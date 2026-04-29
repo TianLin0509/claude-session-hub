@@ -10,7 +10,7 @@ const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
 const { getHubDataDir } = require('./core/data-dir.js');
-const { MeetingRoomManager } = require('./core/meeting-room.js');
+const { MeetingRoomManager, isRoundtableCapableMeeting } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
 const { SummaryEngine } = require('./core/summary-engine');
 const summaryEngine = new SummaryEngine();
@@ -893,8 +893,8 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
   _roundtableInProgress.add(meetingId);
   try {
     const meeting = meetingManager.getMeeting(meetingId);
-    if (!meeting || !meeting.researchMode) {
-      return { status: 'error', reason: 'not research mode', turnNum: null };
+    if (!isRoundtableCapableMeeting(meeting)) {
+      return { status: 'error', reason: 'not roundtable-capable mode', turnNum: null };
     }
 
     // 收集三家活跃 sid + kind 映射
@@ -1001,8 +1001,9 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
           const stamp = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')}-${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}`;
           const titleSlug = (meta.decisionTitle || `session-${turnNum}`).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
           const fileName = `${stamp}-${titleSlug}.md`;
+          const archiveTitle = meeting.researchMode ? '# 投研圆桌决策档案' : '# 圆桌讨论决策档案';
           const lines = [
-            `# 投研圆桌决策档案`,
+            archiveTitle,
             `- 标题：${meta.decisionTitle || '(未提供)'}`,
             `- 总结人：${meta.summarizer || 'unknown'}`,
             `- 完成时间：${ts.toLocaleString('zh-CN')}`,

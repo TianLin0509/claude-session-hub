@@ -1617,8 +1617,8 @@ function openCreateMeetingModal() {
   createMeetingConfirmEl.disabled = false;
   createMeetingConfirmEl.textContent = '创建';
   for (const cb of document.querySelectorAll('.create-meeting-cb')) cb.checked = true;
-  const driverRadio = document.querySelector('input[name="meeting-mode"][value="driver"]');
-  if (driverRadio) driverRadio.checked = true;
+  const roundtableRadio = document.querySelector('input[name="meeting-mode"][value="roundtable"]');
+  if (roundtableRadio) roundtableRadio.checked = true;
   // 预填投研公约模板（首次拉取，之后缓存）
   _ensureResearchCovenantTemplate().then((tpl) => {
     const ta = document.getElementById('create-meeting-covenant-text');
@@ -1640,9 +1640,10 @@ async function submitCreateMeeting() {
   if (kinds.length === 0) return;
 
   const modeRadio = document.querySelector('input[name="meeting-mode"]:checked');
-  const meetingMode = modeRadio ? modeRadio.value : 'driver';
+  const meetingMode = modeRadio ? modeRadio.value : 'roundtable';
   const isDriverMode = meetingMode === 'driver';
   const isResearchMode = meetingMode === 'research';
+  const isRoundtableMode = meetingMode === 'roundtable';
 
   createMeetingConfirmEl.disabled = true;
   createMeetingConfirmEl.textContent = '创建中...';
@@ -1658,6 +1659,7 @@ async function submitCreateMeeting() {
     if (isDriverMode) {
       await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { driverMode: true } });
       meeting.driverMode = true;
+      meeting.roundtableMode = false;
     } else if (isResearchMode) {
       const ta = document.getElementById('create-meeting-covenant-text');
       const covenantText = ta ? (ta.value || '') : '';
@@ -1666,7 +1668,12 @@ async function submitCreateMeeting() {
         fields: { researchMode: true, covenantText },
       });
       meeting.researchMode = true;
+      meeting.roundtableMode = false;
       meeting.covenantText = covenantText;
+    } else if (isRoundtableMode) {
+      // 显式落盘 prompt/covenant 文件（不依赖 createMeeting 的隐式默认字段）
+      const res = await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: true });
+      if (res && res.meeting) Object.assign(meeting, res.meeting);
     }
     meetings[meeting.id] = meeting;
 
@@ -1712,6 +1719,7 @@ for (const radio of document.querySelectorAll('input[name="meeting-mode"]')) {
 function _syncMeetingModeUI() {
   const isDriver = document.querySelector('input[name="meeting-mode"][value="driver"]')?.checked;
   const isResearch = document.querySelector('input[name="meeting-mode"][value="research"]')?.checked;
+  const isRoundtable = document.querySelector('input[name="meeting-mode"][value="roundtable"]')?.checked;
   const claudeCb = document.querySelector('.create-meeting-cb[data-kind="claude"]');
   const geminiCb = document.querySelector('.create-meeting-cb[data-kind="gemini"]');
   const codexCb = document.querySelector('.create-meeting-cb[data-kind="codex"]');
@@ -1730,7 +1738,7 @@ function _syncMeetingModeUI() {
     if (geminiCb) { geminiCb.checked = true; geminiCb.disabled = true; }
     if (codexCb) { codexCb.checked = true; codexCb.disabled = true; }
   }
-  // free 模式：所有可选（已被前面重置）
+  // 通用圆桌：所有 checkbox 可选（已被前面重置）
 
   // mode 描述文案
   if (desc) {
@@ -1739,6 +1747,9 @@ function _syncMeetingModeUI() {
       desc.style.display = 'block';
     } else if (isResearch) {
       desc.textContent = '三家平等本色辩论；自动注入投资公约 + 数据接入工具';
+      desc.style.display = 'block';
+    } else if (isRoundtable) {
+      desc.textContent = '三家平等讨论，支持 @debate / @summary / @单家私聊';
       desc.style.display = 'block';
     } else {
       desc.style.display = 'none';

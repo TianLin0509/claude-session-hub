@@ -248,4 +248,8 @@ class MeetingRoomManager {
   }
 }
 
-module.exports = { MeetingRoomManager };
+function isRoundtableCapableMeeting(meeting) {
+  return !!(meeting && (meeting.researchMode || meeting.roundtableMode));
+}
+
+module.exports = { MeetingRoomManager, isRoundtableCapableMeeting };

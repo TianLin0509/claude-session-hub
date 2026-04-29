@@ -153,13 +153,13 @@
             <label style="display:block;margin-bottom:8px;color:var(--text-secondary);font-size:13px">会议模式</label>
             <div style="display:flex;gap:16px;flex-wrap:wrap">
               <label style="display:flex;align-items:center;gap:6px;color:var(--text-primary);font-size:14px;cursor:pointer">
-                <input type="radio" name="meeting-mode" value="driver" checked> 主驾模式
+                <input type="radio" name="meeting-mode" value="roundtable" checked> 通用圆桌
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;color:var(--text-primary);font-size:14px;cursor:pointer">
+                <input type="radio" name="meeting-mode" value="driver"> 主驾模式
               </label>
               <label style="display:flex;align-items:center;gap:6px;color:var(--text-primary);font-size:14px;cursor:pointer">
                 <input type="radio" name="meeting-mode" value="research"> 投研圆桌
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;color:var(--text-primary);font-size:14px;cursor:pointer">
-                <input type="radio" name="meeting-mode" value="free"> 自由讨论
               </label>
             </div>
             <p id="meeting-mode-desc" style="color:var(--text-muted, #6b7280);font-size:12px;margin:6px 0 0">Claude 主驾执行，Gemini/Codex 仅审查副驾</p>

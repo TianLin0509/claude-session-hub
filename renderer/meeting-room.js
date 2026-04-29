@@ -147,8 +147,9 @@
         const mode = btn.getAttribute('data-mode');
         if (!mode) return;
         try {
-          // 切到非 roundtable 时，先清理 roundtable 的 prompt/covenant/private 文件
-          // （toggle-roundtable-mode handler 在 enabled=false 时会调 cleanupGeneralRoundtableFiles）
+          // 切到非 roundtable 时，先调 toggle-roundtable-mode 把 roundtableMode 标志置 false。
+          // 注意：enabled=false 只切状态字段，不清理文件——prompt/covenant/private 文件统一在
+          // close-meeting (main.js:605-616) 时清理，避免用户切换模式查看其他视图时丢私聊历史。
           if (meeting.roundtableMode && mode !== 'roundtable') {
             try {
               await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: false });
