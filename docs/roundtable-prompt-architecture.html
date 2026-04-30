@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌 Prompt 注入架构 — Before / After</title>
+<style>
+  :root {
+    --bg: #1a1b26; --bg2: #24253a; --bg3: #2f3049;
+    --fg: #c0caf5; --fg2: #a9b1d6; --dim: #565f89;
+    --accent: #7aa2f7; --accent2: #bb9af7;
+    --green: #9ece6a; --red: #f7768e; --orange: #ff9e64; --yellow: #e0af68;
+    --claude: #c45a1a; --gemini: #1a73e8; --codex: #1f8b3a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: 'Segoe UI', system-ui, sans-serif; padding: 32px; line-height: 1.6; }
+  h1 { font-size: 26px; margin-bottom: 6px; background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  h2 { font-size: 19px; margin: 36px 0 14px; color: var(--accent); border-bottom: 1px solid var(--bg3); padding-bottom: 6px; }
+  h3 { font-size: 15px; margin: 18px 0 8px; color: var(--fg2); }
+  .subtitle { color: var(--dim); font-size: 14px; margin-bottom: 28px; }
+
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 14px 0; }
+  @media (max-width: 1100px) { .compare-grid { grid-template-columns: 1fr; } }
+  .card { background: var(--bg2); border-radius: 10px; overflow: hidden; border: 1px solid var(--bg3); }
+  .card.before { border-top: 3px solid var(--red); }
+  .card.after { border-top: 3px solid var(--green); }
+  .card-header { padding: 12px 16px; display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+  .tag { font-size: 10px; padding: 2px 8px; border-radius: 4px; font-weight: 500; }
+  .tag.before { background: rgba(247,118,142,0.2); color: var(--red); }
+  .tag.after { background: rgba(158,206,106,0.2); color: var(--green); }
+  .card-body { padding: 0 16px 16px; }
+
+  /* Prompt block styles */
+  .prompt-stack { display: flex; flex-direction: column; gap: 6px; }
+  .prompt-block { border-radius: 8px; padding: 12px 14px; font-size: 12px; position: relative; }
+  .prompt-block .label { font-weight: 600; font-size: 11px; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+  .prompt-block .label .badge { font-size: 9px; padding: 1px 6px; border-radius: 3px; font-weight: 500; }
+  .prompt-block ul { padding-left: 16px; margin: 4px 0; }
+  .prompt-block li { margin: 2px 0; color: var(--fg2); font-size: 11px; line-height: 1.5; }
+  .prompt-block code { background: rgba(0,0,0,0.3); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+  .prompt-block .note { font-size: 10px; color: var(--dim); margin-top: 6px; font-style: italic; }
+
+  .pb-rules { background: rgba(122,162,247,0.1); border: 1px solid rgba(122,162,247,0.25); }
+  .pb-rules .label { color: var(--accent); }
+  .pb-scene { background: rgba(187,154,247,0.1); border: 1px solid rgba(187,154,247,0.25); }
+  .pb-scene .label { color: var(--accent2); }
+  .pb-covenant { background: rgba(255,158,100,0.1); border: 1px solid rgba(255,158,100,0.25); }
+  .pb-covenant .label { color: var(--orange); }
+  .pb-turn { background: rgba(158,206,106,0.1); border: 1px solid rgba(158,206,106,0.25); }
+  .pb-turn .label { color: var(--green); }
+  .pb-mcp { background: rgba(224,175,104,0.1); border: 1px solid rgba(224,175,104,0.25); }
+  .pb-mcp .label { color: var(--yellow); }
+  .pb-dup { background: rgba(247,118,142,0.06); border: 1px dashed rgba(247,118,142,0.3); }
+  .pb-dup .label { color: var(--red); }
+
+  .arrow-down { text-align: center; color: var(--dim); font-size: 16px; margin: 2px 0; }
+
+  /* Problem callout */
+  .problem { background: rgba(247,118,142,0.08); border-left: 3px solid var(--red); border-radius: 0 8px 8px 0; padding: 10px 14px; margin: 8px 0; font-size: 12px; }
+  .problem .title { color: var(--red); font-weight: 600; margin-bottom: 4px; }
+  .problem p { color: var(--fg2); font-size: 11px; }
+
+  /* Concept box */
+  .concept { background: var(--bg2); border: 1px solid var(--bg3); border-radius: 10px; padding: 18px; margin: 14px 0; }
+  .concept .key { color: var(--green); font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  .concept p { color: var(--fg2); font-size: 13px; }
+
+  /* Scene registry table */
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 12px; }
+  th { background: var(--bg3); padding: 8px 12px; text-align: left; color: var(--accent); font-weight: 600; }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--bg3); color: var(--fg2); }
+  td code { background: rgba(0,0,0,0.3); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+  tr:hover td { background: rgba(122,162,247,0.05); }
+
+  /* Diff view */
+  .diff { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; background: #0d1117; border-radius: 8px; padding: 12px 14px; margin: 8px 0; overflow-x: auto; line-height: 1.6; }
+  .diff .del { color: var(--red); }
+  .diff .add { color: var(--green); }
+  .diff .ctx { color: var(--dim); }
+  .diff .hdr { color: var(--accent2); }
+
+  .strike { text-decoration: line-through; color: var(--red); opacity: 0.6; }
+  .new { color: var(--green); font-weight: 500; }
+  .hl { background: rgba(122,162,247,0.15); padding: 2px 6px; border-radius: 3px; }
+
+  /* Improvement list */
+  .opt-list { display: grid; gap: 10px; margin: 14px 0; }
+  .opt-item { display: flex; gap: 12px; padding: 14px; background: var(--bg2); border-radius: 8px; border-left: 3px solid var(--accent2); }
+  .opt-item .num { font-size: 20px; font-weight: 700; color: var(--accent2); min-width: 28px; }
+  .opt-item .content { flex: 1; }
+  .opt-item .title { font-weight: 600; color: var(--fg); margin-bottom: 3px; font-size: 13px; }
+  .opt-item .desc { font-size: 12px; color: var(--dim); }
+  .opt-item .code { font-size: 11px; color: var(--accent); margin-top: 4px; font-family: 'Cascadia Code', monospace; }
+
+  .flex-row { display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap; margin: 16px 0; }
+  .flex-row .box { background: var(--bg3); padding: 8px 16px; border-radius: 8px; text-align: center; font-size: 13px; }
+  .flex-row .op { color: var(--dim); font-size: 18px; }
+  .flex-row .result { border: 2px solid var(--green); color: var(--green); }
+</style>
+</head>
+<body>
+
+<h1>Prompt 注入架构优化</h1>
+<p class="subtitle">从"两套平行模板"到"基础规则 + 场景插件"</p>
+
+<!-- ===== Section 1: Current Problems ===== -->
+<div>
+  <h2>当前问题诊断</h2>
+
+  <div class="problem">
+    <div class="title">问题 1：两套 Rules 模板 80% 重复</div>
+    <p><code>general-roundtable-mode.js</code> 和 <code>research-mode.js</code> 各自维护一份完整的 rules 模板。角色定义、语法说明(@debate/@summary)、协作礼仪几乎完全一样，只有数据获取段和少量措辞不同。改一处要同步改另一处。</p>
+  </div>
+
+  <div class="problem">
+    <div class="title">问题 2：Orchestrator 硬编码"投研圆桌"</div>
+    <p><code>roundtable-orchestrator.js</code> 的 turn prompt 全部写死 <code>[投研圆桌 · 第N轮 · ...]</code>，通用圆桌也会收到这个前缀 —— 场景无关的 orchestrator 和场景强耦合。</p>
+  </div>
+
+  <div class="problem">
+    <div class="title">问题 3：Summary 输出格式绑死投研</div>
+    <p>Summary prompt 的输出建议写死了"仓位/止损/加仓/观察指标"、<code>&lt;&lt;TITLE: 兆易创新-买入决策&gt;&gt;</code> —— 通用圆桌讨论技术架构时也会收到这些投研专属指引。</p>
+  </div>
+
+  <div class="problem">
+    <div class="title">问题 4：两套平行的文件管理函数</div>
+    <p>两个模块各自实现 <code>writeXxxPromptFile</code> / <code>writeCovenantSnapshot</code> / <code>readCovenantSnapshot</code> / <code>cleanupXxxFiles</code> —— 逻辑近乎一致，只是文件名前缀不同（<code>-roundtable.md</code> vs <code>-research.md</code>）。</p>
+  </div>
+</div>
+
+<!-- ===== Section 2: Before Architecture ===== -->
+<div>
+  <h2>Before：两套平行模板</h2>
+  <div class="compare-grid">
+
+    <!-- General -->
+    <div class="card before">
+      <div class="card-header"><span class="tag before">通用圆桌</span> System Prompt 组装</div>
+      <div class="card-body">
+        <div class="prompt-stack">
+          <div class="prompt-block pb-dup">
+            <div class="label">GENERAL_ROUNDTABLE_RULES_TEMPLATE <span class="badge" style="background:rgba(247,118,142,0.2);color:var(--red);">独立副本</span></div>
+            <ul>
+              <li>角色定义（三家平等、本色发挥）</li>
+              <li>语法：默认提问 / @debate / @summary / <strong>@&lt;who&gt; 私聊</strong></li>
+              <li>协作礼仪</li>
+              <li>工具资源（通用描述：联网/文件/代码/MCP）</li>
+              <li>留白寄语</li>
+            </ul>
+            <div class="note">~46 行，与投研版 80% 相同</div>
+          </div>
+          <div class="arrow-down">+</div>
+          <div class="prompt-block pb-covenant">
+            <div class="label">Covenant（公约）</div>
+            <ul>
+              <li>默认：<strong>空字符串</strong>（不预设场景）</li>
+              <li>用户在 UI 编辑后才有内容</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Research -->
+    <div class="card before">
+      <div class="card-header"><span class="tag before">投研圆桌</span> System Prompt 组装</div>
+      <div class="card-body">
+        <div class="prompt-stack">
+          <div class="prompt-block pb-dup">
+            <div class="label">RESEARCH_RULES_TEMPLATE <span class="badge" style="background:rgba(247,118,142,0.2);color:var(--red);">独立副本</span></div>
+            <ul>
+              <li>角色定义（三家平等、本色发挥）</li>
+              <li>语法：默认提问 / @debate / @summary（<strong>无 @&lt;who&gt; 私聊</strong>）</li>
+              <li>数据获取优先级：LinDangAgent → MCP → 联网 → 沙箱</li>
+              <li>LinDangAgent 具体路径 + 调用方式（~25行）</li>
+              <li>铁律（纯读不写、探查上限2次）</li>
+              <li>协作礼仪</li>
+            </ul>
+            <div class="note">~77 行，与通用版 80% 相同</div>
+          </div>
+          <div class="arrow-down">+</div>
+          <div class="prompt-block pb-covenant">
+            <div class="label">COVENANT_TEMPLATE（公约）</div>
+            <ul>
+              <li>默认：<strong>立花道雪投研公约 v1</strong>（~40行）</li>
+              <li>投资风格、关注维度、红线、输出习惯</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Before：Turn Prompt（Orchestrator 注入）</h3>
+  <div class="compare-grid">
+    <div class="card before" style="grid-column: 1/-1;">
+      <div class="card-header"><span class="tag before">通用 + 投研 共用</span> roundtable-orchestrator.js</div>
+      <div class="card-body">
+        <div class="prompt-stack">
+          <div class="prompt-block pb-turn">
+            <div class="label">buildFanoutPrompt</div>
+            <ul>
+              <li><code>[<strong style="color:var(--red)">投研圆桌</strong> · 第N轮 · 默认提问]</code> ← 通用圆桌也写"投研"</li>
+              <li><code>## 数据接入（Hub 自动从 <strong style="color:var(--red)">LinDangAgent</strong> 拉取）</code> ← 通用不用这个</li>
+            </ul>
+          </div>
+          <div class="prompt-block pb-turn">
+            <div class="label">buildDebatePrompt</div>
+            <ul>
+              <li><code>[<strong style="color:var(--red)">投研圆桌</strong> · 第N轮 · @debate]</code></li>
+            </ul>
+          </div>
+          <div class="prompt-block pb-turn">
+            <div class="label">buildSummaryPrompt</div>
+            <ul>
+              <li><code>[<strong style="color:var(--red)">投研圆桌</strong> · 第N轮 · @summary]</code></li>
+              <li>输出格式写死：<strong style="color:var(--red)">仓位/止损/加仓/观察指标</strong></li>
+              <li><code>&lt;&lt;TITLE: <strong style="color:var(--red)">兆易创新-买入决策</strong>&gt;&gt;</code></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Section 3: After Architecture ===== -->
+<div>
+  <h2>After：基础规则 + 场景插件</h2>
+
+  <div class="concept">
+    <div class="key">核心思路：三层拼装</div>
+    <p>System Prompt = <span class="hl">Base Rules</span>（共享、写死）+ <span class="hl" style="background:rgba(187,154,247,0.15);">Scene Preset</span>（场景专属片段）+ <span class="hl" style="background:rgba(255,158,100,0.15);">Covenant</span>（用户可编辑公约）</p>
+  </div>
+
+  <div class="flex-row">
+    <div class="box" style="border:1px solid var(--accent);">Base Rules<br><small style="color:var(--dim)">角色 + 语法 + 礼仪</small></div>
+    <div class="op">+</div>
+    <div class="box" style="border:1px solid var(--accent2);">Scene Preset<br><small style="color:var(--dim)">场景专属指引</small></div>
+    <div class="op">+</div>
+    <div class="box" style="border:1px solid var(--orange);">Covenant<br><small style="color:var(--dim)">用户公约</small></div>
+    <div class="op">=</div>
+    <div class="box result">System Prompt</div>
+  </div>
+
+  <div class="compare-grid">
+
+    <!-- Base Rules -->
+    <div class="card after" style="grid-column: 1/-1;">
+      <div class="card-header"><span class="tag after">共享</span> BASE_RULES（一份，所有场景复用）</div>
+      <div class="card-body">
+        <div class="prompt-block pb-rules">
+          <div class="label">BASE_ROUNDTABLE_RULES <span class="badge" style="background:rgba(158,206,106,0.2);color:var(--green);">唯一真相</span></div>
+          <ul>
+            <li><strong>角色定义</strong>：三家平等、本色发挥（与现有一致，只保留一份）</li>
+            <li><strong>语法说明</strong>：默认提问 / @debate / @summary / @&lt;who&gt; 私聊（统一包含私聊，所有场景可用）</li>
+            <li><strong>协作礼仪</strong>：引用对方观点、不盲从、summary 写决策报告</li>
+            <li><strong>工具通用指引</strong>：联网搜索、读文件、跑代码、MCP 工具 — 能查就查</li>
+            <li><strong>留白</strong>：智囊伙伴，不是答题机器</li>
+          </ul>
+          <div class="note">约 35 行。所有场景共享，改一处全生效。</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene: General -->
+    <div class="card after">
+      <div class="card-header"><span class="tag after">场景 A</span> 通用圆桌 Scene Preset</div>
+      <div class="card-body">
+        <div class="prompt-stack">
+          <div class="prompt-block pb-scene">
+            <div class="label">SCENE_GENERAL <span class="badge" style="background:rgba(187,154,247,0.15);color:var(--accent2);">~5行</span></div>
+            <ul>
+              <li>场景名称：<code>通用圆桌</code></li>
+              <li>无特殊数据源指引</li>
+              <li>无额外工具限制</li>
+              <li>"自由讨论任意话题，按需使用你的全部能力"</li>
+            </ul>
+          </div>
+          <div class="arrow-down">+</div>
+          <div class="prompt-block pb-covenant">
+            <div class="label">默认 Covenant</div>
+            <ul><li>空（用户按需填写）</li></ul>
+          </div>
+          <div class="arrow-down">+</div>
+          <div class="prompt-block pb-mcp">
+            <div class="label">MCP 配置</div>
+            <ul><li>无额外 MCP server（用 CLI 自带的即可）</li></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scene: Research -->
+    <div class="card after">
+      <div class="card-header"><span class="tag after">场景 B</span> 投研圆桌 Scene Preset</div>
+      <div class="card-body">
+        <div class="prompt-stack">
+          <div class="prompt-block pb-scene">
+            <div class="label">SCENE_RESEARCH <span class="badge" style="background:rgba(187,154,247,0.15);color:var(--accent2);">~40行</span></div>
+            <ul>
+              <li>场景名称：<code>投研圆桌</code></li>
+              <li>数据获取优先级：LinDangAgent → MCP → 联网 → 沙箱</li>
+              <li>LinDangAgent 路径 + 调用方式</li>
+              <li>铁律：纯读不写、探查上限2次</li>
+            </ul>
+          </div>
+          <div class="arrow-down">+</div>
+          <div class="prompt-block pb-covenant">
+            <div class="label">默认 Covenant</div>
+            <ul>
+              <li>立花道雪投研公约 v1（投资风格、关注维度、红线）</li>
+            </ul>
+          </div>
+          <div class="arrow-down">+</div>
+          <div class="prompt-block pb-mcp">
+            <div class="label">MCP 配置</div>
+            <ul><li><code>arena-research</code> MCP server（fetch_lindang_stock 等）</li></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Section 4: Turn Prompt Fix ===== -->
+<div>
+  <h2>After：Turn Prompt 场景感知</h2>
+
+  <div class="concept">
+    <div class="key">改动：Orchestrator 接收 sceneName 参数</div>
+    <p>Orchestrator 不再硬编码"投研圆桌"，而是从 meeting 对象读取当前场景名。turn prompt 前缀变为 <code>[{sceneName} · 第N轮 · mode]</code>。summary 输出格式也由场景定义。</p>
+  </div>
+
+  <div class="compare-grid">
+    <div class="card before">
+      <div class="card-header"><span class="tag before">BEFORE</span> Turn Prompt</div>
+      <div class="card-body">
+        <div class="diff">
+          <div class="del">- [<strong>投研圆桌</strong> · 第3轮 · 默认提问]</div>
+          <div class="del">- ## 数据接入（Hub 自动从 <strong>LinDangAgent</strong> 拉取）</div>
+          <div class="ctx">&nbsp; ## 用户问题</div>
+          <div class="ctx">&nbsp; 讨论一下微服务架构的利弊</div>
+          <div class="ctx">&nbsp;</div>
+          <div class="hdr">// summary 输出格式：</div>
+          <div class="del">- 3) 具体行动建议（<strong>仓位/止损/加仓/观察指标</strong>）</div>
+          <div class="del">- 4) &lt;&lt;TITLE: <strong>兆易创新-买入决策</strong>&gt;&gt;</div>
+        </div>
+        <p style="font-size:11px; color:var(--red); margin-top:6px;">通用圆桌讨论微服务却收到"投研"前缀和投研输出格式</p>
+      </div>
+    </div>
+    <div class="card after">
+      <div class="card-header"><span class="tag after">AFTER</span> Turn Prompt</div>
+      <div class="card-body">
+        <div class="diff">
+          <div class="add">+ [<strong>通用圆桌</strong> · 第3轮 · 默认提问]</div>
+          <div class="ctx">&nbsp; ## 用户问题</div>
+          <div class="ctx">&nbsp; 讨论一下微服务架构的利弊</div>
+          <div class="ctx">&nbsp;</div>
+          <div class="hdr">// summary 输出格式（由场景定义）：</div>
+          <div class="add">+ 3) 具体行动建议（<strong>按讨论话题自适应</strong>）</div>
+          <div class="ctx" style="color:var(--dim);">&nbsp; // 通用场景不要求 &lt;&lt;TITLE&gt;&gt;，减少不必要的格式约束</div>
+        </div>
+        <p style="font-size:11px; color:var(--green); margin-top:6px;">场景名 + 输出格式跟随当前场景自适应</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>投研场景下的 Turn Prompt（不变）</h3>
+  <div class="card after" style="max-width:540px;">
+    <div class="card-body" style="padding-top:14px;">
+      <div class="diff">
+        <div class="add">+ [<strong>投研圆桌</strong> · 第2轮 · @debate]</div>
+        <div class="ctx">&nbsp; ## 另两家上一轮观点</div>
+        <div class="ctx">&nbsp; ### Gemini 的观点</div>
+        <div class="ctx">&nbsp; 兆易创新近期资金面偏强...</div>
+        <div class="ctx">&nbsp;</div>
+        <div class="hdr">// summary 输出格式（投研场景特有）：</div>
+        <div class="add">+ 3) 具体行动建议（仓位/止损/加仓/观察指标）</div>
+        <div class="add">+ 4) &lt;&lt;TITLE: 兆易创新-买入决策&gt;&gt;</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Section 5: Scene Registry ===== -->
+<div>
+  <h2>场景注册表（核心数据结构）</h2>
+
+  <div class="concept">
+    <div class="key">新增：SCENE_REGISTRY 对象</div>
+    <p>一个场景 = 一组配置字段。新增场景只需往注册表加一条，零 UI 代码改动。</p>
+  </div>
+
+  <div class="diff" style="max-width:680px;">
+    <div class="hdr">// core/roundtable-scenes.js (新文件)</div>
+    <div class="add">+ const SCENE_REGISTRY = {</div>
+    <div class="add">+   general: {</div>
+    <div class="add">+     name: '通用圆桌',</div>
+    <div class="add">+     icon: '🎯',</div>
+    <div class="add">+     preset: SCENE_GENERAL,      // ~5行场景专属指引</div>
+    <div class="add">+     defaultCovenant: '',          // 空</div>
+    <div class="add">+     mcpConfig: null,              // 无额外 MCP</div>
+    <div class="add">+     summaryHints: '按讨论话题自适应', // summary 输出指引</div>
+    <div class="add">+     summaryTitleTag: false,       // 不要求 &lt;&lt;TITLE&gt;&gt;</div>
+    <div class="add">+     dataPackEnabled: false,       // 不自动拉数据</div>
+    <div class="add">+   },</div>
+    <div class="add">+   research: {</div>
+    <div class="add">+     name: '投研圆桌',</div>
+    <div class="add">+     icon: '📊',</div>
+    <div class="add">+     preset: SCENE_RESEARCH,       // ~40行投研指引</div>
+    <div class="add">+     defaultCovenant: COVENANT_TEMPLATE,</div>
+    <div class="add">+     mcpConfig: buildResearchMcpConfig,</div>
+    <div class="add">+     summaryHints: '仓位/止损/加仓/观察指标',</div>
+    <div class="add">+     summaryTitleTag: true,        // 要求 &lt;&lt;TITLE&gt;&gt; 用于决策档案</div>
+    <div class="add">+     dataPackEnabled: true,        // fanout 时自动拉 LinDangAgent</div>
+    <div class="add">+   },</div>
+    <div class="add">+   // 未来扩展示例：</div>
+    <div class="add">+   // codeReview: { name: '代码审查', preset: SCENE_CODE_REVIEW, ... },</div>
+    <div class="add">+   // pptDesign: { name: 'PPT 讨论', preset: SCENE_PPT, ... },</div>
+    <div class="add">+ };</div>
+  </div>
+
+  <table style="margin-top:16px;">
+    <thead>
+      <tr><th>字段</th><th>用途</th><th>通用圆桌</th><th>投研圆桌</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>name</code></td>
+        <td>Turn prompt 前缀 + UI 显示</td>
+        <td>通用圆桌</td>
+        <td>投研圆桌</td>
+      </tr>
+      <tr>
+        <td><code>preset</code></td>
+        <td>场景专属 prompt 片段（拼在 Base Rules 之后）</td>
+        <td>~5行（通用工具描述）</td>
+        <td>~40行（LinDangAgent + 数据优先级）</td>
+      </tr>
+      <tr>
+        <td><code>defaultCovenant</code></td>
+        <td>新建会议时的默认公约</td>
+        <td>空</td>
+        <td>投研公约 v1（投资风格/红线）</td>
+      </tr>
+      <tr>
+        <td><code>mcpConfig</code></td>
+        <td>额外 MCP server 配置</td>
+        <td><code>null</code></td>
+        <td><code>arena-research</code> server</td>
+      </tr>
+      <tr>
+        <td><code>summaryHints</code></td>
+        <td>@summary 输出格式提示</td>
+        <td>按话题自适应</td>
+        <td>仓位/止损/加仓/观察指标</td>
+      </tr>
+      <tr>
+        <td><code>dataPackEnabled</code></td>
+        <td>fanout 时是否自动拉数据包</td>
+        <td><code>false</code></td>
+        <td><code>true</code>（LinDangAgent）</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ===== Section 6: File Consolidation ===== -->
+<div>
+  <h2>文件整合</h2>
+
+  <table>
+    <thead>
+      <tr><th>Before</th><th>After</th><th>变化</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code class="strike">general-roundtable-mode.js</code></td>
+        <td rowspan="2"><code class="new">roundtable-scenes.js</code></td>
+        <td rowspan="2">两个文件 → 一个文件<br>共享 Base Rules + 各场景 preset/covenant</td>
+      </tr>
+      <tr>
+        <td><code class="strike">research-mode.js</code></td>
+      </tr>
+      <tr>
+        <td><code>roundtable-orchestrator.js</code></td>
+        <td><code>roundtable-orchestrator.js</code></td>
+        <td>构造函数接收 <code>scene</code> 参数<br>turn prompt 前缀 / summary hints 不再硬编码</td>
+      </tr>
+      <tr>
+        <td>文件管理函数 ×2 套</td>
+        <td>文件管理函数 ×1 套</td>
+        <td>统一 <code>writePromptFile(scene, meetingId, covenant)</code><br>文件名统一 <code>{id}-prompt.md</code></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ===== Section 7: Optimization Summary ===== -->
+<div>
+  <h2>优化总结</h2>
+  <div class="opt-list">
+    <div class="opt-item">
+      <div class="num">1</div>
+      <div class="content">
+        <div class="title">Rules 去重：两套 → 一套 Base Rules</div>
+        <div class="desc">抽出共享部分（角色 + 语法 + 礼仪 + 工具 + 留白）作为 <code>BASE_ROUNDTABLE_RULES</code>。统一包含 @&lt;who&gt; 私聊语法（投研之前没有但应该有）。改 rules 只改一处。</div>
+      </div>
+    </div>
+    <div class="opt-item">
+      <div class="num">2</div>
+      <div class="content">
+        <div class="title">场景注册表驱动：新增场景零 UI 改动</div>
+        <div class="desc">每个场景只是一条 SCENE_REGISTRY 记录（name/preset/covenant/mcp/summaryHints）。header toggle 按钮从注册表动态生成，新增场景只需加一条记录。</div>
+      </div>
+    </div>
+    <div class="opt-item">
+      <div class="num">3</div>
+      <div class="content">
+        <div class="title">Orchestrator 场景感知</div>
+        <div class="desc">构造函数接收 <code>sceneName</code>，turn prompt 前缀从 <code>[投研圆桌·第N轮]</code> 变为 <code>[{sceneName}·第N轮]</code>。summary 输出提示从 <code>scene.summaryHints</code> 读取。</div>
+      </div>
+    </div>
+    <div class="opt-item">
+      <div class="num">4</div>
+      <div class="content">
+        <div class="title">文件管理统一</div>
+        <div class="desc">一套 <code>writePromptFile / writeCovenantSnapshot / readCovenantSnapshot / cleanup</code> 函数。文件名统一 <code>{meetingId}-prompt.md</code> / <code>{meetingId}-covenant.md</code>（不再按模式分命名）。</div>
+      </div>
+    </div>
+    <div class="opt-item">
+      <div class="num">5</div>
+      <div class="content">
+        <div class="title">投研私聊补齐</div>
+        <div class="desc">当前投研 rules 缺 <code>@&lt;who&gt; 私聊</code> 语法说明（只有通用版有）。统一到 Base Rules 后两个场景都自动拥有私聊能力。</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Section 8: Prompt Diff ===== -->
+<div>
+  <h2>Prompt 实际输出对比（用户侧感知）</h2>
+
+  <h3>通用圆桌 · fanout 轮</h3>
+  <div class="compare-grid">
+    <div class="card before">
+      <div class="card-header"><span class="tag before">BEFORE</span></div>
+      <div class="card-body">
+        <div class="diff" style="font-size:10px;">
+          <div class="ctx"># 圆桌讨论规则</div>
+          <div class="ctx">## 你的角色</div>
+          <div class="ctx">你和另外两位 AI 同事...</div>
+          <div class="ctx">## 圆桌的运作方式</div>
+          <div class="ctx">1. 默认提问... 2. @debate... 3. @summary...</div>
+          <div class="ctx">4. @&lt;你&gt; 私聊...</div>
+          <div class="ctx">## 协作礼仪 ...</div>
+          <div class="ctx">## 工具与资源 ...</div>
+          <div class="ctx">## 留白 ...</div>
+          <div class="ctx" style="color:var(--dim);">--- (无 covenant) ---</div>
+          <div class="ctx">&nbsp;</div>
+          <div class="del">[<strong>投研圆桌</strong> · 第1轮 · 默认提问]</div>
+          <div class="ctx">## 用户问题</div>
+          <div class="ctx">讨论下微服务拆分策略</div>
+        </div>
+      </div>
+    </div>
+    <div class="card after">
+      <div class="card-header"><span class="tag after">AFTER</span></div>
+      <div class="card-body">
+        <div class="diff" style="font-size:10px;">
+          <div class="ctx"># 圆桌讨论规则</div>
+          <div class="ctx">## 你的角色</div>
+          <div class="ctx">你和另外两位 AI 同事...</div>
+          <div class="ctx">## 圆桌的运作方式</div>
+          <div class="ctx">1. 默认提问... 2. @debate... 3. @summary...</div>
+          <div class="ctx">4. @&lt;你&gt; 私聊...</div>
+          <div class="ctx">## 协作礼仪 ...</div>
+          <div class="ctx">## 工具与资源 ...</div>
+          <div class="ctx">## 留白 ...</div>
+          <div class="add">## 场景：通用圆桌</div>
+          <div class="add">自由讨论任意话题，按需使用你的全部能力。</div>
+          <div class="ctx" style="color:var(--dim);">--- (无 covenant) ---</div>
+          <div class="ctx">&nbsp;</div>
+          <div class="add">[<strong>通用圆桌</strong> · 第1轮 · 默认提问]</div>
+          <div class="ctx">## 用户问题</div>
+          <div class="ctx">讨论下微服务拆分策略</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>投研圆桌 · summary 轮</h3>
+  <div class="compare-grid">
+    <div class="card before">
+      <div class="card-header"><span class="tag before">BEFORE</span></div>
+      <div class="card-body">
+        <div class="diff" style="font-size:10px;">
+          <div class="ctx">[投研圆桌 · 第4轮 · @summary @Claude]</div>
+          <div class="ctx">## 你的任务</div>
+          <div class="ctx">你已在上下文里读过前4轮讨论...</div>
+          <div class="ctx">输出格式建议：</div>
+          <div class="ctx">  1) 结论先行</div>
+          <div class="ctx">  2) 三方共识与关键分歧</div>
+          <div class="del">  3) 具体行动建议（<strong>仓位/止损/加仓/观察指标</strong>）</div>
+          <div class="del">  4) &lt;&lt;TITLE: <strong>兆易创新-买入决策</strong>&gt;&gt;</div>
+        </div>
+      </div>
+    </div>
+    <div class="card after">
+      <div class="card-header"><span class="tag after">AFTER</span></div>
+      <div class="card-body">
+        <div class="diff" style="font-size:10px;">
+          <div class="ctx">[投研圆桌 · 第4轮 · @summary @Claude]</div>
+          <div class="ctx">## 你的任务</div>
+          <div class="ctx">你已在上下文里读过前4轮讨论...</div>
+          <div class="ctx">输出格式建议：</div>
+          <div class="ctx">  1) 结论先行</div>
+          <div class="ctx">  2) 三方共识与关键分歧</div>
+          <div class="add">  3) 具体行动建议（<strong>仓位/止损/加仓/观察指标</strong>）</div>
+          <div class="ctx" style="font-size:9px; color:var(--dim);">  ↑ 来自 scene.summaryHints，投研场景不变</div>
+          <div class="add">  4) &lt;&lt;TITLE: 兆易创新-买入决策&gt;&gt;</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="text-align:center; padding:32px 0; color:var(--dim); font-size:12px;">
+  Claude Session Hub &mdash; Prompt Architecture Optimization &mdash; 2026-04-30
+</div>
+
+</body>
+</html>

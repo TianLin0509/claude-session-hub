@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌架构统一方案 — Before / After</title>
+<style>
+  :root {
+    --bg: #1a1b26; --bg2: #24253a; --bg3: #2f3049;
+    --fg: #c0caf5; --fg2: #a9b1d6; --dim: #565f89;
+    --accent: #7aa2f7; --accent2: #bb9af7;
+    --green: #9ece6a; --red: #f7768e; --orange: #ff9e64; --yellow: #e0af68;
+    --claude: #c45a1a; --gemini: #1a73e8; --codex: #1f8b3a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: 'Segoe UI', system-ui, sans-serif; padding: 32px; line-height: 1.6; }
+  h1 { font-size: 28px; margin-bottom: 8px; background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  h2 { font-size: 20px; margin: 32px 0 16px; color: var(--accent); border-bottom: 1px solid var(--bg3); padding-bottom: 8px; }
+  h3 { font-size: 16px; margin: 20px 0 10px; color: var(--fg2); }
+  .subtitle { color: var(--dim); font-size: 14px; margin-bottom: 32px; }
+  .section { margin-bottom: 40px; }
+
+  /* Core Concept */
+  .concept-box { background: var(--bg2); border: 1px solid var(--bg3); border-radius: 12px; padding: 24px; margin: 16px 0; }
+  .concept-box .key { color: var(--green); font-weight: 600; font-size: 15px; margin-bottom: 8px; }
+  .concept-box p { color: var(--fg2); font-size: 14px; }
+  .formula { display: flex; align-items: center; gap: 12px; justify-content: center; margin: 20px 0; font-size: 16px; flex-wrap: wrap; }
+  .formula .box { background: var(--bg3); padding: 10px 18px; border-radius: 8px; text-align: center; }
+  .formula .op { color: var(--dim); font-size: 20px; }
+  .formula .result { border: 2px solid var(--green); color: var(--green); }
+
+  /* Before / After comparison */
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 16px 0; }
+  @media (max-width: 1100px) { .compare-grid { grid-template-columns: 1fr; } }
+  .compare-card { background: var(--bg2); border-radius: 12px; overflow: hidden; border: 1px solid var(--bg3); }
+  .compare-card.before { border-top: 3px solid var(--red); }
+  .compare-card.after { border-top: 3px solid var(--green); }
+  .compare-header { padding: 14px 18px; display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; }
+  .compare-header .tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 500; }
+  .compare-header .tag.before { background: rgba(247,118,142,0.2); color: var(--red); }
+  .compare-header .tag.after { background: rgba(158,206,106,0.2); color: var(--green); }
+  .compare-body { padding: 0 18px 18px; }
+
+  /* Mock UI */
+  .mock-hub { background: var(--bg); border-radius: 8px; border: 1px solid var(--bg3); overflow: hidden; font-size: 12px; }
+  .mock-header { background: var(--bg3); padding: 8px 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .mock-header .mode-toggle { display: flex; background: rgba(0,0,0,0.3); border-radius: 6px; padding: 2px; gap: 2px; }
+  .mock-header .mode-btn { padding: 4px 12px; border-radius: 4px; font-size: 11px; color: var(--dim); border: none; background: none; cursor: default; }
+  .mock-header .mode-btn.active { background: var(--accent); color: #fff; }
+  .mock-header .title { color: var(--fg2); font-weight: 500; flex: 1; }
+  .mock-header .cli-dots { display: flex; gap: 6px; }
+  .mock-header .cli-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .mock-header .cli-dot.claude { background: var(--claude); }
+  .mock-header .cli-dot.gemini { background: var(--gemini); }
+  .mock-header .cli-dot.codex { background: var(--codex); }
+  .mock-body { padding: 10px; }
+
+  /* Card panel mock */
+  .mock-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 8px; }
+  .mock-card { background: var(--bg2); border-radius: 6px; padding: 8px; border-left: 3px solid; min-height: 50px; }
+  .mock-card.claude { border-color: var(--claude); }
+  .mock-card.gemini { border-color: var(--gemini); }
+  .mock-card.codex { border-color: var(--codex); }
+  .mock-card .name { font-size: 10px; font-weight: 600; margin-bottom: 4px; }
+  .mock-card .text { font-size: 9px; color: var(--dim); line-height: 1.4; }
+
+  /* Terminal mock */
+  .mock-terminals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .mock-terminal { background: #0d1117; border-radius: 6px; padding: 8px; min-height: 60px; border: 1px solid rgba(255,255,255,0.06); }
+  .mock-terminal .term-header { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+  .mock-terminal .term-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .mock-terminal .term-name { font-size: 9px; color: var(--dim); }
+  .mock-terminal .term-line { font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 9px; color: var(--green); opacity: 0.7; line-height: 1.5; }
+  .mock-terminal .term-cursor { display: inline-block; width: 6px; height: 11px; background: var(--green); opacity: 0.7; animation: blink 1s infinite; vertical-align: bottom; }
+  @keyframes blink { 0%,49% { opacity: 0.7; } 50%,100% { opacity: 0; } }
+  .mock-no-terminal { display: flex; align-items: center; justify-content: center; min-height: 60px; color: var(--dim); font-size: 11px; background: rgba(247,118,142,0.05); border: 1px dashed rgba(247,118,142,0.3); border-radius: 6px; }
+
+  /* Plus menu mock */
+  .mock-menu { background: var(--bg2); border-radius: 8px; padding: 6px; width: 160px; border: 1px solid var(--bg3); margin: 8px auto; font-size: 12px; }
+  .mock-menu-item { padding: 6px 10px; border-radius: 4px; color: var(--fg2); cursor: default; }
+  .mock-menu-item:hover { background: var(--bg3); }
+  .mock-menu-item.highlight { background: rgba(122,162,247,0.15); color: var(--accent); }
+  .mock-menu-divider { height: 1px; background: var(--bg3); margin: 4px 0; }
+  .mock-menu-item.removed { text-decoration: line-through; color: var(--red); opacity: 0.5; }
+
+  /* Improvement list */
+  .improvement-list { display: grid; gap: 12px; margin: 16px 0; }
+  .improvement-item { display: flex; gap: 14px; padding: 16px; background: var(--bg2); border-radius: 10px; border-left: 3px solid var(--accent); }
+  .improvement-item .num { font-size: 22px; font-weight: 700; color: var(--accent); min-width: 32px; }
+  .improvement-item .content { flex: 1; }
+  .improvement-item .title { font-weight: 600; color: var(--fg); margin-bottom: 4px; }
+  .improvement-item .desc { font-size: 13px; color: var(--dim); }
+  .improvement-item .files { font-size: 11px; color: var(--accent2); margin-top: 6px; font-family: 'Cascadia Code', monospace; }
+
+  /* Architecture diagram */
+  .arch-diagram { display: flex; gap: 32px; justify-content: center; margin: 24px 0; flex-wrap: wrap; }
+  .arch-col { text-align: center; }
+  .arch-col .label { font-size: 12px; color: var(--dim); margin-bottom: 8px; }
+  .arch-box { background: var(--bg2); border: 1px solid var(--bg3); border-radius: 8px; padding: 14px 20px; margin: 6px 0; font-size: 13px; }
+  .arch-box.ui { border-color: var(--accent); color: var(--accent); }
+  .arch-box.scene { border-color: var(--accent2); color: var(--accent2); }
+  .arch-box.prompt { border-color: var(--orange); color: var(--orange); }
+  .arch-arrow { color: var(--dim); font-size: 18px; margin: 4px 0; }
+  .arch-x { display: flex; gap: 8px; justify-content: center; }
+
+  /* Summary table */
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th { background: var(--bg3); padding: 10px 14px; text-align: left; color: var(--accent); font-weight: 600; }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--bg3); color: var(--fg2); }
+  tr:hover td { background: rgba(122,162,247,0.05); }
+  .strike { text-decoration: line-through; color: var(--red); opacity: 0.6; }
+  .new { color: var(--green); font-weight: 500; }
+
+  /* Status indicators */
+  .status { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 8px; border-radius: 4px; }
+  .status.removed { background: rgba(247,118,142,0.15); color: var(--red); }
+  .status.kept { background: rgba(158,206,106,0.15); color: var(--green); }
+  .status.changed { background: rgba(255,158,100,0.15); color: var(--orange); }
+</style>
+</head>
+<body>
+
+<h1>圆桌架构统一方案</h1>
+<p class="subtitle">核心理念：一套 UI + 场景化 Prompt 注入 = 正交架构</p>
+
+<!-- ===== Section 1: Core Concept ===== -->
+<div class="section">
+  <h2>核心理念</h2>
+  <div class="concept-box">
+    <div class="key">当前问题：UI 和场景强耦合</div>
+    <p>通用圆桌隐藏了终端（xterm），只显示卡片面板；投研圆桌同时显示终端+卡片面板。两种模式的 UI 渲染走了完全不同的代码分支，导致通用圆桌出问题时无法通过终端排查。</p>
+  </div>
+  <div class="concept-box">
+    <div class="key">目标：正交解耦</div>
+    <p>圆桌只有一种 UI 形态（= 当前投研圆桌的完整 UI：卡片面板 + 终端），"通用"和"投研"只是不同的<strong>场景预设</strong>，差异仅体现在 prompt 注入（系统提示词、房间公约、MCP 工具配置）。</p>
+  </div>
+  <div class="formula">
+    <div class="box">统一 UI<br><small style="color:var(--dim)">卡片 + 终端</small></div>
+    <div class="op">+</div>
+    <div class="box">场景切换<br><small style="color:var(--dim)">圆桌 / 投研</small></div>
+    <div class="op">=</div>
+    <div class="box result">正交架构<br><small style="color:var(--green)">UI 与场景解耦</small></div>
+  </div>
+</div>
+
+<!-- ===== Section 2: + Menu Before/After ===== -->
+<div class="section">
+  <h2>改进 1：创建入口简化</h2>
+  <div class="compare-grid">
+    <div class="compare-card before">
+      <div class="compare-header">
+        <span class="tag before">BEFORE</span> + 号菜单
+      </div>
+      <div class="compare-body">
+        <div class="mock-menu">
+          <div class="mock-menu-item">Claude Code</div>
+          <div class="mock-menu-item">Gemini CLI</div>
+          <div class="mock-menu-item">Codex CLI</div>
+          <div class="mock-menu-item">DeepSeek</div>
+          <div class="mock-menu-item">PowerShell</div>
+          <div class="mock-menu-divider"></div>
+          <div class="mock-menu-item highlight">🌐 通用圆桌</div>
+          <div class="mock-menu-item highlight">📊 投研圆桌</div>
+        </div>
+        <p style="font-size:12px; color:var(--dim); text-align:center; margin-top:8px;">两个入口 → 用户疑惑"选哪个？"</p>
+      </div>
+    </div>
+    <div class="compare-card after">
+      <div class="compare-header">
+        <span class="tag after">AFTER</span> + 号菜单
+      </div>
+      <div class="compare-body">
+        <div class="mock-menu">
+          <div class="mock-menu-item">Claude Code</div>
+          <div class="mock-menu-item">Gemini CLI</div>
+          <div class="mock-menu-item">Codex CLI</div>
+          <div class="mock-menu-item">DeepSeek</div>
+          <div class="mock-menu-item">PowerShell</div>
+          <div class="mock-menu-divider"></div>
+          <div class="mock-menu-item highlight">🎯 创建圆桌</div>
+        </div>
+        <p style="font-size:12px; color:var(--green); text-align:center; margin-top:8px;">一个入口 → 默认通用场景，进入后随时切换</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Section 3: UI Before/After ===== -->
+<div class="section">
+  <h2>改进 2：通用圆桌补齐终端（核心改动）</h2>
+
+  <h3>Before — 通用圆桌（缺终端，出问题无法排查）</h3>
+  <div class="mock-hub" style="margin-bottom:16px;">
+    <div class="mock-header">
+      <div class="mode-toggle">
+        <div class="mode-btn active">圆桌</div>
+        <div class="mode-btn">投研</div>
+      </div>
+      <div class="title">通用圆桌 #2</div>
+      <div class="cli-dots">
+        <div class="cli-dot claude"></div>
+        <div class="cli-dot gemini"></div>
+        <div class="cli-dot codex"></div>
+      </div>
+    </div>
+    <div class="mock-body">
+      <div class="mock-cards">
+        <div class="mock-card claude">
+          <div class="name" style="color:var(--claude)">Claude</div>
+          <div class="text">我认为这个方案可以从三个角度...</div>
+        </div>
+        <div class="mock-card gemini">
+          <div class="name" style="color:var(--gemini)">Gemini</div>
+          <div class="text">补充一点关于性能的考虑...</div>
+        </div>
+        <div class="mock-card codex">
+          <div class="name" style="color:var(--codex)">Codex</div>
+          <div class="text">从实现成本角度分析...</div>
+        </div>
+      </div>
+      <div class="mock-no-terminal">
+        ❌ 终端被隐藏 — 出错时看不到 CLI 输出，无法排查
+      </div>
+    </div>
+  </div>
+
+  <h3>Before — 投研圆桌（有终端，功能完整）</h3>
+  <div class="mock-hub" style="margin-bottom:16px;">
+    <div class="mock-header">
+      <div class="mode-toggle">
+        <div class="mode-btn">圆桌</div>
+        <div class="mode-btn active">投研</div>
+      </div>
+      <div class="title">投研圆桌 #1</div>
+      <div class="cli-dots">
+        <div class="cli-dot claude"></div>
+        <div class="cli-dot gemini"></div>
+        <div class="cli-dot codex"></div>
+      </div>
+    </div>
+    <div class="mock-body">
+      <div class="mock-cards">
+        <div class="mock-card claude">
+          <div class="name" style="color:var(--claude)">Claude</div>
+          <div class="text">兆易创新近期资金面偏强...</div>
+        </div>
+        <div class="mock-card gemini">
+          <div class="name" style="color:var(--gemini)">Gemini</div>
+          <div class="text">从技术形态看突破了压力位...</div>
+        </div>
+        <div class="mock-card codex">
+          <div class="name" style="color:var(--codex)">Codex</div>
+          <div class="text">行业景气度 PMI 数据显示...</div>
+        </div>
+      </div>
+      <div class="mock-terminals">
+        <div class="mock-terminal">
+          <div class="term-header"><div class="term-dot" style="background:var(--claude)"></div><div class="term-name">Claude</div></div>
+          <div class="term-line">$ claude --model opus<br>Thinking...<span class="term-cursor"></span></div>
+        </div>
+        <div class="mock-terminal">
+          <div class="term-header"><div class="term-dot" style="background:var(--gemini)"></div><div class="term-name">Gemini</div></div>
+          <div class="term-line">$ gemini chat<br>[streaming]<span class="term-cursor"></span></div>
+        </div>
+        <div class="mock-terminal">
+          <div class="term-header"><div class="term-dot" style="background:var(--codex)"></div><div class="term-name">Codex</div></div>
+          <div class="term-line">$ codex --model o3<br>Working...<span class="term-cursor"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3 style="color:var(--green);">After — 统一 UI（任何场景都完整）</h3>
+  <div style="border: 2px solid var(--green); border-radius: 10px; padding: 2px;">
+    <div class="mock-hub">
+      <div class="mock-header">
+        <div class="mode-toggle">
+          <div class="mode-btn active">圆桌</div>
+          <div class="mode-btn">投研</div>
+        </div>
+        <div class="title">圆桌 #3</div>
+        <div class="cli-dots">
+          <div class="cli-dot claude"></div>
+          <div class="cli-dot gemini"></div>
+          <div class="cli-dot codex"></div>
+        </div>
+      </div>
+      <div class="mock-body">
+        <div class="mock-cards">
+          <div class="mock-card claude">
+            <div class="name" style="color:var(--claude)">Claude</div>
+            <div class="text">我认为这个方案可以从三个角度...</div>
+          </div>
+          <div class="mock-card gemini">
+            <div class="name" style="color:var(--gemini)">Gemini</div>
+            <div class="text">补充一点关于性能的考虑...</div>
+          </div>
+          <div class="mock-card codex">
+            <div class="name" style="color:var(--codex)">Codex</div>
+            <div class="text">从实现成本角度分析...</div>
+          </div>
+        </div>
+        <div class="mock-terminals">
+          <div class="mock-terminal">
+            <div class="term-header"><div class="term-dot" style="background:var(--claude)"></div><div class="term-name">Claude</div></div>
+            <div class="term-line">$ claude --model opus<br>Thinking...<span class="term-cursor"></span></div>
+          </div>
+          <div class="mock-terminal">
+            <div class="term-header"><div class="term-dot" style="background:var(--gemini)"></div><div class="term-name">Gemini</div></div>
+            <div class="term-line">$ gemini chat<br>[streaming]<span class="term-cursor"></span></div>
+          </div>
+          <div class="mock-terminal">
+            <div class="term-header"><div class="term-dot" style="background:var(--codex)"></div><div class="term-name">Codex</div></div>
+            <div class="term-line">$ codex --model o3<br>Working...<span class="term-cursor"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p style="font-size:12px; color:var(--green); text-align:center; margin-top:8px;">
+    切换"圆桌 ⇄ 投研"只换 prompt —— 卡片面板 + 终端始终可见
+  </p>
+</div>
+
+<!-- ===== Section 4: Architecture Diagram ===== -->
+<div class="section">
+  <h2>架构对比：耦合 → 正交</h2>
+  <div class="compare-grid">
+    <div class="compare-card before">
+      <div class="compare-header"><span class="tag before">BEFORE</span> 耦合架构</div>
+      <div class="compare-body">
+        <div style="text-align:center; padding:12px 0;">
+          <div class="arch-box" style="border-color:var(--red);">创建入口 A: 通用圆桌</div>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-x">
+            <div class="arch-box ui">UI-A: 仅卡片</div>
+            <div class="arch-box prompt">Prompt-A: 通用</div>
+          </div>
+          <div style="height:20px"></div>
+          <div class="arch-box" style="border-color:var(--red);">创建入口 B: 投研圆桌</div>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-x">
+            <div class="arch-box ui">UI-B: 卡片+终端</div>
+            <div class="arch-box prompt">Prompt-B: 投研</div>
+          </div>
+          <p style="font-size:11px; color:var(--red); margin-top:12px;">
+            UI 和场景 1:1 绑定，两套渲染分支
+          </p>
+        </div>
+      </div>
+    </div>
+    <div class="compare-card after">
+      <div class="compare-header"><span class="tag after">AFTER</span> 正交架构</div>
+      <div class="compare-body">
+        <div style="text-align:center; padding:12px 0;">
+          <div class="arch-box" style="border-color:var(--green);">创建入口: 创建圆桌</div>
+          <div class="arch-arrow">↓</div>
+          <div class="arch-box ui" style="font-size:14px; padding:16px 20px;">统一 UI: 卡片 + 终端</div>
+          <div class="arch-arrow">↓ Header 切换</div>
+          <div class="arch-x">
+            <div class="arch-box scene">场景 A: 通用</div>
+            <div class="arch-box scene">场景 B: 投研</div>
+            <div class="arch-box scene" style="border-style:dashed; opacity:0.5;">场景 C: ...</div>
+          </div>
+          <div class="arch-arrow">↓ 只换 prompt</div>
+          <div class="arch-x">
+            <div class="arch-box prompt">Prompt A</div>
+            <div class="arch-box prompt">Prompt B</div>
+            <div class="arch-box prompt" style="border-style:dashed; opacity:0.5;">Prompt C</div>
+          </div>
+          <p style="font-size:11px; color:var(--green); margin-top:12px;">
+            UI 固定，场景可扩展，新增场景零 UI 改动
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Section 5: Key Changes ===== -->
+<div class="section">
+  <h2>主要改动点</h2>
+  <div class="improvement-list">
+    <div class="improvement-item">
+      <div class="num">1</div>
+      <div class="content">
+        <div class="title">移除终端隐藏逻辑</div>
+        <div class="desc">删除 <code>applyModeContainerVisibility</code> 中 <code>roundtableMode → mr-terminals-hidden</code> 的分支，删除 <code>renderTerminals</code> 中 roundtable 的 early return。所有场景都渲染 xterm 终端。</div>
+        <div class="files">renderer/meeting-room.js:865-894</div>
+      </div>
+    </div>
+    <div class="improvement-item">
+      <div class="num">2</div>
+      <div class="content">
+        <div class="title">合并创建入口</div>
+        <div class="desc">+ 号菜单只留一个"创建圆桌"按钮，默认以"通用"场景创建。删除 <code>data-meeting-mode="research"</code> 那一行。</div>
+        <div class="files">renderer/index.html:28-29</div>
+      </div>
+    </div>
+    <div class="improvement-item">
+      <div class="num">3</div>
+      <div class="content">
+        <div class="title">简化创建流程</div>
+        <div class="desc"><code>createMeetingByMode</code> 不再 if/else 分支，统一走 <code>toggle-roundtable-mode</code> + <code>add-meeting-sub</code> 三家。场景切换交给 header toggle。</div>
+        <div class="files">renderer/renderer.js:1604-1660</div>
+      </div>
+    </div>
+    <div class="improvement-item">
+      <div class="num">4</div>
+      <div class="content">
+        <div class="title">场景切换 = 纯 prompt 热替换</div>
+        <div class="desc">header toggle 点击后只重新注入 prompt/公约/MCP 配置（写新的 <code>.md</code> 文件 + 通知 CLI 子进程），不触发任何 UI 重建。当前的 <code>renderTerminals</code> 重建逻辑可以简化或删除。</div>
+        <div class="files">renderer/meeting-room.js:124-155 + main.js IPC handlers</div>
+      </div>
+    </div>
+    <div class="improvement-item">
+      <div class="num">5</div>
+      <div class="content">
+        <div class="title">统一渲染路径</div>
+        <div class="desc">删除 <code>renderTerminals</code> 中 roundtable vs research 的分支判断，全部走 <code>renderFocusMode</code>（当前投研模式的完整渲染：卡片面板 + 三列 xterm）。</div>
+        <div class="files">renderer/meeting-room.js:876-894</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Section 6: Detail Table ===== -->
+<div class="section">
+  <h2>改进前后对比表</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>维度</th>
+        <th>Before</th>
+        <th>After</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>+ 号菜单</td>
+        <td class="strike">🌐 通用圆桌 / 📊 投研圆桌（两项）</td>
+        <td class="new">🎯 创建圆桌（一项）</td>
+      </tr>
+      <tr>
+        <td>创建后默认场景</td>
+        <td>取决于点哪个按钮</td>
+        <td class="new">固定"通用"，进入后随时切换</td>
+      </tr>
+      <tr>
+        <td>通用圆桌终端</td>
+        <td class="strike">隐藏（mr-terminals-hidden）</td>
+        <td class="new">始终显示</td>
+      </tr>
+      <tr>
+        <td>卡片面板</td>
+        <td>两种模式都有（一致）</td>
+        <td>保持不变</td>
+      </tr>
+      <tr>
+        <td>场景切换触发</td>
+        <td>重建整个终端 DOM</td>
+        <td class="new">只替换 prompt 文件 + 通知子进程</td>
+      </tr>
+      <tr>
+        <td>渲染代码分支</td>
+        <td class="strike">roundtable → 卡片 / research → 卡片+终端</td>
+        <td class="new">统一 renderFocusMode（一条路径）</td>
+      </tr>
+      <tr>
+        <td>新增场景成本</td>
+        <td>需同步改 UI + 创建入口 + 渲染分支</td>
+        <td class="new">只写新的 prompt 模板 + toggle 按钮</td>
+      </tr>
+      <tr>
+        <td>出错排查</td>
+        <td class="strike">通用模式无终端，CLI 错误不可见</td>
+        <td class="new">任何场景都能看到 CLI 原始输出</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ===== Section 7: Bonus ===== -->
+<div class="section">
+  <h2>附加收益：场景可扩展性</h2>
+  <div class="concept-box">
+    <div class="key">正交架构 = 未来场景零 UI 改动</div>
+    <p>假设未来要加"代码审查圆桌"或"PPT 讨论圆桌"：</p>
+    <ul style="margin-top:8px; padding-left:20px; color:var(--fg2); font-size:13px;">
+      <li><strong>Before</strong>：需要新增菜单项 + 新增渲染分支 + 决定是否显示终端 + 写模式检测代码</li>
+      <li><strong>After</strong>：只写一个新的 prompt 模板文件 + header toggle 加一个按钮，UI 代码零改动</li>
+    </ul>
+  </div>
+</div>
+
+<div style="text-align:center; padding:32px 0; color:var(--dim); font-size:12px;">
+  Claude Session Hub &mdash; Roundtable Architecture Unification Proposal &mdash; 2026-04-30
+</div>
+
+</body>
+</html>
