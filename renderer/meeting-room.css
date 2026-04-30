@@ -1387,3 +1387,40 @@
   background: rgba(255, 255, 255, 0.08);
   color: var(--text-primary, #c9d1d9);
 }
+
+/* P1-2：历史轮次面板每家状态角标 */
+.mr-rt-history-statuses {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 8px;
+}
+.mr-rt-history-status {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  border-radius: 8px;
+  font-weight: 500;
+  white-space: nowrap;
+  user-select: none;
+}
+.mr-rt-history-status.completed {
+  background: rgba(74, 210, 139, 0.18);
+  color: #56d4a4;
+  border: 1px solid rgba(74, 210, 139, 0.3);
+}
+.mr-rt-history-status.manual {
+  background: rgba(91, 141, 239, 0.18);
+  color: #79b8ff;
+  border: 1px solid rgba(91, 141, 239, 0.3);
+}
+.mr-rt-history-status.absent {
+  background: rgba(139, 148, 158, 0.18);
+  color: #b1bac4;
+  border: 1px solid rgba(139, 148, 158, 0.3);
+}
+.mr-rt-history-status.errored {
+  background: rgba(248, 81, 73, 0.18);
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}

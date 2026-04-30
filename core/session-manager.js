@@ -263,7 +263,7 @@ class SessionManager extends EventEmitter {
       this.emit('output', { sessionId: id, seq: this._outputSeq, data });
     });
 
-    ptyProcess.onExit(() => {
+    ptyProcess.onExit((exitInfo) => {
       const entry = this.sessions.get(id);
       // Guard against id reuse: if a fresh session has already taken this id
       // (e.g., via restart-session reusing old.id), the entry's pty will be
@@ -273,7 +273,11 @@ class SessionManager extends EventEmitter {
       if (!entry || entry.pty !== ptyProcess) return;
       const mid = entry.info ? entry.info.meetingId : null;
       this.sessions.delete(id);
-      this.onSessionClosed(id, mid);
+      // Stage 2 P1-1：把 exit code/signal 透传给 onSessionClosed，
+      //   让 main.js 能把"PTY 异常退出"作为 L2 完成信号通知圆桌 watcher。
+      //   exitInfo 来自 node-pty：{ exitCode: number, signal: number | undefined }
+      //   老调用方只用前两参（id, mid），无需调整；第 3 参可选。
+      this.onSessionClosed(id, mid, exitInfo || null);
     });
 
     if (kind === 'powershell') {

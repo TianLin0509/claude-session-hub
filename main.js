@@ -429,7 +429,23 @@ sessionManager.onData = (sessionId, data) => {
   sendToRenderer('terminal-data', { sessionId, data });
 };
 
-sessionManager.onSessionClosed = (sessionId, meetingId) => {
+sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
+  // Stage 2 P1-1：把 PTY 退出作为 L2 完成信号通知圆桌 watcher。
+  //   如果该 sid 当前正在 turn 等待中（_activeWatchers 命中），调 markProcessExit
+  //   让 watcher 立即 settle（completed if exit=0 else errored），不再被任何
+  //   "永远不来"的 L1 信号或 30min 过渡 timeout 拖住。
+  const watcher = _activeWatchers.get(sessionId);
+  if (watcher) {
+    // node-pty 的 exitInfo 是 { exitCode, signal }，watcher 接受 { code, signal }——做名称适配
+    const adapted = exitInfo
+      ? { code: typeof exitInfo.exitCode === 'number' ? exitInfo.exitCode : null, signal: exitInfo.signal }
+      : { code: null };
+    console.log(`[roundtable] PTY exit detected for sid=${sessionId.slice(0, 8)} (code=${adapted.code} signal=${adapted.signal || 'none'}), notifying watcher`);
+    try { watcher.markProcessExit(adapted); } catch (e) {
+      console.warn('[roundtable] markProcessExit threw:', e.message);
+    }
+  }
+
   try { transcriptTap.unregisterSession(sessionId); } catch {}
   sendToRenderer('session-closed', { sessionId });
   if (meetingId) {

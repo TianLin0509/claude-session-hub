@@ -271,16 +271,50 @@
     </div>`;
   }
 
-  function _renderRtHistory(state) {
+  // Stage 2 P1-2：历史轮次面板状态角标 — 把每家本轮的 byStatus 渲染成 [Claude ✓][Gemini 手动][Codex 缺席]
+  // 让用户回看时一眼能看出哪轮哪家"未参与/出错/手动提取"。老格式 byStatus=null 时显示空（默默兼容）。
+  const _STATUS_BADGE_CONFIG = {
+    completed:        { icon: '✓',   cls: 'completed', title: '已答' },
+    manual_extracted: { icon: '手动', cls: 'manual',    title: '手动提取' },
+    absent:           { icon: '缺席', cls: 'absent',    title: '本轮缺席' },
+    errored:          { icon: '错误', cls: 'errored',   title: '错误未输出' },
+    interrupted:      { icon: '中断', cls: 'errored',   title: '已中断' },
+    transport_lost:   { icon: '断连', cls: 'errored',   title: '连接断开' },
+  };
+  function _renderHistoryStatusBadges(turn, sidLabelLookup) {
+    if (!turn || !turn.byStatus) return '';
+    const badges = [];
+    for (const [sid, status] of Object.entries(turn.byStatus)) {
+      const cfg = _STATUS_BADGE_CONFIG[status];
+      if (!cfg) continue;
+      const label = sidLabelLookup ? (sidLabelLookup(sid) || sid.slice(0, 6)) : sid.slice(0, 6);
+      badges.push(`<span class="mr-rt-history-status ${cfg.cls}" title="${escapeHtml(label)}: ${cfg.title}">${escapeHtml(label)} ${cfg.icon}</span>`);
+    }
+    return badges.join('');
+  }
+
+  function _renderRtHistory(state, meeting) {
     if (!state.turns || state.turns.length === 0) return '';
+    // 构造 sid → label 查表，从 meeting.subSessions 推 kind label
+    const sidToLabel = {};
+    if (meeting && Array.isArray(meeting.subSessions) && typeof sessions !== 'undefined') {
+      for (const sid of meeting.subSessions) {
+        const s = sessions.get(sid);
+        if (s) sidToLabel[sid] = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[s.kind] || s.kind;
+      }
+    }
+    const lookupLabel = sid => sidToLabel[sid] || sid.slice(0, 6);
+
     const items = state.turns.map(t => {
       const userIn = (t.userInput || '').slice(0, 60);
       const meta = t.decisionTitle ? ` · 标题: ${escapeHtml(t.decisionTitle.slice(0, 40))}` : '';
+      const statusBadges = _renderHistoryStatusBadges(t, lookupLabel);
       return `<div class="mr-rt-history-item">
         <span class="mr-rt-history-turn">第 ${t.n} 轮</span>
         <span class="mr-rt-history-mode ${escapeHtml(t.mode)}">${escapeHtml(t.mode)}</span>
         <span class="mr-rt-history-input">${escapeHtml(userIn)}${(t.userInput || '').length > 60 ? '…' : ''}</span>
         <span class="mr-rt-history-meta">${meta}</span>
+        ${statusBadges ? `<span class="mr-rt-history-statuses">${statusBadges}</span>` : ''}
       </div>`;
     }).join('');
     const expanded = _rtHistoryExpanded;
@@ -368,7 +402,7 @@
     const mode = state.currentMode || 'idle';
     const partialBy = state._partialBy || null;
     const fusedTabs = _renderFusedTabs(state, subs, mode, partialBy, meeting);
-    const history = _renderRtHistory(state);
+    const history = _renderRtHistory(state, meeting);
     const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
     const stepper = _renderTurnStepper(state.turns, mode);
     const cmdBar = _renderCmdBar(state.turns, mode, partialBy);
