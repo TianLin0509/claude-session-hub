@@ -257,8 +257,13 @@
         const snippet = preview.slice(-150).replace(/</g, '&lt;');
         bottomHtml = `<div class="mr-ft-preview streaming">${snippet}<span class="mr-ft-cursor"></span></div>`;
       } else if (preview) {
-        const snippet = escapeHtml(preview.slice(0, 200)) + (preview.length > 200 ? '…' : '');
-        bottomHtml = `<div class="mr-ft-preview">${snippet}</div>`;
+        // IF-C0（2026-05-01）：completed/已答状态用 marked + DOMPurify 渲染 markdown，
+        //   不再以原始字符显示 # ## ** 等。截到 800 字（markdown 渲染后视觉密度高，
+        //   200 字留白多）；末尾省略号在外层 wrapper 加。
+        const sliced = preview.slice(0, 800);
+        const truncated = preview.length > 800;
+        const rendered = _renderMarkdown(sliced) + (truncated ? '<span class="mr-ft-preview-ellip">…</span>' : '');
+        bottomHtml = `<div class="mr-ft-preview mr-ft-preview-md">${rendered}</div>`;
       } else {
         // 占位文本，保持卡片底部不空（防视觉空洞）
         bottomHtml = '<div class="mr-ft-preview" style="opacity:0.5;font-style:italic">等待…</div>';

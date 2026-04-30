@@ -633,6 +633,57 @@
   min-height: 0;
   overflow: hidden;
 }
+
+/* IF-C0（2026-05-01）：卡片预览 markdown 渲染样式
+ *   - h1/h2/h3 在 13/12/11px 卡片预览里缩小到合理字号
+ *   - p / li 紧凑 line-height，避免在 220px 卡片里浪费纵向空间
+ *   - code 等宽字体小一号
+ *   - 列表符号缩进
+ */
+.mr-ft-preview-md h1, .mr-ft-preview-md h2, .mr-ft-preview-md h3,
+.mr-ft-preview-md h4, .mr-ft-preview-md h5, .mr-ft-preview-md h6 {
+  font-size: 13px; font-weight: 700;
+  margin: 4px 0 2px;
+  color: #c9d1d9;
+  line-height: 1.3;
+}
+.mr-ft-preview-md h1 { font-size: 14px; }
+.mr-ft-preview-md p { margin: 2px 0; line-height: 1.5; }
+.mr-ft-preview-md ul, .mr-ft-preview-md ol {
+  margin: 2px 0; padding-left: 18px;
+}
+.mr-ft-preview-md li { margin: 1px 0; line-height: 1.4; }
+.mr-ft-preview-md strong { color: #c9d1d9; font-weight: 600; }
+.mr-ft-preview-md em { color: #c9d1d9; font-style: italic; }
+.mr-ft-preview-md code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  background: rgba(255,255,255,0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #fde68a;
+}
+.mr-ft-preview-md pre {
+  margin: 4px 0;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 11px;
+}
+.mr-ft-preview-md pre code { background: transparent; padding: 0; }
+.mr-ft-preview-md blockquote {
+  margin: 2px 0; padding-left: 8px;
+  border-left: 2px solid rgba(255,255,255,0.15);
+  color: #6e7681;
+}
+.mr-ft-preview-md hr {
+  margin: 4px 0; border: 0;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.mr-ft-preview-md a { color: #79b8ff; text-decoration: underline; }
+.mr-ft-preview-md table { font-size: 11px; }
+.mr-ft-preview-ellip { color: #8b949e; opacity: 0.6; }
 .mr-ft-preview.streaming { color: #c8d3e6; }
 .mr-ft-cursor {
   display: inline-block; width: 5px; height: 10px;
