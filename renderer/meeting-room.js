@@ -1013,6 +1013,16 @@
     } else {
       _removeRtPanel();
     }
+
+    // IF-C2（2026-05-01）：auto-focus 输入框 — 修 P1 bug A（输入框暂时不可用）。
+    //   xterm.terminal.open() + robustFit 的 rAF 循环会抢焦点；用 setTimeout 50ms
+    //   defer 到 xterm 初始化稳定后再 focus，让用户进会议室立即可键盘输入。
+    setTimeout(() => {
+      const inputBox = document.getElementById('mr-input-box');
+      if (inputBox && document.activeElement !== inputBox) {
+        inputBox.focus();
+      }
+    }, 50);
   }
 
   function closeMeetingPanel() {
@@ -1771,7 +1781,9 @@
     const targetSelect = document.getElementById('mr-input-target');
     if (!inputBox || !sendBtn) return;
 
-    inputBox.textContent = '';
+    // IF-C2（2026-05-01）：placeholder 每次都更新（meeting 切换时场景可能变）；
+    // 但 textContent 擦除只在首次（_inputBound=false）做——避免每次重渲染擦掉
+    // 用户已输入但还没发送的内容（P1 体验断裂 bug A）。
     inputBox.dataset.placeholder = meeting.scene
       ? '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who> / @<who> 单聊'
       : '输入消息...';
@@ -1803,6 +1815,8 @@
 
     if (_inputBound) return;
     _inputBound = true;
+    // IF-C2：仅首次绑定时清空（避免后续重渲染 setupInput 擦掉用户已输入未发送内容）
+    inputBox.textContent = '';
 
     if (targetSelect) {
       targetSelect.addEventListener('change', (e) => {
