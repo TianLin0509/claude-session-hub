@@ -214,9 +214,9 @@ function assert(cond, msg) {
     const promptFileWritten = await evalRpc(ws, `(async () => {
       // Renderer has nodeIntegration → can require core modules directly.
       const path = require('path');
-      const researchMode = require(path.join(${JSON.stringify(HUB_DIR.replace(/\\/g, '\\\\'))}, 'core', 'research-mode.js'));
+      const scenes = require(path.join(${JSON.stringify(HUB_DIR.replace(/\\/g, '\\\\'))}, 'core', 'roundtable-scenes.js'));
       const dataDir = ${JSON.stringify(TEMP_DATA.replace(/\\/g, '\\\\'))};
-      const filePath = researchMode.writeResearchPromptFile(dataDir, '${meetingId}', '');
+      const filePath = scenes.writePromptFile(dataDir, '${meetingId}', 'research', '');
       return filePath;
     })()`);
     console.log(`  -> research prompt file: ${promptFileWritten}`);

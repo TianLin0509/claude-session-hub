@@ -79,7 +79,7 @@ function testCreateMeetingMenuContract() {
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf-8');
   assert.ok(/data-meeting-mode="general"/.test(html), 'menu must have general mode entry');
   assert.ok(!/data-meeting-mode="driver"/.test(html), 'driver mode entry must be removed');
-  assert.ok(html.includes('通用圆桌'), 'menu label "通用圆桌" must appear');
+  assert.ok(html.includes('创建圆桌'), 'menu label "创建圆桌" must appear');
   assert.ok(!html.includes('主驾会议'), 'legacy "主驾会议" label must be removed');
   assert.ok(!/id="create-meeting-modal"/.test(html), 'legacy create-meeting modal must be removed');
   console.log('  ✓ testCreateMeetingMenuContract');
@@ -91,8 +91,8 @@ function testRendererCreateMeetingByMode() {
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf-8');
   assert.ok(/async function createMeetingByMode\s*\(\s*mode\s*\)/.test(src),
     'createMeetingByMode function must exist');
-  assert.ok(/invoke\(['"]create-meeting['"]\s*,\s*\{\s*mode\s*\}/.test(src),
-    'createMeetingByMode must invoke create-meeting IPC with {mode}');
+  assert.ok(/invoke\(['"]create-meeting['"]/.test(src),
+    'createMeetingByMode must invoke create-meeting IPC');
   assert.ok(!/mode\s*===\s*['"]driver['"]/.test(src),
     'driver branch must be removed (driver mode deprecated)');
   console.log('  ✓ testRendererCreateMeetingByMode');

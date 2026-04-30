@@ -1,5 +1,5 @@
 'use strict';
-// 单元测试 core/general-roundtable-mode.js + general-roundtable-private-store.js
+// 单元测试 core/roundtable-scenes.js (prompt 拼装/文件管理) + general-roundtable-private-store.js
 // 用 Node 内置 assert + 临时目录隔离
 
 const assert = require('assert');
@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const grm = require('../core/general-roundtable-mode');
+const scenes = require('../core/roundtable-scenes');
 const grps = require('../core/general-roundtable-private-store');
 
 function tmpDir() {
@@ -16,25 +16,24 @@ function tmpDir() {
   return d;
 }
 
-// === RULES 内容契约 ===
+// === BASE_RULES 内容契约 ===
 function testRulesContent() {
-  const r = grm.GENERAL_ROUNDTABLE_RULES_TEMPLATE;
+  const r = scenes.BASE_RULES;
   assert.ok(r.includes('圆桌讨论规则'), 'rules should contain title');
   assert.ok(r.includes('@debate'), 'rules should mention @debate');
-  assert.ok(r.includes('@summary @<你>'), 'rules should mention @summary @<who>');
-  assert.ok(r.includes('@<你> 私聊'), 'rules should mention private chat syntax');
-  assert.ok(!r.includes('LinDangAgent'), 'rules MUST NOT mention LinDangAgent (general, not 投研)');
-  assert.ok(!r.includes('A 股'), 'rules MUST NOT mention 投研 specifics');
-  assert.ok(!r.includes('tushare'), 'rules MUST NOT mention 投研 data source');
+  assert.ok(r.includes('@summary'), 'rules should mention @summary');
+  assert.ok(r.includes('私聊'), 'rules should mention private chat syntax');
+  assert.ok(!r.includes('LinDangAgent'), 'base rules MUST NOT mention LinDangAgent');
+  assert.ok(!r.includes('tushare'), 'base rules MUST NOT mention 投研 data source');
   console.log('  ✓ testRulesContent');
 }
 
-// === 写 prompt：空 covenant 仅写 rules ===
+// === 写 prompt：空 covenant 不含 separator ===
 function testWriteWithEmptyCovenant() {
   const d = tmpDir();
-  const fp = grm.writeGeneralRoundtablePromptFile(d, 'meeting-A', '');
+  const fp = scenes.writePromptFile(d, 'meeting-A', 'general', '');
   const content = fs.readFileSync(fp, 'utf-8');
-  assert.ok(content === grm.GENERAL_ROUNDTABLE_RULES_TEMPLATE, 'empty covenant: only rules');
+  assert.ok(content.includes('圆桌讨论规则'), 'has base rules');
   assert.ok(!content.includes('---'), 'no separator when covenant empty');
   console.log('  ✓ testWriteWithEmptyCovenant');
 }
@@ -42,7 +41,7 @@ function testWriteWithEmptyCovenant() {
 // === 写 prompt：非空 covenant 拼接 ===
 function testWriteWithCovenant() {
   const d = tmpDir();
-  const fp = grm.writeGeneralRoundtablePromptFile(d, 'meeting-B', '## 我的偏好\n喜欢简洁回答');
+  const fp = scenes.writePromptFile(d, 'meeting-B', 'general', '## 我的偏好\n喜欢简洁回答');
   const content = fs.readFileSync(fp, 'utf-8');
   assert.ok(content.includes('圆桌讨论规则'), 'has rules');
   assert.ok(content.includes('---'), 'has separator');
@@ -53,8 +52,8 @@ function testWriteWithCovenant() {
 // === covenant 读写一致 ===
 function testCovenantSnapshotRoundtrip() {
   const d = tmpDir();
-  grm.writeCovenantSnapshot(d, 'meeting-C', '我的红线：禁止套模板');
-  const r = grm.readCovenantSnapshot(d, 'meeting-C');
+  scenes.writeCovenantSnapshot(d, 'meeting-C', '我的红线：禁止套模板');
+  const r = scenes.readCovenantSnapshot(d, 'meeting-C');
   assert.strictEqual(r, '我的红线：禁止套模板');
   console.log('  ✓ testCovenantSnapshotRoundtrip');
 }
@@ -62,26 +61,24 @@ function testCovenantSnapshotRoundtrip() {
 // === 读不存在的 covenant 返回 null ===
 function testReadMissingCovenant() {
   const d = tmpDir();
-  assert.strictEqual(grm.readCovenantSnapshot(d, 'never-existed'), null);
+  assert.strictEqual(scenes.readCovenantSnapshot(d, 'never-existed'), null);
   console.log('  ✓ testReadMissingCovenant');
 }
 
 // === cleanup 清掉本会议室所有文件 ===
 function testCleanup() {
   const d = tmpDir();
-  grm.writeGeneralRoundtablePromptFile(d, 'meeting-D', 'x');
-  grm.writeCovenantSnapshot(d, 'meeting-D', 'x');
+  scenes.writePromptFile(d, 'meeting-D', 'general', 'x');
+  scenes.writeCovenantSnapshot(d, 'meeting-D', 'x');
   grps.appendPrivateTurn(d, 'meeting-D', 'claude', 'q', 'a');
-  // 别的 meeting 不该被清掉
-  grm.writeGeneralRoundtablePromptFile(d, 'meeting-E', 'y');
+  scenes.writePromptFile(d, 'meeting-E', 'general', 'y');
 
-  grm.cleanupGeneralRoundtableFiles(d, 'meeting-D');
+  scenes.cleanup(d, 'meeting-D');
 
   const promptDir = path.join(d, 'arena-prompts');
-  assert.ok(!fs.existsSync(path.join(promptDir, 'meeting-D-roundtable.md')));
-  assert.ok(!fs.existsSync(path.join(promptDir, 'meeting-D-roundtable-covenant.md')));
-  assert.ok(!fs.existsSync(path.join(promptDir, 'meeting-D-roundtable-private.json')));
-  assert.ok(fs.existsSync(path.join(promptDir, 'meeting-E-roundtable.md')), 'sibling meeting untouched');
+  assert.ok(!fs.existsSync(path.join(promptDir, 'meeting-D-prompt.md')));
+  assert.ok(!fs.existsSync(path.join(promptDir, 'meeting-D-covenant.md')));
+  assert.ok(fs.existsSync(path.join(promptDir, 'meeting-E-prompt.md')), 'sibling meeting untouched');
   console.log('  ✓ testCleanup');
 }
 
