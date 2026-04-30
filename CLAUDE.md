@@ -31,6 +31,26 @@
 
 **血泪案例**：2026-04-19 用户桌面图标启动 Hub 报 `Cannot find module 'dijkstrajs'`，node_modules 被大规模清空（`npm install` 补回 182 个包）。推断起因是 04-16 `npm run dist` 在主工作目录跑 + 分支反复切换期间 npm 操作被 EBUSY 打断，留下长期半坏状态。用户明确表示已反复遇到同一问题。
 
+**血泪案例 2**（2026-04-30）：worktree 清理时主 `node_modules` 再次半坏，桌面 Hub 启动报 `Cannot find module 'body-parser'`（express 的传递依赖被部分删除）。根因：清理脚本用了
+```powershell
+cmd /c rmdir "$wt\node_modules"          # 删 junction（Windows 下异步,1s 不够刷新）
+Start-Sleep -Seconds 1
+Remove-Item -Recurse -Force $wt           # PS 5.1 此条会"穿透 junction"删除目标内容
+```
+**Windows PowerShell 5.1 的 `Remove-Item -Recurse` 对 reparse point/junction 的处理 bug**：如果 junction 在 `Remove-Item` 启动前未完全消失，`-Recurse` 会跟随进入 junction 目标删除内容（PS 7+ 已修，5.1 仍带 bug）。结果是 worktree 共享的主 `claude-session-hub\node_modules` 被部分删除——express/qrcode 等顶层包还在但传递依赖（body-parser、dijkstrajs 等）丢失。
+
+7. **清理 worktree 含 node_modules junction 时,严禁混用 PowerShell `Remove-Item -Recurse`**。必须用 `cmd /c rmdir` 系列全程处理:
+   ```powershell
+   $wt = "C:\Users\lintian\AppData\Local\Temp\hub-XXX"
+   if (Test-Path "$wt\node_modules") { cmd /c rmdir "$wt\node_modules" }
+   # 验证 junction 真的消失了再继续(异步删除可能未完成)
+   while (Test-Path "$wt\node_modules") { Start-Sleep -Seconds 1 }
+   cmd /c rmdir /S /Q "$wt"   # 用 cmd 的 rmdir /S/Q,不用 PS Remove-Item -Recurse
+   ```
+   或者直接用 `git worktree remove --force <path>`(git 自己处理 junction,但 PS 5.1 下也可能踩 bug,验证后再用)。
+   **触发场景**：feature 分支合并完成后清理 worktree、`git worktree prune`、手工 rm worktree 目录、CI 自动化测试结束清理。
+   **症状识别**：清理后下次 Hub 启动报 `Cannot find module '<express/qrcode/electron 子依赖>'`。
+
 ## 铁律：并行测试 Hub 实例（多 MCP / E2E 测试）
 
 **Hub 原生支持 `CLAUDE_HUB_DATA_DIR` env var 实现运行时状态隔离。所有并行测试必须走这条路径，不得 copy 整个 node_modules 或忽略状态隔离——历史上那种做法已经造成 35+ 条防火墙规则污染 + 数 GB 磁盘垃圾 + 测试互相干扰。**

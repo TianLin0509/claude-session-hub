@@ -1114,7 +1114,8 @@ body.theme-light .prompt-line-marker {
 .model-badge.gemini  { background: rgba(66, 133, 244, 0.22);  color: #79b8ff; }
 .model-badge.codex   { background: rgba(16, 163, 127, 0.22);  color: #56d4a4; }
 .model-badge.deepseek { background: rgba(77, 107, 255, 0.22);  color: #8da2ff; }
-.model-badge:not(.opus):not(.sonnet):not(.haiku):not(.gemini):not(.codex):not(.deepseek) { background: rgba(139, 148, 158, 0.22); color: #b1bac4; }
+.model-badge.glm { background: rgba(20, 184, 166, 0.22); color: #5eead4; }
+.model-badge:not(.opus):not(.sonnet):not(.haiku):not(.gemini):not(.codex):not(.deepseek):not(.glm) { background: rgba(139, 148, 158, 0.22); color: #b1bac4; }
 
 .terminal-model-badge {
   margin-left: 8px;
@@ -1156,7 +1157,12 @@ body.theme-light .prompt-line-marker {
   border-color: rgba(77, 107, 255, 0.2);
   box-shadow: 0 0 10px rgba(77, 107, 255, 0.1), inset 0 0 8px rgba(77, 107, 255, 0.05);
 }
-.terminal-model-badge:not(.opus):not(.sonnet):not(.haiku):not(.gemini):not(.codex):not(.deepseek) {
+.terminal-model-badge.glm {
+  background: rgba(20, 184, 166, 0.10); color: #5eead4;
+  border-color: rgba(20, 184, 166, 0.2);
+  box-shadow: 0 0 10px rgba(20, 184, 166, 0.1), inset 0 0 8px rgba(20, 184, 166, 0.05);
+}
+.terminal-model-badge:not(.opus):not(.sonnet):not(.haiku):not(.gemini):not(.codex):not(.deepseek):not(.glm) {
   background: rgba(139, 148, 158, 0.12); color: #b1bac4;
   border-color: rgba(139, 148, 158, 0.15);
 }

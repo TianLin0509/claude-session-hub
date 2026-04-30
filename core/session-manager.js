@@ -1,6 +1,7 @@
 const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 
@@ -9,14 +10,66 @@ const RING_BUFFER_BYTES = 16384;
 // Default proxy for Claude sessions. Change if your proxy differs.
 const CLAUDE_PROXY = 'http://127.0.0.1:7890';
 
-function loadDeepSeekApiKey() {
+function loadSecretValue(key) {
+  if (process.env[key]) return process.env[key];
   try {
-    const content = require('fs').readFileSync('C:\\LinDangAgent\\secrets.toml', 'utf8');
-    const match = content.match(/DEEPSEEK_API_KEY\s*=\s*["']([^"']+)["']/);
+    const content = fs.readFileSync('C:\\LinDangAgent\\secrets.toml', 'utf8');
+    const match = content.match(new RegExp(key + "\\s*=\\s*[\"']([^\"']+)[\"']"));
     return match ? match[1] : '';
   } catch { return ''; }
 }
-const DEEPSEEK_API_KEY = loadDeepSeekApiKey();
+function normalizeBaseUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+const DEEPSEEK_API_KEY = loadSecretValue('DEEPSEEK_API_KEY');
+const GLM_API_KEY = loadSecretValue('GLM_API_KEY');
+const GLM_BASE_URL = normalizeBaseUrl(loadSecretValue('GLM_BASE_URL') || 'https://mydamoxing.cn');
+const GLM_MODEL = loadSecretValue('GLM_MODEL') || 'glm-5.1';
+
+function toClaudeProjectKey(projectDir) {
+  return path.resolve(projectDir || os.homedir()).replace(/\\/g, '/');
+}
+
+function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
+  if (!claudeDir) return;
+  try {
+    fs.mkdirSync(claudeDir, { recursive: true });
+
+    const settingsPath = path.join(claudeDir, 'settings.json');
+    let settings = {};
+    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+    if (settings.permissionMode !== 'bypassPermissions') {
+      settings.permissionMode = 'bypassPermissions';
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    }
+
+    const statePath = path.join(claudeDir, '.claude.json');
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch {}
+    if (!state || typeof state !== 'object' || Array.isArray(state)) state = {};
+    if (!state.projects || typeof state.projects !== 'object' || Array.isArray(state.projects)) {
+      state.projects = {};
+    }
+
+    const projectKey = toClaudeProjectKey(projectDir);
+    const existing = state.projects[projectKey] && typeof state.projects[projectKey] === 'object'
+      ? state.projects[projectKey]
+      : {};
+    state.projects[projectKey] = {
+      allowedTools: Array.isArray(existing.allowedTools) ? existing.allowedTools : [],
+      mcpContextUris: Array.isArray(existing.mcpContextUris) ? existing.mcpContextUris : [],
+      mcpServers: existing.mcpServers && typeof existing.mcpServers === 'object' ? existing.mcpServers : {},
+      enabledMcpjsonServers: Array.isArray(existing.enabledMcpjsonServers) ? existing.enabledMcpjsonServers : [],
+      disabledMcpjsonServers: Array.isArray(existing.disabledMcpjsonServers) ? existing.disabledMcpjsonServers : [],
+      ...existing,
+      hasTrustDialogAccepted: true,
+      hasCompletedProjectOnboarding: true,
+    };
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
+  } catch (err) {
+    console.warn('[hub] failed to pretrust Claude config:', err.message);
+  }
+}
 
 class SessionManager extends EventEmitter {
   sessions = new Map();
@@ -54,7 +107,8 @@ class SessionManager extends EventEmitter {
     const isGemini = kind === 'gemini';
     const isCodex = kind === 'codex';
     const isDeepSeek = kind === 'deepseek';
-    const isAgent = isClaude || isGemini || isCodex || isDeepSeek;
+    const isGlm = kind === 'glm';
+    const isAgent = isClaude || isGemini || isCodex || isDeepSeek || isGlm;
     let title;
     if (opts.title) title = opts.title;
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
@@ -62,6 +116,7 @@ class SessionManager extends EventEmitter {
     else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Gemini ${this.geminiCounter}`; }
     else if (kind === 'codex') { this.codexCounter = (this.codexCounter || 0) + 1; title = `Codex ${this.codexCounter}`; }
     else if (kind === 'deepseek') { this.deepseekCounter = (this.deepseekCounter || 0) + 1; title = `DeepSeek ${this.deepseekCounter}`; }
+    else if (kind === 'glm') { this.glmCounter = (this.glmCounter || 0) + 1; title = `GLM ${this.glmCounter}`; }
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
@@ -114,6 +169,22 @@ class SessionManager extends EventEmitter {
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
+    } else if (isGlm) {
+      delete sessionEnv.HTTP_PROXY;
+      delete sessionEnv.HTTPS_PROXY;
+      delete sessionEnv.NO_PROXY;
+      sessionEnv.ANTHROPIC_BASE_URL = GLM_BASE_URL;
+      sessionEnv.ANTHROPIC_AUTH_TOKEN = GLM_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_BASE_URL;
+      sessionEnv.CLAUDE_CONFIG_DIR = path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), '.claude-glm');
+      sessionEnv.CLAUDE_HUB_SESSION_ID = id;
+      if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
+      if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
+      if (process.env.CLAUDE_HUB_DATA_DIR) {
+        sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
+      }
     }
 
     // Merge extra env vars (used by TeamSessionManager for MCP config etc.)
@@ -126,9 +197,13 @@ class SessionManager extends EventEmitter {
     // avoid node-pty failing if the stored cwd was later deleted/moved.
     let spawnCwd = opts.cwd;
     if (spawnCwd) {
-      try { require('fs').accessSync(spawnCwd); } catch { spawnCwd = null; }
+      try { fs.accessSync(spawnCwd); } catch { spawnCwd = null; }
     }
     if (!spawnCwd) spawnCwd = process.env.USERPROFILE || process.env.HOME || '.';
+
+    if (isDeepSeek || isGlm) {
+      ensureClaudeBypassAndTrust(sessionEnv.CLAUDE_CONFIG_DIR, spawnCwd);
+    }
 
     const ptyProcess = pty.spawn('powershell.exe', shellArgs, {
       name: 'xterm-256color',
@@ -153,6 +228,9 @@ class SessionManager extends EventEmitter {
     } else if (isDeepSeek) {
       const mid = opts.model || 'deepseek-v4-pro';
       currentModel = { id: mid, displayName: mid === 'deepseek-v4-pro' ? 'DS V4 Pro' : 'DS V4 Flash' };
+    } else if (isGlm) {
+      const mid = opts.model || GLM_MODEL;
+      currentModel = { id: mid, displayName: mid.toLowerCase().includes('5.1') ? 'GLM 5.1' : mid };
     }
 
     const now = Date.now();
@@ -171,9 +249,14 @@ class SessionManager extends EventEmitter {
     };
 
     const pendingTimers = [];
-    this.sessions.set(id, { info, pty: ptyProcess, pendingTimers, ringBuffer: '' });
+    // roundtableReady：圆桌"快路径"缓存，CLI 首次 ready 后置 true，
+    //   后续 _rtSendToPty 跳过 8s/8s/5s 硬 sleep；活性兜底失败时重置 false。
+    // roundtableLastActivity：PTY 最近一次产出输出的 ms 时间戳，用于活性兜底判断。
+    this.sessions.set(id, { info, pty: ptyProcess, pendingTimers, ringBuffer: '', roundtableReady: false, roundtableLastActivity: 0 });
 
     ptyProcess.onData((data) => {
+      const entry = this.sessions.get(id);
+      if (entry) entry.roundtableLastActivity = Date.now();
       this._appendToRingBuffer(id, data);
       this.onData(id, data);
       this._outputSeq += 1;
@@ -284,10 +367,10 @@ class SessionManager extends EventEmitter {
       let cmd;
       if (opts.useResume && opts.codexSid) {
         // Level 1: precise resume by sid
-        cmd = ` codex resume ${opts.codexSid} --full-auto`;
+        cmd = ` codex resume ${opts.codexSid} --dangerously-bypass-approvals-and-sandbox`;
       } else if (opts.useResume) {
         // Level 2 degradation: no sid recorded → use --last
-        cmd = ' codex resume --last --full-auto';
+        cmd = ' codex resume --last --dangerously-bypass-approvals-and-sandbox';
       } else {
         // Research mode：完全 bypass approvals + sandbox（含 MCP 工具调用、shell 命令、文件写）
         // 避免任何 "Allow ... ?" 弹窗阻塞投研讨论流程；
@@ -295,7 +378,7 @@ class SessionManager extends EventEmitter {
         if (opts.codexBypassApprovals) {
           cmd = ' codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.5';
         } else {
-          cmd = ' codex --full-auto --model gpt-5.5';
+          cmd = ' codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.5';
         }
         // 注：曾尝试 --no-alt-screen 改善观感，实测无明显改善 + Enter 提交失效 → 撤回。
         // 渲染观感问题改由"持久化圆桌面板"（直接展示干净回答预览）绕过。
@@ -330,12 +413,49 @@ class SessionManager extends EventEmitter {
 
     if (isDeepSeek) {
       let cmd;
+      // --permission-mode bypassPermissions 跳过信任文件夹 + 工具权限等所有弹窗，
+      // 让 DeepSeek 会话和 Claude 会话一样直接启动（~/.claude-deepseek 是隔离配置，
+      // 不像 ~/.claude 有历史累积的信任状态，必须靠 CLI 参数兜底）。
       if (opts.resumeCCSessionId) {
-        cmd = ` claude --resume ${opts.resumeCCSessionId}`;
+        cmd = ` claude --resume ${opts.resumeCCSessionId} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
-        cmd = ' claude --continue';
+        cmd = ' claude --continue --permission-mode bypassPermissions';
       } else {
-        cmd = ` claude --model ${opts.model || 'deepseek-v4-pro'}`;
+        cmd = ` claude --model ${opts.model || 'deepseek-v4-pro'} --permission-mode bypassPermissions`;
+      }
+      cmd += '\r\n';
+      let sent = false;
+      let debounceTimer = null;
+      const watcher = ptyProcess.onData(() => {
+        if (sent) return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (sent) return;
+          sent = true;
+          watcher.dispose();
+          const s = this.sessions.get(id);
+          if (s) s.pty.write(cmd);
+        }, 200);
+      });
+      const safetyTimer = setTimeout(() => {
+        if (sent) return;
+        sent = true;
+        watcher.dispose();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        const s = this.sessions.get(id);
+        if (s) s.pty.write(cmd);
+      }, 3000);
+      pendingTimers.push(safetyTimer);
+    }
+
+    if (isGlm) {
+      let cmd;
+      if (opts.resumeCCSessionId) {
+        cmd = ` claude --resume ${opts.resumeCCSessionId} --permission-mode bypassPermissions`;
+      } else if (opts.useContinue) {
+        cmd = ' claude --continue --permission-mode bypassPermissions';
+      } else {
+        cmd = ` claude --model ${opts.model || GLM_MODEL} --permission-mode bypassPermissions`;
       }
       cmd += '\r\n';
       let sent = false;
@@ -410,6 +530,23 @@ class SessionManager extends EventEmitter {
   getSession(sessionId) {
     const s = this.sessions.get(sessionId);
     return s ? { ...s.info } : undefined;
+  }
+
+  // 圆桌快路径缓存：首次 _rtWaitCliReady 通过后置 true，后续 _rtSendToPty 跳过冷启动 sleep。
+  getRoundtableReady(sessionId) {
+    const s = this.sessions.get(sessionId);
+    return s ? !!s.roundtableReady : false;
+  }
+
+  setRoundtableReady(sessionId, ready) {
+    const s = this.sessions.get(sessionId);
+    if (s) s.roundtableReady = !!ready;
+  }
+
+  // 返回 PTY 最近一次产出输出的 ms 时间戳，用于 _rtSendToPty 活性兜底（write 后 300ms 内有无 echo）。
+  getRoundtableLastActivity(sessionId) {
+    const s = this.sessions.get(sessionId);
+    return s ? (s.roundtableLastActivity || 0) : 0;
   }
 
   getAllSessions() {

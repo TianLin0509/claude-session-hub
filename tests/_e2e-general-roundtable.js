@@ -259,6 +259,107 @@ async function readUiState(ws, meetingId) {
     // route to rt-private (because @claude is a single-target). The send path
     // in handleMeetingSend will hit the 'rt-private' branch but with no claude
     // sub session — best-effort behavior. We check the input box clears.
+    const mentionState = await evalRpc(ws, `(async () => {
+      const box = document.getElementById('mr-input-box');
+      if (!box) return { error: 'no input box' };
+      box.textContent = '@';
+      box.focus();
+      const range = document.createRange();
+      range.selectNodeContents(box);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 250));
+      const menu = document.getElementById('mr-rt-mention-menu');
+      const buttons = Array.from(document.querySelectorAll('.mr-rt-mention-item'));
+      const visibleBeforePick = !!menu && menu.style.display !== 'none';
+      const items = buttons.map(btn => ({
+        label: btn.querySelector('.mr-rt-mention-label')?.textContent || '',
+        value: btn.querySelector('.mr-rt-mention-value')?.textContent || ''
+      }));
+      const debate = buttons.find(btn => btn.querySelector('.mr-rt-mention-value')?.textContent === '@debate');
+      if (debate) debate.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      await new Promise(r => setTimeout(r, 100));
+      return {
+        visible: visibleBeforePick,
+        count: items.length,
+        values: items.map(x => x.value),
+        afterPick: box.textContent
+      };
+    })()`);
+    console.log(`  mention menu: ${JSON.stringify(mentionState)}`);
+    assert(mentionState.visible === true, '@ mention menu becomes visible');
+    assert(mentionState.count === 5, '@ mention menu shows 5 choices');
+    assert(['@claude', '@gemini', '@codex', '@debate', '@summary @claude'].every(v => mentionState.values.includes(v)),
+      '@ mention menu includes 3 AI choices plus debate and summary');
+    assert(mentionState.afterPick === '@debate ', 'clicking @debate inserts command into input');
+
+    const aiFocusState = await evalRpc(ws, `(async () => {
+      const { ipcRenderer } = require('electron');
+      const box = document.getElementById('mr-input-box');
+      const terminals = document.getElementById('mr-terminals');
+      const meeting = window.MeetingRoom.getMeetingData('${meetingId}');
+      if (!box || !terminals || !meeting || typeof sessions === 'undefined') {
+        return { error: 'missing renderer fixtures' };
+      }
+      const originalSend = ipcRenderer.send.bind(ipcRenderer);
+      ipcRenderer.send = (channel, ...args) => {
+        if (channel === 'update-meeting') return;
+        return originalSend(channel, ...args);
+      };
+      const originalSubs = Array.isArray(meeting.subSessions) ? meeting.subSessions.slice() : [];
+      const originalFocused = meeting.focusedSub || null;
+      const fakeSubs = [
+        ['fake-claude', 'claude'],
+        ['fake-gemini', 'gemini'],
+        ['fake-codex', 'codex']
+      ];
+      for (const [sid, kind] of fakeSubs) {
+        sessions.set(sid, { id: sid, kind, title: kind, status: 'active' });
+        const slot = document.createElement('div');
+        slot.className = 'mr-sub-slot';
+        slot.dataset.sessionId = sid;
+        slot.style.display = sid === 'fake-gemini' ? '' : 'none';
+        terminals.appendChild(slot);
+      }
+      meeting.subSessions = fakeSubs.map(x => x[0]);
+      meeting.focusedSub = 'fake-gemini';
+      box.textContent = '@cl';
+      box.focus();
+      const range = document.createRange();
+      range.selectNodeContents(box);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise(r => setTimeout(r, 100));
+      box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await new Promise(r => setTimeout(r, 250));
+      const visibleSid = Array.from(terminals.querySelectorAll('.mr-sub-slot'))
+        .filter(slot => slot.style.display !== 'none')
+        .map(slot => slot.dataset.sessionId)
+        .find(sid => sid && sid.startsWith('fake-')) || null;
+      const focusedAfter = meeting.focusedSub;
+      const inputAfter = box.textContent;
+      for (const [sid] of fakeSubs) {
+        sessions.delete(sid);
+        terminals.querySelectorAll('.mr-sub-slot').forEach(slot => {
+          if (slot.dataset.sessionId === sid) slot.remove();
+        });
+      }
+      meeting.subSessions = originalSubs;
+      meeting.focusedSub = originalFocused;
+      ipcRenderer.send = originalSend;
+      return { focusedAfter, visibleSid, inputAfter };
+    })()`);
+    console.log(`  AI focus after mention: ${JSON.stringify(aiFocusState)}`);
+    assert(aiFocusState.focusedAfter === 'fake-claude', 'selecting @claude focuses Claude shell');
+    assert(aiFocusState.visibleSid === 'fake-claude', 'selecting @claude shows Claude shell slot');
+    assert(aiFocusState.inputAfter === '@claude ', 'keyboard selection inserts @claude');
+
     const inputCleared = await evalRpc(ws, `(async () => {
       const box = document.getElementById('mr-input-box');
       if (!box) return { error: 'no input box' };

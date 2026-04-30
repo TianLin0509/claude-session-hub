@@ -2551,6 +2551,7 @@ function modelClass(id) {
   if (s.includes('gemini')) return 'gemini';
   if (s.includes('codex') || s.includes('gpt-5') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
   if (s.includes('deepseek')) return 'deepseek';
+  if (s.includes('glm')) return 'glm';
   return '';
 }
 
@@ -2567,6 +2568,7 @@ function modelShort(m) {
   if (id.includes('gemini')) return id.replace(/^gemini-/, 'Gemini ').replace(/-/g, ' ');
   if (id.includes('codex')) return 'Codex';
   if (id.includes('deepseek')) return 'DS';
+  if (id.includes('glm')) return 'GLM';
   return m.id || '';
 }
 
@@ -3426,7 +3428,7 @@ function schedulePersist() {
   persistDebounceTimer = setTimeout(() => {
     const list = [];
     for (const s of sessions.values()) {
-      if (!s.meetingId && s.kind !== 'claude' && s.kind !== 'claude-resume' && s.kind !== 'gemini' && s.kind !== 'codex' && s.kind !== 'deepseek') continue;
+      if (!s.meetingId && s.kind !== 'claude' && s.kind !== 'claude-resume' && s.kind !== 'gemini' && s.kind !== 'codex' && s.kind !== 'deepseek' && s.kind !== 'glm') continue;
       list.push({
         hubId: s.id,
         title: s.title,

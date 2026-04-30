@@ -272,6 +272,7 @@
 
 /* Input Row */
 .mr-input-row {
+  position: relative;
   display: flex;
   align-items: flex-end;
   padding: 8px 12px;
@@ -315,6 +316,56 @@
 .mr-input-box:empty::before {
   content: attr(data-placeholder);
   color: var(--text-secondary, #8b949e);
+}
+
+.mr-rt-mention-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  z-index: 1200;
+  padding: 4px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg-secondary, #161b22);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.mr-rt-mention-item {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(92px, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary, #c9d1d9);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.mr-rt-mention-item:hover,
+.mr-rt-mention-item.active {
+  background: var(--bg-hover, #1c2128);
+}
+
+.mr-rt-mention-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mr-rt-mention-value {
+  color: var(--accent, #6366f1);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  white-space: nowrap;
+}
+
+.mr-rt-mention-hint {
+  color: var(--text-secondary, #8b949e);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .mr-send-btn {

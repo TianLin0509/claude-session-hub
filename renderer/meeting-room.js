@@ -397,16 +397,7 @@
     panel.querySelectorAll('.mr-ft[data-ft-sid]').forEach(tab => {
       tab.addEventListener('click', () => {
         const sid = tab.getAttribute('data-ft-sid');
-        const focused = meeting.focusedSub || meeting.subSessions[0];
-        if (sid && sid !== focused) {
-          _tabState[sid] = 'idle';
-          if (_tabTimers[sid]) { clearTimeout(_tabTimers[sid]); delete _tabTimers[sid]; }
-          meeting.focusedSub = sid;
-          ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { focusedSub: sid } });
-          switchFocusTab(meeting, sid);
-          refreshRoundtablePanel(meeting);
-          renderHeader(meeting);
-        }
+        if (sid) _focusRoundtableSession(meeting, sid);
       });
     });
     panel.querySelectorAll('.mr-ft-expand[data-ft-expand-sid]').forEach(btn => {
@@ -1262,6 +1253,187 @@
   // --- Input & Broadcasting ---
 
   let _inputBound = false;
+  let _rtMentionActiveIndex = 0;
+  const RT_MENTION_ITEMS = [
+    { value: '@claude', label: 'Claude', hint: 'private ask', kind: 'claude' },
+    { value: '@gemini', label: 'Gemini', hint: 'private ask', kind: 'gemini' },
+    { value: '@codex', label: 'Codex', hint: 'private ask', kind: 'codex' },
+    { value: '@debate', label: '@debate', hint: 'cross-review' },
+    { value: '@summary @claude', label: '@summary', hint: 'final summary' },
+  ];
+
+  function _getRtMentionMenu() {
+    let menu = document.getElementById('mr-rt-mention-menu');
+    if (!menu) {
+      menu = document.createElement('div');
+      menu.id = 'mr-rt-mention-menu';
+      menu.className = 'mr-rt-mention-menu';
+      menu.setAttribute('role', 'listbox');
+      menu.style.display = 'none';
+      const row = document.getElementById('mr-input-row');
+      if (row) row.appendChild(menu);
+    }
+    return menu;
+  }
+
+  function _hideRtMentionMenu() {
+    const menu = document.getElementById('mr-rt-mention-menu');
+    if (menu) {
+      menu.style.display = 'none';
+      menu.innerHTML = '';
+    }
+    _rtMentionActiveIndex = 0;
+  }
+
+  function _getTextCaretOffset(el) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return el.innerText.length;
+    const range = sel.getRangeAt(0);
+    if (!el.contains(range.endContainer)) return el.innerText.length;
+    const pre = range.cloneRange();
+    pre.selectNodeContents(el);
+    pre.setEnd(range.endContainer, range.endOffset);
+    return pre.toString().length;
+  }
+
+  function _placeCaretAtTextOffset(el, offset) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    let node;
+    let remaining = offset;
+    while ((node = walker.nextNode())) {
+      if (remaining <= node.nodeValue.length) {
+        const range = document.createRange();
+        range.setStart(node, remaining);
+        range.collapse(true);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return;
+      }
+      remaining -= node.nodeValue.length;
+    }
+    _placeCaretAtEnd(el);
+  }
+
+  function _getRtMentionMatch(inputBox) {
+    const text = inputBox.innerText || '';
+    const caret = _getTextCaretOffset(inputBox);
+    const beforeCaret = text.slice(0, caret);
+    const at = beforeCaret.lastIndexOf('@');
+    if (at < 0) return null;
+    const query = beforeCaret.slice(at + 1);
+    if (/\s/.test(query)) return null;
+    return { text, caret, start: at, query: query.toLowerCase() };
+  }
+
+  function _insertRtMention(inputBox, item, meeting) {
+    const match = _getRtMentionMatch(inputBox);
+    if (!match) return;
+    const suffix = match.text.slice(match.caret);
+    const spacer = suffix.startsWith(' ') || suffix.length === 0 ? '' : ' ';
+    const inserted = `${item.value} `;
+    inputBox.textContent = match.text.slice(0, match.start) + inserted + spacer + suffix;
+    inputBox.focus();
+    _placeCaretAtTextOffset(inputBox, match.start + inserted.length);
+    _hideRtMentionMenu();
+    if (item.kind) _focusRoundtableKind(meeting, item.kind);
+  }
+
+  function _updateRtMentionMenu(inputBox, meeting) {
+    if (!_isPanelCapableMeeting(meeting)) {
+      _hideRtMentionMenu();
+      return;
+    }
+    const match = _getRtMentionMatch(inputBox);
+    if (!match) {
+      _hideRtMentionMenu();
+      return;
+    }
+    const items = RT_MENTION_ITEMS.filter(item => {
+      const haystack = `${item.value} ${item.label}`.toLowerCase().replace(/^@/, '');
+      return haystack.includes(match.query);
+    });
+    if (items.length === 0) {
+      _hideRtMentionMenu();
+      return;
+    }
+    if (_rtMentionActiveIndex >= items.length) _rtMentionActiveIndex = 0;
+    const menu = _getRtMentionMenu();
+    menu.style.left = `${inputBox.offsetLeft}px`;
+    menu.style.minWidth = `${Math.min(Math.max(inputBox.offsetWidth, 260), 420)}px`;
+    menu.innerHTML = items.map((item, index) => `
+      <button type="button" class="mr-rt-mention-item${index === _rtMentionActiveIndex ? ' active' : ''}" data-mention-index="${index}" role="option" aria-selected="${index === _rtMentionActiveIndex ? 'true' : 'false'}">
+        <span class="mr-rt-mention-label">${escapeHtml(item.label)}</span>
+        <span class="mr-rt-mention-value">${escapeHtml(item.value)}</span>
+        <span class="mr-rt-mention-hint">${escapeHtml(item.hint)}</span>
+      </button>
+    `).join('');
+    menu.style.display = 'block';
+    menu.querySelectorAll('.mr-rt-mention-item').forEach(btn => {
+      btn.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const index = Number(btn.getAttribute('data-mention-index'));
+        _insertRtMention(inputBox, items[index], meeting);
+      });
+    });
+  }
+
+  function _focusRoundtableSession(meeting, sid) {
+    if (!meeting || !sid || !Array.isArray(meeting.subSessions) || !meeting.subSessions.includes(sid)) return false;
+    const focused = meeting.focusedSub || meeting.subSessions[0];
+    if (sid === focused) return true;
+    _tabState[sid] = 'idle';
+    if (_tabTimers[sid]) { clearTimeout(_tabTimers[sid]); delete _tabTimers[sid]; }
+    meeting.focusedSub = sid;
+    ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { focusedSub: sid } });
+    switchFocusTab(meeting, sid);
+    refreshRoundtablePanel(meeting);
+    renderHeader(meeting);
+    return true;
+  }
+
+  function _focusRoundtableKind(meeting, kind) {
+    const sid = findSessionByKind(meeting, kind);
+    if (!sid) return false;
+    return _focusRoundtableSession(meeting, sid);
+  }
+
+  function _handleRtMentionKeydown(e, inputBox, meeting) {
+    const menu = document.getElementById('mr-rt-mention-menu');
+    const isOpen = menu && menu.style.display !== 'none';
+    if (!isOpen) return false;
+    const items = RT_MENTION_ITEMS.filter(item => {
+      const match = _getRtMentionMatch(inputBox);
+      if (!match) return false;
+      const haystack = `${item.value} ${item.label}`.toLowerCase().replace(/^@/, '');
+      return haystack.includes(match.query);
+    });
+    if (items.length === 0) return false;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      _rtMentionActiveIndex = (_rtMentionActiveIndex + 1) % items.length;
+      _updateRtMentionMenu(inputBox, meeting);
+      return true;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      _rtMentionActiveIndex = (_rtMentionActiveIndex + items.length - 1) % items.length;
+      _updateRtMentionMenu(inputBox, meeting);
+      return true;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      _insertRtMention(inputBox, items[_rtMentionActiveIndex], meeting);
+      return true;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      _hideRtMentionMenu();
+      return true;
+    }
+    return false;
+  }
+
   function setupInput(meeting) {
     const inputBox = document.getElementById('mr-input-box');
     const sendBtn = document.getElementById('mr-send-btn');
@@ -1332,10 +1504,30 @@
     sendBtn.addEventListener('click', doSend);
 
     inputBox.addEventListener('keydown', (e) => {
+      const mid = activeMeetingId;
+      const currentMeeting = meetingData[mid] || meeting;
+      if (_handleRtMentionKeydown(e, inputBox, currentMeeting)) return;
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         doSend();
       }
+    });
+
+    inputBox.addEventListener('input', () => {
+      const mid = activeMeetingId;
+      _updateRtMentionMenu(inputBox, meetingData[mid] || meeting);
+    });
+    inputBox.addEventListener('keyup', (e) => {
+      if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key)) return;
+      const mid = activeMeetingId;
+      _updateRtMentionMenu(inputBox, meetingData[mid] || meeting);
+    });
+    inputBox.addEventListener('click', () => {
+      const mid = activeMeetingId;
+      _updateRtMentionMenu(inputBox, meetingData[mid] || meeting);
+    });
+    inputBox.addEventListener('blur', () => {
+      setTimeout(_hideRtMentionMenu, 120);
     });
   }
 

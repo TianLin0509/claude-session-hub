@@ -114,11 +114,43 @@ function ensureHooksDeployed(claudeDirPath) {
     changed = true;
   }
 
+  // 3. Ensure bypass-permissions — so DeepSeek (and any future Claude-derivative)
+  //    sessions start without folder-trust / permission-confirmation prompts.
+  //    The main ~/.claude dir typically already has this from prior manual setup,
+  //    but ~/.claude-deepseek is a fresh isolated config that needs it seeded.
+  if (!settings.permissionMode || settings.permissionMode !== 'bypassPermissions') {
+    settings.permissionMode = 'bypassPermissions';
+    changed = true;
+  }
+
   if (changed) {
     fs.mkdirSync(claudeDir, { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
     console.log('[hub] settings.json updated with hook config');
   }
+
+  // 4. Ensure .claude.json project trust — Claude Code 将"信任文件夹"状态
+  //    存在 .claude.json 而非 settings.json。隔离配置(~/.claude-deepseek)缺少
+  //    主配置(~/.claude)的历史信任记录，需要每次启动检查并修复。
+  const statePath = path.join(claudeDir, '.claude.json');
+  try {
+    const raw = fs.readFileSync(statePath, 'utf8');
+    const state = JSON.parse(raw);
+    if (state.projects && typeof state.projects === 'object') {
+      let trustChanged = false;
+      for (const [projectDir, proj] of Object.entries(state.projects)) {
+        if (proj && typeof proj === 'object' && proj.hasTrustDialogAccepted === false) {
+          proj.hasTrustDialogAccepted = true;
+          trustChanged = true;
+          console.log(`[hub] .claude.json trust fixed: ${projectDir}`);
+        }
+      }
+      if (trustChanged) {
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
+        console.log('[hub] .claude.json trust state updated');
+      }
+    }
+  } catch { /* .claude.json 不存在或格式异常，跳过（首次启动可能尚未生成） */ }
 }
 
 // Ensure Codex CLI status bar includes context-remaining so the scanner can
@@ -408,7 +440,7 @@ sessionManager.onSessionClosed = (sessionId, meetingId) => {
 
 // Register a freshly-spawned session with the transcript tap so the appropriate
 // backend starts watching its CLI-native transcript file. No-op for kinds
-// without a backend (powershell/deepseek).
+// without a backend (powershell/deepseek/glm).
 function registerSessionForTap(session) {
   if (!session || !session.id) return;
   try { transcriptTap.registerSession(session.id, session.kind, { cwd: session.cwd }); }
@@ -452,7 +484,7 @@ ipcMain.handle('add-meeting-sub', async (_e, { meetingId, kind, opts }) => {
       scenes.writeCovenantSnapshot(hubDataDir, meetingId, covenantText);
     }
     const promptFile = scenes.writePromptFile(hubDataDir, meetingId, meeting.scene, covenantText);
-    if (kind === 'claude') {
+    if (kind === 'claude' || kind === 'glm') {
       sessionOpts.appendSystemPromptFile = promptFile;
       if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
         sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude');
@@ -514,6 +546,7 @@ const _RT_READY_MARKERS = {
   claude: [],
   gemini: ['Type your message', 'YOLO', 'gemini-'],
   codex: ['gpt-5.5', 'gpt-5.4', 'Context 100%', 'send'],
+  glm: [],
 };
 
 // timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）
@@ -525,36 +558,48 @@ async function _rtWaitCliReady(sid, kind, maxMs = 60000) {
     // 空 markers：buffer 至少 1500 字符就认为启动完成（启动屏 + 提示符通常 >2KB）
     if (need.length === 0) { if (buf.length >= 1500) return true; }
     else if (need.some(m => buf.includes(m))) return true;
-    await new Promise(r => setTimeout(r, 300));
+    // 100ms 轮询：cold path 加速 ~200ms（原 300ms 是为了省 CPU，但圆桌冷启动总耗时主要由 CLI 自身决定，轮询频率影响小）
+    await new Promise(r => setTimeout(r, 100));
   }
   return false;
 }
 
-// 发送 prompt 到 PTY 并发回车
-// 保护机制：markers 出现 ≠ 真接受输入（Gemini OAuth init / Codex 启动 init phase 仍在跑）
-// → markers ready 后额外加 stabilize 缓冲，确保 prompt 不被吞
+// 发送 prompt 到 PTY 并回车
+// 设计：CLI 初始化是持久状态，只需做一次。session-manager 的 roundtableReady 缓存
+//       让第 2-N 轮跳过冷启动等待，直接走快路径。
+// **关键约束（历史 bug 重现于 2026-04-30）**：Claude/Gemini/Codex 三家都是 TUI alt-screen 程序，
+//   把紧贴到达的字符当"粘贴"事件 → 粘贴里的 '\r' 被当文本换行符而不是 Enter 提交。
+//   所以 prompt 和 '\r' **必须分两次 write**，中间留 TUI 消化窗口；不能合并 `prompt + '\r'`。
+// 活性兜底（fail-safe，2026-05-01 调整）：300ms 内 PTY 无 echo 视为 CLI 失活
+//   （Ctrl+C / crash / PTY 断开）→ 重置 ready 直接 return false 让调用方 skip 这家。
+//   不在兜底里"重发 prompt"——第一次 write 已把字符送进 PTY stdin，无论 CLI 有无 echo
+//   字符都已被接收/缓冲，重发会造成 prompt+prompt+\r 双重输入。下一轮自动走冷启动恢复。
+//   这 300ms 同时充当 TUI 消化 prompt 的窗口，prompt 写下去后 PTY 通常 < 50ms 就开始回 echo。
 async function _rtSendToPty(sid, prompt, kind) {
-  if (kind === 'claude') {
-    // Claude TUI 用 alt-screen，buffer 抓取不可靠 → fire-and-forget 8s 初始化
-    await new Promise(r => setTimeout(r, 8000));
-  } else if (kind === 'gemini') {
-    // Gemini markers 出现快但 OAuth/auth init 慢 → markers 后再等 8s 稳定期
+  const FAST_PATH_ACTIVITY_WINDOW_MS = 300;
+
+  // 冷启动：仅首次或 ready 被重置后
+  if (!sessionManager.getRoundtableReady(sid)) {
     const ready = await _rtWaitCliReady(sid, kind, 60000);
     if (!ready) return false;
-    await new Promise(r => setTimeout(r, 8000));
-  } else if (kind === 'codex') {
-    // Codex 启动 init phase 也需缓冲（含 MCP server spawn）
-    const ready = await _rtWaitCliReady(sid, kind, 60000);
-    if (!ready) return false;
-    await new Promise(r => setTimeout(r, 5000));
-  } else {
-    const ready = await _rtWaitCliReady(sid, kind, 60000);
-    if (!ready) return false;
+    sessionManager.setRoundtableReady(sid, true);
   }
+
+  // 第 1 次 write：仅 prompt（不带 '\r'）
+  const beforeWrite = sessionManager.getRoundtableLastActivity(sid);
   sessionManager.writeToSession(sid, prompt);
-  const baseDelay = kind === 'codex' ? 500 : 250;
-  const sizeDelay = Math.min(Math.floor(prompt.length / 100) * 10, 500);
-  await new Promise(r => setTimeout(r, baseDelay + sizeDelay));
+
+  // 活性兜底 + TUI 消化窗口：300ms 后 TUI 已处理完 prompt 输入并 echo
+  await new Promise(r => setTimeout(r, FAST_PATH_ACTIVITY_WINDOW_MS));
+  const afterWrite = sessionManager.getRoundtableLastActivity(sid);
+
+  if (afterWrite === beforeWrite) {
+    console.warn(`[roundtable] fast-path activity check failed for ${kind}(${sid.slice(0, 8)}), skipping turn (ready reset for next-turn cold restart)`);
+    sessionManager.setRoundtableReady(sid, false);
+    return false;
+  }
+
+  // 第 2 次 write：单独 '\r' 触发提交（独立 write 是 TUI 识别 Enter 而非粘贴 newline 的硬性条件）
   sessionManager.writeToSession(sid, '\r');
   return true;
 }
@@ -1173,7 +1218,8 @@ ipcMain.handle('resume-session', async (_e, meta) => {
   if (!meta || !meta.hubId) return null;
   const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume');
   const isDeepSeek = (meta.kind === 'deepseek');
-  const isClaudeCliResumable = isClaude || isDeepSeek;
+  const isGlm = (meta.kind === 'glm');
+  const isClaudeCliResumable = isClaude || isDeepSeek || isGlm;
   const isGeminiOrCodex = (meta.kind === 'gemini' || meta.kind === 'codex');
 
   // resume 时根据会议模式重新注入 prompt 文件(research/general 公约)。
@@ -1193,7 +1239,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
       promptFile = scenes.writePromptFile(hubDataDir, meta.meetingId, meeting.scene, covenantText);
     }
     if (promptFile) {
-      if (isClaude) {
+      if (isClaude || isGlm) {
         resumeOpts.appendSystemPromptFile = promptFile;
       } else if (meta.kind === 'gemini') {
         resumeOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
@@ -1838,6 +1884,7 @@ app.whenReady().then(async () => {
   const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();
   ensureHooksDeployed(path.join(_home, '.claude'));
   ensureHooksDeployed(path.join(_home, '.claude-deepseek'));
+  ensureHooksDeployed(path.join(_home, '.claude-glm'));
   ensureCodexContextConfig();
   hookPort = await listenWithFallback();
   if (hookPort) {
