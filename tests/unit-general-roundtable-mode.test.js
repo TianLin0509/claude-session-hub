@@ -120,41 +120,38 @@ function testPrivateSoftCap() {
   console.log('  ✓ testPrivateSoftCap');
 }
 
-// === meeting-room: updateMeeting 三态互斥 loud-fail ===
-function testUpdateMeetingMutexLoudFail() {
+// === meeting-room: updateMeeting invalid scene ===
+function testUpdateMeetingInvalidScene() {
   const { MeetingRoomManager } = require('../core/meeting-room.js');
   const mgr = new MeetingRoomManager();
   const m = mgr.createMeeting();
 
-  // 同时传两个 true → 应抛错
+  // 传无效 scene → 应抛错
   assert.throws(
-    () => mgr.updateMeeting(m.id, { roundtableMode: true, researchMode: true }),
-    /Cannot set multiple modes to true simultaneously/
+    () => mgr.updateMeeting(m.id, { scene: 'driver' }),
+    /Invalid scene value/
   );
-  console.log('  ✓ testUpdateMeetingMutexLoudFail');
+  console.log('  ✓ testUpdateMeetingInvalidScene');
 }
 
-// === meeting-room: 单个 true 时互斥关闭另一个（合法路径） ===
-function testUpdateMeetingMutexHappyPath() {
+// === meeting-room: scene 切换（合法路径） ===
+function testUpdateMeetingSceneSwitch() {
   const { MeetingRoomManager } = require('../core/meeting-room.js');
   const mgr = new MeetingRoomManager();
   const m = mgr.createMeeting();
 
-  // 默认 roundtableMode=true
-  assert.strictEqual(m.roundtableMode, true);
-  assert.strictEqual(m.researchMode, false);
+  // 默认 scene=general
+  assert.strictEqual(m.scene, 'general');
 
-  // 切到 researchMode → 关掉 roundtableMode
-  const r1 = mgr.updateMeeting(m.id, { researchMode: true });
-  assert.strictEqual(r1.researchMode, true);
-  assert.strictEqual(r1.roundtableMode, false);
+  // 切到 research
+  const r1 = mgr.updateMeeting(m.id, { scene: 'research' });
+  assert.strictEqual(r1.scene, 'research');
 
-  // 切回 roundtableMode → 关掉 researchMode
-  const r2 = mgr.updateMeeting(m.id, { roundtableMode: true });
-  assert.strictEqual(r2.roundtableMode, true);
-  assert.strictEqual(r2.researchMode, false);
+  // 切回 general
+  const r2 = mgr.updateMeeting(m.id, { scene: 'general' });
+  assert.strictEqual(r2.scene, 'general');
 
-  console.log('  ✓ testUpdateMeetingMutexHappyPath');
+  console.log('  ✓ testUpdateMeetingSceneSwitch');
 }
 
 console.log('Running general-roundtable unit tests...');
@@ -167,6 +164,6 @@ testCleanup();
 testPrivateAppendList();
 testPrivateInvalidKind();
 testPrivateSoftCap();
-testUpdateMeetingMutexLoudFail();
-testUpdateMeetingMutexHappyPath();
+testUpdateMeetingInvalidScene();
+testUpdateMeetingSceneSwitch();
 console.log('All passed.');

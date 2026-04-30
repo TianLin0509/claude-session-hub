@@ -1,6 +1,8 @@
 const { v4: uuid } = require('uuid');
 const meetingStore = require('./meeting-store');
 
+const MEETING_MODES = ['general', 'research'];
+
 // 模式 → 房名前缀。前端 +号菜单点击两模式入口时透传 mode,createMeeting 据此生成
 // 自带语义的房名(每模式独立计数,后期允许用户重命名)。未传 mode 时默认 'general' 走
 // 通用圆桌路径,保持向后兼容(老调用 createMeeting() 不会炸)。
@@ -35,11 +37,8 @@ class MeetingRoomManager {
       pinned: false,
       status: 'idle',
       lastScene: 'free_discussion',
-      researchMode: mode === 'research',
+      scene: MEETING_MODES.includes(mode) ? mode : 'general',
       covenantText: '',
-      // 两态互斥:researchMode 时 roundtableMode=false,只有 general 默认开
-      roundtableMode: mode === 'general',
-      generalRoundtableCovenant: '',
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -101,31 +100,15 @@ class MeetingRoomManager {
   updateMeeting(meetingId, fields) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
-    // Loud-fail on ambiguous mode input: callers must set at most one mode to true at a time.
-    // Without this guard, the two sequential mutex if-blocks below would silently zero out
-    // ALL mode flags when both modes are set true together, leaving the meeting in undefined state.
-    const trueCount = ['roundtableMode', 'researchMode']
-      .filter(k => fields[k] === true).length;
-    if (trueCount > 1) {
-      throw new Error(`Cannot set multiple modes to true simultaneously: ${JSON.stringify({
-        roundtableMode: fields.roundtableMode,
-        researchMode: fields.researchMode,
-      })}`);
+    if (fields.scene && !MEETING_MODES.includes(fields.scene)) {
+      throw new Error(`Invalid scene value: '${fields.scene}'. Allowed: ${MEETING_MODES.join(', ')}`);
     }
     const allowed = [
       'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned',
-      'lastMessageTime', 'status', 'lastScene', 'researchMode', 'covenantText',
-      'roundtableMode', 'generalRoundtableCovenant',
+      'lastMessageTime', 'status', 'lastScene', 'scene', 'covenantText',
     ];
     for (const key of allowed) {
       if (key in fields) m[key] = fields[key];
-    }
-    // 两态互斥：开启某一个时关掉另一个
-    if (fields.roundtableMode === true) {
-      m.researchMode = false;
-    }
-    if (fields.researchMode === true) {
-      m.roundtableMode = false;
     }
     return { ...m, subSessions: [...m.subSessions] };
   }
@@ -144,14 +127,11 @@ class MeetingRoomManager {
 
   restoreMeeting(meetingData) {
     if (!meetingData || !meetingData.id) return;
-    // 白名单展开,显式不保留 driver* / pendingReviewId 等已废弃字段。
-    // 老 driverMode meeting 自动降级为通用圆桌(roundtableMode=true),用户可以继续看历史 timeline,
-    // 新建会议才走 createMeeting 的默认 'general' 路径。
-    const isResearch = !!meetingData.researchMode;
-    const isRoundtable = meetingData.roundtableMode === true;
-    // 兜底:老 driverMode meeting 既不 research 也不 roundtable,自动降级为通用圆桌
-    // 否则 isRoundtableCapableMeeting 会拒绝它,用户连历史都看不到
-    const fallbackToRoundtable = !isResearch && !isRoundtable;
+    // 向后兼容：从旧的 researchMode/roundtableMode 推断 scene
+    let scene = meetingData.scene;
+    if (!scene) {
+      scene = meetingData.researchMode ? 'research' : 'general';
+    }
     this.meetings.set(meetingData.id, {
       id: meetingData.id,
       type: 'meeting',
@@ -166,19 +146,15 @@ class MeetingRoomManager {
       pinned: !!meetingData.pinned,
       status: 'dormant',
       lastScene: meetingData.lastScene || 'free_discussion',
-      researchMode: isResearch,
-      covenantText: meetingData.covenantText || '',
-      roundtableMode: isRoundtable || fallbackToRoundtable,
-      generalRoundtableCovenant: meetingData.generalRoundtableCovenant || '',
+      scene,
+      covenantText: meetingData.covenantText || meetingData.generalRoundtableCovenant || '',
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,
     });
-    // 按 mode flag + title 末尾 #N 数字推断恢复到哪个 counter,避免新建撞号。
+    // 按 scene + title 末尾 #N 数字推断恢复到哪个 counter,避免新建撞号。
     // 老格式 "会议室-N" / "主驾会议 #N" 不匹配新规则,跳过。
-    let restoredMode = null;
-    if (isResearch) restoredMode = 'research';
-    else if (isRoundtable) restoredMode = 'general';
+    const restoredMode = scene;
     const seqMatch = (meetingData.title || '').match(/#(\d+)\s*$/);
     const seq = seqMatch ? parseInt(seqMatch[1], 10) : 0;
     if (restoredMode && seq > 0 && seq > this._counters[restoredMode]) {
@@ -270,7 +246,7 @@ class MeetingRoomManager {
 }
 
 function isRoundtableCapableMeeting(meeting) {
-  return !!(meeting && (meeting.researchMode || meeting.roundtableMode));
+  return !!(meeting && meeting.scene);
 }
 
-module.exports = { MeetingRoomManager, isRoundtableCapableMeeting };
+module.exports = { MeetingRoomManager, isRoundtableCapableMeeting, MEETING_MODES };

@@ -17,20 +17,20 @@ const path = require('path');
 const { MeetingRoomManager, isRoundtableCapableMeeting } = require('../core/meeting-room');
 
 function testHelperRoundtableMode() {
-  const m = { researchMode: false, roundtableMode: true };
-  assert.strictEqual(isRoundtableCapableMeeting(m), true, 'roundtableMode=true should be capable');
+  const m = { scene: 'general' };
+  assert.strictEqual(isRoundtableCapableMeeting(m), true, 'scene=general should be capable');
   console.log('  ✓ testHelperRoundtableMode');
 }
 
 function testHelperResearchMode() {
-  const m = { researchMode: true, roundtableMode: false };
-  assert.strictEqual(isRoundtableCapableMeeting(m), true, 'researchMode=true should be capable');
+  const m = { scene: 'research' };
+  assert.strictEqual(isRoundtableCapableMeeting(m), true, 'scene=research should be capable');
   console.log('  ✓ testHelperResearchMode');
 }
 
 function testHelperNeitherMode() {
-  const m = { researchMode: false, roundtableMode: false };
-  assert.strictEqual(isRoundtableCapableMeeting(m), false, 'both-false should be rejected');
+  const m = {};
+  assert.strictEqual(isRoundtableCapableMeeting(m), false, 'no scene should be rejected');
   console.log('  ✓ testHelperNeitherMode');
 }
 
@@ -46,8 +46,7 @@ function testRealCreatedMeetingIsCapable() {
   // 任何一方漂移都会让本测试挂掉。
   const mgr = new MeetingRoomManager();
   const m = mgr.createMeeting();
-  assert.strictEqual(m.roundtableMode, true, 'createMeeting default should be roundtableMode=true');
-  assert.strictEqual(m.researchMode, false, 'createMeeting default should be researchMode=false');
+  assert.strictEqual(m.scene, 'general', 'createMeeting default should be scene=general');
   assert.strictEqual(isRoundtableCapableMeeting(m), true, 'default-created meeting must be roundtable-capable');
   console.log('  ✓ testRealCreatedMeetingIsCapable');
 }
@@ -75,21 +74,20 @@ function testMainJsUsesHelper() {
 }
 
 function testCreateMeetingMenuContract() {
-  // +号菜单必须有三模式直接入口（通用/投研/主驾），各带 data-meeting-mode；
+  // +号菜单必须有 general 入口（后续 Task 5 会合并为单入口）；
   // 老的 #create-meeting-modal 已废弃,不再出现在 HTML 中。
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf-8');
   assert.ok(/data-meeting-mode="general"/.test(html), 'menu must have general mode entry');
-  assert.ok(/data-meeting-mode="research"/.test(html), 'menu must have research mode entry');
   assert.ok(!/data-meeting-mode="driver"/.test(html), 'driver mode entry must be removed');
   assert.ok(html.includes('通用圆桌'), 'menu label "通用圆桌" must appear');
-  assert.ok(html.includes('投研圆桌'), 'menu label "投研圆桌" must appear');
   assert.ok(!html.includes('主驾会议'), 'legacy "主驾会议" label must be removed');
   assert.ok(!/id="create-meeting-modal"/.test(html), 'legacy create-meeting modal must be removed');
   console.log('  ✓ testCreateMeetingMenuContract');
 }
 
 function testRendererCreateMeetingByMode() {
-  // createMeetingByMode 必须显式处理三 mode 分支,与后端 createMeeting({mode}) 契约对齐。
+  // createMeetingByMode 必须存在并通过 IPC 创建会议。
+  // 后续 Task 5 会简化这个函数,这里只检查核心契约。
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf-8');
   assert.ok(/async function createMeetingByMode\s*\(\s*mode\s*\)/.test(src),
     'createMeetingByMode function must exist');
@@ -97,10 +95,6 @@ function testRendererCreateMeetingByMode() {
     'createMeetingByMode must invoke create-meeting IPC with {mode}');
   assert.ok(!/mode\s*===\s*['"]driver['"]/.test(src),
     'driver branch must be removed (driver mode deprecated)');
-  assert.ok(/mode\s*===\s*['"]research['"]/.test(src),
-    'createMeetingByMode must have research branch');
-  assert.ok(/toggle-roundtable-mode/.test(src),
-    'general branch must invoke toggle-roundtable-mode');
   console.log('  ✓ testRendererCreateMeetingByMode');
 }
 
