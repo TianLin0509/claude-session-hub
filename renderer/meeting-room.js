@@ -149,6 +149,37 @@
     return 'ok';
   }
 
+  // Card redesign（2026-05-01）— 卡片统计格式化 helper
+  function _formatTokens(n) {
+    if (n == null || n === 0) return '-';
+    if (n < 1000) return String(n);
+    if (n < 1000000) {
+      const v = (n / 1000).toFixed(1);
+      return v.replace(/\.0$/, '') + 'k';
+    }
+    return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  }
+  function _formatThinkTime(seconds) {
+    if (seconds == null || seconds === 0) return '-';
+    if (seconds < 60) {
+      // 1.0s 显示 1s（秒级），<10s 显示 1 位小数（避免抖动到 1 整数粒度）
+      return seconds < 10 ? `${seconds.toFixed(1).replace(/\.0$/, '')}s` : `${Math.round(seconds)}s`;
+    }
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return s === 0 ? `${m}m` : `${m}m${String(s).padStart(2, '0')}s`;
+  }
+  function _avatarSrcFor(kind) {
+    return ({
+      claude: 'assets/pokemon/pikachu.png',
+      gemini: 'assets/pokemon/charmander.png',
+      codex:  'assets/pokemon/squirtle.png',
+    })[kind] || '';
+  }
+  function _avatarFallbackFor(kind) {
+    return ({ claude: '🟡', gemini: '🟠', codex: '🔵' })[kind] || '🤖';
+  }
+
   function _renderFusedTabs(state, subs, currentMode, partialBy, meeting) {
     const lastTurn = state.turns.length > 0 ? state.turns[state.turns.length - 1] : null;
     const summarizerKind = state.currentSummarizerKind || null;
@@ -216,42 +247,79 @@
       const tabState = _tabState[sub.sid] || 'idle';
       const newBadge = tabState === 'new-output' && !isActive ? '<span class="mr-ft-new">NEW</span>' : '';
 
-      let row3 = '';
+      // Card redesign（2026-05-01）：bottom 区内容（progress / streaming preview / completed preview / 占位）
+      let bottomHtml = '';
       if (status === 'thinking') {
         if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
-        const elapsed = Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000);
-        row3 = `<div class="mr-ft-progress"><div class="mr-ft-progress-bar ${kind}"></div></div>`;
-        tabs.push(_ftHtml(kind, isActive, sub.sid, labelDisplay, statusLabel, status, modelName, modelCls, ctxPct, ctxCls, row3, `${elapsed}s`, newBadge));
+        bottomHtml = `<div class="mr-ft-progress"><div class="mr-ft-progress-bar ${kind}"></div></div>`;
       } else if (status === 'streaming') {
         if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
-        const elapsed = Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000);
         const snippet = preview.slice(-150).replace(/</g, '&lt;');
-        row3 = `<div class="mr-ft-preview streaming">${snippet}<span class="mr-ft-cursor"></span></div>`;
-        tabs.push(_ftHtml(kind, isActive, sub.sid, labelDisplay, statusLabel, status, modelName, modelCls, ctxPct, ctxCls, row3, `${elapsed}s`, newBadge));
+        bottomHtml = `<div class="mr-ft-preview streaming">${snippet}<span class="mr-ft-cursor"></span></div>`;
+      } else if (preview) {
+        const snippet = escapeHtml(preview.slice(0, 200)) + (preview.length > 200 ? '…' : '');
+        bottomHtml = `<div class="mr-ft-preview">${snippet}</div>`;
       } else {
-        const snippet = preview ? escapeHtml(preview.slice(0, 150)) + (preview.length > 150 ? '…' : '') : '';
-        row3 = snippet ? `<div class="mr-ft-preview">${snippet}</div>` : '';
-        tabs.push(_ftHtml(kind, isActive, sub.sid, labelDisplay, statusLabel, status, modelName, modelCls, ctxPct, ctxCls, row3, '', newBadge));
+        // 占位文本，保持卡片底部不空（防视觉空洞）
+        bottomHtml = '<div class="mr-ft-preview" style="opacity:0.5;font-style:italic">等待…</div>';
       }
+
+      // Card redesign：计算"本轮 / 累计"的时间和 token
+      const aiStats = (state.aiStats && state.aiStats[kind]) || { totalThinkSec: 0, totalTokens: 0 };
+      let thinkCurrentSec = 0;
+      let tokensCurrentN = 0;
+      if (status === 'thinking' || status === 'streaming') {
+        // 实时计算（粗粒度，按整秒避免抖动）
+        thinkCurrentSec = _thinkStartTs[meetingId]
+          ? Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000)
+          : 0;
+        if (partial && partial.tokens && typeof partial.tokens.total === 'number') {
+          tokensCurrentN = partial.tokens.total;
+        }
+      } else if (lastTurn && lastTurn.thinkSecBy && lastTurn.thinkSecBy[sub.sid] != null) {
+        // 已完成：从 lastTurn 持久化字段精准回显
+        thinkCurrentSec = lastTurn.thinkSecBy[sub.sid] || 0;
+        tokensCurrentN = (lastTurn.tokensBy && lastTurn.tokensBy[sub.sid]) || 0;
+      }
+      const thinkCurrent = _formatThinkTime(thinkCurrentSec);
+      const thinkTotal   = _formatThinkTime(aiStats.totalThinkSec || 0);
+      const tokensCurrent = _formatTokens(tokensCurrentN);
+      const tokensTotal   = _formatTokens(aiStats.totalTokens || 0);
+
+      tabs.push(_ftHtml(
+        kind, isActive, sub.sid, labelDisplay, statusLabel, status,
+        modelName, modelCls, ctxPct, ctxCls, bottomHtml,
+        thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge
+      ));
     }
     if (!anyThinking && meetingId) delete _thinkStartTs[meetingId];
     return `<div class="mr-ft-strip">${tabs.join('')}</div>`;
   }
 
-  function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, row3, elapsed, newBadge) {
+  function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, bottomHtml,
+                   thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge) {
     const cls = ['mr-ft', kind];
     if (isActive) cls.push('active');
+    // Card redesign：thinking-card / streaming-card 触发头像 bounce 动画
+    if (statusCls === 'thinking') cls.push('thinking-card');
+    else if (statusCls === 'streaming') cls.push('streaming-card');
+
     const modelBadge = modelName ? `<span class="mr-ft-model ${kind}">${escapeHtml(modelName)}</span>` : '';
     const ctxBadge = ctxPct !== null ? `<span class="mr-ft-ctx ${ctxCls}">Ctx ${ctxPct}%</span>` : '';
-    const elapsedHtml = elapsed ? `<span class="mr-ft-elapsed mr-rt-think-elapsed">${elapsed}</span>` : '';
+
+    // Card redesign：头像（PNG + emoji fallback）
+    const avatarSrc = _avatarSrcFor(kind);
+    const avatarFb = _avatarFallbackFor(kind);
+    const avatarHtml = avatarSrc
+      ? `<div class="mr-ft-avatar"><img src="${avatarSrc}" alt="${kind}" onerror="this.parentNode.textContent='${avatarFb}'; this.parentNode.style.cssText+=';display:flex;align-items:center;justify-content:center;font-size:30px;'"></div>`
+      : `<div class="mr-ft-avatar" style="display:flex;align-items:center;justify-content:center;font-size:30px;">${avatarFb}</div>`;
 
     // Stage 2 容错升级：角标（绝对定位卡片右上角）—— 区分手动提取 / 缺席态
     let cornerBadge = '';
     if (statusCls === 'manual_extracted') cornerBadge = '<span class="mr-ft-corner-badge manual">手动</span>';
     else if (statusCls === 'absent') cornerBadge = '<span class="mr-ft-corner-badge absent">缺席</span>';
 
-    // Stage 2 容错升级：逃生工具栏（条件渲染）—— 等待中或软提醒时显示，让用户能绕过完成检测
-    // active 状态：thinking / streaming / soft_alert（等待中）/ submitted（不在当前枚举里，预留）
+    // Stage 2 容错升级：逃生工具栏（条件渲染，嵌入 mr-ft-bottom 内）
     const isWaitingState = statusCls === 'thinking' || statusCls === 'streaming' || statusCls === 'soft_alert';
     const escapeBar = isWaitingState ? `
       <div class="mr-ft-escape-bar">
@@ -260,14 +328,36 @@
         <button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新发送 prompt（P0.5 实现中，暂未启用）" disabled>重发</button>
       </div>` : '';
 
+    // Card redesign：row3 ⏱ 时间 + row4 🪙 tokens
+    const timeoutCls = statusCls === 'timeout' ? ' timeout' : '';
+    const row3 = `<div class="mr-ft-row3${timeoutCls}">
+      <span class="mr-ft-stat-icon">⏱</span>
+      <span class="mr-ft-stat-current">本轮 ${escapeHtml(thinkCurrent)}</span>
+      <span class="mr-ft-stat-divider">·</span>
+      <span class="mr-ft-stat-total">累计 ${escapeHtml(thinkTotal)}</span>
+    </div>`;
+    const row4 = `<div class="mr-ft-row4">
+      <span class="mr-ft-stat-icon">🪙</span>
+      <span class="mr-ft-stat-current">本轮 ${escapeHtml(tokensCurrent)}</span>
+      <span class="mr-ft-stat-divider">·</span>
+      <span class="mr-ft-stat-total">累计 ${escapeHtml(tokensTotal)}</span>
+    </div>`;
+
     return `<div class="${cls.join(' ')}" data-ft-sid="${sid}" data-ft-kind="${kind}">
       <button class="mr-ft-expand" data-ft-expand-sid="${sid}" data-ft-expand-kind="${kind}" title="展开详细回答">↗</button>${cornerBadge}
-      <div class="mr-ft-row1">
-        <span class="mr-ft-name ${kind}">${name}</span>
-        <span class="mr-ft-status ${statusCls}">${statusLabel}</span>${newBadge}${elapsedHtml}
+      <div class="mr-ft-head">
+        ${avatarHtml}
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1">
+            <span class="mr-ft-name ${kind}">${name}</span>
+            <span class="mr-ft-status ${statusCls}">${statusLabel}</span>${newBadge}
+          </div>
+          <div class="mr-ft-row2">${modelBadge}${ctxBadge}</div>
+          ${row3}
+          ${row4}
+        </div>
       </div>
-      <div class="mr-ft-row2">${modelBadge}${ctxBadge}</div>
-      ${row3}${escapeBar}
+      <div class="mr-ft-bottom">${bottomHtml}${escapeBar}</div>
     </div>`;
   }
 
@@ -817,7 +907,7 @@
   });
 
   // Roundtable 单家 partial-update：单卡片立即刷新，不等所有家完成
-  ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text }) => {
+  ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting) || meetingId !== activeMeetingId) return;
     const cached = _rtPanelState[meetingId];
@@ -827,7 +917,14 @@
       return;
     }
     if (!cached._partialBy) cached._partialBy = {};
-    cached._partialBy[sid] = { text: text || '', status: status || 'completed' };
+    // Card redesign（2026-05-01）：partial 携带 thinkSec / tokens 时一并存入，
+    //   让卡片 row3/row4 在 streaming 完成→completed 切换那一刻拿到精准值（不必等下次 state refresh）
+    cached._partialBy[sid] = {
+      text: text || '',
+      status: status || 'completed',
+      thinkSec: typeof thinkSec === 'number' ? thinkSec : undefined,
+      tokens: tokens || undefined,
+    };
     // 直接本地重渲染（不调 IPC，省一次 round-trip）
     const panel = _ensureRtPanel();
     panel.innerHTML = _renderRtPanelHtml(cached, meeting);
