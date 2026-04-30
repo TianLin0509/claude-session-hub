@@ -25,9 +25,10 @@ function arenaPromptsDir(hubDataDir) {
 }
 
 class RoundtableOrchestrator {
-  constructor(hubDataDir, meetingId) {
+  constructor(hubDataDir, meetingId, scene) {
     this.hubDataDir = hubDataDir;
     this.meetingId = meetingId;
+    this.scene = scene || { name: '圆桌', summaryHints: '', summaryTitleTag: false, dataPackEnabled: false };
     this.state = {
       meetingId,
       currentTurn: 0,
@@ -77,8 +78,8 @@ class RoundtableOrchestrator {
 
   // 默认 fanout 轮：用户原话 +（可选）数据包前缀
   buildFanoutPrompt(turnNum, userInput, dataPack) {
-    const parts = [`[投研圆桌 · 第 ${turnNum} 轮 · 默认提问]`];
-    if (dataPack && typeof dataPack === 'string' && dataPack.trim().length > 0) {
+    const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · 默认提问]`];
+    if (this.scene.dataPackEnabled && dataPack && typeof dataPack === 'string' && dataPack.trim().length > 0) {
       parts.push('', '## 数据接入（Hub 自动从 LinDangAgent 拉取）', dataPack);
     }
     parts.push('', '## 用户问题', userInput || '');
@@ -91,7 +92,7 @@ class RoundtableOrchestrator {
   // targetSid = 当前接收 AI 的 sid（不会把它自己的观点发给它）
   // sidLabelFn = (sid) => label string
   buildDebatePrompt(turnNum, userInput, lastTurn, targetSid, sidLabelFn) {
-    const parts = [`[投研圆桌 · 第 ${turnNum} 轮 · @debate]`, ''];
+    const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · @debate]`, ''];
     if (userInput && userInput.trim().length > 0) {
       parts.push('## 用户在本轮补充的新信息', userInput, '');
     }
@@ -121,7 +122,7 @@ class RoundtableOrchestrator {
     const summarizerLabel = sidLabelFn ? (sidLabelFn(summarizerSid) || 'AI') : 'AI';
     const totalTurns = this.state.turns.length;
     const lastTurn = this.getLastTurn();
-    const parts = [`[投研圆桌 · 第 ${turnNum} 轮 · @summary @${summarizerLabel}]`, ''];
+    const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · @summary @${summarizerLabel}]`, ''];
     parts.push('## 你的任务');
     parts.push(`你已经在自己的上下文里读过前 ${totalTurns} 轮讨论（含你自己的观点 + 另两家观点 + 用户补充）。`);
     parts.push('请直接基于上下文给出最终意见，不需要逐轮复述。');
@@ -129,8 +130,10 @@ class RoundtableOrchestrator {
     parts.push('输出格式建议：');
     parts.push('  1) 结论先行（推荐 / 不推荐 / 中性 / 观望，附简短理由）');
     parts.push('  2) 三方共识与关键分歧');
-    parts.push('  3) 具体行动建议（仓位/止损/加仓/观察指标 等，按问题类型自适应）');
-    parts.push('  4) 在末尾用 `<<TITLE: xxx>>` 标记本次会话简短标题（用于决策档案命名，例：`<<TITLE: 兆易创新-买入决策>>`）');
+    parts.push(`  3) 具体行动建议（${this.scene.summaryHints || '按讨论话题自适应'}）`);
+    if (this.scene.summaryTitleTag) {
+      parts.push('  4) 在末尾用 `<<TITLE: xxx>>` 标记本次会话简短标题（用于决策档案命名，例：`<<TITLE: 兆易创新-买入决策>>`）');
+    }
 
     // 仅附最近一轮作为防健忘参考，且只附另两家观点（summarizer 自己的不重复发回）
     if (lastTurn) {
@@ -201,10 +204,12 @@ class RoundtableOrchestrator {
 
 // 单例池：每会议室一个 orchestrator
 const _pool = new Map();
-function getOrchestrator(hubDataDir, meetingId) {
+function getOrchestrator(hubDataDir, meetingId, scene) {
   const key = `${hubDataDir}::${meetingId}`;
-  if (!_pool.has(key)) _pool.set(key, new RoundtableOrchestrator(hubDataDir, meetingId));
-  return _pool.get(key);
+  if (!_pool.has(key)) _pool.set(key, new RoundtableOrchestrator(hubDataDir, meetingId, scene));
+  const orch = _pool.get(key);
+  if (scene) orch.scene = scene;
+  return orch;
 }
 function releaseOrchestrator(hubDataDir, meetingId) {
   const key = `${hubDataDir}::${meetingId}`;
