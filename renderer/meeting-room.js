@@ -4,6 +4,7 @@
 
 (function () {
   const { ipcRenderer } = require('electron');
+  const _scenes = require('../core/roundtable-scenes.js');
 
   let activeMeetingId = null;
   let meetingData = {};
@@ -60,9 +61,9 @@
   // partialBy: 当前进行中轮次的部分回答 { sid: { text, status } } — 单家完成立即更新
   const _rtPanelState = {};
   let _rtHistoryExpanded = false;
-  // 私聊计数缓存：{ [meetingId]: { claude: N, gemini: N, codex: N } }
-  // 在 refreshRoundtablePanel 里 best-effort 拉，用于卡片右上角 💬 角标
   const _privateCountCache = {};
+  const _thinkStartTs = {};
+  let _thinkTimer = null;
 
   // markdown 渲染（用项目已有的 marked + DOMPurify）
   let _markedCache = null;
@@ -145,30 +146,26 @@
     const cards = [];
     const meetingId = meeting && meeting.id;
     const countMap = (meetingId && _privateCountCache[meetingId]) || {};
+    let anyThinking = false;
     for (const kind of ['claude', 'gemini', 'codex']) {
       const sub = subs[kind];
       if (!sub) continue;
-      // 优先级：partialBy（in-progress 单家完成） > lastTurn.by（已完整持久化的轮）
       const partial = partialBy ? partialBy[sub.sid] : null;
       let status = 'idle';
       let preview = '';
-      let isStandby = false; // summary 轮非 summarizer 卡片的"维持上轮预览"状态
+      let isStandby = false;
 
       if (partial) {
-        // 当前轮已收到这家的部分结果
         status = partial.status === 'timeout' ? 'timeout' : 'completed';
         preview = partial.text || '';
       } else if (currentMode && currentMode !== 'idle') {
-        // 当前正在跑某轮但本家还没回
         if (currentMode === 'summary' && summarizerKind && summarizerKind !== kind) {
-          // 非 summarizer：保持上一轮（debate）的回答展示，不进入 thinking
           status = lastTurn && lastTurn.by[sub.sid] ? 'completed' : 'idle';
           preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
           isStandby = true;
         } else {
           status = 'thinking';
-          // 思考中也展示上一轮预览（保留历史）
-          preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
+          anyThinking = true;
         }
       } else if (lastTurn && lastTurn.by[sub.sid]) {
         status = 'completed';
@@ -176,11 +173,22 @@
       }
 
       const isSummarizer = currentMode === 'summary' && summarizerKind === kind;
-      const statusLabel = { idle: '待命', thinking: '思考中', completed: '已答', timeout: '超时' }[status] || status;
-      const previewClipped = preview ? preview.slice(0, 600) : '';
-      const previewHtml = preview
-        ? `<div class="mr-rt-card-preview">${_renderMarkdown(previewClipped)}${preview.length > 600 ? '<div class="mr-rt-card-more">… 点卡片看全文</div>' : ''}</div>`
-        : '<div class="mr-rt-card-empty">尚无回答</div>';
+      const statusLabel = { idle: '待命', thinking: '思考中', completed: '已答 ✓', timeout: '超时' }[status] || status;
+      let bodyHtml;
+      if (status === 'thinking') {
+        if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
+        const elapsed = Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000);
+        bodyHtml = `<div class="mr-rt-think-vis">
+          <div class="mr-rt-think-bar ${kind}"></div>
+          <div class="mr-rt-think-meta"><span class="mr-rt-think-elapsed">已 ${elapsed}s</span><span>等待回答…</span></div>
+        </div>`;
+      } else {
+        if (status !== 'thinking' && meetingId && !anyThinking) delete _thinkStartTs[meetingId];
+        const previewClipped = preview ? preview.slice(0, 600) : '';
+        bodyHtml = preview
+          ? `<div class="mr-rt-card-preview">${_renderMarkdown(previewClipped)}${preview.length > 600 ? '<div class="mr-rt-card-more">… 点卡片看全文</div>' : ''}</div>`
+          : '<div class="mr-rt-card-empty">尚无回答</div>';
+      }
       const labelDisplay = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[kind];
       const cardCls = ['mr-rt-card', kind];
       if (status === 'thinking') cardCls.push('active');
@@ -201,9 +209,10 @@
           <span class="mr-rt-card-name">${labelDisplay}${summarizerBadge}${privateBadge}</span>
           <span class="mr-rt-status ${status}">${statusLabel}${standbyHint}</span>
         </div>
-        ${previewHtml}
+        ${bodyHtml}
       </div>`);
     }
+    if (!anyThinking && meetingId) delete _thinkStartTs[meetingId];
     return cards.join('');
   }
 
@@ -227,27 +236,98 @@
     </div>`;
   }
 
+  function _renderTurnStepper(turns, currentMode) {
+    if (turns.length === 0) return '';
+    const maxDots = 8;
+    const showDots = turns.slice(-maxDots);
+    const dots = showDots.map(t =>
+      `<span class="mr-rt-step-dot" title="第 ${t.n} 轮 · ${t.mode}"></span>`
+    ).join('<span class="mr-rt-step-line"></span>');
+    const activeDot = currentMode && currentMode !== 'idle'
+      ? '<span class="mr-rt-step-line"></span><span class="mr-rt-step-dot active"></span>'
+      : '';
+    const label = currentMode && currentMode !== 'idle'
+      ? `第 ${turns.length + 1} 轮 · ${{ fanout: '提问中', debate: '辩论中', summary: '综合中' }[currentMode] || currentMode}`
+      : `已 ${turns.length} 轮 · 等待提问`;
+    return `<span class="mr-rt-stepper">${dots}${activeDot}<span class="mr-rt-step-label">${label}</span></span>`;
+  }
+
+  function _suggestedCmd(turns, currentMode) {
+    if (currentMode && currentMode !== 'idle') return '';
+    if (turns.length === 0) return 'ask';
+    const last = turns[turns.length - 1];
+    if (last.mode === 'fanout') return 'debate';
+    if (last.mode === 'debate') return 'summary';
+    return 'ask';
+  }
+
+  function _renderCmdBar(turns, currentMode) {
+    const suggested = _suggestedCmd(turns, currentMode);
+    const inProgress = currentMode && currentMode !== 'idle';
+    const dis = inProgress ? ' disabled' : '';
+    const noDebate = (turns.length < 1 || inProgress) ? ' disabled' : '';
+    const cls = (cmd) => `mr-rt-cmd-btn${suggested === cmd ? ' mr-rt-cmd-suggested' : ''}`;
+    return `<div class="mr-rt-cmd-bar">
+      <button class="${cls('ask')}" data-rt-cmd="ask"${dis}>💬 直接提问 <span class="mr-rt-cmd-hint">三家独立答</span></button>
+      <button class="${cls('debate')}" data-rt-cmd="debate"${noDebate}>⚔ @debate <span class="mr-rt-cmd-hint">互相点评</span></button>
+      <button class="${cls('summary')}" data-rt-cmd="summary"${noDebate}>📋 @summary <span class="mr-rt-cmd-hint">综合总结</span></button>
+      <button class="mr-rt-cmd-btn" data-rt-cmd="private"${dis}>🤫 @私聊 <span class="mr-rt-cmd-hint">单独问一家</span></button>
+    </div>`;
+  }
+
+  function _renderOnboarding(meeting) {
+    const sceneKey = meeting && meeting.scene || 'general';
+    const scene = _scenes.getScene(sceneKey);
+    const examples = (scene && scene.onboardingExamples) || [];
+    const titleText = scene ? scene.name : '圆桌讨论';
+    const exCards = examples.map(ex =>
+      `<div class="mr-rt-ob-card" data-ob-q="${escapeHtml(ex.q)}">
+        <div class="mr-rt-ob-icon">${ex.icon}</div>
+        <div class="mr-rt-ob-title">${escapeHtml(ex.title)}</div>
+        <div class="mr-rt-ob-q">"${escapeHtml(ex.q)}"</div>
+        <div class="mr-rt-ob-hint">${escapeHtml(ex.hint)}</div>
+      </div>`
+    ).join('');
+    return `<div class="mr-rt-onboarding">
+      <div class="mr-rt-ob-head">${scene ? scene.icon : '🎯'} ${escapeHtml(titleText)}已创建</div>
+      <div class="mr-rt-ob-sub">三家 AI（Claude / Gemini / Codex）已就位，等你抛话题</div>
+      <div class="mr-rt-ob-hint-bar">⏱ 首次发送：<strong>约 25s</strong> 冷启动 + OAuth · 后续轮次会快很多</div>
+      <div class="mr-rt-ob-examples">${exCards}</div>
+    </div>`;
+  }
+
   function _renderRtPanelHtml(state, meeting) {
     const subs = _getRtSubInfo(meeting);
     const mode = state.currentMode || 'idle';
-    const modeLabel = { idle: '待命', fanout: '提问中', debate: '辩论中', summary: '综合中' }[mode] || mode;
     const partialBy = state._partialBy || null;
     const cards = _renderRtCards(state, subs, mode, partialBy, meeting);
     const history = _renderRtHistory(state);
-    // 首发提醒：完成过 1 轮后消失
-    const firstRunHint = state.turns.length === 0
-      ? `<div class="mr-rt-firstrun-hint">⏱ <strong>首次发送较慢</strong>（约 25 秒）— 三家 CLI 需要冷启动 + OAuth 验证。后续轮次会快很多。</div>`
-      : '';
     const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
+    const stepper = _renderTurnStepper(state.turns, mode);
+    const cmdBar = _renderCmdBar(state.turns, mode);
+    if (state.turns.length === 0 && mode === 'idle') {
+      return `
+        <div class="mr-rt-track">
+          <div class="mr-rt-track-row">
+            <div class="mr-rt-track-title-grp">
+              <span class="mr-rt-title">${titleText}</span>
+            </div>
+          </div>
+          ${cmdBar}
+        </div>
+        ${_renderOnboarding(meeting)}
+      `;
+    }
     return `
-      <div class="mr-rt-header">
-        <span class="mr-rt-title">${titleText}</span>
-        <span class="mr-rt-meta">
-          <span>已 ${state.turns.length} 轮</span>
-          <span class="mr-rt-mode-tag ${mode}">${escapeHtml(modeLabel)}</span>
-        </span>
+      <div class="mr-rt-track">
+        <div class="mr-rt-track-row">
+          <div class="mr-rt-track-title-grp">
+            <span class="mr-rt-title">${titleText}</span>
+            ${stepper}
+          </div>
+        </div>
+        ${cmdBar}
       </div>
-      ${firstRunHint}
       <div class="mr-rt-cards">${cards}</div>
       ${history}
     `;
@@ -314,6 +394,48 @@
         if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); }
       });
     });
+    panel.querySelectorAll('.mr-rt-cmd-btn[data-rt-cmd]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (btn.hasAttribute('disabled')) return;
+        const cmd = btn.getAttribute('data-rt-cmd');
+        const input = document.getElementById('mr-input-box');
+        if (!input) return;
+        if (cmd === 'ask') { input.focus(); }
+        else if (cmd === 'debate') { input.textContent = '@debate '; input.focus(); _placeCaretAtEnd(input); }
+        else if (cmd === 'summary') { input.textContent = '@summary @claude '; input.focus(); _placeCaretAtEnd(input); }
+        else if (cmd === 'private') { input.textContent = '@claude '; input.focus(); _placeCaretAtEnd(input); }
+      });
+    });
+    const hasThinking = panel.querySelector('.mr-rt-think-elapsed');
+    if (hasThinking && !_thinkTimer) {
+      const mid = meeting.id;
+      _thinkTimer = setInterval(() => {
+        const ts = _thinkStartTs[mid];
+        if (!ts) { clearInterval(_thinkTimer); _thinkTimer = null; return; }
+        const els = document.querySelectorAll('.mr-rt-think-elapsed');
+        if (els.length === 0) { clearInterval(_thinkTimer); _thinkTimer = null; return; }
+        const sec = Math.round((Date.now() - ts) / 1000);
+        els.forEach(el => { el.textContent = `已 ${sec}s`; });
+      }, 1000);
+    } else if (!hasThinking && _thinkTimer) {
+      clearInterval(_thinkTimer); _thinkTimer = null;
+    }
+    panel.querySelectorAll('.mr-rt-ob-card[data-ob-q]').forEach(card => {
+      card.addEventListener('click', () => {
+        const q = card.getAttribute('data-ob-q');
+        const input = document.getElementById('mr-input-box');
+        if (input && q) { input.textContent = q; input.focus(); _placeCaretAtEnd(input); }
+      });
+    });
+  }
+
+  function _placeCaretAtEnd(el) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
   }
 
   // ---- AI 时间线浮层 ----------------------------------------------------

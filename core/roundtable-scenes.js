@@ -177,6 +177,11 @@ const SCENE_REGISTRY = {
     summaryHints: '按讨论话题自适应',
     summaryTitleTag: false,
     dataPackEnabled: false,
+    onboardingExamples: [
+      { icon: '💡', title: '技术辩论', q: '用 Rust 重写 Python CLI 值得吗？', hint: '默认提问 → @debate' },
+      { icon: '🔍', title: '代码评审', q: '看下 core/foo.js，三家各挑 3 个问题', hint: '默认提问 → @summary @claude' },
+      { icon: '🎲', title: '开放讨论', q: 'Anthropic 的 MCP 协议会赢吗？', hint: '默认提问 → 自由展开' },
+    ],
   },
   research: {
     name: '投研圆桌',
@@ -187,6 +192,11 @@ const SCENE_REGISTRY = {
     summaryHints: '仓位/止损/加仓/观察指标',
     summaryTitleTag: true,
     dataPackEnabled: true,
+    onboardingExamples: [
+      { icon: '📈', title: '个股分析', q: '兆易创新 603986 现在能上车吗？', hint: '默认提问 → @debate → @summary' },
+      { icon: '🏭', title: '行业扫描', q: 'AI 芯片板块本周资金面怎么样？', hint: '默认提问 → @summary @claude' },
+      { icon: '⚖️', title: '持仓复盘', q: '帮我复盘昨天的交易，是不是追高了？', hint: '默认提问 → 自由展开' },
+    ],
   },
 };
 
