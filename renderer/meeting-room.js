@@ -16,71 +16,43 @@
   // renderer.js loads before us — its `sessions` and `getOrCreateTerminal`
   // are accessible via the global lexical scope. We access them directly.
 
-  // 两个圆桌模式(general/research)在 UI 渲染上完全一致(卡片+CLI)。
+  // 所有场景(general/research)在 UI 渲染上完全一致(卡片+CLI)。
   // 与 core/meeting-room.js 的 isRoundtableCapableMeeting 语义一致。
   function _isPanelCapableMeeting(m) {
-    return !!(m && (m.researchMode || m.roundtableMode));
+    return !!(m && m.scene);
   }
 
   // --- Roundtable @command parser ---
   // 支持 @debate / @summary @<who> / @all / @<who> 单聊
   function parseRoundtableCommand(text, meeting) {
-    if (!meeting) return { type: 'normal', text, targets: null };
-
-    // Research mode: 三家平等圆桌，独立语法（@debate / @summary @<who> / 默认 fanout）
-    if (meeting.researchMode) {
-      let rest = text.trim();
-      const summaryRe = /^@summary\s+@(claude|gemini|codex)\b\s*/i;
-      const debateRe = /^@debate\b\s*/i;
-      let m;
-      if ((m = rest.match(summaryRe))) {
-        return { type: 'rt-summary', summarizerKind: m[1].toLowerCase(), text: rest.slice(m[0].length) };
-      }
-      if ((m = rest.match(debateRe))) {
-        return { type: 'rt-debate', text: rest.slice(m[0].length) };
-      }
-      return { type: 'rt-fanout', text: rest };
+    if (!meeting || !meeting.scene) return { type: 'normal', text, targets: null };
+    let rest = text.trim();
+    const summaryRe = /^@summary\s+@(claude|gemini|codex)\b\s*/i;
+    const debateRe = /^@debate\b\s*/i;
+    let m;
+    if ((m = rest.match(summaryRe))) {
+      return { type: 'rt-summary', summarizerKind: m[1].toLowerCase(), text: rest.slice(m[0].length) };
     }
-
-    // 通用圆桌：默认 fanout，新增 @<who> 单聊语义
-    if (meeting.roundtableMode) {
-      let rest = text.trim();
-      const summaryRe = /^@summary\s+@(claude|gemini|codex)\b\s*/i;
-      let m;
-      // 注意：`@summary` 必须带 `@<who>` 才会路由到 rt-summary，未带 @<who> 时本 regex 不匹配，
-      // fall through 到下面的 @<who>/@all/纯文本逻辑。结果通常是 rt-fanout，原文照发给三家。
-      // 这是 spec 默认行为；UI 友好提示见后续 Phase 增强。
-      if ((m = rest.match(summaryRe))) {
-        return { type: 'rt-summary', summarizerKind: m[1].toLowerCase(), text: rest.slice(m[0].length) };
-      }
-      const debateRe = /^@debate\b\s*/i;
-      if ((m = rest.match(debateRe))) {
-        return { type: 'rt-debate', text: rest.slice(m[0].length) };
-      }
-      const allRe = /^@all\b\s*/i;
-      if ((m = rest.match(allRe))) {
-        return { type: 'rt-fanout', text: rest.slice(m[0].length) };
-      }
-      // @<who> 单家或多家但非全员 → 私聊
-      const targets = [];
-      const tokenRe = /^@(claude|gemini|codex)\b\s*/i;
-      while (true) {
-        const t = rest.match(tokenRe);
-        if (!t) break;
-        const tok = t[1].toLowerCase();
-        if (!targets.includes(tok)) targets.push(tok);
-        rest = rest.slice(t[0].length);
-      }
-      if (targets.length === 3) {
-        return { type: 'rt-fanout', text: rest };
-      }
-      if (targets.length > 0) {
-        return { type: 'rt-private', targetKinds: targets, text: rest };
-      }
-      return { type: 'rt-fanout', text: rest };
+    if ((m = rest.match(debateRe))) {
+      return { type: 'rt-debate', text: rest.slice(m[0].length) };
     }
-
-    return { type: 'normal', text, targets: null };
+    const allRe = /^@all\b\s*/i;
+    if ((m = rest.match(allRe))) {
+      return { type: 'rt-fanout', text: rest.slice(m[0].length) };
+    }
+    // @<who> 私聊
+    const targets = [];
+    const tokenRe = /^@(claude|gemini|codex)\b\s*/i;
+    while (true) {
+      const t = rest.match(tokenRe);
+      if (!t) break;
+      targets.push(t[1].toLowerCase());
+      rest = rest.slice(t[0].length);
+    }
+    if (targets.length > 0 && targets.length < 3) {
+      return { type: 'rt-private', targetKinds: targets, text: rest };
+    }
+    return { type: 'rt-fanout', text: rest };
   }
 
   // --- Roundtable Mode: 持久化圆桌面板（始终显示当前状态 + 历史）---
@@ -111,12 +83,11 @@
 
   function _renderModeToggle(meeting) {
     if (!meeting) return '';
-    const isRoundtable = !!meeting.roundtableMode;
-    const isResearch = !!meeting.researchMode;
+    const current = meeting.scene || 'general';
     return `
-      <div class="mr-mode-toggle" role="radiogroup" aria-label="会议模式">
-        <button type="button" class="mr-mode-btn ${isRoundtable ? 'active' : ''}" data-mode="roundtable" title="通用圆桌：三家平等讨论">圆桌</button>
-        <button type="button" class="mr-mode-btn ${isResearch ? 'active' : ''}" data-mode="research" title="投研圆桌：A 股专题">投研</button>
+      <div class="mr-mode-toggle" role="radiogroup" aria-label="会议场景">
+        <button type="button" class="mr-mode-btn ${current === 'general' ? 'active' : ''}" data-scene="general" title="通用圆桌：三家平等讨论">圆桌</button>
+        <button type="button" class="mr-mode-btn ${current === 'research' ? 'active' : ''}" data-scene="research" title="投研圆桌：A 股专题">投研</button>
       </div>
     `;
   }
@@ -125,28 +96,11 @@
     if (!rootEl || !meeting) return;
     rootEl.querySelectorAll('.mr-mode-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
-        const mode = btn.getAttribute('data-mode');
-        if (!mode) return;
+        const scene = btn.getAttribute('data-scene');
+        if (!scene || scene === meeting.scene) return;
         try {
-          // 切到非 roundtable 时，先调 toggle-roundtable-mode 把 roundtableMode 标志置 false。
-          // 注意：enabled=false 只切状态字段，不清理文件——prompt/covenant/private 文件统一在
-          // close-meeting 时清理，避免用户切换模式查看其他视图时丢私聊历史。
-          if (meeting.roundtableMode && mode !== 'roundtable') {
-            try {
-              await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: false });
-            } catch (e) {
-              console.warn('[mode-toggle] roundtable cleanup failed (continuing anyway):', e.message);
-            }
-          }
-          if (mode === 'roundtable') {
-            // 通用圆桌：走 toggle-roundtable-mode（含 prompt 文件写盘 + mutex 互斥）
-            const res = await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: true });
-            if (res && !res.ok) console.warn('[mode-toggle] roundtable failed:', res.error);
-          } else if (mode === 'research') {
-            const covenantText = (meeting.covenantText && typeof meeting.covenantText === 'string') ? meeting.covenantText : '';
-            const ok = await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { researchMode: true, covenantText } });
-            if (!ok) console.warn('[mode-toggle] research failed: update-meeting-sync returned falsy');
-          }
+          const res = await ipcRenderer.invoke('switch-scene', { meetingId: meeting.id, scene });
+          if (res && !res.ok) console.warn('[mode-toggle] switch-scene failed:', res.error);
         } catch (e) {
           console.warn('[mode-toggle] click failed:', e.message);
         }
@@ -284,7 +238,7 @@
     const firstRunHint = state.turns.length === 0
       ? `<div class="mr-rt-firstrun-hint">⏱ <strong>首次发送较慢</strong>（约 25 秒）— 三家 CLI 需要冷启动 + OAuth 验证。后续轮次会快很多。</div>`
       : '';
-    const titleText = meeting && meeting.researchMode ? '投研圆桌' : '圆桌讨论';
+    const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
     return `
       <div class="mr-rt-header">
         <span class="mr-rt-title">${titleText}</span>
@@ -410,9 +364,7 @@
     }).join('');
 
     // 私聊 tab：放最右，data-tab-idx = turnsWithAns.length 作为哨兵
-    // C1：仅在通用圆桌（roundtableMode）下展示。投研圆桌（researchMode）无私聊概念，
-    // roundtable-private:list 不为 research 路由记录数据，展示空 tab 会破坏现有投研 UX。
-    const showsPrivate = !!(meeting && meeting.roundtableMode);
+    const showsPrivate = !!(meeting && meeting.scene);
     const privateTabIdx = turnsWithAns.length;
     const privateTabHtml = showsPrivate ? `<button type="button" class="mr-rt-tl-tab private" data-tab-idx="${privateTabIdx}" title="${escapeHtml(headerLabel)} 的私聊历史">
       <span class="mr-rt-tl-tab-turn">💬 私聊</span>
@@ -683,13 +635,7 @@
         if (term) applyModeContainerVisibility(updated, term);
         const prevSubs = prev ? prev.subSessions.join(',') : '';
         const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
-        // 模式切换需强制重建终端 DOM：roundtableMode 时 renderTerminals 会清空 #mr-terminals，
-        // 切回 research 时 a0561e3 的可见性切换只能 un-hide 容器但内部仍是空的，
-        // 必须 force re-render 才能恢复 xterm 实例。
-        const modeChanged = prev && (
-          (prev.roundtableMode || false) !== (updated.roundtableMode || false) ||
-          (prev.researchMode || false) !== (updated.researchMode || false)
-        );
+        const modeChanged = prev && (prev.scene !== updated.scene);
         if (prevSubs !== newSubs || modeChanged) {
           renderTerminals(updated);
           setupInput(updated);
@@ -864,13 +810,7 @@
 
   function applyModeContainerVisibility(meeting, container) {
     if (!container) return;
-    // 通用圆桌:卡片+CLI 是全部 UI,隐藏 xterm 容器。
-    // 投研圆桌:保持 xterm + panel 双视图(C1 红线,用户最满意的形态,不动)。
-    if (meeting && meeting.roundtableMode) {
-      container.classList.add('mr-terminals-hidden');
-    } else {
-      container.classList.remove('mr-terminals-hidden');
-    }
+    container.classList.remove('mr-terminals-hidden');
   }
 
   function renderTerminals(meeting) {
@@ -883,12 +823,6 @@
     }
     container.innerHTML = '';
     applyModeContainerVisibility(meeting, container);
-    // 通用圆桌:卡片+CLI 由 refreshRoundtablePanel 渲染,xterm 不渲染。
-    // 投研圆桌:保留 xterm 渲染(C1 不动)。
-    if (meeting && meeting.roundtableMode) {
-      subTerminals = {};
-      return;
-    }
     container.className = 'mr-terminals focus-mode';
     subTerminals = {};
     renderFocusMode(meeting, container);
@@ -1157,11 +1091,6 @@
   function setLayout(meetingId, layout) {
     const meeting = meetingData[meetingId];
     if (!meeting) return;
-    // 仅通用圆桌阻断 layout 切换；researchMode 保持原行为（C1）
-    if (meeting.roundtableMode) {
-      console.warn('[meeting-room] setLayout called in roundtable mode — ignored');
-      return;
-    }
     meeting.layout = layout;
     if (layout === 'focus' && !meeting.focusedSub) {
       meeting.focusedSub = meeting.subSessions[0] || null;
@@ -1235,11 +1164,9 @@
     if (!inputBox || !sendBtn) return;
 
     inputBox.textContent = '';
-    inputBox.dataset.placeholder = meeting.researchMode
-      ? '输入投研问题，回车发送 → 三家本色独立回答（@debate / @summary @<who> 也可继续手输）'
-      : (meeting.roundtableMode
-        ? '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who> / @<who> 单聊'
-        : '输入消息...');
+    inputBox.dataset.placeholder = meeting.scene
+      ? '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who> / @<who> 单聊'
+      : '输入消息...';
 
     // 两模式(通用/投研)统一隐藏目标选择(路由由 fanout/debate/summary/private/@command 决定)。
     if (targetSelect) {
@@ -1287,9 +1214,7 @@
       const mid = activeMeetingId;
       const m = meetingData[mid];
       if (!m) return;
-      // researchMode / roundtableMode 下 sendTarget 由 fanout/debate/summary/private 路由决定，不依赖隐藏的 select
-      // （select 隐藏后 value 是 ''，不能让它把 m.sendTarget 覆盖成空）
-      if (!m.researchMode && !m.roundtableMode) {
+      if (!m.scene) {
         const sel = document.getElementById('mr-input-target');
         if (sel) m.sendTarget = sel.value;
       } else {
@@ -1314,8 +1239,7 @@
 
     // --- Research Mode routing 优先 ---
     // 路由完全由 fanout/debate/summary 决定，不依赖 sendTarget/validTargets。
-    // 必须在 validTargets 检查前判定，否则 researchMode 下 sendTarget = 'all' / subSessions 为空时会被拦掉。
-    if (current.researchMode || current.roundtableMode) {
+    if (current.scene) {
       const cmd = parseRoundtableCommand(text, current);
       // 公共轮次：fanout / debate / summary 走 orchestrator
       if (cmd.type === 'rt-fanout' || cmd.type === 'rt-debate' || cmd.type === 'rt-summary') {

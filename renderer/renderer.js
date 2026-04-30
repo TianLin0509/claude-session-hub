@@ -1599,61 +1599,38 @@ function closeResumeModal() {
 }
 
 // --- Create Meeting (mode-driven, no modal) ---
-// +号菜单的两个会议入口（通用/投研）直接调用 createMeetingByMode
+// +号菜单的会议入口直接调用 createMeetingByMode
 // 不弹对话框、不问成员、不问公约——成员默认 Claude+Gemini+Codex 三家全开,公约套预设。
 async function createMeetingByMode(mode) {
   let meeting;
   try {
-    meeting = await ipcRenderer.invoke('create-meeting', { mode });
+    meeting = await ipcRenderer.invoke('create-meeting', { mode: mode || 'general' });
   } catch (e) {
     console.error('[create-meeting] failed:', e.message);
     return;
   }
   if (!meeting) return;
 
-  if (mode === 'research') {
-    let covenantText = '';
-    try {
-      covenantText = await ipcRenderer.invoke('get-research-covenant-template');
-    } catch (e) {
-      console.warn('[create-meeting] research covenant template fetch failed:', e.message);
-    }
-    try {
-      await ipcRenderer.invoke('update-meeting-sync', {
-        meetingId: meeting.id,
-        fields: { researchMode: true, covenantText: covenantText || '' },
-      });
-    } catch (e) {
-      console.error('[create-meeting] research mode set failed:', e.message);
-    }
-    meeting.researchMode = true;
-    meeting.roundtableMode = false;
-    meeting.covenantText = covenantText || '';
-  } else {
-    // 'general' = 通用圆桌：toggle-roundtable-mode 触发 prompt/covenant md 文件落盘
-    try {
-      const res = await ipcRenderer.invoke('toggle-roundtable-mode', {
-        meetingId: meeting.id,
-        enabled: true,
-      });
-      if (res && res.meeting) Object.assign(meeting, res.meeting);
-    } catch (e) {
-      console.error('[create-meeting] general roundtable toggle failed:', e.message);
-    }
+  // 通过 switch-scene 写 prompt/covenant 文件
+  try {
+    const res = await ipcRenderer.invoke('switch-scene', {
+      meetingId: meeting.id,
+      scene: meeting.scene || 'general',
+    });
+    if (res && res.meeting) Object.assign(meeting, res.meeting);
+  } catch (e) {
+    console.error('[create-meeting] switch-scene failed:', e.message);
   }
-  meetings[meeting.id] = meeting;
 
+  meetings[meeting.id] = meeting;
   for (const kind of ['claude', 'gemini', 'codex']) {
     try {
       const result = await ipcRenderer.invoke('add-meeting-sub', { meetingId: meeting.id, kind });
-      if (result && result.meeting) {
-        meetings[meeting.id] = result.meeting;
-      }
+      if (result && result.meeting) meetings[meeting.id] = result.meeting;
     } catch (e) {
       console.error(`[create-meeting] add-sub ${kind} failed:`, e.message);
     }
   }
-
   selectMeeting(meeting.id);
   renderSessionList();
   schedulePersist();
