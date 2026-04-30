@@ -268,6 +268,10 @@ class CodexTap extends EventEmitter {
     const bound = this._bound.get(hubSessionId);
     if (bound) {
       try { bound.tail?.close(); } catch {}
+      // P2-1 清理 task_complete debounce 的 pending timer，防 memory leak / unhandled emit
+      if (bound._pendingEmitTimer) {
+        try { clearTimeout(bound._pendingEmitTimer); } catch {}
+      }
       this._bound.delete(hubSessionId);
     }
     if (this._pending.size === 0 && this._bound.size === 0) {
@@ -385,24 +389,59 @@ class CodexTap extends EventEmitter {
     const codexSid = extractCodexSidFromRolloutPath(rolloutPath);
     this.emit('session-bound', { hubSessionId, kind: 'codex', codexSid, rolloutPath });
 
+    // Stage 2 P2-1：Codex 多 turn 加固 — task_complete 后 3s debounce 防误判。
+    //   场景：codex 一次 prompt 内可能跑多个 task（think → search → think 再 task_complete），
+    //   每个 task 都会写一条 task_complete 事件。我们要的是"全部 task 完成后的最终消息"。
+    //   策略：task_complete 触发后启动 3s timer 暂存 pendingText；
+    //         若 3s 内观察到新的 task_started 事件（明确表示又起新 task），
+    //         取消 pending 并丢弃旧 text，等下一次 task_complete；
+    //         3s 静默后才真 emit 'turn-complete'。
+    const TASK_COMPLETE_DEBOUNCE_MS = 3000;
     const onLine = (obj) => {
       if (obj?.type !== 'event_msg' || !obj.payload) return;
-      if (obj.payload.type === 'task_complete' && typeof obj.payload.last_agent_message === 'string') {
+      const entry = this._bound.get(hubSessionId);
+      if (!entry) return;
+      const eventType = obj.payload.type;
+
+      // 新 task 开始 → 取消 pending emit（视为"还在进行"，丢弃上一次的 pendingText）
+      if (eventType === 'task_started' && entry._pendingEmitTimer) {
+        clearTimeout(entry._pendingEmitTimer);
+        entry._pendingEmitTimer = null;
+        entry._pendingText = null;
+        entry._pendingDurationMs = null;
+      }
+
+      if (eventType === 'task_complete' && typeof obj.payload.last_agent_message === 'string') {
         const text = obj.payload.last_agent_message.trim();
         if (!text) return;
-        const entry = this._bound.get(hubSessionId);
-        if (entry) entry.lastText = text;
-        this.emit('turn-complete', {
-          hubSessionId,
-          text,
-          completedAt: Date.now(),
-          durationMs: obj.payload.duration_ms,
-        });
+        // 重置 debounce timer：每次新 task_complete 都重新计时（最后一次 task_complete 的 text 为准）
+        if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
+        entry._pendingText = text;
+        entry._pendingDurationMs = obj.payload.duration_ms;
+        entry._pendingEmitTimer = setTimeout(() => {
+          entry._pendingEmitTimer = null;
+          const finalText = entry._pendingText;
+          const finalDuration = entry._pendingDurationMs;
+          entry._pendingText = null;
+          entry._pendingDurationMs = null;
+          if (!finalText) return;
+          entry.lastText = finalText;
+          this.emit('turn-complete', {
+            hubSessionId,
+            text: finalText,
+            completedAt: Date.now(),
+            durationMs: finalDuration,
+            signalSource: 'task_complete',
+          });
+        }, TASK_COMPLETE_DEBOUNCE_MS);
       }
     };
 
     const tail = new JsonlTail(rolloutPath, onLine);
-    this._bound.set(hubSessionId, { rolloutPath, tail, lastText: null });
+    this._bound.set(hubSessionId, {
+      rolloutPath, tail, lastText: null,
+      _pendingEmitTimer: null, _pendingText: null, _pendingDurationMs: null,
+    });
     await tail.start();
   }
 }
