@@ -673,6 +673,12 @@ const { createTurnCompletionWatcher } = require('./core/turn-completion-watcher.
 function _rtWaitTurnComplete(sid, label, opts = {}) {
   const { meetingId, mode, turnNum, onPartial } = opts;
 
+  // Card redesign（2026-05-01）：记录本轮起始时刻 + 清除上轮 token 缓存。
+  //   settle 后注入 result.thinkSec（0.1s 精度）+ result.tokens（仅 Gemini 有）。
+  //   卡片 row3/row4 用这两个字段做"本轮"统计 + orchestrator 做"累计"累加。
+  const _startTs = Date.now();
+  try { transcriptTap.clearLastTokens(sid); } catch {}
+
   const watcher = createTurnCompletionWatcher({
     transcriptTap,
     hubSessionId: sid,
@@ -712,6 +718,14 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
     clearTimeout(hardTimeout);
     if (streamTimer) clearInterval(streamTimer);
     _activeWatchers.delete(sid);
+
+    // Card redesign（2026-05-01）：注入本轮统计字段供 orchestrator 累加 + 卡片渲染。
+    //   thinkSec 精度 0.1s（Math.round((..)*10)/10）；tokens 仅 Gemini 有，其他家 null。
+    const elapsedMs = Date.now() - _startTs;
+    result.thinkSec = Math.round(elapsedMs / 100) / 10;
+    try { result.tokens = transcriptTap.getLastTokens(sid) || null; }
+    catch { result.tokens = null; }
+
     if (typeof onPartial === 'function') {
       try { onPartial(result); } catch (e) { console.warn('[roundtable] onPartial error:', e.message); }
     }

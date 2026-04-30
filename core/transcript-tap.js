@@ -492,6 +492,27 @@ class GeminiTap extends EventEmitter {
     return this._bound.get(hubSessionId)?.lastText || null;
   }
 
+  // Card redesign（2026-05-01）— 最新 token 计数缓存：
+  //   GeminiTap onLine 看到 obj.tokens.total 时调 this._recordTokens(sid, obj.tokens) 缓存。
+  //   _rtWaitTurnComplete 在 watcher settle 时调 this.getLastTokens(sid) 拿到最新值，
+  //   附到 result.tokens 上传给 renderer 卡片 row4 显示"本轮 X tokens · 累计 Y tokens"。
+  _recordTokens(hubSessionId, tokens) {
+    if (!hubSessionId || !tokens || typeof tokens.total !== 'number') return;
+    const entry = this._bound.get(hubSessionId);
+    if (entry) entry.lastTokens = { ...tokens };
+  }
+
+  getLastTokens(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    return entry?.lastTokens || null;
+  }
+
+  // 每轮发新 prompt 前清空，避免上一轮的 token 数据被本轮用作"本轮"统计
+  clearLastTokens(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    if (entry) entry.lastTokens = null;
+  }
+
   // Stage 2 容错升级（2026-05-01）— 手动提取兜底：
   //   当 Gemini 永不 emit L1/L3 完成信号时（OAuth 异常 / 限流 / 卡死），
   //   用户在 UI 点"一键提取"会调本方法，直接读 JSONL 拼接 sincePromptTs 之后的所有
@@ -660,7 +681,13 @@ class GeminiTap extends EventEmitter {
         // L3 — tokens.total 启发式（保留向后兼容；慢响应/限流时永不写入）
         if (obj?.type === 'gemini' && obj.tokens && obj.tokens.total != null
             && typeof obj.content === 'string' && obj.content.trim().length > 0) {
+          // Card redesign（2026-05-01）：缓存最新 token 计数，让 _rtWaitTurnComplete 在 settle
+          //   时把数据透传给 watcher.wait() 的 result.tokens。卡片 row4 显示"本轮 X tokens"。
+          this._recordTokens(hubSessionId, obj.tokens);
           emitIfComplete(obj.content, { signalSource: 'tokens_total' });
+        } else if (obj?.type === 'gemini' && obj.tokens && obj.tokens.total != null) {
+          // 仅缓存 token，不触发 emit（content 为空时 token 信息仍有用：streaming 中实时更新）
+          this._recordTokens(hubSessionId, obj.tokens);
         }
       };
       const tail = new JsonlTail(sessionPath, onLine);
@@ -744,6 +771,17 @@ class TranscriptTap extends EventEmitter {
   //   transcriptTap.extractLatestGeminiTurn(...) 入口，不必感知 _gemini 子实例。
   async extractLatestGeminiTurn(hubSessionId, sincePromptTs) {
     return this._gemini.extractLatestGeminiTurn(hubSessionId, sincePromptTs);
+  }
+
+  // Card redesign（2026-05-01）— 最新 token 计数代理。
+  //   目前仅 Gemini 提供 obj.tokens.total（Claude/Codex 无此通道），
+  //   外部调用方收到 null 时按"未上报"处理（卡片 row4 显示 "-"）。
+  getLastTokens(hubSessionId) {
+    return this._gemini.getLastTokens(hubSessionId);
+  }
+
+  clearLastTokens(hubSessionId) {
+    this._gemini.clearLastTokens(hubSessionId);
   }
 
   async notifyClaudeStop(hubSessionId, transcriptPath) {
