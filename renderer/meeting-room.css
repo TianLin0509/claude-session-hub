@@ -1267,3 +1267,123 @@
   background: rgba(91, 141, 239, 0.1);
   color: var(--ink, #d8dee9);
 }
+
+/* ========================================================================
+   Stage 2 容错升级（2026-05-01）—— 逃生工具栏 + 角标 + 软提醒 banner
+   ======================================================================== */
+
+/* 卡片右上角角标：手动提取（蓝）/ 缺席（灰） */
+.mr-ft { position: relative; }
+.mr-ft-corner-badge {
+  position: absolute;
+  top: 4px;
+  right: 28px; /* 给 .mr-ft-expand 让位（expand 在 right: 6px 左右） */
+  padding: 1px 6px;
+  font-size: 9px;
+  line-height: 1.4;
+  border-radius: 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  user-select: none;
+  z-index: 2;
+}
+.mr-ft-corner-badge.manual {
+  background: rgba(91, 141, 239, 0.18);
+  color: #79b8ff;
+  border: 1px solid rgba(91, 141, 239, 0.4);
+}
+.mr-ft-corner-badge.absent {
+  background: rgba(139, 148, 158, 0.18);
+  color: #b1bac4;
+  border: 1px solid rgba(139, 148, 158, 0.35);
+}
+
+/* 状态文本新值（待 statusLabel 渲染时 mr-ft-status.<class>） */
+.mr-ft-status.soft_alert {
+  color: #f0843a;
+  animation: ft-pulse 1.5s ease-in-out infinite;
+}
+.mr-ft-status.errored,
+.mr-ft-status.transport_lost { color: #f85149; }
+.mr-ft-status.manual_extracted { color: #79b8ff; }
+.mr-ft-status.absent,
+.mr-ft-status.interrupted { color: #b1bac4; }
+@keyframes ft-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* 卡片底部逃生工具栏 */
+.mr-ft-escape-bar {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px 8px;
+  margin-top: 4px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.06);
+}
+.mr-ft-escape-btn {
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 11px;
+  line-height: 1.3;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary, #8b949e);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.mr-ft-escape-btn:hover:not([disabled]) {
+  background: rgba(91, 141, 239, 0.1);
+  color: var(--text-primary, #c9d1d9);
+  border-color: rgba(91, 141, 239, 0.3);
+}
+.mr-ft-escape-btn[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 软提醒 banner（黄底，非阻塞） */
+.mr-rt-soft-alert-banner {
+  display: none;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 0 8px;
+  padding: 8px 12px;
+  background: rgba(240, 132, 58, 0.10);
+  border: 1px solid rgba(240, 132, 58, 0.35);
+  border-radius: 6px;
+  color: var(--text-primary, #c9d1d9);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mr-rt-soft-alert-banner.urgent {
+  background: rgba(248, 81, 73, 0.10);
+  border-color: rgba(248, 81, 73, 0.4);
+}
+.mr-rt-soft-alert-msg { flex: 1; }
+.mr-rt-soft-alert-msg strong { color: #f0843a; }
+.mr-rt-soft-alert-banner.urgent .mr-rt-soft-alert-msg strong { color: #f85149; }
+.mr-rt-soft-alert-hint {
+  margin-left: 6px;
+  color: var(--text-secondary, #8b949e);
+  font-size: 11px;
+}
+.mr-rt-soft-alert-close {
+  flex-shrink: 0;
+  width: 22px; height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.mr-rt-soft-alert-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary, #c9d1d9);
+}

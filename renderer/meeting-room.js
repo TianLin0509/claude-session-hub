@@ -64,6 +64,8 @@
   const _privateCountCache = {};
   const _thinkStartTs = {};
   let _thinkTimer = null;
+  // Stage 2 容错升级：每轮 prompt 发送时间戳（用于 manual-extract IPC 的 sincePromptTs 参数）
+  const _rtTurnStartTs = {};
 
   // markdown 渲染（用项目已有的 marked + DOMPurify）
   let _markedCache = null;
@@ -195,7 +197,22 @@
       const ctxCls = _ftCtxClass(ctxPct);
       const labelDisplay = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[kind];
 
-      const statusLabel = { idle: '待命', initializing: '创建中…', thinking: '思考中', streaming: '输出中', completed: '已答 ✓', timeout: '超时' }[status] || status;
+      // Stage 2 容错升级：状态机扩展（manual_extracted / absent / soft_alert / errored / interrupted / transport_lost）
+      // 状态来源：partial.status（后端 watcher 设置）+ 'roundtable-soft-alert' IPC 注入 status='soft_alert'
+      const statusLabel = {
+        idle: '待命',
+        initializing: '创建中…',
+        thinking: '思考中',
+        streaming: '输出中',
+        completed: '已答 ✓',
+        timeout: '超时',           // 老路径兼容（commit 2 已改 watcher，此值不再产生）
+        manual_extracted: '已答 ✓ 手动',
+        absent: '本轮缺席',
+        soft_alert: '等待中…',
+        errored: '错误',
+        interrupted: '已中断',
+        transport_lost: '连接断开',
+      }[status] || status;
       const tabState = _tabState[sub.sid] || 'idle';
       const newBadge = tabState === 'new-output' && !isActive ? '<span class="mr-ft-new">NEW</span>' : '';
 
@@ -227,14 +244,30 @@
     const modelBadge = modelName ? `<span class="mr-ft-model ${kind}">${escapeHtml(modelName)}</span>` : '';
     const ctxBadge = ctxPct !== null ? `<span class="mr-ft-ctx ${ctxCls}">Ctx ${ctxPct}%</span>` : '';
     const elapsedHtml = elapsed ? `<span class="mr-ft-elapsed mr-rt-think-elapsed">${elapsed}</span>` : '';
+
+    // Stage 2 容错升级：角标（绝对定位卡片右上角）—— 区分手动提取 / 缺席态
+    let cornerBadge = '';
+    if (statusCls === 'manual_extracted') cornerBadge = '<span class="mr-ft-corner-badge manual">手动</span>';
+    else if (statusCls === 'absent') cornerBadge = '<span class="mr-ft-corner-badge absent">缺席</span>';
+
+    // Stage 2 容错升级：逃生工具栏（条件渲染）—— 等待中或软提醒时显示，让用户能绕过完成检测
+    // active 状态：thinking / streaming / soft_alert（等待中）/ submitted（不在当前枚举里，预留）
+    const isWaitingState = statusCls === 'thinking' || statusCls === 'streaming' || statusCls === 'soft_alert';
+    const escapeBar = isWaitingState ? `
+      <div class="mr-ft-escape-bar">
+        <button class="mr-ft-escape-btn" data-rt-escape="extract" data-rt-sid="${sid}" data-rt-kind="${kind}" title="从 transcript 直读拼接（Gemini 卡死时绕过完成检测）">一键提取</button>
+        <button class="mr-ft-escape-btn" data-rt-escape="skip" data-rt-sid="${sid}" data-rt-kind="${kind}" title="本轮跳过这家，下游 prompt 不引用">跳过</button>
+        <button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新发送 prompt（P0.5 实现中，暂未启用）" disabled>重发</button>
+      </div>` : '';
+
     return `<div class="${cls.join(' ')}" data-ft-sid="${sid}" data-ft-kind="${kind}">
-      <button class="mr-ft-expand" data-ft-expand-sid="${sid}" data-ft-expand-kind="${kind}" title="展开详细回答">↗</button>
+      <button class="mr-ft-expand" data-ft-expand-sid="${sid}" data-ft-expand-kind="${kind}" title="展开详细回答">↗</button>${cornerBadge}
       <div class="mr-ft-row1">
         <span class="mr-ft-name ${kind}">${name}</span>
         <span class="mr-ft-status ${statusCls}">${statusLabel}</span>${newBadge}${elapsedHtml}
       </div>
       <div class="mr-ft-row2">${modelBadge}${ctxBadge}</div>
-      ${row3}
+      ${row3}${escapeBar}
     </div>`;
   }
 
@@ -283,9 +316,21 @@
     return 'ask';
   }
 
-  function _renderCmdBar(turns, currentMode) {
+  // Stage 2 容错升级：当所有参与者都 settled（completed/manual_extracted/absent/errored/interrupted）
+  // 即使后端 currentMode 仍为非 idle（在写持久化），UI 也允许用户继续推进，避免 100% 等待。
+  const _SETTLED_STATUSES = new Set(['completed', 'manual_extracted', 'absent', 'errored', 'interrupted']);
+  function _allParticipantsSettled(partialBy) {
+    if (!partialBy) return false;
+    const sids = Object.keys(partialBy);
+    if (sids.length === 0) return false;
+    return sids.every(sid => _SETTLED_STATUSES.has(partialBy[sid] && partialBy[sid].status));
+  }
+
+  function _renderCmdBar(turns, currentMode, partialBy) {
     const suggested = _suggestedCmd(turns, currentMode);
-    const inProgress = currentMode && currentMode !== 'idle';
+    const rawInProgress = currentMode && currentMode !== 'idle';
+    // effectiveInProgress：考虑 partialBy 中各家 settle 状态——如果都 settled 就视为已结束
+    const inProgress = rawInProgress && !_allParticipantsSettled(partialBy);
     const dis = inProgress ? ' disabled' : '';
     const noDebate = (turns.length < 1 || inProgress) ? ' disabled' : '';
     const cls = (cmd) => `mr-rt-cmd-btn${suggested === cmd ? ' mr-rt-cmd-suggested' : ''}`;
@@ -326,8 +371,10 @@
     const history = _renderRtHistory(state);
     const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
     const stepper = _renderTurnStepper(state.turns, mode);
-    const cmdBar = _renderCmdBar(state.turns, mode);
+    const cmdBar = _renderCmdBar(state.turns, mode, partialBy);
     const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
+    // Stage 2 容错升级：软提醒 banner 容器（按需显示，详见 'roundtable-soft-alert' IPC 监听）
+    const softBanner = `<div id="mr-rt-soft-alert-banner" class="mr-rt-soft-alert-banner" style="display:none"></div>`;
     return `
       <div class="mr-rt-track">
         <div class="mr-rt-track-row">
@@ -338,6 +385,7 @@
           ${cmdBar}
         </div>
       </div>
+      ${softBanner}
       ${fusedTabs}
       ${onboarding}
       ${history}
@@ -441,6 +489,57 @@
         if (input && q) { input.textContent = q; input.focus(); _placeCaretAtEnd(input); }
       });
     });
+
+    // Stage 2 容错升级：逃生工具栏按钮（提取/跳过/重发）
+    panel.querySelectorAll('.mr-ft-escape-btn[data-rt-escape]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (btn.hasAttribute('disabled')) return;
+        const action = btn.getAttribute('data-rt-escape');
+        const sid = btn.getAttribute('data-rt-sid');
+        const kind = btn.getAttribute('data-rt-kind');
+        if (!sid) return;
+        // 防重入：临时 disable + 操作期 spinner
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = '...';
+        try {
+          if (action === 'extract') {
+            const r = await ipcRenderer.invoke('roundtable-manual-extract', {
+              meetingId: meeting.id, sid, sincePromptTs: _rtTurnStartTs[meeting.id] || 0,
+            });
+            if (!r || !r.ok) {
+              console.warn(`[rt-escape] extract failed: ${r?.reason} (${r?.detail || ''})`);
+              alert(`提取失败：${r?.reason || 'unknown'}\n${r?.detail || ''}`);
+            } else {
+              console.log(`[rt-escape] extract ok: ${kind} got ${r.lineCount} lines (${r.text.length} chars)`);
+            }
+          } else if (action === 'skip') {
+            const r = await ipcRenderer.invoke('roundtable-skip-participant', { meetingId: meeting.id, sid });
+            if (!r || !r.ok) console.warn(`[rt-escape] skip failed: ${r?.reason}`);
+          } else if (action === 'resend') {
+            const r = await ipcRenderer.invoke('roundtable-resend-participant', { meetingId: meeting.id, sid });
+            alert(r?.detail || '重发功能尚未实现（P0.5 计划）');
+          }
+        } catch (err) {
+          console.error(`[rt-escape] ${action} threw:`, err);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = oldText;
+        }
+      });
+    });
+
+    // 软提醒 banner 关闭按钮
+    const banner = panel.querySelector('#mr-rt-soft-alert-banner');
+    if (banner) {
+      banner.querySelectorAll('[data-rt-banner-close]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          banner.style.display = 'none';
+          banner.innerHTML = '';
+        });
+      });
+    }
   }
 
   function _placeCaretAtEnd(el) {
@@ -594,6 +693,8 @@
   // 投研圆桌触发器：按钮/输入框统一入口。立即给 UI pending 反馈，再异步 invoke IPC。
   function triggerRoundtable(meeting, mode, opts = {}) {
     const cached = _rtPanelState[meeting.id];
+    // Stage 2 容错升级：记录本轮 prompt 发送时间戳，逃生工具栏的 manual-extract 用此过滤 JSONL
+    _rtTurnStartTs[meeting.id] = Date.now();
     // 立即写本地乐观状态 + 标 _rtOptimisticTurn（IPC 完成后清掉）
     _rtOptimisticTurn[meeting.id] = {
       mode,
@@ -697,6 +798,43 @@
     const panel = _ensureRtPanel();
     panel.innerHTML = _renderRtPanelHtml(cached, meeting);
     _bindRtPanelEvents(panel, meeting);
+  });
+
+  // Stage 2 容错升级：软提醒 banner —— watcher 在 T1=90s/T2=180s 触发，UI 弹非阻塞 banner
+  // 提示用户"还在等"，提供"一键提取/跳过/继续等"操作。永不阻塞按钮（按钮 disabled
+  // 由 _allParticipantsSettled 决定，与本 banner 无关）。
+  ipcRenderer.on('roundtable-soft-alert', (_event, { meetingId, sid, label, level, mode, turnNum }) => {
+    const meeting = meetingData[meetingId];
+    if (!_isPanelCapableMeeting(meeting) || meetingId !== activeMeetingId) return;
+    // 同时把 sid 状态切到 soft_alert，让卡片状态文本变 "等待中…" + 显示逃生工具栏
+    const cached = _rtPanelState[meetingId];
+    if (cached) {
+      if (!cached._partialBy) cached._partialBy = {};
+      const existing = cached._partialBy[sid] || {};
+      cached._partialBy[sid] = { text: existing.text || '', status: 'soft_alert' };
+    }
+    const banner = document.getElementById('mr-rt-soft-alert-banner');
+    if (banner) {
+      const levelLabel = level === 't2' ? '180 秒' : '90 秒';
+      const urgency = level === 't2' ? 'urgent' : '';
+      banner.className = `mr-rt-soft-alert-banner ${urgency}`;
+      banner.innerHTML = `
+        <div class="mr-rt-soft-alert-msg">
+          <strong>${escapeHtml(label || sid.slice(0, 8))}</strong> 已等待 <strong>${levelLabel}</strong>，可能是慢响应/限流/卡死。
+          <span class="mr-rt-soft-alert-hint">用卡片上的"一键提取/跳过"绕过完成检测，或继续等待自然完成。</span>
+        </div>
+        <button class="mr-rt-soft-alert-close" data-rt-banner-close="1" title="关闭提示">×</button>
+      `;
+      banner.style.display = 'flex';
+      banner.querySelectorAll('[data-rt-banner-close]').forEach(b => {
+        b.addEventListener('click', () => { banner.style.display = 'none'; banner.innerHTML = ''; }, { once: true });
+      });
+    }
+    if (cached) {
+      const panel = _ensureRtPanel();
+      panel.innerHTML = _renderRtPanelHtml(cached, meeting);
+      _bindRtPanelEvents(panel, meeting);
+    }
   });
 
   const panelEl = () => document.getElementById('meeting-room-panel');
