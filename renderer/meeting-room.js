@@ -11,6 +11,10 @@
   let subTerminals = {};
   let _markerStatusCache = {};
   let _markerPollTimer = null;
+  // IF-C1（2026-05-01）：CLI ready 状态 cache（per-sid bool），由 cli-ready-status IPC 1s 轮询填充
+  //   驱动 isInitializing 判断（修 P0 阻塞 bug B：原 markerStatus 永远 'none' 导致永久卡"创建中"）
+  let _cliReadyCache = {};
+  let _cliReadyPollTimer = null;
   const _tabState = {};     // { sessionId: 'streaming'|'new-output'|'idle'|'error' }
   const _tabTimers = {};    // { sessionId: silenceTimerId }
 
@@ -193,7 +197,11 @@
       const partial = partialBy ? partialBy[sub.sid] : null;
       const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sub.sid) : null;
       const markerState = _markerStatusCache[sub.sid];
-      const isInitializing = s && markerState !== 'done' && markerState !== 'streaming';
+      // IF-C1（2026-05-01）：用 _cliReadyCache 替代 markerStatus 判 isInitializing。
+      //   原 markerState 检测 summary marker，AI ready 但无人问过时永远 'none' →
+      //   卡片永久"创建中"卡死（P0 阻塞 bug B）。新方案靠 cli-ready-status IPC 实时
+      //   读 PTY buffer 长度/marker 判断 CLI 真就绪。
+      const isInitializing = s && !_cliReadyCache[sub.sid];
       let status = 'idle';
       let preview = '';
 
@@ -996,6 +1004,8 @@
     renderToolbar(meeting);
     setupInput(meeting);
     startMarkerPoll();
+    // IF-C1：开启 CLI ready 轮询，驱动卡片"创建中→待命"切换
+    startCliReadyPoll();
 
     // 两模式(通用/投研)进入会议室即刷新持久化面板
     if (_isPanelCapableMeeting(meeting)) {
@@ -1010,6 +1020,9 @@
     _inputBound = false;
     stopMarkerPoll();
     _markerStatusCache = {};
+    // IF-C1：关闭轮询并清空 ready cache，下次 openMeeting 重新检测
+    stopCliReadyPoll();
+    _cliReadyCache = {};
     const panel = panelEl();
     if (panel) panel.style.display = 'none';
     const el = terminalsEl();
@@ -1261,6 +1274,50 @@
 
   function stopMarkerPoll() {
     if (_markerPollTimer) { clearInterval(_markerPollTimer); _markerPollTimer = null; }
+  }
+
+  // IF-C1（2026-05-01）— 修 P0 阻塞 bug B：永久卡死"创建中"
+  // 每秒 invoke cli-ready-status IPC 更新 _cliReadyCache，驱动 isInitializing。
+  // 一家 ready 后置 true 不再变（除非会议关闭重置），避免实时切换造成 UI 抖动。
+  function startCliReadyPoll() {
+    if (_cliReadyPollTimer) return;
+    const pollOnce = async () => {
+      if (!activeMeetingId) return;
+      const meeting = meetingData[activeMeetingId];
+      if (!meeting || !Array.isArray(meeting.subSessions)) return;
+      let changed = false;
+      let needRefresh = false;
+      for (const sid of meeting.subSessions) {
+        if (_cliReadyCache[sid]) continue; // 已 ready 不重查
+        try {
+          const ready = await ipcRenderer.invoke('cli-ready-status', sid);
+          if (ready) {
+            _cliReadyCache[sid] = true;
+            changed = true;
+            needRefresh = true;
+          }
+        } catch {}
+      }
+      if (needRefresh && _isPanelCapableMeeting(meeting)) {
+        // 触发 panel 重渲染让 isInitializing 立即生效（卡片切到"待命"）
+        const cached = _rtPanelState[activeMeetingId];
+        if (cached) {
+          const panel = _ensureRtPanel();
+          panel.innerHTML = _renderRtPanelHtml(cached, meeting);
+          _bindRtPanelEvents(panel, meeting);
+        }
+      }
+      // 软提醒 banner（IF-C3 实装后会调），保护性调用——不存在时静默
+      if (changed && typeof _refreshSoftAlert === 'function') {
+        try { _refreshSoftAlert(meeting); } catch {}
+      }
+    };
+    pollOnce(); // 立即跑一次（不等 1s）
+    _cliReadyPollTimer = setInterval(pollOnce, 1000);
+  }
+
+  function stopCliReadyPoll() {
+    if (_cliReadyPollTimer) { clearInterval(_cliReadyPollTimer); _cliReadyPollTimer = null; }
   }
 
   function updateMarkerBadges(meeting) {

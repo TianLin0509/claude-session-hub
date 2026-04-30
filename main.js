@@ -1003,6 +1003,26 @@ ipcMain.handle('marker-status', (_e, sessionId) => {
   return summaryEngine.markerStatus(raw || '', sessionId);
 });
 
+// IF-C1（2026-05-01）— 修复 P0 阻塞 bug B：卡片"创建中"永久卡死。
+//   原 isInitializing 用 markerStatus（检测 summary marker），AI ready 但无人问
+//   过时永远是 'none' → 卡片永远显示"创建中"。本 IPC 复用圆桌发送侧已用的
+//   _RT_READY_MARKERS，按 buffer 长度/marker 判断 CLI 是否真就绪。renderer 每
+//   秒 invoke 一次，缓存到 _cliReadyCache[sid] 驱动 isInitializing 判断。
+ipcMain.handle('cli-ready-status', (_e, sessionId) => {
+  if (!sessionId) return false;
+  const session = sessionManager.getSession(sessionId);
+  if (!session) return false;
+  const kind = session.kind;
+  // 非 agent 类型（powershell 等）默认 ready，避免误判
+  if (kind === 'powershell' || !_RT_READY_MARKERS[kind]) return true;
+  const need = _RT_READY_MARKERS[kind];
+  const buf = sessionManager.getSessionBuffer(sessionId) || '';
+  // 空 markers（Claude/GLM）：buffer 长度 ≥ 1500 视为已 ready
+  if (need.length === 0) return buf.length >= 1500;
+  // 有 markers（Gemini/Codex）：任一 marker 出现视为 ready
+  return need.some(m => buf.includes(m));
+});
+
 ipcMain.handle('get-marker-instruction', () => {
   return summaryEngine.getMarkerInstruction();
 });
