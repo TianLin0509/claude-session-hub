@@ -633,44 +633,69 @@ function _rtExtractStreamingText(sid) {
   return usable.join('\n').trim().slice(-500);
 }
 
-function _rtWaitTurnComplete(sid, label, watchdogMs, onPartial) {
-  return new Promise(resolve => {
-    let settled = false;
-    let streamTimer = null;
-    const stopStreaming = () => { if (streamTimer) { clearInterval(streamTimer); streamTimer = null; } };
+// Stage 2 容错升级（2026-05-01）— 用 turn-completion-watcher 替代老 watchdog 实现
+//
+// 架构变更：
+//   - 老逻辑：内联 transcriptTap.on('turn-complete') + 600s 强制 timeout → 整轮锁死
+//   - 新逻辑：watcher 状态机管理（completed/errored/manual_extracted/absent），
+//            T1=90s/T2=180s 软提醒 banner（不阻塞），用户可点 UI 触发点退出。
+//
+// **过渡期兜底**：UI 逃生工具栏（commit 3）落地前，临时 30min 硬 timeout 防止 turn 永远卡死。
+//   commit 3 完成后，软提醒 + 用户操作能 100% 触发退出，可移除此兜底或调更长。
+const RT_TRANSITIONAL_HARD_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
+
+// 模块级活跃 watcher 注册表：让 IPC handler 能找到当前 turn 中等待的 watcher
+//   key = hubSessionId（每家 sid 同时最多一个 watcher）；value = watcher
+const _activeWatchers = new Map();
+
+const { createTurnCompletionWatcher } = require('./core/turn-completion-watcher.js');
+
+function _rtWaitTurnComplete(sid, label, opts = {}) {
+  const { meetingId, mode, turnNum, onPartial } = opts;
+
+  const watcher = createTurnCompletionWatcher({
+    transcriptTap,
+    hubSessionId: sid,
+    label,
+    onSoftAlert: (level) => {
+      // 软提醒：T1=90s 推一次 banner；T2=180s 升级。永不强制 settle。
+      try {
+        sendToRenderer('roundtable-soft-alert', {
+          meetingId, turnNum, mode, sid, label, level,
+        });
+      } catch {}
+    },
+  });
+  _activeWatchers.set(sid, watcher);
+
+  // streaming partial 流式推送（保留现有体验，每 1500ms 推一次终端实时文本）
+  let streamTimer = null;
+  if (typeof onPartial === 'function') {
+    streamTimer = setInterval(() => {
+      if (watcher.isSettled()) { clearInterval(streamTimer); streamTimer = null; return; }
+      const text = _rtExtractStreamingText(sid);
+      if (text.length > 10) {
+        try { onPartial({ sid, label, status: 'streaming', text }); } catch {}
+      }
+    }, 1500);
+  }
+
+  // 过渡期硬 timeout（commit 3 UI 落地后可移除）
+  const hardTimeout = setTimeout(() => {
+    if (watcher.isSettled()) return;
+    console.warn(`[roundtable] transitional hard timeout (30min) hit for ${label}(${sid.slice(0, 8)}), forcing skip`);
+    watcher.skip();
+  }, RT_TRANSITIONAL_HARD_TIMEOUT_MS);
+  hardTimeout.unref?.();
+
+  return watcher.wait().then(result => {
+    clearTimeout(hardTimeout);
+    if (streamTimer) clearInterval(streamTimer);
+    _activeWatchers.delete(sid);
     if (typeof onPartial === 'function') {
-      streamTimer = setInterval(() => {
-        if (settled) { stopStreaming(); return; }
-        const text = _rtExtractStreamingText(sid);
-        if (text.length > 10) {
-          try { onPartial({ sid, label, status: 'streaming', text }); } catch {}
-        }
-      }, 1500);
+      try { onPartial(result); } catch (e) { console.warn('[roundtable] onPartial error:', e.message); }
     }
-    const handler = (ev) => {
-      if (ev.hubSessionId !== sid || settled) return;
-      settled = true;
-      stopStreaming();
-      transcriptTap.removeListener('turn-complete', handler);
-      clearTimeout(watchdog);
-      const result = { sid, label, status: 'completed', text: ev.text || '' };
-      if (typeof onPartial === 'function') {
-        try { onPartial(result); } catch (e) { console.warn('[roundtable] onPartial error:', e.message); }
-      }
-      resolve(result);
-    };
-    transcriptTap.on('turn-complete', handler);
-    const watchdog = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      stopStreaming();
-      transcriptTap.removeListener('turn-complete', handler);
-      const result = { sid, label, status: 'timeout', text: '' };
-      if (typeof onPartial === 'function') {
-        try { onPartial(result); } catch {}
-      }
-      resolve(result);
-    }, watchdogMs);
+    return result;
   });
 }
 
@@ -756,17 +781,29 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     }
 
     // 等所有 sent 的 turn-complete；单家完成立即推 partial-update 给 renderer 单卡片刷新
+    // Stage 2: Promise.all → Promise.allSettled，单家卡死/异常不阻塞整轮（其他家照常 settle）
     console.log(`[roundtable] turn ${turnNum} waiting for ${sentTargets.length} turn-complete`);
-    const results = await Promise.all(sentTargets.map(t =>
-      _rtWaitTurnComplete(t.sid, t.label, roundtable.TURN_WATCHDOG_MS, (partial) => {
-        console.log(`[roundtable] turn ${turnNum} partial: ${partial.label} ${partial.status} (${partial.text.length} chars)`);
-        sendToRenderer('roundtable-partial-update', {
-          meetingId, turnNum, mode,
-          sid: partial.sid, label: partial.label,
-          status: partial.status, text: partial.text,
-        });
+    const settled = await Promise.allSettled(sentTargets.map(t =>
+      _rtWaitTurnComplete(t.sid, t.label, {
+        meetingId, mode, turnNum,
+        onPartial: (partial) => {
+          console.log(`[roundtable] turn ${turnNum} partial: ${partial.label} ${partial.status} (${partial.text.length} chars)`);
+          sendToRenderer('roundtable-partial-update', {
+            meetingId, turnNum, mode,
+            sid: partial.sid, label: partial.label,
+            status: partial.status, text: partial.text,
+          });
+        },
       })
     ));
+    // watcher 自身不会 reject（settle 都走 resolve 路径），但 Promise.allSettled 兜底处理
+    const results = settled.map((s, i) => s.status === 'fulfilled' ? s.value : {
+      sid: sentTargets[i].sid,
+      label: sentTargets[i].label,
+      status: 'errored',
+      text: '',
+      reason: s.reason?.message || 'Promise rejected',
+    });
 
     // 持久化轮记录
     const byMap = {};
@@ -842,6 +879,49 @@ ipcMain.handle('roundtable:get-state', (_e, { meetingId }) => {
   const sceneObj = meeting ? scenes.getScene(meeting.scene) : null;
   const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
   return orch.getState();
+});
+
+// ===== Stage 2 容错升级（2026-05-01）— 圆桌逃生工具 IPC =====
+//
+// 这三个 IPC 让 UI 在某家 AI 卡死时绕过完成检测，不再让整个圆桌锁 10 分钟。
+// 与 turn-completion-watcher 配合使用：watcher.wait() 期间，IPC 可以通过
+// _activeWatchers Map 找到对应 watcher 并触发 manualExtract / skip。
+//
+// 调用前提：必须在某 turn 的 wait() 期间调用（即 watcher 还在 _activeWatchers 中）。
+// turn 已结束（watcher 已 settle 并从 Map 移除）后调这些 IPC 返回 not_active。
+
+// 一键提取：从 Gemini JSONL 直接读 sincePromptTs 之后的 content 拼接，
+//   绕过完成检测设为该家本轮答案。仅 Gemini 需要（Claude/Codex 都有可靠 L1）。
+ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePromptTs } = {}) => {
+  if (!sid) return { ok: false, reason: 'missing sid' };
+  const watcher = _activeWatchers.get(sid);
+  if (!watcher) return { ok: false, reason: 'not_active', detail: 'no active watcher for this sid (turn may have ended)' };
+  let extracted = null;
+  try { extracted = await transcriptTap.extractLatestGeminiTurn(sid, sincePromptTs || 0); }
+  catch (e) { return { ok: false, reason: 'extract_failed', detail: e.message }; }
+  if (!extracted || !extracted.text) {
+    return { ok: false, reason: 'no_content', detail: 'JSONL had no usable type:"gemini" lines after sincePromptTs' };
+  }
+  watcher.manualExtract(extracted.text);
+  return { ok: true, text: extracted.text, lineCount: extracted.lineCount, source: extracted.source };
+});
+
+// 跳过本家：watcher settle 为 absent 状态，下游 prompt builder 过滤这家
+//   （过滤逻辑由 commit 4 P0-14 落地；本 commit 只设状态）。
+ipcMain.handle('roundtable-skip-participant', async (_e, { meetingId, sid } = {}) => {
+  if (!sid) return { ok: false, reason: 'missing sid' };
+  const watcher = _activeWatchers.get(sid);
+  if (!watcher) return { ok: false, reason: 'not_active' };
+  watcher.skip();
+  return { ok: true };
+});
+
+// 重发该家：plan 中标为 P0.5 单独提交，本 commit 先 stub 占位避免 IPC 缺失。
+//   完整实现需要重新走 _rtSendToPty + 新建一个 watcher，等单家重分发逻辑稳定后再补。
+ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = {}) => {
+  // TODO(P0.5): 实现单家重分发——重置 watcher、重发 prompt、重新等待 turn-complete
+  console.warn(`[roundtable] resend-participant not yet implemented (sid=${sid?.slice(0, 8)})`);
+  return { ok: false, reason: 'not_implemented', detail: 'resend is P0.5 backlog; use skip + new turn for now' };
 });
 
 ipcMain.handle('get-ring-buffer', (_e, sessionId) => {

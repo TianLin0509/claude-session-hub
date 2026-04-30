@@ -110,13 +110,13 @@ function testTranscriptTapWrapperExists() {
 }
 
 function testRoundtableOrchestratorConstants() {
-  // 同时锁住 P0-3：roundtable-orchestrator 导出 SOFT_ALERT_T1/T2，且值正确
+  // 锁住 P0-3：roundtable-orchestrator 导出 SOFT_ALERT_T1/T2，且值正确
   const orch = require('../core/roundtable-orchestrator.js');
   assert.strictEqual(orch.SOFT_ALERT_T1_MS, 90000, 'SOFT_ALERT_T1_MS must be 90000ms (90s)');
   assert.strictEqual(orch.SOFT_ALERT_T2_MS, 180000, 'SOFT_ALERT_T2_MS must be 180000ms (180s)');
-  // TURN_WATCHDOG_MS 在本 commit 范围内仍保留（main.js 老路径还在引用），commit 2 才删
-  assert.strictEqual(typeof orch.TURN_WATCHDOG_MS, 'number',
-    'TURN_WATCHDOG_MS still exported in commit 1 (deprecated, removed in commit 2)');
+  // TURN_WATCHDOG_MS 在 Stage 2 commit 2 已删除（main.js 改用 turn-completion-watcher）
+  assert.strictEqual(orch.TURN_WATCHDOG_MS, undefined,
+    'TURN_WATCHDOG_MS must NOT be exported (replaced by turn-completion-watcher soft alerts)');
   console.log('  ✓ testRoundtableOrchestratorConstants');
 }
 
