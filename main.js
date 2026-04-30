@@ -561,12 +561,42 @@ async function _rtSendToPty(sid, prompt, kind) {
 
 // 等待指定 sid 的 turn-complete 事件，返回 { sid, status, text }
 // onPartial 回调（如提供）：单家完成时立即调用，让面板单卡片刷新（不必等 Promise.all）
+function _rtExtractStreamingText(sid) {
+  const buf = sessionManager.getSessionBuffer(sid);
+  if (!buf) return '';
+  const lines = buf.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split('\n');
+  const usable = [];
+  let started = false;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!started && line.length > 0) started = true;
+    if (started) {
+      if (/^(PS |>|\$|❊|Cooked for)/.test(line)) break;
+      if (/^\[.*圆桌.*轮/.test(line)) break;
+      usable.unshift(line);
+    }
+  }
+  return usable.join('\n').trim().slice(-500);
+}
+
 function _rtWaitTurnComplete(sid, label, watchdogMs, onPartial) {
   return new Promise(resolve => {
     let settled = false;
+    let streamTimer = null;
+    const stopStreaming = () => { if (streamTimer) { clearInterval(streamTimer); streamTimer = null; } };
+    if (typeof onPartial === 'function') {
+      streamTimer = setInterval(() => {
+        if (settled) { stopStreaming(); return; }
+        const text = _rtExtractStreamingText(sid);
+        if (text.length > 10) {
+          try { onPartial({ sid, label, status: 'streaming', text }); } catch {}
+        }
+      }, 1500);
+    }
     const handler = (ev) => {
       if (ev.hubSessionId !== sid || settled) return;
       settled = true;
+      stopStreaming();
       transcriptTap.removeListener('turn-complete', handler);
       clearTimeout(watchdog);
       const result = { sid, label, status: 'completed', text: ev.text || '' };
@@ -579,6 +609,7 @@ function _rtWaitTurnComplete(sid, label, watchdogMs, onPartial) {
     const watchdog = setTimeout(() => {
       if (settled) return;
       settled = true;
+      stopStreaming();
       transcriptTap.removeListener('turn-complete', handler);
       const result = { sid, label, status: 'timeout', text: '' };
       if (typeof onPartial === 'function') {

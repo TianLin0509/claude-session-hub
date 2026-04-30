@@ -140,12 +140,19 @@
     return subs;
   }
 
-  function _renderRtCards(state, subs, currentMode, partialBy, meeting) {
+  function _ftCtxClass(pct) {
+    if (typeof pct !== 'number') return 'ok';
+    if (pct >= 80) return 'high';
+    if (pct >= 50) return 'warn';
+    return 'ok';
+  }
+
+  function _renderFusedTabs(state, subs, currentMode, partialBy, meeting) {
     const lastTurn = state.turns.length > 0 ? state.turns[state.turns.length - 1] : null;
     const summarizerKind = state.currentSummarizerKind || null;
-    const cards = [];
+    const tabs = [];
     const meetingId = meeting && meeting.id;
-    const countMap = (meetingId && _privateCountCache[meetingId]) || {};
+    const focused = meeting.focusedSub || meeting.subSessions[0];
     let anyThinking = false;
     for (const kind of ['claude', 'gemini', 'codex']) {
       const sub = subs[kind];
@@ -153,16 +160,20 @@
       const partial = partialBy ? partialBy[sub.sid] : null;
       let status = 'idle';
       let preview = '';
-      let isStandby = false;
 
       if (partial) {
-        status = partial.status === 'timeout' ? 'timeout' : 'completed';
-        preview = partial.text || '';
+        if (partial.status === 'streaming') {
+          status = 'streaming';
+          preview = partial.text || '';
+          anyThinking = true;
+        } else {
+          status = partial.status === 'timeout' ? 'timeout' : 'completed';
+          preview = partial.text || '';
+        }
       } else if (currentMode && currentMode !== 'idle') {
         if (currentMode === 'summary' && summarizerKind && summarizerKind !== kind) {
           status = lastTurn && lastTurn.by[sub.sid] ? 'completed' : 'idle';
           preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
-          isStandby = true;
         } else {
           status = 'thinking';
           anyThinking = true;
@@ -172,48 +183,55 @@
         preview = lastTurn.by[sub.sid];
       }
 
-      const isSummarizer = currentMode === 'summary' && summarizerKind === kind;
-      const statusLabel = { idle: '待命', thinking: '思考中', completed: '已答 ✓', timeout: '超时' }[status] || status;
-      let bodyHtml;
+      const isActive = sub.sid === focused;
+      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sub.sid) : null;
+      const modelName = s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
+      const modelCls = s && s.currentModel && typeof modelClass === 'function' ? modelClass(s.currentModel.id) : '';
+      const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
+      const ctxCls = _ftCtxClass(ctxPct);
+      const labelDisplay = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[kind];
+
+      const statusLabel = { idle: '待命', thinking: '思考中', streaming: '输出中', completed: '已答 ✓', timeout: '超时' }[status] || status;
+      const tabState = _tabState[sub.sid] || 'idle';
+      const newBadge = tabState === 'new-output' && !isActive ? '<span class="mr-ft-new">NEW</span>' : '';
+
+      let row3 = '';
       if (status === 'thinking') {
         if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
         const elapsed = Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000);
-        bodyHtml = `<div class="mr-rt-think-vis">
-          <div class="mr-rt-think-bar ${kind}"></div>
-          <div class="mr-rt-think-meta"><span class="mr-rt-think-elapsed">已 ${elapsed}s</span><span>等待回答…</span></div>
-        </div>`;
+        row3 = `<div class="mr-ft-progress"><div class="mr-ft-progress-bar ${kind}"></div></div>`;
+        tabs.push(_ftHtml(kind, isActive, sub.sid, labelDisplay, statusLabel, status, modelName, modelCls, ctxPct, ctxCls, row3, `${elapsed}s`, newBadge));
+      } else if (status === 'streaming') {
+        if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
+        const elapsed = Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000);
+        const snippet = preview.slice(-80).replace(/</g, '&lt;');
+        row3 = `<div class="mr-ft-preview streaming">${snippet}<span class="mr-ft-cursor"></span></div>`;
+        tabs.push(_ftHtml(kind, isActive, sub.sid, labelDisplay, statusLabel, status, modelName, modelCls, ctxPct, ctxCls, row3, `${elapsed}s`, newBadge));
       } else {
-        if (status !== 'thinking' && meetingId && !anyThinking) delete _thinkStartTs[meetingId];
-        const previewClipped = preview ? preview.slice(0, 600) : '';
-        bodyHtml = preview
-          ? `<div class="mr-rt-card-preview">${_renderMarkdown(previewClipped)}${preview.length > 600 ? '<div class="mr-rt-card-more">… 点卡片看全文</div>' : ''}</div>`
-          : '<div class="mr-rt-card-empty">尚无回答</div>';
+        const snippet = preview ? escapeHtml(preview.slice(0, 80)) + (preview.length > 80 ? '…' : '') : '';
+        row3 = snippet ? `<div class="mr-ft-preview">${snippet}</div>` : '';
+        tabs.push(_ftHtml(kind, isActive, sub.sid, labelDisplay, statusLabel, status, modelName, modelCls, ctxPct, ctxCls, row3, '', newBadge));
       }
-      const labelDisplay = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[kind];
-      const cardCls = ['mr-rt-card', kind];
-      if (status === 'thinking') cardCls.push('active');
-      if (isSummarizer) cardCls.push('summarizer');
-      if (isStandby) cardCls.push('standby');
-      const summarizerBadge = isSummarizer
-        ? '<span class="mr-rt-summarizer-badge" title="本轮总结人">★ 总结人</span>'
-        : '';
-      const standbyHint = isStandby
-        ? '<span class="mr-rt-standby-hint">上轮回答（等总结）</span>'
-        : '';
-      const privateCount = countMap[kind] || 0;
-      const privateBadge = privateCount > 0
-        ? `<span class="mr-rt-private-badge" title="有 ${privateCount} 条私聊">💬 ${privateCount}</span>`
-        : '';
-      cards.push(`<div class="${cardCls.join(' ')}" data-rt-sid="${sub.sid}" data-rt-kind="${kind}" role="button" tabindex="0" title="点击查看 ${labelDisplay} 的全部历史回答">
-        <div class="mr-rt-card-head">
-          <span class="mr-rt-card-name">${labelDisplay}${summarizerBadge}${privateBadge}</span>
-          <span class="mr-rt-status ${status}">${statusLabel}${standbyHint}</span>
-        </div>
-        ${bodyHtml}
-      </div>`);
     }
     if (!anyThinking && meetingId) delete _thinkStartTs[meetingId];
-    return cards.join('');
+    return `<div class="mr-ft-strip">${tabs.join('')}</div>`;
+  }
+
+  function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, row3, elapsed, newBadge) {
+    const cls = ['mr-ft', kind];
+    if (isActive) cls.push('active');
+    const modelBadge = modelName ? `<span class="mr-ft-model ${kind}">${escapeHtml(modelName)}</span>` : '';
+    const ctxBadge = ctxPct !== null ? `<span class="mr-ft-ctx ${ctxCls}">Ctx ${ctxPct}%</span>` : '';
+    const elapsedHtml = elapsed ? `<span class="mr-ft-elapsed mr-rt-think-elapsed">${elapsed}</span>` : '';
+    return `<div class="${cls.join(' ')}" data-ft-sid="${sid}" data-ft-kind="${kind}">
+      <button class="mr-ft-expand" data-ft-expand-sid="${sid}" data-ft-expand-kind="${kind}" title="展开详细回答">↗</button>
+      <div class="mr-ft-row1">
+        <span class="mr-ft-name ${kind}">${name}</span>
+        <span class="mr-ft-status ${statusCls}">${statusLabel}</span>${newBadge}${elapsedHtml}
+      </div>
+      <div class="mr-ft-row2">${modelBadge}${ctxBadge}</div>
+      ${row3}
+    </div>`;
   }
 
   function _renderRtHistory(state) {
@@ -300,7 +318,7 @@
     const subs = _getRtSubInfo(meeting);
     const mode = state.currentMode || 'idle';
     const partialBy = state._partialBy || null;
-    const cards = _renderRtCards(state, subs, mode, partialBy, meeting);
+    const fusedTabs = _renderFusedTabs(state, subs, mode, partialBy, meeting);
     const history = _renderRtHistory(state);
     const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
     const stepper = _renderTurnStepper(state.turns, mode);
@@ -328,7 +346,7 @@
         </div>
         ${cmdBar}
       </div>
-      <div class="mr-rt-cards">${cards}</div>
+      ${fusedTabs}
       ${history}
     `;
   }
@@ -383,15 +401,27 @@
         refreshRoundtablePanel(meeting);
       });
     }
-    panel.querySelectorAll('.mr-rt-card[data-rt-sid]').forEach(card => {
-      const open = () => {
-        const sid = card.getAttribute('data-rt-sid');
-        const kind = card.getAttribute('data-rt-kind');
+    panel.querySelectorAll('.mr-ft[data-ft-sid]').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const sid = tab.getAttribute('data-ft-sid');
+        const focused = meeting.focusedSub || meeting.subSessions[0];
+        if (sid && sid !== focused) {
+          _tabState[sid] = 'idle';
+          if (_tabTimers[sid]) { clearTimeout(_tabTimers[sid]); delete _tabTimers[sid]; }
+          meeting.focusedSub = sid;
+          ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { focusedSub: sid } });
+          switchFocusTab(meeting, sid);
+          refreshRoundtablePanel(meeting);
+          renderHeader(meeting);
+        }
+      });
+    });
+    panel.querySelectorAll('.mr-ft-expand[data-ft-expand-sid]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const sid = btn.getAttribute('data-ft-expand-sid');
+        const kind = btn.getAttribute('data-ft-expand-kind');
         _openRtTimeline(meeting, sid, kind);
-      };
-      card.addEventListener('click', open);
-      card.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); }
       });
     });
     panel.querySelectorAll('.mr-rt-cmd-btn[data-rt-cmd]').forEach(btn => {
@@ -775,27 +805,6 @@
   function renderHeader(meeting) {
     const el = headerEl();
     if (!el) return;
-    const focused = meeting.focusedSub || meeting.subSessions[0];
-
-    let tabsHtml = '';
-    if (meeting.layout === 'focus' && meeting.subSessions.length > 0) {
-      const tabs = meeting.subSessions.map(sid => {
-        const s = sessions ? sessions.get(sid) : null;
-        const label = s ? (s.title || s.kind) : 'session';
-        const badges = subModelBadgeHtml(s) + subCtxBadgeHtml(s);
-        const cls = sid === focused ? 'mr-tab active' : 'mr-tab';
-        const state = _tabState[sid] || 'idle';
-        const markerBadge = markerStatusHtml(sid);
-        const statusDot = `<span class="mr-tab-status ${state}"></span>`;
-        const newBadge = state === 'new-output' ? ' <span class="new-badge">NEW</span>' : '';
-        const hasNewCls = state === 'new-output' ? ' has-new' : '';
-        return `<button class="${cls}${hasNewCls}" data-sid="${sid}">${statusDot}${escapeHtml(label)}${badges ? ' ' + badges : ''} ${markerBadge}${newBadge}</button>`;
-      }).join('');
-      tabsHtml = `<div class="mr-tabs" id="mr-tabs">${tabs}</div>`;
-    }
-
-    // 两模式(通用/投研)统一隐藏 Focus/Blackboard 按钮:
-    // 卡片+CLI 是唯一布局,blackboard 已彻底废弃。
     const showLayoutButtons = !_isPanelCapableMeeting(meeting);
     const layoutButtonsHtml = showLayoutButtons ? `
         <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>` : '';
@@ -804,7 +813,6 @@
       <div class="mr-header-left">
         ${_renderModeToggle(meeting)}
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
-        ${tabsHtml}
       </div>
       <div class="mr-header-right">${layoutButtonsHtml}
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
@@ -826,24 +834,6 @@
       await ipcRenderer.invoke('close-meeting', meeting.id);
       closeMeetingPanel();
     });
-
-    // Focus mode tab click → switch focused sub-session
-    const tabsEl = document.getElementById('mr-tabs');
-    if (tabsEl) {
-      tabsEl.addEventListener('click', (e) => {
-        const btn = e.target.closest('.mr-tab');
-        if (!btn) return;
-        const sid = btn.dataset.sid;
-        if (sid && sid !== focused) {
-          _tabState[sid] = 'idle';
-          if (_tabTimers[sid]) { clearTimeout(_tabTimers[sid]); delete _tabTimers[sid]; }
-          meeting.focusedSub = sid;
-          ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { focusedSub: sid } });
-          switchFocusTab(meeting, sid);
-          renderHeader(meeting);
-        }
-      });
-    }
 
     const titleSpan = document.getElementById('mr-title');
     titleSpan.addEventListener('dblclick', () => {
