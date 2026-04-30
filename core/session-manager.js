@@ -146,7 +146,7 @@ class SessionManager extends EventEmitter {
 
     let currentModel = null;
     if (isGemini) {
-      const mid = opts.model || 'gemini-3.1-pro-preview';
+      const mid = opts.model || 'gemini-2.5-flash';
       currentModel = { id: mid, displayName: SessionManager.geminiDisplayName(mid) };
     } else if (isCodex) {
       currentModel = { id: 'gpt-5.5', displayName: 'GPT-5.5' };
@@ -245,7 +245,7 @@ class SessionManager extends EventEmitter {
 
     if (isGemini) {
       let cmd = ' gemini --approval-mode yolo';
-      cmd += ` --model ${opts.model || 'gemini-3.1-pro-preview'}`;
+      cmd += ` --model ${opts.model || 'gemini-2.5-flash'}`;
       if (opts.useResume) {
         if (opts.geminiChatId && opts.geminiChatId.length > 8) {
           // Level 1: precise resume by full UUID (e.g. "3eab55d9-8019-4485-a47e-07f93e288be5")
