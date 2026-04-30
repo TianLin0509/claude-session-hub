@@ -453,6 +453,41 @@ class GeminiTap extends EventEmitter {
     return this._bound.get(hubSessionId)?.lastText || null;
   }
 
+  // Stage 2 容错升级（2026-05-01）— 手动提取兜底：
+  //   当 Gemini 永不 emit L1/L3 完成信号时（OAuth 异常 / 限流 / 卡死），
+  //   用户在 UI 点"一键提取"会调本方法，直接读 JSONL 拼接 sincePromptTs 之后的所有
+  //   type:"gemini" 行 content，绕过完成检测。
+  //   返回 { text, lineCount, source: 'manual' }；JSONL 不可读 / 无匹配行返回 null。
+  async extractLatestGeminiTurn(hubSessionId, sincePromptTs) {
+    const entry = this._bound.get(hubSessionId);
+    if (!entry || !entry.sessionPath || !entry.isJsonl) return null;
+    let raw;
+    try { raw = await fs.promises.readFile(entry.sessionPath, 'utf8'); }
+    catch { return null; }
+    const lines = raw.split('\n');
+    const collected = [];
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+      if (obj?.type !== 'gemini') continue;
+      const ts = typeof obj.timestamp === 'number' ? obj.timestamp
+              : typeof obj.ts === 'number' ? obj.ts
+              : null;
+      if (ts !== null && ts < sincePromptTs) continue;
+      if (typeof obj.content !== 'string') continue;
+      const piece = obj.content;
+      if (!piece.trim()) continue;
+      // 去重：Gemini 某些版本流式输出末尾会出现连续重复 chunk。
+      if (collected.length && collected[collected.length - 1] === piece) continue;
+      collected.push(piece);
+    }
+    if (collected.length === 0) return null;
+    const text = collected.join('').trim();
+    if (!text) return null;
+    return { text, lineCount: collected.length, source: 'manual' };
+  }
+
   _ensureWatcher() {
     if (this._pollTimer) return;
     this._scanOnce().catch(() => {});
@@ -550,7 +585,10 @@ class GeminiTap extends EventEmitter {
       sessionPath,
     });
 
-    const emitIfComplete = (content) => {
+    // Stage 2 容错升级（2026-05-01）：emit payload 增加 signalSource 字段，
+    //   让下游 turn-completion-watcher 区分 L1（result/message_update）/ L3（tokens_total）信号。
+    //   向后兼容——既有调用方（main.js _rtWaitTurnComplete）忽略此字段不影响。
+    const emitIfComplete = (content, meta = {}) => {
       const text = (content || '').trim();
       if (!text) return;
       if (text === boundEntry.lastText) return;
@@ -559,15 +597,31 @@ class GeminiTap extends EventEmitter {
         hubSessionId,
         text,
         completedAt: Date.now(),
+        signalSource: meta.signalSource || 'tokens_total',
       });
     };
 
     if (isJsonl) {
-      // Gemini 0.39+ JSONL: tail for lines with type:"gemini" and tokens.total
+      // Gemini 0.39+ JSONL: 三层完成信号识别（按可靠度优先匹配）：
+      //   L1a result_event: type:"result"（headless --output-format stream-json 模式）
+      //   L1b message_update: type:"message_update" + status:"finalized"（TUI fallback）
+      //   L3  tokens_total:  type:"gemini" + tokens.total（启发式，慢/限流时不可靠）
       const onLine = (obj) => {
+        // L1a — 协议级 result 事件（最可靠）
+        if (obj?.type === 'result' && typeof obj.content === 'string' && obj.content.trim().length > 0) {
+          emitIfComplete(obj.content, { signalSource: 'result_event' });
+          return;
+        }
+        // L1b — message_update finalized（TUI 模式 fallback）
+        if (obj?.type === 'message_update' && obj.status === 'finalized'
+            && typeof obj.content === 'string' && obj.content.trim().length > 0) {
+          emitIfComplete(obj.content, { signalSource: 'message_update' });
+          return;
+        }
+        // L3 — tokens.total 启发式（保留向后兼容；慢响应/限流时永不写入）
         if (obj?.type === 'gemini' && obj.tokens && obj.tokens.total != null
             && typeof obj.content === 'string' && obj.content.trim().length > 0) {
-          emitIfComplete(obj.content);
+          emitIfComplete(obj.content, { signalSource: 'tokens_total' });
         }
       };
       const tail = new JsonlTail(sessionPath, onLine);
@@ -645,6 +699,12 @@ class TranscriptTap extends EventEmitter {
       this._gemini.getLastAssistantText(hubSessionId) ||
       null
     );
+  }
+
+  // Stage 2 容错升级（2026-05-01）— 委托到 GeminiTap，让外部 IPC handler 用统一的
+  //   transcriptTap.extractLatestGeminiTurn(...) 入口，不必感知 _gemini 子实例。
+  async extractLatestGeminiTurn(hubSessionId, sincePromptTs) {
+    return this._gemini.extractLatestGeminiTurn(hubSessionId, sincePromptTs);
   }
 
   async notifyClaudeStop(hubSessionId, transcriptPath) {

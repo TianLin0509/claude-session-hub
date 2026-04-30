@@ -18,7 +18,15 @@ const path = require('path');
 const MAX_DEBATE_OPINION_CHARS = 5000;
 const MAX_DEBATE_OPINION_KEEP = 2000;
 const MAX_SUMMARY_PER_VIEW_CHARS = 3000;
+// @deprecated — Stage 2 容错升级用 SOFT_ALERT_T1/T2 + turn-completion-watcher 替代。
+//   保留导出避免 main.js 老路径（_rtWaitTurnComplete 内部 setTimeout）调用时 ReferenceError。
+//   Stage 2 第二个 commit 切换 main.js 用 watcher 后即可删除。
 const TURN_WATCHDOG_MS = 600000; // 10 min
+// 软提醒两阶段：T1 先弹 banner 提示"还在等"，T2 再升级提醒。
+//   永不自动 settle—— 真正退出由用户点"手动提取/跳过/重发"或 L1/L2 信号决定。
+//   设计文档：docs/superpowers/specs/2026-04-30-roundtable-resilience-design.md
+const SOFT_ALERT_T1_MS = 90000;  //  90s — 首阶段提醒
+const SOFT_ALERT_T2_MS = 180000; // 180s — 二阶段升级
 
 function arenaPromptsDir(hubDataDir) {
   return path.join(hubDataDir, 'arena-prompts');
@@ -229,4 +237,6 @@ module.exports = {
   releaseOrchestrator,
   extractDecisionTitle,
   TURN_WATCHDOG_MS,
+  SOFT_ALERT_T1_MS,
+  SOFT_ALERT_T2_MS,
 };
