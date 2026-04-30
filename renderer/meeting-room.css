@@ -239,6 +239,7 @@
   background: var(--bg-secondary, #161b22);
   border-top: 1px solid var(--border, #30363d);
   font-size: 12px;
+  flex-shrink: 0;
 }
 
 .mr-toolbar label {
@@ -277,6 +278,7 @@
   gap: 8px;
   background: var(--bg-secondary, #161b22);
   border-top: 1px solid var(--border, #30363d);
+  flex-shrink: 0;
 }
 
 #mr-input-target {
@@ -403,9 +405,10 @@
   border-bottom: 1px solid #2a3245;
   border-top: 2px solid transparent;
   border-image: linear-gradient(90deg, var(--c-claude) 0%, var(--c-gemini) 50%, var(--c-codex) 100%) 1;
-  padding: 10px 14px;
+  padding: 8px 14px;
   font-size: 13px;
   color: #d8dee9;
+  flex-shrink: 0;
 }
 .mr-rt-header {
   display: flex;
@@ -415,13 +418,13 @@
   padding-bottom: 8px;
   border-bottom: 1px solid rgba(255,255,255,0.05);
 }
-/* New track header with turn stepper + command bar */
-.mr-rt-track { margin-bottom: 10px; }
+/* Track header: title + stepper + commands in one row */
+.mr-rt-track { margin-bottom: 6px; }
 .mr-rt-track-row {
-  display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap;
 }
-.mr-rt-track-title-grp { display: flex; align-items: center; gap: 14px; }
+.mr-rt-track-title-grp { display: flex; align-items: center; gap: 10px; }
 .mr-rt-stepper {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 11px; color: #8b949e;
@@ -488,6 +491,7 @@
 .mr-ft-status.thinking  { background: rgba(250,204,21,0.2); color: #fde68a; animation: rt-pulse 1.5s ease-in-out infinite; }
 .mr-ft-status.streaming { background: rgba(99,102,241,0.2); color: #a5b4fc; animation: rt-pulse 1.5s ease-in-out infinite; }
 .mr-ft-status.idle      { background: rgba(139,148,158,0.2); color: #a0a8b9; }
+.mr-ft-status.initializing { background: rgba(99,102,241,0.2); color: #a5b4fc; animation: rt-pulse 1.5s ease-in-out infinite; }
 .mr-ft-status.timeout   { background: rgba(248,113,113,0.2); color: #fca5a5; }
 .mr-ft-elapsed { font-size: 11px; color: #fde68a; margin-left: auto; font-variant-numeric: tabular-nums; font-family: "Cascadia Mono", Consolas, monospace; }
 .mr-ft-expand {

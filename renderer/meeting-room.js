@@ -158,10 +158,15 @@
       const sub = subs[kind];
       if (!sub) continue;
       const partial = partialBy ? partialBy[sub.sid] : null;
+      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sub.sid) : null;
+      const markerState = _markerStatusCache[sub.sid];
+      const isInitializing = s && !s.currentModel && markerState !== 'done' && markerState !== 'streaming';
       let status = 'idle';
       let preview = '';
 
-      if (partial) {
+      if (isInitializing && !partial && !(currentMode && currentMode !== 'idle') && !lastTurn) {
+        status = 'initializing';
+      } else if (partial) {
         if (partial.status === 'streaming') {
           status = 'streaming';
           preview = partial.text || '';
@@ -184,14 +189,13 @@
       }
 
       const isActive = sub.sid === focused;
-      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sub.sid) : null;
       const modelName = s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
       const modelCls = s && s.currentModel && typeof modelClass === 'function' ? modelClass(s.currentModel.id) : '';
       const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
       const ctxCls = _ftCtxClass(ctxPct);
       const labelDisplay = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[kind];
 
-      const statusLabel = { idle: '待命', thinking: '思考中', streaming: '输出中', completed: '已答 ✓', timeout: '超时' }[status] || status;
+      const statusLabel = { idle: '待命', initializing: '创建中…', thinking: '思考中', streaming: '输出中', completed: '已答 ✓', timeout: '超时' }[status] || status;
       const tabState = _tabState[sub.sid] || 'idle';
       const newBadge = tabState === 'new-output' && !isActive ? '<span class="mr-ft-new">NEW</span>' : '';
 
@@ -331,8 +335,8 @@
             <span class="mr-rt-title">${titleText}</span>
             ${stepper}
           </div>
+          ${cmdBar}
         </div>
-        ${cmdBar}
       </div>
       ${fusedTabs}
       ${onboarding}
