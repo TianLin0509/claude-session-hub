@@ -104,9 +104,22 @@ class RoundtableOrchestrator {
     }
     parts.push('## 另两家上一轮观点');
     let appended = 0;
+    const byStatus = lastTurn?.byStatus || null; // Stage 2 容错升级，null = 老格式按 completed
     for (const [sid, text] of Object.entries(lastTurn?.by || {})) {
       if (sid === targetSid) continue;
       const label = sidLabelFn ? (sidLabelFn(sid) || 'AI') : 'AI';
+      const status = byStatus ? (byStatus[sid] || 'completed') : 'completed';
+      // 容错升级：absent/errored 的家不传"空内容"假装"无观点"，明确说"本轮未参与"
+      if (status === 'absent') {
+        parts.push('', `### ${label} 的观点`, `（${label} 本轮因故未参与，请勿引用）`);
+        appended++;
+        continue;
+      }
+      if (status === 'errored') {
+        parts.push('', `### ${label} 的观点`, `（${label} 本轮发生错误未输出，请勿引用）`);
+        appended++;
+        continue;
+      }
       let trimmed = (text || '(无输出)');
       if (trimmed.length > MAX_DEBATE_OPINION_CHARS) {
         trimmed = trimmed.slice(0, MAX_DEBATE_OPINION_KEEP)
@@ -149,9 +162,21 @@ class RoundtableOrchestrator {
         parts.push(`**用户输入**：${lastTurn.userInput.slice(0, 1000)}`);
       }
       let appended = 0;
+      const byStatus = lastTurn.byStatus || null; // Stage 2 容错升级
       for (const [sid, text] of Object.entries(lastTurn.by || {})) {
         if (sid === summarizerSid) continue;
         const label = sidLabelFn ? (sidLabelFn(sid) || 'AI') : 'AI';
+        const status = byStatus ? (byStatus[sid] || 'completed') : 'completed';
+        if (status === 'absent') {
+          parts.push('', `### ${label}`, `（${label} 本轮因故未参与，请勿引用）`);
+          appended++;
+          continue;
+        }
+        if (status === 'errored') {
+          parts.push('', `### ${label}`, `（${label} 本轮发生错误未输出，请勿引用）`);
+          appended++;
+          continue;
+        }
         let trimmed = text || '(无输出)';
         if (trimmed.length > MAX_SUMMARY_PER_VIEW_CHARS) {
           trimmed = trimmed.slice(0, MAX_SUMMARY_PER_VIEW_CHARS) + '…[已截断]';
@@ -180,12 +205,16 @@ class RoundtableOrchestrator {
   // 完成一轮：写持久化
   // byMap: { sid: text }
   // meta: 任意附加（如 summarizer / decisionTitle）
-  completeTurn(turnNum, mode, userInput, byMap, meta = {}) {
+  // byStatus: { sid: 'completed' | 'manual_extracted' | 'absent' | 'errored' | ... }
+  //   新增（Stage 2 容错升级）。null/undefined 表示老格式 — buildDebate/Summary 会按
+  //   "全部 completed" 处理。下游 prompt builder 用此字段过滤 absent/errored 参与者。
+  completeTurn(turnNum, mode, userInput, byMap, meta = {}, byStatus = null) {
     const record = {
       n: turnNum,
       mode,
       userInput: userInput || '',
       by: byMap || {},
+      byStatus: byStatus || null,
       timestamp: Date.now(),
       ...meta,
     };

@@ -806,8 +806,14 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     });
 
     // 持久化轮记录
+    // Stage 2 容错升级：构建 byMap + byStatus，让下个 turn 的 prompt builder 区分
+    //   completed/manual_extracted（正常引用文本）vs absent/errored（明确加注未参与）。
     const byMap = {};
-    for (const r of results) byMap[r.sid] = r.text || '';
+    const byStatus = {};
+    for (const r of results) {
+      byMap[r.sid] = r.text || '';
+      byStatus[r.sid] = r.status || 'completed';
+    }
     const meta = {};
     if (mode === 'summary') {
       meta.summarizer = summarizerKind;
@@ -815,7 +821,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       const title = roundtable.extractDecisionTitle(results[0]?.text || '');
       if (title) meta.decisionTitle = title;
     }
-    orch.completeTurn(turnNum, mode, userInput || '', byMap, meta);
+    orch.completeTurn(turnNum, mode, userInput || '', byMap, meta, byStatus);
 
     // E2 选项：summary 后写决策档案到 .arena/sessions/<datetime>-<title>.md
     if (mode === 'summary') {
