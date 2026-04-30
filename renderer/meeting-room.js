@@ -204,11 +204,11 @@
       } else if (status === 'streaming') {
         if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
         const elapsed = Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000);
-        const snippet = preview.slice(-80).replace(/</g, '&lt;');
+        const snippet = preview.slice(-150).replace(/</g, '&lt;');
         row3 = `<div class="mr-ft-preview streaming">${snippet}<span class="mr-ft-cursor"></span></div>`;
         tabs.push(_ftHtml(kind, isActive, sub.sid, labelDisplay, statusLabel, status, modelName, modelCls, ctxPct, ctxCls, row3, `${elapsed}s`, newBadge));
       } else {
-        const snippet = preview ? escapeHtml(preview.slice(0, 80)) + (preview.length > 80 ? '…' : '') : '';
+        const snippet = preview ? escapeHtml(preview.slice(0, 150)) + (preview.length > 150 ? '…' : '') : '';
         row3 = snippet ? `<div class="mr-ft-preview">${snippet}</div>` : '';
         tabs.push(_ftHtml(kind, isActive, sub.sid, labelDisplay, statusLabel, status, modelName, modelCls, ctxPct, ctxCls, row3, '', newBadge));
       }
@@ -323,19 +323,7 @@
     const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
     const stepper = _renderTurnStepper(state.turns, mode);
     const cmdBar = _renderCmdBar(state.turns, mode);
-    if (state.turns.length === 0 && mode === 'idle') {
-      return `
-        <div class="mr-rt-track">
-          <div class="mr-rt-track-row">
-            <div class="mr-rt-track-title-grp">
-              <span class="mr-rt-title">${titleText}</span>
-            </div>
-          </div>
-          ${cmdBar}
-        </div>
-        ${_renderOnboarding(meeting)}
-      `;
-    }
+    const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
     return `
       <div class="mr-rt-track">
         <div class="mr-rt-track-row">
@@ -347,6 +335,7 @@
         ${cmdBar}
       </div>
       ${fusedTabs}
+      ${onboarding}
       ${history}
     `;
   }

@@ -564,15 +564,24 @@ async function _rtSendToPty(sid, prompt, kind) {
 function _rtExtractStreamingText(sid) {
   const buf = sessionManager.getSessionBuffer(sid);
   if (!buf) return '';
-  const lines = buf.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').split('\n');
+  const cleaned = buf
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    .replace(/\x1b\][^\x07]*\x07/g, '')
+    .replace(/\x1b[()][0-9A-Za-z]/g, '')
+    .replace(/\x1b[=><%]/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .replace(/\r/g, '');
+  const lines = cleaned.split('\n');
   const usable = [];
   let started = false;
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (!started && line.length > 0) started = true;
     if (started) {
-      if (/^(PS |>|\$|❊|Cooked for)/.test(line)) break;
+      if (/^(PS |>|\$|❊|Cooked for|bypass permissions|Claude Code v)/.test(line)) break;
       if (/^\[.*圆桌.*轮/.test(line)) break;
+      if (/^(##\s*用户问题|请独立回答)/.test(line)) break;
+      if (/quota\s+--?no.sandbox|gemini\s+--approval/.test(line)) break;
       usable.unshift(line);
     }
   }
