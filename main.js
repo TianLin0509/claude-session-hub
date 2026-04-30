@@ -391,10 +391,14 @@ function createWindow() {
   const iconPath = path.join(__dirname, 'claude-wx.ico');
   const winIcon = nativeImage.createFromPath(iconPath);
 
+  // 标题动态读 package.json 版本号，避免硬编码漂移（card-redesign 0.2.0 起）
+  const _pkgVersion = (() => {
+    try { return require('./package.json').version || ''; } catch { return ''; }
+  })();
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: 'Claude Session Hub',
+    title: `Claude Session Hub${_pkgVersion ? ` v${_pkgVersion}` : ''}`,
     backgroundColor: '#0d1117',
     icon: winIcon,
     show: false,
