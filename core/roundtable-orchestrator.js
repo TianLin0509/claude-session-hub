@@ -40,8 +40,19 @@ class RoundtableOrchestrator {
       currentTurn: 0,
       currentMode: 'idle',
       turns: [], // [{ n, mode, userInput, by: { sid: text }, timestamp, meta }]
+      // Card redesign（2026-05-01）：跨轮 AI 统计累加器，让卡片 row3/row4 显示
+      //   "本轮 Xs · 累计 Ys" / "本轮 Xk · 累计 Yk"。perTurnHistory 留待将来做趋势图。
+      aiStats: this._defaultAiStats(),
     };
     this._loadState();
+  }
+
+  _defaultAiStats() {
+    return {
+      claude: { totalThinkSec: 0, totalTokens: 0, perTurnHistory: [] },
+      gemini: { totalThinkSec: 0, totalTokens: 0, perTurnHistory: [] },
+      codex:  { totalThinkSec: 0, totalTokens: 0, perTurnHistory: [] },
+    };
   }
 
   _stateFilePath() {
@@ -56,7 +67,20 @@ class RoundtableOrchestrator {
     if (!fs.existsSync(fp)) return;
     try {
       const raw = JSON.parse(fs.readFileSync(fp, 'utf-8'));
-      if (raw && raw.meetingId === this.meetingId) this.state = raw;
+      if (raw && raw.meetingId === this.meetingId) {
+        this.state = raw;
+        // Card redesign（2026-05-01）：旧 state.json 缺 aiStats 字段时补默认值，
+        //   防止后续 completeTurn 累加 / renderer 读 totalThinkSec 时 undefined.xxx 抛错。
+        if (!this.state.aiStats || typeof this.state.aiStats !== 'object') {
+          this.state.aiStats = this._defaultAiStats();
+        } else {
+          for (const kind of ['claude', 'gemini', 'codex']) {
+            if (!this.state.aiStats[kind]) {
+              this.state.aiStats[kind] = { totalThinkSec: 0, totalTokens: 0, perTurnHistory: [] };
+            }
+          }
+        }
+      }
     } catch (e) {
       console.warn(`[roundtable] load state failed for ${this.meetingId}:`, e.message);
     }
@@ -208,19 +232,45 @@ class RoundtableOrchestrator {
   // byStatus: { sid: 'completed' | 'manual_extracted' | 'absent' | 'errored' | ... }
   //   新增（Stage 2 容错升级）。null/undefined 表示老格式 — buildDebate/Summary 会按
   //   "全部 completed" 处理。下游 prompt builder 用此字段过滤 absent/errored 参与者。
-  completeTurn(turnNum, mode, userInput, byMap, meta = {}, byStatus = null) {
+  // stats: { thinkSecByKind: {claude/gemini/codex: number}, tokensByKind: {...},
+  //         thinkSecBy: {sid: number}, tokensBy: {sid: number} }
+  //   新增（Card redesign 2026-05-01）。null/undefined 时跳过累加（向后兼容）。
+  //   thinkSecBy/tokensBy 写入 record，state.aiStats[kind] 累加 totalThinkSec/totalTokens。
+  completeTurn(turnNum, mode, userInput, byMap, meta = {}, byStatus = null, stats = null) {
     const record = {
       n: turnNum,
       mode,
       userInput: userInput || '',
       by: byMap || {},
       byStatus: byStatus || null,
+      thinkSecBy: (stats && stats.thinkSecBy) || {},
+      tokensBy: (stats && stats.tokensBy) || {},
       timestamp: Date.now(),
       ...meta,
     };
     this.state.turns.push(record);
     this.state.currentMode = 'idle';
     delete this.state.currentSummarizerKind;
+
+    // Card redesign：累加到 state.aiStats[kind] 跨轮持久化
+    if (stats && (stats.thinkSecByKind || stats.tokensByKind)) {
+      if (!this.state.aiStats) this.state.aiStats = this._defaultAiStats();
+      for (const kind of ['claude', 'gemini', 'codex']) {
+        if (!this.state.aiStats[kind]) {
+          this.state.aiStats[kind] = { totalThinkSec: 0, totalTokens: 0, perTurnHistory: [] };
+        }
+        const s = this.state.aiStats[kind];
+        const thisSec = (stats.thinkSecByKind && stats.thinkSecByKind[kind]) || 0;
+        const thisTok = (stats.tokensByKind && stats.tokensByKind[kind]) || 0;
+        s.totalThinkSec += thisSec;
+        s.totalTokens   += thisTok;
+        // 仅当本轮该家有数据时才进 history（避免无意义的 0 行）
+        if (thisSec > 0 || thisTok > 0) {
+          s.perTurnHistory.push({ n: turnNum, thinkSec: thisSec, tokens: thisTok, ts: Date.now() });
+        }
+      }
+    }
+
     this._saveState();
     this._saveTurnFile(record);
     return record;
