@@ -1007,12 +1007,23 @@
     renderToolbar(meeting);
     setupInput(meeting);
     startMarkerPoll();
-    // IF-C1：开启 CLI ready 轮询，驱动卡片"创建中→待命"切换
-    startCliReadyPoll();
+    // IF-C1：开启 CLI ready 轮询，驱动卡片"创建中→待命"切换。
+    // IF-C6（多方审查 medium 修复）：拿首次 poll 的 promise，等它返回后再 refresh panel
+    //   避免首屏闪烁——一次 IPC < 100ms，对用户感知近乎瞬间。
+    const firstPoll = startCliReadyPoll();
 
     // 两模式(通用/投研)进入会议室即刷新持久化面板
+    // 先做一次同步渲染（保持响应不阻塞），await 首次 poll 后再 refresh 一次（修首屏闪烁）
     if (_isPanelCapableMeeting(meeting)) {
       refreshRoundtablePanel(meeting);
+      // 异步等首次 poll 后再 refresh 一次（poll 内部已会重渲，这里只是兜底，不阻塞 UI）
+      if (firstPoll && typeof firstPoll.then === 'function') {
+        firstPoll.then(() => {
+          if (activeMeetingId === meetingId) {
+            try { _refreshSoftAlert(meeting); } catch {}
+          }
+        }).catch(() => {});
+      }
     } else {
       _removeRtPanel();
     }
@@ -1308,7 +1319,7 @@
       let changed = false;
       let needRefresh = false;
       for (const sid of meeting.subSessions) {
-        if (_cliReadyCache[sid]) continue; // 已 ready 不重查
+        if (_cliReadyCache[sid]) continue; // 已 ready 不重查（CLI exit 时由 'session-closed' 清缓存触发重查）
         try {
           const ready = await ipcRenderer.invoke('cli-ready-status', sid);
           if (ready) {
@@ -1332,8 +1343,12 @@
         try { _refreshSoftAlert(meeting); } catch {}
       }
     };
-    pollOnce(); // 立即跑一次（不等 1s）
+    // IF-C6（首屏闪烁修复 2026-05-01）：返回首次 pollOnce 的 promise，让 openMeeting 可以
+    //   await 它再继续后续渲染（一次 IPC < 100ms，远低于人眼可感知的 200ms 阈值）。
+    //   避免 panel 首次渲染时 _cliReadyCache 还空 → 全部判 isInitializing → 闪一下"创建中"。
+    const firstPollPromise = pollOnce();
     _cliReadyPollTimer = setInterval(pollOnce, 1000);
+    return firstPollPromise;
   }
 
   function stopCliReadyPoll() {
@@ -2212,6 +2227,20 @@
     if (_tabState[sessionId] !== undefined) {
       _tabState[sessionId] = 'error';
       updateTabIndicator(sessionId);
+    }
+    // IF-C6（多方审查 high 修复 2026-05-01）：CLI 进程退出后清 _cliReadyCache，
+    //   避免单调递增——一旦 ready=true 永不复查导致卡片错误显示"已就绪"。
+    //   清后下个 cliReady poll tick 会重新查 IPC 拿到 false（getSession 找不到 sid 即返回 false）。
+    if (_cliReadyCache[sessionId] !== undefined) {
+      delete _cliReadyCache[sessionId];
+      if (activeMeetingId && _isPanelCapableMeeting(meetingData[activeMeetingId])) {
+        const cached = _rtPanelState[activeMeetingId];
+        if (cached) {
+          const panel = _ensureRtPanel();
+          panel.innerHTML = _renderRtPanelHtml(cached, meetingData[activeMeetingId]);
+          _bindRtPanelEvents(panel, meetingData[activeMeetingId]);
+        }
+      }
     }
   });
 
