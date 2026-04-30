@@ -12,18 +12,19 @@
   let _markerPollTimer = null;
   const _tabState = {};     // { sessionId: 'streaming'|'new-output'|'idle'|'error' }
   const _tabTimers = {};    // { sessionId: silenceTimerId }
-  let _divergenceEnabled = false;
-  let _divergenceResult = null;
-  let _divergenceHash = '';
-  let _driverSummaryEnabled = false; // Claude 摘要开关
 
   // renderer.js loads before us — its `sessions` and `getOrCreateTerminal`
   // are accessible via the global lexical scope. We access them directly.
 
-  // --- Driver Mode: @command parser ---
-  // 支持组合：`@gemini @codex 帮我看下` → 同时发给 gemini + codex
-  // `@review` 全局审查路径，与其他 @ 混用时优先生效
-  function parseDriverCommand(text, meeting) {
+  // 两个圆桌模式(general/research)在 UI 渲染上完全一致(卡片+CLI)。
+  // 与 core/meeting-room.js 的 isRoundtableCapableMeeting 语义一致。
+  function _isPanelCapableMeeting(m) {
+    return !!(m && (m.researchMode || m.roundtableMode));
+  }
+
+  // --- Roundtable @command parser ---
+  // 支持 @debate / @summary @<who> / @all / @<who> 单聊
+  function parseRoundtableCommand(text, meeting) {
     if (!meeting) return { type: 'normal', text, targets: null };
 
     // Research mode: 三家平等圆桌，独立语法（@debate / @summary @<who> / 默认 fanout）
@@ -79,25 +80,7 @@
       return { type: 'rt-fanout', text: rest };
     }
 
-    if (!meeting.driverMode) return { type: 'normal', text, targets: null };
-    let rest = text.trim();
-    const targets = [];
-    let wantReview = false;
-    const tokenRe = /^@(review|审查|gemini|codex|claude)\b\s*/i;
-    while (true) {
-      const m = rest.match(tokenRe);
-      if (!m) break;
-      const tok = m[1].toLowerCase();
-      if (tok === 'review' || tok === '审查') {
-        wantReview = true;
-      } else if (!targets.includes(tok)) {
-        targets.push(tok);
-      }
-      rest = rest.slice(m[0].length);
-    }
-    if (wantReview) return { type: 'review', text: rest };
-    if (targets.length > 0) return { type: 'direct', targetKinds: targets, text: rest };
-    return { type: 'driver-only', text };
+    return { type: 'normal', text, targets: null };
   }
 
   // --- Roundtable Mode: 持久化圆桌面板（始终显示当前状态 + 历史）---
@@ -124,17 +107,15 @@
     }
   }
 
-  // --- Tri-state mode toggle (圆桌 / 主驾 / 投研) ---
+  // --- Two-state mode toggle (圆桌 / 投研) ---
 
   function _renderModeToggle(meeting) {
     if (!meeting) return '';
     const isRoundtable = !!meeting.roundtableMode;
-    const isDriver = !!meeting.driverMode;
     const isResearch = !!meeting.researchMode;
     return `
       <div class="mr-mode-toggle" role="radiogroup" aria-label="会议模式">
         <button type="button" class="mr-mode-btn ${isRoundtable ? 'active' : ''}" data-mode="roundtable" title="通用圆桌：三家平等讨论">圆桌</button>
-        <button type="button" class="mr-mode-btn ${isDriver ? 'active' : ''}" data-mode="driver" title="主驾模式：Claude 编码 + 副驾审查">主驾</button>
         <button type="button" class="mr-mode-btn ${isResearch ? 'active' : ''}" data-mode="research" title="投研圆桌：A 股专题">投研</button>
       </div>
     `;
@@ -149,7 +130,7 @@
         try {
           // 切到非 roundtable 时，先调 toggle-roundtable-mode 把 roundtableMode 标志置 false。
           // 注意：enabled=false 只切状态字段，不清理文件——prompt/covenant/private 文件统一在
-          // close-meeting (main.js:605-616) 时清理，避免用户切换模式查看其他视图时丢私聊历史。
+          // close-meeting 时清理，避免用户切换模式查看其他视图时丢私聊历史。
           if (meeting.roundtableMode && mode !== 'roundtable') {
             try {
               await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: false });
@@ -161,10 +142,6 @@
             // 通用圆桌：走 toggle-roundtable-mode（含 prompt 文件写盘 + mutex 互斥）
             const res = await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: true });
             if (res && !res.ok) console.warn('[mode-toggle] roundtable failed:', res.error);
-          } else if (mode === 'driver') {
-            // 主驾 / 投研：复用 update-meeting-sync（互斥逻辑由 core/meeting-room.js updateMeeting 处理）
-            const ok = await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { driverMode: true } });
-            if (!ok) console.warn('[mode-toggle] driver failed: update-meeting-sync returned falsy');
           } else if (mode === 'research') {
             const covenantText = (meeting.covenantText && typeof meeting.covenantText === 'string') ? meeting.covenantText : '';
             const ok = await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { researchMode: true, covenantText } });
@@ -307,7 +284,7 @@
     const firstRunHint = state.turns.length === 0
       ? `<div class="mr-rt-firstrun-hint">⏱ <strong>首次发送较慢</strong>（约 25 秒）— 三家 CLI 需要冷启动 + OAuth 验证。后续轮次会快很多。</div>`
       : '';
-    const titleText = (meeting && meeting.researchMode) ? '投研圆桌' : '圆桌讨论';
+    const titleText = meeting && meeting.researchMode ? '投研圆桌' : '圆桌讨论';
     return `
       <div class="mr-rt-header">
         <span class="mr-rt-title">${titleText}</span>
@@ -328,7 +305,7 @@
   // 此时 server state 真实状态（含 idle）才被采纳。
   // partialBy 单独保留：轮中单家完成 IPC 推 partial-update，这是轮内增量，独立处理。
   async function refreshRoundtablePanel(meeting) {
-    if (!meeting || (!meeting.researchMode && !meeting.roundtableMode)) { _removeRtPanel(); return; }
+    if (!_isPanelCapableMeeting(meeting)) { _removeRtPanel(); return; }
     let state;
     try {
       state = await ipcRenderer.invoke('roundtable:get-state', { meetingId: meeting.id });
@@ -585,91 +562,16 @@
     return null;
   }
 
-  function getCopilotSids(meeting) {
-    if (!meeting || !meeting.subSessions) return [];
-    return meeting.subSessions.filter(sid => {
-      if (sid === meeting.driverSessionId) return false;
-      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
-      return s && s.status !== 'dormant';
-    });
-  }
-
-  // --- Driver Mode: trigger review (thin renderer layer, logic in main.js executeReview) ---
-  async function triggerReview(meeting, userText, triggerType) {
-    renderReviewBanner(meeting, { status: 'pending' });
-    try {
-      const result = await ipcRenderer.invoke('driver-execute-review', {
-        meetingId: meeting.id, userText, triggerType,
-      });
-      if (result.status === 'completed' && result.reviewId) {
-        meeting.pendingReviewId = result.reviewId;
-        meetingData[meeting.id] = meeting;
-      }
-      renderReviewBanner(meeting, result);
-    } catch (e) {
-      console.error('[driver] review failed:', e.message);
-      renderReviewBanner(meeting, { status: 'error', reviewers: {} });
-    }
-  }
-
-  // --- Driver Mode: render review banner (status notification, no verdict parsing) ---
-  function renderReviewBanner(meeting, result) {
-    let bar = document.getElementById('mr-review-bar');
-    if (!bar) {
-      bar = document.createElement('div');
-      bar.id = 'mr-review-bar';
-      const container = terminalsEl();
-      if (container && container.parentElement) {
-        container.parentElement.insertBefore(bar, container);
-      }
-    }
-
-    if (result.status === 'pending') {
-      bar.innerHTML = '<div class="mr-review-header">审查中...</div>';
-      bar.className = 'mr-review-bar';
-      return;
-    }
-
-    if (result.status === 'busy') {
-      bar.innerHTML = '<div class="mr-review-header">审查进行中，请等待当前审查完成</div>';
-      bar.className = 'mr-review-bar';
-      setTimeout(() => { if (bar.parentElement) bar.remove(); }, 5000);
-      return;
-    }
-
-    const reviewers = result.reviewers ? Object.values(result.reviewers) : [];
-    let html = '<div class="mr-review-header">审查完成</div>';
-    for (const r of reviewers) {
-      const statusLabel = r.status === 'completed' ? '完成' : r.status === 'timeout' ? '超时' : '异常';
-      const summary = (r.text || '').trim().slice(0, 200);
-      html += `<div class="mr-review-item mr-review-neutral">
-        <span class="mr-review-agent">${escapeHtml(r.label || 'AI')}</span>
-        <span class="mr-review-verdict">${escapeHtml(statusLabel)}</span>
-        <span class="mr-review-reason">${escapeHtml(summary)}${(r.text || '').length > 200 ? '…' : ''}</span>
-      </div>`;
-    }
-    bar.innerHTML = html;
-    bar.className = 'mr-review-bar';
-    setTimeout(() => { if (bar.parentElement) bar.remove(); }, 15000);
-  }
-
   function escapeHtml(str) {
     if (str == null) return '';
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  // --- Driver Mode: listen for auto-review events from Claude ---
-  ipcRenderer.on('driver-auto-review', (_event, { meetingId, triggerType, claudeText }) => {
-    const meeting = meetingData[meetingId];
-    if (!meeting || !meeting.driverMode) return;
-    triggerReview(meeting, claudeText || '', triggerType);
-  });
-
   // Roundtable 轮次完成：清掉 partialBy + 乐观标记（防止 turn-complete 比 IPC.then 更早），
   // 从 IPC 拉最终 state（含 turn N 已持久化）
   ipcRenderer.on('roundtable-turn-complete', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
-    if (meeting && (meeting.researchMode || meeting.roundtableMode) && meetingId === activeMeetingId) {
+    if (_isPanelCapableMeeting(meeting) && meetingId === activeMeetingId) {
       delete _rtOptimisticTurn[meetingId];
       const cached = _rtPanelState[meetingId];
       if (cached) {
@@ -686,7 +588,7 @@
   // Roundtable state 元数据变更（如 summary 启动写入 currentSummarizerKind）
   ipcRenderer.on('roundtable-state-update', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
-    if (meeting && (meeting.researchMode || meeting.roundtableMode) && meetingId === activeMeetingId) {
+    if (_isPanelCapableMeeting(meeting) && meetingId === activeMeetingId) {
       refreshRoundtablePanel(meeting);
     }
   });
@@ -694,7 +596,7 @@
   // Roundtable 单家 partial-update：单卡片立即刷新，不等所有家完成
   ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text }) => {
     const meeting = meetingData[meetingId];
-    if (!meeting || (!meeting.researchMode && !meeting.roundtableMode) || meetingId !== activeMeetingId) return;
+    if (!_isPanelCapableMeeting(meeting) || meetingId !== activeMeetingId) return;
     const cached = _rtPanelState[meetingId];
     if (!cached) {
       // 首次：直接 refresh（拉 state），下次 partial 才能本地更新
@@ -708,173 +610,6 @@
     panel.innerHTML = _renderRtPanelHtml(cached, meeting);
     _bindRtPanelEvents(panel, meeting);
   });
-
-  // --- Driver Mode: @-mention 弹框状态机 ---
-  // 用户在 mr-input-box 输入 `@` 后弹出选项框，方向键/Tab/Enter 选择，避免手敲。
-  // 仅在 driverMode === true 时启用（普通模式没有 @ 路由语义）。
-  const mentionState = {
-    active: false,
-    items: [],
-    filtered: [],
-    selectedIdx: 0,
-    query: '',
-    atIndex: -1,
-    textNode: null,
-  };
-
-  function resetMention() {
-    mentionState.active = false;
-    mentionState.items = [];
-    mentionState.filtered = [];
-    mentionState.selectedIdx = 0;
-    mentionState.query = '';
-    mentionState.atIndex = -1;
-    mentionState.textNode = null;
-    const popup = document.getElementById('mr-mention-popup');
-    if (popup) {
-      popup.style.display = 'none';
-      popup.innerHTML = '';
-    }
-  }
-
-  // 主驾模式下 @ 弹框的候选项。@review 走全审查，其他三个直送对应 PTY。
-  function buildMentionItems(meeting) {
-    const items = [];
-    items.push({ id: 'review', label: 'review', subtitle: '全审查（Gemini + Codex）', iconText: '审', iconCls: 'icon-review' });
-    if (findSessionByKind(meeting, 'gemini')) {
-      items.push({ id: 'gemini', label: 'gemini', subtitle: '架构副驾（直送）', iconText: 'G', iconCls: 'icon-gemini' });
-    }
-    if (findSessionByKind(meeting, 'codex')) {
-      items.push({ id: 'codex', label: 'codex', subtitle: '代码副驾（直送）', iconText: 'C', iconCls: 'icon-codex' });
-    }
-    if (findSessionByKind(meeting, 'claude')) {
-      items.push({ id: 'claude', label: 'claude', subtitle: '主驾（默认目标）', iconText: 'CL', iconCls: 'icon-claude' });
-    }
-    return items;
-  }
-
-  function filterMention(query) {
-    const q = (query || '').toLowerCase();
-    if (!q) return mentionState.items.slice();
-    return mentionState.items.filter(it =>
-      it.label.toLowerCase().includes(q) || it.id.toLowerCase().includes(q)
-    );
-  }
-
-  function renderMentionPopup() {
-    const popup = document.getElementById('mr-mention-popup');
-    if (!popup) return;
-    const items = mentionState.filtered;
-    if (items.length === 0) { resetMention(); return; }
-    if (mentionState.selectedIdx >= items.length) mentionState.selectedIdx = 0;
-    popup.innerHTML = items.map((it, i) => `
-      <div class="mr-mention-item ${i === mentionState.selectedIdx ? 'active' : ''}" data-idx="${i}">
-        <span class="mr-mention-icon ${it.iconCls}">${escapeHtml(it.iconText)}</span>
-        <span class="mr-mention-name">@${escapeHtml(it.label)}</span>
-        <span class="mr-mention-sub">${escapeHtml(it.subtitle)}</span>
-      </div>
-    `).join('');
-    popup.style.display = 'block';
-    const activeEl = popup.querySelector('.mr-mention-item.active');
-    if (activeEl && activeEl.scrollIntoView) {
-      activeEl.scrollIntoView({ block: 'nearest' });
-    }
-  }
-
-  // 检测光标位置前是否刚输入了 `@xxx`，是的话激活弹框
-  function detectMention(meeting) {
-    if (!meeting || !meeting.driverMode) { resetMention(); return; }
-    const inputBox = document.getElementById('mr-input-box');
-    if (!inputBox) { resetMention(); return; }
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) { resetMention(); return; }
-    const range = sel.getRangeAt(0);
-    if (!range.collapsed) { resetMention(); return; }
-    const node = range.startContainer;
-    if (!inputBox.contains(node) || node.nodeType !== Node.TEXT_NODE) {
-      resetMention();
-      return;
-    }
-    const offset = range.startOffset;
-    const text = node.nodeValue.slice(0, offset);
-    // 触发条件：行首或空白后紧跟 @xxx（光标在 xxx 末尾）
-    const m = text.match(/(^|\s)@([^\s@]*)$/);
-    if (!m) { resetMention(); return; }
-    const query = m[2];
-    const atIndex = offset - query.length - 1;
-
-    if (!mentionState.active) {
-      mentionState.items = buildMentionItems(meeting);
-      mentionState.selectedIdx = 0;
-      mentionState.active = true;
-    }
-    mentionState.query = query;
-    mentionState.atIndex = atIndex;
-    mentionState.textNode = node;
-    mentionState.filtered = filterMention(query);
-    renderMentionPopup();
-  }
-
-  function commitMention() {
-    const items = mentionState.filtered;
-    if (!items || items.length === 0) { resetMention(); return; }
-    const it = items[mentionState.selectedIdx] || items[0];
-    const node = mentionState.textNode;
-    const atIndex = mentionState.atIndex;
-    if (!node || atIndex < 0) { resetMention(); return; }
-    const text = node.nodeValue;
-    const sel = window.getSelection();
-    const caretOffset = (sel && sel.rangeCount && sel.getRangeAt(0).startContainer === node)
-      ? sel.getRangeAt(0).startOffset
-      : (atIndex + 1 + mentionState.query.length);
-    const before = text.slice(0, atIndex);
-    const after = text.slice(caretOffset);
-    const insertion = `@${it.label} `;
-    node.nodeValue = before + insertion + after;
-    const newOffset = before.length + insertion.length;
-    const range = document.createRange();
-    range.setStart(node, newOffset);
-    range.setEnd(node, newOffset);
-    sel.removeAllRanges();
-    sel.addRange(range);
-    resetMention();
-  }
-
-  function onMentionKeydown(e) {
-    if (!mentionState.active) return;
-    const n = mentionState.filtered.length;
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      if (n > 0) {
-        mentionState.selectedIdx = (mentionState.selectedIdx + 1) % n;
-        renderMentionPopup();
-      }
-      return;
-    }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      if (n > 0) {
-        mentionState.selectedIdx = (mentionState.selectedIdx - 1 + n) % n;
-        renderMentionPopup();
-      }
-      return;
-    }
-    if (e.key === 'Enter' || e.key === 'Tab') {
-      if (n > 0) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        commitMention();
-      }
-      return;
-    }
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      resetMention();
-    }
-  }
 
   const panelEl = () => document.getElementById('meeting-room-panel');
   const headerEl = () => document.getElementById('mr-header');
@@ -900,8 +635,8 @@
     setupInput(meeting);
     startMarkerPoll();
 
-    // 投研圆桌 / 通用圆桌：进入会议室即刷新持久化面板
-    if (meeting.researchMode || meeting.roundtableMode) {
+    // 两模式(通用/投研)进入会议室即刷新持久化面板
+    if (_isPanelCapableMeeting(meeting)) {
       refreshRoundtablePanel(meeting);
     } else {
       _removeRtPanel();
@@ -939,7 +674,7 @@
         renderHeader(updated);
         renderToolbar(updated);
         // 模式切换时同步刷新面板与终端容器可见性（E2E 修复）
-        if (updated.researchMode || updated.roundtableMode) {
+        if (_isPanelCapableMeeting(updated)) {
           refreshRoundtablePanel(updated);
         } else {
           _removeRtPanel();
@@ -949,12 +684,11 @@
         const prevSubs = prev ? prev.subSessions.join(',') : '';
         const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
         // 模式切换需强制重建终端 DOM：roundtableMode 时 renderTerminals 会清空 #mr-terminals，
-        // 切回 driver/research 时 a0561e3 的可见性切换只能 un-hide 容器但内部仍是空的，
+        // 切回 research 时 a0561e3 的可见性切换只能 un-hide 容器但内部仍是空的，
         // 必须 force re-render 才能恢复 xterm 实例。
         const modeChanged = prev && (
           (prev.roundtableMode || false) !== (updated.roundtableMode || false) ||
-          (prev.researchMode || false) !== (updated.researchMode || false) ||
-          (prev.driverMode || false) !== (updated.driverMode || false)
+          (prev.researchMode || false) !== (updated.researchMode || false)
         );
         if (prevSubs !== newSubs || modeChanged) {
           renderTerminals(updated);
@@ -987,23 +721,21 @@
         const statusDot = `<span class="mr-tab-status ${state}"></span>`;
         const newBadge = state === 'new-output' ? ' <span class="new-badge">NEW</span>' : '';
         const hasNewCls = state === 'new-output' ? ' has-new' : '';
-        const driverIcon = meeting.driverMode ? (sid === meeting.driverSessionId ? ' <span class="mr-role-icon" title="主驾">&#128663;</span>' : ' <span class="mr-role-icon" title="副驾">&#128065;</span>') : '';
-        return `<button class="${cls}${hasNewCls}" data-sid="${sid}">${statusDot}${escapeHtml(label)}${driverIcon}${badges ? ' ' + badges : ''} ${markerBadge}${newBadge}</button>`;
+        return `<button class="${cls}${hasNewCls}" data-sid="${sid}">${statusDot}${escapeHtml(label)}${badges ? ' ' + badges : ''} ${markerBadge}${newBadge}</button>`;
       }).join('');
       tabsHtml = `<div class="mr-tabs" id="mr-tabs">${tabs}</div>`;
     }
 
-    // 通用圆桌不展示 Focus / Blackboard 切换（layout 概念在该模式下无意义）；
-    // researchMode 保持原行为（按钮显示）以满足 C1：existing researchMode UI behavior MUST be preserved
-    const showLayoutButtons = !meeting.roundtableMode;
+    // 两模式(通用/投研)统一隐藏 Focus/Blackboard 按钮:
+    // 卡片+CLI 是唯一布局,blackboard 已彻底废弃。
+    const showLayoutButtons = !_isPanelCapableMeeting(meeting);
     const layoutButtonsHtml = showLayoutButtons ? `
-        <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>
-        <button class="mr-header-btn ${meeting.layout === 'blackboard' ? 'active' : ''}" id="mr-btn-blackboard">Blackboard</button>` : '';
+        <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>` : '';
 
     el.innerHTML = `
       <div class="mr-header-left">
         ${_renderModeToggle(meeting)}
-        <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>${meeting.driverMode ? '<span class="mr-driver-badge">Driver</span>' : ''}
+        <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
         ${tabsHtml}
       </div>
       <div class="mr-header-right">${layoutButtonsHtml}
@@ -1017,8 +749,6 @@
 
     const focusBtn = document.getElementById('mr-btn-focus');
     if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
-    const bbBtn = document.getElementById('mr-btn-blackboard');
-    if (bbBtn) bbBtn.addEventListener('click', () => setLayout(meeting.id, 'blackboard'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
     _bindModeToggle(el, meeting);
     document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
@@ -1134,7 +864,8 @@
 
   function applyModeContainerVisibility(meeting, container) {
     if (!container) return;
-    // 仅通用圆桌隐藏 3-xterm 容器；researchMode 保持原行为（C1）
+    // 通用圆桌:卡片+CLI 是全部 UI,隐藏 xterm 容器。
+    // 投研圆桌:保持 xterm + panel 双视图(C1 红线,用户最满意的形态,不动)。
     if (meeting && meeting.roundtableMode) {
       container.classList.add('mr-terminals-hidden');
     } else {
@@ -1152,18 +883,10 @@
     }
     container.innerHTML = '';
     applyModeContainerVisibility(meeting, container);
-    // 通用圆桌：3-xterm 终端不渲染（圆桌专属面板由 refreshRoundtablePanel 渲染）；
-    // researchMode 保持原行为（终端继续渲染）以满足 C1
+    // 通用圆桌:卡片+CLI 由 refreshRoundtablePanel 渲染,xterm 不渲染。
+    // 投研圆桌:保留 xterm 渲染(C1 不动)。
     if (meeting && meeting.roundtableMode) {
       subTerminals = {};
-      return;
-    }
-    if (meeting.layout === 'blackboard') {
-      container.className = 'mr-terminals mr-blackboard';
-      subTerminals = {};
-      if (typeof MeetingBlackboard !== 'undefined') {
-        MeetingBlackboard.renderBlackboard(meeting, container);
-      }
       return;
     }
     container.className = 'mr-terminals focus-mode';
@@ -1228,7 +951,6 @@
       }
       if (changed) {
         updateMarkerBadges(meeting);
-        if (_divergenceEnabled) checkDivergence(meeting);
       }
     }, 2000);
   }
@@ -1455,15 +1177,9 @@
     const el = toolbarEl();
     if (!el) return;
 
-    if (meeting.layout === 'blackboard') {
-      if (typeof MeetingBlackboard !== 'undefined') {
-        MeetingBlackboard.renderBlackboardToolbar(meeting, el);
-      }
-      return;
-    }
-
-    // researchMode / roundtableMode 专属 toolbar：群策群力 / 总结发言（不展示主驾的"同步/自动同步/分歧检测"）
-    if (meeting.researchMode || meeting.roundtableMode) {
+    // Module C 后 blackboard layout 已废弃,layout 字段只剩 'focus' 一种语义。
+    // 两模式(通用/投研)统一 toolbar：群策群力 / 总结发言。
+    if (_isPanelCapableMeeting(meeting)) {
       const subs = _getRtSubInfo(meeting);
       const opts = ['claude', 'gemini', 'codex']
         .filter(k => subs[k])
@@ -1504,51 +1220,9 @@
       return;
     }
 
-    const summaryToggle = meeting.driverMode
-      ? `<div class="mr-sync-toggle ${_driverSummaryEnabled ? 'active' : ''}" id="mr-summary-toggle"><span>Claude 摘要: ${_driverSummaryEnabled ? '开' : '关'}</span></div>`
-      : '';
-
-    el.innerHTML = `
-      <button class="mr-header-btn" id="mr-sync-btn">⟳ 同步</button>
-      <div class="mr-sync-toggle ${meeting.syncContext ? 'active' : ''}" id="mr-sync-toggle">
-        <span>自动同步: ${meeting.syncContext ? '开' : '关'}</span>
-      </div>
-      <div class="mr-sync-toggle ${_divergenceEnabled ? 'active' : ''}" id="mr-divergence-toggle">
-        <span>分歧检测: ${_divergenceEnabled ? '开' : '关'}</span>
-      </div>
-      ${summaryToggle}
-    `;
-
-    document.getElementById('mr-sync-toggle').addEventListener('click', () => {
-      meeting.syncContext = !meeting.syncContext;
-      ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { syncContext: meeting.syncContext } });
-      renderToolbar(meeting);
-    });
-
-    const summaryEl = document.getElementById('mr-summary-toggle');
-    if (summaryEl) {
-      summaryEl.addEventListener('click', () => {
-        _driverSummaryEnabled = !_driverSummaryEnabled;
-        renderToolbar(meeting);
-      });
-    }
-
-    document.getElementById('mr-divergence-toggle').addEventListener('click', () => {
-      _divergenceEnabled = !_divergenceEnabled;
-      renderToolbar(meeting);
-      if (_divergenceEnabled) checkDivergence(meeting);
-      else {
-        _divergenceResult = null;
-        const bar = document.getElementById('mr-divergence-bar');
-        if (bar) bar.remove();
-      }
-    });
-
-    document.getElementById('mr-sync-btn').addEventListener('click', () => {
-      if (typeof MeetingBlackboard !== 'undefined' && MeetingBlackboard.handleSyncFromFocus) {
-        MeetingBlackboard.handleSyncFromFocus(meeting);
-      }
-    });
+    // fallback toolbar:仅在老数据/异常 meeting(无 mode flag)出现,清空即可,
+    // 用户应通过模式 toggle 切到圆桌或投研以使用主功能。
+    el.innerHTML = '';
   }
 
   // --- Input & Broadcasting ---
@@ -1565,19 +1239,12 @@
       ? '输入投研问题，回车发送 → 三家本色独立回答（@debate / @summary @<who> 也可继续手输）'
       : (meeting.roundtableMode
         ? '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who> / @<who> 单聊'
-        : (meeting.driverMode
-          ? '输入 @ 选副驾，可同时 @gemini @codex'
-          : '输入消息...'));
+        : '输入消息...');
 
-    // researchMode / roundtableMode：隐藏目标选择（路由由 fanout/debate/summary/private 决定）
-    // driverMode：禁用目标选择（路由由 @command 决定）
+    // 两模式(通用/投研)统一隐藏目标选择(路由由 fanout/debate/summary/private/@command 决定)。
     if (targetSelect) {
-      if (meeting.researchMode || meeting.roundtableMode) {
+      if (_isPanelCapableMeeting(meeting)) {
         targetSelect.style.display = 'none';
-      } else if (meeting.driverMode) {
-        targetSelect.style.display = '';
-        targetSelect.style.opacity = '0.4';
-        targetSelect.style.pointerEvents = 'none';
       } else {
         targetSelect.style.display = '';
         targetSelect.style.opacity = '';
@@ -1585,7 +1252,7 @@
       }
     }
 
-    if (targetSelect && !meeting.researchMode && !meeting.roundtableMode) {
+    if (targetSelect && !_isPanelCapableMeeting(meeting)) {
       targetSelect.innerHTML = '<option value="all">全部</option>';
       for (const sid of meeting.subSessions) {
         const session = sessions ? sessions.get(sid) : null;
@@ -1634,44 +1301,12 @@
 
     sendBtn.addEventListener('click', doSend);
 
-    // @ 弹框：input 事件监听打字，keydown 优先让弹框处理方向键/Enter/Tab/Escape
-    inputBox.addEventListener('input', () => {
-      const m = meetingData[activeMeetingId];
-      if (m) detectMention(m);
-    });
-
     inputBox.addEventListener('keydown', (e) => {
-      // 弹框激活时优先消费方向键/Enter/Tab/Escape
-      if (mentionState.active) {
-        onMentionKeydown(e);
-        if (e.defaultPrevented) return;
-      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         doSend();
       }
     });
-
-    // 失焦关闭弹框（点击其他区域）
-    inputBox.addEventListener('blur', () => {
-      // 短暂延迟，让 popup 的 mousedown 先触发 commitMention
-      setTimeout(() => resetMention(), 150);
-    });
-
-    // 点击弹框项直接提交
-    const popup = document.getElementById('mr-mention-popup');
-    if (popup) {
-      popup.addEventListener('mousedown', (e) => {
-        const item = e.target.closest('.mr-mention-item');
-        if (item) {
-          e.preventDefault();
-          mentionState.selectedIdx = parseInt(item.dataset.idx || '0', 10);
-          commitMention();
-          // commitMention 后焦点回到 inputBox
-          inputBox.focus();
-        }
-      });
-    }
   }
 
   async function handleMeetingSend(text, meeting) {
@@ -1681,7 +1316,7 @@
     // 路由完全由 fanout/debate/summary 决定，不依赖 sendTarget/validTargets。
     // 必须在 validTargets 检查前判定，否则 researchMode 下 sendTarget = 'all' / subSessions 为空时会被拦掉。
     if (current.researchMode || current.roundtableMode) {
-      const cmd = parseDriverCommand(text, current);
+      const cmd = parseRoundtableCommand(text, current);
       // 公共轮次：fanout / debate / summary 走 orchestrator
       if (cmd.type === 'rt-fanout' || cmd.type === 'rt-debate' || cmd.type === 'rt-summary') {
         const mode = cmd.type === 'rt-fanout' ? 'fanout' : cmd.type === 'rt-debate' ? 'debate' : 'summary';
@@ -1771,51 +1406,6 @@
       return;
     }
 
-    // --- Driver Mode routing ---
-    if (current.driverMode) {
-      const cmd = parseDriverCommand(text, current);
-      if (cmd.type === 'review') {
-        triggerReview(current, cmd.text, 'user-review');
-        meeting.lastMessageTime = Date.now();
-        ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
-        return;
-      }
-      let driverTargets;
-      if (cmd.type === 'direct') {
-        const kinds = cmd.targetKinds || (cmd.targetKind ? [cmd.targetKind] : []);
-        const sids = [];
-        for (const kind of kinds) {
-          const sid = findSessionByKind(current, kind);
-          if (sid && !sids.includes(sid)) sids.push(sid);
-        }
-        driverTargets = sids;
-      } else {
-        driverTargets = current.driverSessionId ? [current.driverSessionId] : validTargets;
-      }
-
-      // Inject pendingReviewId hint when sending to Claude
-      let pendingHint = '';
-      if (current.pendingReviewId && driverTargets.includes(current.driverSessionId)) {
-        pendingHint = `[系统提示] 副驾审查已完成，请先读取 .arena/reviews/${current.pendingReviewId}.md 并处理。\n`;
-        current.pendingReviewId = null;
-        ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { pendingReviewId: null } });
-      }
-
-      for (const sessionId of driverTargets) {
-        const payload = pendingHint + (contextBySid[sessionId] || '') + (cmd.text || text);
-        ipcRenderer.send('terminal-input', { sessionId, data: payload });
-        const session = sessions ? sessions.get(sessionId) : null;
-        const baseDelay = session && session.kind === 'codex' ? 400 : 200;
-        const sizeDelay = Math.min(Math.floor(payload.length / 100) * 10, 500);
-        setTimeout(() => {
-          ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
-        }, baseDelay + sizeDelay);
-      }
-      meeting.lastMessageTime = Date.now();
-      ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
-      return;
-    }
-
     // --- Normal mode: Phase C send to each target ---
     for (const sessionId of validTargets) {
       const payload = (contextBySid[sessionId] || '') + text;
@@ -1831,10 +1421,6 @@
     meeting.lastMessageTime = Date.now();
     ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
     _contextCompressCache.clear();
-    _divergenceResult = null;
-    _divergenceHash = '';
-    const divBar = document.getElementById('mr-divergence-bar');
-    if (divBar) divBar.remove();
   }
 
   // Format incremental-context turns as a clear "meeting sync" prefix the AI can
@@ -1906,102 +1492,6 @@
       hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
     }
     return hash.toString(36);
-  }
-
-  // --- Divergence Detection ---
-
-  async function checkDivergence(meeting) {
-    if (!_divergenceEnabled) return;
-    let doneCount = 0;
-    for (const sid of meeting.subSessions) {
-      if (_markerStatusCache[sid] === 'done') doneCount++;
-    }
-    if (doneCount < 2) {
-      _divergenceResult = null;
-      renderDivergenceBar(meeting);
-      return;
-    }
-
-    const hashes = [];
-    for (const sid of meeting.subSessions) {
-      const content = await ipcRenderer.invoke('quick-summary', sid);
-      hashes.push(simpleHash(content || ''));
-    }
-    const hash = hashes.join('-');
-    if (hash === _divergenceHash && _divergenceResult) {
-      renderDivergenceBar(meeting);
-      return;
-    }
-
-    _divergenceResult = await ipcRenderer.invoke('detect-divergence', { meetingId: meeting.id });
-    _divergenceHash = hash;
-    renderDivergenceBar(meeting);
-  }
-
-  function renderDivergenceBar(meeting) {
-    let bar = document.getElementById('mr-divergence-bar');
-    if (!_divergenceEnabled || !_divergenceResult) {
-      if (bar) bar.remove();
-      return;
-    }
-
-    if (!bar) {
-      bar = document.createElement('div');
-      bar.id = 'mr-divergence-bar';
-      const container = terminalsEl();
-      if (container) container.parentElement.insertBefore(bar, container);
-    }
-
-    const { consensus = [], divergence = [] } = _divergenceResult;
-    let html = '';
-
-    if (divergence.length > 0) {
-      html += `<div class="mr-div-header mr-div-warn">⚠ ${divergence.length} 个分歧点</div>`;
-      html += '<div class="mr-div-cards">';
-      for (const d of divergence) {
-        const positions = Object.entries(d.positions || {})
-          .map(([k, v]) => `<span class="mr-div-pos"><b>${escapeHtml(k)}</b>: ${escapeHtml(v)}</span>`)
-          .join('');
-        html += `<div class="mr-div-card">
-          <div class="mr-div-topic">${escapeHtml(d.topic)}</div>
-          <div class="mr-div-positions">${positions}</div>
-          <div class="mr-div-actions">
-            <button class="mr-div-ask" data-q="${escapeHtml(d.suggestedQuestion || '')}" data-target="all">追问全部</button>
-            ${meeting.subSessions.map(sid => {
-              const s = sessions ? sessions.get(sid) : null;
-              const label = s ? (s.kind || 'AI') : 'AI';
-              return `<button class="mr-div-ask" data-q="${escapeHtml(d.suggestedQuestion || '')}" data-target="${sid}">问 ${escapeHtml(label)}</button>`;
-            }).join('')}
-          </div>
-        </div>`;
-      }
-      html += '</div>';
-    }
-
-    if (consensus.length > 0) {
-      html += `<div class="mr-div-header mr-div-ok">✓ ${consensus.length} 个共识点</div>`;
-      html += '<div class="mr-div-consensus">' + consensus.map(c => `<span class="mr-div-consensus-item">${escapeHtml(c)}</span>`).join('') + '</div>';
-    }
-
-    bar.innerHTML = html;
-
-    bar.querySelectorAll('.mr-div-ask').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const question = btn.dataset.q;
-        const target = btn.dataset.target;
-        const inputBox = document.getElementById('mr-input-box');
-        if (inputBox && question) inputBox.textContent = question;
-        if (target !== 'all') {
-          meeting.sendTarget = target;
-        } else {
-          meeting.sendTarget = 'all';
-        }
-        ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { sendTarget: meeting.sendTarget } });
-        const sel = document.getElementById('mr-input-target');
-        if (sel) sel.value = meeting.sendTarget;
-        if (inputBox) inputBox.focus();
-      });
-    });
   }
 
   // --- Quote (Right-click) ---
@@ -2163,6 +1653,5 @@
     getMeetingData,
     updateMeetingData,
     mountSubTerminal,
-    get _divergenceResult() { return _divergenceResult; },
   };
 })();

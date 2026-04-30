@@ -18,7 +18,6 @@ const { TranscriptTap } = require('./core/transcript-tap');
 const { createUsageFilter } = require('./core/usage-filter.js');
 const transcriptTap = new TranscriptTap();
 const { DeepSummaryService } = require('./core/deep-summary-service.js');
-const driverMode = require('./core/driver-mode.js');
 const researchMode = require('./core/research-mode.js');
 const generalRoundtableMode = require('./core/general-roundtable-mode.js');
 const generalRoundtablePrivateStore = require('./core/general-roundtable-private-store.js');
@@ -314,9 +313,7 @@ transcriptTap.on('turn-complete', ({ hubSessionId, text, completedAt }) => {
   if (turn) {
     sendToRenderer('meeting-timeline-updated', { meetingId: session.meetingId, turn });
   }
-  // Driver-mode auto-review now flows through MCP tool calls (request_review /
-  // request_danger_review) → hookServer /api/driver/request-review → driver-auto-review IPC.
-  // String-based detection has been removed (误触发 + 漏触发 + 不可观测).
+  // (Driver-mode auto-review removed when driver mode was deprecated.)
 });
 
 // Persist resume meta when transcript-tap binds a sub-session to its native CLI sid.
@@ -434,8 +431,10 @@ ipcMain.handle('create-session', (_e, arg) => {
 
 // --- Meeting Room IPC ---
 
-ipcMain.handle('create-meeting', () => {
-  const meeting = meetingManager.createMeeting();
+ipcMain.handle('create-meeting', (_e, opts) => {
+  // opts: { mode?: 'general' | 'research' }
+  // 兼容老调用(无参数 / 旧前端)→ createMeeting 默认 'general'。
+  const meeting = meetingManager.createMeeting(opts || {});
   sendToRenderer('meeting-created', { meeting });
   return meeting;
 });
@@ -444,34 +443,7 @@ ipcMain.handle('add-meeting-sub', async (_e, { meetingId, kind, opts }) => {
   const meeting = meetingManager.getMeeting(meetingId);
   let sessionOpts = { ...(opts || {}), meetingId };
 
-  // arena-memory: 记录每种 audience 注入的 prompt 文件路径，session 创建后取出 cwd 再注入。
-  let driverPromptFile = null;
-  let geminiPromptFile = null;
-  let codexPromptFile = null;
-
-  if (meeting && meeting.driverMode) {
-    const hubDataDir = getHubDataDir();
-    if (kind === 'claude') {
-      // hookPort 是主驾模式的硬依赖：MCP server 通过 HTTP 回调到 hookServer 触发审查。
-      // 没有 hookPort，request_review/request_danger_review 工具调用全部失败，
-      // 但 Claude 仍被指令"必须调用"——安全约束失效。所以无 hookPort 时退化为
-      // 普通 Claude session（不注入 driver prompt 也不挂 MCP），用户能看到 console.warn。
-      if (hookPort) {
-        sessionOpts.appendSystemPromptFile = driverMode.writeDriverPromptFile(hubDataDir, meetingId);
-        sessionOpts.mcpConfigFile = driverMode.writeDriverMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN);
-        driverPromptFile = sessionOpts.appendSystemPromptFile;
-      } else {
-        console.warn(`[hub] driver-mode Claude session in meeting ${meetingId} but hookPort unavailable — falling back to plain Claude (no driver rules, no MCP tools). Restart Hub or check port 3456-3460 availability.`);
-      }
-    } else if (kind === 'gemini') {
-      const gemPrompt = driverMode.writeCopilotPromptFile(hubDataDir, meetingId, 'gemini');
-      sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: gemPrompt };
-      geminiPromptFile = gemPrompt;
-    } else if (kind === 'codex') {
-      sessionOpts.codexInstructionFile = driverMode.writeCopilotPromptFile(hubDataDir, meetingId, 'codex');
-      codexPromptFile = sessionOpts.codexInstructionFile;
-    }
-  } else if (meeting && meeting.researchMode) {
+  if (meeting && meeting.researchMode) {
     // 投研圆桌模式：三家平等注入同一份 system prompt（rules + 用户公约合成）。
     // Sprint 1 范围：仅 prompt 文件注入。MCP 工具集 / 轮次状态机在后续 Sprint。
     const hubDataDir = getHubDataDir();
@@ -534,60 +506,6 @@ ipcMain.handle('add-meeting-sub', async (_e, { meetingId, kind, opts }) => {
     return null;
   }
 
-  if (meeting && meeting.driverMode && kind === 'claude' && !meeting.driverSessionId) {
-    meetingManager.updateMeeting(meetingId, { driverSessionId: session.id });
-  }
-
-  // arena-memory: 注入会议室共识到 prompt 尾部。Claude 启动有 200ms 防抖延迟，
-  // 同步写盘完全来得及。Gemini/Codex 副驾继承 driver session 的 cwd（meet 是
-  // 共识的物理位置，没 driver 时退回到 session 自己的 cwd 兜底）。
-  if (driverPromptFile) {
-    try {
-      const arenaInjector = require('./core/arena-memory/injector');
-      const arenaStore = require('./core/arena-memory/store');
-      const cwd = session && session.cwd;
-      if (cwd) {
-        const block = await arenaInjector.composeMemoryBlock({ projectCwd: cwd });
-        arenaInjector.appendMemoryToPromptFile(driverPromptFile, block);
-        await arenaStore.appendEpisode(cwd, { type: 'injection', meetingId, audience: 'driver', tokens: block.length });
-      }
-    } catch (e) {
-      console.error('[hub] arena-memory injection (driver) failed:', e.message);
-    }
-  }
-  if (geminiPromptFile) {
-    try {
-      const arenaInjector = require('./core/arena-memory/injector');
-      const arenaStore = require('./core/arena-memory/store');
-      const meet = meetingManager.getMeeting(meetingId);
-      const driverSess = meet && meet.driverSessionId ? sessionManager.getSession(meet.driverSessionId) : null;
-      const cwd = (driverSess && driverSess.cwd) || (session && session.cwd);
-      if (cwd) {
-        const block = await arenaInjector.composeMemoryBlock({ projectCwd: cwd });
-        arenaInjector.appendMemoryToPromptFile(geminiPromptFile, block);
-        await arenaStore.appendEpisode(cwd, { type: 'injection', meetingId, audience: 'gemini', tokens: block.length });
-      }
-    } catch (e) {
-      console.error('[hub] arena-memory injection (gemini) failed:', e.message);
-    }
-  }
-  if (codexPromptFile) {
-    try {
-      const arenaInjector = require('./core/arena-memory/injector');
-      const arenaStore = require('./core/arena-memory/store');
-      const meet = meetingManager.getMeeting(meetingId);
-      const driverSess = meet && meet.driverSessionId ? sessionManager.getSession(meet.driverSessionId) : null;
-      const cwd = (driverSess && driverSess.cwd) || (session && session.cwd);
-      if (cwd) {
-        const block = await arenaInjector.composeMemoryBlock({ projectCwd: cwd });
-        arenaInjector.appendMemoryToPromptFile(codexPromptFile, block);
-        await arenaStore.appendEpisode(cwd, { type: 'injection', meetingId, audience: 'codex', tokens: block.length });
-      }
-    } catch (e) {
-      console.error('[hub] arena-memory injection (codex) failed:', e.message);
-    }
-  }
-
   registerSessionForTap(session);
   sendToRenderer('session-created', { session });
   const freshMeeting = meetingManager.getMeeting(meetingId);
@@ -608,194 +526,11 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
   for (const sid of subIds) {
     sessionManager.closeSession(sid);
   }
-  driverMode.cleanupPromptFiles(getHubDataDir(), meetingId);
   researchMode.cleanupResearchFiles(getHubDataDir(), meetingId);
   generalRoundtableMode.cleanupGeneralRoundtableFiles(getHubDataDir(), meetingId);
   sendToRenderer('meeting-closed', { meetingId });
   return true;
 });
-
-// --- Driver Mode: review request ---
-// promptMap: { sid: prompt } for per-copilot role-specific prompts
-// Uses activity-based timeout: keeps waiting while copilot buffer is growing (streaming).
-// --- Driver Mode: unified review executor ---
-let _reviewInProgress = false;
-const REVIEW_WATCHDOG_MS = 600000; // 10 min
-
-async function executeReview(meetingId, { userText, triggerType }) {
-  if (_reviewInProgress) {
-    return { status: 'busy', reviewId: null, reviewers: {} };
-  }
-  _reviewInProgress = true;
-  const reviewId = `review-${Date.now()}`;
-  try {
-    const meeting = meetingManager.getMeeting(meetingId);
-    if (!meeting || !meeting.driverMode) return { status: 'error', reviewId, reviewers: {} };
-
-    // Collect copilot SIDs
-    const copilotSids = (meeting.subSessions || []).filter(sid => {
-      if (sid === meeting.driverSessionId) return false;
-      const s = sessionManager.getSession(sid);
-      return s && s.status !== 'dormant';
-    });
-    if (copilotSids.length === 0) return { status: 'no_copilots', reviewId, reviewers: {} };
-
-    // Build label map
-    const labelMap = new Map();
-    for (const sid of meeting.subSessions) {
-      const s = sessionManager.getSession(sid);
-      if (s) labelMap.set(sid, { label: s.title || s.kind || 'AI', kind: s.kind });
-    }
-
-    // Write context.md snapshot (resolve to Claude's cwd, not Hub dir)
-    const claudeSession = meeting.driverSessionId ? sessionManager.getSession(meeting.driverSessionId) : null;
-    const projectCwd = claudeSession ? claudeSession.cwd : null;
-    if (projectCwd) {
-      meetingManager.loadTimelineLazy(meetingId);
-      const timeline = meetingManager.getTimeline(meetingId) || [];
-      const arenaDir = path.join(projectCwd, '.arena');
-      driverMode.writeContextSnapshot(arenaDir, timeline, labelMap);
-    }
-
-    // Get Claude's last output + recent timeline
-    const claudeLastOutput = meeting.driverSessionId
-      ? (transcriptTap.getLastAssistantText(meeting.driverSessionId) || '') : '';
-    meetingManager.loadTimelineLazy(meetingId);
-    const recentTimeline = driverMode.formatRecentTimeline(
-      meetingManager.getTimeline(meetingId) || [], labelMap, 10);
-
-    // Build per-copilot prompts
-    const promptMap = {};
-    for (const sid of copilotSids) {
-      const meta = labelMap.get(sid) || {};
-      promptMap[sid] = driverMode.buildReviewPrompt({
-        kind: meta.kind || 'unknown',
-        triggerType,
-        claudeLastOutput,
-        recentTimeline,
-        userText,
-      });
-    }
-
-    // Send prompts in parallel
-    const sentSids = [];
-    const READY_MARKERS = {
-      gemini: ['Type your message', 'YOLO'],
-      codex: ['gpt-5.5', 'Context 100%', 'send'],
-      claude: ['Type your message', '? for shortcuts'],
-    };
-    async function waitCliReady(sid, kind, maxMs = 15000) {
-      const need = READY_MARKERS[kind] || [];
-      const start = Date.now();
-      while (Date.now() - start < maxMs) {
-        const buf = sessionManager.getSessionBuffer(sid) || '';
-        if (need.length === 0) { if (buf.length >= 1000) return true; }
-        else if (need.some(m => buf.includes(m))) return true;
-        await new Promise(r => setTimeout(r, 300));
-      }
-      return false;
-    }
-    await Promise.all(copilotSids.map(async (sid) => {
-      const prompt = promptMap[sid];
-      if (!prompt) { console.log(`[review] skip ${sid}: no prompt`); return; }
-      const s = sessionManager.getSession(sid);
-      const kind = s ? s.kind : '?';
-      const ready = await waitCliReady(sid, kind, 15000);
-      const buf = sessionManager.getSessionBuffer(sid) || '';
-      if (!ready) { console.log(`[review] skip ${sid}: ${kind} not ready (buf=${buf.length})`); return; }
-      console.log(`[review] sending to ${kind} (${sid.slice(0,8)}), prompt=${prompt.length} chars, buf=${buf.length}`);
-      sessionManager.writeToSession(sid, prompt);
-      const baseDelay = s && s.kind === 'codex' ? 500 : 250;
-      const sizeDelay = Math.min(Math.floor(prompt.length / 100) * 10, 500);
-      await new Promise(r => setTimeout(r, baseDelay + sizeDelay));
-      sessionManager.writeToSession(sid, '\r');
-      sentSids.push(sid);
-      console.log(`[review] sent Enter to ${kind} (${sid.slice(0,8)})`);
-    }));
-
-    // Wait for turn-complete only from copilots that received prompts
-    if (sentSids.length === 0) {
-      console.log('[review] no prompts sent, returning empty');
-      return { status: 'no_prompts', reviewId, reviewers: {} };
-    }
-    console.log(`[review] waiting for turn-complete from ${sentSids.length} copilots`);
-    const results = await Promise.all(sentSids.map(sid => {
-      return new Promise(resolve => {
-        let settled = false;
-        const handler = (ev) => {
-          if (ev.hubSessionId !== sid || settled) return;
-          settled = true;
-          transcriptTap.removeListener('turn-complete', handler);
-          clearTimeout(watchdog);
-          const meta = labelMap.get(sid) || {};
-          resolve({ sid, label: meta.label || 'AI', status: 'completed', text: ev.text || '' });
-        };
-        transcriptTap.on('turn-complete', handler);
-        const watchdog = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          transcriptTap.removeListener('turn-complete', handler);
-          const meta = labelMap.get(sid) || {};
-          resolve({ sid, label: meta.label || 'AI', status: 'timeout', text: '' });
-        }, REVIEW_WATCHDOG_MS);
-      });
-    }));
-
-    // Write results to .arena/reviews/
-    if (projectCwd) {
-      const reviewsDir = path.join(projectCwd, '.arena', 'reviews');
-      try { fs.mkdirSync(reviewsDir, { recursive: true }); } catch {}
-      const lines = [`# 审查结果 (${new Date().toLocaleString('zh-CN')})`, `触发: ${triggerType}`, `焦点: ${userText || ''}`, ''];
-      for (const r of results) {
-        lines.push(`## ${r.label} [${r.status}]`, '', r.text || '(无输出)', '');
-      }
-      const filePath = path.join(reviewsDir, `${reviewId}.md`);
-      fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
-
-      // arena-memory: 解析副驾 [lesson]/[fact]/[decision] 标记 → 持久化
-      const parser = require('./core/arena-memory/marker-parser');
-      const arenaStore = require('./core/arena-memory/store');
-      const totalMarkers = { fact: 0, lesson: 0, decision: 0 };
-      for (const r of results) {
-        if (!r.text) continue;
-        // 通过 labelMap 取 kind（'gemini'/'codex'/...）比 r.label 可靠（label 可能是用户自定义 title）
-        const meta = labelMap.get(r.sid) || {};
-        const copilotKind = String(meta.kind || '').toLowerCase();
-        if (!['gemini', 'codex'].includes(copilotKind)) continue;
-        try {
-          const markers = parser.parseMarkers(r.text, copilotKind);
-          if (markers.length) {
-            await arenaStore.persistMarkers(projectCwd, markers, { source: `marker:${reviewId}` });
-            // 注：计数副驾说了什么，不区分 appendFact 是否 dedup（审计语义）
-            for (const m of markers) totalMarkers[m.kind] = (totalMarkers[m.kind] || 0) + 1;
-          }
-        } catch (e) {
-          console.error('[hub] arena-memory marker persist failed for', r.sid, ':', e.message);
-        }
-      }
-      try {
-        await arenaStore.appendEpisode(projectCwd, {
-          type: 'review_complete',
-          reviewId,
-          meetingId,
-          markerCounts: totalMarkers,
-        });
-      } catch (e) {
-        console.error('[hub] arena-memory review_complete episode failed:', e.message);
-      }
-    }
-
-    // Write summary to timeline
-    const summaryLines = results.map(r => `[${r.label}] (${r.status}) ${(r.text || '').slice(0, 200)}`);
-    const summaryText = `**审查完成**\n${summaryLines.join('\n')}`;
-    const turn = meetingManager.appendTurn(meetingId, 'user', summaryText, Date.now());
-    if (turn) sendToRenderer('meeting-timeline-updated', { meetingId, turn });
-
-    return { status: 'completed', reviewId, reviewers: Object.fromEntries(results.map(r => [r.sid, r])) };
-  } finally {
-    _reviewInProgress = false;
-  }
-}
 
 // =====================================================================
 // Roundtable Mode (Sprint 2): fanout / debate / summary 三种轮次
@@ -1050,56 +785,6 @@ ipcMain.handle('roundtable:get-state', (_e, { meetingId }) => {
   return orch.getState();
 });
 
-// IPC for renderer @review
-ipcMain.handle('driver-execute-review', async (_e, { meetingId, userText, triggerType }) => {
-  const result = await executeReview(meetingId, { userText, triggerType });
-  // Set pendingReview for @review path (not MCP path)
-  if (result.status === 'completed' && result.reviewId) {
-    const meeting = meetingManager.getMeeting(meetingId);
-    if (meeting) {
-      meetingManager.updateMeeting(meetingId, { pendingReviewId: result.reviewId });
-    }
-  }
-  // Notify renderer
-  sendToRenderer('driver-review-complete', { meetingId, result });
-  return result;
-});
-
-// --- Driver Mode: write context.md snapshot ---
-ipcMain.handle('driver-write-context', (_e, { meetingId, arenaDir }) => {
-  meetingManager.loadTimelineLazy(meetingId);
-  const timeline = meetingManager.getTimeline(meetingId);
-  const labelMap = new Map();
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (meeting) {
-    for (const sid of meeting.subSessions) {
-      const s = sessionManager.getSession(sid);
-      if (s) labelMap.set(sid, { label: s.title || s.kind || 'AI', kind: s.kind });
-    }
-  }
-  return driverMode.writeContextSnapshot(arenaDir, timeline || [], labelMap);
-});
-
-// --- Driver Mode: get recent timeline formatted ---
-ipcMain.handle('driver-recent-timeline', (_e, { meetingId, count }) => {
-  meetingManager.loadTimelineLazy(meetingId);
-  const timeline = meetingManager.getTimeline(meetingId);
-  const labelMap = new Map();
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (meeting) {
-    for (const sid of meeting.subSessions) {
-      const s = sessionManager.getSession(sid);
-      if (s) labelMap.set(sid, { label: s.title || s.kind || 'AI', kind: s.kind });
-    }
-  }
-  return driverMode.formatRecentTimeline(timeline || [], labelMap, count || 10);
-});
-
-// --- Driver Mode: get Claude summarize instruction ---
-ipcMain.handle('driver-summarize-instruction', () => {
-  return driverMode.SUMMARIZE_INSTRUCTION;
-});
-
 ipcMain.handle('get-ring-buffer', (_e, sessionId) => {
   return sessionManager.getSessionBuffer(sessionId);
 });
@@ -1219,9 +904,8 @@ ipcMain.handle('get-summary-scenes', () => {
   return summaryEngine.getScenes();
 });
 
-ipcMain.handle('build-injection', (_e, { summaries, userFollowUp }) => {
-  return summaryEngine.buildInjection(summaries, userFollowUp);
-});
+// build-injection IPC 历史用于 blackboard 用户输入合成注入子会话(meeting-blackboard.js)。
+// Module C 后 blackboard 已删除,该 handler 不再被任何前端代码调用,清理。
 
 ipcMain.on('update-meeting', (_e, { meetingId, fields }) => {
   const updated = meetingManager.updateMeeting(meetingId, fields);
@@ -1471,50 +1155,37 @@ ipcMain.handle('resume-session', async (_e, meta) => {
   const isClaudeCliResumable = isClaude || isDeepSeek;
   const isGeminiOrCodex = (meta.kind === 'gemini' || meta.kind === 'codex');
 
-  // If resuming a driver-mode Claude session, re-inject the rules + MCP config
-  // (--mcp-config works with --resume).
-  // hookPort 不可用时退化为普通 session（同 add-meeting-sub 的处理），避免 Claude
-  // 收到"必须调用 MCP 工具"指令但没有工具可调，让安全约束悬空。
-  let driverOpts = {};
-  let driverPromptFile = null;
-  if (isClaude && meta.meetingId) {
+  // resume 时根据会议模式重新注入 prompt 文件(research/general 公约)。
+  // 注意三家 CLI 各走自己的注入字段(与 add-meeting-sub 对齐):
+  //   Claude  → appendSystemPromptFile (CLI 参数)
+  //   Gemini  → extraEnv.GEMINI_SYSTEM_MD (env)
+  //   Codex   → codexInstructionFile (CLI 参数)
+  let resumeOpts = {};
+  if (meta.meetingId) {
     const meeting = meetingManager.getMeeting(meta.meetingId);
-    if (meeting && meeting.driverMode) {
-      if (hookPort) {
-        const hubDataDir = getHubDataDir();
-        driverOpts.appendSystemPromptFile = driverMode.writeDriverPromptFile(hubDataDir, meta.meetingId);
-        driverOpts.mcpConfigFile = driverMode.writeDriverMcpConfig(hubDataDir, meta.meetingId, hookPort, HOOK_TOKEN);
-        driverPromptFile = driverOpts.appendSystemPromptFile;
-      } else {
-        console.warn(`[hub] resuming driver-mode Claude session in meeting ${meta.meetingId} but hookPort unavailable — falling back to plain Claude (no driver rules, no MCP tools).`);
-      }
-    } else if (meeting && meeting.researchMode) {
+    let promptFile = null;
+    if (meeting && meeting.researchMode) {
       const hubDataDir = getHubDataDir();
       // resume 优先用 meeting.covenantText（已 restoreMeeting 恢复），snapshot 兜底
       const covenantText = (typeof meeting.covenantText === 'string' && meeting.covenantText.length > 0)
         ? meeting.covenantText
         : researchMode.readCovenantSnapshot(hubDataDir, meta.meetingId);
-      driverOpts.appendSystemPromptFile = researchMode.writeResearchPromptFile(hubDataDir, meta.meetingId, covenantText);
+      promptFile = researchMode.writeResearchPromptFile(hubDataDir, meta.meetingId, covenantText);
     } else if (meeting && meeting.roundtableMode) {
       const hubDataDir = getHubDataDir();
       const covenantText = (typeof meeting.generalRoundtableCovenant === 'string')
         ? meeting.generalRoundtableCovenant
         : generalRoundtableMode.readCovenantSnapshot(hubDataDir, meta.meetingId);
-      driverOpts.appendSystemPromptFile = generalRoundtableMode.writeGeneralRoundtablePromptFile(hubDataDir, meta.meetingId, covenantText);
+      promptFile = generalRoundtableMode.writeGeneralRoundtablePromptFile(hubDataDir, meta.meetingId, covenantText);
     }
-  }
-
-  // arena-memory: resume 时同样把当前 facts.md 注入 driver prompt 尾部。
-  // 用 meta.cwd 作为 projectCwd（resume 元数据里就有），命中后再下钻 createSession。
-  if (driverPromptFile && meta.cwd) {
-    try {
-      const arenaInjector = require('./core/arena-memory/injector');
-      const arenaStore = require('./core/arena-memory/store');
-      const block = await arenaInjector.composeMemoryBlock({ projectCwd: meta.cwd });
-      arenaInjector.appendMemoryToPromptFile(driverPromptFile, block);
-      await arenaStore.appendEpisode(meta.cwd, { type: 'injection', meetingId: meta.meetingId, audience: 'driver', tokens: block.length, via: 'resume' });
-    } catch (e) {
-      console.error('[hub] arena-memory injection (driver) failed:', e.message);
+    if (promptFile) {
+      if (isClaude) {
+        resumeOpts.appendSystemPromptFile = promptFile;
+      } else if (meta.kind === 'gemini') {
+        resumeOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
+      } else if (meta.kind === 'codex') {
+        resumeOpts.codexInstructionFile = promptFile;
+      }
     }
   }
 
@@ -1531,7 +1202,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
     geminiProjectRoot: meta.kind === 'gemini' ? (meta.geminiProjectRoot || null) : null,
     lastMessageTime: meta.lastMessageTime,
     lastOutputPreview: meta.lastOutputPreview,
-    ...driverOpts,
+    ...resumeOpts,
   });
   registerSessionForTap(session);
   sendToRenderer('session-created', { session });
@@ -1726,13 +1397,11 @@ const hookServer = http.createServer((req, res) => {
 
   const isHook = req.method === 'POST' && req.url.startsWith('/api/hook/');
   const isStatus = req.method === 'POST' && req.url === '/api/status';
-  const isDriverReview = req.method === 'POST' && req.url === '/api/driver/request-review';
-  const isDriverRemember = req.method === 'POST' && req.url === '/api/driver/remember';
   const isResearchFetchStock = req.method === 'POST' && req.url === '/api/research/fetch-stock';
   const isResearchFetchConcept = req.method === 'POST' && req.url === '/api/research/fetch-concept';
   const isResearchFetchSector = req.method === 'POST' && req.url === '/api/research/fetch-sector';
   const isResearchFetch = isResearchFetchStock || isResearchFetchConcept || isResearchFetchSector;
-  if (!isHook && !isStatus && !isDriverReview && !isDriverRemember && !isResearchFetch) {
+  if (!isHook && !isStatus && !isResearchFetch) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -1748,93 +1417,6 @@ const hookServer = http.createServer((req, res) => {
     if (tooBig) { res.writeHead(413); res.end('{}'); return; }
     let parsed;
     try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
-    // Driver-mode MCP callback (loopback). Token-protected since the MCP
-    // server runs as a child of Claude CLI — payload originates from Claude's
-    // tool_use call but is forwarded by our own driver-mcp-server.js process.
-    if (isDriverReview) {
-      if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
-      const { meetingId, isDanger, scope, open_risks, operation, files } = parsed;
-      const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-      if (!meeting || !meeting.driverMode) {
-        res.writeHead(400); res.end('{"error":"not driver mode"}'); return;
-      }
-      const triggerType = isDanger ? 'danger' : 'claude-request';
-      const claudeText = isDanger
-        ? `危险操作：${operation || ''}${files ? `\n受影响文件：${files}` : ''}`
-        : `${scope || ''}${open_risks ? `\n关注点：${open_risks}` : ''}`;
-      sendToRenderer('driver-auto-review', { meetingId, triggerType, claudeText });
-      res.writeHead(200); res.end('{"ok":true}');
-      return;
-    }
-    // Driver-mode arena_remember MCP callback (loopback). Persists facts /
-    // episodes into the project's .arena/memory/ directory via arena store.
-    if (isDriverRemember) {
-      try {
-        if (parsed.token !== HOOK_TOKEN) {
-          res.writeHead(403); res.end(JSON.stringify({ ok: false, error: 'invalid token' }));
-          return;
-        }
-        // Reject multi-line what/content (post-review I-1 from T2: LLM input
-        // arrives here, validate at boundary before reaching the store).
-        if (parsed.kind === 'fact' && parsed.what && /[\r\n]/.test(parsed.what)) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ ok: false, error: 'what must be single-line (no newlines)' }));
-          return;
-        }
-        if ((parsed.kind === 'lesson' || parsed.kind === 'decision')
-            && parsed.content && /[\r\n]/.test(parsed.content)) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ ok: false, error: 'content must be single-line (no newlines)' }));
-          return;
-        }
-        const meetingId = String(parsed.meetingId || '');
-        const meeting = meetingManager.getMeeting(meetingId);
-        if (!meeting || !meeting.driverSessionId) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ ok: false, error: 'meeting or driver session not found' }));
-          return;
-        }
-        const session = sessionManager.getSession(meeting.driverSessionId);
-        const projectCwd = session && session.cwd;
-        if (!projectCwd) {
-          res.writeHead(400);
-          res.end(JSON.stringify({ ok: false, error: 'no projectCwd' }));
-          return;
-        }
-        const arenaStore = require('./core/arena-memory/store');
-        if (parsed.kind === 'fact') {
-          await arenaStore.appendFact(projectCwd, {
-            what: parsed.what,
-            why: parsed.why,
-            status: parsed.status,
-            source: 'mcp:arena_remember',
-          });
-          await arenaStore.appendEpisode(projectCwd, {
-            type: 'remember',
-            kind: 'fact',
-            what: parsed.what,
-            meetingId,
-            source: 'mcp:arena_remember',
-          });
-        } else {
-          await arenaStore.appendEpisode(projectCwd, {
-            type: 'remember',
-            kind: parsed.kind,
-            content: parsed.content,
-            meetingId,
-            source: 'mcp:arena_remember',
-          });
-        }
-        res.writeHead(200);
-        res.end(JSON.stringify({ ok: true }));
-      } catch (e) {
-        console.error('[hub] /api/driver/remember error:', e.message);
-        res.writeHead(500);
-        res.end(JSON.stringify({ ok: false, error: e.message }));
-      }
-      return;
-    }
-
     // Research mode MCP callbacks (loopback)：fetch_lindang_stock / fetch_concept_stocks / fetch_sector_overview
     if (isResearchFetch) {
       if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
@@ -1879,11 +1461,11 @@ const hookServer = http.createServer((req, res) => {
         } else if (parsed.transcriptPath) {
           latestUserMessage = await readLastUserMessage(parsed.transcriptPath);
         }
-        // Feed the Claude transcript tap so the meeting-room blackboard gets
-        // the authoritative final assistant turn (replaces SM-START/END markers).
-        // Only fire on Stop events — UserPromptSubmit fires before the assistant
-        // has responded, so the transcript tail's last-assistant entry would be
-        // the previous turn and immediately trigger a stale update.
+        // Feed the Claude transcript tap so the Hub timeline (research/general)
+        // gets the authoritative final assistant turn. Only fire on Stop events
+        // — UserPromptSubmit fires before the assistant has responded, so the
+        // transcript tail's last-assistant entry would be the previous turn
+        // and immediately trigger a stale update.
         if (event === 'stop' && parsed.transcriptPath) {
           transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath).catch(() => {});
         }

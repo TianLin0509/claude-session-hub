@@ -131,18 +131,10 @@ function testUpdateMeetingMutexLoudFail() {
     () => mgr.updateMeeting(m.id, { roundtableMode: true, researchMode: true }),
     /Cannot set multiple modes to true simultaneously/
   );
-  assert.throws(
-    () => mgr.updateMeeting(m.id, { driverMode: true, researchMode: true }),
-    /Cannot set multiple modes to true simultaneously/
-  );
-  assert.throws(
-    () => mgr.updateMeeting(m.id, { roundtableMode: true, researchMode: true, driverMode: true }),
-    /Cannot set multiple modes to true simultaneously/
-  );
   console.log('  ✓ testUpdateMeetingMutexLoudFail');
 }
 
-// === meeting-room: 单个 true 时互斥关闭其他两个（合法路径） ===
+// === meeting-room: 单个 true 时互斥关闭另一个（合法路径） ===
 function testUpdateMeetingMutexHappyPath() {
   const { MeetingRoomManager } = require('../core/meeting-room.js');
   const mgr = new MeetingRoomManager();
@@ -151,25 +143,16 @@ function testUpdateMeetingMutexHappyPath() {
   // 默认 roundtableMode=true
   assert.strictEqual(m.roundtableMode, true);
   assert.strictEqual(m.researchMode, false);
-  assert.strictEqual(m.driverMode, false);
 
-  // 切到 researchMode → 关掉 roundtableMode 和 driverMode
+  // 切到 researchMode → 关掉 roundtableMode
   const r1 = mgr.updateMeeting(m.id, { researchMode: true });
   assert.strictEqual(r1.researchMode, true);
   assert.strictEqual(r1.roundtableMode, false);
-  assert.strictEqual(r1.driverMode, false);
 
-  // 切到 driverMode → 关掉 researchMode 和 roundtableMode
-  const r2 = mgr.updateMeeting(m.id, { driverMode: true });
-  assert.strictEqual(r2.driverMode, true);
+  // 切回 roundtableMode → 关掉 researchMode
+  const r2 = mgr.updateMeeting(m.id, { roundtableMode: true });
+  assert.strictEqual(r2.roundtableMode, true);
   assert.strictEqual(r2.researchMode, false);
-  assert.strictEqual(r2.roundtableMode, false);
-
-  // 切回 roundtableMode → 关掉其他
-  const r3 = mgr.updateMeeting(m.id, { roundtableMode: true });
-  assert.strictEqual(r3.roundtableMode, true);
-  assert.strictEqual(r3.researchMode, false);
-  assert.strictEqual(r3.driverMode, false);
 
   console.log('  ✓ testUpdateMeetingMutexHappyPath');
 }

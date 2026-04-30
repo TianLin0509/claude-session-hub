@@ -25,7 +25,8 @@
               <button class="new-session-option" data-kind="deepseek">DeepSeek</button>
               <button class="new-session-option" data-kind="powershell">PowerShell</button>
               <div class="new-session-divider"></div>
-              <button class="new-session-option" data-kind="meeting">🏢 会议室</button>
+              <button class="new-session-option" data-kind="meeting" data-meeting-mode="general">🌐 通用圆桌</button>
+              <button class="new-session-option" data-kind="meeting" data-meeting-mode="research">📊 投研圆桌</button>
             </div>
           </div>
           <button class="btn-resume-picker" id="btn-resume-picker" title="Resume a past session">↻</button>
@@ -112,7 +113,6 @@
         <select class="mr-target-select" id="mr-input-target" title="发送目标"></select>
         <div class="mr-input-box" id="mr-input-box" contenteditable="true" data-placeholder="输入消息..."></div>
         <button class="mr-send-btn" id="mr-send-btn" title="发送">▶</button>
-        <div class="mr-mention-popup" id="mr-mention-popup" style="display:none"></div>
       </div>
     </div>
     <div class="modal-overlay" id="resume-modal" style="display:none">
@@ -124,58 +124,6 @@
         </div>
         <div class="modal-body" id="resume-list">
           <div class="modal-empty">Scanning…</div>
-        </div>
-      </div>
-    </div>
-    <div class="modal-overlay" id="create-meeting-modal" style="display:none">
-      <div class="modal" style="max-width:520px">
-        <div class="modal-header">
-          <span class="modal-title">创建会议室</span>
-          <button class="modal-close" id="create-meeting-close" title="Close (Esc)">✕</button>
-        </div>
-        <div class="modal-body" style="padding:16px">
-          <label style="display:block;margin-bottom:8px;color:var(--text-secondary);font-size:13px">选择 AI 成员</label>
-          <div id="create-meeting-members" style="display:flex;flex-direction:column;gap:10px">
-            <label style="display:flex;align-items:center;gap:8px;color:var(--text-primary);font-size:14px;cursor:pointer">
-              <input type="checkbox" class="create-meeting-cb" data-kind="claude" checked>
-              Claude Code <span style="color:var(--text-secondary);font-size:12px">(Opus 4.7)</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;color:var(--text-primary);font-size:14px;cursor:pointer">
-              <input type="checkbox" class="create-meeting-cb" data-kind="gemini" checked>
-              Gemini CLI <span style="color:var(--text-secondary);font-size:12px">(3.1 Pro)</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;color:var(--text-primary);font-size:14px;cursor:pointer">
-              <input type="checkbox" class="create-meeting-cb" data-kind="codex" checked>
-              Codex CLI <span style="color:var(--text-secondary);font-size:12px">(GPT-5.5)</span>
-            </label>
-          </div>
-          <div id="create-meeting-mode" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border, #30363d)">
-            <label style="display:block;margin-bottom:8px;color:var(--text-secondary);font-size:13px">会议模式</label>
-            <div style="display:flex;gap:16px;flex-wrap:wrap">
-              <label style="display:flex;align-items:center;gap:6px;color:var(--text-primary);font-size:14px;cursor:pointer">
-                <input type="radio" name="meeting-mode" value="roundtable" checked> 通用圆桌
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;color:var(--text-primary);font-size:14px;cursor:pointer">
-                <input type="radio" name="meeting-mode" value="driver"> 主驾模式
-              </label>
-              <label style="display:flex;align-items:center;gap:6px;color:var(--text-primary);font-size:14px;cursor:pointer">
-                <input type="radio" name="meeting-mode" value="research"> 投研圆桌
-              </label>
-            </div>
-            <p id="meeting-mode-desc" style="color:var(--text-muted, #6b7280);font-size:12px;margin:6px 0 0">Claude 主驾执行，Gemini/Codex 仅审查副驾</p>
-          </div>
-          <div id="create-meeting-covenant" style="display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--border, #30363d)">
-            <label style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;color:var(--text-secondary);font-size:13px">
-              <span>房间公约（投研圆桌）</span>
-              <button id="create-meeting-covenant-reset" type="button" style="padding:2px 10px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);font-size:11px;cursor:pointer">重置默认</button>
-            </label>
-            <textarea id="create-meeting-covenant-text" style="width:100%;height:200px;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg, #0d1117);color:var(--text-primary);font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.5;resize:vertical" placeholder="加载默认模板中..."></textarea>
-            <p style="color:var(--text-muted, #6b7280);font-size:12px;margin:6px 0 0">三家共享。仅新会议室生效，老会议室不变。</p>
-          </div>
-          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px">
-            <button id="create-meeting-cancel" style="padding:6px 16px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer">取消</button>
-            <button id="create-meeting-confirm" style="padding:6px 16px;border-radius:6px;border:none;background:var(--accent, #6366f1);color:#fff;cursor:pointer">创建</button>
-          </div>
         </div>
       </div>
     </div>
@@ -201,7 +149,6 @@
   </div>
   <script src="renderer.js"></script>
   <script src="meeting-room.js"></script>
-  <script src="meeting-blackboard.js"></script>
   <script src="meeting-summary-modal.js"></script>
 
   <div id="pair-modal" class="pair-modal-overlay hidden">

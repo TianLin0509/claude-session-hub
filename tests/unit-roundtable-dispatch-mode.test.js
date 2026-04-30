@@ -30,7 +30,7 @@ function testHelperResearchMode() {
 
 function testHelperNeitherMode() {
   const m = { researchMode: false, roundtableMode: false };
-  assert.strictEqual(isRoundtableCapableMeeting(m), false, 'neither mode should be rejected');
+  assert.strictEqual(isRoundtableCapableMeeting(m), false, 'both-false should be rejected');
   console.log('  ✓ testHelperNeitherMode');
 }
 
@@ -74,36 +74,34 @@ function testMainJsUsesHelper() {
   console.log('  ✓ testMainJsUsesHelper');
 }
 
-function testCreateMeetingModalHtmlContract() {
-  // 弹窗 UI 入口必须与 createMeeting 默认 roundtableMode=true 对齐：
-  // - 通用圆桌 radio 存在且 checked；不再有 value="free"
-  // - 主驾/投研 radio 仍在
+function testCreateMeetingMenuContract() {
+  // +号菜单必须有三模式直接入口（通用/投研/主驾），各带 data-meeting-mode；
+  // 老的 #create-meeting-modal 已废弃,不再出现在 HTML 中。
   const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf-8');
-  assert.ok(
-    /name="meeting-mode"\s+value="roundtable"\s+checked/.test(html),
-    'create-meeting modal must default to roundtable radio'
-  );
-  assert.ok(html.includes('通用圆桌'), 'roundtable label "通用圆桌" must appear');
-  assert.ok(!/value="free"/.test(html), 'legacy value="free" must be removed');
-  assert.ok(/value="driver"/.test(html), 'driver radio must still exist');
-  assert.ok(/value="research"/.test(html), 'research radio must still exist');
-  console.log('  ✓ testCreateMeetingModalHtmlContract');
+  assert.ok(/data-meeting-mode="general"/.test(html), 'menu must have general mode entry');
+  assert.ok(/data-meeting-mode="research"/.test(html), 'menu must have research mode entry');
+  assert.ok(!/data-meeting-mode="driver"/.test(html), 'driver mode entry must be removed');
+  assert.ok(html.includes('通用圆桌'), 'menu label "通用圆桌" must appear');
+  assert.ok(html.includes('投研圆桌'), 'menu label "投研圆桌" must appear');
+  assert.ok(!html.includes('主驾会议'), 'legacy "主驾会议" label must be removed');
+  assert.ok(!/id="create-meeting-modal"/.test(html), 'legacy create-meeting modal must be removed');
+  console.log('  ✓ testCreateMeetingMenuContract');
 }
 
-function testRendererSubmitHasRoundtableBranch() {
-  // submitCreateMeeting 必须显式处理 isRoundtableMode 分支，而不是依赖 createMeeting 隐式默认。
-  // _syncMeetingModeUI 必须有 isRoundtable 描述文案。
+function testRendererCreateMeetingByMode() {
+  // createMeetingByMode 必须显式处理三 mode 分支,与后端 createMeeting({mode}) 契约对齐。
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf-8');
-  assert.ok(/isRoundtableMode\s*=\s*meetingMode\s*===\s*'roundtable'/.test(src),
-    'submitCreateMeeting must derive isRoundtableMode from radio value');
-  assert.ok(/else if\s*\(isRoundtableMode\)/.test(src),
-    'submitCreateMeeting must have an explicit roundtable branch');
-  assert.ok(/toggle-roundtable-mode'.*enabled:\s*true/s.test(src) ||
-            /'toggle-roundtable-mode'[\s\S]{0,200}enabled:\s*true/.test(src),
-    'roundtable branch must invoke toggle-roundtable-mode with enabled:true');
-  assert.ok(src.includes('三家平等讨论'),
-    '_syncMeetingModeUI must show roundtable description');
-  console.log('  ✓ testRendererSubmitHasRoundtableBranch');
+  assert.ok(/async function createMeetingByMode\s*\(\s*mode\s*\)/.test(src),
+    'createMeetingByMode function must exist');
+  assert.ok(/invoke\(['"]create-meeting['"]\s*,\s*\{\s*mode\s*\}/.test(src),
+    'createMeetingByMode must invoke create-meeting IPC with {mode}');
+  assert.ok(!/mode\s*===\s*['"]driver['"]/.test(src),
+    'driver branch must be removed (driver mode deprecated)');
+  assert.ok(/mode\s*===\s*['"]research['"]/.test(src),
+    'createMeetingByMode must have research branch');
+  assert.ok(/toggle-roundtable-mode/.test(src),
+    'general branch must invoke toggle-roundtable-mode');
+  console.log('  ✓ testRendererCreateMeetingByMode');
 }
 
 console.log('Running roundtable dispatch mode-guard tests...');
@@ -113,6 +111,6 @@ testHelperNeitherMode();
 testHelperNullMeeting();
 testRealCreatedMeetingIsCapable();
 testMainJsUsesHelper();
-testCreateMeetingModalHtmlContract();
-testRendererSubmitHasRoundtableBranch();
+testCreateMeetingMenuContract();
+testRendererCreateMeetingByMode();
 console.log('All passed.');

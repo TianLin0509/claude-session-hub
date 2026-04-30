@@ -1567,7 +1567,8 @@ for (const btn of document.querySelectorAll('.new-session-option')) {
   btn.addEventListener('click', async () => {
     menuEl.style.display = 'none';
     if (btn.dataset.kind === 'meeting') {
-      openCreateMeetingModal();
+      const mode = btn.dataset.meetingMode || 'general';
+      await createMeetingByMode(mode);
       return;
     }
     await ipcRenderer.invoke('create-session', btn.dataset.kind);
@@ -1597,194 +1598,65 @@ function closeResumeModal() {
   resumeModalEl.style.display = 'none';
 }
 
-// --- Create Meeting modal ---
-const createMeetingModalEl = document.getElementById('create-meeting-modal');
-const createMeetingConfirmEl = document.getElementById('create-meeting-confirm');
-
-let _researchCovenantTemplateCache = null;
-async function _ensureResearchCovenantTemplate() {
-  if (_researchCovenantTemplateCache != null) return _researchCovenantTemplateCache;
+// --- Create Meeting (mode-driven, no modal) ---
+// +号菜单的两个会议入口（通用/投研）直接调用 createMeetingByMode
+// 不弹对话框、不问成员、不问公约——成员默认 Claude+Gemini+Codex 三家全开,公约套预设。
+async function createMeetingByMode(mode) {
+  let meeting;
   try {
-    _researchCovenantTemplateCache = await ipcRenderer.invoke('get-research-covenant-template');
+    meeting = await ipcRenderer.invoke('create-meeting', { mode });
   } catch (e) {
-    _researchCovenantTemplateCache = '';
+    console.error('[create-meeting] failed:', e.message);
+    return;
   }
-  return _researchCovenantTemplateCache;
-}
+  if (!meeting) return;
 
-function openCreateMeetingModal() {
-  createMeetingModalEl.style.display = 'flex';
-  createMeetingConfirmEl.disabled = false;
-  createMeetingConfirmEl.textContent = '创建';
-  for (const cb of document.querySelectorAll('.create-meeting-cb')) cb.checked = true;
-  const roundtableRadio = document.querySelector('input[name="meeting-mode"][value="roundtable"]');
-  if (roundtableRadio) roundtableRadio.checked = true;
-  // 预填投研公约模板（首次拉取，之后缓存）
-  _ensureResearchCovenantTemplate().then((tpl) => {
-    const ta = document.getElementById('create-meeting-covenant-text');
-    if (ta && (!ta.value || ta.dataset.fromTemplate === '1')) {
-      ta.value = tpl || '';
-      ta.dataset.fromTemplate = '1';
+  if (mode === 'research') {
+    let covenantText = '';
+    try {
+      covenantText = await ipcRenderer.invoke('get-research-covenant-template');
+    } catch (e) {
+      console.warn('[create-meeting] research covenant template fetch failed:', e.message);
     }
-  });
-  _syncMeetingModeUI();
-}
-
-function closeCreateMeetingModal() {
-  createMeetingModalEl.style.display = 'none';
-}
-
-async function submitCreateMeeting() {
-  const kinds = [...document.querySelectorAll('.create-meeting-cb:checked')]
-    .map(cb => cb.dataset.kind);
-  if (kinds.length === 0) return;
-
-  const modeRadio = document.querySelector('input[name="meeting-mode"]:checked');
-  const meetingMode = modeRadio ? modeRadio.value : 'roundtable';
-  const isDriverMode = meetingMode === 'driver';
-  const isResearchMode = meetingMode === 'research';
-  const isRoundtableMode = meetingMode === 'roundtable';
-
-  createMeetingConfirmEl.disabled = true;
-  createMeetingConfirmEl.textContent = '创建中...';
-
-  try {
-    const meeting = await ipcRenderer.invoke('create-meeting');
-    if (!meeting) {
-      createMeetingConfirmEl.textContent = '失败，重试';
-      createMeetingConfirmEl.disabled = false;
-      return;
-    }
-
-    if (isDriverMode) {
-      await ipcRenderer.invoke('update-meeting-sync', { meetingId: meeting.id, fields: { driverMode: true } });
-      meeting.driverMode = true;
-      meeting.roundtableMode = false;
-    } else if (isResearchMode) {
-      const ta = document.getElementById('create-meeting-covenant-text');
-      const covenantText = ta ? (ta.value || '') : '';
+    try {
       await ipcRenderer.invoke('update-meeting-sync', {
         meetingId: meeting.id,
-        fields: { researchMode: true, covenantText },
+        fields: { researchMode: true, covenantText: covenantText || '' },
       });
-      meeting.researchMode = true;
-      meeting.roundtableMode = false;
-      meeting.covenantText = covenantText;
-    } else if (isRoundtableMode) {
-      // 显式落盘 prompt/covenant 文件（不依赖 createMeeting 的隐式默认字段）
-      const res = await ipcRenderer.invoke('toggle-roundtable-mode', { meetingId: meeting.id, enabled: true });
-      if (res && res.meeting) Object.assign(meeting, res.meeting);
+    } catch (e) {
+      console.error('[create-meeting] research mode set failed:', e.message);
     }
-    meetings[meeting.id] = meeting;
+    meeting.researchMode = true;
+    meeting.roundtableMode = false;
+    meeting.covenantText = covenantText || '';
+  } else {
+    // 'general' = 通用圆桌：toggle-roundtable-mode 触发 prompt/covenant md 文件落盘
+    try {
+      const res = await ipcRenderer.invoke('toggle-roundtable-mode', {
+        meetingId: meeting.id,
+        enabled: true,
+      });
+      if (res && res.meeting) Object.assign(meeting, res.meeting);
+    } catch (e) {
+      console.error('[create-meeting] general roundtable toggle failed:', e.message);
+    }
+  }
+  meetings[meeting.id] = meeting;
 
-    for (const kind of kinds) {
+  for (const kind of ['claude', 'gemini', 'codex']) {
+    try {
       const result = await ipcRenderer.invoke('add-meeting-sub', { meetingId: meeting.id, kind });
       if (result && result.meeting) {
         meetings[meeting.id] = result.meeting;
       }
-    }
-
-    closeCreateMeetingModal();
-    selectMeeting(meeting.id);
-    renderSessionList();
-    schedulePersist();
-  } catch (e) {
-    console.error('[create-meeting] failed:', e.message);
-    createMeetingConfirmEl.textContent = '失败，重试';
-    createMeetingConfirmEl.disabled = false;
-  }
-}
-
-createMeetingConfirmEl.addEventListener('click', submitCreateMeeting);
-document.getElementById('create-meeting-cancel').addEventListener('click', closeCreateMeetingModal);
-document.getElementById('create-meeting-close').addEventListener('click', closeCreateMeetingModal);
-createMeetingModalEl.addEventListener('click', (e) => {
-  if (e.target === createMeetingModalEl) closeCreateMeetingModal();
-});
-
-// checkbox 变化时：至少勾选一个才能创建
-for (const cb of document.querySelectorAll('.create-meeting-cb')) {
-  cb.addEventListener('change', () => {
-    _syncMeetingModeUI();
-    const anyChecked = document.querySelectorAll('.create-meeting-cb:checked').length > 0;
-    createMeetingConfirmEl.disabled = !anyChecked;
-  });
-}
-
-// radio 变化时：主驾模式强制 Claude 勾选
-for (const radio of document.querySelectorAll('input[name="meeting-mode"]')) {
-  radio.addEventListener('change', _syncMeetingModeUI);
-}
-
-function _syncMeetingModeUI() {
-  const isDriver = document.querySelector('input[name="meeting-mode"][value="driver"]')?.checked;
-  const isResearch = document.querySelector('input[name="meeting-mode"][value="research"]')?.checked;
-  const isRoundtable = document.querySelector('input[name="meeting-mode"][value="roundtable"]')?.checked;
-  const claudeCb = document.querySelector('.create-meeting-cb[data-kind="claude"]');
-  const geminiCb = document.querySelector('.create-meeting-cb[data-kind="gemini"]');
-  const codexCb = document.querySelector('.create-meeting-cb[data-kind="codex"]');
-  const desc = document.getElementById('meeting-mode-desc');
-  const covenantBox = document.getElementById('create-meeting-covenant');
-
-  // 先重置所有 checkbox 为可选（避免切换 mode 后 disable 状态残留）
-  for (const cb of document.querySelectorAll('.create-meeting-cb')) cb.disabled = false;
-
-  if (isDriver) {
-    // 主驾模式强制 Claude（Gemini/Codex 副驾可选）
-    if (claudeCb) { claudeCb.checked = true; claudeCb.disabled = true; }
-  } else if (isResearch) {
-    // 投研圆桌：三家平等强制全员（disable 防止用户取消）
-    if (claudeCb) { claudeCb.checked = true; claudeCb.disabled = true; }
-    if (geminiCb) { geminiCb.checked = true; geminiCb.disabled = true; }
-    if (codexCb) { codexCb.checked = true; codexCb.disabled = true; }
-  }
-  // 通用圆桌：所有 checkbox 可选（已被前面重置）
-
-  // mode 描述文案
-  if (desc) {
-    if (isDriver) {
-      desc.textContent = 'Claude 主驾执行，Gemini/Codex 仅审查副驾';
-      desc.style.display = 'block';
-    } else if (isResearch) {
-      desc.textContent = '三家平等本色辩论；自动注入投资公约 + 数据接入工具';
-      desc.style.display = 'block';
-    } else if (isRoundtable) {
-      desc.textContent = '三家平等讨论，支持 @debate / @summary / @单家私聊';
-      desc.style.display = 'block';
-    } else {
-      desc.style.display = 'none';
+    } catch (e) {
+      console.error(`[create-meeting] add-sub ${kind} failed:`, e.message);
     }
   }
-  // covenant 编辑器仅在投研圆桌模式显示
-  if (covenantBox) {
-    covenantBox.style.display = isResearch ? 'block' : 'none';
-  }
-}
 
-// covenant 重置默认按钮 + textarea input listener
-function _initCovenantUIListeners() {
-  const resetBtn = document.getElementById('create-meeting-covenant-reset');
-  if (resetBtn) {
-    resetBtn.addEventListener('click', async () => {
-      const tpl = await _ensureResearchCovenantTemplate();
-      const ta = document.getElementById('create-meeting-covenant-text');
-      if (ta) {
-        ta.value = tpl || '';
-        ta.dataset.fromTemplate = '1';
-      }
-    });
-  }
-  // 用户改过 textarea 后清掉 fromTemplate 标记，避免下次打开 modal 被覆盖
-  const ta = document.getElementById('create-meeting-covenant-text');
-  if (ta) {
-    ta.addEventListener('input', () => { ta.dataset.fromTemplate = '0'; });
-  }
-}
-// readyState 兜底：renderer.js 加载时 DOM 可能已 ready，DOMContentLoaded 不会再触发
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', _initCovenantUIListeners);
-} else {
-  _initCovenantUIListeners();
+  selectMeeting(meeting.id);
+  renderSessionList();
+  schedulePersist();
 }
 
 function renderResumeList(items) {
