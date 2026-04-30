@@ -160,7 +160,7 @@
       const partial = partialBy ? partialBy[sub.sid] : null;
       const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sub.sid) : null;
       const markerState = _markerStatusCache[sub.sid];
-      const isInitializing = s && !s.currentModel && markerState !== 'done' && markerState !== 'streaming';
+      const isInitializing = s && markerState !== 'done' && markerState !== 'streaming';
       let status = 'idle';
       let preview = '';
 
