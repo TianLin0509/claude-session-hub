@@ -15,6 +15,9 @@
   //   驱动 isInitializing 判断（修 P0 阻塞 bug B：原 markerStatus 永远 'none' 导致永久卡"创建中"）
   let _cliReadyCache = {};
   let _cliReadyPollTimer = null;
+  // IF-C3（2026-05-01）：banner dismiss 状态记录 — meetingId，dismiss 后同会议不再显示，
+  //   关闭会议（closeMeetingPanel）会重置，下次进同会议又显示
+  let _bannerDismissedFor = null;
   const _tabState = {};     // { sessionId: 'streaming'|'new-output'|'idle'|'error' }
   const _tabTimers = {};    // { sessionId: silenceTimerId }
 
@@ -1014,6 +1017,9 @@
       _removeRtPanel();
     }
 
+    // IF-C3（2026-05-01）：进会议室立即刷一次软提醒 banner（AI 未 ready 时提示用户）
+    try { _refreshSoftAlert(meeting); } catch {}
+
     // IF-C2（2026-05-01）：auto-focus 输入框 — 修 P1 bug A（输入框暂时不可用）。
     //   xterm.terminal.open() + robustFit 的 rAF 循环会抢焦点；用 setTimeout 50ms
     //   defer 到 xterm 初始化稳定后再 focus，让用户进会议室立即可键盘输入。
@@ -1033,6 +1039,10 @@
     // IF-C1：关闭轮询并清空 ready cache，下次 openMeeting 重新检测
     stopCliReadyPoll();
     _cliReadyCache = {};
+    // IF-C3：清空 banner dismiss 状态 + 隐藏 banner，下次进同会议再显示一次
+    _bannerDismissedFor = null;
+    const _banner = document.getElementById('mr-input-soft-alert');
+    if (_banner) { _banner.style.display = 'none'; _banner.innerHTML = ''; }
     const panel = panelEl();
     if (panel) panel.style.display = 'none';
     const el = terminalsEl();
@@ -1328,6 +1338,53 @@
 
   function stopCliReadyPoll() {
     if (_cliReadyPollTimer) { clearInterval(_cliReadyPollTimer); _cliReadyPollTimer = null; }
+  }
+
+  // IF-C3（2026-05-01）：软提醒 banner — 进会议室时若 AI 还在启动，显示哪几家未 ready
+  //   提示用户"等几秒再发送"，避免输入早于 CLI ready 而被吞。
+  //   一旦全部 ready 自动消失。用户点 × dismiss 后同会议不再显示（_bannerDismissedFor 记录），
+  //   关闭会议 → 重置，下次进同会议又显示。
+  function _refreshSoftAlert(meeting) {
+    const banner = document.getElementById('mr-input-soft-alert');
+    if (!banner || !meeting || !Array.isArray(meeting.subSessions)) return;
+
+    // dismiss 状态判断
+    if (_bannerDismissedFor === meeting.id) {
+      banner.style.display = 'none';
+      return;
+    }
+
+    // 列出未 ready 的 AI 标签
+    const labelOf = sid => {
+      const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+      const kind = sess && sess.kind;
+      return ({ claude: 'Claude', gemini: 'Gemini', codex: 'Codex', glm: 'GLM', deepseek: 'DeepSeek' }[kind])
+        || (sess && sess.title) || sid.slice(0, 6);
+    };
+    const notReady = meeting.subSessions.filter(sid => !_cliReadyCache[sid]).map(labelOf);
+
+    if (notReady.length === 0) {
+      banner.style.display = 'none';
+      banner.innerHTML = '';
+      return;
+    }
+
+    banner.innerHTML = `
+      <span class="mr-input-soft-alert-icon">⏳</span>
+      <span class="mr-input-soft-alert-msg">
+        <strong>${notReady.join(' / ')}</strong> 启动中，建议等到状态变"待命"再发送（避免输入丢失）。
+      </span>
+      <button class="mr-input-soft-alert-close" data-soft-alert-close="1" title="关闭提示">×</button>
+    `;
+    banner.style.display = 'flex';
+    const closeBtn = banner.querySelector('[data-soft-alert-close]');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', () => {
+        _bannerDismissedFor = meeting.id;
+        banner.style.display = 'none';
+        banner.innerHTML = '';
+      }, { once: true });
+    }
   }
 
   function updateMarkerBadges(meeting) {

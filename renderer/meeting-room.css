@@ -1541,3 +1541,44 @@
   color: #f85149;
   border: 1px solid rgba(248, 81, 73, 0.3);
 }
+
+/* ========================================================================
+   IF-C3（2026-05-01）—— 软提醒 banner（输入区上方）
+   AI 启动中时提示用户哪几家未 ready，引导"等几秒再发送"避免输入丢失。
+   ======================================================================== */
+.mr-input-soft-alert {
+  display: none; /* JS 控制 display: flex 时显示 */
+  align-items: center;
+  gap: 10px;
+  margin: 4px 12px 0;
+  padding: 7px 12px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: 6px;
+  color: var(--text-primary, #c9d1d9);
+  font-size: 12px;
+  line-height: 1.5;
+  animation: mr-input-soft-alert-pulse 2s ease-in-out infinite;
+}
+@keyframes mr-input-soft-alert-pulse {
+  0%, 100% { border-color: rgba(99, 102, 241, 0.28); }
+  50%      { border-color: rgba(99, 102, 241, 0.6); }
+}
+.mr-input-soft-alert-icon { flex-shrink: 0; }
+.mr-input-soft-alert-msg { flex: 1; }
+.mr-input-soft-alert-msg strong { color: #a5b4fc; }
+.mr-input-soft-alert-close {
+  flex-shrink: 0;
+  width: 22px; height: 22px;
+  border: 0; border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.mr-input-soft-alert-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary, #c9d1d9);
+}
