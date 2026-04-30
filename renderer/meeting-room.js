@@ -1613,15 +1613,17 @@
       const disabledAttr = inProgress ? 'disabled' : '';
       const turns = cached ? (cached.turns || []).length : 0;
       const debateDisabled = (turns < 1 || inProgress) ? 'disabled' : '';
+      // IF-C4（2026-05-01）：按钮重排——「群策群力」「总结发言」两个动作按钮相邻
+      // 在 divider 左侧（讨论操作组），「总结人」选择器在 divider 右侧（参数）
       el.innerHTML = `
         <div class="mr-rt-toolbar">
           <button class="mr-rt-tb-btn primary" id="mr-rt-debate-btn" ${debateDisabled} title="让三家结合对方观点重新发言（基于上一轮）">🤝 群策群力</button>
+          <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${debateDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结发言</button>
           <span class="mr-rt-tb-divider"></span>
           <label class="mr-rt-tb-pick">
             <span class="mr-rt-tb-pick-label">总结人:</span>
             <select id="mr-rt-summary-pick" ${disabledAttr}>${opts || '<option disabled>无可用 AI</option>'}</select>
           </label>
-          <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${debateDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结发言</button>
           <span class="mr-rt-tb-status" id="mr-rt-tb-status">${inProgress ? '⏳ 处理中…' : (turns === 0 ? '先发个问题让三家本色发言' : `已 ${turns} 轮`)}</span>
         </div>
       `;
