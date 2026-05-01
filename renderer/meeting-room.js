@@ -485,18 +485,23 @@
   // Stage 2 容错升级：当所有参与者都 settled（completed/manual_extracted/absent/errored/interrupted）
   // 即使后端 currentMode 仍为非 idle（在写持久化），UI 也允许用户继续推进，避免 100% 等待。
   const _SETTLED_STATUSES = new Set(['completed', 'manual_extracted', 'absent', 'errored', 'interrupted']);
-  function _allParticipantsSettled(partialBy) {
-    if (!partialBy) return false;
-    const sids = Object.keys(partialBy);
-    if (sids.length === 0) return false;
-    return sids.every(sid => _SETTLED_STATUSES.has(partialBy[sid] && partialBy[sid].status));
+  // FIX-E（2026-05-01）：必须用"期望 sids 集合"判定，而不是 partialBy 自身的 keys。
+  //   旧实现 `Object.keys(partialBy).every(...)` 在某家 watcher 还没 settle（partial 还没推送）
+  //   时，partialBy 里压根没有这家的 sid → every 在剩余家都 settled 时直接为 true →
+  //   推进按钮提前解锁，用户能在 Codex 卡死时先发下一轮，造成混乱。
+  //   现按 expectedSids（meeting.subSessions）严格比对：每个期望 sid 都要有 settled 状态才算齐。
+  function _allParticipantsSettled(partialBy, expectedSids) {
+    if (!partialBy || !expectedSids || expectedSids.length === 0) return false;
+    return expectedSids.every(sid =>
+      partialBy[sid] && _SETTLED_STATUSES.has(partialBy[sid].status)
+    );
   }
 
-  function _renderCmdBar(turns, currentMode, partialBy) {
+  function _renderCmdBar(turns, currentMode, partialBy, expectedSids) {
     const suggested = _suggestedCmd(turns, currentMode);
     const rawInProgress = currentMode && currentMode !== 'idle';
     // effectiveInProgress：考虑 partialBy 中各家 settle 状态——如果都 settled 就视为已结束
-    const inProgress = rawInProgress && !_allParticipantsSettled(partialBy);
+    const inProgress = rawInProgress && !_allParticipantsSettled(partialBy, expectedSids);
     const dis = inProgress ? ' disabled' : '';
     const noDebate = (turns.length < 1 || inProgress) ? ' disabled' : '';
     const cls = (cmd) => `mr-rt-cmd-btn${suggested === cmd ? ' mr-rt-cmd-suggested' : ''}`;
@@ -537,7 +542,11 @@
     const history = _renderRtHistory(state, meeting);
     const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
     const stepper = _renderTurnStepper(state.turns, mode);
-    const cmdBar = _renderCmdBar(state.turns, mode, partialBy);
+    // FIX-E（2026-05-01）：cmdBar 推进按钮判定要按"期望家集合"，不是 partialBy 自身的 keys
+    const expectedSids = ['claude', 'gemini', 'codex']
+      .map(k => subs[k] && subs[k].sid)
+      .filter(Boolean);
+    const cmdBar = _renderCmdBar(state.turns, mode, partialBy, expectedSids);
     const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
     // Stage 2 容错升级：软提醒 banner 容器（按需显示，详见 'roundtable-soft-alert' IPC 监听）
     const softBanner = `<div id="mr-rt-soft-alert-banner" class="mr-rt-soft-alert-banner" style="display:none"></div>`;
