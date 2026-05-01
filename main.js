@@ -693,6 +693,19 @@ const _activeWatchers = new Map();
 
 const { createTurnCompletionWatcher } = require('./core/turn-completion-watcher.js');
 
+// FIX-D（2026-05-01）：宿主 shell prompt 心跳检测——CLI 自我退出（Codex 自动更新 / Gemini OAuth
+//   异常 / Claude 内部 panic 等）后 PTY 控制权回到宿主 shell（PowerShell / bash），但 PTY 进程
+//   本身没退，markProcessExit 不会触发。watcher 因此只能等 5min 硬 timeout。
+//   解决：每 10s 检查 PTY ring buffer 末尾是否回到宿主 shell prompt，连续 2 次命中视为 CLI 已死，
+//   立即 markProcessExit({ code: -1, signal: 'cli_self_exit' }) 让 watcher 切 errored。
+//   核心检测函数抽到 core/host-shell-detector.js 方便单测。
+const _HOST_SHELL_HEARTBEAT_MS = 10 * 1000;
+const _HOST_SHELL_CONSECUTIVE_HITS = 2;
+const { detectHostShellTakeover: _detectHostShellTakeover } = require('./core/host-shell-detector.js');
+function _rtCheckHostShellTakeover(sid) {
+  return _detectHostShellTakeover(sessionManager.getSessionBuffer(sid));
+}
+
 function _rtWaitTurnComplete(sid, label, opts = {}) {
   const { meetingId, mode, turnNum, onPartial } = opts;
 
@@ -729,16 +742,34 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
     }, 1500);
   }
 
-  // 过渡期硬 timeout（commit 3 UI 落地后可移除）
+  // 过渡期硬 timeout（FIX-B 已 30min→5min）
   const hardTimeout = setTimeout(() => {
     if (watcher.isSettled()) return;
-    console.warn(`[roundtable] transitional hard timeout (30min) hit for ${label}(${sid.slice(0, 8)}), forcing skip`);
+    console.warn(`[roundtable] transitional hard timeout (5min) hit for ${label}(${sid.slice(0, 8)}), forcing skip`);
     watcher.skip();
   }, RT_TRANSITIONAL_HARD_TIMEOUT_MS);
   hardTimeout.unref?.();
 
+  // FIX-D（2026-05-01）：宿主 shell prompt 心跳检测，10-15s 内识别 CLI 自我退出
+  let hostShellHits = 0;
+  const hostShellHeartbeat = setInterval(() => {
+    if (watcher.isSettled()) { clearInterval(hostShellHeartbeat); return; }
+    if (_rtCheckHostShellTakeover(sid)) {
+      hostShellHits += 1;
+      if (hostShellHits >= _HOST_SHELL_CONSECUTIVE_HITS) {
+        console.warn(`[roundtable] host shell prompt detected for ${label}(${sid.slice(0, 8)}) on hit #${hostShellHits} — CLI self-exited, marking errored`);
+        try { watcher.markProcessExit({ code: -1, signal: 'cli_self_exit' }); }
+        catch (e) { console.warn('[roundtable] markProcessExit (heartbeat) threw:', e.message); }
+      }
+    } else {
+      hostShellHits = 0;
+    }
+  }, _HOST_SHELL_HEARTBEAT_MS);
+  hostShellHeartbeat.unref?.();
+
   return watcher.wait().then(result => {
     clearTimeout(hardTimeout);
+    clearInterval(hostShellHeartbeat);
     if (streamTimer) clearInterval(streamTimer);
     _activeWatchers.delete(sid);
 
