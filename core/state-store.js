@@ -28,6 +28,11 @@ function load() {
     if (!parsed.immersiveByMeeting || typeof parsed.immersiveByMeeting !== 'object') {
       parsed.immersiveByMeeting = {};
     }
+    // pilot-mode Task 1（2026-05-01）— 主驾 slot per-meeting 持久化字典。
+    //   缺省 {}（无主驾），老 state.json 自动兼容。
+    if (!parsed.pilotSlotByMeeting || typeof parsed.pilotSlotByMeeting !== 'object') {
+      parsed.pilotSlotByMeeting = {};
+    }
     return parsed;
   } catch {
     return defaultState();
@@ -39,6 +44,7 @@ function defaultState() {
     version: CURRENT_VERSION, cleanShutdown: true,
     sessions: [], meetings: [],
     immersiveByMeeting: {},
+    pilotSlotByMeeting: {},
   };
 }
 

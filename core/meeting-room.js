@@ -43,6 +43,9 @@ class MeetingRoomManager {
       //   形如 [{ index, kind, model }, ...]。subSessions 数组顺序与 slot index 同步，
       //   slotSpecs 保留 kind/model 是为了"再来一次"或诊断信息。
       slotSpecs: Array.isArray(opts.slotSpecs) ? opts.slotSpecs.slice() : null,
+      // pilot-mode（2026-05-01）：当前主驾 slot 索引（0|1|2|null）。null = 未开主驾，
+      //   全员（subSessions[0..2]）共同回答；非 null 时 dispatchRoundtableTurn 只发给该 slot。
+      pilotSlot: null,
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -50,6 +53,28 @@ class MeetingRoomManager {
     meeting._nextIdx = 0;
     this.meetings.set(id, meeting);
     return { ...meeting, slotSpecs: meeting.slotSpecs ? meeting.slotSpecs.slice() : null };
+  }
+
+  // pilot-mode（2026-05-01）：切换主驾 slot。slotIndex=null 表示关闭主驾。
+  //   仅做内存 state + per-meeting JSON 落盘；state.json 的 pilotSlotByMeeting
+  //   由 main.js 在 IPC handler 内顺手维护（与 _immersiveByMeeting 同模式）。
+  setPilotSlot(meetingId, slotIndex) {
+    const m = this.meetings.get(meetingId);
+    if (!m) return null;
+    if (slotIndex !== null && (typeof slotIndex !== 'number' || slotIndex < 0 || slotIndex > 2)) {
+      throw new Error(`Invalid pilot slotIndex: ${slotIndex}`);
+    }
+    m.pilotSlot = slotIndex;
+    meetingStore.markDirty(meetingId, {
+      _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx,
+      slotSpecs: m.slotSpecs, pilotSlot: m.pilotSlot,
+    });
+    return { ...m, subSessions: [...m.subSessions], pilotSlot: m.pilotSlot };
+  }
+
+  getPilotSlot(meetingId) {
+    const m = this.meetings.get(meetingId);
+    return m ? (m.pilotSlot ?? null) : null;
   }
 
   // meeting-create-modal（2026-05-01）：Modal 创建完所有 slot 后调用，
@@ -73,6 +98,7 @@ class MeetingRoomManager {
       _timeline: [...m._timeline],
       _cursors: { ...m._cursors },
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
+      pilotSlot: m.pilotSlot ?? null,
     } : null;
   }
 
@@ -83,6 +109,7 @@ class MeetingRoomManager {
       _timeline: [...m._timeline],
       _cursors: { ...m._cursors },
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
+      pilotSlot: m.pilotSlot ?? null,
     }));
   }
 
@@ -170,6 +197,9 @@ class MeetingRoomManager {
       // meeting-create-modal（2026-05-01）：从 state.json 还原 slot 规格；
       //   老 meeting 没有此字段时为 null，渲染逻辑会按 subSessions 顺序兜底分配 slot。
       slotSpecs: Array.isArray(meetingData.slotSpecs) ? meetingData.slotSpecs.slice() : null,
+      // pilot-mode（2026-05-01）：从 state.json 还原主驾 slot；老 meeting 默认 null（关）。
+      pilotSlot: (typeof meetingData.pilotSlot === 'number' && meetingData.pilotSlot >= 0 && meetingData.pilotSlot <= 2)
+        ? meetingData.pilotSlot : null,
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,
@@ -197,6 +227,10 @@ class MeetingRoomManager {
     // 兜底回填 slotSpecs（state.json 已写过的不覆盖）
     if (!Array.isArray(m.slotSpecs) && Array.isArray(data.slotSpecs)) {
       m.slotSpecs = data.slotSpecs.slice();
+    }
+    // pilot-mode 兜底回填：state.json 走 _pilotSlotByMeeting，per-meeting JSON 是备份
+    if ((m.pilotSlot === null || m.pilotSlot === undefined) && typeof data.pilotSlot === 'number') {
+      m.pilotSlot = data.pilotSlot;
     }
     return true;
   }

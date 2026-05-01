@@ -25,6 +25,7 @@ const lindangBridge = require('./core/lindang-bridge.js');
 const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
 const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
 const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-config.js');
+const { getConfig: getHubConfig } = require('./core/hub-config.js');
 
 // Isolate Chromium userData when CLAUDE_HUB_DATA_DIR is set (parallel test
 // instances). Must run before app.whenReady(). Production Hub unaffected
@@ -372,6 +373,7 @@ transcriptTap.on('session-bound', (ev) => {
       sessions: lastPersistedSessions,
       meetings: meetingManager.getAllMeetings(),
       immersiveByMeeting: _immersiveByMeeting,
+      pilotSlotByMeeting: _pilotSlotByMeeting,
     });
     console.log(`[hub] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
   }
@@ -617,12 +619,63 @@ ipcMain.handle('save-immersive-mode', (_e, { meetingId, immersive } = {}) => {
       sessions: lastPersistedSessions,
       meetings: meetingManager.getAllMeetings(),
       immersiveByMeeting: _immersiveByMeeting,
+      pilotSlotByMeeting: _pilotSlotByMeeting,
     });
   } catch (e) {
     console.warn('[hub] save-immersive-mode persist failed:', e.message);
     return { ok: false, error: e.message };
   }
   return { ok: true };
+});
+
+// pilot-mode Task 1（2026-05-01）— roundtable:pilot-toggle IPC
+//   slotIndex=0|1|2 开主驾 / null 关主驾。关主驾时调用 _generatePilotRecap 生成
+//   摘要 + md 镜像 + timeline 写入（Task 4 实现）。同时 _pilotSlotByMeeting + meeting
+//   字段 + per-meeting JSON 三处都更新（与 _immersiveByMeeting 同模式 + 加 markDirty）。
+ipcMain.handle('roundtable:pilot-toggle', async (_e, { meetingId, slotIndex } = {}) => {
+  if (!meetingId) throw new Error('Missing meetingId');
+  if (slotIndex !== null && (typeof slotIndex !== 'number' || slotIndex < 0 || slotIndex > 2)) {
+    throw new Error(`Invalid slotIndex: ${slotIndex}`);
+  }
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
+  const prevSlot = (meeting.pilotSlot === null || meeting.pilotSlot === undefined) ? null : meeting.pilotSlot;
+
+  meetingManager.setPilotSlot(meetingId, slotIndex);
+  if (slotIndex === null) delete _pilotSlotByMeeting[meetingId];
+  else _pilotSlotByMeeting[meetingId] = slotIndex;
+
+  try {
+    stateStore.save({
+      version: 1,
+      cleanShutdown: false,
+      sessions: lastPersistedSessions,
+      meetings: meetingManager.getAllMeetings(),
+      immersiveByMeeting: _immersiveByMeeting,
+      pilotSlotByMeeting: _pilotSlotByMeeting,
+    });
+  } catch (e) {
+    console.warn('[hub] roundtable:pilot-toggle persist failed:', e.message);
+  }
+
+  // 通知 renderer 更新 toolbar / 卡片视觉
+  sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
+
+  let recapIdx = null;
+  if (slotIndex === null && prevSlot !== null) {
+    // 关主驾 → 调主驾自己生成 recap（Task 4 实现）
+    if (typeof _generatePilotRecap === 'function') {
+      try {
+        recapIdx = await _generatePilotRecap(meetingId, prevSlot);
+      } catch (e) {
+        console.error('[pilot-toggle] _generatePilotRecap failed:', e.message);
+        // 不抛错，让用户至少能关闭主驾
+      }
+    } else {
+      console.warn('[pilot-toggle] _generatePilotRecap not implemented yet');
+    }
+  }
+  return { ok: true, recapIdx };
 });
 
 // =====================================================================
@@ -928,6 +981,27 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     }
     if (typeof orch.setMeetingContext === 'function') orch.setMeetingContext(sidInfoMap);
 
+    // pilot-mode Task 2（2026-05-01）：主驾期间过滤目标集合到仅主驾 slot。
+    //   subs 仍按 subSessions 全集，只是发送时跳过非主驾。subs 全集仍用于 sidLabelFn /
+    //   sidInfoMap（让副驾的 kind/model 元数据保留，方便切回时 prompt 注入）。
+    const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
+      ? meeting.pilotSlot : null;
+    const subSidsRaw = meeting.subSessions || [];
+    const isPilotSubByIndex = (i) => pilotSlot === null ? true : (i === pilotSlot);
+    const targetSubs = pilotSlot === null
+      ? subs
+      : subs.filter(x => {
+          const idx = subSidsRaw.indexOf(x.sid);
+          return idx === pilotSlot;
+        });
+    if (targetSubs.length === 0) {
+      return { status: 'error', reason: 'pilot slot session not active', turnNum: null };
+    }
+    if (pilotSlot !== null && (mode === 'debate' || mode === 'summary')) {
+      // 主驾期间禁止 debate/summary（toolbar 已 disable，但 IPC 兜底也加一层）
+      return { status: 'error', reason: '主驾模式中不支持 @debate / @summary，请先关闭主驾', turnNum: null };
+    }
+
     // 决定本轮的目标 sid 集合 + 拼 per-sid prompt
     const targets = []; // [{ sid, kind, label, prompt }]
     let turnNum;
@@ -935,7 +1009,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     if (mode === 'fanout') {
       turnNum = orch.beginTurn('fanout');
       const prompt = orch.buildFanoutPrompt(turnNum, userInput, null);
-      for (const x of subs) targets.push({ ...x, prompt });
+      for (const x of targetSubs) targets.push({ ...x, prompt });
     } else if (mode === 'debate') {
       const last = orch.getLastTurn();
       if (!last) {
@@ -943,7 +1017,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
         return { status: 'error', reason: '没有上一轮可中转，请先用 fanout 提问', turnNum: null };
       }
       turnNum = orch.beginTurn('debate');
-      for (const x of subs) {
+      for (const x of targetSubs) {
         const prompt = orch.buildDebatePrompt(turnNum, userInput, last, x.sid, sidLabelFn);
         targets.push({ ...x, prompt });
       }
@@ -1671,6 +1745,14 @@ let lastPersistedSessions = Array.isArray(bootState.sessions) ? bootState.sessio
 //   每个 stateStore.save 调用都把这份 dict 一起写回，避免被覆盖。
 let _immersiveByMeeting = (bootState.immersiveByMeeting && typeof bootState.immersiveByMeeting === 'object')
   ? bootState.immersiveByMeeting : {};
+
+// pilot-mode Task 1（2026-05-01）— 主驾 slot per-meeting 状态（持久化）
+//   key = meetingId，value = 0|1|2|null（null = 关闭主驾，全员协作）。
+//   与 _immersiveByMeeting 同模式：所有 stateStore.save 都一起写回。
+//   restoreMeeting 阶段已经把每个 meeting.pilotSlot 还原；此处保留 dict 是为了让
+//   stateStore.save 携带最新视图（避免 meeting 关闭后状态丢失）。
+let _pilotSlotByMeeting = (bootState.pilotSlotByMeeting && typeof bootState.pilotSlotByMeeting === 'object')
+  ? bootState.pilotSlotByMeeting : {};
 // Heal any cwds that legacy code corrupted (see extractCwdFromTranscript).
 // This reads CC's own JSONL transcripts which carry the authoritative cwd.
 const healed = healPersistedCwds(lastPersistedSessions);
@@ -1679,11 +1761,17 @@ if (healed > 0) console.log(`[hub] healed ${healed} stale cwd(s) from CC transcr
 const bootMeetings = Array.isArray(bootState.meetings) ? bootState.meetings : [];
 for (const m of bootMeetings) {
   if (m.layout === 'split') m.layout = 'focus';
+  // pilot-mode：把 _pilotSlotByMeeting 里的状态合并到 meeting 字段里再 restore，
+  //   兼容老 meeting（无 m.pilotSlot 字段）+ 新 dict 结构（独立持久化）。
+  const dictPilot = _pilotSlotByMeeting[m.id];
+  if (typeof dictPilot === 'number' && (m.pilotSlot === null || m.pilotSlot === undefined)) {
+    m.pilotSlot = dictPilot;
+  }
   meetingManager.restoreMeeting(m);
 }
 
 // Flip cleanShutdown to false immediately on boot; before-quit will flip it back.
-stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions, meetings: bootMeetings, immersiveByMeeting: _immersiveByMeeting }, { sync: true });
+stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions, meetings: bootMeetings, immersiveByMeeting: _immersiveByMeeting, pilotSlotByMeeting: _pilotSlotByMeeting }, { sync: true });
 
 ipcMain.handle('get-dormant-meetings', () => meetingManager.getAllMeetings());
 
@@ -1732,6 +1820,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
     sessions: list,
     meetings: Array.isArray(meetingList) ? meetingList : meetingManager.getAllMeetings(),
     immersiveByMeeting: _immersiveByMeeting,
+    pilotSlotByMeeting: _pilotSlotByMeeting,
   });
 });
 
@@ -2494,17 +2583,19 @@ app.whenReady().then(async () => {
   startAgentScanner();
   // Mobile server starts after window — no need to block UI for phone pairing.
   try {
-    const feishuCodexToken = process.env.HUB_FEISHU_CODEX_TOKEN || '';
-    const feishuAppId = process.env.HUB_FEISHU_APP_ID || '';
-    const feishuAppSecret = process.env.HUB_FEISHU_APP_SECRET || '';
+    const hubConfig = getHubConfig();
+    const feishuConfig = hubConfig.feishuCodex || {};
+    const feishuCodexToken = feishuConfig.token || '';
+    const feishuAppId = feishuConfig.appId || '';
+    const feishuAppSecret = feishuConfig.appSecret || '';
     const feishuSender = (feishuAppId && feishuAppSecret)
       ? createFeishuMessageSender(new FeishuClient({
         appId: feishuAppId,
         appSecret: feishuAppSecret,
-        domain: process.env.HUB_FEISHU_DOMAIN || 'feishu',
+        domain: feishuConfig.domain || 'feishu',
         baseUrl: process.env.HUB_FEISHU_BASE_URL || null,
       }), {
-        replyInThread: process.env.HUB_FEISHU_REPLY_IN_THREAD !== '0',
+        replyInThread: feishuConfig.replyInThread !== false,
       })
       : async (msg) => {
         // MVP fallback: inbound Feishu-compatible events are functional without
@@ -2524,7 +2615,7 @@ app.whenReady().then(async () => {
       getDormantSessions: () => lastPersistedSessions,
       feishuCodex: feishuCodexToken ? {
         token: feishuCodexToken,
-        defaultCwd: process.env.HUB_FEISHU_CODEX_CWD || path.join(_home, 'claude-session-hub'),
+        defaultCwd: feishuConfig.defaultCwd || path.join(_home, 'claude-session-hub'),
         sendMessage: feishuSender,
       } : null,
     });
@@ -2543,7 +2634,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', async () => {
-  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting }, { sync: true });
+  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting, pilotSlotByMeeting: _pilotSlotByMeeting }, { sync: true });
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
   try {
     await meetingStore.flushAll();

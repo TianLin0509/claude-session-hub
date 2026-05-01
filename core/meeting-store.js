@@ -29,6 +29,8 @@ function saveMeetingFile(id, data) {
     // meeting-create-modal（2026-05-01）：slotSpecs 也在 per-meeting JSON 落盘，
     //   作为 state.json 的备份（state.json 写失败时仍能从这里 restoreMeeting 重建 slot 信息）。
     slotSpecs: Array.isArray(data.slotSpecs) ? data.slotSpecs : null,
+    // pilot-mode（2026-05-01）：当前主驾 slot 索引（0|1|2|null）。Hub 重启后自动恢复主驾态。
+    pilotSlot: (typeof data.pilotSlot === 'number') ? data.pilotSlot : null,
     savedAt: Date.now(),
   };
   const tmp = meetingFilePath(id) + '.tmp';

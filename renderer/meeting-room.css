@@ -1751,3 +1751,72 @@
   overflow: hidden;
   min-height: 220px;
 }
+
+/* pilot-mode Task 3（2026-05-01）— 主驾按钮 + dropdown + 卡片视觉 */
+.mr-rt-tb-pilot-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.mr-rt-tb-btn.pilot {
+  background: rgba(248, 81, 73, 0.14);
+  border: 1px solid #f85149;
+  color: #f85149;
+  font-weight: 600;
+}
+.mr-rt-tb-btn.pilot:hover:not([disabled]) {
+  background: rgba(248, 81, 73, 0.22);
+}
+.mr-rt-tb-btn.pilot.active {
+  background: rgba(248, 81, 73, 0.4);
+  box-shadow: 0 0 0 2px rgba(248, 81, 73, 0.3);
+  color: #fff;
+}
+.mr-rt-tb-status.pilot-on {
+  color: #f85149;
+  font-weight: 600;
+  background: rgba(248, 81, 73, 0.10);
+}
+.mr-pilot-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 4px 0;
+  min-width: 200px;
+  z-index: 200;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.mr-pilot-option {
+  padding: 7px 14px;
+  font-size: 12.5px;
+  cursor: pointer;
+  color: #e6edf3;
+  white-space: nowrap;
+}
+.mr-pilot-option:hover {
+  background: rgba(88, 166, 255, 0.12);
+}
+.mr-pilot-option-off {
+  border-top: 1px solid #21262d;
+  color: #8b949e;
+  margin-top: 2px;
+}
+.mr-pilot-option-off:hover {
+  background: rgba(248, 81, 73, 0.10);
+  color: #f85149;
+}
+/* 卡片视觉：被锁定 vs 旁观 */
+.mr-ft.pilot-locked {
+  border-color: #f85149 !important;
+  border-width: 2px;
+  box-shadow: 0 0 24px rgba(248, 81, 73, 0.18);
+}
+.mr-ft.pilot-observer {
+  opacity: 0.32;
+  filter: grayscale(0.55);
+  pointer-events: auto;
+}
+.mr-rt-tb-pick.dim { opacity: 0.45; }

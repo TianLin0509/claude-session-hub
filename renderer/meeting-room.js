@@ -736,6 +736,11 @@
     const panel = _ensureRtPanel();
     panel.innerHTML = _renderRtPanelHtml(state, meeting);
     _bindRtPanelEvents(panel, meeting);
+    // pilot-mode（2026-05-01）：每次 panel 重绘后重新涂卡片视觉（locked/observer），
+    //   否则切回主驾态时第一帧卡片是普通态。
+    const pilotSlotForVisual = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
+      ? meeting.pilotSlot : null;
+    _applyPilotCardVisual(meeting, pilotSlotForVisual);
   }
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
@@ -1958,6 +1963,78 @@
     renderTerminals(meeting);
   }
 
+  // pilot-mode Task 3（2026-05-01）：主驾按钮事件绑定 + 卡片视觉切换。
+  //   按钮点击展开 dropdown；选 slot 0/1/2 → 调 IPC 开主驾；选 -1 关主驾。
+  //   IPC 返回后由 'meeting-updated' 事件触发 renderToolbar 重渲（按钮 active + 卡片 dim）。
+  function _bindPilotEvents(meeting, _pilotSlot) {
+    const btn = document.getElementById('mr-pilot-btn');
+    const menu = document.getElementById('mr-pilot-menu');
+    if (!btn || !menu) return;
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+    });
+
+    // 点外部关闭菜单
+    const offClickHandler = (e) => {
+      if (!btn.contains(e.target) && !menu.contains(e.target)) {
+        menu.style.display = 'none';
+      }
+    };
+    document.addEventListener('mousedown', offClickHandler, { once: true });
+
+    menu.querySelectorAll('.mr-pilot-option').forEach(opt => {
+      opt.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const slotStr = opt.dataset.slot;
+        const slotIndex = parseInt(slotStr, 10);
+        const targetSlot = slotIndex === -1 ? null : slotIndex;
+        // 检查目标 slot 真的有 sub session（避免开到空槽）
+        if (targetSlot !== null && (!meeting.subSessions || !meeting.subSessions[targetSlot])) {
+          alert(`Slot ${targetSlot + 1} 没有活跃 session`);
+          return;
+        }
+        menu.style.display = 'none';
+        // 防重复点击：disable 按钮直到 IPC 完成
+        btn.disabled = true;
+        const labelSpan = document.getElementById('mr-pilot-label');
+        const oldLabel = labelSpan ? labelSpan.textContent : '';
+        if (labelSpan) labelSpan.textContent = '切换中…';
+        try {
+          const result = await ipcRenderer.invoke('roundtable:pilot-toggle', {
+            meetingId: meeting.id, slotIndex: targetSlot,
+          });
+          // result.recapIdx 在 timeline-append IPC 推送，UI 自动更新（Task 7）
+          if (!result || !result.ok) throw new Error('pilot-toggle returned non-ok');
+        } catch (err) {
+          console.error('[pilot-toggle] failed:', err);
+          alert('切换主驾失败：' + (err && err.message ? err.message : String(err)));
+          if (labelSpan) labelSpan.textContent = oldLabel;
+        } finally {
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  // 主驾态卡片视觉：被锁定的 slot 红边 + 旁观 slot 灰显
+  function _applyPilotCardVisual(meeting, pilotSlot) {
+    const cards = document.querySelectorAll('.mr-ft');
+    cards.forEach((card, i) => {
+      card.classList.toggle('pilot-locked', pilotSlot === i);
+      card.classList.toggle('pilot-observer', pilotSlot !== null && pilotSlot !== i);
+    });
+    // 输入框 placeholder
+    const inputBox = document.getElementById('mr-input-box');
+    if (inputBox) {
+      const slotPokemon = ['皮卡丘', '小火龙', '杰尼龟'];
+      inputBox.dataset.placeholder = pilotSlot !== null
+        ? `🚗 主驾中（仅 Slot ${pilotSlot + 1} · ${slotPokemon[pilotSlot]} 接收）...`
+        : '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who> / @<who> 单聊';
+    }
+  }
+
   // --- Toolbar ---
 
   function renderToolbar(meeting) {
@@ -1976,19 +2053,43 @@
       const inProgress = cached && cached.currentMode && cached.currentMode !== 'idle';
       const disabledAttr = inProgress ? 'disabled' : '';
       const turns = cached ? (cached.turns || []).length : 0;
-      const debateDisabled = (turns < 1 || inProgress) ? 'disabled' : '';
-      // IF-C4（2026-05-01）：按钮重排——「群策群力」「总结发言」两个动作按钮相邻
-      // 在 divider 左侧（讨论操作组），「总结人」选择器在 divider 右侧（参数）
+      // pilot-mode Task 3（2026-05-01）：主驾态读 meeting.pilotSlot
+      const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
+        ? meeting.pilotSlot : null;
+      const pilotOn = pilotSlot !== null;
+      // 主驾期间禁用 debate / summary（dispatchTurn 也加了 IPC 兜底）
+      const debateDisabled = (turns < 1 || inProgress || pilotOn) ? 'disabled' : '';
+      const summaryDisabled = (inProgress || pilotOn) ? 'disabled' : '';
+      const summaryPickDisabled = (inProgress || pilotOn) ? 'disabled' : '';
+      // 主驾按钮 label：关 / Slot N · 宝可梦
+      const slotPokemon = ['⚡皮卡丘', '🔥小火龙', '💎杰尼龟'];
+      const pilotBtnLabel = pilotOn ? `Slot ${pilotSlot + 1} · ${slotPokemon[pilotSlot]}` : '关';
+      const pilotBtnCls = pilotOn ? 'mr-rt-tb-btn pilot active' : 'mr-rt-tb-btn pilot';
+      // IF-C4（2026-05-01）：按钮重排
       el.innerHTML = `
         <div class="mr-rt-toolbar">
           <button class="mr-rt-tb-btn primary" id="mr-rt-debate-btn" ${debateDisabled} title="让三家结合对方观点重新发言（基于上一轮）">🤝 群策群力</button>
-          <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${debateDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结发言</button>
+          <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${summaryDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结发言</button>
           <span class="mr-rt-tb-divider"></span>
-          <label class="mr-rt-tb-pick">
+          <label class="mr-rt-tb-pick ${pilotOn ? 'dim' : ''}">
             <span class="mr-rt-tb-pick-label">总结人:</span>
-            <select id="mr-rt-summary-pick" ${disabledAttr}>${opts || '<option disabled>无可用 AI</option>'}</select>
+            <select id="mr-rt-summary-pick" ${summaryPickDisabled}>${opts || '<option disabled>无可用 AI</option>'}</select>
           </label>
-          <span class="mr-rt-tb-status" id="mr-rt-tb-status">${inProgress ? '⏳ 处理中…' : (turns === 0 ? '先发个问题让三家本色发言' : `已 ${turns} 轮`)}</span>
+          <span class="mr-rt-tb-divider"></span>
+          <span class="mr-rt-tb-pilot-wrap">
+            <button class="${pilotBtnCls}" id="mr-pilot-btn" title="主驾模式：锁定一个 slot 单独深聊；切回时主驾自己生成不限字数摘要 + md 镜像注入副驾">🚗 主驾:<span id="mr-pilot-label">${pilotBtnLabel}</span> ${pilotOn ? '▾' : '▾'}</button>
+            <span id="mr-pilot-menu" class="mr-pilot-menu" style="display:none;">
+              <div class="mr-pilot-option" data-slot="0">⚡ Slot 1 · 皮卡丘</div>
+              <div class="mr-pilot-option" data-slot="1">🔥 Slot 2 · 小火龙</div>
+              <div class="mr-pilot-option" data-slot="2">💎 Slot 3 · 杰尼龟</div>
+              <div class="mr-pilot-option mr-pilot-option-off" data-slot="-1">关闭主驾</div>
+            </span>
+          </span>
+          <span class="mr-rt-tb-status ${pilotOn ? 'pilot-on' : ''}" id="mr-rt-tb-status">${
+            pilotOn
+              ? `主驾中 · 仅 Slot ${pilotSlot + 1} 接收`
+              : (inProgress ? '⏳ 处理中…' : (turns === 0 ? '先发个问题让三家本色发言' : `已 ${turns} 轮`))
+          }</span>
         </div>
       `;
       const debateBtn = el.querySelector('#mr-rt-debate-btn');
@@ -2006,6 +2107,8 @@
         const summarizerKind = pick ? pick.value : 'claude';
         triggerRoundtable(meeting, 'summary', { summarizerKind });
       });
+      _bindPilotEvents(meeting, pilotSlot);
+      _applyPilotCardVisual(meeting, pilotSlot);
       return;
     }
 
