@@ -1640,7 +1640,7 @@
    Card optimization Task 9（2026-05-01）—— 沉浸/调试模式切换
    按钮 class = mr-immersive-toggle（**故意 NOT mr-mode-btn**——该 class 已被
    既有"圆桌/投研"切换占用，复用会样式冲突）。沉浸模式下：
-     1) #mr-shell-area 淡出（240ms ease-out）→ shell 区不可见且不响应
+     1) .mr-terminals 单独 hide（240ms ease-out）→ xterm 区不可见且不响应
      2) .mr-ft-strip flex:1 抢占 panel 剩余高度
    ======================================================================== */
 .mr-immersive-toggle {
@@ -1666,27 +1666,38 @@
   color: var(--accent, #58a6ff);
 }
 
-#mr-shell-area {
-  transition: max-height 240ms ease-out, opacity 240ms ease-out;
-  overflow: hidden;
-  max-height: 100vh;
-  opacity: 1;
+/* Card optimization Task 9 fix（2026-05-01）— 沉浸模式只隐藏 .mr-terminals（xterm 终端），
+   toolbar / 输入框 / 软提醒 banner 全部保持固定在底部，不参与切换。
+   原设计把 mr-terminals + toolbar + input-row 一起包进 wrapper 整体淡出，
+   会导致用户失去发送入口和命令行——已回退该 wrapper。 */
+.mr-terminals {
+  transition: flex 240ms ease-out, opacity 240ms ease-out, min-height 240ms ease-out;
 }
-#meeting-room-panel.immersive #mr-shell-area {
-  max-height: 0 !important;
+#meeting-room-panel.immersive .mr-terminals {
+  flex: 0 0 0 !important;
+  min-height: 0 !important;
+  height: 0 !important;
   opacity: 0;
   pointer-events: none;
+  overflow: hidden;
+  border: none;
 }
 
-.mr-ft-strip {
+/* 沉浸模式下 cards 区（.mr-rt-panel）抢占 mr-terminals 让出的高度。
+   原 .mr-rt-panel 是 flex-shrink:0（按内容高度），沉浸时升级为 flex:1 + 滚动。 */
+.mr-rt-panel {
   transition: flex 240ms ease-out;
 }
-#meeting-room-panel.immersive .mr-ft-strip {
-  flex: 1;
-  height: auto;
+#meeting-room-panel.immersive .mr-rt-panel {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
 }
-#meeting-room-panel.immersive .mr-ft {
-  height: 100%;
+
+/* cards strip 在沉浸模式下不必特殊撑满（panel 仍按既有 grid 渲染）；
+   保留 flex transition 以备未来需要 */
+.mr-ft-strip {
+  transition: flex 240ms ease-out;
 }
 
 /* ========================================================================

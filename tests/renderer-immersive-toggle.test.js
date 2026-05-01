@@ -28,14 +28,13 @@ const CSS = fs.readFileSync(path.join(ROOT, 'renderer', 'meeting-room.css'), 'ut
 const MAIN = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf-8');
 const STATE_STORE = fs.readFileSync(path.join(ROOT, 'core', 'state-store.js'), 'utf-8');
 
-test('index.html 含 #mr-shell-area wrapper', () => {
-  assert.match(HTML, /id="mr-shell-area"/);
-  // 内部包 mr-terminals
-  const start = HTML.indexOf('id="mr-shell-area"');
-  const end = HTML.indexOf('</div>', start) + 6;  // 第一个闭合（粗略）
-  // 实际更可靠：检查 mr-terminals / mr-toolbar / mr-input-row 都在 mr-shell-area 之后
-  assert.ok(HTML.indexOf('id="mr-terminals"', start) > start, 'mr-terminals after mr-shell-area open');
-  assert.ok(HTML.indexOf('id="mr-input-row"', start) > start, 'mr-input-row after mr-shell-area open');
+test('index.html 不再含 #mr-shell-area wrapper（fix：toolbar/input 必须固定底部）', () => {
+  assert.ok(!/id="mr-shell-area"/.test(HTML),
+    'mr-shell-area wrapper 已移除（包装会破坏 panel flex column 布局，导致 toolbar/input 错位）');
+  // mr-terminals + mr-toolbar + mr-input-row 必须仍存在，且都是 panel 直接子级
+  assert.match(HTML, /id="mr-terminals"/);
+  assert.match(HTML, /id="mr-toolbar"/);
+  assert.match(HTML, /id="mr-input-row"/);
 });
 
 test('meeting-room.js renderHeader 注入 immersive button（id+class 正确）', () => {
@@ -92,11 +91,23 @@ test('openMeeting 调 _restoreMeetingMode', () => {
   assert.match(body, /_restoreMeetingMode\s*\(/);
 });
 
-test('CSS 含 .mr-immersive-toggle.active + #mr-shell-area + immersive panel state', () => {
+test('CSS 含 .mr-immersive-toggle.active + 沉浸只隐藏 .mr-terminals + cards 抢占空间', () => {
   assert.match(CSS, /\.mr-immersive-toggle\s*\{/);
   assert.match(CSS, /\.mr-immersive-toggle\.active\s*\{/);
-  assert.match(CSS, /#mr-shell-area\s*\{/);
-  assert.match(CSS, /#meeting-room-panel\.immersive\s+#mr-shell-area/);
+  // 沉浸模式只 hide .mr-terminals，不能 hide toolbar / input-row
+  assert.match(CSS, /#meeting-room-panel\.immersive\s+\.mr-terminals/);
+  // cards 区（.mr-rt-panel）在沉浸模式下抢占空间
+  assert.match(CSS, /#meeting-room-panel\.immersive\s+\.mr-rt-panel/);
+  // 兜底：CSS 不能再含 #mr-shell-area 选择器
+  assert.ok(!/#mr-shell-area/.test(CSS), '#mr-shell-area selector 已移除');
+});
+
+test('沉浸 CSS 不能影响 .mr-toolbar / .mr-input-row（toolbar/input 必须固定底部）', () => {
+  // grep `#meeting-room-panel.immersive` 全部规则，看是否有 .mr-toolbar 或 .mr-input-row 的选择器
+  const rules = CSS.match(/#meeting-room-panel\.immersive\s+\S+/g) || [];
+  const violators = rules.filter(r => /\.mr-toolbar|\.mr-input-row|\.mr-input-soft-alert/.test(r));
+  assert.strictEqual(violators.length, 0,
+    `沉浸模式下严禁影响 toolbar/input：发现违规规则 ${violators.join(', ')}`);
 });
 
 test('main.js 含 IPC handlers save/get-immersive-mode', () => {

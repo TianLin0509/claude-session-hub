@@ -107,20 +107,21 @@
     </div>
     <div class="meeting-room-panel" id="meeting-room-panel" style="display:none">
       <div class="mr-header" id="mr-header"></div>
-      <!-- Card optimization Task 9（2026-05-01）— 沉浸/调试模式 shell 包装：
-           沉浸模式下此区淡出（max-height:0 + opacity:0），cards-tab 抢占整个 panel 高度。
-           内部 mr-terminals / mr-toolbar / mr-input-row 的 ID 全部保留不变（renderer.js
-           直接 getElementById 它们）。 -->
-      <div id="mr-shell-area">
-        <div class="mr-terminals" id="mr-terminals"></div>
-        <div class="mr-toolbar" id="mr-toolbar"></div>
-        <!-- IF-C3 软提醒 banner：AI 启动中时显示哪几家未 ready，让用户避免在 ready 前发送 -->
-        <div class="mr-input-soft-alert" id="mr-input-soft-alert" style="display:none"></div>
-        <div class="mr-input-row" id="mr-input-row">
-          <select class="mr-target-select" id="mr-input-target" title="发送目标"></select>
-          <div class="mr-input-box" id="mr-input-box" contenteditable="true" data-placeholder="输入消息..."></div>
-          <button class="mr-send-btn" id="mr-send-btn" title="发送">▶</button>
-        </div>
+      <!-- Card optimization Task 9 fix（2026-05-01）— 移除 #mr-shell-area 包装。
+           原方案把 mr-terminals + mr-toolbar + mr-input-row 全包进 shell-area，
+           但 panel 是 flex column 容器，包一层后子元素 flex 属性失效，
+           调试模式下 toolbar/input-row 错乱、沉浸模式下整个底部一起被隐藏。
+           现回归 panel 直接子级布局：mr-terminals 单独 flex:1 占主区，
+           toolbar+input-row 永远固定底部（flex-shrink:0），不参与沉浸切换。
+           沉浸模式只 hide .mr-terminals，让 .mr-rt-panel（cards）抢占空间。 -->
+      <div class="mr-terminals" id="mr-terminals"></div>
+      <div class="mr-toolbar" id="mr-toolbar"></div>
+      <!-- IF-C3 软提醒 banner：AI 启动中时显示哪几家未 ready，让用户避免在 ready 前发送 -->
+      <div class="mr-input-soft-alert" id="mr-input-soft-alert" style="display:none"></div>
+      <div class="mr-input-row" id="mr-input-row">
+        <select class="mr-target-select" id="mr-input-target" title="发送目标"></select>
+        <div class="mr-input-box" id="mr-input-box" contenteditable="true" data-placeholder="输入消息..."></div>
+        <button class="mr-send-btn" id="mr-send-btn" title="发送">▶</button>
       </div>
     </div>
     <div class="modal-overlay" id="resume-modal" style="display:none">
