@@ -370,6 +370,7 @@ transcriptTap.on('session-bound', (ev) => {
       cleanShutdown: false,
       sessions: lastPersistedSessions,
       meetings: meetingManager.getAllMeetings(),
+      immersiveByMeeting: _immersiveByMeeting,
     });
     console.log(`[hub] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
   }
@@ -553,6 +554,33 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
   scenes.cleanup(getHubDataDir(), meetingId);
   sendToRenderer('meeting-closed', { meetingId });
   return true;
+});
+
+// Card optimization Task 9（2026-05-01）— 沉浸/调试模式 IPC 持久化。
+//   renderer 调 get-immersive-mode 在 openMeeting 时拿初始模式；
+//   切换按钮 click → save-immersive-mode 写回 state.json。
+//   _immersiveByMeeting 是模块级 dict（顶部 bootState 加载），所有 stateStore.save 都带它。
+ipcMain.handle('get-immersive-mode', (_e, { meetingId } = {}) => {
+  if (!meetingId) return { immersive: false };
+  return { immersive: !!_immersiveByMeeting[meetingId] };
+});
+
+ipcMain.handle('save-immersive-mode', (_e, { meetingId, immersive } = {}) => {
+  if (!meetingId) return { ok: false, reason: 'no_meeting_id' };
+  _immersiveByMeeting[meetingId] = !!immersive;
+  try {
+    stateStore.save({
+      version: 1,
+      cleanShutdown: false,
+      sessions: lastPersistedSessions,
+      meetings: meetingManager.getAllMeetings(),
+      immersiveByMeeting: _immersiveByMeeting,
+    });
+  } catch (e) {
+    console.warn('[hub] save-immersive-mode persist failed:', e.message);
+    return { ok: false, error: e.message };
+  }
+  return { ok: true };
 });
 
 // =====================================================================
@@ -1596,6 +1624,11 @@ ipcMain.handle('debug:get-session-buffer', (_e, sessionId) => {
 const bootState = stateStore.load();
 const bootWasClean = bootState.cleanShutdown;
 let lastPersistedSessions = Array.isArray(bootState.sessions) ? bootState.sessions : [];
+// Card optimization Task 9（2026-05-01）— 沉浸/调试模式 per-meeting 状态（持久化）
+//   key = meetingId，value = boolean（true=沉浸，false=调试）。
+//   每个 stateStore.save 调用都把这份 dict 一起写回，避免被覆盖。
+let _immersiveByMeeting = (bootState.immersiveByMeeting && typeof bootState.immersiveByMeeting === 'object')
+  ? bootState.immersiveByMeeting : {};
 // Heal any cwds that legacy code corrupted (see extractCwdFromTranscript).
 // This reads CC's own JSONL transcripts which carry the authoritative cwd.
 const healed = healPersistedCwds(lastPersistedSessions);
@@ -1608,7 +1641,7 @@ for (const m of bootMeetings) {
 }
 
 // Flip cleanShutdown to false immediately on boot; before-quit will flip it back.
-stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions, meetings: bootMeetings }, { sync: true });
+stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions, meetings: bootMeetings, immersiveByMeeting: _immersiveByMeeting }, { sync: true });
 
 ipcMain.handle('get-dormant-meetings', () => meetingManager.getAllMeetings());
 
@@ -1656,6 +1689,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
     cleanShutdown: false,
     sessions: list,
     meetings: Array.isArray(meetingList) ? meetingList : meetingManager.getAllMeetings(),
+    immersiveByMeeting: _immersiveByMeeting,
   });
 });
 
@@ -2438,7 +2472,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', async () => {
-  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings() }, { sync: true });
+  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting }, { sync: true });
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
   try {
     await meetingStore.flushAll();

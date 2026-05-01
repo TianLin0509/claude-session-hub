@@ -23,6 +23,11 @@ function load() {
       if (s.geminiProjectRoot === undefined) s.geminiProjectRoot = null;
     }
     if (!Array.isArray(parsed.meetings)) parsed.meetings = [];
+    // Card optimization Task 9（2026-05-01）— 沉浸/调试模式 per-meeting 持久化字典。
+    //   缺省按 false（调试模式）处理，老 state.json 没有此字段也兼容。
+    if (!parsed.immersiveByMeeting || typeof parsed.immersiveByMeeting !== 'object') {
+      parsed.immersiveByMeeting = {};
+    }
     return parsed;
   } catch {
     return defaultState();
@@ -30,7 +35,11 @@ function load() {
 }
 
 function defaultState() {
-  return { version: CURRENT_VERSION, cleanShutdown: true, sessions: [], meetings: [] };
+  return {
+    version: CURRENT_VERSION, cleanShutdown: true,
+    sessions: [], meetings: [],
+    immersiveByMeeting: {},
+  };
 }
 
 let saveDebounceTimer = null;

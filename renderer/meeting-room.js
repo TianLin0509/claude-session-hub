@@ -74,6 +74,11 @@
   // Stage 2 容错升级：每轮 prompt 发送时间戳（用于 manual-extract IPC 的 sincePromptTs 参数）
   const _rtTurnStartTs = {};
 
+  // Card optimization Task 9（2026-05-01）— 沉浸/调试模式 per-meetingId 状态（renderer 内存镜像）。
+  //   首次 openMeeting 走 IPC 'get-immersive-mode' 拿主进程持久化值；切换走 'save-immersive-mode' 写回。
+  //   _toggleMeetingMode 切换 panel.classList.immersive + 按钮 .active class + icon/label 文本。
+  const _immersiveByMeeting = {};
+
   // markdown 渲染（用项目已有的 marked + DOMPurify）
   let _markedCache = null;
   let _domPurifyCache = null;
@@ -1153,6 +1158,14 @@
     // IF-C3（2026-05-01）：进会议室立即刷一次软提醒 banner（AI 未 ready 时提示用户）
     try { _refreshSoftAlert(meeting); } catch {}
 
+    // Card optimization Task 9（2026-05-01）：恢复持久化的沉浸/调试模式
+    if (_isPanelCapableMeeting(meeting)) {
+      _restoreMeetingMode(meeting).catch(() => {});
+    }
+
+    // Card optimization Task 10（2026-05-01）：开启 ResizeObserver 防溢出兜底（Task 10 提供）
+    if (typeof _setupMeetingResizeObserver === 'function') _setupMeetingResizeObserver();
+
     // IF-C2（2026-05-01）：auto-focus 输入框 — 修 P1 bug A（输入框暂时不可用）。
     //   xterm.terminal.open() + robustFit 的 rAF 循环会抢焦点；用 setTimeout 50ms
     //   defer 到 xterm 初始化稳定后再 focus，让用户进会议室立即可键盘输入。
@@ -1176,11 +1189,70 @@
     _bannerDismissedFor = null;
     const _banner = document.getElementById('mr-input-soft-alert');
     if (_banner) { _banner.style.display = 'none'; _banner.innerHTML = ''; }
+    // Card optimization Task 10（2026-05-01）：拆 ResizeObserver / window resize 监听，避免 panel 隐藏后还触发 fit
+    if (typeof _teardownMeetingResizeObserver === 'function') _teardownMeetingResizeObserver();
     const panel = panelEl();
     if (panel) panel.style.display = 'none';
     const el = terminalsEl();
     if (el) el.innerHTML = '';
     subTerminals = {};
+  }
+
+  // Card optimization Task 9（2026-05-01）— 沉浸/调试模式切换。
+  //   _toggleMeetingMode：用户点 button → 翻转 _immersiveByMeeting[meetingId] → IPC 写回 → applyMode。
+  //   _applyMeetingMode：纯 DOM 操作（panel.classList + 按钮 active class + icon/label）。
+  //   _restoreMeetingMode：openMeeting 调，问主进程拿持久化值（IPC 'get-immersive-mode'），首次进入会议时生效。
+  function _toggleMeetingMode() {
+    const mid = activeMeetingId;
+    if (!mid) return;
+    const cur = !!_immersiveByMeeting[mid];
+    const next = !cur;
+    _immersiveByMeeting[mid] = next;
+    _applyMeetingMode(next);
+    // 持久化到 main.js（state.json immersiveByMeeting{}）
+    try { ipcRenderer.invoke('save-immersive-mode', { meetingId: mid, immersive: next }); } catch {}
+  }
+
+  function _applyMeetingMode(immersive) {
+    const panel = document.getElementById('meeting-room-panel');
+    const btn = document.getElementById('meeting-room-mode-toggle');
+    const iconEl = document.getElementById('mr-mode-icon');
+    const labelEl = document.getElementById('mr-mode-label');
+    if (!panel) return;
+    if (immersive) {
+      panel.classList.add('immersive');
+      if (btn) btn.classList.add('active');
+      if (iconEl) iconEl.textContent = '🎯';
+      if (labelEl) labelEl.textContent = '沉浸';
+    } else {
+      panel.classList.remove('immersive');
+      if (btn) btn.classList.remove('active');
+      if (iconEl) iconEl.textContent = '🖥';
+      if (labelEl) labelEl.textContent = '调试';
+    }
+    // 防快速反复点击（动画 240ms）
+    if (btn) {
+      btn.style.pointerEvents = 'none';
+      setTimeout(() => { if (btn) btn.style.pointerEvents = ''; }, 280);
+    }
+    // 等动画结束让 xterm 重新 fit（_relayoutMeetingRoom 由 Task 10 提供，可选调）
+    setTimeout(() => {
+      if (typeof _relayoutMeetingRoom === 'function') _relayoutMeetingRoom();
+    }, 260);
+  }
+
+  async function _restoreMeetingMode(meeting) {
+    if (!meeting) return;
+    let immersive = !!_immersiveByMeeting[meeting.id];
+    // 首次：内存里没有就问主进程
+    if (_immersiveByMeeting[meeting.id] === undefined) {
+      try {
+        const r = await ipcRenderer.invoke('get-immersive-mode', { meetingId: meeting.id });
+        immersive = !!(r && r.immersive);
+        _immersiveByMeeting[meeting.id] = immersive;
+      } catch { immersive = false; }
+    }
+    _applyMeetingMode(immersive);
   }
 
   function getActiveMeetingId() {
@@ -1233,12 +1305,23 @@
     const layoutButtonsHtml = showLayoutButtons ? `
         <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>` : '';
 
+    // Card optimization Task 9（2026-05-01）— 沉浸/调试模式切换按钮（仅 panel-capable meeting 才显示）。
+    //   id=meeting-room-mode-toggle，class=mr-immersive-toggle（**故意 NOT mr-mode-btn**——
+    //   该 class 已被既有"圆桌/投研" mode toggle 占用，复用会样式冲突）。
+    //   icon/label 由 _applyMeetingMode 在 click 后切换：调试 🖥 / 沉浸 🎯。
+    const showImmersiveToggle = _isPanelCapableMeeting(meeting);
+    const immersiveToggleHtml = showImmersiveToggle ? `
+        <button class="mr-immersive-toggle" id="meeting-room-mode-toggle" title="切换沉浸/调试模式">
+          <span id="mr-mode-icon">🖥</span>
+          <span id="mr-mode-label">调试</span>
+        </button>` : '';
+
     el.innerHTML = `
       <div class="mr-header-left">
         ${_renderModeToggle(meeting)}
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
       </div>
-      <div class="mr-header-right">${layoutButtonsHtml}
+      <div class="mr-header-right">${layoutButtonsHtml}${immersiveToggleHtml}
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
         <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
@@ -1251,6 +1334,14 @@
     if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
     _bindModeToggle(el, meeting);
+    // Task 9：绑定沉浸/调试切换按钮 click（renderHeader 每次都新生成 DOM 所以无需 once-bind 守卫）
+    const immersiveBtn = document.getElementById('meeting-room-mode-toggle');
+    if (immersiveBtn) {
+      immersiveBtn.addEventListener('click', _toggleMeetingMode);
+      // 同步当前 panel.classList 的 immersive 状态到按钮的 active class + label
+      const panel = document.getElementById('meeting-room-panel');
+      if (panel && panel.classList.contains('immersive')) _applyMeetingMode(true);
+    }
     document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
     document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
     document.getElementById('mr-btn-zoom-in').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom + 1); });
