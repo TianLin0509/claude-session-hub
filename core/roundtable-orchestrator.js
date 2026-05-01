@@ -40,19 +40,12 @@ class RoundtableOrchestrator {
       currentTurn: 0,
       currentMode: 'idle',
       turns: [], // [{ n, mode, userInput, by: { sid: text }, timestamp, meta }]
-      // Card redesign（2026-05-01）：跨轮 AI 统计累加器，让卡片 row3/row4 显示
-      //   "本轮 Xs · 累计 Ys" / "本轮 Xk · 累计 Yk"。perTurnHistory 留待将来做趋势图。
-      aiStats: this._defaultAiStats(),
+      // meeting-create-modal（2026-05-01）：sid 索引化（允许 3 个相同 kind 的 slot
+      //   各自独立累加），卡片 row3/row4 仍显示"本轮/累计"。老 kind 索引格式
+      //   会在 setMeetingContext() 调用时迁移；迁移失败丢累计统计但不影响功能。
+      aiStats: {},
     };
     this._loadState();
-  }
-
-  _defaultAiStats() {
-    return {
-      claude: { totalThinkSec: 0, totalTokens: 0, perTurnHistory: [] },
-      gemini: { totalThinkSec: 0, totalTokens: 0, perTurnHistory: [] },
-      codex:  { totalThinkSec: 0, totalTokens: 0, perTurnHistory: [] },
-    };
   }
 
   _stateFilePath() {
@@ -69,20 +62,27 @@ class RoundtableOrchestrator {
       const raw = JSON.parse(fs.readFileSync(fp, 'utf-8'));
       if (raw && raw.meetingId === this.meetingId) {
         this.state = raw;
-        // Card redesign（2026-05-01）：旧 state.json 缺 aiStats 字段时补默认值，
-        //   防止后续 completeTurn 累加 / renderer 读 totalThinkSec 时 undefined.xxx 抛错。
+        // 兜底字段，防止 undefined 抛错。aiStats 老格式（kind 索引）这里不改写——
+        //   等 setMeetingContext(sidToKindMap) 调用时再尝试 migrateAiStats，
+        //   失败则丢累计统计起新（per spec §4.4）。
         if (!this.state.aiStats || typeof this.state.aiStats !== 'object') {
-          this.state.aiStats = this._defaultAiStats();
-        } else {
-          for (const kind of ['claude', 'gemini', 'codex']) {
-            if (!this.state.aiStats[kind]) {
-              this.state.aiStats[kind] = { totalThinkSec: 0, totalTokens: 0, perTurnHistory: [] };
-            }
-          }
+          this.state.aiStats = {};
         }
       }
     } catch (e) {
       console.warn(`[roundtable] load state failed for ${this.meetingId}:`, e.message);
+    }
+  }
+
+  // meeting-create-modal（2026-05-01）：让 main.js 在 IPC 调度阶段把当前 meeting
+  //   的 sid → {kind, model} 映射注入 orchestrator，触发老 aiStats 格式迁移
+  //   + 让 completeTurn 能给新 sid 项写 kind/model 元数据。
+  setMeetingContext(sidToInfoMap) {
+    this._sidInfo = sidToInfoMap || {};
+    // 如果当前 aiStats 是老 kind 索引格式，尝试 migrate 到 sid 格式
+    if (_isLegacyKindKeyed(this.state.aiStats)) {
+      this.state.aiStats = migrateAiStats(this.state.aiStats, this._sidInfo);
+      try { this._saveState(); } catch {}
     }
   }
 
@@ -252,19 +252,35 @@ class RoundtableOrchestrator {
     this.state.currentMode = 'idle';
     delete this.state.currentSummarizerKind;
 
-    // Card redesign：累加到 state.aiStats[kind] 跨轮持久化
-    if (stats && (stats.thinkSecByKind || stats.tokensByKind)) {
-      if (!this.state.aiStats) this.state.aiStats = this._defaultAiStats();
-      for (const kind of ['claude', 'gemini', 'codex']) {
-        if (!this.state.aiStats[kind]) {
-          this.state.aiStats[kind] = { totalThinkSec: 0, totalTokens: 0, perTurnHistory: [] };
+    // meeting-create-modal（2026-05-01）：sid 索引累加。stats.thinkSecBy / tokensBy
+    //   已经是 sid-keyed 格式（见调用方 main.js）。state.aiStats[<sid>] 写入
+    //   { totalThinkSec, totalTokens, perTurnHistory, kind, model }。
+    if (stats && (stats.thinkSecBy || stats.tokensBy)) {
+      if (!this.state.aiStats || typeof this.state.aiStats !== 'object') this.state.aiStats = {};
+      const tsBy = stats.thinkSecBy || {};
+      const tkBy = stats.tokensBy || {};
+      const sids = new Set([
+        ...Object.keys(byMap || {}),
+        ...Object.keys(tsBy),
+        ...Object.keys(tkBy),
+      ]);
+      for (const sid of sids) {
+        if (!sid) continue;
+        if (!this.state.aiStats[sid]) {
+          const info = (this._sidInfo && this._sidInfo[sid]) || {};
+          this.state.aiStats[sid] = {
+            totalThinkSec: 0,
+            totalTokens: 0,
+            perTurnHistory: [],
+            kind: info.kind || null,
+            model: info.model || null,
+          };
         }
-        const s = this.state.aiStats[kind];
-        const thisSec = (stats.thinkSecByKind && stats.thinkSecByKind[kind]) || 0;
-        const thisTok = (stats.tokensByKind && stats.tokensByKind[kind]) || 0;
+        const s = this.state.aiStats[sid];
+        const thisSec = tsBy[sid] || 0;
+        const thisTok = tkBy[sid] || 0;
         s.totalThinkSec += thisSec;
         s.totalTokens   += thisTok;
-        // 仅当本轮该家有数据时才进 history（避免无意义的 0 行）
         if (thisSec > 0 || thisTok > 0) {
           s.perTurnHistory.push({ n: turnNum, thinkSec: thisSec, tokens: thisTok, ts: Date.now() });
         }
@@ -310,6 +326,51 @@ class RoundtableOrchestrator {
   }
 }
 
+// meeting-create-modal（2026-05-01）：判断 aiStats 是不是老 kind 索引格式
+//   （含 claude/gemini/codex 顶层 key），用于 setMeetingContext 时触发迁移。
+function _isLegacyKindKeyed(stats) {
+  if (!stats || typeof stats !== 'object') return false;
+  return ['claude', 'gemini', 'codex'].some(k => stats[k] && typeof stats[k] === 'object'
+    && (typeof stats[k].totalThinkSec === 'number' || typeof stats[k].totalTokens === 'number'));
+}
+
+// 把 kind 索引的老 aiStats 重写成 sid 索引。sidToInfoMap 是 { sid: {kind, model} }，
+//   通常由 main.js 从当前 meeting.subSessions + sessions[sid].kind/currentModel 构造。
+//   多个 sid 同 kind 时（比如 3 个 Claude），老格式聚合的累计值会划给第一个匹配的 sid，
+//   其余 sid 起 0 — 因为老数据本来就是按 kind 共用，无法精准还原到具体 sid。
+//   迁移失败（无任何 sid 匹配上）返回空对象 {}（per spec §4.4：丢累计统计不影响功能）。
+function migrateAiStats(stats, sidToInfoMap) {
+  if (!stats || typeof stats !== 'object') return {};
+  if (!_isLegacyKindKeyed(stats)) return stats;
+  const migrated = {};
+  const used = new Set();
+  for (const [sid, info] of Object.entries(sidToInfoMap || {})) {
+    if (!sid || !info) continue;
+    const k = info.kind;
+    const old = stats[k];
+    if (old && !used.has(k)) {
+      migrated[sid] = {
+        totalThinkSec: old.totalThinkSec || 0,
+        totalTokens: old.totalTokens || 0,
+        perTurnHistory: Array.isArray(old.perTurnHistory) ? old.perTurnHistory.slice() : [],
+        kind: k,
+        model: info.model || null,
+      };
+      used.add(k); // 同 kind 多 sid 时只迁第一个
+    } else {
+      // 同 kind 已被消费，或老数据无此 kind → 起 0 累加器
+      migrated[sid] = {
+        totalThinkSec: 0,
+        totalTokens: 0,
+        perTurnHistory: [],
+        kind: k || null,
+        model: info.model || null,
+      };
+    }
+  }
+  return migrated;
+}
+
 // 单例池：每会议室一个 orchestrator
 const _pool = new Map();
 function getOrchestrator(hubDataDir, meetingId, scene) {
@@ -336,6 +397,8 @@ module.exports = {
   getOrchestrator,
   releaseOrchestrator,
   extractDecisionTitle,
+  migrateAiStats,
+  _isLegacyKindKeyed,
   SOFT_ALERT_T1_MS,
   SOFT_ALERT_T2_MS,
 };

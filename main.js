@@ -875,6 +875,17 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
 
     const sceneObj = scenes.getScene(meeting.scene);
     const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+    // meeting-create-modal（2026-05-01）：把 sid → {kind, model} 注入 orchestrator，
+    //   触发老 aiStats kind 索引格式迁移，并让 completeTurn 给新 sid 项写元数据。
+    const sidInfoMap = {};
+    for (const sub of subs) {
+      const s = sessionManager.getSession(sub.sid);
+      sidInfoMap[sub.sid] = {
+        kind: sub.kind,
+        model: (s && s.currentModel && s.currentModel.id) || null,
+      };
+    }
+    if (typeof orch.setMeetingContext === 'function') orch.setMeetingContext(sidInfoMap);
 
     // 决定本轮的目标 sid 集合 + 拼 per-sid prompt
     const targets = []; // [{ sid, kind, label, prompt }]
@@ -964,24 +975,17 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     //   completed/manual_extracted（正常引用文本）vs absent/errored（明确加注未参与）。
     // Card redesign（2026-05-01）：构建 stats 让 orchestrator 累加 state.aiStats
     //   跨轮持久化"累计思考秒数 / 累计 tokens"，卡片 row3/row4 显示。
+    // meeting-create-modal（2026-05-01）：sid 索引化，去掉硬编码 thinkSecByKind 字典。
+    //   orchestrator 会按 sid 累加到 state.aiStats[<sid>]，多 Claude slot 各自独立。
     const byMap = {};
     const byStatus = {};
     const thinkSecBy = {};
     const tokensBy = {};
-    const thinkSecByKind = { claude: 0, gemini: 0, codex: 0 };
-    const tokensByKind = { claude: 0, gemini: 0, codex: 0 };
     for (const r of results) {
       byMap[r.sid] = r.text || '';
       byStatus[r.sid] = r.status || 'completed';
-      const thisSec = typeof r.thinkSec === 'number' ? r.thinkSec : 0;
-      const thisTok = (r.tokens && typeof r.tokens.total === 'number') ? r.tokens.total : 0;
-      thinkSecBy[r.sid] = thisSec;
-      tokensBy[r.sid] = thisTok;
-      // 找出该 sid 对应 kind 累加（sentTargets 里有 kind 字段）
-      const target = sentTargets.find(t => t.sid === r.sid);
-      const kind = target ? target.kind : null;
-      if (kind && thinkSecByKind[kind] !== undefined) thinkSecByKind[kind] += thisSec;
-      if (kind && tokensByKind[kind] !== undefined) tokensByKind[kind] += thisTok;
+      thinkSecBy[r.sid] = typeof r.thinkSec === 'number' ? r.thinkSec : 0;
+      tokensBy[r.sid]   = (r.tokens && typeof r.tokens.total === 'number') ? r.tokens.total : 0;
     }
     const meta = {};
     if (mode === 'summary') {
@@ -991,7 +995,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       if (title) meta.decisionTitle = title;
     }
     orch.completeTurn(turnNum, mode, userInput || '', byMap, meta, byStatus, {
-      thinkSecBy, tokensBy, thinkSecByKind, tokensByKind,
+      thinkSecBy, tokensBy,
     });
 
     // E2 选项：summary 后写决策档案到 .arena/sessions/<datetime>-<title>.md
@@ -1507,19 +1511,21 @@ ipcMain.handle('roundtable-private:append', (_e, { meetingId, kind, userInput, r
 });
 
 ipcMain.handle('roundtable-private:list', (_e, { meetingId, kind } = {}) => {
+  // meeting-create-modal（2026-05-01）：去掉 claude/gemini/codex 白名单。
+  //   kind 未传 → 返回 store 全量（按文件实际 kind 顶层 key）；传了非空字符串 → 仅该 kind 列表。
+  //   返回空 store 时返回 {} 而不是硬编码 {claude,gemini,codex}，但保持向后兼容
+  //   （renderer 取 counts.claude 时 || [] 兜底已存在，不会 NPE）。
   if (!_isValidMeetingId(meetingId)) {
-    return kind ? [] : { claude: [], gemini: [], codex: [] };
+    return kind ? [] : {};
   }
-  // 校验 kind：未传/null OK（返回全量 store），传了必须在白名单内，
-  // 否则 listPrivateTurns 会 fallthrough 到全量返回，破坏白名单契约
-  if (kind !== undefined && kind !== null && !['claude', 'gemini', 'codex'].includes(kind)) {
+  if (kind !== undefined && kind !== null && (typeof kind !== 'string' || !kind)) {
     return [];
   }
   try {
     return generalRoundtablePrivateStore.listPrivateTurns(getHubDataDir(), meetingId, kind);
   } catch (e) {
     console.warn(`[roundtable-private:list] failed: ${e.message}`);
-    return kind ? [] : { claude: [], gemini: [], codex: [] };
+    return kind ? [] : {};
   }
 });
 

@@ -385,8 +385,10 @@
         bottomHtml = '<div class="mr-ft-preview" style="opacity:0.5;font-style:italic">等待…</div>';
       }
 
-      // Card redesign：计算"本轮 / 累计"的时间和 token
-      const aiStats = (state.aiStats && state.aiStats[kind]) || { totalThinkSec: 0, totalTokens: 0 };
+      // meeting-create-modal（2026-05-01）：aiStats 现在是 sid 索引（让多 Claude
+      //   slot 各自独立累加），先按 sid 取，再回退到 kind（兼容老 state.json）。
+      const aiStats = (state.aiStats && (state.aiStats[sub.sid] || state.aiStats[kind]))
+        || { totalThinkSec: 0, totalTokens: 0 };
       let thinkCurrentSec = 0;
       let tokensCurrentN = 0;
       if (status === 'thinking' || status === 'streaming') {
