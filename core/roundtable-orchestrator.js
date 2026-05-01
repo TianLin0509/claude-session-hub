@@ -285,6 +285,29 @@ class RoundtableOrchestrator {
       this._saveState();
     }
   }
+
+  // FIX-F（2026-05-01）：单家"重新拉起"成功后，把新结果 patch 进指定轮记录。
+  //   仅修改 by[sid] / byStatus[sid] / thinkSecBy[sid] / tokensBy[sid]；
+  //   不改 mode / userInput / meta / 累计统计 aiStats（避免重复累加）。
+  // 返回 patch 后的 record（深拷贝），方便调用方推 turn-complete IPC。
+  patchTurnResult(turnNum, sid, { text, status, thinkSec, tokens }) {
+    const record = this.state.turns.find(t => t.n === turnNum);
+    if (!record) return null;
+    record.by = record.by || {};
+    record.byStatus = record.byStatus || {};
+    record.thinkSecBy = record.thinkSecBy || {};
+    record.tokensBy = record.tokensBy || {};
+    if (status === 'completed' || status === 'manual_extracted') {
+      record.by[sid] = text || '';
+    }
+    record.byStatus[sid] = status || 'errored';
+    if (typeof thinkSec === 'number') record.thinkSecBy[sid] = thinkSec;
+    if (tokens && typeof tokens.total === 'number') record.tokensBy[sid] = tokens.total;
+    record.lastPatchedAt = Date.now();
+    this._saveState();
+    this._saveTurnFile(record);
+    return JSON.parse(JSON.stringify(record));
+  }
 }
 
 // 单例池：每会议室一个 orchestrator

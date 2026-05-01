@@ -1029,12 +1029,199 @@ ipcMain.handle('roundtable-skip-participant', async (_e, { meetingId, sid } = {}
   return { ok: true };
 });
 
-// 重发该家：plan 中标为 P0.5 单独提交，本 commit 先 stub 占位避免 IPC 缺失。
-//   完整实现需要重新走 _rtSendToPty + 新建一个 watcher，等单家重分发逻辑稳定后再补。
+// FIX-F（2026-05-01）：单家"重新拉起"——已结束轮上某家结果不理想时，
+//   不重启整轮，仅让该家用本轮 prompt 再答一次，patch 进 lastTurn。
+//
+// 流程：
+//   1. 检测 PTY 是否已切到宿主 shell（CLI 自我退出场景）→ 调 sessionManager.relaunchCli 重启
+//   2. rebuild 该家本轮 prompt（按 lastTurn.mode：fanout / debate / summary）
+//   3. _rtSendToPty 发送（内含 _rtWaitCliReady 冷启动等待）
+//   4. 创建独立 watcher 等 turn-complete（不挂到原 dispatch 的 Promise.allSettled）
+//   5. 期间推 partial-update 让卡片 UI 切回 thinking → streaming → completed
+//   6. settle 后调 orch.patchTurnResult patch lastTurn + 推 turn-complete 让 renderer 刷新
 ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = {}) => {
-  // TODO(P0.5): 实现单家重分发——重置 watcher、重发 prompt、重新等待 turn-complete
-  console.warn(`[roundtable] resend-participant not yet implemented (sid=${sid?.slice(0, 8)})`);
-  return { ok: false, reason: 'not_implemented', detail: 'resend is P0.5 backlog; use skip + new turn for now' };
+  if (!meetingId || !sid) return { ok: false, reason: 'missing_args' };
+
+  // 防重入：同一 sid 同时只能跑一个 resend
+  if (_activeWatchers.has(sid)) {
+    return { ok: false, reason: 'already_active', detail: '该家正在等待中（resend 或原 turn 还没结束）' };
+  }
+
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (!meeting) return { ok: false, reason: 'meeting_not_found' };
+
+  const sceneObj = scenes.getScene(meeting.scene);
+  const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+  const lastTurn = orch.getLastTurn();
+  if (!lastTurn) return { ok: false, reason: 'no_last_turn', detail: '没有可重新拉起的轮次' };
+
+  const session = sessionManager.getSession(sid);
+  if (!session) return { ok: false, reason: 'session_not_found' };
+  const kind = session.kind;
+  const label = session.title || kind;
+
+  console.log(`[resend] start sid=${sid.slice(0, 8)} kind=${kind} turn=${lastTurn.n} mode=${lastTurn.mode}`);
+
+  // 1. 立即推 partial-update：卡片切回 thinking（红色 → 进度条）
+  sendToRenderer('roundtable-partial-update', {
+    meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
+    sid, label, status: 'streaming', text: '',
+  });
+
+  // 2. 检测 PTY 是否需要重启 CLI
+  const needRelaunch = _rtCheckHostShellTakeover(sid);
+  if (needRelaunch) {
+    console.log(`[resend] host shell detected, relaunching ${kind} CLI`);
+    if (!sessionManager.relaunchCli(sid)) {
+      sendToRenderer('roundtable-partial-update', {
+        meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
+        sid, label, status: 'errored', text: '',
+      });
+      return { ok: false, reason: 'relaunch_failed', detail: `不支持的 kind=${kind}` };
+    }
+  } else {
+    // CLI 还活着但状态可能不对（被 PTY 末尾紊乱内容污染）→ 强制下次走冷启动确认 ready
+    sessionManager.setRoundtableReady(sid, false);
+  }
+
+  // 3. rebuild 本轮 prompt
+  const sidLabelFn = (s) => {
+    const sess = sessionManager.getSession(s);
+    return sess?.title || sess?.kind || 'AI';
+  };
+  let prompt;
+  try {
+    if (lastTurn.mode === 'fanout') {
+      // dataPack 不持久化，重发时不带（degradation acceptable —— 用户问题本身是核心）
+      prompt = orch.buildFanoutPrompt(lastTurn.n, lastTurn.userInput, '');
+    } else if (lastTurn.mode === 'debate') {
+      prompt = orch.buildDebatePrompt(lastTurn.n, lastTurn.userInput, lastTurn, sid, sidLabelFn);
+    } else if (lastTurn.mode === 'summary') {
+      prompt = orch.buildSummaryPrompt(lastTurn.n, sid, sidLabelFn);
+    } else {
+      return { ok: false, reason: 'unsupported_mode', detail: `未知 mode=${lastTurn.mode}` };
+    }
+  } catch (e) {
+    console.error('[resend] prompt build failed:', e);
+    return { ok: false, reason: 'prompt_build_failed', detail: e.message };
+  }
+
+  // 4. _rtSendToPty 发送（含 ready 等待 + paste-detect 安静期）
+  let sent = false;
+  try { sent = await _rtSendToPty(sid, prompt, kind); }
+  catch (e) {
+    console.error('[resend] _rtSendToPty threw:', e);
+    sendToRenderer('roundtable-partial-update', {
+      meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
+      sid, label, status: 'errored', text: '',
+    });
+    return { ok: false, reason: 'send_threw', detail: e.message };
+  }
+  if (!sent) {
+    sendToRenderer('roundtable-partial-update', {
+      meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
+      sid, label, status: 'errored', text: '',
+    });
+    return { ok: false, reason: 'send_failed', detail: 'CLI 未就绪或活性兜底失败' };
+  }
+
+  // 5. 创建独立 watcher 等 turn-complete
+  const startTs = Date.now();
+  const watcher = createTurnCompletionWatcher({
+    transcriptTap, hubSessionId: sid, label,
+    onSoftAlert: (level) => {
+      try {
+        sendToRenderer('roundtable-soft-alert', {
+          meetingId, turnNum: lastTurn.n, mode: lastTurn.mode, sid, label, level,
+        });
+      } catch {}
+    },
+  });
+  _activeWatchers.set(sid, watcher);
+
+  // streaming partial（同 _rtWaitTurnComplete 的体验）
+  const streamTimer = setInterval(() => {
+    if (watcher.isSettled()) { clearInterval(streamTimer); return; }
+    const text = _rtExtractStreamingText(sid);
+    if (text.length > 10) {
+      try {
+        sendToRenderer('roundtable-partial-update', {
+          meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
+          sid, label, status: 'streaming', text,
+        });
+      } catch {}
+    }
+  }, 1500);
+
+  // 5min 硬 timeout（与原 dispatch 一致）
+  const hardTimeout = setTimeout(() => {
+    if (!watcher.isSettled()) {
+      console.warn(`[resend] hard timeout (5min) for ${label}, forcing skip`);
+      watcher.skip();
+    }
+  }, RT_TRANSITIONAL_HARD_TIMEOUT_MS);
+  hardTimeout.unref?.();
+
+  // FIX-D：心跳检测同样适用 resend
+  let hostShellHits = 0;
+  const heartbeat = setInterval(() => {
+    if (watcher.isSettled()) { clearInterval(heartbeat); return; }
+    if (_rtCheckHostShellTakeover(sid)) {
+      hostShellHits += 1;
+      if (hostShellHits >= _HOST_SHELL_CONSECUTIVE_HITS) {
+        console.warn(`[resend] host shell during resend for ${label}, errored`);
+        try { watcher.markProcessExit({ code: -1, signal: 'cli_self_exit_during_resend' }); }
+        catch {}
+      }
+    } else {
+      hostShellHits = 0;
+    }
+  }, _HOST_SHELL_HEARTBEAT_MS);
+  heartbeat.unref?.();
+
+  let result;
+  try {
+    result = await watcher.wait();
+  } finally {
+    clearInterval(streamTimer);
+    clearInterval(heartbeat);
+    clearTimeout(hardTimeout);
+    _activeWatchers.delete(sid);
+  }
+
+  // 注入 thinkSec / tokens（同 _rtWaitTurnComplete 的逻辑）
+  result.thinkSec = Math.round((Date.now() - startTs) / 100) / 10;
+  try { result.tokens = transcriptTap.getLastTokens(sid) || null; }
+  catch { result.tokens = null; }
+
+  // 6. patch lastTurn + 推 partial-update + turn-complete 让 renderer 刷新
+  const patched = orch.patchTurnResult(lastTurn.n, sid, {
+    text: result.text || '',
+    status: result.status,
+    thinkSec: result.thinkSec,
+    tokens: result.tokens,
+  });
+
+  sendToRenderer('roundtable-partial-update', {
+    meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
+    sid, label, status: result.status, text: result.text || '',
+    thinkSec: result.thinkSec, tokens: result.tokens,
+  });
+
+  // 重用整轮 turn-complete IPC：renderer 会清 _partialBy + currentMode + refresh
+  sendToRenderer('roundtable-turn-complete', {
+    meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
+    results: [{ sid, label, ...result }],
+    meta: { resend: true, patched: !!patched },
+  });
+
+  console.log(`[resend] done sid=${sid.slice(0, 8)} status=${result.status} chars=${(result.text || '').length}`);
+  return {
+    ok: result.status === 'completed' || result.status === 'manual_extracted',
+    status: result.status,
+    text: result.text || '',
+    thinkSec: result.thinkSec,
+  };
 });
 
 ipcMain.handle('get-ring-buffer', (_e, sessionId) => {

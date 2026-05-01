@@ -4,27 +4,28 @@ const os = require('os');
 const fs = require('fs');
 const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
+const { getConfig } = require('./hub-config.js');
 
 const RING_BUFFER_BYTES = 16384;
 
-// Default proxy for Claude sessions. Change if your proxy differs.
-const CLAUDE_PROXY = 'http://127.0.0.1:7890';
-
-function loadSecretValue(key) {
-  if (process.env[key]) return process.env[key];
-  try {
-    const content = fs.readFileSync('C:\\LinDangAgent\\secrets.toml', 'utf8');
-    const match = content.match(new RegExp(key + "\\s*=\\s*[\"']([^\"']+)[\"']"));
-    return match ? match[1] : '';
-  } catch { return ''; }
+// 配置从 hub-config.js 加载（优先级：env > config.json > secrets.toml）
+// 老用户无感知：如果 config.json 不存在，自动 fallback 到 secrets.toml
+function _loadConfigValues() {
+  const config = getConfig();
+  return {
+    CLAUDE_PROXY: config.proxy,
+    DEEPSEEK_API_KEY: config.deepseekApiKey,
+    GLM_API_KEY: config.glmApiKey,
+    GLM_BASE_URL: config.glmBaseUrl,
+    GLM_MODEL: config.glmModel,
+  };
 }
-function normalizeBaseUrl(url) {
-  return String(url || '').trim().replace(/\/+$/, '');
+// 惰性求值：首次使用时加载，之后缓存
+let _configValues = null;
+function getConfigValues() {
+  if (!_configValues) _configValues = _loadConfigValues();
+  return _configValues;
 }
-const DEEPSEEK_API_KEY = loadSecretValue('DEEPSEEK_API_KEY');
-const GLM_API_KEY = loadSecretValue('GLM_API_KEY');
-const GLM_BASE_URL = normalizeBaseUrl(loadSecretValue('GLM_BASE_URL') || 'https://mydamoxing.cn');
-const GLM_MODEL = loadSecretValue('GLM_MODEL') || 'glm-5.1';
 
 function toClaudeProjectKey(projectDir) {
   return path.resolve(projectDir || os.homedir()).replace(/\\/g, '/');
@@ -129,10 +130,9 @@ class SessionManager extends EventEmitter {
       delete sessionEnv.ANTHROPIC_AUTH_TOKEN;
       delete sessionEnv.ANTHROPIC_API_KEY;
       delete sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
-      // Force Clash proxy — don't rely on how Electron was launched.
-      // User's hard rule: all CLI calls must go through 127.0.0.1:7890.
-      sessionEnv.HTTP_PROXY = CLAUDE_PROXY;
-      sessionEnv.HTTPS_PROXY = CLAUDE_PROXY;
+      const cv = getConfigValues();
+      sessionEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
+      sessionEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
       sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
       // Attribution + auth for the Stop/UserPromptSubmit hook script
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
@@ -145,17 +145,19 @@ class SessionManager extends EventEmitter {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
     } else if (isGemini || isCodex) {
-      sessionEnv.HTTP_PROXY = CLAUDE_PROXY;
-      sessionEnv.HTTPS_PROXY = CLAUDE_PROXY;
+      const cv = getConfigValues();
+      sessionEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
+      sessionEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
       sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
     } else if (isDeepSeek) {
+      const cv = getConfigValues();
       // DeepSeek API 国内直连，不走代理
       delete sessionEnv.HTTP_PROXY;
       delete sessionEnv.HTTPS_PROXY;
       delete sessionEnv.NO_PROXY;
       // 让 Claude Code CLI 连接 DeepSeek 的 Anthropic 兼容端点
       sessionEnv.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
-      sessionEnv.ANTHROPIC_AUTH_TOKEN = DEEPSEEK_API_KEY;
+      sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.DEEPSEEK_API_KEY;
       // 清除可能继承的 Anthropic 认证，防止冲突
       delete sessionEnv.ANTHROPIC_API_KEY;
       delete sessionEnv.ANTHROPIC_API_BASE_URL;
@@ -170,11 +172,12 @@ class SessionManager extends EventEmitter {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
     } else if (isGlm) {
+      const cv = getConfigValues();
       delete sessionEnv.HTTP_PROXY;
       delete sessionEnv.HTTPS_PROXY;
       delete sessionEnv.NO_PROXY;
-      sessionEnv.ANTHROPIC_BASE_URL = GLM_BASE_URL;
-      sessionEnv.ANTHROPIC_AUTH_TOKEN = GLM_API_KEY;
+      sessionEnv.ANTHROPIC_BASE_URL = cv.GLM_BASE_URL;
+      sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.GLM_API_KEY;
       delete sessionEnv.ANTHROPIC_API_KEY;
       delete sessionEnv.ANTHROPIC_API_BASE_URL;
       sessionEnv.CLAUDE_CONFIG_DIR = path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), '.claude-glm');
@@ -229,7 +232,8 @@ class SessionManager extends EventEmitter {
       const mid = opts.model || 'deepseek-v4-pro';
       currentModel = { id: mid, displayName: mid === 'deepseek-v4-pro' ? 'DS V4 Pro' : 'DS V4 Flash' };
     } else if (isGlm) {
-      const mid = opts.model || GLM_MODEL;
+      const cv = getConfigValues();
+      const mid = opts.model || cv.GLM_MODEL;
       currentModel = { id: mid, displayName: mid.toLowerCase().includes('5.1') ? 'GLM 5.1' : mid };
     }
 
@@ -453,13 +457,14 @@ class SessionManager extends EventEmitter {
     }
 
     if (isGlm) {
+      const cv = getConfigValues();
       let cmd;
       if (opts.resumeCCSessionId) {
         cmd = ` claude --resume ${opts.resumeCCSessionId} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
         cmd = ' claude --continue --permission-mode bypassPermissions';
       } else {
-        cmd = ` claude --model ${opts.model || GLM_MODEL} --permission-mode bypassPermissions`;
+        cmd = ` claude --model ${opts.model || cv.GLM_MODEL} --permission-mode bypassPermissions`;
       }
       cmd += '\r\n';
       let sent = false;
@@ -551,6 +556,32 @@ class SessionManager extends EventEmitter {
   getRoundtableLastActivity(sessionId) {
     const s = this.sessions.get(sessionId);
     return s ? (s.roundtableLastActivity || 0) : 0;
+  }
+
+  // FIX-F（2026-05-01）：在已存在的 PTY 上重新启动 CLI 进程（不重 spawn PTY）。
+  //   场景：CLI 自我退出（Codex 自动更新 / Gemini OAuth refresh / Claude panic），
+  //   PTY 控制权回到宿主 shell（PowerShell / bash），ring buffer 末尾是 host prompt。
+  //   往 PTY 写启动命令重新拉起 CLI；不带 resume，启动新 session（context 干净）。
+  //   命令前导空格抑制 shell 历史记录，避免污染。
+  // 返回 true 已写命令，false 找不到 session 或 kind 不支持。
+  relaunchCli(sessionId) {
+    const s = this.sessions.get(sessionId);
+    if (!s || !s.pty) return false;
+    const kind = s.info && s.info.kind;
+    let cmd;
+    if (kind === 'codex') {
+      cmd = ' codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.5\r\n';
+    } else if (kind === 'gemini') {
+      cmd = ' gemini --approval-mode yolo --model gemini-2.5-flash\r\n';
+    } else if (kind === 'claude') {
+      cmd = ' claude --model claude-opus-4-7[1m]\r\n';
+    } else {
+      return false;
+    }
+    s.pty.write(cmd);
+    // 重置 roundtable 快路径缓存：CLI 是新启动，必须重新走冷启动流程
+    s.roundtableReady = false;
+    return true;
   }
 
   getAllSessions() {
