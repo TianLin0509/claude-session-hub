@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' file: data:;">
-  <title>Claude Session Hub</title>
+  <title>圆桌</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="meeting-room.css">
@@ -13,51 +13,59 @@
   <div class="app-container" id="app-container">
     <div class="session-sidebar" id="session-sidebar">
       <div class="sidebar-header">
-        <span class="sidebar-title">Sessions</span>
-        <div style="display:flex;align-items:center;gap:6px">
-          <span class="session-count" id="session-count">0 open</span>
-          <div class="new-session-wrapper" id="new-session-wrapper">
-            <button class="btn-new-session" id="btn-new" title="New session (Ctrl+N)">+</button>
-            <div class="new-session-menu" id="new-session-menu" style="display:none">
-              <button class="new-session-option" data-kind="claude">Claude Code</button>
-              <button class="new-session-option" data-kind="claude-resume">Claude Resume</button>
-              <button class="new-session-option" data-kind="gemini">Gemini CLI</button>
-              <button class="new-session-option" data-kind="codex">Codex CLI</button>
-              <button class="new-session-option" data-kind="deepseek">DeepSeek</button>
-              <button class="new-session-option" data-kind="glm">GLM</button>
-              <button class="new-session-option" data-kind="powershell">PowerShell</button>
-              <div class="new-session-divider"></div>
-              <button class="new-session-option" data-kind="meeting" data-meeting-mode="general">🎯 创建圆桌</button>
-            </div>
+        <div class="new-session-wrapper" id="new-session-wrapper">
+          <button class="btn-new-session" id="btn-new" title="新建会话 (Ctrl+N)">+ 新建 ▾</button>
+          <div class="new-session-menu" id="new-session-menu" style="display:none">
+            <div class="menu-group-label">AI CLI</div>
+            <button class="new-session-option" data-kind="claude"><span class="ai-logo logo-claude"></span>Claude Code</button>
+            <button class="new-session-option" data-kind="gemini"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
+            <button class="new-session-option" data-kind="codex"><span class="ai-logo logo-codex"></span>Codex CLI</button>
+            <button class="new-session-option" data-kind="deepseek"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
+            <button class="new-session-option" data-kind="glm"><span class="ai-logo logo-glm"></span>GLM</button>
+            <div class="new-session-divider"></div>
+            <div class="menu-group-label">终端</div>
+            <button class="new-session-option" data-kind="powershell"><span class="ai-logo logo-powershell"></span>PowerShell</button>
           </div>
-          <button class="btn-resume-picker" id="btn-resume-picker" title="Resume a past session">↻</button>
-          <button class="btn-collapse-sidebar" id="btn-collapse-sidebar" title="Collapse sidebar (Ctrl+B)">◀</button>
-          <div class="theme-picker-wrapper">
-            <button class="btn-collapse-sidebar" id="btn-theme" title="切换主题">🎨</button>
-            <div class="theme-picker-popup" id="theme-picker-popup" style="display:none">
-              <div class="theme-picker-title">选择主题</div>
-              <div class="theme-option" data-theme="default">
-                <div class="theme-swatch swatch-default"></div>
-                <div class="theme-option-info"><div class="theme-option-name">Default Dark</div><div class="theme-option-desc">经典深色</div></div>
-              </div>
-              <div class="theme-option" data-theme="midnight">
-                <div class="theme-swatch swatch-midnight"></div>
-                <div class="theme-option-info"><div class="theme-option-name">Midnight Abyss</div><div class="theme-option-desc">深邃海蓝 + 冰蓝</div></div>
-              </div>
-              <div class="theme-option" data-theme="obsidian">
-                <div class="theme-swatch swatch-obsidian"></div>
-                <div class="theme-option-info"><div class="theme-option-name">Obsidian Ember</div><div class="theme-option-desc">纯黑 + 琥珀暖光</div></div>
-              </div>
-              <div class="theme-option" data-theme="aurora">
-                <div class="theme-swatch swatch-aurora"></div>
-                <div class="theme-option-info"><div class="theme-option-name">Aurora Borealis</div><div class="theme-option-desc">极光渐变 蓝绿紫</div></div>
-              </div>
+        </div>
+        <div class="resume-picker-wrapper" id="resume-picker-wrapper">
+          <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话">↻ 恢复 ▾</button>
+          <div class="resume-picker-menu" id="resume-picker-menu" style="display:none">
+            <button class="resume-option" data-kind="claude-resume"><span class="ai-logo logo-claude"></span>Claude<span class="hint">PTY picker</span></button>
+            <button class="resume-option" data-kind="gemini-resume"><span class="ai-logo logo-gemini"></span>Gemini<span class="hint">最近一次</span></button>
+            <button class="resume-option" data-kind="codex-resume"><span class="ai-logo logo-codex"></span>Codex<span class="hint">PTY picker</span></button>
+            <button class="resume-option" data-kind="deepseek-resume"><span class="ai-logo logo-deepseek"></span>DeepSeek<span class="hint">PTY picker</span></button>
+            <button class="resume-option" data-kind="glm-resume"><span class="ai-logo logo-glm"></span>GLM<span class="hint">PTY picker</span></button>
+          </div>
+        </div>
+        <button class="btn-roundtable" id="btn-roundtable" title="创建圆桌">🎯 圆桌</button>
+        <div class="options-wrapper">
+          <button class="btn-options" id="btn-options" title="选项">⚙ 选项 ▾</button>
+          <div class="options-menu" id="options-menu" style="display:none">
+            <div class="options-item" id="options-theme">🎨 切换主题</div>
+            <div class="options-divider"></div>
+            <div class="options-item" id="options-settings">⚙️ 设置</div>
+          </div>
+          <div class="theme-picker-popup" id="theme-picker-popup" style="display:none">
+            <div class="theme-picker-title">选择主题</div>
+            <div class="theme-option" data-theme="default">
+              <div class="theme-swatch swatch-default"></div>
+              <div class="theme-option-info"><div class="theme-option-name">Default Dark</div><div class="theme-option-desc">经典深色</div></div>
+            </div>
+            <div class="theme-option" data-theme="midnight">
+              <div class="theme-swatch swatch-midnight"></div>
+              <div class="theme-option-info"><div class="theme-option-name">Midnight Abyss</div><div class="theme-option-desc">深邃海蓝 + 冰蓝</div></div>
+            </div>
+            <div class="theme-option" data-theme="obsidian">
+              <div class="theme-swatch swatch-obsidian"></div>
+              <div class="theme-option-info"><div class="theme-option-name">Obsidian Ember</div><div class="theme-option-desc">纯黑 + 琥珀暖光</div></div>
+            </div>
+            <div class="theme-option" data-theme="aurora">
+              <div class="theme-swatch swatch-aurora"></div>
+              <div class="theme-option-info"><div class="theme-option-name">Aurora Borealis</div><div class="theme-option-desc">极光渐变 蓝绿紫</div></div>
             </div>
           </div>
         </div>
-      </div>
-      <div class="sidebar-search">
-        <input type="text" id="search-input" class="search-input" placeholder="Search sessions…">
+        <button class="btn-collapse-sidebar" id="btn-collapse-sidebar" title="折叠侧边栏 (Ctrl+B)">◀</button>
       </div>
       <div id="account-usage" class="account-usage" style="display:none"></div>
       <div class="session-list" id="session-list"></div>
@@ -161,6 +169,151 @@
   <script src="meeting-room.js"></script>
   <script src="meeting-summary-modal.js"></script>
   <script src="meeting-create-modal.js"></script>
+
+  <div id="config-modal" class="config-modal-overlay hidden">
+    <div class="config-modal-content">
+      <div class="config-modal-header">
+        <h2>配置 · Settings</h2>
+        <button class="config-modal-close" id="config-close">✕</button>
+      </div>
+      <div class="config-modal-body">
+        <div id="config-main-view">
+          <p class="config-hint">配置全局代理和各 AI 的接入方式。Codex / DeepSeek / GLM 的变更会在新建会话时生效。</p>
+          <div class="config-field">
+            <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
+            <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
+          </div>
+          <div class="config-section-label">
+            <span>AI 模型</span>
+            <span>点击进入详情</span>
+          </div>
+          <div class="config-ai-list">
+            <button class="config-ai-row" type="button" data-ai="claude">
+              <span class="config-ai-mark claude">CL</span>
+              <span class="config-ai-copy">
+                <strong>Claude</strong>
+                <small id="cfg-summary-claude">订阅模式 · claude-opus-4-7[1m]</small>
+              </span>
+              <span class="config-ai-status subscription">订阅</span>
+            </button>
+            <button class="config-ai-row" type="button" data-ai="gemini">
+              <span class="config-ai-mark gemini">GE</span>
+              <span class="config-ai-copy">
+                <strong>Gemini</strong>
+                <small id="cfg-summary-gemini">订阅模式 · gemini-2.5-flash</small>
+              </span>
+              <span class="config-ai-status subscription">订阅</span>
+            </button>
+            <button class="config-ai-row" type="button" data-ai="codex">
+              <span class="config-ai-mark codex">CX</span>
+              <span class="config-ai-copy">
+                <strong>Codex</strong>
+                <small id="cfg-summary-codex">订阅模式 · gpt-5.5</small>
+              </span>
+              <span class="config-ai-status" id="cfg-status-codex">订阅</span>
+            </button>
+            <button class="config-ai-row" type="button" data-ai="deepseek">
+              <span class="config-ai-mark deepseek">DS</span>
+              <span class="config-ai-copy">
+                <strong>DeepSeek</strong>
+                <small id="cfg-summary-deepseek">API · deepseek-v4-pro</small>
+              </span>
+              <span class="config-ai-status api" id="cfg-status-deepseek">API</span>
+            </button>
+            <button class="config-ai-row" type="button" data-ai="glm">
+              <span class="config-ai-mark glm">GL</span>
+              <span class="config-ai-copy">
+                <strong>GLM</strong>
+                <small id="cfg-summary-glm">API · glm-5.1</small>
+              </span>
+              <span class="config-ai-status api" id="cfg-status-glm">API</span>
+            </button>
+          </div>
+        </div>
+
+        <div id="config-detail-view" class="hidden">
+          <div class="config-detail-head">
+            <button class="config-back-btn" id="config-back" type="button">‹ 返回模型列表</button>
+            <span class="config-ai-status" id="cfg-detail-status">订阅</span>
+          </div>
+          <h3 id="cfg-detail-title">Codex 设置</h3>
+          <p class="config-hint" id="cfg-detail-hint">全 Hub 新建 Codex 会话统一生效。</p>
+
+          <div class="config-ai-detail" id="cfg-detail-claude">
+            <div class="config-mode-card selected">
+              <strong>订阅 / Claude Code 登录</strong>
+              <span>使用当前本机 Claude Code 登录状态。Hub 会保持现有订阅启动方式，不写入 API Key。</span>
+            </div>
+          </div>
+
+          <div class="config-ai-detail" id="cfg-detail-gemini">
+            <div class="config-mode-card selected">
+              <strong>订阅 / Gemini CLI 登录</strong>
+              <span>使用当前本机 Gemini CLI 登录状态。API 模式暂不接入，避免影响当前可用链路。</span>
+            </div>
+          </div>
+
+          <div class="config-ai-detail" id="cfg-detail-codex">
+            <div class="config-field">
+              <label>Codex 后端 <span class="config-label-hint">（全 Hub 生效）</span></label>
+              <select id="cfg-codex-backend">
+                <option value="subscription">订阅 / ChatGPT 登录</option>
+                <option value="api">第三方 API / Packy</option>
+              </select>
+            </div>
+            <div class="config-note">API 模式仍以 gpt-5.5、YOLO、信任当前目录启动，目标是和订阅模式体感一致。</div>
+            <div class="config-field">
+              <label>Codex API Key</label>
+              <input type="password" id="cfg-codex-key" placeholder="sk-..." spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>Codex API Base URL</label>
+              <input type="text" id="cfg-codex-url" placeholder="https://www.packyapi.com/v1" spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>Codex API Model</label>
+              <input type="text" id="cfg-codex-model" placeholder="gpt-5.5" spellcheck="false">
+            </div>
+          </div>
+
+          <div class="config-ai-detail" id="cfg-detail-deepseek">
+            <div class="config-mode-card selected">
+              <strong>API 模式</strong>
+              <span>DeepSeek 当前通过 Anthropic 兼容 API 接入，使用隔离 Claude 配置目录。</span>
+            </div>
+            <div class="config-field">
+              <label>DeepSeek API Key</label>
+              <input type="password" id="cfg-deepseek-key" placeholder="sk-..." spellcheck="false">
+            </div>
+          </div>
+
+          <div class="config-ai-detail" id="cfg-detail-glm">
+            <div class="config-mode-card selected">
+              <strong>API 模式</strong>
+              <span>GLM 当前通过 Anthropic 兼容 API 接入，Base URL 和模型可自定义。</span>
+            </div>
+            <div class="config-field">
+              <label>GLM API Key</label>
+              <input type="password" id="cfg-glm-key" placeholder="sk-..." spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>GLM Base URL</label>
+              <input type="text" id="cfg-glm-url" placeholder="https://mydamoxing.cn" spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>GLM Model</label>
+              <input type="text" id="cfg-glm-model" placeholder="glm-5.1" spellcheck="false">
+            </div>
+          </div>
+        </div>
+        <div class="config-modal-actions">
+          <button class="config-btn config-btn-save" id="config-save">保存</button>
+          <button class="config-btn config-btn-cancel" id="config-cancel">取消</button>
+        </div>
+        <div class="config-save-msg" id="config-save-msg" style="display:none"></div>
+      </div>
+    </div>
+  </div>
 
   <div id="pair-modal" class="pair-modal-overlay hidden">
     <div class="pair-modal-content">

@@ -1,7 +1,7 @@
 {
-  "name": "claude-session-hub",
-  "version": "0.6.0",
-  "description": "Chat-style multi-session terminal manager for Claude Code",
+  "name": "roundtable",
+  "version": "0.7.0",
+  "description": "多模型协作圆桌终端",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -35,22 +35,24 @@
   },
   "devDependencies": {
     "electron": "^41.2.0",
-    "electron-builder": "^26.0.0"
+    "electron-builder": "^26.0.0",
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.34.5"
   },
   "build": {
     "npmRebuild": false,
-    "appId": "com.claude-session-hub",
-    "productName": "Claude Session Hub",
+    "appId": "com.roundtable",
+    "productName": "圆桌",
     "win": {
       "target": "nsis",
-      "icon": "claude-wx.ico",
+      "icon": "roundtable.ico",
       "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerIcon": "claude-wx.ico",
-      "uninstallerIcon": "claude-wx.ico",
+      "installerIcon": "roundtable.ico",
+      "uninstallerIcon": "roundtable.ico",
       "createDesktopShortcut": true
     },
     "files": [
@@ -59,7 +61,7 @@
       "renderer/**/*",
       "renderer-mobile/**/*",
       "scripts/**/*",
-      "claude-wx.ico",
+      "roundtable.ico",
       "package.json"
     ],
     "extraResources": [

@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const http = require('http');
 const os = require('os');
 let QRCode = null;
-const { SessionManager } = require('./core/session-manager.js');
+const { SessionManager, clearSessionManagerConfigCache } = require('./core/session-manager.js');
 const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
@@ -62,7 +62,7 @@ function ensureHooksDeployed(claudeDirPath) {
     }
     if (needsCopy) {
       fs.copyFileSync(src, dest);
-      console.log(`[hub] deployed ${file} -> ${dest}`);
+      console.log(`[圆桌] deployed ${file} -> ${dest}`);
     }
   }
 
@@ -128,7 +128,7 @@ function ensureHooksDeployed(claudeDirPath) {
   if (changed) {
     fs.mkdirSync(claudeDir, { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    console.log('[hub] settings.json updated with hook config');
+    console.log('[圆桌] settings.json updated with hook config');
   }
 
   // 4. Ensure .claude.json project trust — Claude Code 将"信任文件夹"状态
@@ -144,12 +144,12 @@ function ensureHooksDeployed(claudeDirPath) {
         if (proj && typeof proj === 'object' && proj.hasTrustDialogAccepted === false) {
           proj.hasTrustDialogAccepted = true;
           trustChanged = true;
-          console.log(`[hub] .claude.json trust fixed: ${projectDir}`);
+          console.log(`[圆桌] .claude.json trust fixed: ${projectDir}`);
         }
       }
       if (trustChanged) {
         fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
-        console.log('[hub] .claude.json trust state updated');
+        console.log('[圆桌] .claude.json trust state updated');
       }
     }
   } catch { /* .claude.json 不存在或格式异常，跳过（首次启动可能尚未生成） */ }
@@ -167,9 +167,9 @@ function ensureCodexContextConfig() {
     const line = '\n[tui]\nstatus_line = ["model-with-reasoning", "context-remaining", "current-dir"]\n';
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.appendFileSync(configPath, line);
-    console.log('[hub] codex config.toml patched with context-remaining');
+    console.log('[圆桌] codex config.toml patched with context-remaining');
   } catch (e) {
-    console.warn('[hub] codex config patch failed:', e.message);
+    console.warn('[圆桌] codex config patch failed:', e.message);
   }
 }
 
@@ -227,7 +227,7 @@ function healPersistedCwds(sessions) {
     if (!tp) continue;
     const realCwd = extractCwdFromTranscript(tp);
     if (realCwd && realCwd !== s.cwd) {
-      console.log(`[hub] heal cwd: "${s.title}" ${s.cwd} -> ${realCwd}`);
+      console.log(`[圆桌] heal cwd: "${s.title}" ${s.cwd} -> ${realCwd}`);
       s.cwd = realCwd;
       fixed++;
     }
@@ -375,7 +375,7 @@ transcriptTap.on('session-bound', (ev) => {
       immersiveByMeeting: _immersiveByMeeting,
       pilotSlotByMeeting: _pilotSlotByMeeting,
     });
-    console.log(`[hub] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
+    console.log(`[圆桌] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
   }
 });
 
@@ -392,7 +392,7 @@ function createWindow() {
   // Load the icon as a NativeImage so we can pass it to BrowserWindow AND
   // re-apply via setIcon — on Windows the constructor `icon` alone sometimes
   // misses the taskbar; the explicit setIcon nails it.
-  const iconPath = path.join(__dirname, 'claude-wx.ico');
+  const iconPath = path.join(__dirname, 'roundtable.ico');
   const winIcon = nativeImage.createFromPath(iconPath);
 
   // 标题动态读 package.json 版本号，避免硬编码漂移（card-redesign 0.2.0 起）
@@ -402,7 +402,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: `Claude Session Hub${_pkgVersion ? ` v${_pkgVersion}` : ''}`,
+    title: `圆桌${_pkgVersion ? ` v${_pkgVersion}` : ''}`,
     backgroundColor: '#0d1117',
     icon: winIcon,
     show: false,
@@ -510,7 +510,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
       if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
         sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude');
       } else if (sceneObj && sceneObj.mcpConfig === 'research' && !hookPort) {
-        console.warn('[hub] research scene Claude/DS/GLM in meeting ' + meetingId + ' but hookPort unavailable — MCP tools unavailable');
+        console.warn('[圆桌] research scene Claude/DS/GLM in meeting ' + meetingId + ' but hookPort unavailable — MCP tools unavailable');
       }
     } else if (kind === 'gemini') {
       sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
@@ -622,7 +622,7 @@ ipcMain.handle('save-immersive-mode', (_e, { meetingId, immersive } = {}) => {
       pilotSlotByMeeting: _pilotSlotByMeeting,
     });
   } catch (e) {
-    console.warn('[hub] save-immersive-mode persist failed:', e.message);
+    console.warn('[圆桌] save-immersive-mode persist failed:', e.message);
     return { ok: false, error: e.message };
   }
   return { ok: true };
@@ -834,7 +834,7 @@ ipcMain.handle('roundtable:pilot-toggle', async (_e, { meetingId, slotIndex } = 
       pilotSlotByMeeting: _pilotSlotByMeeting,
     });
   } catch (e) {
-    console.warn('[hub] roundtable:pilot-toggle persist failed:', e.message);
+    console.warn('[圆桌] roundtable:pilot-toggle persist failed:', e.message);
   }
 
   // 通知 renderer 更新 toolbar / 卡片视觉
@@ -1980,12 +1980,12 @@ ipcMain.handle('get-deep-summary-config', async () => _deepSummaryConfig.ui);
 const sessionArchive = require('./core/session-archive.js');
 ipcMain.handle('list-past-sessions', async (_e, { limit = 50 } = {}) => {
   try { return await sessionArchive.listRecent(limit); }
-  catch (e) { console.warn('[hub] list-past-sessions failed:', e.message); return []; }
+  catch (e) { console.warn('[圆桌] list-past-sessions failed:', e.message); return []; }
 });
 
 ipcMain.handle('search-past-sessions', async (_e, { query, limit = 50 } = {}) => {
   try { return await sessionArchive.searchAcross(query, { limit }); }
-  catch (e) { console.warn('[hub] search-past-sessions failed:', e.message); return { hits: [], truncated: false }; }
+  catch (e) { console.warn('[圆桌] search-past-sessions failed:', e.message); return { hits: [], truncated: false }; }
 });
 
 ipcMain.handle('close-session', (_e, sessionId) => {
@@ -2058,7 +2058,7 @@ let _pilotSlotByMeeting = (bootState.pilotSlotByMeeting && typeof bootState.pilo
 // Heal any cwds that legacy code corrupted (see extractCwdFromTranscript).
 // This reads CC's own JSONL transcripts which carry the authoritative cwd.
 const healed = healPersistedCwds(lastPersistedSessions);
-if (healed > 0) console.log(`[hub] healed ${healed} stale cwd(s) from CC transcripts`);
+if (healed > 0) console.log(`[圆桌] healed ${healed} stale cwd(s) from CC transcripts`);
 // Restore persisted meetings on boot
 const bootMeetings = Array.isArray(bootState.meetings) ? bootState.meetings : [];
 for (const m of bootMeetings) {
@@ -2099,7 +2099,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   // Preserve resume meta fields (codexSid/geminiChatId/geminiProjectHash/geminiProjectRoot)
   // that renderer is unaware of. Without this merge, every renderer schedulePersist
   // would silently wipe these fields populated by transcript-tap session-bound handler.
-  const RESUME_META_FIELDS = ['codexSid', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot'];
+  const RESUME_META_FIELDS = ['codexSid', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'model'];
   const oldByHubId = new Map(lastPersistedSessions.map(s => [s.hubId, s]));
   for (const newSession of list) {
     if (!newSession || !newSession.hubId) continue;
@@ -2169,6 +2169,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
     title: meta.title,
     cwd: (meta.kind === 'gemini' && meta.geminiProjectRoot) ? meta.geminiProjectRoot : meta.cwd,
     meetingId: meta.meetingId || null,
+    model: meta.model || undefined,
     resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
     useContinue: isClaudeCliResumable && !meta.ccSessionId,
     useResume: isGeminiOrCodex,
@@ -2213,16 +2214,16 @@ ipcMain.handle('resume-session', async (_e, meta) => {
           try {
             const sess = sessionManager.getSession(session.id);
             if (!sess || sess.status === 'dormant') {
-              console.warn(`[hub] Level 3 inject skipped: session ${session.id.slice(0,8)} no longer active`);
+              console.warn(`[圆桌] Level 3 inject skipped: session ${session.id.slice(0,8)} no longer active`);
               return;
             }
             sessionManager.writeToSession(session.id, msg);
-            console.log(`[hub] Level 3 fallback: injected ${tail.length}-char transcript tail to ${meta.kind} session ${session.id.slice(0,8)}`);
+            console.log(`[圆桌] Level 3 fallback: injected ${tail.length}-char transcript tail to ${meta.kind} session ${session.id.slice(0,8)}`);
           } catch (e) {
-            console.warn(`[hub] Level 3 inject failed:`, e.message);
+            console.warn(`[圆桌] Level 3 inject failed:`, e.message);
           }
         }, 5000);
-      }).catch(e => console.warn('[hub] Level 3 fallback error:', e.message));
+      }).catch(e => console.warn('[圆桌] Level 3 fallback error:', e.message));
     }
   }
 
@@ -2250,7 +2251,7 @@ ipcMain.handle('restart-session', (_e, sessionId) => {
 // Show a Windows/OS notification. Renderer decides when to call it.
 ipcMain.on('show-notification', (_e, { title, body }) => {
   if (!Notification.isSupported()) return;
-  const n = new Notification({ title: title || 'Claude Session Hub', body: body || '', silent: false });
+  const n = new Notification({ title: title || '圆桌', body: body || '', silent: false });
   n.on('click', () => {
     if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
   });
@@ -2280,7 +2281,7 @@ ipcMain.handle('save-clipboard-image', () => {
     fs.writeFileSync(filePath, img.toPNG());
     return filePath;
   } catch (e) {
-    console.warn('[hub] save-clipboard-image failed:', e.message);
+    console.warn('[圆桌] save-clipboard-image failed:', e.message);
     return null;
   }
 });
@@ -2486,7 +2487,7 @@ function listenWithFallback() {
       hookServer.removeAllListeners('error');
       hookServer.removeAllListeners('listening');
       hookServer.once('error', (e) => {
-        console.warn(`[hub] hook server bind failed on :${port} (${e.code}): ${e.message}`);
+        console.warn(`[圆桌] hook server bind failed on :${port} (${e.code}): ${e.message}`);
         tryNext();
       });
       hookServer.once('listening', () => resolve(port));
@@ -2550,6 +2551,11 @@ ipcMain.handle('get-hub-config', () => {
     glmApiKeySet: !!config.glmApiKey,
     glmBaseUrl: config.glmBaseUrl,
     glmModel: config.glmModel,
+    codexBackend: config.codexBackend,
+    codexApiKey: config.codexApiKey ? '***' + config.codexApiKey.slice(-4) : '',
+    codexApiKeySet: !!config.codexApiKey,
+    codexApiBaseUrl: config.codexApiBaseUrl,
+    codexApiModel: config.codexApiModel,
   };
 });
 
@@ -2562,6 +2568,10 @@ ipcMain.handle('get-hub-config-raw', () => {
     glmApiKey: config.glmApiKey || '',
     glmBaseUrl: config.glmBaseUrl,
     glmModel: config.glmModel,
+    codexBackend: config.codexBackend,
+    codexApiKey: config.codexApiKey || '',
+    codexApiBaseUrl: config.codexApiBaseUrl,
+    codexApiModel: config.codexApiModel,
   };
 });
 
@@ -2590,14 +2600,24 @@ ipcMain.handle('save-hub-config', (_e, newConfig) => {
         base_url: newConfig.glmBaseUrl || DEFAULTS.glm_base_url,
         model: newConfig.glmModel || DEFAULTS.glm_model,
       },
+      codex: {
+        ...(existing.providers?.codex || {}),
+        backend: newConfig.codexBackend === 'api' ? 'api' : DEFAULTS.codex_backend,
+        api_key: newConfig.codexApiKey || undefined,
+        base_url: newConfig.codexApiBaseUrl || DEFAULTS.codex_api_base_url,
+        model: newConfig.codexApiModel || DEFAULTS.codex_api_model,
+        provider: DEFAULTS.codex_api_provider,
+      },
     },
   };
 
   // 清除空值
   if (!merged.providers.deepseek.api_key) delete merged.providers.deepseek.api_key;
   if (!merged.providers.glm.api_key) delete merged.providers.glm.api_key;
+  if (!merged.providers.codex.api_key) delete merged.providers.codex.api_key;
 
   saveConfig(merged);
+  clearSessionManagerConfigCache();
   return { success: true };
 });
 
@@ -2876,10 +2896,10 @@ app.whenReady().then(async () => {
   ensureCodexContextConfig();
   hookPort = await listenWithFallback();
   if (hookPort) {
-    console.log(`[hub] hook server listening on 127.0.0.1:${hookPort}`);
+    console.log(`[圆桌] hook server listening on 127.0.0.1:${hookPort}`);
     sessionManager.hookPort = hookPort;
   } else {
-    console.warn('[hub] hook server failed to bind — falling back to silence detection');
+    console.warn('[圆桌] hook server failed to bind — falling back to silence detection');
   }
   createWindow();
   startAgentScanner();
@@ -2950,9 +2970,9 @@ app.on('before-quit', async () => {
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
   try {
     await meetingStore.flushAll();
-    console.log('[hub] meeting-store flushed on quit');
+    console.log('[圆桌] meeting-store flushed on quit');
   } catch (err) {
-    console.warn('[hub] meeting-store flush failed:', err.message);
+    console.warn('[圆桌] meeting-store flush failed:', err.message);
   }
 });
 

@@ -300,13 +300,15 @@ const emptyStateEl = document.getElementById('empty-state');
 const btnNew = document.getElementById('btn-new');
 const menuEl = document.getElementById('new-session-menu');
 const wrapperEl = document.getElementById('new-session-wrapper');
-const searchInputEl = document.getElementById('search-input');
+const btnResume = document.getElementById('btn-resume');
+const resumeMenuEl = document.getElementById('resume-picker-menu');
+const resumeWrapperEl = document.getElementById('resume-picker-wrapper');
+const btnRoundtable = document.getElementById('btn-roundtable');
 const contextMenuEl = document.getElementById('context-menu');
 const appContainerEl = document.getElementById('app-container');
 const btnCollapseEl = document.getElementById('btn-collapse-sidebar');
 const btnExpandEl = document.getElementById('btn-expand-sidebar');
 
-let searchQuery = '';
 let contextMenuSessionId = null;
 
 // Font size — shared across all terminals, persisted
@@ -519,7 +521,6 @@ function escapeHtml(text) {
 
 // --- Session list rendering ---
 // Sort: pinned sessions first (by their own time), then unpinned by lastMessageTime.
-// Filter: search query matches title or preview (case-insensitive).
 // Mixed list: regular sessions + meeting rooms share the same sort + rendering.
 function renderSessionList() {
   const regularSessions = Array.from(sessions.values()).filter(s => !s.meetingId);
@@ -539,14 +540,7 @@ function renderSessionList() {
 
   const all = regularSessions.concat(meetingItems);
 
-  const filtered = searchQuery
-    ? all.filter(s => {
-        const q = searchQuery.toLowerCase();
-        return s.title.toLowerCase().includes(q) || (s.lastOutputPreview || '').toLowerCase().includes(q);
-      })
-    : all;
-
-  const sorted = filtered.sort((a, b) => {
+  const sorted = all.sort((a, b) => {
     if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
     return b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt;
   });
@@ -1555,19 +1549,33 @@ btnNew.addEventListener('click', () => {
 
 document.addEventListener('mousedown', (e) => {
   if (!wrapperEl.contains(e.target)) menuEl.style.display = 'none';
+  if (resumeWrapperEl && !resumeWrapperEl.contains(e.target)) resumeMenuEl.style.display = 'none';
 });
 
 for (const btn of document.querySelectorAll('.new-session-option')) {
   btn.addEventListener('click', async () => {
     menuEl.style.display = 'none';
-    if (btn.dataset.kind === 'meeting') {
-      const mode = btn.dataset.meetingMode || 'general';
-      await createMeetingByMode(mode);
-      return;
-    }
     await ipcRenderer.invoke('create-session', btn.dataset.kind);
   });
 }
+
+// --- Resume dropdown ---
+btnResume.addEventListener('click', (e) => {
+  e.stopPropagation();
+  resumeMenuEl.style.display = resumeMenuEl.style.display === 'none' ? 'block' : 'none';
+});
+
+for (const btn of document.querySelectorAll('.resume-option')) {
+  btn.addEventListener('click', async () => {
+    resumeMenuEl.style.display = 'none';
+    await ipcRenderer.invoke('create-session', btn.dataset.kind);
+  });
+}
+
+// --- Roundtable button ---
+btnRoundtable.addEventListener('click', async () => {
+  await createMeetingByMode('general');
+});
 
 // --- Resume past session modal ---
 const resumeModalEl = document.getElementById('resume-modal');
@@ -1651,7 +1659,6 @@ resumeFilterEl.addEventListener('input', () => {
   renderResumeList(filtered);
 });
 
-document.getElementById('btn-resume-picker').addEventListener('click', openResumeModal);
 document.getElementById('resume-modal-close').addEventListener('click', closeResumeModal);
 resumeModalEl.addEventListener('click', (e) => {
   if (e.target === resumeModalEl) closeResumeModal();
@@ -2401,6 +2408,13 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
 // Carries contextPct / cwd / api time / session_name per session + account-wide usage5h/usage7d.
 const accountUsage = { usage5h: null, usage7d: null };
 const agentUsage = { gemini: null, codex: null };
+const providerModes = {
+  claude: 'subscription',
+  gemini: 'subscription',
+  codex: 'subscription',
+  deepseek: 'api',
+  glm: 'api',
+};
 let _claudeUsageLastSeen = 0;
 // Samples for quota burn-rate attribution. Per-session contextUsed history
 // (15 min ring) → tokens/min. Global 5h samples let us estimate tokens-per-pct
@@ -2717,17 +2731,27 @@ function renderAccountUsage() {
     const h = Math.floor(mins / 60);
     return ` title="数据来自 ${h}h 前"`;
   };
-  const buildLine = (badgeClass, label, u5h, u7d, lastSeen) => {
+  const modePill = (mode) => {
+    const normalized = mode === 'api' ? 'api' : 'subscription';
+    const label = normalized === 'api' ? 'API' : '订阅';
+    return `<span class="usage-mode ${normalized}">${label}</span>`;
+  };
+  const buildLine = (kind, badgeClass, label, u5h, u7d, lastSeen, hasUsage = true) => {
     const sc = staleCls(lastSeen);
     const st = staleTitle(lastSeen);
-    return `<div class="usage-line${sc}"${st}><span class="model-badge ${badgeClass} usage-badge">${label}</span><span class="usage-slot">5h ${fmtSlot(u5h)}</span><span class="usage-sep">│</span><span class="usage-slot">7d ${fmtSlot(u7d)}</span></div>`;
+    const metrics = hasUsage
+      ? `<span class="usage-slot">5h ${fmtSlot(u5h)}</span><span class="usage-sep">│</span><span class="usage-slot">7d ${fmtSlot(u7d)}</span>`
+      : '<span class="usage-empty">API 接入</span>';
+    return `<div class="usage-line${sc}"${st}><span class="model-badge ${badgeClass} usage-badge">${label}</span><span class="usage-metrics">${metrics}</span>${modePill(providerModes[kind])}</div>`;
   };
   const g = agentUsage.gemini || {};
   const c = agentUsage.codex || {};
   el.innerHTML =
-    buildLine('opus', 'Claude', accountUsage.usage5h, accountUsage.usage7d, _claudeUsageLastSeen) +
-    buildLine('gemini', 'Gemini', g.usage5h, g.usage7d) +
-    buildLine('codex', 'Codex', c.usage5h, c.usage7d);
+    buildLine('claude', 'opus', 'Claude', accountUsage.usage5h, accountUsage.usage7d, _claudeUsageLastSeen) +
+    buildLine('gemini', 'gemini', 'Gemini', g.usage5h, g.usage7d) +
+    buildLine('codex', 'codex', 'Codex', c.usage5h, c.usage7d) +
+    buildLine('deepseek', 'deepseek', 'DeepSeek', null, null, 0, false) +
+    buildLine('glm', 'glm', 'GLM', null, null, 0, false);
 }
 
 setInterval(renderAccountUsage, 60000);
@@ -2929,17 +2953,9 @@ document.addEventListener('keydown', (e) => {
   }
 
   // Ctrl+F: terminal in-buffer search (when a terminal is active)
-  // Ctrl+K: sidebar session search
   if (!e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
     e.preventDefault();
     if (activeSessionId) openTerminalSearch();
-    else { searchInputEl.focus(); searchInputEl.select(); }
-    return;
-  }
-  if (!e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
-    e.preventDefault();
-    searchInputEl.focus();
-    searchInputEl.select();
     return;
   }
 
@@ -2998,13 +3014,7 @@ document.addEventListener('keydown', (e) => {
 function getSortedVisibleSessionIds() {
   // Same sort as renderSessionList so Ctrl+N maps to what user sees.
   const all = Array.from(sessions.values());
-  const filtered = searchQuery
-    ? all.filter(s => {
-        const q = searchQuery.toLowerCase();
-        return s.title.toLowerCase().includes(q) || (s.lastOutputPreview || '').toLowerCase().includes(q);
-      })
-    : all;
-  return filtered
+  return all
     .sort((a, b) => {
       if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
       return b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt;
@@ -3025,20 +3035,6 @@ function jumpToSessionByIndex(idx) {
   if (idx < 0 || idx >= ids.length) return;
   selectSession(ids[idx]);
 }
-
-// --- Search ---
-searchInputEl.addEventListener('input', () => {
-  searchQuery = searchInputEl.value.trim();
-  renderSessionList();
-});
-searchInputEl.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    searchInputEl.value = '';
-    searchQuery = '';
-    renderSessionList();
-    searchInputEl.blur();
-  }
-});
 
 // --- Context menu (right-click session) ---
 function openContextMenu(sessionId, x, y) {
@@ -3316,7 +3312,219 @@ function applyTheme(name) {
       if (!themePopup.contains(e.target)) themePopup.style.display = 'none';
     });
   }
+
+  // 设置选项点击 -> 打开配置面板
+  const settingsItem = document.getElementById('options-settings');
+  if (settingsItem) {
+    settingsItem.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      optionsMenu.style.display = 'none';
+      openConfigModal();
+    });
+  }
 })();
+
+// --- Config/Settings Modal (API key + proxy) ---
+const CONFIG_AI_META = {
+  claude: {
+    title: 'Claude 设置',
+    hint: '使用当前本机 Claude Code 订阅登录状态。Hub 保持现有订阅启动方式。',
+    status: '订阅',
+    statusClass: 'subscription',
+  },
+  gemini: {
+    title: 'Gemini 设置',
+    hint: '使用当前本机 Gemini CLI 登录状态。代理设置会影响新建 Gemini 会话。',
+    status: '订阅',
+    statusClass: 'subscription',
+  },
+  codex: {
+    title: 'Codex 设置',
+    hint: '全 Hub 新建 Codex 会话统一生效。API 模式会使用隔离 CODEX_HOME，不污染本机订阅配置。',
+  },
+  deepseek: {
+    title: 'DeepSeek 设置',
+    hint: 'DeepSeek 当前通过 API 接入，新建 DeepSeek 会话生效。',
+    status: 'API',
+    statusClass: 'api',
+  },
+  glm: {
+    title: 'GLM 设置',
+    hint: 'GLM 当前通过 API 接入，新建 GLM 会话生效。',
+    status: 'API',
+    statusClass: 'api',
+  },
+};
+
+let activeConfigAi = 'codex';
+
+function configEl(id) {
+  return document.getElementById(id);
+}
+
+function setConfigStatus(el, label, cls) {
+  if (!el) return;
+  el.textContent = label;
+  el.className = 'config-ai-status ' + (cls || '');
+}
+
+function updateConfigSummaries() {
+  const codexBackend = configEl('cfg-codex-backend') ? configEl('cfg-codex-backend').value : 'subscription';
+  const codexModel = configEl('cfg-codex-model') ? (configEl('cfg-codex-model').value.trim() || 'gpt-5.5') : 'gpt-5.5';
+  const codexKey = configEl('cfg-codex-key') ? configEl('cfg-codex-key').value.trim() : '';
+  const deepseekKey = configEl('cfg-deepseek-key') ? configEl('cfg-deepseek-key').value.trim() : '';
+  const glmKey = configEl('cfg-glm-key') ? configEl('cfg-glm-key').value.trim() : '';
+  const glmModel = configEl('cfg-glm-model') ? (configEl('cfg-glm-model').value.trim() || 'glm-5.1') : 'glm-5.1';
+
+  const codexSummary = configEl('cfg-summary-codex');
+  if (codexSummary) {
+    codexSummary.textContent = codexBackend === 'api'
+      ? `第三方 API · ${codexModel} · Packy`
+      : `订阅模式 · ${codexModel}`;
+  }
+  setConfigStatus(
+    configEl('cfg-status-codex'),
+    codexBackend === 'api' ? (codexKey ? 'API' : '缺 Key') : '订阅',
+    codexBackend === 'api' ? (codexKey ? 'api' : 'missing') : 'subscription'
+  );
+
+  const deepseekSummary = configEl('cfg-summary-deepseek');
+  if (deepseekSummary) deepseekSummary.textContent = deepseekKey ? 'API · deepseek-v4-pro' : 'API · 未配置 Key';
+  setConfigStatus(configEl('cfg-status-deepseek'), deepseekKey ? 'API' : '缺 Key', deepseekKey ? 'api' : 'missing');
+
+  const glmSummary = configEl('cfg-summary-glm');
+  if (glmSummary) glmSummary.textContent = glmKey ? `API · ${glmModel}` : 'API · 未配置 Key';
+  setConfigStatus(configEl('cfg-status-glm'), glmKey ? 'API' : '缺 Key', glmKey ? 'api' : 'missing');
+
+  if (activeConfigAi === 'codex') {
+    setConfigStatus(
+      configEl('cfg-detail-status'),
+      codexBackend === 'api' ? (codexKey ? 'API' : '缺 Key') : '订阅',
+      codexBackend === 'api' ? (codexKey ? 'api' : 'missing') : 'subscription'
+    );
+  } else if (activeConfigAi === 'deepseek') {
+    setConfigStatus(configEl('cfg-detail-status'), deepseekKey ? 'API' : '缺 Key', deepseekKey ? 'api' : 'missing');
+  } else if (activeConfigAi === 'glm') {
+    setConfigStatus(configEl('cfg-detail-status'), glmKey ? 'API' : '缺 Key', glmKey ? 'api' : 'missing');
+  }
+}
+
+function showConfigMainView() {
+  if (configEl('config-main-view')) configEl('config-main-view').classList.remove('hidden');
+  if (configEl('config-detail-view')) configEl('config-detail-view').classList.add('hidden');
+  document.querySelectorAll('.config-ai-row').forEach(row => row.classList.remove('active'));
+  updateConfigSummaries();
+}
+
+function showConfigDetail(ai) {
+  activeConfigAi = ai || 'codex';
+  const meta = CONFIG_AI_META[activeConfigAi] || CONFIG_AI_META.codex;
+  if (configEl('config-main-view')) configEl('config-main-view').classList.add('hidden');
+  if (configEl('config-detail-view')) configEl('config-detail-view').classList.remove('hidden');
+  if (configEl('cfg-detail-title')) configEl('cfg-detail-title').textContent = meta.title;
+  if (configEl('cfg-detail-hint')) configEl('cfg-detail-hint').textContent = meta.hint;
+  document.querySelectorAll('.config-ai-row').forEach(row => row.classList.toggle('active', row.dataset.ai === activeConfigAi));
+  document.querySelectorAll('.config-ai-detail').forEach(panel => panel.classList.toggle('active', panel.id === 'cfg-detail-' + activeConfigAi));
+
+  if (meta.status) {
+    setConfigStatus(configEl('cfg-detail-status'), meta.status, meta.statusClass);
+  }
+  updateConfigSummaries();
+}
+
+async function openConfigModal() {
+  const modal = document.getElementById('config-modal');
+  if (!modal) return;
+
+  // 加载当前配置
+  try {
+    const cfg = await ipcRenderer.invoke('get-hub-config-raw');
+    providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
+    document.getElementById('cfg-proxy').value = cfg.proxy || '';
+    document.getElementById('cfg-deepseek-key').value = cfg.deepseekApiKey || '';
+    document.getElementById('cfg-codex-backend').value = cfg.codexBackend || 'subscription';
+    document.getElementById('cfg-codex-key').value = cfg.codexApiKey || '';
+    document.getElementById('cfg-codex-url').value = cfg.codexApiBaseUrl || '';
+    document.getElementById('cfg-codex-model').value = cfg.codexApiModel || '';
+    document.getElementById('cfg-glm-key').value = cfg.glmApiKey || '';
+    document.getElementById('cfg-glm-url').value = cfg.glmBaseUrl || '';
+    document.getElementById('cfg-glm-model').value = cfg.glmModel || '';
+    updateConfigSummaries();
+  } catch {
+    // 加载失败也显示空白面板
+  }
+  showConfigMainView();
+  modal.classList.remove('hidden');
+}
+
+function closeConfigModal() {
+  const modal = document.getElementById('config-modal');
+  if (modal) modal.classList.add('hidden');
+  const msg = document.getElementById('config-save-msg');
+  if (msg) { msg.style.display = 'none'; msg.textContent = ''; }
+}
+
+// 配置面板事件（DOM ready 后绑定）
+function initConfigModal() {
+  const modal = document.getElementById('config-modal');
+  if (!modal) return;
+
+  document.getElementById('config-close').addEventListener('click', closeConfigModal);
+  document.getElementById('config-cancel').addEventListener('click', closeConfigModal);
+  const backBtn = document.getElementById('config-back');
+  if (backBtn) backBtn.addEventListener('click', showConfigMainView);
+  document.querySelectorAll('.config-ai-row').forEach(row => {
+    row.addEventListener('click', () => showConfigDetail(row.dataset.ai));
+  });
+  ['cfg-codex-backend', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key', 'cfg-glm-key', 'cfg-glm-url', 'cfg-glm-model'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', updateConfigSummaries);
+    if (el) el.addEventListener('change', updateConfigSummaries);
+  });
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeConfigModal(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
+      e.preventDefault(); closeConfigModal();
+    }
+  });
+
+  document.getElementById('config-save').addEventListener('click', async () => {
+    const msg = document.getElementById('config-save-msg');
+    const newConfig = {
+      proxy: document.getElementById('cfg-proxy').value.trim() || undefined,
+      deepseekApiKey: document.getElementById('cfg-deepseek-key').value.trim() || undefined,
+      codexBackend: document.getElementById('cfg-codex-backend').value,
+      codexApiKey: document.getElementById('cfg-codex-key').value.trim() || undefined,
+      codexApiBaseUrl: document.getElementById('cfg-codex-url').value.trim() || undefined,
+      codexApiModel: document.getElementById('cfg-codex-model').value.trim() || undefined,
+      glmApiKey: document.getElementById('cfg-glm-key').value.trim() || undefined,
+      glmBaseUrl: document.getElementById('cfg-glm-url').value.trim() || undefined,
+      glmModel: document.getElementById('cfg-glm-model').value.trim() || undefined,
+    };
+    try {
+      const result = await ipcRenderer.invoke('save-hub-config', newConfig);
+      if (result && result.success) {
+        providerModes.codex = newConfig.codexBackend === 'api' ? 'api' : 'subscription';
+        renderAccountUsage();
+        msg.textContent = '配置已保存。新创建的 Codex / GLM / DeepSeek 会话将立即生效。';
+        msg.className = 'config-save-msg success';
+        msg.style.display = 'block';
+        setTimeout(() => { msg.style.display = 'none'; }, 4000);
+      } else {
+        throw new Error('save failed');
+      }
+    } catch (err) {
+      msg.textContent = '保存失败: ' + (err.message || '未知错误');
+      msg.className = 'config-save-msg error';
+      msg.style.display = 'block';
+    }
+  });
+}
+document.addEventListener('DOMContentLoaded', initConfigModal);
+// 如果 DOM 已经 ready 也立即尝试
+if (document.readyState === 'complete' || document.readyState === 'interactive') {
+  setTimeout(initConfigModal, 0);
+}
 
 if (typeof MeetingRoom !== 'undefined') {
   MeetingRoom.init(sessions, getOrCreateTerminal);
@@ -3474,12 +3682,17 @@ async function resumeDormantSession(hubId) {
 
 // --- Init ---
 (async () => {
-  const [existing, persisted, dormantMeetings, cached] = await Promise.all([
+  const [existing, persisted, dormantMeetings, cached, cfg] = await Promise.all([
     ipcRenderer.invoke('get-sessions'),
     ipcRenderer.invoke('get-dormant-sessions'),
     ipcRenderer.invoke('get-dormant-meetings').catch(() => null),
     ipcRenderer.invoke('get-usage-cache').catch(() => null),
+    ipcRenderer.invoke('get-hub-config-raw').catch(() => null),
   ]);
+
+  if (cfg) {
+    providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
+  }
 
   for (const s of existing) sessions.set(s.id, s);
 

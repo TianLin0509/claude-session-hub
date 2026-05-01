@@ -5,6 +5,7 @@ const fs = require('fs');
 const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
+const { getHubDataDir } = require('./data-dir');
 
 const RING_BUFFER_BYTES = 16384;
 
@@ -18,6 +19,11 @@ function _loadConfigValues() {
     GLM_API_KEY: config.glmApiKey,
     GLM_BASE_URL: config.glmBaseUrl,
     GLM_MODEL: config.glmModel,
+    CODEX_BACKEND: config.codexBackend,
+    CODEX_API_KEY: config.codexApiKey,
+    CODEX_API_BASE_URL: config.codexApiBaseUrl,
+    CODEX_API_MODEL: config.codexApiModel,
+    CODEX_API_PROVIDER: config.codexApiProvider || 'packycode',
   };
 }
 // 惰性求值：首次使用时加载，之后缓存
@@ -25,6 +31,9 @@ let _configValues = null;
 function getConfigValues() {
   if (!_configValues) _configValues = _loadConfigValues();
   return _configValues;
+}
+function clearSessionManagerConfigCache() {
+  _configValues = null;
 }
 
 function toClaudeProjectKey(projectDir) {
@@ -91,6 +100,50 @@ function dismissCodexUpdatePrompt(homeDir = process.env.USERPROFILE || process.e
   }
 }
 
+function tomlString(value) {
+  return JSON.stringify(String(value || ''));
+}
+
+function getCodexApiHome() {
+  return path.join(getHubDataDir(), 'codex-api-profile');
+}
+
+function ensureCodexApiProfile(cv, projectDir) {
+  const codexHome = getCodexApiHome();
+  const provider = cv.CODEX_API_PROVIDER || 'packycode';
+  const baseUrl = cv.CODEX_API_BASE_URL || 'https://www.packyapi.com/v1';
+  const model = cv.CODEX_API_MODEL || 'gpt-5.5';
+  const projectKey = path.resolve(projectDir || os.homedir());
+
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), [
+    'disable_response_storage = true',
+    `model = ${tomlString(model)}`,
+    `model_provider = ${tomlString(provider)}`,
+    'model_reasoning_effort = "medium"',
+    'approval_policy = "never"',
+    'sandbox_mode = "danger-full-access"',
+    '',
+    `[model_providers.${provider}]`,
+    `base_url = ${tomlString(baseUrl)}`,
+    `name = ${tomlString(provider)}`,
+    'requires_openai_auth = true',
+    'wire_api = "responses"',
+    '',
+    `[projects.${tomlString(projectKey)}]`,
+    'trust_level = "trusted"',
+    '',
+  ].join('\n'), 'utf8');
+  fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify({
+    OPENAI_API_KEY: cv.CODEX_API_KEY || '',
+  }), 'utf8');
+  return codexHome;
+}
+
+function isCodexApiBackend(cv) {
+  return cv.CODEX_BACKEND === 'api' && !!cv.CODEX_API_KEY;
+}
+
 class SessionManager extends EventEmitter {
   sessions = new Map();
   focusedSessionId = null;
@@ -124,10 +177,10 @@ class SessionManager extends EventEmitter {
   createSession(kind = 'powershell', opts = {}) {
     const id = opts.id || uuid();
     const isClaude = kind === 'claude' || kind === 'claude-resume';
-    const isGemini = kind === 'gemini';
-    const isCodex = kind === 'codex';
-    const isDeepSeek = kind === 'deepseek';
-    const isGlm = kind === 'glm';
+    const isGemini = kind === 'gemini' || kind === 'gemini-resume';
+    const isCodex = kind === 'codex' || kind === 'codex-resume';
+    const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';
+    const isGlm = kind === 'glm' || kind === 'glm-resume';
     const isAgent = isClaude || isGemini || isCodex || isDeepSeek || isGlm;
     let title;
     if (opts.title) title = opts.title;
@@ -137,6 +190,10 @@ class SessionManager extends EventEmitter {
     else if (kind === 'codex') { this.codexCounter = (this.codexCounter || 0) + 1; title = `Codex ${this.codexCounter}`; }
     else if (kind === 'deepseek') { this.deepseekCounter = (this.deepseekCounter || 0) + 1; title = `DeepSeek ${this.deepseekCounter}`; }
     else if (kind === 'glm') { this.glmCounter = (this.glmCounter || 0) + 1; title = `GLM ${this.glmCounter}`; }
+    else if (kind === 'gemini-resume') title = `Gemini Resume ${++this.resumeCounter}`;
+    else if (kind === 'codex-resume') title = `Codex Resume ${++this.resumeCounter}`;
+    else if (kind === 'deepseek-resume') title = `DeepSeek Resume ${++this.resumeCounter}`;
+    else if (kind === 'glm-resume') title = `GLM Resume ${++this.resumeCounter}`;
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
@@ -168,6 +225,7 @@ class SessionManager extends EventEmitter {
       sessionEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
       sessionEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
       sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+      if (isCodex && isCodexApiBackend(cv)) sessionEnv.CODEX_HOME = getCodexApiHome();
     } else if (isDeepSeek) {
       const cv = getConfigValues();
       // DeepSeek API 国内直连，不走代理
@@ -223,6 +281,13 @@ class SessionManager extends EventEmitter {
     }
     if (!spawnCwd) spawnCwd = process.env.USERPROFILE || process.env.HOME || '.';
 
+    if (isCodex) {
+      const cv = getConfigValues();
+      if (isCodexApiBackend(cv)) {
+        sessionEnv.CODEX_HOME = ensureCodexApiProfile(cv, spawnCwd);
+      }
+    }
+
     if (isDeepSeek || isGlm) {
       ensureClaudeBypassAndTrust(sessionEnv.CLAUDE_CONFIG_DIR, spawnCwd);
     }
@@ -250,7 +315,8 @@ class SessionManager extends EventEmitter {
       const mid = opts.model || 'gemini-2.5-flash';
       currentModel = { id: mid, displayName: SessionManager.geminiDisplayName(mid) };
     } else if (isCodex) {
-      const cmid = opts.model || 'gpt-5.5';
+      const cv = getConfigValues();
+      const cmid = isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : (opts.model || 'gpt-5.5');
       currentModel = { id: cmid, displayName: cmid.toUpperCase() };
     } else if (isDeepSeek) {
       const mid = opts.model || 'deepseek-v4-pro';
@@ -362,7 +428,9 @@ class SessionManager extends EventEmitter {
     if (isGemini) {
       let cmd = ' gemini --approval-mode yolo';
       cmd += ` --model ${opts.model || 'gemini-2.5-flash'}`;
-      if (opts.useResume) {
+      if (kind === 'gemini-resume') {
+        cmd += ' --resume latest';
+      } else if (opts.useResume) {
         if (opts.geminiChatId && opts.geminiChatId.length > 8) {
           // Level 1: precise resume by full UUID (e.g. "3eab55d9-8019-4485-a47e-07f93e288be5")
           cmd += ` --resume ${opts.geminiChatId}`;
@@ -399,7 +467,10 @@ class SessionManager extends EventEmitter {
     if (isCodex) {
       dismissCodexUpdatePrompt();
       let cmd;
-      if (opts.useResume && opts.codexSid) {
+      if (kind === 'codex-resume') {
+        // codex resume 无参 = picker by default
+        cmd = ' codex resume --dangerously-bypass-approvals-and-sandbox';
+      } else if (opts.useResume && opts.codexSid) {
         // Level 1: precise resume by sid
         cmd = ` codex resume ${opts.codexSid} --dangerously-bypass-approvals-and-sandbox`;
       } else if (opts.useResume) {
@@ -410,7 +481,8 @@ class SessionManager extends EventEmitter {
         // 避免任何 "Allow ... ?" 弹窗阻塞投研讨论流程；
         // 安全约束完全靠 prompt/covenant 软约束（已强化"不要改代码 / 不要 git / 不要删除"）
         // opts.model 让 meeting-create-modal 选定的非默认 model（如 gpt-5.4）生效。
-        const codexModel = opts.model || 'gpt-5.5';
+        const cv = getConfigValues();
+        const codexModel = isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : (opts.model || 'gpt-5.5');
         if (opts.codexBypassApprovals) {
           cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
         } else {
@@ -452,8 +524,12 @@ class SessionManager extends EventEmitter {
       // --permission-mode bypassPermissions 跳过信任文件夹 + 工具权限等所有弹窗，
       // 让 DeepSeek 会话和 Claude 会话一样直接启动（~/.claude-deepseek 是隔离配置，
       // 不像 ~/.claude 有历史累积的信任状态，必须靠 CLI 参数兜底）。
-      if (opts.resumeCCSessionId) {
-        cmd = ` claude --resume ${opts.resumeCCSessionId} --permission-mode bypassPermissions`;
+      if (kind === 'deepseek-resume') {
+        const model = opts.model || 'deepseek-v4-pro';
+        cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
+      } else if (opts.resumeCCSessionId) {
+        const model = opts.model || 'deepseek-v4-pro';
+        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
         cmd = ' claude --continue --permission-mode bypassPermissions';
       } else {
@@ -487,8 +563,12 @@ class SessionManager extends EventEmitter {
     if (isGlm) {
       const cv = getConfigValues();
       let cmd;
-      if (opts.resumeCCSessionId) {
-        cmd = ` claude --resume ${opts.resumeCCSessionId} --permission-mode bypassPermissions`;
+      if (kind === 'glm-resume') {
+        const model = opts.model || cv.GLM_MODEL;
+        cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
+      } else if (opts.resumeCCSessionId) {
+        const model = opts.model || cv.GLM_MODEL;
+        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
         cmd = ' claude --continue --permission-mode bypassPermissions';
       } else {
@@ -598,16 +678,16 @@ class SessionManager extends EventEmitter {
     const kind = s.info && s.info.kind;
     const modelId = s.info && s.info.currentModel && s.info.currentModel.id;
     let cmd;
-    if (kind === 'codex') {
+    if (kind === 'codex' || kind === 'codex-resume') {
       dismissCodexUpdatePrompt();
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}\r\n`;
-    } else if (kind === 'gemini') {
+    } else if (kind === 'gemini' || kind === 'gemini-resume') {
       cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-2.5-flash'}\r\n`;
-    } else if (kind === 'claude') {
+    } else if (kind === 'claude' || kind === 'claude-resume') {
       cmd = ` claude --model ${modelId || 'claude-opus-4-7[1m]'}\r\n`;
-    } else if (kind === 'deepseek') {
+    } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
       cmd = ` claude --model ${modelId || 'deepseek-v4-pro'} --permission-mode bypassPermissions\r\n`;
-    } else if (kind === 'glm') {
+    } else if (kind === 'glm' || kind === 'glm-resume') {
       const cv = getConfigValues();
       cmd = ` claude --model ${modelId || cv.GLM_MODEL || 'glm-5.1'} --permission-mode bypassPermissions\r\n`;
     } else {
@@ -637,6 +717,7 @@ class SessionManager extends EventEmitter {
       lastOutputPreview: info.lastOutputPreview,
       ...(info.pinned !== undefined ? { pinned: info.pinned } : {}),
       ...(info.ccSessionId !== undefined ? { ccSessionId: info.ccSessionId } : {}),
+      ...(info.currentModel ? { model: info.currentModel.id } : {}),
     };
   }
 
@@ -774,4 +855,4 @@ async function readTranscriptTail(kind, sourcePath, n = 10) {
   }
 }
 
-module.exports = { SessionManager, readTranscriptTail, dismissCodexUpdatePrompt };
+module.exports = { SessionManager, readTranscriptTail, dismissCodexUpdatePrompt, clearSessionManagerConfigCache };
