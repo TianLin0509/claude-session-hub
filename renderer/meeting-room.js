@@ -241,11 +241,47 @@
       claude: 'assets/pokemon/pikachu.png',
       gemini: 'assets/pokemon/charmander.png',
       codex:  'assets/pokemon/squirtle.png',
+      deepseek: 'assets/pokemon/pikachu.png', // DeepSeek 跑在 claude CLI 上 → 复用皮卡丘
+      glm:      'assets/pokemon/pikachu.png', // GLM 同理
     })[kind] || '';
   }
   function _avatarFallbackFor(kind) {
-    return ({ claude: '🟡', gemini: '🟠', codex: '🔵' })[kind] || '🤖';
+    return ({ claude: '🟡', gemini: '🟠', codex: '🔵', deepseek: '🟢', glm: '🟣' })[kind] || '🤖';
   }
+  // meeting-create-modal（2026-05-01）：圆桌卡片头像与 slot 位置绑定（不与 kind 绑定）。
+  //   slot 1 = 皮卡丘永远（即使该 slot 是 DeepSeek）；slot 2 小火龙；slot 3 杰尼龟。
+  //   理由：用户视觉上把"slot 位置"和某只宝可梦稳定挂钩，方便快速识别哪一格是哪家。
+  //   侧边栏单 session 列表仍按 kind 显头像（_avatarSrcFor），逻辑没变。
+  const _SLOT_AVATARS = [
+    'assets/pokemon/pikachu.png',
+    'assets/pokemon/charmander.png',
+    'assets/pokemon/squirtle.png',
+  ];
+  const _SLOT_AVATAR_FB = ['🟡', '🟠', '🔵'];
+  function _avatarBySlot(i) {
+    return _SLOT_AVATARS[i] || '';
+  }
+  function _avatarFallbackBySlot(i) {
+    return _SLOT_AVATAR_FB[i] || '🤖';
+  }
+
+  // meeting-create-modal（2026-05-01）：按 subSessions 数组顺序还原 slot 数组。
+  //   返回 [slot0, slot1, slot2]，每个 slot 是 { sid, kind, label } 或 null。
+  //   老 meeting 兼容：subSessions 顺序就是 slot 顺序（自然吻合）。
+  function _getRtSlots(meeting) {
+    const slots = [null, null, null];
+    if (!meeting || !Array.isArray(meeting.subSessions)) return slots;
+    for (let i = 0; i < meeting.subSessions.length && i < 3; i++) {
+      const sid = meeting.subSessions[i];
+      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+      if (!s) continue;
+      slots[i] = { sid, kind: s.kind, label: s.title || s.kind || `Slot ${i + 1}` };
+    }
+    return slots;
+  }
+
+  // 兼容老 kind label 字典 + 新加的 deepseek/glm
+  const _KIND_LABELS = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex', deepseek: 'DeepSeek', glm: 'GLM' };
 
   function _renderFusedTabs(state, subs, currentMode, partialBy, meeting) {
     const lastTurn = state.turns.length > 0 ? state.turns[state.turns.length - 1] : null;
@@ -254,9 +290,15 @@
     const meetingId = meeting && meeting.id;
     const focused = meeting.focusedSub || meeting.subSessions[0];
     let anyThinking = false;
-    for (const kind of ['claude', 'gemini', 'codex']) {
-      const sub = subs[kind];
-      if (!sub) continue;
+    // meeting-create-modal（2026-05-01）：sid 索引化重构 — 旧版 for(kind of [...]) + subs[kind]
+    //   只支持固定三家。新版按 subSessions 数组顺序还原 slot[0..2]，每 slot 包含 sid+kind+label，
+    //   渲染按 slot index 派头像（皮卡丘永远 slot 1，与 kind 解绑）。
+    const slots = _getRtSlots(meeting);
+    for (let slotIndex = 0; slotIndex < 3; slotIndex++) {
+      const slot = slots[slotIndex];
+      if (!slot) continue;
+      const kind = slot.kind;
+      const sub = { sid: slot.sid, label: slot.label };
       const partial = partialBy ? partialBy[sub.sid] : null;
       const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sub.sid) : null;
       const markerState = _markerStatusCache[sub.sid];
@@ -312,7 +354,7 @@
       const modelCls = s && s.currentModel && typeof modelClass === 'function' ? modelClass(s.currentModel.id) : '';
       const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
       const ctxCls = _ftCtxClass(ctxPct);
-      const labelDisplay = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[kind];
+      const labelDisplay = _KIND_LABELS[kind] || (kind ? kind : `Slot ${slotIndex + 1}`);
 
       // Stage 2 容错升级：状态机扩展（manual_extracted / absent / soft_alert / errored / interrupted / transport_lost）
       // 状态来源：partial.status（后端 watcher 设置）+ 'roundtable-soft-alert' IPC 注入 status='soft_alert'
@@ -412,7 +454,8 @@
       tabs.push(_ftHtml(
         kind, isActive, sub.sid, labelDisplay, statusLabel, status,
         modelName, modelCls, ctxPct, ctxCls, bottomHtml,
-        thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge
+        thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge,
+        slotIndex
       ));
     }
     if (!anyThinking && meetingId) delete _thinkStartTs[meetingId];
@@ -420,7 +463,7 @@
   }
 
   function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, bottomHtml,
-                   thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge) {
+                   thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge, slotIndex) {
     const cls = ['mr-ft', kind];
     if (isActive) cls.push('active');
     // Card redesign：thinking-card / streaming-card 触发头像 bounce 动画
@@ -430,11 +473,14 @@
     const modelBadge = modelName ? `<span class="mr-ft-model ${kind}">${escapeHtml(modelName)}</span>` : '';
     const ctxBadge = ctxPct !== null ? `<span class="mr-ft-ctx ${ctxCls}">Ctx ${ctxPct}%</span>` : '';
 
-    // Card redesign：头像（PNG + emoji fallback）
-    const avatarSrc = _avatarSrcFor(kind);
-    const avatarFb = _avatarFallbackFor(kind);
+    // meeting-create-modal（2026-05-01）：圆桌卡片头像与 slot 位置绑定（不与 kind 绑定）。
+    //   slot 1 永远皮卡丘，slot 2 永远小火龙，slot 3 永远杰尼龟，便于用户视觉识别
+    //   "哪一格是哪家"。kind 仅用于 CSS 类名 + 颜色映射。
+    const slotIdx = (typeof slotIndex === 'number' && slotIndex >= 0) ? slotIndex : 0;
+    const avatarSrc = _avatarBySlot(slotIdx);
+    const avatarFb = _avatarFallbackBySlot(slotIdx);
     const avatarHtml = avatarSrc
-      ? `<div class="mr-ft-avatar"><img src="${avatarSrc}" alt="${kind}" onerror="this.parentNode.textContent='${avatarFb}'; this.parentNode.style.cssText+=';display:flex;align-items:center;justify-content:center;font-size:30px;'"></div>`
+      ? `<div class="mr-ft-avatar"><img src="${avatarSrc}" alt="${kind || 'slot' + (slotIdx + 1)}" onerror="this.parentNode.textContent='${avatarFb}'; this.parentNode.style.cssText+=';display:flex;align-items:center;justify-content:center;font-size:30px;'"></div>`
       : `<div class="mr-ft-avatar" style="display:flex;align-items:center;justify-content:center;font-size:30px;">${avatarFb}</div>`;
 
     // Stage 2 容错升级：角标（绝对定位卡片右上角）—— 区分手动提取 / 缺席态
@@ -1972,13 +2018,62 @@
 
   let _inputBound = false;
   let _rtMentionActiveIndex = 0;
-  const RT_MENTION_ITEMS = [
-    { value: '@claude', label: 'Claude', hint: 'private ask', kind: 'claude' },
-    { value: '@gemini', label: 'Gemini', hint: 'private ask', kind: 'gemini' },
-    { value: '@codex', label: 'Codex', hint: 'private ask', kind: 'codex' },
-    { value: '@debate', label: '@debate', hint: 'cross-review' },
-    { value: '@summary @claude', label: '@summary', hint: 'final summary' },
-  ];
+
+  // meeting-create-modal（2026-05-01）：mention 列表按当前 meeting 动态构建，
+  //   支持 5 选 3（claude/gemini/codex/deepseek/glm）+ 同 kind 重复（如 3 Claude）。
+  //   默认插入 @slot1 / @slot2 / @slot3（按 slot 位置精确指向）；
+  //   当 meeting 内某个 kind 唯一出现时，额外注册 @<kind> 别名（向后兼容老 prompt）；
+  //   重复 kind 时该 kind 的 @<kind> 别名不注册（避免歧义）。
+  function buildRtMentionItems(meeting) {
+    const items = [];
+    const subSids = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions : [];
+    const sidKind = {};
+    const kindCount = {};
+    for (const sid of subSids) {
+      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+      if (s && s.kind) {
+        sidKind[sid] = s.kind;
+        kindCount[s.kind] = (kindCount[s.kind] || 0) + 1;
+      }
+    }
+    // slot mentions（主项）
+    for (let i = 0; i < subSids.length; i++) {
+      const sid = subSids[i];
+      const k = sidKind[sid] || null;
+      const kindLabel = k ? (_KIND_LABELS[k] || k) : '';
+      items.push({
+        value: `@slot${i + 1}`,
+        label: `Slot ${i + 1}${kindLabel ? ' · ' + kindLabel : ''}`,
+        hint: 'private ask',
+        sid,
+        kind: k,
+        slotIndex: i,
+      });
+    }
+    // kind alias（仅 kind 唯一时注册，避免歧义）
+    for (const sid of subSids) {
+      const k = sidKind[sid];
+      if (k && kindCount[k] === 1) {
+        items.push({
+          value: `@${k}`,
+          label: _KIND_LABELS[k] || k,
+          hint: 'private ask · 别名',
+          sid, kind: k,
+        });
+      }
+    }
+    // mode 触发（静态）
+    items.push({ value: '@debate', label: '@debate', hint: 'cross-review' });
+    // @summary 默认指向第一个 slot 对应的 kind
+    if (subSids.length > 0) {
+      const firstK = sidKind[subSids[0]] || null;
+      const summaryValue = firstK && kindCount[firstK] === 1 ? `@summary @${firstK}` : '@summary';
+      items.push({ value: summaryValue, label: '@summary', hint: 'final summary' });
+    } else {
+      items.push({ value: '@summary', label: '@summary', hint: 'final summary' });
+    }
+    return items;
+  }
 
   function _getRtMentionMenu() {
     let menu = document.getElementById('mr-rt-mention-menu');
@@ -2054,7 +2149,10 @@
     inputBox.focus();
     _placeCaretAtTextOffset(inputBox, match.start + inserted.length);
     _hideRtMentionMenu();
-    if (item.kind) _focusRoundtableKind(meeting, item.kind);
+    // meeting-create-modal：slot mentions 优先按 sid focus（精确指向 slot）；
+    //   kind alias 走老 _focusRoundtableKind（kind 唯一时才注册此别名，确定不歧义）。
+    if (item.sid) _focusRoundtableSession(meeting, item.sid);
+    else if (item.kind) _focusRoundtableKind(meeting, item.kind);
   }
 
   function _updateRtMentionMenu(inputBox, meeting) {
@@ -2067,7 +2165,7 @@
       _hideRtMentionMenu();
       return;
     }
-    const items = RT_MENTION_ITEMS.filter(item => {
+    const items = buildRtMentionItems(meeting).filter(item => {
       const haystack = `${item.value} ${item.label}`.toLowerCase().replace(/^@/, '');
       return haystack.includes(match.query);
     });
@@ -2120,7 +2218,7 @@
     const menu = document.getElementById('mr-rt-mention-menu');
     const isOpen = menu && menu.style.display !== 'none';
     if (!isOpen) return false;
-    const items = RT_MENTION_ITEMS.filter(item => {
+    const items = buildRtMentionItems(meeting).filter(item => {
       const match = _getRtMentionMatch(inputBox);
       if (!match) return false;
       const haystack = `${item.value} ${item.label}`.toLowerCase().replace(/^@/, '');
