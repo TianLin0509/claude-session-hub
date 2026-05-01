@@ -322,7 +322,16 @@
           preview = partial.text || '';
         }
       } else if (currentMode && currentMode !== 'idle') {
-        if (currentMode === 'summary' && summarizerKind && summarizerKind !== kind) {
+        // pilot-mode（2026-05-01 用户反馈）：主驾期间副驾不应显示 thinking。
+        //   dispatchTurn 只发给主驾 slot，副驾完全不参与，UI 应保持 idle 或回显上一轮。
+        const meetingPilotSlot = (typeof meeting.pilotSlot === 'number'
+          && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2) ? meeting.pilotSlot : null;
+        const isObserverDuringPilot = meetingPilotSlot !== null && meetingPilotSlot !== slotIndex;
+        if (isObserverDuringPilot) {
+          // 副驾保持上轮显示或 idle，不参与本轮
+          status = lastTurn && lastTurn.by && lastTurn.by[sub.sid] ? 'completed' : 'idle';
+          preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
+        } else if (currentMode === 'summary' && summarizerKind && summarizerKind !== kind) {
           status = lastTurn && lastTurn.by[sub.sid] ? 'completed' : 'idle';
           preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
         } else {

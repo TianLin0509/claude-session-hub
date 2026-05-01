@@ -1779,7 +1779,9 @@
 }
 .mr-pilot-menu {
   position: absolute;
-  top: calc(100% + 4px);
+  /* 用户反馈（2026-05-01）：toolbar 紧贴输入行时下弹会被 input-row 遮住，"关闭主驾"
+     这个最后一项就找不到。改成上弹（bottom: calc(100% + 4px)），始终从按钮上方展开。 */
+  bottom: calc(100% + 4px);
   right: 0;
   background: #161b22;
   border: 1px solid #30363d;
@@ -1787,7 +1789,7 @@
   padding: 4px 0;
   min-width: 200px;
   z-index: 200;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.4);
 }
 .mr-pilot-option {
   padding: 7px 14px;

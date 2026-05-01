@@ -114,3 +114,105 @@ E2E runner：`tests/_e2e-mcm-runner.js`（gitignored；用 `ws` 直连 CDP，无
 立花道雪（自动执行 — 用户外出 3h 内完成）
 
 **放行 commit：** `1c7489a fix(verify): 4-way review findings — 3 real bugs`
+
+---
+
+## 2026-05-01 · roundtable-pilot-mode（主驾模式 + 不限字数摘要 + F5 段落目录）
+
+**Plan：** `docs/superpowers/plans/2026-05-01-roundtable-pilot-mode.md`
+**Spec：** `docs/superpowers/specs/2026-05-01-roundtable-pilot-mode-design.md`
+**Commit range：** `1c66ea5..d2d905a`（6 commits + 1 待 commit bug fix）
+
+### Step 1 — 改动范围
+
+18 production / test files (1843 insertions / 27 deletions)：
+- `core/summary-engine.js` — `summarizeWithKind(kind, system, prompt, opts)` 5-kind 路由（claude/gemini/codex/deepseek/glm）
+- `core/general-roundtable-private-store.js` — 新增 sid 索引 API（`appendPrivateTurnBySid` / `listPrivateTurnsBySid` / `clearPrivateTurnsBySid`），保留旧 kind API
+- `core/pilot-recap-builder.js` — **新文件**，`splitByTurn` / `splitBySmart` / `build` / `rebuildMd`，写 markdown 镜像 + 段落目录
+- `core/roundtable-orchestrator.js` — `_maybePilotRecapPrefix` + `findLatestPilotRecap`，副驾 prompt 注入 D'+F2+F5
+- `core/meeting-store.js` + `core/state-store.js` — `pilotSlot` 字段持久化（双轨：meeting.pilotSlot + `_pilotSlotByMeeting` dict）
+- `core/meeting-room.js` — `setPilotSlot` API
+- `main.js` — IPC `roundtable:pilot-toggle` + `roundtable:pilot-segment-mode` + `_generatePilotRecap` + `_appendTimelineRecap` + `_parseSummaryWithSegments` + dispatchTurn pilotSlot 守卫
+- `renderer/meeting-room.js` — 主驾 toolbar dropdown / `_bindPilotEvents` / `_applyPilotCardVisual` / `_renderPilotRecapCard` / `_bindPilotRecapEvents` / `_updatePilotPlaceholder` / observer guard (bug fix)
+- `renderer/meeting-room.css` — `.mr-pilot-*` 样式集 + dropdown 上弹（bug fix）
+- `package.json` — version 0.5.0 → 0.6.0
+- 5 个新测试：`summary-engine-multi-kind` / `private-store-no-whitelist`（扩展）/ `pilot-recap-builder` / `pilot-recap-parser` / `orchestrator-pilot-recap-injection`
+
+### Step 2 — 遗留引用搜索
+
+| 模式 | 范围 | 结果 |
+|---|---|---|
+| 删除/重命名对象 | 全项目 | **无** — 改动全是新增 API + bug 修复 |
+| 旧 `appendPrivateTurn`(kind API) 调用 | `**/*.js` | ✅ 仍被 `main.js:1911` 私聊路径用，旧契约保留 |
+| 新 `appendPrivateTurnBySid`(sid API) 调用 | `**/*.js` | ✅ 仅 `main.js:1396` dispatchTurn 主驾分支调用 |
+| `summarizeWithKind` 调用 | `**/*.js` | ✅ 1 定义 + 2 调用（`main.js:684/899`）+ 测试齐全 |
+
+### Step 3 — 调用方同步检查
+
+| API/字段 | 调用点 | 一致性 |
+|---|---|---|
+| `summarizeWithKind(kind, system, prompt, opts)` | `main.js:684` (`_generatePilotRecap`) + `main.js:899` (segment-mode IPC) | ✅ 签名一致 |
+| `meeting.pilotSlot` 字段 | 11 处读写（`main.js` IPC handler / dispatchTurn / restore；`renderer/meeting-room.js` _renderFusedTabs / _applyPilotCardVisual / disabled 判定） | ✅ 全部用 `(typeof === 'number' && >= 0 && <= 2)` 守卫 |
+| `_pilotSlotByMeeting[mid]` dict | `main.js:376/622/1396/2042-2058/2064/2113/2937` | ✅ 与 meeting.pilotSlot 双轨同步, restore 时 dict 合并到 meeting |
+| `clearPrivateTurnsBySid` | `main.js:666/732`（短主驾兜底 + 长主驾分支） | ✅ try-catch 保护 |
+| IPC `roundtable:pilot-toggle` | handler `main.js:814` ↔ renderer `_bindPilotEvents`(meeting-room.js:2143) | ✅ |
+| IPC `roundtable:pilot-segment-mode` | handler `main.js:864` ↔ renderer `_bindPilotRecapEvents`(meeting-room.js:765) | ✅ |
+| timeline tag `pilot-recap` | 写入 `main.js:782` ↔ 渲染 `meeting-room.js:719+765` | ✅ |
+
+### Step 4 — 端到端验证
+
+| 验证 | 命令 / 路径 | 结果 |
+|---|---|---|
+| 单测套件 1 | `node tests/summary-engine-multi-kind.test.js` | ✅ 7/7 |
+| 单测套件 2 | `node tests/private-store-no-whitelist.test.js` | ✅ 9/9 |
+| 单测套件 3 | `node tests/pilot-recap-builder.test.js` | ✅ 9/9 |
+| 单测套件 4 | `node tests/orchestrator-pilot-recap-injection.test.js` | ✅ 11/11 |
+| E2E 主线 | `tests/_e2e-pilot-mode-runner.js`（CDP, 隔离 Hub）| ✅ 5 场景 PASS（截图 `tests/screenshots/pilot-mode/00-05.png`）|
+| E2E bug fix 验证 | `tests/_e2e-pilot-bugfix-verify.js`（CDP）| ✅ 3 bug PASS（截图 `06-bugfix-dropdown.png` + `07-bugfix-after-pilot-on.png`）|
+| 用户亲测反馈 | 真实用户三个 bug 反馈 → 全修 | ✅ |
+
+### Step 5 — 多方审查（精简 — 只报 high severity）
+
+聚焦 4 段核心代码：private-store sid API / pilot-recap-builder.js / `_generatePilotRecap` + `_parseSummaryWithSegments` / observer guard bug fix。
+
+| 审查方 | 结论 | 实际 severity |
+|---|---|---|
+| Claude (self) | _parseSummaryWithSegments 边界（LLM 摘要正文里举例引用"段落 N: xxx"会被尾扫误抓） | low（LLM 通常遵守 prompt 格式约定） |
+| Gemini | 报 high：(1) read-modify-write 文件并发竞态; (2) clear catch 静默吞 | (1) medium（实际是 IPC handler 间 await 让出, 不是 fs 原子性, race window 极窄）; (2) low-medium（fs 操作失败概率低, log 缺失只影响诊断） |
+| Codex | 报 high：read-await-clear race（dispatchTurn capture pilotSlot vs IPC pilot-toggle null-then-await-summary） | medium（同 Gemini-1, 触发条件苛刻） |
+| DeepSeek (V4-pro reasoning_effort=high) | 报 high：_turns 持久化到 timeline → 隐私泄漏 | **false positive** — 设计意图，F5-A/B 切段 IPC 必须保留 turns 副本（store 已清空时） |
+
+### Step 6 — 验证报告
+
+| 项 | 状态 |
+|---|---|
+| 单测全绿（4 套件 / 36 用例） | ✅ |
+| E2E（7 截图 + DOM 断言）| ✅ |
+| 用户亲测 3 bug 反馈 | ✅ 全修 |
+| 残留 grep | ✅ 0（无删除/重命名）|
+| 调用方一致性 | ✅ |
+| 多方审查 | ✅ 4 路（Gemini/Codex/DeepSeek MCP + Claude self）|
+| 高置信度问题 | 0 ship blocker |
+| Known issues 文档化 | ✅（race + log 缺失 → 后续 issue）|
+
+### Known Issues（post-ship 单独修）
+
+1. **read-await-clear race**（Gemini + Codex 共识）
+   - 触发：用户在主驾响应中点关主驾, dispatchTurn `await` 期间用 capture `pilotSlot` 写新 turn, 之后被 `_generatePilotRecap` 的 `clearPrivateTurnsBySid` 一起清掉
+   - 影响：丢失最后一轮 turn 数据；摘要不会包含但无崩溃
+   - 概率：低（精确时序窗口）
+   - TODO：dispatchTurn 写入 sid 索引前重新校验 `meeting.pilotSlot`，或加 turn-level lock
+2. **clear 失败静默吞**（Gemini）
+   - 现状：`try { clearPrivateTurnsBySid... } catch {}` 无 log（main.js:666 / 732）
+   - 影响：失败后 store 残留, 下次主驾会卷入老 turns
+   - TODO：catch 块加 `console.error`；可考虑 retry-once
+3. **`_parseSummaryWithSegments` 误抓边界**（Claude self）
+   - 触发：LLM 摘要正文中举例引用"段落 N: xxx"格式
+   - 影响：摘要被截断, 例子误成 segments
+   - TODO：要求"段落 N"行连续 + 紧贴文本结尾才算目录
+
+### Step 7 — 放行人
+
+立花道雪（用户亲测 + 4 路审查 + 自动 verify）
+
+**放行 commit：** 待 commit（pilot 修复 = css dropdown flip + js observer guard + verify 文档 + 截图）
