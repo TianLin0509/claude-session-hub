@@ -39,13 +39,30 @@ class MeetingRoomManager {
       lastScene: 'free_discussion',
       scene: MEETING_MODES.includes(mode) ? mode : 'general',
       covenantText: '',
+      // meeting-create-modal（2026-05-01）：用户在 Modal 选定的 slots 列表，
+      //   形如 [{ index, kind, model }, ...]。subSessions 数组顺序与 slot index 同步，
+      //   slotSpecs 保留 kind/model 是为了"再来一次"或诊断信息。
+      slotSpecs: Array.isArray(opts.slotSpecs) ? opts.slotSpecs.slice() : null,
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
     meeting._cursors = {};
     meeting._nextIdx = 0;
     this.meetings.set(id, meeting);
-    return { ...meeting };
+    return { ...meeting, slotSpecs: meeting.slotSpecs ? meeting.slotSpecs.slice() : null };
+  }
+
+  // meeting-create-modal（2026-05-01）：Modal 创建完所有 slot 后调用，
+  //   把 slot 规格写到 meeting + 触发 timeline JSON 落盘。
+  setSlotSpecs(meetingId, slotSpecs) {
+    const m = this.meetings.get(meetingId);
+    if (!m) return null;
+    m.slotSpecs = Array.isArray(slotSpecs) ? slotSpecs.slice() : null;
+    meetingStore.markDirty(meetingId, {
+      _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx,
+      slotSpecs: m.slotSpecs,
+    });
+    return { ...m, subSessions: [...m.subSessions], slotSpecs: m.slotSpecs ? m.slotSpecs.slice() : null };
   }
 
   getMeeting(id) {
@@ -55,6 +72,7 @@ class MeetingRoomManager {
       subSessions: [...m.subSessions],
       _timeline: [...m._timeline],
       _cursors: { ...m._cursors },
+      slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
     } : null;
   }
 
@@ -64,6 +82,7 @@ class MeetingRoomManager {
       subSessions: [...m.subSessions],
       _timeline: [...m._timeline],
       _cursors: { ...m._cursors },
+      slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
     }));
   }
 
@@ -148,6 +167,9 @@ class MeetingRoomManager {
       lastScene: meetingData.lastScene || 'free_discussion',
       scene,
       covenantText: meetingData.covenantText || meetingData.generalRoundtableCovenant || '',
+      // meeting-create-modal（2026-05-01）：从 state.json 还原 slot 规格；
+      //   老 meeting 没有此字段时为 null，渲染逻辑会按 subSessions 顺序兜底分配 slot。
+      slotSpecs: Array.isArray(meetingData.slotSpecs) ? meetingData.slotSpecs.slice() : null,
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,
@@ -172,6 +194,10 @@ class MeetingRoomManager {
     m._timeline = Array.isArray(data._timeline) ? data._timeline : [];
     m._cursors = (data._cursors && typeof data._cursors === 'object') ? data._cursors : {};
     m._nextIdx = typeof data._nextIdx === 'number' ? data._nextIdx : m._timeline.length;
+    // 兜底回填 slotSpecs（state.json 已写过的不覆盖）
+    if (!Array.isArray(m.slotSpecs) && Array.isArray(data.slotSpecs)) {
+      m.slotSpecs = data.slotSpecs.slice();
+    }
     return true;
   }
 

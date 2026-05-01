@@ -26,6 +26,9 @@ function saveMeetingFile(id, data) {
     _timeline: Array.isArray(data._timeline) ? data._timeline : [],
     _cursors: data._cursors && typeof data._cursors === 'object' ? data._cursors : {},
     _nextIdx: typeof data._nextIdx === 'number' ? data._nextIdx : 0,
+    // meeting-create-modal（2026-05-01）：slotSpecs 也在 per-meeting JSON 落盘，
+    //   作为 state.json 的备份（state.json 写失败时仍能从这里 restoreMeeting 重建 slot 信息）。
+    slotSpecs: Array.isArray(data.slotSpecs) ? data.slotSpecs : null,
     savedAt: Date.now(),
   };
   const tmp = meetingFilePath(id) + '.tmp';

@@ -484,17 +484,13 @@ ipcMain.handle('create-session', (_e, arg) => {
 
 // --- Meeting Room IPC ---
 
-ipcMain.handle('create-meeting', (_e, opts) => {
-  // opts: { mode?: 'general' | 'research' }
-  // 兼容老调用(无参数 / 旧前端)→ createMeeting 默认 'general'。
-  const meeting = meetingManager.createMeeting(opts || {});
-  sendToRenderer('meeting-created', { meeting });
-  return meeting;
-});
-
-ipcMain.handle('add-meeting-sub', async (_e, { meetingId, kind, opts }) => {
+// meeting-create-modal（2026-05-01）：把 add-meeting-sub IPC 的核心逻辑抽出来，
+//   create-meeting 内部循环也复用，避免重复 sceneObj/promptFile 计算。
+async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
   const meeting = meetingManager.getMeeting(meetingId);
   let sessionOpts = { ...(opts || {}), meetingId };
+  // opts.model 透传给 sessionManager（让 Claude/Codex/DeepSeek/GLM/Gemini 用对应 model）
+  if (opts && opts.model) sessionOpts.model = opts.model;
 
   if (meeting && meeting.scene) {
     const hubDataDir = getHubDataDir();
@@ -506,12 +502,13 @@ ipcMain.handle('add-meeting-sub', async (_e, { meetingId, kind, opts }) => {
       scenes.writeCovenantSnapshot(hubDataDir, meetingId, covenantText);
     }
     const promptFile = scenes.writePromptFile(hubDataDir, meetingId, meeting.scene, covenantText);
-    if (kind === 'claude' || kind === 'glm') {
+    // DeepSeek 跑在 Claude CLI 上（CLAUDE_CONFIG_DIR 隔离），需要相同的 system prompt 注入。
+    if (kind === 'claude' || kind === 'glm' || kind === 'deepseek') {
       sessionOpts.appendSystemPromptFile = promptFile;
       if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
         sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude');
       } else if (sceneObj && sceneObj.mcpConfig === 'research' && !hookPort) {
-        console.warn('[hub] research scene Claude in meeting ' + meetingId + ' but hookPort unavailable — MCP tools unavailable');
+        console.warn('[hub] research scene Claude/DS/GLM in meeting ' + meetingId + ' but hookPort unavailable — MCP tools unavailable');
       }
     } else if (kind === 'gemini') {
       sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
@@ -537,6 +534,45 @@ ipcMain.handle('add-meeting-sub', async (_e, { meetingId, kind, opts }) => {
   const freshMeeting = meetingManager.getMeeting(meetingId);
   sendToRenderer('meeting-updated', { meeting: freshMeeting || updated });
   return { session, meeting: freshMeeting || updated };
+}
+
+ipcMain.handle('create-meeting', async (_e, opts) => {
+  // opts: { mode?, scene?, slots?: [{index, kind, model}, ...] }
+  //   meeting-create-modal（2026-05-01）：当 slots 数组传入时，立即按 slot 顺序
+  //   逐个 _addMeetingSubInternal(kind, model)，并把 slotSpecs 落盘。renderer 旧路径
+  //   不传 slots → 仍只 createMeeting，由 renderer 后续逐个 add-meeting-sub（向后兼容）。
+  const safe = { ...(opts || {}) };
+  if (Array.isArray(safe.slots) && safe.slots.length > 0) {
+    safe.slotSpecs = safe.slots.map(s => ({
+      index: typeof s.index === 'number' ? s.index : null,
+      kind: s.kind, model: s.model || null,
+    }));
+  }
+  const meeting = meetingManager.createMeeting(safe);
+  sendToRenderer('meeting-created', { meeting });
+
+  if (Array.isArray(safe.slots) && safe.slots.length > 0) {
+    for (const slot of safe.slots) {
+      try {
+        await _addMeetingSubInternal(meeting.id, slot.kind, { model: slot.model });
+      } catch (e) {
+        console.warn('[create-meeting] add-sub failed for slot', slot, e.message);
+      }
+    }
+    // 落盘 slotSpecs（per-meeting JSON）— state.json 由 schedulePersist 兜底
+    meetingManager.setSlotSpecs(meeting.id, safe.slotSpecs);
+  }
+
+  // 返回最终 meeting（含 subSessions + slotSpecs）
+  return meetingManager.getMeeting(meeting.id) || meeting;
+});
+
+ipcMain.handle('add-meeting-sub', async (_e, args = {}) => {
+  // 兼容老 payload { meetingId, kind, opts } + 新 payload { meetingId, kind, model, opts }
+  const { meetingId, kind, model } = args;
+  const opts = args.opts || {};
+  if (model && !opts.model) opts.model = model;
+  return _addMeetingSubInternal(meetingId, kind, opts);
 });
 
 ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId }) => {
