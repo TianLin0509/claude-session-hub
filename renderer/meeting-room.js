@@ -1282,8 +1282,13 @@
     // 强制 reflow（避免延迟到下次 paint）
     void panel.offsetHeight;
 
-    // xterm fit — 遍历所有 subTerminals（每个 cached 上挂着 fitAddon）
-    if (typeof subTerminals === 'object' && subTerminals) {
+    // 沉浸模式下 .mr-terminals height:0 + opacity:0，xterm 容器尺寸为 0，
+    //   FitAddon.fit() 在 rows/cols < 1 时可能抛 (xterm 协议下限)。即便外层 try/catch
+    //   吃掉异常，频繁失败调用也是浪费——直接 skip。
+    //   多方审查反馈（DeepSeek V4-pro 中置信度 #1）。
+    const skipFit = panel.classList.contains('immersive');
+
+    if (!skipFit && typeof subTerminals === 'object' && subTerminals) {
       for (const sid of Object.keys(subTerminals)) {
         const cached = subTerminals[sid];
         if (cached && cached.fitAddon && typeof cached.fitAddon.fit === 'function') {
