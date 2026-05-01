@@ -79,10 +79,15 @@ class RoundtableOrchestrator {
   //   + 让 completeTurn 能给新 sid 项写 kind/model 元数据。
   setMeetingContext(sidToInfoMap) {
     this._sidInfo = sidToInfoMap || {};
-    // 如果当前 aiStats 是老 kind 索引格式，尝试 migrate 到 sid 格式
-    if (_isLegacyKindKeyed(this.state.aiStats)) {
-      this.state.aiStats = migrateAiStats(this.state.aiStats, this._sidInfo);
-      try { this._saveState(); } catch {}
+    // 仅在有 sid 信息时迁移，否则 migrateAiStats 会保守返回原 stats（防数据丢失）。
+    const hasSidInfo = Object.keys(this._sidInfo).some(k => !!k && !!this._sidInfo[k]);
+    if (hasSidInfo && _isLegacyKindKeyed(this.state.aiStats)) {
+      const migrated = migrateAiStats(this.state.aiStats, this._sidInfo);
+      // 防御：迁移结果非法（不是对象）时不动 state
+      if (migrated && typeof migrated === 'object') {
+        this.state.aiStats = migrated;
+        try { this._saveState(); } catch {}
+      }
     }
   }
 
@@ -342,10 +347,13 @@ function _isLegacyKindKeyed(stats) {
 function migrateAiStats(stats, sidToInfoMap) {
   if (!stats || typeof stats !== 'object') return {};
   if (!_isLegacyKindKeyed(stats)) return stats;
+  // 边界保护：sidToInfoMap 为空时直接保留原 stats —— 否则会落盘空对象覆盖老数据（数据丢失）。
+  // 调用方（setMeetingContext）确保只在拿到非空 sidInfo 时调，但这里多一层兜底。
+  const sidEntries = Object.entries(sidToInfoMap || {}).filter(([sid, info]) => sid && info);
+  if (sidEntries.length === 0) return stats;
   const migrated = {};
   const used = new Set();
-  for (const [sid, info] of Object.entries(sidToInfoMap || {})) {
-    if (!sid || !info) continue;
+  for (const [sid, info] of sidEntries) {
     const k = info.kind;
     const old = stats[k];
     if (old && !used.has(k)) {

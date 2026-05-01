@@ -76,10 +76,31 @@ test('migrateAiStats: new sid format passes through unchanged', () => {
   assert.deepStrictEqual(m, newFormat);
 });
 
-test('migrateAiStats: empty sidInfo → {} (lose stats per spec)', () => {
-  const old = { claude: { totalThinkSec: 100, totalTokens: 5000 } };
+test('migrateAiStats: empty sidInfo → preserve original stats (no data loss)', () => {
+  // Reviewer fix（2026-05-01）：早先版本返回 {}，配合 setMeetingContext 落盘后丢失老累计。
+  //   现在边界情况返回原 stats（_isLegacyKindKeyed 通过但无 sid 可映射时保守不动）。
+  const old = { claude: { totalThinkSec: 100, totalTokens: 5000, perTurnHistory: [] } };
   const m = migrateAiStats(old, {});
-  assert.deepStrictEqual(m, {});
+  assert.deepStrictEqual(m, old, 'empty sidToInfoMap should leave stats untouched');
+});
+
+test('setMeetingContext with empty sidInfo does NOT overwrite legacy aiStats', () => {
+  // 防回归：setMeetingContext({}) 不应触发迁移 + 落盘空对象。
+  const dir = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'rt-empty-ctx-'));
+  const stateDir = require('path').join(dir, 'arena-prompts');
+  require('fs').mkdirSync(stateDir, { recursive: true });
+  const stateFile = require('path').join(stateDir, 'm-empty-ctx-roundtable.json');
+  require('fs').writeFileSync(stateFile, JSON.stringify({
+    meetingId: 'm-empty-ctx', currentTurn: 1, currentMode: 'idle', turns: [],
+    aiStats: { claude: { totalThinkSec: 99, totalTokens: 999, perTurnHistory: [] } },
+  }));
+  const orch = new RoundtableOrchestrator(dir, 'm-empty-ctx', scenes.getScene('general'));
+  orch.setMeetingContext({});  // empty
+  // 老格式仍在，没被空对象覆盖
+  assert.ok(_isLegacyKindKeyed(orch.state.aiStats),
+    'empty context must not migrate (preserve legacy until real meeting context arrives)');
+  assert.strictEqual(orch.state.aiStats.claude.totalThinkSec, 99);
+  try { require('fs').rmSync(dir, { recursive: true, force: true }); } catch {}
 });
 
 test('migrateAiStats: null/undefined inputs → {}', () => {

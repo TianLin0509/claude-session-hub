@@ -549,9 +549,11 @@ ipcMain.handle('create-meeting', async (_e, opts) => {
     }));
   }
   const meeting = meetingManager.createMeeting(safe);
-  sendToRenderer('meeting-created', { meeting });
 
   if (Array.isArray(safe.slots) && safe.slots.length > 0) {
+    // 不抢先 sendToRenderer('meeting-created')—— 那样 renderer 先看到空 subSessions 列表，
+    // 之后每个 add-sub 触发 'meeting-updated' 才补 sub，会造成 0→1→2→3 的视觉抖动。
+    // 改成 add-sub 完成后再发 'meeting-created' 一次性带齐 subSessions（modal 走这条路径）。
     for (const slot of safe.slots) {
       try {
         await _addMeetingSubInternal(meeting.id, slot.kind, { model: slot.model });
@@ -559,8 +561,11 @@ ipcMain.handle('create-meeting', async (_e, opts) => {
         console.warn('[create-meeting] add-sub failed for slot', slot, e.message);
       }
     }
-    // 落盘 slotSpecs（per-meeting JSON）— state.json 由 schedulePersist 兜底
     meetingManager.setSlotSpecs(meeting.id, safe.slotSpecs);
+    sendToRenderer('meeting-created', { meeting: meetingManager.getMeeting(meeting.id) || meeting });
+  } else {
+    // 老路径（renderer 后续会自己 add-meeting-sub）保持先发的语义不变
+    sendToRenderer('meeting-created', { meeting });
   }
 
   // 返回最终 meeting（含 subSessions + slotSpecs）

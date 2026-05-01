@@ -89,18 +89,24 @@ function testPrivateAppendList() {
   grps.appendPrivateTurn(d, 'meeting-F', 'claude', 'q2', 'a2');
   grps.appendPrivateTurn(d, 'meeting-F', 'gemini', 'q3', 'a3');
   const all = grps.listPrivateTurns(d, 'meeting-F');
+  // meeting-create-modal（2026-05-01）：去白名单后 store 只含实际写入的 kind 顶层 key，
+  //   不再硬保证 codex:[] 存在。Renderer 用 (counts.codex || []).length 兜底。
   assert.strictEqual(all.claude.length, 2);
   assert.strictEqual(all.gemini.length, 1);
-  assert.strictEqual(all.codex.length, 0);
+  assert.strictEqual((all.codex || []).length, 0);
   assert.strictEqual(all.claude[0].userInput, 'hi');
   assert.strictEqual(all.claude[1].response, 'a2');
   console.log('  ✓ testPrivateAppendList');
 }
 
 // === 私聊存储：非法 kind 抛错 ===
+// meeting-create-modal（2026-05-01）：去掉 claude/gemini/codex 白名单后，'unknown' 是合法 kind。
+//   只保留空值/非字符串非法（spec §5.10）；具体 deepseek/glm 兼容性见 private-store-no-whitelist.test.js。
 function testPrivateInvalidKind() {
   const d = tmpDir();
-  assert.throws(() => grps.appendPrivateTurn(d, 'm', 'unknown', 'q', 'a'), /invalid kind/);
+  assert.throws(() => grps.appendPrivateTurn(d, 'm', '',     'q', 'a'), /invalid kind/);
+  assert.throws(() => grps.appendPrivateTurn(d, 'm', null,   'q', 'a'), /invalid kind/);
+  assert.throws(() => grps.appendPrivateTurn(d, 'm', undefined, 'q', 'a'), /invalid kind/);
   console.log('  ✓ testPrivateInvalidKind');
 }
 
