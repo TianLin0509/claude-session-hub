@@ -590,13 +590,20 @@ async function _rtWaitCliReady(sid, kind, maxMs = 60000) {
 // **关键约束（历史 bug 重现于 2026-04-30）**：Claude/Gemini/Codex 三家都是 TUI alt-screen 程序，
 //   把紧贴到达的字符当"粘贴"事件 → 粘贴里的 '\r' 被当文本换行符而不是 Enter 提交。
 //   所以 prompt 和 '\r' **必须分两次 write**，中间留 TUI 消化窗口；不能合并 `prompt + '\r'`。
-// 活性兜底（fail-safe，2026-05-01 调整）：300ms 内 PTY 无 echo 视为 CLI 失活
-//   （Ctrl+C / crash / PTY 断开）→ 重置 ready 直接 return false 让调用方 skip 这家。
+// **大 prompt 加固（2026-05-01 第二次修，bug 重现于 debate/summary 阶段）**：
+//   原 300ms 固定窗口对 3500+ 字 prompt 不够 —— Codex 的 paste-detect 在末批字符到达后
+//   还要 ~150ms 才 fire。\r 落在 paste 缓冲态里就被吃掉，Enter 不触发。
+//   改为"安静期自适应"：每 50ms 轮询 lastActivity，连续 FAST_PATH_QUIET_MS=250ms 无变化即
+//   视为 CLI 已完成 paste 接收 + paste-end 检测，此时 \r 才会被识别为 Enter。
+//   MAX FAST_PATH_MAX_WAIT_MS=3000ms 兜底（极大 prompt 也不无限等）。
+// 活性兜底（fail-safe）：write 后 PTY 始终零 echo 视为 CLI 失活（Ctrl+C / crash / PTY 断开）
+//   → 重置 ready 直接 return false 让调用方 skip 这家。
 //   不在兜底里"重发 prompt"——第一次 write 已把字符送进 PTY stdin，无论 CLI 有无 echo
 //   字符都已被接收/缓冲，重发会造成 prompt+prompt+\r 双重输入。下一轮自动走冷启动恢复。
-//   这 300ms 同时充当 TUI 消化 prompt 的窗口，prompt 写下去后 PTY 通常 < 50ms 就开始回 echo。
 async function _rtSendToPty(sid, prompt, kind) {
-  const FAST_PATH_ACTIVITY_WINDOW_MS = 300;
+  const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
+  const FAST_PATH_MAX_WAIT_MS = 3000;   // 上限：极大 prompt 也不无限等
+  const FAST_PATH_POLL_MS = 50;
 
   // 冷启动：仅首次或 ready 被重置后
   if (!sessionManager.getRoundtableReady(sid)) {
@@ -609,11 +616,24 @@ async function _rtSendToPty(sid, prompt, kind) {
   const beforeWrite = sessionManager.getRoundtableLastActivity(sid);
   sessionManager.writeToSession(sid, prompt);
 
-  // 活性兜底 + TUI 消化窗口：300ms 后 TUI 已处理完 prompt 输入并 echo
-  await new Promise(r => setTimeout(r, FAST_PATH_ACTIVITY_WINDOW_MS));
-  const afterWrite = sessionManager.getRoundtableLastActivity(sid);
+  // 自适应安静期等待：每 50ms 检查 lastActivity，
+  //   连续 250ms 无变化 → CLI paste-detect timer 已 fire，安全发 Enter
+  //   一直在抖动 → 等到 MAX，仍发 \r（best effort，与老 300ms 行为同等保守）
+  const startWait = Date.now();
+  let lastSeen = beforeWrite;
+  let lastChange = Date.now();
+  while (Date.now() - startWait < FAST_PATH_MAX_WAIT_MS) {
+    await new Promise(r => setTimeout(r, FAST_PATH_POLL_MS));
+    const cur = sessionManager.getRoundtableLastActivity(sid);
+    if (cur !== lastSeen) {
+      lastSeen = cur;
+      lastChange = Date.now();
+    }
+    if (Date.now() - lastChange >= FAST_PATH_QUIET_MS) break;
+  }
 
-  if (afterWrite === beforeWrite) {
+  // 活性兜底：从头到尾零 echo → CLI 已死
+  if (lastSeen === beforeWrite) {
     console.warn(`[roundtable] fast-path activity check failed for ${kind}(${sid.slice(0, 8)}), skipping turn (ready reset for next-turn cold restart)`);
     sessionManager.setRoundtableReady(sid, false);
     return false;

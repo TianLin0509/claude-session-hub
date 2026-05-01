@@ -2,12 +2,15 @@
 // 锁住圆桌"快路径"重写：
 // - session-manager 的 roundtableReady / roundtableLastActivity 缓存 + 三个 API 行为正确
 // - main.js _rtSendToPty 不再有 8000/5000 ms 硬 sleep；首次冷启动会写 ready=true；
-//   活性兜底失败会写 ready=false 并重发
+//   活性兜底失败会写 ready=false 让调用方 skip
 // - main.js _rtWaitCliReady 轮询从 300ms 缩到 100ms
+// - 大 prompt 加固（2026-05-01 第二次修，bug 重现于 debate/summary）：废固定 300ms 窗口，
+//   改为 PTY 安静期自适应等待（FAST_PATH_QUIET_MS=250 / FAST_PATH_MAX_WAIT_MS=3000），
+//   防止 3500+ 字 prompt 的 \r 落进 Codex paste 缓冲被吃掉。
 //
 // 背景：原 _rtSendToPty 每轮都重收 Claude 8s / Gemini 8s / Codex 5s 的 CLI 初始化等待，
 // 导致圆桌每轮要 ~8 秒才能让三家看到 prompt。设计修正后 CLI 首次 ready 缓存到 sid 上，
-// 第 2-N 轮直接走快路径（write prompt+'\r' 一次到位 + 300ms 活性兜底）。
+// 第 2-N 轮直接走快路径（分两次 write：prompt → 安静期等待 → '\r'）。
 //
 // 不在本单测覆盖：_rtSendToPty 的实际异步行为（需要 spawn PTY，留给隔离 Hub 实例 E2E）。
 
@@ -74,7 +77,8 @@ function testCreateSessionInitialFields() {
 function testMainJsHasFastPathContract() {
   // _rtSendToPty 必须删除三条硬 sleep（8000 / 8000 / 5000）+ prompt→'\r' 中间 delay。
   // 必须使用 getRoundtableReady / setRoundtableReady / getRoundtableLastActivity 三个 API。
-  // 必须有 FAST_PATH_ACTIVITY_WINDOW_MS 常量。
+  // 必须用"安静期自适应"等待（FAST_PATH_QUIET_MS + FAST_PATH_MAX_WAIT_MS），
+  //   不能再用固定 300ms 窗口（对 3500+ 字大 prompt 不够，Codex paste-detect 还没 fire）。
   const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf-8');
 
   // 锁住函数本体（从 `async function _rtSendToPty` 到下一个 `function _rtExtractStreamingText` 之前）
@@ -90,6 +94,8 @@ function testMainJsHasFastPathContract() {
   // 老版 baseDelay 250 / 500 + sizeDelay 也必须没了
   assert.ok(!/baseDelay/.test(fnBody), '_rtSendToPty must not contain baseDelay (legacy prompt→\\r delay)');
   assert.ok(!/sizeDelay/.test(fnBody), '_rtSendToPty must not contain sizeDelay (legacy prompt→\\r delay)');
+  // 老版固定 300ms 窗口必须废弃（对大 prompt 不够）
+  assert.ok(!/FAST_PATH_ACTIVITY_WINDOW_MS/.test(fnBody), '_rtSendToPty must not use legacy fixed FAST_PATH_ACTIVITY_WINDOW_MS=300 (replaced by quiet-period adaptive wait)');
 
   // 必须用三个新 API
   assert.ok(/getRoundtableReady\(sid\)/.test(fnBody), '_rtSendToPty must call getRoundtableReady(sid)');
@@ -97,8 +103,9 @@ function testMainJsHasFastPathContract() {
   assert.ok(/setRoundtableReady\(sid,\s*false\)/.test(fnBody), '_rtSendToPty must call setRoundtableReady(sid, false) on activity-check failure');
   assert.ok(/getRoundtableLastActivity\(sid\)/.test(fnBody), '_rtSendToPty must read getRoundtableLastActivity(sid) for activity check');
 
-  // 必须有快路径活性兜底窗口常量
-  assert.ok(/FAST_PATH_ACTIVITY_WINDOW_MS\s*=\s*300/.test(fnBody), '_rtSendToPty must define FAST_PATH_ACTIVITY_WINDOW_MS = 300');
+  // 安静期自适应等待的两个常量（值锁定为 250 / 3000，与 paste-detect timer 经验值匹配）
+  assert.ok(/FAST_PATH_QUIET_MS\s*=\s*250/.test(fnBody), '_rtSendToPty must define FAST_PATH_QUIET_MS = 250 (PTY quiet duration before sending Enter)');
+  assert.ok(/FAST_PATH_MAX_WAIT_MS\s*=\s*3000/.test(fnBody), '_rtSendToPty must define FAST_PATH_MAX_WAIT_MS = 3000 (upper bound for very large prompts)');
 
   // prompt 和 '\r' **必须分两次 write**（TUI alt-screen 把紧贴字符当粘贴事件，紧贴的 \r 不触发 Enter）。
   // 历史 bug 重现于 2026-04-30，commit 5c17e34 之前就是分两次 write 的设计。
