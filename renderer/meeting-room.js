@@ -89,6 +89,61 @@
     }
   }
 
+  // T7（2026-05-01）：preview blocks 结构化渲染 helper —
+  //   transcript-tap 现在直供 { type:'thinking'|'text'|'tool_use', ... } 块数组
+  //   thinking → 灰斜体 + 💭 前缀；tool_use → cyan chip 工具调用摘要；text → 复用 _renderMarkdown
+  //   工具块上限 8（spec §3.6 R8），超出从前面丢（保留最近）
+  function _formatToolUseBlock(block) {
+    const name = (block && block.name) || '';
+    const input = (block && block.input) || {};
+    if (/^(WebSearch|web_search)$/i.test(name)) {
+      const q = input.query || input.q || '';
+      return `🔍 搜索: "${q}"`;
+    }
+    if (/^(Read|read_file|read)$/i.test(name)) {
+      return `📄 读: ${input.path || input.file || input.file_path || ''}`;
+    }
+    if (/^(Bash|shell|exec)$/i.test(name)) {
+      const cmd = String(input.command || input.cmd || '').slice(0, 60);
+      return `⚙ 执行: ${cmd}`;
+    }
+    if (/^(Edit|Write|edit|write)$/i.test(name)) {
+      return `✏ 编辑: ${input.file_path || input.path || ''}`;
+    }
+    return `🔧 ${name}`;
+  }
+
+  function _renderPreviewBlocks(blocks) {
+    if (!Array.isArray(blocks) || blocks.length === 0) return '';
+    // 工具块只保留最后 8 个，从前面丢（spec §3.6 R8 防 thinking-heavy 卡片膨胀）
+    const filtered = [];
+    let toolCount = 0;
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i];
+      if (!b || typeof b !== 'object') continue;
+      if (b.type === 'tool_use') {
+        if (toolCount >= 8) continue;
+        toolCount++;
+      }
+      filtered.unshift(b);
+    }
+    const html = [];
+    for (const block of filtered) {
+      if (block.type === 'thinking') {
+        const t = String(block.text || '').slice(-400);
+        html.push(`<div class="mr-ft-think">${escapeHtml(t)}</div>`);
+      } else if (block.type === 'tool_use') {
+        const summary = _formatToolUseBlock(block);
+        html.push(`<span class="mr-ft-tool">${escapeHtml(summary)}</span>`);
+      } else if (block.type === 'text') {
+        const t = String(block.text || '').slice(-2000);
+        const md = _renderMarkdown(t);
+        html.push(`<div class="mr-ft-md">${md}</div>`);
+      }
+    }
+    return html.join('');
+  }
+
   // --- Two-state mode toggle (圆桌 / 投研) ---
 
   function _renderModeToggle(meeting) {
@@ -273,6 +328,21 @@
       const tabState = _tabState[sub.sid] || 'idle';
       const newBadge = tabState === 'new-output' && !isActive ? '<span class="mr-ft-new">NEW</span>' : '';
 
+      // T7（2026-05-01）：blocks 优先 / text 兼容 / lastTurn 历史回显 / 占位
+      //   partial.blocks（数组、非空）→ 结构化渲染（thinking/tool/text）
+      //   partial.text（字符串）→ 包成 [{type:'text',text}] 走同一渲染（向后兼容）
+      //   历史轮 lastTurn.by[sid] → 同上（包成 text 块）
+      //   都没有 → "等待…" 占位
+      const blocksFromPartial = (partial && Array.isArray(partial.blocks) && partial.blocks.length > 0)
+        ? partial.blocks
+        : null;
+      const textFromPartial = (partial && typeof partial.text === 'string' && partial.text)
+        ? partial.text
+        : null;
+      const textFromHistory = (!partial && lastTurn && lastTurn.by && lastTurn.by[sub.sid])
+        ? lastTurn.by[sub.sid]
+        : null;
+
       // Card redesign（2026-05-01）：bottom 区内容（progress / streaming preview / completed preview / 占位）
       let bottomHtml = '';
       if (status === 'thinking') {
@@ -280,16 +350,28 @@
         bottomHtml = `<div class="mr-ft-progress"><div class="mr-ft-progress-bar ${kind}"></div></div>`;
       } else if (status === 'streaming') {
         if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
-        const snippet = preview.slice(-150).replace(/</g, '&lt;');
-        bottomHtml = `<div class="mr-ft-preview streaming">${snippet}<span class="mr-ft-cursor"></span></div>`;
-      } else if (preview) {
-        // IF-C0（2026-05-01）：completed/已答状态用 marked + DOMPurify 渲染 markdown，
-        //   不再以原始字符显示 # ## ** 等。截到 800 字（markdown 渲染后视觉密度高，
-        //   200 字留白多）；末尾省略号在外层 wrapper 加。
-        const sliced = preview.slice(0, 800);
-        const truncated = preview.length > 800;
-        const rendered = _renderMarkdown(sliced) + (truncated ? '<span class="mr-ft-preview-ellip">…</span>' : '');
-        bottomHtml = `<div class="mr-ft-preview mr-ft-preview-md">${rendered}</div>`;
+        // T7：streaming 状态下也走 blocks 渲染（如 transcript-tap 已就绪），fallback 到旧 snippet
+        let inner;
+        if (blocksFromPartial) {
+          inner = _renderPreviewBlocks(blocksFromPartial);
+        } else if (textFromPartial) {
+          inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }]);
+        } else {
+          inner = '';
+        }
+        bottomHtml = `<div class="mr-ft-preview streaming mr-ft-preview-md">${inner}<span class="mr-ft-cursor"></span></div>`;
+      } else if (blocksFromPartial || textFromPartial || textFromHistory) {
+        // IF-C0（2026-05-01）：completed/已答状态用 marked + DOMPurify 渲染 markdown
+        //   T7：所有 preview 都走 _renderPreviewBlocks，统一管线
+        let inner;
+        if (blocksFromPartial) {
+          inner = _renderPreviewBlocks(blocksFromPartial);
+        } else if (textFromPartial) {
+          inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }]);
+        } else {
+          inner = _renderPreviewBlocks([{ type: 'text', text: textFromHistory }]);
+        }
+        bottomHtml = `<div class="mr-ft-preview mr-ft-preview-md">${inner}</div>`;
       } else {
         // 占位文本，保持卡片底部不空（防视觉空洞）
         bottomHtml = '<div class="mr-ft-preview" style="opacity:0.5;font-style:italic">等待…</div>';
@@ -370,33 +452,25 @@
       </div>`;
     }
 
-    // Card redesign：row3 ⏱ 时间 + row4 🪙 tokens
-    const timeoutCls = statusCls === 'timeout' ? ' timeout' : '';
-    const row3 = `<div class="mr-ft-row3${timeoutCls}">
-      <span class="mr-ft-stat-icon">⏱</span>
-      <span class="mr-ft-stat-current">本轮 ${escapeHtml(thinkCurrent)}</span>
-      <span class="mr-ft-stat-divider">·</span>
-      <span class="mr-ft-stat-total">累计 ${escapeHtml(thinkTotal)}</span>
-    </div>`;
-    const row4 = `<div class="mr-ft-row4">
-      <span class="mr-ft-stat-icon">🪙</span>
-      <span class="mr-ft-stat-current">本轮 ${escapeHtml(tokensCurrent)}</span>
-      <span class="mr-ft-stat-divider">·</span>
-      <span class="mr-ft-stat-total">累计 ${escapeHtml(tokensTotal)}</span>
-    </div>`;
+    // T8（2026-05-01）：row3/row4 stats 合并到 row1/row2 末尾（margin-left:auto push to right），
+    //   删除 row3/row4 div，让 preview 区多 ~44px 给 markdown 内容。
+    //   timeout 着色迁移：原 .mr-ft-row3.timeout .mr-ft-stat-current 高亮，
+    //   现统一以 .mr-ft-row1.timeout .mr-ft-stat-inline 着色（CSS 处理）。
+    const row1TimeoutCls = statusCls === 'timeout' ? ' timeout' : '';
+    const timeStat = `<span class="mr-ft-stat-inline" title="本轮 / 累计 思考时间">⏱ <span class="num">${escapeHtml(thinkCurrent)}</span> · ${escapeHtml(thinkTotal)}</span>`;
+    const tokenStat = `<span class="mr-ft-stat-inline" title="本轮 / 累计 token">🪙 <span class="num">${escapeHtml(tokensCurrent)}</span> · ${escapeHtml(tokensTotal)}</span>`;
 
     return `<div class="${cls.join(' ')}" data-ft-sid="${sid}" data-ft-kind="${kind}">
       <button class="mr-ft-expand" data-ft-expand-sid="${sid}" data-ft-expand-kind="${kind}" title="展开详细回答">↗</button>${cornerBadge}
       <div class="mr-ft-head">
         ${avatarHtml}
         <div class="mr-ft-info">
-          <div class="mr-ft-row1">
+          <div class="mr-ft-row1${row1TimeoutCls}">
             <span class="mr-ft-name ${kind}">${name}</span>
             <span class="mr-ft-status ${statusCls}">${statusLabel}</span>${newBadge}
+            ${timeStat}
           </div>
-          <div class="mr-ft-row2">${modelBadge}${ctxBadge}</div>
-          ${row3}
-          ${row4}
+          <div class="mr-ft-row2">${modelBadge}${ctxBadge}${tokenStat}</div>
         </div>
       </div>
       <div class="mr-ft-bottom">${bottomHtml}${escapeBar}</div>
@@ -963,7 +1037,7 @@
   });
 
   // Roundtable 单家 partial-update：单卡片立即刷新，不等所有家完成
-  ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens }) => {
+  ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting) || meetingId !== activeMeetingId) return;
     const cached = _rtPanelState[meetingId];
@@ -975,11 +1049,15 @@
     if (!cached._partialBy) cached._partialBy = {};
     // Card redesign（2026-05-01）：partial 携带 thinkSec / tokens 时一并存入，
     //   让卡片 row3/row4 在 streaming 完成→completed 切换那一刻拿到精准值（不必等下次 state refresh）
+    // T7（2026-05-01）：blocks 数组（thinking/text/tool_use 结构化块）+ source（'tap'|'pty'）
+    //   也写进 cache，_renderFusedTabs 优先读 partial.blocks 走结构化渲染
     cached._partialBy[sid] = {
       text: text || '',
       status: status || 'completed',
       thinkSec: typeof thinkSec === 'number' ? thinkSec : undefined,
       tokens: tokens || undefined,
+      blocks: Array.isArray(blocks) ? blocks : undefined,
+      source: source || undefined,
     };
     // 直接本地重渲染（不调 IPC，省一次 round-trip）
     const panel = _ensureRtPanel();
@@ -2352,4 +2430,5 @@
     updateMeetingData,
     mountSubTerminal,
   };
+
 })();

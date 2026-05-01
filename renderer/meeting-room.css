@@ -531,6 +531,8 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* T8（2026-05-01）：启用容器查询，让 .mr-ft-stat-inline 在窄卡片下换行（spec §2.5） */
+  container-type: inline-size;
 }
 .mr-ft:not(:last-child) { border-right: 1px solid #1f2735; }
 .mr-ft:hover { background: rgba(255,255,255,0.02); }
@@ -566,23 +568,61 @@
 }
 .mr-ft-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 
-/* Card redesign：row3 ⏱ 时间统计 / row4 🪙 token 统计 */
-.mr-ft-row3, .mr-ft-row4 {
-  display: flex;
-  align-items: center;
-  font-size: 11px;
+/* T8（2026-05-01）：row3/row4 stats 合并到 row1/row2 末尾，删除 row3/row4 div 释放 ~44px 给 preview。
+ *   .mr-ft-stat-inline 用 margin-left:auto push 到行末。
+ *   timeout 着色迁移：原 .mr-ft-row3.timeout 高亮，现 .mr-ft-row1.timeout .mr-ft-stat-inline 红色。 */
+.mr-ft-stat-inline {
+  margin-left: auto;
+  font-size: 11.5px;
   color: #8b949e;
   font-variant-numeric: tabular-nums;
-  gap: 5px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex-shrink: 0;
 }
-.mr-ft-stat-icon { flex-shrink: 0; }
-.mr-ft-stat-current { color: #fde68a; font-weight: 600; }
-.mr-ft-stat-total { color: #8b949e; }
-.mr-ft-stat-divider { color: rgba(255,255,255,0.18); margin: 0 2px; }
-.mr-ft-row3.timeout .mr-ft-stat-current { color: #fca5a5; }
+.mr-ft-stat-inline .num {
+  color: #fde68a;
+  font-weight: 600;
+}
+.mr-ft-row1.timeout .mr-ft-stat-inline,
+.mr-ft-row1.timeout .mr-ft-stat-inline .num {
+  color: #fca5a5;
+}
+
+/* T8（2026-05-01）：响应式降级 — 卡片极窄时 stats 换行（spec §2.5） */
+@container (max-width: 280px) {
+  .mr-ft-stat-inline {
+    flex-basis: 100%;
+    margin-left: 0;
+    margin-top: 2px;
+  }
+}
+
+/* T7（2026-05-01）：blocks 结构化渲染样式 — thinking 块灰斜体 + 💭 前缀；
+ *   tool_use 块 cyan chip 工具调用摘要；text 块由 _renderMarkdown 渲染（沿用 .mr-ft-preview-md 样式）。 */
+.mr-ft-think {
+  color: #8b949e;
+  font-style: italic;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+.mr-ft-think::before { content: "💭 "; }
+
+.mr-ft-tool {
+  display: inline-block;
+  background: rgba(57, 208, 216, 0.12);
+  color: #39d0d8;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11.5px;
+  margin: 2px 4px 2px 0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+
+.mr-ft-md {
+  font-size: 12.5px;
+  line-height: 1.55;
+}
 
 /* Card redesign：bottom 区（flex:1 撑满，含 preview / progress / escape-bar / corner-badge） */
 .mr-ft-bottom {
