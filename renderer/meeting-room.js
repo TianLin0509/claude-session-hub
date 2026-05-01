@@ -118,7 +118,7 @@
     return `🔧 ${name}`;
   }
 
-  function _renderPreviewBlocks(blocks) {
+  function _renderPreviewBlocks(blocks, sid) {
     if (!Array.isArray(blocks) || blocks.length === 0) return '';
     // 工具块只保留最后 8 个，从前面丢（spec §3.6 R8 防 thinking-heavy 卡片膨胀）
     const filtered = [];
@@ -132,18 +132,29 @@
       }
       filtered.unshift(b);
     }
+    // Arch refactor 2026-05-02 (Task 6): 截断方向反转 — 保头去尾，让用户能从开头读起。
+    //   原 slice(-X) 截头保尾的设计是为了适配老沉浸模式下小卡片只看最新输出；现在
+    //   shell 已经独立到子 session 主区，长输出请用户点 [🔧 进 shell] 看真实 PTY。
+    //   截断时追加点击提示链接到 shell view。
+    const truncatedHint = sid
+      ? `<span class="mr-truncated-hint" data-rt-escape="enter-shell" data-rt-sid="${sid}" title="切换到该家 shell 主视图，查看完整输出">▾ 内容已截断 · 进 shell 看完整 →</span>`
+      : `<span class="mr-truncated-hint">▾ 内容已截断 · 切到该家 session 看完整 →</span>`;
     const html = [];
     for (const block of filtered) {
       if (block.type === 'thinking') {
-        const t = String(block.text || '').slice(-400);
-        html.push(`<div class="mr-ft-think">${escapeHtml(t)}</div>`);
+        const raw = String(block.text || '');
+        const t = raw.slice(0, 400);
+        const truncMark = raw.length > 400 ? truncatedHint : '';
+        html.push(`<div class="mr-ft-think">${escapeHtml(t)}${truncMark}</div>`);
       } else if (block.type === 'tool_use') {
         const summary = _formatToolUseBlock(block);
         html.push(`<span class="mr-ft-tool">${escapeHtml(summary)}</span>`);
       } else if (block.type === 'text') {
-        const t = String(block.text || '').slice(-2000);
+        const raw = String(block.text || '');
+        const t = raw.slice(0, 2000);
         const md = _renderMarkdown(t);
-        html.push(`<div class="mr-ft-md">${md}</div>`);
+        const truncMark = raw.length > 2000 ? truncatedHint : '';
+        html.push(`<div class="mr-ft-md">${md}${truncMark}</div>`);
       }
     }
     return html.join('');
@@ -184,8 +195,16 @@
       panel = document.createElement('div');
       panel.id = 'mr-roundtable-panel';
       panel.className = 'mr-rt-panel';
-      const container = terminalsEl();
-      if (container && container.parentElement) container.parentElement.insertBefore(panel, container);
+      // Arch refactor 2026-05-02: mr-terminals removed. Anchor the cards panel
+      // before mr-toolbar so it occupies the main flex area between header and
+      // toolbar / input-row.
+      const toolbar = document.getElementById('mr-toolbar');
+      if (toolbar && toolbar.parentElement) {
+        toolbar.parentElement.insertBefore(panel, toolbar);
+      } else {
+        const mrPanel = document.getElementById('meeting-room-panel');
+        if (mrPanel) mrPanel.appendChild(panel);
+      }
     }
     return panel;
   }
@@ -412,9 +431,9 @@
         //   显示"💭 思考中..."占位，承认 streaming 阶段 PTY 不可信，等 transcript 落盘再渲染。
         let inner;
         if (blocksFromPartial) {
-          inner = _renderPreviewBlocks(blocksFromPartial);
+          inner = _renderPreviewBlocks(blocksFromPartial, sub.sid);
         } else if (textFromPartial) {
-          inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }]);
+          inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
         } else {
           inner = '<div class="mr-ft-thinking-placeholder">💭 思考中...</div>';
         }
@@ -424,11 +443,11 @@
         //   T7：所有 preview 都走 _renderPreviewBlocks，统一管线
         let inner;
         if (blocksFromPartial) {
-          inner = _renderPreviewBlocks(blocksFromPartial);
+          inner = _renderPreviewBlocks(blocksFromPartial, sub.sid);
         } else if (textFromPartial) {
-          inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }]);
+          inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
         } else {
-          inner = _renderPreviewBlocks([{ type: 'text', text: textFromHistory }]);
+          inner = _renderPreviewBlocks([{ type: 'text', text: textFromHistory }], sub.sid);
         }
         bottomHtml = `<div class="mr-ft-preview mr-ft-preview-md">${inner}</div>`;
       } else {
@@ -497,23 +516,25 @@
     if (statusCls === 'manual_extracted') cornerBadge = '<span class="mr-ft-corner-badge manual">手动</span>';
     else if (statusCls === 'absent') cornerBadge = '<span class="mr-ft-corner-badge absent">缺席</span>';
 
-    // Stage 2 容错升级：逃生工具栏（条件渲染，嵌入 mr-ft-bottom 内）
+    // Arch refactor 2026-05-02 (Task 5): 逃生按钮常驻。
+    //   等待中（thinking/streaming/soft_alert）或终态（errored/absent）都立即显示
+    //   [一键提取] [跳过] [🔧 进 shell] 三按钮，无 3min 等待门槛。
+    //   "进 shell" 是新增按钮：触发 selectSession(sid) 切到子 session 主区 shell view，
+    //   让用户直接看真实 PTY 输出 / 键入 / kill — 用户卡死时的终极逃生口。
+    //   终态卡片额外加一个"重新拉起"按钮。
     const isWaitingState = statusCls === 'thinking' || statusCls === 'streaming' || statusCls === 'soft_alert';
-    // FIX-C（2026-05-01）：errored/absent 终态也显示一个迷你工具栏，
-    //   让用户能"重新拉起"该家——尤其 Codex CLI 自我更新退出后，用户需要这个出口。
     const isTerminalErrorState = statusCls === 'errored' || statusCls === 'absent';
     let escapeBar = '';
-    if (isWaitingState) {
+    if (isWaitingState || isTerminalErrorState) {
+      const relaunchBtn = isTerminalErrorState
+        ? `<button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新拉起该家：重发本轮 prompt">🔄 重新拉起</button>`
+        : '';
       escapeBar = `
       <div class="mr-ft-escape-bar">
-        <button class="mr-ft-escape-btn" data-rt-escape="extract" data-rt-sid="${sid}" data-rt-kind="${kind}" title="从 transcript 直读拼接（Gemini 卡死时绕过完成检测）">一键提取</button>
+        <button class="mr-ft-escape-btn" data-rt-escape="extract" data-rt-sid="${sid}" data-rt-kind="${kind}" title="从 transcript 直读拼接（卡死时绕过完成检测）">一键提取</button>
         <button class="mr-ft-escape-btn" data-rt-escape="skip" data-rt-sid="${sid}" data-rt-kind="${kind}" title="本轮跳过这家，下游 prompt 不引用">跳过</button>
-        <button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新发送 prompt（P0.5 实现中，暂未启用）" disabled>重发</button>
-      </div>`;
-    } else if (isTerminalErrorState) {
-      escapeBar = `
-      <div class="mr-ft-escape-bar mr-ft-escape-bar-terminal">
-        <button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新拉起该家：重发本轮 prompt（FIX-F 真实生效）">🔄 重新拉起这家</button>
+        <button class="mr-ft-escape-btn" data-rt-escape="enter-shell" data-rt-sid="${sid}" data-rt-kind="${kind}" title="切换到该家的 shell 主视图，直接查看 PTY 真实输出">🔧 进 shell</button>
+        ${relaunchBtn}
       </div>`;
     }
 
@@ -925,8 +946,10 @@
       });
     });
 
-    // Stage 2 容错升级：逃生工具栏按钮（提取/跳过/重发）
-    panel.querySelectorAll('.mr-ft-escape-btn[data-rt-escape]').forEach(btn => {
+    // Stage 2 容错升级：逃生工具栏按钮（提取/跳过/进 shell/重发）+ 截断提示链接（Task 6）。
+    //   选择器从 .mr-ft-escape-btn[data-rt-escape] 放宽到 [data-rt-escape]，让
+    //   .mr-truncated-hint 也能触发 enter-shell（共享同一段 click 处理逻辑）。
+    panel.querySelectorAll('[data-rt-escape]').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         if (btn.hasAttribute('disabled')) return;
@@ -952,13 +975,23 @@
           } else if (action === 'skip') {
             const r = await ipcRenderer.invoke('roundtable-skip-participant', { meetingId: meeting.id, sid });
             if (!r || !r.ok) console.warn(`[rt-escape] skip failed: ${r?.reason}`);
+          } else if (action === 'enter-shell') {
+            // Arch refactor 2026-05-02 (Task 5): 切到该子 session 主区 shell view，
+            // 复用已有 selectSession 路径（隐藏 mr-panel + 显示 terminal-panel + mount xterm）。
+            if (typeof window !== 'undefined' && typeof window.selectSession === 'function') {
+              window.selectSession(sid);
+            } else if (typeof selectSession === 'function') {
+              selectSession(sid);
+            } else {
+              console.warn('[rt-escape] enter-shell: selectSession not available');
+            }
           } else if (action === 'resend') {
             const r = await ipcRenderer.invoke('roundtable-resend-participant', { meetingId: meeting.id, sid });
             if (r && r.ok) {
               console.log(`[rt-escape] resend ok: ${kind}`);
             } else {
               // FIX-C 阶段：FIX-F 还没落地前，重发 IPC 是 stub，给用户清晰指引
-              alert(`暂未支持单家"重新拉起"。\n\n建议操作：\n1. 在该卡片底部按"跳过"，下游 prompt 不会引用此家。\n2. 或者发起新一轮（直接提问 / @debate），系统会自动重启卡死的 CLI。\n\n（错误信息：${r?.reason || 'unknown'}）`);
+              alert(`暂未支持单家"重新拉起"。\n\n建议操作：\n1. 在该卡片底部按"跳过"，下游 prompt 不会引用此家。\n2. 或者发起新一轮（直接提问 / @debate），系统会自动重启卡死的 CLI。\n3. 或者点 [🔧 进 shell] 自己看 PTY 真实情况。\n\n（错误信息：${r?.reason || 'unknown'}）`);
             }
           }
         } catch (err) {
@@ -1428,62 +1461,11 @@
     subTerminals = {};
   }
 
-  // Card optimization Task 9（2026-05-01）— 沉浸/调试模式切换。
-  //   _toggleMeetingMode：用户点 button → 翻转 _immersiveByMeeting[meetingId] → IPC 写回 → applyMode。
-  //   _applyMeetingMode：纯 DOM 操作（panel.classList + 按钮 active class + icon/label）。
-  //   _restoreMeetingMode：openMeeting 调，问主进程拿持久化值（IPC 'get-immersive-mode'），首次进入会议时生效。
-  function _toggleMeetingMode() {
-    const mid = activeMeetingId;
-    if (!mid) return;
-    const cur = !!_immersiveByMeeting[mid];
-    const next = !cur;
-    _immersiveByMeeting[mid] = next;
-    _applyMeetingMode(next);
-    // 持久化到 main.js（state.json immersiveByMeeting{}）
-    try { ipcRenderer.invoke('save-immersive-mode', { meetingId: mid, immersive: next }); } catch {}
-  }
-
-  function _applyMeetingMode(immersive) {
-    const panel = document.getElementById('meeting-room-panel');
-    const btn = document.getElementById('meeting-room-mode-toggle');
-    const iconEl = document.getElementById('mr-mode-icon');
-    const labelEl = document.getElementById('mr-mode-label');
-    if (!panel) return;
-    if (immersive) {
-      panel.classList.add('immersive');
-      if (btn) btn.classList.add('active');
-      if (iconEl) iconEl.textContent = '🎯';
-      if (labelEl) labelEl.textContent = '沉浸';
-    } else {
-      panel.classList.remove('immersive');
-      if (btn) btn.classList.remove('active');
-      if (iconEl) iconEl.textContent = '🖥';
-      if (labelEl) labelEl.textContent = '调试';
-    }
-    // 防快速反复点击（动画 240ms）
-    if (btn) {
-      btn.style.pointerEvents = 'none';
-      setTimeout(() => { if (btn) btn.style.pointerEvents = ''; }, 280);
-    }
-    // 等动画结束让 xterm 重新 fit（_relayoutMeetingRoom 由 Task 10 提供，可选调）
-    setTimeout(() => {
-      if (typeof _relayoutMeetingRoom === 'function') _relayoutMeetingRoom();
-    }, 260);
-  }
-
-  async function _restoreMeetingMode(meeting) {
-    if (!meeting) return;
-    let immersive = !!_immersiveByMeeting[meeting.id];
-    // 首次：内存里没有就问主进程
-    if (_immersiveByMeeting[meeting.id] === undefined) {
-      try {
-        const r = await ipcRenderer.invoke('get-immersive-mode', { meetingId: meeting.id });
-        immersive = !!(r && r.immersive);
-        _immersiveByMeeting[meeting.id] = immersive;
-      } catch { immersive = false; }
-    }
-    _applyMeetingMode(immersive);
-  }
+  // Arch refactor 2026-05-02: 沉浸/调试模式切换已删除。圆桌只有一种视图，
+  // 这些函数保留为 no-op 以兼容内部调用（openMeeting 仍调 _restoreMeetingMode）。
+  function _toggleMeetingMode() { /* removed: only one view now */ }
+  function _applyMeetingMode(_immersive) { /* removed */ }
+  async function _restoreMeetingMode(_meeting) { /* removed */ }
 
   // Card optimization Task 10（2026-05-01）— 动态重排兜底：
   //   触发场景：窗口 resize / 沉浸切换 / 历史面板展开 / preview markdown 长度跳变 /
@@ -1620,23 +1602,15 @@
     const layoutButtonsHtml = showLayoutButtons ? `
         <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>` : '';
 
-    // Card optimization Task 9（2026-05-01）— 沉浸/调试模式切换按钮（仅 panel-capable meeting 才显示）。
-    //   id=meeting-room-mode-toggle，class=mr-immersive-toggle（**故意 NOT mr-mode-btn**——
-    //   该 class 已被既有"圆桌/投研" mode toggle 占用，复用会样式冲突）。
-    //   icon/label 由 _applyMeetingMode 在 click 后切换：调试 🖥 / 沉浸 🎯。
-    const showImmersiveToggle = _isPanelCapableMeeting(meeting);
-    const immersiveToggleHtml = showImmersiveToggle ? `
-        <button class="mr-immersive-toggle" id="meeting-room-mode-toggle" title="切换沉浸/调试模式">
-          <span id="mr-mode-icon">🖥</span>
-          <span id="mr-mode-label">调试</span>
-        </button>` : '';
+    // Arch refactor 2026-05-02: 沉浸/调试切换按钮已删除。圆桌界面只有一种
+    // 视图（永远纯卡片），shell 沉到子 session 主区。
 
     el.innerHTML = `
       <div class="mr-header-left">
         ${_renderModeToggle(meeting)}
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
       </div>
-      <div class="mr-header-right">${layoutButtonsHtml}${immersiveToggleHtml}
+      <div class="mr-header-right">${layoutButtonsHtml}
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
         <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
@@ -1649,14 +1623,7 @@
     if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
     _bindModeToggle(el, meeting);
-    // Task 9：绑定沉浸/调试切换按钮 click（renderHeader 每次都新生成 DOM 所以无需 once-bind 守卫）
-    const immersiveBtn = document.getElementById('meeting-room-mode-toggle');
-    if (immersiveBtn) {
-      immersiveBtn.addEventListener('click', _toggleMeetingMode);
-      // 同步当前 panel.classList 的 immersive 状态到按钮的 active class + label
-      const panel = document.getElementById('meeting-room-panel');
-      if (panel && panel.classList.contains('immersive')) _applyMeetingMode(true);
-    }
+    // Arch refactor 2026-05-02: 沉浸/调试 toggle 删除，无需 binding。
     document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
     document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
     document.getElementById('mr-btn-zoom-in').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom + 1); });
@@ -1755,41 +1722,13 @@
     container.classList.remove('mr-terminals-hidden');
   }
 
-  function renderTerminals(meeting) {
-    const container = terminalsEl();
-    if (!container) return;
-    for (const cached of Object.values(subTerminals)) {
-      if (cached && cached.container && cached.container.parentElement) {
-        cached.container.parentElement.removeChild(cached.container);
-      }
-    }
-    container.innerHTML = '';
-    applyModeContainerVisibility(meeting, container);
-    container.className = 'mr-terminals focus-mode';
-    subTerminals = {};
-    renderFocusMode(meeting, container);
-  }
+  // Arch refactor 2026-05-02: 圆桌界面去 shell。原 #mr-terminals 已删除，xterm
+  // 仅在子 session 主区 shell view 挂载（renderer.js: showTerminal）。这些
+  // mount/render 函数保留签名以兼容调用方，body 改为 no-op。subTerminals 永远
+  // 为空对象，下游 fit 循环空跑无害。
+  function renderTerminals(_meeting) { /* removed: shell moved to sub-session view */ }
 
-  function openSubTerminal(sessionId) {
-    const cached = subTerminals[sessionId];
-    if (!cached || !cached.terminal || !cached.container) return;
-    if (!cached.container.querySelector('.xterm-screen')) {
-      cached.terminal.open(cached.container);
-      cached.opened = true;
-      if (typeof loadGpuRenderer === 'function') loadGpuRenderer(cached);
-    }
-    cached.terminal.refresh(0, cached.terminal.rows - 1);
-    // Sync scroll area to prevent stale scrollHeight locking
-    try {
-      const vpInst = cached.terminal._core && cached.terminal._core.viewport;
-      if (vpInst && typeof vpInst.syncScrollArea === 'function') {
-        vpInst.syncScrollArea(true);
-      }
-    } catch (_) {}
-    cached.terminal.scrollToBottom();
-    const vp = cached.container.querySelector('.xterm-viewport');
-    if (vp) vp.scrollTop = vp.scrollHeight;
-  }
+  function openSubTerminal(_sessionId) { /* removed */ }
 
   function subModelBadgeHtml(session) {
     if (!session || !session.currentModel) return '';
@@ -2009,32 +1948,9 @@
     return slot;
   }
 
-  // fitSubTerminal 现在是 robustFit 的薄壳：rAF-loop 等容器有 layout + SIGWINCH 去重。
-  // 调用方（mountSubTerminal）经常在 appendChild 同帧调用，没有 layout 信息，
-  // 不能再像旧版那样立即 fit 拿默认 80x24 / 0x0 错值发 PTY。
-  function fitSubTerminal(sessionId) {
-    robustFit(sessionId);
-  }
-
-  function mountSubTerminal(sessionId) {
-    if (!activeMeetingId || typeof getOrCreateTerminal !== 'function') return;
-    const slot = document.querySelector(`.mr-sub-slot[data-session-id="${sessionId}"]`);
-    if (!slot) return;
-    slot.classList.remove('dormant');
-    const termContainer = slot.querySelector('.mr-sub-terminal');
-    if (!termContainer || termContainer.querySelector('.xterm')) return;
-    const cached = getOrCreateTerminal(sessionId);
-    if (cached && cached.container) {
-      cached.container.style.display = 'block';
-      // 幂等：cached.container 是单例, 已在当前 termContainer 下就别再挂一次（避免 canvas 抖动）
-      if (cached.container.parentNode !== termContainer) {
-        termContainer.appendChild(cached.container);
-      }
-      subTerminals[sessionId] = cached;
-      openSubTerminal(sessionId);
-      requestAnimationFrame(() => fitSubTerminal(sessionId));
-    }
-  }
+  // Arch refactor 2026-05-02: shell 不再在圆桌界面 mount，no-op。
+  function fitSubTerminal(_sessionId) { /* removed */ }
+  function mountSubTerminal(_sessionId) { /* removed */ }
 
   // --- Focus Mode ---
 

@@ -124,18 +124,8 @@
   border-color: var(--accent, #6366f1);
 }
 
-/* Terminal Grid */
-.mr-terminals {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  gap: 1px;
-  background: var(--border, #30363d);
-}
-
-.mr-terminals.focus-mode {
-  flex-direction: column;
-}
+/* Arch refactor 2026-05-02: .mr-terminals + .mr-terminals.focus-mode 已删除
+   (圆桌界面不再 mount xterm，shell 沉到子 session 主区 view)。 */
 
 /* Sub-session slot */
 .mr-sub-slot {
@@ -1646,95 +1636,54 @@
 }
 
 /* ========================================================================
-   Card optimization Task 9（2026-05-01）—— 沉浸/调试模式切换
-   按钮 class = mr-immersive-toggle（**故意 NOT mr-mode-btn**——该 class 已被
-   既有"圆桌/投研"切换占用，复用会样式冲突）。沉浸模式下：
-     1) .mr-terminals 单独 hide（240ms ease-out）→ xterm 区不可见且不响应
-     2) .mr-ft-strip flex:1 抢占 panel 剩余高度
+   Arch refactor 2026-05-02 —— 圆桌界面去 shell + 删除沉浸/调试切换。
+   原沉浸模式（hide .mr-terminals + 让 .mr-rt-panel 抢空间）已变成"唯一视图"：
+   .mr-terminals 已删除，.mr-rt-panel 直接 flex:1 占主区。
+   保留以下规则把"原沉浸态布局"作为默认应用到 .mr-rt-panel 及其内部 strip/cards。
    ======================================================================== */
-.mr-immersive-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: var(--bg-card-2, #1c232c);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 4px;
-  padding: 4px 10px;
-  font-size: 12px;
-  color: var(--text-primary, #e6edf3);
-  cursor: pointer;
-  user-select: none;
-  transition: background 200ms ease-out, border-color 200ms ease-out, color 200ms ease-out;
-}
-.mr-immersive-toggle:hover {
-  background: rgba(88, 166, 255, 0.08);
-}
-.mr-immersive-toggle.active {
-  background: rgba(88, 166, 255, 0.18);
-  border-color: var(--accent, #58a6ff);
-  color: var(--accent, #58a6ff);
-}
-
-/* Card optimization Task 9 fix（2026-05-01）— 沉浸模式只隐藏 .mr-terminals（xterm 终端），
-   toolbar / 输入框 / 软提醒 banner 全部保持固定在底部，不参与切换。
-   原设计把 mr-terminals + toolbar + input-row 一起包进 wrapper 整体淡出，
-   会导致用户失去发送入口和命令行——已回退该 wrapper。 */
-.mr-terminals {
-  transition: flex 240ms ease-out, opacity 240ms ease-out, min-height 240ms ease-out;
-}
-#meeting-room-panel.immersive .mr-terminals {
-  flex: 0 0 0 !important;
-  min-height: 0 !important;
-  height: 0 !important;
-  opacity: 0;
-  pointer-events: none;
-  overflow: hidden;
-  border: none;
-}
-
-/* Card optimization Task 9 fix v2（2026-05-01）— 沉浸模式让 cards 真正变大。
-   多方审查反馈：v1 只让外层 .mr-rt-panel flex:1 1 auto 抢占空间，但内部 .mr-ft-strip
-   仍是 grid，每张 .mr-ft 卡片固定 min-height:220px → 父级长大但子元素不长。
-   修复：沉浸时 .mr-rt-panel 变 flex column；.mr-ft-strip flex:1 + height:100% +
-   grid-auto-rows:1fr 让 grid 行高 stretch；.mr-ft 取消 220px 固定改 height:100%；
-   .mr-rt-history 用 margin-top:auto 下沉到 toolbar 上方（紧贴底部）。 */
 .mr-rt-panel {
-  transition: flex 240ms ease-out;
-}
-#meeting-room-panel.immersive .mr-rt-panel {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
 }
-#meeting-room-panel.immersive .mr-ft-strip {
+.mr-ft-strip {
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
-  /* grid 子项需要明确告诉 stretch（默认 grid-auto-rows: auto 不会让卡片填高） */
   grid-auto-rows: 1fr;
   align-items: stretch;
+  transition: flex 240ms ease-out;
 }
-#meeting-room-panel.immersive .mr-ft {
-  /* 取消调试模式的 min-height:220px（line 1396 区块），让卡片填满 grid 行高 */
-  min-height: 0 !important;
+.mr-ft {
+  /* 取消调试模式的 min-height:220px 强制让卡片填满 grid 行高 */
+  min-height: 0;
   height: 100%;
 }
-/* 卡片内部 preview 区在大空间下也得能滚动，否则超长 markdown 顶爆卡片 */
-#meeting-room-panel.immersive .mr-ft-preview {
+.mr-ft-preview {
   min-height: 0;
   overflow-y: auto;
 }
-/* 历史轮次 toggle 沉到 cards-strip 之下、toolbar 之上 */
-#meeting-room-panel.immersive .mr-rt-history {
+.mr-rt-history {
   margin-top: auto;
   flex-shrink: 0;
 }
 
-/* 调试模式默认行为：strip 用 grid 自然布局（保留 transition 以备未来需要） */
-.mr-ft-strip {
-  transition: flex 240ms ease-out;
+/* Arch refactor 2026-05-02 (Task 6): 截断提示链接（卡片摘要超长时附加） */
+.mr-truncated-hint {
+  display: block;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border, #30363d);
+  color: var(--accent, #58a6ff);
+  font-size: 11.5px;
+  cursor: pointer;
+  user-select: none;
+}
+.mr-truncated-hint:hover {
+  text-decoration: underline;
+  filter: brightness(1.15);
 }
 
 /* ========================================================================

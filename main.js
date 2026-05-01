@@ -600,31 +600,15 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
   return true;
 });
 
-// Card optimization Task 9（2026-05-01）— 沉浸/调试模式 IPC 持久化。
-//   renderer 调 get-immersive-mode 在 openMeeting 时拿初始模式；
-//   切换按钮 click → save-immersive-mode 写回 state.json。
-//   _immersiveByMeeting 是模块级 dict（顶部 bootState 加载），所有 stateStore.save 都带它。
-ipcMain.handle('get-immersive-mode', (_e, { meetingId } = {}) => {
-  if (!meetingId) return { immersive: false };
-  return { immersive: !!_immersiveByMeeting[meetingId] };
+// Arch refactor 2026-05-02: 沉浸/调试模式切换已删除。圆桌只有一种视图。
+// 这两个 handler 保留为 no-op：避免老 state.json (含 immersiveByMeeting 字段)
+// 在 renderer 调 get-immersive-mode 时报 'No handler registered'。新 renderer
+// 永远不调这两个 IPC，但保留 handler 兼容老前端代码（已嵌进 dist 的版本）。
+ipcMain.handle('get-immersive-mode', () => {
+  return { immersive: false };
 });
 
-ipcMain.handle('save-immersive-mode', (_e, { meetingId, immersive } = {}) => {
-  if (!meetingId) return { ok: false, reason: 'no_meeting_id' };
-  _immersiveByMeeting[meetingId] = !!immersive;
-  try {
-    stateStore.save({
-      version: 1,
-      cleanShutdown: false,
-      sessions: lastPersistedSessions,
-      meetings: meetingManager.getAllMeetings(),
-      immersiveByMeeting: _immersiveByMeeting,
-      pilotSlotByMeeting: _pilotSlotByMeeting,
-    });
-  } catch (e) {
-    console.warn('[圆桌] save-immersive-mode persist failed:', e.message);
-    return { ok: false, error: e.message };
-  }
+ipcMain.handle('save-immersive-mode', () => {
   return { ok: true };
 });
 

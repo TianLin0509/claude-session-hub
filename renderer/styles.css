@@ -2202,3 +2202,78 @@ body.theme-light .floating-scroll-btn {
 .logo-deepseek  { background-image: url('assets/ai-logos/deepseek.svg'); }
 .logo-glm       { background-image: url('assets/ai-logos/glm.svg'); }
 .logo-powershell{ background-image: url('assets/ai-logos/powershell.svg'); }
+
+/* === Sidebar tree (meeting + child sub-sessions) === */
+/* The expand-arrow toggles whether a meeting's sub-sessions are listed below
+   it as indented children. Click on the arrow toggles; click anywhere else
+   on the row opens the meeting itself. */
+.session-item.meeting {
+  border-left-color: var(--accent, #6366f1);
+}
+.session-item.meeting .expand-arrow {
+  display: inline-block;
+  width: 12px;
+  margin-right: 4px;
+  color: var(--text-muted, #8b949e);
+  cursor: pointer;
+  transition: transform 180ms ease;
+  user-select: none;
+  font-size: 10px;
+  line-height: 1;
+  vertical-align: middle;
+}
+.session-item.meeting.expanded .expand-arrow {
+  transform: rotate(90deg);
+}
+.session-item.meeting .expand-arrow:hover {
+  color: var(--text-primary, #f0f6fc);
+}
+
+/* Child sub-session rows under an expanded meeting. Smaller and indented
+   to convey hierarchy without losing the click target. */
+.session-item.child {
+  padding: 6px 10px 6px 26px;
+  margin: 1px 4px 1px 12px;
+  border-left: 2px solid var(--color-border, #30363d);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.015);
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background 120ms ease, border-left-color 120ms ease;
+  position: relative;
+}
+.session-item.child::before {
+  content: none;  /* override the .session-item::before glow used on parents */
+}
+.session-item.child:hover {
+  background: rgba(88, 166, 255, 0.06);
+  border-left-color: var(--accent, #58a6ff);
+}
+.session-item.child.selected {
+  background: rgba(88, 166, 255, 0.14);
+  border-left-color: var(--accent, #58a6ff);
+}
+.session-item.child .ai-logo {
+  width: 14px;
+  height: 14px;
+  margin-right: 0;
+  flex-shrink: 0;
+}
+.session-item.child .child-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary, #e6edf3);
+}
+.session-item.child .child-model-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--bg-tertiary, #1f2630);
+  color: var(--text-muted, #8b949e);
+  flex-shrink: 0;
+}

@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌架构重构（阶段 1）：Shell/卡片分离 + 树形侧边栏</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg2: #161b22;
+    --bg3: #1f2630;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text2: #8b949e;
+    --accent: #58a6ff;
+    --accent-warm: #f0883e;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --claude: #c47cf6;
+    --gemini: #5d9eff;
+    --codex: #d4d4d4;
+    --deepseek: #5e72e4;
+    --glm: #ff8c42;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 32px;
+    font: 14px/1.6 -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; color: var(--accent); }
+  h2 { font-size: 19px; margin: 36px 0 12px; padding-bottom: 6px;
+       border-bottom: 1px solid var(--border); color: #f1c40f; }
+  h3 { font-size: 16px; margin: 20px 0 8px; color: var(--accent-warm); }
+  code { background: #161b22; padding: 1px 6px; border-radius: 3px;
+         font: 12.5px "Consolas", monospace; color: #ffa657; }
+  pre { background: #0a0e14; padding: 12px 16px; border-radius: 6px;
+        overflow-x: auto; font: 12px "Consolas", monospace;
+        border: 1px solid var(--border); color: #c9d1d9; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left;
+           font-size: 13px; vertical-align: top; }
+  th { background: var(--bg2); color: #f1c40f; font-weight: 600; }
+  tr:nth-child(even) td { background: rgba(88,166,255,0.03); }
+  .meta { color: var(--text2); font-size: 13px; margin-bottom: 16px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px;
+           font-size: 11px; font-weight: 600; margin: 0 4px; }
+  .b-green { background: rgba(63,185,80,0.18); color: var(--green); }
+  .b-red { background: rgba(248,81,73,0.18); color: var(--red); }
+  .b-yellow { background: rgba(210,153,34,0.18); color: var(--yellow); }
+  .b-blue { background: rgba(88,166,255,0.18); color: var(--accent); }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 18px; }
+  .panel { background: var(--bg2); border: 1px solid var(--border);
+           border-radius: 8px; padding: 14px 16px; }
+  .panel-title { font-size: 13px; font-weight: 600; color: var(--accent);
+                 margin-bottom: 10px; padding-bottom: 6px;
+                 border-bottom: 1px solid var(--border); }
+
+  /* Mockup 容器 */
+  .mockup {
+    background: #0d1117; border: 1px solid var(--border);
+    border-radius: 8px; padding: 0; overflow: hidden;
+    font: 12px "Consolas", monospace;
+    margin: 12px 0;
+  }
+  .mockup-bar {
+    background: #21262d; padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text2); font-size: 11px;
+  }
+  .hub-shell { display: flex; min-height: 380px; }
+  .hub-sidebar {
+    width: 260px; background: #161b22; border-right: 1px solid var(--border);
+    padding: 8px; flex-shrink: 0;
+  }
+  .hub-main {
+    flex: 1; background: #0d1117; padding: 16px; position: relative;
+    display: flex; flex-direction: column;
+  }
+
+  /* Sidebar items */
+  .si {
+    padding: 8px 10px; margin: 3px 0; border-radius: 5px;
+    cursor: pointer; border-left: 3px solid transparent;
+    color: var(--text); font-size: 13px;
+  }
+  .si:hover { background: rgba(88,166,255,0.06); }
+  .si-meeting {
+    padding: 12px 12px; border: 1.5px solid rgba(196,124,246,0.35);
+    background: linear-gradient(135deg, rgba(196,124,246,0.05), transparent);
+    border-radius: 6px; margin: 6px 0;
+    font-weight: 500; font-size: 13.5px;
+  }
+  .si-meeting.expanded { border-color: rgba(196,124,246,0.55); }
+  .si-meeting .arrow { display: inline-block; width: 14px; transition: transform 200ms; color: var(--text2); }
+  .si-meeting.expanded .arrow { transform: rotate(90deg); }
+  .si-meeting .badge-num {
+    float: right; background: rgba(196,124,246,0.2);
+    color: var(--claude); padding: 1px 7px; border-radius: 8px;
+    font-size: 11px;
+  }
+  .si-child {
+    padding: 6px 10px 6px 28px; margin: 1px 0 1px 8px;
+    border-left: 2px solid var(--border);
+    background: rgba(255,255,255,0.02);
+    font-size: 12.5px; color: var(--text);
+  }
+  .si-child:hover { background: rgba(88,166,255,0.06); border-left-color: var(--accent); }
+  .si-child.selected { background: rgba(88,166,255,0.12); border-left-color: var(--accent); }
+  .ailogo {
+    display: inline-block; width: 14px; height: 14px;
+    border-radius: 3px; vertical-align: middle;
+    margin-right: 6px; font-size: 9px; line-height: 14px; text-align: center;
+    color: white; font-weight: 700;
+  }
+  .l-claude { background: var(--claude); }
+  .l-gemini { background: var(--gemini); }
+  .l-codex { background: var(--codex); color: #000; }
+  .l-deepseek { background: var(--deepseek); }
+  .l-glm { background: var(--glm); }
+
+  /* 圆桌纯卡片视图 */
+  .mr-cards { display: flex; gap: 10px; flex: 1; }
+  .mr-card {
+    flex: 1; background: #161b22; border: 1px solid var(--border);
+    border-radius: 7px; padding: 10px; display: flex; flex-direction: column;
+    min-height: 260px;
+  }
+  .mr-card-head {
+    font-weight: 600; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border); margin-bottom: 8px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .mr-card-status {
+    font-size: 11px; padding: 1px 6px; border-radius: 8px;
+  }
+  .st-thinking { background: rgba(210,153,34,0.18); color: var(--yellow); }
+  .st-streaming { background: rgba(88,166,255,0.18); color: var(--accent); }
+  .st-done { background: rgba(63,185,80,0.18); color: var(--green); }
+  .st-error { background: rgba(248,81,73,0.18); color: var(--red); }
+  .mr-card-body { flex: 1; font-size: 12px; color: #c9d1d9; line-height: 1.55;
+                  white-space: pre-wrap; overflow-y: auto; }
+  .truncated-hint {
+    color: var(--accent); font-size: 11px; cursor: pointer; margin-top: 6px;
+    border-top: 1px dashed var(--border); padding-top: 6px;
+  }
+  .mr-card-escape {
+    display: flex; gap: 6px; padding-top: 8px; margin-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .esc-btn {
+    flex: 1; padding: 4px 8px; font-size: 11px;
+    background: var(--bg3); border: 1px solid var(--border);
+    color: var(--text); border-radius: 4px; cursor: pointer;
+    text-align: center;
+  }
+  .esc-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .esc-btn.danger:hover { border-color: var(--red); color: var(--red); }
+
+  .mr-input {
+    margin-top: 12px; padding: 8px; background: #161b22;
+    border: 1px solid var(--border); border-radius: 5px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .mr-input-target {
+    background: var(--bg3); padding: 4px 8px; border-radius: 4px;
+    font-size: 11px; color: var(--text2); border: 1px solid var(--border);
+  }
+  .mr-input-text { flex: 1; color: var(--text2); font-style: italic; font-size: 12px; }
+  .mr-send { background: var(--accent); color: white; padding: 4px 10px;
+             border-radius: 4px; font-size: 11px; font-weight: 600; }
+
+  /* Shell view */
+  .shell-view {
+    background: #1e1e1e; border: 1px solid var(--border);
+    border-radius: 5px; padding: 12px; flex: 1;
+    font: 11.5px "Consolas", monospace; color: #d4d4d4;
+    white-space: pre; line-height: 1.5;
+    overflow: auto;
+  }
+  .shell-view .prompt { color: #4ec9b0; }
+  .shell-view .user-input { color: #569cd6; }
+  .shell-view .assistant { color: #ce9178; }
+
+  /* 流程图 */
+  .flow {
+    display: flex; align-items: center; gap: 14px;
+    padding: 16px; background: var(--bg2); border-radius: 6px;
+    border: 1px solid var(--border); flex-wrap: wrap;
+    margin: 10px 0;
+  }
+  .flow-step {
+    background: var(--bg3); padding: 10px 14px; border-radius: 6px;
+    border: 1px solid var(--border); font-size: 12px;
+    min-width: 140px; text-align: center;
+  }
+  .flow-step.entry { border-color: var(--green); color: var(--green); }
+  .flow-step.action { border-color: var(--accent); color: var(--accent); }
+  .flow-step.check { border-color: var(--accent-warm); color: var(--accent-warm); }
+  .flow-step.exit { border-color: var(--claude); color: var(--claude); }
+  .flow-arrow { color: var(--text2); font-size: 18px; }
+
+  .strike { text-decoration: line-through; opacity: 0.5; color: var(--red); }
+  .add { color: var(--green); font-weight: 600; }
+  .keep { color: var(--text2); }
+
+  .compare {
+    display: grid; grid-template-columns: 1fr 30px 1fr; gap: 0;
+    align-items: stretch; margin: 14px 0;
+  }
+  .compare-side {
+    background: var(--bg2); padding: 14px; border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+  .compare-side.before { border-color: rgba(248,81,73,0.4); }
+  .compare-side.after  { border-color: rgba(63,185,80,0.4); }
+  .compare-arrow {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px; color: var(--accent);
+  }
+  .compare-side h4 { margin: 0 0 8px; font-size: 13px;
+                     padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .compare-side.before h4 { color: var(--red); }
+  .compare-side.after h4 { color: var(--green); }
+</style>
+</head>
+<body>
+
+<h1>🎯 圆桌架构重构（阶段 1）：Shell/卡片分离 + 树形侧边栏</h1>
+<div class="meta">
+  日期：2026-05-02 &nbsp;|&nbsp;
+  作者：立花道雪 &nbsp;|&nbsp;
+  Plan：<code>C:\Users\lintian\.claude\plans\crispy-dreaming-canyon.md</code>
+  &nbsp;|&nbsp; 决策：<span class="badge b-blue">Q1=A</span><span class="badge b-blue">Q2=A</span><span class="badge b-blue">Q3=B</span>
+</div>
+
+<h2>一、动机：6 个 issue 的同根</h2>
+<p>当前圆桌界面把"卡片摘要"和"shell PTY 流"塞在同一棵 DOM 树里相互争抢空间。<b>所有视觉/渲染问题都是这个混合架构的衍生</b>：</p>
+<table>
+  <tr><th>用户报告</th><th>本质根因</th><th>本次解法</th></tr>
+  <tr><td>#1 shell 压住底部按钮</td><td>flex 高度计算 + z-index 在混合架构里争抢</td><td>圆桌界面无 shell → 按钮永远在上</td></tr>
+  <tr><td>#2 Gemini shell 渲染怪</td><td>父布局抖动触发 xterm.fit() 失稳</td><td>shell 进入子 session 独立 view，不再被父布局抢空间</td></tr>
+  <tr><td>#5 卡死 3min 后才出逃生</td><td>逃生按钮被沉浸 visibility 控制 + 时延门槛</td><td>逃生按钮常驻 + 新增"进 shell"直接看真相</td></tr>
+  <tr><td>#6 模式切换渲染重复</td><td>普通发言/群策群力切换 → DOM 重建 → xterm 重 fit</td><td>删除"沉浸/调试"双视图开关，模式只剩输入策略</td></tr>
+  <tr><td>#7 摘要截断保尾去头</td><td><code>slice(-2000)</code> 截头保尾</td><td>反转为 <code>slice(0, 2000)</code> + 截断提示</td></tr>
+  <tr><td>#8 普通→群策群力终端被压</td><td>同 #6 根因</td><td>同 #6 解法</td></tr>
+</table>
+<p><b>剩余 #3 #4 与架构正交，分阶段 2 单独修</b>（已在 plan 末尾标注）。</p>
+
+<h2>二、改前 vs 改后</h2>
+<div class="compare">
+  <div class="compare-side before">
+    <h4>❌ 改前（混合架构）</h4>
+    <pre style="margin:0; padding:0; background:transparent; border:0">
+sidebar (平铺)        圆桌界面 (纵向叠层)
+├ 🏢 圆桌 1 [3]       ├ header
+├ session A          ├ <span style="color:#f85149">mr-terminals (xterm × 3)</span>
+└ session B          ├ 卡片区
+                     ├ toolbar (沉浸/调试切换)
+                     └ input-row
+
+切沉浸 → DOM 抖动
+切群策群力 → DOM 抖动</pre>
+  </div>
+  <div class="compare-arrow">→</div>
+  <div class="compare-side after">
+    <h4>✅ 改后（分离架构）</h4>
+    <pre style="margin:0; padding:0; background:transparent; border:0">
+sidebar (树形)        圆桌界面 (纯卡片)
+├ ▼ 🎯 圆桌 1 [3]    ├ header
+│  ├ 🟢 Gemini       ├ 卡片区 (只此一个)
+│  ├ 🟠 Codex        ├ toolbar
+│  └ 🟣 DeepSeek     └ input-row
+├ ▶ 🎯 圆桌 2 [2]
+└ session A          子 session 界面
+                     └ <span style="color:#3fb950">shell-view (xterm)</span>
+
+无任何模式切换，无 DOM 重排</pre>
+  </div>
+</div>
+
+<h2>三、UI Mockup</h2>
+
+<h3>3.1 左侧栏树形（圆桌 + 3 子 session 嵌套）</h3>
+<div class="mockup">
+  <div class="mockup-bar">Hub Sidebar — 树形展开态</div>
+  <div class="hub-shell">
+    <div class="hub-sidebar">
+
+      <!-- 圆桌 1 展开 -->
+      <div class="si si-meeting expanded">
+        <span class="arrow">▶</span> 🎯 通用圆桌 #1 <span class="badge-num">3</span>
+      </div>
+      <div class="si si-child">
+        <span class="ailogo l-gemini">G</span>Gemini · 2.5 Pro
+      </div>
+      <div class="si si-child selected">
+        <span class="ailogo l-codex">X</span>Codex · gpt-5.2
+      </div>
+      <div class="si si-child">
+        <span class="ailogo l-deepseek">D</span>DeepSeek · v4-pro
+      </div>
+
+      <!-- 圆桌 2 折叠 -->
+      <div class="si si-meeting" style="margin-top:8px">
+        <span class="arrow">▶</span> 🎯 通用圆桌 #2 <span class="badge-num">2</span>
+      </div>
+
+      <!-- 普通 session（与圆桌平级） -->
+      <div class="si" style="border-left-color:var(--accent); margin-top:8px;">
+        <span class="ailogo l-claude">C</span>Claude · Opus 4.7
+      </div>
+      <div class="si">
+        <span style="color:var(--text2)">▶_</span> PowerShell · L2_RRM_Sim
+      </div>
+
+    </div>
+    <div class="hub-main" style="color:var(--text2); justify-content:center; align-items:center;">
+      <span style="font-size:13px;">主区按 sidebar 选中切换 →</span>
+    </div>
+  </div>
+</div>
+<p style="font-size:13px; color:var(--text2)">
+  <b>关键交互</b>：点圆桌左侧 ▶ 折叠/展开；点圆桌行 = 进圆桌沉浸卡片视图；<b>点子 session 行 = 进对应 AI 的 shell view</b>（xterm 容器从缓存 attach 到主区）；折叠态 expand 信息通过 <code>localStorage.hubExpandedMeetings</code> 持久化。
+</p>
+
+<h3>3.2 主区视图 A：圆桌纯卡片视图</h3>
+<div class="mockup">
+  <div class="mockup-bar">主区 — 圆桌 #1 卡片视图（永远沉浸，无任何模式切换）</div>
+  <div class="hub-shell">
+    <div class="hub-sidebar" style="opacity:0.4">
+      <div class="si si-meeting expanded" style="border-color:var(--accent);background:rgba(88,166,255,0.1)">
+        <span class="arrow">▶</span> 🎯 通用圆桌 #1 <span class="badge-num">3</span>
+      </div>
+      <div class="si si-child"><span class="ailogo l-gemini">G</span>Gemini</div>
+      <div class="si si-child"><span class="ailogo l-codex">X</span>Codex</div>
+      <div class="si si-child"><span class="ailogo l-deepseek">D</span>DeepSeek</div>
+    </div>
+    <div class="hub-main">
+      <div class="mr-cards">
+        <!-- Gemini 卡片：streaming 中 -->
+        <div class="mr-card">
+          <div class="mr-card-head">
+            <span><span class="ailogo l-gemini">G</span>Gemini · 2.5 Pro</span>
+            <span class="mr-card-status st-streaming">流式中 · 7s</span>
+          </div>
+          <div class="mr-card-body">A 股近一年涨幅 Top10 主要由 AI 算力 / 半导体 / 创新药 板块驱动。具体来看：
+
+1. <b>胜宏科技</b> 涨 580% — AI 服务器 PCB 龙头
+2. <b>新易盛</b> 涨 410% — 800G 光模块出货放量
+3. <b>中际旭创</b> 涨 350% ...</div>
+          <div class="mr-card-escape">
+            <button class="esc-btn">提取</button>
+            <button class="esc-btn danger">跳过</button>
+            <button class="esc-btn">🔧 进 shell</button>
+          </div>
+        </div>
+
+        <!-- Codex 卡片：thinking 等待 -->
+        <div class="mr-card">
+          <div class="mr-card-head">
+            <span><span class="ailogo l-codex">X</span>Codex · gpt-5.2</span>
+            <span class="mr-card-status st-thinking">等待中 · 2min</span>
+          </div>
+          <div class="mr-card-body" style="color:var(--text2)">
+            <i>等待响应中...</i>
+          </div>
+          <div class="mr-card-escape">
+            <button class="esc-btn">提取</button>
+            <button class="esc-btn danger">跳过</button>
+            <button class="esc-btn">🔧 进 shell</button>
+          </div>
+        </div>
+
+        <!-- DeepSeek 卡片：截断示例 -->
+        <div class="mr-card">
+          <div class="mr-card-head">
+            <span><span class="ailogo l-deepseek">D</span>DeepSeek · v4-pro</span>
+            <span class="mr-card-status st-done">完成 · 38s</span>
+          </div>
+          <div class="mr-card-body">从估值与基本面看，A 股 Top10 涨幅主要源于：
+
+(1) 题材轮动：AI 算力 → 算法应用 → 数据要素，资金集中度高
+(2) 业绩验证：胜宏 / 新易盛 单季度营收同比 +200%+
+(3) 流动性宽松：北向资金回流 + 居民理财搬家
+            <span class="truncated-hint">▾ 仅显示前 2000 字 · 进 shell 看完整 →</span>
+          </div>
+          <div class="mr-card-escape">
+            <button class="esc-btn">提取</button>
+            <button class="esc-btn">🔧 进 shell</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="mr-input">
+        <span class="mr-input-target">@all</span>
+        <span class="mr-input-text">输入消息（@all 群发 / @debate 辩论 / @summary @gemini 总结）...</span>
+        <span class="mr-send">▶</span>
+      </div>
+    </div>
+  </div>
+</div>
+<p style="font-size:13px; color:var(--text2)">
+  <b>关键变化</b>：<span class="strike">沉浸/调试切换按钮（删除）</span> · <span class="strike">普通/群策群力 UI 模式切换（删除）</span> · 卡片永远 100% 主区高度 · 逃生按钮 <span class="add">[提取] [跳过] [🔧 进 shell]</span> 进入 waiting 状态立即出现，无 3min 等待 · 截断方向反转 <span class="add">显示前 2000 字</span> + 截断提示链接。
+</p>
+
+<h3>3.3 主区视图 B：子 session shell 视图</h3>
+<div class="mockup">
+  <div class="mockup-bar">主区 — 圆桌 #1 / Codex 子 session（点 sidebar Codex 行触发）</div>
+  <div class="hub-shell">
+    <div class="hub-sidebar" style="opacity:0.4">
+      <div class="si si-meeting expanded">
+        <span class="arrow">▶</span> 🎯 通用圆桌 #1 <span class="badge-num">3</span>
+      </div>
+      <div class="si si-child"><span class="ailogo l-gemini">G</span>Gemini</div>
+      <div class="si si-child selected" style="border-color:var(--accent); background:rgba(88,166,255,0.15)">
+        <span class="ailogo l-codex">X</span>Codex
+      </div>
+      <div class="si si-child"><span class="ailogo l-deepseek">D</span>DeepSeek</div>
+    </div>
+    <div class="hub-main">
+      <div class="shell-view">
+<span class="prompt">codex@gpt-5.2 ~/$</span> <span style="color:var(--text2)">[在等待用户提问中]</span>
+
+<span class="prompt">user&gt;</span> <span class="user-input">A 股近一年涨幅 Top10 是哪些？说明驱动因素</span>
+
+<span class="prompt">codex&gt;</span> <span class="assistant">[thinking]
+正在搜索 A 股市场数据...
+✓ 检索 Wind 终端 API
+✓ 提取近 252 个交易日涨幅
+✓ 按行业分组排序
+
+[output]
+A 股近一年涨幅 Top10：
+1. 胜宏科技 (002245.SZ) +580.3%
+   - 驱动：AI 服务器 PCB 主供货商
+   - 业绩：Q3 营收 +312% YoY
+2. 新易盛 (300502.SZ) +410.7%
+   - 驱动：800G 光模块订单放量
+...</span>
+
+<span class="prompt">codex&gt;</span> <span style="color:var(--text2)">[等待下一轮输入]</span>
+      </div>
+      <div style="margin-top:10px; padding:8px; background:rgba(63,185,80,0.08); border:1px solid var(--green); border-radius:5px; font-size:12px; color:var(--green)">
+        ✓ 已切到子 session shell — 完整 PTY 输出实时同步 · 可直接键入 / Ctrl+C / kill PTY
+      </div>
+    </div>
+  </div>
+</div>
+<p style="font-size:13px; color:var(--text2)">
+  <b>关键变化</b>：xterm 容器从 <code>terminalCache.get(sid).container</code> detach（如已在圆桌挂着也 detach）→ attach 到主区 <code>#shell-view-mount</code> → <code>fitAddon.fit()</code>。同一时刻 xterm 只挂一处，<span class="add">PTY 进程从未中断</span>，ringBuffer 自动续写。
+</p>
+
+<h2>四、xterm 容器单 viewer 切换流程</h2>
+<div class="flow">
+  <div class="flow-step entry">用户点 sidebar 子 session 行</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step check">从 terminalCache.get(sid)<br>取 container</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step action">if container.parentElement<br>则 detach</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step action">attach 到<br>#shell-view-mount</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step exit">rAF + fitAddon.fit()<br>显示 panel</div>
+</div>
+<p style="font-size:13px; color:var(--text2)">
+  反向（离开子 session）：从 <code>#shell-view-mount</code> detach → 不重新 attach（暂存内存）。<b>PTY 进程一直存活，xterm 实例从未销毁</b>，ringBuffer 持续承接输出。下次 attach 时 xterm 自动续写补齐缺失帧。
+</p>
+
+<h2>五、渲染对比：圆桌界面去 shell</h2>
+<div class="grid2">
+  <div class="panel">
+    <div class="panel-title">改前 DOM (index.html L120-138)</div>
+<pre>&lt;div id="meeting-room-panel"&gt;
+  &lt;div id="mr-header"&gt;
+    &lt;button id="mr-immersive-toggle"&gt;
+      <span class="strike">📋 沉浸 / 🔧 调试</span>
+    &lt;/button&gt;
+  &lt;/div&gt;
+  <span class="strike">&lt;div id="mr-terminals"&gt;
+    &lt;div class="mr-slot"&gt; xterm × 3 &lt;/div&gt;
+  &lt;/div&gt;</span>
+  &lt;div id="mr-rt-panel"&gt; 卡片区 &lt;/div&gt;
+  &lt;div id="mr-toolbar"&gt;...&lt;/div&gt;
+  &lt;div id="mr-input-row"&gt;...&lt;/div&gt;
+&lt;/div&gt;</pre>
+  </div>
+  <div class="panel">
+    <div class="panel-title">改后 DOM</div>
+<pre>&lt;div id="meeting-room-panel"&gt;
+  &lt;div id="mr-header"&gt;
+    <span class="add">&lt;!-- 删除 immersive-toggle --&gt;</span>
+  &lt;/div&gt;
+  <span class="add">&lt;!-- mr-terminals 已删除 --&gt;</span>
+  &lt;div id="mr-rt-panel"&gt; 卡片区 &lt;/div&gt;
+  &lt;div id="mr-toolbar"&gt;...&lt;/div&gt;
+  &lt;div id="mr-input-row"&gt;...&lt;/div&gt;
+&lt;/div&gt;
+
+<span class="add">&lt;div id="shell-view-panel" style="display:none"&gt;
+  &lt;div id="shell-view-mount"&gt;&lt;/div&gt;
+&lt;/div&gt;</span></pre>
+  </div>
+</div>
+
+<h2>六、卡片改造细节</h2>
+<div class="grid2">
+  <div class="panel">
+    <div class="panel-title">逃生按钮（meeting-room.js:500-518 + 1321-1323）</div>
+    <p><b>改前</b>：3 分钟才出现"重新拉起"，且只在 errored/absent 状态下可点。</p>
+    <p><b>改后</b>：</p>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px;">
+      <li>状态为 <code>thinking</code>/<code>streaming</code>/<code>soft_alert</code>/<code>idle-no-content</code> 立即显示三按钮</li>
+      <li><span class="add">[提取]</span> · <span class="add">[跳过]</span> · <span class="add">[🔧 进 shell]</span></li>
+      <li>无 3 分钟时延门槛（保留 3min 后<b>警告文案</b>升级，但按钮始终可点）</li>
+      <li>"进 shell" 一键切到 sidebar 对应子 session shell view，看真实 PTY</li>
+    </ul>
+  </div>
+  <div class="panel">
+    <div class="panel-title">摘要截断（meeting-room.js:121-150）</div>
+    <p><b>改前</b>：<code>slice(-2000)</code> 截头保尾，用户看不到回答开头。</p>
+    <p><b>改后</b>：</p>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px;">
+      <li>text 块：<code>slice(0, 2000)</code> <span class="add">截尾保头</span></li>
+      <li>thinking 块：<code>slice(0, 400)</code> 同理</li>
+      <li>截断时追加 <span class="add">"▾ 仅显示前 2000 字 · 进 shell 看完整 →"</span> 提示</li>
+      <li>沉浸/调试已合并为一种视图，不再分支判断</li>
+      <li>提示 click → selectSubSession(sid) 进 shell view 看完整 PTY</li>
+    </ul>
+  </div>
+</div>
+
+<h2>七、文件清单</h2>
+<table>
+  <tr><th>文件</th><th>行号</th><th>动作</th><th>改动概要</th></tr>
+  <tr><td><code>renderer\renderer.js</code></td><td>528-621</td><td class="add">改写</td><td>renderSessionList tree walk + expand state + 子 session click</td></tr>
+  <tr><td><code>renderer\renderer.js</code></td><td>919+</td><td class="add">新增</td><td>mountTerminalToMainShell / unmountFromMainShell / showMainView</td></tr>
+  <tr><td><code>renderer\meeting-room.js</code></td><td>1758-2054</td><td class="strike" style="color:var(--red)">删除</td><td>renderTerminals / mountSubTerminal / openSubTerminal / fitSubTerminal / unmountSubTerminal / subTerminals state</td></tr>
+  <tr><td><code>renderer\meeting-room.js</code></td><td>1432-1485</td><td class="strike" style="color:var(--red)">删除</td><td>_toggleMeetingMode / _applyMeetingMode / _immersiveByMeeting</td></tr>
+  <tr><td><code>renderer\meeting-room.js</code></td><td>121-150</td><td class="add">改写</td><td>截断方向反转 slice(0,2000) + 追加截断提示</td></tr>
+  <tr><td><code>renderer\meeting-room.js</code></td><td>500-518</td><td class="add">改写</td><td>逃生按钮常驻条件 + 新增"进 shell"按钮</td></tr>
+  <tr><td><code>renderer\meeting-room.js</code></td><td>1321-1323</td><td class="strike" style="color:var(--red)">删除</td><td>3min waitingSec 时延门槛</td></tr>
+  <tr><td><code>renderer\index.html</code></td><td>120-138</td><td class="add">改写</td><td>删 mr-terminals + immersive-toggle，加 shell-view-panel</td></tr>
+  <tr><td><code>renderer\meeting-room.css</code></td><td>128-156, 1682-1710</td><td class="strike" style="color:var(--red)">删除</td><td>沉浸模式 CSS + mr-terminals 布局</td></tr>
+  <tr><td><code>renderer\styles.css</code></td><td>475-666</td><td class="add">新增</td><td>.session-item.meeting / .child / .expand-arrow / .ai-logo-mini</td></tr>
+  <tr><td><code>renderer\assets\ai-logos\</code></td><td>—</td><td class="add">新建</td><td>5 家 AI 16x16 SVG（claude/gemini/codex/deepseek/glm）</td></tr>
+  <tr><td><code>main.js</code></td><td>save-immersive-mode</td><td class="keep">改 no-op</td><td>避免老 state 报错，加 deprecation 注释</td></tr>
+  <tr><td><code>package.json</code></td><td>version</td><td class="add">+0.1</td><td>同步版本号</td></tr>
+  <tr><td><code>tests\_e2e-arch-refactor-verify.js</code></td><td>—</td><td class="add">新建</td><td>E2E 12 步流程</td></tr>
+</table>
+
+<h2>八、测试矩阵（CDP 真测，禁 mock）</h2>
+<table>
+  <tr><th>#</th><th>测试场景</th><th>断言</th><th>截图</th></tr>
+  <tr><td>1</td><td>启动隔离 Hub</td><td>初始 sidebar 出现</td><td>✓</td></tr>
+  <tr><td>2</td><td>创建圆桌 (gemini+codex+deepseek)</td><td>sidebar 出现 1 圆桌 + 3 子 session 树形 + 缩进</td><td>✓</td></tr>
+  <tr><td>3</td><td>圆桌 expand-arrow 折叠</td><td>子 session 隐藏</td><td>✓</td></tr>
+  <tr><td>4</td><td>再展开</td><td>子 session 重新出现</td><td>✓</td></tr>
+  <tr><td>5</td><td>点子 session（gemini）</td><td>主区切到 shell view，xterm container attach 成功</td><td>✓</td></tr>
+  <tr><td>6</td><td>切回圆桌</td><td>主区切回 meeting-room，xterm 从 shell view detach</td><td>✓</td></tr>
+  <tr><td>7</td><td>圆桌 DOM assert</td><td><b>不存在</b> mr-terminals 元素</td><td>✓</td></tr>
+  <tr><td>8</td><td>圆桌发言"@all 你好"</td><td>三家卡片渲染回答</td><td>✓</td></tr>
+  <tr><td>9</td><td>卡片"等待中"</td><td>[提取/跳过/进 shell] 三按钮立即显示，无 3min 等待</td><td>✓</td></tr>
+  <tr><td>10</td><td>点"🔧 进 shell"</td><td>切到子 session shell view，显示真实 PTY</td><td>✓</td></tr>
+  <tr><td>11</td><td>超 2000 字回答</td><td>显示前 2000 字 + "进 shell 看完整"提示</td><td>✓</td></tr>
+  <tr><td>12</td><td>截断提示 click</td><td>切到子 session shell view</td><td>✓</td></tr>
+</table>
+<p style="font-size:13px; color:var(--text2)">
+  截图归档：<code>C:\Users\lintian\claude-session-hub\tests\screenshots\arch-refactor\</code><br>
+  隔离 Hub：<code>CLAUDE_HUB_DATA_DIR=C:\temp\hub-arch-refactor</code><br>
+  AI：<b>Gemini + Codex + DeepSeek</b>，禁动用户 Claude session
+</p>
+
+<h2>九、风险与回滚</h2>
+<table>
+  <tr><th>#</th><th>风险</th><th>影响</th><th>缓解</th></tr>
+  <tr><td>R1</td><td>xterm 容器 detach/attach 闪烁</td><td>中</td><td>rAF + opacity transition；attach 后立即 fitAddon.fit()</td></tr>
+  <tr><td>R2</td><td>PTY 输出在 detach 期堆积</td><td>低</td><td>xterm 内部 buffer + ringBuffer 已支撑，attach 后自动渲染</td></tr>
+  <tr><td>R3</td><td>sidebar expand state localStorage race</td><td>低</td><td>同步写 localStorage，不引入 IPC</td></tr>
+  <tr><td>R4</td><td>老 state.json 含 immersiveByMeeting 字段</td><td>低</td><td>保留字段读但忽略写，no-op handler</td></tr>
+  <tr><td>R5</td><td>老用户找不到"调试模式"</td><td>中</td><td>子 session shell 等价 = 直接看真实 PTY，比沉浸/调试更鲁棒</td></tr>
+  <tr><td>R6</td><td>圆桌内 codex/gemini resume 路径未触动</td><td>中</td><td>E2E Task 8 测圆桌发言流程，确认未触动 sub-session resume</td></tr>
+</table>
+
+<h2>十、阶段 2 预告（不在本次范围）</h2>
+<ul>
+  <li><b>#3</b> <code>meeting-room.js:38</code> <code>summaryRe</code> 正则补 <code>deepseek|glm</code>，summary 快捷菜单（meeting-room.js:2365-2371）补 deepseek/glm 选项</li>
+  <li><b>#4</b> <code>openMeeting</code> 时主动 invoke <code>cli-ready-status</code> 一次（不等 1s 轮询首轮），并修复 <code>roundtableReady</code> 快路径在子 session 已 ready 但用户未问过时未置真的 bug</li>
+</ul>
+<p style="font-size:13px; color:var(--text2)">阶段 2 预计 1 工作日，与本次解耦。</p>
+
+<h2>十一、估时</h2>
+<table>
+  <tr><th>Task</th><th>名称</th><th>预估</th></tr>
+  <tr><td>0</td><td>AI logo 资源准备</td><td>0.3 天</td></tr>
+  <tr><td>1</td><td>sidebar 树形改造</td><td>1.0 天</td></tr>
+  <tr><td>2</td><td>主区 shell view 容器 + 复用机制</td><td>1.0 天</td></tr>
+  <tr><td>3</td><td>圆桌界面去 shell</td><td>0.5 天</td></tr>
+  <tr><td>4</td><td>删除沉浸/调试模式切换</td><td>0.3 天</td></tr>
+  <tr><td>5</td><td>逃生按钮常驻 + 进 shell 按钮</td><td>0.5 天</td></tr>
+  <tr><td>6</td><td>截断方向反转</td><td>0.3 天</td></tr>
+  <tr><td>7</td><td>版本号同步</td><td>0.1 天</td></tr>
+  <tr><td>8</td><td>E2E 验证（CDP 真测）</td><td>0.7 天</td></tr>
+  <tr><td>9</td><td>post-refactor-verify + 四路审查</td><td>0.5 天</td></tr>
+  <tr><td colspan="2" style="text-align:right; font-weight:600">合计</td><td><b>≈ 5.2 工作日</b></td></tr>
+</table>
+
+<div style="margin-top:32px; padding:14px 18px; background:rgba(88,166,255,0.08); border:1px solid var(--accent); border-radius:6px;">
+  <b>📌 等待用户最终决策</b>：以上方案是否最终拍板？拍板后立即按 Task 0 → 9 顺序执行，每完成一个 Task 报告进度。
+</div>
+
+</body>
+</html>
