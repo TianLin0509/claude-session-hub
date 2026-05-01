@@ -232,10 +232,10 @@ class RoundtableOrchestrator {
   // byStatus: { sid: 'completed' | 'manual_extracted' | 'absent' | 'errored' | ... }
   //   新增（Stage 2 容错升级）。null/undefined 表示老格式 — buildDebate/Summary 会按
   //   "全部 completed" 处理。下游 prompt builder 用此字段过滤 absent/errored 参与者。
-  // stats: { thinkSecByKind: {claude/gemini/codex: number}, tokensByKind: {...},
-  //         thinkSecBy: {sid: number}, tokensBy: {sid: number} }
-  //   新增（Card redesign 2026-05-01）。null/undefined 时跳过累加（向后兼容）。
-  //   thinkSecBy/tokensBy 写入 record，state.aiStats[kind] 累加 totalThinkSec/totalTokens。
+  // stats: { thinkSecBy: {sid: number}, tokensBy: {sid: number} }
+  //   meeting-create-modal（2026-05-01）：纯 sid 索引（去掉了老的 thinkSecByKind/tokensByKind）。
+  //   null/undefined 时跳过累加（向后兼容）。state.aiStats[<sid>] 累加 totalThinkSec/totalTokens。
+  //   sid → kind/model 元数据由 setMeetingContext(sidToInfoMap) 注入，迁移老格式同此入口。
   completeTurn(turnNum, mode, userInput, byMap, meta = {}, byStatus = null, stats = null) {
     const record = {
       n: turnNum,

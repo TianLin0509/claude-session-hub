@@ -672,10 +672,10 @@
     const history = _renderRtHistory(state, meeting);
     const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
     const stepper = _renderTurnStepper(state.turns, mode);
-    // FIX-E（2026-05-01）：cmdBar 推进按钮判定要按"期望家集合"，不是 partialBy 自身的 keys
-    const expectedSids = ['claude', 'gemini', 'codex']
-      .map(k => subs[k] && subs[k].sid)
-      .filter(Boolean);
+    // FIX-E（2026-05-01）：cmdBar 推进按钮判定要按"期望家集合"，不是 partialBy 自身的 keys。
+    // meeting-create-modal（2026-05-01）：期望家 = meeting.subSessions（按 slot 顺序），
+    //   不再硬编码 ['claude','gemini','codex']——多 claude / DeepSeek+GLM 混搭的圆桌也能正确判完成。
+    const expectedSids = Array.isArray(meeting.subSessions) ? meeting.subSessions.slice() : [];
     const cmdBar = _renderCmdBar(state.turns, mode, partialBy, expectedSids);
     const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
     // Stage 2 容错升级：软提醒 banner 容器（按需显示，详见 'roundtable-soft-alert' IPC 监听）
