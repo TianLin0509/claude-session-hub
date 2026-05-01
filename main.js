@@ -1992,6 +1992,7 @@ ipcMain.handle('close-session', (_e, sessionId) => {
   // No explicit sendToRenderer here — closeSession kills the PTY, which fires
   // the onExit callback wired up above (line 87) and emits session-closed for
   // us. Emitting twice would spam the renderer for no benefit.
+  _ptyLastResizeBySid.delete(sessionId);  // P0-4 cache cleanup
   sessionManager.closeSession(sessionId);
 });
 
@@ -1999,7 +2000,18 @@ ipcMain.on('terminal-input', (_e, { sessionId, data }) => {
   sessionManager.writeToSession(sessionId, data);
 });
 
+// SIGWINCH 去重缓存（xterm-render-stabilize P0-4, 2026-05-01）：
+//   渲染端 robustFit 已经做了一层 cols/rows 不变就不发的去重；这里是主进程
+//   第二层防护，覆盖任何漏过的重复 resize（例如同一帧多个调用方触发）。
+//   CLI TUI（Claude/Gemini/Codex）对 SIGWINCH 高度敏感，错值或重复值都会
+//   触发整屏重绘 → 导致用户看到"重复行 / 字符叠加"。
+const _ptyLastResizeBySid = new Map();  // sid → { cols, rows }
 ipcMain.on('terminal-resize', (_e, { sessionId, cols, rows }) => {
+  if (typeof sessionId !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') return;
+  if (cols <= 0 || rows <= 0) return;  // 非法尺寸直接丢弃, 避免 fit 错值打到 PTY
+  const last = _ptyLastResizeBySid.get(sessionId);
+  if (last && last.cols === cols && last.rows === rows) return;  // 同尺寸去重
+  _ptyLastResizeBySid.set(sessionId, { cols, rows });
   sessionManager.resizeSession(sessionId, cols, rows);
 });
 
@@ -2911,6 +2923,12 @@ app.whenReady().then(async () => {
         ws: feishuConfig.ws !== false,
         defaultCwd: feishuConfig.defaultCwd || path.join(_home, 'claude-session-hub'),
         sendMessage: feishuSender,
+        onSessionCreated: (session) => {
+          registerSessionForTap(session);
+          sendToRenderer('session-created', { session });
+        },
+        getCleanOutput: (sessionId) => transcriptTap.getLastAssistantText(sessionId),
+        transcriptTap,
       } : null,
     });
     console.log(`[mobile] listening on :${mobileSrv.port}`);

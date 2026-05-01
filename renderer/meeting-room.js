@@ -1992,7 +1992,12 @@
       const cached = getOrCreateTerminal(sessionId);
       if (cached && cached.container) {
         cached.container.style.display = 'block';
-        termContainer.appendChild(cached.container);
+        // 幂等防护：cached.container 是单例（renderer.js:708 cache）, 反复 appendChild
+        //   会让 DOM 自动 detach + reattach, 期间 Canvas/WebGL 上下文可能丢帧。
+        //   只在父节点变更时才挂载, layout 切换 / 主驾切换的高频重渲不再抖动。
+        if (cached.container.parentNode !== termContainer) {
+          termContainer.appendChild(cached.container);
+        }
         subTerminals[sessionId] = cached;
       }
     }
@@ -2004,17 +2009,11 @@
     return slot;
   }
 
+  // fitSubTerminal 现在是 robustFit 的薄壳：rAF-loop 等容器有 layout + SIGWINCH 去重。
+  // 调用方（mountSubTerminal）经常在 appendChild 同帧调用，没有 layout 信息，
+  // 不能再像旧版那样立即 fit 拿默认 80x24 / 0x0 错值发 PTY。
   function fitSubTerminal(sessionId) {
-    const cached = subTerminals[sessionId];
-    if (!cached || !cached.fitAddon) return;
-    try {
-      cached.fitAddon.fit();
-      ipcRenderer.send('terminal-resize', {
-        sessionId,
-        cols: cached.terminal.cols,
-        rows: cached.terminal.rows,
-      });
-    } catch (_) {}
+    robustFit(sessionId);
   }
 
   function mountSubTerminal(sessionId) {
@@ -2027,7 +2026,10 @@
     const cached = getOrCreateTerminal(sessionId);
     if (cached && cached.container) {
       cached.container.style.display = 'block';
-      termContainer.appendChild(cached.container);
+      // 幂等：cached.container 是单例, 已在当前 termContainer 下就别再挂一次（避免 canvas 抖动）
+      if (cached.container.parentNode !== termContainer) {
+        termContainer.appendChild(cached.container);
+      }
       subTerminals[sessionId] = cached;
       openSubTerminal(sessionId);
       requestAnimationFrame(() => fitSubTerminal(sessionId));
@@ -2054,16 +2056,35 @@
     robustFit(focused);
   }
 
-  // rAF-loop until container has real width, then fit + resize PTY
+  // rAF-loop until container has real width AND height, then fit + resize PTY.
+  // 旧实现的 `cached.container || ... ? null : ...` 因 ||/?: 优先级 bug 让 el 永远是 null，
+  // offsetWidth 门禁形同虚设，fit 在容器无 layout 时执行 → 错 cols/rows → SIGWINCH 风暴
+  // → CLI 错位重绘（用户看到的"重复渲染/字符叠加"老 bug）。
+  // 同时加 SIGWINCH 去重：cols/rows 没变就不再发 terminal-resize（第二层防护，主进程也再去重一次）。
   function robustFit(sessionId) {
     const _refit = () => {
       const cached = subTerminals[sessionId];
       if (!cached || !cached.fitAddon) return;
-      const el = cached.container || cached.fitAddon._addonDispose ? null : cached.terminal.element;
-      if (el && !el.offsetWidth) { requestAnimationFrame(_refit); return; }
+      const el = cached.container || cached.terminal.element;
+      if (!el || !el.offsetWidth || !el.offsetHeight) {
+        requestAnimationFrame(_refit);
+        return;
+      }
       try {
+        const beforeCols = cached.terminal.cols;
+        const beforeRows = cached.terminal.rows;
         cached.fitAddon.fit();
-        ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
+        const afterCols = cached.terminal.cols;
+        const afterRows = cached.terminal.rows;
+        if (afterCols !== beforeCols || afterRows !== beforeRows) {
+          ipcRenderer.send('terminal-resize', { sessionId, cols: afterCols, rows: afterRows });
+        }
+        // Canvas/WebGL 后端在 display:none→block 或 reparent 后, 浏览器合成层
+        // 可能保留旧帧或缺帧；不强制 refresh 会留下"残影 / 字符叠加"。
+        // 排在 fit 之后的下一帧确保 cols/rows 已稳定。
+        requestAnimationFrame(() => {
+          try { cached.terminal.refresh(0, cached.terminal.rows - 1); } catch (_) {}
+        });
       } catch (_) {}
     };
     requestAnimationFrame(_refit);
