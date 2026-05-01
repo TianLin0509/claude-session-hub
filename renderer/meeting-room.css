@@ -1438,6 +1438,19 @@
   margin-top: 4px;
   border-top: 1px dashed rgba(255, 255, 255, 0.06);
 }
+/* FIX-C（2026-05-01）：errored / absent 终态用红色描边的工具栏，与思考态区分 */
+.mr-ft-escape-bar-terminal {
+  border-top: 1px solid rgba(255, 100, 100, 0.25);
+  background: rgba(255, 80, 80, 0.05);
+}
+.mr-ft-escape-bar-terminal .mr-ft-escape-btn {
+  border-color: rgba(255, 100, 100, 0.35);
+  color: #ffb4b4;
+}
+.mr-ft-escape-bar-terminal .mr-ft-escape-btn:hover {
+  background: rgba(255, 100, 100, 0.12);
+  border-color: rgba(255, 130, 130, 0.5);
+}
 .mr-ft-escape-btn {
   flex: 1;
   padding: 4px 6px;

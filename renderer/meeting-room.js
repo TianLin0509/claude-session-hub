@@ -227,9 +227,24 @@
           status = 'thinking';
           anyThinking = true;
         }
-      } else if (lastTurn && lastTurn.by[sub.sid]) {
-        status = 'completed';
-        preview = lastTurn.by[sub.sid];
+      } else if (lastTurn) {
+        // FIX-A（2026-05-01）：已结束轮的卡片状态必须读 byStatus，不能只看 by[sid] 文本。
+        //   旧逻辑 if (lastTurn.by[sub.sid]) → errored / absent 因 by[sid]=='' 直接 fall through 到
+        //   默认 'idle'，卡片显"待命"无角标无逃生按钮（用户场景：Codex CLI 自我更新后卡死 30min）。
+        //   现按 byStatus 区分四种终态：completed / manual_extracted / errored / absent。
+        const lastStatus = lastTurn.byStatus ? lastTurn.byStatus[sub.sid] : null;
+        if (lastStatus === 'errored') {
+          status = 'errored';
+        } else if (lastStatus === 'absent') {
+          status = 'absent';
+        } else if (lastStatus === 'manual_extracted') {
+          status = 'manual_extracted';
+          preview = lastTurn.by[sub.sid] || '';
+        } else if (lastTurn.by[sub.sid]) {
+          status = 'completed';
+          preview = lastTurn.by[sub.sid];
+        }
+        // 否则保持 'idle'（首次未参与 / 老格式无 byStatus + 无 by 文本）
       }
 
       const isActive = sub.sid === focused;
@@ -337,12 +352,23 @@
 
     // Stage 2 容错升级：逃生工具栏（条件渲染，嵌入 mr-ft-bottom 内）
     const isWaitingState = statusCls === 'thinking' || statusCls === 'streaming' || statusCls === 'soft_alert';
-    const escapeBar = isWaitingState ? `
+    // FIX-C（2026-05-01）：errored/absent 终态也显示一个迷你工具栏，
+    //   让用户能"重新拉起"该家——尤其 Codex CLI 自我更新退出后，用户需要这个出口。
+    const isTerminalErrorState = statusCls === 'errored' || statusCls === 'absent';
+    let escapeBar = '';
+    if (isWaitingState) {
+      escapeBar = `
       <div class="mr-ft-escape-bar">
         <button class="mr-ft-escape-btn" data-rt-escape="extract" data-rt-sid="${sid}" data-rt-kind="${kind}" title="从 transcript 直读拼接（Gemini 卡死时绕过完成检测）">一键提取</button>
         <button class="mr-ft-escape-btn" data-rt-escape="skip" data-rt-sid="${sid}" data-rt-kind="${kind}" title="本轮跳过这家，下游 prompt 不引用">跳过</button>
         <button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新发送 prompt（P0.5 实现中，暂未启用）" disabled>重发</button>
-      </div>` : '';
+      </div>`;
+    } else if (isTerminalErrorState) {
+      escapeBar = `
+      <div class="mr-ft-escape-bar mr-ft-escape-bar-terminal">
+        <button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新拉起该家：重发本轮 prompt（FIX-F 真实生效）">🔄 重新拉起这家</button>
+      </div>`;
+    }
 
     // Card redesign：row3 ⏱ 时间 + row4 🪙 tokens
     const timeoutCls = statusCls === 'timeout' ? ' timeout' : '';
@@ -659,7 +685,12 @@
             if (!r || !r.ok) console.warn(`[rt-escape] skip failed: ${r?.reason}`);
           } else if (action === 'resend') {
             const r = await ipcRenderer.invoke('roundtable-resend-participant', { meetingId: meeting.id, sid });
-            alert(r?.detail || '重发功能尚未实现（P0.5 计划）');
+            if (r && r.ok) {
+              console.log(`[rt-escape] resend ok: ${kind}`);
+            } else {
+              // FIX-C 阶段：FIX-F 还没落地前，重发 IPC 是 stub，给用户清晰指引
+              alert(`暂未支持单家"重新拉起"。\n\n建议操作：\n1. 在该卡片底部按"跳过"，下游 prompt 不会引用此家。\n2. 或者发起新一轮（直接提问 / @debate），系统会自动重启卡死的 CLI。\n\n（错误信息：${r?.reason || 'unknown'}）`);
+            }
           }
         } catch (err) {
           console.error(`[rt-escape] ${action} threw:`, err);
@@ -962,13 +993,17 @@
     }
     const banner = document.getElementById('mr-rt-soft-alert-banner');
     if (banner) {
-      const levelLabel = level === 't2' ? '180 秒' : '90 秒';
+      const levelLabel = level === 't2' ? '3 分钟' : '90 秒';
       const urgency = level === 't2' ? 'urgent' : '';
+      // FIX-B（2026-05-01）：T2（3min）文案明确指引"用卡片按钮绕过"，不再让用户傻等
+      const hint = level === 't2'
+        ? '⚠ 已等待 3 分钟仍无响应，大概率卡死。请用卡片上的「一键提取 / 跳过 / 重新拉起」按钮处理这家。'
+        : '可能是慢响应 / 限流 / 卡死。可用卡片上的"一键提取 / 跳过"绕过，或继续等待自然完成。';
       banner.className = `mr-rt-soft-alert-banner ${urgency}`;
       banner.innerHTML = `
         <div class="mr-rt-soft-alert-msg">
-          <strong>${escapeHtml(label || sid.slice(0, 8))}</strong> 已等待 <strong>${levelLabel}</strong>，可能是慢响应/限流/卡死。
-          <span class="mr-rt-soft-alert-hint">用卡片上的"一键提取/跳过"绕过完成检测，或继续等待自然完成。</span>
+          <strong>${escapeHtml(label || sid.slice(0, 8))}</strong> 已等待 <strong>${levelLabel}</strong>。
+          <span class="mr-rt-soft-alert-hint">${hint}</span>
         </div>
         <button class="mr-rt-soft-alert-close" data-rt-banner-close="1" title="关闭提示">×</button>
       `;

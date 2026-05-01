@@ -680,9 +680,12 @@ function _rtExtractStreamingText(sid) {
 //   - 新逻辑：watcher 状态机管理（completed/errored/manual_extracted/absent），
 //            T1=90s/T2=180s 软提醒 banner（不阻塞），用户可点 UI 触发点退出。
 //
-// **过渡期兜底**：UI 逃生工具栏（commit 3）落地前，临时 30min 硬 timeout 防止 turn 永远卡死。
-//   commit 3 完成后，软提醒 + 用户操作能 100% 触发退出，可移除此兜底或调更长。
-const RT_TRANSITIONAL_HARD_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
+// **过渡期兜底**（FIX-B 2026-05-01 缩短）：原 30min 太长——Codex 自动更新 / Gemini OAuth 退出
+//   等 CLI 自我退出场景，PTY 宿主 shell 还活，markProcessExit 不会被触发，watcher 唯一兜底就是
+//   这个 timeout。30min 期间用户面板按钮锁死、卡片显错状态。
+//   缩到 5min 覆盖 Opus 极慢推理上限，让"真卡死"场景能更快释放。彻底治本靠 FIX-D 的
+//   shell prompt 心跳检测（10-15s 内识别 CLI 自我退出）。
+const RT_TRANSITIONAL_HARD_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
 
 // 模块级活跃 watcher 注册表：让 IPC handler 能找到当前 turn 中等待的 watcher
 //   key = hubSessionId（每家 sid 同时最多一个 watcher）；value = watcher
@@ -1799,6 +1802,79 @@ function loadUsageCache() {
 }
 
 ipcMain.handle('get-usage-cache', () => loadUsageCache());
+
+// --- Hub Config IPC handlers ---
+// 配置 UI 和首次启动向导使用
+const { getConfig, saveConfig, checkMissingConfig, clearConfigCache, getConfigPath, DEFAULTS } = require('./core/hub-config.js');
+
+ipcMain.handle('get-hub-config', () => {
+  const config = getConfig();
+  return {
+    proxy: config.proxy,
+    deepseekApiKey: config.deepseekApiKey ? '***' + config.deepseekApiKey.slice(-4) : '',
+    deepseekApiKeySet: !!config.deepseekApiKey,
+    glmApiKey: config.glmApiKey ? '***' + config.glmApiKey.slice(-4) : '',
+    glmApiKeySet: !!config.glmApiKey,
+    glmBaseUrl: config.glmBaseUrl,
+    glmModel: config.glmModel,
+  };
+});
+
+ipcMain.handle('get-hub-config-raw', () => {
+  // 返回完整配置（用于编辑），但 API key 仍然脱敏
+  const config = getConfig();
+  return {
+    proxy: config.proxy,
+    deepseekApiKey: config.deepseekApiKey || '',
+    glmApiKey: config.glmApiKey || '',
+    glmBaseUrl: config.glmBaseUrl,
+    glmModel: config.glmModel,
+  };
+});
+
+ipcMain.handle('save-hub-config', (_e, newConfig) => {
+  // 读取现有 config.json（如果存在），合并更新
+  const configPath = getConfigPath();
+  let existing = {};
+  try {
+    const raw = fs.readFileSync(configPath, 'utf8');
+    existing = JSON.parse(raw);
+  } catch {}
+
+  // 合并配置
+  const merged = {
+    ...existing,
+    proxy: { http: newConfig.proxy || DEFAULTS.proxy },
+    providers: {
+      ...(existing.providers || {}),
+      deepseek: {
+        ...(existing.providers?.deepseek || {}),
+        api_key: newConfig.deepseekApiKey || undefined,
+      },
+      glm: {
+        ...(existing.providers?.glm || {}),
+        api_key: newConfig.glmApiKey || undefined,
+        base_url: newConfig.glmBaseUrl || DEFAULTS.glm_base_url,
+        model: newConfig.glmModel || DEFAULTS.glm_model,
+      },
+    },
+  };
+
+  // 清除空值
+  if (!merged.providers.deepseek.api_key) delete merged.providers.deepseek.api_key;
+  if (!merged.providers.glm.api_key) delete merged.providers.glm.api_key;
+
+  saveConfig(merged);
+  return { success: true };
+});
+
+ipcMain.handle('check-config-missing', () => {
+  return checkMissingConfig();
+});
+
+ipcMain.handle('get-config-path', () => {
+  return getConfigPath();
+});
 
 // --- Gemini/Codex ring-buffer usage scanner ---
 // Periodically scans agent sessions' ring buffers for token/model patterns
