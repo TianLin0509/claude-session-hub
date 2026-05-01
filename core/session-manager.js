@@ -72,6 +72,25 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
   }
 }
 
+function dismissCodexUpdatePrompt(homeDir = process.env.USERPROFILE || process.env.HOME || os.homedir()) {
+  const versionPath = path.join(homeDir, '.codex', 'version.json');
+  try {
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(versionPath, 'utf8')); } catch {}
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return false;
+    if (!state.latest_version || state.dismissed_version === state.latest_version) return false;
+
+    state.dismissed_version = state.latest_version;
+    fs.mkdirSync(path.dirname(versionPath), { recursive: true });
+    fs.writeFileSync(versionPath, JSON.stringify(state), 'utf8');
+    console.log(`[hub] dismissed Codex update prompt for ${state.latest_version}`);
+    return true;
+  } catch (err) {
+    console.warn('[hub] failed to dismiss Codex update prompt:', err.message);
+    return false;
+  }
+}
+
 class SessionManager extends EventEmitter {
   sessions = new Map();
   focusedSessionId = null;
@@ -372,6 +391,7 @@ class SessionManager extends EventEmitter {
     }
 
     if (isCodex) {
+      dismissCodexUpdatePrompt();
       let cmd;
       if (opts.useResume && opts.codexSid) {
         // Level 1: precise resume by sid
@@ -570,6 +590,7 @@ class SessionManager extends EventEmitter {
     const kind = s.info && s.info.kind;
     let cmd;
     if (kind === 'codex') {
+      dismissCodexUpdatePrompt();
       cmd = ' codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.5\r\n';
     } else if (kind === 'gemini') {
       cmd = ' gemini --approval-mode yolo --model gemini-2.5-flash\r\n';
@@ -739,4 +760,4 @@ async function readTranscriptTail(kind, sourcePath, n = 10) {
   }
 }
 
-module.exports = { SessionManager, readTranscriptTail };
+module.exports = { SessionManager, readTranscriptTail, dismissCodexUpdatePrompt };
