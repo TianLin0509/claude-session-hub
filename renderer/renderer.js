@@ -295,7 +295,6 @@ const terminalCache = new Map();
 
 // --- DOM refs ---
 const sessionListEl = document.getElementById('session-list');
-const sessionCountEl = document.getElementById('session-count');
 const terminalPanelEl = document.getElementById('terminal-panel');
 const emptyStateEl = document.getElementById('empty-state');
 const btnNew = document.getElementById('btn-new');
@@ -554,11 +553,6 @@ function renderSessionList() {
 
   // Hide any leftover legacy background PTY sessions from the removed room path.
   const visible = sorted.filter(s => !s.title || !s.title.startsWith('[Team] '));
-  const totalCount = regularSessions.length + meetingItems.length;
-
-  sessionCountEl.textContent = searchQuery
-    ? `${visible.length}/${totalCount}`
-    : `${totalCount} open`;
 
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list
@@ -1599,41 +1593,16 @@ function closeResumeModal() {
 }
 
 // --- Create Meeting (mode-driven, no modal) ---
-// +号菜单的会议入口直接调用 createMeetingByMode
-// 不弹对话框、不问成员、不问公约——成员默认 Claude+Gemini+Codex 三家全开,公约套预设。
-async function createMeetingByMode(mode) {
-  let meeting;
-  try {
-    meeting = await ipcRenderer.invoke('create-meeting', { mode: mode || 'general' });
-  } catch (e) {
-    console.error('[create-meeting] failed:', e.message);
-    return;
+// meeting-create-modal（2026-05-01）：+号菜单的圆桌入口现在弹 Modal 让用户选 AI/model，
+//   不再"立即创建 Claude+Gemini+Codex"。Modal 在 renderer/meeting-create-modal.js，
+//   提交后调 create-meeting IPC（带 slots），main.js 内部循环 add-meeting-sub +
+//   持久化 slotSpecs，返回完整 meeting 对象，Modal 再调 selectMeeting(meeting.id)。
+function createMeetingByMode(mode) {
+  if (typeof window.openMeetingCreateModal === 'function') {
+    window.openMeetingCreateModal(mode || 'general');
+  } else {
+    console.error('[createMeetingByMode] meeting-create-modal not loaded');
   }
-  if (!meeting) return;
-
-  // 通过 switch-scene 写 prompt/covenant 文件
-  try {
-    const res = await ipcRenderer.invoke('switch-scene', {
-      meetingId: meeting.id,
-      scene: meeting.scene || 'general',
-    });
-    if (res && res.meeting) Object.assign(meeting, res.meeting);
-  } catch (e) {
-    console.error('[create-meeting] switch-scene failed:', e.message);
-  }
-
-  meetings[meeting.id] = meeting;
-  for (const kind of ['claude', 'gemini', 'codex']) {
-    try {
-      const result = await ipcRenderer.invoke('add-meeting-sub', { meetingId: meeting.id, kind });
-      if (result && result.meeting) meetings[meeting.id] = result.meeting;
-    } catch (e) {
-      console.error(`[create-meeting] add-sub ${kind} failed:`, e.message);
-    }
-  }
-  selectMeeting(meeting.id);
-  renderSessionList();
-  schedulePersist();
 }
 
 function renderResumeList(items) {
@@ -3312,22 +3281,41 @@ function applyTheme(name) {
 (function initThemePicker() {
   const saved = localStorage.getItem('claude-hub-theme') || 'default';
   applyTheme(saved);
-  const btn = document.getElementById('btn-theme');
-  const popup = document.getElementById('theme-picker-popup');
-  if (!btn || !popup) return;
-  btn.addEventListener('click', (e) => {
+  // 主题切换通过"选项"菜单触发
+  const optionsBtn = document.getElementById('btn-options');
+  const optionsMenu = document.getElementById('options-menu');
+  const themeItem = document.getElementById('options-theme');
+  const themePopup = document.getElementById('theme-picker-popup');
+  if (!optionsBtn || !optionsMenu) return;
+
+  // 选项菜单展开/收起
+  optionsBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    popup.style.display = popup.style.display === 'none' ? 'block' : 'none';
+    optionsMenu.style.display = optionsMenu.style.display === 'none' ? 'block' : 'none';
   });
-  for (const opt of popup.querySelectorAll('.theme-option')) {
-    opt.addEventListener('click', () => {
-      applyTheme(opt.dataset.theme);
-      popup.style.display = 'none';
+  document.addEventListener('mousedown', (e) => {
+    if (!optionsBtn.contains(e.target) && !optionsMenu.contains(e.target)) {
+      optionsMenu.style.display = 'none';
+    }
+  });
+
+  // 主题选项点击 -> 显示主题选择弹窗
+  if (themeItem && themePopup) {
+    themeItem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      themePopup.style.display = 'block';
+      optionsMenu.style.display = 'none';
+    });
+    for (const opt of themePopup.querySelectorAll('.theme-option')) {
+      opt.addEventListener('click', () => {
+        applyTheme(opt.dataset.theme);
+        themePopup.style.display = 'none';
+      });
+    }
+    document.addEventListener('mousedown', (e) => {
+      if (!themePopup.contains(e.target)) themePopup.style.display = 'none';
     });
   }
-  document.addEventListener('mousedown', (e) => {
-    if (!btn.contains(e.target) && !popup.contains(e.target)) popup.style.display = 'none';
-  });
 })();
 
 if (typeof MeetingRoom !== 'undefined') {
