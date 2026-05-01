@@ -9,6 +9,11 @@
 //   + 自动 add-meeting-sub 三个；返回的 meeting 已含 subSessions + slotSpecs。
 //
 // 与 renderer.js 通过 selectMeeting() 全局函数 + meeting-created IPC 事件协作。
+//
+// 整个模块包裹在 IIFE 里 — renderer.js 顶层已 const ipcRenderer 等，与本模块共享
+// 全局 script scope，再次 const 会抛 "Identifier 'ipcRenderer' has already been declared"。
+
+(function () {
 
 const { ipcRenderer } = require('electron');
 
@@ -199,3 +204,6 @@ function closeMeetingCreateModal() {
 
 window.openMeetingCreateModal = openMeetingCreateModal;
 window.closeMeetingCreateModal = closeMeetingCreateModal;
+
+})();
+
