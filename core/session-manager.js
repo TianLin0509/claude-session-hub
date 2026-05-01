@@ -242,11 +242,16 @@ class SessionManager extends EventEmitter {
     });
 
     let currentModel = null;
-    if (isGemini) {
+    if (isClaude) {
+      // 默认 Opus 4.7 1M；圆桌 Modal 选 sonnet-4.5 等时透传 opts.model。
+      const mid = opts.model || 'claude-opus-4-7[1m]';
+      currentModel = { id: mid, displayName: mid };
+    } else if (isGemini) {
       const mid = opts.model || 'gemini-2.5-flash';
       currentModel = { id: mid, displayName: SessionManager.geminiDisplayName(mid) };
     } else if (isCodex) {
-      currentModel = { id: 'gpt-5.5', displayName: 'GPT-5.5' };
+      const cmid = opts.model || 'gpt-5.5';
+      currentModel = { id: cmid, displayName: cmid.toUpperCase() };
     } else if (isDeepSeek) {
       const mid = opts.model || 'deepseek-v4-pro';
       currentModel = { id: mid, displayName: mid === 'deepseek-v4-pro' ? 'DS V4 Pro' : 'DS V4 Flash' };
@@ -318,7 +323,8 @@ class SessionManager extends EventEmitter {
       } else {
         // Fresh Claude sessions default to Opus 4.7 1M (extended thinking).
         // Resume/continue inherit the transcript's model, so don't force --model there.
-        cmd = ' claude --model claude-opus-4-7[1m]';
+        // opts.model 让 meeting-create-modal 选定的非默认 model（如 sonnet-4.5）生效。
+        cmd = ` claude --model ${opts.model || 'claude-opus-4-7[1m]'}`;
       }
       // Append system prompt file if provided (TeamSessionManager injects character prompt)
       if (opts.appendSystemPromptFile) {
@@ -403,10 +409,12 @@ class SessionManager extends EventEmitter {
         // Research mode：完全 bypass approvals + sandbox（含 MCP 工具调用、shell 命令、文件写）
         // 避免任何 "Allow ... ?" 弹窗阻塞投研讨论流程；
         // 安全约束完全靠 prompt/covenant 软约束（已强化"不要改代码 / 不要 git / 不要删除"）
+        // opts.model 让 meeting-create-modal 选定的非默认 model（如 gpt-5.4）生效。
+        const codexModel = opts.model || 'gpt-5.5';
         if (opts.codexBypassApprovals) {
-          cmd = ' codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.5';
+          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
         } else {
-          cmd = ' codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.5';
+          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
         }
         // 注：曾尝试 --no-alt-screen 改善观感，实测无明显改善 + Enter 提交失效 → 撤回。
         // 渲染观感问题改由"持久化圆桌面板"（直接展示干净回答预览）绕过。
@@ -588,14 +596,20 @@ class SessionManager extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s || !s.pty) return false;
     const kind = s.info && s.info.kind;
+    const modelId = s.info && s.info.currentModel && s.info.currentModel.id;
     let cmd;
     if (kind === 'codex') {
       dismissCodexUpdatePrompt();
-      cmd = ' codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.5\r\n';
+      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}\r\n`;
     } else if (kind === 'gemini') {
-      cmd = ' gemini --approval-mode yolo --model gemini-2.5-flash\r\n';
+      cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-2.5-flash'}\r\n`;
     } else if (kind === 'claude') {
-      cmd = ' claude --model claude-opus-4-7[1m]\r\n';
+      cmd = ` claude --model ${modelId || 'claude-opus-4-7[1m]'}\r\n`;
+    } else if (kind === 'deepseek') {
+      cmd = ` claude --model ${modelId || 'deepseek-v4-pro'} --permission-mode bypassPermissions\r\n`;
+    } else if (kind === 'glm') {
+      const cv = getConfigValues();
+      cmd = ` claude --model ${modelId || cv.GLM_MODEL || 'glm-5.1'} --permission-mode bypassPermissions\r\n`;
     } else {
       return false;
     }

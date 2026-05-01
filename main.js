@@ -9,6 +9,7 @@ const { SessionManager } = require('./core/session-manager.js');
 const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
+const { FeishuClient, createFeishuMessageSender } = require('./core/feishu-client.js');
 const { getHubDataDir } = require('./core/data-dir.js');
 const { MeetingRoomManager, isRoundtableCapableMeeting } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
@@ -595,6 +596,8 @@ const _RT_READY_MARKERS = {
   gemini: ['Type your message', 'YOLO', 'gemini-'],
   codex: ['gpt-5.5', 'gpt-5.4', 'Context 100%', 'send'],
   glm: [],
+  // DeepSeek 跑在 claude CLI 上（同 buffer 长度兜底策略）— 让 _rtWaitCliReady 走兜底分支
+  deepseek: [],
 };
 
 // timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）
@@ -2445,6 +2448,29 @@ app.whenReady().then(async () => {
   // Mobile server starts after window — no need to block UI for phone pairing.
   try {
     const feishuCodexToken = process.env.HUB_FEISHU_CODEX_TOKEN || '';
+    const feishuAppId = process.env.HUB_FEISHU_APP_ID || '';
+    const feishuAppSecret = process.env.HUB_FEISHU_APP_SECRET || '';
+    const feishuSender = (feishuAppId && feishuAppSecret)
+      ? createFeishuMessageSender(new FeishuClient({
+        appId: feishuAppId,
+        appSecret: feishuAppSecret,
+        domain: process.env.HUB_FEISHU_DOMAIN || 'feishu',
+        baseUrl: process.env.HUB_FEISHU_BASE_URL || null,
+      }), {
+        replyInThread: process.env.HUB_FEISHU_REPLY_IN_THREAD !== '0',
+      })
+      : async (msg) => {
+        // MVP fallback: inbound Feishu-compatible events are functional without
+        // credentials. Official Feishu delivery is enabled by HUB_FEISHU_APP_ID
+        // + HUB_FEISHU_APP_SECRET.
+        console.log('[feishu-codex]', JSON.stringify({
+          threadKey: msg.threadKey,
+          chatId: msg.chatId,
+          messageId: msg.messageId,
+          type: msg.type,
+          text: msg.text,
+        }));
+      };
     mobileSrv = await createMobileServer({
       sessionManager,
       preferredPort: 3470,
@@ -2452,17 +2478,7 @@ app.whenReady().then(async () => {
       feishuCodex: feishuCodexToken ? {
         token: feishuCodexToken,
         defaultCwd: process.env.HUB_FEISHU_CODEX_CWD || path.join(_home, 'claude-session-hub'),
-        sendMessage: async (msg) => {
-          // MVP adapter: inbound Feishu-compatible events are functional now.
-          // Official Feishu card delivery will replace this sink once app credentials
-          // and tenant policy are confirmed. Keep it explicit instead of silently
-          // pretending messages were sent to Feishu.
-          console.log('[feishu-codex]', JSON.stringify({
-            threadKey: msg.threadKey,
-            type: msg.type,
-            text: msg.text,
-          }));
-        },
+        sendMessage: feishuSender,
       } : null,
     });
     console.log(`[mobile] listening on :${mobileSrv.port}`);
