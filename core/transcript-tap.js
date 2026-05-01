@@ -920,7 +920,12 @@ class TranscriptTap extends EventEmitter {
   }
 
   _backendFor(kind) {
-    if (kind === 'claude' || kind === 'claude-resume') return this._claude;
+    // DeepSeek / GLM 跑在 Claude Code CLI 上（CLAUDE_CONFIG_DIR 隔离），transcript JSONL
+    // 与 Claude 同 shape（spike 验证：tests/_spike-deepseek-stop-hook-result.md），
+    // 直接复用 ClaudeTap 即让圆桌 timeline + streaming preview 自动接入。
+    if (kind === 'claude' || kind === 'claude-resume' || kind === 'deepseek' || kind === 'glm') {
+      return this._claude;
+    }
     if (kind === 'codex') return this._codex;
     if (kind === 'gemini') return this._gemini;
     return null;
