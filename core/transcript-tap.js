@@ -697,7 +697,9 @@ class GeminiTap extends EventEmitter {
   }
 
   async _bindSession(hubSessionId, sessionPath, isJsonl) {
-    const boundEntry = { sessionPath, tail: null, lastText: null, isJsonl, debounceTimer: null };
+    // Card optimization Task 2（2026-05-01）— streamingBuf 累积流式 chunk，让 main.js _rtExtractStreamingText
+    //   优先用 tap 的 blocks 数组渲染（替代 PTY ringBuffer 过滤），preview 区不再有 throbbing 字符。
+    const boundEntry = { sessionPath, tail: null, lastText: null, isJsonl, debounceTimer: null, _streamingBuf: [] };
     this._bound.set(hubSessionId, boundEntry);
 
     // Emit session-bound for main.js to persist resume meta.
@@ -750,15 +752,35 @@ class GeminiTap extends EventEmitter {
       //   L1a result_event: type:"result"（headless --output-format stream-json 模式）
       //   L1b message_update: type:"message_update" + status:"finalized"（TUI fallback）
       //   L3  tokens_total:  type:"gemini" + tokens.total（启发式，慢/限流时不可靠）
+      // Card optimization Task 2（2026-05-01）— 同步累积流式 content 到 _streamingBuf：
+      //   只要看到带 content 的 gemini/result/message_update 行就 push（无视 token 是否到位），
+      //   让 preview 区在 token 到达之前就能显示流式中间态。50KB tail-preserving 截断防内存膨胀。
+      const _STREAM_BUF_MAX_BYTES = 50000;
+      const _pushStreamBlock = (text) => {
+        if (typeof text !== 'string' || text.length === 0) return;
+        boundEntry._streamingBuf.push({ type: 'text', text });
+        // 50KB 头部截断，保留尾部
+        let totalLen = 0;
+        for (let i = boundEntry._streamingBuf.length - 1; i >= 0; i--) {
+          totalLen += String(boundEntry._streamingBuf[i].text || '').length;
+          if (totalLen > _STREAM_BUF_MAX_BYTES) {
+            boundEntry._streamingBuf = boundEntry._streamingBuf.slice(i + 1);
+            break;
+          }
+        }
+      };
+
       const onLine = (obj) => {
         // L1a — 协议级 result 事件（最可靠）
         if (obj?.type === 'result' && typeof obj.content === 'string' && obj.content.trim().length > 0) {
+          _pushStreamBlock(obj.content);
           emitIfComplete(obj.content, { signalSource: 'result_event' });
           return;
         }
         // L1b — message_update finalized（TUI 模式 fallback）
         if (obj?.type === 'message_update' && obj.status === 'finalized'
             && typeof obj.content === 'string' && obj.content.trim().length > 0) {
+          _pushStreamBlock(obj.content);
           emitIfComplete(obj.content, { signalSource: 'message_update' });
           return;
         }
@@ -768,10 +790,14 @@ class GeminiTap extends EventEmitter {
           // Card redesign（2026-05-01）：缓存最新 token 计数，让 _rtWaitTurnComplete 在 settle
           //   时把数据透传给 watcher.wait() 的 result.tokens。卡片 row4 显示"本轮 X tokens"。
           this._recordTokens(hubSessionId, obj.tokens);
+          _pushStreamBlock(obj.content);
           emitIfComplete(obj.content, { signalSource: 'tokens_total' });
         } else if (obj?.type === 'gemini' && obj.tokens && obj.tokens.total != null) {
           // 仅缓存 token，不触发 emit（content 为空时 token 信息仍有用：streaming 中实时更新）
           this._recordTokens(hubSessionId, obj.tokens);
+        } else if (obj?.type === 'gemini' && typeof obj.content === 'string' && obj.content.trim().length > 0) {
+          // Task 2（2026-05-01）— 流式中间态：content 已到、token 未到，仍累积让 preview 显示
+          _pushStreamBlock(obj.content);
         }
       };
       const tail = new JsonlTail(sessionPath, onLine);
