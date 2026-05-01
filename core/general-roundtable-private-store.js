@@ -74,10 +74,57 @@ function listPrivateTurns(hubDataDir, meetingId, kind) {
   return store;
 }
 
+// pilot-mode Task 4（2026-05-01）— sid 索引的私聊存储 API。
+//   主驾期间用户和 pilot slot 的对话用此 API 隔离存储；切回时 _generatePilotRecap
+//   读所有 turns + 构建 md 镜像 + 写 timeline 后调 clearPrivateTurnsBySid 清空，
+//   下个主驾窗口起点重置。键名加 'sid:' 前缀，与老 kind 键名（claude/gemini/...）
+//   显式区隔，便于诊断 + 防误删。
+function _sidKey(sid) {
+  if (!sid || typeof sid !== 'string') throw new Error(`invalid sid: ${sid}`);
+  return `sid:${sid}`;
+}
+
+function appendPrivateTurnBySid(hubDataDir, meetingId, sid, userInput, response) {
+  const key = _sidKey(sid);
+  const store = readPrivateStore(hubDataDir, meetingId);
+  if (!Array.isArray(store[key])) store[key] = [];
+  store[key].push({
+    ts: Date.now(),
+    userInput: typeof userInput === 'string' ? userInput : '',
+    response: typeof response === 'string' ? response : '',
+  });
+  if (store[key].length > MAX_PRIVATE_TURNS_PER_KIND) {
+    store[key] = store[key].slice(-MAX_PRIVATE_TURNS_PER_KIND);
+  }
+  const dir = arenaPromptsDir(hubDataDir);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(privateFilePath(hubDataDir, meetingId), JSON.stringify(store, null, 2), 'utf-8');
+}
+
+function listPrivateTurnsBySid(hubDataDir, meetingId, sid) {
+  const key = _sidKey(sid);
+  const store = readPrivateStore(hubDataDir, meetingId);
+  return Array.isArray(store[key]) ? store[key] : [];
+}
+
+function clearPrivateTurnsBySid(hubDataDir, meetingId, sid) {
+  const key = _sidKey(sid);
+  const store = readPrivateStore(hubDataDir, meetingId);
+  if (!(key in store)) return false;
+  delete store[key];
+  const dir = arenaPromptsDir(hubDataDir);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(privateFilePath(hubDataDir, meetingId), JSON.stringify(store, null, 2), 'utf-8');
+  return true;
+}
+
 module.exports = {
   appendPrivateTurn,
   listPrivateTurns,
   readPrivateStore,
   privateFilePath,
+  appendPrivateTurnBySid,
+  listPrivateTurnsBySid,
+  clearPrivateTurnsBySid,
   MAX_PRIVATE_TURNS_PER_KIND,
 };

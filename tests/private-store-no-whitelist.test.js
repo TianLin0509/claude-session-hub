@@ -77,4 +77,55 @@ test('readPrivateStore returns file contents as-is (no shape coercion to claude/
   cleanup();
 });
 
+// pilot-mode Task 4（2026-05-01）— sid 索引 API
+test('appendPrivateTurnBySid + listPrivateTurnsBySid round-trip', () => {
+  setup();
+  store.appendPrivateTurnBySid(tmp, 'm-pilot-1', 'sid-abc-123', '问题1', '答案1');
+  store.appendPrivateTurnBySid(tmp, 'm-pilot-1', 'sid-abc-123', '问题2', '答案2');
+  const turns = store.listPrivateTurnsBySid(tmp, 'm-pilot-1', 'sid-abc-123');
+  assert.strictEqual(turns.length, 2);
+  assert.strictEqual(turns[0].userInput, '问题1');
+  assert.strictEqual(turns[1].response, '答案2');
+  cleanup();
+});
+
+test('sid-based and kind-based stores coexist with prefix isolation', () => {
+  setup();
+  store.appendPrivateTurn(tmp, 'm-mix', 'claude', 'kind-q', 'kind-a');
+  store.appendPrivateTurnBySid(tmp, 'm-mix', 'sid-xyz', 'sid-q', 'sid-a');
+  const all = store.readPrivateStore(tmp, 'm-mix');
+  // 顶层 keys 同时含 'claude' 和 'sid:sid-xyz'，互不干扰
+  assert.ok(Array.isArray(all.claude));
+  assert.ok(Array.isArray(all['sid:sid-xyz']));
+  assert.strictEqual(all.claude.length, 1);
+  assert.strictEqual(all['sid:sid-xyz'].length, 1);
+  // listPrivateTurnsBySid 不返回 kind 数据
+  const sidOnly = store.listPrivateTurnsBySid(tmp, 'm-mix', 'sid-xyz');
+  assert.strictEqual(sidOnly.length, 1);
+  assert.strictEqual(sidOnly[0].userInput, 'sid-q');
+  cleanup();
+});
+
+test('clearPrivateTurnsBySid wipes one sid window without touching others', () => {
+  setup();
+  store.appendPrivateTurnBySid(tmp, 'm-clear', 'sid-a', 'q', 'r');
+  store.appendPrivateTurnBySid(tmp, 'm-clear', 'sid-b', 'q', 'r');
+  store.appendPrivateTurn(tmp, 'm-clear', 'gemini', 'kq', 'kr');
+  const cleared = store.clearPrivateTurnsBySid(tmp, 'm-clear', 'sid-a');
+  assert.strictEqual(cleared, true);
+  assert.strictEqual(store.listPrivateTurnsBySid(tmp, 'm-clear', 'sid-a').length, 0);
+  assert.strictEqual(store.listPrivateTurnsBySid(tmp, 'm-clear', 'sid-b').length, 1, 'sid-b untouched');
+  assert.strictEqual(store.listPrivateTurns(tmp, 'm-clear', 'gemini').length, 1, 'kind untouched');
+  // clearing nonexistent returns false
+  assert.strictEqual(store.clearPrivateTurnsBySid(tmp, 'm-clear', 'sid-nope'), false);
+  cleanup();
+});
+
+test('appendPrivateTurnBySid rejects empty/null sid', () => {
+  setup();
+  assert.throws(() => store.appendPrivateTurnBySid(tmp, 'm', '', 'q', 'r'), /invalid sid/);
+  assert.throws(() => store.appendPrivateTurnBySid(tmp, 'm', null, 'q', 'r'), /invalid sid/);
+  cleanup();
+});
+
 console.log('All passed.');

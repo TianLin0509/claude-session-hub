@@ -628,6 +628,181 @@ ipcMain.handle('save-immersive-mode', (_e, { meetingId, immersive } = {}) => {
   return { ok: true };
 });
 
+// pilot-mode Task 4（2026-05-01）— 主驾切回时生成回顾（recap）。
+//   流程：
+//     1. 从 private-store 读出本次主驾期间所有 turns（按 sid 索引）
+//     2. 短主驾兜底（≤1 轮）：直接写一行 timeline 占位，不调 LLM
+//     3. 长主驾：调主驾自己 summarizeWithKind 生成"摘要 + 段落目录"
+//     4. pilot-recap-builder 把 turns 切段 + 写 md 镜像 (arena-prompts/<mid>-pilot-recap-<ts>.md)
+//     5. 把 recap entry 推到 meeting._timeline + sendToRenderer('timeline-append', ...)
+//     6. 清空 private-store 的 sid 索引（下个主驾窗口重置）
+//   返回值：成功 timeline entry 的 idx；失败 null。
+const recapBuilder = require('./core/pilot-recap-builder.js');
+
+async function _generatePilotRecap(meetingId, prevSlot) {
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (!meeting) return null;
+  const subSids = meeting.subSessions || [];
+  if (typeof prevSlot !== 'number' || prevSlot < 0 || prevSlot >= subSids.length) return null;
+  const pilotSid = subSids[prevSlot];
+  if (!pilotSid) return null;
+  const pilotSession = sessionManager.getSession(pilotSid);
+  const pilotKind = pilotSession ? pilotSession.kind : 'unknown';
+
+  const hubDataDir = getHubDataDir();
+  const turns = generalRoundtablePrivateStore.listPrivateTurnsBySid(hubDataDir, meetingId, pilotSid) || [];
+
+  // 短主驾兜底：≤1 轮不调 LLM
+  if (turns.length <= 1) {
+    const userInput = turns[0]?.userInput || '';
+    const text = turns.length === 1
+      ? `用户私下问了 Slot${prevSlot + 1}（${pilotKind}）："${userInput.slice(0, 80)}${userInput.length > 80 ? '…' : ''}"`
+      : '用户开启了主驾但未发消息（主驾期 0 轮）';
+    const idx = _appendTimelineRecap(meeting, {
+      text, recapMdPath: null, segments: [], segmentMode: 'turn',
+      pilotSlot: prevSlot, pilotKind, turnCount: turns.length,
+    });
+    try { generalRoundtablePrivateStore.clearPrivateTurnsBySid(hubDataDir, meetingId, pilotSid); } catch {}
+    return idx;
+  }
+
+  // 长主驾：调主驾自己 summarizeWithKind
+  const dialogue = turns.map((t, i) =>
+    `[轮 ${i + 1}]\n用户: ${t.userInput || ''}\n你: ${t.response || ''}\n`
+  ).join('\n');
+  const systemText = '你正在总结你和用户刚才的对话。请按用户要求输出摘要 + 段落目录。';
+  const promptText = `请总结你和我刚才的对话要点（多少字合适都由你决定，不要刻意简短，但也不要冗余）。
+
+最后请用一组单独的"段落 N: <主题>"行附上段落目录（按主题切，1-10 段，每段一行格式：\`段落 N: <主题>\`，不超过 10 段）。
+
+对话历史:
+${dialogue}`;
+
+  let summaryText, segmentTitles;
+  try {
+    const llmOutput = await summaryEngine.summarizeWithKind(
+      pilotKind, systemText, promptText, { timeout: 90000 }
+    );
+    const parsed = _parseSummaryWithSegments(llmOutput);
+    summaryText = parsed.summaryText;
+    segmentTitles = parsed.segmentTitles;
+    if (!summaryText || summaryText.length < 10) {
+      throw new Error('summary too short or empty');
+    }
+  } catch (e) {
+    console.warn('[pilot-recap] summary failed, falling back to F5-B:', e.message);
+    summaryText = `（主驾摘要生成失败：${e.message}。已降级为按轮切；可点击 [切段:智能 ▾] 重试）`;
+    segmentTitles = null;
+  }
+
+  // 段落质量校验：>10 截断；<1 降级
+  if (Array.isArray(segmentTitles) && segmentTitles.length > 10) {
+    console.warn('[pilot-recap] LLM gave', segmentTitles.length, 'segments, capping at 10');
+    segmentTitles = segmentTitles.slice(0, 10);
+  }
+  if (Array.isArray(segmentTitles) && segmentTitles.length < 1) segmentTitles = null;
+
+  const segments = (segmentTitles && segmentTitles.length > 0)
+    ? recapBuilder.splitBySmart(turns, segmentTitles)
+    : recapBuilder.splitByTurn(turns);
+
+  const arenaDir = path.join(hubDataDir, 'arena-prompts');
+  await fs.promises.mkdir(arenaDir, { recursive: true });
+  const mdPath = path.join(arenaDir, `${meetingId}-pilot-recap-${Date.now()}.md`);
+  try {
+    await recapBuilder.build(mdPath, turns, segments, { pilotKind, pilotSlot: prevSlot });
+  } catch (e) {
+    console.error('[pilot-recap] md build failed:', e.message);
+    // md 写不出也要让 timeline entry 出现（仅缺 md path 而已）
+  }
+
+  const recapIdx = _appendTimelineRecap(meeting, {
+    text: summaryText,
+    recapMdPath: fs.existsSync(mdPath) ? mdPath : null,
+    segments,
+    segmentMode: segmentTitles ? 'smart' : 'turn',
+    pilotSlot: prevSlot,
+    pilotKind,
+    turnCount: turns.length,
+  });
+
+  // 清空 sid 索引存储（下个主驾窗口重置，不会卷入老 turns）
+  try { generalRoundtablePrivateStore.clearPrivateTurnsBySid(hubDataDir, meetingId, pilotSid); } catch {}
+
+  return recapIdx;
+}
+
+// 解析 LLM 输出：找最后一段连续的"段落 N: ..."行作为目录，前面文本作为摘要。
+function _parseSummaryWithSegments(llmOutput) {
+  if (!llmOutput || typeof llmOutput !== 'string') return { summaryText: '', segmentTitles: null };
+  const lines = llmOutput.split('\n');
+  const segLineRegex = /^段落\s*\d+\s*[:：]\s*(.+)$/;
+  const segIdxs = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (segLineRegex.test(trimmed)) {
+      segIdxs.unshift(i);
+    } else if (segIdxs.length > 0 && trimmed.length > 0) {
+      // 段落块到此结束（向前扩展时遇到非段落非空行）
+      break;
+    }
+    // 空行不打断扩展
+  }
+  let summaryText, segmentTitles;
+  if (segIdxs.length > 0) {
+    const firstSegLine = segIdxs[0];
+    summaryText = lines.slice(0, firstSegLine).join('\n').trim()
+      // 删可能的"段落目录:"标头 / 分隔线
+      .replace(/^段落目录\s*[:：]?\s*$/m, '')
+      .replace(/^---+\s*$/m, '')
+      .trim();
+    segmentTitles = segIdxs.map(idx => {
+      const m = lines[idx].trim().match(segLineRegex);
+      return m ? m[1].trim() : '';
+    }).filter(Boolean);
+  } else {
+    summaryText = llmOutput.trim();
+    segmentTitles = null;
+  }
+  return { summaryText, segmentTitles };
+}
+
+function _appendTimelineRecap(meeting, payload) {
+  // 直接操作内存对象（meetingManager.getMeeting 返回拷贝；要拿到底层引用）
+  const live = meetingManager.meetings ? meetingManager.meetings.get(meeting.id) : null;
+  if (!live) return null;
+  if (!Array.isArray(live._timeline)) live._timeline = [];
+  if (typeof live._nextIdx !== 'number') live._nextIdx = live._timeline.length;
+  const idx = live._nextIdx++;
+  const entry = {
+    idx,
+    sid: 'system',
+    tag: 'pilot-recap',
+    text: payload.text,
+    recapMdPath: payload.recapMdPath,
+    segments: payload.segments,
+    segmentMode: payload.segmentMode,
+    pilotSlot: payload.pilotSlot,
+    pilotKind: payload.pilotKind,
+    turnCount: payload.turnCount,
+    ts: Date.now(),
+  };
+  live._timeline.push(entry);
+  // 落 per-meeting JSON 镜像
+  try {
+    const meetingStore = require('./core/meeting-store.js');
+    meetingStore.markDirty(live.id, {
+      _timeline: live._timeline, _cursors: live._cursors, _nextIdx: live._nextIdx,
+      slotSpecs: live.slotSpecs, pilotSlot: live.pilotSlot,
+    });
+  } catch (e) {
+    console.warn('[pilot-recap] markDirty failed:', e.message);
+  }
+  // 推 IPC（renderer Task 7 渲染）
+  sendToRenderer('timeline-append', { meetingId: live.id, entry });
+  return idx;
+}
+
 // pilot-mode Task 1（2026-05-01）— roundtable:pilot-toggle IPC
 //   slotIndex=0|1|2 开主驾 / null 关主驾。关主驾时调用 _generatePilotRecap 生成
 //   摘要 + md 镜像 + timeline 写入（Task 4 实现）。同时 _pilotSlotByMeeting + meeting
@@ -1112,6 +1287,24 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     orch.completeTurn(turnNum, mode, userInput || '', byMap, meta, byStatus, {
       thinkSecBy, tokensBy,
     });
+
+    // pilot-mode Task 4（2026-05-01）：主驾期间，把这一轮的"用户问 + 主驾答"写到
+    //   private-store sid 索引。切回主驾时 _generatePilotRecap 会读这些 turns 构建
+    //   recap。只对主驾 slot 写（targetSubs 已过滤；这里再校验一次）。
+    if (pilotSlot !== null && targetSubs.length === 1) {
+      const pilotSid = targetSubs[0].sid;
+      const result = results.find(r => r.sid === pilotSid);
+      if (result && result.status === 'completed' && result.text) {
+        try {
+          generalRoundtablePrivateStore.appendPrivateTurnBySid(
+            getHubDataDir(), meetingId, pilotSid,
+            userInput || '', result.text || ''
+          );
+        } catch (e) {
+          console.warn('[pilot-dispatch] private-store append failed:', e.message);
+        }
+      }
+    }
 
     // E2 选项：summary 后写决策档案到 .arena/sessions/<datetime>-<title>.md
     if (mode === 'summary') {
@@ -2615,6 +2808,10 @@ app.whenReady().then(async () => {
       getDormantSessions: () => lastPersistedSessions,
       feishuCodex: feishuCodexToken ? {
         token: feishuCodexToken,
+        appId: feishuAppId,
+        appSecret: feishuAppSecret,
+        domain: feishuConfig.domain || 'feishu',
+        ws: feishuConfig.ws !== false,
         defaultCwd: feishuConfig.defaultCwd || path.join(_home, 'claude-session-hub'),
         sendMessage: feishuSender,
       } : null,
