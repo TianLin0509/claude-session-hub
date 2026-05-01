@@ -106,7 +106,7 @@
     <div class="memo-panel" id="memo-panel" style="display:none">
       <div class="memo-header">
         <span class="memo-title">备忘录</span>
-        <button class="memo-clear-btn" id="memo-clear-btn" title="清空全部">清空</button>
+        <button class="memo-clear-btn" id="memo-clear-btn" title="关闭备忘录">关闭</button>
       </div>
       <div class="memo-input-row">
         <input type="text" class="memo-input" id="memo-input" placeholder="输入想法...">
@@ -116,14 +116,9 @@
     </div>
     <div class="meeting-room-panel" id="meeting-room-panel" style="display:none">
       <div class="mr-header" id="mr-header"></div>
-      <!-- Card optimization Task 9 fix（2026-05-01）— 移除 #mr-shell-area 包装。
-           原方案把 mr-terminals + mr-toolbar + mr-input-row 全包进 shell-area，
-           但 panel 是 flex column 容器，包一层后子元素 flex 属性失效，
-           调试模式下 toolbar/input-row 错乱、沉浸模式下整个底部一起被隐藏。
-           现回归 panel 直接子级布局：mr-terminals 单独 flex:1 占主区，
-           toolbar+input-row 永远固定底部（flex-shrink:0），不参与沉浸切换。
-           沉浸模式只 hide .mr-terminals，让 .mr-rt-panel（cards）抢占空间。 -->
-      <div class="mr-terminals" id="mr-terminals"></div>
+      <!-- Arch refactor 2026-05-02: 圆桌界面去 shell。原 #mr-terminals
+           (xterm 多家平铺) 已删除。Shell PTY 流通过左侧栏树形展开后点击
+           子 session 进入主区 shell view 查看 (复用 selectSession 路径)。 -->
       <div class="mr-toolbar" id="mr-toolbar"></div>
       <!-- IF-C3 软提醒 banner：AI 启动中时显示哪几家未 ready，让用户避免在 ready 前发送 -->
       <div class="mr-input-soft-alert" id="mr-input-soft-alert" style="display:none"></div>

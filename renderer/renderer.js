@@ -476,7 +476,7 @@ function initMemoPanel() {
     }
   });
 
-  clearBtn.addEventListener('click', () => clearAllMemo());
+  clearBtn.addEventListener('click', () => toggleMemoPanel());
 
   listEl.addEventListener('click', e => {
     const copyBtn = e.target.closest('.memo-copy-btn');
@@ -519,9 +519,40 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// --- Sidebar tree state: which meeting entries are expanded to show their sub-sessions ---
+// Persists across reloads. Newly created meetings are expanded by default
+// (handled in the meeting-created handler).
+const _expandedMeetings = (() => {
+  try {
+    const raw = localStorage.getItem('hubExpandedMeetings');
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch { return new Set(); }
+})();
+function _persistExpandedMeetings() {
+  try {
+    localStorage.setItem('hubExpandedMeetings', JSON.stringify([..._expandedMeetings]));
+  } catch {}
+}
+function toggleMeetingExpand(meetingId) {
+  if (_expandedMeetings.has(meetingId)) _expandedMeetings.delete(meetingId);
+  else _expandedMeetings.add(meetingId);
+  _persistExpandedMeetings();
+  renderSessionList();
+}
+
+// AI mini logo for sidebar sub-session items. Reuses the .ai-logo + .logo-<kind>
+// classes already defined in styles.css for the toolbar dropdown.
+function _aiLogoHtml(kind) {
+  const known = ['claude', 'gemini', 'codex', 'deepseek', 'glm', 'powershell'];
+  const k = String(kind || '').replace(/-resume$/, '');
+  if (!known.includes(k)) return '';
+  return `<span class="ai-logo logo-${k}" aria-hidden="true"></span>`;
+}
+
 // --- Session list rendering ---
 // Sort: pinned sessions first (by their own time), then unpinned by lastMessageTime.
-// Mixed list: regular sessions + meeting rooms share the same sort + rendering.
+// Tree shape: meeting entries optionally expand to show their child sub-sessions.
+// Top-level regular sessions (no meetingId) sit alongside meetings in the same sort order.
 function renderSessionList() {
   const regularSessions = Array.from(sessions.values()).filter(s => !s.meetingId);
 
@@ -557,20 +588,59 @@ function renderSessionList() {
   for (const s of visible) {
     if (s._isMeeting) {
       const isActive = activeMeetingId === s.id;
+      const isExpanded = _expandedMeetings.has(s.id);
       const div = document.createElement('div');
-      div.className = 'session-item meeting' + (isActive ? ' selected' : '');
+      div.className = 'session-item meeting' + (isActive ? ' selected' : '') + (isExpanded ? ' expanded' : '');
+      div.dataset.meetingId = s.id;
       div.innerHTML = `
         <div class="session-item-header">
-          <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status running"></span>🏢 ${escapeHtml(s.title)}<span class="meeting-badge">${s._meeting.subSessions.length}</span></span>
+          <span class="session-title">
+            <span class="expand-arrow" data-action="toggle-expand" title="${isExpanded ? '折叠' : '展开'}">▶</span>
+            ${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}
+            <span class="session-status running"></span>🎯 ${escapeHtml(s.title)}<span class="meeting-badge">${s._meeting.subSessions.length}</span>
+          </span>
           <span class="session-header-right">
             <span class="session-time">${formatTime(s.lastMessageTime)}</span>
           </span>
         </div>
         <div class="session-preview">${escapeHtml(s.lastOutputPreview)}</div>
       `;
-      div.addEventListener('click', () => selectMeeting(s.id));
+      div.addEventListener('click', (e) => {
+        if (e.target.closest('[data-action="toggle-expand"]')) {
+          e.stopPropagation();
+          toggleMeetingExpand(s.id);
+        } else {
+          selectMeeting(s.id);
+        }
+      });
       div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
       sessionListEl.appendChild(div);
+
+      // Render child sub-sessions if expanded (clicking goes straight to shell view).
+      if (isExpanded) {
+        for (const subId of s._meeting.subSessions) {
+          const sub = sessions.get(subId);
+          if (!sub) continue;
+          const childDiv = document.createElement('div');
+          const isChildActive = subId === activeSessionId;
+          childDiv.className = 'session-item child' + (isChildActive ? ' selected' : '');
+          childDiv.dataset.sessionId = subId;
+          const modelLabel = sub.currentModel
+            ? `<span class="child-model-badge ${modelClass(sub.currentModel.id)}" title="${escapeHtml(sub.currentModel.displayName || sub.currentModel.id)}">${escapeHtml(modelShort(sub.currentModel))}</span>`
+            : '';
+          childDiv.innerHTML = `
+            ${_aiLogoHtml(sub.kind)}
+            <span class="child-title">${escapeHtml(sub.title)}</span>
+            ${modelLabel}
+          `;
+          // Use the existing selectSession path: it hides meeting-room-panel,
+          // shows terminal-panel, and mounts the cached xterm container.
+          // This is exactly the "single-viewer strict switch" the spec calls for.
+          childDiv.addEventListener('click', () => selectSession(subId));
+          childDiv.addEventListener('contextmenu', (ev) => { ev.preventDefault(); openContextMenu(subId, ev.clientX, ev.clientY); });
+          sessionListEl.appendChild(childDiv);
+        }
+      }
       continue;
     }
 
@@ -2408,6 +2478,7 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
 // Carries contextPct / cwd / api time / session_name per session + account-wide usage5h/usage7d.
 const accountUsage = { usage5h: null, usage7d: null };
 const agentUsage = { gemini: null, codex: null };
+const agentUsageLastSeen = { gemini: 0, codex: 0 };
 const providerModes = {
   claude: 'subscription',
   gemini: 'subscription',
@@ -2519,8 +2590,14 @@ ipcRenderer.on('status-event', (_e, payload) => {
 });
 
 ipcRenderer.on('agent-usage', (_e, totals) => {
-  if (totals.gemini && (totals.gemini.usage5h || totals.gemini.usage7d)) agentUsage.gemini = totals.gemini;
-  if (totals.codex && (totals.codex.usage5h || totals.codex.usage7d)) agentUsage.codex = totals.codex;
+  if (totals.gemini && (totals.gemini.usage5h || totals.gemini.usage7d)) {
+    agentUsage.gemini = totals.gemini;
+    agentUsageLastSeen.gemini = totals.gemini._ts || Date.now();
+  }
+  if (totals.codex && (totals.codex.usage5h || totals.codex.usage7d)) {
+    agentUsage.codex = totals.codex;
+    agentUsageLastSeen.codex = totals.codex._ts || Date.now();
+  }
   renderAccountUsage();
 });
 
@@ -2748,8 +2825,8 @@ function renderAccountUsage() {
   const c = agentUsage.codex || {};
   el.innerHTML =
     buildLine('claude', 'opus', 'Claude', accountUsage.usage5h, accountUsage.usage7d, _claudeUsageLastSeen) +
-    buildLine('gemini', 'gemini', 'Gemini', g.usage5h, g.usage7d) +
-    buildLine('codex', 'codex', 'Codex', c.usage5h, c.usage7d) +
+    buildLine('gemini', 'gemini', 'Gemini', g.usage5h, g.usage7d, agentUsageLastSeen.gemini) +
+    buildLine('codex', 'codex', 'Codex', c.usage5h, c.usage7d, agentUsageLastSeen.codex) +
     buildLine('deepseek', 'deepseek', 'DeepSeek', null, null, 0, false) +
     buildLine('glm', 'glm', 'GLM', null, null, 0, false);
 }
@@ -3682,17 +3759,11 @@ async function resumeDormantSession(hubId) {
 
 // --- Init ---
 (async () => {
-  const [existing, persisted, dormantMeetings, cached, cfg] = await Promise.all([
-    ipcRenderer.invoke('get-sessions'),
-    ipcRenderer.invoke('get-dormant-sessions'),
+  const [existing, persisted, dormantMeetings] = await Promise.all([
+    ipcRenderer.invoke('get-sessions').catch(() => []),
+    ipcRenderer.invoke('get-dormant-sessions').catch(() => null),
     ipcRenderer.invoke('get-dormant-meetings').catch(() => null),
-    ipcRenderer.invoke('get-usage-cache').catch(() => null),
-    ipcRenderer.invoke('get-hub-config-raw').catch(() => null),
   ]);
-
-  if (cfg) {
-    providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
-  }
 
   for (const s of existing) sessions.set(s.id, s);
 
@@ -3729,18 +3800,28 @@ async function resumeDormantSession(hubId) {
     }
   }
 
-  if (cached) {
+  renderSessionList();
+  ipcRenderer.send('renderer-sidebar-ready');
+
+  ipcRenderer.invoke('get-hub-config-raw').then((cfg) => {
+    if (!cfg) return;
+    providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
+    renderAccountUsage();
+  }).catch(() => {});
+
+  ipcRenderer.invoke('get-usage-cache').then((cached) => {
+    if (!cached) return;
     if (cached.claude && cached.claude.usage5h) {
       accountUsage.usage5h = cached.claude.usage5h;
       accountUsage.usage7d = cached.claude.usage7d;
       if (cached.claude.ts) _claudeUsageLastSeen = cached.claude.ts;
     }
     if (cached.gemini) agentUsage.gemini = cached.gemini;
+    if (cached.gemini && cached.gemini.ts) agentUsageLastSeen.gemini = cached.gemini.ts;
     if (cached.codex) agentUsage.codex = cached.codex;
+    if (cached.codex && cached.codex.ts) agentUsageLastSeen.codex = cached.codex.ts;
     renderAccountUsage();
-  }
-
-  renderSessionList();
+  }).catch(() => {});
 })();
 
 // Persist on relevant changes — listen at renderer-level for mutations that
@@ -3752,6 +3833,11 @@ for (const ch of ['session-created', 'session-closed', 'session-updated', 'meeti
 // --- Meeting Room IPC events ---
 ipcRenderer.on('meeting-created', (_e, { meeting }) => {
   meetings[meeting.id] = meeting;
+  // New meetings default to expanded so users immediately see their child sub-sessions.
+  if (!_expandedMeetings.has(meeting.id)) {
+    _expandedMeetings.add(meeting.id);
+    _persistExpandedMeetings();
+  }
   renderSessionList();
 });
 
@@ -3765,6 +3851,10 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
 
 ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
   delete meetings[meetingId];
+  if (_expandedMeetings.has(meetingId)) {
+    _expandedMeetings.delete(meetingId);
+    _persistExpandedMeetings();
+  }
   if (activeMeetingId === meetingId) {
     activeMeetingId = null;
     if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel();
