@@ -2428,9 +2428,21 @@
       _hideRtMentionMenu();
       return;
     }
+    // pilot-mode Task 9（2026-05-01）：主驾期间 mention 灰显——所有 @ 候选都不可用，
+    //   仅显示一行 disabled 提示让用户知道为什么。
+    const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
+      ? meeting.pilotSlot : null;
     const match = _getRtMentionMatch(inputBox);
     if (!match) {
       _hideRtMentionMenu();
+      return;
+    }
+    if (pilotSlot !== null) {
+      const menu = _getRtMentionMenu();
+      menu.style.left = `${inputBox.offsetLeft}px`;
+      menu.style.minWidth = `${Math.min(Math.max(inputBox.offsetWidth, 260), 420)}px`;
+      menu.innerHTML = `<div class="mr-rt-mention-disabled-hint">主驾模式中（仅 Slot ${pilotSlot + 1} 接收），请先 [🚗 主驾:▾ 关闭主驾] 再使用 @ 提及</div>`;
+      menu.style.display = 'block';
       return;
     }
     const items = buildRtMentionItems(meeting).filter(item => {

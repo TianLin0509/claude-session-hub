@@ -1,6 +1,6 @@
 {
   "name": "claude-session-hub",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Chat-style multi-session terminal manager for Claude Code",
   "main": "main.js",
   "scripts": {
@@ -16,6 +16,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.62.1",
     "@xterm/addon-canvas": "^0.7.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.16.0",

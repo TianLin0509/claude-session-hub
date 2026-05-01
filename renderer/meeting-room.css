@@ -1882,6 +1882,15 @@
   margin: 0;
 }
 
+/* pilot-mode Task 9（2026-05-01）— mention 主驾期 disabled 提示 */
+.mr-rt-mention-disabled-hint {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #f85149;
+  font-style: italic;
+  background: rgba(248, 81, 73, 0.06);
+}
+
 /* pilot-mode Task 8（2026-05-01）— 主驾期间占位 */
 .mr-pilot-placeholder {
   background: rgba(248, 81, 73, 0.06);
