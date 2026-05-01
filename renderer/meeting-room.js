@@ -1255,6 +1255,86 @@
     _applyMeetingMode(immersive);
   }
 
+  // Card optimization Task 10（2026-05-01）— 动态重排兜底：
+  //   触发场景：窗口 resize / 沉浸切换 / 历史面板展开 / preview markdown 长度跳变 /
+  //             session 加减 / devtools 开关
+  //   策略：ResizeObserver 监 #meeting-room-panel 尺寸 + window 'resize' →
+  //         debounce 100ms → 强制 reflow + 对所有 subTerminals 调 fitAddon.fit()
+  //   subTerminals[sid] 结构（renderer.js:919）：{ terminal, fitAddon, searchAddon, container, opened }。
+  //   T9 已预先在 openMeeting / closeMeetingPanel 调 setup/teardown（typeof 守卫）。
+  function _debounce(fn, wait) {
+    let t = null;
+    return function (...args) {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => fn.apply(this, args), wait);
+    };
+  }
+
+  let _meetingResizeObserver = null;
+  let _windowResizeHandler = null;
+  let _lastLayoutW = 0;
+  let _lastLayoutH = 0;
+
+  function _relayoutMeetingRoom() {
+    const panel = document.getElementById('meeting-room-panel');
+    if (!panel || panel.style.display === 'none') return;
+
+    // 强制 reflow（避免延迟到下次 paint）
+    void panel.offsetHeight;
+
+    // xterm fit — 遍历所有 subTerminals（每个 cached 上挂着 fitAddon）
+    if (typeof subTerminals === 'object' && subTerminals) {
+      for (const sid of Object.keys(subTerminals)) {
+        const cached = subTerminals[sid];
+        if (cached && cached.fitAddon && typeof cached.fitAddon.fit === 'function') {
+          try { cached.fitAddon.fit(); } catch (_) {}
+        }
+      }
+    }
+
+    // history panel 高度（如展开）— 当前 DOM 暂未引入 #mr-history-panel，保留兜底以防未来加入
+    const hp = document.getElementById('mr-history-panel');
+    if (hp && hp.classList.contains('expanded')) {
+      hp.style.maxHeight = `${hp.scrollHeight}px`;
+    }
+  }
+
+  function _setupMeetingResizeObserver() {
+    if (_meetingResizeObserver) return;
+    const panel = document.getElementById('meeting-room-panel');
+    if (!panel) return;
+
+    const debouncedRelayout = _debounce((entries) => {
+      const e = entries && entries[0];
+      if (!e) { _relayoutMeetingRoom(); return; }
+      const { width, height } = e.contentRect;
+      // 抖动过滤：宽高变化 <4px 视为噪声（典型滚动条出现/消失边缘）
+      if (Math.abs(width - _lastLayoutW) < 4 && Math.abs(height - _lastLayoutH) < 4) return;
+      _lastLayoutW = width;
+      _lastLayoutH = height;
+      _relayoutMeetingRoom();
+    }, 100);
+
+    _meetingResizeObserver = new ResizeObserver(debouncedRelayout);
+    _meetingResizeObserver.observe(panel);
+
+    // window resize（cover devtools 开关、窗口拖拽尺寸）
+    _windowResizeHandler = _debounce(() => _relayoutMeetingRoom(), 100);
+    window.addEventListener('resize', _windowResizeHandler);
+  }
+
+  function _teardownMeetingResizeObserver() {
+    if (_meetingResizeObserver) {
+      try { _meetingResizeObserver.disconnect(); } catch (_) {}
+      _meetingResizeObserver = null;
+    }
+    if (_windowResizeHandler) {
+      try { window.removeEventListener('resize', _windowResizeHandler); } catch (_) {}
+      _windowResizeHandler = null;
+    }
+    _lastLayoutW = 0; _lastLayoutH = 0;
+  }
+
   function getActiveMeetingId() {
     return activeMeetingId;
   }
