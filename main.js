@@ -646,9 +646,29 @@ async function _rtSendToPty(sid, prompt, kind) {
 
 // 等待指定 sid 的 turn-complete 事件，返回 { sid, status, text }
 // onPartial 回调（如提供）：单家完成时立即调用，让面板单卡片刷新（不必等 Promise.all）
-function _rtExtractStreamingText(sid) {
+// Card optimization Task 5+6（2026-05-01）— 流式预览净化（方案 B 升级版）
+//   旧实现：每 1500ms 抽 PTY ringBuffer 尾部 + ANSI 剥离 → 把 TUI throbbing 文本（Claude
+//          "thinking more with..."、cursor 控制序列残留）一起送进 renderer preview。
+//   新实现：优先取 transcript-tap 的结构化 blocks（thinking / text / tool_use）；
+//          tap 没数据（启动头几秒 / Claude 第一轮 Stop hook 还没触发）才走 PTY 兜底。
+//   返回 { source: 'tap'|'pty', blocks: Array<Block>, text: string }
+//          - blocks：renderer 结构化渲染（区分 thinking/tool_use/text 三类）
+//          - text：旧 IPC 字段兼容（仅 text 块拼接 + slice(-500)），老 renderer 也能用
+//   kind 参数：当前未在函数体使用（保留为 API 稳定性，便于将来按 kind 切 ANSI 处理策略）。
+function _rtExtractStreamingText(sid, _kind) {
+  const tapBlocks = transcriptTap.getStreamingText(sid);
+  if (Array.isArray(tapBlocks) && tapBlocks.length > 0) {
+    const text = tapBlocks
+      .filter(b => b.type === 'text' && typeof b.text === 'string')
+      .map(b => b.text)
+      .join('')
+      .slice(-500);
+    return { source: 'tap', blocks: tapBlocks, text };
+  }
+
+  // PTY 兜底：保留原有过滤逻辑，剥离 ANSI / 圆桌标记 / 提示符
   const buf = sessionManager.getSessionBuffer(sid);
-  if (!buf) return '';
+  if (!buf) return { source: 'pty', blocks: [], text: '' };
   const cleaned = buf
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
     .replace(/\x1b\][^\x07]*\x07/g, '')
@@ -670,7 +690,8 @@ function _rtExtractStreamingText(sid) {
       usable.unshift(line);
     }
   }
-  return usable.join('\n').trim().slice(-500);
+  const text = usable.join('\n').trim().slice(-500);
+  return { source: 'pty', blocks: text ? [{ type: 'text', text }] : [], text };
 }
 
 // Stage 2 容错升级（2026-05-01）— 用 turn-completion-watcher 替代老 watchdog 实现
@@ -731,13 +752,22 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   _activeWatchers.set(sid, watcher);
 
   // streaming partial 流式推送（保留现有体验，每 1500ms 推一次终端实时文本）
+  // Card optimization Task 5+6（2026-05-01）：onPartial 现在收到 { sid, label, status, blocks, source, text }
+  //   — blocks 让 renderer 结构化渲染（thinking/tool_use 高亮）；text 是兼容字段。
   let streamTimer = null;
   if (typeof onPartial === 'function') {
     streamTimer = setInterval(() => {
       if (watcher.isSettled()) { clearInterval(streamTimer); streamTimer = null; return; }
-      const text = _rtExtractStreamingText(sid);
-      if (text.length > 10) {
-        try { onPartial({ sid, label, status: 'streaming', text }); } catch {}
+      const session = sessionManager.getSession(sid);
+      const kind = session?.kind || 'unknown';
+      const result = _rtExtractStreamingText(sid, kind);
+      if (result.text.length > 10 || result.blocks.length > 0) {
+        try {
+          onPartial({
+            sid, label, status: 'streaming',
+            blocks: result.blocks, source: result.source, text: result.text,
+          });
+        } catch {}
       }
     }, 1500);
   }
@@ -814,6 +844,12 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     const sidLabelFn = (sid) => labelMap.get(sid) || 'AI';
     const sidByKind = (kind) => subs.find(x => x.kind === kind)?.sid;
 
+    // Card optimization Task 6（2026-05-01）— 本轮开始前清空所有 sub 的 streamingBuf。
+    //   不清的话，上一轮残留的 thinking/text/tool_use blocks 会污染本轮 partial preview。
+    for (const sub of subs) {
+      try { transcriptTap.clearStreamingBuf(sub.sid); } catch {}
+    }
+
     const sceneObj = scenes.getScene(meeting.scene);
     const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
 
@@ -875,12 +911,17 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       _rtWaitTurnComplete(t.sid, t.label, {
         meetingId, mode, turnNum,
         onPartial: (partial) => {
-          console.log(`[roundtable] turn ${turnNum} partial: ${partial.label} ${partial.status} (${partial.text.length} chars)`);
+          const partialTextLen = (partial.text || '').length;
+          console.log(`[roundtable] turn ${turnNum} partial: ${partial.label} ${partial.status} (${partialTextLen} chars, ${(partial.blocks || []).length} blocks, src=${partial.source || '-'})`);
           // Card redesign：转发 thinkSec/tokens 给 renderer 让卡片实时显示"本轮"统计
+          // Card optimization Task 6：blocks + source 字段让 renderer 用结构化渲染替代 plain text
           sendToRenderer('roundtable-partial-update', {
             meetingId, turnNum, mode,
             sid: partial.sid, label: partial.label,
-            status: partial.status, text: partial.text,
+            status: partial.status,
+            text: partial.text,
+            blocks: partial.blocks,
+            source: partial.source,
             thinkSec: partial.thinkSec, tokens: partial.tokens,
           });
         },
@@ -1062,10 +1103,13 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
 
   console.log(`[resend] start sid=${sid.slice(0, 8)} kind=${kind} turn=${lastTurn.n} mode=${lastTurn.mode}`);
 
+  // Card optimization Task 6（2026-05-01）— resend 开始前清这家 streamingBuf
+  try { transcriptTap.clearStreamingBuf(sid); } catch {}
+
   // 1. 立即推 partial-update：卡片切回 thinking（红色 → 进度条）
   sendToRenderer('roundtable-partial-update', {
     meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-    sid, label, status: 'streaming', text: '',
+    sid, label, status: 'streaming', text: '', blocks: [], source: 'tap',
   });
 
   // 2. 检测 PTY 是否需要重启 CLI
@@ -1140,14 +1184,18 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
   _activeWatchers.set(sid, watcher);
 
   // streaming partial（同 _rtWaitTurnComplete 的体验）
+  // Card optimization Task 5+6（2026-05-01）：partial-update payload 现在带 blocks/source 字段。
   const streamTimer = setInterval(() => {
     if (watcher.isSettled()) { clearInterval(streamTimer); return; }
-    const text = _rtExtractStreamingText(sid);
-    if (text.length > 10) {
+    const result = _rtExtractStreamingText(sid, kind);
+    if (result.text.length > 10 || result.blocks.length > 0) {
       try {
         sendToRenderer('roundtable-partial-update', {
           meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-          sid, label, status: 'streaming', text,
+          sid, label, status: 'streaming',
+          text: result.text,
+          blocks: result.blocks,
+          source: result.source,
         });
       } catch {}
     }
