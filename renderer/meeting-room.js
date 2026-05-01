@@ -356,13 +356,16 @@
       } else if (status === 'streaming') {
         if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
         // T7：streaming 状态下也走 blocks 渲染（如 transcript-tap 已就绪），fallback 到旧 snippet
+        // fix（2026-05-01 多方审查反馈方案 C）：tap 没数据时不再 fallback 到 PTY ringBuffer
+        //   （会被 Claude TUI throbbing 字符 / Codex prompt echo 残片污染）。
+        //   显示"💭 思考中..."占位，承认 streaming 阶段 PTY 不可信，等 transcript 落盘再渲染。
         let inner;
         if (blocksFromPartial) {
           inner = _renderPreviewBlocks(blocksFromPartial);
         } else if (textFromPartial) {
           inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }]);
         } else {
-          inner = '';
+          inner = '<div class="mr-ft-thinking-placeholder">💭 思考中...</div>';
         }
         bottomHtml = `<div class="mr-ft-preview streaming mr-ft-preview-md">${inner}<span class="mr-ft-cursor"></span></div>`;
       } else if (blocksFromPartial || textFromPartial || textFromHistory) {

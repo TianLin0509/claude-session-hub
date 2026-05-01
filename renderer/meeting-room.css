@@ -608,6 +608,15 @@
 }
 .mr-ft-think::before { content: "💭 "; }
 
+/* Card optimization fix（2026-05-01 多方审查反馈方案 C）—— streaming 期 tap 没数据的占位 */
+.mr-ft-thinking-placeholder {
+  color: var(--text-dim, #8b949e);
+  font-style: italic;
+  font-size: 12.5px;
+  padding: 4px 0;
+  user-select: none;
+}
+
 .mr-ft-tool {
   display: inline-block;
   background: rgba(57, 208, 216, 0.12);
@@ -1683,19 +1692,47 @@
   border: none;
 }
 
-/* 沉浸模式下 cards 区（.mr-rt-panel）抢占 mr-terminals 让出的高度。
-   原 .mr-rt-panel 是 flex-shrink:0（按内容高度），沉浸时升级为 flex:1 + 滚动。 */
+/* Card optimization Task 9 fix v2（2026-05-01）— 沉浸模式让 cards 真正变大。
+   多方审查反馈：v1 只让外层 .mr-rt-panel flex:1 1 auto 抢占空间，但内部 .mr-ft-strip
+   仍是 grid，每张 .mr-ft 卡片固定 min-height:220px → 父级长大但子元素不长。
+   修复：沉浸时 .mr-rt-panel 变 flex column；.mr-ft-strip flex:1 + height:100% +
+   grid-auto-rows:1fr 让 grid 行高 stretch；.mr-ft 取消 220px 固定改 height:100%；
+   .mr-rt-history 用 margin-top:auto 下沉到 toolbar 上方（紧贴底部）。 */
 .mr-rt-panel {
   transition: flex 240ms ease-out;
 }
 #meeting-room-panel.immersive .mr-rt-panel {
   flex: 1 1 auto;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
+  overflow: hidden;
+}
+#meeting-room-panel.immersive .mr-ft-strip {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  /* grid 子项需要明确告诉 stretch（默认 grid-auto-rows: auto 不会让卡片填高） */
+  grid-auto-rows: 1fr;
+  align-items: stretch;
+}
+#meeting-room-panel.immersive .mr-ft {
+  /* 取消调试模式的 min-height:220px（line 1396 区块），让卡片填满 grid 行高 */
+  min-height: 0 !important;
+  height: 100%;
+}
+/* 卡片内部 preview 区在大空间下也得能滚动，否则超长 markdown 顶爆卡片 */
+#meeting-room-panel.immersive .mr-ft-preview {
+  min-height: 0;
+  overflow-y: auto;
+}
+/* 历史轮次 toggle 沉到 cards-strip 之下、toolbar 之上 */
+#meeting-room-panel.immersive .mr-rt-history {
+  margin-top: auto;
+  flex-shrink: 0;
 }
 
-/* cards strip 在沉浸模式下不必特殊撑满（panel 仍按既有 grid 渲染）；
-   保留 flex transition 以备未来需要 */
+/* 调试模式默认行为：strip 用 grid 自然布局（保留 transition 以备未来需要） */
 .mr-ft-strip {
   transition: flex 240ms ease-out;
 }

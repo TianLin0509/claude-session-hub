@@ -110,6 +110,31 @@ test('沉浸 CSS 不能影响 .mr-toolbar / .mr-input-row（toolbar/input 必须
     `沉浸模式下严禁影响 toolbar/input：发现违规规则 ${violators.join(', ')}`);
 });
 
+test('沉浸模式下 cards 真正撑大（fix v2：strip flex:1 + grid-auto-rows:1fr + ft height:100%）', () => {
+  // .mr-rt-panel 在沉浸下必须 display:flex + flex-direction:column
+  assert.match(CSS, /#meeting-room-panel\.immersive\s+\.mr-rt-panel[\s\S]{0,200}flex-direction:\s*column/,
+    '.mr-rt-panel 沉浸下需 flex column');
+  // .mr-ft-strip 在沉浸下需 flex:1 + grid-auto-rows:1fr 让 grid 行高 stretch
+  assert.match(CSS, /#meeting-room-panel\.immersive\s+\.mr-ft-strip[\s\S]{0,300}grid-auto-rows:\s*1fr/,
+    '.mr-ft-strip 沉浸下需 grid-auto-rows:1fr');
+  assert.match(CSS, /#meeting-room-panel\.immersive\s+\.mr-ft-strip[\s\S]{0,300}flex:\s*1/,
+    '.mr-ft-strip 沉浸下需 flex:1');
+  // .mr-ft 沉浸下需 min-height:0 + height:100%（取消默认 220px）
+  assert.match(CSS, /#meeting-room-panel\.immersive\s+\.mr-ft[\s\S]{0,200}height:\s*100%/);
+  // .mr-rt-history 沉浸下 margin-top:auto 下沉到底
+  assert.match(CSS, /#meeting-room-panel\.immersive\s+\.mr-rt-history[\s\S]{0,150}margin-top:\s*auto/);
+});
+
+test('streaming preview 占位（多方审查方案 C）：tap 没数据时显示"思考中..."而非 PTY 脏文本', () => {
+  // renderer 在 streaming + 无 blocks/text 时必须输出 .mr-ft-thinking-placeholder
+  assert.match(JS, /mr-ft-thinking-placeholder[\s\S]{0,80}思考中/);
+  // CSS 含 .mr-ft-thinking-placeholder 样式
+  assert.match(CSS, /\.mr-ft-thinking-placeholder\s*\{/);
+  // main.js 已移除 PTY ringBuffer fallback（_rtExtractStreamingText 不再含 ANSI strip 链）
+  assert.ok(!/sessionManager\.getSessionBuffer\(sid\)[\s\S]{0,400}\\x1b\[/.test(MAIN),
+    'main.js _rtExtractStreamingText 不应再 fallback 到 PTY ringBuffer + ANSI strip');
+});
+
 test('main.js 含 IPC handlers save/get-immersive-mode', () => {
   assert.match(MAIN, /ipcMain\.handle\s*\(\s*['"]save-immersive-mode['"]/);
   assert.match(MAIN, /ipcMain\.handle\s*\(\s*['"]get-immersive-mode['"]/);

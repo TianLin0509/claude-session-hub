@@ -674,15 +674,15 @@ async function _rtSendToPty(sid, prompt, kind) {
 
 // 等待指定 sid 的 turn-complete 事件，返回 { sid, status, text }
 // onPartial 回调（如提供）：单家完成时立即调用，让面板单卡片刷新（不必等 Promise.all）
-// Card optimization Task 5+6（2026-05-01）— 流式预览净化（方案 B 升级版）
-//   旧实现：每 1500ms 抽 PTY ringBuffer 尾部 + ANSI 剥离 → 把 TUI throbbing 文本（Claude
-//          "thinking more with..."、cursor 控制序列残留）一起送进 renderer preview。
-//   新实现：优先取 transcript-tap 的结构化 blocks（thinking / text / tool_use）；
-//          tap 没数据（启动头几秒 / Claude 第一轮 Stop hook 还没触发）才走 PTY 兜底。
-//   返回 { source: 'tap'|'pty', blocks: Array<Block>, text: string }
-//          - blocks：renderer 结构化渲染（区分 thinking/tool_use/text 三类）
-//          - text：旧 IPC 字段兼容（仅 text 块拼接 + slice(-500)），老 renderer 也能用
-//   kind 参数：当前未在函数体使用（保留为 API 稳定性，便于将来按 kind 切 ANSI 处理策略）。
+// Card optimization Task 5+6+12（2026-05-01）— 流式预览净化（方案 C：tap 优先 + placeholder 兜底）
+//   v1（T5/T6）：tap 没数据时退到 PTY ringBuffer + ANSI 剥离 + 行级黑名单。
+//   v2（fix）：用户多方审查反馈——PTY 流式期本质不可信（Claude TUI throbbing
+//             "thinking with xhigh effort"/"Waddling..." 装饰行 + Codex prompt echo
+//             残片 "W/Wo/or" 都进过 preview）。三家审查（Gemini/Codex/DeepSeek V4-pro）
+//             一致推荐方案 C：放弃 PTY 兜底，没 tap 数据就显示空 + renderer 端"💭 思考中…"
+//             占位，承认 streaming 阶段 PTY 内容不可信。
+//   返回 { source: 'tap'|'placeholder', blocks: Array<Block>, text: string }
+//   kind 参数保留为 API 稳定性（未使用）。
 function _rtExtractStreamingText(sid, _kind) {
   const tapBlocks = transcriptTap.getStreamingText(sid);
   if (Array.isArray(tapBlocks) && tapBlocks.length > 0) {
@@ -694,32 +694,9 @@ function _rtExtractStreamingText(sid, _kind) {
     return { source: 'tap', blocks: tapBlocks, text };
   }
 
-  // PTY 兜底：保留原有过滤逻辑，剥离 ANSI / 圆桌标记 / 提示符
-  const buf = sessionManager.getSessionBuffer(sid);
-  if (!buf) return { source: 'pty', blocks: [], text: '' };
-  const cleaned = buf
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-    .replace(/\x1b\][^\x07]*\x07/g, '')
-    .replace(/\x1b[()][0-9A-Za-z]/g, '')
-    .replace(/\x1b[=><%]/g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
-    .replace(/\r/g, '');
-  const lines = cleaned.split('\n');
-  const usable = [];
-  let started = false;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!started && line.length > 0) started = true;
-    if (started) {
-      if (/^(PS |>|\$|❊|Cooked for|bypass permissions|Claude Code v)/.test(line)) break;
-      if (/^\[.*圆桌.*轮/.test(line)) break;
-      if (/^(##\s*用户问题|请独立回答)/.test(line)) break;
-      if (/quota\s+--?no.sandbox|gemini\s+--approval/.test(line)) break;
-      usable.unshift(line);
-    }
-  }
-  const text = usable.join('\n').trim().slice(-500);
-  return { source: 'pty', blocks: text ? [{ type: 'text', text }] : [], text };
+  // 没有结构化 tap 数据（Claude streaming 期 Stop hook 未触发 / Codex spike FAIL 永远走兜底）
+  //   → 返回空，renderer 显示"💭 思考中…"占位。**不再回退 PTY ringBuffer。**
+  return { source: 'placeholder', blocks: [], text: '' };
 }
 
 // Stage 2 容错升级（2026-05-01）— 用 turn-completion-watcher 替代老 watchdog 实现
@@ -782,18 +759,33 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   // streaming partial 流式推送（保留现有体验，每 1500ms 推一次终端实时文本）
   // Card optimization Task 5+6（2026-05-01）：onPartial 现在收到 { sid, label, status, blocks, source, text }
   //   — blocks 让 renderer 结构化渲染（thinking/tool_use 高亮）；text 是兼容字段。
+  // fix（2026-05-01 多方审查反馈）：tap 没数据时 result.blocks 为空 + source='placeholder'，
+  //   仍然推一次 partial 让 renderer 切到 streaming 状态显示"💭 思考中…"占位（避免卡片
+  //   一直停在 idle / initializing）。同时 watcher 自身已发 status 信号，partial 是补充。
   let streamTimer = null;
   if (typeof onPartial === 'function') {
+    let placeholderEmitted = false;
     streamTimer = setInterval(() => {
       if (watcher.isSettled()) { clearInterval(streamTimer); streamTimer = null; return; }
       const session = sessionManager.getSession(sid);
       const kind = session?.kind || 'unknown';
       const result = _rtExtractStreamingText(sid, kind);
-      if (result.text.length > 10 || result.blocks.length > 0) {
+      const hasContent = result.text.length > 10 || result.blocks.length > 0;
+      if (hasContent) {
         try {
           onPartial({
             sid, label, status: 'streaming',
             blocks: result.blocks, source: result.source, text: result.text,
+          });
+        } catch {}
+      } else if (!placeholderEmitted) {
+        // 第一次没拿到 tap 数据，推一次 placeholder partial 让卡片状态切到 streaming
+        // （后续轮询不再重复推 placeholder，避免 IPC 噪音；等真有 tap 数据才再触发 push）
+        placeholderEmitted = true;
+        try {
+          onPartial({
+            sid, label, status: 'streaming',
+            blocks: [], source: 'placeholder', text: '',
           });
         } catch {}
       }
@@ -2452,10 +2444,26 @@ app.whenReady().then(async () => {
   startAgentScanner();
   // Mobile server starts after window — no need to block UI for phone pairing.
   try {
+    const feishuCodexToken = process.env.HUB_FEISHU_CODEX_TOKEN || '';
     mobileSrv = await createMobileServer({
       sessionManager,
       preferredPort: 3470,
       getDormantSessions: () => lastPersistedSessions,
+      feishuCodex: feishuCodexToken ? {
+        token: feishuCodexToken,
+        defaultCwd: process.env.HUB_FEISHU_CODEX_CWD || path.join(_home, 'claude-session-hub'),
+        sendMessage: async (msg) => {
+          // MVP adapter: inbound Feishu-compatible events are functional now.
+          // Official Feishu card delivery will replace this sink once app credentials
+          // and tenant policy are confirmed. Keep it explicit instead of silently
+          // pretending messages were sent to Feishu.
+          console.log('[feishu-codex]', JSON.stringify({
+            threadKey: msg.threadKey,
+            type: msg.type,
+            text: msg.text,
+          }));
+        },
+      } : null,
     });
     console.log(`[mobile] listening on :${mobileSrv.port}`);
     global.__mobileSrv = mobileSrv;
