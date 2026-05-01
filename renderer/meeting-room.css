@@ -1820,3 +1820,76 @@
   pointer-events: auto;
 }
 .mr-rt-tb-pick.dim { opacity: 0.45; }
+
+/* pilot-mode Task 7（2026-05-01）— 主驾回顾折叠卡片 + 切段菜单 */
+.mr-pilot-recap-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+.mr-pilot-recap-card {
+  background: #161b22;
+  border: 1px solid #bc8cff;
+  border-radius: 8px;
+  padding: 10px 14px;
+  box-shadow: 0 0 24px rgba(188, 140, 255, 0.10);
+}
+.mr-pilot-recap-header {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600;
+}
+.mr-pilot-recap-title { color: #bc8cff; flex: 0 1 auto; }
+.mr-pilot-recap-actions {
+  margin-left: auto;
+  display: flex; gap: 6px; align-items: center;
+  position: relative;
+}
+.mr-pilot-recap-toggle, .mr-pilot-segment-btn {
+  background: #1c232c; border: 1px solid #30363d;
+  border-radius: 3px; padding: 3px 10px;
+  font-size: 11.5px; color: #e6edf3; cursor: pointer;
+  font-family: inherit;
+}
+.mr-pilot-recap-toggle:hover { background: #30363d; }
+.mr-pilot-segment-btn {
+  background: rgba(63, 185, 80, 0.10);
+  border-color: #3fb950; color: #3fb950;
+}
+.mr-pilot-segment-btn:hover:not([disabled]) { background: rgba(63, 185, 80, 0.18); }
+.mr-pilot-segment-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.mr-pilot-segment-mode-wrap { position: relative; }
+.mr-pilot-segment-menu {
+  position: absolute; right: 0; top: calc(100% + 4px);
+  background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+  padding: 4px 0; min-width: 240px;
+  z-index: 200; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.mr-pilot-segment-menu div {
+  padding: 7px 14px; font-size: 12px; cursor: pointer; color: #e6edf3;
+  white-space: nowrap;
+}
+.mr-pilot-segment-menu div:hover { background: rgba(63, 185, 80, 0.12); }
+.mr-pilot-recap-body {
+  margin-top: 10px;
+  font-size: 13px; color: #e6edf3; line-height: 1.55;
+}
+.mr-pilot-recap-text { margin-bottom: 10px; }
+.mr-pilot-recap-segments {
+  background: #0d1117; border-radius: 4px; padding: 10px 12px;
+  font-family: "JetBrains Mono", Consolas, monospace; font-size: 11.5px;
+  white-space: pre; overflow-x: auto; color: #8b949e;
+  margin: 0;
+}
+
+/* pilot-mode Task 8（2026-05-01）— 主驾期间占位 */
+.mr-pilot-placeholder {
+  background: rgba(248, 81, 73, 0.06);
+  border: 1px dashed rgba(248, 81, 73, 0.4);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  font-size: 12px;
+  color: #f85149;
+  font-style: italic;
+}

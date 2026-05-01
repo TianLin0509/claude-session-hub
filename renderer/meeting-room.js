@@ -678,8 +678,12 @@
     const expectedSids = Array.isArray(meeting.subSessions) ? meeting.subSessions.slice() : [];
     const cmdBar = _renderCmdBar(state.turns, mode, partialBy, expectedSids);
     const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
-    // Stage 2 容错升级：软提醒 banner 容器（按需显示，详见 'roundtable-soft-alert' IPC 监听）
+    // Stage 2 容错升级：软提醒 banner 容器
     const softBanner = `<div id="mr-rt-soft-alert-banner" class="mr-rt-soft-alert-banner" style="display:none"></div>`;
+    // pilot-mode Task 7（2026-05-01）：[主驾回顾] 折叠卡片 + 主驾期间占位容器。
+    //   _timeline 中所有 tag='pilot-recap' 条目都渲染在卡片下方、history 上方。
+    const pilotRecaps = _renderPilotRecapsHtml(meeting);
+    const pilotPlaceholder = `<div id="mr-pilot-placeholder-container"></div>`;
     return `
       <div class="mr-rt-track">
         <div class="mr-rt-track-row">
@@ -693,8 +697,116 @@
       ${softBanner}
       ${fusedTabs}
       ${onboarding}
+      <div id="mr-pilot-recap-container" class="mr-pilot-recap-container">${pilotRecaps}</div>
+      ${pilotPlaceholder}
       ${history}
     `;
+  }
+
+  // pilot-mode Task 7（2026-05-01）：渲染 meeting._timeline 中所有 pilot-recap 条目。
+  //   按 idx 升序（旧→新），每条一张折叠卡，默认收起；用户点 [展开 ▾] 显示摘要 + md 路径 + 段落目录。
+  function _renderPilotRecapsHtml(meeting) {
+    if (!meeting || !Array.isArray(meeting._timeline)) return '';
+    const recaps = meeting._timeline.filter(e => e && e.tag === 'pilot-recap')
+      .sort((a, b) => a.idx - b.idx);
+    return recaps.map(e => _renderPilotRecapEntry(e)).join('');
+  }
+
+  function _renderPilotRecapEntry(entry) {
+    const expandedKey = `pilot-recap-expanded-${entry.idx}`;
+    const expanded = sessionStorage.getItem(expandedKey) === '1';
+    const segs = Array.isArray(entry.segments) ? entry.segments : [];
+    const segLines = segs.map((s, i) =>
+      `   段落 ${i + 1} [行 ${s.mdLineStart}-${s.mdLineEnd}]   ${escapeHtml(s.title || '')}`
+    ).join('\n');
+    const summaryText = String(entry.text || '');
+    const summaryHtml = (typeof _renderMarkdown === 'function')
+      ? _renderMarkdown(summaryText)
+      : `<pre style="white-space:pre-wrap;">${escapeHtml(summaryText)}</pre>`;
+    const segmentBtnLabel = `切段:${entry.segmentMode === 'smart' ? '智能' : '按轮'} ▾`;
+    const mdLine = entry.recapMdPath
+      ? `📂 完整历史: ${escapeHtml(entry.recapMdPath)} (${segs.length} 段)\n${segLines}\n\n若摘要够则直接答；不够可用 Read 工具读对应段落（offset+limit）。`
+      : '';
+    return `
+      <div class="mr-pilot-recap-card" data-recap-idx="${entry.idx}" data-mode="${entry.segmentMode || 'turn'}">
+        <div class="mr-pilot-recap-header">
+          <span>📒</span>
+          <span class="mr-pilot-recap-title">[主驾回顾 · ${escapeHtml(entry.pilotKind || 'AI')} · ${entry.turnCount || 0} 轮]</span>
+          <div class="mr-pilot-recap-actions">
+            <button class="mr-pilot-recap-toggle">${expanded ? '收起 ▴' : '展开 ▾'}</button>
+            <div class="mr-pilot-segment-mode-wrap">
+              <button class="mr-pilot-segment-btn">${segmentBtnLabel}</button>
+              <div class="mr-pilot-segment-menu" style="display:none;">
+                <div data-mode="smart">智能（F5-A · 主驾按主题切）</div>
+                <div data-mode="turn">按轮（F5-B · Hub 按对话轮切）</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mr-pilot-recap-body" style="${expanded ? '' : 'display:none;'}">
+          <div class="mr-pilot-recap-text">${summaryHtml}</div>
+          ${mdLine ? `<pre class="mr-pilot-recap-segments">${mdLine}</pre>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function _bindPilotRecapEvents(scope) {
+    const root = scope || document;
+    root.querySelectorAll('.mr-pilot-recap-card').forEach(card => {
+      if (card.dataset.bound === '1') return;
+      card.dataset.bound = '1';
+      const recapIdx = parseInt(card.dataset.recapIdx, 10);
+
+      // 展开/收起
+      const toggle = card.querySelector('.mr-pilot-recap-toggle');
+      if (toggle) toggle.addEventListener('click', () => {
+        const body = card.querySelector('.mr-pilot-recap-body');
+        const expanded = body.style.display !== 'none';
+        body.style.display = expanded ? 'none' : '';
+        toggle.textContent = expanded ? '展开 ▾' : '收起 ▴';
+        try { sessionStorage.setItem(`pilot-recap-expanded-${recapIdx}`, expanded ? '0' : '1'); } catch {}
+      });
+
+      // 切段菜单
+      const segBtn = card.querySelector('.mr-pilot-segment-btn');
+      const segMenu = card.querySelector('.mr-pilot-segment-menu');
+      let lastModeSwitchTs = 0;
+      if (segBtn && segMenu) {
+        segBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          segMenu.style.display = segMenu.style.display === 'none' ? 'block' : 'none';
+        });
+        segMenu.querySelectorAll('div[data-mode]').forEach(opt => {
+          opt.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const mode = opt.dataset.mode;
+            segMenu.style.display = 'none';
+            // debounce 2s
+            const now = Date.now();
+            if (now - lastModeSwitchTs < 2000) {
+              alert('切换太频繁，请稍候 2s');
+              return;
+            }
+            lastModeSwitchTs = now;
+            const meetingId = activeMeetingId;
+            segBtn.disabled = true;
+            const oldText = segBtn.textContent;
+            segBtn.textContent = '切换中...';
+            try {
+              await ipcRenderer.invoke('roundtable:pilot-segment-mode', { meetingId, recapIdx, mode });
+              // timeline-update IPC 会推回新 entry，自动重渲
+            } catch (err) {
+              console.error('[pilot-segment-mode] failed:', err);
+              alert('切换段落模式失败：' + (err && err.message ? err.message : String(err)));
+              segBtn.textContent = oldText;
+            } finally {
+              segBtn.disabled = false;
+            }
+          });
+        });
+      }
+    });
   }
 
   // 主渲染：从 IPC 拿最新 state 后重绘。
@@ -741,6 +853,10 @@
     const pilotSlotForVisual = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
       ? meeting.pilotSlot : null;
     _applyPilotCardVisual(meeting, pilotSlotForVisual);
+    // 主驾回顾卡片事件绑定（每次重绘后都重新绑）
+    _bindPilotRecapEvents(panel);
+    // 主驾期间 timeline 占位（Task 8）
+    _updatePilotPlaceholder(meeting);
   }
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
@@ -1080,10 +1196,13 @@
       const cached = _rtPanelState[meetingId];
       if (cached) {
         cached._partialBy = null;
-        // 让 refresh 用 server 真值（idle）覆盖
         cached.currentMode = null;
         delete cached.currentSummarizerKind;
       }
+      // pilot-mode Task 8（2026-05-01）：主驾期间累加占位轮次
+      const inPilot = meeting && typeof meeting.pilotSlot === 'number'
+        && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2;
+      if (inPilot) _pilotPlaceholderTurns++;
       refreshRoundtablePanel(meeting);
       if (cached) renderToolbar(meeting);
     }
@@ -1096,6 +1215,52 @@
       refreshRoundtablePanel(meeting);
     }
   });
+
+  // pilot-mode Task 7（2026-05-01）— timeline-append: 主驾切回时主进程推过来的新 recap entry。
+  //   把 entry 追加到内存 meeting._timeline + 重渲 panel（pilot-recap 区域刷新）。
+  //   如果 meeting 不是当前活跃 meeting，仅更新 meetingData 缓存，下次打开时见。
+  ipcRenderer.on('timeline-append', (_event, { meetingId, entry }) => {
+    const meeting = meetingData[meetingId];
+    if (!meeting) return;
+    if (!Array.isArray(meeting._timeline)) meeting._timeline = [];
+    // 防重复追加（idx 已存在则替换）
+    const existingIdx = meeting._timeline.findIndex(e => e && e.idx === entry.idx);
+    if (existingIdx >= 0) meeting._timeline[existingIdx] = entry;
+    else meeting._timeline.push(entry);
+    if (meetingId === activeMeetingId) {
+      refreshRoundtablePanel(meeting);
+    }
+  });
+
+  ipcRenderer.on('timeline-update', (_event, { meetingId, idx, entry }) => {
+    const meeting = meetingData[meetingId];
+    if (!meeting || !Array.isArray(meeting._timeline)) return;
+    const i = meeting._timeline.findIndex(e => e && e.idx === idx);
+    if (i >= 0) meeting._timeline[i] = entry;
+    if (meetingId === activeMeetingId) {
+      refreshRoundtablePanel(meeting);
+    }
+  });
+
+  // pilot-mode Task 8（2026-05-01）— 主驾期间 timeline 占位
+  //   主驾期每次 turn-complete 时增加占位轮次计数；关闭主驾后由 _generatePilotRecap
+  //   推 timeline-append（实际卡片）→ 占位移除。
+  let _pilotPlaceholderTurns = 0;
+  function _updatePilotPlaceholder(meeting) {
+    const containerHost = document.getElementById('mr-pilot-placeholder-container');
+    if (!containerHost) {
+      _pilotPlaceholderTurns = 0;
+      return;
+    }
+    const pilotSlot = (meeting && typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
+      ? meeting.pilotSlot : null;
+    if (pilotSlot === null) {
+      containerHost.innerHTML = '';
+      _pilotPlaceholderTurns = 0;
+      return;
+    }
+    containerHost.innerHTML = `<div class="mr-pilot-placeholder">📒 主驾对话进行中（已 ${_pilotPlaceholderTurns} 轮）...</div>`;
+  }
 
   // Roundtable 单家 partial-update：单卡片立即刷新，不等所有家完成
   ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source }) => {
