@@ -117,19 +117,36 @@ class JsonlTail {
 // 相比 Codex/Gemini 不需要 fs.watch——hook 触发即代表 agent loop 完整结束，
 // 此时尾部 assistant 条目必已 flush。
 
+// Card optimization Task 1（2026-05-01）— ClaudeTap 升级流式 tail：
+//   旧实现：只在 Stop hook 触发时一次性读 transcript 末尾的 last assistant；renderer 看不到 thinking/tool_use。
+//   新实现：notifyStop 首次拿到 transcriptPath 后，启动 JsonlTail；
+//          后续每条新 assistant message_id 块（thinking / text / tool_use）累积到 _streamingBuf；
+//          getStreamingText / clearStreamingBuf 暴露给上层（main.js _rtExtractStreamingText 优先使用）。
+//   降级：notifyStop 永不被调用 → _streamingBuf 永远空 → main.js 走 PTY 兜底（既有体验，不回归）。
+const _CLAUDE_STREAM_BUF_MAX_BYTES = 50000;
+
 class ClaudeTap extends EventEmitter {
   constructor() {
     super();
-    this._bound = new Map(); // hubSessionId → { transcriptPath, lastText }
+    this._bound = new Map(); // hubSessionId → { transcriptPath, lastText, _streamingBuf, _tail }
   }
 
   registerSession(hubSessionId /* , ctx */) {
     if (!this._bound.has(hubSessionId)) {
-      this._bound.set(hubSessionId, { transcriptPath: null, lastText: null });
+      this._bound.set(hubSessionId, {
+        transcriptPath: null,
+        lastText: null,
+        _streamingBuf: [],
+        _tail: null,
+      });
     }
   }
 
   unregisterSession(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    if (entry?._tail) {
+      try { entry._tail.close(); } catch {}
+    }
     this._bound.delete(hubSessionId);
   }
 
@@ -138,13 +155,66 @@ class ClaudeTap extends EventEmitter {
     return e?.lastText || null;
   }
 
+  getStreamingText(hubSessionId) {
+    const e = this._bound.get(hubSessionId);
+    if (!e || !Array.isArray(e._streamingBuf) || e._streamingBuf.length === 0) return null;
+    return [...e._streamingBuf];
+  }
+
+  clearStreamingBuf(hubSessionId) {
+    const e = this._bound.get(hubSessionId);
+    if (e) e._streamingBuf = [];
+  }
+
   // 由 main.js 的 /api/hook/stop 路由调用。transcriptPath 是 CC 原生给的
   // ~/.claude/projects/<slug>/<ccSessionId>.jsonl。
   async notifyStop(hubSessionId, transcriptPath) {
     if (!transcriptPath || !hubSessionId) return;
-    if (!this._bound.has(hubSessionId)) this._bound.set(hubSessionId, {});
+    if (!this._bound.has(hubSessionId)) {
+      this._bound.set(hubSessionId, {
+        transcriptPath: null, lastText: null, _streamingBuf: [], _tail: null,
+      });
+    }
     const entry = this._bound.get(hubSessionId);
     entry.transcriptPath = transcriptPath;
+
+    // 首次拿到路径 → 启动 JsonlTail，让后续轮也能流式
+    if (!entry._tail) {
+      const onLine = (obj) => {
+        if (obj?.type !== 'assistant' || !obj.message?.content) return;
+        const content = obj.message.content;
+        if (!Array.isArray(content)) return;
+        for (const block of content) {
+          if (!block || typeof block !== 'object') continue;
+          if (block.type === 'text' && typeof block.text === 'string') {
+            entry._streamingBuf.push({ type: 'text', text: block.text });
+          } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
+            entry._streamingBuf.push({ type: 'thinking', text: block.thinking });
+          } else if (block.type === 'tool_use' && block.name) {
+            entry._streamingBuf.push({
+              type: 'tool_use',
+              name: block.name,
+              input: block.input || {},
+            });
+          }
+        }
+        // 50KB 头部截断：从尾部累计，直到超出预算就把更早的丢掉
+        let totalLen = 0;
+        for (let i = entry._streamingBuf.length - 1; i >= 0; i--) {
+          const b = entry._streamingBuf[i];
+          const blen = (b.text != null) ? String(b.text).length : JSON.stringify(b.input || {}).length;
+          totalLen += blen;
+          if (totalLen > _CLAUDE_STREAM_BUF_MAX_BYTES) {
+            entry._streamingBuf = entry._streamingBuf.slice(i + 1);
+            break;
+          }
+        }
+      };
+      entry._tail = new JsonlTail(transcriptPath, onLine);
+      await entry._tail.start();
+    }
+
+    // 既有 last assistant message 读取（保持兼容），让外部调用方仍能拿到完整尾部 text
     const text = await readLastAssistantMessageFromClaudeTranscript(transcriptPath);
     if (text) {
       entry.lastText = text;
@@ -513,6 +583,20 @@ class GeminiTap extends EventEmitter {
     if (entry) entry.lastTokens = null;
   }
 
+  // Card optimization Task 2（2026-05-01）— 流式 streamingBuf 接口。
+  //   onLine 累积逻辑见 _bindSession 的 onLine（type:"gemini" 分支）。
+  //   返回数组 Array<Block> | null，与 ClaudeTap 同形（main.js _rtExtractStreamingText 统一处理）。
+  getStreamingText(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    if (!entry || !Array.isArray(entry._streamingBuf) || entry._streamingBuf.length === 0) return null;
+    return [...entry._streamingBuf];
+  }
+
+  clearStreamingBuf(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    if (entry) entry._streamingBuf = [];
+  }
+
   // Stage 2 容错升级（2026-05-01）— 手动提取兜底：
   //   当 Gemini 永不 emit L1/L3 完成信号时（OAuth 异常 / 限流 / 卡死），
   //   用户在 UI 点"一键提取"会调本方法，直接读 JSONL 拼接 sincePromptTs 之后的所有
@@ -765,6 +849,26 @@ class TranscriptTap extends EventEmitter {
       this._gemini.getLastAssistantText(hubSessionId) ||
       null
     );
+  }
+
+  // Card optimization Task 3（2026-05-01）— 顶层流式聚合代理。
+  //   按 claude → gemini → codex 顺序代理（codex 在 spike FAIL 后无 streamingBuf，可选链回退 null）。
+  //   返回 Array<Block> | null，调用方拿到 null 时走 PTY 兜底。
+  getStreamingText(hubSessionId) {
+    return (
+      this._claude.getStreamingText(hubSessionId) ||
+      this._gemini.getStreamingText(hubSessionId) ||
+      (this._codex.getStreamingText ? this._codex.getStreamingText(hubSessionId) : null) ||
+      null
+    );
+  }
+
+  clearStreamingBuf(hubSessionId) {
+    for (const b of [this._claude, this._gemini, this._codex]) {
+      try {
+        if (typeof b.clearStreamingBuf === 'function') b.clearStreamingBuf(hubSessionId);
+      } catch {}
+    }
   }
 
   // Stage 2 容错升级（2026-05-01）— 委托到 GeminiTap，让外部 IPC handler 用统一的
