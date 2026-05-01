@@ -1,5 +1,6 @@
 // core/summary-engine.js
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const { stripAnsi } = require('./ansi-utils');
@@ -198,6 +199,128 @@ class SummaryEngine {
       });
       child.stdin.write(prompt);
       child.stdin.end();
+    });
+  }
+
+  // pilot-mode（2026-05-01）：让任意 5 家 AI（claude / deepseek / glm / codex / gemini）
+  //   都能 headless 生成摘要。pilot 模式关闭时主驾自己生成"不限字数摘要 + 段落目录"。
+  //   失败时调用方走 F5-B 按轮切兜底（plan §Task 4 已规划）。
+  async summarizeWithKind(kind, system, prompt, options = {}) {
+    const timeout = options.timeout || 60000;
+    const model = options.model || null;
+    switch (kind) {
+      case 'claude':
+      case 'claude-resume':
+      case 'deepseek':
+      case 'glm':
+        return this._callClaudeHeadless(kind, system, prompt, timeout, model);
+      case 'codex':
+        return this._callCodexHeadless(system, prompt, timeout, model);
+      case 'gemini':
+        return this._callGeminiPipe(system, prompt);
+      default:
+        throw new Error(`summarizeWithKind: Unsupported kind: ${kind}`);
+    }
+  }
+
+  _buildEnvForKind(kind) {
+    const env = { ...process.env };
+    if (kind === 'claude' || kind === 'claude-resume') return env;
+    // 通过 hub-config 取 DeepSeek / GLM 的 API key + base url（与 session-manager 同源），
+    //   避免在多处复制 secrets.toml 解析逻辑。
+    let cv = {};
+    try {
+      const { getConfig } = require('./hub-config.js');
+      cv = getConfig() || {};
+    } catch (e) {
+      console.warn('[summary-engine] hub-config load failed:', e.message);
+    }
+    if (kind === 'deepseek') {
+      env.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
+      if (cv.deepseekApiKey) env.ANTHROPIC_AUTH_TOKEN = cv.deepseekApiKey;
+      env.CLAUDE_CONFIG_DIR = path.join(os.homedir(), '.claude-deepseek');
+    } else if (kind === 'glm') {
+      if (cv.glmBaseUrl) env.ANTHROPIC_BASE_URL = cv.glmBaseUrl;
+      if (cv.glmApiKey) env.ANTHROPIC_AUTH_TOKEN = cv.glmApiKey;
+      env.CLAUDE_CONFIG_DIR = path.join(os.homedir(), '.claude-glm');
+    }
+    return env;
+  }
+
+  _writeTmpSysFile(system) {
+    const f = path.join(os.tmpdir(), `summary_sys_${Date.now()}_${Math.random().toString(36).slice(2)}.md`);
+    fs.writeFileSync(f, system || '', 'utf8');
+    return f;
+  }
+
+  async _callClaudeHeadless(kind, system, prompt, timeout, model) {
+    const env = this._buildEnvForKind(kind);
+    const sysFile = this._writeTmpSysFile(system);
+    const args = ['-p'];
+    if (model) args.push('--model', model);
+    args.push('--append-system-prompt-file', sysFile);
+    // DeepSeek/GLM 跑在 claude CLI 上，需 bypass permissions 才能 headless 不弹窗
+    if (kind === 'deepseek' || kind === 'glm') args.push('--permission-mode', 'bypassPermissions');
+    try {
+      return await this._spawnAndCollect('claude', args, { env, stdin: prompt }, timeout);
+    } finally {
+      try { fs.unlinkSync(sysFile); } catch {}
+    }
+  }
+
+  async _callCodexHeadless(system, prompt, timeout, model) {
+    const sysFile = this._writeTmpSysFile(system);
+    const args = ['exec', '-', '--skip-git-repo-check', '--json', '--full-auto',
+                  '-c', `model_instructions_file=${sysFile}`];
+    if (model) args.push('--model', model);
+    try {
+      const out = await this._spawnAndCollect('codex', args, { stdin: prompt }, timeout);
+      // Codex JSONL 输出：抽出 item.completed.item.text（或老格式 message.text）
+      return this._extractCodexFinalText(out) || out.trim();
+    } finally {
+      try { fs.unlinkSync(sysFile); } catch {}
+    }
+  }
+
+  _extractCodexFinalText(jsonlOut) {
+    if (!jsonlOut) return '';
+    const lines = jsonlOut.split('\n').filter(l => l.trim());
+    let lastText = '';
+    for (const line of lines) {
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+      // 新协议：{type:'item.completed', item:{type:'message', text:'...'}}
+      if (obj?.type === 'item.completed' && obj.item?.text) lastText = obj.item.text;
+      // 老协议：{type:'message', text:'...'}
+      else if (obj?.type === 'message' && obj.text) lastText = obj.text;
+    }
+    return lastText;
+  }
+
+  _spawnAndCollect(cmd, args, opts, timeout) {
+    return new Promise((resolve, reject) => {
+      const env = opts.env || process.env;
+      const child = spawn(cmd, args, { env, shell: false });
+      let out = '', err = '';
+      child.stdout.on('data', d => out += d.toString());
+      child.stderr.on('data', d => err += d.toString());
+      if (opts.stdin) {
+        child.stdin.on('error', e => { if (e.code !== 'EPIPE') reject(e); });
+        child.stdin.end(opts.stdin);
+      }
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch {}
+        reject(new Error(`${cmd} headless timeout after ${timeout}ms; stderr: ${err.slice(0, 200)}`));
+      }, timeout);
+      child.on('exit', (code) => {
+        clearTimeout(timer);
+        if (code === 0 && out.trim().length > 0) resolve(out.trim());
+        else reject(new Error(`${cmd} exit code=${code}: ${err.slice(0, 300)}`));
+      });
+      child.on('error', (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
     });
   }
 }
