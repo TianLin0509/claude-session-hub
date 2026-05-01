@@ -661,6 +661,7 @@ async function _generatePilotRecap(meetingId, prevSlot) {
     const idx = _appendTimelineRecap(meeting, {
       text, recapMdPath: null, segments: [], segmentMode: 'turn',
       pilotSlot: prevSlot, pilotKind, turnCount: turns.length,
+      _turns: turns.slice(),  // 模式切换 IPC 用
     });
     try { generalRoundtablePrivateStore.clearPrivateTurnsBySid(hubDataDir, meetingId, pilotSid); } catch {}
     return idx;
@@ -724,6 +725,7 @@ ${dialogue}`;
     pilotSlot: prevSlot,
     pilotKind,
     turnCount: turns.length,
+    _turns: turns.slice(),  // 模式切换 IPC 用：保留 turns 副本，避免丢失（store 已清空）
   });
 
   // 清空 sid 索引存储（下个主驾窗口重置，不会卷入老 turns）
@@ -785,6 +787,8 @@ function _appendTimelineRecap(meeting, payload) {
     pilotSlot: payload.pilotSlot,
     pilotKind: payload.pilotKind,
     turnCount: payload.turnCount,
+    // 内部字段，给 pilot-segment-mode IPC 重切段用，前缀 _ 表示不期望前端依赖。
+    _turns: Array.isArray(payload._turns) ? payload._turns : null,
     ts: Date.now(),
   };
   live._timeline.push(entry);
@@ -851,6 +855,87 @@ ipcMain.handle('roundtable:pilot-toggle', async (_e, { meetingId, slotIndex } = 
     }
   }
   return { ok: true, recapIdx };
+});
+
+// pilot-mode Task 5（2026-05-01）— F5-A/B 切段模式切换 IPC
+//   recap 创建时默认 F5-A 智能切；用户点 [切段:智能/按轮 ▾] 可在两模式间切换。
+//   切到 turn 走 splitByTurn 直接重写 md；切到 smart 再调一次主驾生成段落目录。
+//   两次切换最少间隔由 renderer 端 debounce（2s）控制；这里仅做 IPC 校验。
+ipcMain.handle('roundtable:pilot-segment-mode', async (_e, { meetingId, recapIdx, mode } = {}) => {
+  if (!meetingId) throw new Error('Missing meetingId');
+  if (typeof recapIdx !== 'number') throw new Error('Missing recapIdx');
+  if (mode !== 'smart' && mode !== 'turn') throw new Error(`Invalid mode: ${mode} (smart|turn)`);
+  const live = meetingManager.meetings ? meetingManager.meetings.get(meetingId) : null;
+  if (!live) throw new Error(`Meeting not found: ${meetingId}`);
+  const recap = (live._timeline || []).find(e => e.idx === recapIdx);
+  if (!recap || recap.tag !== 'pilot-recap') {
+    throw new Error(`pilot-recap entry not found at idx ${recapIdx}`);
+  }
+  // recap.pilotSlot 还原 turns 来源 sid
+  const subSids = live.subSessions || [];
+  const pilotSid = subSids[recap.pilotSlot];
+  if (!pilotSid) throw new Error(`pilot sid for slot ${recap.pilotSlot} no longer present`);
+  // 注意：recap 生成时已 clearPrivateTurnsBySid，此 IPC 后于 generate 调用，store 是空的。
+  //   要么 plan 设计时假设 store 会保留；要么需要从 md 镜像反向解析 turns。
+  //   折中：保存 turns snapshot 到 recap entry 自身（既不费太多空间，又让模式切换自含）。
+  //   方案：_generatePilotRecap 时在 entry 上挂 _turns（不上 IPC，仅本地 timeline JSON）。
+  //   本 IPC 优先读 recap._turns。
+  const turns = Array.isArray(recap._turns) ? recap._turns : [];
+  if (turns.length === 0) {
+    throw new Error('No turn snapshot on recap entry; cannot rebuild segments');
+  }
+
+  let segments;
+  if (mode === 'turn') {
+    segments = recapBuilder.splitByTurn(turns);
+  } else {
+    // F5-A: 再调主驾产段落目录
+    const pilotSession = sessionManager.getSession(pilotSid);
+    const pilotKind = pilotSession ? pilotSession.kind : (recap.pilotKind || 'unknown');
+    try {
+      const dialogue = turns.map((t, i) =>
+        `[轮 ${i + 1}]\n用户: ${t.userInput || ''}\n你: ${t.response || ''}\n`
+      ).join('\n');
+      const llmOutput = await summaryEngine.summarizeWithKind(
+        pilotKind,
+        '请仅输出对话的段落目录（按主题切，1-10 段，每段一行：`段落 N: <主题>`），不要其他文字。',
+        `对话历史:\n${dialogue}`,
+        { timeout: 60000 }
+      );
+      const { segmentTitles } = _parseSummaryWithSegments(llmOutput);
+      segments = recapBuilder.splitBySmart(turns, segmentTitles || []);
+    } catch (e) {
+      throw new Error(`F5-A segment-mode failed: ${e.message}`);
+    }
+  }
+
+  // 重写 md（沿用原 mdPath，让 renderer 不用更新文件路径）
+  if (recap.recapMdPath) {
+    try {
+      await recapBuilder.rebuildMd(recap.recapMdPath, turns, segments, {
+        pilotKind: recap.pilotKind, pilotSlot: recap.pilotSlot,
+      });
+    } catch (e) {
+      console.warn('[pilot-segment-mode] md rebuild failed:', e.message);
+      // 不抛错，segments 仍写入 entry，UI 仍能显示新目录（仅 md 旧）
+    }
+  }
+
+  recap.segments = segments;
+  recap.segmentMode = mode;
+  // 持久化更新
+  try {
+    const meetingStore = require('./core/meeting-store.js');
+    meetingStore.markDirty(live.id, {
+      _timeline: live._timeline, _cursors: live._cursors, _nextIdx: live._nextIdx,
+      slotSpecs: live.slotSpecs, pilotSlot: live.pilotSlot,
+    });
+  } catch (e) {
+    console.warn('[pilot-segment-mode] markDirty failed:', e.message);
+  }
+  // 推 IPC（renderer 替换 timeline 卡片）
+  sendToRenderer('timeline-update', { meetingId, idx: recapIdx, entry: recap });
+  return { ok: true, segments, segmentMode: mode };
 });
 
 // =====================================================================
@@ -1181,10 +1266,22 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     const targets = []; // [{ sid, kind, label, prompt }]
     let turnNum;
 
+    // pilot-mode Task 6（2026-05-01）：每个 target 独立构建 prompt，让 ctx 携带
+    //   targetSlotIndex 让 buildFanoutPrompt/buildDebatePrompt 决定是否注入 recap 前缀。
+    //   ctx.meeting 直接拿底层引用（live），允许 _maybePilotRecapPrefix 修改 _cursors 防重复注入。
+    const liveMeeting = meetingManager.meetings ? meetingManager.meetings.get(meetingId) : null;
+    const buildCtx = (sub) => ({
+      meeting: liveMeeting,
+      targetSid: sub.sid,
+      targetSlotIndex: subSidsRaw.indexOf(sub.sid),
+    });
+
     if (mode === 'fanout') {
       turnNum = orch.beginTurn('fanout');
-      const prompt = orch.buildFanoutPrompt(turnNum, userInput, null);
-      for (const x of targetSubs) targets.push({ ...x, prompt });
+      for (const x of targetSubs) {
+        const prompt = orch.buildFanoutPrompt(turnNum, userInput, null, buildCtx(x));
+        targets.push({ ...x, prompt });
+      }
     } else if (mode === 'debate') {
       const last = orch.getLastTurn();
       if (!last) {
@@ -1193,7 +1290,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       }
       turnNum = orch.beginTurn('debate');
       for (const x of targetSubs) {
-        const prompt = orch.buildDebatePrompt(turnNum, userInput, last, x.sid, sidLabelFn);
+        const prompt = orch.buildDebatePrompt(turnNum, userInput, last, x.sid, sidLabelFn, buildCtx(x));
         targets.push({ ...x, prompt });
       }
     } else if (mode === 'summary') {
