@@ -1717,13 +1717,15 @@ ipcMain.handle('cli-ready-status', (_e, sessionId) => {
   if (!sessionId) return false;
   const session = sessionManager.getSession(sessionId);
   if (!session) return false;
+  // Plan 阶段 2: 优先读 roundtableReady 快路径 (server 端任何路径确认 ready 后立即 surface)
+  if (sessionManager.getRoundtableReady(sessionId)) return true;
   const kind = session.kind;
   // 非 agent 类型（powershell 等）默认 ready，避免误判
   if (kind === 'powershell' || !_RT_READY_MARKERS[kind]) return true;
   const need = _RT_READY_MARKERS[kind];
   const buf = sessionManager.getSessionBuffer(sessionId) || '';
-  // 空 markers（Claude/GLM）：buffer 长度 ≥ 1500 视为已 ready
-  if (need.length === 0) return buf.length >= 1500;
+  // Plan 阶段 2: 空 markers（Claude/GLM/DeepSeek）阈值 1500 → 500 (router 启动屏偏少)
+  if (need.length === 0) return buf.length >= 500;
   // 有 markers（Gemini/Codex）：任一 marker 出现视为 ready
   return need.some(m => buf.includes(m));
 });

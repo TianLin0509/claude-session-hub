@@ -35,7 +35,7 @@
   function parseRoundtableCommand(text, meeting) {
     if (!meeting || !meeting.scene) return { type: 'normal', text, targets: null };
     let rest = text.trim();
-    const summaryRe = /^@summary\s+@(claude|gemini|codex)\b\s*/i;
+    const summaryRe = /^@summary\s+@(claude|gemini|codex|deepseek|glm)\b\s*/i;
     const debateRe = /^@debate\b\s*/i;
     let m;
     if ((m = rest.match(summaryRe))) {
@@ -50,14 +50,17 @@
     }
     // @<who> 私聊
     const targets = [];
-    const tokenRe = /^@(claude|gemini|codex)\b\s*/i;
+    const tokenRe = /^@(claude|gemini|codex|deepseek|glm)\b\s*/i;
     while (true) {
       const t = rest.match(tokenRe);
       if (!t) break;
       targets.push(t[1].toLowerCase());
       rest = rest.slice(t[0].length);
     }
-    if (targets.length > 0 && targets.length < 3) {
+    // Plan 阶段 2: < 3 改为 < meeting.subSessions.length —— 兼容 5 家场景
+    // (圆桌最多 3 子 session, 但参与者也可能是 deepseek/glm)
+    const totalSubs = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions.length : 3;
+    if (targets.length > 0 && targets.length < totalSubs) {
       return { type: 'rt-private', targetKinds: targets, text: rest };
     }
     return { type: 'rt-fanout', text: rest };
@@ -214,16 +217,20 @@
     if (p && p.parentElement) p.remove();
   }
 
-  // sub session 信息（kind/label/sid）— 用于把 by 字段映射到三家卡片
+  // sub session 信息（kind → {sid, label}）— 用于按 kind 索引找子 session 显示信息。
+  // Plan 阶段 2: 改为按 _KIND_LABELS 动态生成 5 家槽位（claude/gemini/codex/deepseek/glm），
+  // 自动支持 deepseek/glm 私聊与 @summary。每个 kind 只取首个匹配的 sub-session
+  // (5 选 3 + 同 kind 重复 的语义由 slotSpecs 处理，本函数仍按 kind 单值索引)。
   function _getRtSubInfo(meeting) {
-    const subs = { claude: null, gemini: null, codex: null };
+    const subs = {};
+    for (const kind of Object.keys(_KIND_LABELS)) subs[kind] = null;
     if (!meeting || !meeting.subSessions) return subs;
     for (const sid of meeting.subSessions) {
       const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
-      if (!s) continue;
-      if (s.kind === 'claude' && !subs.claude) subs.claude = { sid, label: s.title || 'Claude' };
-      else if (s.kind === 'gemini' && !subs.gemini) subs.gemini = { sid, label: s.title || 'Gemini' };
-      else if (s.kind === 'codex' && !subs.codex) subs.codex = { sid, label: s.title || 'Codex' };
+      if (!s || !s.kind) continue;
+      if (subs[s.kind] === null) {
+        subs[s.kind] = { sid, label: s.title || _KIND_LABELS[s.kind] || s.kind };
+      }
     }
     return subs;
   }
@@ -422,7 +429,7 @@
       let bottomHtml = '';
       if (status === 'thinking') {
         if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
-        bottomHtml = `<div class="mr-ft-progress"><div class="mr-ft-progress-bar ${kind}"></div></div>`;
+        bottomHtml = `<div class="mr-ft-progress"><div class="mr-ft-progress-bar slot-${slotIndex + 1}"></div></div>`;
       } else if (status === 'streaming') {
         if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
         // T7：streaming 状态下也走 blocks 渲染（如 transcript-tap 已就绪），fallback 到旧 snippet
@@ -492,19 +499,23 @@
 
   function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, bottomHtml,
                    thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge, slotIndex) {
-    const cls = ['mr-ft', kind];
+    // 圆桌主题色按 slot 上色（slot 1/2/3 = 皮卡丘/小火龙/杰尼龟），与 kind 解耦：
+    // kind 仍保留为 data-attribute 标识 AI 身份，但 CSS 视觉风格只跟槽位走，
+    // 未来加任意 AI 都不需要补 CSS。
+    const slotIdx = (typeof slotIndex === 'number' && slotIndex >= 0) ? slotIndex : 0;
+    const slotCls = `slot-${slotIdx + 1}`;
+    const cls = ['mr-ft', slotCls];
     if (isActive) cls.push('active');
     // Card redesign：thinking-card / streaming-card 触发头像 bounce 动画
     if (statusCls === 'thinking') cls.push('thinking-card');
     else if (statusCls === 'streaming') cls.push('streaming-card');
 
-    const modelBadge = modelName ? `<span class="mr-ft-model ${kind}">${escapeHtml(modelName)}</span>` : '';
+    const modelBadge = modelName ? `<span class="mr-ft-model ${slotCls}">${escapeHtml(modelName)}</span>` : '';
     const ctxBadge = ctxPct !== null ? `<span class="mr-ft-ctx ${ctxCls}">Ctx ${ctxPct}%</span>` : '';
 
-    // meeting-create-modal（2026-05-01）：圆桌卡片头像与 slot 位置绑定（不与 kind 绑定）。
+    // 圆桌卡片头像与 slot 位置绑定（不与 kind 绑定）。
     //   slot 1 永远皮卡丘，slot 2 永远小火龙，slot 3 永远杰尼龟，便于用户视觉识别
-    //   "哪一格是哪家"。kind 仅用于 CSS 类名 + 颜色映射。
-    const slotIdx = (typeof slotIndex === 'number' && slotIndex >= 0) ? slotIndex : 0;
+    //   "哪一格是哪家"。CSS 主题色亦按 slot 上色（见 .mr-ft.slot-N），kind 仅作 data-attribute。
     const avatarSrc = _avatarBySlot(slotIdx);
     const avatarFb = _avatarFallbackBySlot(slotIdx);
     const avatarHtml = avatarSrc
@@ -552,7 +563,7 @@
         ${avatarHtml}
         <div class="mr-ft-info">
           <div class="mr-ft-row1${row1TimeoutCls}">
-            <span class="mr-ft-name ${kind}">${name}</span>
+            <span class="mr-ft-name ${slotCls}">${name}</span>
             <span class="mr-ft-status ${statusCls}">${statusLabel}</span>${newBadge}
             ${timeStat}
           </div>
@@ -592,7 +603,7 @@
     if (meeting && Array.isArray(meeting.subSessions) && typeof sessions !== 'undefined') {
       for (const sid of meeting.subSessions) {
         const s = sessions.get(sid);
-        if (s) sidToLabel[sid] = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[s.kind] || s.kind;
+        if (s) sidToLabel[sid] = _KIND_LABELS[s.kind] || s.kind;
       }
     }
     const lookupLabel = sid => sidToLabel[sid] || sid.slice(0, 6);
@@ -1030,10 +1041,15 @@
     const state = _rtPanelState[meeting.id];
     if (!state || !Array.isArray(state.turns)) return;
 
-    const labelDisplay = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex' }[kind] || kind;
+    const labelDisplay = _KIND_LABELS[kind] || kind;
     const subs = _getRtSubInfo(meeting);
     const sub = subs[kind];
     const headerLabel = sub && sub.label ? sub.label : labelDisplay;
+    // 抽屉边框色与卡片同槽位 — 按 sid 在 subSessions 数组里的位置算 slot
+    const slotIdxTl = (meeting && Array.isArray(meeting.subSessions))
+      ? Math.max(0, meeting.subSessions.indexOf(sid))
+      : 0;
+    const slotClsTl = `slot-${slotIdxTl + 1}`;
 
     // 收集该 sid 有回答的轮次，按 turn n 倒序（最新在最左）
     const turnsWithAns = state.turns
@@ -1082,7 +1098,7 @@
 
     overlay.innerHTML = `
       <div class="mr-rt-tl-backdrop" data-rt-tl-close="1"></div>
-      <aside class="mr-rt-tl-drawer mr-rt-tl-${escapeHtml(kind)}" role="dialog" aria-label="${escapeHtml(headerLabel)} 时间线">
+      <aside class="mr-rt-tl-drawer mr-rt-tl-${slotClsTl}" role="dialog" aria-label="${escapeHtml(headerLabel)} 时间线">
         <header class="mr-rt-tl-drawer-head">
           <span class="mr-rt-tl-drawer-title">${escapeHtml(headerLabel)} · 历史回答</span>
           <span class="mr-rt-tl-drawer-meta">共 ${turnsWithAns.length} 轮</span>
@@ -2156,9 +2172,10 @@
     // 两模式(通用/投研)统一 toolbar：群策群力 / 总结发言。
     if (_isPanelCapableMeeting(meeting)) {
       const subs = _getRtSubInfo(meeting);
-      const opts = ['claude', 'gemini', 'codex']
+      // Plan 阶段 2: 动态枚举 _KIND_LABELS 全部 kind, 支持 deepseek/glm 作为 @summary 总结人
+      const opts = Object.keys(_KIND_LABELS)
         .filter(k => subs[k])
-        .map(k => `<option value="${k}">${ {claude:'Claude',gemini:'Gemini',codex:'Codex'}[k] }</option>`)
+        .map(k => `<option value="${k}">${escapeHtml(_KIND_LABELS[k])}</option>`)
         .join('');
       const cached = _rtPanelState[meeting.id];
       const inProgress = cached && cached.currentMode && cached.currentMode !== 'idle';
