@@ -346,6 +346,19 @@
           status = 'streaming';
           preview = partial.text || '';
           anyThinking = true;
+        } else if (partial.status === 'absent') {
+          status = 'absent';
+          preview = '';
+        } else if (partial.status === 'errored') {
+          status = 'errored';
+          preview = '';
+        } else if (partial.status === 'manual_extracted') {
+          status = 'manual_extracted';
+          preview = partial.text || '';
+        } else if (partial.status === 'soft_alert') {
+          status = 'soft_alert';
+          preview = partial.text || '';
+          anyThinking = true;
         } else {
           status = partial.status === 'timeout' ? 'timeout' : 'completed';
           preview = partial.text || '';
@@ -533,12 +546,12 @@
     else if (statusCls === 'absent') cornerBadge = '<span class="mr-ft-corner-badge absent">缺席</span>';
 
     // 2026-05-02 修订：逃生按钮**永久常驻**（用户血泪反馈：按钮"莫名其妙消失"
-    //   再次发生）。无论卡片状态（idle/completed/thinking/error/...），三大按钮始终
+    //   再次发生）。无论卡片状态（idle/completed/thinking/error/...），两大按钮始终
     //   显示，给用户随时可用的兜底口：
     //     [一键提取]    — 任何状态都能从 transcript 直读拼接
     //     [跳过]        — 任何状态都能跳过本轮 / 暂停后续期待
-    //     [🔧 进 shell] — 任何状态都能进子 session 看真实 PTY
     //   仅 [🔄 重新拉起] 保持仅终态显示（idle 没什么可拉起的，会让用户困惑）。
+    //   截断提示链接（.mr-truncated-hint）仍可触发 enter-shell 切到子 session 主区。
     const isTerminalErrorState = statusCls === 'errored' || statusCls === 'absent';
     const relaunchBtn = isTerminalErrorState
       ? `<button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新拉起该家：重发本轮 prompt">🔄 重新拉起</button>`
@@ -547,7 +560,6 @@
       <div class="mr-ft-escape-bar">
         <button class="mr-ft-escape-btn" data-rt-escape="extract" data-rt-sid="${sid}" data-rt-kind="${kind}" title="从 transcript 直读拼接（卡死时绕过完成检测）">一键提取</button>
         <button class="mr-ft-escape-btn" data-rt-escape="skip" data-rt-sid="${sid}" data-rt-kind="${kind}" title="本轮跳过这家，下游 prompt 不引用">跳过</button>
-        <button class="mr-ft-escape-btn" data-rt-escape="enter-shell" data-rt-sid="${sid}" data-rt-kind="${kind}" title="切换到该家的 shell 主视图，直接查看 PTY 真实输出">🔧 进 shell</button>
         ${relaunchBtn}
       </div>`;
 
@@ -900,7 +912,7 @@
               console.log(`[rt-escape] resend ok: ${kind}`);
             } else {
               // FIX-C 阶段：FIX-F 还没落地前，重发 IPC 是 stub，给用户清晰指引
-              alert(`暂未支持单家"重新拉起"。\n\n建议操作：\n1. 在该卡片底部按"跳过"，下游 prompt 不会引用此家。\n2. 或者发起新一轮（直接提问 / @debate），系统会自动重启卡死的 CLI。\n3. 或者点 [🔧 进 shell] 自己看 PTY 真实情况。\n\n（错误信息：${r?.reason || 'unknown'}）`);
+              alert(`暂未支持单家"重新拉起"。\n\n建议操作：\n1. 在该卡片底部按"跳过"，下游 prompt 不会引用此家。\n2. 或者发起新一轮（直接提问 / @debate），系统会自动重启卡死的 CLI。\n3. 或者从左侧 sidebar 点该子 session 进 shell 看 PTY 真实情况。\n\n（错误信息：${r?.reason || 'unknown'}）`);
             }
           }
         } catch (err) {
@@ -2469,6 +2481,9 @@
     sendBtn.addEventListener('click', doSend);
 
     inputBox.addEventListener('keydown', (e) => {
+      // IME composition (中/日/韩) 中, 回车/方向键是给候选词用的, 不是给应用层。
+      // 不放行就会出现:中文按回车选词被当作"发送"+清空输入框,或方向键被 mention 菜单吃掉。
+      if (e.isComposing || e.keyCode === 229) return;
       const mid = activeMeetingId;
       const currentMeeting = meetingData[mid] || meeting;
       if (_handleRtMentionKeydown(e, inputBox, currentMeeting)) return;
