@@ -43,9 +43,15 @@ class MeetingRoomManager {
       //   形如 [{ index, kind, model }, ...]。subSessions 数组顺序与 slot index 同步，
       //   slotSpecs 保留 kind/model 是为了"再来一次"或诊断信息。
       slotSpecs: Array.isArray(opts.slotSpecs) ? opts.slotSpecs.slice() : null,
-      // pilot-mode（2026-05-01）：当前主驾 slot 索引（0|1|2|null）。null = 未开主驾，
-      //   全员（subSessions[0..2]）共同回答；非 null 时 dispatchRoundtableTurn 只发给该 slot。
+      // pilot redesign（2026-05-02）：
+      //   pilotSlot ∈ {0,1,2,null}：主驾"角色"标识（红框 UI）。仅是身份标签，不切换全局模式。
+      //   dispatchMode ∈ {'all','pilot','observer'}：本轮 prompt 谁开口。
+      //     all       — 全员（默认）；
+      //     pilot     — 仅主驾（pilotSlot 必须 !== null）；
+      //     observer  — 仅副驾两家（pilotSlot 必须 !== null）。
+      //   主驾切换 / 取消主驾时 dispatchMode 自动 reset 为 'all'（避免状态漂移）。
       pilotSlot: null,
+      dispatchMode: 'all',
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -55,9 +61,9 @@ class MeetingRoomManager {
     return { ...meeting, slotSpecs: meeting.slotSpecs ? meeting.slotSpecs.slice() : null };
   }
 
-  // pilot-mode（2026-05-01）：切换主驾 slot。slotIndex=null 表示关闭主驾。
-  //   仅做内存 state + per-meeting JSON 落盘；state.json 的 pilotSlotByMeeting
-  //   由 main.js 在 IPC handler 内顺手维护（与 _immersiveByMeeting 同模式）。
+  // pilot redesign（2026-05-02）：切换主驾 slot。slotIndex=null 表示取消主驾角色。
+  //   切换或取消时同步 reset dispatchMode='all'，避免"主驾切了但还在副驾发言模式"的状态漂移。
+  //   仅做内存 state + per-meeting JSON 落盘；state.json 由 main.js 顺手维护。
   setPilotSlot(meetingId, slotIndex) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;
@@ -65,16 +71,41 @@ class MeetingRoomManager {
       throw new Error(`Invalid pilot slotIndex: ${slotIndex}`);
     }
     m.pilotSlot = slotIndex;
+    m.dispatchMode = 'all';  // 切换主驾自动 reset
     meetingStore.markDirty(meetingId, {
       _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx,
-      slotSpecs: m.slotSpecs, pilotSlot: m.pilotSlot,
+      slotSpecs: m.slotSpecs, pilotSlot: m.pilotSlot, dispatchMode: m.dispatchMode,
     });
-    return { ...m, subSessions: [...m.subSessions], pilotSlot: m.pilotSlot };
+    return { ...m, subSessions: [...m.subSessions], pilotSlot: m.pilotSlot, dispatchMode: m.dispatchMode };
   }
 
   getPilotSlot(meetingId) {
     const m = this.meetings.get(meetingId);
     return m ? (m.pilotSlot ?? null) : null;
+  }
+
+  // pilot redesign（2026-05-02）：设置当前轮 dispatchMode。
+  //   mode ∈ {'all','pilot','observer'}。'pilot' / 'observer' 要求 pilotSlot !== null。
+  setDispatchMode(meetingId, mode) {
+    const m = this.meetings.get(meetingId);
+    if (!m) return null;
+    if (!['all', 'pilot', 'observer'].includes(mode)) {
+      throw new Error(`Invalid dispatchMode: ${mode}`);
+    }
+    if (mode !== 'all' && (m.pilotSlot === null || m.pilotSlot === undefined)) {
+      throw new Error(`dispatchMode '${mode}' requires pilotSlot to be set`);
+    }
+    m.dispatchMode = mode;
+    meetingStore.markDirty(meetingId, {
+      _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx,
+      slotSpecs: m.slotSpecs, pilotSlot: m.pilotSlot, dispatchMode: m.dispatchMode,
+    });
+    return { ...m, subSessions: [...m.subSessions], pilotSlot: m.pilotSlot, dispatchMode: m.dispatchMode };
+  }
+
+  getDispatchMode(meetingId) {
+    const m = this.meetings.get(meetingId);
+    return m ? (m.dispatchMode || 'all') : 'all';
   }
 
   // meeting-create-modal（2026-05-01）：Modal 创建完所有 slot 后调用，
@@ -99,6 +130,7 @@ class MeetingRoomManager {
       _cursors: { ...m._cursors },
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
       pilotSlot: m.pilotSlot ?? null,
+      dispatchMode: m.dispatchMode || 'all',
     } : null;
   }
 
@@ -110,6 +142,7 @@ class MeetingRoomManager {
       _cursors: { ...m._cursors },
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
       pilotSlot: m.pilotSlot ?? null,
+      dispatchMode: m.dispatchMode || 'all',
     }));
   }
 
@@ -200,6 +233,12 @@ class MeetingRoomManager {
       // pilot-mode（2026-05-01）：从 state.json 还原主驾 slot；老 meeting 默认 null（关）。
       pilotSlot: (typeof meetingData.pilotSlot === 'number' && meetingData.pilotSlot >= 0 && meetingData.pilotSlot <= 2)
         ? meetingData.pilotSlot : null,
+      // pilot redesign 迁移（2026-05-02）：旧数据无 dispatchMode 时按 pilotSlot 推断。
+      //   旧 pilotSlot !== null（旧版"开主驾模式"）→ 默认 'pilot'（保留旧行为：仅主驾发言）；
+      //   pilotSlot === null → 默认 'all'。新数据直接读字段。
+      dispatchMode: ['all', 'pilot', 'observer'].includes(meetingData.dispatchMode)
+        ? meetingData.dispatchMode
+        : ((typeof meetingData.pilotSlot === 'number') ? 'pilot' : 'all'),
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,
@@ -231,6 +270,10 @@ class MeetingRoomManager {
     // pilot-mode 兜底回填：state.json 走 _pilotSlotByMeeting，per-meeting JSON 是备份
     if ((m.pilotSlot === null || m.pilotSlot === undefined) && typeof data.pilotSlot === 'number') {
       m.pilotSlot = data.pilotSlot;
+    }
+    // pilot redesign 兜底回填（2026-05-02）：dispatchMode 同样支持 per-meeting JSON 兜底
+    if ((!m.dispatchMode || m.dispatchMode === 'all') && ['all', 'pilot', 'observer'].includes(data.dispatchMode)) {
+      m.dispatchMode = data.dispatchMode;
     }
     return true;
   }

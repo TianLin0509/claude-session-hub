@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌聊天模式系统化设计 (2026-05-02)</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #2c3e50;
+  background: #f5f6fa;
+}
+.container { max-width: 1080px; margin: 0 auto; padding: 32px 28px 60px; }
+header {
+  border-bottom: 3px solid #c8102e;
+  padding-bottom: 16px;
+  margin-bottom: 28px;
+}
+h1 { font-size: 26px; margin: 0 0 6px; color: #1a2533; font-weight: 700; }
+h2 {
+  font-size: 19px;
+  margin: 36px 0 14px;
+  color: #1a2533;
+  border-left: 4px solid #c8102e;
+  padding-left: 12px;
+}
+h3 { font-size: 16px; margin: 22px 0 10px; color: #1a2533; }
+h4 { font-size: 14px; margin: 16px 0 8px; color: #4a5d72; }
+.meta { color: #6b7c93; font-size: 13px; }
+.tldr {
+  background: #fff7e6;
+  border-left: 4px solid #f0a020;
+  padding: 14px 18px;
+  border-radius: 4px;
+  margin: 20px 0 28px;
+}
+.tldr ul { margin: 6px 0 0; padding-left: 22px; }
+.tldr li { margin: 4px 0; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0 18px;
+  font-size: 13px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+th {
+  background: #1a2533;
+  color: #fff;
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 13px;
+}
+td { padding: 8px 12px; border-bottom: 1px solid #e8eaed; vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+tr:hover { background: #fafbfc; }
+code {
+  background: #eef1f5;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: "JetBrains Mono", Consolas, "SF Mono", monospace;
+  font-size: 12.5px;
+  color: #c8102e;
+}
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  margin: 0 2px;
+}
+.badge-keep { background: #d4edda; color: #155724; }
+.badge-drop { background: #f8d7da; color: #721c24; }
+.badge-new { background: #d1ecf1; color: #0c5460; }
+.badge-update { background: #fff3cd; color: #856404; }
+.badge-p0 { background: #c8102e; color: #fff; }
+.badge-p1 { background: #f0a020; color: #fff; }
+.badge-p2 { background: #6b7c93; color: #fff; }
+.callout {
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-left: 4px solid #2c7be5;
+  border-radius: 4px;
+  padding: 14px 18px;
+  margin: 14px 0;
+}
+.callout-warn { border-left-color: #c8102e; background: #fef5f5; }
+.callout-success { border-left-color: #28a745; background: #f1f9f3; }
+.flow {
+  background: #fff;
+  border-radius: 6px;
+  padding: 18px 22px;
+  margin: 14px 0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  color: #1a2533;
+}
+.matrix {
+  display: grid;
+  grid-template-columns: 120px repeat(3, 1fr);
+  gap: 0;
+  background: #fff;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  margin: 14px 0;
+}
+.matrix > div {
+  padding: 10px 12px;
+  border-right: 1px solid #e8eaed;
+  border-bottom: 1px solid #e8eaed;
+  font-size: 13px;
+}
+.matrix > div:nth-child(4n) { border-right: none; }
+.matrix .head {
+  background: #1a2533;
+  color: #fff;
+  font-weight: 600;
+  text-align: center;
+}
+.matrix .row-head {
+  background: #f5f6fa;
+  font-weight: 600;
+}
+.matrix .ok { background: #d4edda; color: #155724; text-align: center; font-weight: 600; }
+.matrix .no { background: #f8d7da; color: #721c24; text-align: center; font-weight: 600; }
+.matrix .meh { background: #fff3cd; color: #856404; text-align: center; font-weight: 600; }
+.cols-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.col-card {
+  background: #fff;
+  border-radius: 6px;
+  padding: 14px 18px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.cols-2 .col-card h4 { margin-top: 0; }
+.option-card {
+  background: #fff;
+  border-radius: 6px;
+  padding: 14px 18px;
+  margin: 10px 0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  border-top: 3px solid #2c7be5;
+}
+.option-card.recommended { border-top-color: #28a745; }
+.option-title {
+  font-weight: 700;
+  font-size: 15px;
+  color: #1a2533;
+  margin-bottom: 6px;
+}
+.option-meta {
+  color: #6b7c93;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+ul.compact li { margin: 3px 0; }
+.kbd {
+  background: #f5f6fa;
+  border: 1px solid #d6dae0;
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 12px;
+}
+.note { color: #6b7c93; font-size: 12.5px; font-style: italic; }
+footer {
+  margin-top: 50px;
+  padding-top: 18px;
+  border-top: 1px solid #e8eaed;
+  color: #6b7c93;
+  font-size: 12px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+<h1>圆桌聊天模式系统化设计</h1>
+<div class="meta">2026-05-02 · 设计探讨稿 · 决策待用户确认 · 不写代码</div>
+</header>
+
+<div class="tldr">
+<strong>TL;DR — 三个核心结论</strong>
+<ul>
+<li>Shell/卡片分离后，<strong>P1 加固范围（hidden buffer / ResizeObserver / unified lifecycle）天然失效</strong>，可全部删除；P0 已 commit 的渲染修复仍保留，无需进一步加固。</li>
+<li>项目已有<strong>两套私聊 API</strong>（旧 kind-keyed `@&lt;who&gt;` 与新 sid-keyed 主驾私聊），<strong>新的那套从未接前端</strong>——这就是"私聊在圆桌上没有特别好的体现"的根因。</li>
+<li>建议把"主驾发言/副驾发言"（圆桌公开层）和"私聊"（子会话深聊层）拆成两个清晰的层次，两套 store 统一为 sid-keyed，归档动作（手动 + autoArchive）作为<strong>私聊→公开</strong>的唯一桥接。</li>
+</ul>
+</div>
+
+<h2>1. 现状审视：最近改动对 plan 的影响</h2>
+
+<h3>1.1 渲染问题：shell/卡片分离消化了大部分 P1 范围</h3>
+<table>
+<thead><tr><th style="width:35%">项</th><th>原状</th><th>当前</th><th style="width:15%">结论</th></tr></thead>
+<tbody>
+<tr><td>P0-1 robustFit 运算符优先级修复</td><td>已 commit (18d0f6b)</td><td>仍在代码里 (<code>renderer/meeting-room.js:2008</code>)</td><td><span class="badge badge-keep">保留</span></td></tr>
+<tr><td>P0-2 fit 后 term.refresh 重绘</td><td>已 commit</td><td>仍在 (<code>:2017-2019</code>)</td><td><span class="badge badge-keep">保留</span></td></tr>
+<tr><td>P0-3 mountSubTerminal 幂等防护</td><td>已 commit</td><td>函数整体已删除（圆桌无终端）</td><td><span class="badge badge-drop">自然消失</span></td></tr>
+<tr><td>P0-4 主进程 SIGWINCH 去重</td><td>已 commit</td><td>仍在 (<code>main.js:1994-2000</code>)</td><td><span class="badge badge-keep">保留</span></td></tr>
+<tr><td>P1-1 hidden 期间 PTY data buffer</td><td>未实施</td><td>圆桌界面已无终端，无隐藏态</td><td><span class="badge badge-drop">删除</span></td></tr>
+<tr><td>P1-2 ResizeObserver 替代手动 fit</td><td>未实施</td><td>子会话区无 hide/show 切换</td><td><span class="badge badge-drop">删除</span></td></tr>
+<tr><td>P1-3 统一 terminal-lifecycle 入口</td><td>未实施</td><td>生命周期已简化（create on selectSession / destroy on leave）</td><td><span class="badge badge-drop">删除</span></td></tr>
+</tbody>
+</table>
+
+<h3>1.2 plan 关键行号校准</h3>
+<table>
+<thead><tr><th>plan 假设</th><th>当前实际</th><th>偏移</th></tr></thead>
+<tbody>
+<tr><td><code>main.js:1184 dispatchRoundtableTurn</code></td><td><code>:1184</code></td><td>0</td></tr>
+<tr><td><code>main.js:798 roundtable:pilot-toggle</code></td><td><code>:798</code></td><td>0</td></tr>
+<tr><td><code>main.js:626 _generatePilotRecap</code></td><td><code>:626</code></td><td>0</td></tr>
+<tr><td><code>core/meeting-room.js:48 meeting 构造</code></td><td><code>:48</code></td><td>0</td></tr>
+<tr><td><code>renderer/meeting-room.js:2151 renderToolbar</code></td><td><code>:2167</code></td><td><strong>+16</strong></td></tr>
+<tr><td><code>renderer/meeting-room.js:2182 mr-rt-debate-btn</code></td><td><code>:2199</code></td><td><strong>+17</strong></td></tr>
+<tr><td><code>renderer/meeting-room.js:2191 mr-pilot-btn</code></td><td><code>:2208</code></td><td><strong>+17</strong></td></tr>
+</tbody>
+</table>
+<p class="note">后端 0 偏移；前端因 toolbar 重构整体 +16~17 行。所有标识符（按钮 id、IPC 名称）保留。</p>
+
+<h2>2. 现状："私聊"在圆桌里的双轨制困境</h2>
+
+<h3>2.1 项目里已有两套私聊 API</h3>
+<div class="cols-2">
+<div class="col-card">
+<h4>旧 API · kind-keyed</h4>
+<p style="margin:6px 0"><code>appendPrivateTurn(meetingId, kind, ...)</code><br><code>listPrivateTurns(meetingId, kind?)</code></p>
+<ul class="compact">
+<li>触发：圆桌里输入 <code>@claude</code> / <code>@gemini</code> / <code>@codex</code></li>
+<li>UI：<strong>有</strong>——圆桌侧"私聊 tab" + 快捷按钮 <span class="kbd">🤫 @私聊</span></li>
+<li>记录：每条只一轮（一问一答）</li>
+<li>语义：圆桌内的"轻量私聊"，副驾不感知</li>
+</ul>
+</div>
+<div class="col-card">
+<h4>新 API · sid-keyed</h4>
+<p style="margin:6px 0"><code>appendPrivateTurnBySid(meetingId, sid, ...)</code><br><code>listPrivateTurnsBySid(meetingId, sid)</code><br><code>clearPrivateTurnsBySid(meetingId, sid)</code></p>
+<ul class="compact">
+<li>触发：pilot mode ON 期间主驾子会话聊天 (<code>main.js:1380</code>)</li>
+<li>UI：<strong>无</strong>——前端从未调用过 <code>listPrivateTurnsBySid</code></li>
+<li>记录：累积多轮，关闭 pilot 时 <code>_generatePilotRecap</code> 读出后清空</li>
+<li>语义：子会话区的"深度私聊"，归档为 recap 时副驾才看到</li>
+</ul>
+</div>
+</div>
+
+<h3>2.2 痛点定位</h3>
+<div class="callout callout-warn">
+<strong>主驾私聊期间，圆桌界面只看到 placeholder「📒 主驾对话进行中」</strong>——没有轮数、没有进度、没有最新片段摘要。副驾完全感知不到主驾刚和用户私下聊了什么；要等用户关闭 pilot mode 触发 recap 后才看得见，<em>为时已晚</em>。
+</div>
+
+<h2>3. 当前所有聊天模式全景（旧）</h2>
+
+<table>
+<thead><tr><th>#</th><th>模式</th><th>触发位置</th><th>谁收 prompt</th><th>谁可见结果</th><th>存储</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>群策群力 fanout</td><td>圆桌</td><td>三家 PTY</td><td>三张卡片 + timeline</td><td>roundtable.json turns</td></tr>
+<tr><td>2</td><td>辩论 debate</td><td>圆桌</td><td>三家 PTY（结合彼此）</td><td>三张卡片 + timeline</td><td>roundtable.json turns</td></tr>
+<tr><td>3</td><td>总结 summary</td><td>圆桌</td><td>选定一家 PTY</td><td>选定卡片 + timeline</td><td>roundtable.json turns</td></tr>
+<tr><td>4</td><td>圆桌 @&lt;who&gt; 私聊</td><td>圆桌</td><td>选定一家 PTY</td><td>仅"私聊 tab"</td><td>kind-keyed store</td></tr>
+<tr><td>5</td><td>主驾发言（pilot mode + 普通发言）</td><td>圆桌</td><td>主驾 PTY</td><td>主驾卡片 + timeline placeholder</td><td>roundtable.json turns</td></tr>
+<tr><td>6</td><td>主驾子会话私聊</td><td>主驾子会话区</td><td>主驾 PTY</td><td><strong>圆桌完全不显示</strong></td><td>sid-keyed store</td></tr>
+<tr><td>7</td><td>主驾归档（关闭 pilot）</td><td>圆桌（按钮）</td><td>—</td><td>recap 卡片 + segment md</td><td>timeline + .md 文件</td></tr>
+<tr><td>8</td><td>独立子会话聊天（无 pilot）</td><td>子会话区</td><td>该 session PTY</td><td>仅 shell 日志</td><td>无（仅 PTY tty）</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+<strong>冗余识别</strong>：
+<ul class="compact">
+<li>模式 4（@&lt;who&gt; 圆桌私聊）和模式 6（主驾子会话私聊）<strong>语义重叠</strong>但 store 不通——同一个用户问"@gemini 你怎么看"和在 Gemini 子会话区单独聊，记录到不同地方，互不可见。</li>
+<li>模式 5（主驾发言）会写 timeline + 卡片摘要——这是<strong>公开发言</strong>而非私聊；但 placeholder「主驾对话进行中」让人误以为 pilot ON 期间所有内容都隐藏。语义混淆。</li>
+<li>模式 7（归档）当前只在 pilot OFF 时触发，无法在不切主驾的情况下手动归档。</li>
+</ul>
+</div>
+
+<h2>4. 设计方案：模式精简 + 私聊统一</h2>
+
+<h3>4.1 三层语义分层</h3>
+<div class="flow">┌─────────────────────────────────────────────────────────────────┐
+│  层 1 · 角色层（pilotSlot）                                       │
+│  ─ 选定一家为"主驾角色"，其余为副驾                              │
+│  ─ 仅是标签 + UI 红框，不影响发言流                              │
+│  ─ 字段：meeting.pilotSlot ∈ {0,1,2,null}                        │
+└─────────────────────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  层 2 · 公开发言层（dispatchMode × mode）                        │
+│  ─ 触发位置：圆桌界面                                              │
+│  ─ 内容写 timeline + 卡片摘要（全员可见）                          │
+│  ─ dispatchMode ∈ {all, pilot, observer} 决定"谁开口"            │
+│  ─ mode ∈ {fanout, debate, summary} 决定"怎么开口"                │
+└─────────────────────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  层 3 · 私聊层（sid-keyed store）                                │
+│  ─ 触发位置：任一子会话区（不限主驾）                              │
+│  ─ 内容写 sid-keyed store，<strong>不</strong>写 timeline / 卡片摘要      │
+│  ─ 圆桌界面通过 banner / 卡片角标提示"X 正在私聊（N 轮）"         │
+└─────────────────────────────────────────────────────────────────┘
+                             │
+                             ▼
+                    ┌────────────────┐
+                    │  桥接：归档     │
+                    │  按钮 OR auto   │
+                    └────────────────┘
+                             │
+                             ▼
+              私聊累积 → recap 卡片 → 圆桌全员可见
+</div>
+
+<h3>4.2 精简后的模式表（7 项核心）</h3>
+<table>
+<thead><tr><th>#</th><th>模式</th><th>层</th><th>触发位置</th><th>谁收</th><th>谁可见</th><th>存储</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>群策群力</td><td>2</td><td>圆桌</td><td>全员</td><td>三张卡片</td><td>timeline</td></tr>
+<tr><td>2</td><td>主驾发言</td><td>2</td><td>圆桌</td><td>主驾</td><td>主驾卡片</td><td>timeline</td></tr>
+<tr><td>3</td><td>副驾发言</td><td>2</td><td>圆桌</td><td>副驾两家</td><td>副驾两张卡片</td><td>timeline</td></tr>
+<tr><td>4</td><td>辩论 debate</td><td>2</td><td>圆桌</td><td>全员/副驾两家</td><td>对应卡片</td><td>timeline</td></tr>
+<tr><td>5</td><td>总结 summary</td><td>2</td><td>圆桌</td><td>选定一家</td><td>选定卡片</td><td>timeline</td></tr>
+<tr><td>6</td><td><strong>私聊（统一）</strong></td><td>3</td><td>任一子会话区</td><td>该 session</td><td>圆桌 banner（轮数提示）</td><td>sid-keyed store</td></tr>
+<tr><td>7</td><td>归档</td><td>桥</td><td>圆桌按钮 / auto</td><td>—</td><td>recap 卡片 + segment md</td><td>timeline + 文件</td></tr>
+</tbody>
+</table>
+
+<div class="callout callout-success">
+<strong>关键简化</strong>：废弃旧 kind-keyed 私聊（模式 4 旧），把"@&lt;who&gt; 圆桌私聊"重定义为"进入该 session 子会话区私聊的快捷入口"，统一到 sid-keyed store。圆桌侧不再有"私聊 tab"，改为<strong>每张卡片右上角的轮数角标</strong>（"私聊 5 轮"），点击展开抽屉看历史。
+</div>
+
+<h3>4.3 dispatchMode × mode 正交矩阵（含禁用组合）</h3>
+<div class="matrix">
+<div class="head">dispatchMode \ mode</div>
+<div class="head">普通发言 (fanout)</div>
+<div class="head">辩论 (debate)</div>
+<div class="head">总结 (summary)</div>
+
+<div class="row-head">群策群力 (all)</div>
+<div class="ok">√ 全员</div>
+<div class="ok">√ 三家辩论</div>
+<div class="ok">√ 选定一家总结全部</div>
+
+<div class="row-head">主驾发言 (pilot)</div>
+<div class="ok">√ 仅主驾</div>
+<div class="no">× 一家无法辩论</div>
+<div class="ok">√ 主驾自总结</div>
+
+<div class="row-head">副驾发言 (observer)</div>
+<div class="ok">√ 仅副驾两家</div>
+<div class="ok">√ 副驾两家互辩</div>
+<div class="ok">√ 副驾选一总结</div>
+</div>
+
+<h2>5. 主驾 / 副驾 + 私聊的配合 UX</h2>
+
+<h3>5.1 典型工作流：「深聊主驾 → 副驾评审 → 切回主驾改稿」</h3>
+<div class="flow">[Step 1] 选定主驾 = Claude
+         ─→ 卡片红框出现，dispatchMode 解锁
+
+[Step 2] 点 Claude 卡片"进 shell" → 进入 Claude 子会话区
+         ─→ 与 Claude 深聊 5 轮（写 sid-keyed store）
+         ─→ 圆桌 banner 实时显示"🚗 Claude 私聊中（5 轮）"
+
+[Step 3] 返回圆桌（点 banner / 顶栏按钮）
+         ─→ Claude 卡片右上角角标"私聊 5 轮"
+
+[Step 4] 圆桌按"归档片段" 按钮 (or autoArchive 自动)
+         ─→ 触发 _generatePilotRecap
+         ─→ recap 卡片出现在 timeline，segment md 写盘
+         ─→ Claude 卡片角标清零
+
+[Step 5] 切 dispatchMode 到"副驾发言 + 辩论"
+         ─→ Gemini + Codex 互相评审 recap 内容
+         ─→ 主驾卡片灰化（保留红框），副驾两张蓝框 + 脉冲
+
+[Step 6] 切 dispatchMode 回"主驾发言"
+         ─→ Claude 看到副驾评审 → 改稿
+         ─→ 进入 Step 2 下一轮深聊
+</div>
+
+<h3>5.2 私聊 UI 反馈（圆桌侧）</h3>
+<table>
+<thead><tr><th>位置</th><th>元素</th><th>触发</th><th>样式</th></tr></thead>
+<tbody>
+<tr><td>圆桌顶栏（toolbar 上方）</td><td>实时 banner</td><td>任意 slot 有未归档私聊</td><td>"🚗 Claude 私聊中（5 轮）· 点击查看 / 归档"</td></tr>
+<tr><td>每张 .mr-ft 卡片右上角</td><td>轮数角标</td><td>该 sid 在 sid-keyed store 有 entries</td><td>蓝色小圆 badge "5"，点击展开抽屉</td></tr>
+<tr><td>卡片抽屉</td><td>私聊历史列表</td><td>点击角标</td><td>滚动列表，每行一轮（user → AI）</td></tr>
+<tr><td>归档按钮</td><td>toolbar 行右侧</td><td>主驾有未归档私聊</td><td>"🗂 归档片段（5 轮）"——点击立即归档</td></tr>
+<tr><td>autoArchive toggle</td><td>toolbar 行</td><td>用户切主驾时是否自动归档</td><td>"🗂 切换归档: ON / OFF"</td></tr>
+</tbody>
+</table>
+
+<h2>6. 落地路径（轻量化分阶段）</h2>
+
+<div class="option-card recommended">
+<div class="option-title"><span class="badge badge-p0">P0</span> 主驾角色 + 分发模式（已有 plan，更新行号）</div>
+<div class="option-meta">范围：~250 行 · 4 commits · 2-3 小时</div>
+<ul class="compact">
+<li>按当前 plan 执行（行号已校准 +16/+17）</li>
+<li>删除 plan 里 P1 三项（hidden buffer / ResizeObserver / unified lifecycle）</li>
+<li>UI：toolbar segmented control + autoArchive toggle + 卡片红框/蓝框 + 状态行</li>
+<li>后端：dispatchMode 路由 + 持久化 + 归档触发条件改写</li>
+</ul>
+</div>
+
+<div class="option-card recommended">
+<div class="option-title"><span class="badge badge-p0">P0+</span> 私聊 UI 透明度（追加到 plan）</div>
+<div class="option-meta">范围：~120 行 · 1 commit · 1-2 小时</div>
+<ul class="compact">
+<li>新增 IPC <code>'pilot-private-turn-added'</code>：<code>main.js:1380</code> appendPrivateTurnBySid 后 sendToRenderer 广播</li>
+<li>渲染端监听 → 卡片右上角更新轮数角标</li>
+<li>圆桌顶栏 banner：当前有未归档私聊时显示"X 私聊中（N 轮）· 归档"</li>
+<li>归档按钮（手动触发）：调 <code>_generatePilotRecap</code> 不依赖 pilot OFF</li>
+</ul>
+</div>
+
+<div class="option-card">
+<div class="option-title"><span class="badge badge-p1">P1</span> 私聊抽屉 + 双轨 store 整合</div>
+<div class="option-meta">范围：~200 行 · 2 commits · 半天</div>
+<ul class="compact">
+<li>卡片角标点击 → 展开"私聊抽屉"（slide-in panel），列出该 sid 的 sid-keyed turns</li>
+<li>整合旧 kind-keyed @&lt;who&gt; 私聊到 sid-keyed（迁移脚本，启动时一次性）</li>
+<li>废弃圆桌侧"私聊 tab"，改为卡片抽屉</li>
+<li>"@私聊"快捷按钮重定义为"进入 X 子会话区私聊"</li>
+</ul>
+</div>
+
+<div class="option-card">
+<div class="option-title"><span class="badge badge-p2">P2</span> 长线扩展</div>
+<div class="option-meta">范围：~300 行 · 3-4 commits · 1-2 天</div>
+<ul class="compact">
+<li>历史 timeline 显示主驾切换 + 归档事件（badge "[主驾切换 Claude→Gemini]"）</li>
+<li>recap 卡片支持"加载历史 .md"快捷链接，点击展开 segment</li>
+<li>副驾对 recap 评审的"自动接力"模板（点 recap 卡片"让副驾点评"按钮 → 自动 dispatchMode='observer' + debate）</li>
+<li>跨 meeting 的"私聊全局视图"（cross-meeting search）</li>
+</ul>
+</div>
+
+<h2>7. plan 更新点（汇总）</h2>
+
+<div class="callout">
+本 HTML 设计稿如经确认，现有 plan 文件 <code>C:\Users\lintian\.claude\plans\claude-session-hub-eager-stream.md</code> 需做以下更新：
+</div>
+
+<table>
+<thead><tr><th>plan 节</th><th>更新内容</th><th>类型</th></tr></thead>
+<tbody>
+<tr><td>前端改动清单（renderer/meeting-room.js 行号）</td><td>2151 → 2167，2182 → 2199，2191 → 2208</td><td><span class="badge badge-update">校准</span></td></tr>
+<tr><td>"不在本范围"小节</td><td>追加："P1 hidden buffer / ResizeObserver / unified lifecycle 已被 shell/卡片分离自然消化，永久放弃"</td><td><span class="badge badge-update">追加</span></td></tr>
+<tr><td>"卡片视觉反馈"小节</td><td>追加：卡片右上角私聊轮数角标 + 圆桌顶栏 banner</td><td><span class="badge badge-new">新增</span></td></tr>
+<tr><td>新增"P0+ 私聊透明度"段落</td><td>IPC 广播 + 角标 + 手动归档按钮（120 行追加）</td><td><span class="badge badge-new">新增</span></td></tr>
+<tr><td>commit 编排</td><td>在 #2 (segmented control) 之后插入 #3 (私聊 UI 透明度)，原 #3 / #4 顺延</td><td><span class="badge badge-update">重排</span></td></tr>
+<tr><td>验证 E2E 场景</td><td>追加：场景 9 "主驾私聊期间圆桌实时反馈"；场景 10 "手动归档（无切主驾）"</td><td><span class="badge badge-update">追加</span></td></tr>
+</tbody>
+</table>
+
+<h2>8. 待你拍板的开放问题</h2>
+
+<ol>
+<li><strong>kind-keyed 旧私聊 API 怎么处理？</strong> 完全废弃 + 迁移到 sid-keyed？还是双轨保留（用户可能习惯了"@私聊"快捷按钮）？</li>
+<li><strong>"私聊抽屉"展开方式？</strong>
+   <ul>
+   <li>A. 点卡片角标 → 抽屉从右滑入（占圆桌一半宽度）</li>
+   <li>B. 点卡片角标 → 弹出 modal（覆盖圆桌）</li>
+   <li>C. 点卡片角标 → 直接跳到该 sid 子会话区（无圆桌侧抽屉）</li>
+   </ul>
+</li>
+<li><strong>banner 位置</strong>：toolbar 上方一整行（醒目但占空间）vs toolbar 内嵌（紧凑但不显眼）？</li>
+<li><strong>P0 + P0+ 一起做还是分两次？</strong> P0+（私聊透明度 ~120 行）追加到 plan 一起 commit，还是 P0 ship 后再起一个 plan？</li>
+<li><strong>"@&lt;who&gt; 圆桌私聊"在新模型里的语义</strong>：是去掉这个概念（用户改用"主驾发言"），还是保留为"快捷创建私聊"（自动选定 &lt;who&gt; 为主驾 + 进入子会话区）？</li>
+</ol>
+
+<footer>
+本文档为设计探讨稿，不代表已实施方案。决策点需用户确认后方进入 plan / 编码。<br>
+关联文件：<code>C:\Users\lintian\.claude\plans\claude-session-hub-eager-stream.md</code>（plan）、<code>C:\Users\lintian\claude-session-hub\core\general-roundtable-private-store.js</code>（私聊 store）、<code>C:\Users\lintian\claude-session-hub\main.js</code>（dispatch + IPC）。
+</footer>
+
+</div>
+</body>
+</html>

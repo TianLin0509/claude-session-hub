@@ -30,51 +30,9 @@ function arenaPromptsDir(hubDataDir) {
   return path.join(hubDataDir, 'arena-prompts');
 }
 
-// pilot-mode Task 6（2026-05-01）— 主驾切回时给副驾的 prompt 注入 recap 前缀的 helper。
-// 找 timeline 最末一条 tag='pilot-recap' 条目；只在以下条件下注入：
-//   1. 当前 target 不是主驾自己（pilotSlot !== ctx.targetSlotIndex）
-//   2. 这次 turn 是 recap 写入后的"第一次回归"（_cursors[sid] <= recap.idx）
-//   3. md 文件还在（recap.recapMdPath 可读，否则只附摘要不附 path）
-// 注入后立即把 cursor 推进到 recap.idx + 1，下次 fanout 不再注入（避免重复）。
-function findLatestPilotRecap(timeline) {
-  if (!Array.isArray(timeline)) return null;
-  for (let i = timeline.length - 1; i >= 0; i--) {
-    const e = timeline[i];
-    if (e && e.tag === 'pilot-recap') return e;
-  }
-  return null;
-}
-
-function _maybePilotRecapPrefix(ctx) {
-  if (!ctx || !ctx.meeting || typeof ctx.targetSlotIndex !== 'number' || !ctx.targetSid) return null;
-  const recap = findLatestPilotRecap(ctx.meeting._timeline);
-  if (!recap) return null;
-  // 主驾自己不注入
-  if (recap.pilotSlot === ctx.targetSlotIndex) return null;
-  // cursor 防重复注入
-  const cursor = (ctx.meeting._cursors && ctx.meeting._cursors[ctx.targetSid]) || 0;
-  if (cursor > recap.idx) return null;
-  // md 漂移检测
-  let mdPathLine = '';
-  if (recap.recapMdPath) {
-    try {
-      fs.accessSync(recap.recapMdPath, fs.constants.R_OK);
-      const segLines = (recap.segments || []).map((s, i) =>
-        `   段落 ${i + 1} [行 ${s.mdLineStart}-${s.mdLineEnd}]   ${s.title}`
-      ).join('\n');
-      mdPathLine = `\n📂 完整历史: ${recap.recapMdPath} (${(recap.segments || []).length} 段)\n${segLines}\n\n若摘要够则直接答；不够可用 Read 工具读对应段落（offset+limit）。`;
-    } catch {
-      // 路径漂移 — 仅注入摘要
-      mdPathLine = '';
-    }
-  }
-  // 推 cursor（注意：mutate ctx.meeting._cursors，让 main.js 把这个 cursor 一起持久化到 state.json）
-  if (ctx.meeting._cursors) ctx.meeting._cursors[ctx.targetSid] = recap.idx + 1;
-  const slotN = recap.pilotSlot + 1;
-  return `## 你刚才暂时离场（用户和 Slot${slotN}（${recap.pilotKind}）通过 ${recap.turnCount} 轮深聊）
-
-${recap.text}${mdPathLine}`;
-}
+// pilot recap injection 已废弃 (2026-05-02)
+//   shell/卡片分离后 pilot recap 整体删除（圆桌只承载协作，私聊去子会话区）。
+//   旧 _maybePilotRecapPrefix / findLatestPilotRecap 实现详见 git 历史。
 
 class RoundtableOrchestrator {
   constructor(hubDataDir, meetingId, scene) {
@@ -158,16 +116,8 @@ class RoundtableOrchestrator {
   // ---------------------------------------------------------------------
 
   // 默认 fanout 轮：用户原话 +（可选）数据包前缀
-  // pilot-mode Task 6（2026-05-01）：可选 ctx 参数让 fanout 给副驾注入主驾 recap 前缀。
-  //   ctx = { meeting, targetSid, targetSlotIndex }
-  //   - meeting._timeline 中找最后一个 tag='pilot-recap' 的 entry
-  //   - 当 entry.pilotSlot !== ctx.targetSlotIndex（即该 target 是副驾）+ 还没注入过
-  //     （cursor 推进检查）→ 在 prompt 顶端拼 recap 摘要 + md 路径 + 段落目录
-  //   - 注入后把 _cursors[targetSid] 推进到 recap.idx + 1（下次 fanout 不再注入）
-  buildFanoutPrompt(turnNum, userInput, dataPack, ctx) {
-    const recapInjection = _maybePilotRecapPrefix(ctx);
+  buildFanoutPrompt(turnNum, userInput, dataPack) {
     const parts = [];
-    if (recapInjection) parts.push(recapInjection, '');
     parts.push(`[${this.scene.name} · 第 ${turnNum} 轮 · 默认提问]`);
     if (this.scene.dataPackEnabled && dataPack && typeof dataPack === 'string' && dataPack.trim().length > 0) {
       parts.push('', '## 数据接入（Hub 自动从 LinDangAgent 拉取）', dataPack);
@@ -181,11 +131,8 @@ class RoundtableOrchestrator {
   // lastTurn = { by: { sid: text } }
   // targetSid = 当前接收 AI 的 sid（不会把它自己的观点发给它）
   // sidLabelFn = (sid) => label string
-  // ctx = pilot-mode 注入上下文（同 buildFanoutPrompt）
-  buildDebatePrompt(turnNum, userInput, lastTurn, targetSid, sidLabelFn, ctx) {
-    const recapInjection = _maybePilotRecapPrefix(ctx);
+  buildDebatePrompt(turnNum, userInput, lastTurn, targetSid, sidLabelFn) {
     const parts = [];
-    if (recapInjection) parts.push(recapInjection, '');
     parts.push(`[${this.scene.name} · 第 ${turnNum} 轮 · @debate]`, '');
     if (userInput && userInput.trim().length > 0) {
       parts.push('## 用户在本轮补充的新信息', userInput, '');
@@ -466,8 +413,6 @@ module.exports = {
   extractDecisionTitle,
   migrateAiStats,
   _isLegacyKindKeyed,
-  findLatestPilotRecap,
-  _maybePilotRecapPrefix,
   SOFT_ALERT_T1_MS,
   SOFT_ALERT_T2_MS,
 };

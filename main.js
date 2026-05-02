@@ -20,12 +20,18 @@ const { createUsageFilter } = require('./core/usage-filter.js');
 const transcriptTap = new TranscriptTap();
 const { DeepSummaryService } = require('./core/deep-summary-service.js');
 const scenes = require('./core/roundtable-scenes.js');
-const generalRoundtablePrivateStore = require('./core/general-roundtable-private-store.js');
 const lindangBridge = require('./core/lindang-bridge.js');
 const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
 const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
 const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-config.js');
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
+
+const STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
+const STARTUP_T0 = Date.now();
+function traceStartup(msg) {
+  if (!STARTUP_TRACE) return;
+  console.log(`[startup +${Date.now() - STARTUP_T0}ms] ${msg}`);
+}
 
 // Isolate Chromium userData when CLAUDE_HUB_DATA_DIR is set (parallel test
 // instances). Must run before app.whenReady(). Production Hub unaffected
@@ -307,6 +313,18 @@ let hookPort = null;  // set after listen() succeeds
 let mobileSrv = null; // set after app.whenReady startup
 
 let mainWindow;
+const enforceSingleInstance = !process.env.CLAUDE_HUB_DATA_DIR;
+if (enforceSingleInstance && !app.requestSingleInstanceLock()) {
+  app.exit(0);
+}
+if (enforceSingleInstance) {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
 const sessionManager = new SessionManager();
 const meetingManager = new MeetingRoomManager();
 
@@ -374,6 +392,7 @@ transcriptTap.on('session-bound', (ev) => {
       meetings: meetingManager.getAllMeetings(),
       immersiveByMeeting: _immersiveByMeeting,
       pilotSlotByMeeting: _pilotSlotByMeeting,
+      dispatchModeByMeeting: _dispatchModeByMeeting,
     });
     console.log(`[圆桌] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
   }
@@ -421,8 +440,20 @@ function createWindow() {
     console.warn('[icon] failed to load', iconPath);
   }
 
-  mainWindow.maximize();
-  mainWindow.show();
+  let hasShown = false;
+  const showMainWindow = () => {
+    if (hasShown || !mainWindow || mainWindow.isDestroyed()) return;
+    hasShown = true;
+    mainWindow.maximize();
+    mainWindow.show();
+  };
+  ipcMain.once('renderer-sidebar-ready', showMainWindow);
+  mainWindow.webContents.once('did-finish-load', showMainWindow);
+  mainWindow.webContents.on('did-finish-load', () => {
+    traceStartup('did-finish-load');
+    sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
+  });
+  setTimeout(showMainWindow, 4000);
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => { mainWindow = null; });
 }
@@ -612,189 +643,18 @@ ipcMain.handle('save-immersive-mode', () => {
   return { ok: true };
 });
 
-// pilot-mode Task 4（2026-05-01）— 主驾切回时生成回顾（recap）。
-//   流程：
-//     1. 从 private-store 读出本次主驾期间所有 turns（按 sid 索引）
-//     2. 短主驾兜底（≤1 轮）：直接写一行 timeline 占位，不调 LLM
-//     3. 长主驾：调主驾自己 summarizeWithKind 生成"摘要 + 段落目录"
-//     4. pilot-recap-builder 把 turns 切段 + 写 md 镜像 (arena-prompts/<mid>-pilot-recap-<ts>.md)
-//     5. 把 recap entry 推到 meeting._timeline + sendToRenderer('timeline-append', ...)
-//     6. 清空 private-store 的 sid 索引（下个主驾窗口重置）
-//   返回值：成功 timeline entry 的 idx；失败 null。
-const recapBuilder = require('./core/pilot-recap-builder.js');
+// pilot recap / private-store / timeline recap 整体废弃 (2026-05-02)
+//   原因：shell/卡片分离后，圆桌 = 协作（公开 timeline + 卡片），子会话区 = 私聊（独立 PTY 不感知圆桌）。
+//   软件层不再桥接两者——副驾想看主驾思路？让主驾在圆桌"主驾发言"模式下说一遍即可。
+//   被删除的辅助：_generatePilotRecap / _parseSummaryWithSegments / _appendTimelineRecap
+//                 + core/pilot-recap-builder.js + core/general-roundtable-private-store.js
+//                 + IPC roundtable:pilot-segment-mode + roundtable-private:append/list
 
-async function _generatePilotRecap(meetingId, prevSlot) {
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting) return null;
-  const subSids = meeting.subSessions || [];
-  if (typeof prevSlot !== 'number' || prevSlot < 0 || prevSlot >= subSids.length) return null;
-  const pilotSid = subSids[prevSlot];
-  if (!pilotSid) return null;
-  const pilotSession = sessionManager.getSession(pilotSid);
-  const pilotKind = pilotSession ? pilotSession.kind : 'unknown';
 
-  const hubDataDir = getHubDataDir();
-  const turns = generalRoundtablePrivateStore.listPrivateTurnsBySid(hubDataDir, meetingId, pilotSid) || [];
-
-  // 短主驾兜底：≤1 轮不调 LLM
-  if (turns.length <= 1) {
-    const userInput = turns[0]?.userInput || '';
-    const text = turns.length === 1
-      ? `用户私下问了 Slot${prevSlot + 1}（${pilotKind}）："${userInput.slice(0, 80)}${userInput.length > 80 ? '…' : ''}"`
-      : '用户开启了主驾但未发消息（主驾期 0 轮）';
-    const idx = _appendTimelineRecap(meeting, {
-      text, recapMdPath: null, segments: [], segmentMode: 'turn',
-      pilotSlot: prevSlot, pilotKind, turnCount: turns.length,
-      _turns: turns.slice(),  // 模式切换 IPC 用
-    });
-    try { generalRoundtablePrivateStore.clearPrivateTurnsBySid(hubDataDir, meetingId, pilotSid); } catch {}
-    return idx;
-  }
-
-  // 长主驾：调主驾自己 summarizeWithKind
-  const dialogue = turns.map((t, i) =>
-    `[轮 ${i + 1}]\n用户: ${t.userInput || ''}\n你: ${t.response || ''}\n`
-  ).join('\n');
-  const systemText = '你正在总结你和用户刚才的对话。请按用户要求输出摘要 + 段落目录。';
-  const promptText = `请总结你和我刚才的对话要点（多少字合适都由你决定，不要刻意简短，但也不要冗余）。
-
-最后请用一组单独的"段落 N: <主题>"行附上段落目录（按主题切，1-10 段，每段一行格式：\`段落 N: <主题>\`，不超过 10 段）。
-
-对话历史:
-${dialogue}`;
-
-  let summaryText, segmentTitles;
-  try {
-    const llmOutput = await summaryEngine.summarizeWithKind(
-      pilotKind, systemText, promptText, { timeout: 90000 }
-    );
-    const parsed = _parseSummaryWithSegments(llmOutput);
-    summaryText = parsed.summaryText;
-    segmentTitles = parsed.segmentTitles;
-    if (!summaryText || summaryText.length < 10) {
-      throw new Error('summary too short or empty');
-    }
-  } catch (e) {
-    console.warn('[pilot-recap] summary failed, falling back to F5-B:', e.message);
-    summaryText = `（主驾摘要生成失败：${e.message}。已降级为按轮切；可点击 [切段:智能 ▾] 重试）`;
-    segmentTitles = null;
-  }
-
-  // 段落质量校验：>10 截断；<1 降级
-  if (Array.isArray(segmentTitles) && segmentTitles.length > 10) {
-    console.warn('[pilot-recap] LLM gave', segmentTitles.length, 'segments, capping at 10');
-    segmentTitles = segmentTitles.slice(0, 10);
-  }
-  if (Array.isArray(segmentTitles) && segmentTitles.length < 1) segmentTitles = null;
-
-  const segments = (segmentTitles && segmentTitles.length > 0)
-    ? recapBuilder.splitBySmart(turns, segmentTitles)
-    : recapBuilder.splitByTurn(turns);
-
-  const arenaDir = path.join(hubDataDir, 'arena-prompts');
-  await fs.promises.mkdir(arenaDir, { recursive: true });
-  const mdPath = path.join(arenaDir, `${meetingId}-pilot-recap-${Date.now()}.md`);
-  try {
-    await recapBuilder.build(mdPath, turns, segments, { pilotKind, pilotSlot: prevSlot });
-  } catch (e) {
-    console.error('[pilot-recap] md build failed:', e.message);
-    // md 写不出也要让 timeline entry 出现（仅缺 md path 而已）
-  }
-
-  const recapIdx = _appendTimelineRecap(meeting, {
-    text: summaryText,
-    recapMdPath: fs.existsSync(mdPath) ? mdPath : null,
-    segments,
-    segmentMode: segmentTitles ? 'smart' : 'turn',
-    pilotSlot: prevSlot,
-    pilotKind,
-    turnCount: turns.length,
-    _turns: turns.slice(),  // 模式切换 IPC 用：保留 turns 副本，避免丢失（store 已清空）
-  });
-
-  // 清空 sid 索引存储（下个主驾窗口重置，不会卷入老 turns）
-  try { generalRoundtablePrivateStore.clearPrivateTurnsBySid(hubDataDir, meetingId, pilotSid); } catch {}
-
-  return recapIdx;
-}
-
-// 解析 LLM 输出：找最后一段连续的"段落 N: ..."行作为目录，前面文本作为摘要。
-function _parseSummaryWithSegments(llmOutput) {
-  if (!llmOutput || typeof llmOutput !== 'string') return { summaryText: '', segmentTitles: null };
-  const lines = llmOutput.split('\n');
-  const segLineRegex = /^段落\s*\d+\s*[:：]\s*(.+)$/;
-  const segIdxs = [];
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const trimmed = lines[i].trim();
-    if (segLineRegex.test(trimmed)) {
-      segIdxs.unshift(i);
-    } else if (segIdxs.length > 0 && trimmed.length > 0) {
-      // 段落块到此结束（向前扩展时遇到非段落非空行）
-      break;
-    }
-    // 空行不打断扩展
-  }
-  let summaryText, segmentTitles;
-  if (segIdxs.length > 0) {
-    const firstSegLine = segIdxs[0];
-    summaryText = lines.slice(0, firstSegLine).join('\n').trim()
-      // 删可能的"段落目录:"标头 / 分隔线
-      .replace(/^段落目录\s*[:：]?\s*$/m, '')
-      .replace(/^---+\s*$/m, '')
-      .trim();
-    segmentTitles = segIdxs.map(idx => {
-      const m = lines[idx].trim().match(segLineRegex);
-      return m ? m[1].trim() : '';
-    }).filter(Boolean);
-  } else {
-    summaryText = llmOutput.trim();
-    segmentTitles = null;
-  }
-  return { summaryText, segmentTitles };
-}
-
-function _appendTimelineRecap(meeting, payload) {
-  // 直接操作内存对象（meetingManager.getMeeting 返回拷贝；要拿到底层引用）
-  const live = meetingManager.meetings ? meetingManager.meetings.get(meeting.id) : null;
-  if (!live) return null;
-  if (!Array.isArray(live._timeline)) live._timeline = [];
-  if (typeof live._nextIdx !== 'number') live._nextIdx = live._timeline.length;
-  const idx = live._nextIdx++;
-  const entry = {
-    idx,
-    sid: 'system',
-    tag: 'pilot-recap',
-    text: payload.text,
-    recapMdPath: payload.recapMdPath,
-    segments: payload.segments,
-    segmentMode: payload.segmentMode,
-    pilotSlot: payload.pilotSlot,
-    pilotKind: payload.pilotKind,
-    turnCount: payload.turnCount,
-    // 内部字段，给 pilot-segment-mode IPC 重切段用，前缀 _ 表示不期望前端依赖。
-    _turns: Array.isArray(payload._turns) ? payload._turns : null,
-    ts: Date.now(),
-  };
-  live._timeline.push(entry);
-  // 落 per-meeting JSON 镜像
-  try {
-    const meetingStore = require('./core/meeting-store.js');
-    meetingStore.markDirty(live.id, {
-      _timeline: live._timeline, _cursors: live._cursors, _nextIdx: live._nextIdx,
-      slotSpecs: live.slotSpecs, pilotSlot: live.pilotSlot,
-    });
-  } catch (e) {
-    console.warn('[pilot-recap] markDirty failed:', e.message);
-  }
-  // 推 IPC（renderer Task 7 渲染）
-  sendToRenderer('timeline-append', { meetingId: live.id, entry });
-  return idx;
-}
-
-// pilot-mode Task 1（2026-05-01）— roundtable:pilot-toggle IPC
-//   slotIndex=0|1|2 开主驾 / null 关主驾。关主驾时调用 _generatePilotRecap 生成
-//   摘要 + md 镜像 + timeline 写入（Task 4 实现）。同时 _pilotSlotByMeeting + meeting
-//   字段 + per-meeting JSON 三处都更新（与 _immersiveByMeeting 同模式 + 加 markDirty）。
+// pilot redesign（2026-05-02）— roundtable:pilot-toggle IPC（无副作用版）
+//   slotIndex ∈ {0,1,2,null}：设置主驾"角色"标识。仅是 UI 红框，不切换全局模式。
+//   切换或取消主驾时 dispatchMode 自动 reset 'all'（由 meetingManager.setPilotSlot 内部处理）。
+//   旧版本会在关主驾时触发 _generatePilotRecap 生成 recap 卡片——已废弃（圆桌不再桥接子会话私聊）。
 ipcMain.handle('roundtable:pilot-toggle', async (_e, { meetingId, slotIndex } = {}) => {
   if (!meetingId) throw new Error('Missing meetingId');
   if (slotIndex !== null && (typeof slotIndex !== 'number' || slotIndex < 0 || slotIndex > 2)) {
@@ -802,11 +662,12 @@ ipcMain.handle('roundtable:pilot-toggle', async (_e, { meetingId, slotIndex } = 
   }
   const meeting = meetingManager.getMeeting(meetingId);
   if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
-  const prevSlot = (meeting.pilotSlot === null || meeting.pilotSlot === undefined) ? null : meeting.pilotSlot;
 
   meetingManager.setPilotSlot(meetingId, slotIndex);
   if (slotIndex === null) delete _pilotSlotByMeeting[meetingId];
   else _pilotSlotByMeeting[meetingId] = slotIndex;
+  // setPilotSlot 内部已 reset dispatchMode='all'，同步更新 dict
+  delete _dispatchModeByMeeting[meetingId];
 
   try {
     stateStore.save({
@@ -816,6 +677,7 @@ ipcMain.handle('roundtable:pilot-toggle', async (_e, { meetingId, slotIndex } = 
       meetings: meetingManager.getAllMeetings(),
       immersiveByMeeting: _immersiveByMeeting,
       pilotSlotByMeeting: _pilotSlotByMeeting,
+      dispatchModeByMeeting: _dispatchModeByMeeting,
     });
   } catch (e) {
     console.warn('[圆桌] roundtable:pilot-toggle persist failed:', e.message);
@@ -824,102 +686,43 @@ ipcMain.handle('roundtable:pilot-toggle', async (_e, { meetingId, slotIndex } = 
   // 通知 renderer 更新 toolbar / 卡片视觉
   sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
 
-  let recapIdx = null;
-  if (slotIndex === null && prevSlot !== null) {
-    // 关主驾 → 调主驾自己生成 recap（Task 4 实现）
-    if (typeof _generatePilotRecap === 'function') {
-      try {
-        recapIdx = await _generatePilotRecap(meetingId, prevSlot);
-      } catch (e) {
-        console.error('[pilot-toggle] _generatePilotRecap failed:', e.message);
-        // 不抛错，让用户至少能关闭主驾
-      }
-    } else {
-      console.warn('[pilot-toggle] _generatePilotRecap not implemented yet');
-    }
-  }
-  return { ok: true, recapIdx };
+  return { ok: true };
 });
 
-// pilot-mode Task 5（2026-05-01）— F5-A/B 切段模式切换 IPC
-//   recap 创建时默认 F5-A 智能切；用户点 [切段:智能/按轮 ▾] 可在两模式间切换。
-//   切到 turn 走 splitByTurn 直接重写 md；切到 smart 再调一次主驾生成段落目录。
-//   两次切换最少间隔由 renderer 端 debounce（2s）控制；这里仅做 IPC 校验。
-ipcMain.handle('roundtable:pilot-segment-mode', async (_e, { meetingId, recapIdx, mode } = {}) => {
+// pilot redesign（2026-05-02）— 设置当前轮 dispatchMode。
+//   mode ∈ {'all','pilot','observer'}：'pilot'/'observer' 要求 pilotSlot !== null。
+//   失败抛错（前端兜底应该已 disable 按钮，这里再校验一次防绕过）。
+ipcMain.handle('roundtable:dispatch-mode-set', async (_e, { meetingId, dispatchMode } = {}) => {
   if (!meetingId) throw new Error('Missing meetingId');
-  if (typeof recapIdx !== 'number') throw new Error('Missing recapIdx');
-  if (mode !== 'smart' && mode !== 'turn') throw new Error(`Invalid mode: ${mode} (smart|turn)`);
-  const live = meetingManager.meetings ? meetingManager.meetings.get(meetingId) : null;
-  if (!live) throw new Error(`Meeting not found: ${meetingId}`);
-  const recap = (live._timeline || []).find(e => e.idx === recapIdx);
-  if (!recap || recap.tag !== 'pilot-recap') {
-    throw new Error(`pilot-recap entry not found at idx ${recapIdx}`);
+  if (!['all', 'pilot', 'observer'].includes(dispatchMode)) {
+    throw new Error(`Invalid dispatchMode: ${dispatchMode}`);
   }
-  // recap.pilotSlot 还原 turns 来源 sid
-  const subSids = live.subSessions || [];
-  const pilotSid = subSids[recap.pilotSlot];
-  if (!pilotSid) throw new Error(`pilot sid for slot ${recap.pilotSlot} no longer present`);
-  // 注意：recap 生成时已 clearPrivateTurnsBySid，此 IPC 后于 generate 调用，store 是空的。
-  //   要么 plan 设计时假设 store 会保留；要么需要从 md 镜像反向解析 turns。
-  //   折中：保存 turns snapshot 到 recap entry 自身（既不费太多空间，又让模式切换自含）。
-  //   方案：_generatePilotRecap 时在 entry 上挂 _turns（不上 IPC，仅本地 timeline JSON）。
-  //   本 IPC 优先读 recap._turns。
-  const turns = Array.isArray(recap._turns) ? recap._turns : [];
-  if (turns.length === 0) {
-    throw new Error('No turn snapshot on recap entry; cannot rebuild segments');
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
+  if (dispatchMode !== 'all' && (meeting.pilotSlot === null || meeting.pilotSlot === undefined)) {
+    throw new Error(`dispatchMode '${dispatchMode}' requires pilotSlot to be set`);
   }
 
-  let segments;
-  if (mode === 'turn') {
-    segments = recapBuilder.splitByTurn(turns);
-  } else {
-    // F5-A: 再调主驾产段落目录
-    const pilotSession = sessionManager.getSession(pilotSid);
-    const pilotKind = pilotSession ? pilotSession.kind : (recap.pilotKind || 'unknown');
-    try {
-      const dialogue = turns.map((t, i) =>
-        `[轮 ${i + 1}]\n用户: ${t.userInput || ''}\n你: ${t.response || ''}\n`
-      ).join('\n');
-      const llmOutput = await summaryEngine.summarizeWithKind(
-        pilotKind,
-        '请仅输出对话的段落目录（按主题切，1-10 段，每段一行：`段落 N: <主题>`），不要其他文字。',
-        `对话历史:\n${dialogue}`,
-        { timeout: 60000 }
-      );
-      const { segmentTitles } = _parseSummaryWithSegments(llmOutput);
-      segments = recapBuilder.splitBySmart(turns, segmentTitles || []);
-    } catch (e) {
-      throw new Error(`F5-A segment-mode failed: ${e.message}`);
-    }
-  }
+  meetingManager.setDispatchMode(meetingId, dispatchMode);
+  if (dispatchMode === 'all') delete _dispatchModeByMeeting[meetingId];
+  else _dispatchModeByMeeting[meetingId] = dispatchMode;
 
-  // 重写 md（沿用原 mdPath，让 renderer 不用更新文件路径）
-  if (recap.recapMdPath) {
-    try {
-      await recapBuilder.rebuildMd(recap.recapMdPath, turns, segments, {
-        pilotKind: recap.pilotKind, pilotSlot: recap.pilotSlot,
-      });
-    } catch (e) {
-      console.warn('[pilot-segment-mode] md rebuild failed:', e.message);
-      // 不抛错，segments 仍写入 entry，UI 仍能显示新目录（仅 md 旧）
-    }
-  }
-
-  recap.segments = segments;
-  recap.segmentMode = mode;
-  // 持久化更新
   try {
-    const meetingStore = require('./core/meeting-store.js');
-    meetingStore.markDirty(live.id, {
-      _timeline: live._timeline, _cursors: live._cursors, _nextIdx: live._nextIdx,
-      slotSpecs: live.slotSpecs, pilotSlot: live.pilotSlot,
+    stateStore.save({
+      version: 1,
+      cleanShutdown: false,
+      sessions: lastPersistedSessions,
+      meetings: meetingManager.getAllMeetings(),
+      immersiveByMeeting: _immersiveByMeeting,
+      pilotSlotByMeeting: _pilotSlotByMeeting,
+      dispatchModeByMeeting: _dispatchModeByMeeting,
     });
   } catch (e) {
-    console.warn('[pilot-segment-mode] markDirty failed:', e.message);
+    console.warn('[圆桌] roundtable:dispatch-mode-set persist failed:', e.message);
   }
-  // 推 IPC（renderer 替换 timeline 卡片）
-  sendToRenderer('timeline-update', { meetingId, idx: recapIdx, entry: recap });
-  return { ok: true, segments, segmentMode: mode };
+
+  sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
+  return { ok: true };
 });
 
 // =====================================================================
@@ -1181,7 +984,7 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
 // 主调度：mode = 'fanout' | 'debate' | 'summary'
 // userInput: 用户输入（fanout 是问题，debate 是补充，summary 可空）
 // summarizerKind: 仅 summary 用，'claude' / 'gemini' / 'codex'
-async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKind }) {
+async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKind, dispatchMode }) {
   if (_roundtableInProgress.has(meetingId)) {
     return { status: 'busy', turnNum: null };
   }
@@ -1225,45 +1028,46 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     }
     if (typeof orch.setMeetingContext === 'function') orch.setMeetingContext(sidInfoMap);
 
-    // pilot-mode Task 2（2026-05-01）：主驾期间过滤目标集合到仅主驾 slot。
-    //   subs 仍按 subSessions 全集，只是发送时跳过非主驾。subs 全集仍用于 sidLabelFn /
-    //   sidInfoMap（让副驾的 kind/model 元数据保留，方便切回时 prompt 注入）。
+    // pilot redesign（2026-05-02）：dispatchMode × mode 正交路由。
+    //   pilotSlot ∈ {0,1,2,null}：主驾"角色"标识（仅 UI 红框，不影响 dispatch）。
+    //   dispatchMode ∈ {'all','pilot','observer'}：本轮谁开口。'pilot'/'observer' 要求 pilotSlot !== null。
+    //   兜底：dispatchMode 未传时取 meeting 持久化字段（默认 'all'）。
     const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
       ? meeting.pilotSlot : null;
     const subSidsRaw = meeting.subSessions || [];
-    const isPilotSubByIndex = (i) => pilotSlot === null ? true : (i === pilotSlot);
-    const targetSubs = pilotSlot === null
-      ? subs
-      : subs.filter(x => {
-          const idx = subSidsRaw.indexOf(x.sid);
-          return idx === pilotSlot;
-        });
-    if (targetSubs.length === 0) {
-      return { status: 'error', reason: 'pilot slot session not active', turnNum: null };
+    const effectiveDispatchMode = ['all', 'pilot', 'observer'].includes(dispatchMode)
+      ? dispatchMode
+      : (meeting.dispatchMode || 'all');
+
+    if (effectiveDispatchMode !== 'all' && pilotSlot === null) {
+      return { status: 'error', reason: `dispatchMode '${effectiveDispatchMode}' 需要先选定主驾`, turnNum: null };
     }
-    if (pilotSlot !== null && (mode === 'debate' || mode === 'summary')) {
-      // 主驾期间禁止 debate/summary（toolbar 已 disable，但 IPC 兜底也加一层）
-      return { status: 'error', reason: '主驾模式中不支持 @debate / @summary，请先关闭主驾', turnNum: null };
+    if (effectiveDispatchMode === 'pilot' && mode === 'debate') {
+      // 主驾发言只有一家无法辩论
+      return { status: 'error', reason: '主驾发言模式下无法辩论（一家无法互辩）', turnNum: null };
+    }
+
+    const targetSubs = (() => {
+      if (effectiveDispatchMode === 'all') return subs;
+      if (effectiveDispatchMode === 'pilot') {
+        return subs.filter(x => subSidsRaw.indexOf(x.sid) === pilotSlot);
+      }
+      // observer：排除主驾
+      return subs.filter(x => subSidsRaw.indexOf(x.sid) !== pilotSlot);
+    })();
+
+    if (targetSubs.length === 0) {
+      return { status: 'error', reason: 'dispatchMode 过滤后无活跃目标 session', turnNum: null };
     }
 
     // 决定本轮的目标 sid 集合 + 拼 per-sid prompt
     const targets = []; // [{ sid, kind, label, prompt }]
     let turnNum;
 
-    // pilot-mode Task 6（2026-05-01）：每个 target 独立构建 prompt，让 ctx 携带
-    //   targetSlotIndex 让 buildFanoutPrompt/buildDebatePrompt 决定是否注入 recap 前缀。
-    //   ctx.meeting 直接拿底层引用（live），允许 _maybePilotRecapPrefix 修改 _cursors 防重复注入。
-    const liveMeeting = meetingManager.meetings ? meetingManager.meetings.get(meetingId) : null;
-    const buildCtx = (sub) => ({
-      meeting: liveMeeting,
-      targetSid: sub.sid,
-      targetSlotIndex: subSidsRaw.indexOf(sub.sid),
-    });
-
     if (mode === 'fanout') {
       turnNum = orch.beginTurn('fanout');
       for (const x of targetSubs) {
-        const prompt = orch.buildFanoutPrompt(turnNum, userInput, null, buildCtx(x));
+        const prompt = orch.buildFanoutPrompt(turnNum, userInput, null);
         targets.push({ ...x, prompt });
       }
     } else if (mode === 'debate') {
@@ -1274,7 +1078,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       }
       turnNum = orch.beginTurn('debate');
       for (const x of targetSubs) {
-        const prompt = orch.buildDebatePrompt(turnNum, userInput, last, x.sid, sidLabelFn, buildCtx(x));
+        const prompt = orch.buildDebatePrompt(turnNum, userInput, last, x.sid, sidLabelFn);
         targets.push({ ...x, prompt });
       }
     } else if (mode === 'summary') {
@@ -1368,24 +1172,6 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     orch.completeTurn(turnNum, mode, userInput || '', byMap, meta, byStatus, {
       thinkSecBy, tokensBy,
     });
-
-    // pilot-mode Task 4（2026-05-01）：主驾期间，把这一轮的"用户问 + 主驾答"写到
-    //   private-store sid 索引。切回主驾时 _generatePilotRecap 会读这些 turns 构建
-    //   recap。只对主驾 slot 写（targetSubs 已过滤；这里再校验一次）。
-    if (pilotSlot !== null && targetSubs.length === 1) {
-      const pilotSid = targetSubs[0].sid;
-      const result = results.find(r => r.sid === pilotSid);
-      if (result && result.status === 'completed' && result.text) {
-        try {
-          generalRoundtablePrivateStore.appendPrivateTurnBySid(
-            getHubDataDir(), meetingId, pilotSid,
-            userInput || '', result.text || ''
-          );
-        } catch (e) {
-          console.warn('[pilot-dispatch] private-store append failed:', e.message);
-        }
-      }
-    }
 
     // E2 选项：summary 后写决策档案到 .arena/sessions/<datetime>-<title>.md
     if (mode === 'summary') {
@@ -1889,37 +1675,6 @@ ipcMain.handle('toggle-roundtable-mode', (_e, { meetingId, enabled, covenant } =
   return _switchScene(meetingId, 'general', covenant);
 });
 
-ipcMain.handle('roundtable-private:append', (_e, { meetingId, kind, userInput, response } = {}) => {
-  if (!_isValidMeetingId(meetingId)) {
-    return { ok: false, error: 'invalid meetingId' };
-  }
-  try {
-    generalRoundtablePrivateStore.appendPrivateTurn(getHubDataDir(), meetingId, kind, userInput, response);
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-});
-
-ipcMain.handle('roundtable-private:list', (_e, { meetingId, kind } = {}) => {
-  // meeting-create-modal（2026-05-01）：去掉 claude/gemini/codex 白名单。
-  //   kind 未传 → 返回 store 全量（按文件实际 kind 顶层 key）；传了非空字符串 → 仅该 kind 列表。
-  //   返回空 store 时返回 {} 而不是硬编码 {claude,gemini,codex}，但保持向后兼容
-  //   （renderer 取 counts.claude 时 || [] 兜底已存在，不会 NPE）。
-  if (!_isValidMeetingId(meetingId)) {
-    return kind ? [] : {};
-  }
-  if (kind !== undefined && kind !== null && (typeof kind !== 'string' || !kind)) {
-    return [];
-  }
-  try {
-    return generalRoundtablePrivateStore.listPrivateTurns(getHubDataDir(), meetingId, kind);
-  } catch (e) {
-    console.warn(`[roundtable-private:list] failed: ${e.message}`);
-    return kind ? [] : {};
-  }
-});
-
 ipcMain.handle('get-meetings', () => {
   return meetingManager.getAllMeetings();
 });
@@ -2041,6 +1796,11 @@ let _immersiveByMeeting = (bootState.immersiveByMeeting && typeof bootState.imme
 //   stateStore.save 携带最新视图（避免 meeting 关闭后状态丢失）。
 let _pilotSlotByMeeting = (bootState.pilotSlotByMeeting && typeof bootState.pilotSlotByMeeting === 'object')
   ? bootState.pilotSlotByMeeting : {};
+// pilot redesign（2026-05-02）— dispatchMode per-meeting 持久化字典，与 _pilotSlotByMeeting 同模式。
+//   restoreMeeting 阶段把 dispatchModeByMeeting[id] 合并到 meeting.dispatchMode；旧数据缺字段时
+//   restoreMeeting 内会按 pilotSlot 推断（pilotSlot !== null → 'pilot'，否则 'all'）。
+let _dispatchModeByMeeting = (bootState.dispatchModeByMeeting && typeof bootState.dispatchModeByMeeting === 'object')
+  ? bootState.dispatchModeByMeeting : {};
 // Heal any cwds that legacy code corrupted (see extractCwdFromTranscript).
 // This reads CC's own JSONL transcripts which carry the authoritative cwd.
 const healed = healPersistedCwds(lastPersistedSessions);
@@ -2055,11 +1815,17 @@ for (const m of bootMeetings) {
   if (typeof dictPilot === 'number' && (m.pilotSlot === null || m.pilotSlot === undefined)) {
     m.pilotSlot = dictPilot;
   }
+  // pilot redesign（2026-05-02）：dispatchMode 同模式合并；restoreMeeting 内会按
+  //   pilotSlot 推断默认值（pilotSlot !== null → 'pilot'，否则 'all'）作为旧数据兜底。
+  const dictDispatch = _dispatchModeByMeeting[m.id];
+  if (['all', 'pilot', 'observer'].includes(dictDispatch) && !m.dispatchMode) {
+    m.dispatchMode = dictDispatch;
+  }
   meetingManager.restoreMeeting(m);
 }
 
 // Flip cleanShutdown to false immediately on boot; before-quit will flip it back.
-stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions, meetings: bootMeetings, immersiveByMeeting: _immersiveByMeeting, pilotSlotByMeeting: _pilotSlotByMeeting }, { sync: true });
+stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions, meetings: bootMeetings, immersiveByMeeting: _immersiveByMeeting, pilotSlotByMeeting: _pilotSlotByMeeting, dispatchModeByMeeting: _dispatchModeByMeeting }, { sync: true });
 
 ipcMain.handle('get-dormant-meetings', () => meetingManager.getAllMeetings());
 
@@ -2109,6 +1875,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
     meetings: Array.isArray(meetingList) ? meetingList : meetingManager.getAllMeetings(),
     immersiveByMeeting: _immersiveByMeeting,
     pilotSlotByMeeting: _pilotSlotByMeeting,
+    dispatchModeByMeeting: _dispatchModeByMeeting,
   });
 });
 
@@ -2875,11 +2642,20 @@ function startAgentScanner() {
 }
 
 app.whenReady().then(async () => {
+  traceStartup('app.whenReady');
   const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  traceStartup('deploy hooks start');
   ensureHooksDeployed(path.join(_home, '.claude'));
   ensureHooksDeployed(path.join(_home, '.claude-deepseek'));
   ensureHooksDeployed(path.join(_home, '.claude-glm'));
+  traceStartup('deploy hooks done');
+  traceStartup('codex config start');
   ensureCodexContextConfig();
+  traceStartup('codex config done');
+  traceStartup('createWindow start');
+  createWindow();
+  traceStartup('createWindow done');
+  traceStartup('hook listen start');
   hookPort = await listenWithFallback();
   if (hookPort) {
     console.log(`[圆桌] hook server listening on 127.0.0.1:${hookPort}`);
@@ -2887,10 +2663,13 @@ app.whenReady().then(async () => {
   } else {
     console.warn('[圆桌] hook server failed to bind — falling back to silence detection');
   }
-  createWindow();
+  traceStartup(`hook listen done (${hookPort || 'none'})`);
+  sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
+  traceStartup('startAgentScanner');
   startAgentScanner();
   // Mobile server starts after window — no need to block UI for phone pairing.
   try {
+    traceStartup('mobile server start');
     const hubConfig = getHubConfig();
     const feishuConfig = hubConfig.feishuCodex || {};
     const feishuCodexToken = feishuConfig.token || '';
@@ -2939,20 +2718,15 @@ app.whenReady().then(async () => {
     });
     console.log(`[mobile] listening on :${mobileSrv.port}`);
     global.__mobileSrv = mobileSrv;
+    traceStartup(`mobile server done (${mobileSrv.port})`);
   } catch (e) {
     console.error('[mobile] failed to start:', e);
     global.__mobileSrv = null;
   }
-  // Push status to renderer after window is ready
-  if (mainWindow) {
-    mainWindow.webContents.on('did-finish-load', () => {
-      sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
-    });
-  }
 });
 
 app.on('before-quit', async () => {
-  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting, pilotSlotByMeeting: _pilotSlotByMeeting }, { sync: true });
+  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting, pilotSlotByMeeting: _pilotSlotByMeeting, dispatchModeByMeeting: _dispatchModeByMeeting }, { sync: true });
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
   try {
     await meetingStore.flushAll();

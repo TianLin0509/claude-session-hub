@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌聊天模式 · 简化版决策稿 (2026-05-02)</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px; line-height: 1.6;
+  color: #2c3e50; background: #f5f6fa;
+}
+.container { max-width: 1180px; margin: 0 auto; padding: 32px 28px 60px; }
+header { border-bottom: 3px solid #c8102e; padding-bottom: 16px; margin-bottom: 28px; }
+h1 { font-size: 26px; margin: 0 0 6px; color: #1a2533; }
+h2 {
+  font-size: 20px; margin: 40px 0 16px; color: #1a2533;
+  border-left: 4px solid #c8102e; padding-left: 12px;
+}
+h3 { font-size: 16px; margin: 22px 0 10px; color: #1a2533; }
+h4 { font-size: 14px; margin: 14px 0 6px; color: #4a5d72; }
+.meta { color: #6b7c93; font-size: 13px; }
+
+.tldr {
+  background: linear-gradient(135deg, #f1f9f3, #e8f5e9);
+  border-left: 5px solid #28a745;
+  padding: 16px 20px; border-radius: 6px; margin: 20px 0 28px;
+}
+.tldr h3 { margin-top: 0; color: #155724; }
+.tldr ul { margin: 6px 0 0; padding-left: 22px; }
+.tldr li { margin: 6px 0; }
+.user-quote {
+  background: #fff;
+  border-left: 4px solid #2c7be5;
+  padding: 12px 18px; border-radius: 4px; margin: 16px 0;
+  font-style: italic; color: #4a5d72;
+}
+
+code {
+  background: #eef1f5; padding: 2px 6px; border-radius: 3px;
+  font-family: Consolas, monospace; font-size: 12.5px; color: #c8102e;
+}
+
+table {
+  border-collapse: collapse; width: 100%;
+  margin: 12px 0 18px; font-size: 13px; background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+th {
+  background: #1a2533; color: #fff; text-align: left;
+  padding: 8px 12px; font-weight: 600; font-size: 13px;
+}
+td { padding: 8px 12px; border-bottom: 1px solid #e8eaed; vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 600; margin: 0 2px;
+}
+.badge-keep { background: #d4edda; color: #155724; }
+.badge-drop { background: #f8d7da; color: #721c24; }
+.badge-new { background: #d1ecf1; color: #0c5460; }
+.badge-update { background: #fff3cd; color: #856404; }
+
+/* mockup */
+.mockup-frame {
+  background: #1e1e1e; border-radius: 8px; padding: 0;
+  margin: 14px 0; overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.mockup-titlebar {
+  background: #2d2d2d; padding: 8px 14px;
+  color: #d4d4d4; font-size: 12px;
+  border-bottom: 1px solid #3a3a3a;
+  display: flex; align-items: center; gap: 8px;
+}
+.mockup-titlebar .dot {
+  width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+}
+.mockup-titlebar .dot.r { background: #ff5f57; }
+.mockup-titlebar .dot.y { background: #ffbd2e; }
+.mockup-titlebar .dot.g { background: #28ca42; }
+.mockup-body { display: flex; min-height: 320px; }
+.mockup-sidebar {
+  width: 180px; background: #252526; color: #cccccc;
+  padding: 12px 8px; font-size: 12px;
+  border-right: 1px solid #3a3a3a;
+}
+.mockup-sidebar .item {
+  padding: 6px 10px; border-radius: 3px; cursor: pointer;
+  display: flex; align-items: center; gap: 6px;
+}
+.mockup-sidebar .item.active { background: #094771; }
+.mockup-sidebar .item.sub { padding-left: 24px; font-size: 11.5px; color: #a0a0a0; }
+.mockup-sidebar .group-title {
+  padding: 8px 10px 4px; color: #6a6a6a;
+  font-size: 11px; text-transform: uppercase;
+}
+.mockup-main {
+  flex: 1; background: #1e1e1e; color: #d4d4d4;
+  display: flex; flex-direction: column;
+}
+
+.mr-toolbar {
+  background: #2d2d2d; padding: 10px 14px;
+  border-bottom: 1px solid #3a3a3a;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.tb-btn {
+  background: #3a3d41; color: #d4d4d4;
+  border: 1px solid #4a4d51; border-radius: 3px;
+  padding: 5px 10px; font-size: 12px; cursor: pointer;
+}
+.tb-btn.primary { background: #0e639c; border-color: #1177bb; color: #fff; }
+.tb-btn.warm { background: #ce9178; border-color: #d6a07e; color: #fff; }
+.tb-btn.success { background: #16825d; border-color: #1a9970; color: #fff; }
+.tb-btn:disabled, .tb-btn.disabled { opacity: 0.4; cursor: not-allowed; }
+.tb-divider { width: 1px; height: 16px; background: #4a4d51; margin: 0 4px; }
+.tb-segmented {
+  display: inline-flex; border: 1px solid #4a4d51; border-radius: 3px; overflow: hidden;
+}
+.tb-segmented .tb-btn {
+  border: none; border-right: 1px solid #4a4d51; border-radius: 0; margin: 0;
+}
+.tb-segmented .tb-btn:last-child { border-right: none; }
+.tb-segmented .tb-btn.active { background: #0e639c; color: #fff; }
+.tb-status { font-size: 11px; color: #888; margin-left: auto; }
+
+.mr-input-row {
+  background: #1e1e1e; padding: 10px 14px;
+  border-bottom: 1px solid #3a3a3a;
+  display: flex; gap: 8px;
+}
+.mr-input-row input {
+  flex: 1; background: #3c3c3c; color: #d4d4d4;
+  border: 1px solid #4a4d51; border-radius: 3px;
+  padding: 6px 10px; font-size: 12px;
+}
+.mr-input-row .send {
+  background: #0e639c; color: #fff; border: none;
+  border-radius: 3px; padding: 6px 16px; font-size: 12px; cursor: pointer;
+}
+
+.mr-status-line {
+  background: #252526; color: #888;
+  padding: 5px 14px; font-size: 11px;
+  border-bottom: 1px solid #3a3a3a;
+}
+.mr-status-line .seg { margin-right: 16px; }
+.mr-status-line strong { color: #d4d4d4; }
+
+.mr-cards {
+  display: flex; gap: 10px; padding: 14px;
+  background: #1e1e1e; flex: 1;
+}
+.mr-ft {
+  flex: 1; background: #252526; border: 2px solid #3a3a3a;
+  border-radius: 6px; padding: 10px 12px;
+  position: relative;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+.mr-ft.pilot-role { border-color: #c8102e; box-shadow: 0 0 0 1px rgba(200,16,46,0.3); }
+.mr-ft.dispatch-active { border-color: #0e639c; box-shadow: 0 0 8px rgba(14,99,156,0.5); }
+.mr-ft.dispatch-active.pilot-role { box-shadow: 0 0 8px rgba(14,99,156,0.6), inset 0 0 0 1px #0e639c; }
+.mr-ft.dispatch-inactive { opacity: 0.55; }
+.mr-ft .ft-head {
+  font-size: 13px; font-weight: 600; color: #d4d4d4;
+  display: flex; align-items: center; gap: 6px; margin-bottom: 8px;
+}
+.mr-ft .ft-summary {
+  font-size: 11.5px; color: #b0b0b0; line-height: 1.5;
+  min-height: 60px;
+}
+.mr-ft .ft-actions {
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid #3a3a3a;
+  display: flex; gap: 6px;
+}
+.mr-ft .ft-link {
+  font-size: 11px; color: #4ec9b0; cursor: pointer;
+}
+.mr-ft .ft-corner-pilot {
+  position: absolute; top: -1px; left: -1px;
+  background: #c8102e; color: #fff; font-size: 9px;
+  padding: 2px 6px; border-radius: 0 0 4px 0; font-weight: 600;
+}
+
+.mr-timeline {
+  background: #252526; padding: 10px 14px;
+  border-top: 1px solid #3a3a3a;
+  font-size: 11.5px; color: #a0a0a0;
+}
+.mr-timeline .t-row { padding: 5px 0; display: flex; gap: 10px; align-items: center; }
+.mr-timeline .t-tag {
+  background: #3a3a3a; padding: 1px 7px; border-radius: 8px; font-size: 10px;
+}
+
+.term {
+  background: #0c0c0c; color: #cccccc;
+  font-family: Consolas, monospace; font-size: 11.5px;
+  padding: 12px 14px; flex: 1; line-height: 1.5;
+  white-space: pre-wrap; min-height: 240px;
+}
+.term .prompt { color: #569cd6; }
+.term .ai { color: #ce9178; }
+.term .cursor { background: #cccccc; color: #0c0c0c; padding: 0 1px; }
+
+/* compare layout */
+.compare-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 16px; margin: 14px 0;
+}
+.compare-grid h4 {
+  margin: 0 0 8px; padding: 6px 10px; border-radius: 4px 4px 0 0;
+}
+.compare-grid .col-old h4 { background: #f8d7da; color: #721c24; }
+.compare-grid .col-new h4 { background: #d4edda; color: #155724; }
+
+.dataflow {
+  background: #fff; border-radius: 8px; padding: 18px;
+  margin: 14px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  font-family: Consolas, monospace; font-size: 12px;
+  line-height: 1.7; white-space: pre; overflow-x: auto;
+  color: #1a2533;
+}
+.dataflow .step { color: #c8102e; font-weight: 700; }
+.dataflow .file { color: #0e639c; }
+.dataflow .gone { color: #b87575; text-decoration: line-through; }
+.dataflow .new { background: #fffbe5; color: #1a7030; padding: 1px 4px; border-radius: 2px; }
+
+.deletion-card {
+  background: #fef5f5; border-left: 4px solid #c8102e; border-radius: 4px;
+  padding: 12px 16px; margin: 10px 0;
+}
+.deletion-card .file-list {
+  font-family: Consolas, monospace; font-size: 12px;
+  color: #871f1f; margin-top: 6px;
+}
+.keep-card {
+  background: #f1f9f3; border-left: 4px solid #28a745; border-radius: 4px;
+  padding: 12px 16px; margin: 10px 0;
+}
+
+.option-group { display: grid; grid-template-columns: 1fr; gap: 14px; margin: 14px 0; }
+.option {
+  background: #fff; border-radius: 8px; padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  border-top: 4px solid #2c7be5;
+}
+.option.recommended { border-top-color: #28a745; }
+.option-title { font-weight: 700; font-size: 15px; color: #1a2533; margin-bottom: 4px; }
+.option-tag {
+  display: inline-block; background: #d4edda; color: #155724;
+  padding: 1px 8px; border-radius: 10px; font-size: 11px;
+  font-weight: 600; margin-left: 6px;
+}
+.option-desc { color: #4a5d72; font-size: 13px; margin: 4px 0 8px; }
+.pros-cons { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
+.pros, .cons { font-size: 12.5px; padding: 8px 12px; border-radius: 4px; }
+.pros { background: #f1f9f3; color: #1a7030; }
+.cons { background: #fef5f5; color: #871f1f; }
+.pros strong, .cons strong { display: block; margin-bottom: 3px; font-size: 11.5px; text-transform: uppercase; }
+.pros ul, .cons ul { margin: 0; padding-left: 18px; }
+.pros li, .cons li { margin: 2px 0; }
+
+.decision-box {
+  background: #fff; border: 2px solid #c8102e; border-radius: 8px;
+  padding: 16px 20px; margin: 24px 0;
+}
+.decision-box h3 { margin-top: 0; color: #c8102e; }
+.q { font-weight: 600; margin: 16px 0 6px; color: #1a2533; }
+.choice { display: flex; align-items: flex-start; gap: 10px; padding: 4px 0; font-size: 13px; }
+.choice .num {
+  background: #c8102e; color: #fff; border-radius: 50%;
+  width: 22px; height: 22px; display: inline-flex;
+  align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; flex-shrink: 0;
+}
+
+.workflow-step {
+  background: #fff; border-radius: 6px; padding: 12px 16px;
+  margin: 10px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  display: flex; gap: 14px; align-items: flex-start;
+}
+.workflow-step .step-num {
+  background: #1a2533; color: #fff; border-radius: 50%;
+  width: 28px; height: 28px; display: inline-flex;
+  align-items: center; justify-content: center;
+  font-weight: 700; font-size: 13px; flex-shrink: 0;
+}
+.workflow-step .step-content { flex: 1; }
+.workflow-step .step-content h5 { margin: 0 0 4px; font-size: 14px; color: #1a2533; }
+.workflow-step .step-content p { margin: 0; font-size: 13px; color: #4a5d72; }
+
+.callout {
+  background: #fff; border: 1px solid #e8eaed;
+  border-left: 4px solid #2c7be5; border-radius: 4px;
+  padding: 14px 18px; margin: 14px 0;
+}
+
+footer {
+  margin-top: 50px; padding-top: 18px;
+  border-top: 1px solid #e8eaed; color: #6b7c93; font-size: 12px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+<h1>圆桌聊天模式 · 简化版决策稿</h1>
+<div class="meta">2026-05-02 · v2 · 用户洞察驱动的删减重构</div>
+</header>
+
+<div class="user-quote">
+"shell/卡片分离已经把架构切清楚了，私聊就是用户在子 shell 里操作，圆桌只承载协作（群策群力、主驾、副驾）。私聊模式可以直接删除，功能更鲁棒简洁。"
+</div>
+
+<div class="tldr">
+<h3>✓ 用户洞察的本质</h3>
+<ul>
+<li><strong>圆桌</strong>（meeting room）= 协作空间。所有内容公开（写 timeline + 卡片摘要）。模式只剩 <code>dispatchMode × mode</code> 两个正交维度。</li>
+<li><strong>子会话区</strong> = 私聊空间。一对一独立 PTY，圆桌完全不感知。用户想私聊就直接进对应子会话。</li>
+<li><strong>桥接 = 用户的眼睛和复制粘贴</strong>。软件层面不做"自动归档/双向同步"——这正是之前一切复杂度的来源。</li>
+</ul>
+<p style="margin: 12px 0 0; padding-top: 12px; border-top: 1px solid #c8e6c9; color: #155724">
+<strong>净改动估计</strong>：删除 ~600-900 行（旧 pilot mode 副产品 + 双轨私聊）+ 新增 ~150 行（dispatchMode 路由 + UI）= <strong>整体减少 ~500 行代码</strong>。
+</p>
+</div>
+
+<!-- ============================== 1. 心智模型 ============================== -->
+<h2>1. 新心智模型 · 一图说清</h2>
+
+<div class="dataflow">┌──────────────────────────────────────────────────────────────────────┐
+│  圆桌（meeting room）                                                 │
+│  ───────────────────────────────────────────────────────              │
+│  位置：mr-panel · 卡片视图 + toolbar + timeline                       │
+│  内容：所有内容公开（timeline + 卡片摘要 · 全员可见）                  │
+│  操作：dispatchMode × mode 两维度组合                                 │
+│                                                                      │
+│    dispatchMode（谁开口）  ┃   mode（怎么开口）                       │
+│    ──────────────────────  ┃   ──────────────────────                 │
+│    all       群策群力      ┃   fanout    普通发言                     │
+│    pilot     仅主驾        ┃   debate    辩论                         │
+│    observer  仅副驾两家    ┃   summary   总结                         │
+└──────────────────────────────────────────────────────────────────────┘
+                                ↕ <strong>用户的眼睛和键盘（不是软件）</strong>
+┌──────────────────────────────────────────────────────────────────────┐
+│  子会话区（terminal panel）                                           │
+│  ───────────────────────────────────────────────────────              │
+│  位置：每家 AI 一个独立 xterm 主区                                    │
+│  内容：一对一私聊 · 圆桌不感知 · 不写任何 store                       │
+│  操作：直接和该 AI 聊（就是普通子会话，无特殊语义）                    │
+└──────────────────────────────────────────────────────────────────────┘</div>
+
+<div class="callout">
+<strong>关键</strong>：两个空间通过<strong>用户行为</strong>桥接，而非软件 IPC。用户想让副驾评审主驾思路？两种做法：
+<ol style="margin: 6px 0">
+<li>把主驾刚才的回复复制粘贴到圆桌输入框，发"@all 评一下"</li>
+<li>切到"副驾发言"模式，让副驾基于<strong>圆桌已有 timeline</strong> 评审（而非主驾的私聊内容）</li>
+</ol>
+</div>
+
+<!-- ============================== 2. 模式表 ============================== -->
+<h2>2. 简化后的聊天模式（6 项核心）</h2>
+
+<table>
+<thead><tr><th>#</th><th>模式</th><th>位置</th><th>谁收 prompt</th><th>谁可见</th><th>存储</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>群策群力 (all + fanout)</td><td>圆桌</td><td>三家 PTY</td><td>三张卡片 + timeline</td><td>roundtable.json</td></tr>
+<tr><td>2</td><td>主驾发言 (pilot + fanout)</td><td>圆桌</td><td>主驾 PTY</td><td>主驾卡片 + timeline</td><td>roundtable.json</td></tr>
+<tr><td>3</td><td>副驾发言 (observer + fanout)</td><td>圆桌</td><td>副驾两家 PTY</td><td>副驾两张卡片 + timeline</td><td>roundtable.json</td></tr>
+<tr><td>4</td><td>辩论 (×× + debate)</td><td>圆桌</td><td>对应 dispatch 的家</td><td>对应卡片 + timeline</td><td>roundtable.json</td></tr>
+<tr><td>5</td><td>总结 (×× + summary)</td><td>圆桌</td><td>选定一家</td><td>选定卡片 + timeline</td><td>roundtable.json</td></tr>
+<tr><td>6</td><td>私聊（独立子会话）</td><td>子会话区</td><td>该 session PTY</td><td>仅 xterm（圆桌完全不感知）</td><td>无（仅 PTY tty）</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+<strong>对比 v1 草稿</strong>：从 7 项核心 + 1 项桥接（归档），简化为 6 项纯模式。<strong>归档功能整体删除</strong>，因为没有"私聊累积"需要打包了。
+</div>
+
+<!-- ============================== 3. UI 对比 ============================== -->
+<h2>3. UI 对比：复杂版 → 简化版</h2>
+
+<h3>3.1 v1 推荐版（带 banner / 角标 / 归档按钮 · 复杂）</h3>
+<div class="mockup-frame">
+<div class="mockup-titlebar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span style="margin-left:8px">v1 · 多了 banner、角标、归档 toggle</span></div>
+<div class="mockup-body">
+  <div class="mockup-main">
+    <div style="background:#3d2c1e;color:#d4a070;border-bottom:1px solid #5a4520;padding:8px 14px;font-size:12px;display:flex;align-items:center;gap:10px">
+      <span>🚗 Claude 私聊中（已 5 轮未归档）</span>
+      <button style="background:#5a4520;border:1px solid #7a6020;color:#f0d090;border-radius:3px;padding:3px 8px;font-size:11px;margin-left:auto">📋 查看片段</button>
+      <button style="background:#5a4520;border:1px solid #7a6020;color:#f0d090;border-radius:3px;padding:3px 8px;font-size:11px">🗂 立即归档</button>
+    </div>
+    <div class="mr-status-line">
+      <span class="seg">分发: <strong>副驾发言</strong></span>
+      <span class="seg">主驾: <strong>Claude</strong></span>
+      <span class="seg">归档: <strong>切换时自动 (ON)</strong></span>
+    </div>
+    <div class="mr-toolbar">
+      <div class="tb-segmented">
+        <button class="tb-btn">🤝 群策群力</button>
+        <button class="tb-btn">🎯 主驾发言</button>
+        <button class="tb-btn active">👥 副驾发言</button>
+      </div>
+      <span class="tb-divider"></span>
+      <button class="tb-btn">🗣 辩论</button>
+      <button class="tb-btn warm">📝 总结</button>
+      <span class="tb-divider"></span>
+      <button class="tb-btn">🚗 主驾: Claude ▾</button>
+      <button class="tb-btn success">🗂 切换归档: ON</button>
+    </div>
+    <div class="mr-cards">
+      <div class="mr-ft pilot-role dispatch-inactive" style="position:relative">
+        <div class="ft-corner-pilot">主驾</div>
+        <div style="position:absolute;top:8px;right:8px;background:#0e639c;color:#fff;font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600">5</div>
+        <div class="ft-head" style="margin-top:4px">⚡ Claude</div>
+        <div class="ft-summary">（私聊 5 轮）</div>
+      </div>
+      <div class="mr-ft dispatch-active"><div class="ft-head">🔥 Gemini</div><div class="ft-summary">...</div></div>
+      <div class="mr-ft dispatch-active"><div class="ft-head">💎 Codex</div><div class="ft-summary">...</div></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<h3>3.2 v2 简化版（无 banner / 无角标 / 无归档 · 推荐）</h3>
+<div class="mockup-frame">
+<div class="mockup-titlebar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span style="margin-left:8px">v2 · 圆桌只关心协作 · 私聊去子会话区</span></div>
+<div class="mockup-body">
+  <div class="mockup-main">
+    <div class="mr-status-line">
+      <span class="seg">分发: <strong>副驾发言</strong></span>
+      <span class="seg">主驾: <strong>Claude</strong></span>
+    </div>
+    <div class="mr-toolbar">
+      <div class="tb-segmented">
+        <button class="tb-btn">🤝 群策群力</button>
+        <button class="tb-btn">🎯 主驾发言</button>
+        <button class="tb-btn active">👥 副驾发言</button>
+      </div>
+      <span class="tb-divider"></span>
+      <button class="tb-btn">🗣 辩论</button>
+      <button class="tb-btn warm">📝 总结</button>
+      <span class="tb-divider"></span>
+      <button class="tb-btn">🚗 主驾: Claude ▾</button>
+      <span class="tb-status">空闲</span>
+    </div>
+    <div class="mr-input-row">
+      <input value="你们俩评一下 Claude 在圆桌 Turn 2 的思路">
+      <button class="send">发送</button>
+    </div>
+    <div class="mr-cards">
+      <div class="mr-ft pilot-role dispatch-inactive">
+        <div class="ft-corner-pilot">主驾</div>
+        <div class="ft-head" style="margin-top:4px">⚡ Claude</div>
+        <div class="ft-summary">（最近未在圆桌发言）</div>
+        <div class="ft-actions"><span class="ft-link">🔧 进 shell 私聊</span></div>
+      </div>
+      <div class="mr-ft dispatch-active">
+        <div class="ft-head">🔥 Gemini</div>
+        <div class="ft-summary">关于 Claude Turn 2 的思路，我有两个角度想质疑...</div>
+        <div class="ft-actions"><span class="ft-link">🔧 进 shell 私聊</span></div>
+      </div>
+      <div class="mr-ft dispatch-active">
+        <div class="ft-head">💎 Codex</div>
+        <div class="ft-summary">补充 Gemini 的角度，从工程上看还有...</div>
+        <div class="ft-actions"><span class="ft-link">🔧 进 shell 私聊</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="compare-grid">
+<div class="col-old">
+<h4>v1 复杂版的代价</h4>
+<ul style="font-size:13px;padding-left:20px">
+<li>banner、角标、归档按钮、toggle 多个新组件</li>
+<li>新增 IPC <code>'pilot-private-turn-added'</code> + <code>'roundtable:archive-pilot-segment'</code></li>
+<li>sid-keyed store 写入触发条件复杂</li>
+<li>autoArchive 状态字段 + UI toggle</li>
+<li>~120 行追加 P0+ 代码</li>
+</ul>
+</div>
+<div class="col-new">
+<h4>v2 简化版的收益</h4>
+<ul style="font-size:13px;padding-left:20px">
+<li>圆桌 UI 只剩 segmented control + 主驾按钮 + 状态行</li>
+<li>无新 IPC（只复用 <code>'roundtable:turn'</code> + <code>'roundtable:pilot-toggle'</code>）</li>
+<li>sid-keyed store 完全废除</li>
+<li>autoArchive 字段 / 归档按钮 全删</li>
+<li>~600-900 行净删除</li>
+</ul>
+</div>
+</div>
+
+<!-- ============================== 4. 工作流 ============================== -->
+<h2>4. 副驾评审主驾思路 · 不依赖归档的新工作流</h2>
+
+<p>用户最经典的诉求："让 Claude 主稿 → 让 Gemini+Codex 评审 → 切回 Claude 改稿"。在新模型下完全无需"归档"机制：</p>
+
+<div class="workflow-step">
+<div class="step-num">1</div>
+<div class="step-content">
+<h5>选定 Claude 为主驾</h5>
+<p>点圆桌 toolbar"🚗 主驾" → 选 Claude · 卡片红框出现 · dispatchMode 三态按钮解锁</p>
+</div>
+</div>
+
+<div class="workflow-step">
+<div class="step-num">2</div>
+<div class="step-content">
+<h5>圆桌切到"主驾发言"模式 + 普通发言（fanout）</h5>
+<p>用户在圆桌输入框发"画一个方案" · 仅 Claude 收 prompt · 内容写 Claude 卡片摘要 + timeline · <strong>副驾两张卡片仍能在 timeline 看到 Claude 的发言</strong>（因为这是公开的）</p>
+</div>
+</div>
+
+<div class="workflow-step">
+<div class="step-num">3</div>
+<div class="step-content">
+<h5>（可选）用户去 Claude 子会话区跟 Claude 深聊补充细节</h5>
+<p>点 Claude 卡片"🔧 进 shell 私聊" → 进 Claude xterm → 一对一聊 · <strong>圆桌完全不感知</strong>（这是新设计的关键 · 子会话区聊的内容只属于用户和 Claude）</p>
+</div>
+</div>
+
+<div class="workflow-step">
+<div class="step-num">4</div>
+<div class="step-content">
+<h5>回到圆桌切到"副驾发言"模式 + debate</h5>
+<p>用户在圆桌输入框发"@gemini @codex 你们对 Turn 2 的方案有什么意见" · Gemini+Codex 收 prompt · 副驾基于 <strong>圆桌已有 timeline</strong>（Turn 2 是 Claude 公开发言）评审 · 主驾子会话区的私聊内容副驾看不到（也不需要）</p>
+</div>
+</div>
+
+<div class="workflow-step">
+<div class="step-num">5</div>
+<div class="step-content">
+<h5>切回"主驾发言"让 Claude 改稿</h5>
+<p>Claude 看到副驾在 timeline 上的反馈 → 改稿 · 循环回 Step 2</p>
+</div>
+</div>
+
+<div class="callout">
+<strong>关键洞察</strong>：副驾评审的对象是<strong>圆桌 timeline 上的公开发言</strong>，不是主驾的私聊。这意味着用户想让副驾评审某段思路，就<strong>在圆桌上让主驾说一遍</strong>（这是 Step 2 干的事）。私聊（Step 3）只是用户和主驾的预热/补充，不参与协作流程。
+</div>
+
+<!-- ============================== 5. 删除清单 ============================== -->
+<h2>5. 删除清单 · 系统性减法</h2>
+
+<div class="deletion-card">
+<strong>🗑 后端可全删</strong>
+<div class="file-list">
+- core/general-roundtable-private-store.js · 整个文件（~130 行）<br>
+- core/pilot-recap-builder.js · 整个文件（~110 行）<br>
+- core/summary-engine.js · summarizeWithKind 5-kind 中 group/pilot 路由（~80 行）<br>
+- main.js:626-719 · _generatePilotRecap · 整个函数（~93 行）<br>
+- main.js:756-792 · _appendTimelineRecap · 整个函数（~37 行）<br>
+- main.js:828-835 · roundtable:pilot-toggle 的归档触发<br>
+- main.js:1375-1387 · dispatchTurn 的 sid-keyed 写入<br>
+- main.js:1892-1921 · IPC 'roundtable-private:append' / ':list'（~30 行）<br>
+- main.js:1897 · 圆桌 @&lt;who&gt; 的 kind-keyed 写入
+</div>
+</div>
+
+<div class="deletion-card">
+<strong>🗑 前端可全删</strong>
+<div class="file-list">
+- renderer/meeting-room.js:64 · type:'rt-private' 命令解析<br>
+- renderer/meeting-room.js:683 · "🤫 @私聊"快捷按钮<br>
+- renderer/meeting-room.js:870 · IPC 'roundtable-private:list' 调用<br>
+- renderer/meeting-room.js:1091-1131 · "私聊 tab" 渲染<br>
+- renderer/meeting-room.js:1320 · "📒 主驾对话进行中" placeholder<br>
+- renderer/meeting-room.js:2618-2658 · rt-private 命令处理<br>
+- timeline 里的 recap 卡片渲染逻辑（grep "recap" 确认）
+</div>
+</div>
+
+<div class="keep-card">
+<strong>✓ 保留 + 改造</strong>
+<div class="file-list">
+- main.js:1184-1240 dispatchRoundtableTurn · 加 dispatchMode 路由<br>
+- main.js:798-840 roundtable:pilot-toggle · 简化为纯角色设置（无副作用）<br>
+- core/meeting-room.js · 加 dispatchMode 字段 + setDispatchMode 方法<br>
+- renderer/meeting-room.js · toolbar 改 segmented control + 状态行<br>
+- meeting-room.css · 卡片视觉态（红框/蓝框/灰化）
+</div>
+</div>
+
+<div class="callout">
+<strong>净改动评估</strong>：删除约 ~600-900 行 + 新增 ~150 行 = <strong>整体减少 ~500 行代码 + 删除 2 个 store 字段 + 简化 2 个 IPC handler</strong>。这才是真正的"鲁棒简洁"。
+</div>
+
+<!-- ============================== 6. 开放问题 ============================== -->
+<h2>6. 你需要拍板的开放问题（v2 · 简化后只剩 4 个）</h2>
+
+<!-- Q1 -->
+<h3>Q1 · 旧 <code>@gemini</code> 圆桌私聊命令彻底怎么处理？</h3>
+
+<div class="option-group">
+
+<div class="option recommended">
+<div class="option-title">A · 完全删除（包括快捷按钮 + 命令解析 + IPC handler）<span class="option-tag">推荐</span></div>
+<div class="option-desc">圆桌输入框不再识别 <code>@&lt;who&gt;</code>。用户想私聊就自己点 sidebar 的子会话进入。卡片"🔧 进 shell 私聊"链接保留作为快捷入口。</div>
+<div class="pros-cons">
+<div class="pros"><strong>优点</strong><ul><li>最彻底的简化</li><li>语义统一（圆桌输入 = 协作 / 子会话 = 私聊，无例外）</li><li>删除最多代码</li></ul></div>
+<div class="cons"><strong>缺点</strong><ul><li>用户失去"@私聊"快捷键习惯</li></ul></div>
+</div>
+</div>
+
+<div class="option">
+<div class="option-title">B · 改造为"导航快捷键"</div>
+<div class="option-desc">用户输入 <code>@gemini xxx</code> → 自动选定 Gemini 为主驾 + 跳到 Gemini 子会话区 + 把 xxx 作为初始 prompt 发到 PTY。<strong>不写任何 store</strong>。</div>
+<div class="pros-cons">
+<div class="pros"><strong>优点</strong><ul><li>保留快捷键习惯</li><li>仍是纯私聊（无圆桌侧记录）</li></ul></div>
+<div class="cons"><strong>缺点</strong><ul><li>新增"路由 + 注入"逻辑（~50 行）</li><li>语义混淆：圆桌输入框有时进协作有时跳子会话</li></ul></div>
+</div>
+</div>
+
+<div class="option">
+<div class="option-title">C · 保留旧行为（kind-keyed store + 私聊 tab）</div>
+<div class="option-desc">@&lt;who&gt; 圆桌私聊保持不变，"私聊 tab" 保留。新设计中作为"轻量单轮私聊"的入口（vs 子会话区的"长聊"）。</div>
+<div class="pros-cons">
+<div class="pros"><strong>优点</strong><ul><li>无破坏性改动</li></ul></div>
+<div class="cons"><strong>缺点</strong><ul><li>圆桌依然有"半私聊"概念，违背简化原则</li><li>store + UI + IPC 全保留 → 代码删除量减半</li></ul></div>
+</div>
+</div>
+
+</div>
+
+<!-- Q2 -->
+<h3>Q2 · pilot mode 关闭时副作用怎么处理？（旧逻辑会归档）</h3>
+
+<div class="option-group">
+
+<div class="option recommended">
+<div class="option-title">A · 无副作用（仅设置 pilotSlot=null）<span class="option-tag">推荐</span></div>
+<div class="option-desc">"取消主驾"= 清除红框 + reset dispatchMode='all' + 后两个发言按钮 disabled。<strong>不调任何归档逻辑</strong>。子会话区的私聊历史就在子会话区里（用户能滚回去看），与圆桌无关。</div>
+<div class="pros-cons">
+<div class="pros"><strong>优点</strong><ul><li>逻辑最简（一行代码）</li><li>用户行为可预测</li><li>无意外副作用</li></ul></div>
+<div class="cons"><strong>缺点</strong><ul><li>用户失去"自动 recap"工具，需要手动整理</li></ul></div>
+</div>
+</div>
+
+<div class="option">
+<div class="option-title">B · 把"圆桌 timeline 的最近 N turns"打包为 recap 卡片</div>
+<div class="option-desc">取消主驾时 → 取最近 N（比如 5）turns 中主驾的发言 → 用主驾自己的 LLM 生成摘要 → 写 recap 卡片到 timeline。<strong>仅打包圆桌公开内容，不涉及子会话</strong>。</div>
+<div class="pros-cons">
+<div class="pros"><strong>优点</strong><ul><li>保留"recap"价值</li><li>仅基于公开内容，无私聊耦合</li></ul></div>
+<div class="cons"><strong>缺点</strong><ul><li>需要保留 summary-engine 的部分逻辑</li><li>"打包圆桌历史"的需求是否真实存在？</li></ul></div>
+</div>
+</div>
+
+<div class="option">
+<div class="option-title">C · 保留旧行为（读 sid-keyed store 生成 recap）</div>
+<div class="option-desc">不删 sid-keyed store，pilot OFF 仍触发 _generatePilotRecap。和 v1 一样。</div>
+<div class="pros-cons">
+<div class="pros"><strong>优点</strong><ul><li>无破坏性改动</li></ul></div>
+<div class="cons"><strong>缺点</strong><ul><li>违背简化原则（核心私聊机制还在，只是不显示）</li></ul></div>
+</div>
+</div>
+
+</div>
+
+<!-- Q3 -->
+<h3>Q3 · 切主驾时 dispatchMode 怎么处理？</h3>
+
+<div class="option-group">
+
+<div class="option recommended">
+<div class="option-title">A · 自动 reset 为 'all'<span class="option-tag">推荐</span></div>
+<div class="option-desc">用户切主驾（A → B 或 A → null）时，dispatchMode 强制重置为 'all'。避免"主驾切了但还在副驾发言模式，副驾对象变了"的混乱。</div>
+<div class="pros-cons">
+<div class="pros"><strong>优点</strong><ul><li>状态一致性强</li><li>用户切主驾后看到熟悉的"群策群力"默认</li></ul></div>
+<div class="cons"><strong>缺点</strong><ul><li>切主驾后想继续副驾发言要再点一次按钮</li></ul></div>
+</div>
+</div>
+
+<div class="option">
+<div class="option-title">B · 保持当前 dispatchMode</div>
+<div class="option-desc">用户切主驾时 dispatchMode 不变。如果切前是"副驾发言"，切后副驾对象自动更新，dispatch 按钮高亮不变。</div>
+<div class="pros-cons">
+<div class="pros"><strong>优点</strong><ul><li>切主驾路径更顺（不打断 dispatch 状态）</li></ul></div>
+<div class="cons"><strong>缺点</strong><ul><li>用户可能没意识到副驾对象变了</li><li>引入"隐式状态变化"风险</li></ul></div>
+</div>
+</div>
+
+</div>
+
+<!-- Q4 -->
+<h3>Q4 · 主驾按钮的视觉表达</h3>
+
+<div class="option-group">
+
+<div class="option recommended">
+<div class="option-title">A · 卡片左上角红色三角标 "主驾" + 边框红色<span class="option-tag">推荐</span></div>
+<div class="option-desc">主驾卡片左上角一个红色三角标（"主驾"二字），同时整个卡片边框变红。视觉冗余，绝对不会漏看。</div>
+<div class="mockup-frame" style="margin-top:8px">
+<div class="mockup-body">
+  <div class="mockup-main">
+    <div class="mr-cards">
+      <div class="mr-ft pilot-role">
+        <div class="ft-corner-pilot">主驾</div>
+        <div class="ft-head" style="margin-top:4px">⚡ Claude</div>
+        <div class="ft-summary">这是主驾，红色边框 + 左上角三角标</div>
+      </div>
+      <div class="mr-ft"><div class="ft-head">🔥 Gemini</div><div class="ft-summary">副驾，普通边框</div></div>
+      <div class="mr-ft"><div class="ft-head">💎 Codex</div><div class="ft-summary">副驾，普通边框</div></div>
+    </div>
+  </div>
+</div>
+</div>
+</div>
+
+<div class="option">
+<div class="option-title">B · 仅卡片边框红色，无三角标</div>
+<div class="option-desc">视觉最干净，只有边框颜色区分。</div>
+<div class="mockup-frame" style="margin-top:8px">
+<div class="mockup-body">
+  <div class="mockup-main">
+    <div class="mr-cards">
+      <div class="mr-ft pilot-role">
+        <div class="ft-head">⚡ Claude</div>
+        <div class="ft-summary">主驾，仅红色边框</div>
+      </div>
+      <div class="mr-ft"><div class="ft-head">🔥 Gemini</div><div class="ft-summary">副驾</div></div>
+      <div class="mr-ft"><div class="ft-head">💎 Codex</div><div class="ft-summary">副驾</div></div>
+    </div>
+  </div>
+</div>
+</div>
+</div>
+
+<div class="option">
+<div class="option-title">C · 卡片头部加 "🚗 主驾" 标签</div>
+<div class="option-desc">主驾卡片头部加一个文字标签，红色背景。</div>
+<div class="mockup-frame" style="margin-top:8px">
+<div class="mockup-body">
+  <div class="mockup-main">
+    <div class="mr-cards">
+      <div class="mr-ft" style="border-color:#3a3a3a">
+        <div class="ft-head">⚡ Claude <span style="background:#c8102e;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600">🚗 主驾</span></div>
+        <div class="ft-summary">主驾，头部标签</div>
+      </div>
+      <div class="mr-ft"><div class="ft-head">🔥 Gemini</div><div class="ft-summary">副驾</div></div>
+      <div class="mr-ft"><div class="ft-head">💎 Codex</div><div class="ft-summary">副驾</div></div>
+    </div>
+  </div>
+</div>
+</div>
+</div>
+
+</div>
+
+<!-- ============================== 7. 后端数据流 ============================== -->
+<h2>7. 后端数据流：当前 vs 简化后</h2>
+
+<div class="dataflow"><span class="step">[当前 · 复杂]</span>
+
+  圆桌发言 ──→ dispatchRoundtableTurn ──→ targetSubs (按 pilotSlot 过滤)
+                                            ├─→ _rtSendToPty (单家或全员)
+                                            ├─→ <span class="gone">private-store 写入</span>
+                                            └─→ orchestrator → timeline + 卡片
+
+  圆桌 @&lt;who&gt; 私聊 ──→ <span class="gone">'roundtable-private:append'</span>
+                          └─→ <span class="gone">kind-keyed store</span> ──→ <span class="gone">私聊 tab UI</span>
+
+  子会话区聊 (pilot ON) ──→ orchestrator 检测 pilot
+                              └─→ <span class="gone">appendPrivateTurnBySid</span>
+                                    └─→ <span class="gone">sid-keyed store</span> (前端从未读)
+
+  pilot OFF ──→ <span class="gone">_generatePilotRecap</span>
+                    ├─→ <span class="gone">summarizeWithKind</span>
+                    ├─→ <span class="gone">recapBuilder.build (写 .md)</span>
+                    ├─→ <span class="gone">_appendTimelineRecap</span>
+                    └─→ <span class="gone">clearPrivateTurnsBySid</span>
+
+<span class="step">[简化后 · 极简]</span>
+
+  圆桌发言 ──→ dispatchRoundtableTurn { mode, dispatchMode }
+                ├─→ targetSubs 按 dispatchMode 过滤
+                │   <span class="new">all → 全员 / pilot → 主驾 / observer → 副驾</span>
+                ├─→ _rtSendToPty (单家或全员)
+                └─→ orchestrator → timeline + 卡片
+
+  子会话区聊 ──→ <span class="new">仅 PTY 输出，无任何 store 写入</span>
+                  <span class="new">圆桌完全不感知</span>
+
+  pilot 切换 ──→ 设 meeting.pilotSlot
+                  └─→ <span class="new">reset meeting.dispatchMode = 'all'</span>
+                  <span class="new">无任何归档副作用</span>
+
+  // <span class="new">完全删除：sid-keyed store · kind-keyed store · _generatePilotRecap</span>
+  // <span class="new">完全删除：summary-engine pilot 路由 · recap-builder · timeline recap 卡片</span>
+  // <span class="new">完全删除：私聊 tab · @私聊 快捷按钮 · IPC roundtable-private:*</span></div>
+
+<!-- ============================== 8. 决策清单 ============================== -->
+<div class="decision-box">
+<h3>8. 决策清单 · 等你回填</h3>
+<p>v2 简化后只剩 4 个开放点（v1 是 5 个，归档相关的开放点合并到 Q2）。回完之后我去更新 plan + 开始实施。</p>
+
+<div class="q">Q1 · 旧 <code>@gemini</code> 圆桌私聊命令</div>
+<div class="choice"><span class="num">A</span><span>完全删除 <strong>· 推荐</strong></span></div>
+<div class="choice"><span class="num">B</span><span>改造为导航快捷键（@xxx → 跳子会话区注入 prompt）</span></div>
+<div class="choice"><span class="num">C</span><span>保留旧行为（kind-keyed store + 私聊 tab）</span></div>
+
+<div class="q">Q2 · pilot mode 关闭时副作用</div>
+<div class="choice"><span class="num">A</span><span>无副作用（仅清 pilotSlot + reset dispatchMode）<strong>· 推荐</strong></span></div>
+<div class="choice"><span class="num">B</span><span>打包圆桌 timeline 最近 N turns 为 recap</span></div>
+<div class="choice"><span class="num">C</span><span>保留旧行为（sid-keyed store + 自动归档）</span></div>
+
+<div class="q">Q3 · 切主驾时 dispatchMode</div>
+<div class="choice"><span class="num">A</span><span>自动 reset 为 'all' <strong>· 推荐</strong></span></div>
+<div class="choice"><span class="num">B</span><span>保持当前 dispatchMode</span></div>
+
+<div class="q">Q4 · 主驾视觉</div>
+<div class="choice"><span class="num">A</span><span>左上角红三角"主驾" + 红边框（双重冗余）<strong>· 推荐</strong></span></div>
+<div class="choice"><span class="num">B</span><span>仅红边框</span></div>
+<div class="choice"><span class="num">C</span><span>头部标签 "🚗 主驾"</span></div>
+
+<p style="margin-top:20px;color:#666;font-size:12.5px"><strong>额外问题 Q5 · 实施节奏</strong>：删除 + 新增一起做（一个 plan 整体重构），还是先删除 ship → 再加 dispatchMode？</p>
+</div>
+
+<footer>
+本设计稿与 plan 文件 <code>C:\Users\lintian\.claude\plans\claude-session-hub-eager-stream.md</code> 配套。<br>
+v1 → v2 变化：删除"私聊抽屉/banner/角标/归档 toggle"等所有"圆桌侧的私聊概念"，回归"圆桌=协作 / 子会话区=私聊"的清晰边界。<br>
+你看完后回每个 Q 的选项，我会更新 plan（删减为主），再 ExitPlanMode 进入实施。
+</footer>
+
+</div>
+</body>
+</html>

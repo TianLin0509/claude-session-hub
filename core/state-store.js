@@ -33,6 +33,11 @@ function load() {
     if (!parsed.pilotSlotByMeeting || typeof parsed.pilotSlotByMeeting !== 'object') {
       parsed.pilotSlotByMeeting = {};
     }
+    // pilot redesign（2026-05-02）— dispatchMode per-meeting 持久化字典。
+    //   缺省 {}，老 state.json 自动兼容（restoreMeeting 内还会按 pilotSlot 推断默认值）。
+    if (!parsed.dispatchModeByMeeting || typeof parsed.dispatchModeByMeeting !== 'object') {
+      parsed.dispatchModeByMeeting = {};
+    }
     return parsed;
   } catch {
     return defaultState();
@@ -45,6 +50,7 @@ function defaultState() {
     sessions: [], meetings: [],
     immersiveByMeeting: {},
     pilotSlotByMeeting: {},
+    dispatchModeByMeeting: {},
   };
 }
 

@@ -57,12 +57,9 @@
       targets.push(t[1].toLowerCase());
       rest = rest.slice(t[0].length);
     }
-    // Plan 阶段 2: < 3 改为 < meeting.subSessions.length —— 兼容 5 家场景
-    // (圆桌最多 3 子 session, 但参与者也可能是 deepseek/glm)
-    const totalSubs = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions.length : 3;
-    if (targets.length > 0 && targets.length < totalSubs) {
-      return { type: 'rt-private', targetKinds: targets, text: rest };
-    }
+    // pilot redesign（2026-05-02）：旧 @xxx 私聊解析整体废弃。
+    //   想私聊就直接进对应 AI 子会话区聊（圆桌不再桥接子会话，rt-private 类型已删）。
+    //   保留 @xxx 前缀剥离能力，但全部走 fanout（@xxx 与不带 @ 等价）。
     return { type: 'rt-fanout', text: rest };
   }
 
@@ -71,7 +68,7 @@
   // partialBy: 当前进行中轮次的部分回答 { sid: { text, status } } — 单家完成立即更新
   const _rtPanelState = {};
   let _rtHistoryExpanded = false;
-  const _privateCountCache = {};
+  // pilot redesign（2026-05-02）：_privateCountCache 已废弃（圆桌不再桥接子会话私聊）
   const _thinkStartTs = {};
   let _thinkTimer = null;
   // Stage 2 容错升级：每轮 prompt 发送时间戳（用于 manual-extract IPC 的 sincePromptTs 参数）
@@ -680,7 +677,6 @@
       <button class="${cls('ask')}" data-rt-cmd="ask"${dis}>💬 直接提问 <span class="mr-rt-cmd-hint">三家独立答</span></button>
       <button class="${cls('debate')}" data-rt-cmd="debate"${noDebate}>⚔ @debate <span class="mr-rt-cmd-hint">互相点评</span></button>
       <button class="${cls('summary')}" data-rt-cmd="summary"${noDebate}>📋 @summary <span class="mr-rt-cmd-hint">综合总结</span></button>
-      <button class="mr-rt-cmd-btn" data-rt-cmd="private"${dis}>🤫 @私聊 <span class="mr-rt-cmd-hint">单独问一家</span></button>
     </div>`;
   }
 
@@ -721,10 +717,7 @@
     const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
     // Stage 2 容错升级：软提醒 banner 容器
     const softBanner = `<div id="mr-rt-soft-alert-banner" class="mr-rt-soft-alert-banner" style="display:none"></div>`;
-    // pilot-mode Task 7（2026-05-01）：[主驾回顾] 折叠卡片 + 主驾期间占位容器。
-    //   _timeline 中所有 tag='pilot-recap' 条目都渲染在卡片下方、history 上方。
-    const pilotRecaps = _renderPilotRecapsHtml(meeting);
-    const pilotPlaceholder = `<div id="mr-pilot-placeholder-container"></div>`;
+    // pilot redesign（2026-05-02）：废弃 pilotRecaps 卡片 + 主驾占位容器（圆桌不再桥接子会话私聊）。
     return `
       <div class="mr-rt-track">
         <div class="mr-rt-track-row">
@@ -738,117 +731,10 @@
       ${softBanner}
       ${fusedTabs}
       ${onboarding}
-      <div id="mr-pilot-recap-container" class="mr-pilot-recap-container">${pilotRecaps}</div>
-      ${pilotPlaceholder}
       ${history}
     `;
   }
 
-  // pilot-mode Task 7（2026-05-01）：渲染 meeting._timeline 中所有 pilot-recap 条目。
-  //   按 idx 升序（旧→新），每条一张折叠卡，默认收起；用户点 [展开 ▾] 显示摘要 + md 路径 + 段落目录。
-  function _renderPilotRecapsHtml(meeting) {
-    if (!meeting || !Array.isArray(meeting._timeline)) return '';
-    const recaps = meeting._timeline.filter(e => e && e.tag === 'pilot-recap')
-      .sort((a, b) => a.idx - b.idx);
-    return recaps.map(e => _renderPilotRecapEntry(e)).join('');
-  }
-
-  function _renderPilotRecapEntry(entry) {
-    const expandedKey = `pilot-recap-expanded-${entry.idx}`;
-    const expanded = sessionStorage.getItem(expandedKey) === '1';
-    const segs = Array.isArray(entry.segments) ? entry.segments : [];
-    const segLines = segs.map((s, i) =>
-      `   段落 ${i + 1} [行 ${s.mdLineStart}-${s.mdLineEnd}]   ${escapeHtml(s.title || '')}`
-    ).join('\n');
-    const summaryText = String(entry.text || '');
-    const summaryHtml = (typeof _renderMarkdown === 'function')
-      ? _renderMarkdown(summaryText)
-      : `<pre style="white-space:pre-wrap;">${escapeHtml(summaryText)}</pre>`;
-    const segmentBtnLabel = `切段:${entry.segmentMode === 'smart' ? '智能' : '按轮'} ▾`;
-    const mdLine = entry.recapMdPath
-      ? `📂 完整历史: ${escapeHtml(entry.recapMdPath)} (${segs.length} 段)\n${segLines}\n\n若摘要够则直接答；不够可用 Read 工具读对应段落（offset+limit）。`
-      : '';
-    return `
-      <div class="mr-pilot-recap-card" data-recap-idx="${entry.idx}" data-mode="${entry.segmentMode || 'turn'}">
-        <div class="mr-pilot-recap-header">
-          <span>📒</span>
-          <span class="mr-pilot-recap-title">[主驾回顾 · ${escapeHtml(entry.pilotKind || 'AI')} · ${entry.turnCount || 0} 轮]</span>
-          <div class="mr-pilot-recap-actions">
-            <button class="mr-pilot-recap-toggle">${expanded ? '收起 ▴' : '展开 ▾'}</button>
-            <div class="mr-pilot-segment-mode-wrap">
-              <button class="mr-pilot-segment-btn">${segmentBtnLabel}</button>
-              <div class="mr-pilot-segment-menu" style="display:none;">
-                <div data-mode="smart">智能（F5-A · 主驾按主题切）</div>
-                <div data-mode="turn">按轮（F5-B · Hub 按对话轮切）</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="mr-pilot-recap-body" style="${expanded ? '' : 'display:none;'}">
-          <div class="mr-pilot-recap-text">${summaryHtml}</div>
-          ${mdLine ? `<pre class="mr-pilot-recap-segments">${mdLine}</pre>` : ''}
-        </div>
-      </div>
-    `;
-  }
-
-  function _bindPilotRecapEvents(scope) {
-    const root = scope || document;
-    root.querySelectorAll('.mr-pilot-recap-card').forEach(card => {
-      if (card.dataset.bound === '1') return;
-      card.dataset.bound = '1';
-      const recapIdx = parseInt(card.dataset.recapIdx, 10);
-
-      // 展开/收起
-      const toggle = card.querySelector('.mr-pilot-recap-toggle');
-      if (toggle) toggle.addEventListener('click', () => {
-        const body = card.querySelector('.mr-pilot-recap-body');
-        const expanded = body.style.display !== 'none';
-        body.style.display = expanded ? 'none' : '';
-        toggle.textContent = expanded ? '展开 ▾' : '收起 ▴';
-        try { sessionStorage.setItem(`pilot-recap-expanded-${recapIdx}`, expanded ? '0' : '1'); } catch {}
-      });
-
-      // 切段菜单
-      const segBtn = card.querySelector('.mr-pilot-segment-btn');
-      const segMenu = card.querySelector('.mr-pilot-segment-menu');
-      let lastModeSwitchTs = 0;
-      if (segBtn && segMenu) {
-        segBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          segMenu.style.display = segMenu.style.display === 'none' ? 'block' : 'none';
-        });
-        segMenu.querySelectorAll('div[data-mode]').forEach(opt => {
-          opt.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            const mode = opt.dataset.mode;
-            segMenu.style.display = 'none';
-            // debounce 2s
-            const now = Date.now();
-            if (now - lastModeSwitchTs < 2000) {
-              alert('切换太频繁，请稍候 2s');
-              return;
-            }
-            lastModeSwitchTs = now;
-            const meetingId = activeMeetingId;
-            segBtn.disabled = true;
-            const oldText = segBtn.textContent;
-            segBtn.textContent = '切换中...';
-            try {
-              await ipcRenderer.invoke('roundtable:pilot-segment-mode', { meetingId, recapIdx, mode });
-              // timeline-update IPC 会推回新 entry，自动重渲
-            } catch (err) {
-              console.error('[pilot-segment-mode] failed:', err);
-              alert('切换段落模式失败：' + (err && err.message ? err.message : String(err)));
-              segBtn.textContent = oldText;
-            } finally {
-              segBtn.disabled = false;
-            }
-          });
-        });
-      }
-    });
-  }
 
   // 主渲染：从 IPC 拿最新 state 后重绘。
   // 乐观字段（currentMode/currentSummarizerKind）的保留条件：**只有 _rtOptimisticTurn[id] 还在**
@@ -865,17 +751,6 @@
       return;
     }
     if (!state) return;
-    // 私聊计数缓存（best-effort，不阻塞 panel 渲染）
-    try {
-      const counts = await ipcRenderer.invoke('roundtable-private:list', { meetingId: meeting.id });
-      _privateCountCache[meeting.id] = {
-        claude: ((counts && counts.claude) || []).length,
-        gemini: ((counts && counts.gemini) || []).length,
-        codex:  ((counts && counts.codex)  || []).length,
-      };
-    } catch (e) {
-      console.warn('[meeting-room] private count cache refresh failed:', e.message);
-    }
     const prev = _rtPanelState[meeting.id];
     const optimistic = _rtOptimisticTurn[meeting.id];
     if (optimistic && (!state.currentMode || state.currentMode === 'idle')) {
@@ -889,15 +764,12 @@
     const panel = _ensureRtPanel();
     panel.innerHTML = _renderRtPanelHtml(state, meeting);
     _bindRtPanelEvents(panel, meeting);
-    // pilot-mode（2026-05-01）：每次 panel 重绘后重新涂卡片视觉（locked/observer），
-    //   否则切回主驾态时第一帧卡片是普通态。
+    // pilot redesign（2026-05-02）：每次 panel 重绘后重新涂卡片视觉（角色红框 + dispatchMode 蓝/灰）。
     const pilotSlotForVisual = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
       ? meeting.pilotSlot : null;
-    _applyPilotCardVisual(meeting, pilotSlotForVisual);
-    // 主驾回顾卡片事件绑定（每次重绘后都重新绑）
-    _bindPilotRecapEvents(panel);
-    // 主驾期间 timeline 占位（Task 8）
-    _updatePilotPlaceholder(meeting);
+    const dispatchModeForVisual = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
+      ? meeting.dispatchMode : 'all';
+    _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
   }
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
@@ -932,7 +804,6 @@
         if (cmd === 'ask') { input.focus(); }
         else if (cmd === 'debate') { input.textContent = '@debate '; input.focus(); _placeCaretAtEnd(input); }
         else if (cmd === 'summary') { input.textContent = '@summary @claude '; input.focus(); _placeCaretAtEnd(input); }
-        else if (cmd === 'private') { input.textContent = '@claude '; input.focus(); _placeCaretAtEnd(input); }
       });
     });
     const hasThinking = panel.querySelector('.mr-rt-think-elapsed');
@@ -1087,14 +958,8 @@
       </button>`;
     }).join('');
 
-    // 私聊 tab：放最右，data-tab-idx = turnsWithAns.length 作为哨兵
-    const showsPrivate = !!(meeting && meeting.scene);
-    const privateTabIdx = turnsWithAns.length;
-    const privateTabHtml = showsPrivate ? `<button type="button" class="mr-rt-tl-tab private" data-tab-idx="${privateTabIdx}" title="${escapeHtml(headerLabel)} 的私聊历史">
-      <span class="mr-rt-tl-tab-turn">💬 私聊</span>
-    </button>` : '';
-    const tabsHtmlWithPrivate = tabsHtml + privateTabHtml;
-    const hasAnyTab = turnsWithAns.length > 0 || showsPrivate;
+    // pilot redesign（2026-05-02）：私聊 tab 已删除（圆桌不再桥接子会话私聊）。
+    const hasAnyTab = turnsWithAns.length > 0;
 
     overlay.innerHTML = `
       <div class="mr-rt-tl-backdrop" data-rt-tl-close="1"></div>
@@ -1104,52 +969,20 @@
           <span class="mr-rt-tl-drawer-meta">共 ${turnsWithAns.length} 轮</span>
           <button type="button" class="mr-rt-tl-close" data-rt-tl-close="1" aria-label="关闭">×</button>
         </header>
-        ${hasAnyTab ? `<nav class="mr-rt-tl-tabs" role="tablist">${tabsHtmlWithPrivate}</nav>` : ''}
+        ${hasAnyTab ? `<nav class="mr-rt-tl-tabs" role="tablist">${tabsHtml}</nav>` : ''}
         <div class="mr-rt-tl-content" id="mr-rt-tl-content">${renderTurnBody(turnsWithAns[0])}</div>
       </aside>
     `;
     overlay.style.display = 'block';
 
-    // Tab 切换：私聊 tab（idx === privateTabIdx）异步拉 list；其他 tab 走 renderTurnBody
     const contentEl = overlay.querySelector('#mr-rt-tl-content');
-    const renderTurnOrPrivate = async (idx) => {
-      // showsPrivate=false 时不应渲染私聊 tab；防御一手即使 idx 命中哨兵也走普通分支
-      if (showsPrivate && idx === privateTabIdx) {
-        let list = [];
-        try {
-          list = await ipcRenderer.invoke('roundtable-private:list', { meetingId: meeting.id, kind });
-        } catch (e) {
-          console.warn('[meeting-room] private list fetch failed:', e.message);
-        }
-        if (!Array.isArray(list) || list.length === 0) {
-          return '<div class="mr-rt-tl-empty">尚无与该 AI 的私聊。</div>';
-        }
-        return list.map(turn => {
-          const ans = turn.response || '';
-          const userIn = turn.userInput || '';
-          const ts = turn.ts ? new Date(turn.ts).toLocaleString() : '';
-          return `<div class="mr-rt-tl-private-item">
-            <div class="mr-rt-tl-user">用户：${escapeHtml(userIn)}</div>
-            ${ans ? `<div class="mr-rt-tl-body">${_renderMarkdown(ans)}</div>` : ''}
-            <div class="mr-rt-tl-private-ts">${escapeHtml(ts)}</div>
-          </div>`;
-        }).join('');
-      }
-      return renderTurnBody(turnsWithAns[idx]);
-    };
-
     overlay.querySelectorAll('.mr-rt-tl-tab').forEach(btn => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
         overlay.querySelectorAll('.mr-rt-tl-tab').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         const idx = parseInt(btn.getAttribute('data-tab-idx') || '0', 10);
         if (contentEl) {
-          contentEl.innerHTML = '<div class="mr-rt-tl-loading">加载中…</div>';
-          const result = await renderTurnOrPrivate(idx);
-          // 防御异步竞态：私聊 tab 走 IPC，await 期间用户若已切换到其他 tab，
-          // 此处会用过期数据覆盖新渲染，故先校验 active 标志
-          if (!btn.classList.contains('active')) return;
-          contentEl.innerHTML = result;
+          contentEl.innerHTML = renderTurnBody(turnsWithAns[idx]);
           contentEl.scrollTop = 0;
         }
       });
@@ -1219,6 +1052,9 @@
       mode,
       userInput: opts.userInput || '',
       summarizerKind: opts.summarizerKind || null,
+      // pilot redesign（2026-05-02）：传当前 dispatchMode（'all'|'pilot'|'observer'）。
+      //   后端会校验 + 按值过滤 targetSubs；未传时按 meeting 持久化字段兜底（默认 'all'）。
+      dispatchMode: meeting.dispatchMode || 'all',
     }).then((result) => {
       // 不论 completed / busy / error / no_sent，IPC 已返回 → 清乐观态，后续完全信任 server
       console.log('[roundtable] turn IPC resolved:', result && result.status, 'turn=', result && result.turnNum);
@@ -1257,10 +1093,6 @@
         cached.currentMode = null;
         delete cached.currentSummarizerKind;
       }
-      // pilot-mode Task 8（2026-05-01）：主驾期间累加占位轮次
-      const inPilot = meeting && typeof meeting.pilotSlot === 'number'
-        && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2;
-      if (inPilot) _pilotPlaceholderTurns++;
       refreshRoundtablePanel(meeting);
       if (cached) renderToolbar(meeting);
     }
@@ -1274,51 +1106,8 @@
     }
   });
 
-  // pilot-mode Task 7（2026-05-01）— timeline-append: 主驾切回时主进程推过来的新 recap entry。
-  //   把 entry 追加到内存 meeting._timeline + 重渲 panel（pilot-recap 区域刷新）。
-  //   如果 meeting 不是当前活跃 meeting，仅更新 meetingData 缓存，下次打开时见。
-  ipcRenderer.on('timeline-append', (_event, { meetingId, entry }) => {
-    const meeting = meetingData[meetingId];
-    if (!meeting) return;
-    if (!Array.isArray(meeting._timeline)) meeting._timeline = [];
-    // 防重复追加（idx 已存在则替换）
-    const existingIdx = meeting._timeline.findIndex(e => e && e.idx === entry.idx);
-    if (existingIdx >= 0) meeting._timeline[existingIdx] = entry;
-    else meeting._timeline.push(entry);
-    if (meetingId === activeMeetingId) {
-      refreshRoundtablePanel(meeting);
-    }
-  });
-
-  ipcRenderer.on('timeline-update', (_event, { meetingId, idx, entry }) => {
-    const meeting = meetingData[meetingId];
-    if (!meeting || !Array.isArray(meeting._timeline)) return;
-    const i = meeting._timeline.findIndex(e => e && e.idx === idx);
-    if (i >= 0) meeting._timeline[i] = entry;
-    if (meetingId === activeMeetingId) {
-      refreshRoundtablePanel(meeting);
-    }
-  });
-
-  // pilot-mode Task 8（2026-05-01）— 主驾期间 timeline 占位
-  //   主驾期每次 turn-complete 时增加占位轮次计数；关闭主驾后由 _generatePilotRecap
-  //   推 timeline-append（实际卡片）→ 占位移除。
-  let _pilotPlaceholderTurns = 0;
-  function _updatePilotPlaceholder(meeting) {
-    const containerHost = document.getElementById('mr-pilot-placeholder-container');
-    if (!containerHost) {
-      _pilotPlaceholderTurns = 0;
-      return;
-    }
-    const pilotSlot = (meeting && typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
-      ? meeting.pilotSlot : null;
-    if (pilotSlot === null) {
-      containerHost.innerHTML = '';
-      _pilotPlaceholderTurns = 0;
-      return;
-    }
-    containerHost.innerHTML = `<div class="mr-pilot-placeholder">📒 主驾对话进行中（已 ${_pilotPlaceholderTurns} 轮）...</div>`;
-  }
+  // pilot redesign（2026-05-02）：timeline-append / timeline-update / _updatePilotPlaceholder 整体废弃
+  //   （pilot recap 卡片不再生成，圆桌 timeline 只保留 fanout/debate/summary 公开发言记录）。
 
   // Roundtable 单家 partial-update：单卡片立即刷新，不等所有家完成
   ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source }) => {
@@ -2132,7 +1921,7 @@
           const result = await ipcRenderer.invoke('roundtable:pilot-toggle', {
             meetingId: meeting.id, slotIndex: targetSlot,
           });
-          // result.recapIdx 在 timeline-append IPC 推送，UI 自动更新（Task 7）
+          // pilot redesign（2026-05-02）：pilot-toggle 仅设置 pilotSlot，无副作用（无 recap 生成）。
           if (!result || !result.ok) throw new Error('pilot-toggle returned non-ok');
         } catch (err) {
           console.error('[pilot-toggle] failed:', err);
@@ -2145,20 +1934,50 @@
     });
   }
 
-  // 主驾态卡片视觉：被锁定的 slot 红边 + 旁观 slot 灰显
-  function _applyPilotCardVisual(meeting, pilotSlot) {
+  // pilot redesign（2026-05-02）：卡片双层视觉
+  //   红框（.pilot-role）= 主驾角色身份（独立于 dispatchMode）
+  //   蓝框（.dispatch-active）+ 灰化（.dispatch-inactive）= 当前 dispatchMode 的可见性反馈
+  //   主驾未选时（pilotSlot === null）三张卡片都正常态。
+  function _applyPilotCardVisual(meeting, pilotSlot, dispatchMode) {
     const cards = document.querySelectorAll('.mr-ft');
+    const mode = ['all', 'pilot', 'observer'].includes(dispatchMode) ? dispatchMode : 'all';
     cards.forEach((card, i) => {
-      card.classList.toggle('pilot-locked', pilotSlot === i);
-      card.classList.toggle('pilot-observer', pilotSlot !== null && pilotSlot !== i);
+      // 角色层：主驾红框 + 左上角"主驾"三角标
+      card.classList.toggle('pilot-role', pilotSlot === i);
+      // dispatch 层
+      let active = false;
+      let inactive = false;
+      if (pilotSlot !== null && mode === 'pilot') {
+        active = (i === pilotSlot);
+        inactive = (i !== pilotSlot);
+      } else if (pilotSlot !== null && mode === 'observer') {
+        active = (i !== pilotSlot);
+        inactive = (i === pilotSlot);
+      }
+      // mode === 'all' 时三张都正常态（不加 active/inactive）
+      card.classList.toggle('dispatch-active', active);
+      card.classList.toggle('dispatch-inactive', inactive);
+      // 主驾角色 corner 三角
+      let cornerEl = card.querySelector('.ft-corner-pilot');
+      if (pilotSlot === i) {
+        if (!cornerEl) {
+          cornerEl = document.createElement('div');
+          cornerEl.className = 'ft-corner-pilot';
+          cornerEl.textContent = '主驾';
+          card.appendChild(cornerEl);
+        }
+      } else if (cornerEl) {
+        cornerEl.remove();
+      }
     });
     // 输入框 placeholder
     const inputBox = document.getElementById('mr-input-box');
     if (inputBox) {
       const slotPokemon = ['皮卡丘', '小火龙', '杰尼龟'];
+      const dispatchLabel = { all: '群策群力', pilot: '主驾发言', observer: '副驾发言' }[mode];
       inputBox.dataset.placeholder = pilotSlot !== null
-        ? `🚗 主驾中（仅 Slot ${pilotSlot + 1} · ${slotPokemon[pilotSlot]} 接收）...`
-        : '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who> / @<who> 单聊';
+        ? `🚗 主驾: Slot ${pilotSlot + 1} · ${slotPokemon[pilotSlot]} · 当前分发: ${dispatchLabel}`
+        : '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who>';
     }
   }
 
@@ -2179,47 +1998,82 @@
         .join('');
       const cached = _rtPanelState[meeting.id];
       const inProgress = cached && cached.currentMode && cached.currentMode !== 'idle';
-      const disabledAttr = inProgress ? 'disabled' : '';
       const turns = cached ? (cached.turns || []).length : 0;
-      // pilot-mode Task 3（2026-05-01）：主驾态读 meeting.pilotSlot
+      // pilot redesign（2026-05-02）：pilotSlot 是"主驾角色"标识（红框），dispatchMode 控制本轮谁开口。
       const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
         ? meeting.pilotSlot : null;
       const pilotOn = pilotSlot !== null;
-      // 主驾期间禁用 debate / summary（dispatchTurn 也加了 IPC 兜底）
-      const debateDisabled = (turns < 1 || inProgress || pilotOn) ? 'disabled' : '';
-      const summaryDisabled = (inProgress || pilotOn) ? 'disabled' : '';
-      const summaryPickDisabled = (inProgress || pilotOn) ? 'disabled' : '';
-      // 主驾按钮 label：关 / Slot N · 宝可梦
+      const dispatchMode = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
+        ? meeting.dispatchMode : 'all';
+
+      // dispatchMode segmented control: pilot/observer 要求 pilotSlot !== null
+      const dispatchPilotDisabled = (!pilotOn || inProgress) ? 'disabled' : '';
+      const dispatchObserverDisabled = (!pilotOn || inProgress) ? 'disabled' : '';
+      const dispatchAllDisabled = inProgress ? 'disabled' : '';
+
+      // debate: 'pilot' 模式下一家无法辩论 → disable
+      const debateDisabled = (turns < 1 || inProgress || dispatchMode === 'pilot') ? 'disabled' : '';
+      const summaryDisabled = inProgress ? 'disabled' : '';
+      const summaryPickDisabled = inProgress ? 'disabled' : '';
+
+      // 主驾按钮 label
       const slotPokemon = ['⚡皮卡丘', '🔥小火龙', '💎杰尼龟'];
-      const pilotBtnLabel = pilotOn ? `Slot ${pilotSlot + 1} · ${slotPokemon[pilotSlot]}` : '关';
+      const pilotBtnLabel = pilotOn ? `${slotPokemon[pilotSlot]}` : '未选';
       const pilotBtnCls = pilotOn ? 'mr-rt-tb-btn pilot active' : 'mr-rt-tb-btn pilot';
-      // IF-C4（2026-05-01）：按钮重排
+
+      // 状态行（toolbar 顶部一行小字，文字冗余兜底）
+      const dispatchModeLabel = { all: '群策群力', pilot: '主驾发言', observer: '副驾发言' }[dispatchMode];
+      const pilotLabel = pilotOn ? `Slot ${pilotSlot + 1}` : '未选';
+      const statusLine = `<div class="mr-status-line">分发: <strong>${dispatchModeLabel}</strong> · 主驾: <strong>${pilotLabel}</strong>${
+        inProgress ? ' · <strong>⏳ 处理中</strong>' : (turns > 0 ? ` · 已 ${turns} 轮` : '')
+      }</div>`;
+
       el.innerHTML = `
+        ${statusLine}
         <div class="mr-rt-toolbar">
-          <button class="mr-rt-tb-btn primary" id="mr-rt-debate-btn" ${debateDisabled} title="让三家结合对方观点重新发言（基于上一轮）">🤝 群策群力</button>
-          <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${summaryDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结发言</button>
+          <div class="mr-rt-dispatch-group" role="group" aria-label="分发模式">
+            <button class="mr-rt-dispatch-btn ${dispatchMode === 'all' ? 'active' : ''}" data-dispatch-mode="all" ${dispatchAllDisabled} title="群策群力：本轮 prompt 发给全员">🤝 群策群力</button>
+            <button class="mr-rt-dispatch-btn ${dispatchMode === 'pilot' ? 'active' : ''}" data-dispatch-mode="pilot" ${dispatchPilotDisabled} title="主驾发言：本轮 prompt 仅发给主驾">🎯 主驾发言</button>
+            <button class="mr-rt-dispatch-btn ${dispatchMode === 'observer' ? 'active' : ''}" data-dispatch-mode="observer" ${dispatchObserverDisabled} title="副驾发言：本轮 prompt 仅发给副驾两家">👥 副驾发言</button>
+          </div>
           <span class="mr-rt-tb-divider"></span>
-          <label class="mr-rt-tb-pick ${pilotOn ? 'dim' : ''}">
+          <button class="mr-rt-tb-btn" id="mr-rt-debate-btn" ${debateDisabled} title="让目标范围内的 AI 结合彼此观点重新发言（基于上一轮）">🗣 辩论</button>
+          <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${summaryDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结</button>
+          <label class="mr-rt-tb-pick">
             <span class="mr-rt-tb-pick-label">总结人:</span>
             <select id="mr-rt-summary-pick" ${summaryPickDisabled}>${opts || '<option disabled>无可用 AI</option>'}</select>
           </label>
           <span class="mr-rt-tb-divider"></span>
           <span class="mr-rt-tb-pilot-wrap">
-            <button class="${pilotBtnCls}" id="mr-pilot-btn" title="主驾模式：锁定一个 slot 单独深聊；切回时主驾自己生成不限字数摘要 + md 镜像注入副驾">🚗 主驾:<span id="mr-pilot-label">${pilotBtnLabel}</span> ${pilotOn ? '▾' : '▾'}</button>
+            <button class="${pilotBtnCls}" id="mr-pilot-btn" title="选定一家为主驾角色（红框标记）；不会切换全局模式，仅是身份标签。配合分发模式按钮使用。">🚗 主驾角色:<span id="mr-pilot-label">${pilotBtnLabel}</span> ▾</button>
             <span id="mr-pilot-menu" class="mr-pilot-menu" style="display:none;">
               <div class="mr-pilot-option" data-slot="0">⚡ Slot 1 · 皮卡丘</div>
               <div class="mr-pilot-option" data-slot="1">🔥 Slot 2 · 小火龙</div>
               <div class="mr-pilot-option" data-slot="2">💎 Slot 3 · 杰尼龟</div>
-              <div class="mr-pilot-option mr-pilot-option-off" data-slot="-1">关闭主驾</div>
+              <div class="mr-pilot-option mr-pilot-option-off" data-slot="-1">取消主驾</div>
             </span>
           </span>
-          <span class="mr-rt-tb-status ${pilotOn ? 'pilot-on' : ''}" id="mr-rt-tb-status">${
-            pilotOn
-              ? `主驾中 · 仅 Slot ${pilotSlot + 1} 接收`
-              : (inProgress ? '⏳ 处理中…' : (turns === 0 ? '先发个问题让三家本色发言' : `已 ${turns} 轮`))
+          <span class="mr-rt-tb-status" id="mr-rt-tb-status">${
+            inProgress ? '⏳ 处理中…' : (turns === 0 ? '先发个问题让大家本色发言' : `已 ${turns} 轮`)
           }</span>
         </div>
       `;
+
+      // dispatchMode 切换：调 IPC 'roundtable:dispatch-mode-set'，server 推 meeting-updated 回来重渲
+      el.querySelectorAll('.mr-rt-dispatch-btn[data-dispatch-mode]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (btn.hasAttribute('disabled')) return;
+          const newMode = btn.getAttribute('data-dispatch-mode');
+          if (newMode === dispatchMode) return;  // 已选中
+          try {
+            await ipcRenderer.invoke('roundtable:dispatch-mode-set', { meetingId: meeting.id, dispatchMode: newMode });
+          } catch (err) {
+            console.error('[dispatch-mode-set] failed:', err);
+            alert('切换分发模式失败：' + (err && err.message ? err.message : String(err)));
+          }
+        });
+      });
+
       const debateBtn = el.querySelector('#mr-rt-debate-btn');
       const summaryBtn = el.querySelector('#mr-rt-summary-btn');
       const pick = el.querySelector('#mr-rt-summary-pick');
@@ -2236,7 +2090,7 @@
         triggerRoundtable(meeting, 'summary', { summarizerKind });
       });
       _bindPilotEvents(meeting, pilotSlot);
-      _applyPilotCardVisual(meeting, pilotSlot);
+      _applyPilotCardVisual(meeting, pilotSlot, dispatchMode);
       return;
     }
 
@@ -2614,58 +2468,8 @@
         });
         return;
       }
-      // 私聊：单家或多家但非全员，不入轮次
-      if (cmd.type === 'rt-private') {
-        const kinds = cmd.targetKinds || [];
-        const sids = [];
-        const resolvedKinds = [];
-        const failedKinds = [];
-        for (const kind of kinds) {
-          const sid = findSessionByKind(current, kind);
-          if (sid && !sids.includes(sid)) {
-            sids.push(sid);
-            resolvedKinds.push(kind);
-          } else {
-            failedKinds.push(kind);
-          }
-        }
-        if (sids.length === 0) {
-          console.warn('[meeting-room] rt-private: no matching session for kinds', kinds);
-          return;
-        }
-        if (failedKinds.length > 0) {
-          console.warn(`[meeting-room] rt-private: partial resolution — sent to [${resolvedKinds.join(',')}], skipped [${failedKinds.join(',')}] (sessions not attached or dormant)`);
-        }
-        // ---
-        // 顺序与不变量备注：
-        // 1) terminal-input 是 fire-and-forget（IPC send），私聊 store 是 best-effort async invoke
-        // 2) 极端情况下 send 成功但 store append 失败，UI 仅 console.warn 不阻塞，依赖未来
-        //    transcript-tap 回填 response 字段做兜底
-        // 3) 我们接受这个不变量缺口换取低延迟体验，详情见 spec 私聊段落
-        // ---
-        const payload = cmd.text || '';
-        for (const sessionId of sids) {
-          ipcRenderer.send('terminal-input', { sessionId, data: payload });
-          const session = sessions ? sessions.get(sessionId) : null;
-          const baseDelay = session && session.kind === 'codex' ? 400 : 200;
-          const sizeDelay = Math.min(Math.floor(payload.length / 100) * 10, 500);
-          setTimeout(() => {
-            ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
-          }, baseDelay + sizeDelay);
-        }
-        // 仅对成功送达的 kinds 写私聊 store，避免给下线 AI 留虚假记录
-        for (const kind of resolvedKinds) {
-          ipcRenderer.invoke('roundtable-private:append', {
-            meetingId: meeting.id,
-            kind,
-            userInput: payload,
-            response: '',
-          }).catch(e => console.warn('[meeting-room] private append failed:', e.message));
-        }
-        meeting.lastMessageTime = Date.now();
-        ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
-        return;
-      }
+      // pilot redesign（2026-05-02）：rt-private 类型完全废弃，圆桌不再处理 @<who> 私聊。
+      //   想私聊就直接进 AI 子会话区聊。parseRoundtableCommand 会把 @xxx 前缀的输入归一为 rt-fanout。
     }
 
     const targets = current.sendTarget === 'all' ? current.subSessions : [current.sendTarget];

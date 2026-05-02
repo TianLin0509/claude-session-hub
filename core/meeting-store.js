@@ -31,6 +31,8 @@ function saveMeetingFile(id, data) {
     slotSpecs: Array.isArray(data.slotSpecs) ? data.slotSpecs : null,
     // pilot-mode（2026-05-01）：当前主驾 slot 索引（0|1|2|null）。Hub 重启后自动恢复主驾态。
     pilotSlot: (typeof data.pilotSlot === 'number') ? data.pilotSlot : null,
+    // pilot redesign（2026-05-02）：dispatchMode = 'all'|'pilot'|'observer'，决定本轮谁开口。
+    dispatchMode: ['all', 'pilot', 'observer'].includes(data.dispatchMode) ? data.dispatchMode : 'all',
     savedAt: Date.now(),
   };
   const tmp = meetingFilePath(id) + '.tmp';
