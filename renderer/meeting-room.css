@@ -1757,9 +1757,13 @@
   background: rgba(248, 81, 73, 0.10);
   color: #f85149;
 }
-/* pilot redesign（2026-05-02）— 卡片双层视觉：角色（红框）+ dispatchMode（蓝框/灰化） */
+/* pilot redesign v4（2026-05-02）— 只保留"角色层"红框，删除 dispatch 视觉特效。
+   设计准则：副驾发言时主驾卡片应保持原状（PTY 没收到 prompt 自然就不会有 thinking 动画），
+            主驾发言时副驾同理。dispatch 视觉特效（蓝框脉冲 / 灰化 / 冻结动画）属于
+            "多此一举"——卡片真实 PTY 状态本身就是最准确的视觉反馈。
+            分发模式由 toolbar segmented control + 底部状态行告知用户，无需卡片再叠加层。 */
 
-/* 角色层：主驾红框 + 左上角"主驾"三角标 */
+/* 角色层：主驾红框 + 左上角"主驾"三角标（独立于 dispatchMode） */
 .mr-ft.pilot-role {
   border-color: #f85149 !important;
   border-width: 2px;
@@ -1777,62 +1781,6 @@
   border-radius: 6px 0 6px 0;
   pointer-events: none;
   z-index: 5;
-}
-
-/* dispatch 层：active 蓝框 + 轻脉冲；inactive 灰化 */
-.mr-ft.dispatch-active {
-  border-color: #2c7be5 !important;
-  border-width: 2px;
-  box-shadow: 0 0 12px rgba(44, 123, 229, 0.45);
-  animation: mr-ft-dispatch-pulse 2s ease-in-out infinite;
-}
-@keyframes mr-ft-dispatch-pulse {
-  0%, 100% { box-shadow: 0 0 12px rgba(44, 123, 229, 0.45); }
-  50%      { box-shadow: 0 0 18px rgba(44, 123, 229, 0.70); }
-}
-.mr-ft.dispatch-inactive {
-  opacity: 0.45;
-  filter: grayscale(0.5);
-  transition: opacity 200ms ease, filter 200ms ease;
-}
-
-/* 双层叠加：主驾 + dispatch-active → 红外框 + 蓝内框（box-shadow 双层） */
-.mr-ft.pilot-role.dispatch-active {
-  border-color: #f85149 !important;
-  box-shadow: 0 0 0 2px #2c7be5, 0 0 12px rgba(44, 123, 229, 0.55);
-  animation: mr-ft-pilot-active-pulse 2s ease-in-out infinite;
-}
-@keyframes mr-ft-pilot-active-pulse {
-  0%, 100% { box-shadow: 0 0 0 2px #2c7be5, 0 0 12px rgba(44, 123, 229, 0.55); }
-  50%      { box-shadow: 0 0 0 2px #2c7be5, 0 0 18px rgba(44, 123, 229, 0.80); }
-}
-/* 主驾在 observer 模式下：红框保留 + 灰化（用户能感知"主驾在场但本轮不发言"） */
-.mr-ft.pilot-role.dispatch-inactive {
-  opacity: 0.45;
-  filter: grayscale(0.5);
-}
-
-/* dispatch-inactive 强制视觉冻结（修复 v3·2026-05-02）：
-   场景：用户切到 observer 模式时，主驾上一轮的 thinking 还在跑（PTY 未结束），
-        progress-bar 流光、avatar bounce、"思考中"badge、计时秒数全在动 →
-        用户视觉上误以为主驾本轮还在 active。
-   修复（克制版）：
-        1) hide 进度条容器（最显眼的运动元素，连流光底色一并消失）
-        2) hide 逃生按钮栏（inactive 卡片不应该有交互入口）
-        3) hide 流式光标
-        4) **所有子元素动画强制 paused** !important（avatar bounce / cursor blink
-           / 任何后续新增动画都自动覆盖）
-        保留：状态文字 + 计时数字（用户仍能看到"主驾上一轮还在思考"是事实信息），
-              卡片 opacity 0.45 + grayscale 0.5 让这些信息明显淡化。 */
-.mr-ft.dispatch-inactive .mr-ft-progress,
-.mr-ft.dispatch-inactive .mr-ft-escape-bar,
-.mr-ft.dispatch-inactive .mr-ft-cursor {
-  display: none !important;
-}
-.mr-ft.dispatch-inactive *,
-.mr-ft.dispatch-inactive *::before,
-.mr-ft.dispatch-inactive *::after {
-  animation-play-state: paused !important;
 }
 
 /* dispatchMode segmented control */

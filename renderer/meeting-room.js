@@ -1938,38 +1938,22 @@
     });
   }
 
-  // pilot redesign（2026-05-02）：卡片双层视觉
-  //   红框（.pilot-role）= 主驾角色身份（独立于 dispatchMode）
-  //   蓝框（.dispatch-active）+ 灰化（.dispatch-inactive）= 当前 dispatchMode 的可见性反馈
-  //   主驾未选时（pilotSlot === null）三张卡片都正常态。
+  // pilot redesign v4（2026-05-02）：卡片只保留"角色层"红框，删除 dispatch 视觉特效。
+  //   设计准则：副驾发言时主驾卡片保持原状，主驾发言时副驾同理。卡片自然反映真实 PTY
+  //            状态（thinking/done/idle）即可——dispatch 视觉特效是"多此一举"，反而
+  //            会和真实 PTY 状态打架（出现"灰化但又部分动"的怪异中间态）。
+  //   dispatchMode 仍保留参数：仅用于输入框 placeholder 的文本提示。
   function _applyPilotCardVisual(meeting, pilotSlot, dispatchMode) {
-    // querySelectorAll('.mr-ft') 会匹配整个文档；圆桌界面 strip 内只应有 3 张卡片，但
-    //   sub-session 子区或者 timeline drawer 也可能含 .mr-ft。改为只取圆桌 panel 内的卡片，
-    //   避免对子区/drawer 卡片误改 class（这是上一版主驾没灰化的关键 root cause）。
     const panel = document.getElementById('mr-rt-panel');
     const cards = panel
       ? panel.querySelectorAll('.mr-ft-strip > .mr-ft')
       : document.querySelectorAll('.mr-ft-strip > .mr-ft');
     const mode = ['all', 'pilot', 'observer'].includes(dispatchMode) ? dispatchMode : 'all';
-    if (typeof console !== 'undefined' && console.debug) {
-      console.debug('[pilot-visual]', { cards: cards.length, pilotSlot, mode });
-    }
     cards.forEach((card, i) => {
       // 角色层：主驾红框 + 左上角"主驾"三角标
       card.classList.toggle('pilot-role', pilotSlot === i);
-      // dispatch 层
-      let active = false;
-      let inactive = false;
-      if (pilotSlot !== null && mode === 'pilot') {
-        active = (i === pilotSlot);
-        inactive = (i !== pilotSlot);
-      } else if (pilotSlot !== null && mode === 'observer') {
-        active = (i !== pilotSlot);
-        inactive = (i === pilotSlot);
-      }
-      // mode === 'all' 时三张都正常态（不加 active/inactive）
-      card.classList.toggle('dispatch-active', active);
-      card.classList.toggle('dispatch-inactive', inactive);
+      // 兜底清理旧 v3 dispatch class（用户从老版本升级时卡片可能仍带这两个 class）
+      card.classList.remove('dispatch-active', 'dispatch-inactive');
       // 主驾角色 corner 三角
       let cornerEl = card.querySelector('.ft-corner-pilot');
       if (pilotSlot === i) {

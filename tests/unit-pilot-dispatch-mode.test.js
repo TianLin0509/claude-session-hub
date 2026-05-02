@@ -183,7 +183,16 @@ function testNoPilotPrivateUiInRenderer() {
   assert.ok(src.includes("ipcRenderer.invoke('roundtable:dispatch-mode-set'"),
     'dispatch-mode-set IPC invoke present');
   assert.ok(src.includes('pilot-role'), 'pilot-role visual class present');
-  assert.ok(src.includes('dispatch-active'), 'dispatch-active visual class present');
+  // pilot redesign v4：dispatch 视觉特效已移除（"副驾发言时主驾卡片保持原状"准则），
+  //   仅在兜底清理调用 classList.remove('dispatch-active', 'dispatch-inactive') 残留。
+  //   不应出现 toggle/add('dispatch-active') 或 'dispatch-inactive' 写入路径。
+  const codeOnlyNoComments = src.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(!/classList\.toggle\(['\"]dispatch-active['\"]/.test(codeOnlyNoComments),
+    'no toggle dispatch-active (v4 removed)');
+  assert.ok(!/classList\.add\(['\"]dispatch-active['\"]/.test(codeOnlyNoComments),
+    'no add dispatch-active (v4 removed)');
+  assert.ok(!/classList\.toggle\(['\"]dispatch-inactive['\"]/.test(codeOnlyNoComments),
+    'no toggle dispatch-inactive (v4 removed)');
   ok('renderer cleaned (no pilot recap UI) + new dispatch UI wired');
 }
 
