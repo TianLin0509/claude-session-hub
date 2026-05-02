@@ -81,6 +81,63 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
   }
 }
 
+// 圆桌 CLI 隔离 — 软隔离方案 (2026-05-02)
+// 目的：圆桌成员的 Claude/DeepSeek/GLM CLI 启动时
+//   1) --disable-slash-commands   关闭 superpowers / brainstorming / TDD 等 skill 入口
+//   2) --settings <path>          merge 一份"全 plugin disabled"的 settings.json
+//      （只覆盖 enabledPlugins 字段，不动主目录的 hooks/permissions/statusLine 等）
+// 不动 CLAUDE_CONFIG_DIR — auto-memory / CLAUDE.md / OAuth 凭证全部继续共享。
+// 仅当 opts.meetingId 存在（即圆桌成员）时启用，主桌 Claude 会话不受影响。
+const _ROUNDTABLE_DISABLE_PLUGINS = {
+  'hookify@claude-plugins-official': false,
+  'code-review@claude-plugins-official': false,
+  'security-guidance@claude-plugins-official': false,
+  'commit-commands@claude-plugins-official': false,
+  'pyright-lsp@claude-plugins-official': false,
+  'feature-dev@claude-plugins-official': false,
+  'claude-md-management@claude-plugins-official': false,
+  'skill-creator@claude-plugins-official': false,
+  'frontend-design@claude-plugins-official': false,
+  'codex@openai-codex': false,
+  'superpowers@claude-plugins-official': false,
+  'harness@harness-marketplace': false,
+  'differential-review@trailofbits-skills': false,
+  'property-based-testing@trailofbits-skills': false,
+  'supply-chain-risk-auditor@trailofbits-skills': false,
+  'sharp-edges@trailofbits-skills': false,
+  'variant-analysis@trailofbits-skills': false,
+  'modern-python@trailofbits-skills': false,
+  'second-opinion@trailofbits-skills': false,
+  'git-cleanup@trailofbits-skills': false,
+  'gh-cli@trailofbits-skills': false,
+  'context7@context7': false,
+  'ui-ux-pro-max@ui-ux-pro-max-skill': false,
+};
+
+function ensureRoundtableSettings(hubDataDir) {
+  const fp = path.join(hubDataDir, 'roundtable-claude-settings.json');
+  const content = JSON.stringify({ enabledPlugins: _ROUNDTABLE_DISABLE_PLUGINS }, null, 2);
+  try {
+    let cur = '';
+    try { cur = fs.readFileSync(fp, 'utf8'); } catch {}
+    if (cur !== content) {
+      fs.mkdirSync(path.dirname(fp), { recursive: true });
+      fs.writeFileSync(fp, content, 'utf8');
+    }
+  } catch (err) {
+    console.warn('[hub] failed to write roundtable settings:', err.message);
+  }
+  return fp;
+}
+
+function buildRoundtableIsolationFlags(meetingId) {
+  if (!meetingId) return '';
+  const settingsPath = ensureRoundtableSettings(getHubDataDir());
+  // settings 路径含反斜杠 — Claude CLI 在 PowerShell 下接受双反斜杠转义
+  const escaped = settingsPath.replace(/\\/g, '\\\\');
+  return ` --disable-slash-commands --settings "${escaped}"`;
+}
+
 function dismissCodexUpdatePrompt(homeDir = process.env.USERPROFILE || process.env.HOME || os.homedir()) {
   const versionPath = path.join(homeDir, '.codex', 'version.json');
   try {
@@ -400,6 +457,8 @@ class SessionManager extends EventEmitter {
       if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
       }
+      // 圆桌成员：禁 skill + plugin（保留 auto-memory / CLAUDE.md / OAuth）
+      cmd += buildRoundtableIsolationFlags(opts.meetingId);
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -535,6 +594,8 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${opts.model || 'deepseek-v4-pro'} --permission-mode bypassPermissions`;
       }
+      // 圆桌成员：禁 skill + plugin
+      cmd += buildRoundtableIsolationFlags(opts.meetingId);
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -574,6 +635,8 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${opts.model || cv.GLM_MODEL} --permission-mode bypassPermissions`;
       }
+      // 圆桌成员：禁 skill + plugin
+      cmd += buildRoundtableIsolationFlags(opts.meetingId);
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -677,6 +740,12 @@ class SessionManager extends EventEmitter {
     if (!s || !s.pty) return false;
     const kind = s.info && s.info.kind;
     const modelId = s.info && s.info.currentModel && s.info.currentModel.id;
+    const meetingId = s.info && s.info.meetingId;
+    // 圆桌成员：复用同一份隔离 settings + --disable-slash-commands
+    const isolation = (kind === 'claude' || kind === 'claude-resume' ||
+                       kind === 'deepseek' || kind === 'deepseek-resume' ||
+                       kind === 'glm' || kind === 'glm-resume')
+      ? buildRoundtableIsolationFlags(meetingId) : '';
     let cmd;
     if (kind === 'codex' || kind === 'codex-resume') {
       dismissCodexUpdatePrompt();
@@ -684,12 +753,12 @@ class SessionManager extends EventEmitter {
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
       cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-2.5-flash'}\r\n`;
     } else if (kind === 'claude' || kind === 'claude-resume') {
-      cmd = ` claude --model ${modelId || 'claude-opus-4-7[1m]'}\r\n`;
+      cmd = ` claude --model ${modelId || 'claude-opus-4-7[1m]'}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
-      cmd = ` claude --model ${modelId || 'deepseek-v4-pro'} --permission-mode bypassPermissions\r\n`;
+      cmd = ` claude --model ${modelId || 'deepseek-v4-pro'} --permission-mode bypassPermissions${isolation}\r\n`;
     } else if (kind === 'glm' || kind === 'glm-resume') {
       const cv = getConfigValues();
-      cmd = ` claude --model ${modelId || cv.GLM_MODEL || 'glm-5.1'} --permission-mode bypassPermissions\r\n`;
+      cmd = ` claude --model ${modelId || cv.GLM_MODEL || 'glm-5.1'} --permission-mode bypassPermissions${isolation}\r\n`;
     } else {
       return false;
     }
