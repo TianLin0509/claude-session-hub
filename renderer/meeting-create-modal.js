@@ -74,7 +74,12 @@ function _slotHtml(i) {
 }
 
 function _ensureModal() {
-  if (_modalEl) return _modalEl;
+  // E4 修复 (2026-05-03)：旧版仅 if (_modalEl) return —— 若 modal 被外部
+  //   .remove() 出 DOM（DevTools / 测试 / 极端 UI 路径），缓存的 detached
+  //   element 仍 truthy，下次 open 直接返回 detached 节点，modal 永远不显示。
+  //   修复：检查 element 是否仍在 document 树里。
+  if (_modalEl && document.body.contains(_modalEl)) return _modalEl;
+  _modalEl = null;
   _modalEl = document.createElement('div');
   _modalEl.id = 'meeting-create-modal';
   _modalEl.className = 'mcm-overlay';

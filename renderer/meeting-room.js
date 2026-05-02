@@ -2054,6 +2054,13 @@
       // dispatchMode segmented control: pilot/observer 要求 pilotSlot !== null
       const dispatchPilotDisabled = (!pilotOn || inProgress) ? 'disabled' : '';
       const dispatchObserverDisabled = (!pilotOn || inProgress) ? 'disabled' : '';
+      // E5 修复 (2026-05-03)：disabled 时 title 解释原因（之前 title 仍是按钮功能描述，
+      //   用户点不动不知道为啥）。优先级：处理中 > 没选主驾。
+      const _pilotObsHint = inProgress
+        ? '上一轮还在跑，请等结束'
+        : (!pilotOn ? '请先在右侧 🚗 主驾角色 选定一家 AI 才能切到此模式' : null);
+      const dispatchPilotTitle = _pilotObsHint || '主驾发言：本轮 prompt 仅发给主驾';
+      const dispatchObserverTitle = _pilotObsHint || '副驾发言：本轮 prompt 仅发给副驾两家';
       const dispatchAllDisabled = inProgress ? 'disabled' : '';
 
       // debate: 'pilot' 模式下一家无法辩论 → disable
@@ -2085,8 +2092,8 @@
         <div class="mr-rt-toolbar">
           <div class="mr-rt-dispatch-group" role="group" aria-label="分发模式">
             <button class="mr-rt-dispatch-btn ${dispatchMode === 'all' ? 'active' : ''}" data-dispatch-mode="all" ${dispatchAllDisabled} title="群策群力：本轮 prompt 发给全员">🤝 群策群力</button>
-            <button class="mr-rt-dispatch-btn ${dispatchMode === 'pilot' ? 'active' : ''}" data-dispatch-mode="pilot" ${dispatchPilotDisabled} title="主驾发言：本轮 prompt 仅发给主驾">🎯 主驾发言</button>
-            <button class="mr-rt-dispatch-btn ${dispatchMode === 'observer' ? 'active' : ''}" data-dispatch-mode="observer" ${dispatchObserverDisabled} title="副驾发言：本轮 prompt 仅发给副驾两家">👥 副驾发言</button>
+            <button class="mr-rt-dispatch-btn ${dispatchMode === 'pilot' ? 'active' : ''}" data-dispatch-mode="pilot" ${dispatchPilotDisabled} title="${dispatchPilotTitle}">🎯 主驾发言</button>
+            <button class="mr-rt-dispatch-btn ${dispatchMode === 'observer' ? 'active' : ''}" data-dispatch-mode="observer" ${dispatchObserverDisabled} title="${dispatchObserverTitle}">👥 副驾发言</button>
           </div>
           <span class="mr-rt-tb-divider"></span>
           <button class="mr-rt-tb-btn" id="mr-rt-debate-btn" ${debateDisabled} title="让目标范围内的 AI 结合彼此观点重新发言（基于上一轮）">🗣 辩论</button>
