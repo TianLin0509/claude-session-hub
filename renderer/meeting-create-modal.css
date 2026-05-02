@@ -149,3 +149,16 @@
   cursor: not-allowed;
   filter: none;
 }
+
+/* E2 修复：inline error，替代 alert 阻塞 */
+.mcm-error {
+  margin: 0 16px 12px;
+  padding: 8px 12px;
+  background: rgba(192, 57, 43, 0.12);
+  color: #f39c8b;
+  border-left: 3px solid #c0392b;
+  border-radius: 4px;
+  font-size: 13px;
+  white-space: pre-line;
+  line-height: 1.5;
+}

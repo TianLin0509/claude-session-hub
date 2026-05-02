@@ -575,15 +575,36 @@ ipcMain.handle('create-meeting', async (_e, opts) => {
     // 不抢先 sendToRenderer('meeting-created')—— 那样 renderer 先看到空 subSessions 列表，
     // 之后每个 add-sub 触发 'meeting-updated' 才补 sub，会造成 0→1→2→3 的视觉抖动。
     // 改成 add-sub 完成后再发 'meeting-created' 一次性带齐 subSessions（modal 走这条路径）。
+    //
+    // E1 silent failure 修复 (2026-05-03)：
+    //   旧代码 add-sub 失败仅 console.warn 吞掉，全失败时仍返回非空 meeting，
+    //   renderer selectMeeting() 进入空房间——用户感知"按钮不响应预期"的根因。
+    //   修复：收集 errors。全失败→closeMeeting + throw（让 IPC 在 renderer 端 reject）；
+    //         部分失败→额外发 meeting-created-with-errors 事件让 UI 显示警告。
+    const errors = [];
     for (const slot of safe.slots) {
       try {
         await _addMeetingSubInternal(meeting.id, slot.kind, { model: slot.model });
       } catch (e) {
-        console.warn('[create-meeting] add-sub failed for slot', slot, e.message);
+        errors.push({ slot, message: e && e.message || String(e) });
+        console.warn('[create-meeting] add-sub failed for slot', slot, e && e.message);
       }
     }
+    const finalMeeting = meetingManager.getMeeting(meeting.id);
+    const subCount = finalMeeting ? (finalMeeting.subSessions || []).length : 0;
+    if (subCount === 0) {
+      // 全失败：清理空 meeting + 抛错给 renderer
+      try { meetingManager.closeMeeting(meeting.id); } catch (e) { console.warn('[create-meeting] close empty meeting failed:', e.message); }
+      try { scenes.cleanup(getHubDataDir(), meeting.id); } catch {}
+      const detail = errors.map(er => `· ${er.slot.kind}（${er.slot.model || 'default'}）：${er.message}`).join('\n');
+      throw new Error('所有子会话创建失败：\n' + (detail || '（未知原因）'));
+    }
     meetingManager.setSlotSpecs(meeting.id, safe.slotSpecs);
-    sendToRenderer('meeting-created', { meeting: meetingManager.getMeeting(meeting.id) || meeting });
+    if (errors.length > 0) {
+      // 部分失败：UI 显示警告条
+      sendToRenderer('meeting-created-with-errors', { meeting: finalMeeting, errors });
+    }
+    sendToRenderer('meeting-created', { meeting: finalMeeting });
   } else {
     // 老路径（renderer 后续会自己 add-meeting-sub）保持先发的语义不变
     sendToRenderer('meeting-created', { meeting });

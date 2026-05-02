@@ -148,6 +148,8 @@ async function _onCreate() {
   createBtn.disabled = true;
   createBtn.textContent = '创建中…';
 
+  // 清掉之前可能残留的 inline error
+  _clearError();
   try {
     const meeting = await ipcRenderer.invoke('create-meeting', { mode, scene, slots });
     if (!meeting || !meeting.id) {
@@ -163,11 +165,31 @@ async function _onCreate() {
       console.warn('[meeting-create-modal] selectMeeting not found globally; meeting created but UI not switched');
     }
   } catch (e) {
+    // E2 修复 (2026-05-03)：原 alert() 同步阻塞 Electron renderer 主线程，UI 卡死。
+    //   改为 modal 内 inline error span，不阻塞 + 用户可见错误后修正重试。
     console.error('[meeting-create-modal] create failed:', e);
-    alert('创建失败：' + (e && e.message ? e.message : String(e)));
+    _showError((e && e.message) ? e.message : String(e));
     createBtn.disabled = false;
     createBtn.textContent = '创建圆桌';
   }
+}
+
+function _showError(text) {
+  if (!_modalEl) return;
+  let bar = _modalEl.querySelector('.mcm-error');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.className = 'mcm-error';
+    const footer = _modalEl.querySelector('.mcm-footer');
+    if (footer) footer.before(bar); else _modalEl.querySelector('.mcm-body')?.appendChild(bar);
+  }
+  bar.textContent = '⚠ 创建失败：' + text;
+}
+
+function _clearError() {
+  if (!_modalEl) return;
+  const bar = _modalEl.querySelector('.mcm-error');
+  if (bar) bar.remove();
 }
 
 function openMeetingCreateModal(mode = 'general') {
