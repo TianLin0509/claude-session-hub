@@ -786,15 +786,40 @@ const _RT_READY_MARKERS = {
 };
 
 // timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）
+//
+// E7 + M2 root cause 修复 (2026-05-03)：
+//   旧版仅用 "buffer ≥ 1500 字节" 判 ready —— Claude/Codex/GLM 启动屏 ANSI/box
+//   字符密集，1.5s 内即可达阈值，但 OAuth 可能还要 5-15s 才完成。被过早判 ready
+//   后，_rtSendToPty write prompt → CLI 还在 OAuth → 吃掉输入 → 用户感知"按钮
+//   不响应预期"。e2e 验证：sleep 60s 后再发就能成功，确认 root cause。
+//
+//   新版策略（双轨）：
+//   - 优先 marker 命中（gemini/codex 文本提示符）→ 即可判 ready
+//   - 兜底"buffer 静默期"：buffer 至少 MIN_BUF_LEN 字节，且连续 STABLE_MS
+//     无新增（TUI 真稳定）→ 才判 ready。Claude/DeepSeek/GLM 走此路径。
+//   优势：不依赖具体 marker 内容（OAuth 完成后字符串可能因版本变），通用判定。
+const _RT_READY_MIN_BUF_LEN = 500;
+const _RT_READY_STABLE_MS = 1500;
+
 async function _rtWaitCliReady(sid, kind, maxMs = 60000) {
   const need = _RT_READY_MARKERS[kind] || [];
   const start = Date.now();
+  let lastBufLen = 0;
+  let stableSince = 0;
   while (Date.now() - start < maxMs) {
     const buf = sessionManager.getSessionBuffer(sid) || '';
-    // 空 markers：buffer 至少 1500 字符就认为启动完成（启动屏 + 提示符通常 >2KB）
-    if (need.length === 0) { if (buf.length >= 1500) return true; }
-    else if (need.some(m => buf.includes(m))) return true;
-    // 100ms 轮询：cold path 加速 ~200ms（原 300ms 是为了省 CPU，但圆桌冷启动总耗时主要由 CLI 自身决定，轮询频率影响小）
+    // marker 优先（gemini/codex）
+    if (need.length > 0 && need.some(m => buf.includes(m))) return true;
+    // 静默期判定（claude/deepseek/glm 等空 marker）
+    if (need.length === 0 && buf.length >= _RT_READY_MIN_BUF_LEN) {
+      if (buf.length === lastBufLen) {
+        if (stableSince === 0) stableSince = Date.now();
+        else if (Date.now() - stableSince >= _RT_READY_STABLE_MS) return true;
+      } else {
+        lastBufLen = buf.length;
+        stableSince = 0;
+      }
+    }
     await new Promise(r => setTimeout(r, 100));
   }
   return false;
@@ -1821,21 +1846,46 @@ ipcMain.handle('marker-status', (_e, sessionId) => {
 //   过时永远是 'none' → 卡片永远显示"创建中"。本 IPC 复用圆桌发送侧已用的
 //   _RT_READY_MARKERS，按 buffer 长度/marker 判断 CLI 是否真就绪。renderer 每
 //   秒 invoke 一次，缓存到 _cliReadyCache[sid] 驱动 isInitializing 判断。
+//
+// E7 + M2 root cause 修复 (2026-05-03)：
+//   旧"buffer ≥ 500 字节"过松（OAuth 还没完成就判 ready），用户在卡片显示"待命"
+//   后立即发送 → CLI 吃掉 prompt → 没响应。改为"静默期判定"：buffer 至少
+//   500 字节 + 上次 IPC call 后 buffer 长度未变 → ready。renderer 1s poll，
+//   所以两次 call 间 buffer 不增 ≈ TUI 至少稳定 1s。
+const _cliReadyStableState = new Map(); // sid → { lastBufLen, lastChangeTs }
+
 ipcMain.handle('cli-ready-status', (_e, sessionId) => {
   if (!sessionId) return false;
   const session = sessionManager.getSession(sessionId);
   if (!session) return false;
   // Plan 阶段 2: 优先读 roundtableReady 快路径 (server 端任何路径确认 ready 后立即 surface)
-  if (sessionManager.getRoundtableReady(sessionId)) return true;
+  if (sessionManager.getRoundtableReady(sessionId)) {
+    _cliReadyStableState.delete(sessionId); // cleanup (no longer needed)
+    return true;
+  }
   const kind = session.kind;
   // 非 agent 类型（powershell 等）默认 ready，避免误判
   if (kind === 'powershell' || !_RT_READY_MARKERS[kind]) return true;
   const need = _RT_READY_MARKERS[kind];
   const buf = sessionManager.getSessionBuffer(sessionId) || '';
-  // Plan 阶段 2: 空 markers（Claude/GLM/DeepSeek）阈值 1500 → 500 (router 启动屏偏少)
-  if (need.length === 0) return buf.length >= 500;
-  // 有 markers（Gemini/Codex）：任一 marker 出现视为 ready
-  return need.some(m => buf.includes(m));
+  // marker 命中（gemini/codex）→ 即可 ready
+  if (need.length > 0 && need.some(m => buf.includes(m))) return true;
+  // 空 markers（Claude/GLM/DeepSeek）：静默期判定
+  if (need.length === 0 && buf.length >= _RT_READY_MIN_BUF_LEN) {
+    let st = _cliReadyStableState.get(sessionId);
+    if (!st) {
+      _cliReadyStableState.set(sessionId, { lastBufLen: buf.length, lastChangeTs: Date.now() });
+      return false; // 首次记录，等下次 poll 看是否稳定
+    }
+    if (buf.length === st.lastBufLen) {
+      return (Date.now() - st.lastChangeTs) >= _RT_READY_STABLE_MS;
+    } else {
+      st.lastBufLen = buf.length;
+      st.lastChangeTs = Date.now();
+      return false;
+    }
+  }
+  return false;
 });
 
 ipcMain.handle('get-marker-instruction', () => {
