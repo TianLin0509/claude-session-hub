@@ -764,12 +764,16 @@
     const panel = _ensureRtPanel();
     panel.innerHTML = _renderRtPanelHtml(state, meeting);
     _bindRtPanelEvents(panel, meeting);
-    // pilot redesign（2026-05-02）：每次 panel 重绘后重新涂卡片视觉（角色红框 + dispatchMode 蓝/灰）。
+    // pilot redesign（2026-05-02）：panel.innerHTML 重渲后用 rAF 包裹，确保 paint 后再涂卡片视觉。
+    //   旧实现直接调用，理论上同步生效，但截图显示 class 偶尔没生效——猜测是 panel innerHTML 后浏览器
+    //   还没完成布局/合成的瞬间 querySelectorAll 拿到的引用与最终 paint 的 DOM 不一致。
     const pilotSlotForVisual = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
       ? meeting.pilotSlot : null;
     const dispatchModeForVisual = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
       ? meeting.dispatchMode : 'all';
-    _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
+    requestAnimationFrame(() => {
+      _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
+    });
   }
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
@@ -1939,8 +1943,17 @@
   //   蓝框（.dispatch-active）+ 灰化（.dispatch-inactive）= 当前 dispatchMode 的可见性反馈
   //   主驾未选时（pilotSlot === null）三张卡片都正常态。
   function _applyPilotCardVisual(meeting, pilotSlot, dispatchMode) {
-    const cards = document.querySelectorAll('.mr-ft');
+    // querySelectorAll('.mr-ft') 会匹配整个文档；圆桌界面 strip 内只应有 3 张卡片，但
+    //   sub-session 子区或者 timeline drawer 也可能含 .mr-ft。改为只取圆桌 panel 内的卡片，
+    //   避免对子区/drawer 卡片误改 class（这是上一版主驾没灰化的关键 root cause）。
+    const panel = document.getElementById('mr-rt-panel');
+    const cards = panel
+      ? panel.querySelectorAll('.mr-ft-strip > .mr-ft')
+      : document.querySelectorAll('.mr-ft-strip > .mr-ft');
     const mode = ['all', 'pilot', 'observer'].includes(dispatchMode) ? dispatchMode : 'all';
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug('[pilot-visual]', { cards: cards.length, pilotSlot, mode });
+    }
     cards.forEach((card, i) => {
       // 角色层：主驾红框 + 左上角"主驾"三角标
       card.classList.toggle('pilot-role', pilotSlot === i);
@@ -2090,7 +2103,8 @@
         triggerRoundtable(meeting, 'summary', { summarizerKind });
       });
       _bindPilotEvents(meeting, pilotSlot);
-      _applyPilotCardVisual(meeting, pilotSlot, dispatchMode);
+      // pilot redesign（2026-05-02）：不在这里调 _applyPilotCardVisual——renderToolbar 在 panel.innerHTML
+      //   重渲之前执行，对旧卡片设的 class 会被冲掉。统一由 refreshRoundtablePanel 在 DOM 重建后调用。
       return;
     }
 

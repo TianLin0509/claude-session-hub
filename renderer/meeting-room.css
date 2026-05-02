@@ -1812,6 +1812,18 @@
   filter: grayscale(0.4);
 }
 
+/* dispatch-inactive 时停掉所有运动动画（避免"流光"让用户误以为主驾在 active）：
+   1) 进度条 flowbar
+   2) 头像 bounce（thinking-card / streaming-card）
+   3) preview cursor blink
+   被 inactive 后这些动画 paused，用户视觉上"主驾静止"。 */
+.mr-ft.dispatch-inactive .mr-ft-progress-bar,
+.mr-ft.dispatch-inactive.thinking-card .mr-ft-avatar,
+.mr-ft.dispatch-inactive.streaming-card .mr-ft-avatar,
+.mr-ft.dispatch-inactive .mr-ft-cursor {
+  animation-play-state: paused;
+}
+
 /* dispatchMode segmented control */
 .mr-rt-dispatch-group {
   display: inline-flex;
