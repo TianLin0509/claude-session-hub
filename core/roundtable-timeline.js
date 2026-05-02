@@ -169,22 +169,36 @@ function _rollIfNeeded(filePath) {
   const kept = turns.filter(t => t.isSummary || !toArchiveSet.has(t));
 
   const newContent = header + kept.map(t => t.text).join('');
-  fs.writeFileSync(filePath, newContent, 'utf-8');
-
-  // append archive
   const archivePath = getArchivePath(filePath);
-  if (!fs.existsSync(archivePath)) {
-    const archiveHeader = `# Timeline Archive · ${path.basename(filePath, '.md')}\n\n` +
-      `> 系统自动归档：从主 timeline 滚出窗口的非摘要轮（按时间顺序追加）\n\n---\n`;
-    fs.writeFileSync(archivePath, archiveHeader, 'utf-8');
+  const archiveAppend = '\n' + toArchive.map(t => t.text).join('');
+
+  // BUGFIX (4-way review · DeepSeek#1)：
+  //   旧逻辑先写新主文件再 append archive —— 若 archive 写失败，主文件已被截断，
+  //   滚出窗口的轮次永久丢失。
+  //   修复：先确保 archive 写成功，再覆写主文件。任一步失败都不丢数据。
+  try {
+    if (!fs.existsSync(archivePath)) {
+      const archiveHeader = `# Timeline Archive · ${path.basename(filePath, '.md')}\n\n` +
+        `> 系统自动归档：从主 timeline 滚出窗口的非摘要轮（按时间顺序追加）\n\n---\n`;
+      fs.writeFileSync(archivePath, archiveHeader, 'utf-8');
+    }
+    fs.appendFileSync(archivePath, archiveAppend, 'utf-8');
+  } catch (e) {
+    // archive 写失败 → 不动主文件，下次再尝试滚动
+    console.warn(`[timeline] archive write failed, skip rolling: ${e.message}`);
+    return;
   }
-  fs.appendFileSync(archivePath, '\n' + toArchive.map(t => t.text).join(''), 'utf-8');
+  // archive 已成功 → 安全截断主文件
+  fs.writeFileSync(filePath, newContent, 'utf-8');
 }
 
 // 解析 timeline 内容为 { header, turns: [{ text, isSummary, n }] }
 // 不解析失败抛错，仅在结构完整时返回
 function _parseTurnSections(content) {
-  const turnTitleRe = /^## 第 (\d+) 轮 .*$/gm;
+  // BUGFIX (4-way review · DeepSeek#2)：要求标题格式必含 " · "（系统侧标题严格固定格式
+  //   "## 第 N 轮 · <mode> · <dispatchMode>" 或 "## 第 N 轮 · 摘要 by ..."），
+  //   降低 AI 输出"## 第 N 轮"字面量被误识别为新轮起点的概率。
+  const turnTitleRe = /^## 第 (\d+) 轮 · .*$/gm;
   const matches = [];
   let m;
   while ((m = turnTitleRe.exec(content)) !== null) {

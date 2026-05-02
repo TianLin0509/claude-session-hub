@@ -734,26 +734,35 @@ const rtInjection = require('./core/roundtable-injection.js');
 let _roundtableInProgress = new Set(); // 同会议室单一并发：set of meetingId
 
 // 方案 F · 2026-05-02：计算单个 sub 视角的"调度上下文" spec，喂给 build*Prompt
-//   subs    = [{ sid, kind, label }] 全体活跃 sub
-//   self    = 当前要拼 prompt 的 sub
-//   pilotSlot = 主驾 slot 索引（0/1/2/null）
+//   targetSubs = [{ sid, kind, label }] 本轮真正发言的 sub（按 dispatchMode 过滤后）
+//                ← BUGFIX (Codex#2)：之前用全员 subs，pilot/observer 模式下"同台"会含静音 AI
+//   self       = 当前要拼 prompt 的 sub
+//   pilotSlot  = 主驾 slot 索引（0/1/2/null）
 //   subSidsRaw = meeting.subSessions 数组（决定 slot index）
 //   effectiveDispatchMode = 'all' | 'pilot' | 'observer'
-function _computeDispatchSpec(self, subs, pilotSlot, subSidsRaw, effectiveDispatchMode) {
+//   pilotLabel 仍按 subSidsRaw 全集找（即使主驾本轮静音也能在 dispatchSpec 标识"主驾是谁"）
+function _computeDispatchSpec(self, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode) {
   if (!self) return null;
   const selfSlotIdx = subSidsRaw.indexOf(self.sid);
   const isPilotSelf = pilotSlot !== null && selfSlotIdx === pilotSlot;
   let selfRole = null;
   if (pilotSlot !== null) selfRole = isPilotSelf ? 'pilot' : 'observer';
-  // 同台名单：除自己外
-  const sameStageLabels = subs.filter(x => x.sid !== self.sid).map(x => x.label || x.kind || 'AI');
-  // 主驾名（若有）
-  const pilotSub = pilotSlot !== null ? subs.find(x => subSidsRaw.indexOf(x.sid) === pilotSlot) : null;
+  // 同台名单：本轮真发言者中除自己外
+  const sameStageLabels = (targetSubs || []).filter(x => x.sid !== self.sid).map(x => x.label || x.kind || 'AI');
+  // 主驾名（如有）—— 跨 subSidsRaw 全集找，即使本轮静音也要能告诉副驾"主驾是谁"
+  const pilotLabel = (() => {
+    if (pilotSlot === null) return null;
+    const pilotSid = subSidsRaw[pilotSlot];
+    if (!pilotSid) return null;
+    const inTarget = (targetSubs || []).find(x => x.sid === pilotSid);
+    if (inTarget) return inTarget.label || inTarget.kind || 'AI';
+    return 'pilot';  // 主驾不在 targetSubs 时仍标 'pilot'（避免缺名）
+  })();
   return {
     mode: effectiveDispatchMode || 'all',
     selfRole,
     sameStageLabels,
-    pilotLabel: pilotSub ? (pilotSub.label || pilotSub.kind || 'AI') : null,
+    pilotLabel,
   };
 }
 
@@ -1144,12 +1153,18 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     let turnNum;
 
     if (mode === 'fanout') {
+      // BUGFIX (4-way review · Codex#1)：旧逻辑 length > 1 是 off-by-one
+      //   beginTurn 不 push turns（completeTurn 才 push），所以 turns.length 即"已完成轮数"
+      //   第 2 轮 fanout 前 length===1（已完成第 1 轮），应注入；旧 length > 1 → 错过
+      //   改用 orch.getLastTurn() 正确取最近已完成轮（首轮自然返回 null）
+      const lastTurn = orch.getLastTurn();
       turnNum = orch.beginTurn('fanout');
-      const lastTurn = orch.state.turns.length > 1 ? orch.state.turns[orch.state.turns.length - 1] : null;
       const targetSids = targetSubs.map(t => t.sid);
       const injectMap = rtInjection.computeLastTurnInjection(lastTurn, targetSids, sidLabelFn, sidRoleFn);
       for (const x of targetSubs) {
-        const dispatchSpec = _computeDispatchSpec(x, subs, pilotSlot, subSidsRaw, effectiveDispatchMode);
+        // BUGFIX (4-way review · Codex#2)：sameStageLabels 应基于 targetSubs（本轮真发言者）
+        //   而非全员 subs，否则 pilot/observer 模式下"同台"会含静音 AI
+        const dispatchSpec = _computeDispatchSpec(x, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
         const prompt = orch.buildFanoutPrompt(turnNum, userInput, null, dispatchSpec, injectMap[x.sid] || null, timelinePath);
         targets.push({ ...x, prompt });
       }
@@ -1163,7 +1178,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       const targetSids = targetSubs.map(t => t.sid);
       const injectMap = rtInjection.computeLastTurnInjection(last, targetSids, sidLabelFn, sidRoleFn);
       for (const x of targetSubs) {
-        const dispatchSpec = _computeDispatchSpec(x, subs, pilotSlot, subSidsRaw, effectiveDispatchMode);
+        const dispatchSpec = _computeDispatchSpec(x, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
         const prompt = orch.buildDebatePrompt(turnNum, userInput, dispatchSpec, injectMap[x.sid] || null, timelinePath);
         targets.push({ ...x, prompt });
       }
@@ -1172,14 +1187,15 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       if (!targetSid) {
         return { status: 'error', reason: `summarizer ${summarizerKind} 不在会议室或未活跃`, turnNum: null };
       }
+      // BUGFIX (Codex#1)：同 fanout —— 取最近已完成轮，不要 length>1
+      const lastTurn = orch.getLastTurn();
       turnNum = orch.beginTurn('summary');
       orch.state.currentSummarizerKind = summarizerKind;
       orch._saveState();
       sendToRenderer('roundtable-state-update', { meetingId });
       const target = subs.find(x => x.sid === targetSid);
-      const lastTurn = orch.state.turns.length > 1 ? orch.state.turns[orch.state.turns.length - 1] : null;
       const injectMap = rtInjection.computeLastTurnInjection(lastTurn, [target.sid], sidLabelFn, sidRoleFn);
-      const dispatchSpec = _computeDispatchSpec(target, subs, pilotSlot, subSidsRaw, effectiveDispatchMode);
+      const dispatchSpec = _computeDispatchSpec(target, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
       const prompt = orch.buildSummaryPrompt(turnNum, target.sid, sidLabelFn, dispatchSpec, injectMap[target.sid] || null, timelinePath);
       targets.push({ ...target, prompt });
     } else {
