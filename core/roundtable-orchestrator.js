@@ -298,6 +298,43 @@ class RoundtableOrchestrator {
 
 
   // ---------------------------------------------------------------------
+  // 摘要轮 prompt（plan F M3 · 2026-05-02）
+  //   用户在 UI 点「摘要」按钮触发：系统给上一轮发言者发本 prompt，要求他们按
+  //   五元组浓缩自己最近一段连续发言。
+  //
+  //   summarizeRange = { fromTurn, toTurn }（可选）— 浓缩范围说明
+  // ---------------------------------------------------------------------
+  buildBriefSummaryPrompt(turnNum, summarizerSid, sidLabelFn, summarizeRange, timelinePath) {
+    const summarizerLabel = sidLabelFn ? (sidLabelFn(summarizerSid) || 'AI') : 'AI';
+    const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · 摘要轮 · by ${summarizerLabel}]`];
+
+    parts.push('', '## 任务');
+    parts.push('用户希望你把最近一段连续发言浓缩为「五元组」摘要，便于后续轮次的协作者快速进入状态。');
+
+    if (summarizeRange && typeof summarizeRange.fromTurn === 'number' && typeof summarizeRange.toTurn === 'number') {
+      parts.push(`浓缩范围:第 ${summarizeRange.fromTurn} - ${summarizeRange.toTurn} 轮你参与的发言。`);
+    }
+
+    parts.push('');
+    parts.push('## 输出格式（严格按五段，不要展开论证）');
+    parts.push('1. **目标**:本段聚焦什么任务/问题（一句话，20-50 字）');
+    parts.push('2. **关键事实**:你确认的事实/数据（项目化，最多 5 条）');
+    parts.push('3. **关键分歧**:与他人核心分歧 / 自己的不确定（项目化）');
+    parts.push('4. **当前结论**:倾向判断 + 信心度 0-100%（30-80 字）');
+    parts.push('5. **下一步**:建议下一轮聚焦什么 / 想问对方什么（30-80 字）');
+    parts.push('');
+    parts.push('## 约束');
+    parts.push('- 不超过 500 字');
+    parts.push('- 第一人称（"我认为"）');
+    parts.push('- 不展开论证、不重复事实细节');
+
+    if (timelinePath) {
+      parts.push('', `---\n你的发言历史:${timelinePath}`);
+    }
+    return parts.join('\n');
+  }
+
+  // ---------------------------------------------------------------------
   // 状态记录
   // ---------------------------------------------------------------------
 

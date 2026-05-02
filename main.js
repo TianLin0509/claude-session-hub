@@ -1328,6 +1328,156 @@ ipcMain.handle('roundtable:turn', async (_e, args) => {
   return await dispatchRoundtableTurn(args.meetingId, args);
 });
 
+// 方案 F · 2026-05-02 · M3.1
+//   摘要按钮 IPC：触发"上一轮发言者"按五元组浓缩，写入 timeline.md 并算一轮。
+//   失败/拒绝场景：
+//     - meetingId 缺失 / meeting 不存在 → 抛
+//     - lastTurn 为 null（首轮无可摘要） → return error
+//     - lastTurn.mode === 'summary-brief'（已是摘要轮，禁止套娃） → return error
+//     - 上一轮发言者全部 dormant → return error
+//     - _roundtableInProgress 占用 → return busy
+ipcMain.handle('roundtable:summary-trigger', async (_e, { meetingId } = {}) => {
+  if (!meetingId) throw new Error('Missing meetingId');
+  if (_roundtableInProgress.has(meetingId)) return { status: 'busy', turnNum: null };
+
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (!meeting || !isRoundtableCapableMeeting(meeting)) {
+    return { status: 'error', reason: '非圆桌模式或会议室不存在', turnNum: null };
+  }
+
+  const sceneObj = scenes.getScene(meeting.scene);
+  const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+  const lastTurn = orch.getLastTurn();
+  if (!lastTurn) return { status: 'error', reason: '无可摘要的上一轮', turnNum: null };
+  if (lastTurn.mode === 'summary-brief') {
+    return { status: 'error', reason: '上一轮已是摘要轮，不允许连续摘要', turnNum: null };
+  }
+
+  const lastSpeakers = Object.keys(lastTurn.by || {});
+  if (lastSpeakers.length === 0) return { status: 'error', reason: '上一轮无发言者', turnNum: null };
+
+  // 收集 sub 信息 + 过滤 dormant
+  const subs = (meeting.subSessions || [])
+    .map(sid => {
+      const s = sessionManager.getSession(sid);
+      return s && s.status !== 'dormant' ? { sid, kind: s.kind, label: s.title || s.kind || 'AI' } : null;
+    })
+    .filter(Boolean);
+  const subSidSet = new Set(subs.map(x => x.sid));
+  const activeSummarizers = lastSpeakers.filter(sid => subSidSet.has(sid));
+  if (activeSummarizers.length === 0) {
+    return { status: 'error', reason: '上一轮发言者全部 dormant，无法摘要', turnNum: null };
+  }
+
+  _roundtableInProgress.add(meetingId);
+  try {
+    const labelMap = new Map(subs.map(x => [x.sid, x.label]));
+    const sidLabelFn = (sid) => labelMap.get(sid) || 'AI';
+
+    // projectCwd / timelinePath 同 dispatchRoundtableTurn 算法
+    const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
+      ? meeting.pilotSlot : null;
+    const subSidsRaw = meeting.subSessions || [];
+    const projectCwd = (() => {
+      const pilotSub = pilotSlot !== null ? subs.find(x => subSidsRaw.indexOf(x.sid) === pilotSlot) : null;
+      const candidate = pilotSub || subs[0];
+      if (!candidate) return null;
+      const sess = sessionManager.getSession(candidate.sid);
+      return (sess && sess.cwd) ? sess.cwd : null;
+    })();
+    let timelinePath = null;
+    try {
+      timelinePath = rtTimeline.ensureFile(meetingId, projectCwd, getHubDataDir(), sceneObj?.name || '通用圆桌');
+    } catch (e) {
+      console.warn('[roundtable] summary timeline ensureFile failed:', e.message);
+    }
+
+    // 浓缩范围：自上次摘要轮（不含）到 lastTurn.n
+    const lastSummaryTurnNum = (() => {
+      for (let i = orch.state.turns.length - 2; i >= 0; i--) {
+        if (orch.state.turns[i].mode === 'summary-brief') return orch.state.turns[i].n;
+      }
+      return 0;
+    })();
+    const summarizeRange = { fromTurn: lastSummaryTurnNum + 1, toTurn: lastTurn.n };
+
+    const turnNum = orch.beginTurn('summary-brief');
+    sendToRenderer('roundtable-state-update', { meetingId });
+
+    // 并发派发摘要 prompt
+    const targets = activeSummarizers.map(sid => {
+      const x = subs.find(s => s.sid === sid);
+      const prompt = orch.buildBriefSummaryPrompt(turnNum, sid, sidLabelFn, summarizeRange, timelinePath);
+      return { ...x, prompt };
+    });
+    const sentTargets = [];
+    await Promise.all(targets.map(async (t) => {
+      const ok = await _rtSendToPty(t.sid, t.prompt, t.kind);
+      if (ok) {
+        sentTargets.push(t);
+        console.log(`[roundtable] summary turn ${turnNum} sent to ${t.kind}(${t.sid.slice(0,8)})`);
+      } else {
+        console.log(`[roundtable] summary turn ${turnNum} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
+      }
+    }));
+    if (sentTargets.length === 0) {
+      orch.rollbackTurn(turnNum);
+      return { status: 'no_sent', turnNum };
+    }
+
+    const settled = await Promise.allSettled(sentTargets.map(t =>
+      _rtWaitTurnComplete(t.sid, t.label, {
+        meetingId, mode: 'summary-brief', turnNum,
+        onPartial: (partial) => {
+          sendToRenderer('roundtable-partial-update', {
+            meetingId, turnNum, mode: 'summary-brief',
+            sid: partial.sid, label: partial.label,
+            status: partial.status, text: partial.text,
+            blocks: partial.blocks, source: partial.source,
+            thinkSec: partial.thinkSec, tokens: partial.tokens,
+          });
+        },
+      })
+    ));
+
+    const results = settled.map((s, i) => s.status === 'fulfilled' ? s.value : {
+      sid: sentTargets[i].sid, label: sentTargets[i].label,
+      status: 'errored', text: '', reason: s.reason?.message || 'Promise rejected',
+    });
+
+    const byMap = {}, byStatus = {}, thinkSecBy = {}, tokensBy = {};
+    for (const r of results) {
+      byMap[r.sid] = r.text || '';
+      byStatus[r.sid] = r.status || 'completed';
+      thinkSecBy[r.sid] = typeof r.thinkSec === 'number' ? r.thinkSec : 0;
+      tokensBy[r.sid] = (r.tokens && typeof r.tokens.total === 'number') ? r.tokens.total : 0;
+    }
+
+    const meta = {
+      isSummary: true,
+      summarizers: sentTargets.map(t => t.sid),
+      summarizeRange,
+      dispatchMode: meeting.dispatchMode || 'all',
+    };
+    const turnRecord = orch.completeTurn(turnNum, 'summary-brief', '', byMap, meta, byStatus, {
+      thinkSecBy, tokensBy,
+    });
+
+    try {
+      rtTimeline.writeTurn(meetingId, turnRecord, sceneObj?.name || '通用圆桌', projectCwd, getHubDataDir(), sidLabelFn);
+    } catch (e) {
+      console.warn(`[roundtable] timeline.writeTurn failed for summary turn ${turnNum}:`, e.message);
+    }
+
+    sendToRenderer('roundtable-turn-complete', {
+      meetingId, turnNum, mode: 'summary-brief', results, meta,
+    });
+    return { status: 'completed', turnNum, results, meta };
+  } finally {
+    _roundtableInProgress.delete(meetingId);
+  }
+});
+
 ipcMain.handle('roundtable:get-state', (_e, { meetingId }) => {
   const meeting = meetingManager.getMeeting(meetingId);
   const sceneObj = meeting ? scenes.getScene(meeting.scene) : null;

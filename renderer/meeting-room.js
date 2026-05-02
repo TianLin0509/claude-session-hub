@@ -2037,6 +2037,13 @@
       const debateDisabled = (turns < 1 || inProgress || dispatchMode === 'pilot') ? 'disabled' : '';
       const summaryDisabled = inProgress ? 'disabled' : '';
       const summaryPickDisabled = inProgress ? 'disabled' : '';
+      // 方案 F · M3.4：摘要按钮 disable 规则
+      //   - 无可摘要的上一轮（turns < 1）
+      //   - 圆桌正在 dispatch
+      //   - 上一轮已是摘要轮（禁止连续摘要套娃）
+      const _lastTurn = (cached && Array.isArray(cached.turns) && cached.turns.length > 0)
+        ? cached.turns[cached.turns.length - 1] : null;
+      const briefSummaryDisabled = (turns < 1 || inProgress || (_lastTurn && _lastTurn.mode === 'summary-brief')) ? 'disabled' : '';
 
       // 主驾按钮 label
       const slotPokemon = ['⚡皮卡丘', '🔥小火龙', '💎杰尼龟'];
@@ -2060,6 +2067,7 @@
           </div>
           <span class="mr-rt-tb-divider"></span>
           <button class="mr-rt-tb-btn" id="mr-rt-debate-btn" ${debateDisabled} title="让目标范围内的 AI 结合彼此观点重新发言（基于上一轮）">🗣 辩论</button>
+          <button class="mr-rt-tb-btn" id="mr-rt-brief-summary-btn" ${briefSummaryDisabled} title="让上一轮发言者按五元组浓缩自己最近一段（典型场景:主驾深聊后切副驾审查前）">🗒 摘要</button>
           <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${summaryDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结</button>
           <label class="mr-rt-tb-pick">
             <span class="mr-rt-tb-pick-label">总结人:</span>
@@ -2110,6 +2118,23 @@
         if (summaryBtn.hasAttribute('disabled')) return;
         const summarizerKind = pick ? pick.value : 'claude';
         triggerRoundtable(meeting, 'summary', { summarizerKind });
+      });
+      // 方案 F · M3.4 摘要按钮事件绑定
+      const briefSummaryBtn = el.querySelector('#mr-rt-brief-summary-btn');
+      if (briefSummaryBtn) briefSummaryBtn.addEventListener('click', async () => {
+        if (briefSummaryBtn.hasAttribute('disabled')) return;
+        try {
+          const r = await ipcRenderer.invoke('roundtable:summary-trigger', { meetingId: meeting.id });
+          if (r && r.status && r.status !== 'completed' && r.status !== 'ok') {
+            console.warn('[brief-summary] non-success status:', r.status, r.reason || '');
+            if (r.status !== 'busy') {
+              alert('摘要失败:' + (r.reason || r.status || '未知'));
+            }
+          }
+        } catch (err) {
+          console.error('[brief-summary] failed:', err);
+          alert('摘要失败:' + (err && err.message ? err.message : String(err)));
+        }
       });
       _bindPilotEvents(meeting, pilotSlot);
       // pilot redesign（2026-05-02）：不在这里调 _applyPilotCardVisual——renderToolbar 在 panel.innerHTML
