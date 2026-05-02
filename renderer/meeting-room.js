@@ -1100,6 +1100,17 @@
       // 不论 completed / busy / error / no_sent，IPC 已返回 → 清乐观态，后续完全信任 server
       console.log('[roundtable] turn IPC resolved:', result && result.status, 'turn=', result && result.turnNum);
       clearOptimistic();
+      // 用户血泪反馈"输入框卡死"根因：上一轮还在跑（_roundtableInProgress 占用）→ server
+      // 返回 status='busy' → doSend 已清空 input → 用户感觉"按发送没反应消息消失"。
+      // 这里识别 busy 时把原文还原回 input + 给清晰提示。
+      if (result && result.status === 'busy') {
+        const inp = document.getElementById('mr-input-box');
+        if (inp && !inp.innerText.trim()) {
+          inp.textContent = opts.userInput || '';
+          _placeCaretAtEnd(inp);
+        }
+        alert('上一轮圆桌还在等其他家完成，无法发起新一轮。\n\n请用卡片上的"跳过"按钮处理仍在等待的家，或等他们自然完成后再发送。');
+      }
     }).catch((e) => {
       console.error('[roundtable] turn IPC failed:', e.message);
       clearOptimistic();

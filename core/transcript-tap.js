@@ -438,29 +438,50 @@ class CodexTap extends EventEmitter {
   }
 
   // 2026-05-02 Bug 修复：手动提取支持 Codex（同 ClaudeTap.extractLatestTurn 设计）。
-  //   读 rolloutPath 末尾扫 task_complete 事件，取最近一条 last_agent_message。
-  //   sincePromptTs 暂不过滤（rollout 行有 timestamp，可后续加严）。
+  //   优先读 rollout 末尾的 task_complete.last_agent_message。
+  //   降级：本轮还在 streaming（task_complete 未写）时拼接 sincePromptTs 之后所有
+  //   agent_message.message — codex 一个 turn 内会写多条 commentary phase + 最后一条
+  //   final phase 的 agent_message，task_complete 才写在末尾。用户 codex 子 session
+  //   有真实输出但点"一键提取"返回 null 即此场景。
   //   未绑定 rolloutPath（CodexTap scan 还没找到文件）→ null。
-  async extractLatestTurn(hubSessionId, _sincePromptTs = 0) {
+  async extractLatestTurn(hubSessionId, sincePromptTs = 0) {
     const entry = this._bound.get(hubSessionId);
     if (!entry || !entry.rolloutPath) return null;
     let raw;
     try { raw = await fs.promises.readFile(entry.rolloutPath, 'utf8'); }
     catch { return null; }
     const lines = raw.split('\n');
-    // 从尾向前扫，找最近一条 task_complete.last_agent_message
+
+    // 优先：从尾向前扫 task_complete.last_agent_message（带 sincePromptTs 过滤）
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();
       if (!line) continue;
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
-      if (obj?.type !== 'event_msg' || !obj.payload) continue;
-      if (obj.payload.type !== 'task_complete') continue;
+      if (obj?.type !== 'event_msg' || obj.payload?.type !== 'task_complete') continue;
+      const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+      if (sincePromptTs && Number.isFinite(ts) && ts < sincePromptTs) continue;
       const text = obj.payload.last_agent_message;
       if (typeof text !== 'string' || !text.trim()) continue;
       return { text: text.trim(), source: 'manual_codex_rollout' };
     }
-    return null;
+
+    // 降级：streaming 中（无 task_complete）→ 拼 sincePromptTs 之后所有 agent_message
+    const collected = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let obj;
+      try { obj = JSON.parse(trimmed); } catch { continue; }
+      if (obj?.type !== 'event_msg' || obj.payload?.type !== 'agent_message') continue;
+      const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+      if (sincePromptTs && Number.isFinite(ts) && ts < sincePromptTs) continue;
+      const msg = obj.payload.message;
+      if (typeof msg !== 'string' || !msg.trim()) continue;
+      collected.push(msg.trim());
+    }
+    if (collected.length === 0) return null;
+    return { text: collected.join('\n\n'), source: 'manual_codex_rollout_streaming' };
   }
 
   _ensureWatcher() {
