@@ -1791,8 +1791,8 @@
   50%      { box-shadow: 0 0 18px rgba(44, 123, 229, 0.70); }
 }
 .mr-ft.dispatch-inactive {
-  opacity: 0.55;
-  filter: grayscale(0.4);
+  opacity: 0.45;
+  filter: grayscale(0.5);
   transition: opacity 200ms ease, filter 200ms ease;
 }
 
@@ -1808,20 +1808,31 @@
 }
 /* 主驾在 observer 模式下：红框保留 + 灰化（用户能感知"主驾在场但本轮不发言"） */
 .mr-ft.pilot-role.dispatch-inactive {
-  opacity: 0.55;
-  filter: grayscale(0.4);
+  opacity: 0.45;
+  filter: grayscale(0.5);
 }
 
-/* dispatch-inactive 时停掉所有运动动画（避免"流光"让用户误以为主驾在 active）：
-   1) 进度条 flowbar
-   2) 头像 bounce（thinking-card / streaming-card）
-   3) preview cursor blink
-   被 inactive 后这些动画 paused，用户视觉上"主驾静止"。 */
-.mr-ft.dispatch-inactive .mr-ft-progress-bar,
-.mr-ft.dispatch-inactive.thinking-card .mr-ft-avatar,
-.mr-ft.dispatch-inactive.streaming-card .mr-ft-avatar,
+/* dispatch-inactive 强制视觉冻结（修复 v3·2026-05-02）：
+   场景：用户切到 observer 模式时，主驾上一轮的 thinking 还在跑（PTY 未结束），
+        progress-bar 流光、avatar bounce、"思考中"badge、计时秒数全在动 →
+        用户视觉上误以为主驾本轮还在 active。
+   修复（克制版）：
+        1) hide 进度条容器（最显眼的运动元素，连流光底色一并消失）
+        2) hide 逃生按钮栏（inactive 卡片不应该有交互入口）
+        3) hide 流式光标
+        4) **所有子元素动画强制 paused** !important（avatar bounce / cursor blink
+           / 任何后续新增动画都自动覆盖）
+        保留：状态文字 + 计时数字（用户仍能看到"主驾上一轮还在思考"是事实信息），
+              卡片 opacity 0.45 + grayscale 0.5 让这些信息明显淡化。 */
+.mr-ft.dispatch-inactive .mr-ft-progress,
+.mr-ft.dispatch-inactive .mr-ft-escape-bar,
 .mr-ft.dispatch-inactive .mr-ft-cursor {
-  animation-play-state: paused;
+  display: none !important;
+}
+.mr-ft.dispatch-inactive *,
+.mr-ft.dispatch-inactive *::before,
+.mr-ft.dispatch-inactive *::after {
+  animation-play-state: paused !important;
 }
 
 /* dispatchMode segmented control */
