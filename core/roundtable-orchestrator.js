@@ -113,115 +113,186 @@ class RoundtableOrchestrator {
   }
 
   // ---------------------------------------------------------------------
-  // Prompt 拼装
+  // Prompt 拼装（方案 F · 2026-05-02 重构）
+  //
+  // 三个 build*Prompt 接受统一参数：
+  //   dispatchSpec       — { mode, selfRole, sameStageLabels, pilotLabel } 或 null
+  //   injectionPayload   — computeLastTurnInjection(...) 返回的当前 sid 对应 payload，或 null（同组跳过 / 首轮）
+  //   timelinePath       — timeline.md 绝对路径，或 null（无 timeline 时省略相关段）
+  //
+  // 内部用三个共享渲染 helper：
+  //   _renderDispatchContext(dispatchSpec)       → '## 调度上下文' 段
+  //   _renderLastTurnSection(payload, tlPath)    → '## 上一轮 ...' 段（嵌 timeline 索引）
+  //   _renderTimelineFooter(tlPath)              → '完整历史：...' 末尾段
   // ---------------------------------------------------------------------
 
-  // 默认 fanout 轮：用户原话 +（可选）数据包前缀
-  buildFanoutPrompt(turnNum, userInput, dataPack) {
-    const parts = [];
-    parts.push(`[${this.scene.name} · 第 ${turnNum} 轮 · 默认提问]`);
+  // 共享渲染：## 调度上下文 段（spec §7.3）
+  _renderDispatchContext(dispatchSpec) {
+    if (!dispatchSpec || typeof dispatchSpec !== 'object') return null;
+    const { mode, selfRole, sameStageLabels, pilotLabel } = dispatchSpec;
+    const lines = ['## 调度上下文'];
+    if (mode === 'all') {
+      lines.push('- 模式：群策群力（参与者同台独立回答）');
+    } else if (mode === 'pilot') {
+      lines.push('- 模式：主驾发言（你被点名独说，副驾们本轮静音）');
+    } else if (mode === 'observer') {
+      lines.push(`- 模式：副驾发言（主驾${pilotLabel ? ' ' + pilotLabel : ''} 本轮静音，用户希望听副驾视角）`);
+    } else {
+      return null;
+    }
+    if (selfRole === 'pilot') lines.push('- 你的位置:主驾');
+    else if (selfRole === 'observer' || selfRole === 'co-pilot') lines.push('- 你的位置:副驾');
+    if (Array.isArray(sameStageLabels) && sameStageLabels.length > 0) {
+      lines.push(`- 同台:${sameStageLabels.join(' / ')}`);
+    }
+    return lines.join('\n');
+  }
+
+  // 共享渲染：## 上一轮 段（按 injection 矩阵注入；payload null 时返回 null 整段省略）
+  _renderLastTurnSection(injectionPayload, timelinePath) {
+    if (!injectionPayload || typeof injectionPayload !== 'object') return null;
+    const { lastTurnNum, lastTurnMode, lastDispatchMode, isSummaryInjection, speakers } = injectionPayload;
+    if (!Array.isArray(speakers) || speakers.length === 0) return null;
+
+    const lines = [];
+    if (isSummaryInjection) {
+      const names = speakers.map(s => s.label || s.sid).join(' + ');
+      lines.push(`## 上一轮（第 ${lastTurnNum} 轮 · 摘要 by ${names} · 五元组）`);
+    } else {
+      lines.push(`## 上一轮（第 ${lastTurnNum} 轮 · ${lastTurnMode || 'fanout'} · ${lastDispatchMode || 'all'}）`);
+    }
+    if (timelinePath) {
+      lines.push(`> 提示:本段是上一轮内容。如需更早历史请 Read ${timelinePath}`);
+    }
+    lines.push('');
+
+    for (const sp of speakers) {
+      const { label, role, text, status } = sp;
+      const labelDisplay = label || sp.sid || 'AI';
+      let header = `### ${labelDisplay}`;
+      if (role === 'pilot') header += '（主驾）';
+      else if (role === 'observer' || role === 'co-pilot') header += '（副驾）';
+      if (status === 'absent') header += '（本轮未参与）';
+      else if (status === 'errored') header += '（本轮错误）';
+      lines.push(header);
+      let body;
+      if (status === 'absent') {
+        body = `（${labelDisplay} 本轮因故未参与，请勿引用）`;
+      } else if (status === 'errored') {
+        body = `（${labelDisplay} 本轮发生错误未输出，请勿引用）`;
+      } else {
+        let trimmed = text || '(无输出)';
+        if (trimmed.length > MAX_DEBATE_OPINION_CHARS) {
+          trimmed = trimmed.slice(0, MAX_DEBATE_OPINION_KEEP)
+            + '\n\n…[中段已省略以控制 prompt 长度]…\n\n'
+            + trimmed.slice(-MAX_DEBATE_OPINION_KEEP);
+        }
+        body = trimmed;
+      }
+      lines.push(body);
+      lines.push('');
+    }
+    while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    return lines.join('\n');
+  }
+
+  // 共享渲染：末尾"完整历史"footer
+  _renderTimelineFooter(timelinePath) {
+    if (!timelinePath || typeof timelinePath !== 'string') return null;
+    return `---\n完整历史:${timelinePath}`;
+  }
+
+  // 默认 fanout 轮:scene 标签 + [调度上下文?] + [上一轮?] + [数据包?] + 用户问题 + 行为提示 + [timeline footer?]
+  buildFanoutPrompt(turnNum, userInput, dataPack, dispatchSpec, injectionPayload, timelinePath) {
+    const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · 默认提问]`];
+
+    const ctx = this._renderDispatchContext(dispatchSpec);
+    if (ctx) parts.push('', ctx);
+
+    const last = this._renderLastTurnSection(injectionPayload, timelinePath);
+    if (last) parts.push('', last);
+
     if (this.scene.dataPackEnabled && dataPack && typeof dataPack === 'string' && dataPack.trim().length > 0) {
       parts.push('', '## 数据接入（Hub 自动从 LinDangAgent 拉取）', dataPack);
     }
+
     parts.push('', '## 用户问题', userInput || '');
-    parts.push('', '请独立回答（你看不到另两家观点，本色发挥即可）。');
+
+    const mode = dispatchSpec ? dispatchSpec.mode : null;
+    if (mode === 'pilot') {
+      parts.push('', '请独立回答（本轮你被点名独说，副驾们本轮静音）。');
+    } else if (mode === 'observer') {
+      parts.push('', '请独立回答（你与另一位副驾互相看不到本轮发言，保持各自独立视角）。');
+    } else {
+      parts.push('', '请独立回答（你看不到其他人本轮观点，本色发挥即可）。');
+    }
+
+    const footer = this._renderTimelineFooter(timelinePath);
+    if (footer) parts.push('', footer);
+
     return parts.join('\n');
   }
 
-  // debate 轮：中转另两家上一轮观点给当前 AI
-  // lastTurn = { by: { sid: text } }
-  // targetSid = 当前接收 AI 的 sid（不会把它自己的观点发给它）
-  // sidLabelFn = (sid) => label string
-  buildDebatePrompt(turnNum, userInput, lastTurn, targetSid, sidLabelFn) {
-    const parts = [];
-    parts.push(`[${this.scene.name} · 第 ${turnNum} 轮 · @debate]`, '');
-    if (userInput && userInput.trim().length > 0) {
-      parts.push('## 用户在本轮补充的新信息', userInput, '');
+  // debate 轮:scene 标签 + [调度上下文?] + [用户补充?] + [上一轮?] + 任务说明 + [timeline footer?]
+  buildDebatePrompt(turnNum, userInput, dispatchSpec, injectionPayload, timelinePath) {
+    const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · @debate]`];
+
+    const ctx = this._renderDispatchContext(dispatchSpec);
+    if (ctx) parts.push('', ctx);
+
+    if (userInput && typeof userInput === 'string' && userInput.trim().length > 0) {
+      parts.push('', '## 用户在本轮补充的新信息', userInput);
     }
-    parts.push('## 另两家上一轮观点');
-    let appended = 0;
-    const byStatus = lastTurn?.byStatus || null; // Stage 2 容错升级，null = 老格式按 completed
-    for (const [sid, text] of Object.entries(lastTurn?.by || {})) {
-      if (sid === targetSid) continue;
-      const label = sidLabelFn ? (sidLabelFn(sid) || 'AI') : 'AI';
-      const status = byStatus ? (byStatus[sid] || 'completed') : 'completed';
-      // 容错升级：absent/errored 的家不传"空内容"假装"无观点"，明确说"本轮未参与"
-      if (status === 'absent') {
-        parts.push('', `### ${label} 的观点`, `（${label} 本轮因故未参与，请勿引用）`);
-        appended++;
-        continue;
-      }
-      if (status === 'errored') {
-        parts.push('', `### ${label} 的观点`, `（${label} 本轮发生错误未输出，请勿引用）`);
-        appended++;
-        continue;
-      }
-      let trimmed = (text || '(无输出)');
-      if (trimmed.length > MAX_DEBATE_OPINION_CHARS) {
-        trimmed = trimmed.slice(0, MAX_DEBATE_OPINION_KEEP)
-          + '\n\n…[中段已省略以控制 prompt 长度]…\n\n'
-          + trimmed.slice(-MAX_DEBATE_OPINION_KEEP);
-      }
-      parts.push('', `### ${label} 的观点`, trimmed);
-      appended++;
+
+    const last = this._renderLastTurnSection(injectionPayload, timelinePath);
+    if (last) {
+      parts.push('', last);
+    } else {
+      parts.push('', '（无上一轮内容可参考，请独立发表观点）');
     }
-    if (appended === 0) parts.push('(无另两家上轮记录)');
+
     parts.push('', '## 你的任务');
-    parts.push('请基于另两家观点 + 用户补充信息，发表新观点：可以继承、可以反驳，但要明示引用对方哪一点。');
+    parts.push('请基于上一轮内容 + 用户补充信息发表新观点:可继承、可反驳，但要明示引用对方哪一点。');
+
+    const footer = this._renderTimelineFooter(timelinePath);
+    if (footer) parts.push('', footer);
+
     return parts.join('\n');
   }
 
-  // summary 轮：summarizer 自己的 PTY 上下文已经读过前面所有轮次（fanout 自答 + debate 收对方观点）
-  // 所以只发任务说明 + 最近一轮（debate）作为复习参考即可，不再回放全部历史
-  buildSummaryPrompt(turnNum, summarizerSid, sidLabelFn) {
+  // summary 轮（@summary @<who> 综合最终决策）
+  //   有 timeline 时:鼓励 AI 先 Read timeline.md 浏览全部历史
+  //   无 timeline 时:依赖 PTY 上下文 + 上一轮注入兜底（旧实现的兜底语义）
+  buildSummaryPrompt(turnNum, summarizerSid, sidLabelFn, dispatchSpec, injectionPayload, timelinePath) {
     const summarizerLabel = sidLabelFn ? (sidLabelFn(summarizerSid) || 'AI') : 'AI';
     const totalTurns = this.state.turns.length;
-    const lastTurn = this.getLastTurn();
-    const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · @summary @${summarizerLabel}]`, ''];
-    parts.push('## 你的任务');
-    parts.push(`你已经在自己的上下文里读过前 ${totalTurns} 轮讨论（含你自己的观点 + 另两家观点 + 用户补充）。`);
-    parts.push('请直接基于上下文给出最终意见，不需要逐轮复述。');
+    const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · @summary @${summarizerLabel}]`];
+
+    const ctx = this._renderDispatchContext(dispatchSpec);
+    if (ctx) parts.push('', ctx);
+
+    parts.push('', '## 你的任务');
+    if (timelinePath) {
+      parts.push(`请综合 ${totalTurns} 轮讨论给出最终决策。建议先 Read ${timelinePath} 浏览全部历史，再结合下面"上一轮"段做完整 fan-in。`);
+    } else {
+      parts.push(`你已经在自己的上下文里读过前 ${totalTurns} 轮讨论（含你自己的观点 + 其他人观点 + 用户补充）。`);
+      parts.push('请直接基于上下文给出最终意见，不需要逐轮复述。');
+    }
     parts.push('');
-    parts.push('输出格式建议：');
+    parts.push('输出格式建议:');
     parts.push('  1) 结论先行（推荐 / 不推荐 / 中性 / 观望，附简短理由）');
-    parts.push('  2) 三方共识与关键分歧');
+    parts.push('  2) 共识与关键分歧（请显式列出未消解分歧，不要伪共识）');
     parts.push(`  3) 具体行动建议（${this.scene.summaryHints || '按讨论话题自适应'}）`);
     if (this.scene.summaryTitleTag) {
-      parts.push('  4) 在末尾用 `<<TITLE: xxx>>` 标记本次会话简短标题（用于决策档案命名，例：`<<TITLE: 兆易创新-买入决策>>`）');
+      parts.push('  4) 在末尾用 `<<TITLE: xxx>>` 标记本次会话简短标题（用于决策档案命名，例:`<<TITLE: 兆易创新-买入决策>>`）');
     }
 
-    // 仅附最近一轮作为防健忘参考，且只附另两家观点（summarizer 自己的不重复发回）
-    if (lastTurn) {
-      parts.push('');
-      parts.push(`## 最近一轮（第 ${lastTurn.n} 轮 · ${lastTurn.mode}）参考 — 仅另两家观点，仅供唤起记忆`);
-      if (lastTurn.userInput && lastTurn.userInput.trim().length > 0) {
-        parts.push(`**用户输入**：${lastTurn.userInput.slice(0, 1000)}`);
-      }
-      let appended = 0;
-      const byStatus = lastTurn.byStatus || null; // Stage 2 容错升级
-      for (const [sid, text] of Object.entries(lastTurn.by || {})) {
-        if (sid === summarizerSid) continue;
-        const label = sidLabelFn ? (sidLabelFn(sid) || 'AI') : 'AI';
-        const status = byStatus ? (byStatus[sid] || 'completed') : 'completed';
-        if (status === 'absent') {
-          parts.push('', `### ${label}`, `（${label} 本轮因故未参与，请勿引用）`);
-          appended++;
-          continue;
-        }
-        if (status === 'errored') {
-          parts.push('', `### ${label}`, `（${label} 本轮发生错误未输出，请勿引用）`);
-          appended++;
-          continue;
-        }
-        let trimmed = text || '(无输出)';
-        if (trimmed.length > MAX_SUMMARY_PER_VIEW_CHARS) {
-          trimmed = trimmed.slice(0, MAX_SUMMARY_PER_VIEW_CHARS) + '…[已截断]';
-        }
-        parts.push('', `### ${label}`, trimmed);
-        appended++;
-      }
-      if (appended === 0) parts.push('(无另两家上轮记录 — 你自己直接综合输出即可)');
-    }
+    const last = this._renderLastTurnSection(injectionPayload, timelinePath);
+    if (last) parts.push('', last);
+
+    const footer = this._renderTimelineFooter(timelinePath);
+    if (footer) parts.push('', footer);
+
     return parts.join('\n');
   }
 

@@ -14,6 +14,19 @@ const path = require('path');
 const os = require('os');
 const { RoundtableOrchestrator } = require('../core/roundtable-orchestrator.js');
 const scenes = require('../core/roundtable-scenes.js');
+const { computeLastTurnInjection } = require('../core/roundtable-injection.js');
+
+// 方案 F · helper：旧风格 (lastTurn, targetSid) → 新签名 buildDebatePrompt
+function buildDebate(orch, turnNum, userInput, lastTurn, targetSid, sidLabelFn) {
+  const inj = computeLastTurnInjection(lastTurn, [targetSid], sidLabelFn, () => null);
+  return orch.buildDebatePrompt(turnNum, userInput, null, inj[targetSid] || null, null);
+}
+function buildSummary(orch, turnNum, summarizerSid, sidLabelFn) {
+  // 取最近一轮（@summary 触发时，已 complete 的轮就是上一轮）
+  const lastTurn = orch.getLastTurn();
+  const inj = computeLastTurnInjection(lastTurn, [summarizerSid], sidLabelFn, () => null);
+  return orch.buildSummaryPrompt(turnNum, summarizerSid, sidLabelFn, null, inj[summarizerSid] || null, null);
+}
 
 let _tmpRoot = null;
 function setupTmp() {
@@ -85,7 +98,7 @@ function testDebatePromptWithAbsent() {
   });
   const last = orch.getLastTurn();
   // Codex 视角看 debate prompt：应该看到 Claude 的真实观点 + Gemini 的未参与说明
-  const prompt = orch.buildDebatePrompt(2, 'q2', last, 'sid-codex', sidLabel);
+  const prompt = buildDebate(orch, 2, 'q2', last, 'sid-codex', sidLabel);
   assert.ok(prompt.includes('Claude opinion'), 'must include Claude real opinion');
   assert.ok(prompt.includes('Gemini 本轮因故未参与'), 'must mark Gemini as absent');
   assert.ok(!prompt.includes('Codex opinion'), 'must NOT include Codex own opinion (targetSid filter)');
@@ -106,7 +119,7 @@ function testDebatePromptWithErrored() {
     'sid-codex': 'completed',
   });
   const last = orch.getLastTurn();
-  const prompt = orch.buildDebatePrompt(2, '', last, 'sid-gemini', sidLabel);
+  const prompt = buildDebate(orch, 2, '', last, 'sid-gemini', sidLabel);
   assert.ok(prompt.includes('Claude 本轮发生错误未输出'), 'must mark Claude as errored');
   assert.ok(prompt.includes('Codex opinion'), 'Codex real opinion still in prompt');
   cleanupTmp();
@@ -122,7 +135,7 @@ function testDebatePromptLegacyNoByStatus() {
     'sid-gemini': 'Gemini opinion',
   }, {}); // 不传 byStatus
   const last = orch.getLastTurn();
-  const prompt = orch.buildDebatePrompt(2, '', last, 'sid-codex', sidLabel);
+  const prompt = buildDebate(orch, 2, '', last, 'sid-codex', sidLabel);
   assert.ok(prompt.includes('Claude opinion'));
   assert.ok(prompt.includes('Gemini opinion'));
   assert.ok(!/因故未参与/.test(prompt), 'legacy turn must not produce "absent" copy');
@@ -142,7 +155,7 @@ function testSummaryPromptWithAbsent() {
     'sid-gemini': 'absent',
     'sid-codex': 'completed',
   });
-  const prompt = orch.buildSummaryPrompt(2, 'sid-claude', sidLabel);
+  const prompt = buildSummary(orch, 2, 'sid-claude', sidLabel);
   // Claude 视角：看 Gemini absent 说明 + Codex 真实观点（Claude 自己不重复）
   assert.ok(prompt.includes('Gemini 本轮因故未参与'), 'summary must mark Gemini absent');
   assert.ok(prompt.includes('Codex opinion'), 'summary still shows Codex real opinion');
@@ -163,7 +176,7 @@ function testManualExtractedTreatedAsCompleted() {
     'sid-gemini': 'manual_extracted',
   });
   const last = orch.getLastTurn();
-  const prompt = orch.buildDebatePrompt(2, '', last, 'sid-claude', sidLabel);
+  const prompt = buildDebate(orch, 2, '', last, 'sid-claude', sidLabel);
   assert.ok(prompt.includes('Gemini extracted'),
     'manual_extracted text must be included in prompt as if it were completed');
   assert.ok(!/因故未参与|发生错误未输出/.test(prompt),

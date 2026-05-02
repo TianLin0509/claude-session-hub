@@ -23,6 +23,7 @@ const { EventEmitter } = require('events');
 const { createTurnCompletionWatcher } = require('../core/turn-completion-watcher.js');
 const { RoundtableOrchestrator } = require('../core/roundtable-orchestrator.js');
 const scenes = require('../core/roundtable-scenes.js');
+const { computeLastTurnInjection } = require('../core/roundtable-injection.js');
 
 function mkTap() { return new EventEmitter(); }
 
@@ -145,7 +146,9 @@ async function scenario4_SkipParticipantPropagatesToPrompt() {
   orch.beginTurn('fanout');
   orch.completeTurn(1, 'fanout', 'q1', byMap, {}, byStatus);
   const last = orch.getLastTurn();
-  const prompt = orch.buildDebatePrompt(2, 'q2', last, 'sid-codex', sidLabel);
+  // 方案 F：用 computeLastTurnInjection 算 payload，再调新签名 buildDebatePrompt
+  const injMap = computeLastTurnInjection(last, ['sid-codex'], sidLabel, () => null);
+  const prompt = orch.buildDebatePrompt(2, 'q2', null, injMap['sid-codex'], null);
   assert.ok(prompt.includes('C answer'), 'Claude real opinion in prompt');
   assert.ok(prompt.includes('Gemini 本轮因故未参与'), 'Gemini absent → "因故未参与"');
   cleanup();
@@ -206,8 +209,9 @@ async function scenario6_AllErrored() {
     'sid-codex':  'errored',
   });
   const last = orch.getLastTurn();
-  // Claude 视角：另两家都 errored
-  const prompt = orch.buildDebatePrompt(2, '', last, 'sid-claude', sidLabel);
+  // Claude 视角：另两家都 errored（方案 F 新签名）
+  const injMap = computeLastTurnInjection(last, ['sid-claude'], sidLabel, () => null);
+  const prompt = orch.buildDebatePrompt(2, '', null, injMap['sid-claude'], null);
   assert.ok(/Gemini 本轮发生错误未输出/.test(prompt), 'prompt must mark Gemini errored');
   assert.ok(/Codex 本轮发生错误未输出/.test(prompt), 'prompt must mark Codex errored');
   cleanup();

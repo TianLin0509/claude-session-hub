@@ -729,7 +729,33 @@ ipcMain.handle('roundtable:dispatch-mode-set', async (_e, { meetingId, dispatchM
 // Roundtable Mode (Sprint 2): fanout / debate / summary 三种轮次
 // =====================================================================
 const roundtable = require('./core/roundtable-orchestrator.js');
+const rtTimeline = require('./core/roundtable-timeline.js');
+const rtInjection = require('./core/roundtable-injection.js');
 let _roundtableInProgress = new Set(); // 同会议室单一并发：set of meetingId
+
+// 方案 F · 2026-05-02：计算单个 sub 视角的"调度上下文" spec，喂给 build*Prompt
+//   subs    = [{ sid, kind, label }] 全体活跃 sub
+//   self    = 当前要拼 prompt 的 sub
+//   pilotSlot = 主驾 slot 索引（0/1/2/null）
+//   subSidsRaw = meeting.subSessions 数组（决定 slot index）
+//   effectiveDispatchMode = 'all' | 'pilot' | 'observer'
+function _computeDispatchSpec(self, subs, pilotSlot, subSidsRaw, effectiveDispatchMode) {
+  if (!self) return null;
+  const selfSlotIdx = subSidsRaw.indexOf(self.sid);
+  const isPilotSelf = pilotSlot !== null && selfSlotIdx === pilotSlot;
+  let selfRole = null;
+  if (pilotSlot !== null) selfRole = isPilotSelf ? 'pilot' : 'observer';
+  // 同台名单：除自己外
+  const sameStageLabels = subs.filter(x => x.sid !== self.sid).map(x => x.label || x.kind || 'AI');
+  // 主驾名（若有）
+  const pilotSub = pilotSlot !== null ? subs.find(x => subSidsRaw.indexOf(x.sid) === pilotSlot) : null;
+  return {
+    mode: effectiveDispatchMode || 'all',
+    selfRole,
+    sameStageLabels,
+    pilotLabel: pilotSub ? (pilotSub.label || pilotSub.kind || 'AI') : null,
+  };
+}
 
 const _RT_READY_MARKERS = {
   // Claude 启动 buffer 含大量 ANSI/box 字符，文本匹配易失败 → 空 markers 走 buffer 长度兜底
@@ -1089,14 +1115,42 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       return { status: 'error', reason: 'dispatchMode 过滤后无活跃目标 session', turnNum: null };
     }
 
+    // 方案 F · 2026-05-02：计算注入 map / projectCwd / timelinePath / sidRoleFn
+    //   - sidRoleFn：哪些 sid 是主驾、哪些是副驾（仅 pilotSlot 非 null 时有意义）
+    //   - projectCwd：用于决定 timeline.md 写哪里（主驾 cwd 优先，否则第一活跃 sub）
+    //   - timelinePath：每轮 prompt 末尾会附此路径
+    const sidRoleFn = (sid) => {
+      if (pilotSlot === null) return null;
+      const idx = subSidsRaw.indexOf(sid);
+      if (idx < 0) return null;
+      return idx === pilotSlot ? 'pilot' : 'observer';
+    };
+    const projectCwd = (() => {
+      const pilotSub = pilotSlot !== null ? subs.find(x => subSidsRaw.indexOf(x.sid) === pilotSlot) : null;
+      const candidate = pilotSub || subs[0];
+      if (!candidate) return null;
+      const sess = sessionManager.getSession(candidate.sid);
+      return (sess && sess.cwd) ? sess.cwd : null;
+    })();
+    let timelinePath = null;
+    try {
+      timelinePath = rtTimeline.ensureFile(meetingId, projectCwd, getHubDataDir(), sceneObj?.name || '通用圆桌');
+    } catch (e) {
+      console.warn('[roundtable] timeline ensureFile failed:', e.message);
+    }
+
     // 决定本轮的目标 sid 集合 + 拼 per-sid prompt
     const targets = []; // [{ sid, kind, label, prompt }]
     let turnNum;
 
     if (mode === 'fanout') {
       turnNum = orch.beginTurn('fanout');
+      const lastTurn = orch.state.turns.length > 1 ? orch.state.turns[orch.state.turns.length - 1] : null;
+      const targetSids = targetSubs.map(t => t.sid);
+      const injectMap = rtInjection.computeLastTurnInjection(lastTurn, targetSids, sidLabelFn, sidRoleFn);
       for (const x of targetSubs) {
-        const prompt = orch.buildFanoutPrompt(turnNum, userInput, null);
+        const dispatchSpec = _computeDispatchSpec(x, subs, pilotSlot, subSidsRaw, effectiveDispatchMode);
+        const prompt = orch.buildFanoutPrompt(turnNum, userInput, null, dispatchSpec, injectMap[x.sid] || null, timelinePath);
         targets.push({ ...x, prompt });
       }
     } else if (mode === 'debate') {
@@ -1106,8 +1160,11 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
         return { status: 'error', reason: '没有上一轮可中转，请先用 fanout 提问', turnNum: null };
       }
       turnNum = orch.beginTurn('debate');
+      const targetSids = targetSubs.map(t => t.sid);
+      const injectMap = rtInjection.computeLastTurnInjection(last, targetSids, sidLabelFn, sidRoleFn);
       for (const x of targetSubs) {
-        const prompt = orch.buildDebatePrompt(turnNum, userInput, last, x.sid, sidLabelFn);
+        const dispatchSpec = _computeDispatchSpec(x, subs, pilotSlot, subSidsRaw, effectiveDispatchMode);
+        const prompt = orch.buildDebatePrompt(turnNum, userInput, dispatchSpec, injectMap[x.sid] || null, timelinePath);
         targets.push({ ...x, prompt });
       }
     } else if (mode === 'summary') {
@@ -1120,7 +1177,10 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       orch._saveState();
       sendToRenderer('roundtable-state-update', { meetingId });
       const target = subs.find(x => x.sid === targetSid);
-      const prompt = orch.buildSummaryPrompt(turnNum, target.sid, sidLabelFn);
+      const lastTurn = orch.state.turns.length > 1 ? orch.state.turns[orch.state.turns.length - 1] : null;
+      const injectMap = rtInjection.computeLastTurnInjection(lastTurn, [target.sid], sidLabelFn, sidRoleFn);
+      const dispatchSpec = _computeDispatchSpec(target, subs, pilotSlot, subSidsRaw, effectiveDispatchMode);
+      const prompt = orch.buildSummaryPrompt(turnNum, target.sid, sidLabelFn, dispatchSpec, injectMap[target.sid] || null, timelinePath);
       targets.push({ ...target, prompt });
     } else {
       return { status: 'error', reason: 'unknown mode', turnNum: null };
@@ -1191,16 +1251,25 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       thinkSecBy[r.sid] = typeof r.thinkSec === 'number' ? r.thinkSec : 0;
       tokensBy[r.sid]   = (r.tokens && typeof r.tokens.total === 'number') ? r.tokens.total : 0;
     }
-    const meta = {};
+    // 方案 F：在 meta 带上 dispatchMode，让 timeline 写入能记录
+    const meta = { dispatchMode: effectiveDispatchMode };
     if (mode === 'summary') {
       meta.summarizer = summarizerKind;
       meta.summarizerSid = sentTargets[0]?.sid || null;
       const title = roundtable.extractDecisionTitle(results[0]?.text || '');
       if (title) meta.decisionTitle = title;
     }
-    orch.completeTurn(turnNum, mode, userInput || '', byMap, meta, byStatus, {
+    const turnRecord = orch.completeTurn(turnNum, mode, userInput || '', byMap, meta, byStatus, {
       thinkSecBy, tokensBy,
     });
+
+    // 方案 F：turn-complete 后追加到 timeline.md（系统侧自动维护）
+    try {
+      rtTimeline.writeTurn(meetingId, turnRecord, sceneObj?.name || '通用圆桌', projectCwd, getHubDataDir(), sidLabelFn);
+    } catch (e) {
+      console.warn(`[roundtable] timeline.writeTurn failed for turn ${turnNum}:`, e.message);
+      // 不阻塞主流程
+    }
 
     // E2 选项：summary 后写决策档案到 .arena/sessions/<datetime>-<title>.md
     if (mode === 'summary') {
@@ -1408,13 +1477,20 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
   };
   let prompt;
   try {
+    // FIX-F resend 路径：异常路径单家重发，使用最小可用参数（null 全部 → 退化为基本 prompt，
+    //   不含调度上下文段 / 上一轮注入 / timeline footer）。这是可接受降级，因为：
+    //   1. 主任务说明仍在（fanout 用户问题、debate 任务说明、summary 输出格式）
+    //   2. 该 sid PTY 上下文里仍有自己之前的轮次记忆
+    //   3. resend 是修复异常，不必复刻完整 plan-F prompt
     if (lastTurn.mode === 'fanout') {
-      // dataPack 不持久化，重发时不带（degradation acceptable —— 用户问题本身是核心）
-      prompt = orch.buildFanoutPrompt(lastTurn.n, lastTurn.userInput, '');
+      prompt = orch.buildFanoutPrompt(lastTurn.n, lastTurn.userInput, '', null, null, null);
     } else if (lastTurn.mode === 'debate') {
-      prompt = orch.buildDebatePrompt(lastTurn.n, lastTurn.userInput, lastTurn, sid, sidLabelFn);
+      // debate resend：仍构造 injectionPayload 让 AI 看到上上轮内容（如可用）
+      const prevTurn = orch.state.turns.length > 1 ? orch.state.turns[orch.state.turns.length - 2] : null;
+      const inj = rtInjection.computeLastTurnInjection(prevTurn, [sid], sidLabelFn, null);
+      prompt = orch.buildDebatePrompt(lastTurn.n, lastTurn.userInput, null, inj[sid] || null, null);
     } else if (lastTurn.mode === 'summary') {
-      prompt = orch.buildSummaryPrompt(lastTurn.n, sid, sidLabelFn);
+      prompt = orch.buildSummaryPrompt(lastTurn.n, sid, sidLabelFn, null, null, null);
     } else {
       return { ok: false, reason: 'unsupported_mode', detail: `未知 mode=${lastTurn.mode}` };
     }
