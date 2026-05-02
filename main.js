@@ -313,18 +313,6 @@ let hookPort = null;  // set after listen() succeeds
 let mobileSrv = null; // set after app.whenReady startup
 
 let mainWindow;
-const enforceSingleInstance = !process.env.CLAUDE_HUB_DATA_DIR;
-if (enforceSingleInstance && !app.requestSingleInstanceLock()) {
-  app.exit(0);
-}
-if (enforceSingleInstance) {
-  app.on('second-instance', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-  });
-}
 const sessionManager = new SessionManager();
 const meetingManager = new MeetingRoomManager();
 
