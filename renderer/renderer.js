@@ -1,4 +1,12 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
+const { isClaudeFamily } = require('../core/ai-kinds.js');
+const RENDER_STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
+const RENDER_STARTUP_T0 = performance.now();
+function traceRendererStartup(msg) {
+  if (!RENDER_STARTUP_TRACE) return;
+  console.log(`[renderer-startup +${Math.round(performance.now() - RENDER_STARTUP_T0)}ms] ${msg}`);
+}
+traceRendererStartup('renderer.js start');
 const { Terminal } = require('@xterm/xterm');
 
 // --- Wheel/scroll diagnostic logger (DEBUG ONLY) ---
@@ -807,8 +815,12 @@ function getOrCreateTerminal(sessionId) {
   // xterm fires onTitleChange for it. We capture that as the session title
   // unless the user already renamed in Hub (userRenamed wins). Only for Claude
   // kinds — PowerShell emits title sequences on every prompt, which we don't want.
+  // 2026-05-02 修复：DeepSeek/GLM 也跑在 Claude CLI 上、emit 同样的 OSC title
+  //   序列，但旧版本 isClaudeKind 只含 'claude'/'claude-resume' 把这两家排除 →
+  //   DS/GLM 子 session 永远叫 'Claude' 不能自动获标题。改用 isClaudeFamily helper
+  //   （CLAUDE_FAMILY 含 deepseek/glm），单一真理源，未来加新 Claude 衍生家族自动覆盖。
   const session = sessions.get(sessionId);
-  const isClaudeKind = session && (session.kind === 'claude' || session.kind === 'claude-resume');
+  const isClaudeKind = session && isClaudeFamily(session.kind);
   if (isClaudeKind) {
     terminal.onTitleChange((newTitle) => {
       const s = sessions.get(sessionId);
@@ -3759,11 +3771,13 @@ async function resumeDormantSession(hubId) {
 
 // --- Init ---
 (async () => {
+  traceRendererStartup('init ipc start');
   const [existing, persisted, dormantMeetings] = await Promise.all([
     ipcRenderer.invoke('get-sessions').catch(() => []),
     ipcRenderer.invoke('get-dormant-sessions').catch(() => null),
     ipcRenderer.invoke('get-dormant-meetings').catch(() => null),
   ]);
+  traceRendererStartup(`init ipc done existing=${existing.length} persisted=${persisted && Array.isArray(persisted.sessions) ? persisted.sessions.length : 0} meetings=${Array.isArray(dormantMeetings) ? dormantMeetings.length : 0}`);
 
   for (const s of existing) sessions.set(s.id, s);
 
@@ -3800,13 +3814,17 @@ async function resumeDormantSession(hubId) {
     }
   }
 
+  traceRendererStartup('renderSessionList start');
   renderSessionList();
+  traceRendererStartup('renderSessionList done');
   ipcRenderer.send('renderer-sidebar-ready');
+  traceRendererStartup('renderer-sidebar-ready sent');
 
   ipcRenderer.invoke('get-hub-config-raw').then((cfg) => {
     if (!cfg) return;
     providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
     renderAccountUsage();
+    traceRendererStartup('hub config loaded');
   }).catch(() => {});
 
   ipcRenderer.invoke('get-usage-cache').then((cached) => {
@@ -3821,6 +3839,7 @@ async function resumeDormantSession(hubId) {
     if (cached.codex) agentUsage.codex = cached.codex;
     if (cached.codex && cached.codex.ts) agentUsageLastSeen.codex = cached.codex.ts;
     renderAccountUsage();
+    traceRendererStartup('usage cache loaded');
   }).catch(() => {});
 })();
 

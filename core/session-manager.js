@@ -791,8 +791,13 @@ class SessionManager extends EventEmitter {
 
 // Read tail N turns from a CLI transcript file and format into a prompt-injectable
 // context block. Returns null if file unavailable or no usable turns.
-//   kind:    'claude' | 'codex' | 'gemini'
+//   kind:    'claude' | 'claude-resume' | 'deepseek' | 'glm' | 'codex' | 'gemini'
 //   sourcePath: kind-specific transcript file path
+//
+// 2026-05-02 修复：deepseek/glm 跑在 Claude CLI 上，transcript JSONL shape 与 Claude
+//   完全一致，原本应复用 'claude' 分支但代码里完全没分支 → resume 时圆桌历史上下文
+//   注入失败。下面把 Claude 家族判定改为 isClaudeFamily helper。
+const { isClaudeFamily } = require('./ai-kinds.js');
 async function readTranscriptTail(kind, sourcePath, n = 10) {
   if (!sourcePath) return null;
   // T13 fix: refuse oversized transcripts (>5MB) to avoid main-process memory spike
@@ -824,7 +829,8 @@ async function readTranscriptTail(kind, sourcePath, n = 10) {
     for (const line of lines) {
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
-      if (kind === 'claude') {
+      if (isClaudeFamily(kind)) {
+        // Claude 家族（claude/claude-resume/deepseek/glm）共享同一 JSONL shape
         if (obj.type === 'user' && obj.message?.content) {
           out.push(`USER: ${typeof obj.message.content === 'string' ? obj.message.content : JSON.stringify(obj.message.content)}`);
         }

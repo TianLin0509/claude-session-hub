@@ -11,6 +11,13 @@
   --c-gemini-rgb: 91, 141, 239;
   --c-codex: #4ad28b;
   --c-codex-rgb: 74, 210, 139;
+  /* 2026-05-02 修复：补 DeepSeek/GLM 主题色变量。
+     旧版本只定义三家，使用 var(--c-deepseek-rgb) / var(--c-glm-rgb) 的位置
+     fallback 到 inherit，DS/GLM 用户在 feed/summary 等 kind-tagged 面板视觉退化。 */
+  --c-deepseek: #58a6ff;
+  --c-deepseek-rgb: 88, 166, 255;
+  --c-glm: #d96aa8;
+  --c-glm-rgb: 217, 106, 168;
 
   /* Slot tokens — 御三家 (Pikachu / Charmander / Squirtle) */
   --c-slot-1: #fbbf24;

@@ -6,6 +6,7 @@
   const { ipcRenderer } = require('electron');
   const _scenes = require('../core/roundtable-scenes.js');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
+  const { isPasteSensitive, kindRegexAlternation } = require('../core/ai-kinds.js');
 
   let activeMeetingId = null;
   let meetingData = {};
@@ -33,13 +34,18 @@
 
   // --- Roundtable @command parser ---
   // 支持 @debate / @summary @<who> / @all / @<who> 单聊
+  // 2026-05-02 修复：summaryRe / tokenRe 正则原本硬编码 (claude|gemini|codex|deepseek|glm)
+  //   字符串，未来加新 AI 必须同步改正则（容易漏）。改为从 ai-kinds.js 的
+  //   kindRegexAlternation() 动态构造，单一真理源。
+  const _RT_KIND_ALT = kindRegexAlternation();
+  const _summaryRe = new RegExp('^@summary\\s+@(' + _RT_KIND_ALT + ')\\b\\s*', 'i');
+  const _tokenRe = new RegExp('^@(' + _RT_KIND_ALT + ')\\b\\s*', 'i');
   function parseRoundtableCommand(text, meeting) {
     if (!meeting || !meeting.scene) return { type: 'normal', text, targets: null };
     let rest = text.trim();
-    const summaryRe = /^@summary\s+@(claude|gemini|codex|deepseek|glm)\b\s*/i;
     const debateRe = /^@debate\b\s*/i;
     let m;
-    if ((m = rest.match(summaryRe))) {
+    if ((m = rest.match(_summaryRe))) {
       return { type: 'rt-summary', summarizerKind: m[1].toLowerCase(), text: rest.slice(m[0].length) };
     }
     if ((m = rest.match(debateRe))) {
@@ -51,9 +57,8 @@
     }
     // @<who> 私聊
     const targets = [];
-    const tokenRe = /^@(claude|gemini|codex|deepseek|glm)\b\s*/i;
     while (true) {
-      const t = rest.match(tokenRe);
+      const t = rest.match(_tokenRe);
       if (!t) break;
       targets.push(t[1].toLowerCase());
       rest = rest.slice(t[0].length);
@@ -2517,7 +2522,12 @@
       const payload = (contextBySid[sessionId] || '') + text;
       ipcRenderer.send('terminal-input', { sessionId, data: payload });
       const session = sessions ? sessions.get(sessionId) : null;
-      const baseDelay = session && session.kind === 'codex' ? 400 : 200;
+      // 2026-05-02 修复：旧版本仅 codex 用 400ms 延迟，其他 200ms。但 Claude/Gemini/
+      //   DeepSeek/GLM 同样是 TUI alt-screen + paste-detect 程序，200ms 太短可能让 \r
+      //   落进 paste 缓冲被吞 → 字符进了 CLI 输入框但 Enter 没提交 → 用户血泪反馈
+      //   "卡输入框需手按 Enter"。统一所有 paste-sensitive CLI 都用 400ms 兜底，
+      //   powershell 等普通 shell 仍 200ms。
+      const baseDelay = session && isPasteSensitive(session.kind) ? 400 : 200;
       const sizeDelay = Math.min(Math.floor(payload.length / 100) * 10, 500);
       setTimeout(() => {
         ipcRenderer.send('terminal-input', { sessionId, data: '\r' });

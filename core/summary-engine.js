@@ -99,6 +99,11 @@ class SummaryEngine {
     return this.extractMarker(rawBuffer, sessionId);
   }
 
+  // 2026-05-02 备忘：compressContext / detectDivergence / deepSummary 当前硬调
+  //   _callGeminiPipe（Gemini 充当协调/摘要者）。已存在 summarizeWithKind 支持全 5 家
+  //   (claude/claude-resume/deepseek/glm/codex/gemini)，未来如需让主驾 kind 自己做摘要，
+  //   传 options.summarizerKind 走 summarizeWithKind 即可。当前默认 Gemini 是有意保留：
+  //   协作分析适合用稳定的协调者，不应每次随主驾切换。
   async compressContext(content, maxChars = 1000) {
     if (!content || content.length <= maxChars) return content;
     const system = '你是一个协作上下文压缩助手。将内容压缩到指定字符数以内，保留关键结论、数据点和具体建议，压缩论证过程和重复内容。';

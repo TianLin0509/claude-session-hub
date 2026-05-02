@@ -14,6 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { ALL_AI_KINDS } = require('./ai-kinds.js');
 
 const MAX_DEBATE_OPINION_CHARS = 5000;
 const MAX_DEBATE_OPINION_KEEP = 2000;
@@ -337,11 +338,15 @@ class RoundtableOrchestrator {
   }
 }
 
-// meeting-create-modal（2026-05-01）：判断 aiStats 是不是老 kind 索引格式
-//   （含 claude/gemini/codex 顶层 key），用于 setMeetingContext 时触发迁移。
+// meeting-create-modal（2026-05-01）：判断 aiStats 是不是老 kind 索引格式（含
+//   claude/gemini/codex/deepseek/glm 顶层 key），用于 setMeetingContext 时触发迁移。
+//
+// 2026-05-02 修复：旧版本仅检测 ['claude', 'gemini', 'codex']，DeepSeek/GLM 用户从老
+//   版本升级时迁移条件不命中 → 累计统计漂浮。改为遍历 ALL_AI_KINDS（来自 core/ai-kinds.js），
+//   单一真理源，未来加新 AI 自动覆盖。
 function _isLegacyKindKeyed(stats) {
   if (!stats || typeof stats !== 'object') return false;
-  return ['claude', 'gemini', 'codex'].some(k => stats[k] && typeof stats[k] === 'object'
+  return ALL_AI_KINDS.some(k => stats[k] && typeof stats[k] === 'object'
     && (typeof stats[k].totalThinkSec === 'number' || typeof stats[k].totalTokens === 'number'));
 }
 
