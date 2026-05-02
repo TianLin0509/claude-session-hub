@@ -135,6 +135,15 @@ const _CLAUDE_STREAM_BUF_MAX_BYTES = 50000;
 //   5s 无新行 → 高置信度本轮已答完。仍嫌慢可后续调小（与 Codex 的 task_complete 3s debounce 对齐）。
 const _CLAUDE_IDLE_EMIT_MS = 5000;
 
+// 2026-05-02 Gemini 兜底：与 ClaudeTap 同套 idle-timer 思路。用户血泪反馈：
+//   "第一轮 Gemini 子 session 输出后没快速提取，手动提取后流程继续"。
+// 根因：GeminiTap.onLine 仅 L1a result_event / L1b message_update / L3 tokens.total
+//   三种情况触发 emit。第一轮启动慢时 token 计数延迟到达，三个信号都没到 → 卡片永远
+//   停在 streaming，需要用户手动点"一键提取"。
+// 兜底：每条带 content 的 gemini 行重置 5s timer，连续 5s 无新行 → 主动 emit
+//   turn-complete（signalSource=idle_timer_5s）。L1/L3 抢先时取消 timer。
+const _GEMINI_IDLE_EMIT_MS = 5000;
+
 class ClaudeTap extends EventEmitter {
   constructor() {
     super();
@@ -652,6 +661,8 @@ class GeminiTap extends EventEmitter {
     if (bound) {
       try { bound.tail?.close(); } catch {}
       try { clearTimeout(bound.debounceTimer); } catch {}
+      // 2026-05-02：清 idle-timer 防 leak（用户血泪场景兜底新增的 timer）
+      if (bound._idleTimer) { try { clearTimeout(bound._idleTimer); } catch {} }
       this._bound.delete(hubSessionId);
     }
     if (this._pending.size === 0 && this._bound.size === 0) {
@@ -800,7 +811,9 @@ class GeminiTap extends EventEmitter {
   async _bindSession(hubSessionId, sessionPath, isJsonl) {
     // Card optimization Task 2（2026-05-01）— streamingBuf 累积流式 chunk，让 main.js _rtExtractStreamingText
     //   优先用 tap 的 blocks 数组渲染（替代 PTY ringBuffer 过滤），preview 区不再有 throbbing 字符。
-    const boundEntry = { sessionPath, tail: null, lastText: null, isJsonl, debounceTimer: null, _streamingBuf: [] };
+    // 2026-05-02 加 _idleTimer 字段：用户反馈"Gemini 第一轮没快速提取"，token 信号
+    //   延迟到达时三层 emit 都不触发；idle-timer 兜底见 _scheduleGeminiIdleEmit。
+    const boundEntry = { sessionPath, tail: null, lastText: null, isJsonl, debounceTimer: null, _streamingBuf: [], _idleTimer: null };
     this._bound.set(hubSessionId, boundEntry);
 
     // Emit session-bound for main.js to persist resume meta.
@@ -835,17 +848,47 @@ class GeminiTap extends EventEmitter {
     // Stage 2 容错升级（2026-05-01）：emit payload 增加 signalSource 字段，
     //   让下游 turn-completion-watcher 区分 L1（result/message_update）/ L3（tokens_total）信号。
     //   向后兼容——既有调用方（main.js _rtWaitTurnComplete）忽略此字段不影响。
+    // 2026-05-02：emit 时取消 idle timer（避免重复 emit）。
     const emitIfComplete = (content, meta = {}) => {
       const text = (content || '').trim();
       if (!text) return;
       if (text === boundEntry.lastText) return;
       boundEntry.lastText = text;
+      // L1/L3 抢先 → 取消 idle timer
+      if (boundEntry._idleTimer) {
+        clearTimeout(boundEntry._idleTimer);
+        boundEntry._idleTimer = null;
+      }
       this.emit('turn-complete', {
         hubSessionId,
         text,
         completedAt: Date.now(),
         signalSource: meta.signalSource || 'tokens_total',
       });
+    };
+
+    // 2026-05-02 idle-timer 兜底：每条新 content 行重置 5s timer，
+    //   连续 5s 无新行 → 把 streamingBuf 拼成完整 text 主动 emit。
+    //   防止"第一轮 token 延迟到达"导致卡片永远 streaming（用户血泪反馈）。
+    const _scheduleGeminiIdleEmit = () => {
+      if (boundEntry._idleTimer) clearTimeout(boundEntry._idleTimer);
+      boundEntry._idleTimer = setTimeout(() => {
+        boundEntry._idleTimer = null;
+        // 拼 streamingBuf 内容；过滤 type:'text' 块（Gemini 只 push text 块）
+        const text = boundEntry._streamingBuf
+          .filter(b => b && b.type === 'text' && typeof b.text === 'string')
+          .map(b => b.text).join('').trim();
+        if (!text) return;
+        if (text === boundEntry.lastText) return;
+        boundEntry.lastText = text;
+        this.emit('turn-complete', {
+          hubSessionId,
+          text,
+          completedAt: Date.now(),
+          signalSource: 'idle_timer_5s',
+        });
+      }, _GEMINI_IDLE_EMIT_MS);
+      boundEntry._idleTimer.unref?.();
     };
 
     if (isJsonl) {
@@ -899,6 +942,10 @@ class GeminiTap extends EventEmitter {
         } else if (obj?.type === 'gemini' && typeof obj.content === 'string' && obj.content.trim().length > 0) {
           // Task 2（2026-05-01）— 流式中间态：content 已到、token 未到，仍累积让 preview 显示
           _pushStreamBlock(obj.content);
+          // 2026-05-02 兜底：流式中间态也启动/重置 idle timer。如果 5s 无新 content
+          //   且 token 一直没到（用户血泪场景：第一轮 token 延迟），主动 emit 让卡片
+          //   切到 completed，无需用户手动点"一键提取"。
+          _scheduleGeminiIdleEmit();
         }
       };
       const tail = new JsonlTail(sessionPath, onLine);

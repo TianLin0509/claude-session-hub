@@ -162,6 +162,42 @@ function testClaudeTapHasIdleEmitFallback() {
   console.log('  ✓ testClaudeTapHasIdleEmitFallback');
 }
 
+// ---------------- 测 8：契约测试 — GeminiTap 也有 idle-timer 兜底 ----------------
+//   2026-05-02 用户反馈："Gemini 第一轮没快速提取"，根因是 token 信号延迟到达时
+//   onLine 三层 emit 都不触发。修复：与 ClaudeTap 同套 idle-timer 思路。
+function testGeminiTapHasIdleEmitFallback() {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'transcript-tap.js'), 'utf-8');
+
+  // 必须定义 _GEMINI_IDLE_EMIT_MS 常量
+  assert.ok(/_GEMINI_IDLE_EMIT_MS\s*=\s*\d+/.test(src),
+    'transcript-tap.js 必须定义 _GEMINI_IDLE_EMIT_MS（GeminiTap idle 兜底间隔）');
+  // 必须有 _scheduleGeminiIdleEmit 内部函数
+  assert.ok(/_scheduleGeminiIdleEmit/.test(src),
+    'GeminiTap 必须有 _scheduleGeminiIdleEmit（onLine 触发的兜底 emit timer）');
+  // idle 路径 emit 必须带新 signalSource
+  assert.ok(/signalSource:\s*['"]idle_timer_5s['"]/.test(src),
+    'idle-timer 兜底 emit 必须带 signalSource: idle_timer_5s');
+  // GeminiTap.emitIfComplete 必须 clearTimeout(_idleTimer) 防重复 emit
+  const geminiBindIdx = src.indexOf('async _bindSession');
+  assert.ok(geminiBindIdx > 0, 'GeminiTap._bindSession 必须存在');
+  const geminiBindBody = src.slice(geminiBindIdx, geminiBindIdx + 5000);
+  // emitIfComplete 闭包必须含 _idleTimer + clearTimeout
+  assert.ok(/emitIfComplete[\s\S]{0,800}?_idleTimer[\s\S]{0,200}?clearTimeout/.test(geminiBindBody),
+    'GeminiTap.emitIfComplete 必须 clearTimeout(_idleTimer) 防 L1/L3 抢先后重复 emit');
+  // unregisterSession 必须清 idle timer 防 leak（用 indexOf 定位整段函数体，避免正则非贪婪
+  // 在 try {} 第一个 } 处提前截断）
+  const geminiClassIdx = src.indexOf('class GeminiTap');
+  assert.ok(geminiClassIdx > 0, '能定位到 GeminiTap class');
+  const geminiUnregisterIdx = src.indexOf('unregisterSession(hubSessionId)', geminiClassIdx);
+  assert.ok(geminiUnregisterIdx > 0, '能定位到 GeminiTap.unregisterSession');
+  // 取函数 + 后续 1500 字符（足够覆盖整个函数体）
+  const geminiUnregisterBody = src.slice(geminiUnregisterIdx, geminiUnregisterIdx + 1500);
+  assert.ok(/_idleTimer/.test(geminiUnregisterBody),
+    'GeminiTap.unregisterSession 必须清 _idleTimer 防 leak');
+
+  console.log('  ✓ testGeminiTapHasIdleEmitFallback');
+}
+
 // ---------------- 测 7：契约测试 — 三个 backend 都有 extractLatestTurn ----------------
 function testAllBackendsHaveExtractLatestTurn() {
   const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'transcript-tap.js'), 'utf-8');
@@ -214,6 +250,7 @@ function testAllBackendsHaveExtractLatestTurn() {
     testNotifyStopEmitsWithSignalSource,
     testMainJsUsesUnifiedExtractEntry,
     testClaudeTapHasIdleEmitFallback,
+    testGeminiTapHasIdleEmitFallback,
     testAllBackendsHaveExtractLatestTurn,
   ];
   for (const t of tests) {
