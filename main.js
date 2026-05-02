@@ -776,10 +776,14 @@ async function _rtSendToPty(sid, prompt, kind) {
   const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
   const FAST_PATH_MAX_WAIT_MS = 3000;   // 上限：极大 prompt 也不无限等
   const FAST_PATH_POLL_MS = 50;
+  const ENTER_RETRY_TRIES = 3;          // 零 echo 兜底：分多次发 \r 提升提交成功率
+  const ENTER_RETRY_GAP_MS = 150;       // 兜底 \r 之间间隔
+  const POST_ENTER_VERIFY_MS = 500;     // 提交后再观察一次活性，确认没卡
 
   // 冷启动：仅首次或 ready 被重置后
   if (!sessionManager.getRoundtableReady(sid)) {
     const ready = await _rtWaitCliReady(sid, kind, 60000);
+    // CLI 完全没启动 → prompt 都没写，可以正当放弃
     if (!ready) return false;
     sessionManager.setRoundtableReady(sid, true);
   }
@@ -804,15 +808,40 @@ async function _rtSendToPty(sid, prompt, kind) {
     if (Date.now() - lastChange >= FAST_PATH_QUIET_MS) break;
   }
 
-  // 活性兜底：从头到尾零 echo → CLI 已死
-  if (lastSeen === beforeWrite) {
-    console.warn(`[roundtable] fast-path activity check failed for ${kind}(${sid.slice(0, 8)}), skipping turn (ready reset for next-turn cold restart)`);
+  // 关键修复（2026-05-02 血泪教训第 N 次）：prompt 字符已经在 PTY stdin 里，
+  //   **`\r` 必须发出去**。旧逻辑在零 echo 时直接 return false 不发 \r，导致用户的
+  //   prompt 卡在 CLI 输入框需要手按 Enter — 这是用户反复反馈的核心 bug。
+  //
+  // 为什么 \r 多发是安全的（与"prompt 不能重发"对比）：
+  //   - prompt 重发 → 输入框出现 prompt+prompt → 提交后内容污染（旧注释正确警告了这点）
+  //   - \r 多发    → 输入框有 prompt 时首个 \r 触发提交，后续 \r 落入空输入框被
+  //                  CLI 忽略（PowerShell 也只是显示空提示符）；不污染 prompt 内容
+  //
+  // 决策：echo 正常 → 发 1 次 \r；零 echo → 发 3 次 \r（间隔 150ms），让 paste-end
+  //   状态机被卡在 throbbing/工具调用中的 CLI 也能"看见" Enter。
+  const echoSeen = lastSeen !== beforeWrite;
+  if (echoSeen) {
+    sessionManager.writeToSession(sid, '\r');
+  } else {
+    console.warn(`[roundtable] zero-echo for ${kind}(${sid.slice(0, 8)}) — sending ${ENTER_RETRY_TRIES}x \\r as belt-and-suspenders submit (prompt already in PTY stdin, MUST commit)`);
+    for (let i = 0; i < ENTER_RETRY_TRIES; i++) {
+      sessionManager.writeToSession(sid, '\r');
+      if (i < ENTER_RETRY_TRIES - 1) {
+        await new Promise(r => setTimeout(r, ENTER_RETRY_GAP_MS));
+      }
+    }
+    // ready 重置：下轮走冷启动重新 align（本轮 prompt 已经尽力提交了）
     sessionManager.setRoundtableReady(sid, false);
-    return false;
   }
 
-  // 第 2 次 write：单独 '\r' 触发提交（独立 write 是 TUI 识别 Enter 而非粘贴 newline 的硬性条件）
-  sessionManager.writeToSession(sid, '\r');
+  // 提交后活性二次确认：再等 500ms 看 PTY 有无新输出。
+  //   有 → 正常被 CLI 接住；无 → 标记 suspect（仅日志，不阻塞 turn-completion-watcher）。
+  //   不在这里 return false：prompt 已发，应让 watcher 走完整流程（含 host-shell 心跳兜底）。
+  await new Promise(r => setTimeout(r, POST_ENTER_VERIFY_MS));
+  const afterEnter = sessionManager.getRoundtableLastActivity(sid);
+  if (afterEnter === lastSeen) {
+    console.warn(`[roundtable] post-Enter still zero-echo for ${kind}(${sid.slice(0, 8)}) — watcher will detect via host-shell heartbeat or 5min hard timeout`);
+  }
   return true;
 }
 

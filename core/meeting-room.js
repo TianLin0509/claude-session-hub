@@ -352,4 +352,36 @@ function isRoundtableCapableMeeting(meeting) {
   return !!(meeting && meeting.scene);
 }
 
-module.exports = { MeetingRoomManager, isRoundtableCapableMeeting, MEETING_MODES };
+// pilot redesign v5（2026-05-02）：判定某 slot 是否参与本轮 dispatch。
+// 与 main.js dispatchRoundtableTurn 的 targetSubs 公式严格对齐 — UI 卡片渲染
+// （renderer/meeting-room.js）和后端 dispatch 路由必须共用同一份真理，避免
+// 出现"卡片显 thinking 但后端没发 prompt"或反向的撕裂。
+//
+// 两轴解耦：
+//   pilotSlot     — 角色标识（红框 / "主驾"三角，与本轮 dispatch 无关）
+//   dispatchMode  — 本轮谁开口：'all' | 'pilot' | 'observer'
+//
+// 规则：
+//   - pilotSlot 未设（null）→ 始终全员参与（dispatchMode 此时被强制视为 'all'）
+//   - dispatchMode='all'    → 全员参与
+//   - dispatchMode='pilot'  → 仅主驾 slot 参与
+//   - dispatchMode='observer' → 排除主驾 slot
+function isSlotParticipatingThisTurn(meeting, slotIndex) {
+  if (!meeting) return true;
+  const pilotSlot = (typeof meeting.pilotSlot === 'number'
+    && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2) ? meeting.pilotSlot : null;
+  const dispatchMode = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
+    ? meeting.dispatchMode : 'all';
+  if (pilotSlot === null) return true;
+  if (dispatchMode === 'all') return true;
+  if (dispatchMode === 'pilot') return slotIndex === pilotSlot;
+  if (dispatchMode === 'observer') return slotIndex !== pilotSlot;
+  return true;
+}
+
+module.exports = {
+  MeetingRoomManager,
+  isRoundtableCapableMeeting,
+  isSlotParticipatingThisTurn,
+  MEETING_MODES,
+};

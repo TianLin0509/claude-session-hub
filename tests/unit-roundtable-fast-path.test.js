@@ -113,11 +113,27 @@ function testMainJsHasFastPathContract() {
   assert.ok(/writeToSession\(sid,\s*['"]\\r['"]\)/.test(fnBody), 'must write \\r in a separate call');
   assert.ok(!/writeToSession\(sid,\s*prompt\s*\+\s*['"]\\r['"]\)/.test(fnBody), 'must NOT merge prompt+\\r into single write (TUI paste-vs-Enter ambiguity)');
 
-  // 兜底必须 fail-safe：活性失败后立即 return false，**不重发 prompt**
+  // 兜底必须 fail-safe：**不重发 prompt**
   // （第一次 write 已把字符送进 PTY stdin，重发会让 CLI 收到 prompt+prompt+\r 双重输入）。
   // 锁住"prompt 在函数体里只 write 一次"的不变式。
   const promptWriteCount = (fnBody.match(/writeToSession\(sid,\s*prompt\)/g) || []).length;
   assert.strictEqual(promptWriteCount, 1, '_rtSendToPty must write prompt exactly once (fail-safe: no resend on activity failure to avoid double-prompt to CLI stdin)');
+
+  // 关键契约（2026-05-02 用户血泪反馈）：零 echo 时 **\r 必须发出去**。
+  //   旧版本错误地在 lastSeen===beforeWrite 时 return false 不发 \r，导致用户的 prompt
+  //   字符已经在 PTY stdin 但 Enter 提交没发出 → 卡在 CLI 输入框需要手按 Enter。
+  //   新契约：echo 正常发 1 次 \r；零 echo 兜底分 ENTER_RETRY_TRIES 次发 \r（间隔 ENTER_RETRY_GAP_MS）。
+  //   多发 \r 安全（输入框有 prompt 时首个 \r 提交，后续落入空输入框被 CLI 忽略），不会污染 prompt 内容。
+  assert.ok(/ENTER_RETRY_TRIES\s*=\s*[2-9]/.test(fnBody),
+    '_rtSendToPty must define ENTER_RETRY_TRIES >= 2 for zero-echo fallback (must commit Enter even when CLI not echoing back)');
+  assert.ok(/ENTER_RETRY_GAP_MS\s*=\s*\d+/.test(fnBody),
+    '_rtSendToPty must define ENTER_RETRY_GAP_MS for spacing fallback Enters');
+  // 锁住"零 echo 时仍 write \r"的代码模式：循环里写 \r
+  assert.ok(/for\s*\([^)]+ENTER_RETRY_TRIES[\s\S]{0,200}?writeToSession\(sid,\s*['"]\\r['"]\)/.test(fnBody),
+    '_rtSendToPty must write \\r in a loop bounded by ENTER_RETRY_TRIES on zero-echo path');
+  // 反向：禁止"零 echo 时 return false 跳过 \r"的旧 bug 模式
+  assert.ok(!/lastSeen\s*===\s*beforeWrite[\s\S]{0,200}return\s+false/.test(fnBody),
+    '_rtSendToPty MUST NOT early-return false on zero-echo (regression guard: prompt already in PTY stdin, \\r MUST be sent — see 2026-05-02 user blood-tear feedback)');
 
   console.log('  ✓ testMainJsHasFastPathContract');
 }
@@ -139,8 +155,9 @@ function testFastPathColdToHotSequence() {
   // 流程级模拟：手工调用三个 API，模拟 _rtSendToPty 的内部状态机走一遍。
   // - 第 1 次：cache miss → setRoundtableReady(true) → 走快路径
   // - 第 2 次：cache hit → 跳过冷启动 → 走快路径
-  // - 第 3 次：活性兜底失败 → setRoundtableReady(false) + return false（fail-safe 不重发，
-  //   避免 prompt+prompt+\r 双重输入；下一轮自动走冷启动恢复）
+  // - 第 3 次：零 echo 兜底 → setRoundtableReady(false) 让下轮重新冷启动；
+  //           **本轮 \r 仍发出去**（2026-05-02 修订：旧版本在零 echo 时 return false 不发 \r，
+  //           导致 prompt 字符已在 PTY stdin 但 Enter 没提交，用户卡在子 session 输入框需手按 Enter）
   // - 第 4 次（恢复）：cache miss → 重新走冷启动 → setRoundtableReady(true)
   const sm = new SessionManager();
   const entry = { info: { id: 'sid-D' }, pty: null, pendingTimers: [], ringBuffer: '', roundtableReady: false, roundtableLastActivity: 0 };
@@ -157,12 +174,12 @@ function testFastPathColdToHotSequence() {
   // 第 3 次：write 前 lastActivity 快照，模拟 PTY 没回 echo（lastActivity 不变）
   entry.roundtableLastActivity = 100;
   const before = sm.getRoundtableLastActivity('sid-D');
-  // ... 模拟"300ms 等待"完成后 ...
+  // ... 模拟"安静期等待"完成后 ...
   const after = sm.getRoundtableLastActivity('sid-D');
   assert.strictEqual(after, before, 'turn 3: no PTY echo → activity unchanged');
-  // 活性兜底 fail-safe：仅重置 ready，调用方收到 false 后 skip
+  // 零 echo 兜底：仅重置 ready 让下轮冷启动重对齐；本轮 \r 仍多发兜底（不在状态机模拟范围）
   sm.setRoundtableReady('sid-D', false);
-  assert.strictEqual(sm.getRoundtableReady('sid-D'), false, 'turn 3 fail-safe: ready reset (no in-place retry / no second prompt write)');
+  assert.strictEqual(sm.getRoundtableReady('sid-D'), false, 'turn 3 zero-echo: ready reset for next-turn cold restart (current turn still commits \\r — see testMainJsHasFastPathContract regression guard)');
 
   // 第 4 次：cache miss 后自动走冷启动恢复
   assert.strictEqual(sm.getRoundtableReady('sid-D'), false, 'turn 4: cache miss again → cold init triggered');

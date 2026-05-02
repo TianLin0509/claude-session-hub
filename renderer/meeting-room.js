@@ -5,6 +5,7 @@
 (function () {
   const { ipcRenderer } = require('electron');
   const _scenes = require('../core/roundtable-scenes.js');
+  const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
 
   let activeMeetingId = null;
   let meetingData = {};
@@ -345,13 +346,15 @@
           preview = partial.text || '';
         }
       } else if (currentMode && currentMode !== 'idle') {
-        // pilot-mode（2026-05-01 用户反馈）：主驾期间副驾不应显示 thinking。
-        //   dispatchTurn 只发给主驾 slot，副驾完全不参与，UI 应保持 idle 或回显上一轮。
-        const meetingPilotSlot = (typeof meeting.pilotSlot === 'number'
-          && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2) ? meeting.pilotSlot : null;
-        const isObserverDuringPilot = meetingPilotSlot !== null && meetingPilotSlot !== slotIndex;
-        if (isObserverDuringPilot) {
-          // 副驾保持上轮显示或 idle，不参与本轮
+        // pilot redesign v5（2026-05-02）：参与名单委托给 core/meeting-room.js
+        //   的 isSlotParticipatingThisTurn 纯函数，与 main.js dispatchRoundtableTurn
+        //   的 targetSubs 公式共用同一份真理。
+        //   v4 旧逻辑只判 "slot != pilotSlot" 当作 observer，造成：
+        //     - 群策群力 + 已选主驾：副驾真在 thinking，卡片错显 idle
+        //     - 副驾发言：主驾错显 thinking，副驾错显 idle（语义完全反了）
+        //   v5：把判定抽到 core/，单测固化；renderer 与后端对齐。
+        if (!isSlotParticipatingThisTurn(meeting, slotIndex)) {
+          // 本轮不参与：保持上轮显示或 idle
           status = lastTurn && lastTurn.by && lastTurn.by[sub.sid] ? 'completed' : 'idle';
           preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
         } else if (currentMode === 'summary' && summarizerKind && summarizerKind !== kind) {
@@ -524,27 +527,24 @@
     if (statusCls === 'manual_extracted') cornerBadge = '<span class="mr-ft-corner-badge manual">手动</span>';
     else if (statusCls === 'absent') cornerBadge = '<span class="mr-ft-corner-badge absent">缺席</span>';
 
-    // Arch refactor 2026-05-02 (Task 5): 逃生按钮常驻。
-    //   等待中（thinking/streaming/soft_alert）或终态（errored/absent）都立即显示
-    //   [一键提取] [跳过] [🔧 进 shell] 三按钮，无 3min 等待门槛。
-    //   "进 shell" 是新增按钮：触发 selectSession(sid) 切到子 session 主区 shell view，
-    //   让用户直接看真实 PTY 输出 / 键入 / kill — 用户卡死时的终极逃生口。
-    //   终态卡片额外加一个"重新拉起"按钮。
-    const isWaitingState = statusCls === 'thinking' || statusCls === 'streaming' || statusCls === 'soft_alert';
+    // 2026-05-02 修订：逃生按钮**永久常驻**（用户血泪反馈：按钮"莫名其妙消失"
+    //   再次发生）。无论卡片状态（idle/completed/thinking/error/...），三大按钮始终
+    //   显示，给用户随时可用的兜底口：
+    //     [一键提取]    — 任何状态都能从 transcript 直读拼接
+    //     [跳过]        — 任何状态都能跳过本轮 / 暂停后续期待
+    //     [🔧 进 shell] — 任何状态都能进子 session 看真实 PTY
+    //   仅 [🔄 重新拉起] 保持仅终态显示（idle 没什么可拉起的，会让用户困惑）。
     const isTerminalErrorState = statusCls === 'errored' || statusCls === 'absent';
-    let escapeBar = '';
-    if (isWaitingState || isTerminalErrorState) {
-      const relaunchBtn = isTerminalErrorState
-        ? `<button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新拉起该家：重发本轮 prompt">🔄 重新拉起</button>`
-        : '';
-      escapeBar = `
+    const relaunchBtn = isTerminalErrorState
+      ? `<button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新拉起该家：重发本轮 prompt">🔄 重新拉起</button>`
+      : '';
+    const escapeBar = `
       <div class="mr-ft-escape-bar">
         <button class="mr-ft-escape-btn" data-rt-escape="extract" data-rt-sid="${sid}" data-rt-kind="${kind}" title="从 transcript 直读拼接（卡死时绕过完成检测）">一键提取</button>
         <button class="mr-ft-escape-btn" data-rt-escape="skip" data-rt-sid="${sid}" data-rt-kind="${kind}" title="本轮跳过这家，下游 prompt 不引用">跳过</button>
         <button class="mr-ft-escape-btn" data-rt-escape="enter-shell" data-rt-sid="${sid}" data-rt-kind="${kind}" title="切换到该家的 shell 主视图，直接查看 PTY 真实输出">🔧 进 shell</button>
         ${relaunchBtn}
       </div>`;
-    }
 
     // T8（2026-05-01）：row3/row4 stats 合并到 row1/row2 末尾（margin-left:auto push to right），
     //   删除 row3/row4 div，让 preview 区多 ~44px 给 markdown 内容。
