@@ -1277,18 +1277,60 @@ ipcMain.handle('roundtable:get-state', (_e, { meetingId }) => {
 
 // 一键提取：从 Gemini JSONL 直接读 sincePromptTs 之后的 content 拼接，
 //   绕过完成检测设为该家本轮答案。仅 Gemini 需要（Claude/Codex 都有可靠 L1）。
+// 2026-05-02 Bug 修复：手动提取扩展到所有 backend（Claude/DeepSeek/GLM/Codex/Gemini）。
+//   旧版本只调 extractLatestGeminiTurn → Claude/DeepSeek/GLM/Codex 永远 null → UI 报"提取失败"
+//   → 用户感觉按钮是假的。新版本走 transcriptTap.extractLatestTurn 统一入口按 backend 路由。
+//
+// 此外移除"必须有 active watcher 才能提取"的硬限制：active watcher 缺失只意味着本轮已 settle，
+// 但 transcript 文件中的 last assistant 仍然有意义（用户想拿当前最新答案 patch 进 lastTurn）。
+// 有 watcher 走 manualExtract（让本轮 settle 走完整流程）；无 watcher 走 patchTurnResult 直接更新 lastTurn。
 ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePromptTs } = {}) => {
-  if (!sid) return { ok: false, reason: 'missing sid' };
-  const watcher = _activeWatchers.get(sid);
-  if (!watcher) return { ok: false, reason: 'not_active', detail: 'no active watcher for this sid (turn may have ended)' };
+  if (!sid) return { ok: false, reason: 'missing_sid' };
+
   let extracted = null;
-  try { extracted = await transcriptTap.extractLatestGeminiTurn(sid, sincePromptTs || 0); }
+  try { extracted = await transcriptTap.extractLatestTurn(sid, sincePromptTs || 0); }
   catch (e) { return { ok: false, reason: 'extract_failed', detail: e.message }; }
   if (!extracted || !extracted.text) {
-    return { ok: false, reason: 'no_content', detail: 'JSONL had no usable type:"gemini" lines after sincePromptTs' };
+    const session = sessionManager.getSession(sid);
+    const kind = session?.kind || 'unknown';
+    return {
+      ok: false,
+      reason: 'no_content',
+      detail: `transcript 中没有可读的 last assistant 内容（kind=${kind}）。可能原因：CLI 还没真正回答 / transcript 路径未绑定 / Stop hook 没触发且 idle-timer 还没到期。建议稍等几秒重试，或点"🔧 进 shell"看真实 PTY 输出。`,
+    };
   }
-  watcher.manualExtract(extracted.text);
-  return { ok: true, text: extracted.text, lineCount: extracted.lineCount, source: extracted.source };
+
+  const watcher = _activeWatchers.get(sid);
+  if (watcher) {
+    // 本轮还在等：让 watcher settle 走 manual_extracted 状态
+    watcher.manualExtract(extracted.text);
+    return { ok: true, text: extracted.text, source: extracted.source, mode: 'watcher_settle' };
+  }
+
+  // 本轮已 settle 但用户仍想刷新卡片 → patch lastTurn
+  if (meetingId) {
+    try {
+      const meeting = meetingManager.getMeeting(meetingId);
+      const sceneObj = meeting ? scenes.getScene(meeting.scene) : null;
+      const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+      const lastTurn = orch.getLastTurn();
+      if (lastTurn) {
+        const patched = orch.patchTurnResult(lastTurn.n, sid, {
+          text: extracted.text,
+          status: 'manual_extracted',
+        });
+        if (patched) {
+          sendToRenderer('roundtable-turn-complete', { meetingId });
+          return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_last_turn' };
+        }
+      }
+    } catch (e) {
+      console.warn('[manual-extract] patch lastTurn failed:', e.message);
+    }
+  }
+
+  // 无 meetingId / 没有 lastTurn → 仍返回提取的文字让 UI 显示
+  return { ok: true, text: extracted.text, source: extracted.source, mode: 'text_only' };
 });
 
 // 跳过本家：watcher settle 为 absent 状态，下游 prompt builder 过滤这家

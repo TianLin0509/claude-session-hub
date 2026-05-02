@@ -847,6 +847,9 @@
         btn.disabled = true;
         const oldText = btn.textContent;
         btn.textContent = '...';
+        // 标记是否已由按钮内部接管 textContent 还原（如 extract 走 1.5s setTimeout），
+        //   finally 看到此 flag 就不再立即覆盖按钮文字。
+        let _btnTextHandledExternally = false;
         try {
           if (action === 'extract') {
             const r = await ipcRenderer.invoke('roundtable-manual-extract', {
@@ -854,9 +857,24 @@
             });
             if (!r || !r.ok) {
               console.warn(`[rt-escape] extract failed: ${r?.reason} (${r?.detail || ''})`);
-              alert(`提取失败：${r?.reason || 'unknown'}\n${r?.detail || ''}`);
+              alert(`提取失败：${r?.reason || 'unknown'}\n\n${r?.detail || ''}`);
             } else {
-              console.log(`[rt-escape] extract ok: ${kind} got ${r.lineCount} lines (${r.text.length} chars)`);
+              // 2026-05-02 Bug 修复：用户视觉反馈。
+              //   旧版本只 console.log → 用户看不到"提取成功"，加上 IPC 永远失败（Bug 2），
+              //   感觉按钮完全是假的。新版本：按钮短暂变绿显示 "✓ 已同步 N 字"，
+              //   1.5s 后恢复；卡片本身会被 sendToRenderer('roundtable-turn-complete') 触发刷新。
+              const charCount = (r.text || '').length;
+              console.log(`[rt-escape] extract ok: ${kind} got ${charCount} chars (mode=${r.mode}, source=${r.source})`);
+              btn.style.background = '#2da44e';
+              btn.style.color = '#fff';
+              btn.textContent = `✓ 已同步 ${charCount}字`;
+              _btnTextHandledExternally = true;
+              setTimeout(() => {
+                btn.style.background = '';
+                btn.style.color = '';
+                btn.textContent = oldText;
+                btn.disabled = false;
+              }, 1500);
             }
           } else if (action === 'skip') {
             const r = await ipcRenderer.invoke('roundtable-skip-participant', { meetingId: meeting.id, sid });
@@ -883,8 +901,10 @@
         } catch (err) {
           console.error(`[rt-escape] ${action} threw:`, err);
         } finally {
-          btn.disabled = false;
-          btn.textContent = oldText;
+          if (!_btnTextHandledExternally) {
+            btn.disabled = false;
+            btn.textContent = oldText;
+          }
         }
       });
     });

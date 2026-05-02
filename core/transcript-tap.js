@@ -123,7 +123,17 @@ class JsonlTail {
 //          后续每条新 assistant message_id 块（thinking / text / tool_use）累积到 _streamingBuf；
 //          getStreamingText / clearStreamingBuf 暴露给上层（main.js _rtExtractStreamingText 优先使用）。
 //   降级：notifyStop 永不被调用 → _streamingBuf 永远空 → main.js 走 PTY 兜底（既有体验，不回归）。
+//
+// 2026-05-02 根治升级（Bug "DeepSeek/GLM 卡片不更新"）：
+//   旧链路：Stop hook 触发 → notifyStop → emit 'turn-complete' → watcher settle
+//   断点：Stop hook 因任何原因没触发（CLI 自我退出 / hook 5s timeout / settings.json 漂移）→ 永不 emit
+//         → watcher 无限等待 → 卡片停在上一轮
+//   根治：JsonlTail.onLine 看到新 assistant 行时启动 5s idle timer，连续 5s 无新行视为本轮答完，
+//         **主动 emit 'turn-complete'**（兜底信号）。Stop hook 仍是快路径：来了立即 emit + 取消 timer。
 const _CLAUDE_STREAM_BUF_MAX_BYTES = 50000;
+// idle 时间：Claude/DeepSeek/GLM 一轮回答平均 10-30s，工具调用穿插时单 chunk 间隔 1-3s。
+//   5s 无新行 → 高置信度本轮已答完。仍嫌慢可后续调小（与 Codex 的 task_complete 3s debounce 对齐）。
+const _CLAUDE_IDLE_EMIT_MS = 5000;
 
 class ClaudeTap extends EventEmitter {
   constructor() {
@@ -138,6 +148,8 @@ class ClaudeTap extends EventEmitter {
         lastText: null,
         _streamingBuf: [],
         _tail: null,
+        _idleTimer: null,
+        _pendingEmitText: null,
       });
     }
   }
@@ -147,12 +159,30 @@ class ClaudeTap extends EventEmitter {
     if (entry?._tail) {
       try { entry._tail.close(); } catch {}
     }
+    if (entry?._idleTimer) {
+      try { clearTimeout(entry._idleTimer); } catch {}
+    }
     this._bound.delete(hubSessionId);
   }
 
   getLastAssistantText(hubSessionId) {
     const e = this._bound.get(hubSessionId);
     return e?.lastText || null;
+  }
+
+  // 2026-05-02 Bug 修复：扩展手动提取支持 Claude/DeepSeek/GLM。
+  //   旧版本仅 GeminiTap 有 extractLatestGeminiTurn → 用户对 Claude/DeepSeek/GLM 卡片点
+  //   "一键提取"永远拿到 null，UI 显"提取失败"——按钮形同虚设。
+  //   新版本：复用 readLastAssistantMessageFromClaudeTranscript 读 transcript 末尾的
+  //   last assistant text。sincePromptTs 暂不过滤（Claude transcript 末尾通常就是本轮，
+  //   误差可接受；后续可加 timestamp 字段过滤）。
+  //   返回 { text, source } 与 GeminiTap 同形；transcriptPath 未知（hook/scan 都未拿到）→ null。
+  async extractLatestTurn(hubSessionId, _sincePromptTs = 0) {
+    const entry = this._bound.get(hubSessionId);
+    if (!entry || !entry.transcriptPath) return null;
+    const text = await readLastAssistantMessageFromClaudeTranscript(entry.transcriptPath);
+    if (!text || !text.trim()) return null;
+    return { text: text.trim(), source: 'manual_claude_transcript' };
   }
 
   getStreamingText(hubSessionId) {
@@ -173,6 +203,7 @@ class ClaudeTap extends EventEmitter {
     if (!this._bound.has(hubSessionId)) {
       this._bound.set(hubSessionId, {
         transcriptPath: null, lastText: null, _streamingBuf: [], _tail: null,
+        _idleTimer: null, _pendingEmitText: null,
       });
     }
     const entry = this._bound.get(hubSessionId);
@@ -209,20 +240,64 @@ class ClaudeTap extends EventEmitter {
             break;
           }
         }
+
+        // 2026-05-02 根治升级：每条新 assistant 行重置 idle timer。
+        //   连续 _CLAUDE_IDLE_EMIT_MS（5s）无新行 → 视为本轮答完，主动 emit 'turn-complete'。
+        //   不再单点依赖 Stop hook（hook 失败 / 超时 / 配置漂移时卡片不再永远停在上一轮）。
+        //   Stop hook 仍优先：来了取消 idle timer 立即 emit（快路径），二者互不冲突。
+        this._scheduleIdleEmit(hubSessionId);
       };
       entry._tail = new JsonlTail(transcriptPath, onLine);
       await entry._tail.start();
     }
 
-    // 既有 last assistant message 读取（保持兼容），让外部调用方仍能拿到完整尾部 text
+    // Stop hook 触发 → 取消 idle timer，走快路径直接读 transcript 末尾立即 emit
+    this._cancelIdleEmit(hubSessionId);
     const text = await readLastAssistantMessageFromClaudeTranscript(transcriptPath);
-    if (text) {
+    if (text && text !== entry.lastText) {
       entry.lastText = text;
       this.emit('turn-complete', {
         hubSessionId,
         text,
         completedAt: Date.now(),
+        signalSource: 'stop_hook',
       });
+    }
+  }
+
+  // 内部：每条新 assistant 行调用一次，重置 idle timer。
+  //   timer 触发时（连续 5s 无新行）从 transcript 末尾读 last assistant 主动 emit。
+  //   防重复：emit 前比对 lastText，相同则不再重复 emit。
+  _scheduleIdleEmit(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    if (!entry) return;
+    if (entry._idleTimer) clearTimeout(entry._idleTimer);
+    entry._idleTimer = setTimeout(async () => {
+      entry._idleTimer = null;
+      if (!entry.transcriptPath) return;
+      try {
+        const text = await readLastAssistantMessageFromClaudeTranscript(entry.transcriptPath);
+        if (!text || !text.trim()) return;
+        if (text === entry.lastText) return; // 已 emit 过相同内容（如 Stop hook 抢先）
+        entry.lastText = text;
+        this.emit('turn-complete', {
+          hubSessionId,
+          text,
+          completedAt: Date.now(),
+          signalSource: 'idle_timer_5s',
+        });
+      } catch (e) {
+        console.warn('[claude-tap] idle-emit read failed:', e.message);
+      }
+    }, _CLAUDE_IDLE_EMIT_MS);
+    entry._idleTimer.unref?.();
+  }
+
+  _cancelIdleEmit(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    if (entry?._idleTimer) {
+      clearTimeout(entry._idleTimer);
+      entry._idleTimer = null;
     }
   }
 }
@@ -351,6 +426,32 @@ class CodexTap extends EventEmitter {
 
   getLastAssistantText(hubSessionId) {
     return this._bound.get(hubSessionId)?.lastText || null;
+  }
+
+  // 2026-05-02 Bug 修复：手动提取支持 Codex（同 ClaudeTap.extractLatestTurn 设计）。
+  //   读 rolloutPath 末尾扫 task_complete 事件，取最近一条 last_agent_message。
+  //   sincePromptTs 暂不过滤（rollout 行有 timestamp，可后续加严）。
+  //   未绑定 rolloutPath（CodexTap scan 还没找到文件）→ null。
+  async extractLatestTurn(hubSessionId, _sincePromptTs = 0) {
+    const entry = this._bound.get(hubSessionId);
+    if (!entry || !entry.rolloutPath) return null;
+    let raw;
+    try { raw = await fs.promises.readFile(entry.rolloutPath, 'utf8'); }
+    catch { return null; }
+    const lines = raw.split('\n');
+    // 从尾向前扫，找最近一条 task_complete.last_agent_message
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+      if (obj?.type !== 'event_msg' || !obj.payload) continue;
+      if (obj.payload.type !== 'task_complete') continue;
+      const text = obj.payload.last_agent_message;
+      if (typeof text !== 'string' || !text.trim()) continue;
+      return { text: text.trim(), source: 'manual_codex_rollout' };
+    }
+    return null;
   }
 
   _ensureWatcher() {
@@ -901,6 +1002,25 @@ class TranscriptTap extends EventEmitter {
   //   transcriptTap.extractLatestGeminiTurn(...) 入口，不必感知 _gemini 子实例。
   async extractLatestGeminiTurn(hubSessionId, sincePromptTs) {
     return this._gemini.extractLatestGeminiTurn(hubSessionId, sincePromptTs);
+  }
+
+  // 2026-05-02 Bug 修复：统一手动提取入口，按 backend 路由。
+  //   Claude/DeepSeek/GLM → ClaudeTap.extractLatestTurn（读 transcript 末 last assistant）
+  //   Codex               → CodexTap.extractLatestTurn（读 rollout 末 task_complete）
+  //   Gemini              → GeminiTap.extractLatestGeminiTurn（既有实现，过滤 sincePromptTs）
+  //   旧 IPC handler 只调 extractLatestGeminiTurn，对 Claude/DeepSeek/GLM/Codex 永远返回 null
+  //   → 用户报告"提取按钮假的"。统一入口后所有 backend 都能真正工作。
+  //   返回 { text, source } 或 null。调用方应顺序尝试三个 backend，因为同一 sid 只在一个里。
+  async extractLatestTurn(hubSessionId, sincePromptTs = 0) {
+    // 三个 backend 的 _bound 互斥（一个 sid 只在一个 tap 里），按概率序尝试
+    let r = null;
+    try { r = await this._claude.extractLatestTurn(hubSessionId, sincePromptTs); } catch {}
+    if (r && r.text) return r;
+    try { r = await this._gemini.extractLatestGeminiTurn(hubSessionId, sincePromptTs); } catch {}
+    if (r && r.text) return r;
+    try { r = await this._codex.extractLatestTurn(hubSessionId, sincePromptTs); } catch {}
+    if (r && r.text) return r;
+    return null;
   }
 
   // Card redesign（2026-05-01）— 最新 token 计数代理。
