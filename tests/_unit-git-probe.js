@@ -88,6 +88,13 @@ function test(name, fn) {
     assert.strictEqual(r[0].branch, null);
   });
 
+  await test('parseWorktreeList: refs/remotes branch falls back to bare slice', () => {
+    const { parseWorktreeList } = require('../core/worktree/git-probe');
+    const input = 'worktree C:/x\nHEAD abc\nbranch refs/remotes/origin/main\n';
+    const r = parseWorktreeList(input);
+    assert.strictEqual(r[0].branch, 'refs/remotes/origin/main');
+  });
+
   const { probeRepo, _resetCacheForTest } = require('../core/worktree/git-probe');
 
   await test('probeRepo: 真仓库返回 isRepo=true 与 branch', async () => {

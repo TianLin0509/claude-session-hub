@@ -52,7 +52,10 @@ function parseWorktreeList(text) {
     } else if (line.startsWith('HEAD ')) {
       if (cur) cur.head = line.slice('HEAD '.length);
     } else if (line.startsWith('branch ')) {
-      if (cur) cur.branch = line.slice('branch refs/heads/'.length);
+      if (cur) {
+        const m = /^branch refs\/heads\/(.+)$/.exec(line);
+        cur.branch = m ? m[1] : line.slice('branch '.length);
+      }
     } else if (line === 'detached') {
       if (cur) cur.branch = null;
     } else if (line === '' && cur) {
