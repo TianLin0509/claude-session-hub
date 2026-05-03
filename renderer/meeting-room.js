@@ -2888,6 +2888,15 @@
       const mid = activeMeetingId;
       const m = meetingData[mid];
       if (!m) return;
+      // free-mode（2026-05-04）：0 人勾选时拒绝发送
+      // CSS readonly 对 contenteditable 无效，必须 JS 二次防御，防 race 导致按钮意外还原
+      if (m.mode === 'free') {
+        const parts = Array.isArray(m.participants) ? m.participants : [];
+        if (parts.length === 0) {
+          alert('请先勾选至少一位发言人');
+          return;
+        }
+      }
       if (!m.scene) {
         const sel = document.getElementById('mr-input-target');
         if (sel) m.sendTarget = sel.value;

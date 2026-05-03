@@ -1402,34 +1402,7 @@
 /* === 投研圆桌 / 通用圆桌：隐藏 3-xterm 终端容器 === */
 .mr-terminals-hidden { display: none !important; }
 
-/* === 模式切换按钮（圆桌 / 投研） === */
-.mr-mode-toggle {
-  display: inline-flex;
-  background: var(--panel-2, #232b3a);
-  border-radius: 8px;
-  padding: 2px;
-  gap: 2px;
-  margin: 0 8px;
-}
-.mr-mode-btn {
-  background: transparent;
-  border: none;
-  color: var(--ink-2, #a0a8b9);
-  padding: 4px 12px;
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  font-weight: 600;
-  transition: background 0.15s, color 0.15s;
-}
-.mr-mode-btn.active {
-  background: var(--accent, #5b8def);
-  color: #fff;
-}
-.mr-mode-btn:hover:not(.active) {
-  background: rgba(91, 141, 239, 0.1);
-  color: var(--ink, #d8dee9);
-}
+/* === 模式切换按钮（圆桌 / 投研）— 样式已移至 Free Mode 块（2026-05-04）=== */
 
 /* ========================================================================
    Stage 2 容错升级（2026-05-01）—— 逃生工具栏 + 角标 + 软提醒 banner
