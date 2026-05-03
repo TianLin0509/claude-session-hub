@@ -120,6 +120,24 @@
       </div>
       <div class="memo-list" id="memo-list"></div>
     </div>
+    <div class="worktree-panel" id="worktree-panel" style="display:none">
+      <div class="wt-header">
+        <div class="wt-header-title">
+          <span class="wt-status-dot" data-status="green"></span>
+          <span class="wt-repo-name" id="wt-repo-name">—</span>
+          <span class="wt-session-count" id="wt-session-count"></span>
+        </div>
+        <div class="wt-header-actions">
+          <button class="wt-refresh-btn" id="wt-refresh-btn" title="刷新">⟳</button>
+          <button class="wt-close-btn" id="wt-close-btn" title="关闭">✕</button>
+        </div>
+      </div>
+      <div class="wt-health" id="wt-health"></div>
+      <div class="wt-section wt-topology" id="wt-topology"></div>
+      <div class="wt-section wt-current" id="wt-current"></div>
+      <div class="wt-section wt-peers" id="wt-peers"></div>
+      <div class="wt-error" id="wt-error" style="display:none"></div>
+    </div>
     <div class="meeting-room-panel" id="meeting-room-panel" style="display:none">
       <div class="mr-header" id="mr-header"></div>
       <!-- Arch refactor 2026-05-02: 圆桌界面去 shell。原 #mr-terminals
@@ -424,5 +442,7 @@
       <ul id="pair-devices"></ul>
     </div>
   </div>
+  <link rel="stylesheet" href="./worktree/worktree-panel.css">
+  <script src="./worktree/worktree-panel.js" defer></script>
 </body>
 </html>
