@@ -20,6 +20,7 @@ const { createUsageFilter } = require('./core/usage-filter.js');
 const transcriptTap = new TranscriptTap();
 const { DeepSummaryService } = require('./core/deep-summary-service.js');
 const scenes = require('./core/roundtable-scenes.js');
+const cliReadyDetector = require('./core/roundtable-cli-ready-detector.js');
 const lindangBridge = require('./core/lindang-bridge.js');
 const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
 const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
@@ -441,10 +442,13 @@ function createWindow() {
   const _pkgVersion = (() => {
     try { return require('./package.json').version || ''; } catch { return ''; }
   })();
+  // 2026-05-03 道雪：标题带 PID，方便桌面同时存在多个 Hub 窗口（生产+测试）时
+  //   一眼区分哪个对应哪个 PID — 调试时不再需要 Get-Process 反查。
+  const _hubTitle = `圆桌：PID ${process.pid}${_pkgVersion ? ` v${_pkgVersion}` : ''}`;
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: `圆桌${_pkgVersion ? ` v${_pkgVersion}` : ''}`,
+    title: _hubTitle,
     backgroundColor: '#0d1117',
     icon: winIcon,
     show: false,
@@ -456,6 +460,9 @@ function createWindow() {
       webviewTag: true,
     },
   });
+  // index.html 的 <title>圆桌</title> 在页面加载完成后会触发 page-title-updated 覆盖
+  // BrowserWindow.title — preventDefault 阻止覆盖，保留带 PID 的标题
+  mainWindow.on('page-title-updated', (e) => { e.preventDefault(); });
 
   if (!winIcon.isEmpty()) {
     mainWindow.setIcon(winIcon);
@@ -509,6 +516,8 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
   }
 
   try { transcriptTap.unregisterSession(sessionId); } catch {}
+  // 圆桌 cli-ready monotonic guard 清理（独立模块，详见 core/roundtable-cli-ready-detector.js）
+  try { cliReadyDetector.cleanup(sessionId); } catch {}
   sendToRenderer('session-closed', { sessionId });
   if (meetingId) {
     const updated = meetingManager.removeSubSession(meetingId, sessionId);
@@ -822,51 +831,14 @@ function _computeDispatchSpec(self, targetSubs, pilotSlot, subSidsRaw, effective
   };
 }
 
-const _RT_READY_MARKERS = {
-  // Claude 启动 buffer 含大量 ANSI/box 字符，文本匹配易失败 → 空 markers 走 buffer 长度兜底
-  claude: [],
-  gemini: ['Type your message', 'YOLO', 'gemini-'],
-  codex: ['gpt-5.5', 'gpt-5.4', 'Context 100%', 'send'],
-  glm: [],
-  // DeepSeek 跑在 claude CLI 上（同 buffer 长度兜底策略）— 让 _rtWaitCliReady 走兜底分支
-  deepseek: [],
-};
-
-// timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）
-//
-// E7 + M2 root cause 修复 (2026-05-03)：
-//   旧版仅用 "buffer ≥ 1500 字节" 判 ready —— Claude/Codex/GLM 启动屏 ANSI/box
-//   字符密集，1.5s 内即可达阈值，但 OAuth 可能还要 5-15s 才完成。被过早判 ready
-//   后，_rtSendToPty write prompt → CLI 还在 OAuth → 吃掉输入 → 用户感知"按钮
-//   不响应预期"。e2e 验证：sleep 60s 后再发就能成功，确认 root cause。
-//
-//   新版策略（双轨）：
-//   - 优先 marker 命中（gemini/codex 文本提示符）→ 即可判 ready
-//   - 兜底"buffer 静默期"：buffer 至少 MIN_BUF_LEN 字节，且连续 STABLE_MS
-//     无新增（TUI 真稳定）→ 才判 ready。Claude/DeepSeek/GLM 走此路径。
-//   优势：不依赖具体 marker 内容（OAuth 完成后字符串可能因版本变），通用判定。
-const _RT_READY_MIN_BUF_LEN = 500;
-const _RT_READY_STABLE_MS = 1500;
-
+// _rtWaitCliReady — 圆桌发送 prompt 前的等待轮询。判定逻辑独立到
+//   core/roundtable-cli-ready-detector.js（marker + buffer 静默双门 + monotonic guard）。
+//   timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）。
 async function _rtWaitCliReady(sid, kind, maxMs = 60000) {
-  const need = _RT_READY_MARKERS[kind] || [];
   const start = Date.now();
-  let lastBufLen = 0;
-  let stableSince = 0;
   while (Date.now() - start < maxMs) {
     const buf = sessionManager.getSessionBuffer(sid) || '';
-    // marker 优先（gemini/codex）
-    if (need.length > 0 && need.some(m => buf.includes(m))) return true;
-    // 静默期判定（claude/deepseek/glm 等空 marker）
-    if (need.length === 0 && buf.length >= _RT_READY_MIN_BUF_LEN) {
-      if (buf.length === lastBufLen) {
-        if (stableSince === 0) stableSince = Date.now();
-        else if (Date.now() - stableSince >= _RT_READY_STABLE_MS) return true;
-      } else {
-        lastBufLen = buf.length;
-        stableSince = 0;
-      }
-    }
+    if (cliReadyDetector.isReady(sid, kind, buf)) return true;
     await new Promise(r => setTimeout(r, 100));
   }
   return false;
@@ -1904,51 +1876,20 @@ ipcMain.handle('marker-status', (_e, sessionId) => {
   return summaryEngine.markerStatus(raw || '', sessionId);
 });
 
-// IF-C1（2026-05-01）— 修复 P0 阻塞 bug B：卡片"创建中"永久卡死。
-//   原 isInitializing 用 markerStatus（检测 summary marker），AI ready 但无人问
-//   过时永远是 'none' → 卡片永远显示"创建中"。本 IPC 复用圆桌发送侧已用的
-//   _RT_READY_MARKERS，按 buffer 长度/marker 判断 CLI 是否真就绪。renderer 每
-//   秒 invoke 一次，缓存到 _cliReadyCache[sid] 驱动 isInitializing 判断。
-//
-// E7 + M2 root cause 修复 (2026-05-03)：
-//   旧"buffer ≥ 500 字节"过松（OAuth 还没完成就判 ready），用户在卡片显示"待命"
-//   后立即发送 → CLI 吃掉 prompt → 没响应。改为"静默期判定"：buffer 至少
-//   500 字节 + 上次 IPC call 后 buffer 长度未变 → ready。renderer 1s poll，
-//   所以两次 call 间 buffer 不增 ≈ TUI 至少稳定 1s。
-const _cliReadyStableState = new Map(); // sid → { lastBufLen, lastChangeTs }
-
+// cli-ready-status IPC handler — 只负责"参数转发到 detector + 透传 roundtableReady 快路径"。
+//   判定逻辑全部在 core/roundtable-cli-ready-detector.js（marker + 静默双门 + monotonic guard）。
+//   renderer 每秒 invoke 一次，缓存到 _cliReadyCache[sid] 驱动卡片"创建中→待命"切换。
 ipcMain.handle('cli-ready-status', (_e, sessionId) => {
   if (!sessionId) return false;
   const session = sessionManager.getSession(sessionId);
   if (!session) return false;
-  // Plan 阶段 2: 优先读 roundtableReady 快路径 (server 端任何路径确认 ready 后立即 surface)
+  // 快路径：server 端任何路径确认 ready 后立即 surface（如 _rtSendToPty 已成功发过 prompt）
   if (sessionManager.getRoundtableReady(sessionId)) {
-    _cliReadyStableState.delete(sessionId); // cleanup (no longer needed)
+    cliReadyDetector.markReady(sessionId);
     return true;
   }
-  const kind = session.kind;
-  // 非 agent 类型（powershell 等）默认 ready，避免误判
-  if (kind === 'powershell' || !_RT_READY_MARKERS[kind]) return true;
-  const need = _RT_READY_MARKERS[kind];
   const buf = sessionManager.getSessionBuffer(sessionId) || '';
-  // marker 命中（gemini/codex）→ 即可 ready
-  if (need.length > 0 && need.some(m => buf.includes(m))) return true;
-  // 空 markers（Claude/GLM/DeepSeek）：静默期判定
-  if (need.length === 0 && buf.length >= _RT_READY_MIN_BUF_LEN) {
-    let st = _cliReadyStableState.get(sessionId);
-    if (!st) {
-      _cliReadyStableState.set(sessionId, { lastBufLen: buf.length, lastChangeTs: Date.now() });
-      return false; // 首次记录，等下次 poll 看是否稳定
-    }
-    if (buf.length === st.lastBufLen) {
-      return (Date.now() - st.lastChangeTs) >= _RT_READY_STABLE_MS;
-    } else {
-      st.lastBufLen = buf.length;
-      st.lastChangeTs = Date.now();
-      return false;
-    }
-  }
-  return false;
+  return cliReadyDetector.isReady(sessionId, session.kind, buf);
 });
 
 ipcMain.handle('get-marker-instruction', () => {
