@@ -383,6 +383,15 @@ class RoundtableOrchestrator {
       timestamp: Date.now(),
       ...meta,
     };
+    // Resend & Auto-Recovery（2026-05-03）：merge active prompt meta 到 record
+    //   promptHeaderBy + sendStatus 长存（小，调试用）；promptBy 节流删除（resend 已不可用）
+    const _activeSlot = this.state._activePrompts && this.state._activePrompts[turnNum];
+    if (_activeSlot) {
+      record.promptHeaderBy = _activeSlot.promptHeaderBy || {};
+      record.sendStatus = _activeSlot.sendStatus || {};
+      delete this.state._activePrompts[turnNum];
+    }
+
     this.state.turns.push(record);
     this.state.currentMode = 'idle';
     delete this.state.currentSummarizerSlot;
@@ -433,6 +442,9 @@ class RoundtableOrchestrator {
       this.state.currentTurn -= 1;
       this.state.currentMode = 'idle';
       delete this.state.currentSummarizerSlot;
+      if (this.state._activePrompts) {
+        delete this.state._activePrompts[turnNum];
+      }
       this._saveState();
     }
   }
@@ -477,6 +489,37 @@ class RoundtableOrchestrator {
     this._saveState();
     this._saveTurnFile(record);
     return JSON.parse(JSON.stringify(record));
+  }
+
+  // ============================================================================
+  // Resend & Auto-Recovery（2026-05-03）— prompt 元数据 API
+  // ============================================================================
+  // 设计：dispatch 前 recordTurnPrompt 把当前轮 prompt 落到 _activePrompts，
+  //   resendCurrentPrompt 时从这里取；completeTurn/rollbackTurn 节流删 promptBy
+  //   只保留 promptHeaderBy（指纹）+ sendStatus（调试）到 turn record 长存。
+  //   节流策略详见 docs/superpowers/specs/2026-05-03-roundtable-resend-and-auto-recovery-design.md
+
+  recordTurnPrompt(turnNum, sid, prompt) {
+    if (!this.state._activePrompts) this.state._activePrompts = {};
+    if (!this.state._activePrompts[turnNum]) {
+      this.state._activePrompts[turnNum] = { promptBy: {}, promptHeaderBy: {}, sendStatus: {} };
+    }
+    const slot = this.state._activePrompts[turnNum];
+    slot.promptBy[sid] = String(prompt || '');
+    slot.promptHeaderBy[sid] = String(prompt || '').split('\n')[0] || '';
+    this._saveState();
+  }
+
+  setSendStatus(turnNum, sid, status) {
+    if (!this.state._activePrompts) return;
+    if (!this.state._activePrompts[turnNum]) return;
+    this.state._activePrompts[turnNum].sendStatus[sid] = status;
+    this._saveState();
+  }
+
+  getActivePrompt(turnNum) {
+    if (!this.state._activePrompts) return null;
+    return this.state._activePrompts[turnNum] || null;
   }
 }
 
