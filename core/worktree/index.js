@@ -25,7 +25,12 @@ async function getPanelData({ activeSessionId, allSessions, force = false }) {
     const p = await probeRepo(s.cwd, { force });
     return { ...p, sessionId: s.sessionId, sessionLabel: s.sessionLabel };
   }));
-  const peers = peerProbes.filter(p => p.isRepo && p.repoRoot === activeFull.repoRoot);
+  const activeRootKey = String(activeFull.repoRoot || '').replace(/\\/g, '/').toLowerCase();
+  const peers = peerProbes.filter(p => {
+    if (!p.isRepo) return false;
+    const pKey = String(p.repoRoot || '').replace(/\\/g, '/').toLowerCase();
+    return pKey === activeRootKey;
+  });
 
   const worktreeList = activeFull.isRepo ? await listWorktrees(activeFull.repoRoot) : [];
   const conflict = classify(activeFull, peers);
