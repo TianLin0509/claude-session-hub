@@ -27,6 +27,8 @@ const {
   SOFT_ALERT_T2_MS: DEFAULT_T2_MS,
 } = require('./roundtable-orchestrator.js');
 
+const PATCH_WINDOW_MS = 300_000;  // 5 分钟（spec 2026-05-03）
+
 function createTurnCompletionWatcher(opts) {
   const {
     transcriptTap,
@@ -38,6 +40,8 @@ function createTurnCompletionWatcher(opts) {
     // P1 占位：接入 PTY 退出事件作为 L2 信号源。watcher 不主动监听进程，
     //   由调用方在 PTY exit 时调 watcher 的 markProcessExit() 钩子。
     onProcessExit = null, // eslint-disable-line no-unused-vars
+    onTurnPatched = null,                   // 新增（2026-05-03）
+    patchWindowMs = PATCH_WINDOW_MS,        // 新增（测试可注入更短的窗口）
   } = opts || {};
 
   if (!transcriptTap) throw new Error('createTurnCompletionWatcher: transcriptTap required');
@@ -50,6 +54,12 @@ function createTurnCompletionWatcher(opts) {
   let onTurnComplete = null;
   let onTurnError = null;
 
+  // patch-after-settle 状态（2026-05-03）
+  let patchListener = null;
+  let patchWindowTimer = null;
+  let settledText = '';
+  let patchCancelled = false;
+
   const cleanup = () => {
     if (t1Timer) { clearTimeout(t1Timer); t1Timer = null; }
     if (t2Timer) { clearTimeout(t2Timer); t2Timer = null; }
@@ -57,10 +67,31 @@ function createTurnCompletionWatcher(opts) {
     if (onTurnError) { transcriptTap.removeListener('turn-error', onTurnError); onTurnError = null; }
   };
 
+  const _cleanupPatch = () => {
+    if (patchListener) { transcriptTap.removeListener('turn-complete', patchListener); patchListener = null; }
+    if (patchWindowTimer) { clearTimeout(patchWindowTimer); patchWindowTimer = null; }
+  };
+
   const settle = (result) => {
     if (settled) return;
     settled = true;
     cleanup();
+    settledText = result.text || '';
+    // 仅 completed 状态才挂 patch listener（manual_extracted/absent/errored 没必要 patch）
+    if (result.status === 'completed' && onTurnPatched && !patchCancelled) {
+      patchListener = (evt) => {
+        if (evt.hubSessionId !== hubSessionId) return;
+        if (evt.signalSource !== 'stop_reason_terminal' && evt.signalSource !== 'stop_hook') return;
+        if (!evt.text || evt.text === settledText) return;
+        if (evt.text.length <= settledText.length) return;
+        try { onTurnPatched({ sid: hubSessionId, label, text: evt.text, status: 'completed' }); }
+        catch (e) { console.warn('[watcher] onTurnPatched threw:', e && e.message); }
+        settledText = evt.text;  // 更新基线，可能还有 M3
+      };
+      transcriptTap.on('turn-complete', patchListener);
+      patchWindowTimer = setTimeout(_cleanupPatch, patchWindowMs);
+      if (patchWindowTimer.unref) patchWindowTimer.unref();
+    }
     if (resolveFn) resolveFn(result);
   };
 
@@ -177,6 +208,11 @@ function createTurnCompletionWatcher(opts) {
     },
 
     isSettled() { return settled; },
+
+    cancelPatch() {
+      patchCancelled = true;
+      _cleanupPatch();
+    },
   };
 }
 
