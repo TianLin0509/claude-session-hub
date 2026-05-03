@@ -92,17 +92,97 @@
   // markdown 渲染（用项目已有的 marked + DOMPurify）
   let _markedCache = null;
   let _domPurifyCache = null;
+
+  // 卡片优化（2026-05-03 道雪）：与 renderer.js 的 ABS_PATH_RE 同源 — 绝对路径
+  //   (Windows C:\... / UNC \\server\... / ~ 起始)，扩展名 1-8 ASCII。圆桌卡片
+  //   场景下 AI 输出多绝对路径；相对路径需 cwd 上下文，本卡片层不易拿到，先不做。
+  const _ABS_PATH_RE = /(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/])(?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
+
+  // marked 渲染后扫描所有非 <code>/<pre> 文本节点的绝对路径，包成
+  // <a class="rt-file-link" data-path="..."> 让用户点击进 hub 内置 preview 面板。
+  // 不在 <code>/<pre> 里替换，避免破坏代码块内的路径展示语义。
+  function _wrapFilePathsInDom(rootEl) {
+    const SKIP_TAGS = new Set(['CODE', 'PRE', 'A', 'SCRIPT', 'STYLE']);
+    const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        let p = node.parentNode;
+        while (p && p !== rootEl) {
+          if (p.nodeType === 1 && SKIP_TAGS.has(p.tagName)) return NodeFilter.FILTER_REJECT;
+          p = p.parentNode;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const targets = [];
+    let n;
+    while ((n = walker.nextNode())) {
+      _ABS_PATH_RE.lastIndex = 0;
+      if (_ABS_PATH_RE.test(n.nodeValue || '')) targets.push(n);
+    }
+    for (const node of targets) {
+      const text = node.nodeValue;
+      _ABS_PATH_RE.lastIndex = 0;
+      const frag = document.createDocumentFragment();
+      let last = 0;
+      let m;
+      while ((m = _ABS_PATH_RE.exec(text)) !== null) {
+        const start = m.index;
+        const end = start + m[0].length;
+        if (start > last) frag.appendChild(document.createTextNode(text.slice(last, start)));
+        const a = document.createElement('a');
+        a.className = 'rt-file-link';
+        a.setAttribute('data-path', m[0]);
+        a.title = m[0];
+        a.textContent = m[0];
+        frag.appendChild(a);
+        last = end;
+      }
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    }
+  }
+
   function _renderMarkdown(text) {
     if (!text) return '';
     try {
       if (!_markedCache) _markedCache = require('marked').marked;
       if (!_domPurifyCache) _domPurifyCache = require('dompurify');
-      return _domPurifyCache.sanitize(_markedCache.parse(text, { breaks: true, gfm: true }));
+      const sanitized = _domPurifyCache.sanitize(
+        _markedCache.parse(text, { breaks: true, gfm: true }),
+        { ADD_ATTR: ['data-path'] }
+      );
+      // 后处理：扫文件路径包 <a class="rt-file-link"> 让用户点开预览（卡片优化 2026-05-03）。
+      //   注意必须在 sanitize 之后做，因为我们新增的 <a> 元素文本来自 sanitize 后的 textContent
+      //   （已 escape），data-path 也是从同一字符串复制，无注入风险。
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = sanitized;
+      _wrapFilePathsInDom(wrapper);
+      return wrapper.innerHTML;
     } catch (e) {
       // 回退到纯文本（escapeHtml）
       return escapeHtml(text).replace(/\n/g, '<br>');
     }
   }
+
+  // 卡片优化（2026-05-03 道雪）：路径链接 click 全局委托。
+  //   meeting-room.js IIFE 内 setup 一次（IIFE 只运行一次，幂等）。捕获阶段
+  //   先于 marked HTML 内任何 a 元素的默认行为，让 .rt-file-link 路由到 hub
+  //   内置 preview 面板（renderer.js 全局函数 openPreviewPanel）。
+  document.addEventListener('click', (e) => {
+    const a = e.target && e.target.closest && e.target.closest('a.rt-file-link');
+    if (!a) return;
+    const path = a.getAttribute('data-path');
+    if (!path) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof openPreviewPanel === 'function') {
+      openPreviewPanel(path);
+    } else if (typeof window !== 'undefined' && typeof window.openPreviewPanel === 'function') {
+      window.openPreviewPanel(path);
+    } else {
+      console.warn('[mr] openPreviewPanel not found, cannot preview:', path);
+    }
+  }, true);
 
   // T7（2026-05-01）：preview blocks 结构化渲染 helper —
   //   transcript-tap 现在直供 { type:'thinking'|'text'|'tool_use', ... } 块数组
@@ -2507,8 +2587,14 @@
     // 但 textContent 擦除只在首次（_inputBound=false）做——避免每次重渲染擦掉
     // 用户已输入但还没发送的内容（P1 体验断裂 bug A）。
     inputBox.dataset.placeholder = meeting.scene
-      ? '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who> / @<who> 单聊'
+      ? '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<slot> / @<slot> 单聊'
       : '输入消息...';
+
+    // 卡片优化（2026-05-03 道雪）：粘贴图片支持。绑一次（idempotent guard 在 helper 内）。
+    //   helper 由 renderer.js 暴露为 window.attachContenteditablePasteImage（先于 meeting-room.js 加载）。
+    if (typeof window.attachContenteditablePasteImage === 'function') {
+      window.attachContenteditablePasteImage(inputBox);
+    }
 
     // 两模式(通用/投研)统一隐藏目标选择(路由由 fanout/debate/summary/private/@command 决定)。
     if (targetSelect) {

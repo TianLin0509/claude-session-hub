@@ -620,6 +620,29 @@
 .mr-ft-md {
   font-size: 12.5px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+/* 卡片优化（2026-05-03 道雪）：mr-ft-md（fused tab 当前轮卡片）补齐 markdown 元素样式。
+   原本只有字号/行高，<table>/<th>/<td>/<pre>/<code> 没 CSS → 浏览器默认样式渲染表格无边框，
+   用户感觉"表格散了"。与 .mr-rt-tl-body（圆桌历史区）保持视觉一致。 */
+.mr-ft-md p { margin: .4em 0; }
+.mr-ft-md h1, .mr-ft-md h2, .mr-ft-md h3 { margin: .7em 0 .25em; }
+.mr-ft-md ul, .mr-ft-md ol { margin: .4em 0; padding-left: 1.5em; }
+.mr-ft-md li { margin: .15em 0; }
+.mr-ft-md code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 3px; font-size: 11.5px; }
+.mr-ft-md pre { background: #0d1117; padding: 8px 10px; border-radius: 5px; overflow-x: auto; margin: .5em 0; }
+.mr-ft-md pre code { background: transparent; padding: 0; }
+.mr-ft-md table { border-collapse: collapse; margin: .5em 0; }
+.mr-ft-md th, .mr-ft-md td { border: 1px solid #30363d; padding: 3px 7px; }
+.mr-ft-md th { background: rgba(255,255,255,.04); font-weight: 600; }
+/* 文件路径链接（marked HTML 后处理识别 .html/.md/.csv 等路径并包 <a class="rt-file-link">）。
+   悬停下划线 + 鼠标手型；click 走委托调 openPreviewPanel。 */
+.mr-ft-md a.rt-file-link, .mr-rt-tl-body a.rt-file-link {
+  color: #79c0ff; cursor: pointer; text-decoration: none;
+  border-bottom: 1px dashed transparent; transition: border-color .15s;
+}
+.mr-ft-md a.rt-file-link:hover, .mr-rt-tl-body a.rt-file-link:hover {
+  border-bottom-color: #79c0ff;
 }
 
 /* Card redesign：bottom 区（flex:1 撑满，含 preview / progress / escape-bar / corner-badge） */

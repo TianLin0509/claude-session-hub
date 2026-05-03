@@ -170,6 +170,48 @@ async function handlePasteForSession(sessionId) {
   if (text) cached.terminal.paste(text);
 }
 
+// 卡片优化（2026-05-03 道雪）：自定义输入框（contenteditable div）粘贴图片支持。
+//   xterm 的 paste handler 不能用（xterm.paste 是 xterm-only API）。这里给
+//   普通 session 浮动输入框 / 圆桌输入框等 contenteditable 元素用：
+//   1. 监听 'paste' 事件（contenteditable 默认会 fire，与 xterm 不同）
+//   2. 检测剪贴板有图片 → 调 save-clipboard-image IPC 拿绝对路径
+//   3. 用 execCommand('insertText', path) 在 caret 位置插入路径文字
+//      （execCommand 比 selection.insertNode 更稳：自动处理 caret/undo stack/IME）
+//   4. 文本粘贴走浏览器默认（不 preventDefault）
+// 暴露为 window.attachContenteditablePasteImage 供 meeting-room.js IIFE 使用。
+function attachContenteditablePasteImage(inputEl) {
+  if (!inputEl || inputEl.dataset.imgPasteBound === '1') return;
+  inputEl.dataset.imgPasteBound = '1';
+  inputEl.addEventListener('paste', async (e) => {
+    // 优先看事件携带的 clipboardData（同步），其次 fallback 到 Electron clipboard
+    const cd = e.clipboardData;
+    let hasImage = false;
+    if (cd && cd.items) {
+      for (const it of cd.items) {
+        if (it.kind === 'file' && /^image\//.test(it.type)) { hasImage = true; break; }
+      }
+    }
+    if (!hasImage) {
+      const img = clipboard.readImage();
+      if (img && !img.isEmpty()) hasImage = true;
+    }
+    if (!hasImage) return; // 纯文本粘贴走浏览器默认
+    e.preventDefault();
+    try {
+      const filePath = await ipcRenderer.invoke('save-clipboard-image');
+      if (!filePath) return;
+      // 在 caret 位置插入路径文本（保持 selection / 维护 undo stack）
+      // execCommand 在 contenteditable 里仍然可用（虽然标记 deprecated，浏览器仍支持
+      // 且对 Electron renderer 是稳定 API，与 xterm.paste 等价语义）
+      document.execCommand('insertText', false, filePath);
+      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+    } catch (err) {
+      console.warn('[paste-image] save-clipboard-image failed:', err && err.message);
+    }
+  });
+}
+if (typeof window !== 'undefined') window.attachContenteditablePasteImage = attachContenteditablePasteImage;
+
 // --- Image hover preview tooltip ---
 const previewTooltip = document.createElement('div');
 previewTooltip.className = 'image-preview-tooltip';
@@ -1523,6 +1565,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       terminal.focus();
     }
   });
+
+  // 卡片优化（2026-05-03）：粘贴图片到浮动输入框 → save-clipboard-image
+  //   IPC 取得绝对路径 → execCommand('insertText') 插入到 caret 位置。
+  //   语义与 xterm 的 handlePasteForSession 一致（用户粘图后路径文字流到 PTY）。
+  attachContenteditablePasteImage(inputBox);
 
   sendBtn.addEventListener('click', (e) => {
     e.stopPropagation();
