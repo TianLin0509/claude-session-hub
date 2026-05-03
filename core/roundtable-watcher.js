@@ -234,8 +234,9 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing }) 
   const { sessionManager } = _deps;
   if (!prompt) return { ok: false, reason: 'no_prompt' };
   const buf = sessionManager.getSessionBuffer(sid) || '';
-  // 取末尾 4096 字（足够覆盖一屏 + 输入框，超出此长度的 prompt 头部就算 paste-mode 占位）
-  const tail = buf.slice(-4096);
+  // 仅取最近 ~1024 字符（约一屏 PTY 输出，覆盖 CLI 输入框；
+  //   太大会包含上一轮 Claude 回答里复述的 promptHeader → 误判 enter_only 发空 \r）
+  const tail = buf.slice(-1024);
   const inInputBox = !!(promptHeader && promptHeader.length > 0 && tail.includes(promptHeader));
 
   const before = sessionManager.getRoundtableLastActivity(sid);

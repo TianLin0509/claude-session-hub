@@ -123,5 +123,18 @@ console.log('Running roundtable-watcher resend tests...');
     assert.strictEqual(r.mode, 'rewrite_full');
   });
 
+  await test('resendCurrentPrompt verify 失败 → ok=false reason=verify_failed', async () => {
+    const sm = makeFakeSm(100, { mockSilent: true, bufferText: 'whatever' });
+    rtWatcher.init({ sessionManager: sm, cliReadyDetector: { isReady: () => true } });
+    const r = await rtWatcher.resendCurrentPrompt({
+      sid: 'sid-A', kind: 'claude',
+      prompt: 'hi',
+      promptHeader: 'hdr',
+      timing: { ENTER_RETRY_GAP_MS: 10, POST_ENTER_VERIFY_MS: 30 },
+    });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.reason, 'verify_failed');
+  });
+
   console.log('\n✓ roundtable-watcher resend: tests done\n');
 })();
