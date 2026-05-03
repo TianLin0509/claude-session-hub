@@ -2309,8 +2309,32 @@
       const dispatchObserverTitle = _pilotObsHint || '副驾发言：本轮 prompt 仅发给副驾两家';
       const dispatchAllDisabled = inProgress ? 'disabled' : '';
 
-      // debate: 'pilot' 模式下一家无法辩论 → disable
-      const debateDisabled = (turns < 1 || inProgress || dispatchMode === 'pilot') ? 'disabled' : '';
+      // T6：mode toggle segmented control（必须在 debateDisabled 之前，因为 debateDisabled 依赖 meetingMode）
+      const meetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'pilot';
+
+      // debate: free 模式需 >=2 人；pilot 模式下一家无法辩论 → disable
+      const debateDisabled = (() => {
+        if (turns < 1 || inProgress) return 'disabled';
+        if (meetingMode === 'free') {
+          const parts = Array.isArray(meeting.participants) ? meeting.participants : [];
+          return parts.length < 2 ? 'disabled' : '';
+        }
+        // pilot 模式：原条件
+        return dispatchMode === 'pilot' ? 'disabled' : '';
+      })();
+
+      const debateBtnTitle = (() => {
+        if (turns < 1) return '至少完成 1 轮 fanout 才能辩论';
+        if (inProgress) return '上一轮还在跑，请等结束';
+        if (meetingMode === 'free') {
+          const parts = Array.isArray(meeting.participants) ? meeting.participants : [];
+          if (parts.length < 2) return '勾选至少 2 位才能辩论';
+          return '让目标范围内的 AI 结合彼此观点重新发言';
+        }
+        if (dispatchMode === 'pilot') return '主驾发言模式下一家无法辩论';
+        return '让目标范围内的 AI 结合彼此观点重新发言';
+      })();
+
       const summaryDisabled = inProgress ? 'disabled' : '';
       const summaryPickDisabled = inProgress ? 'disabled' : '';
       // 方案 F · M3.4：摘要按钮 disable 规则
@@ -2326,15 +2350,28 @@
       const pilotBtnLabel = pilotOn ? `${slotPokemon[pilotSlot]}` : '未选';
       const pilotBtnCls = pilotOn ? 'mr-rt-tb-btn pilot active' : 'mr-rt-tb-btn pilot';
 
-      // 状态行（toolbar 顶部一行小字，文字冗余兜底）
-      const dispatchModeLabel = { all: '群策群力', pilot: '主驾发言', observer: '副驾发言' }[dispatchMode];
-      const pilotLabel = pilotOn ? `Slot ${pilotSlot + 1}` : '未选';
-      const statusLine = `<div class="mr-status-line">分发: <strong>${dispatchModeLabel}</strong> · 主驾: <strong>${pilotLabel}</strong>${
-        inProgress ? ' · <strong>⏳ 处理中</strong>' : (turns > 0 ? ` · 已 ${turns} 轮` : '')
-      }</div>`;
-
-      // T6：mode toggle segmented control
-      const meetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'pilot';
+      // 状态行（toolbar 顶部一行小字，文字冗余兜底）—— T7: free/pilot 分支
+      let statusLine;
+      if (meetingMode === 'free') {
+        const parts = Array.isArray(meeting.participants) ? meeting.participants : [];
+        const SLOT_NAMES_S = ['⚡Pikachu', '🔥Charmander', '💎Squirtle'];
+        let speakerStr;
+        if (parts.length === 0) {
+          speakerStr = '<strong style="color:#f85149">⚠ 请勾选至少一位发言人</strong>';
+        } else {
+          speakerStr = '发言人: <strong>' + parts.map(i => SLOT_NAMES_S[i]).join(', ') + '</strong>';
+        }
+        statusLine = `<div class="mr-status-line">分发: <strong>自由</strong> · ${speakerStr}${
+          inProgress ? ' · <strong>⏳ 处理中</strong>' : (turns > 0 ? ` · 已 ${turns} 轮` : '')
+        }</div>`;
+      } else {
+        // pilot 路径：原状态行不动
+        const dispatchModeLabel = { all: '群策群力', pilot: '主驾发言', observer: '副驾发言' }[dispatchMode];
+        const pilotLabel = pilotOn ? `Slot ${pilotSlot + 1}` : '未选';
+        statusLine = `<div class="mr-status-line">分发: <strong>${dispatchModeLabel}</strong> · 主驾: <strong>${pilotLabel}</strong>${
+          inProgress ? ' · <strong>⏳ 处理中</strong>' : (turns > 0 ? ` · 已 ${turns} 轮` : '')
+        }</div>`;
+      }
       const modeToggleDisabled = inProgress ? 'disabled' : '';
       const modeToggleHtml = `
         <div class="mr-mode-toggle" role="group" aria-label="圆桌模式">
@@ -2394,7 +2431,7 @@
         <div class="mr-rt-toolbar">
           ${dispatchAreaHtml}
           <span class="mr-rt-tb-divider"></span>
-          <button class="mr-rt-tb-btn" id="mr-rt-debate-btn" ${debateDisabled} title="让目标范围内的 AI 结合彼此观点重新发言（基于上一轮）">🗣 辩论</button>
+          <button class="mr-rt-tb-btn" id="mr-rt-debate-btn" ${debateDisabled} title="${debateBtnTitle}">🗣 辩论</button>
           <button class="mr-rt-tb-btn" id="mr-rt-brief-summary-btn" ${briefSummaryDisabled} title="让上一轮发言者按五元组浓缩自己最近一段（典型场景:主驾深聊后切副驾审查前）">🗒 摘要</button>
           <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${summaryDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结</button>
           <label class="mr-rt-tb-pick">
@@ -2775,9 +2812,27 @@
     // IF-C2（2026-05-01）：placeholder 每次都更新（meeting 切换时场景可能变）；
     // 但 textContent 擦除只在首次（_inputBound=false）做——避免每次重渲染擦掉
     // 用户已输入但还没发送的内容（P1 体验断裂 bug A）。
-    inputBox.dataset.placeholder = meeting.scene
-      ? '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<slot> / @<slot> 单聊'
-      : '输入消息...';
+    // T7: free 模式 0 人勾选时灰态保护
+    const _curMeetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'pilot';
+    const isFreeZeroSelected = (_curMeetingMode === 'free') &&
+      (Array.isArray(meeting.participants) && meeting.participants.length === 0);
+    if (meeting.scene) {
+      inputBox.dataset.placeholder = isFreeZeroSelected
+        ? '请先勾选至少一位发言人'
+        : '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<slot> / @<slot> 单聊';
+    } else {
+      inputBox.dataset.placeholder = '输入消息...';
+    }
+    // 灰态：readonly + class 切换
+    if (isFreeZeroSelected) {
+      inputBox.setAttribute('readonly', '');
+      inputBox.classList.add('mr-rt-input-disabled');
+      sendBtn.disabled = true;
+    } else {
+      inputBox.removeAttribute('readonly');
+      inputBox.classList.remove('mr-rt-input-disabled');
+      sendBtn.disabled = false;
+    }
 
     // 卡片优化（2026-05-03 道雪）：粘贴图片支持。绑一次（idempotent guard 在 helper 内）。
     //   helper 由 renderer.js 暴露为 window.attachContenteditablePasteImage（先于 meeting-room.js 加载）。

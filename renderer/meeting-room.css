@@ -1879,3 +1879,103 @@
   color: var(--ink, #e6edf3);
   font-weight: 600;
 }
+
+/* ============================================================
+   Free Mode (2026-05-04) — 圆桌自由模式样式
+   ============================================================ */
+
+/* mode toggle segmented control（顶部） */
+.mr-mode-toggle {
+  display: inline-flex;
+  gap: 4px;
+  margin: 8px 0 4px 0;
+  padding: 3px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.mr-mode-toggle-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: transparent;
+  border: none;
+  color: #c9d1d9;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all .15s;
+}
+.mr-mode-toggle-btn:hover:not([disabled]) {
+  background: rgba(255,255,255,0.06);
+}
+.mr-mode-toggle-btn.active {
+  background: #1f6feb;
+  color: white;
+  font-weight: 600;
+}
+.mr-mode-toggle-btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* free 模式头像勾选区 */
+.mr-free-participants {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.mr-free-participants-title {
+  font-size: 12px;
+  color: #8b949e;
+  margin-right: 4px;
+  user-select: none;
+}
+.mr-free-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 4px;
+  border: 1.5px solid transparent;
+  cursor: pointer;
+  opacity: 0.4;
+  transition: all .15s;
+}
+.mr-free-slot.checked {
+  opacity: 1;
+  border-color: #1f6feb;
+  background: rgba(31,111,235,0.08);
+}
+.mr-free-slot:hover:not(.disabled) {
+  background: rgba(255,255,255,0.06);
+}
+.mr-free-slot.disabled {
+  cursor: not-allowed;
+  opacity: 0.3 !important;
+}
+.mr-free-slot-cb {
+  margin: 0;
+  cursor: pointer;
+}
+.mr-free-slot img {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.mr-free-slot-label {
+  font-size: 12px;
+  color: #c9d1d9;
+  user-select: none;
+}
+
+/* 输入框 0 人灰态 */
+.mr-rt-input.mr-rt-input-disabled {
+  background: rgba(255,255,255,0.02);
+  color: #6e7681;
+  cursor: not-allowed;
+}
