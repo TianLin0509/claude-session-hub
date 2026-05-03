@@ -74,8 +74,17 @@ const SLOT_DISPLAY = {
 };
 
 function _slotLabel(slotIdOrIdx) {
-  const id = typeof slotIdOrIdx === 'number' ? SLOT_IDS[slotIdOrIdx] : slotIdOrIdx;
-  const d = SLOT_DISPLAY[id];
+  let id;
+  if (typeof slotIdOrIdx === 'number') {
+    id = SLOT_IDS[slotIdOrIdx];
+  } else if (typeof slotIdOrIdx === 'string') {
+    // 接受数字字符串（如 "0"）和 slot id 字符串（如 "pikachu"）
+    const asNum = Number(slotIdOrIdx);
+    id = (Number.isInteger(asNum) && asNum >= 0 && asNum <= 2)
+      ? SLOT_IDS[asNum]
+      : slotIdOrIdx;
+  }
+  const d = id && SLOT_DISPLAY[id];
   return d ? `${d.icon} ${d.en}` : 'AI';
 }
 
@@ -101,10 +110,11 @@ function _renderInjection(inj) {
 }
 
 function buildFreeFanoutPrompt({ meeting, selfSlot, participants, userInput, lastTurnInjection, turnNum }) {
+  const n = (typeof turnNum === 'number' && turnNum > 0) ? turnNum : '?';
   const selfLabel = _slotLabel(selfSlot);
   const partList = _formatParticipantList(participants);
   const lines = [
-    `# 自由模式 第 ${turnNum} 轮 fanout — 你是 ${selfLabel}`,
+    `# 自由模式 第 ${n} 轮 fanout — 你是 ${selfLabel}`,
     '',
     '[本轮上下文]',
     `- 模式：自由模式 · fanout`,
@@ -119,10 +129,11 @@ function buildFreeFanoutPrompt({ meeting, selfSlot, participants, userInput, las
 }
 
 function buildFreeDebatePrompt({ meeting, selfSlot, participants, userInput, lastTurnInjection, turnNum }) {
+  const n = (typeof turnNum === 'number' && turnNum > 0) ? turnNum : '?';
   const selfLabel = _slotLabel(selfSlot);
   const partList = _formatParticipantList(participants);
   const lines = [
-    `# 自由模式 第 ${turnNum} 轮 debate — 你是 ${selfLabel}`,
+    `# 自由模式 第 ${n} 轮 debate — 你是 ${selfLabel}`,
     '',
     '[本轮上下文]',
     `- 模式：自由模式 · 辩论`,
@@ -137,9 +148,10 @@ function buildFreeDebatePrompt({ meeting, selfSlot, participants, userInput, las
 }
 
 function buildFreeSummaryPrompt({ meeting, summarizerSlot, userInput, lastTurnInjection, turnNum }) {
+  const n = (typeof turnNum === 'number' && turnNum > 0) ? turnNum : '?';
   const selfLabel = _slotLabel(summarizerSlot);
   const lines = [
-    `# 自由模式 第 ${turnNum} 轮 summary — 你是 ${selfLabel}`,
+    `# 自由模式 第 ${n} 轮 summary — 你是 ${selfLabel}`,
     '',
     '[本轮上下文]',
     `- 模式：自由模式 · 总结`,

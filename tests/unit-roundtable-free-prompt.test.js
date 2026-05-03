@@ -140,6 +140,50 @@ function testInjectionIsRendered() {
   assert.ok(p.includes('Pikachu'), 'injection speaker label rendered');
 }
 
+function testFanoutTurnNumZeroFallback() {
+  // 边界防御：turnNum=0 应 fallback 为 '?'，不出现 "第 0 轮"
+  const p = free.buildFreeFanoutPrompt({
+    meeting: baseMeeting,
+    selfSlot: 0,
+    participants: [0],
+    userInput: 'q',
+    lastTurnInjection: null,
+    turnNum: 0,
+  });
+  const firstLine = p.split('\n')[0];
+  assert.ok(!firstLine.includes('第 0 轮'), 'turnNum=0 should fall back, not literal');
+  assert.ok(firstLine.includes('第 ? 轮'), 'fallback ?');
+}
+
+function testFanoutTurnNumUndefinedFallback() {
+  const p = free.buildFreeFanoutPrompt({
+    meeting: baseMeeting,
+    selfSlot: 0,
+    participants: [0],
+    userInput: 'q',
+    lastTurnInjection: null,
+    // turnNum omitted
+  });
+  const firstLine = p.split('\n')[0];
+  assert.ok(!firstLine.includes('undefined'), 'no undefined word');
+  assert.ok(firstLine.includes('第 ? 轮'), 'fallback ?');
+}
+
+function testSlotLabelAcceptsNumericString() {
+  // _slotLabel 内部函数无法直接测，通过 buildFreeFanoutPrompt selfSlot="0" 间接测
+  const p = free.buildFreeFanoutPrompt({
+    meeting: baseMeeting,
+    selfSlot: '0',  // 数字字符串
+    participants: [0],
+    userInput: 'q',
+    lastTurnInjection: null,
+    turnNum: 1,
+  });
+  const firstLine = p.split('\n')[0];
+  assert.ok(firstLine.includes('Pikachu'), 'numeric string slot should resolve to Pikachu, not AI');
+  assert.ok(!firstLine.includes('— 你是 AI'), 'no AI fallback for valid numeric string');
+}
+
 console.log('--- roundtable-free prompt ---');
 run('testFanoutFirstLineContract', testFanoutFirstLineContract);
 run('testFanoutListsParticipants', testFanoutListsParticipants);
@@ -149,5 +193,8 @@ run('testDebateMentionsRebuttal', testDebateMentionsRebuttal);
 run('testSummaryFirstLineContract', testSummaryFirstLineContract);
 run('testSummaryNoMainCoPilot', testSummaryNoMainCoPilot);
 run('testInjectionIsRendered', testInjectionIsRendered);
+run('testFanoutTurnNumZeroFallback', testFanoutTurnNumZeroFallback);
+run('testFanoutTurnNumUndefinedFallback', testFanoutTurnNumUndefinedFallback);
+run('testSlotLabelAcceptsNumericString', testSlotLabelAcceptsNumericString);
 
 process.exit(failed > 0 ? 1 : 0);
