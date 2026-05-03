@@ -372,7 +372,7 @@ const resumeWrapperEl = document.getElementById('resume-picker-wrapper');
 const btnRoundtable = document.getElementById('btn-roundtable');
 const contextMenuEl = document.getElementById('context-menu');
 const appContainerEl = document.getElementById('app-container');
-const btnCollapseEl = document.getElementById('btn-collapse-sidebar');
+// btn-collapse-sidebar 已删除 (v0.8.4) — 用 Ctrl+B 折叠;展开按钮 btn-expand-sidebar 在折叠态仍提供
 const btnExpandEl = document.getElementById('btn-expand-sidebar');
 
 let contextMenuSessionId = null;
@@ -3073,57 +3073,108 @@ function formatResetIn(resetsAt) {
   return `${d}d ${h % 24}h`;
 }
 
+// PackyAPI 账户数据(余额 / 今日消耗 / 累计消耗) - main 后台 5min 拉取后通过 IPC 推送
+let packyAccountData = null;
+
 function renderAccountUsage() {
   const el = document.getElementById('account-usage');
   if (!el) return;
   el.style.display = 'block';
-  const fmtSlot = (u) => {
-    if (!u) return '<span class="usage-na">—</span>';
+
+  const pctCls = (pct) => pct >= 85 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
+
+  const renderBar = (label, u) => {
+    if (!u || u.pct === null || u.pct === undefined) {
+      return `<div class="acc-bar-line"><span class="acc-bar-label">${label}</span><div class="acc-bar-track"><div class="acc-bar-fill dim" style="width:0%"></div></div><span class="acc-bar-pct dim">—</span></div>`;
+    }
     const pct = Math.round(u.pct);
-    const reset = formatResetIn(u.resetsAt);
-    return `<span class="usage-pct ${pctClass(pct)}">${pct}%</span>${reset ? '<span class="usage-reset">' + reset + '</span>' : ''}`;
+    const cls = pctCls(pct);
+    const w = Math.max(2, pct);
+    return `<div class="acc-bar-line"><span class="acc-bar-label">${label}</span><div class="acc-bar-track"><div class="acc-bar-fill ${cls}" style="width:${w}%"></div></div><span class="acc-bar-pct ${cls}">${pct}%</span></div>`;
   };
-  const staleCls = (lastSeen) => {
-    if (!lastSeen) return '';
-    const age = Date.now() - lastSeen;
-    if (age > 2 * 3600 * 1000) return ' usage-stale';
-    if (age > 5 * 60 * 1000) return ' usage-aging';
+
+  const logoSrc = (badgeClass) => {
+    if (badgeClass === 'cl') return 'assets/ai-logos/claude.svg';
+    if (badgeClass === 'cx') return 'assets/ai-logos/codex.svg';
     return '';
   };
-  const staleTitle = (lastSeen) => {
-    if (!lastSeen) return '';
-    const age = Date.now() - lastSeen;
-    if (age <= 5 * 60 * 1000) return '';
-    const mins = Math.round(age / 60000);
-    if (mins < 60) return ` title="数据来自 ${mins}m 前"`;
-    const h = Math.floor(mins / 60);
-    return ` title="数据来自 ${h}h 前"`;
+  const renderUsageRow = (badgeClass, name, u5h, u7d) => {
+    const src = logoSrc(badgeClass);
+    const logoHtml = src
+      ? `<img class="acc-ai-logo" src="${src}" alt="${escapeHtml(name)}">`
+      : `<span class="acc-ai-letters">${badgeClass.toUpperCase()}</span>`;
+    return `
+      <div class="acc-usage-row">
+        <span class="acc-ai-badge ${badgeClass}">${logoHtml}</span>
+        <span class="acc-ai-name">${name}</span>
+        <div class="acc-bars">
+          ${renderBar('5h', u5h)}
+          ${renderBar('7d', u7d)}
+        </div>
+      </div>
+    `;
   };
-  const modePill = (mode) => {
-    const normalized = mode === 'api' ? 'api' : 'subscription';
-    const label = normalized === 'api' ? 'API' : '订阅';
-    return `<span class="usage-mode ${normalized}">${label}</span>`;
+
+  const renderPackyRow = (data) => {
+    if (!data || !data.enabled) {
+      return `<div class="acc-packy-row no-cookie" title="设置 → PackyAPI 段填 cookie 启用余额监控">
+        <span class="acc-packy-icon">$</span>
+        <div class="acc-packy-text">
+          <div class="acc-packy-balance-line"><span class="acc-packy-balance">未接入</span></div>
+          <div class="acc-packy-spend-line">点设置填 cookie</div>
+        </div>
+      </div>`;
+    }
+    const fmt = (n) => '$' + (typeof n === 'number' ? n.toFixed(2) : '—');
+    if (data.error && (data.balanceUsd === null || data.balanceUsd === undefined)) {
+      return `<div class="acc-packy-row error" title="${escapeHtml(data.error)}">
+        <span class="acc-packy-icon">!</span>
+        <div class="acc-packy-text">
+          <div class="acc-packy-balance-line"><span class="acc-packy-balance">cookie 失效</span></div>
+          <div class="acc-packy-spend-line">今日 ${fmt(data.todayUsd)} · 设置→PackyAPI 重填</div>
+        </div>
+      </div>`;
+    }
+    const balance = (data.balanceUsd !== null && data.balanceUsd !== undefined) ? fmt(data.balanceUsd) : '—';
+    const total = (data.usedUsd !== null && data.usedUsd !== undefined) ? fmt(data.usedUsd) : '—';
+    // 注:packyapi 的 /v1/dashboard/billing/usage 端点不响应 date 参数,
+    // 无法做"今日 vs 累计"的区分。只显示累计消耗,避免数据相同造成误导。
+    return `<div class="acc-packy-row" title="PackyAPI · ${escapeHtml(data.displayName || '账户')}">
+      <span class="acc-packy-icon">¥</span>
+      <div class="acc-packy-text">
+        <div class="acc-packy-balance-line">
+          <span class="acc-packy-balance">${balance}</span>
+          <span class="acc-packy-balance-label">余额</span>
+        </div>
+        <div class="acc-packy-spend-line">
+          <span>累计消耗 <span class="acc-packy-spend-today">${total}</span></span>
+        </div>
+      </div>
+      <button class="acc-packy-topup" data-action="packy-topup">充值</button>
+    </div>`;
   };
-  const buildLine = (kind, badgeClass, label, u5h, u7d, lastSeen, hasUsage = true) => {
-    const sc = staleCls(lastSeen);
-    const st = staleTitle(lastSeen);
-    const metrics = hasUsage
-      ? `<span class="usage-slot">5h ${fmtSlot(u5h)}</span><span class="usage-sep">│</span><span class="usage-slot">7d ${fmtSlot(u7d)}</span>`
-      : '<span class="usage-empty">API 接入</span>';
-    return `<div class="usage-line${sc}"${st}><span class="model-badge ${badgeClass} usage-badge">${label}</span><span class="usage-metrics">${metrics}</span>${modePill(providerModes[kind])}</div>`;
-  };
-  const g = agentUsage.gemini || {};
+
   const c = agentUsage.codex || {};
   el.innerHTML =
-    buildLine('claude', 'opus', 'Claude', accountUsage.usage5h, accountUsage.usage7d, _claudeUsageLastSeen) +
-    buildLine('gemini', 'gemini', 'Gemini', g.usage5h, g.usage7d, agentUsageLastSeen.gemini) +
-    buildLine('codex', 'codex', 'Codex', c.usage5h, c.usage7d, agentUsageLastSeen.codex) +
-    buildLine('deepseek', 'deepseek', 'DeepSeek', null, null, 0, false) +
-    buildLine('glm', 'glm', 'GLM', null, null, 0, false) +
-    buildLine('gpt', 'gpt', 'GPT 5.4 high', null, null, 0, false) +
-    buildLine('kimi', 'kimi', 'Kimi K2.5', null, null, 0, false) +
-    buildLine('qwen', 'qwen', 'Qwen 3.6 Plus', null, null, 0, false);
+    renderUsageRow('cl', 'Claude', accountUsage.usage5h, accountUsage.usage7d) +
+    renderUsageRow('cx', 'Codex', c.usage5h, c.usage7d) +
+    renderPackyRow(packyAccountData);
+
+  // 充值按钮 — 打开 packyapi console
+  const topupBtn = el.querySelector('[data-action="packy-topup"]');
+  if (topupBtn) {
+    topupBtn.addEventListener('click', () => {
+      ipcRenderer.invoke('open-external-url', 'https://www.packyapi.com/console').catch(() => {
+        window.open('https://www.packyapi.com/console', '_blank');
+      });
+    });
+  }
 }
+
+ipcRenderer.on('packy-account-updated', (_e, data) => {
+  packyAccountData = data;
+  renderAccountUsage();
+});
 
 setInterval(renderAccountUsage, 60000);
 
@@ -3588,7 +3639,6 @@ function toggleSidebar() {
   localStorage.setItem(SIDEBAR_KEY, next ? '1' : '0');
   applySidebarCollapsed(next);
 }
-btnCollapseEl.addEventListener('click', toggleSidebar);
 btnExpandEl.addEventListener('click', toggleSidebar);
 
 // --- Theme selector ---
@@ -3872,6 +3922,10 @@ async function openConfigModal() {
     document.getElementById('cfg-qwen-key').value = cfg.qwenApiKey || '';
     document.getElementById('cfg-qwen-url').value = cfg.qwenBaseUrl || '';
     document.getElementById('cfg-qwen-model').value = cfg.qwenModel || '';
+    const packyEl = document.getElementById('cfg-packy-cookie');
+    if (packyEl) packyEl.value = cfg.packySessionCookie || '';
+    const expiresEl = document.getElementById('cfg-packy-expires');
+    if (expiresEl) expiresEl.textContent = cfg.packySessionCookie ? '已配置' : '未配置';
     updateConfigSummaries();
   } catch {
     // 加载失败也显示空白面板
@@ -3932,6 +3986,7 @@ function initConfigModal() {
       qwenApiKey: document.getElementById('cfg-qwen-key').value.trim() || undefined,
       qwenBaseUrl: document.getElementById('cfg-qwen-url').value.trim() || undefined,
       qwenModel: document.getElementById('cfg-qwen-model').value.trim() || undefined,
+      packySessionCookie: (document.getElementById('cfg-packy-cookie') && document.getElementById('cfg-packy-cookie').value.trim()) || undefined,
     };
     try {
       const result = await ipcRenderer.invoke('save-hub-config', newConfig);
@@ -4182,6 +4237,7 @@ async function resumeDormantSession(hubId) {
     if (cached.gemini && cached.gemini.ts) agentUsageLastSeen.gemini = cached.gemini.ts;
     if (cached.codex) agentUsage.codex = cached.codex;
     if (cached.codex && cached.codex.ts) agentUsageLastSeen.codex = cached.codex.ts;
+    if (cached.packy) packyAccountData = cached.packy;
     renderAccountUsage();
     traceRendererStartup('usage cache loaded');
   }).catch(() => {});

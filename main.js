@@ -26,6 +26,7 @@ const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
 const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
 const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-config.js');
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
+const packyBalance = require('./core/packy-balance.js');
 const { isClaudeFamily, SLOT_IDS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 
 const STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
@@ -2594,11 +2595,53 @@ function cacheAgentUsage(provider, tokenData) {
   } catch {}
 }
 
+function cachePackyAccount(data) {
+  try {
+    const existing = loadUsageCache();
+    existing.packy = { ...data, ts: Date.now() };
+    fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
+    fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(existing));
+  } catch {}
+}
+
 function loadUsageCache() {
   try { return JSON.parse(fs.readFileSync(USAGE_CACHE_FILE, 'utf8')); } catch { return {}; }
 }
 
 ipcMain.handle('get-usage-cache', () => loadUsageCache());
+
+// PackyAPI 账户(余额 + 消耗)异步拉取 + 缓存。
+// 调用方:启动后台 timer + IPC 'refresh-packy-account'(用户设置改 cookie 时强制刷新)。
+async function fetchAndCachePackyAccount() {
+  const cfg = getHubConfig();
+  const cookie = cfg.packySessionCookie || '';
+  // sk- key 用于查"今日消耗"(独立路径,即使没 cookie 也有数据)。
+  // codex 与 gpt 共享 codex 分组 key;kimi/qwen 共享 bailian key。去重交给 fetchAggregated。
+  const tokenKeys = [cfg.codexApiKey, cfg.gptApiKey, cfg.kimiApiKey, cfg.qwenApiKey].filter(Boolean);
+  if (!cookie && tokenKeys.length === 0) {
+    cachePackyAccount({ enabled: false });
+    return { enabled: false };
+  }
+  const proxy = cfg.proxy || '';
+  const data = await packyBalance.fetchAggregated({ cookie, tokenKeys, proxy });
+  cachePackyAccount({ ...data, enabled: true });
+  // 通知 renderer 刷新
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { win.webContents.send('packy-account-updated', data); } catch {}
+  }
+  return data;
+}
+
+ipcMain.handle('refresh-packy-account', async () => {
+  return await fetchAndCachePackyAccount();
+});
+
+// 打开外部 URL(用系统默认浏览器,而不是 Electron BrowserWindow)
+ipcMain.handle('open-external-url', async (_e, url) => {
+  if (!url || !/^https?:\/\//i.test(url)) return { success: false };
+  await shell.openExternal(url);
+  return { success: true };
+});
 
 // --- Hub Config IPC handlers ---
 // 配置 UI 和首次启动向导使用
@@ -2656,6 +2699,7 @@ ipcMain.handle('get-hub-config-raw', () => {
     codexApiKey: config.codexApiKey || '',
     codexApiBaseUrl: config.codexApiBaseUrl,
     codexApiModel: config.codexApiModel,
+    packySessionCookie: config.packySessionCookie || '',
   };
 });
 
@@ -2710,6 +2754,10 @@ ipcMain.handle('save-hub-config', (_e, newConfig) => {
         model: newConfig.codexApiModel || DEFAULTS.codex_api_model,
         provider: DEFAULTS.codex_api_provider,
       },
+      packy: {
+        ...(existing.providers?.packy || {}),
+        session_cookie: newConfig.packySessionCookie || undefined,
+      },
     },
   };
 
@@ -2720,9 +2768,14 @@ ipcMain.handle('save-hub-config', (_e, newConfig) => {
   if (!merged.providers.kimi.api_key) delete merged.providers.kimi.api_key;
   if (!merged.providers.qwen.api_key) delete merged.providers.qwen.api_key;
   if (!merged.providers.codex.api_key) delete merged.providers.codex.api_key;
+  if (!merged.providers.packy.session_cookie) delete merged.providers.packy.session_cookie;
 
   saveConfig(merged);
   clearSessionManagerConfigCache();
+  // packy cookie 改了立即重拉,UI 不用等下个 5 分钟
+  if (newConfig.packySessionCookie !== undefined) {
+    fetchAndCachePackyAccount().catch(() => {});
+  }
   return { success: true };
 });
 
@@ -3022,6 +3075,10 @@ app.whenReady().then(async () => {
   sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
   traceStartup('startAgentScanner');
   startAgentScanner();
+  // PackyAPI 账户(余额 + 消耗)— 启动 1.5s 后首次拉取,之后每 5 分钟刷新一次。
+  // 延后启动避免拖慢首屏;失败静默不影响其他功能。
+  setTimeout(() => { fetchAndCachePackyAccount().catch(() => {}); }, 1500);
+  setInterval(() => { fetchAndCachePackyAccount().catch(() => {}); }, 5 * 60 * 1000);
   // Mobile server starts after window — no need to block UI for phone pairing.
   try {
     traceStartup('mobile server start');

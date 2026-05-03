@@ -195,65 +195,83 @@ html, body {
   min-width: 0;
 }
 
-.btn-new-session {
-  height: 26px;
-  border-radius: 4px;
-  border: none;
-  background: var(--accent-green);
-  color: white;
+/* ===== 4 按钮 · GitHub Primer 风格(v0.8.4) ===== */
+.btn-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.btn-caret {
+  width: 10px;
+  height: 10px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+.btn-label {
   font-size: 12px;
   font-weight: 500;
-  padding: 0 12px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  white-space: nowrap;
-  transition: opacity 0.15s;
+  letter-spacing: 0.2px;
 }
 
+.btn-new-session {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(240, 246, 252, 0.1);
+  background: #238636;
+  color: white;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-family: inherit;
+  font-size: 12px;
+  transition: background 0.12s;
+}
 .btn-new-session:hover {
-  opacity: 0.85;
+  background: #2ea043;
 }
 
 .btn-resume-picker {
-  background: rgba(56, 139, 253, 0.08);
-  border: 1px solid rgba(110, 118, 129, 0.4);
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   color: var(--text-primary);
-  border-radius: 4px;
-  height: 26px;
-  padding: 0 12px;
   cursor: pointer;
-  font-size: 12px;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  white-space: nowrap;
+  justify-content: center;
+  padding: 0;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
 }
 .btn-resume-picker:hover {
-  background: rgba(56, 139, 253, 0.15);
-  border-color: var(--accent-blue);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .btn-options {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  border-radius: 4px;
-  height: 26px;
-  padding: 0 12px;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
   cursor: pointer;
-  font-size: 12px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  white-space: nowrap;
+  padding: 0;
+  font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
 }
 .btn-options:hover {
-  color: var(--text-primary);
-  border-color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .options-wrapper {
@@ -1205,24 +1223,26 @@ body.theme-light .prompt-line-marker {
   font-size: 11px;
 }
 
-/* --- Roundtable button --- */
+/* --- Roundtable button(v0.8.4 GitHub Primer · 蓝填充) --- */
 .btn-roundtable {
-  background: rgba(187, 128, 9, 0.15);
-  border: 1px solid rgba(210, 153, 34, 0.5);
-  color: #d29922;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(240, 246, 252, 0.1);
+  background: #1f6feb;
+  color: white;
   font-weight: 500;
+  cursor: pointer;
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
+  gap: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  transition: background 0.12s;
 }
 .btn-roundtable:hover {
-  background: rgba(187, 128, 9, 0.3);
-  border-color: #d29922;
+  background: #2c7eff;
 }
 
 /* Theme toggle button */
@@ -1306,89 +1326,175 @@ body.theme-light .prompt-line-marker {
   text-align: right;
 }
 
-/* Compact provider lines — one row per model */
-.usage-line {
-  display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) 38px;
-  align-items: center;
-  gap: 7px;
-  min-height: 22px;
-  padding: 2px 0;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-.usage-badge {
-  font-size: 9px;
-  padding: 0 4px;
-  line-height: 16px;
-  min-width: 54px;
-  text-align: center;
-  border-radius: 5px;
-}
-.usage-metrics {
-  min-width: 0;
+/* === v0.8.4 · 用量 3 行卡片(Claude / Codex / PackyAPI 合并行) === */
+.acc-usage-row {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
   display: flex;
   align-items: center;
-  gap: 4px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
+  gap: 8px;
 }
-.usage-slot {
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-.usage-sep {
-  color: var(--border);
-  font-size: 9px;
-}
-.usage-pct {
-  font-weight: 600;
-  margin: 0 2px;
-}
-.usage-pct.ok     { color: var(--accent-green); }
-.usage-pct.warn   { color: var(--accent-orange); }
-.usage-pct.danger { color: var(--accent-red); }
-.usage-reset {
-  color: var(--text-muted);
-  margin-left: 2px;
-  font-size: 9px;
-}
-.usage-na {
-  color: var(--text-muted);
-  opacity: 0.5;
-}
-.usage-empty {
-  color: var(--text-muted);
-  opacity: 0.72;
-}
-.usage-mode {
-  justify-self: end;
-  min-width: 34px;
-  padding: 1px 5px;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 999px;
-  text-align: center;
+.acc-usage-row .acc-ai-badge {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 9px;
   font-weight: 700;
-  line-height: 15px;
-  letter-spacing: 0;
+  font-family: ui-monospace, "SF Mono", monospace;
+  flex-shrink: 0;
 }
-.usage-mode.subscription {
-  color: #cbb6ff;
-  background: rgba(168,137,255,0.12);
-  border-color: rgba(168,137,255,0.24);
+.acc-usage-row .acc-ai-badge.cl { background: rgba(212, 165, 116, 0.18); }
+.acc-usage-row .acc-ai-badge.cx { background: rgba(16, 163, 127, 0.18); }
+.acc-usage-row .acc-ai-logo { width: 18px; height: 18px; display: block; }
+.acc-usage-row .acc-ai-letters { font-size: 9px; font-weight: 700; font-family: ui-monospace, "SF Mono", monospace; }
+.acc-usage-row .acc-ai-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  width: 44px;
+  flex-shrink: 0;
 }
-.usage-mode.api {
-  color: #9dccff;
-  background: rgba(88,166,255,0.11);
-  border-color: rgba(88,166,255,0.23);
+.acc-usage-row .acc-bars {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
-.usage-line.usage-aging {
-  opacity: 0.6;
+.acc-bar-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  font-family: ui-monospace, "SF Mono", monospace;
+  color: var(--text-muted);
 }
-.usage-line.usage-stale {
-  opacity: 0.35;
+.acc-bar-line .acc-bar-label {
+  width: 16px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.acc-bar-track {
+  flex: 1;
+  height: 5px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.acc-bar-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+.acc-bar-fill.ok     { background: var(--accent-green); }
+.acc-bar-fill.warn   { background: var(--accent-orange); }
+.acc-bar-fill.danger { background: var(--accent-red); }
+.acc-bar-fill.dim    { background: var(--border); opacity: 0.5; }
+.acc-bar-pct {
+  width: 30px;
+  text-align: right;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.acc-bar-pct.ok     { color: var(--accent-green); }
+.acc-bar-pct.warn   { color: var(--accent-orange); }
+.acc-bar-pct.danger { color: var(--accent-red); }
+.acc-bar-pct.dim    { color: var(--text-muted); }
+
+/* PackyAPI 合并行(余额 + 消耗 + 充值) */
+.acc-packy-row {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.acc-packy-row .acc-packy-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #3b82f6, #06b6d4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: 700;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.acc-packy-row .acc-packy-text {
+  flex: 1;
+  min-width: 0;
+}
+.acc-packy-row .acc-packy-balance-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.acc-packy-row .acc-packy-balance {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.acc-packy-row .acc-packy-balance-label {
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+}
+.acc-packy-row .acc-packy-spend-line {
+  font-size: 9px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+  font-family: ui-monospace, "SF Mono", monospace;
+}
+.acc-packy-row .acc-packy-spend-today {
+  color: #39c5cf;
+  font-weight: 600;
+}
+.acc-packy-row .acc-packy-spend-sep {
+  color: var(--border);
+  margin: 0 3px;
+}
+.acc-packy-row .acc-packy-topup {
+  font-size: 10px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+.acc-packy-row .acc-packy-topup:hover {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
+.acc-packy-row.error {
+  border-color: rgba(248, 81, 73, 0.3);
+  background: rgba(248, 81, 73, 0.04);
+}
+.acc-packy-row.error .acc-packy-icon {
+  background: linear-gradient(135deg, #f85149, #d29922);
+}
+.acc-packy-row.no-cookie .acc-packy-balance {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 /* Per-session context badge in footer */

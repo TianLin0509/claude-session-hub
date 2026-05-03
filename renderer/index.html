@@ -14,7 +14,7 @@
     <div class="session-sidebar" id="session-sidebar">
       <div class="sidebar-header">
         <div class="new-session-wrapper" id="new-session-wrapper">
-          <button class="btn-new-session" id="btn-new" title="新建会话 (Ctrl+N)">+ ▾</button>
+          <button class="btn-new-session" id="btn-new" title="新建会话 (Ctrl+N)"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span class="btn-label">新建</span><svg class="btn-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
           <div class="new-session-menu" id="new-session-menu" style="display:none">
             <div class="menu-group-label">AI CLI</div>
             <button class="new-session-option" data-kind="claude"><span class="ai-logo logo-claude"></span>Claude Code</button>
@@ -30,8 +30,9 @@
             <button class="new-session-option" data-kind="powershell"><span class="ai-logo logo-powershell"></span>PowerShell</button>
           </div>
         </div>
+        <button class="btn-roundtable" id="btn-roundtable" title="创建圆桌"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="6" r="2" fill="currentColor"/><circle cx="6.5" cy="15" r="2" fill="currentColor"/><circle cx="17.5" cy="15" r="2" fill="currentColor"/></svg><span class="btn-label">圆桌</span></button>
         <div class="resume-picker-wrapper" id="resume-picker-wrapper">
-          <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话">↻ ▾</button>
+          <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg></button>
           <div class="resume-picker-menu" id="resume-picker-menu" style="display:none">
             <button class="resume-option" data-kind="claude-resume"><span class="ai-logo logo-claude"></span>Claude<span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="gemini-resume"><span class="ai-logo logo-gemini"></span>Gemini<span class="hint">最近一次</span></button>
@@ -43,9 +44,8 @@
             <button class="resume-option" data-kind="qwen-resume"><span class="ai-logo logo-qwen"></span>Qwen 3.6 Plus<span class="hint">PTY picker</span></button>
           </div>
         </div>
-        <button class="btn-roundtable" id="btn-roundtable" title="创建圆桌">🎯</button>
         <div class="options-wrapper">
-          <button class="btn-options" id="btn-options" title="选项">⚙ ▾</button>
+          <button class="btn-options" id="btn-options" title="选项"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.66-7.66l-4.24 4.24m-7.07 7.07L4.34 19.66m13.32 0l-4.24-4.24m-7.07-7.07L4.34 4.34"/></svg></button>
           <div class="options-menu" id="options-menu" style="display:none">
             <div class="options-item" id="options-theme">🎨 切换主题</div>
             <div class="options-divider"></div>
@@ -71,7 +71,6 @@
             </div>
           </div>
         </div>
-        <button class="btn-collapse-sidebar" id="btn-collapse-sidebar" title="折叠侧边栏 (Ctrl+B)">◀</button>
       </div>
       <div id="account-usage" class="account-usage" style="display:none"></div>
       <div class="session-list" id="session-list"></div>
@@ -116,7 +115,7 @@
             <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
             <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
             <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
-            <span class="launcher-version">v0.8.3</span>
+            <span class="launcher-version">v0.8.4</span>
           </div>
         </div>
       </div>
@@ -284,6 +283,16 @@
               </span>
               <span class="config-ai-status api" id="cfg-status-qwen">API</span>
             </button>
+          </div>
+
+          <div class="config-section-label" style="margin-top: 18px;">
+            <span>侧栏数据 · PackyAPI 账户</span>
+            <span id="cfg-packy-expires" class="config-label-hint"></span>
+          </div>
+          <p class="config-hint">侧栏第三行展示 PackyAPI 余额/消耗。需要从 <a href="#" id="cfg-packy-doc-link">www.packyapi.com</a> 浏览器 cookies 复制 <code>session</code> 字段值粘贴下方(等同登录态,过期需重新提供)。</p>
+          <div class="config-field">
+            <label>PackyAPI Session Cookie <span class="config-label-hint">(留空则只显示今日消耗)</span></label>
+            <textarea id="cfg-packy-cookie" rows="2" placeholder="MTc3NzY0NTUwM3xEWDhFQVFMX2dBQUJF..." spellcheck="false" style="resize: vertical; min-height: 44px; font-family: ui-monospace, monospace; font-size: 11px;"></textarea>
           </div>
         </div>
 

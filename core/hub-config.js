@@ -121,6 +121,8 @@ function getConfig() {
     codexApiBaseUrl: normalizeBaseUrl(getConfigValue('codexApiBaseUrl', 'HUB_CODEX_API_BASE_URL', 'providers.codex.base_url', DEFAULTS.codex_api_base_url)),
     codexApiModel: getConfigValue('codexApiModel', 'HUB_CODEX_API_MODEL', 'providers.codex.model', DEFAULTS.codex_api_model),
     codexApiProvider: getConfigValue('codexApiProvider', 'HUB_CODEX_API_PROVIDER', 'providers.codex.provider', DEFAULTS.codex_api_provider),
+    // PackyAPI 账户面板(余额 + 消耗,通过网站 cookie 接入)
+    packySessionCookie: getConfigValue('packySessionCookie', 'PACKY_SESSION_COOKIE', 'providers.packy.session_cookie', ''),
     feishuCodex: {
       token: getConfigValue('feishuCodexToken', 'HUB_FEISHU_CODEX_TOKEN', 'channels.feishuCodex.token', ''),
       appId: getConfigValue('feishuAppId', 'HUB_FEISHU_APP_ID', 'channels.feishuCodex.app_id', ''),
