@@ -1106,7 +1106,13 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (localStorage.getItem(MEMO_OPEN_KEY) === 'true') memoBtn.classList.add('active');
   memoBtn.addEventListener('click', () => toggleMemoPanel());
 
-  headerActions.append(memoBtn, zoomOutBtn, zoomInBtn, closeBtn);
+  const wtBtn = document.createElement('button');
+  wtBtn.className = 'btn-zoom btn-worktree-toggle';
+  wtBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3h5v5H2zM9 3h5v5H9zM2 10h5v5H2zM9 10h5v3a2 2 0 01-2 2H9z" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>';
+  wtBtn.title = '工作树面板';
+  wtBtn.addEventListener('click', () => window.worktreePanel?.toggle());
+
+  headerActions.append(memoBtn, wtBtn, zoomOutBtn, zoomInBtn, closeBtn);
 
   titleRow.append(titleSection, headerActions);
 
@@ -1657,6 +1663,7 @@ function selectSession(id) {
     session.readSignature = getQuestionsSignature(id);
   }
   restorePreviewForContext(`session:${id}`);
+  window.worktreePanel?.onSessionChange(id);
 }
 
 // --- Dropdown menu ---
@@ -2787,6 +2794,7 @@ ipcRenderer.on('status-event', (_e, payload) => {
   if (payload.usage7d) accountUsage.usage7d = payload.usage7d;
   renderAccountUsage();
   renderSessionList();
+  window.worktreePanel?.notifyStatusEvent();
 });
 
 ipcRenderer.on('agent-usage', (_e, totals) => {
