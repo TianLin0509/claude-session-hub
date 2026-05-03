@@ -23,6 +23,13 @@ const DEFAULTS = {
   codex_api_base_url: 'https://www.packyapi.com/v1',
   codex_api_model: 'gpt-5.5',
   codex_api_provider: 'packycode',
+  // PackyAPI multi-model sessions (Anthropic-format endpoint)
+  gpt_base_url: 'https://www.packyapi.com',
+  gpt_model: 'gpt-5.5',
+  kimi_base_url: 'https://www.packyapi.com',
+  kimi_model: 'kimi-k2.5',
+  qwen_base_url: 'https://www.packyapi.com',
+  qwen_model: 'qwen3.6-plus',
 };
 
 // 兼容老用户的 secrets.toml 路径
@@ -99,6 +106,16 @@ function getConfig() {
     glmApiKey: getConfigValue('glmApiKey', 'GLM_API_KEY', 'providers.glm.api_key', ''),
     glmBaseUrl: normalizeBaseUrl(getConfigValue('glmBaseUrl', 'GLM_BASE_URL', 'providers.glm.base_url', DEFAULTS.glm_base_url)),
     glmModel: getConfigValue('glmModel', 'GLM_MODEL', 'providers.glm.model', DEFAULTS.glm_model),
+    // PackyAPI multi-model sessions
+    gptApiKey: getConfigValue('gptApiKey', 'PACKY_GPT_API_KEY', 'providers.gpt.api_key', ''),
+    gptBaseUrl: normalizeBaseUrl(getConfigValue('gptBaseUrl', 'PACKY_GPT_BASE_URL', 'providers.gpt.base_url', DEFAULTS.gpt_base_url)),
+    gptModel: getConfigValue('gptModel', 'PACKY_GPT_MODEL', 'providers.gpt.model', DEFAULTS.gpt_model),
+    kimiApiKey: getConfigValue('kimiApiKey', 'PACKY_KIMI_API_KEY', 'providers.kimi.api_key', ''),
+    kimiBaseUrl: normalizeBaseUrl(getConfigValue('kimiBaseUrl', 'PACKY_KIMI_BASE_URL', 'providers.kimi.base_url', DEFAULTS.kimi_base_url)),
+    kimiModel: getConfigValue('kimiModel', 'PACKY_KIMI_MODEL', 'providers.kimi.model', DEFAULTS.kimi_model),
+    qwenApiKey: getConfigValue('qwenApiKey', 'PACKY_QWEN_API_KEY', 'providers.qwen.api_key', ''),
+    qwenBaseUrl: normalizeBaseUrl(getConfigValue('qwenBaseUrl', 'PACKY_QWEN_BASE_URL', 'providers.qwen.base_url', DEFAULTS.qwen_base_url)),
+    qwenModel: getConfigValue('qwenModel', 'PACKY_QWEN_MODEL', 'providers.qwen.model', DEFAULTS.qwen_model),
     codexBackend: getConfigValue('codexBackend', 'HUB_CODEX_BACKEND', 'providers.codex.backend', DEFAULTS.codex_backend),
     codexApiKey: getConfigValue('codexApiKey', 'HUB_CODEX_API_KEY', 'providers.codex.api_key', ''),
     codexApiBaseUrl: normalizeBaseUrl(getConfigValue('codexApiBaseUrl', 'HUB_CODEX_API_BASE_URL', 'providers.codex.base_url', DEFAULTS.codex_api_base_url)),
