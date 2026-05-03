@@ -129,43 +129,53 @@ function testAiKindsModuleExportsContract() {
   const m = require('../core/ai-kinds');
 
   assert.ok(Array.isArray(m.ALL_AI_KINDS), 'ALL_AI_KINDS 必须是数组');
-  // 当前应包含 5 家
-  for (const k of ['claude', 'gemini', 'codex', 'deepseek', 'glm']) {
+  // 当前应包含 8 家
+  for (const k of ['claude', 'gemini', 'codex', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen']) {
     assert.ok(m.ALL_AI_KINDS.includes(k), `ALL_AI_KINDS 必须包含 ${k}`);
   }
 
   assert.ok(Array.isArray(m.CLAUDE_FAMILY), 'CLAUDE_FAMILY 必须是数组');
-  for (const k of ['claude', 'claude-resume', 'deepseek', 'glm']) {
+  for (const k of ['claude', 'claude-resume', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen']) {
     assert.ok(m.CLAUDE_FAMILY.includes(k), `CLAUDE_FAMILY 必须包含 ${k}`);
   }
   assert.ok(!m.CLAUDE_FAMILY.includes('gemini'), 'CLAUDE_FAMILY 不应包含 gemini');
   assert.ok(!m.CLAUDE_FAMILY.includes('codex'), 'CLAUDE_FAMILY 不应包含 codex');
 
   assert.ok(Array.isArray(m.PASTE_SENSITIVE_KINDS), 'PASTE_SENSITIVE_KINDS 必须是数组');
-  // 5 家 AI 都是 TUI alt-screen，全在列表
-  for (const k of ['claude', 'gemini', 'codex', 'deepseek', 'glm']) {
+  for (const k of ['claude', 'gemini', 'codex', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen']) {
     assert.ok(m.PASTE_SENSITIVE_KINDS.includes(k), `PASTE_SENSITIVE_KINDS 必须含 ${k}`);
   }
-  // powershell 等普通 shell 不应在列表
   assert.ok(!m.PASTE_SENSITIVE_KINDS.includes('powershell'), 'PASTE_SENSITIVE_KINDS 不应含 powershell');
 
   assert.strictEqual(m.isClaudeFamily('deepseek'), true);
   assert.strictEqual(m.isClaudeFamily('glm'), true);
+  assert.strictEqual(m.isClaudeFamily('gpt'), true);
+  assert.strictEqual(m.isClaudeFamily('kimi'), true);
+  assert.strictEqual(m.isClaudeFamily('qwen'), true);
   assert.strictEqual(m.isClaudeFamily('claude'), true);
   assert.strictEqual(m.isClaudeFamily('gemini'), false);
   assert.strictEqual(m.isClaudeFamily('codex'), false);
 
   assert.strictEqual(m.isPasteSensitive('deepseek'), true);
   assert.strictEqual(m.isPasteSensitive('claude'), true);
+  assert.strictEqual(m.isPasteSensitive('gpt'), true);
+  assert.strictEqual(m.isPasteSensitive('kimi'), true);
+  assert.strictEqual(m.isPasteSensitive('qwen'), true);
   assert.strictEqual(m.isPasteSensitive('powershell'), false);
 
   assert.strictEqual(typeof m.listKindsForPrompt(), 'string');
   assert.ok(m.listKindsForPrompt().includes('DeepSeek'));
   assert.ok(m.listKindsForPrompt().includes('GLM'));
+  assert.ok(m.listKindsForPrompt().includes('GPT'));
+  assert.ok(m.listKindsForPrompt().includes('Kimi'));
+  assert.ok(m.listKindsForPrompt().includes('Qwen'));
 
   assert.strictEqual(typeof m.kindRegexAlternation(), 'string');
   assert.ok(m.kindRegexAlternation().includes('deepseek'));
   assert.ok(m.kindRegexAlternation().includes('glm'));
+  assert.ok(m.kindRegexAlternation().includes('gpt'));
+  assert.ok(m.kindRegexAlternation().includes('kimi'));
+  assert.ok(m.kindRegexAlternation().includes('qwen'));
 
   console.log('  ✓ testAiKindsModuleExportsContract');
 }
