@@ -97,6 +97,11 @@ function _ensureModal() {
         <div class="mcm-slots">
           ${[0, 1, 2].map(i => _slotHtml(i)).join('')}
         </div>
+        <div class="mcm-mode">
+          模式:
+          <label><input type="radio" name="mcm-meeting-mode" value="free" checked> 🆓 自由模式</label>
+          <label><input type="radio" name="mcm-meeting-mode" value="pilot"> 🎯 主驾模式</label>
+        </div>
         <div class="mcm-scene">
           场景:
           <label><input type="radio" name="mcm-scene" value="general" checked> 通用</label>
@@ -151,6 +156,8 @@ async function _onCreate() {
   });
   const scene = _modalEl.querySelector('input[name="mcm-scene"]:checked').value;
   const mode = scene === 'research' ? 'research' : 'general';
+  // free-mode（2026-05-04）：meetingMode 与历史 mode（general/research）分语义，避免字段冲突
+  const meetingMode = _modalEl.querySelector('input[name="mcm-meeting-mode"]:checked').value;
 
   const createBtn = _modalEl.querySelector('.mcm-create');
   createBtn.disabled = true;
@@ -159,7 +166,7 @@ async function _onCreate() {
   // 清掉之前可能残留的 inline error
   _clearError();
   try {
-    const meeting = await ipcRenderer.invoke('create-meeting', { mode, scene, slots });
+    const meeting = await ipcRenderer.invoke('create-meeting', { mode, scene, slots, meetingMode });
     if (!meeting || !meeting.id) {
       throw new Error('create-meeting returned empty meeting');
     }

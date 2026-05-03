@@ -52,8 +52,8 @@ class MeetingRoomManager {
       //   主驾切换 / 取消主驾时 dispatchMode 自动 reset 为 'all'（避免状态漂移）。
       pilotSlot: null,
       dispatchMode: 'all',
-      // free-mode（2026-05-04）：meeting 级模式 'pilot'|'free'，默认 'free'（新建默认自由模式）
-      mode: 'free',
+      // free-mode（2026-05-04）：meeting 级模式 'pilot'|'free'，创建时由对话框 opts.meetingMode 决定，默认 'free'
+      mode: opts.meetingMode === 'pilot' ? 'pilot' : 'free',
       // free-mode（2026-05-04）：自由模式参与者 slot 列表，默认全员勾选
       participants: [0, 1, 2],
     };

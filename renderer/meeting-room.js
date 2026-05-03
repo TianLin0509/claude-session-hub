@@ -249,34 +249,9 @@
     return html.join('');
   }
 
-  // --- Two-state mode toggle (圆桌 / 投研) ---
-
-  function _renderModeToggle(meeting) {
-    if (!meeting) return '';
-    const current = meeting.scene || 'general';
-    return `
-      <div class="mr-mode-toggle" role="radiogroup" aria-label="会议场景">
-        <button type="button" class="mr-mode-btn ${current === 'general' ? 'active' : ''}" data-scene="general" title="通用圆桌：三家平等讨论">圆桌</button>
-        <button type="button" class="mr-mode-btn ${current === 'research' ? 'active' : ''}" data-scene="research" title="投研圆桌：A 股专题">投研</button>
-      </div>
-    `;
-  }
-
-  function _bindModeToggle(rootEl, meeting) {
-    if (!rootEl || !meeting) return;
-    rootEl.querySelectorAll('.mr-mode-btn').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const scene = btn.getAttribute('data-scene');
-        if (!scene || scene === meeting.scene) return;
-        try {
-          const res = await ipcRenderer.invoke('switch-scene', { meetingId: meeting.id, scene });
-          if (res && !res.ok) console.warn('[mode-toggle] switch-scene failed:', res.error);
-        } catch (e) {
-          console.warn('[mode-toggle] click failed:', e.message);
-        }
-      });
-    });
-  }
+  // 注：顶部 scene toggle（圆桌/投研）的 _renderModeToggle/_bindModeToggle 已删除
+  //   （2026-05-04 决策：scene 创建时确定，运行时不可切换）。
+  //   IPC `switch-scene` handler 保留，避免破坏其它代码路径。
 
   function _ensureRtPanel() {
     let panel = document.getElementById('mr-roundtable-panel');
@@ -1668,7 +1643,6 @@
 
     el.innerHTML = `
       <div class="mr-header-left">
-        ${_renderModeToggle(meeting)}
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
       </div>
       <div class="mr-header-right">${layoutButtonsHtml}
@@ -1683,7 +1657,7 @@
     const focusBtn = document.getElementById('mr-btn-focus');
     if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
-    _bindModeToggle(el, meeting);
+    // 注：顶部 scene toggle（圆桌/投研）已删除（2026-05-04 决策：scene 创建时确定，运行时不可切换）。
     // Arch refactor 2026-05-02: 沉浸/调试 toggle 删除，无需 binding。
     document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
     document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
@@ -2379,13 +2353,7 @@
           inProgress ? ' · <strong>⏳ 处理中</strong>' : (turns > 0 ? ` · 已 ${turns} 轮` : '')
         }</div>`;
       }
-      const modeToggleDisabled = inProgress ? 'disabled' : '';
-      const modeToggleHtml = `
-        <div class="mr-mode-toggle" role="group" aria-label="圆桌模式">
-          <button class="mr-mode-toggle-btn ${meetingMode === 'free' ? 'active' : ''}" data-meeting-mode="free" ${modeToggleDisabled} title="自由模式：勾选发言人">🆓 自由模式</button>
-          <button class="mr-mode-toggle-btn ${meetingMode === 'pilot' ? 'active' : ''}" data-meeting-mode="pilot" ${modeToggleDisabled} title="主驾模式：群策/主驾/副驾">🎯 主驾模式</button>
-        </div>
-      `;
+      // 注：mode（free/pilot）在创建会议时确定，运行时不可切换；旧的 mode toggle 已删除（2026-05-04 决策）。
 
       // T6：dispatch 区域按 mode 分支
       const SLOT_AVATARS = ['pikachu.png', 'charmander.png', 'squirtle.png'];
@@ -2433,7 +2401,6 @@
       ` : '';
 
       el.innerHTML = `
-        ${modeToggleHtml}
         ${statusLine}
         <div class="mr-rt-toolbar">
           ${dispatchAreaHtml}
@@ -2452,20 +2419,7 @@
         </div>
       `;
 
-      // T6：mode toggle click handler
-      el.querySelectorAll('.mr-mode-toggle-btn[data-meeting-mode]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          if (btn.hasAttribute('disabled')) return;
-          const newMode = btn.getAttribute('data-meeting-mode');
-          if (newMode === meetingMode) return;
-          try {
-            await ipcRenderer.invoke('roundtable:set-meeting-mode', { meetingId: meeting.id, mode: newMode });
-          } catch (err) {
-            console.error('[set-meeting-mode] failed:', err);
-            alert('切换模式失败：' + (err && err.message ? err.message : String(err)));
-          }
-        });
-      });
+      // 注：mode toggle click handler 已删除（mode 创建时确定，运行时不可切换）。
 
       // T6：头像勾选 click handler（free 模式）
       // race guard：每次 panel 重渲新建一次 lock，防止连击竞态
