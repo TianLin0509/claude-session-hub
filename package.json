@@ -10,6 +10,8 @@
     "test:mobile:auth": "node tests/mobile/test-auth.js",
     "test:mobile:rest": "node tests/mobile/test-rest.js",
     "test:mobile:ws": "node tests/mobile/test-ws.js",
+    "test:worktree-unit": "node tests/_unit-git-probe.js && node tests/_unit-conflict-detector.js && node tests/_unit-worktree-index.js",
+    "test:worktree-e2e": "node tests/_e2e-worktree-panel.js",
     "dist": "electron-builder --win"
   },
   "engines": {
