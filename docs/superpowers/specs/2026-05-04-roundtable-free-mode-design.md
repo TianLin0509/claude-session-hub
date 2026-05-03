@@ -123,10 +123,12 @@ deriveTargetSids(meeting, mode, summarizerSlot) → string[]
   // mode === 'fanout' / 'debate' → participants 对应 sub.sid，过滤 active
   // 边界：participants 为空 → 返回 []
 
-derivePilotCompatDispatchMode(participants) → 'all' | 'pilot' | 'observer'
-  // length === 3 → 'all'
-  // length === 1 → 'pilot'
-  // length === 2 → 'observer'
+derivePilotCompatDispatchMode(participants, mode) → 'all' | 'pilot' | 'observer'
+  // mode === 'debate' → 'all'（debate 必须互看，不复用 observer 同组跳过）
+  // 其他模式：
+  //   length === 3 → 'all'
+  //   length === 1 → 'pilot'
+  //   length === 2 → 'observer'
   // 其它（0 或 >3） → 'all'（兜底）
 
 // === Prompt 模板 ===
@@ -148,7 +150,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
   if (meeting.mode === 'free') {
     const free = require('./core/roundtable-free');
     const targetSids = free.deriveTargetSids(meeting, mode, summarizerSlot);
-    const compatDM   = free.derivePilotCompatDispatchMode(meeting.participants || []);
+    const compatDM   = free.derivePilotCompatDispatchMode(meeting.participants || [], mode);
     // 后续走原 fanout/debate/summary 流程
     // - turn record 写 dispatchMode = compatDM
     // - prompt 用 buildFreeXxxPrompt（替换 buildXxxPrompt）
