@@ -33,6 +33,11 @@ function saveMeetingFile(id, data) {
     pilotSlot: (typeof data.pilotSlot === 'number') ? data.pilotSlot : null,
     // pilot redesign（2026-05-02）：dispatchMode = 'all'|'pilot'|'observer'，决定本轮谁开口。
     dispatchMode: ['all', 'pilot', 'observer'].includes(data.dispatchMode) ? data.dispatchMode : 'all',
+    // free-mode（2026-05-04）：mode = 'pilot'|'free'，缺失/非法 → 'pilot'（老 meeting 兼容）
+    mode: ['pilot', 'free'].includes(data.mode) ? data.mode : 'pilot',
+    // free-mode（2026-05-04）：participants = number[]（slot 索引）｜null（首次未初始化）
+    //   非数组 → null；空数组保留（Q11=A：尊重用户清空）
+    participants: Array.isArray(data.participants) ? data.participants : null,
     savedAt: Date.now(),
   };
   const tmp = meetingFilePath(id) + '.tmp';
