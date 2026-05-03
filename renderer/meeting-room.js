@@ -1,8 +1,10 @@
 // renderer/meeting-room.js
 // Meeting Room UI — manages the parallel terminal panel.
 // Exposes global `MeetingRoom` object consumed by renderer.js.
+// T2（2026-05-04 道雪）：底部 module.exports 暴露 _isPartialUnchanged 给 Node unit test，
+//   require 时 typeof document === 'undefined' → IIFE 体内大量 DOM/IPC 引用会爆，故 IIFE 只在 renderer 浏览器环境跑。
 
-(function () {
+if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
   const _scenes = require('../core/roundtable-scenes.js');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
@@ -866,21 +868,20 @@
   }
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
-  function _bindRtPanelEvents(panel, meeting) {
-    const toggle = panel.querySelector('#mr-rt-history-toggle');
-    if (toggle) {
-      toggle.addEventListener('click', () => {
-        _rtHistoryExpanded = !_rtHistoryExpanded;
-        refreshRoundtablePanel(meeting);
-      });
-    }
-    panel.querySelectorAll('.mr-ft[data-ft-sid]').forEach(tab => {
-      tab.addEventListener('click', () => {
-        const sid = tab.getAttribute('data-ft-sid');
+  // T2（2026-05-04 道雪）：单 slot 卡片的事件绑定独立成函数，让 partial-update 局部 patch 后只 rebind 单卡片。
+  //   覆盖范围：① 卡片本体 click（focus session）② ↗ 展开按钮 ③ [data-rt-escape] 工具栏按钮组。
+  //   不覆盖：history-toggle / soft-alert banner-close / mr-rt-ob-card（这些是 panel 级，由 _bindRtPanelEvents 管）。
+  function _bindSlotCardEvents(slotEl, meeting) {
+    if (!slotEl) return;
+    // 卡片本体 click（mr-ft 自身），focus 该 sid 的 session
+    if (slotEl.matches('.mr-ft[data-ft-sid]')) {
+      const sid = slotEl.getAttribute('data-ft-sid');
+      slotEl.addEventListener('click', () => {
         if (sid) _focusRoundtableSession(meeting, sid);
       });
-    });
-    panel.querySelectorAll('.mr-ft-expand[data-ft-expand-sid]').forEach(btn => {
+    }
+    // ↗ 展开
+    slotEl.querySelectorAll('.mr-ft-expand[data-ft-expand-sid]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const sid = btn.getAttribute('data-ft-expand-sid');
@@ -888,33 +889,8 @@
         _openRtTimeline(meeting, sid, kind);
       });
     });
-    // E3 修复 (2026-05-03)：cmd-bar 的 .mr-rt-cmd-btn click handler 删除（按钮已不渲染）
-    const hasThinking = panel.querySelector('.mr-rt-think-elapsed');
-    if (hasThinking && !_thinkTimer) {
-      const mid = meeting.id;
-      _thinkTimer = setInterval(() => {
-        const ts = _thinkStartTs[mid];
-        if (!ts) { clearInterval(_thinkTimer); _thinkTimer = null; return; }
-        const els = document.querySelectorAll('.mr-rt-think-elapsed');
-        if (els.length === 0) { clearInterval(_thinkTimer); _thinkTimer = null; return; }
-        const sec = Math.round((Date.now() - ts) / 1000);
-        els.forEach(el => { el.textContent = `已 ${sec}s`; });
-      }, 1000);
-    } else if (!hasThinking && _thinkTimer) {
-      clearInterval(_thinkTimer); _thinkTimer = null;
-    }
-    panel.querySelectorAll('.mr-rt-ob-card[data-ob-q]').forEach(card => {
-      card.addEventListener('click', () => {
-        const q = card.getAttribute('data-ob-q');
-        const input = document.getElementById('mr-input-box');
-        if (input && q) { input.textContent = q; input.focus(); _placeCaretAtEnd(input); }
-      });
-    });
-
-    // Stage 2 容错升级：逃生工具栏按钮（提取/跳过/进 shell/重发）+ 截断提示链接（Task 6）。
-    //   选择器从 .mr-ft-escape-btn[data-rt-escape] 放宽到 [data-rt-escape]，让
-    //   .mr-truncated-hint 也能触发 enter-shell（共享同一段 click 处理逻辑）。
-    panel.querySelectorAll('[data-rt-escape]').forEach(btn => {
+    // 逃生工具栏 [data-rt-escape] —— 与原 _bindRtPanelEvents 中的 click handler 字节等价（4 分支：extract / skip / enter-shell / resend / resend-prompt）。
+    slotEl.querySelectorAll('[data-rt-escape]').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         if (btn.hasAttribute('disabled')) return;
@@ -1014,6 +990,45 @@
         }
       });
     });
+  }
+
+  function _bindRtPanelEvents(panel, meeting) {
+    const toggle = panel.querySelector('#mr-rt-history-toggle');
+    if (toggle) {
+      toggle.addEventListener('click', () => {
+        _rtHistoryExpanded = !_rtHistoryExpanded;
+        refreshRoundtablePanel(meeting);
+      });
+    }
+    // T2（2026-05-04 道雪）：每个 slot 卡片走 _bindSlotCardEvents（同一函数 partial 局部 rebind 复用）
+    panel.querySelectorAll('.mr-ft[data-ft-sid]').forEach(slotEl => {
+      _bindSlotCardEvents(slotEl, meeting);
+    });
+    // E3 修复 (2026-05-03)：cmd-bar 的 .mr-rt-cmd-btn click handler 删除（按钮已不渲染）
+    const hasThinking = panel.querySelector('.mr-rt-think-elapsed');
+    if (hasThinking && !_thinkTimer) {
+      const mid = meeting.id;
+      _thinkTimer = setInterval(() => {
+        const ts = _thinkStartTs[mid];
+        if (!ts) { clearInterval(_thinkTimer); _thinkTimer = null; return; }
+        const els = document.querySelectorAll('.mr-rt-think-elapsed');
+        if (els.length === 0) { clearInterval(_thinkTimer); _thinkTimer = null; return; }
+        const sec = Math.round((Date.now() - ts) / 1000);
+        els.forEach(el => { el.textContent = `已 ${sec}s`; });
+      }, 1000);
+    } else if (!hasThinking && _thinkTimer) {
+      clearInterval(_thinkTimer); _thinkTimer = null;
+    }
+    panel.querySelectorAll('.mr-rt-ob-card[data-ob-q]').forEach(card => {
+      card.addEventListener('click', () => {
+        const q = card.getAttribute('data-ob-q');
+        const input = document.getElementById('mr-input-box');
+        if (input && q) { input.textContent = q; input.focus(); _placeCaretAtEnd(input); }
+      });
+    });
+
+    // T2（2026-05-04 道雪）：[data-rt-escape] 工具栏按钮的绑定已迁入 _bindSlotCardEvents
+    //   （上方 panel.querySelectorAll('.mr-ft[data-ft-sid]') 循环已覆盖）。
 
     // 软提醒 banner 关闭按钮
     const banner = panel.querySelector('#mr-rt-soft-alert-banner');
@@ -1250,23 +1265,44 @@
   // pilot redesign（2026-05-02）：timeline-append / timeline-update / _updatePilotPlaceholder 整体废弃
   //   （pilot recap 卡片不再生成，圆桌 timeline 只保留 fanout/debate/summary 公开发言记录）。
 
-  // Roundtable 单家 partial-update：单卡片立即刷新，不等所有家完成
+  // T2（2026-05-04 道雪）：partial diff 短路 — 内容完全没变就不动 DOM，
+  //   修复 B2「皮卡丘已 settled 后小火龙心跳仍打回皮卡丘卡片滚动条」。
+  function _isPartialUnchanged(prev, next) {
+    if (!prev && !next) return true;
+    if (!prev || !next) return false;
+    if (prev.text !== next.text) return false;
+    if (prev.status !== next.status) return false;
+    if (prev.cleanBufLen !== next.cleanBufLen) return false;
+    if (prev.sendStatus !== next.sendStatus) return false;
+    const pt = prev.tokens && prev.tokens.total;
+    const nt = next.tokens && next.tokens.total;
+    if (pt !== nt) return false;
+    const pb = Array.isArray(prev.blocks) ? prev.blocks : null;
+    const nb = Array.isArray(next.blocks) ? next.blocks : null;
+    if (!pb && !nb) return true;
+    if (!pb || !nb) return false;
+    if (pb.length !== nb.length) return false;
+    if (pb.length === 0) return true;
+    const last = pb.length - 1;
+    if (pb[last].type !== nb[last].type) return false;
+    if ((pb[last].text || '') !== (nb[last].text || '')) return false;
+    return true;
+  }
+
+  // Roundtable 单家 partial-update：T2（2026-05-04 道雪）局部 patch + diff 短路 + scrollTop 保留
+  //   修复 B2 滚动条弹回：旧版 panel.innerHTML 全量重渲，三家卡片 DOM 全销毁→
+  //   皮卡丘 settled 后小火龙心跳仍把皮卡丘 .mr-ft-preview 的 scrollTop 拍回 0。
   ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting) || meetingId !== activeMeetingId) return;
     const cached = _rtPanelState[meetingId];
     if (!cached) {
-      // 首次：直接 refresh（拉 state），下次 partial 才能本地更新
+      // 首次：直接 refresh（拉 state），下次 partial 才有 cached 走局部路径
       refreshRoundtablePanel(meeting);
       return;
     }
     if (!cached._partialBy) cached._partialBy = {};
-    // Card redesign（2026-05-01）：partial 携带 thinkSec / tokens 时一并存入，
-    //   让卡片 row3/row4 在 streaming 完成→completed 切换那一刻拿到精准值（不必等下次 state refresh）
-    // T7（2026-05-01）：blocks 数组（thinking/text/tool_use 结构化块）+ source（'tap'|'pty'）
-    //   也写进 cache，_renderFusedTabs 优先读 partial.blocks 走结构化渲染
-    // B1（2026-05-03 道雪）：cleanBufLen 是 streaming 心跳字数，placeholder 渲染读它
-    cached._partialBy[sid] = {
+    const next = {
       text: text || '',
       status: status || 'completed',
       thinkSec: typeof thinkSec === 'number' ? thinkSec : undefined,
@@ -1275,10 +1311,58 @@
       source: source || undefined,
       cleanBufLen: typeof cleanBufLen === 'number' ? cleanBufLen : undefined,
     };
-    // 直接本地重渲染（不调 IPC，省一次 round-trip）
+    const prev = cached._partialBy[sid];
+    // T2 short-circuit：内容完全无变化（高频心跳常见）→ 直接 return，0 DOM 操作
+    if (_isPartialUnchanged(prev, next)) return;
+    // 保留 sendStatus（不在 partial-update 推送，由 send-stuck handler 维护）
+    next.sendStatus = prev && prev.sendStatus;
+    cached._partialBy[sid] = next;
+
+    // T2 局部 patch：找到该 sid 的 slot DOM，outerHTML 替换；其他两个 slot 完全不动
     const panel = _ensureRtPanel();
-    panel.innerHTML = _renderRtPanelHtml(cached, meeting);
-    _bindRtPanelEvents(panel, meeting);
+    const slotEl = panel.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
+    if (!slotEl) {
+      // 兜底：DOM 找不到该 slot（panel 还没渲染过）→ 全量重渲
+      panel.innerHTML = _renderRtPanelHtml(cached, meeting);
+      _bindRtPanelEvents(panel, meeting);
+      return;
+    }
+    // T2 scrollTop 保留：替换前记录 .mr-ft-preview 的滚动位置（即使是流式增长的家自己，也尽量保留）
+    const prevPreview = slotEl.querySelector('.mr-ft-preview');
+    const savedScrollTop = prevPreview ? prevPreview.scrollTop : 0;
+    // 计算新 HTML
+    const slots = _getRtSlots(meeting);
+    const slotIndex = slots.findIndex(slot => slot && slot.sid === sid);
+    if (slotIndex < 0) return;
+    const lastTurn = cached.turns.length > 0 ? cached.turns[cached.turns.length - 1] : null;
+    const summarizerSlot = cached.currentSummarizerSlot || null;
+    const focused = meeting.focusedSub || meeting.subSessions[0];
+    const ctx = {
+      state: cached, currentMode: cached.currentMode || 'idle', partialBy: cached._partialBy,
+      meeting, slots, lastTurn, summarizerSlot, meetingId: meeting.id, focused,
+    };
+    const { html } = _renderSlotCard(slotIndex, ctx);
+    if (!html) return;
+    // outerHTML 替换该 slot（其他卡片 DOM 节点完全不被打扰）
+    slotEl.outerHTML = html;
+    // 重新查找新节点（outerHTML 替换后旧引用已失效）
+    const newSlotEl = panel.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
+    if (newSlotEl) {
+      _bindSlotCardEvents(newSlotEl, meeting);
+      // 恢复 scrollTop
+      const newPreview = newSlotEl.querySelector('.mr-ft-preview');
+      if (newPreview && savedScrollTop > 0) newPreview.scrollTop = savedScrollTop;
+    }
+    // 应用 pilot 视觉（红框）— 与全量 refreshRoundtablePanel 保持一致
+    if (meeting.mode !== 'free') {
+      const pilotSlotForVisual = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
+        ? meeting.pilotSlot : null;
+      const dispatchModeForVisual = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
+        ? meeting.dispatchMode : 'all';
+      requestAnimationFrame(() => {
+        _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
+      });
+    }
   });
 
   // Stage 2 容错升级：软提醒 banner —— watcher 在 T1=90s/T2=180s 触发，UI 弹非阻塞 banner
@@ -3185,3 +3269,33 @@
   };
 
 })();
+
+// Node 测试环境兼容（renderer 真实运行时为 IIFE 浏览器环境，typeof module 为 undefined 走不到这）
+if (typeof module !== 'undefined' && module.exports) {
+  // 让 unit test 能 require 到 _isPartialUnchanged。这种"双模兼容"模式同 core/roundtable-free.js。
+  // 双份函数体看起来 DRY 违反，但 IIFE 内部变量（document、ipcRenderer）在 Node require 时不存在 →
+  // 把整个 IIFE 移出来代价巨大。_isPartialUnchanged 是纯函数无外部依赖 → 复制一份是最低成本路径。
+  module.exports = {
+    _isPartialUnchanged: function _isPartialUnchanged(prev, next) {
+      if (!prev && !next) return true;
+      if (!prev || !next) return false;
+      if (prev.text !== next.text) return false;
+      if (prev.status !== next.status) return false;
+      if (prev.cleanBufLen !== next.cleanBufLen) return false;
+      if (prev.sendStatus !== next.sendStatus) return false;
+      const pt = prev.tokens && prev.tokens.total;
+      const nt = next.tokens && next.tokens.total;
+      if (pt !== nt) return false;
+      const pb = Array.isArray(prev.blocks) ? prev.blocks : null;
+      const nb = Array.isArray(next.blocks) ? next.blocks : null;
+      if (!pb && !nb) return true;
+      if (!pb || !nb) return false;
+      if (pb.length !== nb.length) return false;
+      if (pb.length === 0) return true;
+      const last = pb.length - 1;
+      if (pb[last].type !== nb[last].type) return false;
+      if ((pb[last].text || '') !== (nb[last].text || '')) return false;
+      return true;
+    },
+  };
+}
