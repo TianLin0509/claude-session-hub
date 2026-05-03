@@ -170,6 +170,43 @@ async function testDryRunMode() {
   console.log('  ok dry-run mode');
 }
 
+async function testCardWaitingState() {
+  const card = buildNotifyCard(basePayload({
+    isWaiting: true,
+    newlyWaiting: true,
+    waitingText: '请审批：删除文件 a.txt',
+  }));
+  assert.strictEqual(card.schema, '2.0');
+  assert.strictEqual(card.header.template, 'orange', 'orange for waiting');
+  const md = card.body.elements.map(e => e.content || '').join('\n');
+  assert.ok(md.includes('lindang-agent'), 'title in markdown');
+  assert.ok(md.includes('等你回复'), 'waiting label');
+  assert.ok(md.includes('请审批：删除文件 a.txt'), 'waitingText shown');
+  console.log('  ok card waiting state');
+}
+
+async function testCardCompletedState() {
+  const card = buildNotifyCard(basePayload({
+    isWaiting: false,
+    preview: '已完成数据拉取，准备进入下一轮分析。',
+  }));
+  assert.strictEqual(card.header.template, 'wathet', 'wathet for completed');
+  const md = card.body.elements.map(e => e.content || '').join('\n');
+  assert.ok(md.includes('一轮完成'), 'completed label');
+  assert.ok(md.includes('已完成数据拉取'), 'preview shown');
+  console.log('  ok card completed state');
+}
+
+async function testCardPreviewTruncation() {
+  const longPreview = 'x'.repeat(500);
+  const card = buildNotifyCard(basePayload({ preview: longPreview }));
+  const md = card.body.elements.map(e => e.content || '').join('\n');
+  // preview 段不应超过 200 字符（不算 "..." 后缀）
+  const xCount = (md.match(/x/g) || []).length;
+  assert.ok(xCount <= 210, `preview truncated, got ${xCount} chars`);
+  console.log('  ok card preview truncation');
+}
+
 (async () => {
   console.log('Running FeishuNotifier tests...');
   await testConstructorValidation();
@@ -180,6 +217,9 @@ async function testDryRunMode() {
   await testDifferentSessionsIndependent();
   await testApiFailureNoThrow();
   await testDryRunMode();
+  await testCardWaitingState();
+  await testCardCompletedState();
+  await testCardPreviewTruncation();
   console.log('All passed.');
 })().catch(err => {
   console.error(err);
