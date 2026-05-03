@@ -1,0 +1,150 @@
+/* Hub 工作树面板 · 360px dashboard，与右侧 #memo-panel 平级共存。 */
+
+.worktree-panel {
+  width: 360px;
+  min-width: 360px;
+  max-width: 360px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow-y: auto;
+}
+
+.wt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.wt-header-title { display: flex; align-items: center; gap: 8px; }
+.wt-status-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent-green, #10b981);
+  flex: none;
+}
+.wt-status-dot[data-status="yellow"] { background: #f59e0b; }
+.wt-status-dot[data-status="red"]    { background: #e74c3c; box-shadow: 0 0 6px #e74c3c; }
+.wt-repo-name { font-weight: 600; }
+.wt-session-count { color: var(--text-muted); font-size: 10px; }
+.wt-header-actions { display: flex; gap: 6px; }
+.wt-header-actions button {
+  background: none; border: none; color: var(--text-muted);
+  cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px;
+}
+.wt-header-actions button:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+
+.wt-health {
+  padding: 8px 16px; border-bottom: 1px solid var(--border);
+}
+.wt-health-bar {
+  display: flex; gap: 2px; height: 4px; border-radius: 2px; overflow: hidden;
+  margin-bottom: 6px;
+}
+.wt-health-bar > .seg { height: 100%; }
+.wt-health-bar > .seg-red    { background: #e74c3c; }
+.wt-health-bar > .seg-yellow { background: #f59e0b; }
+.wt-health-bar > .seg-green  { background: #10b981; }
+.wt-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.wt-pill {
+  padding: 3px 8px; border-radius: 10px; font-size: 10px; font-weight: 500;
+}
+.wt-pill-red    { background: rgba(239,68,68,.15);  color: #fca5a5; }
+.wt-pill-yellow { background: rgba(245,158,11,.12); color: #fbbf24; }
+.wt-pill-green  { background: rgba(16,185,129,.12); color: #6ee7b7; }
+
+.wt-section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.wt-section:last-of-type { border-bottom: none; }
+.wt-section-label {
+  font-size: 9.5px; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 1.2px;
+  margin-bottom: 8px;
+}
+
+.wt-topology .wt-tp-row { font-family: monospace; font-size: 10.5px; line-height: 1.7; }
+.wt-tp-branch {
+  background: rgba(167,139,250,.15); color: #c4b5fd;
+  padding: 1px 5px; border-radius: 3px; margin-right: 4px;
+}
+.wt-tp-cwd { color: #7dd3fc; }
+.wt-tp-sessions { color: var(--text-muted); padding-left: 14px; font-size: 10px; }
+.wt-tp-row[data-conflict="red"] .wt-tp-branch { background: rgba(239,68,68,.15); }
+
+.wt-current .wt-cwd-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.wt-current .wt-cwd {
+  flex: 1; color: #7dd3fc; font-family: monospace; font-size: 10.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer;
+}
+.wt-current .wt-cwd:hover { text-decoration: underline; }
+.wt-open-explorer {
+  background: none; border: none; color: var(--text-muted);
+  cursor: pointer; font-size: 12px; padding: 2px 4px;
+}
+.wt-current .wt-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.wt-meta .wt-pill { font-size: 10px; padding: 2px 7px; }
+
+.wt-commit-graph {
+  background: var(--bg-primary); border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 10px;
+  font-family: monospace; font-size: 10px; line-height: 1.6;
+}
+.wt-commit-graph .wt-commit { color: #6ee7b7; }
+.wt-commit-graph .wt-commit-old { color: var(--text-muted); }
+.wt-commit-graph .wt-commit-line { color: var(--text-muted); }
+
+.wt-files { display: flex; flex-direction: column; gap: 4px; }
+.wt-file {
+  display: flex; align-items: center; gap: 6px; font-size: 10.5px;
+  background: var(--bg-primary); padding: 5px 8px; border-radius: 4px;
+  cursor: pointer;
+}
+.wt-file:hover { background: var(--hover-bg, rgba(255,255,255,.04)); }
+.wt-file .wt-stat-letter {
+  width: 12px; font-family: monospace; font-weight: 600;
+}
+.wt-file[data-status="M"] .wt-stat-letter { color: #fbbf24; }
+.wt-file[data-status="U"] .wt-stat-letter { color: #10b981; }
+.wt-file[data-status="D"] .wt-stat-letter { color: #ef4444; }
+.wt-file[data-status="R"] .wt-stat-letter { color: #c4b5fd; }
+.wt-file .wt-fname { flex: 1; color: var(--text-primary); font-family: monospace; }
+.wt-file .wt-stat { font-size: 9.5px; font-family: monospace; }
+
+.wt-peer-card {
+  border-radius: 6px; padding: 8px 10px; margin-bottom: 6px;
+  cursor: pointer;
+}
+.wt-peer-card[data-conflict="red"] {
+  background: linear-gradient(135deg, rgba(239,68,68,.1), transparent);
+  border: 1px solid rgba(239,68,68,.25);
+}
+.wt-peer-card[data-conflict="yellow"] {
+  background: rgba(245,158,11,.06);
+  border: 1px solid rgba(245,158,11,.2);
+}
+.wt-peer-card[data-conflict="green"] { padding: 6px 10px; }
+.wt-peer-card:hover { filter: brightness(1.1); }
+.wt-peer-card .wt-peer-head { display: flex; align-items: center; gap: 6px; }
+.wt-peer-card .wt-peer-meta { color: var(--text-muted); font-size: 10px; margin-top: 3px; margin-left: 12px; }
+.wt-peer-card .wt-peer-reason { color: #fca5a5; font-size: 10px; margin-top: 3px; margin-left: 12px; }
+
+.wt-error {
+  margin: 8px 16px; padding: 8px 12px;
+  background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3);
+  border-radius: 4px; color: #fca5a5; font-size: 11px;
+}
+.wt-error button {
+  margin-left: 8px; background: none; border: 1px solid currentColor;
+  color: inherit; padding: 2px 8px; border-radius: 3px; cursor: pointer;
+}
+
+.wt-spinner {
+  display: inline-block; width: 12px; height: 12px;
+  border: 2px solid var(--text-muted); border-top-color: transparent;
+  border-radius: 50%; animation: wt-spin 0.8s linear infinite;
+}
+@keyframes wt-spin { to { transform: rotate(360deg); } }
