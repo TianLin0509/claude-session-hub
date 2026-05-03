@@ -960,6 +960,20 @@ function _rtExtractStreamingText(sid, _kind) {
   return { source: 'placeholder', blocks: [], text: '' };
 }
 
+// 2026-05-03 道雪 B1：心跳指示器 - PTY buffer 剥 ANSI/spinner 后的"可读字符数"
+//   用途：streaming 期间推 partial.cleanBufLen，卡片显示"已输出约 N 字"心跳
+//   精度：含 CLI 自身状态条文案（"Computing..." "Brewed for 1m"），是活跃度近似值
+function _rtCleanBufLen(buf) {
+  if (!buf) return 0;
+  const cleaned = String(buf)
+    .replace(/\[[0-9;?]*[A-Za-z]/g, '')   // ANSI CSI
+    .replace(/\][^]*/g, '')   // OSC
+    .replace(/[()][\w]/g, '')              // charset
+    .replace(/[\b\r]/g, '')                       // backspace + CR
+    .replace(/[✻✶✽✢●·*⏺⠁⠂⠄⠈⠐⠠⡀⢀]/g, '');     // spinner symbols
+  return cleaned.length;
+}
+
 // Stage 2 容错升级（2026-05-01）— 用 turn-completion-watcher 替代老 watchdog 实现
 //
 // 架构变更：
@@ -1025,28 +1039,31 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   //   一直停在 idle / initializing）。同时 watcher 自身已发 status 信号，partial 是补充。
   let streamTimer = null;
   if (typeof onPartial === 'function') {
-    let placeholderEmitted = false;
     streamTimer = setInterval(() => {
       if (watcher.isSettled()) { clearInterval(streamTimer); streamTimer = null; return; }
       const session = sessionManager.getSession(sid);
       const kind = session?.kind || 'unknown';
       const result = _rtExtractStreamingText(sid, kind);
       const hasContent = result.text.length > 10 || result.blocks.length > 0;
+      // B1（2026-05-03 道雪）：每次心跳都计算 cleanBufLen 让 renderer 显示"已输出约 N 字"
+      //   placeholder 路径改为每次都推（原 placeholderEmitted=true 后只推一次）。
+      //   代价：60s 圆桌每家多 ~40 次 IPC（~120 次/3 sub），远小于真 streaming 的事件量。
+      const buf = sessionManager.getSessionBuffer(sid) || '';
+      const cleanBufLen = _rtCleanBufLen(buf);
       if (hasContent) {
         try {
           onPartial({
             sid, label, status: 'streaming',
             blocks: result.blocks, source: result.source, text: result.text,
+            cleanBufLen,
           });
         } catch {}
-      } else if (!placeholderEmitted) {
-        // 第一次没拿到 tap 数据，推一次 placeholder partial 让卡片状态切到 streaming
-        // （后续轮询不再重复推 placeholder，避免 IPC 噪音；等真有 tap 数据才再触发 push）
-        placeholderEmitted = true;
+      } else {
         try {
           onPartial({
             sid, label, status: 'streaming',
             blocks: [], source: 'placeholder', text: '',
+            cleanBufLen,
           });
         } catch {}
       }
@@ -1300,6 +1317,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
             blocks: partial.blocks,
             source: partial.source,
             thinkSec: partial.thinkSec, tokens: partial.tokens,
+            cleanBufLen: partial.cleanBufLen,   // B1 道雪 2026-05-03 心跳字数
           });
         },
       })

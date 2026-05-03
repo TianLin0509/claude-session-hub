@@ -454,7 +454,16 @@
         } else if (textFromPartial) {
           inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
         } else {
-          inner = '<div class="mr-ft-thinking-placeholder">💭 思考中...</div>';
+          // 2026-05-03 道雪 B1：placeholder 心跳 - 显示思考时长 + cleanBufLen 字数
+          //   数据源：main.js 心跳 partial.cleanBufLen（PTY buffer 剥 ANSI/spinner）
+          //   注意：cleanBufLen 含 cli 状态条文案（"Computing..."），是活跃度近似值
+          const elapsedSec = _thinkStartTs[meetingId]
+            ? Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000)
+            : 0;
+          const elapsedTxt = _formatThinkTime(elapsedSec);
+          const liveLen = (partial && typeof partial.cleanBufLen === 'number') ? partial.cleanBufLen : 0;
+          const lenTxt = liveLen > 0 ? ` · 已输出约 ${liveLen} 字` : '';
+          inner = `<div class="mr-ft-thinking-placeholder">💭 思考中 ${elapsedTxt}${lenTxt}<br><span class="mr-ft-thinking-hint">详情请点击左侧子 session 查看</span></div>`;
         }
         bottomHtml = `<div class="mr-ft-preview streaming mr-ft-preview-md">${inner}<span class="mr-ft-cursor"></span></div>`;
       } else if (blocksFromPartial || textFromPartial || textFromHistory) {
@@ -1152,7 +1161,7 @@
   //   （pilot recap 卡片不再生成，圆桌 timeline 只保留 fanout/debate/summary 公开发言记录）。
 
   // Roundtable 单家 partial-update：单卡片立即刷新，不等所有家完成
-  ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source }) => {
+  ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting) || meetingId !== activeMeetingId) return;
     const cached = _rtPanelState[meetingId];
@@ -1166,6 +1175,7 @@
     //   让卡片 row3/row4 在 streaming 完成→completed 切换那一刻拿到精准值（不必等下次 state refresh）
     // T7（2026-05-01）：blocks 数组（thinking/text/tool_use 结构化块）+ source（'tap'|'pty'）
     //   也写进 cache，_renderFusedTabs 优先读 partial.blocks 走结构化渲染
+    // B1（2026-05-03 道雪）：cleanBufLen 是 streaming 心跳字数，placeholder 渲染读它
     cached._partialBy[sid] = {
       text: text || '',
       status: status || 'completed',
@@ -1173,6 +1183,7 @@
       tokens: tokens || undefined,
       blocks: Array.isArray(blocks) ? blocks : undefined,
       source: source || undefined,
+      cleanBufLen: typeof cleanBufLen === 'number' ? cleanBufLen : undefined,
     };
     // 直接本地重渲染（不调 IPC，省一次 round-trip）
     const panel = _ensureRtPanel();
