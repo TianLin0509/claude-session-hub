@@ -33,10 +33,14 @@ const KIND_LABELS = {
   glm:    'GLM',
 };
 
+// 2026-05-03 调试期默认（道雪）：先用 3 个 Claude Sonnet 4.5 把圆桌主流程跑稳。
+//   起因：claude / gemini-cli / codex-cli 三家 CLI 行为差异较大，之前混合默认导致
+//   单条 bug 经常牵涉多家——先把"同种 AI ×3"的场景调通，再把混合默认放回来。
+//   恢复路径：改回 [claude opus / gemini flash / codex gpt-5.5] 即可。
 const DEFAULT_SLOTS = [
-  { kind: 'claude', model: 'claude-opus-4-7[1m]' },
-  { kind: 'gemini', model: 'gemini-2.5-flash' },
-  { kind: 'codex',  model: 'gpt-5.5' },
+  { kind: 'claude', model: 'claude-sonnet-4-5' },
+  { kind: 'claude', model: 'claude-sonnet-4-5' },
+  { kind: 'claude', model: 'claude-sonnet-4-5' },
 ];
 
 const SLOT_AVATARS = [

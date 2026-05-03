@@ -39,10 +39,13 @@ test('modal js has MODELS_BY_KIND with all 5 kinds non-empty', () => {
   assert.match(MODAL_JS, /'glm-/);
 });
 
-test('DEFAULT_SLOTS preserves old implicit behavior (Claude/Gemini/Codex defaults)', () => {
-  assert.match(MODAL_JS, /kind:\s*'claude'[\s\S]{0,80}claude-opus-4-7\[1m\]/);
-  assert.match(MODAL_JS, /kind:\s*'gemini'[\s\S]{0,80}gemini-2.5-flash/);
-  assert.match(MODAL_JS, /kind:\s*'codex'[\s\S]{0,80}gpt-5.5/);
+test('DEFAULT_SLOTS = 3x Claude Sonnet 4.5 (debug-phase default, 2026-05-03)', () => {
+  // 调试期把混合默认压成同种 ×3，先把圆桌通用流程跑稳。
+  const matches = MODAL_JS.match(
+    /\{\s*kind:\s*'claude'\s*,\s*model:\s*'claude-sonnet-4-5'\s*\}/g
+  ) || [];
+  assert.strictEqual(matches.length, 3,
+    `expected 3 default slots of (claude, claude-sonnet-4-5), got ${matches.length}`);
 });
 
 test('SLOT_AVATARS = pikachu / charmander / squirtle (slot-bound, not kind-bound)', () => {
