@@ -27,7 +27,7 @@ const MODELS_BY_KIND = {
   deepseek: ['deepseek-v4-pro', 'deepseek-v4-flash'],
   glm:      ['glm-5.1', 'glm-4.6', 'glm-4-plus', 'glm-4-air'],
   // PackyAPI 三家：跑在 Claude CLI 上，model id 由 PackyAPI 端确定
-  gpt:      ['gpt-5.5', 'gpt-5.4'],
+  gpt:      ['gpt-5.4-high', 'gpt-5.5', 'gpt-5.4'],
   kimi:     ['kimi-k2.5'],
   qwen:     ['qwen3.6-plus'],
 };

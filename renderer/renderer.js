@@ -2855,7 +2855,7 @@ function renderAccountUsage() {
     buildLine('codex', 'codex', 'Codex', c.usage5h, c.usage7d, agentUsageLastSeen.codex) +
     buildLine('deepseek', 'deepseek', 'DeepSeek', null, null, 0, false) +
     buildLine('glm', 'glm', 'GLM', null, null, 0, false) +
-    buildLine('gpt', 'gpt', 'GPT 5.5', null, null, 0, false) +
+    buildLine('gpt', 'gpt', 'GPT 5.4 high', null, null, 0, false) +
     buildLine('kimi', 'kimi', 'Kimi K2.5', null, null, 0, false) +
     buildLine('qwen', 'qwen', 'Qwen 3.6 Plus', null, null, 0, false);
 }
@@ -3501,7 +3501,7 @@ function updateConfigSummaries() {
   const glmKey = configEl('cfg-glm-key') ? configEl('cfg-glm-key').value.trim() : '';
   const glmModel = configEl('cfg-glm-model') ? (configEl('cfg-glm-model').value.trim() || 'glm-5.1') : 'glm-5.1';
   const gptKey = configEl('cfg-gpt-key') ? configEl('cfg-gpt-key').value.trim() : '';
-  const gptModel = configEl('cfg-gpt-model') ? (configEl('cfg-gpt-model').value.trim() || 'gpt-5.5') : 'gpt-5.5';
+  const gptModel = configEl('cfg-gpt-model') ? (configEl('cfg-gpt-model').value.trim() || 'gpt-5.4-high') : 'gpt-5.4-high';
   const kimiKey = configEl('cfg-kimi-key') ? configEl('cfg-kimi-key').value.trim() : '';
   const kimiModel = configEl('cfg-kimi-model') ? (configEl('cfg-kimi-model').value.trim() || 'kimi-k2.5') : 'kimi-k2.5';
   const qwenKey = configEl('cfg-qwen-key') ? configEl('cfg-qwen-key').value.trim() : '';

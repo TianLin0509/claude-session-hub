@@ -25,7 +25,7 @@ const DEFAULTS = {
   codex_api_provider: 'packycode',
   // PackyAPI multi-model sessions (Anthropic-format endpoint)
   gpt_base_url: 'https://www.packyapi.com',
-  gpt_model: 'gpt-5.5',
+  gpt_model: 'gpt-5.4-high',
   kimi_base_url: 'https://www.packyapi.com',
   kimi_model: 'kimi-k2.5',
   qwen_base_url: 'https://www.packyapi.com',

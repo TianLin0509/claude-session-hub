@@ -455,7 +455,7 @@ class SessionManager extends EventEmitter {
       currentModel = { id: mid, displayName: mid.toLowerCase().includes('5.1') ? 'GLM 5.1' : mid };
     } else if (isGpt) {
       const cv = getConfigValues();
-      const mid = opts.model || cv.GPT_MODEL || 'gpt-5.5';
+      const mid = opts.model || cv.GPT_MODEL || 'gpt-5.4-high';
       currentModel = { id: mid, displayName: mid.toUpperCase() };
     } else if (isKimi) {
       const cv = getConfigValues();
@@ -749,15 +749,15 @@ class SessionManager extends EventEmitter {
       const cv = getConfigValues();
       let cmd;
       if (kind === 'gpt-resume') {
-        const model = opts.model || cv.GPT_MODEL || 'gpt-5.5';
+        const model = opts.model || cv.GPT_MODEL || 'gpt-5.4-high';
         cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.resumeCCSessionId) {
-        const model = opts.model || cv.GPT_MODEL || 'gpt-5.5';
+        const model = opts.model || cv.GPT_MODEL || 'gpt-5.4-high';
         cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
         cmd = ' claude --continue --permission-mode bypassPermissions';
       } else {
-        cmd = ` claude --model ${opts.model || cv.GPT_MODEL || 'gpt-5.5'} --permission-mode bypassPermissions`;
+        cmd = ` claude --model ${opts.model || cv.GPT_MODEL || 'gpt-5.4-high'} --permission-mode bypassPermissions`;
       }
       // 圆桌成员：禁 skill + plugin
       cmd += buildRoundtableIsolationFlags(opts.meetingId);
@@ -967,7 +967,7 @@ class SessionManager extends EventEmitter {
       cmd = ` claude --model ${modelId || cv.GLM_MODEL || 'glm-5.1'} --permission-mode bypassPermissions${isolation}\r\n`;
     } else if (kind === 'gpt' || kind === 'gpt-resume') {
       const cv = getConfigValues();
-      cmd = ` claude --model ${modelId || cv.GPT_MODEL || 'gpt-5.5'} --permission-mode bypassPermissions${isolation}\r\n`;
+      cmd = ` claude --model ${modelId || cv.GPT_MODEL || 'gpt-5.4-high'} --permission-mode bypassPermissions${isolation}\r\n`;
     } else if (kind === 'kimi' || kind === 'kimi-resume') {
       const cv = getConfigValues();
       cmd = ` claude --model ${modelId || cv.KIMI_MODEL || 'kimi-k2.5'} --permission-mode bypassPermissions${isolation}\r\n`;
