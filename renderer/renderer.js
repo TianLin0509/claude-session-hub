@@ -1479,6 +1479,9 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   }
 
   inputBox.addEventListener('keydown', (e) => {
+    // IME composition (中/日/韩) 中, 回车是给候选词用的, 不是给应用层。
+    // 不放行就会出现:中文按回车选词被当作"发送"+清空输入框,数字纯 ASCII 不受影响。
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendInput();
