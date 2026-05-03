@@ -80,6 +80,9 @@ if (typeof document !== 'undefined') (function () {
   // partialBy: 当前进行中轮次的部分回答 { sid: { text, status } } — 单家完成立即更新
   const _rtPanelState = {};
   let _rtHistoryExpanded = false;
+  // T3（2026-05-04 道雪）：抽屉实时订阅状态。打开时设 { sid, mid, kind }，关时清 null。
+  //   partial-update handler 命中同 sid + 用户当前 active 的是 live tab 时，更新抽屉内容。
+  let _rtTimelineLive = null;
   // pilot redesign（2026-05-02）：_privateCountCache 已废弃（圆桌不再桥接子会话私聊）
   const _thinkStartTs = {};
   let _thinkTimer = null;
@@ -1053,6 +1056,8 @@ if (typeof document !== 'undefined') (function () {
 
   // ---- AI 时间线浮层 ----------------------------------------------------
   // 点击任意卡片 → 打开右侧抽屉，顶部 Tab 列轮次（最新在最左 = 默认 active），点 Tab 切换内容。
+  // T3（2026-05-04 道雪）：合并 _partialBy[sid] 作为「实时」虚拟轮次（如果有内容）；
+  //   抽屉打开期间订阅 partial-update 实时更新内容（修复 B1 看不到本轮 partial）。
   function _openRtTimeline(meeting, sid, kind) {
     const state = _rtPanelState[meeting.id];
     if (!state || !Array.isArray(state.turns)) return;
@@ -1061,16 +1066,35 @@ if (typeof document !== 'undefined') (function () {
     const subs = _getRtSubInfo(meeting);
     const sub = subs[kind];
     const headerLabel = sub && sub.label ? sub.label : labelDisplay;
-    // 抽屉边框色与卡片同槽位 — 按 sid 在 subSessions 数组里的位置算 slot
     const slotIdxTl = (meeting && Array.isArray(meeting.subSessions))
       ? Math.max(0, meeting.subSessions.indexOf(sid))
       : 0;
     const slotClsTl = `slot-${slotIdxTl + 1}`;
 
     // 收集该 sid 有回答的轮次，按 turn n 倒序（最新在最左）
-    const turnsWithAns = state.turns
+    const historyTurns = state.turns
       .filter(t => (t.by || {})[sid])
       .sort((a, b) => b.n - a.n);
+
+    // T3：本轮 partial 合并（皮卡丘 settled 但小火龙未完时，本轮没 turn-complete → 用户在抽屉看不到本轮内容）
+    const partial = (state._partialBy || {})[sid];
+    const liveText = (partial && (partial.text || (Array.isArray(partial.blocks) && partial.blocks.length > 0)))
+      ? (partial.text || '') : null;
+    const turnsWithAns = [...historyTurns];
+    let liveTurn = null;
+    if (liveText !== null) {
+      const baseTurnN = (historyTurns[0] && historyTurns[0].n) || (state.turnNum || 0);
+      liveTurn = {
+        n: baseTurnN + 1,
+        mode: state.currentMode || 'fanout',
+        by: { [sid]: liveText },
+        userInput: '',  // partial 阶段没有标准化的 userInput；留空避免 stale
+        _live: true,
+        _partialStatus: partial.status,
+        _partialBlocks: Array.isArray(partial.blocks) ? partial.blocks : null,
+      };
+      turnsWithAns.unshift(liveTurn);
+    }
 
     let overlay = document.getElementById('mr-rt-timeline-overlay');
     if (!overlay) {
@@ -1082,7 +1106,22 @@ if (typeof document !== 'undefined') (function () {
 
     const renderTurnBody = (turn) => {
       if (!turn) return '<div class="mr-rt-tl-empty">该 AI 还没有可显示的历史回答。</div>';
-      const text = (turn.by || {})[sid] || '';
+      // T3：_live 走 partial blocks（如有）→ markdown text → 占位
+      let bodyHtml;
+      if (turn._live) {
+        if (turn._partialBlocks && turn._partialBlocks.length > 0) {
+          bodyHtml = _renderPreviewBlocks(turn._partialBlocks, sid);
+        } else if (turn.by[sid]) {
+          bodyHtml = _renderMarkdown(turn.by[sid]);
+        } else {
+          bodyHtml = '<div class="mr-rt-tl-empty" style="opacity:.6">💭 思考中…等待 AI 输出</div>';
+        }
+        // 加流式光标
+        bodyHtml += '<span class="mr-ft-cursor"></span>';
+      } else {
+        const text = (turn.by || {})[sid] || '';
+        bodyHtml = _renderMarkdown(text);
+      }
       const userIn = (turn.userInput || '').trim();
       const userBlock = userIn
         ? `<div class="mr-rt-tl-user">用户输入：${escapeHtml(userIn.slice(0, 400))}${userIn.length > 400 ? '…' : ''}</div>`
@@ -1090,20 +1129,21 @@ if (typeof document !== 'undefined') (function () {
       const decisionTag = turn.decisionTitle
         ? `<div class="mr-rt-tl-decision-row">📌 决策标题：${escapeHtml(turn.decisionTitle)}</div>`
         : '';
-      return `${decisionTag}${userBlock}<div class="mr-rt-tl-body">${_renderMarkdown(text)}</div>`;
+      return `${decisionTag}${userBlock}<div class="mr-rt-tl-body">${bodyHtml}</div>`;
     };
 
     const tabsHtml = turnsWithAns.map((t, i) => {
       const modeLabel = { fanout: '提问', debate: '辩论', summary: '综合' }[t.mode] || t.mode;
       const isLatest = i === 0;
-      return `<button type="button" class="mr-rt-tl-tab ${isLatest ? 'active' : ''}" data-tab-idx="${i}" title="第 ${t.n} 轮 · ${escapeHtml(modeLabel)}">
+      const liveTag = t._live ? '<span class="mr-rt-tl-tab-latest" style="background:#22863a">实时</span>' : '';
+      const latestTag = (isLatest && !t._live) ? '<span class="mr-rt-tl-tab-latest">最新</span>' : '';
+      return `<button type="button" class="mr-rt-tl-tab ${isLatest ? 'active' : ''}" data-tab-idx="${i}" data-tab-live="${t._live ? '1' : '0'}" title="第 ${t.n} 轮 · ${escapeHtml(modeLabel)}">
         <span class="mr-rt-tl-tab-turn">第 ${t.n} 轮</span>
         <span class="mr-rt-tl-tab-mode ${escapeHtml(t.mode)}">${escapeHtml(modeLabel)}</span>
-        ${isLatest ? '<span class="mr-rt-tl-tab-latest">最新</span>' : ''}
+        ${liveTag}${latestTag}
       </button>`;
     }).join('');
 
-    // pilot redesign（2026-05-02）：私聊 tab 已删除（圆桌不再桥接子会话私聊）。
     const hasAnyTab = turnsWithAns.length > 0;
 
     overlay.innerHTML = `
@@ -1120,22 +1160,30 @@ if (typeof document !== 'undefined') (function () {
     `;
     overlay.style.display = 'block';
 
+    // T3：注册 live 订阅（仅当有 liveTurn 且默认 active 是它时）
+    _rtTimelineLive = (liveTurn && turnsWithAns[0] && turnsWithAns[0]._live)
+      ? { sid, mid: meeting.id, kind } : null;
+
     const contentEl = overlay.querySelector('#mr-rt-tl-content');
     overlay.querySelectorAll('.mr-rt-tl-tab').forEach(btn => {
       btn.addEventListener('click', () => {
         overlay.querySelectorAll('.mr-rt-tl-tab').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         const idx = parseInt(btn.getAttribute('data-tab-idx') || '0', 10);
+        const isLive = btn.getAttribute('data-tab-live') === '1';
         if (contentEl) {
           contentEl.innerHTML = renderTurnBody(turnsWithAns[idx]);
           contentEl.scrollTop = 0;
         }
+        // T3：用户切走 live tab → 解订阅；切回 live tab → 重订阅
+        _rtTimelineLive = (isLive && liveTurn) ? { sid, mid: meeting.id, kind } : null;
       });
     });
 
     const closeAll = () => {
       overlay.style.display = 'none';
       document.removeEventListener('keydown', escHandler);
+      _rtTimelineLive = null;  // T3：关抽屉清订阅
     };
     const escHandler = (ev) => { if (ev.key === 'Escape') closeAll(); };
     overlay.querySelectorAll('[data-rt-tl-close]').forEach(el => {
@@ -1362,6 +1410,29 @@ if (typeof document !== 'undefined') (function () {
       requestAnimationFrame(() => {
         _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
       });
+    }
+    // T3（2026-05-04 道雪）：抽屉实时订阅 — 用户打开 ↗ 看本 sid 的实时 tab 时，
+    //   不重建 overlay，仅 mutate `.mr-rt-tl-body` innerHTML，保留用户的滚动位置。
+    if (_rtTimelineLive && _rtTimelineLive.sid === sid && _rtTimelineLive.mid === meetingId) {
+      const overlay = document.getElementById('mr-rt-timeline-overlay');
+      if (overlay && overlay.style.display !== 'none') {
+        const tlBody = overlay.querySelector('.mr-rt-tl-body');
+        if (tlBody) {
+          let inner;
+          if (Array.isArray(next.blocks) && next.blocks.length > 0) {
+            inner = _renderPreviewBlocks(next.blocks, sid);
+          } else if (next.text) {
+            inner = _renderMarkdown(next.text);
+          } else {
+            inner = '<div class="mr-rt-tl-empty" style="opacity:.6">💭 思考中…等待 AI 输出</div>';
+          }
+          // T3 滚动保留：mutate innerHTML 时记录旧 scrollTop，在父容器（.mr-rt-tl-content）层面恢复
+          const tlContent = overlay.querySelector('#mr-rt-tl-content');
+          const savedScroll = tlContent ? tlContent.scrollTop : 0;
+          tlBody.innerHTML = inner;
+          if (tlContent && savedScroll > 0) tlContent.scrollTop = savedScroll;
+        }
+      }
     }
   });
 
