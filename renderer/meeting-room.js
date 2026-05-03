@@ -1312,10 +1312,10 @@ if (typeof document !== 'undefined') (function () {
       cleanBufLen: typeof cleanBufLen === 'number' ? cleanBufLen : undefined,
     };
     const prev = cached._partialBy[sid];
+    // T2（2026-05-04 道雪）：先把 sendStatus 从 prev 抄到 next，再做 diff —— 否则 stuck 心跳每次都误判变化，短路失效。
+    next.sendStatus = prev && prev.sendStatus;
     // T2 short-circuit：内容完全无变化（高频心跳常见）→ 直接 return，0 DOM 操作
     if (_isPartialUnchanged(prev, next)) return;
-    // 保留 sendStatus（不在 partial-update 推送，由 send-stuck handler 维护）
-    next.sendStatus = prev && prev.sendStatus;
     cached._partialBy[sid] = next;
 
     // T2 局部 patch：找到该 sid 的 slot DOM，outerHTML 替换；其他两个 slot 完全不动

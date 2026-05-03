@@ -64,3 +64,9 @@ test('blocks 数组按 length + 末块 type/text 比对（轻量比对）', () =
   const next3 = { text: '', status: 'streaming', blocks: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] };
   assert.equal(_isPartialUnchanged(prev, next3), false);
 });
+
+test('sendStatus stuck 心跳：prev 与 next 都已带 stuck 时视为 unchanged（短路生效）', () => {
+  const prev = { text: 'abc', status: 'streaming', sendStatus: 'stuck' };
+  const next = { text: 'abc', status: 'streaming', sendStatus: 'stuck' };
+  assert.equal(_isPartialUnchanged(prev, next), true);
+});
