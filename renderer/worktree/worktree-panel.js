@@ -237,6 +237,16 @@
       }
     },
     toggle() {
+      // Lazy-pickup: 一些 session-created 路径直接赋值 activeSessionId 而不走
+      // selectSession，可能没触发 onSessionChange。toggle 时兜底读一次 renderer.js
+      // 的全局 activeSessionId（classic script 的 top-level let 在 script scope 共享）。
+      if (!currentSessionId) {
+        try {
+          if (typeof activeSessionId !== 'undefined' && activeSessionId) {
+            currentSessionId = activeSessionId;
+          }
+        } catch (_) { /* ReferenceError = 没这个全局，正常 fall through */ }
+      }
       if (!currentSessionId) return;
       const next = panel.style.display === 'none';
       panel.style.display = next ? '' : 'none';

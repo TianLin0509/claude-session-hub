@@ -3949,6 +3949,7 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   ipcRenderer.send('focus-session', { sessionId: session.id });
   renderSessionList();
   showTerminal(session.id);
+  window.worktreePanel?.onSessionChange(session.id);
 });
 
 ipcRenderer.on('session-closed', (_e, { sessionId }) => {
