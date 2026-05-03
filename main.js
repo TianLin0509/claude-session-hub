@@ -179,6 +179,41 @@ function ensureCodexContextConfig() {
   }
 }
 
+// Ensure Gemini CLI has arena-research MCP server registered. Gemini reads
+// ~/.gemini/settings.json and auto-launches mcpServers entries on startup.
+// We register the server with stdio transport, NO env field — the server
+// inherits ARENA_* env from the gemini parent process. When gemini is started
+// without ARENA_* env (user's standalone gemini, or non-research roundtable),
+// the server enters STUB mode and exposes no tools.
+function ensureGeminiMcpInstalled() {
+  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  const geminiDir = path.join(home, '.gemini');
+  if (!fs.existsSync(geminiDir)) return;
+  const settingsPath = path.join(geminiDir, 'settings.json');
+  let settings = {};
+  try {
+    settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  } catch { settings = {}; }
+  if (!settings.mcpServers || typeof settings.mcpServers !== 'object') {
+    settings.mcpServers = {};
+  }
+  const mcpServerPath = path.resolve(__dirname, 'core', 'research-mcp-server.js');
+  const desired = {
+    command: process.execPath,
+    args: [mcpServerPath],
+    env: { ELECTRON_RUN_AS_NODE: '1' },
+  };
+  const existing = settings.mcpServers['arena-research'];
+  if (existing && JSON.stringify(existing) === JSON.stringify(desired)) return;
+  settings.mcpServers['arena-research'] = desired;
+  try {
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    console.log('[圆桌] arena-research MCP installed into Gemini settings.json');
+  } catch (e) {
+    console.warn('[圆桌] gemini mcp install failed:', e.message);
+  }
+}
+
 // Find the project directory holding a given CC session's JSONL by globbing
 // ~/.claude/projects/<slug>/<ccSessionId>.jsonl across all project slugs.
 // Returns the full path, or null if not found.
@@ -533,6 +568,18 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
       }
     } else if (kind === 'gemini') {
       sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
+      // Inject ARENA_* env so the arena-research MCP server (registered globally
+      // in ~/.gemini/settings.json by ensureGeminiMcpInstalled) wakes up with
+      // tool list. Without these env vars the server enters STUB mode (no tools).
+      if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
+        Object.assign(sessionOpts.extraEnv, {
+          ELECTRON_RUN_AS_NODE: '1',
+          ARENA_MEETING_ID: meetingId,
+          ARENA_HUB_PORT: String(hookPort),
+          ARENA_HOOK_TOKEN: HOOK_TOKEN,
+          ARENA_AI_KIND: 'gemini',
+        });
+      }
     } else if (kind === 'codex') {
       sessionOpts.codexInstructionFile = promptFile;
       sessionOpts.codexBypassApprovals = true;
@@ -2515,9 +2562,10 @@ const hookServer = http.createServer((req, res) => {
   const isHook = req.method === 'POST' && req.url.startsWith('/api/hook/');
   const isStatus = req.method === 'POST' && req.url === '/api/status';
   const isResearchFetchStock = req.method === 'POST' && req.url === '/api/research/fetch-stock';
+  const isResearchFetchField = req.method === 'POST' && req.url === '/api/research/fetch-field';
   const isResearchFetchConcept = req.method === 'POST' && req.url === '/api/research/fetch-concept';
   const isResearchFetchSector = req.method === 'POST' && req.url === '/api/research/fetch-sector';
-  const isResearchFetch = isResearchFetchStock || isResearchFetchConcept || isResearchFetchSector;
+  const isResearchFetch = isResearchFetchStock || isResearchFetchField || isResearchFetchConcept || isResearchFetchSector;
   if (!isHook && !isStatus && !isResearchFetch) {
     res.writeHead(404); res.end('{}'); return;
   }
@@ -2537,7 +2585,7 @@ const hookServer = http.createServer((req, res) => {
     // Research mode MCP callbacks (loopback)：fetch_lindang_stock / fetch_concept_stocks / fetch_sector_overview
     if (isResearchFetch) {
       if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
-      const { meetingId, kind, symbol, name, concept, top_n, sector } = parsed;
+      const { meetingId, kind, symbol, name, concept, top_n, sector, op } = parsed;
       const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
       if (!meeting || meeting.scene !== 'research') {
         res.writeHead(400); res.end('{"error":"not research mode"}'); return;
@@ -2547,6 +2595,8 @@ const hookServer = http.createServer((req, res) => {
       try {
         if (isResearchFetchStock) {
           result = await lindangBridge.fetchStock(symbol, name);
+        } else if (isResearchFetchField) {
+          result = await lindangBridge.fetchField(op, symbol);
         } else if (isResearchFetchConcept) {
           result = await lindangBridge.fetchConcept(concept, top_n || 10);
         } else {
@@ -3040,6 +3090,9 @@ app.whenReady().then(async () => {
   traceStartup('codex config start');
   ensureCodexContextConfig();
   traceStartup('codex config done');
+  traceStartup('gemini mcp install start');
+  ensureGeminiMcpInstalled();
+  traceStartup('gemini mcp install done');
   traceStartup('createWindow start');
   createWindow();
   traceStartup('createWindow done');

@@ -1,7 +1,13 @@
 'use strict';
-// LinDangAgent 桥接：spawn `python -m services.fetch_for_arena ...` 拉取 A 股数据
-// 三种 endpoint：fetchStock / fetchConcept / fetchSector
-// 失败兜底返回 { ok: false, error, stdout, stderr }
+// LinDangAgent 桥接（2026-05-03 重构）：
+// 旧入口 `python -m services.fetch_for_arena ...` 已下线（services 目录已删）。
+// 新入口：`python data_query.py <op> [args...]`，详见 C:\LinDangAgent\data\AGENT_GUIDE.md
+//
+// 对外接口：
+//   fetchSnapshot(symbol)        — 主用：一键拉 gate+basic+price+indicators+flow
+//   fetchField(op, symbol, extra) — 按需取单字段（op = financial/flow/indicators/dragon-tiger/...）
+//   fetchStock(symbol, name)     — 兼容老接口，内部 = fetchSnapshot
+//   fetchConcept / fetchSector   — 已下线，返回错误（依赖 Stock_top10 已删）
 
 const { spawn } = require('child_process');
 
@@ -9,13 +15,25 @@ const LINDANG_DIR = process.env.LINDANG_DIR || 'C:\\LinDangAgent';
 const PYTHON_BIN = process.env.LINDANG_PYTHON
   || 'C:\\Users\\lintian\\AppData\\Local\\Programs\\Python\\Python312\\python.exe';
 
-function _runFetch(args, timeoutMs = 90000) {
+// data_query.py 各子命令的合理超时（ms）。snapshot 拉得多，给宽一点
+const OP_TIMEOUTS = {
+  'snapshot': 90000,
+  'financial': 60000,
+  'price': 30000,
+  'indicators': 30000,
+  'qmt-realtime': 15000,
+  'qmt-kline': 15000,
+  'qmt-financial': 60000,
+  'qmt-sector': 30000,
+  // 其他单字段查询默认 30s
+};
+
+function _runDataQuery(op, args, timeoutMs = null) {
+  if (timeoutMs == null) timeoutMs = OP_TIMEOUTS[op] || 30000;
   return new Promise((resolve) => {
-    let stdout = '';
-    let stderr = '';
     let child;
     try {
-      child = spawn(PYTHON_BIN, ['-X', 'utf8', '-m', 'services.fetch_for_arena', ...args], {
+      child = spawn(PYTHON_BIN, ['-X', 'utf8', 'data_query.py', op, ...args], {
         cwd: LINDANG_DIR,
         env: {
           ...process.env,
@@ -27,60 +45,87 @@ function _runFetch(args, timeoutMs = 90000) {
         windowsHide: true,
       });
     } catch (e) {
-      return resolve({ ok: false, error: 'spawn failed: ' + e.message });
+      return resolve({ ok: false, op, error: 'spawn failed: ' + e.message });
     }
-    // 用 raw Buffer 累积，结束后再 toString utf-8 整体解析（避免 utf-8 多字节字符在 chunk 边界被切坏）
     const stdoutChunks = [];
     const stderrChunks = [];
-    child.stdout.on('data', (c) => { stdoutChunks.push(c); });
-    child.stderr.on('data', (c) => { stderrChunks.push(c); });
+    child.stdout.on('data', (c) => stdoutChunks.push(c));
+    child.stderr.on('data', (c) => stderrChunks.push(c));
     const timer = setTimeout(() => {
       try { child.kill('SIGKILL'); } catch {}
-      resolve({ ok: false, error: 'timeout (' + timeoutMs + 'ms)', stdout, stderr });
+      resolve({ ok: false, op, error: 'timeout (' + timeoutMs + 'ms)' });
     }, timeoutMs);
     child.on('error', (e) => {
       clearTimeout(timer);
-      resolve({ ok: false, error: 'process error: ' + e.message, stdout, stderr });
+      resolve({ ok: false, op, error: 'process error: ' + e.message });
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      const stdout = Buffer.concat(stdoutChunks).toString('utf-8');
+      const stdout = Buffer.concat(stdoutChunks).toString('utf-8').trim();
       const stderr = Buffer.concat(stderrChunks).toString('utf-8');
-      const trimmed = stdout.trim();
-      if (code === 0 && trimmed) {
-        // 跳过 xtquant 等三方库 import 时污染 stdout 的广告 print
-        // 找第一个 { 或 [ 字符作为 JSON 起点
-        const jsonStart = trimmed.search(/[{\[]/);
-        const jsonText = jsonStart >= 0 ? trimmed.slice(jsonStart) : trimmed;
-        try {
-          const data = JSON.parse(jsonText);
-          resolve({ ok: true, data });
-        } catch (e) {
-          resolve({ ok: false, error: 'json parse: ' + e.message, stdout: jsonText.slice(0, 1000), stderr: stderr.slice(0, 500) });
-        }
-      } else {
-        resolve({ ok: false, error: 'exit code ' + code, stdout: trimmed.slice(0, 500), stderr: stderr.slice(0, 1500) });
+      if (!stdout) {
+        return resolve({ ok: false, op, error: 'exit ' + code, stderr: stderr.slice(0, 1500) });
+      }
+      // data_query.py 输出严格 JSON；偶有第三方库（xtquant 等）污染 stdout，提取首个 { 起的内容
+      const jsonStart = stdout.search(/[{\[]/);
+      const jsonText = jsonStart >= 0 ? stdout.slice(jsonStart) : stdout;
+      try {
+        const parsed = JSON.parse(jsonText);
+        // data_query.py 自带 ok/op/error 字段，原样透传
+        resolve(parsed);
+      } catch (e) {
+        resolve({
+          ok: false,
+          op,
+          error: 'json parse: ' + e.message,
+          stdout: jsonText.slice(0, 800),
+          stderr: stderr.slice(0, 500),
+        });
       }
     });
   });
 }
 
-async function fetchStock(symbol, name = '') {
-  if (!symbol) return { ok: false, error: 'symbol 必填' };
-  const args = ['stock', '--symbol', symbol];
-  if (name) args.push('--name', name);
-  // build_report_context 5+ 层兜底（QMT/tushare/akshare/baostock/sina），首次 3-5 min
-  return await _runFetch(args, 300000);
+async function fetchSnapshot(symbol) {
+  if (!symbol) return { ok: false, op: 'snapshot', error: 'symbol 必填' };
+  return await _runDataQuery('snapshot', [symbol]);
 }
 
-async function fetchConcept(concept, topN = 10) {
-  if (!concept) return { ok: false, error: 'concept 必填' };
-  return await _runFetch(['concept', '--concept', concept, '--top-n', String(topN)], 90000);
+async function fetchField(op, symbol, extra = []) {
+  if (!op) return { ok: false, op, error: 'op 必填' };
+  if (!symbol) return { ok: false, op, error: 'symbol 必填' };
+  return await _runDataQuery(op, [symbol, ...extra]);
 }
 
-async function fetchSector(sector) {
-  if (!sector) return { ok: false, error: 'sector 必填' };
-  return await _runFetch(['sector', '--sector', sector], 90000);
+// ── 兼容老接口 ────────────────────────────────────────────────────
+
+async function fetchStock(symbol, _name = '') {
+  // 旧接口语义：拉单股 33 字段。新方案 snapshot 也是一站式（gate+basic+price+indicators+flow）。
+  return await fetchSnapshot(symbol);
 }
 
-module.exports = { fetchStock, fetchConcept, fetchSector, LINDANG_DIR, PYTHON_BIN };
+async function fetchConcept(_concept, _topN = 10) {
+  return {
+    ok: false,
+    op: 'concept',
+    error: '概念龙头查询已下线（依赖 Stock_top10 已删）。圆桌请改用 fetch_lindang_stock(symbol) 或 fetch_lindang_field(op, symbol)。',
+  };
+}
+
+async function fetchSector(_sector) {
+  return {
+    ok: false,
+    op: 'sector',
+    error: '板块概况查询已下线。如需板块成分，可改用 fetch_lindang_field(op="qmt-sector", symbol="<板块名>")，但需要 QMT 客户端启动。',
+  };
+}
+
+module.exports = {
+  fetchSnapshot,
+  fetchField,
+  fetchStock,
+  fetchConcept,
+  fetchSector,
+  LINDANG_DIR,
+  PYTHON_BIN,
+};

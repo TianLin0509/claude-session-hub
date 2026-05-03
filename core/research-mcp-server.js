@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-// Research Roundtable MCP server.
+// Research Roundtable MCP server (2026-05-03 重构)。
 // Spawned by Claude/Codex/Gemini CLI per research mode meeting，through MCP config 注入。
-// 暴露三个工具：fetch_lindang_stock / fetch_concept_stocks / fetch_sector_overview
-// 工具调用 → HTTP POST → Hub hookServer (loopback) → core/lindang-bridge.js → LinDangAgent
+// 暴露 2 个工具：
+//   fetch_lindang_stock(symbol)         — 一站式快照（gate + basic + price + 17 指标 + 资金流）
+//   fetch_lindang_field(op, symbol, …)  — 按需取单字段（financial/flow/dragon-tiger/...）
 //
-// 仿 core/driver-mcp-server.js 模式。
+// 调用链：tool call → HTTP POST → Hub hookServer (loopback) → core/lindang-bridge.js → data_query.py
+// 详见 C:\LinDangAgent\data\AGENT_GUIDE.md
+//
+// 旧的 fetch_concept_stocks / fetch_sector_overview 已下线（依赖 Stock_top10 已删）。
 'use strict';
 
 const http = require('http');
@@ -31,67 +35,59 @@ function logErr(msg) {
 
 logErr('startup pid=' + process.pid + ' meeting=' + MEETING_ID + ' port=' + HUB_PORT + ' kind=' + AI_KIND);
 
-if (!MEETING_ID || !HUB_PORT || !HOOK_TOKEN) {
-  logErr('missing required env: ARENA_MEETING_ID/ARENA_HUB_PORT/ARENA_HOOK_TOKEN');
-  process.exit(1);
+// Stub mode: 当 ARENA_* env 缺失（例如用户在终端独立跑 gemini，或非 research 圆桌会议
+// spawn gemini）时，server 不退出而是进入 stub —— 响应 initialize、tools/list 返回空，
+// 避免 gemini settings.json 里全局注册的 arena-research server 在无 ARENA_* 环境下报错。
+const STUB_MODE = !MEETING_ID || !HUB_PORT || !HOOK_TOKEN;
+if (STUB_MODE) {
+  logErr('no ARENA_* env detected, running in STUB mode (tools list will be empty)');
 }
 
 // --- MCP tools ---
+const FIELD_OPS = [
+  'gate', 'basic', 'price', 'financial', 'flow', 'dragon-tiger',
+  'valuation', 'northbound', 'margin', 'peers', 'holders', 'pledge', 'funds',
+  'qmt-kline', 'qmt-realtime', 'qmt-sector', 'qmt-financial', 'indicators',
+];
+
 const TOOLS = [
   {
     name: 'fetch_lindang_stock',
-    description: '从用户的 LinDangAgent（A股投研项目）拉单股 33 字段全量数据：基本面（营收/利润/毛利率/ROE）+ 资金面（北向/龙虎榜/主力净流入）+ 技术面（K线/MA/RSI/量比）+ 题材（概念/板块/行业地位）+ 估值（PE/PB 历史分位）。优先用此工具，不够时再用联网搜索。',
+    description: '【优先用此工具】拉 A 股单股快照：一次返回 gate(退市/ST 拦截) + basic(PE/PB/市值/换手率) + price_summary(走势文本) + indicators(17 项 RSI/MACD/Bollinger/KDJ/ATR/...) + capital_flow(资金流向)。讨论新股票的标准开场。来源：用户的 LinDangAgent，含 5 层数据兜底（tushare→akshare→东财→baostock→sina）。底层调 `python data_query.py snapshot <symbol>`。',
     inputSchema: {
       type: 'object',
       properties: {
         symbol: {
           type: 'string',
-          description: 'A股股票代码（6位数字如"603986"，或带后缀如"603986.SH"）',
-        },
-        name: {
-          type: 'string',
-          description: '公司名（可选，用于辅助匹配）',
+          description: 'A股股票代码（"600519" / "600519.SH" / 中文名"贵州茅台" 都可）',
         },
       },
       required: ['symbol'],
     },
   },
   {
-    name: 'fetch_concept_stocks',
-    description: '按 A 股概念查正宗龙头股票池（5 路候选合并 + 量价回测 + 成分股权重排序）。例：DDR5 / AI 算力 / 人形机器人 / 减肥药 / 算力租赁。返回 top_n 只候选股票及其评分。',
+    name: 'fetch_lindang_field',
+    description: '按需取 A 股单字段数据（snapshot 不够细时用）。op 可选：gate(退市/ST检查) / basic(基本面) / price(K线+摘要) / financial(财务报表) / flow(资金流) / dragon-tiger(龙虎榜) / valuation(PE/PB历史分位) / northbound(北向) / margin(融资融券) / peers(同业对比) / holders(大股东) / pledge(质押) / funds(基金持仓) / indicators(17项技术指标) / qmt-kline(实时K线) / qmt-realtime(实时盘口，symbol 用逗号分隔) / qmt-sector(板块成分，symbol传板块名) / qmt-financial(QMT财报)。底层调 `python data_query.py <op> <symbol>`。',
     inputSchema: {
       type: 'object',
       properties: {
-        concept: {
+        op: {
           type: 'string',
-          description: '概念名（中文，例 "DDR5"、"人形机器人"、"算力租赁"）',
+          enum: FIELD_OPS,
+          description: '要查的字段 op',
         },
-        top_n: {
-          type: 'number',
-          description: '返回前 N 只（默认 10）',
+        symbol: {
+          type: 'string',
+          description: '股票代码或名称（qmt-realtime 多股逗号分隔；qmt-sector 传板块名）',
         },
       },
-      required: ['concept'],
-    },
-  },
-  {
-    name: 'fetch_sector_overview',
-    description: '查 A 股板块/行业的整体行情：板块涨跌幅、成交额、成分股数、领涨/领跌、资金流向。例 "半导体" / "白酒" / "新能源"。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        sector: {
-          type: 'string',
-          description: '板块/行业名（中文，例 "半导体"、"白酒"、"光伏"）',
-        },
-      },
-      required: ['sector'],
+      required: ['op', 'symbol'],
     },
   },
 ];
 
 // --- HTTP helper ---
-function postFetch(endpoint, body) {
+function postFetch(endpoint, body, timeoutMs = 100000) {
   return new Promise((resolve) => {
     const data = JSON.stringify(body);
     const req = http.request({
@@ -100,14 +96,14 @@ function postFetch(endpoint, body) {
       path: endpoint,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
-      timeout: 320000, // LinDangAgent 单股全量首次 3-5 min，给 320s 兜底（bridge 端 300s + 缓冲）
+      timeout: timeoutMs,
     }, (res) => {
       let chunks = '';
       res.on('data', (c) => { chunks += c; });
       res.on('end', () => resolve({ ok: res.statusCode === 200, status: res.statusCode, body: chunks }));
     });
     req.on('error', (e) => resolve({ ok: false, status: 0, body: 'request error: ' + e.message }));
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, status: 0, body: 'timeout (90s)' }); });
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, status: 0, body: 'timeout' }); });
     req.write(data);
     req.end();
   });
@@ -117,12 +113,8 @@ function postFetch(endpoint, body) {
 function send(msg) {
   try { process.stdout.write(JSON.stringify(msg) + '\n'); } catch (e) { logErr('stdout write failed: ' + e.message); }
 }
-function reply(id, result) {
-  if (id != null) send({ jsonrpc: '2.0', id, result });
-}
-function replyError(id, code, message) {
-  if (id != null) send({ jsonrpc: '2.0', id, error: { code, message } });
-}
+function reply(id, result) { if (id != null) send({ jsonrpc: '2.0', id, result }); }
+function replyError(id, code, message) { if (id != null) send({ jsonrpc: '2.0', id, error: { code, message } }); }
 
 async function handleRequest(req) {
   const { id, method, params } = req || {};
@@ -130,49 +122,47 @@ async function handleRequest(req) {
     return reply(id, {
       protocolVersion: '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'arena-research', version: '1.0.0' },
+      serverInfo: { name: 'arena-research', version: '2.0.0' },
     });
   }
   if (method === 'notifications/initialized') {
-    return; // notification — no reply
+    return;
   }
   if (method === 'tools/list') {
-    return reply(id, { tools: TOOLS });
+    return reply(id, { tools: STUB_MODE ? [] : TOOLS });
   }
   if (method === 'tools/call') {
+    if (STUB_MODE) {
+      return replyError(id, -32601, 'arena-research server in stub mode (not in research roundtable)');
+    }
     const name = params && params.name;
     const args = (params && params.arguments) || {};
     const baseBody = { token: HOOK_TOKEN, meetingId: MEETING_ID, kind: AI_KIND };
 
     if (name === 'fetch_lindang_stock') {
       const symbol = String(args.symbol || '');
-      const stockName = String(args.name || '');
       if (!symbol) {
-        return reply(id, { content: [{ type: 'text', text: '错误：symbol 参数必填（例 "603986"）' }], isError: true });
+        return reply(id, { content: [{ type: 'text', text: '错误：symbol 参数必填（例 "600519" 或 "贵州茅台"）' }], isError: true });
       }
-      const r = await postFetch('/api/research/fetch-stock', { ...baseBody, symbol, name: stockName });
-      const text = r.ok ? r.body : `LinDangAgent 拉股票数据失败（${r.status}）：${r.body}`;
+      const r = await postFetch('/api/research/fetch-stock', { ...baseBody, symbol });
+      const text = r.ok ? r.body : `LinDangAgent 拉股票快照失败（${r.status}）：${r.body}`;
       return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
     }
-    if (name === 'fetch_concept_stocks') {
-      const concept = String(args.concept || '');
-      const top_n = parseInt(args.top_n || '10', 10);
-      if (!concept) {
-        return reply(id, { content: [{ type: 'text', text: '错误：concept 参数必填（例 "DDR5"）' }], isError: true });
+
+    if (name === 'fetch_lindang_field') {
+      const op = String(args.op || '');
+      const symbol = String(args.symbol || '');
+      if (!op || !FIELD_OPS.includes(op)) {
+        return reply(id, { content: [{ type: 'text', text: `错误：op 参数无效。可选：${FIELD_OPS.join(', ')}` }], isError: true });
       }
-      const r = await postFetch('/api/research/fetch-concept', { ...baseBody, concept, top_n });
-      const text = r.ok ? r.body : `LinDangAgent 概念查询失败（${r.status}）：${r.body}`;
+      if (!symbol) {
+        return reply(id, { content: [{ type: 'text', text: '错误：symbol 参数必填' }], isError: true });
+      }
+      const r = await postFetch('/api/research/fetch-field', { ...baseBody, op, symbol });
+      const text = r.ok ? r.body : `LinDangAgent ${op} 查询失败（${r.status}）：${r.body}`;
       return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
     }
-    if (name === 'fetch_sector_overview') {
-      const sector = String(args.sector || '');
-      if (!sector) {
-        return reply(id, { content: [{ type: 'text', text: '错误：sector 参数必填（例 "半导体"）' }], isError: true });
-      }
-      const r = await postFetch('/api/research/fetch-sector', { ...baseBody, sector });
-      const text = r.ok ? r.body : `LinDangAgent 板块查询失败（${r.status}）：${r.body}`;
-      return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
-    }
+
     return replyError(id, -32601, 'unknown tool: ' + name);
   }
   return replyError(id, -32601, 'method not found: ' + method);
