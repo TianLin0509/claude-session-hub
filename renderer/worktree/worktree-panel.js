@@ -25,19 +25,22 @@
 
   async function refresh({ force = false } = {}) {
     if (!currentSessionId) return;
+    const requestSessionId = currentSessionId;  // snapshot
     const cur = document.getElementById('wt-current');
     if (cur) cur.classList.add('wt-loading');
     let res;
     try {
       res = await ipcRenderer.invoke('worktree:probe', {
-        activeSessionId: currentSessionId, force,
+        activeSessionId: requestSessionId, force,
       });
     } catch (e) {
+      if (currentSessionId !== requestSessionId) return;  // session changed during await
       showError(`IPC 异常: ${e.message}`, true);
       return;
     } finally {
       if (cur) cur.classList.remove('wt-loading');
     }
+    if (currentSessionId !== requestSessionId) return;  // stale response, drop
     if (!res.ok) {
       if (/timeout/i.test(res.error)) showError(`git 响应超时`, true);
       else if (/not.*git/i.test(res.error)) showError(`目录不在 git 仓库内`, false);
