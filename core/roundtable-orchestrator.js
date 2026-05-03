@@ -444,6 +444,25 @@ class RoundtableOrchestrator {
     this._saveTurnFile(record);
     return JSON.parse(JSON.stringify(record));
   }
+
+  // 2026-05-03 道雪 bug ④ 续修：patch turn 顶层 meta 字段（archivedTo/decisionTitle 等）
+  //   并持久化。dispatch 路径写完决策档案后调用 patchTurnMeta(turnNum, { archivedTo })，
+  //   manual-extract 重写归档时再读到这个 archivedTo 复用同一文件名。
+  //   仅写 metaPatch 提供的 key（浅合并到 record 顶层），不动 by/byStatus/stats。
+  // 返回 patch 后的 record（深拷贝）；turn 不存在返回 null。
+  patchTurnMeta(turnNum, metaPatch) {
+    const record = this.state.turns.find(t => t.n === turnNum);
+    if (!record) return null;
+    if (metaPatch && typeof metaPatch === 'object') {
+      for (const [k, v] of Object.entries(metaPatch)) {
+        record[k] = v;
+      }
+    }
+    record.lastPatchedAt = Date.now();
+    this._saveState();
+    this._saveTurnFile(record);
+    return JSON.parse(JSON.stringify(record));
+  }
 }
 
 // meeting-create-modal（2026-05-01）：判断 aiStats 是不是老 kind 索引格式（含

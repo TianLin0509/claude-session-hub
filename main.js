@@ -796,6 +796,7 @@ ipcMain.handle('roundtable:dispatch-mode-set', async (_e, { meetingId, dispatchM
 const roundtable = require('./core/roundtable-orchestrator.js');
 const rtTimeline = require('./core/roundtable-timeline.js');
 const rtInjection = require('./core/roundtable-injection.js');
+const rtArchive = require('./core/roundtable-archive.js');
 let _roundtableInProgress = new Set(); // 同会议室单一并发：set of meetingId
 
 // 方案 F · 2026-05-02：计算单个 sub 视角的"调度上下文" spec，喂给 build*Prompt
@@ -867,6 +868,14 @@ async function _rtSendToPty(sid, prompt, kind) {
   const ENTER_RETRY_TRIES = 3;          // 零 echo 兜底：分多次发 \r 提升提交成功率
   const ENTER_RETRY_GAP_MS = 150;       // 兜底 \r 之间间隔
   const POST_ENTER_VERIFY_MS = 500;     // 提交后再观察一次活性，确认没卡
+  // bug A 修复（2026-05-03 道雪）：turn 间 race condition
+  //   stop_hook / stop_reason 触发时 Claude 逻辑层已结束本轮，但 PTY 终端
+  //   仍在异步喷收尾字符（清 spinner / 重画 prompt /TUI 装饰）。Hub 立刻 type
+  //   下一轮 prompt 会撞上 PTY 余响，prompt 被 throbbing 状态吃掉、单个 \r
+  //   不触发提交 → sub 表面"sent"但 jsonl 没收到 user msg → 5min 硬超时
+  //   才标 absent。修：写 prompt 前等 PTY 真正静默 N ms。
+  const PRE_PROMPT_QUIET_MS = 1500;     // 至少 1.5s PTY 无新字符
+  const PRE_PROMPT_MAX_WAIT_MS = 8000;  // 上限：避免持续 spinner 死等
 
   // 冷启动：仅首次或 ready 被重置后
   if (!sessionManager.getRoundtableReady(sid)) {
@@ -874,6 +883,28 @@ async function _rtSendToPty(sid, prompt, kind) {
     // CLI 完全没启动 → prompt 都没写，可以正当放弃
     if (!ready) return false;
     sessionManager.setRoundtableReady(sid, true);
+  }
+
+  // bug A 修复：发 prompt 前等 PTY 静默（不依赖 cold-start 路径）。
+  //   语义层信号（stop_hook/stop_reason）触发 ≠ 设备层 PTY 静止；前者是
+  //   "Claude 答完最后一个字"，后者是"终端扩音器关掉"。
+  {
+    const startQuiet = Date.now();
+    let lastSeenPre = sessionManager.getRoundtableLastActivity(sid);
+    let lastChangePre = Date.now();
+    while (Date.now() - startQuiet < PRE_PROMPT_MAX_WAIT_MS) {
+      await new Promise(r => setTimeout(r, FAST_PATH_POLL_MS));
+      const cur = sessionManager.getRoundtableLastActivity(sid);
+      if (cur !== lastSeenPre) {
+        lastSeenPre = cur;
+        lastChangePre = Date.now();
+      }
+      if (Date.now() - lastChangePre >= PRE_PROMPT_QUIET_MS) break;
+    }
+    const totalWait = Date.now() - startQuiet;
+    if (totalWait >= PRE_PROMPT_MAX_WAIT_MS) {
+      console.warn(`[roundtable] pre-prompt PTY never quiet for ${kind}(${sid.slice(0,8)}); proceeded after ${totalWait}ms ceiling`);
+    }
   }
 
   // 第 1 次 write：仅 prompt（不带 '\r'）
@@ -1115,88 +1146,9 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   });
 }
 
-// 2026-05-03 道雪 bug ④ 修复：决策档案归档抽出 helper，让 manual-extract 后端
-//   patch lastTurn.byMap 时也能重写归档（保持磁盘文件 = 内存最新内容）。
-//   原归档逻辑只在 turn-complete 那一刻 fs.writeFileSync 一次；用户后来点
-//   一键提取拿到完整 M2 → byMap 更新但磁盘 .md 仍是 M1 16 字。
-//
-// 行为约定：
-//   - 仅对 summary mode turn 归档（其他 mode 不触发）
-//   - 文件名：首次归档按当前时间戳生成 + 锁到 turnRecord.meta.archivedTo；
-//     重写时复用同一文件名（覆盖原内容，不产生新文件）
-//   - "完成时间"字段每次重写更新（反映最新归档时间）
-//   - 写入失败仅 warn，不抛
-function _writeDecisionArchive(meetingId, turnRecord) {
-  if (!turnRecord || turnRecord.mode !== 'summary') return null;
-  try {
-    const meeting = meetingManager.getMeeting(meetingId);
-    if (!meeting) return null;
-    // claude session 的 cwd 当 projectCwd（与原归档同源）
-    const claudeSid = (meeting.subSessions || [])
-      .find(sid => sessionManager.getSession(sid)?.kind === 'claude');
-    const claudeSession = claudeSid ? sessionManager.getSession(claudeSid) : null;
-    const projectCwd = claudeSession?.cwd;
-    if (!projectCwd) return null;
-
-    const meta = turnRecord.meta || {};
-    // sidLabelFn 重建（与 dispatchRoundtableTurn 内一致）
-    const labelMap = new Map();
-    for (const sid of meeting.subSessions || []) {
-      const s = sessionManager.getSession(sid);
-      if (s) labelMap.set(sid, s.title || s.kind || 'AI');
-    }
-    const sidLabelFn = (sid) => labelMap.get(sid) || 'AI';
-
-    const sceneObj = scenes.getScene(meeting.scene);
-    const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
-
-    const sessionsDir = path.join(projectCwd, '.arena', 'sessions');
-    fs.mkdirSync(sessionsDir, { recursive: true });
-
-    // 文件名：首次按当前时间戳，后续复用 meta.archivedTo
-    let fileName = meta.archivedTo;
-    const isFirstWrite = !fileName;
-    if (isFirstWrite) {
-      const ts = new Date();
-      const stamp = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')}-${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}`;
-      const titleSlug = (meta.decisionTitle || `session-${turnRecord.n}`).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
-      fileName = `${stamp}-${titleSlug}.md`;
-    }
-
-    const archiveTitle = meeting.scene === 'research' ? '# 投研圆桌决策档案' : '# 圆桌讨论决策档案';
-    // "最终意见" 段：summary 主持人在 turnRecord.by 里的 text（patch 后是最新内容）
-    const summaryFinalText = turnRecord.by?.[meta.summarizerSid] || '(无输出)';
-    const lines = [
-      archiveTitle,
-      `- 标题：${meta.decisionTitle || '(未提供)'}`,
-      `- 总结人：${meta.summarizer || 'unknown'}`,
-      `- 完成时间：${new Date().toLocaleString('zh-CN')}`,
-      `- 会议室：${meetingId}`,
-      `- 历史轮数：${orch.state.turns.length}`,
-      '',
-      `## 最终意见（${meta.summarizer}）`,
-      '',
-      summaryFinalText,
-      '',
-      `## 全部历史轮次`,
-      '',
-    ];
-    for (const t of orch.state.turns) {
-      lines.push(`### 第 ${t.n} 轮 · ${t.mode}`);
-      if (t.userInput) lines.push(`**用户输入**：${t.userInput}`);
-      for (const [sid, text] of Object.entries(t.by || {})) {
-        lines.push('', `#### ${sidLabelFn(sid)}`, text || '(无输出)');
-      }
-      lines.push('');
-    }
-    fs.writeFileSync(path.join(sessionsDir, fileName), lines.join('\n'), 'utf-8');
-    console.log(`[roundtable] decision archived (${isFirstWrite ? 'first' : 'patched'}): ${fileName}`);
-    return fileName;
-  } catch (e) {
-    console.warn('[roundtable] archive failed:', e.message);
-    return null;
-  }
-}
+// 决策档案归档已抽到 core/roundtable-archive.js（rtArchive.writeDecisionArchive）。
+// 调用方走依赖注入：rtArchive.writeDecisionArchive(meetingId, turnRecord, {
+//   meetingManager, sessionManager, scenes, roundtable, getHubDataDir })
 
 // 主调度：mode = 'fanout' | 'debate' | 'summary'
 // userInput: 用户输入（fanout 是问题，debate 是补充，summary 可空）
@@ -1452,9 +1404,17 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     }
 
     // E2 选项：summary 后写决策档案到 .arena/sessions/<datetime>-<title>.md
+    // bug ④ 续修（2026-05-03 道雪）：fileName 必须 patchTurnMeta 持久化进 record，
+    //   否则 manual-extract 重写归档时读不到 archivedTo，无法复用同一文件名。
     if (mode === 'summary') {
-      const fileName = _writeDecisionArchive(meetingId, turnRecord);
-      if (fileName) meta.archivedTo = fileName;
+      const fileName = rtArchive.writeDecisionArchive(meetingId, turnRecord, {
+        meetingManager, sessionManager, scenes, roundtable, getHubDataDir,
+      });
+      if (fileName) {
+        meta.archivedTo = fileName;
+        try { orch.patchTurnMeta(turnNum, { archivedTo: fileName }); }
+        catch (e) { console.warn('[roundtable] patchTurnMeta archivedTo failed:', e.message); }
+      }
     }
 
     sendToRenderer('roundtable-turn-complete', { meetingId, turnNum, mode, results, meta });
@@ -1687,8 +1647,12 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
         if (patched) {
           // bug ④（2026-05-03 道雪）：summary mode 已归档过 .md 文件时，
           //   patch 完 byMap 同步重写归档，避免磁盘档案永远停在过早 settle 时刻的内容。
-          if (patched.mode === 'summary' && patched.meta?.archivedTo) {
-            _writeDecisionArchive(meetingId, patched);
+          //   字段路径修复：record 顶层有 archivedTo（dispatch 路径已 patchTurnMeta 持久化），
+          //   不是 patched.meta?.archivedTo（orchestrator.completeTurn 用 ...meta 顶层展开）。
+          if (patched.mode === 'summary' && patched.archivedTo) {
+            rtArchive.writeDecisionArchive(meetingId, patched, {
+              meetingManager, sessionManager, scenes, roundtable, getHubDataDir,
+            });
           }
           sendToRenderer('roundtable-turn-complete', { meetingId });
           return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_last_turn' };
