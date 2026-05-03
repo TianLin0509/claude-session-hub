@@ -98,11 +98,18 @@
   //   场景下 AI 输出多绝对路径；相对路径需 cwd 上下文，本卡片层不易拿到，先不做。
   const _ABS_PATH_RE = /(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/])(?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
 
-  // marked 渲染后扫描所有非 <code>/<pre> 文本节点的绝对路径，包成
+  // marked 渲染后扫描非 <pre> 文本节点的绝对路径，包成
   // <a class="rt-file-link" data-path="..."> 让用户点击进 hub 内置 preview 面板。
-  // 不在 <code>/<pre> 里替换，避免破坏代码块内的路径展示语义。
+  //
+  // 不跳过 <code>（单 inline code）：AI 通常用 `\`path\`` 标注路径，理应可点击。
+  //   `<code>C:\foo.html</code>` 会被升级成 `<code><a>C:\foo.html</a></code>`
+  //   既保留 code 灰底等宽视觉，又得到链接行为。
+  // 跳过 <pre>（多行代码块）：bash/python 脚本里的路径是命令参数，识别会误伤
+  //   （如 `python C:\script.py --arg` 包路径会让脚本视觉断开）。
+  // 2026-05-03 道雪：从 SKIP 移除 CODE 是用户场景反馈：历史回答面板的路径
+  //   出现在 inline code 内，原 skip CODE 让它没有 link。
   function _wrapFilePathsInDom(rootEl) {
-    const SKIP_TAGS = new Set(['CODE', 'PRE', 'A', 'SCRIPT', 'STYLE']);
+    const SKIP_TAGS = new Set(['PRE', 'A', 'SCRIPT', 'STYLE']);
     const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         let p = node.parentNode;
