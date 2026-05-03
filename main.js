@@ -1115,6 +1115,89 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   });
 }
 
+// 2026-05-03 道雪 bug ④ 修复：决策档案归档抽出 helper，让 manual-extract 后端
+//   patch lastTurn.byMap 时也能重写归档（保持磁盘文件 = 内存最新内容）。
+//   原归档逻辑只在 turn-complete 那一刻 fs.writeFileSync 一次；用户后来点
+//   一键提取拿到完整 M2 → byMap 更新但磁盘 .md 仍是 M1 16 字。
+//
+// 行为约定：
+//   - 仅对 summary mode turn 归档（其他 mode 不触发）
+//   - 文件名：首次归档按当前时间戳生成 + 锁到 turnRecord.meta.archivedTo；
+//     重写时复用同一文件名（覆盖原内容，不产生新文件）
+//   - "完成时间"字段每次重写更新（反映最新归档时间）
+//   - 写入失败仅 warn，不抛
+function _writeDecisionArchive(meetingId, turnRecord) {
+  if (!turnRecord || turnRecord.mode !== 'summary') return null;
+  try {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting) return null;
+    // claude session 的 cwd 当 projectCwd（与原归档同源）
+    const claudeSid = (meeting.subSessions || [])
+      .find(sid => sessionManager.getSession(sid)?.kind === 'claude');
+    const claudeSession = claudeSid ? sessionManager.getSession(claudeSid) : null;
+    const projectCwd = claudeSession?.cwd;
+    if (!projectCwd) return null;
+
+    const meta = turnRecord.meta || {};
+    // sidLabelFn 重建（与 dispatchRoundtableTurn 内一致）
+    const labelMap = new Map();
+    for (const sid of meeting.subSessions || []) {
+      const s = sessionManager.getSession(sid);
+      if (s) labelMap.set(sid, s.title || s.kind || 'AI');
+    }
+    const sidLabelFn = (sid) => labelMap.get(sid) || 'AI';
+
+    const sceneObj = scenes.getScene(meeting.scene);
+    const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+
+    const sessionsDir = path.join(projectCwd, '.arena', 'sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+
+    // 文件名：首次按当前时间戳，后续复用 meta.archivedTo
+    let fileName = meta.archivedTo;
+    const isFirstWrite = !fileName;
+    if (isFirstWrite) {
+      const ts = new Date();
+      const stamp = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')}-${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}`;
+      const titleSlug = (meta.decisionTitle || `session-${turnRecord.n}`).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
+      fileName = `${stamp}-${titleSlug}.md`;
+    }
+
+    const archiveTitle = meeting.scene === 'research' ? '# 投研圆桌决策档案' : '# 圆桌讨论决策档案';
+    // "最终意见" 段：summary 主持人在 turnRecord.by 里的 text（patch 后是最新内容）
+    const summaryFinalText = turnRecord.by?.[meta.summarizerSid] || '(无输出)';
+    const lines = [
+      archiveTitle,
+      `- 标题：${meta.decisionTitle || '(未提供)'}`,
+      `- 总结人：${meta.summarizer || 'unknown'}`,
+      `- 完成时间：${new Date().toLocaleString('zh-CN')}`,
+      `- 会议室：${meetingId}`,
+      `- 历史轮数：${orch.state.turns.length}`,
+      '',
+      `## 最终意见（${meta.summarizer}）`,
+      '',
+      summaryFinalText,
+      '',
+      `## 全部历史轮次`,
+      '',
+    ];
+    for (const t of orch.state.turns) {
+      lines.push(`### 第 ${t.n} 轮 · ${t.mode}`);
+      if (t.userInput) lines.push(`**用户输入**：${t.userInput}`);
+      for (const [sid, text] of Object.entries(t.by || {})) {
+        lines.push('', `#### ${sidLabelFn(sid)}`, text || '(无输出)');
+      }
+      lines.push('');
+    }
+    fs.writeFileSync(path.join(sessionsDir, fileName), lines.join('\n'), 'utf-8');
+    console.log(`[roundtable] decision archived (${isFirstWrite ? 'first' : 'patched'}): ${fileName}`);
+    return fileName;
+  } catch (e) {
+    console.warn('[roundtable] archive failed:', e.message);
+    return null;
+  }
+}
+
 // 主调度：mode = 'fanout' | 'debate' | 'summary'
 // userInput: 用户输入（fanout 是问题，debate 是补充，summary 可空）
 // summarizerKind: 仅 summary 用，'claude' / 'gemini' / 'codex'
@@ -1370,48 +1453,8 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
 
     // E2 选项：summary 后写决策档案到 .arena/sessions/<datetime>-<title>.md
     if (mode === 'summary') {
-      try {
-        const claudeSid = sidByKind('claude');
-        const claudeSession = claudeSid ? sessionManager.getSession(claudeSid) : null;
-        const projectCwd = claudeSession ? claudeSession.cwd : null;
-        if (projectCwd) {
-          const sessionsDir = path.join(projectCwd, '.arena', 'sessions');
-          fs.mkdirSync(sessionsDir, { recursive: true });
-          const ts = new Date();
-          const stamp = `${ts.getFullYear()}-${String(ts.getMonth()+1).padStart(2,'0')}-${String(ts.getDate()).padStart(2,'0')}-${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}`;
-          const titleSlug = (meta.decisionTitle || `session-${turnNum}`).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
-          const fileName = `${stamp}-${titleSlug}.md`;
-          const archiveTitle = meeting.scene === 'research' ? '# 投研圆桌决策档案' : '# 圆桌讨论决策档案';
-          const lines = [
-            archiveTitle,
-            `- 标题：${meta.decisionTitle || '(未提供)'}`,
-            `- 总结人：${meta.summarizer || 'unknown'}`,
-            `- 完成时间：${ts.toLocaleString('zh-CN')}`,
-            `- 会议室：${meetingId}`,
-            `- 历史轮数：${orch.state.turns.length}`,
-            '',
-            `## 最终意见（${meta.summarizer}）`,
-            '',
-            results[0]?.text || '(无输出)',
-            '',
-            `## 全部历史轮次`,
-            '',
-          ];
-          for (const t of orch.state.turns) {
-            lines.push(`### 第 ${t.n} 轮 · ${t.mode}`);
-            if (t.userInput) lines.push(`**用户输入**：${t.userInput}`);
-            for (const [sid, text] of Object.entries(t.by || {})) {
-              lines.push('', `#### ${sidLabelFn(sid)}`, text || '(无输出)');
-            }
-            lines.push('');
-          }
-          fs.writeFileSync(path.join(sessionsDir, fileName), lines.join('\n'), 'utf-8');
-          console.log(`[roundtable] decision archived: ${fileName}`);
-          meta.archivedTo = fileName;
-        }
-      } catch (e) {
-        console.warn('[roundtable] archive failed:', e.message);
-      }
+      const fileName = _writeDecisionArchive(meetingId, turnRecord);
+      if (fileName) meta.archivedTo = fileName;
     }
 
     sendToRenderer('roundtable-turn-complete', { meetingId, turnNum, mode, results, meta });
@@ -1642,6 +1685,11 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
           status: 'manual_extracted',
         });
         if (patched) {
+          // bug ④（2026-05-03 道雪）：summary mode 已归档过 .md 文件时，
+          //   patch 完 byMap 同步重写归档，避免磁盘档案永远停在过早 settle 时刻的内容。
+          if (patched.mode === 'summary' && patched.meta?.archivedTo) {
+            _writeDecisionArchive(meetingId, patched);
+          }
           sendToRenderer('roundtable-turn-complete', { meetingId });
           return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_last_turn' };
         }
