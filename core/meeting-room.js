@@ -52,6 +52,10 @@ class MeetingRoomManager {
       //   主驾切换 / 取消主驾时 dispatchMode 自动 reset 为 'all'（避免状态漂移）。
       pilotSlot: null,
       dispatchMode: 'all',
+      // free-mode（2026-05-04）：meeting 级模式 'pilot'|'free'，默认 'pilot'（向后兼容）
+      mode: 'pilot',
+      // free-mode（2026-05-04）：自由模式参与者 slot 列表，null=首次未初始化
+      participants: null,
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -108,6 +112,41 @@ class MeetingRoomManager {
     return m ? (m.dispatchMode || 'all') : 'all';
   }
 
+  // free-mode（2026-05-04）：切换 meeting 级模式 'pilot' ⇄ 'free'。
+  //   直接写回 Map 原始对象（getMeeting 返回浅拷贝，对其赋值不写回 Map）。
+  //   切到 free 且 participants 未初始化 → 默认全选 [0,1,2]。
+  setMeetingMode(meetingId, mode) {
+    const m = this.meetings.get(meetingId);
+    if (!m) return null;
+    if (!['pilot', 'free'].includes(mode)) {
+      throw new Error(`Invalid meeting mode: ${mode}`);
+    }
+    m.mode = mode;
+    if (mode === 'free' && m.participants === null) {
+      m.participants = [0, 1, 2];
+    }
+    meetingStore.markDirty(meetingId, {
+      _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx,
+      slotSpecs: m.slotSpecs, pilotSlot: m.pilotSlot, dispatchMode: m.dispatchMode,
+      mode: m.mode, participants: m.participants,
+    });
+    return { ...m, subSessions: [...m.subSessions], mode: m.mode, participants: Array.isArray(m.participants) ? [...m.participants] : null };
+  }
+
+  // free-mode（2026-05-04）：设置自由模式参与者列表。
+  //   接受空数组（Q11=A：尊重用户清空）。
+  setParticipants(meetingId, participants) {
+    const m = this.meetings.get(meetingId);
+    if (!m) return null;
+    m.participants = Array.isArray(participants) ? participants : null;
+    meetingStore.markDirty(meetingId, {
+      _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx,
+      slotSpecs: m.slotSpecs, pilotSlot: m.pilotSlot, dispatchMode: m.dispatchMode,
+      mode: m.mode, participants: m.participants,
+    });
+    return { ...m, subSessions: [...m.subSessions], mode: m.mode, participants: Array.isArray(m.participants) ? [...m.participants] : null };
+  }
+
   // meeting-create-modal（2026-05-01）：Modal 创建完所有 slot 后调用，
   //   把 slot 规格写到 meeting + 触发 timeline JSON 落盘。
   setSlotSpecs(meetingId, slotSpecs) {
@@ -131,6 +170,8 @@ class MeetingRoomManager {
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
       pilotSlot: m.pilotSlot ?? null,
       dispatchMode: m.dispatchMode || 'all',
+      mode: ['pilot', 'free'].includes(m.mode) ? m.mode : 'pilot',
+      participants: Array.isArray(m.participants) ? [...m.participants] : null,
     } : null;
   }
 
@@ -143,6 +184,8 @@ class MeetingRoomManager {
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
       pilotSlot: m.pilotSlot ?? null,
       dispatchMode: m.dispatchMode || 'all',
+      mode: ['pilot', 'free'].includes(m.mode) ? m.mode : 'pilot',
+      participants: Array.isArray(m.participants) ? [...m.participants] : null,
     }));
   }
 
@@ -239,6 +282,10 @@ class MeetingRoomManager {
       dispatchMode: ['all', 'pilot', 'observer'].includes(meetingData.dispatchMode)
         ? meetingData.dispatchMode
         : ((typeof meetingData.pilotSlot === 'number') ? 'pilot' : 'all'),
+      // free-mode（2026-05-04）：老 meeting 无此字段时兜底 'pilot'（向后兼容）
+      mode: ['pilot', 'free'].includes(meetingData.mode) ? meetingData.mode : 'pilot',
+      // free-mode（2026-05-04）：null=首次未初始化，空数组=用户已清空（Q11=A）
+      participants: Array.isArray(meetingData.participants) ? meetingData.participants : null,
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,
@@ -274,6 +321,13 @@ class MeetingRoomManager {
     // pilot redesign 兜底回填（2026-05-02）：dispatchMode 同样支持 per-meeting JSON 兜底
     if ((!m.dispatchMode || m.dispatchMode === 'all') && ['all', 'pilot', 'observer'].includes(data.dispatchMode)) {
       m.dispatchMode = data.dispatchMode;
+    }
+    // free-mode 兜底回填（2026-05-04）：per-meeting JSON 备份 mode/participants
+    if (!['pilot', 'free'].includes(m.mode) && ['pilot', 'free'].includes(data.mode)) {
+      m.mode = data.mode;
+    }
+    if (!Array.isArray(m.participants) && Array.isArray(data.participants)) {
+      m.participants = data.participants;
     }
     return true;
   }

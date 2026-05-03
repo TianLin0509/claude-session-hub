@@ -842,12 +842,8 @@ ipcMain.handle('roundtable:set-meeting-mode', async (_e, { meetingId, mode } = {
     throw new Error('正在跑一轮，请等结束后再切模式');
   }
 
-  meeting.mode = validMode;
-
-  // 切到 free 模式且 participants 未初始化 → 默认全选
-  if (validMode === 'free' && meeting.participants === null) {
-    meeting.participants = [0, 1, 2];
-  }
+  // FIX(T4 HIGH): 用 setter 写回 Map 原始对象（getMeeting 返回浅拷贝，赋值不写回）
+  meetingManager.setMeetingMode(meetingId, validMode);
 
   try {
     stateStore.save({
@@ -877,7 +873,8 @@ ipcMain.handle('roundtable:set-participants', async (_e, { meetingId, participan
   const meeting = meetingManager.getMeeting(meetingId);
   if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
 
-  meeting.participants = validated;
+  // FIX(T4 HIGH): 用 setter 写回 Map 原始对象（getMeeting 返回浅拷贝，赋值不写回）
+  meetingManager.setParticipants(meetingId, validated);
 
   try {
     stateStore.save({
