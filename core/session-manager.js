@@ -6,6 +6,7 @@ const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
+const { isClaudeFamily } = require('./ai-kinds.js');
 
 const RING_BUFFER_BYTES = 16384;
 
@@ -947,10 +948,10 @@ class SessionManager extends EventEmitter {
     const modelId = s.info && s.info.currentModel && s.info.currentModel.id;
     const meetingId = s.info && s.info.meetingId;
     // 圆桌成员：复用同一份隔离 settings + --disable-slash-commands
-    const isolation = (kind === 'claude' || kind === 'claude-resume' ||
-                       kind === 'deepseek' || kind === 'deepseek-resume' ||
-                       kind === 'glm' || kind === 'glm-resume')
-      ? buildRoundtableIsolationFlags(meetingId) : '';
+    // 用 isClaudeFamily 同时覆盖主 kind 与 *-resume 形态（含 gpt/kimi/qwen 跑在 Claude CLI 上）。
+    const baseKind = (typeof kind === 'string') ? kind.replace(/-resume$/, '') : kind;
+    const isClaudeCli = isClaudeFamily(baseKind);
+    const isolation = isClaudeCli ? buildRoundtableIsolationFlags(meetingId) : '';
     let cmd;
     if (kind === 'codex' || kind === 'codex-resume') {
       dismissCodexUpdatePrompt();
@@ -964,6 +965,15 @@ class SessionManager extends EventEmitter {
     } else if (kind === 'glm' || kind === 'glm-resume') {
       const cv = getConfigValues();
       cmd = ` claude --model ${modelId || cv.GLM_MODEL || 'glm-5.1'} --permission-mode bypassPermissions${isolation}\r\n`;
+    } else if (kind === 'gpt' || kind === 'gpt-resume') {
+      const cv = getConfigValues();
+      cmd = ` claude --model ${modelId || cv.GPT_MODEL || 'gpt-5.5'} --permission-mode bypassPermissions${isolation}\r\n`;
+    } else if (kind === 'kimi' || kind === 'kimi-resume') {
+      const cv = getConfigValues();
+      cmd = ` claude --model ${modelId || cv.KIMI_MODEL || 'kimi-k2.5'} --permission-mode bypassPermissions${isolation}\r\n`;
+    } else if (kind === 'qwen' || kind === 'qwen-resume') {
+      const cv = getConfigValues();
+      cmd = ` claude --model ${modelId || cv.QWEN_MODEL || 'qwen3.6-plus'} --permission-mode bypassPermissions${isolation}\r\n`;
     } else {
       return false;
     }
@@ -1070,8 +1080,7 @@ class SessionManager extends EventEmitter {
 //
 // 2026-05-02 修复：deepseek/glm 跑在 Claude CLI 上，transcript JSONL shape 与 Claude
 //   完全一致，原本应复用 'claude' 分支但代码里完全没分支 → resume 时圆桌历史上下文
-//   注入失败。下面把 Claude 家族判定改为 isClaudeFamily helper。
-const { isClaudeFamily } = require('./ai-kinds.js');
+//   注入失败。下面把 Claude 家族判定改为 isClaudeFamily helper（已在文件顶部 require）。
 async function readTranscriptTail(kind, sourcePath, n = 10) {
   if (!sourcePath) return null;
   // T13 fix: refuse oversized transcripts (>5MB) to avoid main-process memory spike

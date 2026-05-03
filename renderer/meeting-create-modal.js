@@ -16,6 +16,9 @@
 (function () {
 
 const { ipcRenderer } = require('electron');
+// KIND_LABELS / ALL_AI_KINDS 来自 ai-kinds.js 单一真理源，含 deepseek/glm/gpt/kimi/qwen，
+// 未来加新 AI 自动覆盖；本模块只额外维护 model 列表（每家 CLI 支持的 model id 不一样）。
+const { KIND_LABELS, ALL_AI_KINDS } = require('../core/ai-kinds.js');
 
 const MODELS_BY_KIND = {
   claude:   ['claude-opus-4-7[1m]', 'claude-opus-4-6', 'claude-sonnet-4-5'],
@@ -23,14 +26,10 @@ const MODELS_BY_KIND = {
   codex:    ['gpt-5.5', 'gpt-5.4'],
   deepseek: ['deepseek-v4-pro', 'deepseek-v4-flash'],
   glm:      ['glm-5.1', 'glm-4.6', 'glm-4-plus', 'glm-4-air'],
-};
-
-const KIND_LABELS = {
-  claude: 'Claude',
-  gemini: 'Gemini',
-  codex:  'Codex',
-  deepseek: 'DeepSeek',
-  glm:    'GLM',
+  // PackyAPI 三家：跑在 Claude CLI 上，model id 由 PackyAPI 端确定
+  gpt:      ['gpt-5.5', 'gpt-5.4'],
+  kimi:     ['kimi-k2.5'],
+  qwen:     ['qwen3.6-plus'],
 };
 
 // 2026-05-03 调试期默认（道雪）：先用 3 个 Claude Sonnet 4.5 把圆桌主流程跑稳。

@@ -551,10 +551,10 @@ function toggleMeetingExpand(meetingId) {
 
 // AI mini logo for sidebar sub-session items. Reuses the .ai-logo + .logo-<kind>
 // classes already defined in styles.css for the toolbar dropdown.
+//   - 'powershell' 不是 AI kind 但侧边栏需展示 logo，在 ALL_AI_KINDS 之外单独保留。
 function _aiLogoHtml(kind) {
-  const known = ['claude', 'gemini', 'codex', 'deepseek', 'glm', 'powershell'];
   const k = String(kind || '').replace(/-resume$/, '');
-  if (!known.includes(k)) return '';
+  if (k !== 'powershell' && !isAiKind(k)) return '';
   return `<span class="ai-logo logo-${k}" aria-hidden="true"></span>`;
 }
 

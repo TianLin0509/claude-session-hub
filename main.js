@@ -26,6 +26,7 @@ const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
 const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
 const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-config.js');
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
+const { isClaudeFamily } = require('./core/ai-kinds.js');
 
 const STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const STARTUP_T0 = Date.now();
@@ -567,8 +568,8 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
       scenes.writeCovenantSnapshot(hubDataDir, meetingId, covenantText);
     }
     const promptFile = scenes.writePromptFile(hubDataDir, meetingId, meeting.scene, covenantText);
-    // DeepSeek 跑在 Claude CLI 上（CLAUDE_CONFIG_DIR 隔离），需要相同的 system prompt 注入。
-    if (kind === 'claude' || kind === 'glm' || kind === 'deepseek') {
+    // DeepSeek/GLM/GPT/Kimi/Qwen 跑在 Claude CLI 上（CLAUDE_CONFIG_DIR 隔离），需要相同的 system prompt 注入。
+    if (isClaudeFamily(kind)) {
       sessionOpts.appendSystemPromptFile = promptFile;
       if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
         sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude');
@@ -2263,7 +2264,9 @@ ipcMain.handle('resume-session', async (_e, meta) => {
   const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume');
   const isDeepSeek = (meta.kind === 'deepseek');
   const isGlm = (meta.kind === 'glm');
-  const isClaudeCliResumable = isClaude || isDeepSeek || isGlm;
+  // CLAUDE_FAMILY 含 claude/claude-resume/deepseek/glm/gpt/kimi/qwen — 所有跑在 Claude CLI
+  // 上的 kind 共享同一 resume + system prompt 注入路径，单一真理源。
+  const isClaudeCliResumable = isClaudeFamily(meta.kind);
   const isGeminiOrCodex = (meta.kind === 'gemini' || meta.kind === 'codex');
 
   // resume 时根据会议模式重新注入 prompt 文件(research/general 公约)。
