@@ -2992,6 +2992,8 @@ ipcMain.handle('get-hub-config-raw', () => {
     codexApiBaseUrl: config.codexApiBaseUrl,
     codexApiModel: config.codexApiModel,
     packySessionCookie: config.packySessionCookie || '',
+    uiToolFoldThreshold: config.uiToolFoldThreshold,
+    uiCodeFoldThreshold: config.uiCodeFoldThreshold,
   };
 });
 

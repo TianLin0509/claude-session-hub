@@ -30,6 +30,8 @@ const DEFAULTS = {
   kimi_model: 'kimi-k2.5',
   qwen_base_url: 'https://www.packyapi.com',
   qwen_model: 'qwen3.6-plus',
+  ui_tool_fold_threshold: 15,
+  ui_code_fold_threshold: 30,
 };
 
 // 兼容老用户的 secrets.toml 路径
@@ -123,6 +125,8 @@ function getConfig() {
     codexApiProvider: getConfigValue('codexApiProvider', 'HUB_CODEX_API_PROVIDER', 'providers.codex.provider', DEFAULTS.codex_api_provider),
     // PackyAPI 账户面板(余额 + 消耗,通过网站 cookie 接入)
     packySessionCookie: getConfigValue('packySessionCookie', 'PACKY_SESSION_COOKIE', 'providers.packy.session_cookie', ''),
+    uiToolFoldThreshold: parseInt(getConfigValue('uiToolFoldThreshold', 'HUB_UI_TOOL_FOLD', 'ui.tool_fold_threshold', DEFAULTS.ui_tool_fold_threshold), 10),
+    uiCodeFoldThreshold: parseInt(getConfigValue('uiCodeFoldThreshold', 'HUB_UI_CODE_FOLD', 'ui.code_fold_threshold', DEFAULTS.ui_code_fold_threshold), 10),
     feishuCodex: {
       token: getConfigValue('feishuCodexToken', 'HUB_FEISHU_CODEX_TOKEN', 'channels.feishuCodex.token', ''),
       appId: getConfigValue('feishuAppId', 'HUB_FEISHU_APP_ID', 'channels.feishuCodex.app_id', ''),

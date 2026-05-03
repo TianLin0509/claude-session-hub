@@ -1522,21 +1522,76 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
   };
 }
 
+// === Spec 1 v0.9.0 · 工具调用块 + 折叠状态 ===
+const _foldedToolsState = new Map(); // 'turnId:toolIdx' -> bool(expanded)
+let _toolFoldThreshold = 15; // 启动时从 config 拉
+
+function setFoldedTool(turnId, idx, expanded) {
+  _foldedToolsState.set(`${turnId}:${idx}`, expanded);
+}
+function getFoldedTool(turnId, idx, defaultExpanded) {
+  const key = `${turnId}:${idx}`;
+  if (_foldedToolsState.has(key)) return _foldedToolsState.get(key);
+  return defaultExpanded;
+}
+
+function renderToolCall(turnId, idx, tc) {
+  // tc = { name, cmd, stdout, ok, durationMs, exitCode? }
+  const lines = (tc.stdout || '').split('\n').length;
+  const isFail = tc.ok === false;
+  const shouldFold = lines > _toolFoldThreshold && !isFail;
+  const expanded = getFoldedTool(turnId, idx, !shouldFold);
+  const status = isFail
+    ? `<span class="tc-fail">✗</span>${tc.exitCode != null ? ' exit ' + tc.exitCode : ''}`
+    : `<span class="tc-ok">✓</span>`;
+  const dur = tc.durationMs != null ? ` · ${(tc.durationMs/1000).toFixed(1)}s` : '';
+  const meta = `${lines} line${lines===1?'':'s'}${dur}`;
+  return `<div class="tc" data-turn="${escapeHtml(turnId)}" data-idx="${idx}">
+    <div class="tc-head">
+      <span><span class="tc-name">${escapeHtml(tc.name)}</span> ${escapeHtml(tc.cmd || '')}</span>
+      <span class="tc-meta">${status} ${meta}</span>
+    </div>
+    ${shouldFold && !expanded
+      ? `<div class="tc-toggle" data-action="tc-expand">▸ 展开 ${lines} 行(折叠 >${_toolFoldThreshold} 行)</div>`
+      : `<pre class="tc-out">${escapeHtml(tc.stdout || '')}</pre>${shouldFold ? '<div class="tc-toggle" data-action="tc-collapse">▾ 折叠</div>' : ''}`}
+  </div>`;
+}
+
+// 全局 click handler: 工具块展开/折叠
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action="tc-expand"], [data-action="tc-collapse"]');
+  if (!btn) return;
+  const wrap = btn.closest('.tc');
+  const turnId = wrap.dataset.turn;
+  const idx = parseInt(wrap.dataset.idx, 10);
+  const want = btn.dataset.action === 'tc-expand';
+  setFoldedTool(turnId, idx, want);
+  rerenderTurn(turnId);
+});
+
+function rerenderTurn(turnId) {
+  // 重渲染整张 turn 卡片(简单粗暴版,后续 task 接通 session.turns 后重写)
+  const card = document.querySelector(`.turn-card[data-turn-id="${turnId}"]`);
+  if (!card || !window._sessionTurns) return;
+  const turn = window._sessionTurns.get(turnId);
+  if (!turn) return;
+  card.outerHTML = renderTurnCard(turn);
+}
+
 // === Spec 1 v0.9.0 · turn 卡片渲染 ===
 function renderTurnCard(turn) {
-  // turn = { id, role: 'user'|'assistant', text, ts, model? }
-  // 注: 此版本 minimal — 不渲染 toolCalls/markdown,后续 task 5/6 扩展
   const isUser = turn.role === 'user';
   const cls = isUser ? 'turn-card user' : 'turn-card';
   const who = isUser ? '你' : (turn.model || 'Claude');
   const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
   const body = escapeHtml(turn.text || '').replace(/\n/g, '<br>');
+  const toolHtml = (turn.toolCalls || []).map((tc, i) => renderToolCall(turn.id || '', i, tc)).join('');
   return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}">
     <div class="turn-head">
       <span class="turn-who">${escapeHtml(who)}</span>
       <span class="turn-meta">${escapeHtml(ts)}</span>
     </div>
-    <div class="turn-body">${body}</div>
+    <div class="turn-body">${body}${toolHtml}</div>
   </div>`;
 }
 
@@ -4282,6 +4337,8 @@ async function resumeDormantSession(hubId) {
   ipcRenderer.invoke('get-hub-config-raw').then((cfg) => {
     if (!cfg) return;
     providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
+    if (typeof cfg.uiToolFoldThreshold === 'number' && !isNaN(cfg.uiToolFoldThreshold)) _toolFoldThreshold = cfg.uiToolFoldThreshold;
+    // _codeFoldThreshold will be added by T6, leave space for it
     // 不在这里调 renderAccountUsage —— packyAccountData 还没从 cache 加载完成,
     // 提前渲染会出现一帧"未接入"假象(get-usage-cache 慢于本 promise resolve)。
     // 余额/用量行的渲染统一交给下面的 cache promise。

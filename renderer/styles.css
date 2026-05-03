@@ -2685,3 +2685,44 @@ body.theme-light .floating-scroll-btn {
   margin-top: 4px;
   color: var(--turn-body-fg);
 }
+
+/* === Spec 1 v0.9.0 · 工具调用块 === */
+.tc {
+  background: var(--tool-call-bg);
+  border: 1px solid var(--tool-call-border);
+  border-radius: 6px;
+  margin: 8px 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+.tc-head {
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.tc-name { color: var(--tool-call-name); font-weight: 600; }
+.tc-meta { color: var(--turn-meta-fg); font-size: 10px; flex-shrink: 0; }
+.tc-ok { color: var(--tool-call-ok); }
+.tc-fail { color: var(--tool-call-fail); }
+.tc-out {
+  margin: 0;
+  padding: 4px 10px 8px;
+  color: #a1a1aa;
+  border-top: 1px solid var(--tool-call-border);
+  white-space: pre;
+  font-size: 10.5px;
+  line-height: 1.45;
+  max-height: 480px;
+  overflow-y: auto;
+}
+.tc-toggle {
+  color: var(--tool-call-toggle);
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 10.5px;
+  border-top: 1px solid var(--tool-call-border);
+  user-select: none;
+}
+.tc-toggle:hover { background: rgba(167, 139, 250, 0.05); }
