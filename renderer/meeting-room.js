@@ -911,11 +911,14 @@
     //   还没完成布局/合成的瞬间 querySelectorAll 拿到的引用与最终 paint 的 DOM 不一致。
     const pilotSlotForVisual = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
       ? meeting.pilotSlot : null;
-    const dispatchModeForVisual = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
-      ? meeting.dispatchMode : 'all';
-    requestAnimationFrame(() => {
-      _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
-    });
+    // T6：free 模式不调 _applyPilotCardVisual（无红框逻辑）
+    if (meeting.mode !== 'free') {
+      const dispatchModeForVisual = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
+        ? meeting.dispatchMode : 'all';
+      requestAnimationFrame(() => {
+        _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
+      });
+    }
   }
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
@@ -2330,14 +2333,66 @@
         inProgress ? ' · <strong>⏳ 处理中</strong>' : (turns > 0 ? ` · 已 ${turns} 轮` : '')
       }</div>`;
 
+      // T6：mode toggle segmented control
+      const meetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'pilot';
+      const modeToggleDisabled = inProgress ? 'disabled' : '';
+      const modeToggleHtml = `
+        <div class="mr-mode-toggle" role="group" aria-label="圆桌模式">
+          <button class="mr-mode-toggle-btn ${meetingMode === 'free' ? 'active' : ''}" data-meeting-mode="free" ${modeToggleDisabled} title="自由模式：勾选发言人">🆓 自由模式</button>
+          <button class="mr-mode-toggle-btn ${meetingMode === 'pilot' ? 'active' : ''}" data-meeting-mode="pilot" ${modeToggleDisabled} title="主驾模式：群策/主驾/副驾">🎯 主驾模式</button>
+        </div>
+      `;
+
+      // T6：dispatch 区域按 mode 分支
+      const SLOT_AVATARS = ['pikachu.png', 'charmander.png', 'squirtle.png'];
+      const SLOT_LABELS = ['⚡ Pikachu · 皮卡丘', '🔥 Charmander · 小火龙', '💎 Squirtle · 杰尼龟'];
+      const dispatchAreaHtml = (() => {
+        if (meetingMode === 'free') {
+          const participants = Array.isArray(meeting.participants) ? meeting.participants : [];
+          const partSet = new Set(participants);
+          const slotsHtml = [0, 1, 2].map(idx => {
+            const checked = partSet.has(idx);
+            const disabled = inProgress ? 'disabled' : '';
+            return `
+              <label class="mr-free-slot ${checked ? 'checked' : ''} ${disabled}" data-slot-idx="${idx}">
+                <input type="checkbox" class="mr-free-slot-cb" data-slot-idx="${idx}" ${checked ? 'checked' : ''} ${disabled} />
+                <img src="assets/pokemon/${SLOT_AVATARS[idx]}" alt="${SLOT_LABELS[idx]}" />
+                <span class="mr-free-slot-label">${SLOT_LABELS[idx]}</span>
+              </label>
+            `;
+          }).join('');
+          return `<div class="mr-free-participants" role="group" aria-label="本轮发言人">
+            <span class="mr-free-participants-title">本轮发言人</span>
+            ${slotsHtml}
+          </div>`;
+        }
+        // pilot 模式：原三按钮组（一行不动）
+        return `<div class="mr-rt-dispatch-group" role="group" aria-label="分发模式">
+          <button class="mr-rt-dispatch-btn ${dispatchMode === 'all' ? 'active' : ''}" data-dispatch-mode="all" ${dispatchAllDisabled} title="群策群力：本轮 prompt 发给全员">🤝 群策群力</button>
+          <button class="mr-rt-dispatch-btn ${dispatchMode === 'pilot' ? 'active' : ''}" data-dispatch-mode="pilot" ${dispatchPilotDisabled} title="${dispatchPilotTitle}">🎯 主驾发言</button>
+          <button class="mr-rt-dispatch-btn ${dispatchMode === 'observer' ? 'active' : ''}" data-dispatch-mode="observer" ${dispatchObserverDisabled} title="${dispatchObserverTitle}">👥 副驾发言</button>
+        </div>`;
+      })();
+
+      // T6：pilot wrap 仅 pilot 模式显示
+      const pilotWrapHtml = (meetingMode === 'pilot') ? `
+        <span class="mr-rt-tb-divider"></span>
+        <span class="mr-rt-tb-pilot-wrap">
+          <button class="${pilotBtnCls}" id="mr-pilot-btn" title="选定一家为主驾角色（红框标记）；不会切换全局模式，仅是身份标签。配合分发模式按钮使用。">🚗 主驾角色:<span id="mr-pilot-label">${pilotBtnLabel}</span> ▾</button>
+          <span id="mr-pilot-menu" class="mr-pilot-menu" style="display:none;">
+            <div class="mr-pilot-option" data-slot="0">⚡ Slot 1 · 皮卡丘</div>
+            <div class="mr-pilot-option" data-slot="1">🔥 Slot 2 · 小火龙</div>
+            <div class="mr-pilot-option" data-slot="2">💎 Slot 3 · 杰尼龟</div>
+            <div class="mr-pilot-option mr-pilot-option-off" data-slot="-1">取消主驾</div>
+          </span>
+        </span>
+      ` : '';
+
       el.innerHTML = `
+        ${modeToggleHtml}
         ${statusLine}
         <div class="mr-rt-toolbar">
-          <div class="mr-rt-dispatch-group" role="group" aria-label="分发模式">
-            <button class="mr-rt-dispatch-btn ${dispatchMode === 'all' ? 'active' : ''}" data-dispatch-mode="all" ${dispatchAllDisabled} title="群策群力：本轮 prompt 发给全员">🤝 群策群力</button>
-            <button class="mr-rt-dispatch-btn ${dispatchMode === 'pilot' ? 'active' : ''}" data-dispatch-mode="pilot" ${dispatchPilotDisabled} title="${dispatchPilotTitle}">🎯 主驾发言</button>
-            <button class="mr-rt-dispatch-btn ${dispatchMode === 'observer' ? 'active' : ''}" data-dispatch-mode="observer" ${dispatchObserverDisabled} title="${dispatchObserverTitle}">👥 副驾发言</button>
-          </div>
+          ${dispatchAreaHtml}
           <span class="mr-rt-tb-divider"></span>
           <button class="mr-rt-tb-btn" id="mr-rt-debate-btn" ${debateDisabled} title="让目标范围内的 AI 结合彼此观点重新发言（基于上一轮）">🗣 辩论</button>
           <button class="mr-rt-tb-btn" id="mr-rt-brief-summary-btn" ${briefSummaryDisabled} title="让上一轮发言者按五元组浓缩自己最近一段（典型场景:主驾深聊后切副驾审查前）">🗒 摘要</button>
@@ -2346,21 +2401,53 @@
             <span class="mr-rt-tb-pick-label">总结人:</span>
             <select id="mr-rt-summary-pick" ${summaryPickDisabled}>${opts || '<option disabled>无可用 AI</option>'}</select>
           </label>
-          <span class="mr-rt-tb-divider"></span>
-          <span class="mr-rt-tb-pilot-wrap">
-            <button class="${pilotBtnCls}" id="mr-pilot-btn" title="选定一家为主驾角色（红框标记）；不会切换全局模式，仅是身份标签。配合分发模式按钮使用。">🚗 主驾角色:<span id="mr-pilot-label">${pilotBtnLabel}</span> ▾</button>
-            <span id="mr-pilot-menu" class="mr-pilot-menu" style="display:none;">
-              <div class="mr-pilot-option" data-slot="0">⚡ Slot 1 · 皮卡丘</div>
-              <div class="mr-pilot-option" data-slot="1">🔥 Slot 2 · 小火龙</div>
-              <div class="mr-pilot-option" data-slot="2">💎 Slot 3 · 杰尼龟</div>
-              <div class="mr-pilot-option mr-pilot-option-off" data-slot="-1">取消主驾</div>
-            </span>
-          </span>
+          ${pilotWrapHtml}
           <span class="mr-rt-tb-status" id="mr-rt-tb-status">${
             inProgress ? '⏳ 处理中…' : (turns === 0 ? '先发个问题让大家本色发言' : `已 ${turns} 轮`)
           }</span>
         </div>
       `;
+
+      // T6：mode toggle click handler
+      el.querySelectorAll('.mr-mode-toggle-btn[data-meeting-mode]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (btn.hasAttribute('disabled')) return;
+          const newMode = btn.getAttribute('data-meeting-mode');
+          if (newMode === meetingMode) return;
+          try {
+            await ipcRenderer.invoke('roundtable:set-meeting-mode', { meetingId: meeting.id, mode: newMode });
+          } catch (err) {
+            console.error('[set-meeting-mode] failed:', err);
+            alert('切换模式失败：' + (err && err.message ? err.message : String(err)));
+          }
+        });
+      });
+
+      // T6：头像勾选 click handler（free 模式）
+      el.querySelectorAll('.mr-free-slot-cb[data-slot-idx]').forEach(cb => {
+        cb.addEventListener('click', async (ev) => {
+          ev.stopPropagation();  // 防止 label click 重复触发
+          const slotIdx = parseInt(cb.getAttribute('data-slot-idx'), 10);
+          const current = Array.isArray(meeting.participants) ? [...meeting.participants] : [0, 1, 2];
+          let next;
+          if (cb.checked) {
+            // 勾选：加入
+            next = current.includes(slotIdx) ? current : [...current, slotIdx];
+          } else {
+            // 取消：移除
+            next = current.filter(x => x !== slotIdx);
+          }
+          next.sort((a, b) => a - b);
+          try {
+            await ipcRenderer.invoke('roundtable:set-participants', { meetingId: meeting.id, participants: next });
+          } catch (err) {
+            console.error('[set-participants] failed:', err);
+            alert('保存失败：' + (err && err.message ? err.message : String(err)));
+            // 回滚 UI
+            cb.checked = !cb.checked;
+          }
+        });
+      });
 
       // dispatchMode 切换：调 IPC 'roundtable:dispatch-mode-set'，server 推 meeting-updated 回来重渲
       el.querySelectorAll('.mr-rt-dispatch-btn[data-dispatch-mode]').forEach(btn => {
