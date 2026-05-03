@@ -1198,34 +1198,73 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
     if (typeof orch.setMeetingContext === 'function') orch.setMeetingContext(sidInfoMap);
 
     // pilot redesign（2026-05-02）：dispatchMode × mode 正交路由。
-    //   pilotSlot ∈ {0,1,2,null}：主驾"角色"标识（仅 UI 红框，不影响 dispatch）。
-    //   dispatchMode ∈ {'all','pilot','observer'}：本轮谁开口。'pilot'/'observer' 要求 pilotSlot !== null。
-    //   兜底：dispatchMode 未传时取 meeting 持久化字段（默认 'all'）。
-    const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
-      ? meeting.pilotSlot : null;
-    const effectiveDispatchMode = ['all', 'pilot', 'observer'].includes(dispatchMode)
-      ? dispatchMode
-      : (meeting.dispatchMode || 'all');
+    // free-mode（2026-05-04）：meeting.mode === 'free' 时改为 participants 派生路由。
 
-    if (effectiveDispatchMode !== 'all' && pilotSlot === null) {
-      return { status: 'error', reason: `dispatchMode '${effectiveDispatchMode}' 需要先选定主驾`, turnNum: null };
-    }
-    if (effectiveDispatchMode === 'pilot' && mode === 'debate') {
-      // 主驾发言只有一家无法辩论
-      return { status: 'error', reason: '主驾发言模式下无法辩论（一家无法互辩）', turnNum: null };
-    }
+    const isFreeMode = meeting.mode === 'free';
+    const free = isFreeMode ? require('./core/roundtable-free') : null;
 
-    const targetSubs = (() => {
-      if (effectiveDispatchMode === 'all') return subs;
-      if (effectiveDispatchMode === 'pilot') {
-        return subs.filter(x => subSidsRaw.indexOf(x.sid) === pilotSlot);
+    let pilotSlot;
+    let effectiveDispatchMode;
+    let targetSubs;
+
+    if (isFreeMode) {
+      // Free 模式：从 participants 派生 effectiveDispatchMode + targets
+      pilotSlot = null;  // free 模式无主驾
+      // 容错：若 participants 仍是 null（异常状态），UI 应该已防发送，这里兜底为 [0,1,2]
+      const parts = Array.isArray(meeting.participants) ? meeting.participants : [0, 1, 2];
+
+      if (parts.length === 0) {
+        return { status: 'error', reason: '请勾选至少一位发言人', turnNum: null };
       }
-      // observer：排除主驾
-      return subs.filter(x => subSidsRaw.indexOf(x.sid) !== pilotSlot);
-    })();
+      if (mode === 'debate' && parts.length < 2) {
+        return { status: 'error', reason: '辩论需要至少 2 位发言人', turnNum: null };
+      }
+
+      effectiveDispatchMode = free.derivePilotCompatDispatchMode(parts, mode);
+
+      if (mode === 'summary') {
+        // summary 不受 participants 限制（Q8=A）
+        const targetSid = summarizerSlot ? sidBySlot(summarizerSlot) : null;
+        if (!targetSid) {
+          return { status: 'error', reason: `summarizer slot '${summarizerSlot}' 不在会议室或未活跃`, turnNum: null };
+        }
+        targetSubs = subs.filter(x => x.sid === targetSid);
+      } else {
+        // fanout / debate：按 participants 过滤
+        const partSet = new Set(parts);
+        targetSubs = subs.filter(x => partSet.has(x.slotIndex));
+      }
+    } else {
+      // Pilot 模式：原路径完全不动（一行不改）
+      //   pilotSlot ∈ {0,1,2,null}：主驾"角色"标识（仅 UI 红框，不影响 dispatch）。
+      //   dispatchMode ∈ {'all','pilot','observer'}：本轮谁开口。'pilot'/'observer' 要求 pilotSlot !== null。
+      //   兜底：dispatchMode 未传时取 meeting 持久化字段（默认 'all'）。
+      pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
+        ? meeting.pilotSlot : null;
+      effectiveDispatchMode = ['all', 'pilot', 'observer'].includes(dispatchMode)
+        ? dispatchMode
+        : (meeting.dispatchMode || 'all');
+
+      if (effectiveDispatchMode !== 'all' && pilotSlot === null) {
+        return { status: 'error', reason: `dispatchMode '${effectiveDispatchMode}' 需要先选定主驾`, turnNum: null };
+      }
+      if (effectiveDispatchMode === 'pilot' && mode === 'debate') {
+        // 主驾发言只有一家无法辩论
+        return { status: 'error', reason: '主驾发言模式下无法辩论（一家无法互辩）', turnNum: null };
+      }
+
+      targetSubs = (() => {
+        if (effectiveDispatchMode === 'all') return subs;
+        if (effectiveDispatchMode === 'pilot') {
+          return subs.filter(x => subSidsRaw.indexOf(x.sid) === pilotSlot);
+        }
+        // observer：排除主驾
+        return subs.filter(x => subSidsRaw.indexOf(x.sid) !== pilotSlot);
+      })();
+    }
 
     if (targetSubs.length === 0) {
-      return { status: 'error', reason: 'dispatchMode 过滤后无活跃目标 session', turnNum: null };
+      return { status: 'error', reason: 'dispatch 过滤后无活跃目标 session', turnNum: null };
     }
 
     // 方案 F · 2026-05-02：计算注入 map / projectCwd / timelinePath / sidRoleFn
@@ -1266,10 +1305,22 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       const targetSids = targetSubs.map(t => t.sid);
       const injectMap = rtInjection.computeLastTurnInjection(lastTurn, targetSids, sidLabelFn, sidRoleFn);
       for (const x of targetSubs) {
-        // BUGFIX (4-way review · Codex#2)：sameStageLabels 应基于 targetSubs（本轮真发言者）
-        //   而非全员 subs，否则 pilot/observer 模式下"同台"会含静音 AI
-        const dispatchSpec = _computeDispatchSpec(x, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
-        const prompt = orch.buildFanoutPrompt(turnNum, userInput, null, dispatchSpec, injectMap[x.sid] || null, timelinePath);
+        let prompt;
+        if (isFreeMode) {
+          prompt = free.buildFreeFanoutPrompt({
+            meeting,
+            selfSlot: x.slotIndex,
+            participants: meeting.participants,
+            userInput,
+            lastTurnInjection: injectMap[x.sid] || null,
+            turnNum,
+          });
+        } else {
+          // BUGFIX (4-way review · Codex#2)：sameStageLabels 应基于 targetSubs（本轮真发言者）
+          //   而非全员 subs，否则 pilot/observer 模式下"同台"会含静音 AI
+          const dispatchSpec = _computeDispatchSpec(x, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
+          prompt = orch.buildFanoutPrompt(turnNum, userInput, null, dispatchSpec, injectMap[x.sid] || null, timelinePath);
+        }
         targets.push({ ...x, prompt });
       }
     } else if (mode === 'debate') {
@@ -1282,8 +1333,20 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       const targetSids = targetSubs.map(t => t.sid);
       const injectMap = rtInjection.computeLastTurnInjection(last, targetSids, sidLabelFn, sidRoleFn);
       for (const x of targetSubs) {
-        const dispatchSpec = _computeDispatchSpec(x, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
-        const prompt = orch.buildDebatePrompt(turnNum, userInput, dispatchSpec, injectMap[x.sid] || null, timelinePath);
+        let prompt;
+        if (isFreeMode) {
+          prompt = free.buildFreeDebatePrompt({
+            meeting,
+            selfSlot: x.slotIndex,
+            participants: meeting.participants,
+            userInput,
+            lastTurnInjection: injectMap[x.sid] || null,
+            turnNum,
+          });
+        } else {
+          const dispatchSpec = _computeDispatchSpec(x, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
+          prompt = orch.buildDebatePrompt(turnNum, userInput, dispatchSpec, injectMap[x.sid] || null, timelinePath);
+        }
         targets.push({ ...x, prompt });
       }
     } else if (mode === 'summary') {
@@ -1307,8 +1370,19 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
         return { status: 'error', reason: `summarizer sid ${targetSid.slice(0,8)} 已变为 dormant`, turnNum: null };
       }
       const injectMap = rtInjection.computeLastTurnInjection(lastTurn, [target.sid], sidLabelFn, sidRoleFn);
-      const dispatchSpec = _computeDispatchSpec(target, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
-      const prompt = orch.buildSummaryPrompt(turnNum, target.sid, sidLabelFn, dispatchSpec, injectMap[target.sid] || null, timelinePath);
+      let prompt;
+      if (isFreeMode) {
+        prompt = free.buildFreeSummaryPrompt({
+          meeting,
+          summarizerSlot,
+          userInput,
+          lastTurnInjection: injectMap[target.sid] || null,
+          turnNum,
+        });
+      } else {
+        const dispatchSpec = _computeDispatchSpec(target, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
+        prompt = orch.buildSummaryPrompt(turnNum, target.sid, sidLabelFn, dispatchSpec, injectMap[target.sid] || null, timelinePath);
+      }
       targets.push({ ...target, prompt });
     } else {
       return { status: 'error', reason: 'unknown mode', turnNum: null };
