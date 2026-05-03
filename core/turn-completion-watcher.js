@@ -84,9 +84,14 @@ function createTurnCompletionWatcher(opts) {
         if (evt.signalSource !== 'stop_reason_terminal' && evt.signalSource !== 'stop_hook') return;
         if (!evt.text || evt.text === settledText) return;
         if (evt.text.length <= settledText.length) return;
-        try { onTurnPatched({ sid: hubSessionId, label, text: evt.text, status: 'completed' }); }
-        catch (e) { console.warn('[watcher] onTurnPatched threw:', e && e.message); }
-        settledText = evt.text;  // 更新基线，可能还有 M3
+        try {
+          onTurnPatched({ sid: hubSessionId, label, text: evt.text, status: 'completed' });
+          settledText = evt.text;  // 仅成功后更新基线（spec 防 silent failure）
+        } catch (e) {
+          console.warn('[watcher] onTurnPatched threw:', e && e.message);
+          // 不更新 settledText——下次更长 emit 仍可重试此 patch
+          // 同 text 会被 transcriptTap.emit 内部 lastText 比对吞掉，不会风暴
+        }
       };
       transcriptTap.on('turn-complete', patchListener);
       patchWindowTimer = setTimeout(_cleanupPatch, patchWindowMs);
