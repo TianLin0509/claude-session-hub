@@ -692,6 +692,22 @@
     const scene = _scenes.getScene(sceneKey);
     const examples = (scene && scene.onboardingExamples) || [];
     const titleText = scene ? scene.name : '圆桌讨论';
+    // 2026-05-03 道雪精测 C1 修复：欢迎文案原写死 "三家 AI（Claude / Gemini / Codex）"，
+    //   3 × claude / 任意混合配置下都显示成 Claude/Gemini/Codex → 用户困惑配置是否生效。
+    //   改为按 meeting.subSessions 的实际 kind 动态生成。
+    const _OB_LABEL = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex', deepseek: 'DeepSeek', glm: 'GLM' };
+    let aiSummary = '圆桌已就位';
+    try {
+      const sids = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions : [];
+      const labels = sids.map(sid => {
+        const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+        return _OB_LABEL[sess && sess.kind] || (sess && sess.title) || 'AI';
+      });
+      if (labels.length > 0) {
+        const cn = ['零','一','两','三','四','五','六','七','八','九'][labels.length] || labels.length;
+        aiSummary = `${cn}家 AI（${labels.join(' / ')}）已就位`;
+      }
+    } catch {}
     const exCards = examples.map(ex =>
       `<div class="mr-rt-ob-card" data-ob-q="${escapeHtml(ex.q)}">
         <div class="mr-rt-ob-icon">${ex.icon}</div>
@@ -702,7 +718,7 @@
     ).join('');
     return `<div class="mr-rt-onboarding">
       <div class="mr-rt-ob-head">${scene ? scene.icon : '🎯'} ${escapeHtml(titleText)}已创建</div>
-      <div class="mr-rt-ob-sub">三家 AI（Claude / Gemini / Codex）已就位，等你抛话题</div>
+      <div class="mr-rt-ob-sub">${escapeHtml(aiSummary)}，等你抛话题</div>
       <div class="mr-rt-ob-hint-bar">⏱ 首次发送：<strong>约 25s</strong> 冷启动 + OAuth · 后续轮次会快很多</div>
       <div class="mr-rt-ob-examples">${exCards}</div>
     </div>`;
@@ -1672,19 +1688,51 @@
   //   提示用户"等几秒再发送"，避免输入早于 CLI ready 而被吞。
   //   一旦全部 ready 自动消失。用户点 × dismiss 后同会议不再显示（_bannerDismissedFor 记录），
   //   关闭会议 → 重置，下次进同会议又显示。
+  //
+  // 2026-05-03 道雪精测 Bug #1+#2 修复（关键 P0 用户铁律）：banner 用「DOM + cache
+  //   取并集」的悲观策略 — 任一数据源说某家未 ready，banner 就提示该家启动中。
+  //   原 filter(meeting.subSessions, sid => !_cliReadyCache[sid]) 有两个问题：
+  //   #1: 装配中途 meeting.subSessions 还不完整 → notReady 数字偏小（如 2/3 而非 3/3）
+  //   #2: _cliReadyCache 比卡片 DOM 早更新 1s → banner 早消失，用户以为 ready 实际还没
+  //   并集策略保证：DOM 卡片仍"创建中" 或 cache 未 ready，任一为真即在 banner 内提示，
+  //   彻底杜绝"卡片创建中但 banner 消失"的误导（用户铁律 P0 禁忌）。
   function _refreshSoftAlert(meeting) {
     const banner = document.getElementById('mr-input-soft-alert');
     if (!banner || !meeting || !Array.isArray(meeting.subSessions)) return;
 
-    // 列出未 ready 的 AI 标签
     const labelOf = sid => {
       const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
       const kind = sess && sess.kind;
       return ({ claude: 'Claude', gemini: 'Gemini', codex: 'Codex', glm: 'GLM', deepseek: 'DeepSeek' }[kind])
         || (sess && sess.title) || sid.slice(0, 6);
     };
-    const notReadySids = meeting.subSessions.filter(sid => !_cliReadyCache[sid]);
-    const notReady = notReadySids.map(labelOf);
+    // 数据源 A：DOM 卡片状态文字含"创建中"的 sid（跟用户所见同源）
+    const domNotReadySids = new Set();
+    document.querySelectorAll('.mr-ft').forEach(card => {
+      const status = (card.querySelector('.mr-ft-status')?.textContent || '').trim();
+      if (status && status.includes('创建中')) {
+        const sid = card.querySelector('[data-rt-sid]')?.dataset?.rtSid;
+        if (sid) domNotReadySids.add(sid);
+      }
+    });
+    // 数据源 B：cli-ready cache 未 ready 的 sid（覆盖 panel 还没渲染时的首屏）
+    const cacheNotReadySids = new Set(meeting.subSessions.filter(sid => !_cliReadyCache[sid]));
+    // 并集（悲观策略）：任一源说未 ready → 提示
+    const unionSids = new Set([...domNotReadySids, ...cacheNotReadySids]);
+    const notReady = meeting.subSessions.filter(sid => unionSids.has(sid)).map(labelOf);
+    // 2026-05-03 道雪精测 Bug #1 三次修复（最终）：create-meeting 流程内 sequential
+    //   add 3 sub 期间，hub 后端会发 3 次 'meeting-updated'，每次 subSessions 数从 1 → 2 → 3。
+    //   banner 在 subSessions=2 时被调用过 → notReady 列出 2 个 Claude → 但实际 slotSpecs 期望 3 家。
+    //   补齐：用 slotSpecs.length 作为目标总数，差额按 slotSpecs[i].kind 算未 ready。
+    //   这保证装配中途 banner 数字 = 用户最初选的家数（永不偏小）。
+    if (Array.isArray(meeting.slotSpecs) && meeting.slotSpecs.length > meeting.subSessions.length) {
+      const SLOT_LABEL = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex', glm: 'GLM', deepseek: 'DeepSeek' };
+      for (let i = meeting.subSessions.length; i < meeting.slotSpecs.length; i++) {
+        const spec = meeting.slotSpecs[i];
+        notReady.push(SLOT_LABEL[spec?.kind] || 'AI');
+      }
+    }
+    const notReadySids = notReady; // 兼容下方 _lastNotReadyCount 比较语义
 
     // IF-C7（2026-05-03）：dismiss 语义改为"对当前未 ready 集合 dismiss"。
     //   当未 ready 数量上升（如新增子会话/某 sid 被踢回未 ready）→ 重新激活 banner。
