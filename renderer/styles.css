@@ -21,6 +21,33 @@
   --session-selected: #1c2128;
 }
 
+/* === Spec 1 v0.9.0 · UI redesign · 紫色基调 === */
+:root {
+  /* P 紫色基调 */
+  --ui-purple-1: #8b5cf6;
+  --ui-purple-2: #a78bfa;
+  --ui-purple-3: #c4b5fd;
+  --ui-purple-tint-bg: #2a2335;
+  --ui-purple-glow: rgba(139, 92, 246, 0.5);
+
+  /* 卡片 */
+  --turn-bg-assistant: #1c1d23;
+  --turn-bg-user: var(--ui-purple-tint-bg);
+  --turn-meta-fg: #71717a;
+  --turn-body-fg: #d4d4d8;
+  --turn-radius: 8px;
+  --turn-padding: 10px 14px;
+  --turn-gap: 8px;
+
+  /* 工具调用块 */
+  --tool-call-bg: #14151a;
+  --tool-call-border: #2a2b32;
+  --tool-call-name: #fbbf24;
+  --tool-call-toggle: var(--ui-purple-2);
+  --tool-call-ok: #34d399;
+  --tool-call-fail: #f87171;
+}
+
 body.theme-midnight {
   --bg-primary: #080c14;
   --bg-secondary: #0b1020;
@@ -2561,4 +2588,25 @@ body.theme-light .floating-scroll-btn {
   background: var(--bg-tertiary, #1f2630);
   color: var(--text-muted, #8b949e);
   flex-shrink: 0;
+}
+
+/* === Spec 1 v0.9.0 · 紫色滚动条 === */
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+*:hover::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.25); }
+*::-webkit-scrollbar-thumb:hover { background: var(--ui-purple-glow); }
+
+/* 排除 xterm 内部滚动条(它有自己的 viewport,会冲突) */
+.xterm *::-webkit-scrollbar,
+.xterm-viewport::-webkit-scrollbar {
+  width: auto; height: auto;
+}
+.xterm *::-webkit-scrollbar-thumb,
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: revert;
 }
