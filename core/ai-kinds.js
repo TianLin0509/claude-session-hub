@@ -53,7 +53,7 @@ const CLAUDE_FAMILY = ['claude', 'claude-resume', 'deepseek', 'glm', 'gpt', 'kim
 // ---------------------------------------------------------------------------
 // TUI alt-screen 程序（paste-sensitive）：
 //   把紧贴到达的字符当"粘贴"事件，紧贴的 \r 不会被识别为 Enter。
-//   所有 5 家 AI CLI 都是 TUI alt-screen；powershell 等普通 shell 不是。
+//   所有 8 家 AI CLI 都是 TUI alt-screen；powershell 等普通 shell 不是。
 //   普通模式发送 prompt 时这些 kind 需要 ≥400ms 延迟才能让 paste-detect 完成。
 // ---------------------------------------------------------------------------
 const PASTE_SENSITIVE_KINDS = ['claude', 'claude-resume', 'gemini', 'codex', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen'];
