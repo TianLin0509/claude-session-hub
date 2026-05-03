@@ -29,4 +29,25 @@ function parsePorcelain(text) {
   return out;
 }
 
-module.exports = { parsePorcelain };
+function parseWorktreeList(text) {
+  const out = [];
+  let cur = null;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      if (cur) out.push(cur);
+      cur = { cwd: line.slice('worktree '.length), head: null, branch: null };
+    } else if (line.startsWith('HEAD ')) {
+      if (cur) cur.head = line.slice('HEAD '.length);
+    } else if (line.startsWith('branch ')) {
+      if (cur) cur.branch = line.slice('branch refs/heads/'.length);
+    } else if (line === 'detached') {
+      if (cur) cur.branch = null;
+    } else if (line === '' && cur) {
+      out.push(cur); cur = null;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+module.exports = { parsePorcelain, parseWorktreeList };

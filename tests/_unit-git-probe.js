@@ -49,6 +49,31 @@ function test(name, fn) {
     assert.strictEqual(r.behind, 0);
   });
 
+  await test('parseWorktreeList: 解析多 worktree', () => {
+    const { parseWorktreeList } = require('../core/worktree/git-probe');
+    const input = [
+      'worktree C:/repos/main',
+      'HEAD abc123',
+      'branch refs/heads/master',
+      '',
+      'worktree C:/temp/feat-x',
+      'HEAD def456',
+      'branch refs/heads/feat-x',
+      '',
+    ].join('\n');
+    const r = parseWorktreeList(input);
+    assert.strictEqual(r.length, 2);
+    assert.deepStrictEqual(r[0], { cwd: 'C:/repos/main', head: 'abc123', branch: 'master' });
+    assert.deepStrictEqual(r[1], { cwd: 'C:/temp/feat-x', head: 'def456', branch: 'feat-x' });
+  });
+
+  await test('parseWorktreeList: detached HEAD', () => {
+    const { parseWorktreeList } = require('../core/worktree/git-probe');
+    const input = 'worktree C:/repos/x\nHEAD abc\ndetached\n';
+    const r = parseWorktreeList(input);
+    assert.strictEqual(r[0].branch, null);
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);
 })();
