@@ -164,10 +164,37 @@ function buildFreeSummaryPrompt({ meeting, summarizerSlot, userInput, lastTurnIn
   return lines.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// IPC 校验 helper（main.js 用）
+// ---------------------------------------------------------------------------
+
+function _validateMode(mode) {
+  if (mode !== 'pilot' && mode !== 'free') {
+    throw new Error(`Invalid mode: ${JSON.stringify(mode)} (expected 'pilot' or 'free')`);
+  }
+  return mode;
+}
+
+function _validateParticipants(arr) {
+  if (!Array.isArray(arr)) {
+    throw new Error(`participants must be array, got ${typeof arr}`);
+  }
+  const seen = new Set();
+  for (const x of arr) {
+    if (!Number.isInteger(x) || x < 0 || x > 2) {
+      throw new Error(`Invalid participant slot: ${JSON.stringify(x)} (expected 0|1|2)`);
+    }
+    seen.add(x);
+  }
+  return [...seen].sort((a, b) => a - b);
+}
+
 module.exports = {
   deriveTargetSids,
   derivePilotCompatDispatchMode,
   buildFreeFanoutPrompt,
   buildFreeDebatePrompt,
   buildFreeSummaryPrompt,
+  _validateMode,
+  _validateParticipants,
 };

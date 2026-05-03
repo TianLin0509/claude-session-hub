@@ -826,6 +826,77 @@ ipcMain.handle('roundtable:dispatch-mode-set', async (_e, { meetingId, dispatchM
   return { ok: true };
 });
 
+// free-mode（2026-05-04）— 切换 meeting.mode 'pilot' ⇄ 'free'
+//   inProgress=true 时拒绝（Q9=A：避免半轮发言后改语义）
+//   切到 free 模式时若 meeting.participants===null，首次初始化为 [0,1,2]
+ipcMain.handle('roundtable:set-meeting-mode', async (_e, { meetingId, mode } = {}) => {
+  if (!meetingId) throw new Error('Missing meetingId');
+  const free = require('./core/roundtable-free');
+  const validMode = free._validateMode(mode);
+
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
+
+  // Q9=A：inProgress 时拒绝
+  if (_roundtableInProgress.has(meetingId)) {
+    throw new Error('正在跑一轮，请等结束后再切模式');
+  }
+
+  meeting.mode = validMode;
+
+  // 切到 free 模式且 participants 未初始化 → 默认全选
+  if (validMode === 'free' && meeting.participants === null) {
+    meeting.participants = [0, 1, 2];
+  }
+
+  try {
+    stateStore.save({
+      version: 1,
+      cleanShutdown: false,
+      sessions: lastPersistedSessions,
+      meetings: meetingManager.getAllMeetings(),
+      immersiveByMeeting: _immersiveByMeeting,
+      pilotSlotByMeeting: _pilotSlotByMeeting,
+      dispatchModeByMeeting: _dispatchModeByMeeting,
+    });
+  } catch (e) {
+    console.warn('[圆桌] roundtable:set-meeting-mode persist failed:', e.message);
+  }
+
+  sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
+  return { ok: true };
+});
+
+// free-mode（2026-05-04）— 设置 free 模式参与者勾选
+//   接受空数组（Q11=A：尊重用户清空，UI 已防发送）
+ipcMain.handle('roundtable:set-participants', async (_e, { meetingId, participants } = {}) => {
+  if (!meetingId) throw new Error('Missing meetingId');
+  const free = require('./core/roundtable-free');
+  const validated = free._validateParticipants(participants);
+
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
+
+  meeting.participants = validated;
+
+  try {
+    stateStore.save({
+      version: 1,
+      cleanShutdown: false,
+      sessions: lastPersistedSessions,
+      meetings: meetingManager.getAllMeetings(),
+      immersiveByMeeting: _immersiveByMeeting,
+      pilotSlotByMeeting: _pilotSlotByMeeting,
+      dispatchModeByMeeting: _dispatchModeByMeeting,
+    });
+  } catch (e) {
+    console.warn('[圆桌] roundtable:set-participants persist failed:', e.message);
+  }
+
+  sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
+  return { ok: true };
+});
+
 // =====================================================================
 // Roundtable Mode (Sprint 2): fanout / debate / summary 三种轮次
 // =====================================================================
