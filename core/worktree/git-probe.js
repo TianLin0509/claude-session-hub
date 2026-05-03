@@ -113,6 +113,19 @@ async function probeRepo(cwd, opts = {}) {
       let repoRoot = root.trim();
       try { repoRoot = fs.realpathSync(repoRoot); } catch (_) { repoRoot = path.resolve(repoRoot); }
 
+      // git-common-dir: same .git path for ALL linked worktrees of a repo.
+      // Used as the "same repo" identity key — repoRoot alone is per-worktree.
+      let commonDir;
+      try {
+        const cd = await _runGit(realCwd, ['rev-parse', '--git-common-dir']);
+        if (cd) {
+          commonDir = cd.trim();
+          // resolve relative to repoRoot if not absolute
+          if (!path.isAbsolute(commonDir)) commonDir = path.resolve(repoRoot, commonDir);
+          try { commonDir = fs.realpathSync(commonDir); } catch (_) {}
+        }
+      } catch (_) { commonDir = null; }
+
       const [statusText, lastCommitText] = await Promise.all([
         _runGit(repoRoot, ['status', '--porcelain=2', '--branch']),
         _runGit(repoRoot, ['log', '-1', '--format=%h%x09%s%x09%cr']),
@@ -124,6 +137,7 @@ async function probeRepo(cwd, opts = {}) {
         isRepo: true,
         cwd: realCwd,
         repoRoot,
+        gitCommonDir: commonDir || repoRoot,  // fallback to repoRoot if probe failed
         branch: status.branch,
         ahead: status.ahead,
         behind: status.behind,

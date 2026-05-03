@@ -25,8 +25,8 @@ async function getPanelData({ activeSessionId, allSessions, force = false }) {
     const p = await probeRepo(s.cwd, { force });
     return { ...p, sessionId: s.sessionId, sessionLabel: s.sessionLabel };
   }));
-  const activeRootKey = _norm(activeFull.repoRoot);
-  const peers = peerProbes.filter(p => p.isRepo && _norm(p.repoRoot) === activeRootKey);
+  const activeKey = _norm(activeFull.gitCommonDir || activeFull.repoRoot);
+  const peers = peerProbes.filter(p => p.isRepo && _norm(p.gitCommonDir || p.repoRoot) === activeKey);
 
   const worktreeList = activeFull.isRepo ? await listWorktrees(activeFull.repoRoot) : [];
   const conflict = classify(activeFull, peers);

@@ -14,13 +14,13 @@ function classify(active, peers) {
   const reasons = [];
   let level = 'green';
   const activeCwd = _norm(active.cwd);
-  const activeRoot = _norm(active.repoRoot);
+  const activeKey = _norm(active.gitCommonDir || active.repoRoot);  // identity key
   const activeDirtyPaths = new Set((active.dirty || []).map(d => _norm(d.path)));
 
   for (const p of peers) {
     if (!p || !p.isRepo) continue;
     const pCwd = _norm(p.cwd);
-    const pRoot = _norm(p.repoRoot);
+    const pKey = _norm(p.gitCommonDir || p.repoRoot);
     const tag = p.sessionId || p.cwd;
 
     if (pCwd === activeCwd) {
@@ -28,7 +28,7 @@ function classify(active, peers) {
       level = 'red';
       continue;
     }
-    if (pRoot === activeRoot) {
+    if (pKey === activeKey) {
       const overlap = (p.dirty || [])
         .map(d => _norm(d.path))
         .filter(x => activeDirtyPaths.has(x));

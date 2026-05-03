@@ -155,12 +155,29 @@ function test(name, fn) {
     cp.spawn = function(...args) { spawnCount++; return origSpawn.apply(this, args); };
     try {
       await Promise.all([probeRepo(dir, { force: true }), probeRepo(dir, { force: true })]);
-      // 单次 probeRepo 内部最多 spawn 3 次（rev-parse + status + log）
-      // 并发两次去重成功 → 仍是 3 次（共享同一 in-flight Promise）
-      // 去重失败 → 6 次
-      assert.ok(spawnCount <= 3, `expected <= 3 spawns, got ${spawnCount}`);
+      // 单次 probeRepo 内部最多 spawn 4 次（rev-parse toplevel + rev-parse common-dir + status + log）
+      // 并发两次去重成功 → 仍是 4 次（共享同一 in-flight Promise）
+      // 去重失败 → 8 次
+      assert.ok(spawnCount <= 4, `expected <= 4 spawns, got ${spawnCount}`);
     } finally {
       cp.spawn = origSpawn;
+    }
+  });
+
+  await test('probeRepo: 真实 worktree 共享 gitCommonDir', async () => {
+    _resetCacheForTest();
+    const main = makeRepo();
+    const wt = path.join(os.tmpdir(), 'gprobe-wt-' + Date.now());
+    cp.execSync(`git -C "${main}" worktree add "${wt}" -b feat-wt-test HEAD`, { shell: true });
+    try {
+      const a = await probeRepo(main, { force: true });
+      const b = await probeRepo(wt, { force: true });
+      assert.ok(a.gitCommonDir, 'main has gitCommonDir');
+      assert.ok(b.gitCommonDir, 'wt has gitCommonDir');
+      assert.strictEqual(a.gitCommonDir, b.gitCommonDir, 'same gitCommonDir for main + wt');
+      assert.notStrictEqual(a.repoRoot, b.repoRoot, 'different repoRoot for main vs wt');
+    } finally {
+      try { cp.execSync(`git -C "${main}" worktree remove "${wt}" --force`, { shell: true }); } catch (_) {}
     }
   });
 

@@ -47,6 +47,21 @@ const repoB = { isRepo: true, cwd: 'C:/b', repoRoot: 'C:/b', dirty: [] };
     assert.strictEqual(r.color, 'green');
   });
 
+  await test('8. 不同 worktree 同 gitCommonDir → 同 repo 黄', () => {
+    const wtMain  = { isRepo: true, cwd: 'C:/repo',     repoRoot: 'C:/repo',     gitCommonDir: 'C:/repo/.git', dirty: [{path:'foo.js'}] };
+    const wtFeatA = { isRepo: true, cwd: 'C:/wt-a',     repoRoot: 'C:/wt-a',     gitCommonDir: 'C:/repo/.git', dirty: [{path:'bar.js'}] };
+    const r = classify(wtMain, [{ ...wtFeatA, sessionId: 'S2' }]);
+    assert.strictEqual(r.color, 'yellow');
+  });
+
+  await test('9. 不同 worktree 同 gitCommonDir 撞文件 → 红', () => {
+    const wtMain  = { isRepo: true, cwd: 'C:/repo', repoRoot: 'C:/repo', gitCommonDir: 'C:/repo/.git', dirty: [{path:'foo.js'}] };
+    const wtFeatA = { isRepo: true, cwd: 'C:/wt-a', repoRoot: 'C:/wt-a', gitCommonDir: 'C:/repo/.git', dirty: [{path:'foo.js'}] };
+    const r = classify(wtMain, [{ ...wtFeatA, sessionId: 'S2' }]);
+    assert.strictEqual(r.color, 'red');
+    assert.ok(r.reasons.some(s => /改同文件/.test(s) && /foo\.js/.test(s)));
+  });
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);
 })();
