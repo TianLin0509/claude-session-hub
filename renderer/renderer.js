@@ -1666,6 +1666,25 @@ function selectSession(id) {
   window.worktreePanel?.onSessionChange(id);
 }
 
+// Expose for worktree panel peer-card click → jump to session.
+window.selectSession = selectSession;
+
+// Worktree panel file-row click hook: resolve relPath against active session
+// cwd and route through the existing preview entry (openPreviewPanel).
+window.openWorktreeDiffPreview = function(relPath) {
+  if (!relPath) return;
+  const sid = activeSessionId;
+  if (!sid) return;
+  const sess = sessions.get(sid);
+  if (!sess || !sess.cwd) return;
+  const abs = require('path').resolve(sess.cwd, relPath);
+  if (typeof openPreviewPanel === 'function') {
+    openPreviewPanel(abs);
+  } else {
+    console.warn('[worktree] no preview entry found for', abs);
+  }
+};
+
 // --- Dropdown menu ---
 btnNew.addEventListener('click', () => {
   menuEl.style.display = menuEl.style.display === 'none' ? 'block' : 'none';
