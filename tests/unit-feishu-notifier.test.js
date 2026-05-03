@@ -129,6 +129,24 @@ async function testDifferentSessionsIndependent() {
   console.log('  ok different sessions independent');
 }
 
+async function testApiFailureNoThrow() {
+  const failingClient = {
+    sendCard: async () => { throw new Error('Feishu HTTP 500'); },
+  };
+  const clock = makeFakeClock();
+  const notifier = new FeishuNotifier({
+    client: failingClient, chatId: 'oc_target', now: clock.now,
+    logger: { warn: () => {} },
+  });
+
+  const result = await notifier.notify(basePayload());
+
+  assert.deepStrictEqual(result, { sent: false, reason: 'error' });
+  assert.ok(notifier.lastError, 'lastError recorded');
+  assert.strictEqual(notifier.lastError.message, 'Feishu HTTP 500');
+  console.log('  ok api failure does not throw');
+}
+
 (async () => {
   console.log('Running FeishuNotifier tests...');
   await testConstructorValidation();
@@ -137,6 +155,7 @@ async function testDifferentSessionsIndependent() {
   await testReSendAfterWindow();
   await testNewlyWaitingBypassesDedupe();
   await testDifferentSessionsIndependent();
+  await testApiFailureNoThrow();
   console.log('All passed.');
 })().catch(err => {
   console.error(err);
