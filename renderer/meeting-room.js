@@ -140,29 +140,21 @@
       }
       filtered.unshift(b);
     }
-    // Arch refactor 2026-05-02 (Task 6): 截断方向反转 — 保头去尾，让用户能从开头读起。
-    //   原 slice(-X) 截头保尾的设计是为了适配老沉浸模式下小卡片只看最新输出；现在
-    //   shell 已经独立到子 session 主区，长输出请用户点 [🔧 进 shell] 看真实 PTY。
-    //   截断时追加点击提示链接到 shell view。
-    const truncatedHint = sid
-      ? `<span class="mr-truncated-hint" data-rt-escape="enter-shell" data-rt-sid="${sid}" title="切换到该家 shell 主视图，查看完整输出">▾ 内容已截断 · 进 shell 看完整 →</span>`
-      : `<span class="mr-truncated-hint">▾ 内容已截断 · 切到该家 session 看完整 →</span>`;
+    // 2026-05-03 道雪：移除字符截断（改前 thinking 400 / text 2000）。
+    //   卡片本身有 max-height + overflow-y 滚动承载长内容；截断会砍掉答案末尾
+    //   的关键信息（如评分总评），用户必须开 shell 才能看到，违反"卡片即结论"原则。
+    //   "进 shell"入口仍在卡片头部 escape btn，用户需要时可手动切换。
     const html = [];
     for (const block of filtered) {
       if (block.type === 'thinking') {
         const raw = String(block.text || '');
-        const t = raw.slice(0, 400);
-        const truncMark = raw.length > 400 ? truncatedHint : '';
-        html.push(`<div class="mr-ft-think">${escapeHtml(t)}${truncMark}</div>`);
+        html.push(`<div class="mr-ft-think">${escapeHtml(raw)}</div>`);
       } else if (block.type === 'tool_use') {
         const summary = _formatToolUseBlock(block);
         html.push(`<span class="mr-ft-tool">${escapeHtml(summary)}</span>`);
       } else if (block.type === 'text') {
         const raw = String(block.text || '');
-        const t = raw.slice(0, 2000);
-        const md = _renderMarkdown(t);
-        const truncMark = raw.length > 2000 ? truncatedHint : '';
-        html.push(`<div class="mr-ft-md">${md}${truncMark}</div>`);
+        html.push(`<div class="mr-ft-md">${_renderMarkdown(raw)}</div>`);
       }
     }
     return html.join('');
