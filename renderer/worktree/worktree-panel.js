@@ -25,16 +25,34 @@
 
   async function refresh({ force = false } = {}) {
     if (!currentSessionId) return;
-    const res = await ipcRenderer.invoke('worktree:probe', {
-      activeSessionId: currentSessionId, force,
-    });
+    const cur = document.getElementById('wt-current');
+    if (cur) cur.classList.add('wt-loading');
+    let res;
+    try {
+      res = await ipcRenderer.invoke('worktree:probe', {
+        activeSessionId: currentSessionId, force,
+      });
+    } catch (e) {
+      showError(`IPC 异常: ${e.message}`, true);
+      return;
+    } finally {
+      if (cur) cur.classList.remove('wt-loading');
+    }
     if (!res.ok) {
-      errorEl.style.display = '';
-      errorEl.textContent = `加载失败: ${res.error}`;
+      if (/timeout/i.test(res.error)) showError(`git 响应超时`, true);
+      else if (/not.*git/i.test(res.error)) showError(`目录不在 git 仓库内`, false);
+      else showError(`加载失败: ${res.error}`, true);
       return;
     }
     errorEl.style.display = 'none';
     render(res.data);
+  }
+
+  function showError(msg, retryable) {
+    errorEl.style.display = '';
+    errorEl.innerHTML = `${escapeHtml(msg)}${retryable ? ` <button class="wt-retry">重试</button>` : ''}`;
+    const retry = errorEl.querySelector('.wt-retry');
+    if (retry) retry.addEventListener('click', () => refresh({ force: true }));
   }
 
   function render(data) {
