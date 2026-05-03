@@ -1,6 +1,8 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
 const { isClaudeFamily, isAiKind } = require('../core/ai-kinds.js');
 const { formatAbsoluteTime } = require('./format-time.js');
+const { marked } = require('marked');
+const DOMPurify = require('dompurify');
 const RENDER_STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const RENDER_STARTUP_T0 = performance.now();
 function traceRendererStartup(msg) {
@@ -1589,7 +1591,8 @@ function renderTurnCard(turn) {
   const cls = isUser ? 'turn-card user' : 'turn-card';
   const who = isUser ? '你' : (turn.model || 'Claude');
   const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
-  const body = escapeHtml(turn.text || '').replace(/\n/g, '<br>');
+  const rawHtml = marked.parse(turn.text || '', { breaks: true, gfm: true });
+  const body = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target', 'data-lang'] });
   const toolHtml = (turn.toolCalls || []).map((tc, i) => renderToolCall(turn.id || '', i, tc)).join('');
   return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}">
     <div class="turn-head">
@@ -1602,6 +1605,99 @@ function renderTurnCard(turn) {
 
 // debug: 暴露给 console 验证
 window._renderTurnCard = renderTurnCard;
+
+// === Spec 1 v0.9.0 · 代码块强化 (D2) ===
+let _codeFoldThreshold = 30;
+const _foldedCodesState = new Map();
+
+function postProcessCardCodeBlocks(cardEl) {
+  if (!cardEl) return;
+  const blocks = cardEl.querySelectorAll('pre > code');
+  blocks.forEach((code, idx) => {
+    const pre = code.parentElement;
+    // marked adds class="language-xx"; pull first language match
+    const lang = (code.className.match(/language-(\w+)/) || [, ''])[1];
+    // prism highlight (only if language plugin loaded)
+    if (lang && window.Prism && Prism.languages[lang]) {
+      try { code.innerHTML = Prism.highlight(code.textContent, Prism.languages[lang], lang); }
+      catch {}
+    }
+    // wrap pre in .code-block-wrap, add Copy button + fold toggle if long
+    const lines = code.textContent.split('\n').length;
+    const turnId = cardEl.dataset.turnId || '';
+    const codeKey = `${turnId}:code:${idx}`;
+    const expanded = _foldedCodesState.has(codeKey) ? _foldedCodesState.get(codeKey) : (lines <= _codeFoldThreshold);
+    const wrap = document.createElement('div');
+    wrap.className = 'code-block-wrap';
+    wrap.dataset.codeKey = codeKey;
+    wrap.dataset.lang = lang || 'text';
+    wrap.dataset.lines = lines;
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+    // Copy button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'code-copy';
+    copyBtn.textContent = '📋 Copy';
+    copyBtn.dataset.action = 'code-copy';
+    wrap.appendChild(copyBtn);
+    // Fold toggle (long blocks)
+    if (lines > _codeFoldThreshold && !expanded) {
+      pre.style.display = 'none';
+      const toggle = document.createElement('div');
+      toggle.className = 'code-toggle';
+      toggle.dataset.action = 'code-expand';
+      toggle.textContent = `▸ 展开 ${_codeFoldThreshold} of ${lines} 行 · ${lang || 'text'}`;
+      wrap.appendChild(toggle);
+    } else if (lines > _codeFoldThreshold) {
+      const toggle = document.createElement('div');
+      toggle.className = 'code-toggle';
+      toggle.dataset.action = 'code-collapse';
+      toggle.textContent = `▾ 折叠 (${lines} 行)`;
+      wrap.appendChild(toggle);
+    }
+  });
+}
+
+function mountTurnCard(container, turn) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = renderTurnCard(turn);
+  const cardEl = tmp.firstElementChild;
+  postProcessCardCodeBlocks(cardEl);
+  container.appendChild(cardEl);
+  return cardEl;
+}
+window._mountTurnCard = mountTurnCard;
+
+// click handler — code-copy + code-expand/collapse
+document.addEventListener('click', (e) => {
+  const copyBtn = e.target.closest('[data-action="code-copy"]');
+  if (copyBtn) {
+    const code = copyBtn.parentElement.querySelector('pre code');
+    if (code) {
+      navigator.clipboard.writeText(code.textContent).then(() => {
+        copyBtn.textContent = '✓ Copied';
+        setTimeout(() => copyBtn.textContent = '📋 Copy', 1500);
+      });
+    }
+    return;
+  }
+  const toggleBtn = e.target.closest('[data-action="code-expand"], [data-action="code-collapse"]');
+  if (toggleBtn) {
+    const wrap = toggleBtn.closest('.code-block-wrap');
+    const key = wrap.dataset.codeKey;
+    const want = toggleBtn.dataset.action === 'code-expand';
+    _foldedCodesState.set(key, want);
+    const pre = wrap.querySelector('pre');
+    pre.style.display = want ? '' : 'none';
+    if (want) {
+      toggleBtn.dataset.action = 'code-collapse';
+      toggleBtn.textContent = `▾ 折叠 (${wrap.dataset.lines} 行)`;
+    } else {
+      toggleBtn.dataset.action = 'code-expand';
+      toggleBtn.textContent = `▸ 展开 ${_codeFoldThreshold} of ${wrap.dataset.lines} 行 · ${wrap.dataset.lang}`;
+    }
+  }
+});
 
 // === Spec 1 v0.9.0 · 视图切换 ===
 let currentView = 'card'; // 'card' | 'pty'
@@ -4343,7 +4439,7 @@ async function resumeDormantSession(hubId) {
     if (!cfg) return;
     providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
     if (typeof cfg.uiToolFoldThreshold === 'number' && !isNaN(cfg.uiToolFoldThreshold)) _toolFoldThreshold = cfg.uiToolFoldThreshold;
-    // _codeFoldThreshold will be added by T6, leave space for it
+    if (typeof cfg.uiCodeFoldThreshold === 'number' && !isNaN(cfg.uiCodeFoldThreshold)) _codeFoldThreshold = cfg.uiCodeFoldThreshold;
     // 不在这里调 renderAccountUsage —— packyAccountData 还没从 cache 加载完成,
     // 提前渲染会出现一帧"未接入"假象(get-usage-cache 慢于本 promise resolve)。
     // 余额/用量行的渲染统一交给下面的 cache promise。

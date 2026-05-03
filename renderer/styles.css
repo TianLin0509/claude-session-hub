@@ -2726,3 +2726,56 @@ body.theme-light .floating-scroll-btn {
   user-select: none;
 }
 .tc-toggle:hover { background: rgba(167, 139, 250, 0.05); }
+
+/* === Spec 1 v0.9.0 · 代码块 (D2) === */
+.code-block-wrap {
+  position: relative;
+  margin: 10px 0;
+}
+.code-block-wrap pre {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--tool-call-bg) !important;
+  border: 1px solid var(--tool-call-border);
+  border-radius: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+.code-copy {
+  position: absolute;
+  top: 6px; right: 6px;
+  background: rgba(139, 92, 246, 0.15);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  color: var(--ui-purple-3);
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  font-family: inherit;
+}
+.code-block-wrap:hover .code-copy { opacity: 1; }
+.code-copy:hover { background: rgba(139, 92, 246, 0.3); }
+.code-toggle {
+  background: var(--tool-call-bg);
+  border: 1px solid var(--tool-call-border);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  padding: 6px 10px;
+  color: var(--ui-purple-2);
+  cursor: pointer;
+  font-size: 10.5px;
+  font-family: ui-monospace, monospace;
+  user-select: none;
+}
+.code-toggle:hover { background: rgba(167, 139, 250, 0.05); }
+
+/* prism-tomorrow 紫调 override */
+.token.keyword { color: var(--ui-purple-3) !important; }
+.token.function { color: #fbbf24 !important; }
+.token.string { color: #34d399 !important; }
+.token.comment { color: #6b7280 !important; font-style: italic; }
+.token.operator { color: #c4b5fd !important; }
