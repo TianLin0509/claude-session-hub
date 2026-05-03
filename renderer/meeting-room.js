@@ -2424,9 +2424,18 @@
       });
 
       // T6：头像勾选 click handler（free 模式）
+      // race guard：每次 panel 重渲新建一次 lock，防止连击竞态
+      let _freeSlotUpdating = false;
       el.querySelectorAll('.mr-free-slot-cb[data-slot-idx]').forEach(cb => {
         cb.addEventListener('click', async (ev) => {
           ev.stopPropagation();  // 防止 label click 重复触发
+          // 连击时第二次 rollback UI 状态、不发 IPC
+          if (_freeSlotUpdating) {
+            cb.checked = !cb.checked;
+            return;
+          }
+          _freeSlotUpdating = true;
+
           const slotIdx = parseInt(cb.getAttribute('data-slot-idx'), 10);
           const current = Array.isArray(meeting.participants) ? [...meeting.participants] : [0, 1, 2];
           let next;
@@ -2445,6 +2454,8 @@
             alert('保存失败：' + (err && err.message ? err.message : String(err)));
             // 回滚 UI
             cb.checked = !cb.checked;
+          } finally {
+            _freeSlotUpdating = false;
           }
         });
       });
