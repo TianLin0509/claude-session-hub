@@ -71,6 +71,14 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
       state.projects = {};
     }
 
+    // 顶级 state：跳过 BypassPermissions 全屏警告菜单 + onboarding。
+    // 缺这些字段时 claude CLI 首次启动会弹 "WARNING: Bypass Permissions mode" 全屏菜单
+    // 要求按 2+Enter 通过 — conpty alt-screen 下方向键模拟不靠谱，普通用户体感"卡住"。
+    // 字段名参考主 ~/.claude.json（生产 Claude 长期 accept 后的实际状态）。
+    state.bypassPermissionsModeAccepted = true;
+    state.skipDangerousModePermissionPrompt = true;
+    state.hasCompletedOnboarding = true;
+
     const projectKey = toClaudeProjectKey(projectDir);
     const existing = state.projects[projectKey] && typeof state.projects[projectKey] === 'object'
       ? state.projects[projectKey]
