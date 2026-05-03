@@ -1596,6 +1596,10 @@ function rerenderTurn(turnId) {
 }
 
 // === Spec 1 v0.9.0 · D4 头像 ===
+function sanitizeAssetName(name) {
+  // 仅允许字母数字+横线下划线,防止路径遍历
+  return String(name || '').replace(/[^a-zA-Z0-9_-]/g, '');
+}
 function aiLogoSrc(kind) {
   // 已有 logos: claude / codex / 等。其它 kind fallback 到字母
   const known = ['claude','codex','gemini','deepseek','glm','gpt','kimi','qwen'];
@@ -1622,7 +1626,12 @@ function renderTurnCard(turn) {
     avatarHtml = `<span class="turn-avatar av-user">👤</span>`;
   } else if (turn.slotPokemon) {
     // 圆桌 slot 体系
-    avatarHtml = `<span class="turn-avatar av-poke"><img src="assets/pokemon/${escapeHtml(turn.slotPokemon)}.png" alt="${escapeHtml(turn.slotPokemon)}"></span>`;
+    const safe = sanitizeAssetName(turn.slotPokemon);
+    if (safe) {
+      avatarHtml = `<span class="turn-avatar av-poke"><img src="assets/pokemon/${safe}.png" alt="${escapeHtml(turn.slotPokemon)}"></span>`;
+    } else {
+      avatarHtml = `<span class="turn-avatar av-letter">${escapeHtml(aiLetterFallback(turn.kind))}</span>`;
+    }
   } else {
     const logo = aiLogoSrc(turn.kind);
     avatarHtml = logo
