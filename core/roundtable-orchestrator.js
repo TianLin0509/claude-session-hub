@@ -96,15 +96,30 @@ class RoundtableOrchestrator {
     }
   }
 
+  // silent-failure-hunter#2（2026-05-03 道雪）：原代码无 try/catch，磁盘满/EBUSY/
+  //   权限错误时 writeFileSync 抛错 → 调用方（completeTurn/patchTurnResult/...）
+  //   异常冒泡到 dispatchRoundtableTurn 的 finally → 内存 state.turns 已 push
+  //   但磁盘 .json 没更新 → 重启后 _loadState 漏掉这轮 → turnNum 重用乱跳。
+  //   修：catch + console.error + 重 throw 让调用方有机会 rollback。
   _saveState() {
     const fp = this._stateFilePath();
-    fs.mkdirSync(path.dirname(fp), { recursive: true });
-    fs.writeFileSync(fp, JSON.stringify(this.state, null, 2), 'utf-8');
+    try {
+      fs.mkdirSync(path.dirname(fp), { recursive: true });
+      fs.writeFileSync(fp, JSON.stringify(this.state, null, 2), 'utf-8');
+    } catch (e) {
+      console.error(`[orchestrator] _saveState failed for ${this.meetingId} (${fp}):`, e.message);
+      throw e;
+    }
   }
 
   _saveTurnFile(turnRecord) {
     const fp = this._turnFilePath(turnRecord.n);
-    fs.writeFileSync(fp, JSON.stringify(turnRecord, null, 2), 'utf-8');
+    try {
+      fs.writeFileSync(fp, JSON.stringify(turnRecord, null, 2), 'utf-8');
+    } catch (e) {
+      console.error(`[orchestrator] _saveTurnFile failed for ${this.meetingId} turn ${turnRecord.n} (${fp}):`, e.message);
+      throw e;
+    }
   }
 
   getState() { return JSON.parse(JSON.stringify(this.state)); }

@@ -10,7 +10,7 @@ const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
 const { FeishuClient, createFeishuMessageSender } = require('./core/feishu-client.js');
-const { getHubDataDir } = require('./core/data-dir.js');
+const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
 const { MeetingRoomManager, isRoundtableCapableMeeting } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
 const { SummaryEngine } = require('./core/summary-engine');
@@ -557,6 +557,22 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
   // opts.model 透传给 sessionManager（让 Claude/Codex/DeepSeek/GLM/Gemini 用对应 model）
   if (opts && opts.model) sessionOpts.model = opts.model;
 
+  // 阶段乙（2026-05-03 道雪）：隔离 hub 模式下，sub session cwd 走
+  //   <HUB_DATA_DIR>/workspaces/<meetingId>/，避免归档（.arena/sessions/）
+  //   落到生产 C:\Users\lintian\.arena/ 污染用户真实档案。
+  //   生产 hub（无 CLAUDE_HUB_DATA_DIR env）保持 sessionManager 默认行为
+  //   （USERPROFILE）以维持向后兼容 + 让 Claude CLI 找到用户级 CLAUDE.md。
+  //   不覆盖调用方显式传入的 opts.cwd（保留 add-meeting-sub 自定义入口）。
+  if (isIsolatedHub() && !sessionOpts.cwd) {
+    const workspaceDir = getMeetingWorkspaceDir(meetingId);
+    try {
+      fs.mkdirSync(workspaceDir, { recursive: true });
+      sessionOpts.cwd = workspaceDir;
+    } catch (e) {
+      console.warn(`[meeting-sub] isolated workspace mkdir failed for ${meetingId}: ${e.message}; sub will use default cwd (may pollute production .arena)`);
+    }
+  }
+
   if (meeting && meeting.scene) {
     const hubDataDir = getHubDataDir();
     const sceneObj = scenes.getScene(meeting.scene);
@@ -797,6 +813,8 @@ const roundtable = require('./core/roundtable-orchestrator.js');
 const rtTimeline = require('./core/roundtable-timeline.js');
 const rtInjection = require('./core/roundtable-injection.js');
 const rtArchive = require('./core/roundtable-archive.js');
+const rtWatcher = require('./core/roundtable-watcher.js');
+rtWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
 let _roundtableInProgress = new Set(); // 同会议室单一并发：set of meetingId
 
 // 方案 F · 2026-05-02：计算单个 sub 视角的"调度上下文" spec，喂给 build*Prompt
@@ -832,178 +850,13 @@ function _computeDispatchSpec(self, targetSubs, pilotSlot, subSidsRaw, effective
   };
 }
 
-// _rtWaitCliReady — 圆桌发送 prompt 前的等待轮询。判定逻辑独立到
-//   core/roundtable-cli-ready-detector.js（marker + buffer 静默双门 + monotonic guard）。
-//   timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）。
-async function _rtWaitCliReady(sid, kind, maxMs = 60000) {
-  const start = Date.now();
-  while (Date.now() - start < maxMs) {
-    const buf = sessionManager.getSessionBuffer(sid) || '';
-    if (cliReadyDetector.isReady(sid, kind, buf)) return true;
-    await new Promise(r => setTimeout(r, 100));
-  }
-  return false;
-}
+// 圆桌 PTY 通信 helpers（waitCliReady / sendToPty / extractStreamingText / cleanBufLen
+// / checkHostShellTakeover）已抽到 core/roundtable-watcher.js（rtWatcher）。
+// 调用方走 rtWatcher.X。dispatchRoundtableTurn 与 _rtWaitTurnComplete 仍在 main.js
+// 这里（依赖闭包过深，留下次专项 → core/roundtable-dispatcher.js）。
 
-// 发送 prompt 到 PTY 并回车
-// 设计：CLI 初始化是持久状态，只需做一次。session-manager 的 roundtableReady 缓存
-//       让第 2-N 轮跳过冷启动等待，直接走快路径。
-// **关键约束（历史 bug 重现于 2026-04-30）**：Claude/Gemini/Codex 三家都是 TUI alt-screen 程序，
-//   把紧贴到达的字符当"粘贴"事件 → 粘贴里的 '\r' 被当文本换行符而不是 Enter 提交。
-//   所以 prompt 和 '\r' **必须分两次 write**，中间留 TUI 消化窗口；不能合并 `prompt + '\r'`。
-// **大 prompt 加固（2026-05-01 第二次修，bug 重现于 debate/summary 阶段）**：
-//   原 300ms 固定窗口对 3500+ 字 prompt 不够 —— Codex 的 paste-detect 在末批字符到达后
-//   还要 ~150ms 才 fire。\r 落在 paste 缓冲态里就被吃掉，Enter 不触发。
-//   改为"安静期自适应"：每 50ms 轮询 lastActivity，连续 FAST_PATH_QUIET_MS=250ms 无变化即
-//   视为 CLI 已完成 paste 接收 + paste-end 检测，此时 \r 才会被识别为 Enter。
-//   MAX FAST_PATH_MAX_WAIT_MS=3000ms 兜底（极大 prompt 也不无限等）。
-// 活性兜底（fail-safe）：write 后 PTY 始终零 echo 视为 CLI 失活（Ctrl+C / crash / PTY 断开）
-//   → 重置 ready 直接 return false 让调用方 skip 这家。
-//   不在兜底里"重发 prompt"——第一次 write 已把字符送进 PTY stdin，无论 CLI 有无 echo
-//   字符都已被接收/缓冲，重发会造成 prompt+prompt+\r 双重输入。下一轮自动走冷启动恢复。
-async function _rtSendToPty(sid, prompt, kind) {
-  const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
-  const FAST_PATH_MAX_WAIT_MS = 3000;   // 上限：极大 prompt 也不无限等
-  const FAST_PATH_POLL_MS = 50;
-  const ENTER_RETRY_TRIES = 3;          // 零 echo 兜底：分多次发 \r 提升提交成功率
-  const ENTER_RETRY_GAP_MS = 150;       // 兜底 \r 之间间隔
-  const POST_ENTER_VERIFY_MS = 500;     // 提交后再观察一次活性，确认没卡
-  // bug A 修复（2026-05-03 道雪）：turn 间 race condition
-  //   stop_hook / stop_reason 触发时 Claude 逻辑层已结束本轮，但 PTY 终端
-  //   仍在异步喷收尾字符（清 spinner / 重画 prompt /TUI 装饰）。Hub 立刻 type
-  //   下一轮 prompt 会撞上 PTY 余响，prompt 被 throbbing 状态吃掉、单个 \r
-  //   不触发提交 → sub 表面"sent"但 jsonl 没收到 user msg → 5min 硬超时
-  //   才标 absent。修：写 prompt 前等 PTY 真正静默 N ms。
-  const PRE_PROMPT_QUIET_MS = 1500;     // 至少 1.5s PTY 无新字符
-  const PRE_PROMPT_MAX_WAIT_MS = 8000;  // 上限：避免持续 spinner 死等
 
-  // 冷启动：仅首次或 ready 被重置后
-  if (!sessionManager.getRoundtableReady(sid)) {
-    const ready = await _rtWaitCliReady(sid, kind, 60000);
-    // CLI 完全没启动 → prompt 都没写，可以正当放弃
-    if (!ready) return false;
-    sessionManager.setRoundtableReady(sid, true);
-  }
 
-  // bug A 修复：发 prompt 前等 PTY 静默（不依赖 cold-start 路径）。
-  //   语义层信号（stop_hook/stop_reason）触发 ≠ 设备层 PTY 静止；前者是
-  //   "Claude 答完最后一个字"，后者是"终端扩音器关掉"。
-  {
-    const startQuiet = Date.now();
-    let lastSeenPre = sessionManager.getRoundtableLastActivity(sid);
-    let lastChangePre = Date.now();
-    while (Date.now() - startQuiet < PRE_PROMPT_MAX_WAIT_MS) {
-      await new Promise(r => setTimeout(r, FAST_PATH_POLL_MS));
-      const cur = sessionManager.getRoundtableLastActivity(sid);
-      if (cur !== lastSeenPre) {
-        lastSeenPre = cur;
-        lastChangePre = Date.now();
-      }
-      if (Date.now() - lastChangePre >= PRE_PROMPT_QUIET_MS) break;
-    }
-    const totalWait = Date.now() - startQuiet;
-    if (totalWait >= PRE_PROMPT_MAX_WAIT_MS) {
-      console.warn(`[roundtable] pre-prompt PTY never quiet for ${kind}(${sid.slice(0,8)}); proceeded after ${totalWait}ms ceiling`);
-    }
-  }
-
-  // 第 1 次 write：仅 prompt（不带 '\r'）
-  const beforeWrite = sessionManager.getRoundtableLastActivity(sid);
-  sessionManager.writeToSession(sid, prompt);
-
-  // 自适应安静期等待：每 50ms 检查 lastActivity，
-  //   连续 250ms 无变化 → CLI paste-detect timer 已 fire，安全发 Enter
-  //   一直在抖动 → 等到 MAX，仍发 \r（best effort，与老 300ms 行为同等保守）
-  const startWait = Date.now();
-  let lastSeen = beforeWrite;
-  let lastChange = Date.now();
-  while (Date.now() - startWait < FAST_PATH_MAX_WAIT_MS) {
-    await new Promise(r => setTimeout(r, FAST_PATH_POLL_MS));
-    const cur = sessionManager.getRoundtableLastActivity(sid);
-    if (cur !== lastSeen) {
-      lastSeen = cur;
-      lastChange = Date.now();
-    }
-    if (Date.now() - lastChange >= FAST_PATH_QUIET_MS) break;
-  }
-
-  // 关键修复（2026-05-02 血泪教训第 N 次）：prompt 字符已经在 PTY stdin 里，
-  //   **`\r` 必须发出去**。旧逻辑在零 echo 时直接 return false 不发 \r，导致用户的
-  //   prompt 卡在 CLI 输入框需要手按 Enter — 这是用户反复反馈的核心 bug。
-  //
-  // 为什么 \r 多发是安全的（与"prompt 不能重发"对比）：
-  //   - prompt 重发 → 输入框出现 prompt+prompt → 提交后内容污染（旧注释正确警告了这点）
-  //   - \r 多发    → 输入框有 prompt 时首个 \r 触发提交，后续 \r 落入空输入框被
-  //                  CLI 忽略（PowerShell 也只是显示空提示符）；不污染 prompt 内容
-  //
-  // 决策：echo 正常 → 发 1 次 \r；零 echo → 发 3 次 \r（间隔 150ms），让 paste-end
-  //   状态机被卡在 throbbing/工具调用中的 CLI 也能"看见" Enter。
-  const echoSeen = lastSeen !== beforeWrite;
-  if (echoSeen) {
-    sessionManager.writeToSession(sid, '\r');
-  } else {
-    console.warn(`[roundtable] zero-echo for ${kind}(${sid.slice(0, 8)}) — sending ${ENTER_RETRY_TRIES}x \\r as belt-and-suspenders submit (prompt already in PTY stdin, MUST commit)`);
-    for (let i = 0; i < ENTER_RETRY_TRIES; i++) {
-      sessionManager.writeToSession(sid, '\r');
-      if (i < ENTER_RETRY_TRIES - 1) {
-        await new Promise(r => setTimeout(r, ENTER_RETRY_GAP_MS));
-      }
-    }
-    // ready 重置：下轮走冷启动重新 align（本轮 prompt 已经尽力提交了）
-    sessionManager.setRoundtableReady(sid, false);
-  }
-
-  // 提交后活性二次确认：再等 500ms 看 PTY 有无新输出。
-  //   有 → 正常被 CLI 接住；无 → 标记 suspect（仅日志，不阻塞 turn-completion-watcher）。
-  //   不在这里 return false：prompt 已发，应让 watcher 走完整流程（含 host-shell 心跳兜底）。
-  await new Promise(r => setTimeout(r, POST_ENTER_VERIFY_MS));
-  const afterEnter = sessionManager.getRoundtableLastActivity(sid);
-  if (afterEnter === lastSeen) {
-    console.warn(`[roundtable] post-Enter still zero-echo for ${kind}(${sid.slice(0, 8)}) — watcher will detect via host-shell heartbeat or 5min hard timeout`);
-  }
-  return true;
-}
-
-// 等待指定 sid 的 turn-complete 事件，返回 { sid, status, text }
-// onPartial 回调（如提供）：单家完成时立即调用，让面板单卡片刷新（不必等 Promise.all）
-// Card optimization Task 5+6+12（2026-05-01）— 流式预览净化（方案 C：tap 优先 + placeholder 兜底）
-//   v1（T5/T6）：tap 没数据时退到 PTY ringBuffer + ANSI 剥离 + 行级黑名单。
-//   v2（fix）：用户多方审查反馈——PTY 流式期本质不可信（Claude TUI throbbing
-//             "thinking with xhigh effort"/"Waddling..." 装饰行 + Codex prompt echo
-//             残片 "W/Wo/or" 都进过 preview）。三家审查（Gemini/Codex/DeepSeek V4-pro）
-//             一致推荐方案 C：放弃 PTY 兜底，没 tap 数据就显示空 + renderer 端"💭 思考中…"
-//             占位，承认 streaming 阶段 PTY 内容不可信。
-//   返回 { source: 'tap'|'placeholder', blocks: Array<Block>, text: string }
-//   kind 参数保留为 API 稳定性（未使用）。
-function _rtExtractStreamingText(sid, _kind) {
-  const tapBlocks = transcriptTap.getStreamingText(sid);
-  if (Array.isArray(tapBlocks) && tapBlocks.length > 0) {
-    const text = tapBlocks
-      .filter(b => b.type === 'text' && typeof b.text === 'string')
-      .map(b => b.text)
-      .join('')
-      .slice(-500);
-    return { source: 'tap', blocks: tapBlocks, text };
-  }
-
-  // 没有结构化 tap 数据（Claude streaming 期 Stop hook 未触发 / Codex spike FAIL 永远走兜底）
-  //   → 返回空，renderer 显示"💭 思考中…"占位。**不再回退 PTY ringBuffer。**
-  return { source: 'placeholder', blocks: [], text: '' };
-}
-
-// 2026-05-03 道雪 B1：心跳指示器 - PTY buffer 剥 ANSI/spinner 后的"可读字符数"
-//   用途：streaming 期间推 partial.cleanBufLen，卡片显示"已输出约 N 字"心跳
-//   精度：含 CLI 自身状态条文案（"Computing..." "Brewed for 1m"），是活跃度近似值
-function _rtCleanBufLen(buf) {
-  if (!buf) return 0;
-  const cleaned = String(buf)
-    .replace(/\[[0-9;?]*[A-Za-z]/g, '')   // ANSI CSI
-    .replace(/\][^]*/g, '')   // OSC
-    .replace(/[()][\w]/g, '')              // charset
-    .replace(/[\b\r]/g, '')                       // backspace + CR
-    .replace(/[✻✶✽✢●·*⏺⠁⠂⠄⠈⠐⠠⡀⢀]/g, '');     // spinner symbols
-  return cleaned.length;
-}
 
 // Stage 2 容错升级（2026-05-01）— 用 turn-completion-watcher 替代老 watchdog 实现
 //
@@ -1033,10 +886,6 @@ const { createTurnCompletionWatcher } = require('./core/turn-completion-watcher.
 //   核心检测函数抽到 core/host-shell-detector.js 方便单测。
 const _HOST_SHELL_HEARTBEAT_MS = 10 * 1000;
 const _HOST_SHELL_CONSECUTIVE_HITS = 2;
-const { detectHostShellTakeover: _detectHostShellTakeover } = require('./core/host-shell-detector.js');
-function _rtCheckHostShellTakeover(sid) {
-  return _detectHostShellTakeover(sessionManager.getSessionBuffer(sid));
-}
 
 function _rtWaitTurnComplete(sid, label, opts = {}) {
   const { meetingId, mode, turnNum, onPartial } = opts;
@@ -1074,13 +923,13 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
       if (watcher.isSettled()) { clearInterval(streamTimer); streamTimer = null; return; }
       const session = sessionManager.getSession(sid);
       const kind = session?.kind || 'unknown';
-      const result = _rtExtractStreamingText(sid, kind);
+      const result = rtWatcher.extractStreamingText(sid, kind);
       const hasContent = result.text.length > 10 || result.blocks.length > 0;
       // B1（2026-05-03 道雪）：每次心跳都计算 cleanBufLen 让 renderer 显示"已输出约 N 字"
       //   placeholder 路径改为每次都推（原 placeholderEmitted=true 后只推一次）。
       //   代价：60s 圆桌每家多 ~40 次 IPC（~120 次/3 sub），远小于真 streaming 的事件量。
       const buf = sessionManager.getSessionBuffer(sid) || '';
-      const cleanBufLen = _rtCleanBufLen(buf);
+      const cleanBufLen = rtWatcher.cleanBufLen(buf);
       if (hasContent) {
         try {
           onPartial({
@@ -1113,7 +962,7 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   let hostShellHits = 0;
   const hostShellHeartbeat = setInterval(() => {
     if (watcher.isSettled()) { clearInterval(hostShellHeartbeat); return; }
-    if (_rtCheckHostShellTakeover(sid)) {
+    if (rtWatcher.checkHostShellTakeover(sid)) {
       hostShellHits += 1;
       if (hostShellHits >= _HOST_SHELL_CONSECUTIVE_HITS) {
         console.warn(`[roundtable] host shell prompt detected for ${label}(${sid.slice(0, 8)}) on hit #${hostShellHits} — CLI self-exited, marking errored`);
@@ -1299,6 +1148,14 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       orch._saveState();
       sendToRenderer('roundtable-state-update', { meetingId });
       const target = subs.find(x => x.sid === targetSid);
+      // silent-failure-hunter#1（2026-05-03 道雪）：sidByKind 用全 subs 但 subs.find
+      //   走过滤后的集合，竞争窗口里 sub 转 dormant 会让 target=undefined → target.sid
+      //   抛 TypeError → beginTurn 已落盘但 rollbackTurn 永不调用 → orchestrator
+      //   死锁需重启 Hub。修：显式校验 + rollbackTurn。
+      if (!target) {
+        try { orch.rollbackTurn(turnNum); } catch (e) { console.warn('[roundtable] summary target gone, rollbackTurn failed:', e.message); }
+        return { status: 'error', reason: `summarizer sid ${targetSid.slice(0,8)} 已变为 dormant`, turnNum: null };
+      }
       const injectMap = rtInjection.computeLastTurnInjection(lastTurn, [target.sid], sidLabelFn, sidRoleFn);
       const dispatchSpec = _computeDispatchSpec(target, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
       const prompt = orch.buildSummaryPrompt(turnNum, target.sid, sidLabelFn, dispatchSpec, injectMap[target.sid] || null, timelinePath);
@@ -1317,7 +1174,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       // → 圆桌死锁需重启 Hub 才能恢复。lambda 内 try/catch 把异常降级为"未发出",
       // 自动走下面 sentTargets.length === 0 的 rollback 兜底。
       try {
-        const ok = await _rtSendToPty(t.sid, t.prompt, t.kind);
+        const ok = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
         if (ok) {
           sentTargets.push(t);
           console.log(`[roundtable] turn ${turnNum} ${mode} sent to ${t.kind}(${t.sid.slice(0,8)})`);
@@ -1406,14 +1263,23 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     // E2 选项：summary 后写决策档案到 .arena/sessions/<datetime>-<title>.md
     // bug ④ 续修（2026-05-03 道雪）：fileName 必须 patchTurnMeta 持久化进 record，
     //   否则 manual-extract 重写归档时读不到 archivedTo，无法复用同一文件名。
+    // silent-failure-hunter#4（2026-05-03 道雪）：summarizer errored/absent 时
+    //   results[0].text 为空，归档会写"(无输出)"但函数返回 fileName 表示"成功"。
+    //   修：summarizer 状态 != completed 时跳过首次归档，等 manual-extract patch
+    //   后再写。这避免空档案污染 .arena/sessions/，用户能更明确知道需要手动提取。
     if (mode === 'summary') {
-      const fileName = rtArchive.writeDecisionArchive(meetingId, turnRecord, {
-        meetingManager, sessionManager, scenes, roundtable, getHubDataDir,
-      });
-      if (fileName) {
-        meta.archivedTo = fileName;
-        try { orch.patchTurnMeta(turnNum, { archivedTo: fileName }); }
-        catch (e) { console.warn('[roundtable] patchTurnMeta archivedTo failed:', e.message); }
+      const summarizerStatus = results[0]?.status;
+      if (summarizerStatus !== 'completed') {
+        console.warn(`[roundtable] summary turn ${turnNum} summarizer status=${summarizerStatus}, skip archive write; user should manual-extract then re-archive`);
+      } else {
+        const fileName = rtArchive.writeDecisionArchive(meetingId, turnRecord, {
+          meetingManager, sessionManager, scenes, roundtable, getHubDataDir,
+        });
+        if (fileName) {
+          meta.archivedTo = fileName;
+          try { orch.patchTurnMeta(turnNum, { archivedTo: fileName }); }
+          catch (e) { console.warn('[roundtable] patchTurnMeta archivedTo failed:', e.message); }
+        }
       }
     }
 
@@ -1515,7 +1381,7 @@ ipcMain.handle('roundtable:summary-trigger', async (_e, { meetingId } = {}) => {
       // P0-4 修复同 dispatchRoundtableTurn (1241): _rtSendToPty 抛错时降级为未发出,
       // 避免整个 Promise.all reject 导致 turnNum 已 beginTurn 但 rollback 永不调用。
       try {
-        const ok = await _rtSendToPty(t.sid, t.prompt, t.kind);
+        const ok = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
         if (ok) {
           sentTargets.push(t);
           console.log(`[roundtable] summary turn ${turnNum} sent to ${t.kind}(${t.sid.slice(0,8)})`);
@@ -1720,7 +1586,7 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
   });
 
   // 2. 检测 PTY 是否需要重启 CLI
-  const needRelaunch = _rtCheckHostShellTakeover(sid);
+  const needRelaunch = rtWatcher.checkHostShellTakeover(sid);
   if (needRelaunch) {
     console.log(`[resend] host shell detected, relaunching ${kind} CLI`);
     if (!sessionManager.relaunchCli(sid)) {
@@ -1757,16 +1623,27 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
     } else if (lastTurn.mode === 'summary') {
       prompt = orch.buildSummaryPrompt(lastTurn.n, sid, sidLabelFn, null, null, null);
     } else {
+      // silent-failure-hunter#3（2026-05-03 道雪）：summary-brief 等未识别 mode
+      //   走 else，但已经推过 streaming partial-update（line 1725），卡片永久
+      //   卡 streaming。修：return 前推 errored 让卡片退出 streaming。
+      sendToRenderer('roundtable-partial-update', {
+        meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
+        sid, label, status: 'errored', text: '',
+      });
       return { ok: false, reason: 'unsupported_mode', detail: `未知 mode=${lastTurn.mode}` };
     }
   } catch (e) {
     console.error('[resend] prompt build failed:', e);
+    sendToRenderer('roundtable-partial-update', {
+      meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
+      sid, label, status: 'errored', text: '',
+    });
     return { ok: false, reason: 'prompt_build_failed', detail: e.message };
   }
 
   // 4. _rtSendToPty 发送（含 ready 等待 + paste-detect 安静期）
   let sent = false;
-  try { sent = await _rtSendToPty(sid, prompt, kind); }
+  try { sent = await rtWatcher.sendToPty(sid, prompt, kind); }
   catch (e) {
     console.error('[resend] _rtSendToPty threw:', e);
     sendToRenderer('roundtable-partial-update', {
@@ -1801,7 +1678,7 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
   // Card optimization Task 5+6（2026-05-01）：partial-update payload 现在带 blocks/source 字段。
   const streamTimer = setInterval(() => {
     if (watcher.isSettled()) { clearInterval(streamTimer); return; }
-    const result = _rtExtractStreamingText(sid, kind);
+    const result = rtWatcher.extractStreamingText(sid, kind);
     if (result.text.length > 10 || result.blocks.length > 0) {
       try {
         sendToRenderer('roundtable-partial-update', {
@@ -1828,7 +1705,7 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
   let hostShellHits = 0;
   const heartbeat = setInterval(() => {
     if (watcher.isSettled()) { clearInterval(heartbeat); return; }
-    if (_rtCheckHostShellTakeover(sid)) {
+    if (rtWatcher.checkHostShellTakeover(sid)) {
       hostShellHits += 1;
       if (hostShellHits >= _HOST_SHELL_CONSECUTIVE_HITS) {
         console.warn(`[resend] host shell during resend for ${label}, errored`);
