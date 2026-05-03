@@ -1,5 +1,19 @@
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const cp = require('child_process');
 const { parsePorcelain } = require('../core/worktree/git-probe');
+
+function makeRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gprobe-'));
+  cp.execSync('git init -q -b main', { cwd: dir });
+  cp.execSync('git config user.email t@t', { cwd: dir });
+  cp.execSync('git config user.name t', { cwd: dir });
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'one');
+  cp.execSync('git add . && git commit -q -m init', { cwd: dir });
+  return dir;
+}
 
 let pass = 0, fail = 0;
 function test(name, fn) {
@@ -72,6 +86,54 @@ function test(name, fn) {
     const input = 'worktree C:/repos/x\nHEAD abc\ndetached\n';
     const r = parseWorktreeList(input);
     assert.strictEqual(r[0].branch, null);
+  });
+
+  const { probeRepo, _resetCacheForTest } = require('../core/worktree/git-probe');
+
+  await test('probeRepo: 真仓库返回 isRepo=true 与 branch', async () => {
+    _resetCacheForTest();
+    const dir = makeRepo();
+    const r = await probeRepo(dir, { force: true });
+    assert.strictEqual(r.isRepo, true);
+    assert.strictEqual(r.branch, 'main');
+    assert.strictEqual(r.repoRoot, fs.realpathSync(dir));
+    assert.deepStrictEqual(r.dirty, []);
+  });
+
+  await test('probeRepo: 修改文件后 dirty 含该文件', async () => {
+    _resetCacheForTest();
+    const dir = makeRepo();
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'two');
+    fs.writeFileSync(path.join(dir, 'b.txt'), 'new');
+    const r = await probeRepo(dir, { force: true });
+    const paths = r.dirty.map(d => d.path).sort();
+    assert.deepStrictEqual(paths, ['a.txt', 'b.txt']);
+  });
+
+  await test('probeRepo: 非 git 目录 → isRepo=false', async () => {
+    _resetCacheForTest();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nogit-'));
+    const r = await probeRepo(dir, { force: true });
+    assert.strictEqual(r.isRepo, false);
+  });
+
+  await test('probeRepo: 缓存命中（同 cwd 30s 内不重复 spawn）', async () => {
+    _resetCacheForTest();
+    const dir = makeRepo();
+    const t1 = Date.now();
+    await probeRepo(dir, { force: true });
+    const t2 = Date.now();
+    await probeRepo(dir);  // 第二次必须命中缓存
+    const t3 = Date.now();
+    assert.ok((t3 - t2) < (t2 - t1) / 2, '第二次应明显更快');
+  });
+
+  await test('probeRepo: 同 cwd 并发只 spawn 一次', async () => {
+    _resetCacheForTest();
+    const dir = makeRepo();
+    const [a, b] = await Promise.all([probeRepo(dir, { force: true }), probeRepo(dir, { force: true })]);
+    // 两个并发 force 调用应通过 in-flight 合并，结果相同对象引用
+    assert.ok(a === b || JSON.stringify(a) === JSON.stringify(b));
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);

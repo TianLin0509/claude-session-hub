@@ -1,5 +1,18 @@
 'use strict';
 
+const cp = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+const TTL_MS = 30 * 1000;
+const SLOW_MS = 5 * 1000;
+const ABORT_MS = 15 * 1000;
+
+const cache = new Map();        // realCwd → { result, ts }
+const inflight = new Map();     // realCwd → Promise
+
+function _resetCacheForTest() { cache.clear(); inflight.clear(); }
+
 function parsePorcelain(text) {
   const lines = String(text || '').split(/\r?\n/);
   const out = { branch: null, ahead: 0, behind: 0, dirty: [] };
@@ -50,4 +63,83 @@ function parseWorktreeList(text) {
   return out;
 }
 
-module.exports = { parsePorcelain, parseWorktreeList };
+function _runGit(cwd, args) {
+  return new Promise((resolve, reject) => {
+    const child = cp.spawn('git', args, { cwd, windowsHide: true });
+    let out = '', err = '';
+    const slowTimer = setTimeout(() => { /* UI 层观测，这里不动 */ }, SLOW_MS);
+    const abortTimer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch (_) {}
+      reject(new Error('git timeout'));
+    }, ABORT_MS);
+    child.stdout.on('data', d => out += d);
+    child.stderr.on('data', d => err += d);
+    child.on('close', code => {
+      clearTimeout(slowTimer); clearTimeout(abortTimer);
+      if (code === 0) resolve(out);
+      else if (/not a git repository/i.test(err)) resolve(null);
+      else reject(new Error(`git ${args.join(' ')}: exit ${code}: ${err.trim()}`));
+    });
+    child.on('error', e => {
+      clearTimeout(slowTimer); clearTimeout(abortTimer);
+      reject(e);
+    });
+  });
+}
+
+async function probeRepo(cwd, opts = {}) {
+  const force = !!opts.force;
+  let realCwd;
+  try { realCwd = fs.realpathSync(cwd); } catch (_) {
+    return { isRepo: false, error: 'cwd-missing', cwd };
+  }
+  const cached = cache.get(realCwd);
+  if (!force && cached && Date.now() - cached.ts < TTL_MS) return cached.result;
+
+  if (inflight.has(realCwd)) return inflight.get(realCwd);
+
+  const promise = (async () => {
+    try {
+      const root = await _runGit(realCwd, ['rev-parse', '--show-toplevel']);
+      if (!root) return { isRepo: false, cwd: realCwd };
+      let repoRoot = root.trim();
+      try { repoRoot = fs.realpathSync(repoRoot); } catch (_) { repoRoot = path.resolve(repoRoot); }
+
+      const [statusText, lastCommitText] = await Promise.all([
+        _runGit(repoRoot, ['status', '--porcelain=2', '--branch']),
+        _runGit(repoRoot, ['log', '-1', '--format=%h%x09%s%x09%cr']),
+      ]);
+      const status = require('./git-probe').parsePorcelain(statusText);
+      const [hash, subject, when] = String(lastCommitText || '').trim().split('\t');
+
+      const result = {
+        isRepo: true,
+        cwd: realCwd,
+        repoRoot,
+        branch: status.branch,
+        ahead: status.ahead,
+        behind: status.behind,
+        dirty: status.dirty,
+        lastCommit: hash ? { hash, subject, when } : null,
+      };
+      cache.set(realCwd, { result, ts: Date.now() });
+      return result;
+    } finally {
+      inflight.delete(realCwd);
+    }
+  })();
+  inflight.set(realCwd, promise);
+  return promise;
+}
+
+async function listWorktrees(cwd) {
+  try {
+    const text = await _runGit(cwd, ['worktree', 'list', '--porcelain']);
+    if (!text) return [];
+    return require('./git-probe').parseWorktreeList(text);
+  } catch (_) {
+    return [];
+  }
+}
+
+module.exports = { parsePorcelain, parseWorktreeList, probeRepo, listWorktrees, _resetCacheForTest };
