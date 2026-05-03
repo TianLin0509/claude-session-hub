@@ -1523,6 +1523,11 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
 }
 
 // === Spec 1 v0.9.0 · 工具调用块 + 折叠状态 ===
+// _sessionTurns: turnId -> turn object map. Initialized here so rerenderTurn
+// works for T5 toggle even before T10 wires real session.turns data.
+// T10 will populate this from session.turns[]; for now it's an empty map.
+if (!window._sessionTurns) window._sessionTurns = new Map();
+
 const _foldedToolsState = new Map(); // 'turnId:toolIdx' -> bool(expanded)
 let _toolFoldThreshold = 15; // 启动时从 config 拉
 
