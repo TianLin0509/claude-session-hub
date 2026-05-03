@@ -2,7 +2,7 @@
 // Sprint 5 完整 3 轮 E2E（真实用户操作路径）：
 //   轮 1 fanout： "分析兆易创新 603986"  → 三家独立回答
 //   轮 2 debate： "@debate 我刚看到龙虎榜机构买入 8000 万"  → 三家收到对方观点 + 用户补充
-//   轮 3 summary："@summary @claude"  → Claude 综合 + 自动归档到 .arena/sessions/
+//   轮 3 summary："@summary @pikachu"  → Pikachu 综合 + 自动归档到 .arena/sessions/
 //
 // 验证：
 //   - turn-1.json / turn-2.json / turn-3.json 三轮文件齐
@@ -152,9 +152,9 @@ async function main() {
   }
   console.log(`[轮 2] 三家中有 ${referencesOk}/3 家明显引用对方观点`);
 
-  // 轮 3: @summary @claude
-  console.log(`\n[${ts()}] === 轮 3 @summary @claude ===`);
-  await sendUserInput(ws, '@summary @claude');
+  // 轮 3: @summary @pikachu
+  console.log(`\n[${ts()}] === 轮 3 @summary @pikachu ===`);
+  await sendUserInput(ws, '@summary @pikachu');
   await waitTurnComplete(ws, meetingId, 3, 'summary');
   await sleep(3000);
   const turn3 = JSON.parse(fs.readFileSync(path.join(promptsDir, `${meetingId}-turn-3.json`), 'utf-8'));

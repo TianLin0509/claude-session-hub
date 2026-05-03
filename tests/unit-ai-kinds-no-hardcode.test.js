@@ -215,18 +215,53 @@ function testKeyCallsitesUseAiKindsHelpers() {
   // （注释里的历史引用允许，模板字符串实际内容不允许）
   const scenesSrc = fs.readFileSync(path.join(REPO_ROOT, 'core', 'roundtable-scenes.js'), 'utf-8');
   assert.ok(!/你和另外两位\s*AI\s*同事[（(]共三家/.test(scenesSrc),
-    'roundtable-scenes.js BASE_RULES 模板字符串不应再含"你和另外两位 AI 同事（共三家"（要用 listKindsForPrompt 动态生成）');
-  // 必须真用上 listKindsForPrompt 的注入（防止有人把它注释掉但忘改文本）
-  assert.ok(/listKindsForPrompt\(\)/.test(scenesSrc),
-    'roundtable-scenes.js 必须调 listKindsForPrompt() 动态拼接 AI 列表');
+    'roundtable-scenes.js BASE_RULES 模板字符串不应再含"你和另外两位 AI 同事（共三家"');
+
+  // slot 化（2026-05-03）：BASE_RULES 必须包含 slot 昵称列表（防止 slot 化被回退到 kind）
+  assert.ok(/Pikachu\s*\/\s*Charmander\s*\/\s*Squirtle/.test(scenesSrc),
+    'roundtable-scenes.js BASE_RULES 必须含 "Pikachu / Charmander / Squirtle" 席位说明');
 
   console.log('  ✓ testKeyCallsitesUseAiKindsHelpers');
+}
+
+// ---------- slot 单一真理源契约 ----------
+function testSlotIdsModuleContract() {
+  const m = require(path.join(REPO_ROOT, 'core', 'ai-kinds.js'));
+  assert.deepStrictEqual(m.SLOT_IDS, ['pikachu', 'charmander', 'squirtle'],
+    'SLOT_IDS 必须按 ["pikachu","charmander","squirtle"] 顺序');
+  assert.strictEqual(m.getSlotPromptName(0), 'Pikachu');
+  assert.strictEqual(m.getSlotPromptName('charmander'), 'Charmander');
+  assert.strictEqual(m.getSlotPromptName(2), 'Squirtle');
+  assert.ok(m.getSlotDisplayLabel(0).includes('皮卡丘'), 'displayLabel 含中文宝可梦名');
+  assert.ok(m.getSlotDisplayLabel('squirtle').includes('Squirtle'), 'displayLabel 含英文 slot 名');
+  assert.strictEqual(m.slotIdRegexAlternation(), 'pikachu|charmander|squirtle');
+  assert.strictEqual(m.slotIdToIndex('pikachu'), 0);
+  assert.strictEqual(m.slotIdToIndex('charmander'), 1);
+  assert.strictEqual(m.slotIdToIndex('squirtle'), 2);
+  assert.strictEqual(m.slotIdToIndex('unknown'), -1);
+  assert.strictEqual(m.slotIndexToId(0), 'pikachu');
+  assert.strictEqual(m.slotIndexToId(2), 'squirtle');
+  assert.strictEqual(m.slotIndexToId(3), null, 'idx>=3 必须返回 null（圆桌仅 3 席）');
+
+  // main.js 必须 require slot helper（防止有人把 dispatchRoundtableTurn 改回 summarizerKind）
+  const mainSrc = fs.readFileSync(path.join(REPO_ROOT, 'main.js'), 'utf-8');
+  assert.ok(/getSlotPromptName/.test(mainSrc), 'main.js 必须 require getSlotPromptName');
+  assert.ok(/summarizerSlot/.test(mainSrc), 'main.js dispatchRoundtableTurn 必须用 summarizerSlot 入参');
+  assert.ok(!/sidByKind/.test(mainSrc), 'main.js 不应再有 sidByKind（已替换为 sidBySlot）');
+
+  // renderer/meeting-room.js dropdown 必须按 slot 枚举（不再按 kind 去重）
+  const mrSrc = fs.readFileSync(path.join(REPO_ROOT, 'renderer', 'meeting-room.js'), 'utf-8');
+  assert.ok(/slotIdRegexAlternation/.test(mrSrc),
+    'renderer/meeting-room.js @ 解析正则必须用 slotIdRegexAlternation（不再用 kindRegexAlternation 当圆桌身份判定）');
+  assert.ok(/summarizerSlot/.test(mrSrc), 'renderer/meeting-room.js triggerRoundtable 必须传 summarizerSlot');
+
+  console.log('  ✓ testSlotIdsModuleContract');
 }
 
 // ---------- 跑测 ----------
 console.log('Running ai-kinds no-hardcode lint tests...');
 let failed = 0;
-for (const t of [testAiKindsModuleExportsContract, testKeyCallsitesUseAiKindsHelpers, testNoHardcodedAiArrays]) {
+for (const t of [testAiKindsModuleExportsContract, testKeyCallsitesUseAiKindsHelpers, testNoHardcodedAiArrays, testSlotIdsModuleContract]) {
   try { t(); }
   catch (e) {
     console.error('  ✗', t.name);
@@ -234,5 +269,5 @@ for (const t of [testAiKindsModuleExportsContract, testKeyCallsitesUseAiKindsHel
     failed++;
   }
 }
-console.log(`\n${3 - failed} passed, ${failed} failed`);
+console.log(`\n${4 - failed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

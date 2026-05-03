@@ -25,7 +25,9 @@ function tmpDir() {
   return d;
 }
 
-const labelMap = { sid_a: 'Claude', sid_b: 'Gemini', sid_c: 'Codex' };
+// slot 化（2026-05-03）：圆桌 sid 标签现以 slot 名（Pikachu/Charmander/Squirtle）出现，
+//   不再以底层 AI 家族名（Claude/Gemini/Codex）出现 — main.js sidLabelFn 改用 slotIndexToId+getSlotPromptName。
+const labelMap = { sid_a: 'Pikachu', sid_b: 'Charmander', sid_c: 'Squirtle' };
 const labelOf = (sid) => labelMap[sid] || sid;
 
 // === 1. buildBriefSummaryPrompt 输出含五元组 + timeline footer ===
@@ -37,7 +39,7 @@ function testBriefSummaryPromptOutput() {
     'C:\\proj\\.arena\\timeline-m-test.md'
   );
   // 标题
-  assert.ok(prompt.includes('第 5 轮 · 摘要轮 · by Claude'), 'title with summarizer label');
+  assert.ok(prompt.includes('第 5 轮 · 摘要轮 · by Pikachu'), 'title with summarizer label');
   // 任务说明
   assert.ok(prompt.includes('五元组'), 'mentions 五元组');
   // 五段格式
@@ -100,7 +102,7 @@ function testTimelineWritesSummaryTurnHeader() {
 
   const content = tl.readFull(mid, cwd, null);
   assert.ok(content.includes('## 第 1 轮 · fanout · all'));
-  assert.ok(content.includes('## 第 2 轮 · 摘要 by Claude（五元组）'),
+  assert.ok(content.includes('## 第 2 轮 · 摘要 by Pikachu（五元组）'),
     'summary turn title format');
   assert.ok(content.includes('触发：用户点「摘要」按钮'), 'summary trigger note (中文冒号)');
   console.log('  ✓ testTimelineWritesSummaryTurnHeader');
@@ -152,13 +154,13 @@ function testEndToEndSummaryToFanoutInjection() {
   assert.strictEqual(inj.sid_b.isSummaryInjection, true);
 
   // 副驾 b 的 prompt
-  const dispatchSpec = { mode: 'observer', selfRole: 'observer', sameStageLabels: ['Codex'], pilotLabel: 'Claude' };
+  const dispatchSpec = { mode: 'observer', selfRole: 'observer', sameStageLabels: ['Squirtle'], pilotLabel: 'Pikachu' };
   const prompt = orch.buildFanoutPrompt(5, '你怎么看主驾的判断？', null, dispatchSpec, inj.sid_b, 'C:\\fake\\timeline.md');
 
-  assert.ok(prompt.includes('## 上一轮（第 4 轮 · 摘要 by Claude · 五元组）'),
+  assert.ok(prompt.includes('## 上一轮（第 4 轮 · 摘要 by Pikachu · 五元组）'),
     'fanout prompt should contain summary injection title');
   assert.ok(prompt.includes('1. 目标:深挖兆易创新'), 'summary content injected');
-  assert.ok(prompt.includes('副驾发言（主驾 Claude 本轮静音'), 'dispatch context observer');
+  assert.ok(prompt.includes('副驾发言（主驾 Pikachu 本轮静音'), 'dispatch context observer');
   assert.ok(prompt.includes('完整历史:C:\\fake\\timeline.md'), 'timeline footer');
   console.log('  ✓ testEndToEndSummaryToFanoutInjection');
 }

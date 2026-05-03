@@ -186,7 +186,7 @@ async function main() {
   console.log(`  在投研圆桌会议室（${meetingId}）切到 Claude/Gemini/Codex tab，看三家正在回答 fanout`);
   console.log(`  等他们回答完后，你可以手动测：`);
   console.log(`    @debate     → 让另两家观点中转给第三家`);
-  console.log(`    @summary @claude  → 让 Claude 综合所有历史给最终意见`);
+  console.log(`    @summary @pikachu  → 让 Pikachu 席位综合所有历史给最终意见`);
   console.log(`\n  实时状态：${rtStateFile}`);
   console.log(`  完成的轮次：${promptsDir}/${meetingId}-turn-N.json`);
   console.log(`  决策档案（summary 后生成）：在 Claude 的 cwd 下 .arena/sessions/`);

@@ -853,6 +853,10 @@ function getOrCreateTerminal(sessionId) {
       const s = sessions.get(sessionId);
       if (!s) return;
       if (s.userRenamed) return; // user's Hub rename is authoritative
+      // slot 化（2026-05-03 道雪）：圆桌 sub session title 永久绑定 slot 名
+      //   （Pikachu/Charmander/Squirtle），不接受 OSC 自动覆盖。
+      //   主桌单 session（meetingId === null）仍走 OSC 自动命名（Claude 给的简短摘要）。
+      if (s.meetingId) return;
       const clean = String(newTitle || '').trim();
       if (!clean) return;
       if (clean === 'Claude Code') return; // generic startup title — ignore

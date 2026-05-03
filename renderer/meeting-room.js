@@ -6,7 +6,9 @@
   const { ipcRenderer } = require('electron');
   const _scenes = require('../core/roundtable-scenes.js');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
-  const { isPasteSensitive, kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel } = require('../core/ai-kinds.js');
+  const { isPasteSensitive, kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
+          SLOT_IDS, SLOT_DISPLAY, getSlotPromptName, getSlotDisplayLabel,
+          slotIdRegexAlternation, slotIdToIndex, slotIndexToId } = require('../core/ai-kinds.js');
 
   let activeMeetingId = null;
   let meetingData = {};
@@ -35,20 +37,20 @@
   }
 
   // --- Roundtable @command parser ---
-  // 支持 @debate / @summary @<who> / @all / @<who> 单聊
-  // 2026-05-02 修复：summaryRe / tokenRe 正则原本硬编码 (claude|gemini|codex|deepseek|glm)
-  //   字符串，未来加新 AI 必须同步改正则（容易漏）。改为从 ai-kinds.js 的
-  //   kindRegexAlternation() 动态构造，单一真理源。
-  const _RT_KIND_ALT = kindRegexAlternation();
-  const _summaryRe = new RegExp('^@summary\\s+@(' + _RT_KIND_ALT + ')\\b\\s*', 'i');
-  const _tokenRe = new RegExp('^@(' + _RT_KIND_ALT + ')\\b\\s*', 'i');
+  // 支持 @debate / @summary @<slot> / @all / @<slot> 单聊
+  //   slot 化（2026-05-03）：原 @<kind> 改为 @<slot> (pikachu/charmander/squirtle)。
+  //   3 个同 kind 的圆桌（如 3 claude）按 slot 区分总结人/单聊对象。
+  //   ASCII slot id + \b 边界：正则鲁棒，无中文 lookahead 复杂度。
+  const _RT_SLOT_ALT = slotIdRegexAlternation();
+  const _summaryRe = new RegExp('^@summary\\s+@(' + _RT_SLOT_ALT + ')\\b\\s*', 'i');
+  const _tokenRe = new RegExp('^@(' + _RT_SLOT_ALT + ')\\b\\s*', 'i');
   function parseRoundtableCommand(text, meeting) {
     if (!meeting || !meeting.scene) return { type: 'normal', text, targets: null };
     let rest = text.trim();
     const debateRe = /^@debate\b\s*/i;
     let m;
     if ((m = rest.match(_summaryRe))) {
-      return { type: 'rt-summary', summarizerKind: m[1].toLowerCase(), text: rest.slice(m[0].length) };
+      return { type: 'rt-summary', summarizerSlot: m[1].toLowerCase(), text: rest.slice(m[0].length) };
     }
     if ((m = rest.match(debateRe))) {
       return { type: 'rt-debate', text: rest.slice(m[0].length) };
@@ -296,8 +298,10 @@
   }
 
   // meeting-create-modal（2026-05-01）：按 subSessions 数组顺序还原 slot 数组。
-  //   返回 [slot0, slot1, slot2]，每个 slot 是 { sid, kind, label } 或 null。
-  //   老 meeting 兼容：subSessions 顺序就是 slot 顺序（自然吻合）。
+  //   返回 [slot0, slot1, slot2]，每个 slot 是 { sid, kind, slotId, slotIndex, label, displayLabel }
+  //     - slotId:        'pikachu' / 'charmander' / 'squirtle'（slot 化 2026-05-03）
+  //     - label:         纯英文 slot 名（"Pikachu"），给 prompt / @解析 / 后端字段用
+  //     - displayLabel:  双语带 emoji（"⚡ Pikachu · 皮卡丘"），给卡片 UI 用
   function _getRtSlots(meeting) {
     const slots = [null, null, null];
     if (!meeting || !Array.isArray(meeting.subSessions)) return slots;
@@ -305,7 +309,15 @@
       const sid = meeting.subSessions[i];
       const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
       if (!s) continue;
-      slots[i] = { sid, kind: s.kind, label: s.title || s.kind || `Slot ${i + 1}` };
+      const slotId = slotIndexToId(i);
+      slots[i] = {
+        sid,
+        kind: s.kind,
+        slotId,
+        slotIndex: i,
+        label: slotId ? getSlotPromptName(slotId) : (s.title || s.kind || `Slot ${i + 1}`),
+        displayLabel: slotId ? getSlotDisplayLabel(slotId) : (s.title || s.kind || `Slot ${i + 1}`),
+      };
     }
     return slots;
   }
@@ -315,7 +327,7 @@
 
   function _renderFusedTabs(state, subs, currentMode, partialBy, meeting) {
     const lastTurn = state.turns.length > 0 ? state.turns[state.turns.length - 1] : null;
-    const summarizerKind = state.currentSummarizerKind || null;
+    const summarizerSlot = state.currentSummarizerSlot || null;
     const tabs = [];
     const meetingId = meeting && meeting.id;
     const focused = meeting.focusedSub || meeting.subSessions[0];
@@ -376,7 +388,7 @@
           // 本轮不参与：保持上轮显示或 idle
           status = lastTurn && lastTurn.by && lastTurn.by[sub.sid] ? 'completed' : 'idle';
           preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
-        } else if (currentMode === 'summary' && summarizerKind && summarizerKind !== kind) {
+        } else if (currentMode === 'summary' && summarizerSlot && summarizerSlot !== slot.slotId) {
           status = lastTurn && lastTurn.by[sub.sid] ? 'completed' : 'idle';
           preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
         } else {
@@ -408,7 +420,9 @@
       const modelCls = s && s.currentModel && typeof modelClass === 'function' ? modelClass(s.currentModel.id) : '';
       const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
       const ctxCls = _ftCtxClass(ctxPct);
-      const labelDisplay = _KIND_LABELS[kind] || (kind ? kind : `Slot ${slotIndex + 1}`);
+      // slot 化（2026-05-03）：卡片名走 slot 双语显示（"⚡ Pikachu · 皮卡丘"）。
+      //   多 claude 圆桌时不再三家全显"Claude"，按 slot 区分清晰。
+      const labelDisplay = slot.displayLabel;
 
       // Stage 2 容错升级：状态机扩展（manual_extracted / absent / soft_alert / errored / interrupted / transport_lost）
       // 状态来源：partial.status（后端 watcher 设置）+ 'roundtable-soft-alert' IPC 注入 status='soft_alert'
@@ -770,7 +784,7 @@
 
 
   // 主渲染：从 IPC 拿最新 state 后重绘。
-  // 乐观字段（currentMode/currentSummarizerKind）的保留条件：**只有 _rtOptimisticTurn[id] 还在**
+  // 乐观字段（currentMode/currentSummarizerSlot）的保留条件：**只有 _rtOptimisticTurn[id] 还在**
   // —— 也就是 IPC 还在飞行中。IPC resolve 后 _rtOptimisticTurn 已被 clearOptimistic 清，
   // 此时 server state 真实状态（含 idle）才被采纳。
   // partialBy 单独保留：轮中单家完成 IPC 推 partial-update，这是轮内增量，独立处理。
@@ -789,7 +803,7 @@
     if (optimistic && (!state.currentMode || state.currentMode === 'idle')) {
       // IPC 飞行期间 + server 还没 begin → 显示乐观态
       state.currentMode = optimistic.mode;
-      if (optimistic.summarizerKind) state.currentSummarizerKind = optimistic.summarizerKind;
+      if (optimistic.summarizerSlot) state.currentSummarizerSlot = optimistic.summarizerSlot;
     }
     // partialBy 独立保留（轮中增量，不依赖 optimistic 标记）
     if (prev && prev._partialBy) state._partialBy = prev._partialBy;
@@ -1050,7 +1064,7 @@
   // 一旦 IPC resolve / reject 或 server 推 turn-complete，就清掉这个标记 —— 之后 refresh
   // 拿到的 server state（含 idle）就是真值，merge 不再覆盖。
   // 不用单纯依赖 cached.currentMode 比对，避免轮次完成后 server.idle 被永远 merge 成乐观值。
-  const _rtOptimisticTurn = {}; // { [meetingId]: { mode, summarizerKind, t } }
+  const _rtOptimisticTurn = {}; // { [meetingId]: { mode, summarizerSlot, t } }
 
   // 兼容旧调用名（handleMeetingSend 还在用 renderRoundtableBanner）
   function renderRoundtableBanner(meeting, result) {
@@ -1067,15 +1081,15 @@
     // 立即写本地乐观状态 + 标 _rtOptimisticTurn（IPC 完成后清掉）
     _rtOptimisticTurn[meeting.id] = {
       mode,
-      summarizerKind: mode === 'summary' ? (opts.summarizerKind || 'claude') : null,
+      summarizerSlot: mode === 'summary' ? (opts.summarizerSlot || 'pikachu') : null,
       t: Date.now(),
     };
     if (cached) {
       cached.currentMode = mode;
       if (mode === 'summary') {
-        cached.currentSummarizerKind = opts.summarizerKind || 'claude';
+        cached.currentSummarizerSlot = opts.summarizerSlot || 'pikachu';
       } else {
-        delete cached.currentSummarizerKind;
+        delete cached.currentSummarizerSlot;
       }
       cached._partialBy = null;
     }
@@ -1088,7 +1102,7 @@
       if (c) {
         // 不强写 idle —— 让 refresh 从 server 拿真值。但本地乐观字段必须先清，否则 merge 会保留它。
         c.currentMode = null; // null = 触发 merge 分支用 server 真值
-        delete c.currentSummarizerKind;
+        delete c.currentSummarizerSlot;
       }
       refreshRoundtablePanel(meeting);
       renderToolbar(meeting);
@@ -1098,7 +1112,7 @@
       meetingId: meeting.id,
       mode,
       userInput: opts.userInput || '',
-      summarizerKind: opts.summarizerKind || null,
+      summarizerSlot: opts.summarizerSlot || null,
       // pilot redesign（2026-05-02）：传当前 dispatchMode（'all'|'pilot'|'observer'）。
       //   后端会校验 + 按值过滤 targetSubs；未传时按 meeting 持久化字段兜底（默认 'all'）。
       dispatchMode: meeting.dispatchMode || 'all',
@@ -1149,14 +1163,14 @@
       if (cached) {
         cached._partialBy = null;
         cached.currentMode = null;
-        delete cached.currentSummarizerKind;
+        delete cached.currentSummarizerSlot;
       }
       refreshRoundtablePanel(meeting);
       if (cached) renderToolbar(meeting);
     }
   });
 
-  // Roundtable state 元数据变更（如 summary 启动写入 currentSummarizerKind）
+  // Roundtable state 元数据变更（如 summary 启动写入 currentSummarizerSlot）
   ipcRenderer.on('roundtable-state-update', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
     if (_isPanelCapableMeeting(meeting) && meetingId === activeMeetingId) {
@@ -2089,10 +2103,15 @@
     // 两模式(通用/投研)统一 toolbar：群策群力 / 总结发言。
     if (_isPanelCapableMeeting(meeting)) {
       const subs = _getRtSubInfo(meeting);
-      // Plan 阶段 2: 动态枚举 _KIND_LABELS 全部 kind, 支持 deepseek/glm 作为 @summary 总结人
-      const opts = Object.keys(_KIND_LABELS)
-        .filter(k => subs[k])
-        .map(k => `<option value="${k}">${escapeHtml(_KIND_LABELS[k])}</option>`)
+      // slot 化（2026-05-03）：dropdown 改按 slot 枚举（不再按 kind 去重）。
+      //   关键修复：3 claude 圆桌时，原 kind 索引只显 1 个"Claude"选项，
+      //   sidByKind 也只返回首个，导致后两位 claude 永远当不了总结人。
+      //   现在改 slot：3 个选项 ⚡Pikachu / 🔥Charmander / 💎Squirtle，
+      //   value=slotId 直接对应到后端 sidBySlot。
+      const slotsArr = _getRtSlots(meeting);
+      const opts = slotsArr
+        .filter(s => s)
+        .map(s => `<option value="${s.slotId}">${escapeHtml(s.displayLabel)}</option>`)
         .join('');
       const cached = _rtPanelState[meeting.id];
       const inProgress = cached && cached.currentMode && cached.currentMode !== 'idle';
@@ -2199,8 +2218,8 @@
       });
       if (summaryBtn) summaryBtn.addEventListener('click', () => {
         if (summaryBtn.hasAttribute('disabled')) return;
-        const summarizerKind = pick ? pick.value : 'claude';
-        triggerRoundtable(meeting, 'summary', { summarizerKind });
+        const summarizerSlot = pick ? pick.value : 'pikachu';
+        triggerRoundtable(meeting, 'summary', { summarizerSlot });
       });
       // 方案 F · M3.4 摘要按钮事件绑定
       const briefSummaryBtn = el.querySelector('#mr-rt-brief-summary-btn');
@@ -2598,7 +2617,7 @@
         } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
         triggerRoundtable(current, mode, {
           userInput: cmd.text || '',
-          summarizerKind: cmd.summarizerKind || null,
+          summarizerSlot: cmd.summarizerSlot || null,
         });
         return;
       }

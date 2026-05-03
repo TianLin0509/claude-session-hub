@@ -26,7 +26,7 @@ const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
 const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
 const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-config.js');
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
-const { isClaudeFamily } = require('./core/ai-kinds.js');
+const { isClaudeFamily, SLOT_IDS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 
 const STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const STARTUP_T0 = Date.now();
@@ -558,6 +558,20 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
   // opts.model 透传给 sessionManager（让 Claude/Codex/DeepSeek/GLM/Gemini 用对应 model）
   if (opts && opts.model) sessionOpts.model = opts.model;
 
+  // 圆桌 slot 化（2026-05-03 道雪）：圆桌 meeting 的 sub 按加入顺序分配 slot id
+  //   (pikachu/charmander/squirtle)，title 走 slot 名（"Pikachu" 等）。
+  //   单 session 主桌（meeting 为空或非圆桌）不受影响（走 sessionManager 默认计数器）。
+  //   slot 仅识别前 3 个 sub；第 4+ sub 视为额外，title 退回 sessionManager 默认。
+  //   不覆盖调用方显式传入的 opts.title。
+  let slotId = null;
+  if (meeting && !sessionOpts.title) {
+    const currentSubCount = (meeting.subSessions || []).length;
+    if (currentSubCount < SLOT_IDS.length) {
+      slotId = SLOT_IDS[currentSubCount];
+      sessionOpts.title = getSlotPromptName(slotId); // "Pikachu" / "Charmander" / "Squirtle"
+    }
+  }
+
   // 阶段乙（2026-05-03 道雪）：隔离 hub 模式下，sub session cwd 走
   //   <HUB_DATA_DIR>/workspaces/<meetingId>/，避免归档（.arena/sessions/）
   //   落到生产 C:\Users\lintian\.arena/ 污染用户真实档案。
@@ -1002,8 +1016,9 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
 
 // 主调度：mode = 'fanout' | 'debate' | 'summary'
 // userInput: 用户输入（fanout 是问题，debate 是补充，summary 可空）
-// summarizerKind: 仅 summary 用，'claude' / 'gemini' / 'codex'
-async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKind, dispatchMode }) {
+// summarizerSlot: 仅 summary 用，'pikachu' / 'charmander' / 'squirtle'
+//   slot 化（2026-05-03）：由 sub 在 meeting.subSessions 数组中的 index 推 slot id
+async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSlot, dispatchMode }) {
   if (_roundtableInProgress.has(meetingId)) {
     return { status: 'busy', turnNum: null };
   }
@@ -1014,18 +1029,22 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
       return { status: 'error', reason: 'not roundtable-capable mode', turnNum: null };
     }
 
-    // 收集三家活跃 sid + kind 映射
-    const subs = (meeting.subSessions || [])
-      .map(sid => {
+    // 收集活跃 sid + 推 slot 索引（slot 由在 subSessions 数组的位置决定，与 kind 解耦）
+    const subSidsRaw = meeting.subSessions || [];
+    const subs = subSidsRaw
+      .map((sid, idx) => {
         const s = sessionManager.getSession(sid);
-        return s && s.status !== 'dormant' ? { sid, kind: s.kind, label: s.title || s.kind || 'AI' } : null;
+        if (!s || s.status === 'dormant') return null;
+        const slotId = slotIndexToId(idx);                    // 'pikachu'/'charmander'/'squirtle'/null（>3）
+        const slotName = slotId ? getSlotPromptName(slotId) : (s.title || s.kind || 'AI'); // "Pikachu"/...
+        return { sid, kind: s.kind, slotId, slotIndex: idx, label: slotName };
       })
       .filter(Boolean);
     if (subs.length === 0) return { status: 'no_subs', turnNum: null };
 
     const labelMap = new Map(subs.map(x => [x.sid, x.label]));
     const sidLabelFn = (sid) => labelMap.get(sid) || 'AI';
-    const sidByKind = (kind) => subs.find(x => x.kind === kind)?.sid;
+    const sidBySlot = (slotId) => subs.find(x => x.slotId === slotId)?.sid;
 
     // Card optimization Task 6（2026-05-01）— 本轮开始前清空所有 sub 的 streamingBuf。
     //   不清的话，上一轮残留的 thinking/text/tool_use blocks 会污染本轮 partial preview。
@@ -1053,7 +1072,6 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     //   兜底：dispatchMode 未传时取 meeting 持久化字段（默认 'all'）。
     const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
       ? meeting.pilotSlot : null;
-    const subSidsRaw = meeting.subSessions || [];
     const effectiveDispatchMode = ['all', 'pilot', 'observer'].includes(dispatchMode)
       ? dispatchMode
       : (meeting.dispatchMode || 'all');
@@ -1138,18 +1156,18 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
         targets.push({ ...x, prompt });
       }
     } else if (mode === 'summary') {
-      const targetSid = summarizerKind ? sidByKind(summarizerKind) : null;
+      const targetSid = summarizerSlot ? sidBySlot(summarizerSlot) : null;
       if (!targetSid) {
-        return { status: 'error', reason: `summarizer ${summarizerKind} 不在会议室或未活跃`, turnNum: null };
+        return { status: 'error', reason: `summarizer slot '${summarizerSlot}' 不在会议室或未活跃`, turnNum: null };
       }
       // BUGFIX (Codex#1)：同 fanout —— 取最近已完成轮，不要 length>1
       const lastTurn = orch.getLastTurn();
       turnNum = orch.beginTurn('summary');
-      orch.state.currentSummarizerKind = summarizerKind;
+      orch.state.currentSummarizerSlot = summarizerSlot;
       orch._saveState();
       sendToRenderer('roundtable-state-update', { meetingId });
       const target = subs.find(x => x.sid === targetSid);
-      // silent-failure-hunter#1（2026-05-03 道雪）：sidByKind 用全 subs 但 subs.find
+      // silent-failure-hunter#1（2026-05-03 道雪）：sidBySlot 用全 subs 但 subs.find
       //   走过滤后的集合，竞争窗口里 sub 转 dormant 会让 target=undefined → target.sid
       //   抛 TypeError → beginTurn 已落盘但 rollbackTurn 永不调用 → orchestrator
       //   死锁需重启 Hub。修：显式校验 + rollbackTurn。
@@ -1244,7 +1262,10 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     // 方案 F：在 meta 带上 dispatchMode，让 timeline 写入能记录
     const meta = { dispatchMode: effectiveDispatchMode };
     if (mode === 'summary') {
-      meta.summarizer = summarizerKind;
+      // slot 化（2026-05-03）：meta.summarizer 写 slot 名（"Pikachu"），归档 / timeline
+      //   都用 slot 名（去 kind 硬编码）。summarizerSlot 字段额外保留 slot id 便于过滤。
+      meta.summarizer = summarizerSlot ? getSlotPromptName(summarizerSlot) : 'AI';
+      meta.summarizerSlot = summarizerSlot;
       meta.summarizerSid = sentTargets[0]?.sid || null;
       const title = roundtable.extractDecisionTitle(results[0]?.text || '');
       if (title) meta.decisionTitle = title;

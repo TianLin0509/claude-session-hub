@@ -16,7 +16,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { listKindsForPrompt, kindRegexAlternation } = require('./ai-kinds.js');
+const { listKindsForPrompt } = require('./ai-kinds.js');
 
 // ---------------------------------------------------------------------------
 // BASE_RULES — L1 核心规则（极简，约 250 字）
@@ -32,8 +32,6 @@ const { listKindsForPrompt, kindRegexAlternation } = require('./ai-kinds.js');
 //   旧版 BASE_RULES 600+ 字、硬编码"共三家"、协作礼仪/工具资源/留白等都塞 L1，
 //   导致 DS/GLM 用户困惑，且每轮 PTY 启动都要读一大段固定文本。
 //   adb1f43 修了硬编码部分，本次（plan-F）进一步把详细约定下沉到 L2。
-const _KIND_LIST_FOR_PROMPT = listKindsForPrompt();      // 例: "Claude/Gemini/Codex/DeepSeek/GLM"
-const _KIND_ALT = kindRegexAlternation();                // 例: "claude|gemini|codex|deepseek|glm" — 给下游 prompt 模板复用
 const BASE_RULES = `# 圆桌讨论 · 核心规则
 
 ## ⚠️ 铁律：圆桌讨论 ≠ 独立任务执行
@@ -56,8 +54,10 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 木桶原理：你的过度认真会拖死全体——保持讨论节奏。
 
 ## 你是谁
-你是用户的 AI 智囊之一，与其他 AI 同事共处一个圆桌（圆桌可参与的家族：${_KIND_LIST_FOR_PROMPT}）。
-本轮具体有哪几位发言由用户选定的会议室成员和分发模式决定。
+你是用户的 AI 智囊之一，与其他 AI 同事共处一个圆桌。
+圆桌最多 3 个席位（slot），用昵称区分：**Pikachu / Charmander / Squirtle**（皮卡丘/小火龙/杰尼龟）。
+每个席位具体由哪家 AI（${listKindsForPrompt()} 等）担任，由用户在创建会议时配置；同一家 AI 可以同时占多个席位。
+本轮具体有哪几位发言、你是哪个席位，由本轮 prompt 头部的「调度上下文」告诉你。
 **地位完全平等，本色发挥，不需要扮演角色。**
 
 ## 怎么开口
@@ -103,10 +103,10 @@ python C:\\LinDangAgent\\data_query.py <op> [args...]
 - \`financial / flow / dragon-tiger / valuation / northbound / margin / peers / holders / pledge / funds\` — 单字段
 - \`qmt-realtime <code1,code2>\` — 实时盘口（需 QMT 启动）
 
-### MCP 工具 ⭐ 五家全部已注入（请优先用 MCP）
+### MCP 工具 ⭐ 已注入（请优先用 MCP）
 
-无论你是 **Claude / DeepSeek / GLM / Codex / Gemini**，本会议启动时 Hub 都已经把
-\`arena-research\` MCP server 配好。你应该看见两个工具：
+无论你的圆桌席位是哪一个、底层是哪家 AI（Claude/DeepSeek/GLM/Codex/Gemini 等都支持），
+本会议启动时 Hub 都已经把 \`arena-research\` MCP server 配好。你应该看见两个工具：
 
 - **\`fetch_lindang_stock(symbol)\`** ⭐ — 一站式快照，对应 \`data_query.py snapshot\`
 - **\`fetch_lindang_field(op, symbol)\`** — 按需取单字段，op 是上面 19 个子命令之一
@@ -249,14 +249,14 @@ const COVENANT_RESEARCH = `# 立花道雪投研圆桌 · 房间公约 v1
 // ---------------------------------------------------------------------------
 const RESUME_REMINDERS = {
   general: `[系统提醒] 你正在通用圆桌（Roundtable）中恢复会话。请继续遵守以下规则：
-- 三家平等本色发挥，不扮演角色
-- 用户驱动语法：默认提问（独立回答）/ @debate（看对方观点后再发）/ @summary @<你>（综合）/ @<你> 私聊（一对一）
+- 圆桌成员（Pikachu/Charmander/Squirtle 三席）地位平等本色发挥，不扮演角色
+- 用户驱动语法：默认提问（独立回答）/ @debate（看对方观点后再发）/ @summary @<slot>（如 @summary @pikachu，让指定席位综合）/ @<slot> 私聊（一对一）
 - 善用你的工具（联网/读文件/跑代码/MCP）辅助回答
 `,
   research: `[系统提醒] 你正在投研圆桌（Research Roundtable）中恢复会话。请继续遵守以下规则：
-- 你和另外两位 AI（Gemini/Codex）地位平等，本色发挥
-- 用户驱动语法：默认提问（独立回答）/ @debate（看对方观点后再发）/ @summary @<你>（综合给最终意见）
-- 数据获取：优先用 MCP 工具 fetch_lindang_stock / fetch_concept_stocks / fetch_sector_overview
+- 圆桌成员（最多 3 席：Pikachu/Charmander/Squirtle）地位平等，本色发挥
+- 用户驱动语法：默认提问（独立回答）/ @debate（看对方观点后再发）/ @summary @<slot>（如 @summary @pikachu，让指定席位综合给最终意见）
+- 数据获取：优先用 MCP 工具 fetch_lindang_stock / fetch_lindang_field
 - 实时信息可用自己的联网能力；量化可用沙箱跑代码（不要乱改本地代码）
 `,
 };
@@ -276,7 +276,7 @@ const SCENE_REGISTRY = {
     dataPackEnabled: false,
     onboardingExamples: [
       { icon: '💡', title: '技术辩论', q: '用 Rust 重写 Python CLI 值得吗？', hint: '默认提问 → @debate' },
-      { icon: '🔍', title: '代码评审', q: '看下 core/foo.js，三家各挑 3 个问题', hint: '默认提问 → @summary @claude' },
+      { icon: '🔍', title: '代码评审', q: '看下 core/foo.js，三席各挑 3 个问题', hint: '默认提问 → @summary @pikachu' },
       { icon: '🎲', title: '开放讨论', q: 'Anthropic 的 MCP 协议会赢吗？', hint: '默认提问 → 自由展开' },
     ],
   },
@@ -291,7 +291,7 @@ const SCENE_REGISTRY = {
     dataPackEnabled: true,
     onboardingExamples: [
       { icon: '📈', title: '个股分析', q: '兆易创新 603986 现在能上车吗？', hint: '默认提问 → @debate → @summary' },
-      { icon: '🏭', title: '行业扫描', q: 'AI 芯片板块本周资金面怎么样？', hint: '默认提问 → @summary @claude' },
+      { icon: '🏭', title: '行业扫描', q: 'AI 芯片板块本周资金面怎么样？', hint: '默认提问 → @summary @pikachu' },
       { icon: '⚖️', title: '持仓复盘', q: '帮我复盘昨天的交易，是不是追高了？', hint: '默认提问 → 自由展开' },
     ],
   },

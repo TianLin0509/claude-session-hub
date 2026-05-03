@@ -94,6 +94,48 @@ function kindRegexAlternation() {
   return ALL_AI_KINDS.join('|');
 }
 
+// ---------------------------------------------------------------------------
+// 圆桌席位（slot）单一真理源 — 2026-05-03 道雪
+//   背景：圆桌允许 5 选 3 + 同 kind 多份（如 3 claude），按 kind 区分总结人/@对象
+//     不可行（dropdown 只显 1 个 Claude，sidByKind 永远返回首匹配）。改为按 slot 索引
+//     绑定 stable id（pikachu/charmander/squirtle），@解析、prompt、归档全用 slot id。
+//   命名：内部 id 走 ASCII（让正则 \b 边界正常工作），UI 显示中英双语方便用户识别。
+//   头像图片已存在（renderer/assets/）—— 本常量只补语义/正则/显示标签，UI 不动头像逻辑。
+// ---------------------------------------------------------------------------
+const SLOT_IDS = ['pikachu', 'charmander', 'squirtle'];
+
+const SLOT_DISPLAY = {
+  pikachu:    { en: 'Pikachu',    zh: '皮卡丘', icon: '⚡' },
+  charmander: { en: 'Charmander', zh: '小火龙', icon: '🔥' },
+  squirtle:   { en: 'Squirtle',   zh: '杰尼龟', icon: '💎' },
+};
+
+// 给 prompt 用的纯英文名（AI 上下文用，国际化稳定）。
+function getSlotPromptName(slotIdOrIndex) {
+  const id = typeof slotIdOrIndex === 'number' ? SLOT_IDS[slotIdOrIndex] : slotIdOrIndex;
+  return SLOT_DISPLAY[id]?.en || 'AI';
+}
+
+// 给 UI 卡片显示用的双语标签（含 emoji）。
+function getSlotDisplayLabel(slotIdOrIndex) {
+  const id = typeof slotIdOrIndex === 'number' ? SLOT_IDS[slotIdOrIndex] : slotIdOrIndex;
+  const d = SLOT_DISPLAY[id];
+  return d ? `${d.icon} ${d.en} · ${d.zh}` : 'AI';
+}
+
+// 正则字符类，用于 @<slot> / @summary @<slot> 命令解析。返回 "pikachu|charmander|squirtle"。
+function slotIdRegexAlternation() {
+  return SLOT_IDS.join('|');
+}
+
+// slot id ↔ slot index 双向映射 helper。
+function slotIdToIndex(slotId) {
+  return SLOT_IDS.indexOf(slotId);
+}
+function slotIndexToId(idx) {
+  return SLOT_IDS[idx] || null;
+}
+
 module.exports = {
   ALL_AI_KINDS,
   KIND_LABELS,
@@ -106,4 +148,12 @@ module.exports = {
   getKindLabel,
   listKindsForPrompt,
   kindRegexAlternation,
+  // slot 单一真理源
+  SLOT_IDS,
+  SLOT_DISPLAY,
+  getSlotPromptName,
+  getSlotDisplayLabel,
+  slotIdRegexAlternation,
+  slotIdToIndex,
+  slotIndexToId,
 };

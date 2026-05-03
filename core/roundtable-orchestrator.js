@@ -385,7 +385,7 @@ class RoundtableOrchestrator {
     };
     this.state.turns.push(record);
     this.state.currentMode = 'idle';
-    delete this.state.currentSummarizerKind;
+    delete this.state.currentSummarizerSlot;
 
     // meeting-create-modal（2026-05-01）：sid 索引累加。stats.thinkSecBy / tokensBy
     //   已经是 sid-keyed 格式（见调用方 main.js）。state.aiStats[<sid>] 写入
@@ -432,7 +432,7 @@ class RoundtableOrchestrator {
     if (this.state.currentTurn === turnNum) {
       this.state.currentTurn -= 1;
       this.state.currentMode = 'idle';
-      delete this.state.currentSummarizerKind;
+      delete this.state.currentSummarizerSlot;
       this._saveState();
     }
   }
