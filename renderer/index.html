@@ -14,7 +14,7 @@
     <div class="session-sidebar" id="session-sidebar">
       <div class="sidebar-header">
         <div class="new-session-wrapper" id="new-session-wrapper">
-          <button class="btn-new-session" id="btn-new" title="新建会话 (Ctrl+N)">+ 新建 ▾</button>
+          <button class="btn-new-session" id="btn-new" title="新建会话 (Ctrl+N)">+ ▾</button>
           <div class="new-session-menu" id="new-session-menu" style="display:none">
             <div class="menu-group-label">AI CLI</div>
             <button class="new-session-option" data-kind="claude"><span class="ai-logo logo-claude"></span>Claude Code</button>
@@ -31,7 +31,7 @@
           </div>
         </div>
         <div class="resume-picker-wrapper" id="resume-picker-wrapper">
-          <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话">↻ 恢复 ▾</button>
+          <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话">↻ ▾</button>
           <div class="resume-picker-menu" id="resume-picker-menu" style="display:none">
             <button class="resume-option" data-kind="claude-resume"><span class="ai-logo logo-claude"></span>Claude<span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="gemini-resume"><span class="ai-logo logo-gemini"></span>Gemini<span class="hint">最近一次</span></button>
@@ -43,9 +43,9 @@
             <button class="resume-option" data-kind="qwen-resume"><span class="ai-logo logo-qwen"></span>Qwen 3.6 Plus<span class="hint">PTY picker</span></button>
           </div>
         </div>
-        <button class="btn-roundtable" id="btn-roundtable" title="创建圆桌">🎯 圆桌</button>
+        <button class="btn-roundtable" id="btn-roundtable" title="创建圆桌">🎯</button>
         <div class="options-wrapper">
-          <button class="btn-options" id="btn-options" title="选项">⚙ 选项 ▾</button>
+          <button class="btn-options" id="btn-options" title="选项">⚙ ▾</button>
           <div class="options-menu" id="options-menu" style="display:none">
             <div class="options-item" id="options-theme">🎨 切换主题</div>
             <div class="options-divider"></div>
@@ -87,15 +87,46 @@
     <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="Show sidebar (Ctrl+B)">▶</button>
     <div class="terminal-panel" id="terminal-panel">
       <div class="empty-state" id="empty-state">
-        <div class="empty-state-icon">+</div>
-        <div class="empty-state-text">No session selected</div>
-        <div class="empty-state-hint">Click "+" to create a new session</div>
+        <div class="launcher launcher-poster">
+          <div class="launcher-trio">
+            <div class="launcher-trio-slot pikachu">
+              <img src="assets/pokemon/pikachu.png" alt="Pikachu">
+              <span class="launcher-trio-name">Pikachu</span>
+            </div>
+            <div class="launcher-trio-slot charmander">
+              <img src="assets/pokemon/charmander.png" alt="Charmander">
+              <span class="launcher-trio-name">Charmander</span>
+            </div>
+            <div class="launcher-trio-slot squirtle">
+              <img src="assets/pokemon/squirtle.png" alt="Squirtle">
+              <span class="launcher-trio-name">Squirtle</span>
+            </div>
+          </div>
+          <div class="launcher-title">召集你的 AI 智囊</div>
+          <div class="launcher-subtitle">3 个 AI 席位,你来配:Claude / Gemini / Codex / DeepSeek / GLM / 千问 …… 任意搭配,真实碰撞,而非 AI 合唱。</div>
+          <button class="launcher-cta" data-launcher-action="roundtable">🎯 开始圆桌讨论</button>
+          <div class="launcher-secondary">
+            <span>想 1 v 1?</span>
+            <a class="launcher-link" data-launcher-kind="claude">Claude</a><span class="launcher-sep">·</span>
+            <a class="launcher-link" data-launcher-kind="gemini">Gemini</a><span class="launcher-sep">·</span>
+            <a class="launcher-link" data-launcher-kind="codex">Codex</a><span class="launcher-sep">·</span>
+            <a class="launcher-link" data-launcher-kind="claude-resume">↻ 恢复历史</a>
+          </div>
+          <div class="launcher-kbd-row">
+            <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
+            <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
+            <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
+            <span class="launcher-version">v0.8.3</span>
+          </div>
+        </div>
       </div>
     </div>
     <div class="preview-splitter" id="preview-splitter" style="display:none"></div>
     <div class="preview-panel" id="preview-panel" style="display:none">
       <div class="preview-header">
+        <span class="preview-file-badge" id="preview-file-badge">--</span>
         <span class="preview-title" id="preview-title">Preview</span>
+        <span class="preview-file-meta" id="preview-file-meta"></span>
         <div class="preview-header-actions">
           <button class="preview-action-btn" id="preview-zoom-out" title="缩小 (Ctrl+-)">A−</button>
           <span class="preview-zoom-label" id="preview-zoom-label">100%</span>

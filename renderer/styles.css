@@ -203,7 +203,7 @@ html, body {
   color: white;
   font-size: 12px;
   font-weight: 500;
-  padding: 0 8px;
+  padding: 0 12px;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -223,7 +223,7 @@ html, body {
   color: var(--text-primary);
   border-radius: 4px;
   height: 26px;
-  padding: 0 8px;
+  padding: 0 12px;
   cursor: pointer;
   font-size: 12px;
   display: inline-flex;
@@ -242,7 +242,7 @@ html, body {
   color: var(--text-secondary);
   border-radius: 4px;
   height: 26px;
-  padding: 0 8px;
+  padding: 0 12px;
   cursor: pointer;
   font-size: 12px;
   display: flex;
@@ -950,7 +950,7 @@ body.theme-light .prompt-line-marker {
   100% { opacity: 0; }
 }
 
-/* Empty state */
+/* Empty state — 启动面板(0.8.2) */
 .empty-state {
   flex: 1;
   display: flex;
@@ -958,21 +958,155 @@ body.theme-light .prompt-line-marker {
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
-  gap: 16px;
+  padding: 40px 24px;
+  overflow: auto;
 }
 
-.empty-state-icon {
-  font-size: 48px;
-  opacity: 0.3;
+/* legacy hooks 保留(向后兼容,现版不再渲染) */
+.empty-state-icon { font-size: 48px; opacity: 0.3; }
+.empty-state-text { font-size: 14px; }
+.empty-state-hint { font-size: 12px; color: var(--text-muted); }
+
+/* Launcher — 三精灵海报(Option B,v0.8.3) */
+.launcher {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 18px;
+  width: 100%;
+  max-width: 560px;
 }
 
-.empty-state-text {
+.launcher-trio {
+  display: flex;
+  gap: 18px;
+  justify-content: center;
+  margin-bottom: 2px;
+}
+.launcher-trio-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  transition: transform 0.18s ease;
+}
+.launcher-trio-slot:hover {
+  transform: translateY(-3px);
+}
+.launcher-trio-slot img {
+  width: 78px;
+  height: 78px;
+  background: var(--bg-secondary);
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.launcher-trio-slot.pikachu img    { border-color: rgba(255, 221, 0, 0.55); }
+.launcher-trio-slot.charmander img { border-color: rgba(248, 81, 73, 0.55); }
+.launcher-trio-slot.squirtle img   { border-color: rgba(88, 166, 255, 0.55); }
+.launcher-trio-name {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
+.launcher-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.5px;
+  line-height: 1.2;
+}
+.launcher-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  max-width: 460px;
+  line-height: 1.6;
+  margin: 0 auto;
+}
+
+.launcher-cta {
+  margin-top: 4px;
+  background: var(--accent-blue);
+  color: #fff;
+  border: none;
+  padding: 12px 28px;
+  border-radius: 8px;
   font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: 0 4px 16px rgba(93, 142, 215, 0.3);
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.launcher-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(93, 142, 215, 0.4);
+}
+.launcher-cta:active {
+  transform: translateY(0);
 }
 
-.empty-state-hint {
+.launcher-secondary {
   font-size: 12px;
   color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.launcher-link {
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 1px 2px;
+  border-bottom: 1px dashed var(--border);
+  transition: color 0.12s, border-color 0.12s;
+  text-decoration: none;
+  margin: 0 2px;
+}
+.launcher-link:hover {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue);
+}
+.launcher-sep {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.launcher-kbd-row {
+  display: flex;
+  gap: 16px;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+.launcher-version {
+  margin-left: auto;
+  opacity: 0.6;
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.launcher-kbd-row kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin: 0 1px;
 }
 
 /* New session dropdown */
@@ -1077,7 +1211,7 @@ body.theme-light .prompt-line-marker {
   border: 1px solid rgba(210, 153, 34, 0.5);
   color: #d29922;
   height: 26px;
-  padding: 0 8px;
+  padding: 0 10px;
   border-radius: 4px;
   font-size: 12px;
   cursor: pointer;
@@ -1737,12 +1871,37 @@ body.theme-light .prompt-line-marker {
 }
 
 .preview-title {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.preview-file-badge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(93, 142, 215, 0.18);
+  color: var(--accent-blue);
+  font-family: ui-monospace, "SF Mono", monospace;
+  letter-spacing: 0.5px;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.preview-file-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: 8px;
+  margin-right: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .preview-header-actions {

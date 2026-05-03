@@ -1736,6 +1736,23 @@ for (const btn of document.querySelectorAll('.resume-option')) {
   });
 }
 
+// --- Launcher (启动面板 v0.8.3 · 三精灵海报) ---
+// 主 CTA 召集圆桌(走现有 createMeetingByMode);底部超链接 1v1 单聊(走 create-session)。
+// 静态 DOM,无最近会话,无磁盘 IO,无 IPC 启动开销。
+for (const cta of document.querySelectorAll('.launcher-cta')) {
+  cta.addEventListener('click', () => {
+    if (cta.dataset.launcherAction === 'roundtable') {
+      createMeetingByMode('general');
+    }
+  });
+}
+for (const link of document.querySelectorAll('.launcher-link')) {
+  link.addEventListener('click', () => {
+    const kind = link.dataset.launcherKind;
+    if (kind) ipcRenderer.invoke('create-session', kind);
+  });
+}
+
 // --- Roundtable button ---
 btnRoundtable.addEventListener('click', async () => {
   await createMeetingByMode('general');
@@ -2238,6 +2255,27 @@ async function openPreviewPanel(filePath) {
   const fileName = isUrl ? filePath.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] : filePath.replace(/^.*[\\/]/, '');
   previewTitleEl.textContent = fileName;
   previewTitleEl.title = filePath;
+
+  // 0.8.2: 文件类型角标 + 大小信息
+  const badgeEl = document.getElementById('preview-file-badge');
+  const metaEl = document.getElementById('preview-file-meta');
+  if (badgeEl && metaEl) {
+    if (isUrl) {
+      badgeEl.textContent = 'URL';
+      metaEl.textContent = '';
+    } else {
+      const m = filePath.match(/\.([a-zA-Z0-9]+)$/);
+      badgeEl.textContent = m ? m[1].toUpperCase().slice(0, 4) : '--';
+      try {
+        const size = fs.statSync(filePath).size;
+        if (size < 1024) metaEl.textContent = size + ' B';
+        else if (size < 1024 * 1024) metaEl.textContent = (size / 1024).toFixed(1) + ' KB';
+        else metaEl.textContent = (size / 1024 / 1024).toFixed(1) + ' MB';
+      } catch {
+        metaEl.textContent = '';
+      }
+    }
+  }
 
   if (!previewSourcePanel) {
     if (document.getElementById('meeting-room-panel').style.display !== 'none'
