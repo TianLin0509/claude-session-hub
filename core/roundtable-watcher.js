@@ -140,10 +140,22 @@ async function sendToPty(sid, prompt, kind) {
   //   不在这里 return false：prompt 已发，应让 watcher 走完整流程（含 host-shell 心跳兜底）。
   await new Promise(r => setTimeout(r, POST_ENTER_VERIFY_MS));
   const afterEnter = sessionManager.getRoundtableLastActivity(sid);
+  let sendStatus = 'ok';
   if (afterEnter === lastSeen) {
-    console.warn(`[roundtable] post-Enter still zero-echo for ${kind}(${sid.slice(0, 8)}) — watcher will detect via host-shell heartbeat or 5min hard timeout`);
+    console.warn(`[roundtable] post-Enter still zero-echo for ${kind}(${sid.slice(0, 8)}) — trying _autoRecoverSend`);
+    const recovered = await _autoRecoverSend({
+      sid, kind, prompt, echoSeen,
+      timing: { ENTER_RETRY_GAP_MS, POST_ENTER_VERIFY_MS },
+    });
+    if (recovered) {
+      console.log(`[roundtable] _autoRecoverSend recovered ${kind}(${sid.slice(0, 8)}) mode=${echoSeen ? 'enter_only' : 'rewrite_full'}`);
+      sendStatus = 'auto_recovered';
+    } else {
+      console.warn(`[roundtable] _autoRecoverSend failed for ${kind}(${sid.slice(0, 8)}); upgrading to send_stuck`);
+      sendStatus = 'stuck';
+    }
   }
-  return true;
+  return { ok: true, sendStatus };  // 兼容老调用方（boolean truthy）
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +202,61 @@ function cleanBufLen(buf) {
 }
 
 // ---------------------------------------------------------------------------
+// _autoRecoverSend — sendToPty verify 失败时的单次自动恢复（2026-05-03）
+// 决策依据：echoSeen 物理标志位（不依赖任何字符串匹配/魔数）
+//   echoSeen=true  → prompt 已在输入框，仅 \r 没生效 → 补 1x \r
+//   echoSeen=false → prompt 完全未进 PTY        → 重写 prompt + 1x \r
+// 返回 true=verify 通过；false=仍未恢复，调用方应升级 send_stuck。
+async function _autoRecoverSend({ sid, kind, prompt, echoSeen, timing }) {
+  const { sessionManager } = _deps;
+  const before = sessionManager.getRoundtableLastActivity(sid);
+  if (echoSeen) {
+    sessionManager.writeToSession(sid, '\r');
+  } else {
+    sessionManager.writeToSession(sid, prompt);
+    await new Promise(r => setTimeout(r, (timing && timing.ENTER_RETRY_GAP_MS) || 150));
+    sessionManager.writeToSession(sid, '\r');
+  }
+  await new Promise(r => setTimeout(r, (timing && timing.POST_ENTER_VERIFY_MS) || 500));
+  const after = sessionManager.getRoundtableLastActivity(sid);
+  // void kind: 保留参数名以便日志使用
+  void kind;
+  return after !== before;
+}
+
+// ---------------------------------------------------------------------------
+// resendCurrentPrompt — 手动 [📤 发送] 按钮的后端入口（2026-05-03）
+// 与 _autoRecoverSend 不同的是：手动按钮 caller 没有 dispatchPromptToSub 当时的
+// echoSeen 上下文（dispatch 已经结束很久了），所以用 ring-buffer 末尾 grep prompt
+// 第一行（promptHeader 指纹）来判定输入框是否还含 prompt。
+// 返回 { ok, mode, reason? }，mode ∈ 'enter_only' | 'rewrite_full'。
+async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing }) {
+  const { sessionManager } = _deps;
+  if (!prompt) return { ok: false, reason: 'no_prompt' };
+  const buf = sessionManager.getSessionBuffer(sid) || '';
+  // 取末尾 4096 字（足够覆盖一屏 + 输入框，超出此长度的 prompt 头部就算 paste-mode 占位）
+  const tail = buf.slice(-4096);
+  const inInputBox = !!(promptHeader && promptHeader.length > 0 && tail.includes(promptHeader));
+
+  const before = sessionManager.getRoundtableLastActivity(sid);
+  let mode;
+  if (inInputBox) {
+    mode = 'enter_only';
+    sessionManager.writeToSession(sid, '\r');
+  } else {
+    mode = 'rewrite_full';
+    sessionManager.writeToSession(sid, prompt);
+    await new Promise(r => setTimeout(r, (timing && timing.ENTER_RETRY_GAP_MS) || 150));
+    sessionManager.writeToSession(sid, '\r');
+  }
+  await new Promise(r => setTimeout(r, (timing && timing.POST_ENTER_VERIFY_MS) || 500));
+  const after = sessionManager.getRoundtableLastActivity(sid);
+  const verified = after !== before;
+  void kind;
+  return { ok: verified, mode, ...(verified ? {} : { reason: 'verify_failed' }) };
+}
+
+// ---------------------------------------------------------------------------
 // checkHostShellTakeover — host-shell prompt 心跳检测
 //   FIX-D（2026-05-01）：CLI 自我退出（Codex 自动更新 / Gemini OAuth 异常 /
 //     Claude 内部 panic 等）后 PTY 控制权回到宿主 shell（PowerShell / bash），但 PTY 进程
@@ -209,4 +276,6 @@ module.exports = {
   extractStreamingText,
   cleanBufLen,
   checkHostShellTakeover,
+  _autoRecoverSend,           // 新增（测试 + 同模块调用）
+  resendCurrentPrompt,         // 新增（main.js IPC handler 调用）
 };

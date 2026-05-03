@@ -75,37 +75,38 @@ function testCreateSessionInitialFields() {
 }
 
 function testMainJsHasFastPathContract() {
-  // _rtSendToPty 必须删除三条硬 sleep（8000 / 8000 / 5000）+ prompt→'\r' 中间 delay。
-  // 必须使用 getRoundtableReady / setRoundtableReady / getRoundtableLastActivity 三个 API。
-  // 必须用"安静期自适应"等待（FAST_PATH_QUIET_MS + FAST_PATH_MAX_WAIT_MS），
-  //   不能再用固定 300ms 窗口（对 3500+ 字大 prompt 不够，Codex paste-detect 还没 fire）。
-  const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf-8');
+  // sendToPty（原 _rtSendToPty）已抽至 core/roundtable-watcher.js（2026-05-03 道雪阶段丙）。
+  // 契约检查改为读 roundtable-watcher.js：
+  //   - 三条硬 sleep（8000 / 8000 / 5000）+ prompt→'\r' 中间 delay 必须无
+  //   - 必须使用 getRoundtableReady / setRoundtableReady / getRoundtableLastActivity 三个 API
+  //   - 必须用"安静期自适应"等待（FAST_PATH_QUIET_MS + FAST_PATH_MAX_WAIT_MS）
+  const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'roundtable-watcher.js'), 'utf-8');
 
-  // 锁住函数本体（从 `async function _rtSendToPty` 到下一个 `function _rtExtractStreamingText` 之前）
-  const startIdx = src.indexOf('async function _rtSendToPty');
-  const endIdx = src.indexOf('function _rtExtractStreamingText', startIdx);
-  assert.ok(startIdx >= 0, '_rtSendToPty function must exist');
-  assert.ok(endIdx > startIdx, '_rtExtractStreamingText must follow _rtSendToPty (used as end anchor)');
+  // 锁住函数本体（从 `async function sendToPty` 到下一个 `function extractStreamingText` 之前）
+  const startIdx = src.indexOf('async function sendToPty');
+  const endIdx = src.indexOf('function extractStreamingText', startIdx);
+  assert.ok(startIdx >= 0, 'sendToPty function must exist in roundtable-watcher.js');
+  assert.ok(endIdx > startIdx, 'extractStreamingText must follow sendToPty (used as end anchor)');
   const fnBody = src.slice(startIdx, endIdx);
 
   // 三条硬 sleep 不能再出现在 _rtSendToPty 函数体里
-  assert.ok(!/setTimeout\(\s*r\s*,\s*8000\s*\)/.test(fnBody), '_rtSendToPty must not contain setTimeout 8000ms');
-  assert.ok(!/setTimeout\(\s*r\s*,\s*5000\s*\)/.test(fnBody), '_rtSendToPty must not contain setTimeout 5000ms');
+  assert.ok(!/setTimeout\(\s*r\s*,\s*8000\s*\)/.test(fnBody), 'sendToPty must not contain setTimeout 8000ms');
+  assert.ok(!/setTimeout\(\s*r\s*,\s*5000\s*\)/.test(fnBody), 'sendToPty must not contain setTimeout 5000ms');
   // 老版 baseDelay 250 / 500 + sizeDelay 也必须没了
-  assert.ok(!/baseDelay/.test(fnBody), '_rtSendToPty must not contain baseDelay (legacy prompt→\\r delay)');
-  assert.ok(!/sizeDelay/.test(fnBody), '_rtSendToPty must not contain sizeDelay (legacy prompt→\\r delay)');
+  assert.ok(!/baseDelay/.test(fnBody), 'sendToPty must not contain baseDelay (legacy prompt→\\r delay)');
+  assert.ok(!/sizeDelay/.test(fnBody), 'sendToPty must not contain sizeDelay (legacy prompt→\\r delay)');
   // 老版固定 300ms 窗口必须废弃（对大 prompt 不够）
-  assert.ok(!/FAST_PATH_ACTIVITY_WINDOW_MS/.test(fnBody), '_rtSendToPty must not use legacy fixed FAST_PATH_ACTIVITY_WINDOW_MS=300 (replaced by quiet-period adaptive wait)');
+  assert.ok(!/FAST_PATH_ACTIVITY_WINDOW_MS/.test(fnBody), 'sendToPty must not use legacy fixed FAST_PATH_ACTIVITY_WINDOW_MS=300 (replaced by quiet-period adaptive wait)');
 
   // 必须用三个新 API
-  assert.ok(/getRoundtableReady\(sid\)/.test(fnBody), '_rtSendToPty must call getRoundtableReady(sid)');
-  assert.ok(/setRoundtableReady\(sid,\s*true\)/.test(fnBody), '_rtSendToPty must call setRoundtableReady(sid, true) on cold-path success');
-  assert.ok(/setRoundtableReady\(sid,\s*false\)/.test(fnBody), '_rtSendToPty must call setRoundtableReady(sid, false) on activity-check failure');
-  assert.ok(/getRoundtableLastActivity\(sid\)/.test(fnBody), '_rtSendToPty must read getRoundtableLastActivity(sid) for activity check');
+  assert.ok(/getRoundtableReady\(sid\)/.test(fnBody), 'sendToPty must call getRoundtableReady(sid)');
+  assert.ok(/setRoundtableReady\(sid,\s*true\)/.test(fnBody), 'sendToPty must call setRoundtableReady(sid, true) on cold-path success');
+  assert.ok(/setRoundtableReady\(sid,\s*false\)/.test(fnBody), 'sendToPty must call setRoundtableReady(sid, false) on activity-check failure');
+  assert.ok(/getRoundtableLastActivity\(sid\)/.test(fnBody), 'sendToPty must read getRoundtableLastActivity(sid) for activity check');
 
   // 安静期自适应等待的两个常量（值锁定为 250 / 3000，与 paste-detect timer 经验值匹配）
-  assert.ok(/FAST_PATH_QUIET_MS\s*=\s*250/.test(fnBody), '_rtSendToPty must define FAST_PATH_QUIET_MS = 250 (PTY quiet duration before sending Enter)');
-  assert.ok(/FAST_PATH_MAX_WAIT_MS\s*=\s*3000/.test(fnBody), '_rtSendToPty must define FAST_PATH_MAX_WAIT_MS = 3000 (upper bound for very large prompts)');
+  assert.ok(/FAST_PATH_QUIET_MS\s*=\s*250/.test(fnBody), 'sendToPty must define FAST_PATH_QUIET_MS = 250 (PTY quiet duration before sending Enter)');
+  assert.ok(/FAST_PATH_MAX_WAIT_MS\s*=\s*3000/.test(fnBody), 'sendToPty must define FAST_PATH_MAX_WAIT_MS = 3000 (upper bound for very large prompts)');
 
   // prompt 和 '\r' **必须分两次 write**（TUI alt-screen 把紧贴字符当粘贴事件，紧贴的 \r 不触发 Enter）。
   // 历史 bug 重现于 2026-04-30，commit 5c17e34 之前就是分两次 write 的设计。
@@ -117,7 +118,7 @@ function testMainJsHasFastPathContract() {
   // （第一次 write 已把字符送进 PTY stdin，重发会让 CLI 收到 prompt+prompt+\r 双重输入）。
   // 锁住"prompt 在函数体里只 write 一次"的不变式。
   const promptWriteCount = (fnBody.match(/writeToSession\(sid,\s*prompt\)/g) || []).length;
-  assert.strictEqual(promptWriteCount, 1, '_rtSendToPty must write prompt exactly once (fail-safe: no resend on activity failure to avoid double-prompt to CLI stdin)');
+  assert.strictEqual(promptWriteCount, 1, 'sendToPty must write prompt exactly once (fail-safe: no resend on activity failure to avoid double-prompt to CLI stdin)');
 
   // 关键契约（2026-05-02 用户血泪反馈）：零 echo 时 **\r 必须发出去**。
   //   旧版本错误地在 lastSeen===beforeWrite 时 return false 不发 \r，导致用户的 prompt
@@ -125,29 +126,30 @@ function testMainJsHasFastPathContract() {
   //   新契约：echo 正常发 1 次 \r；零 echo 兜底分 ENTER_RETRY_TRIES 次发 \r（间隔 ENTER_RETRY_GAP_MS）。
   //   多发 \r 安全（输入框有 prompt 时首个 \r 提交，后续落入空输入框被 CLI 忽略），不会污染 prompt 内容。
   assert.ok(/ENTER_RETRY_TRIES\s*=\s*[2-9]/.test(fnBody),
-    '_rtSendToPty must define ENTER_RETRY_TRIES >= 2 for zero-echo fallback (must commit Enter even when CLI not echoing back)');
+    'sendToPty must define ENTER_RETRY_TRIES >= 2 for zero-echo fallback (must commit Enter even when CLI not echoing back)');
   assert.ok(/ENTER_RETRY_GAP_MS\s*=\s*\d+/.test(fnBody),
-    '_rtSendToPty must define ENTER_RETRY_GAP_MS for spacing fallback Enters');
+    'sendToPty must define ENTER_RETRY_GAP_MS for spacing fallback Enters');
   // 锁住"零 echo 时仍 write \r"的代码模式：循环里写 \r
   assert.ok(/for\s*\([^)]+ENTER_RETRY_TRIES[\s\S]{0,200}?writeToSession\(sid,\s*['"]\\r['"]\)/.test(fnBody),
-    '_rtSendToPty must write \\r in a loop bounded by ENTER_RETRY_TRIES on zero-echo path');
+    'sendToPty must write \\r in a loop bounded by ENTER_RETRY_TRIES on zero-echo path');
   // 反向：禁止"零 echo 时 return false 跳过 \r"的旧 bug 模式
   assert.ok(!/lastSeen\s*===\s*beforeWrite[\s\S]{0,200}return\s+false/.test(fnBody),
-    '_rtSendToPty MUST NOT early-return false on zero-echo (regression guard: prompt already in PTY stdin, \\r MUST be sent — see 2026-05-02 user blood-tear feedback)');
+    'sendToPty MUST NOT early-return false on zero-echo (regression guard: prompt already in PTY stdin, \\r MUST be sent — see 2026-05-02 user blood-tear feedback)');
 
   console.log('  ✓ testMainJsHasFastPathContract');
 }
 
 function testRtWaitCliReadyPollIs100ms() {
-  // _rtWaitCliReady 内部轮询从 300ms 缩到 100ms。
-  const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf-8');
-  const startIdx = src.indexOf('async function _rtWaitCliReady');
-  const endIdx = src.indexOf('async function _rtSendToPty', startIdx);
-  assert.ok(startIdx >= 0, '_rtWaitCliReady function must exist');
-  assert.ok(endIdx > startIdx, '_rtSendToPty must follow _rtWaitCliReady (used as end anchor)');
+  // waitCliReady（原 _rtWaitCliReady）已抽至 core/roundtable-watcher.js（2026-05-03 道雪阶段丙）。
+  // 内部轮询从 300ms 缩到 100ms。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'roundtable-watcher.js'), 'utf-8');
+  const startIdx = src.indexOf('async function waitCliReady');
+  const endIdx = src.indexOf('async function sendToPty', startIdx);
+  assert.ok(startIdx >= 0, 'waitCliReady function must exist in roundtable-watcher.js');
+  assert.ok(endIdx > startIdx, 'sendToPty must follow waitCliReady (used as end anchor)');
   const fnBody = src.slice(startIdx, endIdx);
-  assert.ok(/setTimeout\(\s*r\s*,\s*100\s*\)/.test(fnBody), '_rtWaitCliReady must poll every 100ms');
-  assert.ok(!/setTimeout\(\s*r\s*,\s*300\s*\)/.test(fnBody), '_rtWaitCliReady must not poll every 300ms (legacy)');
+  assert.ok(/setTimeout\(\s*r\s*,\s*100\s*\)/.test(fnBody), 'waitCliReady must poll every 100ms');
+  assert.ok(!/setTimeout\(\s*r\s*,\s*300\s*\)/.test(fnBody), 'waitCliReady must not poll every 300ms (legacy)');
   console.log('  ✓ testRtWaitCliReadyPollIs100ms');
 }
 
