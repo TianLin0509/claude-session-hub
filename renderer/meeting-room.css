@@ -1595,6 +1595,51 @@
   color: #b1bac4;
   border: 1px solid rgba(139, 148, 158, 0.3);
 }
+
+/* ============================================================================
+   Resend & Auto-Recovery（2026-05-03）
+   ============================================================================ */
+
+/* send_stuck 状态：自动恢复失败 → 红边 + 按钮闪烁 + 状态条文案 */
+.mr-ft.send-stuck {
+  border-left: 4px solid #f85149;
+}
+.mr-ft.send-stuck button[data-rt-escape="resend-prompt"] {
+  background: #ffc107;
+  color: #000;
+  font-weight: 600;
+  animation: mr-ft-send-stuck-blink 1s ease-in-out infinite;
+}
+.mr-ft-status.send-stuck {
+  color: #f85149;
+  font-weight: 600;
+}
+@keyframes mr-ft-send-stuck-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* auto_patched 角标：右上角浮"自动补全 +N 字" 3s fade-out */
+.mr-ft-auto-patched-badge {
+  position: absolute;
+  top: 4px;
+  right: 28px;
+  padding: 2px 8px;
+  font-size: 10px;
+  line-height: 1.4;
+  border-radius: 8px;
+  font-weight: 600;
+  background: rgba(46, 160, 67, 0.18);
+  color: #56d364;
+  border: 1px solid rgba(46, 160, 67, 0.4);
+  pointer-events: none;
+  z-index: 3;
+  opacity: 1;
+  transition: opacity 1s ease-out 2s;  /* 2s 实显 + 1s fade */
+}
+.mr-ft-auto-patched-badge.fade-out {
+  opacity: 0;
+}
 .mr-rt-history-status.errored {
   background: rgba(248, 81, 73, 0.18);
   color: #f85149;
