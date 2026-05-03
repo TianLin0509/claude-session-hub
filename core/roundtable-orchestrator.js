@@ -15,6 +15,8 @@
 const fs = require('fs');
 const path = require('path');
 const { ALL_AI_KINDS } = require('./ai-kinds.js');
+// P4 五元组 SSoT (2026-05-04): COVENANT_GENERAL 与 buildBriefSummaryPrompt 共用同一份 schema
+const { renderFiveElementItems, renderBriefSummaryConstraints } = require('./roundtable-scenes.js');
 
 const MAX_DEBATE_OPINION_CHARS = 5000;
 const MAX_DEBATE_OPINION_KEEP = 2000;
@@ -141,26 +143,56 @@ class RoundtableOrchestrator {
   //   _renderTimelineFooter(tlPath)              → '完整历史：...' 末尾段
   // ---------------------------------------------------------------------
 
-  // 共享渲染：## 调度上下文 段（spec §7.3）
-  _renderDispatchContext(dispatchSpec) {
+  // P6 (2026-05-04) 字段化调度上下文 — 6 字段 bullet,集中协议层运行时信息
+  //   字段顺序: 你是 / 同台 / 模式 / 轮次性质 / 回答方式 / 轻提醒
+  //   "回答方式"+"轻提醒"两字段把原散落在 build 函数末尾的独立行为提示段并入此处,
+  //   攻击 attention recency (位于头部 + 距离任务体最近)。
+  //   dispatchSpec=null 时返回 null (resend 路径兼容)。
+  _renderDispatchContext(dispatchSpec, mySid, sidLabelFn, turnKind) {
     if (!dispatchSpec || typeof dispatchSpec !== 'object') return null;
     const { mode, selfRole, sameStageLabels, pilotLabel } = dispatchSpec;
+    if (mode !== 'all' && mode !== 'pilot' && mode !== 'observer') return null;
+
     const lines = ['## 调度上下文'];
-    if (mode === 'all') {
-      lines.push('- 模式：群策群力（参与者同台独立回答）');
-    } else if (mode === 'pilot') {
-      lines.push('- 模式：主驾发言（你被点名独说，副驾们本轮静音）');
-    } else if (mode === 'observer') {
-      lines.push(`- 模式：副驾发言（主驾${pilotLabel ? ' ' + pilotLabel : ''} 本轮静音，用户希望听副驾视角）`);
-    } else {
-      return null;
-    }
-    if (selfRole === 'pilot') lines.push('- 你的位置:主驾');
-    else if (selfRole === 'observer' || selfRole === 'co-pilot') lines.push('- 你的位置:副驾');
+    // 你是
+    const myLabel = sidLabelFn ? (sidLabelFn(mySid) || mySid || 'AI') : (mySid || 'AI');
+    let youAre = `- 你是:${myLabel}`;
+    if (selfRole === 'pilot') youAre += '（主驾）';
+    else if (selfRole === 'observer' || selfRole === 'co-pilot') youAre += '（副驾）';
+    lines.push(youAre);
+    // 同台
     if (Array.isArray(sameStageLabels) && sameStageLabels.length > 0) {
       lines.push(`- 同台:${sameStageLabels.join(' / ')}`);
     }
+    // 模式
+    lines.push(`- 模式:${this._dispatchModeLabel(mode, pilotLabel)}`);
+    // 轮次性质 + 回答方式
+    if (turnKind) {
+      lines.push(`- 轮次性质:${turnKind}`);
+      lines.push(`- 回答方式:${this._answerStyleFor(turnKind, mode)}`);
+    }
+    // 轻提醒 (P6 micro-reminder · 攻击长对话 attention decay)
+    lines.push('- 轻提醒:≤ 1500 字 / 不写文件 / 不展开多步骤工作流');
     return lines.join('\n');
+  }
+
+  _dispatchModeLabel(mode, pilotLabel) {
+    if (mode === 'all') return '群策群力（参与者同台独立回答）';
+    if (mode === 'pilot') return '主驾发言（你被点名独说，副驾们本轮静音）';
+    if (mode === 'observer') return `副驾发言（主驾${pilotLabel ? ' ' + pilotLabel : ''} 本轮静音，用户希望听副驾视角）`;
+    return mode || '未知';
+  }
+
+  _answerStyleFor(turnKind, dispatchMode) {
+    if (turnKind === 'fanout') {
+      if (dispatchMode === 'pilot') return '独立回答（本轮你被点名独说，副驾们本轮静音）';
+      if (dispatchMode === 'observer') return '独立回答（你与另一位副驾互相看不到本轮发言，保持各自独立视角）';
+      return '独立回答（看不到他人本轮观点）';
+    }
+    if (turnKind === 'debate') return '引用并回应上一轮他人观点（可看到对方本轮言论）';
+    if (turnKind === 'summary') return '综合全部讨论给最终意见，显列未消解分歧';
+    if (turnKind === 'brief') return '五元组压缩你最近发言';
+    return '按本轮上下文回答';
   }
 
   // 共享渲染：## 上一轮 段（按 injection 矩阵注入；payload null 时返回 null 整段省略）
@@ -211,17 +243,19 @@ class RoundtableOrchestrator {
     return lines.join('\n');
   }
 
-  // 共享渲染：末尾"完整历史"footer
+  // 共享渲染：末尾"完整历史"footer (P6 压缩 · 与上一轮注入段提示行格式统一)
   _renderTimelineFooter(timelinePath) {
     if (!timelinePath || typeof timelinePath !== 'string') return null;
-    return `---\n完整历史:${timelinePath}`;
+    return `> 完整历史:${timelinePath}`;
   }
 
-  // 默认 fanout 轮:scene 标签 + [调度上下文?] + [上一轮?] + [数据包?] + 用户问题 + 行为提示 + [timeline footer?]
-  buildFanoutPrompt(turnNum, userInput, dataPack, dispatchSpec, injectionPayload, timelinePath) {
+  // P6 (2026-05-04) 默认 fanout 轮:scene 标签 + 字段化调度上下文 + [上一轮?] + [数据包?] + 用户问题 + [timeline footer?]
+  //   独立行为提示段已删除 — 已并入 _renderDispatchContext 的"回答方式"字段
+  //   新参数 mySid / sidLabelFn 用于"你是"字段渲染 (向后兼容: caller 不传则降级显示 sid)
+  buildFanoutPrompt(turnNum, userInput, dataPack, dispatchSpec, injectionPayload, timelinePath, mySid, sidLabelFn) {
     const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · 默认提问]`];
 
-    const ctx = this._renderDispatchContext(dispatchSpec);
+    const ctx = this._renderDispatchContext(dispatchSpec, mySid, sidLabelFn, 'fanout');
     if (ctx) parts.push('', ctx);
 
     const last = this._renderLastTurnSection(injectionPayload, timelinePath);
@@ -233,26 +267,17 @@ class RoundtableOrchestrator {
 
     parts.push('', '## 用户问题', userInput || '');
 
-    const mode = dispatchSpec ? dispatchSpec.mode : null;
-    if (mode === 'pilot') {
-      parts.push('', '请独立回答（本轮你被点名独说，副驾们本轮静音）。');
-    } else if (mode === 'observer') {
-      parts.push('', '请独立回答（你与另一位副驾互相看不到本轮发言，保持各自独立视角）。');
-    } else {
-      parts.push('', '请独立回答（你看不到其他人本轮观点，本色发挥即可）。');
-    }
-
     const footer = this._renderTimelineFooter(timelinePath);
     if (footer) parts.push('', footer);
 
     return parts.join('\n');
   }
 
-  // debate 轮:scene 标签 + [调度上下文?] + [用户补充?] + [上一轮?] + 任务说明 + [timeline footer?]
-  buildDebatePrompt(turnNum, userInput, dispatchSpec, injectionPayload, timelinePath) {
+  // P6 (2026-05-04) debate 轮:scene 标签 + 字段化调度上下文 + [用户补充?] + [上一轮?] + 任务说明 + [timeline footer?]
+  buildDebatePrompt(turnNum, userInput, dispatchSpec, injectionPayload, timelinePath, mySid, sidLabelFn) {
     const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · @debate]`];
 
-    const ctx = this._renderDispatchContext(dispatchSpec);
+    const ctx = this._renderDispatchContext(dispatchSpec, mySid, sidLabelFn, 'debate');
     if (ctx) parts.push('', ctx);
 
     if (userInput && typeof userInput === 'string' && userInput.trim().length > 0) {
@@ -283,7 +308,8 @@ class RoundtableOrchestrator {
     const totalTurns = this.state.turns.length;
     const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · @summary @${summarizerLabel}]`];
 
-    const ctx = this._renderDispatchContext(dispatchSpec);
+    // P6 (2026-05-04) 字段化调度上下文 (turnKind='summary')
+    const ctx = this._renderDispatchContext(dispatchSpec, summarizerSid, sidLabelFn, 'summary');
     if (ctx) parts.push('', ctx);
 
     parts.push('', '## 你的任务');
@@ -323,6 +349,14 @@ class RoundtableOrchestrator {
     const summarizerLabel = sidLabelFn ? (sidLabelFn(summarizerSid) || 'AI') : 'AI';
     const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · 摘要轮 · by ${summarizerLabel}]`];
 
+    // P6 (2026-05-04) brief-summary 纳入字段化调度上下文统一壳
+    parts.push('', '## 调度上下文');
+    parts.push(`- 你是:${summarizerLabel}`);
+    parts.push('- 模式:摘要触发');
+    parts.push('- 轮次性质:brief');
+    parts.push('- 回答方式:五元组压缩你最近发言');
+    parts.push('- 轻提醒:≤ 1500 字 / 不写文件 / 不展开多步骤工作流');
+
     parts.push('', '## 任务');
     parts.push('用户希望你把最近一段连续发言浓缩为「五元组」摘要，便于后续轮次的协作者快速进入状态。');
 
@@ -330,21 +364,15 @@ class RoundtableOrchestrator {
       parts.push(`浓缩范围:第 ${summarizeRange.fromTurn} - ${summarizeRange.toTurn} 轮你参与的发言。`);
     }
 
-    parts.push('');
-    parts.push('## 输出格式（严格按五段，不要展开论证）');
-    parts.push('1. **目标**:本段聚焦什么任务/问题（一句话，20-50 字）');
-    parts.push('2. **关键事实**:你确认的事实/数据（项目化，最多 5 条）');
-    parts.push('3. **关键分歧**:与他人核心分歧 / 自己的不确定（项目化）');
-    parts.push('4. **当前结论**:倾向判断 + 信心度 0-100%（30-80 字）');
-    parts.push('5. **下一步**:建议下一轮聚焦什么 / 想问对方什么（30-80 字）');
-    parts.push('');
-    parts.push('## 约束');
-    parts.push('- 不超过 500 字');
-    parts.push('- 第一人称（"我认为"）');
-    parts.push('- 不展开论证、不重复事实细节');
+    // P4 SSoT (2026-05-04): 引用 BRIEF_SUMMARY_FIELDS schema, 与 COVENANT_GENERAL 共用同一份字段定义
+    parts.push('', '## 输出格式（严格按五段，不要展开论证）');
+    parts.push(renderFiveElementItems());
+    parts.push('', '## 约束');
+    parts.push(renderBriefSummaryConstraints('list'));
 
     if (timelinePath) {
-      parts.push('', `---\n你的发言历史:${timelinePath}`);
+      // P6 footer 压缩 (与上一轮注入段提示行格式统一)
+      parts.push('', `> 你的发言历史:${timelinePath}`);
     }
     return parts.join('\n');
   }

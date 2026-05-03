@@ -1311,6 +1311,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       for (const x of targetSubs) {
         let prompt;
         if (isFreeMode) {
+          // P6 (2026-05-04): 补传 sceneName + timelinePath 给字段化调度上下文 + footer
           prompt = free.buildFreeFanoutPrompt({
             meeting,
             selfSlot: x.slotIndex,
@@ -1318,12 +1319,15 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
             userInput,
             lastTurnInjection: injectMap[x.sid] || null,
             turnNum,
+            sceneName: sceneObj?.name || '通用圆桌',
+            timelinePath,
           });
         } else {
           // BUGFIX (4-way review · Codex#2)：sameStageLabels 应基于 targetSubs（本轮真发言者）
           //   而非全员 subs，否则 pilot/observer 模式下"同台"会含静音 AI
           const dispatchSpec = _computeDispatchSpec(x, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
-          prompt = orch.buildFanoutPrompt(turnNum, userInput, null, dispatchSpec, injectMap[x.sid] || null, timelinePath);
+          // P6 (2026-05-04): 补传 mySid + sidLabelFn 给字段化调度上下文用
+          prompt = orch.buildFanoutPrompt(turnNum, userInput, null, dispatchSpec, injectMap[x.sid] || null, timelinePath, x.sid, sidLabelFn);
         }
         targets.push({ ...x, prompt });
       }
@@ -1339,6 +1343,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       for (const x of targetSubs) {
         let prompt;
         if (isFreeMode) {
+          // P6 (2026-05-04): 补传 sceneName + timelinePath
           prompt = free.buildFreeDebatePrompt({
             meeting,
             selfSlot: x.slotIndex,
@@ -1346,10 +1351,13 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
             userInput,
             lastTurnInjection: injectMap[x.sid] || null,
             turnNum,
+            sceneName: sceneObj?.name || '通用圆桌',
+            timelinePath,
           });
         } else {
           const dispatchSpec = _computeDispatchSpec(x, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
-          prompt = orch.buildDebatePrompt(turnNum, userInput, dispatchSpec, injectMap[x.sid] || null, timelinePath);
+          // P6 (2026-05-04): 补传 mySid + sidLabelFn 给字段化调度上下文用
+          prompt = orch.buildDebatePrompt(turnNum, userInput, dispatchSpec, injectMap[x.sid] || null, timelinePath, x.sid, sidLabelFn);
         }
         targets.push({ ...x, prompt });
       }
@@ -1376,12 +1384,15 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       const injectMap = rtInjection.computeLastTurnInjection(lastTurn, [target.sid], sidLabelFn, sidRoleFn);
       let prompt;
       if (isFreeMode) {
+        // P6 (2026-05-04): 补传 sceneName + timelinePath
         prompt = free.buildFreeSummaryPrompt({
           meeting,
           summarizerSlot,
           userInput,
           lastTurnInjection: injectMap[target.sid] || null,
           turnNum,
+          sceneName: sceneObj?.name || '通用圆桌',
+          timelinePath,
         });
       } else {
         const dispatchSpec = _computeDispatchSpec(target, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);

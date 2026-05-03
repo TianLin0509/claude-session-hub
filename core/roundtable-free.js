@@ -16,8 +16,12 @@
 //     特殊：debate 模式永远返回 'all'（debate 必须互看，不能走 observer 同组跳过）。
 //
 //   buildFreeFanoutPrompt / buildFreeDebatePrompt / buildFreeSummaryPrompt
-//     第一行格式：# 自由模式 第 N 轮 <mode> — 你是 <slotLabel>
-//     满足 Resend T2 第一行契约（非空 + 含轮号）
+//     P6 (2026-05-04): 与 pilot 路径统一 5 段骨架 + 字段化调度上下文 + footer 压缩
+//     第一行格式: [<sceneName> · 第 N 轮 · <模式中文>] (B1 决议·hub 头部解析依赖)
+//
+// P4 SSoT (2026-05-04): COVENANT_GENERAL 与 buildBriefSummaryPrompt 共用同一份字段定义,
+//   通过 renderFiveElementItems / renderBriefSummaryConstraints helper 渲染。
+//   free 路径目前没有 brief-summary 模式 (用户在 UI 点摘要按钮走 pilot 路径)。
 
 const SLOT_IDS = ['pikachu', 'charmander', 'squirtle'];
 
@@ -64,7 +68,7 @@ function derivePilotCompatDispatchMode(participants, mode) {
 }
 
 // ---------------------------------------------------------------------------
-// Prompt 模板（free 模式专用）
+// Prompt 模板（free 模式专用，P6 统一骨架·2026-05-04）
 // ---------------------------------------------------------------------------
 
 const SLOT_DISPLAY = {
@@ -90,12 +94,12 @@ function _slotLabel(slotIdOrIdx) {
 
 function _formatParticipantList(participants) {
   if (!Array.isArray(participants) || participants.length === 0) return '';
-  return participants.map(idx => _slotLabel(idx)).join(', ');
+  return participants.map(idx => _slotLabel(idx)).join(' / ');
 }
 
 function _renderInjection(inj) {
   if (!inj || !Array.isArray(inj.speakers) || inj.speakers.length === 0) return '';
-  const lines = ['', '[上一轮注入]'];
+  const lines = ['', '## 上一轮注入'];
   if (inj.isSummaryInjection) {
     lines.push(`（上一轮是摘要轮，第 ${inj.lastTurnNum} 轮 · ${inj.lastTurnMode}）`);
   } else {
@@ -109,58 +113,110 @@ function _renderInjection(inj) {
   return lines.join('\n');
 }
 
-function buildFreeFanoutPrompt({ meeting, selfSlot, participants, userInput, lastTurnInjection, turnNum }) {
-  const n = (typeof turnNum === 'number' && turnNum > 0) ? turnNum : '?';
-  const selfLabel = _slotLabel(selfSlot);
+// P6 (2026-05-04): free 路径字段化调度上下文 helper
+//   字段差异 (vs pilot):
+//     - "你是" 不带 (副驾/主驾) 角色括注 (free 取消该概念)
+//     - "参与者" (含自己) 替代 pilot 的 "同台" (不含自己)
+//     - "模式" 固定为 "自由（参与者勾选）"
+function _renderFreeDispatchContext({ selfSlot, participants, turnKind, answerStyle }) {
+  const lines = ['## 调度上下文'];
+  lines.push(`- 你是:${_slotLabel(selfSlot)}`);
   const partList = _formatParticipantList(participants);
-  const lines = [
-    `# 自由模式 第 ${n} 轮 fanout — 你是 ${selfLabel}`,
-    '',
-    '[本轮上下文]',
-    `- 模式：自由模式 · fanout`,
-    `- 本轮发言人：${partList}`,
-    `- 你是：${selfLabel}`,
-  ];
-  const inj = _renderInjection(lastTurnInjection);
-  if (inj) lines.push(inj);
-  lines.push('', '[用户输入]', userInput || '');
-  lines.push('', '请独立回答（与其他发言人互相看不到本轮发言，保持各自独立视角）。');
+  if (partList) lines.push(`- 参与者:${partList}`);
+  lines.push('- 模式:自由（参与者勾选）');
+  lines.push(`- 轮次性质:${turnKind}`);
+  lines.push(`- 回答方式:${answerStyle}`);
+  lines.push('- 轻提醒:≤ 1500 字 / 不写文件 / 不展开多步骤工作流');
   return lines.join('\n');
 }
 
-function buildFreeDebatePrompt({ meeting, selfSlot, participants, userInput, lastTurnInjection, turnNum }) {
+// P6 (2026-05-04): timeline footer 压缩 (与 pilot 路径 _renderTimelineFooter 一致)
+function _renderFreeTimelineFooter(timelinePath) {
+  if (!timelinePath || typeof timelinePath !== 'string') return null;
+  return `> 完整历史:${timelinePath}`;
+}
+
+function buildFreeFanoutPrompt({ meeting, selfSlot, participants, userInput, lastTurnInjection, turnNum, sceneName, timelinePath }) {
   const n = (typeof turnNum === 'number' && turnNum > 0) ? turnNum : '?';
-  const selfLabel = _slotLabel(selfSlot);
-  const partList = _formatParticipantList(participants);
-  const lines = [
-    `# 自由模式 第 ${n} 轮 debate — 你是 ${selfLabel}`,
-    '',
-    '[本轮上下文]',
-    `- 模式：自由模式 · 辩论`,
-    `- 本轮发言人：${partList}`,
-    `- 你是：${selfLabel}`,
-  ];
+  const scene = sceneName || (meeting && meeting.scene === 'research' ? '投研圆桌' : '通用圆桌');
+  // P6 B1 (2026-05-04): 第一行改用 pilot 格式 [<scene> · 第 N 轮 · <模式中文>]
+  //   撤销原 `# 自由模式 第 N 轮 fanout — 你是 ⚡ Pikachu` 格式 (与 hub 头部解析契约统一)
+  const lines = [`[${scene} · 第 ${n} 轮 · 默认提问]`];
+
+  lines.push('', _renderFreeDispatchContext({
+    selfSlot, participants,
+    turnKind: 'fanout',
+    answerStyle: '独立回答（与其他参与者互相看不到本轮发言）',
+  }));
+
   const inj = _renderInjection(lastTurnInjection);
   if (inj) lines.push(inj);
-  lines.push('', '[用户输入]', userInput || '');
-  lines.push('', '请反驳/呼应其他发言人的观点（你们看得到对方本轮言论）。');
+
+  lines.push('', '## 用户问题', userInput || '');
+
+  // P6: 删除原"请独立回答（与其他发言人互相看不到本轮发言，保持各自独立视角）"独立段
+  //   (已并入 _renderFreeDispatchContext 的"回答方式"字段)
+
+  const footer = _renderFreeTimelineFooter(timelinePath);
+  if (footer) lines.push('', footer);
+
   return lines.join('\n');
 }
 
-function buildFreeSummaryPrompt({ meeting, summarizerSlot, userInput, lastTurnInjection, turnNum }) {
+function buildFreeDebatePrompt({ meeting, selfSlot, participants, userInput, lastTurnInjection, turnNum, sceneName, timelinePath }) {
   const n = (typeof turnNum === 'number' && turnNum > 0) ? turnNum : '?';
+  const scene = sceneName || (meeting && meeting.scene === 'research' ? '投研圆桌' : '通用圆桌');
+  // P6 B1: 第一行 [<scene> · 第 N 轮 · @debate]
+  const lines = [`[${scene} · 第 ${n} 轮 · @debate]`];
+
+  lines.push('', _renderFreeDispatchContext({
+    selfSlot, participants,
+    turnKind: 'debate',
+    answerStyle: '反驳/呼应其他参与者观点（可看到对方本轮言论）',
+  }));
+
+  if (userInput && typeof userInput === 'string' && userInput.trim().length > 0) {
+    lines.push('', '## 用户在本轮补充的新信息', userInput);
+  }
+
+  const inj = _renderInjection(lastTurnInjection);
+  if (inj) lines.push(inj);
+
+  lines.push('', '## 你的任务');
+  lines.push('请基于上一轮内容 + 用户补充信息发表新观点：可继承、可反驳，但要明示引用对方哪一点。');
+
+  // P6: 删除原"请反驳/呼应其他发言人的观点（你们看得到对方本轮言论）"独立段
+
+  const footer = _renderFreeTimelineFooter(timelinePath);
+  if (footer) lines.push('', footer);
+
+  return lines.join('\n');
+}
+
+function buildFreeSummaryPrompt({ meeting, summarizerSlot, userInput, lastTurnInjection, turnNum, sceneName, timelinePath }) {
+  const n = (typeof turnNum === 'number' && turnNum > 0) ? turnNum : '?';
+  const scene = sceneName || (meeting && meeting.scene === 'research' ? '投研圆桌' : '通用圆桌');
   const selfLabel = _slotLabel(summarizerSlot);
-  const lines = [
-    `# 自由模式 第 ${n} 轮 summary — 你是 ${selfLabel}`,
-    '',
-    '[本轮上下文]',
-    `- 模式：自由模式 · 总结`,
-    `- 你被点名担任本轮总结人`,
-  ];
+  // P6 B1: 第一行 [<scene> · 第 N 轮 · @summary @<X>]
+  const lines = [`[${scene} · 第 ${n} 轮 · @summary @${selfLabel}]`];
+
+  lines.push('', _renderFreeDispatchContext({
+    selfSlot: summarizerSlot,
+    participants: null,  // summary 轮只发给被点名的 summarizer,无"参与者"概念
+    turnKind: 'summary',
+    answerStyle: '综合上述历史给出总结',
+  }));
+
   const inj = _renderInjection(lastTurnInjection);
   if (inj) lines.push(inj);
-  lines.push('', '[用户输入]', userInput || '');
-  lines.push('', '请综合上述历史给出总结。');
+
+  lines.push('', '## 你的任务', userInput || '请综合上述历史给出总结。');
+
+  // P6: 删除原"请综合上述历史给出总结。"独立段
+
+  const footer = _renderFreeTimelineFooter(timelinePath);
+  if (footer) lines.push('', footer);
+
   return lines.join('\n');
 }
 
