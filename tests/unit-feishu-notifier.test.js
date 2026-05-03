@@ -99,12 +99,44 @@ async function testReSendAfterWindow() {
   console.log('  ok re-send after window');
 }
 
+async function testNewlyWaitingBypassesDedupe() {
+  const client = makeFakeClient();
+  const clock = makeFakeClock();
+  const notifier = new FeishuNotifier({
+    client, chatId: 'oc_target', dedupeWindowMs: 60_000, now: clock.now,
+  });
+
+  await notifier.notify(basePayload());
+  clock.advance(10_000);
+  const result = await notifier.notify(basePayload({ newlyWaiting: true, isWaiting: true }));
+
+  assert.deepStrictEqual(result, { sent: true, reason: 'sent' });
+  assert.strictEqual(client.calls.length, 2, 'newlyWaiting bypasses dedupe');
+  console.log('  ok newlyWaiting bypasses dedupe');
+}
+
+async function testDifferentSessionsIndependent() {
+  const client = makeFakeClient();
+  const clock = makeFakeClock();
+  const notifier = new FeishuNotifier({
+    client, chatId: 'oc_target', dedupeWindowMs: 60_000, now: clock.now,
+  });
+
+  await notifier.notify(basePayload({ sessionId: 'sess-A' }));
+  await notifier.notify(basePayload({ sessionId: 'sess-B' }));
+
+  assert.strictEqual(client.calls.length, 2, 'different sessions both send');
+  console.log('  ok different sessions independent');
+}
+
 (async () => {
   console.log('Running FeishuNotifier tests...');
   await testConstructorValidation();
   await testFirstSend();
   await testDedupeWithinWindow();
   await testReSendAfterWindow();
+  await testNewlyWaitingBypassesDedupe();
+  await testDifferentSessionsIndependent();
   console.log('All passed.');
 })().catch(err => {
   console.error(err);

@@ -33,10 +33,12 @@ class FeishuNotifier {
     if (!payload || !payload.sessionId) {
       return { sent: false, reason: 'invalid' };
     }
-    const last = this._lastSentAt.get(payload.sessionId) || 0;
     const t = this.now();
-    if (t - last < this.dedupeWindowMs) {
-      return { sent: false, reason: 'deduped' };
+    if (!payload.newlyWaiting) {
+      const last = this._lastSentAt.get(payload.sessionId) || 0;
+      if (t - last < this.dedupeWindowMs) {
+        return { sent: false, reason: 'deduped' };
+      }
     }
     return this._send(payload, t);
   }
