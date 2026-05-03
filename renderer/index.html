@@ -22,6 +22,9 @@
             <button class="new-session-option" data-kind="codex"><span class="ai-logo logo-codex"></span>Codex CLI</button>
             <button class="new-session-option" data-kind="deepseek"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
             <button class="new-session-option" data-kind="glm"><span class="ai-logo logo-glm"></span>GLM</button>
+            <button class="new-session-option" data-kind="gpt"><span class="ai-logo logo-gpt"></span>GPT 5.5</button>
+            <button class="new-session-option" data-kind="kimi"><span class="ai-logo logo-kimi"></span>Kimi K2.5</button>
+            <button class="new-session-option" data-kind="qwen"><span class="ai-logo logo-qwen"></span>Qwen 3.6 Plus</button>
             <div class="new-session-divider"></div>
             <div class="menu-group-label">终端</div>
             <button class="new-session-option" data-kind="powershell"><span class="ai-logo logo-powershell"></span>PowerShell</button>
@@ -35,6 +38,9 @@
             <button class="resume-option" data-kind="codex-resume"><span class="ai-logo logo-codex"></span>Codex<span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="deepseek-resume"><span class="ai-logo logo-deepseek"></span>DeepSeek<span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="glm-resume"><span class="ai-logo logo-glm"></span>GLM<span class="hint">PTY picker</span></button>
+            <button class="resume-option" data-kind="gpt-resume"><span class="ai-logo logo-gpt"></span>GPT 5.5<span class="hint">PTY picker</span></button>
+            <button class="resume-option" data-kind="kimi-resume"><span class="ai-logo logo-kimi"></span>Kimi K2.5<span class="hint">PTY picker</span></button>
+            <button class="resume-option" data-kind="qwen-resume"><span class="ai-logo logo-qwen"></span>Qwen 3.6 Plus<span class="hint">PTY picker</span></button>
           </div>
         </div>
         <button class="btn-roundtable" id="btn-roundtable" title="创建圆桌">🎯 圆桌</button>
@@ -173,7 +179,7 @@
       </div>
       <div class="config-modal-body">
         <div id="config-main-view">
-          <p class="config-hint">配置全局代理和各 AI 的接入方式。Codex / DeepSeek / GLM 的变更会在新建会话时生效。</p>
+          <p class="config-hint">配置全局代理和各 AI 的接入方式。Codex / DeepSeek / GLM / GPT / Kimi / Qwen 的变更会在新建会话时生效。</p>
           <div class="config-field">
             <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
             <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
@@ -222,6 +228,30 @@
                 <small id="cfg-summary-glm">API · glm-5.1</small>
               </span>
               <span class="config-ai-status api" id="cfg-status-glm">API</span>
+            </button>
+            <button class="config-ai-row" type="button" data-ai="gpt">
+              <span class="config-ai-mark gpt">GP</span>
+              <span class="config-ai-copy">
+                <strong>GPT</strong>
+                <small id="cfg-summary-gpt">API · gpt-5.5 · Packy</small>
+              </span>
+              <span class="config-ai-status api" id="cfg-status-gpt">API</span>
+            </button>
+            <button class="config-ai-row" type="button" data-ai="kimi">
+              <span class="config-ai-mark kimi">KI</span>
+              <span class="config-ai-copy">
+                <strong>Kimi</strong>
+                <small id="cfg-summary-kimi">API · kimi-k2.5 · Packy</small>
+              </span>
+              <span class="config-ai-status api" id="cfg-status-kimi">API</span>
+            </button>
+            <button class="config-ai-row" type="button" data-ai="qwen">
+              <span class="config-ai-mark qwen">QW</span>
+              <span class="config-ai-copy">
+                <strong>Qwen</strong>
+                <small id="cfg-summary-qwen">API · qwen3.6-plus · Packy</small>
+              </span>
+              <span class="config-ai-status api" id="cfg-status-qwen">API</span>
             </button>
           </div>
         </div>
@@ -298,6 +328,63 @@
             <div class="config-field">
               <label>GLM Model</label>
               <input type="text" id="cfg-glm-model" placeholder="glm-5.1" spellcheck="false">
+            </div>
+          </div>
+
+          <div class="config-ai-detail" id="cfg-detail-gpt">
+            <div class="config-mode-card selected">
+              <strong>API 模式</strong>
+              <span>GPT 5.5 通过 PackyAPI codex 分组的 Anthropic 兼容端点接入（服务端做 OpenAI ↔ Anthropic 协议翻译），使用隔离 Claude 配置目录。</span>
+            </div>
+            <div class="config-field">
+              <label>GPT API Key（PackyAPI codex 分组）</label>
+              <input type="password" id="cfg-gpt-key" placeholder="sk-..." spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>Base URL</label>
+              <input type="text" id="cfg-gpt-url" placeholder="https://www.packyapi.com" spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>模型</label>
+              <input type="text" id="cfg-gpt-model" placeholder="gpt-5.5" spellcheck="false">
+            </div>
+          </div>
+
+          <div class="config-ai-detail" id="cfg-detail-kimi">
+            <div class="config-mode-card selected">
+              <strong>API 模式</strong>
+              <span>Kimi K2.5 通过 PackyAPI bailian 分组的 Anthropic 兼容端点接入，使用隔离 Claude 配置目录。</span>
+            </div>
+            <div class="config-field">
+              <label>Kimi API Key（PackyAPI bailian 分组）</label>
+              <input type="password" id="cfg-kimi-key" placeholder="sk-..." spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>Base URL</label>
+              <input type="text" id="cfg-kimi-url" placeholder="https://www.packyapi.com" spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>模型</label>
+              <input type="text" id="cfg-kimi-model" placeholder="kimi-k2.5" spellcheck="false">
+            </div>
+          </div>
+
+          <div class="config-ai-detail" id="cfg-detail-qwen">
+            <div class="config-mode-card selected">
+              <strong>API 模式</strong>
+              <span>Qwen 3.6 Plus 通过 PackyAPI bailian 分组的 Anthropic 兼容端点接入（与 Kimi 共享同一 bailian key），使用隔离 Claude 配置目录。</span>
+            </div>
+            <div class="config-field">
+              <label>Qwen API Key（PackyAPI bailian 分组）</label>
+              <input type="password" id="cfg-qwen-key" placeholder="sk-..." spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>Base URL</label>
+              <input type="text" id="cfg-qwen-url" placeholder="https://www.packyapi.com" spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>模型</label>
+              <input type="text" id="cfg-qwen-model" placeholder="qwen3.6-plus" spellcheck="false">
             </div>
           </div>
         </div>
