@@ -20,6 +20,8 @@
   // IF-C3（2026-05-01）：banner dismiss 状态记录 — meetingId，dismiss 后同会议不再显示，
   //   关闭会议（closeMeetingPanel）会重置，下次进同会议又显示
   let _bannerDismissedFor = null;
+  // IF-C7（2026-05-03）：未 ready 数量上次值，用于"新增未 ready 项时撤销 dismiss"
+  let _lastNotReadyCount = 0;
   const _tabState = {};     // { sessionId: 'streaming'|'new-output'|'idle'|'error' }
   const _tabTimers = {};    // { sessionId: silenceTimerId }
 
@@ -1287,6 +1289,7 @@
     _cliReadyCache = {};
     // IF-C3：清空 banner dismiss 状态 + 隐藏 banner，下次进同会议再显示一次
     _bannerDismissedFor = null;
+    _lastNotReadyCount = 0;
     const _banner = document.getElementById('mr-input-soft-alert');
     if (_banner) { _banner.style.display = 'none'; _banner.innerHTML = ''; }
     // Card optimization Task 10（2026-05-01）：拆 ResizeObserver / window resize 监听，避免 panel 隐藏后还触发 fit
@@ -1651,7 +1654,12 @@
     // IF-C6（首屏闪烁修复 2026-05-01）：返回首次 pollOnce 的 promise，让 openMeeting 可以
     //   await 它再继续后续渲染（一次 IPC < 100ms，远低于人眼可感知的 200ms 阈值）。
     //   避免 panel 首次渲染时 _cliReadyCache 还空 → 全部判 isInitializing → 闪一下"创建中"。
-    const firstPollPromise = pollOnce();
+    // IF-C7（2026-05-03）：首次 pollOnce 后强制刷一次 banner。原 _refreshSoftAlert 仅在
+    //   pollOnce 检测 changed=true 时被调，全员未 ready 时 cache 始终空 → 不变更 → banner
+    //   一次都不显示，输入框上方静默——本 fix 让首屏立刻反映"XX 启动中"提示。
+    const firstPollPromise = pollOnce().then(() => {
+      try { _refreshSoftAlert(meeting); } catch {}
+    });
     _cliReadyPollTimer = setInterval(pollOnce, 1000);
     return firstPollPromise;
   }
@@ -1668,12 +1676,6 @@
     const banner = document.getElementById('mr-input-soft-alert');
     if (!banner || !meeting || !Array.isArray(meeting.subSessions)) return;
 
-    // dismiss 状态判断
-    if (_bannerDismissedFor === meeting.id) {
-      banner.style.display = 'none';
-      return;
-    }
-
     // 列出未 ready 的 AI 标签
     const labelOf = sid => {
       const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
@@ -1681,7 +1683,20 @@
       return ({ claude: 'Claude', gemini: 'Gemini', codex: 'Codex', glm: 'GLM', deepseek: 'DeepSeek' }[kind])
         || (sess && sess.title) || sid.slice(0, 6);
     };
-    const notReady = meeting.subSessions.filter(sid => !_cliReadyCache[sid]).map(labelOf);
+    const notReadySids = meeting.subSessions.filter(sid => !_cliReadyCache[sid]);
+    const notReady = notReadySids.map(labelOf);
+
+    // IF-C7（2026-05-03）：dismiss 语义改为"对当前未 ready 集合 dismiss"。
+    //   当未 ready 数量上升（如新增子会话/某 sid 被踢回未 ready）→ 重新激活 banner。
+    //   全员 ready 后清掉 dismiss，下次有新增未 ready 也能正常提示。
+    if (_bannerDismissedFor === meeting.id && notReady.length <= _lastNotReadyCount) {
+      _lastNotReadyCount = notReady.length;
+      if (notReady.length === 0) _bannerDismissedFor = null;
+      banner.style.display = 'none';
+      return;
+    }
+    _lastNotReadyCount = notReady.length;
+    if (notReady.length === 0) _bannerDismissedFor = null;
 
     if (notReady.length === 0) {
       banner.style.display = 'none';
