@@ -535,6 +535,39 @@ function registerSessionForTap(session) {
   catch {}
 }
 
+// ──────────────────────────────────────────────────────────
+// Worktree panel IPC（道雪 2026-05-03）
+//   probe：聚合当前 active session 所在 git repo 的 worktree 拓扑 + peer 状态
+//   open-explorer：在系统文件管理器打开 worktree 目录
+//   `shell` 已在顶部 `require('electron')` 解构，不要重复 require
+// ──────────────────────────────────────────────────────────
+const { getPanelData: _getWorktreePanelData } = require('./core/worktree');
+
+ipcMain.handle('worktree:probe', async (_e, { activeSessionId, force = false } = {}) => {
+  const allSessions = [];
+  // sessionManager.getAllSessions() 返回每个 session 的 info 副本（含 id/title/kind/cwd）
+  for (const info of sessionManager.getAllSessions()) {
+    if (info && info.cwd) {
+      allSessions.push({
+        sessionId: info.id,
+        cwd: info.cwd,
+        sessionLabel: info.title || info.kind || info.id,
+      });
+    }
+  }
+  try {
+    return { ok: true, data: await _getWorktreePanelData({ activeSessionId, allSessions, force }) };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle('worktree:open-explorer', async (_e, { cwd } = {}) => {
+  if (!cwd) return { ok: false, error: 'no cwd' };
+  const err = await shell.openPath(cwd);
+  return { ok: !err, error: err || null };
+});
+
 ipcMain.handle('create-session', (_e, arg) => {
   // Back-compat: legacy callers pass just a `kind` string. New callers pass
   // `{ kind, opts }` so they can request `resumeCCSessionId` / custom cwd / etc.
