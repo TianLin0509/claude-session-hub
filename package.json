@@ -1,6 +1,6 @@
 {
   "name": "roundtable",
-  "version": "0.8.5",
+  "version": "0.9.0",
   "description": "多模型协作圆桌终端",
   "main": "main.js",
   "scripts": {
@@ -29,6 +29,7 @@
     "express": "^4.22.1",
     "marked": "^18.0.1",
     "node-pty": "^1.0.0",
+    "prismjs": "^1.30.0",
     "qrcode": "^1.5.4",
     "uuid": "^10.0.0",
     "ws": "^8.20.0"
