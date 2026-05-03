@@ -1,5 +1,5 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
-const { isClaudeFamily } = require('../core/ai-kinds.js');
+const { isClaudeFamily, isAiKind } = require('../core/ai-kinds.js');
 const RENDER_STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const RENDER_STARTUP_T0 = performance.now();
 function traceRendererStartup(msg) {
@@ -2502,6 +2502,9 @@ const providerModes = {
   codex: 'subscription',
   deepseek: 'api',
   glm: 'api',
+  gpt: 'api',
+  kimi: 'api',
+  qwen: 'api',
 };
 let _claudeUsageLastSeen = 0;
 // Samples for quota burn-rate attribution. Per-session contextUsed history
@@ -2629,6 +2632,9 @@ function modelClass(id) {
   if (s.includes('codex') || s.includes('gpt-5') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
   if (s.includes('deepseek')) return 'deepseek';
   if (s.includes('glm')) return 'glm';
+  if (s.includes('gpt')) return 'gpt';
+  if (s.includes('kimi')) return 'kimi';
+  if (s.includes('qwen')) return 'qwen';
   return '';
 }
 
@@ -2646,6 +2652,9 @@ function modelShort(m) {
   if (id.includes('codex')) return 'Codex';
   if (id.includes('deepseek')) return 'DS';
   if (id.includes('glm')) return 'GLM';
+  if (id.includes('gpt')) return 'GP';
+  if (id.includes('kimi')) return 'KI';
+  if (id.includes('qwen')) return 'QW';
   return m.id || '';
 }
 
@@ -2845,7 +2854,10 @@ function renderAccountUsage() {
     buildLine('gemini', 'gemini', 'Gemini', g.usage5h, g.usage7d, agentUsageLastSeen.gemini) +
     buildLine('codex', 'codex', 'Codex', c.usage5h, c.usage7d, agentUsageLastSeen.codex) +
     buildLine('deepseek', 'deepseek', 'DeepSeek', null, null, 0, false) +
-    buildLine('glm', 'glm', 'GLM', null, null, 0, false);
+    buildLine('glm', 'glm', 'GLM', null, null, 0, false) +
+    buildLine('gpt', 'gpt', 'GPT 5.5', null, null, 0, false) +
+    buildLine('kimi', 'kimi', 'Kimi K2.5', null, null, 0, false) +
+    buildLine('qwen', 'qwen', 'Qwen 3.6 Plus', null, null, 0, false);
 }
 
 setInterval(renderAccountUsage, 60000);
@@ -3449,6 +3461,24 @@ const CONFIG_AI_META = {
     status: 'API',
     statusClass: 'api',
   },
+  gpt: {
+    title: 'GPT 设置',
+    hint: 'GPT 当前通过 PackyAPI codex 分组的 Anthropic 兼容端点接入，新建 GPT 会话生效。',
+    status: 'API',
+    statusClass: 'api',
+  },
+  kimi: {
+    title: 'Kimi 设置',
+    hint: 'Kimi 当前通过 PackyAPI bailian 分组的 Anthropic 兼容端点接入，新建 Kimi 会话生效。',
+    status: 'API',
+    statusClass: 'api',
+  },
+  qwen: {
+    title: 'Qwen 设置',
+    hint: 'Qwen 当前通过 PackyAPI bailian 分组的 Anthropic 兼容端点接入（与 Kimi 共享 bailian key），新建 Qwen 会话生效。',
+    status: 'API',
+    statusClass: 'api',
+  },
 };
 
 let activeConfigAi = 'codex';
@@ -3470,6 +3500,12 @@ function updateConfigSummaries() {
   const deepseekKey = configEl('cfg-deepseek-key') ? configEl('cfg-deepseek-key').value.trim() : '';
   const glmKey = configEl('cfg-glm-key') ? configEl('cfg-glm-key').value.trim() : '';
   const glmModel = configEl('cfg-glm-model') ? (configEl('cfg-glm-model').value.trim() || 'glm-5.1') : 'glm-5.1';
+  const gptKey = configEl('cfg-gpt-key') ? configEl('cfg-gpt-key').value.trim() : '';
+  const gptModel = configEl('cfg-gpt-model') ? (configEl('cfg-gpt-model').value.trim() || 'gpt-5.5') : 'gpt-5.5';
+  const kimiKey = configEl('cfg-kimi-key') ? configEl('cfg-kimi-key').value.trim() : '';
+  const kimiModel = configEl('cfg-kimi-model') ? (configEl('cfg-kimi-model').value.trim() || 'kimi-k2.5') : 'kimi-k2.5';
+  const qwenKey = configEl('cfg-qwen-key') ? configEl('cfg-qwen-key').value.trim() : '';
+  const qwenModel = configEl('cfg-qwen-model') ? (configEl('cfg-qwen-model').value.trim() || 'qwen3.6-plus') : 'qwen3.6-plus';
 
   const codexSummary = configEl('cfg-summary-codex');
   if (codexSummary) {
@@ -3491,6 +3527,18 @@ function updateConfigSummaries() {
   if (glmSummary) glmSummary.textContent = glmKey ? `API · ${glmModel}` : 'API · 未配置 Key';
   setConfigStatus(configEl('cfg-status-glm'), glmKey ? 'API' : '缺 Key', glmKey ? 'api' : 'missing');
 
+  const gptSummary = configEl('cfg-summary-gpt');
+  if (gptSummary) gptSummary.textContent = gptKey ? `API · ${gptModel} · Packy` : 'API · 未配置 Key';
+  setConfigStatus(configEl('cfg-status-gpt'), gptKey ? 'API' : '缺 Key', gptKey ? 'api' : 'missing');
+
+  const kimiSummary = configEl('cfg-summary-kimi');
+  if (kimiSummary) kimiSummary.textContent = kimiKey ? `API · ${kimiModel} · Packy` : 'API · 未配置 Key';
+  setConfigStatus(configEl('cfg-status-kimi'), kimiKey ? 'API' : '缺 Key', kimiKey ? 'api' : 'missing');
+
+  const qwenSummary = configEl('cfg-summary-qwen');
+  if (qwenSummary) qwenSummary.textContent = qwenKey ? `API · ${qwenModel} · Packy` : 'API · 未配置 Key';
+  setConfigStatus(configEl('cfg-status-qwen'), qwenKey ? 'API' : '缺 Key', qwenKey ? 'api' : 'missing');
+
   if (activeConfigAi === 'codex') {
     setConfigStatus(
       configEl('cfg-detail-status'),
@@ -3501,6 +3549,12 @@ function updateConfigSummaries() {
     setConfigStatus(configEl('cfg-detail-status'), deepseekKey ? 'API' : '缺 Key', deepseekKey ? 'api' : 'missing');
   } else if (activeConfigAi === 'glm') {
     setConfigStatus(configEl('cfg-detail-status'), glmKey ? 'API' : '缺 Key', glmKey ? 'api' : 'missing');
+  } else if (activeConfigAi === 'gpt') {
+    setConfigStatus(configEl('cfg-detail-status'), gptKey ? 'API' : '缺 Key', gptKey ? 'api' : 'missing');
+  } else if (activeConfigAi === 'kimi') {
+    setConfigStatus(configEl('cfg-detail-status'), kimiKey ? 'API' : '缺 Key', kimiKey ? 'api' : 'missing');
+  } else if (activeConfigAi === 'qwen') {
+    setConfigStatus(configEl('cfg-detail-status'), qwenKey ? 'API' : '缺 Key', qwenKey ? 'api' : 'missing');
   }
 }
 
@@ -3544,6 +3598,15 @@ async function openConfigModal() {
     document.getElementById('cfg-glm-key').value = cfg.glmApiKey || '';
     document.getElementById('cfg-glm-url').value = cfg.glmBaseUrl || '';
     document.getElementById('cfg-glm-model').value = cfg.glmModel || '';
+    document.getElementById('cfg-gpt-key').value = cfg.gptApiKey || '';
+    document.getElementById('cfg-gpt-url').value = cfg.gptBaseUrl || '';
+    document.getElementById('cfg-gpt-model').value = cfg.gptModel || '';
+    document.getElementById('cfg-kimi-key').value = cfg.kimiApiKey || '';
+    document.getElementById('cfg-kimi-url').value = cfg.kimiBaseUrl || '';
+    document.getElementById('cfg-kimi-model').value = cfg.kimiModel || '';
+    document.getElementById('cfg-qwen-key').value = cfg.qwenApiKey || '';
+    document.getElementById('cfg-qwen-url').value = cfg.qwenBaseUrl || '';
+    document.getElementById('cfg-qwen-model').value = cfg.qwenModel || '';
     updateConfigSummaries();
   } catch {
     // 加载失败也显示空白面板
@@ -3571,7 +3634,7 @@ function initConfigModal() {
   document.querySelectorAll('.config-ai-row').forEach(row => {
     row.addEventListener('click', () => showConfigDetail(row.dataset.ai));
   });
-  ['cfg-codex-backend', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key', 'cfg-glm-key', 'cfg-glm-url', 'cfg-glm-model'].forEach(id => {
+  ['cfg-codex-backend', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key', 'cfg-glm-key', 'cfg-glm-url', 'cfg-glm-model', 'cfg-gpt-key', 'cfg-gpt-url', 'cfg-gpt-model', 'cfg-kimi-key', 'cfg-kimi-url', 'cfg-kimi-model', 'cfg-qwen-key', 'cfg-qwen-url', 'cfg-qwen-model'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', updateConfigSummaries);
     if (el) el.addEventListener('change', updateConfigSummaries);
@@ -3595,13 +3658,22 @@ function initConfigModal() {
       glmApiKey: document.getElementById('cfg-glm-key').value.trim() || undefined,
       glmBaseUrl: document.getElementById('cfg-glm-url').value.trim() || undefined,
       glmModel: document.getElementById('cfg-glm-model').value.trim() || undefined,
+      gptApiKey: document.getElementById('cfg-gpt-key').value.trim() || undefined,
+      gptBaseUrl: document.getElementById('cfg-gpt-url').value.trim() || undefined,
+      gptModel: document.getElementById('cfg-gpt-model').value.trim() || undefined,
+      kimiApiKey: document.getElementById('cfg-kimi-key').value.trim() || undefined,
+      kimiBaseUrl: document.getElementById('cfg-kimi-url').value.trim() || undefined,
+      kimiModel: document.getElementById('cfg-kimi-model').value.trim() || undefined,
+      qwenApiKey: document.getElementById('cfg-qwen-key').value.trim() || undefined,
+      qwenBaseUrl: document.getElementById('cfg-qwen-url').value.trim() || undefined,
+      qwenModel: document.getElementById('cfg-qwen-model').value.trim() || undefined,
     };
     try {
       const result = await ipcRenderer.invoke('save-hub-config', newConfig);
       if (result && result.success) {
         providerModes.codex = newConfig.codexBackend === 'api' ? 'api' : 'subscription';
         renderAccountUsage();
-        msg.textContent = '配置已保存。新创建的 Codex / GLM / DeepSeek 会话将立即生效。';
+        msg.textContent = '配置已保存。新创建的 Codex / GLM / DeepSeek / GPT / Kimi / Qwen 会话将立即生效。';
         msg.className = 'config-save-msg success';
         msg.style.display = 'block';
         setTimeout(() => { msg.style.display = 'none'; }, 4000);
@@ -3719,7 +3791,8 @@ function schedulePersist() {
   persistDebounceTimer = setTimeout(() => {
     const list = [];
     for (const s of sessions.values()) {
-      if (!s.meetingId && s.kind !== 'claude' && s.kind !== 'claude-resume' && s.kind !== 'gemini' && s.kind !== 'codex' && s.kind !== 'deepseek' && s.kind !== 'glm') continue;
+      // 持久化白名单：圆桌会议 + 所有 AI kind（含 -resume 变体）。新增 AI 由 ai-kinds.js 单一真理源覆盖。
+      if (!s.meetingId && !isAiKind(s.kind) && s.kind !== 'claude-resume' && !(typeof s.kind === 'string' && s.kind.endsWith('-resume'))) continue;
       list.push({
         hubId: s.id,
         title: s.title,

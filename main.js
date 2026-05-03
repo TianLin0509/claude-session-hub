@@ -2683,6 +2683,18 @@ ipcMain.handle('get-hub-config', () => {
     glmApiKeySet: !!config.glmApiKey,
     glmBaseUrl: config.glmBaseUrl,
     glmModel: config.glmModel,
+    gptApiKey: config.gptApiKey ? '***' + config.gptApiKey.slice(-4) : '',
+    gptApiKeySet: !!config.gptApiKey,
+    gptBaseUrl: config.gptBaseUrl,
+    gptModel: config.gptModel,
+    kimiApiKey: config.kimiApiKey ? '***' + config.kimiApiKey.slice(-4) : '',
+    kimiApiKeySet: !!config.kimiApiKey,
+    kimiBaseUrl: config.kimiBaseUrl,
+    kimiModel: config.kimiModel,
+    qwenApiKey: config.qwenApiKey ? '***' + config.qwenApiKey.slice(-4) : '',
+    qwenApiKeySet: !!config.qwenApiKey,
+    qwenBaseUrl: config.qwenBaseUrl,
+    qwenModel: config.qwenModel,
     codexBackend: config.codexBackend,
     codexApiKey: config.codexApiKey ? '***' + config.codexApiKey.slice(-4) : '',
     codexApiKeySet: !!config.codexApiKey,
@@ -2700,6 +2712,15 @@ ipcMain.handle('get-hub-config-raw', () => {
     glmApiKey: config.glmApiKey || '',
     glmBaseUrl: config.glmBaseUrl,
     glmModel: config.glmModel,
+    gptApiKey: config.gptApiKey || '',
+    gptBaseUrl: config.gptBaseUrl,
+    gptModel: config.gptModel,
+    kimiApiKey: config.kimiApiKey || '',
+    kimiBaseUrl: config.kimiBaseUrl,
+    kimiModel: config.kimiModel,
+    qwenApiKey: config.qwenApiKey || '',
+    qwenBaseUrl: config.qwenBaseUrl,
+    qwenModel: config.qwenModel,
     codexBackend: config.codexBackend,
     codexApiKey: config.codexApiKey || '',
     codexApiBaseUrl: config.codexApiBaseUrl,
@@ -2732,6 +2753,24 @@ ipcMain.handle('save-hub-config', (_e, newConfig) => {
         base_url: newConfig.glmBaseUrl || DEFAULTS.glm_base_url,
         model: newConfig.glmModel || DEFAULTS.glm_model,
       },
+      gpt: {
+        ...(existing.providers?.gpt || {}),
+        api_key: newConfig.gptApiKey || undefined,
+        base_url: newConfig.gptBaseUrl || DEFAULTS.gpt_base_url,
+        model: newConfig.gptModel || DEFAULTS.gpt_model,
+      },
+      kimi: {
+        ...(existing.providers?.kimi || {}),
+        api_key: newConfig.kimiApiKey || undefined,
+        base_url: newConfig.kimiBaseUrl || DEFAULTS.kimi_base_url,
+        model: newConfig.kimiModel || DEFAULTS.kimi_model,
+      },
+      qwen: {
+        ...(existing.providers?.qwen || {}),
+        api_key: newConfig.qwenApiKey || undefined,
+        base_url: newConfig.qwenBaseUrl || DEFAULTS.qwen_base_url,
+        model: newConfig.qwenModel || DEFAULTS.qwen_model,
+      },
       codex: {
         ...(existing.providers?.codex || {}),
         backend: newConfig.codexBackend === 'api' ? 'api' : DEFAULTS.codex_backend,
@@ -2746,6 +2785,9 @@ ipcMain.handle('save-hub-config', (_e, newConfig) => {
   // 清除空值
   if (!merged.providers.deepseek.api_key) delete merged.providers.deepseek.api_key;
   if (!merged.providers.glm.api_key) delete merged.providers.glm.api_key;
+  if (!merged.providers.gpt.api_key) delete merged.providers.gpt.api_key;
+  if (!merged.providers.kimi.api_key) delete merged.providers.kimi.api_key;
+  if (!merged.providers.qwen.api_key) delete merged.providers.qwen.api_key;
   if (!merged.providers.codex.api_key) delete merged.providers.codex.api_key;
 
   saveConfig(merged);
