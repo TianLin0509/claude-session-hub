@@ -1577,12 +1577,20 @@ document.addEventListener('click', (e) => {
 });
 
 function rerenderTurn(turnId) {
-  // 重渲染整张 turn 卡片(简单粗暴版,后续 task 接通 session.turns 后重写)
+  // 重渲染整张 turn 卡片 + 调 postProcessCardCodeBlocks 保留代码块交互
   const card = document.querySelector(`.turn-card[data-turn-id="${turnId}"]`);
   if (!card || !window._sessionTurns) return;
   const turn = window._sessionTurns.get(turnId);
   if (!turn) return;
-  card.outerHTML = renderTurnCard(turn);
+  const tmp = document.createElement('div');
+  tmp.innerHTML = renderTurnCard(turn);
+  const newCard = tmp.firstElementChild;
+  if (newCard) {
+    if (typeof postProcessCardCodeBlocks === 'function') {
+      postProcessCardCodeBlocks(newCard);
+    }
+    card.replaceWith(newCard);
+  }
 }
 
 // === Spec 1 v0.9.0 · turn 卡片渲染 ===
