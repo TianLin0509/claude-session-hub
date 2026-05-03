@@ -36,6 +36,13 @@
 5. **现有 minimap + nav 按钮不动** — 仅 CSS 重绘对齐紫色基调,行为/接口不变
 6. **statusline-cache.json / usage-cache.json 不动** — 数据源原样
 7. **现有 ai-logos/*.svg 复用** — 不新增 logo 文件
+8. **`openPreviewPanel(path)` 文件预览功能不破坏** — `renderer/renderer.js:2250` 是核心入口,支持 `.html`/`.htm`(webview)、`.md`/`.markdown`(marked+dompurify)、URL(webview)、PDF/JSON/图片。**关键调用点**:
+   - xterm `WebLinksAddon` 链接点击(`renderer.js:875`)
+   - 双击词触发(`renderer.js:3580`)
+   - 圆桌 `rt-file-link` 点击(`meeting-room.js:185-188`,通过 `window.openPreviewPanel`)
+   - path-link 识别后点击(`renderer.js:2163`)
+   新卡片层必须保留这些入口,且**新卡片渲染的 markdown 内容里出现的文件路径,也要识别成可点击 link → openPreviewPanel**(沿用 meeting-room.js 的 `rt-file-link` post-process 逻辑,不重新实现)
+9. **xterm 双击/选中/链接事件不被卡片层拦截** — 卡片层的 click handler 必须允许事件冒泡到 xterm 容器,或 z-index 层级让 xterm 在卡片层之上(取决于"卡片/PTY"切换状态)
 
 ## 2. 视觉决策(G)
 
@@ -214,6 +221,10 @@ xterm 仍保留 PTY raw 输出的渲染(用户切到"PTY 视图"时显示)。提
 | minimap 上下条按钮 | 仍然工作 |
 | 跨日时间戳 | 显示 `5月3日 14:22` 而非 `14:22` |
 | 圆桌窗口 | 卡片化生效;slot 精灵头像保留;不破坏 split layout |
+| 让 Claude 在卡片里输出含 `.html` / `.md` 文件路径的 markdown(如 `参考 docs/foo.md`) | 路径要识别成 link,点击触发 `openPreviewPanel`,在 split panel 显示预览 |
+| 让 Claude 输出 URL(如 `http://localhost:3000`) | URL 也要可点击触发 webview 预览 |
+| 切到 PTY 视图后,xterm WebLinksAddon 仍正常 | 双击词、链接点击、行 hover 全部如旧 |
+| meeting-room 圆桌 rt-file-link 仍正常 | 圆桌历史回答里的文件路径点击仍能预览 |
 
 ### 5.2 不需要的
 
@@ -233,7 +244,8 @@ xterm 仍保留 PTY raw 输出的渲染(用户切到"PTY 视图"时显示)。提
 - [ ] xterm PTY 渲染未破坏(切换"卡片/PTY"两边都正常)
 - [ ] state.json 折叠状态持久化
 - [ ] package.json 版本号 v0.9.0 + index.html / 标题栏同步
-- [ ] CDP E2E 9 场景全过
+- [ ] CDP E2E 13 场景全过(原 9 + 4 个 path/url 预览场景)
+- [ ] `openPreviewPanel` 4 个调用入口全部仍工作:xterm WebLinksAddon / 双击词 / 圆桌 rt-file-link / 卡片内 path-link
 
 ## 7. 风险与回退
 
@@ -241,6 +253,8 @@ xterm 仍保留 PTY raw 输出的渲染(用户切到"PTY 视图"时显示)。提
 | --- | --- |
 | Prism.js 引入打破 bundle 体积 | core minified ~6KB + 常用语言 component ~2KB/each;按需 lazy import 语言包;若仍嫌重,fallback 到 plain text(只显示等宽字体不上色) |
 | 卡片层叠在 xterm 之上 z-index 冲突 | 提供 PTY 切换 fallback;卡片层 z-index ≤ 999,xterm 内部 ≥ 1000 |
+| **卡片层吞掉 xterm 的双击/链接事件** | 卡片层 `pointer-events` 默认 `auto`;在 PTY-only 视图(切回 classic)时整个卡片层 `display:none`;在卡片视图下 xterm 在底层不可交互(用户需要交互时切 PTY 视图)。Path-link 识别在卡片自身实现,不依赖 xterm |
+| **新卡片层不再识别 .html/.md path 触发预览** | 卡片渲染 markdown 后必须 post-process 路径识别(沿用 `meeting-room.js` 的 `rt-file-link` 逻辑),link click handler 调 `openPreviewPanel(path)`。这是必做项不是 nice-to-have |
 | 长 session 渲染慢 | pageSize=100 + lazy load 上下页;若仍慢,本 spec 实施时降级关闭卡片化 |
 | 用户不喜欢卡片化 | 设置面板加 `ui.layout: 'card' | 'classic'` 开关,classic = 现有 PTY-only |
 
