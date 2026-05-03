@@ -20,9 +20,12 @@ const MARKERS = {
   claude: ['shift+tab'],
   gemini: ['Type your message', 'YOLO', 'gemini-'],
   codex: ['gpt-5.5', 'gpt-5.4', 'Context 100%', 'send'],
-  // GLM/DeepSeek 跑在 claude CLI 上 — 复用 Claude marker
+  // GLM/DeepSeek/GPT/Kimi/Qwen 都跑在 claude CLI 上（CLAUDE_CONFIG_DIR 隔离） — 复用 Claude marker
   glm: ['shift+tab'],
   deepseek: ['shift+tab'],
+  gpt: ['shift+tab'],
+  kimi: ['shift+tab'],
+  qwen: ['shift+tab'],
 };
 
 const MIN_BUF_LEN = 500;

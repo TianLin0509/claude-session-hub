@@ -207,9 +207,12 @@ class SummaryEngine {
     });
   }
 
-  // pilot-mode（2026-05-01）：让任意 5 家 AI（claude / deepseek / glm / codex / gemini）
+  // pilot-mode（2026-05-01）：让任意 8 家 AI（claude / deepseek / glm / gpt / kimi / qwen / codex / gemini）
   //   都能 headless 生成摘要。pilot 模式关闭时主驾自己生成"不限字数摘要 + 段落目录"。
   //   失败时调用方走 F5-B 按轮切兜底（plan §Task 4 已规划）。
+  //   CLAUDE_FAMILY 含 claude/claude-resume/deepseek/glm/gpt/kimi/qwen — 都跑在 Claude CLI 上，
+  //   走 _callClaudeHeadless 同一路径，env 由 _buildEnvForKind 分流。case 列表显式列出
+  //   8 家以便 unit test 用 regex 校验路由完整性。
   async summarizeWithKind(kind, system, prompt, options = {}) {
     const timeout = options.timeout || 60000;
     const model = options.model || null;
@@ -218,6 +221,9 @@ class SummaryEngine {
       case 'claude-resume':
       case 'deepseek':
       case 'glm':
+      case 'gpt':
+      case 'kimi':
+      case 'qwen':
         return this._callClaudeHeadless(kind, system, prompt, timeout, model);
       case 'codex':
         return this._callCodexHeadless(system, prompt, timeout, model);
@@ -231,8 +237,8 @@ class SummaryEngine {
   _buildEnvForKind(kind) {
     const env = { ...process.env };
     if (kind === 'claude' || kind === 'claude-resume') return env;
-    // 通过 hub-config 取 DeepSeek / GLM 的 API key + base url（与 session-manager 同源），
-    //   避免在多处复制 secrets.toml 解析逻辑。
+    // 通过 hub-config 取 DeepSeek / GLM / GPT / Kimi / Qwen 的 API key + base url（与
+    // session-manager 同源），避免在多处复制 secrets.toml 解析逻辑。
     let cv = {};
     try {
       const { getConfig } = require('./hub-config.js');
@@ -248,6 +254,21 @@ class SummaryEngine {
       if (cv.glmBaseUrl) env.ANTHROPIC_BASE_URL = cv.glmBaseUrl;
       if (cv.glmApiKey) env.ANTHROPIC_AUTH_TOKEN = cv.glmApiKey;
       env.CLAUDE_CONFIG_DIR = path.join(os.homedir(), '.claude-glm');
+    } else if (kind === 'gpt') {
+      // PackyAPI codex 分组的 Anthropic 兼容端点（GPT-5.5 等）
+      if (cv.gptBaseUrl) env.ANTHROPIC_BASE_URL = cv.gptBaseUrl;
+      if (cv.gptApiKey) env.ANTHROPIC_AUTH_TOKEN = cv.gptApiKey;
+      env.CLAUDE_CONFIG_DIR = path.join(os.homedir(), '.claude-packy-gpt');
+    } else if (kind === 'kimi') {
+      // PackyAPI bailian 分组（kimi-k2.5）
+      if (cv.kimiBaseUrl) env.ANTHROPIC_BASE_URL = cv.kimiBaseUrl;
+      if (cv.kimiApiKey) env.ANTHROPIC_AUTH_TOKEN = cv.kimiApiKey;
+      env.CLAUDE_CONFIG_DIR = path.join(os.homedir(), '.claude-packy-kimi');
+    } else if (kind === 'qwen') {
+      // PackyAPI bailian 分组（qwen3.6-plus，与 Kimi 共享 bailian key）
+      if (cv.qwenBaseUrl) env.ANTHROPIC_BASE_URL = cv.qwenBaseUrl;
+      if (cv.qwenApiKey) env.ANTHROPIC_AUTH_TOKEN = cv.qwenApiKey;
+      env.CLAUDE_CONFIG_DIR = path.join(os.homedir(), '.claude-packy-qwen');
     }
     return env;
   }
@@ -264,8 +285,12 @@ class SummaryEngine {
     const args = ['-p'];
     if (model) args.push('--model', model);
     args.push('--append-system-prompt-file', sysFile);
-    // DeepSeek/GLM 跑在 claude CLI 上，需 bypass permissions 才能 headless 不弹窗
-    if (kind === 'deepseek' || kind === 'glm') args.push('--permission-mode', 'bypassPermissions');
+    // DeepSeek/GLM/GPT/Kimi/Qwen 跑在 claude CLI 上（CLAUDE_CONFIG_DIR 隔离），需 bypass
+    // permissions 才能 headless 不弹窗。CLAUDE_FAMILY 包含 claude/claude-resume，
+    // 但主 Claude 用订阅授权不需 bypass，故只对非 claude 主家族成员加这个 flag。
+    if (kind !== 'claude' && kind !== 'claude-resume' && require('./ai-kinds.js').isClaudeFamily(kind)) {
+      args.push('--permission-mode', 'bypassPermissions');
+    }
     try {
       return await this._spawnAndCollect('claude', args, { env, stdin: prompt }, timeout);
     } finally {

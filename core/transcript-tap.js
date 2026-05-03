@@ -18,6 +18,7 @@
 // summary-engine.js 会回退到原 marker 扫描。Tap 不抛错，不崩 Hub。
 
 const { EventEmitter } = require('events');
+const { isClaudeFamily } = require('./ai-kinds.js');
 const { StringDecoder } = require('string_decoder');
 const fs = require('fs');
 const path = require('path');
@@ -1178,10 +1179,11 @@ class TranscriptTap extends EventEmitter {
   }
 
   _backendFor(kind) {
-    // DeepSeek / GLM 跑在 Claude Code CLI 上（CLAUDE_CONFIG_DIR 隔离），transcript JSONL
-    // 与 Claude 同 shape（spike 验证：tests/_spike-deepseek-stop-hook-result.md），
-    // 直接复用 ClaudeTap 即让圆桌 timeline + streaming preview 自动接入。
-    if (kind === 'claude' || kind === 'claude-resume' || kind === 'deepseek' || kind === 'glm') {
+    // DeepSeek/GLM/GPT/Kimi/Qwen 跑在 Claude Code CLI 上（CLAUDE_CONFIG_DIR 隔离），transcript
+    // JSONL 与 Claude 同 shape（spike 验证：tests/_spike-deepseek-stop-hook-result.md），
+    // 直接复用 ClaudeTap 即让圆桌 timeline + streaming preview 自动接入。CLAUDE_FAMILY 是单一
+    // 真理源，含 claude/claude-resume/deepseek/glm/gpt/kimi/qwen，未来加新 Claude 衍生家族自动覆盖。
+    if (isClaudeFamily(kind)) {
       return this._claude;
     }
     if (kind === 'codex') return this._codex;

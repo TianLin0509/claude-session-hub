@@ -1503,6 +1503,9 @@ body.theme-light .prompt-line-marker {
 .config-ai-mark.codex { color: #56d4a4; }
 .config-ai-mark.deepseek { color: #8da2ff; }
 .config-ai-mark.glm { color: #5eead4; }
+.config-ai-mark.gpt { color: #c1c5d4; }
+.config-ai-mark.kimi { color: #ffd966; }
+.config-ai-mark.qwen { color: #b794f4; }
 .config-ai-copy { min-width: 0; display: grid; gap: 2px; }
 .config-ai-copy strong { font-size: 14px; line-height: 1.2; }
 .config-ai-copy small { color: #8b949e; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2201,6 +2204,9 @@ body.theme-light .floating-scroll-btn {
 .logo-codex     { background-image: url('assets/ai-logos/codex.svg'); }
 .logo-deepseek  { background-image: url('assets/ai-logos/deepseek.svg'); }
 .logo-glm       { background-image: url('assets/ai-logos/glm.svg'); }
+.logo-gpt       { background-image: url('assets/ai-logos/gpt.svg'); }
+.logo-kimi      { background-image: url('assets/ai-logos/kimi.svg'); }
+.logo-qwen      { background-image: url('assets/ai-logos/qwen.svg'); }
 .logo-powershell{ background-image: url('assets/ai-logos/powershell.svg'); }
 
 /* === Sidebar tree (meeting + child sub-sessions) === */

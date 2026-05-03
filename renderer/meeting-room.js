@@ -6,7 +6,7 @@
   const { ipcRenderer } = require('electron');
   const _scenes = require('../core/roundtable-scenes.js');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
-  const { isPasteSensitive, kindRegexAlternation } = require('../core/ai-kinds.js');
+  const { isPasteSensitive, kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel } = require('../core/ai-kinds.js');
 
   let activeMeetingId = null;
   let meetingData = {};
@@ -264,12 +264,19 @@
       claude: 'assets/pokemon/pikachu.png',
       gemini: 'assets/pokemon/charmander.png',
       codex:  'assets/pokemon/squirtle.png',
-      deepseek: 'assets/pokemon/pikachu.png', // DeepSeek 跑在 claude CLI 上 → 复用皮卡丘
-      glm:      'assets/pokemon/pikachu.png', // GLM 同理
+      // 下列 kind 都跑在 claude CLI 上（CLAUDE_CONFIG_DIR 隔离）→ 共用皮卡丘
+      deepseek: 'assets/pokemon/pikachu.png',
+      glm:      'assets/pokemon/pikachu.png',
+      gpt:      'assets/pokemon/pikachu.png',
+      kimi:     'assets/pokemon/pikachu.png',
+      qwen:     'assets/pokemon/pikachu.png',
     })[kind] || '';
   }
   function _avatarFallbackFor(kind) {
-    return ({ claude: '🟡', gemini: '🟠', codex: '🔵', deepseek: '🟢', glm: '🟣' })[kind] || '🤖';
+    return ({
+      claude: '🟡', gemini: '🟠', codex: '🔵',
+      deepseek: '🟢', glm: '🟣', gpt: '⚪', kimi: '🟤', qwen: '🔴',
+    })[kind] || '🤖';
   }
   // meeting-create-modal（2026-05-01）：圆桌卡片头像与 slot 位置绑定（不与 kind 绑定）。
   //   slot 1 = 皮卡丘永远（即使该 slot 是 DeepSeek）；slot 2 小火龙；slot 3 杰尼龟。
@@ -303,8 +310,8 @@
     return slots;
   }
 
-  // 兼容老 kind label 字典 + 新加的 deepseek/glm
-  const _KIND_LABELS = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex', deepseek: 'DeepSeek', glm: 'GLM' };
+  // 用 ai-kinds.js 的 KIND_LABELS 单一真理源（含 deepseek/glm/gpt/kimi/qwen），未来加新 AI 自动覆盖。
+  const _KIND_LABELS = KIND_LABELS;
 
   function _renderFusedTabs(state, subs, currentMode, partialBy, meeting) {
     const lastTurn = state.turns.length > 0 ? state.turns[state.turns.length - 1] : null;
@@ -696,7 +703,7 @@
     // 2026-05-03 道雪精测 C1 修复：欢迎文案原写死 "三家 AI（Claude / Gemini / Codex）"，
     //   3 × claude / 任意混合配置下都显示成 Claude/Gemini/Codex → 用户困惑配置是否生效。
     //   改为按 meeting.subSessions 的实际 kind 动态生成。
-    const _OB_LABEL = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex', deepseek: 'DeepSeek', glm: 'GLM' };
+    const _OB_LABEL = KIND_LABELS;
     let aiSummary = '圆桌已就位';
     try {
       const sids = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions : [];
@@ -1540,13 +1547,14 @@
     menu.style.top = rect.bottom + 4 + 'px';
     menu.style.left = rect.left + 'px';
 
-    const kinds = [
-      { kind: 'claude', label: 'Claude Code' },
-      { kind: 'gemini', label: 'Gemini CLI' },
-      { kind: 'codex', label: 'Codex CLI' },
-      { kind: 'deepseek', label: 'DeepSeek' },
-      { kind: 'powershell', label: 'PowerShell' },
-    ];
+    // 用 ALL_AI_KINDS 单一真理源动态生成菜单项 — Claude/Gemini/Codex 用 "<Brand> CLI" 后缀，
+    // 其他 Claude 家族（DeepSeek/GLM/GPT/Kimi/Qwen）用纯 brand 名（都跑在 Claude CLI 上）。
+    const _CLI_SUFFIX = { claude: 'Claude Code', gemini: 'Gemini CLI', codex: 'Codex CLI' };
+    const kinds = ALL_AI_KINDS.map(k => ({
+      kind: k,
+      label: _CLI_SUFFIX[k] || getKindLabel(k),
+    }));
+    kinds.push({ kind: 'powershell', label: 'PowerShell' });
 
     for (const { kind, label } of kinds) {
       const item = document.createElement('button');
@@ -1706,8 +1714,7 @@
     const labelOf = sid => {
       const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
       const kind = sess && sess.kind;
-      return ({ claude: 'Claude', gemini: 'Gemini', codex: 'Codex', glm: 'GLM', deepseek: 'DeepSeek' }[kind])
-        || (sess && sess.title) || sid.slice(0, 6);
+      return KIND_LABELS[kind] || (sess && sess.title) || sid.slice(0, 6);
     };
     // 数据源 A：DOM 卡片状态文字含"创建中"的 sid（跟用户所见同源）
     const domNotReadySids = new Set();
@@ -1729,10 +1736,9 @@
     //   补齐：用 slotSpecs.length 作为目标总数，差额按 slotSpecs[i].kind 算未 ready。
     //   这保证装配中途 banner 数字 = 用户最初选的家数（永不偏小）。
     if (Array.isArray(meeting.slotSpecs) && meeting.slotSpecs.length > meeting.subSessions.length) {
-      const SLOT_LABEL = { claude: 'Claude', gemini: 'Gemini', codex: 'Codex', glm: 'GLM', deepseek: 'DeepSeek' };
       for (let i = meeting.subSessions.length; i < meeting.slotSpecs.length; i++) {
         const spec = meeting.slotSpecs[i];
-        notReady.push(SLOT_LABEL[spec?.kind] || 'AI');
+        notReady.push(KIND_LABELS[spec?.kind] || 'AI');
       }
     }
     const notReadySids = notReady; // 兼容下方 _lastNotReadyCount 比较语义
