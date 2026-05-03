@@ -477,6 +477,7 @@ function initMemoPanel() {
   });
 
   input.addEventListener('keydown', e => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       addMemoItem(input.value);
@@ -1579,6 +1580,7 @@ function startRename(sessionId, titleSpan) {
 
   input.addEventListener('blur', finish);
   input.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') input.blur();
     if (e.key === 'Escape') { input.value = session.title; input.blur(); }
   });
@@ -3278,6 +3280,7 @@ function runSearch(direction) {
 
 termSearchInput.addEventListener('input', () => runSearch(1));
 termSearchInput.addEventListener('keydown', (e) => {
+  if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter') { e.preventDefault(); runSearch(e.shiftKey ? -1 : 1); }
   else if (e.key === 'Escape') { e.preventDefault(); closeTerminalSearch(); }
 });
@@ -3981,7 +3984,7 @@ function initMobilePair() {
       renderAddrs();
     }
   });
-  addrInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addrAddBtn.click(); });
+  addrInput.addEventListener('keydown', (e) => { if (e.isComposing || e.keyCode === 229) return; if (e.key === 'Enter') addrAddBtn.click(); });
 
   generateBtn.addEventListener('click', async () => {
     if (!addresses.length) { alert('至少填一个地址'); return; }
