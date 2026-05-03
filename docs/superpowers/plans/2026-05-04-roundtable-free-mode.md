@@ -1060,7 +1060,7 @@ if (isFreeMode) {
     return { status: 'error', reason: '辩论需要至少 2 位发言人', turnNum: null };
   }
 
-  effectiveDispatchMode = free.derivePilotCompatDispatchMode(parts);
+  effectiveDispatchMode = free.derivePilotCompatDispatchMode(parts, mode);
 
   if (mode === 'summary') {
     // summary 不受 participants 限制（Q8=A）

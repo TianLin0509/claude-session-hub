@@ -81,9 +81,11 @@ participants: Array.isArray(data.participants) ? data.participants : null,
 每轮 turn record 仍写 `dispatchMode` 字段，但 free 模式下其值是 **派生**：
 
 ```
-participants.length === 3 → 'all'
-participants.length === 1 → 'pilot'
-participants.length === 2 → 'observer'
+mode === 'debate' → 'all'（debate 必须互看，不复用 observer 同组跳过）
+其他模式：
+  participants.length === 3 → 'all'
+  participants.length === 1 → 'pilot'
+  participants.length === 2 → 'observer'
 ```
 
 派生收益：

@@ -79,6 +79,26 @@ function testDerivePilotCompat_Edge() {
   assert.strictEqual(free.derivePilotCompatDispatchMode(null), 'all');
 }
 
+function testDerivePilotCompat_DebateTwoForcesAll() {
+  // 双人 debate 必须 'all'（避免 injection 同组跳过让两人看不到对方）
+  assert.strictEqual(free.derivePilotCompatDispatchMode([0, 1], 'debate'), 'all');
+}
+
+function testDerivePilotCompat_DebateOneStillAll() {
+  // 一人 debate 也派 all（其实 main.js 会先校验拒绝单人 debate，这是防御）
+  assert.strictEqual(free.derivePilotCompatDispatchMode([1], 'debate'), 'all');
+}
+
+function testDerivePilotCompat_FanoutTwoStillObserver() {
+  // 双人 fanout 仍然是 observer（保持原派生）
+  assert.strictEqual(free.derivePilotCompatDispatchMode([0, 1], 'fanout'), 'observer');
+}
+
+function testDerivePilotCompat_DebateThreeStillAll() {
+  // 三人 debate 也派 all（debate 优先级最高，与 participants 长度无关）
+  assert.strictEqual(free.derivePilotCompatDispatchMode([0, 1, 2], 'debate'), 'all');
+}
+
 console.log('--- roundtable-free dispatch ---');
 run('testDeriveTargetSids_FanoutAllThree', testDeriveTargetSids_FanoutAllThree);
 run('testDeriveTargetSids_FanoutOneSlot', testDeriveTargetSids_FanoutOneSlot);
@@ -91,5 +111,9 @@ run('testDerivePilotCompat_Three', testDerivePilotCompat_Three);
 run('testDerivePilotCompat_One', testDerivePilotCompat_One);
 run('testDerivePilotCompat_Two', testDerivePilotCompat_Two);
 run('testDerivePilotCompat_Edge', testDerivePilotCompat_Edge);
+run('testDerivePilotCompat_DebateTwoForcesAll', testDerivePilotCompat_DebateTwoForcesAll);
+run('testDerivePilotCompat_DebateOneStillAll', testDerivePilotCompat_DebateOneStillAll);
+run('testDerivePilotCompat_FanoutTwoStillObserver', testDerivePilotCompat_FanoutTwoStillObserver);
+run('testDerivePilotCompat_DebateThreeStillAll', testDerivePilotCompat_DebateThreeStillAll);
 
 process.exit(failed > 0 ? 1 : 0);
