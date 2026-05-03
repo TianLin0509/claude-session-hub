@@ -131,9 +131,15 @@ class JsonlTail {
 //   根治：JsonlTail.onLine 看到新 assistant 行时启动 5s idle timer，连续 5s 无新行视为本轮答完，
 //         **主动 emit 'turn-complete'**（兜底信号）。Stop hook 仍是快路径：来了立即 emit + 取消 timer。
 const _CLAUDE_STREAM_BUF_MAX_BYTES = 50000;
-// idle 时间：Claude/DeepSeek/GLM 一轮回答平均 10-30s，工具调用穿插时单 chunk 间隔 1-3s。
-//   5s 无新行 → 高置信度本轮已答完。仍嫌慢可后续调小（与 Codex 的 task_complete 3s debounce 对齐）。
-const _CLAUDE_IDLE_EMIT_MS = 5000;
+// 2026-05-03 道雪 R3：用 Claude 自带的 message.stop_reason 语义信号判定本轮真结束。
+//   原 5s idle 启发式在 tool_use 边界后误触发 — Claude 等 tool_result + 思考可达 27-67s
+//   静默（无新 assistant 行），被 hub 当成"本轮答完"主动 emit，导致后续真答案 M2（4647 字）
+//   到达 transcript 时 watcher 已 settle 无人监听，卡片永远定格在 M1 首句。
+//   R3 主路径：onLine 看到 stop_reason ∈ {end_turn, max_tokens, refusal} 立即（200ms 防抖）emit；
+//             "tool_use" / null 不 emit，等下一条 message。
+//   90s idle 仅留作"transcript 完全卡死/写入异常"的最终兜底，不再是主路径。
+const _CLAUDE_STOP_REASON_DEBOUNCE_MS = 200;
+const _CLAUDE_IDLE_EMIT_MS = 90 * 1000; // 极端兜底（原 5s 误触发太多）
 
 // 2026-05-02 Gemini 兜底：与 ClaudeTap 同套 idle-timer 思路。用户血泪反馈：
 //   "第一轮 Gemini 子 session 输出后没快速提取，手动提取后流程继续"。
@@ -158,6 +164,7 @@ class ClaudeTap extends EventEmitter {
         _streamingBuf: [],
         _tail: null,
         _idleTimer: null,
+        _stopReasonTimer: null,  // R3: stop_reason 终态防抖 timer
         _pendingEmitText: null,
       });
     }
@@ -170,6 +177,9 @@ class ClaudeTap extends EventEmitter {
     }
     if (entry?._idleTimer) {
       try { clearTimeout(entry._idleTimer); } catch {}
+    }
+    if (entry?._stopReasonTimer) {
+      try { clearTimeout(entry._stopReasonTimer); } catch {}
     }
     this._bound.delete(hubSessionId);
   }
@@ -250,18 +260,28 @@ class ClaudeTap extends EventEmitter {
           }
         }
 
-        // 2026-05-02 根治升级：每条新 assistant 行重置 idle timer。
-        //   连续 _CLAUDE_IDLE_EMIT_MS（5s）无新行 → 视为本轮答完，主动 emit 'turn-complete'。
-        //   不再单点依赖 Stop hook（hook 失败 / 超时 / 配置漂移时卡片不再永远停在上一轮）。
-        //   Stop hook 仍优先：来了取消 idle timer 立即 emit（快路径），二者互不冲突。
-        this._scheduleIdleEmit(hubSessionId);
+        // 2026-05-03 道雪 R3：用 Claude 自带的 message.stop_reason 语义信号判定本轮真结束。
+        //   终态值 {end_turn, max_tokens, refusal} 是 Claude 主动标的"本轮真完结"，立即（200ms 防抖）emit。
+        //   "tool_use" 表明还要等 tool_result + 后续 assistant message，不 emit。
+        //   null 表示流式中间态（未 finalize），不 emit。
+        //   90s idle timer 仅作 transcript 完全卡死的最终兜底，不再是主路径。
+        const stopReason = obj.message.stop_reason;
+        const isTerminal = stopReason === 'end_turn' || stopReason === 'max_tokens' || stopReason === 'refusal';
+        if (isTerminal) {
+          this._scheduleStopReasonEmit(hubSessionId);
+        } else {
+          // tool_use / null：取消任何 pending stop_reason emit，启动 90s 兜底 idle
+          this._cancelStopReasonEmit(hubSessionId);
+          this._scheduleIdleEmit(hubSessionId);
+        }
       };
       entry._tail = new JsonlTail(transcriptPath, onLine);
       await entry._tail.start();
     }
 
-    // Stop hook 触发 → 取消 idle timer，走快路径直接读 transcript 末尾立即 emit
+    // Stop hook 触发 → 取消 idle timer + stop_reason timer，走快路径直接读 transcript 末尾立即 emit
     this._cancelIdleEmit(hubSessionId);
+    this._cancelStopReasonEmit(hubSessionId);
     const text = await readLastAssistantMessageFromClaudeTranscript(transcriptPath);
     if (text && text !== entry.lastText) {
       entry.lastText = text;
@@ -307,6 +327,44 @@ class ClaudeTap extends EventEmitter {
     if (entry?._idleTimer) {
       clearTimeout(entry._idleTimer);
       entry._idleTimer = null;
+    }
+  }
+
+  // R3（2026-05-03 道雪）：stop_reason 终态信号触发的延迟 emit。
+  //   onLine 看到 stop_reason ∈ {end_turn, max_tokens, refusal} 时调，200ms 防抖窗口
+  //   兼容罕见的"end_turn 后还有续 chunk 落盘"场景。emit 时取消 idle timer 不再兜底。
+  _scheduleStopReasonEmit(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    if (!entry) return;
+    // 语义信号优先，取消 idle 兜底
+    this._cancelIdleEmit(hubSessionId);
+    if (entry._stopReasonTimer) clearTimeout(entry._stopReasonTimer);
+    entry._stopReasonTimer = setTimeout(async () => {
+      entry._stopReasonTimer = null;
+      if (!entry.transcriptPath) return;
+      try {
+        const text = await readLastAssistantMessageFromClaudeTranscript(entry.transcriptPath);
+        if (!text || !text.trim()) return;
+        if (text === entry.lastText) return; // 已 emit 过相同内容（如 Stop hook 抢先）
+        entry.lastText = text;
+        this.emit('turn-complete', {
+          hubSessionId,
+          text,
+          completedAt: Date.now(),
+          signalSource: 'stop_reason_terminal',
+        });
+      } catch (e) {
+        console.warn('[claude-tap] stop_reason emit read failed:', e.message);
+      }
+    }, _CLAUDE_STOP_REASON_DEBOUNCE_MS);
+    entry._stopReasonTimer.unref?.();
+  }
+
+  _cancelStopReasonEmit(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    if (entry?._stopReasonTimer) {
+      clearTimeout(entry._stopReasonTimer);
+      entry._stopReasonTimer = null;
     }
   }
 }
