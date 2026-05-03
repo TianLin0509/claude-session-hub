@@ -121,11 +121,27 @@ const PROMPT_PREFIX_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+/;
 // we ever mis-match a user prompt line, this filters out lines that are
 // clearly assistant output.
 const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
-// Absolute Windows path ending in a 1-8 char alnum extension. /g so callers
-// can iterate with exec(); reset lastIndex before each loop to avoid state
-// leakage between calls.
-const ABS_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
-// Image-only subset of ABS_PATH_RE for hover-preview detection.
+// Absolute path ending in a 1-8 char alnum extension. Accepts: Windows drive
+// (C:\... or C:/...), UNC (\\server\share\...), home (~/... or ~\...). Pure
+// POSIX (/foo) intentionally excluded — too many false positives in CC's
+// markdown output (URL fragments, code, comments). /g so callers can iterate
+// with exec(); reset lastIndex before each loop to avoid state leakage.
+const ABS_PATH_RE = /(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/])(?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
+// Relative path: must contain at least one separator (segments + ext).
+// Optional ./ or ../ prefix. Pure filenames like "renderer.js" intentionally
+// excluded — signal too weak, would noise-match every code identifier.
+// Will also match the tail of an absolute path; caller must dedupe by range.
+// Each REL match must be fs.existsSync()-validated against session.cwd before
+// being shown as clickable, since "docs/x.md" in prose is often not a real
+// file reference.
+const REL_PATH_RE = /(?:\.{1,2}[\\/])?(?:[^\\/:*?"<>|\r\n\s]+[\\/])+[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
+// http(s) URL with optional port. Permissive on host so localhost:port (which
+// xterm's WebLinksAddon misses — its regex requires a path-char terminator,
+// excluding port-digit endings) gets caught here. Trailing prose punctuation
+// (".,;:!?)]") is trimmed by the caller after match.
+const URL_RE = /\bhttps?:\/\/[\w\-.~]+(?::\d+)?(?:[\/?#][^\s<>"'`\\]*)?/g;
+// Image-only subset (for hover-preview tooltip). Kept absolute-only — hover
+// preview reads files via file:// directly, no cwd context available here.
 const IMAGE_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.(?:png|jpe?g|gif|webp|bmp)(?![A-Za-z0-9])/gi;
 const PREVIEW_PATH_RE = /\.(?:html?|md|markdown|png|jpe?g|gif|webp|bmp|svg|pdf|csv|tsv|json|jsonl|js|ts|jsx|tsx|mjs|cjs|py|go|rs|java|c|cpp|h|hpp|cs|txt|log|ya?ml|toml|ini|cfg|conf|sh|bat|ps1|xml|sql|r|rb|php|swift|kt|lua|zig|asm|css|scss|less)$/i;
 // Our own clipboard-image directory. Stripped from sidebar preview: paste
@@ -797,6 +813,16 @@ function getOrCreateTerminal(sessionId) {
     cursorBlink: true,
     scrollback: 10000,
     allowProposedApi: true,
+    // Tells xterm the PTY backend is conpty so it parses native wrap sequences
+    // (Windows 11 build >= 21376) and sets isWrapped correctly. Without this
+    // xterm sees conpty's already-laid-out lines as separate explicit lines
+    // and our path-link wrap-stitching breaks on long paths.
+    ...(process.platform === 'win32' ? {
+      windowsPty: {
+        backend: 'conpty',
+        buildNumber: parseInt(require('os').release().split('.').pop(), 10) || 0,
+      },
+    } : {}),
   });
 
   const fitAddon = new FitAddon();
@@ -805,7 +831,7 @@ function getOrCreateTerminal(sessionId) {
   terminal.loadAddon(new Unicode11Addon());
   terminal.loadAddon(searchAddon);
   terminal.loadAddon(new WebLinksAddon((e, uri) => { openPreviewPanel(uri); }));
-  registerLocalPathLinks(terminal);
+  registerLocalPathLinks(terminal, sessionId);
   terminal.unicode.activeVersion = '11';
 
   terminal.onData((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
@@ -1862,73 +1888,223 @@ document.addEventListener('keydown', (e) => {
 
 // Ctrl+click on a local file path in the terminal → open with OS default app.
 // xterm's WebLinksAddon only handles URLs, so we register a separate link
-// provider that scans each buffer line for absolute Windows paths using
-// ABS_PATH_RE (shared — see top of file). Click routes to main via open-path,
-// which calls shell.openPath().
-function registerLocalPathLinks(terminal) {
+// provider. Scans each line for ABS_PATH_RE (high confidence, no validation)
+// and REL_PATH_RE (validated against session.cwd via fs.existsSync to avoid
+// false positives on prose mentions). Click routes to openPreviewPanel for
+// previewable extensions, otherwise to main via open-path → shell.openPath().
+//
+// Cross-line paths (xterm soft-wrap on long paths): we register ONE link per
+// physical line covered, all sharing the same fullPath. xterm hover/click
+// hit-testing on cross-line ranges (startY ≠ endY) has known quirks that
+// silently break long-path detection — single-line ranges sidestep them.
+
+// LRU + TTL cache for relative-path existsSync. Hover spam can re-query the
+// same path 60+ times in seconds; without this we'd stat the disk each time.
+// 5s TTL keeps file-creation feedback near-instant.
+const REL_PATH_CACHE = new Map();
+const REL_PATH_CACHE_MAX = 256;
+const REL_PATH_CACHE_TTL_MS = 5000;
+function _resolveRelPathIfExists(cwd, relPath) {
+  const key = `${cwd}|${relPath}`;
+  const now = Date.now();
+  const hit = REL_PATH_CACHE.get(key);
+  if (hit && now - hit.ts < REL_PATH_CACHE_TTL_MS) {
+    REL_PATH_CACHE.delete(key);
+    REL_PATH_CACHE.set(key, hit); // refresh LRU recency
+    return hit.absPath;
+  }
+  let absPath = null;
+  try {
+    const candidate = require('path').resolve(cwd, relPath);
+    if (require('fs').existsSync(candidate)) absPath = candidate;
+  } catch {}
+  REL_PATH_CACHE.set(key, { absPath, ts: now });
+  if (REL_PATH_CACHE.size > REL_PATH_CACHE_MAX) {
+    const oldestKey = REL_PATH_CACHE.keys().next().value;
+    REL_PATH_CACHE.delete(oldestKey);
+  }
+  return absPath;
+}
+
+// Group of currently-registered link instances that all point to the same
+// fullPath. Used so that hovering ANY segment of a wrap-split path lights up
+// the underline on EVERY segment (xterm's default only decorates the line
+// the cursor is on). Mutating link.decorations.underline triggers a re-render
+// per the xterm.d.ts ILink contract.
+const _activeLinkGroups = new Map(); // fullPath → Set<ILink>
+function _registerLinkInGroup(fullPath, link) {
+  let set = _activeLinkGroups.get(fullPath);
+  if (!set) { set = new Set(); _activeLinkGroups.set(fullPath, set); }
+  set.add(link);
+}
+function _unregisterLinkFromGroup(fullPath, link) {
+  const set = _activeLinkGroups.get(fullPath);
+  if (!set) return;
+  set.delete(link);
+  if (set.size === 0) _activeLinkGroups.delete(fullPath);
+}
+function _setGroupUnderline(fullPath, value) {
+  const set = _activeLinkGroups.get(fullPath);
+  if (!set) return;
+  for (const link of set) {
+    if (link.decorations) link.decorations.underline = value;
+  }
+}
+
+function registerLocalPathLinks(terminal, sessionId) {
+  // Path-valid char regex for the heuristic-continuation boundary check.
+  // Excludes whitespace + path-illegal chars + quotes/backtick (so we don't
+  // wrongly stitch across `'path.md'  next-line-prose` style boundaries).
+  const PATH_BOUNDARY_RE = /[^\\/:*?"<>|\r\n\s'"`]/;
+  // Heuristic: treat `current` as a wrap-continuation of `prev` even when
+  // current.isWrapped is false. Required because Ink-based apps (Claude Code,
+  // Codex CLI, etc.) detect cols via process.stdout.columns and emit their own
+  // hard \n at the cols boundary — conpty forwards those as explicit lines,
+  // xterm sees isWrapped=false, and our wrap stitching would break long paths.
+  // Trigger only when prev exactly fills cols AND boundary chars on both
+  // sides are path-valid — three conjunct conditions keep false-positive rate
+  // low; a stray mis-stitch still gets filtered by the regex match in phase 1/2.
+  const _isHeuristicCont = (prevLine, currentLine) => {
+    if (!prevLine || !currentLine) return false;
+    const cols = terminal.cols;
+    const prevTrim = prevLine.translateToString(true);
+    if (prevTrim.length !== cols) return false;
+    const prevLast = prevTrim[prevTrim.length - 1];
+    const curRaw = currentLine.translateToString(false);
+    const curFirst = curRaw[0];
+    return !!(prevLast && curFirst
+      && PATH_BOUNDARY_RE.test(prevLast)
+      && PATH_BOUNDARY_RE.test(curFirst));
+  };
+
   terminal.registerLinkProvider({
     provideLinks(lineNumber, callback) {
       const buf = terminal.buffer.active;
       const line = buf.getLine(lineNumber - 1);
       if (!line) { callback(undefined); return; }
 
-      // Walk backwards to find the start of this logical line group
+      // Walk backwards to find the start of this logical line group. Continue
+      // past either xterm's isWrapped flag OR our heuristic continuation.
       let groupIdx = lineNumber - 1; // 0-based buffer index
-      while (groupIdx > 0 && buf.getLine(groupIdx).isWrapped) groupIdx--;
+      while (groupIdx > 0) {
+        const cur = buf.getLine(groupIdx);
+        if (cur && cur.isWrapped) { groupIdx--; continue; }
+        const prev = buf.getLine(groupIdx - 1);
+        if (_isHeuristicCont(prev, cur)) { groupIdx--; continue; }
+        break;
+      }
       const groupLine = groupIdx + 1; // 1-based line number of group start
 
-      // Collect all lines in the group (start + wrapped continuations)
+      // Collect group + wrapped continuations into one flat string so a path
+      // split across wrap can be matched whole.
       let text = '';
       const lineWidths = [];
       for (let i = groupIdx; ; i++) {
         const l = buf.getLine(i);
         if (!l) break;
-        if (i > groupIdx && !l.isWrapped) break;
+        if (i > groupIdx) {
+          const prev = buf.getLine(i - 1);
+          if (!l.isWrapped && !_isHeuristicCont(prev, l)) break;
+        }
         const lt = l.translateToString(true);
         text += lt;
         lineWidths.push(lt.length);
       }
 
-      const links = [];
-      ABS_PATH_RE.lastIndex = 0;
+      // Phase 0 — collect URL matches. Catches http(s)://host:port forms
+      // that WebLinksAddon's stricter built-in regex misses. URLs go straight
+      // to openPreviewPanel (which has webview-rendering for http schemes).
+      const candidates = []; // [{ start, end, openPath, isUrl? }]
+      URL_RE.lastIndex = 0;
       let m;
+      while ((m = URL_RE.exec(text))) {
+        // Trim trailing prose punctuation (".,;:!?)]") that's not part of the URL.
+        const trimmed = m[0].replace(/[.,;:!?)\]]+$/, '');
+        if (trimmed.length < 'http://x'.length) continue;
+        candidates.push({
+          start: m.index,
+          end: m.index + trimmed.length - 1,
+          openPath: trimmed,
+          isUrl: true,
+        });
+      }
+
+      // Phase 1 — collect ABS matches (high confidence, no validation).
+      ABS_PATH_RE.lastIndex = 0;
       while ((m = ABS_PATH_RE.exec(text))) {
-        const filePath = m[0];
-        const startOff = m.index;
-        const endOff = startOff + filePath.length - 1;
-        // Map flat offsets → (x, y) across physical lines
-        let startX, startY, endX, endY;
+        candidates.push({
+          start: m.index,
+          end: m.index + m[0].length - 1,
+          openPath: m[0],
+        });
+      }
+
+      // Phase 2 — REL matches: drop any overlapping with ABS/URL (REL regex
+      // also matches the tail of an absolute path or URL), then
+      // existsSync-validate against session.cwd. Skip phase entirely if cwd
+      // unavailable.
+      const cwd = (sessions.get(sessionId) || {}).cwd;
+      if (cwd) {
+        REL_PATH_RE.lastIndex = 0;
+        while ((m = REL_PATH_RE.exec(text))) {
+          const start = m.index;
+          const end = start + m[0].length - 1;
+          const overlapsExisting = candidates.some(c =>
+            !(end < c.start || start > c.end));
+          if (overlapsExisting) continue;
+          const absPath = _resolveRelPathIfExists(cwd, m[0]);
+          if (!absPath) continue;
+          candidates.push({ start, end, openPath: absPath });
+        }
+      }
+
+      // Phase 3 — for each candidate, register one single-line link per
+      // physical line it covers, all sharing the same openPath. xterm calls
+      // provideLinks once per line, so we only return segments matching
+      // lineNumber on this call (other lines get their own segment when
+      // xterm queries them).
+      const links = [];
+      for (const c of candidates) {
         let cum = 0;
         for (let i = 0; i < lineWidths.length; i++) {
-          if (startX === undefined && cum + lineWidths[i] > startOff) {
-            startX = startOff - cum + 1;
-            startY = groupLine + i;
-          }
-          if (cum + lineWidths[i] > endOff) {
-            endX = endOff - cum + 1;
-            endY = groupLine + i;
-            break;
-          }
-          cum += lineWidths[i];
+          const lineStart = cum;
+          const lineEnd = cum + lineWidths[i]; // exclusive
+          cum = lineEnd;
+          if (c.end < lineStart || c.start >= lineEnd) continue;
+          const yLine = groupLine + i;
+          if (yLine !== lineNumber) continue;
+          const segStartOff = Math.max(c.start, lineStart);
+          const segEndOff = Math.min(c.end, lineEnd - 1);
+          const startX = segStartOff - lineStart + 1; // xterm cols are 1-based
+          const endX = segEndOff - lineStart + 1;
+          const fullPath = c.openPath;
+          const isUrl = !!c.isUrl;
+          // hover/leave/dispose route through _activeLinkGroups so all
+          // segments of the same fullPath share underline state — hover any
+          // segment, every segment lights up. Initial underline:false; xterm
+          // mutates back via the hover callback.
+          const linkObj = {
+            range: {
+              start: { x: startX, y: yLine },
+              end: { x: endX, y: yLine },
+            },
+            text: fullPath, // hover tooltip shows the resolved absolute path
+            decorations: { pointerCursor: true, underline: false },
+            activate: async () => {
+              if (isUrl || PREVIEW_PATH_RE.test(fullPath)) {
+                openPreviewPanel(fullPath);
+              } else {
+                const err = await ipcRenderer.invoke('open-path', fullPath);
+                if (err) console.warn('[hub] open-path failed:', fullPath, '→', err);
+              }
+            },
+            hover: () => _setGroupUnderline(fullPath, true),
+            leave: () => _setGroupUnderline(fullPath, false),
+          };
+          linkObj.dispose = () => _unregisterLinkFromGroup(fullPath, linkObj);
+          _registerLinkInGroup(fullPath, linkObj);
+          links.push(linkObj);
         }
-        if (startX === undefined || endX === undefined) continue;
-        // Only return links that overlap with the requested lineNumber
-        if (startY > lineNumber || endY < lineNumber) continue;
-        links.push({
-          range: {
-            start: { x: startX, y: startY },
-            end: { x: endX, y: endY },
-          },
-          text: filePath,
-          activate: async (_event, uri) => {
-            if (PREVIEW_PATH_RE.test(uri)) {
-              openPreviewPanel(uri);
-            } else {
-              const err = await ipcRenderer.invoke('open-path', uri);
-              if (err) console.warn('[hub] open-path failed:', uri, '→', err);
-            }
-          },
-        });
       }
       callback(links.length > 0 ? links : undefined);
     },
