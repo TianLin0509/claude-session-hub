@@ -2658,6 +2658,8 @@ body.theme-light .floating-scroll-btn {
   padding: var(--turn-padding);
   border-radius: var(--turn-radius);
   margin-bottom: var(--turn-gap);
+  display: flex;
+  gap: 10px;
 }
 .turn-card.user {
   background: var(--turn-bg-user);
@@ -2779,3 +2781,30 @@ body.theme-light .floating-scroll-btn {
 .token.string { color: #34d399 !important; }
 .token.comment { color: #6b7280 !important; font-style: italic; }
 .token.operator { color: #c4b5fd !important; }
+
+/* === Spec 1 v0.9.0 · 头像 (D4) === */
+.turn-avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  background: var(--bg-tertiary);
+  overflow: hidden;
+}
+.turn-avatar.av-user { background: var(--ui-purple-tint-bg); }
+.turn-avatar.av-logo img,
+.turn-avatar.av-poke img {
+  width: 100%; height: 100%;
+  object-fit: contain;
+}
+.turn-avatar.av-poke { background: #fef3c7; padding: 2px; }
+.turn-avatar.av-letter {
+  font-size: 11px;
+  font-weight: 700;
+  color: white;
+  background: linear-gradient(135deg, var(--ui-purple-1), var(--ui-purple-2));
+}
+.turn-content { flex: 1; min-width: 0; }

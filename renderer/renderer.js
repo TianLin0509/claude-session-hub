@@ -1595,25 +1595,56 @@ function rerenderTurn(turnId) {
   }
 }
 
+// === Spec 1 v0.9.0 · D4 头像 ===
+function aiLogoSrc(kind) {
+  // 已有 logos: claude / codex / 等。其它 kind fallback 到字母
+  const known = ['claude','codex','gemini','deepseek','glm','gpt','kimi','qwen'];
+  const k = (kind || '').toLowerCase();
+  if (known.includes(k)) return `assets/ai-logos/${k}.svg`;
+  return null;
+}
+function aiLetterFallback(kind) {
+  const k = (kind || '?').toUpperCase();
+  return k.length >= 2 ? k.slice(0, 2) : k + '?';
+}
+
 // === Spec 1 v0.9.0 · turn 卡片渲染 ===
 function renderTurnCard(turn) {
+  // turn = { id, role: 'user'|'assistant', text, ts, model?, kind?, slotPokemon?, toolCalls? }
   const isUser = turn.role === 'user';
   const cls = isUser ? 'turn-card user' : 'turn-card';
-  const who = isUser ? '你' : (turn.model || 'Claude');
+  const who = isUser ? '你' : (turn.model || turn.kind || 'Claude');
   const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
+
+  // 头像分支
+  let avatarHtml;
+  if (isUser) {
+    avatarHtml = `<span class="turn-avatar av-user">👤</span>`;
+  } else if (turn.slotPokemon) {
+    // 圆桌 slot 体系
+    avatarHtml = `<span class="turn-avatar av-poke"><img src="assets/pokemon/${escapeHtml(turn.slotPokemon)}.png" alt="${escapeHtml(turn.slotPokemon)}"></span>`;
+  } else {
+    const logo = aiLogoSrc(turn.kind);
+    avatarHtml = logo
+      ? `<span class="turn-avatar av-logo"><img src="${logo}" alt="${escapeHtml(turn.kind || 'AI')}"></span>`
+      : `<span class="turn-avatar av-letter">${escapeHtml(aiLetterFallback(turn.kind))}</span>`;
+  }
+
   const rawHtml = marked.parse(turn.text || '', { breaks: true, gfm: true });
   const body = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target', 'data-lang'] });
   const toolHtml = (turn.toolCalls || []).map((tc, i) => renderToolCall(turn.id || '', i, tc)).join('');
+
   return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}">
-    <div class="turn-head">
-      <span class="turn-who">${escapeHtml(who)}</span>
-      <span class="turn-meta">${escapeHtml(ts)}</span>
+    ${avatarHtml}
+    <div class="turn-content">
+      <div class="turn-head">
+        <span class="turn-who">${escapeHtml(who)}</span>
+        <span class="turn-meta">${escapeHtml(ts)}</span>
+      </div>
+      <div class="turn-body">${body}${toolHtml}</div>
     </div>
-    <div class="turn-body">${body}${toolHtml}</div>
   </div>`;
 }
-
-// debug: 暴露给 console 验证
 window._renderTurnCard = renderTurnCard;
 
 // === Spec 1 v0.9.0 · 代码块强化 (D2) ===
