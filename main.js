@@ -1049,6 +1049,15 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
     clearInterval(hostShellHeartbeat);
     if (streamTimer) clearInterval(streamTimer);
     _activeWatchers.delete(sid);
+    // 305s 后清理 _patchListenersBySid 中的 watcher 引用（与 watcher 内部 patch 窗口 300s 对齐 + 5s 余量）。
+    //   防 watcher settle 后 ref 永远留在 main.js 全局表（dead ref 累积内存压力）。
+    //   不能立即 unregister——cancelPatchListenersForSid 需要在新一轮 dispatch 时
+    //   还能找到老 watcher 取消其 patch listener。305s 后 watcher 自己已 cleanup，
+    //   ref 留着也无意义，此时 unregister 干净。
+    setTimeout(() => {
+      try { unregisterPatchListener(sid, watcher); }
+      catch (e) { console.warn('[patch] unregisterPatchListener throw:', e && e.message); }
+    }, 305_000).unref?.();
 
     // Card redesign（2026-05-01）：注入本轮统计字段供 orchestrator 累加 + 卡片渲染。
     //   thinkSec 精度 0.1s（Math.round((..)*10)/10）；tokens 仅 Gemini 有，其他家 null。
@@ -1272,6 +1281,11 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
           try { orch.setSendStatus(turnNum, t.sid, sendStatus); } catch {}
         }
         if (sendStatus === 'stuck') {
+          // TODO（spec 协议偏差，2026-05-03 review）：spec 定义此 IPC payload 字段为
+          //   `mode: 'enter_only' | 'rewrite_full'`，但 T4 sendToPty 返回 { ok, sendStatus }
+          //   未带 mode 字段。当前推送 kind（AI 类型）作为占位，renderer 暂不消费此字段。
+          //   后续若 renderer 要按 mode 决定 resend 策略，需在 T4 sendToPty stuck 路径
+          //   返回 mode（echoSeen ? 'enter_only' : 'rewrite_full'），main.js 这里改读 sendResult.mode。
           sendToRenderer('roundtable-send-stuck', {
             meetingId, sid: t.sid, kind: t.kind,
           });
@@ -1654,7 +1668,11 @@ ipcMain.handle('roundtable-resend-prompt', async (_e, { meetingId, sid } = {}) =
   const sceneObj = scenes.getScene(meeting.scene);
   const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
   const turnNum = orch.state.currentTurn;
-  if (!turnNum) return { ok: false, reason: 'no_active_turn' };
+  // 用 currentMode === 'idle' 检测活跃轮（completeTurn 不重置 currentTurn，只改 currentMode；
+  //   极短并发窗口下用户可能在 turn 已 settled 后点重发，需要拒掉避免二次发送）
+  if (!turnNum || orch.state.currentMode === 'idle') {
+    return { ok: false, reason: 'no_active_turn' };
+  }
   const active = orch.getActivePrompt(turnNum);
   if (!active || !active.promptBy || !active.promptBy[sid]) {
     return { ok: false, reason: 'no_active_prompt' };
