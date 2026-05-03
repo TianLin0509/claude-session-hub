@@ -384,7 +384,8 @@ class RoundtableOrchestrator {
       ...meta,
     };
     // Resend & Auto-Recovery（2026-05-03）：merge active prompt meta 到 record
-    //   promptHeaderBy + sendStatus 长存（小，调试用）；promptBy 节流删除（resend 已不可用）
+    //   promptHeaderBy + sendStatus 长存（小，调试用）；
+    //   promptBy 不复制到 record（节流策略：仅活跃轮持有，settle 时随 _activePrompts[turnNum] 整体删除）
     const _activeSlot = this.state._activePrompts && this.state._activePrompts[turnNum];
     if (_activeSlot) {
       record.promptHeaderBy = _activeSlot.promptHeaderBy || {};
@@ -500,6 +501,7 @@ class RoundtableOrchestrator {
   //   节流策略详见 docs/superpowers/specs/2026-05-03-roundtable-resend-and-auto-recovery-design.md
 
   recordTurnPrompt(turnNum, sid, prompt) {
+    // _activePrompts 不持久化（临时数据，crash 后无 resend 语义损失）
     if (!this.state._activePrompts) this.state._activePrompts = {};
     if (!this.state._activePrompts[turnNum]) {
       this.state._activePrompts[turnNum] = { promptBy: {}, promptHeaderBy: {}, sendStatus: {} };
@@ -507,14 +509,13 @@ class RoundtableOrchestrator {
     const slot = this.state._activePrompts[turnNum];
     slot.promptBy[sid] = String(prompt || '');
     slot.promptHeaderBy[sid] = String(prompt || '').split('\n')[0] || '';
-    this._saveState();
   }
 
   setSendStatus(turnNum, sid, status) {
+    // _activePrompts 不持久化（临时数据，crash 后无 resend 语义损失）
     if (!this.state._activePrompts) return;
     if (!this.state._activePrompts[turnNum]) return;
     this.state._activePrompts[turnNum].sendStatus[sid] = status;
-    this._saveState();
   }
 
   getActivePrompt(turnNum) {

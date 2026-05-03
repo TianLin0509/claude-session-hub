@@ -28,7 +28,7 @@ function freshOrch() {
 
 test('recordTurnPrompt 切第一行 + 暂存 promptBy/promptHeaderBy', () => {
   const orch = freshOrch();
-  orch.beginTurn(1, 'fanout');
+  orch.beginTurn('fanout');
   orch.recordTurnPrompt(1, 'sid-A', '[research · 第 1 轮 · 默认提问]\n## 用户问题\n请分析兆易创新');
   const active = orch.getActivePrompt(1);
   assert.ok(active, 'getActivePrompt 应返回非空');
@@ -38,7 +38,7 @@ test('recordTurnPrompt 切第一行 + 暂存 promptBy/promptHeaderBy', () => {
 
 test('setSendStatus 写入 active turn', () => {
   const orch = freshOrch();
-  orch.beginTurn(1, 'fanout');
+  orch.beginTurn('fanout');
   orch.recordTurnPrompt(1, 'sid-A', 'L1\nL2');
   orch.setSendStatus(1, 'sid-A', 'auto_recovered');
   const active = orch.getActivePrompt(1);
@@ -47,7 +47,7 @@ test('setSendStatus 写入 active turn', () => {
 
 test('completeTurn 后：promptBy 被节流删除，promptHeaderBy/sendStatus 落入 record', () => {
   const orch = freshOrch();
-  orch.beginTurn(1, 'fanout');
+  orch.beginTurn('fanout');
   orch.recordTurnPrompt(1, 'sid-A', 'header A\nbody');
   orch.recordTurnPrompt(1, 'sid-B', 'header B\nbody');
   orch.setSendStatus(1, 'sid-A', 'ok');
@@ -69,11 +69,22 @@ test('getActivePrompt 不存在时返回 null', () => {
 
 test('rollbackTurn 也清 _activePrompts（避免泄漏）', () => {
   const orch = freshOrch();
-  orch.beginTurn(1, 'fanout');
+  orch.beginTurn('fanout');
   orch.recordTurnPrompt(1, 'sid-A', 'h\nb');
   orch.rollbackTurn(1);
   assert.strictEqual(orch.getActivePrompt(1), null);
 });
 
+test('无 active slot 时 completeTurn record 不含 promptHeaderBy/sendStatus（向后兼容）', () => {
+  const orch = freshOrch();
+  orch.beginTurn('fanout');
+  // 注意：故意不调 recordTurnPrompt
+  orch.completeTurn(1, 'fanout', 'q', { 'sid-A': 'a' }, {}, { 'sid-A': 'completed' });
+  const turn = orch.state.turns.find(t => t.n === 1);
+  assert.ok(turn);
+  assert.strictEqual(turn.promptHeaderBy, undefined, 'record 不应有 promptHeaderBy');
+  assert.strictEqual(turn.sendStatus, undefined, 'record 不应有 sendStatus');
+});
+
 const failed = process.exitCode || 0;
-console.log(`\n${failed ? '✗' : '✓'} orchestrator prompt-meta: ${5 - failed} passed\n`);
+console.log(`\n${failed ? '✗' : '✓'} orchestrator prompt-meta: ${6 - failed} passed\n`);
