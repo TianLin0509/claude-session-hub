@@ -513,6 +513,9 @@
 
       // Stage 2 容错升级：状态机扩展（manual_extracted / absent / soft_alert / errored / interrupted / transport_lost）
       // 状态来源：partial.status（后端 watcher 设置）+ 'roundtable-soft-alert' IPC 注入 status='soft_alert'
+      // T6（2026-05-03）：send_stuck 由 partial.sendStatus='stuck' 注入（不覆盖 partial.status，保留 streaming/soft_alert 并行）
+      let statusForLabel = status;
+      if (partial && partial.sendStatus === 'stuck') statusForLabel = 'send_stuck';
       const statusLabel = {
         idle: '待命',
         initializing: '创建中…',
@@ -523,10 +526,11 @@
         manual_extracted: '已答 ✓ 手动',
         absent: '本轮缺席',
         soft_alert: '等待中…',
+        send_stuck: '⚠ 发送卡住，请按发送',  // T6：数据驱动，refreshRoundtablePanel 重渲后保留
         errored: '错误',
         interrupted: '已中断',
         transport_lost: '连接断开',
-      }[status] || status;
+      }[statusForLabel] || statusForLabel;
       const tabState = _tabState[sub.sid] || 'idle';
       const newBadge = tabState === 'new-output' && !isActive ? '<span class="mr-ft-new">NEW</span>' : '';
 
@@ -615,11 +619,12 @@
       const tokensCurrent = _formatTokens(tokensCurrentN);
       const tokensTotal   = _formatTokens(aiStats.totalTokens || 0);
 
+      const sendStuck = !!(partial && partial.sendStatus === 'stuck');
       tabs.push(_ftHtml(
         kind, isActive, sub.sid, labelDisplay, statusLabel, status,
         modelName, modelCls, ctxPct, ctxCls, bottomHtml,
         thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge,
-        slotIndex
+        slotIndex, sendStuck
       ));
     }
     if (!anyThinking && meetingId) delete _thinkStartTs[meetingId];
@@ -627,7 +632,7 @@
   }
 
   function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, bottomHtml,
-                   thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge, slotIndex) {
+                   thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge, slotIndex, sendStuck) {
     // 圆桌主题色按 slot 上色（slot 1/2/3 = 皮卡丘/小火龙/杰尼龟），与 kind 解耦：
     // kind 仍保留为 data-attribute 标识 AI 身份，但 CSS 视觉风格只跟槽位走，
     // 未来加任意 AI 都不需要补 CSS。
@@ -638,6 +643,8 @@
     // Card redesign：thinking-card / streaming-card 触发头像 bounce 动画
     if (statusCls === 'thinking') cls.push('thinking-card');
     else if (statusCls === 'streaming') cls.push('streaming-card');
+    // T6（2026-05-03）：send-stuck 数据驱动，refreshRoundtablePanel 重渲后保留
+    if (sendStuck) cls.push('send-stuck');
 
     const modelBadge = modelName ? `<span class="mr-ft-model ${slotCls}">${escapeHtml(modelName)}</span>` : '';
     const ctxBadge = ctxPct !== null ? `<span class="mr-ft-ctx ${ctxCls}">Ctx ${ctxPct}%</span>` : '';
@@ -690,7 +697,7 @@
         <div class="mr-ft-info">
           <div class="mr-ft-row1${row1TimeoutCls}">
             <span class="mr-ft-name ${slotCls}">${name}</span>
-            <span class="mr-ft-status ${statusCls}">${statusLabel}</span>${newBadge}
+            <span class="mr-ft-status ${statusCls}${sendStuck ? ' send-stuck' : ''}">${statusLabel}</span>${newBadge}
             ${timeStat}
           </div>
           <div class="mr-ft-row2">${modelBadge}${ctxBadge}${tokenStat}</div>
@@ -1021,13 +1028,12 @@
               btn.style.color = '#fff';
               btn.textContent = `✓ 已重发`;
               _btnTextHandledExternally = true;
-              // 重发成功后清理 send-stuck 视觉
-              const card = document.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
-              if (card) {
-                card.classList.remove('send-stuck');
-                const statusEl = card.querySelector('.mr-ft-status.send-stuck');
-                if (statusEl) statusEl.classList.remove('send-stuck');
+              // H2 数据驱动：重发成功后清掉 sendStatus='stuck'，由 refreshRoundtablePanel 重渲清除视觉
+              const cachedForResend = _rtPanelState[meeting.id];
+              if (cachedForResend && cachedForResend._partialBy && cachedForResend._partialBy[sid]) {
+                delete cachedForResend._partialBy[sid].sendStatus;
               }
+              refreshRoundtablePanel(meeting);
               setTimeout(() => {
                 btn.style.background = '';
                 btn.style.color = '';
@@ -1048,6 +1054,11 @@
           }
         } catch (err) {
           console.error(`[rt-escape] ${action} threw:`, err);
+          // M1（T6 fix）：resend-prompt 是用户主动触发，IPC handler 未注册时静默失败体验差，
+          //   加 alert 告知用户（"No handler registered" 说明 T5 IPC 还没部署）。
+          if (action === 'resend-prompt') {
+            alert(`📤 发送失败：${err && err.message ? err.message : 'unknown'}\n\n（如果错误说"No handler registered"，说明后端 IPC 还没部署，需要等待 T5 落地）`);
+          }
         } finally {
           if (!_btnTextHandledExternally) {
             btn.disabled = false;
@@ -1364,21 +1375,39 @@
     }
   });
 
-  // T6（2026-05-03）：send-stuck 事件 → 卡片加 .send-stuck 类 + 状态文本提示
+  // T6（2026-05-03）：send-stuck 事件 → 数据驱动写 _partialBy[sid].sendStatus='stuck'，
+  //   再 refreshRoundtablePanel 重渲——这样 innerHTML 重渲后状态也能保留（H2 数据驱动方案）。
+  //   H1 修复：补 activeMeetingId 守卫，与其他 roundtable-* 监听器保持一致。
   ipcRenderer.on('roundtable-send-stuck', (_e, { meetingId, sid /*, kind, mode */ }) => {
-    const card = document.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
-    if (!card) return;
-    card.classList.add('send-stuck');
-    const statusEl = card.querySelector('.mr-ft-status');
-    if (statusEl) {
-      statusEl.textContent = '⚠ 发送卡住，请按发送';
-      statusEl.classList.add('send-stuck');
+    if (meetingId !== activeMeetingId) return;  // H1：跨 meeting 隔离
+    const meeting = meetingData[meetingId];
+    if (!_isPanelCapableMeeting(meeting)) return;
+    const cached = _rtPanelState[meetingId];
+    if (cached) {
+      if (!cached._partialBy) cached._partialBy = {};
+      const existing = cached._partialBy[sid] || {};
+      // 保留已有 text/status/blocks，仅追加 sendStatus='stuck'
+      cached._partialBy[sid] = { ...existing, sendStatus: 'stuck' };
     }
     console.warn(`[renderer] roundtable-send-stuck meeting=${meetingId} sid=${sid.slice(0,8)}`);
+    if (cached) {
+      const panel = _ensureRtPanel();
+      panel.innerHTML = _renderRtPanelHtml(cached, meeting);
+      _bindRtPanelEvents(panel, meeting);
+    }
   });
 
   // T6（2026-05-03）：turn-patched 事件 → 卡片右上角浮"自动补全 +N 字"角标 + 触发刷新
-  ipcRenderer.on('roundtable-turn-patched', (_e, { meetingId, turnNum, sid, charCount }) => {
+  //   H1 修复：补 activeMeetingId 守卫。
+  //   M2 修复（最小化方案）：先 await refreshRoundtablePanel 拿最新 turn meta 重渲，
+  //     再追加 badge 到新 DOM 节点上（旧节点已被 innerHTML 替换），避免 badge 被立即抹掉。
+  ipcRenderer.on('roundtable-turn-patched', async (_e, { meetingId, turnNum, sid, charCount }) => {
+    if (meetingId !== activeMeetingId) return;  // H1：跨 meeting 隔离
+    const meeting = meetingData[meetingId];
+    if (_isPanelCapableMeeting(meeting)) {
+      // 先重渲（拿最新 turn meta），badge 在新 DOM 上追加
+      await refreshRoundtablePanel(meeting);
+    }
     const card = document.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
     if (!card) return;
     let badge = card.querySelector('.mr-ft-auto-patched-badge');
@@ -1392,11 +1421,6 @@
     void badge.offsetWidth;  // 强制 reflow 让 fade-out 动画从头开始
     badge.classList.add('fade-out');
     setTimeout(() => { try { badge.remove(); } catch {} }, 3000);
-    // 触发完整卡片刷新（拿最新 turn meta 重渲染卡片正文），复用 roundtable-turn-complete 同路径
-    const meeting = meetingData[meetingId];
-    if (_isPanelCapableMeeting(meeting) && meetingId === activeMeetingId) {
-      refreshRoundtablePanel(meeting);
-    }
     console.log(`[renderer] roundtable-turn-patched turn=${turnNum} sid=${sid.slice(0,8)} +${charCount} chars`);
   });
 
