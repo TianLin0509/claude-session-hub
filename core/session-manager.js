@@ -24,6 +24,15 @@ function _loadConfigValues() {
     CODEX_API_BASE_URL: config.codexApiBaseUrl,
     CODEX_API_MODEL: config.codexApiModel,
     CODEX_API_PROVIDER: config.codexApiProvider || 'packycode',
+    GPT_API_KEY: config.gptApiKey,
+    GPT_BASE_URL: config.gptBaseUrl,
+    GPT_MODEL: config.gptModel,
+    KIMI_API_KEY: config.kimiApiKey,
+    KIMI_BASE_URL: config.kimiBaseUrl,
+    KIMI_MODEL: config.kimiModel,
+    QWEN_API_KEY: config.qwenApiKey,
+    QWEN_BASE_URL: config.qwenBaseUrl,
+    QWEN_MODEL: config.qwenModel,
   };
 }
 // 惰性求值：首次使用时加载，之后缓存
@@ -238,7 +247,10 @@ class SessionManager extends EventEmitter {
     const isCodex = kind === 'codex' || kind === 'codex-resume';
     const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';
     const isGlm = kind === 'glm' || kind === 'glm-resume';
-    const isAgent = isClaude || isGemini || isCodex || isDeepSeek || isGlm;
+    const isGpt = kind === 'gpt' || kind === 'gpt-resume';
+    const isKimi = kind === 'kimi' || kind === 'kimi-resume';
+    const isQwen = kind === 'qwen' || kind === 'qwen-resume';
+    const isAgent = isClaude || isGemini || isCodex || isDeepSeek || isGlm || isGpt || isKimi || isQwen;
     let title;
     if (opts.title) title = opts.title;
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
@@ -247,10 +259,16 @@ class SessionManager extends EventEmitter {
     else if (kind === 'codex') { this.codexCounter = (this.codexCounter || 0) + 1; title = `Codex ${this.codexCounter}`; }
     else if (kind === 'deepseek') { this.deepseekCounter = (this.deepseekCounter || 0) + 1; title = `DeepSeek ${this.deepseekCounter}`; }
     else if (kind === 'glm') { this.glmCounter = (this.glmCounter || 0) + 1; title = `GLM ${this.glmCounter}`; }
+    else if (kind === 'gpt') { this.gptCounter = (this.gptCounter || 0) + 1; title = `GPT ${this.gptCounter}`; }
+    else if (kind === 'kimi') { this.kimiCounter = (this.kimiCounter || 0) + 1; title = `Kimi ${this.kimiCounter}`; }
+    else if (kind === 'qwen') { this.qwenCounter = (this.qwenCounter || 0) + 1; title = `Qwen ${this.qwenCounter}`; }
     else if (kind === 'gemini-resume') title = `Gemini Resume ${++this.resumeCounter}`;
     else if (kind === 'codex-resume') title = `Codex Resume ${++this.resumeCounter}`;
     else if (kind === 'deepseek-resume') title = `DeepSeek Resume ${++this.resumeCounter}`;
     else if (kind === 'glm-resume') title = `GLM Resume ${++this.resumeCounter}`;
+    else if (kind === 'gpt-resume') title = `GPT Resume ${++this.resumeCounter}`;
+    else if (kind === 'kimi-resume') title = `Kimi Resume ${++this.resumeCounter}`;
+    else if (kind === 'qwen-resume') title = `Qwen Resume ${++this.resumeCounter}`;
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
@@ -322,6 +340,58 @@ class SessionManager extends EventEmitter {
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
+    } else if (isGpt) {
+      const cv = getConfigValues();
+      // PackyAPI 国内直连，不走代理
+      delete sessionEnv.HTTP_PROXY;
+      delete sessionEnv.HTTPS_PROXY;
+      delete sessionEnv.NO_PROXY;
+      sessionEnv.ANTHROPIC_BASE_URL = cv.GPT_BASE_URL;
+      sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.GPT_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_BASE_URL;
+      sessionEnv.CLAUDE_CONFIG_DIR = path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), '.claude-packy-gpt');
+      sessionEnv.CLAUDE_HUB_SESSION_ID = id;
+      if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
+      if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
+      if (process.env.CLAUDE_HUB_DATA_DIR) {
+        sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
+      }
+    } else if (isKimi) {
+      const cv = getConfigValues();
+      delete sessionEnv.HTTP_PROXY;
+      delete sessionEnv.HTTPS_PROXY;
+      delete sessionEnv.NO_PROXY;
+      sessionEnv.ANTHROPIC_BASE_URL = cv.KIMI_BASE_URL;
+      sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.KIMI_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_BASE_URL;
+      sessionEnv.CLAUDE_CONFIG_DIR = path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), '.claude-packy-kimi');
+      sessionEnv.CLAUDE_HUB_SESSION_ID = id;
+      if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
+      if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
+      if (process.env.CLAUDE_HUB_DATA_DIR) {
+        sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
+      }
+    } else if (isQwen) {
+      const cv = getConfigValues();
+      delete sessionEnv.HTTP_PROXY;
+      delete sessionEnv.HTTPS_PROXY;
+      delete sessionEnv.NO_PROXY;
+      sessionEnv.ANTHROPIC_BASE_URL = cv.QWEN_BASE_URL;
+      sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.QWEN_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_BASE_URL;
+      sessionEnv.CLAUDE_CONFIG_DIR = path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), '.claude-packy-qwen');
+      sessionEnv.CLAUDE_HUB_SESSION_ID = id;
+      if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
+      if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
+      if (process.env.CLAUDE_HUB_DATA_DIR) {
+        sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
+      }
     }
 
     // Merge extra env vars (used by TeamSessionManager for MCP config etc.)
@@ -345,7 +415,7 @@ class SessionManager extends EventEmitter {
       }
     }
 
-    if (isDeepSeek || isGlm) {
+    if (isDeepSeek || isGlm || isGpt || isKimi || isQwen) {
       ensureClaudeBypassAndTrust(sessionEnv.CLAUDE_CONFIG_DIR, spawnCwd);
     }
 
@@ -382,6 +452,18 @@ class SessionManager extends EventEmitter {
       const cv = getConfigValues();
       const mid = opts.model || cv.GLM_MODEL;
       currentModel = { id: mid, displayName: mid.toLowerCase().includes('5.1') ? 'GLM 5.1' : mid };
+    } else if (isGpt) {
+      const cv = getConfigValues();
+      const mid = opts.model || cv.GPT_MODEL || 'gpt-5.5';
+      currentModel = { id: mid, displayName: mid.toUpperCase() };
+    } else if (isKimi) {
+      const cv = getConfigValues();
+      const mid = opts.model || cv.KIMI_MODEL || 'kimi-k2.5';
+      currentModel = { id: mid, displayName: mid };
+    } else if (isQwen) {
+      const cv = getConfigValues();
+      const mid = opts.model || cv.QWEN_MODEL || 'qwen3.6-plus';
+      currentModel = { id: mid, displayName: mid };
     }
 
     const now = Date.now();
@@ -634,6 +716,129 @@ class SessionManager extends EventEmitter {
         cmd = ' claude --continue --permission-mode bypassPermissions';
       } else {
         cmd = ` claude --model ${opts.model || cv.GLM_MODEL} --permission-mode bypassPermissions`;
+      }
+      // 圆桌成员：禁 skill + plugin
+      cmd += buildRoundtableIsolationFlags(opts.meetingId);
+      cmd += '\r\n';
+      let sent = false;
+      let debounceTimer = null;
+      const watcher = ptyProcess.onData(() => {
+        if (sent) return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (sent) return;
+          sent = true;
+          watcher.dispose();
+          const s = this.sessions.get(id);
+          if (s) s.pty.write(cmd);
+        }, 200);
+      });
+      const safetyTimer = setTimeout(() => {
+        if (sent) return;
+        sent = true;
+        watcher.dispose();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        const s = this.sessions.get(id);
+        if (s) s.pty.write(cmd);
+      }, 3000);
+      pendingTimers.push(safetyTimer);
+    }
+
+    if (isGpt) {
+      const cv = getConfigValues();
+      let cmd;
+      if (kind === 'gpt-resume') {
+        const model = opts.model || cv.GPT_MODEL || 'gpt-5.5';
+        cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
+      } else if (opts.resumeCCSessionId) {
+        const model = opts.model || cv.GPT_MODEL || 'gpt-5.5';
+        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
+      } else if (opts.useContinue) {
+        cmd = ' claude --continue --permission-mode bypassPermissions';
+      } else {
+        cmd = ` claude --model ${opts.model || cv.GPT_MODEL || 'gpt-5.5'} --permission-mode bypassPermissions`;
+      }
+      // 圆桌成员：禁 skill + plugin
+      cmd += buildRoundtableIsolationFlags(opts.meetingId);
+      cmd += '\r\n';
+      let sent = false;
+      let debounceTimer = null;
+      const watcher = ptyProcess.onData(() => {
+        if (sent) return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (sent) return;
+          sent = true;
+          watcher.dispose();
+          const s = this.sessions.get(id);
+          if (s) s.pty.write(cmd);
+        }, 200);
+      });
+      const safetyTimer = setTimeout(() => {
+        if (sent) return;
+        sent = true;
+        watcher.dispose();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        const s = this.sessions.get(id);
+        if (s) s.pty.write(cmd);
+      }, 3000);
+      pendingTimers.push(safetyTimer);
+    }
+
+    if (isKimi) {
+      const cv = getConfigValues();
+      let cmd;
+      if (kind === 'kimi-resume') {
+        const model = opts.model || cv.KIMI_MODEL || 'kimi-k2.5';
+        cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
+      } else if (opts.resumeCCSessionId) {
+        const model = opts.model || cv.KIMI_MODEL || 'kimi-k2.5';
+        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
+      } else if (opts.useContinue) {
+        cmd = ' claude --continue --permission-mode bypassPermissions';
+      } else {
+        cmd = ` claude --model ${opts.model || cv.KIMI_MODEL || 'kimi-k2.5'} --permission-mode bypassPermissions`;
+      }
+      // 圆桌成员：禁 skill + plugin
+      cmd += buildRoundtableIsolationFlags(opts.meetingId);
+      cmd += '\r\n';
+      let sent = false;
+      let debounceTimer = null;
+      const watcher = ptyProcess.onData(() => {
+        if (sent) return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (sent) return;
+          sent = true;
+          watcher.dispose();
+          const s = this.sessions.get(id);
+          if (s) s.pty.write(cmd);
+        }, 200);
+      });
+      const safetyTimer = setTimeout(() => {
+        if (sent) return;
+        sent = true;
+        watcher.dispose();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        const s = this.sessions.get(id);
+        if (s) s.pty.write(cmd);
+      }, 3000);
+      pendingTimers.push(safetyTimer);
+    }
+
+    if (isQwen) {
+      const cv = getConfigValues();
+      let cmd;
+      if (kind === 'qwen-resume') {
+        const model = opts.model || cv.QWEN_MODEL || 'qwen3.6-plus';
+        cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
+      } else if (opts.resumeCCSessionId) {
+        const model = opts.model || cv.QWEN_MODEL || 'qwen3.6-plus';
+        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
+      } else if (opts.useContinue) {
+        cmd = ' claude --continue --permission-mode bypassPermissions';
+      } else {
+        cmd = ` claude --model ${opts.model || cv.QWEN_MODEL || 'qwen3.6-plus'} --permission-mode bypassPermissions`;
       }
       // 圆桌成员：禁 skill + plugin
       cmd += buildRoundtableIsolationFlags(opts.meetingId);
