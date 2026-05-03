@@ -135,12 +135,22 @@ function test(name, fn) {
     assert.ok((t3 - t2) < (t2 - t1) / 2, '第二次应明显更快');
   });
 
-  await test('probeRepo: 同 cwd 并发只 spawn 一次', async () => {
+  await test('probeRepo: 同 cwd 并发去重 (spawn 计数)', async () => {
     _resetCacheForTest();
     const dir = makeRepo();
-    const [a, b] = await Promise.all([probeRepo(dir, { force: true }), probeRepo(dir, { force: true })]);
-    // 两个并发 force 调用应通过 in-flight 合并，结果相同对象引用
-    assert.ok(a === b || JSON.stringify(a) === JSON.stringify(b));
+    const cp = require('child_process');
+    const origSpawn = cp.spawn;
+    let spawnCount = 0;
+    cp.spawn = function(...args) { spawnCount++; return origSpawn.apply(this, args); };
+    try {
+      await Promise.all([probeRepo(dir, { force: true }), probeRepo(dir, { force: true })]);
+      // 单次 probeRepo 内部最多 spawn 3 次（rev-parse + status + log）
+      // 并发两次去重成功 → 仍是 3 次（共享同一 in-flight Promise）
+      // 去重失败 → 6 次
+      assert.ok(spawnCount <= 3, `expected <= 3 spawns, got ${spawnCount}`);
+    } finally {
+      cp.spawn = origSpawn;
+    }
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);
