@@ -1278,7 +1278,8 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
         const ok = sendResult && sendResult.ok;
         const sendStatus = sendResult && sendResult.sendStatus;
         if (sendStatus) {
-          try { orch.setSendStatus(turnNum, t.sid, sendStatus); } catch {}
+          try { orch.setSendStatus(turnNum, t.sid, sendStatus); }
+          catch (e) { console.warn('[roundtable] setSendStatus threw:', e && e.message); }
         }
         if (sendStatus === 'stuck') {
           // TODO（spec 协议偏差，2026-05-03 review）：spec 定义此 IPC payload 字段为
