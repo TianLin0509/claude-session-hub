@@ -936,6 +936,21 @@ class GeminiTap extends EventEmitter {
       };
 
       const onLine = (obj) => {
+        // M2.4 修复 (2026-05-03)：把 idle_timer_5s 提升为"所有路径的 catch-all 兜底"。
+        //   旧版只在 line 963 分支（type:"gemini" + content + 无 tokens）schedule timer，
+        //   导致以下用户血泪场景永不触发 turn-complete：
+        //   - Gemini 写 type:"gemini" + content + tokens.total=null（限流 / 流式中断）
+        //   - 主路径 emitIfComplete 因 lastText 去重提前返回但下一行有新 content
+        //   - 真实 jsonl 完全无 type:"result" / "message_update"（只有 type:"gemini"）
+        //   现在策略：任何 type:"gemini"/"result"/"message_update" 的有 content 行都
+        //   schedule timer。emitIfComplete 已用 lastText 去重，5s 后兜底 emit 安全。
+        const isContentLine = (
+          (obj?.type === 'gemini' || obj?.type === 'result' || obj?.type === 'message_update')
+          && typeof obj?.content === 'string'
+          && obj.content.trim().length > 0
+        );
+        if (isContentLine) _scheduleGeminiIdleEmit();
+
         // L1a — 协议级 result 事件（最可靠）
         if (obj?.type === 'result' && typeof obj.content === 'string' && obj.content.trim().length > 0) {
           _pushStreamBlock(obj.content);
@@ -963,10 +978,7 @@ class GeminiTap extends EventEmitter {
         } else if (obj?.type === 'gemini' && typeof obj.content === 'string' && obj.content.trim().length > 0) {
           // Task 2（2026-05-01）— 流式中间态：content 已到、token 未到，仍累积让 preview 显示
           _pushStreamBlock(obj.content);
-          // 2026-05-02 兜底：流式中间态也启动/重置 idle timer。如果 5s 无新 content
-          //   且 token 一直没到（用户血泪场景：第一轮 token 延迟），主动 emit 让卡片
-          //   切到 completed，无需用户手动点"一键提取"。
-          _scheduleGeminiIdleEmit();
+          // M2.4 修复：idle timer 已在 onLine 顶部统一 schedule，此处不再重复
         }
       };
       const tail = new JsonlTail(sessionPath, onLine);
