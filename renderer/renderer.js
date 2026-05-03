@@ -1589,6 +1589,8 @@ function rerenderTurn(turnId) {
     if (typeof postProcessCardCodeBlocks === 'function') {
       postProcessCardCodeBlocks(newCard);
     }
+    const bodyEl = newCard.querySelector('.turn-body');
+    if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl);
     card.replaceWith(newCard);
   }
 }
@@ -1671,10 +1673,25 @@ function mountTurnCard(container, turn) {
   tmp.innerHTML = renderTurnCard(turn);
   const cardEl = tmp.firstElementChild;
   postProcessCardCodeBlocks(cardEl);
+  // 路径识别 (T7 风险条款: 卡片内 .md / URL 必须可点击触发预览)
+  const bodyEl = cardEl.querySelector('.turn-body');
+  if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl);
   container.appendChild(cardEl);
   return cardEl;
 }
 window._mountTurnCard = mountTurnCard;
+
+// rt-file-link click → openPreviewPanel (only for cards inside .msg-overlay,
+// don't conflict with meeting-room.js handler which targets its own scope)
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a.rt-file-link');
+  if (!a) return;
+  if (!a.closest('.msg-overlay')) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const path = a.dataset.path;
+  if (path && typeof openPreviewPanel === 'function') openPreviewPanel(path);
+}, true);
 
 // click handler — code-copy + code-expand/collapse
 document.addEventListener('click', (e) => {
