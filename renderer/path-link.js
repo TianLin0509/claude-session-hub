@@ -12,7 +12,13 @@ function extractPathLinks(text) {
   // URL 优先(避免 URL 里的 .html 被当文件路径)
   _PL_URL_RE.lastIndex = 0;
   while ((m = _PL_URL_RE.exec(text)) !== null) {
-    out.push({ path: m[0], start: m.index, end: m.index + m[0].length, kind: 'url' });
+    let url = m[0];
+    // Strip common trailing punctuation that's almost never part of URL
+    // (period/comma/semicolon/colon/exclam/question/closing brackets/quotes)
+    const stripped = url.replace(/[.,;:!?)\]}>'"]+$/, '');
+    if (stripped.length >= 8) { // at least "http://x"
+      out.push({ path: stripped, start: m.index, end: m.index + stripped.length, kind: 'url' });
+    }
   }
   // file paths
   _PL_FILE_EXT_RE.lastIndex = 0;
