@@ -18,6 +18,10 @@ const summaryEngine = new SummaryEngine();
 const { TranscriptTap } = require('./core/transcript-tap');
 const { createUsageFilter } = require('./core/usage-filter.js');
 const transcriptTap = new TranscriptTap();
+// Resend & Auto-Recovery（2026-05-03）—— patch-listener 注册表（见 line 834 附近）会让
+//   transcriptTap 在 5 分钟 patch 窗口内挂多个 listener。3 sub × 1 watcher/sub × 多轮重叠
+//   ＞ Node 默认 10 个会触发 MaxListenersExceededWarning。提升上限到 100 安全冗余。
+try { transcriptTap.setMaxListeners(100); } catch {}
 const { DeepSummaryService } = require('./core/deep-summary-service.js');
 const scenes = require('./core/roundtable-scenes.js');
 const cliReadyDetector = require('./core/roundtable-cli-ready-detector.js');
@@ -833,6 +837,30 @@ const rtWatcher = require('./core/roundtable-watcher.js');
 rtWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
 let _roundtableInProgress = new Set(); // 同会议室单一并发：set of meetingId
 
+// Resend & Auto-Recovery（2026-05-03）—— per-sid patch-listener 注册表
+//   防跨轮污染：dispatchRoundtableTurn 入口先 cancelPatchListenersForSid(sid)
+//   保证一个 sub 永远只有最新一轮的 patch listener 在监听。watcher.cancelPatch()
+//   把 patchCancelled=true 后续 settle 不再挂新 listener；已挂的 patch listener
+//   通过 watcher 内部的 _cleanupPatch 自然清理。
+const _patchListenersBySid = new Map(); // sid → Set<watcher>
+
+function registerPatchListener(sid, watcher) {
+  if (!_patchListenersBySid.has(sid)) _patchListenersBySid.set(sid, new Set());
+  _patchListenersBySid.get(sid).add(watcher);
+}
+function cancelPatchListenersForSid(sid) {
+  const set = _patchListenersBySid.get(sid);
+  if (!set) return;
+  for (const w of set) {
+    try { w.cancelPatch?.(); } catch (e) { console.warn('[patch] cancelPatch threw:', e && e.message); }
+  }
+  set.clear();
+}
+function unregisterPatchListener(sid, watcher) {
+  const set = _patchListenersBySid.get(sid);
+  if (set) set.delete(watcher);
+}
+
 // 方案 F · 2026-05-02：计算单个 sub 视角的"调度上下文" spec，喂给 build*Prompt
 //   targetSubs = [{ sid, kind, label }] 本轮真正发言的 sub（按 dispatchMode 过滤后）
 //                ← BUGFIX (Codex#2)：之前用全员 subs，pilot/observer 模式下"同台"会含静音 AI
@@ -924,8 +952,33 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
         });
       } catch {}
     },
+    // Resend & Auto-Recovery（2026-05-03）— onTurnPatched：watcher settle 后 5min 内
+    //   transcriptTap 再 emit turn-complete（且文本更长）则 patch lastTurn。
+    //   防护 #2：不覆盖 manual_extracted（用户手动提取的内容是权威，patch 不许覆盖）。
+    //   闭包用 meetingId（来自 opts）→ 通过 meetingManager + scenes 拿 sceneObj → orch。
+    //   turnNum 也从 opts 闭包读取。
+    onTurnPatched: ({ sid: patchedSid, text, status }) => {
+      try {
+        const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
+        const sceneObj = meeting ? scenes.getScene(meeting.scene) : null;
+        const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+        // 防护 #2：不覆盖 manual_extracted 状态（spec 要求）
+        const turn = orch.state.turns.find(t => t.n === turnNum);
+        const currentStatus = turn?.byStatus?.[patchedSid];
+        const finalStatus = (currentStatus === 'manual_extracted') ? 'manual_extracted' : status;
+        orch.patchTurnResult(turnNum, patchedSid, { text, status: finalStatus });
+        sendToRenderer('roundtable-turn-patched', {
+          meetingId, turnNum, sid: patchedSid, charCount: (text || '').length,
+        });
+      } catch (e) {
+        console.warn('[patch] onTurnPatched threw:', e && e.message);
+      }
+    },
   });
   _activeWatchers.set(sid, watcher);
+  // Resend & Auto-Recovery（2026-05-03）— 注册到全局 patch-listener 表
+  //   下一轮 dispatch 同 sid 时通过 cancelPatchListenersForSid 强制 cancel 老 patch listener
+  registerPatchListener(sid, watcher);
 
   // streaming partial 流式推送（保留现有体验，每 1500ms 推一次终端实时文本）
   // Card optimization Task 5+6（2026-05-01）：onPartial 现在收到 { sid, label, status, blocks, source, text }
@@ -1184,6 +1237,21 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       return { status: 'error', reason: 'unknown mode', turnNum: null };
     }
 
+    // Resend & Auto-Recovery（2026-05-03）— Step 1：每家 dispatch 前清掉它身上的老 patch listener
+    //   防跨轮污染：上一轮 patch 窗口可能还在 5min 内（PATCH_WINDOW_MS = 300_000）。
+    //   不清的话，本轮新 prompt 提交后老 listener 仍然听 turn-complete，
+    //   一旦 transcriptTap 再 emit 就会用新文本覆盖上一轮 record（污染历史）。
+    for (const t of targets) {
+      cancelPatchListenersForSid(t.sid);
+    }
+    // Resend & Auto-Recovery（2026-05-03）— Step 2：把 prompt 落到 orchestrator._activePrompts
+    //   resendCurrentPrompt（手动 [📤 发送] 按钮）从这里取 promptBy / promptHeaderBy；
+    //   completeTurn 时合并 promptHeaderBy / sendStatus 到 record（节流策略，promptBy 只活跃轮持有）。
+    for (const t of targets) {
+      try { orch.recordTurnPrompt(turnNum, t.sid, t.prompt); }
+      catch (e) { console.warn('[roundtable] recordTurnPrompt threw:', e && e.message); }
+    }
+
     // 并行发送到所有目标 PTY
     const sentTargets = [];
     await Promise.all(targets.map(async (t) => {
@@ -1194,15 +1262,28 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       // → 圆桌死锁需重启 Hub 才能恢复。lambda 内 try/catch 把异常降级为"未发出",
       // 自动走下面 sentTargets.length === 0 的 rollback 兜底。
       try {
-        const ok = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
+        // Resend & Auto-Recovery（2026-05-03）— sendToPty 现在返回 { ok, sendStatus } 或 false
+        //   sendStatus ∈ 'ok' | 'auto_recovered' | 'stuck'。stuck 时推 send-stuck IPC 让
+        //   renderer 把 [📤 发送] 按钮亮起；其它状态写到 _activePrompts 供 UI 调试。
+        const sendResult = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
+        const ok = sendResult && sendResult.ok;
+        const sendStatus = sendResult && sendResult.sendStatus;
+        if (sendStatus) {
+          try { orch.setSendStatus(turnNum, t.sid, sendStatus); } catch {}
+        }
+        if (sendStatus === 'stuck') {
+          sendToRenderer('roundtable-send-stuck', {
+            meetingId, sid: t.sid, kind: t.kind,
+          });
+        }
         if (ok) {
           sentTargets.push(t);
-          console.log(`[roundtable] turn ${turnNum} ${mode} sent to ${t.kind}(${t.sid.slice(0,8)})`);
+          console.log(`[roundtable] turn ${turnNum} ${mode} sent to ${t.kind}(${t.sid.slice(0,8)}) sendStatus=${sendStatus || 'ok'}`);
         } else {
           console.log(`[roundtable] turn ${turnNum} ${mode} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
         }
       } catch (e) {
-        console.warn(`[roundtable] turn ${turnNum} ${mode} _rtSendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
+        console.warn(`[roundtable] turn ${turnNum} ${mode} sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
       }
     }));
     if (sentTargets.length === 0) {
@@ -1404,7 +1485,10 @@ ipcMain.handle('roundtable:summary-trigger', async (_e, { meetingId } = {}) => {
       // P0-4 修复同 dispatchRoundtableTurn (1241): _rtSendToPty 抛错时降级为未发出,
       // 避免整个 Promise.all reject 导致 turnNum 已 beginTurn 但 rollback 永不调用。
       try {
-        const ok = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
+        // Resend & Auto-Recovery（2026-05-03）— sendToPty 返回 { ok, sendStatus } 或 false（兼容老 truthy）
+        //   summary-trigger 路径不写 setSendStatus / 不推 send-stuck（不属于"标准 dispatch 主路径"）
+        const sendResult = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
+        const ok = sendResult && sendResult.ok;
         if (ok) {
           sentTargets.push(t);
           console.log(`[roundtable] summary turn ${turnNum} sent to ${t.kind}(${t.sid.slice(0,8)})`);
@@ -1412,7 +1496,7 @@ ipcMain.handle('roundtable:summary-trigger', async (_e, { meetingId } = {}) => {
           console.log(`[roundtable] summary turn ${turnNum} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
         }
       } catch (e) {
-        console.warn(`[roundtable] summary turn ${turnNum} _rtSendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
+        console.warn(`[roundtable] summary turn ${turnNum} sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
       }
     }));
     if (sentTargets.length === 0) {
@@ -1556,6 +1640,44 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
   return { ok: true, text: extracted.text, source: extracted.source, mode: 'text_only' };
 });
 
+// Resend & Auto-Recovery（2026-05-03）— 手动 [📤 发送] 按钮入口
+//   触发场景：dispatch 主路径 sendToPty 返回 sendStatus='stuck'（auto-recover 也救不了），
+//     renderer 收到 'roundtable-send-stuck' IPC 后让卡片亮 [📤 发送] 按钮，
+//     用户手动点击 → renderer invoke('roundtable-resend-prompt') → 走这里。
+//   行为：从 orchestrator._activePrompts 取本轮 prompt + promptHeader →
+//     调 rtWatcher.resendCurrentPrompt（按 promptHeader 指纹判 enter_only / rewrite_full）。
+//   成功后 setSendStatus 'auto_recovered' 让 UI 调试能看到。
+ipcMain.handle('roundtable-resend-prompt', async (_e, { meetingId, sid } = {}) => {
+  if (!meetingId || !sid) return { ok: false, reason: 'invalid_args' };
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (!meeting) return { ok: false, reason: 'meeting_not_found' };
+  const sceneObj = scenes.getScene(meeting.scene);
+  const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+  const turnNum = orch.state.currentTurn;
+  if (!turnNum) return { ok: false, reason: 'no_active_turn' };
+  const active = orch.getActivePrompt(turnNum);
+  if (!active || !active.promptBy || !active.promptBy[sid]) {
+    return { ok: false, reason: 'no_active_prompt' };
+  }
+  const prompt = active.promptBy[sid];
+  const promptHeader = active.promptHeaderBy?.[sid] || '';
+  const session = sessionManager.getSession(sid);
+  const kind = session ? session.kind : 'unknown';
+  try {
+    const r = await rtWatcher.resendCurrentPrompt({
+      sid, kind, prompt, promptHeader,
+      timing: { ENTER_RETRY_GAP_MS: 150, POST_ENTER_VERIFY_MS: 500 },
+    });
+    if (r.ok) {
+      try { orch.setSendStatus(turnNum, sid, 'auto_recovered'); } catch {}
+    }
+    return r;
+  } catch (e) {
+    console.error('[roundtable-resend-prompt] threw:', e);
+    return { ok: false, reason: 'exception', detail: e.message };
+  }
+});
+
 // 跳过本家：watcher settle 为 absent 状态，下游 prompt builder 过滤这家
 //   （过滤逻辑由 commit 4 P0-14 落地；本 commit 只设状态）。
 ipcMain.handle('roundtable-skip-participant', async (_e, { meetingId, sid } = {}) => {
@@ -1665,8 +1787,14 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
   }
 
   // 4. _rtSendToPty 发送（含 ready 等待 + paste-detect 安静期）
+  // Resend & Auto-Recovery（2026-05-03）— sendToPty 返回 { ok, sendStatus } 或 false
+  //   resend-participant 路径不写 setSendStatus / 不推 send-stuck（无 turnNum 上下文，
+  //   且本路径已经有自己的 errored partial-update 兜底）
   let sent = false;
-  try { sent = await rtWatcher.sendToPty(sid, prompt, kind); }
+  try {
+    const sendResult = await rtWatcher.sendToPty(sid, prompt, kind);
+    sent = sendResult && sendResult.ok;
+  }
   catch (e) {
     console.error('[resend] _rtSendToPty threw:', e);
     sendToRenderer('roundtable-partial-update', {
