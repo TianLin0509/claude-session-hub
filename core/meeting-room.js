@@ -422,6 +422,11 @@ function isRoundtableCapableMeeting(meeting) {
 //   - dispatchMode='observer' → 排除主驾 slot
 function isSlotParticipatingThisTurn(meeting, slotIndex) {
   if (!meeting) return true;
+  // free-mode（2026-05-04）：按 participants 集合判定
+  if (meeting.mode === 'free') {
+    if (!Array.isArray(meeting.participants)) return true; // 未初始化默认全员
+    return meeting.participants.includes(slotIndex);
+  }
   const pilotSlot = (typeof meeting.pilotSlot === 'number'
     && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2) ? meeting.pilotSlot : null;
   const dispatchMode = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
