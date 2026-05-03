@@ -63,8 +63,99 @@ function derivePilotCompatDispatchMode(participants, mode) {
   return 'all';
 }
 
+// ---------------------------------------------------------------------------
+// Prompt 模板（free 模式专用）
+// ---------------------------------------------------------------------------
+
+const SLOT_DISPLAY = {
+  pikachu:    { en: 'Pikachu',    icon: '⚡' },
+  charmander: { en: 'Charmander', icon: '🔥' },
+  squirtle:   { en: 'Squirtle',   icon: '💎' },
+};
+
+function _slotLabel(slotIdOrIdx) {
+  const id = typeof slotIdOrIdx === 'number' ? SLOT_IDS[slotIdOrIdx] : slotIdOrIdx;
+  const d = SLOT_DISPLAY[id];
+  return d ? `${d.icon} ${d.en}` : 'AI';
+}
+
+function _formatParticipantList(participants) {
+  if (!Array.isArray(participants) || participants.length === 0) return '';
+  return participants.map(idx => _slotLabel(idx)).join(', ');
+}
+
+function _renderInjection(inj) {
+  if (!inj || !Array.isArray(inj.speakers) || inj.speakers.length === 0) return '';
+  const lines = ['', '[上一轮注入]'];
+  if (inj.isSummaryInjection) {
+    lines.push(`（上一轮是摘要轮，第 ${inj.lastTurnNum} 轮 · ${inj.lastTurnMode}）`);
+  } else {
+    lines.push(`（第 ${inj.lastTurnNum} 轮 · ${inj.lastTurnMode} · ${inj.lastDispatchMode}）`);
+  }
+  for (const s of inj.speakers) {
+    lines.push('');
+    lines.push(`### ${s.label}（${s.status || 'completed'}）`);
+    lines.push(s.text || '');
+  }
+  return lines.join('\n');
+}
+
+function buildFreeFanoutPrompt({ meeting, selfSlot, participants, userInput, lastTurnInjection, turnNum }) {
+  const selfLabel = _slotLabel(selfSlot);
+  const partList = _formatParticipantList(participants);
+  const lines = [
+    `# 自由模式 第 ${turnNum} 轮 fanout — 你是 ${selfLabel}`,
+    '',
+    '[本轮上下文]',
+    `- 模式：自由模式 · fanout`,
+    `- 本轮发言人：${partList}`,
+    `- 你是：${selfLabel}`,
+  ];
+  const inj = _renderInjection(lastTurnInjection);
+  if (inj) lines.push(inj);
+  lines.push('', '[用户输入]', userInput || '');
+  lines.push('', '请独立回答（与其他发言人互相看不到本轮发言，保持各自独立视角）。');
+  return lines.join('\n');
+}
+
+function buildFreeDebatePrompt({ meeting, selfSlot, participants, userInput, lastTurnInjection, turnNum }) {
+  const selfLabel = _slotLabel(selfSlot);
+  const partList = _formatParticipantList(participants);
+  const lines = [
+    `# 自由模式 第 ${turnNum} 轮 debate — 你是 ${selfLabel}`,
+    '',
+    '[本轮上下文]',
+    `- 模式：自由模式 · 辩论`,
+    `- 本轮发言人：${partList}`,
+    `- 你是：${selfLabel}`,
+  ];
+  const inj = _renderInjection(lastTurnInjection);
+  if (inj) lines.push(inj);
+  lines.push('', '[用户输入]', userInput || '');
+  lines.push('', '请反驳/呼应其他发言人的观点（你们看得到对方本轮言论）。');
+  return lines.join('\n');
+}
+
+function buildFreeSummaryPrompt({ meeting, summarizerSlot, userInput, lastTurnInjection, turnNum }) {
+  const selfLabel = _slotLabel(summarizerSlot);
+  const lines = [
+    `# 自由模式 第 ${turnNum} 轮 summary — 你是 ${selfLabel}`,
+    '',
+    '[本轮上下文]',
+    `- 模式：自由模式 · 总结`,
+    `- 你被点名担任本轮总结人`,
+  ];
+  const inj = _renderInjection(lastTurnInjection);
+  if (inj) lines.push(inj);
+  lines.push('', '[用户输入]', userInput || '');
+  lines.push('', '请综合上述历史给出总结。');
+  return lines.join('\n');
+}
+
 module.exports = {
   deriveTargetSids,
   derivePilotCompatDispatchMode,
-  // T3 会补 buildFree* prompt 模板
+  buildFreeFanoutPrompt,
+  buildFreeDebatePrompt,
+  buildFreeSummaryPrompt,
 };
