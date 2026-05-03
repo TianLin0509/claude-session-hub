@@ -1,5 +1,6 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
 const { isClaudeFamily, isAiKind } = require('../core/ai-kinds.js');
+const { formatAbsoluteTime } = require('./format-time.js');
 const RENDER_STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const RENDER_STARTUP_T0 = performance.now();
 function traceRendererStartup(msg) {
@@ -1520,6 +1521,27 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
     },
   };
 }
+
+// === Spec 1 v0.9.0 · turn 卡片渲染 ===
+function renderTurnCard(turn) {
+  // turn = { id, role: 'user'|'assistant', text, ts, model? }
+  // 注: 此版本 minimal — 不渲染 toolCalls/markdown,后续 task 5/6 扩展
+  const isUser = turn.role === 'user';
+  const cls = isUser ? 'turn-card user' : 'turn-card';
+  const who = isUser ? '你' : (turn.model || 'Claude');
+  const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
+  const body = escapeHtml(turn.text || '').replace(/\n/g, '<br>');
+  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}">
+    <div class="turn-head">
+      <span class="turn-who">${escapeHtml(who)}</span>
+      <span class="turn-meta">${escapeHtml(ts)}</span>
+    </div>
+    <div class="turn-body">${body}</div>
+  </div>`;
+}
+
+// debug: 暴露给 console 验证
+window._renderTurnCard = renderTurnCard;
 
 // === Spec 1 v0.9.0 · 视图切换 ===
 let currentView = 'card'; // 'card' | 'pty'

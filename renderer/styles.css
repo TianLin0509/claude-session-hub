@@ -2651,3 +2651,37 @@ body.theme-light .floating-scroll-btn {
 .xterm-viewport::-webkit-scrollbar-thumb {
   background: revert;
 }
+
+/* === Spec 1 v0.9.0 · turn 卡片 === */
+.turn-card {
+  background: var(--turn-bg-assistant);
+  padding: var(--turn-padding);
+  border-radius: var(--turn-radius);
+  margin-bottom: var(--turn-gap);
+}
+.turn-card.user {
+  background: var(--turn-bg-user);
+  border-left: 3px solid var(--ui-purple-1);
+}
+.turn-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.turn-who {
+  color: var(--ui-purple-2);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.turn-card.user .turn-who { color: var(--ui-purple-3); }
+.turn-meta {
+  color: var(--turn-meta-fg);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.turn-body {
+  margin-top: 4px;
+  color: var(--turn-body-fg);
+}
