@@ -424,6 +424,9 @@ function isSlotParticipatingThisTurn(meeting, slotIndex) {
   if (!meeting) return true;
   // free-mode（2026-05-04）：按 participants 集合判定
   if (meeting.mode === 'free') {
+    // 设计契约（与 main.js:dispatchRoundtableTurn 同步）：
+    //   participants===null（未初始化）→ 视为全员（默认 [0,1,2]）
+    //   两处兜底必须语义一致，否则 UI thinking 状态会与实际 dispatch 撕裂
     if (!Array.isArray(meeting.participants)) return true; // 未初始化默认全员
     return meeting.participants.includes(slotIndex);
   }

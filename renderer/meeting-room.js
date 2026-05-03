@@ -1648,6 +1648,7 @@
       }
     } catch (e) {
       console.error('[meeting-room] updateMeetingData error:', e);
+      // 注：故意不清 _inputBound，保留上次绑定避免 setupInput 重渲后 listener 丢失
     } finally {
       _updating = false;
     }
