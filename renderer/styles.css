@@ -2808,3 +2808,29 @@ body.theme-light .floating-scroll-btn {
   background: linear-gradient(135deg, var(--ui-purple-1), var(--ui-purple-2));
 }
 .turn-content { flex: 1; min-width: 0; }
+
+/* === Spec 1 v0.9.0 · D5 操作按钮 === */
+.turn-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.turn-card:hover .turn-actions { opacity: 1; }
+.ta-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1;
+}
+.ta-btn:hover {
+  border-color: var(--ui-purple-1);
+  background: rgba(139, 92, 246, 0.1);
+  color: var(--ui-purple-3);
+}

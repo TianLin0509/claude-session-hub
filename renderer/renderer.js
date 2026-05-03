@@ -1649,6 +1649,13 @@ function renderTurnCard(turn) {
       <div class="turn-head">
         <span class="turn-who">${escapeHtml(who)}</span>
         <span class="turn-meta">${escapeHtml(ts)}</span>
+        <div class="turn-actions">
+          <button class="ta-btn" data-action="copy" title="复制">📋</button>
+          ${isUser
+            ? `<button class="ta-btn" data-action="resend" title="重发">↻</button>
+               <button class="ta-btn" data-action="edit-resend" title="编辑重发">✏</button>`
+            : `<button class="ta-btn" data-action="regen" title="重新生成">⏪</button>`}
+        </div>
       </div>
       <div class="turn-body">${body}${toolHtml}</div>
     </div>
@@ -1732,6 +1739,79 @@ document.addEventListener('click', (e) => {
   const path = a.dataset.path;
   if (path && typeof openPreviewPanel === 'function') openPreviewPanel(path);
 }, true);
+
+// === Spec 1 v0.9.0 · D5 操作按钮 click ===
+function getTurnFromCard(cardEl) {
+  if (!cardEl || !window._sessionTurns) return null;
+  return window._sessionTurns.get(cardEl.dataset.turnId);
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.ta-btn');
+  if (!btn) return;
+  const card = btn.closest('.turn-card');
+  if (!card || !card.closest('.msg-overlay')) return;
+  const turn = getTurnFromCard(card);
+  if (!turn) return;
+  const action = btn.dataset.action;
+
+  if (action === 'copy') {
+    let md = turn.text || '';
+    if (Array.isArray(turn.toolCalls)) {
+      for (const tc of turn.toolCalls) {
+        md += `\n\n\`\`\`\n${tc.name || ''} ${tc.cmd || ''}\n${tc.stdout || ''}\n\`\`\``;
+      }
+    }
+    navigator.clipboard.writeText(md).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = '✓';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    }).catch(() => {});
+    return;
+  }
+
+  if (action === 'resend' || action === 'regen') {
+    // Resend = same user prompt; regen = find prior user prompt then resend
+    let promptText = null;
+    if (action === 'resend') {
+      promptText = turn.text;
+    } else {
+      // regen: walk DOM up looking for prior user .turn-card
+      const cards = [...document.querySelectorAll('.msg-overlay .turn-card')];
+      const myIdx = cards.indexOf(card);
+      for (let i = myIdx - 1; i >= 0; i--) {
+        if (cards[i].classList.contains('user')) {
+          const userTurn = getTurnFromCard(cards[i]);
+          if (userTurn) promptText = userTurn.text;
+          break;
+        }
+      }
+    }
+    if (!promptText) return;
+    // 复用 terminal-input IPC，不新增 channel
+    const sid = (typeof activeSessionId !== 'undefined' && activeSessionId) || (typeof currentSessionId !== 'undefined' && currentSessionId);
+    if (sid && typeof ipcRenderer !== 'undefined') {
+      ipcRenderer.send('terminal-input', { sessionId: sid, data: promptText + '\r' });
+    }
+    const orig = btn.textContent;
+    btn.textContent = '↺';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+    return;
+  }
+
+  if (action === 'edit-resend') {
+    // Find input area, fill it, focus
+    const inputEl = document.getElementById('terminal-input-area')
+      || document.querySelector('.input-area textarea')
+      || document.querySelector('textarea[placeholder*="输入"], textarea[placeholder*="message"], textarea[placeholder*="Message"]');
+    if (inputEl) {
+      inputEl.value = turn.text || '';
+      inputEl.focus();
+      try { inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length); } catch {}
+    }
+    return;
+  }
+});
 
 // click handler — code-copy + code-expand/collapse
 document.addEventListener('click', (e) => {
