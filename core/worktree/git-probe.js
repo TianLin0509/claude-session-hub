@@ -109,7 +109,7 @@ async function probeRepo(cwd, opts = {}) {
         _runGit(repoRoot, ['status', '--porcelain=2', '--branch']),
         _runGit(repoRoot, ['log', '-1', '--format=%h%x09%s%x09%cr']),
       ]);
-      const status = require('./git-probe').parsePorcelain(statusText);
+      const status = parsePorcelain(statusText);
       const [hash, subject, when] = String(lastCommitText || '').trim().split('\t');
 
       const result = {
@@ -136,7 +136,7 @@ async function listWorktrees(cwd) {
   try {
     const text = await _runGit(cwd, ['worktree', 'list', '--porcelain']);
     if (!text) return [];
-    return require('./git-probe').parseWorktreeList(text);
+    return parseWorktreeList(text);
   } catch (_) {
     return [];
   }
