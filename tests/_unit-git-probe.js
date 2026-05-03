@@ -40,6 +40,17 @@ function test(name, fn) {
     assert.deepStrictEqual(r.dirty, []);
   });
 
+  await test('解析 unmerged 行', () => {
+    const input = [
+      '# branch.head main',
+      '# branch.ab +0 -0',
+      'u UU N... 100644 100644 100644 100644 abc def ghi src/conflict.js',
+    ].join('\n');
+    const r = parsePorcelain(input);
+    assert.strictEqual(r.dirty.length, 1);
+    assert.deepStrictEqual(r.dirty[0], { path: 'src/conflict.js', status: 'C' });
+  });
+
   await test('解析 modified / untracked / renamed', () => {
     const input = [
       '# branch.head main',

@@ -37,6 +37,11 @@ function parsePorcelain(text) {
       out.dirty.push({ path: newPath, status: 'R', from: oldPath });
     } else if (line.startsWith('? ')) {
       out.dirty.push({ path: line.slice(2), status: 'U' });
+    } else if (line.startsWith('u ')) {
+      // unmerged: "u XY sub m1 m2 m3 mW h1 h2 h3 path"
+      const parts = line.split(' ');
+      const path = parts.slice(10).join(' ');
+      if (path) out.dirty.push({ path, status: 'C' });  // 'C' = conflict (distinct from 'U' untracked)
     }
   }
   return out;
