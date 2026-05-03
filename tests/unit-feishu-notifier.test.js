@@ -67,10 +67,44 @@ async function testFirstSend() {
   console.log('  ok first send');
 }
 
+async function testDedupeWithinWindow() {
+  const client = makeFakeClient();
+  const clock = makeFakeClock();
+  const notifier = new FeishuNotifier({
+    client, chatId: 'oc_target', dedupeWindowMs: 60_000, now: clock.now,
+  });
+
+  await notifier.notify(basePayload());
+  clock.advance(30_000);
+  const result = await notifier.notify(basePayload());
+
+  assert.deepStrictEqual(result, { sent: false, reason: 'deduped' });
+  assert.strictEqual(client.calls.length, 1, 'sendCard called only on first');
+  console.log('  ok dedupe within window');
+}
+
+async function testReSendAfterWindow() {
+  const client = makeFakeClient();
+  const clock = makeFakeClock();
+  const notifier = new FeishuNotifier({
+    client, chatId: 'oc_target', dedupeWindowMs: 60_000, now: clock.now,
+  });
+
+  await notifier.notify(basePayload());
+  clock.advance(61_000);
+  const result = await notifier.notify(basePayload());
+
+  assert.deepStrictEqual(result, { sent: true, reason: 'sent' });
+  assert.strictEqual(client.calls.length, 2);
+  console.log('  ok re-send after window');
+}
+
 (async () => {
   console.log('Running FeishuNotifier tests...');
   await testConstructorValidation();
   await testFirstSend();
+  await testDedupeWithinWindow();
+  await testReSendAfterWindow();
   console.log('All passed.');
 })().catch(err => {
   console.error(err);

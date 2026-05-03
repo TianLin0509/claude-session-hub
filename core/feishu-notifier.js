@@ -33,13 +33,22 @@ class FeishuNotifier {
     if (!payload || !payload.sessionId) {
       return { sent: false, reason: 'invalid' };
     }
+    const last = this._lastSentAt.get(payload.sessionId) || 0;
+    const t = this.now();
+    if (t - last < this.dedupeWindowMs) {
+      return { sent: false, reason: 'deduped' };
+    }
+    return this._send(payload, t);
+  }
+
+  async _send(payload, t) {
     const card = buildNotifyCard(payload);
     try {
       await this.client.sendCard({ chatId: this.chatId, card });
-      this._lastSentAt.set(payload.sessionId, this.now());
+      this._lastSentAt.set(payload.sessionId, t);
       return { sent: true, reason: 'sent' };
     } catch (err) {
-      this._lastError = { time: this.now(), message: err.message };
+      this._lastError = { time: t, message: err.message };
       this.logger.warn && this.logger.warn('[feishu-notify] send failed:', err.message);
       return { sent: false, reason: 'error' };
     }
