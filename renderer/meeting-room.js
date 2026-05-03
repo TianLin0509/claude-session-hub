@@ -387,6 +387,176 @@
   // 用 ai-kinds.js 的 KIND_LABELS 单一真理源（含 deepseek/glm/gpt/kimi/qwen），未来加新 AI 自动覆盖。
   const _KIND_LABELS = KIND_LABELS;
 
+  // T1（2026-05-04 道雪）：抽出单 slot 卡片渲染，让 partial-update IPC handler
+  //   能复用同一份模板做局部 patch（不再 panel.innerHTML 全量替换）。
+  //   依赖：函数参数（slotIndex, ctx）+ ctx 字段 { state, currentMode, partialBy, meeting,
+  //         slots, lastTurn, summarizerSlot, meetingId, focused }；
+  //         IIFE 私有 helper / 全局：_avatarBySlot, _avatarFallbackBySlot, _renderPreviewBlocks,
+  //         isSlotParticipatingThisTurn, _ftCtxClass, _formatThinkTime, _formatTokens, _ftHtml,
+  //         _thinkStartTs, _markerStatusCache, _cliReadyCache, _tabState, sessions,
+  //         _KIND_LABELS, modelShort, modelClass。
+  // 返回：{ html, anyThinking }（anyThinking 由调用方累加，不再 mutate 闭包变量）
+  function _renderSlotCard(slotIndex, ctx) {
+    const { state, currentMode, partialBy, meeting, slots, lastTurn, summarizerSlot, meetingId, focused } = ctx;
+    const slot = slots[slotIndex];
+    if (!slot) return { html: '', anyThinking: false };
+    const kind = slot.kind;
+    const sub = { sid: slot.sid, label: slot.label };
+    const partial = partialBy ? partialBy[sub.sid] : null;
+    const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sub.sid) : null;
+    const markerState = _markerStatusCache[sub.sid];
+    const isInitializing = s && !_cliReadyCache[sub.sid];
+    let status = 'idle';
+    let preview = '';
+    let anyThinking = false;
+
+    if (isInitializing && !partial && !(currentMode && currentMode !== 'idle') && !lastTurn) {
+      status = 'initializing';
+    } else if (partial) {
+      if (partial.status === 'streaming') {
+        status = 'streaming';
+        preview = partial.text || '';
+        anyThinking = true;
+      } else if (partial.status === 'absent') {
+        status = 'absent';
+        preview = '';
+      } else if (partial.status === 'errored') {
+        status = 'errored';
+        preview = '';
+      } else if (partial.status === 'manual_extracted') {
+        status = 'manual_extracted';
+        preview = partial.text || '';
+      } else if (partial.status === 'soft_alert') {
+        status = 'soft_alert';
+        preview = partial.text || '';
+        anyThinking = true;
+      } else {
+        status = partial.status === 'timeout' ? 'timeout' : 'completed';
+        preview = partial.text || '';
+      }
+    } else if (currentMode && currentMode !== 'idle') {
+      if (!isSlotParticipatingThisTurn(meeting, slotIndex)) {
+        status = lastTurn && lastTurn.by && lastTurn.by[sub.sid] ? 'completed' : 'idle';
+        preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
+      } else if (currentMode === 'summary' && summarizerSlot && summarizerSlot !== slot.slotId) {
+        status = lastTurn && lastTurn.by[sub.sid] ? 'completed' : 'idle';
+        preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
+      } else {
+        status = 'thinking';
+        anyThinking = true;
+      }
+    } else if (lastTurn) {
+      const lastStatus = lastTurn.byStatus ? lastTurn.byStatus[sub.sid] : null;
+      if (lastStatus === 'errored') {
+        status = 'errored';
+      } else if (lastStatus === 'absent') {
+        status = 'absent';
+      } else if (lastStatus === 'manual_extracted') {
+        status = 'manual_extracted';
+        preview = lastTurn.by[sub.sid] || '';
+      } else if (lastTurn.by[sub.sid]) {
+        status = 'completed';
+        preview = lastTurn.by[sub.sid];
+      }
+    }
+
+    const isActive = sub.sid === focused;
+    const modelName = s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
+    const modelCls = s && s.currentModel && typeof modelClass === 'function' ? modelClass(s.currentModel.id) : '';
+    const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
+    const ctxCls = _ftCtxClass(ctxPct);
+    const labelDisplay = slot.displayLabel;
+
+    let statusForLabel = status;
+    if (partial && partial.sendStatus === 'stuck') statusForLabel = 'send_stuck';
+    const statusLabel = {
+      idle: '待命',
+      initializing: '创建中…',
+      thinking: '思考中',
+      streaming: '输出中',
+      completed: '已答 ✓',
+      timeout: '超时',
+      manual_extracted: '已答 ✓ 手动',
+      absent: '本轮缺席',
+      soft_alert: '等待中…',
+      send_stuck: '⚠ 发送卡住，请按发送',
+      errored: '错误',
+      interrupted: '已中断',
+      transport_lost: '连接断开',
+    }[statusForLabel] || statusForLabel;
+    const tabState = _tabState[sub.sid] || 'idle';
+    const newBadge = tabState === 'new-output' && !isActive ? '<span class="mr-ft-new">NEW</span>' : '';
+
+    const blocksFromPartial = (partial && Array.isArray(partial.blocks) && partial.blocks.length > 0)
+      ? partial.blocks : null;
+    const textFromPartial = (partial && typeof partial.text === 'string' && partial.text)
+      ? partial.text : null;
+    const textFromHistory = (!partial && lastTurn && lastTurn.by && lastTurn.by[sub.sid])
+      ? lastTurn.by[sub.sid] : null;
+
+    let bottomHtml = '';
+    if (status === 'thinking') {
+      if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
+      bottomHtml = `<div class="mr-ft-progress"><div class="mr-ft-progress-bar slot-${slotIndex + 1}"></div></div>`;
+    } else if (status === 'streaming') {
+      if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
+      let inner;
+      if (blocksFromPartial) {
+        inner = _renderPreviewBlocks(blocksFromPartial, sub.sid);
+      } else if (textFromPartial) {
+        inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
+      } else {
+        const elapsedSec = _thinkStartTs[meetingId]
+          ? Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000) : 0;
+        const elapsedTxt = _formatThinkTime(elapsedSec);
+        const liveLen = (partial && typeof partial.cleanBufLen === 'number') ? partial.cleanBufLen : 0;
+        const lenTxt = liveLen > 0 ? ` · 已输出约 ${liveLen} 字` : '';
+        inner = `<div class="mr-ft-thinking-placeholder">💭 思考中 ${elapsedTxt}${lenTxt}<br><span class="mr-ft-thinking-hint">详情请点击左侧子 session 查看</span></div>`;
+      }
+      bottomHtml = `<div class="mr-ft-preview streaming mr-ft-preview-md">${inner}<span class="mr-ft-cursor"></span></div>`;
+    } else if (blocksFromPartial || textFromPartial || textFromHistory) {
+      let inner;
+      if (blocksFromPartial) {
+        inner = _renderPreviewBlocks(blocksFromPartial, sub.sid);
+      } else if (textFromPartial) {
+        inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
+      } else {
+        inner = _renderPreviewBlocks([{ type: 'text', text: textFromHistory }], sub.sid);
+      }
+      bottomHtml = `<div class="mr-ft-preview mr-ft-preview-md">${inner}</div>`;
+    } else {
+      bottomHtml = '<div class="mr-ft-preview" style="opacity:0.5;font-style:italic">等待…</div>';
+    }
+
+    const aiStats = (state.aiStats && (state.aiStats[sub.sid] || state.aiStats[kind]))
+      || { totalThinkSec: 0, totalTokens: 0 };
+    let thinkCurrentSec = 0;
+    let tokensCurrentN = 0;
+    if (status === 'thinking' || status === 'streaming') {
+      thinkCurrentSec = _thinkStartTs[meetingId]
+        ? Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000) : 0;
+      if (partial && partial.tokens && typeof partial.tokens.total === 'number') {
+        tokensCurrentN = partial.tokens.total;
+      }
+    } else if (lastTurn && lastTurn.thinkSecBy && lastTurn.thinkSecBy[sub.sid] != null) {
+      thinkCurrentSec = lastTurn.thinkSecBy[sub.sid] || 0;
+      tokensCurrentN = (lastTurn.tokensBy && lastTurn.tokensBy[sub.sid]) || 0;
+    }
+    const thinkCurrent = _formatThinkTime(thinkCurrentSec);
+    const thinkTotal   = _formatThinkTime(aiStats.totalThinkSec || 0);
+    const tokensCurrent = _formatTokens(tokensCurrentN);
+    const tokensTotal   = _formatTokens(aiStats.totalTokens || 0);
+
+    const sendStuck = !!(partial && partial.sendStatus === 'stuck');
+    const html = _ftHtml(
+      kind, isActive, sub.sid, labelDisplay, statusLabel, status,
+      modelName, modelCls, ctxPct, ctxCls, bottomHtml,
+      thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge,
+      slotIndex, sendStuck
+    );
+    return { html, anyThinking };
+  }
+
   function _renderFusedTabs(state, subs, currentMode, partialBy, meeting) {
     const lastTurn = state.turns.length > 0 ? state.turns[state.turns.length - 1] : null;
     const summarizerSlot = state.currentSummarizerSlot || null;
@@ -394,213 +564,12 @@
     const meetingId = meeting && meeting.id;
     const focused = meeting.focusedSub || meeting.subSessions[0];
     let anyThinking = false;
-    // meeting-create-modal（2026-05-01）：sid 索引化重构 — 旧版 for(kind of [...]) + subs[kind]
-    //   只支持固定三家。新版按 subSessions 数组顺序还原 slot[0..2]，每 slot 包含 sid+kind+label，
-    //   渲染按 slot index 派头像（皮卡丘永远 slot 1，与 kind 解绑）。
     const slots = _getRtSlots(meeting);
+    const ctx = { state, currentMode, partialBy, meeting, slots, lastTurn, summarizerSlot, meetingId, focused };
     for (let slotIndex = 0; slotIndex < 3; slotIndex++) {
-      const slot = slots[slotIndex];
-      if (!slot) continue;
-      const kind = slot.kind;
-      const sub = { sid: slot.sid, label: slot.label };
-      const partial = partialBy ? partialBy[sub.sid] : null;
-      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sub.sid) : null;
-      const markerState = _markerStatusCache[sub.sid];
-      // IF-C1（2026-05-01）：用 _cliReadyCache 替代 markerStatus 判 isInitializing。
-      //   原 markerState 检测 summary marker，AI ready 但无人问过时永远 'none' →
-      //   卡片永久"创建中"卡死（P0 阻塞 bug B）。新方案靠 cli-ready-status IPC 实时
-      //   读 PTY buffer 长度/marker 判断 CLI 真就绪。
-      const isInitializing = s && !_cliReadyCache[sub.sid];
-      let status = 'idle';
-      let preview = '';
-
-      if (isInitializing && !partial && !(currentMode && currentMode !== 'idle') && !lastTurn) {
-        status = 'initializing';
-      } else if (partial) {
-        if (partial.status === 'streaming') {
-          status = 'streaming';
-          preview = partial.text || '';
-          anyThinking = true;
-        } else if (partial.status === 'absent') {
-          status = 'absent';
-          preview = '';
-        } else if (partial.status === 'errored') {
-          status = 'errored';
-          preview = '';
-        } else if (partial.status === 'manual_extracted') {
-          status = 'manual_extracted';
-          preview = partial.text || '';
-        } else if (partial.status === 'soft_alert') {
-          status = 'soft_alert';
-          preview = partial.text || '';
-          anyThinking = true;
-        } else {
-          status = partial.status === 'timeout' ? 'timeout' : 'completed';
-          preview = partial.text || '';
-        }
-      } else if (currentMode && currentMode !== 'idle') {
-        // pilot redesign v5（2026-05-02）：参与名单委托给 core/meeting-room.js
-        //   的 isSlotParticipatingThisTurn 纯函数，与 main.js dispatchRoundtableTurn
-        //   的 targetSubs 公式共用同一份真理。
-        //   v4 旧逻辑只判 "slot != pilotSlot" 当作 observer，造成：
-        //     - 群策群力 + 已选主驾：副驾真在 thinking，卡片错显 idle
-        //     - 副驾发言：主驾错显 thinking，副驾错显 idle（语义完全反了）
-        //   v5：把判定抽到 core/，单测固化；renderer 与后端对齐。
-        if (!isSlotParticipatingThisTurn(meeting, slotIndex)) {
-          // 本轮不参与：保持上轮显示或 idle
-          status = lastTurn && lastTurn.by && lastTurn.by[sub.sid] ? 'completed' : 'idle';
-          preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
-        } else if (currentMode === 'summary' && summarizerSlot && summarizerSlot !== slot.slotId) {
-          status = lastTurn && lastTurn.by[sub.sid] ? 'completed' : 'idle';
-          preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
-        } else {
-          status = 'thinking';
-          anyThinking = true;
-        }
-      } else if (lastTurn) {
-        // FIX-A（2026-05-01）：已结束轮的卡片状态必须读 byStatus，不能只看 by[sid] 文本。
-        //   旧逻辑 if (lastTurn.by[sub.sid]) → errored / absent 因 by[sid]=='' 直接 fall through 到
-        //   默认 'idle'，卡片显"待命"无角标无逃生按钮（用户场景：Codex CLI 自我更新后卡死 30min）。
-        //   现按 byStatus 区分四种终态：completed / manual_extracted / errored / absent。
-        const lastStatus = lastTurn.byStatus ? lastTurn.byStatus[sub.sid] : null;
-        if (lastStatus === 'errored') {
-          status = 'errored';
-        } else if (lastStatus === 'absent') {
-          status = 'absent';
-        } else if (lastStatus === 'manual_extracted') {
-          status = 'manual_extracted';
-          preview = lastTurn.by[sub.sid] || '';
-        } else if (lastTurn.by[sub.sid]) {
-          status = 'completed';
-          preview = lastTurn.by[sub.sid];
-        }
-        // 否则保持 'idle'（首次未参与 / 老格式无 byStatus + 无 by 文本）
-      }
-
-      const isActive = sub.sid === focused;
-      const modelName = s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
-      const modelCls = s && s.currentModel && typeof modelClass === 'function' ? modelClass(s.currentModel.id) : '';
-      const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
-      const ctxCls = _ftCtxClass(ctxPct);
-      // slot 化（2026-05-03）：卡片名走 slot 双语显示（"⚡ Pikachu · 皮卡丘"）。
-      //   多 claude 圆桌时不再三家全显"Claude"，按 slot 区分清晰。
-      const labelDisplay = slot.displayLabel;
-
-      // Stage 2 容错升级：状态机扩展（manual_extracted / absent / soft_alert / errored / interrupted / transport_lost）
-      // 状态来源：partial.status（后端 watcher 设置）+ 'roundtable-soft-alert' IPC 注入 status='soft_alert'
-      // T6（2026-05-03）：send_stuck 由 partial.sendStatus='stuck' 注入（不覆盖 partial.status，保留 streaming/soft_alert 并行）
-      let statusForLabel = status;
-      if (partial && partial.sendStatus === 'stuck') statusForLabel = 'send_stuck';
-      const statusLabel = {
-        idle: '待命',
-        initializing: '创建中…',
-        thinking: '思考中',
-        streaming: '输出中',
-        completed: '已答 ✓',
-        timeout: '超时',           // 老路径兼容（commit 2 已改 watcher，此值不再产生）
-        manual_extracted: '已答 ✓ 手动',
-        absent: '本轮缺席',
-        soft_alert: '等待中…',
-        send_stuck: '⚠ 发送卡住，请按发送',  // T6：数据驱动，refreshRoundtablePanel 重渲后保留
-        errored: '错误',
-        interrupted: '已中断',
-        transport_lost: '连接断开',
-      }[statusForLabel] || statusForLabel;
-      const tabState = _tabState[sub.sid] || 'idle';
-      const newBadge = tabState === 'new-output' && !isActive ? '<span class="mr-ft-new">NEW</span>' : '';
-
-      // T7（2026-05-01）：blocks 优先 / text 兼容 / lastTurn 历史回显 / 占位
-      //   partial.blocks（数组、非空）→ 结构化渲染（thinking/tool/text）
-      //   partial.text（字符串）→ 包成 [{type:'text',text}] 走同一渲染（向后兼容）
-      //   历史轮 lastTurn.by[sid] → 同上（包成 text 块）
-      //   都没有 → "等待…" 占位
-      const blocksFromPartial = (partial && Array.isArray(partial.blocks) && partial.blocks.length > 0)
-        ? partial.blocks
-        : null;
-      const textFromPartial = (partial && typeof partial.text === 'string' && partial.text)
-        ? partial.text
-        : null;
-      const textFromHistory = (!partial && lastTurn && lastTurn.by && lastTurn.by[sub.sid])
-        ? lastTurn.by[sub.sid]
-        : null;
-
-      // Card redesign（2026-05-01）：bottom 区内容（progress / streaming preview / completed preview / 占位）
-      let bottomHtml = '';
-      if (status === 'thinking') {
-        if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
-        bottomHtml = `<div class="mr-ft-progress"><div class="mr-ft-progress-bar slot-${slotIndex + 1}"></div></div>`;
-      } else if (status === 'streaming') {
-        if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
-        // T7：streaming 状态下也走 blocks 渲染（如 transcript-tap 已就绪），fallback 到旧 snippet
-        // fix（2026-05-01 多方审查反馈方案 C）：tap 没数据时不再 fallback 到 PTY ringBuffer
-        //   （会被 Claude TUI throbbing 字符 / Codex prompt echo 残片污染）。
-        //   显示"💭 思考中..."占位，承认 streaming 阶段 PTY 不可信，等 transcript 落盘再渲染。
-        let inner;
-        if (blocksFromPartial) {
-          inner = _renderPreviewBlocks(blocksFromPartial, sub.sid);
-        } else if (textFromPartial) {
-          inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
-        } else {
-          // 2026-05-03 道雪 B1：placeholder 心跳 - 显示思考时长 + cleanBufLen 字数
-          //   数据源：main.js 心跳 partial.cleanBufLen（PTY buffer 剥 ANSI/spinner）
-          //   注意：cleanBufLen 含 cli 状态条文案（"Computing..."），是活跃度近似值
-          const elapsedSec = _thinkStartTs[meetingId]
-            ? Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000)
-            : 0;
-          const elapsedTxt = _formatThinkTime(elapsedSec);
-          const liveLen = (partial && typeof partial.cleanBufLen === 'number') ? partial.cleanBufLen : 0;
-          const lenTxt = liveLen > 0 ? ` · 已输出约 ${liveLen} 字` : '';
-          inner = `<div class="mr-ft-thinking-placeholder">💭 思考中 ${elapsedTxt}${lenTxt}<br><span class="mr-ft-thinking-hint">详情请点击左侧子 session 查看</span></div>`;
-        }
-        bottomHtml = `<div class="mr-ft-preview streaming mr-ft-preview-md">${inner}<span class="mr-ft-cursor"></span></div>`;
-      } else if (blocksFromPartial || textFromPartial || textFromHistory) {
-        // IF-C0（2026-05-01）：completed/已答状态用 marked + DOMPurify 渲染 markdown
-        //   T7：所有 preview 都走 _renderPreviewBlocks，统一管线
-        let inner;
-        if (blocksFromPartial) {
-          inner = _renderPreviewBlocks(blocksFromPartial, sub.sid);
-        } else if (textFromPartial) {
-          inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
-        } else {
-          inner = _renderPreviewBlocks([{ type: 'text', text: textFromHistory }], sub.sid);
-        }
-        bottomHtml = `<div class="mr-ft-preview mr-ft-preview-md">${inner}</div>`;
-      } else {
-        // 占位文本，保持卡片底部不空（防视觉空洞）
-        bottomHtml = '<div class="mr-ft-preview" style="opacity:0.5;font-style:italic">等待…</div>';
-      }
-
-      // meeting-create-modal（2026-05-01）：aiStats 现在是 sid 索引（让多 Claude
-      //   slot 各自独立累加），先按 sid 取，再回退到 kind（兼容老 state.json）。
-      const aiStats = (state.aiStats && (state.aiStats[sub.sid] || state.aiStats[kind]))
-        || { totalThinkSec: 0, totalTokens: 0 };
-      let thinkCurrentSec = 0;
-      let tokensCurrentN = 0;
-      if (status === 'thinking' || status === 'streaming') {
-        // 实时计算（粗粒度，按整秒避免抖动）
-        thinkCurrentSec = _thinkStartTs[meetingId]
-          ? Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000)
-          : 0;
-        if (partial && partial.tokens && typeof partial.tokens.total === 'number') {
-          tokensCurrentN = partial.tokens.total;
-        }
-      } else if (lastTurn && lastTurn.thinkSecBy && lastTurn.thinkSecBy[sub.sid] != null) {
-        // 已完成：从 lastTurn 持久化字段精准回显
-        thinkCurrentSec = lastTurn.thinkSecBy[sub.sid] || 0;
-        tokensCurrentN = (lastTurn.tokensBy && lastTurn.tokensBy[sub.sid]) || 0;
-      }
-      const thinkCurrent = _formatThinkTime(thinkCurrentSec);
-      const thinkTotal   = _formatThinkTime(aiStats.totalThinkSec || 0);
-      const tokensCurrent = _formatTokens(tokensCurrentN);
-      const tokensTotal   = _formatTokens(aiStats.totalTokens || 0);
-
-      const sendStuck = !!(partial && partial.sendStatus === 'stuck');
-      tabs.push(_ftHtml(
-        kind, isActive, sub.sid, labelDisplay, statusLabel, status,
-        modelName, modelCls, ctxPct, ctxCls, bottomHtml,
-        thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge,
-        slotIndex, sendStuck
-      ));
+      const { html, anyThinking: t } = _renderSlotCard(slotIndex, ctx);
+      if (html) tabs.push(html);
+      if (t) anyThinking = true;
     }
     if (!anyThinking && meetingId) delete _thinkStartTs[meetingId];
     return `<div class="mr-ft-strip">${tabs.join('')}</div>`;
