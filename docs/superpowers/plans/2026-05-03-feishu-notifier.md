@@ -786,16 +786,16 @@ function resolveFeishuNotifyConfig(hubConfig) {
 
 - [ ] **Step 7.4: 启动 smoke test，确认 Hub 能正常起来（无 chat_id 配置时静默禁用）**
 
-Run（**用隔离 data dir，避免污染生产 Hub 状态**）：
+Run（**必须用 `$env:...; & exe` 同句 + run_in_background**。`Start-Process` 在 PS 5.1 下不继承 env，会让 `CLAUDE_HUB_DATA_DIR` 失效从而污染生产 Hub state — 严禁使用）：
 
 ```powershell
-cd C:\Users\lintian\claude-session-hub
-$env:CLAUDE_HUB_DATA_DIR = "$env:TEMP\hub-task7-smoke"
-Remove-Item Env:HUB_FEISHU_NOTIFY_CHAT_ID -ErrorAction SilentlyContinue  # 确保未配
-$proc = Start-Process -FilePath ".\node_modules\electron\dist\electron.exe" -ArgumentList "." -PassThru -RedirectStandardOutput "$env:TEMP\hub-smoke.log" -RedirectStandardError "$env:TEMP\hub-smoke.err.log"
-Start-Sleep -Seconds 8
-Stop-Process -Id $proc.Id -Force
-Remove-Item Env:CLAUDE_HUB_DATA_DIR
+# 一句完整命令，run_in_background:true
+Remove-Item Env:HUB_FEISHU_NOTIFY_CHAT_ID -ErrorAction SilentlyContinue; $env:CLAUDE_HUB_DATA_DIR = "$env:TEMP\hub-task7-smoke"; & "C:\Users\lintian\claude-session-hub\node_modules\electron\dist\electron.exe" "C:\Users\lintian\claude-session-hub" 2>&1 | Tee-Object -FilePath "$env:TEMP\hub-smoke.log"
+```
+
+启动后等 8 秒，停掉这个 background 进程（用其 shell id），然后：
+
+```powershell
 Get-Content "$env:TEMP\hub-smoke.log" | Select-String -Pattern "feishu-notify|hook server"
 ```
 
@@ -853,15 +853,16 @@ node -e "const lines=require('fs').readFileSync('renderer/renderer.js','utf8').s
 
 - [ ] **Step 8.3: smoke test — 启动 Hub 确认 renderer 不报错**
 
-Run（用隔离 data dir）：
+Run（同 Task 7 — `$env:...; & exe` 同句 + run_in_background；**禁用 Start-Process**）：
 
 ```powershell
-$env:CLAUDE_HUB_DATA_DIR = "$env:TEMP\hub-task8-smoke"
-$proc = Start-Process -FilePath ".\node_modules\electron\dist\electron.exe" -ArgumentList "." -PassThru -RedirectStandardOutput "$env:TEMP\hub-smoke.log" -RedirectStandardError "$env:TEMP\hub-smoke.err.log"
-Start-Sleep -Seconds 8
-Stop-Process -Id $proc.Id -Force
-Remove-Item Env:CLAUDE_HUB_DATA_DIR
-Get-Content "$env:TEMP\hub-smoke.err.log" | Select-String -Pattern "Error|Uncaught"
+$env:CLAUDE_HUB_DATA_DIR = "$env:TEMP\hub-task8-smoke"; & "C:\Users\lintian\claude-session-hub\node_modules\electron\dist\electron.exe" "C:\Users\lintian\claude-session-hub" 2>&1 | Tee-Object -FilePath "$env:TEMP\hub-smoke.log"
+```
+
+run_in_background:true，等 8 秒后停掉，再：
+
+```powershell
+Get-Content "$env:TEMP\hub-smoke.log" | Select-String -Pattern "Error|Uncaught"
 ```
 
 Expected: 无 `Error` / `Uncaught` 输出。
