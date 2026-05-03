@@ -682,20 +682,8 @@
     );
   }
 
-  function _renderCmdBar(turns, currentMode, partialBy, expectedSids) {
-    const suggested = _suggestedCmd(turns, currentMode);
-    const rawInProgress = currentMode && currentMode !== 'idle';
-    // effectiveInProgress：考虑 partialBy 中各家 settle 状态——如果都 settled 就视为已结束
-    const inProgress = rawInProgress && !_allParticipantsSettled(partialBy, expectedSids);
-    const dis = inProgress ? ' disabled' : '';
-    const noDebate = (turns.length < 1 || inProgress) ? ' disabled' : '';
-    const cls = (cmd) => `mr-rt-cmd-btn${suggested === cmd ? ' mr-rt-cmd-suggested' : ''}`;
-    return `<div class="mr-rt-cmd-bar">
-      <button class="${cls('ask')}" data-rt-cmd="ask"${dis}>💬 直接提问 <span class="mr-rt-cmd-hint">三家独立答</span></button>
-      <button class="${cls('debate')}" data-rt-cmd="debate"${noDebate}>⚔ @debate <span class="mr-rt-cmd-hint">互相点评</span></button>
-      <button class="${cls('summary')}" data-rt-cmd="summary"${noDebate}>📋 @summary <span class="mr-rt-cmd-hint">综合总结</span></button>
-    </div>`;
-  }
+  // E3 修复 (2026-05-03)：_renderCmdBar 删除（与 toolbar 重复的 ask/debate/summary 按钮组）。
+  // _suggestedCmd / _allParticipantsSettled 仍被其他地方使用（如未来扩展）— 保留 helper 函数，删渲染。
 
   function _renderOnboarding(meeting) {
     const sceneKey = meeting && meeting.scene || 'general';
@@ -730,7 +718,10 @@
     // meeting-create-modal（2026-05-01）：期望家 = meeting.subSessions（按 slot 顺序），
     //   不再硬编码 ['claude','gemini','codex']——多 claude / DeepSeek+GLM 混搭的圆桌也能正确判完成。
     const expectedSids = Array.isArray(meeting.subSessions) ? meeting.subSessions.slice() : [];
-    const cmdBar = _renderCmdBar(state.turns, mode, partialBy, expectedSids);
+    // E3 修复 (2026-05-03)：删除 _renderCmdBar 调用 — panel 顶部的
+    //   "💬 直接提问 / ⚔ @debate / 📋 @summary" 按钮组与 toolbar 的"🗣 辩论 / 🗒 摘要 /
+    //   📝 总结"语义重叠且 disabled 状态不一致（cmd-bar @summary disabled vs toolbar
+    //   📝 总结 enabled），用户困惑。toolbar 已覆盖所有功能，删 cmd-bar 单一来源。
     const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
     // Stage 2 容错升级：软提醒 banner 容器
     const softBanner = `<div id="mr-rt-soft-alert-banner" class="mr-rt-soft-alert-banner" style="display:none"></div>`;
@@ -742,7 +733,6 @@
             <span class="mr-rt-title">${titleText}</span>
             ${stepper}
           </div>
-          ${cmdBar}
         </div>
       </div>
       ${softBanner}
@@ -816,17 +806,7 @@
         _openRtTimeline(meeting, sid, kind);
       });
     });
-    panel.querySelectorAll('.mr-rt-cmd-btn[data-rt-cmd]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (btn.hasAttribute('disabled')) return;
-        const cmd = btn.getAttribute('data-rt-cmd');
-        const input = document.getElementById('mr-input-box');
-        if (!input) return;
-        if (cmd === 'ask') { input.focus(); }
-        else if (cmd === 'debate') { input.textContent = '@debate '; input.focus(); _placeCaretAtEnd(input); }
-        else if (cmd === 'summary') { input.textContent = '@summary @claude '; input.focus(); _placeCaretAtEnd(input); }
-      });
-    });
+    // E3 修复 (2026-05-03)：cmd-bar 的 .mr-rt-cmd-btn click handler 删除（按钮已不渲染）
     const hasThinking = panel.querySelector('.mr-rt-think-elapsed');
     if (hasThinking && !_thinkTimer) {
       const mid = meeting.id;

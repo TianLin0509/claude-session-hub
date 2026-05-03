@@ -501,29 +501,8 @@
 }
 .mr-rt-step-line { width: 12px; height: 1px; background: #2a3245; }
 .mr-rt-step-label { margin-left: 6px; font-size: 11px; white-space: nowrap; }
-.mr-rt-cmd-bar {
-  display: flex; gap: 6px; flex-wrap: wrap;
-}
-.mr-rt-cmd-btn {
-  padding: 5px 12px; font-size: 11px;
-  background: rgba(99,102,241,0.08);
-  border: 1px solid rgba(99,102,241,0.25);
-  color: #a5b4fc;
-  border-radius: 14px;
-  cursor: pointer;
-  font-family: inherit;
-  transition: background 0.15s, border-color 0.15s;
-}
-.mr-rt-cmd-btn:hover:not([disabled]) { background: rgba(99,102,241,0.15); }
-.mr-rt-cmd-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
-.mr-rt-cmd-hint { color: #8b949e; margin-left: 4px; font-size: 10px; }
-.mr-rt-cmd-suggested {
-  background: rgba(250,204,21,0.12);
-  border-color: rgba(250,204,21,0.35);
-  color: #fde68a;
-}
-.mr-rt-cmd-suggested .mr-rt-cmd-hint { color: rgba(250,204,21,0.6); }
-.mr-rt-cmd-suggested:hover:not([disabled]) { background: rgba(250,204,21,0.2); }
+/* E3 修复 (2026-05-03)：.mr-rt-cmd-bar / .mr-rt-cmd-btn 等样式删除 — cmd-bar
+   按钮组与 toolbar 重复，已从渲染中移除（meeting-room.js _renderCmdBar 删）。 */
 
 /* Fused card-tabs: card + terminal tab in one */
 /* Card redesign 2026-05-01：防抖三件套
