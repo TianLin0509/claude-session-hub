@@ -1635,7 +1635,13 @@
         const prevSubs = prev ? prev.subSessions.join(',') : '';
         const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
         const modeChanged = prev && (prev.scene !== updated.scene);
-        if (prevSubs !== newSubs || modeChanged) {
+        // T7 fix（2026-05-04）：free 模式下 participants 变化（尤其 0 人→非0）需重刷 setupInput
+        // 以同步 sendBtn.disabled 和 inputBox placeholder/readonly 状态。
+        const prevParts = prev && Array.isArray(prev.participants) ? prev.participants.join(',') : 'null';
+        const newParts = Array.isArray(updated.participants) ? updated.participants.join(',') : 'null';
+        const participantsChanged = prevParts !== newParts;
+        const modeModeChanged = prev && (prev.mode !== updated.mode);
+        if (prevSubs !== newSubs || modeChanged || participantsChanged || modeModeChanged) {
           renderTerminals(updated);
           setupInput(updated);
         }
