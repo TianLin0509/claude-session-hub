@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+
 function buildNotifyCard(payload) {
   // 占位实现，Task 6 会扩展
   return {
@@ -40,7 +42,23 @@ class FeishuNotifier {
         return { sent: false, reason: 'deduped' };
       }
     }
+    if (this.chatId === '') {
+      this._writeDryRun(payload, t);
+      this._lastSentAt.set(payload.sessionId, t);
+      return { sent: true, reason: 'dryrun' };
+    }
     return this._send(payload, t);
+  }
+
+  _writeDryRun(payload, t) {
+    if (!this.dryRunLogPath) return;
+    const card = buildNotifyCard(payload);
+    const line = JSON.stringify({ t, payload, card }) + '\n';
+    try {
+      fs.appendFileSync(this.dryRunLogPath, line, 'utf8');
+    } catch (err) {
+      this._lastError = { time: t, message: 'dryrun log failed: ' + err.message };
+    }
   }
 
   async _send(payload, t) {

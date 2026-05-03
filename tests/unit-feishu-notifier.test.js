@@ -1,6 +1,9 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const { FeishuNotifier, buildNotifyCard } = require('../core/feishu-notifier.js');
 
 function makeFakeClient() {
@@ -147,6 +150,26 @@ async function testApiFailureNoThrow() {
   console.log('  ok api failure does not throw');
 }
 
+async function testDryRunMode() {
+  const client = makeFakeClient();
+  const clock = makeFakeClock();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-notify-dry-'));
+  const logPath = path.join(tmpDir, 'feishu-notify.log');
+  const notifier = new FeishuNotifier({
+    client, chatId: '', dryRunLogPath: logPath, now: clock.now,
+  });
+
+  const result = await notifier.notify(basePayload());
+
+  assert.deepStrictEqual(result, { sent: true, reason: 'dryrun' });
+  assert.strictEqual(client.calls.length, 0, 'sendCard NOT called in dryrun');
+  assert.ok(fs.existsSync(logPath), 'dry-run log exists');
+  const logContent = fs.readFileSync(logPath, 'utf8');
+  assert.ok(logContent.includes('sess-A'), 'log contains sessionId');
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  console.log('  ok dry-run mode');
+}
+
 (async () => {
   console.log('Running FeishuNotifier tests...');
   await testConstructorValidation();
@@ -156,6 +179,7 @@ async function testApiFailureNoThrow() {
   await testNewlyWaitingBypassesDedupe();
   await testDifferentSessionsIndependent();
   await testApiFailureNoThrow();
+  await testDryRunMode();
   console.log('All passed.');
 })().catch(err => {
   console.error(err);
