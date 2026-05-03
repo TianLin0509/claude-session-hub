@@ -1521,6 +1521,28 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
   };
 }
 
+// === Spec 1 v0.9.0 · 视图切换 ===
+let currentView = 'card'; // 'card' | 'pty'
+
+function applyViewMode(mode) {
+  currentView = mode;
+  const overlay = document.getElementById('msg-overlay');
+  if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
+  document.querySelectorAll('.view-toggle-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === mode);
+  });
+  // 切到 PTY 时 refit xterm
+  if (mode === 'pty' && typeof terminalCache !== 'undefined') {
+    const cached = terminalCache.get(activeSessionId);
+    if (cached && cached.fitAddon) cached.fitAddon.fit();
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.view-toggle-btn');
+  if (btn && btn.dataset.view) applyViewMode(btn.dataset.view);
+});
+
 function mountFloatingInput(sessionId, termContainer, terminal) {
   const bar = document.createElement('div');
   bar.className = 'floating-input-bar';
@@ -4259,6 +4281,7 @@ async function resumeDormantSession(hubId) {
     renderAccountUsage();
     traceRendererStartup('usage cache loaded');
   }).catch(() => { renderAccountUsage(); });
+  applyViewMode('card');
 })();
 
 // Persist on relevant changes — listen at renderer-level for mutations that
