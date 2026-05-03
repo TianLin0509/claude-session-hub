@@ -53,6 +53,9 @@ function loadMeetingFile(id) {
       console.warn(`[meeting-store] schema mismatch for ${id}: ${obj.schemaVersion}`);
       return null;
     }
+    // free-mode（2026-05-04）：老 meeting 文件无 mode/participants 字段时兜底
+    if (!['pilot', 'free'].includes(obj.mode)) obj.mode = 'pilot';
+    if (!Array.isArray(obj.participants)) obj.participants = null;
     return obj;
   } catch (e) {
     if (e.code !== 'ENOENT') console.warn(`[meeting-store] load ${id} failed:`, e.message);

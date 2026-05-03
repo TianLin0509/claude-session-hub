@@ -67,12 +67,32 @@ function testEmptyArrayParticipantsAllowed() {
   assert.deepStrictEqual(re.participants, [], 'empty array preserved');
 }
 
+function testLegacyJsonOnDiskLoadFallback() {
+  // 直接写无 mode/participants 字段的老 JSON 到磁盘，验证 loadMeetingFile 兜底
+  const dir = path.join(TEST_DIR, 'meetings');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'm-on-disk.json'), JSON.stringify({
+    schemaVersion: 1,
+    id: 'm-on-disk',
+    _timeline: [],
+    _cursors: {},
+    _nextIdx: 0,
+    pilotSlot: null,
+    dispatchMode: 'all',
+    savedAt: Date.now(),
+  }));
+  const re = store.loadMeetingFile('m-on-disk');
+  assert.strictEqual(re.mode, 'pilot', 'load tolerates missing mode');
+  assert.strictEqual(re.participants, null, 'load tolerates missing participants');
+}
+
 console.log('--- meeting-store free fields ---');
 run('testFreshSaveAndLoad', testFreshSaveAndLoad);
 run('testLegacyMeetingDefaultsToPilot', testLegacyMeetingDefaultsToPilot);
 run('testInvalidModeFallsBackToPilot', testInvalidModeFallsBackToPilot);
 run('testInvalidParticipantsFallsBackToNull', testInvalidParticipantsFallsBackToNull);
 run('testEmptyArrayParticipantsAllowed', testEmptyArrayParticipantsAllowed);
+run('testLegacyJsonOnDiskLoadFallback', testLegacyJsonOnDiskLoadFallback);
 
 // cleanup
 try { fs.rmSync(TEST_DIR, { recursive: true, force: true }); } catch {}
