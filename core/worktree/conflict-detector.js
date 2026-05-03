@@ -44,4 +44,4 @@ function classify(active, peers) {
   return { color: level, reasons };
 }
 
-module.exports = { classify };
+module.exports = { classify, _norm };

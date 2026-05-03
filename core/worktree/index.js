@@ -1,6 +1,6 @@
 'use strict';
 const { probeRepo, listWorktrees } = require('./git-probe');
-const { classify } = require('./conflict-detector');
+const { classify, _norm } = require('./conflict-detector');
 
 /**
  * 收集 active session 与同 repo peers 的 git 状态，返回面板数据。
@@ -25,12 +25,8 @@ async function getPanelData({ activeSessionId, allSessions, force = false }) {
     const p = await probeRepo(s.cwd, { force });
     return { ...p, sessionId: s.sessionId, sessionLabel: s.sessionLabel };
   }));
-  const activeRootKey = String(activeFull.repoRoot || '').replace(/\\/g, '/').toLowerCase();
-  const peers = peerProbes.filter(p => {
-    if (!p.isRepo) return false;
-    const pKey = String(p.repoRoot || '').replace(/\\/g, '/').toLowerCase();
-    return pKey === activeRootKey;
-  });
+  const activeRootKey = _norm(activeFull.repoRoot);
+  const peers = peerProbes.filter(p => p.isRepo && _norm(p.repoRoot) === activeRootKey);
 
   const worktreeList = activeFull.isRepo ? await listWorktrees(activeFull.repoRoot) : [];
   const conflict = classify(activeFull, peers);
