@@ -1239,12 +1239,22 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerKi
     // 并行发送到所有目标 PTY
     const sentTargets = [];
     await Promise.all(targets.map(async (t) => {
-      const ok = await _rtSendToPty(t.sid, t.prompt, t.kind);
-      if (ok) {
-        sentTargets.push(t);
-        console.log(`[roundtable] turn ${turnNum} ${mode} sent to ${t.kind}(${t.sid.slice(0,8)})`);
-      } else {
-        console.log(`[roundtable] turn ${turnNum} ${mode} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
+      // P0-4 修复(silent-failure-audit-2026-05-03): _rtSendToPty 在 session 并发关闭等
+      // 场景下可能抛 TypeError(getSessionBuffer 返回 undefined 后访问 .length)。原本未捕获
+      // 会让 Promise.all reject → dispatchRoundtableTurn try 直接跳 finally,turnNum 已经
+      // beginTurn 写了 state.json 但 rollbackTurn 永不调用 → orchestrator 留在非 idle 状态
+      // → 圆桌死锁需重启 Hub 才能恢复。lambda 内 try/catch 把异常降级为"未发出",
+      // 自动走下面 sentTargets.length === 0 的 rollback 兜底。
+      try {
+        const ok = await _rtSendToPty(t.sid, t.prompt, t.kind);
+        if (ok) {
+          sentTargets.push(t);
+          console.log(`[roundtable] turn ${turnNum} ${mode} sent to ${t.kind}(${t.sid.slice(0,8)})`);
+        } else {
+          console.log(`[roundtable] turn ${turnNum} ${mode} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
+        }
+      } catch (e) {
+        console.warn(`[roundtable] turn ${turnNum} ${mode} _rtSendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
       }
     }));
     if (sentTargets.length === 0) {
@@ -1462,12 +1472,18 @@ ipcMain.handle('roundtable:summary-trigger', async (_e, { meetingId } = {}) => {
     });
     const sentTargets = [];
     await Promise.all(targets.map(async (t) => {
-      const ok = await _rtSendToPty(t.sid, t.prompt, t.kind);
-      if (ok) {
-        sentTargets.push(t);
-        console.log(`[roundtable] summary turn ${turnNum} sent to ${t.kind}(${t.sid.slice(0,8)})`);
-      } else {
-        console.log(`[roundtable] summary turn ${turnNum} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
+      // P0-4 修复同 dispatchRoundtableTurn (1241): _rtSendToPty 抛错时降级为未发出,
+      // 避免整个 Promise.all reject 导致 turnNum 已 beginTurn 但 rollback 永不调用。
+      try {
+        const ok = await _rtSendToPty(t.sid, t.prompt, t.kind);
+        if (ok) {
+          sentTargets.push(t);
+          console.log(`[roundtable] summary turn ${turnNum} sent to ${t.kind}(${t.sid.slice(0,8)})`);
+        } else {
+          console.log(`[roundtable] summary turn ${turnNum} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
+        }
+      } catch (e) {
+        console.warn(`[roundtable] summary turn ${turnNum} _rtSendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
       }
     }));
     if (sentTargets.length === 0) {
