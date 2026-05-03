@@ -1800,14 +1800,23 @@ document.addEventListener('click', (e) => {
   }
 
   if (action === 'edit-resend') {
-    // Find input area, fill it, focus
-    const inputEl = document.getElementById('terminal-input-area')
-      || document.querySelector('.input-area textarea')
-      || document.querySelector('textarea[placeholder*="输入"], textarea[placeholder*="message"], textarea[placeholder*="Message"]');
+    // Hub uses contenteditable div for input (not textarea):
+    // - Single session: `<div class="floating-input-box" contenteditable>`
+    // - Roundtable: `<div id="mr-input-box" contenteditable>`
+    const inputEl = document.querySelector('.floating-input-box')
+      || document.getElementById('mr-input-box');
     if (inputEl) {
-      inputEl.value = turn.text || '';
+      inputEl.textContent = turn.text || '';
       inputEl.focus();
-      try { inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length); } catch {}
+      // Place cursor at end (contenteditable doesn't have setSelectionRange)
+      try {
+        const range = document.createRange();
+        range.selectNodeContents(inputEl);
+        range.collapse(false);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch {}
     }
     return;
   }
