@@ -3084,13 +3084,17 @@ function renderAccountUsage() {
   const pctCls = (pct) => pct >= 85 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
 
   const renderBar = (label, u) => {
+    const resetTxt = u && u.resetsAt ? formatResetIn(u.resetsAt) : '';
+    const resetHtml = resetTxt
+      ? `<span class="acc-bar-reset" title="距离 ${label} 配额刷新还有 ${resetTxt}">${resetTxt}</span>`
+      : `<span class="acc-bar-reset"></span>`;
     if (!u || u.pct === null || u.pct === undefined) {
-      return `<div class="acc-bar-line"><span class="acc-bar-label">${label}</span><div class="acc-bar-track"><div class="acc-bar-fill dim" style="width:0%"></div></div><span class="acc-bar-pct dim">—</span></div>`;
+      return `<div class="acc-bar-line"><span class="acc-bar-label">${label}</span><div class="acc-bar-track"><div class="acc-bar-fill dim" style="width:0%"></div></div><span class="acc-bar-pct dim">—</span>${resetHtml}</div>`;
     }
     const pct = Math.round(u.pct);
     const cls = pctCls(pct);
     const w = Math.max(2, pct);
-    return `<div class="acc-bar-line"><span class="acc-bar-label">${label}</span><div class="acc-bar-track"><div class="acc-bar-fill ${cls}" style="width:${w}%"></div></div><span class="acc-bar-pct ${cls}">${pct}%</span></div>`;
+    return `<div class="acc-bar-line"><span class="acc-bar-label">${label}</span><div class="acc-bar-track"><div class="acc-bar-fill ${cls}" style="width:${w}%"></div></div><span class="acc-bar-pct ${cls}">${pct}%</span>${resetHtml}</div>`;
   };
 
   const logoSrc = (badgeClass) => {
@@ -3101,12 +3105,11 @@ function renderAccountUsage() {
   const renderUsageRow = (badgeClass, name, u5h, u7d) => {
     const src = logoSrc(badgeClass);
     const logoHtml = src
-      ? `<img class="acc-ai-logo" src="${src}" alt="${escapeHtml(name)}">`
+      ? `<img class="acc-ai-logo" src="${src}" alt="${escapeHtml(name)}" title="${escapeHtml(name)}">`
       : `<span class="acc-ai-letters">${badgeClass.toUpperCase()}</span>`;
     return `
-      <div class="acc-usage-row">
+      <div class="acc-usage-row" title="${escapeHtml(name)}">
         <span class="acc-ai-badge ${badgeClass}">${logoHtml}</span>
-        <span class="acc-ai-name">${name}</span>
         <div class="acc-bars">
           ${renderBar('5h', u5h)}
           ${renderBar('7d', u7d)}
@@ -3117,21 +3120,21 @@ function renderAccountUsage() {
 
   const renderPackyRow = (data) => {
     if (!data || !data.enabled) {
-      return `<div class="acc-packy-row no-cookie" title="设置 → PackyAPI 段填 cookie 启用余额监控">
+      return `<div class="acc-packy-row no-cookie clickable" data-action="open-packy-settings" title="点击打开设置 → 填 PackyAPI cookie 启用余额监控">
         <span class="acc-packy-icon">$</span>
         <div class="acc-packy-text">
           <div class="acc-packy-balance-line"><span class="acc-packy-balance">未接入</span></div>
-          <div class="acc-packy-spend-line">点设置填 cookie</div>
+          <div class="acc-packy-spend-line">点击此处填 cookie</div>
         </div>
       </div>`;
     }
     const fmt = (n) => '$' + (typeof n === 'number' ? n.toFixed(2) : '—');
     if (data.error && (data.balanceUsd === null || data.balanceUsd === undefined)) {
-      return `<div class="acc-packy-row error" title="${escapeHtml(data.error)}">
+      return `<div class="acc-packy-row error clickable" data-action="open-packy-settings" title="${escapeHtml(data.error)} · 点击打开设置重填 cookie">
         <span class="acc-packy-icon">!</span>
         <div class="acc-packy-text">
           <div class="acc-packy-balance-line"><span class="acc-packy-balance">cookie 失效</span></div>
-          <div class="acc-packy-spend-line">今日 ${fmt(data.todayUsd)} · 设置→PackyAPI 重填</div>
+          <div class="acc-packy-spend-line">今日 ${fmt(data.todayUsd)} · 点击重填</div>
         </div>
       </div>`;
     }
@@ -3169,6 +3172,19 @@ function renderAccountUsage() {
       });
     });
   }
+  // 未接入 / cookie 失效 整行可点击 → 打开设置并定位到 cookie 输入框
+  el.querySelectorAll('[data-action="open-packy-settings"]').forEach(row => {
+    row.addEventListener('click', async () => {
+      try {
+        await openConfigModal();
+        const cookieEl = document.getElementById('cfg-packy-cookie');
+        if (cookieEl) {
+          cookieEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          setTimeout(() => cookieEl.focus(), 200);
+        }
+      } catch {}
+    });
+  });
 }
 
 ipcRenderer.on('packy-account-updated', (_e, data) => {
@@ -4222,12 +4238,14 @@ async function resumeDormantSession(hubId) {
   ipcRenderer.invoke('get-hub-config-raw').then((cfg) => {
     if (!cfg) return;
     providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
-    renderAccountUsage();
+    // 不在这里调 renderAccountUsage —— packyAccountData 还没从 cache 加载完成,
+    // 提前渲染会出现一帧"未接入"假象(get-usage-cache 慢于本 promise resolve)。
+    // 余额/用量行的渲染统一交给下面的 cache promise。
     traceRendererStartup('hub config loaded');
   }).catch(() => {});
 
   ipcRenderer.invoke('get-usage-cache').then((cached) => {
-    if (!cached) return;
+    if (!cached) cached = {};
     if (cached.claude && cached.claude.usage5h) {
       accountUsage.usage5h = cached.claude.usage5h;
       accountUsage.usage7d = cached.claude.usage7d;
@@ -4240,7 +4258,7 @@ async function resumeDormantSession(hubId) {
     if (cached.packy) packyAccountData = cached.packy;
     renderAccountUsage();
     traceRendererStartup('usage cache loaded');
-  }).catch(() => {});
+  }).catch(() => { renderAccountUsage(); });
 })();
 
 // Persist on relevant changes — listen at renderer-level for mutations that

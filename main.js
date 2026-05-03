@@ -2771,12 +2771,15 @@ async function fetchAndCachePackyAccount() {
   }
   const proxy = cfg.proxy || '';
   const data = await packyBalance.fetchAggregated({ cookie, tokenKeys, proxy });
-  cachePackyAccount({ ...data, enabled: true });
-  // 通知 renderer 刷新
+  // cache 与 IPC payload 必须都带 enabled: true。漏 enabled 会让 renderer 直接覆盖
+  // packyAccountData 后 renderPackyRow 走 !data.enabled 分支显示"未接入"——
+  // 启动时从 cache 加载有 enabled,5min 自动刷新触发 IPC 后立刻翻车。
+  const payload = { ...data, enabled: true };
+  cachePackyAccount(payload);
   for (const win of BrowserWindow.getAllWindows()) {
-    try { win.webContents.send('packy-account-updated', data); } catch {}
+    try { win.webContents.send('packy-account-updated', payload); } catch {}
   }
-  return data;
+  return payload;
 }
 
 ipcMain.handle('refresh-packy-account', async () => {

@@ -115,7 +115,7 @@
             <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
             <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
             <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
-            <span class="launcher-version">v0.8.4</span>
+            <span class="launcher-version">v0.8.5</span>
           </div>
         </div>
       </div>
@@ -285,14 +285,9 @@
             </button>
           </div>
 
-          <div class="config-section-label" style="margin-top: 18px;">
-            <span>侧栏数据 · PackyAPI 账户</span>
-            <span id="cfg-packy-expires" class="config-label-hint"></span>
-          </div>
-          <p class="config-hint">侧栏第三行展示 PackyAPI 余额/消耗。需要从 <a href="#" id="cfg-packy-doc-link">www.packyapi.com</a> 浏览器 cookies 复制 <code>session</code> 字段值粘贴下方(等同登录态,过期需重新提供)。</p>
           <div class="config-field">
-            <label>PackyAPI Session Cookie <span class="config-label-hint">(留空则只显示今日消耗)</span></label>
-            <textarea id="cfg-packy-cookie" rows="2" placeholder="MTc3NzY0NTUwM3xEWDhFQVFMX2dBQUJF..." spellcheck="false" style="resize: vertical; min-height: 44px; font-family: ui-monospace, monospace; font-size: 11px;"></textarea>
+            <label>PackyAPI Cookie <span class="config-label-hint">（侧栏余额监控，从 packyapi.com cookies 复制 session 字段值）</span> <span id="cfg-packy-expires" class="config-label-hint"></span></label>
+            <input type="password" id="cfg-packy-cookie" placeholder="MTc3NzY0NTUwM3xEWDhFQVFMX2dBQUJF..." spellcheck="false">
           </div>
         </div>
 

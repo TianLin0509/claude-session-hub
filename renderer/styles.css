@@ -1353,13 +1353,6 @@ body.theme-light .prompt-line-marker {
 .acc-usage-row .acc-ai-badge.cx { background: rgba(16, 163, 127, 0.18); }
 .acc-usage-row .acc-ai-logo { width: 18px; height: 18px; display: block; }
 .acc-usage-row .acc-ai-letters { font-size: 9px; font-weight: 700; font-family: ui-monospace, "SF Mono", monospace; }
-.acc-usage-row .acc-ai-name {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-primary);
-  width: 44px;
-  flex-shrink: 0;
-}
 .acc-usage-row .acc-bars {
   flex: 1;
   display: flex;
@@ -1409,6 +1402,15 @@ body.theme-light .prompt-line-marker {
 .acc-bar-pct.warn   { color: var(--accent-orange); }
 .acc-bar-pct.danger { color: var(--accent-red); }
 .acc-bar-pct.dim    { color: var(--text-muted); }
+.acc-bar-reset {
+  width: 30px;
+  text-align: right;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-family: ui-monospace, "SF Mono", monospace;
+}
 
 /* PackyAPI 合并行(余额 + 消耗 + 充值) */
 .acc-packy-row {
@@ -1495,6 +1497,18 @@ body.theme-light .prompt-line-marker {
   font-size: 11px;
   color: var(--text-muted);
   font-weight: 500;
+}
+.acc-packy-row.clickable {
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.acc-packy-row.clickable:hover {
+  border-color: var(--accent-blue);
+  background: rgba(31, 111, 235, 0.08);
+}
+.acc-packy-row.error.clickable:hover {
+  border-color: rgba(248, 81, 73, 0.6);
+  background: rgba(248, 81, 73, 0.08);
 }
 
 /* Per-session context badge in footer */
