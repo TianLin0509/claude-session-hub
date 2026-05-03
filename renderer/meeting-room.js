@@ -671,6 +671,7 @@
       <div class="mr-ft-escape-bar">
         <button class="mr-ft-escape-btn" data-rt-escape="extract" data-rt-sid="${sid}" data-rt-kind="${kind}" title="从 transcript 直读拼接（卡死时绕过完成检测）">一键提取</button>
         <button class="mr-ft-escape-btn" data-rt-escape="skip" data-rt-sid="${sid}" data-rt-kind="${kind}" title="本轮跳过这家，下游 prompt 不引用">跳过</button>
+        <button class="mr-ft-escape-btn" data-rt-escape="resend-prompt" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重发本轮 prompt 给该家（自动判定输入框是否已含 prompt）">📤 发送</button>
         ${relaunchBtn}
       </div>`;
 
@@ -1013,6 +1014,29 @@
             } else {
               console.warn('[rt-escape] enter-shell: selectSession not available');
             }
+          } else if (action === 'resend-prompt') {
+            const r = await ipcRenderer.invoke('roundtable-resend-prompt', { meetingId: meeting.id, sid });
+            if (r && r.ok) {
+              btn.style.background = '#2da44e';
+              btn.style.color = '#fff';
+              btn.textContent = `✓ 已重发`;
+              _btnTextHandledExternally = true;
+              // 重发成功后清理 send-stuck 视觉
+              const card = document.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
+              if (card) {
+                card.classList.remove('send-stuck');
+                const statusEl = card.querySelector('.mr-ft-status.send-stuck');
+                if (statusEl) statusEl.classList.remove('send-stuck');
+              }
+              setTimeout(() => {
+                btn.style.background = '';
+                btn.style.color = '';
+                btn.textContent = oldText;
+                btn.disabled = false;
+              }, 1500);
+            } else {
+              alert(`重发失败：${r?.reason || 'unknown'}\n\n建议：\n1. 检查该家 PTY 是否还活着（左侧 sidebar 点进去看）\n2. 或者按"跳过"绕过这家，下一轮会自动重启 CLI`);
+            }
           } else if (action === 'resend') {
             const r = await ipcRenderer.invoke('roundtable-resend-participant', { meetingId: meeting.id, sid });
             if (r && r.ok) {
@@ -1338,6 +1362,42 @@
       panel.innerHTML = _renderRtPanelHtml(cached, meeting);
       _bindRtPanelEvents(panel, meeting);
     }
+  });
+
+  // T6（2026-05-03）：send-stuck 事件 → 卡片加 .send-stuck 类 + 状态文本提示
+  ipcRenderer.on('roundtable-send-stuck', (_e, { meetingId, sid /*, kind, mode */ }) => {
+    const card = document.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
+    if (!card) return;
+    card.classList.add('send-stuck');
+    const statusEl = card.querySelector('.mr-ft-status');
+    if (statusEl) {
+      statusEl.textContent = '⚠ 发送卡住，请按发送';
+      statusEl.classList.add('send-stuck');
+    }
+    console.warn(`[renderer] roundtable-send-stuck meeting=${meetingId} sid=${sid.slice(0,8)}`);
+  });
+
+  // T6（2026-05-03）：turn-patched 事件 → 卡片右上角浮"自动补全 +N 字"角标 + 触发刷新
+  ipcRenderer.on('roundtable-turn-patched', (_e, { meetingId, turnNum, sid, charCount }) => {
+    const card = document.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
+    if (!card) return;
+    let badge = card.querySelector('.mr-ft-auto-patched-badge');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'mr-ft-auto-patched-badge';
+      card.appendChild(badge);
+    }
+    badge.textContent = `自动补全 +${charCount}字`;
+    badge.classList.remove('fade-out');
+    void badge.offsetWidth;  // 强制 reflow 让 fade-out 动画从头开始
+    badge.classList.add('fade-out');
+    setTimeout(() => { try { badge.remove(); } catch {} }, 3000);
+    // 触发完整卡片刷新（拿最新 turn meta 重渲染卡片正文），复用 roundtable-turn-complete 同路径
+    const meeting = meetingData[meetingId];
+    if (_isPanelCapableMeeting(meeting) && meetingId === activeMeetingId) {
+      refreshRoundtablePanel(meeting);
+    }
+    console.log(`[renderer] roundtable-turn-patched turn=${turnNum} sid=${sid.slice(0,8)} +${charCount} chars`);
   });
 
   const panelEl = () => document.getElementById('meeting-room-panel');
