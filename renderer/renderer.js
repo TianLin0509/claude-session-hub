@@ -1966,6 +1966,70 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
 }
 window._loadSessionHistoryToOverlay = loadSessionHistoryToOverlay;
 
+// === Spec 2 v1.0.0 · S6 turn-complete-event listener ===
+// main.js (S3) broadcasts 'turn-complete-event' whenever an assistant turn
+// finishes streaming. Append the just-completed turn as a card to #msg-overlay
+// for the active Claude session in card view.
+//
+// Skip conditions (each is a multi-instance / multi-view safety guard):
+//   - meetingId truthy → 圆桌 has its own card pipeline (renderer/meeting-room.js)
+//   - hubSessionId !== activeSessionId → other sessions' new turns shouldn't pop
+//     up under the active session's overlay
+//   - currentView !== 'card' → PTY view doesn't use the overlay; building DOM
+//     nobody sees is wasteful
+//
+// Why re-invoke parse-session-transcript instead of trusting payload.text:
+//   The S3 payload only carries plain text. The structured turn (thinking,
+//   toolCalls, model, stopReason, usage, id, ts) lives in the JSONL transcript
+//   and is parsed by S1's parse-session-transcript. Calling it with limit:1
+//   fromTail:true returns the just-completed turn fully structured. Fallback to
+//   payload-only turn on IPC error keeps the user from seeing nothing.
+ipcRenderer.on('turn-complete-event', async (_event, payload) => {
+  const {
+    hubSessionId,
+    transcriptPath,
+    text,
+    completedAt,
+    meetingId,
+    kind,
+  } = payload || {};
+
+  // 1. 圆桌 path — meeting-room.js handles its own card rendering
+  if (meetingId) return;
+
+  // 2. multi-session safety — only render for currently active session
+  if (hubSessionId !== activeSessionId) return;
+
+  // 3. only render in card view (PTY view doesn't use msg-overlay)
+  if (currentView !== 'card') return;
+
+  try {
+    const r = await ipcRenderer.invoke('parse-session-transcript', {
+      hubSessionId,
+      transcriptPath,
+      opts: { limit: 1, fromTail: true },
+    });
+
+    if (r && !r.error && Array.isArray(r.turns) && r.turns.length > 0) {
+      // got the structured turn from S1 parser
+      mountSessionTurnCard(hubSessionId, r.turns[0], { kind, autoScroll: true });
+      return;
+    }
+
+    // fall through to payload-only fallback on parse error / empty
+    const fallbackTurn = {
+      id: 'turn-' + (completedAt || Date.now()),
+      role: 'assistant',
+      text: text || '',
+      ts: completedAt || Date.now(),
+      kind,
+    };
+    mountSessionTurnCard(hubSessionId, fallbackTurn, { kind, autoScroll: true });
+  } catch (err) {
+    console.warn('[turn-complete-event] failed to render new turn:', err);
+  }
+});
+
 // rt-file-link click → openPreviewPanel (only for cards inside .msg-overlay,
 // don't conflict with meeting-room.js handler which targets its own scope)
 document.addEventListener('click', (e) => {
