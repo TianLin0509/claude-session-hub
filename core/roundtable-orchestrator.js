@@ -93,7 +93,12 @@ class RoundtableOrchestrator {
       // 防御：迁移结果非法（不是对象）时不动 state
       if (migrated && typeof migrated === 'object') {
         this.state.aiStats = migrated;
-        try { this._saveState(); } catch {}
+        // silent-failure-hunter M2（2026-05-04 道雪）：原空 catch 吞掉 _saveState throw →
+        //   内存迁移成功但磁盘没更新 → 下次 Hub 启动又载入老格式重新迁移、aiStats 累计回滚。
+        //   留 try/catch（迁移失败不应阻断 setMeetingContext 流程），但加 warn 方便追溯。
+        try { this._saveState(); } catch (e) {
+          console.warn('[orchestrator] setMeetingContext: _saveState failed after aiStats migration:', e && e.message);
+        }
       }
     }
   }
