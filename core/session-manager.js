@@ -99,13 +99,27 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
   }
 }
 
-// 圆桌 CLI 隔离 — 软隔离方案 (2026-05-02)
-// 目的：圆桌成员的 Claude/DeepSeek/GLM CLI 启动时
-//   1) --disable-slash-commands   关闭 superpowers / brainstorming / TDD 等 skill 入口
-//   2) --settings <path>          merge 一份"全 plugin disabled"的 settings.json
-//      （只覆盖 enabledPlugins 字段，不动主目录的 hooks/permissions/statusLine 等）
+// 圆桌 CLI 隔离 — 软隔离方案 (2026-05-02 / v2 白名单优化 2026-05-04 道雪)
+// 目的：圆桌成员的 Claude/DeepSeek/GLM CLI 启动时,
+//   `--settings <path>`  merge 一份"全 plugin disabled"的 settings.json
+//   （只覆盖 enabledPlugins 字段，不动主目录的 hooks/permissions/statusLine 等）。
 // 不动 CLAUDE_CONFIG_DIR — auto-memory / CLAUDE.md / OAuth 凭证全部继续共享。
-// 仅当 opts.meetingId 存在（即圆桌成员）时启用，主桌 Claude 会话不受影响。
+// 仅当 opts.meetingId 存在（即圆桌成员）时启用,主桌 Claude 会话不受影响。
+//
+// ⚠ settings 兜底盲区 (v2 修订 · 2026-05-04 道雪):
+//   `enabledPlugins` 仅对 **plugin 内的 skill** 生效。
+//     ✅ 兜得住: superpowers 全家 (plan/brainstorming/TDD/debugging/SDD/post-refactor-verify/
+//        simplify/review/security-review)、code-review/security-guidance/codex/
+//        feature-dev/skill-creator/claude-md-management 等 23 个 plugin。
+//     ❌ 兜不住: 用户自定义 skill (位于 ~/.claude/skills/),如 cli-caller / init / loop /
+//        schedule / design-review。它们不属于任何 plugin,settings 完全无法禁用。
+//   这部分必须靠 BASE_RULES (core/roundtable-scenes.js) 软约束兜底,详见该文件
+//   "AI 禁止主动调用" 段。
+//
+// 历史 (v1 · 2026-05-02):
+//   原方案另加 `--disable-slash-commands` (CLI 参数) 一刀切禁用所有斜杠命令,
+//   误杀 /model /compact /help /clear /config 等用户基本操作 (用户反馈痛点)。
+//   v2 删除该参数,改靠 settings 禁 plugin + BASE_RULES 软约束自定义 skill 双层兜底。
 const _ROUNDTABLE_DISABLE_PLUGINS = {
   'hookify@claude-plugins-official': false,
   'code-review@claude-plugins-official': false,
@@ -153,7 +167,10 @@ function buildRoundtableIsolationFlags(meetingId) {
   const settingsPath = ensureRoundtableSettings(getHubDataDir());
   // settings 路径含反斜杠 — Claude CLI 在 PowerShell 下接受双反斜杠转义
   const escaped = settingsPath.replace(/\\/g, '\\\\');
-  return ` --disable-slash-commands --settings "${escaped}"`;
+  // v2 (2026-05-04): 仅 --settings 单层兜底 (禁 plugin 内 skill);
+  //   用户自定义 skill 由 BASE_RULES 软约束兜底 (详见上方注释)。
+  //   旧版 `--disable-slash-commands` 已删,避免误杀 /model /compact 等用户基本操作。
+  return ` --settings "${escaped}"`;
 }
 
 function dismissCodexUpdatePrompt(homeDir = process.env.USERPROFILE || process.env.HOME || os.homedir()) {
@@ -955,7 +972,8 @@ class SessionManager extends EventEmitter {
     const kind = s.info && s.info.kind;
     const modelId = s.info && s.info.currentModel && s.info.currentModel.id;
     const meetingId = s.info && s.info.meetingId;
-    // 圆桌成员：复用同一份隔离 settings + --disable-slash-commands
+    // 圆桌成员：复用 buildRoundtableIsolationFlags 输出 (v2 后仅 --settings,不含
+    //   --disable-slash-commands;详见该函数注释)。
     // 用 isClaudeFamily 同时覆盖主 kind 与 *-resume 形态（含 gpt/kimi/qwen 跑在 Claude CLI 上）。
     const baseKind = (typeof kind === 'string') ? kind.replace(/-resume$/, '') : kind;
     const isClaudeCli = isClaudeFamily(baseKind);
