@@ -83,6 +83,8 @@ if (typeof document !== 'undefined') (function () {
   // T3（2026-05-04 道雪）：抽屉实时订阅状态。打开时设 { sid, mid, kind }，关时清 null。
   //   partial-update handler 命中同 sid + 用户当前 active 的是 live tab 时，更新抽屉内容。
   let _rtTimelineLive = null;
+  // T3 fix（2026-05-04 道雪）：上一次抽屉的清理函数，开新抽屉前先调，避免 escHandler 累积绑定 + 闭包内存泄漏。
+  let _rtTimelineCleanup = null;
   // pilot redesign（2026-05-02）：_privateCountCache 已废弃（圆桌不再桥接子会话私聊）
   const _thinkStartTs = {};
   let _thinkTimer = null;
@@ -1059,6 +1061,8 @@ if (typeof document !== 'undefined') (function () {
   // T3（2026-05-04 道雪）：合并 _partialBy[sid] 作为「实时」虚拟轮次（如果有内容）；
   //   抽屉打开期间订阅 partial-update 实时更新内容（修复 B1 看不到本轮 partial）。
   function _openRtTimeline(meeting, sid, kind) {
+    // T3 fix（2026-05-04 道雪）：开新抽屉前先清掉上一次的 escHandler + 订阅状态。
+    if (_rtTimelineCleanup) { _rtTimelineCleanup(); _rtTimelineCleanup = null; }
     const state = _rtPanelState[meeting.id];
     if (!state || !Array.isArray(state.turns)) return;
 
@@ -1184,12 +1188,16 @@ if (typeof document !== 'undefined') (function () {
       overlay.style.display = 'none';
       document.removeEventListener('keydown', escHandler);
       _rtTimelineLive = null;  // T3：关抽屉清订阅
+      _rtTimelineCleanup = null;  // T3 fix：清掉自身指针，避免下次开抽屉重复 cleanup
     };
     const escHandler = (ev) => { if (ev.key === 'Escape') closeAll(); };
     overlay.querySelectorAll('[data-rt-tl-close]').forEach(el => {
       el.addEventListener('click', closeAll);
     });
     document.addEventListener('keydown', escHandler);
+    // T3 fix（2026-05-04 道雪）：把本次 closeAll 注册为模块级清理函数。
+    //   下次 _openRtTimeline 调用时会先调它，避免 escHandler 累积。
+    _rtTimelineCleanup = closeAll;
   }
 
   // 乐观态生命周期：renderer 在 IPC 飞行期间用 _rtOptimisticTurn 标记自己写的乐观字段，
