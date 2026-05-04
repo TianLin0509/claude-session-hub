@@ -366,6 +366,19 @@ const terminalCache = new Map();
 const sessionListEl = document.getElementById('session-list');
 const terminalPanelEl = document.getElementById('terminal-panel');
 const emptyStateEl = document.getElementById('empty-state');
+
+// Spec 2 preserve helper — both showTerminal AND session-closed handler clear
+// terminalPanelEl.innerHTML, which would obliterate spec 1/2 elements (view-toggle,
+// msg-overlay) declared statically in index.html. Without preserve they vanish forever
+// after the first session close → no card view + no view toggle button.
+function preserveAndClearTerminalPanel() {
+  const preserved = [
+    document.getElementById('msg-overlay'),
+    document.querySelector('.view-toggle')
+  ].filter(Boolean);
+  terminalPanelEl.innerHTML = '';
+  preserved.forEach(el => terminalPanelEl.appendChild(el));
+}
 const btnNew = document.getElementById('btn-new');
 const menuEl = document.getElementById('new-session-menu');
 const wrapperEl = document.getElementById('new-session-wrapper');
@@ -1084,14 +1097,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   // Preserve spec 1/2 elements that live inside #terminal-panel (view-toggle, msg-overlay)
   // before innerHTML clear obliterates them; re-attach after.
-  const preserved = [
-    document.getElementById('msg-overlay'),
-    document.querySelector('.view-toggle')
-  ].filter(Boolean);
-
-  terminalPanelEl.innerHTML = '';
-
-  preserved.forEach(el => terminalPanelEl.appendChild(el));
+  preserveAndClearTerminalPanel();
 
   const header = document.createElement('div');
   header.className = 'terminal-header';
@@ -3477,22 +3483,25 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
 
   // Spec 2 partial-update workaround:
   // transcriptTap.emit('turn-complete') only fires on stop_reason ∈ {end_turn, max_tokens, refusal} —
-  // assistant turns with stop_reason='tool_use' wait for the next message, so card view lags
-  // PTY badly during multi-tool-call cycles. PTY data arriving means transcript has new lines;
-  // debounce-reload card view ~600ms after PTY quiets so card stays in sync.
+  // assistant turns with stop_reason='tool_use' wait for the next message; card view lags PTY.
+  // Throttle (leading edge) reload card every ~800ms while PTY streams. Not debounce — debounce
+  // resets timer on every PTY chunk, so during streaming it never fires until full silence.
   if (sessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
-    if (!window._cardReloadDebounce) window._cardReloadDebounce = new Map();
-    if (!window._cardReloadInProgress) window._cardReloadInProgress = new Set();
-    const prev = window._cardReloadDebounce.get(sessionId);
-    if (prev) clearTimeout(prev);
-    window._cardReloadDebounce.set(sessionId, setTimeout(() => {
-      window._cardReloadDebounce.delete(sessionId);
-      if (window._cardReloadInProgress.has(sessionId)) return;
-      window._cardReloadInProgress.add(sessionId);
-      loadSessionHistoryToOverlay(sessionId)
-        .catch(err => console.warn('[card auto-reload] failed:', err))
-        .finally(() => window._cardReloadInProgress.delete(sessionId));
-    }, 600));
+    if (!window._cardReloadState) window._cardReloadState = new Map();
+    let st = window._cardReloadState.get(sessionId);
+    if (!st) { st = { lastReloadAt: 0, pendingTimer: null, inProgress: false }; window._cardReloadState.set(sessionId, st); }
+    if (!st.pendingTimer && !st.inProgress) {
+      const sinceLast = Date.now() - st.lastReloadAt;
+      const delay = Math.max(100, 800 - sinceLast);
+      st.pendingTimer = setTimeout(() => {
+        st.pendingTimer = null;
+        st.inProgress = true;
+        st.lastReloadAt = Date.now();
+        loadSessionHistoryToOverlay(sessionId)
+          .catch(err => console.warn('[card auto-reload] failed:', err))
+          .finally(() => { st.inProgress = false; });
+      }, delay);
+    }
   }
 });
 
@@ -4842,7 +4851,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   }
   if (activeSessionId === sessionId) {
     activeSessionId = null;
-    terminalPanelEl.innerHTML = '';
+    preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
     emptyStateEl.style.display = '';
   }
