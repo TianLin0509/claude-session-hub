@@ -1575,6 +1575,43 @@ function getFoldedTool(turnId, idx, defaultExpanded) {
   return defaultExpanded;
 }
 
+// === Spec 3 · UI 方案 E (CardCluster) — 工具簇 ===
+// 多 tool 同 turn 合并显示：1 行 cluster summary 默认折叠，展开后是工具列表。
+// 每行 tool 显示 [Name] [cmd-from-input]，因 tool_result 在 parser 跳过故无 stdout
+// （留待 spec 3+ 关联 tool_use_id ↔ tool_result 后再展开单 tool 详情）。
+// 替代了之前每个 tool 单独渲染成大块的方案（信息密度低）。
+const _TOOL_CMD_KEYS = ['file_path', 'command', 'pattern', 'path', 'url', 'query'];
+function _toolCmdFromInput(input) {
+  if (!input || typeof input !== 'object') return '';
+  for (const k of _TOOL_CMD_KEYS) {
+    if (typeof input[k] === 'string' && input[k]) {
+      return input[k].split('\n')[0].slice(0, 100);
+    }
+  }
+  return '';
+}
+function renderToolCluster(turnId, toolCalls) {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
+  const counts = {};
+  for (const tc of toolCalls) {
+    const name = (tc && tc.name) || '?';
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  const breakdown = Object.entries(counts)
+    .map(([n, c]) => c > 1 ? `${n} × ${c}` : n)
+    .join(' + ');
+  const total = toolCalls.length;
+  const items = toolCalls.map((tc) => {
+    const name = escapeHtml((tc && tc.name) || '?');
+    const cmd = escapeHtml(_toolCmdFromInput(tc && tc.input));
+    return `<div class="tc-row"><span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}</div>`;
+  }).join('');
+  return `<details class="tc-cluster" data-turn="${escapeHtml(turnId)}">
+    <summary class="tc-cluster-head">${total} 个工具调用 · ${escapeHtml(breakdown)}</summary>
+    <div class="tc-cluster-list">${items}</div>
+  </details>`;
+}
+
 function renderToolCall(turnId, idx, tc) {
   // tc = { name, cmd, stdout, ok, durationMs, exitCode? }
   const lines = (tc.stdout || '').split('\n').length;
@@ -1625,6 +1662,8 @@ function rerenderTurn(turnId) {
     const bodyEl = newCard.querySelector('.turn-body');
     if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl);
     card.replaceWith(newCard);
+    // Spec 3 长文本折叠：必须在 DOM 内调（replaceWith 之后），否则 scrollHeight=0
+    if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
   }
 }
 
@@ -1674,7 +1713,8 @@ function renderTurnCard(turn) {
 
   const rawHtml = marked.parse(turn.text || '', { breaks: true, gfm: true });
   const body = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target', 'data-lang'] });
-  const toolHtml = (turn.toolCalls || []).map((tc, i) => renderToolCall(turn.id || '', i, tc)).join('');
+  // Spec 3 方案 E：工具簇折叠（之前每 tool 单独大块 → 信息密度极低）
+  const toolHtml = renderToolCluster(turn.id || '', turn.toolCalls);
 
   // === Spec 2 · S8: thinking 字段 (assistant only, default collapsed) ===
   // S1 parser exposes turn.thinking as multi-block joined string (or null).
@@ -1711,7 +1751,7 @@ function renderTurnCard(turn) {
         </div>
       </div>
       ${thinkingHtml}
-      <div class="turn-body">${body}${toolHtml}</div>
+      <div class="turn-body">${toolHtml}${body}</div>
     </div>
   </div>`;
 }
@@ -1769,6 +1809,44 @@ function postProcessCardCodeBlocks(cardEl) {
   });
 }
 
+// === Spec 3 · 长 markdown 文本默认折叠 ===
+// 在卡片插入 DOM 后调用：检测 turn-body scrollHeight 超过阈值 → 加 .body-foldable.folded
+// + 插入"展开全文"按钮。必须在 mount 后调（detached 元素 scrollHeight=0）。
+const _BODY_FOLD_THRESHOLD_PX = 400;
+function postProcessLongTextFold(cardEl) {
+  if (!cardEl) return;
+  const body = cardEl.querySelector('.turn-body');
+  if (!body) return;
+  // 已存在折叠按钮（rerender 路径） → 跳过
+  if (cardEl.querySelector('.body-fold-toggle')) return;
+  if (body.scrollHeight <= _BODY_FOLD_THRESHOLD_PX) return;
+  body.classList.add('body-foldable', 'folded');
+  const btn = document.createElement('div');
+  btn.className = 'body-fold-toggle';
+  btn.dataset.action = 'body-expand';
+  btn.textContent = '▾ 展开全文';
+  body.parentElement.insertBefore(btn, body.nextSibling);
+}
+
+// 全局 click handler: 长文本展开/折叠
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('[data-action="body-expand"], [data-action="body-collapse"]');
+  if (!btn) return;
+  const card = btn.closest('.turn-card');
+  if (!card) return;
+  const body = card.querySelector('.turn-body');
+  if (!body) return;
+  if (btn.dataset.action === 'body-expand') {
+    body.classList.remove('folded');
+    btn.dataset.action = 'body-collapse';
+    btn.textContent = '▴ 折叠';
+  } else {
+    body.classList.add('folded');
+    btn.dataset.action = 'body-expand';
+    btn.textContent = '▾ 展开全文';
+  }
+});
+
 function mountTurnCard(container, turn) {
   const tmp = document.createElement('div');
   tmp.innerHTML = renderTurnCard(turn);
@@ -1778,6 +1856,7 @@ function mountTurnCard(container, turn) {
   const bodyEl = cardEl.querySelector('.turn-body');
   if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl);
   container.appendChild(cardEl);
+  postProcessLongTextFold(cardEl);
   return cardEl;
 }
 window._mountTurnCard = mountTurnCard;
@@ -1857,6 +1936,10 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   const bodyEl = cardEl.querySelector('.turn-body');
   if (bodyEl && typeof wrapPathLinksInElement === 'function') {
     wrapPathLinksInElement(bodyEl);
+  }
+  // 7b. Spec 3 · 长文本默认折叠（必须在 DOM 插入后调，否则 scrollHeight=0）
+  if (typeof postProcessLongTextFold === 'function') {
+    postProcessLongTextFold(cardEl);
   }
 
   // 8. register in _sessionTurns (turnId → turn) — keep spec1 Map shape

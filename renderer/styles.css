@@ -2759,6 +2759,99 @@ body.theme-light .floating-scroll-btn {
 }
 .tc-toggle:hover { background: rgba(167, 139, 250, 0.05); }
 
+/* === Spec 3 · UI 方案 E · 工具簇折叠 === */
+.tc-cluster {
+  background: var(--tool-call-bg);
+  border: 1px solid var(--tool-call-border);
+  border-radius: 6px;
+  margin: 8px 0;
+}
+.tc-cluster-head {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: var(--ui-purple-2);
+  user-select: none;
+}
+.tc-cluster-head::-webkit-details-marker { display: none; }
+.tc-cluster-head::before { content: '▸ '; color: var(--ui-purple-2); }
+.tc-cluster[open] .tc-cluster-head::before { content: '▾ '; }
+.tc-cluster-head:hover { color: var(--ui-purple-3); }
+.tc-cluster-list {
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tc-row {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  padding: 4px 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+}
+.tc-row-name { color: var(--tool-call-name); font-weight: 600; flex-shrink: 0; }
+.tc-row-cmd { color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* === Spec 3 · 长 markdown 文本默认折叠 === */
+.turn-body.body-foldable.folded {
+  max-height: 400px;
+  overflow: hidden;
+  position: relative;
+  -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+}
+.body-fold-toggle {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 4px 12px;
+  font-size: 11.5px;
+  color: var(--ui-purple-2);
+  cursor: pointer;
+  border-radius: 4px;
+  background: rgba(167, 139, 250, 0.06);
+  user-select: none;
+  transition: background 0.15s;
+}
+.body-fold-toggle:hover { background: rgba(167, 139, 250, 0.14); color: var(--ui-purple-3); }
+
+/* === Spec 3 · markdown 表格样式 (此前完全裸样式 → 表格"散乱") === */
+.turn-body table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 13px;
+  width: auto;
+  max-width: 100%;
+  border: 1px solid var(--tool-call-border);
+}
+.turn-body th,
+.turn-body td {
+  border: 1px solid var(--tool-call-border);
+  padding: 6px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.turn-body th {
+  background: var(--ui-purple-tint-bg);
+  color: var(--ui-purple-3);
+  font-weight: 600;
+}
+.turn-body tbody tr:nth-child(even) td {
+  background: rgba(196, 181, 253, 0.04);
+}
+.turn-body table code {
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
 /* === Spec 1 v0.9.0 · 代码块 (D2) === */
 .code-block-wrap {
   position: relative;
