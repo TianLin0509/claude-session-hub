@@ -159,32 +159,38 @@ docs/codex-signals.md  # 人类速查表（副产物）
 
 ---
 
-## 六、Phase 3 · 绑定 + 恢复（1d）
+## 六、Phase 3 · 绑定 + 恢复（v2.1 缩减：0.5d）
 
 **对应 Spec**：S4 + S5
+**v2.1 关键发现**（2026-05-04 实施时）：
+1. **B3.0 SPIKE 已落定**：`session-manager.js:660-662` 现状已使用 `codex -c "model_instructions_file=<path>"` 在主交互模式注入 system instructions（首次 spawn / resume 都已支持 `codexInstructionFile` 入口）。**fresh+ctx 注入路径已是现有通道，不需新设计 PTY paste**。
+2. **Spec S4 字面"未 bind 期间禁止发送"承认 fail-soft**（v2.1 修订点 8）：现状 sendToPty 用 hubSessionId（PTY 进程），与 codexSid bind 无关，rollout bind 窗口 [-10s, +5min] 容纳"先发后绑"。**B3.1-B3.3 awaitSessionBound 推到 Phase 5（UX 改进，非阻塞功能）**。
 
-### 现状盘点（v2 新增）
+### 现状盘点（v2.1 修订）
 
-- `core/session-manager.js:265-645` 已有 codex resume **前两档**：
-  - 精确 sid → `codex resume <sid> --dangerously-bypass-approvals-and-sandbox`
-  - 无 sid 兜底 → `codex resume --last --dangerously-bypass-approvals-and-sandbox`
-- **第三档 fresh+ctx 是真新增**，前两档复用现有路径仅加 telemetry
-- `awaitSessionBound` / `bindStatus` IPC **不存在 → 新建**
+- `core/session-manager.js:637-645` 已有 codex resume 前两档（精确 sid + `--last`）
+- `core/session-manager.js:660-662` 普通 spawn 已支持 `codexInstructionFile` 注入 system instructions
+- `main.js:636 / 2569` 已在首次 spawn / resume 时把 promptFile（roundtable system prompt）传给 `codexInstructionFile`
+- **第三档 fresh+ctx**：复用现有通道——caller 检测 sid + `--last` 都失败时，传 `useResume=false` + `codexInstructionFile=<ctx file 含历史摘要>` 即可
+- **唯一缺的是"ctx file 内容生成器"**——即从 orchestrator 取最近 N 轮历史 → 拼成 markdown instructions
 
-### v2 新增前置 batch
-
-| ID | 类型 | 内容 |
-|---|---|---|
-| B3.0 | 🔬 SPIKE | **Phase 3 必做前置**：实测 codex CLI 是否支持 `--initial-prompt` 类首句注入参数；若支持，B3.6 走 CLI 参数路径；若不支持，回退方案是 PTY paste（实测超长 ctx 是否触发 OSC 闪屏 / 自动换行截断）。**无 SPIKE 结论不进 B3.6**。 |
+### v2.1 Batch（替换 v2 的 B3.0-B3.6 七个 batch）
 
 | ID | 类型 | 文件 | 内容 |
 |---|---|---|---|
-| B3.1 | 🔴 RED | `tests/unit-codex-bind-pending-visible.test.js` | bind 未完成时 IPC 返回 `pending` 状态 |
-| B3.2 | 🟢 GREEN | `main.js` | 新增 `roundtable-codex-bind-status` IPC + `awaitSessionBound(sid, 15s)` |
-| B3.3 | 🟢 GREEN | UI | bind pending 角标 + 等待期按钮策略（S4 表格） |
-| B3.4 | 🔴 RED | `tests/unit-codex-resume-fallback-chain.test.js` | sid 失效 → `--last` 失效 → fresh+ctx；前两档断言走现有 session-manager 路径，第三档断言走 B3.6 新代码 |
-| B3.5 | 🟢 GREEN | `core/session-manager.js` | **复用前两档 + 追加第三档** fresh+ctx 路径 + `from_sid/from_last/from_fresh+ctx` telemetry |
-| B3.6 | 🟢 GREEN | `core/roundtable-orchestrator.js` | fresh+ctx 注入"最近 N=3 轮 summary"作为首次 prompt context（**实现路径由 B3.0 结论决定**） |
+| ~~B3.0~~ | — | — | **删**（SPIKE 已落定：现状 `-c "model_instructions_file=<path>"` 在主交互模式有效，且 Hub 已在用）|
+| ~~B3.1~~ | — | — | **推 Phase 5**（UX 改进 awaitSessionBound 角标，非阻塞功能） |
+| ~~B3.2~~ | — | — | **推 Phase 5** |
+| ~~B3.3~~ | — | — | **推 Phase 5** |
+| **B3.4-3.6** | 🟢 GREEN | `core/codex-fresh-context.js`（新建） | `buildContextInstructions(orchestrator, opts)` 从 state.turns 拼最近 N 轮历史 markdown；优先 `mode='summary'` 轮，不足时 fallback 任意 mode；含单家文本 800 字截断 + userInput 500 字截断防 prompt 爆炸；`writeContextInstructionsFile(...)` 落盘临时 .md 文件返回路径 |
+| B3.7 | 🟢 GREEN | `tests/unit-codex-fresh-context.test.js`（新建）| 12 个单测：空历史 / fanout 兜底 / 3 轮 summary / 6 轮取最近 / 混合 mode / includeUserInput / sidLabelFn / 空 by 跳过 / 文件落盘 / 缺 outDir throw / 默认常量 |
+
+**v2.1 Phase 3 总产出**：1 个 helper module + 1 个测试文件（12 cases），**零 main.js / session-manager.js 改动**（现状通道已完整，只补 ctx 内容生成器）。
+
+**Caller 接入**（推到 Phase 5 / 用户实际触发时）：
+1. main.js 检测 codex resume 失败 → 从 orchestrator 调 `writeContextInstructionsFile()` 写 ctx 文件
+2. spawn 普通 codex (useResume=false) + `codexInstructionFile=<ctx 文件路径>`
+3. UI 角标显示 `from_fresh+ctx`
 
 ---
 
@@ -312,5 +318,10 @@ Day 7:    /post-refactor-verify + 用户体感验收
 | 7 | Phase 2 需要 `detectCodexAck` / `detectCodexStuck` 实现 | 现状 sendToPty / resendCurrentPrompt **100% kind-agnostic**，基于物理时间戳判 ack，无任何 CLI 特定字符串信号 | Phase 2 删 B2.1/B2.2/B2.3/B2.7（4 个 batch），仅保留 contract test 验证现状不退化 |
 | 8 | Spec S4 字面"未 bind 期间禁止发送" | 现状 fail-soft 设计：sendToPty 用 hubSessionId（PTY 进程），与 codexSid bind 无关；CodexTap bind 窗口 [-10s, +5min] 容纳"先发后绑" | 承认 fail-soft 现状；Spec S4 收敛为"未 bind 时 UI 显示等待角标"，不真禁止发送 |
 | 9 | Phase 1 B1.7 需要 turn 唯一键 `${meetingId}:${turnNum}:${sid}` + partial/final 分层存储 | 现状 watcher 实例本身已天然按 sid + turn 隔离（每轮 new 一个 watcher），加唯一键属过度设计；真 bug 是 patchListener 限制（`completed` only + signalSource 白名单不含 task_complete）| B1.7 改为修真 bug：`PATCHABLE_STATUSES` 加 `manual_extracted`，`PATCHABLE_SIGNAL_SOURCES` 加 `task_complete` |
+| 10 | Phase 3 B3.0 SPIKE 必做前置（codex CLI 注入路径未确认）| `session-manager.js:660-662` 现状已使用 `codex -c "model_instructions_file=<path>"` 在主交互模式注入 system instructions，且在首次 spawn / resume 路径都已就绪 | B3.0 删；fresh+ctx 复用现有通道，仅补 ctx 内容生成 helper |
+| 11 | Phase 3 B3.1-B3.3 awaitSessionBound IPC 必做 | Spec S4 字面"未 bind 期间禁止发送"已被 v2.1 修订点 8 承认 fail-soft；UI 角标可独立做不阻塞 | B3.1-B3.3 推 Phase 5（UX 改进） |
 
-**Phase 2 工作量从 1.5d 缩到 0.3d**（合计仍在 6-7d 总预算内，节省的时间转给 Phase 3 SPIKE B3.0 + Phase 4 E2E）。
+**v2.1 工作量大幅缩减**：
+- Phase 2：1.5d → 0.3d
+- Phase 3：1d   → 0.5d
+- 节省 1.7d 转给 Phase 4 真实 E2E + Phase 0 真信号采样（B0.2/B0.3 PTY ack/stuck）。
