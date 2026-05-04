@@ -1779,14 +1779,24 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
   if (!extracted || !extracted.text) {
     const session = sessionManager.getSession(sid);
     const kind = session?.kind || 'unknown';
-    // 2026-05-04 codex equiv (Spec S2)：codex 4 态契约下空 text 仍带 extractMode，
-    //   透传给 UI 让卡片按 'no_task_complete_yet' / 'no_rollout_bound' 显示分级 hint，
-    //   不再笼统 "提取失败"。其他 backend 不返回 extractMode 时此字段为 null。
+    // 2026-05-04 codex equiv (Spec S2 + extract-failure TDD)：detail 按 extractMode 分级。
+    //   v2.1 加了 extractMode 透传但 detail 仍写死，用户截图重现仍看到笼统"提取失败"。
+    //   现在按 4 态给针对性 hint，让用户知道下一步该做什么（等几秒 / 进 shell / 检查路径）。
+    const extractMode = extracted?.extractMode || null;
+    let detail;
+    if (extractMode === 'no_rollout_bound') {
+      detail = `Codex rollout 文件尚未绑定（kind=${kind}）。可能原因：（a）当天目录 ~/.codex/sessions/<今日>/ 还没新文件；（b）codex spawn 时的 cwd 与 rollout session_meta.cwd 不一致；（c）timestamp 超出绑定窗口 [-10s, +5min]。建议：等 5-10s（codex 通常 spawn 后才写 rollout 首行），或点"🔧 进 shell"看真实 PTY 输出确认 codex 是否真的启动了。`;
+    } else if (extractMode === 'no_task_complete_yet') {
+      detail = `Codex 已绑定 rollout 但 task_complete 事件尚未写入（kind=${kind}）。可能原因：（a）codex 仍在思考；（b）codex 在等 MCP 工具确认弹窗（如 ai-team team_respond），需要进 shell 点"Allow"；（c）codex 多 task 场景含 3s debounce，最后一个 task 完成后才 emit。建议：点"🔧 进 shell"看 codex 当前是否被 confirm 弹窗阻塞。`;
+    } else {
+      // null（claude/gemini/deepseek/glm 等非 codex backend，无 extractMode）或未知态
+      detail = `transcript 中没有可读的 last assistant 内容（kind=${kind}）。可能原因：CLI 还没真正回答 / transcript 路径未绑定 / Stop hook 没触发且 idle-timer 还没到期。建议稍等几秒重试，或点"🔧 进 shell"看真实 PTY 输出。`;
+    }
     return {
       ok: false,
       reason: 'no_content',
-      extractMode: extracted?.extractMode || null,
-      detail: `transcript 中没有可读的 last assistant 内容（kind=${kind}）。可能原因：CLI 还没真正回答 / transcript 路径未绑定 / Stop hook 没触发且 idle-timer 还没到期。建议稍等几秒重试，或点"🔧 进 shell"看真实 PTY 输出。`,
+      extractMode,
+      detail,
     };
   }
 
@@ -1830,6 +1840,19 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
 
   // 无 meetingId / 没有 lastTurn → 仍返回提取的文字让 UI 显示
   return { ok: true, text: extracted.text, source: extracted.source, mode: 'text_only', extractMode: extracted.extractMode || null };
+});
+
+// 2026-05-04 codex equiv extract-failure TDD —— 调试入口暴露 CodexTap 内部状态。
+//   触发场景：用户报告"codex 已回答但卡片提取不到"，需要看 _bound / _pending / _seen 状态
+//     才能区分"绑定失败"vs"绑定成功但 task_complete 未写"vs"任何 backend 都没该 sid"。
+//   返回值：JSON 可序列化的 { sessionsRoot, pending: [], bound: [], seen: [] } 快照。
+//   不暴露 timer / tail object / EventEmitter listeners 等内部句柄。
+ipcMain.handle('roundtable-codex-debug-state', async () => {
+  try {
+    return { ok: true, snapshot: transcriptTap.getCodexDebugSnapshot() };
+  } catch (e) {
+    return { ok: false, reason: 'snapshot_failed', detail: e.message };
+  }
 });
 
 // Resend & Auto-Recovery（2026-05-03）— 手动 [📤 发送] 按钮入口

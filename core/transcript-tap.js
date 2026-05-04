@@ -505,6 +505,36 @@ class CodexTap extends EventEmitter {
     return this._bound.get(hubSessionId)?.lastText || null;
   }
 
+  // 2026-05-04 codex equiv extract-failure debug —— 给运行时排查"为什么没 bind"用。
+  //   不暴露 timer / tail object / EventEmitter listeners 等内部句柄；
+  //   返回值必须 JSON 可序列化（IPC 跨进程边界）。
+  getDebugSnapshot() {
+    const now = Date.now();
+    const pending = [];
+    for (const [hubSessionId, entry] of this._pending) {
+      pending.push({
+        hubSessionId,
+        cwd: entry.cwd,
+        spawnTime: entry.spawnTime,
+        ageMs: now - entry.spawnTime,
+      });
+    }
+    const bound = [];
+    for (const [hubSessionId, entry] of this._bound) {
+      bound.push({
+        hubSessionId,
+        rolloutPath: entry.rolloutPath,
+        hasLastText: !!entry.lastText,
+      });
+    }
+    return {
+      sessionsRoot: this._sessionsRoot,
+      pending,
+      bound,
+      seen: Array.from(this._seen),
+    };
+  }
+
   // 2026-05-02 Bug 修复：手动提取支持 Codex（同 ClaudeTap.extractLatestTurn 设计）。
   //   优先读 rollout 末尾的 task_complete.last_agent_message。
   //   降级：本轮还在 streaming（task_complete 未写）时拼接 sincePromptTs 之后所有
@@ -1206,6 +1236,13 @@ class TranscriptTap extends EventEmitter {
   async notifyClaudeStop(hubSessionId, transcriptPath) {
     try { await this._claude.notifyStop(hubSessionId, transcriptPath); }
     catch (e) { console.warn('[transcript-tap] notifyClaudeStop failed:', e.message); }
+  }
+
+  // 2026-05-04 codex equiv extract-failure debug —— TranscriptTap 转发 CodexTap 调试快照
+  // 给 main.js 的 roundtable-codex-debug-state IPC handler 用，
+  // renderer 可以拿到当前 _bound / _pending / _seen 状态排查为什么 manual-extract 拿不到。
+  getCodexDebugSnapshot() {
+    return this._codex.getDebugSnapshot();
   }
 
   _backendFor(kind) {

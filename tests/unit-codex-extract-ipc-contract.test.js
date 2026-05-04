@@ -78,7 +78,12 @@ function testMainJsManualExtractSourceContract() {
   // 找到 'roundtable-manual-extract' handler 的范围（从 ipcMain.handle 到下一个 ipcMain.handle）
   const startIdx = mainSrc.indexOf("ipcMain.handle('roundtable-manual-extract'");
   assert.ok(startIdx > 0, 'main.js must contain roundtable-manual-extract handler');
-  const endIdx = mainSrc.indexOf("ipcMain.handle('roundtable-resend-prompt'", startIdx);
+  // 找下一个 ipcMain.handle 任意值作为 boundary（不写死 'resend-prompt'，因为 codex-debug-state
+  // 等新 IPC handler 可能插在 manual-extract 与 resend-prompt 之间）
+  const nextHandlerRegex = /ipcMain\.handle\(['"]/g;
+  nextHandlerRegex.lastIndex = startIdx + 1;
+  const m = nextHandlerRegex.exec(mainSrc);
+  const endIdx = m ? m.index : mainSrc.length;
   assert.ok(endIdx > startIdx, 'must find next handler as boundary');
   const handlerBlock = mainSrc.slice(startIdx, endIdx);
 
@@ -109,7 +114,11 @@ function testMainJsManualExtractSourceContract() {
 function testMainJsLegacyModeNotRenamed() {
   const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const startIdx = mainSrc.indexOf("ipcMain.handle('roundtable-manual-extract'");
-  const endIdx = mainSrc.indexOf("ipcMain.handle('roundtable-resend-prompt'", startIdx);
+  // 同上 boundary 修复
+  const nextHandlerRegex = /ipcMain\.handle\(['"]/g;
+  nextHandlerRegex.lastIndex = startIdx + 1;
+  const m = nextHandlerRegex.exec(mainSrc);
+  const endIdx = m ? m.index : mainSrc.length;
   const handlerBlock = mainSrc.slice(startIdx, endIdx);
 
   // 契约：旧 mode 字段（IPC 上下文 mode）必须保留 3 个值
