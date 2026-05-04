@@ -33,6 +33,7 @@ const { getConfig: getHubConfig } = require('./core/hub-config.js');
 const packyBalance = require('./core/packy-balance.js');
 const { isClaudeFamily, SLOT_IDS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
+const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
 
 const STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const STARTUP_T0 = Date.now();
@@ -383,19 +384,41 @@ const deepSummaryService = new DeepSummaryService({ providers: _buildDeepSummary
 // Wire TranscriptTap → MeetingRoomManager timeline.
 // When a sub-session's CLI finishes a turn, append the AI text to its
 // meeting's timeline (if the sub-session belongs to a meeting).
-transcriptTap.on('turn-complete', ({ hubSessionId, text, completedAt }) => {
+transcriptTap.on('turn-complete', (ev) => {
+  const { hubSessionId, text, completedAt } = ev || {};
   const session = sessionManager.getSession(hubSessionId);
-  if (!session || !session.meetingId) return;
-  const turn = meetingManager.appendTurn(
-    session.meetingId,
-    hubSessionId,
-    text,
-    completedAt != null ? completedAt : Date.now(),
-  );
-  if (turn) {
-    sendToRenderer('meeting-timeline-updated', { meetingId: session.meetingId, turn });
+  if (session && session.meetingId) {
+    const turn = meetingManager.appendTurn(
+      session.meetingId,
+      hubSessionId,
+      text,
+      completedAt != null ? completedAt : Date.now(),
+    );
+    if (turn) {
+      sendToRenderer('meeting-timeline-updated', { meetingId: session.meetingId, turn });
+    }
+    // (Driver-mode auto-review removed when driver mode was deprecated.)
   }
-  // (Driver-mode auto-review removed when driver mode was deprecated.)
+
+  // spec2/S3：把 turn-complete 广播给 renderer，供历史会话/侧边栏卡片实时刷新。
+  // 注意：这里独立于上面的 meeting timeline 逻辑——非圆桌的普通会话也要广播。
+  try {
+    let transcriptPath = ev && ev.transcriptPath ? ev.transcriptPath : null;
+    if (!transcriptPath && session && session.ccSessionId) {
+      try { transcriptPath = findTranscriptByCCSessionId(session.ccSessionId); } catch {}
+    }
+    sendToRenderer('turn-complete-event', {
+      hubSessionId,
+      ccSessionId: session ? session.ccSessionId : null,
+      transcriptPath,
+      text,
+      completedAt: completedAt != null ? completedAt : Date.now(),
+      meetingId: session ? session.meetingId : null,
+      kind: session ? session.kind : null,
+    });
+  } catch (e) {
+    console.warn('[spec2/S3] turn-complete-event broadcast failed:', e && e.message);
+  }
 });
 
 // Persist resume meta when transcript-tap binds a sub-session to its native CLI sid.
@@ -2159,6 +2182,36 @@ ipcMain.handle('meeting-incremental-context', (_e, { meetingId, targetSid }) => 
 // Renderer falls back to marker-based extraction when null.
 ipcMain.handle('get-last-assistant-text', (_e, sessionId) => {
   return transcriptTap.getLastAssistantText(sessionId);
+});
+
+// spec2/S3：解析任意会话的 JSONL transcript 为结构化 turns 列表。
+// 入参三选一：transcriptPath > ccSessionId > hubSessionId（按优先级 fallback）。
+// 出参：{ turns: [...], transcriptPath, error: null|string }
+//   - 找不到 transcript → { turns: [], transcriptPath: null, error: 'transcript not found' }
+//   - 解析抛错 → { turns: [], transcriptPath, error: err.message }
+// opts 透传给 parseClaudeTranscriptToTurns，默认 { limit: 50, fromTail: true }。
+ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
+  const { hubSessionId, ccSessionId, transcriptPath: inPath, opts } = args || {};
+  let transcriptPath = inPath || null;
+  try {
+    if (!transcriptPath && ccSessionId) {
+      transcriptPath = findTranscriptByCCSessionId(ccSessionId);
+    }
+    if (!transcriptPath && hubSessionId) {
+      const session = sessionManager.getSession(hubSessionId);
+      if (session && session.ccSessionId) {
+        transcriptPath = findTranscriptByCCSessionId(session.ccSessionId);
+      }
+    }
+    if (!transcriptPath) {
+      return { turns: [], transcriptPath: null, error: 'transcript not found' };
+    }
+    const parseOpts = opts && typeof opts === 'object' ? opts : { limit: 50, fromTail: true };
+    const turns = await parseClaudeTranscriptToTurns(transcriptPath, parseOpts);
+    return { turns: Array.isArray(turns) ? turns : [], transcriptPath, error: null };
+  } catch (err) {
+    return { turns: [], transcriptPath, error: err && err.message ? err.message : String(err) };
+  }
 });
 
 function collectAgentOutputs(meetingId) {
