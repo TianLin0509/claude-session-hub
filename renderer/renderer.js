@@ -5152,6 +5152,8 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   if (terminalPanelEl) terminalPanelEl.style.display = '';
   ipcRenderer.send('focus-session', { sessionId: session.id });
   renderSessionList();
+  // 新建/resume session 强制 PTY 视图，用户手动点"卡片"才进卡片模式
+  applyViewMode('pty');
   showTerminal(session.id);
 });
 
