@@ -1592,6 +1592,18 @@ function _toolCmdFromInput(input) {
 }
 function renderToolCluster(turnId, toolCalls) {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
+  const total = toolCalls.length;
+  // Spec 3 · W1：单 tool 时简化 summary 为 `▸ Bash command-snippet`
+  // 不再写"1 个工具调用 · X"（D3 数据：5196 个 entry 中 55% 是 1-tool，原措辞冗余且填屏）
+  if (total === 1) {
+    const tc = toolCalls[0] || {};
+    const name = escapeHtml(tc.name || '?');
+    const cmd = escapeHtml(_toolCmdFromInput(tc.input));
+    return `<details class="tc-cluster tc-cluster-single" data-turn="${escapeHtml(turnId)}">
+      <summary class="tc-cluster-head"><span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}</summary>
+      <div class="tc-cluster-list"><div class="tc-row tc-row-detail"><span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}</div></div>
+    </details>`;
+  }
   const counts = {};
   for (const tc of toolCalls) {
     const name = (tc && tc.name) || '?';
@@ -1600,7 +1612,6 @@ function renderToolCluster(turnId, toolCalls) {
   const breakdown = Object.entries(counts)
     .map(([n, c]) => c > 1 ? `${n} × ${c}` : n)
     .join(' + ');
-  const total = toolCalls.length;
   const items = toolCalls.map((tc) => {
     const name = escapeHtml((tc && tc.name) || '?');
     const cmd = escapeHtml(_toolCmdFromInput(tc && tc.input));
@@ -2332,6 +2343,18 @@ function applyViewMode(mode) {
   if (mode === 'pty' && typeof terminalCache !== 'undefined') {
     const cached = terminalCache.get(activeSessionId);
     if (cached && cached.fitAddon) cached.fitAddon.fit();
+  }
+  // Spec 3 · W3 resume bug fix (b)：切到卡片时若 overlay 没卡片（既无 turn-card 也无 placeholder），
+  // 主动 trigger load — 因为 showTerminal 在切 session 时只在 currentView==='card' 才 load，
+  // 默认 PTY 模式下 overlay 始终空，user 手动切到 card 时该看到历史。
+  // 已有卡片或 placeholder 则不 reload（避免重复 IPC + reflow）。
+  if (mode === 'card' && overlay && typeof loadSessionHistoryToOverlay === 'function' && activeSessionId) {
+    const hasContent = overlay.querySelector('.turn-card, .msg-overlay-placeholder');
+    if (!hasContent) {
+      loadSessionHistoryToOverlay(activeSessionId).catch(err => {
+        console.warn('[applyViewMode card] auto-load failed:', err);
+      });
+    }
   }
 }
 
@@ -3598,6 +3621,14 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
       const delay = Math.max(80, 250 - sinceLast);
       st.pendingTimer = setTimeout(() => {
         st.pendingTimer = null;
+        // Spec 3 · W2 throttle race fix：timer 创建时 sessionId === activeSessionId，
+        // 但 timer fire 时 user 可能已切到别的 session。incremental:true 会跳过 clear，
+        // 直接 append 旧 session 的 turns 到当前 overlay → 跨 session 数据污染。
+        // 这里再次比对，不一致就静默跳过（旧 session 的数据要等用户切回才有意义）。
+        if (sessionId !== activeSessionId || currentView !== 'card') {
+          st.inProgress = false;
+          return;
+        }
         st.inProgress = true;
         st.lastReloadAt = Date.now();
         loadSessionHistoryToOverlay(sessionId, { incremental: true })

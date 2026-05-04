@@ -488,6 +488,12 @@ class SessionManager extends EventEmitter {
       cwd: spawnCwd,
       meetingId: opts.meetingId || null,
       currentModel,
+      // Spec 3 · W3 resume bug fix (a)：resume 启动时立即写入已知 ccSessionId，
+      // 不等 Stop hook 第一次回调。否则 spawn 到第一次 Stop 之间 (~数秒) 卡片视图
+      // 拿不到 ccSessionId → IPC parse-session-transcript 返 'transcript not found' → 空白。
+      // 普通新建（非 resume）opts.resumeCCSessionId 为 undefined，info.ccSessionId 也为 undefined，
+      // _toPublic 的 `info.ccSessionId !== undefined` 检查会跳过该字段，行为不变。
+      ...(opts.resumeCCSessionId ? { ccSessionId: opts.resumeCCSessionId } : {}),
     };
 
     const pendingTimers = [];
