@@ -628,31 +628,56 @@ if (typeof document !== 'undefined') (function () {
 
     const sendStuck = !!(partial && partial.sendStatus === 'stuck');
 
-    // F4 Phase 2(2026-05-04 道雪): 上一轮注入血缘 chip(渲染层推断式, 不动后端)
-    //   规则: 本轮 sid X 的血缘 = 上一轮 by 中所有非空且不是 X 自己的 sid (排除 absent/errored)
-    //   显示条件: 本卡有内容(completed/streaming/manual_extracted/thinking)且 lastTurn 存在
-    //   实现限制: 不点击跳转(避免 _openRtTimeline 加 initialTurnN 复杂度); chip hover 显示 tooltip
+    // F4 Phase 2(2026-05-04 道雪 / v3 多方审查后修订 2026-05-04): 上一轮注入血缘 chip(渲染层推断式, 不动后端)
+    //   语义: "本轮卡片显示的内容"参考了"上一轮"谁的发言。
+    //
+    //   关键修订(v3): 用 currentMode 作为"运行中 vs idle 回顾态"的判断 (Gemini 多方审查推荐) —
+    //     之前用 partial 存在与否, 但 partial 清空 vs turns push 第 N 轮 不是原子操作,
+    //     存在时序窗口期内 chip 显示的轮次号会闪烁突变。currentMode 切换是后端原子动作, 更可靠。
+    //
+    //     场景 A: currentMode !== 'idle' (本轮运行中, 含 thinking/streaming/刚 settle/manual_extracted)
+    //       → 卡片渲染本轮内容; turns 还没含本轮; lastTurn 是 N-1 轮 ✓
+    //       → lineageRefTurn = lastTurn
+    //
+    //     场景 B: currentMode === 'idle' (回顾稳定态, 全员答完后)
+    //       → 卡片渲染 turns 最后一项(=第 N 轮)的 by 内容; lastTurn 此时 = N (本轮自己)
+    //       → "本轮"的"上一轮"是 turns[N-2] ≠ lastTurn ✓
+    //
+    //   规则: 本轮 sid X 的血缘 = lineageRefTurn.by 中除 X 外的所有 sid (排除 absent/errored)
+    //   实现限制: 不点击跳转(避免 _openRtTimeline 加 initialTurnN); chip hover tooltip
     //   spec §F4 同组跳过(pilot→pilot/observer→observer)由后端 prompt 注入决定, UI 仅展示参考
     let lineageHtml = '';
-    if (lastTurn && lastTurn.by && typeof lastTurn.n === 'number'
-        && (status === 'completed' || status === 'streaming' || status === 'manual_extracted' || status === 'thinking')) {
-      const lastByMap = lastTurn.by || {};
-      const lastByStatus = lastTurn.byStatus || {};
-      const otherSpeakers = Object.keys(lastByMap).filter(s => {
+    let lineageRefTurn = null;
+    const turnsArr = (state && Array.isArray(state.turns)) ? state.turns : [];
+    if (currentMode === 'idle' && (status === 'completed' || status === 'manual_extracted')) {
+      // 场景 B: idle 回顾态(稳定) → lineage 来自 turns[N-2]
+      if (turnsArr.length >= 2) lineageRefTurn = turnsArr[turnsArr.length - 2];
+    } else if (currentMode && currentMode !== 'idle'
+               && (status === 'thinking' || status === 'streaming'
+                   || status === 'completed' || status === 'manual_extracted')) {
+      // 场景 A: 本轮运行中(thinking/streaming/刚 settle 等) → lineage 来自 lastTurn (=N-1)
+      lineageRefTurn = lastTurn;
+    }
+    if (lineageRefTurn && lineageRefTurn.by && typeof lineageRefTurn.n === 'number') {
+      const refByMap = lineageRefTurn.by || {};
+      const refByStatus = lineageRefTurn.byStatus || {};
+      const otherSpeakers = Object.keys(refByMap).filter(s => {
         if (s === sub.sid) return false;
-        const st = lastByStatus[s];
+        const st = refByStatus[s];
         if (st === 'absent' || st === 'errored') return false;
-        if (!lastByMap[s] && st !== 'manual_extracted') return false;
+        if (!refByMap[s] && st !== 'manual_extracted') return false;
         return true;
       });
       if (otherSpeakers.length > 0) {
         const chips = otherSpeakers.map(spkSid => {
           const spkSlot = slots.findIndex(slot => slot && slot.sid === spkSid);
-          const spkSlotCls = spkSlot >= 0 ? `slot-${spkSlot + 1}` : '';
-          const spkLabel = (spkSlot >= 0 && slots[spkSlot]) ? slots[spkSlot].label : spkSid.slice(0, 8);
-          return `<span class="mr-ft-lineage-chip ${spkSlotCls}" title="本轮看了 ${escapeHtml(spkLabel)} 第 ${lastTurn.n} 轮的发言">↪ ${escapeHtml(spkLabel)} 第${lastTurn.n}轮</span>`;
+          // Gemini #4 修订: 加 slots 上界检查 (虽然 findIndex 返回 -1 时已过滤, 但 length 防御深一层更稳)
+          const inBounds = spkSlot >= 0 && spkSlot < slots.length && slots[spkSlot];
+          const spkSlotCls = inBounds ? `slot-${spkSlot + 1}` : '';
+          const spkLabel = inBounds ? slots[spkSlot].label : spkSid.slice(0, 8);
+          return `<span class="mr-ft-lineage-chip ${spkSlotCls}" title="本轮内容参考了 ${escapeHtml(spkLabel)} 第 ${lineageRefTurn.n} 轮的发言">↪ ${escapeHtml(spkLabel)} 第${lineageRefTurn.n}轮</span>`;
         }).join('');
-        lineageHtml = `<div class="mr-ft-lineage" title="本轮 AI 引用上一轮谁的发言">${chips}</div>`;
+        lineageHtml = `<div class="mr-ft-lineage" title="本轮 AI 参考了上一轮谁的发言">${chips}</div>`;
       }
     }
 
