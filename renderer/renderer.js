@@ -1082,7 +1082,16 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   const cached = getOrCreateTerminal(sessionId);
 
+  // Preserve spec 1/2 elements that live inside #terminal-panel (view-toggle, msg-overlay)
+  // before innerHTML clear obliterates them; re-attach after.
+  const preserved = [
+    document.getElementById('msg-overlay'),
+    document.querySelector('.view-toggle')
+  ].filter(Boolean);
+
   terminalPanelEl.innerHTML = '';
+
+  preserved.forEach(el => terminalPanelEl.appendChild(el));
 
   const header = document.createElement('div');
   header.className = 'terminal-header';
