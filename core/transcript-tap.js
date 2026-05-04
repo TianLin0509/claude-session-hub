@@ -907,9 +907,16 @@ class GeminiTap extends EventEmitter {
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
       if (obj?.type !== 'gemini') continue;
-      const ts = typeof obj.timestamp === 'number' ? obj.timestamp
-              : typeof obj.ts === 'number' ? obj.ts
-              : null;
+      // 2026-05-04 gemini-equiv Bug 2 修复：gemini 0.40.1 jsonl 写的 timestamp 是
+      //   ISO 字符串（"2026-05-04T13:38:21.867Z"），旧代码只识 number → 全部置 null
+      //   → ts < sincePromptTs 过滤被绕过，一键提取拿到整个 jsonl 历史多轮 content。
+      //   现接受 ISO 字符串 + number 两种格式；解析失败置 null（保留旧"无 ts 不过滤"行为）。
+      let ts = null;
+      if (typeof obj.timestamp === 'number') ts = obj.timestamp;
+      else if (typeof obj.timestamp === 'string') {
+        const parsed = Date.parse(obj.timestamp);
+        if (!Number.isNaN(parsed)) ts = parsed;
+      } else if (typeof obj.ts === 'number') ts = obj.ts;
       if (ts !== null && ts < sincePromptTs) continue;
       if (typeof obj.content !== 'string') continue;
       const piece = obj.content;

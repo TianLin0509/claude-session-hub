@@ -31,12 +31,22 @@ const MARKERS = {
 const MIN_BUF_LEN = 500;
 const STABLE_MS = 1500;
 
+// 2026-05-04 gemini-equiv Bug 1 修复：强 marker kind 跳过静默期。
+//   gemini 0.40.1 Ink TUI 在 PTY 下持续重渲染（spinner / cursor blink / token 计数刷新），
+//   buffer 长度持续变化 → 永远不进入 STABLE_MS 静默 → 卡片永久卡"创建中"。
+//   gemini 的 marker（'Type your message' / 'YOLO' / 'gemini-'）只在主输入框就绪后
+//   才出现，是已 ready 的强信号；命中即应判 ready，不强制静默期。
+//   claude/codex 的 marker 较 generic（'shift+tab' / 'send'）容易在加载阶段假命中，
+//   仍保留静默期保护。
+const _STRONG_MARKER_KINDS = new Set(['gemini']);
+
 const _stableState = new Map(); // sid → { lastBufLen, lastChangeTs }
 const _onceTrue = new Set();    // sid → 一旦 true 永久锁
 
 // isReady(sessionId, kind, buf) → boolean
 //   非圆桌可参与 kind（powershell 等）：默认 ready
-//   含 marker → marker 命中 + 静默期双门
+//   _STRONG_MARKER_KINDS 含 marker → marker 命中 + buf ≥ MIN 即 ready（无静默期）
+//   其他 kind 含 marker → marker 命中 + 静默期双门
 //   不含 marker（空数组）→ 仅静默期
 function isReady(sessionId, kind, buf) {
   if (!sessionId) return false;
@@ -48,6 +58,11 @@ function isReady(sessionId, kind, buf) {
   const noMarker = need.length === 0;
   if (!(markerHit || noMarker)) return false;
   if (buf.length < MIN_BUF_LEN) return false;
+  // gemini 强信号 marker fast-path：marker 命中 + buf ≥ MIN 立即 ready
+  if (markerHit && _STRONG_MARKER_KINDS.has(kind)) {
+    _onceTrue.add(sessionId);
+    return true;
+  }
   let st = _stableState.get(sessionId);
   if (!st) {
     _stableState.set(sessionId, { lastBufLen: buf.length, lastChangeTs: Date.now() });
