@@ -514,13 +514,20 @@
 .mr-ft {
   padding: 14px 16px; cursor: pointer;
   border-bottom: 3px solid transparent;
-  transition: background .15s, border-color .15s;
+  /* F0 Phase 1(2026-05-04 道雪): transition 扩展 transform/opacity/filter, 让聚焦切换平滑 */
+  transition: background .15s, border-color .15s,
+              transform .45s cubic-bezier(0.22, 1, 0.36, 1),
+              opacity .45s cubic-bezier(0.22, 1, 0.36, 1),
+              filter .45s cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
   height: 220px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* T8（2026-05-01）：启用容器查询，让 .mr-ft-stat-inline 在窄卡片下换行（spec §2.5） */
+  /* F0 Phase 1: isolation + z-index, 让 ::after 描边光晕和 z-index 不穿透邻居卡片 */
+  isolation: isolate;
+  z-index: 0;
+  /* T8(2026-05-01): 启用容器查询, 让 .mr-ft-stat-inline 在窄卡片下换行(spec §2.5) */
   container-type: inline-size;
 }
 .mr-ft:not(:last-child) { border-right: 1px solid #1f2735; }
@@ -531,6 +538,98 @@
 .mr-ft.slot-1.active { border-bottom-color: var(--c-slot-1); background: rgba(var(--c-slot-1-rgb),0.06); }
 .mr-ft.slot-2.active { border-bottom-color: var(--c-slot-2); background: rgba(var(--c-slot-2-rgb),0.06); }
 .mr-ft.slot-3.active { border-bottom-color: var(--c-slot-3); background: rgba(var(--c-slot-3-rgb),0.06); }
+
+/* === F0 Neon Glow 卡片聚焦 v2(Phase 1 修订 / 2026-05-04 道雪 / spec F0 · 用户选 B 方案) ===
+ * 触发: body.mr-card-focus-on 时, 该 strip 内的 .active 卡片是聚焦主卡。
+ * 主卡: 占 70% 宽度(grid-template-columns 4.7fr:1fr:1fr 重分配) + 多层光晕 + ::after 描边
+ * 邻居: 占 ~15% 宽度,opacity 0.62 + brightness 0.72 + 内容缩简(隐藏 stats/Ctx/actions, 4 行预览)
+ * 退出: 再次 click 同卡 / Esc / 点空白(_bindSlotCardEvents 内 toggle)
+ * 铁律: 不用 backdrop-filter / filter:blur; 改用 grid 重分配占位,不用 transform scale
+ */
+.mr-ft-strip {
+  /* 让 grid-template-columns 切换平滑(Chromium 105+ 支持过渡) */
+  transition: grid-template-columns .45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+body.mr-card-focus-on .mr-ft-strip:has(.mr-ft.slot-1.active) {
+  grid-template-columns: 4.7fr 1fr 1fr;
+}
+body.mr-card-focus-on .mr-ft-strip:has(.mr-ft.slot-2.active) {
+  grid-template-columns: 1fr 4.7fr 1fr;
+}
+body.mr-card-focus-on .mr-ft-strip:has(.mr-ft.slot-3.active) {
+  grid-template-columns: 1fr 1fr 4.7fr;
+}
+
+/* 主卡光晕色变量 */
+body.mr-card-focus-on .mr-ft-strip .mr-ft.slot-1.active { --c-slot-glow: var(--c-slot-1-rgb); }
+body.mr-card-focus-on .mr-ft-strip .mr-ft.slot-2.active { --c-slot-glow: var(--c-slot-2-rgb); }
+body.mr-card-focus-on .mr-ft-strip .mr-ft.slot-3.active { --c-slot-glow: var(--c-slot-3-rgb); }
+
+/* 主卡: z-index 提升 + 多层 box-shadow 光晕 */
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active {
+  z-index: 2;
+  box-shadow:
+    0 0 30px rgba(var(--c-slot-glow), 0.5),
+    0 0 70px rgba(var(--c-slot-glow), 0.2),
+    0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* 主卡: ::after 渐变描边光晕(脉冲呼吸) */
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  padding: 2px;
+  background: linear-gradient(135deg,
+    rgba(var(--c-slot-glow), 0.95),
+    rgba(255, 255, 255, 0.4),
+    rgba(var(--c-slot-glow), 0.95));
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+  animation: mr-ft-glow-pulse 2.4s ease-in-out infinite;
+}
+@keyframes mr-ft-glow-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+
+/* 邻居: 整体淡化 + 亮度降低 */
+body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) {
+  opacity: 0.62;
+  filter: brightness(0.72);
+  z-index: 0;
+}
+/* 邻居: 隐藏 stats-inline / Ctx 徽章 / actions 工具栏(节省纵向空间给 preview) */
+body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) .mr-ft-stat-inline,
+body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) .mr-ft-ctx,
+body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) .mr-ft-escape-btn,
+body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) [data-rt-escape] {
+  display: none;
+}
+/* 邻居: bottom preview 限制 4 行,字号缩小,fade-out 渐变收尾 */
+body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) .mr-ft-bottom {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #6b7385;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: 5.8em;
+  position: relative;
+}
+/* 邻居: 主卡保留时 hover 邻居仍可见对比效果(opacity 微回升) */
+body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active):hover {
+  opacity: 0.85;
+  filter: brightness(0.92);
+}
+/* === /F0 Neon Glow v2 === */
 
 /* Card redesign：head 区（头像 + info 列） */
 .mr-ft-head { display: flex; align-items: flex-start; gap: 10px; min-height: 0; }
@@ -669,6 +768,31 @@
 .mr-ft-status.idle      { background: rgba(139,148,158,0.2); color: #a0a8b9; }
 .mr-ft-status.initializing { background: rgba(99,102,241,0.2); color: #a5b4fc; animation: rt-pulse 1.5s ease-in-out infinite; }
 .mr-ft-status.timeout   { background: rgba(248,113,113,0.2); color: #fca5a5; }
+/* === F1 13 态徽章配色补完(Phase 1 / 2026-05-04 道雪 / spec F1 v3) ===
+ * 上方 6 种(completed/thinking/streaming/idle/initializing/timeout)保持。
+ * 补 7 种异常态: errored / manual_extracted / absent / soft_alert / send_stuck / interrupted / transport_lost
+ * statusLabel 文本已在 meeting-room.js:479-492 配齐, 本节只补颜色 + 关键 ::before 前缀。
+ */
+.mr-ft-status.errored        { background: rgba(239,68,68,0.28); color: #fca5a5; font-weight: 700; }
+.mr-ft-status.errored::before { content: '✗ '; }
+.mr-ft-status.manual_extracted { background: rgba(74,222,128,0.15); color: #86efac; opacity: 0.85; }
+.mr-ft-status.absent         { background: rgba(139,148,158,0.15); color: #707783; }
+.mr-ft-status.soft_alert     { background: rgba(251,146,60,0.22); color: #fdba74; animation: rt-pulse 1.5s ease-in-out infinite; }
+.mr-ft-status.send_stuck     { background: rgba(239,68,68,0.32); color: #fca5a5; animation: rt-pulse 1.5s ease-in-out infinite; }
+.mr-ft-status.interrupted    { background: rgba(251,146,60,0.22); color: #fdba74; }
+.mr-ft-status.transport_lost { background: rgba(239,68,68,0.32); color: #fca5a5; }
+/* F1 thinking 三跳点动画(spec §2.1 thinking) */
+.mr-ft-status.thinking::after {
+  content: ' ●●●';
+  font-size: 9px;
+  letter-spacing: 1px;
+  animation: mr-think-dots-pulse 1.4s ease-in-out infinite;
+}
+@keyframes mr-think-dots-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+/* === /F1 === */
 .mr-ft-elapsed { font-size: 11px; color: #fde68a; margin-left: auto; font-variant-numeric: tabular-nums; font-family: "Cascadia Mono", Consolas, monospace; }
 .mr-ft-expand {
   position: absolute; top: 8px; right: 8px;

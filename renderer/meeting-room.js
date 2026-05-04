@@ -88,6 +88,23 @@ if (typeof document !== 'undefined') (function () {
   // pilot redesign（2026-05-02）：_privateCountCache 已废弃（圆桌不再桥接子会话私聊）
   const _thinkStartTs = {};
   let _thinkTimer = null;
+  // F0 Phase 1(2026-05-04 道雪): 卡片聚焦态全局状态。null = 默认态; sid = 该卡聚焦中。
+  //   触发: click 任一 .mr-ft → 进入; 再次 click 同卡 / Esc / 点空白 → 退出。
+  //   退出后 meeting.focusedSub 不变(主显仍是该 sid)。
+  let _rtFocusedCardSid = null;
+  // F0 Phase 1: 全局 Esc / 点空白退出聚焦态。IIFE 顶层挂载, 只挂一次。
+  document.addEventListener('keydown', function _rtFocusEscHandler(ev) {
+    if (ev.key !== 'Escape') return;
+    if (!_rtFocusedCardSid) return;
+    _rtFocusedCardSid = null;
+    document.body.classList.remove('mr-card-focus-on');
+  });
+  document.addEventListener('click', function _rtFocusBlankClickHandler(ev) {
+    if (!_rtFocusedCardSid) return;
+    if (ev.target && ev.target.closest && ev.target.closest('.mr-ft')) return;
+    _rtFocusedCardSid = null;
+    document.body.classList.remove('mr-card-focus-on');
+  });
   // Stage 2 容错升级：每轮 prompt 发送时间戳（用于 manual-extract IPC 的 sincePromptTs 参数）
   const _rtTurnStartTs = {};
 
@@ -882,7 +899,16 @@ if (typeof document !== 'undefined') (function () {
     if (slotEl.matches('.mr-ft[data-ft-sid]')) {
       const sid = slotEl.getAttribute('data-ft-sid');
       slotEl.addEventListener('click', () => {
-        if (sid) _focusRoundtableSession(meeting, sid);
+        if (!sid) return;
+        // F0 Phase 1(2026-05-04 道雪): click toggle 聚焦态(spec F0: 再次 click 同卡退出)
+        if (_rtFocusedCardSid === sid) {
+          _rtFocusedCardSid = null;
+          document.body.classList.remove('mr-card-focus-on');
+          return;
+        }
+        _focusRoundtableSession(meeting, sid);
+        _rtFocusedCardSid = sid;
+        document.body.classList.add('mr-card-focus-on');
       });
     }
     // ↗ 展开
