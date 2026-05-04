@@ -2016,7 +2016,13 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
 
     if (r && !r.error && Array.isArray(r.turns) && r.turns.length > 0) {
       // got the structured turn from S1 parser
-      mountSessionTurnCard(hubSessionId, r.turns[0], { kind, autoScroll: true });
+      const turn = r.turns[0];
+      // turn-complete should always be assistant; defend against future broadcast scope changes
+      if (turn.role !== 'assistant') return;
+      // Dedup: skip if turn already mounted (race with loadSessionHistoryToOverlay)
+      if (window._sessionTurns && window._sessionTurns.has(turn.id)) return;
+      if (document.querySelector('.turn-card[data-turn-id="' + CSS.escape(turn.id) + '"]')) return;
+      mountSessionTurnCard(hubSessionId, turn, { kind, autoScroll: true });
       return;
     }
 
@@ -2028,6 +2034,9 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
       ts: completedAt || Date.now(),
       kind,
     };
+    // Dedup: skip if turn already mounted (race with loadSessionHistoryToOverlay)
+    if (window._sessionTurns && window._sessionTurns.has(fallbackTurn.id)) return;
+    if (document.querySelector('.turn-card[data-turn-id="' + CSS.escape(fallbackTurn.id) + '"]')) return;
     mountSessionTurnCard(hubSessionId, fallbackTurn, { kind, autoScroll: true });
   } catch (err) {
     console.warn('[turn-complete-event] failed to render new turn:', err);
