@@ -2834,3 +2834,17 @@ body.theme-light .floating-scroll-btn {
   background: rgba(139, 92, 246, 0.1);
   color: var(--ui-purple-3);
 }
+
+/* === Spec 1 v0.9.0 · T10 minimal placeholder === */
+.msg-overlay-placeholder {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 16px;
+  text-align: center;
+  font-style: italic;
+}
+.msg-overlay-placeholder a {
+  color: var(--ui-purple-2);
+  text-decoration: underline;
+  cursor: pointer;
+}
