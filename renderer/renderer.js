@@ -1742,6 +1742,95 @@ function mountTurnCard(container, turn) {
 }
 window._mountTurnCard = mountTurnCard;
 
+// === Spec 2 · S4: mountSessionTurnCard ===
+// Mount a single Turn (from S1 parseClaudeTranscriptToTurns) as a card into #msg-overlay.
+//
+// Used by:
+//   - S5 loadSessionHistoryToOverlay      — batch mount on session switch
+//   - S6 turn-complete-event listener     — append on new assistant turn
+//
+// Boundary adapters / contract notes:
+//   * renderTurnCard (line ~1630) accepts { id, role, text, ts, model?, kind?,
+//     slotPokemon?, toolCalls? } and ignores unknown fields. S1 turns may
+//     additionally carry { thinking, stopReason, usage } — those are passed
+//     through harmlessly until S8 adds thinking rendering inside renderTurnCard.
+//   * window._sessionTurns: spec1 stores raw `turn` objects (not wrapped),
+//     because rerenderTurn (line ~1593) and getTurnFromCard (line ~1758) both
+//     do `_sessionTurns.get(turnId)` and use the result as a turn directly.
+//     Wrapping it in `{ sessionId, turn, element }` here would break those
+//     button handlers. Instead we keep the Map shape (turnId → turn), and
+//     stash sessionId on the DOM via cardEl.dataset.sessionId so future
+//     per-session cleanup can find cards by sessionId without changing the
+//     Map contract. The `element` is recoverable via
+//     `document.querySelector('.turn-card[data-turn-id="…"]')` (used by
+//     rerenderTurn already).
+function mountSessionTurnCard(sessionId, turn, opts = {}) {
+  // 1. validate inputs
+  if (!turn || !turn.id || !turn.role) {
+    console.warn('[mountSessionTurnCard] invalid turn (missing id/role):', turn);
+    return null;
+  }
+  // 2. resolve container
+  const container = opts.container || document.getElementById('msg-overlay');
+  if (!container) {
+    console.warn('[mountSessionTurnCard] container not found (msg-overlay missing)');
+    return null;
+  }
+  // defensive init (spec1 also does this at line ~1545, but be paranoid)
+  if (!window._sessionTurns) window._sessionTurns = new Map();
+
+  // 3. merge kind through to renderTurnCard without mutating caller's turn
+  const turnForRender = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
+
+  // 4. build wrapper element from HTML string
+  let cardEl = null;
+  try {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = renderTurnCard(turnForRender);
+    cardEl = tmp.firstElementChild;
+  } catch (err) {
+    console.warn('[mountSessionTurnCard] renderTurnCard threw:', err);
+    return null;
+  }
+  if (!cardEl) {
+    console.warn('[mountSessionTurnCard] renderTurnCard produced empty HTML for turn', turn.id);
+    return null;
+  }
+
+  // multi-session safety: tag the DOM with sessionId for per-session cleanup
+  cardEl.dataset.sessionId = String(sessionId || '');
+
+  // 5. insert into container
+  container.appendChild(cardEl);
+
+  // 6. post-process code blocks (Prism + Copy + folding)
+  if (typeof postProcessCardCodeBlocks === 'function') {
+    postProcessCardCodeBlocks(cardEl);
+  }
+  // 7. path link recognition (scoped to .turn-body to avoid touching meta/actions)
+  const bodyEl = cardEl.querySelector('.turn-body');
+  if (bodyEl && typeof wrapPathLinksInElement === 'function') {
+    wrapPathLinksInElement(bodyEl);
+  }
+
+  // 8. register in _sessionTurns (turnId → turn) — keep spec1 Map shape
+  window._sessionTurns.set(turn.id, turn);
+
+  // 9. autoScroll
+  if (opts.autoScroll) {
+    try {
+      cardEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    } catch {
+      // older browsers without smooth-scroll options: fall back to plain scroll
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  // 10. return cardEl
+  return cardEl;
+}
+window._mountSessionTurnCard = mountSessionTurnCard;
+
 // rt-file-link click → openPreviewPanel (only for cards inside .msg-overlay,
 // don't conflict with meeting-room.js handler which targets its own scope)
 document.addEventListener('click', (e) => {
