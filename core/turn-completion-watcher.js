@@ -77,14 +77,21 @@ function createTurnCompletionWatcher(opts) {
     settled = true;
     cleanup();
     settledText = result.text || '';
-    // 仅 completed 状态才挂 patch listener（manual_extracted/absent/errored 没必要 patch）
-    if (result.status === 'completed' && onTurnPatched && !patchCancelled) {
+    // 2026-05-04 codex equiv (Spec S6/B1.7)：partial→final patch 适用范围扩展。
+    //   - status: completed（claude/codex 自动完成）+ manual_extracted（用户先点提取拿 partial，
+    //     codex 后续 task_complete 来时把 final 覆盖回来，否则卡片永久停在 partial）
+    //   - signalSource 白名单加 'task_complete'（codex L1 信号），原 'stop_reason_terminal' /
+    //     'stop_hook' 仍保留（claude 信号源）
+    const PATCHABLE_STATUSES = new Set(['completed', 'manual_extracted']);
+    const PATCHABLE_SIGNAL_SOURCES = new Set(['stop_reason_terminal', 'stop_hook', 'task_complete']);
+    if (PATCHABLE_STATUSES.has(result.status) && onTurnPatched && !patchCancelled) {
       patchListener = (evt) => {
         if (evt.hubSessionId !== hubSessionId) return;
-        if (evt.signalSource !== 'stop_reason_terminal' && evt.signalSource !== 'stop_hook') return;
+        if (!PATCHABLE_SIGNAL_SOURCES.has(evt.signalSource)) return;
         if (!evt.text || evt.text === settledText) return;
         if (evt.text.length <= settledText.length) return;
         try {
+          // patch 后状态统一标 'completed'：partial 是过渡，final 才是真完成
           onTurnPatched({ sid: hubSessionId, label, text: evt.text, status: 'completed' });
           settledText = evt.text;  // 仅成功后更新基线（spec 防 silent failure）
         } catch (e) {
