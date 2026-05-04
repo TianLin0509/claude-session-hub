@@ -2421,8 +2421,8 @@ body.theme-light .floating-scroll-btn {
 /* === Spec 1 v0.9.0 · 消息层 === */
 .msg-overlay {
   position: absolute;
-  /* 留出底部 60px 给 .floating-input-bar 不被覆盖 */
-  top: 0; left: 0; right: 0; bottom: 60px;
+  /* 留出顶部 43px 给 .terminal-header（含 zoom A−/A+ + close ✕ 按钮）+ 底部 60px 给输入框 */
+  top: 43px; left: 0; right: 0; bottom: 60px;
   overflow-y: auto;
   background: var(--bg-primary);
   padding: 12px 16px;
