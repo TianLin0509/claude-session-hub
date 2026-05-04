@@ -2435,9 +2435,10 @@ body.theme-light .floating-scroll-btn {
 .msg-overlay.hidden { display: none; }
 
 /* 视图切换按钮(右上角浮) — right offset 避开 zoom (A−/A+) + close(✕) 按钮 */
+/* zoom buttons 各 30px + close 26px + gaps ≈ 130px，view-toggle right offset 取 170 留 40px buffer */
 .view-toggle {
   position: absolute;
-  top: 8px; right: 130px;
+  top: 8px; right: 170px;
   z-index: 100;
   display: flex;
   gap: 0;
