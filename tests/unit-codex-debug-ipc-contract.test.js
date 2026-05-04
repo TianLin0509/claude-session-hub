@@ -24,7 +24,8 @@ function testGetDebugSnapshotShape() {
   assert.strictEqual(typeof tap.getDebugSnapshot, 'function', 'CodexTap must expose getDebugSnapshot()');
   const snap = tap.getDebugSnapshot();
   assert.ok(snap && typeof snap === 'object');
-  assert.ok('sessionsRoot' in snap, 'snap must have sessionsRoot');
+  assert.ok(Array.isArray(snap.sessionsRoots), 'snap must have sessionsRoots array (multi-root: 订阅模式 + API 模式)');
+  assert.ok(snap.sessionsRoots.length >= 1, 'sessionsRoots must contain at least default ~/.codex/sessions');
   assert.ok(Array.isArray(snap.pending), 'snap.pending must be Array');
   assert.ok(Array.isArray(snap.bound), 'snap.bound must be Array');
   assert.ok(Array.isArray(snap.seen), 'snap.seen must be Array');
@@ -93,7 +94,7 @@ function testTranscriptTapForwardsSnapshot() {
     'TranscriptTap must expose getCodexDebugSnapshot() forwarder');
   const snap = tap.getCodexDebugSnapshot();
   assert.ok(snap && typeof snap === 'object');
-  assert.ok('sessionsRoot' in snap);
+  assert.ok(Array.isArray(snap.sessionsRoots));
 }
 
 // === case 5: 内部敏感字段不暴露（不能含 timer / EventEmitter listeners 等）===

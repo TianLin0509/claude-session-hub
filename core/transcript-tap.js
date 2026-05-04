@@ -464,7 +464,10 @@ class CodexTap extends EventEmitter {
    */
   constructor(opts = {}) {
     super();
-    this._sessionsRoot = opts.sessionsRoot || CODEX_SESSIONS_ROOT;
+    // 多 sessionsRoot：默认含 ~/.codex/sessions（订阅模式）；API 模式 sub session
+    // 走 isolated CODEX_HOME（hubDataDir/codex-api-profile/sessions），registerSession
+    // 时按需加入。Set 自动去重。
+    this._sessionsRoots = new Set([opts.sessionsRoot || CODEX_SESSIONS_ROOT]);
     this._pollIntervalMs = opts.pollIntervalMs || 1000;
     this._pending = new Map(); // hubSessionId → { cwd, spawnTime }
     this._bound = new Map();   // hubSessionId → { rolloutPath, tail, lastText }
@@ -476,8 +479,9 @@ class CodexTap extends EventEmitter {
                                // both _tryBind() and double-bind a file.
   }
 
-  registerSession(hubSessionId, { cwd } = {}) {
+  registerSession(hubSessionId, { cwd, sessionsRoot } = {}) {
     const normCwd = normalizePathForCompare(cwd || process.cwd());
+    if (sessionsRoot) this._sessionsRoots.add(sessionsRoot);
     this._pending.set(hubSessionId, {
       cwd: normCwd,
       spawnTime: Date.now(),
@@ -528,7 +532,7 @@ class CodexTap extends EventEmitter {
       });
     }
     return {
-      sessionsRoot: this._sessionsRoot,
+      sessionsRoots: Array.from(this._sessionsRoots),
       pending,
       bound,
       seen: Array.from(this._seen),
@@ -613,20 +617,23 @@ class CodexTap extends EventEmitter {
   }
 
   _candidateDirs() {
-    // Scan today + yesterday. A Codex session started at 23:55 keeps appending
-    // to yesterday's rollout file across midnight; the old +1 direction
-    // (tomorrow) would never see a real file.
+    // Scan today + yesterday across all known sessionsRoots. A Codex session
+    // started at 23:55 keeps appending to yesterday's rollout file across midnight;
+    // the old +1 direction (tomorrow) would never see a real file.
+    // Multi-root: 订阅模式（~/.codex/sessions）+ API 模式（hubDataDir/codex-api-profile/sessions）
+    // 共存时都要扫。
     const now = new Date();
     const dirs = [];
-    for (const offset of [0, -86400000]) {
-      const d = new Date(now.getTime() + offset);
-      const p = path.join(
-        this._sessionsRoot,
-        String(d.getFullYear()),
-        String(d.getMonth() + 1).padStart(2, '0'),
-        String(d.getDate()).padStart(2, '0'),
-      );
-      dirs.push(p);
+    for (const root of this._sessionsRoots) {
+      for (const offset of [0, -86400000]) {
+        const d = new Date(now.getTime() + offset);
+        dirs.push(path.join(
+          root,
+          String(d.getFullYear()),
+          String(d.getMonth() + 1).padStart(2, '0'),
+          String(d.getDate()).padStart(2, '0'),
+        ));
+      }
     }
     return dirs;
   }

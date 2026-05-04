@@ -173,8 +173,20 @@ function buildRoundtableIsolationFlags(meetingId) {
   return ` --settings "${escaped}"`;
 }
 
-function dismissCodexUpdatePrompt(homeDir = process.env.USERPROFILE || process.env.HOME || os.homedir()) {
-  const versionPath = path.join(homeDir, '.codex', 'version.json');
+// dismissCodexUpdatePrompt — 阻止 codex CLI 启动时弹 "Update available! X -> Y" 提示。
+//
+// 历史 bug：codex 在 alt-screen TUI 弹 update prompt 阻塞主循环，圆桌发 prompt 时
+// 字符进 update 选择菜单 → codex 选 "1.Update now" 自动跑 npm install -g → 升级完
+// codex 自退、PowerShell 接管 PTY → Hub 的 prompt 被 PowerShell 当命令执行 + 解析失败。
+//
+// 修：写 dismissed_version = latest_version 到 codex 的 version.json，让 prompt 静默。
+//
+// 默认对订阅模式 ~/.codex/version.json；API 模式（isolated CODEX_HOME）必须显式传
+// configDir 指向 <hubDataDir>/codex-api-profile，否则 dismiss 写到错误位置不生效。
+function dismissCodexUpdatePrompt(homeDir = process.env.USERPROFILE || process.env.HOME || os.homedir(), configDir = null) {
+  const versionPath = configDir
+    ? path.join(configDir, 'version.json')
+    : path.join(homeDir, '.codex', 'version.json');
   try {
     let state = {};
     try { state = JSON.parse(fs.readFileSync(versionPath, 'utf8')); } catch {}
@@ -184,7 +196,7 @@ function dismissCodexUpdatePrompt(homeDir = process.env.USERPROFILE || process.e
     state.dismissed_version = state.latest_version;
     fs.mkdirSync(path.dirname(versionPath), { recursive: true });
     fs.writeFileSync(versionPath, JSON.stringify(state), 'utf8');
-    console.log(`[hub] dismissed Codex update prompt for ${state.latest_version}`);
+    console.log(`[hub] dismissed Codex update prompt for ${state.latest_version} at ${versionPath}`);
     return true;
   } catch (err) {
     console.warn('[hub] failed to dismiss Codex update prompt:', err.message);
@@ -234,6 +246,29 @@ function ensureCodexApiProfile(cv, projectDir) {
 
 function isCodexApiBackend(cv) {
   return cv.CODEX_BACKEND === 'api' && !!cv.CODEX_API_KEY;
+}
+
+// 订阅模式 codex CLI 0.125.0 对未 trust 的 cwd 启动时会弹
+// "Do you trust the contents of this directory? 1.Yes 2.No" 阻塞 TUI 主循环，
+// 永远不写 ~/.codex/sessions/.../rollout-*.jsonl → CodexTap _bound 永远空。
+// 修：spawn 前幂等追加 [projects.'<cwd>'] trust_level = "trusted" 到主 config.toml。
+function ensureCodexCwdTrusted(projectDir) {
+  if (!projectDir) return;
+  try {
+    const codexHome = path.join(os.homedir(), '.codex');
+    fs.mkdirSync(codexHome, { recursive: true });
+    const cfgPath = path.join(codexHome, 'config.toml');
+    const projectKey = path.resolve(projectDir);
+    let cfg = '';
+    try { cfg = fs.readFileSync(cfgPath, 'utf8'); } catch {}
+    const headerNeedle = `[projects.'${projectKey}']`.toLowerCase();
+    if (cfg.toLowerCase().includes(headerNeedle)) return;
+    const append = (cfg && !cfg.endsWith('\n') ? '\n' : '')
+      + `\n[projects.'${projectKey}']\ntrust_level = "trusted"\n`;
+    fs.appendFileSync(cfgPath, append, 'utf8');
+  } catch (err) {
+    console.warn('[hub] failed to pretrust codex cwd:', err.message);
+  }
 }
 
 class SessionManager extends EventEmitter {
@@ -434,10 +469,16 @@ class SessionManager extends EventEmitter {
     }
     if (!spawnCwd) spawnCwd = process.env.USERPROFILE || process.env.HOME || '.';
 
+    let codexSessionsRoot = null;
     if (isCodex) {
       const cv = getConfigValues();
       if (isCodexApiBackend(cv)) {
         sessionEnv.CODEX_HOME = ensureCodexApiProfile(cv, spawnCwd);
+        // API 模式 codex 把 rollout 写到 isolated home（不写 ~/.codex/sessions）。
+        // 记到 info 让 transcript-tap 注册时把这个 root 加进 CodexTap 的扫描列表。
+        codexSessionsRoot = path.join(sessionEnv.CODEX_HOME, 'sessions');
+      } else {
+        ensureCodexCwdTrusted(spawnCwd);
       }
     }
 
@@ -505,6 +546,7 @@ class SessionManager extends EventEmitter {
       cwd: spawnCwd,
       meetingId: opts.meetingId || null,
       currentModel,
+      codexSessionsRoot,
     };
 
     const pendingTimers = [];
@@ -632,7 +674,7 @@ class SessionManager extends EventEmitter {
     }
 
     if (isCodex) {
-      dismissCodexUpdatePrompt();
+      dismissCodexUpdatePrompt(undefined, sessionEnv.CODEX_HOME || null);
       let cmd;
       if (kind === 'codex-resume') {
         // codex resume 无参 = picker by default
@@ -980,7 +1022,9 @@ class SessionManager extends EventEmitter {
     const isolation = isClaudeCli ? buildRoundtableIsolationFlags(meetingId) : '';
     let cmd;
     if (kind === 'codex' || kind === 'codex-resume') {
-      dismissCodexUpdatePrompt();
+      // relaunch：API 模式时 codex 用 isolated CODEX_HOME，从 info.codexSessionsRoot 反推
+      const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
+      dismissCodexUpdatePrompt(undefined, codexConfigDir);
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}\r\n`;
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
       cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-2.5-flash'}\r\n`;

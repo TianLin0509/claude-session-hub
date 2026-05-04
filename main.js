@@ -33,6 +33,18 @@ const { getConfig: getHubConfig } = require('./core/hub-config.js');
 const packyBalance = require('./core/packy-balance.js');
 const { isClaudeFamily, SLOT_IDS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 
+// === EPIPE 防护（隔离 Hub 启动必需）===
+// PowerShell `& exe ...` + run_in_background 启动模式下，parent 退出后
+// stdout/stderr 管道关闭。任何 console.log/warn/error 写入会触发 EPIPE，
+// 未捕获时整个 Electron 主进程崩溃（红色 "JavaScript error" dialog）。
+// 真实触发点：listenWithFallback 端口被占用时 console.warn → EPIPE → uncaught。
+process.stdout.on('error', (e) => { if (e.code !== 'EPIPE') throw e; });
+process.stderr.on('error', (e) => { if (e.code !== 'EPIPE') throw e; });
+process.on('uncaughtException', (e) => {
+  if (e && e.code === 'EPIPE') return;
+  throw e;
+});
+
 const STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const STARTUP_T0 = Date.now();
 function traceStartup(msg) {
@@ -536,7 +548,7 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
 // without a backend (powershell/deepseek/glm).
 function registerSessionForTap(session) {
   if (!session || !session.id) return;
-  try { transcriptTap.registerSession(session.id, session.kind, { cwd: session.cwd }); }
+  try { transcriptTap.registerSession(session.id, session.kind, { cwd: session.cwd, sessionsRoot: session.codexSessionsRoot || undefined }); }
   catch (e) {
     // silent-failure-hunter L2（2026-05-04 道雪）：注册失败 → watcher 收不到 turn-complete L1
     //   信号 → 圆桌等到 180s 软提醒才感知该家"卡住"。日志方便定位根因。
