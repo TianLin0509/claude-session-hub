@@ -32,6 +32,8 @@ const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-confi
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
 const packyBalance = require('./core/packy-balance.js');
 const { isClaudeFamily, SLOT_IDS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
+const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
+const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
 
 // === EPIPE 防护（隔离 Hub 启动必需）===
 // PowerShell `& exe ...` + run_in_background 启动模式下，parent 退出后
@@ -239,9 +241,19 @@ function ensureGeminiMcpInstalled() {
 function findTranscriptByCCSessionId(ccSessionId) {
   if (!ccSessionId) return null;
   const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  // 枚举所有 CLAUDE_FAMILY 隔离配置目录（与 core/ai-kinds.js CLAUDE_FAMILY 对齐）：
+  //   claude/claude-resume → ~/.claude
+  //   deepseek → ~/.claude-deepseek
+  //   glm → ~/.claude-glm
+  //   gpt/kimi/qwen → ~/.claude-packy-{gpt,kimi,qwen}
+  // 缺一个目录会让对应家族的 transcript 全找不到（spec 2 卡片视图空白）。
   const candidateRoots = [
     path.join(home, '.claude', 'projects'),
     path.join(home, '.claude-deepseek', 'projects'),
+    path.join(home, '.claude-glm', 'projects'),
+    path.join(home, '.claude-packy-gpt', 'projects'),
+    path.join(home, '.claude-packy-kimi', 'projects'),
+    path.join(home, '.claude-packy-qwen', 'projects'),
   ];
   for (const projectsDir of candidateRoots) {
     try {
@@ -394,19 +406,41 @@ const deepSummaryService = new DeepSummaryService({ providers: _buildDeepSummary
 // Wire TranscriptTap → MeetingRoomManager timeline.
 // When a sub-session's CLI finishes a turn, append the AI text to its
 // meeting's timeline (if the sub-session belongs to a meeting).
-transcriptTap.on('turn-complete', ({ hubSessionId, text, completedAt }) => {
+transcriptTap.on('turn-complete', (ev) => {
+  const { hubSessionId, text, completedAt } = ev || {};
   const session = sessionManager.getSession(hubSessionId);
-  if (!session || !session.meetingId) return;
-  const turn = meetingManager.appendTurn(
-    session.meetingId,
-    hubSessionId,
-    text,
-    completedAt != null ? completedAt : Date.now(),
-  );
-  if (turn) {
-    sendToRenderer('meeting-timeline-updated', { meetingId: session.meetingId, turn });
+  if (session && session.meetingId) {
+    const turn = meetingManager.appendTurn(
+      session.meetingId,
+      hubSessionId,
+      text,
+      completedAt != null ? completedAt : Date.now(),
+    );
+    if (turn) {
+      sendToRenderer('meeting-timeline-updated', { meetingId: session.meetingId, turn });
+    }
+    // (Driver-mode auto-review removed when driver mode was deprecated.)
   }
-  // (Driver-mode auto-review removed when driver mode was deprecated.)
+
+  // spec2/S3：把 turn-complete 广播给 renderer，供历史会话/侧边栏卡片实时刷新。
+  // 注意：这里独立于上面的 meeting timeline 逻辑——非圆桌的普通会话也要广播。
+  try {
+    let transcriptPath = ev && ev.transcriptPath ? ev.transcriptPath : null;
+    if (!transcriptPath && session && session.ccSessionId) {
+      try { transcriptPath = findTranscriptByCCSessionId(session.ccSessionId); } catch {}
+    }
+    sendToRenderer('turn-complete-event', {
+      hubSessionId,
+      ccSessionId: session ? session.ccSessionId : null,
+      transcriptPath,
+      text,
+      completedAt: completedAt != null ? completedAt : Date.now(),
+      meetingId: session ? session.meetingId : null,
+      kind: session ? session.kind : null,
+    });
+  } catch (e) {
+    console.warn('[spec2/S3] turn-complete-event broadcast failed:', e && e.message);
+  }
 });
 
 // Persist resume meta when transcript-tap binds a sub-session to its native CLI sid.
@@ -435,6 +469,16 @@ transcriptTap.on('session-bound', (ev) => {
       immersiveByMeeting: _immersiveByMeeting,
       pilotSlotByMeeting: _pilotSlotByMeeting,
       dispatchModeByMeeting: _dispatchModeByMeeting,
+    });
+    // Spec 3 · W12：广播给 renderer 让 sessions Map 即刻同步（之前只写磁盘，
+    // renderer 内存不更新 → codex/gemini 的 resume meta 必须 reboot 才生效）
+    sendToRenderer('session-meta-updated', {
+      hubSessionId: ev.hubSessionId,
+      kind: ev.kind,
+      codexSid: cur.codexSid,
+      geminiChatId: cur.geminiChatId,
+      geminiProjectHash: cur.geminiProjectHash,
+      geminiProjectRoot: cur.geminiProjectRoot,
     });
     console.log(`[圆桌] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
   }
@@ -2250,6 +2294,43 @@ ipcMain.handle('get-last-assistant-text', (_e, sessionId) => {
   return transcriptTap.getLastAssistantText(sessionId);
 });
 
+// spec2/S3：解析任意会话的 JSONL transcript 为结构化 turns 列表。
+// 入参三选一：transcriptPath > ccSessionId > hubSessionId（按优先级 fallback）。
+// 出参：{ turns: [...], transcriptPath, error: null|string }
+//   - 找不到 transcript → { turns: [], transcriptPath: null, error: 'transcript not found' }
+//   - 解析抛错 → { turns: [], transcriptPath, error: err.message }
+// opts 透传给 parseClaudeTranscriptToTurns，默认 { limit: 50, fromTail: true }。
+ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
+  // Spec 3 · W10：在调 sync parser 之前 setImmediate yield 一次让 main loop 喘气。
+  // parser 是 sync（fs.readFileSync + JSON.parse loop + merge），5MB transcript 实测
+  // ~218ms 主线程阻塞。yield 不能消除阻塞，但能确保此 IPC 不和上一条 IPC 背靠背执行，
+  // 让 PTY data / hook-event / 圆桌广播 等其它 IPC 在阻塞间隙里被处理。
+  // 不上 worker_threads 是为避免 transcript-parser 跨边界引入序列化开销 + 复杂度。
+  await new Promise(resolve => setImmediate(resolve));
+
+  const { hubSessionId, ccSessionId, transcriptPath: inPath, opts } = args || {};
+  let transcriptPath = inPath || null;
+  try {
+    if (!transcriptPath && ccSessionId) {
+      transcriptPath = findTranscriptByCCSessionId(ccSessionId);
+    }
+    if (!transcriptPath && hubSessionId) {
+      const session = sessionManager.getSession(hubSessionId);
+      if (session && session.ccSessionId) {
+        transcriptPath = findTranscriptByCCSessionId(session.ccSessionId);
+      }
+    }
+    if (!transcriptPath) {
+      return { turns: [], transcriptPath: null, error: 'transcript not found' };
+    }
+    const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
+    const turns = await parseClaudeTranscriptToTurns(transcriptPath, parseOpts);
+    return { turns: Array.isArray(turns) ? turns : [], transcriptPath, error: null };
+  } catch (err) {
+    return { turns: [], transcriptPath, error: err && err.message ? err.message : String(err) };
+  }
+});
+
 function collectAgentOutputs(meetingId) {
   const meeting = meetingManager.getMeeting(meetingId);
   if (!meeting) return null;
@@ -3099,6 +3180,8 @@ ipcMain.handle('get-hub-config-raw', () => {
     codexApiBaseUrl: config.codexApiBaseUrl,
     codexApiModel: config.codexApiModel,
     packySessionCookie: config.packySessionCookie || '',
+    uiToolFoldThreshold: Number.isFinite(config.uiToolFoldThreshold) ? config.uiToolFoldThreshold : 15,
+    uiCodeFoldThreshold: Number.isFinite(config.uiCodeFoldThreshold) ? config.uiCodeFoldThreshold : 30,
   };
 });
 

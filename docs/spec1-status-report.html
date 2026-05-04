@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Spec 1 进度可视化报告 · Hub UI Redesign</title>
+<style>
+  :root{
+    --bg:#0e0c14;
+    --bg-card:#181522;
+    --bg-soft:#1f1b2c;
+    --border:#2a2438;
+    --text:#e8e4f0;
+    --muted:#9b94a8;
+    --purple:#8b5cf6;
+    --purple-soft:#a78bfa;
+    --purple-deep:#6d28d9;
+    --good:#10b981;
+    --warn:#f59e0b;
+    --bad:#ef4444;
+    --info:#60a5fa;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:linear-gradient(180deg,var(--purple),var(--purple-deep));border-radius:5px}
+  .wrap{max-width:1180px;margin:0 auto;padding:36px 28px 80px}
+  header{margin-bottom:28px}
+  .badge{display:inline-block;padding:3px 10px;border-radius:999px;background:var(--purple-deep);color:#fff;font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;margin-right:8px}
+  .badge.warn{background:#7c2d12;color:#fde68a}
+  .badge.muted{background:#374151;color:#d1d5db}
+  h1{margin:6px 0 4px;font-size:28px;font-weight:700;background:linear-gradient(90deg,#fff,var(--purple-soft));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .subtitle{color:var(--muted);font-size:14px}
+  .progressbar{margin-top:22px;background:var(--bg-soft);border-radius:999px;height:12px;overflow:hidden;position:relative}
+  .progressfill{height:100%;width:75%;background:linear-gradient(90deg,var(--purple),var(--purple-soft));border-radius:999px;box-shadow:0 0 12px rgba(139,92,246,.4)}
+  .progress-meta{display:flex;justify-content:space-between;margin-top:6px;color:var(--muted);font-size:12px}
+
+  section{margin-top:36px;background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:22px 24px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+  section h2{margin:0 0 4px;font-size:18px;display:flex;align-items:center;gap:10px}
+  section h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--purple)}
+  section .lede{color:var(--muted);margin:0 0 16px}
+
+  /* Mockup 区 */
+  .mock{display:grid;grid-template-columns:200px 1fr;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#100d18}
+  .mock .side{background:linear-gradient(180deg,#1a1525,#13101c);padding:14px 12px;border-right:1px solid var(--border)}
+  .mock .side .brand{font-size:13px;font-weight:700;color:var(--purple-soft);margin-bottom:14px}
+  .mock .side .item{padding:8px 10px;border-radius:8px;color:var(--muted);font-size:12px;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+  .mock .side .item.active{background:rgba(139,92,246,.18);color:#fff;border:1px solid rgba(139,92,246,.4)}
+  .mock .side .item .pip{width:6px;height:6px;border-radius:50%;background:var(--good)}
+
+  .mock .stage{padding:14px;display:flex;flex-direction:column;gap:10px;min-height:520px}
+  .toolbar{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:8px}
+  .tabs{display:inline-flex;background:var(--bg-soft);border-radius:8px;padding:3px}
+  .tab{padding:5px 12px;border-radius:6px;font-size:12px;color:var(--muted);cursor:pointer}
+  .tab.active{background:var(--purple);color:#fff}
+  .tab.danger{background:#7f1d1d;color:#fecaca}
+
+  .turn{display:flex;gap:10px;padding:10px;border-radius:10px;background:rgba(139,92,246,.04);border:1px solid rgba(139,92,246,.12);transition:transform .2s}
+  .turn:hover{transform:translateY(-1px);background:rgba(139,92,246,.08)}
+  .avatar{width:32px;height:32px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:13px}
+  .avatar.user{background:#0ea5e9}
+  .avatar.ai{background:linear-gradient(135deg,var(--purple),#ec4899)}
+  .turn-body{flex:1;min-width:0}
+  .turn-meta{font-size:11px;color:var(--muted);margin-bottom:4px;display:flex;justify-content:space-between}
+  .turn-actions{opacity:0;transition:opacity .2s;display:flex;gap:4px}
+  .turn:hover .turn-actions{opacity:1}
+  .ta-btn{font-size:10px;padding:2px 6px;border-radius:4px;background:var(--bg-soft);color:var(--muted);border:1px solid var(--border)}
+  .turn-text{font-size:13px;color:var(--text)}
+
+  .toolcall{margin-top:6px;border:1px solid rgba(139,92,246,.25);border-radius:6px;background:rgba(0,0,0,.2);overflow:hidden}
+  .tc-head{padding:6px 10px;font-size:11px;display:flex;justify-content:space-between;align-items:center;background:rgba(139,92,246,.1);color:var(--purple-soft);cursor:pointer}
+  .tc-head .chev{font-size:10px}
+
+  .codeblock{margin-top:6px;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:#0a0810;font-family:Consolas,Monaco,monospace;font-size:12px}
+  .cb-head{display:flex;justify-content:space-between;padding:4px 10px;background:rgba(139,92,246,.08);font-size:10px;color:var(--muted)}
+  .cb-body{padding:8px 10px;color:#cdd6f4}
+  .tk-key{color:#f59e0b}.tk-str{color:#10b981}.tk-fn{color:var(--purple-soft)}.tk-cmt{color:#6b7280;font-style:italic}
+
+  .empty-stage{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#7f1d1d;border:2px dashed #991b1b;border-radius:12px;background:rgba(239,68,68,.04);padding:30px}
+  .empty-stage .big{font-size:48px;margin-bottom:8px}
+  .empty-stage .lbl{color:#fecaca;font-size:14px;font-weight:600}
+  .empty-stage .sub{color:#fca5a5;font-size:12px;margin-top:4px;text-align:center;max-width:340px}
+
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+  .compare > div{border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--bg-soft)}
+  .compare h3{margin:0 0 10px;font-size:13px;display:flex;align-items:center;gap:6px}
+  .compare h3 .pill{font-size:10px;padding:2px 7px;border-radius:6px}
+  .pill.good{background:rgba(16,185,129,.18);color:var(--good)}
+  .pill.bad{background:rgba(239,68,68,.18);color:var(--bad)}
+
+  /* 风险卡 */
+  .risks{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:8px}
+  .risk{border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--bg-soft);position:relative;overflow:hidden}
+  .risk::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--purple)}
+  .risk.crit::before{background:var(--bad)}
+  .risk.warn::before{background:var(--warn)}
+  .risk.info::before{background:var(--info)}
+  .risk h4{margin:0 0 6px;font-size:14px}
+  .risk p{margin:4px 0;font-size:13px;color:var(--text)}
+  .risk .lvl{font-size:10px;padding:2px 8px;border-radius:6px;text-transform:uppercase;font-weight:700;letter-spacing:.5px}
+  .risk.crit .lvl{background:rgba(239,68,68,.18);color:var(--bad)}
+  .risk.warn .lvl{background:rgba(245,158,11,.18);color:var(--warn)}
+  .risk.info .lvl{background:rgba(96,165,250,.18);color:var(--info)}
+  .risk .impact{margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-size:12px;color:var(--muted)}
+  .risk .impact b{color:var(--purple-soft)}
+
+  /* 场景卡 */
+  .scenarios{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:8px}
+  .scn{border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--bg-soft)}
+  .scn .hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+  .scn .name{font-weight:600;font-size:13px}
+  .scn .face{font-size:24px}
+  .scn .flow{font-size:12px;color:var(--muted);margin:6px 0}
+  .scn .verdict{margin-top:10px;padding:8px;border-radius:6px;font-size:12px}
+  .scn .verdict.ok{background:rgba(16,185,129,.1);color:var(--good);border:1px solid rgba(16,185,129,.3)}
+  .scn .verdict.bad{background:rgba(239,68,68,.1);color:var(--bad);border:1px solid rgba(239,68,68,.3)}
+  .scn .verdict.warn{background:rgba(245,158,11,.1);color:var(--warn);border:1px solid rgba(245,158,11,.3)}
+
+  /* 任务表 */
+  table.tasks{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
+  table.tasks th,table.tasks td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border)}
+  table.tasks th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+  table.tasks tr.done td{color:var(--muted);text-decoration:line-through}
+  table.tasks tr.blocked td{background:rgba(239,68,68,.06)}
+  table.tasks .st{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600}
+  .st.done{background:rgba(16,185,129,.18);color:var(--good)}
+  .st.block{background:rgba(239,68,68,.18);color:var(--bad)}
+  .st.todo{background:rgba(156,148,168,.18);color:var(--muted)}
+
+  .footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:12px;text-align:center}
+  .arrow{color:var(--purple-soft);margin:0 6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <span class="badge">SPEC 1</span>
+    <span class="badge warn">9/12 任务完成</span>
+    <span class="badge muted">Branch · feat/ui-redesign-spec1</span>
+    <h1>Hub UI 重构 · 进度与风险可视化报告</h1>
+    <div class="subtitle">Worktree：<code>C:\Users\lintian\hub-feat-ui-redesign-spec1</code> · 已 13 个 commit · 主仓库 0.8.5 不受影响</div>
+    <div class="progressbar"><div class="progressfill"></div></div>
+    <div class="progress-meta"><span>T1—T9 完成</span><span>T10 决策中</span><span>T11/T12 等待</span></div>
+  </header>
+
+  <!-- 一、当前效果 -->
+  <section>
+    <h2><span class="dot"></span>一、当前效果会是怎么样？</h2>
+    <p class="lede">视觉/交互层（PTY 模式）= 完成；卡片视图 = 空白占位（数据未接通）</p>
+
+    <div class="compare">
+      <div>
+        <h3>PTY 视图 <span class="pill good">完全正常</span></h3>
+        <div class="mock">
+          <div class="side">
+            <div class="brand">Claude Hub</div>
+            <div class="item active"><span class="pip"></span>my-project</div>
+            <div class="item"><span class="pip" style="background:#6b7280"></span>old-task</div>
+            <div class="item">+ 新建</div>
+          </div>
+          <div class="stage">
+            <div class="toolbar">
+              <div class="tabs"><span class="tab">卡片</span><span class="tab active">PTY</span></div>
+              <span style="color:var(--muted);font-size:11px">v0.9.0</span>
+            </div>
+            <div style="flex:1;background:#000;border-radius:6px;padding:10px;font-family:Consolas;font-size:11px;color:#cdd6f4;overflow:hidden">
+              <div><span style="color:#10b981">$</span> claude</div>
+              <div style="color:#9b94a8">Welcome to Claude Code...</div>
+              <div style="margin-top:8px"><span style="color:var(--purple-soft)">&gt;</span> 帮我修一下 src/main.js 的 bug</div>
+              <div style="margin-top:8px;color:#cdd6f4">好的，我先读取文件...</div>
+              <div style="color:#10b981">● Read(src/main.js)</div>
+              <div style="color:#9b94a8">  → 100 lines</div>
+            </div>
+          </div>
+        </div>
+        <p style="margin:10px 0 0;color:var(--muted);font-size:12px">用户体验：与 v0.8.5 完全一致 + 紫色滚动条 + 紫色主题侧栏。</p>
+      </div>
+
+      <div>
+        <h3>卡片视图 <span class="pill bad">空白占位</span></h3>
+        <div class="mock">
+          <div class="side">
+            <div class="brand">Claude Hub</div>
+            <div class="item active"><span class="pip"></span>my-project</div>
+            <div class="item"><span class="pip" style="background:#6b7280"></span>old-task</div>
+            <div class="item">+ 新建</div>
+          </div>
+          <div class="stage">
+            <div class="toolbar">
+              <div class="tabs"><span class="tab active">卡片</span><span class="tab">PTY</span></div>
+              <span style="color:var(--muted);font-size:11px">v0.9.0</span>
+            </div>
+            <div class="empty-stage">
+              <div class="big">📭</div>
+              <div class="lbl">暂无消息</div>
+              <div class="sub">真实数据接通推迟到 spec 2，当前切到卡片视图看不到任何 turn</div>
+            </div>
+          </div>
+        </div>
+        <p style="margin:10px 0 0;color:var(--muted);font-size:12px">用户体验：切过去 = 空白；切回 PTY 立即恢复。</p>
+      </div>
+    </div>
+
+    <h3 style="margin-top:24px;font-size:14px;color:var(--purple-soft)">理想效果（spec 2 完成后才有）</h3>
+    <div class="mock">
+      <div class="side">
+        <div class="brand">Claude Hub</div>
+        <div class="item active"><span class="pip"></span>my-project</div>
+      </div>
+      <div class="stage">
+        <div class="toolbar">
+          <div class="tabs"><span class="tab active">卡片</span><span class="tab">PTY</span></div>
+          <span style="color:var(--muted);font-size:11px">v0.9.0</span>
+        </div>
+
+        <div class="turn">
+          <div class="avatar user">立</div>
+          <div class="turn-body">
+            <div class="turn-meta"><span>立花道雪 · 14:22</span><div class="turn-actions"><span class="ta-btn">复制</span><span class="ta-btn">编辑重发</span></div></div>
+            <div class="turn-text">帮我修一下 <code style="background:rgba(139,92,246,.15);padding:1px 4px;border-radius:3px;color:var(--purple-soft)">src/main.js</code> 的 bug</div>
+          </div>
+        </div>
+
+        <div class="turn">
+          <div class="avatar ai">C</div>
+          <div class="turn-body">
+            <div class="turn-meta"><span>Claude · 14:22</span><div class="turn-actions"><span class="ta-btn">复制</span><span class="ta-btn">重新生成</span></div></div>
+            <div class="turn-text">好的，我先读取文件看看问题在哪。</div>
+            <div class="toolcall">
+              <div class="tc-head"><span>● Read(src/main.js) · 100 lines</span><span class="chev">▼ 展开</span></div>
+            </div>
+            <div class="turn-text" style="margin-top:8px">问题在第 42 行的空指针，修改如下：</div>
+            <div class="codeblock">
+              <div class="cb-head"><span>javascript</span><span>📋 复制</span></div>
+              <div class="cb-body">
+                <div><span class="tk-key">function</span> <span class="tk-fn">load</span>(path) {</div>
+                <div>&nbsp;&nbsp;<span class="tk-key">if</span> (!path) <span class="tk-key">return</span> <span class="tk-str">''</span>;</div>
+                <div>&nbsp;&nbsp;<span class="tk-cmt">// 防御性空检查</span></div>
+                <div>}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 二、主要瓶颈 -->
+  <section>
+    <h2><span class="dot" style="background:var(--bad)"></span>二、主要瓶颈在哪里？</h2>
+    <p class="lede">T10 数据接通：原 plan 假设的数据结构不存在</p>
+    <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:16px;margin-top:8px">
+      <div style="font-size:14px;font-weight:600;color:var(--bad);margin-bottom:8px">瓶颈 · Hub 单 session 没有 <code>session.turns[]</code> 数组</div>
+      <div style="color:var(--text);font-size:13px;line-height:1.7">
+        Plan 的 T10 假设可以从 <code>session.turns[]</code> 读取历史轮次喂给卡片视图。
+        实际 grep 后发现：
+        <ul style="margin:8px 0 0">
+          <li>单 session 状态只有 <code>{ event, sessionId, claudeSessionId, cwd, latestUserMessage }</code></li>
+          <li>assistant 完整回复内容存在 <strong>Claude Code 的 transcript JSONL 文件</strong>里</li>
+          <li>需要新增解析逻辑 + 历史回放，工作量远超 plan 预估</li>
+          <li>更糟的是会触碰 CC transcript 这块敏感代码 → 容易引入新 bug 影响圆桌</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 三、关键 issue -->
+  <section>
+    <h2><span class="dot" style="background:var(--warn)"></span>三、关键 issue</h2>
+    <table class="tasks">
+      <thead><tr><th style="width:60px">#</th><th>任务</th><th style="width:90px">状态</th><th>关键问题</th></tr></thead>
+      <tbody>
+        <tr class="done"><td>T1—T9</td><td>视觉/交互/工具折叠/代码块/path-link/头像/操作按钮</td><td><span class="st done">已完成</span></td><td>—</td></tr>
+        <tr class="blocked"><td>T10</td><td>接通真实数据</td><td><span class="st block">阻塞</span></td><td><strong>session.turns[] 不存在</strong>，需缩减或扩展</td></tr>
+        <tr><td>T11</td><td>CDP E2E 13 场景</td><td><span class="st todo">等待</span></td><td>取决于 T10 是否接真实数据</td></tr>
+        <tr><td>T12</td><td>版本号同步 + 收尾</td><td><span class="st todo">等待</span></td><td>v0.9.0 已 bump，但功能与版本号不对等</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 四、潜在风险 -->
+  <section>
+    <h2><span class="dot" style="background:var(--bad)"></span>四、潜在风险（聚焦用户体验）</h2>
+
+    <div class="risks">
+      <div class="risk crit">
+        <div style="display:flex;justify-content:space-between;align-items:center"><h4>用户切到卡片视图 = 空白</h4><span class="lvl">CRITICAL</span></div>
+        <p>用户看到顶部多了"卡片"tab，好奇点一下，结果是空的。</p>
+        <div class="impact"><b>用户感知：</b>"新版本卡片视图坏了？我升级是不是踩坑了？"</div>
+      </div>
+
+      <div class="risk warn">
+        <div style="display:flex;justify-content:space-between;align-items:center"><h4>v0.9.0 版本号承诺感过强</h4><span class="lvl">WARN</span></div>
+        <p>从 0.8.5 跳 0.9.0，用户会期待"重大功能升级"。但当前默认体验与 0.8.5 几乎一致。</p>
+        <div class="impact"><b>用户感知：</b>"升了个寂寞？"</div>
+      </div>
+
+      <div class="risk warn">
+        <div style="display:flex;justify-content:space-between;align-items:center"><h4>已知功能（HTML/MD 预览）回归未验</h4><span class="lvl">WARN</span></div>
+        <p>spec 1 加了 path-link 链接化功能，但你强调过 .html / .md 的预览面板（<code>openPreviewPanel</code>）必须不能失效。当前还没跑 E2E 验证（T11 未执行）。</p>
+        <div class="impact"><b>用户感知：</b>点击 .md 文件链接，要么打开预览面板（OK），要么浏览器跳出错误。需要验证。</div>
+      </div>
+
+      <div class="risk info">
+        <div style="display:flex;justify-content:space-between;align-items:center"><h4>圆桌（multi-room）未改</h4><span class="lvl">INFO</span></div>
+        <p>spec 1 只动单 session 主区。圆桌 UI 仍是老样式，用户在两种模式间切换会感到风格不一致。</p>
+        <div class="impact"><b>用户感知：</b>新旧 UI 混搭过渡期。</div>
+      </div>
+
+      <div class="risk crit">
+        <div style="display:flex;justify-content:space-between;align-items:center"><h4>回退路径不清晰</h4><span class="lvl">CRITICAL</span></div>
+        <p>如果发布后用户反馈卡片视图问题，是 hide tab 入口？还是 revert 整个 worktree？目前没有 feature flag。</p>
+        <div class="impact"><b>用户感知：</b>遇到 bug 只能等下个版本，无法自己关闭。</div>
+      </div>
+
+      <div class="risk info">
+        <div style="display:flex;justify-content:space-between;align-items:center"><h4>node_modules junction 部署风险</h4><span class="lvl">INFO</span></div>
+        <p>worktree 用 mklink /J 软链 node_modules，本地开发 OK。但如果走 electron-builder 打包，需要确认 dist 不会跟随软链。</p>
+        <div class="impact"><b>用户感知：</b>本地无感知；正式 release 前需验证打包路径。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 五、用户体验影响 -->
+  <section>
+    <h2><span class="dot" style="background:var(--info)"></span>五、用户体验影响（按使用场景）</h2>
+    <div class="scenarios">
+      <div class="scn">
+        <div class="hdr"><div class="name">场景 A · 默认 PTY 用户</div><div class="face">😊</div></div>
+        <div class="flow">不切视图，按老习惯用 PTY 终端 + xterm 输入</div>
+        <div class="verdict ok">✓ 体验提升：紫色主题更精致 + 滚动条好看</div>
+      </div>
+      <div class="scn">
+        <div class="hdr"><div class="name">场景 B · 好奇点新功能</div><div class="face">😕</div></div>
+        <div class="flow">看到顶部新 tab"卡片"，点击切换</div>
+        <div class="verdict bad">✗ 看到空白页 → 困惑/退回 PTY</div>
+      </div>
+      <div class="scn">
+        <div class="hdr"><div class="name">场景 C · 期待升级</div><div class="face">😐</div></div>
+        <div class="flow">看到 v0.9.0 升级提示，期待新功能</div>
+        <div class="verdict warn">⚠ 默认无变化，需要主动探索才能感知</div>
+      </div>
+    </div>
+
+    <div style="margin-top:18px;padding:14px;background:var(--bg-soft);border-radius:10px;border-left:4px solid var(--purple-soft)">
+      <strong style="color:var(--purple-soft)">总结：</strong>
+      当前状态属于"<strong>视觉地基铺好，功能房子还没盖</strong>"。
+      默认体验不会变差（PTY 仍是 default），但如果用户被新 tab 吸引去点，会失望。
+      <strong>核心决策点：要不要在 spec 1 发布前隐藏卡片 tab 入口？</strong>
+      隐藏 = 用户感知不到瑕疵；不隐藏 = 提前预告，但有空白页风险。
+    </div>
+  </section>
+
+  <!-- 六、决策建议 -->
+  <section>
+    <h2><span class="dot"></span>六、给你三个决策方向</h2>
+    <div class="risks">
+      <div class="risk info">
+        <div style="display:flex;justify-content:space-between;align-items:center"><h4>方向 A · 隐藏入口稳交付</h4><span class="lvl">推荐</span></div>
+        <p>T10 不接数据，<strong>直接隐藏卡片 tab 入口</strong>（feature flag default off）。</p>
+        <div class="impact">
+          <b>用户感知：</b>升级后体验完全不变（隐性升级）<br>
+          <b>工作量：</b>T10 极简（1 行改动） + T11 缩减 + T12 收尾<br>
+          <b>剩余时间估计：</b>~30 min
+        </div>
+      </div>
+
+      <div class="risk warn">
+        <div style="display:flex;justify-content:space-between;align-items:center"><h4>方向 B · 完整接通真实数据</h4><span class="lvl">高风险</span></div>
+        <p>T10 真去解析 transcript JSONL + 历史回放，spec 1 完整交付。</p>
+        <div class="impact">
+          <b>用户感知：</b>升级即可看到完整卡片视图<br>
+          <b>工作量：</b>T10 拆 a/b，需要 60+ min，触碰 CC transcript 高风险<br>
+          <b>剩余时间估计：</b>~2 小时 + 引入新 bug 概率高
+        </div>
+      </div>
+
+      <div class="risk info">
+        <div style="display:flex;justify-content:space-between;align-items:center"><h4>方向 C · 切片 merge</h4><span class="lvl">中性</span></div>
+        <p>T1-T9 已完成的视觉层单独 PR/merge（v0.8.6），spec 2 单独 brainstorm 数据接通。</p>
+        <div class="impact">
+          <b>用户感知：</b>v0.8.6 主题更新，无新 tab；v0.9.0 留给完整卡片视图<br>
+          <b>工作量：</b>需要把 T3 的 view-toggle 暂时去掉再 merge<br>
+          <b>剩余时间估计：</b>~45 min（含撤销 toggle UI）
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="footer">
+    生成时间：2026-05-04 · 基于 worktree commit <code>0385f9d</code><br>
+    HTML 路径：<code>C:\Users\lintian\hub-feat-ui-redesign-spec1\docs\spec1-status-report.html</code>
+  </div>
+</div>
+</body>
+</html>

@@ -1,5 +1,8 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
 const { isClaudeFamily, isAiKind } = require('../core/ai-kinds.js');
+const { formatAbsoluteTime } = require('./format-time.js');
+const { marked } = require('marked');
+const DOMPurify = require('dompurify');
 const RENDER_STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const RENDER_STARTUP_T0 = performance.now();
 function traceRendererStartup(msg) {
@@ -363,6 +366,19 @@ const terminalCache = new Map();
 const sessionListEl = document.getElementById('session-list');
 const terminalPanelEl = document.getElementById('terminal-panel');
 const emptyStateEl = document.getElementById('empty-state');
+
+// Spec 2 preserve helper — both showTerminal AND session-closed handler clear
+// terminalPanelEl.innerHTML, which would obliterate spec 1/2 elements (view-toggle,
+// msg-overlay) declared statically in index.html. Without preserve they vanish forever
+// after the first session close → no card view + no view toggle button.
+function preserveAndClearTerminalPanel() {
+  const preserved = [
+    document.getElementById('msg-overlay'),
+    document.querySelector('.view-toggle')
+  ].filter(Boolean);
+  terminalPanelEl.innerHTML = '';
+  preserved.forEach(el => terminalPanelEl.appendChild(el));
+}
 const btnNew = document.getElementById('btn-new');
 const menuEl = document.getElementById('new-session-menu');
 const wrapperEl = document.getElementById('new-session-wrapper');
@@ -1079,7 +1095,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   const cached = getOrCreateTerminal(sessionId);
 
-  terminalPanelEl.innerHTML = '';
+  // Preserve spec 1/2 elements that live inside #terminal-panel (view-toggle, msg-overlay)
+  // before innerHTML clear obliterates them; re-attach after.
+  preserveAndClearTerminalPanel();
 
   const header = document.createElement('div');
   header.className = 'terminal-header';
@@ -1238,6 +1256,28 @@ function showTerminal(sessionId, opts = { focus: true }) {
   cached._navButtons = mountPromptNavButtons(sessionId, termContainer, cached._minimap);
   if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
   cached._floatingInput = mountFloatingInput(sessionId, termContainer, cached.terminal);
+
+  // === Spec 2 · S7: 切换 session 时加载真实历史卡片 ===
+  if (currentView === 'card') {
+    // loadSessionHistoryToOverlay handles its own clear + Map.clear + placeholder
+    // for empty/error/non-Claude cases. Don't pre-clear here.
+    if (typeof loadSessionHistoryToOverlay === 'function') {
+      loadSessionHistoryToOverlay(sessionId).catch(err => {
+        console.warn('[showTerminal] loadSessionHistoryToOverlay failed:', err);
+      });
+    }
+  } else {
+    // PTY view: just clear msg-overlay (don't load cards user can't see)
+    const overlay = document.getElementById('msg-overlay');
+    if (overlay) {
+      overlay.innerHTML = '';
+      if (window._sessionTurns) window._sessionTurns.clear();
+    }
+  }
+  // Spec 3 · W15：切 session 时清旧 indicator + 按新 active session 状态重建
+  if (typeof _updateStreamingIndicator === 'function') {
+    _updateStreamingIndicator(sessionId);
+  }
 }
 
 // Minimap: a narrow strip on the right edge of the terminal that shows prompt
@@ -1520,6 +1560,1004 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
     },
   };
 }
+
+// === Spec 1 v0.9.0 · 工具调用块 + 折叠状态 ===
+// _sessionTurns: turnId -> turn object map. Initialized here so rerenderTurn
+// works for T5 toggle even before T10 wires real session.turns data.
+// T10 will populate this from session.turns[]; for now it's an empty map.
+if (!window._sessionTurns) window._sessionTurns = new Map();
+
+const _foldedToolsState = new Map(); // 'turnId:toolIdx' -> bool(expanded)
+let _toolFoldThreshold = 15; // 启动时从 config 拉
+
+function setFoldedTool(turnId, idx, expanded) {
+  _foldedToolsState.set(`${turnId}:${idx}`, expanded);
+}
+function getFoldedTool(turnId, idx, defaultExpanded) {
+  const key = `${turnId}:${idx}`;
+  if (_foldedToolsState.has(key)) return _foldedToolsState.get(key);
+  return defaultExpanded;
+}
+
+// === Spec 3 · UI 方案 E (CardCluster) — 工具簇 ===
+// 多 tool 同 turn 合并显示：1 行 cluster summary 默认折叠，展开后是工具列表。
+// 每行 tool 显示 [Name] [cmd-from-input]，因 tool_result 在 parser 跳过故无 stdout
+// （留待 spec 3+ 关联 tool_use_id ↔ tool_result 后再展开单 tool 详情）。
+// 替代了之前每个 tool 单独渲染成大块的方案（信息密度低）。
+const _TOOL_CMD_KEYS = ['file_path', 'command', 'pattern', 'path', 'url', 'query'];
+function _toolCmdFromInput(input) {
+  if (!input || typeof input !== 'object') return '';
+  for (const k of _TOOL_CMD_KEYS) {
+    if (typeof input[k] === 'string' && input[k]) {
+      return input[k].split('\n')[0].slice(0, 100);
+    }
+  }
+  return '';
+}
+// Spec 3 · W9：渲染单条 tool row。如果有 result（tool stdout），
+// 用 details/summary 折叠；否则纯 div。result 默认折叠，长 result 截断 5KB。
+const _TOOL_RESULT_PREVIEW_LIMIT = 5000;
+function _renderToolRow(tc) {
+  const name = escapeHtml((tc && tc.name) || '?');
+  const cmd = escapeHtml(_toolCmdFromInput(tc && tc.input));
+  const head = `<span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}`;
+  const hasResult = tc && typeof tc.result === 'string' && tc.result.length > 0;
+  if (!hasResult) {
+    return `<div class="tc-row">${head}</div>`;
+  }
+  const isErr = tc.isError === true;
+  const truncated = tc.result.length > _TOOL_RESULT_PREVIEW_LIMIT;
+  const preview = truncated
+    ? tc.result.slice(0, _TOOL_RESULT_PREVIEW_LIMIT) + '\n…(已截断 ' + (tc.result.length - _TOOL_RESULT_PREVIEW_LIMIT) + ' 字符)'
+    : tc.result;
+  const errBadge = isErr ? ' <span class="tc-row-errbadge">✗ 错误</span>' : '';
+  return `<details class="tc-row tc-row-with-result${isErr ? ' tc-row-err' : ''}">
+    <summary class="tc-row-head">${head}${errBadge}</summary>
+    <pre class="tc-result${isErr ? ' tc-result-err' : ''}">${escapeHtml(preview)}</pre>
+  </details>`;
+}
+
+function renderToolCluster(turnId, toolCalls) {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
+  const total = toolCalls.length;
+  // Spec 3 · W1：单 tool 时简化 summary 为 `▸ Bash command-snippet`
+  // 不再写"1 个工具调用 · X"（D3 数据：5196 个 entry 中 55% 是 1-tool，原措辞冗余且填屏）
+  if (total === 1) {
+    const tc = toolCalls[0] || {};
+    const name = escapeHtml(tc.name || '?');
+    const cmd = escapeHtml(_toolCmdFromInput(tc.input));
+    return `<details class="tc-cluster tc-cluster-single" data-turn="${escapeHtml(turnId)}">
+      <summary class="tc-cluster-head"><span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}</summary>
+      <div class="tc-cluster-list">${_renderToolRow(tc)}</div>
+    </details>`;
+  }
+  const counts = {};
+  for (const tc of toolCalls) {
+    const name = (tc && tc.name) || '?';
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  const breakdown = Object.entries(counts)
+    .map(([n, c]) => c > 1 ? `${n} × ${c}` : n)
+    .join(' + ');
+  const items = toolCalls.map(_renderToolRow).join('');
+  return `<details class="tc-cluster" data-turn="${escapeHtml(turnId)}">
+    <summary class="tc-cluster-head">${total} 个工具调用 · ${escapeHtml(breakdown)}</summary>
+    <div class="tc-cluster-list">${items}</div>
+  </details>`;
+}
+
+function renderToolCall(turnId, idx, tc) {
+  // tc = { name, cmd, stdout, ok, durationMs, exitCode? }
+  const lines = (tc.stdout || '').split('\n').length;
+  const isFail = tc.ok === false;
+  const shouldFold = lines > _toolFoldThreshold && !isFail;
+  const expanded = getFoldedTool(turnId, idx, !shouldFold);
+  const status = isFail
+    ? `<span class="tc-fail">✗</span>${tc.exitCode != null ? ' exit ' + tc.exitCode : ''}`
+    : `<span class="tc-ok">✓</span>`;
+  const dur = tc.durationMs != null ? ` · ${(tc.durationMs/1000).toFixed(1)}s` : '';
+  const meta = `${lines} line${lines===1?'':'s'}${dur}`;
+  return `<div class="tc" data-turn="${escapeHtml(turnId)}" data-idx="${idx}">
+    <div class="tc-head">
+      <span><span class="tc-name">${escapeHtml(tc.name)}</span> ${escapeHtml(tc.cmd || '')}</span>
+      <span class="tc-meta">${status} ${meta}</span>
+    </div>
+    ${shouldFold && !expanded
+      ? `<div class="tc-toggle" data-action="tc-expand">▸ 展开 ${lines} 行(折叠 >${_toolFoldThreshold} 行)</div>`
+      : `<pre class="tc-out">${escapeHtml(tc.stdout || '')}</pre>${shouldFold ? '<div class="tc-toggle" data-action="tc-collapse">▾ 折叠</div>' : ''}`}
+  </div>`;
+}
+
+// 全局 click handler: 工具块展开/折叠
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action="tc-expand"], [data-action="tc-collapse"]');
+  if (!btn) return;
+  const wrap = btn.closest('.tc');
+  const turnId = wrap.dataset.turn;
+  const idx = parseInt(wrap.dataset.idx, 10);
+  const want = btn.dataset.action === 'tc-expand';
+  setFoldedTool(turnId, idx, want);
+  rerenderTurn(turnId);
+});
+
+function rerenderTurn(turnId) {
+  // 重渲染整张 turn 卡片 + 调 postProcessCardCodeBlocks 保留代码块交互
+  const card = document.querySelector(`.turn-card[data-turn-id="${turnId}"]`);
+  if (!card || !window._sessionTurns) return;
+  const turn = window._sessionTurns.get(turnId);
+  if (!turn) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = renderTurnCard(turn);
+  const newCard = tmp.firstElementChild;
+  if (newCard) {
+    if (typeof postProcessCardCodeBlocks === 'function') {
+      postProcessCardCodeBlocks(newCard);
+    }
+    const bodyEl = newCard.querySelector('.turn-body');
+    if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl);
+    card.replaceWith(newCard);
+    // Spec 3 长文本折叠：必须在 DOM 内调（replaceWith 之后），否则 scrollHeight=0
+    if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
+  }
+}
+
+// === Spec 1 v0.9.0 · D4 头像 ===
+function sanitizeAssetName(name) {
+  // 仅允许字母数字+横线下划线,防止路径遍历
+  return String(name || '').replace(/[^a-zA-Z0-9_-]/g, '');
+}
+function aiLogoSrc(kind) {
+  // 已有 logos: claude / codex / 等。其它 kind fallback 到字母。
+  // Spec 3 · W6 fix：claude-resume / gemini-resume / codex-resume / deepseek-resume / 等
+  // 都共享对应 base kind 的 logo（之前 -resume 后缀漏映射 → 字母 fallback "CL"）。
+  const known = ['claude','codex','gemini','deepseek','glm','gpt','kimi','qwen'];
+  const k = (kind || '').toLowerCase().replace(/-resume$/, '');
+  if (known.includes(k)) return `assets/ai-logos/${k}.svg`;
+  return null;
+}
+function aiLetterFallback(kind) {
+  const k = (kind || '?').toUpperCase();
+  return k.length >= 2 ? k.slice(0, 2) : k + '?';
+}
+
+// === Spec 3 · W7 头部 metadata pills ===
+// 给卡片头加 4 个信息 pill：🔧 工具数 / ⇡in/⇣out token / 📊 ctx% / ⏱ 耗时（user 卡片仅 📝 字数）
+// model context window 用模糊匹配（实际 model id 多变如 "claude-opus-4-7[1m]"），匹配不到默认 200k。
+function _modelCtxWindow(model) {
+  if (!model) return 200000;
+  const m = String(model).toLowerCase();
+  if (m.includes('1m') || m.includes('opus-4')) return 1000000;
+  if (m.includes('gemini')) return 1000000;
+  if (m.includes('sonnet')) return 200000;
+  if (m.includes('haiku')) return 200000;
+  if (m.includes('gpt')) return 128000;
+  return 200000;
+}
+function _fmtTokens(n) {
+  if (!n) return '0';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+}
+function _fmtDuration(ms) {
+  const s = ms / 1000;
+  if (s >= 60) return (s / 60).toFixed(1) + 'min';
+  return s.toFixed(1) + 's';
+}
+function _renderMetaPills(turn) {
+  const isUser = turn.role === 'user';
+  if (isUser) {
+    const n = (turn.text || '').length;
+    if (!n) return '';
+    return `<span class="turn-meta-pills"><span class="pill">📝 ${n} 字</span></span>`;
+  }
+  const pills = [];
+  const toolN = (turn.toolCalls && turn.toolCalls.length) || 0;
+  if (toolN > 0) pills.push(`<span class="pill pill-tool">🔧 ${toolN} 工具</span>`);
+  if (turn.usage && (turn.usage.input_tokens || turn.usage.output_tokens)) {
+    pills.push(`<span class="pill pill-token">⇡${_fmtTokens(turn.usage.input_tokens||0)} ⇣${_fmtTokens(turn.usage.output_tokens||0)}</span>`);
+  }
+  if (turn.usage && turn.usage.input_tokens) {
+    const win = _modelCtxWindow(turn.model);
+    const pct = Math.min(100, Math.round(turn.usage.input_tokens / win * 100));
+    pills.push(`<span class="pill pill-ctx">📊 ${pct}% ctx</span>`);
+  }
+  if (typeof turn.tsEnd === 'number' && typeof turn.ts === 'number' && turn.tsEnd > turn.ts) {
+    pills.push(`<span class="pill pill-time">⏱ ${_fmtDuration(turn.tsEnd - turn.ts)}</span>`);
+  }
+  if (pills.length === 0) return '';
+  return `<span class="turn-meta-pills">${pills.join('')}</span>`;
+}
+
+// === Spec 1 v0.9.0 · turn 卡片渲染 ===
+function renderTurnCard(turn) {
+  // turn = { id, role: 'user'|'assistant', text, ts, model?, kind?, slotPokemon?, toolCalls? }
+  const isUser = turn.role === 'user';
+  const cls = isUser ? 'turn-card user' : 'turn-card';
+  const who = isUser ? '你' : (turn.model || turn.kind || 'Claude');
+  const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
+
+  // 头像分支
+  let avatarHtml;
+  if (isUser) {
+    // Spec 3 · W6：用户头像用皮卡丘（与圆桌 slot 体系视觉一致，复用 .av-poke 黄色背景）
+    avatarHtml = `<span class="turn-avatar av-poke"><img src="assets/pokemon/pikachu.png" alt="你"></span>`;
+  } else if (turn.slotPokemon) {
+    // 圆桌 slot 体系
+    const safe = sanitizeAssetName(turn.slotPokemon);
+    if (safe) {
+      avatarHtml = `<span class="turn-avatar av-poke"><img src="assets/pokemon/${safe}.png" alt="${escapeHtml(turn.slotPokemon)}"></span>`;
+    } else {
+      avatarHtml = `<span class="turn-avatar av-letter">${escapeHtml(aiLetterFallback(turn.kind))}</span>`;
+    }
+  } else {
+    const logo = aiLogoSrc(turn.kind);
+    avatarHtml = logo
+      ? `<span class="turn-avatar av-logo"><img src="${logo}" alt="${escapeHtml(turn.kind || 'AI')}"></span>`
+      : `<span class="turn-avatar av-letter">${escapeHtml(aiLetterFallback(turn.kind))}</span>`;
+  }
+
+  const rawHtml = marked.parse(turn.text || '', { breaks: true, gfm: true });
+  const body = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target', 'data-lang'] });
+  // Spec 3 方案 E：工具簇折叠（之前每 tool 单独大块 → 信息密度极低）
+  const toolHtml = renderToolCluster(turn.id || '', turn.toolCalls);
+
+  // === Spec 2 · S8: thinking 字段 (assistant only, default collapsed) ===
+  // S1 parser exposes turn.thinking as multi-block joined string (or null).
+  // Render as <details> ABOVE main body — chronologically thinking precedes the answer.
+  // Only attached for assistant role with non-empty string; user turns never carry thinking.
+  let thinkingHtml = '';
+  if (!isUser && typeof turn.thinking === 'string' && turn.thinking.length > 0) {
+    const thinkingRaw = marked.parse(turn.thinking, { breaks: true, gfm: true });
+    const thinkingBody = DOMPurify.sanitize(thinkingRaw, { ADD_ATTR: ['target', 'data-lang'] });
+    // Long thinking (>5KB): summary shows first-200-char preview (HTML-escaped, newlines→space)
+    let summaryLabel = '💭 思考过程';
+    if (turn.thinking.length > 5120) {
+      const previewRaw = turn.thinking.slice(0, 200).replace(/\s+/g, ' ').trim();
+      summaryLabel = `💭 思考过程 (前 200 字符: ${escapeHtml(previewRaw)}…)`;
+    }
+    thinkingHtml = `<details class="turn-thinking">
+        <summary class="turn-thinking-summary">${summaryLabel}</summary>
+        <div class="turn-thinking-body">${thinkingBody}</div>
+      </details>`;
+  }
+
+  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}">
+    ${avatarHtml}
+    <div class="turn-content">
+      <div class="turn-head">
+        <span class="turn-who">${escapeHtml(who)}</span>
+        <span class="turn-meta">${escapeHtml(ts)}</span>
+        ${_renderMetaPills(turn)}
+        <div class="turn-actions">
+          <button class="ta-btn" data-action="copy" title="复制">📋</button>
+          ${isUser
+            ? `<button class="ta-btn" data-action="resend" title="重发">↻</button>
+               <button class="ta-btn" data-action="edit-resend" title="编辑重发">✏</button>`
+            : `<button class="ta-btn" data-action="regen" title="重新生成">⏪</button>`}
+        </div>
+      </div>
+      ${thinkingHtml}
+      <div class="turn-body">${toolHtml}${body}</div>
+    </div>
+  </div>`;
+}
+window._renderTurnCard = renderTurnCard;
+
+// === Spec 1 v0.9.0 · 代码块强化 (D2) ===
+let _codeFoldThreshold = 30;
+const _foldedCodesState = new Map();
+
+function postProcessCardCodeBlocks(cardEl) {
+  if (!cardEl) return;
+  const blocks = cardEl.querySelectorAll('pre > code');
+  blocks.forEach((code, idx) => {
+    const pre = code.parentElement;
+    // marked adds class="language-xx"; pull first language match
+    const lang = (code.className.match(/language-(\w+)/) || [, ''])[1];
+    // prism highlight (only if language plugin loaded)
+    if (lang && window.Prism && Prism.languages[lang]) {
+      try { code.innerHTML = Prism.highlight(code.textContent, Prism.languages[lang], lang); }
+      catch {}
+    }
+    // wrap pre in .code-block-wrap, add Copy button + fold toggle if long
+    const lines = code.textContent.split('\n').length;
+    const turnId = cardEl.dataset.turnId || '';
+    const codeKey = `${turnId}:code:${idx}`;
+    const expanded = _foldedCodesState.has(codeKey) ? _foldedCodesState.get(codeKey) : (lines <= _codeFoldThreshold);
+    const wrap = document.createElement('div');
+    wrap.className = 'code-block-wrap';
+    wrap.dataset.codeKey = codeKey;
+    wrap.dataset.lang = lang || 'text';
+    wrap.dataset.lines = lines;
+    pre.parentNode.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+    // Copy button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'code-copy';
+    copyBtn.textContent = '📋 Copy';
+    copyBtn.dataset.action = 'code-copy';
+    wrap.appendChild(copyBtn);
+    // Fold toggle (long blocks)
+    if (lines > _codeFoldThreshold && !expanded) {
+      pre.style.display = 'none';
+      const toggle = document.createElement('div');
+      toggle.className = 'code-toggle';
+      toggle.dataset.action = 'code-expand';
+      toggle.textContent = `▸ 展开 ${_codeFoldThreshold} of ${lines} 行 · ${lang || 'text'}`;
+      wrap.appendChild(toggle);
+    } else if (lines > _codeFoldThreshold) {
+      const toggle = document.createElement('div');
+      toggle.className = 'code-toggle';
+      toggle.dataset.action = 'code-collapse';
+      toggle.textContent = `▾ 折叠 (${lines} 行)`;
+      wrap.appendChild(toggle);
+    }
+  });
+}
+
+// === Spec 3 · 长 markdown 文本默认折叠 ===
+// 在卡片插入 DOM 后调用：检测 turn-body scrollHeight 超过阈值 → 加 .body-foldable.folded
+// + 插入"展开全文"按钮。必须在 mount 后调（detached 元素 scrollHeight=0）。
+const _BODY_FOLD_THRESHOLD_PX = 400;
+function postProcessLongTextFold(cardEl) {
+  if (!cardEl) return;
+  const body = cardEl.querySelector('.turn-body');
+  if (!body) return;
+  // 已存在折叠按钮（rerender 路径） → 跳过
+  if (cardEl.querySelector('.body-fold-toggle')) return;
+  if (body.scrollHeight <= _BODY_FOLD_THRESHOLD_PX) return;
+  body.classList.add('body-foldable', 'folded');
+  const btn = document.createElement('div');
+  btn.className = 'body-fold-toggle';
+  btn.dataset.action = 'body-expand';
+  btn.textContent = '▾ 展开全文';
+  body.parentElement.insertBefore(btn, body.nextSibling);
+}
+
+// 全局 click handler: 长文本展开/折叠
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('[data-action="body-expand"], [data-action="body-collapse"]');
+  if (!btn) return;
+  const card = btn.closest('.turn-card');
+  if (!card) return;
+  const body = card.querySelector('.turn-body');
+  if (!body) return;
+  if (btn.dataset.action === 'body-expand') {
+    body.classList.remove('folded');
+    btn.dataset.action = 'body-collapse';
+    btn.textContent = '▴ 折叠';
+  } else {
+    body.classList.add('folded');
+    btn.dataset.action = 'body-expand';
+    btn.textContent = '▾ 展开全文';
+  }
+});
+
+function mountTurnCard(container, turn) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = renderTurnCard(turn);
+  const cardEl = tmp.firstElementChild;
+  postProcessCardCodeBlocks(cardEl);
+  // 路径识别 (T7 风险条款: 卡片内 .md / URL 必须可点击触发预览)
+  const bodyEl = cardEl.querySelector('.turn-body');
+  if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl);
+  container.appendChild(cardEl);
+  postProcessLongTextFold(cardEl);
+  return cardEl;
+}
+window._mountTurnCard = mountTurnCard;
+
+// === Spec 2 · S4: mountSessionTurnCard ===
+// Mount a single Turn (from S1 parseClaudeTranscriptToTurns) as a card into #msg-overlay.
+//
+// Used by:
+//   - S5 loadSessionHistoryToOverlay      — batch mount on session switch
+//   - S6 turn-complete-event listener     — append on new assistant turn
+//
+// Boundary adapters / contract notes:
+//   * renderTurnCard (line ~1630) accepts { id, role, text, ts, model?, kind?,
+//     slotPokemon?, toolCalls? } and ignores unknown fields. S1 turns may
+//     additionally carry { thinking, stopReason, usage } — those are passed
+//     through harmlessly until S8 adds thinking rendering inside renderTurnCard.
+//   * window._sessionTurns: spec1 stores raw `turn` objects (not wrapped),
+//     because rerenderTurn (line ~1593) and getTurnFromCard (line ~1758) both
+//     do `_sessionTurns.get(turnId)` and use the result as a turn directly.
+//     Wrapping it in `{ sessionId, turn, element }` here would break those
+//     button handlers. Instead we keep the Map shape (turnId → turn), and
+//     stash sessionId on the DOM via cardEl.dataset.sessionId so future
+//     per-session cleanup can find cards by sessionId without changing the
+//     Map contract. The `element` is recoverable via
+//     `document.querySelector('.turn-card[data-turn-id="…"]')` (used by
+//     rerenderTurn already).
+function mountSessionTurnCard(sessionId, turn, opts = {}) {
+  // 1. validate inputs
+  if (!turn || !turn.id || !turn.role) {
+    console.warn('[mountSessionTurnCard] invalid turn (missing id/role):', turn);
+    return null;
+  }
+  // 2. resolve container
+  const container = opts.container || document.getElementById('msg-overlay');
+  if (!container) {
+    console.warn('[mountSessionTurnCard] container not found (msg-overlay missing)');
+    return null;
+  }
+  // defensive init (spec1 also does this at line ~1545, but be paranoid)
+  if (!window._sessionTurns) window._sessionTurns = new Map();
+
+  // dedup with in-place replace：同 turnId 已在 DOM 时，不是 skip 而是替换。
+  // 原因：W5 后一个 logical turn 包含多个 raw entries，streaming 新 entry 合并进来时
+  // turn.id 不变（取首条 entry uuid）但内容已变（toolCalls 多了 / text 长了 / tsEnd 变 /
+  // mergedCount 增加）。skip 会让用户看不到新工具调用；replace 让卡片 in-place 更新。
+  // 副作用：替换瞬间该卡片如有 hover 操作菜单会闪一下，可接受。
+  const existing = container.querySelector(`.turn-card[data-turn-id="${CSS.escape(turn.id)}"]`);
+  if (existing) {
+    let newCard = null;
+    try {
+      const tmp2 = document.createElement('div');
+      const turnForRender2 = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
+      tmp2.innerHTML = renderTurnCard(turnForRender2);
+      newCard = tmp2.firstElementChild;
+    } catch (err) {
+      console.warn('[mountSessionTurnCard replace] renderTurnCard threw:', err);
+      return null;
+    }
+    if (!newCard) return null;
+    newCard.dataset.sessionId = String(sessionId || '');
+    existing.replaceWith(newCard);
+    if (typeof postProcessCardCodeBlocks === 'function') postProcessCardCodeBlocks(newCard);
+    const bodyEl2 = newCard.querySelector('.turn-body');
+    if (bodyEl2 && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl2);
+    if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
+    window._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
+    return newCard;
+  }
+
+  // 3. merge kind through to renderTurnCard without mutating caller's turn
+  const turnForRender = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
+
+  // 4. build wrapper element from HTML string
+  let cardEl = null;
+  try {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = renderTurnCard(turnForRender);
+    cardEl = tmp.firstElementChild;
+  } catch (err) {
+    console.warn('[mountSessionTurnCard] renderTurnCard threw:', err);
+    return null;
+  }
+  if (!cardEl) {
+    console.warn('[mountSessionTurnCard] renderTurnCard produced empty HTML for turn', turn.id);
+    return null;
+  }
+
+  // multi-session safety: tag the DOM with sessionId for per-session cleanup
+  cardEl.dataset.sessionId = String(sessionId || '');
+
+  // 5. insert into container — Spec 3 W16：streaming indicator 必须在末尾，
+  // 所以新卡插在 indicator 之前（如果存在）
+  const _streamingTail = container.querySelector('.streaming-indicator');
+  if (_streamingTail) {
+    container.insertBefore(cardEl, _streamingTail);
+  } else {
+    container.appendChild(cardEl);
+  }
+
+  // 6. post-process code blocks (Prism + Copy + folding)
+  if (typeof postProcessCardCodeBlocks === 'function') {
+    postProcessCardCodeBlocks(cardEl);
+  }
+  // 7. path link recognition (scoped to .turn-body to avoid touching meta/actions)
+  const bodyEl = cardEl.querySelector('.turn-body');
+  if (bodyEl && typeof wrapPathLinksInElement === 'function') {
+    wrapPathLinksInElement(bodyEl);
+  }
+  // 7b. Spec 3 · 长文本默认折叠（必须在 DOM 插入后调，否则 scrollHeight=0）
+  if (typeof postProcessLongTextFold === 'function') {
+    postProcessLongTextFold(cardEl);
+  }
+
+  // 8. register in _sessionTurns (turnId → turn) — keep spec1 Map shape
+  // Use turnForRender (kind merged) so rerenderTurn won't lose kind on fold/unfold
+  window._sessionTurns.set(turn.id, turnForRender);
+
+  // 9. autoScroll
+  if (opts.autoScroll) {
+    try {
+      cardEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    } catch {
+      // older browsers without smooth-scroll options: fall back to plain scroll
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  // Spec 3 · W16：cardCount 变化 → indicator 文案需切（"正在思考"→"还在生成更多"）
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
+
+  // 10. return cardEl
+  return cardEl;
+}
+window._mountSessionTurnCard = mountSessionTurnCard;
+
+// === Spec 2 v1.0.0 · S5 loadSessionHistoryToOverlay ===
+// Load historical turns for a session and mount them as cards into #msg-overlay.
+//
+// Used by:
+//   - showTerminal (S7) when switching to a Claude session in card view
+//   - User explicit "reload history" action (future)
+//
+// Workflow:
+//   1. Resolve container = #msg-overlay; missing → warn + bail
+//   2. Clear container + clear _sessionTurns Map (multi-session safety)
+//   3. Look up session via existing `sessions` Map (showTerminal pattern, line ~1080)
+//   4. kind !== 'claude' (per isClaudeFamily) → friendly placeholder, skip IPC
+//   5. invoke('parse-session-transcript', { hubSessionId, ccSessionId, opts })
+//   6. Handle result:
+//      - turns.length === 0 → placeholder ("会话尚未产生历史" or error text)
+//      - turns.length > 0   → loop mountSessionTurnCard, then ONE bottom-scroll
+//        (don't autoScroll per mount — would jitter and force N reflows)
+//   7. Return { mounted, error }
+//
+// Boundary notes:
+//   * Does NOT touch showTerminal — S7 will integrate
+//   * Does NOT register IPC listeners for turn-complete-event — that's S6
+//   * Falls back to ipcRenderer.invoke even if `sessions.get` returns null;
+//     main.js handler does its own session lookup and returns
+//     'transcript not found' for unknown ids — we display that as the error.
+async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
+  // Spec 3 · B1 增量 mount：opts.incremental=true 时不清 container/Map，
+  // 依赖 mountSessionTurnCard 内的 turnId dedup 自动跳过已 mount 的 turn。
+  // 用于 throttle reload（同 sessionId 反复）— 把"全清重建"压成"只 append 新增"。
+  // 切 session 时调用方传默认（incremental=false）走全量。
+  const incremental = opts.incremental === true;
+
+  // 1. resolve container
+  const container = document.getElementById('msg-overlay');
+  if (!container) {
+    console.warn('[loadSessionHistoryToOverlay] container not found (msg-overlay missing)');
+    return { mounted: 0, error: 'container missing' };
+  }
+
+  // 2. clear container + Map (avoid stale turns from previous session)
+  if (!incremental) {
+    container.innerHTML = '';
+    if (!window._sessionTurns) window._sessionTurns = new Map();
+    window._sessionTurns.clear();
+  } else if (!window._sessionTurns) {
+    window._sessionTurns = new Map();
+  }
+
+  // helper: render a placeholder line inside the cleared container.
+  // 增量模式下若需要显示 placeholder（如 IPC error）说明出了问题，仍然清掉重写。
+  const showPlaceholder = (html) => {
+    container.innerHTML =
+      '<div class="msg-overlay-placeholder">' + html + '</div>';
+  };
+
+  // 3. look up session info — same pattern as showTerminal (line ~1080)
+  let session = null;
+  try {
+    if (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function') {
+      session = sessions.get(sessionId) || null;
+    }
+  } catch (err) {
+    console.warn('[loadSessionHistoryToOverlay] sessions.get threw:', err);
+  }
+  const ccSessionId = session ? (session.ccSessionId || null) : null;
+  const kind = session ? (session.kind || null) : null;
+
+  // 4. kind gate — spec 2 only supports Claude family; show placeholder for others
+  if (kind && !isClaudeFamily(kind)) {
+    showPlaceholder(
+      '卡片视图当前仅支持 Claude session — '
+      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
+    );
+    return { mounted: 0, error: null };
+  }
+
+  // 5. invoke IPC (let main.js apply default opts: limit:50, fromTail:true)
+  let result;
+  try {
+    result = await ipcRenderer.invoke('parse-session-transcript', {
+      hubSessionId: sessionId,
+      ccSessionId,
+      opts: opts.parseOpts,
+    });
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : String(err);
+    console.warn('[loadSessionHistoryToOverlay] IPC invoke threw:', err);
+    showPlaceholder(
+      '加载历史失败：' + msg + ' — '
+      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
+    );
+    return { mounted: 0, error: msg };
+  }
+
+  const turns = (result && Array.isArray(result.turns)) ? result.turns : [];
+  const ipcError = (result && result.error) ? result.error : null;
+
+  // 6a. error AND no turns → friendly placeholder (don't silent fail)
+  if (turns.length === 0 && ipcError) {
+    // Spec 3 · W11：transcript not found 通常是 session 创建后从未发过消息（无 ccSessionId 写入）。
+    // 不是 bug，是 expected。文案明示让 user 不再误以为"卡片视图坏了"。
+    let txt;
+    if (ipcError === 'transcript not found') {
+      const ccSid = ccSessionId || (session && session.ccSessionId);
+      txt = ccSid
+        ? `会话尚未产生历史（transcript 文件可能已被移走或删除：${ccSid.slice(0, 8)}…）`
+        : '此会话从未发送过消息，无对话历史可显示';
+    } else {
+      txt = '加载历史失败：' + ipcError;
+    }
+    showPlaceholder(
+      txt + ' — '
+      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
+    );
+    return { mounted: 0, error: ipcError };
+  }
+
+  // 6b. no turns, no error → fresh session
+  if (turns.length === 0) {
+    showPlaceholder(
+      '新会话，发首条消息试试看 — '
+      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
+    );
+    return { mounted: 0, error: null };
+  }
+
+  // 6c. mount each turn; pass kind through opts so renderTurnCard picks it up.
+  // Use a default kind 'claude' if session lookup failed but main.js still
+  // returned turns — they came from a Claude transcript by definition.
+  const mountKind = kind || 'claude';
+  let mounted = 0;
+  let lastCardEl = null;
+  for (const turn of turns) {
+    const cardEl = mountSessionTurnCard(sessionId, turn, { kind: mountKind });
+    if (cardEl) {
+      mounted++;
+      lastCardEl = cardEl;
+    }
+  }
+
+  // Single bottom-scroll AFTER loop (don't autoScroll per mount — N reflows = jitter)
+  if (lastCardEl) {
+    try {
+      lastCardEl.scrollIntoView({ behavior: 'auto', block: 'end' });
+    } catch {
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  return { mounted, error: null };
+}
+window._loadSessionHistoryToOverlay = loadSessionHistoryToOverlay;
+
+// === Spec 2 v1.0.0 · S6 turn-complete-event listener ===
+// main.js (S3) broadcasts 'turn-complete-event' whenever an assistant turn
+// finishes streaming. Append the just-completed turn as a card to #msg-overlay
+// for the active Claude session in card view.
+//
+// Skip conditions (each is a multi-instance / multi-view safety guard):
+//   - meetingId truthy → 圆桌 has its own card pipeline (renderer/meeting-room.js)
+//   - hubSessionId !== activeSessionId → other sessions' new turns shouldn't pop
+//     up under the active session's overlay
+//   - currentView !== 'card' → PTY view doesn't use the overlay; building DOM
+//     nobody sees is wasteful
+//
+// Why re-invoke parse-session-transcript instead of trusting payload.text:
+//   The S3 payload only carries plain text. The structured turn (thinking,
+//   toolCalls, model, stopReason, usage, id, ts) lives in the JSONL transcript
+//   and is parsed by S1's parse-session-transcript. Calling it with limit:1
+//   fromTail:true returns the just-completed turn fully structured. Fallback to
+//   payload-only turn on IPC error keeps the user from seeing nothing.
+ipcRenderer.on('turn-complete-event', async (_event, payload) => {
+  const {
+    hubSessionId,
+    transcriptPath,
+    text,
+    completedAt,
+    meetingId,
+    kind,
+  } = payload || {};
+
+  // 1. 圆桌 path — meeting-room.js handles its own card rendering
+  if (meetingId) return;
+
+  // 2. multi-session safety — only render for currently active session
+  if (hubSessionId !== activeSessionId) return;
+
+  // 3. only render in card view (PTY view doesn't use msg-overlay)
+  if (currentView !== 'card') return;
+
+  // 4. If overlay is in placeholder state (history failed to load earlier, e.g.
+  //    ccSessionId was null when showTerminal ran), trigger full reload instead
+  //    of appending a single card on top of the placeholder.
+  const overlay = document.getElementById('msg-overlay');
+  if (overlay && overlay.querySelector('.msg-overlay-placeholder')) {
+    if (typeof loadSessionHistoryToOverlay === 'function') {
+      loadSessionHistoryToOverlay(hubSessionId).catch(err => {
+        console.warn('[turn-complete-event] reload after placeholder failed:', err);
+      });
+    }
+    return;
+  }
+
+  try {
+    const r = await ipcRenderer.invoke('parse-session-transcript', {
+      hubSessionId,
+      transcriptPath,
+      opts: { limit: 1, fromTail: true },
+    });
+
+    if (r && !r.error && Array.isArray(r.turns) && r.turns.length > 0) {
+      // got the structured turn from S1 parser
+      const turn = r.turns[0];
+      // turn-complete should always be assistant; defend against future broadcast scope changes
+      if (turn.role !== 'assistant') return;
+      // Dedup: skip if turn already mounted (race with loadSessionHistoryToOverlay)
+      if (window._sessionTurns && window._sessionTurns.has(turn.id)) return;
+      if (document.querySelector('.turn-card[data-turn-id="' + CSS.escape(turn.id) + '"]')) return;
+      mountSessionTurnCard(hubSessionId, turn, { kind, autoScroll: true });
+      return;
+    }
+
+    // fall through to payload-only fallback on parse error / empty
+    const fallbackTurn = {
+      id: 'turn-' + (completedAt || Date.now()),
+      role: 'assistant',
+      text: text || '',
+      ts: completedAt || Date.now(),
+      kind,
+    };
+    // Dedup: skip if turn already mounted (race with loadSessionHistoryToOverlay)
+    if (window._sessionTurns && window._sessionTurns.has(fallbackTurn.id)) return;
+    if (document.querySelector('.turn-card[data-turn-id="' + CSS.escape(fallbackTurn.id) + '"]')) return;
+    mountSessionTurnCard(hubSessionId, fallbackTurn, { kind, autoScroll: true });
+  } catch (err) {
+    console.warn('[turn-complete-event] failed to render new turn:', err);
+  }
+});
+
+// rt-file-link click → openPreviewPanel (only for cards inside .msg-overlay,
+// don't conflict with meeting-room.js handler which targets its own scope)
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('a.rt-file-link');
+  if (!a) return;
+  if (!a.closest('.msg-overlay')) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const path = a.dataset.path;
+  if (path && typeof openPreviewPanel === 'function') openPreviewPanel(path);
+}, true);
+
+// === Spec 1 v0.9.0 · D5 操作按钮 click ===
+function getTurnFromCard(cardEl) {
+  if (!cardEl || !window._sessionTurns) return null;
+  return window._sessionTurns.get(cardEl.dataset.turnId);
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.ta-btn');
+  if (!btn) return;
+  const card = btn.closest('.turn-card');
+  if (!card || !card.closest('.msg-overlay')) return;
+  const turn = getTurnFromCard(card);
+  if (!turn) return;
+  const action = btn.dataset.action;
+
+  if (action === 'copy') {
+    let md = turn.text || '';
+    if (Array.isArray(turn.toolCalls)) {
+      for (const tc of turn.toolCalls) {
+        md += `\n\n\`\`\`\n${tc.name || ''} ${tc.cmd || ''}\n${tc.stdout || ''}\n\`\`\``;
+      }
+    }
+    navigator.clipboard.writeText(md).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = '✓';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    }).catch(() => {});
+    return;
+  }
+
+  if (action === 'resend' || action === 'regen') {
+    // Resend = same user prompt; regen = find prior user prompt then resend
+    let promptText = null;
+    if (action === 'resend') {
+      promptText = turn.text;
+    } else {
+      // regen: walk DOM up looking for prior user .turn-card
+      const cards = [...document.querySelectorAll('.msg-overlay .turn-card')];
+      const myIdx = cards.indexOf(card);
+      for (let i = myIdx - 1; i >= 0; i--) {
+        if (cards[i].classList.contains('user')) {
+          const userTurn = getTurnFromCard(cards[i]);
+          if (userTurn) promptText = userTurn.text;
+          break;
+        }
+      }
+    }
+    if (!promptText) return;
+    // 复用 terminal-input IPC，不新增 channel
+    const sid = (typeof activeSessionId !== 'undefined' && activeSessionId) || (typeof currentSessionId !== 'undefined' && currentSessionId);
+    if (sid && typeof ipcRenderer !== 'undefined') {
+      ipcRenderer.send('terminal-input', { sessionId: sid, data: promptText + '\r' });
+    }
+    const orig = btn.textContent;
+    btn.textContent = '↺';
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+    return;
+  }
+
+  if (action === 'edit-resend') {
+    // Hub uses contenteditable div for input (not textarea):
+    // - Single session: `<div class="floating-input-box" contenteditable>`
+    // - Roundtable: `<div id="mr-input-box" contenteditable>`
+    const inputEl = document.querySelector('.floating-input-box')
+      || document.getElementById('mr-input-box');
+    if (inputEl) {
+      inputEl.textContent = turn.text || '';
+      inputEl.focus();
+      // Place cursor at end (contenteditable doesn't have setSelectionRange)
+      try {
+        const range = document.createRange();
+        range.selectNodeContents(inputEl);
+        range.collapse(false);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch {}
+    }
+    return;
+  }
+});
+
+// click handler — code-copy + code-expand/collapse
+document.addEventListener('click', (e) => {
+  const copyBtn = e.target.closest('[data-action="code-copy"]');
+  if (copyBtn) {
+    const code = copyBtn.parentElement.querySelector('pre code');
+    if (code) {
+      navigator.clipboard.writeText(code.textContent).then(() => {
+        copyBtn.textContent = '✓ Copied';
+        setTimeout(() => copyBtn.textContent = '📋 Copy', 1500);
+      });
+    }
+    return;
+  }
+  const toggleBtn = e.target.closest('[data-action="code-expand"], [data-action="code-collapse"]');
+  if (toggleBtn) {
+    const wrap = toggleBtn.closest('.code-block-wrap');
+    const key = wrap.dataset.codeKey;
+    const want = toggleBtn.dataset.action === 'code-expand';
+    _foldedCodesState.set(key, want);
+    const pre = wrap.querySelector('pre');
+    pre.style.display = want ? '' : 'none';
+    if (want) {
+      toggleBtn.dataset.action = 'code-collapse';
+      toggleBtn.textContent = `▾ 折叠 (${wrap.dataset.lines} 行)`;
+    } else {
+      toggleBtn.dataset.action = 'code-expand';
+      toggleBtn.textContent = `▸ 展开 ${_codeFoldThreshold} of ${wrap.dataset.lines} 行 · ${wrap.dataset.lang}`;
+    }
+  }
+});
+
+// === Spec 1 v0.9.0 · 视图切换 ===
+// 默认 PTY（卡片视图作为可选第二视图，不破坏 PTY 主流程）— 2026-05-04 用户反馈
+let currentView = 'pty'; // 'card' | 'pty'
+
+// === Spec 3 · W15+W16: streaming indicator ===
+// session.status === 'running' 表示 PTY 最近有数据（>200 byte burst within silence window）。
+// 卡片视图下 active session 跑 running 时在 overlay 末尾显示三个跳动的紫色点 + 文案，
+// 让用户瞬间感知"agent 还在干活"，不必盯 PTY 视图。
+//
+// W16 改进：
+// (1) 防 flash 延迟移除：assistant 一轮完成（end_turn）→ 短暂 silence → status=idle，
+//     接着可能又有下一轮 → status=running。中间 gap 让 indicator 闪烁，不友好。
+//     status idle 时延迟 1.5s 才移除（gap < 1.5s 时 indicator 视觉上保持显示）。
+// (2) 文案动态：0 卡时显示"Claude 正在思考…"（首响应等待）；
+//     ≥1 卡时显示"Claude 还在生成更多回复…"（暗示后续还有，user 关心的核心）。
+const _W16_DELAYED_REMOVE_MS = 1500;
+const _w16RemoveTimers = new Map(); // sessionId → setTimeout id
+function _updateStreamingIndicator(sessionId) {
+  if (sessionId !== activeSessionId) return;
+  const overlay = document.getElementById('msg-overlay');
+  if (!overlay) return;
+  const sess = sessions.get(sessionId);
+  const isRunning = sess && sess.status === 'running';
+  // 多方审查 P1 (DeepSeek + Claude 共识)：querySelector 不带 dataset 过滤会拿到
+  // 别 session 残留的 indicator（1.5s 延迟移除期间），快速切 session 时新 session
+  // 会"接管"旧 indicator 导致显示错乱或 timer 触发时误删新 session 的 indicator。
+  // 加 [data-session-id] 过滤强 session 隔离。
+  const sidStr = String(sessionId);
+  let indicator = overlay.querySelector(`.streaming-indicator[data-session-id="${CSS.escape(sidStr)}"]`);
+  // 任何状态变化先取消 pending 延迟移除（如 idle→running 在 gap 期间，要立刻取消移除）
+  if (_w16RemoveTimers.has(sessionId)) {
+    clearTimeout(_w16RemoveTimers.get(sessionId));
+    _w16RemoveTimers.delete(sessionId);
+  }
+  if (isRunning && currentView === 'card') {
+    if (!indicator) {
+      indicator = document.createElement('div');
+      indicator.className = 'streaming-indicator';
+      indicator.dataset.sessionId = String(sessionId);
+      indicator.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="text"></span>';
+      overlay.appendChild(indicator);
+      try { overlay.scrollTop = overlay.scrollHeight; } catch {}
+    }
+    // 动态文案
+    const cardCount = overlay.querySelectorAll('.turn-card[data-turn-id]').length;
+    const textEl = indicator.querySelector('.text');
+    if (textEl) {
+      textEl.textContent = cardCount === 0
+        ? 'Claude 正在思考…'
+        : 'Claude 还在生成更多回复…';
+    }
+  } else if (!isRunning && indicator) {
+    // 延迟 1.5s 移除（防 silence gap 闪烁）
+    const timer = setTimeout(() => {
+      _w16RemoveTimers.delete(sessionId);
+      const ov = document.getElementById('msg-overlay');
+      if (!ov) return;
+      // 多方审查 P1：同样按 data-session-id 过滤，只 remove 自己 session 的 indicator
+      const cur = ov.querySelector(`.streaming-indicator[data-session-id="${CSS.escape(sidStr)}"]`);
+      if (!cur) return;
+      // 二次确认：1.5s 后状态仍非 running 才真正移除
+      const sess2 = sessions.get(sessionId);
+      if (sessionId !== activeSessionId || !sess2 || sess2.status !== 'running' || currentView !== 'card') {
+        cur.remove();
+      }
+    }, _W16_DELAYED_REMOVE_MS);
+    _w16RemoveTimers.set(sessionId, timer);
+  } else if (currentView !== 'card' && indicator) {
+    // 不在卡片视图 → 立即移除（不延迟，因为根本看不见）
+    indicator.remove();
+  }
+}
+
+function applyViewMode(mode) {
+  currentView = mode;
+  const overlay = document.getElementById('msg-overlay');
+  if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
+  document.querySelectorAll('.view-toggle-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === mode);
+  });
+  // 切到 PTY 时 refit xterm
+  if (mode === 'pty' && typeof terminalCache !== 'undefined') {
+    const cached = terminalCache.get(activeSessionId);
+    if (cached && cached.fitAddon) cached.fitAddon.fit();
+  }
+  // Spec 3 · W3 resume bug fix (b)：切到卡片时若 overlay 没卡片（既无 turn-card 也无 placeholder），
+  // 主动 trigger load — 因为 showTerminal 在切 session 时只在 currentView==='card' 才 load，
+  // 默认 PTY 模式下 overlay 始终空，user 手动切到 card 时该看到历史。
+  // 已有卡片或 placeholder 则不 reload（避免重复 IPC + reflow）。
+  if (mode === 'card' && overlay && typeof loadSessionHistoryToOverlay === 'function' && activeSessionId) {
+    const hasContent = overlay.querySelector('.turn-card, .msg-overlay-placeholder');
+    if (!hasContent) {
+      loadSessionHistoryToOverlay(activeSessionId).catch(err => {
+        console.warn('[applyViewMode card] auto-load failed:', err);
+      });
+    }
+  }
+  // Spec 3 · W15：切到 card 立即 sync streaming indicator（active session 可能正在 running）；
+  // 切到 PTY 立即移除（_updateStreamingIndicator 内部 currentView !== 'card' 分支处理）。
+  if (activeSessionId && typeof _updateStreamingIndicator === 'function') {
+    _updateStreamingIndicator(activeSessionId);
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.view-toggle-btn');
+  if (btn && btn.dataset.view) applyViewMode(btn.dataset.view);
+});
+
+// T10 placeholder: "切到 PTY 视图" link
+document.addEventListener('click', (e) => {
+  const a = e.target.closest && e.target.closest('[data-action="switch-to-pty"]');
+  if (!a) return;
+  e.preventDefault();
+  if (typeof applyViewMode === 'function') applyViewMode('pty');
+});
 
 function mountFloatingInput(sessionId, termContainer, terminal) {
   const bar = document.createElement('div');
@@ -2680,6 +3718,7 @@ function onTerminalOutput(sessionId, dataLen) {
   if (dataCounters.get(sessionId) > 200 && session.status !== 'running') {
     session.status = 'running';
     renderSessionList();
+    if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
   }
 
   // Reset silence timer
@@ -2689,7 +3728,10 @@ function onTerminalOutput(sessionId, dataLen) {
     dataCounters.delete(sessionId);
 
     const wasRunning = session.status === 'running';
-    if (wasRunning) session.status = 'idle';
+    if (wasRunning) {
+      session.status = 'idle';
+      if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
+    }
 
     readTerminalPreview(sessionId);
 
@@ -2754,6 +3796,39 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
     cached.terminal.write(data);
   }
   onTerminalOutput(sessionId, data.length);
+
+  // Spec 2 partial-update workaround + Spec 3 · B1+B3 优化:
+  // transcriptTap.emit('turn-complete') only fires on stop_reason ∈ {end_turn, max_tokens, refusal} —
+  // assistant turns with stop_reason='tool_use' wait for the next message; card view lags PTY.
+  // Throttle (leading edge) reload card every ~250ms while PTY streams. Not debounce — debounce
+  // resets timer on every PTY chunk, so during streaming it never fires until full silence.
+  // Spec 3 · B1：传 incremental:true → mount dedup 自动跳过已存在 turn id，无需全清重建
+  // Spec 3 · B3：throttle 800→250ms（B1+B2 完成后单次 reload <50ms 才安全调小，否则反向打负载）
+  if (sessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
+    if (!window._cardReloadState) window._cardReloadState = new Map();
+    let st = window._cardReloadState.get(sessionId);
+    if (!st) { st = { lastReloadAt: 0, pendingTimer: null, inProgress: false }; window._cardReloadState.set(sessionId, st); }
+    if (!st.pendingTimer && !st.inProgress) {
+      const sinceLast = Date.now() - st.lastReloadAt;
+      const delay = Math.max(80, 250 - sinceLast);
+      st.pendingTimer = setTimeout(() => {
+        st.pendingTimer = null;
+        // Spec 3 · W2 throttle race fix：timer 创建时 sessionId === activeSessionId，
+        // 但 timer fire 时 user 可能已切到别的 session。incremental:true 会跳过 clear，
+        // 直接 append 旧 session 的 turns 到当前 overlay → 跨 session 数据污染。
+        // 这里再次比对，不一致就静默跳过（旧 session 的数据要等用户切回才有意义）。
+        if (sessionId !== activeSessionId || currentView !== 'card') {
+          st.inProgress = false;
+          return;
+        }
+        st.inProgress = true;
+        st.lastReloadAt = Date.now();
+        loadSessionHistoryToOverlay(sessionId, { incremental: true })
+          .catch(err => console.warn('[card auto-reload] failed:', err))
+          .finally(() => { st.inProgress = false; });
+      }, delay);
+    }
+  }
 });
 
 // Status updates from our custom statusline script.
@@ -4080,7 +5155,35 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   showTerminal(session.id);
 });
 
+// Spec 3 · W12：transcript-tap session-bound 触发的 IPC，内存 sessions Map 同步
+// codex/gemini 的 resume meta（之前只落盘 lastPersistedSessions，renderer 内存
+// 拿不到 → reboot 才生效）。Claude/claude-resume 不走这条（ccSessionId 走 hook-event）。
+ipcRenderer.on('session-meta-updated', (_e, ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  const s = sessions.get(ev.hubSessionId);
+  if (!s) return;
+  if (ev.codexSid && !s.codexSid) s.codexSid = ev.codexSid;
+  if (ev.geminiChatId && !s.geminiChatId) s.geminiChatId = ev.geminiChatId;
+  if (ev.geminiProjectHash && !s.geminiProjectHash) s.geminiProjectHash = ev.geminiProjectHash;
+  if (ev.geminiProjectRoot && !s.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
+});
+
+// Spec 3 · W13：清理 _cardReloadState 的 session 条目，防 Map 长期累积。
+// session-closed 触发，确保即使 inProgress 异常残留也不影响新生命周期同 sessionId 的 session。
 ipcRenderer.on('session-closed', (_e, { sessionId }) => {
+  if (window._cardReloadState && window._cardReloadState.has(sessionId)) {
+    const st = window._cardReloadState.get(sessionId);
+    if (st && st.pendingTimer) { try { clearTimeout(st.pendingTimer); } catch {} }
+    window._cardReloadState.delete(sessionId);
+  }
+  // 多方审查 P1 (Claude 共识)：W16 _w16RemoveTimers 也要在 session-closed 时清理，
+  // 否则 1.5s 后 timer 触发时 sessions.get(sessionId) === undefined → 走 .remove() 分支，
+  // 加上未做 dataset 过滤前会误删别 session 的 indicator。即使加了 dataset 过滤，timer
+  // 残留也是 leak。一起清。
+  if (typeof _w16RemoveTimers !== 'undefined' && _w16RemoveTimers.has(sessionId)) {
+    try { clearTimeout(_w16RemoveTimers.get(sessionId)); } catch {}
+    _w16RemoveTimers.delete(sessionId);
+  }
   sessions.delete(sessionId);
   if (silenceTimers.has(sessionId)) {
     clearTimeout(silenceTimers.get(sessionId));
@@ -4102,7 +5205,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   }
   if (activeSessionId === sessionId) {
     activeSessionId = null;
-    terminalPanelEl.innerHTML = '';
+    preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
     emptyStateEl.style.display = '';
   }
@@ -4241,6 +5344,8 @@ async function resumeDormantSession(hubId) {
   ipcRenderer.invoke('get-hub-config-raw').then((cfg) => {
     if (!cfg) return;
     providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
+    if (typeof cfg.uiToolFoldThreshold === 'number' && !isNaN(cfg.uiToolFoldThreshold)) _toolFoldThreshold = cfg.uiToolFoldThreshold;
+    if (typeof cfg.uiCodeFoldThreshold === 'number' && !isNaN(cfg.uiCodeFoldThreshold)) _codeFoldThreshold = cfg.uiCodeFoldThreshold;
     // 不在这里调 renderAccountUsage —— packyAccountData 还没从 cache 加载完成,
     // 提前渲染会出现一帧"未接入"假象(get-usage-cache 慢于本 promise resolve)。
     // 余额/用量行的渲染统一交给下面的 cache promise。
@@ -4262,6 +5367,7 @@ async function resumeDormantSession(hubId) {
     renderAccountUsage();
     traceRendererStartup('usage cache loaded');
   }).catch(() => { renderAccountUsage(); });
+  applyViewMode('pty');
 })();
 
 // Persist on relevant changes — listen at renderer-level for mutations that

@@ -8,6 +8,14 @@
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="meeting-room.css">
   <link rel="stylesheet" href="meeting-create-modal.css">
+  <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
+  <script src="../node_modules/prismjs/prism.js"></script>
+  <script src="../node_modules/prismjs/components/prism-bash.min.js"></script>
+  <script src="../node_modules/prismjs/components/prism-javascript.min.js"></script>
+  <script src="../node_modules/prismjs/components/prism-json.min.js"></script>
+  <script src="../node_modules/prismjs/components/prism-python.min.js"></script>
+  <script src="../node_modules/prismjs/components/prism-typescript.min.js"></script>
+  <script src="../node_modules/prismjs/components/prism-markdown.min.js"></script>
 </head>
 <body>
   <div class="app-container" id="app-container">
@@ -115,9 +123,16 @@
             <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
             <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
             <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
-            <span class="launcher-version">v0.11.0</span>
+            <span class="launcher-version">v0.12.0</span>
           </div>
         </div>
+      </div>
+      <!-- Spec 1 v0.9.0: 消息层(卡片视图) -->
+      <div id="msg-overlay" class="msg-overlay"></div>
+      <!-- 视图切换按钮 -->
+      <div class="view-toggle">
+        <button class="view-toggle-btn active" data-view="card" title="卡片视图(默认)">📇 卡片</button>
+        <button class="view-toggle-btn" data-view="pty" title="PTY 视图(原始终端)">⌨ PTY</button>
       </div>
     </div>
     <div class="preview-splitter" id="preview-splitter" style="display:none"></div>
@@ -196,6 +211,7 @@
       <button class="terminal-search-btn" id="terminal-search-close" title="Close (Esc)">✕</button>
     </div>
   </div>
+  <script src="path-link.js"></script>
   <script src="renderer.js"></script>
   <script src="meeting-room.js"></script>
   <script src="meeting-summary-modal.js"></script>
