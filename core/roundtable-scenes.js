@@ -104,7 +104,7 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 `;
 
 // ===========================================================================
-// Scene: research — 投研圆桌 preset (P1 瘦身 · 2026-05-04)
+// Scene: research — 投研圆桌 preset (P1 瘦身 · 2026-05-04 / Bash escape 修复 · 2026-05-04)
 // ===========================================================================
 // L2 research 准入闸门 (Squirtle 三条规则):
 //   1. 所有具体工具 / 数据入口 / 命令 / 旧入口禁令,只能在 RESEARCH_PRESET
@@ -116,15 +116,29 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 //   - 迁出"圆桌产物是观点不是研报" 到 COVENANT_RESEARCH (属判断纪律)
 //   - 19 op 详细清单 → 留 4 常用,余下指向 AGENT_GUIDE.md
 //   - 兜底链路展开 → 简化为"失败自动兜底 + fetch_warning 处理"
+//
+// Bash escape 修复 (2026-05-04 道雪):
+//   血泪案例: Charmander 调用 Bash 命令 `python C:\LinDangAgent\data_query.py
+//     snapshot 688008` 时,bash 把 `\L` `\d` 当 escape 序列处理,反斜杠被吞,
+//     传给 python 的 argv 是 `C:LinDangAgentdata_query.py`,加 cwd 后报
+//     `can't open file 'C:\Users\lintian\LinDangAgentdata_query.py'`。
+//   修复: 命令样板从 `python C:\LinDangAgent\data_query.py` 改为
+//     `cd C:/LinDangAgent && python data_query.py`(与 AGENT_GUIDE 一致),
+//     所有路径引用统一正斜杠,加 ⚠ Bash 路径警告段教育 AI 不再犯。
 const RESEARCH_PRESET = `## A 股投研数据接入
 
 ### 数据入口（唯一推荐）
-**LinDangAgent**（\`C:\\LinDangAgent\`）唯一入口：
-\`python C:\\LinDangAgent\\data_query.py <op> [args...]\`
+**LinDangAgent**（\`C:/LinDangAgent\`）唯一入口：
+\`cd C:/LinDangAgent && python data_query.py <op> [args...]\`
 
 输出标准 JSON 到 stdout，日志到 stderr，冷启 ~1.5s/次。
 
-**完整 op 清单见 \`C:\\LinDangAgent\\data\\AGENT_GUIDE.md\`**，常用 4 个：
+⚠ **Bash 路径规则**：Windows 路径在 bash 命令里**只能用正斜杠或双引号**。
+bash 把反斜杠当 escape 序列处理（\`\\L\` \`\\d\` 等会被吞），无引号裸反斜杠路径
+传到 python 会缺反斜杠 → 当相对路径加 cwd → \`No such file or directory\`。
+**唯一正确写法**：上面的 cd 模式（推荐）或 \`python C:/LinDangAgent/data_query.py <op>\`。
+
+**完整 op 清单见 \`C:/LinDangAgent/data/AGENT_GUIDE.md\`**，常用 4 个：
 - \`snapshot <code>\` — ⭐ 主用：gate+basic+price+17 指标+资金流
 - \`gate <code>\` — 退市/ST 拦截
 - \`basic <code>\` — PE/PB/市值/换手率
@@ -134,7 +148,7 @@ const RESEARCH_PRESET = `## A 股投研数据接入
 - **\`fetch_lindang_stock(symbol)\`** ⭐ — 一站式快照
 - **\`fetch_lindang_field(op, symbol)\`** — 按需取单字段
 
-**优先级**：MCP > Bash。MCP 输出结构化、省 token、错误清晰。
+**优先级**：MCP > Bash。MCP 输出结构化、省 token、错误清晰，且**无路径转义陷阱**。
 
 ### 数据策略（按场景）
 - **用户已贴数据** → 直接基于数据给观点，不要再查
@@ -143,7 +157,8 @@ const RESEARCH_PRESET = `## A 股投研数据接入
 - **实时新闻/政策** → WebFetch / WebSearch（Claude）/ Google Search grounding（Gemini）/ web_search（Codex）
 
 ### 圆桌使用纪律（仅操作禁令）
-- ❌ 严禁旧入口（已下线）：\`cli.py analyze / war-room / kline / top10-* / sentiment-* / dragon-* / intel-*\`、\`fetch_for_arena\`、\`Stock_top10/\` 模块、老 MCP 工具 \`fetch_concept_stocks\` / \`fetch_sector_overview\`
+- ❌ 严禁旧入口（已下线）：\`cli.py analyze / war-room / kline / top10-* / sentiment-* / dragon-* / intel-* / event-recon\`、\`services.fetch_for_arena\`、\`Stock_top10/\` 模块、老 MCP 工具 \`fetch_concept_stocks\` / \`fetch_sector_overview\`
+- ❌ 严禁裸反斜杠 Windows 路径调 Bash（详见上文 ⚠ Bash 路径规则）
 - ✅ 失败自动兜底；若结果含 \`fetch_warning\`，结论里声明数据可信度略低
 `;
 

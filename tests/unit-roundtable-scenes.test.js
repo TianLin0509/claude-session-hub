@@ -114,6 +114,43 @@ function testResearchPresetCore() {
   console.log('  ✓ testResearchPresetCore');
 }
 
+// === Bash escape 修复 (2026-05-04 道雪): RESEARCH_PRESET 路径样板必须避坑 ===
+//   血泪案例: 旧版样板 `python C:\LinDangAgent\data_query.py snapshot 688008` 经 bash
+//     解析后 `\L` `\d` 当 escape,反斜杠被吞,变成 `python C:LinDangAgentdata_query.py`,
+//     python 当相对路径加 cwd 报 No such file or directory。
+//   契约: 入口样板必须用 `cd C:/LinDangAgent && python data_query.py` 模式
+//     (正斜杠 + cd 后相对路径,与 AGENT_GUIDE 一致),且必须含 ⚠ Bash 路径警告段。
+function testResearchPresetBashEscapeSafe() {
+  const s = scenes.getScene('research');
+  // 反向断言: 不允许"python <反斜杠绝对路径>"裸样板出现 (诱导源)
+  // 唯一允许的反斜杠 token 是禁令短语 (例如 "严禁裸反斜杠"),不允许完整命令样板
+  assert.ok(!/python\s+C:\\LinDangAgent\\data_query\.py/.test(s.preset),
+    'RESEARCH_PRESET MUST NOT contain `python C:\\\\LinDangAgent\\\\data_query.py` 裸样板 ' +
+    '(诱导源: AI 会照抄 → bash 吃反斜杠 → No such file)');
+  assert.ok(!/python\s+C:\\LinDangAgent\\\.\.\./.test(s.preset),
+    'RESEARCH_PRESET MUST NOT contain 完整反例命令字串 (即使在警告段) ' +
+    '— 按 feedback_prompt_no_negation_demo 铁律,删诱导源,不靠"⚠ 不要 X"+反例字符纠正');
+  // 正向断言: 必须有 cd 模式样板 (与 AGENT_GUIDE 一致)
+  assert.ok(/cd\s+C:\/LinDangAgent\s*&&\s*python\s+data_query\.py/.test(s.preset),
+    'RESEARCH_PRESET 必须含 `cd C:/LinDangAgent && python data_query.py` 样板 (avoids bash escape)');
+  // 必须有规则/警告段教育 AI (机制说明,不展示反例)
+  assert.ok(s.preset.includes('Bash 路径规则') || s.preset.includes('Bash 路径警告'),
+    'RESEARCH_PRESET 必须含 ⚠ Bash 路径规则段 (机制说明,不展示反例)');
+  // 必须明示 escape 机制
+  assert.ok(/escape|当 escape|escape 序列/.test(s.preset),
+    'Bash 路径规则必须明示反斜杠被当 escape 序列处理');
+  // 必须给替代正例
+  assert.ok(s.preset.includes('C:/LinDangAgent/data_query.py') || /python\s+C:\/LinDangAgent\/data_query\.py/.test(s.preset),
+    'Bash 路径规则必须给"正斜杠版"正例 python C:/LinDangAgent/data_query.py');
+  // AGENT_GUIDE 引用也用正斜杠
+  assert.ok(s.preset.includes('C:/LinDangAgent/data/AGENT_GUIDE.md'),
+    'AGENT_GUIDE 引用应用正斜杠版 C:/LinDangAgent/data/AGENT_GUIDE.md');
+  // 禁令段明示禁裸反斜杠 Bash 调用 (短语,不附完整反例)
+  assert.ok(/严禁.*反斜杠|裸反斜杠/.test(s.preset),
+    'RESEARCH_PRESET 操作禁令必须明示 ❌ 裸反斜杠 Windows 路径调 Bash');
+  console.log('  ✓ testResearchPresetBashEscapeSafe');
+}
+
 // === P3: GENERAL_PRESET 补强 (4 协作策略 + 1 场景定位) ===
 function testGeneralPresetEnhanced() {
   const s = scenes.getScene('general');
@@ -464,6 +501,7 @@ const tests = [
   testL2CovenantGeneralExported,
   testRegistryStructure,
   testResearchPresetCore,
+  testResearchPresetBashEscapeSafe,
   testGeneralPresetEnhanced,
   testGeneralDefaultCovenantIsCovenantGeneral,
   testResearchDefaultCovenantIsCombined,
