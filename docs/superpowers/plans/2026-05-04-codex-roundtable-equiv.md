@@ -106,34 +106,37 @@ docs/codex-signals.md  # 人类速查表（副产物）
 
 ---
 
-## 四、Phase 2 · 发送闭环（1.5d）
+## 四、Phase 2 · 发送闭环（v2.1 大幅缩减：0.3d）
 
 **对应 Spec**：S1
-**前置依赖**：Phase 0 必须录到 ack/stuck 信号 fixture，否则 B2.1/B2.2 无依据
+**v2.1 关键发现**（2026-05-04 实施时）：现状 sendToPty / resendCurrentPrompt **100% kind-agnostic**，
+基于 `sessionManager.getRoundtableLastActivity(sid)` 物理时间戳判 ack，
+不依赖任何 CLI 特定字符串信号。**codex 已天然走通用路径，零特化代码**。
 
-### 现状盘点（v2 新增）
+### 现状盘点（v2.1 修订）
 
-- `main.js:1438-1460, 1864` 现 `sendStatus` **已落地** ∈ `{ok, auto_recovered, stuck}`（2026-05-03 Resend & Auto-Recovery batch）
-- 当 `sendStatus === 'stuck'` 时已推 `roundtable-send-stuck` IPC，renderer 卡片已亮 `📤 发送`/`🔄 重新拉起`
-- `roundtable-resend-prompt` IPC（main.js:1838）**已按 promptHeader 指纹**判 `enter_only / rewrite_full`，但**未确认是否已走 codex 分支**（B2.4 即此 contract test）
+- `core/roundtable-watcher.js:45-159` `sendToPty` **零 codex 分支**（grep 验证）：echo 检测 / paste 安静期 / `\r` 提交 / verify 全是物理时间戳轮询
+- `core/roundtable-watcher.js:233-258` `resendCurrentPrompt` 同上：按 `promptHeader` 在 buffer 末尾 1024 字符查找判 `enter_only` / `rewrite_full`
+- `main.js:1438-1460, 1864` `sendStatus ∈ {ok, auto_recovered, stuck}` 已落地（2026-05-03 batch）
+- **`detectCodexAck` / `detectCodexStuck` 假设错误**：现状不存在按 CLI 字符串信号的 ack 检测，全是物理活性
+- **B0.2/B0.3 PTY 真实采样不再为 Phase 2 必需**——延迟到 Phase 4 E2E 时按需补
 
-### v2 命名约束
-
-- `sendStatus` 沿用现有 `{ok, auto_recovered, stuck}` 命名空间
-- **新增进态 `sending`**（发出后等 echo 期间过渡值），最终态保持不变
-- Spec S1"ack"语义 = 现状 `ok`/`auto_recovered`，**不引入新词 ack**
-
-### Batch
+### v2.1 Batch（替换 v2 的 7 个 batch）
 
 | ID | 类型 | 文件 | 内容 |
 |---|---|---|---|
-| B2.1 | 🔴 RED | `tests/unit-codex-send-ack.test.js` | 喂 T0 PTY ack fixture → 期望 sendStatus 从 `sending` 转 `ok` 或 `auto_recovered` |
-| B2.2 | 🔴 RED | `tests/unit-codex-send-stuck.test.js` | 喂 stuck fixture → 期望 `stuck` |
-| B2.3 | 🟢 GREEN | `core/cli-send-adapter.js`（新建） | `detectCodexAck` / `detectCodexStuck`（基于 T0 实测信号）；新增 `sending` 进态发射点 |
-| B2.4 | 🔴 RED | `tests/unit-codex-resend-no-duplicate.test.js` | **contract test**：codex 分支走通用 `resendCurrentPrompt` 路径 → echo 已现 → `enter_only`；未现 → `rewrite_full` |
-| B2.5 | 🔴 RED | `tests/unit-codex-send-while-binding.test.js` | sid 未绑定时发送 → 等待绑定或抛 BindTimeout（吸收 Charmander） |
-| B2.6 | 🔴 RED | `tests/unit-codex-resend-after-extract.test.js` | 手动拉取后重发 → 正确判 enter_only/rewrite_full（吸收 Charmander） |
-| B2.7 | 🟢 GREEN | `core/cli-send-adapter.js` 或 `core/roundtable-watcher.js` | 视 B2.4 contract test 结果决定：若 codex 已走通用路径，`parseEcho` 仅需补 codex prompt header 形态识别；若没走，需补 codex 分支 |
+| ~~B2.1~~ | — | — | **删**（v1 假设 detectCodexAck，现状无对应概念）|
+| ~~B2.2~~ | — | — | **删**（v1 假设 detectCodexStuck，现状无对应概念）|
+| ~~B2.3~~ | — | — | **删**（v1 新建 `core/cli-send-adapter.js`，现状不需要）|
+| **B2.4** | 🔴→🟢 | `tests/unit-codex-send-contract.test.js` | **contract test**：codex 走 `resendCurrentPrompt` → buffer 含 promptHeader → `enter_only`；不含 → `rewrite_full`（已通过现状）|
+| **B2.5** | 🔴→🟢 | 同上 | sid 未 bind 时 sendToPty fail-soft：照常发出，等 rollout 文件出现后 bind（实测 codex bind 窗口 [-10s, +5min] 容忍此场景）—— **Spec S4 字面"禁止发送"过度悲观，v2.1 承认 fail-soft 现状** |
+| **B2.6** | 🔴→🟢 | 同上 | manual extract 不污染 PTY，resend 路径仍按 promptHeader 指纹判，与未 extract 一致 |
+| **B2.7** | — | — | **删**（同 B2.3 假设错误）|
+| B2.X | 🔵 contract | 同上 | 源码契约：`grep -E 'kind\s*===\s*[\"\\x27]codex[\"\\x27]' core/roundtable-watcher.js` 必须 0 命中（防回归引入 codex 特化） |
+
+**v2.1 Phase 2 总产出**：1 个测试文件 `unit-codex-send-contract.test.js`（5 cases），**零业务代码改动**。
+
+**关于 Spec S1 `sending` 进态**：UX 改进，非必修 bug，移到 Phase 5（按证据决定）。
 
 ---
 
@@ -299,3 +302,15 @@ Day 7:    /post-refactor-verify + 用户体感验收
 | 6 | Spec S5 第三档 fresh+ctx 注入路径未确认 | 未知 codex CLI 是否支持 `--initial-prompt`；PTY paste 长 ctx 风险（OSC/换行截断）| 新增 Phase 3 前置 SPIKE B3.0 实测注入路径；无结论不进 B3.6 |
 
 **未改动**：Phase 0 fixture 录制方法 / Phase 4 E2E 矩阵 / Phase 5 决策点 / 总工作量估算（仍 6-7d）。
+
+---
+
+## 十四、v2.1 修订记录（2026-05-04 实施时）
+
+| # | v2 假设 | 实施时发现 | v2.1 修补 |
+|---|---|---|---|
+| 7 | Phase 2 需要 `detectCodexAck` / `detectCodexStuck` 实现 | 现状 sendToPty / resendCurrentPrompt **100% kind-agnostic**，基于物理时间戳判 ack，无任何 CLI 特定字符串信号 | Phase 2 删 B2.1/B2.2/B2.3/B2.7（4 个 batch），仅保留 contract test 验证现状不退化 |
+| 8 | Spec S4 字面"未 bind 期间禁止发送" | 现状 fail-soft 设计：sendToPty 用 hubSessionId（PTY 进程），与 codexSid bind 无关；CodexTap bind 窗口 [-10s, +5min] 容纳"先发后绑" | 承认 fail-soft 现状；Spec S4 收敛为"未 bind 时 UI 显示等待角标"，不真禁止发送 |
+| 9 | Phase 1 B1.7 需要 turn 唯一键 `${meetingId}:${turnNum}:${sid}` + partial/final 分层存储 | 现状 watcher 实例本身已天然按 sid + turn 隔离（每轮 new 一个 watcher），加唯一键属过度设计；真 bug 是 patchListener 限制（`completed` only + signalSource 白名单不含 task_complete）| B1.7 改为修真 bug：`PATCHABLE_STATUSES` 加 `manual_extracted`，`PATCHABLE_SIGNAL_SOURCES` 加 `task_complete` |
+
+**Phase 2 工作量从 1.5d 缩到 0.3d**（合计仍在 6-7d 总预算内，节省的时间转给 Phase 3 SPIKE B3.0 + Phase 4 E2E）。
