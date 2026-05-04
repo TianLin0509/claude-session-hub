@@ -154,28 +154,103 @@ function testResearchDefaultCovenantIsCombined() {
   console.log('  ✓ testResearchDefaultCovenantIsCombined');
 }
 
-// === P1: COVENANT_RESEARCH 重写为 4 块差量结构 ===
-function testCovenantResearchDifferential() {
+// === P0 24 轮共享核心版: COVENANT_RESEARCH 必须含 24 轮收敛核心机制 ===
+function testCovenantResearch24Round() {
   const c = scenes.COVENANT_RESEARCH;
-  // 4 块判断纪律
-  assert.ok(c.includes('证据优先'), 'COVENANT_RESEARCH should have 证据优先 block');
-  assert.ok(c.includes('假设分层'), 'COVENANT_RESEARCH should have 假设分层 block');
-  assert.ok(c.includes('分歧保留'), 'COVENANT_RESEARCH should have 分歧保留 block');
-  // 红线
+  // 元规则 (24 轮元规则,凌驾所有具体规则)
+  assert.ok(c.includes('元规则'), 'COVENANT_RESEARCH should declare 元规则');
+  assert.ok(c.includes('此刻买/不买/等一等'),
+    'COVENANT_RESEARCH 元规则必须保留"此刻买/不买/等一等"决策增量原则');
+  // 系统身份与目标 + GPT 金句
+  assert.ok(c.includes('该盯什么') && c.includes('该怕什么'),
+    'COVENANT_RESEARCH should keep GPT 金句"该盯什么/该怕什么"');
+  // 5 派定锚原则
+  assert.ok(c.includes('基本面定锚') && c.includes('资金面定节奏'),
+    'COVENANT_RESEARCH should keep 5-anchor 核心原则');
+  // 反问轮 (24 轮新增机制)
+  assert.ok(c.includes('反问轮'), 'COVENANT_RESEARCH should describe 反问轮');
+  assert.ok(c.includes('直接分析'), 'COVENANT_RESEARCH 反问轮必须留 skip 路径');
+  // 主分析轮 5 段
+  assert.ok(c.includes('局型识别'), 'COVENANT_RESEARCH should require 局型识别');
+  assert.ok(c.includes('主矛盾'), 'COVENANT_RESEARCH should require 主矛盾');
+  assert.ok(c.includes('关键假设'), 'COVENANT_RESEARCH should require 关键假设 (限 2 条)');
+  assert.ok(c.includes('多空对抗'), 'COVENANT_RESEARCH should require 多空对抗');
+  assert.ok(c.includes('收束 3 句'), 'COVENANT_RESEARCH should require 收束 3 句');
+  // "此刻"硬约束 (24 轮收敛: 替代旧版"建议关注/可跟踪"模糊收口)
+  assert.ok(c.includes('"此刻"硬约束') || c.includes('此刻硬约束'),
+    'COVENANT_RESEARCH 必须含"此刻"硬约束');
+  assert.ok(c.includes('催化时间窗口') && c.includes('资金信号'),
+    'COVENANT_RESEARCH "此刻"硬约束必须列出 价格位置/催化窗口/资金信号 三选一');
+  // 4 档结论 (24 轮替代旧版"推荐/不推荐/中性/观望")
+  assert.ok(c.includes('强烈推荐') && c.includes('可买需条件')
+            && c.includes('不建议买') && c.includes('强烈回避'),
+    'COVENANT_RESEARCH 必须列出 4 档结论 (强烈推荐/可买需条件/不建议买/强烈回避)');
+  assert.ok(c.includes('建议关注') === false || /禁止.*建议关注/.test(c),
+    'COVENANT_RESEARCH 必须明示禁止"建议关注/可跟踪"模糊收口');
+  // 红线 3 条 (从旧版打捞)
   assert.ok(c.includes('红线'), 'COVENANT_RESEARCH should keep 红线');
   assert.ok(c.includes('蹭概念'), 'COVENANT_RESEARCH should mention 蹭概念 red line');
+  assert.ok(c.includes('破关键支撑'), 'COVENANT_RESEARCH should mention 破支撑 red line');
+  assert.ok(c.includes('财务造假'), 'COVENANT_RESEARCH should mention 财务造假 red line');
+  // 共用铁律 (24 轮收敛 8 条)
+  assert.ok(c.includes('数据先于观点'), 'COVENANT_RESEARCH 铁律 1: 数据先于观点');
+  assert.ok(c.includes('多空同列'), 'COVENANT_RESEARCH 铁律 2: 多空同列');
+  assert.ok(c.includes('数字精确反推'), 'COVENANT_RESEARCH 铁律: 禁止数字精确反推 (LLM 幻觉防护)');
+  assert.ok(c.includes('史实类比'), 'COVENANT_RESEARCH 铁律: 禁止史实类比 (LLM 幻觉防护)');
   // 用户画像指针 (B 路线: 外置)
   assert.ok(c.includes('research-profile.md'), 'COVENANT_RESEARCH should reference external profile');
-  // P1 准入: 不重复 GENERAL/L1
+  // 准入: 不重复 GENERAL/L1
   assert.ok(!c.includes('timeline.md 路径'), 'COVENANT_RESEARCH MUST NOT duplicate timeline 机制');
-  assert.ok(!c.includes('五元组'), 'COVENANT_RESEARCH MUST NOT duplicate 五元组 definition');
-  // P1 准入: 不含具体工具/命令 (应在 PRESET)
+  assert.ok(!c.includes('## 五元组格式'), 'COVENANT_RESEARCH MUST NOT duplicate 五元组 definition');
+  // 准入: 不含具体工具/命令 (应在 PRESET)
   assert.ok(!c.includes('fetch_lindang'), 'COVENANT_RESEARCH MUST NOT contain MCP tool names (PRESET territory)');
   assert.ok(!c.includes('cli.py'), 'COVENANT_RESEARCH MUST NOT contain CLI commands (PRESET territory)');
-  // P1 准入: 不直接写用户偏好数字 (应在 profile)
+  // 准入: 不直接写用户偏好数字 (应在 profile)
   assert.ok(!/15%|35%|30%|20%/.test(c), 'COVENANT_RESEARCH MUST NOT contain weight numbers (profile territory)');
-  assert.ok(!/单股仓位|1-3 万/.test(c), 'COVENANT_RESEARCH MUST NOT contain user portfolio amounts');
-  console.log('  ✓ testCovenantResearchDifferential');
+  // P0 决议: 旧版"推荐/不推荐/中性/观望" 4 档已被 24 轮版替代
+  assert.ok(!/推荐\s*\/\s*不推荐\s*\/\s*中性\s*\/\s*观望/.test(c),
+    'COVENANT_RESEARCH MUST NOT keep 旧版"推荐/不推荐/中性/观望" (已被 4 档替代)');
+  console.log('  ✓ testCovenantResearch24Round');
+}
+
+// === P2 L3 偏置层: RESEARCH_SLOT_BIASES 必须存在,三派关键词正确 ===
+function testResearchSlotBiasesExist() {
+  assert.strictEqual(typeof scenes.RESEARCH_SLOT_BIASES, 'object',
+    'RESEARCH_SLOT_BIASES should be exported as object');
+  const biases = scenes.RESEARCH_SLOT_BIASES;
+  // 三派 key 完整
+  assert.ok(biases.pikachu && biases.charmander && biases.squirtle,
+    'RESEARCH_SLOT_BIASES must contain pikachu/charmander/squirtle keys');
+  // 每派关键认知功能词必须正确归位
+  assert.ok(biases.pikachu.includes('对抗硬度'),
+    'Pikachu 偏置必须明示"对抗硬度派"定位');
+  assert.ok(biases.pikachu.includes('信息密度自检'),
+    'Pikachu 偏置必须含信息密度自检机制');
+  assert.ok(biases.pikachu.includes('主轮留白'),
+    'Pikachu 偏置必须含主轮留白原则 (反同质化核心)');
+
+  assert.ok(biases.charmander.includes('反直觉校验'),
+    'Charmander 偏置必须明示"反直觉校验派"定位');
+  assert.ok(biases.charmander.includes('生命周期'),
+    'Charmander 偏置必须含机会生命周期标注');
+  assert.ok(biases.charmander.includes('阶段 1') && biases.charmander.includes('阶段 4'),
+    'Charmander 生命周期必须列出 4 个阶段');
+
+  assert.ok(biases.squirtle.includes('极简克制'),
+    'Squirtle 偏置必须明示"极简克制派"定位');
+  assert.ok(biases.squirtle.includes('默认压缩'),
+    'Squirtle 偏置必须含默认压缩机制');
+  assert.ok(biases.squirtle.includes('行动闭环'),
+    'Squirtle 偏置必须含行动闭环优先');
+
+  // 偏置层长度上限 (防膨胀回流共享核心)
+  for (const [slot, bias] of Object.entries(biases)) {
+    assert.ok(bias.length < 1500,
+      `${slot} 偏置过长 (${bias.length} 字符,上限 1500 防止膨胀)`);
+    assert.ok(bias.length > 200,
+      `${slot} 偏置过短 (${bias.length} 字符,可能没注入有效内容)`);
+  }
+  console.log('  ✓ testResearchSlotBiasesExist');
 }
 
 // === P4: 五元组 SSoT schema ===
@@ -258,25 +333,118 @@ function testBuildSystemPromptEmptyStringNoSeparator() {
   console.log('  ✓ testBuildSystemPromptEmptyStringNoSeparator (records current behavior)');
 }
 
-// === 文件管理完整链路（不变） ===
+// === P2 buildSystemPrompt: research + slotId='pikachu' → 含 Pikachu 偏置不含 Squirtle/Charmander ===
+function testBuildSystemPromptResearchSlotInjection() {
+  const prompt = scenes.buildSystemPrompt('research', null, 'pikachu');
+  // 共享核心 + L3 偏置都在
+  assert.ok(prompt.includes(scenes.BASE_RULES), 'should contain BASE_RULES');
+  assert.ok(prompt.includes('LinDangAgent'), 'should contain RESEARCH_PRESET');
+  assert.ok(prompt.includes('# 投研圆桌 · 研究纪律'), 'should contain COVENANT_RESEARCH (24 轮版)');
+  // Pikachu 偏置注入
+  assert.ok(prompt.includes('[Pikachu 偏置]'), 'research+pikachu should inject Pikachu bias');
+  assert.ok(prompt.includes('对抗硬度'), 'pikachu bias header should appear');
+  assert.ok(prompt.includes('主轮留白'), 'pikachu-specific 主轮留白 mechanism should appear');
+  // 其他两派偏置不应注入
+  assert.ok(!prompt.includes('[Squirtle 偏置]'), 'pikachu slot MUST NOT leak Squirtle bias');
+  assert.ok(!prompt.includes('[Charmander 偏置]'), 'pikachu slot MUST NOT leak Charmander bias');
+  assert.ok(!prompt.includes('生命周期'), 'pikachu slot MUST NOT contain Charmander 生命周期 mechanism');
+  console.log('  ✓ testBuildSystemPromptResearchSlotInjection');
+}
+
+// === P2 buildSystemPrompt: research + slotId='charmander' → 含 Charmander 偏置 ===
+function testBuildSystemPromptCharmanderInjection() {
+  const prompt = scenes.buildSystemPrompt('research', null, 'charmander');
+  assert.ok(prompt.includes('[Charmander 偏置]'), 'research+charmander should inject Charmander bias');
+  assert.ok(prompt.includes('反直觉校验'), 'charmander-specific 反直觉校验 mechanism should appear');
+  assert.ok(prompt.includes('阶段 1') && prompt.includes('阶段 4'),
+    'charmander 4 阶段生命周期 should appear');
+  assert.ok(!prompt.includes('[Pikachu 偏置]'), 'charmander slot MUST NOT leak Pikachu bias');
+  assert.ok(!prompt.includes('[Squirtle 偏置]'), 'charmander slot MUST NOT leak Squirtle bias');
+  console.log('  ✓ testBuildSystemPromptCharmanderInjection');
+}
+
+// === P2 buildSystemPrompt: research + slotId='squirtle' → 含 Squirtle 偏置 ===
+function testBuildSystemPromptSquirtleInjection() {
+  const prompt = scenes.buildSystemPrompt('research', null, 'squirtle');
+  assert.ok(prompt.includes('[Squirtle 偏置]'), 'research+squirtle should inject Squirtle bias');
+  assert.ok(prompt.includes('极简克制'), 'squirtle-specific 极简克制 mechanism should appear');
+  assert.ok(prompt.includes('默认压缩'), 'squirtle 默认压缩 mechanism should appear');
+  assert.ok(!prompt.includes('[Pikachu 偏置]'), 'squirtle slot MUST NOT leak Pikachu bias');
+  assert.ok(!prompt.includes('[Charmander 偏置]'), 'squirtle slot MUST NOT leak Charmander bias');
+  console.log('  ✓ testBuildSystemPromptSquirtleInjection');
+}
+
+// === P2 buildSystemPrompt: general + slotId='pikachu' → 不注入任何 L3 偏置 (non-research 限定) ===
+function testBuildSystemPromptGeneralNoSlotInjection() {
+  const prompt = scenes.buildSystemPrompt('general', null, 'pikachu');
+  // 共享核心存在
+  assert.ok(prompt.includes(scenes.BASE_RULES), 'should contain BASE_RULES');
+  assert.ok(prompt.includes('## 关于 timeline.md'), 'should contain COVENANT_GENERAL');
+  // L3 偏置绝不应在 non-research 场景注入 (P2 设计契约)
+  assert.ok(!prompt.includes('[Pikachu 偏置]'),
+    'general scene MUST NOT inject Pikachu bias even with valid slotId');
+  assert.ok(!prompt.includes('[Squirtle 偏置]'),
+    'general scene MUST NOT inject any L3 bias');
+  assert.ok(!prompt.includes('[Charmander 偏置]'),
+    'general scene MUST NOT inject any L3 bias');
+  console.log('  ✓ testBuildSystemPromptGeneralNoSlotInjection');
+}
+
+// === P2 buildSystemPrompt: research + slotId 缺省 → 不注入 L3 (向后兼容) ===
+function testBuildSystemPromptResearchNoSlotBackwardCompat() {
+  // 三参数老调用 (slotId=undefined)
+  const prompt1 = scenes.buildSystemPrompt('research', null);
+  assert.ok(prompt1.includes('LinDangAgent'), 'should contain RESEARCH_PRESET (3-arg call works)');
+  assert.ok(prompt1.includes('# 投研圆桌 · 研究纪律'), 'should contain COVENANT_RESEARCH');
+  assert.ok(!prompt1.includes('[Pikachu 偏置]'), 'no slot → no Pikachu bias');
+  assert.ok(!prompt1.includes('[Charmander 偏置]'), 'no slot → no Charmander bias');
+  assert.ok(!prompt1.includes('[Squirtle 偏置]'), 'no slot → no Squirtle bias');
+
+  // slotId === null 显式 null 也兼容
+  const prompt2 = scenes.buildSystemPrompt('research', null, null);
+  assert.ok(!prompt2.includes('[Pikachu 偏置]'), 'null slot → no bias');
+
+  // 无效 slotId 不抛错,不注入
+  const prompt3 = scenes.buildSystemPrompt('research', null, 'unknown-slot');
+  assert.ok(!prompt3.includes('[Pikachu 偏置]'), 'unknown slot → no bias');
+  console.log('  ✓ testBuildSystemPromptResearchNoSlotBackwardCompat');
+}
+
+// === 文件管理完整链路（含 per-slot 文件名 + cleanup 兼容） ===
 function testFileManagement() {
   const d = tmpDir();
   const mid = 'test-meeting-FM';
 
+  // 老路径: 5 参数 (slotId 缺省)
   const pf = scenes.writePromptFile(d, mid, 'research', '自定义公约');
   assert.ok(fs.existsSync(pf), 'prompt file should exist');
+  assert.ok(pf.endsWith(`${mid}-prompt.md`), 'no slotId → 老文件名');
   const content = fs.readFileSync(pf, 'utf-8');
   assert.ok(content.includes(scenes.BASE_RULES), 'prompt file has BASE_RULES');
   assert.ok(content.includes('自定义公约'), 'prompt file has custom covenant');
 
+  // P2 新路径: per-slot 文件名
+  const pfPika = scenes.writePromptFile(d, mid, 'research', null, 'pikachu');
+  assert.ok(pfPika.endsWith(`${mid}-pikachu-prompt.md`),
+    `slotId='pikachu' → per-slot 文件名,得到 ${pfPika}`);
+  assert.ok(fs.existsSync(pfPika), 'per-slot prompt file should exist');
+  const slotContent = fs.readFileSync(pfPika, 'utf-8');
+  assert.ok(slotContent.includes('[Pikachu 偏置]'),
+    'per-slot prompt file should contain Pikachu bias');
+
+  // covenant snapshot 不变 (不按 slot 区分)
   scenes.writeCovenantSnapshot(d, mid, '快照公约');
   const read = scenes.readCovenantSnapshot(d, mid);
   assert.strictEqual(read, '快照公约', 'covenant snapshot roundtrip');
 
+  // cleanup 必须清掉 老文件名 + per-slot 文件名 (startsWith 匹配)
+  scenes.writePromptFile(d, mid, 'research', null, 'charmander');
+  scenes.writePromptFile(d, mid, 'research', null, 'squirtle');
   scenes.cleanup(d, mid);
   const promptDir = path.join(d, 'arena-prompts');
   const remaining = fs.readdirSync(promptDir).filter(f => f.startsWith(`${mid}-`));
-  assert.strictEqual(remaining.length, 0, 'cleanup should remove all meeting files');
+  assert.strictEqual(remaining.length, 0,
+    `cleanup should remove all meeting files (含 per-slot),剩 ${remaining.join(',')}`);
   console.log('  ✓ testFileManagement');
 }
 
@@ -299,13 +467,19 @@ const tests = [
   testGeneralPresetEnhanced,
   testGeneralDefaultCovenantIsCovenantGeneral,
   testResearchDefaultCovenantIsCombined,
-  testCovenantResearchDifferential,
+  testCovenantResearch24Round,
+  testResearchSlotBiasesExist,
   testFiveElementSchema,
   testResumeRemindersDeleted,
   testBuildSystemPromptUserOverride,
   testBuildSystemPromptNullFallbackGeneral,
   testBuildSystemPromptNullFallbackResearch,
   testBuildSystemPromptEmptyStringNoSeparator,
+  testBuildSystemPromptResearchSlotInjection,
+  testBuildSystemPromptCharmanderInjection,
+  testBuildSystemPromptSquirtleInjection,
+  testBuildSystemPromptGeneralNoSlotInjection,
+  testBuildSystemPromptResearchNoSlotBackwardCompat,
   testFileManagement,
   testGetScene,
 ];
