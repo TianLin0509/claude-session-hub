@@ -92,18 +92,73 @@ if (typeof document !== 'undefined') (function () {
   //   触发: click 任一 .mr-ft → 进入; 再次 click 同卡 / Esc / 点空白 → 退出。
   //   退出后 meeting.focusedSub 不变(主显仍是该 sid)。
   let _rtFocusedCardSid = null;
-  // F0 Phase 1: 全局 Esc / 点空白退出聚焦态。IIFE 顶层挂载, 只挂一次。
+
+  // F9 Phase 2(2026-05-04 道雪): 卡片密度切换 (常规 220px / 紧凑 120px)。
+  //   localStorage 持久化, per-Hub 全局态, 不与 meeting 绑定。
+  function _isDensityCompact() {
+    try {
+      return typeof localStorage !== 'undefined' && localStorage.getItem('mr-density-compact') === 'true';
+    } catch { return false; }
+  }
+  function _setDensityCompact(compact) {
+    try { if (typeof localStorage !== 'undefined') localStorage.setItem('mr-density-compact', compact ? 'true' : 'false'); } catch {}
+    if (compact) document.body.classList.add('mr-density-compact');
+    else document.body.classList.remove('mr-density-compact');
+    // 触发 _relayoutMeetingRoom 让 xterm 等重新 fit (Card optimization Task 10 提供)
+    if (typeof _relayoutMeetingRoom === 'function') {
+      setTimeout(() => _relayoutMeetingRoom(), 260);
+    }
+  }
+  // 启动时立即应用持久化状态
+  if (_isDensityCompact()) document.body.classList.add('mr-density-compact');
+
+  // F3 Phase 2(2026-05-04 道雪 / spec F3): 多卡 Ctrl/Cmd+click 对比模式
+  //   状态: Set<sid>。空 = 默认; ≥1 = 对比模式 (body.mr-card-compare-on)
+  //   spec §5 状态优先级: compare-selected 与 focus 互斥(进入对比时清 focus)
+  //   退出: Esc / 点空白 / 取消最后一张
+  //   简化版: 仅视觉描边(蓝色 dashed)+ 邻居淡化, 不动 grid 重分配
+  const _rtCompareSlots = new Set();
+  function _toggleCompareSelect(sid) {
+    if (!sid) return;
+    if (_rtFocusedCardSid) {
+      _rtFocusedCardSid = null;
+      document.body.classList.remove('mr-card-focus-on');
+    }
+    if (_rtCompareSlots.has(sid)) _rtCompareSlots.delete(sid);
+    else _rtCompareSlots.add(sid);
+    _applyCompareVisual();
+  }
+  function _clearCompareSelect() {
+    if (_rtCompareSlots.size === 0) return;
+    _rtCompareSlots.clear();
+    _applyCompareVisual();
+  }
+  function _applyCompareVisual() {
+    document.querySelectorAll('.mr-ft[data-ft-sid]').forEach(card => {
+      const cardSid = card.getAttribute('data-ft-sid');
+      if (_rtCompareSlots.has(cardSid)) card.classList.add('compare-selected');
+      else card.classList.remove('compare-selected');
+    });
+    if (_rtCompareSlots.size > 0) document.body.classList.add('mr-card-compare-on');
+    else document.body.classList.remove('mr-card-compare-on');
+  }
+
+  // F0 + F3 Phase 1/2: 全局 Esc / 点空白退出聚焦/对比态。IIFE 顶层挂载, 只挂一次。
   document.addEventListener('keydown', function _rtFocusEscHandler(ev) {
     if (ev.key !== 'Escape') return;
-    if (!_rtFocusedCardSid) return;
-    _rtFocusedCardSid = null;
-    document.body.classList.remove('mr-card-focus-on');
+    if (_rtFocusedCardSid) {
+      _rtFocusedCardSid = null;
+      document.body.classList.remove('mr-card-focus-on');
+    }
+    if (_rtCompareSlots.size > 0) _clearCompareSelect();
   });
   document.addEventListener('click', function _rtFocusBlankClickHandler(ev) {
-    if (!_rtFocusedCardSid) return;
     if (ev.target && ev.target.closest && ev.target.closest('.mr-ft')) return;
-    _rtFocusedCardSid = null;
-    document.body.classList.remove('mr-card-focus-on');
+    if (_rtFocusedCardSid) {
+      _rtFocusedCardSid = null;
+      document.body.classList.remove('mr-card-focus-on');
+    }
+    if (_rtCompareSlots.size > 0) _clearCompareSelect();
   });
   // Stage 2 容错升级：每轮 prompt 发送时间戳（用于 manual-extract IPC 的 sincePromptTs 参数）
   const _rtTurnStartTs = {};
@@ -572,11 +627,40 @@ if (typeof document !== 'undefined') (function () {
     const tokensTotal   = _formatTokens(aiStats.totalTokens || 0);
 
     const sendStuck = !!(partial && partial.sendStatus === 'stuck');
+
+    // F4 Phase 2(2026-05-04 道雪): 上一轮注入血缘 chip(渲染层推断式, 不动后端)
+    //   规则: 本轮 sid X 的血缘 = 上一轮 by 中所有非空且不是 X 自己的 sid (排除 absent/errored)
+    //   显示条件: 本卡有内容(completed/streaming/manual_extracted/thinking)且 lastTurn 存在
+    //   实现限制: 不点击跳转(避免 _openRtTimeline 加 initialTurnN 复杂度); chip hover 显示 tooltip
+    //   spec §F4 同组跳过(pilot→pilot/observer→observer)由后端 prompt 注入决定, UI 仅展示参考
+    let lineageHtml = '';
+    if (lastTurn && lastTurn.by && typeof lastTurn.n === 'number'
+        && (status === 'completed' || status === 'streaming' || status === 'manual_extracted' || status === 'thinking')) {
+      const lastByMap = lastTurn.by || {};
+      const lastByStatus = lastTurn.byStatus || {};
+      const otherSpeakers = Object.keys(lastByMap).filter(s => {
+        if (s === sub.sid) return false;
+        const st = lastByStatus[s];
+        if (st === 'absent' || st === 'errored') return false;
+        if (!lastByMap[s] && st !== 'manual_extracted') return false;
+        return true;
+      });
+      if (otherSpeakers.length > 0) {
+        const chips = otherSpeakers.map(spkSid => {
+          const spkSlot = slots.findIndex(slot => slot && slot.sid === spkSid);
+          const spkSlotCls = spkSlot >= 0 ? `slot-${spkSlot + 1}` : '';
+          const spkLabel = (spkSlot >= 0 && slots[spkSlot]) ? slots[spkSlot].label : spkSid.slice(0, 8);
+          return `<span class="mr-ft-lineage-chip ${spkSlotCls}" title="本轮看了 ${escapeHtml(spkLabel)} 第 ${lastTurn.n} 轮的发言">↪ ${escapeHtml(spkLabel)} 第${lastTurn.n}轮</span>`;
+        }).join('');
+        lineageHtml = `<div class="mr-ft-lineage" title="本轮 AI 引用上一轮谁的发言">${chips}</div>`;
+      }
+    }
+
     const html = _ftHtml(
       kind, isActive, sub.sid, labelDisplay, statusLabel, status,
       modelName, modelCls, ctxPct, ctxCls, bottomHtml,
       thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge,
-      slotIndex, sendStuck
+      slotIndex, sendStuck, lineageHtml
     );
     return { html, anyThinking };
   }
@@ -600,7 +684,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, bottomHtml,
-                   thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge, slotIndex, sendStuck) {
+                   thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge, slotIndex, sendStuck, lineageHtml) {
     // 圆桌主题色按 slot 上色（slot 1/2/3 = 皮卡丘/小火龙/杰尼龟），与 kind 解耦：
     // kind 仍保留为 data-attribute 标识 AI 身份，但 CSS 视觉风格只跟槽位走，
     // 未来加任意 AI 都不需要补 CSS。
@@ -658,8 +742,19 @@ if (typeof document !== 'undefined') (function () {
     const timeStat = `<span class="mr-ft-stat-inline" title="本轮 / 累计 思考时间">⏱ <span class="num">${escapeHtml(thinkCurrent)}</span> · ${escapeHtml(thinkTotal)}</span>`;
     const tokenStat = `<span class="mr-ft-stat-inline" title="本轮 / 累计 token">🪙 <span class="num">${escapeHtml(tokensCurrent)}</span> · ${escapeHtml(tokensTotal)}</span>`;
 
+    // F2 Phase 2(2026-05-04 道雪 / spec F2): hover 卡片浮出快捷操作浮条
+    //   位置: 卡片右上, ↗ 按钮左侧(避免冲突)
+    //   按钮: 📋 复制全文 / @ 追问 / " 引用入下轮(F6 占位, Phase 3 实施)
+    //   交互: hover 卡片 0.25s 浮出, 移出消失。stopPropagation 不触发 F0 focus
+    const hoverActionsHtml = `<div class="mr-ft-hover-actions">
+        <button data-rt-action="copy" data-rt-sid="${sid}" title="复制本卡内容">📋</button>
+        <button data-rt-action="mention" data-rt-sid="${sid}" data-rt-kind="${kind}" title="在输入框插入 @ 该家">@</button>
+        <button data-rt-action="quote" data-rt-sid="${sid}" title="引用本卡内容入下一轮(Phase 3)">&ldquo;</button>
+      </div>`;
+
     return `<div class="${cls.join(' ')}" data-ft-sid="${sid}" data-ft-kind="${kind}">
       <button class="mr-ft-expand" data-ft-expand-sid="${sid}" data-ft-expand-kind="${kind}" title="展开详细回答">↗</button>${cornerBadge}
+      ${hoverActionsHtml}
       <div class="mr-ft-head">
         ${avatarHtml}
         <div class="mr-ft-info">
@@ -669,6 +764,7 @@ if (typeof document !== 'undefined') (function () {
             ${timeStat}
           </div>
           <div class="mr-ft-row2">${modelBadge}${ctxBadge}${tokenStat}</div>
+          ${lineageHtml || ''}
         </div>
       </div>
       <div class="mr-ft-bottom">${bottomHtml}${escapeBar}</div>
@@ -898,9 +994,17 @@ if (typeof document !== 'undefined') (function () {
     // 卡片本体 click（mr-ft 自身），focus 该 sid 的 session
     if (slotEl.matches('.mr-ft[data-ft-sid]')) {
       const sid = slotEl.getAttribute('data-ft-sid');
-      slotEl.addEventListener('click', () => {
+      slotEl.addEventListener('click', (ev) => {
         if (!sid) return;
-        // F0 Phase 1(2026-05-04 道雪): click toggle 聚焦态(spec F0: 再次 click 同卡退出)
+        // F3 Phase 2: Ctrl/Cmd+click → 对比模式多选(状态优先级: 互斥 focus)
+        if (ev && (ev.ctrlKey || ev.metaKey)) {
+          ev.stopPropagation();   // 阻止冒泡到全局 click 退出 handler
+          _toggleCompareSelect(sid);
+          return;
+        }
+        // 无 modifier click: 进入 focus 前清 compare(状态优先级)
+        if (_rtCompareSlots.size > 0) _clearCompareSelect();
+        // F0 Phase 1: click toggle 聚焦态(spec F0: 再次 click 同卡退出)
         if (_rtFocusedCardSid === sid) {
           _rtFocusedCardSid = null;
           document.body.classList.remove('mr-card-focus-on');
@@ -1018,6 +1122,57 @@ if (typeof document !== 'undefined') (function () {
             btn.disabled = false;
             btn.textContent = oldText;
           }
+        }
+      });
+    });
+
+    // F2 Phase 2(2026-05-04 道雪 / spec F2): hover-actions 浮条按钮
+    //   📋 复制本卡 preview 全文 / @ 输入框插入 @AI / " 引用 (F6 占位 Phase 3)
+    //   stopPropagation 避免冒泡到卡片 click 触发 F0 focus
+    slotEl.querySelectorAll('.mr-ft-hover-actions button').forEach(btn => {
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const action = btn.getAttribute('data-rt-action');
+        const f2Kind = btn.getAttribute('data-rt-kind');
+        const card = btn.closest('.mr-ft');
+        if (action === 'copy') {
+          const previewText = (card?.querySelector('.mr-ft-bottom')?.innerText || '').trim();
+          if (!previewText) {
+            const oldT = btn.textContent;
+            btn.textContent = '空';
+            setTimeout(() => { btn.textContent = oldT; }, 1000);
+            return;
+          }
+          try {
+            await navigator.clipboard.writeText(previewText);
+            const oldT = btn.textContent;
+            btn.textContent = '✓';
+            btn.style.background = '#2da44e';
+            btn.style.color = '#fff';
+            setTimeout(() => {
+              btn.textContent = oldT;
+              btn.style.background = '';
+              btn.style.color = '';
+            }, 1200);
+          } catch (e) {
+            console.warn('[hover-actions] copy failed:', e);
+          }
+        } else if (action === 'mention') {
+          const input = document.getElementById('mr-input-box');
+          if (input) {
+            const labelEl = card?.querySelector('.mr-ft-name');
+            const fullLabel = (labelEl?.textContent || f2Kind || '').trim();
+            // 剥离前导 emoji / 非文字字符, 再按 · 或空格切第一段
+            const cleanLabel = fullLabel.replace(/^[^A-Za-z0-9_一-鿿]+/, '');
+            const shortLabel = cleanLabel.split(/[·\s]/)[0] || f2Kind || '';
+            const cur = input.textContent || '';
+            input.textContent = (cur && !cur.endsWith(' ') ? cur + ' ' : cur) + `@${shortLabel} `;
+            input.focus();
+            if (typeof _placeCaretAtEnd === 'function') _placeCaretAtEnd(input);
+          }
+        } else if (action === 'quote') {
+          // F6 占位:Phase 3 实施完整选中文本引用流程
+          alert('"引用本卡内容入下一轮" 将在 Phase 3 (F6) 实施。\n当前可先用 📋 复制后粘贴到输入框。');
         }
       });
     });
@@ -1811,6 +1966,7 @@ if (typeof document !== 'undefined') (function () {
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
       </div>
       <div class="mr-header-right">${layoutButtonsHtml}
+        <button class="mr-header-btn ${_isDensityCompact() ? 'active' : ''}" id="mr-btn-density" title="切换卡片密度: 常规 (220px) ↔ 紧凑 (120px,只显示头部)">${_isDensityCompact() ? '📃 紧凑' : '📖 常规'}</button>
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
         <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
@@ -1821,6 +1977,17 @@ if (typeof document !== 'undefined') (function () {
 
     const focusBtn = document.getElementById('mr-btn-focus');
     if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
+    // F9 Phase 2(2026-05-04 道雪): 卡片密度切换 (常规 220px / 紧凑 120px 只显示头部)
+    const densityBtn = document.getElementById('mr-btn-density');
+    if (densityBtn) {
+      densityBtn.addEventListener('click', () => {
+        const next = !_isDensityCompact();
+        _setDensityCompact(next);
+        // 立即更新按钮文案 (避免重渲整个 header)
+        densityBtn.textContent = next ? '📃 紧凑' : '📖 常规';
+        densityBtn.classList.toggle('active', next);
+      });
+    }
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
     // 注：顶部 scene toggle（圆桌/投研）已删除（2026-05-04 决策：scene 创建时确定，运行时不可切换）。
     // Arch refactor 2026-05-02: 沉浸/调试 toggle 删除，无需 binding。

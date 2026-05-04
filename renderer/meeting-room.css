@@ -793,6 +793,160 @@ body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active):hover {
   50% { opacity: 1; }
 }
 /* === /F1 === */
+/* === F4 Phase 2(2026-05-04 道雪 / spec F4): 上一轮注入血缘 chip === */
+.mr-ft-lineage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+  align-items: center;
+  /* 防止 chip 数 ≥3 时撑破宽度: 横向滚动 */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.mr-ft-lineage::-webkit-scrollbar { display: none; }
+.mr-ft-lineage-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #8b949e;
+  white-space: nowrap;
+  cursor: help;
+  transition: background .15s, border-color .15s;
+  font-variant-numeric: tabular-nums;
+}
+.mr-ft-lineage-chip:hover {
+  background: rgba(255,255,255,0.08);
+}
+.mr-ft-lineage-chip.slot-1 { color: #fde68a; border-color: rgba(251,191,36,0.32); }
+.mr-ft-lineage-chip.slot-2 { color: #fdba74; border-color: rgba(249,115,22,0.32); }
+.mr-ft-lineage-chip.slot-3 { color: #93c5fd; border-color: rgba(59,130,246,0.32); }
+/* F0 聚焦态时邻居隐藏 lineage(节省空间给 4 行 preview) */
+body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) .mr-ft-lineage {
+  display: none;
+}
+/* === /F4 === */
+
+/* === F9 Phase 2(2026-05-04 道雪 / spec F9): 卡片密度切换 ===
+ * 常规模式 (默认): 卡片高度跟随 strip 撑满主区 (Arch refactor 2026-05-02 设定)
+ * 紧凑模式 (body.mr-density-compact): 卡片固定 130px, 仅 head 区可见, strip 内 cards 居顶
+ * F0 聚焦态优先: 若同时 mr-card-focus-on, 主卡恢复 stretch (用户聚焦看完整内容)
+ * 切换平滑: height transition 0.3s
+ *
+ * 实施细节: line 1869 .mr-ft-strip { align-items: stretch } 隐式默认 + line 1880 .mr-ft { height: 100% }
+ *   覆盖 line 514 的 height: 220px 让卡片填满 row。 紧凑模式必须用 !important 覆盖 line 1880。
+ */
+.mr-ft {
+  transition: background .15s, border-color .15s,
+              transform .45s cubic-bezier(0.22, 1, 0.36, 1),
+              opacity .45s cubic-bezier(0.22, 1, 0.36, 1),
+              filter .45s cubic-bezier(0.22, 1, 0.36, 1),
+              height .3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+body.mr-density-compact .mr-ft-strip {
+  align-items: start;             /* 覆盖隐式 stretch, 让 cells 不拉伸到 row 高度 */
+}
+body.mr-density-compact .mr-ft {
+  height: 130px !important;        /* 覆盖 line 1880 .mr-ft { height: 100% } */
+  min-height: 0 !important;        /* 覆盖 line 1879 / 1919 的 min-height */
+}
+body.mr-density-compact .mr-ft .mr-ft-bottom {
+  display: none;
+}
+body.mr-density-compact .mr-ft .mr-ft-corner-badge {
+  font-size: 9px;
+}
+/* F0 聚焦态优先 — 主卡恢复 stretch (用户聚焦看完整内容), 邻居仍紧凑 */
+body.mr-card-focus-on.mr-density-compact .mr-ft.active {
+  height: 100% !important;
+}
+body.mr-card-focus-on.mr-density-compact .mr-ft.active .mr-ft-bottom {
+  display: flex;
+  flex-direction: column;
+}
+/* === /F9 === */
+
+/* === F3 Phase 2(2026-05-04 道雪 / spec F3): 多卡对比模式 ===
+ * 触发: ctrl/cmd+click 任一卡 → body.mr-card-compare-on + .compare-selected on cards
+ * 视觉: 选中卡蓝色 dashed 描边 + 蓝色光晕 box-shadow; 邻居(未选中)淡化
+ * 退出: Esc / 点空白 / 取消最后一张
+ * 状态优先级 spec §5: compare-selected 互斥 focus (进入对比时清 focus)
+ * 简化: 不动 grid 重分配, 仅视觉描边(避免与 F0 grid:has 冲突)
+ */
+body.mr-card-compare-on .mr-ft.compare-selected {
+  outline: 3px dashed #58a6ff;
+  outline-offset: -3px;
+  z-index: 2;
+  box-shadow:
+    0 0 18px rgba(88, 166, 255, 0.45),
+    0 0 42px rgba(88, 166, 255, 0.18);
+}
+body.mr-card-compare-on .mr-ft:not(.compare-selected) {
+  opacity: 0.55;
+  filter: brightness(0.7);
+}
+/* 多张选中时,最后选中态视觉(后选中的 z-index 略高,通过 hover 强化区分) */
+body.mr-card-compare-on .mr-ft.compare-selected:hover {
+  z-index: 3;
+  box-shadow:
+    0 0 24px rgba(88, 166, 255, 0.6),
+    0 0 50px rgba(88, 166, 255, 0.22);
+}
+/* === /F3 === */
+
+/* === F2 Phase 2(2026-05-04 道雪 / spec F2): hover 卡片快捷操作浮条 ===
+ * 位置: 卡片右上, ↗ 按钮(right: 8px, 24px 宽)左侧
+ * 按钮: 📋 复制 / @ 追问 / " 引用
+ * 交互: hover 卡片 0.25s 浮出(translateY -4 → 0, opacity 0 → 1), 移出消失
+ * 不影响选中文本(pointer-events 默认), z-index 5 在 ::after 描边之上
+ */
+.mr-ft-hover-actions {
+  position: absolute;
+  top: 8px;
+  right: 38px;            /* ↗ 按钮 right: 8px + width 24 + margin 6 */
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity .25s ease-out, transform .25s ease-out;
+  z-index: 5;
+  pointer-events: none;   /* 默认不可点(hover 后才启用), 避免误击 */
+}
+.mr-ft:hover .mr-ft-hover-actions {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.mr-ft-hover-actions button {
+  width: 26px;
+  height: 26px;
+  background: rgba(33, 38, 45, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #c9d1d9;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  padding: 0;
+  font-family: inherit;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.mr-ft-hover-actions button:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+/* F0 聚焦/F3 对比/F9 紧凑下也保持 hover-actions 可访问 */
+body.mr-density-compact .mr-ft-hover-actions {
+  /* 紧凑模式下 hover-actions 仍可见 */
+}
+/* === /F2 === */
 .mr-ft-elapsed { font-size: 11px; color: #fde68a; margin-left: auto; font-variant-numeric: tabular-nums; font-family: "Cascadia Mono", Consolas, monospace; }
 .mr-ft-expand {
   position: absolute; top: 8px; right: 8px;
