@@ -1832,6 +1832,140 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
 }
 window._mountSessionTurnCard = mountSessionTurnCard;
 
+// === Spec 2 v1.0.0 · S5 loadSessionHistoryToOverlay ===
+// Load historical turns for a session and mount them as cards into #msg-overlay.
+//
+// Used by:
+//   - showTerminal (S7) when switching to a Claude session in card view
+//   - User explicit "reload history" action (future)
+//
+// Workflow:
+//   1. Resolve container = #msg-overlay; missing → warn + bail
+//   2. Clear container + clear _sessionTurns Map (multi-session safety)
+//   3. Look up session via existing `sessions` Map (showTerminal pattern, line ~1080)
+//   4. kind !== 'claude' (per isClaudeFamily) → friendly placeholder, skip IPC
+//   5. invoke('parse-session-transcript', { hubSessionId, ccSessionId, opts })
+//   6. Handle result:
+//      - turns.length === 0 → placeholder ("会话尚未产生历史" or error text)
+//      - turns.length > 0   → loop mountSessionTurnCard, then ONE bottom-scroll
+//        (don't autoScroll per mount — would jitter and force N reflows)
+//   7. Return { mounted, error }
+//
+// Boundary notes:
+//   * Does NOT touch showTerminal — S7 will integrate
+//   * Does NOT register IPC listeners for turn-complete-event — that's S6
+//   * Falls back to ipcRenderer.invoke even if `sessions.get` returns null;
+//     main.js handler does its own session lookup and returns
+//     'transcript not found' for unknown ids — we display that as the error.
+async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
+  // 1. resolve container
+  const container = document.getElementById('msg-overlay');
+  if (!container) {
+    console.warn('[loadSessionHistoryToOverlay] container not found (msg-overlay missing)');
+    return { mounted: 0, error: 'container missing' };
+  }
+
+  // 2. clear container + Map (avoid stale turns from previous session)
+  container.innerHTML = '';
+  if (!window._sessionTurns) window._sessionTurns = new Map();
+  window._sessionTurns.clear();
+
+  // helper: render a placeholder line inside the cleared container
+  const showPlaceholder = (html) => {
+    container.innerHTML =
+      '<div class="msg-overlay-placeholder">' + html + '</div>';
+  };
+
+  // 3. look up session info — same pattern as showTerminal (line ~1080)
+  let session = null;
+  try {
+    if (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function') {
+      session = sessions.get(sessionId) || null;
+    }
+  } catch (err) {
+    console.warn('[loadSessionHistoryToOverlay] sessions.get threw:', err);
+  }
+  const ccSessionId = session ? (session.ccSessionId || null) : null;
+  const kind = session ? (session.kind || null) : null;
+
+  // 4. kind gate — spec 2 only supports Claude family; show placeholder for others
+  if (kind && !isClaudeFamily(kind)) {
+    showPlaceholder(
+      '卡片视图当前仅支持 Claude session — '
+      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
+    );
+    return { mounted: 0, error: null };
+  }
+
+  // 5. invoke IPC (let main.js apply default opts: limit:50, fromTail:true)
+  let result;
+  try {
+    result = await ipcRenderer.invoke('parse-session-transcript', {
+      hubSessionId: sessionId,
+      ccSessionId,
+      opts: opts.parseOpts,
+    });
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : String(err);
+    console.warn('[loadSessionHistoryToOverlay] IPC invoke threw:', err);
+    showPlaceholder(
+      '加载历史失败：' + msg + ' — '
+      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
+    );
+    return { mounted: 0, error: msg };
+  }
+
+  const turns = (result && Array.isArray(result.turns)) ? result.turns : [];
+  const ipcError = (result && result.error) ? result.error : null;
+
+  // 6a. error AND no turns → friendly placeholder (don't silent fail)
+  if (turns.length === 0 && ipcError) {
+    const txt = (ipcError === 'transcript not found')
+      ? '会话尚未产生历史'
+      : '加载历史失败：' + ipcError;
+    showPlaceholder(
+      txt + ' — '
+      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
+    );
+    return { mounted: 0, error: ipcError };
+  }
+
+  // 6b. no turns, no error → fresh session
+  if (turns.length === 0) {
+    showPlaceholder(
+      '新会话，发首条消息试试看 — '
+      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
+    );
+    return { mounted: 0, error: null };
+  }
+
+  // 6c. mount each turn; pass kind through opts so renderTurnCard picks it up.
+  // Use a default kind 'claude' if session lookup failed but main.js still
+  // returned turns — they came from a Claude transcript by definition.
+  const mountKind = kind || 'claude';
+  let mounted = 0;
+  let lastCardEl = null;
+  for (const turn of turns) {
+    const cardEl = mountSessionTurnCard(sessionId, turn, { kind: mountKind });
+    if (cardEl) {
+      mounted++;
+      lastCardEl = cardEl;
+    }
+  }
+
+  // Single bottom-scroll AFTER loop (don't autoScroll per mount — N reflows = jitter)
+  if (lastCardEl) {
+    try {
+      lastCardEl.scrollIntoView({ behavior: 'auto', block: 'end' });
+    } catch {
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  return { mounted, error: null };
+}
+window._loadSessionHistoryToOverlay = loadSessionHistoryToOverlay;
+
 // rt-file-link click → openPreviewPanel (only for cards inside .msg-overlay,
 // don't conflict with meeting-room.js handler which targets its own scope)
 document.addEventListener('click', (e) => {
