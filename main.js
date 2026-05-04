@@ -2206,7 +2206,7 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
     if (!transcriptPath) {
       return { turns: [], transcriptPath: null, error: 'transcript not found' };
     }
-    const parseOpts = opts && typeof opts === 'object' ? opts : { limit: 50, fromTail: true };
+    const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
     const turns = await parseClaudeTranscriptToTurns(transcriptPath, parseOpts);
     return { turns: Array.isArray(turns) ? turns : [], transcriptPath, error: null };
   } catch (err) {
