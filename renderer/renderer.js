@@ -3474,6 +3474,26 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
     cached.terminal.write(data);
   }
   onTerminalOutput(sessionId, data.length);
+
+  // Spec 2 partial-update workaround:
+  // transcriptTap.emit('turn-complete') only fires on stop_reason ∈ {end_turn, max_tokens, refusal} —
+  // assistant turns with stop_reason='tool_use' wait for the next message, so card view lags
+  // PTY badly during multi-tool-call cycles. PTY data arriving means transcript has new lines;
+  // debounce-reload card view ~600ms after PTY quiets so card stays in sync.
+  if (sessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
+    if (!window._cardReloadDebounce) window._cardReloadDebounce = new Map();
+    if (!window._cardReloadInProgress) window._cardReloadInProgress = new Set();
+    const prev = window._cardReloadDebounce.get(sessionId);
+    if (prev) clearTimeout(prev);
+    window._cardReloadDebounce.set(sessionId, setTimeout(() => {
+      window._cardReloadDebounce.delete(sessionId);
+      if (window._cardReloadInProgress.has(sessionId)) return;
+      window._cardReloadInProgress.add(sessionId);
+      loadSessionHistoryToOverlay(sessionId)
+        .catch(err => console.warn('[card auto-reload] failed:', err))
+        .finally(() => window._cardReloadInProgress.delete(sessionId));
+    }, 600));
+  }
 });
 
 // Status updates from our custom statusline script.
