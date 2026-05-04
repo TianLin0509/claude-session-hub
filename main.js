@@ -229,9 +229,19 @@ function ensureGeminiMcpInstalled() {
 function findTranscriptByCCSessionId(ccSessionId) {
   if (!ccSessionId) return null;
   const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  // 枚举所有 CLAUDE_FAMILY 隔离配置目录（与 core/ai-kinds.js CLAUDE_FAMILY 对齐）：
+  //   claude/claude-resume → ~/.claude
+  //   deepseek → ~/.claude-deepseek
+  //   glm → ~/.claude-glm
+  //   gpt/kimi/qwen → ~/.claude-packy-{gpt,kimi,qwen}
+  // 缺一个目录会让对应家族的 transcript 全找不到（spec 2 卡片视图空白）。
   const candidateRoots = [
     path.join(home, '.claude', 'projects'),
     path.join(home, '.claude-deepseek', 'projects'),
+    path.join(home, '.claude-glm', 'projects'),
+    path.join(home, '.claude-packy-gpt', 'projects'),
+    path.join(home, '.claude-packy-kimi', 'projects'),
+    path.join(home, '.claude-packy-qwen', 'projects'),
   ];
   for (const projectsDir of candidateRoots) {
     try {

@@ -1819,6 +1819,12 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // defensive init (spec1 also does this at line ~1545, but be paranoid)
   if (!window._sessionTurns) window._sessionTurns = new Map();
 
+  // dedup：同 turnId 已在 DOM → 不重复 mount（避免 load + turn-complete 紧贴
+  // 触发同一 turn 渲染两次出现"空/重复"卡片）。— 2026-05-04 用户反馈空卡片
+  if (container.querySelector(`.turn-card[data-turn-id="${CSS.escape(turn.id)}"]`)) {
+    return null;
+  }
+
   // 3. merge kind through to renderTurnCard without mutating caller's turn
   const turnForRender = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
 
@@ -2218,7 +2224,8 @@ document.addEventListener('click', (e) => {
 });
 
 // === Spec 1 v0.9.0 · 视图切换 ===
-let currentView = 'card'; // 'card' | 'pty'
+// 默认 PTY（卡片视图作为可选第二视图，不破坏 PTY 主流程）— 2026-05-04 用户反馈
+let currentView = 'pty'; // 'card' | 'pty'
 
 function applyViewMode(mode) {
   currentView = mode;
@@ -5010,7 +5017,7 @@ async function resumeDormantSession(hubId) {
     renderAccountUsage();
     traceRendererStartup('usage cache loaded');
   }).catch(() => { renderAccountUsage(); });
-  applyViewMode('card');
+  applyViewMode('pty');
 })();
 
 // Persist on relevant changes — listen at renderer-level for mutations that

@@ -328,3 +328,52 @@ test('real fixture (30a4345b...) parses without tool_result pollution', (t) => {
   const a = turns.find(x => x.role === 'assistant');
   assert.ok(a.model && typeof a.model === 'string', 'assistant turn must have a model string');
 });
+
+// ---- Test 16: skip empty assistant entries (api error / interrupted / empty content) ----
+// 用户反馈：卡片视图偶尔出现"空 assistant 卡片"。根因：assistant entry 的 content
+// 完全无 thinking/text/tool_use（API 异常/被打断/拒答）时，旧 parser 仍输出 turn，
+// 渲染后视觉为空。修复：assistant 三种 visible content 全无 → skip entry。
+test('skip assistant entry with no thinking/text/tool_use (empty content)', () => {
+  const userLine = JSON.stringify({
+    type: 'user', uuid: 'u-1', timestamp: '2026-01-01T00:00:00Z',
+    message: { content: 'hi' },
+  });
+  const emptyAssistantLine = JSON.stringify({
+    type: 'assistant', uuid: 'a-empty', timestamp: '2026-01-01T00:00:01Z',
+    message: { content: [], model: 'claude-opus-4-7', stop_reason: 'end_turn' },
+  });
+  const realAssistantLine = JSON.stringify({
+    type: 'assistant', uuid: 'a-real', timestamp: '2026-01-01T00:00:02Z',
+    message: {
+      content: [{ type: 'text', text: 'reply' }],
+      model: 'claude-opus-4-7',
+      stop_reason: 'end_turn',
+    },
+  });
+  const p = writeTmp('skip-empty', [userLine, emptyAssistantLine, realAssistantLine].join('\n'));
+  try {
+    const turns = parseClaudeTranscriptToTurns(p);
+    assert.strictEqual(turns.length, 2, 'empty assistant entry should be skipped');
+    assert.strictEqual(turns[0].role, 'user');
+    assert.strictEqual(turns[1].role, 'assistant');
+    assert.strictEqual(turns[1].id, 'a-real');
+  } finally { cleanup(p); }
+});
+
+// thinking-only assistant entry must NOT be skipped (renders as 💭 思考过程 summary)
+test('keep assistant entry with thinking-only content (not skipped)', () => {
+  const line = JSON.stringify({
+    type: 'assistant', uuid: 'a-think', timestamp: '2026-01-01T00:00:00Z',
+    message: {
+      content: [{ type: 'thinking', thinking: 'planning…' }],
+      model: 'claude-opus-4-7', stop_reason: 'tool_use',
+    },
+  });
+  const p = writeTmp('keep-thinking-only', line);
+  try {
+    const turns = parseClaudeTranscriptToTurns(p);
+    assert.strictEqual(turns.length, 1, 'thinking-only assistant should NOT be skipped');
+    assert.strictEqual(turns[0].thinking, 'planning…');
+    assert.strictEqual(turns[0].text, '');
+  } finally { cleanup(p); }
+});

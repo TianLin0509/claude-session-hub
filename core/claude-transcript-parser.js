@@ -98,6 +98,14 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
     } else if (entry.type === 'assistant') {
       const message = entry.message || {};
       const parsed = parseAssistantContent(message.content);
+      // 跳过完全无内容 entry（API 异常/被打断/拒答 → message.content=[] 或全是未识别类型）。
+      // 保留只有 thinking 或只有 tool_use 的 entry：渲染时 "💭 思考过程" summary
+      // 或工具卡片仍可见，不会显示为空白。— 2026-05-04 用户反馈空卡片
+      const hasContent =
+        (parsed.text && parsed.text.length > 0) ||
+        (parsed.toolCalls && parsed.toolCalls.length > 0) ||
+        (parsed.thinking && parsed.thinking.length > 0);
+      if (!hasContent) continue;
       turns.push({
         id: entry.uuid,
         role: 'assistant',
