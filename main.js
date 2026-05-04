@@ -606,7 +606,10 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
     if (covenantText && covenantText.trim().length > 0) {
       scenes.writeCovenantSnapshot(hubDataDir, meetingId, covenantText);
     }
-    const promptFile = scenes.writePromptFile(hubDataDir, meetingId, meeting.scene, covenantText);
+    // P2 (2026-05-04 道雪): 投研场景 per-slot prompt 文件 (L3 偏置层注入)。
+    //   slotId 在 line 575-582 已计算 (前 3 个 sub 按加入顺序映射 SLOT_IDS);
+    //   slotId === null (第 4+ sub 或非圆桌) 时 writePromptFile 退回老文件名。
+    const promptFile = scenes.writePromptFile(hubDataDir, meetingId, meeting.scene, covenantText, slotId);
     // DeepSeek/GLM/GPT/Kimi/Qwen 跑在 Claude CLI 上（CLAUDE_CONFIG_DIR 隔离），需要相同的 system prompt 注入。
     if (isClaudeFamily(kind)) {
       sessionOpts.appendSystemPromptFile = promptFile;
@@ -2285,6 +2288,15 @@ function _switchScene(meetingId, scene, covenant) {
   const text = typeof covenant === 'string' ? covenant : (updated.covenantText || '');
   try {
     scenes.writeCovenantSnapshot(getHubDataDir(), meetingId, text);
+    // P2 (2026-05-04 道雪): research 场景预生成 3 个 slot prompt 文件 (L3 偏置),
+    //   后续 add-meeting-sub / resume 直接读取;非 research 场景仍写单一 fallback。
+    //   预生成不占代价 (~3KB/文件,cleanup 时一并删) 但消除 race window
+    //   (sub 启动前文件就已就绪,即便 add-meeting-sub 路径漏写也有兜底)。
+    if (scene === 'research') {
+      for (const sid of SLOT_IDS) {
+        scenes.writePromptFile(getHubDataDir(), meetingId, scene, text, sid);
+      }
+    }
     scenes.writePromptFile(getHubDataDir(), meetingId, scene, text);
   } catch (e) {
     console.warn(`[switch-scene] write prompt files failed: ${e.message}`);
@@ -2534,7 +2546,15 @@ ipcMain.handle('resume-session', async (_e, meta) => {
       const covenantText = (typeof meeting.covenantText === 'string' && meeting.covenantText.length > 0)
         ? meeting.covenantText
         : scenes.readCovenantSnapshot(hubDataDir, meta.meetingId);
-      promptFile = scenes.writePromptFile(hubDataDir, meta.meetingId, meeting.scene, covenantText);
+      // P2 (2026-05-04 道雪): resume 时按 subSessions index 推 slotId,
+      //   保证 dormant→awake 后注入与首次启动一致的 L3 偏置。
+      //   meta.hubId 不在 subSessions 时 (异常路径) → slotId=null,退回老 fallback。
+      let slotId = null;
+      if (Array.isArray(meeting.subSessions)) {
+        const idx = meeting.subSessions.indexOf(meta.hubId);
+        if (idx >= 0 && idx < SLOT_IDS.length) slotId = SLOT_IDS[idx];
+      }
+      promptFile = scenes.writePromptFile(hubDataDir, meta.meetingId, meeting.scene, covenantText, slotId);
     }
     if (promptFile) {
       if (isClaude || isGlm) {
