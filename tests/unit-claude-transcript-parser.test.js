@@ -64,7 +64,7 @@ test('basic: 1 user + 1 assistant → 2 turns with correct fields', () => {
 });
 
 // ---- Test 2: 跳 tool_result 污染 ----
-test('skip tool_result: user(text) + assistant(tool_use) + user(tool_result) + assistant(text) → 3 turns', () => {
+test('skip tool_result + W5 merge: [u, a(tool_use), tr, a(end_turn)] → 2 turns (1 user + 1 merged-assistant)', () => {
   const u1 = JSON.stringify({
     type: 'user', uuid: 'u-1', timestamp: '2026-05-04T08:00:00.000Z',
     message: { content: 'do something' },
@@ -97,11 +97,20 @@ test('skip tool_result: user(text) + assistant(tool_use) + user(tool_result) + a
   const fp = writeTmp('toolresult.jsonl', [u1, a1, tr, a2].join('\n') + '\n');
   try {
     const turns = parseClaudeTranscriptToTurns(fp);
-    assert.strictEqual(turns.length, 3, 'tool_result row must be skipped');
+    // W5: 两个相邻 assistant entries (a1 tool_use + a2 end_turn) 合为 1 logical turn。
+    // tool_result 仍被跳过（不被算作 user 消息）。
+    assert.strictEqual(turns.length, 2, 'tool_result skipped + 2 assistants merged → 2 turns');
     assert.strictEqual(turns[0].role, 'user');
+    assert.strictEqual(turns[0].id, 'u-1');
     assert.strictEqual(turns[1].role, 'assistant');
-    assert.strictEqual(turns[2].role, 'assistant');
-    assert.ok(!turns.some(t => typeof t.text === 'string' && t.text.includes('file1\nfile2')));
+    assert.strictEqual(turns[1].id, 'a-1', 'merged turn id = first assistant entry uuid');
+    assert.strictEqual(turns[1].mergedCount, 2, 'mergedCount tracks how many entries combined');
+    assert.strictEqual(turns[1].stopReason, 'end_turn', 'stopReason from last entry');
+    assert.strictEqual(turns[1].toolCalls.length, 1, 'a1 toolCalls preserved');
+    assert.ok(turns[1].text.includes('calling tool') && turns[1].text.includes('done'),
+      'text from both entries joined');
+    assert.ok(!turns.some(t => typeof t.text === 'string' && t.text.includes('file1\nfile2')),
+      'tool_result content not surfaced');
   } finally {
     cleanup(fp);
   }
@@ -147,8 +156,8 @@ test('parseAssistantContent: multiple thinking blocks joined with \\n\\n', () =>
   assert.strictEqual(out.text, 'visible');
 });
 
-// ---- Test 5: stop_reason 各种值 ----
-test('stop_reason: end_turn / tool_use / max_tokens / stop_sequence all preserved as raw string', () => {
+// ---- Test 5: stop_reason 各种值 + W5 合并行为 ----
+test('stop_reason values + W5 merge: tool_use chains into next, others terminate', () => {
   const reasons = ['end_turn', 'tool_use', 'max_tokens', 'stop_sequence'];
   const lines = reasons.map((r, i) => JSON.stringify({
     type: 'assistant',
@@ -163,8 +172,13 @@ test('stop_reason: end_turn / tool_use / max_tokens / stop_sequence all preserve
   const fp = writeTmp('stopreasons.jsonl', lines.join('\n') + '\n');
   try {
     const turns = parseClaudeTranscriptToTurns(fp);
-    assert.strictEqual(turns.length, 4);
-    assert.deepStrictEqual(turns.map(t => t.stopReason), reasons);
+    // W5: a-0 (end_turn) flush 单独; a-1 (tool_use) + a-2 (max_tokens) 合为 1 (max_tokens 终止);
+    //     a-3 (stop_sequence) 独立 → 总 3 turns。
+    assert.strictEqual(turns.length, 3, 'merge collapses tool_use chain');
+    assert.deepStrictEqual(turns.map(t => t.stopReason), ['end_turn', 'max_tokens', 'stop_sequence']);
+    assert.deepStrictEqual(turns.map(t => t.id), ['a-0', 'a-1', 'a-3'],
+      'merged turn id = first entry of chain');
+    assert.strictEqual(turns[1].mergedCount, 2, 'a-1 chain merged 2 entries');
   } finally {
     cleanup(fp);
   }
@@ -412,8 +426,88 @@ test('B2 tail-only: skips tool_result entries during reverse scan', () => {
   const fp = writeTmp('B2-tool-result', lines.join('\n') + '\n');
   try {
     const turns = parseClaudeTranscriptToTurns(fp, { limit: 10, fromTail: true });
-    assert.strictEqual(turns.length, 3, 'tool_result entry skipped');
-    assert.deepStrictEqual(turns.map(t => t.id), ['u-1', 'a-1', 'a-2']);
+    // W5: a-1 (tool_use) + a-2 (end_turn) merge → 1 turn → 总 2 turns
+    assert.strictEqual(turns.length, 2, 'tool_result skipped + 2 assistants merged');
+    assert.deepStrictEqual(turns.map(t => t.id), ['u-1', 'a-1']);
+    assert.strictEqual(turns[1].mergedCount, 2);
+    assert.strictEqual(turns[1].toolCalls.length, 1);
+  } finally { cleanup(fp); }
+});
+
+// === Spec 3 · W5 merge architecture tests ===
+
+// 长 tool 链：1 user + 5 个 1-tool assistant + 1 final → user + 1 merged turn
+test('W5 merge: 5 consecutive 1-tool entries + 1 final = 1 user + 1 merged turn (6 toolCalls)', () => {
+  const lines = [
+    JSON.stringify({ type: 'user', uuid: 'u-q', timestamp: '2026-01-01T00:00:00Z',
+      message: { content: 'do many things' } }),
+  ];
+  for (let i = 0; i < 5; i++) {
+    lines.push(JSON.stringify({
+      type: 'assistant', uuid: `a-${i}`, timestamp: `2026-01-01T00:00:0${i+1}Z`,
+      message: { model: 'claude-opus-4-7', stop_reason: 'tool_use',
+        content: [
+          { type: 'thinking', thinking: `think-${i}` },
+          { type: 'tool_use', id: `t-${i}`, name: 'Bash', input: { command: `cmd-${i}` } }
+        ],
+        usage: { input_tokens: 1000, output_tokens: 200 }
+      }
+    }));
+    lines.push(JSON.stringify({ type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: `t-${i}`, content: `out-${i}` }] }
+    }));
+  }
+  lines.push(JSON.stringify({
+    type: 'assistant', uuid: 'a-final', timestamp: '2026-01-01T00:01:00Z',
+    message: { model: 'claude-opus-4-7', stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'all done!' }],
+      usage: { input_tokens: 5000, output_tokens: 100 }
+    }
+  }));
+  const fp = writeTmp('W5-long-chain', lines.join('\n') + '\n');
+  try {
+    const turns = parseClaudeTranscriptToTurns(fp);
+    assert.strictEqual(turns.length, 2, '6 raw assistants → 1 merged turn');
+    assert.strictEqual(turns[0].role, 'user');
+    const a = turns[1];
+    assert.strictEqual(a.role, 'assistant');
+    assert.strictEqual(a.id, 'a-0', 'merged id = first entry');
+    assert.strictEqual(a.mergedCount, 6);
+    assert.strictEqual(a.toolCalls.length, 5, '5 tool_use aggregated');
+    assert.strictEqual(a.text, 'all done!');
+    assert.ok(a.thinking.includes('think-0') && a.thinking.includes('think-4'),
+      'all thinking concatenated');
+    assert.strictEqual(a.stopReason, 'end_turn', 'last entry stop_reason wins');
+    assert.strictEqual(a.tsEnd, new Date('2026-01-01T00:01:00Z').getTime(), 'tsEnd = last entry ts');
+    assert.strictEqual(a.usage.input_tokens, 5000 + 5*1000, 'usage tokens accumulated');
+    assert.strictEqual(a.usage.output_tokens, 100 + 5*200);
+  } finally { cleanup(fp); }
+});
+
+// user 出现立即 flush（不会跨 user 合并）
+test('W5 merge: user message flushes accumulator (no merge across user turns)', () => {
+  const lines = [
+    JSON.stringify({ type: 'user', uuid: 'u-1', timestamp: '2026-01-01T00:00:00Z',
+      message: { content: 'q1' } }),
+    JSON.stringify({ type: 'assistant', uuid: 'a-1', timestamp: '2026-01-01T00:00:01Z',
+      message: { model: 'claude-opus-4-7', stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/x' } }] }
+    }),
+    // 这条 a-1 的 tool_use 没有等到 tool_result 就被 user 打断
+    JSON.stringify({ type: 'user', uuid: 'u-2', timestamp: '2026-01-01T00:01:00Z',
+      message: { content: 'q2' } }),
+    JSON.stringify({ type: 'assistant', uuid: 'a-2', timestamp: '2026-01-01T00:01:01Z',
+      message: { model: 'claude-opus-4-7', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'reply2' }] }
+    }),
+  ];
+  const fp = writeTmp('W5-user-flush', lines.join('\n') + '\n');
+  try {
+    const turns = parseClaudeTranscriptToTurns(fp);
+    assert.strictEqual(turns.length, 4, 'user flushes acc, no cross-user merge');
+    assert.deepStrictEqual(turns.map(t => t.id), ['u-1', 'a-1', 'u-2', 'a-2']);
+    assert.strictEqual(turns[1].mergedCount, 1);
+    assert.strictEqual(turns[3].mergedCount, 1);
   } finally { cleanup(fp); }
 });
 

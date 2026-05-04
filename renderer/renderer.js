@@ -1684,15 +1684,65 @@ function sanitizeAssetName(name) {
   return String(name || '').replace(/[^a-zA-Z0-9_-]/g, '');
 }
 function aiLogoSrc(kind) {
-  // 已有 logos: claude / codex / 等。其它 kind fallback 到字母
+  // 已有 logos: claude / codex / 等。其它 kind fallback 到字母。
+  // Spec 3 · W6 fix：claude-resume / gemini-resume / codex-resume / deepseek-resume / 等
+  // 都共享对应 base kind 的 logo（之前 -resume 后缀漏映射 → 字母 fallback "CL"）。
   const known = ['claude','codex','gemini','deepseek','glm','gpt','kimi','qwen'];
-  const k = (kind || '').toLowerCase();
+  const k = (kind || '').toLowerCase().replace(/-resume$/, '');
   if (known.includes(k)) return `assets/ai-logos/${k}.svg`;
   return null;
 }
 function aiLetterFallback(kind) {
   const k = (kind || '?').toUpperCase();
   return k.length >= 2 ? k.slice(0, 2) : k + '?';
+}
+
+// === Spec 3 · W7 头部 metadata pills ===
+// 给卡片头加 4 个信息 pill：🔧 工具数 / ⇡in/⇣out token / 📊 ctx% / ⏱ 耗时（user 卡片仅 📝 字数）
+// model context window 用模糊匹配（实际 model id 多变如 "claude-opus-4-7[1m]"），匹配不到默认 200k。
+function _modelCtxWindow(model) {
+  if (!model) return 200000;
+  const m = String(model).toLowerCase();
+  if (m.includes('1m') || m.includes('opus-4')) return 1000000;
+  if (m.includes('gemini')) return 1000000;
+  if (m.includes('sonnet')) return 200000;
+  if (m.includes('haiku')) return 200000;
+  if (m.includes('gpt')) return 128000;
+  return 200000;
+}
+function _fmtTokens(n) {
+  if (!n) return '0';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+}
+function _fmtDuration(ms) {
+  const s = ms / 1000;
+  if (s >= 60) return (s / 60).toFixed(1) + 'min';
+  return s.toFixed(1) + 's';
+}
+function _renderMetaPills(turn) {
+  const isUser = turn.role === 'user';
+  if (isUser) {
+    const n = (turn.text || '').length;
+    if (!n) return '';
+    return `<span class="turn-meta-pills"><span class="pill">📝 ${n} 字</span></span>`;
+  }
+  const pills = [];
+  const toolN = (turn.toolCalls && turn.toolCalls.length) || 0;
+  if (toolN > 0) pills.push(`<span class="pill pill-tool">🔧 ${toolN} 工具</span>`);
+  if (turn.usage && (turn.usage.input_tokens || turn.usage.output_tokens)) {
+    pills.push(`<span class="pill pill-token">⇡${_fmtTokens(turn.usage.input_tokens||0)} ⇣${_fmtTokens(turn.usage.output_tokens||0)}</span>`);
+  }
+  if (turn.usage && turn.usage.input_tokens) {
+    const win = _modelCtxWindow(turn.model);
+    const pct = Math.min(100, Math.round(turn.usage.input_tokens / win * 100));
+    pills.push(`<span class="pill pill-ctx">📊 ${pct}% ctx</span>`);
+  }
+  if (typeof turn.tsEnd === 'number' && typeof turn.ts === 'number' && turn.tsEnd > turn.ts) {
+    pills.push(`<span class="pill pill-time">⏱ ${_fmtDuration(turn.tsEnd - turn.ts)}</span>`);
+  }
+  if (pills.length === 0) return '';
+  return `<span class="turn-meta-pills">${pills.join('')}</span>`;
 }
 
 // === Spec 1 v0.9.0 · turn 卡片渲染 ===
@@ -1706,7 +1756,8 @@ function renderTurnCard(turn) {
   // 头像分支
   let avatarHtml;
   if (isUser) {
-    avatarHtml = `<span class="turn-avatar av-user">👤</span>`;
+    // Spec 3 · W6：用户头像用皮卡丘（与圆桌 slot 体系视觉一致，复用 .av-poke 黄色背景）
+    avatarHtml = `<span class="turn-avatar av-poke"><img src="assets/pokemon/pikachu.png" alt="你"></span>`;
   } else if (turn.slotPokemon) {
     // 圆桌 slot 体系
     const safe = sanitizeAssetName(turn.slotPokemon);
@@ -1753,6 +1804,7 @@ function renderTurnCard(turn) {
       <div class="turn-head">
         <span class="turn-who">${escapeHtml(who)}</span>
         <span class="turn-meta">${escapeHtml(ts)}</span>
+        ${_renderMetaPills(turn)}
         <div class="turn-actions">
           <button class="ta-btn" data-action="copy" title="复制">📋</button>
           ${isUser
@@ -1909,10 +1961,32 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // defensive init (spec1 also does this at line ~1545, but be paranoid)
   if (!window._sessionTurns) window._sessionTurns = new Map();
 
-  // dedup：同 turnId 已在 DOM → 不重复 mount（避免 load + turn-complete 紧贴
-  // 触发同一 turn 渲染两次出现"空/重复"卡片）。— 2026-05-04 用户反馈空卡片
-  if (container.querySelector(`.turn-card[data-turn-id="${CSS.escape(turn.id)}"]`)) {
-    return null;
+  // dedup with in-place replace：同 turnId 已在 DOM 时，不是 skip 而是替换。
+  // 原因：W5 后一个 logical turn 包含多个 raw entries，streaming 新 entry 合并进来时
+  // turn.id 不变（取首条 entry uuid）但内容已变（toolCalls 多了 / text 长了 / tsEnd 变 /
+  // mergedCount 增加）。skip 会让用户看不到新工具调用；replace 让卡片 in-place 更新。
+  // 副作用：替换瞬间该卡片如有 hover 操作菜单会闪一下，可接受。
+  const existing = container.querySelector(`.turn-card[data-turn-id="${CSS.escape(turn.id)}"]`);
+  if (existing) {
+    let newCard = null;
+    try {
+      const tmp2 = document.createElement('div');
+      const turnForRender2 = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
+      tmp2.innerHTML = renderTurnCard(turnForRender2);
+      newCard = tmp2.firstElementChild;
+    } catch (err) {
+      console.warn('[mountSessionTurnCard replace] renderTurnCard threw:', err);
+      return null;
+    }
+    if (!newCard) return null;
+    newCard.dataset.sessionId = String(sessionId || '');
+    existing.replaceWith(newCard);
+    if (typeof postProcessCardCodeBlocks === 'function') postProcessCardCodeBlocks(newCard);
+    const bodyEl2 = newCard.querySelector('.turn-body');
+    if (bodyEl2 && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl2);
+    if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
+    window._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
+    return newCard;
   }
 
   // 3. merge kind through to renderTurnCard without mutating caller's turn

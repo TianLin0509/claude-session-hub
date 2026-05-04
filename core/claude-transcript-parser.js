@@ -101,62 +101,97 @@ function _entryToTurn(entry) {
   return null;
 }
 
-// === Spec 3 · B2 tail-only fast path ===
-// 反向读取文件尾部 64KB chunks，直到收集到 ≥ limit 个 turns 或读到文件头。
-// 大 transcript（5MB+）从前 readFileSync 整文件 → 现在通常只需 1-2 个 chunk。
-// 仅在 fromTail+limit>0 时启用；其余调用走原 readFileSync 全文路径。
-function _parseTurnsFromTail(jsonlPath, limit) {
-  const CHUNK = 65536;
-  const collected = []; // 倒序收集（last entry → first entry）
-  let fd = null;
-  try {
-    fd = fs.openSync(jsonlPath, 'r');
-    const { size } = fs.fstatSync(fd);
-    let pos = size;
-    let tail = '';
-    while (pos > 0 && collected.length < limit) {
-      const readLen = Math.min(CHUNK, pos);
-      pos -= readLen;
-      const buf = Buffer.alloc(readLen);
-      fs.readSync(fd, buf, 0, readLen, pos);
-      tail = buf.toString('utf-8') + tail;
-      const lines = tail.split('\n');
-      // 第一片若不在文件头，可能是不完整行 → 留给下次拼接
-      const firstFragment = pos === 0 ? null : lines.shift();
-      // 倒序处理 lines（更接近末尾的先收集）
-      for (let i = lines.length - 1; i >= 0 && collected.length < limit; i--) {
-        const trimmed = lines[i].trim();
-        if (!trimmed) continue;
-        let entry;
-        try { entry = JSON.parse(trimmed); } catch { continue; }
-        if (!entry || typeof entry !== 'object') continue;
-        if (isToolResultEntry(entry)) continue;
-        const turn = _entryToTurn(entry);
-        if (turn) collected.push(turn);
+// === Spec 3 · W5 合并连续 assistant entries ===
+// Claude CLI 在 stop_reason='tool_use' 时把每次 LLM call 写成单独 entry：
+// 一个 assistant entry = 1 thinking + 1 tool_use（D3 实测 5196 entries 中 0 或 1 个 tool）。
+// 一次 user prompt 实际触发 N 个 assistant entries（中间夹 tool_result entry，已过滤）。
+// 用户视角应该看到 1 个 logical turn（聚合所有 thinking/tools/text），而不是 N 张卡片。
+//
+// 合并规则：连续 assistant entries（之间可能夹 tool_result，已 skip）合为 1 turn，
+//   终止于 stop_reason ∈ {end_turn, max_tokens, refusal, stop_sequence} 那条 entry（含）。
+//   user 真消息出现 → flush 当前 acc。
+//
+// 字段合并：
+//   id → 第一条 entry uuid（dedup 锚定，streaming 中保持稳定让 mountSessionTurnCard
+//        replace 而非新增卡片）
+//   text → 各 entry text 用 \n\n 拼接
+//   thinking → 各 entry thinking 用 \n\n---\n\n 分隔拼接
+//   toolCalls → flatten append（保持顺序）
+//   ts → 第一条；tsEnd → 最后一条（用于头部"⏱ X.Ys"耗时 pill）
+//   model → 最后一条（极少跨 model 切换；保最新）
+//   stopReason → 最后一条（end_turn 表示真完成）
+//   usage → 累计 input_tokens/output_tokens（multi-call 累积）
+//   mergedCount → 合并的 entry 数（>1 表示发生了合并）
+function _mergeConsecutiveAssistantTurns(turns) {
+  const merged = [];
+  let acc = null;
+
+  const flush = () => {
+    if (acc) {
+      // thinking 数组 → 字符串
+      if (Array.isArray(acc.thinking)) {
+        acc.thinking = acc.thinking.length ? acc.thinking.join('\n\n---\n\n') : null;
       }
-      tail = firstFragment == null ? '' : firstFragment;
+      merged.push(acc);
+      acc = null;
     }
-  } catch {
-    // 文件读不到 → 返空，调用方 fallback 为 'transcript not found' 一类语义
-  } finally {
-    if (fd != null) { try { fs.closeSync(fd); } catch {} }
+  };
+
+  for (const t of turns) {
+    if (t.role === 'user') {
+      flush();
+      merged.push(t);
+      continue;
+    }
+    // assistant
+    if (!acc) {
+      acc = {
+        id: t.id,
+        role: 'assistant',
+        text: t.text || '',
+        ts: t.ts,
+        tsEnd: t.ts,
+        model: t.model,
+        stopReason: t.stopReason,
+        thinking: t.thinking ? [t.thinking] : [],
+        toolCalls: Array.isArray(t.toolCalls) ? [...t.toolCalls] : [],
+        usage: t.usage
+          ? { input_tokens: t.usage.input_tokens || 0, output_tokens: t.usage.output_tokens || 0 }
+          : { input_tokens: 0, output_tokens: 0 },
+        mergedCount: 1,
+      };
+    } else {
+      if (t.text) acc.text += (acc.text ? '\n\n' : '') + t.text;
+      if (t.thinking) acc.thinking.push(t.thinking);
+      if (Array.isArray(t.toolCalls) && t.toolCalls.length) acc.toolCalls.push(...t.toolCalls);
+      acc.tsEnd = t.ts;
+      acc.stopReason = t.stopReason || acc.stopReason;
+      if (t.model) acc.model = t.model;
+      if (t.usage) {
+        acc.usage.input_tokens += t.usage.input_tokens || 0;
+        acc.usage.output_tokens += t.usage.output_tokens || 0;
+      }
+      acc.mergedCount += 1;
+    }
+    // 终止于非 tool_use stop_reason（一轮真完成）
+    if (t.stopReason && t.stopReason !== 'tool_use') {
+      flush();
+    }
   }
-  // collected 是倒序（最新在前）→ reverse 给 chronological（最旧在前）
-  return collected.reverse();
+  flush();
+
+  return merged;
 }
 
 function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
   const { limit, fromTail = false } = opts;
-
-  // Spec 3 · B2 fast path：fromTail+limit>0 时只读尾部 chunk
-  if (fromTail && typeof limit === 'number' && limit > 0) {
-    return _parseTurnsFromTail(jsonlPath, limit);
-  }
   if (typeof limit === 'number' && limit <= 0) return [];
 
+  // 简化：D3 实测 5MB transcript readFileSync 仅 9ms（B2 tail-only over-engineered）。
+  // merge 必须基于完整 entries（局部 tail 会切断 merge group 头），所以全 read 后 merge。
   const raw = fs.readFileSync(jsonlPath, 'utf8');
   const lines = raw.split(/\r?\n/);
-  const turns = [];
+  const rawTurns = [];
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -173,15 +208,18 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
     if (isToolResultEntry(entry)) continue;
 
     const turn = _entryToTurn(entry);
-    if (turn) turns.push(turn);
+    if (turn) rawTurns.push(turn);
   }
 
-  if (typeof limit === 'number' && limit < turns.length) {
+  // Spec 3 · W5：合并连续 assistant entries
+  const merged = _mergeConsecutiveAssistantTurns(rawTurns);
+
+  if (typeof limit === 'number' && limit < merged.length) {
     return fromTail
-      ? turns.slice(turns.length - limit)
-      : turns.slice(0, limit);
+      ? merged.slice(merged.length - limit)
+      : merged.slice(0, limit);
   }
-  return turns;
+  return merged;
 }
 
 module.exports = {

@@ -2759,6 +2759,32 @@ body.theme-light .floating-scroll-btn {
 }
 .tc-toggle:hover { background: rgba(167, 139, 250, 0.05); }
 
+/* === Spec 3 · W7 头部 metadata pills === */
+.turn-meta-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-left: 4px;
+}
+.pill {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--tool-call-border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  color: var(--turn-meta-fg);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.pill-tool { color: var(--tool-call-name); border-color: rgba(251, 191, 36, 0.25); }
+.pill-token { color: var(--ui-purple-3); border-color: rgba(196, 181, 253, 0.25); }
+.pill-ctx { color: var(--ui-purple-2); border-color: rgba(167, 139, 250, 0.25); }
+.pill-time { color: var(--accent-green); border-color: rgba(63, 185, 80, 0.25); }
+
 /* === Spec 3 · UI 方案 E · 工具簇折叠 === */
 .tc-cluster {
   background: var(--tool-call-bg);
