@@ -537,7 +537,11 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
 function registerSessionForTap(session) {
   if (!session || !session.id) return;
   try { transcriptTap.registerSession(session.id, session.kind, { cwd: session.cwd }); }
-  catch {}
+  catch (e) {
+    // silent-failure-hunter L2（2026-05-04 道雪）：注册失败 → watcher 收不到 turn-complete L1
+    //   信号 → 圆桌等到 180s 软提醒才感知该家"卡住"。日志方便定位根因。
+    console.warn('[tap] registerSession failed for', session.id.slice(0, 8), session.kind, ':', e && e.message);
+  }
 }
 
 ipcMain.handle('create-session', (_e, arg) => {
@@ -1567,7 +1571,16 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
 }
 
 ipcMain.handle('roundtable:turn', async (_e, args) => {
-  return await dispatchRoundtableTurn(args.meetingId, args);
+  // silent-failure-hunter M1（2026-05-04 道雪）：dispatchRoundtableTurn 多数错误返回
+  //   { status: 'error' } 不抛，但 beginTurn → _saveState 在磁盘满 / EBUSY 等场景会
+  //   throw 穿透 finally，rollbackTurn 跑不到 → orchestrator currentTurn 已递增但
+  //   永不复位 → 圆桌死锁要重启 Hub。包一层兜底变成 status=error 让 renderer 可恢复。
+  try {
+    return await dispatchRoundtableTurn(args.meetingId, args);
+  } catch (e) {
+    console.error('[roundtable:turn] unhandled throw, returning error to renderer:', e);
+    return { status: 'error', reason: (e && e.message) || 'internal_error', turnNum: null };
+  }
 });
 
 // 方案 F · 2026-05-02 · M3.1
@@ -2037,7 +2050,12 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
       if (hostShellHits >= _HOST_SHELL_CONSECUTIVE_HITS) {
         console.warn(`[resend] host shell during resend for ${label}, errored`);
         try { watcher.markProcessExit({ code: -1, signal: 'cli_self_exit_during_resend' }); }
-        catch {}
+        catch (e) {
+          // silent-failure-hunter M4（2026-05-04 道雪）：极端场景 watcher 引用坏掉时
+          //   markProcessExit throw 被吞 → watcher 不 settle → 等 5min 硬 timeout
+          //   才强制 skip。日志方便回查。
+          console.warn(`[resend] markProcessExit threw for ${label}:`, e && e.message);
+        }
       }
     } else {
       hostShellHits = 0;
