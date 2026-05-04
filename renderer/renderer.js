@@ -1814,7 +1814,8 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   }
 
   // 8. register in _sessionTurns (turnId → turn) — keep spec1 Map shape
-  window._sessionTurns.set(turn.id, turn);
+  // Use turnForRender (kind merged) so rerenderTurn won't lose kind on fold/unfold
+  window._sessionTurns.set(turn.id, turnForRender);
 
   // 9. autoScroll
   if (opts.autoScroll) {
