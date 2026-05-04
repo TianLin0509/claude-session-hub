@@ -2033,8 +2033,14 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // multi-session safety: tag the DOM with sessionId for per-session cleanup
   cardEl.dataset.sessionId = String(sessionId || '');
 
-  // 5. insert into container
-  container.appendChild(cardEl);
+  // 5. insert into container — Spec 3 W16：streaming indicator 必须在末尾，
+  // 所以新卡插在 indicator 之前（如果存在）
+  const _streamingTail = container.querySelector('.streaming-indicator');
+  if (_streamingTail) {
+    container.insertBefore(cardEl, _streamingTail);
+  } else {
+    container.appendChild(cardEl);
+  }
 
   // 6. post-process code blocks (Prism + Copy + folding)
   if (typeof postProcessCardCodeBlocks === 'function') {
@@ -2063,6 +2069,9 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
       container.scrollTop = container.scrollHeight;
     }
   }
+
+  // Spec 3 · W16：cardCount 变化 → indicator 文案需切（"正在思考"→"还在生成更多"）
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
 
   // 10. return cardEl
   return cardEl;
@@ -2437,30 +2446,66 @@ document.addEventListener('click', (e) => {
 // 默认 PTY（卡片视图作为可选第二视图，不破坏 PTY 主流程）— 2026-05-04 用户反馈
 let currentView = 'pty'; // 'card' | 'pty'
 
-// === Spec 3 · W15: streaming indicator ===
+// === Spec 3 · W15+W16: streaming indicator ===
 // session.status === 'running' 表示 PTY 最近有数据（>200 byte burst within silence window）。
-// 卡片视图下 active session 跑 running 时在 overlay 末尾显示三个跳动的紫色点 + "Claude 正在
-// 输出…"，让用户瞬间感知"agent 还在干活"，不必盯 PTY 视图。
+// 卡片视图下 active session 跑 running 时在 overlay 末尾显示三个跳动的紫色点 + 文案，
+// 让用户瞬间感知"agent 还在干活"，不必盯 PTY 视图。
+//
+// W16 改进：
+// (1) 防 flash 延迟移除：assistant 一轮完成（end_turn）→ 短暂 silence → status=idle，
+//     接着可能又有下一轮 → status=running。中间 gap 让 indicator 闪烁，不友好。
+//     status idle 时延迟 1.5s 才移除（gap < 1.5s 时 indicator 视觉上保持显示）。
+// (2) 文案动态：0 卡时显示"Claude 正在思考…"（首响应等待）；
+//     ≥1 卡时显示"Claude 还在生成更多回复…"（暗示后续还有，user 关心的核心）。
+const _W16_DELAYED_REMOVE_MS = 1500;
+const _w16RemoveTimers = new Map(); // sessionId → setTimeout id
 function _updateStreamingIndicator(sessionId) {
-  if (sessionId !== activeSessionId) return; // 只反映 active session 状态
+  if (sessionId !== activeSessionId) return;
   const overlay = document.getElementById('msg-overlay');
   if (!overlay) return;
   const sess = sessions.get(sessionId);
   const isRunning = sess && sess.status === 'running';
   let indicator = overlay.querySelector('.streaming-indicator');
+  // 任何状态变化先取消 pending 延迟移除（如 idle→running 在 gap 期间，要立刻取消移除）
+  if (_w16RemoveTimers.has(sessionId)) {
+    clearTimeout(_w16RemoveTimers.get(sessionId));
+    _w16RemoveTimers.delete(sessionId);
+  }
   if (isRunning && currentView === 'card') {
     if (!indicator) {
       indicator = document.createElement('div');
       indicator.className = 'streaming-indicator';
       indicator.dataset.sessionId = String(sessionId);
-      indicator.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="text">Claude 正在输出…</span>';
+      indicator.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="text"></span>';
       overlay.appendChild(indicator);
-      // 滚到底让用户看到 indicator
       try { overlay.scrollTop = overlay.scrollHeight; } catch {}
     }
-  } else {
-    // 不 running 或不在卡片视图 → 移除
-    if (indicator) indicator.remove();
+    // 动态文案
+    const cardCount = overlay.querySelectorAll('.turn-card[data-turn-id]').length;
+    const textEl = indicator.querySelector('.text');
+    if (textEl) {
+      textEl.textContent = cardCount === 0
+        ? 'Claude 正在思考…'
+        : 'Claude 还在生成更多回复…';
+    }
+  } else if (!isRunning && indicator) {
+    // 延迟 1.5s 移除（防 silence gap 闪烁）
+    const timer = setTimeout(() => {
+      _w16RemoveTimers.delete(sessionId);
+      const ov = document.getElementById('msg-overlay');
+      if (!ov) return;
+      const cur = ov.querySelector('.streaming-indicator');
+      if (!cur) return;
+      // 二次确认：1.5s 后状态仍非 running 才真正移除
+      const sess2 = sessions.get(sessionId);
+      if (sessionId !== activeSessionId || !sess2 || sess2.status !== 'running' || currentView !== 'card') {
+        cur.remove();
+      }
+    }, _W16_DELAYED_REMOVE_MS);
+    _w16RemoveTimers.set(sessionId, timer);
+  } else if (currentView !== 'card' && indicator) {
+    // 不在卡片视图 → 立即移除（不延迟，因为根本看不见）
+    indicator.remove();
   }
 }
 
