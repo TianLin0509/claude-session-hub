@@ -112,6 +112,80 @@ if (typeof document !== 'undefined') (function () {
   // 启动时立即应用持久化状态
   if (_isDensityCompact()) document.body.classList.add('mr-density-compact');
 
+  // F5 Phase 3(2026-05-04 道雪 / spec F5 简化版): 整轮总耗时
+  //   原本 token + 成本估算因 transcript-tap 仅 GeminiTap 提供 token 数据,
+  //   Claude/Codex/DeepSeek 等的 token/cost 显示 "--", 用户视觉上无价值。
+  //   决定: 仅保留总耗时显示。token/cost 留给后续 transcript-tap 扩展后再启用。
+
+  // F7 Phase 3(2026-05-04 道雪 / spec F7): 全员完成通知
+  //   触发: turn-complete IPC 时检查最后一轮 byStatus 全员都不是 absent/errored
+  //   通知方式: 1) Web Notification API (Electron renderer 支持); 2) document.title 闪烁(降级/增强)
+  //   抑制: 窗口已 focus 时不触发(用户已在看, 不打扰)
+  //   停止: 窗口 focus → 立即停止 title 闪烁
+  let _origDocTitle = null;
+  let _titleFlashTimer = null;
+  let _notifyPermissionAsked = false;
+
+  function _isWindowFocused() {
+    try { return document.hasFocus(); } catch { return true; }
+  }
+  function _startTitleFlash(flashText) {
+    if (!_origDocTitle) _origDocTitle = document.title;
+    if (_titleFlashTimer) clearInterval(_titleFlashTimer);
+    let toggle = false;
+    _titleFlashTimer = setInterval(() => {
+      document.title = toggle ? _origDocTitle : flashText;
+      toggle = !toggle;
+    }, 1000);
+  }
+  function _stopTitleFlash() {
+    if (_titleFlashTimer) { clearInterval(_titleFlashTimer); _titleFlashTimer = null; }
+    if (_origDocTitle) { document.title = _origDocTitle; _origDocTitle = null; }
+  }
+  function _maybeNotifyAllCompleted(meeting) {
+    if (!meeting || !Array.isArray(meeting.subSessions) || meeting.subSessions.length === 0) return;
+    const cached = _rtPanelState[meeting.id];
+    if (!cached || !Array.isArray(cached.turns) || cached.turns.length === 0) return;
+    const lastTurn = cached.turns[cached.turns.length - 1];
+    const byMap = lastTurn.by || {};
+    const byStatus = lastTurn.byStatus || {};
+    // 全员完成: 每家既不是异常态(absent/errored/interrupted/transport_lost), 且有 by 内容或手动提取
+    const allDone = meeting.subSessions.every(sid => {
+      const st = byStatus[sid];
+      if (st === 'absent' || st === 'errored' || st === 'interrupted' || st === 'transport_lost') return false;
+      if (byMap[sid]) return true;
+      return st === 'manual_extracted';
+    });
+    if (!allDone) return;
+    // 窗口已 focus → 不打扰
+    if (_isWindowFocused()) return;
+    const titleText = `(✓) 第 ${lastTurn.n} 轮完成 · ${meeting.title || '圆桌讨论'}`;
+    // 1) Web Notification API
+    try {
+      if (typeof Notification !== 'undefined') {
+        if (Notification.permission === 'granted') {
+          const n = new Notification(`✓ ${meeting.title || '圆桌讨论'}`, {
+            body: `第 ${lastTurn.n} 轮 3 个 AI 全部完成`,
+            silent: false,
+          });
+          // 点通知 → 切回 Hub 窗口(Electron renderer)
+          n.onclick = () => { try { window.focus(); } catch {} };
+        } else if (!_notifyPermissionAsked && Notification.permission !== 'denied') {
+          _notifyPermissionAsked = true;
+          Notification.requestPermission().catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('[F7] Notification failed:', e.message);
+    }
+    // 2) title 闪烁(无论 Notification 成败, 提供视觉降级)
+    _startTitleFlash(titleText);
+  }
+  // 窗口 focus 立即停止 title 闪烁(IIFE 顶层一次性挂)
+  window.addEventListener('focus', _stopTitleFlash);
+  // 启动时如有缓存的 origTitle 残留, 安全清掉
+  if (_isWindowFocused()) _stopTitleFlash();
+
   // F3 Phase 2(2026-05-04 道雪 / spec F3): 多卡 Ctrl/Cmd+click 对比模式
   //   状态: Set<sid>。空 = 默认; ≥1 = 对比模式 (body.mr-card-compare-on)
   //   spec §5 状态优先级: compare-selected 与 focus 互斥(进入对比时清 focus)
@@ -143,9 +217,126 @@ if (typeof document !== 'undefined') (function () {
     else document.body.classList.remove('mr-card-compare-on');
   }
 
+  // F6 Phase 3(2026-05-04 道雪 / spec F6): 选中文本引用 chip
+  //   流程: mouseup 选中 .mr-ft-bottom 内文本 → 浮按钮 [💎 引用追问] → 加 chip 到输入框上方区
+  //   提交时: chips 内容拼到 prompt 头部"基于以下引用追问:\n[💎 第N轮 X: \"...\"]\n用户问题: ..."
+  //   清空: 提交后 / 切 meeting 时
+  let _rtQuoteChips = [];     // [{ sid, slotIndex, slotLabel, turnN, text }]
+  let _rtQuoteFloatBtn = null; // body 级浮按钮 DOM, lazy 创建
+
+  function _renderQuoteChips() {
+    const inputRow = document.getElementById('mr-input-row');
+    if (!inputRow) return;
+    let row = document.getElementById('mr-quote-chips-row');
+    if (!row) {
+      row = document.createElement('div');
+      row.id = 'mr-quote-chips-row';
+      row.className = 'mr-quote-chips-row';
+      inputRow.parentNode.insertBefore(row, inputRow);
+    }
+    if (_rtQuoteChips.length === 0) {
+      row.style.display = 'none';
+      row.innerHTML = '';
+      return;
+    }
+    row.style.display = '';
+    row.innerHTML = _rtQuoteChips.map((c, i) => {
+      const slotCls = (c.slotIndex >= 0 && c.slotIndex < 3) ? `slot-${c.slotIndex + 1}` : '';
+      const truncated = c.text.length > 60 ? c.text.slice(0, 60) + '…' : c.text;
+      return `<span class="mr-rt-quote-chip ${slotCls}" data-quote-idx="${i}">
+        <span class="mr-rt-quote-label">💎 第${c.turnN}轮 ${escapeHtml(c.slotLabel)}</span>
+        <span class="mr-rt-quote-text">"${escapeHtml(truncated)}"</span>
+        <button class="mr-rt-quote-close" data-quote-close="${i}" title="移除此引用">✕</button>
+      </span>`;
+    }).join('');
+    row.querySelectorAll('[data-quote-close]').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const idx = parseInt(btn.getAttribute('data-quote-close'), 10);
+        if (!isNaN(idx) && idx >= 0 && idx < _rtQuoteChips.length) {
+          _rtQuoteChips.splice(idx, 1);
+          _renderQuoteChips();
+        }
+      });
+    });
+  }
+
+  function _addQuoteChip(meeting, sid, text) {
+    if (!sid || !text || !text.trim()) return;
+    if (_rtQuoteChips.length >= 5) return;  // 最多 5 条引用 (避免 prompt 爆炸)
+    const slots = _getRtSlots(meeting);
+    const slotIndex = slots.findIndex(s => s && s.sid === sid);
+    const slot = (slotIndex >= 0 && slotIndex < slots.length) ? slots[slotIndex] : null;
+    if (!slot) return;
+    const cached = _rtPanelState[meeting.id];
+    const turnsArr = (cached && Array.isArray(cached.turns)) ? cached.turns : [];
+    const turnN = turnsArr.length > 0 ? (turnsArr[turnsArr.length - 1].n || turnsArr.length) : 1;
+    _rtQuoteChips.push({
+      sid, slotIndex,
+      slotLabel: slot.label || sid.slice(0, 8),
+      turnN,
+      text: text.trim().slice(0, 500),  // 单条最长 500 字符
+    });
+    _renderQuoteChips();
+  }
+
+  function _clearQuoteChips() {
+    if (_rtQuoteChips.length === 0) return;
+    _rtQuoteChips = [];
+    _renderQuoteChips();
+  }
+
+  // mouseup 选区检测 + 浮按钮 (IIFE 顶层一次性挂)
+  document.addEventListener('mouseup', function _rtQuoteSelHandler(ev) {
+    if (!ev.target || typeof ev.target.closest !== 'function') return;
+    const card = ev.target.closest('.mr-ft[data-ft-sid]');
+    const hideBtn = () => { if (_rtQuoteFloatBtn) _rtQuoteFloatBtn.style.display = 'none'; };
+    if (!card) { hideBtn(); return; }
+    const sel = window.getSelection();
+    const selText = sel ? sel.toString().trim() : '';
+    if (!selText || selText.length < 2) { hideBtn(); return; }
+    // 选区起点必须在卡片 bottom 区(.mr-ft-bottom)内 — 排除 row1/row2 状态文本被误选
+    const anchorEl = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+    if (!anchorEl || !anchorEl.closest('.mr-ft-bottom')) { hideBtn(); return; }
+    const sid = card.getAttribute('data-ft-sid');
+    if (!sid) { hideBtn(); return; }
+    let range; try { range = sel.getRangeAt(0); } catch { hideBtn(); return; }
+    const rect = range.getBoundingClientRect();
+    // lazy 创建浮按钮
+    if (!_rtQuoteFloatBtn) {
+      _rtQuoteFloatBtn = document.createElement('button');
+      _rtQuoteFloatBtn.id = 'mr-rt-quote-float-btn';
+      _rtQuoteFloatBtn.className = 'mr-rt-quote-float-btn';
+      _rtQuoteFloatBtn.type = 'button';
+      _rtQuoteFloatBtn.textContent = '💎 引用追问';
+      _rtQuoteFloatBtn.title = '把选中文本作为引用加入下一轮 prompt (Phase 3 F6)';
+      document.body.appendChild(_rtQuoteFloatBtn);
+      _rtQuoteFloatBtn.addEventListener('mousedown', (e) => e.preventDefault()); // 防失焦清选区
+      _rtQuoteFloatBtn.addEventListener('click', () => {
+        const fSid = _rtQuoteFloatBtn.dataset.sid;
+        const fText = _rtQuoteFloatBtn.dataset.text;
+        const mid = activeMeetingId;
+        const meeting = meetingData[mid];
+        if (fSid && fText && meeting) _addQuoteChip(meeting, fSid, fText);
+        _rtQuoteFloatBtn.style.display = 'none';
+        try { window.getSelection().removeAllRanges(); } catch {}
+      });
+    }
+    _rtQuoteFloatBtn.dataset.sid = sid;
+    _rtQuoteFloatBtn.dataset.text = selText;
+    _rtQuoteFloatBtn.style.display = 'inline-flex';
+    // 选区右上方 + window scroll 偏移
+    _rtQuoteFloatBtn.style.top = `${rect.top + window.scrollY - 34}px`;
+    _rtQuoteFloatBtn.style.left = `${rect.right + window.scrollX - 90}px`;
+  });
+
   // F0 + F3 Phase 1/2: 全局 Esc / 点空白退出聚焦/对比态。IIFE 顶层挂载, 只挂一次。
   document.addEventListener('keydown', function _rtFocusEscHandler(ev) {
     if (ev.key !== 'Escape') return;
+    // F6: Esc 也关闭引用浮按钮
+    if (_rtQuoteFloatBtn && _rtQuoteFloatBtn.style.display !== 'none') {
+      _rtQuoteFloatBtn.style.display = 'none';
+    }
     if (_rtFocusedCardSid) {
       _rtFocusedCardSid = null;
       document.body.classList.remove('mr-card-focus-on');
@@ -938,6 +1129,22 @@ if (typeof document !== 'undefined') (function () {
     const history = _renderRtHistory(state, meeting);
     const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
     const stepper = _renderTurnStepper(state.turns, mode);
+
+    // F5 Phase 3(2026-05-04 道雪 简化版): 仅整轮总耗时
+    //   token + cost 因 transcript-tap 通路缺失暂不显示, 等后续扩展再启用。
+    const slots = _getRtSlots(meeting);
+    const aiStats = state.aiStats || {};
+    let totalSec = 0;
+    for (const slot of slots) {
+      if (!slot || !slot.sid) continue;
+      const stats = aiStats[slot.sid] || aiStats[slot.kind] || null;
+      if (!stats) continue;
+      totalSec += stats.totalThinkSec || 0;
+    }
+    const totalSecTxt = totalSec > 0 ? _formatThinkTime(totalSec) : '--';
+    const costBarHtml = `<div class="mr-rt-cost-bar" title="本对话累计总耗时(三家相加)">
+      <span class="mr-rt-cost-item"><span class="ico">⏱</span> 总耗时 <span class="num">${escapeHtml(totalSecTxt)}</span></span>
+    </div>`;
     // FIX-E（2026-05-01）：cmdBar 推进按钮判定要按"期望家集合"，不是 partialBy 自身的 keys。
     // meeting-create-modal（2026-05-01）：期望家 = meeting.subSessions（按 slot 顺序），
     //   不再硬编码 ['claude','gemini','codex']——多 claude / DeepSeek+GLM 混搭的圆桌也能正确判完成。
@@ -957,6 +1164,7 @@ if (typeof document !== 'undefined') (function () {
             <span class="mr-rt-title">${titleText}</span>
             ${stepper}
           </div>
+          ${costBarHtml}
         </div>
       </div>
       ${softBanner}
@@ -1513,6 +1721,10 @@ if (typeof document !== 'undefined') (function () {
       }
       refreshRoundtablePanel(meeting);
       if (cached) renderToolbar(meeting);
+      // F7 Phase 3: 全员完成通知(窗口失焦时触发 Notification + title 闪烁)
+      try { _maybeNotifyAllCompleted(meeting); } catch (e) {
+        console.warn('[F7] notify failed:', e.message);
+      }
     }
   });
 
@@ -1828,6 +2040,9 @@ if (typeof document !== 'undefined') (function () {
     if (_banner) { _banner.style.display = 'none'; _banner.innerHTML = ''; }
     // Card optimization Task 10（2026-05-01）：拆 ResizeObserver / window resize 监听，避免 panel 隐藏后还触发 fit
     if (typeof _teardownMeetingResizeObserver === 'function') _teardownMeetingResizeObserver();
+    // F6 Phase 3: 切 meeting 清引用 chips, 避免跨 meeting 误带
+    if (typeof _clearQuoteChips === 'function') _clearQuoteChips();
+    if (_rtQuoteFloatBtn) _rtQuoteFloatBtn.style.display = 'none';
     const panel = panelEl();
     if (panel) panel.style.display = 'none';
     const el = terminalsEl();
@@ -3201,8 +3416,9 @@ if (typeof document !== 'undefined') (function () {
 
     const doSend = () => {
       const box = document.getElementById('mr-input-box');
-      const text = box ? box.innerText.trim() : '';
-      if (!text) return;
+      const userText = box ? box.innerText.trim() : '';
+      // F6 Phase 3: 既无 text 又无 quote chips → 不发
+      if (!userText && _rtQuoteChips.length === 0) return;
       const mid = activeMeetingId;
       const m = meetingData[mid];
       if (!m) return;
@@ -3221,8 +3437,19 @@ if (typeof document !== 'undefined') (function () {
       } else {
         m.sendTarget = 'all';
       }
-      handleMeetingSend(text, m);
+      // F6 Phase 3: 拼接引用 chips 到 prompt 头部, 让 AI 知道用户基于哪些片段追问
+      let finalText = userText;
+      if (_rtQuoteChips.length > 0) {
+        const quoteSection = '基于以下引用追问:\n' + _rtQuoteChips.map(c =>
+          `[💎 第${c.turnN}轮 ${c.slotLabel}: "${c.text}"]`
+        ).join('\n');
+        finalText = userText
+          ? `${quoteSection}\n\n用户问题: ${userText}`
+          : `${quoteSection}\n\n(请就以上引用展开评论或继续讨论)`;
+      }
+      handleMeetingSend(finalText, m);
       if (box) box.textContent = '';
+      _clearQuoteChips();
     };
 
     sendBtn.addEventListener('click', doSend);

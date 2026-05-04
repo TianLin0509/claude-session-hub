@@ -947,6 +947,138 @@ body.mr-density-compact .mr-ft-hover-actions {
   /* 紧凑模式下 hover-actions 仍可见 */
 }
 /* === /F2 === */
+
+/* === F6 Phase 3(2026-05-04 道雪 / spec F6): 选中文本引用 chip ===
+ * 浮按钮: body 级 absolute 定位, 选区右上方
+ * 引用 chip 区: 输入框上方, JS 动态注入到 #mr-input-row 之前
+ * chip: slot 主题色 + 引用片段截断显示 + ✕ 移除按钮
+ */
+.mr-rt-quote-float-btn {
+  position: absolute;
+  z-index: 1000;
+  background: rgba(88, 166, 255, 0.95);
+  color: #fff;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5), 0 0 18px rgba(88, 166, 255, 0.45);
+  display: none;
+  user-select: none;
+  white-space: nowrap;
+}
+.mr-rt-quote-float-btn:hover {
+  background: rgba(88, 166, 255, 1);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5), 0 0 24px rgba(88, 166, 255, 0.6);
+  transform: translateY(-1px);
+}
+
+.mr-quote-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px;
+  border-top: 1px solid #21262d;
+  background: rgba(88, 166, 255, 0.04);
+  align-items: center;
+  max-height: 90px;
+  overflow-y: auto;
+}
+.mr-rt-quote-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 10px;
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px solid rgba(88, 166, 255, 0.32);
+  border-radius: 12px;
+  font-size: 11.5px;
+  color: #c9d1d9;
+  max-width: 380px;
+}
+.mr-rt-quote-chip .mr-rt-quote-label {
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.mr-rt-quote-chip.slot-1 .mr-rt-quote-label { color: #fde68a; }
+.mr-rt-quote-chip.slot-2 .mr-rt-quote-label { color: #fdba74; }
+.mr-rt-quote-chip.slot-3 .mr-rt-quote-label { color: #93c5fd; }
+.mr-rt-quote-chip .mr-rt-quote-text {
+  color: #8b949e;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+.mr-rt-quote-chip .mr-rt-quote-close {
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.mr-rt-quote-chip .mr-rt-quote-close:hover {
+  background: rgba(248, 81, 73, 0.18);
+  color: #f85149;
+}
+/* === /F6 === */
+
+/* === F5 Phase 3(2026-05-04 道雪 / spec F5): 整轮 + 累计成本 status bar ===
+ * 位置: panel 顶部 .mr-rt-track-row 右侧 (titleText + stepper 之后)
+ * 内容: ⏱ 总耗时 · 🪙 总 tokens · 💰 累计成本
+ * 精度: ±30% (input:output 比例视为固定 6:4, 不分单独计费)
+ */
+.mr-rt-cost-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  font-size: 11.5px;
+  color: #8b949e;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+}
+.mr-rt-cost-bar .mr-rt-cost-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+}
+.mr-rt-cost-bar .mr-rt-cost-item .ico {
+  opacity: 0.78;
+  font-size: 12px;
+}
+.mr-rt-cost-bar .mr-rt-cost-item .num {
+  color: #fde68a;
+  font-weight: 600;
+}
+.mr-rt-cost-bar .mr-rt-cost-item.cost .num {
+  color: #86efac;
+}
+.mr-rt-cost-bar .mr-rt-cost-divider {
+  color: rgba(255, 255, 255, 0.15);
+  margin: 0 1px;
+}
+/* 紧凑模式下隐藏 cost bar 节省空间 */
+body.mr-density-compact .mr-rt-cost-bar {
+  display: none;
+}
+/* === /F5 === */
 .mr-ft-elapsed { font-size: 11px; color: #fde68a; margin-left: auto; font-variant-numeric: tabular-nums; font-family: "Cascadia Mono", Consolas, monospace; }
 .mr-ft-expand {
   position: absolute; top: 8px; right: 8px;
