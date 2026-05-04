@@ -57,7 +57,7 @@ function renderBriefSummaryConstraints(style /* 'inline' | 'list' */) {
 }
 
 // ===========================================================================
-// BASE_RULES — L1 核心规则 (P0 瘦身 · 2026-05-04)
+// BASE_RULES — L1 核心规则 (P0 瘦身 · 2026-05-04 / v2 白名单优化 · 2026-05-04)
 // ===========================================================================
 // L1 准入规则 (新增内容必须三问全 yes,否则下沉到 scene.preset 或 COVENANT):
 //   1. 是否所有场景 (general / research / 未来 scene) 都需要?
@@ -71,18 +71,37 @@ function renderBriefSummaryConstraints(style /* 'inline' | 'list' */) {
 //   plan-F (2026-05-02) 把详细约定下沉到 L2;P0 (2026-05-04) 进一步瘦身到
 //   ~260 字,删投研禁令 (下沉 RESEARCH_PRESET) / 调度模式枚举 / 木桶原理修辞。
 //
+// v2 白名单优化 (2026-05-04 道雪):
+//   配合 session-manager.js 删除 `--disable-slash-commands` (用户基本操作 /model
+//   /compact /help /clear /config 不再被一刀切误杀)。BASE_RULES 改造:
+//   1. 区分"AI 主动 vs 用户主动"调用 — 用户调任何斜杠命令放行,AI 自己派
+//      sub-agent / 写 CLAUDE.md / 清历史(/agents /init /clear) 仍禁
+//   2. 显式列出 plugin 内 skill (superpowers 全家) + 用户自定义 skill
+//      (cli-caller/init/loop/schedule/design-review) 两类 — 后者不归任何
+//      plugin,settings 完全禁不掉,只能 BASE_RULES 软约束
+//   3. "Edit / Write 文件" → "Edit / Write **项目文件**" — memory 文件不在禁令内
+//   4. 显式 memory 写入白名单 — 鼓励每 AI 积累自己记忆,建议 frontmatter
+//      `source: roundtable` 标记 (来自 P2-4 设计)
+//
 // 字数限制 (≤ 1500 字) 与 L3 "轻提醒"字段一致;请勿单独修改一处导致漂移。
 const BASE_RULES = `# 圆桌讨论 · 核心规则
 
 ## ⚠️ 铁律：圆桌讨论 ≠ 独立任务执行
 本轮只输出**观点**（≤ 1500 字）。这不是独立任务——不要展开多步骤工作流。
 
-**禁止**：
-- 触发 plan / brainstorming / TDD / debugging 等 skill；派生 Task / sub-agent
-- Edit / Write 文件；跑长命令（构建、部署、大型脚本）
+**AI 禁止主动调用**（用户主动用斜杠命令例外，见下方"用户主动放行"段）：
+- 任何工作流 skill：plan / brainstorming / TDD / debugging / SDD / post-refactor-verify / simplify / review / security-review / cli-caller / init / loop / schedule / design-review
+- 派生 Task / sub-agent
+- 斜杠命令 \`/agents\`（派 sub-agent）/ \`/init\`（写 CLAUDE.md）/ \`/clear\`（清历史会断 timeline）
+- Edit / Write **项目文件**（main.js / *.py / *.md 等代码或文档）；跑长命令（构建、部署、大型脚本）
 - 主动自检 / verify / 多方审查；套用 CLAUDE.md 或记忆里的工作流
 
-**可用**（单次、必要时）：Read 文件 / Grep 关键字 / WebSearch / WebFetch / 浏览 timeline.md
+**允许**（必要时单次使用）：
+- Read / Grep / Glob / WebSearch / WebFetch / 浏览 timeline.md
+- **Auto-memory 写入**：每个 AI 写入自身 memory 目录的记忆文件（路径见用户级 CLAUDE.md memory 段；圆桌写入的 memory 建议 frontmatter 含 \`source: roundtable\` 标记，区分观点态和经验态）
+- 已注入的 MCP 工具（具体清单依场景，详见房间公约/preset）
+
+**用户主动放行**：用户输入 \`/model\` \`/compact\` \`/help\` \`/clear\` \`/config\` 等斜杠命令时是用户基本操作，CLI 会执行。**仅"AI 自己派 sub-agent / 自己写 CLAUDE.md / 自己清历史"才是上面禁的内容**，不要混淆。
 
 需执行类任务 → 结论里**建议用户切独立 session**，圆桌内不执行。
 

@@ -28,6 +28,9 @@ function testL1BaseRulesIsMinimal() {
   assert.ok(r.includes('调度上下文'), 'BASE_RULES should preview "调度上下文"');
   assert.ok(r.includes('timeline.md'), 'BASE_RULES should mention timeline.md');
   assert.ok(r.includes('房间公约'), 'BASE_RULES should reference 房间公约');
+  // v2 白名单优化 (2026-05-04): "AI 禁止主动调用" 段必须存在
+  assert.ok(r.includes('AI 禁止主动调用'),
+    'BASE_RULES 必须含"AI 禁止主动调用"段 (v2 白名单优化区分 AI 主动 vs 用户主动)');
   // 三个原则的关键词
   assert.ok(r.includes('引用明示'), 'BASE_RULES should include "引用明示" principle');
   assert.ok(r.includes('分歧不抹平'), 'BASE_RULES should include "分歧不抹平" principle');
@@ -52,6 +55,51 @@ function testL1BaseRulesIsMinimal() {
   // 篇幅约束
   assert.ok(r.length < 1500, `BASE_RULES too long: ${r.length} chars (P0 瘦身后应 ~600 字符)`);
   console.log('  ✓ testL1BaseRulesIsMinimal');
+}
+
+// === v2 白名单优化 (2026-05-04 道雪): BASE_RULES 必须区分 AI 主动 vs 用户主动 ===
+//   配合 session-manager.js 删除 --disable-slash-commands (用户基本操作不再被误杀),
+//   BASE_RULES 必须用软约束兜住 settings 兜不到的盲区:
+//   - 用户自定义 skill (cli-caller/init/loop/schedule/design-review,~/.claude/skills/)
+//     不属于任何 plugin,enabledPlugins 完全禁不掉
+//   - 危险斜杠命令 /agents /init /clear 解锁后 AI 主动调会违反 CLAUDE.md 铁律
+//   - memory 写入要明示在白名单内 (区分项目文件 vs memory 文件)
+function testL1BaseRulesAiVsUserAccessV2() {
+  const r = scenes.BASE_RULES;
+
+  // 必须列出用户自定义 skill 名单 (settings 兜不到,只能软约束)
+  const customSkills = ['cli-caller', 'init', 'loop', 'schedule', 'design-review'];
+  for (const sk of customSkills) {
+    assert.ok(r.includes(sk),
+      `BASE_RULES "AI 禁止主动调用"段必须列出用户自定义 skill "${sk}" ` +
+      `(它不属于任何 plugin,enabledPlugins 兜不到)`);
+  }
+
+  // 必须列出危险斜杠命令的 AI 主动调用禁令
+  assert.ok(/\/agents|派 sub-agent/.test(r),
+    'BASE_RULES 必须禁 AI 主动调 /agents (派 sub-agent 违反铁律)');
+  assert.ok(/\/init|写 CLAUDE\.md/.test(r),
+    'BASE_RULES 必须禁 AI 主动调 /init (写 CLAUDE.md 违反"圆桌不写文件"铁律)');
+  assert.ok(/\/clear|清历史|断 timeline/.test(r),
+    'BASE_RULES 必须禁 AI 主动调 /clear (清历史会断 timeline.md 一致性)');
+
+  // 必须区分"项目文件"vs"memory 文件" (放开 memory 写入白名单)
+  assert.ok(r.includes('项目文件'),
+    'BASE_RULES 必须明示"Edit/Write **项目文件**" (区分代码文件 vs memory 文件)');
+
+  // 必须有 memory 写入白名单
+  assert.ok(/Auto-memory|memory 写入|memory 目录/.test(r),
+    'BASE_RULES "允许"段必须含 Auto-memory 写入白名单 (让每 AI 积累记忆)');
+
+  // 必须明示用户主动放行
+  assert.ok(/用户主动放行|用户.*斜杠命令|\/model.*\/compact/.test(r),
+    'BASE_RULES 必须明示用户主动调 /model /compact 等斜杠命令放行 (不被禁令误杀)');
+
+  // 反向断言: 不允许出现旧版"Edit / Write 文件"裸字串 (歧义)
+  assert.ok(!/Edit\s*\/\s*Write\s*文件[；;]/.test(r),
+    'v2 决议: 不允许"Edit / Write 文件;"裸字串 (与 memory 文件冲突,必须改为"项目文件")');
+
+  console.log('  ✓ testL1BaseRulesAiVsUserAccessV2');
 }
 
 // === L2 COVENANT_GENERAL：详细协作手册 + 五元组 SSoT ===
@@ -498,6 +546,7 @@ console.log('Running roundtable-scenes unit tests (P0-P5 prompt 重构)...');
 let failed = 0;
 const tests = [
   testL1BaseRulesIsMinimal,
+  testL1BaseRulesAiVsUserAccessV2,
   testL2CovenantGeneralExported,
   testRegistryStructure,
   testResearchPresetCore,
