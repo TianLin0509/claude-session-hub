@@ -1237,10 +1237,17 @@ if (typeof document !== 'undefined') (function () {
         }
         // 无 modifier click: 进入 focus 前清 compare(状态优先级)
         if (_rtCompareSlots.size > 0) _clearCompareSelect();
-        // F0 Phase 1: click toggle 聚焦态(spec F0: 再次 click 同卡退出)
-        if (_rtFocusedCardSid === sid) {
-          _rtFocusedCardSid = null;
-          document.body.classList.remove('mr-card-focus-on');
+        // F0 v3(2026-05-05 道雪): 聚焦态下任何卡片点击都"收回放大",不打开新卡。
+        //   场景: 用户聚焦 A 后, 想恢复全员等宽时常点到 B 卡区域 — 应理解为"收回",
+        //         而非"切换聚焦到 B"。再次进入聚焦需先收回再点目标卡。
+        //   - 同卡再点: 不动作(让用户选文本/复制), 显式退出走 Esc / 点空白
+        //   - 不同卡再点: 退出聚焦(收回放大), 不打开新卡
+        //   - 无聚焦时点卡: 进入聚焦
+        if (_rtFocusedCardSid) {
+          if (_rtFocusedCardSid !== sid) {
+            _rtFocusedCardSid = null;
+            document.body.classList.remove('mr-card-focus-on');
+          }
           return;
         }
         _focusRoundtableSession(meeting, sid);
