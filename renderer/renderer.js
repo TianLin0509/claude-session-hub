@@ -1661,6 +1661,26 @@ function renderTurnCard(turn) {
   const body = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target', 'data-lang'] });
   const toolHtml = (turn.toolCalls || []).map((tc, i) => renderToolCall(turn.id || '', i, tc)).join('');
 
+  // === Spec 2 · S8: thinking 字段 (assistant only, default collapsed) ===
+  // S1 parser exposes turn.thinking as multi-block joined string (or null).
+  // Render as <details> ABOVE main body — chronologically thinking precedes the answer.
+  // Only attached for assistant role with non-empty string; user turns never carry thinking.
+  let thinkingHtml = '';
+  if (!isUser && typeof turn.thinking === 'string' && turn.thinking.length > 0) {
+    const thinkingRaw = marked.parse(turn.thinking, { breaks: true, gfm: true });
+    const thinkingBody = DOMPurify.sanitize(thinkingRaw, { ADD_ATTR: ['target', 'data-lang'] });
+    // Long thinking (>5KB): summary shows first-200-char preview (HTML-escaped, newlines→space)
+    let summaryLabel = '💭 思考过程';
+    if (turn.thinking.length > 5120) {
+      const previewRaw = turn.thinking.slice(0, 200).replace(/\s+/g, ' ').trim();
+      summaryLabel = `💭 思考过程 (前 200 字符: ${escapeHtml(previewRaw)}…)`;
+    }
+    thinkingHtml = `<details class="turn-thinking">
+        <summary class="turn-thinking-summary">${summaryLabel}</summary>
+        <div class="turn-thinking-body">${thinkingBody}</div>
+      </details>`;
+  }
+
   return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}">
     ${avatarHtml}
     <div class="turn-content">
@@ -1675,6 +1695,7 @@ function renderTurnCard(turn) {
             : `<button class="ta-btn" data-action="regen" title="重新生成">⏪</button>`}
         </div>
       </div>
+      ${thinkingHtml}
       <div class="turn-body">${body}${toolHtml}</div>
     </div>
   </div>`;

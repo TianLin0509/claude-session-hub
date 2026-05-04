@@ -2688,6 +2688,34 @@ body.theme-light .floating-scroll-btn {
   color: var(--turn-body-fg);
 }
 
+/* === Spec 2 · S8: thinking 折叠块 (assistant only, default collapsed) === */
+.turn-thinking {
+  margin-top: 6px;
+  margin-bottom: 4px;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+  border-left: 2px solid var(--text-muted);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.turn-thinking-summary {
+  color: var(--text-muted);
+  font-style: italic;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+  outline: none;
+}
+.turn-thinking-summary:hover { color: var(--ui-purple-2); }
+.turn-thinking-body {
+  margin-top: 6px;
+  padding: 4px 6px 2px;
+  color: var(--turn-body-fg);
+  font-style: italic;
+  opacity: 0.85;
+  line-height: 1.55;
+}
+
 /* === Spec 1 v0.9.0 · 工具调用块 === */
 .tc {
   background: var(--tool-call-bg);
