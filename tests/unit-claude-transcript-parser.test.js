@@ -294,6 +294,21 @@ test('isToolResultEntry: detects only the tool_result-shaped user entry', () => 
   assert.strictEqual(isToolResultEntry({}), false);
 });
 
+// ---- Test 8d: isToolResultEntry tolerant of mixed content arrays ----
+test('isToolResultEntry: detects tool_result anywhere in content array (not just first)', () => {
+  // CC may produce mixed arrays in future
+  const mixed = { type: 'user', message: { content: [
+    { type: 'text', text: 'pre' },
+    { type: 'tool_result', tool_use_id: 'toolu_x', content: 'r' }
+  ]}};
+  assert.strictEqual(isToolResultEntry(mixed), true);
+
+  const onlyText = { type: 'user', message: { content: [
+    { type: 'text', text: 'hello' }
+  ]}};
+  assert.strictEqual(isToolResultEntry(onlyText), false);
+});
+
 // ---- Test 9: 真实 fixture ----
 test('real fixture (30a4345b...) parses without tool_result pollution', (t) => {
   const real = 'C:\\Users\\lintian\\.claude\\projects\\C--Users-lintian\\30a4345b-0083-4acc-8030-0fd8b3d5fded.jsonl';

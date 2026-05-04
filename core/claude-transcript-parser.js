@@ -25,8 +25,7 @@ function isToolResultEntry(entry) {
     entry.type === 'user' &&
     entry.message &&
     Array.isArray(entry.message.content) &&
-    entry.message.content[0] &&
-    entry.message.content[0].type === 'tool_result'
+    entry.message.content.some(c => c && c.type === 'tool_result')
   );
 }
 
@@ -104,12 +103,12 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
         role: 'assistant',
         text: parsed.text,
         ts: toMs(entry.timestamp),
-        model: message.model,
+        model: typeof message.model === 'string' ? message.model : undefined,
         stopReason:
           typeof message.stop_reason === 'string' ? message.stop_reason : undefined,
         thinking: parsed.thinking,
         toolCalls: parsed.toolCalls,
-        usage: message.usage,
+        usage: (message.usage && typeof message.usage === 'object') ? message.usage : undefined,
       });
     }
     // 其他 type（queue-operation/attachment/last-prompt/...）→ skip
