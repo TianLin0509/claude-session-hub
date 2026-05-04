@@ -2037,6 +2037,19 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
   // 3. only render in card view (PTY view doesn't use msg-overlay)
   if (currentView !== 'card') return;
 
+  // 4. If overlay is in placeholder state (history failed to load earlier, e.g.
+  //    ccSessionId was null when showTerminal ran), trigger full reload instead
+  //    of appending a single card on top of the placeholder.
+  const overlay = document.getElementById('msg-overlay');
+  if (overlay && overlay.querySelector('.msg-overlay-placeholder')) {
+    if (typeof loadSessionHistoryToOverlay === 'function') {
+      loadSessionHistoryToOverlay(hubSessionId).catch(err => {
+        console.warn('[turn-complete-event] reload after placeholder failed:', err);
+      });
+    }
+    return;
+  }
+
   try {
     const r = await ipcRenderer.invoke('parse-session-transcript', {
       hubSessionId,
