@@ -1242,17 +1242,21 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
   cached._floatingInput = mountFloatingInput(sessionId, termContainer, cached.terminal);
 
-  // === Spec 1 v0.9.0 · T10 minimal: 切换 session 清理消息层 ===
-  const overlay = document.getElementById('msg-overlay');
-  if (overlay) {
-    // 清空消息层 + 清掉 _sessionTurns(避免 rerenderTurn 找到上一 session 的 turn)
-    overlay.innerHTML = '';
-    if (window._sessionTurns) window._sessionTurns.clear();
-    // 占位说明 (spec 2 接通真实数据后会被卡片填满)
-    if (currentView === 'card') {
-      overlay.innerHTML = '<div class="msg-overlay-placeholder">卡片视图骨架已就位 — 真实数据接通在 spec 2 ('
-        + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
-        + ')</div>';
+  // === Spec 2 · S7: 切换 session 时加载真实历史卡片 ===
+  if (currentView === 'card') {
+    // loadSessionHistoryToOverlay handles its own clear + Map.clear + placeholder
+    // for empty/error/non-Claude cases. Don't pre-clear here.
+    if (typeof loadSessionHistoryToOverlay === 'function') {
+      loadSessionHistoryToOverlay(sessionId).catch(err => {
+        console.warn('[showTerminal] loadSessionHistoryToOverlay failed:', err);
+      });
+    }
+  } else {
+    // PTY view: just clear msg-overlay (don't load cards user can't see)
+    const overlay = document.getElementById('msg-overlay');
+    if (overlay) {
+      overlay.innerHTML = '';
+      if (window._sessionTurns) window._sessionTurns.clear();
     }
   }
 }
