@@ -1779,9 +1779,13 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
   if (!extracted || !extracted.text) {
     const session = sessionManager.getSession(sid);
     const kind = session?.kind || 'unknown';
+    // 2026-05-04 codex equiv (Spec S2)：codex 4 态契约下空 text 仍带 extractMode，
+    //   透传给 UI 让卡片按 'no_task_complete_yet' / 'no_rollout_bound' 显示分级 hint，
+    //   不再笼统 "提取失败"。其他 backend 不返回 extractMode 时此字段为 null。
     return {
       ok: false,
       reason: 'no_content',
+      extractMode: extracted?.extractMode || null,
       detail: `transcript 中没有可读的 last assistant 内容（kind=${kind}）。可能原因：CLI 还没真正回答 / transcript 路径未绑定 / Stop hook 没触发且 idle-timer 还没到期。建议稍等几秒重试，或点"🔧 进 shell"看真实 PTY 输出。`,
     };
   }
@@ -1790,7 +1794,7 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
   if (watcher) {
     // 本轮还在等：让 watcher settle 走 manual_extracted 状态
     watcher.manualExtract(extracted.text);
-    return { ok: true, text: extracted.text, source: extracted.source, mode: 'watcher_settle' };
+    return { ok: true, text: extracted.text, source: extracted.source, mode: 'watcher_settle', extractMode: extracted.extractMode || null };
   }
 
   // 本轮已 settle 但用户仍想刷新卡片 → patch lastTurn
@@ -1816,7 +1820,7 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
             });
           }
           sendToRenderer('roundtable-turn-complete', { meetingId });
-          return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_last_turn' };
+          return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_last_turn', extractMode: extracted.extractMode || null };
         }
       }
     } catch (e) {
@@ -1825,7 +1829,7 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
   }
 
   // 无 meetingId / 没有 lastTurn → 仍返回提取的文字让 UI 显示
-  return { ok: true, text: extracted.text, source: extracted.source, mode: 'text_only' };
+  return { ok: true, text: extracted.text, source: extracted.source, mode: 'text_only', extractMode: extracted.extractMode || null };
 });
 
 // Resend & Auto-Recovery（2026-05-03）— 手动 [📤 发送] 按钮入口

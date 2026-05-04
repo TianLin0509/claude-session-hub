@@ -455,8 +455,17 @@ async function readLastAssistantMessageFromClaudeTranscript(transcriptPath) {
 const CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
 
 class CodexTap extends EventEmitter {
-  constructor() {
+  /**
+   * @param {object} [opts]
+   * @param {string} [opts.sessionsRoot]    rollout 扫描根目录（默认 ~/.codex/sessions）
+   *                                        2026-05-04 codex equiv 引入：单测注入 tmp 目录隔离
+   * @param {number} [opts.pollIntervalMs]  scan 间隔（默认 1000ms）
+   *                                        2026-05-04 codex equiv 引入：单测压到 50-100ms 加快
+   */
+  constructor(opts = {}) {
     super();
+    this._sessionsRoot = opts.sessionsRoot || CODEX_SESSIONS_ROOT;
+    this._pollIntervalMs = opts.pollIntervalMs || 1000;
     this._pending = new Map(); // hubSessionId → { cwd, spawnTime }
     this._bound = new Map();   // hubSessionId → { rolloutPath, tail, lastText }
     this._pollTimer = null;
@@ -500,15 +509,23 @@ class CodexTap extends EventEmitter {
   //   优先读 rollout 末尾的 task_complete.last_agent_message。
   //   降级：本轮还在 streaming（task_complete 未写）时拼接 sincePromptTs 之后所有
   //   agent_message.message — codex 一个 turn 内会写多条 commentary phase + 最后一条
-  //   final phase 的 agent_message，task_complete 才写在末尾。用户 codex 子 session
-  //   有真实输出但点"一键提取"返回 null 即此场景。
-  //   未绑定 rolloutPath（CodexTap scan 还没找到文件）→ null。
+  //   final phase 的 agent_message，task_complete 才写在末尾。
+  //
+  // 2026-05-04 codex equiv（Spec S2）：返回值新增 `extractMode` 字段，4 态契约：
+  //   - final_answer          ← rollout 末尾命中 task_complete（含 last_agent_message）
+  //   - partial_commentary    ← 仅 agent_message，无 task_complete
+  //   - no_task_complete_yet  ← 已绑定但 agent_message 全部为空（罕见，think-only 阶段）
+  //   - no_rollout_bound      ← _bound.get(hubSessionId).rolloutPath 不存在
+  //   返回值始终是对象（不再返回 null），text='' 时由调用方按 extractMode 区分原因。
+  //   `source` 字段（manual_codex_rollout / manual_codex_rollout_streaming）保留用于日志追溯。
   async extractLatestTurn(hubSessionId, sincePromptTs = 0) {
     const entry = this._bound.get(hubSessionId);
-    if (!entry || !entry.rolloutPath) return null;
+    if (!entry || !entry.rolloutPath) {
+      return { text: '', extractMode: 'no_rollout_bound', source: null };
+    }
     let raw;
     try { raw = await fs.promises.readFile(entry.rolloutPath, 'utf8'); }
-    catch { return null; }
+    catch { return { text: '', extractMode: 'no_rollout_bound', source: null }; }
     const lines = raw.split('\n');
 
     // 优先：从尾向前扫 task_complete.last_agent_message（带 sincePromptTs 过滤）
@@ -522,7 +539,11 @@ class CodexTap extends EventEmitter {
       if (sincePromptTs && Number.isFinite(ts) && ts < sincePromptTs) continue;
       const text = obj.payload.last_agent_message;
       if (typeof text !== 'string' || !text.trim()) continue;
-      return { text: text.trim(), source: 'manual_codex_rollout' };
+      return {
+        text: text.trim(),
+        extractMode: 'final_answer',
+        source: 'manual_codex_rollout',
+      };
     }
 
     // 降级：streaming 中（无 task_complete）→ 拼 sincePromptTs 之后所有 agent_message
@@ -539,14 +560,20 @@ class CodexTap extends EventEmitter {
       if (typeof msg !== 'string' || !msg.trim()) continue;
       collected.push(msg.trim());
     }
-    if (collected.length === 0) return null;
-    return { text: collected.join('\n\n'), source: 'manual_codex_rollout_streaming' };
+    if (collected.length === 0) {
+      return { text: '', extractMode: 'no_task_complete_yet', source: null };
+    }
+    return {
+      text: collected.join('\n\n'),
+      extractMode: 'partial_commentary',
+      source: 'manual_codex_rollout_streaming',
+    };
   }
 
   _ensureWatcher() {
     if (this._pollTimer) return;
     this._scanOnce().catch((e) => console.warn('[codex-tap] scan error:', e.message));
-    this._pollTimer = setInterval(() => this._scanOnce().catch((e) => console.warn('[codex-tap] scan error:', e.message)), 1000);
+    this._pollTimer = setInterval(() => this._scanOnce().catch((e) => console.warn('[codex-tap] scan error:', e.message)), this._pollIntervalMs);
     this._pollTimer.unref?.();
   }
 
@@ -564,7 +591,7 @@ class CodexTap extends EventEmitter {
     for (const offset of [0, -86400000]) {
       const d = new Date(now.getTime() + offset);
       const p = path.join(
-        CODEX_SESSIONS_ROOT,
+        this._sessionsRoot,
         String(d.getFullYear()),
         String(d.getMonth() + 1).padStart(2, '0'),
         String(d.getDate()).padStart(2, '0'),
@@ -1159,6 +1186,9 @@ class TranscriptTap extends EventEmitter {
     if (r && r.text) return r;
     try { r = await this._codex.extractLatestTurn(hubSessionId, sincePromptTs); } catch {}
     if (r && r.text) return r;
+    // 2026-05-04 codex equiv：codex 4 态契约——即便 text='' 也要把 extractMode 透传给 IPC
+    // （承载 'no_task_complete_yet' / 'no_rollout_bound'，让 UI 区分原因，不再笼统 no_content）
+    if (r && r.extractMode) return r;
     return null;
   }
 
@@ -1228,6 +1258,7 @@ function extractGeminiProjectHashFromDir(projectDir) {
 
 module.exports = {
   TranscriptTap,
+  CodexTap,           // 2026-05-04 codex equiv：单测注入 sessionsRoot 直测 4 态 extractMode
   JsonlTail,
   readLastAssistantMessageFromClaudeTranscript,
   extractCodexSidFromRolloutPath,
