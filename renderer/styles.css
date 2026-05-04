@@ -2825,6 +2825,46 @@ body.theme-light .floating-scroll-btn {
 .tc-row-name { color: var(--tool-call-name); font-weight: 600; flex-shrink: 0; }
 .tc-row-cmd { color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* Spec 3 · W9: 工具 stdout 折叠（与 PTY 视图对齐） */
+.tc-row-with-result {
+  display: block;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+}
+.tc-row-with-result summary.tc-row-head {
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+}
+.tc-row-with-result summary.tc-row-head::-webkit-details-marker { display: none; }
+.tc-row-with-result summary.tc-row-head::before { content: '▸'; color: var(--ui-purple-2); margin-right: 4px; }
+.tc-row-with-result[open] summary.tc-row-head::before { content: '▾'; }
+.tc-row-with-result.tc-row-err summary.tc-row-head { background: rgba(248, 113, 113, 0.06); }
+.tc-row-errbadge { color: var(--accent-red); font-size: 10px; margin-left: auto; }
+.tc-result {
+  margin: 0;
+  padding: 6px 10px;
+  background: #08070d;
+  color: #b1aebf;
+  border-top: 1px solid var(--tool-call-border);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+  border-radius: 0 0 4px 4px;
+}
+.tc-result-err { color: #fca5a5; border-left: 2px solid var(--accent-red); }
+
 /* === Spec 3 · 长 markdown 文本默认折叠 === */
 .turn-body.body-foldable.folded {
   max-height: 400px;

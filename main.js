@@ -458,6 +458,16 @@ transcriptTap.on('session-bound', (ev) => {
       pilotSlotByMeeting: _pilotSlotByMeeting,
       dispatchModeByMeeting: _dispatchModeByMeeting,
     });
+    // Spec 3 · W12：广播给 renderer 让 sessions Map 即刻同步（之前只写磁盘，
+    // renderer 内存不更新 → codex/gemini 的 resume meta 必须 reboot 才生效）
+    sendToRenderer('session-meta-updated', {
+      hubSessionId: ev.hubSessionId,
+      kind: ev.kind,
+      codexSid: cur.codexSid,
+      geminiChatId: cur.geminiChatId,
+      geminiProjectHash: cur.geminiProjectHash,
+      geminiProjectRoot: cur.geminiProjectRoot,
+    });
     console.log(`[圆桌] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
   }
 });
@@ -2201,6 +2211,13 @@ ipcMain.handle('get-last-assistant-text', (_e, sessionId) => {
 //   - 解析抛错 → { turns: [], transcriptPath, error: err.message }
 // opts 透传给 parseClaudeTranscriptToTurns，默认 { limit: 50, fromTail: true }。
 ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
+  // Spec 3 · W10：在调 sync parser 之前 setImmediate yield 一次让 main loop 喘气。
+  // parser 是 sync（fs.readFileSync + JSON.parse loop + merge），5MB transcript 实测
+  // ~218ms 主线程阻塞。yield 不能消除阻塞，但能确保此 IPC 不和上一条 IPC 背靠背执行，
+  // 让 PTY data / hook-event / 圆桌广播 等其它 IPC 在阻塞间隙里被处理。
+  // 不上 worker_threads 是为避免 transcript-parser 跨边界引入序列化开销 + 复杂度。
+  await new Promise(resolve => setImmediate(resolve));
+
   const { hubSessionId, ccSessionId, transcriptPath: inPath, opts } = args || {};
   let transcriptPath = inPath || null;
   try {

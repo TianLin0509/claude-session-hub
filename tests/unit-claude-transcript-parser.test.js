@@ -7,6 +7,7 @@ const {
   parseClaudeTranscriptToTurns,
   parseAssistantContent,
   isToolResultEntry,
+  extractToolResults,
 } = require('../core/claude-transcript-parser.js');
 
 let tmpCounter = 0;
@@ -431,6 +432,80 @@ test('B2 tail-only: skips tool_result entries during reverse scan', () => {
     assert.deepStrictEqual(turns.map(t => t.id), ['u-1', 'a-1']);
     assert.strictEqual(turns[1].mergedCount, 2);
     assert.strictEqual(turns[1].toolCalls.length, 1);
+  } finally { cleanup(fp); }
+});
+
+// === Spec 3 · W9 tool_result association tests ===
+
+test('W9 extractToolResults: string content + isError flag preserved', () => {
+  const entry = { type: 'user', message: { content: [
+    { type: 'tool_result', tool_use_id: 't-1', content: 'stdout text' },
+    { type: 'tool_result', tool_use_id: 't-2', content: 'err msg', is_error: true },
+  ]}};
+  const out = extractToolResults(entry);
+  assert.strictEqual(out.length, 2);
+  assert.deepStrictEqual(out[0], { tool_use_id: 't-1', content: 'stdout text', isError: false });
+  assert.deepStrictEqual(out[1], { tool_use_id: 't-2', content: 'err msg', isError: true });
+});
+
+test('W9 extractToolResults: array content (text blocks) joined', () => {
+  const entry = { type: 'user', message: { content: [
+    { type: 'tool_result', tool_use_id: 't-x', content: [
+      { type: 'text', text: 'line1' },
+      { type: 'image', source: {} },  // image 跳过
+      { type: 'text', text: 'line2' },
+    ]},
+  ]}};
+  const out = extractToolResults(entry);
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].content, 'line1\nline2');
+});
+
+test('W9 parser: tool_use.result populated from tool_result entry', () => {
+  const lines = [
+    JSON.stringify({ type: 'user', uuid: 'u-1', timestamp: '2026-01-01T00:00:00Z',
+      message: { content: 'q' } }),
+    JSON.stringify({ type: 'assistant', uuid: 'a-1', timestamp: '2026-01-01T00:00:01Z',
+      message: { model: 'claude-opus-4-7', stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'toolu_x', name: 'Bash', input: { command: 'ls' } }] }
+    }),
+    JSON.stringify({ type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'file1\nfile2' }] }
+    }),
+    JSON.stringify({ type: 'assistant', uuid: 'a-2', timestamp: '2026-01-01T00:00:03Z',
+      message: { model: 'claude-opus-4-7', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'done' }] }
+    }),
+  ];
+  const fp = writeTmp('W9-result-assoc', lines.join('\n') + '\n');
+  try {
+    const turns = parseClaudeTranscriptToTurns(fp);
+    assert.strictEqual(turns.length, 2, 'user + merged assistant');
+    const a = turns[1];
+    assert.strictEqual(a.toolCalls.length, 1);
+    assert.strictEqual(a.toolCalls[0].id, 'toolu_x');
+    assert.strictEqual(a.toolCalls[0].result, 'file1\nfile2', 'result populated from tool_result');
+    assert.strictEqual(a.toolCalls[0].isError, false);
+  } finally { cleanup(fp); }
+});
+
+test('W9 parser: is_error flag propagates to toolCall.isError', () => {
+  const lines = [
+    JSON.stringify({ type: 'assistant', uuid: 'a-err', timestamp: '2026-01-01T00:00:00Z',
+      message: { model: 'claude-opus-4-7', stop_reason: 'end_turn',
+        content: [{ type: 'tool_use', id: 'toolu_err', name: 'Bash', input: { command: 'fail' } }] }
+    }),
+    JSON.stringify({ type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_err',
+        content: 'command failed', is_error: true }] }
+    }),
+  ];
+  const fp = writeTmp('W9-error-flag', lines.join('\n') + '\n');
+  try {
+    const turns = parseClaudeTranscriptToTurns(fp);
+    assert.strictEqual(turns.length, 1);
+    assert.strictEqual(turns[0].toolCalls[0].isError, true);
+    assert.strictEqual(turns[0].toolCalls[0].result, 'command failed');
   } finally { cleanup(fp); }
 });
 

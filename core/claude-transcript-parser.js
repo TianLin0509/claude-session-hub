@@ -29,6 +29,34 @@ function isToolResultEntry(entry) {
   );
 }
 
+// === Spec 3 · W9: 提取 tool_result entry 内的 result 列表 ===
+// 一个 tool_result entry 的 message.content 可能含多条 tool_result（少见但合规）。
+// 每条 tool_result.content 可以是 string 或 array of {type:'text'/'image',...}。
+// 卡片视图只关心文本部分（image 暂不显示，留 spec 4+）。
+// is_error=true 标记后端错误返回（renderer 渲红色）。
+function extractToolResults(entry) {
+  const out = [];
+  if (!entry || !entry.message || !Array.isArray(entry.message.content)) return out;
+  for (const c of entry.message.content) {
+    if (!c || c.type !== 'tool_result' || !c.tool_use_id) continue;
+    let textContent = '';
+    if (typeof c.content === 'string') {
+      textContent = c.content;
+    } else if (Array.isArray(c.content)) {
+      textContent = c.content
+        .filter(b => b && b.type === 'text' && typeof b.text === 'string')
+        .map(b => b.text)
+        .join('\n');
+    }
+    out.push({
+      tool_use_id: c.tool_use_id,
+      content: textContent,
+      isError: c.is_error === true,
+    });
+  }
+  return out;
+}
+
 function parseAssistantContent(contentArray) {
   const result = { thinking: null, text: '', toolCalls: [] };
   if (!Array.isArray(contentArray) || contentArray.length === 0) {
@@ -192,6 +220,8 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
   const raw = fs.readFileSync(jsonlPath, 'utf8');
   const lines = raw.split(/\r?\n/);
   const rawTurns = [];
+  // Spec 3 · W9：tool_use_id → result 映射，用于关联 stdout 到 toolCall
+  const toolResultMap = new Map();
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -204,11 +234,29 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
     }
     if (!entry || typeof entry !== 'object') continue;
 
-    // tool_result 污染过滤
-    if (isToolResultEntry(entry)) continue;
+    // tool_result entry：提取后存映射，不作为 turn
+    if (isToolResultEntry(entry)) {
+      const results = extractToolResults(entry);
+      for (const r of results) {
+        toolResultMap.set(r.tool_use_id, { content: r.content, isError: r.isError });
+      }
+      continue;
+    }
 
     const turn = _entryToTurn(entry);
     if (turn) rawTurns.push(turn);
+  }
+
+  // Spec 3 · W9：把 result 关联到对应 toolCall（必须在 merge 之前 — merge 后 toolCalls flatten 不丢 id）
+  for (const t of rawTurns) {
+    if (t.role !== 'assistant' || !Array.isArray(t.toolCalls)) continue;
+    for (const tc of t.toolCalls) {
+      const r = tc && tc.id ? toolResultMap.get(tc.id) : null;
+      if (r) {
+        tc.result = r.content;
+        tc.isError = r.isError;
+      }
+    }
   }
 
   // Spec 3 · W5：合并连续 assistant entries
@@ -226,4 +274,5 @@ module.exports = {
   parseClaudeTranscriptToTurns,
   parseAssistantContent,
   isToolResultEntry,
+  extractToolResults,
 };

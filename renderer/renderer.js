@@ -1590,6 +1590,29 @@ function _toolCmdFromInput(input) {
   }
   return '';
 }
+// Spec 3 · W9：渲染单条 tool row。如果有 result（tool stdout），
+// 用 details/summary 折叠；否则纯 div。result 默认折叠，长 result 截断 5KB。
+const _TOOL_RESULT_PREVIEW_LIMIT = 5000;
+function _renderToolRow(tc) {
+  const name = escapeHtml((tc && tc.name) || '?');
+  const cmd = escapeHtml(_toolCmdFromInput(tc && tc.input));
+  const head = `<span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}`;
+  const hasResult = tc && typeof tc.result === 'string' && tc.result.length > 0;
+  if (!hasResult) {
+    return `<div class="tc-row">${head}</div>`;
+  }
+  const isErr = tc.isError === true;
+  const truncated = tc.result.length > _TOOL_RESULT_PREVIEW_LIMIT;
+  const preview = truncated
+    ? tc.result.slice(0, _TOOL_RESULT_PREVIEW_LIMIT) + '\n…(已截断 ' + (tc.result.length - _TOOL_RESULT_PREVIEW_LIMIT) + ' 字符)'
+    : tc.result;
+  const errBadge = isErr ? ' <span class="tc-row-errbadge">✗ 错误</span>' : '';
+  return `<details class="tc-row tc-row-with-result${isErr ? ' tc-row-err' : ''}">
+    <summary class="tc-row-head">${head}${errBadge}</summary>
+    <pre class="tc-result${isErr ? ' tc-result-err' : ''}">${escapeHtml(preview)}</pre>
+  </details>`;
+}
+
 function renderToolCluster(turnId, toolCalls) {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
   const total = toolCalls.length;
@@ -1601,7 +1624,7 @@ function renderToolCluster(turnId, toolCalls) {
     const cmd = escapeHtml(_toolCmdFromInput(tc.input));
     return `<details class="tc-cluster tc-cluster-single" data-turn="${escapeHtml(turnId)}">
       <summary class="tc-cluster-head"><span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}</summary>
-      <div class="tc-cluster-list"><div class="tc-row tc-row-detail"><span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}</div></div>
+      <div class="tc-cluster-list">${_renderToolRow(tc)}</div>
     </details>`;
   }
   const counts = {};
@@ -1612,11 +1635,7 @@ function renderToolCluster(turnId, toolCalls) {
   const breakdown = Object.entries(counts)
     .map(([n, c]) => c > 1 ? `${n} × ${c}` : n)
     .join(' + ');
-  const items = toolCalls.map((tc) => {
-    const name = escapeHtml((tc && tc.name) || '?');
-    const cmd = escapeHtml(_toolCmdFromInput(tc && tc.input));
-    return `<div class="tc-row"><span class="tc-row-name">${name}</span>${cmd ? ` <span class="tc-row-cmd">${cmd}</span>` : ''}</div>`;
-  }).join('');
+  const items = toolCalls.map(_renderToolRow).join('');
   return `<details class="tc-cluster" data-turn="${escapeHtml(turnId)}">
     <summary class="tc-cluster-head">${total} 个工具调用 · ${escapeHtml(breakdown)}</summary>
     <div class="tc-cluster-list">${items}</div>
@@ -2145,9 +2164,17 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
 
   // 6a. error AND no turns → friendly placeholder (don't silent fail)
   if (turns.length === 0 && ipcError) {
-    const txt = (ipcError === 'transcript not found')
-      ? '会话尚未产生历史'
-      : '加载历史失败：' + ipcError;
+    // Spec 3 · W11：transcript not found 通常是 session 创建后从未发过消息（无 ccSessionId 写入）。
+    // 不是 bug，是 expected。文案明示让 user 不再误以为"卡片视图坏了"。
+    let txt;
+    if (ipcError === 'transcript not found') {
+      const ccSid = ccSessionId || (session && session.ccSessionId);
+      txt = ccSid
+        ? `会话尚未产生历史（transcript 文件可能已被移走或删除：${ccSid.slice(0, 8)}…）`
+        : '此会话从未发送过消息，无对话历史可显示';
+    } else {
+      txt = '加载历史失败：' + ipcError;
+    }
     showPlaceholder(
       txt + ' — '
       + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
@@ -5037,7 +5064,27 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   showTerminal(session.id);
 });
 
+// Spec 3 · W12：transcript-tap session-bound 触发的 IPC，内存 sessions Map 同步
+// codex/gemini 的 resume meta（之前只落盘 lastPersistedSessions，renderer 内存
+// 拿不到 → reboot 才生效）。Claude/claude-resume 不走这条（ccSessionId 走 hook-event）。
+ipcRenderer.on('session-meta-updated', (_e, ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  const s = sessions.get(ev.hubSessionId);
+  if (!s) return;
+  if (ev.codexSid && !s.codexSid) s.codexSid = ev.codexSid;
+  if (ev.geminiChatId && !s.geminiChatId) s.geminiChatId = ev.geminiChatId;
+  if (ev.geminiProjectHash && !s.geminiProjectHash) s.geminiProjectHash = ev.geminiProjectHash;
+  if (ev.geminiProjectRoot && !s.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
+});
+
+// Spec 3 · W13：清理 _cardReloadState 的 session 条目，防 Map 长期累积。
+// session-closed 触发，确保即使 inProgress 异常残留也不影响新生命周期同 sessionId 的 session。
 ipcRenderer.on('session-closed', (_e, { sessionId }) => {
+  if (window._cardReloadState && window._cardReloadState.has(sessionId)) {
+    const st = window._cardReloadState.get(sessionId);
+    if (st && st.pendingTimer) { try { clearTimeout(st.pendingTimer); } catch {} }
+    window._cardReloadState.delete(sessionId);
+  }
   sessions.delete(sessionId);
   if (silenceTimers.has(sessionId)) {
     clearTimeout(silenceTimers.get(sessionId));
