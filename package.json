@@ -1,6 +1,6 @@
 {
   "name": "roundtable",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "多模型协作圆桌终端",
   "main": "main.js",
   "scripts": {

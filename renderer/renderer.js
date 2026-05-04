@@ -749,7 +749,7 @@ function renderSessionList() {
         <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status ${s.status}"></span>${escapeHtml(s.title)}</span>
         <span class="session-header-right">
           ${s.isWaiting && !isActive ? `<span class="waiting-badge" title="${escapeHtml(s.waitingText || 'Claude is waiting for your input')}">⏸ 等你</span>` : ''}
-          ${s.unreadCount > 0 && !isActive ? `<span class="unread-badge">${s.unreadCount}</span>` : ''}
+          ${s.unreadCount > 0 && !isActive && !s.isWaiting ? `<span class="unread-badge" title="${escapeHtml(s.lastOutputPreview || 'AI 有新消息')}">⏸ 等你</span>` : ''}
           <span class="session-time">${formatTime(s.lastMessageTime)}</span>
         </span>
       </div>
@@ -3739,12 +3739,13 @@ function onTerminalOutput(sessionId, dataLen) {
     // actually changed (= a new Q&A turn), not just on any running→idle cycle.
     // This ignores Claude Code's periodic TUI redraws (status bar, context %).
     //
-    // Skip this path entirely when the hook server is up: onReplyCompleteFromHook
-    // already drives unread+time with higher precision (fires on Stop, not on
-    // 2s silence guess). Running both means every AI reply flips unread twice
-    // before the signature compare idempotently kills the second. Keeping it
-    // as fallback only when hook is down.
-    if (!hookUp && session.lastOutputPreview) {
+    // v0.13 · P0 #3: silence fallback 改"距上次 Stop hook ≥ 5s 才接管"，
+    // 不再依赖 hookUp 全局标志。覆盖两类漏报：
+    //   (a) hook server up 但 CC 单次 hook drop（HTTP 5xx / agent SDK 子调用）
+    //   (b) Hub 启动初期 hook server 未就绪的 1~2s 窗口
+    // 仍受 signature 比较保护，与 Stop hook 路径并存不会 double bump。
+    const lastStopMs = Date.now() - (session._lastStopHookTs || 0);
+    if (session.lastOutputPreview && lastStopMs >= 5000) {
       const sig = getQuestionsSignature(sessionId);
       const prev = session.readSignature || '';
       if (sig !== prev) {
@@ -4343,6 +4344,12 @@ function onPromptSubmittedFromHook(sessionId) {
   }
 }
 
+// v0.13 · P0 #1: 跟踪窗口最近一次获得 focus 的时间，用于 onReplyCompleteFromHook
+// 的 seenByUser 判断加 500ms 缓冲（alt-tab 切回瞬间 document.hasFocus() 还未更新
+// 的窗口期会误判 → 错弹红点）。
+let _lastWindowFocusAt = Date.now();
+window.addEventListener('focus', () => { _lastWindowFocusAt = Date.now(); });
+
 // Hook-server health indicator (banner in sidebar when down)
 let hookUp = true;
 ipcRenderer.on('hook-status', (_e, { up }) => {
@@ -4381,6 +4388,12 @@ function onReplyCompleteFromHook(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
+  // v0.13 · P1 #5: Stop hook 500ms 去重窗口。CC 在 agent 子任务 / streaming
+  // 抖动场景下偶尔会发两次 Stop，无去重导致 unread 计数加倍。
+  const now = Date.now();
+  if (session._lastStopHookTs && now - session._lastStopHookTs < 500) return;
+  session._lastStopHookTs = now;
+
   // Fallback preview from xterm buffer — only matters when hook didn't supply
   // a transcript-sourced preview (very rare). Primary preview is written by
   // the hook-event handler directly from CC's JSONL.
@@ -4402,7 +4415,10 @@ function onReplyCompleteFromHook(sessionId) {
   // case — matches the intermittent "有时候不提示" report.
   session.lastMessageTime = Date.now();
   const isActive = sessionId === activeSessionId;
-  const seenByUser = isActive && document.hasFocus();
+  // v0.13 · P0 #1: alt-tab 切回 Hub 的 0~500ms 窗口里 hasFocus() 仍是 false，
+  // 但用户明明已经在看 → 不应弹红点。用 _lastWindowFocusAt 时间戳补缓冲。
+  const focusOk = document.hasFocus() || (Date.now() - _lastWindowFocusAt < 500);
+  const seenByUser = isActive && focusOk;
   if (!seenByUser) {
     session.unreadCount = (session.unreadCount || 0) + 1;
   }
@@ -5287,9 +5303,11 @@ async function resumeDormantSession(hubId) {
     geminiProjectHash: dormant.geminiProjectHash || null,
     geminiProjectRoot: dormant.geminiProjectRoot || null,
   });
-  // session-created handler will replace the dormant entry. Clear unread now.
+  // v0.13 · P0 #2: 不再反向清零 dormant 累积的 unread。睡前积压的对话用户还
+  // 没看 → 应保留红点直到用户真正点击进入（selectSession 会清零）。原代码会
+  // 让"睡前 N 条新消息"在 resume 瞬间静默丢失。
   const s = sessions.get(hubId);
-  if (s) { s.unreadCount = 0; renderSessionList(); }
+  if (s) renderSessionList();
 }
 
 // --- Init ---
