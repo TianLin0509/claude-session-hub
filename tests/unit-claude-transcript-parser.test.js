@@ -360,6 +360,63 @@ test('skip assistant entry with no thinking/text/tool_use (empty content)', () =
   } finally { cleanup(p); }
 });
 
+// ---- Spec 3 · B2 tail-only fast path ----
+// Big file (1000 entries) with fromTail+limit must return correct LAST N turns
+// without reading the full file. Used to be readFileSync(whole file) → 200ms+
+// on real 5MB transcripts; now reverse-chunk read finishes in <5ms typically.
+test('B2 tail-only: fromTail+limit returns last N turns from large file', () => {
+  const lines = [];
+  for (let i = 0; i < 500; i++) {
+    lines.push(JSON.stringify({
+      type: 'user', uuid: `u-${i}`,
+      timestamp: `2026-05-04T08:00:00.${String(i).padStart(3,'0')}Z`,
+      message: { content: `user msg #${i} ` + 'x'.repeat(200) },
+    }));
+    lines.push(JSON.stringify({
+      type: 'assistant', uuid: `a-${i}`,
+      timestamp: `2026-05-04T08:00:01.${String(i).padStart(3,'0')}Z`,
+      message: {
+        model: 'claude-opus-4-7', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: `reply #${i} ` + 'y'.repeat(200) }],
+      },
+    }));
+  }
+  const fp = writeTmp('B2-tail-large', lines.join('\n') + '\n');
+  try {
+    const turns = parseClaudeTranscriptToTurns(fp, { limit: 5, fromTail: true });
+    assert.strictEqual(turns.length, 5, 'tail returns exactly limit turns');
+    // 1000 entries chronologically: ..., a-497, u-498, a-498, u-499, a-499
+    // Last 5 (limit:5, fromTail:true): a-497, u-498, a-498, u-499, a-499
+    assert.strictEqual(turns[4].id, 'a-499', 'last turn must be a-499');
+    assert.strictEqual(turns[3].id, 'u-499');
+    assert.strictEqual(turns[2].id, 'a-498');
+    assert.strictEqual(turns[1].id, 'u-498');
+    assert.strictEqual(turns[0].id, 'a-497');
+  } finally { cleanup(fp); }
+});
+
+// tail-only must skip tool_result entries (regression guard)
+test('B2 tail-only: skips tool_result entries during reverse scan', () => {
+  const lines = [
+    JSON.stringify({ type: 'user', uuid: 'u-1', timestamp: '2026-01-01T00:00:00Z',
+      message: { content: 'q1' } }),
+    JSON.stringify({ type: 'assistant', uuid: 'a-1', timestamp: '2026-01-01T00:00:01Z',
+      message: { content: [{ type: 'tool_use', id: 'tool_1', name: 'Read', input: { file_path: '/x' } }],
+                 model: 'claude-opus-4-7', stop_reason: 'tool_use' } }),
+    JSON.stringify({ type: 'user', uuid: 'u-tr', timestamp: '2026-01-01T00:00:02Z',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'data' }] } }),
+    JSON.stringify({ type: 'assistant', uuid: 'a-2', timestamp: '2026-01-01T00:00:03Z',
+      message: { content: [{ type: 'text', text: 'final' }],
+                 model: 'claude-opus-4-7', stop_reason: 'end_turn' } }),
+  ];
+  const fp = writeTmp('B2-tool-result', lines.join('\n') + '\n');
+  try {
+    const turns = parseClaudeTranscriptToTurns(fp, { limit: 10, fromTail: true });
+    assert.strictEqual(turns.length, 3, 'tool_result entry skipped');
+    assert.deepStrictEqual(turns.map(t => t.id), ['u-1', 'a-1', 'a-2']);
+  } finally { cleanup(fp); }
+});
+
 // thinking-only assistant entry must NOT be skipped (renders as 💭 思考过程 summary)
 test('keep assistant entry with thinking-only content (not skipped)', () => {
   const line = JSON.stringify({

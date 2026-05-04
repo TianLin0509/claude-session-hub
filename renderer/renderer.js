@@ -1987,6 +1987,12 @@ window._mountSessionTurnCard = mountSessionTurnCard;
 //     main.js handler does its own session lookup and returns
 //     'transcript not found' for unknown ids — we display that as the error.
 async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
+  // Spec 3 · B1 增量 mount：opts.incremental=true 时不清 container/Map，
+  // 依赖 mountSessionTurnCard 内的 turnId dedup 自动跳过已 mount 的 turn。
+  // 用于 throttle reload（同 sessionId 反复）— 把"全清重建"压成"只 append 新增"。
+  // 切 session 时调用方传默认（incremental=false）走全量。
+  const incremental = opts.incremental === true;
+
   // 1. resolve container
   const container = document.getElementById('msg-overlay');
   if (!container) {
@@ -1995,11 +2001,16 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   }
 
   // 2. clear container + Map (avoid stale turns from previous session)
-  container.innerHTML = '';
-  if (!window._sessionTurns) window._sessionTurns = new Map();
-  window._sessionTurns.clear();
+  if (!incremental) {
+    container.innerHTML = '';
+    if (!window._sessionTurns) window._sessionTurns = new Map();
+    window._sessionTurns.clear();
+  } else if (!window._sessionTurns) {
+    window._sessionTurns = new Map();
+  }
 
-  // helper: render a placeholder line inside the cleared container
+  // helper: render a placeholder line inside the cleared container.
+  // 增量模式下若需要显示 placeholder（如 IPC error）说明出了问题，仍然清掉重写。
   const showPlaceholder = (html) => {
     container.innerHTML =
       '<div class="msg-overlay-placeholder">' + html + '</div>';
@@ -3571,23 +3582,25 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   }
   onTerminalOutput(sessionId, data.length);
 
-  // Spec 2 partial-update workaround:
+  // Spec 2 partial-update workaround + Spec 3 · B1+B3 优化:
   // transcriptTap.emit('turn-complete') only fires on stop_reason ∈ {end_turn, max_tokens, refusal} —
   // assistant turns with stop_reason='tool_use' wait for the next message; card view lags PTY.
-  // Throttle (leading edge) reload card every ~800ms while PTY streams. Not debounce — debounce
+  // Throttle (leading edge) reload card every ~250ms while PTY streams. Not debounce — debounce
   // resets timer on every PTY chunk, so during streaming it never fires until full silence.
+  // Spec 3 · B1：传 incremental:true → mount dedup 自动跳过已存在 turn id，无需全清重建
+  // Spec 3 · B3：throttle 800→250ms（B1+B2 完成后单次 reload <50ms 才安全调小，否则反向打负载）
   if (sessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
     if (!window._cardReloadState) window._cardReloadState = new Map();
     let st = window._cardReloadState.get(sessionId);
     if (!st) { st = { lastReloadAt: 0, pendingTimer: null, inProgress: false }; window._cardReloadState.set(sessionId, st); }
     if (!st.pendingTimer && !st.inProgress) {
       const sinceLast = Date.now() - st.lastReloadAt;
-      const delay = Math.max(100, 800 - sinceLast);
+      const delay = Math.max(80, 250 - sinceLast);
       st.pendingTimer = setTimeout(() => {
         st.pendingTimer = null;
         st.inProgress = true;
         st.lastReloadAt = Date.now();
-        loadSessionHistoryToOverlay(sessionId)
+        loadSessionHistoryToOverlay(sessionId, { incremental: true })
           .catch(err => console.warn('[card auto-reload] failed:', err))
           .finally(() => { st.inProgress = false; });
       }, delay);
