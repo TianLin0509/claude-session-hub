@@ -1867,6 +1867,18 @@ ipcMain.handle('roundtable-codex-debug-state', async () => {
   }
 });
 
+// 2026-05-04 gemini equiv —— 与 codex 镜像，暴露 GeminiTap 内部状态给 renderer/E2E 用。
+//   触发场景：用户报告"gemini 已回答但卡片提取不到"，需要看 _bound / _pending / _seen / projectDir
+//     状态来区分"projectDir 没解析到"vs"绑定成功但 turn-complete 未 emit"vs"任何 backend 都没该 sid"。
+//   返回 { tmpRoot, pending: [], bound: [], seen: [] }（gemini 单 root，不像 codex 多 sessionsRoots）。
+ipcMain.handle('roundtable-gemini-debug-state', async () => {
+  try {
+    return { ok: true, snapshot: transcriptTap.getGeminiDebugSnapshot() };
+  } catch (e) {
+    return { ok: false, reason: 'snapshot_failed', detail: e.message };
+  }
+});
+
 // Resend & Auto-Recovery（2026-05-03）— 手动 [📤 发送] 按钮入口
 //   触发场景：dispatch 主路径 sendToPty 返回 sendStatus='stuck'（auto-recover 也救不了），
 //     renderer 收到 'roundtable-send-stuck' IPC 后让卡片亮 [📤 发送] 按钮，

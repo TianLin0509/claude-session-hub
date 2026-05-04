@@ -780,13 +780,49 @@ class CodexTap extends EventEmitter {
 const GEMINI_TMP_ROOT = path.join(os.homedir(), '.gemini', 'tmp');
 
 class GeminiTap extends EventEmitter {
-  constructor() {
+  constructor(opts = {}) {
     super();
+    // 2026-05-04 gemini equiv：opts.tmpRoot 让单测把 fake session 写到 tmpdir，
+    // 不污染真实 ~/.gemini/tmp。生产路径不传 opts → 默认走 GEMINI_TMP_ROOT。
+    this._tmpRoot = opts.tmpRoot || GEMINI_TMP_ROOT;
     this._pending = new Map(); // hubSessionId → { cwd, spawnTime, projectDir }
     this._bound = new Map();   // hubSessionId → { sessionPath, tail, lastText, isJsonl, debounceTimer }
     this._pollTimer = null;
     this._seen = new Set();    // session file paths we've already bound
     this._scanning = false;    // re-entry guard (see CodexTap for rationale)
+  }
+
+  // 2026-05-04 gemini equiv extract-failure debug —— 暴露 _pending / _bound / _seen 当前状态。
+  // main.js 的 roundtable-gemini-debug-state IPC handler 转发此快照给 renderer，
+  // 用户报告"gemini 已回答但卡片提取不到"时排查为什么没 bind / 已 bind 但未 emit。
+  // 不暴露 timer / tail object / EventEmitter listeners 等内部句柄；JSON 可序列化。
+  getDebugSnapshot() {
+    const now = Date.now();
+    const pending = [];
+    for (const [hubSessionId, entry] of this._pending) {
+      pending.push({
+        hubSessionId,
+        cwd: entry.cwd,
+        spawnTime: entry.spawnTime,
+        ageMs: now - entry.spawnTime,
+        projectDir: entry.projectDir || null,
+      });
+    }
+    const bound = [];
+    for (const [hubSessionId, entry] of this._bound) {
+      bound.push({
+        hubSessionId,
+        sessionPath: entry.sessionPath,
+        isJsonl: !!entry.isJsonl,
+        hasLastText: !!entry.lastText,
+      });
+    }
+    return {
+      tmpRoot: this._tmpRoot,
+      pending,
+      bound,
+      seen: Array.from(this._seen),
+    };
   }
 
   registerSession(hubSessionId, { cwd } = {}) {
@@ -906,18 +942,18 @@ class GeminiTap extends EventEmitter {
     this._scanning = true;
     try {
       let tmpDirs;
-      try { tmpDirs = await fs.promises.readdir(GEMINI_TMP_ROOT); } catch { return; }
+      try { tmpDirs = await fs.promises.readdir(this._tmpRoot); } catch { return; }
 
       // Phase 1: resolve projectDir for pending entries without one
       for (const [, entry] of this._pending) {
         if (entry.projectDir) continue;
         for (const sub of tmpDirs) {
-          const projectRootFile = path.join(GEMINI_TMP_ROOT, sub, '.project_root');
+          const projectRootFile = path.join(this._tmpRoot, sub, '.project_root');
           let content;
           try { content = await fs.promises.readFile(projectRootFile, 'utf8'); }
           catch { continue; }
           if (normalizePathForCompare(content.trim()) === entry.cwd) {
-            entry.projectDir = path.join(GEMINI_TMP_ROOT, sub);
+            entry.projectDir = path.join(this._tmpRoot, sub);
             break;
           }
         }
@@ -1252,6 +1288,11 @@ class TranscriptTap extends EventEmitter {
     return this._codex.getDebugSnapshot();
   }
 
+  // 2026-05-04 gemini equiv：与 codex 镜像，给 roundtable-gemini-debug-state IPC handler 用。
+  getGeminiDebugSnapshot() {
+    return this._gemini.getDebugSnapshot();
+  }
+
   _backendFor(kind) {
     // DeepSeek/GLM/GPT/Kimi/Qwen 跑在 Claude Code CLI 上（CLAUDE_CONFIG_DIR 隔离），transcript
     // JSONL 与 Claude 同 shape（spike 验证：tests/_spike-deepseek-stop-hook-result.md），
@@ -1303,6 +1344,7 @@ function extractGeminiProjectHashFromDir(projectDir) {
 module.exports = {
   TranscriptTap,
   CodexTap,           // 2026-05-04 codex equiv：单测注入 sessionsRoot 直测 4 态 extractMode
+  GeminiTap,          // 2026-05-04 gemini equiv：单测注入 tmpRoot 直测 _bound 字段
   JsonlTail,
   readLastAssistantMessageFromClaudeTranscript,
   extractCodexSidFromRolloutPath,
