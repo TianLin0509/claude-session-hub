@@ -4173,6 +4173,9 @@ async function resumeDormantSession(hubId) {
     meetingId: dormant.meetingId || null,
     lastMessageTime: dormant.lastMessageTime,
     lastOutputPreview: dormant.lastOutputPreview,
+    // 把原 session 的 model 透传给 main.js → session-manager createSession 的 opts.model，
+    // 避免 spawn `claude --resume` 时回退到默认 opus，丢失原 session 实际使用的 model。
+    model: (dormant.currentModel && dormant.currentModel.id) || null,
     // T10: pass resume-meta so main.js Codex/Gemini precise resume works
     codexSid: dormant.codexSid || null,
     geminiChatId: dormant.geminiChatId || null,

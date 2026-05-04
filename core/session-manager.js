@@ -342,6 +342,7 @@ class SessionManager extends EventEmitter {
       delete sessionEnv.ANTHROPIC_AUTH_TOKEN;
       delete sessionEnv.ANTHROPIC_API_KEY;
       delete sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+      delete sessionEnv.ANTHROPIC_MODEL;
       const cv = getConfigValues();
       sessionEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
       sessionEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
@@ -586,18 +587,22 @@ class SessionManager extends EventEmitter {
     }
 
     if (isClaude) {
+      // 所有路径（fresh / resume / continue）都显式传 --model，
+      // 防止 user-level ~/.claude/settings.local.json 的 model 字段（被 /model 命令污染）
+      // 影响 resume 出来的 session。Claude CLI 的 --resume 仅恢复 transcript 对话历史，
+      // 不从 transcript 反推 model 设置；下一条消息的 model 解析顺序为
+      // CLI --model > env > settings 文件，所以必须显式覆盖。
+      // opts.model 让 meeting-create-modal 选定的非默认 model（如 sonnet-4.5）生效。
+      const model = opts.model || 'claude-opus-4-7[1m]';
       let cmd;
       if (opts.resumeCCSessionId) {
-        cmd = ` claude --resume ${opts.resumeCCSessionId}`;
+        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model}`;
       } else if (opts.useContinue) {
-        cmd = ' claude --continue';
+        cmd = ` claude --continue --model ${model}`;
       } else if (kind === 'claude-resume') {
-        cmd = ' claude --resume';
+        cmd = ` claude --resume --model ${model}`;
       } else {
-        // Fresh Claude sessions default to Opus 4.7 1M (extended thinking).
-        // Resume/continue inherit the transcript's model, so don't force --model there.
-        // opts.model 让 meeting-create-modal 选定的非默认 model（如 sonnet-4.5）生效。
-        cmd = ` claude --model ${opts.model || 'claude-opus-4-7[1m]'}`;
+        cmd = ` claude --model ${model}`;
       }
       // Append system prompt file if provided (TeamSessionManager injects character prompt)
       if (opts.appendSystemPromptFile) {
@@ -740,7 +745,8 @@ class SessionManager extends EventEmitter {
         const model = opts.model || 'deepseek-v4-pro';
         cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
-        cmd = ' claude --continue --permission-mode bypassPermissions';
+        const model = opts.model || 'deepseek-v4-pro';
+        cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
       } else {
         cmd = ` claude --model ${opts.model || 'deepseek-v4-pro'} --permission-mode bypassPermissions`;
       }
@@ -781,7 +787,8 @@ class SessionManager extends EventEmitter {
         const model = opts.model || cv.GLM_MODEL;
         cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
-        cmd = ' claude --continue --permission-mode bypassPermissions';
+        const model = opts.model || cv.GLM_MODEL;
+        cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
       } else {
         cmd = ` claude --model ${opts.model || cv.GLM_MODEL} --permission-mode bypassPermissions`;
       }
@@ -822,7 +829,8 @@ class SessionManager extends EventEmitter {
         const model = opts.model || cv.GPT_MODEL || 'gpt-5.4-high';
         cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
-        cmd = ' claude --continue --permission-mode bypassPermissions';
+        const model = opts.model || cv.GPT_MODEL || 'gpt-5.4-high';
+        cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
       } else {
         cmd = ` claude --model ${opts.model || cv.GPT_MODEL || 'gpt-5.4-high'} --permission-mode bypassPermissions`;
       }
@@ -863,7 +871,8 @@ class SessionManager extends EventEmitter {
         const model = opts.model || cv.KIMI_MODEL || 'kimi-k2.5';
         cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
-        cmd = ' claude --continue --permission-mode bypassPermissions';
+        const model = opts.model || cv.KIMI_MODEL || 'kimi-k2.5';
+        cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
       } else {
         cmd = ` claude --model ${opts.model || cv.KIMI_MODEL || 'kimi-k2.5'} --permission-mode bypassPermissions`;
       }
@@ -904,7 +913,8 @@ class SessionManager extends EventEmitter {
         const model = opts.model || cv.QWEN_MODEL || 'qwen3.6-plus';
         cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
-        cmd = ' claude --continue --permission-mode bypassPermissions';
+        const model = opts.model || cv.QWEN_MODEL || 'qwen3.6-plus';
+        cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
       } else {
         cmd = ` claude --model ${opts.model || cv.QWEN_MODEL || 'qwen3.6-plus'} --permission-mode bypassPermissions`;
       }
