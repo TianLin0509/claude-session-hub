@@ -2465,7 +2465,12 @@ function _updateStreamingIndicator(sessionId) {
   if (!overlay) return;
   const sess = sessions.get(sessionId);
   const isRunning = sess && sess.status === 'running';
-  let indicator = overlay.querySelector('.streaming-indicator');
+  // 多方审查 P1 (DeepSeek + Claude 共识)：querySelector 不带 dataset 过滤会拿到
+  // 别 session 残留的 indicator（1.5s 延迟移除期间），快速切 session 时新 session
+  // 会"接管"旧 indicator 导致显示错乱或 timer 触发时误删新 session 的 indicator。
+  // 加 [data-session-id] 过滤强 session 隔离。
+  const sidStr = String(sessionId);
+  let indicator = overlay.querySelector(`.streaming-indicator[data-session-id="${CSS.escape(sidStr)}"]`);
   // 任何状态变化先取消 pending 延迟移除（如 idle→running 在 gap 期间，要立刻取消移除）
   if (_w16RemoveTimers.has(sessionId)) {
     clearTimeout(_w16RemoveTimers.get(sessionId));
@@ -2494,7 +2499,8 @@ function _updateStreamingIndicator(sessionId) {
       _w16RemoveTimers.delete(sessionId);
       const ov = document.getElementById('msg-overlay');
       if (!ov) return;
-      const cur = ov.querySelector('.streaming-indicator');
+      // 多方审查 P1：同样按 data-session-id 过滤，只 remove 自己 session 的 indicator
+      const cur = ov.querySelector(`.streaming-indicator[data-session-id="${CSS.escape(sidStr)}"]`);
       if (!cur) return;
       // 二次确认：1.5s 后状态仍非 running 才真正移除
       const sess2 = sessions.get(sessionId);
@@ -5169,6 +5175,14 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     const st = window._cardReloadState.get(sessionId);
     if (st && st.pendingTimer) { try { clearTimeout(st.pendingTimer); } catch {} }
     window._cardReloadState.delete(sessionId);
+  }
+  // 多方审查 P1 (Claude 共识)：W16 _w16RemoveTimers 也要在 session-closed 时清理，
+  // 否则 1.5s 后 timer 触发时 sessions.get(sessionId) === undefined → 走 .remove() 分支，
+  // 加上未做 dataset 过滤前会误删别 session 的 indicator。即使加了 dataset 过滤，timer
+  // 残留也是 leak。一起清。
+  if (typeof _w16RemoveTimers !== 'undefined' && _w16RemoveTimers.has(sessionId)) {
+    try { clearTimeout(_w16RemoveTimers.get(sessionId)); } catch {}
+    _w16RemoveTimers.delete(sessionId);
   }
   sessions.delete(sessionId);
   if (silenceTimers.has(sessionId)) {

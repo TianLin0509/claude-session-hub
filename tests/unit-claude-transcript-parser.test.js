@@ -435,6 +435,45 @@ test('B2 tail-only: skips tool_result entries during reverse scan', () => {
   } finally { cleanup(fp); }
 });
 
+// === Spec 3 · 多方审查 P0：input_tokens 不能累加（CLI 每次 call 含完整历史）===
+test('R4 P0: input_tokens takes LAST entry value, not summed (avoid O(N^2) inflation)', () => {
+  // 模拟 CLI 多轮 call：input_tokens 含历史 → 后续每次都比前次多
+  // 这里 a-0 input=1000, a-1 input=1500 (含 a-0 的 history), a-2 input=2200 (含更多 history)
+  const lines = [
+    JSON.stringify({ type: 'user', uuid: 'u-1', timestamp: '2026-01-01T00:00:00Z',
+      message: { content: 'q' } }),
+    JSON.stringify({ type: 'assistant', uuid: 'a-0', timestamp: '2026-01-01T00:00:01Z',
+      message: { model: 'claude-opus-4-7', stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/x' } }],
+        usage: { input_tokens: 1000, output_tokens: 50 } } }),
+    JSON.stringify({ type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'r1' }] } }),
+    JSON.stringify({ type: 'assistant', uuid: 'a-1', timestamp: '2026-01-01T00:00:02Z',
+      message: { model: 'claude-opus-4-7', stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/y' } }],
+        usage: { input_tokens: 1500, output_tokens: 60 } } }),
+    JSON.stringify({ type: 'user',
+      message: { content: [{ type: 'tool_result', tool_use_id: 't2', content: 'r2' }] } }),
+    JSON.stringify({ type: 'assistant', uuid: 'a-2', timestamp: '2026-01-01T00:00:03Z',
+      message: { model: 'claude-opus-4-7', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'done' }],
+        usage: { input_tokens: 2200, output_tokens: 30 } } }),
+  ];
+  const fp = writeTmp('R4-input-tokens-not-summed', lines.join('\n') + '\n');
+  try {
+    const turns = parseClaudeTranscriptToTurns(fp);
+    const a = turns[1];
+    assert.strictEqual(a.role, 'assistant');
+    assert.strictEqual(a.mergedCount, 3);
+    // 关键断言：input_tokens = 最后一条 a-2 的 2200，不是 1000+1500+2200=4700
+    assert.strictEqual(a.usage.input_tokens, 2200,
+      'input_tokens MUST = last entry value (max ctx size), NOT sum (O(N^2) inflation)');
+    // output_tokens 仍累加（每次 call 自己的输出）
+    assert.strictEqual(a.usage.output_tokens, 50 + 60 + 30,
+      'output_tokens still summed (each call has own output)');
+  } finally { cleanup(fp); }
+});
+
 // === Spec 3 · W9 tool_result association tests ===
 
 test('W9 extractToolResults: string content + isError flag preserved', () => {
@@ -554,8 +593,10 @@ test('W5 merge: 5 consecutive 1-tool entries + 1 final = 1 user + 1 merged turn 
       'all thinking concatenated');
     assert.strictEqual(a.stopReason, 'end_turn', 'last entry stop_reason wins');
     assert.strictEqual(a.tsEnd, new Date('2026-01-01T00:01:00Z').getTime(), 'tsEnd = last entry ts');
-    assert.strictEqual(a.usage.input_tokens, 5000 + 5*1000, 'usage tokens accumulated');
-    assert.strictEqual(a.usage.output_tokens, 100 + 5*200);
+    // 多方审查 P0 fix：input_tokens 不累加，取最后一条 (a-final 是 5000)
+    // 因为 Claude API 每次 call 的 input_tokens 含完整历史，累加 = O(N²) 虚高
+    assert.strictEqual(a.usage.input_tokens, 5000, 'input_tokens = last entry value (not summed)');
+    assert.strictEqual(a.usage.output_tokens, 100 + 5*200, 'output_tokens still summed (each call is own output)');
   } finally { cleanup(fp); }
 });
 

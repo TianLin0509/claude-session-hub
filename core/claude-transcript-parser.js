@@ -196,7 +196,12 @@ function _mergeConsecutiveAssistantTurns(turns) {
       acc.stopReason = t.stopReason || acc.stopReason;
       if (t.model) acc.model = t.model;
       if (t.usage) {
-        acc.usage.input_tokens += t.usage.input_tokens || 0;
+        // 多方审查 P0 (Gemini 找到)：Claude API 每次 call 的 input_tokens 是 prompt size，
+        // 含完整历史（前面所有 user + assistant + tool_result）。N 次 call 累加 = O(N²)
+        // 虚高，导致头部"📊 ctx%" pill 远超真实值（极端 case 100% ctx 但实际只 10%）。
+        // 正解：input_tokens 取最后一条（=最大上下文 size）；output_tokens 才是各 call
+        // 自己的输出，应累加。
+        acc.usage.input_tokens = t.usage.input_tokens || acc.usage.input_tokens;
         acc.usage.output_tokens += t.usage.output_tokens || 0;
       }
       acc.mergedCount += 1;
