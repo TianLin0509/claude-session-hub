@@ -1,0 +1,30 @@
+=== Spec 2 · S10 E2E Validation ===
+[setup] CDP page: 9AA33C4DA27364337BAEAD244775A853  url=file:///C:/Users/lintian/hub-feat-ui-redesign-spec1/renderer/index.html
+
+--- Phase 2: 13 scenarios ---
+[PASS] 1. CSS vars + structural elements  --  {"purple1":"#8b5cf6","purple2":"#a78bfa","viewToggle":true,"msgOverlay":true,"placeholder":false}
+[PASS] 2. Default view = card  --  currentView="card"
+[PASS] 3. Mock turn render via mountSessionTurnCard  --  {"mounted":true,"cardInDom":true}
+[PASS] 4. Tool block folded (>15 lines)  --  {"hasToolBlock":true,"hasExpandToggle":true,"foldText":"▸ 展开 25 行(折叠 >15 行)"}
+[PASS] 5. Code block prism highlight  --  {"hasCode":true,"hasToken":true,"prismLoaded":true}
+[PASS] 6. Long code block has fold toggle  --  {"hasWrap":true,"hasToggle":true,"toggleText":"▸ 展开 30 of 36 行 · javascript","lines":"36"}
+[PASS] 7. Path link recognized (src/foo.md)  --  {"hasLink":true,"allLinks":["src/foo.md"]}
+[PASS] 8. Operation buttons (copy/regen/resend/edit-resend)  --  {"copy":true,"regen":true,"resend":true,"editResend":true}
+[PASS] 9. Thinking field collapsed by default  --  {"hasDetails":true,"hasSummary":true,"openAttr":false,"summaryText":"💭 思考过程"}
+[PASS] 10. Long thinking shows preview prefix  --  {"hasSummary":true,"includesPreview":true,"summarySnippet":"💭 思考过程 (前 200 字符: 甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲甲"}
+[PASS] 11. tool_result not shown as user text (real fixture)  --  {"count":2,"offenderCount":0,"error":null,"offenderSample":[]}
+[MANUAL] 12. Real session switch (need actual Claude CLI process)  --  requires user-triggered Claude session start in Hub
+[MANUAL] 13. Real assistant turn-complete (need actual Claude CLI generating)  --  requires real Claude turn-completion
+[MANUAL] 14. openPreviewPanel for .md path click  --  requires user mouse click on .rt-file-link
+[MANUAL] 15. Hover for .ta-btn visibility  --  requires real mouse hover on turn card
+
+--- Phase 3: 圆桌 regression ---
+[PASS] R1. renderer/meeting-room.js: _renderFusedTabs + _renderPreviewBlocks intact  --  {"hasFusedTabs":true,"hasPreviewBlocks":true}
+[PASS] R2. core/meeting-room.js: appendTurn intact  --  {"hasAppendTurn":true}
+[PASS] R3. main.js emits 'meeting-timeline-updated' (count=2)  --  2 occurrences
+[PASS] R4. core/transcript-tap.js: 0 commits since spec1 baseline (06d0ab1)  --  commits since baseline: 0
+[MANUAL] R5. New meeting → 3 sub-sessions added → fanout turn → cards render  --  user must open meeting and verify圆桌 UI
+
+=== Summary ===
+Auto: 15/15 pass, 0 fail
+Manual: 5 scenario(s) for user
