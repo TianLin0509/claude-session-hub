@@ -1379,8 +1379,15 @@ if (typeof document !== 'undefined') (function () {
     const slotEl = panel.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
     if (!slotEl) {
       // 兜底：DOM 找不到该 slot（panel 还没渲染过）→ 全量重渲
-      panel.innerHTML = _renderRtPanelHtml(cached, meeting);
-      _bindRtPanelEvents(panel, meeting);
+      // silent-failure-hunter L1（2026-05-04 道雪）：并发场景（partial-update 在 turn-complete
+      //   之后到、cached 字段意外 null）下 _renderRtPanelHtml 可能抛 TypeError，
+      //   原版无 try/catch → 整个 IPC 回调崩溃，panel 残破。包一层让回调能 return。
+      try {
+        panel.innerHTML = _renderRtPanelHtml(cached, meeting);
+        _bindRtPanelEvents(panel, meeting);
+      } catch (e) {
+        console.error('[roundtable] partial-update fallback rebuild failed:', e);
+      }
       return;
     }
     // T2 scrollTop 保留：替换前记录 .mr-ft-preview 的滚动位置（即使是流式增长的家自己，也尽量保留）
