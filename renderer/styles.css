@@ -2865,6 +2865,37 @@ body.theme-light .floating-scroll-btn {
 }
 .tc-result-err { color: #fca5a5; border-left: 2px solid var(--accent-red); }
 
+/* === Spec 3 · W15: streaming indicator (Claude 正在输出…) === */
+.streaming-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  margin: 8px 0 4px;
+  background: rgba(167, 139, 250, 0.05);
+  border-radius: 6px;
+  border-left: 3px solid var(--ui-purple-2);
+}
+.streaming-indicator .dot {
+  width: 7px;
+  height: 7px;
+  background: var(--ui-purple-2);
+  border-radius: 50%;
+  animation: streaming-dot-pulse 1.4s infinite ease-in-out both;
+}
+.streaming-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
+.streaming-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
+.streaming-indicator .text {
+  color: var(--ui-purple-3);
+  font-size: 13px;
+  font-style: italic;
+  margin-left: 4px;
+}
+@keyframes streaming-dot-pulse {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.7); }
+  40% { opacity: 1; transform: scale(1.2); }
+}
+
 /* === Spec 3 · 长 markdown 文本默认折叠 === */
 .turn-body.body-foldable.folded {
   max-height: 400px;

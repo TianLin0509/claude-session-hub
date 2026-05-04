@@ -1274,6 +1274,10 @@ function showTerminal(sessionId, opts = { focus: true }) {
       if (window._sessionTurns) window._sessionTurns.clear();
     }
   }
+  // Spec 3 · W15：切 session 时清旧 indicator + 按新 active session 状态重建
+  if (typeof _updateStreamingIndicator === 'function') {
+    _updateStreamingIndicator(sessionId);
+  }
 }
 
 // Minimap: a narrow strip on the right edge of the terminal that shows prompt
@@ -2433,6 +2437,33 @@ document.addEventListener('click', (e) => {
 // 默认 PTY（卡片视图作为可选第二视图，不破坏 PTY 主流程）— 2026-05-04 用户反馈
 let currentView = 'pty'; // 'card' | 'pty'
 
+// === Spec 3 · W15: streaming indicator ===
+// session.status === 'running' 表示 PTY 最近有数据（>200 byte burst within silence window）。
+// 卡片视图下 active session 跑 running 时在 overlay 末尾显示三个跳动的紫色点 + "Claude 正在
+// 输出…"，让用户瞬间感知"agent 还在干活"，不必盯 PTY 视图。
+function _updateStreamingIndicator(sessionId) {
+  if (sessionId !== activeSessionId) return; // 只反映 active session 状态
+  const overlay = document.getElementById('msg-overlay');
+  if (!overlay) return;
+  const sess = sessions.get(sessionId);
+  const isRunning = sess && sess.status === 'running';
+  let indicator = overlay.querySelector('.streaming-indicator');
+  if (isRunning && currentView === 'card') {
+    if (!indicator) {
+      indicator = document.createElement('div');
+      indicator.className = 'streaming-indicator';
+      indicator.dataset.sessionId = String(sessionId);
+      indicator.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="text">Claude 正在输出…</span>';
+      overlay.appendChild(indicator);
+      // 滚到底让用户看到 indicator
+      try { overlay.scrollTop = overlay.scrollHeight; } catch {}
+    }
+  } else {
+    // 不 running 或不在卡片视图 → 移除
+    if (indicator) indicator.remove();
+  }
+}
+
 function applyViewMode(mode) {
   currentView = mode;
   const overlay = document.getElementById('msg-overlay');
@@ -2456,6 +2487,11 @@ function applyViewMode(mode) {
         console.warn('[applyViewMode card] auto-load failed:', err);
       });
     }
+  }
+  // Spec 3 · W15：切到 card 立即 sync streaming indicator（active session 可能正在 running）；
+  // 切到 PTY 立即移除（_updateStreamingIndicator 内部 currentView !== 'card' 分支处理）。
+  if (activeSessionId && typeof _updateStreamingIndicator === 'function') {
+    _updateStreamingIndicator(activeSessionId);
   }
 }
 
@@ -3631,6 +3667,7 @@ function onTerminalOutput(sessionId, dataLen) {
   if (dataCounters.get(sessionId) > 200 && session.status !== 'running') {
     session.status = 'running';
     renderSessionList();
+    if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
   }
 
   // Reset silence timer
@@ -3640,7 +3677,10 @@ function onTerminalOutput(sessionId, dataLen) {
     dataCounters.delete(sessionId);
 
     const wasRunning = session.status === 'running';
-    if (wasRunning) session.status = 'idle';
+    if (wasRunning) {
+      session.status = 'idle';
+      if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
+    }
 
     readTerminalPreview(sessionId);
 
