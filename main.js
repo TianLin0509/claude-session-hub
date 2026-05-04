@@ -32,6 +32,7 @@ const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-confi
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
 const packyBalance = require('./core/packy-balance.js');
 const { isClaudeFamily, SLOT_IDS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
+const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
 
 const STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const STARTUP_T0 = Date.now();
