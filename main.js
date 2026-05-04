@@ -1841,7 +1841,15 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
               meetingManager, sessionManager, scenes, roundtable, getHubDataDir,
             });
           }
-          sendToRenderer('roundtable-turn-complete', { meetingId });
+          // 2026-05-04 道雪：单家 patch 改发 partial-update（仅本卡片局部刷新），
+          //   不再复用整轮 turn-complete —— 避免 renderer 把整个 _partialBy 清空、
+          //   导致本轮还在跑的其他家退化成 thinking 流光态（Bug：点 A 一键提取，B/C 出现流光）。
+          sendToRenderer('roundtable-partial-update', {
+            meetingId, sid,
+            status: 'manual_extracted',
+            text: extracted.text,
+            source: extracted.source || 'manual',
+          });
           return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_last_turn', extractMode: extracted.extractMode || null };
         }
       }
@@ -2132,25 +2140,20 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
   try { result.tokens = transcriptTap.getLastTokens(sid) || null; }
   catch { result.tokens = null; }
 
-  // 6. patch lastTurn + 推 partial-update + turn-complete 让 renderer 刷新
-  const patched = orch.patchTurnResult(lastTurn.n, sid, {
+  // 6. patch lastTurn + 推 partial-update 让 renderer 局部刷新
+  orch.patchTurnResult(lastTurn.n, sid, {
     text: result.text || '',
     status: result.status,
     thinkSec: result.thinkSec,
     tokens: result.tokens,
   });
 
+  // 2026-05-04 道雪：单家 resend 只发 partial-update，不再复用整轮 turn-complete
+  //   —— 同 manual-extract 修复，避免误清整个 _partialBy 让其他家进 thinking 流光态。
   sendToRenderer('roundtable-partial-update', {
     meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
     sid, label, status: result.status, text: result.text || '',
     thinkSec: result.thinkSec, tokens: result.tokens,
-  });
-
-  // 重用整轮 turn-complete IPC：renderer 会清 _partialBy + currentMode + refresh
-  sendToRenderer('roundtable-turn-complete', {
-    meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-    results: [{ sid, label, ...result }],
-    meta: { resend: true, patched: !!patched },
   });
 
   console.log(`[resend] done sid=${sid.slice(0, 8)} status=${result.status} chars=${(result.text || '').length}`);
