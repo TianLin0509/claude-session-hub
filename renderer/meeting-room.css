@@ -36,6 +36,19 @@
   min-width: 0;
   background: var(--bg-primary, #0d1117);
   color: var(--text-primary, #c9d1d9);
+  /* Phase 7(2026-05-05 道雪): G 方案 — 地平线光晕。卡片底部 ~80px 高度有微蓝径向光晕,
+     暗示"圆桌中心"。pointer-events:none 防止挡 click;伪元素层 z-index 低于 footer。 */
+  position: relative;
+}
+.meeting-room-panel::after {
+  content: '';
+  position: absolute;
+  bottom: 56px; /* footer 高度上方,正对卡片底部边界 */
+  left: 0; right: 0;
+  height: 96px;
+  background: radial-gradient(ellipse at center bottom, rgba(88,166,255,0.08) 0%, rgba(88,166,255,0.02) 40%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
 }
 
 /* Header */
@@ -285,10 +298,15 @@
   align-items: center;
   gap: 12px;
   padding: 6px 12px;
-  background: var(--bg-secondary, #161b22);
-  border-top: 1px solid var(--border, #30363d);
+  background: transparent;
   font-size: 12px;
   flex-shrink: 0;
+}
+/* Phase 7(2026-05-05): free 模式 toolbar 完全空时, 不占任何高度(避免空灰线) */
+.mr-toolbar:empty {
+  padding: 0;
+  height: 0;
+  min-height: 0;
 }
 
 .mr-toolbar label {
@@ -326,9 +344,9 @@
   align-items: flex-end;
   padding: 8px 12px;
   gap: 8px;
-  background: var(--bg-secondary, #161b22);
-  border-top: 1px solid var(--border, #30363d);
+  background: transparent;
   flex-shrink: 0;
+  z-index: 2; /* 浮于 G 地平线光晕之上 */
 }
 
 /* Phase 4 v2(2026-05-05): footer 一行化 — 头像 checkbox 组(只 logo, 无文字) */
