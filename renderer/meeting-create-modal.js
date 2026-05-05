@@ -111,11 +111,7 @@ function _ensureModal() {
         <div class="mcm-slots">
           ${[0, 1, 2].map(i => _slotHtml(i)).join('')}
         </div>
-        <div class="mcm-mode">
-          模式:
-          <label><input type="radio" name="mcm-meeting-mode" value="free" checked> 🆓 自由模式</label>
-          <label><input type="radio" name="mcm-meeting-mode" value="pilot"> 🎯 主驾模式</label>
-        </div>
+        <!-- 2026-05-05 道雪：废弃主驾模式入口，所有圆桌默认 free。原 mcm-meeting-mode radio 已删除。 -->
         <div class="mcm-scene">
           场景:
           <label><input type="radio" name="mcm-scene" value="general" checked> 通用</label>
@@ -172,8 +168,7 @@ async function _onCreate() {
   const scene = _modalEl.querySelector('input[name="mcm-scene"]:checked').value;
   // legacy mode 字段镜像 scene (向后兼容): research→research, dev→dev (plan-dev-scenario.md), 其他→general
   const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
-  // free-mode（2026-05-04）：meetingMode 与历史 mode（general/research）分语义，避免字段冲突
-  const meetingMode = _modalEl.querySelector('input[name="mcm-meeting-mode"]:checked').value;
+  // 2026-05-05 道雪：主驾模式入口废弃，meetingMode 不再传（core/meeting-room.js 强制 'free'）。
   // 2026-05-05 道雪：房名输入框，非空 → 覆盖后端默认编号 title；空 → 后端走 `通用 #N` 等。
   const titleInput = _modalEl.querySelector('#mcm-title-input');
   const title = titleInput ? titleInput.value.trim() : '';
@@ -185,7 +180,7 @@ async function _onCreate() {
   // 清掉之前可能残留的 inline error
   _clearError();
   try {
-    const meeting = await ipcRenderer.invoke('create-meeting', { mode, scene, slots, meetingMode, title });
+    const meeting = await ipcRenderer.invoke('create-meeting', { mode, scene, slots, title });
     if (!meeting || !meeting.id) {
       throw new Error('create-meeting returned empty meeting');
     }

@@ -1308,7 +1308,7 @@ if (typeof document !== 'undefined') (function () {
         '三家先帮你问清需求、讨论方案，默认只交给 1 个 Driver 实操。',
         '你可以跳过问题；跳过项会在交接单里作为默认假设回显。',
         '需要交接时输入"<strong>生成交接单</strong>"；Driver 改完后输入"<strong>帮我审一下</strong>"。',
-        '如需一对一深聊，可切主驾模式手动使用 superpowers brainstorm skill。',
+        '如需一对一深聊，建议直接打开对应 AI 子会话（左侧栏点 slot 头像跳转）。',
       ],
     },
   };
@@ -3156,7 +3156,8 @@ if (typeof document !== 'undefined') (function () {
       const dispatchAllDisabled = inProgress ? 'disabled' : '';
 
       // T6：mode toggle segmented control（必须在 debateDisabled 之前，因为 debateDisabled 依赖 meetingMode）
-      const meetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'pilot';
+      // 2026-05-05 道雪：主驾入口废弃，fallback 'pilot' → 'free'（与 core 一致）。
+      const meetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'free';
 
       // debate: free 模式需 >=2 人；pilot 模式下一家无法辩论 → disable
       const debateDisabled = (() => {
@@ -3705,7 +3706,8 @@ if (typeof document !== 'undefined') (function () {
     // 但 textContent 擦除只在首次（_inputBound=false）做——避免每次重渲染擦掉
     // 用户已输入但还没发送的内容（P1 体验断裂 bug A）。
     // T7: free 模式 0 人勾选时灰态保护
-    const _curMeetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'pilot';
+    // 2026-05-05 道雪：主驾入口废弃，fallback 'pilot' → 'free'（与 core 一致）。
+    const _curMeetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'free';
     const isFreeZeroSelected = (_curMeetingMode === 'free') &&
       (Array.isArray(meeting.participants) && meeting.participants.length === 0);
     if (meeting.scene) {

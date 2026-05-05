@@ -60,8 +60,10 @@ class MeetingRoomManager {
       //   主驾切换 / 取消主驾时 dispatchMode 自动 reset 为 'all'（避免状态漂移）。
       pilotSlot: null,
       dispatchMode: 'all',
-      // free-mode（2026-05-04）：meeting 级模式 'pilot'|'free'，创建时由对话框 opts.meetingMode 决定，默认 'free'
-      mode: opts.meetingMode === 'pilot' ? 'pilot' : 'free',
+      // 2026-05-05 道雪：废弃主驾模式入口，所有新圆桌固定 free。底层 pilot 编排代码暂留
+      //   （setPilotSlot/dispatchMode/orchestrator pilot 分支等），方便未来恢复；但创建路径
+      //   不再有 pilot 入口。opts.meetingMode 字段被忽略。
+      mode: 'free',
       // free-mode（2026-05-04）：自由模式参与者 slot 列表，默认全员勾选
       participants: [0, 1, 2],
     };
@@ -178,7 +180,8 @@ class MeetingRoomManager {
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
       pilotSlot: m.pilotSlot ?? null,
       dispatchMode: m.dispatchMode || 'all',
-      mode: ['pilot', 'free'].includes(m.mode) ? m.mode : 'pilot',
+      // 2026-05-05 道雪：fallback 从 'pilot' 改 'free'（与新建路径一致），主驾入口废弃。
+      mode: ['pilot', 'free'].includes(m.mode) ? m.mode : 'free',
       participants: Array.isArray(m.participants) ? [...m.participants] : null,
     } : null;
   }
@@ -192,7 +195,8 @@ class MeetingRoomManager {
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
       pilotSlot: m.pilotSlot ?? null,
       dispatchMode: m.dispatchMode || 'all',
-      mode: ['pilot', 'free'].includes(m.mode) ? m.mode : 'pilot',
+      // 2026-05-05 道雪：fallback 从 'pilot' 改 'free'（与新建路径一致），主驾入口废弃。
+      mode: ['pilot', 'free'].includes(m.mode) ? m.mode : 'free',
       participants: Array.isArray(m.participants) ? [...m.participants] : null,
     }));
   }
@@ -290,8 +294,10 @@ class MeetingRoomManager {
       dispatchMode: ['all', 'pilot', 'observer'].includes(meetingData.dispatchMode)
         ? meetingData.dispatchMode
         : ((typeof meetingData.pilotSlot === 'number') ? 'pilot' : 'all'),
-      // free-mode（2026-05-04）：老 meeting 无此字段时兜底 'pilot'（向后兼容）
-      mode: ['pilot', 'free'].includes(meetingData.mode) ? meetingData.mode : 'pilot',
+      // 2026-05-05 道雪：BUG fix —— 旧版兜底 'pilot' 导致 free 模式圆桌重启后被错误改成主驾。
+      //   主驾入口已废弃，所有未识别 mode 一律 fallback 'free'。同时强制把老 meeting 的 mode='pilot'
+      //   也迁移成 'free'（一次性数据迁移）：底层 pilotSlot/dispatchMode 字段保留，但 free UI 不读，无害。
+      mode: 'free',
       // free-mode（2026-05-04）：null=首次未初始化，空数组=用户已清空（Q11=A）
       participants: Array.isArray(meetingData.participants) ? meetingData.participants : null,
       _timeline: [],
