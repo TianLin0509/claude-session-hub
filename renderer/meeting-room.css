@@ -974,6 +974,73 @@ body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active):hover {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-3px); }
 }
+
+/* Phase 6(2026-05-05 道雪): 思考波纹 + 完成打勾动画 */
+.mr-ft-avatar { position: relative; }
+
+/* 波纹 — thinking/streaming 时头像外圈两层水波扩散 */
+.mr-ft.thinking-card .mr-ft-avatar::before,
+.mr-ft.thinking-card .mr-ft-avatar::after,
+.mr-ft.streaming-card .mr-ft-avatar::before,
+.mr-ft.streaming-card .mr-ft-avatar::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  animation: mr-ft-ripple 1.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+  z-index: -1;
+}
+.mr-ft.thinking-card .mr-ft-avatar::after,
+.mr-ft.streaming-card .mr-ft-avatar::after {
+  animation-delay: 0.9s;
+}
+.mr-ft.slot-1.thinking-card .mr-ft-avatar::before,
+.mr-ft.slot-1.thinking-card .mr-ft-avatar::after,
+.mr-ft.slot-1.streaming-card .mr-ft-avatar::before,
+.mr-ft.slot-1.streaming-card .mr-ft-avatar::after {
+  background: rgba(var(--c-slot-1-rgb), 0.5);
+}
+.mr-ft.slot-2.thinking-card .mr-ft-avatar::before,
+.mr-ft.slot-2.thinking-card .mr-ft-avatar::after,
+.mr-ft.slot-2.streaming-card .mr-ft-avatar::before,
+.mr-ft.slot-2.streaming-card .mr-ft-avatar::after {
+  background: rgba(var(--c-slot-2-rgb), 0.5);
+}
+.mr-ft.slot-3.thinking-card .mr-ft-avatar::before,
+.mr-ft.slot-3.thinking-card .mr-ft-avatar::after,
+.mr-ft.slot-3.streaming-card .mr-ft-avatar::before,
+.mr-ft.slot-3.streaming-card .mr-ft-avatar::after {
+  background: rgba(var(--c-slot-3-rgb), 0.5);
+}
+@keyframes mr-ft-ripple {
+  0% { transform: translate(-50%, -50%) scale(1); opacity: 0.65; }
+  100% { transform: translate(-50%, -50%) scale(2.2); opacity: 0; }
+}
+
+/* 完成打勾 — 头像右下角弹出 ✓, 0.4s 弹出 + 留显 */
+.mr-ft.completed-card .mr-ft-avatar::after {
+  content: '✓';
+  position: absolute;
+  bottom: -2px; right: -2px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #56d364;
+  color: white;
+  font-size: 11px;
+  font-weight: bold;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--bg-secondary, #161b22);
+  z-index: 2;
+  animation: mr-ft-check-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+}
+@keyframes mr-ft-check-pop {
+  0% { transform: scale(0); opacity: 0; }
+  60% { transform: scale(1.25); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
 .mr-ft-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 
 /* T8（2026-05-01）：row3/row4 stats 合并到 row1/row2 末尾，删除 row3/row4 div 释放 ~44px 给 preview。
@@ -1051,9 +1118,88 @@ body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active):hover {
 .mr-ft-md code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 3px; font-size: 11.5px; }
 .mr-ft-md pre { background: #0d1117; padding: 8px 10px; border-radius: 5px; overflow-x: auto; margin: .5em 0; }
 .mr-ft-md pre code { background: transparent; padding: 0; }
-.mr-ft-md table { border-collapse: collapse; margin: .5em 0; }
-.mr-ft-md th, .mr-ft-md td { border: 1px solid #30363d; padding: 3px 7px; }
-.mr-ft-md th { background: rgba(255,255,255,.04); font-weight: 600; }
+.mr-ft-md table { border-collapse: collapse; margin: .5em 0; width: auto; }
+.mr-ft-md th, .mr-ft-md td { border: 1px solid #30363d; padding: 4px 9px; }
+.mr-ft-md th { background: rgba(255,255,255,.06); font-weight: 600; color: #c9d1d9; }
+/* Phase 6(2026-05-05): 表格条纹色 + 引用块黄边斜体 */
+.mr-ft-md tr:nth-child(even) td,
+.mr-ft-preview-md tr:nth-child(even) td {
+  background: rgba(255,255,255,0.02);
+}
+.mr-ft-md blockquote,
+.mr-ft-preview-md blockquote {
+  margin: .4em 0; padding: 4px 12px;
+  border-left: 3px solid #d29922;
+  background: rgba(245,215,110,0.05);
+  color: #c9d1d9;
+  font-style: italic;
+}
+.mr-ft-md blockquote p,
+.mr-ft-preview-md blockquote p {
+  margin: 0; line-height: 1.6;
+}
+
+/* Phase 6: prismjs token 颜色(GitHub Dark 风) — 代码块语法高亮 */
+.mr-ft-md pre code .token.comment,
+.mr-ft-md pre code .token.prolog,
+.mr-ft-md pre code .token.doctype,
+.mr-ft-md pre code .token.cdata,
+.mr-ft-preview-md pre code .token.comment {
+  color: #8b949e; font-style: italic;
+}
+.mr-ft-md pre code .token.keyword,
+.mr-ft-md pre code .token.boolean,
+.mr-ft-md pre code .token.atrule,
+.mr-ft-md pre code .token.tag,
+.mr-ft-preview-md pre code .token.keyword {
+  color: #ff7b72;
+}
+.mr-ft-md pre code .token.string,
+.mr-ft-md pre code .token.attr-value,
+.mr-ft-md pre code .token.regex,
+.mr-ft-md pre code .token.char,
+.mr-ft-preview-md pre code .token.string {
+  color: #a5d6ff;
+}
+.mr-ft-md pre code .token.function,
+.mr-ft-md pre code .token.class-name,
+.mr-ft-preview-md pre code .token.function {
+  color: #d2a8ff;
+}
+.mr-ft-md pre code .token.number,
+.mr-ft-md pre code .token.constant,
+.mr-ft-md pre code .token.symbol,
+.mr-ft-preview-md pre code .token.number {
+  color: #79c0ff;
+}
+.mr-ft-md pre code .token.operator,
+.mr-ft-md pre code .token.punctuation,
+.mr-ft-preview-md pre code .token.operator {
+  color: #c9d1d9;
+}
+.mr-ft-md pre code .token.property,
+.mr-ft-md pre code .token.attr-name,
+.mr-ft-md pre code .token.builtin,
+.mr-ft-preview-md pre code .token.property {
+  color: #79c0ff;
+}
+.mr-ft-md pre code .token.selector,
+.mr-ft-md pre code .token.important,
+.mr-ft-md pre code .token.variable {
+  color: #ffa657;
+}
+.mr-ft-md pre code .token.deleted { color: #ffdcd7; background: rgba(248,81,73,0.15); }
+.mr-ft-md pre code .token.inserted { color: #aff5b4; background: rgba(46,160,67,0.15); }
+/* pre 块整体强化(深色背景 + 左侧蓝色强调线) */
+.mr-ft-md pre,
+.mr-ft-preview-md pre {
+  background: #0d1117;
+  border-left: 3px solid rgba(88,166,255,0.5);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: .5em 0;
+  overflow-x: auto;
+}
 /* 文件路径链接（marked HTML 后处理识别 .html/.md/.csv 等路径并包 <a class="rt-file-link">）。
    悬停下划线 + 鼠标手型；click 走委托调 openPreviewPanel。 */
 .mr-ft-md a.rt-file-link, .mr-rt-tl-body a.rt-file-link {

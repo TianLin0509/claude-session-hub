@@ -431,6 +431,41 @@ if (typeof document !== 'undefined') (function () {
     }
   }
 
+  // Phase 6(2026-05-05 道雪): prismjs lazy-load + 常用语言注册 — markdown 代码块语法高亮。
+  //   prismjs 已 deps in package.json (^1.30.0), 默认带 markup/css/clike/javascript;
+  //   bash/python/typescript/rust/go/json/yaml/sql/markdown 等需单独 require components。
+  //   _prismCache: null=未尝试 / Prism object=成功 / false=失败(有 try/catch 兜底)
+  let _prismCache = null;
+  function _getPrism() {
+    if (_prismCache !== null) return _prismCache || null;
+    try {
+      const Prism = require('prismjs');
+      // Prism 默认已含 markup/css/clike/javascript; 显式加载常用扩展语言
+      ['bash', 'python', 'typescript', 'jsx', 'tsx', 'rust', 'go', 'json', 'yaml', 'sql', 'markdown'].forEach(lang => {
+        try { require('prismjs/components/prism-' + lang); } catch {}
+      });
+      _prismCache = Prism;
+      return Prism;
+    } catch (e) {
+      _prismCache = false;
+      return null;
+    }
+  }
+  function _highlightCodeBlocks(wrapper) {
+    const Prism = _getPrism();
+    if (!Prism) return;
+    wrapper.querySelectorAll('pre code[class*="language-"]').forEach(code => {
+      const langClass = Array.from(code.classList).find(c => c.startsWith('language-'));
+      if (!langClass) return;
+      const lang = langClass.slice('language-'.length);
+      if (!Prism.languages[lang]) return;
+      try {
+        const html = Prism.highlight(code.textContent, Prism.languages[lang], lang);
+        code.innerHTML = html;
+      } catch {}
+    });
+  }
+
   function _renderMarkdown(text) {
     if (!text) return '';
     try {
@@ -438,7 +473,7 @@ if (typeof document !== 'undefined') (function () {
       if (!_domPurifyCache) _domPurifyCache = require('dompurify');
       const sanitized = _domPurifyCache.sanitize(
         _markedCache.parse(text, { breaks: true, gfm: true }),
-        { ADD_ATTR: ['data-path'] }
+        { ADD_ATTR: ['data-path', 'class'] }
       );
       // 后处理：扫文件路径包 <a class="rt-file-link"> 让用户点开预览（卡片优化 2026-05-03）。
       //   注意必须在 sanitize 之后做，因为我们新增的 <a> 元素文本来自 sanitize 后的 textContent
@@ -446,6 +481,8 @@ if (typeof document !== 'undefined') (function () {
       const wrapper = document.createElement('div');
       wrapper.innerHTML = sanitized;
       _wrapFilePathsInDom(wrapper);
+      // Phase 6: 代码块语法高亮(prism token classes), CSS 提供 token 颜色
+      _highlightCodeBlocks(wrapper);
       return wrapper.innerHTML;
     } catch (e) {
       // 回退到纯文本（escapeHtml）
@@ -938,6 +975,8 @@ if (typeof document !== 'undefined') (function () {
     // Card redesign：thinking-card / streaming-card 触发头像 bounce 动画
     if (statusCls === 'thinking') cls.push('thinking-card');
     else if (statusCls === 'streaming') cls.push('streaming-card');
+    // Phase 6(2026-05-05 道雪): completed-card → 触发头像旁完成打勾动画(0.4s 弹出 + 留显)
+    else if (statusCls === 'completed' || statusCls === 'manual_extracted') cls.push('completed-card');
     // T6（2026-05-03）：send-stuck 数据驱动，refreshRoundtablePanel 重渲后保留
     if (sendStuck) cls.push('send-stuck');
 
