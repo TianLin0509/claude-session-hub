@@ -724,21 +724,103 @@
   flex-wrap: wrap;
 }
 .mr-rt-track-title-grp { display: flex; align-items: center; gap: 10px; }
+/* Phase 5(2026-05-05): Stepper mini-map A 风格 — progress track dots + N/N 计数器
+   每个 dot = 一轮, mode 配色, 当前轮蓝光圈放大, click/hover 时光机切换。 */
 .mr-rt-stepper {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-size: 11px; color: #8b949e;
+  display: inline-flex; align-items: center; gap: 0;
+  padding: 5px 12px;
+  background: rgba(22,27,34,0.6);
+  border: 1px solid #21262d;
+  border-radius: 14px;
+  position: relative;
+  min-height: 22px;
+}
+.mr-rt-stepper::before {
+  /* 横穿 dots 的细线 */
+  content: ''; position: absolute;
+  left: 18px; right: 50px; top: 50%; transform: translateY(-50%);
+  height: 1px; background: #2a3245;
+  z-index: 0;
 }
 .mr-rt-step-dot {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--c-codex);
+  width: 8px; height: 8px; border-radius: 50%;
+  margin: 0 6px;
+  cursor: pointer;
+  z-index: 1; position: relative;
+  transition: transform .15s ease-out, box-shadow .15s;
+}
+.mr-rt-step-dot.fanout { background: #818cf8; }
+.mr-rt-step-dot.debate { background: #f5d76e; }
+.mr-rt-step-dot.summary { background: #56d364; }
+.mr-rt-step-dot.current {
+  width: 11px; height: 11px;
+  box-shadow: 0 0 0 3px rgba(88,166,255,0.45);
+}
+.mr-rt-step-dot:hover {
+  transform: scale(1.5);
+  z-index: 2;
 }
 .mr-rt-step-dot.active {
-  background: #fde68a;
-  box-shadow: 0 0 6px #fde68a;
+  /* 进行中轮(还没 commit 的轮)有动画 */
   animation: rt-pulse 1.5s ease-in-out infinite;
 }
-.mr-rt-step-line { width: 12px; height: 1px; background: #2a3245; }
-.mr-rt-step-label { margin-left: 6px; font-size: 11px; white-space: nowrap; }
+.mr-rt-step-counter {
+  margin-left: 8px;
+  font-size: 11px; font-weight: 600;
+  color: #c9d1d9;
+  font-variant-numeric: tabular-nums;
+  z-index: 1; position: relative;
+}
+.mr-rt-step-counter.viewing {
+  color: #d8baff;  /* 时光机模式紫色提示 */
+}
+
+/* Phase 5: 时光机 banner */
+.mr-rt-timetravel-banner {
+  background: rgba(216,138,254,0.1);
+  border: 1px solid rgba(216,138,254,0.3);
+  border-radius: 6px;
+  padding: 8px 14px;
+  margin: 8px 0 4px;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12.5px; color: #d8baff;
+}
+.mr-rt-tt-icon { font-size: 14px; }
+.mr-rt-tt-text b { color: #f0d6ff; font-weight: 700; }
+.mr-rt-tt-exit {
+  margin-left: auto;
+  padding: 4px 12px;
+  background: rgba(216,138,254,0.18);
+  color: #d8baff;
+  border: 1px solid rgba(216,138,254,0.3);
+  border-radius: 12px;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.mr-rt-tt-exit:hover {
+  background: rgba(216,138,254,0.3);
+  color: white;
+}
+
+/* Phase 5: 时光机模式时, 3 卡片整体加紫色边框 + 输入框 disable hint(JS 侧 disable 实际操作) */
+.mr-ft-strip.mr-ft-timetravel .mr-ft {
+  border-color: rgba(216,138,254,0.35) !important;
+  background-color: rgba(216,138,254,0.03);
+}
+.mr-input-row-tt {
+  background: rgba(216,138,254,0.05) !important;
+  border-top-color: rgba(216,138,254,0.25) !important;
+}
+.mr-input-row-tt #mr-input-box {
+  opacity: 0.5;
+  cursor: not-allowed;
+  user-select: none;
+}
+.mr-input-row-tt #mr-send-btn {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 /* E3 修复 (2026-05-03)：.mr-rt-cmd-bar / .mr-rt-cmd-btn 等样式删除 — cmd-bar
    按钮组与 toolbar 重复，已从渲染中移除（meeting-room.js _renderCmdBar 删）。 */
 

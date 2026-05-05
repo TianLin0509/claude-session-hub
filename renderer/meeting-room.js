@@ -76,6 +76,11 @@ if (typeof document !== 'undefined') (function () {
   }
 
   // --- Roundtable Mode: 持久化圆桌面板（始终显示当前状态 + 历史）---
+  // Phase 5(2026-05-05 道雪): 时光机模式状态 — _rtViewingTurnN[meetingId] = N 表示正在查看第 N 轮历史。
+  //   null / undefined = 默认查看最新轮(实时模式), 数字 = 查看第 N 轮(只读历史模式)。
+  //   切换由 stepper dot click 触发 → 重渲 panel + _renderSlotCard 拿 turn.by[sid] 渲染历史内容。
+  const _rtViewingTurnN = {};
+
   // _rtPanelState[meetingId] 缓存渲染状态，避免 IPC 频繁调用
   // partialBy: 当前进行中轮次的部分回答 { sid: { text, status } } — 单家完成立即更新
   const _rtPanelState = {};
@@ -330,7 +335,7 @@ if (typeof document !== 'undefined') (function () {
     _rtQuoteFloatBtn.style.left = `${rect.right + window.scrollX - 90}px`;
   });
 
-  // F0 + F3 Phase 1/2: 全局 Esc / 点空白退出聚焦/对比态。IIFE 顶层挂载, 只挂一次。
+  // F0 + F3 Phase 1/2 + Phase 5: 全局 Esc — 退出聚焦/对比/时光机。IIFE 顶层挂载, 只挂一次。
   document.addEventListener('keydown', function _rtFocusEscHandler(ev) {
     if (ev.key !== 'Escape') return;
     // F6: Esc 也关闭引用浮按钮
@@ -342,6 +347,13 @@ if (typeof document !== 'undefined') (function () {
       document.body.classList.remove('mr-card-focus-on');
     }
     if (_rtCompareSlots.size > 0) _clearCompareSelect();
+    // Phase 5: Esc 退出时光机模式(对当前 active meeting)。
+    //   meetings 是 plain object(不是 Map), 用 meetings[id] 取
+    if (typeof activeMeetingId !== 'undefined' && activeMeetingId && _rtViewingTurnN[activeMeetingId]) {
+      delete _rtViewingTurnN[activeMeetingId];
+      const m = (typeof meetings !== 'undefined' && meetings) ? meetings[activeMeetingId] : null;
+      if (m) refreshRoundtablePanel(m);
+    }
   });
   document.addEventListener('click', function _rtFocusBlankClickHandler(ev) {
     if (ev.target && ev.target.closest && ev.target.closest('.mr-ft')) return;
@@ -882,21 +894,36 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _renderFusedTabs(state, subs, currentMode, partialBy, meeting) {
-    const lastTurn = state.turns.length > 0 ? state.turns[state.turns.length - 1] : null;
+    const meetingId = meeting && meeting.id;
+    // Phase 5(2026-05-05 道雪): 时光机模式 — viewingTurnN 设置则将 ctx 切换到该历史轮快照,
+    //   _renderSlotCard 内部 "已完成轮 → 显示 lastTurn.by[sid]" 分支(line 723-735)直接复用,
+    //   纯前端切换。partialBy 设为 null + currentMode 设为 'idle' 避免触发 thinking/streaming 分支。
+    const viewN = _rtViewingTurnN[meetingId];
+    const isTimeTravel = (typeof viewN === 'number' && viewN >= 1 && viewN <= state.turns.length);
+    const effectiveLastTurn = isTimeTravel
+      ? state.turns[viewN - 1]
+      : (state.turns.length > 0 ? state.turns[state.turns.length - 1] : null);
+    const effectivePartialBy = isTimeTravel ? null : partialBy;
+    const effectiveCurrentMode = isTimeTravel ? 'idle' : currentMode;
+
     const summarizerSlot = state.currentSummarizerSlot || null;
     const tabs = [];
-    const meetingId = meeting && meeting.id;
     const focused = meeting.focusedSub || meeting.subSessions[0];
     let anyThinking = false;
     const slots = _getRtSlots(meeting);
-    const ctx = { state, currentMode, partialBy, meeting, slots, lastTurn, summarizerSlot, meetingId, focused };
+    const ctx = {
+      state, currentMode: effectiveCurrentMode, partialBy: effectivePartialBy,
+      meeting, slots, lastTurn: effectiveLastTurn, summarizerSlot, meetingId, focused,
+      isTimeTravel,
+    };
     for (let slotIndex = 0; slotIndex < 3; slotIndex++) {
       const { html, anyThinking: t } = _renderSlotCard(slotIndex, ctx);
       if (html) tabs.push(html);
       if (t) anyThinking = true;
     }
     if (!anyThinking && meetingId) delete _thinkStartTs[meetingId];
-    return `<div class="mr-ft-strip">${tabs.join('')}</div>`;
+    const stripCls = isTimeTravel ? 'mr-ft-strip mr-ft-timetravel' : 'mr-ft-strip';
+    return `<div class="${stripCls}">${tabs.join('')}</div>`;
   }
 
   function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, bottomHtml,
@@ -1041,20 +1068,35 @@ if (typeof document !== 'undefined') (function () {
     </div>`;
   }
 
-  function _renderTurnStepper(turns, currentMode) {
-    if (turns.length === 0) return '';
-    const maxDots = 8;
-    const showDots = turns.slice(-maxDots);
-    const dots = showDots.map(t =>
-      `<span class="mr-rt-step-dot" title="第 ${t.n} 轮 · ${t.mode}"></span>`
-    ).join('<span class="mr-rt-step-line"></span>');
-    const activeDot = currentMode && currentMode !== 'idle'
-      ? '<span class="mr-rt-step-line"></span><span class="mr-rt-step-dot active"></span>'
+  // Phase 5(2026-05-05 道雪): stepper 升级为 progress track mini-map + N/N 当前轮指示。
+  //   旧版: 装饰性 dot, 不可交互, 数据来源轻; 底部独立"历史轮次 (N)"按钮折叠列表。
+  //   新版: 每轮一个可 click/hover 的 dot(progress track 风, A 方案), mode 配色,
+  //         当前轮蓝光圈放大, 末尾 "N/N" 数字直白显示进度。
+  //         数据 attr (data-turn-n / data-turn-mode) 支持 click/hover 时光机切换。
+  //         "历史轮次"按钮 + _renderRtHistory 渲染删除(功能被 mini-map 完全替代)。
+  function _renderTurnStepper(turns, currentMode, viewingTurnN) {
+    const totalTurns = turns.length;
+    if (totalTurns === 0 && (!currentMode || currentMode === 'idle')) return '';
+    const isActive = currentMode && currentMode !== 'idle';
+    // 当前 active 轮号: 非 idle 时 = totalTurns + 1(本轮还在跑); idle 时 = totalTurns(最后一轮已完成)
+    const activeTurnN = isActive ? totalTurns + 1 : totalTurns;
+    // 当前查看的轮号: viewingTurnN 优先(时光机模式), 否则 = activeTurnN
+    const viewN = (typeof viewingTurnN === 'number' && viewingTurnN >= 1) ? viewingTurnN : activeTurnN;
+
+    const dots = turns.map(t => {
+      const isCurrent = t.n === viewN;
+      const cls = `mr-rt-step-dot ${escapeHtml(t.mode)}${isCurrent ? ' current' : ''}`;
+      return `<span class="${cls}" data-turn-n="${t.n}" data-turn-mode="${escapeHtml(t.mode)}" title="第 ${t.n} 轮 · ${escapeHtml(t.mode)}"></span>`;
+    }).join('');
+    // active(进行中)轮的 placeholder dot
+    const activeDot = isActive
+      ? `<span class="mr-rt-step-dot ${escapeHtml(currentMode)} active${activeTurnN === viewN ? ' current' : ''}" data-turn-n="${activeTurnN}" data-turn-active="1" title="第 ${activeTurnN} 轮 · ${escapeHtml(currentMode)} (进行中)"></span>`
       : '';
-    const label = currentMode && currentMode !== 'idle'
-      ? `第 ${turns.length + 1} 轮 · ${{ fanout: '提问中', debate: '辩论中', summary: '综合中' }[currentMode] || currentMode}`
-      : `已 ${turns.length} 轮 · 等待提问`;
-    return `<span class="mr-rt-stepper">${dots}${activeDot}<span class="mr-rt-step-label">${label}</span></span>`;
+    // N/N 进度数字 — 时光机模式时显示 "viewN/totalDisplay" 蓝色, 默认显示 "current/total" 灰色
+    const totalDisplay = isActive ? activeTurnN : totalTurns;
+    const isViewingHistory = (typeof viewingTurnN === 'number' && viewingTurnN < activeTurnN);
+    const counter = `<span class="mr-rt-step-counter${isViewingHistory ? ' viewing' : ''}">${viewN}/${totalDisplay}</span>`;
+    return `<span class="mr-rt-stepper" id="mr-rt-stepper">${dots}${activeDot}${counter}</span>`;
   }
 
   function _suggestedCmd(turns, currentMode) {
@@ -1198,9 +1240,20 @@ if (typeof document !== 'undefined') (function () {
     const mode = state.currentMode || 'idle';
     const partialBy = state._partialBy || null;
     const fusedTabs = _renderFusedTabs(state, subs, mode, partialBy, meeting);
-    const history = _renderRtHistory(state, meeting);
+    // Phase 5(2026-05-05 道雪): 删除 _renderRtHistory 渲染调用。
+    //   旧版底部"历史轮次 (N)"折叠按钮 + 列表已被 stepper mini-map 完全替代;
+    //   保留 _renderRtHistory 函数本身以防其他地方调用, 仅删此处渲染。
     const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
-    const stepper = _renderTurnStepper(state.turns, mode);
+    const viewingTurnN = _rtViewingTurnN[meeting.id];
+    const stepper = _renderTurnStepper(state.turns, mode, viewingTurnN);
+    // Phase 5: 时光机 banner — 仅 viewingTurnN 设置时渲染
+    const timeTravelBanner = (typeof viewingTurnN === 'number' && viewingTurnN >= 1)
+      ? `<div class="mr-rt-timetravel-banner">
+          <span class="mr-rt-tt-icon">⌛</span>
+          <span class="mr-rt-tt-text">时光机模式 · 第 <b>${viewingTurnN}</b> 轮 · ${escapeHtml((state.turns[viewingTurnN - 1] && state.turns[viewingTurnN - 1].mode) || '')} (只读历史)</span>
+          <button class="mr-rt-tt-exit" id="mr-rt-tt-exit" data-rt-tt-exit="1">回到最新 (Esc)</button>
+        </div>`
+      : '';
 
     // F5 Phase 3(2026-05-04 道雪 简化版): 仅整轮总耗时
     //   token + cost 因 transcript-tap 通路缺失暂不显示, 等后续扩展再启用。
@@ -1246,9 +1299,9 @@ if (typeof document !== 'undefined') (function () {
         </div>
       </div>
       ${softBanner}
+      ${timeTravelBanner}
       ${onboarding}
       ${fusedTabs}
-      ${history}
     `;
   }
 
@@ -1497,13 +1550,47 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _bindRtPanelEvents(panel, meeting) {
-    const toggle = panel.querySelector('#mr-rt-history-toggle');
-    if (toggle) {
-      toggle.addEventListener('click', () => {
-        _rtHistoryExpanded = !_rtHistoryExpanded;
+    // Phase 5(2026-05-05 道雪): 旧 history-toggle 已删除(被 stepper mini-map 替代),
+    //   新加 stepper dot click + 时光机 banner exit click handlers。
+    panel.querySelectorAll('.mr-rt-step-dot[data-turn-n]').forEach(dot => {
+      dot.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const n = parseInt(dot.getAttribute('data-turn-n'), 10);
+        if (!Number.isFinite(n) || n < 1) return;
+        const cached = _rtPanelState[meeting.id];
+        const totalTurns = cached && Array.isArray(cached.turns) ? cached.turns.length : 0;
+        const isActive = cached && cached.currentMode && cached.currentMode !== 'idle';
+        const latestN = isActive ? totalTurns + 1 : totalTurns;
+        // 点击当前最新轮 = 退出时光机; 否则进入/切换时光机到第 N 轮
+        if (n === latestN || dot.hasAttribute('data-turn-active')) {
+          delete _rtViewingTurnN[meeting.id];
+        } else {
+          _rtViewingTurnN[meeting.id] = n;
+        }
+        refreshRoundtablePanel(meeting);
+      });
+    });
+    // 时光机 banner 退出按钮
+    const ttExitBtn = panel.querySelector('[data-rt-tt-exit]');
+    if (ttExitBtn) {
+      ttExitBtn.addEventListener('click', () => {
+        delete _rtViewingTurnN[meeting.id];
         refreshRoundtablePanel(meeting);
       });
     }
+    // 时光机模式 input/send disable(只读历史不许新发轮)
+    const inputBox = document.getElementById('mr-input-box');
+    const sendBtn = document.getElementById('mr-send-btn');
+    const inputRow = document.getElementById('mr-input-row');
+    const isTT = !!_rtViewingTurnN[meeting.id];
+    if (inputBox) {
+      inputBox.setAttribute('contenteditable', isTT ? 'false' : 'true');
+      inputBox.setAttribute('data-placeholder', isTT
+        ? '⌛ 时光机模式 — 点 stepper 最新轮 / Esc 退出后才能发送'
+        : (inputBox.getAttribute('data-placeholder-orig') || inputBox.getAttribute('data-placeholder') || ''));
+    }
+    if (sendBtn) sendBtn.disabled = isTT;
+    if (inputRow) inputRow.classList.toggle('mr-input-row-tt', isTT);
     // T2（2026-05-04 道雪）：每个 slot 卡片走 _bindSlotCardEvents（同一函数 partial 局部 rebind 复用）
     panel.querySelectorAll('.mr-ft[data-ft-sid]').forEach(slotEl => {
       _bindSlotCardEvents(slotEl, meeting);
