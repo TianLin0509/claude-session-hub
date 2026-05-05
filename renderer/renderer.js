@@ -2011,6 +2011,19 @@ window._mountTurnCard = mountTurnCard;
 //     Map contract. The `element` is recoverable via
 //     `document.querySelector('.turn-card[data-turn-id="…"]')` (used by
 //     rerenderTurn already).
+// 2026-05-06 道雪 重做 b54a3b6（原 fix 在 fix/card-overlay-scroll-lock 分支没合上 master）+
+// Codex 多方审查补漏：chat UI 标准 scroll-respect-user 模式 — 仅当用户在底部 50px
+// 容差内才自动跟随,否则尊重用户向上翻历史的意图。此 helper 守护三处:
+//   (1) mountSessionTurnCard 的 opts.autoScroll(turn-complete-event 路径会传 true)
+//   (2) _updateStreamingIndicator 创建"还在生成更多回复…"indicator 时
+//   (3) loadSessionHistoryToOverlay 末尾的 batch scrollIntoView (Codex 发现):
+//       incremental=true throttle 反复触发时不应拍底;incremental=false 切 session
+//       时 container 已 innerHTML='' → helper 自然 true → 初次加载行为不退化
+function _isCardOverlayAtBottom(el) {
+  if (!el) return true;
+  return (el.scrollHeight - el.scrollTop - el.clientHeight) < 50;
+}
+
 function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 1. validate inputs
   if (!turn || !turn.id || !turn.role) {
@@ -2077,6 +2090,8 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
 
   // 5. insert into container — Spec 3 W16：streaming indicator 必须在末尾，
   // 所以新卡插在 indicator 之前（如果存在）
+  // 2026-05-06 道雪 scroll-respect-user：append 前先记录用户是否在底部,给 step 9 用
+  const _wasAtBottom = _isCardOverlayAtBottom(container);
   const _streamingTail = container.querySelector('.streaming-indicator');
   if (_streamingTail) {
     container.insertBefore(cardEl, _streamingTail);
@@ -2102,8 +2117,9 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // Use turnForRender (kind merged) so rerenderTurn won't lose kind on fold/unfold
   window._sessionTurns.set(turn.id, turnForRender);
 
-  // 9. autoScroll
-  if (opts.autoScroll) {
+  // 9. autoScroll — 2026-05-06 道雪 scroll-respect-user:仅当用户原本在底部时才滚
+  //   (向上翻历史时不打断,避免被新 turn 拍回底部)
+  if (opts.autoScroll && _wasAtBottom) {
     try {
       cardEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
     } catch {
@@ -2250,6 +2266,13 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   // Use a default kind 'claude' if session lookup failed but main.js still
   // returned turns — they came from a Claude transcript by definition.
   const mountKind = kind || 'claude';
+  // 2026-05-06 道雪 scroll-respect-user (Codex 多方审查发现):
+  //   incremental=true 路径(streaming partial-update throttle)反复触发本函数,
+  //   末尾的 batch scrollIntoView 没 guard → 用户上翻历史时仍被拍回底部。
+  //   incremental=false(切 session): line 2179 已清 container.innerHTML='' →
+  //     scrollTop=0/scrollHeight=0 → helper 自然返回 true → 初次加载行为不退化。
+  //   incremental=true(throttle reload): container 保留旧内容 → 反映用户真实位置。
+  const _batchWasAtBottom = _isCardOverlayAtBottom(container);
   let mounted = 0;
   let lastCardEl = null;
   for (const turn of turns) {
@@ -2261,7 +2284,8 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   }
 
   // Single bottom-scroll AFTER loop (don't autoScroll per mount — N reflows = jitter)
-  if (lastCardEl) {
+  // — 仅当 batch 开始前用户在底部才滚(scroll-respect-user)
+  if (lastCardEl && _batchWasAtBottom) {
     try {
       lastCardEl.scrollIntoView({ behavior: 'auto', block: 'end' });
     } catch {
@@ -2520,12 +2544,17 @@ function _updateStreamingIndicator(sessionId) {
   }
   if (isRunning && currentView === 'card') {
     if (!indicator) {
+      // 2026-05-06 道雪 scroll-respect-user:append 前记录是否在底部,仅满足条件才滚
+      //   (status running↔idle 反复切换时频繁触发的强制 scroll 是历史 bug 主因之一)
+      const wasAtBottom = _isCardOverlayAtBottom(overlay);
       indicator = document.createElement('div');
       indicator.className = 'streaming-indicator';
       indicator.dataset.sessionId = String(sessionId);
       indicator.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="text"></span>';
       overlay.appendChild(indicator);
-      try { overlay.scrollTop = overlay.scrollHeight; } catch {}
+      if (wasAtBottom) {
+        try { overlay.scrollTop = overlay.scrollHeight; } catch {}
+      }
     }
     // 动态文案
     const cardCount = overlay.querySelectorAll('.turn-card[data-turn-id]').length;
