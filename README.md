@@ -13,12 +13,19 @@
 > 多模型协作圆桌终端 · v1.0.0
 
 <p align="center">
-  <img src="./docs/images/roundtable-launcher.png" alt="启动屏 — 三席位圆桌" width="820" />
+  <img src="./docs/images/roundtable-3claude-fanout.gif" alt="3 个 Claude Sonnet 同坐一桌 fanout 实录" width="820" />
 </p>
 
 <p align="center">
-  <em>🎬 圆桌实录 GIF 录制中，敬请期待。</em>
+  <em>3 个 Claude Sonnet 同坐一桌：从「思考中」到三张卡片同步收尾，约 18 秒一轮。</em>
 </p>
+
+<details>
+<summary>启动屏一览（点开看静图）</summary>
+<p align="center">
+  <img src="./docs/images/roundtable-launcher.png" alt="启动屏 — 三席位圆桌" width="820" />
+</p>
+</details>
 
 ---
 
@@ -41,6 +48,31 @@
 | **容错** | 卡死自动 Resend，300s 无响应自动救援，silent failure 三处兜底 — 不会因为某家 AI 抽风把整桌锁死 |
 
 > 圆桌产物是「**可讨论的判断**」而非「研报或可执行方案」。要落地操作时，结论里会建议你切独立 session 实操。
+
+#### 🎬 动图实录
+
+<table>
+<tr>
+<td valign="top" width="50%">
+<img src="./docs/images/roundtable-debate.gif" alt="@debate 辩论模式" />
+<p align="center"><strong>@debate · 触发辩论</strong><br/><sub>三家亮立场互相引用，不再是 AI 合唱</sub></p>
+</td>
+<td valign="top" width="50%">
+<img src="./docs/images/roundtable-timemachine.gif" alt="时光机 mini-map 回放" />
+<p align="center"><strong>时光机 · Stepper mini-map</strong><br/><sub>点任意一轮跳回历史快照，紫 banner 提示"只读"</sub></p>
+</td>
+</tr>
+<tr>
+<td valign="top" width="50%">
+<img src="./docs/images/roundtable-pikachu-mention.gif" alt="@pikachu 点名单聊" />
+<p align="center"><strong>@pikachu · 点名某席</strong><br/><sub>被点名的实质回答，其他两家短礼貌让位</sub></p>
+</td>
+<td valign="top" width="50%">
+<img src="./docs/images/roundtable-sidebar-jump.gif" alt="侧栏迷你跳转" />
+<p align="center"><strong>侧栏 ⚡🔥💎 迷你跳转</strong><br/><sub>三粒小芯片直跳每席的 PTY，看 Hub 给它的完整上下文</sub></p>
+</td>
+</tr>
+</table>
 
 ### 📇 卡片视图 —— 把 PTY 流变成结构化对话
 
@@ -103,9 +135,10 @@
 
 | 集成 | 用法 |
 |------|------|
-| **LinDang MCP** | Gemini 自动挂载 A 股行情 MCP（`fetch_lindang_stock` / `fetch_lindang_field`），research 场景下圆桌可直接查实盘 |
-| **飞书消息** | Hub 活跃圆桌的进展自动推送到飞书私聊（橙=等待 / 蓝=完成），60s 同轮去重 |
-| **Hooks** | `session-hub-hook.py`（驱动未读+消息预览）+ `claude-hub-statusline.js`（推送 Context/Usage） |
+| **A 股行情 MCP**（投研场景，需自配） | 投研场景的圆桌支持挂载行情数据后端（`fetch_lindang_stock` / `fetch_lindang_field`）。**默认未启用** —— 数据后端是作者私有的 A 股投研工具，未公开。其他用户需自己提供一个能跑 `python data_query.py snapshot <code>` 的后端，并设环境变量 `LINDANG_DIR` 指向其项目根；未配置时投研场景圆桌仍可创建，但 AI 调 MCP 工具会拿到 not-configured 错误。**最常见用法**：用通用 / 开发场景，不依赖此集成。 |
+| **DeepSeek 总结备胎**（可选） | 圆桌「📝 总结」按钮的 LLM 走 fallback 链 `gemini-cli → deepseek-api`。默认走你已登录的 Gemini CLI（不需 API key），失败才 fallback 到 DeepSeek API。要启用 DeepSeek 备胎需 `setx DEEPSEEK_API_KEY <your-key>` —— 但典型用户用 Gemini CLI 永远命中第一档，无需配置。 |
+| **飞书消息**（可选） | Hub 活跃圆桌的进展自动推送到飞书私聊（橙=等待 / 蓝=完成），60s 同轮去重。需在设置里配 Feishu App ID + Secret 才启用。 |
+| **Hooks** | `session-hub-hook.py`（驱动未读+消息预览）+ `claude-hub-statusline.js`（推送 Context/Usage），安装时自动部署 |
 | **隔离模式** | `CLAUDE_HUB_DATA_DIR` env 启动隔离实例（E2E/多人协作各开一份），运行时状态完全隔离 |
 
 ---
@@ -236,7 +269,15 @@ MIT
 >
 > Multi-model collaborative roundtable terminal · v1.0.0
 
+![3 Claude Sonnets at one table — fanout in action](docs/images/roundtable-3claude-fanout.gif)
+
+*3 Claude Sonnets sharing one table: "thinking…" to three cards wrapping in sync, ~18 s per turn.*
+
+<details>
+<summary>Static launcher screenshot</summary>
+
 ![Launcher — three-seat roundtable](docs/images/roundtable-launcher.png)
+</details>
 
 ## What's New in v1.0
 
@@ -255,6 +296,31 @@ Not "fan-out the same prompt to three AIs and concatenate." Roundtable lets the 
 | **3 scenes** | **dev** (code design/review) · **research** (stock analysis, MCP-mounted) · **general**. |
 | **Timeline / Time machine** | Each turn appended to timeline.md. Stepper mini-map for replay. |
 | **Fault tolerance** | Auto Resend on hang, 300s auto-recovery, three silent-failure fallbacks. One AI crashing won't lock the whole table. |
+
+#### 🎬 Recordings
+
+<table>
+<tr>
+<td valign="top" width="50%">
+<img src="./docs/images/roundtable-debate.gif" alt="@debate mode" />
+<p align="center"><strong>@debate</strong><br/><sub>Three seats stake out positions and cite each other</sub></p>
+</td>
+<td valign="top" width="50%">
+<img src="./docs/images/roundtable-timemachine.gif" alt="time-machine replay" />
+<p align="center"><strong>Time machine</strong><br/><sub>Click any past round on the stepper mini-map to time-travel back</sub></p>
+</td>
+</tr>
+<tr>
+<td valign="top" width="50%">
+<img src="./docs/images/roundtable-pikachu-mention.gif" alt="@pikachu addressing one seat" />
+<p align="center"><strong>@pikachu</strong><br/><sub>Address one seat; the others step aside with a quick nod</sub></p>
+</td>
+<td valign="top" width="50%">
+<img src="./docs/images/roundtable-sidebar-jump.gif" alt="sidebar mini-jump" />
+<p align="center"><strong>Sidebar ⚡🔥💎 mini-jump</strong><br/><sub>Three chips fly straight to each seat's PTY view</sub></p>
+</td>
+</tr>
+</table>
 
 ### 📇 Card View
 
