@@ -1275,26 +1275,59 @@ if (typeof document !== 'undefined') (function () {
   }
 
   // dev scene 一次性引导卡片 (plan-dev-scenario.md §5.2)
-  //   仅 dev 场景 + localStorage 未持久化"不再显示"时渲染
+  //   按 meeting.scene 分发到三套文案 + 三个 localStorage key
   //   "不再显示" → setItem('1') 永久不再出现; "我知道了" → 仅当前视图隐藏 (DOM 删除), 下次进 panel 仍出现
-  //   D1 v2 (master) 把欢迎区上移到 fusedTabs 之前; dev card 同属欢迎区, 跟随上移待遇 (在 onboarding 之上).
-  const DEV_ONBOARDING_LS_KEY = 'hub-dev-scenario-onboarding-dismissed-v1';
-  function _renderDevOnboardingCard(meeting) {
-    if (!meeting || meeting.scene !== 'dev') return '';
+  //   D1 v2 (master) 把欢迎区上移到 fusedTabs 之前; scene card 同属欢迎区, 跟随上移待遇 (在 onboarding 之上).
+  const SCENE_ONBOARDING_LS_KEY = {
+    general: 'hub-general-scenario-onboarding-dismissed-v1',
+    research: 'hub-research-scenario-onboarding-dismissed-v1',
+    dev: 'hub-dev-scenario-onboarding-dismissed-v1',
+  };
+  const SCENE_ONBOARDING_CONTENT = {
+    general: {
+      head: '🎯 通用圆桌 · 使用提示',
+      bullets: [
+        '三家平等给观点，不预设领域；技术辩论、代码评审、开放讨论都行。',
+        '默认提问 → 三家并行；输入"<strong>@debate</strong>"触发辩论；工具栏"<strong>🗒 摘要</strong>"让上家浓缩五元组，"<strong>📝 总结</strong>"让指定 AI 综合所有轮次。',
+        '想点名某家：用"<strong>@pikachu / @charmander / @squirtle</strong>"指定发言人。',
+        '圆桌产物是<strong>可讨论的判断</strong>，不是研报或可执行方案。需要落地操作时，结论里会建议你切独立 session 实操。',
+      ],
+    },
+    research: {
+      head: '📊 投研圆桌 · 使用提示',
+      bullets: [
+        '三家偏置已固化：<strong>Pikachu</strong> 对抗硬度派（最尖锐空头）/ <strong>Charmander</strong> 反直觉校验派（找盲点）/ <strong>Squirtle</strong> 极简克制派（快速初筛）。',
+        '输入个股代码 / 问题即可；三家会自动调 LinDangAgent 拿最新数据，从基本面 + 资金面 + 技术面 + 情绪面给观点。',
+        '结论必走 <strong>4 档</strong>（强烈推荐 / 可买需条件 / 不建议买 / 强烈回避），不允许"建议关注 / 可跟踪"等模糊话术。',
+        '想跳过首轮反问，直接输入"<strong>直接分析</strong>"；想看深度推演（含对手盘 + 预期差分层），输入"<strong>@深度</strong>"。',
+      ],
+    },
+    dev: {
+      head: '🛠️ 开发圆桌 · 使用提示',
+      bullets: [
+        '三家先帮你问清需求、讨论方案，默认只交给 1 个 Driver 实操。',
+        '你可以跳过问题；跳过项会在交接单里作为默认假设回显。',
+        '需要交接时输入"<strong>生成交接单</strong>"；Driver 改完后输入"<strong>帮我审一下</strong>"。',
+        '如需一对一深聊，可切主驾模式手动使用 superpowers brainstorm skill。',
+      ],
+    },
+  };
+  function _renderSceneOnboardingCard(meeting) {
+    if (!meeting) return '';
+    const sceneKey = meeting.scene;
+    const content = SCENE_ONBOARDING_CONTENT[sceneKey];
+    const lsKey = SCENE_ONBOARDING_LS_KEY[sceneKey];
+    if (!content || !lsKey) return ''; // 未注册场景不渲染
     try {
-      if (localStorage.getItem(DEV_ONBOARDING_LS_KEY) === '1') return '';
+      if (localStorage.getItem(lsKey) === '1') return '';
     } catch {} // localStorage 不可用时按"未持久化"处理
-    return `<div class="mr-rt-dev-card" data-rt-dev-card>
-      <div class="mr-rt-dev-card-head">🛠️ 开发圆桌 · 使用提示</div>
-      <ul class="mr-rt-dev-card-body">
-        <li>三家先帮你问清需求、讨论方案，默认只交给 1 个 Driver 实操。</li>
-        <li>你可以跳过问题；跳过项会在交接单里作为默认假设回显。</li>
-        <li>需要交接时输入"<strong>生成交接单</strong>"；Driver 改完后输入"<strong>帮我审一下</strong>"。</li>
-        <li>如需一对一深聊，可切主驾模式手动使用 superpowers brainstorm skill。</li>
-      </ul>
-      <div class="mr-rt-dev-card-actions">
-        <button class="mr-rt-dev-card-btn" data-rt-dev-card-action="dismiss-once">我知道了</button>
-        <button class="mr-rt-dev-card-btn mr-rt-dev-card-btn-secondary" data-rt-dev-card-action="dismiss-forever">不再显示</button>
+    const bulletsHtml = content.bullets.map(b => `<li>${b}</li>`).join('');
+    return `<div class="mr-rt-scene-card" data-rt-scene-card data-rt-scene-key="${sceneKey}">
+      <div class="mr-rt-scene-card-head">${content.head}</div>
+      <ul class="mr-rt-scene-card-body">${bulletsHtml}</ul>
+      <div class="mr-rt-scene-card-actions">
+        <button class="mr-rt-scene-card-btn" data-rt-scene-card-action="dismiss-once">我知道了</button>
+        <button class="mr-rt-scene-card-btn mr-rt-scene-card-btn-secondary" data-rt-scene-card-action="dismiss-forever">不再显示</button>
       </div>
     </div>`;
   }
@@ -1346,8 +1379,8 @@ if (typeof document !== 'undefined') (function () {
     //   📝 总结"语义重叠且 disabled 状态不一致（cmd-bar @summary disabled vs toolbar
     //   📝 总结 enabled），用户困惑。toolbar 已覆盖所有功能，删 cmd-bar 单一来源。
     const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
-    // dev 一次性引导卡片 (plan-dev-scenario.md §5.2): 与 onboarding 独立, 跨 panel 始终展示直至用户"不再显示"
-    const devCard = _renderDevOnboardingCard(meeting);
+    // 场景一次性引导卡片 (general/research/dev 共用): 与 onboarding 独立, 跨 panel 始终展示直至用户"不再显示"
+    const devCard = _renderSceneOnboardingCard(meeting);
     // Stage 2 容错升级：软提醒 banner 容器
     const softBanner = `<div id="mr-rt-soft-alert-banner" class="mr-rt-soft-alert-banner" style="display:none"></div>`;
     // pilot redesign（2026-05-02）：废弃 pilotRecaps 卡片 + 主驾占位容器（圆桌不再桥接子会话私聊）。
@@ -1702,17 +1735,19 @@ if (typeof document !== 'undefined') (function () {
       });
     }
 
-    // dev 引导卡片按钮 (plan-dev-scenario.md §5.2)
-    //   "我知道了" 仅当前视图隐藏 (DOM remove); "不再显示" 写 localStorage 永久
-    const devCard = panel.querySelector('[data-rt-dev-card]');
-    if (devCard) {
-      devCard.querySelectorAll('[data-rt-dev-card-action]').forEach(btn => {
+    // 场景引导卡片按钮 (general/research/dev 共用)
+    //   "我知道了" 仅当前视图隐藏 (DOM remove); "不再显示" 写对应 scene 的 localStorage key 永久
+    const sceneCard = panel.querySelector('[data-rt-scene-card]');
+    if (sceneCard) {
+      const sceneKey = sceneCard.getAttribute('data-rt-scene-key');
+      const lsKey = SCENE_ONBOARDING_LS_KEY[sceneKey];
+      sceneCard.querySelectorAll('[data-rt-scene-card-action]').forEach(btn => {
         btn.addEventListener('click', () => {
-          const action = btn.getAttribute('data-rt-dev-card-action');
-          if (action === 'dismiss-forever') {
-            try { localStorage.setItem(DEV_ONBOARDING_LS_KEY, '1'); } catch {}
+          const action = btn.getAttribute('data-rt-scene-card-action');
+          if (action === 'dismiss-forever' && lsKey) {
+            try { localStorage.setItem(lsKey, '1'); } catch {}
           }
-          devCard.remove();
+          sceneCard.remove();
         });
       });
     }

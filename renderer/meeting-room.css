@@ -2231,31 +2231,31 @@ body.mr-density-compact .mr-rt-cost-bar {
 
 /* D1 v2(2026-05-05): examples 区已删除, 相关 CSS 一并清理(.mr-rt-ob-examples / -card / -icon / -q / -hint) */
 
-/* ---- dev 场景一次性引导卡片 (plan-dev-scenario.md §5.2) ---- */
-.mr-rt-dev-card {
+/* ---- 场景一次性引导卡片 (general/research/dev 共用样式) ---- */
+.mr-rt-scene-card {
   margin: 12px 4px;
   background: rgba(99,102,241,0.06);
   border: 1px solid rgba(99,102,241,0.35);
   border-radius: 8px;
   padding: 14px 16px;
 }
-.mr-rt-dev-card-head {
+.mr-rt-scene-card-head {
   font-size: 13px; font-weight: 600;
   color: #c7d2fe;
   margin-bottom: 8px;
 }
-.mr-rt-dev-card-body {
+.mr-rt-scene-card-body {
   list-style: disc; padding-left: 22px;
   margin: 0 0 10px 0;
   font-size: 12px; line-height: 1.7;
   color: #d1d5db;
 }
-.mr-rt-dev-card-body li { margin-bottom: 2px; }
-.mr-rt-dev-card-body strong { color: #fde68a; font-weight: 600; }
-.mr-rt-dev-card-actions {
+.mr-rt-scene-card-body li { margin-bottom: 2px; }
+.mr-rt-scene-card-body strong { color: #fde68a; font-weight: 600; }
+.mr-rt-scene-card-actions {
   display: flex; gap: 8px; justify-content: flex-end;
 }
-.mr-rt-dev-card-btn {
+.mr-rt-scene-card-btn {
   padding: 5px 14px;
   border-radius: 5px;
   border: 1px solid #4f46e5;
@@ -2265,16 +2265,16 @@ body.mr-density-compact .mr-rt-cost-bar {
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
-.mr-rt-dev-card-btn:hover {
+.mr-rt-scene-card-btn:hover {
   background: #6366f1;
   border-color: #6366f1;
 }
-.mr-rt-dev-card-btn-secondary {
+.mr-rt-scene-card-btn-secondary {
   background: transparent;
   color: #8b949e;
   border-color: #30363d;
 }
-.mr-rt-dev-card-btn-secondary:hover {
+.mr-rt-scene-card-btn-secondary:hover {
   background: rgba(139,148,158,0.08);
   border-color: #58606a;
   color: #c9d1d9;
