@@ -2861,7 +2861,12 @@ if (typeof document !== 'undefined') (function () {
     if (_cliReadyPollTimer) return;
     const pollOnce = async () => {
       if (!activeMeetingId) return;
-      const meeting = meetingData[activeMeetingId];
+      // 2026-05-05 道雪：activeMeetingId 快照 + race guard。
+      //   原版在 await invoke 后用全局 activeMeetingId 拿 cached、用 T0 闭包的 meeting 写 panel —
+      //   用户在 await 期间切到 B 时，cached=cachedB + meeting=meetingA 混渲（标题来自 A 但 stepper/
+      //   turns 来自 B）。同样可能让 panel 在用户感知"未操作"瞬间显示错圆桌内容。
+      const startActiveMeetingId = activeMeetingId;
+      const meeting = meetingData[startActiveMeetingId];
       if (!meeting || !Array.isArray(meeting.subSessions)) return;
       let changed = false;
       let needRefresh = false;
@@ -2876,9 +2881,11 @@ if (typeof document !== 'undefined') (function () {
           }
         } catch {}
       }
+      // race guard：await 期间 activeMeetingId 已变（用户切走/会议关闭）→ 不写 panel
+      if (activeMeetingId !== startActiveMeetingId) return;
       if (needRefresh && _isPanelCapableMeeting(meeting)) {
         // 触发 panel 重渲染让 isInitializing 立即生效（卡片切到"待命"）
-        const cached = _rtPanelState[activeMeetingId];
+        const cached = _rtPanelState[startActiveMeetingId];
         if (cached) {
           const panel = _ensureRtPanel();
           panel.innerHTML = _renderRtPanelHtml(cached, meeting);
