@@ -39,13 +39,13 @@ test('modal js has MODELS_BY_KIND with all 5 kinds non-empty', () => {
   assert.match(MODAL_JS, /'glm-/);
 });
 
-test('DEFAULT_SLOTS = 3x Claude Sonnet 4.5 (debug-phase default, 2026-05-03)', () => {
-  // 调试期把混合默认压成同种 ×3，先把圆桌通用流程跑稳。
-  const matches = MODAL_JS.match(
-    /\{\s*kind:\s*'claude'\s*,\s*model:\s*'claude-sonnet-4-5'\s*\}/g
-  ) || [];
-  assert.strictEqual(matches.length, 3,
-    `expected 3 default slots of (claude, claude-sonnet-4-5), got ${matches.length}`);
+test('DEFAULT_SLOTS = mixed (claude opus 4.7 [1M] / packy gpt-5.4-high / deepseek v4-pro)', () => {
+  // 2026-05-05 离开"同种 ×3"调试期默认，恢复混合默认。
+  // slot 2 用 'gpt' kind（PackyAPI 中转的 Claude CLI），不是 'codex' kind（OpenAI codex CLI）。
+  // gpt 默认走 5.4-high：PackyAPI 中转仅支持到 5.4 系列，5.5 限定 codex kind。
+  assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*'claude-opus-4-7\[1m\]'\s*\}/);
+  assert.match(MODAL_JS, /\{\s*kind:\s*'gpt'\s*,\s*model:\s*'gpt-5\.4-high'\s*\}/);
+  assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*,\s*model:\s*'deepseek-v4-pro'\s*\}/);
 });
 
 test('SLOT_AVATARS = pikachu / charmander / squirtle (slot-bound, not kind-bound)', () => {

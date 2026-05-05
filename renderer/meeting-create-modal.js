@@ -20,26 +20,35 @@ const { ipcRenderer } = require('electron');
 // 未来加新 AI 自动覆盖；本模块只额外维护 model 列表（每家 CLI 支持的 model id 不一样）。
 const { KIND_LABELS, ALL_AI_KINDS } = require('../core/ai-kinds.js');
 
+// 清单按 docs/superpowers/specs/2026-05-01-per-cli-model-picker-design.md §6.1 对齐。
+// 例外：claude 多保留一项 'claude-sonnet-4-5'——DEFAULT_SLOTS 当前默认指向它（调试期决定，
+// tests/meeting-create-modal-static.test.js + 多个 E2E 锁死），删了会让默认 dropdown 选不中。
 const MODELS_BY_KIND = {
-  claude:   ['claude-opus-4-7[1m]', 'claude-opus-4-6', 'claude-sonnet-4-5'],
-  gemini:   ['gemini-2.5-flash', 'gemini-2.5-pro'],
-  codex:    ['gpt-5.5', 'gpt-5.4'],
+  claude:   [
+    'claude-opus-4-7[1m]',
+    'claude-opus-4-7',
+    'claude-opus-4-6[1m]',
+    'claude-opus-4-6',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-5',
+    'claude-haiku-4-5',
+  ],
+  gemini:   ['gemini-3-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'],
+  codex:    ['gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex'],
   deepseek: ['deepseek-v4-pro', 'deepseek-v4-flash'],
-  glm:      ['glm-5.1', 'glm-4.6', 'glm-4-plus', 'glm-4-air'],
-  // PackyAPI 三家：跑在 Claude CLI 上，model id 由 PackyAPI 端确定
-  gpt:      ['gpt-5.4-high', 'gpt-5.5', 'gpt-5.4'],
+  glm:      ['glm-5.1', 'glm-4.6', 'glm-4.5-air'],
+  // PackyAPI 三家：跑在 Claude CLI 上，model id 由 PackyAPI 端确定。
+  // gpt kind 不含 'gpt-5.5'——PackyAPI 中转仅支持到 5.4；5.5 只在 codex kind（OpenAI 官方）下可用。
+  gpt:      ['gpt-5.4-high', 'gpt-5.4'],
   kimi:     ['kimi-k2.5'],
   qwen:     ['qwen3.6-plus'],
 };
 
-// 2026-05-03 调试期默认（道雪）：先用 3 个 Claude Sonnet 4.5 把圆桌主流程跑稳。
-//   起因：claude / gemini-cli / codex-cli 三家 CLI 行为差异较大，之前混合默认导致
-//   单条 bug 经常牵涉多家——先把"同种 AI ×3"的场景调通，再把混合默认放回来。
-//   恢复路径：改回 [claude opus / gemini flash / codex gpt-5.5] 即可。
+// 2026-05-05：圆桌主流程已跑稳，从"同种 ×3 调试期默认"恢复混合默认（道雪指定）。
 const DEFAULT_SLOTS = [
-  { kind: 'claude', model: 'claude-sonnet-4-5' },
-  { kind: 'claude', model: 'claude-sonnet-4-5' },
-  { kind: 'claude', model: 'claude-sonnet-4-5' },
+  { kind: 'claude',   model: 'claude-opus-4-7[1m]' },
+  { kind: 'gpt',      model: 'gpt-5.4-high' },
+  { kind: 'deepseek', model: 'deepseek-v4-pro' },
 ];
 
 const SLOT_AVATARS = [

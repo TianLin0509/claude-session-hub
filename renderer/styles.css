@@ -1656,9 +1656,26 @@ body.theme-light .prompt-line-marker {
 }
 .model-picker-item:hover { background: #374151; }
 .model-picker-item.current { background: rgba(188, 140, 255, 0.12); }
+.model-picker-item.disabled { opacity: 0.55; cursor: default; }
+.model-picker-item.disabled:hover { background: transparent; }
 .model-picker-check { width: 12px; color: #d2a8ff; text-align: center; }
 .model-picker-label { flex: 1; font-weight: 500; }
 .model-picker-id { color: #9ca3af; font-size: 10px; font-family: var(--font-mono, ui-monospace, monospace); }
+.model-picker-note {
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.08);
+  border-radius: 4px;
+  line-height: 1.4;
+}
+.model-picker-empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #9ca3af;
+  text-align: center;
+}
 
 /* Pinned session indicator */
 .session-item .pin-icon {

@@ -2691,7 +2691,10 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   // Preserve resume meta fields (codexSid/geminiChatId/geminiProjectHash/geminiProjectRoot)
   // that renderer is unaware of. Without this merge, every renderer schedulePersist
   // would silently wipe these fields populated by transcript-tap session-bound handler.
-  const RESUME_META_FIELDS = ['codexSid', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'model'];
+  // 2026-05-05 fix: 字段名是 'currentModel'（renderer.js:5287 持久化用的字段），
+  //   旧版误写成 'model' → 兜底机制对 model 永不触发，任何一次 race 把 currentModel
+  //   写成 null 都会永久污染 state.json，dormant 唤醒丢失原 model（落到默认 opus 等）。
+  const RESUME_META_FIELDS = ['codexSid', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel'];
   const oldByHubId = new Map(lastPersistedSessions.map(s => [s.hubId, s]));
   for (const newSession of list) {
     if (!newSession || !newSession.hubId) continue;

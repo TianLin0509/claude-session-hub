@@ -560,7 +560,10 @@ class SessionManager extends EventEmitter {
       currentModel = { id: mid, displayName: SessionManager.geminiDisplayName(mid) };
     } else if (isCodex) {
       const cv = getConfigValues();
-      const cmid = isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : (opts.model || 'gpt-5.5');
+      // opts.model（modal/picker 用户选择）必须最高优先级；只有未传时才落到 backend 默认 / 'gpt-5.5'。
+      // 旧写法 `isCodexApiBackend ? cv.CODEX_API_MODEL : (opts.model || ...)` 在 packy api 模式下
+      // 强制覆盖用户选择，圆桌选 5.4/5.3 实际跑出来都是 5.5。
+      const cmid = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
       currentModel = { id: cmid, displayName: cmid.toUpperCase() };
     } else if (isDeepSeek) {
       const mid = opts.model || 'deepseek-v4-pro';
@@ -752,7 +755,8 @@ class SessionManager extends EventEmitter {
         // 安全约束完全靠 prompt/covenant 软约束（已强化"不要改代码 / 不要 git / 不要删除"）
         // opts.model 让 meeting-create-modal 选定的非默认 model（如 gpt-5.4）生效。
         const cv = getConfigValues();
-        const codexModel = isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : (opts.model || 'gpt-5.5');
+        // 同上 (line ~563)：opts.model 必须最高优先级，否则圆桌的 model 选择被 packy 默认覆盖。
+        const codexModel = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
         if (opts.codexBypassApprovals) {
           cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
         } else {
