@@ -363,6 +363,40 @@ if (typeof document !== 'undefined') (function () {
     }
     if (_rtCompareSlots.size > 0) _clearCompareSelect();
   });
+
+  // 2026-05-05 道雪：聚焦主卡 Ctrl+滚轮缩放字号。IIFE 顶层挂载只挂一次。
+  //   - CSS 变量 --card-font-focus-scale 挂在 body 上，沿 DOM 树继承到 .mr-ft.active
+  //     的子元素 calc()，所以这里只 set 一次 body.style 就够，无需 MutationObserver
+  //     等 .active 卡渲出来后再写
+  //   - handler 内判断 mr-card-focus-on + e.target 在主卡内才响应
+  //   - preventDefault 拦掉 Electron 默认整窗 zoom（仅主卡内拦，主卡外仍可整窗 zoom）
+  //   - clamp [0.8, 2.0] 步进 0.1，持久化到 localStorage，下次启动沿用
+  const CARD_FOCUS_SCALE_KEY = 'mr-card-focus-font-scale';
+  const CARD_FOCUS_SCALE_MIN = 0.8;
+  const CARD_FOCUS_SCALE_MAX = 2.0;
+  const CARD_FOCUS_SCALE_STEP = 0.1;
+  const CARD_FOCUS_SCALE_DEFAULT = 1.3;
+  let _cardFocusFontScale = (() => {
+    const raw = parseFloat(localStorage.getItem(CARD_FOCUS_SCALE_KEY));
+    return (Number.isFinite(raw) && raw >= CARD_FOCUS_SCALE_MIN && raw <= CARD_FOCUS_SCALE_MAX) ? raw : CARD_FOCUS_SCALE_DEFAULT;
+  })();
+  function _applyCardFocusScale(s) {
+    _cardFocusFontScale = Math.max(CARD_FOCUS_SCALE_MIN, Math.min(CARD_FOCUS_SCALE_MAX, Math.round(s * 10) / 10));
+    document.body.style.setProperty('--card-focus-font-scale', String(_cardFocusFontScale));
+    try { localStorage.setItem(CARD_FOCUS_SCALE_KEY, String(_cardFocusFontScale)); } catch {}
+  }
+  // 启动时把上次/默认 scale 写到 body —— 之后任何 .active 卡渲染都自动继承
+  _applyCardFocusScale(_cardFocusFontScale);
+  document.body.addEventListener('wheel', function _rtCardFocusWheelHandler(e) {
+    if (!e.ctrlKey) return;
+    if (!document.body.classList.contains('mr-card-focus-on')) return;
+    const inActive = e.target && e.target.closest && e.target.closest('.mr-ft.active');
+    if (!inActive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const dir = e.deltaY < 0 ? +1 : -1;
+    _applyCardFocusScale(_cardFocusFontScale + dir * CARD_FOCUS_SCALE_STEP);
+  }, { passive: false });
   // Stage 2 容错升级：每轮 prompt 发送时间戳（用于 manual-extract IPC 的 sincePromptTs 参数）
   const _rtTurnStartTs = {};
 

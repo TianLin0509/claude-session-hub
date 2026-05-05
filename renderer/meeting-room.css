@@ -912,6 +912,39 @@ body.mr-card-focus-on .mr-ft-strip .mr-ft.active {
     0 8px 28px rgba(0, 0, 0, 0.45);
 }
 
+/* 2026-05-05 道雪：聚焦主卡字号缩放变量。挂 body.mr-card-focus-on 上 CSS 变量
+   会沿 DOM 树继承到 .mr-ft.active 内的所有子元素，calc() 自然取到值；这样 JS
+   只需 document.body.style.setProperty 一次性更新，无需查 .active 卡 DOM。
+   默认 1.3（preview 12px → ~15.6px），Ctrl+滚轮可调，clamp [0.8, 2.0]。 */
+body.mr-card-focus-on {
+  --card-focus-font-scale: 1.3;
+}
+
+/* 2026-05-05 道雪：聚焦主卡正文区字号缩放（仅作用 .mr-ft.active 内的 preview） */
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active .mr-ft-preview {
+  font-size: calc(12px * var(--card-focus-font-scale, 1));
+  line-height: 1.5;
+}
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active .mr-ft-preview-md h1 {
+  font-size: calc(14px * var(--card-focus-font-scale, 1));
+}
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active .mr-ft-preview-md h2,
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active .mr-ft-preview-md h3,
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active .mr-ft-preview-md h4,
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active .mr-ft-preview-md h5,
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active .mr-ft-preview-md h6 {
+  font-size: calc(13px * var(--card-focus-font-scale, 1));
+}
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active .mr-ft-preview-md code {
+  font-size: calc(11px * var(--card-focus-font-scale, 1));
+}
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active .mr-ft-preview-md pre {
+  font-size: calc(11px * var(--card-focus-font-scale, 1));
+}
+body.mr-card-focus-on .mr-ft-strip .mr-ft.active .mr-ft-preview-md table {
+  font-size: calc(11px * var(--card-focus-font-scale, 1));
+}
+
 /* 主卡: ::after 渐变描边光晕(脉冲呼吸) */
 body.mr-card-focus-on .mr-ft-strip .mr-ft.active::after {
   content: '';
