@@ -21,21 +21,7 @@ def _ensure_utf8():
 
 
 def _load_api_key():
-    key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if key:
-        return key
-    secrets_path = os.path.join("C:\\LinDangAgent", "secrets.toml")
-    if os.path.exists(secrets_path):
-        try:
-            with open(secrets_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("DEEPSEEK_API_KEY"):
-                        _, _, val = line.partition("=")
-                        return val.strip().strip('"').strip("'")
-        except Exception:
-            pass
-    return ""
+    return os.environ.get("DEEPSEEK_API_KEY", "")
 
 
 MODEL_DISPLAY = {
@@ -64,7 +50,7 @@ def main():
 
     api_key = _load_api_key()
     if not api_key:
-        print("Error: DEEPSEEK_API_KEY not found (checked env + C:\\LinDangAgent\\secrets.toml)", file=sys.stderr)
+        print("Error: DEEPSEEK_API_KEY env var not set. Get a key at https://platform.deepseek.com/api_keys and `setx DEEPSEEK_API_KEY <key>`.", file=sys.stderr)
         sys.exit(1)
 
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")

@@ -9,7 +9,7 @@
     "endpoint": "https://api.deepseek.com/chat/completions",
     "timeout_ms": 60000,
     "max_retries": 1,
-    "secrets_file": "C:\\LinDangAgent\\secrets.toml",
+    "secrets_file": "",
     "secrets_key": "DEEPSEEK_API_KEY"
   },
   "ui": {

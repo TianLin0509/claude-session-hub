@@ -62,13 +62,18 @@
       "renderer/**/*",
       "renderer-mobile/**/*",
       "scripts/**/*",
+      "!scripts/firewall-whitelist-electron.ps1",
       "roundtable.ico",
       "package.json"
     ],
     "extraResources": [
       {
         "from": "scripts",
-        "to": "scripts"
+        "to": "scripts",
+        "filter": [
+          "**/*",
+          "!firewall-whitelist-electron.ps1"
+        ]
       }
     ]
   }

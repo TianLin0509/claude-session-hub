@@ -6,7 +6,7 @@
 //   fetch_lindang_field(op, symbol, …)  — 按需取单字段（financial/flow/dragon-tiger/...）
 //
 // 调用链：tool call → HTTP POST → Hub hookServer (loopback) → core/lindang-bridge.js → data_query.py
-// 详见 C:\LinDangAgent\data\AGENT_GUIDE.md
+// 详见 <LINDANG_DIR>/data/AGENT_GUIDE.md
 //
 // 旧的 fetch_concept_stocks / fetch_sector_overview 已下线（依赖 Stock_top10 已删）。
 'use strict';
@@ -53,7 +53,7 @@ const FIELD_OPS = [
 const TOOLS = [
   {
     name: 'fetch_lindang_stock',
-    description: '【优先用此工具】拉 A 股单股快照：一次返回 gate(退市/ST 拦截) + basic(PE/PB/市值/换手率) + price_summary(走势文本) + indicators(17 项 RSI/MACD/Bollinger/KDJ/ATR/...) + capital_flow(资金流向)。讨论新股票的标准开场。来源：用户的 LinDangAgent，含 5 层数据兜底（tushare→akshare→东财→baostock→sina）。底层调 `python data_query.py snapshot <symbol>`。',
+    description: '【优先用此工具】拉 A 股单股快照：一次返回 gate(退市/ST 拦截) + basic(PE/PB/市值/换手率) + price_summary(走势文本) + indicators(17 项 RSI/MACD/Bollinger/KDJ/ATR/...) + capital_flow(资金流向)。讨论新股票的标准开场。后端含 5 层数据兜底（tushare→akshare→东财→baostock→sina）。底层调 `python data_query.py snapshot <symbol>`。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -145,7 +145,7 @@ async function handleRequest(req) {
         return reply(id, { content: [{ type: 'text', text: '错误：symbol 参数必填（例 "600519" 或 "贵州茅台"）' }], isError: true });
       }
       const r = await postFetch('/api/research/fetch-stock', { ...baseBody, symbol });
-      const text = r.ok ? r.body : `LinDangAgent 拉股票快照失败（${r.status}）：${r.body}`;
+      const text = r.ok ? r.body : `数据后端拉股票快照失败（${r.status}）：${r.body}`;
       return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
     }
 
@@ -159,7 +159,7 @@ async function handleRequest(req) {
         return reply(id, { content: [{ type: 'text', text: '错误：symbol 参数必填' }], isError: true });
       }
       const r = await postFetch('/api/research/fetch-field', { ...baseBody, op, symbol });
-      const text = r.ok ? r.body : `LinDangAgent ${op} 查询失败（${r.status}）：${r.body}`;
+      const text = r.ok ? r.body : `数据后端 ${op} 查询失败（${r.status}）：${r.body}`;
       return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
     }
 

@@ -12,7 +12,7 @@ function getHubDataDir() {
 }
 
 // 阶段乙（2026-05-03 道雪）：判定当前 hub 是否运行在隔离模式。
-//   隔离 hub 测试时不希望 sub session 的 cwd 落在用户 home（C:\Users\lintian），
+//   隔离 hub 测试时不希望 sub session 的 cwd 落在用户 home（~），
 //   否则归档（.arena/sessions/）会污染生产用户的真实档案目录。
 //   隔离模式下 sub cwd 走 <HUB_DATA_DIR>/workspaces/<meetingId>/，归档
 //   也自然落到隔离路径下，跟生产数据完全隔开。

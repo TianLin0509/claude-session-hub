@@ -284,7 +284,7 @@ class RoundtableOrchestrator {
     if (last) parts.push('', last);
 
     if (this.scene.dataPackEnabled && dataPack && typeof dataPack === 'string' && dataPack.trim().length > 0) {
-      parts.push('', '## 数据接入（Hub 自动从 LinDangAgent 拉取）', dataPack);
+      parts.push('', '## 数据接入（Hub 自动调数据后端拉取）', dataPack);
     }
 
     // dev scene L2b 触发追注 (plan-dev-scenario.md §3.3) — 在用户问题前

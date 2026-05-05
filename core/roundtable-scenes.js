@@ -137,27 +137,33 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 //   - 兜底链路展开 → 简化为"失败自动兜底 + fetch_warning 处理"
 //
 // Bash escape 修复 (2026-05-04 道雪):
-//   血泪案例: Charmander 调用 Bash 命令 `python C:\LinDangAgent\data_query.py
-//     snapshot 688008` 时,bash 把 `\L` `\d` 当 escape 序列处理,反斜杠被吞,
-//     传给 python 的 argv 是 `C:LinDangAgentdata_query.py`,加 cwd 后报
-//     `can't open file 'C:\Users\lintian\LinDangAgentdata_query.py'`。
-//   修复: 命令样板从 `python C:\LinDangAgent\data_query.py` 改为
-//     `cd C:/LinDangAgent && python data_query.py`(与 AGENT_GUIDE 一致),
+//   血泪案例: Charmander 调用 Bash 命令 `python C:\Foo\Bar\data_query.py
+//     snapshot 688008` 时,bash 把 `\F` `\B` 当 escape 序列处理,反斜杠被吞,
+//     传给 python 的 argv 是 `C:FooBardata_query.py`,加 cwd 后报
+//     `can't open file '<HOME>\FooBardata_query.py'`。
+//   修复: 命令样板从 `python <DIR>\data_query.py` 改为
+//     `cd <DIR> && python data_query.py`(与 AGENT_GUIDE 一致),
 //     所有路径引用统一正斜杠,加 ⚠ Bash 路径警告段教育 AI 不再犯。
+// LINDANG_DIR 路径在 prompt 里展示：用户配了 env 就显示真实路径；没配就显示占位符
+// （AI 看到 <LINDANG_DIR> 会知道用户未配置该变量，不会盲目执行）。
+const _LD_DIR_DISPLAY = process.env.LINDANG_DIR
+  ? process.env.LINDANG_DIR.replace(/\\/g, '/')
+  : '<LINDANG_DIR>';
+
 const RESEARCH_PRESET = `## A 股投研数据接入
 
 ### 数据入口（唯一推荐）
-**LinDangAgent**（\`C:/LinDangAgent\`）唯一入口：
-\`cd C:/LinDangAgent && python data_query.py <op> [args...]\`
+**数据后端**（\`${_LD_DIR_DISPLAY}\`）唯一入口：
+\`cd ${_LD_DIR_DISPLAY} && python data_query.py <op> [args...]\`
 
 输出标准 JSON 到 stdout，日志到 stderr，冷启 ~1.5s/次。
 
 ⚠ **Bash 路径规则**：Windows 路径在 bash 命令里**只能用正斜杠或双引号**。
 bash 把反斜杠当 escape 序列处理（\`\\L\` \`\\d\` 等会被吞），无引号裸反斜杠路径
 传到 python 会缺反斜杠 → 当相对路径加 cwd → \`No such file or directory\`。
-**唯一正确写法**：上面的 cd 模式（推荐）或 \`python C:/LinDangAgent/data_query.py <op>\`。
+**唯一正确写法**：上面的 cd 模式（推荐）或 \`python ${_LD_DIR_DISPLAY}/data_query.py <op>\`。
 
-**完整 op 清单见 \`C:/LinDangAgent/data/AGENT_GUIDE.md\`**，常用 4 个：
+**完整 op 清单见 \`${_LD_DIR_DISPLAY}/data/AGENT_GUIDE.md\`**，常用 4 个：
 - \`snapshot <code>\` — ⭐ 主用：gate+basic+price+17 指标+资金流
 - \`gate <code>\` — 退市/ST 拦截
 - \`basic <code>\` — PE/PB/市值/换手率

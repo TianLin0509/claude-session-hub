@@ -639,7 +639,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
 
   // 阶段乙（2026-05-03 道雪）：隔离 hub 模式下，sub session cwd 走
   //   <HUB_DATA_DIR>/workspaces/<meetingId>/，避免归档（.arena/sessions/）
-  //   落到生产 C:\Users\lintian\.arena/ 污染用户真实档案。
+  //   落到生产 ~/.arena/ 污染用户真实档案。
   //   生产 hub（无 CLAUDE_HUB_DATA_DIR env）保持 sessionManager 默认行为
   //   （USERPROFILE）以维持向后兼容 + 让 Claude CLI 找到用户级 CLAUDE.md。
   //   不覆盖调用方显式传入的 opts.cwd（保留 add-meeting-sub 自定义入口）。

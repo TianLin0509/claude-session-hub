@@ -1,7 +1,7 @@
 'use strict';
 // LinDangAgent 桥接（2026-05-03 重构）：
 // 旧入口 `python -m services.fetch_for_arena ...` 已下线（services 目录已删）。
-// 新入口：`python data_query.py <op> [args...]`，详见 C:\LinDangAgent\data\AGENT_GUIDE.md
+// 新入口：`python data_query.py <op> [args...]`，详见 <LINDANG_DIR>/data/AGENT_GUIDE.md
 //
 // 对外接口：
 //   fetchSnapshot(symbol)        — 主用：一键拉 gate+basic+price+indicators+flow
@@ -11,9 +11,11 @@
 
 const { spawn } = require('child_process');
 
-const LINDANG_DIR = process.env.LINDANG_DIR || 'C:\\LinDangAgent';
-const PYTHON_BIN = process.env.LINDANG_PYTHON
-  || 'C:\\Users\\lintian\\AppData\\Local\\Programs\\Python\\Python312\\python.exe';
+// LINDANG_DIR 必须由用户配置（env LINDANG_DIR 或 LinDangAgent 项目根路径），未配置则
+// LinDang MCP 工具调用直接返回 not-configured 错误（不影响 Hub 主流程）。
+// PYTHON_BIN 默认走 PATH 解析，绝大多数装了 Python 的机器都能命中。
+const LINDANG_DIR = process.env.LINDANG_DIR || '';
+const PYTHON_BIN = process.env.LINDANG_PYTHON || 'python';
 
 // data_query.py 各子命令的合理超时（ms）。snapshot 拉得多，给宽一点
 const OP_TIMEOUTS = {
@@ -31,6 +33,13 @@ const OP_TIMEOUTS = {
 function _runDataQuery(op, args, timeoutMs = null) {
   if (timeoutMs == null) timeoutMs = OP_TIMEOUTS[op] || 30000;
   return new Promise((resolve) => {
+    if (!LINDANG_DIR) {
+      return resolve({
+        ok: false,
+        op,
+        error: 'LinDang 集成未启用：请设环境变量 LINDANG_DIR 指向 LinDangAgent 项目根目录。',
+      });
+    }
     let child;
     try {
       child = spawn(PYTHON_BIN, ['-X', 'utf8', 'data_query.py', op, ...args], {

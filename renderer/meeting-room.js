@@ -1297,7 +1297,7 @@ if (typeof document !== 'undefined') (function () {
       head: '📊 投研圆桌 · 使用提示',
       bullets: [
         '三家偏置已固化：<strong>Pikachu</strong> 对抗硬度派（最尖锐空头）/ <strong>Charmander</strong> 反直觉校验派（找盲点）/ <strong>Squirtle</strong> 极简克制派（快速初筛）。',
-        '输入个股代码 / 问题即可；三家会自动调 LinDangAgent 拿最新数据，从基本面 + 资金面 + 技术面 + 情绪面给观点。',
+        '输入个股代码 / 问题即可；三家会自动调数据后端拿最新数据，从基本面 + 资金面 + 技术面 + 情绪面给观点。',
         '结论必走 <strong>4 档</strong>（强烈推荐 / 可买需条件 / 不建议买 / 强烈回避），不允许"建议关注 / 可跟踪"等模糊话术。',
         '想跳过首轮反问，直接输入"<strong>直接分析</strong>"；想看深度推演（含对手盘 + 预期差分层），输入"<strong>@深度</strong>"。',
       ],

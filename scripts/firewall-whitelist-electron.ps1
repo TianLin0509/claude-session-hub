@@ -9,7 +9,7 @@
 #   4. Disable NotifyOnListen on all firewall profiles so Windows stops prompting
 #      when a new program (e.g. pytest-spawned Hub at a fresh temp path) tries to listen
 #
-# Background: pytest E2E tests copy the Hub into AppData\Local\Temp\pytest-of-lintian\
+# Background: pytest E2E tests copy the Hub into AppData\Local\Temp\pytest-of-<user>\
 # pytest-NNN\... every run. Each new path is "unknown" to Firewall, so without (4) a
 # prompt pops up repeatedly. Disabling NotifyOnListen does NOT change the default-block
 # behavior for unknown inbound listeners on external interfaces — loopback 127.0.0.1
@@ -25,7 +25,8 @@ if (-not $isAdmin) {
   exit 1
 }
 
-$HubDir      = 'C:\Users\lintian\claude-session-hub'
+# Resolve Hub root from this script's location (scripts/ → ..)
+$HubDir      = Split-Path -Parent $PSScriptRoot
 $ElectronExe = Join-Path $HubDir 'node_modules\electron\dist\electron.exe'
 
 if (-not (Test-Path $ElectronExe)) {
@@ -39,7 +40,7 @@ Get-NetFirewallRule -DisplayName 'electron.exe' -ErrorAction SilentlyContinue |
 Get-NetFirewallRule -DisplayName 'Electron - Claude Hub*' -ErrorAction SilentlyContinue |
   Remove-NetFirewallRule -ErrorAction SilentlyContinue
 $pytestApps = Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue |
-  Where-Object { $_.Program -match 'pytest-of-lintian|pytest-\d+' }
+  Where-Object { $_.Program -match 'pytest-of-[^\\\\]+|pytest-\d+' }
 if ($pytestApps) {
   foreach ($a in $pytestApps) { ($a | Get-NetFirewallRule) | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
   Write-Host ("  removed " + ($pytestApps | Measure-Object).Count + " pytest-path rule(s)")

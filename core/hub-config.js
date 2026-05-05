@@ -4,9 +4,7 @@
  * 优先级（从高到低）：
  * 1. 环境变量（DEEPSEEK_API_KEY, GLM_API_KEY, GLM_BASE_URL, GLM_MODEL, CLAUDE_PROXY）
  * 2. config.json（~/.claude-session-hub/config.json）
- * 3. secrets.toml（兼容老用户：C:\LinDangAgent\secrets.toml）
- *
- * 老用户无感知：如果 config.json 不存在或未配置某项，自动 fallback 到 secrets.toml。
+ * 3. 默认值
  */
 
 const fs = require('fs');
@@ -34,22 +32,6 @@ const DEFAULTS = {
   ui_code_fold_threshold: 30,
 };
 
-// 兼容老用户的 secrets.toml 路径
-const LEGACY_SECRETS_PATH = 'C:\\LinDangAgent\\secrets.toml';
-
-/**
- * 从 secrets.toml 格式文件读取值
- */
-function readTomlValue(filepath, key) {
-  try {
-    const content = fs.readFileSync(filepath, 'utf8');
-    const match = content.match(new RegExp(key + '\\s*=\\s*["\']([^"\']+)["\']'));
-    return match ? match[1] : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * 加载 config.json
  */
@@ -64,7 +46,7 @@ function loadConfigJson() {
 }
 
 /**
- * 获取配置值（优先级：env > config.json > secrets.toml > default）
+ * 获取配置值（优先级：env > config.json > default）
  */
 function getConfigValue(key, envKey, configPath, defaultValue) {
   // 1. 环境变量
@@ -79,13 +61,7 @@ function getConfigValue(key, envKey, configPath, defaultValue) {
     return configValue;
   }
 
-  // 3. secrets.toml（兼容老用户）
-  const tomlValue = readTomlValue(LEGACY_SECRETS_PATH, envKey);
-  if (tomlValue) {
-    return tomlValue;
-  }
-
-  // 4. 默认值
+  // 3. 默认值
   return defaultValue;
 }
 
@@ -191,5 +167,4 @@ module.exports = {
   getConfigPath,
   checkMissingConfig,
   DEFAULTS,
-  LEGACY_SECRETS_PATH,
 };
