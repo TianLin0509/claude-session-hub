@@ -1,7 +1,9 @@
 const { v4: uuid } = require('uuid');
 const meetingStore = require('./meeting-store');
 
-const MEETING_MODES = ['general', 'research'];
+// scene 白名单 (与 core/roundtable-scenes.js SCENE_REGISTRY keys 同步)
+//   2026-05-04 道雪: 'dev' 加入 (plan-dev-scenario.md MVP)
+const MEETING_MODES = ['general', 'research', 'dev'];
 
 // 模式 → 房名前缀。前端 +号菜单点击两模式入口时透传 mode,createMeeting 据此生成
 // 自带语义的房名(每模式独立计数,后期允许用户重命名)。未传 mode 时默认 'general' 走
@@ -9,13 +11,14 @@ const MEETING_MODES = ['general', 'research'];
 const MODE_TITLE_PREFIX = {
   general: '通用圆桌',
   research: '投研圆桌',
+  dev: '开发圆桌',
 };
 
 class MeetingRoomManager {
   constructor() {
     this.meetings = new Map();
     // 两模式独立计数,跨模式不共享
-    this._counters = { general: 0, research: 0 };
+    this._counters = { general: 0, research: 0, dev: 0 };
   }
 
   createMeeting(opts = {}) {

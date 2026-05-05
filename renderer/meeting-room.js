@@ -1121,13 +1121,40 @@ if (typeof document !== 'undefined') (function () {
     </div>`;
   }
 
+  // dev scene 一次性引导卡片 (plan-dev-scenario.md §5.2)
+  //   仅 dev 场景 + localStorage 未持久化"不再显示"时渲染
+  //   "不再显示" → setItem('1') 永久不再出现; "我知道了" → 仅当前视图隐藏 (DOM 删除), 下次进 panel 仍出现
+  //   首轮 onboarding examples 在下方 _renderOnboarding 渲染, 此卡片放最上面优先吸引视线
+  const DEV_ONBOARDING_LS_KEY = 'hub-dev-scenario-onboarding-dismissed-v1';
+  function _renderDevOnboardingCard(meeting) {
+    if (!meeting || meeting.scene !== 'dev') return '';
+    try {
+      if (localStorage.getItem(DEV_ONBOARDING_LS_KEY) === '1') return '';
+    } catch {} // localStorage 不可用时按"未持久化"处理
+    return `<div class="mr-rt-dev-card" data-rt-dev-card>
+      <div class="mr-rt-dev-card-head">🛠️ 开发圆桌 · 使用提示</div>
+      <ul class="mr-rt-dev-card-body">
+        <li>三家先帮你问清需求、讨论方案，默认只交给 1 个 Driver 实操。</li>
+        <li>你可以跳过问题；跳过项会在交接单里作为默认假设回显。</li>
+        <li>需要交接时输入"<strong>生成交接单</strong>"；Driver 改完后输入"<strong>帮我审一下</strong>"。</li>
+        <li>如需一对一深聊，可切主驾模式手动使用 superpowers brainstorm skill。</li>
+      </ul>
+      <div class="mr-rt-dev-card-actions">
+        <button class="mr-rt-dev-card-btn" data-rt-dev-card-action="dismiss-once">我知道了</button>
+        <button class="mr-rt-dev-card-btn mr-rt-dev-card-btn-secondary" data-rt-dev-card-action="dismiss-forever">不再显示</button>
+      </div>
+    </div>`;
+  }
+
   function _renderRtPanelHtml(state, meeting) {
     const subs = _getRtSubInfo(meeting);
     const mode = state.currentMode || 'idle';
     const partialBy = state._partialBy || null;
     const fusedTabs = _renderFusedTabs(state, subs, mode, partialBy, meeting);
     const history = _renderRtHistory(state, meeting);
-    const titleText = meeting && meeting.scene === 'research' ? '投研圆桌' : '圆桌讨论';
+    // 标题: 优先用 SCENE_REGISTRY.name (含 '开发圆桌'), 无场景或未注册场景退回 '圆桌讨论'
+    const _titleScene = meeting ? _scenes.getScene(meeting.scene) : null;
+    const titleText = _titleScene ? _titleScene.name : '圆桌讨论';
     const stepper = _renderTurnStepper(state.turns, mode);
 
     // F5 Phase 3(2026-05-04 道雪 简化版): 仅整轮总耗时
@@ -1154,6 +1181,8 @@ if (typeof document !== 'undefined') (function () {
     //   📝 总结"语义重叠且 disabled 状态不一致（cmd-bar @summary disabled vs toolbar
     //   📝 总结 enabled），用户困惑。toolbar 已覆盖所有功能，删 cmd-bar 单一来源。
     const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
+    // dev 一次性引导卡片 (plan-dev-scenario.md §5.2): 与 onboarding 独立, 跨 panel 始终展示直至用户"不再显示"
+    const devCard = _renderDevOnboardingCard(meeting);
     // Stage 2 容错升级：软提醒 banner 容器
     const softBanner = `<div id="mr-rt-soft-alert-banner" class="mr-rt-soft-alert-banner" style="display:none"></div>`;
     // pilot redesign（2026-05-02）：废弃 pilotRecaps 卡片 + 主驾占位容器（圆桌不再桥接子会话私聊）。
@@ -1168,6 +1197,7 @@ if (typeof document !== 'undefined') (function () {
         </div>
       </div>
       ${softBanner}
+      ${devCard}
       ${fusedTabs}
       ${onboarding}
       ${history}
@@ -1463,6 +1493,21 @@ if (typeof document !== 'undefined') (function () {
         btn.addEventListener('click', () => {
           banner.style.display = 'none';
           banner.innerHTML = '';
+        });
+      });
+    }
+
+    // dev 引导卡片按钮 (plan-dev-scenario.md §5.2)
+    //   "我知道了" 仅当前视图隐藏 (DOM remove); "不再显示" 写 localStorage 永久
+    const devCard = panel.querySelector('[data-rt-dev-card]');
+    if (devCard) {
+      devCard.querySelectorAll('[data-rt-dev-card-action]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const action = btn.getAttribute('data-rt-dev-card-action');
+          if (action === 'dismiss-forever') {
+            try { localStorage.setItem(DEV_ONBOARDING_LS_KEY, '1'); } catch {}
+          }
+          devCard.remove();
         });
       });
     }

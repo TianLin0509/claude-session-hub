@@ -4,7 +4,7 @@
 //
 // 导出：
 //   BASE_RULES                       — L1 共享圆桌基础规则
-//   SCENE_REGISTRY                   — { general, research } 场景定义
+//   SCENE_REGISTRY                   — { general, research, dev } 场景定义
 //   COVENANT_GENERAL                 — L2 通用房间公约
 //   COVENANT_RESEARCH                — L2 投研差量公约
 //   BRIEF_SUMMARY_FIELDS             — 五元组 schema (字段数组)
@@ -445,10 +445,168 @@ const RESEARCH_SLOT_BIASES = {
 };
 
 // ===========================================================================
+// Scene: dev — 开发圆桌 preset (v3 final · plan-dev-scenario.md)
+// ===========================================================================
+// 设计来源: 17 轮三家 AI 圆桌讨论收敛 → docs/plan-dev-scenario.md
+//
+// 定位: human-supervised hierarchical 协作的 advisor council
+//   闭环: clarify(并行澄清) → discuss(方案) → handoff(交接) → 单 Driver 实操
+//        → review(后置审查) → 用户裁断 done
+//
+// L1 永真层 + L2a 姿态轻量层合并写入 DEV_PRESET (每轮全量, 进 system prompt
+//   享受 cache)。L2b 详细规则层 (clarify/handoff/review) 由 orchestrator 按
+//   关键词触发追注到 per-turn user message (不进 system prompt, 避免占 cache
+//   且只在需要时出现)。
+const DEV_PRESET = `## 开发圆桌 · L1 永真规则
+
+拓扑：用户=supervisor，你=advisor，Driver=worker。
+圆桌产物是决策素材，非执行指令。
+
+权限：允许 Read/Grep/Glob；禁 Edit/Write/workflow skill/sub-agent。
+
+铁律：
+1. 核实：涉及文件/函数/API/模块名前必须 Read 或 Grep；未核实标"(未核实推测)"。
+2. 范围 (Scope Guard)：引入原始需求未提及的新模块/依赖/用户旅程标"⚠ 范围扩张"，建议收窄或拆分。
+3. 收敛原则：关注信息增量而非轮数。本轮无新事实/新风险/新方案/新必答问题时，建议用户前进一步。
+4. 默认假设回收：任何阶段采用的默认假设，handoff 前必须显式列出回显给用户确认；用户跳过的问题可暂按默认假设讨论，未确认前不得作为 Driver 硬前提。
+5. 协作边界：可引用反驳补充他人观点（含 timeline 上轮内容），但不得视为用户已批准方案而继续推进执行。
+
+## 姿态自适应（L2a · 自选）
+- 需求模糊 → clarify（提问为主）
+- 需求明确 → discuss（路径+取舍+替代）
+- 已有方案/diff → review（中性事实+风险+倾向建议）
+- 边界清晰的轻任务 → 可跳过 clarify 直接 discuss
+首轮默认进入 clarify。
+专注你独立视角下最重要的问题，重复由用户 fan-in 减法解决。
+
+## 模糊意图询问确认
+若用户表达接近触发但未含明确关键词（如"差不多了/整理下"等），输出问号确认：
+> "看起来需求已经清楚了，是否生成交接单？回'是'就触发。"
+不要主动猜意图直接生成五元组。
+`;
+
+// ===========================================================================
+// DEV_KEYWORDS — 关键词触发清单 (plan §4.1)
+// ===========================================================================
+// handoff / review / brainstorm 三组关键词. 命中即注入对应 L2b 详细规则段
+// (见 buildDevL2bSection)。
+//
+// 设计纪律:
+//   - 不做 AI 主动猜意图后直接生成 (plan §4.3)
+//   - 不做 diff 上下文自动切 review
+//   - **宁愿漏触发也不误触发** (plan §10): 删除过短的歧义子串
+//     - 已删除 '让 '(尾空格) — handoffPatterns 已精确覆盖 "让 X 实操/实现/做"
+//     - 已删除 '交接' — 与 '交接班'/'交接处' 等日常用语冲突, 用 '交接单' 完整词替代
+//     - 已删除 '干吧' — '先这么干吧'/'干吧别闹了' 等口语高频误触
+//   - 用户漏触发可显式输入完整短语 ("生成交接单"/"开始写代码"/"切 Driver");
+//     plan §10 说明: "关键词清单漏匹配 → 后续收集真实未命中样本扩充"
+const DEV_KEYWORDS = {
+  handoff: [
+    '生成交接单', '交接单', '切 Driver', '切driver',
+    '可以开工', '开始写代码',
+  ],
+  // handoff 二级形态 (正则覆盖宽松短语): "让 <名字> 实操/实现/做" / "交给 <名字> 做"
+  handoffPatterns: [
+    /让\s*\S+\s*(实操|实现|做)/,
+    /交给\s*\S+\s*(做|实现|实操)/,
+  ],
+  review: ['审一下', '看 diff', '看diff', '复审', '帮我审', 'review'],
+  brainstorm: ['brainstorm', '问清楚', '帮我想想'],
+};
+
+// ===========================================================================
+// DEV_L2B_TEMPLATES — 按触发追注的详细规则段 (plan §3.3)
+// ===========================================================================
+const DEV_CLARIFY_DETAIL = `## [clarify 详细规则 · 本轮触发追注]
+每位 AI 最多 5 题：
+- [必答] ≤2：附 3 字段（问题 / 默认假设 / 假设错了会改变什么实现决策）
+- [建议] ≤2：附 2 字段（问题 / 默认假设）
+- [可选] ≤1：仅写问题
+不重复 timeline 已答问题；基于已答内容追问。
+用户跳过的问题视为允许默认假设讨论，handoff 前必须回显确认。
+`;
+
+const DEV_HANDOFF_DETAIL = `## [handoff 两步法 · 本轮触发追注]
+
+Step 1: Decision Recall（先输出）
+列出：
+- 已澄清的决策点（最多 5 个最关键的）
+- 用户跳过/允许默认假设的问题清单
+- 当前未决问题
+若 timeline 已滚动，明确声明"早期上下文可能不完整，以下回收基于现有摘要+近期轮次"。
+
+Step 2: 五元组（用户确认 Decision Recall 后输出）
+1. What — 一句话
+2. Why — 业务/技术理由
+3. Tradeoff — 取舍（含被否方案 + 所有默认假设及风险）
+4. Open Questions — 待用户回答的决策点
+   · 不能写"无"
+   · 确无问题时写"不适用，原因：决策点已在 Decision Recall 列出"
+5. Next Action — Driver 第一步（具体到文件/函数）
+缺项不通过。Open Questions 是回流给用户裁决的，Driver 在用户回答前不开工。
+`;
+
+const DEV_REVIEW_DETAIL = `## [review 三段式 · 本轮触发追注]
+1. 已验证事实（中性陈述，不带"好""可接受"等评价词）
+   例：测试覆盖率 80% / 通过 12 个 case / 修改了 3 个文件
+2. 风险/盲区/遗漏/测试缺口（必须附依据：文件/diff/日志/测试）
+3. 倾向建议（可选）
+   例："基于 X 已验证，倾向可接受，但 Y 仍未覆盖"
+不得替用户宣布 done/merge。Driver 自审不能替代独立审查。
+`;
+
+/**
+ * 检测用户输入触发的开发场景姿态 (plan §4)。
+ * 优先级: handoff > review > brainstorm/clarify-keyword > 首轮默认 clarify > null
+ *
+ * @param {string} userInput - 用户本轮输入
+ * @param {boolean} isFirstTurn - 是否首轮 (turnNum === 1)
+ * @returns {'clarify'|'handoff'|'review'|null} - null 表示无追注 (沿用 L2a 自选)
+ */
+function detectDevTrigger(userInput, isFirstTurn) {
+  const text = (typeof userInput === 'string' ? userInput : '').toLowerCase();
+  if (!text && !isFirstTurn) return null;
+
+  // handoff: 子串 + 正则
+  for (const kw of DEV_KEYWORDS.handoff) {
+    if (text.includes(kw.toLowerCase())) return 'handoff';
+  }
+  for (const re of DEV_KEYWORDS.handoffPatterns) {
+    if (re.test(text)) return 'handoff';
+  }
+  // review
+  for (const kw of DEV_KEYWORDS.review) {
+    if (text.includes(kw.toLowerCase())) return 'review';
+  }
+  // brainstorm 关键词 → 触发 clarify 详细规则
+  for (const kw of DEV_KEYWORDS.brainstorm) {
+    if (text.includes(kw.toLowerCase())) return 'clarify';
+  }
+  // 首轮默认 clarify
+  if (isFirstTurn) return 'clarify';
+  return null;
+}
+
+/**
+ * 拼装 L2b 详细规则段 (按 trigger)。null trigger → 返回 null (不追注)。
+ */
+function buildDevL2bSection(trigger) {
+  switch (trigger) {
+    case 'clarify': return DEV_CLARIFY_DETAIL;
+    case 'handoff': return DEV_HANDOFF_DETAIL;
+    case 'review':  return DEV_REVIEW_DETAIL;
+    default: return null;
+  }
+}
+
+// ===========================================================================
 // SCENE_REGISTRY
 // ===========================================================================
+// `key` 字段冗余存自身 key, 让消费者拿到 scene 对象后能反查 (orchestrator 用
+//   `this.scene.key === 'dev'` 判定是否注入 dev L2b)。
 const SCENE_REGISTRY = {
   general: {
+    key: 'general',
     name: '通用圆桌',
     icon: '🎯',
     preset: GENERAL_PRESET,
@@ -464,6 +622,7 @@ const SCENE_REGISTRY = {
     ],
   },
   research: {
+    key: 'research',
     name: '投研圆桌',
     icon: '📊',
     preset: RESEARCH_PRESET,
@@ -476,6 +635,22 @@ const SCENE_REGISTRY = {
       { icon: '📈', title: '个股分析', q: '兆易创新 603986 现在能上车吗？', hint: '默认提问 → @debate → @summary' },
       { icon: '🏭', title: '行业扫描', q: 'AI 芯片板块本周资金面怎么样？', hint: '默认提问 → @summary @pikachu' },
       { icon: '⚖️', title: '持仓复盘', q: '帮我复盘昨天的交易，是不是追高了？', hint: '默认提问 → 自由展开' },
+    ],
+  },
+  dev: {
+    key: 'dev',
+    name: '开发圆桌',
+    icon: '🛠️',
+    preset: DEV_PRESET,
+    defaultCovenant: COVENANT_GENERAL,
+    mcpConfig: null,
+    summaryHints: '澄清决策点 / 默认假设 / 风险',
+    summaryTitleTag: false,
+    dataPackEnabled: false,
+    onboardingExamples: [
+      { icon: '💬', title: '功能讨论', q: '想给 Hub 加个"开发"场景，先帮我问清需求', hint: '首轮默认 clarify 5 题分级' },
+      { icon: '🧩', title: '方案对比', q: '这个 bug 我倾向方案 A，看下三家意见', hint: '默认提问 → discuss' },
+      { icon: '✅', title: '审 diff', q: '审一下我刚改的 core/foo.js', hint: '关键词触发 review 三段式' },
     ],
   },
 };
@@ -664,6 +839,14 @@ module.exports = {
   RESEARCH_SLOT_BIASES,
   BRIEF_SUMMARY_FIELDS,
   BRIEF_SUMMARY_CONSTRAINTS,
+  // dev scene exports (plan-dev-scenario.md)
+  DEV_PRESET,
+  DEV_KEYWORDS,
+  DEV_CLARIFY_DETAIL,
+  DEV_HANDOFF_DETAIL,
+  DEV_REVIEW_DETAIL,
+  detectDevTrigger,
+  buildDevL2bSection,
   renderFiveElementItems,
   renderBriefSummaryConstraints,
   getScene,

@@ -16,7 +16,13 @@ const fs = require('fs');
 const path = require('path');
 const { ALL_AI_KINDS } = require('./ai-kinds.js');
 // P4 五元组 SSoT (2026-05-04): COVENANT_GENERAL 与 buildBriefSummaryPrompt 共用同一份 schema
-const { renderFiveElementItems, renderBriefSummaryConstraints } = require('./roundtable-scenes.js');
+// dev scene (plan-dev-scenario.md): per-turn L2b 触发追注 (clarify/handoff/review)
+const {
+  renderFiveElementItems,
+  renderBriefSummaryConstraints,
+  detectDevTrigger,
+  buildDevL2bSection,
+} = require('./roundtable-scenes.js');
 
 const MAX_DEBATE_OPINION_CHARS = 5000;
 const MAX_DEBATE_OPINION_KEEP = 2000;
@@ -254,6 +260,17 @@ class RoundtableOrchestrator {
     return `> 完整历史:${timelinePath}`;
   }
 
+  // dev scene · L2b 触发段渲染 (plan-dev-scenario.md §3.3 / §4.1)
+  //   首轮默认 clarify · handoff/review/brainstorm 关键词命中追注
+  //   非 dev scene 或无 trigger → 返回 null (整段省略, 不污染其他场景)
+  //   注: 仅 fanout/debate 注入; summary 走既有五元组路径, 不复用 (plan §6 Non-goal)
+  _renderDevL2bSection(turnNum, userInput) {
+    if (!this.scene || this.scene.key !== 'dev') return null;
+    const isFirstTurn = (typeof turnNum === 'number' && turnNum === 1);
+    const trigger = detectDevTrigger(userInput, isFirstTurn);
+    return buildDevL2bSection(trigger);
+  }
+
   // P6 (2026-05-04) 默认 fanout 轮:scene 标签 + 字段化调度上下文 + [上一轮?] + [数据包?] + 用户问题 + [timeline footer?]
   //   独立行为提示段已删除 — 已并入 _renderDispatchContext 的"回答方式"字段
   //   新参数 mySid / sidLabelFn 用于"你是"字段渲染 (向后兼容: caller 不传则降级显示 sid)
@@ -269,6 +286,10 @@ class RoundtableOrchestrator {
     if (this.scene.dataPackEnabled && dataPack && typeof dataPack === 'string' && dataPack.trim().length > 0) {
       parts.push('', '## 数据接入（Hub 自动从 LinDangAgent 拉取）', dataPack);
     }
+
+    // dev scene L2b 触发追注 (plan-dev-scenario.md §3.3) — 在用户问题前
+    const devL2b = this._renderDevL2bSection(turnNum, userInput);
+    if (devL2b) parts.push('', devL2b);
 
     parts.push('', '## 用户问题', userInput || '');
 
@@ -298,6 +319,12 @@ class RoundtableOrchestrator {
 
     parts.push('', '## 你的任务');
     parts.push('请基于上一轮内容 + 用户补充信息发表新观点:可继承、可反驳，但要明示引用对方哪一点。');
+
+    // dev scene L2b 触发追注 (plan-dev-scenario.md §3.3)
+    //   debate 不会是首轮 (debate 至少需要上一轮内容), 所以传 isFirstTurn=false 等价行为;
+    //   _renderDevL2bSection 内部用 turnNum===1 判定首轮, 自然 false
+    const devL2b = this._renderDevL2bSection(turnNum, userInput);
+    if (devL2b) parts.push('', devL2b);
 
     const footer = this._renderTimelineFooter(timelinePath);
     if (footer) parts.push('', footer);

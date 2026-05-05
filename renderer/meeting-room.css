@@ -1737,6 +1737,55 @@ body.mr-density-compact .mr-rt-cost-bar {
   font-family: "Cascadia Mono", Consolas, monospace;
 }
 
+/* ---- dev 场景一次性引导卡片 (plan-dev-scenario.md §5.2) ---- */
+.mr-rt-dev-card {
+  margin: 12px 4px;
+  background: rgba(99,102,241,0.06);
+  border: 1px solid rgba(99,102,241,0.35);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.mr-rt-dev-card-head {
+  font-size: 13px; font-weight: 600;
+  color: #c7d2fe;
+  margin-bottom: 8px;
+}
+.mr-rt-dev-card-body {
+  list-style: disc; padding-left: 22px;
+  margin: 0 0 10px 0;
+  font-size: 12px; line-height: 1.7;
+  color: #d1d5db;
+}
+.mr-rt-dev-card-body li { margin-bottom: 2px; }
+.mr-rt-dev-card-body strong { color: #fde68a; font-weight: 600; }
+.mr-rt-dev-card-actions {
+  display: flex; gap: 8px; justify-content: flex-end;
+}
+.mr-rt-dev-card-btn {
+  padding: 5px 14px;
+  border-radius: 5px;
+  border: 1px solid #4f46e5;
+  background: #4f46e5;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.mr-rt-dev-card-btn:hover {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+.mr-rt-dev-card-btn-secondary {
+  background: transparent;
+  color: #8b949e;
+  border-color: #30363d;
+}
+.mr-rt-dev-card-btn-secondary:hover {
+  background: rgba(139,148,158,0.08);
+  border-color: #58606a;
+  color: #c9d1d9;
+}
+
 /* ---- 圆桌 toolbar：群策群力 / 总结发言 ---- */
 .mr-rt-toolbar {
   display: flex; align-items: center; gap: 10px;
