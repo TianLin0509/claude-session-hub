@@ -2104,6 +2104,11 @@ body.mr-density-compact .mr-rt-cost-bar {
   box-shadow: -10px 0 30px rgba(0,0,0,.55);
   display: flex; flex-direction: column;
   animation: mr-rt-tl-slide .18s ease-out;
+  /* 2026-05-05 道雪：抽屉打开时字体放大，Ctrl+滚轮可调（JS 动态写）。
+     默认 1.2 = 抽屉正文从 13px 提升到 ~16px；clamp [0.8, 2.0]。
+     仅缩放 .mr-rt-tl-content 内的正文（body/decision/user/empty），
+     header/tab/close 按钮保持原字号，避免 tab bar 撑变形。 */
+  --drawer-font-scale: 1.2;
 }
 @keyframes mr-rt-tl-slide { from { transform: translateX(8%); opacity: .4; } to { transform: none; opacity: 1; } }
 .mr-rt-tl-drawer.mr-rt-tl-slot-1 { border-left-color: var(--c-slot-1); }
@@ -2154,25 +2159,31 @@ body.mr-density-compact .mr-rt-cost-bar {
   font-size: 10px; padding: 1px 5px; border-radius: 999px;
   background: linear-gradient(90deg, #fcd34d, #f59e0b); color: #1a1a1a; font-weight: 700;
 }
-.mr-rt-tl-content { padding: 16px 18px 24px; overflow-y: auto; flex: 1; }
+.mr-rt-tl-content {
+  padding: 16px 18px 24px; overflow-y: auto; flex: 1;
+  /* 2026-05-05 道雪：在 content 容器统一基准字号 = 13px × scale；子元素用 em 继承缩放。
+     仅作用于抽屉正文，header/tab 不受影响（它们在 content 之外）。 */
+  font-size: calc(13px * var(--drawer-font-scale, 1));
+  line-height: 1.6;
+}
 .mr-rt-tl-decision-row {
-  font-size: 13px; color: #fcd34d; margin-bottom: 10px;
+  font-size: 1em; color: #fcd34d; margin-bottom: 10px;
   padding: 6px 10px; background: rgba(252,211,77,.08); border-left: 3px solid #fcd34d; border-radius: 4px;
 }
 .mr-rt-tl-user {
-  font-size: 12px; color: #8b949e; margin-bottom: 8px;
+  font-size: 0.92em; color: #8b949e; margin-bottom: 8px;
   padding: 6px 10px; background: rgba(255,255,255,.04); border-radius: 4px;
 }
 .mr-rt-tl-body {
-  font-size: 13px; line-height: 1.6; color: #c9d1d9; overflow-wrap: anywhere;
+  font-size: 1em; line-height: 1.6; color: #c9d1d9; overflow-wrap: anywhere;
 }
 .mr-rt-tl-body p { margin: .5em 0; }
 .mr-rt-tl-body h1, .mr-rt-tl-body h2, .mr-rt-tl-body h3 { margin: .8em 0 .3em; }
-.mr-rt-tl-body code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+.mr-rt-tl-body code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
 .mr-rt-tl-body pre { background: #0d1117; padding: 10px; border-radius: 6px; overflow-x: auto; }
 .mr-rt-tl-body table { border-collapse: collapse; margin: 8px 0; }
 .mr-rt-tl-body th, .mr-rt-tl-body td { border: 1px solid #30363d; padding: 4px 8px; }
-.mr-rt-tl-empty { color: #8b949e; padding: 20px; text-align: center; }
+.mr-rt-tl-empty { color: #8b949e; padding: 20px; text-align: center; font-size: 1em; }
 
 /* ---- 首次发送提醒条（turns.length === 0 时显示，发完一次后消失）---- */
 /* Onboarding (replaces old firstrun hint) */

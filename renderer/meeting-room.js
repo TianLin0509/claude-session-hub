@@ -1870,6 +1870,36 @@ if (typeof document !== 'undefined') (function () {
     `;
     overlay.style.display = 'block';
 
+    // 2026-05-05 道雪：抽屉字号 scale —— 打开时从 localStorage 读上次值（默认 1.2，正文从
+    //   13px 提升到 ~16px），Ctrl+滚轮 ±0.1 调整，clamp [0.8, 2.0]，preventDefault 拦掉
+    //   Electron 默认整窗 zoom（仅抽屉内拦，抽屉外仍可整窗 zoom）。CSS 通过 --drawer-font-scale
+    //   缩放 .mr-rt-tl-content 内的正文；header/tab 不受影响。
+    const _drawerEl = overlay.querySelector('.mr-rt-tl-drawer');
+    const FONT_SCALE_KEY = 'mr-drawer-font-scale';
+    const FONT_SCALE_MIN = 0.8;
+    const FONT_SCALE_MAX = 2.0;
+    const FONT_SCALE_STEP = 0.1;
+    const FONT_SCALE_DEFAULT = 1.2;
+    let _drawerFontScale = (() => {
+      const raw = parseFloat(localStorage.getItem(FONT_SCALE_KEY));
+      return (Number.isFinite(raw) && raw >= FONT_SCALE_MIN && raw <= FONT_SCALE_MAX) ? raw : FONT_SCALE_DEFAULT;
+    })();
+    const _applyDrawerScale = (s) => {
+      _drawerFontScale = Math.max(FONT_SCALE_MIN, Math.min(FONT_SCALE_MAX, Math.round(s * 10) / 10));
+      if (_drawerEl) _drawerEl.style.setProperty('--drawer-font-scale', String(_drawerFontScale));
+      try { localStorage.setItem(FONT_SCALE_KEY, String(_drawerFontScale)); } catch {}
+    };
+    _applyDrawerScale(_drawerFontScale);
+    if (_drawerEl) {
+      _drawerEl.addEventListener('wheel', (e) => {
+        if (!e.ctrlKey) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const dir = e.deltaY < 0 ? +1 : -1;
+        _applyDrawerScale(_drawerFontScale + dir * FONT_SCALE_STEP);
+      }, { passive: false });
+    }
+
     // T3：注册 live 订阅（仅当有 liveTurn 且默认 active 是它时）
     _rtTimelineLive = (liveTurn && turnsWithAns[0] && turnsWithAns[0]._live)
       ? { sid, mid: meeting.id, kind } : null;
