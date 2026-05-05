@@ -9,7 +9,15 @@ const { SessionManager, clearSessionManagerConfigCache } = require('./core/sessi
 const stateStore = require('./core/state-store.js');
 const { createMobileServer } = require('./core/mobile-server.js');
 const mobileAuth = require('./core/mobile-auth.js');
-const { FeishuClient, createFeishuMessageSender } = require('./core/feishu-client.js');
+// 防御性 require：feishu-client.js 缺失时（极端情况下打包遗漏）只 disable 飞书发送，
+// 不让 Hub 启动崩溃。下游 createFeishuMessageSender 调用处有 null guard。
+let FeishuClient = null;
+let createFeishuMessageSender = null;
+try {
+  ({ FeishuClient, createFeishuMessageSender } = require('./core/feishu-client.js'));
+} catch (err) {
+  console.warn('[feishu] client module unavailable, feishu integration disabled:', err.message);
+}
 const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
 const { MeetingRoomManager, isRoundtableCapableMeeting } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
@@ -3637,7 +3645,7 @@ app.whenReady().then(async () => {
     const feishuCodexToken = feishuConfig.token || '';
     const feishuAppId = feishuConfig.appId || '';
     const feishuAppSecret = feishuConfig.appSecret || '';
-    const feishuSender = (feishuAppId && feishuAppSecret)
+    const feishuSender = (feishuAppId && feishuAppSecret && FeishuClient && createFeishuMessageSender)
       ? createFeishuMessageSender(new FeishuClient({
         appId: feishuAppId,
         appSecret: feishuAppSecret,
