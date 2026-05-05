@@ -122,74 +122,10 @@ if (typeof document !== 'undefined') (function () {
   //   Claude/Codex/DeepSeek 等的 token/cost 显示 "--", 用户视觉上无价值。
   //   决定: 仅保留总耗时显示。token/cost 留给后续 transcript-tap 扩展后再启用。
 
-  // F7 Phase 3(2026-05-04 道雪 / spec F7): 全员完成通知
-  //   触发: turn-complete IPC 时检查最后一轮 byStatus 全员都不是 absent/errored
-  //   通知方式: 1) Web Notification API (Electron renderer 支持); 2) document.title 闪烁(降级/增强)
-  //   抑制: 窗口已 focus 时不触发(用户已在看, 不打扰)
-  //   停止: 窗口 focus → 立即停止 title 闪烁
-  let _origDocTitle = null;
-  let _titleFlashTimer = null;
-  let _notifyPermissionAsked = false;
-
-  function _isWindowFocused() {
-    try { return document.hasFocus(); } catch { return true; }
-  }
-  function _startTitleFlash(flashText) {
-    if (!_origDocTitle) _origDocTitle = document.title;
-    if (_titleFlashTimer) clearInterval(_titleFlashTimer);
-    let toggle = false;
-    _titleFlashTimer = setInterval(() => {
-      document.title = toggle ? _origDocTitle : flashText;
-      toggle = !toggle;
-    }, 1000);
-  }
-  function _stopTitleFlash() {
-    if (_titleFlashTimer) { clearInterval(_titleFlashTimer); _titleFlashTimer = null; }
-    if (_origDocTitle) { document.title = _origDocTitle; _origDocTitle = null; }
-  }
-  function _maybeNotifyAllCompleted(meeting) {
-    if (!meeting || !Array.isArray(meeting.subSessions) || meeting.subSessions.length === 0) return;
-    const cached = _rtPanelState[meeting.id];
-    if (!cached || !Array.isArray(cached.turns) || cached.turns.length === 0) return;
-    const lastTurn = cached.turns[cached.turns.length - 1];
-    const byMap = lastTurn.by || {};
-    const byStatus = lastTurn.byStatus || {};
-    // 全员完成: 每家既不是异常态(absent/errored/interrupted/transport_lost), 且有 by 内容或手动提取
-    const allDone = meeting.subSessions.every(sid => {
-      const st = byStatus[sid];
-      if (st === 'absent' || st === 'errored' || st === 'interrupted' || st === 'transport_lost') return false;
-      if (byMap[sid]) return true;
-      return st === 'manual_extracted';
-    });
-    if (!allDone) return;
-    // 窗口已 focus → 不打扰
-    if (_isWindowFocused()) return;
-    const titleText = `(✓) 第 ${lastTurn.n} 轮完成 · ${meeting.title || '圆桌讨论'}`;
-    // 1) Web Notification API
-    try {
-      if (typeof Notification !== 'undefined') {
-        if (Notification.permission === 'granted') {
-          const n = new Notification(`✓ ${meeting.title || '圆桌讨论'}`, {
-            body: `第 ${lastTurn.n} 轮 3 个 AI 全部完成`,
-            silent: false,
-          });
-          // 点通知 → 切回 Hub 窗口(Electron renderer)
-          n.onclick = () => { try { window.focus(); } catch {} };
-        } else if (!_notifyPermissionAsked && Notification.permission !== 'denied') {
-          _notifyPermissionAsked = true;
-          Notification.requestPermission().catch(() => {});
-        }
-      }
-    } catch (e) {
-      console.warn('[F7] Notification failed:', e.message);
-    }
-    // 2) title 闪烁(无论 Notification 成败, 提供视觉降级)
-    _startTitleFlash(titleText);
-  }
-  // 窗口 focus 立即停止 title 闪烁(IIFE 顶层一次性挂)
-  window.addEventListener('focus', _stopTitleFlash);
-  // 启动时如有缓存的 origTitle 残留, 安全清掉
-  if (_isWindowFocused()) _stopTitleFlash();
+  // F7 Phase 3 全员完成通知（Web Notification + title 闪烁）已废弃。
+  //   2026-05-05 道雪 修3：改用侧栏 unread 机制（renderer.js 监听 turn-complete IPC，
+  //   非 active 圆桌累加 meeting.unreadCount → renderSessionList 渲染 has-unread + ⏸ 等你 badge），
+  //   与普通 session 的提醒哲学一致，不再用 Web Notification / title 闪烁打扰用户。
 
   // F3 Phase 2(2026-05-04 道雪 / spec F3): 多卡 Ctrl/Cmd+click 对比模式
   //   状态: Set<sid>。空 = 默认; ≥1 = 对比模式 (body.mr-card-compare-on)
@@ -1172,6 +1108,53 @@ if (typeof document !== 'undefined') (function () {
     return `<span class="mr-rt-stepper" id="mr-rt-stepper">${dots}${activeDot}${counter}</span>`;
   }
 
+  // 2026-05-05 道雪：用户提问 banner（A+D 混合：黄色引用条 + 单行紧凑布局）。
+  //   三态：
+  //     'history' — 时光机模式，蓝色边线 + 第 N 轮 chip
+  //     'live'    — 进行中（用户已发但 turn-complete 未到），黄色 + ⏳进行中
+  //     'latest'  — 已 idle 看最新一轮，黄色 + 第 N 轮 chip
+  //   空提问（纯 debate/summary 无附加输入）→ return ''，不显示。
+  function _renderUserQuestionBanner(state, meeting, viewingTurnN) {
+    const meetingId = meeting && meeting.id;
+    const turns = (state && Array.isArray(state.turns)) ? state.turns : [];
+    const currentMode = state && state.currentMode;
+    const isTimeTravel = typeof viewingTurnN === 'number' && viewingTurnN >= 1 && viewingTurnN <= turns.length;
+    const isLive = !isTimeTravel && currentMode && currentMode !== 'idle';
+
+    let bannerMode, userInput, turnNum, turnLabel;
+    const _modeLabelMap = { fanout: '提问', debate: '辩论', summary: '综合' };
+    if (isTimeTravel) {
+      const turn = turns[viewingTurnN - 1];
+      if (!turn) return '';
+      userInput = (turn.userInput || '').trim();
+      turnNum = viewingTurnN;
+      turnLabel = _modeLabelMap[turn.mode] || turn.mode || '';
+      bannerMode = 'history';
+    } else if (isLive) {
+      userInput = (_currentTurnUserInputByMeeting[meetingId] || '').trim();
+      turnNum = turns.length + 1;
+      turnLabel = '进行中';
+      bannerMode = 'live';
+    } else if (turns.length > 0) {
+      const turn = turns[turns.length - 1];
+      userInput = (turn.userInput || '').trim();
+      turnNum = turn.n || turns.length;
+      turnLabel = _modeLabelMap[turn.mode] || turn.mode || '';
+      bannerMode = 'latest';
+    } else {
+      return '';
+    }
+    if (!userInput) return '';
+    return `
+      <div class="mr-rt-userq" data-mode="${bannerMode}">
+        <span class="mr-rt-userq-label">💬 你的提问</span>
+        <span class="mr-rt-userq-text">${escapeHtml(userInput)}</span>
+        <span class="mr-rt-userq-tag">第 ${turnNum} 轮 · ${escapeHtml(turnLabel)}</span>
+        <button class="mr-rt-userq-toggle" data-action="userq-toggle" title="展开/折叠全文" aria-label="展开/折叠全文">▾</button>
+      </div>
+    `;
+  }
+
   function _suggestedCmd(turns, currentMode) {
     if (currentMode && currentMode !== 'idle') return '';
     if (turns.length === 0) return 'ask';
@@ -1374,10 +1357,9 @@ if (typeof document !== 'undefined') (function () {
     // Phase 5(2026-05-05 道雪): 删除 _renderRtHistory 渲染调用。
     //   旧版底部"历史轮次 (N)"折叠按钮 + 列表已被 stepper mini-map 完全替代;
     //   保留 _renderRtHistory 函数本身以防其他地方调用, 仅删此处渲染。
-    // 标题(plan-dev-scenario.md): 优先 SCENE_REGISTRY.name (覆盖 general/research/dev/未来场景),
-    //   未注册场景退回 '圆桌讨论'。替代旧版硬编码 ternary, 新增场景无需再改这行。
-    const _titleScene = meeting ? _scenes.getScene(meeting.scene) : null;
-    const titleText = _titleScene ? _titleScene.name : '圆桌讨论';
+    // 2026-05-05 道雪：标题统一为「圆桌轮次」(用户偏好统一标题,不区分 general/research/dev)。
+    //   不动 _scenes.getScene().name —— 那个 name 同时给 covenant prompt header 用,改了会污染发给 AI 的 prompt。
+    const titleText = '圆桌轮次';
     const viewingTurnN = _rtViewingTurnN[meeting.id];
     const stepper = _renderTurnStepper(state.turns, mode, viewingTurnN);
     // Phase 5: 时光机 banner — 仅 viewingTurnN 设置时渲染
@@ -1424,6 +1406,9 @@ if (typeof document !== 'undefined') (function () {
     setTimeout(() => { try { _refreshSoftAlert(meeting); } catch {} }, 0);
     // D1 v2(2026-05-05 道雪): 欢迎区从 fusedTabs 之后上移到 fusedTabs 之前,
     //   位置在 "圆桌讨论" 标题正下方与 3 张 AI 卡片之间, 视觉权重更高 + 更早被注意到。
+    // 2026-05-05 道雪: 用户提问 banner 紧贴 fusedTabs 之上 — 让"标题/stepper → 你的提问 → AI 答复"
+    //   形成 Q→A 视觉流。空提问/空 turns 时 banner 自动 return '' 不渲染。
+    const userQBanner = _renderUserQuestionBanner(state, meeting, viewingTurnN);
     return `
       <div class="mr-rt-track">
         <div class="mr-rt-track-row">
@@ -1438,6 +1423,7 @@ if (typeof document !== 'undefined') (function () {
       ${timeTravelBanner}
       ${devCard}
       ${onboarding}
+      ${userQBanner}
       ${fusedTabs}
     `;
   }
@@ -1448,16 +1434,31 @@ if (typeof document !== 'undefined') (function () {
   // —— 也就是 IPC 还在飞行中。IPC resolve 后 _rtOptimisticTurn 已被 clearOptimistic 清，
   // 此时 server state 真实状态（含 idle）才被采纳。
   // partialBy 单独保留：轮中单家完成 IPC 推 partial-update，这是轮内增量，独立处理。
-  async function refreshRoundtablePanel(meeting) {
-    if (!_isPanelCapableMeeting(meeting)) { _removeRtPanel(); return; }
+  // 2026-05-05 道雪 修3：cache 与 DOM 解耦的设计原则
+  //   旧实现：refreshRoundtablePanel 一手包办"拉 server state + merge cache + 写 DOM"，
+  //     调用方必须保证 meeting 是当前 active 才能调，否则 DOM 会被错圆桌内容覆盖。
+  //     副作用：所有 IPC handler 都用 `meetingId !== activeMeetingId → return` 守卫，
+  //     非 active 圆桌的 cache 永远跟不上 server，切回时 partial 残留 → 卡片状态错乱。
+  //   新设计：拆成两个函数 ——
+  //     _syncRoundtableCacheFromServer(meeting): 纯 cache 同步，**任何 meeting 都安全调用**
+  //       不动 DOM，IPC handler 在守卫之外也可调用
+  //     refreshRoundtablePanel(meeting): cache sync + DOM 重渲，**仅 active meeting 调用**
+  //       内含 activeMeetingId race guard（修2 内置）
+  //   这样所有圆桌的 cache 始终跟 server 同步，切换体验一致，杜绝残留。
+
+  // 拉 server state + merge cache（含 optimistic 与 prev._partialBy 合并），写 _rtPanelState。
+  // 不写 DOM 不调 _ensureRtPanel，任何 meeting 都能调。
+  // 返回 { state, ok: bool }，ok=false 表示 server state 拉取失败或 meeting 不可 panel。
+  async function _syncRoundtableCacheFromServer(meeting) {
+    if (!_isPanelCapableMeeting(meeting)) return { state: null, ok: false };
     let state;
     try {
       state = await ipcRenderer.invoke('roundtable:get-state', { meetingId: meeting.id });
     } catch (e) {
       console.error('[roundtable] get-state failed:', e.message);
-      return;
+      return { state: null, ok: false };
     }
-    if (!state) return;
+    if (!state) return { state: null, ok: false };
     const prev = _rtPanelState[meeting.id];
     const optimistic = _rtOptimisticTurn[meeting.id];
     if (optimistic && (!state.currentMode || state.currentMode === 'idle')) {
@@ -1465,9 +1466,24 @@ if (typeof document !== 'undefined') (function () {
       state.currentMode = optimistic.mode;
       if (optimistic.summarizerSlot) state.currentSummarizerSlot = optimistic.summarizerSlot;
     }
-    // partialBy 独立保留（轮中增量，不依赖 optimistic 标记）
-    if (prev && prev._partialBy) state._partialBy = prev._partialBy;
+    // partialBy 合并：本轮还在跑（server currentMode 非 idle）才保留 prev._partialBy 增量；
+    //   server 已 idle（本轮已 settle 持久化）→ 丢 prev 残留，让 lastTurn 路径接管渲染。
+    //   这条规则替代旧 `meetingId !== activeMeetingId → return` 守卫的副作用 ——
+    //   非 active 期间 partial 仍会同步进 cache，但切回时如果 server 已 idle，自然不读残留。
+    const serverIdle = !state.currentMode || state.currentMode === 'idle';
+    if (prev && prev._partialBy && !serverIdle) {
+      state._partialBy = prev._partialBy;
+    }
     _rtPanelState[meeting.id] = state;
+    return { state, ok: true };
+  }
+
+  async function refreshRoundtablePanel(meeting) {
+    if (!_isPanelCapableMeeting(meeting)) { _removeRtPanel(); return; }
+    const { state, ok } = await _syncRoundtableCacheFromServer(meeting);
+    if (!ok) return;
+    // 修2：async race guard — await 期间用户切走，老 refresh 不写 DOM（避免 panel 被错圆桌内容覆盖）
+    if (meeting.id !== activeMeetingId) return;
     const panel = _ensureRtPanel();
     panel.innerHTML = _renderRtPanelHtml(state, meeting);
     _bindRtPanelEvents(panel, meeting);
@@ -1713,6 +1729,17 @@ if (typeof document !== 'undefined') (function () {
       ttExitBtn.addEventListener('click', () => {
         delete _rtViewingTurnN[meeting.id];
         refreshRoundtablePanel(meeting);
+      });
+    }
+    // 2026-05-05 道雪：用户提问 banner 展开/折叠按钮。点 ▾ → 切 .expanded class,
+    //   text 从 ellipsis 单行变 pre-wrap 多行;按钮 transform rotate 180° (CSS 控制)。
+    //   局部 toggle 不调 refreshRoundtablePanel,避免重渲后 expanded 状态丢失。
+    const userqToggle = panel.querySelector('[data-action="userq-toggle"]');
+    if (userqToggle) {
+      userqToggle.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const banner = userqToggle.closest('.mr-rt-userq');
+        if (banner) banner.classList.toggle('expanded');
       });
     }
     // 时光机模式 input/send disable(只读历史不许新发轮)
@@ -2065,30 +2092,43 @@ if (typeof document !== 'undefined') (function () {
 
   // Roundtable 轮次完成：清掉 partialBy + 乐观标记（防止 turn-complete 比 IPC.then 更早），
   // 从 IPC 拉最终 state（含 turn N 已持久化）
+  // 2026-05-05 道雪 修3：cache 清理对所有 meeting 都做（含非 active），DOM 重渲仅 active 做。
+  //   之前的 `meetingId === activeMeetingId` 守卫导致非 active 圆桌 _partialBy 残留，
+  //   切回时 cached.currentMode!=idle 但实际 server 已 idle → 卡片显示 streaming 假象。
   ipcRenderer.on('roundtable-turn-complete', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
-    if (_isPanelCapableMeeting(meeting) && meetingId === activeMeetingId) {
-      delete _rtOptimisticTurn[meetingId];
-      const cached = _rtPanelState[meetingId];
-      if (cached) {
-        cached._partialBy = null;
-        cached.currentMode = null;
-        delete cached.currentSummarizerSlot;
-      }
-      refreshRoundtablePanel(meeting);
-      if (cached) renderToolbar(meeting);
-      // F7 Phase 3: 全员完成通知(窗口失焦时触发 Notification + title 闪烁)
-      try { _maybeNotifyAllCompleted(meeting); } catch (e) {
-        console.warn('[F7] notify failed:', e.message);
-      }
+    if (!_isPanelCapableMeeting(meeting)) return;
+    // === Phase 1: cache 清理（所有 meeting 都做）===
+    delete _rtOptimisticTurn[meetingId];
+    // 2026-05-05 道雪：本轮已 settle,state.turns[N].userInput 接管,清掉进行中缓存。
+    delete _currentTurnUserInputByMeeting[meetingId];
+    const cached = _rtPanelState[meetingId];
+    if (cached) {
+      cached._partialBy = null;
+      cached.currentMode = null;
+      delete cached.currentSummarizerSlot;
     }
+    // === Phase 2: DOM 重渲（仅 active meeting）===
+    //   非 active 圆桌的全员完成通知由 renderer.js 监听同 IPC 累加 meeting.unreadCount
+    //   触发侧栏 has-unread + ⏸ 等你 badge，不在此处理。
+    if (meetingId !== activeMeetingId) return;
+    refreshRoundtablePanel(meeting);
+    if (cached) renderToolbar(meeting);
   });
 
   // Roundtable state 元数据变更（如 summary 启动写入 currentSummarizerSlot）
+  // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（含非 active），DOM 重渲仅 active。
+  //   非 active 圆桌的 currentMode / currentSummarizerSlot 也得跟 server 同步，
+  //   否则切回时 panel 显示老状态。
   ipcRenderer.on('roundtable-state-update', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
-    if (_isPanelCapableMeeting(meeting) && meetingId === activeMeetingId) {
+    if (!_isPanelCapableMeeting(meeting)) return;
+    if (meetingId === activeMeetingId) {
+      // active：cache 同步 + DOM 重渲
       refreshRoundtablePanel(meeting);
+    } else {
+      // 非 active：仅 cache 同步（不动 DOM）
+      _syncRoundtableCacheFromServer(meeting);
     }
   });
 
@@ -2122,13 +2162,22 @@ if (typeof document !== 'undefined') (function () {
   // Roundtable 单家 partial-update：T2（2026-05-04 道雪）局部 patch + diff 短路 + scrollTop 保留
   //   修复 B2 滚动条弹回：旧版 panel.innerHTML 全量重渲，三家卡片 DOM 全销毁→
   //   皮卡丘 settled 后小火龙心跳仍把皮卡丘 .mr-ft-preview 的 scrollTop 拍回 0。
+  // 2026-05-05 道雪 修3：cache 同步与 DOM 解耦 ——
+  //   旧版 `meetingId !== activeMeetingId → return` 让非 active 圆桌的 cache 永远跟不上 server，
+  //   切回时残留 streaming partial → 卡片显示错状态。新版 cache 同步对所有 meeting 都做，
+  //   DOM 操作仅 active 时执行。
   ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen }) => {
     const meeting = meetingData[meetingId];
-    if (!_isPanelCapableMeeting(meeting) || meetingId !== activeMeetingId) return;
-    const cached = _rtPanelState[meetingId];
+    if (!_isPanelCapableMeeting(meeting)) return;
+    // === Phase 1: cache 同步（任何 meeting 都做，含非 active）===
+    let cached = _rtPanelState[meetingId];
     if (!cached) {
-      // 首次：直接 refresh（拉 state），下次 partial 才有 cached 走局部路径
-      refreshRoundtablePanel(meeting);
+      // 没 cache 说明用户从没打开过这个圆桌 → 异步拉 server state 建 cache。
+      //   本次 partial 不写（下次 partial 来时 cache 已建会正常合并），
+      //   保持与旧版行为一致避免占位 cache 导致 lastTurn=null 渲染不完整。
+      _syncRoundtableCacheFromServer(meeting).then(({ ok }) => {
+        if (ok && meetingId === activeMeetingId) refreshRoundtablePanel(meeting);
+      });
       return;
     }
     if (!cached._partialBy) cached._partialBy = {};
@@ -2152,7 +2201,10 @@ if (typeof document !== 'undefined') (function () {
     }
     // T2 short-circuit：内容完全无变化（高频心跳常见）→ 直接 return，0 DOM 操作
     if (_isPartialUnchanged(prev, next)) return;
-    cached._partialBy[sid] = next;
+    cached._partialBy[sid] = next;  // ← cache 写入完成（无论 active 与否都做）
+
+    // === Phase 2: DOM 更新（仅 active meeting 做）===
+    if (meetingId !== activeMeetingId) return;
 
     // 2026-05-05 道雪：时光机模式短路 — 用户在看第 N 轮历史快照时，partial-update
     //   不应该把卡片 outerHTML 替换为最新 streaming 内容（否则用户感知"被强制跳回最新轮"）。
@@ -2242,14 +2294,20 @@ if (typeof document !== 'undefined') (function () {
   // 由 _allParticipantsSettled 决定，与本 banner 无关）。
   ipcRenderer.on('roundtable-soft-alert', (_event, { meetingId, sid, label, level, mode, turnNum }) => {
     const meeting = meetingData[meetingId];
-    if (!_isPanelCapableMeeting(meeting) || meetingId !== activeMeetingId) return;
-    // 同时把 sid 状态切到 soft_alert，让卡片状态文本变 "等待中…" + 显示逃生工具栏
+    if (!_isPanelCapableMeeting(meeting)) return;
+    // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 _partialBy[sid].status='soft_alert'），
+    //   切回该圆桌时卡片自动显示"等待中…"状态。
+    //   banner DOM 仅 active 时弹（跨 meeting 弹 banner 文案"XX 已等待"会让用户混乱当前看的不是这个圆桌）。
+    //   非 active 圆桌的 soft-alert 不接入侧栏 unread —— 这是"AI 慢响应"信号，
+    //   语义跟"全员完成"不同，混入侧栏会让"⏸ 等你"badge 含义模糊。
     const cached = _rtPanelState[meetingId];
     if (cached) {
       if (!cached._partialBy) cached._partialBy = {};
       const existing = cached._partialBy[sid] || {};
       cached._partialBy[sid] = { text: existing.text || '', status: 'soft_alert' };
     }
+    // === Phase 2: banner DOM 与 panel 重渲（仅 active）===
+    if (meetingId !== activeMeetingId) return;
     const banner = document.getElementById('mr-rt-soft-alert-banner');
     if (banner) {
       const levelLabel = level === 't2' ? '3 分钟' : '90 秒';
@@ -2282,9 +2340,11 @@ if (typeof document !== 'undefined') (function () {
   //   再 refreshRoundtablePanel 重渲——这样 innerHTML 重渲后状态也能保留（H2 数据驱动方案）。
   //   H1 修复：补 activeMeetingId 守卫，与其他 roundtable-* 监听器保持一致。
   ipcRenderer.on('roundtable-send-stuck', (_e, { meetingId, sid /*, kind, mode */ }) => {
-    if (meetingId !== activeMeetingId) return;  // H1：跨 meeting 隔离
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
+    // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 sendStatus='stuck'），
+    //   切回该圆桌时卡片自动显示"⚠ 输入卡顿"状态 + [📤 发送] 按钮亮起。
+    //   panel DOM 重渲仅 active 做。
     const cached = _rtPanelState[meetingId];
     if (cached) {
       if (!cached._partialBy) cached._partialBy = {};
@@ -2293,6 +2353,7 @@ if (typeof document !== 'undefined') (function () {
       cached._partialBy[sid] = { ...existing, sendStatus: 'stuck' };
     }
     console.warn(`[renderer] roundtable-send-stuck meeting=${meetingId} sid=${sid.slice(0,8)}`);
+    if (meetingId !== activeMeetingId) return;
     if (cached) {
       const panel = _ensureRtPanel();
       panel.innerHTML = _renderRtPanelHtml(cached, meeting);
@@ -2305,25 +2366,32 @@ if (typeof document !== 'undefined') (function () {
   //   M2 修复（最小化方案）：先 await refreshRoundtablePanel 拿最新 turn meta 重渲，
   //     再追加 badge 到新 DOM 节点上（旧节点已被 innerHTML 替换），避免 badge 被立即抹掉。
   ipcRenderer.on('roundtable-turn-patched', async (_e, { meetingId, turnNum, sid, charCount }) => {
-    if (meetingId !== activeMeetingId) return;  // H1：跨 meeting 隔离
     const meeting = meetingData[meetingId];
-    if (_isPanelCapableMeeting(meeting)) {
-      // 先重渲（拿最新 turn meta），badge 在新 DOM 上追加
+    if (!_isPanelCapableMeeting(meeting)) return;
+    // 2026-05-05 道雪 修3：cache 同步（拉 server state 拿到 patch 后的 lastTurn.by）对所有 meeting 都做，
+    //   切回该圆桌时 lastTurn 自动是 patch 后的最新文本。
+    //   "自动补全 +N 字"badge 是 3s 浮动动画，仅 active 时追加（跨切换语义弱，非 active 期间错过没影响）。
+    if (meetingId === activeMeetingId) {
+      // active：先重渲拿最新 turn meta，badge 在新 DOM 上追加
       await refreshRoundtablePanel(meeting);
+      const card = document.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
+      if (card) {
+        let badge = card.querySelector('.mr-ft-auto-patched-badge');
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'mr-ft-auto-patched-badge';
+          card.appendChild(badge);
+        }
+        badge.textContent = `自动补全 +${charCount}字`;
+        badge.classList.remove('fade-out');
+        void badge.offsetWidth;  // 强制 reflow 让 fade-out 动画从头开始
+        badge.classList.add('fade-out');
+        setTimeout(() => { try { badge.remove(); } catch {} }, 3000);
+      }
+    } else {
+      // 非 active：仅 cache 同步（不动 DOM）
+      _syncRoundtableCacheFromServer(meeting);
     }
-    const card = document.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
-    if (!card) return;
-    let badge = card.querySelector('.mr-ft-auto-patched-badge');
-    if (!badge) {
-      badge = document.createElement('span');
-      badge.className = 'mr-ft-auto-patched-badge';
-      card.appendChild(badge);
-    }
-    badge.textContent = `自动补全 +${charCount}字`;
-    badge.classList.remove('fade-out');
-    void badge.offsetWidth;  // 强制 reflow 让 fade-out 动画从头开始
-    badge.classList.add('fade-out');
-    setTimeout(() => { try { badge.remove(); } catch {} }, 3000);
     console.log(`[renderer] roundtable-turn-patched turn=${turnNum} sid=${sid.slice(0,8)} +${charCount} chars`);
   });
 
@@ -2339,6 +2407,12 @@ if (typeof document !== 'undefined') (function () {
   //   切换前 save 当前 mid 的草稿、切换后 restore 新 mid 的草稿即可独立。
   //   仅内存级（不落盘）：重启 Hub 草稿丢失，与"输入未发送临时缓冲"语义一致。
   const _inputDraftByMeeting = {};
+
+  // 2026-05-05 道雪：用户提问 banner 的"进行中轮"缓存。
+  //   handleMeetingSend 入口写入 → turn-complete 清空 → state.turns[N].userInput 接管。
+  //   这样从用户点发送 → server 推 turn-complete 之间(数秒到数分钟),banner 就能立即显示
+  //   "你刚发的提问 + 进行中"标签,不必等本轮 settle 才出现。
+  const _currentTurnUserInputByMeeting = {};
   function _saveInputDraft() {
     if (!activeMeetingId) return;
     const inp = document.getElementById('mr-input-box');
@@ -3495,6 +3569,9 @@ if (typeof document !== 'undefined') (function () {
         if (debateBtn.hasAttribute('disabled')) return;
         const inputBox = document.getElementById('mr-input-box');
         const extra = inputBox ? inputBox.innerText.trim() : '';
+        // 2026-05-05 道雪：辩论无附加 userInput 时也缓存固定标识,banner 可显示"辩论中"语义
+        if (extra) _currentTurnUserInputByMeeting[meeting.id] = extra;
+        else delete _currentTurnUserInputByMeeting[meeting.id];
         triggerRoundtable(meeting, 'debate', { userInput: extra });
         if (inputBox) inputBox.textContent = '';
         delete _inputDraftByMeeting[meeting.id];
@@ -3950,6 +4027,9 @@ if (typeof document !== 'undefined') (function () {
       // 公共轮次：fanout / debate / summary 走 orchestrator
       if (cmd.type === 'rt-fanout' || cmd.type === 'rt-debate' || cmd.type === 'rt-summary') {
         const mode = cmd.type === 'rt-fanout' ? 'fanout' : cmd.type === 'rt-debate' ? 'debate' : 'summary';
+        // 2026-05-05 道雪：本轮 userInput 立即缓存,让"用户提问 banner"在 turn-complete 之前就能显示。
+        const _userInputForBanner = (cmd.text || '').trim();
+        if (_userInputForBanner) _currentTurnUserInputByMeeting[meeting.id] = _userInputForBanner;
         // 也写入 meeting timeline（黑板视图回放用）
         try {
           await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });

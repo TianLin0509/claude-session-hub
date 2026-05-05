@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>圆桌「用户提问」插槽 · UI 备选 mockup（2026-05-05 道雪）</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font: 13px/1.5 -apple-system,Segoe UI,Microsoft YaHei,sans-serif;
+    background: #0d1117; color: #c9d1d9;
+    margin: 0; padding: 24px;
+  }
+  .meta {
+    color: #8b949e; max-width: 1200px; margin: 0 auto 30px;
+    padding: 12px 16px; background: #161b22; border-left: 3px solid #58a6ff; border-radius: 4px;
+  }
+  .meta b { color: #e6edf3; }
+  .meta code { background: rgba(255,255,255,0.07); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+  .variant-section {
+    max-width: 1200px; margin: 0 auto 36px;
+    border: 1px solid #30363d; border-radius: 8px; overflow: hidden;
+  }
+  .variant-head {
+    padding: 10px 16px; background: linear-gradient(90deg, #58a6ff15, transparent);
+    border-bottom: 1px solid #30363d;
+  }
+  .variant-head h2 { margin: 0; font-size: 15px; color: #58a6ff; }
+  .variant-head .desc { color: #8b949e; font-size: 12px; margin-top: 4px; }
+  .variant-body { padding: 18px; background: #0d1117; }
+
+  /* 模拟现有 panel 框架 */
+  .mr-rt-track-row {
+    display: flex; align-items: center; gap: 16px;
+    padding: 8px 4px; margin-bottom: 8px;
+  }
+  .mr-rt-title { font-weight: 600; color: #e6edf3; font-size: 14px; }
+  .stepper-mock {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 4px;
+  }
+  .stepper-mock .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: #6e7681;
+  }
+  .stepper-mock .dot.active {
+    background: #fcd34d; transform: scale(1.2);
+    box-shadow: 0 0 6px #fcd34d;
+  }
+  .stepper-mock .dot.viewing {
+    background: #58a6ff; box-shadow: 0 0 6px #58a6ff;
+  }
+  .stepper-mock .counter {
+    font-size: 12px; color: #8b949e; margin-left: 6px; font-variant-numeric: tabular-nums;
+  }
+  .total-cost {
+    margin-left: auto; font-size: 11px; color: #8b949e;
+    padding: 4px 10px; background: rgba(255,255,255,0.03); border-radius: 4px;
+  }
+
+  .ai-card-row {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
+    margin-top: 12px;
+  }
+  .ai-card {
+    padding: 10px 12px; background: #0d1117; border: 1px solid #30363d;
+    border-radius: 6px; font-size: 12px;
+  }
+  .ai-card .name { font-weight: 700; }
+  .ai-card.slot-1 .name { color: #fde68a; }
+  .ai-card.slot-2 .name { color: #fdba74; }
+  .ai-card.slot-3 .name { color: #93c5fd; }
+  .ai-card .badge { display: inline-block; padding: 1px 6px; background: rgba(74,222,128,0.2); color: #86efac; border-radius: 4px; font-size: 10px; margin-left: 6px; }
+  .ai-card .preview { color: #8b949e; margin-top: 6px; line-height: 1.45; }
+
+  /* === 方案 A: 单行紧凑 === */
+  .qb-A {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 12px; margin: 8px 0;
+    background: rgba(255,255,255,0.03); border: 1px solid #30363d; border-radius: 6px;
+    font-size: 12.5px;
+  }
+  .qb-A .label { color: #8b949e; font-weight: 600; flex-shrink: 0; }
+  .qb-A .text {
+    flex: 1; color: #e6edf3;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .qb-A .turn-tag {
+    flex-shrink: 0; font-size: 11px; color: #8b949e;
+    padding: 1px 6px; background: rgba(88,166,255,0.1); border-radius: 999px;
+  }
+  .qb-A .expand-btn {
+    flex-shrink: 0; background: none; border: none; color: #58a6ff;
+    cursor: pointer; padding: 0 4px; font-size: 12px;
+  }
+
+  /* === 方案 B: 卡片式两行 === */
+  .qb-B {
+    margin: 10px 0; padding: 10px 14px;
+    background: rgba(88,166,255,0.04);
+    border-left: 3px solid #58a6ff;
+    border-radius: 4px;
+  }
+  .qb-B .head {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 5px; font-size: 11.5px; color: #8b949e;
+  }
+  .qb-B .head .icon { font-size: 14px; }
+  .qb-B .head .me { color: #79b8ff; font-weight: 600; }
+  .qb-B .head .meta-tag {
+    margin-left: auto; padding: 1px 6px; background: rgba(255,255,255,0.04);
+    border-radius: 999px; font-size: 10.5px;
+  }
+  .qb-B .text {
+    font-size: 13px; color: #e6edf3; line-height: 1.55;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .qb-B.expanded .text { -webkit-line-clamp: unset; }
+  .qb-B .toggle {
+    margin-top: 4px; font-size: 11px; color: #58a6ff; cursor: pointer; user-select: none;
+  }
+
+  /* === 方案 C: 聊天气泡 === */
+  .qb-C { margin: 14px 0; display: flex; justify-content: flex-end; }
+  .qb-C-bubble {
+    max-width: 70%; padding: 10px 14px;
+    background: linear-gradient(135deg, rgba(88,166,255,0.18), rgba(88,166,255,0.08));
+    border: 1px solid rgba(88,166,255,0.32);
+    border-radius: 14px 14px 4px 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    position: relative;
+  }
+  .qb-C-bubble .head {
+    display: flex; gap: 8px; align-items: center;
+    font-size: 11px; color: #8b949e; margin-bottom: 4px;
+  }
+  .qb-C-bubble .head .me { color: #79b8ff; font-weight: 600; }
+  .qb-C-bubble .text { font-size: 13px; color: #e6edf3; line-height: 1.55; }
+  .qb-C-bubble .text-ellip {
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* === 方案 D: 引用条（quote 风） === */
+  .qb-D {
+    margin: 10px 0; padding: 8px 12px 8px 16px;
+    background: rgba(245,215,110,0.04);
+    border-left: 3px solid #d29922;
+    border-radius: 0 4px 4px 0;
+    font-size: 13px; line-height: 1.55;
+    position: relative;
+  }
+  .qb-D .head {
+    color: #d29922; font-size: 11.5px; font-weight: 600;
+    margin-bottom: 3px; display: flex; align-items: center; gap: 6px;
+  }
+  .qb-D .head .turn-no { color: #fcd34d; font-variant-numeric: tabular-nums; }
+  .qb-D .head .ts { color: #8b949e; font-weight: 400; }
+  .qb-D .text { color: #e6edf3; }
+  .qb-D.timetravel { background: rgba(88,166,255,0.05); border-left-color: #58a6ff; }
+  .qb-D.timetravel .head { color: #58a6ff; }
+  .qb-D.timetravel .head .turn-no { color: #79b8ff; }
+
+  /* 公共：时光机模式 banner（参考实现） */
+  .mock-tt-banner {
+    margin: 8px 0; padding: 6px 12px;
+    background: rgba(88,166,255,0.08); border: 1px solid rgba(88,166,255,0.3);
+    border-radius: 4px; font-size: 12px; color: #79b8ff;
+    display: flex; gap: 8px; align-items: center;
+  }
+</style>
+</head>
+<body>
+  <div class="meta">
+    <h2 style="margin:0 0 8px 0;font-size:16px;color:#fcd34d;">⚡ 圆桌「用户提问」插槽 · UI 备选</h2>
+    <div>需求：在 <b>"通用圆桌 [stepper]"</b> 行 与 <b>3 张 AI 卡片</b> 之间增加显示<b>当前查看轮次的用户提问</b>，时光机切轮时同步刷新。</div>
+    <div style="margin-top:6px;color:#8b949e;">数据源：<code>state.turns[viewN-1].userInput</code>（时光机模式拿被查看轮，否则拿最新轮）。空 turns 或当前未提交的轮次：<b>不显示</b>。</div>
+    <div style="margin-top:10px;color:#fde68a;">同时把"通用圆桌"标题改为<b>「圆桌轮次」</b>（统一标题，不动 scene.name 避免影响 covenant prompt）。</div>
+  </div>
+
+  <!-- 方案 A: 单行紧凑 -->
+  <div class="variant-section">
+    <div class="variant-head">
+      <h2>方案 A · 单行紧凑（minimal）</h2>
+      <div class="desc">一行 banner，左 label，中提问（单行截断 ellipsis），右轮号 chip + 展开按钮。占空间最小，与 stepper 风格统一。</div>
+    </div>
+    <div class="variant-body">
+      <div class="mr-rt-track-row">
+        <span class="mr-rt-title">圆桌轮次</span>
+        <span class="stepper-mock">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="dot"></span><span class="dot active"></span>
+          <span class="counter">8/8</span>
+        </span>
+        <span class="total-cost">⏱ 总耗时 6m12s</span>
+      </div>
+      <div class="qb-A">
+        <span class="label">💬 你的提问</span>
+        <span class="text">Pikachu 反驳 Charmander 的论据时,把"概念辨识度"和"受益强度"分开了 — Squirtle 你认可这个拆解吗?</span>
+        <span class="turn-tag">第 8 轮</span>
+        <button class="expand-btn">展开 ▾</button>
+      </div>
+      <div class="ai-card-row">
+        <div class="ai-card slot-1"><span class="name">⚡ Pikachu</span><span class="badge">已答 ✓</span><div class="preview">Pikachu 第 8 轮 · 把"概念辨识度"和"受益强度"分开...</div></div>
+        <div class="ai-card slot-2"><span class="name">🔥 Charmander</span><span class="badge">已答 ✓</span><div class="preview">承认拆解合理 + 修订前次排序逻辑...</div></div>
+        <div class="ai-card slot-3"><span class="name">💎 Squirtle</span><span class="badge">已答 ✓</span><div class="preview">认可拆解 + 补充第三档方法论...</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 方案 B: 卡片式两行 -->
+  <div class="variant-section">
+    <div class="variant-head">
+      <h2>方案 B · 卡片式两行（informational）</h2>
+      <div class="desc">蓝色左边线卡片，head 行 "👤 你 · 第 X 轮 · 时间戳"，下方提问全文（最多 2 行 + 展开折叠）。视觉权重稍重。</div>
+    </div>
+    <div class="variant-body">
+      <div class="mr-rt-track-row">
+        <span class="mr-rt-title">圆桌轮次</span>
+        <span class="stepper-mock">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="dot"></span><span class="dot active"></span>
+          <span class="counter">8/8</span>
+        </span>
+        <span class="total-cost">⏱ 总耗时 6m12s</span>
+      </div>
+      <div class="qb-B">
+        <div class="head">
+          <span class="icon">👤</span>
+          <span class="me">你</span>
+          <span>·</span>
+          <span>第 8 轮 fanout</span>
+          <span class="meta-tag">12:34:56</span>
+        </div>
+        <div class="text">Pikachu 反驳 Charmander 的论据时,把"概念辨识度"和"受益强度"分开了 — Squirtle 你认可这个拆解吗?如果认可,接下来海光的排序应该怎么调?如果不认可,你的主理由是什么?</div>
+        <div class="toggle">展开全文 ▾</div>
+      </div>
+      <div class="ai-card-row">
+        <div class="ai-card slot-1"><span class="name">⚡ Pikachu</span><span class="badge">已答 ✓</span><div class="preview">Pikachu 第 8 轮 · 把"概念辨识度"和"受益强度"分开...</div></div>
+        <div class="ai-card slot-2"><span class="name">🔥 Charmander</span><span class="badge">已答 ✓</span><div class="preview">承认拆解合理 + 修订前次排序逻辑...</div></div>
+        <div class="ai-card slot-3"><span class="name">💎 Squirtle</span><span class="badge">已答 ✓</span><div class="preview">认可拆解 + 补充第三档方法论...</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 方案 C: 聊天气泡 -->
+  <div class="variant-section">
+    <div class="variant-head">
+      <h2>方案 C · 聊天气泡（chat bubble）</h2>
+      <div class="desc">右对齐用户气泡（仿微信/iMessage），与下方 AI 答复构成"问 → 答"对话感。最直观。</div>
+    </div>
+    <div class="variant-body">
+      <div class="mr-rt-track-row">
+        <span class="mr-rt-title">圆桌轮次</span>
+        <span class="stepper-mock">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="dot"></span><span class="dot active"></span>
+          <span class="counter">8/8</span>
+        </span>
+        <span class="total-cost">⏱ 总耗时 6m12s</span>
+      </div>
+      <div class="qb-C">
+        <div class="qb-C-bubble">
+          <div class="head"><span class="me">👤 你</span><span>· 第 8 轮 fanout · 12:34</span></div>
+          <div class="text text-ellip">Pikachu 反驳 Charmander 的论据时,把"概念辨识度"和"受益强度"分开了 — Squirtle 你认可这个拆解吗?如果认可,接下来海光的排序应该怎么调?如果不认可,你的主理由是什么?</div>
+        </div>
+      </div>
+      <div class="ai-card-row">
+        <div class="ai-card slot-1"><span class="name">⚡ Pikachu</span><span class="badge">已答 ✓</span><div class="preview">Pikachu 第 8 轮 · 把"概念辨识度"和"受益强度"分开...</div></div>
+        <div class="ai-card slot-2"><span class="name">🔥 Charmander</span><span class="badge">已答 ✓</span><div class="preview">承认拆解合理 + 修订前次排序逻辑...</div></div>
+        <div class="ai-card slot-3"><span class="name">💎 Squirtle</span><span class="badge">已答 ✓</span><div class="preview">认可拆解 + 补充第三档方法论...</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 方案 D: 引用条 -->
+  <div class="variant-section">
+    <div class="variant-head">
+      <h2>方案 D · 引用条（blockquote-style）</h2>
+      <div class="desc">琥珀色左边线 + 浅黄底，类似 markdown blockquote。视觉与现有"决策标题"行 (.mr-rt-tl-decision-row) 同源,无新风格学习成本。<b>时光机时左边线变蓝</b>暗示历史快照。</div>
+    </div>
+    <div class="variant-body">
+      <div class="mr-rt-track-row">
+        <span class="mr-rt-title">圆桌轮次</span>
+        <span class="stepper-mock">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="dot"></span><span class="dot active"></span>
+          <span class="counter">8/8</span>
+        </span>
+        <span class="total-cost">⏱ 总耗时 6m12s</span>
+      </div>
+      <div class="qb-D">
+        <div class="head">💬 你的提问 · <span class="turn-no">第 8 轮 fanout</span> <span class="ts">· 12:34</span></div>
+        <div class="text">Pikachu 反驳 Charmander 的论据时,把"概念辨识度"和"受益强度"分开了 — Squirtle 你认可这个拆解吗?如果认可,接下来海光的排序应该怎么调?如果不认可,你的主理由是什么?</div>
+      </div>
+      <div class="ai-card-row">
+        <div class="ai-card slot-1"><span class="name">⚡ Pikachu</span><span class="badge">已答 ✓</span><div class="preview">Pikachu 第 8 轮 · 把"概念辨识度"和"受益强度"分开...</div></div>
+        <div class="ai-card slot-2"><span class="name">🔥 Charmander</span><span class="badge">已答 ✓</span><div class="preview">承认拆解合理 + 修订前次排序逻辑...</div></div>
+        <div class="ai-card slot-3"><span class="name">💎 Squirtle</span><span class="badge">已答 ✓</span><div class="preview">认可拆解 + 补充第三档方法论...</div></div>
+      </div>
+
+      <!-- D 的时光机切到第 3 轮态 -->
+      <div style="margin-top:24px; padding-top:18px; border-top:1px dashed #30363d;">
+        <div style="color:#8b949e; font-size:12px; margin-bottom:8px;">↓ 时光机切到第 3 轮（边线变蓝示意只读历史）</div>
+        <div class="mr-rt-track-row">
+          <span class="mr-rt-title">圆桌轮次</span>
+          <span class="stepper-mock">
+            <span class="dot"></span><span class="dot"></span>
+            <span class="dot viewing"></span>
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="dot"></span><span class="dot active"></span>
+            <span class="counter" style="color:#79b8ff;">3/8</span>
+          </span>
+          <span class="total-cost">⏱ 总耗时 6m12s</span>
+        </div>
+        <div class="mock-tt-banner">⌛ 时光机模式 · 第 <b>3</b> 轮 · fanout (只读历史) <span style="margin-left:auto;color:#58a6ff;cursor:pointer;">回到最新 (Esc)</span></div>
+        <div class="qb-D timetravel">
+          <div class="head">💬 你的提问 · <span class="turn-no">第 3 轮 fanout</span> <span class="ts">· 11:48</span></div>
+          <div class="text">把这 6 只里 PE/PB/股息率 你们觉得最贵的 3 只列一下,讲清楚为什么"贵"。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 标题改名说明 -->
+  <div class="meta" style="border-left-color:#fde68a;background:rgba(252,211,77,0.06);">
+    <h3 style="margin:0 0 8px 0;font-size:14px;color:#fde68a;">🏷 「通用圆桌」→「圆桌轮次」改名说明</h3>
+    <div>实施方法：在 <code>renderer/meeting-room.js:1316</code> 把 <code>titleText = _titleScene.name</code> 改为<b>固定字符串</b> <code>'圆桌轮次'</code>(或类似)，<b>不动</b> <code>core/roundtable-scenes.js</code> 的 <code>SCENE_REGISTRY.name</code> 字段。</div>
+    <div style="margin-top:6px;">原因：scene.name 同时被 covenant prompt header 引用("# 投研圆桌·研究纪律"等),改 scene.name 会污染发给 AI 的 prompt。Panel UI 标题与 prompt 标题分离才安全。</div>
+    <div style="margin-top:8px;color:#8b949e;">三种 scene panel 标题统一为「圆桌轮次」OK 吗?或者你想要"圆桌讨论 / 投研圆桌 / 开发圆桌"这种按 scene 区分?</div>
+  </div>
+</body>
+</html>
