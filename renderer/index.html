@@ -154,17 +154,6 @@
       </div>
       <div class="preview-body" id="preview-body"></div>
     </div>
-    <div class="memo-panel" id="memo-panel" style="display:none">
-      <div class="memo-header">
-        <span class="memo-title">备忘录</span>
-        <button class="memo-clear-btn" id="memo-clear-btn" title="关闭备忘录">关闭</button>
-      </div>
-      <div class="memo-input-row">
-        <input type="text" class="memo-input" id="memo-input" placeholder="输入想法...">
-        <button class="memo-add-btn" id="memo-add-btn" title="添加">+</button>
-      </div>
-      <div class="memo-list" id="memo-list"></div>
-    </div>
     <div class="meeting-room-panel" id="meeting-room-panel" style="display:none">
       <div class="mr-header" id="mr-header"></div>
       <!-- Arch refactor 2026-05-02: 圆桌界面去 shell。原 #mr-terminals
@@ -182,6 +171,20 @@
         <div class="mr-input-box" id="mr-input-box" contenteditable="true" data-placeholder="输入消息..."></div>
         <button class="mr-send-btn" id="mr-send-btn" title="发送">▶</button>
       </div>
+    </div>
+    <!-- 2026-05-05 道雪：memo-panel 移到 meeting-room-panel 之后。原位置在两者之间，
+         flex 排版下圆桌模式时 memo 会被顶到主区左侧；挪后两种模式（普通 session / 圆桌）
+         都让 memo 处于最右侧（display:none 项不占位）。 -->
+    <div class="memo-panel" id="memo-panel" style="display:none">
+      <div class="memo-header">
+        <span class="memo-title">备忘录</span>
+        <button class="memo-clear-btn" id="memo-clear-btn" title="关闭备忘录">关闭</button>
+      </div>
+      <div class="memo-input-row">
+        <input type="text" class="memo-input" id="memo-input" placeholder="输入想法...">
+        <button class="memo-add-btn" id="memo-add-btn" title="添加">+</button>
+      </div>
+      <div class="memo-list" id="memo-list"></div>
     </div>
     <div class="modal-overlay" id="resume-modal" style="display:none">
       <div class="modal">

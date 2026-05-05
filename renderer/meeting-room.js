@@ -2090,6 +2090,12 @@ if (typeof document !== 'undefined') (function () {
     if (_isPartialUnchanged(prev, next)) return;
     cached._partialBy[sid] = next;
 
+    // 2026-05-05 道雪：时光机模式短路 — 用户在看第 N 轮历史快照时，partial-update
+    //   不应该把卡片 outerHTML 替换为最新 streaming 内容（否则用户感知"被强制跳回最新轮"）。
+    //   cache 已经在上面更新（保持一致性，用户退出时光机后即可看到最新态），仅跳过 DOM patch。
+    //   refreshRoundtablePanel 全量路径走 _renderFusedTabs 已有 isTimeTravel 分支，不受影响。
+    if (typeof _rtViewingTurnN[meetingId] === 'number') return;
+
     // T2 局部 patch：找到该 sid 的 slot DOM，outerHTML 替换；其他两个 slot 完全不动
     const panel = _ensureRtPanel();
     const slotEl = panel.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
