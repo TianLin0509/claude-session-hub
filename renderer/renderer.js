@@ -1999,6 +1999,17 @@ window._mountTurnCard = mountTurnCard;
 //     Map contract. The `element` is recoverable via
 //     `document.querySelector('.turn-card[data-turn-id="…"]')` (used by
 //     rerenderTurn already).
+// W19 scroll-respect-user：chat UI 标准模式 — 仅当用户在底部 50px 内才执行
+// auto-scroll，否则尊重用户翻历史的意图。三处触发点都用此 helper 守护：
+//   (1) mountSessionTurnCard 的 opts.autoScroll
+//   (2) _updateStreamingIndicator 创建"还在生成更多回复…"indicator 时
+//   (3) loadSessionHistoryToOverlay 末尾 → 无条件（切 session 重置 scrollTop=0
+//       后此 helper 自然返回 true，不需 guard）
+function _isCardOverlayAtBottom(el) {
+  if (!el) return true;
+  return (el.scrollHeight - el.scrollTop - el.clientHeight) < 50;
+}
+
 function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 1. validate inputs
   if (!turn || !turn.id || !turn.role) {
@@ -2065,6 +2076,8 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
 
   // 5. insert into container — Spec 3 W16：streaming indicator 必须在末尾，
   // 所以新卡插在 indicator 之前（如果存在）
+  // W19 scroll-respect-user：append 前先记录用户是否在底部，给 step 9 用
+  const _wasAtBottom = _isCardOverlayAtBottom(container);
   const _streamingTail = container.querySelector('.streaming-indicator');
   if (_streamingTail) {
     container.insertBefore(cardEl, _streamingTail);
@@ -2090,8 +2103,8 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // Use turnForRender (kind merged) so rerenderTurn won't lose kind on fold/unfold
   window._sessionTurns.set(turn.id, turnForRender);
 
-  // 9. autoScroll
-  if (opts.autoScroll) {
+  // 9. autoScroll — W19：仅当用户原本在底部时才滚（向上翻历史不打断）
+  if (opts.autoScroll && _wasAtBottom) {
     try {
       cardEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
     } catch {
@@ -2508,12 +2521,16 @@ function _updateStreamingIndicator(sessionId) {
   }
   if (isRunning && currentView === 'card') {
     if (!indicator) {
+      // W19 scroll-respect-user：append 前记录是否在底部，仅满足条件才滚
+      const wasAtBottom = _isCardOverlayAtBottom(overlay);
       indicator = document.createElement('div');
       indicator.className = 'streaming-indicator';
       indicator.dataset.sessionId = String(sessionId);
       indicator.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="text"></span>';
       overlay.appendChild(indicator);
-      try { overlay.scrollTop = overlay.scrollHeight; } catch {}
+      if (wasAtBottom) {
+        try { overlay.scrollTop = overlay.scrollHeight; } catch {}
+      }
     }
     // 动态文案
     const cardCount = overlay.querySelectorAll('.turn-card[data-turn-id]').length;
