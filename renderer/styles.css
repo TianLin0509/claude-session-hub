@@ -2610,6 +2610,53 @@ body.theme-light .floating-scroll-btn {
   color: var(--text-primary, #f0f6fc);
 }
 
+/* Phase 8(2026-05-05 道雪): 圆桌项迷你跳转按钮 — 折叠/展开态都显示, 替代旧 "N 个子会话" 文字 */
+.session-mini-jumps {
+  display: flex; gap: 8px;
+  padding-left: 22px;
+  margin-top: 6px;
+}
+.mini-jump-btn {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: transparent;
+  border: 2px solid transparent;
+  padding: 0;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  transition: transform .15s ease-out, border-color .15s;
+}
+.mini-jump-btn img {
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  display: block;
+  object-fit: cover;
+}
+.mini-jump-btn:hover {
+  transform: scale(1.1);
+}
+.mini-jump-btn.active {
+  border-color: var(--accent, #58a6ff);
+  box-shadow: 0 0 0 2px rgba(88,166,255,0.25);
+}
+.mini-jump-status-dot {
+  position: absolute;
+  bottom: -1px; right: -1px;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-secondary, #161b22);
+  box-sizing: content-box;
+}
+.mini-jump-status-dot.mini-st-ready    { background: #56d364; }
+.mini-jump-status-dot.mini-st-thinking { background: #f5d76e; animation: mini-st-pulse 1.5s ease-in-out infinite; }
+.mini-jump-status-dot.mini-st-init     { background: #6e7681; }
+.mini-jump-status-dot.mini-st-error    { background: #f87171; }
+@keyframes mini-st-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 /* Child sub-session rows under an expanded meeting. Smaller and indented
    to convey hierarchy without losing the click target. */
 .session-item.child {
