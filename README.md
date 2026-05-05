@@ -13,15 +13,51 @@
 > 多模型协作圆桌终端 · v1.0.0
 
 <p align="center">
-  <img src="./docs/images/roundtable-3claude-fanout.gif" alt="3 个 Claude Sonnet 同坐一桌 fanout 实录" width="820" />
+  <img src="./docs/images/roundtable-3claude-fanout.gif" alt="3 个 Claude Sonnet 同坐一桌 fanout 实录" />
 </p>
 
 <p align="center">
-  <em>3 个 Claude Sonnet 同坐一桌：从「思考中」到三张卡片同步收尾，约 18 秒一轮。</em>
+  <em>3 个 Claude Sonnet 同坐一桌：⚡ 皮卡丘 / 🔥 小火龙 / 💎 杰尼龟 三席并行思考，卡片元数据 + Markdown 高亮 + 思考波纹一镜到底。</em>
+</p>
+
+---
+
+## 🎬 五张实录走一遍
+
+### `@debate` · 触发辩论
+
+三家亮出立场，互相引用对方观点反驳与补充 — 不再是 AI 合唱。
+
+<p align="center">
+  <img src="./docs/images/roundtable-debate.gif" alt="@debate 辩论模式" />
+</p>
+
+### 时光机 · Stepper mini-map
+
+每轮对话写入 timeline。点 stepper 任一圆点跳回那一轮的完整快照，紫色 banner 提示「只读历史」。
+
+<p align="center">
+  <img src="./docs/images/roundtable-timemachine.gif" alt="时光机 Stepper mini-map 回放" />
+</p>
+
+### `@pikachu` · 点名某席发言
+
+被点名的实质回答，其他两家短礼貌让位。`@charmander` / `@squirtle` 同理。
+
+<p align="center">
+  <img src="./docs/images/roundtable-pikachu-mention.gif" alt="@pikachu 点名单聊" />
+</p>
+
+### 侧栏 ⚡🔥💎 迷你跳转
+
+侧栏圆桌项右侧三粒小芯片，点哪粒主区瞬切到那席的完整 PTY，看 Hub 给它注入的全部上下文。
+
+<p align="center">
+  <img src="./docs/images/roundtable-sidebar-jump.gif" alt="侧栏迷你跳转" />
 </p>
 
 <details>
-<summary>启动屏一览（点开看静图）</summary>
+<summary>启动屏静图（点开看）</summary>
 <p align="center">
   <img src="./docs/images/roundtable-launcher.png" alt="启动屏 — 三席位圆桌" width="820" />
 </p>
@@ -48,31 +84,6 @@
 | **容错** | 卡死自动 Resend，300s 无响应自动救援，silent failure 三处兜底 — 不会因为某家 AI 抽风把整桌锁死 |
 
 > 圆桌产物是「**可讨论的判断**」而非「研报或可执行方案」。要落地操作时，结论里会建议你切独立 session 实操。
-
-#### 🎬 动图实录
-
-<table>
-<tr>
-<td valign="top" width="50%">
-<img src="./docs/images/roundtable-debate.gif" alt="@debate 辩论模式" />
-<p align="center"><strong>@debate · 触发辩论</strong><br/><sub>三家亮立场互相引用，不再是 AI 合唱</sub></p>
-</td>
-<td valign="top" width="50%">
-<img src="./docs/images/roundtable-timemachine.gif" alt="时光机 mini-map 回放" />
-<p align="center"><strong>时光机 · Stepper mini-map</strong><br/><sub>点任意一轮跳回历史快照，紫 banner 提示"只读"</sub></p>
-</td>
-</tr>
-<tr>
-<td valign="top" width="50%">
-<img src="./docs/images/roundtable-pikachu-mention.gif" alt="@pikachu 点名单聊" />
-<p align="center"><strong>@pikachu · 点名某席</strong><br/><sub>被点名的实质回答，其他两家短礼貌让位</sub></p>
-</td>
-<td valign="top" width="50%">
-<img src="./docs/images/roundtable-sidebar-jump.gif" alt="侧栏迷你跳转" />
-<p align="center"><strong>侧栏 ⚡🔥💎 迷你跳转</strong><br/><sub>三粒小芯片直跳每席的 PTY，看 Hub 给它的完整上下文</sub></p>
-</td>
-</tr>
-</table>
 
 ### 📇 卡片视图 —— 把 PTY 流变成结构化对话
 
@@ -271,13 +282,43 @@ MIT
 
 ![3 Claude Sonnets at one table — fanout in action](docs/images/roundtable-3claude-fanout.gif)
 
-*3 Claude Sonnets sharing one table: "thinking…" to three cards wrapping in sync, ~18 s per turn.*
+*3 Claude Sonnets at one table: ⚡ Pikachu / 🔥 Charmander / 💎 Squirtle thinking in parallel, with metadata pills, Markdown highlighting, and a thinking ripple — all in one take.*
+
+---
+
+## 🎬 Five demos, one go
+
+### `@debate` — trigger a debate
+
+Each seat stakes out a position and cites the others to push back or build on — no more AI chorus.
+
+![@debate](docs/images/roundtable-debate.gif)
+
+### Time machine — Stepper mini-map
+
+Every turn lands on the timeline. Click any dot to jump to that turn's full snapshot; a purple banner reminds you it's read-only history.
+
+![Time machine](docs/images/roundtable-timemachine.gif)
+
+### `@pikachu` — address one seat
+
+The named seat answers in full; the others step aside with a quick nod. `@charmander` / `@squirtle` work the same way.
+
+![@pikachu](docs/images/roundtable-pikachu-mention.gif)
+
+### Sidebar ⚡🔥💎 mini-jump
+
+Three tiny chips sit next to the roundtable item in the sidebar — click one to jump straight into that seat's PTY and see the full context Hub injected.
+
+![Sidebar jump](docs/images/roundtable-sidebar-jump.gif)
 
 <details>
 <summary>Static launcher screenshot</summary>
 
 ![Launcher — three-seat roundtable](docs/images/roundtable-launcher.png)
 </details>
+
+---
 
 ## What's New in v1.0
 
@@ -296,31 +337,6 @@ Not "fan-out the same prompt to three AIs and concatenate." Roundtable lets the 
 | **3 scenes** | **dev** (code design/review) · **research** (stock analysis, MCP-mounted) · **general**. |
 | **Timeline / Time machine** | Each turn appended to timeline.md. Stepper mini-map for replay. |
 | **Fault tolerance** | Auto Resend on hang, 300s auto-recovery, three silent-failure fallbacks. One AI crashing won't lock the whole table. |
-
-#### 🎬 Recordings
-
-<table>
-<tr>
-<td valign="top" width="50%">
-<img src="./docs/images/roundtable-debate.gif" alt="@debate mode" />
-<p align="center"><strong>@debate</strong><br/><sub>Three seats stake out positions and cite each other</sub></p>
-</td>
-<td valign="top" width="50%">
-<img src="./docs/images/roundtable-timemachine.gif" alt="time-machine replay" />
-<p align="center"><strong>Time machine</strong><br/><sub>Click any past round on the stepper mini-map to time-travel back</sub></p>
-</td>
-</tr>
-<tr>
-<td valign="top" width="50%">
-<img src="./docs/images/roundtable-pikachu-mention.gif" alt="@pikachu addressing one seat" />
-<p align="center"><strong>@pikachu</strong><br/><sub>Address one seat; the others step aside with a quick nod</sub></p>
-</td>
-<td valign="top" width="50%">
-<img src="./docs/images/roundtable-sidebar-jump.gif" alt="sidebar mini-jump" />
-<p align="center"><strong>Sidebar ⚡🔥💎 mini-jump</strong><br/><sub>Three chips fly straight to each seat's PTY view</sub></p>
-</td>
-</tr>
-</table>
 
 ### 📇 Card View
 
