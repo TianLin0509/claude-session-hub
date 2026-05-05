@@ -115,6 +115,7 @@ function _ensureModal() {
           场景:
           <label><input type="radio" name="mcm-scene" value="general" checked> 通用</label>
           <label><input type="radio" name="mcm-scene" value="research"> 投研</label>
+          <label><input type="radio" name="mcm-scene" value="dev"> 开发</label>
         </div>
       </div>
       <div class="mcm-footer">
@@ -164,7 +165,8 @@ async function _onCreate() {
     });
   });
   const scene = _modalEl.querySelector('input[name="mcm-scene"]:checked').value;
-  const mode = scene === 'research' ? 'research' : 'general';
+  // legacy mode 字段镜像 scene (向后兼容): research→research, dev→dev (plan-dev-scenario.md), 其他→general
+  const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
   // free-mode（2026-05-04）：meetingMode 与历史 mode（general/research）分语义，避免字段冲突
   const meetingMode = _modalEl.querySelector('input[name="mcm-meeting-mode"]:checked').value;
 

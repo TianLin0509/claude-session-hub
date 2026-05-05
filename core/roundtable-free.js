@@ -23,7 +23,17 @@
 //   通过 renderFiveElementItems / renderBriefSummaryConstraints helper 渲染。
 //   free 路径目前没有 brief-summary 模式 (用户在 UI 点摘要按钮走 pilot 路径)。
 
+// dev scene (plan-dev-scenario.md): per-turn L2b 触发追注 — 复用 scenes.js 的检测/渲染
+const { detectDevTrigger, buildDevL2bSection } = require('./roundtable-scenes.js');
+
 const SLOT_IDS = ['pikachu', 'charmander', 'squirtle'];
+
+// dev scene · 仅当 meeting.scene === 'dev' 时返回 L2b 段, 否则 null
+function _maybeDevL2b(meeting, turnNum, userInput) {
+  if (!meeting || meeting.scene !== 'dev') return null;
+  const isFirstTurn = (typeof turnNum === 'number' && turnNum === 1);
+  return buildDevL2bSection(detectDevTrigger(userInput, isFirstTurn));
+}
 
 function deriveTargetSids(meeting, mode, summarizerSlot) {
   if (!meeting || !Array.isArray(meeting.subSessions)) return [];
@@ -152,6 +162,10 @@ function buildFreeFanoutPrompt({ meeting, selfSlot, participants, userInput, las
   const inj = _renderInjection(lastTurnInjection);
   if (inj) lines.push(inj);
 
+  // dev scene L2b 触发追注 (plan-dev-scenario.md §3.3) — 在用户问题前
+  const devL2b = _maybeDevL2b(meeting, n, userInput);
+  if (devL2b) lines.push('', devL2b);
+
   lines.push('', '## 用户问题', userInput || '');
 
   // P6: 删除原"请独立回答（与其他发言人互相看不到本轮发言，保持各自独立视角）"独立段
@@ -184,6 +198,11 @@ function buildFreeDebatePrompt({ meeting, selfSlot, participants, userInput, las
 
   lines.push('', '## 你的任务');
   lines.push('请基于上一轮内容 + 用户补充信息发表新观点：可继承、可反驳，但要明示引用对方哪一点。');
+
+  // dev scene L2b 触发追注 (plan-dev-scenario.md §3.3)
+  //   debate 至少需要上一轮内容, 不会是首轮; isFirstTurn 自然 false
+  const devL2b = _maybeDevL2b(meeting, n, userInput);
+  if (devL2b) lines.push('', devL2b);
 
   // P6: 删除原"请反驳/呼应其他发言人的观点（你们看得到对方本轮言论）"独立段
 

@@ -126,7 +126,8 @@ function testL2CovenantGeneralExported() {
 // === SCENE_REGISTRY 结构 ===
 function testRegistryStructure() {
   const keys = scenes.getSceneKeys();
-  assert.deepStrictEqual(keys.sort(), ['general', 'research']);
+  // dev 场景 (plan-dev-scenario.md) 加入后,SCENE_REGISTRY 包含三个 key
+  assert.deepStrictEqual(keys.sort(), ['dev', 'general', 'research']);
 
   const requiredFields = ['name', 'icon', 'preset', 'defaultCovenant', 'mcpConfig',
                           'summaryHints', 'summaryTitleTag', 'dataPackEnabled'];
@@ -542,6 +543,134 @@ function testGetScene() {
   console.log('  ✓ testGetScene');
 }
 
+// === dev scene · plan-dev-scenario.md ===
+function testDevSceneRegistered() {
+  const dev = scenes.getScene('dev');
+  assert.ok(dev !== null, 'dev scene should be registered');
+  assert.strictEqual(dev.key, 'dev', 'dev.key must equal "dev" (orchestrator detects via this)');
+  assert.strictEqual(dev.name, '开发圆桌');
+  // dev 不走 research MCP, 不带 dataPack
+  assert.strictEqual(dev.mcpConfig, null);
+  assert.strictEqual(dev.dataPackEnabled, false);
+  // dev preset 必须含 L1 永真规则关键句 + L2a 姿态自适应
+  assert.ok(dev.preset.includes('开发圆桌 · L1 永真规则'), 'dev preset must contain L1 header');
+  assert.ok(dev.preset.includes('姿态自适应'), 'dev preset must contain L2a 姿态自适应');
+  assert.ok(dev.preset.includes('supervisor'), 'dev preset must define topology');
+  assert.ok(dev.preset.includes('Driver'), 'dev preset must mention Driver/worker');
+  assert.ok(dev.preset.includes('clarify'), 'dev preset must list clarify stance');
+  assert.ok(dev.preset.includes('handoff'), 'dev preset must list handoff stance');
+  assert.ok(dev.preset.includes('review'), 'dev preset must list review stance');
+  // 模糊意图询问确认必须在 L2a 同段 (避免 AI 主动猜意图直接生成)
+  assert.ok(dev.preset.includes('回\'是\'就触发'), 'dev preset must include 询问确认 example');
+  console.log('  ✓ testDevSceneRegistered');
+}
+
+function testDevSceneDefaultCovenantReuseGeneral() {
+  // plan §6 Non-goal: 不复用摘要按钮作 handoff, 但 covenant 复用 GENERAL 不冲突
+  //   (COVENANT_GENERAL 描述既有摘要按钮机制 — handoff 是另一回事)
+  const dev = scenes.getScene('dev');
+  assert.strictEqual(dev.defaultCovenant, scenes.COVENANT_GENERAL,
+    'dev 应复用 COVENANT_GENERAL 作 defaultCovenant (timeline / 协作礼仪 / 摘要按钮原状)');
+  console.log('  ✓ testDevSceneDefaultCovenantReuseGeneral');
+}
+
+function testDevKeywordsExposed() {
+  // plan §4.1: handoff 9 / review 5
+  assert.ok(Array.isArray(scenes.DEV_KEYWORDS.handoff));
+  assert.ok(Array.isArray(scenes.DEV_KEYWORDS.review));
+  assert.ok(scenes.DEV_KEYWORDS.handoff.length >= 5, '至少 5 个 handoff 关键词 (允许子串/正则混合)');
+  assert.ok(scenes.DEV_KEYWORDS.review.length >= 5, '至少 5 个 review 关键词');
+  console.log('  ✓ testDevKeywordsExposed');
+}
+
+function testDetectDevTriggerHandoff() {
+  // plan §4.1 关键词命中 (post-review 收紧后的清单, 见 DEV_KEYWORDS 说明)
+  for (const kw of ['生成交接单', '交接单', '可以开工', '开始写代码', '切 Driver', '切driver']) {
+    assert.strictEqual(scenes.detectDevTrigger(kw, false), 'handoff', `"${kw}" → handoff`);
+  }
+  // 正则形式 "让 X 实操" / "交给 X 做"
+  assert.strictEqual(scenes.detectDevTrigger('让 Pikachu 实操', false), 'handoff');
+  assert.strictEqual(scenes.detectDevTrigger('让Pikachu实操', false), 'handoff');
+  assert.strictEqual(scenes.detectDevTrigger('交给 Squirtle 做', false), 'handoff');
+  // 防误触: 已删除 '让 ' / '交接' / '干吧' 三个过短关键词
+  //   日常对话不应被识别为 handoff
+  assert.strictEqual(scenes.detectDevTrigger('让我想想再说', false), null,
+    '"让我想想"不应触发 handoff (无 实操/实现/做 紧跟)');
+  assert.strictEqual(scenes.detectDevTrigger('我们先交接班吧', false), null,
+    '"交接班"不应触发 handoff');
+  assert.strictEqual(scenes.detectDevTrigger('干吧别闹了', false), null,
+    '"干吧别闹了"不应触发 handoff');
+  console.log('  ✓ testDetectDevTriggerHandoff');
+}
+
+function testDetectDevTriggerReview() {
+  for (const kw of ['审一下', '看 diff', '看diff', '复审', '帮我审', 'review']) {
+    assert.strictEqual(scenes.detectDevTrigger(kw, false), 'review', `"${kw}" → review`);
+  }
+  console.log('  ✓ testDetectDevTriggerReview');
+}
+
+function testDetectDevTriggerFirstTurnDefaultsClarify() {
+  // 首轮默认 clarify (即使无关键词)
+  assert.strictEqual(scenes.detectDevTrigger('我想做 X 功能', true), 'clarify');
+  assert.strictEqual(scenes.detectDevTrigger('', true), 'clarify');
+  // 中间轮无关键词 → null (沿用 L2a 自选, 不强行追注)
+  assert.strictEqual(scenes.detectDevTrigger('我想做 X 功能', false), null);
+  // brainstorm 关键词追注 clarify (中间轮也命中)
+  assert.strictEqual(scenes.detectDevTrigger('帮我想想还有别的方案吗', false), 'clarify');
+  assert.strictEqual(scenes.detectDevTrigger('问清楚一点', false), 'clarify');
+  console.log('  ✓ testDetectDevTriggerFirstTurnDefaultsClarify');
+}
+
+function testDetectDevTriggerLightTaskDirectDiscuss() {
+  // plan §2.2 轻任务直通: "X 函数怎么改" 不被强制走 clarify (中间轮 + 无关键词 → null)
+  // 注: 首轮发问"X 函数怎么改"仍会进 clarify, 这是设计妥协 (首轮无 timeline 上下文,
+  //   AI 自己根据 L2a "边界清晰的轻任务可跳过 clarify" 提示自适应)
+  assert.strictEqual(scenes.detectDevTrigger('foo 函数应该怎么改', false), null,
+    '中间轮无关键词 → null, 让 AI 按 L2a 姿态自选 (轻任务直通 discuss)');
+  console.log('  ✓ testDetectDevTriggerLightTaskDirectDiscuss');
+}
+
+function testBuildDevL2bSection() {
+  const clarify = scenes.buildDevL2bSection('clarify');
+  assert.ok(clarify && clarify.includes('clarify 详细规则'));
+  assert.ok(clarify.includes('[必答]') && clarify.includes('[建议]') && clarify.includes('[可选]'));
+
+  const handoff = scenes.buildDevL2bSection('handoff');
+  assert.ok(handoff && handoff.includes('handoff 两步法'));
+  assert.ok(handoff.includes('Decision Recall'));
+  assert.ok(handoff.includes('Open Questions'));
+  assert.ok(handoff.includes('Next Action'));
+
+  const review = scenes.buildDevL2bSection('review');
+  assert.ok(review && review.includes('review 三段式'));
+  assert.ok(review.includes('已验证事实'));
+  assert.ok(review.includes('风险'));
+
+  // null/未知 → null
+  assert.strictEqual(scenes.buildDevL2bSection(null), null);
+  assert.strictEqual(scenes.buildDevL2bSection('unknown'), null);
+  console.log('  ✓ testBuildDevL2bSection');
+}
+
+function testDevSystemPromptIsolatedFromOtherScenes() {
+  // plan §9 验证: 切回投研/通用场景, 开发 prompt 不污染
+  const general = scenes.buildSystemPrompt('general', '');
+  const research = scenes.buildSystemPrompt('research', '');
+  // 不应含 dev 特有标记
+  assert.ok(!general.includes('开发圆桌 · L1 永真规则'), 'general scene must not leak dev L1');
+  assert.ok(!general.includes('handoff 两步法'), 'general scene must not leak dev L2b');
+  assert.ok(!research.includes('开发圆桌 · L1 永真规则'), 'research scene must not leak dev L1');
+  assert.ok(!research.includes('handoff 两步法'), 'research scene must not leak dev L2b');
+  // dev system prompt 应含 dev preset
+  const dev = scenes.buildSystemPrompt('dev', '');
+  assert.ok(dev.includes('开发圆桌 · L1 永真规则'), 'dev system prompt must contain dev preset');
+  // L2b 详细规则 NOT 在 system prompt (按 trigger per-turn 追注)
+  assert.ok(!dev.includes('clarify 详细规则 · 本轮触发追注'),
+    'dev system prompt 不应含 L2b 详细规则 (per-turn 追注, 不进 cache)');
+  console.log('  ✓ testDevSystemPromptIsolatedFromOtherScenes');
+}
+
 console.log('Running roundtable-scenes unit tests (P0-P5 prompt 重构)...');
 let failed = 0;
 const tests = [
@@ -569,6 +698,16 @@ const tests = [
   testBuildSystemPromptResearchNoSlotBackwardCompat,
   testFileManagement,
   testGetScene,
+  // dev scene tests (plan-dev-scenario.md)
+  testDevSceneRegistered,
+  testDevSceneDefaultCovenantReuseGeneral,
+  testDevKeywordsExposed,
+  testDetectDevTriggerHandoff,
+  testDetectDevTriggerReview,
+  testDetectDevTriggerFirstTurnDefaultsClarify,
+  testDetectDevTriggerLightTaskDirectDiscuss,
+  testBuildDevL2bSection,
+  testDevSystemPromptIsolatedFromOtherScenes,
 ];
 for (const t of tests) {
   try { t(); }
