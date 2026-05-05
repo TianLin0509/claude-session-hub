@@ -675,6 +675,28 @@ function renderSessionList() {
       const div = document.createElement('div');
       div.className = 'session-item meeting' + (isActive ? ' selected' : '') + (isExpanded ? ' expanded' : '');
       div.dataset.meetingId = s.id;
+      // Phase 8(2026-05-05 道雪): 折叠/展开态都显示 3 个迷你头像跳转按钮(替代旧 "N 个子会话" 文字)。
+      //   slot 配色绑定: subSessions[0]=Pikachu(slot1) / [1]=Charmander(slot2) / [2]=Squirtle(slot3),
+      //   PNG 图与卡片头像/footer 一致(assets/pokemon/*.png)。
+      //   状态点: thinking/streaming(running)=黄, errored=红, idle/completed=绿, 创建中=灰。
+      const SLOT_AVATAR_FILES = ['pikachu.png', 'charmander.png', 'squirtle.png'];
+      const SLOT_LABELS_M = ['⚡ Pikachu', '🔥 Charmander', '💎 Squirtle'];
+      const miniJumpsHtml = (s._meeting.subSessions || []).slice(0, 3).map((subId, idx) => {
+        const sub = sessions.get(subId);
+        const label = SLOT_LABELS_M[idx] || `Slot ${idx + 1}`;
+        const modelLabel = sub && sub.currentModel ? (typeof modelShort === 'function' ? modelShort(sub.currentModel) : sub.currentModel.id) : '';
+        // 状态点配色: 复用 sub.status(running/idle/errored), 配合 cliReadyCache 推断 initializing
+        let statusCls = 'mini-st-ready';
+        if (!sub) statusCls = 'mini-st-init';
+        else if (sub.status === 'errored' || sub.status === 'error') statusCls = 'mini-st-error';
+        else if (sub.status === 'running') statusCls = 'mini-st-thinking';
+        const isActiveChild = subId === activeSessionId;
+        const tooltip = `${label}${modelLabel ? ' · ' + modelLabel : ''} (点击跳转)`;
+        return `<button class="mini-jump-btn slot-${idx + 1}${isActiveChild ? ' active' : ''}" data-sub-id="${subId}" title="${escapeHtml(tooltip)}">
+          <img src="assets/pokemon/${SLOT_AVATAR_FILES[idx]}" alt="${label}" />
+          <span class="mini-jump-status-dot ${statusCls}"></span>
+        </button>`;
+      }).join('');
       div.innerHTML = `
         <div class="session-item-header">
           <span class="session-title">
@@ -686,9 +708,17 @@ function renderSessionList() {
             <span class="session-time">${formatTime(s.lastMessageTime)}</span>
           </span>
         </div>
-        <div class="session-preview">${escapeHtml(s.lastOutputPreview)}</div>
+        <div class="session-mini-jumps">${miniJumpsHtml}</div>
       `;
       div.addEventListener('click', (e) => {
+        // Phase 8: 迷你跳转按钮 click → 跳转对应子 session, 不冒泡到 selectMeeting
+        const jumpBtn = e.target.closest('[data-sub-id]');
+        if (jumpBtn) {
+          e.stopPropagation();
+          const subId = jumpBtn.getAttribute('data-sub-id');
+          if (subId) selectSession(subId);
+          return;
+        }
         if (e.target.closest('[data-action="toggle-expand"]')) {
           e.stopPropagation();
           toggleMeetingExpand(s.id);
