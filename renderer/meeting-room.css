@@ -701,9 +701,9 @@
 /* ===== 投研圆桌持久化面板（research mode 专用） ===== */
 .mr-rt-panel {
   background: linear-gradient(180deg, #1a1f2b 0%, #141821 100%);
-  border-bottom: 1px solid #2a3245;
-  border-top: 2px solid transparent;
-  border-image: linear-gradient(90deg, var(--c-claude) 0%, var(--c-gemini) 50%, var(--c-codex) 100%) 1;
+  /* 2026-05-05 道雪: 删除 border-top 2px transparent + border-image 渐变流光线
+     (用户反馈: panel 顶部/底部两条彩色横线视觉干扰) — border-image 默认作用于所有 4 边,
+     原本只想要 top 渐变, 实际 bottom 也染色; 删除后 panel 边界与 footer 平滑过渡。 */
   padding: 8px 14px;
   font-size: 13px;
   color: #d8dee9;
