@@ -647,7 +647,9 @@ function renderSessionList() {
     createdAt: m.createdAt,
     lastOutputPreview: `${m.subSessions.length} 个子会话`,
     status: m.status || 'idle',
-    unreadCount: 0,
+    // 2026-05-05 道雪 修3：圆桌 item 接入 unread 机制 —— 全员答完且非 active 时累加，
+    //   selectMeeting 时清零。替代旧 Web Notification + title 闪烁，统一走 Hub 侧栏哲学。
+    unreadCount: m.unreadCount || 0,
     pinned: m.pinned,
     _isMeeting: true,
     _meeting: m,
@@ -674,7 +676,11 @@ function renderSessionList() {
       const isActive = activeMeetingId === s.id;
       const isExpanded = _expandedMeetings.has(s.id);
       const div = document.createElement('div');
-      div.className = 'session-item meeting' + (isActive ? ' selected' : '') + (isExpanded ? ' expanded' : '');
+      // 2026-05-05 道雪 修3：圆桌 item 也应用 has-unread CSS（跟普通 session 一致），
+      //   全员答完且非 active 时高亮提醒；用户点进圆桌后清零。
+      const hasUnread = !isActive && (s.unreadCount > 0);
+      div.className = 'session-item meeting' + (isActive ? ' selected' : '')
+        + (isExpanded ? ' expanded' : '') + (hasUnread ? ' has-unread' : '');
       div.dataset.meetingId = s.id;
       // Phase 8(2026-05-05 道雪): 折叠/展开态都显示 3 个迷你头像跳转按钮(替代旧 "N 个子会话" 文字)。
       //   slot 配色绑定: subSessions[0]=Pikachu(slot1) / [1]=Charmander(slot2) / [2]=Squirtle(slot3),
@@ -706,6 +712,7 @@ function renderSessionList() {
             <span class="session-status running"></span>🎯 ${escapeHtml(s.title)}<span class="meeting-badge">${s._meeting.subSessions.length}</span>
           </span>
           <span class="session-header-right">
+            ${hasUnread ? `<span class="unread-badge" title="新轮次完成">⏸ 等你</span>` : ''}
             <span class="session-time">${formatTime(s.lastMessageTime)}</span>
           </span>
         </div>
@@ -842,6 +849,10 @@ function selectMeeting(meetingId) {
   clearPreviewUI();
 
   const meeting = meetings[meetingId];
+  // 2026-05-05 道雪 修3：清 unread —— 用户点进圆桌即"看过"，跟普通 session 一致。
+  if (meeting && meeting.unreadCount) {
+    meeting.unreadCount = 0;
+  }
   if (meeting && typeof MeetingRoom !== 'undefined') {
     if (meeting.status === 'dormant') {
       meeting.status = 'idle';
@@ -3503,6 +3514,30 @@ function togglePreviewLayout() {
   refitActiveTerminal();
 }
 
+// 2026-05-05 道雪 bug：预览面板内的 <a> 点击默认行为是 navigate 整个 renderer
+// 进程,会把 index.html 替换为对 href 的 file:// 加载——结果就是"完全黑屏"。
+// 典型触发：预览 .md 文件,内有指向其他 .md 的相对链接,marked 渲染成 <a href="x.md">,
+// 用户点击 → 整个 hub UI 消失。这里委托拦截,路由回 openPreviewPanel。
+previewBodyEl.addEventListener('click', (e) => {
+  const a = e.target && e.target.closest && e.target.closest('a[href]');
+  if (!a) return;
+  if (a.classList.contains('rt-file-link')) return; // 已有专门处理
+  const href = a.getAttribute('href') || '';
+  if (!href || href.startsWith('#')) return; // 同页锚点保持默认
+  e.preventDefault();
+  e.stopPropagation();
+  if (/^https?:\/\//i.test(href)) { openPreviewPanel(href); return; }
+  let target = href.replace(/^file:\/+/i, '');
+  const isAbs = /^[a-zA-Z]:[\\/]/.test(target) || target.startsWith('/');
+  if (!isAbs && currentPreviewPath && !/^https?:\/\//i.test(currentPreviewPath)) {
+    try {
+      const dir = require('path').dirname(currentPreviewPath);
+      target = require('path').resolve(dir, target);
+    } catch (err) { console.warn('[hub] preview link resolve failed:', err); }
+  }
+  openPreviewPanel(target);
+});
+
 document.getElementById('preview-close').addEventListener('click', closePreviewPanel);
 document.getElementById('preview-toggle-layout').addEventListener('click', togglePreviewLayout);
 document.getElementById('preview-open-external').addEventListener('click', async () => {
@@ -5323,11 +5358,22 @@ function schedulePersist() {
         geminiProjectRoot: s.geminiProjectRoot || null,
       });
     }
+    // 2026-05-05 道雪：旧版只挑 11 字段，scene/mode/pilotSlot/dispatchMode/participants/
+    //   slotSpecs/covenantText 全被剥掉 → 写残 state.json → 重启后 restoreMeeting fallback
+    //   scene='general'，所有圆桌退化为通用场景（投研 LinDangAgent MCP 不挂入）。
+    //   修：补全所有 createMeeting 写入 + setMeetingContext 维护的持久化字段。
+    //   main.js persist-sessions handler 端加了 fallback 兜底，但渲染端先把字段补全是第一道防线。
     const meetingList = Object.values(meetings).map(m => ({
       id: m.id, type: 'meeting', title: m.title, subSessions: m.subSessions,
       layout: m.layout, focusedSub: m.focusedSub, syncContext: m.syncContext,
       sendTarget: m.sendTarget, createdAt: m.createdAt, lastMessageTime: m.lastMessageTime,
       pinned: m.pinned || false, lastScene: m.lastScene || null,
+      scene: m.scene, mode: m.mode,
+      pilotSlot: (typeof m.pilotSlot === 'number') ? m.pilotSlot : null,
+      dispatchMode: m.dispatchMode || 'all',
+      participants: Array.isArray(m.participants) ? m.participants : null,
+      slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs : null,
+      covenantText: m.covenantText || '',
     }));
     ipcRenderer.send('persist-sessions', list, meetingList);
   }, 400);
@@ -5474,6 +5520,19 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
   if (typeof MeetingRoom !== 'undefined') {
     MeetingRoom.updateMeetingData(meeting.id, meeting);
   }
+  renderSessionList();
+});
+
+// 2026-05-05 道雪 修3：圆桌 turn-complete IPC → 非 active 圆桌累加 unread，
+//   触发侧栏 has-unread 视觉提醒（unread-badge "⏸ 等你" + slot 1 边框）。
+//   active 圆桌不累加（用户正在看，不需要打扰）。
+//   同 IPC 在 meeting-room.js 里也有监听器（cache 同步 + DOM 重渲），与本监听器职责正交。
+ipcRenderer.on('roundtable-turn-complete', (_event, { meetingId }) => {
+  if (!meetingId || meetingId === activeMeetingId) return;
+  const meeting = meetings[meetingId];
+  if (!meeting) return;
+  meeting.unreadCount = (meeting.unreadCount || 0) + 1;
+  meeting.lastMessageTime = Date.now() / 1000 | 0;  // 触发排序（最新答完的圆桌靠前）
   renderSessionList();
 });
 

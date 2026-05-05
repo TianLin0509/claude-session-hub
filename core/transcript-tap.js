@@ -140,7 +140,13 @@ const _CLAUDE_STREAM_BUF_MAX_BYTES = 50000;
 //             "tool_use" / null 不 emit，等下一条 message。
 //   90s idle 仅留作"transcript 完全卡死/写入异常"的最终兜底，不再是主路径。
 const _CLAUDE_STOP_REASON_DEBOUNCE_MS = 200;
-const _CLAUDE_IDLE_EMIT_MS = 90 * 1000; // 极端兜底（原 5s 误触发太多）
+// 2026-05-05 道雪：从 90s 缩回 15s。R3 之前 5s idle 误触发的根因不是时长，是 readLast
+//   会把 tool_use 行的"我先读取..."中间 text 当成本轮答案 emit。现在 _scheduleIdleEmit
+//   改用 readLastTerminalAssistantTextFromClaudeTranscript 终态过滤（只接受 stop_reason
+//   ∈ {end_turn, max_tokens, refusal}），中间态行被跳过 → 时长可以安全缩短。
+//   兜底场景：transcript 写入异常 / Stop hook 没触发 / stop_reason 字段缺失。
+//   15s 取舍：足够等待 transcript 异步刷盘 + fs.watch 漂移，又不至于让用户卡得明显。
+const _CLAUDE_IDLE_EMIT_MS = 15 * 1000;
 
 // 2026-05-02 Gemini 兜底：与 ClaudeTap 同套 idle-timer 思路。用户血泪反馈：
 //   "第一轮 Gemini 子 session 输出后没快速提取，手动提取后流程继续"。
@@ -296,8 +302,14 @@ class ClaudeTap extends EventEmitter {
   }
 
   // 内部：每条新 assistant 行调用一次，重置 idle timer。
-  //   timer 触发时（连续 5s 无新行）从 transcript 末尾读 last assistant 主动 emit。
+  //   timer 触发时（连续 N 秒无新行）从 transcript 末尾读 last assistant 主动 emit。
   //   防重复：emit 前比对 lastText，相同则不再重复 emit。
+  // 2026-05-05 道雪：兜底 emit 增加 stop_reason 终态过滤 — 历史 R3 修了"5s idle 拿到
+  //   tool_use 行的中间 text 误 emit settle"的 bug，但代价是把 idle 时间拉到 90s，
+  //   transcript 写入异常 / stop_reason 字段缺失场景下卡片要等 90s 才更新。
+  //   现在让兜底也用 stop_reason 过滤：只在 transcript 末尾真有 terminal 行（end_turn/
+  //   max_tokens/refusal）时才 emit，否则视为"还在 thinking/tool_use 中"不 emit。
+  //   这样既保留 R3 的防误读，又能把兜底时间安全压到合理范围。
   _scheduleIdleEmit(hubSessionId) {
     const entry = this._bound.get(hubSessionId);
     if (!entry) return;
@@ -306,15 +318,16 @@ class ClaudeTap extends EventEmitter {
       entry._idleTimer = null;
       if (!entry.transcriptPath) return;
       try {
-        const text = await readLastAssistantMessageFromClaudeTranscript(entry.transcriptPath);
-        if (!text || !text.trim()) return;
-        if (text === entry.lastText) return; // 已 emit 过相同内容（如 Stop hook 抢先）
-        entry.lastText = text;
+        // 终态过滤：transcript 末尾必须有 terminal stop_reason 行才 emit
+        const result = await readLastTerminalAssistantTextFromClaudeTranscript(entry.transcriptPath);
+        if (!result || !result.text || !result.text.trim()) return;
+        if (result.text === entry.lastText) return; // 已 emit 过相同内容
+        entry.lastText = result.text;
         this.emit('turn-complete', {
           hubSessionId,
-          text,
+          text: result.text,
           completedAt: Date.now(),
-          signalSource: 'idle_timer_5s',
+          signalSource: 'idle_timer_terminal',
         });
       } catch (e) {
         console.warn('[claude-tap] idle-emit read failed:', e.message);
@@ -391,6 +404,61 @@ function readFirstLine(filepath) {
     rl.on('error', (e) => { if (!done) { done = true; reject(e); } });
     stream.on('error', (e) => { if (!done) { done = true; reject(e); } });
   });
+}
+
+// 2026-05-05 道雪：终态 stop_reason 过滤版本 — 用于 idle 兜底 emit。
+// 从尾部向前扫，找第一个 stop_reason ∈ {end_turn, max_tokens, refusal} 且 content
+// 含 text 块的 assistant message。
+// 与 readLastAssistantMessageFromClaudeTranscript 的区别：本函数会跳过 stop_reason='tool_use'
+// 等中间态行（这些行的 text 块是工具调用前的"我先读取..."类中间输出，不是本轮真答案）。
+// 返回 { text, stopReason } 或 null（找不到 terminal 行）。
+const _CLAUDE_TERMINAL_STOP_REASONS = new Set(['end_turn', 'max_tokens', 'refusal']);
+async function readLastTerminalAssistantTextFromClaudeTranscript(transcriptPath) {
+  const CHUNK = 65536;
+  let fh;
+  try {
+    fh = await fs.promises.open(transcriptPath, 'r');
+    const { size } = await fh.stat();
+    let pos = size;
+    let tail = '';
+    while (pos > 0) {
+      const readLen = Math.min(CHUNK, pos);
+      pos -= readLen;
+      const buf = Buffer.alloc(readLen);
+      await fh.read(buf, 0, readLen, pos);
+      tail = buf.toString('utf8') + tail;
+      const lines = tail.split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        if (obj?.type !== 'assistant' || !obj.message) continue;
+        const stopReason = obj.message.stop_reason;
+        if (!_CLAUDE_TERMINAL_STOP_REASONS.has(stopReason)) continue;
+        const content = obj.message.content;
+        if (Array.isArray(content)) {
+          const parts = [];
+          for (const p of content) {
+            if (p && typeof p === 'object' && p.type === 'text' && typeof p.text === 'string') {
+              parts.push(p.text);
+            }
+          }
+          const joined = parts.join('').trim();
+          if (joined) return { text: joined, stopReason };
+        } else if (typeof content === 'string') {
+          if (content.trim()) return { text: content.trim(), stopReason };
+        }
+      }
+      if (pos === 0) break;
+      tail = lines[0] || '';
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    try { await fh?.close(); } catch {}
+  }
 }
 
 // Claude transcript JSONL 末尾读取。模式对称于 main.js:readLastUserMessage —
@@ -1354,6 +1422,7 @@ module.exports = {
   GeminiTap,          // 2026-05-04 gemini equiv：单测注入 tmpRoot 直测 _bound 字段
   JsonlTail,
   readLastAssistantMessageFromClaudeTranscript,
+  readLastTerminalAssistantTextFromClaudeTranscript,
   extractCodexSidFromRolloutPath,
   extractGeminiChatIdFromSessionPath,
   extractGeminiProjectHashFromDir,

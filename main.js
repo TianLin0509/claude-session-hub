@@ -2721,11 +2721,45 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
     }
   }
   lastPersistedSessions = list;
+  // 2026-05-05 道雪：第二道防线 — renderer 传来的 meeting 列表如果缺字段（历史 bug 漏 scene 等
+  //   导致重启后所有圆桌退化为 general），按 id 从 meetingManager 拿权威对象做字段补全。
+  //   renderer 的字段是 UI 派生快照（lastMessageTime / focusedSub 等），优先用它；
+  //   meetingManager 的字段是 backend 真理源（scene / mode / pilotSlot / dispatchMode /
+  //   participants / slotSpecs / covenantText），这些字段始终从 manager 兜底，
+  //   确保即使未来 renderer 有调用方再漏字段也不会写残 state.json。
+  let meetingsForState;
+  if (Array.isArray(meetingList)) {
+    meetingsForState = meetingList.map(rendererMeeting => {
+      if (!rendererMeeting || !rendererMeeting.id) return rendererMeeting;
+      const authoritative = meetingManager.getMeeting(rendererMeeting.id);
+      if (!authoritative) return rendererMeeting;
+      return {
+        ...rendererMeeting,
+        scene: rendererMeeting.scene || authoritative.scene,
+        mode: rendererMeeting.mode || authoritative.mode,
+        pilotSlot: (typeof rendererMeeting.pilotSlot === 'number')
+          ? rendererMeeting.pilotSlot
+          : (authoritative.pilotSlot ?? null),
+        dispatchMode: rendererMeeting.dispatchMode || authoritative.dispatchMode || 'all',
+        participants: Array.isArray(rendererMeeting.participants)
+          ? rendererMeeting.participants
+          : (Array.isArray(authoritative.participants) ? authoritative.participants : null),
+        slotSpecs: Array.isArray(rendererMeeting.slotSpecs)
+          ? rendererMeeting.slotSpecs
+          : (Array.isArray(authoritative.slotSpecs) ? authoritative.slotSpecs : null),
+        covenantText: (typeof rendererMeeting.covenantText === 'string' && rendererMeeting.covenantText)
+          ? rendererMeeting.covenantText
+          : (authoritative.covenantText || ''),
+      };
+    });
+  } else {
+    meetingsForState = meetingManager.getAllMeetings();
+  }
   stateStore.save({
     version: 1,
     cleanShutdown: false,
     sessions: list,
-    meetings: Array.isArray(meetingList) ? meetingList : meetingManager.getAllMeetings(),
+    meetings: meetingsForState,
     immersiveByMeeting: _immersiveByMeeting,
     pilotSlotByMeeting: _pilotSlotByMeeting,
     dispatchModeByMeeting: _dispatchModeByMeeting,
@@ -3610,9 +3644,17 @@ app.whenReady().then(async () => {
   traceStartup('app.whenReady');
   const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();
   traceStartup('deploy hooks start');
-  ensureHooksDeployed(path.join(_home, '.claude'));
-  ensureHooksDeployed(path.join(_home, '.claude-deepseek'));
-  ensureHooksDeployed(path.join(_home, '.claude-glm'));
+  // 2026-05-05 道雪：所有 Claude family 隔离配置目录都必须部署 Stop hook，否则
+  //   该家族 sub session 完成时 CC 不调 hook → notifyClaudeStop 永不触发 →
+  //   ClaudeTap.JsonlTail 永不启动 → stop_reason 主路径 + idle 兜底全失效 →
+  //   圆桌卡片自动同步死，只能等 5min 硬 timeout 或用户手动点提取。
+  //   原版漏了 packy 3 家（gpt/kimi/qwen），settings.json 完全没 hook 注册，
+  //   scripts/session-hub-hook.py 也不存在。与 findTranscriptByCCSessionId 的
+  //   candidateRoots 列表对齐，单一真理源应在 ai-kinds.js（后续可重构）。
+  for (const dir of ['.claude', '.claude-deepseek', '.claude-glm',
+                     '.claude-packy-gpt', '.claude-packy-kimi', '.claude-packy-qwen']) {
+    ensureHooksDeployed(path.join(_home, dir));
+  }
   traceStartup('deploy hooks done');
   traceStartup('codex config start');
   ensureCodexContextConfig();

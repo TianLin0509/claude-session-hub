@@ -264,7 +264,19 @@ class MeetingRoomManager {
     // 向后兼容：从旧的 researchMode/roundtableMode 推断 scene
     let scene = meetingData.scene;
     if (!scene) {
-      scene = meetingData.researchMode ? 'research' : 'general';
+      if (meetingData.researchMode) {
+        scene = 'research';
+      } else if (typeof meetingData.title === 'string') {
+        // 2026-05-05 道雪：title 兜底推断 — 历史 bug：renderer schedulePersist 漏 scene
+        //   字段写残 state.json，重启后所有圆桌退化为 general（含投研，丢 LinDangAgent MCP）。
+        //   schedulePersist 已修但既有 state.json 字段已丢，按 title 前缀推断兜底。
+        //   匹配新前缀 "投研" / "开发" / "通用" 与 旧前缀 "投研圆桌" / "开发圆桌" / "通用圆桌"。
+        if (meetingData.title.includes('投研')) scene = 'research';
+        else if (meetingData.title.includes('开发')) scene = 'dev';
+        else scene = 'general';
+      } else {
+        scene = 'general';
+      }
     }
     this.meetings.set(meetingData.id, {
       id: meetingData.id,
