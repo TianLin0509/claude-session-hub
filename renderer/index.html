@@ -171,9 +171,13 @@
            (xterm 多家平铺) 已删除。Shell PTY 流通过左侧栏树形展开后点击
            子 session 进入主区 shell view 查看 (复用 selectSession 路径)。 -->
       <div class="mr-toolbar" id="mr-toolbar"></div>
-      <!-- IF-C3 软提醒 banner：AI 启动中时显示哪几家未 ready，让用户避免在 ready 前发送 -->
-      <div class="mr-input-soft-alert" id="mr-input-soft-alert" style="display:none"></div>
+      <!-- Phase 4 v2(2026-05-05): IF-C3 软提醒 banner 已删除, 启动状态文字上移到 onboarding head;
+           下方 mr-input-row 新增头像组 + 模式 dropdown 占位实现一行化 footer -->
       <div class="mr-input-row" id="mr-input-row">
+        <!-- Phase 4 v2: free 模式头像 checkbox 组(只 logo, 无文字) -->
+        <span class="mr-free-avatars-row" id="mr-free-avatars-row"></span>
+        <!-- Phase 4 v2: 模式 dropdown(辩论/摘要/总结合并, 总结二级 hover 向上展开) -->
+        <span class="mr-input-mode-chips" id="mr-input-mode-chips"></span>
         <select class="mr-target-select" id="mr-input-target" title="发送目标"></select>
         <div class="mr-input-box" id="mr-input-box" contenteditable="true" data-placeholder="输入消息..."></div>
         <button class="mr-send-btn" id="mr-send-btn" title="发送">▶</button>
