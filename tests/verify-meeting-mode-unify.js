@@ -88,8 +88,9 @@ async function main() {
   const modalGoneAfterCreate = await evalInPage(ws, `!document.getElementById('create-meeting-modal')`);
   record('T2.1 无 #create-meeting-modal 残留', modalGoneAfterCreate);
   const sidebarTitles1 = await evalInPage(ws, `[...document.querySelectorAll('.session-list .session-item .session-title, .session-list [class*="title"]')].map(e => e.textContent.trim()).filter(t => t)`);
-  const hasGeneral = sidebarTitles1.some(t => /通用圆桌\s*#\d+/.test(t));
-  record('T2.2 sidebar 出现 "通用圆桌 #N"', hasGeneral, JSON.stringify(sidebarTitles1.filter(t => t.includes('通用')).slice(0, 5)));
+  // 2026-05-05 道雪：title 前缀从 "通用圆桌" 改为 "通用"，断言放宽到字头匹配
+  const hasGeneral = sidebarTitles1.some(t => /通用\s*#\d+/.test(t));
+  record('T2.2 sidebar 出现 "通用 #N"', hasGeneral, JSON.stringify(sidebarTitles1.filter(t => t.includes('通用')).slice(0, 5)));
 
   // T3: 再点两次"通用圆桌" - 验证 counter 递增
   for (let i = 0; i < 2; i++) {
@@ -99,7 +100,7 @@ async function main() {
     await sleep(800);
   }
   const sidebarTitles2 = await evalInPage(ws, `[...document.querySelectorAll('.session-list .session-item .session-title, .session-list [class*="title"]')].map(e => e.textContent.trim()).filter(t => t)`);
-  const generalCount = sidebarTitles2.filter(t => /通用圆桌\s*#\d+/.test(t)).length;
+  const generalCount = sidebarTitles2.filter(t => /通用\s*#\d+/.test(t)).length;
   record('T3 通用圆桌 counter 递增 (>=3)', generalCount >= 3, `count=${generalCount}`);
 
   // T4: 点"投研圆桌" - 计数独立
@@ -108,8 +109,8 @@ async function main() {
   await evalInPage(ws, `document.querySelector('.new-session-option[data-meeting-mode="research"]').click()`);
   await sleep(1000);
   const titlesAfterResearch = await evalInPage(ws, `[...document.querySelectorAll('.session-list .session-item .session-title, .session-list [class*="title"]')].map(e => e.textContent.trim()).filter(t => t)`);
-  const hasResearch = titlesAfterResearch.some(t => /投研圆桌\s*#\d+/.test(t));
-  record('T4 投研圆桌 #N 独立计数', hasResearch, JSON.stringify(titlesAfterResearch.filter(t => t.includes('投研')).slice(0, 3)));
+  const hasResearch = titlesAfterResearch.some(t => /投研\s*#\d+/.test(t));
+  record('T4 投研 #N 独立计数', hasResearch, JSON.stringify(titlesAfterResearch.filter(t => t.includes('投研')).slice(0, 3)));
 
   // T5: 检查 driver / blackboard 全部 DOM 残留
   const bbScriptGone = await evalInPage(ws, `![...document.scripts].some(s => /meeting-blackboard/.test(s.src || ''))`);

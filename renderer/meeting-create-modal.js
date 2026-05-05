@@ -103,6 +103,11 @@ function _ensureModal() {
         <button class="mcm-close" aria-label="关闭">×</button>
       </div>
       <div class="mcm-body">
+        <div class="mcm-name-row">
+          <label class="mcm-name-label" for="mcm-title-input">房名（可选）</label>
+          <input id="mcm-title-input" class="mcm-title-input" type="text" maxlength="40"
+                 placeholder="留空 → 自动编号" autocomplete="off">
+        </div>
         <div class="mcm-slots">
           ${[0, 1, 2].map(i => _slotHtml(i)).join('')}
         </div>
@@ -114,7 +119,7 @@ function _ensureModal() {
         <div class="mcm-scene">
           场景:
           <label><input type="radio" name="mcm-scene" value="general" checked> 通用</label>
-          <label><input type="radio" name="mcm-scene" value="research"> 投研</label>
+          <label><input type="radio" name="mcm-scene" value="research"> 投研 <span class="mcm-scene-hint" title="投研场景需配置 A 股数据后端（设环境变量 LINDANG_DIR），未配置时 AI 拿不到行情数据。详见 README → 协作集成。">ⓘ</span></label>
           <label><input type="radio" name="mcm-scene" value="dev"> 开发</label>
         </div>
       </div>
@@ -169,6 +174,9 @@ async function _onCreate() {
   const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
   // free-mode（2026-05-04）：meetingMode 与历史 mode（general/research）分语义，避免字段冲突
   const meetingMode = _modalEl.querySelector('input[name="mcm-meeting-mode"]:checked').value;
+  // 2026-05-05 道雪：房名输入框，非空 → 覆盖后端默认编号 title；空 → 后端走 `通用 #N` 等。
+  const titleInput = _modalEl.querySelector('#mcm-title-input');
+  const title = titleInput ? titleInput.value.trim() : '';
 
   const createBtn = _modalEl.querySelector('.mcm-create');
   createBtn.disabled = true;
@@ -177,7 +185,7 @@ async function _onCreate() {
   // 清掉之前可能残留的 inline error
   _clearError();
   try {
-    const meeting = await ipcRenderer.invoke('create-meeting', { mode, scene, slots, meetingMode });
+    const meeting = await ipcRenderer.invoke('create-meeting', { mode, scene, slots, meetingMode, title });
     if (!meeting || !meeting.id) {
       throw new Error('create-meeting returned empty meeting');
     }
@@ -222,6 +230,13 @@ function openMeetingCreateModal(mode = 'general') {
   _currentMode = mode === 'research' ? 'research' : 'general';
   _ensureModal();
   _modalEl.querySelector('#mcm-mode-label').textContent = _currentMode === 'research' ? '投研' : '通用';
+  // 房名输入框：每次打开清空 + 按 mode 给提示词。用户填了即覆盖编号 title，留空 → 后端默认。
+  const titleInput = _modalEl.querySelector('#mcm-title-input');
+  if (titleInput) {
+    titleInput.value = '';
+    const hint = _currentMode === 'research' ? '投研' : '通用';
+    titleInput.placeholder = `留空 → 自动编号「${hint} #N」`;
+  }
   // 重置到默认值
   _modalEl.querySelectorAll('.mcm-slot').forEach((el, i) => {
     el.querySelector('.mcm-ai-select').value = DEFAULT_SLOTS[i].kind;

@@ -53,6 +53,36 @@
   overflow-y: auto;
 }
 
+/* 2026-05-05 道雪：房名输入框，置于 slots 之上。label 紧凑，input 占满剩余宽度。 */
+.mcm-name-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.mcm-name-label {
+  font-size: 13px;
+  color: var(--text-dim, #8b949e);
+  flex-shrink: 0;
+}
+.mcm-title-input {
+  flex: 1;
+  background: var(--bg-input, #0d1117);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  color: var(--text, #e6edf3);
+  font-size: 13px;
+  padding: 6px 10px;
+  outline: none;
+}
+.mcm-title-input:focus {
+  border-color: var(--accent, #4493f8);
+}
+.mcm-title-input::placeholder {
+  color: var(--text-dim, #8b949e);
+  opacity: 0.6;
+}
+
 .mcm-slots {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -115,6 +145,23 @@
   align-items: center;
   gap: 4px;
   cursor: pointer;
+}
+.mcm-scene-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--border-soft, #30363d);
+  color: var(--text-muted, #8b949e);
+  font-size: 10px;
+  cursor: help;
+  user-select: none;
+}
+.mcm-scene-hint:hover {
+  background: var(--accent, #58a6ff);
+  color: #fff;
 }
 
 .mcm-footer {

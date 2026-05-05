@@ -8,10 +8,12 @@ const MEETING_MODES = ['general', 'research', 'dev'];
 // 模式 → 房名前缀。前端 +号菜单点击两模式入口时透传 mode,createMeeting 据此生成
 // 自带语义的房名(每模式独立计数,后期允许用户重命名)。未传 mode 时默认 'general' 走
 // 通用圆桌路径,保持向后兼容(老调用 createMeeting() 不会炸)。
+// 2026-05-05 道雪：前缀从 "X圆桌" 简化为 "X"，避免侧边栏 ~12 字符上限把 "投研圆桌 #12" 截成
+//   "投研圆桌 #1..." 区分不出编号。"圆桌"语义已由🎯 emoji + sub session 头像承载。
 const MODE_TITLE_PREFIX = {
-  general: '通用圆桌',
-  research: '投研圆桌',
-  dev: '开发圆桌',
+  general: '通用',
+  research: '投研',
+  dev: '开发',
 };
 
 class MeetingRoomManager {
@@ -26,10 +28,13 @@ class MeetingRoomManager {
     const mode = MODE_TITLE_PREFIX[opts.mode] ? opts.mode : 'general';
     const titlePrefix = MODE_TITLE_PREFIX[mode];
     const seq = ++this._counters[mode];
+    // meeting-create-modal（2026-05-05 道雪）：用户在 Modal 房名输入框填了非空字符串
+    //   则用用户的（trim 后），否则走默认编号 title。modal 留空 = undefined，向后兼容。
+    const customTitle = typeof opts.title === 'string' ? opts.title.trim() : '';
     const meeting = {
       id,
       type: 'meeting',
-      title: `${titlePrefix} #${seq}`,
+      title: customTitle || `${titlePrefix} #${seq}`,
       subSessions: [],
       layout: 'focus',
       focusedSub: null,

@@ -603,8 +603,9 @@ function escapeHtml(text) {
 }
 
 // --- Sidebar tree state: which meeting entries are expanded to show their sub-sessions ---
-// Persists across reloads. Newly created meetings are expanded by default
-// (handled in the meeting-created handler).
+// Persists across reloads. Default = collapsed (白名单未命中即折叠)；用户点 ▶ 后才进
+// _expandedMeetings 集合并落盘。2026-05-05 道雪改：新圆桌不再默认展开，折叠态本来
+// 就有 3 个迷你头像跳转按钮可用。
 const _expandedMeetings = (() => {
   try {
     const raw = localStorage.getItem('hubExpandedMeetings');
@@ -5463,11 +5464,8 @@ for (const ch of ['session-created', 'session-closed', 'session-updated', 'meeti
 // --- Meeting Room IPC events ---
 ipcRenderer.on('meeting-created', (_e, { meeting }) => {
   meetings[meeting.id] = meeting;
-  // New meetings default to expanded so users immediately see their child sub-sessions.
-  if (!_expandedMeetings.has(meeting.id)) {
-    _expandedMeetings.add(meeting.id);
-    _persistExpandedMeetings();
-  }
+  // 2026-05-05 道雪：新圆桌默认折叠（白名单未命中=折叠）。折叠态侧边栏已显示 3 个迷你
+  //   slot 头像跳转按钮，用户能直接点头像进 sub session，不必展开看 slot 列表。
   renderSessionList();
 });
 

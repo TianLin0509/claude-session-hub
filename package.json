@@ -1,6 +1,6 @@
 {
   "name": "roundtable",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "多模型协作圆桌宝可梦终端",
   "main": "main.js",
   "scripts": {

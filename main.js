@@ -721,10 +721,12 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
 }
 
 ipcMain.handle('create-meeting', async (_e, opts) => {
-  // opts: { mode?, scene?, slots?: [{index, kind, model}, ...] }
+  // opts: { mode?, scene?, slots?: [{index, kind, model}, ...], title? }
   //   meeting-create-modal（2026-05-01）：当 slots 数组传入时，立即按 slot 顺序
   //   逐个 _addMeetingSubInternal(kind, model)，并把 slotSpecs 落盘。renderer 旧路径
   //   不传 slots → 仍只 createMeeting，由 renderer 后续逐个 add-meeting-sub（向后兼容）。
+  //   2026-05-05 道雪：title 由 modal 房名输入框填入，非空覆盖默认编号 title；
+  //   留空/未传则 createMeeting 内部走 `通用 #N` 等默认编号路径。
   const safe = { ...(opts || {}) };
   if (Array.isArray(safe.slots) && safe.slots.length > 0) {
     safe.slotSpecs = safe.slots.map(s => ({

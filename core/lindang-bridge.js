@@ -37,7 +37,7 @@ function _runDataQuery(op, args, timeoutMs = null) {
       return resolve({
         ok: false,
         op,
-        error: 'LinDang 集成未启用：请设环境变量 LINDANG_DIR 指向 LinDangAgent 项目根目录。',
+        error: '投研数据后端未配置：投研场景需要 A 股数据后端 + 设置环境变量 LINDANG_DIR 指向项目根目录。详见 README → 协作集成。当前圆桌可改用通用 / 开发场景。',
       });
     }
     let child;
