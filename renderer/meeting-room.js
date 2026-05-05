@@ -1085,40 +1085,112 @@ if (typeof document !== 'undefined') (function () {
   // _suggestedCmd / _allParticipantsSettled 仍被其他地方使用（如未来扩展）— 保留 helper 函数，删渲染。
 
   function _renderOnboarding(meeting) {
-    const sceneKey = meeting && meeting.scene || 'general';
-    const scene = _scenes.getScene(sceneKey);
-    const examples = (scene && scene.onboardingExamples) || [];
-    const titleText = scene ? scene.name : '圆桌讨论';
+    // D1 v2(2026-05-05 道雪): 删 examples 块 + scene 引用, onboarding 上移到 fusedTabs 之前。
     // 2026-05-03 道雪精测 C1 修复：欢迎文案原写死 "三家 AI（Claude / Gemini / Codex）"，
     //   3 × claude / 任意混合配置下都显示成 Claude/Gemini/Codex → 用户困惑配置是否生效。
     //   改为按 meeting.subSessions 的实际 kind 动态生成。
     const _OB_LABEL = KIND_LABELS;
-    let aiSummary = '圆桌已就位';
-    try {
-      const sids = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions : [];
-      const labels = sids.map(sid => {
-        const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
-        return _OB_LABEL[sess && sess.kind] || (sess && sess.title) || 'AI';
-      });
-      if (labels.length > 0) {
-        const cn = ['零','一','两','三','四','五','六','七','八','九'][labels.length] || labels.length;
-        aiSummary = `${cn}家 AI（${labels.join(' / ')}）已就位`;
-      }
-    } catch {}
-    const exCards = examples.map(ex =>
-      `<div class="mr-rt-ob-card" data-ob-q="${escapeHtml(ex.q)}">
-        <div class="mr-rt-ob-icon">${ex.icon}</div>
-        <div class="mr-rt-ob-title">${escapeHtml(ex.title)}</div>
-        <div class="mr-rt-ob-q">"${escapeHtml(ex.q)}"</div>
-        <div class="mr-rt-ob-hint">${escapeHtml(ex.hint)}</div>
-      </div>`
-    ).join('');
+    const sids = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions : [];
+    const labels = sids.map(sid => {
+      const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+      return _OB_LABEL[sess && sess.kind] || (sess && sess.title) || 'AI';
+    });
+    const cnNum = ['零','一','两','三','四','五','六','七','八','九'][labels.length] || String(labels.length);
+    const headText = labels.length > 0 ? `${cnNum}个 AI 已就绪` : '圆桌已就位';
+    const subText = labels.length > 0
+      ? `${labels.join(' · ')} 等你抛话题`
+      : '等你抛话题';
+
+    // D1 Phase 4(2026-05-05 道雪): 圆桌角色 PNG 头像 stack(与卡片头像一致)
+    //   slot 头像绑定: 0=Pikachu / 1=Charmander / 2=Squirtle (与 _SLOT_AVATARS 一致)
+    const avatarsHtml = sids.map((sid, idx) => {
+      const src = _avatarBySlot(idx);
+      const fb = _avatarFallbackBySlot(idx);
+      return src
+        ? `<img src="${src}" class="mr-rt-ob-avatar" alt="slot${idx+1}" onerror="this.outerHTML='<span class=\\'mr-rt-ob-avatar-fb\\'>${fb}</span>'" />`
+        : `<span class="mr-rt-ob-avatar-fb">${fb}</span>`;
+    }).join('');
+
+    // D1 Phase 4: 三步引导卡片 — 让新用户秒懂圆桌使用流程
+    const stepsHtml = `
+      <div class="mr-rt-ob-step">
+        <div class="mr-rt-ob-step-num">1</div>
+        <div class="mr-rt-ob-step-body">
+          <div class="mr-rt-ob-step-title">提问</div>
+          <div class="mr-rt-ob-step-desc">输入框输入问题,${labels.length || 3} 个 AI 同时启动思考</div>
+        </div>
+      </div>
+      <div class="mr-rt-ob-step">
+        <div class="mr-rt-ob-step-num">2</div>
+        <div class="mr-rt-ob-step-body">
+          <div class="mr-rt-ob-step-title">交叉迭代</div>
+          <div class="mr-rt-ob-step-desc">他们引用彼此观点, 多轮收敛核心论点</div>
+        </div>
+      </div>
+      <div class="mr-rt-ob-step">
+        <div class="mr-rt-ob-step-num">3</div>
+        <div class="mr-rt-ob-step-body">
+          <div class="mr-rt-ob-step-title">总结</div>
+          <div class="mr-rt-ob-step-desc">点输入框左侧 📝 总结, 选一人输出交接单</div>
+        </div>
+      </div>
+    `;
+
+    // D1 v3 Phase 4(2026-05-05 道雪): head 改为占位 div, 由 _refreshOnboardingHead 动态填充。
+    //   启动中(notReady>0) → 黄色启动文字, 全员 ready → 绿色"X 个 AI 已就绪"。
+    //   sub 行(label list)隐藏不渲染(信息已在 head 内, 避免重复)。
+    //   data-default-* 属性记录默认全员 ready 文案, 让 head refresh 函数能 fallback。
     return `<div class="mr-rt-onboarding">
-      <div class="mr-rt-ob-head">${scene ? scene.icon : '🎯'} ${escapeHtml(titleText)}已创建</div>
-      <div class="mr-rt-ob-sub">${escapeHtml(aiSummary)}，等你抛话题</div>
-      <div class="mr-rt-ob-hint-bar">⏱ 首次发送：<strong>约 25s</strong> 冷启动 + OAuth · 后续轮次会快很多</div>
-      <div class="mr-rt-ob-examples">${exCards}</div>
+      <div class="mr-rt-ob-avatars">${avatarsHtml}</div>
+      <div class="mr-rt-ob-head" id="mr-rt-ob-head"
+           data-default-text="${escapeHtml(headText)}"
+           data-default-sub="${escapeHtml(subText)}"></div>
+      <div class="mr-rt-ob-steps">${stepsHtml}</div>
     </div>`;
+  }
+
+  // H3 Phase 4(2026-05-05 道雪): 更新 mr-header 的 meta 文字 + 进度条。
+  //   meta: "已 N 轮 · ⏱ 总耗时"; 进度条: 本轮已 settled 的 sid 数 / 总人数, 渐变填充。
+  //   header 骨架由 renderHeader 一次性 mount, 这里只刷新 #mr-header-meta + #mr-header-progress 内容,
+  //   不动其他 listener。每次 _renderRtPanelHtml 时同步调用一次。
+  function _updateHeaderProgress(meeting, state, mode, totalSec) {
+    const metaEl = document.getElementById('mr-header-meta');
+    const progEl = document.getElementById('mr-header-progress');
+    if (!metaEl && !progEl) return;
+    const turnsCount = (state && Array.isArray(state.turns)) ? state.turns.length : 0;
+    const totalSecTxt = totalSec > 0 ? _formatThinkTime(totalSec) : null;
+    // 进度计算: 非 idle = 本轮 partialBy 中 settled 的数 / 期望家总数
+    //          idle    = 0/N (无活跃轮, 进度条灰色 0%)
+    const expectedSids = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
+    const total = expectedSids.length || 0;
+    let done = 0;
+    let isThinking = false;
+    if (mode && mode !== 'idle' && state && state._partialBy) {
+      for (const sid of expectedSids) {
+        const p = state._partialBy[sid];
+        if (p && _SETTLED_STATUSES.has(p.status)) done += 1;
+      }
+      isThinking = done < total;
+    }
+    // meta 文字
+    if (metaEl) {
+      const parts = [];
+      if (turnsCount > 0) parts.push(`已 ${turnsCount} 轮`);
+      if (totalSecTxt) parts.push(`⏱ ${totalSecTxt}`);
+      if (mode && mode !== 'idle' && total > 0) {
+        parts.push(`<span class="mr-header-meta-active">本轮 ${done}/${total}</span>`);
+      }
+      metaEl.innerHTML = parts.length ? '· ' + parts.join(' · ') : '';
+    }
+    // 进度条
+    if (progEl) {
+      if (total === 0) { progEl.style.display = 'none'; return; }
+      progEl.style.display = '';
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      progEl.classList.toggle('mr-header-progress-thinking', isThinking);
+      progEl.classList.toggle('mr-header-progress-idle', !isThinking && mode === 'idle');
+      progEl.innerHTML = `<div class="mr-header-progress-fill" style="width:${pct}%"></div>`;
+    }
   }
 
   function _renderRtPanelHtml(state, meeting) {
@@ -1157,6 +1229,12 @@ if (typeof document !== 'undefined') (function () {
     // Stage 2 容错升级：软提醒 banner 容器
     const softBanner = `<div id="mr-rt-soft-alert-banner" class="mr-rt-soft-alert-banner" style="display:none"></div>`;
     // pilot redesign（2026-05-02）：废弃 pilotRecaps 卡片 + 主驾占位容器（圆桌不再桥接子会话私聊）。
+    // H3 Phase 4(2026-05-05 道雪): 同步刷新 header 进度条 + meta(每次 panel re-render)
+    _updateHeaderProgress(meeting, state, mode, totalSec);
+    // Phase 4 v2(2026-05-05): panel 重渲后 onboarding head 占位空, 异步 microtask 触发 _refreshSoftAlert 填充
+    setTimeout(() => { try { _refreshSoftAlert(meeting); } catch {} }, 0);
+    // D1 v2(2026-05-05 道雪): 欢迎区从 fusedTabs 之后上移到 fusedTabs 之前,
+    //   位置在 "圆桌讨论" 标题正下方与 3 张 AI 卡片之间, 视觉权重更高 + 更早被注意到。
     return `
       <div class="mr-rt-track">
         <div class="mr-rt-track-row">
@@ -1168,8 +1246,8 @@ if (typeof document !== 'undefined') (function () {
         </div>
       </div>
       ${softBanner}
-      ${fusedTabs}
       ${onboarding}
+      ${fusedTabs}
       ${history}
     `;
   }
@@ -2211,7 +2289,9 @@ if (typeof document !== 'undefined') (function () {
     el.innerHTML = `
       <div class="mr-header-left">
         <span class="mr-header-title" id="mr-title">${escapeHtml(meeting.title)}</span>
+        <span class="mr-header-meta" id="mr-header-meta"></span>
       </div>
+      <div class="mr-header-progress" id="mr-header-progress" title="本轮发言进度"></div>
       <div class="mr-header-right">${layoutButtonsHtml}
         <button class="mr-header-btn ${_isDensityCompact() ? 'active' : ''}" id="mr-btn-density" title="切换卡片密度: 常规 (220px) ↔ 紧凑 (120px,只显示头部)">${_isDensityCompact() ? '📃 紧凑' : '📖 常规'}</button>
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
@@ -2455,9 +2535,17 @@ if (typeof document !== 'undefined') (function () {
   //   #2: _cliReadyCache 比卡片 DOM 早更新 1s → banner 早消失，用户以为 ready 实际还没
   //   并集策略保证：DOM 卡片仍"创建中" 或 cache 未 ready，任一为真即在 banner 内提示，
   //   彻底杜绝"卡片创建中但 banner 消失"的误导（用户铁律 P0 禁忌）。
+  // Phase 4 v2(2026-05-05 道雪): _refreshSoftAlert 改造为更新 onboarding head 的动态状态。
+  //   旧策略: 在底部 mr-input-soft-alert banner 显示启动中文字 + dismiss × 按钮。
+  //   新策略(用户决策): banner DOM 已删, head 文字上移到欢迎区。AI 启动中(notReady>0) 显示黄色
+  //     "X / Y / Z 启动中, 建议等到状态变'待命'再发送"; 全员 ready 显示绿色 "N 个 AI 已就绪"。
+  //   notReady 算法不变(DOM "创建中"+ cliReadyCache 并集 + slotSpecs 装配中补齐)。
+  //   dismiss 语义删除(欢迎区 head 是动态的, ready 后自然变绿无需用户关闭)。
+  //
+  // 函数名保持 _refreshSoftAlert 兼容现有调用点(避免大面积改 ipc handler), 实际行为变了。
   function _refreshSoftAlert(meeting) {
-    const banner = document.getElementById('mr-input-soft-alert');
-    if (!banner || !meeting || !Array.isArray(meeting.subSessions)) return;
+    const head = document.getElementById('mr-rt-ob-head');
+    if (!head || !meeting || !Array.isArray(meeting.subSessions)) return;
 
     const labelOf = sid => {
       const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
@@ -2478,52 +2566,31 @@ if (typeof document !== 'undefined') (function () {
     // 并集（悲观策略）：任一源说未 ready → 提示
     const unionSids = new Set([...domNotReadySids, ...cacheNotReadySids]);
     const notReady = meeting.subSessions.filter(sid => unionSids.has(sid)).map(labelOf);
-    // 2026-05-03 道雪精测 Bug #1 三次修复（最终）：create-meeting 流程内 sequential
-    //   add 3 sub 期间，hub 后端会发 3 次 'meeting-updated'，每次 subSessions 数从 1 → 2 → 3。
-    //   banner 在 subSessions=2 时被调用过 → notReady 列出 2 个 Claude → 但实际 slotSpecs 期望 3 家。
-    //   补齐：用 slotSpecs.length 作为目标总数，差额按 slotSpecs[i].kind 算未 ready。
-    //   这保证装配中途 banner 数字 = 用户最初选的家数（永不偏小）。
+    // 装配中途补齐(slotSpecs.length > subSessions.length 时, 差额按 slotSpecs[i].kind 算未 ready)
     if (Array.isArray(meeting.slotSpecs) && meeting.slotSpecs.length > meeting.subSessions.length) {
       for (let i = meeting.subSessions.length; i < meeting.slotSpecs.length; i++) {
         const spec = meeting.slotSpecs[i];
         notReady.push(KIND_LABELS[spec?.kind] || 'AI');
       }
     }
-    const notReadySids = notReady; // 兼容下方 _lastNotReadyCount 比较语义
 
-    // IF-C7（2026-05-03）：dismiss 语义改为"对当前未 ready 集合 dismiss"。
-    //   当未 ready 数量上升（如新增子会话/某 sid 被踢回未 ready）→ 重新激活 banner。
-    //   全员 ready 后清掉 dismiss，下次有新增未 ready 也能正常提示。
-    if (_bannerDismissedFor === meeting.id && notReady.length <= _lastNotReadyCount) {
-      _lastNotReadyCount = notReady.length;
-      if (notReady.length === 0) _bannerDismissedFor = null;
-      banner.style.display = 'none';
-      return;
-    }
-    _lastNotReadyCount = notReady.length;
-    if (notReady.length === 0) _bannerDismissedFor = null;
-
-    if (notReady.length === 0) {
-      banner.style.display = 'none';
-      banner.innerHTML = '';
-      return;
-    }
-
-    banner.innerHTML = `
-      <span class="mr-input-soft-alert-icon">⏳</span>
-      <span class="mr-input-soft-alert-msg">
-        <strong>${notReady.join(' / ')}</strong> 启动中，建议等到状态变"待命"再发送（避免输入丢失）。
-      </span>
-      <button class="mr-input-soft-alert-close" data-soft-alert-close="1" title="关闭提示">×</button>
-    `;
-    banner.style.display = 'flex';
-    const closeBtn = banner.querySelector('[data-soft-alert-close]');
-    if (closeBtn) {
-      closeBtn.addEventListener('click', () => {
-        _bannerDismissedFor = meeting.id;
-        banner.style.display = 'none';
-        banner.innerHTML = '';
-      }, { once: true });
+    // notReady>0 → 黄色启动中; notReady===0 → 绿色全员 ready
+    if (notReady.length > 0) {
+      head.classList.remove('ready');
+      head.classList.add('loading');
+      head.innerHTML = `
+        <span class="mr-rt-ob-head-icon">⏳</span>
+        <span><strong>${notReady.join(' / ')}</strong> 启动中, 建议等到状态变 <strong>"待命"</strong> 再发送(避免输入丢失)</span>
+      `;
+    } else {
+      head.classList.remove('loading');
+      head.classList.add('ready');
+      const defaultText = head.getAttribute('data-default-text') || '圆桌已就位';
+      const defaultSub = head.getAttribute('data-default-sub') || '等你抛话题';
+      head.innerHTML = `
+        <span class="mr-rt-ob-head-icon">✓</span>
+        <span><strong>${escapeHtml(defaultText)}</strong> · ${escapeHtml(defaultSub)}</span>
+      `;
     }
   }
 
@@ -2979,58 +3046,115 @@ if (typeof document !== 'undefined') (function () {
         </span>
       ` : '';
 
-      el.innerHTML = `
-        ${statusLine}
-        <div class="mr-rt-toolbar">
-          ${dispatchAreaHtml}
-          <span class="mr-rt-tb-divider"></span>
-          <button class="mr-rt-tb-btn" id="mr-rt-debate-btn" ${debateDisabled} title="${debateBtnTitle}">🗣 辩论</button>
-          <button class="mr-rt-tb-btn" id="mr-rt-brief-summary-btn" ${briefSummaryDisabled} title="让上一轮发言者按五元组浓缩自己最近一段（典型场景:主驾深聊后切副驾审查前）">🗒 摘要</button>
-          <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${summaryDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结</button>
-          <label class="mr-rt-tb-pick">
-            <span class="mr-rt-tb-pick-label">总结人:</span>
-            <select id="mr-rt-summary-pick" ${summaryPickDisabled}>${opts || '<option disabled>无可用 AI</option>'}</select>
-          </label>
-          ${pilotWrapHtml}
-          <span class="mr-rt-tb-status" id="mr-rt-tb-status">${
-            inProgress ? '⏳ 处理中…' : (turns === 0 ? '先发个问题让大家本色发言' : `已 ${turns} 轮`)
-          }</span>
-        </div>
-      `;
+      // Phase 4 v2(2026-05-05 道雪): footer 一行化重构
+      //   free 模式: toolbar 完全空, 头像组 + 模式 dropdown 渲到 input-row 内占位。
+      //   pilot 模式: 走老 toolbar 路径(本次未优化, 用户主要使用 free)。
+      if (meetingMode === 'free') {
+        el.innerHTML = ''; // toolbar 空, 高度由 input-row 接管
+        // 1. 头像 checkbox 组 → #mr-free-avatars-row(只 logo, 无文字)
+        const avatarsRow = document.getElementById('mr-free-avatars-row');
+        if (avatarsRow) {
+          const participants = Array.isArray(meeting.participants) ? meeting.participants : [];
+          const partSet = new Set(participants);
+          const SLOT_LABELS_FULL = ['⚡ Pikachu · 皮卡丘', '🔥 Charmander · 小火龙', '💎 Squirtle · 杰尼龟'];
+          avatarsRow.innerHTML = [0, 1, 2].map(idx => {
+            const checked = partSet.has(idx);
+            const disabledAttr = inProgress ? 'disabled' : '';
+            return `
+              <label class="mr-free-avatar-chk ${checked ? 'checked' : ''} ${disabledAttr}"
+                     data-slot-idx="${idx}" title="${SLOT_LABELS_FULL[idx]}">
+                <input type="checkbox" class="mr-free-slot-cb" data-slot-idx="${idx}" ${checked ? 'checked' : ''} ${disabledAttr} />
+                <img src="assets/pokemon/${SLOT_AVATARS[idx]}" alt="${SLOT_LABELS_FULL[idx]}" />
+                <span class="mr-free-avatar-chk-mark">✓</span>
+              </label>
+            `;
+          }).join('');
+        }
+        // 2. 模式 dropdown → #mr-input-mode-chips
+        //   一级 hover popup: 辩论 / 摘要 / 总结(▸ 选总结人)
+        //   二级 hover popup: 总结人 slot 列表(向上展开)
+        const modeChipsEl = document.getElementById('mr-input-mode-chips');
+        if (modeChipsEl) {
+          const summaryPersonItems = slotsArr.filter(s => s).map(s => `
+            <button class="mr-mode-subitem" data-summarizer-slot="${s.slotId}" ${summaryDisabled}>
+              <img src="${_avatarBySlot(s.slotIndex)}" alt="${escapeHtml(s.label)}" />
+              <span>${escapeHtml(s.displayLabel)}</span>
+            </button>
+          `).join('');
+          modeChipsEl.innerHTML = `
+            <div class="mr-mode-dropdown">
+              <button class="mr-mode-trigger" id="mr-mode-trigger" title="选择动作: 辩论 / 摘要 / 总结">
+                <span>🎯 模式</span><span class="mr-mode-arrow">▾</span>
+              </button>
+              <div class="mr-mode-popup">
+                <button class="mr-mode-item" id="mr-rt-debate-btn" ${debateDisabled} title="${debateBtnTitle}">
+                  <span>🗣 辩论</span><span class="mr-mode-item-hint">让 AI 互辩</span>
+                </button>
+                <button class="mr-mode-item" id="mr-rt-brief-summary-btn" ${briefSummaryDisabled} title="让上一轮发言者按五元组浓缩自己最近一段">
+                  <span>🗒 摘要</span><span class="mr-mode-item-hint">浓缩近一段</span>
+                </button>
+                <div class="mr-mode-item mr-mode-item-summary ${summaryDisabled ? 'disabled' : ''}" title="选一位 AI 综合所有轮次输出最终意见">
+                  <span>📝 总结</span><span class="mr-mode-item-hint">选总结人 ▸</span>
+                  <div class="mr-mode-subpopup">
+                    <div class="mr-mode-subpopup-title">选定一位总结人</div>
+                    ${summaryPersonItems || '<div class="mr-mode-subpopup-empty">无可用 AI</div>'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+      } else {
+        // pilot 模式: 老 toolbar 渲染(暂不优化)
+        el.innerHTML = `
+          <div class="mr-rt-toolbar">
+            ${dispatchAreaHtml}
+            <span class="mr-rt-tb-divider"></span>
+            <button class="mr-rt-tb-btn" id="mr-rt-debate-btn" ${debateDisabled} title="${debateBtnTitle}">🗣 辩论</button>
+            <button class="mr-rt-tb-btn" id="mr-rt-brief-summary-btn" ${briefSummaryDisabled} title="让上一轮发言者按五元组浓缩自己最近一段">🗒 摘要</button>
+            <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${summaryDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结</button>
+            <label class="mr-rt-tb-pick">
+              <span class="mr-rt-tb-pick-label">总结人:</span>
+              <select id="mr-rt-summary-pick" ${summaryPickDisabled}>${opts || '<option disabled>无可用 AI</option>'}</select>
+            </label>
+            ${pilotWrapHtml}
+          </div>
+        `;
+        // free 模式占位也清掉(避免老元素残留)
+        const arRow = document.getElementById('mr-free-avatars-row');
+        if (arRow) arRow.innerHTML = '';
+        const mc = document.getElementById('mr-input-mode-chips');
+        if (mc) mc.innerHTML = '';
+      }
 
       // 注：mode toggle click handler 已删除（mode 创建时确定，运行时不可切换）。
 
-      // T6：头像勾选 click handler（free 模式）
-      // race guard：每次 panel 重渲新建一次 lock，防止连击竞态
+      // 头像勾选 click handler — Phase 4 v2(2026-05-05 道雪) 重写:
+      //   旧版: listener 绑在 el.querySelectorAll('.mr-free-slot-cb'), 但 free 模式 el(toolbar) 已空,
+      //        头像组在 input-row 内 → listener 无法找到 → 点击无反应。
+      //   新版: 直接给 label(.mr-free-avatar-chk) 绑 click, document 全局查找;
+      //         点击 logo / checkmark / label 任何位置均触发, UI 状态等 IPC 重渲后由 panel 刷新。
+      //   race guard: 仍用 _freeSlotUpdating 防连击。
       let _freeSlotUpdating = false;
-      el.querySelectorAll('.mr-free-slot-cb[data-slot-idx]').forEach(cb => {
-        cb.addEventListener('click', async (ev) => {
-          ev.stopPropagation();  // 防止 label click 重复触发
-          // 连击时第二次 rollback UI 状态、不发 IPC
-          if (_freeSlotUpdating) {
-            cb.checked = !cb.checked;
-            return;
-          }
+      document.querySelectorAll('.mr-free-avatar-chk[data-slot-idx]').forEach(label => {
+        label.addEventListener('click', async (ev) => {
+          ev.preventDefault();   // 阻止 native label→input 触发(避免双触发)
+          ev.stopPropagation();
+          if (label.classList.contains('disabled')) return;
+          if (_freeSlotUpdating) return;
           _freeSlotUpdating = true;
-
-          const slotIdx = parseInt(cb.getAttribute('data-slot-idx'), 10);
+          const slotIdx = parseInt(label.getAttribute('data-slot-idx'), 10);
           const current = Array.isArray(meeting.participants) ? [...meeting.participants] : [0, 1, 2];
-          let next;
-          if (cb.checked) {
-            // 勾选：加入
-            next = current.includes(slotIdx) ? current : [...current, slotIdx];
-          } else {
-            // 取消：移除
-            next = current.filter(x => x !== slotIdx);
-          }
+          const wasChecked = current.includes(slotIdx);
+          const next = wasChecked
+            ? current.filter(x => x !== slotIdx)
+            : [...current, slotIdx];
           next.sort((a, b) => a - b);
           try {
             await ipcRenderer.invoke('roundtable:set-participants', { meetingId: meeting.id, participants: next });
           } catch (err) {
             console.error('[set-participants] failed:', err);
-            alert('保存失败：' + (err && err.message ? err.message : String(err)));
-            // 回滚 UI
-            cb.checked = !cb.checked;
+            alert('保存失败:' + (err && err.message ? err.message : String(err)));
           } finally {
             _freeSlotUpdating = false;
           }
@@ -3052,8 +3176,9 @@ if (typeof document !== 'undefined') (function () {
         });
       });
 
-      const debateBtn = el.querySelector('#mr-rt-debate-btn');
-      const summaryBtn = el.querySelector('#mr-rt-summary-btn');
+      // C2 Phase 4: chip 已挪到 input-row 占位, 用 document.querySelector 而非 el.querySelector
+      const debateBtn = document.getElementById('mr-rt-debate-btn');
+      const summaryBtn = document.getElementById('mr-rt-summary-btn');
       const pick = el.querySelector('#mr-rt-summary-pick');
       if (debateBtn) debateBtn.addEventListener('click', () => {
         if (debateBtn.hasAttribute('disabled')) return;
@@ -3067,8 +3192,16 @@ if (typeof document !== 'undefined') (function () {
         const summarizerSlot = pick ? pick.value : 'pikachu';
         triggerRoundtable(meeting, 'summary', { summarizerSlot });
       });
-      // 方案 F · M3.4 摘要按钮事件绑定
-      const briefSummaryBtn = el.querySelector('#mr-rt-brief-summary-btn');
+      // Phase 4 v2: free 模式 — 总结二级菜单, 每项 click 直接以对应 slot 触发 summary
+      document.querySelectorAll('.mr-mode-subitem[data-summarizer-slot]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (btn.hasAttribute('disabled')) return;
+          const summarizerSlot = btn.getAttribute('data-summarizer-slot');
+          triggerRoundtable(meeting, 'summary', { summarizerSlot });
+        });
+      });
+      // 方案 F · M3.4 摘要按钮事件绑定 (C2 Phase 4: chip 在 input-row, 用 document)
+      const briefSummaryBtn = document.getElementById('mr-rt-brief-summary-btn');
       if (briefSummaryBtn) briefSummaryBtn.addEventListener('click', async () => {
         if (briefSummaryBtn.hasAttribute('disabled')) return;
         try {
