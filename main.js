@@ -506,7 +506,7 @@ function createWindow() {
   })();
   // 2026-05-03 道雪：标题带 PID，方便桌面同时存在多个 Hub 窗口（生产+测试）时
   //   一眼区分哪个对应哪个 PID — 调试时不再需要 Get-Process 反查。
-  const _hubTitle = `圆桌：PID ${process.pid}${_pkgVersion ? ` v${_pkgVersion}` : ''}`;
+  const _hubTitle = `圆桌宝可梦：PID ${process.pid}${_pkgVersion ? ` v${_pkgVersion}` : ''}`;
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -522,7 +522,7 @@ function createWindow() {
       webviewTag: true,
     },
   });
-  // index.html 的 <title>圆桌</title> 在页面加载完成后会触发 page-title-updated 覆盖
+  // index.html 的 <title>圆桌宝可梦</title> 在页面加载完成后会触发 page-title-updated 覆盖
   // BrowserWindow.title — preventDefault 阻止覆盖，保留带 PID 的标题
   mainWindow.on('page-title-updated', (e) => { e.preventDefault(); });
 
@@ -2857,7 +2857,7 @@ ipcMain.handle('restart-session', (_e, sessionId) => {
 // Show a Windows/OS notification. Renderer decides when to call it.
 ipcMain.on('show-notification', (_e, { title, body }) => {
   if (!Notification.isSupported()) return;
-  const n = new Notification({ title: title || '圆桌', body: body || '', silent: false });
+  const n = new Notification({ title: title || '圆桌宝可梦', body: body || '', silent: false });
   n.on('click', () => {
     if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
   });
