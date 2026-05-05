@@ -26,6 +26,7 @@ function makeFakeSm(initialActivity = 100, opts = {}) {
       if (!opts.mockSilent) activity += String(data).length;
     },
     getRoundtableLastActivity() { return activity; },
+    bumpActivity(n) { activity += n; },
     getSessionBuffer() { return opts.bufferText || ''; },
     setRoundtableReady() {},
     getRoundtableReady() { return ready; },
@@ -55,14 +56,34 @@ console.log('Running bracketed-paste fast-path tests...');
     assert.strictEqual(sm.writes[1].data, '\r', '第 2 次 write 应是 \\r');
   });
 
-  await test('claude verify 失败 → sendStatus=stuck（不走 _autoRecoverSend）', async () => {
+  await test('claude verify 失败（1500ms 内零 echo）→ sendStatus=stuck（不走 _autoRecoverSend）', async () => {
     const sm = makeFakeSm(100, { mockSilent: true });  // write 后 activity 不动 = verify 失败
     rtWatcher.init({ sessionManager: sm, cliReadyDetector: { isReady: () => true } });
+    const t0 = Date.now();
     const r = await rtWatcher.sendToPty('sid-A', 'hi', 'claude');
+    const elapsed = Date.now() - t0;
     assert.ok(r && r.ok, 'ok=true（prompt 已发，应让 watcher 走完整流程）');
     assert.strictEqual(r.sendStatus, 'stuck');
     // 关键：仍然只 2 次 write（不应额外触发 _autoRecoverSend 的 prompt+\r 重发）
     assert.strictEqual(sm.writes.length, 2, '1A 失败应直接 stuck，不重试 prompt+\\r');
+    // 2026-05-05 verify 改轮询：跑满 ~1500ms 才标 stuck（之前单点 500ms 太短虚警高）
+    assert.ok(elapsed >= 1500, `verify 应跑满 1500ms 轮询窗口，实际 ${elapsed}ms`);
+  });
+
+  await test('claude verify 慢启动（800ms 后 activity 变化）→ 早 break，sendStatus=ok', async () => {
+    // 模拟 claude TUI 在 \r 后 800ms 才开始 echo（streaming 慢启动），验证轮询窗口
+    // 修复了原单点 500ms 的虚警 bug。
+    const sm = makeFakeSm(100, { mockSilent: true });
+    rtWatcher.init({ sessionManager: sm, cliReadyDetector: { isReady: () => true } });
+    // 800ms 后模拟 streaming 启动
+    const lateActivity = setTimeout(() => sm.bumpActivity(500), 800);
+    const t0 = Date.now();
+    const r = await rtWatcher.sendToPty('sid-A', 'hi', 'claude');
+    const elapsed = Date.now() - t0;
+    clearTimeout(lateActivity);
+    assert.strictEqual(r.sendStatus, 'ok', '轮询应在 800ms 后检测到 activity 变化早 break');
+    // 应该 ~900ms 左右（500ms paste sleep + ~800ms 等到 activity 变化 → break）
+    assert.ok(elapsed < 1500, `应早 break，实际 ${elapsed}ms（应远小于 1500ms 上限）`);
   });
 
   await test('deepseek（跑在 claude CLI）→ 1A 同走', async () => {

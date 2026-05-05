@@ -92,14 +92,28 @@ async function sendToPty(sid, prompt, kind) {
     //   尾巴在内部某些版本下被忽略；间隔 500ms 后 \r 是干净提交信号。
     await new Promise(r => setTimeout(r, 500));
     sessionManager.writeToSession(sid, '\r');
-    await new Promise(r => setTimeout(r, POST_ENTER_VERIFY_MS));
-    const afterEnter = sessionManager.getRoundtableLastActivity(sid);
+
+    // 2026-05-05 fix（虚警 bug）：单点 500ms 后查一次 lastActivity 变化，对 claude
+    //   慢启动场景误判 stuck（实测：\r 后 claude TUI 渲染 user message + 启 streaming
+    //   延迟在 200-1500ms 间，500ms 单点窗口边缘 case 失败率高 → 卡片显示"输入卡顿"
+    //   但实际 25s 内已输出 750 字）。改成轮询窗口：activity 一变就早 break，
+    //   仅真 stuck 时跑满 1500ms 才标。正常情况 dispatch 净延迟仍 < 1s。
+    const VERIFY_MAX_MS = 1500;
+    const VERIFY_POLL_MS = 50;
+    const verifyT0 = Date.now();
+    let activityChanged = false;
+    while (Date.now() - verifyT0 < VERIFY_MAX_MS) {
+      await new Promise(r => setTimeout(r, VERIFY_POLL_MS));
+      if (sessionManager.getRoundtableLastActivity(sid) !== beforeWrite) {
+        activityChanged = true;
+        break;
+      }
+    }
     let sendStatus = 'ok';
-    if (afterEnter === beforeWrite) {
-      // 极少：claude 没接到 paste（cold-start race / 输入框未 ready）。不走
-      //   _autoRecoverSend（它基于 prompt+\r 模式与 1A 协议不兼容），直接标 stuck
-      //   让上层 paste-trapped-detector + UI [📤 发送] 接管。
-      console.warn(`[roundtable] 1A bracketed-paste verify failed for ${kind}(${sid.slice(0,8)}); marking stuck`);
+    if (!activityChanged) {
+      // 极少：1500ms 内仍零 echo。不走 _autoRecoverSend（它基于 prompt+\r 模式与
+      //   1A 协议不兼容），直接标 stuck 让 paste-trapped-detector + UI [📤 发送] 接管。
+      console.warn(`[roundtable] 1A bracketed-paste verify failed for ${kind}(${sid.slice(0,8)}) after ${VERIFY_MAX_MS}ms; marking stuck`);
       sendStatus = 'stuck';
     }
     return { ok: true, sendStatus };

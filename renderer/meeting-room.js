@@ -1960,6 +1960,12 @@ if (typeof document !== 'undefined') (function () {
     const prev = cached._partialBy[sid];
     // T2（2026-05-04 道雪）：先把 sendStatus 从 prev 抄到 next，再做 diff —— 否则 stuck 心跳每次都误判变化，短路失效。
     next.sendStatus = prev && prev.sendStatus;
+    // 2026-05-05 fix（虚警）：streaming/completed/manual_extracted 物理上否定 stuck 状态
+    //   （\r 提交已生效），强清 sendStatus。否则 1A verify 误判 stuck 后即使后续真
+    //   streaming 750 字进来，UI 仍显示"⚠ 输入卡顿"误导用户。
+    if (next.sendStatus === 'stuck' && (status === 'streaming' || status === 'completed' || status === 'manual_extracted')) {
+      delete next.sendStatus;
+    }
     // T2 short-circuit：内容完全无变化（高频心跳常见）→ 直接 return，0 DOM 操作
     if (_isPartialUnchanged(prev, next)) return;
     cached._partialBy[sid] = next;
