@@ -123,7 +123,7 @@
             <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
             <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
             <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
-            <span class="launcher-version">v1.0.2</span>
+            <span class="launcher-version">v1.0.3</span>
           </div>
         </div>
       </div>
@@ -134,25 +134,6 @@
         <button class="view-toggle-btn active" data-view="card" title="卡片视图(默认)">📇 卡片</button>
         <button class="view-toggle-btn" data-view="pty" title="PTY 视图(原始终端)">⌨ PTY</button>
       </div>
-    </div>
-    <div class="preview-splitter" id="preview-splitter" style="display:none"></div>
-    <div class="preview-panel" id="preview-panel" style="display:none">
-      <div class="preview-header">
-        <span class="preview-file-badge" id="preview-file-badge">--</span>
-        <span class="preview-title" id="preview-title">Preview</span>
-        <span class="preview-file-meta" id="preview-file-meta"></span>
-        <div class="preview-header-actions">
-          <button class="preview-action-btn" id="preview-zoom-out" title="缩小 (Ctrl+-)">A−</button>
-          <span class="preview-zoom-label" id="preview-zoom-label">100%</span>
-          <button class="preview-action-btn" id="preview-zoom-in" title="放大 (Ctrl++)">A+</button>
-          <button class="preview-action-btn" id="preview-zoom-reset" title="重置缩放">1:1</button>
-          <span class="preview-action-separator"></span>
-          <button class="preview-action-btn" id="preview-open-external" title="在外部打开">↗</button>
-          <button class="preview-action-btn" id="preview-toggle-layout" title="全屏预览">□</button>
-          <button class="preview-action-btn" id="preview-close" title="关闭预览 (Esc)">✕</button>
-        </div>
-      </div>
-      <div class="preview-body" id="preview-body"></div>
     </div>
     <div class="meeting-room-panel" id="meeting-room-panel" style="display:none">
       <div class="mr-header" id="mr-header"></div>
@@ -172,9 +153,30 @@
         <button class="mr-send-btn" id="mr-send-btn" title="发送">▶</button>
       </div>
     </div>
-    <!-- 2026-05-05 道雪：memo-panel 移到 meeting-room-panel 之后。原位置在两者之间，
-         flex 排版下圆桌模式时 memo 会被顶到主区左侧；挪后两种模式（普通 session / 圆桌）
-         都让 memo 处于最右侧（display:none 项不占位）。 -->
+    <!-- 2026-05-05 道雪：preview-splitter + preview-panel 从 terminal-panel 之后挪到
+         meeting-room-panel 之后。flex 排版下，普通 session 时 mr-panel 隐藏 →
+         排成 [terminal | preview]，圆桌时 terminal 隐藏 → 排成 [meeting-room | preview]，
+         两种模式预览统一在右侧。挪之前圆桌模式预览跑在左边，与普通 session 不一致。 -->
+    <div class="preview-splitter" id="preview-splitter" style="display:none"></div>
+    <div class="preview-panel" id="preview-panel" style="display:none">
+      <div class="preview-header">
+        <span class="preview-file-badge" id="preview-file-badge">--</span>
+        <span class="preview-title" id="preview-title">Preview</span>
+        <span class="preview-file-meta" id="preview-file-meta"></span>
+        <div class="preview-header-actions">
+          <button class="preview-action-btn" id="preview-zoom-out" title="缩小 (Ctrl+-)">A−</button>
+          <span class="preview-zoom-label" id="preview-zoom-label">100%</span>
+          <button class="preview-action-btn" id="preview-zoom-in" title="放大 (Ctrl++)">A+</button>
+          <button class="preview-action-btn" id="preview-zoom-reset" title="重置缩放">1:1</button>
+          <span class="preview-action-separator"></span>
+          <button class="preview-action-btn" id="preview-open-external" title="在外部打开">↗</button>
+          <button class="preview-action-btn" id="preview-toggle-layout" title="全屏预览">□</button>
+          <button class="preview-action-btn" id="preview-close" title="关闭预览 (Esc)">✕</button>
+        </div>
+      </div>
+      <div class="preview-body" id="preview-body"></div>
+    </div>
+    <!-- memo-panel 在最右,与 preview-panel 互不影响（display:none 不占位） -->
     <div class="memo-panel" id="memo-panel" style="display:none">
       <div class="memo-header">
         <span class="memo-title">备忘录</span>

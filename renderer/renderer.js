@@ -3518,14 +3518,36 @@ function togglePreviewLayout() {
 // 进程,会把 index.html 替换为对 href 的 file:// 加载——结果就是"完全黑屏"。
 // 典型触发：预览 .md 文件,内有指向其他 .md 的相对链接,marked 渲染成 <a href="x.md">,
 // 用户点击 → 整个 hub UI 消失。这里委托拦截,路由回 openPreviewPanel。
+//
+// 2026-05-06 道雪 多方审查后增强:
+//   1. mailto:/tel:/sms: 走 shell.openExternal 让 OS 处理(原版会落入 path.resolve 错误拼接)
+//   2. 其它非 http(s)/file scheme(javascript:/data: 等)直接丢弃(双层防御,DOMPurify 已 sanitize)
+//   3. URL-encode 解码(中文/空格文件名)
+//   4. 跨文件锚点 other.md#section 拆 hash 后再 resolve(原版会把整串当文件名,扩展名匹配失败)
 previewBodyEl.addEventListener('click', (e) => {
   const a = e.target && e.target.closest && e.target.closest('a[href]');
   if (!a) return;
   if (a.classList.contains('rt-file-link')) return; // 已有专门处理
-  const href = a.getAttribute('href') || '';
-  if (!href || href.startsWith('#')) return; // 同页锚点保持默认
+  const rawHref = a.getAttribute('href') || '';
+  if (!rawHref || rawHref.startsWith('#')) return; // 同页锚点保持默认
   e.preventDefault();
   e.stopPropagation();
+  // mailto:/tel:/sms: 等用 OS 默认应用打开
+  if (/^(mailto|tel|sms|callto|skype):/i.test(rawHref)) {
+    try { shell.openExternal(rawHref); } catch (err) { console.warn('[hub] openExternal failed:', err); }
+    return;
+  }
+  // javascript:/data: 等危险协议丢弃(DOMPurify 应已 sanitize,这里多一层兜底)
+  const proto = /^([a-z][a-z0-9+.-]*):/i.exec(rawHref);
+  if (proto && !/^(https?|file)$/i.test(proto[1])) {
+    console.warn('[hub] unsupported scheme blocked:', rawHref);
+    return;
+  }
+  // 拆 fragment(other.md#section 这种跨文件锚点),路径解析忽略 hash
+  const hashIdx = rawHref.indexOf('#');
+  const pathOnly = hashIdx >= 0 ? rawHref.slice(0, hashIdx) : rawHref;
+  let href;
+  try { href = decodeURIComponent(pathOnly); } catch (_) { href = pathOnly; }
   if (/^https?:\/\//i.test(href)) { openPreviewPanel(href); return; }
   let target = href.replace(/^file:\/+/i, '');
   const isAbs = /^[a-zA-Z]:[\\/]/.test(target) || target.startsWith('/');
