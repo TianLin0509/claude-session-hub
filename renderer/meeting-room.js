@@ -2334,11 +2334,32 @@ if (typeof document !== 'undefined') (function () {
   const inputBoxEl = () => document.getElementById('mr-input-box');
   const sendBtnEl = () => document.getElementById('mr-send-btn');
 
+  // 2026-05-05 道雪：输入框草稿 per meeting 独立。#mr-input-box 是全局唯一 DOM,
+  //   切换不同圆桌时 textContent 不变 → 用户感知"输入框被共享/串味"。
+  //   切换前 save 当前 mid 的草稿、切换后 restore 新 mid 的草稿即可独立。
+  //   仅内存级（不落盘）：重启 Hub 草稿丢失，与"输入未发送临时缓冲"语义一致。
+  const _inputDraftByMeeting = {};
+  function _saveInputDraft() {
+    if (!activeMeetingId) return;
+    const inp = document.getElementById('mr-input-box');
+    if (!inp) return;
+    const text = inp.innerText || '';
+    if (text.trim()) _inputDraftByMeeting[activeMeetingId] = text;
+    else delete _inputDraftByMeeting[activeMeetingId];
+  }
+  function _restoreInputDraft(meetingId) {
+    const inp = document.getElementById('mr-input-box');
+    if (!inp) return;
+    inp.textContent = _inputDraftByMeeting[meetingId] || '';
+  }
+
   function init() {
     // no-op — kept for backward compat; refs resolved lazily
   }
 
   function openMeeting(meetingId, meeting) {
+    // 切换前先保存上一个 meeting 的草稿（如果有）；切换到同一个 meeting 不存。
+    if (activeMeetingId && activeMeetingId !== meetingId) _saveInputDraft();
     activeMeetingId = meetingId;
     meetingData[meetingId] = meeting;
 
@@ -2349,6 +2370,10 @@ if (typeof document !== 'undefined') (function () {
     renderTerminals(meeting);
     renderToolbar(meeting);
     setupInput(meeting);
+    // setupInput 在 _inputBound=true 时直接 return,不会更新 textContent。
+    // 这里兜底恢复草稿:无论 setupInput 内是首次绑定路径还是 bypass 路径,都保证
+    // 切换 meeting 后 inputBox 显示当前 meeting 的草稿。
+    _restoreInputDraft(meetingId);
     startMarkerPoll();
     // IF-C1：开启 CLI ready 轮询，驱动卡片"创建中→待命"切换。
     // IF-C6（多方审查 medium 修复）：拿首次 poll 的 promise，等它返回后再 refresh panel
@@ -2394,6 +2419,8 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function closeMeetingPanel() {
+    // 离开圆桌前先保存草稿，下次重新进入时恢复。
+    _saveInputDraft();
     activeMeetingId = null;
     _inputBound = false;
     stopMarkerPoll();
@@ -3470,6 +3497,7 @@ if (typeof document !== 'undefined') (function () {
         const extra = inputBox ? inputBox.innerText.trim() : '';
         triggerRoundtable(meeting, 'debate', { userInput: extra });
         if (inputBox) inputBox.textContent = '';
+        delete _inputDraftByMeeting[meeting.id];
       });
       if (summaryBtn) summaryBtn.addEventListener('click', () => {
         if (summaryBtn.hasAttribute('disabled')) return;
@@ -3825,8 +3853,9 @@ if (typeof document !== 'undefined') (function () {
 
     if (_inputBound) return;
     _inputBound = true;
-    // IF-C2：仅首次绑定时清空（避免后续重渲染 setupInput 擦掉用户已输入未发送内容）
-    inputBox.textContent = '';
+    // IF-C2：仅首次绑定时设内容（避免后续重渲染 setupInput 擦掉用户已输入未发送内容）。
+    // 2026-05-05 道雪：从清空改为按 meeting.id 恢复草稿 — 切换不同圆桌时各自独立。
+    inputBox.textContent = _inputDraftByMeeting[meeting.id] || '';
 
     if (targetSelect) {
       targetSelect.addEventListener('change', (e) => {
@@ -3874,6 +3903,7 @@ if (typeof document !== 'undefined') (function () {
       }
       handleMeetingSend(finalText, m);
       if (box) box.textContent = '';
+      delete _inputDraftByMeeting[m.id];
       _clearQuoteChips();
     };
 
