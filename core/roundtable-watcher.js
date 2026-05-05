@@ -13,6 +13,15 @@
 //   transcriptTap 不在 deps —— 因为本模块的 5 个 helper 都不用。
 
 const { detectHostShellTakeover } = require('./host-shell-detector.js');
+const { isClaudeFamily } = require('./ai-kinds.js');
+
+// xterm bracketed paste mode markers（标准协议，claude code TUI 完整识别）。
+//   marker 之间的内容被 CLI 视作"一次粘贴"整体处理，无需 paste-detect timing 探测，
+//   BP_END 之后的 \r 直接作为提交信号被识别。
+//   2026-05-05 实测：claude family（claude/deepseek/glm/gpt/kimi/qwen 都跑在 claude CLI 上）
+//   全部识别；codex/gemini 协议层不识别 → 仍走旧主路径。
+const BP_START = '\x1b[200~';
+const BP_END = '\x1b[201~';
 
 let _deps = null;
 
@@ -66,6 +75,36 @@ async function sendToPty(sid, prompt, kind) {
     if (!ready) return false;
     sessionManager.setRoundtableReady(sid, true);
   }
+
+  // ===========================================================================
+  // 1A fast-path：claude family 走 xterm bracketed paste，跳过 PRE_PROMPT_QUIET
+  // / paste-detect 静默等待（最多省 4-5s）。
+  //   旧主路径用 timing 探测（PTY 静默 1.5s + paste-detect 静默 250ms）来近似
+  //   "CLI paste 缓冲已收完"，但 Ink TUI 持续重渲染（spinner/cursor blink）让静默
+  //   信号失真，timing 经常上限超时硬冲、\r 被吃掉、prompt 留输入框没提交。
+  //   bracketed paste markers 是显式协议，CLI 一看到 BP_END 就明确"粘贴结束"，
+  //   无需任何 timing 探测。claude family 实测稳定通过。
+  //   codex / gemini 协议不识别（marker 被吃但 \r 不提交），保留旧主路径。
+  if (isClaudeFamily(kind)) {
+    const beforeWrite = sessionManager.getRoundtableLastActivity(sid);
+    sessionManager.writeToSession(sid, BP_START + prompt + BP_END);
+    // 500ms 给 Ink useEffect 消化 paste 块，BP_END 紧贴 \r 时 Ink 把 \r 当 paste
+    //   尾巴在内部某些版本下被忽略；间隔 500ms 后 \r 是干净提交信号。
+    await new Promise(r => setTimeout(r, 500));
+    sessionManager.writeToSession(sid, '\r');
+    await new Promise(r => setTimeout(r, POST_ENTER_VERIFY_MS));
+    const afterEnter = sessionManager.getRoundtableLastActivity(sid);
+    let sendStatus = 'ok';
+    if (afterEnter === beforeWrite) {
+      // 极少：claude 没接到 paste（cold-start race / 输入框未 ready）。不走
+      //   _autoRecoverSend（它基于 prompt+\r 模式与 1A 协议不兼容），直接标 stuck
+      //   让上层 paste-trapped-detector + UI [📤 发送] 接管。
+      console.warn(`[roundtable] 1A bracketed-paste verify failed for ${kind}(${sid.slice(0,8)}); marking stuck`);
+      sendStatus = 'stuck';
+    }
+    return { ok: true, sendStatus };
+  }
+  // ===========================================================================
 
   // bug A 修复：发 prompt 前等 PTY 静默（不依赖 cold-start 路径）。
   //   语义层信号（stop_hook/stop_reason）触发 ≠ 设备层 PTY 静止；前者是

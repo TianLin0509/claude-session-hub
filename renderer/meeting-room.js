@@ -749,7 +749,7 @@ if (typeof document !== 'undefined') (function () {
       manual_extracted: '已答 ✓ 手动',
       absent: '本轮缺席',
       soft_alert: '等待中…',
-      send_stuck: '⚠ 发送卡住，请按发送',
+      send_stuck: '⚠ 输入卡顿，请点 📤 发送',
       errored: '错误',
       interrupted: '已中断',
       transport_lost: '连接断开',

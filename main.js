@@ -1056,6 +1056,63 @@ const RT_TRANSITIONAL_HARD_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
 const _activeWatchers = new Map();
 
 const { createTurnCompletionWatcher } = require('./core/turn-completion-watcher.js');
+const pasteTrappedDetector = require('./core/paste-trapped-detector.js');
+
+// paste-trapped 监控注册表（2026-05-05 道雪 P0 2A）：dispatch sendToPty 看似 ok 但
+//   marker 卡输入框时主动确诊 + 推 send-stuck IPC，让用户在 ≤14s 内看到提示。
+//   key = sid，value = setInterval id。watcher settle / sendToPty stuck / hard timeout
+//   任一触发都要清。
+const _pasteTrappedMonitors = new Map();
+const PASTE_TRAPPED_TICK_MS = 3000;
+const PASTE_TRAPPED_HARD_TIMEOUT_MS = 60_000;
+
+function _startPasteTrappedMonitor(sid, kind, meetingId) {
+  if (_pasteTrappedMonitors.has(sid)) return;
+  pasteTrappedDetector.start(sid, Date.now());
+  const startedAt = Date.now();
+  const intervalId = setInterval(() => {
+    try {
+      if (Date.now() - startedAt >= PASTE_TRAPPED_HARD_TIMEOUT_MS) {
+        _stopPasteTrappedMonitor(sid);
+        return;
+      }
+      const buf = sessionManager.getSessionBuffer(sid) || '';
+      const activity = sessionManager.getRoundtableLastActivity(sid);
+      const r = pasteTrappedDetector.tick(sid, buf, activity);
+      if (r === 'stuck') {
+        console.warn(`[paste-trapped] confirmed stuck for ${kind}(${sid.slice(0,8)}) — pushing roundtable-send-stuck IPC`);
+        try {
+          const meeting = meetingManager.getMeeting(meetingId);
+          if (meeting) {
+            const sceneObj = scenes.getScene(meeting.scene);
+            const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+            const turnNum = orch && orch.state && orch.state.currentTurn;
+            if (turnNum) orch.setSendStatus(turnNum, sid, 'stuck');
+          }
+        } catch (e) { console.warn('[paste-trapped] setSendStatus threw:', e && e.message); }
+        sendToRenderer('roundtable-send-stuck', { meetingId, sid, kind });
+        _stopPasteTrappedMonitor(sid);
+      } else if (r === 'ok') {
+        // marker 消失 = paste 已被 \r 提交（或 streaming 内容覆盖输入框区域），停 monitor
+        _stopPasteTrappedMonitor(sid);
+      }
+      // 'unknown' → 继续 tick
+    } catch (e) {
+      console.warn('[paste-trapped] tick threw:', e && e.message);
+    }
+  }, PASTE_TRAPPED_TICK_MS);
+  intervalId.unref?.();
+  _pasteTrappedMonitors.set(sid, intervalId);
+}
+
+function _stopPasteTrappedMonitor(sid) {
+  const id = _pasteTrappedMonitors.get(sid);
+  if (id) {
+    clearInterval(id);
+    _pasteTrappedMonitors.delete(sid);
+  }
+  try { pasteTrappedDetector.stop(sid); } catch {}
+}
 
 // FIX-D（2026-05-01）：宿主 shell prompt 心跳检测——CLI 自我退出（Codex 自动更新 / Gemini OAuth
 //   异常 / Claude 内部 panic 等）后 PTY 控制权回到宿主 shell（PowerShell / bash），但 PTY 进程
@@ -1184,6 +1241,8 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
     clearInterval(hostShellHeartbeat);
     if (streamTimer) clearInterval(streamTimer);
     _activeWatchers.delete(sid);
+    // 2026-05-05 P0 2A：watcher settle = turn 收尾，paste-trapped 监控不再需要
+    _stopPasteTrappedMonitor(sid);
     // 305s 后清理 _patchListenersBySid 中的 watcher 引用（与 watcher 内部 patch 窗口 300s 对齐 + 5s 余量）。
     //   防 watcher settle 后 ref 永远留在 main.js 全局表（dead ref 累积内存压力）。
     //   不能立即 unregister——cancelPatchListenersForSid 需要在新一轮 dispatch 时
@@ -1514,6 +1573,12 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
         if (ok) {
           sentTargets.push(t);
           console.log(`[roundtable] turn ${turnNum} ${mode} sent to ${t.kind}(${t.sid.slice(0,8)}) sendStatus=${sendStatus || 'ok'}`);
+          // 2026-05-05 P0 2A：sendToPty 自己说 ok，但 marker（如 codex 的
+          //   `[[Pasted Content N chars]]`）可能仍卡输入框。启 paste-trapped 监控，
+          //   ≤14s 内主动确诊 + 推 send-stuck IPC。stuck 时已推过，跳过。
+          if (sendStatus !== 'stuck') {
+            _startPasteTrappedMonitor(t.sid, t.kind, meetingId);
+          }
         } else {
           console.log(`[roundtable] turn ${turnNum} ${mode} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
         }

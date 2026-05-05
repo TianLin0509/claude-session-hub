@@ -1997,6 +1997,12 @@ body.mr-density-compact .mr-rt-cost-bar {
   color: #f85149;
   font-weight: 600;
 }
+/* 2026-05-05 道雪 P0 2B：stuck 时流光从 slot 配色统一改琥珀色，视觉一眼分辨"这家不正常" */
+.mr-ft.send-stuck .mr-ft-progress-bar,
+.mr-ft.send-stuck .mr-rt-think-bar {
+  background: linear-gradient(90deg, #f59e0b 0%, rgba(245,158,11,0.3) 50%, transparent 100%) !important;
+  background-size: 200% 100% !important;
+}
 @keyframes mr-ft-send-stuck-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }

@@ -204,6 +204,55 @@ function dismissCodexUpdatePrompt(homeDir = process.env.USERPROFILE || process.e
   }
 }
 
+// dismissCodexRateLimitDialog — 阻止 codex CLI 启动后弹 rate-limit / model-switch
+// dialog（"Press enter to confirm or esc to go back" / "never show again"）。
+//
+// 历史 bug（2026-05-05 道雪 实测确认）：codex 启动后某些条件（rate-limit 接近 / 模型
+//   配额计数）会弹一个 TUI dialog 拦住 alt-screen 输入。Hub 主路径 sendToPty 的字符
+//   写到 dialog 而不是输入框 → \r 被 dialog 当确认按钮 → prompt 留输入框未提交 →
+//   用户看到"输入框卡 prompt"现象，需手动点 [📤 发送]。
+//
+// 修：写 hide_rate_limit_model_nudge = true 到 config.toml 的 [notice] 段，永久关闭
+//   该 dialog（OpenAI 官方 opt-out 机制，见 developers.openai.com/codex/config-reference）。
+//
+// 行为：幂等。若 key 已是 true 直接返回 false（无需写盘）。文件不存在则创建。
+//   有 [notice] section 时在 section 内追加 key；没有时文件末尾追加完整 section。
+//
+// 默认对订阅模式 ~/.codex/config.toml；API 模式（isolated CODEX_HOME）必须显式传
+//   configDir，否则 dismiss 写到错误位置不生效（同 dismissCodexUpdatePrompt 约定）。
+function dismissCodexRateLimitDialog(homeDir = process.env.USERPROFILE || process.env.HOME || os.homedir(), configDir = null) {
+  const configPath = configDir
+    ? path.join(configDir, 'config.toml')
+    : path.join(homeDir, '.codex', 'config.toml');
+  try {
+    let content = '';
+    try { content = fs.readFileSync(configPath, 'utf8'); } catch { /* 文件不存在 → 视作空 */ }
+
+    // 幂等：key 已存在且为 true → 跳过写盘
+    if (/^\s*hide_rate_limit_model_nudge\s*=\s*true\b/m.test(content)) return false;
+
+    let newContent;
+    // 已有 [notice] section（任意大小写 / 前后空格）→ 在 section 头之后插入 key
+    const noticeMatch = content.match(/^\s*\[notice\]\s*$/m);
+    if (noticeMatch) {
+      const insertPos = noticeMatch.index + noticeMatch[0].length;
+      newContent = content.slice(0, insertPos) + '\nhide_rate_limit_model_nudge = true' + content.slice(insertPos);
+    } else {
+      // 没 [notice] → 文件末尾追加完整 section
+      const sep = (content && !content.endsWith('\n')) ? '\n' : '';
+      newContent = content + sep + '\n[notice]\nhide_rate_limit_model_nudge = true\n';
+    }
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, newContent, 'utf8');
+    console.log(`[hub] dismissed Codex rate-limit dialog at ${configPath}`);
+    return true;
+  } catch (err) {
+    console.warn('[hub] failed to dismiss Codex rate-limit dialog:', err.message);
+    return false;
+  }
+}
+
 function tomlString(value) {
   return JSON.stringify(String(value || ''));
 }
@@ -686,6 +735,7 @@ class SessionManager extends EventEmitter {
 
     if (isCodex) {
       dismissCodexUpdatePrompt(undefined, sessionEnv.CODEX_HOME || null);
+      dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       let cmd;
       if (kind === 'codex-resume') {
         // codex resume 无参 = picker by default
@@ -1041,6 +1091,7 @@ class SessionManager extends EventEmitter {
       // relaunch：API 模式时 codex 用 isolated CODEX_HOME，从 info.codexSessionsRoot 反推
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
+      dismissCodexRateLimitDialog(undefined, codexConfigDir);
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}\r\n`;
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
       cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-2.5-flash'}\r\n`;
@@ -1230,4 +1281,4 @@ async function readTranscriptTail(kind, sourcePath, n = 10) {
   }
 }
 
-module.exports = { SessionManager, readTranscriptTail, dismissCodexUpdatePrompt, clearSessionManagerConfigCache };
+module.exports = { SessionManager, readTranscriptTail, dismissCodexUpdatePrompt, dismissCodexRateLimitDialog, clearSessionManagerConfigCache };
