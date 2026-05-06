@@ -1069,17 +1069,20 @@ const { createTurnCompletionWatcher } = require('./core/turn-completion-watcher.
 const pasteTrappedDetector = require('./core/paste-trapped-detector.js');
 
 // paste-trapped 监控注册表（2026-05-05 道雪 P0 2A）：dispatch sendToPty 看似 ok 但
-//   marker 卡输入框时主动确诊 + 推 send-stuck IPC，让用户在 ≤14s 内看到提示。
+//   marker 卡输入框时主动确诊。Codex 先自动补 Enter（只补 \r，不重发 prompt），
+//   仍卡住再推 send-stuck IPC。
 //   key = sid，value = setInterval id。watcher settle / sendToPty stuck / hard timeout
 //   任一触发都要清。
 const _pasteTrappedMonitors = new Map();
 const PASTE_TRAPPED_TICK_MS = 3000;
 const PASTE_TRAPPED_HARD_TIMEOUT_MS = 60_000;
+const PASTE_TRAPPED_CODEX_ENTER_RETRIES = 2;
 
 function _startPasteTrappedMonitor(sid, kind, meetingId) {
   if (_pasteTrappedMonitors.has(sid)) return;
   pasteTrappedDetector.start(sid, Date.now());
   const startedAt = Date.now();
+  const monitor = { intervalId: null, enterRetries: 0 };
   const intervalId = setInterval(() => {
     try {
       if (Date.now() - startedAt >= PASTE_TRAPPED_HARD_TIMEOUT_MS) {
@@ -1090,6 +1093,25 @@ function _startPasteTrappedMonitor(sid, kind, meetingId) {
       const activity = sessionManager.getRoundtableLastActivity(sid);
       const r = pasteTrappedDetector.tick(sid, buf, activity);
       if (r === 'stuck') {
+        if (kind === 'codex' && monitor.enterRetries < PASTE_TRAPPED_CODEX_ENTER_RETRIES) {
+          monitor.enterRetries += 1;
+          console.warn(`[paste-trapped] codex(${sid.slice(0,8)}) paste marker stable; sending retry Enter #${monitor.enterRetries}`);
+          try {
+            sessionManager.writeToSession(sid, '\r');
+            const meeting = meetingManager.getMeeting(meetingId);
+            if (meeting) {
+              const sceneObj = scenes.getScene(meeting.scene);
+              const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+              const turnNum = orch && orch.state && orch.state.currentTurn;
+              if (turnNum) orch.setSendStatus(turnNum, sid, 'enter_retry');
+            }
+          } catch (e) {
+            console.warn('[paste-trapped] codex retry Enter threw:', e && e.message);
+          }
+          // 重新开始 3s 时间门 + marker 稳定观察，避免连续补 Enter 抢在 TUI 重绘前。
+          pasteTrappedDetector.start(sid, Date.now());
+          return;
+        }
         console.warn(`[paste-trapped] confirmed stuck for ${kind}(${sid.slice(0,8)}) — pushing roundtable-send-stuck IPC`);
         try {
           const meeting = meetingManager.getMeeting(meetingId);
@@ -1112,13 +1134,15 @@ function _startPasteTrappedMonitor(sid, kind, meetingId) {
     }
   }, PASTE_TRAPPED_TICK_MS);
   intervalId.unref?.();
-  _pasteTrappedMonitors.set(sid, intervalId);
+  monitor.intervalId = intervalId;
+  _pasteTrappedMonitors.set(sid, monitor);
 }
 
 function _stopPasteTrappedMonitor(sid) {
-  const id = _pasteTrappedMonitors.get(sid);
-  if (id) {
-    clearInterval(id);
+  const entry = _pasteTrappedMonitors.get(sid);
+  const intervalId = entry && typeof entry === 'object' ? entry.intervalId : entry;
+  if (intervalId) {
+    clearInterval(intervalId);
     _pasteTrappedMonitors.delete(sid);
   }
   try { pasteTrappedDetector.stop(sid); } catch {}
@@ -1570,7 +1594,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
           try { orch.setSendStatus(turnNum, t.sid, sendStatus); }
           catch (e) { console.warn('[roundtable] setSendStatus threw:', e && e.message); }
         }
-        if (sendStatus === 'stuck') {
+        if (sendStatus === 'stuck' && t.kind !== 'codex') {
           // TODO（spec 协议偏差，2026-05-03 review）：spec 定义此 IPC payload 字段为
           //   `mode: 'enter_only' | 'rewrite_full'`，但 T4 sendToPty 返回 { ok, sendStatus }
           //   未带 mode 字段。当前推送 kind（AI 类型）作为占位，renderer 暂不消费此字段。
@@ -1584,9 +1608,9 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
           sentTargets.push(t);
           console.log(`[roundtable] turn ${turnNum} ${mode} sent to ${t.kind}(${t.sid.slice(0,8)}) sendStatus=${sendStatus || 'ok'}`);
           // 2026-05-05 P0 2A：sendToPty 自己说 ok，但 marker（如 codex 的
-          //   `[[Pasted Content N chars]]`）可能仍卡输入框。启 paste-trapped 监控，
-          //   ≤14s 内主动确诊 + 推 send-stuck IPC。stuck 时已推过，跳过。
-          if (sendStatus !== 'stuck') {
+          //   `[[Pasted Content N chars]]`）可能仍卡输入框。启 paste-trapped 监控；
+          //   Codex 先自动补 Enter，仍失败才推 send-stuck。非 Codex 保持旧提示。
+          if (sendStatus !== 'stuck' || t.kind === 'codex') {
             _startPasteTrappedMonitor(t.sid, t.kind, meetingId);
           }
         } else {
@@ -1805,12 +1829,16 @@ ipcMain.handle('roundtable:summary-trigger', async (_e, { meetingId } = {}) => {
       // 避免整个 Promise.all reject 导致 turnNum 已 beginTurn 但 rollback 永不调用。
       try {
         // Resend & Auto-Recovery（2026-05-03）— sendToPty 返回 { ok, sendStatus } 或 false（兼容老 truthy）
-        //   summary-trigger 路径不写 setSendStatus / 不推 send-stuck（不属于"标准 dispatch 主路径"）
+        //   summary-trigger 同样挂 paste-trapped 监控，避免 Codex 摘要轮 prompt 卡在输入框。
         const sendResult = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
         const ok = sendResult && sendResult.ok;
+        const sendStatus = sendResult && sendResult.sendStatus;
         if (ok) {
           sentTargets.push(t);
           console.log(`[roundtable] summary turn ${turnNum} sent to ${t.kind}(${t.sid.slice(0,8)})`);
+          if (sendStatus !== 'stuck' || t.kind === 'codex') {
+            _startPasteTrappedMonitor(t.sid, t.kind, meetingId);
+          }
         } else {
           console.log(`[roundtable] summary turn ${turnNum} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
         }

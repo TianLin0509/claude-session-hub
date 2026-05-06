@@ -10,9 +10,9 @@
 //   用户傻等几十秒发现 AI 没回答才意识到卡了。
 //
 // 本 detector 三层 AND 判定（防虚警）：
-//   1) 时间门：dispatch 后 < 5s 不扫描（dispatch 主路径自己 paste 期间 marker 短暂
+//   1) 时间门：dispatch 后 < 3s 不扫描（dispatch 主路径自己 paste 期间 marker 短暂
 //      出现是正常的）
-//   2) marker 持续：连续 ≥ 3 次 tick 都看到同一条 marker（数字 N 不变）+ 持续 ≥ 8s
+//   2) marker 持续：连续 ≥ 2 次 tick 都看到同一条 marker（数字 N 不变）+ 持续 ≥ 3s
 //   3) 无 streaming：这段时间 PTY lastActivity 涨幅 < 200 字节（streaming 时 token
 //      输出至少几 KB）
 //
@@ -21,18 +21,19 @@
 //   const r = detector.tick(sid, buf, currentActivity)  // 'stuck' | 'ok' | 'unknown'
 //   detector.stop(sid)
 //
-// 调用方（main.js dispatch 路径）每 3s 跑一次 tick，看到 'stuck' 立即推
-// 'roundtable-send-stuck' IPC + setSendStatus，让 renderer 亮 [📤 发送] + 改文案。
+// 调用方（main.js dispatch 路径）每 3s 跑一次 tick，看到 'stuck' 后决定
+// 自动补 Enter 或推 'roundtable-send-stuck' IPC。
 
 // 三家 paste marker 通配。覆盖：
 //   "[[Pasted Content 4834 chars]]"  codex
 //   "[Pasted text +120 lines]"       claude code TUI
 //   "[Pasted +N lines]" / 类似       gemini（实测时按需扩）
-const PASTE_MARKER_REGEX = /\[+Pasted(?:\s+Content)?(?:\s+text)?\s*\+?(\d+)\s*(?:chars|lines)\]+/;
+//   "[paste N lines]"                Codex 低大小写 / 简写形态
+const PASTE_MARKER_REGEX = /\[+(?:Pasted|paste)(?:\s+Content)?(?:\s+text)?\s*\+?(\d+)\s*(?:chars|lines)\]+/i;
 
-const TIME_GATE_MS = 5000;
-const MIN_MARKER_OBSERVATIONS = 3;
-const MIN_OBSERVATION_DURATION_MS = 8000;
+const TIME_GATE_MS = 3000;
+const MIN_MARKER_OBSERVATIONS = 2;
+const MIN_OBSERVATION_DURATION_MS = 3000;
 const MAX_ACTIVITY_DELTA = 200;
 const TAIL_SCAN_BYTES = 1024;
 
