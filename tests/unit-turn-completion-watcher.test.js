@@ -71,6 +71,22 @@ async function testManualExtract() {
   console.log('  ✓ testManualExtract');
 }
 
+async function testCompleteFromTranscript() {
+  const tap = mkTap();
+  const w = createTurnCompletionWatcher({
+    transcriptTap: tap, hubSessionId: 'sid-B2', label: 'codex-1',
+    softAlertT1Ms: 5000, softAlertT2Ms: 10000,
+  });
+  const p = w.wait();
+  setImmediate(() => w.completeFromTranscript('rollout final body', 'codex_auto_extract_final_answer'));
+  const r = await p;
+  assert.strictEqual(r.status, 'completed');
+  assert.strictEqual(r.text, 'rollout final body');
+  assert.strictEqual(r.signalSource, 'codex_auto_extract_final_answer');
+  assert.strictEqual(typeof r.completedAt, 'number');
+  console.log('  ok testCompleteFromTranscript');
+}
+
 async function testSkip() {
   const tap = mkTap();
   const w = createTurnCompletionWatcher({
@@ -199,6 +215,7 @@ function testThrowsWithoutTap() {
   await testCompleted();
   await testCompletedIgnoresOtherSid();
   await testManualExtract();
+  await testCompleteFromTranscript();
   await testSkip();
   await testSoftAlertDoesNotSettle();
   await testErrored();

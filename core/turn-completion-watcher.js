@@ -179,6 +179,21 @@ function createTurnCompletionWatcher(opts) {
     },
 
     /**
+     * Automatic transcript fallback for providers whose completion event may be
+     * missed even though the final answer is already persisted.
+     */
+    completeFromTranscript(text, signalSource = 'auto_extract') {
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'completed',
+        text: text || '',
+        signalSource,
+        completedAt: Date.now(),
+      });
+    },
+
+    /**
      * 用户跳过本家——下游 prompt 构建器会过滤这家，不引用其内容。
      */
     skip() {

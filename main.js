@@ -1156,6 +1156,8 @@ function _stopPasteTrappedMonitor(sid) {
 //   核心检测函数抽到 core/host-shell-detector.js 方便单测。
 const _HOST_SHELL_HEARTBEAT_MS = 10 * 1000;
 const _HOST_SHELL_CONSECUTIVE_HITS = 2;
+const _CODEX_AUTO_EXTRACT_DELAY_MS = 3 * 1000;
+const _CODEX_AUTO_EXTRACT_INTERVAL_MS = 2 * 1000;
 
 function _rtWaitTurnComplete(sid, label, opts = {}) {
   const { meetingId, mode, turnNum, onPartial } = opts;
@@ -1270,9 +1272,39 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   }, _HOST_SHELL_HEARTBEAT_MS);
   hostShellHeartbeat.unref?.();
 
+  let codexAutoExtractTimer = null;
+  const waitSession = sessionManager.getSession(sid);
+  if (waitSession?.kind === 'codex') {
+    const sincePromptTs = Math.max(0, _startTs - 1000);
+    let autoExtractBusy = false;
+    codexAutoExtractTimer = setInterval(async () => {
+      if (watcher.isSettled()) {
+        clearInterval(codexAutoExtractTimer);
+        codexAutoExtractTimer = null;
+        return;
+      }
+      if (Date.now() - _startTs < _CODEX_AUTO_EXTRACT_DELAY_MS) return;
+      if (autoExtractBusy) return;
+      autoExtractBusy = true;
+      try {
+        const extracted = await transcriptTap.extractLatestTurn(sid, sincePromptTs);
+        if (extracted?.extractMode === 'final_answer' && extracted.text) {
+          console.log(`[roundtable] codex auto-extract final_answer for ${label}(${sid.slice(0, 8)}) ${extracted.text.length} chars`);
+          watcher.completeFromTranscript(extracted.text, 'codex_auto_extract_final_answer');
+        }
+      } catch (e) {
+        console.warn('[roundtable] codex auto-extract failed:', e && e.message);
+      } finally {
+        autoExtractBusy = false;
+      }
+    }, _CODEX_AUTO_EXTRACT_INTERVAL_MS);
+    codexAutoExtractTimer.unref?.();
+  }
+
   return watcher.wait().then(result => {
     clearTimeout(hardTimeout);
     clearInterval(hostShellHeartbeat);
+    if (codexAutoExtractTimer) clearInterval(codexAutoExtractTimer);
     if (streamTimer) clearInterval(streamTimer);
     _activeWatchers.delete(sid);
     // 2026-05-05 P0 2A：watcher settle = turn 收尾，paste-trapped 监控不再需要
