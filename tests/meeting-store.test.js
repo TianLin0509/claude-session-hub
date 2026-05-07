@@ -17,7 +17,8 @@ const { saveMeetingFile, loadMeetingFile, markDirty, flushAll, listMeetingFiles,
   assert.deepStrictEqual(loaded._timeline, data._timeline, 'timeline round-trip');
   assert.deepStrictEqual(loaded._cursors, data._cursors, 'cursors round-trip');
   assert.strictEqual(loaded._nextIdx, 1, 'nextIdx round-trip');
-  assert.strictEqual(loaded.schemaVersion, 1, 'schemaVersion present');
+  // 2026-05-07：schemaVersion bumped 1→2 (per-meeting JSON 字段补全成完整备份)
+  assert.strictEqual(loaded.schemaVersion, 2, 'schemaVersion bumped to 2');
   console.log('PASS T1.1 save+load round-trip');
 
   // T1.2: missing file returns null

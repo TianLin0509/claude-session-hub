@@ -3,7 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const { getHubDataDir } = require('./data-dir');
 
-const SCHEMA_VERSION = 1;
+// 2026-05-07 道雪 — schemaVersion 1→2：补全 title/scene/createdAt/subSessions/...
+//   字段，让 per-meeting JSON 成为完整权威备份。即使 state.json 损坏或被外部 Hub
+//   覆盖，下次 boot 也能从 meetings/<id>.json 单独恢复整间圆桌。
+//   loadMeetingFile 同时支持 v1（部分字段）与 v2（完整字段），调用方按 schemaVersion
+//   决定是否需要再去 state.json 取兜底。
+const SCHEMA_VERSION = 2;
 const DEBOUNCE_MS = 5000;
 
 function meetingsDir() {
@@ -20,25 +25,36 @@ function meetingFilePath(id) {
 
 function saveMeetingFile(id, data) {
   ensureDir();
+  const now = Date.now();
   const payload = {
     schemaVersion: SCHEMA_VERSION,
     id,
+    // ── timeline + cursors（v1 已有） ──
     _timeline: Array.isArray(data._timeline) ? data._timeline : [],
     _cursors: data._cursors && typeof data._cursors === 'object' ? data._cursors : {},
     _nextIdx: typeof data._nextIdx === 'number' ? data._nextIdx : 0,
-    // meeting-create-modal（2026-05-01）：slotSpecs 也在 per-meeting JSON 落盘，
-    //   作为 state.json 的备份（state.json 写失败时仍能从这里 restoreMeeting 重建 slot 信息）。
     slotSpecs: Array.isArray(data.slotSpecs) ? data.slotSpecs : null,
-    // pilot-mode（2026-05-01）：当前主驾 slot 索引（0|1|2|null）。Hub 重启后自动恢复主驾态。
     pilotSlot: (typeof data.pilotSlot === 'number') ? data.pilotSlot : null,
-    // pilot redesign（2026-05-02）：dispatchMode = 'all'|'pilot'|'observer'，决定本轮谁开口。
     dispatchMode: ['all', 'pilot', 'observer'].includes(data.dispatchMode) ? data.dispatchMode : 'all',
-    // free-mode（2026-05-04）：mode = 'pilot'|'free'，缺失/非法 → 'pilot'（老 meeting 兼容）
-    mode: ['pilot', 'free'].includes(data.mode) ? data.mode : 'pilot',
-    // free-mode（2026-05-04）：participants = number[]（slot 索引）｜null（首次未初始化）
-    //   非数组 → null；空数组保留（Q11=A：尊重用户清空）
+    mode: ['pilot', 'free'].includes(data.mode) ? data.mode : 'free',
     participants: Array.isArray(data.participants) ? data.participants : null,
-    savedAt: Date.now(),
+    // ── v2 新增：完整 meeting metadata（用于 boot 自我修复） ──
+    title: typeof data.title === 'string' ? data.title : null,
+    scene: typeof data.scene === 'string' ? data.scene : null,
+    createdAt: typeof data.createdAt === 'number' ? data.createdAt : null,
+    subSessions: Array.isArray(data.subSessions) ? data.subSessions : [],
+    layout: typeof data.layout === 'string' ? data.layout : 'focus',
+    focusedSub: typeof data.focusedSub === 'string' ? data.focusedSub : null,
+    syncContext: !!data.syncContext,
+    sendTarget: typeof data.sendTarget === 'string' ? data.sendTarget : 'all',
+    pinned: !!data.pinned,
+    lastScene: typeof data.lastScene === 'string' ? data.lastScene : null,
+    lastMessageTime: typeof data.lastMessageTime === 'number' ? data.lastMessageTime : null,
+    covenantText: typeof data.covenantText === 'string' ? data.covenantText : '',
+    immersive: !!data.immersive,
+    // 时间戳
+    updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : now,
+    savedAt: now,
   };
   const tmp = meetingFilePath(id) + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(payload));
@@ -49,13 +65,21 @@ function loadMeetingFile(id) {
   try {
     const raw = fs.readFileSync(meetingFilePath(id), 'utf-8');
     const obj = JSON.parse(raw);
-    if (obj.schemaVersion !== SCHEMA_VERSION) {
-      console.warn(`[meeting-store] schema mismatch for ${id}: ${obj.schemaVersion}`);
+    const v = obj.schemaVersion;
+    if (v !== 1 && v !== 2) {
+      console.warn(`[meeting-store] schema mismatch for ${id}: ${v}`);
       return null;
     }
-    // free-mode（2026-05-04）：老 meeting 文件无 mode/participants 字段时兜底
-    if (!['pilot', 'free'].includes(obj.mode)) obj.mode = 'pilot';
+    // 通用兜底
+    if (!['pilot', 'free'].includes(obj.mode)) obj.mode = 'free';
     if (!Array.isArray(obj.participants)) obj.participants = null;
+    if (typeof obj.updatedAt !== 'number') obj.updatedAt = obj.savedAt || 0;
+    if (v === 1) {
+      // v1 → 缺 title/scene/createdAt/subSessions 等。返回时显式带 schemaVersion=1
+      // 让调用方判断是否需要补全（main.js boot 会在 state.json 里反查；如果都没有则
+      // 不画 sidebar 条目，避免残缺）
+      obj.schemaVersion = 1;
+    }
     return obj;
   } catch (e) {
     if (e.code !== 'ENOENT') console.warn(`[meeting-store] load ${id} failed:`, e.message);
@@ -71,13 +95,24 @@ function listMeetingFiles() {
   } catch { return []; }
 }
 
+// Boot 自我修复用：扫目录返回所有 per-meeting JSON 内容（含 schemaVersion）。
+// 损坏文件 skip 不影响其他文件加载。
+function listMeetingFilesWithData() {
+  const out = [];
+  for (const id of listMeetingFiles()) {
+    const data = loadMeetingFile(id);
+    if (data) out.push(data);
+  }
+  return out;
+}
+
 function deleteMeetingFile(id) {
   try { fs.unlinkSync(meetingFilePath(id)); } catch {}
 }
 
 // Debounced flush registry
-const _dirty = new Map();   // id → latest data snapshot
-const _timers = new Map();  // id → debounce timer
+const _dirty = new Map();
+const _timers = new Map();
 
 function markDirty(id, data) {
   _dirty.set(id, data);
@@ -95,7 +130,7 @@ function markDirty(id, data) {
 }
 
 async function flushAll() {
-  for (const [id, t] of _timers) clearTimeout(t);
+  for (const [, t] of _timers) clearTimeout(t);
   _timers.clear();
   for (const [id, snap] of _dirty) {
     try { saveMeetingFile(id, snap); } catch (e) { console.warn(`[meeting-store] flushAll ${id} failed:`, e.message); }
@@ -115,6 +150,7 @@ module.exports = {
   saveMeetingFile,
   loadMeetingFile,
   listMeetingFiles,
+  listMeetingFilesWithData,
   deleteMeetingFile,
   markDirty,
   cancelDirty,

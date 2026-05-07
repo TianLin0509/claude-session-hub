@@ -26,7 +26,9 @@ function testFreshSaveAndLoad() {
   assert.deepStrictEqual(loaded.participants, [0, 2]);
 }
 
-function testLegacyMeetingDefaultsToPilot() {
+// 2026-05-07：默认 mode 从 'pilot' 改成 'free'（与 meeting-room.js 2026-05-05
+//   废弃主驾入口的迁移一致），测试名保留以保留 git history，断言已更新。
+function testLegacyMeetingDefaultsToFree() {
   // 模拟老 meeting：手工写一个无 mode/participants 字段的 JSON
   const dir = path.join(TEST_DIR, 'meetings');
   fs.mkdirSync(dir, { recursive: true });
@@ -41,17 +43,17 @@ function testLegacyMeetingDefaultsToPilot() {
     savedAt: Date.now(),
   }));
   // 用 saveMeetingFile 重写一次（loadMeetingFile 不做兜底，兜底在 main.js 读取后做）
-  // 我们的契约：saveMeetingFile 写时 mode 缺失则默认 'pilot'，participants 缺失则 null
+  // 我们的契约：saveMeetingFile 写时 mode 缺失则默认 'free'，participants 缺失则 null
   store.saveMeetingFile('m-legacy-resaved', {});
   const re = store.loadMeetingFile('m-legacy-resaved');
-  assert.strictEqual(re.mode, 'pilot', 'mode default pilot');
+  assert.strictEqual(re.mode, 'free', 'mode default free');
   assert.strictEqual(re.participants, null, 'participants default null');
 }
 
-function testInvalidModeFallsBackToPilot() {
+function testInvalidModeFallsBackToFree() {
   store.saveMeetingFile('m-bad', { mode: 'invalid', participants: [0] });
   const re = store.loadMeetingFile('m-bad');
-  assert.strictEqual(re.mode, 'pilot', 'invalid mode → pilot');
+  assert.strictEqual(re.mode, 'free', 'invalid mode → free');
 }
 
 function testInvalidParticipantsFallsBackToNull() {
@@ -82,14 +84,14 @@ function testLegacyJsonOnDiskLoadFallback() {
     savedAt: Date.now(),
   }));
   const re = store.loadMeetingFile('m-on-disk');
-  assert.strictEqual(re.mode, 'pilot', 'load tolerates missing mode');
+  assert.strictEqual(re.mode, 'free', 'load tolerates missing mode');
   assert.strictEqual(re.participants, null, 'load tolerates missing participants');
 }
 
 console.log('--- meeting-store free fields ---');
 run('testFreshSaveAndLoad', testFreshSaveAndLoad);
-run('testLegacyMeetingDefaultsToPilot', testLegacyMeetingDefaultsToPilot);
-run('testInvalidModeFallsBackToPilot', testInvalidModeFallsBackToPilot);
+run('testLegacyMeetingDefaultsToFree', testLegacyMeetingDefaultsToFree);
+run('testInvalidModeFallsBackToFree', testInvalidModeFallsBackToFree);
 run('testInvalidParticipantsFallsBackToNull', testInvalidParticipantsFallsBackToNull);
 run('testEmptyArrayParticipantsAllowed', testEmptyArrayParticipantsAllowed);
 run('testLegacyJsonOnDiskLoadFallback', testLegacyJsonOnDiskLoadFallback);

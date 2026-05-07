@@ -21,6 +21,7 @@ try {
 const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
 const { MeetingRoomManager, isRoundtableCapableMeeting } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
+const sessionStore = require('./core/session-store.js');
 const { SummaryEngine } = require('./core/summary-engine');
 const summaryEngine = new SummaryEngine();
 const { TranscriptTap } = require('./core/transcript-tap');
@@ -469,6 +470,7 @@ transcriptTap.on('session-bound', (ev) => {
     if (ev.geminiProjectRoot && cur.geminiProjectRoot !== ev.geminiProjectRoot) { cur.geminiProjectRoot = ev.geminiProjectRoot; changed = true; }
   }
   if (changed) {
+    cur.updatedAt = Date.now();  // 让后续 stateStore merge 用最新版本胜出
     stateStore.save({
       version: 1,
       cleanShutdown: false,
@@ -478,6 +480,12 @@ transcriptTap.on('session-bound', (ev) => {
       pilotSlotByMeeting: _pilotSlotByMeeting,
       dispatchModeByMeeting: _dispatchModeByMeeting,
     });
+    // 2026-05-07 道雪：sid 类字段一旦确定就立刻 sync 写 per-session JSON。
+    //   不靠 200ms debounce，不靠 state.json 防抖 500ms——任何一个 race / crash
+    //   都不会再让 Codex/Gemini 的 transcript 关联丢失。
+    try { sessionStore.markDirtySync(ev.hubSessionId, cur); }
+    catch (e) { console.warn('[hub] sessionStore sync persist failed:', e.message); }
+
     // Spec 3 · W12：广播给 renderer 让 sessions Map 即刻同步（之前只写磁盘，
     // renderer 内存不更新 → codex/gemini 的 resume meta 必须 reboot 才生效）
     sendToRenderer('session-meta-updated', {
@@ -799,8 +807,19 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
   if (!subIds) return false;
   for (const sid of subIds) {
     sessionManager.closeSession(sid);
+    // 2026-05-07：关掉的子会话立刻 removed，避免下一轮 persist-sessions diff 没赶上时
+    //   state.json 还残留 dormant 条目。
+    stateStore.markRemovedSession(sid);
+    sessionStore.deleteSessionFile(sid);
+    sessionStore.cancelDirty(sid);
   }
   scenes.cleanup(getHubDataDir(), meetingId);
+  // 2026-05-07：会议在 state.json 里也要标记 removed
+  stateStore.markRemovedMeeting(meetingId);
+  // immersive 状态从 dict 一并清掉（避免 state.json 越长越大）
+  delete _immersiveByMeeting[meetingId];
+  delete _pilotSlotByMeeting[meetingId];
+  delete _dispatchModeByMeeting[meetingId];
   sendToRenderer('meeting-closed', { meetingId });
   return true;
 });
@@ -2690,8 +2709,14 @@ ipcMain.handle('debug:get-session-buffer', (_e, sessionId) => {
 // On boot we read state.json; those entries become dormant (sidebar entries
 // with no live PTY). User clicks dormant session → resume-session IPC spawns
 // PTY with `claude --resume <ccSessionId>`.
-const bootState = stateStore.load();
-const bootWasClean = bootState.cleanShutdown;
+//
+// 2026-05-07 道雪：boot 走 loadAndSelfHeal，扫 sessions/ + meetings/ 目录把孤儿
+// 条目（state.json 已丢但 per-id JSON 仍在）合并回来。多 Hub 并发覆盖、
+// state.json 损坏、外部清理工具误删这三类灾难都能自我修复。
+const bootState = stateStore.loadAndSelfHeal({ sessionStore, meetingStore });
+// loadAndSelfHeal 内部已经把 cleanShutdown 翻成 false（运行中状态），
+//   bootWasCleanShutdown 是它额外暴露的"原始盘上值"，告知是否上次优雅退出。
+const bootWasClean = !!bootState.bootWasCleanShutdown;
 let lastPersistedSessions = Array.isArray(bootState.sessions) ? bootState.sessions : [];
 // Card optimization Task 9（2026-05-01）— 沉浸/调试模式 per-meeting 状态（持久化）
 //   key = meetingId，value = boolean（true=沉浸，false=调试）。
@@ -2734,8 +2759,15 @@ for (const m of bootMeetings) {
   meetingManager.restoreMeeting(m);
 }
 
-// Flip cleanShutdown to false immediately on boot; before-quit will flip it back.
-stateStore.save({ version: 1, cleanShutdown: false, sessions: lastPersistedSessions, meetings: bootMeetings, immersiveByMeeting: _immersiveByMeeting, pilotSlotByMeeting: _pilotSlotByMeeting, dispatchModeByMeeting: _dispatchModeByMeeting }, { sync: true });
+// 2026-05-07：loadAndSelfHeal 内部已经写过一次 cleanShutdown=false 的快照，
+//   这里不再重复写。原本的"flip flag immediately on boot"语义由 selfHeal 承担。
+
+// 跟踪上一次 persist 的 hubId/meetingId 集合，用于 diff 出"用户主动移除"的条目。
+//   stateStore.markRemovedSession 把 id 推到 state-store 的 removed set，
+//   merge 时显式删除——不依赖"内存里没有 = 删了"，避免多 Hub 启动期间互相把对方
+//   未感知到的条目抹掉。
+let _lastPersistedSessionIds = new Set(lastPersistedSessions.map(s => s.hubId).filter(Boolean));
+let _lastPersistedMeetingIds = new Set(bootMeetings.map(m => m && m.id).filter(Boolean));
 
 ipcMain.handle('get-dormant-meetings', () => meetingManager.getAllMeetings());
 
@@ -2771,15 +2803,34 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
     const oldSession = oldByHubId.get(newSession.hubId);
     if (!oldSession) continue;
     for (const field of RESUME_META_FIELDS) {
-      // T14 fix: use nullish (== null matches both null and undefined).
-      // T10 changed renderer to explicitly emit `field: s.field || null`,
-      // so the original `=== undefined` check never triggered → fields got
-      // wiped by every schedulePersist (race condition with T7 listener save).
       if (newSession[field] == null && oldSession[field] != null) {
         newSession[field] = oldSession[field];
       }
     }
   }
+
+  // 2026-05-07 道雪：updatedAt + removed diff + per-id JSON 双备份。
+  const nowTs = Date.now();
+  for (const s of list) {
+    if (s && s.hubId) s.updatedAt = nowTs;
+  }
+
+  // diff 出"上次 persist 有但这次没了"的 hubId → 视为用户主动关闭，标记 removed
+  const newSessionIds = new Set(list.map(s => s && s.hubId).filter(Boolean));
+  for (const oldId of _lastPersistedSessionIds) {
+    if (!newSessionIds.has(oldId)) {
+      stateStore.markRemovedSession(oldId);
+      sessionStore.deleteSessionFile(oldId);
+      sessionStore.cancelDirty(oldId);
+    }
+  }
+  _lastPersistedSessionIds = newSessionIds;
+
+  // per-session JSON 备份：debounced 写盘，sid 类字段在 transcript-tap 路径走 sync
+  for (const s of list) {
+    if (s && s.hubId) sessionStore.markDirty(s.hubId, s);
+  }
+
   lastPersistedSessions = list;
   // 2026-05-05 道雪：第二道防线 — renderer 传来的 meeting 列表如果缺字段（历史 bug 漏 scene 等
   //   导致重启后所有圆桌退化为 general），按 id 从 meetingManager 拿权威对象做字段补全。
@@ -2815,6 +2866,32 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   } else {
     meetingsForState = meetingManager.getAllMeetings();
   }
+
+  // 2026-05-07 道雪：meeting 同样加 updatedAt + removed diff + per-id JSON 双备份
+  for (const m of meetingsForState) {
+    if (m && m.id) m.updatedAt = nowTs;
+  }
+  const newMeetingIds = new Set(meetingsForState.map(m => m && m.id).filter(Boolean));
+  for (const oldId of _lastPersistedMeetingIds) {
+    if (!newMeetingIds.has(oldId)) {
+      stateStore.markRemovedMeeting(oldId);
+      // meeting-store 已在 closeMeeting 路径调过 deleteMeetingFile + cancelDirty；
+      // 这里再补一次防御写：renderer 推 persist-sessions 时偶发先于 closeMeeting 路径。
+      meetingStore.deleteMeetingFile(oldId);
+      meetingStore.cancelDirty(oldId);
+    }
+  }
+  _lastPersistedMeetingIds = newMeetingIds;
+
+  // 把 immersive 状态合并进 meeting 字段，让 per-meeting JSON 也带上（v2 schema）
+  for (const m of meetingsForState) {
+    if (m && m.id) {
+      const im = _immersiveByMeeting[m.id];
+      if (typeof im === 'boolean') m.immersive = im;
+      meetingStore.markDirty(m.id, m);
+    }
+  }
+
   stateStore.save({
     version: 1,
     cleanShutdown: false,
@@ -3800,6 +3877,9 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', async () => {
+  // 2026-05-07 道雪：退出时保证三层都同步落盘——state.json（lock + merge）、
+  //   per-meeting JSON、per-session JSON。任意一层丢了，下次 boot 的 selfHeal
+  //   都能从另一层恢复。
   stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting, pilotSlotByMeeting: _pilotSlotByMeeting, dispatchModeByMeeting: _dispatchModeByMeeting }, { sync: true });
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
   try {
@@ -3807,6 +3887,12 @@ app.on('before-quit', async () => {
     console.log('[圆桌] meeting-store flushed on quit');
   } catch (err) {
     console.warn('[圆桌] meeting-store flush failed:', err.message);
+  }
+  try {
+    sessionStore.flushAll();
+    console.log('[hub] session-store flushed on quit');
+  } catch (err) {
+    console.warn('[hub] session-store flush failed:', err.message);
   }
 });
 
