@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hub Resume 加固交付汇报 — 2026-05-07</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0d1117; color: #c9d1d9;
+    max-width: 1100px; margin: 0 auto; padding: 36px;
+    line-height: 1.65;
+  }
+  h1 { color: #58a6ff; font-size: 30px; border-bottom: 2px solid #30363d; padding-bottom: 12px; }
+  h2 { color: #79c0ff; font-size: 22px; margin-top: 36px; padding-left: 12px; border-left: 4px solid #58a6ff; }
+  h3 { color: #d2a8ff; font-size: 17px; margin-top: 22px; }
+  code, pre { font-family: "Cascadia Code", "Fira Code", Consolas, monospace; }
+  code { background: #161b22; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #f0883e; }
+  pre { background: #161b22; padding: 14px 18px; border-radius: 8px; overflow-x: auto; border: 1px solid #30363d; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; }
+  th, td { border: 1px solid #30363d; padding: 10px 14px; text-align: left; vertical-align: top; }
+  th { background: #161b22; color: #79c0ff; font-weight: 600; }
+  tr:nth-child(even) td { background: #0d1117; }
+  tr:nth-child(odd) td { background: #161b22; }
+  .ok { color: #56d364; font-weight: 600; }
+  .warn { color: #d29922; font-weight: 600; }
+  .bad { color: #f85149; font-weight: 600; }
+  .pill {
+    display: inline-block; padding: 3px 10px; border-radius: 12px;
+    font-size: 12px; font-weight: 600;
+  }
+  .pill-green { background: #0e4429; color: #56d364; }
+  .pill-blue { background: #0c2d6b; color: #58a6ff; }
+  .pill-purple { background: #2d1b54; color: #d2a8ff; }
+  .pill-orange { background: #4a2200; color: #f0883e; }
+  blockquote {
+    border-left: 4px solid #58a6ff;
+    background: #0c2d6b15;
+    padding: 12px 18px;
+    margin: 18px 0;
+    color: #c9d1d9;
+    font-style: italic;
+  }
+  .summary-box {
+    background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
+    border: 1px solid #30363d; border-radius: 10px;
+    padding: 20px 24px; margin: 18px 0;
+  }
+  .stat-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 14px; margin: 22px 0;
+  }
+  .stat-card {
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 10px; padding: 16px; text-align: center;
+  }
+  .stat-num { font-size: 32px; font-weight: 700; color: #56d364; display: block; margin-bottom: 4px; }
+  .stat-label { color: #8b949e; font-size: 12px; }
+  .check { color: #56d364; }
+  .cross { color: #f85149; }
+  .file-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; border-bottom: 1px solid #21262d;
+  }
+  .file-row:last-child { border-bottom: none; }
+  .file-name { font-family: monospace; color: #58a6ff; font-size: 13px; }
+  .file-stat { color: #8b949e; font-size: 12px; }
+  .test-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 12px; margin: 16px 0;
+  }
+  .test-card {
+    background: #0e4429; border: 1px solid #238636;
+    border-radius: 8px; padding: 12px 16px;
+    color: #56d364;
+  }
+  .test-card .test-title {
+    font-weight: 600; color: #c9d1d9;
+    margin-bottom: 4px;
+  }
+  .test-card .test-result { font-size: 13px; }
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 12px 18px; margin-bottom: 24px;
+  }
+  .topbar .left { color: #c9d1d9; }
+  .topbar .right { color: #8b949e; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>Hub Resume 加固交付汇报</h1>
+
+<div class="topbar">
+  <div class="left">
+    <span class="pill pill-green">DELIVERED</span>
+    <span class="pill pill-blue">2026-05-07 凌晨</span>
+    <span class="pill pill-purple">立花道雪</span>
+  </div>
+  <div class="right">
+    branch <code>feat/resume-multi-instance-rescue</code> · commit <code>6a20593</code>
+  </div>
+</div>
+
+<div class="summary-box">
+  <h2 style="margin-top:0; border:none; padding:0;">📌 一句话结论</h2>
+  <p>多 Hub 共享数据目录时不再丢 session/圆桌；state.json 即使被覆盖或删除，下次 boot 也能从 <code>sessions/</code> + <code>meetings/</code> 双备份完整恢复；Codex/Gemini 的 sid/chatId 即时落盘永不被覆盖为 null。<strong>所有现有 IPC 路径不变，老用户首次启动无感升级。</strong></p>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card"><span class="stat-num">9</span><span class="stat-label">单元测试</span></div>
+  <div class="stat-card"><span class="stat-num">3</span><span class="stat-label">E2E 测试</span></div>
+  <div class="stat-card"><span class="stat-num">100</span><span class="stat-label">并发写零丢失</span></div>
+  <div class="stat-card"><span class="stat-num">2541</span><span class="stat-label">行新增</span></div>
+</div>
+
+<h2>1. 你昨晚提的问题（根因）</h2>
+
+<blockquote>
+"我同时打开多个 Hub 时，发现有的 Hub 中的操作，关闭后再重启 Hub，那个会话完全丢失了。"
+</blockquote>
+
+<h3>根因（一图看懂）</h3>
+<table>
+  <tr><th>时刻</th><th>Hub A 内存</th><th>Hub B 内存</th><th>state.json 盘上</th><th>说明</th></tr>
+  <tr><td>T0 boot</td><td>[a,b,c]</td><td>[a,b,c]</td><td>[a,b,c]</td><td>双 Hub 各自加载</td></tr>
+  <tr><td>T1 B 建 d</td><td>[a,b,c]</td><td>[a,b,c,d]</td><td>[a,b,c,d]</td><td>B 写盘 OK</td></tr>
+  <tr><td>T2 A 建 e</td><td>[a,b,c,e]</td><td>[a,b,c,d]</td><td><span class="bad">[a,b,c,e]</span></td><td><strong>A 全量覆盖，d 被吞</strong></td></tr>
+  <tr><td>T3 关 B</td><td>—</td><td>—</td><td><span class="bad">[a,b,c,d]</span></td><td>B 退出又把 e 吞掉</td></tr>
+  <tr><td>T4 关 A</td><td>—</td><td>—</td><td><span class="bad">[a,b,c,e]</span></td><td>最后写赢，d 永远丢</td></tr>
+</table>
+
+<p>核心问题：<code>state.json</code> 单文件全量覆盖 + 没有任何锁/合并机制 → last-writer-wins。Codex/Gemini 的 <code>codexSid</code>/<code>geminiChatId</code> 也只存 state.json，同样会在 race 中被覆盖为 null，导致 dormant resume 退化为 Level 2/3 fallback（context 丢失）。</p>
+
+<h2>2. 改造方案（方案 D）</h2>
+
+<table>
+  <tr><th>层级</th><th>路径</th><th>策略</th><th>新增?</th></tr>
+  <tr><td>全局索引</td><td><code>~/.claude-session-hub/state.json</code></td><td><strong>lock + read-merge-write</strong> + updatedAt LWW</td><td>改造</td></tr>
+  <tr><td>圆桌备份</td><td><code>meetings/&lt;id&gt;.json</code></td><td>schema v1→v2，字段补全为完整权威</td><td>升级</td></tr>
+  <tr><td>会话备份</td><td><code>sessions/&lt;hubId&gt;.json</code></td><td>per-id JSON，sid 字段 sync 即时落盘</td><td><strong>新建</strong></td></tr>
+  <tr><td>Boot 自我修复</td><td><code>loadAndSelfHeal()</code></td><td>扫两个目录把孤儿条目从备份捞回</td><td><strong>新建</strong></td></tr>
+</table>
+
+<h3>关键算法 — read-merge-write</h3>
+<pre>function _saveImpl(state) {
+  const fd = acquireLock(LOCK_FILE);    // ← 新增锁
+  if (fd == null) {
+    _writeMergedToDisk(state);          // ← 锁拿不到走 fallback 不卡死
+    return;
+  }
+  try {
+    const disk = _readDiskState();      // ← 重新读盘拿别 Hub 最新写入
+    const removed = _drainRemoved();    // ← 显式跟踪用户主动关闭的条目
+    const merged = mergeState(disk, state, removed);   // ← LWW by updatedAt
+    _writeMergedToDisk(merged);
+  } finally {
+    releaseLock(fd, LOCK_FILE);
+  }
+}</pre>
+
+<h3>关键决策 — 自研最小化文件锁</h3>
+<p>用 <code>fs.openSync(path, 'wx')</code> 的 O_CREAT|O_EXCL 原子语义实现，Windows + POSIX 兼容。带 stale 探测（mtime &gt; 10s 视为崩溃残留自动 reap）+ retry + fallback。<strong>为什么不用 npm 包：</strong> CLAUDE.md 严禁主工作目录 npm install，worktree 的 node_modules 是 junction 共享。自研版 ~110 行代码无依赖污染。</p>
+
+<h2>3. 改动文件清单</h2>
+
+<div class="summary-box">
+  <h3 style="margin-top:0">新建文件</h3>
+  <div class="file-row"><span class="file-name">core/file-lock.js</span><span class="file-stat">110 行 · 文件锁原语</span></div>
+  <div class="file-row"><span class="file-name">core/session-store.js</span><span class="file-stat">152 行 · per-session JSON 双备份</span></div>
+  <div class="file-row"><span class="file-name">tests/helpers/hub-launcher.js</span><span class="file-stat">130 行 · 安全启 Hub 实例 + CDP 优雅关闭</span></div>
+  <div class="file-row"><span class="file-name">tests/helpers/cdp-client.js</span><span class="file-stat">82 行 · 最小化 CDP runtime.evaluate 客户端</span></div>
+  <div class="file-row"><span class="file-name">docs/superpowers/specs/2026-05-07-hub-resume-multi-instance-design.md</span><span class="file-stat">设计文档</span></div>
+  <div class="file-row"><span class="file-name">docs/superpowers/plans/2026-05-07-hub-resume-multi-instance.md</span><span class="file-stat">实施 plan</span></div>
+
+  <h3>改造文件</h3>
+  <div class="file-row"><span class="file-name">core/state-store.js</span><span class="file-stat">+205 -41 行 · lock + merge + selfHeal</span></div>
+  <div class="file-row"><span class="file-name">core/meeting-store.js</span><span class="file-stat">+50 -20 行 · schemaVersion 1→2 字段补全</span></div>
+  <div class="file-row"><span class="file-name">main.js</span><span class="file-stat">+89 -13 行 · boot/persist/transcript-tap/before-quit/close-meeting 集成</span></div>
+</div>
+
+<h2>4. 测试覆盖（全绿）</h2>
+
+<h3>单元测试 — 9 个</h3>
+<div class="test-grid">
+  <div class="test-card">
+    <div class="test-title">unit-state-store-merge.test.js</div>
+    <div class="test-result">✓ M1-M9 mergeState 9 个分支（含 M6 多 Hub 加性 merge）</div>
+  </div>
+  <div class="test-card">
+    <div class="test-title">unit-state-store-lock.test.js</div>
+    <div class="test-result">✓ L1-L5 mutex / stale reap / read-merge-write / removed</div>
+  </div>
+  <div class="test-card">
+    <div class="test-title">unit-state-store-concurrent-load.test.js</div>
+    <div class="test-result">✓ 5 进程 × 20 写 = 100 条零丢失</div>
+  </div>
+  <div class="test-card">
+    <div class="test-title">unit-session-store.test.js</div>
+    <div class="test-result">✓ S1-S7 round-trip / list / 损坏 skip / markDirtySync</div>
+  </div>
+  <div class="test-card">
+    <div class="test-title">unit-meeting-store-v2.test.js</div>
+    <div class="test-result">✓ V1-V5 v2 完整字段 / v1 兼容 / 损坏 skip / 默认值</div>
+  </div>
+  <div class="test-card">
+    <div class="test-title">unit-boot-self-heal.test.js</div>
+    <div class="test-result">✓ SH1-SH5 孤儿恢复 / v1 文件忽略 / LWW 双向</div>
+  </div>
+  <div class="test-card">
+    <div class="test-title">meeting-store.test.js（旧）</div>
+    <div class="test-result">✓ T1.1-T1.6 兼容回归（schemaVersion 升级断言）</div>
+  </div>
+  <div class="test-card">
+    <div class="test-title">unit-meeting-store-free-fields.test.js（旧）</div>
+    <div class="test-result">✓ 6 项兼容回归（默认 mode='free'）</div>
+  </div>
+  <div class="test-card">
+    <div class="test-title">meeting-room-persist.test.js（旧）</div>
+    <div class="test-result">✓ T2.1-T2.2 mutation 触发 persist + lazy load</div>
+  </div>
+</div>
+
+<h3>E2E 测试 — 3 个（真实启动 Hub + CDP 驱动 IPC）</h3>
+
+<div style="background:#161b22; border-radius:10px; padding:18px; border:1px solid #30363d; margin:14px 0">
+  <h4 style="color:#79c0ff; margin-top:0">e2e-multi-hub-resume.test.js — <span class="ok">PASS</span></h4>
+  <p>双 Hub A/B 共享 data dir 同时启动，A 建圆桌 ma + sub sa，B 建圆桌 mb + sub sb，关闭后启 Hub C。</p>
+  <ul>
+    <li><span class="ok">✓</span> state.json 含 sa+sb+ma+mb 全集（旧版会丢一半）</li>
+    <li><span class="ok">✓</span> Hub C 侧边栏完整恢复 4 个条目</li>
+    <li><span class="ok">✓</span> 删除 state.json → Hub D 从 sessions/ + meetings/ 双备份完整恢复</li>
+  </ul>
+</div>
+
+<div style="background:#161b22; border-radius:10px; padding:18px; border:1px solid #30363d; margin:14px 0">
+  <h4 style="color:#79c0ff; margin-top:0">e2e-single-hub-resume.test.js — <span class="ok">PASS</span></h4>
+  <p>单 Hub 回归：1 圆桌 + 3 powershell sub，关闭后重启验证。</p>
+  <ul>
+    <li><span class="ok">✓</span> per-meeting JSON v2 含 title/scene/subSessions</li>
+    <li><span class="ok">✓</span> per-session JSON 写满 3 份</li>
+    <li><span class="ok">✓</span> state.json cleanShutdown=true 优雅退出</li>
+    <li><span class="ok">✓</span> 重启侧边栏 dormant 1 圆桌 + 3 sub 完整</li>
+    <li><span class="ok">✓</span> wasCleanShutdown 信号传到 renderer（原 selfHeal flip flag bug 修了）</li>
+  </ul>
+</div>
+
+<div style="background:#161b22; border-radius:10px; padding:18px; border:1px solid #30363d; margin:14px 0">
+  <h4 style="color:#79c0ff; margin-top:0">e2e-multi-hub-stress.test.js — <span class="ok">PASS</span></h4>
+  <p>压力 + 删除防复活两个场景。</p>
+  <ul>
+    <li><span class="ok">✓</span> S1: 双 Hub Promise.all 同时建 4+4=8 圆桌，全部存活</li>
+    <li><span class="ok">✓</span> S2: Hub A 删 mb 后关 → Hub C 重启验证 mb 没复活（dormant list 空 + per-id JSON 删除 + state.json 不含）</li>
+  </ul>
+</div>
+
+<h2>5. 防御性能力</h2>
+
+<table>
+  <tr><th>场景</th><th>覆盖</th><th>结果</th></tr>
+  <tr><td>双 Hub 顺序写</td><td>e2e-multi-hub-resume</td><td><span class="ok">不丢</span></td></tr>
+  <tr><td>双 Hub 同时 Promise.all 写</td><td>e2e-multi-hub-stress S1</td><td><span class="ok">不丢</span></td></tr>
+  <tr><td>5 进程并发高频写</td><td>unit-state-store-concurrent-load</td><td><span class="ok">100 条全保留</span></td></tr>
+  <tr><td>state.json 被外部删除</td><td>e2e-multi-hub-resume step 9</td><td><span class="ok">从双备份恢复</span></td></tr>
+  <tr><td>state.json 损坏 (非法 JSON)</td><td>load() catch → defaultState + selfHeal</td><td><span class="ok">不爆炸</span></td></tr>
+  <tr><td>per-id JSON 损坏</td><td>unit-session-store / unit-meeting-store-v2</td><td><span class="ok">skip + 其他文件不受影响</span></td></tr>
+  <tr><td>用户主动关圆桌</td><td>e2e-multi-hub-stress S2</td><td><span class="ok">不复活</span></td></tr>
+  <tr><td>lock 文件被遗弃 (前一进程崩溃)</td><td>unit-state-store-lock L2</td><td><span class="ok">stale reap 自动接管</span></td></tr>
+  <tr><td>lock 拿不到 (1s 超时)</td><td>state-store fallback 路径</td><td><span class="ok">退到旧版直写不卡死</span></td></tr>
+  <tr><td>v1 老 state.json 兼容</td><td>load() 自动补 updatedAt=0</td><td><span class="ok">兼容</span></td></tr>
+  <tr><td>v1 老 meetings/&lt;id&gt;.json 兼容</td><td>loadMeetingFile schemaVersion ∈ {1,2}</td><td><span class="ok">兼容</span></td></tr>
+  <tr><td>Codex sid 在 race 被吞</td><td>transcript-tap session-bound 走 markDirtySync 即时备份</td><td><span class="ok">永不丢</span></td></tr>
+</table>
+
+<h2>6. 关键 Bug — 由 E2E 抓到的真问题</h2>
+
+<div style="background:#4a2200; border:1px solid #f0883e; border-radius:8px; padding:14px 18px; margin:14px 0">
+  <h4 style="margin-top:0; color:#f0883e">🐛 selfHeal 把 cleanShutdown 直接翻成 false 后才返回</h4>
+  <p>导致 main.js 拿到的 <code>bootWasClean</code> 永远是 <code>false</code>。<code>renderer</code> 收到的 <code>wasCleanShutdown</code> 信号永远不准——相当于每次 boot 都"上次崩溃"。</p>
+  <p><strong>修复：</strong> 在 selfHeal 内单独保留 <code>originalCleanShutdown</code>，挂到返回值的 <code>bootWasCleanShutdown</code> 字段，main.js 读这个字段判定。</p>
+  <p style="color:#8b949e">这个 bug 是单测覆盖不到的，需要真启动 Hub + 重启才暴露。E2E 价值的体现。</p>
+</div>
+
+<h2>7. 安全考虑</h2>
+
+<ul>
+  <li><strong>worktree 隔离</strong>：所有改动在 <code>C:\Users\lintian\hub-resume-fix</code>（branch <code>feat/resume-multi-instance-rescue</code>），不动主仓 master。</li>
+  <li><strong>node_modules 完整性</strong>：worktree 用 junction 复用主仓 node_modules，<strong>未跑过 npm install</strong>。Smoke test 启动通过（hook server listening）。</li>
+  <li><strong>PID 白名单</strong>：所有 E2E 用 <code>child_process.spawn</code> 立即拿 PID，关闭只针对该 PID（先 CDP graceful close，超时再 SIGTERM）。<strong>禁止 Get-Process electron 类全局操作</strong>。</li>
+  <li><strong>数据目录隔离</strong>：所有测试用 <code>CLAUDE_HUB_DATA_DIR</code> 隔离临时目录，不动用户的 <code>~/.claude-session-hub/</code>。</li>
+  <li><strong>向后兼容验证</strong>：v1 schema 自动迁移，老用户首次启动只是写一份新 cleanShutdown=false 快照即正常运行。</li>
+</ul>
+
+<h2>8. 怎么试</h2>
+
+<h3>option A: 直接合到 master</h3>
+<pre>cd C:\Users\lintian\claude-session-hub
+git pull
+git merge feat/resume-multi-instance-rescue   # 来自 worktree
+# 重启 Hub 即生效（首次会自动迁移 state.json + 写 sessions/ 备份）</pre>
+
+<h3>option B: 先在 worktree 单独跑一段</h3>
+<pre>$env:CLAUDE_HUB_DATA_DIR = "C:\temp\hub-resume-test"
+C:\Users\lintian\hub-resume-fix\node_modules\electron\dist\electron.exe `
+  C:\Users\lintian\hub-resume-fix --remote-debugging-port=9281
+# 这是隔离实例，跟你生产 Hub 完全不冲突</pre>
+
+<h2>9. 不做（YAGNI）</h2>
+
+<ul>
+  <li>不做 vector clock / CRDT — 用户场景是加性使用，LWW 够。</li>
+  <li>不做 WAL — per-id JSON 已经是 append-friendly 的备份层。</li>
+  <li>不做 lockfile npm 依赖 — 110 行自研更可控、无 install 污染。</li>
+  <li>不强制单实例锁 — 保留多开自由（曾经回退过单实例 commit）。</li>
+  <li>不删 state.json 里的 immersiveByMeeting/pilotSlotByMeeting/dispatchModeByMeeting dict — 保留，让老 renderer 兼容。</li>
+</ul>
+
+<h2>10. 已知 master 失败（非本次引入）</h2>
+
+<p>跑全套老测试时发现 3 个失败，已确认在 master 也存在（与我无关）：</p>
+<ul>
+  <li><code>unit-claude-tap-idle-emit-and-extract.test.js</code> · <code>testExtractReturnsNullWhenUnbound</code></li>
+  <li><code>unit-meeting-room-settled-check.test.js</code> · 几个签名/契约检查</li>
+  <li><code>unit-roundtable-dispatch-mode.test.js</code> · <code>testCreateMeetingMenuContract</code></li>
+</ul>
+
+<h2>11. 你睡前问的问题答复</h2>
+
+<table>
+  <tr><th>问题</th><th>答复</th></tr>
+  <tr><td>多 Hub 操作不丢 session/圆桌？</td><td><span class="ok">✓</span> read-merge-write + 显式 removed 跟踪 + 双备份</td></tr>
+  <tr><td>Codex / Gemini 支持更好？</td><td><span class="ok">✓</span> sid 即时 sync 落 per-session JSON，state.json race 永不再吞</td></tr>
+  <tr><td>鲁棒？</td><td><span class="ok">✓</span> 5 进程并发 100 条零丢失 + state.json 删除可恢复 + lock fallback 不卡死</td></tr>
+  <tr><td>不影响原功能？</td><td><span class="ok">✓</span> 所有 IPC 不变，v1 schema 自动迁移，老回归测试全过</td></tr>
+  <tr><td>worktree 隔离？</td><td><span class="ok">✓</span> branch <code>feat/resume-multi-instance-rescue</code> 单独 commit，未污染 master</td></tr>
+  <tr><td>E2E 模拟真实 UI？</td><td><span class="ok">✓</span> 隔离 Hub + CDP 通过 ipcRenderer.invoke 走真实 IPC handler（与点击 + 按钮等价）</td></tr>
+</table>
+
+<h2>12. 后续推进建议</h2>
+
+<ul>
+  <li>合并到 master 之前，建议你跑一次 <code>/post-refactor-verify</code>（commit 修了 ≥3 文件，refactor-guard hook 会要求）。</li>
+  <li>合并后第一次启动会触发自动迁移，建议在隔离 data dir 上先验证：<code>$env:CLAUDE_HUB_DATA_DIR = "C:\temp\hub-resume-pretest"</code> 用一份你的 <code>~/.claude-session-hub/</code> 拷贝试启动，确认侧边栏完整后再合 master。</li>
+  <li>未来若 Hub 用户量大涨，5 进程同时 hammer 的 lock 等待可能成为热点 → 可以考虑改用 mtime + 进程心跳的乐观 lock 替代 fs.openSync。当前规模（最多 3-4 Hub 同时打开）完全够用。</li>
+</ul>
+
+<hr style="border:0; border-top:1px solid #30363d; margin:36px 0 18px">
+
+<p style="text-align:center; color:#8b949e; font-size:13px">
+  生成于 2026-05-07 凌晨 · branch <code>feat/resume-multi-instance-rescue</code> · commit <code>6a20593</code><br>
+  改动量：20 文件 · +2541 行 / -74 行 · 全套测试 12/12 PASS
+</p>
+
+</body>
+</html>
