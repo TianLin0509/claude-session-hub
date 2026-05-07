@@ -739,24 +739,23 @@ class SessionManager extends EventEmitter {
     if (isCodex) {
       dismissCodexUpdatePrompt(undefined, sessionEnv.CODEX_HOME || null);
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
+      const cv = getConfigValues();
+      const codexModel = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
       let cmd;
       if (kind === 'codex-resume') {
         // codex resume 无参 = picker by default
-        cmd = ' codex resume --dangerously-bypass-approvals-and-sandbox';
+        cmd = ` codex resume --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
       } else if (opts.useResume && opts.codexSid) {
         // Level 1: precise resume by sid
-        cmd = ` codex resume ${opts.codexSid} --dangerously-bypass-approvals-and-sandbox`;
+        cmd = ` codex resume ${opts.codexSid} --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
       } else if (opts.useResume) {
         // Level 2 degradation: no sid recorded → use --last
-        cmd = ' codex resume --last --dangerously-bypass-approvals-and-sandbox';
+        cmd = ` codex resume --last --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
       } else {
         // Research mode：完全 bypass approvals + sandbox（含 MCP 工具调用、shell 命令、文件写）
         // 避免任何 "Allow ... ?" 弹窗阻塞投研讨论流程；
         // 安全约束完全靠 prompt/covenant 软约束（已强化"不要改代码 / 不要 git / 不要删除"）
         // opts.model 让 meeting-create-modal 选定的非默认 model（如 gpt-5.4）生效。
-        const cv = getConfigValues();
-        // 同上 (line ~563)：opts.model 必须最高优先级，否则圆桌的 model 选择被 packy 默认覆盖。
-        const codexModel = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
         if (opts.codexBypassApprovals) {
           cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
         } else {

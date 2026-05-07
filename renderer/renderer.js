@@ -5583,7 +5583,7 @@ ipcRenderer.on('roundtable-turn-complete', (_event, { meetingId }) => {
   const meeting = meetings[meetingId];
   if (!meeting) return;
   meeting.unreadCount = (meeting.unreadCount || 0) + 1;
-  meeting.lastMessageTime = Date.now() / 1000 | 0;  // 触发排序（最新答完的圆桌靠前）
+  meeting.lastMessageTime = Date.now();  // 触发排序（最新答完的圆桌靠前）
   renderSessionList();
 });
 
