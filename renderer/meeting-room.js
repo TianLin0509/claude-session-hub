@@ -3525,7 +3525,7 @@ if (typeof document !== 'undefined') (function () {
       let statusLine;
       if (meetingMode === 'free') {
         const parts = Array.isArray(meeting.participants) ? meeting.participants : [];
-        const SLOT_NAMES_S = ['⚡Pikachu', '🔥Charmander', '💎Squirtle'];
+        const SLOT_NAMES_S = ['⚡皮卡丘', '🔥小火龙', '💎杰尼龟'];
         let speakerStr;
         if (parts.length === 0) {
           speakerStr = '<strong style="color:#f85149">⚠ 请勾选至少一位发言人</strong>';

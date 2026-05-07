@@ -37,7 +37,7 @@ const DEFAULT_USER_INPUT_BUDGET = 500;   // userInput 截断长度
  * @param {number} [opts.perAiBudget=800] 单家文本截断长度
  * @param {number} [opts.userInputBudget=500] userInput 截断长度
  * @param {boolean}[opts.includeUserInput=true] 是否含 userInput 段
- * @param {function}[opts.sidLabelFn]     sid → label（如 'Pikachu'），缺省用 sid 前 8 位
+ * @param {function}[opts.sidLabelFn]     sid → label（如 '皮卡丘'），缺省用 sid 前 8 位
  * @returns {string}                      markdown 文本；无可用历史时返回 ''
  */
 function buildContextInstructions(orchestrator, opts = {}) {

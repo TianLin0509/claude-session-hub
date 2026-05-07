@@ -419,44 +419,45 @@ function testBuildSystemPromptEmptyStringNoSeparator() {
   console.log('  ✓ testBuildSystemPromptEmptyStringNoSeparator (records current behavior)');
 }
 
-// === P2 buildSystemPrompt: research + slotId='pikachu' → 含 Pikachu 偏置不含 Squirtle/Charmander ===
+// === P2 buildSystemPrompt: research + slotId='pikachu' → 含 皮卡丘 偏置不含 杰尼龟/小火龙 ===
+// 称谓中文化（2026-05-08）：偏置 header 已改 [皮卡丘/小火龙/杰尼龟 偏置]
 function testBuildSystemPromptResearchSlotInjection() {
   const prompt = scenes.buildSystemPrompt('research', null, 'pikachu');
   // 共享核心 + L3 偏置都在
   assert.ok(prompt.includes(scenes.BASE_RULES), 'should contain BASE_RULES');
   assert.ok(prompt.includes('LinDangAgent'), 'should contain RESEARCH_PRESET');
   assert.ok(prompt.includes('# 投研圆桌 · 研究纪律'), 'should contain COVENANT_RESEARCH (24 轮版)');
-  // Pikachu 偏置注入
-  assert.ok(prompt.includes('[Pikachu 偏置]'), 'research+pikachu should inject Pikachu bias');
+  // 皮卡丘 偏置注入
+  assert.ok(prompt.includes('[皮卡丘 偏置]'), 'research+pikachu should inject 皮卡丘 bias');
   assert.ok(prompt.includes('对抗硬度'), 'pikachu bias header should appear');
   assert.ok(prompt.includes('主轮留白'), 'pikachu-specific 主轮留白 mechanism should appear');
   // 其他两派偏置不应注入
-  assert.ok(!prompt.includes('[Squirtle 偏置]'), 'pikachu slot MUST NOT leak Squirtle bias');
-  assert.ok(!prompt.includes('[Charmander 偏置]'), 'pikachu slot MUST NOT leak Charmander bias');
-  assert.ok(!prompt.includes('生命周期'), 'pikachu slot MUST NOT contain Charmander 生命周期 mechanism');
+  assert.ok(!prompt.includes('[杰尼龟 偏置]'), 'pikachu slot MUST NOT leak 杰尼龟 bias');
+  assert.ok(!prompt.includes('[小火龙 偏置]'), 'pikachu slot MUST NOT leak 小火龙 bias');
+  assert.ok(!prompt.includes('生命周期'), 'pikachu slot MUST NOT contain 小火龙 生命周期 mechanism');
   console.log('  ✓ testBuildSystemPromptResearchSlotInjection');
 }
 
-// === P2 buildSystemPrompt: research + slotId='charmander' → 含 Charmander 偏置 ===
+// === P2 buildSystemPrompt: research + slotId='charmander' → 含 小火龙 偏置 ===
 function testBuildSystemPromptCharmanderInjection() {
   const prompt = scenes.buildSystemPrompt('research', null, 'charmander');
-  assert.ok(prompt.includes('[Charmander 偏置]'), 'research+charmander should inject Charmander bias');
+  assert.ok(prompt.includes('[小火龙 偏置]'), 'research+charmander should inject 小火龙 bias');
   assert.ok(prompt.includes('反直觉校验'), 'charmander-specific 反直觉校验 mechanism should appear');
   assert.ok(prompt.includes('阶段 1') && prompt.includes('阶段 4'),
     'charmander 4 阶段生命周期 should appear');
-  assert.ok(!prompt.includes('[Pikachu 偏置]'), 'charmander slot MUST NOT leak Pikachu bias');
-  assert.ok(!prompt.includes('[Squirtle 偏置]'), 'charmander slot MUST NOT leak Squirtle bias');
+  assert.ok(!prompt.includes('[皮卡丘 偏置]'), 'charmander slot MUST NOT leak 皮卡丘 bias');
+  assert.ok(!prompt.includes('[杰尼龟 偏置]'), 'charmander slot MUST NOT leak 杰尼龟 bias');
   console.log('  ✓ testBuildSystemPromptCharmanderInjection');
 }
 
-// === P2 buildSystemPrompt: research + slotId='squirtle' → 含 Squirtle 偏置 ===
+// === P2 buildSystemPrompt: research + slotId='squirtle' → 含 杰尼龟 偏置 ===
 function testBuildSystemPromptSquirtleInjection() {
   const prompt = scenes.buildSystemPrompt('research', null, 'squirtle');
-  assert.ok(prompt.includes('[Squirtle 偏置]'), 'research+squirtle should inject Squirtle bias');
+  assert.ok(prompt.includes('[杰尼龟 偏置]'), 'research+squirtle should inject 杰尼龟 bias');
   assert.ok(prompt.includes('极简克制'), 'squirtle-specific 极简克制 mechanism should appear');
   assert.ok(prompt.includes('默认压缩'), 'squirtle 默认压缩 mechanism should appear');
-  assert.ok(!prompt.includes('[Pikachu 偏置]'), 'squirtle slot MUST NOT leak Pikachu bias');
-  assert.ok(!prompt.includes('[Charmander 偏置]'), 'squirtle slot MUST NOT leak Charmander bias');
+  assert.ok(!prompt.includes('[皮卡丘 偏置]'), 'squirtle slot MUST NOT leak 皮卡丘 bias');
+  assert.ok(!prompt.includes('[小火龙 偏置]'), 'squirtle slot MUST NOT leak 小火龙 bias');
   console.log('  ✓ testBuildSystemPromptSquirtleInjection');
 }
 
@@ -467,11 +468,11 @@ function testBuildSystemPromptGeneralNoSlotInjection() {
   assert.ok(prompt.includes(scenes.BASE_RULES), 'should contain BASE_RULES');
   assert.ok(prompt.includes('## 关于 timeline.md'), 'should contain COVENANT_GENERAL');
   // L3 偏置绝不应在 non-research 场景注入 (P2 设计契约)
-  assert.ok(!prompt.includes('[Pikachu 偏置]'),
-    'general scene MUST NOT inject Pikachu bias even with valid slotId');
-  assert.ok(!prompt.includes('[Squirtle 偏置]'),
+  assert.ok(!prompt.includes('[皮卡丘 偏置]'),
+    'general scene MUST NOT inject 皮卡丘 bias even with valid slotId');
+  assert.ok(!prompt.includes('[杰尼龟 偏置]'),
     'general scene MUST NOT inject any L3 bias');
-  assert.ok(!prompt.includes('[Charmander 偏置]'),
+  assert.ok(!prompt.includes('[小火龙 偏置]'),
     'general scene MUST NOT inject any L3 bias');
   console.log('  ✓ testBuildSystemPromptGeneralNoSlotInjection');
 }
@@ -482,17 +483,17 @@ function testBuildSystemPromptResearchNoSlotBackwardCompat() {
   const prompt1 = scenes.buildSystemPrompt('research', null);
   assert.ok(prompt1.includes('LinDangAgent'), 'should contain RESEARCH_PRESET (3-arg call works)');
   assert.ok(prompt1.includes('# 投研圆桌 · 研究纪律'), 'should contain COVENANT_RESEARCH');
-  assert.ok(!prompt1.includes('[Pikachu 偏置]'), 'no slot → no Pikachu bias');
-  assert.ok(!prompt1.includes('[Charmander 偏置]'), 'no slot → no Charmander bias');
-  assert.ok(!prompt1.includes('[Squirtle 偏置]'), 'no slot → no Squirtle bias');
+  assert.ok(!prompt1.includes('[皮卡丘 偏置]'), 'no slot → no 皮卡丘 bias');
+  assert.ok(!prompt1.includes('[小火龙 偏置]'), 'no slot → no 小火龙 bias');
+  assert.ok(!prompt1.includes('[杰尼龟 偏置]'), 'no slot → no 杰尼龟 bias');
 
   // slotId === null 显式 null 也兼容
   const prompt2 = scenes.buildSystemPrompt('research', null, null);
-  assert.ok(!prompt2.includes('[Pikachu 偏置]'), 'null slot → no bias');
+  assert.ok(!prompt2.includes('[皮卡丘 偏置]'), 'null slot → no bias');
 
   // 无效 slotId 不抛错,不注入
   const prompt3 = scenes.buildSystemPrompt('research', null, 'unknown-slot');
-  assert.ok(!prompt3.includes('[Pikachu 偏置]'), 'unknown slot → no bias');
+  assert.ok(!prompt3.includes('[皮卡丘 偏置]'), 'unknown slot → no bias');
   console.log('  ✓ testBuildSystemPromptResearchNoSlotBackwardCompat');
 }
 
@@ -515,8 +516,8 @@ function testFileManagement() {
     `slotId='pikachu' → per-slot 文件名,得到 ${pfPika}`);
   assert.ok(fs.existsSync(pfPika), 'per-slot prompt file should exist');
   const slotContent = fs.readFileSync(pfPika, 'utf-8');
-  assert.ok(slotContent.includes('[Pikachu 偏置]'),
-    'per-slot prompt file should contain Pikachu bias');
+  assert.ok(slotContent.includes('[皮卡丘 偏置]'),
+    'per-slot prompt file should contain 皮卡丘 bias');
 
   // covenant snapshot 不变 (不按 slot 区分)
   scenes.writeCovenantSnapshot(d, mid, '快照公约');

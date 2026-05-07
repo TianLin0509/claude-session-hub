@@ -25,8 +25,8 @@
 
 // dev scene (plan-dev-scenario.md): per-turn L2b 触发追注 — 复用 scenes.js 的检测/渲染
 const { detectDevTrigger, buildDevL2bSection } = require('./roundtable-scenes.js');
-
-const SLOT_IDS = ['pikachu', 'charmander', 'squirtle'];
+// 单一真理源：席位 id / 中文展示名 / icon 全部走 ai-kinds.js（避免双源头漂移）
+const { SLOT_IDS, SLOT_DISPLAY, getSlotPromptName } = require('./ai-kinds.js');
 
 // dev scene · 仅当 meeting.scene === 'dev' 时返回 L2b 段, 否则 null
 function _maybeDevL2b(meeting, turnNum, userInput) {
@@ -81,12 +81,6 @@ function derivePilotCompatDispatchMode(participants, mode) {
 // Prompt 模板（free 模式专用，P6 统一骨架·2026-05-04）
 // ---------------------------------------------------------------------------
 
-const SLOT_DISPLAY = {
-  pikachu:    { en: 'Pikachu',    icon: '⚡' },
-  charmander: { en: 'Charmander', icon: '🔥' },
-  squirtle:   { en: 'Squirtle',   icon: '💎' },
-};
-
 function _slotLabel(slotIdOrIdx) {
   let id;
   if (typeof slotIdOrIdx === 'number') {
@@ -99,7 +93,7 @@ function _slotLabel(slotIdOrIdx) {
       : slotIdOrIdx;
   }
   const d = id && SLOT_DISPLAY[id];
-  return d ? `${d.icon} ${d.en}` : 'AI';
+  return d ? `${d.icon} ${getSlotPromptName(id)}` : 'AI';
 }
 
 function _formatParticipantList(participants) {
@@ -136,7 +130,7 @@ function _renderFreeDispatchContext({ selfSlot, participants, turnKind, answerSt
   lines.push('- 模式:自由（参与者勾选）');
   lines.push(`- 轮次性质:${turnKind}`);
   lines.push(`- 回答方式:${answerStyle}`);
-  lines.push('- 轻提醒:≤ 1500 字 / 不写文件 / 不展开多步骤工作流');
+  lines.push('- 轻提醒:≤ 1500 字 / 写文件须用户许可 / 不展开多步骤工作流');
   return lines.join('\n');
 }
 

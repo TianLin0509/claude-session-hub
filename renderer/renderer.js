@@ -687,7 +687,7 @@ function renderSessionList() {
       //   PNG 图与卡片头像/footer 一致(assets/pokemon/*.png)。
       //   状态点: thinking/streaming(running)=黄, errored=红, idle/completed=绿, 创建中=灰。
       const SLOT_AVATAR_FILES = ['pikachu.png', 'charmander.png', 'squirtle.png'];
-      const SLOT_LABELS_M = ['⚡ Pikachu', '🔥 Charmander', '💎 Squirtle'];
+      const SLOT_LABELS_M = ['⚡ 皮卡丘', '🔥 小火龙', '💎 杰尼龟'];
       const miniJumpsHtml = (s._meeting.subSessions || []).slice(0, 3).map((subId, idx) => {
         const sub = sessions.get(subId);
         const label = SLOT_LABELS_M[idx] || `Slot ${idx + 1}`;

@@ -72,7 +72,7 @@ function testSummaryFirstLineContract() {
   assert.ok(/^\[.+ · 第 \d+ 轮 · .+\]$/.test(firstLine), `first line format, got: ${firstLine}`);
   assert.ok(firstLine.includes('第 7 轮'), 'turn number');
   assert.ok(firstLine.includes('@summary'), 'summary marker');
-  assert.ok(firstLine.includes('Squirtle'), 'summarizer label in @summary @<X>');
+  assert.ok(firstLine.includes('杰尼龟'), 'summarizer label in @summary @<X> (中文化 2026-05-08)');
   assert.ok(!firstLine.startsWith('# 自由模式'), 'P6 B1: no regression');
 }
 
@@ -109,9 +109,9 @@ function testFanoutListsParticipants() {
     turnNum: 1,
     sceneName: '通用圆桌',
   });
-  assert.ok(p.includes('Pikachu'), 'lists Pikachu');
-  assert.ok(p.includes('Charmander'), 'lists Charmander');
-  assert.ok(!p.includes('Squirtle'), '未勾选的不列出');
+  assert.ok(p.includes('皮卡丘'), 'lists 皮卡丘');
+  assert.ok(p.includes('小火龙'), 'lists 小火龙');
+  assert.ok(!p.includes('杰尼龟'), '未勾选的不列出');
 }
 
 // === P6 B1: free 取消主驾/副驾概念,prompt 不应包含这些字眼 ===
@@ -267,8 +267,9 @@ function testSlotLabelAcceptsNumericString() {
     sceneName: '通用圆桌',
   });
   // P6 后第一行不再含 selfLabel,改在调度上下文"你是"字段
-  assert.ok(p.includes('Pikachu'), 'numeric string slot should resolve to Pikachu (in 你是 field), not AI');
-  assert.ok(p.includes('- 你是:⚡ Pikachu'), 'verifies 你是 field renders correctly');
+  // 称谓中文化（2026-05-08）：_slotLabel 改走 getSlotPromptName 走中文
+  assert.ok(p.includes('皮卡丘'), 'numeric string slot should resolve to 皮卡丘 (in 你是 field), not AI');
+  assert.ok(p.includes('- 你是:⚡ 皮卡丘'), 'verifies 你是 field renders correctly');
   assert.ok(!p.includes('- 你是:AI'), 'no AI fallback for valid numeric string');
 }
 

@@ -218,8 +218,9 @@ function testKeyCallsitesUseAiKindsHelpers() {
     'roundtable-scenes.js BASE_RULES 模板字符串不应再含"你和另外两位 AI 同事（共三家"');
 
   // slot 化（2026-05-03）：BASE_RULES 必须包含 slot 昵称列表（防止 slot 化被回退到 kind）
-  assert.ok(/Pikachu\s*\/\s*Charmander\s*\/\s*Squirtle/.test(scenesSrc),
-    'roundtable-scenes.js BASE_RULES 必须含 "Pikachu / Charmander / Squirtle" 席位说明');
+  // 称谓中文化（2026-05-08）：席位昵称改用中文宝可梦名
+  assert.ok(/皮卡丘\s*\/\s*小火龙\s*\/\s*杰尼龟/.test(scenesSrc),
+    'roundtable-scenes.js BASE_RULES 必须含 "皮卡丘 / 小火龙 / 杰尼龟" 席位说明');
 
   console.log('  ✓ testKeyCallsitesUseAiKindsHelpers');
 }
@@ -229,11 +230,12 @@ function testSlotIdsModuleContract() {
   const m = require(path.join(REPO_ROOT, 'core', 'ai-kinds.js'));
   assert.deepStrictEqual(m.SLOT_IDS, ['pikachu', 'charmander', 'squirtle'],
     'SLOT_IDS 必须按 ["pikachu","charmander","squirtle"] 顺序');
-  assert.strictEqual(m.getSlotPromptName(0), 'Pikachu');
-  assert.strictEqual(m.getSlotPromptName('charmander'), 'Charmander');
-  assert.strictEqual(m.getSlotPromptName(2), 'Squirtle');
+  // 称谓中文化（2026-05-08）：getSlotPromptName 改返回中文，给 AI prompt 用
+  assert.strictEqual(m.getSlotPromptName(0), '皮卡丘');
+  assert.strictEqual(m.getSlotPromptName('charmander'), '小火龙');
+  assert.strictEqual(m.getSlotPromptName(2), '杰尼龟');
   assert.ok(m.getSlotDisplayLabel(0).includes('皮卡丘'), 'displayLabel 含中文宝可梦名');
-  assert.ok(m.getSlotDisplayLabel('squirtle').includes('Squirtle'), 'displayLabel 含英文 slot 名');
+  assert.ok(m.getSlotDisplayLabel('squirtle').includes('Squirtle'), 'displayLabel 仍保留英文 slot 名（双语展示）');
   assert.strictEqual(m.slotIdRegexAlternation(), 'pikachu|charmander|squirtle');
   assert.strictEqual(m.slotIdToIndex('pikachu'), 0);
   assert.strictEqual(m.slotIdToIndex('charmander'), 1);

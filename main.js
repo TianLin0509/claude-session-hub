@@ -673,7 +673,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
   if (opts && opts.model) sessionOpts.model = opts.model;
 
   // 圆桌 slot 化（2026-05-03 道雪）：圆桌 meeting 的 sub 按加入顺序分配 slot id
-  //   (pikachu/charmander/squirtle)，title 走 slot 名（"Pikachu" 等）。
+  //   (pikachu/charmander/squirtle)，title 走 slot 中文名（"皮卡丘" 等）。
   //   单 session 主桌（meeting 为空或非圆桌）不受影响（走 sessionManager 默认计数器）。
   //   slot 仅识别前 3 个 sub；第 4+ sub 视为额外，title 退回 sessionManager 默认。
   //   不覆盖调用方显式传入的 opts.title。
@@ -682,7 +682,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
     const currentSubCount = (meeting.subSessions || []).length;
     if (currentSubCount < SLOT_IDS.length) {
       slotId = SLOT_IDS[currentSubCount];
-      sessionOpts.title = getSlotPromptName(slotId); // "Pikachu" / "Charmander" / "Squirtle"
+      sessionOpts.title = getSlotPromptName(slotId); // "皮卡丘" / "小火龙" / "杰尼龟"
     }
   }
 
@@ -1436,7 +1436,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
         const s = sessionManager.getSession(sid);
         if (!s || s.status === 'dormant') return null;
         const slotId = slotIndexToId(idx);                    // 'pikachu'/'charmander'/'squirtle'/null（>3）
-        const slotName = slotId ? getSlotPromptName(slotId) : (s.title || s.kind || 'AI'); // "Pikachu"/...
+        const slotName = slotId ? getSlotPromptName(slotId) : (s.title || s.kind || 'AI'); // "皮卡丘"/...
         return { sid, kind: s.kind, slotId, slotIndex: idx, label: slotName };
       })
       .filter(Boolean);
@@ -1838,7 +1838,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
     // 方案 F：在 meta 带上 dispatchMode，让 timeline 写入能记录
     const meta = { dispatchMode: effectiveDispatchMode };
     if (mode === 'summary') {
-      // slot 化（2026-05-03）：meta.summarizer 写 slot 名（"Pikachu"），归档 / timeline
+      // slot 化（2026-05-03）：meta.summarizer 写 slot 中文名（"皮卡丘"），归档 / timeline
       //   都用 slot 名（去 kind 硬编码）。summarizerSlot 字段额外保留 slot id 便于过滤。
       meta.summarizer = summarizerSlot ? getSlotPromptName(summarizerSlot) : 'AI';
       meta.summarizerSlot = summarizerSlot;

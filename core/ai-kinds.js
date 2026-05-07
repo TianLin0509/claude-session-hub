@@ -134,10 +134,10 @@ const SLOT_DISPLAY = {
   squirtle:   { en: 'Squirtle',   zh: '杰尼龟', icon: '💎' },
 };
 
-// 给 prompt 用的纯英文名（AI 上下文用，国际化稳定）。
+// 给 prompt 用的中文名（AI 上下文用，亲切感优先；id 仍走英文 ASCII 在别处保留）。
 function getSlotPromptName(slotIdOrIndex) {
   const id = typeof slotIdOrIndex === 'number' ? SLOT_IDS[slotIdOrIndex] : slotIdOrIndex;
-  return SLOT_DISPLAY[id]?.en || 'AI';
+  return SLOT_DISPLAY[id]?.zh || 'AI';
 }
 
 // 给 UI 卡片显示用的双语标签（含 emoji）。
