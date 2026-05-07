@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>圆桌记忆系统 · 使用指南 · 2026-05-07</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d2991d;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+    max-width: 960px; margin: 0 auto; padding: 40px 24px;
+  }
+  h1 { font-size: 1.8em; margin-bottom: 8px; color: #fff; }
+  h2 { font-size: 1.3em; margin: 40px 0 16px; color: #fff; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 1.05em; margin: 24px 0 8px; color: #e6edf3; }
+  p, li { margin: 0 0 8px; max-width: 80ch; }
+  ul, ol { padding-left: 20px; margin-bottom: 12px; }
+  .subtitle { color: var(--muted); margin-bottom: 32px; font-size: 0.95em; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 20px 24px; margin: 16px 0;
+  }
+  .card h3 { margin-top: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.92em; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.82em; font-weight: 600; }
+  .badge-green { background: #1b3a1e; color: var(--green); }
+  .badge-orange { background: #3d2e0f; color: var(--orange); }
+  .badge-red { background: #3d1115; color: var(--red); }
+  .badge-blue { background: #0f2b3d; color: var(--accent); }
+  .badge-purple { background: #251a3d; color: var(--purple); }
+  .qa { margin: 20px 0; }
+  .qa .q { font-weight: 700; color: #fff; font-size: 1.05em; margin-bottom: 4px; }
+  .qa .a { color: var(--text); padding-left: 16px; border-left: 3px solid var(--accent); }
+  .ascii-box { background: #0d1117; border: 1px solid var(--border); padding: 20px; font-family: "Cascadia Code", Consolas, monospace; font-size: 0.85em; line-height: 1.5; white-space: pre; overflow-x: auto; }
+  .key-finding { background: #0f1a2d; border-left: 3px solid var(--accent); padding: 12px 16px; margin: 12px 0; border-radius: 0 6px 6px 0; }
+  .key-finding.red { background: #1a0f0f; border-left-color: var(--red); }
+  .key-finding.green { background: #0f1a14; border-left-color: var(--green); }
+  .key-finding.orange { background: #1a150f; border-left-color: var(--orange); }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
+  .highlight { color: #fff; font-weight: 600; }
+  .muted { color: var(--muted); font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>圆桌记忆系统 · 使用全景指南</h1>
+<p class="subtitle">Phase 0 → 1 → 2 → 3 完整交付 · 56/56 测试 · 6 轮多路评审收敛 · 2026-05-07</p>
+
+<!-- ============================================================ -->
+<h2>一、当前系统能力总览</h2>
+
+<div class="card">
+<h3>你使用时会感受到的 5 件事</h3>
+
+<table>
+<tr><th>#</th><th>能力</th><th>体现</th></tr>
+<tr>
+  <td>1</td>
+  <td><span class="highlight">AI 会自己决定"该记了"</span></td>
+  <td>聊到你的稳定偏好/风格/习惯时，AI 自动调 memory_write 记到自己的记忆文件。不需要你说"记住"——但你说了会 100% 记（source=explicit）。</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><span class="highlight">下次同 scene 圆桌，AI 自然引用上回的理解</span></td>
+  <td>通用的圆桌里 AI 记住了"你喜欢结论先行"→ 第二天再开通用圆桌 → AI 在回答里自然带出："上次你提过偏好直接给判断，我就不铺背景了。"——不是复读机，是自然延续。</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td><span class="highlight">每 3 轮后台 worker + DeepSeek 提炼三家共识</span></td>
+  <td>3 轮后 worker 自动 fork → DeepSeek 读取三家各自记忆 → 提炼出至少 2 家共现的稳定偏好 → 写入 _profile.md（上限 20 条）。下次新 meeting 开场自动注入给三家 AI。</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td><span class="highlight">每张 AI 卡片右上角可实时查看记忆</span></td>
+  <td>📒 N = 该 AI 个体记忆条数（实时更新），点击直接打开 .md 文件；📊 = 打开共识 _profile.md；📥 红点 = worker 发现漏记的候选项；🧠 = worker 健康状态灯。</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td><span class="highlight">通用 vs 投研互不污染</span></td>
+  <td>通用圆桌的记忆存在 general/ 下，投研的记忆在 research/ 下。通用圆桌学到的偏好不会影响投研圆桌的判断，反之亦然。</td>
+</tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>二、记忆归属关系（你最关心的核心）</h2>
+
+<div class="card">
+<h3>归属的三层结构</h3>
+
+<div class="ascii-box">记忆归属 = Identity（AI 身份）→ Scene（场景）→ File
+
+  具体文件：
+  .arena/rooms/{scene}/memory/{aiKind}-{model}.md
+
+  实例：
+  .arena/rooms/general/memory/claude-opus-4-7.md       ← Opus 4.7 在通用圆桌的所有记忆
+  .arena/rooms/general/memory/claude-sonnet-4-6.md     ← Sonnet 4.6 在通用圆桌的所有记忆
+  .arena/rooms/general/memory/deepseek-v4-pro.md       ← DeepSeek v4-pro 在通用圆桌的记忆
+  .arena/rooms/research/memory/claude-opus-4-7.md      ← Opus 4.7 在投研圆桌的记忆（隔离）
+  .arena/rooms/general/memory/_profile.md              ← 三家共识层（DeepSeek 派生，≤20 条）
+  .arena/rooms/general/memory/pending-claude-opus-4-7.json  ← worker 建议 Opus 采纳的候选项</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>三、你问的核心问题：Opus 4.7 和 Opus 4.6 共享记忆吗？</h2>
+
+<div class="key-finding red">
+<strong>不共享。完全隔离。</strong>
+</div>
+
+<p>Phase 3 的设计粒度是 <code>AI_KIND + MODEL</code>，精确到模型版本：</p>
+
+<table>
+<tr><th>模型</th><th>记忆文件</th><th>关系</th></tr>
+<tr><td>Claude Opus 4.7</td><td><code>claude-opus-4-7.md</code></td><td>独立个体</td></tr>
+<tr><td>Claude Opus 4.6</td><td><code>claude-opus-4-6.md</code></td><td>独立个体</td></tr>
+<tr><td>Claude Sonnet 4.6</td><td><code>claude-sonnet-4-6.md</code></td><td>独立个体</td></tr>
+<tr><td>Gemini 3 Pro</td><td><code>gemini-3-pro.md</code></td><td>独立个体</td></tr>
+<tr><td>DeepSeek V4 Pro</td><td><code>deepseek-v4-pro.md</code></td><td>独立个体</td></tr>
+<tr><td>Codex GPT-5.2</td><td><code>codex-gpt-5-2-codex.md</code></td><td>独立个体</td></tr>
+</table>
+
+<div class="key-finding green" style="margin-top:16px;">
+<strong>为什么这样设计？</strong><br>
+Opus 4.7 和 Opus 4.6 是不同的模型——推理深度、回答风格、判断标准都不同。如果共享记忆，4.6 写的偏好被 4.7 读到，等于让 4.7 继承了一份"不是自己观察到的"记忆。每个模型版本是独立的思考伙伴，记忆也应独立。
+</div>
+
+<div class="key-finding orange">
+<strong>潜在代价（已知，当前不修）：</strong><br>
+升级模型时（如 Opus 4.7 → 4.8），旧模型的记忆 "被弃用"，新模型从零开始。这是当前设计的 trade-off——精确隔离 vs 平滑升级。Phase 4+ 可考虑"同家族 fallback"（找不到 4.8 时读 4.7 的记忆作为过渡）。
+</div>
+
+<!-- ============================================================ -->
+<h2>四、文件地图：你能看到什么、什么时候看</h2>
+
+<h3>4.1 日常使用（点按钮，不用手动找）</h3>
+
+<div class="card">
+<table>
+<tr><th>按钮</th><th>打开的文件</th><th>内容</th><th>什么时候看</th></tr>
+<tr>
+  <td>📒 <strong>N</strong></td>
+  <td><code>{aiKind}-{model}.md</code></td>
+  <td>该 AI 个体记忆全文<br>每一条 = header 行 + content 行<br>含 recall 计数、写入时间、来源</td>
+  <td>每 2-3 天顺手点一次<br>看 AI 记的东西对不对</td>
+</tr>
+<tr>
+  <td>📊</td>
+  <td><code>_profile.md</code></td>
+  <td>三家共识层<br>DeepSeek 派生（≤20 条）<br>含 recall 计数、frontmatter 元数据</td>
+  <td>每周末翻一次<br>看"AI 眼中的我"像不像</td>
+</tr>
+<tr>
+  <td>📥 <span style="color:var(--red);">●</span></td>
+  <td><code>pending-{aiKind}-{model}.json</code></td>
+  <td>worker 建议某 AI 采纳的候选项<br>status: pending / accepted / rejected</td>
+  <td>看到红点出现时<br>看 worker 发现了什么 AI 还没记</td>
+</tr>
+<tr>
+  <td>🧠</td>
+  <td><code>checkpoint-state.json</code></td>
+  <td>worker 健康状态<br>失败计数、最近失败原因</td>
+  <td>灯变橙/红时点开<br>看 worker 出了什么问题</td>
+</tr>
+</table>
+</div>
+
+<h3>4.2 手动深入（路径参考）</h3>
+
+<div class="ascii-box">&lt;projectCwd&gt;/.arena/rooms/general/
+  ├── timeline.md                          ← 圆桌叙事历史（人可读）
+  ├── checkpoint-state.json               ← worker 状态（失败计数、检查点位置）
+  └── memory/
+      ├── claude-opus-4-7.md             ← ⚡ Pikachu 坐 Opus 4.7 时的记忆
+      ├── gemini-3-pro.md                ← 🔥 Charmander 坐 Gemini 3 Pro 时的记忆
+      ├── codex-gpt-5-2-codex.md         ← 💎 Squirtle 坐 Codex 时的记忆
+      ├── _profile.md                    ← 三家共识（DeepSeek 派生，每场开场注入）
+      ├── pending-claude-opus-4-7.json   ← Opus 4.7 的待采纳候选项
+      ├── pending-gemini-3-pro.json
+      ├── pending-codex-gpt-5-2-codex.json
+      ├── inbox-archived/                ← 拒绝/过期的 pending（180 天 GC）
+      └── legacy-by-slot/                ← phase 1/2 旧 slot 文件归档（历史证据）</div>
+
+<!-- ============================================================ -->
+<h2>五、验证节奏：从第一天到第二周</h2>
+
+<div class="grid-2">
+<div class="card">
+<h3>第 1 天 · 首次使用</h3>
+<p><strong>做什么：</strong>开通用圆桌，正常聊业务（不要刻意说"记住"）</p>
+<p><strong>看完什么：</strong></p>
+<ul>
+  <li>是否有 AI 的 📒 N > 0？（真自主写）</li>
+  <li>点 📒 打开 .md，<code>source</code> 是 <code>self</code> 还是 <code>explicit</code>？</li>
+  <li>内容是不是真偏好，不是临时观点？</li>
+</ul>
+</div>
+
+<div class="card">
+<h3>第 2 天 · 关键测试 ⭐</h3>
+<p><strong>做什么：</strong>开 <strong>同 scene</strong> 新通用圆桌，直接聊业务，不提任何偏好</p>
+<p><strong>看完什么：</strong></p>
+<ul>
+  <li>AI 是否自然引用昨天的偏好？</li>
+  <li>引用是 "你之前提过 X，所以 Y"（自然）还是 "根据记忆系统记录..."（机械）？</li>
+  <li>如果完全失忆 → 跨 meeting fix 可能没生效，需要查</li>
+</ul>
+</div>
+
+<div class="card">
+<h3>第 3-7 天 · 日常积累</h3>
+<p><strong>做什么：</strong>每天用 1-2 场圆桌，<strong>别看文件</strong></p>
+<p><strong>周末看：</strong></p>
+<ul>
+  <li>📒 N 增长是否平稳（每场 +1~3 条）？</li>
+  <li>📊 _profile.md 共识条目是否稳定？</li>
+  <li>抽查 5-10 条：误记率 &lt; 10%？</li>
+</ul>
+</div>
+
+<div class="card">
+<h3>第 2 周+ · 信任建立</h3>
+<p><strong>做什么：</strong>日常用，不刻意验证</p>
+<p><strong>问自己：</strong></p>
+<ul>
+  <li>AI 在不被问的时候自然带出某条偏好？</li>
+  <li>看 _profile 觉得 "这就是我"？</li>
+  <li>&#34;惊喜感&#34; 出现了吗？</li>
+</ul>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>六、关键 Issues（我们认为你需要知道的）</h2>
+
+<h3>6.1 自主写入率未知</h3>
+<div class="key-finding orange">
+<strong>Issue：</strong>E2E 验证了链路（AI 能调 memory_write），但 <strong>自然对话中的自主写入率有多高</strong>——不知道。这取决于 MEMORY PROTOCOL 引导段是否够强但不机械。如果一周后 📒 N 全是 0，说明 prompt 引导不足；如果暴涨（每场 +10），说明 AI "为记而记"。
+</div>
+
+<h3>6.2 多模型前台兼容性是债</h3>
+<div class="key-finding orange">
+<strong>Issue：</strong>Phase 0-3 所有 E2E 用 Claude Sonnet（避 Opus 配额 + Gemini/Codex CLI 接入 bug 未修）。<strong>Gemini 和 Codex 作为圆桌参与者是否能正常调 memory MCP</strong>——已知还没测过。当前系统在 "已接入稳定" 的 CLI 上是 production-ready；对 Gemini/Codex，要等接入 bug 修完再补测。
+</div>
+
+<h3>6.3 模型升级时记忆断层</h3>
+<div class="key-finding orange">
+<strong>Issue：</strong>Opus 4.7 → 4.8 升级后，新版本读不到旧版本的记忆文件（因为文件名不同）。当前按你的拍板做了精确隔离——这是正确的初始设计。但如果频繁升级模型，会一直 "从头开始"。
+</div>
+
+<h3>6.4 跨 scene 污染风险</h3>
+<div class="key-finding green">
+<strong>已验证 OK：</strong>通用和投研的 memory 完全隔离（不同 directory）。<strong>但：</strong>如果以后你在通用圆桌里聊了很多投研内容，AI 在 general/ 下记了投研相关的偏好——这些不会污染 research/ 圆桌，但会留在 general 记忆里。这不算是 bug，只是通用圆桌的 "边界感" 取决于你自己怎么用。
+</div>
+
+<h3>6.5 认知固化风险</h3>
+<div class="key-finding red">
+<strong>Issue：</strong>记忆系统的本意是 "越用越懂你"，但过度记住会变成 "被过去绑架"。当前防线有 3 层：(1) MEMORY PROTOCOL「不要记」条款禁止记临时结论；(2) _profile.md 淘汰规则每轮派生都会 prune；(3) 90 天未引用的记忆会被衰减（strikethrough）。<strong>但这些防线是否足够</strong>——需要你长期使用后主观判断。
+</div>
+
+<h3>6.6 pending inbox 采纳率未知</h3>
+<div class="key-finding orange">
+<strong>Issue：</strong>Worker 会生成 pending 候选项（"你漏记了这个"），然后 hook 注入给 AI。AI 自决采纳或拒绝。<strong>但 AI 真的会采纳吗？采纳率多少？</strong>——测试用 explicit trigger 模拟过链路，但 AI 自主决定采纳/拒绝的行为未大规模观察过。如果采纳率趋近 0，inbox 机制就只是开销，不产生价值。
+</div>
+
+<!-- ============================================================ -->
+<h2>七、问题速查表</h2>
+
+<div class="card">
+<table>
+<tr><th>现象</th><th>看哪个文件</th><th>看什么字段</th></tr>
+<tr>
+  <td>🧠 灯变橙/红</td>
+  <td><code>checkpoint-state.json</code></td>
+  <td><code>consecutive_failures</code> + <code>last_failure_reason</code></td>
+</tr>
+<tr>
+  <td>AI 好几天不写新记忆</td>
+  <td>个体 .md（mtime / 📒 N）</td>
+  <td>mtime 是否停在几天前 → prompt 引导可能太弱</td>
+</tr>
+<tr>
+  <td>AI 记的东西不是偏好是临时观点</td>
+  <td>个体 .md 抽样</td>
+  <td><code>kind</code> 字段 + 读 content 内容判断</td>
+</tr>
+<tr>
+  <td>跨 meeting 没 recall</td>
+  <td><code>_profile.md</code> + 个体 .md</td>
+  <td>共识条目是否真存在？个体 .md 的 recall 计数在涨吗？</td>
+</tr>
+<tr>
+  <td>AI 引用记忆太机械</td>
+  <td>聊天的 AI 回答正文</td>
+  <td>是否每段开头都是 "根据记忆..." → prompt 引导段需要调</td>
+</tr>
+<tr>
+  <td>📥 红点一直不消失</td>
+  <td><code>pending-{aiKind}-{model}.json</code></td>
+  <td>items 数组里全是 pending 没有 accepted → AI 拒绝采纳</td>
+</tr>
+<tr>
+  <td>怀疑 worker 派生质量差</td>
+  <td><code>_profile.md</code></td>
+  <td>条目频繁替换（每周换一批新共识）→ DeepSeek 派生不稳</td>
+</tr>
+<tr>
+  <td>记忆文件膨胀</td>
+  <td>个体 .md 文件大小</td>
+  <td>单文件 &gt; 50 条 → AI 写太勤，调 prompt「不要记」条款</td>
+</tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>八、五个核心归属问题（直接回答）</h2>
+
+<div class="qa">
+<div class="q">Q1: Opus 4.7 和 Opus 4.6 共享记忆吗？</div>
+<div class="a"><strong>不共享。完全隔离。</strong>它们是两个独立的 .md 文件。你从 Opus 4.7 升级到 4.8 时——新 4.8 读不到 4.7 的记忆（这是已知 trade-off，不是 bug）。</div>
+</div>
+
+<div class="qa">
+<div class="q">Q2: 同模型同版本，今天坐 Pikachu，明天坐 Charmander——记忆是同一个文件吗？</div>
+<div class="a"><strong>是同一个文件。</strong>Opus 4.7 的记忆文件是 <code>claude-opus-4-7.md</code>，不管 Opus 坐在哪个槽位，都读写这同一个文件。这就是 identity-based（AI 是主体，槽位只是 UI 标签）。</div>
+</div>
+
+<div class="qa">
+<div class="q">Q3: 通用圆桌和投研圆桌的 Opus 4.7——共享记忆吗？</div>
+<div class="a"><strong>不共享。</strong>通用圆桌的 <code>claude-opus-4-7.md</code> 在 <code>general/memory/</code> 下；投研的在 <code>research/memory/</code> 下。不同 scene 完全隔离，互不污染。你在通用圆桌里讨论投研内容产生的偏好，不会影响投研圆桌。</div>
+</div>
+
+<div class="qa">
+<div class="q">Q4: _profile.md 是谁写的？AI 能改吗？</div>
+<div class="a"><strong>_profile.md 由后台 worker 调用 DeepSeek v4-pro 派生，AI 只读不能写。</strong>Worker 每 3 轮（+ token 阈值）读三家个体记忆 → DeepSeek 找至少 2 家共现的稳定偏好 → 写入。AI 每次新 meeting 开场自动读 _profile 注入上下文。这条红线守得很死——worker 不越权写个体记忆，AI 不改共识层。</div>
+</div>
+
+<div class="qa">
+<div class="q">Q5: 如果我手动删了某个 .md 文件里的某条记忆——会怎样？</div>
+<div class="a"><strong>系统下次读写时自动从文件重新 load。</strong>没有中间缓存层。你删了一条 → AI 下次 memory_list 就看不到 → 等于那件事没发生过。这正是你最初要的"半透明"——你用文本编辑器，记忆系统用同一份文件，零中间层。</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>九、一句话总结</h2>
+
+<div class="card" style="text-align:center; padding: 32px;">
+<p style="font-size:1.15em; margin-bottom:8px;">
+<strong>记忆现在属于 AI 个体（Opus / GPT / DeepSeek），不属于座位（Pikachu / Charmander / Squirtle）。</strong>
+</p>
+<p style="color:var(--muted);">
+同一个模型换座不丢记忆 · 不同模型同座不串记忆 · 不同场景互不污染 · 你随时可以打开 .md 文件看一切。
+</p>
+<p style="color:var(--muted); margin-top:16px;">
+工程证据 → 56/56 测试 + 6 轮多路评审。<br>
+产品证据 → 需要你 2-3 周日常使用去建立。代码已经准备好了。
+</p>
+</div>
+
+<p class="muted" style="margin-top:40px; text-align:center;">
+生成于 2026-05-07 · Phase 0/1/2/3 完整交付 · 基于圆桌 39 轮讨论收敛
+</p>
+
+</body>
+</html>

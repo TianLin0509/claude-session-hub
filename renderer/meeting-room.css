@@ -1708,6 +1708,70 @@ body.mr-density-compact .mr-rt-cost-bar {
 .mr-ft-ctx.ok   { background: rgba(74,222,128,0.15); color: #4ade80; }
 .mr-ft-ctx.warn { background: rgba(250,204,21,0.15); color: #fde68a; }
 .mr-ft-ctx.high { background: rgba(248,113,113,0.15); color: #fca5a5; }
+
+/* 圆桌记忆 phase 1（2026-05-07）：📒 N / 📥 / 📊 三按钮（紧邻 Ctx 角标）
+   极简风：emoji + 数字，hover 高亮，点击 = 打开对应 .md 文件 */
+.mr-ft-mem-btn {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.04);
+  color: #c9d1d9;
+  border: 1px solid rgba(255,255,255,0.08);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: background 120ms ease, border-color 120ms ease;
+  line-height: 1.2;
+  margin-left: 2px;
+}
+.mr-ft-mem-btn:hover {
+  background: rgba(255,255,255,0.10);
+  border-color: rgba(255,255,255,0.18);
+  color: #f0f6fc;
+}
+.mr-ft-mem-btn.pending {
+  background: rgba(250,204,21,0.14);
+  color: #fde68a;
+  border-color: rgba(250,204,21,0.3);
+}
+.mr-ft-mem-btn .dot {
+  display: inline-block;
+  background: #f59e0b;
+  color: #1a1a1a;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 0 5px;
+  margin-left: 2px;
+  line-height: 1.4;
+}
+/* Phase 2 P1（2026-05-07）：worker 失败状态灯
+   health-warn: 1-2 次失败（橙）/ health-bad: ≥3 次连续失败（红） */
+.mr-ft-mem-btn.health-warn {
+  background: rgba(251,146,60,0.16);
+  color: #fdba74;
+  border-color: rgba(251,146,60,0.35);
+}
+.mr-ft-mem-btn.health-warn:hover {
+  background: rgba(251,146,60,0.26);
+  border-color: rgba(251,146,60,0.55);
+  color: #fed7aa;
+}
+.mr-ft-mem-btn.health-bad {
+  background: rgba(248,113,113,0.18);
+  color: #fca5a5;
+  border-color: rgba(248,113,113,0.4);
+  animation: mr-ft-mem-pulse 2.4s ease-in-out infinite;
+}
+.mr-ft-mem-btn.health-bad:hover {
+  background: rgba(248,113,113,0.30);
+  border-color: rgba(248,113,113,0.6);
+  color: #fecaca;
+}
+@keyframes mr-ft-mem-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0.0); }
+  50% { box-shadow: 0 0 0 3px rgba(248,113,113,0.18); }
+}
 .mr-ft-preview {
   font-size: 12px; color: #8b949e; line-height: 1.5;
   flex: 1;                  /* card-redesign：在 .mr-ft-bottom 里撑满，不再硬限高度 */

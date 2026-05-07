@@ -95,6 +95,30 @@ function kindRegexAlternation() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4 family canonical 映射（圆桌记忆系统按家族存储）
+//   - 'codex' (Codex CLI) 与 'gpt' (packy-gpt 跑 GPT-5.5) 都是 OpenAI 家族 → 合并到 'gpt'
+//   - 'claude-resume' 是 Claude resume 路径（语义同 'claude'）→ 归为 'claude'
+//   - 其他 7 个 kind 各自独立家族
+//   返回 7 个家族字符串：claude / gemini / gpt / deepseek / glm / kimi / qwen
+// ---------------------------------------------------------------------------
+// 圆桌记忆系统的 7 个家族存储 key 集合（去重 canonical 后）
+const FAMILY_KINDS = ['claude', 'gemini', 'gpt', 'deepseek', 'glm', 'kimi', 'qwen'];
+const _FAMILY_SET = new Set(FAMILY_KINDS);
+
+function canonicalAiKind(rawKind) {
+  if (rawKind === 'codex') return 'gpt';
+  if (rawKind === 'claude-resume') return 'claude';
+  const out = rawKind || 'unknown';
+  // [Phase 4 silent-failure-hunt] 静默 fall-through 会让未来新加的 kind（如 'mistral'）
+  //   生成预期外的 .md 文件，且 _runLegacyMigration 不会归档它（因为不在 FAMILY_SET）。
+  //   warn 一次即可让维护者知道补 FAMILY_KINDS。
+  if (!_FAMILY_SET.has(out) && out !== 'unknown') {
+    console.warn(`[ai-kinds] canonicalAiKind: unknown kind '${rawKind}', treating as-is — 请补 FAMILY_KINDS`);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // 圆桌席位（slot）单一真理源 — 2026-05-03 道雪
 //   背景：圆桌允许 5 选 3 + 同 kind 多份（如 3 claude），按 kind 区分总结人/@对象
 //     不可行（dropdown 只显 1 个 Claude，sidByKind 永远返回首匹配）。改为按 slot 索引
@@ -148,6 +172,9 @@ module.exports = {
   getKindLabel,
   listKindsForPrompt,
   kindRegexAlternation,
+  // Phase 4 圆桌记忆家族级共享
+  canonicalAiKind,
+  FAMILY_KINDS,
   // slot 单一真理源
   SLOT_IDS,
   SLOT_DISPLAY,

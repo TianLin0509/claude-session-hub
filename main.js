@@ -18,7 +18,7 @@ try {
 } catch (err) {
   console.warn('[feishu] client module unavailable, feishu integration disabled:', err.message);
 }
-const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
+const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir, getSceneMemoryRoot, isUserProjectCwd } = require('./core/data-dir.js');
 const { MeetingRoomManager, isRoundtableCapableMeeting } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
 const sessionStore = require('./core/session-store.js');
@@ -227,18 +227,33 @@ function ensureGeminiMcpInstalled() {
   if (!settings.mcpServers || typeof settings.mcpServers !== 'object') {
     settings.mcpServers = {};
   }
-  const mcpServerPath = path.resolve(__dirname, 'core', 'research-mcp-server.js');
-  const desired = {
+  const researchMcpPath = path.resolve(__dirname, 'core', 'research-mcp-server.js');
+  const memoryMcpPath = path.resolve(__dirname, 'core', 'roundtable-memory-mcp-server.js');
+  const desiredResearch = {
     command: process.execPath,
-    args: [mcpServerPath],
+    args: [researchMcpPath],
     env: { ELECTRON_RUN_AS_NODE: '1' },
   };
-  const existing = settings.mcpServers['arena-research'];
-  if (existing && JSON.stringify(existing) === JSON.stringify(desired)) return;
-  settings.mcpServers['arena-research'] = desired;
+  // plan 2026-05-05 阶段 0: arena-roundtable-memory 同样全局注册到 gemini，
+  //   靠 ARENA_AI_SLOT/MEETING_ID/HUB_PORT/HOOK_TOKEN env 启 STUB 决定是否暴露 tools。
+  const desiredMemory = {
+    command: process.execPath,
+    args: [memoryMcpPath],
+    env: { ELECTRON_RUN_AS_NODE: '1' },
+  };
+  let dirty = false;
+  if (JSON.stringify(settings.mcpServers['arena-research']) !== JSON.stringify(desiredResearch)) {
+    settings.mcpServers['arena-research'] = desiredResearch;
+    dirty = true;
+  }
+  if (JSON.stringify(settings.mcpServers['arena-roundtable-memory']) !== JSON.stringify(desiredMemory)) {
+    settings.mcpServers['arena-roundtable-memory'] = desiredMemory;
+    dirty = true;
+  }
+  if (!dirty) return;
   try {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    console.log('[圆桌] arena-research MCP installed into Gemini settings.json');
+    console.log('[圆桌] arena-research + arena-roundtable-memory MCP installed into Gemini settings.json');
   } catch (e) {
     console.warn('[圆桌] gemini mcp install failed:', e.message);
   }
@@ -455,9 +470,21 @@ transcriptTap.on('turn-complete', (ev) => {
 // Persist resume meta when transcript-tap binds a sub-session to its native CLI sid.
 transcriptTap.on('session-bound', (ev) => {
   if (!ev || !ev.hubSessionId) return;
+  try {
+    if (ev.kind === 'codex' && ev.codexSid) sessionManager.updateSessionMeta(ev.hubSessionId, { codexSid: ev.codexSid });
+  } catch {}
   // Find the session in lastPersistedSessions and merge new fields.
   const idx = lastPersistedSessions.findIndex(s => s.hubId === ev.hubSessionId);
-  if (idx < 0) return;
+  if (idx < 0) {
+    if (ev.kind === 'codex' && ev.codexSid) {
+      sendToRenderer('session-meta-updated', {
+        hubSessionId: ev.hubSessionId,
+        kind: ev.kind,
+        codexSid: ev.codexSid,
+      });
+    }
+    return;
+  }
   const cur = lastPersistedSessions[idx];
   let changed = false;
   if (ev.kind === 'codex' && ev.codexSid && cur.codexSid !== ev.codexSid) {
@@ -608,7 +635,13 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
 // without a backend (powershell/deepseek/glm).
 function registerSessionForTap(session) {
   if (!session || !session.id) return;
-  try { transcriptTap.registerSession(session.id, session.kind, { cwd: session.cwd, sessionsRoot: session.codexSessionsRoot || undefined }); }
+  try {
+    transcriptTap.registerSession(session.id, session.kind, {
+      cwd: session.cwd,
+      sessionsRoot: session.codexSessionsRoot || undefined,
+      codexSid: session.codexSid || undefined,
+    });
+  }
   catch (e) {
     // silent-failure-hunter L2（2026-05-04 道雪）：注册失败 → watcher 收不到 turn-complete L1
     //   信号 → 圆桌等到 180s 软提醒才感知该家"卡住"。日志方便定位根因。
@@ -683,18 +716,27 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
     //   slotId === null (第 4+ sub 或非圆桌) 时 writePromptFile 退回老文件名。
     const promptFile = scenes.writePromptFile(hubDataDir, meetingId, meeting.scene, covenantText, slotId);
     // DeepSeek/GLM/GPT/Kimi/Qwen 跑在 Claude CLI 上（CLAUDE_CONFIG_DIR 隔离），需要相同的 system prompt 注入。
+    // plan 2026-05-05 阶段 0：非 research 场景且 slot 已分配时，启用 memory MCP（跨 general/dev）。
+    //   research scene 单 mcpConfig 文件名额仍归 research（合并方案推迟到阶段 1+）。
+    //   slotId === null（第 4+ sub）→ 不启 memory（无个体 .md 文件可写）。
+    const memoryMcpEnabled = !!(slotId && hookPort
+      && sceneObj && sceneObj.mcpConfig !== 'research');
+    // Phase 3：把当前 sub 的 model 传给 MCP server，作为 identity 派生输入。
+    //   model 可能是字符串（"claude-opus-4-7" / "gemini-3-pro" / "gpt-5.2-codex" / null）。
+    //   缺失时透传空串 → hookServer 兜底 'default' 派生 'claude-default' 等 identity。
+    const aiModelEnv = (sessionOpts.model && typeof sessionOpts.model === 'string') ? sessionOpts.model : '';
     if (isClaudeFamily(kind)) {
       sessionOpts.appendSystemPromptFile = promptFile;
       if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
         sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude');
       } else if (sceneObj && sceneObj.mcpConfig === 'research' && !hookPort) {
         console.warn('[圆桌] research scene Claude/DS/GLM in meeting ' + meetingId + ' but hookPort unavailable — MCP tools unavailable');
+      } else if (memoryMcpEnabled) {
+        // Phase 3：MCP config 多写一个 ARENA_AI_MODEL env（让 mcp-server 把 model 透传到 hookServer）
+        sessionOpts.mcpConfigFile = scenes.writeRoundtableMemoryMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude', slotId, aiModelEnv);
       }
     } else if (kind === 'gemini') {
       sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
-      // Inject ARENA_* env so the arena-research MCP server (registered globally
-      // in ~/.gemini/settings.json by ensureGeminiMcpInstalled) wakes up with
-      // tool list. Without these env vars the server enters STUB mode (no tools).
       if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
         Object.assign(sessionOpts.extraEnv, {
           ELECTRON_RUN_AS_NODE: '1',
@@ -703,12 +745,24 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
           ARENA_HOOK_TOKEN: HOOK_TOKEN,
           ARENA_AI_KIND: 'gemini',
         });
+      } else if (memoryMcpEnabled) {
+        Object.assign(sessionOpts.extraEnv, {
+          ELECTRON_RUN_AS_NODE: '1',
+          ARENA_MEETING_ID: meetingId,
+          ARENA_HUB_PORT: String(hookPort),
+          ARENA_HOOK_TOKEN: HOOK_TOKEN,
+          ARENA_AI_KIND: 'gemini',
+          ARENA_AI_MODEL: aiModelEnv,
+          ARENA_AI_SLOT: slotId,
+        });
       }
     } else if (kind === 'codex') {
       sessionOpts.codexInstructionFile = promptFile;
       sessionOpts.codexBypassApprovals = true;
       if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
         sessionOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN)];
+      } else if (memoryMcpEnabled) {
+        sessionOpts.codexMcpEntries = [scenes.buildRoundtableMemoryMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN, slotId, aiModelEnv)];
       }
     }
   }
@@ -998,6 +1052,10 @@ const rtTimeline = require('./core/roundtable-timeline.js');
 const rtInjection = require('./core/roundtable-injection.js');
 const rtArchive = require('./core/roundtable-archive.js');
 const rtWatcher = require('./core/roundtable-watcher.js');
+const rtMemoryStore = require('./core/roundtable-memory/store.js');
+const rtCkptState = require('./core/roundtable-memory/checkpoint-state.js');
+const rtCkptTrigger = require('./core/roundtable-memory/checkpoint-trigger.js');
+const rtInbox = require('./core/roundtable-memory/inbox.js');
 rtWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
 let _roundtableInProgress = new Set(); // 同会议室单一并发：set of meetingId
 
@@ -1502,6 +1560,18 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       console.warn('[roundtable] timeline ensureFile failed:', e.message);
     }
 
+    // 圆桌记忆 phase 1（2026-05-07）：fanout 模式 bump user_msg_count（debate/summary 不 bump）
+    //   debate 是同一用户问题的延续；summary 是 AI 自摘要，都不算"新一轮 user 发言"。
+    //   bump 失败不阻塞 dispatch（memory 是辅助层，主流程对其错误零依赖）。
+    // Phase 2 P0（2026-05-07）：memory 用独立 _memProjectCwd（跨 meeting 共享根），
+    //   与 timeline 的 projectCwd（per-meeting）解耦。
+    const _memScene = sceneObj?.key || meeting.scene || 'general';
+    const _memProjectCwd = _resolveMemoryProjectCwd(meetingId);
+    if (_memProjectCwd && _memScene && mode === 'fanout') {
+      try { rtCkptState.bumpUserMsgCount(_memProjectCwd, _memScene); }
+      catch (e) { console.warn('[mem-ckpt] bumpUserMsgCount failed:', e.message); }
+    }
+
     // 决定本轮的目标 sid 集合 + 拼 per-sid prompt
     const targets = []; // [{ sid, kind, label, prompt }]
     let turnNum;
@@ -1608,6 +1678,45 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       targets.push({ ...target, prompt });
     } else {
       return { status: 'error', reason: 'unknown mode', turnNum: null };
+    }
+
+    // 圆桌记忆 phase 1（2026-05-07）：dispatch 前给每 slot prepend pending inbox（如有）
+    //   - 取候选时 remind_count++（pickForInject 内部）
+    //   - 注入到 prompt 头部，AI 自决调 memory_write 采纳 / 不调即拒绝
+    //   - 失败不阻塞主流程
+    //
+    // [Bug 1 fix · 2026-05-07 多路评审 P0] worker 跑期间跳过注入，避免主进程 pickForInject 与
+    //   worker reconcile/appendCandidates 并发读写 pending-{slot}.json 互相覆盖。
+    //   降级行为：worker 5s 窗口内 inbox 不显示 → 下回合就显示。可接受。
+    const _memWorkerLocked = (_memProjectCwd && _memScene)
+      ? rtCkptTrigger.isLocked(_memProjectCwd, _memScene)
+      : false;
+    if (_memProjectCwd && _memScene && !_memWorkerLocked) {
+      // [Bug 9 + Bug 14 fix · v2/v3 P2] pickForInject 写盘前再校验一次 lock
+      const _memIsLockedCheck = () => rtCkptTrigger.isLocked(_memProjectCwd, _memScene);
+      for (const t of targets) {
+        if (typeof t.slotId !== 'string') continue;
+        // Phase 3：从 sub session 派生 identity 而非直接用 slot
+        const _idInfo = _identityFromMeetingSlot(meeting, t.slotId);
+        if (!_idInfo || !_idInfo.identity) continue;
+        const _identity = _idInfo.identity;
+        try {
+          const r = rtInbox.pickForInject(_memProjectCwd, _memScene, _identity, 5, { isLockedCheck: _memIsLockedCheck });
+          // 防御性显式跳过 skippedSave（worker 在 picking 期间抢到 lock）— 不 inject 未持久化的 items
+          if (!r || r.skippedSave || !r.items || r.items.length === 0) continue;
+          const lines = r.items.map((it, i) =>
+            `${i + 1}. \`${it.kind || 'preference'}:${it.key}\` — ${it.content}\n   reason: ${it.reason || '-'} · priority: ${!!it.priority} · 已提醒 ${it.remind_count || 0}/${rtInbox.MAX_REMIND_COUNT} 次`
+          ).join('\n');
+          const head = `## [INBOX] 后台 worker 派生的记忆候选（${r.items.length} 条）\n\n` +
+            '检视后决策：\n' +
+            '- 看下来正确 → 调 `memory_write({scope:"scene", kind:"...", key:"...", content:"...", source:"inbox"})` 写到自己的记忆\n' +
+            '- 看下来不对 → 不必处理（提醒 ' + rtInbox.MAX_REMIND_COUNT + ' 次后自动归档；或直接 Edit 文件删该 item）\n\n' +
+            '候选列表：\n' + lines + '\n\n---\n\n';
+          t.prompt = head + (t.prompt || '');
+        } catch (e) {
+          console.warn('[mem-inbox] pickForInject failed slot=' + t.slotId + ':', e.message);
+        }
+      }
     }
 
     // Resend & Auto-Recovery（2026-05-03）— Step 1：每家 dispatch 前清掉它身上的老 patch listener
@@ -1773,6 +1882,47 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
     }
 
     sendToRenderer('roundtable-turn-complete', { meetingId, turnNum, mode, results, meta });
+
+    // 圆桌记忆 phase 1（2026-05-07）：本轮发完后异步触发 checkpoint worker（如条件达标）
+    //   - 仅 fanout/debate 触发（summary 是 AI 自摘要，不算用户发言）
+    //   - 显式触发：用户输入含"记一下/总结一下/记下来/存档"
+    //   - setImmediate 延后到当前栈结束，避免阻塞 turn-complete 通知 renderer
+    //   - 失败不影响 turn 流程，已由 worker 自身写 checkpoint-state.last_failure_reason
+    if (_memProjectCwd && _memScene && (mode === 'fanout' || mode === 'debate')) {
+      const force = /记一下|总结一下|记下来|存档|存一下/.test(userInput || '');
+      // Phase 3：从本轮 sub sessions 派生当前 identities（worker 用作 IDENTITIES 列表）
+      const _curIdentities = [];
+      for (const sub of subs) {
+        if (typeof sub.slotId !== 'string') continue;
+        const idi = _identityFromMeetingSlot(meeting, sub.slotId);
+        if (idi && idi.identity && !_curIdentities.includes(idi.identity)) _curIdentities.push(idi.identity);
+      }
+      setImmediate(() => {
+        try {
+          const r = rtCkptTrigger.maybeRunCheckpoint({
+            projectCwd: _memProjectCwd,
+            scene: _memScene,
+            identities: _curIdentities,
+            turn: turnNum,
+            force,
+            onComplete: (res) => {
+              console.log(`[mem-ckpt] worker done turn=${turnNum} code=${res.code}`);
+              sendToRenderer('memory-event', { type: 'checkpoint-done', meetingId, scene: _memScene });
+            },
+            onError: (err, res) => {
+              const tail = (res && res.stderrTail) ? res.stderrTail.slice(-400) : '';
+              console.warn(`[mem-ckpt] worker failed turn=${turnNum}: ${err.message} ${tail}`);
+              sendToRenderer('memory-event', { type: 'checkpoint-failed', meetingId, scene: _memScene, error: err.message });
+            },
+          });
+          if (r.spawned) console.log(`[mem-ckpt] worker spawned turn=${turnNum} reason=${r.reason}`);
+          else console.log(`[mem-ckpt] worker skipped turn=${turnNum}: ${r.reason}`);
+        } catch (e) {
+          console.warn('[mem-ckpt] maybeRunCheckpoint threw:', e.message);
+        }
+      });
+    }
+
     return { status: 'completed', turnNum, results, meta };
   } finally {
     _roundtableInProgress.delete(meetingId);
@@ -3092,6 +3242,156 @@ ipcMain.handle('open-path', async (_e, filePath) => {
   }
 });
 
+// 圆桌记忆 · plan 阶段 1（2026-05-07）：
+//   per-meeting per-slot 取 memory 状态（条目数 + pending 数 + _profile 是否存在）
+//   供卡片右上角 📒 N / 📥 / 📊 三个按钮的角标 / 点击行为使用。
+//   不读 .md 内容（只 stat / count），便于高频刷新。
+function _resolveMemoryProjectCwd(meetingId) {
+  // Phase 2 P0（2026-05-07）：跨 meeting memory 共享。
+  //   优先：sub session cwd 是用户真实项目目录（vs hub 自动分配的 workspaces/<mid>）
+  //         → 用之，per-project 跨 meeting 共享（用户在生产 hub 主驾指真实仓库）
+  //   否则：scene 级共享根 <HUB>/memory-scenes/<scene>
+  //         → per-scene 跨 meeting 共享（隔离 hub / 无 pilot / fallback workspace）
+  // 之前 fallback 用 getMeetingWorkspaceDir(meetingId)，每 meeting 独立 → AI 不会"越来越懂我"。
+  const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
+  if (!meeting) return null;
+  const subSessions = (meeting.subSessions || []).map(sid => sessionManager.getSession(sid)).filter(Boolean);
+  let candidate = null;
+  if (typeof meeting.pilotSlot === 'number' && subSessions[meeting.pilotSlot]) {
+    candidate = subSessions[meeting.pilotSlot].cwd || null;
+  }
+  if (!candidate && subSessions.length > 0) {
+    candidate = subSessions[0].cwd || null;
+  }
+  if (candidate && isUserProjectCwd(candidate)) {
+    return candidate;
+  }
+  const scene = meeting.scene || 'general';
+  const root = getSceneMemoryRoot(scene);
+  try { fs.mkdirSync(root, { recursive: true }); } catch {}
+  return root;
+}
+
+// Phase 3：从 (meeting, slot) 反推 sub session → 派生 (aiKind, aiModel, identity)。
+//   slot = pikachu/charmander/squirtle，UI 仍用之；底层都按 identity 存。
+//   返回 null 表示找不到（slot 越界 / sub 已关）。
+function _identityFromMeetingSlot(meeting, slot) {
+  if (!meeting || !slot) return null;
+  const subSidsRaw = meeting.subSessions || [];
+  const slotIdx = SLOT_IDS.indexOf(slot);
+  if (slotIdx < 0 || slotIdx >= subSidsRaw.length) return null;
+  const sub = sessionManager.getSession(subSidsRaw[slotIdx]);
+  if (!sub) return null;
+  const aiKind = sub.kind || 'unknown';
+  const aiModel = (sub.currentModel && sub.currentModel.id) || sub.model || '';
+  return { aiKind, aiModel, identity: rtMemoryStore.makeIdentity(aiKind, aiModel) };
+}
+
+ipcMain.handle('arena:get-memory-status', (_e, { meetingId, slot } = {}) => {
+  const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
+  if (!meeting || !slot) return { ok: false, count: 0, pending: 0, hasProfile: false };
+  const projectCwd = _resolveMemoryProjectCwd(meetingId);
+  const scene = meeting.scene || 'general';
+  // Phase 3：派生 identity；slot 仍是 UI 标识但底层全按 identity
+  const idInfo = _identityFromMeetingSlot(meeting, slot);
+  if (!idInfo) {
+    // sub 还没创建（如刚 createMeeting 模板未填）→ 返回空 status
+    return { ok: true, count: 0, pending: 0, hasProfile: false, projectCwd, scene, identity: null, aiKind: null, aiModel: null };
+  }
+  const { aiKind, aiModel, identity } = idInfo;
+  let count = 0;
+  const readErrors = [];
+  try {
+    const list = rtMemoryStore.listMemory({ projectCwd, scene, identity });
+    count = (list && list.results && list.results.length) || 0;
+  } catch (e) {
+    console.warn('[memory-status] listMemory failed:', meetingId, slot, identity, e.message);
+    readErrors.push('listMemory: ' + e.message);
+  }
+  // pending / _profile 阶段 1 worker 才生成 — stat 路径但不报错
+  const memDir = path.join(projectCwd, '.arena', 'rooms', scene, 'memory');
+  let pending = 0;
+  let hasProfile = false;
+  try {
+    const pendingFile = path.join(memDir, `pending-${identity}.json`);
+    if (fs.existsSync(pendingFile)) {
+      const data = JSON.parse(fs.readFileSync(pendingFile, 'utf-8'));
+      pending = (Array.isArray(data.items) ? data.items : []).filter(x => x.status === 'pending').length;
+    }
+  } catch (e) {
+    console.warn('[memory-status] pending parse failed:', meetingId, slot, identity, e.message);
+    readErrors.push('pending: ' + e.message);
+  }
+  try {
+    hasProfile = fs.existsSync(path.join(memDir, '_profile.md'));
+  } catch (e) {
+    console.warn('[memory-status] profile stat failed:', e.message);
+    readErrors.push('profile: ' + e.message);
+  }
+  // Phase 2 P1（2026-05-07）：worker 健康状态（meeting 级 — slot 级共享同一份 checkpoint state）
+  let workerHealth = { failures: 0, lastReason: null, healthy: true };
+  try {
+    const st = rtCkptState.readState(projectCwd, scene);
+    workerHealth = {
+      failures: st.consecutive_failures || 0,
+      lastReason: st.last_failure_reason || null,
+      healthy: (st.consecutive_failures || 0) === 0,
+    };
+  } catch (e) {
+    console.warn('[memory-status] readState failed:', e.message);
+    readErrors.push('state: ' + e.message);
+  }
+  return {
+    ok: true, count, pending, hasProfile, projectCwd, scene, workerHealth,
+    // Phase 3：返回 identity / aiKind / aiModel 让 UI 顶部显示当前 AI 身份
+    identity, aiKind, aiModel,
+    readError: readErrors.length > 0 ? readErrors.join('; ') : null,
+  };
+});
+
+ipcMain.handle('arena:open-memory-file', async (_e, { meetingId, slot, type } = {}) => {
+  // type: 'own' | 'pending' | 'profile' | 'worker-state'（Phase 2 P1）
+  const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
+  if (!meeting || !slot || !type) return 'missing meetingId/slot/type';
+  const projectCwd = _resolveMemoryProjectCwd(meetingId);
+  const scene = meeting.scene || 'general';
+  const memDir = path.join(projectCwd, '.arena', 'rooms', scene, 'memory');
+  // Phase 3：own / pending 路径按 identity 而非 slot
+  const idInfo = _identityFromMeetingSlot(meeting, slot);
+  const identity = idInfo ? idInfo.identity : null;
+  if ((type === 'own' || type === 'pending') && !identity) {
+    return 'cannot resolve AI identity for slot: ' + slot;
+  }
+  const fileMap = {
+    own: identity ? path.join(memDir, `${identity}.md`) : null,
+    pending: identity ? path.join(memDir, `pending-${identity}.json`) : null,
+    profile: path.join(memDir, '_profile.md'),
+    // checkpoint-state.json 在 rooms/{scene}/ 根（非 memory/ 子目录），见 checkpoint-state.js:23
+    'worker-state': path.join(projectCwd, '.arena', 'rooms', scene, 'checkpoint-state.json'),
+  };
+  const fp = fileMap[type];
+  if (!fp) return 'invalid type';
+  // 文件不存在时也允许打开 'own'（store 会按需创建头部）
+  if (!fs.existsSync(fp)) {
+    if (type === 'own') {
+      // 尚无任何 entry — 创建空文件方便用户预览（与 store.ensureFileWithHeader 同款 header）
+      try {
+        fs.mkdirSync(path.dirname(fp), { recursive: true });
+        if (!fs.existsSync(fp)) {
+          fs.writeFileSync(fp, '# Roundtable Memory\n# 行格式见 core/roundtable-memory/store.js · plan §4.6\n---\n\n', 'utf-8');
+        }
+      } catch (e) { return 'create file failed: ' + e.message; }
+    } else {
+      return `file not yet created: ${fp}`;
+    }
+  }
+  try {
+    return await shell.openPath(fp);
+  } catch (e) {
+    return String(e && e.message || e);
+  }
+});
+
 const READ_FILE_EXTS = new Set([
   '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl',
   '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs',
@@ -3165,7 +3465,12 @@ const hookServer = http.createServer((req, res) => {
   const isResearchFetchConcept = req.method === 'POST' && req.url === '/api/research/fetch-concept';
   const isResearchFetchSector = req.method === 'POST' && req.url === '/api/research/fetch-sector';
   const isResearchFetch = isResearchFetchStock || isResearchFetchField || isResearchFetchConcept || isResearchFetchSector;
-  if (!isHook && !isStatus && !isResearchFetch) {
+  // plan 2026-05-05 阶段 0: 圆桌记忆 MCP 回调（loopback）
+  const isMemoryWrite = req.method === 'POST' && req.url === '/api/roundtable/memory-write';
+  const isMemorySearch = req.method === 'POST' && req.url === '/api/roundtable/memory-search';
+  const isMemoryList = req.method === 'POST' && req.url === '/api/roundtable/memory-list';
+  const isMemoryRoute = isMemoryWrite || isMemorySearch || isMemoryList;
+  if (!isHook && !isStatus && !isResearchFetch && !isMemoryRoute) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -3206,6 +3511,79 @@ const hookServer = http.createServer((req, res) => {
       }
       const elapsed = Date.now() - t0;
       console.log(`[research] ${req.url.split('/').pop()} kind=${kind} elapsed=${elapsed}ms ok=${result.ok}`);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(result));
+      return;
+    }
+    // plan 2026-05-05 阶段 0: 圆桌记忆 MCP 回调
+    if (isMemoryRoute) {
+      if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
+      // Phase 3：从 (aiKind, aiModel) 派生 identity；slot 仅日志/UI 关联用
+      const { meetingId, slot, aiKind, aiModel } = parsed;
+      const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
+      if (!meeting) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'meeting not found: ' + meetingId }));
+        return;
+      }
+      const projectCwd = _resolveMemoryProjectCwd(meetingId);
+      if (!projectCwd) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'memory route: failed to resolve projectCwd' }));
+        return;
+      }
+      const scene = meeting.scene || 'general';
+      // Phase 3：派生 identity（aiKind=claude/gemini/codex, model=具体型号字符串）
+      const identity = rtMemoryStore.makeIdentity(aiKind, aiModel);
+      if (!rtMemoryStore.isValidIdentity(identity)) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid identity derived from aiKind/aiModel: ' + identity }));
+        return;
+      }
+      const t0 = Date.now();
+      let result;
+      try {
+        if (isMemoryWrite) {
+          result = rtMemoryStore.appendMemoryEntry({
+            projectCwd, scene, identity,
+            scope: parsed.scope || 'scene',
+            kind: parsed.kind,
+            key: parsed.key,
+            content: parsed.content,
+            source: parsed.source || 'self',
+          });
+          if (result.ok) {
+            // UI 角标更新：广播 memory-event（仍按 slot 通知，UI 通过 slot→identity 映射拉新 count）
+            try {
+              const list = rtMemoryStore.listMemory({ projectCwd, scene, identity });
+              const count = (list && list.results && list.results.length) || 0;
+              sendToRenderer('memory-event', {
+                type: 'write',
+                meetingId, scene, slot, identity,
+                action: result.action,
+                key: result.entry && result.entry.key,
+                count,
+                file: result.file,
+              });
+            } catch (e) { /* renderer 没起也无所谓 */ }
+          }
+        } else if (isMemorySearch) {
+          result = rtMemoryStore.searchMemory({
+            projectCwd, scene, identity,
+            query: parsed.query,
+            limit: parsed.limit,
+          });
+        } else {
+          result = rtMemoryStore.listMemory({
+            projectCwd, scene, identity,
+            kind: parsed.kind, // 注：这里 kind 是 entry kind（preference/...），与 aiKind 字段同名但语义不同
+          });
+        }
+      } catch (e) {
+        result = { ok: false, error: 'memory route throw: ' + e.message };
+      }
+      const elapsed = Date.now() - t0;
+      console.log(`[memory] ${req.url.split('/').pop()} identity=${identity} slot=${slot} scene=${scene} elapsed=${elapsed}ms ok=${result && result.ok}`);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(result));
       return;
@@ -3818,6 +4196,171 @@ app.whenReady().then(async () => {
   // 延后启动避免拖慢首屏;失败静默不影响其他功能。
   setTimeout(() => { fetchAndCachePackyAccount().catch(() => {}); }, 1500);
   setInterval(() => { fetchAndCachePackyAccount().catch(() => {}); }, 5 * 60 * 1000);
+  // Phase 2 P2（2026-05-07）：inbox-archived/ 自动 GC（180 天保留）
+  //   启动 5 秒后异步跑一次（启动期 active meetings 通常为空，主要清 scene roots）。
+  //   之后每 6 小时跑一次（覆盖 per-project 路径——用户开过的真实项目目录会出现在 active meetings）。
+  //   失败静默 — 不阻塞启动；不影响主流程。
+  //   1. <HUB>/memory-scenes/<scene>/ — scene 共享根（隔离 hub / 无 pilot 的 fallback）
+  //   2. 已知 meeting 的 pilot.cwd 是真实项目目录的（per-project 共享路径）
+  //      [Phase 2 silent-failure-hunt fix · CRITICAL] 不扫 per-project 会让该路径归档无限堆积。
+  function _runMemArchiveGc() {
+    try {
+      // 收集待扫描 (root, scene) 对，去重
+      const targets = new Map(); // key = `${root}|${scene}`，value = { root, scene }
+      // (1) scene 共享根
+      const scenesRoot = path.join(getHubDataDir(), 'memory-scenes');
+      if (fs.existsSync(scenesRoot)) {
+        try {
+          const sceneDirs = fs.readdirSync(scenesRoot, { withFileTypes: true })
+            .filter(d => d.isDirectory()).map(d => d.name);
+          for (const scene of sceneDirs) {
+            const root = path.join(scenesRoot, scene);
+            targets.set(`${root}|${scene}`, { root, scene });
+          }
+        } catch (e) { console.warn('[mem-gc] readdir scenesRoot failed:', e.message); }
+      }
+      // (2) 当前已知 meeting 的 pilot/sub real-project cwd
+      try {
+        const meetings = meetingManager.getAllMeetings ? meetingManager.getAllMeetings() : [];
+        for (const m of (meetings || [])) {
+          if (!m || !m.scene) continue;
+          const subSessions = (m.subSessions || []).map(sid => sessionManager.getSession(sid)).filter(Boolean);
+          let candidate = null;
+          if (typeof m.pilotSlot === 'number' && subSessions[m.pilotSlot]) candidate = subSessions[m.pilotSlot].cwd || null;
+          if (!candidate && subSessions.length > 0) candidate = subSessions[0].cwd || null;
+          if (candidate && isUserProjectCwd(candidate)) {
+            targets.set(`${candidate}|${m.scene}`, { root: candidate, scene: m.scene });
+          }
+        }
+      } catch (e) { console.warn('[mem-gc] meetings scan failed:', e.message); }
+
+      let totalRemoved = 0, totalScanned = 0, sceneCount = 0;
+      for (const { root, scene } of targets.values()) {
+        try {
+          const r = rtInbox.gcArchive(root, scene);
+          totalScanned += r.scanned;
+          totalRemoved += r.removed;
+          if (r.errors.length) console.warn(`[mem-gc] ${scene} (${root}) errors:`, r.errors);
+          sceneCount += 1;
+        } catch (e) {
+          console.warn(`[mem-gc] scene=${scene} root=${root} threw:`, e.message);
+        }
+      }
+      if (totalScanned > 0 || totalRemoved > 0) {
+        console.log(`[mem-gc] inbox-archived sceneRoots=${sceneCount} scanned=${totalScanned} removed=${totalRemoved} (180-day retention)`);
+      }
+    } catch (e) {
+      console.warn('[mem-gc] gc failed:', e.message);
+    }
+  }
+  // Phase 3（2026-05-07）：legacy slot 数据迁移到 legacy-by-slot/
+  //   phase 1/2 把 pikachu.md / charmander.md / squirtle.md / pending-{slot}.json 当存储 key 写入。
+  //   phase 3 改用 identity 后，老文件会和新 identity 文件同目录共存且语义错位（slot 不是 AI 身份）。
+  //   启动时一次性把 legacy 文件 mv 到 memory/legacy-by-slot/，不删除便于审计/手动复用。
+  //   只迁移 hub 管理的 scene roots（用户真实项目的 .arena 不动 — 那是用户自己的）。
+  //
+  // [Phase 3 silent-failure-hunt fix · CRITICAL] 顺序：先迁移（5s），再 GC（迁移 done 后立即 trigger）。
+  //   原本 GC 5s + migration 7s 同 dir 并发扫描有 race；改成串行 + migration 在 GC 之前。
+  function _runLegacyMigration() {
+    try {
+      const { FAMILY_KINDS, canonicalAiKind } = require('./core/ai-kinds.js');
+      const FAMILY_SET = new Set(FAMILY_KINDS); // claude/gemini/gpt/deepseek/glm/kimi/qwen
+      const SLOT_NAMES = new Set(['pikachu', 'charmander', 'squirtle']); // phase 1/2 legacy
+      // [Phase 4 三路评审 · DeepSeek] 边界 case：phase 3 写入 'codex.md'（不含 '-'）的话
+      //   原判别 `id.includes('-') && !FAMILY_SET.has(id)` 会跳过它，但 canonicalAiKind('codex') = 'gpt'
+      //   说明应该迁移到 legacy-by-version。所以另加一条：canonical 后变了 → 迁移。
+      const _shouldMigrateToVersion = (id) => {
+        // phase 3 命名（含 '-' 但非家族字符串）：claude-opus-4-7, gemini-3-pro 等
+        if (id.includes('-') && !FAMILY_SET.has(id)) return true;
+        // phase 3 'codex.md'（被 phase 4 canonical 到 gpt.md，旧文件应归档）
+        if (canonicalAiKind(id) !== id) return true;
+        return false;
+      };
+      const scenesRoot = path.join(getHubDataDir(), 'memory-scenes');
+      if (!fs.existsSync(scenesRoot)) return;
+      let sceneDirs = [];
+      try {
+        sceneDirs = fs.readdirSync(scenesRoot, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
+      } catch (e) { console.warn('[mem-legacy] readdir scenesRoot failed:', e.message); return; }
+      let movedSlot = 0, movedVersion = 0;
+      for (const scene of sceneDirs) {
+        const memDir = path.join(scenesRoot, scene, '.arena', 'rooms', scene, 'memory');
+        if (!fs.existsSync(memDir)) continue;
+        const legacySlotDir = path.join(memDir, 'legacy-by-slot');
+        const legacyVersionDir = path.join(memDir, 'legacy-by-version'); // Phase 4 新增
+        let names;
+        try { names = fs.readdirSync(memDir); } catch { continue; }
+        for (const name of names) {
+          if (name === 'legacy-by-slot' || name === 'legacy-by-version' || name === 'inbox-archived') continue;
+          // 个体 .md
+          if (name.endsWith('.md')) {
+            if (name === '_profile.md') continue;
+            const id = name.slice(0, -3);
+            // Phase 1/2 legacy slot 文件 → legacy-by-slot/
+            if (SLOT_NAMES.has(id)) {
+              try {
+                fs.mkdirSync(legacySlotDir, { recursive: true });
+                fs.renameSync(path.join(memDir, name), path.join(legacySlotDir, name));
+                movedSlot += 1;
+              } catch (e) { console.warn('[mem-legacy] move slot-file failed:', name, e.message); }
+              continue;
+            }
+            // Phase 4：phase 3 的 {kind}-{model}.md（如 claude-opus-4-7.md）→ legacy-by-version/
+            //   判定：含 '-' 且 id 不在 FAMILY_KINDS 集合内
+            //   ⚠ [silent-failure-hunt] 未来若加含连字符的家族名（如 'claude-code'），
+            //     必须**先**把它加到 ai-kinds.js FAMILY_KINDS，再部署代码 — 否则现有家族 .md
+            //     会被误迁到 legacy-by-version/ 导致用户感知"那家失忆"。canonicalAiKind 已会
+            //     warn 未注册 kind，是双重防线。
+            if (_shouldMigrateToVersion(id)) {
+              try {
+                fs.mkdirSync(legacyVersionDir, { recursive: true });
+                fs.renameSync(path.join(memDir, name), path.join(legacyVersionDir, name));
+                movedVersion += 1;
+              } catch (e) { console.warn('[mem-legacy] move version-file failed:', name, e.message); }
+            }
+            continue;
+          }
+          // pending-*.json
+          const m = name.match(/^pending-(.+)\.json$/);
+          if (m) {
+            const id = m[1];
+            // Phase 1/2 pending-{slot}.json
+            if (SLOT_NAMES.has(id)) {
+              try {
+                fs.mkdirSync(legacySlotDir, { recursive: true });
+                fs.renameSync(path.join(memDir, name), path.join(legacySlotDir, name));
+                movedSlot += 1;
+              } catch (e) { console.warn('[mem-legacy] move pending-slot failed:', name, e.message); }
+              continue;
+            }
+            // Phase 4：phase 3 的 pending-{kind}-{model}.json
+            if (_shouldMigrateToVersion(id)) {
+              try {
+                fs.mkdirSync(legacyVersionDir, { recursive: true });
+                fs.renameSync(path.join(memDir, name), path.join(legacyVersionDir, name));
+                movedVersion += 1;
+              } catch (e) { console.warn('[mem-legacy] move pending-version failed:', name, e.message); }
+            }
+          }
+        }
+      }
+      if (movedSlot > 0) {
+        console.log(`[mem-legacy] phase 1/2→3 migration: moved ${movedSlot} slot files to legacy-by-slot/`);
+      }
+      if (movedVersion > 0) {
+        console.log(`[mem-legacy] phase 3→4 migration: moved ${movedVersion} version files to legacy-by-version/`);
+      }
+    } catch (e) {
+      console.warn('[mem-legacy] migration failed:', e.message);
+    }
+  }
+  // 串行：5s 跑 migration（双层 phase 1/2 + phase 3）→ 完成后立即跑 GC
+  setTimeout(() => {
+    _runLegacyMigration();
+    _runMemArchiveGc();
+  }, 5000);
+  // 每 6 小时复跑 GC（不需要重跑 migration — 一次性操作）
+  setInterval(_runMemArchiveGc, 6 * 60 * 60 * 1000);
   // Mobile server starts after window — no need to block UI for phone pairing.
   try {
     traceStartup('mobile server start');

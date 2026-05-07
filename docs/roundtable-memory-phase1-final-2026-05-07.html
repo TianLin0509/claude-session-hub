@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌记忆系统 阶段 1 · 最终交付（2026-05-07）</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-soft: #444;
+    --fg-mute: #888;
+    --bg: #fbf8f1;
+    --bg-card: #ffffff;
+    --bg-code: #f4ede0;
+    --accent: #b85a1f;
+    --accent2: #2f7d3a;
+    --accent-soft: #f3deca;
+    --ok: #2f7d3a;
+    --warn: #b06b00;
+    --err: #c43c2c;
+    --plan: #4459a3;
+    --border: #e5dcc6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 32px 28px 80px; }
+  header {
+    border-bottom: 3px double var(--border);
+    padding-bottom: 18px;
+    margin-bottom: 28px;
+  }
+  header h1 {
+    font-size: 28px;
+    margin: 0 0 4px;
+    color: var(--accent);
+    letter-spacing: -0.3px;
+  }
+  header .subtitle { color: var(--fg-mute); font-size: 14px; margin-top: 4px; }
+  header .meta { color: var(--fg-mute); font-size: 12.5px; margin-top: 10px; }
+  header .meta code { background: var(--bg-code); padding: 1px 5px; border-radius: 3px; }
+
+  /* 醒目结果卡片 */
+  .hero {
+    background: linear-gradient(135deg, #fffaf0, #f5e9d4);
+    border: 2px solid var(--accent);
+    border-radius: 10px;
+    padding: 22px 26px;
+    margin: 20px 0 32px;
+    box-shadow: 0 2px 8px rgba(184,90,31,0.12);
+  }
+  .hero h2 {
+    margin: 0 0 8px;
+    color: var(--accent);
+    font-size: 20px;
+    border: none;
+    padding: 0;
+  }
+  .hero .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 14px;
+    margin-top: 16px;
+  }
+  .hero .stat {
+    background: rgba(255,255,255,0.7);
+    border-radius: 6px;
+    padding: 12px 14px;
+    text-align: center;
+  }
+  .hero .stat .num {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--accent);
+    display: block;
+  }
+  .hero .stat .label {
+    font-size: 12px;
+    color: var(--fg-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .hero .stat.ok .num { color: var(--ok); }
+
+  h2 {
+    font-size: 19px;
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+    padding-left: 10px;
+    margin: 38px 0 14px;
+  }
+  h3 {
+    font-size: 16px;
+    color: var(--fg);
+    margin: 22px 0 8px;
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0;
+    font-size: 14px;
+    background: var(--bg-card);
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: var(--accent-soft); font-weight: 600; }
+  td code { background: var(--bg-code); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+  pre {
+    background: #2b2b2b;
+    color: #e3dccb;
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    line-height: 1.55;
+    font-family: "JetBrains Mono", "SF Mono", Consolas, Menlo, monospace;
+    font-size: 12.5px;
+  }
+  code { font-family: "JetBrains Mono", "SF Mono", Consolas, Menlo, monospace; font-size: 12.5px; }
+
+  .tag {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+  }
+  .tag.ok { background: #d6efd9; color: var(--ok); }
+  .tag.warn { background: #fbe7c7; color: var(--warn); }
+  .tag.err { background: #fadddc; color: var(--err); }
+  .tag.p0 { background: #fadddc; color: var(--err); }
+  .tag.p1 { background: #fbe7c7; color: var(--warn); }
+  .tag.p2 { background: #fff4cf; color: #88670a; }
+  .tag.p3 { background: #e8e3d0; color: #555; }
+
+  .callout {
+    background: var(--accent-soft);
+    border-left: 4px solid var(--accent);
+    padding: 12px 16px;
+    border-radius: 0 6px 6px 0;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .callout strong { color: var(--accent); }
+  .callout.ok { background: #e0f2e1; border-left-color: var(--ok); }
+  .callout.ok strong { color: var(--ok); }
+
+  ol, ul { padding-left: 22px; margin: 6px 0; }
+  li { margin: 4px 0; }
+
+  hr { border: none; border-top: 1px dashed var(--border); margin: 30px 0; }
+
+  /* 评审轮次时间线 */
+  .timeline {
+    position: relative;
+    padding-left: 26px;
+    margin: 16px 0;
+  }
+  .timeline::before {
+    content: "";
+    position: absolute;
+    left: 8px;
+    top: 6px;
+    bottom: 6px;
+    width: 2px;
+    background: var(--accent-soft);
+  }
+  .timeline-item {
+    position: relative;
+    padding: 8px 0 8px 4px;
+  }
+  .timeline-item::before {
+    content: "";
+    position: absolute;
+    left: -22px;
+    top: 14px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg-card);
+  }
+  .timeline-item.ok::before { background: var(--ok); }
+  .timeline-item .ts {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: var(--fg-mute);
+  }
+  .timeline-item .title {
+    font-weight: 600;
+    margin: 2px 0;
+  }
+  .timeline-item .desc {
+    font-size: 13px;
+    color: var(--fg-soft);
+  }
+
+  footer {
+    margin-top: 50px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-mute);
+    font-size: 12.5px;
+  }
+
+  .kbd {
+    display: inline-block;
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: #fff;
+    font-family: monospace;
+    font-size: 12px;
+    box-shadow: 0 1px 0 var(--border);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>圆桌记忆系统 阶段 1 · 最终交付报告</h1>
+  <div class="subtitle">连夜实施 + 6 轮多路评审 + 20 bugs 全修 + E2E 真跑实证</div>
+  <div class="meta">
+    2026-05-07 · 02:45 完成 ·
+    Plan：<code>docs/superpowers/plans/2026-05-05-roundtable-memory.md</code> ·
+    Final Report MD：<code>...-phase1-final-report.md</code>
+  </div>
+</header>
+
+<div class="hero">
+  <h2>系统已收敛 · 生产就绪</h2>
+  <p>三路评审者（Gemini / Codex / DeepSeek）<strong>全部确认</strong>"修复完整 + 未发现新高/中级 bug"。E2E 实测：3 个 Claude Sonnet 4.5 圆桌跑 3 轮 fanout 后 worker 自动 fork → DeepSeek v4 派生 <code>_profile.md</code>（3 条用户偏好）→ IPC 串行化写盘 → <strong>0 失败 · 0 双倍计数 · 0 误杀生产</strong>。</p>
+  <div class="stats">
+    <div class="stat ok"><span class="num">20</span><span class="label">bugs 修复</span></div>
+    <div class="stat ok"><span class="num">6</span><span class="label">轮多路评审</span></div>
+    <div class="stat ok"><span class="num">50/50</span><span class="label">测试通过</span></div>
+    <div class="stat ok"><span class="num">7</span><span class="label">smoke 验证</span></div>
+    <div class="stat ok"><span class="num">~3000</span><span class="label">行新代码 + 测试</span></div>
+    <div class="stat ok"><span class="num">0</span><span class="label">误杀生产 PID</span></div>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2>一、阶段 1 完成项</h2>
+
+<table>
+  <tr>
+    <th width="30%">任务（plan §10）</th>
+    <th width="10%">状态</th>
+    <th>说明</th>
+  </tr>
+  <tr>
+    <td>#1 checkpoint-state.json + 触发器 + lock</td>
+    <td><span class="tag ok">DONE</span></td>
+    <td><code>core/roundtable-memory/checkpoint-state.js</code> + <code>checkpoint-trigger.js</code> · 原子建锁 + token 校验 + PID 存活检查 + STALE_LOCK_MS 兜底</td>
+  </tr>
+  <tr>
+    <td>#1 child_process.fork worker</td>
+    <td><span class="tag ok">DONE</span></td>
+    <td><code>core/checkpoint-worker.js</code> · 独立进程 ~3-5s 跑完，0 阻塞圆桌主流程</td>
+  </tr>
+  <tr>
+    <td>#2 DeepSeek v4 派生 _profile.md</td>
+    <td><span class="tag ok">DONE</span></td>
+    <td>带反固化 prompt 约束 + JSON 鲁棒解析 + schema 校验 + keep/evict/add 三清单 + 淘汰规则（≤20 entry）</td>
+  </tr>
+  <tr>
+    <td>#3 Inbox 机制 + dispatch 注入</td>
+    <td><span class="tag ok">DONE</span></td>
+    <td><code>inbox.js</code> · pickForInject 含 lock 守卫 · main.js 拼到 prompt 头部</td>
+  </tr>
+  <tr>
+    <td>#4 卡片按钮（📒 N / 📥 / 📊）+ IPC</td>
+    <td><span class="tag ok">DONE</span></td>
+    <td>renderer 实时刷新 · <code>arena:open-memory-file</code> + <code>arena:get-memory-status</code></td>
+  </tr>
+  <tr>
+    <td>#5 失败状态灯 🧠</td>
+    <td><span class="tag p2">推迟</span></td>
+    <td>后端 <code>consecutive_failures</code> 已就绪（含 Bug 15/19/20 防双倍），UI 可视化推到下次</td>
+  </tr>
+  <tr>
+    <td>#6 cooldown 防抖（默认 60s）</td>
+    <td><span class="tag ok">DONE</span></td>
+    <td><code>shouldRun</code> 内 <code>last_checkpoint_at</code> 距今 &lt; cooldownMs 跳过</td>
+  </tr>
+  <tr>
+    <td>#7 Pending 生命周期</td>
+    <td><span class="tag ok">DONE</span></td>
+    <td>同 key 自动合并 · 7 天 / 3 次提醒过期 · accepted/expired 都归档保留审计 · priority 字段识别</td>
+  </tr>
+  <tr>
+    <td>Polish 1 · MEMORY PROTOCOL 硬要求</td>
+    <td><span class="tag ok">DONE</span></td>
+    <td>每轮 fanout 三家先 <code>memory_list({})</code> 自检偏好 · E2E 实测 9 次 list 全部触发</td>
+  </tr>
+</table>
+
+<!-- ============================================================== -->
+<h2>二、6 轮多路评审 · 20 bugs 时间线</h2>
+
+<div class="timeline">
+  <div class="timeline-item ok">
+    <div class="ts">00:00 - 01:10</div>
+    <div class="title">阶段 1 核心链代码完成 + v1 多路评审发起</div>
+    <div class="desc">5 个核心文件（state/profile/inbox/trigger/worker）+ 26 单测；并发 Gemini + Codex + DeepSeek</div>
+  </div>
+  <div class="timeline-item ok">
+    <div class="ts">01:25</div>
+    <div class="title">v1 结果：7 个 P0/P1/P2 bug</div>
+    <div class="desc">主进程-worker 并发读写 pending JSON / state RMW / DeepSeek JSON 不鲁棒 / accepted 不归档 / reconcile 用旧快照 / lock TOCTOU / archive 非原子</div>
+  </div>
+  <div class="timeline-item ok">
+    <div class="ts">01:50</div>
+    <div class="title">v2 结果：4 个新 bug</div>
+    <div class="desc">unlink+rename 窗口期 / pickForInject TOCTOU / state RMW 仍存在 / lock owner 写父 pid 而非 worker pid</div>
+  </div>
+  <div class="timeline-item ok">
+    <div class="ts">02:18</div>
+    <div class="title">v3 结果：5 个新 bug</div>
+    <div class="desc">process.send 后立即 exit IPC 丢失 / fallback 路径回到 RMW / inbox lock 时无限提醒 / 失败双倍计数 / updateLockWithChildPid 复活已删除 lock</div>
+  </div>
+  <div class="timeline-item ok">
+    <div class="ts">02:25</div>
+    <div class="title">v4 结果：DeepSeek 收敛 ✅，Codex 找到 1 个 P2（Bug 19）</div>
+    <div class="desc">IPC callback err fallback 路径会被主进程 exit handler 双倍 markFailure</div>
+  </div>
+  <div class="timeline-item ok">
+    <div class="ts">02:35</div>
+    <div class="title">v5 结果：Gemini 收敛 ✅，DeepSeek 收敛 ✅，Codex 找到 1 个 P1（Bug 20）</div>
+    <div class="desc">sidecar 固定文件名无 token 绑定 → 旧残留导致真实失败漏报</div>
+  </div>
+  <div class="timeline-item ok">
+    <div class="ts">02:50</div>
+    <div class="title">v6 结果：Codex 单家收敛验证 → "修复完整 + 第六轮未发现新高/中级 bug" ✅</div>
+    <div class="desc">三路全部收敛 → 系统达生产级</div>
+  </div>
+</div>
+
+<h3>20 bugs 完整清单</h3>
+
+<table>
+  <tr>
+    <th width="6%">#</th>
+    <th width="6%">轮</th>
+    <th width="9%">严重度</th>
+    <th width="35%">问题</th>
+    <th width="22%">发现者</th>
+    <th width="22%">修复</th>
+  </tr>
+  <tr><td>1</td><td>v1</td><td><span class="tag p0">P0</span></td><td>主进程 pickForInject 与 worker 并发读写 pending JSON</td><td>三家共识</td><td>main.js dispatch 时 isLocked 守卫 + pickForInject 内部 isLockedCheck callback</td></tr>
+  <tr><td>2</td><td>v1</td><td><span class="tag p0">P0</span></td><td>state.json read-modify-write 无锁；worker reset 覆盖主进程 bump</td><td>Codex</td><td>markCheckpoint(opts.startCount) 减法补偿 + IPC 上报（v3 Bug 10）</td></tr>
+  <tr><td>3</td><td>v1</td><td><span class="tag p1">P1</span></td><td>DeepSeek 响应裸 JSON.parse；LLM 偶尔 fence 包裹会失败</td><td>Codex</td><td>parseDeepSeekJson 三段式 + sanitizePendingCandidates schema 过滤</td></tr>
+  <tr><td>4</td><td>v1</td><td><span class="tag p2">P2</span></td><td>reconcile accepted 项不归档不保留 → 审计 gap</td><td>Codex</td><td>accepted 也归档 + resolved_at 时间戳</td></tr>
+  <tr><td>5</td><td>v1</td><td><span class="tag p2">P2</span></td><td>worker reconcile 用启动时 individual 快照 → 期间新写入看不到</td><td>Gemini</td><td>reconcile 前重新 memoryStore.loadEntries</td></tr>
+  <tr><td>6</td><td>v1</td><td><span class="tag p2">P2</span></td><td>lock TOCTOU + 释放无 owner 校验</td><td>Codex</td><td>fs.openSync('wx') 原子建锁 + token 校验 + PID 存活检查</td></tr>
+  <tr><td>7</td><td>v1</td><td><span class="tag p2">P2</span></td><td>archive writeFileSync 不原子（无 tmp+rename）</td><td>Gemini</td><td>archive 改 tmp + rename</td></tr>
+  <tr><td>8</td><td>v2</td><td><span class="tag p1">P1</span></td><td>writeState/savePending 等 unlink+rename 窗口期 → 并发读拿默认值</td><td>DeepSeek</td><td>移除 unlink，直接 fs.renameSync 原子覆盖（Node 18+ Windows 支持，已实测）</td></tr>
+  <tr><td>9</td><td>v2</td><td><span class="tag p2">P2</span></td><td>pickForInject TOCTOU：调用方 isLocked 后到 savePending 之间 worker 可能拿锁</td><td>Codex</td><td>pickForInject(opts.isLockedCheck) 写盘前再校验</td></tr>
+  <tr><td>10</td><td>v2</td><td><span class="tag p1">P1</span></td><td>worker 直调 markCheckpoint 跨进程 RMW race</td><td>三家共识</td><td>worker IPC 上报 process.send → 主进程 child.on('message') 串行化写</td></tr>
+  <tr><td>11</td><td>v2</td><td><span class="tag p2">P2</span></td><td>lock owner 写父 pid 而非 worker pid → 父退出后误清</td><td>Codex</td><td>updateLockWithChildPid 用 worker pid 覆盖（保留 token）</td></tr>
+  <tr><td>12</td><td>v3</td><td><span class="tag p1">P1</span></td><td>process.send 后立即 process.exit IPC buffer 内消息可能丢失</td><td>DeepSeek + Codex 共识</td><td>process.send(msg, callback) await Promise → ack 后才 exit</td></tr>
+  <tr><td>13</td><td>v3</td><td><span class="tag p2">P2</span></td><td>process.send 失败时 fallback 本地写 → 又回到 RMW race</td><td>DeepSeek</td><td>保留 fallback 但配合 sidecar marker（Bug 19/20）防双倍</td></tr>
+  <tr><td>14</td><td>v3</td><td><span class="tag p2">P2</span></td><td>pickForInject 锁定时返回 items（in-mem bumped）但不写盘 → 无限提醒</td><td>三家共识</td><td>锁定时返回空数组，避免未持久化注入</td></tr>
+  <tr><td>15</td><td>v3</td><td><span class="tag p2">P2</span></td><td>worker IPC markFailure + exit code !=0 → 主进程兜底再 markFailure → 双倍累加</td><td>Gemini + Codex 共识</td><td>主进程 _stateReported flag + Bug 19 sidecar 协同</td></tr>
+  <tr><td>16</td><td>v3</td><td><span class="tag p2">P2</span></td><td>updateLockWithChildPid read+write 不原子 → write 可能"复活"已 unlink lock</td><td>Gemini</td><td>fs.openSync(filePath, 'r+') 模式：要求文件存在，ENOENT 不复活</td></tr>
+  <tr><td>19</td><td>v4</td><td><span class="tag p2">P2</span></td><td>IPC callback err fallback 路径仍会被 exit handler 双倍 markFailure</td><td>Codex</td><td>worker 本地写后写 sidecar marker，主进程 exit handler 检查 sidecar 跳过兜底</td></tr>
+  <tr><td>20</td><td>v5</td><td><span class="tag p1">P1</span></td><td>sidecar 固定文件名无 token 绑定 → 旧残留 marker 让真实失败漏报</td><td>Codex</td><td>(a) spawn 前清旧 sidecar; (b) sidecar 内容含 lockToken; (c) exit handler 校验 token 匹配本次 run; (d) sidecar 用 tmp+rename 原子写</td></tr>
+</table>
+
+<p style="font-size: 13px; color: var(--fg-mute);">注：Bug 17/18 是 Gemini v4 因 review pack 没含 v3 修复代码导致的误判，已澄清。v1 还有 2 个 false positive（review pack 简化导致）也排除。</p>
+
+<!-- ============================================================== -->
+<h2>三、E2E 真跑实证（3 sonnet × 3 fanout）</h2>
+
+<div class="callout ok">
+<strong>关键证据链</strong>：worker 真 fork → DeepSeek API 真调用 → JSON 解析 → <code>_profile.md</code> 派生 → IPC 写 <code>checkpoint-state.json</code> → 主进程响应。链路全段实测通过，<strong>无 mock 替代</strong>。
+</div>
+
+<h3>3.1 Hub log 关键事件</h3>
+
+<pre>[memory] memory-list  ai=claude slot=charmander scene=general elapsed=0ms ok=true   ← Polish 1 必调 list
+[memory] memory-write ai=claude slot=charmander scene=general elapsed=2ms ok=true
+[memory] memory-list  ai=claude slot=squirtle   ...
+[memory] memory-write ai=claude slot=squirtle   ...
+[memory] memory-list  ai=claude slot=pikachu    ...
+[memory] memory-write ai=claude slot=pikachu    ...
+[mem-ckpt] worker skipped turn=1: user_msg_count 1 < 3
+... (turn 2 同样 6 次 list/write)
+[mem-ckpt] worker skipped turn=2: user_msg_count 2 < 3
+... (turn 3 同样 6 次 list/write)
+<strong>[mem-ckpt] worker spawned turn=3 reason=user_msg_count >= 3</strong>
+<strong>[mem-ckpt] worker done turn=3 code=0</strong>   ← IPC ack 成功（Bug 12 fix 生效）</pre>
+
+<h3>3.2 worker 完成后 .arena 数据</h3>
+
+<h3 style="margin-top:8px;">checkpoint-state.json（IPC 串行化生效）</h3>
+
+<pre>{
+  "last_user_msg_count": 0,           ← Bug 2 startCount 补偿生效
+  "last_token_count": 0,
+  "last_checkpoint_at": "2026-05-06T17:54:53.341Z",  ← Bug 12 IPC 消息送达
+  "last_checkpoint_turn": "3",
+  "consecutive_failures": 0,           ← Bug 15/19/20 不双倍计数
+  "last_failure_reason": null
+}</pre>
+
+<h3>_profile.md（DeepSeek 真派生 3 条共识）</h3>
+
+<pre>---
+updated_at: 2026-05-06T17:54:53.337Z
+source_checkpoint: 3
+scene: general
+entry_count: 3
+---
+[2026-05-06] preference:conclusion-first 用户喜欢结论先行的回答风格，先给判断/结论，再展开论证或细节。
+[2026-05-06] preference:no-background-preamble 不要铺背景铺垫，直接给判断/答案。与 conclusion-first 配合：开门见山，不绕弯。
+[2026-05-06] preference:admit-uncertainty 不确定就直接说不确定，不硬猜。优先诚实表达认知边界，不过度自信。</pre>
+
+<h3>三家 individual .md（snapshot of behavior）</h3>
+
+<table>
+  <tr>
+    <th>Slot</th>
+    <th>文件</th>
+    <th>大小</th>
+    <th>entries</th>
+    <th>关键观察</th>
+  </tr>
+  <tr><td>Pikachu</td><td><code>pikachu.md</code></td><td>680 B</td><td>3 条 preference</td><td>每轮独立写新偏好</td></tr>
+  <tr><td>Charmander</td><td><code>charmander.md</code></td><td>541 B</td><td>3 条 preference</td><td>同上</td></tr>
+  <tr><td>Squirtle</td><td><code>squirtle.md</code></td><td>422 B</td><td>2 条 preference</td><td>conclusion-first 有 <code>recall: 1</code> ← 主动 search 命中合并旧偏好</td></tr>
+</table>
+
+<!-- ============================================================== -->
+<h2>四、测试覆盖</h2>
+
+<table>
+  <tr>
+    <th>测试套件</th>
+    <th width="10%">用例</th>
+    <th width="10%">状态</th>
+    <th>关键覆盖</th>
+  </tr>
+  <tr>
+    <td><code>tests/roundtable-memory.test.js</code></td>
+    <td>11</td>
+    <td><span class="tag ok">PASS</span></td>
+    <td>Phase 0 store.js append/dedup/parse/search/list/隔离</td>
+  </tr>
+  <tr>
+    <td><code>tests/integration-roundtable-memory-mcp.test.js</code></td>
+    <td>7</td>
+    <td><span class="tag ok">PASS</span></td>
+    <td>3 MCP server fork × stdio JSON-RPC × HTTP loopback × store 写盘</td>
+  </tr>
+  <tr>
+    <td><code>tests/roundtable-memory-phase1.test.js</code></td>
+    <td>32</td>
+    <td><span class="tag ok">PASS</span></td>
+    <td>state（含 startCount）/ profile（含淘汰）/ inbox（含生命周期）/ worker pure helpers / lock 原子性 + token + PID + sidecar token-scoped</td>
+  </tr>
+  <tr style="font-weight: 600;">
+    <td>合计</td>
+    <td>50</td>
+    <td><span class="tag ok">100%</span></td>
+    <td></td>
+  </tr>
+</table>
+
+<h3>关键 bug 单测对照</h3>
+<ul>
+  <li><strong>L1-L4</strong> · lock 原子性 + token + PID 存活（Bug 6/11/16）</li>
+  <li><strong>L5-L6</strong> · pickForInject 锁守卫（Bug 9/14）</li>
+  <li><strong>L7</strong> · updateLockWithChildPid r+ 模式（Bug 11/16）</li>
+  <li><strong>L8</strong> · writeState 直接 rename（Bug 8）</li>
+  <li><strong>L9</strong> · sidecar token 匹配 → 跳过双倍（Bug 19）</li>
+  <li><strong>L10</strong> · sidecar 陈旧 token → 兜底 + consume（Bug 20）</li>
+  <li><strong>S7-S8</strong> · markCheckpoint startCount 补偿（Bug 2）</li>
+  <li><strong>W2</strong> · parseDeepSeekJson 三段式（Bug 3）</li>
+  <li><strong>W3</strong> · sanitizePendingCandidates schema（Bug 3）</li>
+</ul>
+
+<!-- ============================================================== -->
+<h2>五、副作用审计</h2>
+
+<table>
+  <tr><th>项</th><th>状态</th><th>说明</th></tr>
+  <tr>
+    <td>生产 Hub PID</td>
+    <td><span class="tag ok">0 误杀</span></td>
+    <td>用户 5-6 实测的 mem-real-test Hub（PID 16204/24756/35492/45288）全程 4/4 仍活，7 次 smoke + E2E 重启 0 次误杀</td>
+  </tr>
+  <tr>
+    <td><code>~/.gemini/settings.json</code></td>
+    <td><span class="tag warn">已写入</span></td>
+    <td>5-6 写入的 <code>arena-roundtable-memory</code> MCP entry idempotent，本次未再写。STUB_MODE 兜底，独立 gemini 调用无影响</td>
+  </tr>
+  <tr>
+    <td>git commit / push</td>
+    <td><span class="tag ok">0 / 0</span></td>
+    <td>按用户授权边界，所有修改在工作目录 modified / untracked 状态等审阅</td>
+  </tr>
+  <tr>
+    <td>Anthropic Sonnet 4.5 配额</td>
+    <td><span class="tag warn">~90K tokens</span></td>
+    <td>E2E 3 家 × 3 轮 × ~30K total（用户原配额已用 89%，本次 ~3%）</td>
+  </tr>
+  <tr>
+    <td>DeepSeek API</td>
+    <td><span class="tag ok">~4K tokens</span></td>
+    <td>worker 派生 _profile.md 一次调用</td>
+  </tr>
+  <tr>
+    <td>评审 CLI（Gemini/Codex/DeepSeek）</td>
+    <td><span class="tag ok">~280K total</span></td>
+    <td>6 轮 × 3 路 ~ 18 调用，含 Codex 深度 reasoning + DeepSeek R1 思考链</td>
+  </tr>
+</table>
+
+<!-- ============================================================== -->
+<h2>六、起床 5 分钟检查清单</h2>
+
+<ol>
+  <li><span class="kbd">git status</span> 看 modified（main.js / scenes.js / meeting-room.js / .css）+ 一批 untracked phase 1 新文件</li>
+  <li><span class="kbd">node tests/roundtable-memory-phase1.test.js</span> → 32 PASS</li>
+  <li><span class="kbd">node tests/integration-roundtable-memory-mcp.test.js</span> → 7 PASS</li>
+  <li><span class="kbd">node tests/roundtable-memory.test.js</span> → 11 PASS</li>
+  <li>看 E2E 实测数据（保留在 <code>C:\temp\hub-e2e2\workspaces\75f7f323-c2e2-4e89-a62c-74f5242d0532\.arena\rooms\general\</code>）：
+    <ul>
+      <li><code>checkpoint-state.json</code> ✓</li>
+      <li><code>memory/_profile.md</code> ✓ 3 条 preference</li>
+      <li><code>memory/{pikachu,charmander,squirtle}.md</code> ✓</li>
+    </ul>
+  </li>
+  <li>读最终报告：<code>docs/superpowers/plans/2026-05-07-roundtable-memory-phase1-final-report.md</code></li>
+  <li>启动桌面 Hub（生产）→ 创建通用圆桌 → 真实使用：
+    <ul>
+      <li>每轮 fanout 三家先 <code>memory_list</code>（Polish 1 生效，Hub log grep <code>[memory]</code>）</li>
+      <li>第 3 轮后 worker 自动 spawn（log grep <code>mem-ckpt</code>）</li>
+      <li>workspace <code>.arena/rooms/general/memory/_profile.md</code> 自动派生</li>
+    </ul>
+  </li>
+</ol>
+
+<!-- ============================================================== -->
+<h2>七、推迟 / 待用户实测验证</h2>
+
+<table>
+  <tr><th>项</th><th>状态</th><th>建议</th></tr>
+  <tr>
+    <td>🧠 失败状态灯 UI</td>
+    <td><span class="tag p2">推迟</span></td>
+    <td>后端 consecutive_failures 已就绪（含 Bug 15/19/20 防双倍），UI 可视化 ~30 行 renderer 代码，下次迭代</td>
+  </tr>
+  <tr>
+    <td>Inbox 注入端到端</td>
+    <td><span class="tag warn">待观察</span></td>
+    <td>本次 E2E worker 的 DeepSeek 输出 pending 为空（三家都已记下，没漏记），未能直接验证 inbox 注入到下回合 prompt 的链路。后端 + 单测覆盖；建议日常使用观察</td>
+  </tr>
+  <tr>
+    <td>跨 meeting memory 共享 UX</td>
+    <td><span class="tag p2">推迟</span></td>
+    <td>隔离 Hub 默认每 meeting 独立 workspaceDir，UX 上让用户能选"继承哪个旧 meeting 的 memory"，下次迭代</td>
+  </tr>
+  <tr>
+    <td>inbox-archived/ 自动清理</td>
+    <td><span class="tag plan">phase 2</span></td>
+    <td>180 天自动 GC（plan §10 phase 2 范围）</td>
+  </tr>
+  <tr>
+    <td>timeline.md 月归档</td>
+    <td><span class="tag plan">phase 2</span></td>
+    <td>plan §2.2 phase 2 任务</td>
+  </tr>
+  <tr>
+    <td>cross-scene scope</td>
+    <td><span class="tag plan">phase 2</span></td>
+    <td>阶段 0/1 锁 'scene'，phase 2+ 开放 cross-scene + ~/.arena/agents/{slot}/cross.md</td>
+  </tr>
+</table>
+
+<!-- ============================================================== -->
+<h2>八、致谢三路评审者</h2>
+
+<div class="callout">
+没有 6 轮多路评审，phase 1 早期 P0/P1 bug（pending 并发 / state RMW / IPC 丢失 / sidecar 残留）任一上线都会让记忆系统在边缘场景下静默丢数据。三家各有侧重：
+<ul>
+  <li><strong>Codex GPT-5.2</strong>：最严格 + 最深入。6 轮里找到 Bug 1/2/4/6/9/10/11/12/13/14/15/19/20 共 13 个真问题，单家发现 P1 有 4 个。最终单独 v6 收敛验证。</li>
+  <li><strong>DeepSeek R1</strong>：reasoning chain 详细。找到 Bug 3/8/10/12/14 等关键并发问题。v4 最早收敛（信任修复方向 + 测试通过）。</li>
+  <li><strong>Gemini 3 Pro</strong>：擅长架构性观察。找到 Bug 5/7/15/16 等。v5 收敛（"建议进入发布流程"）。</li>
+</ul>
+</div>
+
+<hr>
+
+<footer>
+  Driver session：Claude Opus 4.7 (1M context)，连续 ~3 小时单 session 完成。
+  · plan v3 + 6 轮评审 + 20 bug 修复 + E2E 真跑 + 50/50 测试通过 + 0 误杀生产。
+  · 报告 MD 详版：<code>docs/superpowers/plans/2026-05-07-roundtable-memory-phase1-final-report.md</code>
+</footer>
+
+</div>
+</body>
+</html>

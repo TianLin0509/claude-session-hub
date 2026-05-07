@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌记忆系统 · 用户使用指南</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  line-height: 1.7;
+  padding: 32px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+h1 {
+  color: #f0f6fc;
+  font-size: 28px;
+  font-weight: 700;
+  border-bottom: 2px solid #30363d;
+  padding-bottom: 12px;
+  margin-bottom: 24px;
+}
+h1 .subtitle { color: #8b949e; font-size: 14px; font-weight: 400; margin-left: 12px; }
+h2 {
+  color: #58a6ff;
+  font-size: 22px;
+  margin-top: 36px;
+  margin-bottom: 16px;
+  padding-left: 12px;
+  border-left: 4px solid #58a6ff;
+}
+h3 { color: #f0f6fc; font-size: 17px; margin: 18px 0 10px; }
+p { margin: 10px 0; }
+.signature { color: #8b949e; font-size: 13px; margin-bottom: 20px; }
+.signature b { color: #f0f6fc; }
+section {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 20px 28px;
+  margin-bottom: 20px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  background: #0d1117;
+  border-radius: 6px;
+  overflow: hidden;
+}
+th, td {
+  padding: 10px 14px;
+  text-align: left;
+  border: 1px solid #30363d;
+  font-size: 14px;
+}
+th { background: #21262d; color: #f0f6fc; font-weight: 600; }
+tr:nth-child(even) td { background: #161b22; }
+code {
+  background: #21262d;
+  color: #79c0ff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 13px;
+}
+pre {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 16px;
+  overflow-x: auto;
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 13px;
+  color: #c9d1d9;
+  margin: 12px 0;
+}
+.qa { margin: 16px 0; padding: 14px 18px; background: #0d1117; border-left: 3px solid #58a6ff; border-radius: 0 6px 6px 0; }
+.qa .q { color: #f0f6fc; font-weight: 600; margin-bottom: 6px; }
+.qa .q::before { content: "❓ "; color: #f85149; }
+.qa .a { color: #c9d1d9; }
+.qa .a::before { content: "✅ "; color: #3fb950; }
+.warn {
+  background: #4d2d0a;
+  border-left: 4px solid #f85149;
+  padding: 14px 18px;
+  margin: 16px 0;
+  border-radius: 0 6px 6px 0;
+}
+.warn .label { color: #f85149; font-weight: 700; font-size: 13px; }
+.warn .body { color: #f0f6fc; margin-top: 6px; }
+.info {
+  background: #0c2d6b;
+  border-left: 4px solid #58a6ff;
+  padding: 14px 18px;
+  margin: 16px 0;
+  border-radius: 0 6px 6px 0;
+}
+.info .label { color: #58a6ff; font-weight: 700; font-size: 13px; }
+.info .body { color: #f0f6fc; margin-top: 6px; }
+.checklist { margin: 12px 0; }
+.checklist li { list-style: none; padding: 6px 0; border-bottom: 1px dashed #30363d; }
+.checklist li::before { content: "☐ "; color: #58a6ff; font-weight: 700; margin-right: 8px; }
+.checklist li.done::before { content: "✅ "; color: #3fb950; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 4px; font-weight: 600; }
+.tag.green { background: #033a16; color: #3fb950; }
+.tag.red { background: #4d2d0a; color: #f85149; }
+.tag.blue { background: #0c2d6b; color: #58a6ff; }
+.tag.gray { background: #21262d; color: #8b949e; }
+ul { padding-left: 24px; margin: 8px 0; }
+ul li { padding: 3px 0; }
+.flex-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin: 16px 0; }
+.card {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 16px;
+}
+.card h3 { color: #58a6ff; margin-top: 0; font-size: 15px; }
+.card p { font-size: 14px; color: #c9d1d9; margin: 6px 0; }
+.toc { background: #0d1117; padding: 16px; border-radius: 6px; margin-bottom: 24px; }
+.toc a { color: #58a6ff; text-decoration: none; display: block; padding: 4px 0; font-size: 14px; }
+.toc a:hover { color: #79c0ff; text-decoration: underline; }
+.footer-note { color: #8b949e; font-size: 12px; margin-top: 32px; padding-top: 16px; border-top: 1px solid #30363d; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>圆桌记忆系统 · 用户使用指南<span class="subtitle">v1.0 · phase 0+1+2+3 完成</span></h1>
+<p class="signature">由 <b>立花道雪</b> 与 <b>圆桌三 AI</b>（⚡ Pikachu / 🔥 Charmander / 💎 Squirtle）共识产出 · 2026-05-07</p>
+
+<div class="toc">
+<strong>目录</strong>
+<a href="#vision">① 这套系统能做什么</a>
+<a href="#ownership">② 记忆归属关系（核心）</a>
+<a href="#qa">③ 关键问题答疑</a>
+<a href="#experience">④ 你用起来的预期体验</a>
+<a href="#key-issues">⑤ 你需要重点关注的 5 个 KEY ISSUE</a>
+<a href="#paths">⑥ 文件路径速查</a>
+<a href="#checklist">⑦ 验证清单</a>
+</div>
+
+<section id="vision">
+<h2>① 这套系统能做什么</h2>
+<p>核心愿景一句话：<strong>每个 AI 模型在每个场景下，都成为一个会持续成长的独立伙伴。</strong></p>
+<div class="flex-grid">
+<div class="card">
+<h3>🧠 AI 越用越懂你</h3>
+<p>每家 AI 自主写下对你的偏好/事实/理解。下次再开同场景圆桌时，AI 能自然引用之前的记忆。</p>
+</div>
+<div class="card">
+<h3>🎯 场景隔离</h3>
+<p>"通用圆桌"和"投研圆桌"完全不混。投研里说"重视下行风险"，不会污染通用圆桌的代码评审。</p>
+</div>
+<div class="card">
+<h3>🦋 AI 个性保留</h3>
+<p>Opus、GPT、DeepSeek 各自一份记忆，**各自独立的"老朋友"**。三家观察你的角度可能不同，这正是圆桌价值所在。</p>
+</div>
+<div class="card">
+<h3>🔮 跨 meeting 延续</h3>
+<p>同 scene 关掉再开，记忆延续。这是"惊喜感"的载体——你不必再重复说偏好。</p>
+</div>
+</div>
+</section>
+
+<section id="ownership">
+<h2>② 记忆归属关系（这是最核心的问题）</h2>
+<p>记忆按 <strong>(Scene × AI Identity)</strong> 笛卡尔积归属。下表是完整规则：</p>
+<table>
+<thead><tr><th width="22%">维度</th><th width="20%">是否影响记忆归属</th><th>解释</th></tr></thead>
+<tbody>
+<tr><td><strong>Scene</strong>（通用 / 投研）</td><td><span class="tag green">✅ 隔离</span></td><td>不同领域不互相污染。投研里"看好消费"不会跑到通用圆桌</td></tr>
+<tr><td><strong>AI Kind</strong>（claude / gemini / codex / deepseek）</td><td><span class="tag green">✅ 隔离</span></td><td>不同 AI 家族是不同伙伴</td></tr>
+<tr><td><strong>AI Model 版本</strong>（opus-4-7 / sonnet-4-6 / haiku-4-5）</td><td><span class="tag green">✅ 隔离</span></td><td>精确到具体模型版本，每个版本是独立人格</td></tr>
+<tr><td><strong>Slot 槽位</strong>（皮卡丘 / 小火龙 / 杰尼龟）</td><td><span class="tag red">❌ 不影响</span></td><td>仅 UI 显示，不影响记忆。换 slot 同一 AI 仍延续记忆</td></tr>
+<tr><td><strong>Meeting</strong>（具体某场圆桌）</td><td><span class="tag red">❌ 不影响</span></td><td>同 scene 跨 meeting 共享。timeline 绑 meeting，memory 绑 scene</td></tr>
+<tr><td><strong>Project</strong>（不同项目）</td><td><span class="tag blue">取决于路径</span></td><td>scene 共享根优先（同 "general" 跨项目共享）。<strong>建议起床后实测</strong></td></tr>
+</tbody>
+</table>
+
+<div class="info">
+<div class="label">核心三句话</div>
+<div class="body">
+<strong>1.</strong> 每个 (Scene × AI Identity) 组合 = 一份独立记忆<br>
+<strong>2.</strong> Slot 是 UI 标签，与记忆无关——你换 slot AI 仍延续<br>
+<strong>3.</strong> 模型版本是精确到 4-7 / 4-6 / 4-5 的——切版本就换人格
+</div>
+</div>
+</section>
+
+<section id="qa">
+<h2>③ 关键问题答疑</h2>
+
+<div class="qa">
+<div class="q">Opus 4.7 和 Opus 4.6 共享记忆吗？</div>
+<div class="a"><strong>不共享。</strong> 文件分别是 <code>claude-opus-4-7.md</code> 和 <code>claude-opus-4-6.md</code>。设计意图："每个具体模型版本是独立人格"。
+<br><br><strong>影响</strong>：当 Anthropic 升级 Opus 时，新版本会"失忆"，需要重新建立。这是设计权衡，不是 bug。
+<br><strong>未来方向</strong>（phase 4 候选）：可加入"同家族 fallback"——新版找不到时读老版。但目前精确隔离是默认行为。</div>
+</div>
+
+<div class="qa">
+<div class="q">Sonnet 4.6 切到 Sonnet 4.5 呢？</div>
+<div class="a"><strong>同上不共享。</strong> 版本号是记忆隔离的最细粒度。</div>
+</div>
+
+<div class="qa">
+<div class="q">Claude Opus 在通用圆桌 vs 投研圆桌共享记忆吗？</div>
+<div class="a"><strong>不共享。</strong> Scene 隔离。同一个 Opus 在两个场景下被当作两个独立上下文。<code>rooms/general/memory/claude-opus-4-7.md</code> ≠ <code>rooms/research/memory/claude-opus-4-7.md</code>。</div>
+</div>
+
+<div class="qa">
+<div class="q">我把 Opus 从皮卡丘 slot 换到杰尼龟 slot，记忆延续吗？</div>
+<div class="a"><strong>延续。</strong> Slot 仅是 UI 显示，不影响存储。Opus 在哪个槽位都读同一份 <code>claude-opus-4-7.md</code>。这是 phase 3 修复的核心场景。</div>
+</div>
+
+<div class="qa">
+<div class="q">Claude Code 单聊和圆桌共享记忆吗？</div>
+<div class="a"><strong>不共享，但互不冲突。</strong> 两套并行系统：
+<br>• Claude Code auto-memory：<code>~/.claude/projects/.../memory/</code>
+<br>• 圆桌记忆：<code>&lt;projectCwd&gt;/.arena/rooms/{scene}/memory/</code>
+<br>同一偏好可能两边都有（轻冗余可接受）。</div>
+</div>
+
+<div class="qa">
+<div class="q">不同项目（如 LinDangAgent vs claude-session-hub）的通用圆桌共享记忆吗？</div>
+<div class="a"><strong>取决于 phase 2 fallback 链。</strong> 默认 scene 共享根优先——同 <code>scene="general"</code> 名字跨项目共享。<br><br>
+<strong>这是当前最不确定的一条</strong>，建议起床后实测：在 LinDangAgent 项目开通用圆桌写偏好 → 切到 Hub 项目开通用圆桌 → 看是否共享。
+<br>如果你不希望跨项目共享，可能需要 phase 4 加 "project-scoped scene" 选项。</div>
+</div>
+
+<div class="qa">
+<div class="q">DeepSeek 既是圆桌成员又是后台派生器，会自己引用自己吗？</div>
+<div class="a"><strong>不会。</strong> 后台派生时 DeepSeek 是用 API 调用做语义聚合（输入三家 .md），不写自己的 .md。前台 DeepSeek 坐席时才自主写 <code>deepseek-v4-pro.md</code>。两个角色互不影响。</div>
+</div>
+
+</section>
+
+<section id="experience">
+<h2>④ 你用起来的预期体验</h2>
+
+<h3>第一周</h3>
+<ul>
+<li>开通用圆桌聊真业务（让 AI 帮你看代码/写文档）</li>
+<li>偶尔点卡片右上角 <code>📒 N</code> 看 AI 记了什么</li>
+<li>第二天再开同 scene 圆桌——三家 AI 中至少一家会自然说出："5 月 7 号你提过 X，所以..."<strong>这就是惊喜感</strong> ✨</li>
+<li>翻 <code>_profile.md</code> 看共识层——3-5 条 DeepSeek 派生的稳定偏好</li>
+</ul>
+
+<h3>第 2-4 周（信任建立期）</h3>
+<ul>
+<li>每个 AI 模型逐渐成为"老朋友"</li>
+<li>切换 AI 模型版本（如 Opus 4.7 → Opus 4.8 升级）→ <strong>新模型会"失忆"</strong>，需要重新建立。这是 feature 不是 bug</li>
+<li>切换 scene（通用 → 投研）→ 同 AI 重新建立场景认知</li>
+</ul>
+
+<h3>长期</h3>
+<ul>
+<li>系统会变得"重"——每个 (Scene × Identity) 组合一份记忆，半年后可能 10-20 个文件</li>
+<li>每天后台 GC 自动清理 90 天未引用的条目（加删除线，不真删）</li>
+<li>180 天清理 inbox-archived/</li>
+<li>worker 失败用 🧠 状态灯告警</li>
+</ul>
+</section>
+
+<section id="key-issues">
+<h2>⑤ 你需要重点关注的 5 个 KEY ISSUE</h2>
+
+<div class="warn" style="border-left-color:#22c55e;background:#f0fdf4">
+<div class="label">✅ KEY ISSUE 1：模型版本升级的"失忆体验" — Phase 4（2026-05-08）已解决</div>
+<div class="body">
+<strong>历史问题</strong>（phase 3 时存在）：Anthropic 发布 Opus 4.8 / Sonnet 4.7 时，旧版本的记忆不会自动延续到新版本。<br>
+<strong>Phase 4 修复方案</strong>：记忆从 (kind+model) 粒度回退到家族粒度——<code>claude.md</code> 包含 Opus / Sonnet / Haiku 全档位共享，<code>gpt.md</code> 包含 codex + packy-gpt 各 model 共享。同家族升级 / 切换不再失忆，跨家族（Anthropic ≠ OpenAI ≠ Google）仍隔离。<br>
+<strong>详见</strong>：<code>docs/superpowers/plans/2026-05-07-roundtable-memory-phase4-family-report.md</code>
+</div>
+</div>
+
+<div class="warn">
+<div class="label">⚠️ KEY ISSUE 2：跨项目共享行为不确定</div>
+<div class="body">
+phase 2 fallback 链默认 scene 共享根——同 <code>scene="general"</code> 跨项目共享记忆。<br>
+<strong>这意味着</strong>：你在 LinDangAgent 通用圆桌说的偏好，可能影响 Hub 通用圆桌的 AI 行为。<br>
+<strong>起床后必测</strong>：开两个不同项目的通用圆桌，验证是否串/不串，决定是否需要调整。
+</div>
+</div>
+
+<div class="warn">
+<div class="label">⚠️ KEY ISSUE 3：长期 _profile.md 漂移风险</div>
+<div class="body">
+<code>_profile.md</code> 上限 20 条，DeepSeek 派生质量不稳时可能"抖动"——同样的偏好这周派生进来，下周被淘汰。<br>
+<strong>监控方法</strong>：每周看一次 <code>_profile.md</code>。<br>
+<strong>判断标准</strong>：稳定偏好 (recall_count) 慢慢累积 = 健康；条目剧烈变化 = 派生抖动，可能需要调 prompt
+</div>
+</div>
+
+<div class="warn">
+<div class="label">⚠️ KEY ISSUE 4：AI 真自主写率仍未充分验证</div>
+<div class="body">
+当前实测："请记住"显式触发 → 100% 写入。但<strong>自然对话中 AI 主动判断该记的能力</strong>（不被告知）只有 0-1 次/场。<br>
+<strong>长期目标</strong>：系统真"越用越懂"需要 AI 自然识别——这是产品愿景的核心。<br>
+<strong>判断方法</strong>：跑 5-10 场圆桌，看 <code>{aiKind}-{model}.md</code> 的 source 字段——<code>self</code> 比例越高 = 自主性越强；<code>explicit</code> 占主导 = 还需要 prompt 调优
+</div>
+</div>
+
+<div class="warn">
+<div class="label">⚠️ KEY ISSUE 5：CLI 兼容性债</div>
+<div class="body">
+当前在 Claude 系列（Sonnet/Opus/Haiku）稳定验证。Gemini / Codex 圆桌接入<strong>本身有 bug 待修</strong>——多模型组合时可能出现：某家 AI 拿不到 MCP 工具 / 工具调用失败 / Hub spawn 异常等。<br>
+<strong>当前建议</strong>：圆桌优先用 Claude 系列。Gemini/Codex 接入 bug 修复后再补真实多模型 E2E。
+</div>
+</div>
+
+</section>
+
+<section id="paths">
+<h2>⑥ 文件路径速查</h2>
+<pre>
+&lt;projectCwd&gt;/.arena/rooms/{scene}/                              # scene = "general" / "research" / ...
+├── timeline.md                                                  # 圆桌历史叙事（已有，AI 全量 Read）
+├── checkpoint-state.json                                        # worker 健康状态（失败计数 / 上次 checkpoint）
+├── episodes.jsonl                                               # 程序元数据账本（每行 ~250B）
+└── memory/
+    ├── claude-opus-4-7.md                                       # Opus 4.7 个人记忆
+    ├── claude-sonnet-4-6.md                                     # Sonnet 4.6 个人记忆
+    ├── claude-haiku-4-5.md                                      # Haiku 4.5 个人记忆
+    ├── gemini-3-pro.md                                          # Gemini 3 Pro
+    ├── codex-gpt-5-2-codex.md                                   # Codex
+    ├── deepseek-v4-pro.md                                       # DeepSeek
+    ├── glm.md / qwen.md / kimi.md                               # 其他家族
+    ├── _profile.md                                              # 共识层（DeepSeek 派生，≤20 行）
+    ├── pending-{aiKind}-{model}.json                            # 每个 AI 一个 inbox
+    ├── inbox-archived/                                          # 拒绝/过期归档（180 天 GC）
+    └── legacy-by-slot/                                          # phase 1/2 旧 slot 数据归档
+        ├── pikachu.md
+        ├── charmander.md
+        └── squirtle.md
+</pre>
+
+<h3>UI 4 个按钮（90% 时间用这个）</h3>
+<table>
+<tr><th width="15%">按钮</th><th width="35%">点击行为</th><th>看什么</th></tr>
+<tr><td><code>📒 N</code></td><td>打开当前坐席 AI 的 .md</td><td>N 增长曲线 + 内容质量</td></tr>
+<tr><td><code>📥</code> 红点</td><td>打开 pending-{aiKind}-{model}.json</td><td>worker 提议的漏记候选</td></tr>
+<tr><td><code>📊</code></td><td>打开 _profile.md</td><td>DeepSeek 派生的共识层</td></tr>
+<tr><td><code>🧠</code></td><td>状态灯，点击打开 checkpoint-state.json</td><td>worker 健康（绿/橙/红呼吸）</td></tr>
+</table>
+</section>
+
+<section id="checklist">
+<h2>⑦ 验证清单</h2>
+
+<h3>第 1 天 · 当场验证</h3>
+<ul class="checklist">
+<li>开通用圆桌聊真业务 5-10 轮（不用"请记住"触发词）</li>
+<li>看卡片 <code>📒 N</code>，至少 1 家 N &gt; 0</li>
+<li>点 <code>📒</code> 抽看 .md 内容——是真偏好还是临时观点？</li>
+<li>第 3 轮后看 <code>📊</code> _profile.md 是否更新</li>
+<li>🧠 状态灯绿色，无 worker 失败</li>
+</ul>
+
+<h3>第 2 天 · 关键测试 ⭐</h3>
+<ul class="checklist">
+<li>开同 scene 通用圆桌（同 AI 模型组合）</li>
+<li>不提偏好，问纯业务问题</li>
+<li>三家 AI 至少一家自然引用昨天的偏好（"5月7号你说过..."）</li>
+<li>这一步通过 = phase 2+3 的产品愿景兑现 ✨</li>
+</ul>
+
+<h3>第一周 · 跨项目实测</h3>
+<ul class="checklist">
+<li>开 LinDangAgent 通用圆桌，发偏好"我喜欢A股投研先看下行风险"</li>
+<li>切到 Hub 通用圆桌，问"看一下 main.js"</li>
+<li>看 AI 是否引用 LinDangAgent 的偏好（如果引用 = 跨项目 scene 共享）</li>
+<li>判断这是否符合你的预期，决定是否需要 phase 4 改</li>
+</ul>
+
+<h3>每周 · 长期监控</h3>
+<ul class="checklist">
+<li><code>_profile.md</code> 共识条目稳定（不剧烈抖动）</li>
+<li>每个 .md 文件总条目数缓慢增长（每周 +3~10 条健康；+30+ 暴涨需要调 prompt）</li>
+<li>抽样看 source 字段——self 比例上升 = 自主性增强</li>
+<li>🧠 长期保持绿色，无连续失败</li>
+</ul>
+</section>
+
+<section>
+<h2>⑧ 信任建立的两条线</h2>
+<table>
+<tr><th width="20%">线</th><th>状态</th><th>判断方法</th></tr>
+<tr><td><strong>工程证据</strong></td><td><span class="tag green">✅ 已建立</span></td><td>56/56 测试 PASS + 4 阶段 silent-failure-hunter + 3 路评审收敛</td></tr>
+<tr><td><strong>用户体验</strong></td><td><span class="tag gray">⏳ 需 2-3 周日常使用</span></td><td>主观感受："AI 现在更懂我了吗？"——只能你自己回答</td></tr>
+</table>
+
+<div class="info">
+<div class="label">最关键的心法</div>
+<div class="body">
+<strong>不要把验证当任务做</strong>。phase 1+2+3 的产品愿景是"惊喜感"——它<strong>只能在你不主动看的时候出现</strong>。<br>
+每天打开 .md 找证据 → 永远找不到惊喜。<br>
+日常自然用 → 某天 AI 自然说出你忘了告诉它的偏好 → 那一刻才是真兑现。
+</div>
+</div>
+</section>
+
+<div class="footer-note">
+本指南由通用圆桌第 36-39 轮三家 AI 评估 + 用户拍板共识产出 ·<br>
+对应 plan：<code>2026-05-05-roundtable-memory.md</code> · 系统状态：phase 0+1+2+3 完成 · 0 git commit 待用户授权
+</div>
+
+</body>
+</html>

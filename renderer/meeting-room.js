@@ -21,6 +21,10 @@ if (typeof document !== 'undefined') (function () {
   //   驱动 isInitializing 判断（修 P0 阻塞 bug B：原 markerStatus 永远 'none' 导致永久卡"创建中"）
   let _cliReadyCache = {};
   let _cliReadyPollTimer = null;
+  // 圆桌记忆 phase 1（2026-05-07）：per-(meetingId, slot) 状态缓存
+  //   { meetingId: { slot: { count, pending, hasProfile } } }
+  //   memory-event IPC 增量更新；首次进 panel 时 _loadMemoryStatusForMeeting 拉取
+  let _memStatusBy = {};
   // IF-C3（2026-05-01）：banner dismiss 状态记录 — meetingId，dismiss 后同会议不再显示，
   //   关闭会议（closeMeetingPanel）会重置，下次进同会议又显示
   let _bannerDismissedFor = null;
@@ -1015,12 +1019,91 @@ if (typeof document !== 'undefined') (function () {
             <span class="mr-ft-status ${statusCls}${sendStuck ? ' send-stuck' : ''}">${statusLabel}</span>${newBadge}
             ${timeStat}
           </div>
-          <div class="mr-ft-row2">${modelBadge}${ctxBadge}${tokenStat}</div>
+          <div class="mr-ft-row2">${modelBadge}${ctxBadge}${tokenStat}${_memBadgesHtml(activeMeetingId, slotIdx, sid)}</div>
           ${lineageHtml || ''}
         </div>
       </div>
       <div class="mr-ft-bottom">${bottomHtml}${escapeBar}</div>
     </div>`;
+  }
+
+  // 圆桌记忆 phase 1（2026-05-07）：右上角 📒 N / 📥 / 📊 三个按钮
+  //   📒 N — 个体 .md 条目数。点击 → 打开 {slot}.md。N=0 也显示（点了会创建空文件 + header）
+  //   📥   — 仅 pending-{slot}.json 含 status='pending' 的 item 时显示（带数字 dot）
+  //   📊   — 仅 _profile.md 存在时显示（worker 派生的共识层；阶段 0 不存在）
+  function _memBadgesHtml(meetingId, slotIdx, sid) {
+    if (!meetingId || typeof slotIdx !== 'number' || slotIdx < 0 || slotIdx >= SLOT_IDS.length) return '';
+    const slot = SLOT_IDS[slotIdx];
+    const meta = _memStatusBy[meetingId] && _memStatusBy[meetingId][slot] || { count: 0, pending: 0, hasProfile: false, identity: null, aiKind: null, aiModel: null };
+    // Phase 4 tooltip：identity 是家族存储 key（claude/gpt/...），model 是用户可见的具体型号
+    //   [silent-failure-hunt] aiModel 来自 session.currentModel.id，理论上来源可控，但
+    //     防御性 HTML escape 避免引号 / < 等字符破坏 title 属性。
+    const _esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const familyHint = meta.identity ? _esc(meta.identity) + '.md' : '';
+    const modelHint = meta.aiModel ? `当前: ${_esc(meta.aiModel)}` : '';
+    const idHint = familyHint
+      ? (modelHint ? `\n${modelHint} → 写入 ${familyHint}（家族共享）` : `\n写入 ${familyHint}`)
+      : '';
+    const ownBtn = `<button class="mr-ft-mem-btn" data-rt-mem-action="open-own" data-rt-mem-sid="${sid}" data-rt-mem-slot="${slot}" title="打开家族记忆 .md${idHint}\n${meta.count} 条 entry">📒 ${meta.count}</button>`;
+    const inboxBtn = meta.pending > 0
+      ? `<button class="mr-ft-mem-btn pending" data-rt-mem-action="open-pending" data-rt-mem-sid="${sid}" data-rt-mem-slot="${slot}" title="打开 inbox 候选${idHint}\n${meta.pending} 条待 AI 采纳/拒绝">📥 <span class="dot">${meta.pending}</span></button>`
+      : '';
+    const profileBtn = meta.hasProfile
+      ? `<button class="mr-ft-mem-btn" data-rt-mem-action="open-profile" data-rt-mem-sid="${sid}" data-rt-mem-slot="${slot}" title="打开 _profile.md（共识层）">📊</button>`
+      : '';
+    // Phase 2 P1（2026-05-07）：worker 失败状态灯（meeting 级共享 — 仅在第一个 slot 显示，避免冗余）
+    let healthBtn = '';
+    if (slotIdx === 0) {
+      const wh = _memStatusBy[meetingId] && _memStatusBy[meetingId]._worker;
+      if (wh && wh.failures > 0) {
+        const cls = wh.failures >= 3 ? 'health-bad' : 'health-warn';
+        const reason = wh.lastReason || '(原因未知)';
+        const reasonAttr = String(reason).replace(/"/g, '&quot;').slice(0, 240);
+        healthBtn = `<button class="mr-ft-mem-btn ${cls}" data-rt-mem-action="open-worker" data-rt-mem-sid="${sid}" data-rt-mem-slot="${slot}" title="后台 worker 连续失败 ${wh.failures} 次&#10;最近原因: ${reasonAttr}&#10;点击查看 checkpoint state.json">🧠 ${wh.failures}</button>`;
+      }
+    }
+    return `${ownBtn}${inboxBtn}${profileBtn}${healthBtn}`;
+  }
+
+  // Lazy load memory status for a meeting — 通过 IPC 同步三家 count/pending/hasProfile，
+  //   有变化才 trigger refreshRoundtablePanel。在 selectMeeting / 圆桌轮完成后调用。
+  async function _loadMemoryStatusForMeeting(meeting) {
+    if (!meeting || !meeting.id || !Array.isArray(meeting.subSessions)) return;
+    const meetingId = meeting.id;
+    if (!_memStatusBy[meetingId]) _memStatusBy[meetingId] = {};
+    let dirty = false;
+    const slotsToCheck = Math.min(meeting.subSessions.length, SLOT_IDS.length);
+    for (let i = 0; i < slotsToCheck; i++) {
+      const slot = SLOT_IDS[i];
+      try {
+        const r = await ipcRenderer.invoke('arena:get-memory-status', { meetingId, slot });
+        if (!r || !r.ok) continue;
+        const cur = _memStatusBy[meetingId][slot];
+        // Phase 3：缓存 identity / aiKind / aiModel 用于 tooltip + open 时确认提示
+        const identityChanged = !cur || cur.identity !== r.identity;
+        if (!cur || cur.count !== r.count || cur.pending !== r.pending || cur.hasProfile !== r.hasProfile || identityChanged) {
+          _memStatusBy[meetingId][slot] = {
+            count: r.count, pending: r.pending, hasProfile: r.hasProfile,
+            identity: r.identity || null, aiKind: r.aiKind || null, aiModel: r.aiModel || null,
+          };
+          dirty = true;
+        }
+        // Phase 2 P1（2026-05-07）：worker 健康（meeting 级 — 三家返回相同值，存到 _worker key）
+        if (r.workerHealth) {
+          const wPrev = _memStatusBy[meetingId]._worker;
+          if (!wPrev || wPrev.failures !== r.workerHealth.failures || wPrev.lastReason !== r.workerHealth.lastReason) {
+            _memStatusBy[meetingId]._worker = r.workerHealth;
+            dirty = true;
+          }
+        }
+      } catch (e) {
+        // memory IPC 失败不影响其他 panel 行为，静默 skip
+      }
+    }
+    if (dirty && meetingId === activeMeetingId) {
+      const m = meetingData[meetingId];
+      if (m) refreshRoundtablePanel(m);
+    }
   }
 
   // Stage 2 P1-2：历史轮次面板状态角标 — 把每家本轮的 byStatus 渲染成 [Claude ✓][Gemini 手动][Codex 缺席]
@@ -1500,12 +1583,33 @@ if (typeof document !== 'undefined') (function () {
         _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
       });
     }
+    // 圆桌记忆 phase 1（2026-05-07）：lazy 拉取 count/pending/hasProfile（fire-and-forget）
+    //   首次进 panel 时 cache 空 → 显示 0 → 拉取后若有 dirty 自然触发 refresh 二次渲染
+    //   memory-event IPC 后续会做增量推送，所以这里只补"冷启动 / 切回"场景
+    _loadMemoryStatusForMeeting(meeting);
   }
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
   // T2（2026-05-04 道雪）：单 slot 卡片的事件绑定独立成函数，让 partial-update 局部 patch 后只 rebind 单卡片。
   //   覆盖范围：① 卡片本体 click（focus session）② ↗ 展开按钮 ③ [data-rt-escape] 工具栏按钮组。
   //   不覆盖：history-toggle / soft-alert banner-close / mr-rt-ob-card（这些是 panel 级，由 _bindRtPanelEvents 管）。
+  function _showRtEscapeNotice(message, level = 'warn') {
+    const banner = document.getElementById('mr-rt-soft-alert-banner');
+    if (!banner) return false;
+    const cls = level === 'error' ? 'urgent' : 'warn';
+    banner.className = `mr-rt-soft-alert-banner ${cls}`;
+    banner.innerHTML = `
+      <div class="mr-rt-soft-alert-msg">
+        <strong>${escapeHtml(level === 'error' ? '操作失败' : '提示')}</strong>
+        <span class="mr-rt-soft-alert-hint">${escapeHtml(message || '')}</span>
+      </div>
+      <button class="mr-rt-soft-alert-close" data-rt-banner-close="1" title="关闭提示">×</button>`;
+    banner.style.display = 'flex';
+    const close = banner.querySelector('[data-rt-banner-close]');
+    if (close) close.addEventListener('click', () => { banner.style.display = 'none'; banner.innerHTML = ''; }, { once: true });
+    return true;
+  }
+
   function _bindSlotCardEvents(slotEl, meeting) {
     if (!slotEl) return;
     // 卡片本体 click（mr-ft 自身），focus 该 sid 的 session
@@ -1571,7 +1675,8 @@ if (typeof document !== 'undefined') (function () {
             });
             if (!r || !r.ok) {
               console.warn(`[rt-escape] extract failed: ${r?.reason} (${r?.detail || ''})`);
-              alert(`提取失败：${r?.reason || 'unknown'}\n\n${r?.detail || ''}`);
+              const detail = r?.detail ? `：${r.detail}` : '';
+              _showRtEscapeNotice(`提取失败（${r?.reason || 'unknown'}）${detail}`, 'error');
             } else {
               // 2026-05-02 Bug 修复：用户视觉反馈。
               //   旧版本只 console.log → 用户看不到"提取成功"，加上 IPC 永远失败（Bug 2），
@@ -1646,6 +1751,27 @@ if (typeof document !== 'undefined') (function () {
             btn.disabled = false;
             btn.textContent = oldText;
           }
+        }
+      });
+    });
+
+    // 圆桌记忆 phase 1（2026-05-07）：📒 / 📥 / 📊 三按钮
+    //   data-rt-mem-action: 'open-own' | 'open-pending' | 'open-profile'
+    //   stopPropagation 避免冒泡到 .mr-ft 卡片 click（不要触发 focus）
+    slotEl.querySelectorAll('[data-rt-mem-action]').forEach(btn => {
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const action = btn.getAttribute('data-rt-mem-action');
+        const slot = btn.getAttribute('data-rt-mem-slot');
+        if (!slot || !action) return;
+        const typeMap = { 'open-own': 'own', 'open-pending': 'pending', 'open-profile': 'profile', 'open-worker': 'worker-state' };
+        const type = typeMap[action];
+        if (!type) return;
+        const r = await ipcRenderer.invoke('arena:open-memory-file', { meetingId: meeting.id, slot, type });
+        if (r && typeof r === 'string' && r !== '') {
+          // shell.openPath 失败返回错误字符串
+          console.warn(`[mr-mem] open ${type} for ${slot} failed: ${r}`);
+          alert(`打开记忆文件失败：${r}`);
         }
       });
     });
@@ -2095,6 +2221,32 @@ if (typeof document !== 'undefined') (function () {
   // 2026-05-05 道雪 修3：cache 清理对所有 meeting 都做（含非 active），DOM 重渲仅 active 做。
   //   之前的 `meetingId === activeMeetingId` 守卫导致非 active 圆桌 _partialBy 残留，
   //   切回时 cached.currentMode!=idle 但实际 server 已 idle → 卡片显示 streaming 假象。
+  // 圆桌记忆 phase 1（2026-05-07）：主进程 memory-event 广播
+  //   type:'write'             — memory_write 命中后；含 slot/count，增量更新该 slot count
+  //   type:'checkpoint-done'   — worker 跑完 _profile.md + pending；触发整 meeting 状态重拉
+  //   type:'checkpoint-failed' — worker 失败；触发重拉（让 pending count 仍刷新）
+  ipcRenderer.on('memory-event', (_event, payload) => {
+    if (!payload || !payload.meetingId) return;
+    const { meetingId, slot, count, type } = payload;
+    if (type === 'write' && slot) {
+      if (!_memStatusBy[meetingId]) _memStatusBy[meetingId] = {};
+      if (!_memStatusBy[meetingId][slot]) _memStatusBy[meetingId][slot] = { count: 0, pending: 0, hasProfile: false };
+      if (typeof count === 'number') _memStatusBy[meetingId][slot].count = count;
+      if (meetingId === activeMeetingId) {
+        const m = meetingData[meetingId];
+        if (m) refreshRoundtablePanel(m);
+      }
+      return;
+    }
+    if (type === 'checkpoint-done' || type === 'checkpoint-failed') {
+      // worker 改了 _profile.md / pending-{slot}.json → 全 slot 重拉 status（lazy IPC 调）
+      if (meetingId === activeMeetingId) {
+        const m = meetingData[meetingId];
+        if (m) _loadMemoryStatusForMeeting(m);
+      }
+    }
+  });
+
   ipcRenderer.on('roundtable-turn-complete', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;

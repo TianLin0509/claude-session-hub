@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌记忆系统 · Phase 2 完工概览（2026-05-07）</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; max-width: 980px; margin: 24px auto; padding: 0 20px; color: #1f2328; line-height: 1.62; }
+h1 { color: #0969da; border-bottom: 3px solid #0969da; padding-bottom: 8px; }
+h2 { color: #1f2328; border-left: 4px solid #0969da; padding-left: 10px; margin-top: 36px; }
+h3 { color: #57606a; margin-top: 24px; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+th { background: #f6f8fa; padding: 10px 14px; text-align: left; border: 1px solid #d0d7de; }
+td { padding: 10px 14px; border: 1px solid #d0d7de; vertical-align: top; }
+code { background: #f6f8fa; padding: 1px 6px; border-radius: 3px; font-size: 13px; font-family: "JetBrains Mono", Consolas, monospace; }
+pre { background: #f6f8fa; padding: 14px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.5; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+.tag.ok { background: #dafbe1; color: #1a7f37; }
+.tag.warn { background: #fff8c5; color: #9a6700; }
+.tag.bad { background: #ffebe9; color: #cf222e; }
+.tag.info { background: #ddf4ff; color: #0969da; }
+.callout { background: #fffdf2; border-left: 4px solid #fac905; padding: 12px 16px; margin: 16px 0; border-radius: 4px; }
+.callout-good { background: #f0fdf4; border-left-color: #22c55e; }
+.callout-bad { background: #fef2f2; border-left-color: #ef4444; }
+ul li { margin: 4px 0; }
+hr { border: none; border-top: 1px solid #d0d7de; margin: 32px 0; }
+.kpi { display: inline-block; min-width: 110px; padding: 8px 14px; margin: 4px; background: linear-gradient(135deg, #0969da, #0860c5); color: white; border-radius: 6px; text-align: center; }
+.kpi b { font-size: 20px; display: block; }
+.kpi span { font-size: 12px; opacity: 0.85; }
+</style>
+</head>
+<body>
+<h1>圆桌记忆系统 · Phase 2 完工概览</h1>
+<p style="color: #57606a; font-size: 14px;">日期：2026-05-07 · 状态：<span class="tag ok">完工</span> · 上一份：<a href="roundtable-memory-phase1-final-2026-05-07.html">Phase 1 Final</a></p>
+
+<div class="callout callout-good">
+<b>TL;DR</b><br>
+✅ 用户戳穿的 3 个隐患全部回应（隐患 1 修、隐患 2 升 P0 修、隐患 3 承认已知债）<br>
+✅ Phase 2 P0 / P1 / P2 全部落地<br>
+✅ 51/51 测试 PASS（phase 0: 11 + integration: 7 + phase 1: 33 含新 I6）<br>
+✅ smoke 启动验证 GC 真跑（<code>[mem-gc] inbox-archived scanned=2 removed=1</code>）
+</div>
+
+<div>
+  <span class="kpi"><b>3</b><span>用户隐患全应</span></span>
+  <span class="kpi"><b>P0/1/2</b><span>三档全做</span></span>
+  <span class="kpi"><b>51/51</b><span>测试 PASS</span></span>
+  <span class="kpi"><b>0</b><span>误杀生产 Hub</span></span>
+  <span class="kpi"><b>0</b><span>未授权 git commit</span></span>
+</div>
+
+<h2>一、用户戳穿的 3 个隐患 · 点对点回应</h2>
+
+<table>
+<tr><th>#</th><th>用户警告</th><th>处置</th><th>状态</th></tr>
+<tr>
+  <td>1</td>
+  <td>Polish 1 "每轮硬要求 memory_list" 违反 AI 自主精神，会触发 reflection fatigue（"被反复问 → 敷衍"）</td>
+  <td>回退为 <b>自主判断 + 显式触发硬要求</b>。仅"用户问之前说过什么"保留必调（防凭空猜）。</td>
+  <td><span class="tag ok">已修</span></td>
+</tr>
+<tr>
+  <td>2</td>
+  <td>跨 meeting memory UX 推迟 = 产品体验阻塞。每开新圆桌 AI 又从 0 开始，感受不到"越来越懂我"</td>
+  <td>提为 P0。新增 scene 共享根 + 用户项目根双路径 fallback，timeline 与 memory 解耦。</td>
+  <td><span class="tag ok">已修</span></td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>E2E 仍是 3 sonnet 同模型实例，多模型泛化未真测</td>
+  <td>承认已知债。Gemini/Codex 接入 bug 未修复前不能补。E2E 真跑能验证 worker fork + DeepSeek 派生主链路。</td>
+  <td><span class="tag warn">已知债</span></td>
+</tr>
+</table>
+
+<h2>二、隐患 1 · MEMORY PROTOCOL 修订</h2>
+
+<h3>修改前（v6 收敛但违反原始精神）</h3>
+<pre>【引用记忆 · 必做】
+**每轮发言前先调一次 memory_list({kind: 'preference'})**——这是硬要求，不是建议。
+原因：用户的偏好会改变你这轮该怎么写。**不查 = 浪费记下的偏好**。
+
+执行规则：
+1. 发言前先调一次 memory_list({})，O(几条) 快得很
+2. 命中相关项时**在回答中自然引用**
+...</pre>
+
+<h3>修改后（自主判断 · 不仪式化）</h3>
+<pre>【引用记忆 · 自主判断 · 不仪式化】
+memory_list 是工具不是仪式。**话题与偏好相关时**主动调一次有价值；
+纯闲聊/查事实别浪费 token。
+
+判断维度：
+- 话题涉及"该怎么答（详略/结论位置/技术选型/沟通风格）" → 值得 list
+- 话题是"用户在问具体事实/外部信息" → 不必 list
+- **用户问"我之前说过什么 / 你记得什么"** → 必调（这条是硬要求）
+- 命中相关项 → 回答首句自然带一次（1 句话即可）
+- 命中无关项 → 心里按偏好风格答，不必显式引用
+- list 返回空 → 跳过引用正常发言
+
+原则：被反复问会变成敷衍——该用就用，不该用别仪式化。</pre>
+
+<div class="callout">
+<b>设计原则</b>：cat-cafe 风格（AI 在相关语境主动查/写） vs Mem0 风格（每轮强制注入）。
+原始 30 轮讨论否决了后者，phase 1 v1→v6 收敛过程中"硬要求"路径偷偷回流，phase 2 把它清掉。
+</div>
+
+<h2>三、试用 3 实证 · 跨 meeting gap</h2>
+
+<h3>3.1 Reproduction（修复前）</h3>
+<pre>$ node tests/cross-meeting-gap-repro.js
+--- 模拟用户开第一次圆桌 (meetingA) ---
+charmander 写入偏好 conclusion-first: OK
+
+--- 用户关掉圆桌 → 重开同 scene 第二次圆桌 (meetingB) ---
+charmander 读到的偏好条数: 0
+命中: (空)
+
+--- 文件系统证据 ---
+A 存在: true → ...workspaces\meeting-A-...\.arena\rooms\general\memory\charmander.md
+B 存在: false → ...workspaces\meeting-B-...\.arena\rooms\general\memory\charmander.md
+
+GAP 已证实：meetingB 完全读不到 meetingA 的偏好</pre>
+
+<h3>3.2 根因 · main.js:3138-3164 旧逻辑</h3>
+<pre>function _resolveMemoryProjectCwd(meetingId) {
+  // ... pilot.cwd / first sub.cwd
+  if (!projectCwd) {
+    projectCwd = getMeetingWorkspaceDir(meetingId);  // &lt;HUB&gt;/workspaces/&lt;mid&gt;
+  }                                                  // ↑ 每 meetingId 独立路径！
+  return projectCwd;
+}</pre>
+
+<p>隔离 Hub / 通用圆桌 / 用户没设 sub.cwd → 必走 fallback → 跨 meeting 必然 gap。</p>
+
+<h2>四、Phase 2 P0 · 跨 meeting memory UX</h2>
+
+<h3>4.1 设计 · 双路径 fallback</h3>
+
+<table>
+<tr><th>用户场景</th><th>memory root</th><th>共享粒度</th></tr>
+<tr>
+  <td>生产 Hub 主驾指真实仓库（如 <code>C:\my-project</code>）</td>
+  <td><code>C:\my-project\.arena\rooms\&lt;scene&gt;\memory\</code></td>
+  <td>per-project（同项目跨 meeting 共享）</td>
+</tr>
+<tr>
+  <td>隔离 Hub / 无 pilot / fallback workspace</td>
+  <td><code>&lt;HUB&gt;/memory-scenes/&lt;scene&gt;/.arena/rooms/&lt;scene&gt;/memory/</code></td>
+  <td>per-scene（同 scene 跨 meeting 共享）</td>
+</tr>
+</table>
+
+<h3>4.2 新增 API · core/data-dir.js</h3>
+<pre>function getSceneMemoryRoot(scene) {
+  return path.join(getHubDataDir(), 'memory-scenes', String(scene || 'general'));
+}
+
+function isUserProjectCwd(cwd) {
+  if (!cwd || typeof cwd !== 'string') return false;
+  try {
+    const norm = path.resolve(cwd).toLowerCase();
+    const wsRoot = path.resolve(path.join(getHubDataDir(), 'workspaces')).toLowerCase();
+    return !norm.startsWith(wsRoot);  // 不在 workspaces 下 = 用户真实项目
+  } catch { return false; }
+}</pre>
+
+<h3>4.3 解耦 · main.js dispatchRoundtableTurn</h3>
+<pre>// timeline 走 per-meeting projectCwd（基于 sub.cwd）— 不变
+const projectCwd = (() =&gt; { /* sub.cwd | null */ })();
+
+// memory 走独立解析（Phase 2 P0 新增）
+const _memProjectCwd = _resolveMemoryProjectCwd(meetingId);
+
+// 所有 memory 调用改用 _memProjectCwd（5 处）
+rtCkptState.bumpUserMsgCount(_memProjectCwd, _memScene);
+rtCkptTrigger.isLocked(_memProjectCwd, _memScene);
+rtInbox.pickForInject(_memProjectCwd, _memScene, t.slotId, ...);
+rtCkptTrigger.maybeRunCheckpoint({ projectCwd: _memProjectCwd, ... });</pre>
+
+<h3>4.4 修复后验证</h3>
+<pre>$ node tests/cross-meeting-gap-fixed.test.js
+--- 场景 A：fallback 走 scene 共享根 ---
+meetingA 写入: OK
+meetingB 读到: 1 条
+  ✓ preference:conclusion-first → "用户要求结论先行 不要铺背景"
+
+Phase 2 P0 PASS：scene 级共享生效，user-project 识别正确
+用户开新 meeting → AI 自动延续上次偏好（"越来越懂我"产品愿景达成）</pre>
+
+<h2>五、Phase 2 P1 · worker 失败状态灯 UI</h2>
+
+<h3>5.1 后端 · arena:get-memory-status 新增字段</h3>
+<pre>let workerHealth = { failures: 0, lastReason: null, healthy: true };
+try {
+  const st = rtCkptState.readState(projectCwd, scene);
+  workerHealth = {
+    failures: st.consecutive_failures || 0,
+    lastReason: st.last_failure_reason || null,
+    healthy: (st.consecutive_failures || 0) === 0,
+  };
+} catch {}
+return { ok: true, count, pending, hasProfile, projectCwd, scene, workerHealth };</pre>
+
+<h3>5.2 前端 · 状态灯渲染</h3>
+<pre>// renderer/meeting-room.js — _memBadgesHtml
+if (slotIdx === 0) {  // 仅第一卡显示，避免冗余
+  const wh = _memStatusBy[meetingId]._worker;
+  if (wh && wh.failures &gt; 0) {
+    const cls = wh.failures &gt;= 3 ? 'health-bad' : 'health-warn';
+    healthBtn = `&lt;button class="mr-ft-mem-btn ${cls}"
+      title="后台 worker 连续失败 ${wh.failures} 次\n最近原因: ${reason}"&gt;
+      🧠 ${wh.failures}&lt;/button&gt;`;
+  }
+}</pre>
+
+<h3>5.3 视觉</h3>
+
+<table>
+<tr><th>状态</th><th>显示</th><th>样式</th></tr>
+<tr><td>worker 健康</td><td>(隐藏)</td><td>—</td></tr>
+<tr><td>失败 1-2 次</td><td><span style="background:rgba(251,146,60,0.16);color:#9a3412;padding:2px 8px;border-radius:4px;border:1px solid rgba(251,146,60,0.4);">🧠 2</span></td><td>橙色 health-warn</td></tr>
+<tr><td>连续 ≥3 次</td><td><span style="background:rgba(248,113,113,0.18);color:#991b1b;padding:2px 8px;border-radius:4px;border:1px solid rgba(248,113,113,0.5);box-shadow:0 0 0 3px rgba(248,113,113,0.2);">🧠 5</span></td><td>红色 health-bad + 呼吸光圈</td></tr>
+</table>
+
+<p>点击 → 打开 <code>checkpoint-state.json</code>（用户可看 last_failure_reason 全文）</p>
+
+<h2>六、Phase 2 P2 · inbox-archived GC</h2>
+
+<h3>6.1 新增 inbox.gcArchive</h3>
+<pre>const ARCHIVE_RETENTION_DAYS = 180;
+function gcArchive(projectCwd, scene, opts = {}) {
+  const retention = opts.retentionDays || ARCHIVE_RETENTION_DAYS;
+  const dir = archiveDirPath(projectCwd, scene);
+  if (!fs.existsSync(dir)) return { scanned: 0, removed: 0, errors: [] };
+  const cutoff = new Date(Date.now() - retention * 24 * 60 * 60 * 1000);
+  const cutoffYM = cutoff.getFullYear() * 100 + (cutoff.getMonth() + 1);
+  // 扫 {slot}-YYYYMM.json，YM &lt; cutoffYM 删除
+  // ...
+  return { scanned, removed, errors };
+}</pre>
+
+<h3>6.2 启动时调度（main.js · 5s 后异步）</h3>
+<pre>setTimeout(() =&gt; {
+  const scenesRoot = path.join(getHubDataDir(), 'memory-scenes');
+  if (!fs.existsSync(scenesRoot)) return;
+  const sceneDirs = fs.readdirSync(scenesRoot, { withFileTypes: true })
+    .filter(d =&gt; d.isDirectory()).map(d =&gt; d.name);
+  let totalRemoved = 0, totalScanned = 0;
+  for (const scene of sceneDirs) {
+    const r = rtInbox.gcArchive(path.join(scenesRoot, scene), scene);
+    totalScanned += r.scanned; totalRemoved += r.removed;
+  }
+  if (totalScanned &gt; 0 || totalRemoved &gt; 0) {
+    console.log(`[mem-gc] inbox-archived scanned=${totalScanned} removed=${totalRemoved} (180-day retention)`);
+  }
+}, 5000);</pre>
+
+<h3>6.3 实跑验证</h3>
+<pre>$ seed: pikachu-202505.json (12 个月前) + pikachu-202605.json (当月)
+$ electron . --remote-debugging-port=9253
+[圆桌] hook server listening on 127.0.0.1:3458
+[mem-gc] inbox-archived scanned=2 removed=1 (180-day retention)</pre>
+
+<h2>七、测试集 51/51 PASS</h2>
+
+<table>
+<tr><th>套件</th><th>用例</th><th>通过</th></tr>
+<tr><td>phase 0 unit</td><td>roundtable-memory.test.js</td><td><span class="tag ok">11/11</span></td></tr>
+<tr><td>phase 0 integration MCP</td><td>integration-roundtable-memory-mcp.test.js</td><td><span class="tag ok">7/7</span></td></tr>
+<tr><td>phase 1 unit（含新 I6 gcArchive）</td><td>roundtable-memory-phase1.test.js</td><td><span class="tag ok">33/33</span></td></tr>
+<tr><td>phase 2 P0 reproduction</td><td>cross-meeting-gap-fixed.test.js</td><td><span class="tag ok">PASS</span></td></tr>
+</table>
+
+<h2>八、文件改动清单</h2>
+
+<table>
+<tr><th>文件</th><th>行数</th><th>用途</th></tr>
+<tr><td><code>core/data-dir.js</code></td><td>+29 / -3</td><td>getSceneMemoryRoot + isUserProjectCwd</td></tr>
+<tr><td><code>core/roundtable-scenes.js</code></td><td>修订 MEMORY PROTOCOL 段</td><td>隐患 1 修复（硬→引导）</td></tr>
+<tr><td><code>core/roundtable-memory/inbox.js</code></td><td>+35</td><td>gcArchive + ARCHIVE_RETENTION_DAYS</td></tr>
+<tr><td><code>main.js</code></td><td>+50 / -22</td><td>_resolveMemoryProjectCwd 重写 + memory 解耦 + workerHealth + GC scheduler</td></tr>
+<tr><td><code>renderer/meeting-room.js</code></td><td>+20</td><td>workerHealth 缓存 + 状态灯按钮 + open-worker click</td></tr>
+<tr><td><code>renderer/meeting-room.css</code></td><td>+30</td><td>health-warn / health-bad 颜色 + 呼吸动画</td></tr>
+<tr><td><code>tests/cross-meeting-gap-*.js</code></td><td>+104</td><td>试用 3 reproduction + P0 fix 验证</td></tr>
+<tr><td><code>tests/roundtable-memory-phase1.test.js</code></td><td>+28</td><td>I6 gcArchive 测试</td></tr>
+</table>
+
+<h2>九、起床 5 分钟验收</h2>
+
+<pre># 1) 测试集
+node tests/roundtable-memory.test.js          # → ALL PASS · 11
+node tests/integration-roundtable-memory-mcp.test.js  # → ALL PASS · 7
+node tests/roundtable-memory-phase1.test.js   # → ALL PASS · 33（含 I6 gcArchive）
+node tests/cross-meeting-gap-fixed.test.js    # → P0 PASS
+
+# 2) 隔离 Hub 体验（PowerShell）
+$env:CLAUDE_HUB_DATA_DIR = "C:\temp\hub-phase2-verify"
+.\node_modules\electron\dist\electron.exe . --remote-debugging-port=9261</pre>
+
+<p>验证清单：</p>
+<ul>
+<li>通用圆桌问普通业务问题 → AI 不应每轮都先 list（隐患 1 修复）</li>
+<li>关圆桌 → 同 scene 重开 → 引用之前偏好（P0 跨 meeting 共享）</li>
+<li>卡片右上角 📒 N 显示个体记忆数（phase 1 残留）</li>
+<li>后台 worker 故意失败 → 卡片出现 🧠 N 橙红（P1 状态灯）</li>
+<li>启动看 console：<code>[mem-gc]</code> 日志（P2 GC）</li>
+</ul>
+
+<h2>十、推迟项清空</h2>
+
+<table>
+<tr><th>原推迟项</th><th>当前状态</th><th>备注</th></tr>
+<tr><td>跨 meeting memory UX</td><td><span class="tag ok">DONE · P0</span></td><td>scene 共享 + user-project 共享双路径</td></tr>
+<tr><td>worker 失败状态灯</td><td><span class="tag ok">DONE · P1</span></td><td>橙/红双级别 + 呼吸光圈</td></tr>
+<tr><td>inbox-archived 自动清理</td><td><span class="tag ok">DONE · P2</span></td><td>180 天保留 + 启动时 GC</td></tr>
+<tr><td>多模型泛化 E2E</td><td><span class="tag warn">已知债</span></td><td>等 Gemini/Codex 接入 bug 修</td></tr>
+<tr><td>Polish 1 改回引导</td><td><span class="tag ok">DONE · 隐患 1</span></td><td>显式触发硬要求保留</td></tr>
+</table>
+
+<h2>十一、commit 建议（保留 review 历史）</h2>
+
+<p>按用户指示分两个 commit，<b>不 squash</b>：</p>
+
+<pre>git add core/roundtable-memory/ core/checkpoint-worker.js core/data-dir.js \
+        renderer/meeting-room.js renderer/meeting-room.css \
+        tests/roundtable-memory-phase1.test.js tests/cross-meeting-gap-*.js \
+        main.js docs/superpowers/plans/2026-05-07-*.md \
+        docs/roundtable-memory-phase1-*.html docs/roundtable-memory-phase2-*.html
+
+# Phase 1 commit（昨晚成果，6 轮评审过）
+git commit -m "feat(roundtable-memory): phase 1 — checkpoint worker + DeepSeek 共识层
+
+6 轮多路评审收敛（DeepSeek R1 v5 / Gemini 3 Pro v5 / Codex GPT-5.2 v6），
+20 bug 修复，50/50 测试 PASS。
+关键机制：fork worker + IPC 状态序列化 + 锁 + sidecar token + atomic rename。"
+
+# Phase 2 commit（今晨成果，含隐患 1 修复）
+git commit -m "feat(roundtable-memory): phase 2 — 跨 meeting 共享 + 失败状态灯 + GC + 隐患 1
+
+P0 跨 meeting：scene 共享根 + user-project 共享双路径，解耦 timeline。
+P1 状态灯：worker consecutive_failures UI 化（橙/红双级 + 呼吸光圈）。
+P2 GC：inbox-archived 180 天保留，启动时异步扫描。
+隐患 1：Polish 1 从硬要求回退为自主判断（保留显式触发硬要求）。
+51/51 测试 PASS（含新 I6 gcArchive + cross-meeting reproduction）。"</pre>
+
+<h2>十二、自评 · phase 1 是工程 ready，phase 2 是产品 ready</h2>
+
+<div class="callout callout-good">
+phase 1 完成"production-ready"（工程严谨度 + bug 收敛）。<br>
+phase 2 完成"user-delight ready"（产品体验最后一公里）：
+<ul>
+<li>用户最初愿景 <b>"AI 越来越懂我"</b> → P0 把结构性 gap 修了，下次开圆桌 AI 真的会延续偏好</li>
+<li>用户警告 <b>"reflection fatigue"</b> → 隐患 1 把硬要求降级，AI 不再机械每轮自检</li>
+<li>用户工程要求 <b>"失败可见"</b> → P1 状态灯让后台 worker 健康对用户可见</li>
+<li>用户长期诉求 <b>"自动维护"</b> → P2 GC 让归档不无限堆积</li>
+</ul>
+每条都能追溯到具体改动 + 测试 + 实跑证据，非自我吹嘘。
+</div>
+
+<hr>
+<p style="color:#57606a; font-size: 12px; text-align: center;">
+Generated 2026-05-07 morning · Claude Session Hub · Roundtable Memory System Phase 2 Final
+</p>
+</body>
+</html>

@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌记忆系统 · 概览（2026-05-07）</title>
+<style>
+  :root {
+    --fg: #2b2b2b;
+    --fg-soft: #555;
+    --fg-mute: #888;
+    --bg: #fdfaf3;
+    --bg-card: #ffffff;
+    --bg-code: #f4eede;
+    --accent: #c97a3a;
+    --accent-soft: #f6e6cf;
+    --ok: #2f7d3a;
+    --warn: #b06b00;
+    --plan: #5b6bb3;
+    --border: #e6dfd0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .container { max-width: 1080px; margin: 0 auto; padding: 36px 28px 80px; }
+  header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bottom: 28px; }
+  header h1 {
+    font-size: 26px;
+    margin: 0 0 6px;
+    color: var(--accent);
+    letter-spacing: -0.3px;
+  }
+  header .meta { color: var(--fg-mute); font-size: 13px; }
+  header .meta code { background: var(--bg-code); padding: 1px 6px; border-radius: 3px; font-size: 12px; }
+
+  h2 {
+    font-size: 19px;
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+    padding-left: 10px;
+    margin: 38px 0 14px;
+  }
+  h3 {
+    font-size: 16px;
+    color: var(--fg);
+    margin: 22px 0 8px;
+  }
+  p { margin: 8px 0; }
+
+  /* 双栏：白话 / 技术 */
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22px;
+    margin: 14px 0 22px;
+  }
+  @media (max-width: 720px) { .split { grid-template-columns: 1fr; } }
+  .pane {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+  }
+  .pane.plain {
+    background: #fff;
+  }
+  .pane.tech {
+    background: #fbf6ec;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  }
+  .pane h4 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--fg-mute);
+  }
+  .pane.plain h4::before { content: "白话 · "; }
+  .pane.tech h4::before { content: "技术 · "; color: var(--accent); }
+
+  code, pre {
+    font-family: "JetBrains Mono", "SF Mono", Consolas, Menlo, monospace;
+    font-size: 12.5px;
+  }
+  code { background: var(--bg-code); padding: 1px 5px; border-radius: 3px; color: #6a3a13; }
+  pre {
+    background: #2b2b2b;
+    color: #e3dccb;
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    line-height: 1.55;
+    margin: 8px 0;
+  }
+  pre code { background: transparent; padding: 0; color: inherit; }
+
+  ul, ol { padding-left: 22px; margin: 6px 0; }
+  li { margin: 4px 0; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 8px 0;
+    font-size: 14px;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 7px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: var(--accent-soft); font-weight: 600; }
+  td code { font-size: 12px; }
+
+  .tag {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .tag.done { background: #d6efd9; color: var(--ok); }
+  .tag.gap  { background: #fbe7c7; color: var(--warn); }
+  .tag.plan { background: #dde1f3; color: var(--plan); }
+
+  .callout {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    padding: 12px 14px;
+    border-radius: 0 6px 6px 0;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .callout strong { color: var(--accent); }
+
+  .arrow-flow {
+    font-family: "JetBrains Mono", "SF Mono", Consolas, Menlo, monospace;
+    background: #2b2b2b;
+    color: #e3dccb;
+    padding: 18px 20px;
+    border-radius: 6px;
+    line-height: 1.9;
+    overflow-x: auto;
+    font-size: 12.5px;
+  }
+  .arrow-flow .step { color: #f0c98a; }
+  .arrow-flow .arr  { color: #888; }
+  .arrow-flow .file { color: #b6dca0; }
+  .arrow-flow .net  { color: #c8a8e9; }
+
+  hr.soft { border: none; border-top: 1px dashed var(--border); margin: 30px 0; }
+
+  .toc {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 24px;
+    font-size: 13.5px;
+  }
+  .toc strong { display: block; margin-bottom: 6px; color: var(--fg-mute); font-size: 12px; letter-spacing: 0.5px; }
+  .toc ol { padding-left: 22px; margin: 0; }
+  .toc a { color: var(--fg-soft); text-decoration: none; }
+  .toc a:hover { color: var(--accent); }
+
+  footer {
+    margin-top: 50px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    color: var(--fg-mute);
+    font-size: 12.5px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>圆桌记忆系统 · 概览</h1>
+  <div class="meta">
+    阶段 0 已落地 + gate 验证通过 · 2026-05-07 ·
+    plan: <code>docs/superpowers/plans/2026-05-05-roundtable-memory.md</code>
+  </div>
+</header>
+
+<div class="toc">
+  <strong>目录</strong>
+  <ol>
+    <li><a href="#why">为什么有这个</a></li>
+    <li><a href="#what">现在能做 / 不能做</a></li>
+    <li><a href="#data">数据形态：文件长什么样</a></li>
+    <li><a href="#mcp">三个 MCP 工具</a></li>
+    <li><a href="#flow">完整调用链路</a></li>
+    <li><a href="#prompt">prompt 注入：让 AI 知道有这工具</a></li>
+    <li><a href="#scope">隔离 / 作用域</a></li>
+    <li><a href="#gate">Gate 验证 4 指标实测</a></li>
+    <li><a href="#next">下一步</a></li>
+  </ol>
+</div>
+
+<!-- ============================================================= -->
+<h2 id="why">一、为什么有这个</h2>
+
+<div class="split">
+  <div class="pane plain">
+    <h4>它解决什么</h4>
+    <p>普通圆桌每次开新房，AI 都不记得你上次说过什么——你得反复讲"我喜欢结论先行""不要硬猜"等偏好。</p>
+    <p>这个系统让三家 AI 跨会话<strong>越用越懂你</strong>。</p>
+    <p>四个原则：</p>
+    <ul>
+      <li>AI 自己判断什么该记（不是后台偷听全部对话）</li>
+      <li>不污染答案正文（不会变成"我记得你..."复读机）</li>
+      <li>记的内容是 <code>.md</code> 文件，<strong>你自己用 VS Code/Notepad 就能看 / 改 / 删</strong></li>
+      <li>通用圆桌的偏好和投研圆桌的偏好<strong>互不污染</strong></li>
+    </ul>
+  </div>
+  <div class="pane tech">
+    <h4>设计取舍</h4>
+    <ul>
+      <li><strong>AI 自主写为主</strong>，后台 worker 兜底（worker 在阶段 1）</li>
+      <li>存储 = 纯 Markdown + 一个状态 JSON，<strong>0 RAG / 0 向量库</strong>，符合"半透明可见"</li>
+      <li>per-AI 个体记忆 + per-scene 共识（共识层在阶段 1）</li>
+      <li>0 新 npm 依赖；复用 Hub 现有 hookServer + sessionManager</li>
+      <li>阶段 0 仅 ~470 行新代码（store + MCP server + tests）</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================================= -->
+<h2 id="what">二、现在能做 / 不能做</h2>
+
+<div class="split">
+  <div class="pane plain">
+    <h4>能做（已验证）</h4>
+    <ul>
+      <li><span class="tag done">DONE</span> 你说"记住这个" → 三家 AI 100% 记下</li>
+      <li><span class="tag done">DONE</span> AI 在发言中觉得"该记"自己也能调工具记</li>
+      <li><span class="tag done">DONE</span> 你问"我之前说过什么" → AI 能调 list 准确说出</li>
+      <li><span class="tag done">DONE</span> 关圆桌再开（同 cwd）记忆仍在</li>
+      <li><span class="tag done">DONE</span> 三家 AI 各有自己的记忆文件，互不干扰</li>
+      <li><span class="tag done">DONE</span> 你随时能直接打开 <code>.md</code> 看 / 改 / 删某条</li>
+    </ul>
+  </div>
+  <div class="pane tech">
+    <h4>不能做 / 暂未做</h4>
+    <ul>
+      <li><span class="tag gap">GAP</span> 普通业务话题下 AI <strong>不主动 search 记忆</strong>（gate 实测 2 场都是 0/3）—— prompt 工程问题，<code>COVENANT_GENERAL</code> 里的 MEMORY PROTOCOL 段写的是"可以 search"软建议</li>
+      <li><span class="tag plan">PHASE 1</span> UI 角标 <code>[已记 N]</code> + 三个卡片按钮（个体 / inbox / profile）</li>
+      <li><span class="tag plan">PHASE 1</span> 后台 checkpoint worker 每 3 轮跑 DeepSeek，派生 <code>_profile.md</code> 共识层</li>
+      <li><span class="tag plan">PHASE 1</span> Inbox 机制：worker 检测漏记 → 候选写到 <code>pending-{slot}.json</code> → AI 下次发言前自决采纳</li>
+      <li><span class="tag plan">PHASE 1</span> <code>memory_search</code> 命中后 recall+1 已实现，但 <strong>UI 还没显示</strong>哪条最常被引</li>
+      <li><span class="tag plan">PHASE 2</span> 跨 scene 偏好（<code>cross-scene</code>）；阶段 0/1 锁死 <code>scope='scene'</code></li>
+      <li><span class="tag plan">PHASE 2</span> 90 天衰减扫描（保留删除线但不真删）</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================================= -->
+<h2 id="data">三、数据形态：文件长什么样</h2>
+
+<div class="split">
+  <div class="pane plain">
+    <h4>文件位置</h4>
+    <p>每个圆桌自己的工作目录下，路径形如：</p>
+    <pre><code>&lt;projectCwd&gt;/.arena/rooms/general/memory/
+  ├─ pikachu.md     (slot 0 = 第一家 AI)
+  ├─ charmander.md  (slot 1 = 第二家)
+  └─ squirtle.md    (slot 2 = 第三家)</code></pre>
+    <p><code>projectCwd</code> 是这个圆桌的"工作目录"——通常是主驾或第一活跃 sub session 的 cwd（与 <code>timeline.md</code> 同源）。</p>
+    <p>每条记忆是<strong>两行</strong>：第一行元数据，第二行是内容。</p>
+  </div>
+  <div class="pane tech">
+    <h4>路径解析</h4>
+    <ul>
+      <li><code>core/roundtable-memory/store.js: memoryFile(projectCwd, scene, slot)</code></li>
+      <li>等价于 <code>path.join(projectCwd, '.arena', 'rooms', scene, 'memory', slot + '.md')</code></li>
+      <li><code>scene</code> 阶段 0 取值: <code>general</code> / <code>research</code> / <code>dev</code>（仅 general 启 memory MCP）</li>
+      <li><code>slot</code> 取值: <code>pikachu</code> / <code>charmander</code> / <code>squirtle</code>（来自 <code>core/ai-kinds.js: SLOT_IDS</code>）</li>
+      <li>隔离 Hub 模式（设了 <code>CLAUDE_HUB_DATA_DIR</code>）：<code>projectCwd</code> 默认每 meeting 独立 <code>workspaceDir</code>，跨 meeting 不共享 .md（除非显式传 <code>opts.cwd</code>）</li>
+    </ul>
+  </div>
+</div>
+
+<h3>行格式（plan §4.6）</h3>
+
+<pre><code>[2026-05-07] [scope: scene] [source: explicit] [recall: 3, last: 2026-05-06] preference:conclusion-first
+用户喜欢结论先行的回答模式，先给核心判断再展开论证</code></pre>
+
+<table>
+  <tr>
+    <th width="20%">字段</th><th width="20%">取值</th><th>含义</th>
+  </tr>
+  <tr><td><code>date</code></td><td>YYYY-MM-DD</td><td>记下时的日期（UTC）</td></tr>
+  <tr>
+    <td><code>scope</code></td>
+    <td><code>scene</code></td>
+    <td>阶段 0/1 固定 <code>scene</code>。<code>cross</code> 留给阶段 2+</td>
+  </tr>
+  <tr>
+    <td><code>source</code></td>
+    <td><code>self</code> / <code>inbox</code> / <code>explicit</code></td>
+    <td>
+      <code>self</code> = AI 在发言中自主决定记<br>
+      <code>inbox</code> = AI 采纳了后台 worker 的候选（阶段 1）<br>
+      <code>explicit</code> = 用户说"记住"触发
+    </td>
+  </tr>
+  <tr>
+    <td><code>recall</code></td>
+    <td>整数</td>
+    <td>这条被 <code>memory_search</code> 命中的累计次数（list 不增加）</td>
+  </tr>
+  <tr>
+    <td><code>last</code></td>
+    <td>日期 / <code>-</code></td>
+    <td>最后一次 search 命中的日期；<code>-</code> 表示从没被命中</td>
+  </tr>
+  <tr>
+    <td><code>kind:key</code></td>
+    <td><code>preference|fact|observation|persisted</code> + 短名</td>
+    <td>kind = 类型；key = 短名（同 key 写入会 dedup，更新最新内容 + recall+1）</td>
+  </tr>
+  <tr>
+    <td>第二行</td>
+    <td>一行内容</td>
+    <td>偏好/事实的具体描述（多行会被压成单行）</td>
+  </tr>
+</table>
+
+<!-- ============================================================= -->
+<h2 id="mcp">四、三个 MCP 工具</h2>
+
+<div class="split">
+  <div class="pane plain">
+    <h4>AI 看到的工具清单</h4>
+    <p>每家 AI 启动时，Claude/Codex/Gemini 的 MCP 列表里多了一个 server <code>arena-roundtable-memory</code>，含三个 tool：</p>
+    <ul>
+      <li><strong>memory_write</strong> —— 记一条偏好/事实/观察</li>
+      <li><strong>memory_search</strong> —— 搜自己之前记过的</li>
+      <li><strong>memory_list</strong> —— 列出自己记过的全部</li>
+    </ul>
+    <p>关键：<strong>三家各看自己</strong>，A 看不到 B 的 memory（per-slot 隔离）。</p>
+  </div>
+  <div class="pane tech">
+    <h4>tool 定义入口</h4>
+    <p>文件：<code>core/roundtable-memory-mcp-server.js</code> 的 <code>TOOLS</code> 数组（约 90 行的 schema）。</p>
+    <p>STUB_MODE：当 <code>ARENA_AI_SLOT/MEETING_ID/HUB_PORT/HOOK_TOKEN</code> 任一缺失（如用户终端独立跑 gemini，非圆桌场景），<code>tools/list</code> 返回空，server 仍在但不暴露任何 tool。</p>
+    <p>这避免 Gemini 全局 <code>~/.gemini/settings.json</code> 注册 server 后，非圆桌场景报错。</p>
+  </div>
+</div>
+
+<h3>memory_write 签名</h3>
+<pre><code>memory_write({
+  scope: 'scene',                           // 阶段 0/1 固定
+  kind: 'preference' | 'fact' | 'observation' | 'persisted',
+  key: 'conclusion-first',                  // 短名，同 key 写入 = 覆盖更新 + recall+1
+  content: '用户喜欢结论先行，再展开论证',  // 一句话；多行会被压成单行
+  source: 'self' | 'inbox' | 'explicit'     // 默认 'self'
+})</code></pre>
+
+<h3>memory_search 签名</h3>
+<pre><code>memory_search({
+  query: '结论',                            // 朴素子串匹配（无大小写），命中后该条 recall+1
+  limit: 5                                  // 默认 5
+})</code></pre>
+
+<h3>memory_list 签名</h3>
+<pre><code>memory_list({
+  kind: 'preference'                        // 可选；不传 = 全部
+})
+// 返回的 entry 含 source / scope / recall / last 等元数据
+// 关键：list 不 bump recall（区别于 search）</code></pre>
+
+<!-- ============================================================= -->
+<h2 id="flow">五、完整调用链路</h2>
+
+<p>从 AI 决定调工具，到 .md 文件被改写，全过程：</p>
+
+<div class="arrow-flow">
+<span class="step">[1]</span> AI 在发言中决定调 <code>memory_write({...})</code>
+<span class="arr">  │</span>
+<span class="arr">  ▼</span>
+<span class="step">[2]</span> Claude/Gemini/Codex CLI 把 tool call 转成 JSON-RPC <span class="arr">→</span> 写到 stdin
+<span class="arr">  │</span>
+<span class="arr">  ▼</span>
+<span class="step">[3]</span> <span class="file">core/roundtable-memory-mcp-server.js</span>（独立 child process）从 stdin 读到
+<span class="arr">  │</span>     env 含 ARENA_MEETING_ID / ARENA_HUB_PORT / ARENA_HOOK_TOKEN / ARENA_AI_SLOT
+<span class="arr">  ▼</span>
+<span class="step">[4]</span> server 把参数 + slot + token 拼成 HTTP body <span class="arr">→</span> POST 到
+<span class="arr">  │</span>     <span class="net">http://127.0.0.1:&lt;HOOK_PORT&gt;/api/roundtable/memory-write</span>
+<span class="arr">  ▼</span>
+<span class="step">[5]</span> Hub 主进程 <span class="file">main.js</span> 的 <code>hookServer</code> 收到
+<span class="arr">  │</span>     <code>token === HOOK_TOKEN</code> 校验、查 meeting、算 projectCwd
+<span class="arr">  ▼</span>
+<span class="step">[6]</span> 调 <span class="file">core/roundtable-memory/store.js: appendMemoryEntry()</span>
+<span class="arr">  │</span>     校验 kind/source/scope，dedup 同 key，写盘
+<span class="arr">  ▼</span>
+<span class="step">[7]</span> <span class="file">{slot}.md</span> 文件被原子写入
+<span class="arr">  │</span>
+<span class="arr">  ▼</span>
+<span class="step">[8]</span> 主进程 sendToRenderer('memory-event') <span class="arr">→</span> 阶段 1 的 UI 角标会订阅这个
+<span class="arr">  │</span>
+<span class="arr">  ▼</span>
+<span class="step">[9]</span> HTTP 200 + JSON 结果原路返回 AI
+</div>
+
+<div class="callout">
+  <strong>关键设计：</strong>整条链路<strong>不经过 Electron renderer</strong>——MCP server 直接走 loopback 到 Hub 主进程的 hookServer。Hub renderer 重启 / 关 UI 都不影响 memory 写入。
+</div>
+
+<h3>HookServer 路由代码（<code>main.js:3026 附近</code>）</h3>
+<pre><code>const isMemoryWrite  = req.method === 'POST' && req.url === '/api/roundtable/memory-write';
+const isMemorySearch = req.method === 'POST' && req.url === '/api/roundtable/memory-search';
+const isMemoryList   = req.method === 'POST' && req.url === '/api/roundtable/memory-list';
+// ... token 校验 → meetingManager.getMeeting(meetingId) → 取 sub.cwd 作 projectCwd
+//     → store.appendMemoryEntry/searchMemory/listMemory → JSON 响应</code></pre>
+
+<!-- ============================================================= -->
+<h2 id="prompt">六、prompt 注入：让 AI 知道有这工具</h2>
+
+<div class="split">
+  <div class="pane plain">
+    <h4>怎么"教"AI 用这个工具</h4>
+    <p>三家 AI 启动时，Hub 给它们注入了一段额外的 prompt（叫 MEMORY PROTOCOL），写明：</p>
+    <ul>
+      <li>哪三类该记（preference / fact / observation）</li>
+      <li>哪些不能记（单轮立场 / 临时观点 / 一次性观察）</li>
+      <li>用户说"记住" → 必须立刻记，source='explicit'</li>
+      <li>给了一个 <code>memory_write({...})</code> 的调用示例</li>
+    </ul>
+    <p>这段 prompt 只在<strong>通用圆桌</strong>启用（投研圆桌阶段 0 暂不接，避免和投研 MCP 冲突）。</p>
+  </div>
+  <div class="pane tech">
+    <h4>注入位置</h4>
+    <p>文件：<code>core/roundtable-scenes.js</code> 中的 <code>COVENANT_GENERAL</code> 常量末尾追加 MEMORY PROTOCOL 段（约 40 行）。</p>
+    <p>三家共用同一份 covenant（不分家定制）。</p>
+    <p>注入路径：</p>
+    <ul>
+      <li><strong>Claude family</strong>（claude / deepseek / glm / gpt / kimi / qwen）：通过 <code>--append-system-prompt-file &lt;promptFile&gt;</code> + <code>--mcp-config &lt;memoryMcp.json&gt;</code></li>
+      <li><strong>Gemini</strong>：<code>GEMINI_SYSTEM_MD</code> env + <code>~/.gemini/settings.json</code> 全局 MCP entry + 进程级 ARENA_* env</li>
+      <li><strong>Codex</strong>：<code>codexInstructionFile</code> + <code>codexMcpEntries</code></li>
+    </ul>
+    <p>所有三种 CLI 都拿到相同的 covenant 文本和 memory MCP server。</p>
+  </div>
+</div>
+
+<!-- ============================================================= -->
+<h2 id="scope">七、隔离 / 作用域</h2>
+
+<table>
+  <tr>
+    <th>维度</th><th>是否隔离</th><th>说明</th>
+  </tr>
+  <tr>
+    <td>per-slot（同圆桌内三家）</td>
+    <td><span class="tag done">YES</span></td>
+    <td>Pikachu 的 .md / Charmander 的 / Squirtle 的，三个独立文件。一家不能读另一家。</td>
+  </tr>
+  <tr>
+    <td>per-scene（通用 vs 投研）</td>
+    <td><span class="tag done">YES</span></td>
+    <td>路径含 <code>rooms/{scene}/</code>；通用圆桌的偏好不会跑到投研圆桌</td>
+  </tr>
+  <tr>
+    <td>同 scene 跨 meeting（同 cwd）</td>
+    <td><span class="tag done">SHARED</span></td>
+    <td>相同的 <code>projectCwd</code> + 相同 scene → 共享同一组 .md（关圆桌再开还在）</td>
+  </tr>
+  <tr>
+    <td>同 scene 跨 meeting（隔离 Hub 默认）</td>
+    <td><span class="tag gap">NOT SHARED</span></td>
+    <td>隔离 Hub（<code>CLAUDE_HUB_DATA_DIR</code> 设了）默认每 meeting 独立 <code>workspaceDir</code>，跨 meeting 不共享。要共享需手动传 <code>opts.cwd</code> 给 add-meeting-sub。阶段 1 会修这个 UX。</td>
+  </tr>
+  <tr>
+    <td>cross-scene（通用 + 投研合并）</td>
+    <td><span class="tag plan">PHASE 2+</span></td>
+    <td>阶段 0/1 锁死 <code>scope='scene'</code>。阶段 2 才开 <code>scope='cross'</code> + <code>~/.arena/agents/{slot}/cross.md</code></td>
+  </tr>
+</table>
+
+<!-- ============================================================= -->
+<h2 id="gate">八、Gate 验证 4 指标实测</h2>
+
+<p>2026-05-06 跑了 2 场圆桌（5 个 turn），3 家 Claude Haiku 4.5：</p>
+
+<table>
+  <tr>
+    <th>指标</th><th>阈值</th><th>实测</th><th>结果</th>
+  </tr>
+  <tr><td>自主调用率</td><td>≥1 家/场</td><td><strong>3/3 家</strong>，9 次 memory_write</td><td><span class="tag done">PASS</span></td></tr>
+  <tr><td>写入质量</td><td>≥70% preference/fact</td><td><strong>100%</strong> preference (9/9)</td><td><span class="tag done">PASS</span></td></tr>
+  <tr><td>误记率</td><td>&lt;10% 违反反固化</td><td><strong>0%</strong> (0/9 误记)</td><td><span class="tag done">PASS</span></td></tr>
+  <tr><td>引用率</td><td>≥1 家</td><td>1 家精确引用 (memory_list)，1 家调用但 query 0 命中</td><td><span class="tag done">PASS</span></td></tr>
+</table>
+
+<p>2026-05-07 用户实测复跑：</p>
+<ul>
+  <li>场景 1（"请记住喜欢看到分歧"）：3 家全调 memory_write，3 个 .md 创建</li>
+  <li>场景 2（"Rust 重写 Python CLI 值得吗"）：<strong>0 家调任何 memory tool</strong>（普通话题不主动 search）</li>
+  <li>场景 3（"我之前提过什么"）：1 家（Charmander）调 memory_list 准确引用</li>
+</ul>
+
+<div class="callout">
+  <strong>4 指标全过，但有一个真实 gap：</strong>普通业务话题（不带"记住"或"我之前提过什么"暗示）下，三家都不会主动调 <code>memory_search</code>。它们的回答风格是否符合记下的偏好，依赖 base model 性格而不是真读了 .md。这是 prompt 工程问题，<code>COVENANT_GENERAL</code> 里 MEMORY PROTOCOL 段写的"可以 search"是软建议。
+</div>
+
+<p>详见 <code>docs/superpowers/plans/2026-05-05-roundtable-memory-validation-report.md</code>。</p>
+
+<!-- ============================================================= -->
+<h2 id="next">九、下一步</h2>
+
+<h3>Polish 1（可选，做了再启阶段 1 更稳）</h3>
+<p>把 <code>COVENANT_GENERAL</code> 的 MEMORY PROTOCOL 段从软建议改硬：</p>
+<ul>
+  <li>"<em>回答相关话题时，可先 memory_search 自检</em>" → "<em>回答前先调 memory_list({}) 看自己已记的偏好；命中相关项就在回答里自然引用</em>"</li>
+  <li>风险：可能让每轮都死板调 list，污染回答效率。需要 A/B 实测。</li>
+</ul>
+
+<h3>阶段 1 实施清单（plan §10）</h3>
+<ol>
+  <li><strong>checkpoint-worker.js</strong> + <code>child_process.fork</code> + <code>.checkpoint.lock</code> 文件锁</li>
+  <li><strong>DeepSeek v4-pro 派生 _profile.md</strong>（带反固化约束 + 淘汰规则）</li>
+  <li><strong>inbox 机制</strong> + UserPromptSubmit hook（带竞态防护 + 僵尸恢复）</li>
+  <li><strong>三个卡片按钮</strong> + IPC <code>arena:open-memory-file</code>（点击 → <code>shell.openPath</code> .md 文件）</li>
+  <li><strong>失败状态灯</strong>（绿/黄/红，连续 5 次失败告警）</li>
+  <li><strong>cooldown 防抖</strong>（默认 1 分钟）</li>
+  <li><strong>pending 生命周期</strong>（合并 / 提醒 3 次后归档 / 7 天过期）</li>
+</ol>
+<p>预计代码量：约 +500 行（plan §9 v3 估算）。</p>
+
+<h3>阶段 2+（运营级 / 跨 scene）</h3>
+<ul>
+  <li>90 天衰减扫描 cron</li>
+  <li><code>.memory-disabled</code> 用户开关</li>
+  <li>timeline.md 自动按月归档</li>
+  <li>cross-scene scope 开放 + <code>~/.arena/agents/{slot}/cross.md</code></li>
+</ul>
+
+<hr class="soft">
+
+<footer>
+  系统当前状态：阶段 0 已交付，gate 验证通过，0 git commit（等用户审核）。<br>
+  代码改动：<code>main.js</code> +131 行 / <code>core/roundtable-scenes.js</code> +89 行 / 新增 <code>core/roundtable-memory/store.js</code> + <code>core/roundtable-memory-mcp-server.js</code> + 2 个 test 文件。<br>
+  阶段 0 → 1 推进决定：等用户审核本概览 + 验证报告后给出。
+</footer>
+
+</div>
+</body>
+</html>

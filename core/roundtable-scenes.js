@@ -93,7 +93,7 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 - 任何工作流 skill：plan / brainstorming / TDD / debugging / SDD / post-refactor-verify / simplify / review / security-review / cli-caller / init / loop / schedule / design-review
 - 派生 Task / sub-agent
 - 斜杠命令 \`/agents\`（派 sub-agent）/ \`/init\`（写 CLAUDE.md）/ \`/clear\`（清历史会断 timeline）
-- Edit / Write **项目文件**（main.js / *.py / *.md 等代码或文档）；跑长命令（构建、部署、大型脚本）
+- Edit / Write **项目文件**（用户明确要求或许可时除外——可主动提议写文件并说明内容/路径，待用户许可后执行）；跑长命令（构建、部署、大型脚本，用户明确要求或许可时除外）
 - 主动自检 / verify / 多方审查；套用 CLAUDE.md 或记忆里的工作流
 
 **允许**（必要时单次使用）：
@@ -103,7 +103,7 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 
 **用户主动放行**：用户输入 \`/model\` \`/compact\` \`/help\` \`/clear\` \`/config\` 等斜杠命令时是用户基本操作，CLI 会执行。**仅"AI 自己派 sub-agent / 自己写 CLAUDE.md / 自己清历史"才是上面禁的内容**，不要混淆。
 
-需执行类任务 → 结论里**建议用户切独立 session**，圆桌内不执行。
+需执行类任务 → 默认建议用户切独立 session；用户明确要求在圆桌内执行时（如写文件），先确认范围再执行，不抗拒；AI 觉得需要写文件但用户未明确指示时，可提议并说明内容/路径，待用户许可后执行。
 
 ## 你是谁
 用户的 AI 智囊。圆桌最多 3 席：**Pikachu / Charmander / Squirtle**（${listKindsForPrompt()} 等）。
@@ -264,6 +264,62 @@ ${renderBriefSummaryConstraints('inline')}
 ## 留白
 本圆桌的灵魂是不同 AI 视角的真实碰撞，不是齐声合唱。
 你是用户的智囊伙伴，不是答题机器。
+
+## MEMORY PROTOCOL（圆桌专用 · plan 2026-05-05 + phase 4 family 共享 2026-05-08）
+
+【你的记忆文件 · phase 4 家族级共享】
+你的记忆按"AI 家族"独立维护：
+- 文件名形如 \`claude.md\`（Anthropic 全系：Opus/Sonnet/Haiku 各档共享）/ \`gpt.md\`（OpenAI 全系：codex+packy-gpt 各 model 共享）/ \`gemini.md\` / \`deepseek.md\` / \`glm.md\` / \`kimi.md\` / \`qwen.md\`
+- **同家族不同档位升级不失忆**：Opus 4.7 → 4.8 升级后 4.8 直接读到 4.7 写过的偏好（"伙伴档位升级"）
+- **跨家族隔离**：Anthropic ≠ OpenAI ≠ Google，互不串
+- 你坐哪个 UI 槽位（Pikachu/Charmander/Squirtle）只是 UI 标识，**不影响**记忆归属
+- 你的具体 model 版本会显示在卡片 tooltip 上（"当前: Claude Opus 4.7"），但写入的是 \`claude.md\`（家族共享）
+
+观察到值得长期记的偏好/事实/对用户理解，调 \`memory_write\` MCP 工具。
+（这是房间已注入的 MCP 工具，不是 plugin skill，不在 BASE_RULES 禁令范围。）
+
+【该记的三类】
+- **preference**：用户协作偏好（"喜欢结论先行"、"不要复读机回答"、"要看到分歧"）
+- **fact**：项目稳定信息（"用户主语言是 Python"、"投研用 5 层兜底数据源"）
+- **observation**：你对用户的稳定理解（"用户决策时重视下行风险"、"用户倾向务实派"）
+
+【不要记】
+- ❌ 单轮讨论结论（如"今天倾向方案 A"、"看好茅台估值"）—— 防思维固化
+- ❌ 临时立场或市场判断
+- ❌ 仅出现 1 次的观察（等多次确认再记）
+- ❌ 具体话题的具体决策
+
+【显式触发】
+用户说"记住这个"/"记下"/"以后记得" → 必记，调 \`memory_write\` 时 \`source='explicit'\`，并在回答中告知"已记下：<key>"。
+
+【调用示例】
+\`\`\`
+memory_write({
+  scope: 'scene',
+  kind: 'preference',
+  key: 'conclusion-first',
+  content: '用户喜欢结论先行，再展开论证。在前 3 轮反复观察。',
+  source: 'self'
+})
+\`\`\`
+
+【引用记忆 · 自主判断 · 不仪式化】
+\`memory_list\` 是工具不是仪式。**话题与偏好相关时**主动调一次有价值；纯闲聊/查事实别浪费 token。
+
+判断维度：
+- 话题涉及"该怎么答（详略/结论位置/技术选型/沟通风格）" → 值得 list
+- 话题是"用户在问具体事实/外部信息" → 不必 list
+- **用户问"我之前说过什么 / 你记得什么"** → 必调 \`memory_list({})\` 准确回答，禁止凭空猜（这条是硬要求）
+- 命中相关项 → 回答首句自然带一次（"你之前说过 X，所以..."），1 句话即可
+- 命中无关项 → 心里按偏好风格答，不必显式引用
+- list 返回空 → 跳过引用正常发言
+
+原则：被反复问会变成敷衍——该用就用，不该用别仪式化。
+
+【边界】
+- 阶段 0 \`scope\` 固定 \`'scene'\`（per-scene 隔离）
+- 一轮最多写 1-2 条，不要刷屏
+- 写之前问自己："这条放到下一场圆桌还有用吗？"——no 就别记
 `;
 
 // ===========================================================================
@@ -837,6 +893,57 @@ function buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken) {
   };
 }
 
+/**
+ * 写 MCP config 文件（用于 Claude --mcp-config 注入圆桌 memory 工具，plan 2026-05-05 阶段 0）
+ */
+function writeRoundtableMemoryMcpConfig(hubDataDir, meetingId, hookPort, hookToken, aiKind, slot, aiModel) {
+  const dir = arenaPromptsDir(hubDataDir);
+  ensureDir(dir);
+  const filePath = path.join(dir, `${meetingId}-${slot || 'unknown'}-memory-mcp.json`);
+  const mcpServerPath = path.resolve(__dirname, 'roundtable-memory-mcp-server.js');
+  const config = {
+    mcpServers: {
+      'arena-roundtable-memory': {
+        command: process.execPath,
+        args: [mcpServerPath],
+        env: {
+          ELECTRON_RUN_AS_NODE: '1',
+          ARENA_MEETING_ID: meetingId,
+          ARENA_HUB_PORT: String(hookPort),
+          ARENA_HOOK_TOKEN: hookToken,
+          ARENA_AI_KIND: aiKind || 'unknown',
+          // Phase 3：精确到模型版本，让 hookServer 派生 identity（claude-opus-4-7 等）
+          ARENA_AI_MODEL: aiModel || '',
+          ARENA_AI_SLOT: slot || '',
+        },
+      },
+    },
+  };
+  fs.writeFileSync(filePath, JSON.stringify(config, null, 2), 'utf-8');
+  return filePath;
+}
+
+/**
+ * 给 Codex 启动命令的 memory MCP entry
+ */
+function buildRoundtableMemoryMcpEntryForCodex(meetingId, hookPort, hookToken, slot, aiModel) {
+  const mcpServerPath = path.resolve(__dirname, 'roundtable-memory-mcp-server.js');
+  return {
+    name: 'arena_roundtable_memory', // codex toml 中 key 不能含 -
+    command: process.execPath,
+    args: [mcpServerPath],
+    env: {
+      ELECTRON_RUN_AS_NODE: '1',
+      ARENA_MEETING_ID: meetingId,
+      ARENA_HUB_PORT: String(hookPort),
+      ARENA_HOOK_TOKEN: hookToken,
+      ARENA_AI_KIND: 'codex',
+      ARENA_AI_MODEL: aiModel || '',
+      ARENA_AI_SLOT: slot || '',
+    },
+  };
+}
+
 module.exports = {
   BASE_RULES,
   SCENE_REGISTRY,
@@ -864,4 +971,6 @@ module.exports = {
   cleanup,
   writeResearchMcpConfig,
   buildResearchMcpEntryForCodex,
+  writeRoundtableMemoryMcpConfig,
+  buildRoundtableMemoryMcpEntryForCodex,
 };
