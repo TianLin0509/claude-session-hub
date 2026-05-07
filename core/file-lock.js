@@ -22,7 +22,9 @@ const fs = require('fs');
 //   }
 
 const DEFAULT_RETRIES = 20;
-const DEFAULT_RETRY_DELAY_MS = 50;
+// 2026-05-07 道雪 — 多方审查 fix：原 50ms × 20 = 最多 1s 同步 spin 阻塞事件循环。
+// 缩短到 10ms × 20 = 最多 200ms。100 进程压测过零丢失说明竞争实际很罕见，10ms 够用。
+const DEFAULT_RETRY_DELAY_MS = 10;
 const DEFAULT_STALE_MS = 10000; // a writer holding the lock > 10s is considered crashed
 
 function _sleepBusy(ms) {
@@ -79,10 +81,25 @@ function acquireLock(lockPath, opts = {}) {
 }
 
 function releaseLock(fd, lockPath) {
+  // 2026-05-07 道雪 — 多方审查 fix：原版无条件 unlink 会破坏互斥语义。
+  //   场景：A 拿锁 → A 卡住 > staleMs → B 把 A 的 lock 当 stale unlink → B 拿到新锁
+  //   → A 醒来执行 releaseLock 又把 B 的 lock 删了 → C/A 都能 openSync 'wx' 成功
+  //   → 互斥被破坏，state.json 可能并发损坏。
+  //
+  // 修复：unlink 之前比对 owner pid。如果磁盘上 lock 文件的 pid 不是自己，说明
+  //   这把锁已经被 stale 接管，本进程不再拥有，只 closeSync(fd) 不删文件。
+  //   读 owner 失败（文件已被别人删）也保持安全：跳过 unlink。
   if (fd != null) {
     try { fs.closeSync(fd); } catch { /* close errors don't block release */ }
   }
-  try { fs.unlinkSync(lockPath); } catch { /* file may have been reaped as stale */ }
+  let weStillOwnIt = false;
+  try {
+    const meta = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
+    if (meta && meta.pid === process.pid) weStillOwnIt = true;
+  } catch { /* lock file vanished or unparseable — treat as not ours */ }
+  if (weStillOwnIt) {
+    try { fs.unlinkSync(lockPath); } catch { /* might have just been reaped */ }
+  }
 }
 
 module.exports = { acquireLock, releaseLock };

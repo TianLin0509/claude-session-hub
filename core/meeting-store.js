@@ -2,6 +2,19 @@
 const fs = require('fs');
 const path = require('path');
 const { getHubDataDir } = require('./data-dir');
+// 2026-05-07 多方审查 fix：见 session-store 同款注释——markDirty 检查 removed 集合
+//   防 renderer 防抖窗口复活已删 meeting。
+let _stateStore = null;
+function _getStateStore() {
+  if (_stateStore !== null) return _stateStore;
+  try { _stateStore = require('./state-store'); }
+  catch { _stateStore = null; }
+  return _stateStore;
+}
+function _isMeetingRemoved(meetingId) {
+  const ss = _getStateStore();
+  return !!(ss && typeof ss.isMarkedRemovedMeeting === 'function' && ss.isMarkedRemovedMeeting(meetingId));
+}
 
 // 2026-05-07 道雪 — schemaVersion 1→2：补全 title/scene/createdAt/subSessions/...
 //   字段，让 per-meeting JSON 成为完整权威备份。即使 state.json 损坏或被外部 Hub
@@ -107,7 +120,11 @@ function listMeetingFilesWithData() {
 }
 
 function deleteMeetingFile(id) {
-  try { fs.unlinkSync(meetingFilePath(id)); } catch {}
+  // 2026-05-07 多方审查 fix：ENOENT 静默，EPERM/EBUSY 记 warn
+  try { fs.unlinkSync(meetingFilePath(id)); }
+  catch (e) {
+    if (e.code !== 'ENOENT') console.warn(`[meeting-store] delete ${id} failed:`, e.message);
+  }
 }
 
 // Debounced flush registry
@@ -115,13 +132,25 @@ const _dirty = new Map();
 const _timers = new Map();
 
 function markDirty(id, data) {
+  if (!id) return;
+  if (_isMeetingRemoved(id)) return;  // 防复活
   _dirty.set(id, data);
   if (_timers.has(id)) clearTimeout(_timers.get(id));
   const t = setTimeout(() => {
+    if (_isMeetingRemoved(id)) {
+      _dirty.delete(id);
+      _timers.delete(id);
+      return;
+    }
     const snap = _dirty.get(id);
     if (snap) {
-      try { saveMeetingFile(id, snap); } catch (e) { console.warn(`[meeting-store] flush ${id} failed:`, e.message); }
-      _dirty.delete(id);
+      try {
+        saveMeetingFile(id, snap);
+        _dirty.delete(id);  // 只有成功才删
+      } catch (e) {
+        // 失败保留 dirty 等 flushAll 重试
+        console.warn(`[meeting-store] flush ${id} failed (will retry on flushAll):`, e.message);
+      }
     }
     _timers.delete(id);
   }, DEBOUNCE_MS);
@@ -133,6 +162,7 @@ async function flushAll() {
   for (const [, t] of _timers) clearTimeout(t);
   _timers.clear();
   for (const [id, snap] of _dirty) {
+    if (_isMeetingRemoved(id)) continue;
     try { saveMeetingFile(id, snap); } catch (e) { console.warn(`[meeting-store] flushAll ${id} failed:`, e.message); }
   }
   _dirty.clear();

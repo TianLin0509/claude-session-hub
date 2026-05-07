@@ -21,6 +21,15 @@ const _removedMeetingIds = new Set();
 
 function markRemovedSession(hubId) { if (hubId) _removedSessionIds.add(hubId); }
 function markRemovedMeeting(meetingId) { if (meetingId) _removedMeetingIds.add(meetingId); }
+// 2026-05-07 多方审查 fix：暴露 isMarked* 给 session-store/meeting-store 的 markDirty
+//   做防御。renderer schedulePersist 是 400ms 防抖的，close-meeting 同步标记 removed
+//   后，紧随其后的 persist-sessions IPC 可能仍带着已删 hubId（renderer 的 sessions
+//   Map 还没收到 session-closed 事件就 send 了），main.js 会调 markDirty(sid, ...)，
+//   把刚删的 per-session JSON 又写回来。markDirty 检查这个集合，跳过即可。
+//   注意：drain 时清空 set，所以这道防御只在 save 周期内有效；正常 save 完成后，
+//   下一轮 persist-sessions 已经 diff 出 sid → 走 removed 路径，文件再次被删。
+function isMarkedRemovedSession(hubId) { return _removedSessionIds.has(hubId); }
+function isMarkedRemovedMeeting(meetingId) { return _removedMeetingIds.has(meetingId); }
 function _drainRemoved() {
   const s = [..._removedSessionIds];
   const m = [..._removedMeetingIds];
@@ -87,51 +96,70 @@ function load() {
 function loadAndSelfHeal({ sessionStore, meetingStore } = {}) {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const fd = acquireLock(LOCK_FILE);
+  // 2026-05-07 多方审查 fix：原版即使 fd==null 仍 read+merge+write，
+  //   两 Hub 同时 boot 时第二个会盖掉第一个还没完成的写。
+  // 改为：拿不到锁时只读不写，返回当前盘上 state（仍执行 self-heal 合并扫描，
+  //   但不写回磁盘）。下次正常 save 路径会自然把内存合并落盘。
+  const haveLock = fd != null;
   try {
     const disk = _readDiskState();
     // 2026-05-07 道雪：保留盘上原始 cleanShutdown，让 main.js 看到 reboot 是不是
     //   优雅退出。下方 disk.cleanShutdown=false 会立即翻 flag，不能影响这个值。
     const originalCleanShutdown = !!disk.cleanShutdown;
 
-    // session orphans
+    // session orphans — listSessionFilesWithData 内部已 try/catch（损坏 JSON skip）；
+    //   再外层裹一道防御，万一目录权限错也不让 boot 死掉。
     if (sessionStore && typeof sessionStore.listSessionFilesWithData === 'function') {
-      const onDisk = new Set(disk.sessions.map(s => s.hubId));
-      const fromFiles = sessionStore.listSessionFilesWithData();
-      for (const data of fromFiles) {
-        if (!data || !data.hubId) continue;
-        if (onDisk.has(data.hubId)) {
-          const i = disk.sessions.findIndex(s => s.hubId === data.hubId);
-          if (i >= 0 && (data.updatedAt || 0) > (disk.sessions[i].updatedAt || 0)) {
-            disk.sessions[i] = { ...disk.sessions[i], ...data };
+      try {
+        const onDisk = new Set(disk.sessions.map(s => s.hubId));
+        const fromFiles = sessionStore.listSessionFilesWithData();
+        for (const data of fromFiles) {
+          if (!data || !data.hubId) continue;
+          if (onDisk.has(data.hubId)) {
+            const i = disk.sessions.findIndex(s => s.hubId === data.hubId);
+            if (i >= 0 && (data.updatedAt || 0) > (disk.sessions[i].updatedAt || 0)) {
+              disk.sessions[i] = { ...disk.sessions[i], ...data };
+            }
+          } else {
+            disk.sessions.push({ ...data });
           }
-        } else {
-          disk.sessions.push({ ...data });
         }
+      } catch (e) {
+        console.warn('[hub] session-store self-heal scan failed:', e.message);
       }
     }
 
     // meeting orphans
     if (meetingStore && typeof meetingStore.listMeetingFilesWithData === 'function') {
-      const onDisk = new Set(disk.meetings.map(m => m.id));
-      const fromFiles = meetingStore.listMeetingFilesWithData();
-      for (const data of fromFiles) {
-        if (!data || !data.id) continue;
-        if (onDisk.has(data.id)) {
-          const i = disk.meetings.findIndex(m => m.id === data.id);
-          if (i >= 0 && (data.updatedAt || 0) > (disk.meetings[i].updatedAt || 0)) {
-            // v2 文件版字段更全（含 title/scene/createdAt/...），覆盖式合并
-            disk.meetings[i] = { ...disk.meetings[i], ...data };
+      try {
+        const onDisk = new Set(disk.meetings.map(m => m.id));
+        const fromFiles = meetingStore.listMeetingFilesWithData();
+        for (const data of fromFiles) {
+          if (!data || !data.id) continue;
+          if (onDisk.has(data.id)) {
+            const i = disk.meetings.findIndex(m => m.id === data.id);
+            if (i >= 0 && (data.updatedAt || 0) > (disk.meetings[i].updatedAt || 0)) {
+              // v2 文件版字段更全（含 title/scene/createdAt/...），覆盖式合并
+              disk.meetings[i] = { ...disk.meetings[i], ...data };
+            }
+          } else if ((data.schemaVersion || 0) >= 2) {
+            // v2 文件包含完整字段，可单独还原
+            disk.meetings.push({ ...data });
           }
-        } else if ((data.schemaVersion || 0) >= 2) {
-          // v2 文件包含完整字段，可单独还原
-          disk.meetings.push({ ...data });
+          // v1 only 文件无 state.json 条目 → 字段不全，跳过避免画残缺侧边栏
         }
-        // v1 only 文件无 state.json 条目 → 字段不全，跳过避免画残缺侧边栏
+      } catch (e) {
+        console.warn('[hub] meeting-store self-heal scan failed:', e.message);
       }
     }
 
     disk.cleanShutdown = false;
-    _writeMergedToDisk(disk);
+    if (haveLock) {
+      // 只在拿到锁的情况下写盘，避免与并发 boot 的 Hub 互踩
+      _writeMergedToDisk(disk);
+    } else {
+      console.warn('[hub] loadAndSelfHeal: lock unavailable, returning in-memory heal without disk write');
+    }
     // 返回时 cleanShutdown 字段已被翻成 false（运行中状态），但我们额外暴露
     //   bootWasCleanShutdown 给调用方判断"上次是不是优雅退出"。
     disk.bootWasCleanShutdown = originalCleanShutdown;
@@ -193,8 +221,17 @@ function _saveImpl(state) {
 
   const fd = acquireLock(LOCK_FILE);
   if (fd == null) {
+    // 2026-05-07 多方审查 fix：原版锁拿不到直接 _writeMergedToDisk(state) 全量覆盖，
+    //   绕过 mergeState/disk-reread/removed tombstone。多 Hub 同时拿不到锁时双方都
+    //   走这个 fallback 会互相覆盖。
+    // 改为：仍走读盘 + merge + 写，只不过没锁保护。即使两个 Hub 同时执行 fallback，
+    //   各自的 mergeState 仍把对方的盘上数据合并进来——比起裸覆盖，最坏情况是
+    //   "其中一方的 updatedAt 较新条目可能被覆盖"，而不是"全盘丢失"。
     try {
-      _writeMergedToDisk(state);
+      const disk = _readDiskState();
+      const removed = _drainRemoved();
+      const merged = mergeState(disk, state, removed);
+      _writeMergedToDisk(merged);
     } catch (e) {
       console.warn('[hub] state save failed (no lock fallback):', e.message);
     }
@@ -240,6 +277,8 @@ module.exports = {
   mergeState,
   markRemovedSession,
   markRemovedMeeting,
+  isMarkedRemovedSession,
+  isMarkedRemovedMeeting,
   STATE_FILE,
   LOCK_FILE,
   CURRENT_VERSION,
