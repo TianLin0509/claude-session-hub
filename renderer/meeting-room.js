@@ -125,6 +125,46 @@ if (typeof document !== 'undefined') (function () {
   //   非 active 圆桌累加 meeting.unreadCount → renderSessionList 渲染 has-unread + ⏸ 等你 badge），
   //   与普通 session 的提醒哲学一致，不再用 Web Notification / title 闪烁打扰用户。
 
+  const _CARD_VIEW_MODE_KEY = 'mr-card-view-mode';
+  function _getCardViewMode() {
+    try {
+      const mode = typeof localStorage !== 'undefined' ? localStorage.getItem(_CARD_VIEW_MODE_KEY) : null;
+      return mode === 'tab' ? 'tab' : 'parallel';
+    } catch { return 'parallel'; }
+  }
+  function _isCardTabMode() {
+    return _getCardViewMode() === 'tab';
+  }
+  function _applyCardViewModeClass(mode) {
+    document.body.classList.toggle('mr-card-tab-mode', mode === 'tab');
+    document.body.classList.remove('mr-density-compact');
+  }
+  function _setCardViewMode(mode, meeting) {
+    const next = mode === 'tab' ? 'tab' : 'parallel';
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(_CARD_VIEW_MODE_KEY, next);
+        localStorage.removeItem('mr-density-compact');
+      }
+    } catch {}
+    _applyCardViewModeClass(next);
+    if (next === 'tab') {
+      _clearCompareSelect();
+      _rtFocusedCardSid = null;
+      document.body.classList.remove('mr-card-focus-on');
+      const m = meeting || (activeMeetingId && meetingData[activeMeetingId]);
+      if (m && !m.focusedSub && Array.isArray(m.subSessions) && m.subSessions[0]) {
+        m.focusedSub = m.subSessions[0];
+      }
+    }
+    const active = meeting || (activeMeetingId && meetingData[activeMeetingId]);
+    if (active && _isPanelCapableMeeting(active)) refreshRoundtablePanel(active);
+    if (typeof _relayoutMeetingRoom === 'function') {
+      setTimeout(() => _relayoutMeetingRoom(), 260);
+    }
+  }
+  _applyCardViewModeClass(_getCardViewMode());
+
   // F3 Phase 2(2026-05-04 道雪 / spec F3): 多卡 Ctrl/Cmd+click 对比模式
   //   状态: Set<sid>。空 = 默认; ≥1 = 对比模式 (body.mr-card-compare-on)
   //   spec §5 状态优先级: compare-selected 与 focus 互斥(进入对比时清 focus)
@@ -929,7 +969,9 @@ if (typeof document !== 'undefined') (function () {
     const effectiveCurrentMode = isTimeTravel ? 'idle' : currentMode;
 
     const tabs = [];
-    const focused = meeting.focusedSub || meeting.subSessions[0];
+    const focused = (Array.isArray(meeting.subSessions) && meeting.subSessions.includes(meeting.focusedSub))
+      ? meeting.focusedSub
+      : meeting.subSessions[0];
     let anyThinking = false;
     const slots = _getRtSlots(meeting);
     const ctx = {
@@ -945,6 +987,29 @@ if (typeof document !== 'undefined') (function () {
     if (!anyThinking && meetingId) delete _thinkStartTs[meetingId];
     const stripCls = isTimeTravel ? 'mr-ft-strip mr-ft-timetravel' : 'mr-ft-strip';
     return `<div class="${stripCls}">${tabs.join('')}</div>`;
+  }
+
+  function _renderCardViewTabs(meeting) {
+    if (!_isCardTabMode() || !meeting) return '';
+    const slots = _getRtSlots(meeting);
+    const focused = (Array.isArray(meeting.subSessions) && meeting.subSessions.includes(meeting.focusedSub))
+      ? meeting.focusedSub
+      : meeting.subSessions[0];
+    const items = [];
+    for (let slotIndex = 0; slotIndex < 3; slotIndex++) {
+      const slot = slots[slotIndex];
+      if (!slot || !slot.sid) continue;
+      const slotCls = `slot-${slotIndex + 1}`;
+      const active = slot.sid === focused;
+      const label = slot.label || getKindLabel(slot.kind) || `AI ${slotIndex + 1}`;
+      const kind = slot.kind ? getKindLabel(slot.kind) : '';
+      items.push(`<button type="button" class="mr-card-view-tab ${slotCls}${active ? ' active' : ''}" data-rt-card-tab-sid="${escapeHtml(slot.sid)}" title="${escapeHtml(kind || label)}">
+        <span class="mr-card-view-tab-dot"></span>
+        <span class="mr-card-view-tab-label">${escapeHtml(label)}</span>
+      </button>`);
+    }
+    if (!items.length) return '';
+    return `<div class="mr-card-view-tabs" role="tablist" aria-label="AI cards">${items.join('')}</div>`;
   }
 
   function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, bottomHtml,
@@ -1447,6 +1512,7 @@ if (typeof document !== 'undefined') (function () {
     const mode = state.currentMode || 'idle';
     const partialBy = state._partialBy || null;
     const fusedTabs = _renderFusedTabs(state, subs, mode, partialBy, meeting);
+    const cardViewTabs = _renderCardViewTabs(meeting);
     // Phase 5(2026-05-05 道雪): 删除 _renderRtHistory 渲染调用。
     //   旧版底部"历史轮次 (N)"折叠按钮 + 列表已被 stepper mini-map 完全替代;
     //   保留 _renderRtHistory 函数本身以防其他地方调用, 仅删此处渲染。
@@ -1515,6 +1581,7 @@ if (typeof document !== 'undefined') (function () {
       ${devCard}
       ${onboarding}
       ${userQBanner}
+      ${cardViewTabs}
       ${fusedTabs}
     `;
   }
@@ -1624,6 +1691,7 @@ if (typeof document !== 'undefined') (function () {
       const sid = slotEl.getAttribute('data-ft-sid');
       slotEl.addEventListener('click', (ev) => {
         if (!sid) return;
+        if (_isCardTabMode()) return;
         // F3 Phase 2: Ctrl/Cmd+click → 对比模式多选(状态优先级: 互斥 focus)
         if (ev && (ev.ctrlKey || ev.metaKey)) {
           ev.stopPropagation();   // 阻止冒泡到全局 click 退出 handler
@@ -1860,6 +1928,13 @@ if (typeof document !== 'undefined') (function () {
           _rtViewingTurnN[meeting.id] = n;
         }
         refreshRoundtablePanel(meeting);
+      });
+    });
+    panel.querySelectorAll('[data-rt-card-tab-sid]').forEach(tab => {
+      tab.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const sid = tab.getAttribute('data-rt-card-tab-sid');
+        if (sid) _focusRoundtableSession(meeting, sid);
       });
     });
     // 时光机 banner 退出按钮
@@ -2832,7 +2907,10 @@ if (typeof document !== 'undefined') (function () {
       </div>
       <div class="mr-header-progress" id="mr-header-progress" title="本轮发言进度"></div>
       <div class="mr-header-right">${layoutButtonsHtml}
-        <button class="mr-header-btn ${_isDensityCompact() ? 'active' : ''}" id="mr-btn-density" title="切换卡片密度: 常规 (220px) ↔ 紧凑 (120px,只显示头部)">${_isDensityCompact() ? '📃 紧凑' : '📖 常规'}</button>
+        <div class="mr-view-toggle" role="group" aria-label="Card view mode">
+          <button class="mr-header-btn mr-view-btn ${!_isCardTabMode() ? 'active' : ''}" id="mr-btn-view-parallel" title="并列显示 3 张 AI 卡片">并列</button>
+          <button class="mr-header-btn mr-view-btn ${_isCardTabMode() ? 'active' : ''}" id="mr-btn-view-tab" title="Tab 模式：主界面只显示当前 AI 卡片">Tab</button>
+        </div>
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
         <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
@@ -2843,17 +2921,16 @@ if (typeof document !== 'undefined') (function () {
 
     const focusBtn = document.getElementById('mr-btn-focus');
     if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
-    // F9 Phase 2(2026-05-04 道雪): 卡片密度切换 (常规 220px / 紧凑 120px 只显示头部)
-    const densityBtn = document.getElementById('mr-btn-density');
-    if (densityBtn) {
-      densityBtn.addEventListener('click', () => {
-        const next = !_isDensityCompact();
-        _setDensityCompact(next);
-        // 立即更新按钮文案 (避免重渲整个 header)
-        densityBtn.textContent = next ? '📃 紧凑' : '📖 常规';
-        densityBtn.classList.toggle('active', next);
-      });
-    }
+    const parallelBtn = document.getElementById('mr-btn-view-parallel');
+    const tabBtn = document.getElementById('mr-btn-view-tab');
+    if (parallelBtn) parallelBtn.addEventListener('click', () => {
+      _setCardViewMode('parallel', meeting);
+      renderHeader(meeting);
+    });
+    if (tabBtn) tabBtn.addEventListener('click', () => {
+      _setCardViewMode('tab', meeting);
+      renderHeader(meeting);
+    });
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
     // 注：顶部 scene toggle（圆桌/投研）已删除（2026-05-04 决策：scene 创建时确定，运行时不可切换）。
     // Arch refactor 2026-05-02: 沉浸/调试 toggle 删除，无需 binding。

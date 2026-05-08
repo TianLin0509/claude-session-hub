@@ -196,6 +196,29 @@
   border-color: var(--accent, #6366f1);
 }
 
+.mr-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg-primary, #0d1117);
+}
+.mr-view-toggle .mr-view-btn {
+  min-width: 42px;
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 4px;
+}
+.mr-view-toggle .mr-view-btn:not(.active) {
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+}
+.mr-view-toggle .mr-view-btn:focus-visible {
+  outline: 2px solid rgba(88, 166, 255, 0.75);
+  outline-offset: 1px;
+}
+
 /* Arch refactor 2026-05-02: .mr-terminals + .mr-terminals.focus-mode 已删除
    (圆桌界面不再 mount xterm，shell 沉到子 session 主区 view)。 */
 
@@ -876,6 +899,89 @@
 .mr-ft.slot-1.active { border-bottom-color: var(--c-slot-1); background: rgba(var(--c-slot-1-rgb),0.06); }
 .mr-ft.slot-2.active { border-bottom-color: var(--c-slot-2); background: rgba(var(--c-slot-2-rgb),0.06); }
 .mr-ft.slot-3.active { border-bottom-color: var(--c-slot-3); background: rgba(var(--c-slot-3-rgb),0.06); }
+
+.mr-card-view-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid #1f2735;
+  background: rgba(13, 17, 23, 0.72);
+}
+.mr-card-view-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid rgba(139, 148, 158, 0.28);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #8b949e;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  overflow: hidden;
+}
+.mr-card-view-tab:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #c9d1d9;
+}
+.mr-card-view-tab:focus-visible {
+  outline: 2px solid rgba(88, 166, 255, 0.75);
+  outline-offset: 2px;
+}
+.mr-card-view-tab.active {
+  color: #fff;
+  background: rgba(88, 166, 255, 0.16);
+  border-color: rgba(88, 166, 255, 0.56);
+}
+.mr-card-view-tab-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #8b949e;
+}
+.mr-card-view-tab.slot-1 .mr-card-view-tab-dot { background: var(--c-slot-1); }
+.mr-card-view-tab.slot-2 .mr-card-view-tab-dot { background: var(--c-slot-2); }
+.mr-card-view-tab.slot-3 .mr-card-view-tab-dot { background: var(--c-slot-3); }
+.mr-card-view-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.mr-card-tab-mode .mr-ft-strip {
+  grid-template-columns: minmax(0, 1fr);
+}
+body.mr-card-tab-mode .mr-ft-strip .mr-ft:not(.active) {
+  display: none;
+}
+body.mr-card-tab-mode .mr-ft-strip .mr-ft.active {
+  height: 100%;
+  min-height: 0;
+  border-right: 0;
+  cursor: default;
+}
+body.mr-card-tab-mode .mr-ft-head,
+body.mr-card-tab-mode .mr-ft-expand,
+body.mr-card-tab-mode .mr-ft-hover-actions,
+body.mr-card-tab-mode .mr-ft-corner-badge,
+body.mr-card-tab-mode .mr-ft-escape-bar {
+  display: none;
+}
+body.mr-card-tab-mode .mr-ft-bottom {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+body.mr-card-tab-mode .mr-rt-timetravel-banner,
+body.mr-card-tab-mode .mr-rt-userq {
+  display: none;
+}
 
 /* === F0 Neon Glow 卡片聚焦 v2(Phase 1 修订 / 2026-05-04 道雪 / spec F0 · 用户选 B 方案) ===
  * 触发: body.mr-card-focus-on 时, 该 strip 内的 .active 卡片是聚焦主卡。
