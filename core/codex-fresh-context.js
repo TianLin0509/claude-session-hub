@@ -6,21 +6,20 @@
 // 语义（Spec S5 第三档）：
 //   sid 失效 → --last 失效 → fresh+ctx
 //   "fresh" = 普通 spawn 一个新 codex（不走 resume），不继承任何 sid
-//   "ctx"   = 从 meeting orchestrator 取最近 N=3 轮 summary（若不足取全部），
-//             拼成 markdown instructions 文本，通过 -c model_instructions_file=<file>
+//   "ctx"   = 从 meeting orchestrator 取最近 N=3 轮会议历史，拼成 markdown
+//             instructions 文本，通过 -c model_instructions_file=<file>
 //             在 spawn 时注入（session-manager.js:660-662 已支持 codexInstructionFile）
 //
 // **B3.0 SPIKE 已落定**：codex 0.125.0 主交互模式 `-c key=value` 任意 TOML 路径覆盖
 //   有效，Hub 现状已在用 model_instructions_file 注入首次 spawn 的 system prompt
-//   （session-manager.js:660）。本 helper 写一个**临时 ctx 文件**让同一通道注入历史摘要。
+//   （session-manager.js:660）。本 helper 写一个**临时 ctx 文件**让同一通道注入会议历史。
 //
 // 决策：
 //   - **不动 session-manager / main.js**：现状 codexInstructionFile 入口已通；本 helper
 //     只产出 instructions 文本与文件路径，由 caller 决定何时调用（手动入口或自动 fallback）。
-//   - **不解析 5 元组**：直接拼 raw `turn.by[sid]` 文本（截断到 800 字防 prompt 爆炸）。
-//     5 元组结构化展示在 Phase 5 按需补。
-//   - **优先 mode='summary' 轮**：summary 轮已是上一阶段的精炼结论，比 fanout 轮更适合
-//     做 ctx；不足时 fallback 到任意 mode 的最近 N 轮。
+//   - **不解析结构化字段**：直接拼 raw `turn.by[sid]` 文本（截断到 800 字防 prompt 爆炸）。
+//   - **取最近 N 轮历史**：摘要功能 2026-05-08 整体下线后，所有轮次仅 fanout / debate；
+//     按时间倒序取 maxTurns 最近轮次即可。
 
 const fs = require('fs');
 const path = require('path');
@@ -55,17 +54,14 @@ function buildContextInstructions(orchestrator, opts = {}) {
   const turns = Array.isArray(state && state.turns) ? state.turns : [];
   if (turns.length === 0) return '';
 
-  // 优先取 summary 轮；若不足 maxTurns 用全部最近轮兜底
-  const summaryTurns = turns.filter((t) => t && t.mode === 'summary');
-  const picked = summaryTurns.length >= maxTurns
-    ? summaryTurns.slice(-maxTurns)
-    : turns.slice(-maxTurns);
+  // 摘要功能 2026-05-08 整体下线：按时间倒序取最近 maxTurns 轮（仅 fanout / debate）
+  const picked = turns.slice(-maxTurns);
 
   const sections = [];
   sections.push('# 历史会议上下文（fresh + ctx 注入）');
   sections.push('');
   sections.push('你正在通过 fresh-with-context 模式恢复一个圆桌会议。原 codex sid 已不可用，');
-  sections.push('以下是最近若干轮的会议摘要，作为你继续讨论的背景。请基于此理解上下文，');
+  sections.push('以下是最近若干轮的会议历史，作为你继续讨论的背景。请基于此理解上下文，');
   sections.push('然后等待用户的下一轮 prompt。');
   sections.push('');
 

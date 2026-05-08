@@ -1,4 +1,7 @@
 'use strict';
+// 圆桌摘要（brief 五元组）2026-05-08 已下线；圆桌只剩 fanout / debate 轮次。
+// 注：deep-summary（Hub 全局 transcript 压缩）是独立子系统，不要混淆。
+//
 // Roundtable Orchestrator — 圆桌轮次状态机
 //
 // 两种轮次模式（2026-05-08 摘要功能整体下线后）：

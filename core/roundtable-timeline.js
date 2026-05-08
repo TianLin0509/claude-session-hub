@@ -4,8 +4,8 @@
 // 设计理念：
 //   每轮 turn-complete 后系统侧自动 append 一段到 timeline.md。AI 看不到这个过程，
 //   但每轮 prompt 末尾会附上文件绝对路径，AI 可主动 Read 它做长期上下文回顾。
-//   滚动策略：保留近 10 个非摘要轮 + 全部摘要轮（摘要永久保留），过老的非摘要轮
-//   归档到 -archive.md（追加模式）。
+//   滚动策略：保留近 MAX_HISTORY_TURNS 轮历史，过老的轮次归档到 -archive.md
+//   （追加模式）。摘要功能 2026-05-08 整体下线后，所有轮次只剩 fanout / debate。
 //
 // 文件位置（按优先级）：
 //   1. <projectCwd>/.arena/timeline-<meetingId>.md  (优先：AI 自然能 Read)
@@ -15,7 +15,7 @@
 //   # Roundtable Timeline · <meetingId>
 //   > 场景：投研圆桌
 //   > 创建时间：2026-05-02T10:23:00Z
-//   > 滚动策略：保留近 10 个非摘要轮 + 全部摘要轮
+//   > 滚动策略：保留近 10 轮历史
 //   ---
 //
 //   ## 第 1 轮 · fanout · all
@@ -27,14 +27,11 @@
 //   ### Gemini
 //   <全文>
 //   ...
-//
-//   ## 第 4 轮 · 摘要 by Claude（五元组）
-//   ...
 
 const fs = require('fs');
 const path = require('path');
 
-const MAX_NON_SUMMARY_TURNS = 10;
+const MAX_HISTORY_TURNS = 10;
 
 // ---------------------------------------------------------------------------
 // 路径计算
@@ -77,7 +74,7 @@ function _renderHeader(meetingId, sceneName) {
     `> 场景：${sceneName || '通用圆桌'}\n` +
     `> 创建时间：${new Date().toISOString()}\n` +
     `> 自动生成 · 系统侧维护\n` +
-    `> 滚动策略：保留近 ${MAX_NON_SUMMARY_TURNS} 个非摘要轮 + 全部摘要轮（摘要永久保留）\n\n` +
+    `> 滚动策略：保留近 ${MAX_HISTORY_TURNS} 轮历史\n\n` +
     `---\n`;
 }
 
@@ -144,7 +141,7 @@ function _renderTurnSection(turnRecord, sidLabelFn) {
 }
 
 // ---------------------------------------------------------------------------
-// 滚动：超过 MAX_NON_SUMMARY_TURNS 个非摘要轮时归档最早的
+// 滚动：超过 MAX_HISTORY_TURNS 轮时归档最早的
 // ---------------------------------------------------------------------------
 function _rollIfNeeded(filePath) {
   const content = fs.readFileSync(filePath, 'utf-8');
@@ -152,12 +149,11 @@ function _rollIfNeeded(filePath) {
   if (!sections) return;
 
   const { header, turns } = sections;
-  const nonSummary = turns.filter(t => !t.isSummary);
-  if (nonSummary.length <= MAX_NON_SUMMARY_TURNS) return;
+  if (turns.length <= MAX_HISTORY_TURNS) return;
 
-  const toArchive = nonSummary.slice(0, nonSummary.length - MAX_NON_SUMMARY_TURNS);
+  const toArchive = turns.slice(0, turns.length - MAX_HISTORY_TURNS);
   const toArchiveSet = new Set(toArchive);
-  const kept = turns.filter(t => t.isSummary || !toArchiveSet.has(t));
+  const kept = turns.filter(t => !toArchiveSet.has(t));
 
   const newContent = header + kept.map(t => t.text).join('');
   const archivePath = getArchivePath(filePath);
@@ -170,7 +166,7 @@ function _rollIfNeeded(filePath) {
   try {
     if (!fs.existsSync(archivePath)) {
       const archiveHeader = `# Timeline Archive · ${path.basename(filePath, '.md')}\n\n` +
-        `> 系统自动归档：从主 timeline 滚出窗口的非摘要轮（按时间顺序追加）\n\n---\n`;
+        `> 系统自动归档：从主 timeline 滚出窗口的轮次（按时间顺序追加）\n\n---\n`;
       fs.writeFileSync(archivePath, archiveHeader, 'utf-8');
     }
     fs.appendFileSync(archivePath, archiveAppend, 'utf-8');
@@ -183,11 +179,11 @@ function _rollIfNeeded(filePath) {
   fs.writeFileSync(filePath, newContent, 'utf-8');
 }
 
-// 解析 timeline 内容为 { header, turns: [{ text, isSummary, n }] }
+// 解析 timeline 内容为 { header, turns: [{ text, n }] }
 // 不解析失败抛错，仅在结构完整时返回
 function _parseTurnSections(content) {
   // BUGFIX (4-way review · DeepSeek#2)：要求标题格式必含 " · "（系统侧标题严格固定格式
-  //   "## 第 N 轮 · <mode> · <dispatchMode>" 或 "## 第 N 轮 · 摘要 by ..."），
+  //   "## 第 N 轮 · <mode> · <dispatchMode>"），
   //   降低 AI 输出"## 第 N 轮"字面量被误识别为新轮起点的概率。
   const turnTitleRe = /^## 第 (\d+) 轮 · .*$/gm;
   const matches = [];
@@ -205,8 +201,7 @@ function _parseTurnSections(content) {
     const start = matches[i].index;
     const end = i + 1 < matches.length ? matches[i + 1].index : content.length;
     const text = content.slice(start, end);
-    const isSummary = /^## 第 \d+ 轮 · 摘要 by /.test(matches[i].title);
-    turns.push({ text, isSummary, n: matches[i].n });
+    turns.push({ text, n: matches[i].n });
   }
   return { header, turns };
 }
@@ -229,5 +224,5 @@ module.exports = {
   // 内部 helper 暴露供 unit test
   _renderTurnSection,
   _parseTurnSections,
-  MAX_NON_SUMMARY_TURNS,
+  MAX_HISTORY_TURNS,
 };

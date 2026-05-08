@@ -77,7 +77,7 @@
 |------|------|
 | **三席位** | 8 家 AI（Claude/Gemini/Codex/DeepSeek/GLM/GPT/Kimi/Qwen）任选 3 个组合，同款多份也行（比如 3 个 Claude） |
 | **宝可梦标记** | Pikachu ⚡ / Charmander 🔥 / Squirtle 💎 三只宝可梦绑定席位身份 — 即使同 kind 也能区分谁是谁 |
-| **@ 命令** | `@all` 全员发问 · `@debate` 触发辩论 · `@summary` 五元组摘要 · `@pikachu` 点名某席发言 |
+| **@ 命令** | `@all` 全员发问 · `@debate` 触发辩论 · `@pikachu` 点名某席发言（`@summary` 摘要功能 2026-05-08 已下线） |
 | **4 种模式** | **fanout**（默认三家并行）/ **debate**（聚焦分歧）/ **observer**（副驾观察）/ **free**（自选参与者） |
 | **3 大场景** | **dev**（代码设计/评审）· **research**（投研分析，挂载行情 MCP）· **general**（通用讨论） |
 | **时光机** | 每轮对话写入 timeline，Stepper mini-map 逐轮回放，能精确回到"那时候大家说了什么" |
@@ -147,7 +147,7 @@
 | 集成 | 用法 |
 |------|------|
 | **A 股行情 MCP**（投研场景，需自配） | 投研场景的圆桌支持挂载行情数据后端（`fetch_lindang_stock` / `fetch_lindang_field`）。**默认未启用** —— 数据后端是作者私有的 A 股投研工具，未公开。其他用户需自己提供一个能跑 `python data_query.py snapshot <code>` 的后端，并设环境变量 `LINDANG_DIR` 指向其项目根；未配置时投研场景圆桌仍可创建，但 AI 调 MCP 工具会拿到 not-configured 错误。**最常见用法**：用通用 / 开发场景，不依赖此集成。 |
-| **DeepSeek 总结备胎**（可选） | 圆桌「📝 总结」按钮的 LLM 走 fallback 链 `gemini-cli → deepseek-api`。默认走你已登录的 Gemini CLI（不需 API key），失败才 fallback 到 DeepSeek API。要启用 DeepSeek 备胎需 `setx DEEPSEEK_API_KEY <your-key>` —— 但典型用户用 Gemini CLI 永远命中第一档，无需配置。 |
+| **DeepSeek 总结备胎**（可选） | 用于 deep-summary 子系统（Hub 全局 transcript 压缩，独立于圆桌摘要）的 LLM fallback 链 `gemini-cli → deepseek-api`。默认走你已登录的 Gemini CLI（不需 API key），失败才 fallback 到 DeepSeek API。要启用 DeepSeek 备胎需 `setx DEEPSEEK_API_KEY <your-key>` —— 但典型用户用 Gemini CLI 永远命中第一档，无需配置。 |
 | **飞书消息**（可选） | Hub 活跃圆桌的进展自动推送到飞书私聊（橙=等待 / 蓝=完成），60s 同轮去重。需在设置里配 Feishu App ID + Secret 才启用。 |
 | **Hooks** | `session-hub-hook.py`（驱动未读+消息预览）+ `claude-hub-statusline.js`（推送 Context/Usage），安装时自动部署 |
 | **隔离模式** | `CLAUDE_HUB_DATA_DIR` env 启动隔离实例（E2E/多人协作各开一份），运行时状态完全隔离 |
@@ -332,7 +332,7 @@ Not "fan-out the same prompt to three AIs and concatenate." Roundtable lets the 
 |--------|--------|
 | **3 seats** | Pick any 3 from 8 AIs (Claude / Gemini / Codex / DeepSeek / GLM / GPT / Kimi / Qwen). Same kind × N also fine (e.g. 3 Claudes). |
 | **Pokémon slot identity** | Pikachu ⚡ / Charmander 🔥 / Squirtle 💎 — even when seats share a kind, the avatar tells them apart. |
-| **@ commands** | `@all` ask everyone · `@debate` trigger debate · `@summary` 5-tuple summary · `@pikachu` address one seat. |
+| **@ commands** | `@all` ask everyone · `@debate` trigger debate · `@pikachu` address one seat. (`@summary` was retired 2026-05-08.) |
 | **4 modes** | **fanout** (default parallel) / **debate** (focus disagreement) / **observer** (copilot watches) / **free** (custom participants). |
 | **3 scenes** | **dev** (code design/review) · **research** (stock analysis, MCP-mounted) · **general**. |
 | **Timeline / Time machine** | Each turn appended to timeline.md. Stepper mini-map for replay. |

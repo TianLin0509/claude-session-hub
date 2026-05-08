@@ -120,8 +120,7 @@ function testByStatusLabels() {
 }
 
 // === 6 滚动：12 fanout/debate → 主文件保留 10 个最近 + archive 2 个最早 ===
-//   摘要功能 2026-05-08 整体下线：原 12 普通 + 2 摘要 测试场景已简化为纯 fanout
-//   _parseTurnSections 仍按 isSummary 解析历史 timeline 中的 summary 行（向后兼容）
+//   摘要功能 2026-05-08 整体下线：所有轮次仅 fanout/debate；isSummary 字段已删
 function testRollingArchive() {
   const cwd = tmpDir();
   const mid = 'm-roll';
@@ -133,10 +132,9 @@ function testRollingArchive() {
   const main = tl.readFull(mid, cwd, null);
   const sections = tl._parseTurnSections(main);
   assert.ok(sections, 'should have parsed sections');
-  const ns = sections.turns.filter(t => !t.isSummary);
-  assert.strictEqual(ns.length, 10, `main file should have 10 turns, got ${ns.length}`);
+  assert.strictEqual(sections.turns.length, 10, `main file should have 10 turns, got ${sections.turns.length}`);
   // 轮号最小的应该是 3（不是 1 / 2）
-  const turnNs = ns.map(t => t.n).sort((a, b) => a - b);
+  const turnNs = sections.turns.map(t => t.n).sort((a, b) => a - b);
   assert.strictEqual(turnNs[0], 3, `oldest should be turn 3, got ${turnNs[0]}`);
 
   // archive 应该含轮 1, 2
@@ -151,9 +149,12 @@ function testRollingArchive() {
 }
 
 // 摘要功能 2026-05-08 整体下线：原 testSummaryNeverArchived 已删
-// （新 turn 不再产生 summary-brief 模式；_parseTurnSections 仍能解析旧 timeline 文件中的摘要行）
+// （新 turn 不再产生 summary-brief 模式；isSummary 字段已从 _parseTurnSections 移除）
 
 // === 8 _parseTurnSections 解析正确 ===
+//   摘要功能 2026-05-08 整体下线后，parsed.turns 不再含 isSummary 字段。
+//   旧 timeline 文件里残留的"## 第 N 轮 · 摘要 by ..."标题被 ## 第 N 轮 · ... 通配匹配，
+//   作为普通轮存入 turns，不再特殊标记。
 function testParseTurnSections() {
   const sample = `# Roundtable Timeline · m-x
 
@@ -166,19 +167,18 @@ function testParseTurnSections() {
 ### Claude
 hello
 
-## 第 2 轮 · 摘要 by Claude（五元组）
+## 第 2 轮 · debate · all
 - 时间：T2
 
 ### Claude
-sum
+reply
 `;
   const parsed = tl._parseTurnSections(sample);
   assert.ok(parsed, 'parsed not null');
   assert.strictEqual(parsed.turns.length, 2, '2 turns');
   assert.strictEqual(parsed.turns[0].n, 1);
-  assert.strictEqual(parsed.turns[0].isSummary, false);
   assert.strictEqual(parsed.turns[1].n, 2);
-  assert.strictEqual(parsed.turns[1].isSummary, true, 'summary turn flagged');
+  assert.strictEqual(parsed.turns[0].isSummary, undefined, 'isSummary 字段已删除');
   assert.ok(parsed.header.includes('# Roundtable Timeline'), 'header captured');
   console.log('  ✓ testParseTurnSections');
 }
