@@ -138,6 +138,9 @@ const ABS_PATH_RE = /(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/])(?:[^\\
 // being shown as clickable, since "docs/x.md" in prose is often not a real
 // file reference.
 const REL_PATH_RE = /(?:\.{1,2}[\\/])?(?:[^\\/:*?"<>|\r\n\s]+[\\/])+[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
+const ABS_DIR_RE = /(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/])(?:[^\\/:*?"<>|\r\n]+[\\/])+[^\\/:*?"<>|\r\n]+[\\/]?/g;
+const REL_DIR_RE = /(?:\.{1,2}[\\/])?(?:[^\\/:*?"<>|\r\n]+[\\/]){1,}[^\\/:*?"<>|\r\n]+[\\/]?/g;
+const REL_BARE_RE = /(?<![\w.-])[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![\w.-])|(?<![\w.-])[^\\/:*?"<>|\r\n\s.]{2,}(?![\w.-])/g;
 // http(s) URL with optional port. Permissive on host so localhost:port (which
 // xterm's WebLinksAddon misses — its regex requires a path-char terminator,
 // excluding port-digit endings) gets caught here. Trailing prose punctuation
@@ -1736,7 +1739,7 @@ function rerenderTurn(turnId) {
       postProcessCardCodeBlocks(newCard);
     }
     const bodyEl = newCard.querySelector('.turn-body');
-    if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl);
+    if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId: card.dataset.sessionId });
     card.replaceWith(newCard);
     // Spec 3 长文本折叠：必须在 DOM 内调（replaceWith 之后），否则 scrollHeight=0
     if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
@@ -1982,7 +1985,7 @@ function mountTurnCard(container, turn) {
   postProcessCardCodeBlocks(cardEl);
   // 路径识别 (T7 风险条款: 卡片内 .md / URL 必须可点击触发预览)
   const bodyEl = cardEl.querySelector('.turn-body');
-  if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl);
+  if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId: activeSessionId });
   container.appendChild(cardEl);
   postProcessLongTextFold(cardEl);
   return cardEl;
@@ -2061,7 +2064,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     existing.replaceWith(newCard);
     if (typeof postProcessCardCodeBlocks === 'function') postProcessCardCodeBlocks(newCard);
     const bodyEl2 = newCard.querySelector('.turn-body');
-    if (bodyEl2 && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl2);
+    if (bodyEl2 && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl2, { sessionId });
     if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
     window._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
     return newCard;
@@ -2106,7 +2109,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 7. path link recognition (scoped to .turn-body to avoid touching meta/actions)
   const bodyEl = cardEl.querySelector('.turn-body');
   if (bodyEl && typeof wrapPathLinksInElement === 'function') {
-    wrapPathLinksInElement(bodyEl);
+    wrapPathLinksInElement(bodyEl, { sessionId });
   }
   // 7b. Spec 3 · 长文本默认折叠（必须在 DOM 插入后调，否则 scrollHeight=0）
   if (typeof postProcessLongTextFold === 'function') {
@@ -2383,6 +2386,48 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
   }
 });
 
+function wrapPathLinksInElement(rootEl, opts = {}) {
+  if (!rootEl) return;
+  const cwd = opts.cwd || getSessionCwd(opts.sessionId || activeSessionId) || null;
+  const SKIP_TAGS = new Set(['A', 'SCRIPT', 'STYLE']);
+  const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      let p = node.parentNode;
+      while (p && p !== rootEl) {
+        if (p.nodeType === 1 && SKIP_TAGS.has(p.tagName)) return NodeFilter.FILTER_REJECT;
+        p = p.parentNode;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const targets = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    if (collectPathCandidates(node.nodeValue || '', cwd).length > 0) targets.push(node);
+  }
+  for (const textNode of targets) {
+    const text = textNode.nodeValue || '';
+    const candidates = collectPathCandidates(text, cwd);
+    if (!candidates.length) continue;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    for (const c of candidates) {
+      if (c.start < last) continue;
+      if (c.start > last) frag.appendChild(document.createTextNode(text.slice(last, c.start)));
+      const a = document.createElement('a');
+      a.className = 'rt-file-link';
+      a.setAttribute('data-path', c.openPath);
+      a.title = c.openPath;
+      a.textContent = text.slice(c.start, c.end + 1);
+      frag.appendChild(a);
+      last = c.end + 1;
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
+}
+window.wrapPathLinksInElement = wrapPathLinksInElement;
+
 // rt-file-link click → openPreviewPanel (only for cards inside .msg-overlay,
 // don't conflict with meeting-room.js handler which targets its own scope)
 document.addEventListener('click', (e) => {
@@ -2392,7 +2437,7 @@ document.addEventListener('click', (e) => {
   e.preventDefault();
   e.stopPropagation();
   const path = a.dataset.path;
-  if (path && typeof openPreviewPanel === 'function') openPreviewPanel(path);
+  if (path) openPathInHub(path, { cwd: getSessionCwd(activeSessionId), requireExistsForRel: false });
 }, true);
 
 // === Spec 1 v0.9.0 · D5 操作按钮 click ===
@@ -3103,6 +3148,147 @@ function _resolveRelPathIfExists(cwd, relPath) {
   return absPath;
 }
 
+function _cleanPathCandidate(raw) {
+  let s = String(raw || '').replace(/[\r\n]+/g, '').trim();
+  s = s.replace(/^[`'"\u201c\u201d\u2018\u2019(<\[]+/, '');
+  s = s.replace(/[`'"\u201c\u201d\u2018\u2019)>.,;:!\]]+$/, '');
+  return s;
+}
+
+function _expandHomePath(filePath) {
+  if (/^~[\\/]/.test(filePath)) {
+    try { return require('path').join(require('os').homedir(), filePath.slice(2)); } catch {}
+  }
+  return filePath;
+}
+
+function _isAbsLocalPath(filePath) {
+  return /^[A-Za-z]:[\\/]/.test(filePath)
+    || /^\\\\[^\\/:*?"<>|\r\n\s]+\\/.test(filePath)
+    || /^~[\\/]/.test(filePath);
+}
+
+function _statPathQuiet(filePath) {
+  try { return require('fs').statSync(filePath); } catch { return null; }
+}
+
+function _normalizeLocalPathForOpen(openPath, cwd, requireExistsForRel = true) {
+  let p = _cleanPathCandidate(openPath);
+  if (!p) return null;
+  p = _expandHomePath(p);
+  if (_isAbsLocalPath(p)) return p;
+  if (!cwd) return null;
+  let abs = null;
+  try { abs = require('path').resolve(cwd, p); } catch { return null; }
+  if (requireExistsForRel && !require('fs').existsSync(abs)) return null;
+  return abs;
+}
+
+function _isDirectoryPath(filePath) {
+  const st = _statPathQuiet(filePath);
+  return !!(st && st.isDirectory());
+}
+
+async function openPathInHub(filePath, opts = {}) {
+  const cwd = opts.cwd || null;
+  const raw = _cleanPathCandidate(filePath);
+  if (!raw) return;
+  if (/^https?:\/\//i.test(raw)) {
+    openPreviewPanel(raw);
+    return;
+  }
+  const fullPath = _normalizeLocalPathForOpen(raw, cwd, opts.requireExistsForRel !== false);
+  if (!fullPath) return;
+  if (_isDirectoryPath(fullPath)) {
+    const err = await ipcRenderer.invoke('open-path', fullPath);
+    if (err) console.warn('[hub] open folder failed:', fullPath, '->', err);
+    return;
+  }
+  if (PREVIEW_PATH_RE.test(fullPath)) {
+    openPreviewPanel(fullPath);
+    return;
+  }
+  const err = await ipcRenderer.invoke('open-path', fullPath);
+  if (err) console.warn('[hub] open-path failed:', fullPath, '->', err);
+}
+window.openPathInHub = openPathInHub;
+
+function _addCandidate(candidates, start, end, openPath, isUrl = false) {
+  if (!openPath || end < start) return;
+  const overlapsExisting = candidates.some(c => !(end < c.start || start > c.end));
+  if (overlapsExisting) return;
+  candidates.push({ start, end, openPath, isUrl });
+}
+
+function collectPathCandidates(text, cwd = null, opts = {}) {
+  const candidates = [];
+  text = String(text || '');
+  let m;
+  URL_RE.lastIndex = 0;
+  while ((m = URL_RE.exec(text))) {
+    const trimmed = m[0].replace(/[.,;:!?)\]]+$/, '');
+    if (trimmed.length >= 'http://x'.length) {
+      _addCandidate(candidates, m.index, m.index + trimmed.length - 1, trimmed, true);
+    }
+  }
+
+  ABS_PATH_RE.lastIndex = 0;
+  while ((m = ABS_PATH_RE.exec(text))) {
+    _addCandidate(candidates, m.index, m.index + m[0].length - 1, _cleanPathCandidate(m[0]));
+  }
+
+  if (opts.includeDirectories !== false) {
+    ABS_DIR_RE.lastIndex = 0;
+    while ((m = ABS_DIR_RE.exec(text))) {
+      const raw = _cleanPathCandidate(m[0]);
+      const fullPath = _normalizeLocalPathForOpen(raw, cwd, false);
+      if (fullPath && _isDirectoryPath(fullPath)) {
+        _addCandidate(candidates, m.index, m.index + m[0].length - 1, fullPath);
+      }
+    }
+  }
+
+  if (cwd) {
+    REL_PATH_RE.lastIndex = 0;
+    while ((m = REL_PATH_RE.exec(text))) {
+      const raw = _cleanPathCandidate(m[0]);
+      const absPath = _resolveRelPathIfExists(cwd, raw);
+      if (absPath) _addCandidate(candidates, m.index, m.index + m[0].length - 1, absPath);
+    }
+
+    if (opts.includeDirectories !== false) {
+      REL_DIR_RE.lastIndex = 0;
+      while ((m = REL_DIR_RE.exec(text))) {
+        const raw = _cleanPathCandidate(m[0]);
+        if (PREVIEW_PATH_RE.test(raw)) continue;
+        const absPath = _resolveRelPathIfExists(cwd, raw);
+        if (absPath && _isDirectoryPath(absPath)) {
+          _addCandidate(candidates, m.index, m.index + m[0].length - 1, absPath);
+        }
+      }
+    }
+
+    REL_BARE_RE.lastIndex = 0;
+    while ((m = REL_BARE_RE.exec(text))) {
+      const raw = _cleanPathCandidate(m[0]);
+      const absPath = _resolveRelPathIfExists(cwd, raw);
+      if (!absPath) continue;
+      const st = _statPathQuiet(absPath);
+      if (!st) continue;
+      if (st.isDirectory() || PREVIEW_PATH_RE.test(absPath)) {
+        _addCandidate(candidates, m.index, m.index + m[0].length - 1, absPath);
+      }
+    }
+  }
+
+  return candidates.sort((a, b) => a.start - b.start);
+}
+window.collectPathCandidates = collectPathCandidates;
+
+function getSessionCwd(sessionId) {
+  try { return (sessions.get(sessionId) || {}).cwd || null; } catch { return null; }
+}
+
 // Group of currently-registered link instances that all point to the same
 // fullPath. Used so that hovering ANY segment of a wrap-split path lights up
 // the underline on EVERY segment (xterm's default only decorates the line
@@ -3235,6 +3421,12 @@ function registerLocalPathLinks(terminal, sessionId) {
         }
       }
 
+      for (const extra of collectPathCandidates(text, cwd)) {
+        const overlapsExisting = candidates.some(c =>
+          !(extra.end < c.start || extra.start > c.end));
+        if (!overlapsExisting) candidates.push(extra);
+      }
+
       // Phase 3 — for each candidate, register one single-line link per
       // physical line it covers, all sharing the same openPath. xterm calls
       // provideLinks once per line, so we only return segments matching
@@ -3266,17 +3458,10 @@ function registerLocalPathLinks(terminal, sessionId) {
               end: { x: endX, y: yLine },
             },
             text: fullPath, // hover tooltip shows the resolved absolute path
-            decorations: { pointerCursor: true, underline: false },
-            activate: async () => {
-              if (isUrl || PREVIEW_PATH_RE.test(fullPath)) {
-                openPreviewPanel(fullPath);
-              } else {
-                const err = await ipcRenderer.invoke('open-path', fullPath);
-                if (err) console.warn('[hub] open-path failed:', fullPath, '→', err);
-              }
-            },
+            decorations: { pointerCursor: true, underline: true },
+            activate: async () => openPathInHub(fullPath, { cwd, requireExistsForRel: false }),
             hover: () => _setGroupUnderline(fullPath, true),
-            leave: () => _setGroupUnderline(fullPath, false),
+            leave: () => _setGroupUnderline(fullPath, true),
           };
           linkObj.dispose = () => _unregisterLinkFromGroup(fullPath, linkObj);
           _registerLinkInGroup(fullPath, linkObj);
@@ -4719,9 +4904,13 @@ function openContextMenu(sessionId, x, y) {
   const pinBtn = contextMenuEl.querySelector('[data-action="pin"]');
   const restartBtn = contextMenuEl.querySelector('[data-action="restart"]');
   if (pinBtn) pinBtn.style.display = '';
-  if (restartBtn) restartBtn.style.display = '';
   const session = sessions.get(sessionId);
-  if (pinBtn && session) pinBtn.textContent = session.pinned ? 'Unpin' : 'Pin to top';
+  const meeting = meetings[sessionId];
+  if (restartBtn) restartBtn.style.display = session ? '' : 'none';
+  if (pinBtn) {
+    const target = session || meeting;
+    pinBtn.textContent = target && target.pinned ? 'Unpin' : 'Pin to top';
+  }
 }
 
 function closeContextMenu() {
@@ -4743,8 +4932,9 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
     if (!sid) return;
 
     const session = sessions.get(sid);
+    const meeting = meetings[sid];
 
-    if (action === 'close' && meetings[sid]) {
+    if (action === 'close' && meeting) {
       await ipcRenderer.invoke('close-meeting', sid);
       delete meetings[sid];
       if (activeMeetingId === sid) {
@@ -4752,6 +4942,14 @@ for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
         if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel();
         if (emptyStateEl) emptyStateEl.style.display = '';
       }
+      renderSessionList();
+      schedulePersist();
+      return;
+    }
+
+    if (action === 'pin' && meeting) {
+      meeting.pinned = !meeting.pinned;
+      ipcRenderer.send('update-meeting', { meetingId: sid, fields: { pinned: !!meeting.pinned } });
       renderSessionList();
       schedulePersist();
       return;

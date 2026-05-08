@@ -1264,12 +1264,12 @@ body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active):hover {
 }
 /* 文件路径链接（marked HTML 后处理识别 .html/.md/.csv 等路径并包 <a class="rt-file-link">）。
    悬停下划线 + 鼠标手型；click 走委托调 openPreviewPanel。 */
-.mr-ft-md a.rt-file-link, .mr-rt-tl-body a.rt-file-link {
+.mr-ft-md a.rt-file-link, .mr-ft-preview-md a.rt-file-link, .mr-rt-tl-body a.rt-file-link {
   color: #79c0ff; cursor: pointer; text-decoration: none;
-  border-bottom: 1px dashed transparent; transition: border-color .15s;
+  border-bottom: 1px dashed #79c0ff; transition: border-color .15s;
 }
-.mr-ft-md a.rt-file-link:hover, .mr-rt-tl-body a.rt-file-link:hover {
-  border-bottom-color: #79c0ff;
+.mr-ft-md a.rt-file-link:hover, .mr-ft-preview-md a.rt-file-link:hover, .mr-rt-tl-body a.rt-file-link:hover {
+  border-bottom-color: #a5d6ff;
 }
 
 /* Card redesign：bottom 区（flex:1 撑满，含 preview / progress / escape-bar / corner-badge） */

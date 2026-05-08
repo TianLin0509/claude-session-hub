@@ -3021,6 +3021,15 @@ body.theme-light .floating-scroll-btn {
   padding: 1px 5px;
   border-radius: 3px;
 }
+.turn-body a.rt-file-link {
+  color: var(--accent-blue, #58a6ff);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.turn-body a.rt-file-link:hover {
+  color: #79c0ff;
+}
 
 /* === Spec 1 v0.9.0 · 代码块 (D2) === */
 .code-block-wrap {

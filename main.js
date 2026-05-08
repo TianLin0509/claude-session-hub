@@ -3392,6 +3392,42 @@ ipcMain.handle('arena:open-memory-file', async (_e, { meetingId, slot, type } = 
   }
 });
 
+ipcMain.handle('arena:resolve-memory-file', async (_e, { meetingId, slot, type } = {}) => {
+  const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
+  if (!meeting || !slot || !type) return { error: 'missing meetingId/slot/type' };
+  const projectCwd = _resolveMemoryProjectCwd(meetingId);
+  const scene = meeting.scene || 'general';
+  const memDir = path.join(projectCwd, '.arena', 'rooms', scene, 'memory');
+  const idInfo = _identityFromMeetingSlot(meeting, slot);
+  const identity = idInfo ? idInfo.identity : null;
+  if ((type === 'own' || type === 'pending') && !identity) {
+    return { error: 'cannot resolve AI identity for slot: ' + slot };
+  }
+  const fileMap = {
+    own: identity ? path.join(memDir, `${identity}.md`) : null,
+    pending: identity ? path.join(memDir, `pending-${identity}.json`) : null,
+    profile: path.join(memDir, '_profile.md'),
+    'worker-state': path.join(projectCwd, '.arena', 'rooms', scene, 'checkpoint-state.json'),
+  };
+  const fp = fileMap[type];
+  if (!fp) return { error: 'invalid type' };
+  if (!fs.existsSync(fp)) {
+    if (type === 'own') {
+      try {
+        fs.mkdirSync(path.dirname(fp), { recursive: true });
+        if (!fs.existsSync(fp)) {
+          fs.writeFileSync(fp, '# Roundtable Memory\n# See core/roundtable-memory/store.js\n---\n\n', 'utf-8');
+        }
+      } catch (e) {
+        return { error: 'create file failed: ' + e.message };
+      }
+    } else {
+      return { error: `file not yet created: ${fp}` };
+    }
+  }
+  return { path: fp };
+});
+
 const READ_FILE_EXTS = new Set([
   '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl',
   '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs',

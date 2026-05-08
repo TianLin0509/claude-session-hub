@@ -354,6 +354,20 @@ if (typeof document !== 'undefined') (function () {
   //   场景下 AI 输出多绝对路径；相对路径需 cwd 上下文，本卡片层不易拿到，先不做。
   const _ABS_PATH_RE = /(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/])(?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
 
+  function _activeMeetingCwd() {
+    const meeting = activeMeetingId ? meetingData[activeMeetingId] : null;
+    const subs = meeting && Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
+    for (const sid of subs) {
+      try {
+        const s = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
+          ? sessions.get(sid)
+          : null;
+        if (s && s.cwd) return s.cwd;
+      } catch {}
+    }
+    return null;
+  }
+
   // marked 渲染后扫描非 <pre> 文本节点的绝对路径，包成
   // <a class="rt-file-link" data-path="..."> 让用户点击进 hub 内置 preview 面板。
   //
@@ -365,6 +379,10 @@ if (typeof document !== 'undefined') (function () {
   // 2026-05-03 道雪：从 SKIP 移除 CODE 是用户场景反馈：历史回答面板的路径
   //   出现在 inline code 内，原 skip CODE 让它没有 link。
   function _wrapFilePathsInDom(rootEl) {
+    if (typeof window !== 'undefined' && typeof window.wrapPathLinksInElement === 'function') {
+      window.wrapPathLinksInElement(rootEl, { cwd: _activeMeetingCwd() });
+      return;
+    }
     const SKIP_TAGS = new Set(['PRE', 'A', 'SCRIPT', 'STYLE']);
     const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
@@ -475,7 +493,9 @@ if (typeof document !== 'undefined') (function () {
     if (!path) return;
     e.preventDefault();
     e.stopPropagation();
-    if (typeof openPreviewPanel === 'function') {
+    if (typeof window !== 'undefined' && typeof window.openPathInHub === 'function') {
+      window.openPathInHub(path, { cwd: _activeMeetingCwd(), requireExistsForRel: false });
+    } else if (typeof openPreviewPanel === 'function') {
       openPreviewPanel(path);
     } else if (typeof window !== 'undefined' && typeof window.openPreviewPanel === 'function') {
       window.openPreviewPanel(path);
@@ -1767,11 +1787,17 @@ if (typeof document !== 'undefined') (function () {
         const typeMap = { 'open-own': 'own', 'open-pending': 'pending', 'open-profile': 'profile', 'open-worker': 'worker-state' };
         const type = typeMap[action];
         if (!type) return;
-        const r = await ipcRenderer.invoke('arena:open-memory-file', { meetingId: meeting.id, slot, type });
-        if (r && typeof r === 'string' && r !== '') {
-          // shell.openPath 失败返回错误字符串
-          console.warn(`[mr-mem] open ${type} for ${slot} failed: ${r}`);
-          alert(`打开记忆文件失败：${r}`);
+        const r = await ipcRenderer.invoke('arena:resolve-memory-file', { meetingId: meeting.id, slot, type });
+        if (r && r.path) {
+          if (typeof window !== 'undefined' && typeof window.openPathInHub === 'function') {
+            await window.openPathInHub(r.path, { cwd: _activeMeetingCwd(), requireExistsForRel: false });
+          } else if (typeof openPreviewPanel === 'function') {
+            openPreviewPanel(r.path);
+          }
+        } else {
+          const msg = (r && r.error) || 'unknown';
+          console.warn(`[mr-mem] resolve ${type} for ${slot} failed: ${msg}`);
+          alert(`打开记忆文件失败：${msg}`);
         }
       });
     });
