@@ -51,16 +51,11 @@ test('buildDebatePrompt 第一行非空且含 "第 N 轮"', () => {
   assert.ok(/第\s*5\s*轮/.test(fl), `第一行需含 "第 5 轮"，实际=${fl}`);
 });
 
-test('buildSummaryPrompt 第一行非空且含 "第 N 轮"', () => {
+// 摘要功能 2026-05-08 整体下线：buildSummaryPrompt + buildBriefSummaryPrompt 已删
+test('buildSummaryPrompt 已不存在（摘要功能下线）', () => {
   const orch = freshOrch();
-  // beginTurn 让 state.turns 至少有一条空 record，避免 _renderLastTurnSection 异常
-  // 注：beginTurn 签名是 beginTurn(mode) 单参数（T1 review 修正）
-  orch.beginTurn('fanout');
-  orch.completeTurn(1, 'fanout', 'q', { 'sid-A': 'a' }, {}, { 'sid-A': 'completed' });
-  const p = orch.buildSummaryPrompt(2, 'sid-A', () => 'A', null, null, null);
-  const fl = firstLine(p);
-  assert.ok(fl.length > 0, '第一行非空');
-  assert.ok(/第\s*2\s*轮/.test(fl), `第一行需含 "第 2 轮"，实际=${fl}`);
+  assert.strictEqual(typeof orch.buildSummaryPrompt, 'undefined', 'buildSummaryPrompt 已删除');
+  assert.strictEqual(typeof orch.buildBriefSummaryPrompt, 'undefined', 'buildBriefSummaryPrompt 已删除');
 });
 
 const failed = process.exitCode || 0;

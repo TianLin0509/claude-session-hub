@@ -1,5 +1,6 @@
 'use strict';
-// Stage 2 P0-14 单测：buildDebatePrompt / buildSummaryPrompt 对 absent / errored 状态的处理。
+// Stage 2 P0-14 单测：buildDebatePrompt 对 absent / errored 状态的处理。
+//   摘要功能 2026-05-08 整体下线：原 buildSummaryPrompt 测试已删
 //
 // 不变式：
 //   1. 老格式（lastTurn.byStatus = null/undefined）→ 全部当 completed 处理（向后兼容）
@@ -20,12 +21,6 @@ const { computeLastTurnInjection } = require('../core/roundtable-injection.js');
 function buildDebate(orch, turnNum, userInput, lastTurn, targetSid, sidLabelFn) {
   const inj = computeLastTurnInjection(lastTurn, [targetSid], sidLabelFn, () => null);
   return orch.buildDebatePrompt(turnNum, userInput, null, inj[targetSid] || null, null);
-}
-function buildSummary(orch, turnNum, summarizerSid, sidLabelFn) {
-  // 取最近一轮（@summary 触发时，已 complete 的轮就是上一轮）
-  const lastTurn = orch.getLastTurn();
-  const inj = computeLastTurnInjection(lastTurn, [summarizerSid], sidLabelFn, () => null);
-  return orch.buildSummaryPrompt(turnNum, summarizerSid, sidLabelFn, null, inj[summarizerSid] || null, null);
 }
 
 let _tmpRoot = null;
@@ -143,27 +138,6 @@ function testDebatePromptLegacyNoByStatus() {
   console.log('  ✓ testDebatePromptLegacyNoByStatus');
 }
 
-function testSummaryPromptWithAbsent() {
-  const orch = mkOrch();
-  orch.beginTurn('fanout');
-  orch.completeTurn(1, 'fanout', 'q1', {
-    'sid-claude': 'Claude opinion',
-    'sid-gemini': '',
-    'sid-codex': 'Codex opinion',
-  }, {}, {
-    'sid-claude': 'completed',
-    'sid-gemini': 'absent',
-    'sid-codex': 'completed',
-  });
-  const prompt = buildSummary(orch, 2, 'sid-claude', sidLabel);
-  // Claude 视角：看 Gemini absent 说明 + Codex 真实观点（Claude 自己不重复）
-  assert.ok(prompt.includes('Gemini 本轮因故未参与'), 'summary must mark Gemini absent');
-  assert.ok(prompt.includes('Codex opinion'), 'summary still shows Codex real opinion');
-  assert.ok(!prompt.includes('Claude opinion'), 'summary skips summarizer own opinion');
-  cleanupTmp();
-  console.log('  ✓ testSummaryPromptWithAbsent');
-}
-
 function testManualExtractedTreatedAsCompleted() {
   // manual_extracted 在 prompt 中应该和 completed 一样正常引用
   const orch = mkOrch();
@@ -191,6 +165,5 @@ testCompleteTurnLegacyNoByStatus();
 testDebatePromptWithAbsent();
 testDebatePromptWithErrored();
 testDebatePromptLegacyNoByStatus();
-testSummaryPromptWithAbsent();
 testManualExtractedTreatedAsCompleted();
 console.log('All passed.');

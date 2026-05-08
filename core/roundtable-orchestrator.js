@@ -1,10 +1,9 @@
 'use strict';
-// Roundtable Orchestrator — 投研圆桌轮次状态机
+// Roundtable Orchestrator — 圆桌轮次状态机
 //
-// 三种轮次模式：
+// 两种轮次模式（2026-05-08 摘要功能整体下线后）：
 //   fanout : 默认提问 → 三家独立回答（互不知情）
 //   debate : @debate → 把另两家上一轮观点中转给第三家（可附用户补充）
-//   summary: @summary @<who> → 单家收到全部历史轮次，给最终意见
 //
 // 持久化：
 //   <arena-prompts>/<meetingId>-roundtable.json  — 状态
@@ -15,18 +14,14 @@
 const fs = require('fs');
 const path = require('path');
 const { ALL_AI_KINDS } = require('./ai-kinds.js');
-// P4 五元组 SSoT (2026-05-04): COVENANT_GENERAL 与 buildBriefSummaryPrompt 共用同一份 schema
 // dev scene (plan-dev-scenario.md): per-turn L2b 触发追注 (clarify/handoff/review)
 const {
-  renderFiveElementItems,
-  renderBriefSummaryConstraints,
   detectDevTrigger,
   buildDevL2bSection,
 } = require('./roundtable-scenes.js');
 
 const MAX_DEBATE_OPINION_CHARS = 5000;
 const MAX_DEBATE_OPINION_KEEP = 2000;
-const MAX_SUMMARY_PER_VIEW_CHARS = 3000;
 // 软提醒两阶段：T1 先弹 banner 提示"还在等"，T2 再升级提醒。
 //   永不自动 settle—— 真正退出由用户点"手动提取/跳过/重发"或 L1/L2 信号决定。
 //   设计文档：docs/superpowers/specs/2026-04-30-roundtable-resilience-design.md
@@ -47,7 +42,7 @@ class RoundtableOrchestrator {
   constructor(hubDataDir, meetingId, scene) {
     this.hubDataDir = hubDataDir;
     this.meetingId = meetingId;
-    this.scene = scene || { name: '圆桌', summaryHints: '', summaryTitleTag: false, dataPackEnabled: false };
+    this.scene = scene || { name: '圆桌', dataPackEnabled: false };
     this.state = {
       meetingId,
       currentTurn: 0,
@@ -183,7 +178,7 @@ class RoundtableOrchestrator {
       lines.push(`- 回答方式:${this._answerStyleFor(turnKind, mode)}`);
     }
     // 轻提醒 (P6 micro-reminder · 攻击长对话 attention decay)
-    lines.push('- 轻提醒:≤ 1500 字 / 不写文件 / 不展开多步骤工作流');
+    lines.push('- 轻提醒:≤ 1500 字 / 写文件按用户表达：明确要求→写；未明确→提议 / 不展开多步骤工作流');
     return lines.join('\n');
   }
 
@@ -201,24 +196,17 @@ class RoundtableOrchestrator {
       return '独立回答（看不到他人本轮观点）';
     }
     if (turnKind === 'debate') return '引用并回应上一轮他人观点（可看到对方本轮言论）';
-    if (turnKind === 'summary') return '综合全部讨论给最终意见，显列未消解分歧';
-    if (turnKind === 'brief') return '五元组压缩你最近发言';
     return '按本轮上下文回答';
   }
 
   // 共享渲染：## 上一轮 段（按 injection 矩阵注入；payload null 时返回 null 整段省略）
   _renderLastTurnSection(injectionPayload, timelinePath) {
     if (!injectionPayload || typeof injectionPayload !== 'object') return null;
-    const { lastTurnNum, lastTurnMode, lastDispatchMode, isSummaryInjection, speakers } = injectionPayload;
+    const { lastTurnNum, lastTurnMode, lastDispatchMode, speakers } = injectionPayload;
     if (!Array.isArray(speakers) || speakers.length === 0) return null;
 
     const lines = [];
-    if (isSummaryInjection) {
-      const names = speakers.map(s => s.label || s.sid).join(' + ');
-      lines.push(`## 上一轮（第 ${lastTurnNum} 轮 · 摘要 by ${names} · 五元组）`);
-    } else {
-      lines.push(`## 上一轮（第 ${lastTurnNum} 轮 · ${lastTurnMode || 'fanout'} · ${lastDispatchMode || 'all'}）`);
-    }
+    lines.push(`## 上一轮（第 ${lastTurnNum} 轮 · ${lastTurnMode || 'fanout'} · ${lastDispatchMode || 'all'}）`);
     if (timelinePath) {
       lines.push(`> 提示:本段是上一轮内容。如需更早历史请 Read ${timelinePath}`);
     }
@@ -263,7 +251,7 @@ class RoundtableOrchestrator {
   // dev scene · L2b 触发段渲染 (plan-dev-scenario.md §3.3 / §4.1)
   //   首轮默认 clarify · handoff/review/brainstorm 关键词命中追注
   //   非 dev scene 或无 trigger → 返回 null (整段省略, 不污染其他场景)
-  //   注: 仅 fanout/debate 注入; summary 走既有五元组路径, 不复用 (plan §6 Non-goal)
+  //   注: 仅 fanout/debate 注入
   _renderDevL2bSection(turnNum, userInput) {
     if (!this.scene || this.scene.key !== 'dev') return null;
     const isFirstTurn = (typeof turnNum === 'number' && turnNum === 1);
@@ -332,82 +320,10 @@ class RoundtableOrchestrator {
     return parts.join('\n');
   }
 
-  // summary 轮（@summary @<who> 综合最终决策）
-  //   有 timeline 时:鼓励 AI 先 Read timeline.md 浏览全部历史
-  //   无 timeline 时:依赖 PTY 上下文 + 上一轮注入兜底（旧实现的兜底语义）
-  buildSummaryPrompt(turnNum, summarizerSid, sidLabelFn, dispatchSpec, injectionPayload, timelinePath) {
-    const summarizerLabel = sidLabelFn ? (sidLabelFn(summarizerSid) || 'AI') : 'AI';
-    const totalTurns = this.state.turns.length;
-    const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · @summary @${summarizerLabel}]`];
-
-    // P6 (2026-05-04) 字段化调度上下文 (turnKind='summary')
-    const ctx = this._renderDispatchContext(dispatchSpec, summarizerSid, sidLabelFn, 'summary');
-    if (ctx) parts.push('', ctx);
-
-    parts.push('', '## 你的任务');
-    if (timelinePath) {
-      parts.push(`请综合 ${totalTurns} 轮讨论给出最终决策。建议先 Read ${timelinePath} 浏览全部历史，再结合下面"上一轮"段做完整 fan-in。`);
-    } else {
-      parts.push(`你已经在自己的上下文里读过前 ${totalTurns} 轮讨论（含你自己的观点 + 其他人观点 + 用户补充）。`);
-      parts.push('请直接基于上下文给出最终意见，不需要逐轮复述。');
-    }
-    parts.push('');
-    parts.push('输出格式建议:');
-    parts.push('  1) 结论先行（推荐 / 不推荐 / 中性 / 观望，附简短理由）');
-    parts.push('  2) 共识与关键分歧（请显式列出未消解分歧，不要伪共识）');
-    parts.push(`  3) 具体行动建议（${this.scene.summaryHints || '按讨论话题自适应'}）`);
-    if (this.scene.summaryTitleTag) {
-      parts.push('  4) 在末尾用 `<<TITLE: xxx>>` 标记本次会话简短标题（用于决策档案命名，例:`<<TITLE: 兆易创新-买入决策>>`）');
-    }
-
-    const last = this._renderLastTurnSection(injectionPayload, timelinePath);
-    if (last) parts.push('', last);
-
-    const footer = this._renderTimelineFooter(timelinePath);
-    if (footer) parts.push('', footer);
-
-    return parts.join('\n');
-  }
-
-
-  // ---------------------------------------------------------------------
-  // 摘要轮 prompt（plan F M3 · 2026-05-02）
-  //   用户在 UI 点「摘要」按钮触发：系统给上一轮发言者发本 prompt，要求他们按
-  //   五元组浓缩自己最近一段连续发言。
-  //
-  //   summarizeRange = { fromTurn, toTurn }（可选）— 浓缩范围说明
-  // ---------------------------------------------------------------------
-  buildBriefSummaryPrompt(turnNum, summarizerSid, sidLabelFn, summarizeRange, timelinePath) {
-    const summarizerLabel = sidLabelFn ? (sidLabelFn(summarizerSid) || 'AI') : 'AI';
-    const parts = [`[${this.scene.name} · 第 ${turnNum} 轮 · 摘要轮 · by ${summarizerLabel}]`];
-
-    // P6 (2026-05-04) brief-summary 纳入字段化调度上下文统一壳
-    parts.push('', '## 调度上下文');
-    parts.push(`- 你是:${summarizerLabel}`);
-    parts.push('- 模式:摘要触发');
-    parts.push('- 轮次性质:brief');
-    parts.push('- 回答方式:五元组压缩你最近发言');
-    parts.push('- 轻提醒:≤ 1500 字 / 不写文件 / 不展开多步骤工作流');
-
-    parts.push('', '## 任务');
-    parts.push('用户希望你把最近一段连续发言浓缩为「五元组」摘要，便于后续轮次的协作者快速进入状态。');
-
-    if (summarizeRange && typeof summarizeRange.fromTurn === 'number' && typeof summarizeRange.toTurn === 'number') {
-      parts.push(`浓缩范围:第 ${summarizeRange.fromTurn} - ${summarizeRange.toTurn} 轮你参与的发言。`);
-    }
-
-    // P4 SSoT (2026-05-04): 引用 BRIEF_SUMMARY_FIELDS schema, 与 COVENANT_GENERAL 共用同一份字段定义
-    parts.push('', '## 输出格式（严格按五段，不要展开论证）');
-    parts.push(renderFiveElementItems());
-    parts.push('', '## 约束');
-    parts.push(renderBriefSummaryConstraints('list'));
-
-    if (timelinePath) {
-      // P6 footer 压缩 (与上一轮注入段提示行格式统一)
-      parts.push('', `> 你的发言历史:${timelinePath}`);
-    }
-    return parts.join('\n');
-  }
+  // 摘要功能 2026-05-08 整体下线：
+  //   - buildSummaryPrompt（原 @summary @<who> 综合）已删
+  //   - buildBriefSummaryPrompt（原 UI 摘要按钮触发的五元组压缩）已删
+  //   仅保留 fanout / debate 两条路径。
 
   // ---------------------------------------------------------------------
   // 状态记录
@@ -650,18 +566,10 @@ function releaseOrchestrator(hubDataDir, meetingId) {
   _pool.delete(key);
 }
 
-// 提取 summary 输出末尾的 <<TITLE: xxx>> 标记
-function extractDecisionTitle(text) {
-  if (typeof text !== 'string') return null;
-  const m = text.match(/<<TITLE:\s*([^>\n]{1,80})>>/);
-  return m ? m[1].trim() : null;
-}
-
 module.exports = {
   RoundtableOrchestrator,
   getOrchestrator,
   releaseOrchestrator,
-  extractDecisionTitle,
   migrateAiStats,
   _isLegacyKindKeyed,
   SOFT_ALERT_T1_MS,

@@ -95,23 +95,8 @@ function testWriteTurnSequential() {
   console.log('  ✓ testWriteTurnSequential');
 }
 
-// === 4 摘要轮标题格式区分 ===
-function testSummaryTurnTitle() {
-  const cwd = tmpDir();
-  const mid = 'm-sum';
-  // 普通轮
-  tl.writeTurn(mid, makeTurn(1, 'fanout', { sid_a: 'A 文本' }), '通用圆桌', cwd, null, sidLabelFn);
-  // 摘要轮
-  tl.writeTurn(mid, makeTurn(2, 'summary-brief',
-    { sid_a: '1. 目标：xxx\n2. 关键事实：yyy' },
-    { summarizers: ['sid_a'] }),
-    '通用圆桌', cwd, null, sidLabelFn);
-  const content = tl.readFull(mid, cwd, null);
-  assert.ok(content.includes('## 第 1 轮 · fanout · all'), 'normal turn title');
-  assert.ok(content.includes('## 第 2 轮 · 摘要 by Claude（五元组）'), 'summary turn title');
-  assert.ok(content.includes('触发：用户点「摘要」按钮'), 'summary trigger note');
-  console.log('  ✓ testSummaryTurnTitle');
-}
+// 摘要功能 2026-05-08 整体下线：原 testSummaryTurnTitle 已删
+// （_renderTurnSection 不再特殊处理 mode='summary-brief'，新 turnRecord 仅 fanout/debate）
 
 // === 5 byStatus 各种状态标注 ===
 function testByStatusLabels() {
@@ -134,41 +119,25 @@ function testByStatusLabels() {
   console.log('  ✓ testByStatusLabels');
 }
 
-// === 6 滚动：12 普通 + 2 摘要 → 主文件 10 普通 + 2 摘要 + archive 2 普通 ===
+// === 6 滚动：12 fanout/debate → 主文件保留 10 个最近 + archive 2 个最早 ===
+//   摘要功能 2026-05-08 整体下线：原 12 普通 + 2 摘要 测试场景已简化为纯 fanout
+//   _parseTurnSections 仍按 isSummary 解析历史 timeline 中的 summary 行（向后兼容）
 function testRollingArchive() {
   const cwd = tmpDir();
   const mid = 'm-roll';
 
-  // 写 5 普通 + 1 摘要 + 7 普通 = 共 14 轮（其中 12 普通 + 2 摘要—— 2 个摘要分别在第 6 和最后）
-  // 简化：写 5 普通 → 1 摘要 → 7 普通 → 1 摘要（轮号 14）
-  let n = 0;
-  for (let i = 0; i < 5; i++) {
-    n++;
+  for (let n = 1; n <= 12; n++) {
     tl.writeTurn(mid, makeTurn(n, 'fanout', { sid_a: `txt-${n}` }), '通用圆桌', cwd, null, sidLabelFn);
   }
-  n++;
-  tl.writeTurn(mid, makeTurn(n, 'summary-brief', { sid_a: 'sum-1' }, { summarizers: ['sid_a'] }),
-    '通用圆桌', cwd, null, sidLabelFn);
-  for (let i = 0; i < 7; i++) {
-    n++;
-    tl.writeTurn(mid, makeTurn(n, 'fanout', { sid_a: `txt-${n}` }), '通用圆桌', cwd, null, sidLabelFn);
-  }
-  n++;
-  tl.writeTurn(mid, makeTurn(n, 'summary-brief', { sid_a: 'sum-2' }, { summarizers: ['sid_a'] }),
-    '通用圆桌', cwd, null, sidLabelFn);
 
   const main = tl.readFull(mid, cwd, null);
-  // 主文件应保留：10 个最近非摘要轮（轮 3-5, 7-13）+ 2 个摘要轮（轮 6, 14）
-  // 即应不含轮 1, 2（被归档）
   const sections = tl._parseTurnSections(main);
   assert.ok(sections, 'should have parsed sections');
   const ns = sections.turns.filter(t => !t.isSummary);
-  const ss = sections.turns.filter(t => t.isSummary);
-  assert.strictEqual(ns.length, 10, `main file should have 10 non-summary, got ${ns.length}`);
-  assert.strictEqual(ss.length, 2, `main file should have 2 summary, got ${ss.length}`);
-  // 轮号最小的非摘要轮应该是 3（不是 1 / 2）
-  const nonSummaryNs = ns.map(t => t.n).sort((a, b) => a - b);
-  assert.strictEqual(nonSummaryNs[0], 3, `oldest non-summary should be turn 3, got ${nonSummaryNs[0]}`);
+  assert.strictEqual(ns.length, 10, `main file should have 10 turns, got ${ns.length}`);
+  // 轮号最小的应该是 3（不是 1 / 2）
+  const turnNs = ns.map(t => t.n).sort((a, b) => a - b);
+  assert.strictEqual(turnNs[0], 3, `oldest should be turn 3, got ${turnNs[0]}`);
 
   // archive 应该含轮 1, 2
   const archivePath = tl.getArchivePath(tl.getTimelinePath(mid, cwd, null));
@@ -181,28 +150,8 @@ function testRollingArchive() {
   console.log('  ✓ testRollingArchive');
 }
 
-// === 7 摘要轮在主文件位置保持 + 永不滚出 ===
-function testSummaryNeverArchived() {
-  const cwd = tmpDir();
-  const mid = 'm-sum-keep';
-
-  // 第 1 轮就是摘要 → 然后 12 个非摘要轮 → 第 1 轮摘要应该仍在主文件
-  tl.writeTurn(mid, makeTurn(1, 'summary-brief', { sid_a: 'early sum' }, { summarizers: ['sid_a'] }),
-    '通用圆桌', cwd, null, sidLabelFn);
-  for (let i = 2; i <= 13; i++) {
-    tl.writeTurn(mid, makeTurn(i, 'fanout', { sid_a: `t-${i}` }), '通用圆桌', cwd, null, sidLabelFn);
-  }
-
-  const main = tl.readFull(mid, cwd, null);
-  assert.ok(main.includes('## 第 1 轮 · 摘要 by'), 'summary turn 1 still in main file');
-  // 应该有 12 个非摘要轮（轮 2-13），但 MAX 是 10 → 滚出 2 个最早的（轮 2, 3）
-  const sections = tl._parseTurnSections(main);
-  const ns = sections.turns.filter(t => !t.isSummary);
-  assert.strictEqual(ns.length, 10, `should have 10 non-summary, got ${ns.length}`);
-  assert.strictEqual(ns[0].n, 4, `oldest should be turn 4, got ${ns[0].n}`);
-
-  console.log('  ✓ testSummaryNeverArchived');
-}
+// 摘要功能 2026-05-08 整体下线：原 testSummaryNeverArchived 已删
+// （新 turn 不再产生 summary-brief 模式；_parseTurnSections 仍能解析旧 timeline 文件中的摘要行）
 
 // === 8 _parseTurnSections 解析正确 ===
 function testParseTurnSections() {
@@ -240,10 +189,8 @@ const tests = [
   testEnsureFileInCwd,
   testEnsureFileFallbackToHubData,
   testWriteTurnSequential,
-  testSummaryTurnTitle,
   testByStatusLabels,
   testRollingArchive,
-  testSummaryNeverArchived,
   testParseTurnSections,
 ];
 for (const t of tests) {

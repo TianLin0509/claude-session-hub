@@ -83,12 +83,10 @@ function getKindLabel(kind) {
   return KIND_LABELS[kind] || kind || 'AI';
 }
 
-// 用于 prompt 文本里枚举 "可参与的 AI"。返回类似 "Claude/Gemini/Codex/DeepSeek/GLM"。
-function listKindsForPrompt() {
-  return ALL_AI_KINDS.map(k => KIND_LABELS[k]).join('/');
-}
+// listKindsForPrompt 已删除（2026-05-08）：刻意不向 AI prompt 注入家族枚举，
+// 避免 LLM 对其他 AI 模型形成 stereotype 先验。
 
-// 正则字符类，用于 @summary @<who> / @<who> 等命令解析。
+// 正则字符类，用于 @<who> 等命令解析。
 // 返回类似 "claude|gemini|codex|deepseek|glm"。
 function kindRegexAlternation() {
   return ALL_AI_KINDS.join('|');
@@ -170,7 +168,6 @@ module.exports = {
   isPasteSensitive,
   isAiKind,
   getKindLabel,
-  listKindsForPrompt,
   kindRegexAlternation,
   // Phase 4 圆桌记忆家族级共享
   canonicalAiKind,

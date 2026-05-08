@@ -122,8 +122,8 @@ function testRegistryStructure() {
   // dev 场景 (plan-dev-scenario.md) 加入后,SCENE_REGISTRY 包含三个 key
   assert.deepStrictEqual(keys.sort(), ['dev', 'general', 'research']);
 
-  const requiredFields = ['name', 'icon', 'preset', 'defaultCovenant', 'mcpConfig',
-                          'summaryHints', 'summaryTitleTag', 'dataPackEnabled'];
+  // 摘要功能 2026-05-08 整体下线：summaryHints / summaryTitleTag 字段已从 SCENE_REGISTRY 删除
+  const requiredFields = ['name', 'icon', 'preset', 'defaultCovenant', 'mcpConfig', 'dataPackEnabled'];
   for (const k of keys) {
     const s = scenes.getScene(k);
     assert.ok(s !== null, `scene ${k} should exist`);
@@ -134,9 +134,10 @@ function testRegistryStructure() {
     assert.strictEqual(typeof s.icon, 'string');
     assert.strictEqual(typeof s.preset, 'string');
     assert.strictEqual(typeof s.defaultCovenant, 'string');
-    assert.strictEqual(typeof s.summaryHints, 'string');
-    assert.strictEqual(typeof s.summaryTitleTag, 'boolean');
     assert.strictEqual(typeof s.dataPackEnabled, 'boolean');
+    // summary 相关字段反向断言
+    assert.ok(!('summaryHints' in s), `scene ${k} summaryHints 已删除（摘要功能下线）`);
+    assert.ok(!('summaryTitleTag' in s), `scene ${k} summaryTitleTag 已删除（摘要功能下线）`);
   }
   console.log('  ✓ testRegistryStructure');
 }
@@ -331,35 +332,14 @@ function testResearchSlotBiasesExist() {
   console.log('  ✓ testResearchSlotBiasesExist');
 }
 
-// === P4: 五元组 SSoT schema ===
-function testFiveElementSchema() {
-  // schema 数组导出
-  assert.ok(Array.isArray(scenes.BRIEF_SUMMARY_FIELDS), 'BRIEF_SUMMARY_FIELDS should be exported array');
-  assert.strictEqual(scenes.BRIEF_SUMMARY_FIELDS.length, 5, '五元组恰好 5 字段');
-  // 字段标题稳定
-  const titles = scenes.BRIEF_SUMMARY_FIELDS.map(([n]) => n);
-  assert.deepStrictEqual(titles, ['目标', '关键事实', '关键分歧', '当前结论', '下一步'], '五字段标题稳定');
-  // 约束 4 条独立
-  assert.ok(Array.isArray(scenes.BRIEF_SUMMARY_CONSTRAINTS), 'BRIEF_SUMMARY_CONSTRAINTS should be exported array');
-  assert.strictEqual(scenes.BRIEF_SUMMARY_CONSTRAINTS.length, 4, '约束恰好 4 条独立');
-  assert.ok(scenes.BRIEF_SUMMARY_CONSTRAINTS.includes('不展开论证'), 'should contain 不展开论证');
-  assert.ok(scenes.BRIEF_SUMMARY_CONSTRAINTS.includes('不重复事实细节'), 'should contain 不重复事实细节');
-  // render helpers
-  assert.strictEqual(typeof scenes.renderFiveElementItems, 'function', 'renderFiveElementItems should be function');
-  assert.strictEqual(typeof scenes.renderBriefSummaryConstraints, 'function', 'renderBriefSummaryConstraints should be function');
-  // render output 结构
-  const items = scenes.renderFiveElementItems();
-  assert.ok(items.includes('1. **目标**'), 'render: index 1 = 目标');
-  assert.ok(items.includes('5. **下一步**'), 'render: index 5 = 下一步');
-  // 约束渲染 inline / list 风格
-  const inline = scenes.renderBriefSummaryConstraints('inline');
-  assert.ok(inline.startsWith('约束:'), 'inline style starts with 约束:');
-  assert.ok(inline.includes('，'), 'inline style uses 顿号');
-  const list = scenes.renderBriefSummaryConstraints('list');
-  assert.ok(list.startsWith('- 不超过 500 字'), 'list style uses - prefix');
-  // 2026-05-08 精简: COVENANT_GENERAL 已不再 inline 五元组段（用户停用摘要按钮触发的 covenant 学习）
-  // helpers 仍由 buildBriefSummaryPrompt 在用户实际点摘要按钮时通过 PTY stdin 注入完整格式 + 约束
-  console.log('  ✓ testFiveElementSchema');
+// === 五元组 SSoT 已删除（2026-05-08 摘要功能整体下线）===
+function testFiveElementSchemaRemoved() {
+  // 反向断言：常量与 helpers 已从 module.exports 移除
+  assert.strictEqual(scenes.BRIEF_SUMMARY_FIELDS, undefined, 'BRIEF_SUMMARY_FIELDS export 已删除');
+  assert.strictEqual(scenes.BRIEF_SUMMARY_CONSTRAINTS, undefined, 'BRIEF_SUMMARY_CONSTRAINTS export 已删除');
+  assert.strictEqual(scenes.renderFiveElementItems, undefined, 'renderFiveElementItems export 已删除');
+  assert.strictEqual(scenes.renderBriefSummaryConstraints, undefined, 'renderBriefSummaryConstraints export 已删除');
+  console.log('  ✓ testFiveElementSchemaRemoved');
 }
 
 // === P2: RESUME_REMINDERS / getResumeReminder 已删除 ===
@@ -677,7 +657,7 @@ const tests = [
   testResearchDefaultCovenantIsCombined,
   testCovenantResearch24Round,
   testResearchSlotBiasesExist,
-  testFiveElementSchema,
+  testFiveElementSchemaRemoved,
   testResumeRemindersDeleted,
   testBuildSystemPromptUserOverride,
   testBuildSystemPromptNullFallbackGeneral,

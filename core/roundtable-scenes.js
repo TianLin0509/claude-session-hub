@@ -7,10 +7,6 @@
 //   SCENE_REGISTRY                   — { general, research, dev } 场景定义
 //   COVENANT_GENERAL                 — L2 通用房间公约
 //   COVENANT_RESEARCH                — L2 投研差量公约
-//   BRIEF_SUMMARY_FIELDS             — 五元组 schema (字段数组)
-//   BRIEF_SUMMARY_CONSTRAINTS        — 五元组 schema (约束数组)
-//   renderFiveElementItems           — 五元组字段渲染 (pure)
-//   renderBriefSummaryConstraints    — 五元组约束渲染 (style: 'inline' | 'list')
 //   getScene(key)                    — 查 scene
 //   getSceneKeys()                   — 列出所有 key
 //   buildSystemPrompt()              — 拼装 rules + preset + covenant
@@ -20,41 +16,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const { listKindsForPrompt } = require('./ai-kinds.js');
-
-// ===========================================================================
-// 五元组 SSoT schema (P4 · 2026-05-04)
-// ===========================================================================
-// COVENANT_GENERAL (L2 协议层) 与 buildBriefSummaryPrompt (L3 任务指令层)
-// 共用同一份字段定义,通过 renderFiveElementItems / renderBriefSummaryConstraints
-// helper 渲染。改一处,两处同步生效。
-//
-// 字段数 (5) / 约束数 (4) 受 unit-five-element-schema.test.js 契约保护,
-// 改动需同步更新测试断言。
-const BRIEF_SUMMARY_FIELDS = [
-  ['目标',     '本段聚焦什么任务/问题（一句话，20-50 字）'],
-  ['关键事实', '你确认的事实/数据（项目化，最多 5 条）'],
-  ['关键分歧', '与他人核心分歧 / 自己的不确定（项目化）'],
-  ['当前结论', '倾向判断 + 信心度 0-100%（30-80 字）'],
-  ['下一步',   '建议下一轮聚焦什么 / 想问对方什么（30-80 字）'],
-];
-
-const BRIEF_SUMMARY_CONSTRAINTS = [
-  '不超过 500 字',
-  '第一人称',
-  '不展开论证',
-  '不重复事实细节',
-];
-
-function renderFiveElementItems() {
-  return BRIEF_SUMMARY_FIELDS.map(([n, d], i) => `${i + 1}. **${n}**:${d}`).join('\n');
-}
-
-function renderBriefSummaryConstraints(style /* 'inline' | 'list' */) {
-  return style === 'inline'
-    ? `约束:${BRIEF_SUMMARY_CONSTRAINTS.join('，')}。`
-    : BRIEF_SUMMARY_CONSTRAINTS.map(c => `- ${c}`).join('\n');
-}
 
 // ===========================================================================
 // BASE_RULES — L1 核心规则 (P0 瘦身 · 2026-05-04 / v2 白名单优化 · 2026-05-04)
@@ -101,8 +62,7 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 - **Auto-memory 写入**：写自身 memory 目录（详见用户级 CLAUDE.md）
 - 已注入的 MCP 工具（具体清单见房间公约/preset）
 
-**写文件三档**：用户明确请求 → 直接写；AI 觉得该写 → 提议路径+内容待许可；圆桌产物（HTML/MD/对比表）建议落 \`.arena/artifacts/\`（与项目源码物理隔离）。
-其他执行类任务（构建/部署/长命令）→ 默认建议用户切独立 session。
+**写文件按用户表达**：用户明确请求 → 直接写；AI 觉得该写但用户未明确 → 提议路径+内容待用户许可。圆桌产物建议落 \`.arena/artifacts/\`（推荐路径，非分档依据）。构建/部署/长命令 → 默认建议切独立 session。
 
 ## 你是谁
 用户的 AI 智囊。圆桌最多 3 席：**皮卡丘 / 小火龙 / 杰尼龟**。
@@ -110,7 +70,7 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 
 ## 输出原则
 1. 引用明示（"<对方> 第 N 轮提到的 X"）
-2. 分歧不抹平（summary 时显列未消解分歧）
+2. 分歧不抹平
 3. 不知说不知（信息不足主动声明，不硬猜）
 4. **fanout 轮禁止引用同轮其他 AI 发言**（你看不到对方）；只引用历史轮注入或 timeline.md
 
@@ -209,12 +169,10 @@ const GENERAL_PRESET = `## 通用圆桌
 `;
 
 // ===========================================================================
-// COVENANT_GENERAL — L2 通用房间公约模板 (P4 五元组 SSoT · 2026-05-04)
+// COVENANT_GENERAL — L2 通用房间公约模板
 // ===========================================================================
-// 方案 F (2026-05-02): timeline 用法 / 摘要按钮机制 / 五元组定义 /
-//   dispatchMode 切换工作流 / 协作礼仪等"详细约定"集中在 L2。
-// P4 改动 (2026-05-04): 五元组段从内联硬编码改为引用 BRIEF_SUMMARY_* schema
-//   + render helper, 与 buildBriefSummaryPrompt (L3) 共用同一真相源。
+// 方案 F (2026-05-02): timeline 用法等"详细约定"集中在 L2。
+// 摘要功能 2026-05-08 整体下线：原"摘要按钮机制 / 五元组定义 / dispatchMode 切换工作流 / 协作礼仪 / 留白"等段已删。
 const COVENANT_GENERAL = `# 房间公约 · 圆桌协作手册
 
 ## 关于 timeline.md
@@ -222,24 +180,25 @@ const COVENANT_GENERAL = `# 房间公约 · 圆桌协作手册
 内容结构：
   ## 第 N 轮 · 模式 · 参与者
   ### <AI 名>  <全文>
-滚动策略：保留近 10 个非摘要轮 + 全部摘要轮（摘要永久保留）
+滚动策略：保留近 N 轮历史
 
 ### 何时该 Read 它
 - 用户问"对方第 K 轮说了什么"
 - @debate 时引用某轮具体观点需确认细节
-- @summary 时浏览全部历史做完整 fan-in
 - 上一轮注入感觉不够时
 
 ## MEMORY PROTOCOL
 房间已注入 \`memory_write\` / \`memory_list\` MCP 工具（不在 BASE_RULES 禁令内）。
 
 **该记**：preference（协作偏好）/ fact（项目稳定信息）/ observation（对用户稳定理解）。
-**不要记**：单轮观点 / 临时立场 / 具体决策 —— 防思维固化。
+**不要记**：单轮观点（如"本轮倾向方案 A"）/ 临时立场 / 具体决策 —— 防思维固化。
+写前自问：这条放到下一场圆桌还有用吗？—— no 就别记。
 
 **两个硬要求**：
 - 用户说"记住"/"记下" → 必调 \`memory_write\`，告知"已记下：<key>"
 - 用户问"你记得什么" → 必调 \`memory_list({})\` 准确回答，禁止凭空猜
 
+写入时 \`source\`：用户说"记住" → 'explicit'；AI 自主观察 → 'self'；处理 INBOX 候选 → 'inbox'。
 涉及"该怎么答"时调一次 \`memory_list\` 有价值；纯闲聊别浪费 token。命中就首句自然带一次，不仪式化。
 `;
 
@@ -595,12 +554,10 @@ const SCENE_REGISTRY = {
     preset: GENERAL_PRESET,
     defaultCovenant: COVENANT_GENERAL,
     mcpConfig: null,
-    summaryHints: '按讨论话题自适应',
-    summaryTitleTag: false,
     dataPackEnabled: false,
     onboardingExamples: [
       { icon: '💡', title: '技术辩论', q: '用 Rust 重写 Python CLI 值得吗？', hint: '默认提问 → @debate' },
-      { icon: '🔍', title: '代码评审', q: '看下 core/foo.js，三席各挑 3 个问题', hint: '默认提问 → @summary @pikachu' },
+      { icon: '🔍', title: '代码评审', q: '看下 core/foo.js，三席各挑 3 个问题', hint: '默认提问 → 三家并行' },
       { icon: '🎲', title: '开放讨论', q: 'Anthropic 的 MCP 协议会赢吗？', hint: '默认提问 → 自由展开' },
     ],
   },
@@ -611,12 +568,10 @@ const SCENE_REGISTRY = {
     preset: RESEARCH_PRESET,
     defaultCovenant: COVENANT_GENERAL + '\n\n---\n\n' + COVENANT_RESEARCH,
     mcpConfig: 'research',
-    summaryHints: '仓位/止损/加仓/观察指标',
-    summaryTitleTag: true,
     dataPackEnabled: true,
     onboardingExamples: [
-      { icon: '📈', title: '个股分析', q: '兆易创新 603986 现在能上车吗？', hint: '默认提问 → @debate → @summary' },
-      { icon: '🏭', title: '行业扫描', q: 'AI 芯片板块本周资金面怎么样？', hint: '默认提问 → @summary @pikachu' },
+      { icon: '📈', title: '个股分析', q: '兆易创新 603986 现在能上车吗？', hint: '默认提问 → @debate' },
+      { icon: '🏭', title: '行业扫描', q: 'AI 芯片板块本周资金面怎么样？', hint: '默认提问 → 三家并行' },
       { icon: '⚖️', title: '持仓复盘', q: '帮我复盘昨天的交易，是不是追高了？', hint: '默认提问 → 自由展开' },
     ],
   },
@@ -627,8 +582,6 @@ const SCENE_REGISTRY = {
     preset: DEV_PRESET,
     defaultCovenant: COVENANT_GENERAL,
     mcpConfig: null,
-    summaryHints: '澄清决策点 / 默认假设 / 风险',
-    summaryTitleTag: false,
     dataPackEnabled: false,
     onboardingExamples: [
       { icon: '💬', title: '功能讨论', q: '想给 Hub 加个"开发"场景，先帮我问清需求', hint: '首轮默认 clarify 5 题分级' },
@@ -871,8 +824,6 @@ module.exports = {
   COVENANT_GENERAL,
   COVENANT_RESEARCH,
   RESEARCH_SLOT_BIASES,
-  BRIEF_SUMMARY_FIELDS,
-  BRIEF_SUMMARY_CONSTRAINTS,
   // dev scene exports (plan-dev-scenario.md)
   DEV_PRESET,
   DEV_KEYWORDS,
@@ -881,8 +832,6 @@ module.exports = {
   DEV_REVIEW_DETAIL,
   detectDevTrigger,
   buildDevL2bSection,
-  renderFiveElementItems,
-  renderBriefSummaryConstraints,
   getScene,
   getSceneKeys,
   buildSystemPrompt,

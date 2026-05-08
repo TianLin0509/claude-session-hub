@@ -38,12 +38,8 @@ function testDeriveTargetSids_DebateSameAsFanout() {
   assert.deepStrictEqual(sids, ['sid_pikachu', 'sid_charmander']);
 }
 
-function testDeriveTargetSids_SummaryIgnoresParticipants() {
-  // Q8=A：summary 模式 summarizer 独说，不受 participants 影响
-  const m = { ...meeting, participants: [0] };  // 仅勾选 pikachu
-  const sids = free.deriveTargetSids(m, 'summary', 'squirtle');  // 但选 squirtle 总结
-  assert.deepStrictEqual(sids, ['sid_squirtle'], 'summary 不受 participants 限制');
-}
+// 摘要功能 2026-05-08 整体下线：原 testDeriveTargetSids_SummaryIgnoresParticipants 已删
+//   deriveTargetSids 不再处理 mode='summary'（永不会被传入），按 fanout 路径返回 participants
 
 function testDeriveTargetSids_EmptyParticipants() {
   // Q11=A：空 participants → 空 targets（UI 已防发送，这里仅返回空数组）
@@ -104,7 +100,6 @@ run('testDeriveTargetSids_FanoutAllThree', testDeriveTargetSids_FanoutAllThree);
 run('testDeriveTargetSids_FanoutOneSlot', testDeriveTargetSids_FanoutOneSlot);
 run('testDeriveTargetSids_FanoutTwoSlots', testDeriveTargetSids_FanoutTwoSlots);
 run('testDeriveTargetSids_DebateSameAsFanout', testDeriveTargetSids_DebateSameAsFanout);
-run('testDeriveTargetSids_SummaryIgnoresParticipants', testDeriveTargetSids_SummaryIgnoresParticipants);
 run('testDeriveTargetSids_EmptyParticipants', testDeriveTargetSids_EmptyParticipants);
 run('testDeriveTargetSids_NullParticipants', testDeriveTargetSids_NullParticipants);
 run('testDerivePilotCompat_Three', testDerivePilotCompat_Three);

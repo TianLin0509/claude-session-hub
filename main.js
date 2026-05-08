@@ -1050,7 +1050,6 @@ ipcMain.handle('roundtable:set-participants', async (_e, { meetingId, participan
 const roundtable = require('./core/roundtable-orchestrator.js');
 const rtTimeline = require('./core/roundtable-timeline.js');
 const rtInjection = require('./core/roundtable-injection.js');
-const rtArchive = require('./core/roundtable-archive.js');
 const rtWatcher = require('./core/roundtable-watcher.js');
 const rtMemoryStore = require('./core/roundtable-memory/store.js');
 const rtCkptState = require('./core/roundtable-memory/checkpoint-state.js');
@@ -1410,15 +1409,10 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   });
 }
 
-// 决策档案归档已抽到 core/roundtable-archive.js（rtArchive.writeDecisionArchive）。
-// 调用方走依赖注入：rtArchive.writeDecisionArchive(meetingId, turnRecord, {
-//   meetingManager, sessionManager, scenes, roundtable, getHubDataDir })
-
-// 主调度：mode = 'fanout' | 'debate' | 'summary'
-// userInput: 用户输入（fanout 是问题，debate 是补充，summary 可空）
-// summarizerSlot: 仅 summary 用，'pikachu' / 'charmander' / 'squirtle'
-//   slot 化（2026-05-03）：由 sub 在 meeting.subSessions 数组中的 index 推 slot id
-async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSlot, dispatchMode }) {
+// 主调度：mode = 'fanout' | 'debate'
+// userInput: 用户输入（fanout 是问题，debate 是补充）
+// 摘要功能 2026-05-08 整体下线：原 mode='summary' / @summary 命令路径已删
+async function dispatchRoundtableTurn(meetingId, { mode, userInput, dispatchMode }) {
   if (_roundtableInProgress.has(meetingId)) {
     return { status: 'busy', turnNum: null };
   }
@@ -1491,18 +1485,9 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
 
       effectiveDispatchMode = free.derivePilotCompatDispatchMode(parts, mode);
 
-      if (mode === 'summary') {
-        // summary 不受 participants 限制（Q8=A）
-        const targetSid = summarizerSlot ? sidBySlot(summarizerSlot) : null;
-        if (!targetSid) {
-          return { status: 'error', reason: `summarizer slot '${summarizerSlot}' 不在会议室或未活跃`, turnNum: null };
-        }
-        targetSubs = subs.filter(x => x.sid === targetSid);
-      } else {
-        // fanout / debate：按 participants 过滤
-        const partSet = new Set(parts);
-        targetSubs = subs.filter(x => partSet.has(x.slotIndex));
-      }
+      // fanout / debate：按 participants 过滤
+      const partSet = new Set(parts);
+      targetSubs = subs.filter(x => partSet.has(x.slotIndex));
     } else {
       // Pilot 模式：原路径完全不动（一行不改）
       //   pilotSlot ∈ {0,1,2,null}：主驾"角色"标识（仅 UI 红框，不影响 dispatch）。
@@ -1560,8 +1545,8 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       console.warn('[roundtable] timeline ensureFile failed:', e.message);
     }
 
-    // 圆桌记忆 phase 1（2026-05-07）：fanout 模式 bump user_msg_count（debate/summary 不 bump）
-    //   debate 是同一用户问题的延续；summary 是 AI 自摘要，都不算"新一轮 user 发言"。
+    // 圆桌记忆 phase 1（2026-05-07）：fanout 模式 bump user_msg_count（debate 不 bump）
+    //   debate 是同一用户问题的延续，不算"新一轮 user 发言"。
     //   bump 失败不阻塞 dispatch（memory 是辅助层，主流程对其错误零依赖）。
     // Phase 2 P0（2026-05-07）：memory 用独立 _memProjectCwd（跨 meeting 共享根），
     //   与 timeline 的 projectCwd（per-meeting）解耦。
@@ -1638,44 +1623,6 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
         }
         targets.push({ ...x, prompt });
       }
-    } else if (mode === 'summary') {
-      const targetSid = summarizerSlot ? sidBySlot(summarizerSlot) : null;
-      if (!targetSid) {
-        return { status: 'error', reason: `summarizer slot '${summarizerSlot}' 不在会议室或未活跃`, turnNum: null };
-      }
-      // BUGFIX (Codex#1)：同 fanout —— 取最近已完成轮，不要 length>1
-      const lastTurn = orch.getLastTurn();
-      turnNum = orch.beginTurn('summary');
-      orch.state.currentSummarizerSlot = summarizerSlot;
-      orch._saveState();
-      sendToRenderer('roundtable-state-update', { meetingId });
-      const target = subs.find(x => x.sid === targetSid);
-      // silent-failure-hunter#1（2026-05-03 道雪）：sidBySlot 用全 subs 但 subs.find
-      //   走过滤后的集合，竞争窗口里 sub 转 dormant 会让 target=undefined → target.sid
-      //   抛 TypeError → beginTurn 已落盘但 rollbackTurn 永不调用 → orchestrator
-      //   死锁需重启 Hub。修：显式校验 + rollbackTurn。
-      if (!target) {
-        try { orch.rollbackTurn(turnNum); } catch (e) { console.warn('[roundtable] summary target gone, rollbackTurn failed:', e.message); }
-        return { status: 'error', reason: `summarizer sid ${targetSid.slice(0,8)} 已变为 dormant`, turnNum: null };
-      }
-      const injectMap = rtInjection.computeLastTurnInjection(lastTurn, [target.sid], sidLabelFn, sidRoleFn);
-      let prompt;
-      if (isFreeMode) {
-        // P6 (2026-05-04): 补传 sceneName + timelinePath
-        prompt = free.buildFreeSummaryPrompt({
-          meeting,
-          summarizerSlot,
-          userInput,
-          lastTurnInjection: injectMap[target.sid] || null,
-          turnNum,
-          sceneName: sceneObj?.name || '通用圆桌',
-          timelinePath,
-        });
-      } else {
-        const dispatchSpec = _computeDispatchSpec(target, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
-        prompt = orch.buildSummaryPrompt(turnNum, target.sid, sidLabelFn, dispatchSpec, injectMap[target.sid] || null, timelinePath);
-      }
-      targets.push({ ...target, prompt });
     } else {
       return { status: 'error', reason: 'unknown mode', turnNum: null };
     }
@@ -1836,16 +1783,9 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       tokensBy[r.sid]   = (r.tokens && typeof r.tokens.total === 'number') ? r.tokens.total : 0;
     }
     // 方案 F：在 meta 带上 dispatchMode，让 timeline 写入能记录
+    // 摘要功能 2026-05-08 整体下线：原 mode='summary' 的 meta.summarizer*/decisionTitle/
+    // archivedTo 写入及 .arena/sessions/ 归档已删。timeline.writeTurn 仍保留通用追加。
     const meta = { dispatchMode: effectiveDispatchMode };
-    if (mode === 'summary') {
-      // slot 化（2026-05-03）：meta.summarizer 写 slot 中文名（"皮卡丘"），归档 / timeline
-      //   都用 slot 名（去 kind 硬编码）。summarizerSlot 字段额外保留 slot id 便于过滤。
-      meta.summarizer = summarizerSlot ? getSlotPromptName(summarizerSlot) : 'AI';
-      meta.summarizerSlot = summarizerSlot;
-      meta.summarizerSid = sentTargets[0]?.sid || null;
-      const title = roundtable.extractDecisionTitle(results[0]?.text || '');
-      if (title) meta.decisionTitle = title;
-    }
     const turnRecord = orch.completeTurn(turnNum, mode, userInput || '', byMap, meta, byStatus, {
       thinkSecBy, tokensBy,
     });
@@ -1858,33 +1798,10 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, summarizerSl
       // 不阻塞主流程
     }
 
-    // E2 选项：summary 后写决策档案到 .arena/sessions/<datetime>-<title>.md
-    // bug ④ 续修（2026-05-03 道雪）：fileName 必须 patchTurnMeta 持久化进 record，
-    //   否则 manual-extract 重写归档时读不到 archivedTo，无法复用同一文件名。
-    // silent-failure-hunter#4（2026-05-03 道雪）：summarizer errored/absent 时
-    //   results[0].text 为空，归档会写"(无输出)"但函数返回 fileName 表示"成功"。
-    //   修：summarizer 状态 != completed 时跳过首次归档，等 manual-extract patch
-    //   后再写。这避免空档案污染 .arena/sessions/，用户能更明确知道需要手动提取。
-    if (mode === 'summary') {
-      const summarizerStatus = results[0]?.status;
-      if (summarizerStatus !== 'completed') {
-        console.warn(`[roundtable] summary turn ${turnNum} summarizer status=${summarizerStatus}, skip archive write; user should manual-extract then re-archive`);
-      } else {
-        const fileName = rtArchive.writeDecisionArchive(meetingId, turnRecord, {
-          meetingManager, sessionManager, scenes, roundtable, getHubDataDir,
-        });
-        if (fileName) {
-          meta.archivedTo = fileName;
-          try { orch.patchTurnMeta(turnNum, { archivedTo: fileName }); }
-          catch (e) { console.warn('[roundtable] patchTurnMeta archivedTo failed:', e.message); }
-        }
-      }
-    }
-
     sendToRenderer('roundtable-turn-complete', { meetingId, turnNum, mode, results, meta });
 
     // 圆桌记忆 phase 1（2026-05-07）：本轮发完后异步触发 checkpoint worker（如条件达标）
-    //   - 仅 fanout/debate 触发（summary 是 AI 自摘要，不算用户发言）
+    //   - 仅 fanout/debate 触发
     //   - 显式触发：用户输入含"记一下/总结一下/记下来/存档"
     //   - setImmediate 延后到当前栈结束，避免阻塞 turn-complete 通知 renderer
     //   - 失败不影响 turn 流程，已由 worker 自身写 checkpoint-state.last_failure_reason
@@ -1942,168 +1859,7 @@ ipcMain.handle('roundtable:turn', async (_e, args) => {
   }
 });
 
-// 方案 F · 2026-05-02 · M3.1
-//   摘要按钮 IPC：触发"上一轮发言者"按五元组浓缩，写入 timeline.md 并算一轮。
-//   失败/拒绝场景：
-//     - meetingId 缺失 / meeting 不存在 → 抛
-//     - lastTurn 为 null（首轮无可摘要） → return error
-//     - lastTurn.mode === 'summary-brief'（已是摘要轮，禁止套娃） → return error
-//     - 上一轮发言者全部 dormant → return error
-//     - _roundtableInProgress 占用 → return busy
-ipcMain.handle('roundtable:summary-trigger', async (_e, { meetingId } = {}) => {
-  if (!meetingId) throw new Error('Missing meetingId');
-  if (_roundtableInProgress.has(meetingId)) return { status: 'busy', turnNum: null };
-
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting || !isRoundtableCapableMeeting(meeting)) {
-    return { status: 'error', reason: '非圆桌模式或会议室不存在', turnNum: null };
-  }
-
-  const sceneObj = scenes.getScene(meeting.scene);
-  const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
-  const lastTurn = orch.getLastTurn();
-  if (!lastTurn) return { status: 'error', reason: '无可摘要的上一轮', turnNum: null };
-  if (lastTurn.mode === 'summary-brief') {
-    return { status: 'error', reason: '上一轮已是摘要轮，不允许连续摘要', turnNum: null };
-  }
-
-  const lastSpeakers = Object.keys(lastTurn.by || {});
-  if (lastSpeakers.length === 0) return { status: 'error', reason: '上一轮无发言者', turnNum: null };
-
-  // 收集 sub 信息 + 过滤 dormant
-  const subs = (meeting.subSessions || [])
-    .map(sid => {
-      const s = sessionManager.getSession(sid);
-      return s && s.status !== 'dormant' ? { sid, kind: s.kind, label: s.title || s.kind || 'AI' } : null;
-    })
-    .filter(Boolean);
-  const subSidSet = new Set(subs.map(x => x.sid));
-  const activeSummarizers = lastSpeakers.filter(sid => subSidSet.has(sid));
-  if (activeSummarizers.length === 0) {
-    return { status: 'error', reason: '上一轮发言者全部 dormant，无法摘要', turnNum: null };
-  }
-
-  _roundtableInProgress.add(meetingId);
-  try {
-    const labelMap = new Map(subs.map(x => [x.sid, x.label]));
-    const sidLabelFn = (sid) => labelMap.get(sid) || 'AI';
-
-    // projectCwd / timelinePath 同 dispatchRoundtableTurn 算法
-    const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
-      ? meeting.pilotSlot : null;
-    const subSidsRaw = meeting.subSessions || [];
-    const projectCwd = (() => {
-      const pilotSub = pilotSlot !== null ? subs.find(x => subSidsRaw.indexOf(x.sid) === pilotSlot) : null;
-      const candidate = pilotSub || subs[0];
-      if (!candidate) return null;
-      const sess = sessionManager.getSession(candidate.sid);
-      return (sess && sess.cwd) ? sess.cwd : null;
-    })();
-    let timelinePath = null;
-    try {
-      timelinePath = rtTimeline.ensureFile(meetingId, projectCwd, getHubDataDir(), sceneObj?.name || '通用圆桌');
-    } catch (e) {
-      console.warn('[roundtable] summary timeline ensureFile failed:', e.message);
-    }
-
-    // 浓缩范围：自上次摘要轮（不含）到 lastTurn.n
-    const lastSummaryTurnNum = (() => {
-      for (let i = orch.state.turns.length - 2; i >= 0; i--) {
-        if (orch.state.turns[i].mode === 'summary-brief') return orch.state.turns[i].n;
-      }
-      return 0;
-    })();
-    const summarizeRange = { fromTurn: lastSummaryTurnNum + 1, toTurn: lastTurn.n };
-
-    const turnNum = orch.beginTurn('summary-brief');
-    sendToRenderer('roundtable-state-update', { meetingId });
-
-    // 并发派发摘要 prompt
-    const targets = activeSummarizers.map(sid => {
-      const x = subs.find(s => s.sid === sid);
-      const prompt = orch.buildBriefSummaryPrompt(turnNum, sid, sidLabelFn, summarizeRange, timelinePath);
-      return { ...x, prompt };
-    });
-    const sentTargets = [];
-    await Promise.all(targets.map(async (t) => {
-      // P0-4 修复同 dispatchRoundtableTurn (1241): _rtSendToPty 抛错时降级为未发出,
-      // 避免整个 Promise.all reject 导致 turnNum 已 beginTurn 但 rollback 永不调用。
-      try {
-        // Resend & Auto-Recovery（2026-05-03）— sendToPty 返回 { ok, sendStatus } 或 false（兼容老 truthy）
-        //   summary-trigger 同样挂 paste-trapped 监控，避免 Codex 摘要轮 prompt 卡在输入框。
-        const sendResult = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
-        const ok = sendResult && sendResult.ok;
-        const sendStatus = sendResult && sendResult.sendStatus;
-        if (ok) {
-          sentTargets.push(t);
-          console.log(`[roundtable] summary turn ${turnNum} sent to ${t.kind}(${t.sid.slice(0,8)})`);
-          if (sendStatus !== 'stuck' || t.kind === 'codex') {
-            _startPasteTrappedMonitor(t.sid, t.kind, meetingId);
-          }
-        } else {
-          console.log(`[roundtable] summary turn ${turnNum} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
-        }
-      } catch (e) {
-        console.warn(`[roundtable] summary turn ${turnNum} sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
-      }
-    }));
-    if (sentTargets.length === 0) {
-      orch.rollbackTurn(turnNum);
-      return { status: 'no_sent', turnNum };
-    }
-
-    const settled = await Promise.allSettled(sentTargets.map(t =>
-      _rtWaitTurnComplete(t.sid, t.label, {
-        meetingId, mode: 'summary-brief', turnNum,
-        onPartial: (partial) => {
-          sendToRenderer('roundtable-partial-update', {
-            meetingId, turnNum, mode: 'summary-brief',
-            sid: partial.sid, label: partial.label,
-            status: partial.status, text: partial.text,
-            blocks: partial.blocks, source: partial.source,
-            thinkSec: partial.thinkSec, tokens: partial.tokens,
-          });
-        },
-      })
-    ));
-
-    const results = settled.map((s, i) => s.status === 'fulfilled' ? s.value : {
-      sid: sentTargets[i].sid, label: sentTargets[i].label,
-      status: 'errored', text: '', reason: s.reason?.message || 'Promise rejected',
-    });
-
-    const byMap = {}, byStatus = {}, thinkSecBy = {}, tokensBy = {};
-    for (const r of results) {
-      byMap[r.sid] = r.text || '';
-      byStatus[r.sid] = r.status || 'completed';
-      thinkSecBy[r.sid] = typeof r.thinkSec === 'number' ? r.thinkSec : 0;
-      tokensBy[r.sid] = (r.tokens && typeof r.tokens.total === 'number') ? r.tokens.total : 0;
-    }
-
-    const meta = {
-      isSummary: true,
-      summarizers: sentTargets.map(t => t.sid),
-      summarizeRange,
-      dispatchMode: meeting.dispatchMode || 'all',
-    };
-    const turnRecord = orch.completeTurn(turnNum, 'summary-brief', '', byMap, meta, byStatus, {
-      thinkSecBy, tokensBy,
-    });
-
-    try {
-      rtTimeline.writeTurn(meetingId, turnRecord, sceneObj?.name || '通用圆桌', projectCwd, getHubDataDir(), sidLabelFn);
-    } catch (e) {
-      console.warn(`[roundtable] timeline.writeTurn failed for summary turn ${turnNum}:`, e.message);
-    }
-
-    sendToRenderer('roundtable-turn-complete', {
-      meetingId, turnNum, mode: 'summary-brief', results, meta,
-    });
-    return { status: 'completed', turnNum, results, meta };
-  } finally {
-    _roundtableInProgress.delete(meetingId);
-  }
-});
+// 摘要功能 2026-05-08 整体下线：原 'roundtable:summary-trigger' IPC handler 已删
 
 ipcMain.handle('roundtable:get-state', (_e, { meetingId }) => {
   const meeting = meetingManager.getMeeting(meetingId);
@@ -2180,15 +1936,7 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
           status: 'manual_extracted',
         });
         if (patched) {
-          // bug ④（2026-05-03 道雪）：summary mode 已归档过 .md 文件时，
-          //   patch 完 byMap 同步重写归档，避免磁盘档案永远停在过早 settle 时刻的内容。
-          //   字段路径修复：record 顶层有 archivedTo（dispatch 路径已 patchTurnMeta 持久化），
-          //   不是 patched.meta?.archivedTo（orchestrator.completeTurn 用 ...meta 顶层展开）。
-          if (patched.mode === 'summary' && patched.archivedTo) {
-            rtArchive.writeDecisionArchive(meetingId, patched, {
-              meetingManager, sessionManager, scenes, roundtable, getHubDataDir,
-            });
-          }
+          // 摘要功能 2026-05-08 整体下线：原 patched.mode==='summary' + archivedTo 重写归档分支已删
           // 2026-05-04 道雪：单家 patch 改发 partial-update（仅本卡片局部刷新），
           //   不再复用整轮 turn-complete —— 避免 renderer 把整个 _partialBy 清空、
           //   导致本轮还在跑的其他家退化成 thinking 流光态（Bug：点 A 一键提取，B/C 出现流光）。
@@ -2354,7 +2102,7 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
   try {
     // FIX-F resend 路径：异常路径单家重发，使用最小可用参数（null 全部 → 退化为基本 prompt，
     //   不含调度上下文段 / 上一轮注入 / timeline footer）。这是可接受降级，因为：
-    //   1. 主任务说明仍在（fanout 用户问题、debate 任务说明、summary 输出格式）
+    //   1. 主任务说明仍在（fanout 用户问题、debate 任务说明）
     //   2. 该 sid PTY 上下文里仍有自己之前的轮次记忆
     //   3. resend 是修复异常，不必复刻完整 plan-F prompt
     if (lastTurn.mode === 'fanout') {
@@ -2364,12 +2112,8 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
       const prevTurn = orch.state.turns.length > 1 ? orch.state.turns[orch.state.turns.length - 2] : null;
       const inj = rtInjection.computeLastTurnInjection(prevTurn, [sid], sidLabelFn, null);
       prompt = orch.buildDebatePrompt(lastTurn.n, lastTurn.userInput, null, inj[sid] || null, null);
-    } else if (lastTurn.mode === 'summary') {
-      prompt = orch.buildSummaryPrompt(lastTurn.n, sid, sidLabelFn, null, null, null);
     } else {
-      // silent-failure-hunter#3（2026-05-03 道雪）：summary-brief 等未识别 mode
-      //   走 else，但已经推过 streaming partial-update（line 1725），卡片永久
-      //   卡 streaming。修：return 前推 errored 让卡片退出 streaming。
+      // 摘要功能 2026-05-08 整体下线：原 mode='summary' resend 分支已删
       sendToRenderer('roundtable-partial-update', {
         meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
         sid, label, status: 'errored', text: '',

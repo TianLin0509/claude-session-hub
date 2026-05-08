@@ -4,24 +4,18 @@
 // 与主驾模式（pilot mode）共存，独立模块。
 // pilot 路径完全不动；本模块仅在 meeting.mode === 'free' 时被 main.js 调用。
 //
-// 核心接口：
-//   deriveTargetSids(meeting, mode, summarizerSlot) → string[]
-//     按 mode 决定本轮目标：
-//       summary → [summarizerSub.sid]（不受 participants 影响）
-//       fanout/debate → participants 对应的 sub.sid，按 slot 顺序
+// 核心接口（摘要功能 2026-05-08 整体下线后，仅剩 fanout / debate 两种）：
+//   deriveTargetSids(meeting, mode) → string[]
+//     按 mode 决定本轮目标：fanout/debate 都按 participants 对应的 sub.sid，按 slot 顺序
 //
 //   derivePilotCompatDispatchMode(participants, mode) → 'all'|'pilot'|'observer'
 //     兼容字段：写到 turn record 的 dispatchMode，让现有 roundtable-injection.js
 //     同组跳过算法零修改。语义：参与者集合的等价类标签。
 //     特殊：debate 模式永远返回 'all'（debate 必须互看，不能走 observer 同组跳过）。
 //
-//   buildFreeFanoutPrompt / buildFreeDebatePrompt / buildFreeSummaryPrompt
+//   buildFreeFanoutPrompt / buildFreeDebatePrompt
 //     P6 (2026-05-04): 与 pilot 路径统一 5 段骨架 + 字段化调度上下文 + footer 压缩
 //     第一行格式: [<sceneName> · 第 N 轮 · <模式中文>] (B1 决议·hub 头部解析依赖)
-//
-// P4 SSoT (2026-05-04): COVENANT_GENERAL 与 buildBriefSummaryPrompt 共用同一份字段定义,
-//   通过 renderFiveElementItems / renderBriefSummaryConstraints helper 渲染。
-//   free 路径目前没有 brief-summary 模式 (用户在 UI 点摘要按钮走 pilot 路径)。
 
 // dev scene (plan-dev-scenario.md): per-turn L2b 触发追注 — 复用 scenes.js 的检测/渲染
 const { detectDevTrigger, buildDevL2bSection } = require('./roundtable-scenes.js');
@@ -35,20 +29,8 @@ function _maybeDevL2b(meeting, turnNum, userInput) {
   return buildDevL2bSection(detectDevTrigger(userInput, isFirstTurn));
 }
 
-function deriveTargetSids(meeting, mode, summarizerSlot) {
+function deriveTargetSids(meeting /* mode */) {
   if (!meeting || !Array.isArray(meeting.subSessions)) return [];
-
-  if (mode === 'summary') {
-    if (!summarizerSlot) return [];
-    const idx = SLOT_IDS.indexOf(summarizerSlot);
-    if (idx < 0) return [];
-    if (idx >= meeting.subSessions.length) {
-      console.warn(`[roundtable-free] summarizerSlot '${summarizerSlot}' (idx=${idx}) 超出 subSessions 长度 ${meeting.subSessions.length}`);
-      return [];
-    }
-    const sid = meeting.subSessions[idx];
-    return sid ? [sid] : [];
-  }
 
   // fanout / debate：按 participants 过滤 sub
   if (!Array.isArray(meeting.participants)) return [];
@@ -104,11 +86,7 @@ function _formatParticipantList(participants) {
 function _renderInjection(inj) {
   if (!inj || !Array.isArray(inj.speakers) || inj.speakers.length === 0) return '';
   const lines = ['', '## 上一轮注入'];
-  if (inj.isSummaryInjection) {
-    lines.push(`（上一轮是摘要轮，第 ${inj.lastTurnNum} 轮 · ${inj.lastTurnMode}）`);
-  } else {
-    lines.push(`（第 ${inj.lastTurnNum} 轮 · ${inj.lastTurnMode} · ${inj.lastDispatchMode}）`);
-  }
+  lines.push(`（第 ${inj.lastTurnNum} 轮 · ${inj.lastTurnMode} · ${inj.lastDispatchMode}）`);
   for (const s of inj.speakers) {
     lines.push('');
     lines.push(`### ${s.label}（${s.status || 'completed'}）`);
@@ -130,7 +108,7 @@ function _renderFreeDispatchContext({ selfSlot, participants, turnKind, answerSt
   lines.push('- 模式:自由（参与者勾选）');
   lines.push(`- 轮次性质:${turnKind}`);
   lines.push(`- 回答方式:${answerStyle}`);
-  lines.push('- 轻提醒:≤ 1500 字 / 写文件须用户许可 / 不展开多步骤工作流');
+  lines.push('- 轻提醒:≤ 1500 字 / 写文件按用户表达：明确要求→写；未明确→提议 / 不展开多步骤工作流');
   return lines.join('\n');
 }
 
@@ -206,32 +184,7 @@ function buildFreeDebatePrompt({ meeting, selfSlot, participants, userInput, las
   return lines.join('\n');
 }
 
-function buildFreeSummaryPrompt({ meeting, summarizerSlot, userInput, lastTurnInjection, turnNum, sceneName, timelinePath }) {
-  const n = (typeof turnNum === 'number' && turnNum > 0) ? turnNum : '?';
-  const scene = sceneName || (meeting && meeting.scene === 'research' ? '投研圆桌' : '通用圆桌');
-  const selfLabel = _slotLabel(summarizerSlot);
-  // P6 B1: 第一行 [<scene> · 第 N 轮 · @summary @<X>]
-  const lines = [`[${scene} · 第 ${n} 轮 · @summary @${selfLabel}]`];
-
-  lines.push('', _renderFreeDispatchContext({
-    selfSlot: summarizerSlot,
-    participants: null,  // summary 轮只发给被点名的 summarizer,无"参与者"概念
-    turnKind: 'summary',
-    answerStyle: '综合上述历史给出总结',
-  }));
-
-  const inj = _renderInjection(lastTurnInjection);
-  if (inj) lines.push(inj);
-
-  lines.push('', '## 你的任务', userInput || '请综合上述历史给出总结。');
-
-  // P6: 删除原"请综合上述历史给出总结。"独立段
-
-  const footer = _renderFreeTimelineFooter(timelinePath);
-  if (footer) lines.push('', footer);
-
-  return lines.join('\n');
-}
+// 摘要功能 2026-05-08 整体下线：原 buildFreeSummaryPrompt 已删
 
 // ---------------------------------------------------------------------------
 // IPC 校验 helper（main.js 用）
@@ -263,7 +216,6 @@ module.exports = {
   derivePilotCompatDispatchMode,
   buildFreeFanoutPrompt,
   buildFreeDebatePrompt,
-  buildFreeSummaryPrompt,
   _validateMode,
   _validateParticipants,
 };

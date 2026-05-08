@@ -163,12 +163,8 @@ function testAiKindsModuleExportsContract() {
   assert.strictEqual(m.isPasteSensitive('qwen'), true);
   assert.strictEqual(m.isPasteSensitive('powershell'), false);
 
-  assert.strictEqual(typeof m.listKindsForPrompt(), 'string');
-  assert.ok(m.listKindsForPrompt().includes('DeepSeek'));
-  assert.ok(m.listKindsForPrompt().includes('GLM'));
-  assert.ok(m.listKindsForPrompt().includes('GPT'));
-  assert.ok(m.listKindsForPrompt().includes('Kimi'));
-  assert.ok(m.listKindsForPrompt().includes('Qwen'));
+  // listKindsForPrompt 已删除（2026-05-08）：刻意不向 AI prompt 注入家族枚举
+  assert.strictEqual(m.listKindsForPrompt, undefined, 'listKindsForPrompt 已删除');
 
   assert.strictEqual(typeof m.kindRegexAlternation(), 'string');
   assert.ok(m.kindRegexAlternation().includes('deepseek'));
@@ -183,9 +179,10 @@ function testAiKindsModuleExportsContract() {
 // ---------- 关键调用方迁移到 ai-kinds 的契约 ----------
 function testKeyCallsitesUseAiKindsHelpers() {
   // 验证关键文件已 require ai-kinds.js（防止有人改回硬编码）
+  // 摘要功能 2026-05-08 整体下线：roundtable-scenes.js 不再 require ai-kinds.js
+  //   （原 listKindsForPrompt 已删；scene preset 不向 AI 注入家族枚举，避免 stereotype 先验）
   const requiredFiles = [
     'core/roundtable-orchestrator.js',
-    'core/roundtable-scenes.js',
     'core/session-manager.js',
     'renderer/renderer.js',
     'renderer/meeting-room.js',
@@ -248,14 +245,16 @@ function testSlotIdsModuleContract() {
   // main.js 必须 require slot helper（防止有人把 dispatchRoundtableTurn 改回 summarizerKind）
   const mainSrc = fs.readFileSync(path.join(REPO_ROOT, 'main.js'), 'utf-8');
   assert.ok(/getSlotPromptName/.test(mainSrc), 'main.js 必须 require getSlotPromptName');
-  assert.ok(/summarizerSlot/.test(mainSrc), 'main.js dispatchRoundtableTurn 必须用 summarizerSlot 入参');
+  // 摘要功能 2026-05-08 整体下线：main.js dispatchRoundtableTurn 不再接收 summarizerSlot 入参
+  assert.ok(!/summarizerSlot/.test(mainSrc), 'main.js summarizerSlot 入参已删（摘要功能下线）');
   assert.ok(!/sidByKind/.test(mainSrc), 'main.js 不应再有 sidByKind（已替换为 sidBySlot）');
 
   // renderer/meeting-room.js dropdown 必须按 slot 枚举（不再按 kind 去重）
   const mrSrc = fs.readFileSync(path.join(REPO_ROOT, 'renderer', 'meeting-room.js'), 'utf-8');
   assert.ok(/slotIdRegexAlternation/.test(mrSrc),
     'renderer/meeting-room.js @ 解析正则必须用 slotIdRegexAlternation（不再用 kindRegexAlternation 当圆桌身份判定）');
-  assert.ok(/summarizerSlot/.test(mrSrc), 'renderer/meeting-room.js triggerRoundtable 必须传 summarizerSlot');
+  // 摘要功能 2026-05-08 整体下线：triggerRoundtable 不再传 summarizerSlot
+  assert.ok(!/summarizerSlot/.test(mrSrc), 'renderer/meeting-room.js summarizerSlot 已删（摘要功能下线）');
 
   console.log('  ✓ testSlotIdsModuleContract');
 }

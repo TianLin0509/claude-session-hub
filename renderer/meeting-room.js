@@ -43,21 +43,15 @@ if (typeof document !== 'undefined') (function () {
   }
 
   // --- Roundtable @command parser ---
-  // 支持 @debate / @summary @<slot> / @all / @<slot> 单聊
-  //   slot 化（2026-05-03）：原 @<kind> 改为 @<slot> (pikachu/charmander/squirtle)。
-  //   3 个同 kind 的圆桌（如 3 claude）按 slot 区分总结人/单聊对象。
-  //   ASCII slot id + \b 边界：正则鲁棒，无中文 lookahead 复杂度。
+  // 摘要功能 2026-05-08 整体下线：原 @summary @<slot> 命令路径已删
+  // 现仅支持 @debate / @all / @<slot>（@<slot> 仅用于剥前缀，仍走 fanout）
   const _RT_SLOT_ALT = slotIdRegexAlternation();
-  const _summaryRe = new RegExp('^@summary\\s+@(' + _RT_SLOT_ALT + ')\\b\\s*', 'i');
   const _tokenRe = new RegExp('^@(' + _RT_SLOT_ALT + ')\\b\\s*', 'i');
   function parseRoundtableCommand(text, meeting) {
     if (!meeting || !meeting.scene) return { type: 'normal', text, targets: null };
     let rest = text.trim();
     const debateRe = /^@debate\b\s*/i;
     let m;
-    if ((m = rest.match(_summaryRe))) {
-      return { type: 'rt-summary', summarizerSlot: m[1].toLowerCase(), text: rest.slice(m[0].length) };
-    }
     if ((m = rest.match(debateRe))) {
       return { type: 'rt-debate', text: rest.slice(m[0].length) };
     }
@@ -703,14 +697,14 @@ if (typeof document !== 'undefined') (function () {
   // T1（2026-05-04 道雪）：抽出单 slot 卡片渲染，让 partial-update IPC handler
   //   能复用同一份模板做局部 patch（不再 panel.innerHTML 全量替换）。
   //   依赖：函数参数（slotIndex, ctx）+ ctx 字段 { state, currentMode, partialBy, meeting,
-  //         slots, lastTurn, summarizerSlot, meetingId, focused }；
+  //         slots, lastTurn, meetingId, focused }；
   //         IIFE 私有 helper / 全局：_avatarBySlot, _avatarFallbackBySlot, _renderPreviewBlocks,
   //         isSlotParticipatingThisTurn, _ftCtxClass, _formatThinkTime, _formatTokens, _ftHtml,
   //         _thinkStartTs, _markerStatusCache, _cliReadyCache, _tabState, sessions,
   //         _KIND_LABELS, modelShort, modelClass。
   // 返回：{ html, anyThinking }（anyThinking 由调用方累加，不再 mutate 闭包变量）
   function _renderSlotCard(slotIndex, ctx) {
-    const { state, currentMode, partialBy, meeting, slots, lastTurn, summarizerSlot, meetingId, focused } = ctx;
+    const { state, currentMode, partialBy, meeting, slots, lastTurn, meetingId, focused } = ctx;
     const slot = slots[slotIndex];
     if (!slot) return { html: '', anyThinking: false };
     const kind = slot.kind;
@@ -750,9 +744,6 @@ if (typeof document !== 'undefined') (function () {
     } else if (currentMode && currentMode !== 'idle') {
       if (!isSlotParticipatingThisTurn(meeting, slotIndex)) {
         status = lastTurn && lastTurn.by && lastTurn.by[sub.sid] ? 'completed' : 'idle';
-        preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
-      } else if (currentMode === 'summary' && summarizerSlot && summarizerSlot !== slot.slotId) {
-        status = lastTurn && lastTurn.by[sub.sid] ? 'completed' : 'idle';
         preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
       } else {
         status = 'thinking';
@@ -937,14 +928,13 @@ if (typeof document !== 'undefined') (function () {
     const effectivePartialBy = isTimeTravel ? null : partialBy;
     const effectiveCurrentMode = isTimeTravel ? 'idle' : currentMode;
 
-    const summarizerSlot = state.currentSummarizerSlot || null;
     const tabs = [];
     const focused = meeting.focusedSub || meeting.subSessions[0];
     let anyThinking = false;
     const slots = _getRtSlots(meeting);
     const ctx = {
       state, currentMode: effectiveCurrentMode, partialBy: effectivePartialBy,
-      meeting, slots, lastTurn: effectiveLastTurn, summarizerSlot, meetingId, focused,
+      meeting, slots, lastTurn: effectiveLastTurn, meetingId, focused,
       isTimeTravel,
     };
     for (let slotIndex = 0; slotIndex < 3; slotIndex++) {
@@ -1408,7 +1398,7 @@ if (typeof document !== 'undefined') (function () {
       head: '🎯 通用圆桌 · 使用提示',
       bullets: [
         '三家平等给观点，不预设领域；技术辩论、代码评审、开放讨论都行。',
-        '默认提问 → 三家并行；输入"<strong>@debate</strong>"触发辩论；工具栏"<strong>🗒 摘要</strong>"让上家浓缩五元组，"<strong>📝 总结</strong>"让指定 AI 综合所有轮次。',
+        '默认提问 → 三家并行；输入"<strong>@debate</strong>"触发辩论。',
         '想点名某家：用"<strong>@pikachu / @charmander / @squirtle</strong>"指定发言人。',
         '圆桌产物是<strong>可讨论的判断</strong>，不是研报或可执行方案。需要落地操作时，结论里会建议你切独立 session 实操。',
       ],
@@ -1493,10 +1483,8 @@ if (typeof document !== 'undefined') (function () {
     // meeting-create-modal（2026-05-01）：期望家 = meeting.subSessions（按 slot 顺序），
     //   不再硬编码 ['claude','gemini','codex']——多 claude / DeepSeek+GLM 混搭的圆桌也能正确判完成。
     const expectedSids = Array.isArray(meeting.subSessions) ? meeting.subSessions.slice() : [];
-    // E3 修复 (2026-05-03)：删除 _renderCmdBar 调用 — panel 顶部的
-    //   "💬 直接提问 / ⚔ @debate / 📋 @summary" 按钮组与 toolbar 的"🗣 辩论 / 🗒 摘要 /
-    //   📝 总结"语义重叠且 disabled 状态不一致（cmd-bar @summary disabled vs toolbar
-    //   📝 总结 enabled），用户困惑。toolbar 已覆盖所有功能，删 cmd-bar 单一来源。
+    // E3 修复 (2026-05-03)：删除 _renderCmdBar 调用 — panel 顶部按钮组与 toolbar 重复，
+    //   toolbar 已覆盖所有功能，删 cmd-bar 单一来源。
     const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
     // 场景一次性引导卡片 (general/research/dev 共用): 与 onboarding 独立, 跨 panel 始终展示直至用户"不再显示"
     const devCard = _renderSceneOnboardingCard(meeting);
@@ -1533,7 +1521,7 @@ if (typeof document !== 'undefined') (function () {
 
 
   // 主渲染：从 IPC 拿最新 state 后重绘。
-  // 乐观字段（currentMode/currentSummarizerSlot）的保留条件：**只有 _rtOptimisticTurn[id] 还在**
+  // 乐观字段（currentMode）的保留条件：**只有 _rtOptimisticTurn[id] 还在**
   // —— 也就是 IPC 还在飞行中。IPC resolve 后 _rtOptimisticTurn 已被 clearOptimistic 清，
   // 此时 server state 真实状态（含 idle）才被采纳。
   // partialBy 单独保留：轮中单家完成 IPC 推 partial-update，这是轮内增量，独立处理。
@@ -1567,7 +1555,6 @@ if (typeof document !== 'undefined') (function () {
     if (optimistic && (!state.currentMode || state.currentMode === 'idle')) {
       // IPC 飞行期间 + server 还没 begin → 显示乐观态
       state.currentMode = optimistic.mode;
-      if (optimistic.summarizerSlot) state.currentSummarizerSlot = optimistic.summarizerSlot;
     }
     // partialBy 合并：本轮还在跑（server currentMode 非 idle）才保留 prev._partialBy 增量；
     //   server 已 idle（本轮已 settle 持久化）→ 丢 prev 残留，让 lastTurn 路径接管渲染。
@@ -2153,7 +2140,7 @@ if (typeof document !== 'undefined') (function () {
   // 一旦 IPC resolve / reject 或 server 推 turn-complete，就清掉这个标记 —— 之后 refresh
   // 拿到的 server state（含 idle）就是真值，merge 不再覆盖。
   // 不用单纯依赖 cached.currentMode 比对，避免轮次完成后 server.idle 被永远 merge 成乐观值。
-  const _rtOptimisticTurn = {}; // { [meetingId]: { mode, summarizerSlot, t } }
+  const _rtOptimisticTurn = {}; // { [meetingId]: { mode, t } }
 
   // 兼容旧调用名（handleMeetingSend 还在用 renderRoundtableBanner）
   function renderRoundtableBanner(meeting, result) {
@@ -2168,18 +2155,13 @@ if (typeof document !== 'undefined') (function () {
     // Stage 2 容错升级：记录本轮 prompt 发送时间戳，逃生工具栏的 manual-extract 用此过滤 JSONL
     _rtTurnStartTs[meeting.id] = Date.now();
     // 立即写本地乐观状态 + 标 _rtOptimisticTurn（IPC 完成后清掉）
+    // 摘要功能 2026-05-08 整体下线：mode 仅 'fanout' / 'debate'
     _rtOptimisticTurn[meeting.id] = {
       mode,
-      summarizerSlot: mode === 'summary' ? (opts.summarizerSlot || 'pikachu') : null,
       t: Date.now(),
     };
     if (cached) {
       cached.currentMode = mode;
-      if (mode === 'summary') {
-        cached.currentSummarizerSlot = opts.summarizerSlot || 'pikachu';
-      } else {
-        delete cached.currentSummarizerSlot;
-      }
       cached._partialBy = null;
     }
     refreshRoundtablePanel(meeting);
@@ -2191,7 +2173,6 @@ if (typeof document !== 'undefined') (function () {
       if (c) {
         // 不强写 idle —— 让 refresh 从 server 拿真值。但本地乐观字段必须先清，否则 merge 会保留它。
         c.currentMode = null; // null = 触发 merge 分支用 server 真值
-        delete c.currentSummarizerSlot;
       }
       refreshRoundtablePanel(meeting);
       renderToolbar(meeting);
@@ -2201,7 +2182,6 @@ if (typeof document !== 'undefined') (function () {
       meetingId: meeting.id,
       mode,
       userInput: opts.userInput || '',
-      summarizerSlot: opts.summarizerSlot || null,
       // pilot redesign（2026-05-02）：传当前 dispatchMode（'all'|'pilot'|'observer'）。
       //   后端会校验 + 按值过滤 targetSubs；未传时按 meeting 持久化字段兜底（默认 'all'）。
       dispatchMode: meeting.dispatchMode || 'all',
@@ -2284,7 +2264,6 @@ if (typeof document !== 'undefined') (function () {
     if (cached) {
       cached._partialBy = null;
       cached.currentMode = null;
-      delete cached.currentSummarizerSlot;
     }
     // === Phase 2: DOM 重渲（仅 active meeting）===
     //   非 active 圆桌的全员完成通知由 renderer.js 监听同 IPC 累加 meeting.unreadCount
@@ -2294,10 +2273,9 @@ if (typeof document !== 'undefined') (function () {
     if (cached) renderToolbar(meeting);
   });
 
-  // Roundtable state 元数据变更（如 summary 启动写入 currentSummarizerSlot）
+  // Roundtable state 元数据变更（轮次启停等）
   // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（含非 active），DOM 重渲仅 active。
-  //   非 active 圆桌的 currentMode / currentSummarizerSlot 也得跟 server 同步，
-  //   否则切回时 panel 显示老状态。
+  //   非 active 圆桌的 currentMode 也得跟 server 同步，否则切回时 panel 显示老状态。
   ipcRenderer.on('roundtable-state-update', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
@@ -2414,11 +2392,10 @@ if (typeof document !== 'undefined') (function () {
     const slotIndex = slots.findIndex(slot => slot && slot.sid === sid);
     if (slotIndex < 0) return;
     const lastTurn = cached.turns.length > 0 ? cached.turns[cached.turns.length - 1] : null;
-    const summarizerSlot = cached.currentSummarizerSlot || null;
     const focused = meeting.focusedSub || meeting.subSessions[0];
     const ctx = {
       state: cached, currentMode: cached.currentMode || 'idle', partialBy: cached._partialBy,
-      meeting, slots, lastTurn, summarizerSlot, meetingId: meeting.id, focused,
+      meeting, slots, lastTurn, meetingId: meeting.id, focused,
     };
     const { html } = _renderSlotCard(slotIndex, ctx);
     if (!html) return;
@@ -3459,7 +3436,7 @@ if (typeof document !== 'undefined') (function () {
       const dispatchLabel = { all: '群策群力', pilot: '主驾发言', observer: '副驾发言' }[mode];
       inputBox.dataset.placeholder = pilotSlot !== null
         ? `🚗 主驾: Slot ${pilotSlot + 1} · ${slotPokemon[pilotSlot]} · 当前分发: ${dispatchLabel}`
-        : '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<who>';
+        : '圆桌讨论：发普通文本启动一轮 / @debate';
     }
   }
 
@@ -3532,15 +3509,7 @@ if (typeof document !== 'undefined') (function () {
         return '让目标范围内的 AI 结合彼此观点重新发言';
       })();
 
-      const summaryDisabled = inProgress ? 'disabled' : '';
-      const summaryPickDisabled = inProgress ? 'disabled' : '';
-      // 方案 F · M3.4：摘要按钮 disable 规则
-      //   - 无可摘要的上一轮（turns < 1）
-      //   - 圆桌正在 dispatch
-      //   - 上一轮已是摘要轮（禁止连续摘要套娃）
-      const _lastTurn = (cached && Array.isArray(cached.turns) && cached.turns.length > 0)
-        ? cached.turns[cached.turns.length - 1] : null;
-      const briefSummaryDisabled = (turns < 1 || inProgress || (_lastTurn && _lastTurn.mode === 'summary-brief')) ? 'disabled' : '';
+      // 摘要功能 2026-05-08 整体下线：原 summaryDisabled / summaryPickDisabled / briefSummaryDisabled 已删
 
       // 主驾按钮 label
       const slotPokemon = ['⚡皮卡丘', '🔥小火龙', '💎杰尼龟'];
@@ -3640,53 +3609,29 @@ if (typeof document !== 'undefined') (function () {
             `;
           }).join('');
         }
-        // 2. 模式 dropdown → #mr-input-mode-chips
-        //   一级 hover popup: 辩论 / 摘要 / 总结(▸ 选总结人)
-        //   二级 hover popup: 总结人 slot 列表(向上展开)
+        // 2. 模式 dropdown → #mr-input-mode-chips（摘要功能 2026-05-08 下线后仅剩"辩论"）
         const modeChipsEl = document.getElementById('mr-input-mode-chips');
         if (modeChipsEl) {
-          const summaryPersonItems = slotsArr.filter(s => s).map(s => `
-            <button class="mr-mode-subitem" data-summarizer-slot="${s.slotId}" ${summaryDisabled}>
-              <img src="${_avatarBySlot(s.slotIndex)}" alt="${escapeHtml(s.label)}" />
-              <span>${escapeHtml(s.displayLabel)}</span>
-            </button>
-          `).join('');
           modeChipsEl.innerHTML = `
             <div class="mr-mode-dropdown">
-              <button class="mr-mode-trigger" id="mr-mode-trigger" title="选择动作: 辩论 / 摘要 / 总结">
+              <button class="mr-mode-trigger" id="mr-mode-trigger" title="选择动作: 辩论">
                 <span>🎯 模式</span><span class="mr-mode-arrow">▾</span>
               </button>
               <div class="mr-mode-popup">
                 <button class="mr-mode-item" id="mr-rt-debate-btn" ${debateDisabled} title="${debateBtnTitle}">
                   <span>🗣 辩论</span><span class="mr-mode-item-hint">让 AI 互辩</span>
                 </button>
-                <button class="mr-mode-item" id="mr-rt-brief-summary-btn" ${briefSummaryDisabled} title="让上一轮发言者按五元组浓缩自己最近一段">
-                  <span>🗒 摘要</span><span class="mr-mode-item-hint">浓缩近一段</span>
-                </button>
-                <div class="mr-mode-item mr-mode-item-summary ${summaryDisabled ? 'disabled' : ''}" title="选一位 AI 综合所有轮次输出最终意见">
-                  <span>📝 总结</span><span class="mr-mode-item-hint">选总结人 ▸</span>
-                  <div class="mr-mode-subpopup">
-                    <div class="mr-mode-subpopup-title">选定一位总结人</div>
-                    ${summaryPersonItems || '<div class="mr-mode-subpopup-empty">无可用 AI</div>'}
-                  </div>
-                </div>
               </div>
             </div>
           `;
         }
       } else {
-        // pilot 模式: 老 toolbar 渲染(暂不优化)
+        // pilot 模式: 老 toolbar 渲染（摘要功能 2026-05-08 下线后仅剩"辩论"）
         el.innerHTML = `
           <div class="mr-rt-toolbar">
             ${dispatchAreaHtml}
             <span class="mr-rt-tb-divider"></span>
             <button class="mr-rt-tb-btn" id="mr-rt-debate-btn" ${debateDisabled} title="${debateBtnTitle}">🗣 辩论</button>
-            <button class="mr-rt-tb-btn" id="mr-rt-brief-summary-btn" ${briefSummaryDisabled} title="让上一轮发言者按五元组浓缩自己最近一段">🗒 摘要</button>
-            <button class="mr-rt-tb-btn warm" id="mr-rt-summary-btn" ${summaryDisabled} title="让选中的 AI 综合所有轮次给最终意见">📝 总结</button>
-            <label class="mr-rt-tb-pick">
-              <span class="mr-rt-tb-pick-label">总结人:</span>
-              <select id="mr-rt-summary-pick" ${summaryPickDisabled}>${opts || '<option disabled>无可用 AI</option>'}</select>
-            </label>
             ${pilotWrapHtml}
           </div>
         `;
@@ -3746,10 +3691,9 @@ if (typeof document !== 'undefined') (function () {
         });
       });
 
-      // C2 Phase 4: chip 已挪到 input-row 占位, 用 document.querySelector 而非 el.querySelector
+      // 摘要功能 2026-05-08 整体下线：原 mr-rt-summary-btn / mr-rt-brief-summary-btn /
+      //   mr-mode-subitem[data-summarizer-slot] 事件绑定全删。仅保留辩论按钮。
       const debateBtn = document.getElementById('mr-rt-debate-btn');
-      const summaryBtn = document.getElementById('mr-rt-summary-btn');
-      const pick = el.querySelector('#mr-rt-summary-pick');
       if (debateBtn) debateBtn.addEventListener('click', () => {
         if (debateBtn.hasAttribute('disabled')) return;
         const inputBox = document.getElementById('mr-input-box');
@@ -3760,36 +3704,6 @@ if (typeof document !== 'undefined') (function () {
         triggerRoundtable(meeting, 'debate', { userInput: extra });
         if (inputBox) inputBox.textContent = '';
         delete _inputDraftByMeeting[meeting.id];
-      });
-      if (summaryBtn) summaryBtn.addEventListener('click', () => {
-        if (summaryBtn.hasAttribute('disabled')) return;
-        const summarizerSlot = pick ? pick.value : 'pikachu';
-        triggerRoundtable(meeting, 'summary', { summarizerSlot });
-      });
-      // Phase 4 v2: free 模式 — 总结二级菜单, 每项 click 直接以对应 slot 触发 summary
-      document.querySelectorAll('.mr-mode-subitem[data-summarizer-slot]').forEach(btn => {
-        btn.addEventListener('click', () => {
-          if (btn.hasAttribute('disabled')) return;
-          const summarizerSlot = btn.getAttribute('data-summarizer-slot');
-          triggerRoundtable(meeting, 'summary', { summarizerSlot });
-        });
-      });
-      // 方案 F · M3.4 摘要按钮事件绑定 (C2 Phase 4: chip 在 input-row, 用 document)
-      const briefSummaryBtn = document.getElementById('mr-rt-brief-summary-btn');
-      if (briefSummaryBtn) briefSummaryBtn.addEventListener('click', async () => {
-        if (briefSummaryBtn.hasAttribute('disabled')) return;
-        try {
-          const r = await ipcRenderer.invoke('roundtable:summary-trigger', { meetingId: meeting.id });
-          if (r && r.status && r.status !== 'completed' && r.status !== 'ok') {
-            console.warn('[brief-summary] non-success status:', r.status, r.reason || '');
-            if (r.status !== 'busy') {
-              alert('摘要失败:' + (r.reason || r.status || '未知'));
-            }
-          }
-        } catch (err) {
-          console.error('[brief-summary] failed:', err);
-          alert('摘要失败:' + (err && err.message ? err.message : String(err)));
-        }
       });
       _bindPilotEvents(meeting, pilotSlot);
       // pilot redesign（2026-05-02）：不在这里调 _applyPilotCardVisual——renderToolbar 在 panel.innerHTML
@@ -3850,16 +3764,8 @@ if (typeof document !== 'undefined') (function () {
         });
       }
     }
-    // mode 触发（静态）
+    // mode 触发（静态；摘要功能 2026-05-08 下线后仅剩 @debate）
     items.push({ value: '@debate', label: '@debate', hint: 'cross-review' });
-    // @summary 默认指向第一个 slot 对应的 kind
-    if (subSids.length > 0) {
-      const firstK = sidKind[subSids[0]] || null;
-      const summaryValue = firstK && kindCount[firstK] === 1 ? `@summary @${firstK}` : '@summary';
-      items.push({ value: summaryValue, label: '@summary', hint: 'final summary' });
-    } else {
-      items.push({ value: '@summary', label: '@summary', hint: 'final summary' });
-    }
     return items;
   }
 
@@ -4067,7 +3973,7 @@ if (typeof document !== 'undefined') (function () {
     if (meeting.scene) {
       inputBox.dataset.placeholder = isFreeZeroSelected
         ? '请先勾选至少一位发言人'
-        : '圆桌讨论：发普通文本启动一轮 / @debate / @summary @<slot> / @<slot> 单聊';
+        : '圆桌讨论：发普通文本启动一轮 / @debate / @<slot> 单聊';
     } else {
       inputBox.dataset.placeholder = '输入消息...';
     }
@@ -4206,12 +4112,12 @@ if (typeof document !== 'undefined') (function () {
     const current = meetingData[meeting.id] || meeting;
 
     // --- Research Mode routing 优先 ---
-    // 路由完全由 fanout/debate/summary 决定，不依赖 sendTarget/validTargets。
+    // 路由由 fanout/debate 决定（摘要功能 2026-05-08 整体下线）。
     if (current.scene) {
       const cmd = parseRoundtableCommand(text, current);
-      // 公共轮次：fanout / debate / summary 走 orchestrator
-      if (cmd.type === 'rt-fanout' || cmd.type === 'rt-debate' || cmd.type === 'rt-summary') {
-        const mode = cmd.type === 'rt-fanout' ? 'fanout' : cmd.type === 'rt-debate' ? 'debate' : 'summary';
+      // 公共轮次：fanout / debate 走 orchestrator
+      if (cmd.type === 'rt-fanout' || cmd.type === 'rt-debate') {
+        const mode = cmd.type === 'rt-fanout' ? 'fanout' : 'debate';
         // 2026-05-05 道雪：本轮 userInput 立即缓存,让"用户提问 banner"在 turn-complete 之前就能显示。
         const _userInputForBanner = (cmd.text || '').trim();
         if (_userInputForBanner) _currentTurnUserInputByMeeting[meeting.id] = _userInputForBanner;
@@ -4221,7 +4127,6 @@ if (typeof document !== 'undefined') (function () {
         } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
         triggerRoundtable(current, mode, {
           userInput: cmd.text || '',
-          summarizerSlot: cmd.summarizerSlot || null,
         });
         return;
       }

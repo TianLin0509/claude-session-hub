@@ -59,21 +59,10 @@ function testDebateFirstLineContract() {
   assert.ok(!firstLine.startsWith('# 自由模式'), 'P6 B1: no `# 自由模式` regression');
 }
 
-function testSummaryFirstLineContract() {
-  const p = free.buildFreeSummaryPrompt({
-    meeting: baseMeeting,
-    summarizerSlot: 'squirtle',
-    userInput: '',
-    lastTurnInjection: null,
-    turnNum: 7,
-    sceneName: '通用圆桌',
-  });
-  const firstLine = p.split('\n')[0];
-  assert.ok(/^\[.+ · 第 \d+ 轮 · .+\]$/.test(firstLine), `first line format, got: ${firstLine}`);
-  assert.ok(firstLine.includes('第 7 轮'), 'turn number');
-  assert.ok(firstLine.includes('@summary'), 'summary marker');
-  assert.ok(firstLine.includes('杰尼龟'), 'summarizer label in @summary @<X> (中文化 2026-05-08)');
-  assert.ok(!firstLine.startsWith('# 自由模式'), 'P6 B1: no regression');
+// 摘要功能 2026-05-08 整体下线：buildFreeSummaryPrompt 已删
+function testFreeSummaryPromptRemoved() {
+  assert.strictEqual(typeof free.buildFreeSummaryPrompt, 'undefined',
+    'buildFreeSummaryPrompt 已删除（摘要功能下线）');
 }
 
 // === P6 字段化调度上下文契约 ===
@@ -144,25 +133,13 @@ function testDebateMentionsRebuttal() {
   assert.ok(p.includes('反驳') || p.includes('呼应'), 'debate prompt mentions rebut/respond');
 }
 
-function testSummaryNoMainCoPilot() {
-  const p = free.buildFreeSummaryPrompt({
-    meeting: baseMeeting,
-    summarizerSlot: 'pikachu',
-    userInput: '',
-    lastTurnInjection: null,
-    turnNum: 3,
-    sceneName: '通用圆桌',
-  });
-  assert.ok(!p.includes('主驾'), 'summary no 主驾');
-  assert.ok(!p.includes('副驾'), 'summary no 副驾');
-}
+// 摘要功能 2026-05-08 整体下线：原 testSummaryNoMainCoPilot 已删
 
 function testInjectionIsRendered() {
   const inj = {
     lastTurnNum: 4,
     lastTurnMode: 'fanout',
     lastDispatchMode: 'all',
-    isSummaryInjection: false,
     speakers: [
       { sid: 'sid_pi', label: 'Pikachu', role: null, text: '上一轮 Pikachu 说了 X', status: 'completed' },
     ],
@@ -295,8 +272,7 @@ run('testFanoutHasFieldedDispatchContext', testFanoutHasFieldedDispatchContext);
 run('testFanoutHasNoMainCoPilot', testFanoutHasNoMainCoPilot);
 run('testDebateFirstLineContract', testDebateFirstLineContract);
 run('testDebateMentionsRebuttal', testDebateMentionsRebuttal);
-run('testSummaryFirstLineContract', testSummaryFirstLineContract);
-run('testSummaryNoMainCoPilot', testSummaryNoMainCoPilot);
+run('testFreeSummaryPromptRemoved', testFreeSummaryPromptRemoved);
 run('testInjectionIsRendered', testInjectionIsRendered);
 run('testNoStandaloneAnswerStyleSection', testNoStandaloneAnswerStyleSection);
 run('testTimelineFooterCompressed', testTimelineFooterCompressed);

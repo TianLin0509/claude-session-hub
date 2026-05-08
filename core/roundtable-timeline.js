@@ -103,7 +103,9 @@ function writeTurn(meetingId, turnRecord, sceneName, projectCwd, hubDataDir, sid
 }
 
 function _renderTurnSection(turnRecord, sidLabelFn) {
-  const { n, mode, userInput, by, byStatus, timestamp, dispatchMode, summarizers } = turnRecord;
+  // 摘要功能 2026-05-08 整体下线：新 turnRecord 仅 fanout / debate；
+  //   _parseTurnSections 仍按 isSummary 解析历史 timeline 文件（向后兼容）。
+  const { n, mode, userInput, by, byStatus, timestamp, dispatchMode } = turnRecord;
   const ts = new Date(timestamp || Date.now()).toISOString();
   const labelOf = (sid) => {
     if (typeof sidLabelFn === 'function') {
@@ -113,22 +115,11 @@ function _renderTurnSection(turnRecord, sidLabelFn) {
     return (typeof sid === 'string' && sid.length > 8) ? sid.slice(0, 8) : (sid || 'AI');
   };
 
-  // 标题
-  let title;
-  if (mode === 'summary-brief') {
-    const names = (Array.isArray(summarizers) && summarizers.length > 0
-      ? summarizers : Object.keys(by || {})).map(labelOf).join(' + ');
-    title = `## 第 ${n} 轮 · 摘要 by ${names || 'AI'}（五元组）`;
-  } else {
-    const dm = dispatchMode || 'all';
-    title = `## 第 ${n} 轮 · ${mode} · ${dm}`;
-  }
+  const dm = dispatchMode || 'all';
+  const title = `## 第 ${n} 轮 · ${mode} · ${dm}`;
 
   let out = title + '\n';
   out += `- 时间：${ts}\n`;
-  if (mode === 'summary-brief') {
-    out += `- 触发：用户点「摘要」按钮\n`;
-  }
   if (userInput && typeof userInput === 'string' && userInput.trim()) {
     const oneLine = userInput.replace(/\s*\n+\s*/g, ' ').slice(0, 200);
     out += `- 用户输入：${oneLine}${userInput.length > 200 ? '…' : ''}\n`;

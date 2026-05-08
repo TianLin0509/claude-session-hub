@@ -161,22 +161,8 @@ function testRule7_PilotToAll() {
   console.log('  ✓ testRule7_PilotToAll');
 }
 
-function testRule11_SummaryBriefInjection() {
-  const last = makeTurn(5, 'summary-brief', 'pilot',
-    { sid_pilot: '1. 目标：xxx\n2. 关键事实：yyy\n3. 关键分歧：zzz' },
-    null);
-  // 当前轮：副驾两家审查
-  const r = computeLastTurnInjection(last, [SID_CO1, SID_CO2], labelOf, roleOf);
-  assert.ok(r[SID_CO1]);
-  assert.strictEqual(r[SID_CO1].isSummaryInjection, true);
-  assert.strictEqual(r[SID_CO1].speakers.length, 1);
-  assert.strictEqual(r[SID_CO1].speakers[0].text, '1. 目标：xxx\n2. 关键事实：yyy\n3. 关键分歧：zzz');
-  // 摘要也注入给摘要发出方自己
-  const r2 = computeLastTurnInjection(last, [SID_PILOT], labelOf, roleOf);
-  assert.ok(r2[SID_PILOT], 'summary-brief should inject to self too (回看自己摘要)');
-  assert.strictEqual(r2[SID_PILOT].isSummaryInjection, true);
-  console.log('  ✓ testRule11_SummaryBriefInjection');
-}
+// 摘要功能 2026-05-08 整体下线：原 testRule11_SummaryBriefInjection 已删除
+//   summary-brief mode 不再产生新轮次；isSummaryInjection 字段已从 InjectionPayload 移除
 
 function testInjectionPayloadFields() {
   const last = makeTurn(7, 'debate', 'all', {
@@ -189,7 +175,8 @@ function testInjectionPayloadFields() {
   assert.strictEqual(r[SID_PILOT].lastTurnNum, 7);
   assert.strictEqual(r[SID_PILOT].lastTurnMode, 'debate');
   assert.strictEqual(r[SID_PILOT].lastDispatchMode, 'all');
-  assert.strictEqual(r[SID_PILOT].isSummaryInjection, false);
+  // 摘要功能下线：isSummaryInjection 字段已从 payload 移除
+  assert.strictEqual(r[SID_PILOT].isSummaryInjection, undefined);
   // status 透传
   const speakers = r[SID_PILOT].speakers;
   const co1 = speakers.find(s => s.sid === SID_CO1);
@@ -221,7 +208,6 @@ const tests = [
   testRule7_PilotToAll,
   testRule8_ObserverToObserver_Skip,
   testRule9_ObserverToPilot,
-  testRule11_SummaryBriefInjection,
   testInjectionPayloadFields,
   testSetsEqualHelper,
 ];

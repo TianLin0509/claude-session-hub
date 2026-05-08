@@ -1,13 +1,12 @@
 'use strict';
 // Roundtable Injection — 上一轮注入矩阵算法 (方案 F · 2026-05-02)
 //
-// 核心规则（spec §8）：
+// 核心规则（spec §8 · 2026-05-08 摘要功能下线后简化）：
 //   1. lastTurn 为 null（首轮） → 不注入
-//   2. lastTurn 是摘要轮（mode === 'summary-brief'）→ 给所有当前发言者注入摘要全文
-//   3. 同组跳过：当前发言者集合 === 上一轮发言者集合 → 整体跳过注入
+//   2. 同组跳过：当前发言者集合 === 上一轮发言者集合 → 整体跳过注入
 //      - pilot → pilot（同一主驾）：主驾自己 PTY 上下文里有
 //      - observer → observer（同两副驾）：保持副驾各自独立观点
-//   4. 其他情况：每个当前发言者收到「上一轮发言者中除自己外」的内容
+//   3. 其他情况：每个当前发言者收到「上一轮发言者中除自己外」的内容
 //
 // 接口：
 //   computeLastTurnInjection(lastTurn, currentTargetSids, sidLabelFn, sidRoleFn)
@@ -15,9 +14,8 @@
 //
 //   InjectionPayload = {
 //     lastTurnNum: number,
-//     lastTurnMode: string,         // 'fanout'|'debate'|'summary'|'summary-brief'
+//     lastTurnMode: string,         // 'fanout'|'debate'
 //     lastDispatchMode: string,     // 'all'|'pilot'|'observer'
-//     isSummaryInjection: boolean,  // true 时格式化为「摘要轮注入」
 //     speakers: [{ sid, label, role, text, status }]
 //   }
 //
@@ -45,22 +43,7 @@ function computeLastTurnInjection(lastTurn, currentTargetSids, sidLabelFn, sidRo
     return result;
   }
 
-  // 规则 2：摘要轮 → 全注入摘要给所有 target（包括摘要发出方自己 — 摘要也值得他自己回看）
-  const isSummary = lastTurn.mode === 'summary-brief';
-  if (isSummary) {
-    const speakers = lastSpeakers.map(sid => _renderSpeaker(sid, lastByMap, lastByStatus, sidLabelFn, sidRoleFn));
-    const payload = {
-      lastTurnNum: lastTurn.n,
-      lastTurnMode: lastTurn.mode,
-      lastDispatchMode: lastTurn.dispatchMode || 'all',
-      isSummaryInjection: true,
-      speakers,
-    };
-    for (const sid of targets) result[sid] = payload;
-    return result;
-  }
-
-  // 规则 3：同组跳过 — 仅当上一轮是 pilot/observer 模式且发言者集合相同
+  // 规则 2：同组跳过 — 仅当上一轮是 pilot/observer 模式且发言者集合相同
   //   pilot → pilot（同主驾）：主驾自己 PTY 上下文里有
   //   observer → observer（同两副驾）：保持副驾各自独立观点（不让副驾互通）
   //   注：all → all 不跳过（all 模式下每家 AI 看不到其他人，必须注入另两家）
@@ -70,7 +53,7 @@ function computeLastTurnInjection(lastTurn, currentTargetSids, sidLabelFn, sidRo
     return result;
   }
 
-  // 规则 4：个性化注入 — 每个 target 收到「上一轮发言者中除自己外」的内容
+  // 规则 3：个性化注入 — 每个 target 收到「上一轮发言者中除自己外」的内容
   for (const sid of targets) {
     const otherSpeakers = lastSpeakers.filter(s => s !== sid);
     if (otherSpeakers.length === 0) {
@@ -82,7 +65,6 @@ function computeLastTurnInjection(lastTurn, currentTargetSids, sidLabelFn, sidRo
       lastTurnNum: lastTurn.n,
       lastTurnMode: lastTurn.mode,
       lastDispatchMode: lastTurn.dispatchMode || 'all',
-      isSummaryInjection: false,
       speakers,
     };
   }
