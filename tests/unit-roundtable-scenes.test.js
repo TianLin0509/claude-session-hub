@@ -67,12 +67,13 @@ function testL1BaseRulesIsMinimal() {
 function testL1BaseRulesAiVsUserAccessV2() {
   const r = scenes.BASE_RULES;
 
-  // 必须列出用户自定义 skill 名单 (settings 兜不到,只能软约束)
-  const customSkills = ['cli-caller', 'init', 'loop', 'schedule', 'design-review'];
-  for (const sk of customSkills) {
+  // 2026-05-08 精简: skill 枚举从 14 个压到 6 个易误触的 + 「等」覆盖。
+  //   保留 plan/brainstorming/TDD/debugging/SDD/review 这 6 个核心；
+  //   cli-caller/init/loop/schedule/design-review 等用户自定义 skill 不再硬列出。
+  const coreSkills = ['plan', 'brainstorming', 'TDD', 'debugging', 'SDD', 'review'];
+  for (const sk of coreSkills) {
     assert.ok(r.includes(sk),
-      `BASE_RULES "AI 禁止主动调用"段必须列出用户自定义 skill "${sk}" ` +
-      `(它不属于任何 plugin,enabledPlugins 兜不到)`);
+      `BASE_RULES "AI 禁止主动调用"段必须保留核心 skill "${sk}" (最易误触)`);
   }
 
   // 必须列出危险斜杠命令的 AI 主动调用禁令
@@ -91,9 +92,9 @@ function testL1BaseRulesAiVsUserAccessV2() {
   assert.ok(/Auto-memory|memory 写入|memory 目录/.test(r),
     'BASE_RULES "允许"段必须含 Auto-memory 写入白名单 (让每 AI 积累记忆)');
 
-  // 必须明示用户主动放行
-  assert.ok(/用户主动放行|用户.*斜杠命令|\/model.*\/compact/.test(r),
-    'BASE_RULES 必须明示用户主动调 /model /compact 等斜杠命令放行 (不被禁令误杀)');
+  // 2026-05-08: "用户主动放行"独立段已删；改为"AI 禁止主动调用"括注里说明用户斜杠命令豁免
+  assert.ok(/\/model.*\/compact|用户.*斜杠命令|不在此禁令/.test(r),
+    'BASE_RULES 仍需明示用户主动调 /model /compact /clear 等斜杠命令豁免');
 
   // 反向断言: 不允许出现旧版"Edit / Write 文件"裸字串 (歧义)
   assert.ok(!/Edit\s*\/\s*Write\s*文件[；;]/.test(r),
@@ -102,24 +103,16 @@ function testL1BaseRulesAiVsUserAccessV2() {
   console.log('  ✓ testL1BaseRulesAiVsUserAccessV2');
 }
 
-// === L2 COVENANT_GENERAL：详细协作手册 + 五元组 SSoT ===
+// === L2 COVENANT_GENERAL：详细协作手册 (2026-05-08 精简: 删摘要/dispatchMode/礼仪/留白/何时不必查) ===
 function testL2CovenantGeneralExported() {
   assert.strictEqual(typeof scenes.COVENANT_GENERAL, 'string', 'COVENANT_GENERAL should be exported as string');
   const c = scenes.COVENANT_GENERAL;
-  assert.ok(c.length > 500, `COVENANT_GENERAL should be substantive (got ${c.length} chars)`);
+  assert.ok(c.length > 200, `COVENANT_GENERAL should be substantive (got ${c.length} chars)`);
   // 必须涵盖的详细约定
   assert.ok(c.includes('timeline.md'), 'COVENANT_GENERAL should cover timeline.md usage');
-  assert.ok(c.includes('摘要按钮'), 'COVENANT_GENERAL should cover 摘要按钮');
-  assert.ok(c.includes('五元组'), 'COVENANT_GENERAL should cover 五元组');
-  assert.ok(c.includes('dispatchMode'), 'COVENANT_GENERAL should cover dispatchMode 切换');
-  assert.ok(c.includes('协作礼仪'), 'COVENANT_GENERAL should cover 协作礼仪');
-  // 五元组五段必须齐
-  assert.ok(c.includes('目标') && c.includes('关键事实') && c.includes('关键分歧')
-            && c.includes('当前结论') && c.includes('下一步'),
-    'COVENANT_GENERAL should list all 5 quintuple slots');
-  // P4 SSoT: 五元组段必须用 renderFiveElementItems 渲染 (与 buildBriefSummaryPrompt 共用)
-  assert.ok(c.includes(scenes.renderFiveElementItems()),
-    'COVENANT_GENERAL must contain renderFiveElementItems() output (P4 SSoT)');
+  // 五元组段已迁出 covenant；buildBriefSummaryPrompt 调用时通过 renderFiveElementItems
+  // 注入到 per-turn prompt（保留 helpers 不删，见 P4 SSoT 契约）。
+  // dispatchMode/摘要按钮/协作礼仪/留白 整段已删 — 用户已停用对应功能 + 三原则已覆盖
   console.log('  ✓ testL2CovenantGeneralExported');
 }
 
@@ -203,9 +196,8 @@ function testResearchPresetBashEscapeSafe() {
 // === P3: GENERAL_PRESET 补强 (4 协作策略 + 1 场景定位) ===
 function testGeneralPresetEnhanced() {
   const s = scenes.getScene('general');
-  // 必须含 4 条协作策略关键词
+  // 协作策略段：2026-05-08 精简：删第 1 条「上下文已够 → 直接答」(AI 默认行为不需教育)
   assert.ok(s.preset.includes('协作策略'), 'GENERAL_PRESET should have "协作策略" section');
-  assert.ok(s.preset.includes('上下文已够'), 'GENERAL_PRESET should have 上下文已够 strategy');
   assert.ok(s.preset.includes('涉及代码/文件/事实'), 'GENERAL_PRESET should have 事实核实 strategy');
   assert.ok(s.preset.includes('依赖项目细节'), 'GENERAL_PRESET should have 项目细节 strategy');
   assert.ok(s.preset.includes('问题有多解'), 'GENERAL_PRESET should have 多解澄清 strategy');
@@ -365,9 +357,8 @@ function testFiveElementSchema() {
   assert.ok(inline.includes('，'), 'inline style uses 顿号');
   const list = scenes.renderBriefSummaryConstraints('list');
   assert.ok(list.startsWith('- 不超过 500 字'), 'list style uses - prefix');
-  // SSoT: COVENANT_GENERAL 必须包含 render 输出 (与 buildBriefSummaryPrompt 共用)
-  assert.ok(scenes.COVENANT_GENERAL.includes(items),
-    'COVENANT_GENERAL must use renderFiveElementItems() output (P4 SSoT)');
+  // 2026-05-08 精简: COVENANT_GENERAL 已不再 inline 五元组段（用户停用摘要按钮触发的 covenant 学习）
+  // helpers 仍由 buildBriefSummaryPrompt 在用户实际点摘要按钮时通过 PTY stdin 注入完整格式 + 约束
   console.log('  ✓ testFiveElementSchema');
 }
 
