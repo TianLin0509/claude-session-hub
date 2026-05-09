@@ -3190,11 +3190,31 @@ body.compact-mode .launcher-kbd-row { display: none; }
 body.compact-mode .launcher-title { font-size: 17px; }
 body.compact-mode .launcher-poster { gap: 14px; }
 
-/* --- 7. 预览面板 zoom 按钮组藏 --- */
+/* --- 7. 预览面板简化（简洁模式下藏低频 zoom + open-external + 全屏切换；
+       ✕ 关闭按钮强制可见 + 放大 + 红色突出 + 高 z-index，防止任何遮挡 / overflow / 双 fullscreen 打架）--- */
 body.compact-mode #preview-zoom-out,
 body.compact-mode #preview-zoom-in,
 body.compact-mode #preview-zoom-reset,
-body.compact-mode .preview-zoom-label { display: none; }
+body.compact-mode .preview-zoom-label,
+body.compact-mode #preview-open-external,
+body.compact-mode #preview-toggle-layout,
+body.compact-mode .preview-action-separator { display: none !important; }
+body.compact-mode #preview-close {
+  display: flex !important;
+  width: 36px !important;
+  height: 36px !important;
+  min-width: 36px;
+  font-size: 18px !important;
+  background: rgba(231, 76, 60, 0.15) !important;
+  border-color: rgba(231, 76, 60, 0.4) !important;
+  color: var(--accent-red, #e74c3c) !important;
+  position: relative;
+  z-index: 200;
+}
+body.compact-mode #preview-close:hover {
+  background: var(--accent-red, #e74c3c) !important;
+  color: white !important;
+}
 
 /* --- 8. 简洁模式下 sidebar 默认折叠 + btn-expand-sidebar 在两种状态都可点击 toggle ---
    折叠态：现有 left:8px 在屏幕左边显示（CSS 默认行为）
