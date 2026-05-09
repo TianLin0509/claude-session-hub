@@ -3218,3 +3218,35 @@ body.mr-density-compact .mr-rt-cost-bar {
   color: #6e7681;
   cursor: not-allowed;
 }
+
+/* === 2026-05-09 简洁模式 + 圆桌焦点 = 单卡全屏阅读模式 ===
+ * 复用现有 mr-card-focus-on 焦点机制，简洁模式下升级为单卡撑满主区（保留输入框）：
+ *   - 隐藏 mr-header / mr-toolbar（让 strip 接管 input-row 上面所有空间）
+ *   - mr-input-row 保留显示，方便用户阅读后立刻输入下一条
+ *   - mr-ft-strip 单列 grid，flex:1 撑满高度
+ *   - active 卡片去边距、边角铺满，padding 加大、字号略增便于阅读
+ *   - 非主卡（slot邻居）display:none
+ * 退出：再次点击同卡（meeting-room.js click handler 已为 compact-mode 分支处理）
+ */
+body.compact-mode.mr-card-focus-on .mr-header,
+body.compact-mode.mr-card-focus-on .mr-toolbar {
+  display: none !important;
+}
+body.compact-mode.mr-card-focus-on .mr-ft-strip {
+  grid-template-columns: 1fr !important;
+  flex: 1 1 auto !important;
+  height: 100% !important;
+  border-bottom: none !important;
+}
+body.compact-mode.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) {
+  display: none !important;
+}
+body.compact-mode.mr-card-focus-on .mr-ft-strip .mr-ft.active {
+  height: 100% !important;
+  min-height: 0;
+  padding: 28px 36px !important;
+  border-radius: 0 !important;
+  border-bottom: none !important;
+  font-size: calc(15px * var(--main-zoom, 1));
+  overflow-y: auto;
+}

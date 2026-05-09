@@ -3152,3 +3152,81 @@ body.theme-light .floating-scroll-btn {
   text-decoration: underline;
   cursor: pointer;
 }
+
+/* === 2026-05-09 简洁模式（手机远程友好） + 主区 zoom ===
+   - body.compact-mode 是叠加 toggle，纯 CSS 关闭低优先级 UI
+   - --main-zoom 定义在 :root，由 setFontSize() 联动（base=16）
+   - 注：原本定义在 #terminal-panel 上，但圆桌 #meeting-room-panel 是兄弟节点
+     不会继承到该变量，导致圆桌 fullscreen 字号 calc 无法跟随缩放（多路审查发现）
+*/
+
+:root { --main-zoom: 1; }
+
+/* 简洁按钮 active 态（区分 view-toggle 的 card/pty 互斥按钮，用蓝色） */
+.compact-toggle-btn.active {
+  background: var(--accent-blue);
+  color: white;
+}
+
+/* --- 1. 折叠 usage 三栏（renderer.js renderAccountUsage 给 #account-usage 设 inline style.display='block'，需 !important 覆盖） --- */
+body.compact-mode #account-usage { display: none !important; }
+
+/* --- 2/4. 会话行 compact（保留 ctx-badge） --- */
+body.compact-mode .session-preview { display: none; }
+body.compact-mode .session-footer .model-badge,
+body.compact-mode .session-footer .burn-badge { display: none; }
+body.compact-mode .session-item { padding-top: 6px; padding-bottom: 6px; }
+body.compact-mode .session-time { display: none; }
+
+/* --- 3. 侧栏头部按钮收纳（圆桌/恢复/选项） --- */
+body.compact-mode .btn-roundtable,
+body.compact-mode .resume-picker-wrapper,
+body.compact-mode .options-wrapper { display: none; }
+
+/* --- 5/6. 启动器降级 + 快捷键提示藏 --- */
+body.compact-mode .launcher-trio,
+body.compact-mode .launcher-subtitle,
+body.compact-mode .launcher-kbd-row { display: none; }
+body.compact-mode .launcher-title { font-size: 17px; }
+body.compact-mode .launcher-poster { gap: 14px; }
+
+/* --- 7. 预览面板 zoom 按钮组藏 --- */
+body.compact-mode #preview-zoom-out,
+body.compact-mode #preview-zoom-in,
+body.compact-mode #preview-zoom-reset,
+body.compact-mode .preview-zoom-label { display: none; }
+
+/* --- 8. 简洁模式下 sidebar 默认折叠 + btn-expand-sidebar 在两种状态都可点击 toggle ---
+   折叠态：现有 left:8px 在屏幕左边显示（CSS 默认行为）
+   展开态：移到 sidebar 右边缘 (sidebar 280px + 8px 间距)，方便手机点击折叠回去
+   简洁模式专属美化：圆形、淡化边框、放大箭头字号、紫色 hover 主题色
+*/
+body.compact-mode .btn-expand-sidebar {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  font-size: 15px;
+  font-weight: 300;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  transition: all 160ms ease;
+}
+body.compact-mode .btn-expand-sidebar:hover {
+  background: var(--ui-purple-1);
+  border-color: var(--ui-purple-1);
+  color: white;
+  transform: scale(1.05);
+}
+body.compact-mode .app-container:not(.sidebar-collapsed) .btn-expand-sidebar {
+  left: 288px;
+}
+
+/* --- 主区 zoom 联动：卡片视图 / 启动器 字号跟 --main-zoom 缩放 --- */
+#msg-overlay .msg-card { font-size: calc(13px * var(--main-zoom)); }
+.empty-state .launcher-title { font-size: calc(22px * var(--main-zoom)); }
+body.compact-mode .empty-state .launcher-title { font-size: calc(17px * var(--main-zoom)); }
+.empty-state .launcher-subtitle { font-size: calc(13px * var(--main-zoom)); }
+.empty-state .launcher-cta { font-size: calc(14px * var(--main-zoom)); }
+.empty-state .launcher-secondary { font-size: calc(12px * var(--main-zoom)); }

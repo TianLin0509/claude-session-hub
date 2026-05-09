@@ -1706,7 +1706,15 @@ if (typeof document !== 'undefined') (function () {
         //   - 同卡再点: 不动作(让用户选文本/复制), 显式退出走 Esc / 点空白
         //   - 不同卡再点: 退出聚焦(收回放大), 不打开新卡
         //   - 无聚焦时点卡: 进入聚焦
+        // 2026-05-09: 简洁模式（手机阅读场景）下,聚焦态升级为 fullscreen
+        //   - 同卡再点 → 退出（手机 tap 没法选文本，再点就是想关）
+        //   - CSS body.compact-mode.mr-card-focus-on 自动应用 fullscreen 样式
         if (_rtFocusedCardSid) {
+          if (document.body.classList.contains('compact-mode')) {
+            _rtFocusedCardSid = null;
+            document.body.classList.remove('mr-card-focus-on');
+            return;
+          }
           if (_rtFocusedCardSid !== sid) {
             _rtFocusedCardSid = null;
             document.body.classList.remove('mr-card-focus-on');
@@ -1992,7 +2000,10 @@ if (typeof document !== 'undefined') (function () {
       card.addEventListener('click', () => {
         const q = card.getAttribute('data-ob-q');
         const input = document.getElementById('mr-input-box');
-        if (input && q) { input.textContent = q; input.focus(); _placeCaretAtEnd(input); }
+        // 2026-05-09 道雪：输入框已有内容时不覆盖（用户原则）
+        if (input && q && !(input.innerText || '').trim()) {
+          input.textContent = q; input.focus(); _placeCaretAtEnd(input);
+        }
       });
     });
 
@@ -2912,6 +2923,7 @@ if (typeof document !== 'undefined') (function () {
           <button class="mr-header-btn mr-view-btn ${_isCardTabMode() ? 'active' : ''}" id="mr-btn-view-tab" title="Tab 模式：主界面只显示当前 AI 卡片">Tab</button>
         </div>
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
+        <button class="mr-header-btn compact-toggle-btn ${document.body.classList.contains('compact-mode') ? 'active' : ''}" title="简洁模式（手机远程友好）">📱 简洁</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
         <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
         <button class="btn-zoom" id="mr-btn-zoom-in" title="Enlarge UI">A+</button>
@@ -4361,6 +4373,11 @@ if (typeof document !== 'undefined') (function () {
       item.addEventListener('click', () => {
         menu.remove();
         const inputBox = document.getElementById('mr-input-box');
+        // 2026-05-09 道雪：输入框已有内容时不覆盖，给用户提示
+        if (inputBox && (inputBox.innerText || '').trim()) {
+          alert('当前输入框已有内容，请先清空或手动追加引用后再使用此功能');
+          return;
+        }
         if (inputBox) {
           inputBox.textContent = `> [来自 ${sourceLabel}] ${selection}\n`;
           const range = document.createRange();

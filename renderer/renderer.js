@@ -408,6 +408,9 @@ function setFontSize(size) {
   if (size === currentFontSize) return;
   currentFontSize = size;
   localStorage.setItem(FONT_SIZE_KEY, String(size));
+  // 2026-05-09 主区 zoom 联动：卡片视图 / 启动器 / 圆桌 fullscreen 等通过 CSS calc(... * --main-zoom) 跟随
+  // 写到 :root（documentElement），让圆桌（#meeting-room-panel，#terminal-panel 的兄弟节点）也能继承
+  document.documentElement.style.setProperty('--main-zoom', (size / 16).toFixed(3));
   for (const [, c] of terminalCache) {
     c.terminal.options.fontSize = size;
     if (c.opened) {
@@ -415,6 +418,42 @@ function setFontSize(size) {
     }
   }
 }
+
+// 2026-05-09 简洁模式：手机远程时一键切换的低密度 UI（纯 CSS 通过 body.compact-mode 控制）
+const COMPACT_MODE_KEY = 'claude-hub-compact-mode';
+let compactMode = localStorage.getItem(COMPACT_MODE_KEY) === '1';
+function toggleCompactMode(enabled) {
+  compactMode = !!enabled;
+  document.body.classList.toggle('compact-mode', compactMode);
+  // 同步所有 .compact-toggle-btn（普通 session 视图 + 圆桌视图各有一个）
+  document.querySelectorAll('.compact-toggle-btn').forEach(b => b.classList.toggle('active', compactMode));
+  localStorage.setItem(COMPACT_MODE_KEY, compactMode ? '1' : '0');
+  // sidebar 联动：简洁模式 ON 默认折叠，OFF 恢复用户偏好（不污染 SIDEBAR_KEY）。
+  // 启动 init 时 applySidebarCollapsed 还没定义，typeof 检查跳过 — line 5113 后会兜底。
+  if (typeof applySidebarCollapsed === 'function') {
+    if (compactMode) {
+      applySidebarCollapsed(true);
+    } else {
+      const userPref = localStorage.getItem('claude-hub-sidebar-collapsed') === '1';
+      applySidebarCollapsed(userPref);
+    }
+  }
+  // 侧栏宽度变化要 refit xterm
+  if (typeof terminalCache !== 'undefined' && activeSessionId) {
+    const cached = terminalCache.get(activeSessionId);
+    if (cached && cached.opened) {
+      try { cached.fitAddon.fit(); } catch {}
+    }
+  }
+}
+// 启动应用持久化状态 + 初始化 --main-zoom（首次 setFontSize 才设变量，启动时手动设一次到 :root）
+toggleCompactMode(compactMode);
+document.documentElement.style.setProperty('--main-zoom', (currentFontSize / 16).toFixed(3));
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.compact-toggle-btn')) {
+    toggleCompactMode(!compactMode);
+  }
+});
 
 // --- Global UI zoom (Electron webFrame) ---
 // Scales the entire renderer: sidebar, buttons, xterm cells, modals. Used
@@ -2506,6 +2545,13 @@ document.addEventListener('click', (e) => {
     const inputEl = document.querySelector('.floating-input-box')
       || document.getElementById('mr-input-box');
     if (inputEl) {
+      // 2026-05-09 道雪：用户原则 — 输入框只能由"发送 / 手动编辑"改动；
+      // 已有内容时 edit-resend 不再覆盖（避免吞掉用户正在写的内容）。
+      const cur = (inputEl.innerText || '').trim();
+      if (cur) {
+        console.warn('[edit-resend] 输入框已有内容，跳过自动填入历史消息');
+        return;
+      }
       inputEl.textContent = turn.text || '';
       inputEl.focus();
       // Place cursor at end (contenteditable doesn't have setSelectionRange)
@@ -2636,6 +2682,7 @@ function applyViewMode(mode) {
   const overlay = document.getElementById('msg-overlay');
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
   document.querySelectorAll('.view-toggle-btn').forEach(b => {
+    if (!b.dataset.view) return; // 跳过非视图按钮（如 #btn-compact-toggle 简洁模式独立 toggle）
     b.classList.toggle('active', b.dataset.view === mode);
   });
   // 切到 PTY 时 refit xterm
@@ -5065,6 +5112,8 @@ termSearchClose.addEventListener('click', closeTerminalSearch);
 const SIDEBAR_KEY = 'claude-hub-sidebar-collapsed';
 function applySidebarCollapsed(collapsed) {
   appContainerEl.classList.toggle('sidebar-collapsed', collapsed);
+  // 箭头方向：折叠态 ❯（朝右暗示展开），展开态 ❮（朝左暗示折叠回去）
+  if (btnExpandEl) btnExpandEl.textContent = collapsed ? '❯' : '❮';
   // After CSS transition, refit active xterm so it claims the new width.
   setTimeout(() => {
     const cached = terminalCache.get(activeSessionId);
@@ -5079,6 +5128,8 @@ function applySidebarCollapsed(collapsed) {
 }
 const initialCollapsed = localStorage.getItem(SIDEBAR_KEY) === '1';
 applySidebarCollapsed(initialCollapsed);
+// 简洁模式启动时强制折叠 sidebar（不污染 SIDEBAR_KEY 用户偏好）
+if (compactMode) applySidebarCollapsed(true);
 function toggleSidebar() {
   const next = !appContainerEl.classList.contains('sidebar-collapsed');
   localStorage.setItem(SIDEBAR_KEY, next ? '1' : '0');
