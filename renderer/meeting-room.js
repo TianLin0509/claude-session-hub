@@ -11,6 +11,7 @@ if (typeof document !== 'undefined') (function () {
   const { isPasteSensitive, kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
           SLOT_IDS, SLOT_DISPLAY, getSlotPromptName, getSlotDisplayLabel,
           slotIdRegexAlternation, slotIdToIndex, slotIndexToId } = require('../core/ai-kinds.js');
+  const { transformHtmlBlock, decideHtmlBlockHeight } = require('./html-block-renderer.js');
 
   let activeMeetingId = null;
   let meetingData = {};
@@ -492,6 +493,32 @@ if (typeof document !== 'undefined') (function () {
     });
   }
 
+  // Phase 7（铁律 v2 落地 2026-05-10）：language-html 代码块转 iframe sandbox 内联渲染
+  // 调用纯函数 transformHtmlBlock（renderer/html-block-renderer.js）决定输出形态
+  // → kind=iframe: 创建 iframe 节点 replaceChild 原 pre
+  // → kind=oversize: 在 pre 前插入提示，pre 保留供 Prism 高亮显示源码
+  function _renderHtmlCodeBlocks(wrapper) {
+    wrapper.querySelectorAll('pre code.language-html').forEach(code => {
+      const pre = code.parentElement;
+      if (!pre || pre.tagName !== 'PRE') return;
+      const desc = transformHtmlBlock(code.textContent || '');
+      if (desc.kind === 'oversize') {
+        const note = document.createElement('div');
+        note.className = 'rt-html-too-large';
+        note.textContent = desc.message;
+        pre.parentElement.insertBefore(note, pre);
+        return;
+      }
+      // kind === 'iframe'
+      const iframe = document.createElement('iframe');
+      iframe.className = desc.className;
+      iframe.setAttribute('sandbox', desc.sandbox);
+      iframe.style.cssText = 'width:100%;border:0;min-height:120px;height:0;background:transparent';
+      iframe.srcdoc = desc.srcdoc;
+      pre.parentElement.replaceChild(iframe, pre);
+    });
+  }
+
   function _renderMarkdown(text) {
     if (!text) return '';
     try {
@@ -509,6 +536,8 @@ if (typeof document !== 'undefined') (function () {
       _wrapFilePathsInDom(wrapper);
       // Phase 6: 代码块语法高亮(prism token classes), CSS 提供 token 颜色
       _highlightCodeBlocks(wrapper);
+      // Phase 7（铁律 v2 落地 2026-05-10）：language-html 块转 iframe sandbox 内联渲染
+      _renderHtmlCodeBlocks(wrapper);
       return wrapper.innerHTML;
     } catch (e) {
       // 回退到纯文本（escapeHtml）
@@ -537,6 +566,22 @@ if (typeof document !== 'undefined') (function () {
       console.warn('[mr] openPreviewPanel not found, cannot preview:', path);
     }
   }, true);
+
+  // Phase 7（铁律 v2 落地 2026-05-10）：iframe.rt-html-block 高度自适应
+  // iframe srcdoc 内桥脚本（HTML_BLOCK_BRIDGE in renderer/html-block-renderer.js）
+  // 通过 postMessage 上报 documentElement.scrollHeight；这里全局 listen 一次，
+  // 按 source 匹配 iframe，调 decideHtmlBlockHeight 校验后设 style.height
+  window.addEventListener('message', (e) => {
+    const h = decideHtmlBlockHeight(e.data);
+    if (h === null) return;
+    const iframes = document.querySelectorAll('iframe.rt-html-block');
+    for (const f of iframes) {
+      if (f.contentWindow === e.source) {
+        f.style.height = h + 'px';
+        return;
+      }
+    }
+  });
 
   // T7（2026-05-01）：preview blocks 结构化渲染 helper —
   //   transcript-tap 现在直供 { type:'thinking'|'text'|'tool_use', ... } 块数组
