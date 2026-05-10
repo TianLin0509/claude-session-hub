@@ -2634,27 +2634,32 @@ function _updateStreamingIndicator(sessionId) {
     _w16RemoveTimers.delete(sessionId);
   }
   if (isRunning && currentView === 'card') {
+    // W15 v2 (2026-05-10): 优先把 spinner 挂到最后一个 assistant turn-card 的
+    // turn-head 末尾（视觉不打扰），cardCount=0 时 fallback 到 overlay 顶部。
+    const allAssistantCards = overlay.querySelectorAll('.turn-card[data-turn-id]:not(.user)');
+    const lastAssistantCard = allAssistantCards[allAssistantCards.length - 1];
+    const lastAssistantHead = lastAssistantCard ? lastAssistantCard.querySelector('.turn-head') : null;
+    const targetParent = lastAssistantHead || overlay;
+
     if (!indicator) {
       // 2026-05-06 道雪 scroll-respect-user:append 前记录是否在底部,仅满足条件才滚
       //   (status running↔idle 反复切换时频繁触发的强制 scroll 是历史 bug 主因之一)
       const wasAtBottom = _isCardOverlayAtBottom(overlay);
-      indicator = document.createElement('div');
+      indicator = document.createElement('span');
       indicator.className = 'streaming-indicator';
       indicator.dataset.sessionId = String(sessionId);
-      indicator.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="text"></span>';
-      overlay.appendChild(indicator);
-      if (wasAtBottom) {
+      indicator.innerHTML = '<span class="spinner-icon" aria-hidden="true"></span>';
+      targetParent.appendChild(indicator);
+      if (wasAtBottom && targetParent === overlay) {
         try { overlay.scrollTop = overlay.scrollHeight; } catch {}
       }
+    } else if (indicator.parentElement !== targetParent) {
+      // 已有 indicator 但目标 parent 变了（新 turn-card 渲染出来）→ 迁移过去
+      targetParent.appendChild(indicator);
     }
-    // 动态文案
+    // 文案放 title 属性 hover 显示（不占视觉空间）
     const cardCount = overlay.querySelectorAll('.turn-card[data-turn-id]').length;
-    const textEl = indicator.querySelector('.text');
-    if (textEl) {
-      textEl.textContent = cardCount === 0
-        ? 'Claude 正在思考…'
-        : 'Claude 还在生成更多回复…';
-    }
+    indicator.title = cardCount === 0 ? 'Claude 正在思考…' : 'Claude 还在生成更多回复';
   } else if (!isRunning && indicator) {
     // 延迟 1.5s 移除（防 silence gap 闪烁）
     const timer = setTimeout(() => {
@@ -5175,6 +5180,15 @@ const XTERM_THEMES = {
     brightBlack: '#384858', brightRed: '#ffa198', brightGreen: '#a0f0d8',
     brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
     brightCyan: '#a0f0d8', brightWhite: '#d0e8f0',
+  },
+  'vibechat-light': {
+    background: '#ffffff', foreground: '#1f2328', cursor: '#0969da',
+    cursorAccent: '#ffffff', selectionBackground: 'rgba(9, 105, 218, 0.20)',
+    black: '#24292f', red: '#cf222e', green: '#1a7f37', yellow: '#9a6700',
+    blue: '#0969da', magenta: '#8250df', cyan: '#1b7c83', white: '#6e7781',
+    brightBlack: '#57606a', brightRed: '#a40e26', brightGreen: '#2da44e',
+    brightYellow: '#bf8700', brightBlue: '#218bff', brightMagenta: '#a475f9',
+    brightCyan: '#3192aa', brightWhite: '#1f2328',
   },
 };
 function applyTheme(name) {
