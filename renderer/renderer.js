@@ -2404,6 +2404,10 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
 }
 window._loadSessionHistoryToOverlay = loadSessionHistoryToOverlay;
 
+ipcRenderer.on('prompt-submitted-event', (_event, payload) => {
+  onPromptSubmittedFromTranscriptEvent(payload);
+});
+
 // === Spec 2 v1.0.0 · S6 turn-complete-event listener ===
 // main.js (S3) broadcasts 'turn-complete-event' whenever an assistant turn
 // finishes streaming. Append the just-completed turn as a card to #msg-overlay
@@ -4887,10 +4891,12 @@ function onReplyCompleteFromTranscriptEvent(payload) {
 
   const wasWaiting = !!session.isWaiting;
   session.lastOutputPreview = preview;
+  session.status = 'idle';
   session.isWaiting = true;
   session.waitingReason = 'reply-ready';
   session.waitingText = preview;
   session.lastMessageTime = completedAt || Date.now();
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
 
   const isActive = hubSessionId === activeSessionId;
   const focusOk = document.hasFocus() || (Date.now() - _lastWindowFocusAt < 500);
@@ -4899,6 +4905,34 @@ function onReplyCompleteFromTranscriptEvent(payload) {
     session.unreadCount = (session.unreadCount || 0) + 1;
   }
   if (!isActive || !wasWaiting) maybeNotify(session);
+  renderSessionList();
+  schedulePersist();
+}
+
+function onPromptSubmittedFromTranscriptEvent(payload) {
+  const { hubSessionId, text, submittedAt, meetingId, kind } = payload || {};
+  if (meetingId) return;
+  if (!hubSessionId) return;
+  if (kind !== 'codex' && kind !== 'codex-resume') return;
+
+  const session = sessions.get(hubSessionId);
+  if (!session) return;
+
+  const preview = buildPreviewFromUserMessage(text);
+  const sig = `${submittedAt || ''}:${preview}`;
+  if (preview && session._lastTranscriptPromptSig === sig) return;
+  session._lastTranscriptPromptSig = sig;
+
+  if (preview) {
+    session.lastOutputPreview = preview;
+    session._previewFromTranscript = true;
+  }
+  session.isWaiting = false;
+  session.waitingReason = null;
+  session.waitingText = null;
+  session.status = 'running';
+  session.lastMessageTime = submittedAt || Date.now();
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
   renderSessionList();
   schedulePersist();
 }

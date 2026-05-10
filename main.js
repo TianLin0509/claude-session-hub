@@ -471,9 +471,30 @@ transcriptTap.on('turn-complete', (ev) => {
       completedAt: completedAt != null ? completedAt : Date.now(),
       meetingId: session ? session.meetingId : null,
       kind: session ? session.kind : null,
+      durationMs: ev ? ev.durationMs : null,
+      signalSource: ev ? ev.signalSource : null,
     });
   } catch (e) {
     console.warn('[spec2/S3] turn-complete-event broadcast failed:', e && e.message);
+  }
+});
+
+transcriptTap.on('prompt-submitted', (ev) => {
+  const { hubSessionId, text, submittedAt } = ev || {};
+  if (!hubSessionId) return;
+  const session = sessionManager.getSession(hubSessionId);
+  try {
+    sendToRenderer('prompt-submitted-event', {
+      hubSessionId,
+      transcriptPath: ev ? ev.transcriptPath : null,
+      text,
+      submittedAt: submittedAt != null ? submittedAt : Date.now(),
+      meetingId: session ? session.meetingId : null,
+      kind: session ? session.kind : null,
+      signalSource: ev ? ev.signalSource : null,
+    });
+  } catch (e) {
+    console.warn('[codex prompt] prompt-submitted-event broadcast failed:', e && e.message);
   }
 });
 

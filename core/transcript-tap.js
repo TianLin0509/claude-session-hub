@@ -25,6 +25,42 @@ const path = require('path');
 const os = require('os');
 const readline = require('readline');
 
+function codexTextFromContent(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((item) => {
+      if (!item) return '';
+      if (typeof item === 'string') return item;
+      if (typeof item.text === 'string') return item.text;
+      if (typeof item.content === 'string') return item.content;
+      return '';
+    }).filter(Boolean).join('\n');
+  }
+  if (content && typeof content === 'object') {
+    if (typeof content.text === 'string') return content.text;
+    if (typeof content.content === 'string') return content.content;
+    if (Array.isArray(content.content)) return codexTextFromContent(content.content);
+  }
+  return '';
+}
+
+function codexTextFromPayload(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  return (
+    codexTextFromContent(payload.message) ||
+    codexTextFromContent(payload.text) ||
+    codexTextFromContent(payload.content) ||
+    codexTextFromContent(payload.input) ||
+    codexTextFromContent(payload.prompt)
+  );
+}
+
+function timestampToMs(timestamp) {
+  if (!timestamp) return null;
+  const ms = new Date(timestamp).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
 // ---------------------------------------------------------------------------
 // JsonlTail — 共用工具：监听 JSONL 文件增长，按行回调 JSON.parse 后的对象
 // ---------------------------------------------------------------------------
@@ -857,6 +893,23 @@ class CodexTap extends EventEmitter {
       if (!entry) return;
       const eventType = obj.payload.type;
 
+      if (eventType === 'user_message') {
+        const text = codexTextFromPayload(obj.payload).trim();
+        if (text) {
+          const sig = `${obj.timestamp || ''}:${text}`;
+          if (entry._lastPromptSig !== sig) {
+            entry._lastPromptSig = sig;
+            this.emit('prompt-submitted', {
+              hubSessionId,
+              text,
+              transcriptPath: entry.rolloutPath,
+              submittedAt: timestampToMs(obj.timestamp) || Date.now(),
+              signalSource: 'user_message',
+            });
+          }
+        }
+      }
+
       // 新 task 开始 → 取消 pending emit（视为"还在进行"，丢弃上一次的 pendingText）
       if (eventType === 'task_started' && entry._pendingEmitTimer) {
         clearTimeout(entry._pendingEmitTimer);
@@ -896,6 +949,7 @@ class CodexTap extends EventEmitter {
     this._bound.set(hubSessionId, {
       rolloutPath, tail, lastText: null,
       _pendingEmitTimer: null, _pendingText: null, _pendingDurationMs: null,
+      _lastPromptSig: null,
     });
     await tail.start();
   }
@@ -1327,6 +1381,7 @@ class TranscriptTap extends EventEmitter {
     for (const b of [this._claude, this._codex, this._gemini]) {
       b.on('turn-complete', (ev) => this.emit('turn-complete', ev));
       b.on('session-bound', (ev) => this.emit('session-bound', ev));
+      b.on('prompt-submitted', (ev) => this.emit('prompt-submitted', ev));
     }
   }
 
