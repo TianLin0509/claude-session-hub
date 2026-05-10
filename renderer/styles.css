@@ -2938,36 +2938,54 @@ body.theme-light .floating-scroll-btn {
 }
 .tc-result-err { color: #fca5a5; border-left: 2px solid var(--accent-red); }
 
-/* === Spec 3 · W15: streaming indicator (Claude 正在输出…) === */
+/* === Spec 3 · W15 v2 (2026-05-10): streaming indicator
+   旧版是 turn-card 之间的大 banner（"Claude 还在生成更多回复…" + 3 dot 跳动），
+   实测视觉打扰偏多。新版改成紧凑 spinner，由 JS 优先 append 到最后一个
+   assistant turn-card 的 turn-head 末尾，hover 看具体文案；cardCount=0 时
+   fallback 到 overlay 顶部仍紧凑显示。
+*/
 .streaming-indicator {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  margin: 8px 0 4px;
-  background: rgba(167, 139, 250, 0.05);
-  border-radius: 6px;
-  border-left: 3px solid var(--ui-purple-2);
+  gap: 4px;
+  padding: 0;
+  margin: 0 0 0 6px;
+  background: transparent;
+  border: none;
+  border-left: none;
+  color: var(--ui-purple-2);
+  vertical-align: middle;
 }
-.streaming-indicator .dot {
-  width: 7px;
-  height: 7px;
-  background: var(--ui-purple-2);
+.streaming-indicator .spinner-icon {
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
   border-radius: 50%;
-  animation: streaming-dot-pulse 1.4s infinite ease-in-out both;
+  display: inline-block;
+  animation: streaming-spin 0.8s linear infinite;
+  opacity: 0.65;
+  flex-shrink: 0;
 }
-.streaming-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
-.streaming-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
-.streaming-indicator .text {
-  color: var(--ui-purple-3);
-  font-size: 13px;
+@keyframes streaming-spin { to { transform: rotate(360deg); } }
+/* cardCount=0 fallback：indicator 直接挂 overlay 时给点视觉余量（原 banner 极简化） */
+.msg-overlay > .streaming-indicator {
+  display: flex;
+  margin: 12px 0 4px 8px;
+  padding: 4px 0;
+  font-size: 12px;
   font-style: italic;
-  margin-left: 4px;
+  opacity: 0.75;
 }
-@keyframes streaming-dot-pulse {
-  0%, 80%, 100% { opacity: 0.25; transform: scale(0.7); }
-  40% { opacity: 1; transform: scale(1.2); }
+.msg-overlay > .streaming-indicator::after {
+  content: '思考中…';
+  color: currentColor;
+  font-size: 12px;
+  font-style: italic;
+  margin-left: 6px;
 }
+/* vibechat-light 主题下 spinner 用微信绿 */
+body.theme-vibechat-light .streaming-indicator { color: #07c160; }
 
 /* === Spec 3 · 长 markdown 文本默认折叠 === */
 .turn-body.body-foldable.folded {
