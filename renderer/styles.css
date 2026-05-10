@@ -3283,10 +3283,12 @@ body.theme-vibechat-light {
   --bg-primary: #f5f8fc;
   --bg-secondary: #eef2f7;
   --bg-tertiary: #e3e9f0;
+  --bg-hover: #e3e9f0;           /* hover 浅灰（圆桌 mr-tab/mr-header-btn 等用 var(--bg-hover) fallback 到深 #1c2128，在浅底上需要本地化）*/
   --border: #cbd5e1;
   --text-primary: #0f172a;
   --text-secondary: #475569;
   --text-muted: #64748b;
+  --accent: #07c160;             /* 微信绿（圆桌 mr-tab.active/mr-header-btn.active 用 var(--accent) fallback 到紫 #6366f1，统一改微信绿）*/
   --accent-green: #07c160;       /* 微信绿，替代 GitHub 1a7f37 */
   --accent-blue: #0969da;
   --accent-orange: #bc4c00;
