@@ -3519,3 +3519,31 @@ body.theme-vibechat-light .mr-header-btn.active {
   color: white;
   border-color: var(--accent);
 }
+
+/* ============================================================== */
+/* === 兜底：强制 .mr-ft 浅色背景（防止某个 status class / 子 wrap
+       覆盖整个卡片底色为深色，用户截图反复出现单卡深色 island） ===
+   用 .mr-ft-strip > .mr-ft child combinator + body class + !important
+   提到最高 specificity，压住任何深色覆盖。 */
+/* ============================================================== */
+body.theme-vibechat-light .mr-ft-strip > .mr-ft {
+  background-color: #ffffff !important;
+}
+body.theme-vibechat-light .mr-ft-strip > .mr-ft.slot-1.active {
+  background-color: rgba(var(--c-slot-1-rgb), 0.10) !important;
+}
+body.theme-vibechat-light .mr-ft-strip > .mr-ft.slot-2.active {
+  background-color: rgba(var(--c-slot-2-rgb), 0.10) !important;
+}
+body.theme-vibechat-light .mr-ft-strip > .mr-ft.slot-3.active {
+  background-color: rgba(var(--c-slot-3-rgb), 0.10) !important;
+}
+body.theme-vibechat-light .mr-ft-strip > .mr-ft:hover:not(.active) {
+  background-color: rgba(0, 0, 0, 0.025) !important;
+}
+
+/* 圆桌主容器底色也兜底（meeting-room-panel 用 var(--bg-primary, #0d1117)，
+   万一变量没生效 fallback 到深色） */
+body.theme-vibechat-light .meeting-room-panel {
+  background: var(--bg-primary) !important;
+}
