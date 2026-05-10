@@ -5209,7 +5209,9 @@ function applyTheme(name) {
   }
 }
 (function initThemePicker() {
-  const saved = localStorage.getItem('claude-hub-theme') || 'default';
+  // 默认主题 vibechat-light（2026-05-10 起；之前是 default 紫调深色）
+  // 已设过偏好的用户保留旧值；新装 / 从未切过主题的用户首次启动即看到 vibechat-light
+  const saved = localStorage.getItem('claude-hub-theme') || 'vibechat-light';
   applyTheme(saved);
   // 主题切换通过"选项"菜单触发
   const optionsBtn = document.getElementById('btn-options');
