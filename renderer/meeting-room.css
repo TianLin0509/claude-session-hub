@@ -3250,3 +3250,111 @@ body.compact-mode.mr-card-focus-on .mr-ft-strip .mr-ft.active {
   font-size: calc(15px * var(--main-zoom, 1));
   overflow-y: auto;
 }
+
+/* ============================================================== */
+/* === 2026-05-10 · vibechat-light 主题下圆桌浅色化（风格 A 浅色竞技场）===
+   保留 3 列 grid + 御三家 slot 配色 (黄/橙/蓝)；
+   仅把所有 hardcoded 深色 (rgba(255,255,255,*) 半透明白 / #1f2735 网格线 /
+   #0d1117 代码块 / rgba(13,17,23,*) 深底 等) 在 vibechat-light scope 下
+   反向改成浅色版本。设计依据：artifacts/2026-05-10/vibechat-roundtable-styles-d4f8a2.html 方案 A。 */
+/* ============================================================== */
+
+/* 圆桌底部蓝色径向光晕：浅底下不刺眼（保留淡光晕暗示"圆桌中心"） */
+body.theme-vibechat-light .meeting-room-panel::after {
+  background: radial-gradient(ellipse at center bottom,
+    rgba(7, 193, 96, 0.05) 0%, rgba(7, 193, 96, 0.015) 40%, transparent 70%);
+}
+
+/* mr-ft-strip 网格分隔线 */
+body.theme-vibechat-light .mr-ft-strip { border-bottom-color: var(--border); }
+body.theme-vibechat-light .mr-ft:not(:last-child) { border-right-color: var(--border); }
+
+/* mr-ft 单席位卡片：白底 + slot 色 active 浅底 */
+body.theme-vibechat-light .mr-ft { background: #ffffff; }
+body.theme-vibechat-light .mr-ft:hover { background: rgba(0, 0, 0, 0.025); }
+body.theme-vibechat-light .mr-ft.slot-1 { border-bottom-color: rgba(var(--c-slot-1-rgb), 0.25); }
+body.theme-vibechat-light .mr-ft.slot-2 { border-bottom-color: rgba(var(--c-slot-2-rgb), 0.25); }
+body.theme-vibechat-light .mr-ft.slot-3 { border-bottom-color: rgba(var(--c-slot-3-rgb), 0.25); }
+body.theme-vibechat-light .mr-ft.slot-1.active { background: rgba(var(--c-slot-1-rgb), 0.05); }
+body.theme-vibechat-light .mr-ft.slot-2.active { background: rgba(var(--c-slot-2-rgb), 0.05); }
+body.theme-vibechat-light .mr-ft.slot-3.active { background: rgba(var(--c-slot-3-rgb), 0.05); }
+
+/* mr-card-view-tabs 顶部 tab 区 */
+body.theme-vibechat-light .mr-card-view-tabs {
+  background: var(--bg-secondary);
+  border-bottom-color: var(--border);
+}
+body.theme-vibechat-light .mr-card-view-tab {
+  background: #ffffff;
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+body.theme-vibechat-light .mr-card-view-tab:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* mr-ft-name 在浅底上加深 slot 色（深底深字现在浅底要保持可读） */
+body.theme-vibechat-light .mr-ft-name.slot-1 { color: #b45309; }
+body.theme-vibechat-light .mr-ft-name.slot-2 { color: #c2410c; }
+body.theme-vibechat-light .mr-ft-name.slot-3 { color: #1e40af; }
+
+/* mr-ft-md 内联 markdown：代码块 / 表格浅化 */
+body.theme-vibechat-light .mr-ft-md pre {
+  background: #f6f8fa;
+  color: #1f2328;
+  border: 1px solid var(--border);
+}
+body.theme-vibechat-light .mr-ft-md code {
+  background: rgba(0, 0, 0, 0.06);
+  color: #9d174d;
+}
+body.theme-vibechat-light .mr-ft-md pre code {
+  background: transparent;
+  color: inherit;
+}
+body.theme-vibechat-light .mr-ft-md th,
+body.theme-vibechat-light .mr-ft-md td { border-color: var(--border); }
+
+/* 半透明白底反向（在浅底上 rgba(255,255,255,*) 看不出，改成 rgba(0,0,0,*) 让元素深一档） */
+body.theme-vibechat-light .mr-ft-progress { background: rgba(0, 0, 0, 0.06); }
+body.theme-vibechat-light .mr-ft-md blockquote {
+  border-left: 3px solid var(--border);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* mr-tab.has-new 黄色提示边在浅底上加深 */
+body.theme-vibechat-light .mr-tab.has-new {
+  border-color: rgba(180, 83, 9, 0.6);
+}
+body.theme-vibechat-light .mr-tab .new-badge {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* 进度条 bar 颜色（thinking / idle 状态切换在浅底上更明显） */
+body.theme-vibechat-light .mr-header-progress { background: rgba(0, 0, 0, 0.06); }
+body.theme-vibechat-light .mr-header-progress-fill {
+  background: linear-gradient(90deg, var(--c-slot-1), var(--c-slot-3));
+}
+
+/* mr-input-row 输入区：使用主题变量自动浅化（已通过 var 自动适配，
+   这里仅 fix mr-input-box 的 contenteditable focus 边框 */
+body.theme-vibechat-light .mr-input-box:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(7, 193, 96, 0.10);
+}
+
+/* mr-send-btn 发送按钮：微信绿（跟全局 send 一致） */
+body.theme-vibechat-light .mr-send-btn {
+  background: var(--accent);
+  color: white;
+}
+body.theme-vibechat-light .mr-send-btn:hover {
+  background: #06ad57;
+}
+
+/* mr-free-avatar-chk 头像 checkbox 选中态 */
+body.theme-vibechat-light .mr-free-avatar-chk.checked {
+  outline: 2px solid var(--accent);
+}
