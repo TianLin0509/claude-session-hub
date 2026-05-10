@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌 Prompt 架构重构 · 终版设计报告（2026-05-04）</title>
+<style>
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px 40px 80px;
+    color: #2d3748;
+    line-height: 1.7;
+    background: #fafbfc;
+  }
+  header {
+    border-bottom: 3px solid #4a5568;
+    padding-bottom: 16px;
+    margin-bottom: 32px;
+  }
+  header h1 { margin: 0 0 8px; font-size: 28px; color: #1a202c; }
+  header .meta { color: #718096; font-size: 14px; }
+
+  nav.toc {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 16px 24px;
+    margin-bottom: 32px;
+    font-size: 14px;
+  }
+  nav.toc h3 { margin: 0 0 8px; font-size: 16px; }
+  nav.toc ul { margin: 0; padding-left: 20px; }
+  nav.toc a { color: #2b6cb0; text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+
+  section { margin-bottom: 56px; }
+  section h2 {
+    font-size: 22px;
+    border-left: 5px solid #4299e1;
+    padding-left: 14px;
+    margin-bottom: 8px;
+    color: #2d3748;
+  }
+  section h2 .tag {
+    font-size: 13px;
+    background: #c6f6d5;
+    color: #22543d;
+    padding: 2px 10px;
+    border-radius: 4px;
+    margin-left: 12px;
+    font-weight: normal;
+  }
+  section h2 .tag.pending {
+    background: #fefcbf;
+    color: #744210;
+  }
+  section h3 {
+    font-size: 17px;
+    margin: 24px 0 8px;
+    color: #2c5282;
+  }
+  section h4 {
+    font-size: 15px;
+    margin: 18px 0 6px;
+    color: #4a5568;
+  }
+
+  .filebox {
+    background: #edf2f7;
+    border-left: 4px solid #718096;
+    padding: 8px 14px;
+    margin: 8px 0 16px;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+    border-radius: 0 4px 4px 0;
+    color: #2d3748;
+  }
+  .filebox b { color: #1a202c; }
+
+  pre {
+    background: #1a202c;
+    color: #e2e8f0;
+    padding: 16px 20px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.55;
+    font-family: Consolas, "Courier New", monospace;
+  }
+  pre.markdown {
+    background: #f7fafc;
+    color: #2d3748;
+    border: 1px solid #e2e8f0;
+  }
+  pre.diff-add {
+    background: #f0fff4;
+    color: #22543d;
+    border-left: 4px solid #38a169;
+  }
+  pre.diff-del {
+    background: #fff5f5;
+    color: #742a2a;
+    border-left: 4px solid #e53e3e;
+    text-decoration: line-through;
+    text-decoration-color: rgba(229, 62, 62, 0.4);
+  }
+  code {
+    background: #edf2f7;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+    color: #c53030;
+  }
+  pre code { background: none; padding: 0; color: inherit; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0 20px;
+    font-size: 14px;
+  }
+  th, td {
+    border: 1px solid #cbd5e0;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #edf2f7; color: #2d3748; }
+  tr:nth-child(even) td { background: #f9fafb; }
+
+  .callout {
+    border-left: 4px solid #4299e1;
+    background: #ebf8ff;
+    padding: 12px 18px;
+    border-radius: 0 4px 4px 0;
+    margin: 16px 0;
+  }
+  .callout.warn {
+    border-color: #ed8936;
+    background: #fffaf0;
+  }
+  .callout.danger {
+    border-color: #e53e3e;
+    background: #fff5f5;
+  }
+  .callout.thought {
+    border-color: #805ad5;
+    background: #faf5ff;
+  }
+  .callout b { color: #2d3748; }
+
+  .scenario {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    padding: 12px 18px;
+    margin: 8px 0;
+  }
+  .scenario .label {
+    display: inline-block;
+    background: #4299e1;
+    color: white;
+    font-size: 12px;
+    padding: 2px 10px;
+    border-radius: 3px;
+    margin-right: 8px;
+    font-weight: bold;
+  }
+  .scenario .label.l1 { background: #2b6cb0; }
+  .scenario .label.l2 { background: #2c5282; }
+  .scenario .label.l3 { background: #2a4365; }
+  .scenario .label.l4 { background: #1a365d; }
+
+  ul.checks li { margin-bottom: 4px; }
+
+  .principle-card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 14px 20px;
+    margin: 12px 0;
+  }
+  .principle-card h4 { margin: 0 0 6px; color: #2c5282; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>圆桌 Prompt 架构重构 · 终版设计报告</h1>
+  <p class="meta">
+    产出日期：2026-05-04 ·
+    依据：通用圆桌会议 22 轮三方讨论 ·
+    timeline：<code>C:\Users\lintian\.arena\timeline-a61f5987-f778-467e-a4bf-e6a334ad335e.md</code> ·
+    施工单：<code>C:\Users\lintian\claude-session-hub\docs\roundtable-prompt-refactor-plan.md</code>
+  </p>
+  <p class="meta">
+    目标主文件：<code>C:\Users\lintian\claude-session-hub\core\roundtable-scenes.js</code> ·
+    <code>core\roundtable-orchestrator.js</code> ·
+    <code>main.js</code>
+  </p>
+</header>
+
+<nav class="toc">
+  <h3>目录</h3>
+  <ul>
+    <li><a href="#overview">一、整体架构（4 层注入模型）</a></li>
+    <li><a href="#principles">二、核心设计理念（贯穿全部 Phase）</a></li>
+    <li><a href="#P0">三、P0 — L1 BASE_RULES 瘦身</a></li>
+    <li><a href="#P1">四、P1 — L2 research 三层分型（B 路线）</a></li>
+    <li><a href="#P2">五、P2 — RESUME_REMINDERS 直接删除</a></li>
+    <li><a href="#P3">六、P3 — GENERAL_PRESET 补强</a></li>
+    <li><a href="#P4">七、P4 — 五元组格式 SSoT 统一</a></li>
+    <li><a href="#P5">八、P5 — Arena Memory 启动快照 + L3 变更提示（待裁决）</a></li>
+    <li><a href="#order">九、实施顺序与验证方案</a></li>
+    <li><a href="#log">十、决策日志</a></li>
+  </ul>
+</nav>
+
+<!-- ================================================================ -->
+<section id="overview">
+<h2>一、整体架构（4 层注入模型）</h2>
+
+<p>圆桌 prompt 系统由 4 个层级构成。理解每层的<b>装载时机</b>和<b>AI 可见性</b>是后续所有改动的前提。</p>
+
+<table>
+  <thead>
+    <tr><th>层</th><th>内容</th><th>位置</th><th>装载时机</th><th>AI 可见性</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>L1</b></td>
+      <td><code>BASE_RULES</code> — 核心规则（你是谁 / 三原则 / 怎么找历史）</td>
+      <td><code>roundtable-scenes.js:35-79</code></td>
+      <td>PTY 启动时通过 <code>--append-system-prompt-file</code> 注入一次</td>
+      <td>会议全程可见，但 PTY 启动后不可变</td>
+    </tr>
+    <tr>
+      <td><b>L2</b></td>
+      <td>房间公约 = <code>COVENANT_GENERAL</code> + 场景叠加 <code>COVENANT_RESEARCH</code></td>
+      <td><code>roundtable-scenes.js:152-202 / 207-245</code></td>
+      <td>同 L1（拼装在同一个 prompt 文件）</td>
+      <td>同 L1</td>
+    </tr>
+    <tr>
+      <td><b>L3</b></td>
+      <td>每轮 prompt（调度上下文 + 上一轮 + 任务 + timeline 路径）</td>
+      <td><code>roundtable-orchestrator.js</code> 的 <code>buildFanoutPrompt / buildDebatePrompt / buildSummaryPrompt / buildBriefSummaryPrompt</code></td>
+      <td>PTY 启动后每轮通过 stdin 写入</td>
+      <td>每轮独立可见，可随轮次变化</td>
+    </tr>
+    <tr>
+      <td><b>L4</b></td>
+      <td><code>timeline.md</code> — 外置历史</td>
+      <td><code>C:\Users\lintian\.arena\timeline-{meetingId}.md</code></td>
+      <td>不主动注入</td>
+      <td>AI 通过 Read 工具按需访问</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>装配流程</h3>
+<pre><code>buildSystemPrompt(sceneKey, covenantText)
+  └─ L1 BASE_RULES + scene.preset(general/research) + L2 covenant
+  └─ writePromptFile() → {meetingId}-prompt.md
+  └─ CLI 启动: claude --append-system-prompt-file {meetingId}-prompt.md
+  └─ PTY 起来后, 每轮通过 stdin 发送 L3 prompt</code></pre>
+
+<div class="callout warn">
+  <b>关键技术约束（贯穿 P5 决策）</b>：PTY 启动后，<code>--append-system-prompt-file</code> 读取的是启动时的内容；后面修改 prompt 文件，已启动的 PTY 完全感知不到。<b>真正的"会中刷新"必须走 L3 路径，不能靠改 prompt 文件</b>。
+</div>
+</section>
+
+<!-- ================================================================ -->
+<section id="principles">
+<h2>二、核心设计理念（贯穿全部 Phase）</h2>
+
+<div class="principle-card">
+  <h4>1. 准入闸门（Admission Gate）</h4>
+  <p>每个 prompt 层都有<b>显式准入规则</b>，写入代码注释 + unit test 双重防护，防止内容慢慢膨胀回到改造前的状态。</p>
+  <p>典型例子：L1 准入 3 问（所有场景都需要？每轮值得重复？过期会误导？）；L2 research 准入 3 问（只入 PRESET / 不重 COVENANT / 用户偏好不进 covenant）；GENERAL_PRESET 准入 4 条（不依赖当前轮模式才成立）。</p>
+</div>
+
+<div class="principle-card">
+  <h4>2. 差量层（Differential Layer）</h4>
+  <p>下游层级只承载相对上游的<b>差量</b>，不重写规则。来源 Squirtle 第 6 轮："L2 research 不是第二份说明书，而是 differential layer"。</p>
+  <p>检查标准（用于审查每条新增内容）："如果这条放在 general 里也成立，它就不属于 research"。</p>
+</div>
+
+<div class="principle-card">
+  <h4>3. 单一真相源（Single Source of Truth）</h4>
+  <p>同一份语义不在多处重复定义。P4 五元组格式从两处独立定义（COVENANT_GENERAL + buildBriefSummaryPrompt）改为<b>结构化 schema + render helper</b>，两处共享。</p>
+</div>
+
+<div class="principle-card">
+  <h4>4. 注入层级匹配功能（Inject Layer ≡ Function）</h4>
+  <p>静态信息走 L1/L2，动态信息走 L3。P2 删除 RESUME_REMINDERS 是因为它的功能已被"L1+L2 重注 + Claude --resume 恢复 PTY 历史"完整覆盖；P5 Arena Memory 必须双路径（启动 L1 静态注入 + 会中 L3 动态 hint），否则会中刷新无法生效。</p>
+</div>
+
+<div class="principle-card">
+  <h4>5. 用户画像不进 covenant（User Profile ≠ Protocol）</h4>
+  <p>P1 关键洞察：用户投资风格"15%/35%/30%/20%"被模型当硬规则反向硬套——这是比 token 更严重的问题。<b>用户偏好必须外置（research-profile.md）</b>，covenant 只承载所有用户都适用的判断纪律。</p>
+</div>
+
+<div class="principle-card">
+  <h4>6. 先 0→1 做对的，不做 0→0.5 中间态</h4>
+  <p>P5 节奏判断：Charmander 档 1（启动注入）只解决 0→0.5；Squirtle B 方案（启动 + L3 变更提示）多 ~7 行实施成本但功能完整。优先做对的一步，不分阶段半接入。</p>
+</div>
+
+<div class="principle-card">
+  <h4>7. 先验证再设计（Verify Before Design）</h4>
+  <p>圆桌讨论中三次 grep 推翻假设：P2 发现 <code>getResumeReminder()</code> 是死代码（main.js 调用 = 0）；P4 发现"格式三处"实际是"两处"（<code>summary-templates.json</code> 是 deep-summary 用，与五元组无关）；P5 发现整个 <code>core/arena-memory/</code> 模块从未被 main.js 导入。</p>
+</div>
+
+<div class="principle-card">
+  <h4>8. 死代码删除原则</h4>
+  <p>RESUME_REMINDERS（直接删，因为重复 L1/L2，无独特价值）vs Arena Memory（复活，因为不重复 L1/L2，有独特价值）—— <b>判断标准是"是否提供其他层未覆盖的功能"，不是"代码本身是否优雅"</b>。</p>
+</div>
+</section>
+
+<!-- ================================================================ -->
+<section id="P0">
+<h2>三、P0 — L1 BASE_RULES 瘦身 <span class="tag">已敲定</span></h2>
+
+<div class="filebox">
+  <b>目标文件</b>：<code>C:\Users\lintian\claude-session-hub\core\roundtable-scenes.js</code><br>
+  <b>当前位置</b>：lines 35-79（注释自称 ~250 字，实际 ~700 字）<br>
+  <b>装载时机</b>：PTY 启动时通过 system prompt 注入一次，全程不可变
+</div>
+
+<h3>当前问题</h3>
+<table>
+  <thead><tr><th>问题</th><th>行号</th><th>浪费原因</th></tr></thead>
+  <tbody>
+    <tr><td>A 股投研禁令 3 行</td><td>line 46</td><td>通用圆桌每轮背一遍跟自己无关的禁令</td></tr>
+    <tr><td>投研数据查询（allowed tools 第 3 条）</td><td>line 51</td><td>与 RESEARCH_PRESET:106-115 完全重复</td></tr>
+    <tr><td>调度模式枚举（fanout/debate/summary, all/pilot/observer）</td><td>lines 63-67</td><td>L3 调度上下文已实时输出，L1 复读是维护债</td></tr>
+    <tr><td>"木桶原理"修辞</td><td>line 54</td><td>"≤ 600 字"已覆盖语义，纯文学</td></tr>
+    <tr><td>席位"配置细节"（"同一家 AI 可占多个席位"）</td><td>line 59 后半</td><td>配置细节，对单轮回答质量无价值</td></tr>
+  </tbody>
+</table>
+
+<h3>设计思想</h3>
+<div class="callout thought">
+  <b>L1 = "入场须知" ≠ "操作手册"</b>（来源 Squirtle 第 2 轮）。L1 应该只承载"一旦缺失就会导致行为跑偏"的规则；其余哪怕"有帮助"也不进 L1。
+</div>
+<p>三方收敛标准（Squirtle 第 2 轮"准入 3 问"）：</p>
+<ol>
+  <li>是否所有场景（general / research / 未来 scene）都需要？</li>
+  <li>是否每一轮都值得重复读？</li>
+  <li>如果过期，是否会造成错误引导？</li>
+</ol>
+<p>任一为 no → 不进 L1，下沉到 scene.preset 或 COVENANT。</p>
+
+<h3>改动 1 — 替换 BASE_RULES 常量（lines 35-79）</h3>
+<p>从 ~700 字 → ~260 中文字（<b>-63%</b>）</p>
+
+<pre class="markdown"># 圆桌讨论 · 核心规则
+
+## ⚠️ 铁律：圆桌讨论 ≠ 独立任务执行
+本轮只输出**观点**（≤ 600 字）。这不是独立任务——不要展开多步骤工作流。
+
+**禁止**：
+- 触发 plan / brainstorming / TDD / debugging 等 skill；派生 Task / sub-agent
+- Edit / Write 文件；跑长命令（构建、部署、大型脚本）
+- 主动自检 / verify / 多方审查；套用 CLAUDE.md 或记忆里的工作流
+
+**可用**（单次、必要时）：Read 文件 / Grep 关键字 / WebSearch / WebFetch / 浏览 timeline.md
+
+需执行类任务 → 结论里**建议用户切独立 session**，圆桌内不执行。
+
+## 你是谁
+用户的 AI 智囊。圆桌最多 3 席：**Pikachu / Charmander / Squirtle**（${listKindsForPrompt()} 等）。
+本轮席位、同台者、交互/调度模式 → 见 prompt 头部「调度上下文」。
+**地位平等，本色发挥，不扮演角色。**
+
+## 三个原则
+1. 引用明示（"&lt;对方&gt; 第 N 轮提到的 X"）
+2. 分歧不抹平（summary 时显列未消解分歧）
+3. 不知说不知（信息不足主动声明，不硬猜）
+
+## 怎么找历史
+- 系统推送「上一轮」相关内容
+- 完整历史：timeline.md（路径见末尾），需要时主动 Read
+
+详细约定见房间公约。</pre>
+
+<h3>改动 2 — 顶部注释加准入规则（lines 22-34）</h3>
+<pre><code>// L1 BASE_RULES 准入规则（新增内容必须三问全 yes，否则下沉到 scene.preset 或 COVENANT）：
+//   1. 是否所有场景（general / research / 未来 scene）都需要？
+//   2. 是否每一轮都值得重复读？
+//   3. 如果过期是否会造成错误引导？
+// 任一为 no → 不进 L1。长度预算：≤ 350 中文字（含标点），由 unit test 兜底。</code></pre>
+
+<h3>改动 3 — 新增 unit test</h3>
+<div class="filebox"><b>新文件</b>：<code>tests/unit-base-rules-budget.test.js</code></div>
+<pre><code>const { BASE_RULES } = require('../core/roundtable-scenes.js');
+
+test('L1 BASE_RULES 中文字数在预算内', () => {
+  const cn = [...BASE_RULES].filter(c => /[一-龥]/.test(c)).length;
+  expect(cn).toBeLessThanOrEqual(350); // 当前 ~260，留 ~90 字 buffer
+});
+
+test('L1 不得包含投研场景专属字符串（防反弹）', () => {
+  expect(BASE_RULES).not.toMatch(/cli\.py|Stock_top10|fetch_lindang|tushare|data_query/);
+});</code></pre>
+
+<h3>生效场景</h3>
+<div class="scenario">
+  <span class="label l1">L1 注入</span>
+  会议创建/启动时，<code>buildSystemPrompt()</code> 拼装 L1+L2 写入 <code>{meetingId}-prompt.md</code>，CLI 通过 <code>--append-system-prompt-file</code> 注入；AI 第一次看到 BASE_RULES 是 PTY 启动那一刻，全程可见但不可变。
+</div>
+<div class="scenario">
+  <span class="label l3">L3 反复</span>
+  每轮 prompt 头部"调度上下文"会重复说"本轮属于 fanout/debate/summary，本轮你是 Pikachu/Charmander/Squirtle"——L1 只需说"以调度上下文为准"，<b>不需要枚举模式名</b>。这是删除 lines 63-67 的根本理由。
+</div>
+</section>
+
+<!-- ================================================================ -->
+<section id="P1">
+<h2>四、P1 — L2 research 三层分型（B 路线） <span class="tag">已敲定</span></h2>
+
+<div class="filebox">
+  <b>目标文件</b>：<code>C:\Users\lintian\claude-session-hub\core\roundtable-scenes.js</code><br>
+  <b>当前位置</b>：<code>RESEARCH_PRESET</code> lines 84-134 / <code>COVENANT_RESEARCH</code> lines 207-245<br>
+  <b>装载时机</b>：仅 research 场景，PTY 启动时通过 system prompt 注入<br>
+  <b>新增外置文件</b>：<code>~/.arena/research-profile.md</code>
+</div>
+
+<h3>设计思想</h3>
+<div class="callout thought">
+  <b>三层分型</b>（来源 Squirtle 第 7 轮）：当前 research 把 4 种东西混装（数据入口/研究方法/用户偏好/协作纪律），任何优化都只是局部减肥。<b>必须按语义拆开</b>。
+</div>
+
+<table>
+  <thead>
+    <tr><th>层</th><th>性质（核心问题）</th><th>内容归属</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>RESEARCH_PRESET</code></td>
+      <td>资源 / 操作（你能用什么、缺数据怎么办）</td>
+      <td>数据入口、MCP 优先级、旧入口禁令、失败兜底、<code>fetch_warning</code></td>
+    </tr>
+    <tr>
+      <td><code>COVENANT_RESEARCH</code></td>
+      <td>判断 / 表达纪律（拿到数据后怎么推理和表达）</td>
+      <td>4 块差量（证据优先 / 假设分层 / 分歧保留 / 输出格式）+ 红线</td>
+    </tr>
+    <tr>
+      <td><code>~/.arena/research-profile.md</code> ⭐<b>新增 L4 外置</b></td>
+      <td>用户画像（这个用户偏好什么）</td>
+      <td>投资风格 / 权重 / 资金区间 / 场景适配</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout warn">
+  <b>P1 最大动机</b>：用户投资画像（"基本面 15% / 预期差 35% / 资金面 30% / 技术面 20%"）写在 covenant 里，模型会反向硬套——把"参考权重"误用成"必须遵守的硬规则"。这比 token 浪费严重得多。<b>必须外置 profile</b>。
+</div>
+
+<h3>长期治理闸门（顶部注释）</h3>
+<pre><code>// L2 research 准入闸门（Squirtle 三条规则）：
+//   1. 所有具体工具 / 数据入口 / 命令 / 旧入口禁令，只能在 RESEARCH_PRESET
+//   2. 所有通用协作纪律（礼仪、timeline、留白、分歧表达）不得在 COVENANT_RESEARCH 重复
+//   3. 所有"用户个人偏好"默认不视为 covenant；若暂留 L2 必须明确标 reference 或外置 profile</code></pre>
+
+<h3>改动 1 — RESEARCH_PRESET 瘦身（50 行 → ~25 行）</h3>
+
+<table>
+  <thead><tr><th>操作</th><th>当前位置</th><th>处理</th></tr></thead>
+  <tbody>
+    <tr><td>删</td><td>line 131 "纯读不写"</td><td>与 L1 BASE_RULES "禁 Edit/Write 文件" 重复</td></tr>
+    <tr><td>迁出</td><td>line 130 "圆桌产物是观点不是研报"</td><td>移到 COVENANT_RESEARCH（属判断纪律，非数据接入）</td></tr>
+    <tr><td>瘦身</td><td>lines 98-104 19 个 op 子命令清单</td><td>只留 <code>snapshot/gate/basic/price+indicators</code> 4 个最常用，余下指向 <code>C:\LinDangAgent\data\AGENT_GUIDE.md</code></td></tr>
+    <tr><td>瘦身</td><td>line 132 "失败兜底" 兜底链路展开</td><td>简化为"失败自动兜底；若结果含 fetch_warning，结论里声明数据可信度略低"</td></tr>
+    <tr><td>保留</td><td>"严禁旧入口"（lines 125-130）、MCP 优先级、fetch_warning 处理</td><td>操作禁令每轮必读，不动</td></tr>
+  </tbody>
+</table>
+
+<h3>改动 2 — COVENANT_RESEARCH 重写为 4 块差量结构（40 行 → ~32 行）</h3>
+
+<pre class="markdown"># 投研圆桌 · 研究纪律（差量层 · 仅写 research 独有约束）
+
+## 1. 证据优先
+- 先引用数据，再给判断；二手表述低于原始数据源
+- 没数据就明确缺口（"我需要 X 数据才能判断 Y"），不硬编
+
+## 2. 假设分层
+- 区分**已知事实 / 推断 / 待验证假设**，不把"可能"包装成"确定"
+- 区分**短期催化 / 中期逻辑 / 长期结构**，不混为一谈
+
+## 3. 分歧保留
+- 同时保留多条解释路径，不为追求统一结论而强行收口
+- summary 时明确"主分歧点"
+
+## 4. 输出格式
+- 关键结论先行（推荐 / 不推荐 / 中性 / 观望）
+- 量化给数字，定性给参照系；问什么答什么，不套模板
+- 圆桌产物是观点不是研报——一次 snapshot 给观点足够，别循环调多个 op 拼"完整研报"
+
+## 红线（任何讨论都要避开）
+- 非行业龙头硬蹭概念（无独家技术 / 议价能力证据除外）
+- 技术明显走坏（破关键支撑、量价背离）
+- 监管 / 财务造假风险
+
+## 用户画像
+涉及个股/板块决策时，主动 Read `~/.arena/research-profile.md` 获取用户偏好。
+未读时按通用研究纪律输出，不假设用户风格。</pre>
+
+<h3>改动 3 — 创建 ~/.arena/research-profile.md（默认模板）</h3>
+
+<pre class="markdown"># 用户研究画像（参考，仅在涉及个股/板块决策时被 AI Read）
+
+## 投资风格
+- 基本面强 + 题材正宗（不蹭概念）+ 短期启动趋势已立（放量突破、均线多头）
+- 风险偏好：中性偏稳，单股仓位通常 1-3 万
+
+## 关注权重（参考，不强制套用）
+基本面 15% / 预期差 35% / 资金面 30% / 技术面 20%
+
+## 场景适配
+- 单股决策：偏向资金面 / 技术面 / 预期差
+- 板块研判：偏向行业景气 / 资金流向 / 政策催化
+- 概念选股：强调"正宗度"（核心受益度，不是蹭概念）</pre>
+
+<h3>改动 4 — 新增 unit test</h3>
+<div class="filebox"><b>新文件</b>：<code>tests/unit-research-l2-budget.test.js</code></div>
+<pre><code>const { RESEARCH_PRESET, COVENANT_RESEARCH } = require('../core/roundtable-scenes.js');
+
+test('RESEARCH_PRESET 不得包含通用协作纪律', () => {
+  expect(RESEARCH_PRESET).not.toMatch(/timeline|摘要按钮|五元组|席位|留白/);
+});
+test('COVENANT_RESEARCH 不得包含通用协作纪律', () => {
+  expect(COVENANT_RESEARCH).not.toMatch(/timeline|摘要按钮|五元组|席位|本色发挥/);
+});
+test('COVENANT_RESEARCH 不得包含具体工具/命令名（应在 PRESET）', () => {
+  expect(COVENANT_RESEARCH).not.toMatch(/fetch_lindang|data_query|MCP|cli\.py/);
+});
+test('COVENANT_RESEARCH 不得直接写用户偏好数字（应在 profile）', () => {
+  expect(COVENANT_RESEARCH).not.toMatch(/单股仓位|1-3 万|15%|35%|30%|20%/);
+});</code></pre>
+
+<h3>生效场景</h3>
+<div class="scenario">
+  <span class="label l1">L1+L2 注入</span>
+  research 场景启动时，system prompt = BASE_RULES + RESEARCH_PRESET + COVENANT_GENERAL + COVENANT_RESEARCH，研究纪律全程可见。
+</div>
+<div class="scenario">
+  <span class="label l4">L4 按需 Read</span>
+  AI 看到用户讨论<b>具体股票/板块决策</b>时，主动 Read <code>~/.arena/research-profile.md</code>；讨论一般性方法论时不读，避免投资偏好硬套。
+</div>
+</section>
+
+<!-- ================================================================ -->
+<section id="P2">
+<h2>五、P2 — RESUME_REMINDERS 直接删除 <span class="tag">已敲定</span></h2>
+
+<div class="filebox">
+  <b>目标文件</b>：<code>C:\Users\lintian\claude-session-hub\core\roundtable-scenes.js</code><br>
+  <b>当前位置</b>：<code>RESUME_REMINDERS</code> lines 250-262, <code>getResumeReminder()</code> lines 313-315
+</div>
+
+<h3>关键事实（Charmander 第 9 轮 grep 发现）</h3>
+<div class="callout danger">
+  <b><code>getResumeReminder()</code> 在 main.js 中调用次数 = 0</b>。是死代码。
+</div>
+
+<p>main.js <code>scenes.*</code> 调用统计：</p>
+<table>
+  <thead><tr><th>方法</th><th>调用次数</th></tr></thead>
+  <tbody>
+    <tr><td>getScene</td><td>9</td></tr>
+    <tr><td>writePromptFile</td><td>3</td></tr>
+    <tr><td>writeCovenantSnapshot / readCovenantSnapshot</td><td>4</td></tr>
+    <tr><td>writeResearchMcpConfig</td><td>1</td></tr>
+    <tr><td>cleanup</td><td>2</td></tr>
+    <tr><td><b>getResumeReminder</b></td><td><b>0</b></td></tr>
+  </tbody>
+</table>
+
+<p>main.js resume 流程实际走：</p>
+<pre><code>resume-session IPC → writePromptFile(meetingId, scene, covenant)
+                  → claude --resume &lt;ccSessionId&gt; --append-system-prompt-file &lt;promptFile&gt;</code></pre>
+
+<p>L1 + L2 + scene preset 已通过 <code>writePromptFile</code> 完整重注，Claude CLI <code>--resume</code> 恢复 PTY 历史 —— AI 拿到的 system prompt 和新会话完全相同。<code>RESUME_REMINDERS</code> 是方案 F 重构时的"预留设计"，从未真正接入。</p>
+
+<h3>设计思想</h3>
+<div class="callout thought">
+  <b>死代码 + 内容重复 = 删</b>。Squirtle 第 10 轮关键判断："<code>--resume</code> 已经恢复历史，模型并不缺'我在恢复'这个认知"。一行差量版仍是重复职责，不复活。
+</div>
+
+<h3>改动清单</h3>
+<ul class="checks">
+  <li>删 <code>RESUME_REMINDERS</code> 常量（lines 250-262）</li>
+  <li>删 <code>getResumeReminder()</code> 函数（lines 313-315）</li>
+  <li>删 <code>module.exports</code> 里 <code>getResumeReminder</code>（line 452）</li>
+  <li>更新顶部注释 line 11，去掉 <code>getResumeReminder(key)— 恢复提醒文本</code> 描述</li>
+  <li>删 <code>tests/unit-roundtable-scenes.test.js:197-207</code>（测死代码的测试是更糟的债）</li>
+</ul>
+
+<h3>长期治理注释（采纳 Squirtle 第 9 轮检查标准）</h3>
+<pre><code>// 【设计纪律】未来如需复活 resume 提醒，必须遵守差量原则：
+//   "凡是新开会议系统提示也必须给的内容，都不应该写在 resume。"
+// resume 只承载"恢复语境"差量（在恢复 + 第 N 轮 + timeline 路径），
+// 不承载行为协议（人设/规则/方法都已在 L1/L2/scene preset 完整注入）。</code></pre>
+
+<h3>验证步骤（删之前必跑）</h3>
+<ol>
+  <li>起 research 圆桌聊 5 轮 → 关闭 PTY → resume → 发用户问题</li>
+  <li>检查 AI 是否：正确认出席位（Pikachu/Charmander/Squirtle）/ 能引用 timeline 历史 / 不反问"你是谁 / 我们在聊什么"</li>
+  <li>通过 → 按改动清单一次 commit；失败 → 暂停删除，调查 resume 流程是否另有依赖</li>
+</ol>
+
+<h3>关于"用户驱动语法"是否补进 COVENANT_GENERAL（采纳 Charmander 反对意见）</h3>
+<p>Pikachu 第 8 轮提议补"@debate / @summary @&lt;slot&gt;"语法到 COVENANT_GENERAL。Charmander 第 10 轮反对：AI 看到的是 orchestrator 解析后的 L3 任务指令（"## 你的任务：基于上一轮内容发表新观点"），<b>不需要识别原始 @ 字符串</b>。给 AI 写一份"它永远用不到的语法手册"是新增维护债。</p>
+<p><b>采纳 Charmander 反对：直接删除用户语法说明，不补到任何地方。COVENANT_GENERAL 不动。</b></p>
+</section>
+
+<!-- ================================================================ -->
+<section id="P3">
+<h2>六、P3 — GENERAL_PRESET 补强 <span class="tag">已敲定</span></h2>
+
+<div class="filebox">
+  <b>目标文件</b>：<code>C:\Users\lintian\claude-session-hub\core\roundtable-scenes.js</code><br>
+  <b>当前位置</b>：<code>GENERAL_PRESET</code> lines 139-143（仅 4 行）
+</div>
+
+<h3>当前问题</h3>
+<pre class="markdown">## 通用圆桌
+这是一个开放话题的圆桌讨论。你可以就任何话题发表观点。
+善用你的工具（联网搜索、读文件、跑代码、MCP）辅助回答，能查就查不要凭印象。
+不预设讨论场景，根据用户提问自适应。</pre>
+
+<p>问题：<b>全是空话</b>——"善用工具"AI 不知道何时真用；"自适应"等于没说。L1/L2 一直在做减法，general 场景骨架已薄到危险线。</p>
+
+<h3>设计思想</h3>
+<div class="callout thought">
+  <b>补"协作策略"而非"规则/纪律"</b>。L1 管禁令，preset 管"何时怎么查"；general 应比 research 更轻、更自由。
+</div>
+
+<h3>改动 1 — 替换 GENERAL_PRESET 常量（lines 139-143）</h3>
+<p>从 ~50 字 → ~210 中文字（<b>+4x</b>，但仍只有 RESEARCH_PRESET 的 1/2 体量）</p>
+
+<pre class="markdown">## 通用圆桌
+开放话题讨论，不预设领域。
+
+### 协作策略
+- **上下文已够 + 问观点/判断** → 直接答，不为显得认真而探查
+- **涉及代码/文件/事实/最新信息** → 先一次轻量核实再答；凭记忆答必须标"未验证"
+- **依赖项目细节或历史讨论** → 优先读用户给的文件 / timeline.md，不凭记忆续写
+- **问题有多解** → 先一句话澄清，不赌一种解释长篇展开
+
+### 场景定位
+圆桌产物是**可讨论的判断**，不是报告或可执行方案。需落地操作时，结论里建议切独立 session。</pre>
+
+<h3>改动 2 — 准入闸门 5 条（顶部注释）</h3>
+<pre><code>// GENERAL_PRESET 准入（融合 Squirtle 负约束 + Charmander 跨层禁令）：
+//   1. 不含场景特定知识（投研/技术辩论/写作等）
+//   2. 不重复 L1（工具清单/禁令）或 COVENANT_GENERAL（席位/礼仪/timeline 机制）
+//   3. 不跨层引用（如"工具集见 L1"）—— preset 应单层可读
+//   4. 不依赖"当前轮模式/调度/输出风格"才成立（防 fanout/debate/summary 教学反弹）
+//   5. 长度上限：≤ 350 中文字（含标点），由 unit test 兜底</code></pre>
+
+<h3>改动 3 — 新增 unit test</h3>
+<div class="filebox"><b>新文件</b>：<code>tests/unit-general-preset-budget.test.js</code></div>
+<pre><code>test('GENERAL_PRESET 不含模式/调度教学（依赖当前轮模式）', () => {
+  expect(GENERAL_PRESET).not.toMatch(/fanout|debate|summary|主驾|副驾|@&lt;slot&gt;|@pikachu/i);
+});
+test('GENERAL_PRESET 不含场景特定知识', () => {
+  expect(GENERAL_PRESET).not.toMatch(/股票|投资|tushare|fetch_lindang|MCP/);
+});
+test('GENERAL_PRESET 不重复 L1/L2 协作礼仪', () => {
+  expect(GENERAL_PRESET).not.toMatch(/席位|本色|不扮演|引用明示|分歧不抹平/);
+});
+test('GENERAL_PRESET 不跨层引用', () => {
+  expect(GENERAL_PRESET).not.toMatch(/见 L1|见 BASE_RULES|见房间公约/);
+});
+test('GENERAL_PRESET 长度 ≤ 350 中文字', () => {
+  const cn = [...GENERAL_PRESET].filter(c => /[一-龥]/.test(c)).length;
+  expect(cn).toBeLessThanOrEqual(350);
+});</code></pre>
+
+<h3>关于 COVENANT_GENERAL 是否补 dispatchMode 各模式发言姿态段（采纳第 12 轮共识）</h3>
+<p>Charmander 第 10/12 轮主张补 3 行"各模式发言姿态"到 COVENANT_GENERAL 的"关于 dispatchMode 切换"段。</p>
+<p><b>不补</b>：模式行为 AI 已通过 L3 调度上下文实时获得；orchestrator 控制谁发言（dispatcher 层），AI 不需要懂 @ 语法。P1 决议"不动 COVENANT_GENERAL"在精神上仍生效。</p>
+
+<h3>生效场景</h3>
+<div class="scenario">
+  <span class="label l1">通用圆桌注入</span>
+  通用场景下，system prompt = BASE_RULES + GENERAL_PRESET + COVENANT_GENERAL，AI 拿到 4 条协作策略 + 1 段场景定位作为讨论指引。
+</div>
+<div class="scenario">
+  <span class="label l3">每轮自适应</span>
+  AI 收到用户问题时，按 4 条策略逐一判断：上下文够不够 → 是否事实/代码 → 是否依赖历史 → 是否多解。这是"分流器"而非"模板"。
+</div>
+</section>
+
+<!-- ================================================================ -->
+<section id="P4">
+<h2>七、P4 — 五元组格式 SSoT 统一 <span class="tag">已敲定</span></h2>
+
+<div class="filebox">
+  <b>目标文件 1</b>：<code>C:\Users\lintian\claude-session-hub\core\roundtable-scenes.js</code> — COVENANT_GENERAL 五元组段 lines 178-185<br>
+  <b>目标文件 2</b>：<code>C:\Users\lintian\claude-session-hub\core\roundtable-orchestrator.js</code> — buildBriefSummaryPrompt lines 334-345
+</div>
+
+<h3>事实校正</h3>
+<p>第 1 轮 Charmander 提出"格式定义三处"——实际查证后是<b>两处</b>：</p>
+<ul>
+  <li><code>COVENANT_GENERAL</code> 五元组段（L2 静态公约，system prompt 启动注入）</li>
+  <li><code>buildBriefSummaryPrompt</code> 输出格式段（L3 每轮 prompt，摘要按钮触发时发送）</li>
+</ul>
+<p>第三处 <code>config/summary-templates.json</code> <b>代码里不存在</b>——是早期设计文档的规划，未实现；<code>core/summary-engine.js</code> 是 deep-summary（Gemini 会议总结）服务，与五元组无关。</p>
+
+<h3>当前两处差异（漂移而非设计）</h3>
+<table>
+  <thead><tr><th></th><th>COVENANT_GENERAL</th><th>buildBriefSummaryPrompt</th></tr></thead>
+  <tbody>
+    <tr><td>字数</td><td>"不超过 500 字"</td><td>"不超过 500 字"</td></tr>
+    <tr><td>人称</td><td>"第一人称"</td><td>"第一人称（'我认为'）"</td></tr>
+    <tr><td>论证</td><td>"不展开论证"</td><td>"不展开论证、不重复事实细节"</td></tr>
+  </tbody>
+</table>
+
+<p>Charmander 第 16 轮曾把这种差异定性为"故意差量"（L2 简洁/L3 详细），Pikachu 第 16 轮反驳成立——无 design doc 支撑，应当作漂移消除。Charmander 第 17 轮收回此立场。</p>
+
+<h3>设计思想</h3>
+<div class="callout thought">
+  <b>单一 schema · 双处可见 · 仅样式可变</b>。字段+约束完全统一（schema 唯一），只有装载样式按上下文调整（标题层级 + 约束行紧凑/列表）—— Squirtle 第 17 轮："统一结构，允许两处各自表达；不要只抽文本，要抽语义"。
+</div>
+
+<h3>改动 1 — roundtable-scenes.js 新增 schema 与 render helper</h3>
+
+<pre><code>const BRIEF_SUMMARY_FIELDS = [
+  ['目标',     '本段聚焦什么任务/问题（一句话，20-50 字）'],
+  ['关键事实', '你确认的事实/数据（项目化，最多 5 条）'],
+  ['关键分歧', '与他人核心分歧 / 自己的不确定（项目化）'],
+  ['当前结论', '倾向判断 + 信心度 0-100%（30-80 字）'],
+  ['下一步',   '建议下一轮聚焦什么 / 想问对方什么（30-80 字）'],
+];
+
+const BRIEF_SUMMARY_CONSTRAINTS = [
+  '不超过 500 字',
+  '第一人称',
+  '不展开论证',
+  '不重复事实细节',
+];
+
+function renderFiveElementItems() {
+  return BRIEF_SUMMARY_FIELDS.map(([n, d], i) => `${i+1}. **${n}**：${d}`).join('\n');
+}
+
+function renderBriefSummaryConstraints(style /* 'inline' | 'list' */) {
+  return style === 'inline'
+    ? `约束：${BRIEF_SUMMARY_CONSTRAINTS.join('，')}。`
+    : BRIEF_SUMMARY_CONSTRAINTS.map(c => `- ${c}`).join('\n');
+}
+
+// module.exports 中导出 4 项</code></pre>
+
+<h3>改动 2 — COVENANT_GENERAL 替换内联格式（lines 178-185）</h3>
+<pre class="markdown">### 五元组格式（被点名摘要时严格按此输出）
+${renderFiveElementItems()}
+
+${renderBriefSummaryConstraints('inline')}</pre>
+
+<p>外包框（"### 五元组格式（被点名摘要时严格按此输出）"）由 caller 写。</p>
+
+<h3>改动 3 — buildBriefSummaryPrompt 替换内联格式（lines 334-345）</h3>
+<pre><code>parts.push('', '## 输出格式（严格按五段，不要展开论证）');
+parts.push(renderFiveElementItems());
+parts.push('', '## 约束');
+parts.push(renderBriefSummaryConstraints('list'));
+// 删除原 lines 335-344 的硬编码格式与约束</code></pre>
+
+<h3>改动 4 — 新增 unit test</h3>
+<div class="filebox"><b>新文件</b>：<code>tests/unit-five-element-schema.test.js</code></div>
+<pre><code>test('五元组恰好 5 字段', () => {
+  expect(BRIEF_SUMMARY_FIELDS).toHaveLength(5);
+});
+test('五字段标题稳定', () => {
+  expect(BRIEF_SUMMARY_FIELDS.map(([n]) => n)).toEqual(
+    ['目标', '关键事实', '关键分歧', '当前结论', '下一步']
+  );
+});
+test('约束恰好 4 条独立', () => {
+  expect(BRIEF_SUMMARY_CONSTRAINTS).toHaveLength(4);
+  expect(BRIEF_SUMMARY_CONSTRAINTS).toContain('不展开论证');
+  expect(BRIEF_SUMMARY_CONSTRAINTS).toContain('不重复事实细节');
+});
+test('COVENANT_GENERAL 与 buildBriefSummaryPrompt 共用同一份字段渲染', () => {
+  expect(COVENANT_GENERAL).toContain(renderFiveElementItems());
+});</code></pre>
+
+<h3>生效场景</h3>
+<div class="scenario">
+  <span class="label l2">L2 预习</span>
+  会议启动时，AI 通过 COVENANT_GENERAL 看到完整五元组格式——这是"<b>预习</b>"。当用户随时问"摘要按钮怎么用？"，AI 能直接答出来，不需要等到点击才学习。
+</div>
+<div class="scenario">
+  <span class="label l3">L3 考场</span>
+  用户实际点击摘要按钮时，<code>buildBriefSummaryPrompt</code> 通过 PTY stdin 注入完整格式 + 约束——这是"<b>考场题目纸</b>"。AI 不需要回翻 system prompt，prompt 里就有精确格式。
+</div>
+<div class="scenario">
+  <span class="label l1">SSoT 保证</span>
+  改 schema 数组（如新增/删除字段或约束），<b>L2 和 L3 同步生效</b>，无漂移可能。这是从"两处独立定义"到"单一真相源"的核心收益。
+</div>
+</section>
+
+<!-- ================================================================ -->
+<section id="P5">
+<h2>八、P5 — Arena Memory 启动快照 + L3 变更提示 <span class="tag pending">待用户裁决</span></h2>
+
+<div class="filebox">
+  <b>目标文件 1</b>：<code>C:\Users\lintian\claude-session-hub\main.js</code> — dispatch / 启动流程<br>
+  <b>目标文件 2</b>：<code>C:\Users\lintian\claude-session-hub\core\roundtable-orchestrator.js</code> — build*Prompt() 函数<br>
+  <b>已存在但未接入</b>：<code>core/arena-memory/injector.js</code> 等 3 个文件<br>
+  <b>共享数据</b>：<code>.arena/memory/shared/facts.md</code>
+</div>
+
+<h3>关键事实（Charmander 第 20 轮 grep 发现）</h3>
+<div class="callout danger">
+  <code>core/arena-memory/</code> 整个模块（injector.js + store.js + marker-parser.js, ~200 行）<b>从未被 main.js 导入</b>。grep <code>require.*arena-memory</code> 只在测试文件命中。
+</div>
+
+<h3>判断标准：与 RESUME_REMINDERS 的差异</h3>
+<table>
+  <thead><tr><th>维度</th><th>RESUME_REMINDERS</th><th>Arena Memory</th></tr></thead>
+  <tbody>
+    <tr><td>内容是否重复 L1/L2</td><td>是（100% 重叠）</td><td><b>否</b>——facts.md 是项目上下文，L1/L2 没有</td></tr>
+    <tr><td>是否有独特价值</td><td>否（--resume + L1/L2 重注已覆盖）</td><td><b>是</b>——跨会话共享的共识快照</td></tr>
+    <tr><td>建议</td><td>删</td><td><b>复活</b>，但需修正注入路径</td></tr>
+  </tbody>
+</table>
+
+<h3>核心技术约束（Pikachu 第 19 轮指出）</h3>
+<div class="callout warn">
+  PTY 启动后，<code>--append-system-prompt-file</code> 读取的是启动时内容；后续修改 prompt 文件，已启动的 PTY 完全感知不到。<br>
+  <b>真正的"会中刷新"必须走 L3 路径，不能靠 appendMemoryToPromptFile() 重写文件</b>。
+</div>
+
+<h3>设计思想</h3>
+<div class="callout thought">
+  <b>双路径设计</b>（来源 Squirtle 第 21 轮收敛）：
+  <ul>
+    <li><b>启动时</b>：facts.md 作为 stable background 通过 system prompt 注入（复用现有 injector）</li>
+    <li><b>会中</b>：检测 facts.md mtime 变化，在下一轮 L3 prompt 末尾追加短 hint（带绝对路径让 AI 主动 Read）</li>
+  </ul>
+  不引入 <code>live-facts.md</code> 新文件（Squirtle 撤回早先想法），不做复杂 diff，不做 UI 按钮。
+</div>
+
+<h3>方案候选（用户三选一）</h3>
+
+<table>
+  <thead><tr><th>方案</th><th>启动时</th><th>会议中</th><th>实施成本</th><th>立场</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>A. 不做（YAGNI）</b></td>
+      <td>无</td>
+      <td>无</td>
+      <td>0 行</td>
+      <td>Pikachu 第 19 轮原始立场</td>
+    </tr>
+    <tr style="background: #f0fff4;">
+      <td><b>B. Squirtle MVP（推荐）</b></td>
+      <td>注入 facts.md 快照</td>
+      <td>mtime 变化时 L3 末尾追加 hint</td>
+      <td>~15 行</td>
+      <td>Pikachu 第 22 轮 summary 推荐</td>
+    </tr>
+    <tr>
+      <td><b>C. Charmander 档 1</b></td>
+      <td>注入 facts.md 快照</td>
+      <td>无（完全无感知）</td>
+      <td>3 行</td>
+      <td>0→0.5 中间态，被 Squirtle 反驳"半生不熟"</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>前置验证（任何方案 落地前必跑）</h3>
+<ol>
+  <li>Read <code>C:\Users\lintian\claude-session-hub\.arena\memory\shared\facts.md</code> 看实际内容</li>
+  <li>查 mtime 或 git log 判断近 30 天是否有更新</li>
+  <li>用户主观回忆：曾遇到过"另一会议产 fact 当前看不到"具体场景吗？</li>
+</ol>
+<p>若 facts.md 空 / 长期未更新 / 用户无痛点 → <b>降级为 A 路线（不做）</b>，将 <code>core/arena-memory/</code> 挂为 inactive 或直接删除（理由同 RESUME_REMINDERS）。</p>
+
+<h3>B 路线实施细节</h3>
+
+<h4>路径 1：启动时（PTY 启动前修改 prompt 文件 → --append-system-prompt-file 读取）</h4>
+<div class="filebox"><b>修改文件</b>：<code>main.js</code></div>
+<pre><code>// 在 writePromptFile() 之后、claude CLI 启动之前：
+const { composeMemoryBlock, appendMemoryToPromptFile } = require('./core/arena-memory/injector');
+
+const block = await composeMemoryBlock({
+  projectCwd: meeting.projectCwd || process.cwd(),
+  budgetTokens: 400  // ~1600 中文字, 比默认 800 调小, 与瘦身后 L1+L2 体量平衡
+});
+if (block) appendMemoryToPromptFile(promptFile, block);
+
+// 记录 mtime baseline 给路径 2 用
+const factsPath = path.join(memoryDir, 'shared', 'facts.md');
+meeting.lastFactsMtime = fs.existsSync(factsPath) ? fs.statSync(factsPath).mtimeMs : 0;
+meeting.factsPath = factsPath;</code></pre>
+
+<h4>路径 2：会中每轮（L3 prompt 末尾，PTY stdin 写入）</h4>
+<div class="filebox"><b>修改文件</b>：<code>core/roundtable-orchestrator.js</code></div>
+<pre><code>// 在 buildFanoutPrompt / buildDebatePrompt / buildSummaryPrompt 末尾：
+const currentMtime = fs.existsSync(meeting.factsPath)
+  ? fs.statSync(meeting.factsPath).mtimeMs : 0;
+
+if (currentMtime > meeting.lastFactsMtime) {
+  parts.push('', '## 共享记忆更新');
+  parts.push(`自上轮以来，facts.md 已更新（路径：${meeting.factsPath}）。`);
+  parts.push('请优先参考最新共享结论；需要细节时主动 Read 上述路径。');
+  meeting.lastFactsMtime = currentMtime;
+}</code></pre>
+
+<div class="callout warn">
+  <b>关键技术修正（采纳 Pikachu 第 21 轮指出的 bug）</b>：hint 必须带<b>绝对路径</b>，否则 AI 无法主动 Read。
+</div>
+
+<h4>injector.js 微调</h4>
+<ul>
+  <li><code>budgetTokens</code> 默认 800 → 400（与瘦身后 L1+L2 体量平衡）</li>
+  <li>截断策略改为<b>段边界截断</b>（回退到上一个 <code>\n## </code> 边界），避免 mid-entry 切断</li>
+</ul>
+
+<h3>生效场景</h3>
+<div class="scenario">
+  <span class="label l1">启动快照</span>
+  会议创建/启动时，AI 通过 system prompt 看到 facts.md 当前快照（≤400 token，段边界截断）—— 跨会话项目共识。
+</div>
+<div class="scenario">
+  <span class="label l3">会中变更感知</span>
+  用户在另一个会议产出了新 fact（写入 facts.md），当前会议下一轮 L3 prompt 末尾出现 hint："facts.md 已更新（路径：xxx），需要细节时主动 Read"。AI 看到 hint 后用 Read 工具读取最新 facts。
+</div>
+<div class="scenario">
+  <span class="label l4">不强制全量注入</span>
+  无变化时不追加任何额外内容（零 token 开销）。变化时只发"变更通知 + 路径"，让 AI 按需读，避免每轮都注入 ~400 token 全量浪费。
+</div>
+</section>
+
+<!-- ================================================================ -->
+<section id="order">
+<h2>九、实施顺序与验证方案</h2>
+
+<h3>建议顺序</h3>
+<ol>
+  <li><b>P0</b>（L1 瘦身）—— 改动风险最低，先跑通</li>
+  <li><b>P3</b>（GENERAL_PRESET 补强）—— 与 P0 配套（L1 瘦身后 general 场景骨架变薄）</li>
+  <li><b>P2</b>（RESUME_REMINDERS 删除）—— 验证步骤独立，不依赖其他</li>
+  <li><b>P4</b>（五元组 SSoT）—— 改 2 个文件 + 1 个新测试</li>
+  <li><b>P1</b>（L2 research 三层分型 · B 路线）—— 改动量最大，包括外置 profile 文件</li>
+  <li><b>P5</b>（Arena Memory）—— 用户拍板 A/B/C 后再做；前置事实核实</li>
+</ol>
+
+<h3>建议 commit 拆分</h3>
+<table>
+  <thead><tr><th>Commit</th><th>内容</th><th>预估改动量</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>P0 + P3（L1 瘦身 + GENERAL_PRESET 补强）</td><td>~55 行</td></tr>
+    <tr><td>2</td><td>P2（删 RESUME_REMINDERS）</td><td>~20 行</td></tr>
+    <tr><td>3</td><td>P4（五元组 SSoT）</td><td>~25 行</td></tr>
+    <tr><td>4</td><td>P1（L2 research 三层分型 + 创建 research-profile.md）</td><td>~70 行</td></tr>
+    <tr><td>5</td><td>P5（如选 B 路线）</td><td>~15 行</td></tr>
+  </tbody>
+</table>
+
+<h3>每个 Phase 的强制验证</h3>
+<ul class="checks">
+  <li><b>P0</b>：跑 <code>tests/unit-base-rules-budget.test.js</code> + grep <code>cli.py analyze</code> 确认仅在 RESEARCH_PRESET 命中</li>
+  <li><b>P1</b>：跑 <code>tests/unit-research-l2-budget.test.js</code> + 起 research 圆桌实测"是否会自动 Read profile"</li>
+  <li><b>P2</b>：起 research 圆桌聊 5 轮 → resume → 检查 AI 不"失忆"</li>
+  <li><b>P3</b>：跑 <code>tests/unit-general-preset-budget.test.js</code> + 起通用圆桌实测协作策略生效</li>
+  <li><b>P4</b>：跑 <code>tests/unit-five-element-schema.test.js</code> + 真实点击摘要按钮观察输出</li>
+  <li><b>P5</b>：跑 <code>tests/arena-memory.test.js</code>（已有）+ 启动后修改 facts.md 观察 hint 是否出现在下轮 prompt</li>
+</ul>
+
+<h3>整体回归测试</h3>
+<ul class="checks">
+  <li>跑全部现有 <code>tests/unit-roundtable-*.test.js</code></li>
+  <li>跑 <code>tests/integration-roundtable-summary-flow.test.js</code></li>
+  <li>e2e：起 general + research 各一轮（fanout / debate / summary 三种模式各 1 次）</li>
+</ul>
+</section>
+
+<!-- ================================================================ -->
+<section id="log">
+<h2>十、决策日志</h2>
+
+<table>
+  <thead><tr><th>日期</th><th>轮次</th><th>关键决议</th></tr></thead>
+  <tbody>
+    <tr><td>2026-05-03</td><td>第 4 轮 summary</td><td>P0 决议：Charmander 第 3 轮 260 字版 + Pikachu unit test 兜底</td></tr>
+    <tr><td>2026-05-03</td><td>第 5 轮</td><td>refactor-plan.md 文件创建；P1 进入讨论</td></tr>
+    <tr><td>2026-05-04</td><td>第 7 轮 summary</td><td>P1 收敛到 Squirtle 三层分型（PRESET / COVENANT / PROFILE）</td></tr>
+    <tr><td>2026-05-04</td><td>第 8 轮</td><td>用户拍板 P1 B 路线（投资画像外置 + 4 块差量重写）</td></tr>
+    <tr><td>2026-05-04</td><td>第 9 轮</td><td>Charmander grep 发现 getResumeReminder() 是死代码（main.js 调用 = 0）</td></tr>
+    <tr><td>2026-05-04</td><td>第 10 轮</td><td>用户拍板 P2 路线 A（直接删 + 治理注释 + 验证步骤）</td></tr>
+    <tr><td>2026-05-04</td><td>第 11-13 轮</td><td>P3 三方迭代收敛，分歧（输出形态段 0/1/2 行 + 字数光谱 150/210/240）</td></tr>
+    <tr><td>2026-05-04</td><td>第 14 轮</td><td>用户采纳 Pikachu 第 13 轮推荐版（~210 字，4 策略 + 1 段场景定位）</td></tr>
+    <tr><td>2026-05-04</td><td>第 14-15 轮</td><td>grep 核实 P4 是"两处不是三处"；summary-templates.json 是 deep-summary 用，与五元组无关</td></tr>
+    <tr><td>2026-05-04</td><td>第 16-17 轮 debate</td><td>三方化解"故意差量 vs 漂移"分歧——Charmander 收回扩写，Squirtle 收回"L2 只讲触发"，Pikachu 撤回"3 条约束/参数化 render"</td></tr>
+    <tr><td>2026-05-04</td><td>第 18 轮 summary</td><td>P4 方案 A 落地（结构化 schema + 4 条独立约束 + 双 pure render helper + 删"我认为"举例）</td></tr>
+    <tr><td>2026-05-04</td><td>第 19 轮</td><td>用户拍板 P4 方案 A；P5 Arena Memory 进入讨论</td></tr>
+    <tr><td>2026-05-04</td><td>第 20 轮</td><td>Charmander grep 发现 core/arena-memory/ 整个模块从未被 main.js 导入；Squirtle 提出 stable/live 双层设计</td></tr>
+    <tr><td>2026-05-04</td><td>第 21 轮 debate</td><td>Charmander 收回"prompt 文件接线"实现错误；Squirtle 收回 live-facts.md 新文件，主张二段式 MVP；Pikachu 撤回"档 1 推荐"</td></tr>
+    <tr><td>2026-05-04</td><td>第 22 轮 summary</td><td>P5 收敛到 Squirtle B 路线（启动快照 + L3 变更提示）；前置事实核实必做</td></tr>
+  </tbody>
+</table>
+
+<h3>关键设计争议化解记录</h3>
+
+<div class="callout">
+  <b>争议 1：L1 是否极简到只剩两段？</b><br>
+  Squirtle 主张 ~150 字极限版（删席位昵称、删工具枚举）；最终走 ~260 字版（保留昵称——多模型场景 AI 需要识别引用对方时的称谓）。
+</div>
+
+<div class="callout">
+  <b>争议 2：用户投资画像外置 vs 留 covenant？</b><br>
+  Pikachu/Squirtle 主张外置（防模型把权重当硬规则反向硬套）；Charmander 第 6 轮独立得出同结论；用户第 8 轮拍板外置。
+</div>
+
+<div class="callout">
+  <b>争议 3：RESUME_REMINDERS 删 vs 一行差量版？</b><br>
+  Charmander 第 10 轮提路线 B（一行差量复活）；Squirtle 第 10 轮反驳"--resume 已恢复历史，模型并不缺'我在恢复'认知"；用户拍板 A 路线（直接删）。
+</div>
+
+<div class="callout">
+  <b>争议 4：五元组"故意差量"是设计还是漂移？</b><br>
+  Charmander 第 16 轮主张"故意差量"（L2 简洁/L3 详细）；Pikachu 第 16 轮反驳——无 design doc 支撑，应当作漂移消除；Charmander 第 17 轮收回。
+</div>
+
+<div class="callout">
+  <b>争议 5：Phase 6 节奏（YAGNI / 半做 / 一步到位）？</b><br>
+  Pikachu 第 19 轮主张 YAGNI；Charmander 第 21 轮主张档 1（半做）；Squirtle 第 21 轮反驳"档 1 半生不熟"，主张 B 路线（一步到位）；Pikachu 第 22 轮 summary 撤回 YAGNI 推 B 路线。
+</div>
+</section>
+
+<footer style="margin-top: 64px; padding-top: 24px; border-top: 1px solid #cbd5e0; color: #718096; font-size: 13px;">
+  <p>本报告由通用圆桌三方（Pikachu / Charmander / Squirtle）22 轮讨论产出，由 Pikachu 整理。</p>
+  <p>关联文档：</p>
+  <ul>
+    <li><code>C:\Users\lintian\claude-session-hub\docs\roundtable-prompt-refactor-plan.md</code>（施工单 · 含完整 diff 级方案）</li>
+    <li><code>C:\Users\lintian\.arena\timeline-a61f5987-f778-467e-a4bf-e6a334ad335e.md</code>（圆桌 22 轮原始历史）</li>
+  </ul>
+</footer>
+
+</body>
+</html>

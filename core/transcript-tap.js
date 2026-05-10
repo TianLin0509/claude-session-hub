@@ -547,7 +547,7 @@ class CodexTap extends EventEmitter {
                                // both _tryBind() and double-bind a file.
   }
 
-  registerSession(hubSessionId, { cwd, sessionsRoot } = {}) {
+  registerSession(hubSessionId, { cwd, sessionsRoot, codexSid } = {}) {
     const normCwd = normalizePathForCompare(cwd || process.cwd());
     if (sessionsRoot) this._sessionsRoots.add(sessionsRoot);
     this._pending.set(hubSessionId, {
@@ -555,6 +555,11 @@ class CodexTap extends EventEmitter {
       spawnTime: Date.now(),
     });
     this._ensureWatcher();
+    if (codexSid) {
+      this._bindByCodexSid(hubSessionId, codexSid).catch((e) => {
+        console.warn('[codex-tap] bind by codexSid failed:', e.message);
+      });
+    }
   }
 
   unregisterSession(hubSessionId) {
@@ -575,6 +580,10 @@ class CodexTap extends EventEmitter {
 
   getLastAssistantText(hubSessionId) {
     return this._bound.get(hubSessionId)?.lastText || null;
+  }
+
+  getRolloutPath(hubSessionId) {
+    return this._bound.get(hubSessionId)?.rolloutPath || null;
   }
 
   // 2026-05-04 codex equiv extract-failure debug —— 给运行时排查"为什么没 bind"用。
@@ -726,6 +735,43 @@ class CodexTap extends EventEmitter {
     }
   }
 
+  async _bindByCodexSid(hubSessionId, codexSid) {
+    if (!hubSessionId || !codexSid || this._bound.has(hubSessionId)) return false;
+    const rolloutPath = await this._findRolloutByCodexSid(codexSid);
+    if (!rolloutPath) return false;
+    this._pending.delete(hubSessionId);
+    this._seen.add(rolloutPath);
+    await this._bindRolloutToHubSession(hubSessionId, rolloutPath);
+    return true;
+  }
+
+  async _findRolloutByCodexSid(codexSid) {
+    const suffix = `-${codexSid}.jsonl`;
+    const roots = Array.from(this._sessionsRoots);
+    let best = null;
+    const visit = async (dir, depth) => {
+      if (depth > 3 || best) return;
+      let entries;
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); }
+      catch { return; }
+      for (const ent of entries) {
+        const full = path.join(dir, ent.name);
+        if (ent.isDirectory()) {
+          await visit(full, depth + 1);
+          if (best) return;
+        } else if (ent.isFile() && ent.name.startsWith('rollout-') && ent.name.endsWith(suffix)) {
+          best = full;
+          return;
+        }
+      }
+    };
+    for (const root of roots) {
+      await visit(root, 0);
+      if (best) break;
+    }
+    return best;
+  }
+
   async _tryBind(rolloutPath) {
     // Codex rollout first line (session_meta) can exceed 20KB due to a huge
     // base_instructions.text field — read via readline to get a full line
@@ -746,28 +792,42 @@ class CodexTap extends EventEmitter {
 
     // Fallback: if meta.timestamp is missing/malformed, use file mtime as a
     // best-effort proxy for session start time.
+    let statMtime = null;
+    try { statMtime = (await fs.promises.stat(rolloutPath)).mtimeMs; } catch {}
     let effectiveTs = Number.isFinite(metaTs) ? metaTs : null;
-    if (effectiveTs == null) {
-      try { effectiveTs = (await fs.promises.stat(rolloutPath)).mtimeMs; } catch {}
-    }
+    if (effectiveTs == null) effectiveTs = statMtime;
 
     let best = null;
+    let sawMatchingPendingCwd = false;
     for (const [hubSessionId, entry] of this._pending) {
       if (entry.cwd !== metaCwd) continue;
+      sawMatchingPendingCwd = true;
+      let delta = null;
       if (effectiveTs != null) {
-        const delta = effectiveTs - entry.spawnTime;
-        // Widened window: Codex sometimes writes session_meta.timestamp well
-        // after actual spawn (observed +37s lag on slow starts). Allow up to
-        // 5 minutes forward drift, 10s backward for clock skew.
-        if (delta < -10000 || delta > 300000) continue;
-        if (!best || Math.abs(delta) < Math.abs(best.delta)) {
-          best = { hubSessionId, delta };
-        }
-      } else if (!best) {
-        best = { hubSessionId, delta: 0 };
+        const metaDelta = effectiveTs - entry.spawnTime;
+        if (metaDelta >= -10000 && metaDelta <= 300000) delta = metaDelta;
+      }
+      if (delta == null && statMtime != null) {
+        // Resume can append to an old rollout whose session_meta timestamp is
+        // hours old. mtime is the only fresh signal for `codex resume --last`.
+        const mtimeDelta = statMtime - entry.spawnTime;
+        if (mtimeDelta >= -10000 && mtimeDelta <= 300000) delta = mtimeDelta;
+      }
+      if (delta == null && effectiveTs == null && !best) {
+        delta = 0;
+      }
+      if (delta == null) continue;
+      if (!best || Math.abs(delta) < Math.abs(best.delta)) {
+        best = { hubSessionId, delta };
       }
     }
     if (!best) {
+      if (sawMatchingPendingCwd) {
+        // Do not mark same-cwd old rollout files as permanently seen while a
+        // pending Codex session exists. A resumed CLI may append to one of
+        // them seconds later, refreshing mtime into the bind window.
+        return;
+      }
       // Rollout outside any pending window — mark seen to skip on future scans.
       this._seen.add(rolloutPath);
       return;
@@ -775,8 +835,10 @@ class CodexTap extends EventEmitter {
 
     this._seen.add(rolloutPath);
     this._pending.delete(best.hubSessionId);
-    const hubSessionId = best.hubSessionId;
+    await this._bindRolloutToHubSession(best.hubSessionId, rolloutPath);
+  }
 
+  async _bindRolloutToHubSession(hubSessionId, rolloutPath) {
     // Emit session-bound so main.js can persist codexSid for future resume.
     const codexSid = extractCodexSidFromRolloutPath(rolloutPath);
     this.emit('session-bound', { hubSessionId, kind: 'codex', codexSid, rolloutPath });
@@ -821,6 +883,7 @@ class CodexTap extends EventEmitter {
           this.emit('turn-complete', {
             hubSessionId,
             text: finalText,
+            transcriptPath: entry.rolloutPath,
             completedAt: Date.now(),
             durationMs: finalDuration,
             signalSource: 'task_complete',
@@ -1363,6 +1426,10 @@ class TranscriptTap extends EventEmitter {
     return this._codex.getDebugSnapshot();
   }
 
+  getCodexRolloutPath(hubSessionId) {
+    return this._codex.getRolloutPath(hubSessionId);
+  }
+
   // 2026-05-04 gemini equiv：与 codex 镜像，给 roundtable-gemini-debug-state IPC handler 用。
   getGeminiDebugSnapshot() {
     return this._gemini.getDebugSnapshot();
@@ -1376,7 +1443,7 @@ class TranscriptTap extends EventEmitter {
     if (isClaudeFamily(kind)) {
       return this._claude;
     }
-    if (kind === 'codex') return this._codex;
+    if (kind === 'codex' || kind === 'codex-resume') return this._codex;
     if (kind === 'gemini') return this._gemini;
     return null;
   }

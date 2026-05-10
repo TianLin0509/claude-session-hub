@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "cleanShutdown": false,
+  "sessions": [
+    {
+      "hubId": "s-new-1",
+      "title": "new child",
+      "kind": "claude",
+      "cwd": "C:\\Users\\lintian\\claude-session-hub",
+      "pinned": false,
+      "ccSessionId": null,
+      "meetingId": "m-new",
+      "lastMessageTime": 1778243890788,
+      "lastOutputPreview": "",
+      "unreadCount": 0,
+      "currentModel": null,
+      "codexSid": null,
+      "geminiChatId": null,
+      "geminiProjectHash": null,
+      "geminiProjectRoot": null,
+      "updatedAt": 1778243904645
+    },
+    {
+      "hubId": "s-pin-1",
+      "title": "pin child",
+      "kind": "claude",
+      "cwd": "C:\\Users\\lintian\\claude-session-hub",
+      "pinned": false,
+      "ccSessionId": null,
+      "meetingId": "m-pin",
+      "lastMessageTime": 1778243790788,
+      "lastOutputPreview": "",
+      "unreadCount": 0,
+      "currentModel": null,
+      "codexSid": null,
+      "geminiChatId": null,
+      "geminiProjectHash": null,
+      "geminiProjectRoot": null,
+      "updatedAt": 1778243904645
+    }
+  ],
+  "meetings": [
+    {
+      "id": "m-new",
+      "type": "meeting",
+      "title": "???????",
+      "subSessions": [
+        "s-new-1"
+      ],
+      "createdAt": 1778243889788,
+      "lastMessageTime": 1778243890788,
+      "pinned": false,
+      "lastScene": null,
+      "pilotSlot": null,
+      "dispatchMode": "all",
+      "participants": null,
+      "slotSpecs": null,
+      "covenantText": "",
+      "updatedAt": 1778243904645
+    },
+    {
+      "id": "m-pin",
+      "type": "meeting",
+      "title": "???????",
+      "subSessions": [
+        "s-pin-1"
+      ],
+      "createdAt": 1778243790788,
+      "lastMessageTime": 1778243790788,
+      "pinned": true,
+      "lastScene": null,
+      "pilotSlot": null,
+      "dispatchMode": "all",
+      "participants": null,
+      "slotSpecs": null,
+      "covenantText": "",
+      "updatedAt": 1778243904645
+    }
+  ],
+  "immersiveByMeeting": {},
+  "pilotSlotByMeeting": {},
+  "dispatchModeByMeeting": {}
+}

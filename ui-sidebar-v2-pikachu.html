@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>侧边栏 v2 · 按钮 3 风格 + 4 行用量(Pikachu)</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-elevated: #1c2129;
+    --bg-soft: #21262d;
+    --bg-deepest: #060912;
+    --border: #30363d;
+    --border-strong: #484f58;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --text-dim: #6e7681;
+    --accent: #58a6ff;
+    --accent-purple: #a371f7;
+    --accent-pink: #db61a2;
+    --accent-green: #3fb950;
+    --accent-orange: #d29922;
+    --accent-red: #f85149;
+    --accent-cyan: #39c5cf;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', "PingFang SC", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+    padding-bottom: 80px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page-header {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    padding: 22px 32px;
+    position: sticky; top: 0; z-index: 100;
+  }
+  .page-header h1 { font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .page-header h1 .badge {
+    font-size: 11px; color: var(--accent-purple);
+    background: rgba(163, 113, 247, 0.12);
+    padding: 3px 9px; border-radius: 12px;
+    margin-left: 10px; vertical-align: middle;
+  }
+  .page-header .lead { color: var(--text-muted); font-size: 13px; max-width: 920px; }
+  .page-header .lead b { color: var(--text); }
+  .page-header code {
+    font-family: ui-monospace, monospace; font-size: 12px;
+    background: var(--bg-elevated);
+    padding: 2px 6px; border-radius: 3px;
+    color: var(--accent);
+  }
+
+  .section {
+    max-width: 1100px; margin: 36px auto 0;
+    padding: 0 24px;
+  }
+  .section-header { margin-bottom: 16px; }
+  .section-header h2 {
+    font-size: 18px; font-weight: 600;
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  .section-header h2 .num { color: var(--accent); font-family: ui-monospace, monospace; }
+  .section-header p { color: var(--text-muted); font-size: 13px; margin-top: 6px; }
+
+  /* ============================================================== */
+  /* 按钮 3 风格对比                                                */
+  /* ============================================================== */
+  .styles-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 20px;
+    margin-top: 12px;
+  }
+  .style-col {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .style-col.recommended {
+    border-color: rgba(163, 113, 247, 0.4);
+    background: linear-gradient(180deg, rgba(163, 113, 247, 0.05), var(--bg-card));
+  }
+  .style-name {
+    font-size: 14px; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .style-name .vibe {
+    font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    font-weight: 500; letter-spacing: 0.3px;
+  }
+  .vibe-linear { background: rgba(88, 166, 255, 0.12); color: var(--accent); }
+  .vibe-raycast { background: rgba(57, 197, 207, 0.12); color: var(--accent-cyan); }
+  .vibe-soft { background: rgba(163, 113, 247, 0.12); color: var(--accent-purple); }
+
+  .style-desc {
+    font-size: 11px; color: var(--text-muted); line-height: 1.5;
+  }
+
+  .style-mock-frame {
+    background: var(--bg-deepest);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 12px;
+  }
+
+  /* SVG icon base */
+  .ic { width: 16px; height: 16px; flex-shrink: 0; }
+  .ic-sm { width: 12px; height: 12px; opacity: 0.55; }
+
+  /* ============== STYLE A · Linear 风(精致渐变) ============== */
+  .btn-row-a {
+    display: flex; gap: 6px; align-items: center;
+  }
+  .btn-a {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text);
+    border-radius: 7px;
+    padding: 7px 11px;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 5px;
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    font-family: inherit;
+    font-weight: 500;
+    backdrop-filter: blur(10px);
+  }
+  .btn-a:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.16);
+    transform: translateY(-1px);
+  }
+  .btn-a.primary {
+    background: linear-gradient(180deg, #4ade80, #22c55e);
+    border-color: rgba(34, 197, 94, 0.5);
+    color: #052e16;
+    font-weight: 600;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.15) inset, 0 2px 8px rgba(34, 197, 94, 0.25);
+  }
+  .btn-a.primary:hover {
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.2) inset, 0 4px 12px rgba(34, 197, 94, 0.35);
+  }
+  .btn-a.roundtable {
+    background: linear-gradient(180deg, rgba(163, 113, 247, 0.22), rgba(88, 166, 255, 0.18));
+    border-color: rgba(163, 113, 247, 0.4);
+    color: var(--accent-purple);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 2px 12px rgba(163, 113, 247, 0.18);
+  }
+  .btn-a.roundtable:hover {
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.1) inset, 0 4px 16px rgba(163, 113, 247, 0.3);
+  }
+  .btn-a svg { stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .btn-a.primary svg { stroke-width: 2.5; }
+
+  /* ============== STYLE B · Raycast 风(图标 + 文字) ============== */
+  .btn-row-b {
+    display: flex; gap: 4px; align-items: center;
+    background: var(--bg-elevated);
+    padding: 4px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+  }
+  .btn-b {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 6px;
+    transition: background 0.12s;
+    font-family: inherit;
+    font-weight: 500;
+  }
+  .btn-b:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .btn-b.primary {
+    background: var(--accent-green);
+    color: #052e16;
+    font-weight: 600;
+  }
+  .btn-b.primary:hover {
+    background: #4ade80;
+  }
+  .btn-b.roundtable {
+    background: rgba(163, 113, 247, 0.18);
+    color: var(--accent-purple);
+  }
+  .btn-b.roundtable:hover {
+    background: rgba(163, 113, 247, 0.28);
+  }
+  .btn-b svg { stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .btn-b-divider {
+    width: 1px; height: 14px;
+    background: var(--border);
+    margin: 0 2px;
+  }
+
+  /* ============== STYLE C · 软糖胶囊(Notion / Soft) ============== */
+  .btn-row-c {
+    display: flex; gap: 7px; align-items: center;
+    padding: 4px 0;
+  }
+  .btn-c {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 999px;
+    padding: 7px 13px;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 6px;
+    transition: all 0.18s;
+    font-family: inherit;
+    font-weight: 500;
+  }
+  .btn-c:hover {
+    background: var(--bg-soft);
+    border-color: var(--border-strong);
+    transform: scale(1.04);
+  }
+  .btn-c.icon-only {
+    padding: 7px;
+    width: 32px; height: 32px;
+    justify-content: center;
+  }
+  .btn-c.primary {
+    background: linear-gradient(135deg, #34d399, #10b981);
+    color: #022c22;
+    border: none;
+    font-weight: 600;
+    box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+  }
+  .btn-c.primary:hover {
+    box-shadow: 0 6px 18px rgba(16, 185, 129, 0.45);
+  }
+  .btn-c.roundtable {
+    background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+    color: white;
+    border: none;
+    box-shadow: 0 4px 14px rgba(163, 113, 247, 0.35);
+  }
+  .btn-c.roundtable:hover {
+    box-shadow: 0 6px 18px rgba(163, 113, 247, 0.5);
+  }
+  .btn-c svg { stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ============================================================== */
+  /* 4 行用量 mock(在最终选定按钮风格后下方展示)                  */
+  /* ============================================================== */
+  .full-mock-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-top: 14px;
+  }
+  .full-mock-col { display: flex; flex-direction: column; gap: 8px; }
+  .col-label {
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.7px;
+    padding: 4px 10px; border-radius: 4px;
+    align-self: flex-start;
+  }
+  .col-label.before { background: rgba(248,81,73,0.15); color: var(--accent-red); }
+  .col-label.after  { background: rgba(63,185,80,0.15); color: var(--accent-green); }
+
+  .mock-frame {
+    background: var(--bg-deepest);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    width: 290px;
+  }
+  .mock-frame-bar {
+    background: var(--bg-elevated);
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px; color: var(--text-dim);
+  }
+  .sidebar-mock {
+    padding: 10px 8px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+
+  /* === 4 行用量样式 === */
+  .acc-new {
+    margin-top: 8px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .acc-row-usage {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .acc-row-usage .ai-badge {
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700;
+    font-family: ui-monospace, monospace;
+    flex-shrink: 0;
+  }
+  .acc-row-usage .ai-badge.cl { background: rgba(163,113,247,.18); color: var(--accent-purple); }
+  .acc-row-usage .ai-badge.cx { background: rgba(63,185,80,.18); color: var(--accent-green); }
+  .acc-row-usage .name {
+    font-size: 11px; font-weight: 500;
+    width: 44px; flex-shrink: 0;
+  }
+  .acc-row-usage .bars { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .acc-row-usage .bar-block {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 9px;
+    font-family: ui-monospace, monospace;
+    color: var(--text-dim);
+  }
+  .acc-row-usage .bar-label { width: 16px; font-weight: 600; flex-shrink: 0; }
+  .acc-row-usage .bar-track {
+    flex: 1; height: 5px;
+    background: var(--bg-soft);
+    border-radius: 2px;
+    overflow: hidden;
+    position: relative;
+  }
+  .acc-row-usage .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; }
+  .bar-fill.green  { background: var(--accent-green); }
+  .bar-fill.orange { background: var(--accent-orange); }
+  .bar-fill.red    { background: var(--accent-red); }
+  .bar-fill.dim    { background: var(--border-strong); opacity: 0.5; }
+  .acc-row-usage .bar-pct { width: 30px; text-align: right; font-size: 9px; font-variant-numeric: tabular-nums; }
+  .bar-pct.green { color: var(--accent-green); font-weight: 600; }
+  .bar-pct.red   { color: var(--accent-red); font-weight: 600; }
+  .bar-pct.orange { color: var(--accent-orange); font-weight: 600; }
+
+  /* PackyAPI 第三行(消耗)+ 第四行(余额) */
+  .packy-spend-row, .packy-balance-row {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .packy-spend-row .icon, .packy-balance-row .icon {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; flex-shrink: 0;
+    color: white; font-size: 13px;
+  }
+  .packy-spend-row .icon { background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink)); }
+  .packy-balance-row .icon { background: linear-gradient(135deg, #3b82f6, #06b6d4); }
+  .packy-spend-row .text, .packy-balance-row .text {
+    flex: 1; min-width: 0;
+  }
+  .packy-spend-row .label, .packy-balance-row .label {
+    font-size: 9px; color: var(--text-muted);
+    letter-spacing: 0.3px;
+  }
+  .packy-spend-row .label .sep {
+    color: var(--text-dim); margin: 0 4px;
+  }
+  .packy-spend-row .label .today {
+    color: var(--accent-cyan); font-weight: 600;
+  }
+  .packy-spend-row .value-row {
+    display: flex; align-items: baseline; gap: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  .packy-spend-row .value-today {
+    font-size: 13px; font-weight: 600; color: var(--accent-cyan);
+  }
+  .packy-spend-row .value-divider { font-size: 11px; color: var(--text-dim); }
+  .packy-spend-row .value-total {
+    font-size: 12px; color: var(--text);
+    font-weight: 500;
+  }
+  .packy-balance-row .value {
+    font-size: 17px; font-weight: 700; color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .packy-balance-row .topup {
+    font-size: 10px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    flex-shrink: 0;
+    font-family: inherit;
+  }
+  .packy-balance-row .topup:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* old-style 用于 BEFORE */
+  .acc-old {
+    margin-top: 6px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .acc-old-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+  }
+  .acc-old-row:last-child { border-bottom: none; }
+  .acc-old-name {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 10px; font-weight: 500;
+    width: 64px; text-align: center; flex-shrink: 0;
+  }
+  .acc-old-data { flex: 1; font-size: 9px; color: var(--text-dim); font-family: ui-monospace, monospace; }
+  .acc-old-pill { font-size: 9px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 10px; color: var(--text-muted); flex-shrink: 0; }
+
+  .notes {
+    margin-top: 14px;
+    padding: 14px 18px;
+    background: rgba(88, 166, 255, 0.04);
+    border-left: 2px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .notes b { color: var(--text); }
+  .notes ul { margin: 6px 0 0 18px; }
+  .notes li { margin-bottom: 4px; }
+  .notes code { font-family: ui-monospace, monospace; font-size: 11px; background: var(--bg-elevated); padding: 1px 6px; border-radius: 3px; color: var(--accent); }
+  .notes.success { background: rgba(63, 185, 80, 0.06); border-left-color: var(--accent-green); }
+  .notes.warning { background: rgba(210, 153, 34, 0.06); border-left-color: var(--accent-orange); }
+
+  .pros { color: var(--accent-green); display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
+  .cons { color: var(--accent-orange); display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
+  .pros span, .cons span { font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1>侧边栏 v2 · 按钮 3 风格 + 4 行用量 <span class="badge">Pikachu</span></h1>
+  <p class="lead">
+    Cookie 已实测通过 ✅ 拿到余额 <code>$28.86</code> + 历史消耗 <code>$22.14</code>(quota / 500000 = USD,与 sk- key 实测的 codex+bailian 月消耗 $22.14 完全对得上)。
+    <br>
+    <b>本页要你定的事</b>:① 按钮 3 风格挑一个(下方 Linear / Raycast / 软糖胶囊) · ② 确认 4 行用量布局(下半部)。
+  </p>
+</div>
+
+<!-- ============================================================== -->
+<!-- Section 1: 按钮 3 风格备选                                     -->
+<!-- ============================================================== -->
+<div class="section">
+  <div class="section-header">
+    <h2><span class="num">01</span>按钮区 · 3 个风格备选</h2>
+    <p>都是 4 按钮(删了折叠 ◀)+ Lucide/Feather 图标。区别在视觉气质 — 你挑一个我落代码。</p>
+  </div>
+
+  <div class="styles-grid">
+    <!-- STYLE A -->
+    <div class="style-col">
+      <div class="style-name">A · Linear 风 <span class="vibe vibe-linear">精致渐变</span></div>
+      <div class="style-desc">参考 Linear / Vercel toolbar。半透明卡片 + 微渐变阴影 + hover 上浮。冷静、克制。</div>
+      <div class="style-mock-frame">
+        <div class="btn-row-a">
+          <button class="btn-a primary" title="新建会话">
+            <svg class="ic" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <svg class="ic-sm" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <button class="btn-a" title="恢复会话">
+            <svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
+            <svg class="ic-sm" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <button class="btn-a roundtable" title="开圆桌">
+            <svg class="ic" viewBox="0 0 24 24" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="6" r="2" fill="currentColor"/><circle cx="6.5" cy="15" r="2" fill="currentColor"/><circle cx="17.5" cy="15" r="2" fill="currentColor"/></svg>
+          </button>
+          <button class="btn-a" title="设置">
+            <svg class="ic" viewBox="0 0 24 24" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <svg class="ic-sm" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="pros"><span>✓ 精致</span><span>✓ 不抢戏</span><span>✓ 与 launcher 一致</span></div>
+      <div class="cons"><span>· 渐变略多</span></div>
+    </div>
+
+    <!-- STYLE B -->
+    <div class="style-col recommended">
+      <div class="style-name">B · Raycast 风 <span class="vibe vibe-raycast">★ 推荐</span></div>
+      <div class="style-desc">参考 Raycast / Linear command bar。一个外壳容器装所有按钮 + 内部分组分隔线。最克制最 dev-tool。</div>
+      <div class="style-mock-frame">
+        <div class="btn-row-b">
+          <button class="btn-b primary" title="新建">
+            <svg class="ic" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <svg class="ic-sm" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <button class="btn-b" title="恢复">
+            <svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
+            <svg class="ic-sm" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <span class="btn-b-divider"></span>
+          <button class="btn-b roundtable" title="圆桌">
+            <svg class="ic" viewBox="0 0 24 24" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="6" r="2" fill="currentColor"/><circle cx="6.5" cy="15" r="2" fill="currentColor"/><circle cx="17.5" cy="15" r="2" fill="currentColor"/></svg>
+          </button>
+          <span class="btn-b-divider"></span>
+          <button class="btn-b" title="设置">
+            <svg class="ic" viewBox="0 0 24 24" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.66-7.66l-4.24 4.24m-7.07 7.07L4.34 19.66m13.32 0l-4.24-4.24m-7.07-7.07L4.34 4.34"/></svg>
+            <svg class="ic-sm" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="pros"><span>✓ 最克制</span><span>✓ 视觉一体</span><span>✓ 程序员心智</span><span>✓ 分组清晰</span></div>
+      <div class="cons"><span>· 单看略平淡</span></div>
+    </div>
+
+    <!-- STYLE C -->
+    <div class="style-col">
+      <div class="style-name">C · 软糖胶囊 <span class="vibe vibe-soft">温暖 / 大圆角</span></div>
+      <div class="style-desc">参考 Notion / Things。圆角 999px 胶囊 + 强调色填充 + hover 缩放。最显眼。</div>
+      <div class="style-mock-frame">
+        <div class="btn-row-c">
+          <button class="btn-c primary" title="新建">
+            <svg class="ic" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span style="font-size: 11px;">新建</span>
+          </button>
+          <button class="btn-c icon-only" title="恢复">
+            <svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
+          </button>
+          <button class="btn-c roundtable" title="圆桌">
+            <svg class="ic" viewBox="0 0 24 24" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="6" r="2" fill="currentColor"/><circle cx="6.5" cy="15" r="2" fill="currentColor"/><circle cx="17.5" cy="15" r="2" fill="currentColor"/></svg>
+            <span style="font-size: 11px;">圆桌</span>
+          </button>
+          <button class="btn-c icon-only" title="设置">
+            <svg class="ic" viewBox="0 0 24 24" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="pros"><span>✓ 温暖</span><span>✓ 触控感</span><span>✓ 圆桌按钮最炫</span></div>
+      <div class="cons"><span>· 占空间多</span><span>· 略花哨</span></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <b>我推荐 B · Raycast 风</b>:它最贴 Hub 的"程序员工具"调性,4 个按钮在一个外壳里有视觉一体感,中间用细分隔线区隔语义组(新建/恢复 → 圆桌 → 设置),最克制最不抢戏。<br>
+    主操作"新建"用绿色填充表达"主动作",其他三个 ghost,圆桌按钮带紫色品牌色淡淡呼应 launcher 海报。
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<!-- Section 2: 4 行用量(用 B 风格按钮组合展示完整侧栏)            -->
+<!-- ============================================================== -->
+<div class="section">
+  <div class="section-header">
+    <h2><span class="num">02</span>4 行用量(按你的 spec) <span style="font-size: 12px; color: var(--text-muted); font-weight: normal; margin-left: 8px;">Claude / Codex / 消耗 / 余额</span></h2>
+    <p>按钮先用 B 风格演示(可换)。Claude 5h+7d 双进度条 / Codex 5h+7d 双进度条 / 第三行今日+累计消耗 / 第四行余额(大字)+ 充值按钮。</p>
+  </div>
+
+  <div class="full-mock-grid">
+    <div class="full-mock-col">
+      <span class="col-label before">当前 v0.8.3(8 行)</span>
+      <div class="mock-frame">
+        <div class="mock-frame-bar">侧边栏 · 当前</div>
+        <div class="sidebar-mock">
+          <div class="btn-row-a" style="opacity: 0.5;">
+            <button class="btn-a primary">+ ▾</button>
+            <button class="btn-a">↻ ▾</button>
+            <button class="btn-a roundtable">🎯</button>
+            <button class="btn-a">⚙ ▾</button>
+            <button class="btn-a">◀</button>
+          </div>
+          <div class="acc-old">
+            <div class="acc-old-row"><span class="acc-old-name">Claude</span><span class="acc-old-data">5h 11% | 7d 21%</span><span class="acc-old-pill">订阅</span></div>
+            <div class="acc-old-row"><span class="acc-old-name">Gemini</span><span class="acc-old-data">5h — 7d —</span><span class="acc-old-pill">订阅</span></div>
+            <div class="acc-old-row"><span class="acc-old-name">Codex</span><span class="acc-old-data">5h 1% | 7d 99%</span><span class="acc-old-pill">API</span></div>
+            <div class="acc-old-row"><span class="acc-old-name">DeepSeek</span><span class="acc-old-data">API 接入</span><span class="acc-old-pill">API</span></div>
+            <div class="acc-old-row"><span class="acc-old-name">GLM</span><span class="acc-old-data">API 接入</span><span class="acc-old-pill">API</span></div>
+            <div class="acc-old-row"><span class="acc-old-name">GPT</span><span class="acc-old-data">API 接入</span><span class="acc-old-pill">API</span></div>
+            <div class="acc-old-row"><span class="acc-old-name">Kimi</span><span class="acc-old-data">API 接入</span><span class="acc-old-pill">API</span></div>
+            <div class="acc-old-row"><span class="acc-old-name">Qwen</span><span class="acc-old-data">API 接入</span><span class="acc-old-pill">API</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="full-mock-col">
+      <span class="col-label after">v0.8.4(4 行 + 新按钮)</span>
+      <div class="mock-frame">
+        <div class="mock-frame-bar">侧边栏 · 优化后</div>
+        <div class="sidebar-mock">
+          <!-- B 风格按钮 -->
+          <div class="btn-row-b" style="margin-bottom: 4px;">
+            <button class="btn-b primary">
+              <svg class="ic" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <svg class="ic-sm" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <button class="btn-b">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg>
+              <svg class="ic-sm" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <span class="btn-b-divider"></span>
+            <button class="btn-b roundtable">
+              <svg class="ic" viewBox="0 0 24 24" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="6" r="2" fill="currentColor"/><circle cx="6.5" cy="15" r="2" fill="currentColor"/><circle cx="17.5" cy="15" r="2" fill="currentColor"/></svg>
+            </button>
+            <span class="btn-b-divider"></span>
+            <button class="btn-b">
+              <svg class="ic" viewBox="0 0 24 24" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.66-7.66l-4.24 4.24m-7.07 7.07L4.34 19.66m13.32 0l-4.24-4.24m-7.07-7.07L4.34 4.34"/></svg>
+              <svg class="ic-sm" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+          </div>
+
+          <!-- 4 行用量 -->
+          <div class="acc-new">
+            <!-- Row 1: Claude -->
+            <div class="acc-row-usage">
+              <span class="ai-badge cl">CL</span>
+              <span class="name">Claude</span>
+              <div class="bars">
+                <div class="bar-block">
+                  <span class="bar-label">5h</span>
+                  <div class="bar-track"><div class="bar-fill green" style="width:11%"></div></div>
+                  <span class="bar-pct green">11%</span>
+                </div>
+                <div class="bar-block">
+                  <span class="bar-label">7d</span>
+                  <div class="bar-track"><div class="bar-fill green" style="width:21%"></div></div>
+                  <span class="bar-pct green">21%</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Row 2: Codex -->
+            <div class="acc-row-usage">
+              <span class="ai-badge cx">CX</span>
+              <span class="name">Codex</span>
+              <div class="bars">
+                <div class="bar-block">
+                  <span class="bar-label">5h</span>
+                  <div class="bar-track"><div class="bar-fill orange" style="width:1%; min-width:2px;"></div></div>
+                  <span class="bar-pct orange">1%</span>
+                </div>
+                <div class="bar-block">
+                  <span class="bar-label">7d</span>
+                  <div class="bar-track"><div class="bar-fill red" style="width:99%"></div></div>
+                  <span class="bar-pct red">99%</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Row 3: 消耗(今日+累计) -->
+            <div class="packy-spend-row">
+              <div class="icon">∑</div>
+              <div class="text">
+                <div class="label">PackyAPI · <span class="today">今日</span> <span class="sep">/</span> 累计</div>
+                <div class="value-row">
+                  <span class="value-today">$0.42</span>
+                  <span class="value-divider">/</span>
+                  <span class="value-total">$22.14</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Row 4: 余额 -->
+            <div class="packy-balance-row">
+              <div class="icon">¥</div>
+              <div class="text">
+                <div class="label">余额</div>
+                <div class="value">$28.86</div>
+              </div>
+              <button class="topup">充值</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes success">
+    <b>布局明细</b>(按你的 spec):
+    <ul>
+      <li>Row 1 · <b>Claude</b>(订阅) — 5h + 7d 双进度条,绿/橙/红三档配色</li>
+      <li>Row 2 · <b>Codex</b>(订阅) — 同上结构</li>
+      <li>Row 3 · <b>PackyAPI 消耗</b> — 今日 $0.42 / 累计 $22.14(用 sk- key 查 <code>/v1/dashboard/billing/usage</code>,start_date 设当天 vs 30 天前)</li>
+      <li>Row 4 · <b>PackyAPI 余额</b> — $28.86 大字 + 充值按钮(用 cookie + New-Api-User 调 <code>/api/user/self</code>)</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<!-- Section 3: 数据接入实现细节                                    -->
+<!-- ============================================================== -->
+<div class="section">
+  <div class="section-header">
+    <h2><span class="num">03</span>数据接入实现(Plan AB)</h2>
+    <p>Hub 设置加一个 "PackyAPI Cookie + User ID" 输入区,有则升级到完整版,无则降级显示"今日/累计"消耗。</p>
+  </div>
+
+  <div class="notes">
+    <b>新增配置项(Hub 设置 → PackyAPI 段)</b>:
+    <ul>
+      <li><code>packy_session_cookie</code> — 整段 cookie 值(从浏览器 cookies.txt 拿,你提供的那种)</li>
+      <li><code>packy_user_id</code> — <b>可自动从 cookie 解出</b>(我已实测可用 — gob 解码 session payload 拿 <code>id</code> 字段),用户不需要填</li>
+    </ul>
+    <b>实现路径</b>:
+    <ul>
+      <li>新增 <code>core/packy-balance.js</code> — 封装 cookie 解析 + balance 拉取 + 缓存</li>
+      <li>定时刷新:<b>5 分钟</b> 一次,缓存到 <code>~/.claude-session-hub/usage-cache.json</code> 的 <code>packy</code> 段</li>
+      <li>UI 不阻塞 — 启动直接显示缓存值,后台静默刷新,刷新完成发 IPC 让 renderer 重渲染</li>
+      <li>Cookie 过期 → 显示 "余额: 重新登录"(不是 error,只是黄色提示)+ 设置入口</li>
+    </ul>
+  </div>
+
+  <div class="notes warning">
+    <b>Cookie 安全提示</b>:整段 session cookie 写到本地 <code>config.json</code>,Hub 数据目录权限是 user-only,但仍要让你知道<b>这等同于你的浏览器登录态</b> — 有人拿到这文件就能登录你的 packyapi 账户(直到 cookie 过期)。
+    <br>
+    缓解:
+    <ul>
+      <li>Hub 配置文件不进 git(已经 .gitignore)</li>
+      <li>cookie 过期时间 (timestamp 1780237503 → <b>2026-08-31</b>) 我会显示在设置里,提前一周提醒你刷新</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<!-- 决策                                                           -->
+<!-- ============================================================== -->
+<div class="section">
+  <div class="section-header">
+    <h2><span class="num">04</span>给我两个决策</h2>
+  </div>
+  <div class="notes">
+    <ul style="font-size: 14px; line-height: 1.9;">
+      <li><b>按钮风格</b>:<code>A</code>(Linear 渐变) / <code>B</code>(Raycast 我推荐) / <code>C</code>(软糖胶囊)</li>
+      <li><b>4 行布局</b>:同意我的 mock 还是要调?(比如"今日/累计"那行你想要分开两行?或者余额那行不要充值按钮?)</li>
+    </ul>
+    <p style="margin-top: 12px;">
+      回我两个字定下来,我下一轮一次性落代码到 <code>renderer/index.html / styles.css / renderer.js</code> + 新建 <code>core/packy-balance.js</code> + Hub 设置加 cookie 输入,合并成 v0.8.4 一个 commit。
+    </p>
+  </div>
+</div>
+
+</body>
+</html>

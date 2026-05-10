@@ -1210,6 +1210,12 @@ body.theme-light .prompt-line-marker {
   background: var(--bg-secondary);
 }
 
+.new-session-option .hint {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .new-session-divider {
   height: 1px;
   background: var(--border);

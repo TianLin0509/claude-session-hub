@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hub UI 优化对比 · Pikachu 版</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0e1014;
+    color: #d8dee9;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 32px 48px 80px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    color: #f0f3f8;
+    margin-bottom: 8px;
+  }
+  h1 .author {
+    font-size: 13px;
+    font-weight: 400;
+    color: #6c7689;
+    margin-left: 12px;
+  }
+  .lead {
+    color: #8b94a7;
+    margin-bottom: 28px;
+    max-width: 780px;
+  }
+  .lead b { color: #c8d0df; }
+
+  .section {
+    margin-bottom: 36px;
+    padding: 20px;
+    background: #14171c;
+    border: 1px solid #1f242c;
+    border-radius: 10px;
+  }
+  .section-title {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 4px;
+  }
+  .section-title .num {
+    font-size: 11px;
+    font-weight: 600;
+    color: #5d8ed7;
+    letter-spacing: 0.5px;
+  }
+  .section-title h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #e8ecf3;
+  }
+  .section-title .tag {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(93,142,215,0.12);
+    color: #8aafe3;
+  }
+  .section-desc {
+    color: #8b94a7;
+    margin-bottom: 14px;
+    font-size: 12px;
+  }
+
+  .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .panel {
+    background: #0e1014;
+    border: 1px solid #1f242c;
+    border-radius: 8px;
+    padding: 14px;
+    min-height: 220px;
+    display: flex;
+    flex-direction: column;
+  }
+  .panel-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+    text-transform: uppercase;
+  }
+  .panel.before .panel-label { color: #8a6d6d; }
+  .panel.after  .panel-label { color: #6da57b; }
+  .panel.before { border-color: #2a1e1e; }
+  .panel.after  { border-color: #1e2a22; }
+
+  .notes {
+    margin-top: 14px;
+    padding: 12px 14px;
+    background: rgba(93,142,215,0.06);
+    border-left: 2px solid #5d8ed7;
+    border-radius: 0 4px 4px 0;
+    font-size: 12px;
+    color: #b6bfcf;
+  }
+  .notes b { color: #e8ecf3; }
+  .notes ul { margin: 4px 0 0 18px; }
+  .notes li { margin-bottom: 2px; }
+
+  /* ============ Mock UI 样式 ============ */
+  .mock { font-size: 12px; color: #c8d0df; }
+
+  /* —— S1: 侧边栏 header —— */
+  .mock-sidebar-header {
+    display: flex;
+    gap: 4px;
+    padding: 8px;
+    background: #14171c;
+    border: 1px solid #1f242c;
+    border-radius: 6px;
+    align-items: center;
+  }
+  .mock-btn {
+    background: #1a1e24;
+    border: 1px solid #252a32;
+    color: #c8d0df;
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: default;
+    font-size: 12px;
+  }
+  .mock-btn-primary {
+    background: linear-gradient(180deg, #4a7bd1, #3d68bb);
+    border: 1px solid #5d8ed7;
+    color: white;
+    font-weight: 500;
+  }
+  .mock-btn.icon { padding: 6px 8px; }
+  .mock-btn-split { display: flex; padding: 0; overflow: hidden; }
+  .mock-btn-split > span { padding: 6px 10px; }
+  .mock-btn-split > span:first-child { background: linear-gradient(180deg, #4a7bd1, #3d68bb); color: white; font-weight: 500; }
+  .mock-btn-split > span:last-child { padding: 6px 8px; border-left: 1px solid rgba(255,255,255,0.15); background: linear-gradient(180deg, #4a7bd1, #3d68bb); color: white; }
+  .mock-btn.ghost {
+    background: transparent;
+    border: 1px solid transparent;
+    color: #8b94a7;
+  }
+  .mock-search {
+    flex: 1;
+    background: #0e1014;
+    border: 1px solid #252a32;
+    border-radius: 4px;
+    padding: 6px 10px;
+    color: #6c7689;
+    font-size: 12px;
+  }
+
+  /* —— S2: 会话卡片 —— */
+  .mock-session-list { display: flex; flex-direction: column; gap: 6px; }
+  .mock-session-old {
+    background: #14171c;
+    border-left: 2px solid transparent;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+  .mock-session-old.active { border-left-color: #5d8ed7; background: #1a1e24; }
+  .mock-session-old.dim { opacity: 0.5; }
+  .mock-session-old .title { color: #c8d0df; }
+  .mock-session-old .dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    margin-right: 6px;
+    background: #6da57b;
+  }
+  .mock-session-old .dot.idle { background: #6c7689; }
+
+  .mock-session-new {
+    background: #14171c;
+    border: 1px solid #1f242c;
+    border-radius: 6px;
+    padding: 10px 12px;
+    transition: background 120ms;
+  }
+  .mock-session-new.active {
+    background: rgba(93,142,215,0.10);
+    border-color: #4a7bd1;
+    box-shadow: 0 0 0 1px rgba(93,142,215,0.3);
+  }
+  .mock-session-new .row1 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .mock-session-new .row1 .name {
+    color: #e8ecf3;
+    font-weight: 500;
+    font-size: 13px;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mock-session-new .ai-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.06);
+    color: #8b94a7;
+    font-family: ui-monospace, monospace;
+  }
+  .mock-session-new .row2 {
+    color: #6c7689;
+    font-size: 11px;
+    font-family: ui-monospace, "SF Mono", monospace;
+    margin-bottom: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mock-session-new .row3 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+  }
+  .mock-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+  }
+  .mock-status::before {
+    content: '';
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+  }
+  .mock-status.running { color: #6da57b; }
+  .mock-status.running::before { background: #6da57b; box-shadow: 0 0 6px rgba(109,165,123,0.6); }
+  .mock-status.waiting { color: #d4a857; }
+  .mock-status.waiting::before { background: #d4a857; }
+  .mock-status.error { color: #d96d6d; }
+  .mock-status.error::before { background: #d96d6d; }
+  .mock-status.idle { color: #6c7689; }
+  .mock-status.idle::before { background: #6c7689; }
+  .mock-time { margin-left: auto; color: #5d6573; font-size: 11px; }
+
+  /* —— S3: 空状态 —— */
+  .mock-empty-old {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #5d6573;
+    text-align: center;
+  }
+  .mock-empty-old .ico {
+    font-size: 36px;
+    color: #2a3140;
+    margin-bottom: 10px;
+  }
+  .mock-empty-old .text { font-size: 14px; color: #8b94a7; }
+  .mock-empty-old .hint { font-size: 11px; color: #5d6573; margin-top: 4px; }
+
+  .mock-empty-new {
+    flex: 1;
+    padding: 24px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .mock-empty-new .title {
+    font-size: 16px;
+    color: #e8ecf3;
+    font-weight: 500;
+  }
+  .mock-empty-new .subtitle {
+    font-size: 12px;
+    color: #8b94a7;
+    margin-bottom: 6px;
+  }
+  .mock-empty-new .quick-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .mock-empty-new .quick-card {
+    padding: 12px;
+    background: #14171c;
+    border: 1px solid #1f242c;
+    border-radius: 6px;
+    cursor: default;
+  }
+  .mock-empty-new .quick-card:hover { border-color: #4a7bd1; }
+  .mock-empty-new .quick-card .icon {
+    width: 22px; height: 22px;
+    border-radius: 4px;
+    background: rgba(93,142,215,0.15);
+    color: #5d8ed7;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 8px;
+  }
+  .mock-empty-new .quick-card .label {
+    font-size: 12px;
+    color: #d8dee9;
+    font-weight: 500;
+  }
+  .mock-empty-new .quick-card .desc {
+    font-size: 10px;
+    color: #6c7689;
+    margin-top: 2px;
+  }
+  .mock-empty-new .recent-list {
+    margin-top: 4px;
+    border-top: 1px solid #1f242c;
+    padding-top: 10px;
+  }
+  .mock-empty-new .recent-title {
+    font-size: 10px;
+    color: #5d6573;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+  }
+  .mock-empty-new .recent-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 12px;
+    color: #b6bfcf;
+  }
+  .mock-empty-new .recent-item .ago { color: #5d6573; margin-left: auto; font-size: 10px; }
+  .mock-empty-new .kbd-row {
+    margin-top: auto;
+    font-size: 10px;
+    color: #5d6573;
+    display: flex;
+    gap: 14px;
+  }
+  .kbd {
+    display: inline-block;
+    padding: 1px 5px;
+    background: #1a1e24;
+    border: 1px solid #252a32;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+    color: #b6bfcf;
+  }
+
+  /* —— S4: 输入框 —— */
+  .mock-composer-old {
+    margin-top: auto;
+    background: #1a1e24;
+    border: 1px solid #252a32;
+    border-radius: 6px;
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .mock-composer-old input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: #c8d0df;
+    font-size: 12px;
+    outline: none;
+  }
+  .mock-composer-old .send {
+    background: linear-gradient(180deg, #4a7bd1, #3d68bb);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    width: 28px;
+    height: 28px;
+    cursor: default;
+  }
+
+  .mock-composer-new {
+    margin-top: auto;
+    background: #1a1e24;
+    border: 1px solid #252a32;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .mock-composer-new .ctx {
+    padding: 6px 10px;
+    font-size: 10px;
+    color: #8b94a7;
+    background: rgba(93,142,215,0.06);
+    border-bottom: 1px solid #1f242c;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .mock-composer-new .ctx .arrow { color: #5d6573; }
+  .mock-composer-new .ctx .target { color: #8aafe3; font-weight: 500; }
+  .mock-composer-new .body {
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .mock-composer-new .body input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: #c8d0df;
+    font-size: 12px;
+    outline: none;
+  }
+  .mock-composer-new .body .meta {
+    font-size: 10px;
+    color: #5d6573;
+    font-family: ui-monospace, monospace;
+  }
+  .mock-composer-new .body .send {
+    background: linear-gradient(180deg, #4a7bd1, #3d68bb);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    width: 28px;
+    height: 28px;
+    cursor: default;
+  }
+
+  /* —— S5: 预览头部 —— */
+  .mock-preview-old, .mock-preview-new {
+    background: #14171c;
+    border: 1px solid #1f242c;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .mock-preview-old .head, .mock-preview-new .head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: #1a1e24;
+    border-bottom: 1px solid #1f242c;
+  }
+  .mock-preview-old .head { flex-wrap: wrap; }
+  .mock-preview-old .title, .mock-preview-new .title {
+    flex: 1;
+    font-size: 12px;
+    color: #c8d0df;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mock-preview-new .file-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(93,142,215,0.18);
+    color: #8aafe3;
+    font-family: ui-monospace, monospace;
+    font-weight: 500;
+  }
+  .mock-preview-new .size-info {
+    font-size: 10px;
+    color: #6c7689;
+    font-family: ui-monospace, monospace;
+  }
+  .mock-icon-btn {
+    width: 22px; height: 22px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: #8b94a7;
+    border-radius: 3px;
+    font-size: 11px;
+    cursor: default;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .mock-icon-btn.solid { background: #1f242c; }
+  .mock-preview-new .body, .mock-preview-old .body {
+    padding: 16px;
+    color: #5d6573;
+    font-size: 11px;
+    height: 90px;
+  }
+
+  /* —— S6: 主题色板 —— */
+  .swatch-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .swatch {
+    flex: 1;
+    min-width: 110px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #1f242c;
+  }
+  .swatch .head {
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    color: white;
+  }
+  .swatch .stack {
+    display: flex;
+    height: 50px;
+  }
+  .swatch .stack > div { flex: 1; }
+
+  .footnote {
+    margin-top: 28px;
+    padding: 16px 20px;
+    background: rgba(93,142,215,0.06);
+    border-radius: 8px;
+    color: #b6bfcf;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .footnote b { color: #e8ecf3; }
+</style>
+</head>
+<body>
+
+<h1>Claude Session Hub · UI 优化对比 <span class="author">by Pikachu (Claude Opus 4.7)</span></h1>
+<p class="lead">
+聚焦 <b>6 个视觉细节</b>。所有 mock 用 Hub 现有暗色风格,<b>不引入新色彩,只重新组织信息层级</b>。
+和小火龙 <code>ui-optimization-comparison.html</code> 互补,推荐两稿合看。
+</p>
+
+<!-- ========== S1 ========== -->
+<div class="section">
+  <div class="section-title">
+    <span class="num">01</span>
+    <h2>侧边栏 header · 5 按钮拥挤 → 主次分离</h2>
+    <span class="tag">P0 · 改动最重</span>
+  </div>
+  <p class="section-desc">
+    现状:<code>+▾</code> <code>↻▾</code> <code>🎯</code> <code>⚙▾</code> <code>◀</code> 五按钮一字排开,三个 <code>▾</code> 下拉箭头视觉重复。新建 Claude 要 2 步,无搜索入口。
+  </p>
+  <div class="pair">
+    <div class="panel before">
+      <div class="panel-label">BEFORE · 当前</div>
+      <div class="mock-sidebar-header">
+        <button class="mock-btn">+ ▾</button>
+        <button class="mock-btn">↻ ▾</button>
+        <button class="mock-btn icon">🎯</button>
+        <button class="mock-btn">⚙ ▾</button>
+        <button class="mock-btn icon">◀</button>
+      </div>
+      <p style="margin-top:12px;font-size:11px;color:#8a6d6d;">
+        5 按钮宽度 ≈ 250px,iPad 模式或窄屏挤换行<br>
+        三个 <code>▾</code> 同形不同义,扫读心智负担<br>
+        无搜索框,会话超过 10 个就要肉眼找
+      </p>
+    </div>
+    <div class="panel after">
+      <div class="panel-label">AFTER · 优化后</div>
+      <div class="mock-sidebar-header" style="flex-direction:column;align-items:stretch;gap:8px;">
+        <div style="display:flex;gap:6px;">
+          <span class="mock-btn-split">
+            <span>+ Claude</span>
+            <span>▾</span>
+          </span>
+          <button class="mock-btn icon">↻</button>
+          <button class="mock-btn icon">🎯</button>
+          <button class="mock-btn ghost icon">⋯</button>
+          <button class="mock-btn ghost icon">◀</button>
+        </div>
+        <input class="mock-search" placeholder="🔍  Search sessions" readonly>
+      </div>
+      <p style="margin-top:12px;font-size:11px;color:#6da57b;">
+        主操作 <b>+ Claude</b> 一步直达,<code>▾</code> 切其他 AI<br>
+        ⚙/折叠并入 <code>⋯</code> overflow,降低视觉权重<br>
+        搜索框常驻,Cmd+K 也能召唤
+      </p>
+    </div>
+  </div>
+  <div class="notes">
+    <b>关键决策</b>
+    <ul>
+      <li>主按钮做 <b>split button</b>(主操作 + 下拉),消除"两步选 Claude"的痛点</li>
+      <li>把"恢复历史"保留为图标按钮(中频),"圆桌"独立按钮(品牌特征)</li>
+      <li>"选项 + 折叠"合并到 <code>⋯</code> 溢出菜单(低频)</li>
+      <li>搜索框换行常驻,占 28px 高度 — 用户认为值得</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ========== S2 ========== -->
+<div class="section">
+  <div class="section-title">
+    <span class="num">02</span>
+    <h2>会话列表 · 单行文本 → 三层卡片</h2>
+    <span class="tag">P0 · 高频</span>
+  </div>
+  <p class="section-desc">
+    现状:左边框颜色 + 7px 圆点编码状态,信息密度低。看不出当前会话用什么模型、运行多久。
+  </p>
+  <div class="pair">
+    <div class="panel before">
+      <div class="panel-label">BEFORE · 当前</div>
+      <div class="mock-session-list">
+        <div class="mock-session-old"><span class="dot"></span><span class="title">claude-session-hub</span></div>
+        <div class="mock-session-old active"><span class="dot"></span><span class="title">LinDangAgent</span></div>
+        <div class="mock-session-old"><span class="dot"></span><span class="title">funtop10-douyin</span></div>
+        <div class="mock-session-old dim"><span class="dot idle"></span><span class="title">L2_RRM_Sim (休眠)</span></div>
+      </div>
+      <p style="margin-top:12px;font-size:11px;color:#8a6d6d;">
+        每条只看到名字,模型/路径/状态全凭记忆<br>
+        选中靠 2px 蓝边,扫一屏分不出<br>
+        休眠靠透明度,色弱用户分辨困难
+      </p>
+    </div>
+    <div class="panel after">
+      <div class="panel-label">AFTER · 优化后</div>
+      <div class="mock-session-list">
+        <div class="mock-session-new">
+          <div class="row1"><span class="name">claude-session-hub</span><span class="ai-badge">CL · Opus</span></div>
+          <div class="row2">~/claude-session-hub</div>
+          <div class="row3"><span class="mock-status idle">空闲</span><span class="mock-time">3 分钟前</span></div>
+        </div>
+        <div class="mock-session-new active">
+          <div class="row1"><span class="name">LinDangAgent</span><span class="ai-badge">CL · Opus</span></div>
+          <div class="row2">~/LinDangAgent</div>
+          <div class="row3"><span class="mock-status running">运行中 · 02:14</span><span class="mock-time">活跃</span></div>
+        </div>
+        <div class="mock-session-new">
+          <div class="row1"><span class="name">funtop10-douyin</span><span class="ai-badge">GE · 2.5</span></div>
+          <div class="row2">~/funtop10</div>
+          <div class="row3"><span class="mock-status waiting">等待输入</span><span class="mock-time">12 分钟前</span></div>
+        </div>
+        <div class="mock-session-new" style="opacity:0.55;">
+          <div class="row1"><span class="name">L2_RRM_Sim</span><span class="ai-badge">CX · 5.5</span></div>
+          <div class="row2">~/L2_RRM_Sim</div>
+          <div class="row3"><span class="mock-status idle">已休眠</span><span class="mock-time">2 天前</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>关键决策</b>
+    <ul>
+      <li>三行结构:<b>名字 + 模型角标</b> / 路径 / 状态 + 时间 — 高度 ≈ 60px</li>
+      <li>选中态用 <b>整卡背景 + 1px 边框 + 0.3α 阴影</b>(取代左边框)</li>
+      <li>状态色 + 文字双重编码(色盲友好,灰度截图也能辨)</li>
+      <li>运行中加 <b>02:14</b> 计时器,长任务感知"不是卡死"</li>
+      <li>模型角标 <code>CL · Opus</code> 用等宽字体降饱和度,不抢焦点</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ========== S3 ========== -->
+<div class="section">
+  <div class="section-title">
+    <span class="num">03</span>
+    <h2>空状态 · 死页面 → 启动面板</h2>
+    <span class="tag">P1 · 首屏感知</span>
+  </div>
+  <p class="section-desc">
+    现状:<code>"No session selected" + "Click + to create"</code> 两行字 + 一个 + 图标,新用户首屏过于冷清。
+  </p>
+  <div class="pair">
+    <div class="panel before">
+      <div class="panel-label">BEFORE · 当前</div>
+      <div class="mock-empty-old">
+        <div class="ico">+</div>
+        <div class="text">No session selected</div>
+        <div class="hint">Click "+" to create a new session</div>
+      </div>
+    </div>
+    <div class="panel after">
+      <div class="panel-label">AFTER · 优化后</div>
+      <div class="mock-empty-new">
+        <div class="title">开始一个会话</div>
+        <div class="subtitle">选一个 AI 直接开始,或恢复最近的工作</div>
+        <div class="quick-grid">
+          <div class="quick-card">
+            <div class="icon">CL</div>
+            <div class="label">新建 Claude</div>
+            <div class="desc">⌘N</div>
+          </div>
+          <div class="quick-card">
+            <div class="icon">GE</div>
+            <div class="label">新建 Gemini</div>
+            <div class="desc">⌘⇧N</div>
+          </div>
+          <div class="quick-card">
+            <div class="icon">↻</div>
+            <div class="label">恢复历史</div>
+            <div class="desc">⌘R</div>
+          </div>
+          <div class="quick-card">
+            <div class="icon">🎯</div>
+            <div class="label">建圆桌</div>
+            <div class="desc">⌘⇧M</div>
+          </div>
+        </div>
+        <div class="recent-list">
+          <div class="recent-title">最近会话</div>
+          <div class="recent-item">📁 LinDangAgent <span class="ago">3 分钟前</span></div>
+          <div class="recent-item">📁 funtop10 <span class="ago">2 小时前</span></div>
+          <div class="recent-item">📁 claude-session-hub <span class="ago">昨天</span></div>
+        </div>
+        <div class="kbd-row">
+          <span><span class="kbd">⌘K</span> 搜索</span>
+          <span><span class="kbd">⌘B</span> 收侧栏</span>
+          <span><span class="kbd">⌘,</span> 设置</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>关键决策</b>
+    <ul>
+      <li>4 个 quick card(2x2)+ 最近 3 条 + 快捷键提示 — 信息密度足但不拥挤</li>
+      <li>"最近会话"是真实场景:用户关 Hub 又开,恢复比新建更高频</li>
+      <li>底部 kbd 提示让快捷键被发现 — 第一次打开就能学到</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ========== S4 ========== -->
+<div class="section">
+  <div class="section-title">
+    <span class="num">04</span>
+    <h2>输入框 · 无上下文 → 显式目标 + 元信息</h2>
+    <span class="tag">P1 · 圆桌场景</span>
+  </div>
+  <p class="section-desc">
+    现状:输入框没标"在跟谁说话",圆桌场景下选错目标的成本不小。
+  </p>
+  <div class="pair">
+    <div class="panel before">
+      <div class="panel-label">BEFORE · 当前</div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;">
+        <div class="mock-composer-old">
+          <input placeholder="输入消息..." readonly>
+          <button class="send">▶</button>
+        </div>
+      </div>
+      <p style="margin-top:12px;font-size:11px;color:#8a6d6d;">
+        没标当前 AI / 模型<br>
+        没字符计数,长 prompt 易截断<br>
+        没快捷键提示
+      </p>
+    </div>
+    <div class="panel after">
+      <div class="panel-label">AFTER · 优化后</div>
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;">
+        <div class="mock-composer-new">
+          <div class="ctx">
+            <span class="arrow">↗</span>
+            发送至 <span class="target">Claude · Opus 4.7 [1m]</span>
+            <span style="margin-left:auto;color:#5d6573;">⏎ 发送 · ⇧⏎ 换行</span>
+          </div>
+          <div class="body">
+            <input placeholder="输入消息..." readonly>
+            <span class="meta">128 / 200k</span>
+            <button class="send">▶</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>关键决策</b>
+    <ul>
+      <li>顶部 ctx 条 22px 高,降饱和度 — 存在感弱但需要时一眼能看到</li>
+      <li>字符计数到 8000 字符后变橙色 — 提前预警 token 截断</li>
+      <li>快捷键提示常驻 — 不开文档也能学</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ========== S5 ========== -->
+<div class="section">
+  <div class="section-title">
+    <span class="num">05</span>
+    <h2>预览面板头部 · 7 个图标 → 信息 + 主操作 + 溢出</h2>
+    <span class="tag">P2 · 体验打磨</span>
+  </div>
+  <p class="section-desc">
+    现状:<code>A− 100% A+ 1:1 ↗ □ ✕</code> 七图标并排,缺少文件类型/大小信息。
+  </p>
+  <div class="pair">
+    <div class="panel before">
+      <div class="panel-label">BEFORE · 当前</div>
+      <div class="mock-preview-old">
+        <div class="head">
+          <span class="title">README.md</span>
+          <button class="mock-icon-btn">A−</button>
+          <span style="font-size:10px;color:#8b94a7;">100%</span>
+          <button class="mock-icon-btn">A+</button>
+          <button class="mock-icon-btn">1:1</button>
+          <button class="mock-icon-btn">↗</button>
+          <button class="mock-icon-btn">□</button>
+          <button class="mock-icon-btn">✕</button>
+        </div>
+        <div class="body">README.md 内容预览...</div>
+      </div>
+      <p style="margin-top:12px;font-size:11px;color:#8a6d6d;">
+        7 个图标视觉同权重,主次不分<br>
+        没文件类型/大小,看不出"我在看什么"<br>
+        缩放控件占空间过大
+      </p>
+    </div>
+    <div class="panel after">
+      <div class="panel-label">AFTER · 优化后</div>
+      <div class="mock-preview-new">
+        <div class="head">
+          <span class="file-badge">MD</span>
+          <span class="title">README.md</span>
+          <span class="size-info">12.4 KB</span>
+          <button class="mock-icon-btn solid" style="font-size:10px;width:auto;padding:0 6px;">100%</button>
+          <button class="mock-icon-btn">↗</button>
+          <button class="mock-icon-btn">⋯</button>
+          <button class="mock-icon-btn">✕</button>
+        </div>
+        <div class="body">README.md 内容预览...</div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>关键决策</b>
+    <ul>
+      <li>左侧:<b>MD 类型角标</b> + 文件名 + <b>12.4 KB</b> — 一眼知道在看什么</li>
+      <li>缩放合并为单一 <b>100%</b> 按钮(点击展开 ±/重置 popover)</li>
+      <li>外部打开 + 全屏保留快捷,关闭独立(右上角符合 OS 直觉)</li>
+      <li>其他低频(全屏/分屏切换)进 <code>⋯</code> overflow</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ========== S6 ========== -->
+<div class="section">
+  <div class="section-title">
+    <span class="num">06</span>
+    <h2>主题系统 · 已有 4 套但需统一规范</h2>
+    <span class="tag">P2 · 设计令牌</span>
+  </div>
+  <p class="section-desc">
+    Hub 已有 4 主题(default / midnight / obsidian / aurora)。<b>不需要加新主题</b>,但需要统一每个主题的"设计令牌"——bg-1/bg-2/bg-3、accent、status 四个色板的关系是否一致。
+  </p>
+  <div class="swatch-row">
+    <div class="swatch">
+      <div class="head" style="background:#3d5a8a;">Default</div>
+      <div class="stack">
+        <div style="background:#0e1014;"></div>
+        <div style="background:#14171c;"></div>
+        <div style="background:#1a1e24;"></div>
+        <div style="background:#5d8ed7;"></div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="head" style="background:#1e3a5f;">Midnight</div>
+      <div class="stack">
+        <div style="background:#040b1a;"></div>
+        <div style="background:#0a1628;"></div>
+        <div style="background:#102236;"></div>
+        <div style="background:#4ec9e0;"></div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="head" style="background:#3d2818;">Obsidian</div>
+      <div class="stack">
+        <div style="background:#080808;"></div>
+        <div style="background:#121212;"></div>
+        <div style="background:#1a1a1a;"></div>
+        <div style="background:#d4944c;"></div>
+      </div>
+    </div>
+    <div class="swatch">
+      <div class="head" style="background:#2a2055;">Aurora</div>
+      <div class="stack">
+        <div style="background:#0a0e1f;"></div>
+        <div style="background:#141838;"></div>
+        <div style="background:#1e2350;"></div>
+        <div style="background:#8b5cf6;"></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>关键决策</b>
+    <ul>
+      <li>每个主题强制 <b>3 档背景灰阶 + 1 个强调色</b>,杜绝"主题里又冒出第 5 种灰"</li>
+      <li>状态色(运行/等待/错误/空闲)在所有主题下保持一致命中,不随主题变</li>
+      <li>建议在 <code>styles.css</code> 抽出 CSS variables(<code>--bg-1/2/3</code>, <code>--accent</code>),让主题切换只换变量值</li>
+      <li>这是<b>底层重构</b>,不影响视觉,但保证后续 6 项改动在 4 主题下视觉一致</li>
+    </ul>
+  </div>
+</div>
+
+<div class="footnote">
+  <b>建议落地顺序</b>:<br>
+  • <b>第一波</b>(改动小、感知最强): 02 会话卡片 + 03 启动面板 + 01 header 简化<br>
+  • <b>第二波</b>(打磨): 04 输入框上下文 + 05 预览头部<br>
+  • <b>第三波</b>(底层): 06 主题令牌抽象<br><br>
+  <b>和小火龙的对比稿互补</b>:他的 <code>ui-optimization-comparison.html</code> 覆盖更全(8 项),适合做<b>需求清单</b>;我这版每项做了 mock + 决策注解,适合做<b>设计评审</b>。两者一起看决策更稳。
+</div>
+
+</body>
+</html>

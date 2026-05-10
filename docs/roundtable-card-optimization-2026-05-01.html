@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌卡片二期优化 · 2026-05-01</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --bg-card-2: #1c232c;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --text-muted: #6e7681;
+  --accent: #58a6ff;
+  --accent-2: #d2a8ff;
+  --green: #3fb950;
+  --yellow: #f0883e;
+  --red: #f85149;
+  --orange: #db6d28;
+  --cyan: #39d0d8;
+  --pink: #ff7b72;
+  --purple: #bc8cff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  font-size: 14px;
+}
+.wrap { max-width: 1280px; margin: 0 auto; padding: 32px 24px 80px; }
+h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.02em; }
+h2 { font-size: 22px; margin: 48px 0 16px; padding-top: 8px; border-top: 1px solid var(--border-soft); display: flex; align-items: center; gap: 12px; }
+h2 .badge { font-size: 12px; background: var(--accent); color: #000; padding: 3px 8px; border-radius: 12px; font-weight: 600; }
+h3 { font-size: 17px; margin: 24px 0 10px; color: var(--accent-2); }
+h4 { font-size: 14px; margin: 16px 0 6px; color: var(--cyan); }
+.subtitle { color: var(--text-dim); margin-bottom: 8px; }
+.meta { color: var(--text-muted); font-size: 12px; margin-bottom: 32px; }
+.tag { display: inline-block; background: var(--bg-card); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 12px; color: var(--text-dim); }
+code { font-family: "JetBrains Mono", Consolas, monospace; background: var(--bg-card-2); padding: 1px 6px; border-radius: 3px; font-size: 12.5px; color: var(--accent-2); }
+pre { background: var(--bg-card-2); border: 1px solid var(--border-soft); border-radius: 6px; padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.55; }
+pre code { background: transparent; padding: 0; color: var(--text); }
+.kbd { font-family: "JetBrains Mono", monospace; background: #21262d; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px; font-size: 11.5px; color: var(--text-dim); }
+
+/* TOC */
+.toc { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin-bottom: 32px; }
+.toc-title { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+.toc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 16px; }
+.toc-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 4px; }
+.toc-item:hover { background: var(--bg-card-2); }
+.toc-num { font-weight: 700; color: var(--accent); width: 22px; text-align: center; }
+.toc-item a { color: var(--text); text-decoration: none; flex: 1; }
+
+/* Cards */
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+.cmp.cmp3 { grid-template-columns: repeat(3, 1fr); }
+.cmp-col { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.cmp-col.before { border-left: 3px solid var(--red); }
+.cmp-col.after { border-left: 3px solid var(--green); }
+.cmp-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); margin-bottom: 12px; }
+.cmp-col.before .cmp-label { color: var(--red); }
+.cmp-col.after .cmp-label { color: var(--green); }
+
+/* Mock card replicating the meeting room AI tab */
+.mock-card {
+  background: linear-gradient(180deg, #1c232c 0%, #161b22 100%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin: 8px 0;
+  font-size: 13px;
+  position: relative;
+  overflow: hidden;
+}
+.mock-card.streaming { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 24px rgba(88,166,255,0.18); }
+.mock-card.streaming::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%);
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+@keyframes shimmer { 0% {transform: translateX(-100%);} 100% {transform: translateX(100%);} }
+
+.mc-row1 { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.mc-avatar { width: 44px; height: 44px; border-radius: 50%; background: #2d333b; display: flex; align-items: center; justify-content: center; font-size: 26px; flex-shrink: 0; border: 2px solid var(--border); }
+.mc-avatar.claude { background: linear-gradient(135deg, #fff8b5, #f5d76a); }
+.mc-avatar.gemini { background: linear-gradient(135deg, #ffb480, #ff7a4a); }
+.mc-avatar.codex { background: linear-gradient(135deg, #a8d8ff, #5fa8e6); }
+.mc-name { font-weight: 700; font-size: 15px; }
+.mc-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+.mc-status.outputting { background: rgba(88,166,255,0.15); color: var(--accent); }
+.mc-status.done { background: rgba(63,185,80,0.15); color: var(--green); }
+.mc-status.idle { background: rgba(139,148,158,0.15); color: var(--text-dim); }
+.mc-stat-inline { margin-left: auto; display: flex; gap: 12px; font-size: 11.5px; color: var(--text-dim); }
+.mc-stat-inline .num { color: var(--text); font-weight: 600; }
+
+.mc-row2 { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.mc-model { font-size: 11.5px; padding: 2px 8px; border-radius: 4px; background: rgba(139,92,246,0.15); color: var(--purple); font-weight: 600; }
+.mc-ctx { font-size: 11.5px; padding: 2px 8px; border-radius: 4px; background: rgba(63,185,80,0.15); color: var(--green); font-weight: 600; }
+.mc-row2 .mc-stat-inline { margin-left: auto; }
+
+.mc-row3-old { font-size: 11.5px; color: var(--text-dim); margin-bottom: 4px; }
+.mc-row4-old { font-size: 11.5px; color: var(--text-dim); margin-bottom: 8px; }
+
+.mc-divider { height: 1px; background: var(--border-soft); margin: 6px 0 8px; }
+.mc-preview { font-size: 12.5px; color: var(--text); line-height: 1.55; max-height: 96px; overflow: hidden; }
+.mc-preview.tall { max-height: 140px; }
+.mc-preview-noisy { color: var(--text-muted); font-family: "JetBrains Mono", monospace; font-size: 11.5px; }
+.mc-preview-clean { color: var(--text); }
+.mc-preview .think { color: var(--text-dim); font-style: italic; }
+.mc-preview .think::before { content: "💭 "; }
+.mc-preview .tool { display: inline-block; background: rgba(57,208,216,0.12); color: var(--cyan); padding: 1px 6px; border-radius: 3px; font-size: 11px; margin: 2px 0; }
+.mc-preview .tool::before { content: "🔍 "; }
+
+/* Highlight changed regions */
+.hl { background: rgba(88,166,255,0.18); border-radius: 3px; padding: 0 4px; box-shadow: 0 0 0 1px rgba(88,166,255,0.4); }
+.hl-rm { text-decoration: line-through; color: var(--red); opacity: 0.7; }
+
+/* Diagrams */
+.flow {
+  background: var(--bg-card-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--text);
+}
+.flow .label { color: var(--accent); }
+.flow .src { color: var(--green); }
+.flow .out { color: var(--yellow); }
+.flow .bad { color: var(--red); }
+.flow .arrow { color: var(--text-muted); }
+
+/* Layout mockups */
+.layout-mock {
+  background: #0a0e13;
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  height: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+}
+.lm-header { background: #1c232c; border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; display: flex; align-items: center; gap: 8px; }
+.lm-cards { background: linear-gradient(180deg, #2a3440, #1f2530); border: 1px solid var(--border); border-radius: 4px; display: flex; gap: 4px; padding: 4px; }
+.lm-card { background: #2d3744; border: 1px solid var(--border); border-radius: 3px; flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-dim); }
+.lm-shells { background: #11161d; border: 1px solid var(--border); border-radius: 4px; padding: 4px; display: flex; gap: 4px; }
+.lm-shell { background: #1a1f26; border: 1px solid var(--border-soft); border-radius: 3px; flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-family: monospace; }
+.lm-toolbar { background: #161b22; border: 1px solid var(--border); border-radius: 4px; padding: 5px 10px; display: flex; align-items: center; gap: 8px; }
+.lm-input { background: #0d1117; border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; color: var(--text-muted); }
+.lm-btn { background: var(--bg-card-2); border: 1px solid var(--border); border-radius: 3px; padding: 3px 8px; color: var(--text); }
+.lm-btn.primary { background: rgba(88,166,255,0.2); color: var(--accent); border-color: var(--accent); }
+
+/* Toggle button highlight */
+.toggle-btn-demo {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--bg-card-2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 10px; font-size: 12px; color: var(--text);
+}
+.toggle-btn-demo.on { background: rgba(88,166,255,0.18); border-color: var(--accent); color: var(--accent); }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); }
+th { background: var(--bg-card); color: var(--text-dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+tr:hover td { background: rgba(88,166,255,0.04); }
+td.mono { font-family: "JetBrains Mono", monospace; font-size: 12px; }
+td.ok { color: var(--green); }
+td.no { color: var(--red); }
+td.warn { color: var(--yellow); }
+
+/* Notes */
+.note { background: rgba(63,185,80,0.08); border-left: 3px solid var(--green); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+.warn-box { background: rgba(240,136,62,0.08); border-left: 3px solid var(--yellow); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+.danger { background: rgba(248,81,73,0.08); border-left: 3px solid var(--red); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+
+/* Footer */
+.footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--border-soft); color: var(--text-muted); font-size: 12px; text-align: center; }
+
+ul.tight li { margin-bottom: 4px; }
+.kvs { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 13px; margin: 8px 0; }
+.kvs .k { color: var(--text-dim); }
+.kvs .v { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>圆桌卡片二期优化设计</h1>
+<div class="subtitle">4 项优化合一 · 时间/token 合并 · 流式纯净化（B 升级版） · 沉浸/调试切换 · 动态重排兜底</div>
+<div class="meta">2026-05-01 · 立花道雪 · 立项前 mockup · 待 spec/plan 落地</div>
+
+<div class="toc">
+  <div class="toc-title">本文档导览</div>
+  <div class="toc-grid">
+    <div class="toc-item"><span class="toc-num">①</span><a href="#opt1">行 1/2 信息密度提升</a></div>
+    <div class="toc-item"><span class="toc-num">②</span><a href="#opt2">流式预览净化</a></div>
+    <div class="toc-item"><span class="toc-num">③</span><a href="#opt3">沉浸 / 调试模式切换</a></div>
+    <div class="toc-item"><span class="toc-num">④</span><a href="#opt4">动态重排兜底</a></div>
+  </div>
+</div>
+
+<!-- =========================== 优化 1 =========================== -->
+<h2 id="opt1"><span class="badge">优化 1</span>卡片信息密度提升 · 时间/token 合并到行 1/2</h2>
+
+<h3>问题</h3>
+<p>当前卡片结构占用 4 行才显示完元数据（名称/状态/模型/Ctx/⏱时间/🪙 token），preview 区域被压到剩下 1-2 行可见，遇到 markdown 内容根本展不开。</p>
+
+<h3>对比</h3>
+<div class="cmp">
+  <div class="cmp-col before">
+    <div class="cmp-label">Before · 当前 4 行布局</div>
+    <div class="mock-card streaming">
+      <div class="mc-row1">
+        <div class="mc-avatar claude">⚡</div>
+        <div class="mc-name">Claude</div>
+        <div class="mc-status outputting">输出中</div>
+      </div>
+      <div class="mc-row2">
+        <div class="mc-model">Opus 4.7</div>
+        <div class="mc-ctx">Ctx 4%</div>
+      </div>
+      <div class="mc-row3-old">⏱ <span style="color:var(--text)">本轮 33s</span> · 累计 -</div>
+      <div class="mc-row4-old">🪙 本轮 - · 累计 -</div>
+      <div class="mc-divider"></div>
+      <div class="mc-preview mc-preview-noisy">g more with xhigh effortthinking more with xhigh effort*thinking more with xhigh effort</div>
+    </div>
+    <div style="font-size:11.5px;color:var(--text-dim);margin-top:8px">⚠ row3/row4 各占一行，preview 只剩 2 行可见，且当前还显示终端噪声</div>
+  </div>
+  <div class="cmp-col after">
+    <div class="cmp-label">After · 2 行 stats 合并 + 4 行 preview</div>
+    <div class="mock-card streaming">
+      <div class="mc-row1">
+        <div class="mc-avatar claude">⚡</div>
+        <div class="mc-name">Claude</div>
+        <div class="mc-status outputting">输出中</div>
+        <div class="mc-stat-inline"><span><span class="hl">⏱ <span class="num">33s</span> · -</span></span></div>
+      </div>
+      <div class="mc-row2">
+        <div class="mc-model">Opus 4.7</div>
+        <div class="mc-ctx">Ctx 4%</div>
+        <div class="mc-stat-inline"><span><span class="hl">🪙 <span class="num">1.2k</span> · -</span></span></div>
+      </div>
+      <div class="mc-divider"></div>
+      <div class="mc-preview mc-preview-clean tall">
+        <span class="think">先查一下中国长城（000066.SZ）的最新公开信息</span><br>
+        <span class="tool">搜索: "中国长城 000066 2026 一季报"</span><br>
+        <span class="tool">搜索: "中国长城 飞腾CPU 信创 2026"</span><br>
+        基于查询结果，我先给出基本面要点：（1）信创订单兑现度还有待验证…
+      </div>
+    </div>
+    <div style="font-size:11.5px;color:var(--green);margin-top:8px">✓ stats 推到行末，preview 区可见 4 行 + 内容已干净（见 ②）</div>
+  </div>
+</div>
+
+<h3>布局规则</h3>
+<table>
+  <thead><tr><th>行</th><th>左对齐区</th><th>右对齐区（push to end）</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">row1</td><td>头像 + 名称 + 状态徽章</td><td><code>⏱ 本轮 33s · 累计 2m04s</code></td></tr>
+    <tr><td class="mono">row2</td><td>模型徽章 + Ctx%</td><td><code>🪙 本轮 1.2k · 累计 20.1k</code></td></tr>
+    <tr><td class="mono">divider</td><td colspan="2">1px 浅灰分隔线（与原一致）</td></tr>
+    <tr><td class="mono">preview</td><td colspan="2"><strong>原本 2 行高 → 现在 4 行高（≈ 96 → 140px）</strong></td></tr>
+  </tbody>
+</table>
+
+<h3>响应式降级</h3>
+<div class="warn-box">当卡片宽度 &lt; 280px（罕见极窄屏 / 4 卡情况）时，stats 自动换行回单独一行，避免与状态徽章挤压。媒体查询 <code>@container (max-width: 280px)</code>。</div>
+
+<!-- =========================== 优化 2 =========================== -->
+<h2 id="opt2"><span class="badge">优化 2</span>流式预览净化 · 方案 B 升级版（三家全 JSONL）</h2>
+
+<h3>问题</h3>
+<p>当前 preview 直接取 PTY ringBuffer 尾部 500 字符，剥 ANSI 后还残留 throbbing 状态行（<code>thinking more with xhigh effort</code>）、tool call 噪声、cursor 重绘碎片，体验很差。</p>
+
+<h3>核心调研结论</h3>
+<table>
+  <thead><tr><th>AI</th><th>原生流式数据源</th><th>粒度</th><th>当前是否用上</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Claude</strong></td>
+      <td class="mono">~/.claude/projects/&lt;slug&gt;/&lt;sid&gt;.jsonl</td>
+      <td>块级（thinking/text/tool_use 各一行）</td>
+      <td class="no">✗ 仅 Stop 时读，未做 tail</td>
+    </tr>
+    <tr>
+      <td><strong>Gemini</strong></td>
+      <td class="mono">~/.gemini/tmp/&lt;hash&gt;/chats/session-*.jsonl</td>
+      <td>chunk 级（每行 type:"gemini"）</td>
+      <td class="warn">⚠ 已 tail 但仅用于 token 计数 + 完成判定</td>
+    </tr>
+    <tr>
+      <td><strong>Codex</strong></td>
+      <td class="mono">~/.codex/sessions/&lt;date&gt;/rollout-*.jsonl</td>
+      <td>delta 级（agent_message_delta 事件）</td>
+      <td class="no">✗ 协议存在但项目未监听</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <strong>关键发现</strong>：实测 Claude transcript 文件是<strong>块级实时追加</strong>（同一 message_id 的 thinking/text/tool_use 块按时序异步落盘，间隔 100-2000ms），不是 Stop 后整块写。所以 Claude 完全可以 tail，而且能拿到独家的 <code>type:"thinking"</code> 块和结构化 <code>tool_use</code> 块——比 Gemini 更丰富。
+</div>
+
+<h3>新数据流</h3>
+<div class="flow"><span class="label">Claude TUI session</span>
+  <span class="arrow">↓ 块级追加</span>
+  <span class="src">~/.claude/projects/.../sid.jsonl</span>
+  <span class="arrow">→ ClaudeTap.JsonlTail.onLine()</span>
+  <span class="arrow">→ 缓存 thinking/text/tool_use 块到 _streamingBuf[sid]</span>
+                                      <span class="arrow">↓</span>
+<span class="label">Gemini TUI session</span>
+  <span class="arrow">↓ chunk 追加</span>
+  <span class="src">~/.gemini/tmp/.../session-*.jsonl</span>
+  <span class="arrow">→ GeminiTap.onLine()（已存在）</span>
+  <span class="arrow">→ 缓存 type:"gemini" content 到 _streamingBuf[sid]</span>
+                                      <span class="arrow">↓</span>
+<span class="label">Codex TUI session</span>
+  <span class="arrow">↓ delta 追加</span>
+  <span class="src">~/.codex/sessions/.../rollout-*.jsonl</span>
+  <span class="arrow">→ CodexTap.onLine()（新增 delta 分支）</span>
+  <span class="arrow">→ 缓存 agent_message_delta.delta 到 _streamingBuf[sid]</span>
+                                      <span class="arrow">↓</span>
+              <span class="arrow">┌──────────────────────────┐</span>
+              <span class="arrow">│ transcriptTap.getStreamingText(sid) │</span> <span class="out">← 新接口</span>
+              <span class="arrow">└──────────────────────────┘</span>
+                                      <span class="arrow">↓</span>
+<span class="label">main.js _rtExtractStreamingText(sid, kind)</span>
+  <span class="arrow">if</span> tap.getStreamingText(sid) <span class="out">→ 直接用</span>（纯净，无噪声）
+  <span class="arrow">else</span> 走 PTY + 简化过滤器（<span class="bad">兜底</span>，仅启动头几秒）
+                                      <span class="arrow">↓</span>
+<span class="label">IPC 'roundtable-partial-update'</span> → renderer <span class="src">mc-preview</span>
+</div>
+
+<h3>预览渲染规则（结构化 → 漂亮）</h3>
+<p>现在 JSONL 拿到的不只是字符串，而是结构化块。我们把它们渲染成视觉上可区分的元素：</p>
+<table>
+  <thead><tr><th>块类型</th><th>渲染样式</th><th>来源</th></tr></thead>
+  <tbody>
+    <tr><td><code>thinking</code></td><td><span class="mc-preview"><span class="think">先查一下最新公开信息</span></span></td><td>Claude 独有（扩展思考）</td></tr>
+    <tr><td><code>tool_use</code> / <code>Web Search</code></td><td><span class="tool">搜索: "中国长城 000066"</span></td><td>三家通用</td></tr>
+    <tr><td><code>text</code> / 模型输出</td><td>正文样式（白色，正常字号）</td><td>三家通用</td></tr>
+  </tbody>
+</table>
+
+<h3>三家流式效果预览</h3>
+<div class="cmp cmp3">
+  <div class="cmp-col after">
+    <div class="cmp-label">Claude（带 thinking）</div>
+    <div class="mock-card streaming">
+      <div class="mc-row1">
+        <div class="mc-avatar claude">⚡</div>
+        <div class="mc-name">Claude</div>
+        <div class="mc-status outputting">输出中</div>
+        <div class="mc-stat-inline"><span>⏱ <span class="num">33s</span> · -</span></div>
+      </div>
+      <div class="mc-row2">
+        <div class="mc-model">Opus 4.7</div>
+        <div class="mc-ctx">Ctx 4%</div>
+        <div class="mc-stat-inline"><span>🪙 <span class="num">1.2k</span> · -</span></div>
+      </div>
+      <div class="mc-divider"></div>
+      <div class="mc-preview tall">
+        <span class="think">需要查一下中国长城最新一季报</span><br>
+        <span class="tool">搜索: "中国长城 一季报"</span><br>
+        <span class="tool">搜索: "飞腾CPU 信创 2026"</span><br>
+        基于公开信息，中国长城（000066）当前面临三个核心矛盾…
+      </div>
+    </div>
+  </div>
+  <div class="cmp-col after">
+    <div class="cmp-label">Gemini（chunk 流式）</div>
+    <div class="mock-card streaming">
+      <div class="mc-row1">
+        <div class="mc-avatar gemini">🔥</div>
+        <div class="mc-name">Gemini</div>
+        <div class="mc-status outputting">输出中</div>
+        <div class="mc-stat-inline"><span>⏱ <span class="num">26s</span> · 37s</span></div>
+      </div>
+      <div class="mc-row2">
+        <div class="mc-model">Gemini 2.5</div>
+        <div class="mc-ctx">Ctx 6%</div>
+        <div class="mc-stat-inline"><span>🪙 <span class="num">12.6k</span> · 20.1k</span></div>
+      </div>
+      <div class="mc-divider"></div>
+      <div class="mc-preview tall">
+        感谢 Claude 和 Codex 的深入分析。我仔细研读了两位的观点，发现大家在以下几个核心点上达成了高度共识：1. <strong>短期情绪高涨，不建议追高</strong>——Claude 明确指出"追高性价比下降"…
+      </div>
+    </div>
+  </div>
+  <div class="cmp-col after">
+    <div class="cmp-label">Codex（delta 流式）</div>
+    <div class="mock-card streaming">
+      <div class="mc-row1">
+        <div class="mc-avatar codex">💎</div>
+        <div class="mc-name">Codex</div>
+        <div class="mc-status outputting">输出中</div>
+        <div class="mc-stat-inline"><span>⏱ <span class="num">1m10s</span> · -</span></div>
+      </div>
+      <div class="mc-row2">
+        <div class="mc-model">gpt-5.5</div>
+        <div class="mc-ctx">Ctx 8%</div>
+        <div class="mc-stat-inline"><span>🪙 <span class="num">-</span> · -</span></div>
+      </div>
+      <div class="mc-divider"></div>
+      <div class="mc-preview tall">
+        <span class="tool">搜索: "中国长城 000066 资金流向"</span><br>
+        <span class="tool">搜索: "信创板块 2026Q1 资金"</span><br>
+        我同意 Claude 的"等 18 元分歧回踩"判断，但补一句：等到了也别 all-in，仓位留给 8 月中报…
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>兜底策略（PTY fallback）</h3>
+<div class="warn-box">
+  JSONL 文件可能在 session 启动后 1-3 秒才创建好（CLI 自己写）。<strong>这段窗口期 PTY 仍是唯一数据源</strong>。所以 main.js 的逻辑：
+  <ol style="margin: 6px 0 0 20px; padding: 0;">
+    <li>优先 <code>tap.getStreamingText(sid)</code> → 拿到非空字符串就用</li>
+    <li>否则降级走 PTY ringBuffer + <strong>简化过滤器</strong>（只剥 ANSI + 反向扫掉 PowerShell 提示符 + spinner 字符）</li>
+    <li>过滤器规则比现在更轻（不需要再扒 throbbing 文案，因为 JSONL 一就绪就接管）</li>
+  </ol>
+</div>
+
+<h3>Codex Spike 验证</h3>
+<div class="danger">
+  Codex 的 <code>agent_message_delta</code> 事件在 transcript-tap.js:401 注释里说"存在但当前未用"。落地前必须做 30 分钟 spike：跑一次 Codex turn → tail rollout-*.jsonl → 确认 delta 事件的 JSON schema（特别是 <code>payload.delta</code> 字段是否真存在、是否拼接出完整文本）。spike 失败则 Codex 暂仍走 PTY。
+</div>
+
+<!-- =========================== 优化 3 =========================== -->
+<h2 id="opt3"><span class="badge">优化 3</span>沉浸 / 调试模式切换</h2>
+
+<h3>问题与目标</h3>
+<p>纯讨论场景下用户不需要看 shell 终端，shell 占了一半空间反而让 cards-tab 拥挤；调试场景下又必须能看 shell。<strong>用一个 header 按钮快速切换</strong>。</p>
+
+<h3>切换按钮位置</h3>
+<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:14px;margin:12px 0;">
+  <div style="display:flex;align-items:center;gap:12px;font-size:13px;">
+    <div style="background:var(--bg-card-2);padding:6px 14px;border-radius:4px;color:var(--text)">
+      <span class="kbd">圆桌</span> <span class="kbd">投研</span>
+    </div>
+    <div style="font-size:15px;font-weight:600">通用圆桌 #5</div>
+    <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+      <span class="toggle-btn-demo" title="当前：调试模式（默认，显示 shell）">🖥 调试</span>
+      <span style="color:var(--text-muted);font-size:11px">点击切换</span>
+      <span class="toggle-btn-demo on" title="切换后：沉浸模式（隐藏 shell）">🎯 沉浸</span>
+    </div>
+  </div>
+  <div style="margin-top:8px;font-size:11.5px;color:var(--text-dim)">
+    按钮位置：header 行最右侧（房间名标题 + 模式徽章 + ⋯）。图标 + 1 字标签，悬停显示当前/切换后的目标态。
+  </div>
+</div>
+
+<h3>两种模式布局对比</h3>
+<div class="cmp">
+  <div class="cmp-col">
+    <div class="cmp-label" style="color:var(--cyan)">🖥 调试模式（默认）</div>
+    <div class="layout-mock">
+      <div class="lm-header">
+        <span class="lm-btn">圆桌</span>
+        <span style="font-weight:600">#5</span>
+        <span style="margin-left:auto" class="lm-btn">🖥 调试</span>
+      </div>
+      <div class="lm-cards" style="flex: 0 0 38%">
+        <div class="lm-card">⚡ Claude</div>
+        <div class="lm-card">🔥 Gemini</div>
+        <div class="lm-card">💎 Codex</div>
+      </div>
+      <div class="lm-shells" style="flex: 1">
+        <div class="lm-shell">$ claude</div>
+        <div class="lm-shell">$ gemini</div>
+        <div class="lm-shell">$ codex</div>
+      </div>
+      <div class="lm-toolbar">
+        <span class="lm-btn primary">群策群力</span>
+        <span class="lm-btn">总结发言</span>
+        <span style="margin-left:auto;color:var(--text-muted);font-size:10px">总结人: Claude</span>
+      </div>
+      <div class="lm-input">▍ 圆桌讨论：发普通文本启动一轮…</div>
+    </div>
+    <div style="font-size:11.5px;color:var(--text-dim);margin-top:6px">cards-tab : shells = 38% : 62%（当前比例，shell 多用于 debug）</div>
+  </div>
+  <div class="cmp-col">
+    <div class="cmp-label" style="color:var(--accent)">🎯 沉浸模式</div>
+    <div class="layout-mock">
+      <div class="lm-header">
+        <span class="lm-btn">圆桌</span>
+        <span style="font-weight:600">#5</span>
+        <span style="margin-left:auto;background:rgba(88,166,255,0.18);color:var(--accent);border-color:var(--accent)" class="lm-btn">🎯 沉浸</span>
+      </div>
+      <div class="lm-cards" style="flex: 1">
+        <div class="lm-card" style="height:100%;flex-direction:column;align-items:center;justify-content:center">
+          <div>⚡ Claude</div>
+          <div style="font-size:9px;color:var(--text-muted);margin-top:4px">完整 4 行 preview</div>
+        </div>
+        <div class="lm-card" style="height:100%;flex-direction:column;align-items:center;justify-content:center">
+          <div>🔥 Gemini</div>
+          <div style="font-size:9px;color:var(--text-muted);margin-top:4px">完整 4 行 preview</div>
+        </div>
+        <div class="lm-card" style="height:100%;flex-direction:column;align-items:center;justify-content:center">
+          <div>💎 Codex</div>
+          <div style="font-size:9px;color:var(--text-muted);margin-top:4px">完整 4 行 preview</div>
+        </div>
+      </div>
+      <div class="lm-toolbar">
+        <span class="lm-btn primary">群策群力</span>
+        <span class="lm-btn">总结发言</span>
+        <span style="margin-left:auto;color:var(--text-muted);font-size:10px">总结人: Claude</span>
+      </div>
+      <div class="lm-input">▍ 圆桌讨论：发普通文本启动一轮…</div>
+    </div>
+    <div style="font-size:11.5px;color:var(--text-dim);margin-top:6px">shells 完全隐藏，cards-tab 占据 100% 上半部</div>
+  </div>
+</div>
+
+<h3>不变的部分（铁律）</h3>
+<div class="note">
+  <ul class="tight" style="margin:0;padding-left:20px">
+    <li>底部 <strong>toolbar + 输入框</strong>固定布局占比 <strong>不变</strong>（沉浸/调试模式都一样）</li>
+    <li>顶部 header 高度不变（只多了一个切换按钮）</li>
+    <li>历史轮次面板（如展开）的展开规则不变</li>
+  </ul>
+</div>
+
+<h3>状态持久化</h3>
+<table>
+  <thead><tr><th>维度</th><th>规则</th></tr></thead>
+  <tbody>
+    <tr><td>初次进入会议室</td><td>默认 <strong>调试模式</strong>（保留当前体验，不惊吓老用户）</td></tr>
+    <tr><td>用户切到沉浸后退出会议室</td><td>下次进同一会议室记住"沉浸"</td></tr>
+    <tr><td>跨会议室是否共享</td><td><strong>每会议室独立</strong>（per-meetingId），存入 state.json 的 meeting 元数据</td></tr>
+    <tr><td>切换动画</td><td>shell 区 240ms ease-out 淡出 + 收起；cards-tab 同步 grow 到 flex:1</td></tr>
+  </tbody>
+</table>
+
+<!-- =========================== 优化 4 =========================== -->
+<h2 id="opt4"><span class="badge">优化 4</span>动态重排兜底 · 杜绝模块重叠</h2>
+
+<h3>问题</h3>
+<p>当 shell 显示/隐藏、卡片高度变化、窗口 resize、历史面板展开时，xterm.js 的 fit() 没及时调用，cards-tab 高度撑爆 grid，会出现重叠或滚动条错位。</p>
+
+<h3>触发场景清单</h3>
+<table>
+  <thead><tr><th>场景</th><th>当前症状</th><th>修复后</th></tr></thead>
+  <tbody>
+    <tr><td>窗口 resize（拖拽边）</td><td class="warn">xterm 内容裁切，cards 内容溢出</td><td class="ok">实时重排 + xterm.fit()</td></tr>
+    <tr><td>沉浸/调试模式切换</td><td class="warn">未实现（新功能）</td><td class="ok">240ms 动画 + 完成后 fit()</td></tr>
+    <tr><td>历史轮次面板展开/收起</td><td class="warn">cards 区压缩但 preview 高度未跟随</td><td class="ok">观察容器变化重算</td></tr>
+    <tr><td>preview 区 markdown 长度跳变</td><td class="warn">card 高度抖动带动相邻 card</td><td class="ok">grid <code>min-height: 0</code> + 固定 row 高度</td></tr>
+    <tr><td>session 添加/移除 AI</td><td class="warn">grid 列数变化时旧 fit() 状态错乱</td><td class="ok">列数变化时强制重 fit()</td></tr>
+    <tr><td>devtools 打开/关闭</td><td class="warn">视口变化未触发</td><td class="ok">window resize 同步 fit()</td></tr>
+  </tbody>
+</table>
+
+<h3>实现栈</h3>
+<div class="flow"><span class="label">主容器 #meeting-room-panel</span>
+   <span class="arrow">↓ 注册</span>
+<span class="src">ResizeObserver</span> <span class="arrow">→ debounce 100ms</span>
+   <span class="arrow">↓</span>
+<span class="label">_relayoutMeetingRoom()</span>
+   ├─ <span class="src">cards-strip</span>: grid <code>minmax(0, 1fr)</code> 强制重算
+   ├─ <span class="src">每个 xterm</span>: <code>fitAddon.fit()</code>
+   └─ <span class="src">historyPanel</span>: 重算 max-height
+   <span class="arrow">↓</span>
+<span class="out">布局稳定，无重叠</span>
+</div>
+
+<h3>关键 CSS 防溢出三件套</h3>
+<pre><code>.mr-ft-strip {
+  display: grid;
+  grid-template-columns: repeat(3, <span class="hl">minmax(0, 1fr)</span>); /* 防 grid item 溢出 */
+  gap: 8px;
+  <span class="hl">min-height: 0;</span>                                  /* 让 grid 在 flex parent 中可缩 */
+}
+.mr-ft {
+  display: flex;
+  flex-direction: column;
+  <span class="hl">overflow: hidden;</span>                                /* preview 长内容不撑爆卡片 */
+}
+.mr-ft-preview {
+  <span class="hl">flex: 1;</span>                                          /* 抢占 row1/row2 之外的全部空间 */
+  overflow-y: hidden;
+}</code></pre>
+
+<h3>xterm.fit() 调用时机</h3>
+<table>
+  <thead><tr><th>时机</th><th>触发方式</th><th>debounce</th></tr></thead>
+  <tbody>
+    <tr><td>会议室打开</td><td>openMeeting() 末尾</td><td>50ms（等 DOM 稳定）</td></tr>
+    <tr><td>切到 shell tab</td><td>switchFocusTab()</td><td>0（同步）</td></tr>
+    <tr><td>窗口 resize</td><td>ResizeObserver(meetingRoomPanel)</td><td>100ms</td></tr>
+    <tr><td>沉浸/调试切换</td><td>动画 transitionend 事件</td><td>动画结束后 0ms</td></tr>
+    <tr><td>历史面板展开</td><td>historyPanel 的 ResizeObserver</td><td>100ms</td></tr>
+  </tbody>
+</table>
+
+<!-- =========================== 改造一览 =========================== -->
+<h2><span class="badge" style="background:var(--orange)">改造一览</span>4 个优化的代码触点</h2>
+
+<table>
+  <thead><tr><th>#</th><th>优化点</th><th>主要文件</th><th>新增/修改</th><th>Effort</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>行 1/2 stats 合并</td><td class="mono">renderer/meeting-room.{js,css}</td><td>_ftHtml 调整 row1/row2 模板；CSS 删 row3/row4 样式，preview 加 flex:1</td><td>0.5 天</td></tr>
+    <tr><td>2.1</td><td>ClaudeTap 改 tail 模式</td><td class="mono">core/transcript-tap.js</td><td>新增 _scanOnce 找最新 jsonl + JsonlTail 监听 + thinking/text/tool_use 缓存</td><td>1.5 天</td></tr>
+    <tr><td>2.2</td><td>GeminiTap 暴露流式</td><td class="mono">core/transcript-tap.js</td><td>onLine 累积 content 到 _streamingBuf；新增 getStreamingText(sid)</td><td>0.5 天</td></tr>
+    <tr><td>2.3</td><td>Codex spike + delta</td><td class="mono">core/transcript-tap.js</td><td>spike 30min 验证 schema；onLine 加 agent_message_delta 分支</td><td>1 天</td></tr>
+    <tr><td>2.4</td><td>main.js 数据源分流</td><td class="mono">main.js</td><td>_rtExtractStreamingText 按 kind 优先 tap，PTY 兜底</td><td>0.5 天</td></tr>
+    <tr><td>2.5</td><td>renderer 结构化渲染</td><td class="mono">renderer/meeting-room.js</td><td>partial.text 改成 partial.blocks 数组（thinking/tool/text 各样式）</td><td>0.5 天</td></tr>
+    <tr><td>3</td><td>沉浸/调试切换</td><td class="mono">renderer/meeting-room.{js,css,html}</td><td>header 加按钮 + state.immersiveByMeeting 持久化 + 240ms 动画</td><td>1 天</td></tr>
+    <tr><td>4</td><td>动态重排</td><td class="mono">renderer/meeting-room.{js,css}</td><td>ResizeObserver(meetingRoomPanel) + _relayoutMeetingRoom() + CSS 防溢出</td><td>0.5 天</td></tr>
+  </tbody>
+  <tfoot>
+    <tr><td colspan="4" style="text-align:right;color:var(--text-dim)">合计</td><td><strong>~6 天</strong>（spike 不通过 Codex 仍走 PTY，节省 0.5 天）</td></tr>
+  </tfoot>
+</table>
+
+<h3>与既有计划的关系</h3>
+<div class="kvs">
+  <div class="k">前置依赖：</div>
+  <div class="v"><code>2026-05-01-roundtable-card-redesign.md</code> 必须已合（提供 stats 数据通道）</div>
+  <div class="k">前置依赖：</div>
+  <div class="v"><code>2026-05-01-roundtable-input-fixes.md</code> 必须已合（cli-ready-status IPC 是状态判定基线）</div>
+  <div class="k">不冲突：</div>
+  <div class="v">latency / resilience plan 与本份在不同代码层，可并行</div>
+</div>
+
+<!-- =========================== 风险 =========================== -->
+<h2><span class="badge" style="background:var(--red)">风险</span>已知风险与缓解</h2>
+
+<table>
+  <thead><tr><th>#</th><th>风险</th><th>影响</th><th>缓解</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>R1</td>
+      <td>Codex agent_message_delta 协议未在项目验证</td>
+      <td class="warn">中</td>
+      <td>立项前 30 分钟 spike；spike 不通过则 Codex 仍走 PTY+过滤，主线不受阻</td>
+    </tr>
+    <tr>
+      <td>R2</td>
+      <td>Claude transcript 文件路径漂移（CLI 大版本升级）</td>
+      <td class="warn">中</td>
+      <td>ClaudeTap _scanOnce 用 mtime 排序 + cwd 匹配（参考 CodexTap 已有模式）；找不到时 PTY 兜底</td>
+    </tr>
+    <tr>
+      <td>R3</td>
+      <td>多 AI 并发流式时缓存膨胀</td>
+      <td class="warn">中</td>
+      <td>_streamingBuf 加 maxLength=50KB 截断；turn-complete 时清空</td>
+    </tr>
+    <tr>
+      <td>R4</td>
+      <td>沉浸模式下 shell session 仍在跑 → CPU 浪费</td>
+      <td class="warn">低</td>
+      <td>shell 仅是 DOM 隐藏（display:none），PTY 进程照常运行 — 切回调试时 xterm.fit() 重新绑定</td>
+    </tr>
+    <tr>
+      <td>R5</td>
+      <td>ResizeObserver 触发频率过高</td>
+      <td class="warn">低</td>
+      <td>_relayoutMeetingRoom() debounce 100ms；尺寸 delta &lt; 4px 时跳过</td>
+    </tr>
+    <tr>
+      <td>R6</td>
+      <td>JSONL onLine 异常导致缓存破损</td>
+      <td class="warn">低</td>
+      <td>onLine 内 try/catch 静默吞掉单行错误（已有模式）；turn-complete 时无条件清空</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- =========================== Verify =========================== -->
+<h2><span class="badge" style="background:var(--green)">验证</span>E2E 验收脚本</h2>
+
+<h3>verify-card-optimization.js（CDP 真测）</h3>
+<ol class="tight">
+  <li>启动隔离 Hub（<code>CLAUDE_HUB_DATA_DIR=C:\temp\hub-cardopt</code>）</li>
+  <li>新建圆桌 + 进会议室 → 截图 → assert cards-tab 占主区 ≥ 35% 且无重叠</li>
+  <li>点"群策群力"启动 turn → 等 5s → 截图 cards-tab → assert preview 区无 <code>thinking more with</code> / <code>Inferring</code> 等 throbbing 字符串</li>
+  <li>等 turn 完成 → assert row1 含 <code>⏱ 本轮 Ns · 累计</code>，row2 含 <code>🪙 本轮 Nk · 累计</code></li>
+  <li>点 header 沉浸按钮 → assert shell 区 display:none → 截图比对</li>
+  <li>再点切回调试 → assert xterm.fit 已调用 → 截图 cards 高度无变化</li>
+  <li>窗口 resize（CDP 改 viewport）→ 等 200ms → assert 无溢出</li>
+  <li>关闭 Hub → 验证截图全部归档到 <code>tests/screenshots/card-optimization/</code></li>
+</ol>
+
+<div class="warn-box">
+  E2E 必须通过真 Hub + CDP 操作真按钮（点击/键盘），不许后端 IPC 假装。<strong>验证铁律</strong>（CLAUDE.md）：测试通过 = 代码真实执行产出正确结果。
+</div>
+
+<!-- =========================== 决策小结 =========================== -->
+<h2><span class="badge" style="background:var(--purple)">决策</span>需要你拍板</h2>
+
+<table>
+  <thead><tr><th>#</th><th>决策点</th><th>默认</th><th>是否同意</th></tr></thead>
+  <tbody>
+    <tr><td>D1</td><td>stats 放 row1/row2 行末（push to right）</td><td>是</td><td>—</td></tr>
+    <tr><td>D2</td><td>preview 区从 ~96px 提升到 ~140px（约 4 行）</td><td>是</td><td>—</td></tr>
+    <tr><td>D3</td><td>方案 B 升级版（三家全 JSONL 流式 + PTY 兜底）</td><td>是</td><td>已确认</td></tr>
+    <tr><td>D4</td><td>preview 渲染 thinking 块 / tool_use 块为可视化样式</td><td>是</td><td>—</td></tr>
+    <tr><td>D5</td><td>Codex 立项前先做 30min spike 验证 delta 协议</td><td>是</td><td>—</td></tr>
+    <tr><td>D6</td><td>沉浸/调试切换按钮放 header 右侧 · 图标+1字</td><td>是</td><td>—</td></tr>
+    <tr><td>D7</td><td>会议室初次默认调试模式 · 切换状态 per-meetingId 持久化</td><td>是</td><td>—</td></tr>
+    <tr><td>D8</td><td>沉浸切换带 240ms ease-out 动画</td><td>是</td><td>—</td></tr>
+    <tr><td>D9</td><td>底部 toolbar+input 布局占比恒定不变</td><td>是</td><td>—</td></tr>
+    <tr><td>D10</td><td>ResizeObserver + xterm.fit 兜底（debounce 100ms）</td><td>是</td><td>—</td></tr>
+    <tr><td>D11</td><td>本份 plan 在 input-fixes / card-redesign 之后执行（前置依赖）</td><td>是</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<div class="footer">
+  立花道雪 · Claude Session Hub · roundtable-card-optimization-2026-05-01<br>
+  确认决策后将走 <code>spec → plan → 执行</code> 三段流程
+</div>
+
+</div>
+</body>
+</html>

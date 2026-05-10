@@ -2066,6 +2066,50 @@ function _isCardOverlayAtBottom(el) {
   return (el.scrollHeight - el.scrollTop - el.clientHeight) < 50;
 }
 
+// optimistic user-card：用户在 floating-input 按 Enter 后立即 mount 一张 user 气泡卡。
+//   不等 transcript 写盘 + 250ms throttle reload —— 后者经实测 user entry 写盘滞后 1-3s
+//   （Claude CLI 等到 LLM call 启动才 append），用户视感 "气泡 5s 才出来"。
+//   待真 user turn 从 transcript 解析进来时（mountSessionTurnCard 顶部的 dedup），扫一眼
+//   现存 optimistic 卡片，文本匹配的删掉。turn.id 用 'pending-user-' 前缀的临时 id，
+//   不进 _sessionTurns Map（不是权威 turn，避免被当作真 turn dedup-replace 链路对象）。
+function mountOptimisticUserCard(sessionId, text, kind) {
+  const container = document.getElementById('msg-overlay');
+  if (!container) return null;
+  // 移除"新会话，发首条消息"占位 placeholder（如果存在）— S5 默认会写一个
+  const placeholder = container.querySelector('.msg-overlay-placeholder');
+  if (placeholder) placeholder.remove();
+
+  const optimisticId = 'pending-user-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  const turn = { id: optimisticId, role: 'user', text, ts: Date.now(), kind };
+  let cardEl;
+  try {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = renderTurnCard(turn);
+    cardEl = tmp.firstElementChild;
+  } catch (err) {
+    console.warn('[mountOptimisticUserCard] renderTurnCard threw:', err);
+    return null;
+  }
+  if (!cardEl) return null;
+  cardEl.dataset.sessionId = String(sessionId || '');
+  cardEl.dataset.optimistic = 'true';
+  cardEl.dataset.optimisticText = text;
+
+  // 插在 streaming-indicator 之前（与 mountSessionTurnCard 一致），保证位置正确
+  const streamingTail = container.querySelector('.streaming-indicator');
+  if (streamingTail) container.insertBefore(cardEl, streamingTail);
+  else container.appendChild(cardEl);
+
+  // 用户主动发了一条消息 → 一定希望看到自己刚发的气泡；不走 _wasAtBottom 守卫
+  try {
+    cardEl.scrollIntoView({ behavior: 'auto', block: 'end' });
+  } catch {
+    container.scrollTop = container.scrollHeight;
+  }
+  return cardEl;
+}
+window._mountOptimisticUserCard = mountOptimisticUserCard;
+
 function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 1. validate inputs
   if (!turn || !turn.id || !turn.role) {
@@ -2080,6 +2124,23 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   }
   // defensive init (spec1 also does this at line ~1545, but be paranoid)
   if (!window._sessionTurns) window._sessionTurns = new Map();
+
+  // optimistic user-card dedup：真 user turn 从 transcript 进来时，扫现存
+  //   optimistic 占位卡，文本相同则删掉（让真卡片接替）。trim 比较两端容差。
+  if (turn.role === 'user') {
+    const sidStr = String(sessionId || '');
+    const realText = (turn.text || '').trim();
+    if (realText) {
+      const opts2 = container.querySelectorAll('.turn-card.user[data-optimistic="true"]');
+      opts2.forEach(opt => {
+        if (opt.dataset.sessionId !== sidStr) return;
+        const optText = (opt.dataset.optimisticText || '').trim();
+        if (optText && optText === realText) {
+          opt.remove();
+        }
+      });
+    }
+  }
 
   // dedup with in-place replace：同 turnId 已在 DOM 时，不是 skip 而是替换。
   // 原因：W5 后一个 logical turn 包含多个 raw entries，streaming 新 entry 合并进来时
@@ -2246,7 +2307,8 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const kind = session ? (session.kind || null) : null;
 
   // 4. kind gate — spec 2 only supports Claude family; show placeholder for others
-  if (kind && !isClaudeFamily(kind)) {
+  const supportsCardHistory = kind && (isClaudeFamily(kind) || kind === 'codex' || kind === 'codex-resume');
+  if (kind && !supportsCardHistory) {
     showPlaceholder(
       '卡片视图当前仅支持 Claude session — '
       + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
@@ -2770,16 +2832,33 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       ? sessions.get(sessionId) : null;
     const kind = session && session.kind ? session.kind : null;
 
+    // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
+    //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
+    //   也走 transcript reload 路径，但 Claude CLI 通常等 LLM call 启动才把 user entry append
+    //   到 JSONL（实测 1-3s 滞后）。聊天 app 标准做法是发出即 mount，待权威 entry 到时 dedup。
+    if (currentView === 'card' && kind && isClaudeFamily(kind) && typeof mountOptimisticUserCard === 'function') {
+      try {
+        mountOptimisticUserCard(sessionId, text.trim(), kind);
+      } catch (err) {
+        console.warn('[optimistic user-card] mount failed:', err);
+      }
+    }
+
     if (kind && isClaudeFamily(kind)) {
       ipcRenderer.send('terminal-input', { sessionId, data: BP_START + text + BP_END });
-      setTimeout(() => {
-        ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
-      }, 500);
+      // belt-and-suspenders（2026-05-11 用户反馈：BP+500ms+1×\r 仍偶发"消息进输入框但没提交"）：
+      //   BP_END 后 Ink paste-detect 仍有 debounce 窗口，紧贴的 \r 被并入 paste 内容吞掉。
+      //   多发 \r：首个被吞 → 后续落到正常 prompt 触发提交；多余 \r 落空输入框被 CLI 忽略，
+      //   无副作用。首个 \r delay 拉到 700ms 让 paste 窗口尽量先关，再 200ms × 2 兜底。
+      //   参考 core/roundtable-watcher.js:181-186 zero-echo 兜底策略（已工程验证）。
+      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 700);
+      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 900);
+      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 1100);
     } else if (kind && isPasteSensitive(kind)) {
       ipcRenderer.send('terminal-input', { sessionId, data: text });
-      setTimeout(() => {
-        ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
-      }, 450);
+      // 同 belt-and-suspenders 思路（gemini/codex 不识别 BP marker，但 paste-detect 同病）。
+      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 500);
+      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 700);
     } else {
       ipcRenderer.send('terminal-input', { sessionId, data: text + '\r' });
     }
@@ -4211,6 +4290,20 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
           .finally(() => { st.inProgress = false; });
       }, delay);
     }
+
+    // P0 stream-end fallback (2026-05-10)：250ms throttle 是 leading-edge，PTY 字节静默后
+    //   只能再 fire 一次。但 Claude CLI 在 token 流完后才把 end_turn entry append 到 JSONL
+    //   （writeback 偶发滞后），最后一次 reload 拿到的可能还是 tool_use 中间态 → 卡片定格。
+    //   再叠一层"PTY 静默 800ms 后强制 final reload"，覆盖此 race。stop_hook 走 turn-complete-event
+    //   是另一条更快的路径，这里只做兜底。
+    if (!window._cardStopFallbackBySid) window._cardStopFallbackBySid = new Map();
+    clearTimeout(window._cardStopFallbackBySid.get(sessionId));
+    window._cardStopFallbackBySid.set(sessionId, setTimeout(() => {
+      if (sessionId === activeSessionId && currentView === 'card') {
+        loadSessionHistoryToOverlay(sessionId, { incremental: true })
+          .catch(err => console.warn('[card stream-end fallback] failed:', err));
+      }
+    }, 800));
   }
 });
 
@@ -4588,7 +4681,7 @@ function renderAccountUsage() {
     const logoHtml = src
       ? `<img class="acc-ai-logo" src="${src}" alt="${escapeHtml(name)}" title="${escapeHtml(name)}">`
       : `<span class="acc-ai-letters">${badgeClass.toUpperCase()}</span>`;
-    const title = meta.profileLabel ? `${name} - ${meta.profileLabel}` : name;
+    const title = meta.profileLabel ? `${name} · ${meta.profileLabel}` : name;
     return `
       <div class="acc-usage-row" title="${escapeHtml(title)}">
         <span class="acc-ai-badge ${badgeClass}">${logoHtml}</span>
@@ -5340,9 +5433,77 @@ const CONFIG_AI_META = {
 };
 
 let activeConfigAi = 'codex';
+let codexSubscriptionProfiles = [
+  { id: 'default', label: '主账号', home: '' },
+  { id: 'second', label: '新账号', home: 'C:\\Users\\lintian\\.codex-profiles\\second' },
+];
+let codexSubscriptionProfile = 'default';
 
 function configEl(id) {
   return document.getElementById(id);
+}
+
+function normalizeCodexProfilesForUi(profiles) {
+  const byId = new Map(codexSubscriptionProfiles.map(p => [p.id, { ...p }]));
+  if (Array.isArray(profiles)) {
+    for (const p of profiles) {
+      if (!p || typeof p !== 'object') continue;
+      const id = String(p.id || '').trim();
+      if (!id) continue;
+      byId.set(id, {
+        id,
+        label: String(p.label || id).trim() || id,
+        home: String(p.home || '').trim(),
+      });
+    }
+  }
+  return [...byId.values()];
+}
+
+function renderCodexProfileSelect(selectedId) {
+  const select = configEl('cfg-codex-subscription-profile');
+  if (!select) return;
+  const selected = selectedId || codexSubscriptionProfile || 'default';
+  select.innerHTML = '';
+  for (const profile of codexSubscriptionProfiles) {
+    const opt = document.createElement('option');
+    opt.value = profile.id;
+    opt.textContent = profile.label || profile.id;
+    select.appendChild(opt);
+  }
+  select.value = codexSubscriptionProfiles.some(p => p.id === selected) ? selected : 'default';
+  codexSubscriptionProfile = select.value;
+}
+
+function setCodexProfileForm(profiles, selectedId) {
+  codexSubscriptionProfiles = normalizeCodexProfilesForUi(profiles);
+  codexSubscriptionProfile = selectedId || 'default';
+  const main = codexSubscriptionProfiles.find(p => p.id === 'default') || { label: '主账号', home: '' };
+  const second = codexSubscriptionProfiles.find(p => p.id === 'second') || { label: '新账号', home: '' };
+  if (configEl('cfg-codex-profile-default-label')) configEl('cfg-codex-profile-default-label').value = main.label || '主账号';
+  if (configEl('cfg-codex-profile-second-label')) configEl('cfg-codex-profile-second-label').value = second.label || '新账号';
+  if (configEl('cfg-codex-profile-second-home')) configEl('cfg-codex-profile-second-home').value = second.home || '';
+  renderCodexProfileSelect(codexSubscriptionProfile);
+  updateCodexProfileMenuLabels();
+}
+
+function readCodexProfilesFromForm() {
+  const mainLabel = (configEl('cfg-codex-profile-default-label') && configEl('cfg-codex-profile-default-label').value.trim()) || '主账号';
+  const secondLabel = (configEl('cfg-codex-profile-second-label') && configEl('cfg-codex-profile-second-label').value.trim()) || '新账号';
+  const secondHome = (configEl('cfg-codex-profile-second-home') && configEl('cfg-codex-profile-second-home').value.trim()) || '';
+  codexSubscriptionProfiles = [
+    { id: 'default', label: mainLabel, home: '' },
+    { id: 'second', label: secondLabel, home: secondHome },
+  ];
+  return codexSubscriptionProfiles;
+}
+
+function updateCodexProfileMenuLabels() {
+  const byId = new Map(codexSubscriptionProfiles.map(p => [p.id, p]));
+  document.querySelectorAll('[data-codex-profile-label]').forEach(el => {
+    const profile = byId.get(el.dataset.codexProfileLabel);
+    if (profile) el.textContent = profile.label || profile.id;
+  });
 }
 
 function setConfigStatus(el, label, cls) {
@@ -5355,6 +5516,13 @@ function updateConfigSummaries() {
   const codexBackend = configEl('cfg-codex-backend') ? configEl('cfg-codex-backend').value : 'subscription';
   const codexModel = configEl('cfg-codex-model') ? (configEl('cfg-codex-model').value.trim() || 'gpt-5.5') : 'gpt-5.5';
   const codexKey = configEl('cfg-codex-key') ? configEl('cfg-codex-key').value.trim() : '';
+  const profiles = readCodexProfilesFromForm();
+  const profileSelect = configEl('cfg-codex-subscription-profile');
+  const selectedProfileId = profileSelect ? profileSelect.value : codexSubscriptionProfile;
+  if (profileSelect) renderCodexProfileSelect(selectedProfileId);
+  const selectedProfile = profiles.find(p => p.id === selectedProfileId) || profiles[0];
+  codexSubscriptionProfile = selectedProfile ? selectedProfile.id : 'default';
+  updateCodexProfileMenuLabels();
   const deepseekKey = configEl('cfg-deepseek-key') ? configEl('cfg-deepseek-key').value.trim() : '';
   const glmKey = configEl('cfg-glm-key') ? configEl('cfg-glm-key').value.trim() : '';
   const glmModel = configEl('cfg-glm-model') ? (configEl('cfg-glm-model').value.trim() || 'glm-5.1') : 'glm-5.1';
@@ -5369,11 +5537,11 @@ function updateConfigSummaries() {
   if (codexSummary) {
     codexSummary.textContent = codexBackend === 'api'
       ? `第三方 API · ${codexModel} · Packy`
-      : `订阅模式 · ${codexModel}`;
+      : `订阅模式 · ${(selectedProfile && selectedProfile.label) || '主账号'} · ${codexModel}`;
   }
   setConfigStatus(
     configEl('cfg-status-codex'),
-    codexBackend === 'api' ? (codexKey ? 'API' : '缺 Key') : '订阅',
+    codexBackend === 'api' ? (codexKey ? 'API' : '缺 Key') : ((selectedProfile && selectedProfile.label) || '订阅'),
     codexBackend === 'api' ? (codexKey ? 'api' : 'missing') : 'subscription'
   );
 
@@ -5400,7 +5568,7 @@ function updateConfigSummaries() {
   if (activeConfigAi === 'codex') {
     setConfigStatus(
       configEl('cfg-detail-status'),
-      codexBackend === 'api' ? (codexKey ? 'API' : '缺 Key') : '订阅',
+      codexBackend === 'api' ? (codexKey ? 'API' : '缺 Key') : ((selectedProfile && selectedProfile.label) || '订阅'),
       codexBackend === 'api' ? (codexKey ? 'api' : 'missing') : 'subscription'
     );
   } else if (activeConfigAi === 'deepseek') {
@@ -5447,6 +5615,7 @@ async function openConfigModal() {
   try {
     const cfg = await ipcRenderer.invoke('get-hub-config-raw');
     providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
+    setCodexProfileForm(cfg.codexSubscriptionProfiles, cfg.codexSubscriptionProfile);
     document.getElementById('cfg-proxy').value = cfg.proxy || '';
     document.getElementById('cfg-deepseek-key').value = cfg.deepseekApiKey || '';
     document.getElementById('cfg-codex-backend').value = cfg.codexBackend || 'subscription';
@@ -5496,7 +5665,7 @@ function initConfigModal() {
   document.querySelectorAll('.config-ai-row').forEach(row => {
     row.addEventListener('click', () => showConfigDetail(row.dataset.ai));
   });
-  ['cfg-codex-backend', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key', 'cfg-glm-key', 'cfg-glm-url', 'cfg-glm-model', 'cfg-gpt-key', 'cfg-gpt-url', 'cfg-gpt-model', 'cfg-kimi-key', 'cfg-kimi-url', 'cfg-kimi-model', 'cfg-qwen-key', 'cfg-qwen-url', 'cfg-qwen-model'].forEach(id => {
+  ['cfg-codex-backend', 'cfg-codex-subscription-profile', 'cfg-codex-profile-default-label', 'cfg-codex-profile-second-label', 'cfg-codex-profile-second-home', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key', 'cfg-glm-key', 'cfg-glm-url', 'cfg-glm-model', 'cfg-gpt-key', 'cfg-gpt-url', 'cfg-gpt-model', 'cfg-kimi-key', 'cfg-kimi-url', 'cfg-kimi-model', 'cfg-qwen-key', 'cfg-qwen-url', 'cfg-qwen-model'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('input', updateConfigSummaries);
     if (el) el.addEventListener('change', updateConfigSummaries);
@@ -5514,6 +5683,8 @@ function initConfigModal() {
       proxy: document.getElementById('cfg-proxy').value.trim() || undefined,
       deepseekApiKey: document.getElementById('cfg-deepseek-key').value.trim() || undefined,
       codexBackend: document.getElementById('cfg-codex-backend').value,
+      codexSubscriptionProfile: (document.getElementById('cfg-codex-subscription-profile') && document.getElementById('cfg-codex-subscription-profile').value) || 'default',
+      codexSubscriptionProfiles: readCodexProfilesFromForm(),
       codexApiKey: document.getElementById('cfg-codex-key').value.trim() || undefined,
       codexApiBaseUrl: document.getElementById('cfg-codex-url').value.trim() || undefined,
       codexApiModel: document.getElementById('cfg-codex-model').value.trim() || undefined,
@@ -5700,6 +5871,8 @@ function schedulePersist() {
         currentModel: s.currentModel || null,
         // T10: include resume-meta in persist payload so main.js merge has the latest
         codexSid: s.codexSid || null,
+        codexProfile: s.codexProfile || null,
+        codexProfileLabel: s.codexProfileLabel || null,
         geminiChatId: s.geminiChatId || null,
         geminiProjectHash: s.geminiProjectHash || null,
         geminiProjectRoot: s.geminiProjectRoot || null,
@@ -5746,6 +5919,7 @@ async function resumeDormantSession(hubId) {
     model: (dormant.currentModel && dormant.currentModel.id) || null,
     // T10: pass resume-meta so main.js Codex/Gemini precise resume works
     codexSid: dormant.codexSid || null,
+    codexProfile: dormant.codexProfile || null,
     geminiChatId: dormant.geminiChatId || null,
     geminiProjectHash: dormant.geminiProjectHash || null,
     geminiProjectRoot: dormant.geminiProjectRoot || null,
@@ -5799,6 +5973,8 @@ async function resumeDormantSession(hubId) {
         currentModel: resolvedModel,
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
+        codexProfile: meta.codexProfile || null,
+        codexProfileLabel: meta.codexProfileLabel || null,
         geminiChatId: meta.geminiChatId || null,
         geminiProjectHash: meta.geminiProjectHash || null,
         geminiProjectRoot: meta.geminiProjectRoot || null,
@@ -5822,6 +5998,7 @@ async function resumeDormantSession(hubId) {
   ipcRenderer.invoke('get-hub-config-raw').then((cfg) => {
     if (!cfg) return;
     providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
+    setCodexProfileForm(cfg.codexSubscriptionProfiles, cfg.codexSubscriptionProfile);
     if (typeof cfg.uiToolFoldThreshold === 'number' && !isNaN(cfg.uiToolFoldThreshold)) _toolFoldThreshold = cfg.uiToolFoldThreshold;
     if (typeof cfg.uiCodeFoldThreshold === 'number' && !isNaN(cfg.uiCodeFoldThreshold)) _codeFoldThreshold = cfg.uiCodeFoldThreshold;
     // 不在这里调 renderAccountUsage —— packyAccountData 还没从 cache 加载完成,

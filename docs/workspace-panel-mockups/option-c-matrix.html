@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>方案 C · 矩阵热力图</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #fafbff; color: #1e1b4b; font-size: 14px; line-height: 1.5;
+}
+.container { max-width: 1400px; margin: 0 auto; padding: 28px; }
+
+.header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; }
+.header h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #6366f1, #a855f7); -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent; background-clip: text; }
+.header .sub { color: #6b7280; font-size: 13px; margin-top: 4px; }
+.header .ts { color: #4f46e5; font-size: 12px; font-family: "JetBrains Mono", "Consolas", monospace; }
+.header .ts .live { display: inline-block; width: 8px; height: 8px; background: #10b981; border-radius: 50%; margin-right: 6px; }
+
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
+.kpi { background: #fff; border-radius: 14px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(99,102,241,0.06), 0 4px 12px rgba(99,102,241,0.04); }
+.kpi.alert { background: linear-gradient(135deg, #fff1f2, #ffe4e6); }
+.kpi .label { color: #6b7280; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.kpi .value { font-size: 32px; font-weight: 800; margin-top: 6px; letter-spacing: -0.02em; }
+.kpi.alert .value { color: #e11d48; }
+.kpi .delta { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+.kpi .delta.up { color: #e11d48; }
+
+.matrix-card { background: #fff; border-radius: 14px; padding: 24px; box-shadow: 0 1px 3px rgba(99,102,241,0.06), 0 4px 12px rgba(99,102,241,0.04); margin-bottom: 18px; }
+.matrix-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.matrix-title h2 { font-size: 15px; font-weight: 600; }
+.matrix-title .legend { display: flex; gap: 14px; align-items: center; font-size: 11px; color: #6b7280; }
+.matrix-title .legend .scale { display: flex; gap: 2px; align-items: center; }
+.matrix-title .legend .scale i { width: 14px; height: 14px; border-radius: 3px; }
+
+.matrix { display: grid; grid-template-columns: 200px repeat(8, 1fr); gap: 4px; align-items: center; }
+.matrix .col-header { font-size: 10px; color: #6b7280; font-family: "JetBrains Mono", "Consolas", monospace; padding: 4px 2px; word-break: break-all; text-align: center; line-height: 1.3; transform: rotate(-12deg); transform-origin: center; }
+.matrix .col-header.collision { color: #e11d48; font-weight: 700; }
+.matrix .row-label { font-size: 12px; padding: 8px 12px; }
+.matrix .row-label .name { font-weight: 600; }
+.matrix .row-label .branch { font-family: "JetBrains Mono", "Consolas", monospace; font-size: 10px; color: #4f46e5; margin-top: 2px; }
+.matrix .row-label.danger .name::before { content: "● "; color: #e11d48; }
+
+.cell { aspect-ratio: 1.4 / 1; min-height: 38px; border-radius: 6px; background: #f3f4f6;
+  display: flex; align-items: center; justify-content: center; font-size: 10px; font-family: "JetBrains Mono", monospace; color: #fff; font-weight: 600; transition: transform 0.15s; }
+.cell:hover { transform: scale(1.08); }
+.cell.h0 { background: #f3f4f6; color: #d1d5db; }
+.cell.h1 { background: #c7d2fe; color: #3730a3; }
+.cell.h2 { background: #818cf8; }
+.cell.h3 { background: #6366f1; }
+.cell.h4 { background: #4338ca; }
+.cell.collision { background: #ef4444; box-shadow: 0 0 0 3px #fee2e2, 0 0 12px rgba(239,68,68,0.4); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{box-shadow:0 0 0 3px #fee2e2,0 0 12px rgba(239,68,68,.4)}50%{box-shadow:0 0 0 5px #fecaca,0 0 16px rgba(239,68,68,.6)} }
+.cell.warn { background: #f59e0b; box-shadow: 0 0 0 2px #fef3c7; }
+
+.collision-strip { background: #fff1f2; border: 1px solid #fecdd3; border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; display: flex; gap: 14px; align-items: center; }
+.collision-strip .icon { width: 40px; height: 40px; border-radius: 50%; background: #e11d48; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; flex-shrink: 0; }
+.collision-strip .body { flex: 1; }
+.collision-strip .title { font-size: 14px; font-weight: 600; color: #9f1239; }
+.collision-strip .desc { font-size: 12px; color: #be123c; margin-top: 2px; font-family: "JetBrains Mono", "Consolas", monospace; }
+
+.timeline-card { background: #fff; border-radius: 14px; padding: 20px 24px; box-shadow: 0 1px 3px rgba(99,102,241,0.06), 0 4px 12px rgba(99,102,241,0.04); }
+.timeline-card h2 { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: #374151; }
+.timeline { position: relative; padding-left: 20px; }
+.timeline::before { content: ""; position: absolute; left: 4px; top: 4px; bottom: 4px; width: 2px; background: #e0e7ff; }
+.tl-item { position: relative; padding: 6px 0 6px 16px; font-size: 12px; }
+.tl-item::before { content: ""; position: absolute; left: -22px; top: 11px; width: 10px; height: 10px; border-radius: 50%; background: #818cf8; border: 2px solid #fff; }
+.tl-item.s1::before { background: #6366f1; } .tl-item.s2::before { background: #38bdf8; }
+.tl-item.s3::before { background: #a855f7; } .tl-item.s4::before { background: #fb7185; }
+.tl-item.alert::before { background: #ef4444; box-shadow: 0 0 0 3px #fecaca; }
+.tl-item .time { color: #9ca3af; font-family: "JetBrains Mono", monospace; font-size: 11px; margin-right: 8px; }
+.tl-item .who { font-weight: 600; }
+.tl-item .who.s1 { color: #6366f1; } .tl-item.s2 .who { color: #0284c7; }
+.tl-item.s3 .who { color: #9333ea; } .tl-item.s4 .who { color: #e11d48; }
+.tl-item .file { font-family: "JetBrains Mono", monospace; color: #374151; }
+.tl-item.alert .file { color: #e11d48; font-weight: 600; }
+
+.note { color: #9ca3af; font-size: 12px; margin-top: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div>
+      <h1>Workspace Matrix</h1>
+      <div class="sub">4 个 Claude 会话 · 跨 3 个 worktree · 过去 30 分钟内活跃</div>
+    </div>
+    <div class="ts"><span class="live"></span>LIVE · 21:47:08</div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="label">活跃会话</div><div class="value">4</div><div class="delta">2 Opus · 2 Sonnet</div></div>
+    <div class="kpi"><div class="label">触及文件</div><div class="value">11</div><div class="delta">过去 30 分钟</div></div>
+    <div class="kpi alert"><div class="label">硬碰撞</div><div class="value">1</div><div class="delta up">▲ 同文件</div></div>
+    <div class="kpi"><div class="label">软冲突</div><div class="value">2</div><div class="delta">分支共享 + 依赖</div></div>
+  </div>
+
+  <div class="collision-strip">
+    <div class="icon">!</div>
+    <div class="body">
+      <div class="title">硬碰撞 · renderer/diary-view.js</div>
+      <div class="desc">[S1] Hub feat/diary  ⨯  [S4] Hub diary UI  ·  共享 worktree hub-diary</div>
+    </div>
+  </div>
+
+  <div class="matrix-card">
+    <div class="matrix-title">
+      <h2>会话 × 文件 触及矩阵</h2>
+      <div class="legend">
+        <span>修改强度</span>
+        <span class="scale">
+          <i class="cell h0" style="width:14px;height:14px;border-radius:3px;"></i>
+          <i class="cell h1" style="width:14px;height:14px;border-radius:3px;"></i>
+          <i class="cell h2" style="width:14px;height:14px;border-radius:3px;"></i>
+          <i class="cell h3" style="width:14px;height:14px;border-radius:3px;"></i>
+          <i class="cell h4" style="width:14px;height:14px;border-radius:3px;"></i>
+        </span>
+        <span style="display:inline-flex;align-items:center;gap:4px;"><i class="cell collision" style="width:14px;height:14px;border-radius:3px;animation:none;box-shadow:none;"></i> 碰撞</span>
+        <span style="display:inline-flex;align-items:center;gap:4px;"><i class="cell warn" style="width:14px;height:14px;border-radius:3px;box-shadow:none;"></i> 敏感</span>
+      </div>
+    </div>
+
+    <div class="matrix">
+      <div></div>
+      <div class="col-header collision">renderer/<br/>diary-view.js</div>
+      <div class="col-header">core/<br/>diary-store.js</div>
+      <div class="col-header">core/<br/>diary-prompts.js</div>
+      <div class="col-header">renderer/<br/>diary-style.css</div>
+      <div class="col-header">main.js</div>
+      <div class="col-header">package.json</div>
+      <div class="col-header">render.js</div>
+      <div class="col-header">subtitle-<br/>overlay.js</div>
+
+      <div class="row-label danger"><div class="name">Hub feat/diary</div><div class="branch">feat/diary</div></div>
+      <div class="cell collision">8m</div>
+      <div class="cell h3">3m</div>
+      <div class="cell h2">12m</div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+
+      <div class="row-label"><div class="name">Hub fix/qrcode</div><div class="branch">fix/qrcode-deps</div></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h4">1m</div>
+      <div class="cell warn">15m</div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+
+      <div class="row-label"><div class="name">FunTop10 字幕</div><div class="branch">feat/subtitle-stroke</div></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h3">2m</div>
+      <div class="cell h2">5m</div>
+
+      <div class="row-label danger"><div class="name">Hub diary UI</div><div class="branch">feat/diary</div></div>
+      <div class="cell collision">now</div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h2">4m</div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+      <div class="cell h0"></div>
+    </div>
+  </div>
+
+  <div class="timeline-card">
+    <h2>近期事件流</h2>
+    <div class="timeline">
+      <div class="tl-item alert s4"><span class="time">21:47:06</span> <span class="who">Hub diary UI</span> <span style="color:#9ca3af">→ Edit</span> <span class="file">renderer/diary-view.js</span></div>
+      <div class="tl-item s2"><span class="time">21:46:11</span> <span class="who">Hub fix/qrcode</span> <span style="color:#9ca3af">→ Edit</span> <span class="file">main.js</span></div>
+      <div class="tl-item s3"><span class="time">21:45:33</span> <span class="who">FunTop10</span> <span style="color:#9ca3af">→ Write</span> <span class="file">render.js</span></div>
+      <div class="tl-item s1"><span class="time">21:44:40</span> <span class="who">Hub feat/diary</span> <span style="color:#9ca3af">→ Edit</span> <span class="file">core/diary-store.js</span></div>
+      <div class="tl-item alert s1"><span class="time">21:39:47</span> <span class="who">Hub feat/diary</span> <span style="color:#9ca3af">→ Edit</span> <span class="file">renderer/diary-view.js</span></div>
+      <div class="tl-item s2"><span class="time">21:32:15</span> <span class="who">Hub fix/qrcode</span> <span style="color:#9ca3af">→ Edit</span> <span class="file">package.json</span> <span style="color:#f59e0b;font-size:11px;">⚠ 敏感</span></div>
+    </div>
+  </div>
+
+  <div class="note">方案 C · 矩阵热力图  ·  灵感：Datadog / Grafana / GitHub contributions</div>
+</div>
+</body>
+</html>

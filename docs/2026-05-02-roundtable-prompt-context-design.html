@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌上下文构成 · 备选方案对比 (2026-05-02)</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #2c3e50;
+  background: #f5f6fa;
+}
+.container { max-width: 1180px; margin: 0 auto; padding: 32px 28px 80px; }
+header {
+  border-bottom: 3px solid #c8102e;
+  padding-bottom: 16px;
+  margin-bottom: 28px;
+}
+h1 { font-size: 26px; margin: 0 0 6px; color: #1a2533; font-weight: 700; }
+h2 {
+  font-size: 20px;
+  margin: 44px 0 14px;
+  color: #1a2533;
+  border-left: 4px solid #c8102e;
+  padding-left: 12px;
+}
+h3 { font-size: 16px; margin: 24px 0 10px; color: #1a2533; }
+h4 { font-size: 14px; margin: 18px 0 8px; color: #4a5d72; }
+.meta { color: #6b7c93; font-size: 13px; }
+
+.tldr {
+  background: #fff7e6;
+  border-left: 4px solid #f0a020;
+  padding: 14px 18px;
+  border-radius: 4px;
+  margin: 20px 0 28px;
+}
+.tldr ul { margin: 6px 0 0; padding-left: 22px; }
+.tldr li { margin: 6px 0; }
+
+.toc {
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  padding: 14px 22px;
+  margin: 14px 0 28px;
+  font-size: 13.5px;
+}
+.toc ol { margin: 6px 0 0; padding-left: 22px; }
+.toc li { margin: 3px 0; }
+.toc a { color: #2c7be5; text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0 18px;
+  font-size: 13px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+th {
+  background: #1a2533;
+  color: #fff;
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 13px;
+}
+td { padding: 8px 12px; border-bottom: 1px solid #e8eaed; vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+tr:hover { background: #fafbfc; }
+
+code {
+  background: #eef1f5;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: "JetBrains Mono", Consolas, "SF Mono", monospace;
+  font-size: 12.5px;
+  color: #c8102e;
+}
+
+pre {
+  background: #1a2533;
+  color: #e3e8ef;
+  padding: 14px 18px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin: 8px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+pre code { background: transparent; padding: 0; color: inherit; }
+pre .added { background: rgba(40,167,69,0.18); color: #b6f5c5; display: block; padding: 0 4px; }
+pre .removed { background: rgba(200,16,46,0.22); color: #ffc7c7; display: block; padding: 0 4px; }
+pre .meta-line { color: #f0a020; }
+pre .tag { color: #5cb8ff; }
+pre .label { color: #c8a14a; }
+pre .ghost { color: #6b7c93; font-style: italic; }
+
+.option-card {
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  padding: 22px 26px;
+  margin: 18px 0;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+}
+.option-card.baseline { border-left: 6px solid #6b7c93; }
+.option-card.minimal  { border-left: 6px solid #28a745; }
+.option-card.ledger   { border-left: 6px solid #2c7be5; }
+.option-card.structural { border-left: 6px solid #f0a020; }
+.option-card.tagged   { border-left: 6px solid #9966cc; }
+.option-card.user-cmd { border-left: 6px solid #d63384; }
+
+.option-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.option-header h3 { margin: 0; font-size: 18px; }
+.option-tagline { color: #6b7c93; font-size: 13px; margin: 4px 0 14px; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-keep { background: #d4edda; color: #155724; }
+.badge-new  { background: #d1ecf1; color: #0c5460; }
+.badge-cost-S { background: #d4edda; color: #155724; }
+.badge-cost-M { background: #fff3cd; color: #856404; }
+.badge-cost-L { background: #f8d7da; color: #721c24; }
+.badge-rec    { background: #28a745; color: #fff; }
+.badge-skip   { background: #c8102e; color: #fff; }
+.badge-future { background: #6b7c93; color: #fff; }
+
+.callout {
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-left: 4px solid #2c7be5;
+  border-radius: 4px;
+  padding: 14px 18px;
+  margin: 14px 0;
+}
+.callout-warn { border-left-color: #c8102e; background: #fef5f5; }
+.callout-good { border-left-color: #28a745; background: #f1f9f3; }
+.callout-info { border-left-color: #2c7be5; background: #f0f7ff; }
+.callout h4 { margin-top: 0; }
+
+.mode-grid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px 14px;
+  margin: 12px 0;
+  align-items: start;
+}
+.mode-grid > .mode-tag {
+  background: #1a2533;
+  color: #fff;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 12px;
+  text-align: center;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mode-grid > .mode-tag.fanout  { background: #2c7be5; }
+.mode-grid > .mode-tag.debate  { background: #f0a020; }
+.mode-grid > .mode-tag.summary { background: #c8102e; }
+.mode-grid > .mode-tag.pilot   { background: #9966cc; }
+.mode-grid > .mode-tag.observer { background: #6b7c93; }
+.mode-grid > .mode-content {
+  font-size: 13px;
+}
+
+.proscons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 14px 0;
+}
+.proscons > div {
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+.proscons .pro { border-left: 3px solid #28a745; }
+.proscons .con { border-left: 3px solid #c8102e; }
+.proscons h4 { margin: 0 0 6px; font-size: 13px; }
+.proscons ul { margin: 4px 0 0; padding-left: 20px; font-size: 13px; }
+.proscons li { margin: 3px 0; }
+
+.section-divider {
+  height: 1px;
+  background: linear-gradient(to right, transparent, #c8102e, transparent);
+  margin: 50px 0 0;
+}
+
+.layer-diagram {
+  background: #fff;
+  border-radius: 6px;
+  padding: 18px 22px;
+  margin: 14px 0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.layer {
+  border: 1.5px dashed #c8102e;
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 10px 0;
+  background: #fef5f5;
+}
+.layer.system { border-color: #2c7be5; background: #f0f7ff; }
+.layer.turn   { border-color: #f0a020; background: #fff7e6; }
+.layer h4 { margin: 0 0 6px; }
+.layer .layer-desc { color: #4a5d72; font-size: 13px; }
+
+.matrix-table th, .matrix-table td { font-size: 12px; padding: 6px 10px; }
+.matrix-table th:first-child, .matrix-table td:first-child {
+  background: #f5f6fa;
+  font-weight: 600;
+  color: #1a2533;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>圆桌上下文构成 · 5 种备选方案对比</h1>
+  <div class="meta">2026-05-02 · 立花道雪 · 聚焦逻辑层面：每种方案下 AI 实际收到什么上下文</div>
+</header>
+
+<div class="tldr">
+  <b>TL;DR</b>
+  <ul>
+    <li><b>方案 0（基线）</b>：当前实现。System 注一次（规则+场景+公约），每轮 prompt 按 mode 分三套，summary 重度依赖 PTY 历史。</li>
+    <li><b>方案 A 角色显性化</b>：每轮 prompt 多一段"调度上下文"——明示 AI 当前是主驾还是副驾、本轮谁开口、互相能否看见。</li>
+    <li><b>方案 B 会议记忆 Ledger</b>：每轮结束后系统侧自动浓缩成 200-500 字的"轮次记忆"，下游 prompt 注入这个 ledger 替代依赖 PTY。</li>
+    <li><b>方案 C 结构化协作流</b>：强约束 AI 按 What/Why/Tradeoff/Open Questions/Next Action 五段式输出，下游按结构 fan-in。</li>
+    <li><b>方案 D 标签式知识图谱</b>：自由文本 + 轻量标签 <code>[结论][数据][风险][疑问]</code>，下游按标签精准筛选注入。</li>
+    <li><b>方案 E 用户元命令</b>：上下文组成不智能化，给用户 <code>@debate#3-5</code> / <code>@summary --full</code> 等元命令，每次手动指定要喂什么。</li>
+  </ul>
+</div>
+
+<div class="toc">
+  <b>目录</b>
+  <ol>
+    <li><a href="#frame">所有方案共用的两层模型</a></li>
+    <li><a href="#baseline">方案 0：基线（当前实现）</a></li>
+    <li><a href="#opt-a">方案 A：角色显性化</a></li>
+    <li><a href="#opt-b">方案 B：会议记忆 Ledger</a></li>
+    <li><a href="#opt-c">方案 C：结构化协作流</a></li>
+    <li><a href="#opt-d">方案 D：标签式知识图谱</a></li>
+    <li><a href="#opt-e">方案 E：用户元命令驱动</a></li>
+    <li><a href="#matrix">对比矩阵：5 个方案的上下文构成差异</a></li>
+    <li><a href="#decisions">需要你决策的核心问题</a></li>
+  </ol>
+</div>
+
+
+<!-- ============================================================ -->
+<h2 id="frame">1. 所有方案共用的两层模型</h2>
+
+<p>无论选哪个方案，AI 收到的上下文都分两层。差异只在每层装什么。</p>
+
+<div class="layer-diagram">
+  <div class="layer system">
+    <h4>第 1 层 · System Prompt（启动时一次性注入）</h4>
+    <div class="layer-desc">AI 在 PTY 启动那一瞬就读到，之后整个会议室不变。承载"角色定位 / 协作规则 / 场景预设 / 房间公约"。</div>
+  </div>
+  <div class="layer turn">
+    <h4>第 2 层 · Per-Turn Prompt（每轮触发时注入）</h4>
+    <div class="layer-desc">用户在圆桌发言或触发命令时，系统把任务说明 + 历史上下文 + 参考资料拼成一段文字，注入 PTY 让 AI 读。每轮一次。</div>
+  </div>
+</div>
+
+<p>5 种方案的差异完全在<b>这两层各自装什么</b>。第 1 层在所有方案下变化都不大（最多调整公约文本），主要差异在第 2 层。</p>
+
+<div class="callout callout-info">
+<b>额外约束：dispatchMode（all / pilot / observer）正交于 mode（fanout / debate / summary）</b>。dispatchMode 决定本轮"谁开口"——只是过滤发送对象，不直接改 prompt 内容。各方案对这一点处理方式不同（基线完全不告知 AI、方案 A 显性告知、方案 B/D 通过 ledger/标签携带）。
+</div>
+
+
+<!-- ============================================================ -->
+<h2 id="baseline">2. 方案 0：基线（当前实现）</h2>
+
+<div class="option-card baseline">
+  <div class="option-header">
+    <h3>方案 0：基线</h3>
+    <span class="badge badge-skip">参照系</span>
+    <span class="badge badge-keep">已上线</span>
+  </div>
+  <div class="option-tagline">MVP 实现，假设"AI 自己 PTY 上下文连贯"，系统侧只投喂任务说明 + 最近一轮观点</div>
+
+  <h4>选型动机</h4>
+  <p>每个 AI 占一个 PTY，前面所有轮次它都看过——所以系统侧不需要把历史"再喂一遍"，只需要发"任务说明 + 任务相关的最近一轮参考"即可。这是最简洁、token 用量最低的实现。</p>
+
+  <h4>第 1 层 · System Prompt 内容</h4>
+  <pre><code><span class="meta-line"># 圆桌讨论规则</span>
+你和另外两位 AI 同事（Claude / Gemini / Codex）地位完全平等，本色发挥。
+
+用户用以下语法驱动讨论：
+1. 默认提问 → 三家独立回答（互不知情）
+2. @debate → 系统会把另两家上一轮观点发给你
+3. @summary @&lt;你&gt; → 系统会把所有历史汇总给被点名那位
+4. @&lt;你&gt; 私聊 → 仅你看到
+
+<span class="meta-line"># 场景预设（research / general）</span>
+&lt;数据获取指引 / 通用规则&gt;
+
+<span class="meta-line"># 房间公约（投研：用户偏好 / 红线 / 输出习惯）</span>
+&lt;covenant&gt;</code></pre>
+
+  <h4>第 2 层 · Per-Turn Prompt 各模式实际收到的</h4>
+
+  <div class="mode-grid">
+    <div class="mode-tag fanout">fanout</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · 默认提问]
+
+## 数据接入  <span class="ghost">（仅 research scene）</span>
+&lt;dataPack&gt;
+
+## 用户问题
+&lt;userInput&gt;
+
+请独立回答（你看不到另两家观点，本色发挥即可）。</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag debate">debate</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · @debate]
+
+## 用户在本轮补充的新信息
+&lt;userInput&gt;
+
+## 另两家上一轮观点
+### Gemini 的观点
+&lt;text · 5KB 上限，超出则头2K + 中段省略 + 尾2K&gt;
+
+### Codex 的观点
+&lt;同上&gt;
+
+## 你的任务
+请基于另两家观点 + 用户补充信息发表新观点：
+可以继承、可以反驳，但要明示引用对方哪一点。</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag summary">summary</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · @summary @Claude]
+
+## 你的任务
+你已经在自己上下文里读过前 N 轮讨论。
+请直接基于上下文给出最终意见，不需要逐轮复述。
+
+输出格式建议：
+  1) 结论先行
+  2) 三方共识与关键分歧
+  3) 具体行动建议
+
+## 最近一轮（第 N-1 轮）参考 — 仅另两家观点
+**用户输入**：&lt;头 1K 截断&gt;
+
+### Gemini
+&lt;text · 头 3K 截断&gt;
+
+### Codex
+&lt;同上&gt;</code></pre>
+      <p style="margin-top:8px"><b>关键设计假设</b>：summarizer 自己 PTY 上下文里已经存有前 N 轮全部讨论（含自己的、对方的）。系统侧只需提醒任务、附最近一轮唤起记忆即可。</p>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag pilot">pilot</div>
+    <div class="mode-content">仅主驾 PTY 收到 fanout/debate/summary 模板。<b>prompt 内容与 all 模式一字不差</b>——AI 不被告知"本轮只你一个"，它要靠自己 PTY 上下文里"主驾红框氛围"猜出来（实际上 AI 不一定能猜到）。</div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag observer">observer</div>
+    <div class="mode-content">仅副驾两家 PTY 收到 fanout/debate 模板。<b>prompt 内容与 all 模式一字不差</b>——副驾不被告知"主驾本轮静音"。fanout 模板还在写"独立回答"，副驾可能误解为"独立赛跑"。</div>
+  </div>
+
+  <div class="proscons">
+    <div class="pro">
+      <h4>优势</h4>
+      <ul>
+        <li>实现极简，token 用量最低</li>
+        <li>AI 自然发挥，无任何模板束缚</li>
+        <li>初期 1-5 轮短会议体验好</li>
+      </ul>
+    </div>
+    <div class="con">
+      <h4>劣势</h4>
+      <ul>
+        <li>长会议（&gt;15 轮）summary 质量断崖（PTY context 满）</li>
+        <li>debate 不支持跨轮引用（只能用最近一轮）</li>
+        <li>dispatchMode 切换 AI 不知，副驾/主驾角色感知靠猜</li>
+        <li>跨 mode 衔接靠 BASE_RULES 启动一次注入，N 轮后可能淡忘</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2 id="opt-a">3. 方案 A：角色显性化</h2>
+
+<div class="option-card minimal">
+  <div class="option-header">
+    <h3>方案 A：角色显性化</h3>
+    <span class="badge badge-cost-S">最小增量</span>
+    <span class="badge badge-rec">推荐 Phase 1</span>
+  </div>
+  <div class="option-tagline">每轮 prompt 头部多一段"调度上下文"，明示当前轮的角色 / 模式 / 互相可见性</div>
+
+  <h4>选型动机</h4>
+  <p>当前 AI 的"困惑"主要来自<b>对当前轮调度状态不知情</b>——副驾不知主驾静音、主驾不知自己被独点、debate 不能指定其它轮。把这些隐性信息显性化即可，无需引入新组件。</p>
+
+  <h4>第 1 层 · System Prompt 内容</h4>
+  <p>同基线，不变。</p>
+
+  <h4>第 2 层 · Per-Turn Prompt 改动（与基线对比）</h4>
+
+  <div class="mode-grid">
+    <div class="mode-tag fanout">fanout</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · 默认提问 · <span class="tag">副驾发言模式</span>]
+
+<span class="added">## 本轮调度上下文（系统）</span>
+<span class="added">- 主驾：Claude（slot 1，本轮静音 — 用户希望听副驾两家独立观点）</span>
+<span class="added">- 你的位置：副驾</span>
+<span class="added">- 其他副驾：Gemini（同时本轮独立回答，但你看不到他写什么）</span>
+
+## 用户问题
+&lt;userInput&gt;
+
+请独立回答（本轮你与另一位副驾互相看不到）。</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag debate">debate</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · <span class="tag">@debate#3-5（用户指定引用第 3-5 轮）</span>]
+
+<span class="added">## 本轮调度上下文</span>
+<span class="added">- 群策群力模式（all） · 三家全在场</span>
+<span class="added">- 引用范围：第 3 轮 / 第 4 轮 / 第 5 轮</span>
+
+## 用户在本轮补充的新信息
+&lt;userInput&gt;
+
+## 另两家被引用轮的观点
+### Gemini · 第 3 轮
+&lt;text · 截断同基线&gt;
+
+### Gemini · 第 4 轮
+&lt;text&gt;
+
+### Codex · 第 3 轮
+&lt;text&gt;
+<span class="ghost">（用户没指定时退化为基线，仅取上一轮）</span>
+
+## 你的任务
+请基于这些观点 + 用户补充信息发表新观点。</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag summary">summary</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · @summary @Claude]
+
+<span class="added">## 本轮调度上下文</span>
+<span class="added">- 你的位置：综合者</span>
+<span class="added">- 历史共 11 轮：fanout 1 轮 + debate 9 轮 + 数据补充 1 轮</span>
+
+## 你的任务
+<span class="added">请先回顾自己上下文中的全部 11 轮讨论再综合。</span>
+&lt;后续同基线&gt;</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag pilot">pilot 模式</div>
+    <div class="mode-content">主驾 prompt 头部加：<code>本轮你被用户单独点名独说，另两家本轮静音</code>。让主驾知道不必"等队友"。</div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag observer">observer 模式</div>
+    <div class="mode-content">副驾 prompt 头部加：<code>主驾 Claude 本轮静音 — 用户希望听副驾两家独立观点</code>。可选扩展：附"主驾上一轮的观点"作为参考（你决策点之一）。</div>
+  </div>
+
+  <div class="proscons">
+    <div class="pro">
+      <h4>优势</h4>
+      <ul>
+        <li>角色感知问题直接解决（副驾/主驾/observer/pilot 全都明示）</li>
+        <li>debate 跨轮引用能力开放</li>
+        <li>token 增量很小（每轮多 50-100 字）</li>
+        <li>不破坏"本色发挥"理念</li>
+        <li>无新数据结构，不引入持久化负担</li>
+      </ul>
+    </div>
+    <div class="con">
+      <h4>劣势</h4>
+      <ul>
+        <li>仍重度依赖 PTY 上下文（长会议 summary 质量断崖问题原样保留）</li>
+        <li>跨 meeting 知识传承零进展</li>
+        <li>dispatchMode 切换历史不持久化（无法事后复盘"第 3 轮是 observer"）</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2 id="opt-b">4. 方案 B：会议记忆 Ledger（cat-cafe LSM 风格）</h2>
+
+<div class="option-card ledger">
+  <div class="option-header">
+    <h3>方案 B：会议记忆 Ledger</h3>
+    <span class="badge badge-cost-M">中等增量</span>
+    <span class="badge badge-rec">推荐 Phase 2</span>
+  </div>
+  <div class="option-tagline">每轮结束后系统侧浓缩成"轮次记忆卡"，下游 prompt 注入 ledger 替代依赖 PTY 历史</div>
+
+  <h4>选型动机</h4>
+  <p>不能永远依赖 PTY 上下文——长会议（&gt;15 轮）context window 总会满，summarizer 看不到完整历史。<b>把"历史记忆"从 PTY 容器迁移到系统侧 ledger 容器</b>，让 prompt 装配时可以显式控制注入哪些轮、注入到什么粒度。</p>
+
+  <h4>新引入的概念：每轮的"轮次记忆卡"</h4>
+  <p>每轮 turn-complete 后，系统自动生成一张轻量记忆卡（200-500 字），存到会议室独立的记忆 ledger 里：</p>
+  <pre><code><span class="meta-line"># 第 3 轮记忆卡（debate 模式 · 群策群力）</span>
+<span class="label">用户输入</span>："考虑下三季报数据"
+<span class="label">Claude</span>：维持中性 — 业绩 OK 但估值 PE 38 偏高
+<span class="label">Gemini</span>：转推荐 — 三季报营收+18% 超预期，毛利率回升
+<span class="label">Codex</span>：维持谨慎 — 同行恒玄科技更便宜
+<span class="label">本轮共识</span>：业绩面 OK
+<span class="label">本轮分歧</span>：估值是否合理 / 是否切到同行</code></pre>
+
+  <h4>第 1 层 · System Prompt 内容</h4>
+  <p>同基线，但额外加一句"系统会在每轮 prompt 头部注入会议记忆 ledger，请把它当作权威历史"。</p>
+
+  <h4>第 2 层 · Per-Turn Prompt 改动</h4>
+
+  <div class="mode-grid">
+    <div class="mode-tag fanout">fanout</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · 默认提问]
+
+<span class="added">## 会议记忆 Ledger（截至第 N-1 轮）</span>
+<span class="added">### 第 1 轮 fanout（"兆易创新能上车吗"）</span>
+<span class="added">- Claude：中性（PE 38 偏高 / 形态需突破 113.5）</span>
+<span class="added">- Gemini：偏推荐（业绩超预期 + DDR5 概念正宗）</span>
+<span class="added">- Codex：偏谨慎（估值已透支）</span>
+<span class="added">- 共识：业绩 OK | 分歧：估值合理性</span>
+<span class="added"></span>
+<span class="added">### 第 2 轮 debate（用户补充三季报）</span>
+<span class="added">...</span>
+
+## 用户问题
+&lt;userInput&gt;
+
+请独立回答（其他两家这轮也在独立思考）。</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag debate">debate</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · @debate]
+
+<span class="added">## 会议记忆 Ledger（截至第 N-1 轮，全量）</span>
+<span class="added">&lt;轮次记忆卡 1...N-1&gt;</span>
+
+## 另两家最近一轮观点（全文，便于精确反驳）
+### Gemini · 第 N-1 轮
+&lt;原文同基线规则截断&gt;
+
+### Codex · 第 N-1 轮
+&lt;同上&gt;
+
+## 你的任务
+请基于 ledger + 上轮全文 + 用户补充发表新观点。</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag summary">summary</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · @summary @Claude]
+
+## 你的任务
+请综合 11 轮讨论给出最终决策。
+
+<span class="added">## 完整会议记忆 Ledger</span>
+<span class="added">### 第 1 轮 ...</span>
+<span class="added">### 第 2 轮 ...</span>
+<span class="added">### ... 全部 11 轮记忆卡完整列出 ...</span>
+
+<span class="ghost">（不再依赖 PTY 上下文 — 即使 PTY 被压缩或 reset，summary 仍可正确输出）</span>
+
+## 输出格式建议
+1) 结论先行
+2) 三方共识与关键分歧（请显式列出 ledger 里的分歧点）
+3) 具体行动建议</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag pilot">pilot 模式</div>
+    <div class="mode-content">主驾 prompt 中 ledger 自带"第 K 轮 · pilot 模式 · 主驾发言"标签，主驾自然知道当前是被点名独说。</div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag observer">observer 模式</div>
+    <div class="mode-content">副驾 prompt 中 ledger 包含主驾历史观点（即使本轮主驾静音），副驾仍能看到主驾此前怎么说过。语义自然完整。</div>
+  </div>
+
+  <h4>核心差异：上下文容器从 PTY 迁移到 Ledger</h4>
+  <table>
+  <tr><th>维度</th><th>基线（PTY 容器）</th><th>方案 B（Ledger 容器）</th></tr>
+  <tr><td>历史长度限制</td><td>受 PTY context window 限制（~200K tok）</td><td>受 ledger 注入预算限制（用户可调，比如 6K 字）</td></tr>
+  <tr><td>历史能否复盘</td><td>无文件可读，AI 自己 PTY 销毁就丢</td><td>有独立 ledger 文件，可重启 / 跨设备 / 用户审阅</td></tr>
+  <tr><td>当 PTY 翻车</td><td>summary 质量断崖</td><td>无影响（ledger 独立于 PTY）</td></tr>
+  <tr><td>多 AI 一致性</td><td>各 AI 看到的略有不同（自己说的 vs 收到的）</td><td>所有 AI 看到完全一致的 ledger</td></tr>
+  </table>
+
+  <div class="proscons">
+    <div class="pro">
+      <h4>优势</h4>
+      <ul>
+        <li>长会议（15+ 轮）summary 质量稳定</li>
+        <li>跨轮引用 / @debate 任意轮天然支持</li>
+        <li>跨设备 / 重启 / 换号场景下记忆可迁移</li>
+        <li>用户可在 UI 上审阅 ledger（"AI 怎么记的"），增加可信度</li>
+        <li>三家 AI 看到完全一致的历史（避免"你说过 X" 互相否认）</li>
+      </ul>
+    </div>
+    <div class="con">
+      <h4>劣势</h4>
+      <ul>
+        <li>每轮注入 token 增量明显（短会议反而费 token）</li>
+        <li>ledger 质量依赖压缩 prompt 调优（可能漏关键观点）</li>
+        <li>"AI 看的是 ledger 不是原话" 可能丢失语气 / 不确定性 / 隐喻</li>
+        <li>引入新数据结构 = 新故障面（ledger 写失败、损坏、不同步）</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2 id="opt-c">5. 方案 C：结构化协作流（Cross-cat Handoff）</h2>
+
+<div class="option-card structural">
+  <div class="option-header">
+    <h3>方案 C：结构化协作流</h3>
+    <span class="badge badge-cost-M">中等增量</span>
+    <span class="badge badge-skip">不推荐</span>
+  </div>
+  <div class="option-tagline">强约束 AI 按"What / Why / Tradeoff / Open Questions / Next Action"五段式输出，下游 prompt 按结构装配</div>
+
+  <h4>选型动机</h4>
+  <p>cat-cafe Cross-cat Handoff 模式的迁移：每个 AI 在每轮输出末尾必须给出五段式卡片，下游轮次（debate / summary）系统按"对方的 Open Questions"自动转给当前 AI。让 AI 之间像同事一样"传球"，结构化协作。</p>
+
+  <h4>第 1 层 · System Prompt 内容</h4>
+  <p>BASE_RULES 改为"五部分输出强约束"——和当前的"本色发挥"理念冲突，所以这是<b>核心理念变更</b>。</p>
+  <pre><code><span class="meta-line"># 圆桌讨论规则（结构化协作版）</span>
+你和另外两位 AI 是同事，本圆桌按"工业化协作"运作。
+每轮输出必须包含以下五段（缺一不可）：
+
+### What
+你的核心观点是什么。
+
+### Why
+基于哪些事实 / 数据 / 推理。
+
+### Tradeoff
+你的观点的代价 / 不适用条件。
+
+### Open Questions
+- 你仍不确定的问题
+- 想问对方某家的问题（请明示对哪家）
+
+### Next Action
+基于本轮，建议下一轮聚焦什么。</code></pre>
+
+  <h4>第 2 层 · Per-Turn Prompt 改动</h4>
+
+  <div class="mode-grid">
+    <div class="mode-tag fanout">fanout</div>
+    <div class="mode-content">基线 + prompt 末尾重申"请严格按 What/Why/Tradeoff/Open Questions/Next Action 五段输出"。</div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag debate">debate</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · @debate]
+
+<span class="added">## 上一轮另两家的 Open Questions（请你优先回答）</span>
+<span class="added">- Gemini 问 Claude：你提到 PE 38 偏高，但同板块平均 PE 是多少？</span>
+<span class="added">- Codex 问 Claude：恒玄科技你怎么看？</span>
+
+## 上一轮另两家完整观点（5 段式）
+### Gemini · 第 N-1 轮
+[What] ... [Why] ... [Tradeoff] ... [Open Questions] ... [Next Action] ...
+
+## 你的任务
+回答对方的 Open Questions + 发表本轮观点（仍按五段式）。</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag summary">summary</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · @summary @Claude]
+
+<span class="added">## 历史所有轮的结构化观点</span>
+<span class="added">### 第 1 轮 · Claude</span>
+<span class="added">- What: ...</span>
+<span class="added">- Why: ...</span>
+<span class="added">- Tradeoff: ...</span>
+<span class="added">### 第 1 轮 · Gemini ... </span>
+<span class="added">### 第 1 轮 · Codex ... </span>
+<span class="added">... 全部 N-1 轮的所有 What/Why/Tradeoff 列表 ...</span>
+
+## 你的任务
+fan-in 综合最终决策。强制保留分歧（不要抹平 Open Questions 里的疑问）。</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag pilot">pilot / observer</div>
+    <div class="mode-content">同方案 A 的角色明示，叠加五段式约束。</div>
+  </div>
+
+  <div class="proscons">
+    <div class="pro">
+      <h4>优势</h4>
+      <ul>
+        <li>跨轮可解析 — 程序能稳定提取 What/Why/Tradeoff</li>
+        <li>分歧不被 summary 抹平（强制保留）</li>
+        <li>决策档案天然结构化，便于事后审阅 / 自动化</li>
+        <li>AI 之间"传球"明示（Open Questions → 下一轮自动转给对方）</li>
+      </ul>
+    </div>
+    <div class="con">
+      <h4>劣势</h4>
+      <ul>
+        <li><b>破坏"本色发挥"理念</b>（与当前 BASE_RULES 直接冲突）</li>
+        <li>用户问"今天兆易创新能上车吗"被迫收到五段式卡片，自然语义被割裂</li>
+        <li>三家 AI 对结构约束适应度不一（Claude 配合好 / Gemini 偷工 / Codex 输出代码块格式）</li>
+        <li>每轮 token 增量大（强制写五段，最少 +30%）</li>
+        <li>首轮 fanout 没有"上一轮对方 Open Questions"——结构化的核心红利被浪费</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout callout-warn">
+  <b>什么时候才考虑 C</b>：圆桌从"自由讨论"演变为"工业化决策流"——需要把 AI 输出灌到下游程序（决策审计 / 自动建仓 pipeline / ADR 生成）。当前定位是"投研伙伴 / 智囊讨论"，C 的红利无法兑现。
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2 id="opt-d">6. 方案 D：标签式知识图谱</h2>
+
+<div class="option-card tagged">
+  <div class="option-header">
+    <h3>方案 D：标签式知识图谱</h3>
+    <span class="badge badge-cost-L">大增量</span>
+    <span class="badge badge-future">远期</span>
+  </div>
+  <div class="option-tagline">自由文本 + 轻量标签 <code>[结论][数据][风险][疑问]</code>，下游按标签精准筛选注入</div>
+
+  <h4>选型动机</h4>
+  <p>方案 C 太重（强结构破坏自然），方案 B 又太粗（ledger 全文注入费 token）。<b>折中：让 AI 自由文本但鼓励在关键陈述末尾加方括号标签</b>，下游 prompt 装配时按标签筛选——debate 时只注入 <code>[结论][疑问]</code>，summary 时全量注入 <code>[结论][数据][风险]</code>。token 利用率最优。</p>
+
+  <h4>第 1 层 · System Prompt 内容</h4>
+  <p>基线 + 加一段"建议（不强制）"：</p>
+  <pre><code><span class="meta-line"># 协作礼仪（建议，不强制）</span>
+为了便于另两家在后续轮次精准引用你的观点，
+建议在关键陈述末尾用方括号标签，例如：
+
+兆易创新当前 113.2 处于上方密集区。<span class="label">[结论]</span>短期不建议追入。
+三季报营收 27.4 亿同比 +18%，毛利率回升至 36%。<span class="label">[数据]</span>
+但限售股解禁压力 8.3% 月底兑现。<span class="label">[风险]</span>
+另外想问 Codex：恒玄科技你怎么看？<span class="label">[疑问·@Codex]</span>
+
+可用标签集（自由组合，不打标签也 OK）：
+[结论] [数据] [风险] [假设] [反驳] [疑问·@&lt;who&gt;]</code></pre>
+
+  <h4>第 2 层 · Per-Turn Prompt 改动</h4>
+
+  <div class="mode-grid">
+    <div class="mode-tag fanout">fanout</div>
+    <div class="mode-content">基线（首轮无历史可注入；标签是输出侧约定，非输入侧）。</div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag debate">debate</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · @debate]
+
+<span class="added">## 另两家上一轮的关键陈述（按标签筛选）</span>
+<span class="added">### Gemini 的 [结论]</span>
+<span class="added">- 偏推荐</span>
+<span class="added">### Gemini 的 [疑问·@Claude]</span>
+<span class="added">- 你说 PE 38 偏高，但板块平均 PE 多少？</span>
+<span class="added">### Codex 的 [结论]</span>
+<span class="added">- 偏谨慎</span>
+<span class="added">### Codex 的 [疑问·@Claude]</span>
+<span class="added">- 恒玄科技你怎么看？</span>
+
+<span class="ghost">（[数据] / [风险] 不注入 — debate 阶段聚焦观点交锋，数据已在前面 fanout 共享）</span>
+
+## 用户在本轮补充
+&lt;userInput&gt;
+
+## 你的任务
+回答对方点你的疑问 + 基于结论分歧发表新观点。</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag summary">summary</div>
+    <div class="mode-content">
+      <pre><code>[投研圆桌 · 第 N 轮 · @summary @Claude]
+
+<span class="added">## 历史所有轮按标签聚合</span>
+<span class="added">### 全部 [结论]（11 条）</span>
+<span class="added">- 第 1 轮 Claude：中性</span>
+<span class="added">- 第 1 轮 Gemini：偏推荐</span>
+<span class="added">...</span>
+<span class="added"></span>
+<span class="added">### 全部 [数据]（17 条）</span>
+<span class="added">...</span>
+<span class="added"></span>
+<span class="added">### 全部 [风险]（8 条）</span>
+<span class="added">...</span>
+<span class="added"></span>
+<span class="added">### 未消解的 [疑问]（3 条）</span>
+<span class="added">- Codex 第 5 轮问 Gemini：DDR4 切 DDR5 周期是不是已过？</span>
+
+<span class="ghost">（无标签的自由文本不注入 — 假设关键信息 AI 都打了标签；漏的话仍走 PTY 上下文兜底）</span>
+
+## 你的任务
+基于结论分布 + 关键风险 + 未解疑问综合最终意见。</code></pre>
+    </div>
+  </div>
+
+  <div class="mode-grid">
+    <div class="mode-tag pilot">pilot / observer</div>
+    <div class="mode-content">同方案 A，标签筛选额外让副驾"看到主驾历史 [结论] + [风险]"成本极低。</div>
+  </div>
+
+  <div class="proscons">
+    <div class="pro">
+      <h4>优势</h4>
+      <ul>
+        <li>token 利用率最优（精准筛选 + 跳过冗余论证）</li>
+        <li>不打标签也能用（兜底走全文注入），适应度好</li>
+        <li>跨轮引用天然（"你第 3 轮的 [疑问] 我现在回答"）</li>
+        <li>支持"分歧追踪"（未消解的 [疑问] / 反对的 [反驳] 可可视化）</li>
+      </ul>
+    </div>
+    <div class="con">
+      <h4>劣势</h4>
+      <ul>
+        <li>解析依赖 AI 配合（标签合规度可能差异大）</li>
+        <li>首版标签集需运营调优（漏 [假设] / 多余 [建议] 等）</li>
+        <li>需要方案 B 的 ledger 作为基础设施（标签是飘在 ledger 上的元数据）</li>
+        <li>"自由 + 建议"模式下用户不一定能感知到 AI 是否遵守</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2 id="opt-e">7. 方案 E：用户元命令驱动</h2>
+
+<div class="option-card user-cmd">
+  <div class="option-header">
+    <h3>方案 E：用户元命令驱动</h3>
+    <span class="badge badge-cost-S">轻量补丁</span>
+    <span class="badge badge-future">可叠加</span>
+  </div>
+  <div class="option-tagline">把"该投喂多少历史"决策权完全交给用户，不智能化压缩</div>
+
+  <h4>选型动机</h4>
+  <p>方案 B/D 的智能压缩 / 标签解析都有失败可能。<b>另一种思路：不要智能化，给用户精细元命令</b>——用户每次发言时显式指定"这轮我要什么级别上下文"。本质上是把 token 预算控制权从系统侧转回用户侧。</p>
+
+  <h4>第 1 层 · System Prompt 内容</h4>
+  <p>基线 + 一句"用户可能在 prompt 头部用元命令调整你看到的历史"。</p>
+
+  <h4>第 2 层 · Per-Turn Prompt 由用户元命令驱动</h4>
+
+  <table>
+  <tr><th>用户输入</th><th>系统装配的 prompt</th></tr>
+  <tr>
+    <td><code>@debate</code></td>
+    <td>同基线（最近一轮另两家观点）</td>
+  </tr>
+  <tr>
+    <td><code>@debate#3-5</code></td>
+    <td>注入第 3、4、5 轮另两家观点（跨轮引用）</td>
+  </tr>
+  <tr>
+    <td><code>@debate --brief</code></td>
+    <td>另两家观点压缩到 500 字内（用户主动省 token）</td>
+  </tr>
+  <tr>
+    <td><code>@summary @Claude</code></td>
+    <td>同基线（依赖 PTY 历史）</td>
+  </tr>
+  <tr>
+    <td><code>@summary @Claude --full</code></td>
+    <td>显式注入全部历史轮（不依赖 PTY）</td>
+  </tr>
+  <tr>
+    <td><code>@summary @Claude --recent 5</code></td>
+    <td>只注入最近 5 轮</td>
+  </tr>
+  <tr>
+    <td><code>@summary @Claude --bullets</code></td>
+    <td>只注入要点列表（极简）</td>
+  </tr>
+  <tr>
+    <td><code>@pilot --silent</code></td>
+    <td>主驾发言时不告知"另两家静音"（保持主驾自然）</td>
+  </tr>
+  </table>
+
+  <p style="font-size:13px;color:#6b7c93">系统侧不智能压缩，只按用户指令执行。所有 ledger / 标签 / 五段式都不引入——上下文组成完全由用户元命令决定。</p>
+
+  <div class="proscons">
+    <div class="pro">
+      <h4>优势</h4>
+      <ul>
+        <li>极致透明 — 用户清楚每轮注入了什么</li>
+        <li>token 用量完全可控</li>
+        <li>无智能化失败（没有"压缩漏关键观点"风险）</li>
+        <li>可与方案 A 无冲突叠加（A 提供基础， E 提供精细控制）</li>
+      </ul>
+    </div>
+    <div class="con">
+      <h4>劣势</h4>
+      <ul>
+        <li>使用门槛高（用户需要记元命令）</li>
+        <li>新手不友好（默认体验等于基线，没有改进）</li>
+        <li>智能化收益放弃（系统不主动帮用户优化）</li>
+        <li>不解决"系统侧能不能持久化复盘"——记忆仍在 PTY 容器里</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout callout-info">
+  <b>定位</b>：E 不是单独走的方案，是<b>叠加在 A 之上的精细控制层</b>。先用 A 解决角色显性化，再开放 E 的元命令给重度用户用。
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2 id="matrix">8. 对比矩阵：5 个方案的上下文构成差异</h2>
+
+<table class="matrix-table">
+<tr>
+  <th>上下文维度</th>
+  <th>0 基线</th>
+  <th>A 角色显性化</th>
+  <th>B Ledger</th>
+  <th>C 结构化</th>
+  <th>D 标签</th>
+  <th>E 元命令</th>
+</tr>
+
+<tr>
+  <td>System 第 1 层</td>
+  <td>规则+场景+公约</td>
+  <td>同基线</td>
+  <td>+ledger 说明</td>
+  <td><b>改写为五段式</b></td>
+  <td>+标签建议</td>
+  <td>+元命令说明</td>
+</tr>
+
+<tr>
+  <td>fanout 历史注入</td>
+  <td>无</td>
+  <td>无</td>
+  <td>历史 ledger 全量</td>
+  <td>无</td>
+  <td>无</td>
+  <td>用户决定</td>
+</tr>
+
+<tr>
+  <td>debate 历史注入</td>
+  <td>最近一轮另两家全文</td>
+  <td>用户指定轮次范围</td>
+  <td>历史 ledger + 上轮全文</td>
+  <td>对方 Open Questions + 五段式</td>
+  <td>对方 [结论]+[疑问]</td>
+  <td>用户决定</td>
+</tr>
+
+<tr>
+  <td>summary 历史注入</td>
+  <td>最近一轮 + PTY 兜底</td>
+  <td>+ 自查指引</td>
+  <td>全部 ledger 显式</td>
+  <td>历史五段式列表</td>
+  <td>所有 [结论][数据][风险]</td>
+  <td>用户决定</td>
+</tr>
+
+<tr>
+  <td>角色显性化</td>
+  <td>无</td>
+  <td><b>显式标注</b></td>
+  <td>ledger 自带轮次模式标签</td>
+  <td>显式（同 A）</td>
+  <td>显式（同 A）</td>
+  <td>用户决定</td>
+</tr>
+
+<tr>
+  <td>跨轮引用</td>
+  <td>不支持</td>
+  <td><b>用户语法支持</b></td>
+  <td>ledger 自然支持</td>
+  <td>结构化支持</td>
+  <td>标签语法支持</td>
+  <td><b>用户元命令支持</b></td>
+</tr>
+
+<tr>
+  <td>长会议适应性</td>
+  <td>差</td>
+  <td>差</td>
+  <td><b>好</b></td>
+  <td>中</td>
+  <td><b>最好</b></td>
+  <td>用户决定</td>
+</tr>
+
+<tr>
+  <td>token 增量（短会议）</td>
+  <td>—</td>
+  <td>+5%</td>
+  <td>+15%</td>
+  <td>+30%</td>
+  <td>+8%</td>
+  <td>0%（默认）</td>
+</tr>
+
+<tr>
+  <td>token 增量（长会议）</td>
+  <td>—</td>
+  <td>+5%</td>
+  <td><b>-15%</b>（替代 PTY 全文）</td>
+  <td>+30%</td>
+  <td><b>-25%</b>（标签筛选）</td>
+  <td>用户控制</td>
+</tr>
+
+<tr>
+  <td>持久化新增</td>
+  <td>无</td>
+  <td>无</td>
+  <td>ledger 文件</td>
+  <td>无</td>
+  <td>标签字段</td>
+  <td>无</td>
+</tr>
+
+<tr>
+  <td>"本色发挥"理念</td>
+  <td>保留</td>
+  <td>保留</td>
+  <td>保留</td>
+  <td><b>破坏</b></td>
+  <td>保留（标签可选）</td>
+  <td>保留</td>
+</tr>
+
+<tr>
+  <td>三家 AI 兼容性</td>
+  <td>OK</td>
+  <td>OK</td>
+  <td>OK（系统侧）</td>
+  <td>差（结构适应度不一）</td>
+  <td>中（标签合规度不一）</td>
+  <td>OK</td>
+</tr>
+
+<tr>
+  <td>用户介入</td>
+  <td>无</td>
+  <td>可选（@debate#N）</td>
+  <td>无（系统主导）</td>
+  <td>无（系统主导）</td>
+  <td>无（AI 主导）</td>
+  <td><b>必需</b></td>
+</tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 id="decisions">9. 需要你决策的核心问题</h2>
+
+<div class="callout">
+<ol>
+  <li>
+    <b>圆桌"性格"问题</b>：你期待的圆桌更像哪一种？
+    <br/>(a) 自由讨论 — 三家随性发挥，自然语言对话（基线 / A / B / D / E 路线）
+    <br/>(b) 工业化协作 — AI 之间像同事一样按结构传球，便于程序解析（C 路线）
+    <br/><i>→ 答 (a) 直接砍掉 C；答 (b) 重点考虑 C</i>
+  </li>
+
+  <li>
+    <b>上下文容器问题</b>：长期记忆放哪里？
+    <br/>(a) 一直依赖 PTY 上下文（基线 / A / E 不引入新容器）
+    <br/>(b) 系统侧独立 ledger（B 路线）
+    <br/>(c) 不记忆，每次让用户手动指定（E 路线）
+    <br/><i>→ 这是方案分组的最关键分水岭</i>
+  </li>
+
+  <li>
+    <b>智能化 vs 用户控制问题</b>：上下文裁剪谁说了算？
+    <br/>(a) 系统智能压缩 / 标签筛选（B / D 路线）
+    <br/>(b) 用户元命令显式控制（E 路线）
+    <br/>(c) 都不要，每次塞全部（基线 + B 暴力版）
+    <br/><i>→ 决定 D 和 E 哪个更适合你</i>
+  </li>
+
+  <li>
+    <b>角色显性化范围</b>：observer 模式下副驾应不应该看到主驾历史观点？
+    <br/>(a) 不看 — 副驾独立思考更纯粹
+    <br/>(b) 看 — 副驾能呼应 / 反驳主驾立场
+    <br/><i>→ 决定 A / B 在 observer 模式下注入什么</i>
+  </li>
+
+  <li>
+    <b>实施节奏</b>：先做哪个？
+    <br/>(a) 先 A（最快见效，解决你直接观察到的问题）
+    <br/>(b) 直接上 B（一步到位，改造长会议体验）
+    <br/>(c) A + E 同步（基础 + 精细控制）
+    <br/>(d) 暂不动，再观察现状一段时间
+    <br/><i>→ 决定下一步行动</i>
+  </li>
+</ol>
+</div>
+
+<div class="callout callout-good">
+<b>我的初步判断</b>（仅供参考，请你拍板）：
+<ul>
+  <li>第 1 题答 <b>(a) 自由讨论</b> — 投研圆桌定位决定 — 砍 C</li>
+  <li>第 2 题最关键 — 答 (a) 走 A 路径；答 (b) 走 A→B 路径</li>
+  <li>第 3 题答 (a) 智能化时 D 优于 B（token 利用率），但 D 需要 B 作为基础设施 — 所以路径是 A→B→D 三步走</li>
+  <li>第 4 题答 (b) 看 — 增强体验 — 在 A 阶段就实现</li>
+  <li>第 5 题答 (a) 先 A — 当前所有"具体能感知到的问题"都在 A 范畴内</li>
+</ul>
+</div>
+
+<div class="section-divider"></div>
+
+<p class="meta" style="margin-top:30px">
+设计文档生成于 2026-05-02 · 聚焦逻辑层面 · 不含实现细节<br/>
+外部参考：clowder-ai (cat-cafe) LSM Compaction / Cross-cat Handoff / 自然语言+轻量标记 · AI Team Room phase 2C/3/4 经验
+</p>
+
+</div>
+</body>
+</html>

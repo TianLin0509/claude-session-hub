@@ -1,0 +1,1071 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude Session Hub UI/UX Before After Study</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #111827;
+      --panel-2: #151e2f;
+      --panel-3: #1c2638;
+      --line: #293244;
+      --line-soft: #20293a;
+      --text: #eef4ff;
+      --muted: #8d9bb3;
+      --faint: #5e6b82;
+      --blue: #58a6ff;
+      --green: #22c55e;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --purple: #9b8cff;
+      --cyan: #22d3ee;
+      --shadow: 0 22px 60px rgba(0, 0, 0, .36);
+      font-family: Inter, Segoe UI, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 10% 0%, rgba(88, 166, 255, .12), transparent 32rem),
+        linear-gradient(135deg, #090e1a 0%, #0f172a 58%, #101827 100%);
+      color: var(--text);
+    }
+
+    .page {
+      width: min(1500px, calc(100vw - 48px));
+      margin: 0 auto;
+      padding: 28px 0 42px;
+    }
+
+    .intro {
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 30px;
+      letter-spacing: 0;
+      line-height: 1.15;
+    }
+
+    .intro p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+      max-width: 76ch;
+      font-size: 14px;
+    }
+
+    .principles {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .principle {
+      border: 1px solid var(--line);
+      background: rgba(17, 24, 39, .78);
+      border-radius: 8px;
+      padding: 10px 12px;
+      min-height: 70px;
+    }
+
+    .principle strong {
+      display: block;
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+
+    .principle span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .comparison {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .study {
+      border: 1px solid var(--line);
+      background: rgba(10, 15, 27, .78);
+      box-shadow: var(--shadow);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .study-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(17, 24, 39, .82);
+    }
+
+    .study-title h2 {
+      margin: 0;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .window {
+      height: 760px;
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr);
+      background: #0d1117;
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: #0f141c;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .side-head {
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .side-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .icon-row { display: flex; gap: 5px; }
+    .icon-btn {
+      width: 24px;
+      height: 24px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 12px;
+      background: #151b25;
+    }
+
+    .search {
+      margin: 10px 12px 8px;
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0b1018;
+      color: var(--faint);
+      padding: 7px 9px;
+      font-size: 12px;
+    }
+
+    .usage {
+      margin: 0 12px 10px;
+      border: 1px solid var(--line-soft);
+      background: #121a26;
+      border-radius: 6px;
+      padding: 8px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .bar {
+      height: 5px;
+      background: #263247;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 6px;
+    }
+
+    .bar > span {
+      display: block;
+      height: 100%;
+      background: var(--blue);
+      border-radius: inherit;
+    }
+
+    .session-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 0 10px 12px;
+      overflow: hidden;
+    }
+
+    .session {
+      border: 1px solid var(--line);
+      background: #151b25;
+      border-radius: 7px;
+      padding: 9px;
+      min-height: 78px;
+      position: relative;
+    }
+
+    .session.selected { border-left: 3px solid var(--blue); }
+    .session.waiting { border-left: 3px solid var(--amber); }
+    .session.running { border-left: 3px solid var(--green); }
+
+    .session-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 5px;
+    }
+
+    .session-name {
+      font-size: 12px;
+      font-weight: 650;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+
+    .time {
+      font: 11px/1.2 Consolas, monospace;
+      color: var(--muted);
+      flex: 0 0 auto;
+    }
+
+    .preview {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+      max-height: 48px;
+      overflow: hidden;
+    }
+
+    .pill-line {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+      margin-top: 7px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 18px;
+      padding: 0 6px;
+      border-radius: 4px;
+      background: #202a3b;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 18px;
+    }
+
+    .pill.green { color: #9df0b7; background: rgba(34, 197, 94, .12); }
+    .pill.amber { color: #ffd082; background: rgba(245, 158, 11, .13); }
+    .pill.blue { color: #a8d2ff; background: rgba(88, 166, 255, .13); }
+    .pill.purple { color: #c7bdff; background: rgba(155, 140, 255, .14); }
+
+    .main {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      background: #0b0f16;
+    }
+
+    .topbar {
+      border-bottom: 1px solid var(--line);
+      background: #111827;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .crumb {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .crumb strong {
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .crumb span {
+      color: var(--muted);
+      font: 11px/1.3 Consolas, monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .actions { display: flex; gap: 6px; flex: 0 0 auto; }
+    .small-btn {
+      height: 27px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #151f2f;
+      color: var(--muted);
+      font-size: 11px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      white-space: nowrap;
+    }
+
+    .terminal {
+      padding: 14px;
+      background: #05080e;
+      font: 12px/1.55 "Fira Code", Consolas, monospace;
+      color: #d6e2f0;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .terminal pre {
+      margin: 0;
+      white-space: pre-wrap;
+      color: #cbd5e1;
+    }
+
+    .ghost-line { color: #64748b; }
+    .ok-line { color: #86efac; }
+    .warn-line { color: #fcd34d; }
+    .cmd-line { color: #93c5fd; }
+
+    .composer {
+      border-top: 1px solid var(--line);
+      background: #111827;
+      padding: 9px 12px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+    }
+
+    .input {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0b1018;
+      color: var(--muted);
+      padding: 9px 10px;
+      font-size: 12px;
+    }
+
+    .send {
+      width: 40px;
+      border-radius: 6px;
+      border: 0;
+      background: var(--blue);
+      color: white;
+      font-weight: 700;
+    }
+
+    .after .window {
+      grid-template-columns: 288px minmax(0, 1fr);
+    }
+
+    .after .sidebar {
+      background: #0c1220;
+    }
+
+    .after .side-head {
+      padding: 11px 12px 9px;
+    }
+
+    .after .side-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .after .side-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .live-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 12px rgba(34, 197, 94, .65);
+    }
+
+    .after .side-sub {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .after .search {
+      margin-top: 8px;
+      background: #0a101d;
+      border-color: #273247;
+    }
+
+    .filter-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 5px;
+      margin: 0 12px 9px;
+    }
+
+    .filter {
+      height: 24px;
+      border: 1px solid #263149;
+      border-radius: 5px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-size: 10px;
+      background: #121b2a;
+    }
+
+    .filter.active {
+      color: #dbeafe;
+      border-color: rgba(88, 166, 255, .58);
+      background: rgba(88, 166, 255, .16);
+    }
+
+    .after .usage {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 7px 10px;
+      align-items: center;
+      background: #0e1726;
+    }
+
+    .after .bar { margin-top: 0; }
+
+    .after .session {
+      min-height: 88px;
+      background: linear-gradient(180deg, #121b2a, #0f1724);
+    }
+
+    .after .session.selected {
+      background: linear-gradient(180deg, rgba(88, 166, 255, .18), #101927);
+      border-color: rgba(88, 166, 255, .36);
+    }
+
+    .status-strip {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 1px;
+      overflow: hidden;
+      border-bottom: 1px solid var(--line);
+      background: var(--line);
+    }
+
+    .status-cell {
+      min-width: 0;
+      padding: 8px 10px;
+      background: #0f1724;
+    }
+
+    .status-cell strong {
+      display: block;
+      font-size: 11px;
+      margin-bottom: 2px;
+    }
+
+    .status-cell span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .after .topbar {
+      padding: 0;
+      display: block;
+    }
+
+    .context-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 13px;
+      border-bottom: 1px solid var(--line-soft);
+      background: #121b2b;
+    }
+
+    .context-left {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      background: rgba(88, 166, 255, .18);
+      color: #bfdbfe;
+      font-weight: 800;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+
+    .after .crumb strong { font-size: 13px; }
+    .after .crumb span { max-width: 460px; }
+
+    .rail {
+      display: flex;
+      gap: 6px;
+      padding: 7px 13px;
+      background: #0f1724;
+      overflow: hidden;
+    }
+
+    .rail .small-btn {
+      background: #131e2f;
+    }
+
+    .layout-main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 280px;
+      min-height: 0;
+    }
+
+    .after .terminal {
+      padding: 12px 14px;
+      background: #030712;
+    }
+
+    .inspector {
+      border-left: 1px solid var(--line);
+      background: #0d1422;
+      padding: 11px;
+      overflow: hidden;
+    }
+
+    .inspector h3 {
+      margin: 0 0 9px;
+      font-size: 12px;
+    }
+
+    .info-card {
+      border: 1px solid var(--line-soft);
+      background: #111b2a;
+      border-radius: 7px;
+      padding: 9px;
+      margin-bottom: 8px;
+    }
+
+    .info-card strong {
+      display: block;
+      font-size: 11px;
+      margin-bottom: 5px;
+    }
+
+    .info-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .after .composer {
+      grid-template-columns: 150px 1fr auto;
+      background: #0f1724;
+    }
+
+    .target {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #121b2b;
+      color: #bfdbfe;
+      display: flex;
+      align-items: center;
+      padding: 0 9px;
+      font-size: 12px;
+    }
+
+    .meeting-main {
+      display: grid;
+      grid-template-columns: 210px minmax(0, 1fr) 280px;
+      min-height: 0;
+    }
+
+    .agent-rail {
+      border-right: 1px solid var(--line);
+      background: #0c1220;
+      padding: 10px;
+    }
+
+    .agent {
+      border: 1px solid var(--line-soft);
+      background: #111b2a;
+      border-radius: 7px;
+      padding: 8px;
+      margin-bottom: 7px;
+    }
+
+    .agent strong {
+      display: block;
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+
+    .agent span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .timeline {
+      padding: 12px;
+      overflow: hidden;
+      background: #030712;
+    }
+
+    .turn {
+      border: 1px solid var(--line-soft);
+      border-left: 3px solid var(--blue);
+      border-radius: 7px;
+      background: #0f1724;
+      padding: 9px 10px;
+      margin-bottom: 8px;
+    }
+
+    .turn.claude { border-left-color: var(--amber); }
+    .turn.codex { border-left-color: var(--green); }
+    .turn.gemini { border-left-color: var(--purple); }
+
+    .turn-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .turn p {
+      margin: 0;
+      color: #d8e3f3;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .before .meeting-main {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .before .meeting-main .timeline {
+      padding: 12px;
+    }
+
+    .notes {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .note {
+      border: 1px solid var(--line);
+      background: rgba(17, 24, 39, .78);
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    .note h3 {
+      margin: 0 0 7px;
+      font-size: 13px;
+    }
+
+    .note p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .section-label {
+      margin: 18px 0 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .section-label h2 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    @media (max-width: 1100px) {
+      .page { width: calc(100vw - 24px); }
+      .intro, .comparison, .notes { grid-template-columns: 1fr; }
+      .principles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .window { height: 720px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="intro">
+      <div>
+        <h1>Claude Session Hub UI/UX Study</h1>
+        <p>
+          This is a visual proposal only. It keeps the current product idea:
+          a dense Electron workspace for terminal sessions, preview panels, and
+          multi-agent meeting rooms. The expected improvement is stronger
+          information hierarchy, clearer session triage, and fewer controls
+          competing with the terminal.
+        </p>
+      </div>
+      <div class="principles">
+        <div class="principle"><strong>Dense, not noisy</strong><span>Keep the power-user layout but group status and actions by workflow.</span></div>
+        <div class="principle"><strong>Terminal first</strong><span>Preserve xterm space and move context to stable header and inspector zones.</span></div>
+        <div class="principle"><strong>State is visible</strong><span>Waiting, running, unread, and mode should be scannable without opening a session.</span></div>
+        <div class="principle"><strong>No layout jumping</strong><span>Reserve space for toolbars, composer, preview, and async status updates.</span></div>
+      </div>
+    </section>
+
+    <section class="section-label">
+      <h2>Ordinary Session</h2>
+      <span class="tag">Sidebar + terminal + context inspector</span>
+    </section>
+
+    <section class="comparison">
+      <article class="study before">
+        <div class="study-title">
+          <h2>Before: current mental model</h2>
+          <span class="tag">actions scattered</span>
+        </div>
+        <div class="window">
+          <aside class="sidebar">
+            <div class="side-head">
+              <div class="side-title">Sessions</div>
+              <div class="icon-row">
+                <div class="icon-btn">+</div>
+                <div class="icon-btn">R</div>
+                <div class="icon-btn">&lt;</div>
+                <div class="icon-btn">T</div>
+              </div>
+            </div>
+            <div class="search">Search sessions...</div>
+            <div class="usage">Claude usage<div class="bar"><span style="width:64%"></span></div></div>
+            <div class="session-list">
+              <div class="session selected running">
+                <div class="session-top"><div class="session-name">claude-session-hub</div><div class="time">21:45</div></div>
+                <div class="preview">Investigating terminal resize churn and renderer behavior...</div>
+              </div>
+              <div class="session waiting">
+                <div class="session-top"><div class="session-name">meeting-room review</div><div class="time">21:39</div></div>
+                <div class="preview">Waiting for user confirmation. Preview and memo panels can overlap attention.</div>
+              </div>
+              <div class="session">
+                <div class="session-top"><div class="session-name">Codex CLI</div><div class="time">20:58</div></div>
+                <div class="preview">No explicit mode or next action is visible from the list.</div>
+              </div>
+              <div class="session">
+                <div class="session-top"><div class="session-name">PowerShell</div><div class="time">18:10</div></div>
+                <div class="preview">Path and process details are buried in terminal output.</div>
+              </div>
+            </div>
+          </aside>
+          <section class="main">
+            <header class="topbar">
+              <div class="crumb">
+                <strong>Claude Code</strong>
+                <span>C:\Users\lintian\claude-session-hub</span>
+              </div>
+              <div class="actions">
+                <div class="small-btn">Preview</div>
+                <div class="small-btn">Zoom</div>
+                <div class="small-btn">Find</div>
+              </div>
+            </header>
+            <div class="terminal">
+<pre><span class="cmd-line">&gt; npm test</span>
+renderer/renderer.js
+main.js
+
+The session output is readable, but related controls live in multiple areas.
+Preview, search, memo, and floating input can all compete for attention.
+
+<span class="warn-line">warning</span> Waiting state is easier to miss in a long session list.
+<span class="ghost-line">hint</span> cwd, model, token window, and next action are not grouped.</pre>
+            </div>
+            <div class="composer">
+              <div class="input">Type message...</div>
+              <button class="send">&gt;</button>
+            </div>
+          </section>
+        </div>
+      </article>
+
+      <article class="study after">
+        <div class="study-title">
+          <h2>After: proposed direction</h2>
+          <span class="tag">workflow grouped</span>
+        </div>
+        <div class="window">
+          <aside class="sidebar">
+            <div class="side-head">
+              <div class="side-stack">
+                <div class="side-title"><span class="live-dot"></span>Sessions</div>
+                <div class="side-sub">4 open / 1 waiting / 2 running</div>
+              </div>
+              <div class="icon-row">
+                <div class="icon-btn">+</div>
+                <div class="icon-btn">F</div>
+              </div>
+            </div>
+            <div class="search">Filter by project, model, status...</div>
+            <div class="filter-row">
+              <div class="filter active">All</div>
+              <div class="filter">Wait</div>
+              <div class="filter">Run</div>
+              <div class="filter">Dorm</div>
+            </div>
+            <div class="usage">
+              <span>5h budget</span><strong>64%</strong>
+              <div class="bar"><span style="width:64%"></span></div><span>7d ok</span>
+            </div>
+            <div class="session-list">
+              <div class="session selected running">
+                <div class="session-top"><div class="session-name">claude-session-hub</div><div class="time">21:45</div></div>
+                <div class="preview">Root cause: resize dedupe. Next: verify terminal framing.</div>
+                <div class="pill-line"><span class="pill green">running</span><span class="pill blue">hub</span><span class="pill">main.js</span></div>
+              </div>
+              <div class="session waiting">
+                <div class="session-top"><div class="session-name">meeting-room review</div><div class="time">21:39</div></div>
+                <div class="preview">Needs user decision on timeline vs tabbed blackboard.</div>
+                <div class="pill-line"><span class="pill amber">waiting</span><span class="pill purple">review</span></div>
+              </div>
+              <div class="session">
+                <div class="session-top"><div class="session-name">Codex CLI</div><div class="time">20:58</div></div>
+                <div class="preview">Idle. Last action: code review result.</div>
+                <div class="pill-line"><span class="pill">idle</span><span class="pill">codex</span></div>
+              </div>
+            </div>
+          </aside>
+          <section class="main">
+            <header class="topbar">
+              <div class="context-row">
+                <div class="context-left">
+                  <div class="avatar">CC</div>
+                  <div class="crumb">
+                    <strong>Claude Code / claude-session-hub</strong>
+                    <span>C:\Users\lintian\claude-session-hub / renderer focus</span>
+                  </div>
+                </div>
+                <div class="actions">
+                  <div class="small-btn">Resume</div>
+                  <div class="small-btn">Preview</div>
+                  <div class="small-btn">Find</div>
+                </div>
+              </div>
+              <div class="status-strip">
+                <div class="status-cell"><strong>State</strong><span>running / no unread</span></div>
+                <div class="status-cell"><strong>Model</strong><span>Claude Code / Opus 4.7</span></div>
+                <div class="status-cell"><strong>Next action</strong><span>verify UI behavior</span></div>
+              </div>
+            </header>
+            <div class="layout-main">
+              <div class="terminal">
+<pre><span class="cmd-line">&gt; npm test</span>
+renderer/renderer.js
+main.js
+
+The terminal gets the center. Session metadata is stable above it.
+Ancillary context moves to the inspector so the scrollback is not crowded.
+
+<span class="ok-line">pass</span> Status, cwd, model, and next action are grouped.
+<span class="ghost-line">note</span> Preview and memo become explicit inspector tabs, not surprise overlays.</pre>
+              </div>
+              <aside class="inspector">
+                <h3>Inspector</h3>
+                <div class="info-card"><strong>Current thread</strong><p>Resize behavior, xterm fit, preview split, sidebar collapse.</p></div>
+                <div class="info-card"><strong>Artifacts</strong><p>main.js, renderer.js, meeting-room.css, latest test notes.</p></div>
+                <div class="info-card"><strong>Risk flags</strong><p>Terminal redraw, input overlap, preview width, stale session labels.</p></div>
+              </aside>
+            </div>
+            <div class="composer">
+              <div class="target">Send to active</div>
+              <div class="input">Ask, paste, or run command...</div>
+              <button class="send">&gt;</button>
+            </div>
+          </section>
+        </div>
+      </article>
+    </section>
+
+    <section class="section-label">
+      <h2>Meeting Room</h2>
+      <span class="tag">Agent rail + timeline + decision inspector</span>
+    </section>
+
+    <section class="comparison">
+      <article class="study before">
+        <div class="study-title">
+          <h2>Before: timeline competes with controls</h2>
+          <span class="tag">mode ambiguity</span>
+        </div>
+        <div class="window">
+          <aside class="sidebar">
+            <div class="side-head"><div class="side-title">Sessions</div><div class="icon-row"><div class="icon-btn">+</div><div class="icon-btn">&lt;</div></div></div>
+            <div class="search">Search sessions...</div>
+            <div class="session-list">
+              <div class="session selected"><div class="session-top"><div class="session-name">Research Roundtable</div><div class="time">now</div></div><div class="preview">Claude, Gemini, Codex, summary, debate, private turns...</div></div>
+              <div class="session"><div class="session-top"><div class="session-name">Normal Claude Session</div><div class="time">21:45</div></div><div class="preview">Terminal output...</div></div>
+            </div>
+          </aside>
+          <section class="main">
+            <header class="topbar">
+              <div class="crumb"><strong>Meeting Room</strong><span>tabs, toolbar, blackboard, timeline, input target</span></div>
+              <div class="actions"><div class="small-btn">Sync</div><div class="small-btn">Summary</div><div class="small-btn">All</div></div>
+            </header>
+            <div class="meeting-main">
+              <div class="timeline">
+                <div class="turn claude"><div class="turn-head"><span>Claude</span><span>turn 8</span></div><p>Primary answer and implementation stance. The status of other agents is not in the same scan path.</p></div>
+                <div class="turn codex"><div class="turn-head"><span>Codex</span><span>turn 8</span></div><p>Review comment. It is hard to see if this is final, partial, private, or a debate response.</p></div>
+                <div class="turn gemini"><div class="turn-head"><span>Gemini</span><span>turn 8</span></div><p>Alternative position with separate toolbar actions above and input target below.</p></div>
+              </div>
+            </div>
+            <div class="composer">
+              <div class="input">Target dropdown + message...</div>
+              <button class="send">&gt;</button>
+            </div>
+          </section>
+        </div>
+      </article>
+
+      <article class="study after">
+        <div class="study-title">
+          <h2>After: meeting room as operations board</h2>
+          <span class="tag">scan path fixed</span>
+        </div>
+        <div class="window">
+          <aside class="sidebar">
+            <div class="side-head">
+              <div class="side-stack">
+                <div class="side-title"><span class="live-dot"></span>Rooms</div>
+                <div class="side-sub">1 active roundtable</div>
+              </div>
+              <div class="icon-row"><div class="icon-btn">+</div><div class="icon-btn">F</div></div>
+            </div>
+            <div class="search">Search rooms and sessions...</div>
+            <div class="filter-row"><div class="filter active">All</div><div class="filter">Live</div><div class="filter">Wait</div><div class="filter">Done</div></div>
+            <div class="session-list">
+              <div class="session selected running">
+                <div class="session-top"><div class="session-name">Research Roundtable</div><div class="time">now</div></div>
+                <div class="preview">Round 8: disagreement check, summary pending.</div>
+                <div class="pill-line"><span class="pill green">live</span><span class="pill purple">debate</span><span class="pill amber">1 pending</span></div>
+              </div>
+              <div class="session">
+                <div class="session-top"><div class="session-name">Normal Claude Session</div><div class="time">21:45</div></div>
+                <div class="preview">No unread. Last verified: resize gate.</div>
+                <div class="pill-line"><span class="pill">idle</span><span class="pill blue">terminal</span></div>
+              </div>
+            </div>
+          </aside>
+          <section class="main">
+            <header class="topbar">
+              <div class="context-row">
+                <div class="context-left">
+                  <div class="avatar">RT</div>
+                  <div class="crumb"><strong>Research Roundtable / Round 8</strong><span>Mode: debate / visibility: shared / summary target: final opinion</span></div>
+                </div>
+                <div class="actions"><div class="small-btn">Sync</div><div class="small-btn">Summarize</div><div class="small-btn">Export</div></div>
+              </div>
+              <div class="rail">
+                <div class="small-btn">Latest</div>
+                <div class="small-btn">Claude</div>
+                <div class="small-btn">Codex</div>
+                <div class="small-btn">Gemini</div>
+                <div class="small-btn">Private</div>
+                <div class="small-btn">Decisions</div>
+              </div>
+            </header>
+            <div class="meeting-main">
+              <aside class="agent-rail">
+                <div class="agent"><strong>Claude</strong><span>primary / streaming</span><div class="bar"><span style="width:78%;background:var(--amber)"></span></div></div>
+                <div class="agent"><strong>Codex</strong><span>review / done</span><div class="bar"><span style="width:100%;background:var(--green)"></span></div></div>
+                <div class="agent"><strong>Gemini</strong><span>counterpoint / pending</span><div class="bar"><span style="width:42%;background:var(--purple)"></span></div></div>
+              </aside>
+              <div class="timeline">
+                <div class="turn claude"><div class="turn-head"><span>Claude / primary</span><span>streaming</span></div><p>Current answer appears in the center timeline. Status is mirrored in the agent rail.</p></div>
+                <div class="turn codex"><div class="turn-head"><span>Codex / review</span><span>done</span></div><p>Each card carries role, state, and turn type, reducing ambiguity in debate rounds.</p></div>
+                <div class="turn gemini"><div class="turn-head"><span>Gemini / counterpoint</span><span>pending</span></div><p>Pending work is visible before the user sends another instruction.</p></div>
+              </div>
+              <aside class="inspector">
+                <h3>Decision Inspector</h3>
+                <div class="info-card"><strong>Consensus</strong><p>Keep ordinary session flow unchanged.</p></div>
+                <div class="info-card"><strong>Disagreement</strong><p>How much timeline detail to show by default.</p></div>
+                <div class="info-card"><strong>Next action</strong><p>Ask user to approve UI direction before patching.</p></div>
+              </aside>
+            </div>
+            <div class="composer">
+              <div class="target">Send: all agents</div>
+              <div class="input">Type round instruction, mention agent, or choose command...</div>
+              <button class="send">&gt;</button>
+            </div>
+          </section>
+        </div>
+      </article>
+    </section>
+
+    <section class="notes">
+      <div class="note">
+        <h3>1. Sidebar triage</h3>
+        <p>Promote waiting/running/unread into filters and cards. This reduces the cost of finding the next session that needs action.</p>
+      </div>
+      <div class="note">
+        <h3>2. Stable context header</h3>
+        <p>Group cwd, model, state, and next action above the terminal. Avoid hiding critical metadata in transient terminal text.</p>
+      </div>
+      <div class="note">
+        <h3>3. Inspector instead of overlays</h3>
+        <p>Use a predictable right-side inspector for preview, memo, risks, files, and decisions so the terminal does not get visually crowded.</p>
+      </div>
+      <div class="note">
+        <h3>4. Meeting operations board</h3>
+        <p>Separate agents, timeline, and decisions. The user should see who is streaming, who is done, and what decision remains.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

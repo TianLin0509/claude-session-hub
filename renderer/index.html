@@ -127,7 +127,7 @@
             <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
             <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
             <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
-            <span class="launcher-version">v1.0.4</span>
+            <span class="launcher-version">v1.0.5</span>
           </div>
         </div>
       </div>
@@ -261,7 +261,7 @@
               <span class="config-ai-mark gemini">GE</span>
               <span class="config-ai-copy">
                 <strong>Gemini</strong>
-                <small id="cfg-summary-gemini">订阅模式 · gemini-2.5-flash</small>
+                <small id="cfg-summary-gemini">订阅模式 · gemini-3-pro-preview</small>
               </span>
               <span class="config-ai-status subscription">订阅</span>
             </button>
@@ -350,6 +350,22 @@
                 <option value="subscription">订阅 / ChatGPT 登录</option>
                 <option value="api">第三方 API / Packy</option>
               </select>
+            </div>
+            <div class="config-field">
+              <label>订阅账号 <span class="config-label-hint">（新建 Codex/圆桌默认使用）</span></label>
+              <select id="cfg-codex-subscription-profile"></select>
+            </div>
+            <div class="config-field">
+              <label>主账号名称</label>
+              <input type="text" id="cfg-codex-profile-default-label" placeholder="主账号" spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>新账号名称</label>
+              <input type="text" id="cfg-codex-profile-second-label" placeholder="新账号" spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>新账号 CODEX_HOME</label>
+              <input type="text" id="cfg-codex-profile-second-home" placeholder="C:\Users\lintian\.codex-profiles\second" spellcheck="false">
             </div>
             <div class="config-note">API 模式仍以 gpt-5.5、YOLO、信任当前目录启动，目标是和订阅模式体感一致。</div>
             <div class="config-field">

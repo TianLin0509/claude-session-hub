@@ -48,6 +48,11 @@ const {
 const { isClaudeFamily, SLOT_IDS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
 const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
+const {
+  DEFAULT_CODEX_SESSIONS_ROOT,
+  parseCodexRolloutToTurns,
+  findCodexRolloutBySid,
+} = require('./core/codex-transcript-parser.js');
 
 // === EPIPE 防护（隔离 Hub 启动必需）===
 // PowerShell `& exe ...` + run_in_background 启动模式下，parent 退出后
@@ -2364,11 +2369,29 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
   const { hubSessionId, ccSessionId, transcriptPath: inPath, opts } = args || {};
   let transcriptPath = inPath || null;
   try {
+    const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
+    const kind = session ? session.kind : null;
+    if (kind === 'codex' || kind === 'codex-resume') {
+      if (!transcriptPath && hubSessionId) {
+        transcriptPath = transcriptTap.getCodexRolloutPath(hubSessionId);
+      }
+      if (!transcriptPath && session && session.codexSid) {
+        transcriptPath = findCodexRolloutBySid(
+          session.codexSid,
+          session.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT,
+        );
+      }
+      if (!transcriptPath) {
+        return { turns: [], transcriptPath: null, error: 'codex rollout not found' };
+      }
+      const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
+      const turns = parseCodexRolloutToTurns(transcriptPath, parseOpts);
+      return { turns: Array.isArray(turns) ? turns : [], transcriptPath, error: null };
+    }
     if (!transcriptPath && ccSessionId) {
       transcriptPath = findTranscriptByCCSessionId(ccSessionId);
     }
     if (!transcriptPath && hubSessionId) {
-      const session = sessionManager.getSession(hubSessionId);
       if (session && session.ccSessionId) {
         transcriptPath = findTranscriptByCCSessionId(session.ccSessionId);
       }
@@ -2695,7 +2718,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   // 2026-05-05 fix: 字段名是 'currentModel'（renderer.js:5287 持久化用的字段），
   //   旧版误写成 'model' → 兜底机制对 model 永不触发，任何一次 race 把 currentModel
   //   写成 null 都会永久污染 state.json，dormant 唤醒丢失原 model（落到默认 opus 等）。
-  const RESUME_META_FIELDS = ['codexSid', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel'];
+  const RESUME_META_FIELDS = ['codexSid', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel'];
   const oldByHubId = new Map(lastPersistedSessions.map(s => [s.hubId, s]));
   for (const newSession of list) {
     if (!newSession || !newSession.hubId) continue;
@@ -2860,6 +2883,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
     useContinue: isClaudeCliResumable && !meta.ccSessionId,
     useResume: isGeminiOrCodex,
     codexSid: meta.kind === 'codex' ? (meta.codexSid || null) : null,
+    codexProfile: meta.kind === 'codex' ? (meta.codexProfile || null) : null,
     geminiChatId: meta.kind === 'gemini' ? (meta.geminiChatId || null) : null,
     geminiProjectRoot: meta.kind === 'gemini' ? (meta.geminiProjectRoot || null) : null,
     lastMessageTime: meta.lastMessageTime,
@@ -3576,6 +3600,8 @@ ipcMain.handle('get-hub-config', () => {
     qwenBaseUrl: config.qwenBaseUrl,
     qwenModel: config.qwenModel,
     codexBackend: config.codexBackend,
+    codexSubscriptionProfile: config.codexSubscriptionProfile,
+    codexSubscriptionProfiles: config.codexSubscriptionProfiles || [],
     codexApiKey: config.codexApiKey ? '***' + config.codexApiKey.slice(-4) : '',
     codexApiKeySet: !!config.codexApiKey,
     codexApiBaseUrl: config.codexApiBaseUrl,
@@ -3602,6 +3628,8 @@ ipcMain.handle('get-hub-config-raw', () => {
     qwenBaseUrl: config.qwenBaseUrl,
     qwenModel: config.qwenModel,
     codexBackend: config.codexBackend,
+    codexSubscriptionProfile: config.codexSubscriptionProfile,
+    codexSubscriptionProfiles: config.codexSubscriptionProfiles || [],
     codexApiKey: config.codexApiKey || '',
     codexApiBaseUrl: config.codexApiBaseUrl,
     codexApiModel: config.codexApiModel,
@@ -3657,6 +3685,8 @@ ipcMain.handle('save-hub-config', (_e, newConfig) => {
       codex: {
         ...(existing.providers?.codex || {}),
         backend: newConfig.codexBackend === 'api' ? 'api' : DEFAULTS.codex_backend,
+        subscription_profile: newConfig.codexSubscriptionProfile || DEFAULTS.codex_subscription_profile,
+        subscription_profiles: Array.isArray(newConfig.codexSubscriptionProfiles) ? newConfig.codexSubscriptionProfiles : undefined,
         api_key: newConfig.codexApiKey || undefined,
         base_url: newConfig.codexApiBaseUrl || DEFAULTS.codex_api_base_url,
         model: newConfig.codexApiModel || DEFAULTS.codex_api_model,
@@ -3778,7 +3808,6 @@ function parseCodexUsage(plain) {
 // --- Codex JSONL-based usage scanner ---
 // Codex CLI writes authoritative rate_limits to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
 // Each file contains token_count events with primary (5h) and secondary (7d) windows.
-const DEFAULT_CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
 let _codexJsonlLastScan = 0;
 let _codexJsonlCached = null;
 const _codexJsonlCachedByRoot = new Map();

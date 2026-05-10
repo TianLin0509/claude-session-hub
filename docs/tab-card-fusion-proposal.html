@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Tab + Card 融合方案 · 2026-04-30</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 32px;
+  background: #0a0d12; color: #c9d1d9;
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px; line-height: 1.6;
+}
+h1 { font-size: 22px; margin: 0 0 4px; color: #e8e8f0; }
+.lede { color: #8b949e; margin: 0 0 28px; font-size: 13px; }
+
+/* Section */
+.section { margin: 40px 0 56px; border: 1px solid #1f2735; border-radius: 12px; overflow: hidden; background: #0d1117; }
+.section-head { padding: 16px 20px; background: linear-gradient(90deg,#141a25,#0d1117); border-bottom: 1px solid #1f2735; }
+.section-num { display: inline-block; background: #6366f1; color: #fff; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; margin-right: 8px; }
+.section-title { font-size: 17px; font-weight: 600; color: #e8e8f0; }
+.section-priority { float: right; font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-top: 2px; }
+.section-priority.core { background: rgba(248,113,113,0.15); color: #fca5a5; }
+.section-body { padding: 20px; }
+.section-desc { margin: 0 0 18px; color: #a0a8b9; font-size: 13px; }
+.section-rationale { margin: 16px 0 0; padding: 12px 14px; background: rgba(99,102,241,0.06); border-left: 3px solid #6366f1; border-radius: 4px; color: #c8d3e6; font-size: 12.5px; }
+.section-rationale b { color: #a5b4fc; }
+
+/* Compare grid */
+.compare { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; }
+.pane { border: 1px solid #2a3245; border-radius: 8px; background: #0a0d12; overflow: hidden; }
+.pane-head { padding: 8px 12px; font-size: 11px; font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase; border-bottom: 1px solid #1f2735; }
+.pane.before .pane-head { background: rgba(248,113,113,0.08); color: #fca5a5; }
+.pane.after .pane-head  { background: rgba(74,222,128,0.08); color: #86efac; }
+.pane-body { padding: 14px; }
+
+.anno { position: relative; margin: 6px 0 0; padding: 6px 10px; background: rgba(248,113,113,0.06); border-left: 3px solid #f87171; border-radius: 0 4px 4px 0; font-size: 11px; color: #fca5a5; }
+.anno-good { background: rgba(74,222,128,0.06); border-left-color: #4ad28b; color: #86efac; }
+
+/* Color tokens */
+:root {
+  --c-claude: #f0843a; --c-claude-rgb: 240,132,58;
+  --c-gemini: #5b8def; --c-gemini-rgb: 91,141,239;
+  --c-codex:  #4ad28b; --c-codex-rgb:  74,210,139;
+}
+
+/* ===== Mock Hub frame ===== */
+.hub { background: #0d1117; border-radius: 6px; border: 1px solid #1f2735; overflow: hidden; font-size: 12px; }
+
+/* ===== BEFORE: Old tab bar ===== */
+.old-tabs { display: flex; gap: 2px; padding: 0 8px; background: #161b22; border-bottom: 1px solid #21262d; }
+.old-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 12px; font-size: 11px; color: #8b949e;
+  border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap;
+  max-width: 350px; overflow: hidden; text-overflow: ellipsis;
+}
+.old-tab.active { color: #c9d1d9; border-bottom-color: #58a6ff; background: rgba(88,166,255,0.06); }
+.old-tab .dot { width: 6px; height: 6px; border-radius: 50%; background: #3fb950; flex-shrink: 0; }
+.old-tab .model-badge { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: #6366f1; color: #fff; font-weight: 600; }
+.old-tab .ctx-badge { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: rgba(74,222,128,0.2); color: #4ade80; }
+.old-tab .marker { font-size: 9px; color: #6c7385; }
+
+/* ===== AFTER: Fused card-tab ===== */
+.fused-tabs { display: grid; grid-template-columns: repeat(3,1fr); gap: 0; }
+.fused-tab {
+  padding: 10px 12px; cursor: pointer;
+  border-bottom: 3px solid transparent;
+  transition: background .15s, border-color .15s;
+  position: relative;
+}
+.fused-tab:hover { background: rgba(255,255,255,0.02); }
+.fused-tab.claude { border-bottom-color: rgba(var(--c-claude-rgb),0.15); }
+.fused-tab.gemini { border-bottom-color: rgba(var(--c-gemini-rgb),0.15); }
+.fused-tab.codex  { border-bottom-color: rgba(var(--c-codex-rgb),0.15); }
+.fused-tab.claude.active { border-bottom-color: var(--c-claude); background: rgba(var(--c-claude-rgb),0.06); }
+.fused-tab.gemini.active { border-bottom-color: var(--c-gemini); background: rgba(var(--c-gemini-rgb),0.06); }
+.fused-tab.codex.active  { border-bottom-color: var(--c-codex);  background: rgba(var(--c-codex-rgb),0.06); }
+
+.ft-row1 { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.ft-name { font-weight: 700; font-size: 12px; }
+.ft-name.claude { color: var(--c-claude); }
+.ft-name.gemini { color: var(--c-gemini); }
+.ft-name.codex  { color: var(--c-codex); }
+
+.ft-status { font-size: 9px; padding: 2px 6px; border-radius: 8px; font-weight: 600; }
+.ft-status.completed { background: rgba(74,222,128,0.2); color: #86efac; }
+.ft-status.thinking  { background: rgba(250,204,21,0.2); color: #fde68a; animation: pulse 1.5s ease-in-out infinite; }
+.ft-status.idle      { background: rgba(139,148,158,0.2); color: #a0a8b9; }
+@keyframes pulse { 50% { opacity: 0.5; } }
+
+.ft-row2 { display: flex; align-items: center; gap: 6px; }
+.ft-model { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600; color: #fff; }
+.ft-model.claude { background: rgba(var(--c-claude-rgb),0.7); }
+.ft-model.gemini { background: rgba(var(--c-gemini-rgb),0.7); }
+.ft-model.codex  { background: rgba(var(--c-codex-rgb),0.7); }
+
+.ft-ctx { font-size: 9px; padding: 1px 5px; border-radius: 3px; font-variant-numeric: tabular-nums; }
+.ft-ctx.ok   { background: rgba(74,222,128,0.15); color: #4ade80; }
+.ft-ctx.warn { background: rgba(250,204,21,0.15); color: #fde68a; }
+.ft-ctx.high { background: rgba(248,113,113,0.15); color: #fca5a5; }
+
+.ft-marker { font-size: 9px; color: #6c7385; margin-left: auto; }
+.ft-marker.done { color: #4ade80; }
+
+/* Progress bar inside thinking tab */
+.ft-progress { margin-top: 5px; height: 3px; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,0.04); }
+.ft-progress-bar {
+  height: 100%; border-radius: 2px;
+  background: linear-gradient(90deg, #fde68a 0%, rgba(250,204,21,0.2) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: flowbar 1.6s linear infinite;
+}
+@keyframes flowbar { 0% { background-position: 200% 0; } 100% { background-position: -100% 0; } }
+
+/* Preview snippet */
+.ft-preview { font-size: 10px; color: #8b949e; margin-top: 5px; line-height: 1.4; max-height: 28px; overflow: hidden; }
+
+/* Mock terminal area */
+.mock-terminal { background: #0a0d12; padding: 12px 16px; min-height: 120px; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; color: #a0a8b9; line-height: 1.5; border-top: 1px solid #1f2735; }
+.mock-terminal .prompt { color: #fde68a; }
+.mock-terminal .cmd { color: #58a6ff; }
+.mock-terminal .output { color: #c9d1d9; }
+
+/* ===== Full layout mock ===== */
+.full-mock { margin-top: 20px; }
+.fm-track { padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.fm-track-row { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+.fm-title { font-weight: 700; font-size: 13px; background: linear-gradient(135deg, var(--c-claude), var(--c-gemini), var(--c-codex)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.fm-stepper { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #8b949e; }
+.fm-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c-codex); }
+.fm-dot.active { background: #fde68a; box-shadow: 0 0 6px #fde68a; animation: pulse 1.5s ease-in-out infinite; }
+.fm-line { width: 12px; height: 1px; background: #2a3245; }
+.fm-cmd-bar { display: flex; gap: 6px; }
+.fm-cmd { padding: 4px 10px; font-size: 11px; background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.25); color: #a5b4fc; border-radius: 12px; }
+.fm-cmd.suggested { background: rgba(250,204,21,0.12); border-color: rgba(250,204,21,0.35); color: #fde68a; }
+
+/* Footer */
+.footer-note { margin-top: 48px; padding: 16px 20px; background: linear-gradient(90deg, rgba(99,102,241,0.04), transparent); border-left: 3px solid #6366f1; border-radius: 0 6px 6px 0; font-size: 12.5px; color: #c8d3e6; }
+.footer-note h3 { margin: 0 0 8px; font-size: 14px; color: #a5b4fc; }
+</style>
+</head>
+<body>
+
+<h1>Tab + Card 融合方案</h1>
+<p class="lede">
+  核心思路：把<b>顶部三卡片</b>和<b>终端 tab 栏</b>合二为一。每张卡片 = 一个 AI 的身份、状态、模型信息 + 终端切换 tab。<br>
+  不再用冗长的 session 标题（终端 title bar 已经有了），改为 AI 名称 + 模型 + Ctx + 状态。
+</p>
+
+<!-- ============================================================ -->
+<!-- 对比：旧 Tab 栏 vs 新融合卡片 -->
+<!-- ============================================================ -->
+<div class="section">
+  <div class="section-head">
+    <span class="section-num">1</span>
+    <span class="section-title">Tab 栏重设计：从 "session 标题" 到 "AI 身份卡片"</span>
+    <span class="section-priority core">核心改动</span>
+  </div>
+  <div class="section-body">
+    <p class="section-desc">
+      <b>当前问题：</b>Tab 显示完整 session 标题（如 "Chinese roundtable discussion session one"），很长且和终端 title bar 重复。
+      模型徽章和 Ctx% 挤在一行里，信息密度低、视觉辨识差。
+    </p>
+
+    <div class="compare">
+      <div class="pane before">
+        <div class="pane-head">BEFORE — Session 标题 Tab</div>
+        <div class="pane-body">
+          <div class="hub">
+            <div class="old-tabs">
+              <div class="old-tab active">
+                <span class="dot"></span>
+                Chinese roundtable discussion session one
+                <span class="model-badge">Opus 4.7</span>
+                <span class="ctx-badge">Ctx 4%</span>
+                <span class="marker">—</span>
+              </div>
+              <div class="old-tab">
+                <span class="dot" style="background:#5b8def"></span>
+                Gemini 1
+                <span class="model-badge" style="background:#5b8def">Gemini 3.1 Pro Preview</span>
+                <span class="marker">—</span>
+              </div>
+              <div class="old-tab">
+                <span class="dot" style="background:#4ad28b"></span>
+                Codex 1
+                <span class="model-badge" style="background:#4ad28b">gpt-5.5</span>
+                <span class="ctx-badge">Ctx 0%</span>
+                <span class="marker">—</span>
+              </div>
+            </div>
+            <div class="mock-terminal">
+              <span class="prompt">PS C:\Users\lintian&gt;</span>
+              <span class="cmd"> claude --model claude-opus-4-7[1m]</span><br>
+              <span class="output">Claude Code v2.1.123 ...</span>
+            </div>
+          </div>
+          <div class="anno">Session 标题冗长，和下方终端 title bar 重复</div>
+          <div class="anno">模型名太长（"Gemini 3.1 Pro Preview"），Ctx% 不显眼</div>
+          <div class="anno">三个 tab 视觉权重一样，看不出谁在思考、谁已完成</div>
+        </div>
+      </div>
+
+      <div class="pane after">
+        <div class="pane-head">AFTER — AI 身份卡片 Tab</div>
+        <div class="pane-body">
+          <div class="hub">
+            <div class="fused-tabs">
+              <!-- Claude: active + completed -->
+              <div class="fused-tab claude active">
+                <div class="ft-row1">
+                  <span class="ft-name claude">Claude</span>
+                  <span class="ft-status completed">已答 ✓</span>
+                  <span class="ft-marker done">✓</span>
+                </div>
+                <div class="ft-row2">
+                  <span class="ft-model claude">Opus 4.7</span>
+                  <span class="ft-ctx ok">Ctx 4%</span>
+                </div>
+                <div class="ft-preview">刚泡了杯咖啡——本色 Claude 在线，今天想聊点啥？</div>
+              </div>
+              <!-- Gemini: thinking -->
+              <div class="fused-tab gemini">
+                <div class="ft-row1">
+                  <span class="ft-name gemini">Gemini</span>
+                  <span class="ft-status thinking">思考中</span>
+                  <span class="ft-marker" style="color:#fde68a">23s</span>
+                </div>
+                <div class="ft-row2">
+                  <span class="ft-model gemini">2.5 Flash</span>
+                  <span class="ft-ctx ok">Ctx 12%</span>
+                </div>
+                <div class="ft-progress"><div class="ft-progress-bar" style="animation-delay:-0.3s"></div></div>
+              </div>
+              <!-- Codex: completed -->
+              <div class="fused-tab codex">
+                <div class="ft-row1">
+                  <span class="ft-name codex">Codex</span>
+                  <span class="ft-status completed">已答 ✓</span>
+                  <span class="ft-marker done">✓</span>
+                </div>
+                <div class="ft-row2">
+                  <span class="ft-model codex">GPT-5.5</span>
+                  <span class="ft-ctx ok">Ctx 0%</span>
+                </div>
+                <div class="ft-preview">下午好，我在。这一轮我会独立回答……</div>
+              </div>
+            </div>
+            <div class="mock-terminal">
+              <span class="prompt">PS C:\Users\lintian&gt;</span>
+              <span class="cmd"> claude --model claude-opus-4-7[1m]</span><br>
+              <span class="output">Claude Code v2.1.123 ...</span>
+            </div>
+          </div>
+          <div class="anno anno-good">AI 名称替代 session 标题（不重复）</div>
+          <div class="anno anno-good">模型 + Ctx 在第二行，紧凑清晰</div>
+          <div class="anno anno-good">Active tab 底部亮色条 = 当前终端；Gemini 思考中有进度条</div>
+          <div class="anno anno-good">点卡片切终端 + 看最新回答预览，一举两得</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-rationale">
+      <b>关键决策：</b>卡片 = Tab。不再有"上面卡片 + 下面 tab"两层独立 UI，合成一层。<br>
+      <b>信息密度：</b>每张卡片 3 行——(1) AI名+状态 (2) 模型+Ctx (3) 预览/进度条。<br>
+      <b>Session 标题去哪了：</b>终端 title bar 自带（如截图所示），卡片不重复。
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 状态信息详解 -->
+<!-- ============================================================ -->
+<div class="section">
+  <div class="section-head">
+    <span class="section-num">2</span>
+    <span class="section-title">卡片上呈现的信息项 + Ctx 分级</span>
+  </div>
+  <div class="section-body">
+    <p class="section-desc">每张 AI 卡片-tab 包含以下信息：</p>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;color:#c8d3e6">
+      <tr style="border-bottom:1px solid #2a3245">
+        <th style="text-align:left;padding:6px 8px;color:#a5b4fc">信息项</th>
+        <th style="text-align:left;padding:6px 8px;color:#a5b4fc">来源</th>
+        <th style="text-align:left;padding:6px 8px;color:#a5b4fc">示例</th>
+      </tr>
+      <tr style="border-bottom:1px solid #1f2735">
+        <td style="padding:6px 8px;font-weight:600">AI 名称</td>
+        <td style="padding:6px 8px">session.kind</td>
+        <td style="padding:6px 8px">Claude / Gemini / Codex</td>
+      </tr>
+      <tr style="border-bottom:1px solid #1f2735">
+        <td style="padding:6px 8px;font-weight:600">状态徽章</td>
+        <td style="padding:6px 8px">roundtable panel state</td>
+        <td style="padding:6px 8px"><span class="ft-status idle" style="display:inline">待命</span> <span class="ft-status thinking" style="display:inline">思考中</span> <span class="ft-status completed" style="display:inline">已答 ✓</span></td>
+      </tr>
+      <tr style="border-bottom:1px solid #1f2735">
+        <td style="padding:6px 8px;font-weight:600">模型</td>
+        <td style="padding:6px 8px">session.currentModel.displayName</td>
+        <td style="padding:6px 8px"><span class="ft-model claude" style="display:inline">Opus 4.7</span> <span class="ft-model gemini" style="display:inline">2.5 Flash</span></td>
+      </tr>
+      <tr style="border-bottom:1px solid #1f2735">
+        <td style="padding:6px 8px;font-weight:600">上下文占比</td>
+        <td style="padding:6px 8px">session.contextPct</td>
+        <td style="padding:6px 8px"><span class="ft-ctx ok" style="display:inline">Ctx 4%</span> <span class="ft-ctx warn" style="display:inline">Ctx 62%</span> <span class="ft-ctx high" style="display:inline">Ctx 89%</span></td>
+      </tr>
+      <tr style="border-bottom:1px solid #1f2735">
+        <td style="padding:6px 8px;font-weight:600">已耗时</td>
+        <td style="padding:6px 8px">思考态时显示</td>
+        <td style="padding:6px 8px">23s（替代 marker 位置）</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px;font-weight:600">预览/进度条</td>
+        <td style="padding:6px 8px">最新轮回答 / 思考中进度条</td>
+        <td style="padding:6px 8px" style="max-width:200px">单行回答摘要 或 动画进度条</td>
+      </tr>
+    </table>
+
+    <div style="margin-top:16px">
+      <p style="font-size:12px;color:#8b949e;margin-bottom:8px"><b>Ctx 分级配色：</b></p>
+      <div style="display:flex;gap:12px">
+        <span class="ft-ctx ok" style="padding:4px 10px">0-50%: 绿色 (安全)</span>
+        <span class="ft-ctx warn" style="padding:4px 10px">50-80%: 黄色 (注意)</span>
+        <span class="ft-ctx high" style="padding:4px 10px">80%+: 红色 (紧张)</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 完整布局 Mock -->
+<!-- ============================================================ -->
+<div class="section">
+  <div class="section-head">
+    <span class="section-num">3</span>
+    <span class="section-title">完整布局 — 从上到下</span>
+  </div>
+  <div class="section-body">
+    <p class="section-desc">
+      融合后的完整布局：Header → 命令栏 → AI 卡片-Tab（融合层）→ 终端 → 输入框。<br>
+      <b>卡片-Tab 同时承担：</b> (1) 展示三家最新回答/状态 (2) 切换终端 (3) 显示模型+Ctx。<br>
+      讨论开始后 onboarding 隐藏，卡片-Tab 取代旧的"三卡片 + 单独 tab"两层结构。
+    </p>
+
+    <div class="full-mock">
+      <div class="hub">
+        <!-- Track: stepper + commands -->
+        <div class="fm-track">
+          <div class="fm-track-row">
+            <span class="fm-title">圆桌讨论</span>
+            <span class="fm-stepper">
+              <span class="fm-dot"></span><span class="fm-line"></span>
+              <span class="fm-dot"></span><span class="fm-line"></span>
+              <span class="fm-dot active"></span>
+              <span style="margin-left:4px">第 3 轮 · 等待提问</span>
+            </span>
+          </div>
+          <div class="fm-cmd-bar">
+            <button class="fm-cmd suggested">💬 直接提问</button>
+            <button class="fm-cmd">⚔ @debate</button>
+            <button class="fm-cmd">📋 @summary</button>
+            <button class="fm-cmd">🤫 @私聊</button>
+          </div>
+        </div>
+
+        <!-- Fused card-tabs -->
+        <div class="fused-tabs" style="border-bottom:1px solid #1f2735">
+          <div class="fused-tab claude active">
+            <div class="ft-row1">
+              <span class="ft-name claude">Claude</span>
+              <span class="ft-status completed">已答 ✓</span>
+              <span class="ft-marker done">✓</span>
+            </div>
+            <div class="ft-row2">
+              <span class="ft-model claude">Opus 4.7</span>
+              <span class="ft-ctx ok">Ctx 4%</span>
+            </div>
+            <div class="ft-preview">从基本面看，兆易创新存储+MCU双轮驱动…</div>
+          </div>
+          <div class="fused-tab gemini" style="border-left:1px solid #1f2735;border-right:1px solid #1f2735">
+            <div class="ft-row1">
+              <span class="ft-name gemini">Gemini</span>
+              <span class="ft-status thinking">思考中</span>
+              <span class="ft-marker" style="color:#fde68a">38s</span>
+            </div>
+            <div class="ft-row2">
+              <span class="ft-model gemini">2.5 Flash</span>
+              <span class="ft-ctx warn">Ctx 62%</span>
+            </div>
+            <div class="ft-progress"><div class="ft-progress-bar"></div></div>
+          </div>
+          <div class="fused-tab codex">
+            <div class="ft-row1">
+              <span class="ft-name codex">Codex</span>
+              <span class="ft-status completed">已答 ✓</span>
+              <span class="ft-marker done">✓</span>
+            </div>
+            <div class="ft-row2">
+              <span class="ft-model codex">GPT-5.5</span>
+              <span class="ft-ctx ok">Ctx 0%</span>
+            </div>
+            <div class="ft-preview">技术面 60min MACD 金叉，但 24.5 是关键阻力…</div>
+          </div>
+        </div>
+
+        <!-- Terminal area -->
+        <div class="mock-terminal" style="min-height:160px">
+          <div style="color:#6c7385;font-size:10px;margin-bottom:8px">* Chinese roundtable discussion session one &nbsp; <span class="ft-model claude" style="display:inline;font-size:9px">Opus 4.7</span> &nbsp; <span class="ft-ctx ok" style="display:inline;font-size:9px">Ctx 4%</span></div>
+          <span class="prompt">PS C:\Users\lintian&gt;</span>
+          <span class="cmd"> claude --model claude-opus-4-7[1m] --append-system-prompt-file ...</span><br>
+          <span class="output" style="color:#6c7385">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Claude Code v2.1.123</span><br>
+          <span class="output" style="color:#6c7385">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Opus 4.7 (1M context) with xhigh effort</span><br><br>
+          <span style="color:#fde68a">&gt;</span> <span class="output">[通用圆桌 · 第 1 轮 · 默认提问]</span><br>
+          <span class="output">## 用户问题</span><br>
+          <span class="output">大家下午好</span><br><br>
+          <span class="output">● &nbsp;下午好 👋</span><br>
+          <span class="output">刚泡了杯咖啡——本色 Claude 在线，今天想聊点啥？</span><br><br>
+          <span style="color:#6c7385">❊ Cooked for 4s</span><br>
+          <span style="color:#fde68a">&gt;</span> <span style="display:inline-block;width:6px;height:12px;background:#fde68a;animation:pulse 1s steps(2) infinite"></span>
+        </div>
+
+        <!-- Toolbar + Input -->
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid #1f2735;background:#0d1117">
+          <span style="font-size:11px;padding:3px 8px;border-radius:4px;background:rgba(var(--c-claude-rgb),0.1);color:var(--c-claude)">🤝 群策群力</span>
+          <span style="font-size:11px;padding:3px 8px;border-radius:4px;background:rgba(var(--c-gemini-rgb),0.1);color:var(--c-gemini)">📝 总结发言</span>
+          <div style="flex:1;margin-left:8px;padding:6px 10px;background:#161b22;border:1px solid #2a3245;border-radius:6px;color:#6c7385;font-size:12px">输入问题，或用 @debate / @summary @claude / @gemini 私聊...</div>
+          <span style="padding:4px 10px;background:var(--c-claude);color:#fff;border-radius:4px;font-size:11px;font-weight:600">▶</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-rationale">
+      <b>布局层级清晰：</b> 命令栏(操作) → 卡片-Tab(状态+切换) → 终端(原始输出) → 输入框(交互)<br>
+      <b>信息不重复：</b> 卡片显示 AI 名 + 模型简称 + Ctx%，终端 title bar 显示 session 全名 + 详细模型。<br>
+      <b>视觉焦点：</b> Active tab 有 AI 专属色亮边 + 背景，一眼看出在看哪家终端。思考中的 tab 有进度条动画。
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 交互细节 -->
+<!-- ============================================================ -->
+<div class="section">
+  <div class="section-head">
+    <span class="section-num">4</span>
+    <span class="section-title">交互行为</span>
+  </div>
+  <div class="section-body">
+    <table style="width:100%;border-collapse:collapse;font-size:12px;color:#c8d3e6">
+      <tr style="border-bottom:1px solid #2a3245">
+        <th style="text-align:left;padding:6px 8px;color:#a5b4fc">操作</th>
+        <th style="text-align:left;padding:6px 8px;color:#a5b4fc">效果</th>
+      </tr>
+      <tr style="border-bottom:1px solid #1f2735">
+        <td style="padding:6px 8px">点击卡片-Tab</td>
+        <td style="padding:6px 8px">切换下方终端到该 AI 的 shell + 高亮 active 底边</td>
+      </tr>
+      <tr style="border-bottom:1px solid #1f2735">
+        <td style="padding:6px 8px">某家收到新输出（但不是 active）</td>
+        <td style="padding:6px 8px">卡片预览更新 + 闪 <span style="font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(250,204,21,0.3);color:#fde68a">NEW</span> 角标</td>
+      </tr>
+      <tr style="border-bottom:1px solid #1f2735">
+        <td style="padding:6px 8px">圆桌 fanout 启动</td>
+        <td style="padding:6px 8px">三卡片全切 "思考中" + 进度条动画 + 计时</td>
+      </tr>
+      <tr style="border-bottom:1px solid #1f2735">
+        <td style="padding:6px 8px">某家提前回答</td>
+        <td style="padding:6px 8px">该卡片切 "已答 ✓" + 预览文本出现，其他家继续思考</td>
+      </tr>
+      <tr>
+        <td style="padding:6px 8px">Ctx% > 80</td>
+        <td style="padding:6px 8px">Ctx 徽章变红 <span class="ft-ctx high" style="display:inline">Ctx 89%</span>，提醒用户该家上下文快满</td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<div class="footer-note">
+  <h3>实施要点</h3>
+  <ul style="margin:4px 0;padding-left:20px">
+    <li><b>删除旧 tab 渲染</b>：<code>renderHeader</code> 中的 <code>tabsHtml</code> 生成逻辑移除，改由融合卡片-Tab 取代</li>
+    <li><b>融合卡片-Tab 渲染位置</b>：放在 <code>_renderRtPanelHtml</code> 内、命令栏下方（替代当前的 <code>.mr-rt-cards</code>）</li>
+    <li><b>点击切终端</b>：复用现有 <code>switchFocusTab(meeting, newSid)</code></li>
+    <li><b>数据来源</b>：卡片状态来自 roundtable state（已有），模型+Ctx 来自 <code>sessions.get(sid)</code>（已有 <code>subModelBadgeHtml</code> / <code>subCtxBadgeHtml</code>）</li>
+    <li><b>旧三卡片消失后</b>：onboarding 在 turn=0 且 idle 时显示，首轮开始后被卡片-Tab 替代</li>
+  </ul>
+</div>
+
+</body>
+</html>

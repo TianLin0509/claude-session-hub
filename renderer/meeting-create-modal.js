@@ -45,9 +45,11 @@ const MODELS_BY_KIND = {
 };
 
 // 2026-05-05：圆桌主流程已跑稳，从"同种 ×3 调试期默认"恢复混合默认（道雪指定）。
+// 2026-05-11：道雪指定全部用最强模型——slot 2 从 PackyAPI 中转 'gpt-5.4-high' 切到
+// OpenAI codex 直连 'gpt-5.5'（5.5 限定 codex kind，PackyAPI 中转最高到 5.4）。
 const DEFAULT_SLOTS = [
   { kind: 'claude',   model: 'claude-opus-4-7[1m]' },
-  { kind: 'gpt',      model: 'gpt-5.4-high' },
+  { kind: 'codex',    model: 'gpt-5.5' },
   { kind: 'deepseek', model: 'deepseek-v4-pro' },
 ];
 

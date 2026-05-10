@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <title>Claude Session Hub · Unread UI Options</title>
+  <style>
+    /* === 复刻 Hub 主题 tokens（紫色基调 v0.9.0） === */
+    :root {
+      --bg-primary: #0d1117;
+      --bg-secondary: #161b22;
+      --bg-tertiary: #1c2128;
+      --border: #21262d;
+      --text-primary: #f0f6fc;
+      --text-secondary: #8b949e;
+      --text-muted: #484f58;
+      --accent-green: #3fb950;
+      --accent-blue: #58a6ff;
+      --accent-orange: #f0883e;
+      --accent-red: #e74c3c;
+      --session-active: #1c2d1c;
+      --session-selected: #1c2128;
+      --ui-purple-1: #8b5cf6;
+      --ui-purple-2: #a78bfa;
+      --ui-purple-3: #c4b5fd;
+      --ui-purple-tint-bg: #2a2335;
+      --ui-purple-glow: rgba(139, 92, 246, 0.5);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #050608;
+      color: var(--text-primary);
+      font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      padding: 32px 24px;
+      min-height: 100vh;
+    }
+    h1 { font-size: 22px; margin-bottom: 6px; }
+    h1 .ver { color: var(--ui-purple-2); margin-left: 8px; font-size: 13px; }
+    .lead { color: var(--text-secondary); font-size: 13px; margin-bottom: 24px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+      max-width: 1480px;
+    }
+    .col {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .col-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(139,92,246,0.08), transparent);
+    }
+    .col-header h2 {
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .col-header h2 .tag {
+      font-size: 11px;
+      padding: 1px 8px;
+      border-radius: 8px;
+      background: rgba(167,139,250,0.16);
+      color: var(--ui-purple-2);
+      font-weight: 600;
+    }
+    .col-header p {
+      color: var(--text-secondary);
+      font-size: 11.5px;
+      margin-top: 6px;
+      line-height: 1.5;
+    }
+    .pros, .cons {
+      padding: 8px 16px 0;
+      font-size: 11.5px;
+    }
+    .pros li, .cons li { margin-left: 14px; line-height: 1.55; }
+    .pros li { color: #8de0a3; }
+    .cons li { color: #f7a98c; }
+    .pros-cons-sep { height: 8px; }
+
+    /* ========== Mock sidebar ========== */
+    .sidebar {
+      background: var(--bg-primary);
+      width: 100%;
+      padding: 0;
+      border-top: 1px solid var(--border);
+    }
+    .sb-mini-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-tertiary);
+    }
+    .sb-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .sb-list {
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .item {
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      border-left: 3px solid transparent;
+      background: var(--bg-secondary);
+      position: relative;
+      cursor: pointer;
+      transition: background .12s ease;
+    }
+    .item:hover { background: #1f242c; }
+    .item.selected {
+      background: var(--session-selected);
+      border-color: var(--border);
+      border-left-color: var(--accent-blue);
+      box-shadow: 0 0 10px rgba(88,166,255,0.06);
+    }
+    .item-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+    }
+    .item-title {
+      font-size: 13.5px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 150px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      flex-shrink: 0;
+    }
+    .status-dot.idle { background: var(--accent-green); }
+    .status-dot.running { background: var(--accent-orange); animation: pulse-dot 1.4s ease-in-out infinite; }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .item-right {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+    .item-time {
+      font-size: 11px;
+      color: #ffffff;
+      font-variant-numeric: tabular-nums;
+    }
+    .item-preview {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .item-footer {
+      margin-top: 6px;
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      font-size: 10.5px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .badge.ctx { background: rgba(63,185,80,0.18); color: #7ee787; }
+    .badge.model { background: rgba(188,140,255,0.18); color: #d2a8ff; }
+    .badge.waiting {
+      background: var(--accent-orange);
+      color: #0d1117;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+
+    /* ====================================================== */
+    /* Option A — 数字脉冲徽章 + 顶部聚合                     */
+    /* ====================================================== */
+    .opt-a .item.has-unread {
+      background: rgba(167, 139, 250, 0.05);
+      border-left-color: var(--ui-purple-2);
+    }
+    .opt-a .unread-badge-num {
+      background: var(--accent-red);
+      color: #fff;
+      font-size: 10.5px;
+      padding: 1.5px 6.5px;
+      border-radius: 10px;
+      font-weight: 700;
+      min-width: 18px;
+      text-align: center;
+      box-shadow: 0 0 0 0 rgba(231,76,60,0.55);
+      animation: pulse-ring 2s cubic-bezier(0.66, 0, 0, 1) infinite;
+    }
+    @keyframes pulse-ring {
+      0% { box-shadow: 0 0 0 0 rgba(231,76,60,0.55); }
+      70% { box-shadow: 0 0 0 6px rgba(231,76,60,0); }
+      100% { box-shadow: 0 0 0 0 rgba(231,76,60,0); }
+    }
+    .opt-a .global-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--accent-red);
+      color: #fff;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: filter .15s;
+    }
+    .opt-a .global-pill:hover { filter: brightness(1.15); }
+    .opt-a .global-pill.zero {
+      background: rgba(139,148,158,0.2);
+      color: var(--text-muted);
+      cursor: default;
+    }
+
+    /* ====================================================== */
+    /* Option B — 极简红点                                    */
+    /* ====================================================== */
+    .opt-b .item.has-unread {
+      background: var(--bg-secondary);
+    }
+    .opt-b .unread-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-red);
+      box-shadow: 0 0 0 0 rgba(231,76,60,0.6);
+      animation: pulse-ring 1.8s cubic-bezier(0.66, 0, 0, 1) infinite;
+      flex-shrink: 0;
+    }
+    .opt-b .unread-dot.muted {
+      background: var(--ui-purple-2);
+      animation: none;
+      opacity: 0.7;
+    }
+    .opt-b .global-count {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ui-purple-2);
+      letter-spacing: 0.02em;
+    }
+    .opt-b .global-count .zero { color: var(--text-muted); font-weight: 400; }
+
+    /* ====================================================== */
+    /* Option C — 紫色 unread 卡片（沉浸式高亮）              */
+    /* ====================================================== */
+    .opt-c .item.has-unread {
+      background: linear-gradient(90deg, rgba(139,92,246,0.18) 0%, rgba(139,92,246,0.05) 60%, transparent 100%);
+      border-left: 3px solid var(--ui-purple-1);
+      box-shadow: 0 0 14px rgba(139,92,246,0.10);
+    }
+    .opt-c .item.has-unread .item-title { color: #fff; font-weight: 600; }
+    .opt-c .item.has-unread .item-preview { color: var(--ui-purple-3); }
+    .opt-c .unread-chip {
+      background: rgba(139,92,246,0.28);
+      color: var(--ui-purple-3);
+      font-size: 10.5px;
+      padding: 1.5px 7px;
+      border-radius: 8px;
+      font-weight: 600;
+      border: 1px solid rgba(139,92,246,0.35);
+    }
+    .opt-c .global-purple {
+      background: rgba(139,92,246,0.22);
+      color: var(--ui-purple-2);
+      padding: 2px 9px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid rgba(139,92,246,0.4);
+    }
+
+    /* ====================================================== */
+    /* Option D — 左缘脉冲带（sidebar 紧贴左缘）             */
+    /* ====================================================== */
+    .opt-d .sb-list { padding-left: 10px; position: relative; }
+    .opt-d .item {
+      position: relative;
+      overflow: visible;
+      border-left: none;
+      padding-left: 14px;
+    }
+    .opt-d .item.has-unread::before {
+      content: '';
+      position: absolute;
+      left: -8px;
+      top: 8px;
+      bottom: 8px;
+      width: 3px;
+      border-radius: 2px;
+      background: linear-gradient(180deg, var(--ui-purple-1), var(--accent-red));
+      box-shadow: 0 0 8px rgba(231,76,60,0.55), 0 0 14px rgba(139,92,246,0.4);
+      animation: glow-bar 1.6s ease-in-out infinite;
+    }
+    @keyframes glow-bar {
+      0%, 100% { opacity: 0.85; }
+      50% { opacity: 1; box-shadow: 0 0 12px rgba(231,76,60,0.7), 0 0 20px rgba(139,92,246,0.55); }
+    }
+    .opt-d .unread-tiny {
+      width: 14px;
+      height: 14px;
+      border-radius: 7px;
+      background: var(--accent-red);
+      color: #fff;
+      font-size: 9px;
+      font-weight: 800;
+      line-height: 14px;
+      text-align: center;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+    }
+    .opt-d .global-edge {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+    .opt-d .global-edge strong { color: var(--accent-red); font-size: 12px; }
+
+    /* ====================================================== */
+    /* 当前 baseline (复制 Hub 现状)                          */
+    /* ====================================================== */
+    .baseline-row {
+      margin-top: 32px;
+      max-width: 1480px;
+      background: var(--bg-secondary);
+      border: 1px dashed var(--text-muted);
+      border-radius: 12px;
+      padding: 18px 20px;
+    }
+    .baseline-row h3 {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-bottom: 10px;
+    }
+    .baseline-grid { display: grid; grid-template-columns: 320px 1fr; gap: 24px; align-items: start; }
+    .baseline-mock { background: var(--bg-primary); border-radius: 8px; padding: 8px; }
+    .baseline-issues { font-size: 12px; color: var(--text-secondary); line-height: 1.7; }
+    .baseline-issues code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 4px; color: var(--ui-purple-3); font-size: 11px; }
+
+    .baseline-mock .item.has-unread {
+      background: var(--session-active);
+      border-left: 3px solid var(--accent-green);
+    }
+    .baseline-mock .unread-num-old {
+      background: var(--accent-red);
+      color: white;
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-weight: 600;
+      min-width: 18px;
+      text-align: center;
+    }
+    .baseline-mock .item.has-waiting-unread {
+      background: rgba(210, 153, 34, 0.10);
+      border-left: 3px solid var(--accent-orange);
+    }
+
+    .footnote {
+      margin-top: 36px;
+      max-width: 1480px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.7;
+      padding: 16px 20px;
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+    .footnote h3 { font-size: 13px; color: var(--text-primary); margin-bottom: 10px; }
+    .footnote ul { padding-left: 18px; }
+    .footnote li { margin-bottom: 4px; }
+    .footnote code { background: var(--bg-tertiary); padding: 1px 5px; border-radius: 4px; color: var(--ui-purple-3); font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>Claude Session Hub · Unread UI 备选 <span class="ver">v0.12 改进方案</span></h1>
+  <p class="lead">4 个方向并排对比 + 现状 baseline。每个方案都包含：sidebar 顶部全局聚合区 + 4 条 session（active / unread+waiting / unread / 普通）。</p>
+
+  <div class="grid">
+
+    <!-- ========== A · 数字脉冲徽章 + 顶部聚合 ========== -->
+    <div class="col opt-a">
+      <div class="col-header">
+        <h2>A · 数字脉冲徽章 <span class="tag">渐进改良</span></h2>
+        <p>保留现有数字徽章但加红色脉冲呼吸动画 + 顶部全局聚合 pill；卡片背景换成淡紫 tint（去掉刺眼绿色）。</p>
+      </div>
+      <ul class="pros">
+        <li>改动最小，不破坏老用户肌肉记忆</li>
+        <li>顶部 "5 unread" 一眼看出还有几个未读</li>
+        <li>红色脉冲解决"提示太弱"</li>
+      </ul>
+      <div class="pros-cons-sep"></div>
+      <ul class="cons">
+        <li>仍有数字（"3" vs "30" 行为相同）</li>
+        <li>红 + 紫 + 蓝 + 橙四色并存</li>
+      </ul>
+      <div class="pros-cons-sep"></div>
+      <div class="sidebar">
+        <div class="sb-mini-header">
+          <span class="sb-title">Sessions · 12</span>
+          <span class="global-pill">📨 5 未读</span>
+        </div>
+        <div class="sb-list">
+          <div class="item selected">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot running"></span>主战场 · roundtable</span>
+              <span class="item-right"><span class="item-time">刚刚</span></span>
+            </div>
+            <div class="item-preview">用户：可以准备合入主干，由于改动太大…</div>
+            <div class="item-footer"><span class="badge model">Opus</span><span class="badge ctx">Ctx 12%</span></div>
+          </div>
+          <div class="item has-unread">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot idle"></span>Hub UI redesign</span>
+              <span class="item-right">
+                <span class="badge waiting">⏸ 等你</span>
+                <span class="unread-badge-num">3</span>
+                <span class="item-time">2m</span>
+              </span>
+            </div>
+            <div class="item-preview">需要确认：spec 3 要不要做 streaming？</div>
+            <div class="item-footer"><span class="badge model">Sonnet</span><span class="badge ctx">Ctx 38%</span></div>
+          </div>
+          <div class="item has-unread">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot idle"></span>FunTop10 字幕</span>
+              <span class="item-right">
+                <span class="unread-badge-num">12</span>
+                <span class="item-time">8m</span>
+              </span>
+            </div>
+            <div class="item-preview">已完成所有 BGM 替换，请审阅效果。</div>
+            <div class="item-footer"><span class="badge model">Gemini</span></div>
+          </div>
+          <div class="item">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot"></span>L2O sim 调研</span>
+              <span class="item-right"><span class="item-time">1h</span></span>
+            </div>
+            <div class="item-preview">No output yet</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== B · 极简红点（无数字） ========== -->
+    <div class="col opt-b">
+      <div class="col-header">
+        <h2>B · 极简红点 <span class="tag">极简党</span></h2>
+        <p>去掉数字徽章，只用 8px 红色脉冲圆点 + 顶部精确数字总数。强调"有/无"而非"多少"。</p>
+      </div>
+      <ul class="pros">
+        <li>视觉极简，零干扰</li>
+        <li>sidebar 折叠时不挤占标题宽度</li>
+        <li>类似微信 "@" 提及但已读：人类直觉熟悉</li>
+      </ul>
+      <div class="pros-cons-sep"></div>
+      <ul class="cons">
+        <li>失去"多少条新消息"信息（可在 hover tooltip 补回）</li>
+        <li>红点 + waiting 黄 badge 仍同行</li>
+      </ul>
+      <div class="pros-cons-sep"></div>
+      <div class="sidebar">
+        <div class="sb-mini-header">
+          <span class="sb-title">Sessions · 12</span>
+          <span class="global-count">未读 <strong style="color:var(--accent-red);">5</strong></span>
+        </div>
+        <div class="sb-list">
+          <div class="item selected">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot running"></span>主战场 · roundtable</span>
+              <span class="item-right"><span class="item-time">刚刚</span></span>
+            </div>
+            <div class="item-preview">用户：可以准备合入主干…</div>
+            <div class="item-footer"><span class="badge model">Opus</span><span class="badge ctx">Ctx 12%</span></div>
+          </div>
+          <div class="item has-unread">
+            <div class="item-row">
+              <span class="item-title"><span class="unread-dot" title="3 unread"></span><span class="status-dot idle"></span>Hub UI redesign</span>
+              <span class="item-right">
+                <span class="badge waiting">⏸ 等你</span>
+                <span class="item-time">2m</span>
+              </span>
+            </div>
+            <div class="item-preview">需要确认：spec 3 要不要做 streaming？</div>
+            <div class="item-footer"><span class="badge model">Sonnet</span><span class="badge ctx">Ctx 38%</span></div>
+          </div>
+          <div class="item has-unread">
+            <div class="item-row">
+              <span class="item-title"><span class="unread-dot" title="12 unread"></span><span class="status-dot idle"></span>FunTop10 字幕</span>
+              <span class="item-right"><span class="item-time">8m</span></span>
+            </div>
+            <div class="item-preview">已完成所有 BGM 替换，请审阅效果。</div>
+            <div class="item-footer"><span class="badge model">Gemini</span></div>
+          </div>
+          <div class="item">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot"></span>L2O sim 调研</span>
+              <span class="item-right"><span class="item-time">1h</span></span>
+            </div>
+            <div class="item-preview">No output yet</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== C · 紫色沉浸式 unread 卡片 ========== -->
+    <div class="col opt-c">
+      <div class="col-header">
+        <h2>C · 紫色沉浸式 <span class="tag">v0.9 主题派</span></h2>
+        <p>未读卡片整体染紫（与 Hub v0.9 紫色基调对齐），左侧紫色发光边 + 渐变背景。徽章用紫色 chip 而非红数字，统一色系。</p>
+      </div>
+      <ul class="pros">
+        <li>跟 v0.9 紫色基调完全统一，最美观</li>
+        <li>"unread 卡片" 一眼可识别（整卡片高亮 vs 角落小徽章）</li>
+        <li>颜色冲突最少：紫为 unread 主色，红留给真异常</li>
+      </ul>
+      <div class="pros-cons-sep"></div>
+      <ul class="cons">
+        <li>紫色与 selected（蓝色）对比稍弱，需要测</li>
+        <li>大量 unread 时整列紫色可能"花"</li>
+      </ul>
+      <div class="pros-cons-sep"></div>
+      <div class="sidebar">
+        <div class="sb-mini-header">
+          <span class="sb-title">Sessions · 12</span>
+          <span class="global-purple">⚡ 5 待看</span>
+        </div>
+        <div class="sb-list">
+          <div class="item selected">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot running"></span>主战场 · roundtable</span>
+              <span class="item-right"><span class="item-time">刚刚</span></span>
+            </div>
+            <div class="item-preview">用户：可以准备合入主干…</div>
+            <div class="item-footer"><span class="badge model">Opus</span><span class="badge ctx">Ctx 12%</span></div>
+          </div>
+          <div class="item has-unread">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot idle"></span>Hub UI redesign</span>
+              <span class="item-right">
+                <span class="badge waiting">⏸ 等你</span>
+                <span class="unread-chip">3 新</span>
+                <span class="item-time">2m</span>
+              </span>
+            </div>
+            <div class="item-preview">需要确认：spec 3 要不要做 streaming？</div>
+            <div class="item-footer"><span class="badge model">Sonnet</span><span class="badge ctx">Ctx 38%</span></div>
+          </div>
+          <div class="item has-unread">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot idle"></span>FunTop10 字幕</span>
+              <span class="item-right">
+                <span class="unread-chip">12 新</span>
+                <span class="item-time">8m</span>
+              </span>
+            </div>
+            <div class="item-preview">已完成所有 BGM 替换，请审阅效果。</div>
+            <div class="item-footer"><span class="badge model">Gemini</span></div>
+          </div>
+          <div class="item">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot"></span>L2O sim 调研</span>
+              <span class="item-right"><span class="item-time">1h</span></span>
+            </div>
+            <div class="item-preview">No output yet</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== D · 左缘脉冲带 ========== -->
+    <div class="col opt-d">
+      <div class="col-header">
+        <h2>D · 左缘脉冲带 <span class="tag">视觉冲击派</span></h2>
+        <p>未读卡片左缘伸出独立 3px 紫红渐变发光竖条 + 呼吸动画；卡片本体几乎不变。极小角徽 14px 圆 + 数字。</p>
+      </div>
+      <ul class="pros">
+        <li>"扫读最快"——余光也能看到呼吸条</li>
+        <li>不动卡片本体颜色，密集列表不混乱</li>
+        <li>"等你" + "未读" 视觉分离最干净</li>
+      </ul>
+      <div class="pros-cons-sep"></div>
+      <ul class="cons">
+        <li>动画呼吸长时间可能视觉疲劳</li>
+        <li>需调 sidebar 左 padding 给条留位置</li>
+      </ul>
+      <div class="pros-cons-sep"></div>
+      <div class="sidebar">
+        <div class="sb-mini-header">
+          <span class="sb-title">Sessions · 12</span>
+          <span class="global-edge">未读 <strong>5</strong> · 共 12</span>
+        </div>
+        <div class="sb-list">
+          <div class="item selected">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot running"></span>主战场 · roundtable</span>
+              <span class="item-right"><span class="item-time">刚刚</span></span>
+            </div>
+            <div class="item-preview">用户：可以准备合入主干…</div>
+            <div class="item-footer"><span class="badge model">Opus</span><span class="badge ctx">Ctx 12%</span></div>
+          </div>
+          <div class="item has-unread">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot idle"></span>Hub UI redesign</span>
+              <span class="item-right">
+                <span class="badge waiting">⏸ 等你</span>
+                <span class="unread-tiny">3</span>
+                <span class="item-time">2m</span>
+              </span>
+            </div>
+            <div class="item-preview">需要确认：spec 3 要不要做 streaming？</div>
+            <div class="item-footer"><span class="badge model">Sonnet</span><span class="badge ctx">Ctx 38%</span></div>
+          </div>
+          <div class="item has-unread">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot idle"></span>FunTop10 字幕</span>
+              <span class="item-right">
+                <span class="unread-tiny">9+</span>
+                <span class="item-time">8m</span>
+              </span>
+            </div>
+            <div class="item-preview">已完成所有 BGM 替换，请审阅效果。</div>
+            <div class="item-footer"><span class="badge model">Gemini</span></div>
+          </div>
+          <div class="item">
+            <div class="item-row">
+              <span class="item-title"><span class="status-dot"></span>L2O sim 调研</span>
+              <span class="item-right"><span class="item-time">1h</span></span>
+            </div>
+            <div class="item-preview">No output yet</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== 现状 baseline ===== -->
+  <div class="baseline-row">
+    <h3>当前 Hub 现状（baseline，问题的根）</h3>
+    <div class="baseline-grid">
+      <div class="baseline-mock sidebar">
+        <div class="sb-list">
+          <div class="item selected">
+            <div class="item-row">
+              <span class="item-title">主战场</span>
+              <span class="item-right"><span class="item-time">刚刚</span></span>
+            </div>
+            <div class="item-preview">用户：可以准备合入…</div>
+          </div>
+          <div class="item has-waiting-unread">
+            <div class="item-row">
+              <span class="item-title">Hub UI redesign</span>
+              <span class="item-right">
+                <span class="badge waiting">⏸ 等你</span>
+                <span class="unread-num-old">3</span>
+                <span class="item-time">2m</span>
+              </span>
+            </div>
+            <div class="item-preview">需要确认：spec 3 要不要做…</div>
+          </div>
+          <div class="item has-unread">
+            <div class="item-row">
+              <span class="item-title">FunTop10 字幕</span>
+              <span class="item-right"><span class="unread-num-old">12</span><span class="item-time">8m</span></span>
+            </div>
+            <div class="item-preview">已完成所有 BGM 替换…</div>
+          </div>
+        </div>
+      </div>
+      <div class="baseline-issues">
+        <strong>UI 问题：</strong>
+        <ul>
+          <li>四色冲突：<code>selected</code>=蓝边 / <code>has-unread</code>=绿边 / <code>is-waiting</code>=橙边 / <code>unread-badge</code>=红</li>
+          <li>"卡片背景变绿"信号弱（<code>--session-active=#1c2d1c</code>），跟 <code>--session-selected</code> 区分度低</li>
+          <li>waiting + unread 同行：橙黄 badge + 红 badge 颜色硬碰</li>
+          <li>无全局聚合：顶部不知道几个 session 未读</li>
+          <li>无 in-app 提醒动画：unread→read 切换"啪"消失</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 后端建议 ===== -->
+  <div class="footnote">
+    <h3>顺手要修的后端逻辑（与 UI 解耦，独立施工）</h3>
+    <ul>
+      <li><code>renderer.js:3754</code>（silence fallback）补 <code>document.hasFocus()</code> 检查，与 hook 路径行为对齐 — <strong>修 #1</strong></li>
+      <li><code>renderer.js:4407</code> 当 <code>isActive && document.hasFocus()</code> 时确实不 bump，但 active session 后台默默写新 turn → 用户未真正"看到" → 加 <strong>"page visibility + 用户最近 ≥30s 无 input"</strong> 二级 guard — 修 #6/#10</li>
+      <li>新增 IPC <code>get-global-unread-count</code>（renderer 聚合 sessions Map）+ topbar 显示 — 支撑 4 个方案的全局聚合区</li>
+      <li>给 <code>.unread-badge</code> 加 <code>transition: opacity .2s, transform .2s</code> 让消失更柔和 — 修 #8</li>
+      <li>持久化层（<code>state.json</code>）已经持久化 unreadCount（<code>session-manager._toPublic</code>），无需改动</li>
+    </ul>
+  </div>
+
+</body>
+</html>

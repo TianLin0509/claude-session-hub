@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Session Hub — UI 优化对比</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-elevated: #1c2129;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-green: #3fb950;
+    --accent-orange: #d29922;
+    --accent-red: #f85149;
+    --accent-purple: #a371f7;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  /* ===== 头部导航 ===== */
+  .page-header {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .page-header h1 { font-size: 20px; font-weight: 600; }
+  .page-header .badge { font-size: 12px; color: var(--accent-orange); background: rgba(210,153,34,0.12); padding: 2px 8px; border-radius: 12px; }
+  .toc-nav { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+  .toc-nav a {
+    color: var(--text-muted); text-decoration: none; font-size: 12px;
+    padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border);
+    transition: all .15s;
+  }
+  .toc-nav a:hover { color: var(--text); border-color: var(--text-muted); }
+
+  /* ===== 每个对比区块 ===== */
+  .section {
+    max-width: 1100px; margin: 0 auto; padding: 40px 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section:last-child { border-bottom: none; }
+
+  .section-header {
+    margin-bottom: 28px;
+  }
+  .section-header h2 { font-size: 22px; margin-bottom: 4px; }
+  .section-header h2 .num { color: var(--accent); margin-right: 8px; }
+  .section-header p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+  .section-header .tags { display: flex; gap: 6px; margin-top: 8px; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(88,166,255,0.1); color: var(--accent); }
+  .tag.pain { background: rgba(248,81,73,0.1); color: var(--accent-red); }
+
+  /* ===== 对比网格 ===== */
+  .compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  @media (max-width: 800px) { .compare-grid { grid-template-columns: 1fr; } }
+
+  .compare-col { display: flex; flex-direction: column; gap: 8px; }
+  .col-label {
+    font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
+    padding: 4px 10px; border-radius: 4px; display: inline-block; align-self: flex-start;
+  }
+  .col-label.before { background: rgba(248,81,73,0.15); color: var(--accent-red); }
+  .col-label.after  { background: rgba(63,185,80,0.15); color: var(--accent-green); }
+
+  .mock-frame {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .mock-frame-title {
+    font-size: 11px; color: var(--text-muted); padding: 6px 12px;
+    background: rgba(0,0,0,.25); border-bottom: 1px solid var(--border);
+  }
+
+  /* ===== 通用 UI 模拟元素 ===== */
+  .sidebar-mock { width: 260px; }
+  .terminal-mock { flex: 1; }
+
+  /* 会话项 */
+  .sess-item {
+    padding: 10px 14px; border-radius: 6px; margin: 4px 8px; cursor: default;
+    border-left: 3px solid transparent; transition: all .2s; position: relative;
+    background: rgba(255,255,255,.02);
+  }
+  .sess-item:hover { background: rgba(255,255,255,.05); }
+  .sess-item.active { border-left-color: var(--accent); background: rgba(88,166,255,.06); }
+  .sess-item.unread { border-left-color: var(--accent-green); }
+  .sess-item.waiting { border-left-color: var(--accent-orange); }
+  .sess-item.dormant { opacity: .45; }
+  .sess-header { display: flex; align-items: center; gap: 8px; }
+  .sess-ai-logo { width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; }
+  .sess-name { font-size: 13px; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess-time { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+  .sess-preview { font-size: 11px; color: var(--text-muted); margin-top: 2px; margin-left: 26px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess-model-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 500; }
+
+  /* 优化后的会话项 */
+  .sess-item-v2 {
+    padding: 12px 14px; margin: 2px 8px; border-radius: 8px; cursor: default;
+    border: 1px solid transparent; transition: all .2s; position: relative;
+  }
+  .sess-item-v2 .sess-name { font-size: 13.5px; }
+  .sess-item-v2:hover { border-color: rgba(255,255,255,.08); background: rgba(255,255,255,.03); }
+  .sess-item-v2.active {
+    border-color: rgba(88,166,255,.25); background: rgba(88,166,255,.06);
+    box-shadow: 0 0 0 1px rgba(88,166,255,.1);
+  }
+  .sess-item-v2 .sess-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; margin-left: 26px; }
+  .sess-item-v2 .sess-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .sess-item-v2 .sess-dot.green { background: var(--accent-green); }
+  .sess-item-v2 .sess-dot.orange { background: var(--accent-orange); }
+  .sess-item-v2 .sess-dot.gray { background: var(--text-muted); }
+
+  /* 侧边栏头部 */
+  .sb-header { padding: 12px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
+  .sb-header-row { display: flex; gap: 6px; }
+  .sb-btn {
+    font-size: 12px; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: transparent; color: var(--text); cursor: default; display: flex; align-items: center; gap: 5px;
+    white-space: nowrap; transition: all .15s;
+  }
+  .sb-btn:hover { background: rgba(255,255,255,.05); }
+  .sb-btn.primary { background: var(--accent-green); color: #000; border-color: var(--accent-green); font-weight: 600; }
+  .sb-btn.accent { border-color: var(--accent-orange); color: var(--accent-orange); }
+
+  /* V2 侧边栏头部 */
+  .sb-header-v2 { padding: 14px 12px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--border); }
+  .sb-header-v2 .search-box {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    background: rgba(255,255,255,.04); border: 1px solid var(--border); border-radius: 8px;
+    font-size: 12px; color: var(--text-muted);
+  }
+  .sb-header-v2 .search-box svg { opacity: .4; flex-shrink: 0; }
+  .sb-header-v2 .action-row { display: flex; gap: 6px; }
+  .sb-header-v2 .action-row .sb-btn { font-size: 11.5px; padding: 5px 10px; }
+
+  /* 终端头部 */
+  .term-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); }
+  .term-header .th-left { display: flex; align-items: center; gap: 8px; }
+  .term-header .th-title { font-size: 13px; font-weight: 600; }
+  .term-header .th-meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 12px; }
+  .term-header .th-actions { display: flex; gap: 4px; }
+  .term-header .th-btn {
+    width: 28px; height: 28px; border-radius: 6px; border: none; background: transparent;
+    color: var(--text-muted); cursor: default; display: flex; align-items: center; justify-content: center;
+    transition: all .15s;
+  }
+  .term-header .th-btn:hover { background: rgba(255,255,255,.06); color: var(--text); }
+
+  /* V2 终端头部 */
+  .term-header-v2 { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); gap: 16px; }
+  .term-header-v2 .th-path {
+    font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; color: var(--accent);
+    background: rgba(88,166,255,.06); padding: 3px 10px; border-radius: 4px;
+    max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .term-header-v2 .th-stats { display: flex; gap: 16px; font-size: 11px; }
+  .term-header-v2 .th-stat { display: flex; align-items: center; gap: 4px; color: var(--text-muted); }
+  .term-header-v2 .th-stat .val { color: var(--text); font-weight: 500; }
+
+  /* 空状态 */
+  .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; color: var(--text-muted); text-align: center; padding: 40px; }
+  .empty-state .kb-hints { display: flex; gap: 16px; margin-top: 8px; font-size: 11px; }
+  .empty-state .kb-hint { display: flex; align-items: center; gap: 6px; }
+  .kb-key { font-size: 10px; padding: 2px 6px; background: rgba(255,255,255,.06); border: 1px solid var(--border); border-radius: 3px; font-family: monospace; }
+
+  /* V2 空状态 */
+  .empty-state-v2 { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 20px; color: var(--text-muted); text-align: center; padding: 40px; }
+  .empty-state-v2 .logo-placeholder { width: 64px; height: 64px; border-radius: 16px; background: rgba(88,166,255,.08); display: flex; align-items: center; justify-content: center; font-size: 28px; }
+  .empty-state-v2 h3 { color: var(--text); font-size: 16px; margin: 0; }
+  .empty-state-v2 .quick-actions { display: flex; gap: 8px; margin-top: 4px; }
+  .empty-state-v2 .qa-btn {
+    padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border);
+    background: rgba(255,255,255,.03); color: var(--text); cursor: default;
+    font-size: 12px; display: flex; align-items: center; gap: 6px;
+  }
+
+  /* 浮动输入栏 */
+  .floating-input { padding: 10px 16px; background: var(--bg-elevated); border-top: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+  .floating-input .fi-input { flex: 1; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-family: monospace; font-size: 13px; }
+  .floating-input .fi-send { padding: 6px 16px; border-radius: 8px; background: var(--accent-green); color: #000; border: none; font-weight: 600; cursor: default; font-size: 12px; }
+
+  /* V2 浮动输入栏 */
+  .floating-input-v2 { padding: 8px 16px; background: var(--bg-elevated); border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .floating-input-v2 .fi-mode { font-size: 10px; padding: 3px 8px; border-radius: 4px; background: rgba(210,153,34,.12); color: var(--accent-orange); font-weight: 600; border: 1px solid rgba(210,153,34,.2); }
+  .floating-input-v2 .fi-input { flex: 1; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-family: monospace; font-size: 13px; }
+  .floating-input-v2 .fi-char-count { font-size: 10px; color: var(--text-muted); }
+
+  /* 预览面板 */
+  .preview-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); }
+  .preview-header .ph-title { font-size: 12px; font-weight: 500; }
+  .preview-header .ph-actions { display: flex; gap: 2px; }
+  .ph-btn {
+    width: 26px; height: 26px; border-radius: 4px; border: none; background: transparent;
+    color: var(--text-muted); cursor: default; display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+  }
+
+  /* V2 预览面板 */
+  .preview-header-v2 { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); }
+  .preview-header-v2 .ph-file-type {
+    font-size: 10px; padding: 2px 6px; border-radius: 3px; background: rgba(255,255,255,.05);
+    color: var(--text-muted); font-weight: 500;
+  }
+
+  /* 注记行 */
+  .note-row { font-size: 12px; color: var(--text-muted); margin-top: 12px; padding: 10px 14px; background: rgba(88,166,255,.04); border-radius: 6px; border-left: 2px solid var(--accent); }
+  .note-row strong { color: var(--text); }
+
+  /* ===== 总结表 ===== */
+  .summary-table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 13px; }
+  .summary-table th { text-align: left; padding: 10px 14px; background: rgba(255,255,255,.03); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 12px; color: var(--text-muted); }
+  .summary-table td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .summary-table .impact { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .summary-table .impact.high { background: var(--accent-red); }
+  .summary-table .impact.med  { background: var(--accent-orange); }
+  .summary-table .impact.low  { background: var(--accent-green); }
+
+  /* ===== 配色演示条 ===== */
+  .color-demo { display: flex; gap: 8px; margin-top: 10px; }
+  .color-chip { width: 20px; height: 20px; border-radius: 4px; border: 1px solid var(--border); }
+  .color-row { display: flex; align-items: center; gap: 6px; font-size: 11px; margin-top: 4px; }
+
+  footer { text-align: center; padding: 32px; color: var(--text-muted); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1>Claude Session Hub — UI 优化对比</h1>
+  <span class="badge">8 个优化点</span>
+  <nav class="toc-nav">
+    <a href="#s1">会话卡片</a>
+    <a href="#s2">侧边栏头部</a>
+    <a href="#s3">终端头部</a>
+    <a href="#s4">空状态</a>
+    <a href="#s5">浮动输入栏</a>
+    <a href="#s6">预览面板</a>
+    <a href="#s7">信息密度</a>
+    <a href="#s8">微交互</a>
+  </nav>
+</div>
+
+<!-- ==================== 1. 会话列表卡片 ==================== -->
+<div class="section" id="s1">
+  <div class="section-header">
+    <h2><span class="num">01</span>会话列表卡片 — 状态可辨性</h2>
+    <p>当前卡片用彩色左边框区分状态，但悬停/选中时视觉反馈偏弱，信息层级不够清晰。</p>
+    <div class="tags">
+      <span class="tag">视觉层级</span>
+      <span class="tag pain">用户痛点</span>
+    </div>
+  </div>
+
+  <div class="compare-grid">
+    <!-- BEFORE -->
+    <div class="compare-col">
+      <span class="col-label before">当前</span>
+      <div class="mock-frame sidebar-mock">
+        <div class="mock-frame-title">会话列表 — 仅左边框+文字</div>
+        <div style="padding:8px 0;">
+          <div class="sess-item active">
+            <div class="sess-header"><span class="sess-ai-logo" style="background:#d97706;"></span><span class="sess-name">A股技术分析 - Claude</span><span class="sess-time">2m</span></div>
+            <div class="sess-preview">MACD金叉信号确认...</div>
+          </div>
+          <div class="sess-item unread">
+            <div class="sess-header"><span class="sess-ai-logo" style="background:#4285f4;"></span><span class="sess-name">财报解读 - Gemini</span><span class="sess-time">5m</span></div>
+            <div class="sess-preview">Q1营收同比增长23%...</div>
+          </div>
+          <div class="sess-item waiting">
+            <div class="sess-header"><span class="sess-ai-logo" style="background:#10a37f;"></span><span class="sess-name">量化模型 - GPT</span><span class="sess-time">12m</span></div>
+            <div class="sess-preview">等待回复中...</div>
+          </div>
+          <div class="sess-item dormant">
+            <div class="sess-header"><span class="sess-ai-logo" style="background:#6e7681;"></span><span class="sess-name">旧讨论 - Codex</span><span class="sess-time">昨天</span></div>
+            <div class="sess-preview">这段代码需要重构...</div>
+          </div>
+          <div class="sess-item">
+            <div class="sess-header"><span class="sess-ai-logo" style="background:#a371f7;"></span><span class="sess-name">API 设计 - DeepSeek</span><span class="sess-time">1h</span></div>
+            <div class="sess-preview">RESTful接口规范...</div>
+          </div>
+        </div>
+      </div>
+      <div class="note-row"><strong>问题：</strong>Dormant 状态仅靠透明度和蓝色三角区分，多会话时难以快速定位；选中态仅左侧蓝色细线，在深色背景下对比度不足。</div>
+    </div>
+
+    <!-- AFTER -->
+    <div class="compare-col">
+      <span class="col-label after">优化后</span>
+      <div class="mock-frame sidebar-mock">
+        <div class="mock-frame-title">会话列表 — 卡片化+状态点+模型角标</div>
+        <div style="padding:8px 0;">
+          <!-- 活跃选中 -->
+          <div class="sess-item-v2 active">
+            <div class="sess-header">
+              <span class="sess-ai-logo" style="background:#d97706;"></span>
+              <span class="sess-name">A股技术分析</span>
+              <span class="sess-model-badge" style="background:rgba(139,92,246,.15);color:#a371f7;">opus</span>
+              <span class="sess-time">2m</span>
+            </div>
+            <div class="sess-meta">
+              <span class="sess-dot green"></span><span style="font-size:11px;color:var(--text-muted);">活跃 · 12 条消息</span>
+            </div>
+          </div>
+          <!-- 未读 -->
+          <div class="sess-item-v2 unread" style="border-left:3px solid var(--accent-green);">
+            <div class="sess-header">
+              <span class="sess-ai-logo" style="background:#4285f4;"></span>
+              <span class="sess-name">财报解读</span>
+              <span class="sess-model-badge" style="background:rgba(66,133,244,.15);color:#4285f4;">pro</span>
+              <span class="sess-time">5m</span>
+            </div>
+            <div class="sess-meta">
+              <span class="sess-dot green"></span><span style="font-size:11px;color:var(--accent-green);">● 3 条新回复</span>
+            </div>
+          </div>
+          <!-- 等待中 -->
+          <div class="sess-item-v2 waiting" style="border-left:3px solid var(--accent-orange);">
+            <div class="sess-header">
+              <span class="sess-ai-logo" style="background:#10a37f;"></span>
+              <span class="sess-name">量化模型</span>
+              <span class="sess-model-badge" style="background:rgba(16,163,127,.15);color:#10a37f;">gpt-4</span>
+              <span class="sess-time">12m</span>
+            </div>
+            <div class="sess-meta">
+              <span class="sess-dot orange" style="animation:pulse 1.5s infinite;"></span><span style="font-size:11px;color:var(--accent-orange);">⏳ 等待回复…</span>
+            </div>
+          </div>
+          <!-- 休眠 -->
+          <div class="sess-item-v2 dormant" style="opacity:0.55;">
+            <div class="sess-header">
+              <span class="sess-ai-logo" style="background:#6e7681;"></span>
+              <span class="sess-name">旧讨论 · Codex</span>
+              <span class="sess-time">昨天</span>
+            </div>
+            <div class="sess-meta">
+              <span class="sess-dot gray"></span><span style="font-size:11px;">已休眠 · 点击唤醒</span>
+            </div>
+          </div>
+          <!-- 普通 -->
+          <div class="sess-item-v2">
+            <div class="sess-header">
+              <span class="sess-ai-logo" style="background:#a371f7;"></span>
+              <span class="sess-name">API 设计</span>
+              <span class="sess-model-badge" style="background:rgba(163,113,247,.15);color:#a371f7;">v3</span>
+              <span class="sess-time">1h</span>
+            </div>
+            <div class="sess-meta">
+              <span class="sess-dot gray"></span><span style="font-size:11px;">6 条消息</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="note-row"><strong>改进：</strong>① 状态圆点+文字双重编码，色盲友好；② 模型角标快速区分 AI；③ 消息数/新回复数/等待状态一目了然；④ 选中态全卡片高亮而非仅左边线。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 2. 侧边栏头部 ==================== -->
+<div class="section" id="s2">
+  <div class="section-header">
+    <h2><span class="num">02</span>侧边栏头部 — 操作入口重构</h2>
+    <p>当前头部按钮平铺，缺少搜索/筛选，新建下拉菜单层级深（8 个选项），高频操作入口不够直接。</p>
+    <div class="tags">
+      <span class="tag">操作效率</span>
+      <span class="tag pain">用户痛点</span>
+    </div>
+  </div>
+
+  <div class="compare-grid">
+    <div class="compare-col">
+      <span class="col-label before">当前</span>
+      <div class="mock-frame sidebar-mock">
+        <div class="mock-frame-title">侧边栏头部 · 按钮平铺</div>
+        <div class="sb-header">
+          <div class="sb-header-row">
+            <span class="sb-btn primary" style="flex:1;justify-content:center;">+ 新建</span>
+          </div>
+          <div class="sb-header-row">
+            <span class="sb-btn" style="flex:1;justify-content:center;">恢复</span>
+            <span class="sb-btn" style="flex:1;justify-content:center;">搜索</span>
+          </div>
+          <div class="sb-header-row">
+            <span class="sb-btn accent" style="flex:1;justify-content:center;">圆桌</span>
+            <span class="sb-btn" style="flex:1;justify-content:center;">⚙</span>
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">账户用量: Claude 45% · Gemini 30%</div>
+        </div>
+      </div>
+      <div class="note-row"><strong>问题：</strong>新建按钮打开 8 选项下拉菜单，常用 AI 需要两步；无搜索框，会话多时难找；圆桌和设置权重相同却频率悬殊。</div>
+    </div>
+
+    <div class="compare-col">
+      <span class="col-label after">优化后</span>
+      <div class="mock-frame sidebar-mock">
+        <div class="mock-frame-title">侧边栏头部 · 搜索+快捷新建+用量条</div>
+        <div class="sb-header-v2">
+          <!-- 搜索框 -->
+          <div class="search-box">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            搜索会话...
+            <span style="margin-left:auto;font-size:10px;opacity:.5;">⌘K</span>
+          </div>
+          <!-- 快捷新建 -->
+          <div class="action-row">
+            <span class="sb-btn primary" style="flex:1;justify-content:center;">+ 新建 Claude</span>
+            <span class="sb-btn" style="border-color:var(--accent);color:var(--accent);">▼</span>
+          </div>
+          <div class="action-row">
+            <span class="sb-btn" style="flex:1;justify-content:center;font-size:11px;">Gemini</span>
+            <span class="sb-btn" style="flex:1;justify-content:center;font-size:11px;">GPT</span>
+            <span class="sb-btn" style="flex:1;justify-content:center;font-size:11px;">DeepSeek</span>
+          </div>
+          <div class="action-row">
+            <span class="sb-btn accent" style="flex:1;justify-content:center;font-size:11px;">圆桌</span>
+            <span class="sb-btn" style="font-size:11px;">⚙</span>
+            <span class="sb-btn" style="font-size:11px;">恢复</span>
+          </div>
+          <!-- 用量条 -->
+          <div style="font-size:10px;color:var(--text-muted);">
+            <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Claude</span><span>45%</span></div>
+            <div style="height:2px;background:var(--border);border-radius:1px;margin-bottom:6px;"><div style="width:45%;height:100%;background:var(--accent);border-radius:1px;"></div></div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>Gemini</span><span>30%</span></div>
+            <div style="height:2px;background:var(--border);border-radius:1px;"><div style="width:30%;height:100%;background:#4285f4;border-radius:1px;"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="note-row"><strong>改进：</strong>① 搜索框常驻，⌘K 快捷键；② 最常新建 Claude 一键直达，下拉可切换；③ 次常用 AI 单行快捷按钮；④ 用量进度条替代纯文字，一目了然。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 3. 终端头部 ==================== -->
+<div class="section" id="s3">
+  <div class="section-header">
+    <h2><span class="num">03</span>终端头部 — 信息架构精简</h2>
+    <p>当前头部信息较分散，CWD/用量/变更统计并列展示，但视觉权重无区分，关键信息淹没。</p>
+    <div class="tags">
+      <span class="tag">信息架构</span>
+      <span class="tag">视觉层级</span>
+    </div>
+  </div>
+
+  <div class="compare-grid">
+    <div class="compare-col">
+      <span class="col-label before">当前</span>
+      <div class="mock-frame" style="width:100%;">
+        <div class="mock-frame-title">终端头部 · 平铺信息</div>
+        <div class="term-header">
+          <div class="th-left">
+            <span class="th-title">Claude · A股技术分析</span>
+          </div>
+          <div class="th-meta">
+            <span>CWD: ~/projects</span>
+            <span>Token: 4.2k/200k</span>
+            <span>Diff: +12 -3</span>
+          </div>
+          <div class="th-actions">
+            <span class="th-btn" title="清屏">✕</span>
+            <span class="th-btn" title="分屏">⬜</span>
+            <span class="th-btn" title="更多">⋯</span>
+          </div>
+        </div>
+        <div style="padding:20px;font-size:12px;color:var(--text-muted);min-height:40px;">
+          终端内容区域...
+        </div>
+      </div>
+      <div class="note-row"><strong>问题：</strong>CWD、Token 用量、Diff 统计权重相同；没有当前模型信息；操作按钮缺乏文字标签。</div>
+    </div>
+
+    <div class="compare-col">
+      <span class="col-label after">优化后</span>
+      <div class="mock-frame" style="width:100%;">
+        <div class="mock-frame-title">终端头部 · 分层信息+快捷复制</div>
+        <div class="term-header-v2">
+          <div class="th-left" style="display:flex;align-items:center;gap:10px;">
+            <span style="display:flex;align-items:center;gap:6px;">
+              <span class="sess-ai-logo" style="background:#d97706;width:20px;height:20px;"></span>
+              <span class="th-title">A股技术分析</span>
+            </span>
+            <span class="sess-model-badge" style="font-size:10px;background:rgba(139,92,246,.15);color:#a371f7;">Opus 4.7</span>
+          </div>
+          <div class="th-path" title="C:\Users\lintian\projects\trading">C:\Users\lintian\projects\trading</div>
+          <div class="th-stats">
+            <div class="th-stat">Token <span class="val">4.2k</span>/200k</div>
+            <div class="th-stat" style="color:var(--accent-green);">+12</div>
+            <div class="th-stat" style="color:var(--accent-red);">-3</div>
+          </div>
+          <div class="th-actions">
+            <span class="th-btn" title="复制路径">📋</span>
+            <span class="th-btn" title="清屏">🧹</span>
+            <span class="th-btn" title="更多">⋯</span>
+          </div>
+        </div>
+        <div style="padding:20px;font-size:12px;color:var(--text-muted);min-height:40px;">
+          终端内容区域...
+        </div>
+      </div>
+      <div class="note-row"><strong>改进：</strong>① 模型版本角标（Opus 4.7）直接可见；② 工作路径用等宽字体+蓝色高亮+可点击复制；③ Diff 用绿色/红色区分增删；④ AI logo 代替文字节省空间。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 4. 空状态 ==================== -->
+<div class="section" id="s4">
+  <div class="section-header">
+    <h2><span class="num">04</span>空状态页 — 引导性增强</h2>
+    <p>当前未选中会话时终端区域仅显示静态提示，未提供任何操作入口，浪费了主视觉区。</p>
+    <div class="tags">
+      <span class="tag">首次体验</span>
+      <span class="tag pain">用户痛点</span>
+    </div>
+  </div>
+
+  <div class="compare-grid">
+    <div class="compare-col">
+      <span class="col-label before">当前</span>
+      <div class="mock-frame" style="width:100%;min-height:220px;">
+        <div class="mock-frame-title">空状态 — 当前</div>
+        <div class="empty-state">
+          <div style="font-size:40px;opacity:.2;">💬</div>
+          <div style="font-size:15px;">选择一个会话开始</div>
+          <div style="font-size:12px;opacity:.6;">从左侧列表点击已有会话，或新建一个</div>
+        </div>
+      </div>
+      <div class="note-row"><strong>问题：</strong>纯文字提示，无操作入口；新用户不知道有哪些 AI 可用；没有快捷键提示。</div>
+    </div>
+
+    <div class="compare-col">
+      <span class="col-label after">优化后</span>
+      <div class="mock-frame" style="width:100%;min-height:220px;">
+        <div class="mock-frame-title">空状态 — 优化后 · 快捷启动面板</div>
+        <div class="empty-state-v2">
+          <div class="logo-placeholder">⚡</div>
+          <h3>开始新对话</h3>
+          <p style="font-size:13px;margin:0;">选择一个 AI 引擎，即刻开始</p>
+          <div class="quick-actions">
+            <span class="qa-btn"><span style="width:16px;height:16px;border-radius:50%;background:#d97706;"></span> Claude</span>
+            <span class="qa-btn"><span style="width:16px;height:16px;border-radius:50%;background:#4285f4;"></span> Gemini</span>
+            <span class="qa-btn"><span style="width:16px;height:16px;border-radius:50%;background:#10a37f;"></span> GPT</span>
+            <span class="qa-btn"><span style="width:16px;height:16px;border-radius:50%;background:#a371f7;"></span> DeepSeek</span>
+          </div>
+          <div class="kb-hints">
+            <div class="kb-hint"><span class="kb-key">⌘N</span> 新建 Claude</div>
+            <div class="kb-hint"><span class="kb-key">⌘K</span> 搜索会话</div>
+            <div class="kb-hint"><span class="kb-key">⌘R</span> 圆桌会议</div>
+          </div>
+        </div>
+      </div>
+      <div class="note-row"><strong>改进：</strong>① AI 引擎按钮直接在空状态页，一键启动；② 快捷键提示帮助高级用户；③ 视觉重心从空洞提示变成操作入口。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 5. 浮动输入栏 ==================== -->
+<div class="section" id="s5">
+  <div class="section-header">
+    <h2><span class="num">05</span>浮动输入栏 — 上下文提示增强</h2>
+    <p>当前浮栏仅输入框+发送按钮，缺少当前模式提示和字符计数，用户对发送目标不明确。</p>
+    <div class="tags">
+      <span class="tag">输入体验</span>
+      <span class="tag">状态可见</span>
+    </div>
+  </div>
+
+  <div class="compare-grid">
+    <div class="compare-col">
+      <span class="col-label before">当前</span>
+      <div class="mock-frame" style="width:100%;">
+        <div class="mock-frame-title">浮动输入栏 · 当前</div>
+        <div class="floating-input">
+          <span style="font-size:11px;color:var(--text-muted);">></span>
+          <span class="fi-input" style="color:var(--text-muted);">输入消息...</span>
+          <span class="fi-send">发送</span>
+        </div>
+      </div>
+      <div class="note-row"><strong>问题：</strong>不知道当前在和哪个 AI 对话；不知道消息长度；发送按钮语义不完整。</div>
+    </div>
+
+    <div class="compare-col">
+      <span class="col-label after">优化后</span>
+      <div class="mock-frame" style="width:100%;">
+        <div class="mock-frame-title">浮动输入栏 · 模式+字数+历史按钮</div>
+        <div class="floating-input-v2">
+          <span class="fi-mode">Claude · Opus</span>
+          <span style="font-size:11px;color:var(--text-muted);cursor:default;" title="历史消息">🕐</span>
+          <span class="fi-input" style="color:var(--text-muted);">输入消息... (Enter 发送, Shift+Enter 换行)</span>
+          <span class="fi-char-count">0/4000</span>
+          <span class="fi-send" style="display:flex;align-items:center;gap:4px;">↑ 发送</span>
+        </div>
+      </div>
+      <div class="note-row"><strong>改进：</strong>① 当前 AI 名称+模型标签，防止发错窗口；② 实时字符计数（如 4000 token 限制）；③ 历史消息快捷按钮；④ 发送快捷键提示在 placeholder 中。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 6. 预览面板 ==================== -->
+<div class="section" id="s6">
+  <div class="section-header">
+    <h2><span class="num">06</span>预览面板 — 头部瘦身+文件类型标识</h2>
+    <p>当前预览头部操作按钮多但缺乏文字标签，文件类型没有明确标识。</p>
+    <div class="tags">
+      <span class="tag">信息密度</span>
+      <span class="tag">可用性</span>
+    </div>
+  </div>
+
+  <div class="compare-grid">
+    <div class="compare-col">
+      <span class="col-label before">当前</span>
+      <div class="mock-frame" style="width:100%;">
+        <div class="mock-frame-title">预览面板头部 · 当前</div>
+        <div class="preview-header">
+          <span class="ph-title">📄 技术分析报告.md</span>
+          <div class="ph-actions">
+            <span class="ph-btn">🔍-</span>
+            <span class="ph-btn">🔍+</span>
+            <span class="ph-btn">↗</span>
+            <span class="ph-btn">⬜</span>
+            <span class="ph-btn">✕</span>
+          </div>
+        </div>
+        <div style="padding:20px;font-size:12px;color:var(--text-muted);min-height:40px;">
+          预览内容区域...
+        </div>
+      </div>
+    </div>
+
+    <div class="compare-col">
+      <span class="col-label after">优化后</span>
+      <div class="mock-frame" style="width:100%;">
+        <div class="mock-frame-title">预览面板头部 · 文件类型标签+工具提示</div>
+        <div class="preview-header-v2">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="ph-file-type">MD</span>
+            <span class="ph-title" style="font-size:12px;">技术分析报告.md</span>
+            <span style="font-size:10px;color:var(--text-muted);">2.4 KB · 120 行</span>
+          </div>
+          <div class="ph-actions" style="display:flex;align-items:center;gap:2px;">
+            <span class="ph-btn" title="缩小">🔍-</span>
+            <span style="font-size:11px;color:var(--text-muted);">100%</span>
+            <span class="ph-btn" title="放大">🔍+</span>
+            <span style="color:var(--border);margin:0 4px;">|</span>
+            <span class="ph-btn" title="外部打开">↗</span>
+            <span class="ph-btn" title="切换布局">⬜</span>
+            <span class="ph-btn" title="关闭预览">✕</span>
+          </div>
+        </div>
+        <div style="padding:20px;font-size:12px;color:var(--text-muted);min-height:40px;">
+          预览内容区域...
+        </div>
+      </div>
+      <div class="note-row"><strong>改进：</strong>① 文件类型标签（MD/PY/CSV/PNG）一眼可辨；② 文件大小+行数元信息；③ 缩放百分比实时可见；④ 分隔线区分布局操作和关闭。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 7. 信息密度 ==================== -->
+<div class="section" id="s7">
+  <div class="section-header">
+    <h2><span class="num">07</span>全局信息密度 — 间距与排版优化</h2>
+    <p>当前布局整体偏宽松，同等屏幕面积下可见会话数偏少，信息获取效率可提升。</p>
+    <div class="tags">
+      <span class="tag">空间利用</span>
+      <span class="tag">可读性</span>
+    </div>
+  </div>
+
+  <div class="compare-grid">
+    <div class="compare-col">
+      <span class="col-label before">当前</span>
+      <div class="mock-frame sidebar-mock">
+        <div class="mock-frame-title">当前间距 · 每项 ~56px 高</div>
+        <div style="padding:4px 0;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:12px;">
+            <div style="display:flex;justify-content:space-between;"><strong>Claude · A股分析</strong><span style="color:var(--text-muted);">2m</span></div>
+            <div style="color:var(--text-muted);margin-top:4px;">MACD金叉信号确认，建议...</div>
+          </div>
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:12px;">
+            <div style="display:flex;justify-content:space-between;"><strong>Gemini · 财报</strong><span style="color:var(--text-muted);">5m</span></div>
+            <div style="color:var(--text-muted);margin-top:4px;">Q1营收同比增长23%，毛利...</div>
+          </div>
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:12px;">
+            <div style="display:flex;justify-content:space-between;"><strong>GPT · 量化模型</strong><span style="color:var(--text-muted);">12m</span></div>
+            <div style="color:var(--text-muted);margin-top:4px;">等待模型回复中...</div>
+          </div>
+          <div style="padding:12px 14px;font-size:12px;">
+            <div style="display:flex;justify-content:space-between;"><strong>DeepSeek · API设计</strong><span style="color:var(--text-muted);">1h</span></div>
+            <div style="color:var(--text-muted);margin-top:4px;">RESTful 接口规范 v2...</div>
+          </div>
+        </div>
+      </div>
+      <div class="note-row"><strong>问题：</strong>每个卡片 ~56px 高度，280px 侧边栏在 1080p 下约可见 12 个会话，稍多就需滚动。内边距偏大。</div>
+    </div>
+
+    <div class="compare-col">
+      <span class="col-label after">优化后</span>
+      <div class="mock-frame sidebar-mock">
+        <div class="mock-frame-title">紧凑模式 · 每项 ~40px 高 · +40% 可见会话数</div>
+        <div style="padding:2px 0;">
+          <div style="padding:7px 12px;border-bottom:1px solid rgba(255,255,255,.03);font-size:12px;display:flex;align-items:center;gap:10px;">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--accent-green);flex-shrink:0;"></span>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><strong>Claude</strong> <span style="color:var(--text-muted);">A股分析 · MACD金叉信号确认，建议买入...</span></span>
+            <span style="font-size:10px;color:var(--text-muted);flex-shrink:0;">2m</span>
+          </div>
+          <div style="padding:7px 12px;border-bottom:1px solid rgba(255,255,255,.03);font-size:12px;display:flex;align-items:center;gap:10px;">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--accent-green);flex-shrink:0;"></span>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><strong>Gemini</strong> <span style="color:var(--text-muted);">财报 · Q1营收同比增长23%，毛利提升...</span></span>
+            <span style="font-size:10px;color:var(--text-muted);flex-shrink:0;">5m</span>
+          </div>
+          <div style="padding:7px 12px;border-bottom:1px solid rgba(255,255,255,.03);font-size:12px;display:flex;align-items:center;gap:10px;">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--accent-orange);flex-shrink:0;animation:pulse 1.5s infinite;"></span>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><strong>GPT</strong> <span style="color:var(--accent-orange);">量化模型 · 等待回复中...</span></span>
+            <span style="font-size:10px;color:var(--text-muted);flex-shrink:0;">12m</span>
+          </div>
+          <div style="padding:7px 12px;border-bottom:1px solid rgba(255,255,255,.03);font-size:12px;display:flex;align-items:center;gap:10px;">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--text-muted);flex-shrink:0;"></span>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><strong>DeepSeek</strong> <span style="color:var(--text-muted);">API设计 · RESTful接口规范 v2...</span></span>
+            <span style="font-size:10px;color:var(--text-muted);flex-shrink:0;">1h</span>
+          </div>
+          <div style="padding:7px 12px;border-bottom:1px solid rgba(255,255,255,.03);font-size:12px;display:flex;align-items:center;gap:10px;">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--text-muted);flex-shrink:0;"></span>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><strong>GLM</strong> <span style="color:var(--text-muted);">策略回测 · 夏普比率1.8，最大回撤...</span></span>
+            <span style="font-size:10px;color:var(--text-muted);flex-shrink:0;">2h</span>
+          </div>
+          <div style="padding:7px 12px;border-bottom:1px solid rgba(255,255,255,.03);font-size:12px;display:flex;align-items:center;gap:10px;">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--text-muted);flex-shrink:0;"></span>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><strong>Qwen</strong> <span style="color:var(--text-muted);">新闻摘要 · 央行降准50bp...</span></span>
+            <span style="font-size:10px;color:var(--text-muted);flex-shrink:0;">3h</span>
+          </div>
+        </div>
+      </div>
+      <div class="note-row"><strong>改进：</strong>① 单行紧凑布局，AI 名称+预览文字合并；② 状态圆点替代左边框；③ 40px 高度比 56px 节省 28% 空间；④ 同屏可多显示 ~5 个会话；⑤ 建议作为可切换的"紧凑/舒适"双模式。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 8. 微交互 ==================== -->
+<div class="section" id="s8">
+  <div class="section-header">
+    <h2><span class="num">08</span>微交互与反馈 — 过渡动画+操作确认</h2>
+    <p>当前切换会话、发送消息等操作缺乏过渡动画，状态变化是瞬时的，体验偏"硬"。</p>
+    <div class="tags">
+      <span class="tag">体验打磨</span>
+      <span class="tag">动画</span>
+    </div>
+  </div>
+
+  <div class="compare-grid">
+    <div class="compare-col">
+      <span class="col-label before">当前</span>
+      <div class="mock-frame" style="width:100%;">
+        <div class="mock-frame-title">切换会话 · 瞬时切换，无过渡</div>
+        <div style="padding:16px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12px;color:var(--text-muted);">
+            点击会话 A → <span style="color:var(--accent);">瞬间</span> → 终端切换完成
+          </div>
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;text-align:center;color:var(--text-muted);font-size:12px;">
+            ⚡ 无过渡 · 内容瞬间替换
+          </div>
+          <div style="margin-top:12px;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);">
+            发送消息 → <span style="color:var(--accent);">无发送中状态</span> → 直接显示回复
+          </div>
+          <div style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);">
+            侧边栏收起 → 瞬间消失，无可点击动画反馈
+          </div>
+        </div>
+      </div>
+      <div class="note-row"><strong>问题：</strong>切换无过渡让人不确定是否操作成功；发送无加载态；面板折叠无动画显得生硬。</div>
+    </div>
+
+    <div class="compare-col">
+      <span class="col-label after">优化后</span>
+      <div class="mock-frame" style="width:100%;">
+        <div class="mock-frame-title">过渡动画+微反馈 · 操作有感知</div>
+        <div style="padding:16px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12px;">
+            点击会话 → <span style="color:var(--accent-green);">150ms 淡入过渡</span> → 终端内容展现
+          </div>
+          <div style="background:var(--bg);border:1px solid rgba(88,166,255,.15);border-radius:6px;padding:12px;text-align:center;font-size:12px;color:var(--text);">
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-right:6px;animation:pulse 1.5s infinite;"></span>
+            加载中 · 正在恢复会话上下文...
+          </div>
+          <div style="margin-top:12px;display:flex;align-items:center;gap:8px;font-size:12px;">
+            发送消息 → <span style="color:var(--accent-orange);">↑ 旋转→✓ 已发送</span> → <span style="color:var(--accent);">⋯ 等待回复（脉动动画）</span>
+          </div>
+          <div style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:12px;">
+            侧边栏 → <span style="color:var(--accent);">250ms ease 滑入/滑出</span>
+          </div>
+          <div style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:12px;">
+            复制路径 → <span style="color:var(--accent-green);">"已复制" toast（2s 后消失）</span>
+          </div>
+        </div>
+      </div>
+      <div class="note-row"><strong>改进：</strong>① 会话切换 150ms 淡入过渡（不拖慢操作）；② 发送按钮旋转→对勾动画；③ 等待回复时脉动指示器；④ 侧边栏 smooth slide；⑤ 操作反馈 toast（复制/保存等）。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== 总结 ==================== -->
+<div class="section" id="summary">
+  <div class="section-header">
+    <h2>优化总结 & 优先级建议</h2>
+    <p>按投入产出比和用户感知度排序</p>
+  </div>
+
+  <table class="summary-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>优化点</th>
+        <th>影响范围</th>
+        <th>投入</th>
+        <th>优先级</th>
+        <th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>01</td>
+        <td><strong>会话卡片状态可辨性</strong></td>
+        <td>sidebar 核心交互</td>
+        <td>中</td>
+        <td><span class="impact high"></span>P0</td>
+        <td>用户最频繁操作的区域，状态可见性直接影响效率</td>
+      </tr>
+      <tr>
+        <td>02</td>
+        <td><strong>侧边栏头部重构</strong></td>
+        <td>sidebar 头部</td>
+        <td>中</td>
+        <td><span class="impact high"></span>P0</td>
+        <td>新建/搜索是最高频操作，减少一步可大幅提升效率</td>
+      </tr>
+      <tr>
+        <td>08</td>
+        <td><strong>微交互与过渡动画</strong></td>
+        <td>全局</td>
+        <td>低</td>
+        <td><span class="impact med"></span>P1</td>
+        <td>纯 CSS 改动，投入小但体验提升显著</td>
+      </tr>
+      <tr>
+        <td>05</td>
+        <td><strong>浮动输入栏增强</strong></td>
+        <td>终端浮栏</td>
+        <td>低</td>
+        <td><span class="impact med"></span>P1</td>
+        <td>加模式标签+字符计数，改动小</td>
+      </tr>
+      <tr>
+        <td>03</td>
+        <td><strong>终端头部信息重构</strong></td>
+        <td>终端头部</td>
+        <td>低</td>
+        <td><span class="impact med"></span>P1</td>
+        <td>CSS+少量 JS，模型版本显式可见</td>
+      </tr>
+      <tr>
+        <td>07</td>
+        <td><strong>紧凑/舒适双模式</strong></td>
+        <td>sidebar 全局</td>
+        <td>中</td>
+        <td><span class="impact med"></span>P2</td>
+        <td>需要两套间距变量，但效果明显</td>
+      </tr>
+      <tr>
+        <td>04</td>
+        <td><strong>空状态页引导增强</strong></td>
+        <td>终端区域</td>
+        <td>低</td>
+        <td><span class="impact low"></span>P2</td>
+        <td>仅新用户受益，但改动小</td>
+      </tr>
+      <tr>
+        <td>06</td>
+        <td><strong>预览面板头部优化</strong></td>
+        <td>预览面板</td>
+        <td>低</td>
+        <td><span class="impact low"></span>P2</td>
+        <td>锦上添花，文件类型标签实用</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div style="margin-top:24px;padding:16px;background:rgba(88,166,255,.04);border-radius:8px;border:1px solid rgba(88,166,255,.1);font-size:13px;">
+    <strong>建议实施路径：</strong>P0（01+02）为第一轮，解决最核心的会话管理和操作效率问题；P1（03+05+08）为第二轮，打磨交互细节；P2（04+06+07）按需推进。预计全部完成约 2-3 个工作日。
+  </div>
+</div>
+
+<footer>
+  Claude Session Hub UI 优化方案 · 2026-05-03 · 共 8 个优化点
+</footer>
+
+<script>
+// 脉冲动画（演示用）
+const style = document.createElement('style');
+style.textContent = `
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+`;
+document.head.appendChild(style);
+</script>
+</body>
+</html>

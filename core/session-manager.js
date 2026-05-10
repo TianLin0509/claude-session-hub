@@ -21,6 +21,8 @@ function _loadConfigValues() {
     GLM_BASE_URL: config.glmBaseUrl,
     GLM_MODEL: config.glmModel,
     CODEX_BACKEND: config.codexBackend,
+    CODEX_SUBSCRIPTION_PROFILE: config.codexSubscriptionProfile,
+    CODEX_SUBSCRIPTION_PROFILES: config.codexSubscriptionProfiles,
     CODEX_API_KEY: config.codexApiKey,
     CODEX_API_BASE_URL: config.codexApiBaseUrl,
     CODEX_API_MODEL: config.codexApiModel,
@@ -44,6 +46,23 @@ function getConfigValues() {
 }
 function clearSessionManagerConfigCache() {
   _configValues = null;
+}
+
+/**
+ * 清空所有代理 env，让子进程对 PackyAPI / DeepSeek / GLM 等国内/中转端点直连。
+ * 必须清干净大小写两套——Hub 进程继承的可能是 Clash/Mihomo 设的 7890，
+ * 走代理时 60s idle TCP 会被切断（实测 image-2 长 prompt 100% 撞墙）。
+ * 详见 ppt-image-studio/docs/packyapi-image2-60s-investigation.html。
+ */
+function clearProxyEnv(env) {
+  delete env.HTTP_PROXY;
+  delete env.HTTPS_PROXY;
+  delete env.ALL_PROXY;
+  delete env.NO_PROXY;
+  delete env.http_proxy;
+  delete env.https_proxy;
+  delete env.all_proxy;
+  delete env.no_proxy;
 }
 
 function toClaudeProjectKey(projectDir) {
@@ -273,7 +292,7 @@ function ensureCodexApiProfile(cv, projectDir) {
     'disable_response_storage = true',
     `model = ${tomlString(model)}`,
     `model_provider = ${tomlString(provider)}`,
-    'model_reasoning_effort = "medium"',
+    'model_reasoning_effort = "high"',
     'approval_policy = "never"',
     'sandbox_mode = "danger-full-access"',
     '',
@@ -297,14 +316,35 @@ function isCodexApiBackend(cv) {
   return cv.CODEX_BACKEND === 'api' && !!cv.CODEX_API_KEY;
 }
 
+function expandHomePath(p) {
+  const raw = String(p || '').trim();
+  if (!raw) return '';
+  if (raw === '~') return os.homedir();
+  if (raw.startsWith('~/') || raw.startsWith('~\\')) return path.join(os.homedir(), raw.slice(2));
+  return raw;
+}
+
+function resolveCodexSubscriptionProfile(cv, requestedId) {
+  const profiles = Array.isArray(cv.CODEX_SUBSCRIPTION_PROFILES) ? cv.CODEX_SUBSCRIPTION_PROFILES : [];
+  const fallback = profiles.find(p => p && p.id === 'default') || { id: 'default', label: '主账号', home: '' };
+  const wanted = String(requestedId || cv.CODEX_SUBSCRIPTION_PROFILE || fallback.id || 'default').trim();
+  const selected = profiles.find(p => p && p.id === wanted) || fallback;
+  const home = expandHomePath(selected.home);
+  return {
+    id: selected.id || 'default',
+    label: selected.label || selected.id || 'Codex',
+    home: home ? path.resolve(home) : '',
+  };
+}
+
 // 订阅模式 codex CLI 0.125.0 对未 trust 的 cwd 启动时会弹
 // "Do you trust the contents of this directory? 1.Yes 2.No" 阻塞 TUI 主循环，
 // 永远不写 ~/.codex/sessions/.../rollout-*.jsonl → CodexTap _bound 永远空。
 // 修：spawn 前幂等追加 [projects.'<cwd>'] trust_level = "trusted" 到主 config.toml。
-function ensureCodexCwdTrusted(projectDir) {
+function ensureCodexCwdTrusted(projectDir, configDir = null) {
   if (!projectDir) return;
   try {
-    const codexHome = path.join(os.homedir(), '.codex');
+    const codexHome = configDir || path.join(os.homedir(), '.codex');
     fs.mkdirSync(codexHome, { recursive: true });
     const cfgPath = path.join(codexHome, 'config.toml');
     const projectKey = path.resolve(projectDir);
@@ -382,6 +422,7 @@ class SessionManager extends EventEmitter {
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
+    let codexProfile = null;
 
     if (isClaude) {
       // Force subscription OAuth (Claude Max): strip custom-endpoint env vars
@@ -408,16 +449,28 @@ class SessionManager extends EventEmitter {
       }
     } else if (isGemini || isCodex) {
       const cv = getConfigValues();
-      sessionEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
-      sessionEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
-      sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
-      if (isCodex && isCodexApiBackend(cv)) sessionEnv.CODEX_HOME = getCodexApiHome();
+      if (isCodex && isCodexApiBackend(cv)) {
+        // Codex API 模式走 PackyAPI，必须直连，否则代理 60s idle 切长任务
+        clearProxyEnv(sessionEnv);
+        sessionEnv.CODEX_HOME = getCodexApiHome();
+      } else {
+        if (isCodex) {
+          codexProfile = resolveCodexSubscriptionProfile(cv, opts.codexProfile);
+          if (codexProfile.home) {
+            sessionEnv.CODEX_HOME = codexProfile.home;
+          } else {
+            delete sessionEnv.CODEX_HOME;
+          }
+        }
+        // Gemini 走 google.com / Codex 订阅走 openai.com，需走代理过 GFW
+        sessionEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
+        sessionEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
+        sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+      }
     } else if (isDeepSeek) {
       const cv = getConfigValues();
       // DeepSeek API 国内直连，不走代理
-      delete sessionEnv.HTTP_PROXY;
-      delete sessionEnv.HTTPS_PROXY;
-      delete sessionEnv.NO_PROXY;
+      clearProxyEnv(sessionEnv);
       // 让 Claude Code CLI 连接 DeepSeek 的 Anthropic 兼容端点
       sessionEnv.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
       sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.DEEPSEEK_API_KEY;
@@ -436,9 +489,7 @@ class SessionManager extends EventEmitter {
       }
     } else if (isGlm) {
       const cv = getConfigValues();
-      delete sessionEnv.HTTP_PROXY;
-      delete sessionEnv.HTTPS_PROXY;
-      delete sessionEnv.NO_PROXY;
+      clearProxyEnv(sessionEnv);
       sessionEnv.ANTHROPIC_BASE_URL = cv.GLM_BASE_URL;
       sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.GLM_API_KEY;
       delete sessionEnv.ANTHROPIC_API_KEY;
@@ -453,10 +504,8 @@ class SessionManager extends EventEmitter {
       }
     } else if (isGpt) {
       const cv = getConfigValues();
-      // PackyAPI 国内直连，不走代理
-      delete sessionEnv.HTTP_PROXY;
-      delete sessionEnv.HTTPS_PROXY;
-      delete sessionEnv.NO_PROXY;
+      // PackyAPI 国内直连，不走代理（VPN 60s idle 会切断长任务）
+      clearProxyEnv(sessionEnv);
       sessionEnv.ANTHROPIC_BASE_URL = cv.GPT_BASE_URL;
       sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.GPT_API_KEY;
       delete sessionEnv.ANTHROPIC_API_KEY;
@@ -471,9 +520,7 @@ class SessionManager extends EventEmitter {
       }
     } else if (isKimi) {
       const cv = getConfigValues();
-      delete sessionEnv.HTTP_PROXY;
-      delete sessionEnv.HTTPS_PROXY;
-      delete sessionEnv.NO_PROXY;
+      clearProxyEnv(sessionEnv);
       sessionEnv.ANTHROPIC_BASE_URL = cv.KIMI_BASE_URL;
       sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.KIMI_API_KEY;
       delete sessionEnv.ANTHROPIC_API_KEY;
@@ -488,9 +535,7 @@ class SessionManager extends EventEmitter {
       }
     } else if (isQwen) {
       const cv = getConfigValues();
-      delete sessionEnv.HTTP_PROXY;
-      delete sessionEnv.HTTPS_PROXY;
-      delete sessionEnv.NO_PROXY;
+      clearProxyEnv(sessionEnv);
       sessionEnv.ANTHROPIC_BASE_URL = cv.QWEN_BASE_URL;
       sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.QWEN_API_KEY;
       delete sessionEnv.ANTHROPIC_API_KEY;
@@ -528,7 +573,16 @@ class SessionManager extends EventEmitter {
         // 记到 info 让 transcript-tap 注册时把这个 root 加进 CodexTap 的扫描列表。
         codexSessionsRoot = path.join(sessionEnv.CODEX_HOME, 'sessions');
       } else {
-        ensureCodexCwdTrusted(spawnCwd);
+        codexProfile = codexProfile || resolveCodexSubscriptionProfile(cv, opts.codexProfile);
+        if (codexProfile.home) {
+          sessionEnv.CODEX_HOME = codexProfile.home;
+          ensureCodexCwdTrusted(spawnCwd, codexProfile.home);
+          // 非默认订阅账号也有独立 rollout root，否则 CodexTap 只扫 ~/.codex/sessions。
+          codexSessionsRoot = path.join(codexProfile.home, 'sessions');
+        } else {
+          delete sessionEnv.CODEX_HOME;
+          ensureCodexCwdTrusted(spawnCwd);
+        }
       }
     }
 
@@ -556,7 +610,7 @@ class SessionManager extends EventEmitter {
       const mid = opts.model || 'claude-opus-4-7[1m]';
       currentModel = { id: mid, displayName: mid };
     } else if (isGemini) {
-      const mid = opts.model || 'gemini-2.5-flash';
+      const mid = opts.model || 'gemini-3-pro-preview';
       currentModel = { id: mid, displayName: SessionManager.geminiDisplayName(mid) };
     } else if (isCodex) {
       const cv = getConfigValues();
@@ -600,6 +654,8 @@ class SessionManager extends EventEmitter {
       meetingId: opts.meetingId || null,
       currentModel,
       codexSessionsRoot,
+      ...(isCodex && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
+      ...(opts.codexSid ? { codexSid: opts.codexSid } : {}),
       // Spec 3 · W3 resume bug fix (a)：resume 启动时立即写入已知 ccSessionId，
       // 不等 Stop hook 第一次回调。否则 spawn 到第一次 Stop 之间 (~数秒) 卡片视图
       // 拿不到 ccSessionId → IPC parse-session-transcript 返 'transcript not found' → 空白。
@@ -699,7 +755,7 @@ class SessionManager extends EventEmitter {
 
     if (isGemini) {
       let cmd = ' gemini --approval-mode yolo';
-      cmd += ` --model ${opts.model || 'gemini-2.5-flash'}`;
+      cmd += ` --model ${opts.model || 'gemini-3-pro-preview'}`;
       if (kind === 'gemini-resume') {
         cmd += ' --resume latest';
       } else if (opts.useResume) {
@@ -1027,6 +1083,14 @@ class SessionManager extends EventEmitter {
     return { ...session.info };
   }
 
+  updateSessionMeta(sessionId, fields = {}) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !fields || typeof fields !== 'object') return undefined;
+    Object.assign(session.info, fields);
+    this.emit('session-updated', this._toPublic(session.info));
+    return { ...session.info };
+  }
+
   writeToSession(sessionId, data) {
     const s = this.sessions.get(sessionId);
     if (s && s.pty) s.pty.write(data);
@@ -1097,7 +1161,7 @@ class SessionManager extends EventEmitter {
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}\r\n`;
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
-      cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-2.5-flash'}\r\n`;
+      cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
     } else if (kind === 'claude' || kind === 'claude-resume') {
       cmd = ` claude --model ${modelId || 'claude-opus-4-7[1m]'}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {

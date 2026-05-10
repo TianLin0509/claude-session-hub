@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>圆桌卡片改造 · 效果图 · 2026-05-01</title>
+<style>
+  :root {
+    --c-claude-rgb: 217, 119, 87;
+    --c-claude: #d97757;
+    --c-gemini-rgb: 138, 180, 248;
+    --c-gemini: #8ab4f8;
+    --c-codex-rgb: 156, 163, 175;
+    --c-codex: #9ca3af;
+    --c-pikachu: #facc15;
+    --c-charmander: #fb923c;
+    --c-squirtle: #38bdf8;
+    --bg: #0d1117;
+    --panel: #151b25;
+    --border: #1f2735;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .hero {
+    background: linear-gradient(135deg, #1a2332 0%, #0d1117 100%);
+    padding: 60px 48px 40px;
+    border-bottom: 1px solid var(--border);
+  }
+  .hero h1 {
+    margin: 0 0 12px;
+    font-size: 36px;
+    background: linear-gradient(90deg, var(--c-pikachu), var(--c-charmander), var(--c-squirtle));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .hero p { margin: 4px 0; color: var(--muted); }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-top: 32px;
+  }
+  .stat {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .stat-label { color: var(--muted); font-size: 12px; }
+  .stat-value { font-size: 24px; font-weight: 700; margin-top: 6px; }
+  .stat-value.bad { color: #fca5a5; }
+  .stat-value.good { color: #86efac; }
+
+  .container { max-width: 1400px; margin: 0 auto; padding: 40px 48px; }
+  h2 { margin: 48px 0 16px; font-size: 22px; border-left: 4px solid var(--c-pikachu); padding-left: 12px; }
+  h3 { margin: 32px 0 12px; font-size: 16px; color: var(--muted); }
+
+  .panel-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0;
+    overflow: hidden;
+  }
+  .panel-label {
+    background: rgba(255,255,255,0.04);
+    padding: 8px 16px;
+    font-size: 12px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+  }
+  .panel-label.before { color: #fca5a5; }
+  .panel-label.after { color: #86efac; }
+
+  /* ===== Card Strip CSS (matches design) ===== */
+  .mr-ft-strip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .mr-ft-strip.before { /* current: min-height only, can jump */
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .mr-ft-strip.before .mr-ft { height: auto; min-height: 72px; }
+  .mr-ft-strip.before .mr-ft-row1 { display: flex; gap: 8px; align-items: center; margin-bottom: 5px; }
+  .mr-ft-strip.before .mr-ft-row2 { display: flex; gap: 6px; margin-bottom: 2px; }
+
+  .mr-ft {
+    padding: 14px 16px;
+    height: 220px; /* fixed in new design */
+    border-bottom: 3px solid transparent;
+    position: relative;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    transition: background .15s;
+  }
+  .mr-ft:not(:last-child) { border-right: 1px solid var(--border); }
+  .mr-ft:hover { background: rgba(255,255,255,0.02); }
+  .mr-ft.claude { border-bottom-color: rgba(var(--c-claude-rgb), 0.15); }
+  .mr-ft.gemini { border-bottom-color: rgba(var(--c-gemini-rgb), 0.15); }
+  .mr-ft.codex  { border-bottom-color: rgba(var(--c-codex-rgb), 0.15); }
+  .mr-ft.claude.active { border-bottom-color: var(--c-claude); background: rgba(var(--c-claude-rgb), 0.06); }
+  .mr-ft.gemini.active { border-bottom-color: var(--c-gemini); background: rgba(var(--c-gemini-rgb), 0.06); }
+  .mr-ft.codex.active  { border-bottom-color: var(--c-codex);  background: rgba(var(--c-codex-rgb), 0.06); }
+
+  /* New: header = avatar + info column */
+  .mr-ft-head {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .mr-ft-avatar {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: rgba(255,255,255,0.04);
+    border: 2px solid transparent;
+    transition: transform .2s, border-color .2s;
+  }
+  .mr-ft.claude .mr-ft-avatar { border-color: rgba(var(--c-claude-rgb), 0.4); }
+  .mr-ft.gemini .mr-ft-avatar { border-color: rgba(var(--c-gemini-rgb), 0.4); }
+  .mr-ft.codex  .mr-ft-avatar { border-color: rgba(var(--c-codex-rgb), 0.4); }
+  .mr-ft.thinking-card .mr-ft-avatar,
+  .mr-ft.streaming-card .mr-ft-avatar {
+    animation: avatar-bounce 1.6s ease-in-out infinite;
+  }
+  @keyframes avatar-bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-3px); }
+  }
+  .mr-ft-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+  .mr-ft-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .mr-ft-row1 { display: flex; align-items: center; gap: 8px; }
+  .mr-ft-name { font-weight: 700; font-size: 15px; }
+  .mr-ft-name.claude { color: var(--c-claude); }
+  .mr-ft-name.gemini { color: var(--c-gemini); }
+  .mr-ft-name.codex  { color: var(--c-codex); }
+  .mr-ft-status { font-size: 11px; padding: 2px 8px; border-radius: 8px; font-weight: 600; }
+  .mr-ft-status.completed { background: rgba(74,222,128,0.2); color: #86efac; }
+  .mr-ft-status.thinking  { background: rgba(250,204,21,0.2); color: #fde68a; animation: pulse 1.5s ease-in-out infinite; }
+  .mr-ft-status.streaming { background: rgba(99,102,241,0.2); color: #a5b4fc; animation: pulse 1.5s ease-in-out infinite; }
+  .mr-ft-status.idle      { background: rgba(139,148,158,0.2); color: #a0a8b9; }
+  .mr-ft-status.timeout   { background: rgba(248,113,113,0.2); color: #fca5a5; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+  .mr-ft-row2 { display: flex; align-items: center; gap: 6px; }
+  .mr-ft-model { font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: 600; color: #fff; }
+  .mr-ft-model.claude { background: rgba(var(--c-claude-rgb), 0.65); }
+  .mr-ft-model.gemini { background: rgba(var(--c-gemini-rgb), 0.65); }
+  .mr-ft-model.codex  { background: rgba(var(--c-codex-rgb), 0.65); }
+  .mr-ft-ctx { font-size: 10px; padding: 2px 6px; border-radius: 3px; }
+  .mr-ft-ctx.ok   { background: rgba(74,222,128,0.15); color: #4ade80; }
+
+  /* New stats rows */
+  .mr-ft-row3, .mr-ft-row4 {
+    display: flex;
+    align-items: center;
+    font-size: 11px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    gap: 6px;
+  }
+  .mr-ft-row3 .icon, .mr-ft-row4 .icon { opacity: 0.7; }
+  .mr-ft-stat-current { color: #fde68a; font-weight: 600; }
+  .mr-ft-stat-total { color: var(--muted); }
+  .mr-ft-stat-divider { color: rgba(255,255,255,0.15); margin: 0 2px; }
+
+  /* Preview / progress at bottom (flex grow) */
+  .mr-ft-bottom {
+    margin-top: 10px;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid rgba(255,255,255,0.04);
+    padding-top: 8px;
+  }
+  .mr-ft-preview {
+    font-size: 12px;
+    color: #8b949e;
+    line-height: 1.5;
+    overflow: hidden;
+    flex: 1;
+  }
+  .mr-ft-preview.streaming { color: #c8d3e6; }
+  .mr-ft-cursor { display: inline-block; width: 5px; height: 10px; background: #fde68a; vertical-align: text-bottom; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .mr-ft-progress { margin-top: 6px; height: 3px; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,0.04); }
+  .mr-ft-progress-bar {
+    height: 100%; border-radius: 2px;
+    background-size: 200% 100%;
+    animation: flowbar 1.6s linear infinite;
+  }
+  .mr-ft-progress-bar.claude { background: linear-gradient(90deg, var(--c-claude), rgba(var(--c-claude-rgb),0.2), transparent); background-size: 200% 100%; }
+  .mr-ft-progress-bar.gemini { background: linear-gradient(90deg, var(--c-gemini), rgba(var(--c-gemini-rgb),0.2), transparent); background-size: 200% 100%; }
+  .mr-ft-progress-bar.codex  { background: linear-gradient(90deg, var(--c-codex), rgba(var(--c-codex-rgb),0.2), transparent); background-size: 200% 100%; }
+  @keyframes flowbar { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  .mr-ft-expand {
+    position: absolute; top: 8px; right: 8px;
+    background: rgba(255,255,255,0.06); border: none; color: #8b949e;
+    width: 22px; height: 22px; border-radius: 4px; cursor: pointer;
+    font-size: 13px;
+  }
+
+  /* "Before" demo (current bug) — variable height jumping */
+  .mr-ft-strip.before .mr-ft.claude-overflow {
+    /* simulating overflow: text in row1 status pushes layout */
+  }
+  .mr-ft-strip.before .mr-ft.claude-overflow .mr-ft-status {
+    white-space: nowrap;
+    /* status badge with extra-long label causes column to expand */
+  }
+
+  /* Annotation labels */
+  .annotation {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .ann-item {
+    background: rgba(74,222,128,0.06);
+    border-left: 3px solid #4ade80;
+    padding: 10px 14px;
+    border-radius: 0 6px 6px 0;
+    font-size: 13px;
+  }
+  .ann-item.bad { background: rgba(248,113,113,0.06); border-left-color: #f87171; }
+  .ann-item code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 3px; font-size: 12px; }
+
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { background: rgba(255,255,255,0.03); color: var(--muted); font-weight: 600; }
+  code.path { background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 3px; font-size: 12px; color: #c8d3e6; }
+
+  .footer { padding: 32px 48px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); margin-top: 40px; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>🎴 圆桌卡片改造 · 效果图</h1>
+  <p>把"卡片乱跳 + 信息缺失"升级为"固定布局 + 宝可梦头像 + 时间/token 双重统计"</p>
+  <p style="font-size: 13px; opacity: 0.6;">2026-05-01 · brainstorming 阶段产出 · 待用户确认进入 spec.md / plan.md</p>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-label">当前问题</div>
+      <div class="stat-value bad">卡片乱跳</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">改造后</div>
+      <div class="stat-value good">固定 220px</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">新增信息</div>
+      <div class="stat-value">⏱+🪙 双统计</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">趣味元素</div>
+      <div class="stat-value">🎴 宝可梦</div>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+<h2>① 改造前 vs 改造后</h2>
+
+<h3 style="color:#fca5a5;">❌ 改造前（当前布局，streaming 时尺寸乱跳）</h3>
+<div class="panel-wrap">
+  <div class="panel-label before">⚠ 当前 · grid-template-columns: repeat(3, 1fr) · min-height: 72px · 内容增长会撑大单格</div>
+  <div class="mr-ft-strip before">
+    <div class="mr-ft claude active">
+      <button class="mr-ft-expand">↗</button>
+      <div class="mr-ft-row1">
+        <span class="mr-ft-name claude">Claude</span>
+        <span class="mr-ft-status streaming">输出中</span>
+        <span style="margin-left: auto; font-size: 11px; color:#fde68a;">12s</span>
+      </div>
+      <div class="mr-ft-row2">
+        <span class="mr-ft-model claude">Opus 4.7</span>
+        <span class="mr-ft-ctx ok">Ctx 4%</span>
+      </div>
+      <div class="mr-ft-preview streaming" style="max-height:54px; margin-top:5px;">
+        在分析这个问题时，我倾向于先建立完整的多 AI 协同模型。考虑到 Gemini 的限流以及 Codex 的 sandbox 限制，我们需要设计鲁棒的失败回退路径。一个核心点是<span class="mr-ft-cursor"></span>
+      </div>
+    </div>
+    <div class="mr-ft gemini">
+      <div class="mr-ft-row1">
+        <span class="mr-ft-name gemini">Gemini</span>
+        <span class="mr-ft-status thinking">思考中</span>
+        <span style="margin-left: auto; font-size: 11px; color:#fde68a;">8s</span>
+      </div>
+      <div class="mr-ft-row2">
+        <span class="mr-ft-model gemini">2.5 Pro</span>
+      </div>
+      <div class="mr-ft-progress" style="margin-top:4px;">
+        <div class="mr-ft-progress-bar gemini"></div>
+      </div>
+    </div>
+    <div class="mr-ft codex">
+      <div class="mr-ft-row1">
+        <span class="mr-ft-name codex">Codex</span>
+        <span class="mr-ft-status idle">待命</span>
+      </div>
+      <div class="mr-ft-row2">
+        <span class="mr-ft-model codex">gpt-5.2</span>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="annotation">
+  <div class="ann-item bad">❌ 三张卡片高度不一致：Claude 因 streaming preview 撑高，Codex 没 row3 高度仅 50px → 视觉上像挤压</div>
+  <div class="ann-item bad">❌ 当 streaming snippet 越来越长（每帧重渲），<code>repeat(3, 1fr)</code> 会让该格抢占其他格的宽度</div>
+  <div class="ann-item bad">❌ 信息密度低：只有模型/Ctx，缺少时间/token 累计数据</div>
+  <div class="ann-item bad">❌ 缺乏视觉趣味，三张卡片同质化</div>
+</div>
+
+<h3 style="color:#86efac; margin-top: 40px;">✅ 改造后（固定高度 + 宝可梦 + 双统计）</h3>
+<div class="panel-wrap">
+  <div class="panel-label after">✓ 新设计 · grid-template-columns: repeat(3, minmax(0, 1fr)) · height: 220px · 永不抖动</div>
+  <div class="mr-ft-strip">
+    <!-- Claude card · streaming -->
+    <div class="mr-ft claude active streaming-card">
+      <button class="mr-ft-expand">↗</button>
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/pikachu.png" alt="Pikachu"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1">
+            <span class="mr-ft-name claude">Claude</span>
+            <span class="mr-ft-status streaming">输出中</span>
+          </div>
+          <div class="mr-ft-row2">
+            <span class="mr-ft-model claude">Opus 4.7</span>
+            <span class="mr-ft-ctx ok">Ctx 4%</span>
+          </div>
+          <div class="mr-ft-row3">
+            <span class="icon">⏱</span>
+            <span class="mr-ft-stat-current">本轮 12s</span>
+            <span class="mr-ft-stat-divider">·</span>
+            <span class="mr-ft-stat-total">累计 1m23s</span>
+          </div>
+          <div class="mr-ft-row4">
+            <span class="icon">🪙</span>
+            <span class="mr-ft-stat-current">本轮 4.2k</span>
+            <span class="mr-ft-stat-divider">·</span>
+            <span class="mr-ft-stat-total">累计 28.5k</span>
+          </div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview streaming">
+          在分析这个问题时，我倾向于先建立完整的多 AI 协同模型。考虑到 Gemini 的限流以及 Codex 的 sandbox 限制，我们需要设计鲁棒的失败回退路径。一个核心点是<span class="mr-ft-cursor"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Gemini card · thinking -->
+    <div class="mr-ft gemini thinking-card">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/charmander.png" alt="Charmander"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1">
+            <span class="mr-ft-name gemini">Gemini</span>
+            <span class="mr-ft-status thinking">思考中</span>
+          </div>
+          <div class="mr-ft-row2">
+            <span class="mr-ft-model gemini">2.5 Pro</span>
+            <span class="mr-ft-ctx ok">Ctx 12%</span>
+          </div>
+          <div class="mr-ft-row3">
+            <span class="icon">⏱</span>
+            <span class="mr-ft-stat-current">本轮 8s</span>
+            <span class="mr-ft-stat-divider">·</span>
+            <span class="mr-ft-stat-total">累计 47s</span>
+          </div>
+          <div class="mr-ft-row4">
+            <span class="icon">🪙</span>
+            <span class="mr-ft-stat-current">本轮 -</span>
+            <span class="mr-ft-stat-divider">·</span>
+            <span class="mr-ft-stat-total">累计 18.2k</span>
+          </div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview" style="opacity: 0.5; font-style: italic;">等待 Gemini 输出…</div>
+        <div class="mr-ft-progress">
+          <div class="mr-ft-progress-bar gemini"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Codex card · completed -->
+    <div class="mr-ft codex">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/squirtle.png" alt="Squirtle"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1">
+            <span class="mr-ft-name codex">Codex</span>
+            <span class="mr-ft-status completed">已答 ✓</span>
+          </div>
+          <div class="mr-ft-row2">
+            <span class="mr-ft-model codex">gpt-5.2</span>
+            <span class="mr-ft-ctx ok">Ctx 8%</span>
+          </div>
+          <div class="mr-ft-row3">
+            <span class="icon">⏱</span>
+            <span class="mr-ft-stat-current">本轮 14s</span>
+            <span class="mr-ft-stat-divider">·</span>
+            <span class="mr-ft-stat-total">累计 1m02s</span>
+          </div>
+          <div class="mr-ft-row4">
+            <span class="icon">🪙</span>
+            <span class="mr-ft-stat-current">本轮 3.8k</span>
+            <span class="mr-ft-stat-divider">·</span>
+            <span class="mr-ft-stat-total">累计 22.1k</span>
+          </div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview">
+          基于代码分析，我建议从 PTY 写入路径优化入手——当前 _rtSendToPty 的硬编码 sleep 是最大延迟来源，应改为活性探测+缓存模式。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="annotation">
+  <div class="ann-item">✓ 三张卡片<strong>高度严格相等（220px 固定）</strong>，preview 区用 <code>flex: 1</code> 撑满剩余空间，永不抖动</div>
+  <div class="ann-item">✓ 横向用 <code>minmax(0, 1fr)</code>，长 streaming 文本不会撑大列宽</div>
+  <div class="ann-item">✓ 左侧 64×64 圆形头像，思考/输出时上下浮动 3px（柔和的<code>avatar-bounce</code>动画）</div>
+  <div class="ann-item">✓ row3/row4 为时间和 token 统计，"本轮"高亮 + "累计"灰显，对比清晰</div>
+  <div class="ann-item">✓ Gemini 思考中且无 token 时显示 <code>本轮 -</code>，避免误显示 0</div>
+</div>
+
+<h2>② 多状态展示（验证布局稳定性）</h2>
+
+<h3>场景 A：三个 AI 同时 streaming（极端抖动测试）</h3>
+<div class="panel-wrap">
+  <div class="mr-ft-strip">
+    <div class="mr-ft claude active streaming-card">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/pikachu.png"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1"><span class="mr-ft-name claude">Claude</span><span class="mr-ft-status streaming">输出中</span></div>
+          <div class="mr-ft-row2"><span class="mr-ft-model claude">Opus 4.7</span><span class="mr-ft-ctx ok">Ctx 4%</span></div>
+          <div class="mr-ft-row3"><span class="icon">⏱</span><span class="mr-ft-stat-current">本轮 18s</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 1m41s</span></div>
+          <div class="mr-ft-row4"><span class="icon">🪙</span><span class="mr-ft-stat-current">本轮 5.1k</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 33.7k</span></div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview streaming">让我从协议层面分析。Codex 的 task_complete 是 OpenAI 官方的<span class="mr-ft-cursor"></span></div>
+      </div>
+    </div>
+    <div class="mr-ft gemini streaming-card">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/charmander.png"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1"><span class="mr-ft-name gemini">Gemini</span><span class="mr-ft-status streaming">输出中</span></div>
+          <div class="mr-ft-row2"><span class="mr-ft-model gemini">2.5 Pro</span><span class="mr-ft-ctx ok">Ctx 12%</span></div>
+          <div class="mr-ft-row3"><span class="icon">⏱</span><span class="mr-ft-stat-current">本轮 22s</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 1m08s</span></div>
+          <div class="mr-ft-row4"><span class="icon">🪙</span><span class="mr-ft-stat-current">本轮 3.4k</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 21.8k</span></div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview streaming">从工程实践角度看，三层信号模型确实是当前最可靠的<span class="mr-ft-cursor"></span></div>
+      </div>
+    </div>
+    <div class="mr-ft codex streaming-card">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/squirtle.png"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1"><span class="mr-ft-name codex">Codex</span><span class="mr-ft-status streaming">输出中</span></div>
+          <div class="mr-ft-row2"><span class="mr-ft-model codex">gpt-5.2</span><span class="mr-ft-ctx ok">Ctx 8%</span></div>
+          <div class="mr-ft-row3"><span class="icon">⏱</span><span class="mr-ft-stat-current">本轮 9s</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 56s</span></div>
+          <div class="mr-ft-row4"><span class="icon">🪙</span><span class="mr-ft-stat-current">本轮 2.7k</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 19.4k</span></div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview streaming">同意 Claude 的方向。补充一点：app-server 模式可以把<span class="mr-ft-cursor"></span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<p style="color:var(--muted); font-size:13px;">→ 三个 AI 同时输出，长度各异，但卡片高度<strong>严格 220px 不变</strong></p>
+
+<h3>场景 B：完成态（已答对照）</h3>
+<div class="panel-wrap">
+  <div class="mr-ft-strip">
+    <div class="mr-ft claude">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/pikachu.png"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1"><span class="mr-ft-name claude">Claude</span><span class="mr-ft-status completed">已答 ✓</span></div>
+          <div class="mr-ft-row2"><span class="mr-ft-model claude">Opus 4.7</span><span class="mr-ft-ctx ok">Ctx 4%</span></div>
+          <div class="mr-ft-row3"><span class="icon">⏱</span><span class="mr-ft-stat-current">本轮 23s</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 2m05s</span></div>
+          <div class="mr-ft-row4"><span class="icon">🪙</span><span class="mr-ft-stat-current">本轮 6.8k</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 41.3k</span></div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview">综合三方观点，我建议优先实施 P0 阶段的 minmax 修复和高度固定。这能直接消除 streaming 抖动而不引入新的状态管理复杂度…</div>
+      </div>
+    </div>
+    <div class="mr-ft gemini">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/charmander.png"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1"><span class="mr-ft-name gemini">Gemini</span><span class="mr-ft-status completed">已答 ✓</span></div>
+          <div class="mr-ft-row2"><span class="mr-ft-model gemini">2.5 Pro</span><span class="mr-ft-ctx ok">Ctx 12%</span></div>
+          <div class="mr-ft-row3"><span class="icon">⏱</span><span class="mr-ft-stat-current">本轮 31s</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 1m45s</span></div>
+          <div class="mr-ft-row4"><span class="icon">🪙</span><span class="mr-ft-stat-current">本轮 4.5k</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 26.4k</span></div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview">从用户体验角度，固定高度比信息密度更重要——抖动会破坏注意力。建议把动画曲线改为 ease-out 让滚动更柔和…</div>
+      </div>
+    </div>
+    <div class="mr-ft codex">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/squirtle.png"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1"><span class="mr-ft-name codex">Codex</span><span class="mr-ft-status completed">已答 ✓</span></div>
+          <div class="mr-ft-row2"><span class="mr-ft-model codex">gpt-5.2</span><span class="mr-ft-ctx ok">Ctx 8%</span></div>
+          <div class="mr-ft-row3"><span class="icon">⏱</span><span class="mr-ft-stat-current">本轮 17s</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 1m19s</span></div>
+          <div class="mr-ft-row4"><span class="icon">🪙</span><span class="mr-ft-stat-current">本轮 3.2k</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 25.5k</span></div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview">技术上完全可行。补充一个 corner case：当 MutationObserver 检测到 preview 区文本变化时，确保 throttle 防止重排…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>场景 C：混合态（一个超时 + 一个完成 + 一个 idle）</h3>
+<div class="panel-wrap">
+  <div class="mr-ft-strip">
+    <div class="mr-ft claude">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/pikachu.png"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1"><span class="mr-ft-name claude">Claude</span><span class="mr-ft-status completed">已答 ✓</span></div>
+          <div class="mr-ft-row2"><span class="mr-ft-model claude">Opus 4.7</span><span class="mr-ft-ctx ok">Ctx 4%</span></div>
+          <div class="mr-ft-row3"><span class="icon">⏱</span><span class="mr-ft-stat-current">本轮 12s</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 45s</span></div>
+          <div class="mr-ft-row4"><span class="icon">🪙</span><span class="mr-ft-stat-current">本轮 2.1k</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 12.4k</span></div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview">从架构上看这个改造最重要的是消除布局抖动…</div>
+      </div>
+    </div>
+    <div class="mr-ft gemini">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar" style="opacity: 0.5;"><img src="assets/pokemon/charmander.png"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1"><span class="mr-ft-name gemini" style="opacity:0.6;">Gemini</span><span class="mr-ft-status timeout">⚠ 超时</span></div>
+          <div class="mr-ft-row2"><span class="mr-ft-model gemini">2.5 Pro</span></div>
+          <div class="mr-ft-row3"><span class="icon">⏱</span><span class="mr-ft-stat-current" style="color:#fca5a5;">本轮 180s+</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 1m23s</span></div>
+          <div class="mr-ft-row4"><span class="icon">🪙</span><span class="mr-ft-stat-current">本轮 -</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 8.4k</span></div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview" style="color:#fca5a5; font-style:italic;">⚠ Gemini 未返回 turn-complete 信号，建议 [手动提取] 或 [跳过]</div>
+      </div>
+    </div>
+    <div class="mr-ft codex">
+      <div class="mr-ft-head">
+        <div class="mr-ft-avatar"><img src="assets/pokemon/squirtle.png"></div>
+        <div class="mr-ft-info">
+          <div class="mr-ft-row1"><span class="mr-ft-name codex">Codex</span><span class="mr-ft-status idle">待命</span></div>
+          <div class="mr-ft-row2"><span class="mr-ft-model codex">gpt-5.2</span><span class="mr-ft-ctx ok">Ctx 8%</span></div>
+          <div class="mr-ft-row3"><span class="icon">⏱</span><span class="mr-ft-stat-current">本轮 -</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 1m02s</span></div>
+          <div class="mr-ft-row4"><span class="icon">🪙</span><span class="mr-ft-stat-current">本轮 -</span><span class="mr-ft-stat-divider">·</span><span class="mr-ft-stat-total">累计 22.1k</span></div>
+        </div>
+      </div>
+      <div class="mr-ft-bottom">
+        <div class="mr-ft-preview" style="opacity:0.5;">等待新轮次开始…</div>
+      </div>
+    </div>
+  </div>
+</div>
+<p style="color:var(--muted); font-size:13px;">→ 即使一个超时 / 一个 idle，三张卡仍然<strong>等高对齐</strong>；超时态头像变灰 + 时间数值红色提示</p>
+
+<h2>③ 关键改造点清单</h2>
+<table>
+  <tr><th>#</th><th>改造点</th><th>位置</th><th>实现要点</th></tr>
+  <tr>
+    <td>1</td>
+    <td>横向防溢出</td>
+    <td><code class="path">renderer\meeting-room.css:519</code></td>
+    <td><code>repeat(3, 1fr)</code> → <code>repeat(3, minmax(0, 1fr))</code></td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>纵向固定高度</td>
+    <td><code class="path">renderer\meeting-room.css:520-526</code></td>
+    <td><code>min-height: 72px</code> → <code>height: 220px</code> + <code>display: flex; flex-direction: column</code></td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>头像槽 (.mr-ft-head + .mr-ft-avatar)</td>
+    <td><code class="path">renderer\meeting-room.css</code> 新增</td>
+    <td>64×64 圆形 / 思考态 bounce 动画 / kind-color 边框</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>HTML 结构调整</td>
+    <td><code class="path">renderer\meeting-room.js:224 _ftHtml</code></td>
+    <td>头部包成 <code>.mr-ft-head</code> + 信息列 <code>.mr-ft-info</code> + 底部 <code>.mr-ft-bottom</code></td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>新增时间统计行 (row3)</td>
+    <td><code class="path">renderer\meeting-room.js:_ftHtml</code></td>
+    <td>本轮秒数（已有 elapsed）+ 累计秒数（需新增 meeting-level 累加器）</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td>新增 token 统计行 (row4)</td>
+    <td><code class="path">renderer\meeting-room.js + core\transcript-tap.js</code></td>
+    <td>本轮 tokens.total（已有）+ 累计（每轮完成时累加到 meeting state）</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td>资源文件</td>
+    <td><code class="path">renderer\assets\pokemon\</code> 新增</td>
+    <td>pikachu.png（Claude）/ charmander.png（Gemini）/ squirtle.png（Codex）</td>
+  </tr>
+  <tr>
+    <td>8</td>
+    <td>会议状态扩展</td>
+    <td><code class="path">core\roundtable-orchestrator.js</code></td>
+    <td>state.aiStats[kind] = { totalThinkSec, totalTokens, perTurnHistory }</td>
+  </tr>
+</table>
+
+<h2>④ 数据来源映射</h2>
+<table>
+  <tr><th>展示字段</th><th>当前来源</th><th>新增累加逻辑</th></tr>
+  <tr>
+    <td>本轮思考时间</td>
+    <td><code>_thinkStartTs[meetingId]</code> 已有</td>
+    <td>turn-complete 时把 (Date.now - _thinkStartTs) 写入 state.aiStats[kind].perTurnHistory</td>
+  </tr>
+  <tr>
+    <td>累计思考时间</td>
+    <td>无</td>
+    <td>每轮完成后累加: <code>state.aiStats[kind].totalThinkSec += elapsed</code></td>
+  </tr>
+  <tr>
+    <td>本轮 token</td>
+    <td><code>partial.tokens.total</code> 已有（transcript-tap）</td>
+    <td>直接展示 lastTurn.tokensBy[sub.sid] 或 partial.tokens.total</td>
+  </tr>
+  <tr>
+    <td>累计 token</td>
+    <td>无</td>
+    <td>每轮完成后累加: <code>state.aiStats[kind].totalTokens += tokensThisTurn</code></td>
+  </tr>
+</table>
+
+<h2>⑤ 风险与边界条件</h2>
+<table>
+  <tr><th>场景</th><th>处理策略</th></tr>
+  <tr><td>头像图片加载失败</td><td>img onerror fallback 到 emoji（🟡/🟠/🔵）</td></tr>
+  <tr><td>token 信号缺失（Gemini 部分场景）</td><td>显示 "本轮 -"，不写入累加器</td></tr>
+  <tr><td>累计数据持久化</td><td>state.aiStats 随 state.json 持久化（已有 _saveState 机制）</td></tr>
+  <tr><td>preview 区文本超长</td><td><code>flex: 1; overflow: hidden</code> 自动截尾，CSS 控制不破坏布局</td></tr>
+  <tr><td>会议室主区窗口缩小</td><td>220px 固定高度 + 三列等分仍然成立；极端情况（窗口 &lt; 480px）可触发响应式降级到单列</td></tr>
+  <tr><td>头像动画影响性能</td><td>仅 transform: translateY，GPU 合成，3 个元素无压力</td></tr>
+</table>
+
+<h2>⑥ 与既有改造的协调</h2>
+<p>本次改造与已在 plan 中的两份计划<strong>互不冲突</strong>，但可以协同优化：</p>
+<ul>
+  <li><code class="path">2026-04-30-roundtable-latency.md</code> — 改 <code>main.js _rtSendToPty</code>，与本次（meeting-room.js/css）零交集</li>
+  <li><code class="path">2026-04-30-roundtable-resilience.md</code> — 改 transcript-tap 的信号识别 + 新增 manual-extract IPC，与本次（UI 渲染）零交集</li>
+  <li>但本次新增的 timeout 状态展示要兼容 resilience plan 的 absent/errored/manual_extracted 等扩展状态——建议<strong>本次改造在 resilience plan 之后执行</strong>，避免双重维护状态映射</li>
+</ul>
+
+</div>
+
+<div class="footer">
+  <p>📁 本文件路径: <code>C:\Users\lintian\claude-session-hub\docs\roundtable-card-redesign-2026-05-01.html</code></p>
+  <p>🎯 阶段: brainstorming · 等待用户确认进入 spec.md → plan.md</p>
+  <p>🔗 相关: roundtable-latency-2026-04-30 · roundtable-resilience-2026-04-30</p>
+</div>
+
+</body>
+</html>

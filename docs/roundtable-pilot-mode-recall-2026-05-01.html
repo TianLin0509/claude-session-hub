@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>主驾模式 · 按需查询历史 · 2026-05-01</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --bg-card-2: #1c232c;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --text-muted: #6e7681;
+  --accent: #58a6ff;
+  --accent-2: #d2a8ff;
+  --green: #3fb950;
+  --yellow: #f0883e;
+  --red: #f85149;
+  --orange: #db6d28;
+  --cyan: #39d0d8;
+  --pink: #ff7b72;
+  --purple: #bc8cff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  font-size: 14px;
+}
+.wrap { max-width: 1280px; margin: 0 auto; padding: 32px 24px 80px; }
+h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.02em; }
+h2 { font-size: 22px; margin: 48px 0 16px; padding-top: 8px; border-top: 1px solid var(--border-soft); display: flex; align-items: center; gap: 12px; }
+h2 .badge { font-size: 12px; background: var(--accent); color: #000; padding: 3px 8px; border-radius: 12px; font-weight: 600; }
+h3 { font-size: 17px; margin: 24px 0 10px; color: var(--accent-2); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+h4 { font-size: 14px; margin: 16px 0 6px; color: var(--cyan); }
+.subtitle { color: var(--text-dim); margin-bottom: 8px; }
+.meta { color: var(--text-muted); font-size: 12px; margin-bottom: 32px; }
+code { font-family: "JetBrains Mono", Consolas, monospace; background: var(--bg-card-2); padding: 1px 6px; border-radius: 3px; font-size: 12.5px; color: var(--accent-2); }
+pre { background: var(--bg-card-2); border: 1px solid var(--border-soft); border-radius: 6px; padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.55; }
+pre code { background: transparent; padding: 0; color: var(--text); }
+
+.toc { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin-bottom: 32px; }
+.toc-title { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+.toc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 16px; }
+.toc-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 4px; }
+.toc-item:hover { background: var(--bg-card-2); }
+.toc-num { font-weight: 700; color: var(--accent); width: 22px; text-align: center; }
+.toc-item a { color: var(--text); text-decoration: none; flex: 1; }
+
+table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+th { background: var(--bg-card); color: var(--text-dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+tr:hover td { background: rgba(88,166,255,0.04); }
+td.mono { font-family: "JetBrains Mono", monospace; font-size: 12px; }
+td.ok { color: var(--green); font-weight: 600; }
+td.no { color: var(--red); font-weight: 600; }
+td.warn { color: var(--yellow); font-weight: 600; }
+
+.flow {
+  background: var(--bg-card-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--text);
+}
+.flow .label { color: var(--accent); }
+.flow .src { color: var(--green); }
+.flow .out { color: var(--yellow); }
+.flow .bad { color: var(--red); }
+.flow .arrow { color: var(--text-muted); }
+
+.strategy {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 18px; margin: 14px 0;
+}
+.strategy.recommended { border-color: var(--green); border-width: 2px; box-shadow: 0 0 24px rgba(63,185,80,0.12); }
+.strategy.combine { border-color: var(--purple); border-width: 2px; box-shadow: 0 0 24px rgba(188,140,255,0.12); }
+.strategy h3 { margin-top: 0; }
+.verdict { font-size: 11px; padding: 2px 8px; border-radius: 10px; display: inline-flex; font-weight: 600; }
+.verdict.win { background: rgba(63,185,80,0.18); color: var(--green); }
+.verdict.meh { background: rgba(240,136,62,0.18); color: var(--yellow); }
+.verdict.no { background: rgba(248,81,73,0.18); color: var(--red); }
+.verdict.combine { background: rgba(188,140,255,0.18); color: var(--purple); }
+.tag { display: inline-block; background: var(--bg-card-2); border: 1px solid var(--border); border-radius: 3px; padding: 1px 6px; font-size: 11px; color: var(--text-dim); margin-right: 4px; }
+.tag.compatible { border-color: var(--green); color: var(--green); }
+
+.note { background: rgba(63,185,80,0.08); border-left: 3px solid var(--green); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+.warn-box { background: rgba(240,136,62,0.08); border-left: 3px solid var(--yellow); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+.danger { background: rgba(248,81,73,0.08); border-left: 3px solid var(--red); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+.info { background: rgba(88,166,255,0.08); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+
+.score-grid { display: grid; grid-template-columns: 1.5fr repeat(6, 60px); gap: 4px; font-size: 12px; margin: 12px 0; }
+.score-grid > div { padding: 8px; border-bottom: 1px solid var(--border-soft); }
+.score-grid > div.head { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; text-align: center; }
+.score-grid > div.head:first-child { text-align: left; }
+.score-grid > div.metric { color: var(--text-dim); }
+.score-cell { text-align: center; font-weight: 600; }
+.s-5 { color: var(--green); }
+.s-4 { color: #7bc96f; }
+.s-3 { color: var(--yellow); }
+.s-2 { color: var(--orange); }
+.s-1 { color: var(--red); }
+
+.ai-tag {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 600;
+}
+.ai-tag.claude { background: rgba(245,215,106,0.2); color: #f5d76a; border: 1px solid #f5d76a; }
+.ai-tag.gemini { background: rgba(255,122,74,0.2); color: #ff7a4a; border: 1px solid #ff7a4a; }
+.ai-tag.codex { background: rgba(95,168,230,0.2); color: #5fa8e6; border: 1px solid #5fa8e6; }
+.ai-tag.deepseek { background: rgba(63,185,80,0.2); color: var(--green); border: 1px solid var(--green); }
+.ai-tag.glm { background: rgba(188,140,255,0.2); color: var(--purple); border: 1px solid var(--purple); }
+
+ul.tight li { margin-bottom: 4px; }
+
+.footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--border-soft); color: var(--text-muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>主驾模式 · 按需查询历史设计</h1>
+<div class="subtitle">摘要注入（默认） + 按需查询历史（按 AI 自主判断） · 6 种实现思路对比</div>
+<div class="meta">2026-05-01 · 立花道雪 · 主驾模式 v2 · D' 方案延伸</div>
+
+<div class="toc">
+  <div class="toc-title">本文档导览</div>
+  <div class="toc-grid">
+    <div class="toc-item"><span class="toc-num">①</span><a href="#changes">3 个改动确认</a></div>
+    <div class="toc-item"><span class="toc-num">②</span><a href="#unified">历史文件统一现状</a></div>
+    <div class="toc-item"><span class="toc-num">③</span><a href="#ideas">6 种"按需查询"实现思路</a></div>
+    <div class="toc-item"><span class="toc-num">④</span><a href="#scorecard">打分卡</a></div>
+    <div class="toc-item"><span class="toc-num">⑤</span><a href="#combo">推荐组合</a></div>
+    <div class="toc-item"><span class="toc-num">⑥</span><a href="#flow">完整数据流</a></div>
+  </div>
+</div>
+
+<!-- =========================== 改动确认 =========================== -->
+<h2 id="changes"><span class="badge">①</span>3 个改动已确认落地</h2>
+
+<table>
+  <thead><tr><th>#</th><th>改动</th><th>影响</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td><strong>命名："独享" → "主驾"</strong></td>
+      <td>UI 按钮"🚗 主驾"；旁观 AI 称"🛋 副驾"；变量 <code>soloSlot</code> → <code>pilotSlot</code>；IPC channel <code>roundtable:pilot-toggle</code></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><strong>摘要不限字数 + 主驾自己生成</strong></td>
+      <td>摘要 prompt: "请总结你和我刚才的对话要点（多少字合适都由你决定，不需要简短）"。主驾完成是默认行为，不再降级</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><strong>新增"按需查询历史"通道</strong></td>
+      <td><strong>本文重点</strong>。让副驾 AI 拿到摘要后，如果觉得不够，自主查阅完整历史</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- =========================== 历史现状 =========================== -->
+<h2 id="unified"><span class="badge">②</span>历史文件统一记录现状</h2>
+
+<p>项目当前有 <strong>3 个独立的历史文件</strong>，分散记录：</p>
+
+<table>
+  <thead><tr><th>数据</th><th>文件路径</th><th>格式</th><th>主驾相关</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>圆桌每轮记录</td>
+      <td class="mono">&lt;arena&gt;/&lt;meetingId&gt;-roundtable.json</td>
+      <td>JSON 数组（turns）</td>
+      <td class="warn">仅记录多人轮次，不含主驾期间</td>
+    </tr>
+    <tr>
+      <td>主驾私聊</td>
+      <td class="mono">&lt;arena&gt;/&lt;meetingId&gt;-roundtable-private.json</td>
+      <td>JSON（按 kind 分类）</td>
+      <td class="ok">主驾期间消息进这里</td>
+    </tr>
+    <tr>
+      <td>自由对话 timeline</td>
+      <td class="mono">&lt;arena&gt;/&lt;meetingId&gt;.json 的 <code>_timeline</code></td>
+      <td>JSON 数组</td>
+      <td class="warn">摘要可存这里作为系统消息</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="info">
+  <strong>现状评估</strong>：JSON 格式对 AI 不友好（解析成本高、噪声字段多）。统一性也差（要查全貌得读 3 个文件）。<br>
+  <strong>设计建议</strong>：主驾模式落地时同步生成一份 <strong>统一 markdown 镜像</strong>：<code>&lt;arena&gt;/&lt;meetingId&gt;-pilot-recap-&lt;timestamp&gt;.md</code>，专为副驾 AI 阅读优化。这本质上是<strong>把 3 个 JSON 转成 1 份对话 markdown</strong>，AI 读 1 个文件就能拿到全貌。
+</div>
+
+<!-- =========================== 6 种思路 =========================== -->
+<h2 id="ideas"><span class="badge">③</span>6 种"按需查询"实现思路</h2>
+
+<p>所有思路都建立在<strong>已有 D'（主驾自动生成不限字数摘要）</strong>之上，作为"摘要不够时的兜底"。</p>
+
+<!-- F1 -->
+<div class="strategy">
+  <h3>F1 · 路径告知（你提的） <span class="verdict meh">基础版</span></h3>
+  <p><strong>做法</strong>：主驾摘要末尾自动附 footer：</p>
+  <pre><code>📂 完整历史: C:\Users\lintian\.claude-session-hub\arena-prompts\&lt;meetingId&gt;-roundtable-private.json
+该文件包含本次主驾期间的全部对话（5 轮，约 1.2k 词）。
+如基于摘要回答即可，则无需读取；如需细节，请用你的文件读取工具查阅。</code></pre>
+  <p><strong>给副驾的 prompt 完整示例</strong>：</p>
+  <pre><code>## 你刚才暂时离场（用户和 ⚡Slot1 主驾通过 5 轮深聊）
+&lt;主驾 Claude 的不限字数摘要&gt;
+
+📂 完整历史: C:\...\&lt;meetingId&gt;-roundtable-private.json
+&lt;path 描述&gt;
+
+## 现在用户问大家:
+那 Tesla 呢</code></pre>
+  <p><strong>支持矩阵</strong>：</p>
+  <p>
+    <span class="ai-tag claude">Claude ✓</span>
+    <span class="ai-tag gemini">Gemini ✓</span>
+    <span class="ai-tag codex">Codex ✓</span>
+    <span class="ai-tag deepseek">DeepSeek ✓</span>
+    <span class="ai-tag glm">GLM ✓</span>
+    所有 CLI AI 都有 Read / Bash 文件读取能力
+  </p>
+  <p><strong>优点</strong>：</p>
+  <ul class="tight">
+    <li>实现极简：prompt 末尾拼一行字符串，0 新代码</li>
+    <li>所有 AI 兼容（都能读文件）</li>
+    <li>用户透明：路径就是用户机器上的文件，可自己打开看</li>
+  </ul>
+  <p><strong>缺点</strong>：</p>
+  <ul class="tight">
+    <li>JSON 格式 AI 解析成本高，可能浪费 token 在解析 schema 字段上</li>
+    <li>路径暴露给 AI 心智模型有点"工程味重"</li>
+    <li>大文件（如 50 轮对话）AI 读完整文件可能超 ctx</li>
+  </ul>
+</div>
+
+<!-- F2 -->
+<div class="strategy recommended">
+  <h3>F2 · Markdown 镜像（F1 升级） <span class="verdict win">推荐基础</span></h3>
+  <p><strong>做法</strong>：主驾摘要生成时，Hub 同步生成一份对话历史的 markdown 镜像，给副驾的是<strong>这份 md 路径</strong>而非原 JSON。</p>
+  <pre><code># 主驾期会话历史 · Slot 1 (Claude / Opus 4.7)
+> 2026-05-01 14:32 ~ 14:58 · 5 轮 · 1.2k 词
+
+## 第 1 轮 (14:32)
+**用户**: 如何看美股科技股
+**Claude**: 当前美股科技股呈现分化...
+
+## 第 2 轮 (14:38)
+**用户**: 我重点关注 AI/半导体
+**Claude**: 建议 NVDA + AVGO + AMD...
+
+[... 后续 3 轮 ...]</code></pre>
+  <p><strong>给副驾的 prompt</strong>：</p>
+  <pre><code>📂 完整历史: C:\...\&lt;meetingId&gt;-pilot-recap-&lt;ts&gt;.md
+若摘要不够细，可用 Read 工具查阅这份 markdown（对话已格式化为人类可读）。</code></pre>
+  <p><strong>优点（相比 F1）</strong>：</p>
+  <ul class="tight">
+    <li>AI 读 markdown 几乎零解析成本（按行读对话即可）</li>
+    <li>用户可直接双击 md 自己看，做"对话存档"</li>
+    <li>符合 Hub 的"upstream data source"哲学（CLAUDE.md 铁律）</li>
+  </ul>
+  <p><strong>缺点</strong>：</p>
+  <ul class="tight">
+    <li>多一次文件 IO（Hub 写 md）</li>
+    <li>md 与 JSON 同步失败时数据不一致风险（缓解：md 仅在切回时生成一次性快照，不维护更新）</li>
+  </ul>
+</div>
+
+<!-- F3 -->
+<div class="strategy">
+  <h3>F3 · HTTP API · 副驾用 curl 查询 <span class="verdict meh">中等</span></h3>
+  <p><strong>做法</strong>：复用 Hub 既有 hook server（main.js 监听 127.0.0.1:&lt;port&gt;），新增 endpoint：</p>
+  <pre><code>GET http://127.0.0.1:&lt;hookPort&gt;/api/roundtable/history?meetingId=X&segment=pilot-1
+→ 返回 JSON: { turns: [...], summary: "..." }
+
+GET http://127.0.0.1:&lt;hookPort&gt;/api/roundtable/history?meetingId=X&segment=pilot-1&format=markdown
+→ 返回 markdown 文本</code></pre>
+  <p><strong>给副驾的 prompt</strong>：</p>
+  <pre><code>🌐 历史查询 API: curl "http://127.0.0.1:3457/api/roundtable/history?meetingId=&lt;id&gt;&segment=pilot-1"
+若摘要不够细，可用 Bash 工具调用此 API 查询完整历史。</code></pre>
+  <p><strong>优点</strong>：</p>
+  <ul class="tight">
+    <li>API 比文件更受控：可分页、按段查询、限流</li>
+    <li>支持精细查询：query string 可过滤"只看第 3 轮"或"只看用户问题"</li>
+    <li>未来扩展性好（语义检索 / 全文搜索）</li>
+  </ul>
+  <p><strong>缺点</strong>：</p>
+  <ul class="tight">
+    <li>实现成本：需新增 API endpoint + URL 设计 + 认证（避免任意进程读取）</li>
+    <li>port 不稳定（Hub 起多实例时 fallback 端口）需要 prompt 时动态注入</li>
+    <li>所有 AI 都能 curl 但额外 1 步 Bash 调用，比直接 Read 稍重</li>
+  </ul>
+</div>
+
+<!-- F4 -->
+<div class="strategy">
+  <h3>F4 · "@hub recall"协议 · AI 在输出中嵌入查询关键词 <span class="verdict no">不推荐</span></h3>
+  <p><strong>做法</strong>：教副驾 AI："如需详细历史，请在你的回答中先输出一行 <code>@hub:recall pilot-segment-1</code>，Hub 会立即把对应内容注入下一轮，你再继续回答。"</p>
+  <p><strong>优点</strong>：</p>
+  <ul class="tight">
+    <li>AI 不需要任何外部工具能力</li>
+    <li>对话流自然</li>
+  </ul>
+  <p><strong>缺点</strong>：</p>
+  <ul class="tight">
+    <li>需要 Hub 实时解析 AI 输出 + 中断 PTY + 注入 + 续接，<strong>turn 状态机大改</strong></li>
+    <li>turn-complete 检测复杂化（既有 marker 机制要适配）</li>
+    <li>AI 是否听话不可控（prompt 约束级别）</li>
+    <li>调试困难</li>
+  </ul>
+  <p><strong>结论</strong>：技术风险高，违反"轻量简单"。</p>
+</div>
+
+<!-- F5 -->
+<div class="strategy">
+  <h3>F5 · 索引化按需查询（F1+F2 升级） <span class="verdict win">推荐进阶</span></h3>
+  <p><strong>做法</strong>：摘要末尾不只给路径，而是给<strong>段落目录</strong>，让 AI 选择性读取部分内容。</p>
+  <pre><code>📂 完整历史: &lt;path&gt;.md (5 段)
+   段落 1 [行 1-32]   讨论 AI/半导体板块整体
+   段落 2 [行 33-78]  深入 AMD 估值（PE 28x vs 历史 25x）
+   段落 3 [行 79-110] NVDA 风险评估
+   段落 4 [行 111-145] AVGO 与博通收购影响
+   段落 5 [行 146-180] 仓位建议
+
+如需细节，可只读对应段落（如用 Read tool 的 offset/limit 读 33-78 行）。</code></pre>
+  <p><strong>段落自动切分</strong>：让主驾在生成摘要时，同时输出段落目录（一次 LLM 调用产出两个东西）。</p>
+  <p><strong>优点</strong>：</p>
+  <ul class="tight">
+    <li>token 节约：AI 只读自己关心的段落，不读全文</li>
+    <li>意图明确：副驾能精准定位"我需要了解 AMD 估值这块"</li>
+    <li>实现可叠加在 F2 之上（multi-step 输出）</li>
+  </ul>
+  <p><strong>缺点</strong>：</p>
+  <ul class="tight">
+    <li>主驾 prompt 复杂化：要求同时输出摘要+段落目录</li>
+    <li>段落切分质量依赖主驾</li>
+  </ul>
+</div>
+
+<!-- F6 -->
+<div class="strategy">
+  <h3>F6 · 用户主动追加 · UI 按钮 <span class="verdict win">推荐高级补充</span></h3>
+  <p><strong>做法</strong>：Hub UI 在副驾卡片上提供一个 [📜 喂完整历史] 按钮。用户点击后，Hub 把完整 markdown 历史强制注入该 AI 的下一轮 prompt（绕过 AI 自主判断）。</p>
+  <p><strong>触发场景</strong>：</p>
+  <ul class="tight">
+    <li>用户看到副驾 AI 第一次答得很笼统，知道它没读历史 → 点按钮强制喂</li>
+    <li>"完整复盘"心理需求：用户想确保所有 AI 看到全部细节</li>
+  </ul>
+  <p><strong>UI 示意</strong>：</p>
+  <pre><code>┌─ Slot 2 · 🔥小火龙 ────────────┐
+│ 🔥 Gemini  · 已答 ✓             │
+│ 2.5 Flash · Ctx 5%              │
+│ ⏱ 12s · 累计 37s · 🪙 1.2k    │
+│ ─────────────────────────────── │
+│ 关于 Tesla, 我看法是...          │
+│ ...                              │
+│ [📜 喂完整历史] [💬 私聊] ...   │
+└──────────────────────────────────┘</code></pre>
+  <p><strong>优点</strong>：</p>
+  <ul class="tight">
+    <li>用户主权：当用户不信任 AI 自主判断时，可强制干预</li>
+    <li>互补 F1/F2/F5 的不足（如 AI 错判"不需要查"导致回答粗糙）</li>
+  </ul>
+  <p><strong>缺点</strong>：</p>
+  <ul class="tight">
+    <li>需新增 UI 按钮 + IPC + prompt 注入逻辑</li>
+    <li>用户需要"看出 AI 答得粗糙"这种判断力</li>
+  </ul>
+</div>
+
+<!-- =========================== 打分卡 =========================== -->
+<h2 id="scorecard"><span class="badge">④</span>打分卡（35 分制）</h2>
+
+<div class="score-grid">
+  <div class="head metric">维度</div>
+  <div class="head score-cell">F1 路径</div>
+  <div class="head score-cell">F2 MD</div>
+  <div class="head score-cell">F3 HTTP</div>
+  <div class="head score-cell">F4 协议</div>
+  <div class="head score-cell">F5 索引</div>
+  <div class="head score-cell">F6 UI</div>
+
+  <div class="metric">实现成本（越低越好）</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-2">2</div>
+  <div class="score-cell s-1">1</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-3">3</div>
+
+  <div class="metric">AI 兼容性（5 家全支持）</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-5">5</div>
+
+  <div class="metric">Token 经济（按需读不浪费）</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-2">2</div>
+
+  <div class="metric">用户透明度（可见可控）</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-2">2</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-5">5</div>
+
+  <div class="metric">鲁棒性（不依赖外部假设）</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-2">2</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-5">5</div>
+
+  <div class="metric">扩展性（未来加功能）</div>
+  <div class="score-cell s-2">2</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-2">2</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-3">3</div>
+
+  <div class="metric">轻量简单</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-1">1</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-3">3</div>
+
+  <div class="metric"><strong>合计 / 35</strong></div>
+  <div class="score-cell s-3"><strong>28</strong></div>
+  <div class="score-cell s-5"><strong>29</strong></div>
+  <div class="score-cell s-3"><strong>25</strong></div>
+  <div class="score-cell s-1"><strong>14</strong></div>
+  <div class="score-cell s-5"><strong>28</strong></div>
+  <div class="score-cell s-4"><strong>26</strong></div>
+</div>
+
+<!-- =========================== 推荐组合 =========================== -->
+<h2 id="combo"><span class="badge">⑤</span>推荐组合：D' + F2 + F5（默认） + F6（高级）</h2>
+
+<div class="strategy combine">
+  <h3>组合方案 · 三层递进 <span class="verdict combine">最终推荐</span></h3>
+
+  <h4>第 1 层（默认始终启用）· D' 主驾不限字数摘要</h4>
+  <p>切回时主驾自己生成摘要，不限字数。摘要进 timeline 用户可见。</p>
+
+  <h4>第 2 层（默认始终启用）· F2 + F5 索引化 markdown 镜像</h4>
+  <p>同时生成 markdown 镜像 + 段落目录，路径附在副驾 prompt 末尾。副驾 AI 自主判断"摘要够不够"，不够则用 Read 工具读对应段落。</p>
+
+  <h4>第 3 层（高级模式）· F6 用户主动按钮</h4>
+  <p>副驾卡片上 [📜 喂完整历史] 按钮，用户点击强制注入完整 markdown。当 AI 自主判断不准时手动救场。</p>
+
+  <h4>三层递进的逻辑</h4>
+  <table>
+    <thead><tr><th>场景</th><th>触发哪一层</th><th>用户感知</th></tr></thead>
+    <tbody>
+      <tr><td>简单后续问题（如"那 Tesla 呢"）</td><td>L1 摘要够用</td><td>无感切回，副驾基于摘要回答</td></tr>
+      <tr><td>需要细节的问题（如"主驾刚才说 AMD PE 是多少？"）</td><td>L2 副驾自主读 md 段落 2</td><td>副驾回答里有具体数字，准确</td></tr>
+      <tr><td>用户需完整复盘（如要导出报告）</td><td>L3 用户点 [📜 喂完整历史]</td><td>副驾下一轮看到全部对话</td></tr>
+      <tr><td>主驾摘要质量差（极端）</td><td>L3 用户兜底</td><td>用户察觉后手动救场</td></tr>
+    </tbody>
+  </table>
+
+  <h4>为什么这样组合最优</h4>
+  <ul class="tight">
+    <li><strong>覆盖 80% 场景的 L1+L2 实现成本最低</strong>（一次文件 IO + prompt 末尾拼字符串）</li>
+    <li><strong>L3 是兜底</strong>（不依赖 AI 智能判断），但只有需要时才用</li>
+    <li><strong>token 经济性</strong>：L1 仅 100-300 字，L2 仅当 AI 判断需要时读，L3 仅用户触发</li>
+    <li><strong>5 家 AI 全兼容</strong>：F2/F5 都依赖 Read 工具，所有 CLI 都有；F6 是 UI 强制注入，不依赖 AI 能力</li>
+    <li><strong>用户主权</strong>：自动模式 + 手动救场，两手都有</li>
+  </ul>
+</div>
+
+<!-- =========================== 完整流 =========================== -->
+<h2 id="flow"><span class="badge">⑥</span>完整数据流（推荐组合）</h2>
+
+<div class="flow"><span class="label">[Phase 1] 用户开主驾模式</span>
+   user 点 [🚗 主驾] → 选 Slot 1 ⚡
+   meeting.pilotSlot = 0
+   UI: Slot1 红边 锁定; Slot2/3 半透 副驾
+   ↓
+<span class="label">[Phase 2] 主驾深聊（5 轮）</span>
+   user → "AI/半导体怎么看" → 仅 Slot1 PTY
+   Slot1 → "建议 NVDA + AVGO + AMD..."
+   ... (4 more turns)
+   <span class="src">存储:</span>
+     · 进 general-roundtable-private-store (private.json)
+     · NOT 进 timeline / turns
+   ↓
+<span class="label">[Phase 3] 用户点 [🚗] 关闭主驾</span>
+   <span class="out">Hub 自动流程:</span>
+
+   ① 取出 private store 中本次主驾 5 轮历史
+
+   ② <span class="src">调主驾 (Slot1 = Claude) 生成摘要</span>
+      prompt: "请总结你和我刚才的对话要点（多少字合适都由你决定）"
+      output: "我们围绕 AI/半导体板块讨论了三个核心标的：
+              NVDA 是 AI infra 龙头，估值贵但需求确定...
+              AMD 当前 PE 28x vs 历史均值 25x，略高但..."
+
+   ③ <span class="src">主驾同时输出段落目录（F5）</span>
+      output 末尾: "段落: 1)整体板块 2)NVDA 3)AMD 估值 4)AVGO 5)仓位建议"
+
+   ④ <span class="src">Hub 生成 markdown 镜像（F2）</span>
+      写入 &lt;arena&gt;/&lt;meetingId&gt;-pilot-recap-2026-05-01-1432.md
+      内容: "# 主驾期会话历史 · Slot 1 (Claude / Opus 4.7)
+              ## 第 1 轮 (14:32)
+              **用户**: 如何看美股科技股
+              **Claude**: ..."
+              ...
+
+   ⑤ <span class="src">摘要写入 meeting._timeline</span>
+      { idx: N, sid: 'system', tag: 'pilot-recap',
+        text: '[主驾回顾 by Claude] ...摘要全文...',
+        recapMdPath: '&lt;abs path&gt;',
+        segments: [{title:'整体板块', start:1, end:32}, ...] }
+
+   ⑥ UI 显示 timeline 系统消息: "[主驾回顾 · Claude 总结]"（折叠展开）
+   ↓
+<span class="label">[Phase 4] 用户发新消息</span>
+   user → "那 Tesla 呢"
+   ↓
+<span class="label">[Phase 5] Hub 构造 fanout prompt</span>
+   <span class="src">给主驾 (Slot1) 的 prompt:</span>
+     "你刚才已和用户深入讨论（参见你 PTY 历史）。
+      用户现在问大家: 那 Tesla 呢"
+
+   <span class="src">给副驾 (Slot2 Gemini, Slot3 Codex) 的 prompt:</span>
+     "## 你刚才暂时离场（用户和 ⚡Slot1 主驾通过 5 轮深聊）
+      &lt;主驾 Claude 的摘要 - 不限字数&gt;
+
+      📂 完整历史: C:\...\&lt;meetingId&gt;-pilot-recap-2026-05-01-1432.md
+      段落 1 [行 1-32]   讨论 AI/半导体板块整体
+      段落 2 [行 33-78]  AMD 估值
+      段落 3 [行 79-110] NVDA 风险
+      段落 4 [行 111-145] AVGO
+      段落 5 [行 146-180] 仓位建议
+      若摘要够则直接答；不够可用 Read 工具读对应段落。
+
+      ## 现在用户问大家:
+      那 Tesla 呢"
+   ↓
+<span class="label">[Phase 6] 副驾各自决策</span>
+   <span class="out">Gemini 判断: 摘要够 → 直接基于摘要回答 Tesla</span>
+   <span class="out">Codex 判断: 想看 AMD 估值细节 →
+                Read("C:\...\pilot-recap.md", offset=33, limit=46)
+                → 拿到段落 2 内容
+                → 基于详细数据回答 Tesla 与 AMD 估值对比</span>
+   ↓
+<span class="label">[Phase 7] (高级场景) 用户发现某副驾答得粗糙</span>
+   user 点 [📜 喂完整历史] 在 Codex 卡片
+   下一轮 prompt 强制前缀: "## 完整历史:\n&lt;md 全文&gt;\n## 用户问: ..."
+</div>
+
+<h3>关键数据契约（增量）</h3>
+
+<table>
+  <thead><tr><th>层</th><th>新增/改动</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>meeting state</td>
+      <td><code>pilotSlot: 0\|1\|2\|null</code></td>
+      <td>当前主驾的 slot index</td>
+    </tr>
+    <tr>
+      <td>meeting._timeline 条目</td>
+      <td><code>tag: 'pilot-recap'</code> + <code>recapMdPath</code> + <code>segments</code></td>
+      <td>系统消息 + md 镜像绝对路径 + 段落目录</td>
+    </tr>
+    <tr>
+      <td>新增文件</td>
+      <td><code>&lt;arena&gt;/&lt;meetingId&gt;-pilot-recap-&lt;ts&gt;.md</code></td>
+      <td>对话历史 markdown 镜像（一次性快照，不维护更新）</td>
+    </tr>
+    <tr>
+      <td>summary-engine</td>
+      <td>扩展支持 5 家 AI 摘要 + 段落目录提取</td>
+      <td>主驾自己生成（默认）；prompt 同时要摘要+段落</td>
+    </tr>
+    <tr>
+      <td>IPC 新增</td>
+      <td><code>'roundtable:force-recap-inject'</code></td>
+      <td>F6 用户按钮：强制把完整历史注入下一轮某副驾 prompt</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- =========================== 决策 =========================== -->
+<h2><span class="badge" style="background:var(--purple)">决策</span>需要你拍板</h2>
+
+<table>
+  <thead><tr><th>#</th><th>决策点</th><th>默认</th><th>是否同意</th></tr></thead>
+  <tbody>
+    <tr><td>D1</td><td>命名"主驾模式" / "副驾"</td><td>是</td><td>已确认</td></tr>
+    <tr><td>D2</td><td>摘要不限字数 + 主驾自己生成（默认）</td><td>是</td><td>已确认</td></tr>
+    <tr><td>D3</td><td>采用三层递进：D'(摘要) + F2+F5(索引md) + F6(用户按钮)</td><td>是</td><td>—</td></tr>
+    <tr><td>D4</td><td>生成 markdown 镜像（不只 JSON），存到 <code>&lt;arena&gt;/&lt;meetingId&gt;-pilot-recap-&lt;ts&gt;.md</code></td><td>是</td><td>—</td></tr>
+    <tr><td>D5</td><td>主驾摘要 prompt 同时输出段落目录（一次 LLM 调用产出两个）</td><td>是</td><td>—</td></tr>
+    <tr><td>D6</td><td>summary-engine 扩展支持 5 家（不只 Gemini）</td><td>是</td><td>—</td></tr>
+    <tr><td>D7</td><td>F6 [📜 喂完整历史] 按钮放在每个副驾卡片底部（与"💬 私聊"tab 同行）</td><td>是</td><td>—</td></tr>
+    <tr><td>D8</td><td>md 镜像生命周期：仅切回时一次性快照，不更新；Hub 关闭时清理超过 30 天的</td><td>是</td><td>—</td></tr>
+    <tr><td>D9</td><td>md 路径用绝对路径喂给 AI（Windows 风格 <code>C:\...</code>）</td><td>是</td><td>—</td></tr>
+    <tr><td>D10</td><td>主驾摘要进 timeline 时同时存 segments 数组（不只字符串）便于 UI 段落折叠</td><td>是</td><td>—</td></tr>
+    <tr><td>D11</td><td>放弃 F3 (HTTP API) / F4 (协议) — 性价比不如 F2+F5</td><td>是</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<h3>还需要你想清楚的开放问题</h3>
+
+<ol class="tight">
+  <li><strong>段落切分粒度</strong>：让主驾自由切（如"我觉得分 5 段合适"）还是 Hub 强制 N 段？建议自由切，主驾输出几段就几段。</li>
+  <li><strong>md 镜像内是否包含 thinking 块</strong>？若主驾是 Claude 有 thinking，是否要纳入 md？建议<strong>不含</strong>—— md 是用户/副驾视角的"对话记录"，thinking 是内部状态。</li>
+  <li><strong>F6 触发后是否替换 F2/F5</strong>？还是叠加？建议替换（用户既然要完整就给完整，不再喂摘要）。</li>
+  <li><strong>多次主驾切换的 timeline 视觉</strong>：连续 3 段主驾的 [主驾回顾] 是否合并显示？建议合并为"3 段主驾"，点击展开各段。</li>
+  <li><strong>主驾期间 timeline 可见性</strong>：UI 是否在主驾期间显示一个"📒 5 轮对话进行中..."的占位？让用户知道这段历史会被记录。</li>
+</ol>
+
+<div class="footer">
+  立花道雪 · Claude Session Hub · roundtable-pilot-mode-recall-2026-05-01<br>
+  确认决策后将合并入 spec → plan → 执行
+</div>
+
+</div>
+</body>
+</html>

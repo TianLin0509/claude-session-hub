@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hub Toolbar 重构 + 多 AI Resume 入口 · 2026-05-01</title>
+<style>
+  body { background:#0d1117; color:#f0f6fc; font:14px/1.6 -apple-system,Segoe UI,sans-serif; padding:30px; max-width:1200px; margin:0 auto; }
+  h1 { font-size:24px; border-bottom:2px solid #30363d; padding-bottom:10px; }
+  h2 { font-size:18px; border-bottom:1px solid #30363d; padding-bottom:6px; margin-top:36px; }
+  h3 { font-size:15px; margin-top:24px; color:#58a6ff; }
+  .meta { color:#8b949e; font-size:12px; margin-bottom:24px; }
+
+  /* sidebar mock - 模拟 hub 实际效果 */
+  .sidebar-mock {
+    background:#161b22; border:1px solid #30363d; border-radius:8px;
+    width:340px; padding:0; overflow:hidden;
+  }
+  .sidebar-header {
+    background:#1c2128; padding:10px 12px; border-bottom:1px solid #30363d;
+    display:flex; align-items:center; gap:6px;
+  }
+  .btn {
+    background:transparent; border:1px solid rgba(110,118,129,0.4); padding:5px 10px;
+    border-radius:5px; color:#f0f6fc; font-size:12px; cursor:pointer; line-height:1;
+    display:inline-flex; align-items:center; gap:4px;
+  }
+  .btn:hover { background:rgba(56,139,253,0.1); border-color:#58a6ff; }
+  .btn-new { background:#238636; border-color:#3fb950; color:#fff; font-weight:500; }
+  .btn-new:hover { background:#2ea043; }
+  .btn-resume { background:rgba(56,139,253,0.08); }
+  .btn-roundtable { background:rgba(187,128,9,0.15); border-color:rgba(210,153,34,0.5); color:#d29922; }
+  .btn-roundtable:hover { background:rgba(187,128,9,0.25); }
+  .btn-collapse { padding:5px 8px; }
+
+  /* AI logo placeholders（最终用 SVG） */
+  .ai-logo {
+    display:inline-block; width:16px; height:16px; border-radius:3px;
+    vertical-align:middle; margin-right:8px;
+    background-size:contain; background-position:center; background-repeat:no-repeat;
+  }
+  .logo-claude { background:#d97757; position:relative; }
+  .logo-claude::after { content:'C'; color:#fff; font-weight:bold; font-size:10px; line-height:16px; display:block; text-align:center; }
+  .logo-gemini { background:linear-gradient(135deg,#4285f4 0%,#ea4335 33%,#fbbc04 66%,#34a853 100%); }
+  .logo-codex { background:#10a37f; }
+  .logo-codex::after { content:'O'; color:#fff; font-weight:bold; font-size:10px; line-height:16px; display:block; text-align:center; }
+  .logo-deepseek { background:#4d6bfe; }
+  .logo-deepseek::after { content:'D'; color:#fff; font-weight:bold; font-size:10px; line-height:16px; display:block; text-align:center; }
+  .logo-glm { background:#28a4ff; }
+  .logo-glm::after { content:'智'; color:#fff; font-weight:bold; font-size:9px; line-height:16px; display:block; text-align:center; }
+  .logo-powershell { background:#012456; }
+  .logo-powershell::after { content:'>_'; color:#5391fe; font-weight:bold; font-size:8px; line-height:16px; display:block; text-align:center; }
+
+  /* dropdown */
+  .dropdown {
+    background:#161b22; border:1px solid #30363d; border-radius:6px; padding:4px 0;
+    min-width:200px; box-shadow:0 8px 24px rgba(0,0,0,0.5); position:relative;
+  }
+  .menu-group-label {
+    font-size:10px; color:#8b949e; padding:8px 12px 4px;
+    text-transform:uppercase; letter-spacing:0.6px; font-weight:600;
+  }
+  .menu-item {
+    padding:7px 12px; cursor:pointer; font-size:13px; display:flex; align-items:center;
+  }
+  .menu-item:hover { background:rgba(56,139,253,0.15); }
+  .menu-item .hint { color:#8b949e; font-size:11px; margin-left:auto; }
+  .menu-divider { height:1px; background:#30363d; margin:4px 0; }
+
+  /* compare */
+  .compare { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin:20px 0; }
+  .panel { background:#161b22; padding:16px; border-radius:8px; border:1px solid #30363d; }
+  .panel.before { border-left:4px solid #f85149; }
+  .panel.after { border-left:4px solid #3fb950; }
+  .panel h4 { margin:0 0 12px; font-size:14px; color:#8b949e; }
+  .panel ul { padding-left:20px; margin:12px 0 0; color:#8b949e; font-size:12px; }
+  .panel ul li { margin:4px 0; }
+
+  /* tables */
+  table { width:100%; border-collapse:collapse; margin:14px 0; font-size:13px; }
+  th, td { padding:8px 12px; border:1px solid #30363d; text-align:left; vertical-align:top; }
+  th { background:#1c2128; font-weight:600; }
+  code { background:#1c2128; padding:2px 6px; border-radius:3px; font-family:Consolas,monospace; font-size:12px; color:#79c0ff; }
+  pre { background:#1c2128; padding:12px; border-radius:6px; overflow-x:auto; font-size:12px; line-height:1.5; }
+
+  .callout { background:rgba(56,139,253,0.08); border-left:3px solid #58a6ff; padding:12px 16px; border-radius:4px; margin:16px 0; }
+  .callout.warn { background:rgba(248,81,73,0.08); border-left-color:#f85149; }
+  .callout.success { background:rgba(63,185,80,0.08); border-left-color:#3fb950; }
+
+  .arrow { color:#8b949e; margin:0 6px; }
+  .badge { display:inline-block; padding:1px 6px; border-radius:10px; font-size:10px; font-weight:600; }
+  .badge-new { background:#3fb950; color:#0d1117; }
+  .badge-bug { background:#f85149; color:#fff; }
+  .badge-keep { background:#21262d; color:#8b949e; border:1px solid #30363d; }
+
+  /* state展示 */
+  .state-row { display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap; margin:16px 0; }
+  .state-block h5 { margin:0 0 8px; font-size:12px; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px; }
+</style>
+</head>
+<body>
+
+<h1>Hub Toolbar 重构 + 多 AI Resume 入口</h1>
+<div class="meta">设计：2026-05-01 · 立花道雪 · Mockup 文档（最终视觉以实施为准）</div>
+
+<div class="callout">
+<strong>本期目标</strong>：
+（1）"创建" 与 "恢复" 入口彻底分开；
+（2）Resume 支持全部 5 家 AI 极简单层；
+（3）圆桌从 "+" 号独立成 toolbar 按钮；
+（4）删除无信息量的 "对话" 二字；
+（5）+ 号 dropdown 整理 + 各 AI 官方彩色 logo；
+（6）顺手修 GLM/DeepSeek resume 模型变 opus 4.7 的 bug。
+</div>
+
+<h2>1. Toolbar 改前 / 改后</h2>
+
+<div class="compare">
+  <div class="panel before">
+    <h4>改前 <span class="badge badge-keep">v0.x</span></h4>
+    <div class="sidebar-mock">
+      <div class="sidebar-header">
+        <span style="font-weight:600;">对话</span>
+        <button class="btn btn-new">+ 新建</button>
+        <button class="btn">↻ 恢复</button>
+        <button class="btn">选项 ▾</button>
+        <button class="btn btn-collapse">◀</button>
+      </div>
+    </div>
+    <ul>
+      <li>"对话" 二字 — 占位但无信息量</li>
+      <li>"+ 新建" dropdown 里混着 "Claude Resume"（异类）+ "创建圆桌"</li>
+      <li>"↻ 恢复" 仅对应 Claude，其他 4 家无 resume 入口</li>
+    </ul>
+  </div>
+
+  <div class="panel after">
+    <h4>改后 <span class="badge badge-new">v0.x+1</span></h4>
+    <div class="sidebar-mock">
+      <div class="sidebar-header">
+        <button class="btn btn-new">+ 新建 ▾</button>
+        <button class="btn btn-resume">↻ 恢复 ▾</button>
+        <button class="btn btn-roundtable">🎯 圆桌</button>
+        <button class="btn">⚙ 选项 ▾</button>
+        <button class="btn btn-collapse">◀</button>
+      </div>
+    </div>
+    <ul>
+      <li>删除 "对话"，省出空间放新按钮</li>
+      <li>"+ 新建 ▾" 仅做创建（6 项：5 AI + PowerShell）</li>
+      <li>"↻ 恢复 ▾" 极简单层 dropdown（5 家 AI）</li>
+      <li>"🎯 圆桌" 独立按钮，紫橙色 accent 区分</li>
+    </ul>
+  </div>
+</div>
+
+<h2>2. + 号 Dropdown（整理 + 分组 + 彩色 logo）</h2>
+
+<div class="state-row">
+  <div class="state-block">
+    <h5>默认收起</h5>
+    <button class="btn btn-new">+ 新建 ▾</button>
+  </div>
+  <div class="state-block">
+    <h5>展开（点击后）</h5>
+    <div class="dropdown">
+      <div class="menu-group-label">AI CLI</div>
+      <div class="menu-item"><span class="ai-logo logo-claude"></span>Claude Code</div>
+      <div class="menu-item"><span class="ai-logo logo-gemini"></span>Gemini CLI</div>
+      <div class="menu-item"><span class="ai-logo logo-codex"></span>Codex CLI</div>
+      <div class="menu-item"><span class="ai-logo logo-deepseek"></span>DeepSeek</div>
+      <div class="menu-item"><span class="ai-logo logo-glm"></span>GLM</div>
+      <div class="menu-divider"></div>
+      <div class="menu-group-label">终端</div>
+      <div class="menu-item"><span class="ai-logo logo-powershell"></span>PowerShell</div>
+    </div>
+  </div>
+</div>
+
+<div class="callout">
+  <strong>关键变化</strong>：
+  <ul style="margin:6px 0;">
+    <li>移除 "Claude Resume"（迁去右上 ↻ 恢复）</li>
+    <li>移除 "🎯 创建圆桌"（独立成 toolbar 按钮）</li>
+    <li>分组：「AI CLI」 / 「终端」 — 信息架构清晰</li>
+    <li>每项加 16x16 官方彩色 logo（参考 AI-Arena 插件做法）</li>
+  </ul>
+</div>
+
+<h2>3. ↻ 恢复 Dropdown（新增 · 5 家 AI 极简单层）</h2>
+
+<div class="state-row">
+  <div class="state-block">
+    <h5>默认收起</h5>
+    <button class="btn btn-resume">↻ 恢复 ▾</button>
+  </div>
+  <div class="state-block">
+    <h5>展开（点击后）</h5>
+    <div class="dropdown">
+      <div class="menu-item">
+        <span class="ai-logo logo-claude"></span>Claude
+        <span class="hint">PTY picker</span>
+      </div>
+      <div class="menu-item">
+        <span class="ai-logo logo-gemini"></span>Gemini
+        <span class="hint">最近一次</span>
+      </div>
+      <div class="menu-item">
+        <span class="ai-logo logo-codex"></span>Codex
+        <span class="hint">PTY picker</span>
+      </div>
+      <div class="menu-item">
+        <span class="ai-logo logo-deepseek"></span>DeepSeek
+        <span class="hint">PTY picker</span>
+      </div>
+      <div class="menu-item">
+        <span class="ai-logo logo-glm"></span>GLM
+        <span class="hint">PTY picker</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="callout success">
+<strong>极简单层设计哲学</strong>：hub 不维护"会话历史索引"（避免重复造轮子），点哪家直接 spawn CLI 让它在 PTY 内部弹自己的 picker。Claude/Codex/DeepSeek/GLM 都支持无参 picker；Gemini CLI 没有交互 picker，降级用 <code>--resume latest</code> 恢复最近一个。
+</div>
+
+<h3>5 家 AI Resume 命令对照</h3>
+
+<table>
+  <thead><tr><th>AI</th><th>kind</th><th>spawn 命令</th><th>env 注入</th><th>体验</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><span class="ai-logo logo-claude"></span>Claude</td>
+      <td><code>claude-resume</code></td>
+      <td><code>claude --resume</code></td>
+      <td>默认</td>
+      <td>PTY 内 picker</td>
+    </tr>
+    <tr>
+      <td><span class="ai-logo logo-gemini"></span>Gemini</td>
+      <td><code>gemini-resume</code> <span class="badge badge-new">新</span></td>
+      <td><code>gemini --approval-mode yolo --model &lt;m&gt; --resume latest</code></td>
+      <td>代理 + GEMINI_SYSTEM_MD</td>
+      <td>恢复最近一次</td>
+    </tr>
+    <tr>
+      <td><span class="ai-logo logo-codex"></span>Codex</td>
+      <td><code>codex-resume</code> <span class="badge badge-new">新</span></td>
+      <td><code>codex resume --dangerously-bypass-approvals-and-sandbox</code></td>
+      <td>代理</td>
+      <td>PTY 内 picker</td>
+    </tr>
+    <tr>
+      <td><span class="ai-logo logo-deepseek"></span>DeepSeek</td>
+      <td><code>deepseek-resume</code> <span class="badge badge-new">新</span></td>
+      <td><code>claude --resume --model &lt;m&gt; --permission-mode bypassPermissions</code></td>
+      <td>DS router env <span class="badge badge-bug">含模型 bug 修</span></td>
+      <td>PTY 内 picker</td>
+    </tr>
+    <tr>
+      <td><span class="ai-logo logo-glm"></span>GLM</td>
+      <td><code>glm-resume</code> <span class="badge badge-new">新</span></td>
+      <td><code>claude --resume --model &lt;m&gt; --permission-mode bypassPermissions</code></td>
+      <td>GLM router env <span class="badge badge-bug">含模型 bug 修</span></td>
+      <td>PTY 内 picker</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>4. 🎯 圆桌独立按钮</h2>
+
+<div class="state-row">
+  <div class="state-block">
+    <h5>默认</h5>
+    <button class="btn btn-roundtable">🎯 圆桌</button>
+  </div>
+  <div class="state-block">
+    <h5>hover</h5>
+    <button class="btn btn-roundtable" style="background:rgba(187,128,9,0.3);">🎯 圆桌</button>
+  </div>
+  <div class="state-block">
+    <h5>说明</h5>
+    <ul style="margin:0; padding-left:20px; color:#8b949e; font-size:12px;">
+      <li>点击直接调 <code>createMeetingByMode('general')</code>（无中间 dropdown）</li>
+      <li>橙金色 accent 区分于绿色 + 号</li>
+      <li>视觉权重等同 + 新建，体现高频地位</li>
+    </ul>
+  </div>
+</div>
+
+<h2>5. 关键 Bug 修复 · GLM/DeepSeek Resume 模型覆盖</h2>
+
+<div class="callout warn">
+<strong>用户实测复现</strong>：在 hub 里 resume 一个 GLM 会话后，模型被错误地变成 <code>claude-opus-4-7</code>，而非原来的 <code>glm-4.6</code>。
+</div>
+
+<h3>根因（session-manager.js:487-496 & :455-456）</h3>
+
+<pre>// ✅ 创建时正常
+cmd = ` claude --model ${opts.model || cv.GLM_MODEL} --permission-mode bypassPermissions`;
+
+// ❌ resume 时丢失 --model
+if (opts.resumeCCSessionId) {
+  cmd = ` claude --resume ${opts.resumeCCSessionId} --permission-mode bypassPermissions`;
+  //                                                  ↑ 漏！
+}</pre>
+
+<p>Claude CLI 看不到 <code>--model</code> 时，回退到全局 <code>~/.claude/settings.json</code> 默认（通常是 opus 4.7），覆盖原始 GLM 模型。</p>
+
+<h3>修复方案</h3>
+
+<ol>
+  <li><strong>state.json 记录原模型</strong>：确认 <code>sessions[].model</code> 字段创建时被写入（已有 <code>currentModel.id</code>，需 verify）</li>
+  <li><strong>main.js resume IPC 透传</strong>（第 2155-2169 行）：从 <code>meta.model</code> 读出原模型 → 传 <code>opts.model</code></li>
+  <li><strong>session-manager.js 两个分支补 --model</strong>：GLM (487-496) + DeepSeek (455-456) 的 resume 命令拼接补 <code>--model ${opts.model || cv.&lt;KIND&gt;_MODEL}</code></li>
+  <li><strong>保险</strong>：<code>~/.claude-glm/settings.json</code> & <code>~/.claude-deepseek/settings.json</code> 初始化时写默认 model 字段（Level 2 fallback）</li>
+</ol>
+
+<h2>6. 数据流 · resume 命令完整链路</h2>
+
+<pre>用户点击 ↻ 恢复 ▾ 中的 GLM
+  ↓
+renderer.js: invoke('create-session', 'glm-resume')
+  ↓
+main.js IPC handler:
+  - 从 state.json sessions[] 找到最近一个 kind=glm 的 session
+  - 读 meta.model（如 'glm-4.6'）
+  - createSession('glm-resume', { model: meta.model, ... })
+  ↓
+session-manager.js: kind === 'glm-resume' 分支
+  - cmd = ` claude --resume --model glm-4.6 --permission-mode bypassPermissions`
+  - env: ANTHROPIC_BASE_URL=&lt;GLM&gt; ANTHROPIC_AUTH_TOKEN=&lt;k&gt; CLAUDE_CONFIG_DIR=~/.claude-glm
+  ↓
+PTY 启动 → claude CLI 看到 --resume 弹 picker
+  ↓
+用户在 PTY 内选会话 → claude 启动该会话 + 强制 model=glm-4.6 ✓</pre>
+
+<h2>7. 关键文件改造一览</h2>
+
+<table>
+  <thead><tr><th>文件</th><th>类型</th><th>改动概要</th></tr></thead>
+  <tbody>
+    <tr><td><code>renderer/index.html</code></td><td>修改</td><td>删 sidebar-title；toolbar 4 按钮重构；+ 号 dropdown 重组（移除 claude-resume + meeting）；新增 ↻ 恢复 dropdown；新增 🎯 圆桌 按钮</td></tr>
+    <tr><td><code>renderer/renderer.js</code></td><td>修改</td><td>5 个 resume kind 事件绑定；🎯 圆桌 click；移除旧 meeting / claude-resume 分支</td></tr>
+    <tr><td><code>renderer/styles.css</code></td><td>修改</td><td>sidebar-header 间距；新 dropdown / 按钮样式；<code>.ai-logo</code> 通用类；分组标题样式</td></tr>
+    <tr><td><code>renderer/assets/ai-logos/*</code></td><td>新增</td><td>5 家 AI 官方 logo SVG/PNG（优先复用 AI-Arena）</td></tr>
+    <tr><td><code>core/session-manager.js</code></td><td>修改</td><td>4 个新 resume kind 分支；GLM/DeepSeek resume 补 <code>--model</code> 修 bug</td></tr>
+    <tr><td><code>main.js</code></td><td>修改</td><td>resume IPC handler 从 <code>meta.model</code> 透传到 <code>opts.model</code></td></tr>
+    <tr><td><code>package.json</code></td><td>修改</td><td>version +0.1</td></tr>
+    <tr><td><code>tests/_e2e-resume-toolbar-verify.js</code></td><td>新增</td><td>E2E 9 步流程</td></tr>
+  </tbody>
+</table>
+
+<h2>8. 调研结论速查</h2>
+
+<table>
+  <thead><tr><th>AI</th><th>无参 resume 行为</th><th>本期实现</th></tr></thead>
+  <tbody>
+    <tr><td>Claude</td><td>✅ <code>claude --resume</code> 弹 picker</td><td>直接 spawn 让 PTY 自己 picker</td></tr>
+    <tr><td>Codex</td><td>✅ <code>codex resume</code> "picker by default"（实测 --help）</td><td>直接 spawn（删掉旧的 sid 参数）</td></tr>
+    <tr><td>Gemini</td><td>❌ 无交互 picker，需 <code>--resume &lt;id&gt;</code> 或 <code>latest</code></td><td>用 <code>--resume latest</code>（用户低频，可接受）</td></tr>
+    <tr><td>DeepSeek</td><td>✅ 走 Claude router，复用 picker</td><td>直接 spawn + DS router env + <code>--model</code></td></tr>
+    <tr><td>GLM</td><td>✅ 走 Claude router，复用 picker</td><td>直接 spawn + GLM router env + <code>--model</code></td></tr>
+  </tbody>
+</table>
+
+<h2>9. 风险 / 降级</h2>
+
+<table>
+  <thead><tr><th>#</th><th>风险</th><th>影响</th><th>缓解</th></tr></thead>
+  <tbody>
+    <tr><td>R1</td><td>AI 官方 logo 版权 / 资源缺失</td><td>中</td><td>优先复用 AI-Arena 已有；找不到则用简化几何 SVG 兜底</td></tr>
+    <tr><td>R2</td><td>Gemini latest 没有会话时 spawn 失败</td><td>中</td><td>spawn 前调 <code>gemini --list-sessions</code> 探测，无则提示用户先创建</td></tr>
+    <tr><td>R3</td><td>GLM bug 修复影响 router 其他 env</td><td>中</td><td>严格只改 <code>--model</code> 拼接，不动 BASE_URL/TOKEN/CONFIG_DIR</td></tr>
+    <tr><td>R4</td><td>旧 state.json 缺 <code>sessions[].model</code></td><td>中</td><td>fallback：opts.model → meta.model → cv.&lt;KIND&gt;_MODEL → 报错</td></tr>
+    <tr><td>R5</td><td>圆桌按钮独立后老用户找不到</td><td>低</td><td>醒目 🎯 emoji + 橙金 accent 区分</td></tr>
+  </tbody>
+</table>
+
+<h2>10. 决策点速查（已与用户对齐）</h2>
+
+<table>
+  <thead><tr><th>#</th><th>决策点</th><th>结论</th></tr></thead>
+  <tbody>
+    <tr><td>D1</td><td>Resume 入口形式</td><td>极简单层 dropdown（不弹列表 modal）</td></tr>
+    <tr><td>D2</td><td>Resume 按钮外观</td><td><code>↻ 恢复 ▾</code>（保留现按钮 + 加下拉箭头）</td></tr>
+    <tr><td>D3</td><td>+ 号 dropdown 视觉</td><td>分组 + 各 AI 官方彩色 logo</td></tr>
+    <tr><td>D4</td><td>圆桌位置</td><td>独立 toolbar 按钮（从 + 号移出）</td></tr>
+    <tr><td>D5</td><td>"对话" sidebar-title</td><td>删除（无信息量）</td></tr>
+    <tr><td>D6</td><td>Gemini resume 处理</td><td><code>--resume latest</code>（不做 hub micro-picker）</td></tr>
+    <tr><td>D7</td><td>5 家覆盖范围</td><td>Claude / Gemini / Codex / DeepSeek / GLM 全做</td></tr>
+    <tr><td>D8</td><td>GLM 模型 bug 修</td><td>必修（resume 时显式传 <code>--model</code>）</td></tr>
+  </tbody>
+</table>
+
+<h2>11. E2E 验收（9 步）</h2>
+
+<ol>
+  <li>启动隔离 Hub（<code>CLAUDE_HUB_DATA_DIR=C:\temp\hub-resume</code>）→ 截图新 toolbar</li>
+  <li>点 <code>+ 新建 ▾</code> → assert dropdown 6 项 + 彩色 logo + "AI CLI / 终端" 分组</li>
+  <li>点 <code>↻ 恢复 ▾</code> → assert dropdown 5 项 + 彩色 logo + Gemini 行附"最近"灰字</li>
+  <li>选 Claude resume → assert PTY 内出现 claude picker</li>
+  <li>选 Codex resume → assert PTY 内出现 codex picker</li>
+  <li>选 Gemini resume → assert PTY 命令行含 <code>--resume latest</code></li>
+  <li>选 GLM resume（前置：state 内有 1 个 GLM 会话且 <code>meta.model='glm-4.6'</code>）→ assert spawn 命令含 <code>--model glm-4.6</code>，PTY 启动后 <code>/model</code> 显示 glm-4.6 而非 opus（<strong>Bug 回归</strong>）</li>
+  <li>点 <code>🎯 圆桌</code> → assert 弹圆桌创建 modal</li>
+  <li>截图归档 <code>tests/screenshots/resume-toolbar/</code></li>
+</ol>
+
+<div class="callout success">
+<strong>本 mockup 配套交付物</strong>：
+<ul style="margin:6px 0;">
+<li>Spec：<code>docs/superpowers/specs/2026-05-01-hub-resume-toolbar-design.md</code></li>
+<li>Plan：<code>docs/superpowers/plans/2026-05-01-hub-resume-toolbar.md</code>（10 Task 详细实施步骤）</li>
+</ul>
+</div>
+
+</body>
+</html>

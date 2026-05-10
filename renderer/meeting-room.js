@@ -1458,6 +1458,7 @@ if (typeof document !== 'undefined') (function () {
     research: 'hub-research-scenario-onboarding-dismissed-v1',
     dev: 'hub-dev-scenario-onboarding-dismissed-v1',
   };
+  const SCENE_ONBOARDING_ENABLED = false;
   const SCENE_ONBOARDING_CONTENT = {
     general: {
       head: '🎯 通用圆桌 · 使用提示',
@@ -1488,6 +1489,7 @@ if (typeof document !== 'undefined') (function () {
     },
   };
   function _renderSceneOnboardingCard(meeting) {
+    if (!SCENE_ONBOARDING_ENABLED) return '';
     if (!meeting) return '';
     const sceneKey = meeting.scene;
     const content = SCENE_ONBOARDING_CONTENT[sceneKey];

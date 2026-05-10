@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>飞书接入普通 Codex Session MVP 计划</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --surface: #ffffff;
+      --soft: #f8fafc;
+      --text: #17202a;
+      --muted: #667085;
+      --line: #d8e0ea;
+      --blue: #1f6feb;
+      --blue-soft: #eaf2ff;
+      --green: #16845b;
+      --green-soft: #e9f7f1;
+      --amber: #b86e00;
+      --amber-soft: #fff3dc;
+      --red: #c93535;
+      --red-soft: #fff0f0;
+      --ink: #253244;
+      --shadow: 0 18px 48px rgba(20, 32, 45, .12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      letter-spacing: 0;
+    }
+
+    .page {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 26px 24px 42px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 410px;
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .overview {
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 680px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--blue);
+      background: var(--blue-soft);
+      border: 1px solid #cfe0ff;
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 720;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 36px;
+      line-height: 1.12;
+      font-weight: 780;
+    }
+
+    .lead {
+      margin: 15px 0 0;
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.7;
+    }
+
+    .decision {
+      margin-top: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .decision-head {
+      background: #eef4ff;
+      color: #173b73;
+      padding: 12px 14px;
+      font-weight: 760;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .decision-body {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .decision-body div {
+      padding: 15px;
+      border-right: 1px solid var(--line);
+      background: #fff;
+      min-height: 112px;
+    }
+
+    .decision-body div:last-child { border-right: 0; }
+    .decision-body b { display: block; margin-bottom: 8px; font-size: 15px; }
+    .decision-body span { color: var(--muted); font-size: 13px; line-height: 1.6; }
+
+    .road {
+      margin-top: 24px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .step {
+      border: 1px solid var(--line);
+      background: var(--soft);
+      border-radius: 8px;
+      padding: 15px;
+      min-height: 150px;
+    }
+
+    .step .num {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      background: var(--ink);
+      color: #fff;
+      border-radius: 8px;
+      font-weight: 800;
+      margin-bottom: 12px;
+    }
+
+    .step h3 { margin: 0 0 8px; font-size: 16px; }
+    .step p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+
+    .phone {
+      background: #101820;
+      border-radius: 32px;
+      padding: 14px;
+      box-shadow: 0 28px 72px rgba(16, 24, 32, .28);
+      border: 1px solid #283848;
+    }
+
+    .screen {
+      height: 668px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-radius: 24px;
+      background: #eef2f6;
+      border: 1px solid #354453;
+    }
+
+    .status {
+      height: 32px;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      font-size: 12px;
+      font-weight: 680;
+    }
+
+    .chat-head {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 14px;
+      background: #fff;
+      border-bottom: 1px solid #dfe6ee;
+    }
+
+    .avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--blue);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    .chat-title strong { display: block; font-size: 15px; }
+    .chat-title span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+
+    .messages {
+      flex: 1;
+      padding: 13px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .bubble {
+      max-width: 87%;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .me { align-self: flex-end; background: #d9ecff; color: #12304f; }
+    .bot { align-self: flex-start; background: #fff; border: 1px solid #dfe6ee; }
+
+    .card {
+      width: 100%;
+      background: #fff;
+      border: 1px solid #d8e0ea;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 8px 20px rgba(16, 24, 32, .06);
+    }
+
+    .card-head {
+      padding: 11px 12px;
+      border-bottom: 1px solid #e7edf3;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 14px;
+      font-weight: 780;
+    }
+
+    .badge {
+      border-radius: 999px;
+      padding: 3px 8px;
+      color: #fff;
+      background: var(--blue);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .card-body {
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.58;
+      color: #253244;
+    }
+
+    .mono {
+      font-family: Consolas, "Microsoft YaHei", monospace;
+      background: #f2f5f9;
+      border: 1px solid #dfe6ee;
+      border-radius: 6px;
+      padding: 7px;
+      margin-top: 8px;
+      word-break: break-all;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 10px;
+    }
+
+    .btn {
+      border: 1px solid #ccd7e3;
+      background: #f8fafc;
+      color: #253244;
+      border-radius: 6px;
+      padding: 7px 9px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .btn.danger { background: var(--red-soft); color: var(--red); border-color: #ffc7c7; }
+
+    .composer {
+      background: #fff;
+      border-top: 1px solid #dfe6ee;
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+      padding: 10px 12px 14px;
+    }
+
+    .input {
+      flex: 1;
+      min-height: 38px;
+      border: 1px solid #ccd7e3;
+      border-radius: 8px;
+      padding: 9px 10px;
+      color: var(--muted);
+      font-size: 13px;
+      background: #f9fbfc;
+    }
+
+    .send {
+      width: 42px;
+      height: 38px;
+      border-radius: 8px;
+      border: 0;
+      background: var(--blue);
+      color: #fff;
+      font-weight: 800;
+    }
+
+    .section {
+      margin-top: 22px;
+      padding: 24px;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 24px;
+      line-height: 1.25;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .feature {
+      border: 1px solid var(--line);
+      background: var(--soft);
+      border-radius: 8px;
+      padding: 16px;
+      min-height: 178px;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      margin-bottom: 11px;
+    }
+
+    .p0 { background: var(--blue-soft); color: var(--blue); }
+    .p1 { background: var(--green-soft); color: var(--green); }
+    .p2 { background: var(--amber-soft); color: var(--amber); }
+
+    .feature h3 { margin: 0 0 8px; font-size: 16px; }
+    .feature p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+
+    .arch {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .node {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 14px;
+      min-height: 124px;
+      position: relative;
+    }
+
+    .node:not(:last-child)::after {
+      content: ">";
+      position: absolute;
+      right: -12px;
+      top: 48px;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .node b { display: block; margin-bottom: 8px; }
+    .node span { color: var(--muted); font-size: 13px; line-height: 1.55; }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: 180px repeat(4, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 13px;
+    }
+
+    .matrix div {
+      padding: 12px;
+      min-height: 58px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      line-height: 1.5;
+    }
+
+    .matrix div:nth-child(5n) { border-right: 0; }
+    .matrix div:nth-last-child(-n+5) { border-bottom: 0; }
+    .matrix .head { background: #eef4ff; color: #173b73; font-weight: 800; }
+
+    .yes { color: var(--green); font-weight: 800; }
+    .no { color: var(--red); font-weight: 800; }
+    .maybe { color: var(--amber); font-weight: 800; }
+
+    .scripts {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .script {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .script h3 {
+      margin: 0;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--line);
+      background: #f2f5f9;
+      font-size: 15px;
+    }
+
+    .script pre {
+      margin: 0;
+      padding: 15px;
+      white-space: pre-wrap;
+      font-family: Consolas, "Microsoft YaHei", monospace;
+      font-size: 13px;
+      line-height: 1.65;
+      color: #253244;
+    }
+
+    @media (max-width: 1040px) {
+      .hero, .feature-grid, .scripts { grid-template-columns: 1fr; }
+      .phone { max-width: 430px; width: 100%; margin: 0 auto; }
+      .decision-body, .road, .arch { grid-template-columns: 1fr; }
+      .decision-body div { border-right: 0; border-bottom: 1px solid var(--line); }
+      .decision-body div:last-child { border-bottom: 0; }
+      .node:not(:last-child)::after { display: none; }
+      .matrix { grid-template-columns: 1fr; }
+      .matrix div { border-right: 0; }
+      h1 { font-size: 30px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="panel overview">
+        <div>
+          <span class="eyebrow">Phase 1 MVP · 普通 Codex Session 先接飞书</span>
+          <h1>先把手机变成 Codex 的远程输入、进度和审批面板</h1>
+          <p class="lead">
+            第一阶段不直接做圆桌，也不复活 PWA。目标是打通最短闭环：
+            飞书里新建一个 Codex session，Hub 在电脑端执行，手机收到进度、摘要和审批卡。
+            这条链路跑稳后，再把同样机制扩展到 Claude、Gemini 和圆桌。
+          </p>
+
+          <div class="decision">
+            <div class="decision-head">为什么 MVP 先选普通 Codex session</div>
+            <div class="decision-body">
+              <div>
+                <b>链路最短</b>
+                <span>单 session 只有一个输入流和一个输出流，容易验证飞书事件、Hub 写入、回推和重连。</span>
+              </div>
+              <div>
+                <b>价值明确</b>
+                <span>手机上最常见需求是补一句、看进度、批工具调用，不需要一开始就完整复刻桌面。</span>
+              </div>
+              <div>
+                <b>可平滑升级</b>
+                <span>圆桌本质是多个 session 的编排。单 session 通了，圆桌只是多一层 orchestrator 和观点卡。</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="road">
+            <div class="step">
+              <div class="num">1</div>
+              <h3>飞书建任务</h3>
+              <p>输入“新建 codex：任务描述”，Hub 创建 Codex session 并绑定飞书 thread。</p>
+            </div>
+            <div class="step">
+              <div class="num">2</div>
+              <h3>手机继续聊</h3>
+              <p>同一个飞书 thread 后续消息直接写入该 session，形成远程连续对话。</p>
+            </div>
+            <div class="step">
+              <div class="num">3</div>
+              <h3>卡片回推</h3>
+              <p>Hub 不刷完整终端，而是推送开始、执行中、等待审批、完成摘要和失败原因。</p>
+            </div>
+            <div class="step">
+              <div class="num">4</div>
+              <h3>再扩圆桌</h3>
+              <p>复用同一套 channel gateway，把一个 Codex session 扩为多模型会议室。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="phone" aria-label="飞书 Codex MVP 手机效果">
+        <div class="screen">
+          <div class="status"><span>9:41</span><span>5G  82%</span></div>
+          <div class="chat-head">
+            <div class="avatar">Hub</div>
+            <div class="chat-title">
+              <strong>Claude Session Hub</strong>
+              <span>飞书机器人 · Codex session 已连接</span>
+            </div>
+          </div>
+          <div class="messages">
+            <div class="bubble me">新建 codex：检查 claude-session-hub 最近的移动端接入方案，先给我一个实现计划。</div>
+            <div class="bubble bot">已在电脑端创建 Codex session，并绑定当前飞书 thread。后续你在这里发消息，我会继续写入该 session。</div>
+
+            <div class="card">
+              <div class="card-head">
+                <span>Codex 任务状态</span>
+                <span class="badge">运行中</span>
+              </div>
+              <div class="card-body">
+                会话：feishu-codex-mvp-0427<br>
+                工作目录：C:\Users\lintian\claude-session-hub<br>
+                当前阶段：读取项目结构和移动端相关代码
+                <div class="actions">
+                  <button class="btn primary">刷新状态</button>
+                  <button class="btn">查看最近输出</button>
+                  <button class="btn danger">停止</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <span>工具审批</span>
+                <span class="badge" style="background:#b86e00">等待你</span>
+              </div>
+              <div class="card-body">
+                Codex 请求运行测试命令：
+                <div class="mono">node tests/mobile/test-all.js</div>
+                风险：只读验证，可能启动本地测试服务。
+                <div class="actions">
+                  <button class="btn primary">允许一次</button>
+                  <button class="btn">只读允许</button>
+                  <button class="btn danger">拒绝</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <span>阶段摘要</span>
+                <span class="badge" style="background:#16845b">完成</span>
+              </div>
+              <div class="card-body">
+                结论：先做 Codex 单会话飞书接入更稳。<br>
+                已识别模块：channel gateway、thread 绑定、输入转发、输出摘要、审批卡。<br>
+                下一步：生成实施任务清单。
+                <div class="actions">
+                  <button class="btn primary">继续追问</button>
+                  <button class="btn">生成任务清单</button>
+                  <button class="btn">保存到 Hub</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="bubble me">继续，把第一阶段拆成可开发的任务。</div>
+          </div>
+          <div class="composer">
+            <div class="input">输入继续问题、状态、停止、最近输出...</div>
+            <button class="send">发</button>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="panel section">
+      <h2>MVP 功能清单</h2>
+      <div class="feature-grid">
+        <div class="feature">
+          <span class="pill p0">P0 必做</span>
+          <h3>新建 Codex Session</h3>
+          <p>飞书输入“新建 codex：任务”，Hub 创建 Codex session，记录 sessionId、飞书 chatId、message/threadId 和 cwd。</p>
+        </div>
+        <div class="feature">
+          <span class="pill p0">P0 必做</span>
+          <h3>连续输入转发</h3>
+          <p>同一个飞书 thread 后续普通消息自动写入绑定 session，支持补充说明、纠偏、继续执行。</p>
+        </div>
+        <div class="feature">
+          <span class="pill p0">P0 必做</span>
+          <h3>状态卡回推</h3>
+          <p>用卡片展示运行中、等待输入、等待审批、已完成、失败。避免把完整终端流刷满飞书。</p>
+        </div>
+        <div class="feature">
+          <span class="pill p0">P0 必做</span>
+          <h3>工具审批卡</h3>
+          <p>把命令、路径、工作目录和风险摘要发到飞书，提供允许一次、拒绝、只读允许等按钮。</p>
+        </div>
+        <div class="feature">
+          <span class="pill p1">P1 增强</span>
+          <h3>最近输出摘要</h3>
+          <p>输入“最近输出”返回最近若干行和一段摘要，解决手机端看长终端不舒服的问题。</p>
+        </div>
+        <div class="feature">
+          <span class="pill p1">P1 增强</span>
+          <h3>任务控制命令</h3>
+          <p>支持“状态”“停止”“继续”“重试”“保存摘要”，形成手机远程盯进度的常用控制面板。</p>
+        </div>
+        <div class="feature">
+          <span class="pill p1">P1 增强</span>
+          <h3>任务完成总结</h3>
+          <p>Codex 停止输出或任务完成时，飞书收到最终摘要、改动文件、验证结果和下一步建议。</p>
+        </div>
+        <div class="feature">
+          <span class="pill p2">P2 后续</span>
+          <h3>Claude / Gemini 普通会话</h3>
+          <p>复用同一套飞书 channel，把 provider 从 Codex 扩展到 Claude、Gemini，但仍保持单 session 语义。</p>
+        </div>
+        <div class="feature">
+          <span class="pill p2">P2 后续</span>
+          <h3>圆桌入口</h3>
+          <p>当单 session 的输入、输出、审批、状态都稳定后，再做“新建圆桌：问题”和多 AI 观点卡。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel section">
+      <h2>后端链路</h2>
+      <div class="arch">
+        <div class="node">
+          <b>飞书消息</b>
+          <span>用户私聊或群聊发送“新建 codex：...”以及后续追问。</span>
+        </div>
+        <div class="node">
+          <b>Feishu Adapter</b>
+          <span>接收事件、校验来源、发送文本/卡片、处理按钮回调。</span>
+        </div>
+        <div class="node">
+          <b>Hub Router</b>
+          <span>解析命令，找到或创建 session/thread 绑定。</span>
+        </div>
+        <div class="node">
+          <b>Session Manager</b>
+          <span>创建 Codex session，写入输入，监听输出和工具请求。</span>
+        </div>
+        <div class="node">
+          <b>飞书卡片</b>
+          <span>回推状态、审批、摘要和完成结果。</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel section">
+      <h2>阶段边界</h2>
+      <div class="matrix">
+        <div class="head">能力</div>
+        <div class="head">Phase 1 MVP</div>
+        <div class="head">Phase 2</div>
+        <div class="head">Phase 3</div>
+        <div class="head">说明</div>
+
+        <div>Codex 单会话</div>
+        <div><span class="yes">做</span></div>
+        <div><span class="yes">完善</span></div>
+        <div><span class="yes">作为基础</span></div>
+        <div>第一阶段的主线，不分散焦点。</div>
+
+        <div>完整终端流</div>
+        <div><span class="no">不做</span></div>
+        <div><span class="maybe">可选</span></div>
+        <div><span class="maybe">可选</span></div>
+        <div>飞书适合摘要和卡片，不适合长终端刷屏。</div>
+
+        <div>工具审批</div>
+        <div><span class="yes">做</span></div>
+        <div><span class="yes">增强</span></div>
+        <div><span class="yes">复用</span></div>
+        <div>这是手机端最有价值的即时介入能力。</div>
+
+        <div>Claude/Gemini</div>
+        <div><span class="no">不做</span></div>
+        <div><span class="yes">做</span></div>
+        <div><span class="yes">复用</span></div>
+        <div>等 Codex 链路稳定后再扩 provider。</div>
+
+        <div>圆桌</div>
+        <div><span class="no">不做</span></div>
+        <div><span class="maybe">设计</span></div>
+        <div><span class="yes">做</span></div>
+        <div>圆桌是多 session 编排，应该建立在单 session 成功之上。</div>
+      </div>
+    </section>
+
+    <section class="panel section">
+      <h2>飞书里的实际命令</h2>
+      <div class="scripts">
+        <div class="script">
+          <h3>新建与继续</h3>
+          <pre>你：
+新建 codex：检查移动端飞书接入方案，给我 MVP 实施计划。
+
+Hub：
+已创建 Codex session：feishu-codex-mvp-0427
+工作目录：C:\Users\lintian\claude-session-hub
+后续你在本 thread 里发消息，我会继续写入该 session。
+
+你：
+继续，把 P0 任务拆到文件级别。</pre>
+        </div>
+        <div class="script">
+          <h3>状态与审批</h3>
+          <pre>你：
+状态
+
+Hub：
+Codex 正在运行。
+当前阶段：读取 core/session-manager.js 和 mobile-server.js
+最近输出：已识别 mobile server 可复用输入转发能力。
+
+Hub：
+Codex 请求运行命令：
+node tests/mobile/test-all.js
+
+按钮：
+允许一次 / 只读允许 / 拒绝</pre>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

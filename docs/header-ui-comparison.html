@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Header UI 优化方案对比</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0d1117;
+      color: #f0f6fc;
+      padding: 40px;
+      min-height: 100vh;
+    }
+    h1 {
+      font-size: 28px;
+      margin-bottom: 30px;
+      text-align: center;
+      color: #58a6ff;
+    }
+    .comparison {
+      display: flex;
+      gap: 40px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .panel {
+      flex: 1;
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .panel-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 20px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #21262d;
+    }
+    .panel-title.old { color: #f0883e; }
+    .panel-title.new { color: #3fb950; }
+
+    /* 旧版 Header 样式 */
+    .old-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: #0d1117;
+      border-bottom: 1px solid #21262d;
+      font-size: 15px;
+    }
+    .old-title { font-weight: 600; }
+    .old-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .old-count {
+      color: #8b949e;
+      font-size: 13px;
+      margin-right: 8px;
+    }
+    .old-btn {
+      background: transparent;
+      border: 1px solid #21262d;
+      color: #8b949e;
+      border-radius: 4px;
+      width: 24px;
+      height: 24px;
+      cursor: pointer;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .old-btn-new {
+      width: auto;
+      padding: 0 8px;
+      font-size: 13px;
+    }
+    .old-btn-resume {
+      width: 24px;
+    }
+    .old-collapse {
+      margin-left: 6px;
+    }
+    .old-theme-btn {
+      /* 主题按钮在旧版中独立存在 */
+    }
+
+    /* 新版 Header 样式 */
+    .new-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: #0d1117;
+      border-bottom: 1px solid #21262d;
+      font-size: 15px;
+    }
+    .new-title { font-weight: 600; }
+    .new-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .new-btn-group {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .new-btn {
+      background: transparent;
+      border: 1px solid #21262d;
+      color: #c9d1d9;
+      border-radius: 4px;
+      height: 26px;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 10px;
+      transition: all 150ms;
+    }
+    .new-btn:hover {
+      background: #21262d;
+      border-color: #8b949e;
+      color: #f0f6fc;
+    }
+    .new-btn-new {
+      background: #238636;
+      border-color: #238636;
+      color: #fff;
+      font-weight: 500;
+    }
+    .new-btn-new:hover {
+      background: #2ea043;
+      border-color: #2ea043;
+    }
+    .new-btn-options {
+      position: relative;
+    }
+    .new-options-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 4px;
+      background: #161b22;
+      border: 1px solid #21262d;
+      border-radius: 6px;
+      padding: 4px 0;
+      min-width: 140px;
+      z-index: 10;
+    }
+    .new-options-menu.show { display: block; }
+    .new-options-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      color: #c9d1d9;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 100ms;
+    }
+    .new-options-item:hover {
+      background: #21262d;
+    }
+    .new-options-divider {
+      height: 1px;
+      background: #21262d;
+      margin: 4px 0;
+    }
+    .new-collapse {
+      /* 折叠按钮始终在最右 */
+      order: 999;
+    }
+
+    /* 说明区域 */
+    .changes-list {
+      margin-top: 30px;
+      padding: 20px;
+      background: #1c2128;
+      border-radius: 8px;
+    }
+    .changes-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 15px;
+      color: #58a6ff;
+    }
+    .change-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 12px;
+      font-size: 14px;
+      color: #c9d1d9;
+    }
+    .change-icon {
+      width: 20px;
+      text-align: center;
+    }
+    .change-icon.add { color: #3fb950; }
+    .change-icon.remove { color: #f85149; }
+    .change-icon.modify { color: #58a6ff; }
+
+    /* 模拟下拉菜单展示 */
+    .demo-section {
+      margin-top: 30px;
+      padding: 20px;
+      background: #1c2128;
+      border-radius: 8px;
+    }
+    .demo-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 15px;
+      color: #58a6ff;
+    }
+    .demo-header-full {
+      background: #0d1117;
+      border: 1px solid #21262d;
+      border-radius: 6px;
+      padding: 12px 16px;
+    }
+    .demo-options-open .new-options-menu {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <h1>Header UI 优化方案对比</h1>
+
+  <div class="comparison">
+    <!-- 旧版 -->
+    <div class="panel">
+      <div class="panel-title old">旧版 Header（当前）</div>
+      <div class="old-header">
+        <span class="old-title">Sessions</span>
+        <div class="old-actions">
+          <span class="old-count">18 open</span>
+          <button class="old-btn old-btn-new">+</button>
+          <button class="old-btn old-btn-resume">↻</button>
+          <button class="old-btn old-collapse">◀</button>
+          <button class="old-btn old-theme-btn">🎨</button>
+        </div>
+      </div>
+      <p style="margin-top:15px;color:#8b949e;font-size:13px">
+        问题：按钮分散、英文标题、"18 open"无意义占用空间、折叠按钮位置不固定
+      </p>
+    </div>
+
+    <!-- 新版 -->
+    <div class="panel">
+      <div class="panel-title new">新版 Header（优化后）</div>
+      <div class="new-header">
+        <span class="new-title">对话</span>
+        <div class="new-actions">
+          <button class="new-btn new-btn-new">+ 新建</button>
+          <button class="new-btn">↻ 恢复</button>
+          <button class="new-btn new-btn-options">选项 ▾</button>
+          <button class="new-btn new-collapse">◀</button>
+        </div>
+      </div>
+      <p style="margin-top:15px;color:#8b949e;font-size:13px">
+        优点：中文标题、按钮整合、折叠按钮固定最右、"+"按钮更醒目
+      </p>
+    </div>
+  </div>
+
+  <!-- 变更清单 -->
+  <div class="changes-list">
+    <div class="changes-title">变更清单</div>
+    <div class="change-item">
+      <span class="change-icon modify">✎</span>
+      <span>"Sessions" → "对话"（中文化）</span>
+    </div>
+    <div class="change-item">
+      <span class="change-icon remove">✕</span>
+      <span>去掉 "18 open" 计数显示（无实际意义）</span>
+    </div>
+    <div class="change-item">
+      <span class="change-icon modify">↻</span>
+      <span>折叠按钮 ◀ 始终固定在最右侧</span>
+    </div>
+    <div class="change-item">
+      <span class="change-icon add">+</span>
+      <span>新增 "选项" 按钮，合并主题切换 + 设置入口</span>
+    </div>
+    <div class="change-item">
+      <span class="change-icon modify">✎</span>
+      <span>"+" 按钮 → "+ 新建"，添加中文提示，绿色高亮</span>
+    </div>
+    <div class="change-item">
+      <span class="change-icon modify">✎</span>
+      <span>"↻" 按钮 → "↻ 恢复"，添加中文提示</span>
+    </div>
+  </div>
+
+  <!-- "选项"下拉菜单演示 -->
+  <div class="demo-section">
+    <div class="demo-title">"选项"下拉菜单结构</div>
+    <div class="demo-header-full demo-options-open">
+      <div class="new-header" style="border:none">
+        <span class="new-title">对话</span>
+        <div class="new-actions">
+          <button class="new-btn new-btn-new">+ 新建</button>
+          <button class="new-btn">↻ 恢复</button>
+          <button class="new-btn new-btn-options" style="background:#21262d">选项 ▾</button>
+          <button class="new-btn new-collapse">◀</button>
+        </div>
+      </div>
+      <div class="new-options-menu show" style="position:relative;margin-top:8px">
+        <div class="new-options-item">🎨 切换主题</div>
+        <div class="new-options-divider"></div>
+        <div class="new-options-item">⚙️ 设置</div>
+        <div class="new-options-item">📋 导出日志</div>
+        <div class="new-options-divider"></div>
+        <div class="new-options-item">❓ 帮助</div>
+      </div>
+    </div>
+    <p style="margin-top:15px;color:#8b949e;font-size:13px">
+      后续新增功能按钮可直接添加到"选项"菜单中，保持 header 简洁
+    </p>
+  </div>
+</body>
+</html>

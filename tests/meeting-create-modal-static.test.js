@@ -39,12 +39,12 @@ test('modal js has MODELS_BY_KIND with all 5 kinds non-empty', () => {
   assert.match(MODAL_JS, /'glm-/);
 });
 
-test('DEFAULT_SLOTS = mixed (claude opus 4.7 [1M] / packy gpt-5.4-high / deepseek v4-pro)', () => {
-  // 2026-05-05 离开"同种 ×3"调试期默认，恢复混合默认。
-  // slot 2 用 'gpt' kind（PackyAPI 中转的 Claude CLI），不是 'codex' kind（OpenAI codex CLI）。
-  // gpt 默认走 5.4-high：PackyAPI 中转仅支持到 5.4 系列，5.5 限定 codex kind。
+test('DEFAULT_SLOTS = strongest (claude opus 4.7 [1M] / codex gpt-5.5 / deepseek v4-pro)', () => {
+  // 2026-05-11：道雪指定圆桌默认全用最强模型。
+  // slot 2 用 'codex' kind（OpenAI codex CLI 直连订阅）+ 'gpt-5.5'，不再用 PackyAPI 中转的
+  // 'gpt' kind（PackyAPI 中转最高到 5.4，'gpt-5.5' 限定 codex kind）。
   assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*'claude-opus-4-7\[1m\]'\s*\}/);
-  assert.match(MODAL_JS, /\{\s*kind:\s*'gpt'\s*,\s*model:\s*'gpt-5\.4-high'\s*\}/);
+  assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*,\s*model:\s*'gpt-5\.5'\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*,\s*model:\s*'deepseek-v4-pro'\s*\}/);
 });
 

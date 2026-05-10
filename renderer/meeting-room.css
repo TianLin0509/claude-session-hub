@@ -3265,12 +3265,21 @@ body.theme-vibechat-light .meeting-room-panel::after {
     rgba(7, 193, 96, 0.05) 0%, rgba(7, 193, 96, 0.015) 40%, transparent 70%);
 }
 
+/* 主圆桌面板原样式写死深色渐变和浅色文字，必须在 light scope 下整体切回主题变量。 */
+body.theme-vibechat-light .mr-rt-panel {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
 /* mr-ft-strip 网格分隔线 */
 body.theme-vibechat-light .mr-ft-strip { border-bottom-color: var(--border); }
 body.theme-vibechat-light .mr-ft:not(:last-child) { border-right-color: var(--border); }
 
 /* mr-ft 单席位卡片：白底 + slot 色 active 浅底 */
-body.theme-vibechat-light .mr-ft { background: #ffffff; }
+body.theme-vibechat-light .mr-ft {
+  background: #ffffff;
+  color: var(--text-primary);
+}
 body.theme-vibechat-light .mr-ft:hover { background: rgba(0, 0, 0, 0.025); }
 body.theme-vibechat-light .mr-ft.slot-1 { border-bottom-color: rgba(var(--c-slot-1-rgb), 0.25); }
 body.theme-vibechat-light .mr-ft.slot-2 { border-bottom-color: rgba(var(--c-slot-2-rgb), 0.25); }
@@ -3298,6 +3307,51 @@ body.theme-vibechat-light .mr-card-view-tab:hover {
 body.theme-vibechat-light .mr-ft-name.slot-1 { color: #b45309; }
 body.theme-vibechat-light .mr-ft-name.slot-2 { color: #c2410c; }
 body.theme-vibechat-light .mr-ft-name.slot-3 { color: #1e40af; }
+body.theme-vibechat-light .mr-ft-preview,
+body.theme-vibechat-light .mr-ft-think,
+body.theme-vibechat-light .mr-ft-stat-inline {
+  color: #334155;
+}
+body.theme-vibechat-light .mr-ft-md,
+body.theme-vibechat-light .mr-ft-preview-md {
+  color: #1f2937;
+}
+body.theme-vibechat-light .mr-ft-stat-inline .num {
+  color: #0f766e;
+}
+body.theme-vibechat-light .mr-ft-preview-md h1,
+body.theme-vibechat-light .mr-ft-preview-md h2,
+body.theme-vibechat-light .mr-ft-preview-md h3,
+body.theme-vibechat-light .mr-ft-preview-md h4,
+body.theme-vibechat-light .mr-ft-preview-md h5,
+body.theme-vibechat-light .mr-ft-preview-md h6 {
+  color: var(--text-primary);
+}
+body.theme-vibechat-light .mr-ft-preview-md strong,
+body.theme-vibechat-light .mr-ft-md strong {
+  color: #0f172a;
+  font-weight: 700;
+}
+body.theme-vibechat-light .mr-ft-preview-md em,
+body.theme-vibechat-light .mr-ft-md em {
+  color: #1f2937;
+}
+body.theme-vibechat-light .mr-ft-preview-md a,
+body.theme-vibechat-light .mr-ft-md a,
+body.theme-vibechat-light .mr-ft-md a.rt-file-link,
+body.theme-vibechat-light .mr-ft-preview-md a.rt-file-link {
+  color: #075985;
+  border-bottom-color: rgba(7, 89, 133, 0.45);
+  text-decoration-color: rgba(7, 89, 133, 0.45);
+}
+body.theme-vibechat-light .mr-ft-expand {
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--text-secondary);
+}
+body.theme-vibechat-light .mr-ft-expand:hover {
+  background: rgba(15, 23, 42, 0.09);
+  color: var(--text-primary);
+}
 
 /* mr-ft-md 内联 markdown：代码块 / 表格浅化 */
 body.theme-vibechat-light .mr-ft-md pre {
@@ -3306,21 +3360,56 @@ body.theme-vibechat-light .mr-ft-md pre {
   border: 1px solid var(--border);
 }
 body.theme-vibechat-light .mr-ft-md code {
-  background: rgba(0, 0, 0, 0.06);
-  color: #9d174d;
+  background: #eef2ff;
+  color: #7e22ce;
+  border: 1px solid #c7d2fe;
 }
 body.theme-vibechat-light .mr-ft-md pre code {
   background: transparent;
   color: inherit;
+  border: 0;
 }
 body.theme-vibechat-light .mr-ft-md th,
 body.theme-vibechat-light .mr-ft-md td { border-color: var(--border); }
+body.theme-vibechat-light .mr-ft-md th {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+body.theme-vibechat-light .mr-ft-md tr:nth-child(even) td,
+body.theme-vibechat-light .mr-ft-preview-md tr:nth-child(even) td {
+  background: #f8fafc;
+}
+body.theme-vibechat-light .mr-ft-preview-md code {
+  background: #eef2ff;
+  color: #7e22ce;
+  border: 1px solid #c7d2fe;
+}
+body.theme-vibechat-light .mr-ft-preview-md pre {
+  background: #f6f8fa;
+  color: #1f2328;
+  border: 1px solid var(--border);
+  border-left: 3px solid #94a3b8;
+}
+body.theme-vibechat-light .mr-ft-preview-md pre code {
+  background: transparent;
+  color: inherit;
+  border: 0;
+}
 
 /* 半透明白底反向（在浅底上 rgba(255,255,255,*) 看不出，改成 rgba(0,0,0,*) 让元素深一档） */
 body.theme-vibechat-light .mr-ft-progress { background: rgba(0, 0, 0, 0.06); }
-body.theme-vibechat-light .mr-ft-md blockquote {
-  border-left: 3px solid var(--border);
-  background: rgba(0, 0, 0, 0.03);
+body.theme-vibechat-light .mr-ft-md blockquote,
+body.theme-vibechat-light .mr-ft-preview-md blockquote {
+  border-left: 3px solid #94a3b8;
+  background: #f8fafc;
+  color: #334155;
+}
+body.theme-vibechat-light .mr-ft-preview-ellip {
+  color: #64748b;
+  opacity: 1;
+}
+body.theme-vibechat-light .mr-ft-preview.streaming {
+  color: #1f2937;
 }
 
 /* mr-tab.has-new 黄色提示边在浅底上加深 */
@@ -3448,7 +3537,7 @@ body.theme-vibechat-light .mr-ft-status.manual_extracted {
   background: #d1fae5; color: #047857; opacity: 0.85;
 }
 body.theme-vibechat-light .mr-ft-status.absent {
-  background: #f1f5f9; color: #94a3b8;
+  background: #f1f5f9; color: #475569;
 }
 body.theme-vibechat-light .mr-ft-status.soft_alert,
 body.theme-vibechat-light .mr-ft-status.interrupted {
@@ -3465,6 +3554,121 @@ body.theme-vibechat-light .mr-ft-lineage-chip:hover { background: #e2e8f0; }
 body.theme-vibechat-light .mr-ft-lineage-chip.slot-1 { color: #b45309; border-color: rgba(var(--c-slot-1-rgb), 0.40); }
 body.theme-vibechat-light .mr-ft-lineage-chip.slot-2 { color: #c2410c; border-color: rgba(var(--c-slot-2-rgb), 0.40); }
 body.theme-vibechat-light .mr-ft-lineage-chip.slot-3 { color: #1e40af; border-color: rgba(var(--c-slot-3-rgb), 0.40); }
+
+body.theme-vibechat-light .mr-ft-ctx.ok {
+  background: #d1fae5;
+  color: #047857;
+}
+body.theme-vibechat-light .mr-ft-ctx.warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+body.theme-vibechat-light .mr-ft-ctx.high {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+body.theme-vibechat-light .mr-ft-mem-btn {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #334155;
+}
+body.theme-vibechat-light .mr-ft-mem-btn:hover {
+  background: #eef2f7;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+body.theme-vibechat-light .mr-ft-mem-btn.pending {
+  background: #fef3c7;
+  border-color: #fcd34d;
+  color: #92400e;
+}
+body.theme-vibechat-light .mr-ft-mem-btn.health-warn {
+  background: #ffedd5;
+  border-color: #fdba74;
+  color: #9a3412;
+}
+body.theme-vibechat-light .mr-ft-mem-btn.health-bad {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+body.theme-vibechat-light .mr-rt-userq {
+  background: #fff7ed;
+  border-left-color: #f59e0b;
+  color: #334155;
+}
+body.theme-vibechat-light .mr-rt-userq-label,
+body.theme-vibechat-light .mr-rt-userq-toggle {
+  color: #92400e;
+}
+body.theme-vibechat-light .mr-rt-userq-text {
+  color: #1f2937;
+}
+body.theme-vibechat-light .mr-rt-userq-tag {
+  background: #ffedd5;
+  color: #9a3412;
+}
+body.theme-vibechat-light .mr-rt-scene-card,
+body.theme-vibechat-light .mr-rt-ob-step {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+body.theme-vibechat-light .mr-rt-scene-card-head {
+  color: #1e40af;
+}
+body.theme-vibechat-light .mr-rt-scene-card-body {
+  color: #334155;
+}
+body.theme-vibechat-light .mr-rt-scene-card-body strong {
+  color: #b45309;
+}
+body.theme-vibechat-light .mr-rt-scene-card-btn-secondary {
+  background: #ffffff;
+  border-color: #94a3b8;
+  color: #475569;
+}
+body.theme-vibechat-light .mr-rt-scene-card-btn-secondary:hover {
+  background: #f1f5f9;
+  border-color: #64748b;
+  color: #0f172a;
+}
+body.theme-vibechat-light .mr-rt-ob-step-title {
+  color: #0f172a;
+  font-weight: 700;
+}
+body.theme-vibechat-light .mr-rt-ob-step-desc {
+  color: #475569;
+}
+body.theme-vibechat-light .mr-rt-ob-step-num {
+  background: #e0e7ff;
+  color: #4f46e5;
+  border-color: #a5b4fc;
+}
+
+/* focus/compare 的旧深色规则会把非 active 卡片 brightness 压暗；浅色主题下保持白卡一致。 */
+body.theme-vibechat-light.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active),
+body.theme-vibechat-light.mr-card-compare-on .mr-ft:not(.compare-selected) {
+  opacity: 1;
+  filter: none;
+  background-color: #f8fafc !important;
+}
+body.theme-vibechat-light.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active):hover {
+  opacity: 1;
+  filter: none;
+  background-color: #f1f5f9 !important;
+}
+body.theme-vibechat-light.mr-card-focus-on .mr-ft-strip .mr-ft.active {
+  box-shadow:
+    inset 0 0 0 2px rgba(var(--c-slot-glow), 0.45),
+    0 10px 24px rgba(15, 23, 42, 0.10);
+}
+body.theme-vibechat-light.mr-card-focus-on .mr-ft-strip .mr-ft.active::after {
+  background: linear-gradient(135deg,
+    rgba(var(--c-slot-glow), 0.70),
+    rgba(255, 255, 255, 0.85),
+    rgba(var(--c-slot-glow), 0.70));
+}
 
 /* 顶部 mr-tab.active 用微信绿（覆盖默认 var(--accent) 已在 styles.css 声明微信绿，
    这里多加 hover 强化保险） */

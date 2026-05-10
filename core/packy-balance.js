@@ -58,37 +58,26 @@ function parseSessionCookie(cookieValue) {
 }
 
 /**
- * 通用 HTTPS GET 请求(走代理,JSON 返回)
+ * 通用 HTTPS GET 请求（强制直连，不走代理）
+ *
+ * 历史 proxy 参数已不再生效：PackyAPI 任何调用必须直连，
+ * 否则本地 VPN 代理（Clash/Mihomo 7890 端口）的 60s idle TCP 切断会
+ * 在长任务（如 image-2 长 prompt）出图前关闭连接 —— PackyAPI 后端
+ * 仍跑完并扣费，但响应无法回传，钱白扣。
+ * 实测见 ppt-image-studio/docs/packyapi-image2-60s-investigation.html。
  */
-function httpsGetJson(urlStr, headers, proxy) {
+function httpsGetJson(urlStr, headers, _proxyIgnored) {
   return new Promise((resolve, reject) => {
-    let opts;
-    if (proxy) {
-      const proxyUrl = new URL(proxy);
-      const target = new URL(urlStr);
-      opts = {
-        host: proxyUrl.hostname,
-        port: proxyUrl.port,
-        path: urlStr,
-        method: 'GET',
-        headers: {
-          ...headers,
-          Host: target.hostname,
-        },
-      };
-    } else {
-      const target = new URL(urlStr);
-      opts = {
-        host: target.hostname,
-        path: target.pathname + target.search,
-        port: 443,
-        method: 'GET',
-        headers,
-      };
-    }
+    const target = new URL(urlStr);
+    const opts = {
+      host: target.hostname,
+      path: target.pathname + target.search,
+      port: 443,
+      method: 'GET',
+      headers,
+    };
 
-    const lib = proxy ? require('http') : https;
-    const req = lib.request(opts, (res) => {
+    const req = https.request(opts, (res) => {
       let body = '';
       res.on('data', (chunk) => (body += chunk));
       res.on('end', () => {

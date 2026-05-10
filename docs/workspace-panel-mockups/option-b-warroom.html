@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>方案 B · 作战指挥室</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: "JetBrains Mono", "Consolas", "Microsoft YaHei", monospace;
+  background: #07090d; color: #cbd5e1; font-size: 13px; line-height: 1.55;
+  min-height: 100vh;
+}
+.container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;
+  padding-bottom: 14px; border-bottom: 1px solid #1f2937; }
+.header h1 { font-size: 16px; font-weight: 600; color: #e5e7eb; letter-spacing: 0.1em; }
+.header h1 .accent { color: #00ff9f; }
+.header .clock { color: #00ff9f; font-size: 13px; letter-spacing: 0.1em; }
+.header .clock .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: #00ff9f; margin-right: 8px; animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1;box-shadow:0 0 8px #00ff9f}50%{opacity:.3;box-shadow:0 0 0 #00ff9f} }
+
+.radar {
+  background: linear-gradient(90deg, #1a0408 0%, #2d0510 50%, #1a0408 100%);
+  border: 1px solid #ff003c; border-radius: 6px; padding: 18px 22px; margin-bottom: 16px;
+  display: flex; gap: 18px; align-items: center; position: relative; overflow: hidden;
+}
+.radar::before { content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(90deg, transparent 0, transparent 40px, rgba(255,0,60,.05) 40px, rgba(255,0,60,.05) 41px);
+  animation: scan 4s linear infinite; }
+@keyframes scan { from{transform:translateX(-50px)}to{transform:translateX(50px)} }
+.radar .alarm { font-size: 28px; color: #ff003c; animation: blink 0.8s ease-in-out infinite; z-index: 1; }
+@keyframes blink { 0%,100%{opacity:1}50%{opacity:.4} }
+.radar .text { z-index: 1; flex: 1; }
+.radar .label { color: #ff003c; font-size: 11px; font-weight: 700; letter-spacing: 0.2em; }
+.radar .msg { color: #fda4af; font-size: 14px; margin-top: 4px; }
+.radar .msg b { color: #fff; }
+.radar .level { z-index: 1; text-align: right; }
+.radar .level .num { font-size: 32px; font-weight: 700; color: #ff003c; line-height: 1; }
+.radar .level .desc { font-size: 10px; color: #fca5a5; letter-spacing: 0.15em; }
+
+.grid { display: grid; grid-template-columns: 280px 1fr 320px; gap: 14px; }
+.panel { background: #0d1117; border: 1px solid #1f2937; border-radius: 6px; padding: 14px; }
+.panel-title { font-size: 10px; color: #00ff9f; letter-spacing: 0.2em; margin-bottom: 12px;
+  display: flex; justify-content: space-between; }
+.panel-title .count { color: #6b7280; }
+
+/* Roster */
+.roster-item { padding: 10px 0; border-bottom: 1px dashed #1f2937; }
+.roster-item:last-child { border-bottom: none; }
+.roster-item .row { display: flex; align-items: center; gap: 8px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dot.green { background: #00ff9f; box-shadow: 0 0 8px #00ff9f; }
+.dot.amber { background: #ffaa00; box-shadow: 0 0 8px #ffaa00; }
+.dot.red { background: #ff003c; box-shadow: 0 0 8px #ff003c; animation: blink 0.6s infinite; }
+.roster-item .name { color: #e5e7eb; font-weight: 600; flex: 1; font-size: 12px; }
+.roster-item .model { color: #6b7280; font-size: 10px; }
+.roster-item .branch { color: #00ff9f; font-size: 11px; margin-top: 4px; padding-left: 16px; }
+.roster-item .branch::before { content: "└─ "; color: #4b5563; }
+.roster-item .wt { color: #6b7280; font-size: 10px; padding-left: 16px; }
+
+/* Topology */
+.topo { position: relative; height: 460px; }
+.topo svg { width: 100%; height: 100%; }
+.node { fill: #0d1117; stroke: #00ff9f; stroke-width: 2; }
+.node.collision { stroke: #ff003c; }
+.node-label { fill: #e5e7eb; font-size: 11px; font-family: "JetBrains Mono", monospace; text-anchor: middle; }
+.node-meta { fill: #6b7280; font-size: 9px; font-family: "JetBrains Mono", monospace; text-anchor: middle; }
+.edge { stroke: #1f2937; stroke-width: 1.5; fill: none; stroke-dasharray: 4,4; }
+.edge.soft { stroke: #ffaa00; stroke-width: 1.5; }
+.edge.hard { stroke: #ff003c; stroke-width: 2.5; stroke-dasharray: none; }
+.file-label { fill: #ff003c; font-size: 10px; font-family: "JetBrains Mono", monospace; text-anchor: middle; font-weight: 700; }
+
+.legend { margin-top: 12px; display: flex; gap: 16px; font-size: 10px; color: #6b7280; padding-top: 12px; border-top: 1px solid #1f2937; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 18px; height: 2px; display: inline-block; }
+.legend i.hard { background: #ff003c; }
+.legend i.soft { background: #ffaa00; }
+.legend i.idle { background: #1f2937; border-top: 1px dashed #4b5563; }
+
+/* Stream */
+.stream-item { padding: 8px 0; border-bottom: 1px solid #11151c; font-size: 11px; }
+.stream-item:last-child { border-bottom: none; }
+.stream-time { color: #4b5563; font-size: 10px; }
+.stream-item .who { color: #00ff9f; }
+.stream-item .who.s2 { color: #38bdf8; }
+.stream-item .who.s3 { color: #c084fc; }
+.stream-item .who.s4 { color: #fb7185; }
+.stream-item .verb { color: #6b7280; }
+.stream-item .file { color: #e5e7eb; }
+.stream-item.alert { background: rgba(255,0,60,.08); border-left: 2px solid #ff003c; padding-left: 8px; margin: 4px -8px; }
+.stream-item.alert .file { color: #ff003c; font-weight: 700; }
+
+.note { color: #4b5563; font-size: 11px; margin-top: 18px; text-align: center; letter-spacing: 0.1em; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>[ WORKSPACE <span class="accent">//</span> WAR ROOM ]</h1>
+    <div class="clock"><span class="pulse"></span>LIVE · 2026-04-30 21:47:08</div>
+  </div>
+
+  <div class="radar">
+    <div class="alarm">▲</div>
+    <div class="text">
+      <div class="label">CONFLICT DETECTED</div>
+      <div class="msg">两个会话在 <b>renderer/diary-view.js</b> 上活跃编辑 · 共享 worktree <b>hub-diary</b> · 后写入将覆盖前者</div>
+    </div>
+    <div class="level">
+      <div class="num">1</div>
+      <div class="desc">CRITICAL</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- LEFT: ROSTER -->
+    <div class="panel">
+      <div class="panel-title"><span>SESSION ROSTER</span><span class="count">4 / 4</span></div>
+      <div class="roster-item">
+        <div class="row"><span class="dot red"></span><span class="name">Hub feat/diary</span><span class="model">OPUS</span></div>
+        <div class="branch">feat/diary</div>
+        <div class="wt">wt: hub-diary</div>
+      </div>
+      <div class="roster-item">
+        <div class="row"><span class="dot amber"></span><span class="name">Hub fix/qrcode</span><span class="model">SONNET</span></div>
+        <div class="branch">fix/qrcode-deps</div>
+        <div class="wt">wt: hub-qrcode</div>
+      </div>
+      <div class="roster-item">
+        <div class="row"><span class="dot green"></span><span class="name">FunTop10 字幕</span><span class="model">OPUS</span></div>
+        <div class="branch">feat/subtitle-stroke</div>
+        <div class="wt">wt: funtop10-subs</div>
+      </div>
+      <div class="roster-item">
+        <div class="row"><span class="dot red"></span><span class="name">Hub diary UI</span><span class="model">SONNET</span></div>
+        <div class="branch">feat/diary</div>
+        <div class="wt">wt: hub-diary</div>
+      </div>
+    </div>
+
+    <!-- CENTER: TOPOLOGY -->
+    <div class="panel">
+      <div class="panel-title"><span>COLLISION TOPOLOGY</span><span class="count">3 EDGES</span></div>
+      <div class="topo">
+        <svg viewBox="0 0 600 460">
+          <!-- edges first -->
+          <path class="edge hard" d="M 150 110 Q 300 80 450 110" />
+          <text class="file-label" x="300" y="74">renderer/diary-view.js</text>
+          <path class="edge soft" d="M 150 130 Q 300 230 450 130" />
+          <text x="300" y="240" class="file-label" style="fill:#ffaa00">share branch: feat/diary</text>
+          <path class="edge" d="M 450 130 Q 470 250 350 350" />
+          <path class="edge" d="M 350 350 Q 200 350 150 130" />
+          <path class="edge" d="M 150 350 Q 250 380 350 350" />
+
+          <!-- nodes -->
+          <g>
+            <circle class="node collision" cx="150" cy="110" r="42" />
+            <text class="node-label" x="150" y="106">feat/diary</text>
+            <text class="node-meta" x="150" y="122">OPUS · S1</text>
+          </g>
+          <g>
+            <circle class="node collision" cx="450" cy="110" r="42" />
+            <text class="node-label" x="450" y="106">diary UI</text>
+            <text class="node-meta" x="450" y="122">SONNET · S4</text>
+          </g>
+          <g>
+            <circle class="node" cx="150" cy="350" r="42" style="stroke:#ffaa00" />
+            <text class="node-label" x="150" y="346">qrcode</text>
+            <text class="node-meta" x="150" y="362">SONNET · S2</text>
+            <text class="file-label" x="150" y="408" style="fill:#ffaa00">!package.json</text>
+          </g>
+          <g>
+            <circle class="node" cx="450" cy="350" r="42" />
+            <text class="node-label" x="450" y="346">funtop10</text>
+            <text class="node-meta" x="450" y="362">OPUS · S3</text>
+          </g>
+        </svg>
+      </div>
+      <div class="legend">
+        <span><i class="hard"></i> 文件级硬碰撞</span>
+        <span><i class="soft"></i> 分支级软冲突</span>
+        <span><i class="idle"></i> 隔离</span>
+      </div>
+    </div>
+
+    <!-- RIGHT: STREAM -->
+    <div class="panel">
+      <div class="panel-title"><span>EVENT STREAM</span><span class="count">LIVE</span></div>
+      <div class="stream-item alert">
+        <div class="stream-time">21:47:06 · just now</div>
+        <span class="who s4">[S4]</span> <span class="verb">Edit</span> <span class="file">renderer/diary-view.js</span>
+      </div>
+      <div class="stream-item">
+        <div class="stream-time">21:46:11 · 1 min</div>
+        <span class="who s2">[S2]</span> <span class="verb">Edit</span> <span class="file">main.js</span>
+      </div>
+      <div class="stream-item">
+        <div class="stream-time">21:45:33 · 2 min</div>
+        <span class="who s3">[S3]</span> <span class="verb">Write</span> <span class="file">render.js</span>
+      </div>
+      <div class="stream-item">
+        <div class="stream-time">21:44:40 · 3 min</div>
+        <span class="who">[S1]</span> <span class="verb">Edit</span> <span class="file">core/diary-store.js</span>
+      </div>
+      <div class="stream-item">
+        <div class="stream-time">21:43:18 · 4 min</div>
+        <span class="who s4">[S4]</span> <span class="verb">Write</span> <span class="file">renderer/diary-style.css</span>
+      </div>
+      <div class="stream-item">
+        <div class="stream-time">21:42:55 · 5 min</div>
+        <span class="who s3">[S3]</span> <span class="verb">Edit</span> <span class="file">subtitle-overlay.js</span>
+      </div>
+      <div class="stream-item alert">
+        <div class="stream-time">21:39:47 · 8 min</div>
+        <span class="who">[S1]</span> <span class="verb">Edit</span> <span class="file">renderer/diary-view.js</span>
+      </div>
+      <div class="stream-item">
+        <div class="stream-time">21:35:02 · 12 min</div>
+        <span class="who">[S1]</span> <span class="verb">Write</span> <span class="file">core/diary-prompts.js</span>
+      </div>
+      <div class="stream-item">
+        <div class="stream-time">21:32:15 · 15 min</div>
+        <span class="who s2">[S2]</span> <span class="verb">Edit</span> <span class="file">package.json</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">方案 B · 作战指挥室  ·  灵感：Bloomberg terminal / SOC 监控大屏 / Cyberpunk</div>
+</div>
+</body>
+</html>

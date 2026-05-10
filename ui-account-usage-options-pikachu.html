@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Account Usage 优化 · 备选稿(Pikachu)</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-elevated: #1c2129;
+    --bg-soft: #21262d;
+    --border: #30363d;
+    --border-strong: #484f58;
+    --text: #c9d1d9;
+    --text-muted: #8b949e;
+    --text-dim: #6e7681;
+    --accent: #58a6ff;
+    --accent-purple: #a371f7;
+    --accent-green: #3fb950;
+    --accent-orange: #d29922;
+    --accent-red: #f85149;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', "PingFang SC", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+    padding-bottom: 80px;
+  }
+
+  .page-header {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    padding: 22px 32px;
+    position: sticky; top: 0; z-index: 100;
+  }
+  .page-header h1 {
+    font-size: 20px; font-weight: 600; margin-bottom: 6px;
+  }
+  .page-header h1 .badge {
+    font-size: 11px;
+    color: var(--accent-purple);
+    background: rgba(163, 113, 247, 0.12);
+    padding: 3px 9px; border-radius: 12px;
+    margin-left: 10px; vertical-align: middle;
+  }
+  .page-header .lead {
+    color: var(--text-muted); font-size: 13px; max-width: 920px;
+  }
+  .page-header .lead b { color: var(--text); }
+
+  .option {
+    max-width: 1080px; margin: 36px auto 0;
+    padding: 0 24px;
+  }
+  .option-header { margin-bottom: 14px; }
+  .option-header h2 {
+    font-size: 18px; font-weight: 600;
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  .option-header h2 .num {
+    color: var(--accent); font-family: ui-monospace, monospace;
+  }
+  .option-header h2 .vibe {
+    font-size: 11px; padding: 3px 8px; border-radius: 10px;
+    font-weight: 500;
+  }
+  .vibe-cut    { background: rgba(248, 81, 73, 0.12); color: var(--accent-red); }
+  .vibe-group  { background: rgba(63, 185, 80, 0.12); color: var(--accent-green); }
+  .option-header p { color: var(--text-muted); font-size: 13px; margin-top: 6px; }
+
+  /* ========== 对比框架 ========== */
+  .compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-top: 14px;
+  }
+  .compare-col { display: flex; flex-direction: column; gap: 8px; }
+  .col-label {
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.7px;
+    padding: 4px 10px; border-radius: 4px;
+    align-self: flex-start;
+  }
+  .col-label.before { background: rgba(248,81,73,0.15); color: var(--accent-red); }
+  .col-label.after  { background: rgba(63,185,80,0.15); color: var(--accent-green); }
+
+  .mock-frame {
+    background: #0a0d12;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    width: 280px;
+  }
+  .mock-frame-bar {
+    background: var(--bg-elevated);
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px; color: var(--text-dim);
+  }
+
+  /* ========== 模拟侧边栏 ========== */
+  .sidebar-mock {
+    padding: 10px 8px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+
+  /* 头部 5 按钮(不变) */
+  .sb-header {
+    display: flex; gap: 4px; align-items: center;
+    padding: 4px;
+  }
+  .sb-btn {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+  }
+  .sb-btn.primary {
+    background: var(--accent-green); color: #0a0d12; border: none;
+    font-weight: 700;
+  }
+  .sb-btn.roundtable {
+    background: rgba(163,113,247,.18);
+    border-color: rgba(163,113,247,.35);
+    color: var(--accent-purple);
+  }
+
+  /* === BEFORE: 当前 account-usage === */
+  .acc-old {
+    margin-top: 6px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .acc-old-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+  }
+  .acc-old-row:last-child { border-bottom: none; }
+  .acc-old-name {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 10px;
+    font-weight: 500;
+    width: 64px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .acc-old-name.cl { color: var(--accent-purple); }
+  .acc-old-name.ge { color: var(--accent); }
+  .acc-old-name.cx { color: var(--accent-green); }
+  .acc-old-name.ds { color: var(--accent); }
+  .acc-old-name.gl { color: var(--accent-green); }
+  .acc-old-name.gpt { color: var(--text-muted); }
+  .acc-old-name.km { color: var(--text-muted); }
+  .acc-old-name.qw { color: var(--text-muted); }
+  .acc-old-data {
+    flex: 1; font-size: 9px;
+    color: var(--text-dim);
+    font-family: ui-monospace, monospace;
+  }
+  .acc-old-data .pct-green { color: var(--accent-green); font-weight: 600; }
+  .acc-old-data .pct-red { color: var(--accent-red); font-weight: 600; }
+  .acc-old-data .pct-orange { color: var(--accent-orange); font-weight: 600; }
+  .acc-old-data .empty { color: var(--text-dim); }
+  .acc-old-pill {
+    font-size: 9px;
+    padding: 2px 7px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .acc-old-pill.api { color: var(--accent); border-color: rgba(88,166,255,.3); }
+  .acc-old-pill.sub { color: var(--text-muted); }
+
+  /* === AFTER A: 极简删除版 === */
+  .acc-a {
+    margin-top: 6px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .acc-a-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--bg-elevated);
+    font-size: 11px;
+  }
+  .acc-a-row .ai-badge {
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700;
+    font-family: ui-monospace, monospace;
+    flex-shrink: 0;
+  }
+  .acc-a-row .ai-badge.cl { background: rgba(163,113,247,.18); color: var(--accent-purple); }
+  .acc-a-row .ai-badge.ge { background: rgba(88,166,255,.18); color: var(--accent); }
+  .acc-a-row .ai-badge.cx { background: rgba(63,185,80,.18); color: var(--accent-green); }
+
+  .acc-a-row .name {
+    font-size: 11px; font-weight: 500;
+    color: var(--text);
+    width: 50px; flex-shrink: 0;
+  }
+  .acc-a-row .bars {
+    flex: 1; display: flex; flex-direction: column; gap: 3px;
+    min-width: 0;
+  }
+  .acc-a-row .bar-block {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 9px;
+    font-family: ui-monospace, monospace;
+    color: var(--text-dim);
+  }
+  .acc-a-row .bar-label { width: 16px; color: var(--text-dim); flex-shrink: 0; }
+  .acc-a-row .bar-track {
+    flex: 1;
+    height: 4px;
+    background: var(--bg-soft);
+    border-radius: 2px;
+    overflow: hidden;
+    position: relative;
+  }
+  .acc-a-row .bar-fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    border-radius: 2px;
+  }
+  .acc-a-row .bar-fill.green  { background: var(--accent-green); }
+  .acc-a-row .bar-fill.orange { background: var(--accent-orange); }
+  .acc-a-row .bar-fill.red    { background: var(--accent-red); }
+  .acc-a-row .bar-fill.dim    { background: var(--border-strong); opacity: 0.5; }
+  .acc-a-row .bar-pct {
+    width: 30px; text-align: right;
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+  }
+  .acc-a-row .bar-pct.green { color: var(--accent-green); font-weight: 600; }
+  .acc-a-row .bar-pct.red   { color: var(--accent-red); font-weight: 600; }
+  .acc-a-row .bar-pct.dim   { color: var(--text-dim); }
+
+  /* === AFTER B: 分组折叠版 === */
+  .acc-b {
+    margin-top: 6px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .acc-b-section {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .acc-b-section-title {
+    font-size: 9px; font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    padding: 6px 12px 4px;
+  }
+  .acc-b-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    border-top: 1px solid var(--border);
+    font-size: 10px;
+  }
+  .acc-b-row .ai-badge {
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700;
+    font-family: ui-monospace, monospace;
+  }
+  .acc-b-row .ai-badge.cl { background: rgba(163,113,247,.18); color: var(--accent-purple); }
+  .acc-b-row .ai-badge.ge { background: rgba(88,166,255,.18); color: var(--accent); }
+  .acc-b-row .ai-badge.cx { background: rgba(63,185,80,.18); color: var(--accent-green); }
+  .acc-b-row .name {
+    font-size: 10px; font-weight: 500; width: 44px;
+    flex-shrink: 0;
+  }
+  .acc-b-row .bar-track {
+    flex: 1; height: 5px;
+    background: var(--bg-soft);
+    border-radius: 2px;
+    overflow: hidden;
+    position: relative;
+  }
+  .acc-b-row .bar-fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    border-radius: 2px;
+  }
+  .acc-b-row .bar-fill.green { background: var(--accent-green); }
+  .acc-b-row .bar-fill.red { background: var(--accent-red); }
+  .acc-b-row .pct {
+    width: 28px; text-align: right;
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, monospace;
+  }
+  .acc-b-row .pct.green { color: var(--accent-green); font-weight: 600; }
+  .acc-b-row .pct.red { color: var(--accent-red); font-weight: 600; }
+  .acc-b-row .pct.dim { color: var(--text-dim); }
+
+  /* API 折叠 logo 集合 */
+  .acc-b-api-row {
+    display: flex; align-items: center;
+    padding: 6px 12px;
+    border-top: 1px solid var(--border);
+    gap: 6px;
+  }
+  .acc-b-api-row .label {
+    font-size: 10px; color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .acc-b-api-logos {
+    flex: 1;
+    display: flex; gap: 4px;
+    justify-content: flex-end;
+  }
+  .acc-b-api-logo {
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 8px; font-weight: 700;
+    font-family: ui-monospace, monospace;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    cursor: default;
+    transition: all 0.12s;
+  }
+  .acc-b-api-logo:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .notes {
+    margin-top: 14px;
+    padding: 14px 18px;
+    background: rgba(88, 166, 255, 0.04);
+    border-left: 2px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .notes b { color: var(--text); }
+  .notes ul { margin: 6px 0 0 18px; }
+  .notes li { margin-bottom: 3px; }
+  .notes .pros, .notes .cons { display: flex; gap: 18px; margin-top: 8px; flex-wrap: wrap; }
+  .notes .pros { color: var(--accent-green); }
+  .notes .cons { color: var(--accent-orange); }
+  .notes .pros span, .notes .cons span { font-size: 12px; }
+
+  /* 决策表 */
+  .summary {
+    max-width: 1080px; margin: 50px auto 0;
+    padding: 22px 28px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .summary h2 { font-size: 17px; font-weight: 600; margin-bottom: 12px; }
+  table.compare {
+    width: 100%; border-collapse: collapse;
+    font-size: 13px;
+  }
+  table.compare th, table.compare td {
+    text-align: left;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  table.compare th {
+    color: var(--text-muted); font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    background: rgba(255,255,255,0.02);
+  }
+  table.compare td.opt-name { font-weight: 600; color: var(--text); }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1>左上侧边栏 / 用量面板优化 <span class="badge">Pikachu</span></h1>
+  <p class="lead">
+    问题:<b>5 行 API 模式 AI(DeepSeek/GLM/GPT/Kimi/Qwen)中间显示"API 接入",右侧又显示"API"标签 — 完全重复零信息量</b>,占掉 ~200px。
+    订阅模式(Claude/Gemini/Codex)有真实用量数据,值得保留。
+    <br>下方两个方案都<b>不加搜索框</b>(你已经否决);Header 5 按钮区不动(不在本轮范围)。
+  </p>
+</div>
+
+<!-- ============================================================== -->
+<!-- OPTION A · 极简删除版                                          -->
+<!-- ============================================================== -->
+<div class="option">
+  <div class="option-header">
+    <h2><span class="num">A</span>极简删除版 <span class="vibe vibe-cut">最激进 · 推荐</span></h2>
+    <p>
+      <b>直接删 5 行 API 模式 AI</b>。理由:它们没有用量数据,占在"用量面板"里就是噪声。要新建?走头部 <code>+▾</code> 菜单已经能选。
+      省下 200px 给会话列表。订阅模式 3 行美化为<b>双进度条</b>(5h / 7d 窗口可视化)。
+    </p>
+  </div>
+
+  <div class="compare-grid">
+    <div class="compare-col">
+      <span class="col-label before">当前 v0.8.3</span>
+      <div class="mock-frame">
+        <div class="mock-frame-bar">侧边栏 · 当前</div>
+        <div class="sidebar-mock">
+          <div class="sb-header">
+            <button class="sb-btn primary">+ ▾</button>
+            <button class="sb-btn">↻ ▾</button>
+            <button class="sb-btn roundtable">🎯</button>
+            <button class="sb-btn">⚙ ▾</button>
+            <button class="sb-btn">◀</button>
+          </div>
+          <div class="acc-old">
+            <div class="acc-old-row">
+              <span class="acc-old-name cl">Claude</span>
+              <span class="acc-old-data">5h <span class="pct-green">11%</span> 4h20m | 7d <span class="pct-green">21%</span></span>
+              <span class="acc-old-pill sub">订阅</span>
+            </div>
+            <div class="acc-old-row">
+              <span class="acc-old-name ge">Gemini</span>
+              <span class="acc-old-data"><span class="empty">5h —</span>  <span class="empty">7d —</span></span>
+              <span class="acc-old-pill sub">订阅</span>
+            </div>
+            <div class="acc-old-row">
+              <span class="acc-old-name cx">Codex</span>
+              <span class="acc-old-data">5h <span class="pct-orange">1%</span> | 7d <span class="pct-red">99%</span></span>
+              <span class="acc-old-pill api">API</span>
+            </div>
+            <div class="acc-old-row">
+              <span class="acc-old-name ds">DeepSeek</span>
+              <span class="acc-old-data"><span class="empty">API 接入</span></span>
+              <span class="acc-old-pill api">API</span>
+            </div>
+            <div class="acc-old-row">
+              <span class="acc-old-name gl">GLM</span>
+              <span class="acc-old-data"><span class="empty">API 接入</span></span>
+              <span class="acc-old-pill api">API</span>
+            </div>
+            <div class="acc-old-row">
+              <span class="acc-old-name gpt">GPT 5.4</span>
+              <span class="acc-old-data"><span class="empty">API 接入</span></span>
+              <span class="acc-old-pill api">API</span>
+            </div>
+            <div class="acc-old-row">
+              <span class="acc-old-name km">Kimi K2.5</span>
+              <span class="acc-old-data"><span class="empty">API 接入</span></span>
+              <span class="acc-old-pill api">API</span>
+            </div>
+            <div class="acc-old-row">
+              <span class="acc-old-name qw">Qwen 3.6</span>
+              <span class="acc-old-data"><span class="empty">API 接入</span></span>
+              <span class="acc-old-pill api">API</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="compare-col">
+      <span class="col-label after">方案 A</span>
+      <div class="mock-frame">
+        <div class="mock-frame-bar">侧边栏 · 方案 A</div>
+        <div class="sidebar-mock">
+          <div class="sb-header">
+            <button class="sb-btn primary">+ ▾</button>
+            <button class="sb-btn">↻ ▾</button>
+            <button class="sb-btn roundtable">🎯</button>
+            <button class="sb-btn">⚙ ▾</button>
+            <button class="sb-btn">◀</button>
+          </div>
+          <div class="acc-a">
+            <div class="acc-a-row">
+              <span class="ai-badge cl">CL</span>
+              <span class="name">Claude</span>
+              <div class="bars">
+                <div class="bar-block">
+                  <span class="bar-label">5h</span>
+                  <div class="bar-track"><div class="bar-fill green" style="width:11%"></div></div>
+                  <span class="bar-pct green">11%</span>
+                </div>
+                <div class="bar-block">
+                  <span class="bar-label">7d</span>
+                  <div class="bar-track"><div class="bar-fill green" style="width:21%"></div></div>
+                  <span class="bar-pct green">21%</span>
+                </div>
+              </div>
+            </div>
+            <div class="acc-a-row">
+              <span class="ai-badge ge">GE</span>
+              <span class="name">Gemini</span>
+              <div class="bars">
+                <div class="bar-block">
+                  <span class="bar-label">5h</span>
+                  <div class="bar-track"><div class="bar-fill dim" style="width:0%"></div></div>
+                  <span class="bar-pct dim">—</span>
+                </div>
+                <div class="bar-block">
+                  <span class="bar-label">7d</span>
+                  <div class="bar-track"><div class="bar-fill dim" style="width:0%"></div></div>
+                  <span class="bar-pct dim">—</span>
+                </div>
+              </div>
+            </div>
+            <div class="acc-a-row">
+              <span class="ai-badge cx">CX</span>
+              <span class="name">Codex</span>
+              <div class="bars">
+                <div class="bar-block">
+                  <span class="bar-label">5h</span>
+                  <div class="bar-track"><div class="bar-fill orange" style="width:1%; min-width:2px;"></div></div>
+                  <span class="bar-pct dim">1%</span>
+                </div>
+                <div class="bar-block">
+                  <span class="bar-label">7d</span>
+                  <div class="bar-track"><div class="bar-fill red" style="width:99%"></div></div>
+                  <span class="bar-pct red">99%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <b>核心决策</b>:
+    <ul>
+      <li>5 个 API 模式 AI 行 <b>全删</b>(DeepSeek/GLM/GPT/Kimi/Qwen)。它们没用量数据,在"用量面板"里就是噪声</li>
+      <li>5h / 7d 用量从文字 <code>5h 11% 4h20m</code> 改为<b>双进度条 + 数字</b>。颜色编码:绿(空闲)/ 橙(用了一半)/ 红(危险)</li>
+      <li>左侧加 AI logo 角标(CL/GE/CX),识别度提升,符合现有 launcher 风格</li>
+      <li>不显示"订阅/API"pill — 都是订阅或有 quota 的,标签冗余</li>
+    </ul>
+    <div class="pros"><span>✓ 信息密度直接翻倍(8 行 → 3 行)</span><span>✓ 用量进度条比纯数字直观</span><span>✓ 给会话列表多 200px</span></div>
+    <div class="cons"><span>✗ 删了 API 模式 AI 后,如果用户想"快速看 DeepSeek 当前是哪个模型"就没地方看了(缓解:走 ⚙ 设置)</span></div>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<!-- OPTION B · 分组折叠版                                          -->
+<!-- ============================================================== -->
+<div class="option">
+  <div class="option-header">
+    <h2><span class="num">B</span>分组折叠版 <span class="vibe vibe-group">保留全部 AI 但极简化</span></h2>
+    <p>
+      上半:订阅 AI 三行(同方案 A 的进度条)。下半:5 个 API AI 折叠成<b>一行小 logo</b>(横排,hover tooltip 显示当前模型,点击进设置)。
+      保留信息可达性,占用从 5 行降到 1 行。
+    </p>
+  </div>
+
+  <div class="compare-grid">
+    <div class="compare-col">
+      <span class="col-label before">当前 v0.8.3</span>
+      <div class="mock-frame">
+        <div class="mock-frame-bar">侧边栏 · 当前</div>
+        <div class="sidebar-mock">
+          <div class="sb-header">
+            <button class="sb-btn primary">+ ▾</button>
+            <button class="sb-btn">↻ ▾</button>
+            <button class="sb-btn roundtable">🎯</button>
+            <button class="sb-btn">⚙ ▾</button>
+            <button class="sb-btn">◀</button>
+          </div>
+          <div class="acc-old">
+            <div class="acc-old-row"><span class="acc-old-name cl">Claude</span><span class="acc-old-data">5h <span class="pct-green">11%</span> | 7d <span class="pct-green">21%</span></span><span class="acc-old-pill sub">订阅</span></div>
+            <div class="acc-old-row"><span class="acc-old-name ge">Gemini</span><span class="acc-old-data"><span class="empty">5h — 7d —</span></span><span class="acc-old-pill sub">订阅</span></div>
+            <div class="acc-old-row"><span class="acc-old-name cx">Codex</span><span class="acc-old-data">5h <span class="pct-orange">1%</span> | 7d <span class="pct-red">99%</span></span><span class="acc-old-pill api">API</span></div>
+            <div class="acc-old-row"><span class="acc-old-name ds">DeepSeek</span><span class="acc-old-data"><span class="empty">API 接入</span></span><span class="acc-old-pill api">API</span></div>
+            <div class="acc-old-row"><span class="acc-old-name gl">GLM</span><span class="acc-old-data"><span class="empty">API 接入</span></span><span class="acc-old-pill api">API</span></div>
+            <div class="acc-old-row"><span class="acc-old-name gpt">GPT 5.4</span><span class="acc-old-data"><span class="empty">API 接入</span></span><span class="acc-old-pill api">API</span></div>
+            <div class="acc-old-row"><span class="acc-old-name km">Kimi K2.5</span><span class="acc-old-data"><span class="empty">API 接入</span></span><span class="acc-old-pill api">API</span></div>
+            <div class="acc-old-row"><span class="acc-old-name qw">Qwen 3.6</span><span class="acc-old-data"><span class="empty">API 接入</span></span><span class="acc-old-pill api">API</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="compare-col">
+      <span class="col-label after">方案 B</span>
+      <div class="mock-frame">
+        <div class="mock-frame-bar">侧边栏 · 方案 B</div>
+        <div class="sidebar-mock">
+          <div class="sb-header">
+            <button class="sb-btn primary">+ ▾</button>
+            <button class="sb-btn">↻ ▾</button>
+            <button class="sb-btn roundtable">🎯</button>
+            <button class="sb-btn">⚙ ▾</button>
+            <button class="sb-btn">◀</button>
+          </div>
+          <div class="acc-b">
+            <div class="acc-b-section">
+              <div class="acc-b-section-title">用量</div>
+              <div class="acc-b-row">
+                <span class="ai-badge cl">CL</span>
+                <span class="name">Claude</span>
+                <div class="bar-track"><div class="bar-fill green" style="width:21%"></div></div>
+                <span class="pct green">21%</span>
+              </div>
+              <div class="acc-b-row">
+                <span class="ai-badge ge">GE</span>
+                <span class="name">Gemini</span>
+                <div class="bar-track"></div>
+                <span class="pct dim">—</span>
+              </div>
+              <div class="acc-b-row">
+                <span class="ai-badge cx">CX</span>
+                <span class="name">Codex</span>
+                <div class="bar-track"><div class="bar-fill red" style="width:99%"></div></div>
+                <span class="pct red">99%</span>
+              </div>
+            </div>
+            <div class="acc-b-section">
+              <div class="acc-b-api-row">
+                <span class="label">其他 AI</span>
+                <div class="acc-b-api-logos">
+                  <div class="acc-b-api-logo" title="DeepSeek · deepseek-v4-pro">DS</div>
+                  <div class="acc-b-api-logo" title="GLM · glm-5.1">GL</div>
+                  <div class="acc-b-api-logo" title="GPT 5.4 high">GP</div>
+                  <div class="acc-b-api-logo" title="Kimi K2.5">KI</div>
+                  <div class="acc-b-api-logo" title="Qwen 3.6 Plus">QW</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <b>核心决策</b>:
+    <ul>
+      <li>订阅 AI 三行,<b>简化为单进度条</b>(只显示 7d 窗口 — 5h 用量信息密度低,放进 hover tooltip 也行)</li>
+      <li>5 个 API 模式 AI 折叠成<b>一行 22px logo</b> + "其他 AI" 标签。hover 看 tooltip(模型名),点击进设置</li>
+      <li>分组用 section-title 区分:"用量" / "其他 AI"</li>
+    </ul>
+    <div class="pros"><span>✓ 8 行 → 4 行,信息密度提升</span><span>✓ API 模式 AI 不丢,可达性保留</span><span>✓ 视觉分组清晰</span></div>
+    <div class="cons"><span>✗ 比方案 A 多占 ~30px(API logo 那行)</span><span>✗ 用户可能根本不会去点 API logo,等于占空间</span></div>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<!-- 决策表                                                         -->
+<!-- ============================================================== -->
+<div class="summary">
+  <h2>决策对比</h2>
+  <table class="compare">
+    <thead>
+      <tr>
+        <th>方案</th>
+        <th>占用高度</th>
+        <th>API AI 可达性</th>
+        <th>实现成本</th>
+        <th>信噪比</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="opt-name">当前 v0.8.3</td>
+        <td>~280px</td>
+        <td>5 行占位</td>
+        <td>—</td>
+        <td>低</td>
+      </tr>
+      <tr>
+        <td class="opt-name">A · 极简删除版</td>
+        <td><b>~110px</b></td>
+        <td>仅 + 菜单可达</td>
+        <td>低</td>
+        <td><b>高</b></td>
+      </tr>
+      <tr>
+        <td class="opt-name">B · 分组折叠版</td>
+        <td>~140px</td>
+        <td>logo 一键</td>
+        <td>低</td>
+        <td>中高</td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="margin-top: 16px; font-size: 13px; color: var(--text-muted); line-height: 1.7;">
+    <b style="color: var(--text);">我的推荐:方案 A</b> — 你的话"显示 API 没有任何信息量和意义,可以去掉"已经定调,不留尾巴最干净。
+    API 模式 AI 想新建/配置,头部 + 菜单和 ⚙ 设置已经能搞定,用量面板没必要再放一份。<br><br>
+    告诉我选 A 还是 B(或者"再激进点 / 再保守点 / 还要 X"),我下一轮落代码到 <code>renderer.js</code> 的 <code>renderAccountUsage()</code>(line ~4132 附近调用)+ <code>styles.css</code>。
+  </p>
+</div>
+
+</body>
+</html>

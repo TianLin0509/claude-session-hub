@@ -68,6 +68,8 @@ function _normalizeState(parsed) {
   if (!Array.isArray(parsed.sessions)) parsed.sessions = [];
   for (const s of parsed.sessions) {
     if (s.codexSid === undefined) s.codexSid = null;
+    if (s.codexProfile === undefined) s.codexProfile = null;
+    if (s.codexProfileLabel === undefined) s.codexProfileLabel = null;
     if (s.geminiChatId === undefined) s.geminiChatId = null;
     if (s.geminiProjectHash === undefined) s.geminiProjectHash = null;
     if (s.geminiProjectRoot === undefined) s.geminiProjectRoot = null;

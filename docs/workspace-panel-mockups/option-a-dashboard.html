@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>方案 A · 仪表盘卡片风</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #f7f8fa; color: #111827; font-size: 14px; line-height: 1.5;
+}
+.container { max-width: 1280px; margin: 0 auto; padding: 24px; }
+.header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 20px; }
+.header h1 { font-size: 22px; font-weight: 600; }
+.header .meta { color: #6b7280; font-size: 13px; }
+.header .meta strong { color: #111827; }
+
+.alert {
+  background: #fef2f2; border: 1px solid #fecaca; border-left: 4px solid #dc2626;
+  border-radius: 8px; padding: 16px 18px; margin-bottom: 20px;
+  display: flex; gap: 14px; align-items: flex-start;
+}
+.alert .icon { font-size: 22px; line-height: 1; color: #dc2626; }
+.alert .body { flex: 1; }
+.alert .title { color: #991b1b; font-weight: 600; margin-bottom: 4px; }
+.alert .desc { color: #7f1d1d; font-size: 13px; }
+.alert code { background: #fee2e2; padding: 1px 6px; border-radius: 3px; font-size: 12px;
+  font-family: "JetBrains Mono", "Consolas", monospace; }
+
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+.kpi { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px 16px; }
+.kpi .label { color: #6b7280; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.kpi .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+.kpi.danger .value { color: #dc2626; }
+.kpi.warn .value { color: #f59e0b; }
+
+.section-title { font-size: 13px; font-weight: 600; color: #374151; margin: 24px 0 12px;
+  text-transform: uppercase; letter-spacing: 0.06em; }
+.sessions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; position: relative; }
+.card.has-collision { border-color: #fca5a5; box-shadow: 0 0 0 3px #fee2e2; }
+.card .row1 { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.card .name { font-weight: 600; font-size: 15px; }
+.card .badge { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: #f3f4f6; color: #374151; }
+.card .badge.opus { background: #fef3c7; color: #92400e; }
+.card .badge.sonnet { background: #dbeafe; color: #1e40af; }
+.card .meta { font-size: 12px; color: #6b7280; font-family: "JetBrains Mono", "Consolas", monospace; margin-bottom: 4px; }
+.card .meta strong { color: #374151; }
+.card .branch { display: inline-flex; align-items: center; gap: 4px; background: #ecfdf5; color: #065f46;
+  padding: 2px 10px; border-radius: 4px; font-size: 12px;
+  font-family: "JetBrains Mono", "Consolas", monospace; margin-top: 6px; }
+.card .files { margin-top: 12px; padding-top: 12px; border-top: 1px solid #f3f4f6; }
+.card .files-title { font-size: 11px; color: #9ca3af; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.04em; }
+.card .file { display: flex; justify-content: space-between;
+  font-family: "JetBrains Mono", "Consolas", monospace; font-size: 12px; padding: 3px 0; color: #374151; }
+.card .file.collision { background: #fef2f2; color: #991b1b; padding: 3px 8px; border-radius: 4px; margin: 0 -8px; font-weight: 500; }
+.card .file .time { color: #9ca3af; }
+.card .collision-tag { position: absolute; top: -8px; right: 16px; background: #dc2626; color: #fff;
+  font-size: 11px; padding: 2px 10px; border-radius: 12px; font-weight: 600; }
+
+.collisions-table { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 4px; }
+.collision-row { display: grid; grid-template-columns: 80px 1fr 110px; gap: 12px; align-items: center;
+  padding: 12px 14px; border-bottom: 1px solid #f3f4f6; }
+.collision-row:last-child { border-bottom: none; }
+.severity { font-size: 11px; padding: 3px 8px; border-radius: 12px; text-align: center; font-weight: 600; }
+.severity.high { background: #fee2e2; color: #991b1b; }
+.severity.med { background: #fef3c7; color: #92400e; }
+.severity.low { background: #dbeafe; color: #1e40af; }
+.collision-row .what { font-size: 13px; }
+.collision-row .what code { font-family: "JetBrains Mono", "Consolas", monospace; background: #f3f4f6; padding: 1px 6px; border-radius: 3px; }
+.collision-row .who { color: #6b7280; font-size: 12px; margin-top: 2px; }
+.collision-row .when { color: #9ca3af; font-size: 12px; text-align: right; }
+.note { color: #9ca3af; font-size: 12px; margin-top: 16px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Workspace · 4 个活跃会话</h1>
+    <div class="meta">最后刷新 <strong>2 秒前</strong> · 数据源 <strong>Claude hooks + git status</strong></div>
+  </div>
+
+  <div class="alert">
+    <div class="icon">●</div>
+    <div class="body">
+      <div class="title">检测到文件级碰撞 — 立即关注</div>
+      <div class="desc">会话 <code>Hub feat/diary</code> 和 <code>Hub diary UI</code> 都在 <code>renderer/diary-view.js</code> 上活跃编辑，且共享 worktree <code>hub-diary</code>。后写入会覆盖前者改动。</div>
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="label">活跃会话</div><div class="value">4</div></div>
+    <div class="kpi"><div class="label">独立 Worktree</div><div class="value">3</div></div>
+    <div class="kpi danger"><div class="label">硬碰撞</div><div class="value">1</div></div>
+    <div class="kpi warn"><div class="label">软冲突</div><div class="value">2</div></div>
+  </div>
+
+  <div class="section-title">会话状态</div>
+  <div class="sessions">
+    <div class="card has-collision">
+      <div class="collision-tag">碰撞</div>
+      <div class="row1"><div class="name">Hub feat/diary</div><span class="badge opus">Opus 4.7</span></div>
+      <div class="meta">cwd <strong>~/claude-session-hub-diary</strong></div>
+      <div class="meta">worktree <strong>hub-diary</strong></div>
+      <span class="branch">feat/diary</span>
+      <div class="files">
+        <div class="files-title">最近修改</div>
+        <div class="file"><span>core/diary-store.js</span><span class="time">3 min</span></div>
+        <div class="file collision"><span>renderer/diary-view.js</span><span class="time">8 min ⚠</span></div>
+        <div class="file"><span>core/diary-prompts.js</span><span class="time">12 min</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row1"><div class="name">Hub fix/qrcode</div><span class="badge sonnet">Sonnet 4.6</span></div>
+      <div class="meta">cwd <strong>~/hub-qrcode</strong></div>
+      <div class="meta">worktree <strong>hub-qrcode</strong></div>
+      <span class="branch">fix/qrcode-deps</span>
+      <div class="files">
+        <div class="files-title">最近修改</div>
+        <div class="file"><span>main.js</span><span class="time">1 min</span></div>
+        <div class="file"><span>package.json</span><span class="time">15 min ⚠</span></div>
+        <div class="file"><span>package-lock.json</span><span class="time">15 min</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row1"><div class="name">FunTop10 字幕</div><span class="badge opus">Opus 4.7</span></div>
+      <div class="meta">cwd <strong>~/funtop10</strong></div>
+      <div class="meta">worktree <strong>funtop10-subs</strong></div>
+      <span class="branch">feat/subtitle-stroke</span>
+      <div class="files">
+        <div class="files-title">最近修改</div>
+        <div class="file"><span>render.js</span><span class="time">2 min</span></div>
+        <div class="file"><span>subtitle-overlay.js</span><span class="time">5 min</span></div>
+        <div class="file"><span>fonts/config.json</span><span class="time">20 min</span></div>
+      </div>
+    </div>
+    <div class="card has-collision">
+      <div class="collision-tag">碰撞</div>
+      <div class="row1"><div class="name">Hub diary UI</div><span class="badge sonnet">Sonnet 4.6</span></div>
+      <div class="meta">cwd <strong>~/claude-session-hub-diary</strong></div>
+      <div class="meta">worktree <strong>hub-diary</strong></div>
+      <span class="branch">feat/diary</span>
+      <div class="files">
+        <div class="files-title">最近修改</div>
+        <div class="file collision"><span>renderer/diary-view.js</span><span class="time">just now ⚠</span></div>
+        <div class="file"><span>renderer/diary-style.css</span><span class="time">4 min</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">碰撞详情</div>
+  <div class="collisions-table">
+    <div class="collision-row">
+      <span class="severity high">高危</span>
+      <div>
+        <div class="what">文件级 · <code>renderer/diary-view.js</code></div>
+        <div class="who">Hub feat/diary  ⨯  Hub diary UI · 同 worktree <code>hub-diary</code></div>
+      </div>
+      <span class="when">活跃中</span>
+    </div>
+    <div class="collision-row">
+      <span class="severity med">注意</span>
+      <div>
+        <div class="what">分支级 · <code>feat/diary</code> 被两个会话并行修改</div>
+        <div class="who">Hub feat/diary  ⨯  Hub diary UI</div>
+      </div>
+      <span class="when">持续 18 min</span>
+    </div>
+    <div class="collision-row">
+      <span class="severity low">提示</span>
+      <div>
+        <div class="what">依赖级 · <code>package.json</code> 改动会污染其他 worktree</div>
+        <div class="who">Hub fix/qrcode（违反 Hub CLAUDE.md 铁律：禁主目录跑 npm run dist）</div>
+      </div>
+      <span class="when">15 min 前</span>
+    </div>
+  </div>
+
+  <div class="note">方案 A · 仪表盘卡片风  ·  灵感来源：GitHub / Linear / Vercel dashboard</div>
+</div>
+</body>
+</html>

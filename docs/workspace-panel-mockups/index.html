@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Workspace 面板 · UI 风格备选</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: linear-gradient(135deg, #f7f8fa 0%, #eef2ff 100%);
+  min-height: 100vh; color: #1e1b4b;
+}
+.container { max-width: 1100px; margin: 0 auto; padding: 48px 24px; }
+.title { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+.subtitle { color: #6b7280; margin-top: 6px; font-size: 14px; }
+.usecase { background: #fff; border-radius: 12px; padding: 18px 22px; margin: 24px 0; border-left: 4px solid #6366f1; font-size: 13px; line-height: 1.65; }
+.usecase b { color: #4338ca; }
+
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 32px; }
+.card { background: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 14px rgba(99,102,241,0.08); transition: transform .2s, box-shadow .2s; text-decoration: none; color: inherit; display: block; }
+.card:hover { transform: translateY(-4px); box-shadow: 0 12px 32px rgba(99,102,241,0.15); }
+.thumb { height: 180px; background-size: cover; background-position: center; position: relative; overflow: hidden; }
+.thumb-a { background: linear-gradient(135deg, #f7f8fa 0%, #fff 100%); }
+.thumb-a::after { content: ""; position: absolute; inset: 16px; background:
+  linear-gradient(180deg, transparent 0 8%, #fee2e2 8% 22%, transparent 22% 28%,
+    #fff 28% 60%, transparent 60% 65%, #fff 65% 100%);
+  border-radius: 8px; box-shadow: inset 0 0 0 1px #e5e7eb; }
+.thumb-a::before { content: "● 检测到碰撞"; position: absolute; top: 24px; left: 24px; right: 24px;
+  background: #fef2f2; border-left: 3px solid #dc2626; padding: 6px 10px; border-radius: 4px;
+  font-size: 10px; color: #991b1b; font-weight: 600; z-index: 1; }
+.thumb-b { background: #07090d; position: relative; }
+.thumb-b::before { content: "▲ CONFLICT DETECTED"; position: absolute; top: 16px; left: 16px; right: 16px;
+  background: linear-gradient(90deg, #1a0408, #2d0510); border: 1px solid #ff003c; padding: 8px 12px;
+  border-radius: 4px; color: #ff003c; font-size: 10px; font-family: "JetBrains Mono", monospace;
+  font-weight: 700; letter-spacing: 0.15em; }
+.thumb-b::after { content: ""; position: absolute; left: 16px; right: 16px; bottom: 16px; top: 56px;
+  background: radial-gradient(circle at 25% 30%, #00ff9f33 0 8%, transparent 9%),
+              radial-gradient(circle at 75% 30%, #ff003c33 0 8%, transparent 9%),
+              radial-gradient(circle at 25% 70%, #ffaa0033 0 8%, transparent 9%),
+              radial-gradient(circle at 75% 70%, #00ff9f33 0 8%, transparent 9%); }
+.thumb-c { background: #fff; padding: 16px; }
+.thumb-c::after { content: ""; position: absolute; top: 50px; left: 24px; right: 24px; bottom: 16px;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 26px, #f3f4f6 26px 28px),
+    repeating-linear-gradient(90deg, transparent 0 32px, #f3f4f6 32px 33px),
+    radial-gradient(circle at 14% 20%, #ef4444 6px, transparent 7px),
+    radial-gradient(circle at 14% 88%, #ef4444 6px, transparent 7px),
+    radial-gradient(circle at 32% 20%, #6366f1 5px, transparent 6px),
+    radial-gradient(circle at 50% 50%, #f59e0b 5px, transparent 6px),
+    radial-gradient(circle at 68% 75%, #818cf8 5px, transparent 6px),
+    radial-gradient(circle at 86% 75%, #c084fc 4px, transparent 5px); border-radius: 4px; }
+.thumb-c::before { content: "硬碰撞 1 · 软冲突 2"; position: absolute; top: 16px; left: 16px;
+  background: linear-gradient(135deg, #6366f1, #a855f7); color: #fff; padding: 4px 12px; border-radius: 12px;
+  font-size: 11px; font-weight: 600; }
+.body { padding: 18px 20px; }
+.tag { font-size: 10px; color: #6366f1; font-weight: 700; letter-spacing: 0.15em; }
+.name { font-size: 17px; font-weight: 700; margin-top: 6px; }
+.desc { font-size: 12px; color: #6b7280; margin-top: 8px; line-height: 1.55; }
+.traits { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.trait { font-size: 10px; padding: 3px 8px; border-radius: 10px; background: #eef2ff; color: #4338ca; }
+
+.compare { background: #fff; border-radius: 14px; padding: 22px; margin-top: 36px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+.compare h3 { font-size: 14px; margin-bottom: 14px; color: #374151; text-transform: uppercase; letter-spacing: 0.06em; }
+.compare table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.compare th { text-align: left; font-size: 11px; color: #6b7280; padding: 10px; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid #e5e7eb; }
+.compare td { padding: 12px 10px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+.compare td:first-child { font-weight: 600; color: #4338ca; width: 18%; }
+.foot { color: #9ca3af; font-size: 12px; text-align: center; margin-top: 28px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="title">Workspace 面板 · UI 风格 3 备选</div>
+  <div class="subtitle">点击任一卡片预览完整 mockup · 3 个方案使用同一套假数据，方便横向对比</div>
+
+  <div class="usecase">
+    <b>面板定位</b>：Hub 内嵌的<b>只读</b>信息面板。核心目的是让用户快速看到「几个 Claude 在干什么、有没有撞车」。<br/>
+    <b>假数据场景</b>：4 个活跃会话 · 1 个硬碰撞（两个会话同时改 <code>renderer/diary-view.js</code>，且共享 <code>hub-diary</code> worktree） · 1 个分支级软冲突 · 1 个 <code>package.json</code> 依赖告警。
+  </div>
+
+  <div class="cards">
+    <a class="card" href="option-a-dashboard.html">
+      <div class="thumb thumb-a"></div>
+      <div class="body">
+        <div class="tag">OPTION A</div>
+        <div class="name">仪表盘卡片风</div>
+        <div class="desc">白底 + 灰阶 + 状态色。会话卡片网格布局，顶部红色告警条，最稳重。Hub 现有 UI 风格延续，长时间盯不累。</div>
+        <div class="traits">
+          <span class="trait">日常监控</span>
+          <span class="trait">信息密度中</span>
+          <span class="trait">对外可秀</span>
+        </div>
+      </div>
+    </a>
+    <a class="card" href="option-b-warroom.html">
+      <div class="thumb thumb-b"></div>
+      <div class="body">
+        <div class="tag">OPTION B</div>
+        <div class="name">作战指挥室</div>
+        <div class="desc">黑底霓虹 + 等宽字体 + 雷达脉冲。三栏：会话花名册 / 拓扑图（节点连线显示碰撞）/ 实时事件流。碰撞极度醒目。</div>
+        <div class="traits">
+          <span class="trait">高警觉</span>
+          <span class="trait">视觉冲击强</span>
+          <span class="trait">短时盯盘</span>
+        </div>
+      </div>
+    </a>
+    <a class="card" href="option-c-matrix.html">
+      <div class="thumb thumb-c"></div>
+      <div class="body">
+        <div class="tag">OPTION C</div>
+        <div class="name">矩阵热力图</div>
+        <div class="desc">核心是「会话 × 文件」二维矩阵 + 热力色阶。同一列出现两个深色格子 = 碰撞。下方时间线辅助。数据感最强。</div>
+        <div class="traits">
+          <span class="trait">数据驱动</span>
+          <span class="trait">碰撞自然涌现</span>
+          <span class="trait">需要理解矩阵</span>
+        </div>
+      </div>
+    </a>
+  </div>
+
+  <div class="compare">
+    <h3>横向对比</h3>
+    <table>
+      <thead><tr><th>维度</th><th>A 仪表盘</th><th>B 指挥室</th><th>C 矩阵</th></tr></thead>
+      <tbody>
+        <tr><td>碰撞醒目度</td><td>中（红条 + 卡片描边）</td><td>极高（雷达脉冲 + 闪烁）</td><td>高（红格脉冲，但需扫矩阵）</td></tr>
+        <tr><td>信息密度</td><td>中</td><td>高</td><td>极高</td></tr>
+        <tr><td>视觉负担</td><td>低，可长时盯</td><td>高，盯久眼累</td><td>中</td></tr>
+        <tr><td>新会话扩展</td><td>卡片自然增长</td><td>左栏列表 + 拓扑节点</td><td>矩阵增加一行</td></tr>
+        <tr><td>「会话×文件」可视</td><td>卡片内文件列表</td><td>事件流时序为主</td><td>矩阵原生支持</td></tr>
+        <tr><td>与 Hub 风格融合</td><td>最自然</td><td>差异大，做单独标签页</td><td>需要做主题适配</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="foot">挑一个偏好的方案告诉我；也可以混搭（比如 A 主页 + B 模式切换）</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>独享 AI 模式 · 切回上下文同步设计 · 2026-05-01</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --bg-card-2: #1c232c;
+  --border: #30363d;
+  --border-soft: #21262d;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --text-muted: #6e7681;
+  --accent: #58a6ff;
+  --accent-2: #d2a8ff;
+  --green: #3fb950;
+  --yellow: #f0883e;
+  --red: #f85149;
+  --orange: #db6d28;
+  --cyan: #39d0d8;
+  --pink: #ff7b72;
+  --purple: #bc8cff;
+  --pikachu: #f5d76a;
+  --charmander: #ff7a4a;
+  --squirtle: #5fa8e6;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  font-size: 14px;
+}
+.wrap { max-width: 1280px; margin: 0 auto; padding: 32px 24px 80px; }
+h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.02em; }
+h2 { font-size: 22px; margin: 48px 0 16px; padding-top: 8px; border-top: 1px solid var(--border-soft); display: flex; align-items: center; gap: 12px; }
+h2 .badge { font-size: 12px; background: var(--accent); color: #000; padding: 3px 8px; border-radius: 12px; font-weight: 600; }
+h3 { font-size: 17px; margin: 24px 0 10px; color: var(--accent-2); }
+h4 { font-size: 14px; margin: 16px 0 6px; color: var(--cyan); }
+.subtitle { color: var(--text-dim); margin-bottom: 8px; }
+.meta { color: var(--text-muted); font-size: 12px; margin-bottom: 32px; }
+code { font-family: "JetBrains Mono", Consolas, monospace; background: var(--bg-card-2); padding: 1px 6px; border-radius: 3px; font-size: 12.5px; color: var(--accent-2); }
+pre { background: var(--bg-card-2); border: 1px solid var(--border-soft); border-radius: 6px; padding: 12px 14px; overflow-x: auto; font-size: 12.5px; line-height: 1.55; }
+pre code { background: transparent; padding: 0; color: var(--text); }
+.kbd { font-family: "JetBrains Mono", monospace; background: #21262d; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 1px 6px; font-size: 11.5px; color: var(--text-dim); }
+
+/* TOC */
+.toc { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin-bottom: 32px; }
+.toc-title { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+.toc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 16px; }
+.toc-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 4px; }
+.toc-item:hover { background: var(--bg-card-2); }
+.toc-num { font-weight: 700; color: var(--accent); width: 22px; text-align: center; }
+.toc-item a { color: var(--text); text-decoration: none; flex: 1; }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+th { background: var(--bg-card); color: var(--text-dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+tr:hover td { background: rgba(88,166,255,0.04); }
+td.mono { font-family: "JetBrains Mono", monospace; font-size: 12px; }
+td.ok { color: var(--green); }
+td.no { color: var(--red); }
+td.warn { color: var(--yellow); }
+
+/* Mock toolbar */
+.mock-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 12px; margin: 12px 0;
+  font-size: 13px;
+}
+.tb-btn {
+  background: var(--bg-card-2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 12px;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.tb-btn.primary { background: rgba(188,140,255,0.18); border-color: var(--purple); color: var(--purple); font-weight: 600; }
+.tb-btn.warm { background: rgba(240,136,62,0.15); border-color: var(--yellow); color: var(--yellow); font-weight: 600; }
+.tb-btn.solo { background: rgba(248,81,73,0.18); border-color: var(--red); color: var(--red); font-weight: 600; }
+.tb-btn.solo.active { background: rgba(248,81,73,0.4); box-shadow: 0 0 0 2px rgba(248,81,73,0.3); }
+.tb-divider { width: 1px; height: 18px; background: var(--border); }
+.tb-pick { color: var(--text-dim); font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
+.tb-pick select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 3px; padding: 2px 6px; font-size: 12px; }
+.tb-status { margin-left: auto; color: var(--text-muted); font-size: 11px; }
+.tb-status.solo-on { color: var(--red); font-weight: 600; }
+
+/* Flow diagrams */
+.flow {
+  background: var(--bg-card-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--text);
+}
+.flow .label { color: var(--accent); }
+.flow .src { color: var(--green); }
+.flow .out { color: var(--yellow); }
+.flow .bad { color: var(--red); }
+.flow .arrow { color: var(--text-muted); }
+
+/* Cards / boxes */
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+.cmp-col { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.cmp-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); margin-bottom: 12px; }
+.cmp-col.before { border-left: 3px solid var(--red); }
+.cmp-col.after { border-left: 3px solid var(--green); }
+.cmp-col.before .cmp-label { color: var(--red); }
+.cmp-col.after .cmp-label { color: var(--green); }
+
+/* Strategy boxes */
+.strategy {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 16px; margin: 12px 0;
+}
+.strategy.recommended { border-color: var(--green); border-width: 2px; box-shadow: 0 0 24px rgba(63,185,80,0.12); }
+.strategy h3 { margin-top: 0; }
+.strategy .verdict { font-size: 11px; padding: 2px 8px; border-radius: 10px; display: inline-block; font-weight: 600; margin-left: 8px; }
+.strategy .verdict.win { background: rgba(63,185,80,0.18); color: var(--green); }
+.strategy .verdict.meh { background: rgba(240,136,62,0.18); color: var(--yellow); }
+.strategy .verdict.no { background: rgba(248,81,73,0.18); color: var(--red); }
+
+.note { background: rgba(63,185,80,0.08); border-left: 3px solid var(--green); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+.warn-box { background: rgba(240,136,62,0.08); border-left: 3px solid var(--yellow); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+.danger { background: rgba(248,81,73,0.08); border-left: 3px solid var(--red); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+.info { background: rgba(88,166,255,0.08); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 4px; margin: 12px 0; font-size: 13px; }
+
+/* Mock cards strip */
+.mock-strip {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 8px; margin: 12px 0;
+  background: linear-gradient(180deg, #2a3440, #1f2530);
+  padding: 8px; border-radius: 8px;
+}
+.mock-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 6px; padding: 12px;
+  display: flex; flex-direction: column; gap: 4px;
+  transition: all 200ms ease;
+}
+.mock-card.dimmed { opacity: 0.35; filter: grayscale(0.6); }
+.mock-card.locked { border-color: var(--red); border-width: 2px; box-shadow: 0 0 24px rgba(248,81,73,0.2); }
+.mock-card-row1 { display: flex; align-items: center; gap: 8px; }
+.mock-avatar { width: 36px; height: 36px; border-radius: 50%; background: #2d333b; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+.mock-avatar.pikachu { background: var(--pikachu); }
+.mock-avatar.charmander { background: var(--charmander); }
+.mock-avatar.squirtle { background: var(--squirtle); }
+.mock-card-name { font-weight: 600; font-size: 13px; }
+.mock-card-status { font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: auto; }
+.mock-card-status.locked { background: var(--red); color: #fff; font-weight: 600; }
+.mock-card-status.observer { background: var(--text-muted); color: #000; }
+.mock-card-meta { font-size: 11px; color: var(--text-dim); }
+.mock-card-preview { font-size: 11px; color: var(--text); margin-top: 4px; opacity: 0.85; }
+
+/* Score badge */
+.score-grid { display: grid; grid-template-columns: 1fr repeat(5, 80px); gap: 4px; font-size: 12px; margin: 12px 0; }
+.score-grid > div { padding: 8px; border-bottom: 1px solid var(--border-soft); }
+.score-grid > div.head { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
+.score-grid > div.metric { color: var(--text-dim); }
+.score-cell { text-align: center; font-weight: 600; }
+.s-5 { color: var(--green); }
+.s-4 { color: #7bc96f; }
+.s-3 { color: var(--yellow); }
+.s-2 { color: var(--orange); }
+.s-1 { color: var(--red); }
+
+/* Footer */
+.footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--border-soft); color: var(--text-muted); font-size: 12px; text-align: center; }
+ul.tight li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>独享 AI 模式 · 切回上下文同步设计</h1>
+<div class="subtitle">单独和某一家 AI 深聊 · 一键切回多人讨论 · 重点解决"被排除的 AI 如何快速回到对话上下文"</div>
+<div class="meta">2026-05-01 · 立花道雪 · 立项前调研与方案对比</div>
+
+<div class="toc">
+  <div class="toc-title">本文档导览</div>
+  <div class="toc-grid">
+    <div class="toc-item"><span class="toc-num">①</span><a href="#current">现状调研</a></div>
+    <div class="toc-item"><span class="toc-num">②</span><a href="#ui">UI 设计（toolbar 按钮）</a></div>
+    <div class="toc-item"><span class="toc-num">③</span><a href="#strategies">5 种上下文同步方案对比</a></div>
+    <div class="toc-item"><span class="toc-num">④</span><a href="#scorecard">打分卡 + 推荐</a></div>
+    <div class="toc-item"><span class="toc-num">⑤</span><a href="#flow">完整数据流图</a></div>
+    <div class="toc-item"><span class="toc-num">⑥</span><a href="#edge">边界场景</a></div>
+    <div class="toc-item"><span class="toc-num">⑦</span><a href="#estimate">估时与改造范围</a></div>
+  </div>
+</div>
+
+<!-- =========================== 现状调研 =========================== -->
+<h2 id="current"><span class="badge">①</span>现状调研：你已经有 80% 了</h2>
+
+<h3>关键发现：现成的"私聊"机制几乎就是独享模式</h3>
+
+<p>项目里 <code>core/general-roundtable-private-store.js</code> + <code>renderer/meeting-room.js</code> 已经实现了完整的"私聊"链路：</p>
+
+<table>
+  <thead><tr><th>能力</th><th>当前实现</th><th>是否够"独享模式"用</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>触发方式</strong></td>
+      <td>输入框敲 <code>@claude xxx</code> / <code>@gemini xxx</code> 等 mention 前缀；或快捷菜单点 "🤫 @私聊"</td>
+      <td class="warn">⚠ 每次都要输入 @ 前缀，符合用户痛点诉求</td>
+    </tr>
+    <tr>
+      <td><strong>数据存储</strong></td>
+      <td><code>&lt;arena&gt;/&lt;meetingId&gt;-roundtable-private.json</code>，按 kind 分类，每家最多 50 条</td>
+      <td class="ok">✓ 完全隔离，不污染圆桌主轮次</td>
+    </tr>
+    <tr>
+      <td><strong>对其他 AI 可见性</strong></td>
+      <td><strong>完全不可见</strong>：不入 <code>meeting._timeline</code>、不入 <code>orchestrator.state.turns</code></td>
+      <td class="no">✗ 切回多 AI 时其他家完全黑箱 — <strong>这正是要解决的核心问题</strong></td>
+    </tr>
+    <tr>
+      <td><strong>UI 入口</strong></td>
+      <td>卡片底部"💬 私聊"tab + @mention 菜单 + 快捷按钮</td>
+      <td class="warn">⚠ 缺一个"固定开启"的 toggle，体验不连贯</td>
+    </tr>
+    <tr>
+      <td><strong>切回多人</strong></td>
+      <td>无显式切换；用户只要不打 @ 前缀，下一条消息就是 fanout</td>
+      <td class="no">✗ 无 UI 信号，且其他 AI 不知道独享期间发生了什么</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>圆桌的三种 prompt 模式（meet 调研）</h3>
+
+<table>
+  <thead><tr><th>模式</th><th>触发</th><th>各 AI prompt 内容</th><th>知不知道彼此说了什么</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>fanout</strong>（默认）</td>
+      <td>普通文本</td>
+      <td>仅 user 原话 + "请独立回答"</td>
+      <td class="no">完全不知道</td>
+    </tr>
+    <tr>
+      <td><strong>@debate</strong>（群策群力）</td>
+      <td>群策群力按钮 / @debate 前缀</td>
+      <td>user 补充 + <strong>上一轮</strong>另两家观点</td>
+      <td class="ok">仅上一轮可见</td>
+    </tr>
+    <tr>
+      <td><strong>@summary</strong>（总结发言）</td>
+      <td>总结发言按钮 / @summary @who 前缀</td>
+      <td>"你的 PTY 已读过历史"假设 + 最近一轮 fallback</td>
+      <td class="warn">假设制 — Gemini/Codex 重启后会断</td>
+    </tr>
+    <tr>
+      <td><strong>@私聊</strong>（已存在）</td>
+      <td>@kind 前缀</td>
+      <td>仅 user 原话 → 单家 PTY</td>
+      <td class="no">私聊各方完全黑箱</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>关键事实：每家 AI 的 PTY 各自独立</h3>
+
+<div class="info">
+  Hub 不主动"喂"消息给被排除的 AI 的 PTY。每家 AI 的"对话历史"=它自己 PTY 内的 native transcript（Claude JSONL / Gemini chat / Codex rollout）。当 Hub 不发 prompt 给某 AI 时，该 AI 的 PTY 仅看到自己之前发的内容，完全不知道用户跟其他 AI 说了什么。
+</div>
+
+<p>这意味着<strong>切回多人时必须 Hub 主动构造一段"上下文摘要 / 历史"喂给被排除的 AI</strong>，否则它会一脸懵地按"全新轮次"作答，连用户在聊什么都不知道。</p>
+
+<!-- =========================== UI =========================== -->
+<h2 id="ui"><span class="badge">②</span>UI 设计：toolbar 加独享 toggle</h2>
+
+<h3>按钮位置（toolbar 第 N 个位置）</h3>
+
+<p>放在<strong>"总结人 dropdown 右侧、状态徽章左侧"</strong>。这个区域是"参数区"（与左侧"动作区"按钮分开），独享 toggle 在语义上是"控制本轮如何走"的参数，正合适。参考既有的"沉浸/调试"toggle 模式（<code>renderer/meeting-room.js:1402</code>）。</p>
+
+<h4>调试模式（独享 OFF）— 现状</h4>
+<div class="mock-toolbar">
+  <span class="tb-btn primary">🤝 群策群力</span>
+  <span class="tb-btn warm">📝 总结发言</span>
+  <span class="tb-divider"></span>
+  <span class="tb-pick">总结人: <select><option>Claude</option><option>Gemini</option><option>Codex</option></select></span>
+  <span class="tb-btn solo">🔓 独享: 关</span>
+  <span class="tb-status">已 2 轮 · 等待提问</span>
+</div>
+
+<h4>独享模式开启（锁定 Slot 1 = Claude）</h4>
+<div class="mock-toolbar">
+  <span class="tb-btn primary" style="opacity:0.4">🤝 群策群力</span>
+  <span class="tb-btn warm" style="opacity:0.4">📝 总结发言</span>
+  <span class="tb-divider"></span>
+  <span class="tb-pick" style="opacity:0.4">总结人: <select disabled><option>Claude</option></select></span>
+  <span class="tb-btn solo active">🔒 独享: <span style="color:#fff">⚡皮卡丘</span> ▾</span>
+  <span class="tb-status solo-on">独享中 · 仅 Slot 1 接收</span>
+</div>
+
+<h4>交互细节</h4>
+<table>
+  <thead><tr><th>动作</th><th>行为</th></tr></thead>
+  <tbody>
+    <tr><td>点 [🔓 独享: 关] 按钮</td><td>展开 dropdown 让用户选锁定哪个 slot（1 / 2 / 3）→ 选定后变成 [🔒 独享: ⚡皮卡丘 ▾]，按钮高亮红色</td></tr>
+    <tr><td>独享开启时</td><td>① toolbar 上"群策群力" / "总结发言" / "总结人 dropdown" 灰显禁用 <br>② 输入框 placeholder 变成 "🔒 独享中（仅 Slot 1 = Claude 接收）..." <br>③ 卡片区被锁的 slot 卡片高亮红边框 + "🔒 锁定中" 徽章；其他两家卡片半透明 + "👁 旁观" 徽章</td></tr>
+    <tr><td>切换锁定的 slot（不关闭独享）</td><td>点按钮的 ▾ 切换菜单：[Slot 1 ⚡] / [Slot 2 🔥] / [Slot 3 💎]</td></tr>
+    <tr><td>关闭独享（核心）</td><td>点按钮上"🔒"图标 → 弹出确认 toast："切回多 AI · 选择上下文同步策略"（详见 §3）</td></tr>
+    <tr><td>持久化</td><td>per-meetingId 记忆（参考既有 <code>_immersiveByMeeting</code> 模式）；下次进同一会议室自动恢复</td></tr>
+  </tbody>
+</table>
+
+<h3>卡片区视觉</h3>
+
+<div class="mock-strip">
+  <div class="mock-card locked">
+    <div class="mock-card-row1">
+      <div class="mock-avatar pikachu">⚡</div>
+      <div class="mock-card-name">Claude</div>
+      <div class="mock-card-status locked">🔒 锁定</div>
+    </div>
+    <div class="mock-card-meta">Opus 4.7 · Ctx 4%</div>
+    <div class="mock-card-preview">基于你的最新问题，我建议关注三点...</div>
+  </div>
+  <div class="mock-card dimmed">
+    <div class="mock-card-row1">
+      <div class="mock-avatar charmander">🔥</div>
+      <div class="mock-card-name">Gemini</div>
+      <div class="mock-card-status observer">👁 旁观</div>
+    </div>
+    <div class="mock-card-meta">2.5 Flash · Ctx 6%</div>
+    <div class="mock-card-preview" style="color:var(--text-muted)">（独享期间不接收消息）</div>
+  </div>
+  <div class="mock-card dimmed">
+    <div class="mock-card-row1">
+      <div class="mock-avatar squirtle">💎</div>
+      <div class="mock-card-name">Codex</div>
+      <div class="mock-card-status observer">👁 旁观</div>
+    </div>
+    <div class="mock-card-meta">gpt-5.5 · Ctx 8%</div>
+    <div class="mock-card-preview" style="color:var(--text-muted)">（独享期间不接收消息）</div>
+  </div>
+</div>
+
+<!-- =========================== Strategies =========================== -->
+<h2 id="strategies"><span class="badge">③</span>5 种"切回多人时上下文同步"策略对比</h2>
+
+<p>这是<strong>整个设计最关键的决策</strong>。下面 5 种策略各有取舍，先逐个讲清，再统一打分。</p>
+
+<!-- A -->
+<div class="strategy">
+  <h3>方案 A · 完全黑箱（不告诉其他 AI 任何独享期间的事） <span class="verdict no">不推荐</span></h3>
+  <p><strong>做法</strong>：独享期间消息进 private store（既有），切回时下一轮 fanout/debate prompt 中<strong>不提及</strong>独享期间发生过什么。</p>
+  <p><strong>优点</strong>：实现成本最低（0 改动，复用既有私聊存储）；轻量。</p>
+  <p><strong>缺点</strong>：</p>
+  <ul class="tight">
+    <li>其他 AI 切回时<strong>毫无上下文</strong>，可能问"我们在讨论什么？"</li>
+    <li>用户体验断裂 — "我刚跟 Claude 聊了 5 轮深入分析，现在让 Gemini 也加入，结果它一脸懵"</li>
+    <li>违反用户期望"既能让其他 AI 快速了解问题背景迅速加入讨论"</li>
+  </ul>
+  <p><strong>结论</strong>：这是当前默认行为，不解决问题。</p>
+</div>
+
+<!-- B -->
+<div class="strategy">
+  <h3>方案 B · 全量回放（把独享期间的全部对话喂给其他 AI） <span class="verdict no">不推荐</span></h3>
+  <p><strong>做法</strong>：切回时下一轮 prompt 前缀拼接：</p>
+  <pre><code>## 你刚才不在的对话（共 5 轮）
+[Round 1] 用户: ... | Claude: ...
+[Round 2] 用户: ... | Claude: ...
+...
+## 现在用户问大家：[本轮新问题]</code></pre>
+  <p><strong>优点</strong>：信息无损；其他 AI 能精准复盘。</p>
+  <p><strong>缺点</strong>：</p>
+  <ul class="tight">
+    <li><strong>Token 爆炸</strong>：5 轮深聊可能 5000+ token，喂两次（给两家）就 10000+ token，每轮都喂会冲爆 ctx</li>
+    <li><strong>Codex/Gemini 输入长度限制</strong>，超长会被截断或拒绝</li>
+    <li>与"轻量简单"诉求相反</li>
+  </ul>
+  <p><strong>结论</strong>：仅在用户特别需要"完整复盘"时按需启用，不能做默认。</p>
+</div>
+
+<!-- C -->
+<div class="strategy">
+  <h3>方案 C · 被动只读（独享期间消息悄悄喂其他 AI 的 PTY，但要求"不答"） <span class="verdict no">不推荐</span></h3>
+  <p><strong>做法</strong>：独享期间，user 给 Claude 发的每条消息，Hub 同时<strong>静默注入</strong>给 Gemini/Codex 的 PTY，prompt 形如：<code>[只读 · 不要回答] 用户对 Claude 说: ...</code></p>
+  <p><strong>优点</strong>：切回时其他 AI 已自然知道全部上下文，零延迟、零额外 prompt。</p>
+  <p><strong>缺点</strong>：</p>
+  <ul class="tight">
+    <li><strong>Token 持续消耗</strong>：每条独享消息都消耗 N+1 倍 token（N 家旁观者）— 反而比方案 B 更贵</li>
+    <li><strong>不可控</strong>：AI 仍可能主动回答（"不要回答"是 prompt 级约束，不可硬保证）</li>
+    <li><strong>turn-complete 检测复杂</strong>：旁观 AI 可能产生输出，干扰 marker 判定</li>
+    <li><strong>违反"独享"语义</strong>：用户以为是独享，实际三家都在听</li>
+  </ul>
+  <p><strong>结论</strong>：技术风险高，违反"独享"心智模型。</p>
+</div>
+
+<!-- D -->
+<div class="strategy recommended">
+  <h3>方案 D · 自动摘要注入（默认） <span class="verdict win">推荐</span></h3>
+  <p><strong>做法</strong>：</p>
+  <ol class="tight">
+    <li>独享期间消息进 private store（既有）</li>
+    <li>用户关闭独享时，Hub 调一次 <code>summary-engine</code>（既有，仅支持 Gemini）让锁定的那家 AI 自己总结："请用 100 字以内总结刚才你和用户的对话要点"</li>
+    <li>这段摘要存入 <code>meeting._timeline</code> 作为一条 <code>{ sid: 'system', text: '[独享回顾] ...' }</code> 条目</li>
+    <li>下一轮 fanout/debate 的 prompt 给其他 AI 时，前缀加：<br><code>## 你刚才暂时离场，期间用户和 ⚡Slot1 讨论了：<br>[摘要 100 字]<br><br>## 现在用户问大家：</code></li>
+    <li>锁定的 AI 自己不需要这段（它的 PTY 已有完整历史）</li>
+  </ol>
+  <p><strong>优点</strong>：</p>
+  <ul class="tight">
+    <li><strong>Token 经济</strong>：100-200 字摘要，比全量回放小 10×+</li>
+    <li><strong>语义清晰</strong>：其他 AI 明确知道自己刚才"不在场"，不会假装看见过</li>
+    <li><strong>用户透明</strong>：摘要存入 timeline，UI 可显示一条"[独享回顾]"系统消息让用户审阅</li>
+    <li><strong>由锁定 AI 自己总结</strong>，最准确（它有完整 native PTY 历史）</li>
+    <li>复用既有 <code>summary-engine.js</code>（仅需扩展支持 Claude/Codex/DeepSeek/GLM）</li>
+  </ul>
+  <p><strong>缺点</strong>：</p>
+  <ul class="tight">
+    <li>多一次 LLM 调用（摘要生成）— 大约 1-3 秒延迟</li>
+    <li>摘要质量取决于锁定 AI 的能力（极端情况可能漏点）</li>
+    <li>对没接 summary-engine 的家（当前仅 Gemini 支持），需先扩展</li>
+  </ul>
+  <p><strong>降级策略</strong>：summary-engine 失败时，自动回退方案 E 让用户选。</p>
+</div>
+
+<!-- E -->
+<div class="strategy">
+  <h3>方案 E · 切回时弹"上下文范围"选择器 <span class="verdict meh">作为方案 D 的高级补充</span></h3>
+  <p><strong>做法</strong>：用户点关闭独享时，弹一个紧凑 toast：</p>
+  <pre><code>┌──────────────────────────────────────────────┐
+│ 切回多 AI · 让其他 AI 看到独享期间的什么？     │
+│                                              │
+│ ◉ 自动摘要 (推荐, 默认)  · 由 Claude 概括 100 字 │
+│ ○ 全量回放                · 完整 5 轮对话喂给其他 │
+│ ○ 仅最近 1 轮            · 只补最后一条问答     │
+│ ○ 不补                   · 其他 AI 全黑箱进入     │
+│                                              │
+│         [ 取消 ]   [ 确认切回 ]              │
+└──────────────────────────────────────────────┘</code></pre>
+  <p><strong>优点</strong>：用户可控，特殊场景（如想让其他 AI 完整复盘）有出口。</p>
+  <p><strong>缺点</strong>：每次都弹会打扰用户；与"简单"诉求略有冲突。</p>
+  <p><strong>建议落地方式</strong>：默认行为=方案 D（不弹 toast），但提供"高级模式"开关：在切换时按住 <span class="kbd">Alt</span> 才弹此 toast；或者第一次切回时弹一次"是否每次都问我"，用户选"否"则永久走 D。</p>
+</div>
+
+<!-- =========================== 打分卡 =========================== -->
+<h2 id="scorecard"><span class="badge">④</span>打分卡 + 推荐方案</h2>
+
+<div class="score-grid">
+  <div class="head metric">维度</div>
+  <div class="head score-cell">A 黑箱</div>
+  <div class="head score-cell">B 全量</div>
+  <div class="head score-cell">C 被动</div>
+  <div class="head score-cell"><strong>D 摘要</strong></div>
+  <div class="head score-cell">E 弹窗</div>
+
+  <div class="metric">实现成本（越低越好）</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-1">1</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-3">3</div>
+
+  <div class="metric">Token 经济（越低越好）</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-1">1</div>
+  <div class="score-cell s-1">1</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-3">3</div>
+
+  <div class="metric">其他 AI 接得上下文（越高越好）</div>
+  <div class="score-cell s-1">1</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-3">3</div>
+
+  <div class="metric">用户透明度</div>
+  <div class="score-cell s-2">2</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-1">1</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-5">5</div>
+
+  <div class="metric">鲁棒性（不依赖外部假设）</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-2">2</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-4">4</div>
+
+  <div class="metric">符合"独享"心智模型</div>
+  <div class="score-cell s-3">3</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-1">1</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-5">5</div>
+
+  <div class="metric">轻量简单</div>
+  <div class="score-cell s-5">5</div>
+  <div class="score-cell s-2">2</div>
+  <div class="score-cell s-2">2</div>
+  <div class="score-cell s-4">4</div>
+  <div class="score-cell s-3">3</div>
+
+  <div class="metric"><strong>合计 / 35</strong></div>
+  <div class="score-cell s-3"><strong>26</strong></div>
+  <div class="score-cell s-3"><strong>23</strong></div>
+  <div class="score-cell s-1"><strong>12</strong></div>
+  <div class="score-cell s-5"><strong>29</strong></div>
+  <div class="score-cell s-4"><strong>26</strong></div>
+</div>
+
+<h3>推荐：D 为主 + E 为后备</h3>
+
+<div class="note">
+  <strong>D（自动摘要）作为默认行为</strong>：用户关闭独享时无感切换，由锁定 AI 自动总结 100 字喂给其他 AI；同时摘要进 timeline 让用户可见。<br>
+  <strong>E（弹窗选择）作为高级模式</strong>：在 hub 设置里加一个"切回时让我选上下文范围"开关（默认关闭），开启后才走 E 流程。
+</div>
+
+<!-- =========================== Flow =========================== -->
+<h2 id="flow"><span class="badge">⑤</span>完整数据流图（推荐方案 D）</h2>
+
+<h3>独享开启 → 多轮深聊 → 切回的全过程</h3>
+
+<div class="flow"><span class="label">[State 1] 独享 OFF · 默认 fanout 多人圆桌</span>
+   user → "如何看美股科技股" → fanout 三家
+   ↓
+<span class="label">[State 2] 用户点 toolbar [🔓 独享] → 选 Slot 1 ⚡</span>
+   <span class="src">UI 变化:</span>
+     · toolbar 按钮 → [🔒 独享: ⚡皮卡丘 ▾] 高亮
+     · 群策群力/总结发言 灰显
+     · 卡片: Slot1 红边 + "🔒 锁定"; Slot2/3 半透明 + "👁 旁观"
+     · 输入框 placeholder: "🔒 独享中（仅 Slot 1 = Claude 接收）..."
+   <span class="src">State 变化:</span>
+     · meeting.soloSlot = 0 (slot index)
+     · 持久化 saveState (per-meetingId)
+   ↓
+<span class="label">[State 3] 用户与锁定 AI 多轮深聊（5 轮）</span>
+   user → "我重点关注 AI/半导体" → 仅 Slot1 PTY 收到
+   Slot1 → "建议 NVDA + AVGO + AMD..."
+   user → "那 AMD 估值合理吗" → 仅 Slot1
+   Slot1 → "AMD 当前 PE 28x..."
+   ... (重复 3 轮)
+   <span class="src">每轮存储:</span>
+     · 进 <span class="src">general-roundtable-private-store</span> (既有)
+     · NOT 进 meeting._timeline
+     · NOT 进 orchestrator.state.turns
+   ↓
+<span class="label">[State 4] 用户点 [🔒] 关闭独享按钮</span>
+   <span class="out">触发自动摘要流程:</span>
+     1. Hub 取出 private store 中本次独享期间的全部消息（5 轮）
+     2. 调用 <span class="src">summary-engine.summarize(锁定AI, 私聊历史, "100字总结")</span>
+     3. 锁定 AI 输出: "用户聚焦 AI/半导体板块，倾向 NVDA/AVGO/AMD 三股；
+                       重点关注 AMD 当前 PE 28x 是否合理（讨论历史均值 25x）..."
+     4. 摘要存入 <span class="src">meeting._timeline</span> 作为
+        <span class="src">{ idx: N, sid: 'system', tag: 'solo-recap', text: '[独享回顾] ...' }</span>
+   <span class="src">UI 变化:</span>
+     · toolbar 恢复 [🔓 独享: 关]
+     · 卡片恢复正常（无 dim/locked 状态）
+     · 时间线区域出现一条 "[独享回顾 · Claude 总结]" 系统消息（用户可点开看详情）
+   ↓
+<span class="label">[State 5] 用户发新消息（默认 fanout 多人）</span>
+   user → "那 Tesla 呢"
+   ↓
+<span class="label">[State 6] Hub 构造 prompt 时分流</span>
+   <span class="src">给锁定 AI（Claude）的 prompt:</span>
+     "你刚才已和用户深入讨论 AI/半导体（参见你 PTY 历史）。
+      用户现在问大家: 那 Tesla 呢"
+   <span class="src">给其他 AI（Gemini/Codex）的 prompt:</span>
+     "## 你刚才暂时离场（5 轮独享）
+      期间用户和 ⚡Slot1 (Claude) 讨论了：
+      [摘要 100 字]
+
+      ## 现在用户问大家:
+      那 Tesla 呢"
+   ↓
+<span class="out">三家都能合理回答，节奏自然衔接</span>
+</div>
+
+<h3>数据契约</h3>
+
+<table>
+  <thead><tr><th>层</th><th>新增字段</th><th>类型</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>meeting state</td>
+      <td><code>soloSlot</code></td>
+      <td><code>0 \| 1 \| 2 \| null</code></td>
+      <td>当前锁定的 slot index；null = 未锁定（多人模式）</td>
+    </tr>
+    <tr>
+      <td>meeting._timeline 条目</td>
+      <td><code>tag</code></td>
+      <td><code>'solo-recap' \| undefined</code></td>
+      <td>标记此条是独享回顾摘要，UI 特殊渲染</td>
+    </tr>
+    <tr>
+      <td>private store 条目</td>
+      <td><code>soloSession</code></td>
+      <td><code>{ start, end }</code></td>
+      <td>标记一次独享会话的起止时间，便于切回时取出整段摘要</td>
+    </tr>
+    <tr>
+      <td>IPC <code>'roundtable:turn'</code></td>
+      <td><code>excludedSlots: number[]</code></td>
+      <td><code>number[]</code></td>
+      <td>本轮被排除的 slot index 列表；Hub 据此过滤 PTY 写入</td>
+    </tr>
+    <tr>
+      <td>IPC 新增 <code>'roundtable:solo-toggle'</code></td>
+      <td>—</td>
+      <td><code>{ meetingId, slotIndex \| null }</code></td>
+      <td>开关独享；slotIndex=null 时触发摘要生成 + 切回流程</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- =========================== 边界 =========================== -->
+<h2 id="edge"><span class="badge">⑥</span>边界场景与缓解</h2>
+
+<table>
+  <thead><tr><th>#</th><th>场景</th><th>问题</th><th>缓解</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>E1</td>
+      <td>独享期间 user 主动用 <code>@gemini</code> mention 跳到另一家</td>
+      <td>语义冲突：独享和 mention 哪个优先？</td>
+      <td>独享按钮优先级最高；mention 在独享开启时被 UI 灰显，告诉用户"先关闭独享"</td>
+    </tr>
+    <tr>
+      <td>E2</td>
+      <td>用户独享期间只发了 1 条消息就关闭</td>
+      <td>1 条对话生成摘要意义不大，反而消耗 token</td>
+      <td>阈值：私聊轮次 ≤ 1 时跳过摘要生成，直接把那条 user 原话拼进给其他 AI 的 prompt（"刚才用户私下问了 X"）</td>
+    </tr>
+    <tr>
+      <td>E3</td>
+      <td>summary-engine 调用失败（如 Gemini 限流）</td>
+      <td>没有摘要，其他 AI 切回时仍黑箱</td>
+      <td>降级：① 让用户选（弹方案 E 选择器）；② 若用户关了选择器，则用"仅最近 1 轮"作 fallback</td>
+    </tr>
+    <tr>
+      <td>E4</td>
+      <td>锁定 AI 是 Codex（无原生 summarize 通道）</td>
+      <td>当前 summary-engine 仅支持 Gemini</td>
+      <td>本期扩展 summary-engine，让 Claude/Codex/DeepSeek/GLM 都能调（用 PTY 模式发"请总结"prompt → 等 turn-complete）</td>
+    </tr>
+    <tr>
+      <td>E5</td>
+      <td>用户独享 → 切回 → 又独享，频繁切换</td>
+      <td>多次摘要堆积，timeline 噪声</td>
+      <td>UI 折叠：连续多次"[独享回顾]"自动合并显示为"独享 N 段"，点开展开各段</td>
+    </tr>
+    <tr>
+      <td>E6</td>
+      <td>独享期间锁定的 AI session 崩溃 / PTY 退出</td>
+      <td>relaunchCli 后 PTY 历史丢失，摘要无源</td>
+      <td>Hub 自己有 private store 备份，可绕过 PTY 直接喂"私聊历史"给重启后的 AI 让它总结；或回退用户选择策略</td>
+    </tr>
+    <tr>
+      <td>E7</td>
+      <td>独享开启后用户切到投研模式 / 其他场景</td>
+      <td>场景切换是否要保留独享状态？</td>
+      <td>保留：soloSlot 持久化与场景无关；切场景不改 soloSlot</td>
+    </tr>
+    <tr>
+      <td>E8</td>
+      <td>多个会议室间共享独享状态？</td>
+      <td>不应共享（per-meetingId 才合理）</td>
+      <td>state.json 中 <code>soloSlotByMeeting: { [meetingId]: slotIndex }</code> 而非全局字段</td>
+    </tr>
+    <tr>
+      <td>E9</td>
+      <td>独享期间切回 fanout 立即再独享别家</td>
+      <td>第二段独享开始时，第一段的摘要还没注入完？</td>
+      <td>queue 化：摘要生成是 await 操作，期间 toolbar 显示 "切回中..."（disable），完成后才允许新独享</td>
+    </tr>
+    <tr>
+      <td>E10</td>
+      <td>用户在独享期间使用"群策群力"/"总结发言"按钮</td>
+      <td>这些按钮在独享下灰显，但若用户硬点呢？</td>
+      <td>JS 层 disabled 属性禁用 + click handler 早返；按钮 tooltip 提示"独享模式下请先关闭独享"</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- =========================== 估时 =========================== -->
+<h2 id="estimate"><span class="badge">⑦</span>估时与改造范围</h2>
+
+<table>
+  <thead><tr><th>模块</th><th>主要改动</th><th>关键文件</th><th>Effort</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>UI · toolbar 按钮</td>
+      <td>新增 [🔓 独享] toggle + slot 选择 dropdown；按钮禁用规则；卡片 dim/locked 视觉</td>
+      <td><code>renderer/meeting-room.js</code> renderToolbar；<code>meeting-room.css</code></td>
+      <td>1 天</td>
+    </tr>
+    <tr>
+      <td>State · soloSlot</td>
+      <td>per-meetingId 持久化；IPC 'roundtable:solo-toggle'</td>
+      <td><code>main.js</code>；<code>core/meeting-room.js</code></td>
+      <td>0.5 天</td>
+    </tr>
+    <tr>
+      <td>分流 · prompt 构造</td>
+      <td>dispatchRoundtableTurn 接受 excludedSlots；fanout/debate prompt builder 跳过被排除的 sub</td>
+      <td><code>main.js</code>；<code>core/roundtable-orchestrator.js</code></td>
+      <td>1 天</td>
+    </tr>
+    <tr>
+      <td>独享存储</td>
+      <td>复用 private store；新增 soloSession 时间戳标记</td>
+      <td><code>core/general-roundtable-private-store.js</code></td>
+      <td>0.3 天</td>
+    </tr>
+    <tr>
+      <td>摘要引擎扩展</td>
+      <td>summary-engine 支持 Claude/Codex/DeepSeek/GLM（不只 Gemini）；新接口 <code>summarizeSoloSession(slotSid, history)</code></td>
+      <td><code>core/summary-engine.js</code></td>
+      <td>1.5 天</td>
+    </tr>
+    <tr>
+      <td>切回流程</td>
+      <td>关独享时：取 private 历史 → 调摘要 → 写 timeline → 通知 renderer 显示系统消息</td>
+      <td><code>main.js</code>；<code>core/meeting-room.js</code></td>
+      <td>1 天</td>
+    </tr>
+    <tr>
+      <td>Prompt 前缀注入</td>
+      <td>fanout/debate prompt builder 检测 timeline 末尾 solo-recap → 拼前缀给排除时未在场的 AI</td>
+      <td><code>core/roundtable-orchestrator.js</code></td>
+      <td>0.5 天</td>
+    </tr>
+    <tr>
+      <td>Timeline 渲染</td>
+      <td>系统消息 [独享回顾] 折叠展示；多段合并 UI</td>
+      <td><code>renderer/meeting-room.js</code></td>
+      <td>0.5 天</td>
+    </tr>
+    <tr>
+      <td>边界与降级</td>
+      <td>E1-E10 各场景处理</td>
+      <td>多文件</td>
+      <td>0.5 天</td>
+    </tr>
+    <tr>
+      <td>E2E 验收</td>
+      <td>真测：独享 5 轮 → 关闭 → 摘要生成 → 多人轮次他家正常衔接</td>
+      <td><code>tests/_e2e-solo-mode-verify.js</code></td>
+      <td>0.7 天</td>
+    </tr>
+  </tbody>
+  <tfoot>
+    <tr>
+      <td colspan="3" style="text-align:right;color:var(--text-dim)">合计</td>
+      <td><strong>~7.5 天</strong></td>
+    </tr>
+  </tfoot>
+</table>
+
+<h3>与既有 plan 的关系</h3>
+
+<div class="info">
+  <strong>建议在 <code>2026-05-01-meeting-create-modal.md</code>（按 sid 索引重构）合入后再做本期</strong>。本期"slot index 排除"逻辑要按 slot 而非 kind 工作（用户可能 3 家都是 Claude，按 kind 排除会全锁定）。card-redesign / input-fixes / card-optimization 不冲突可并行。
+</div>
+
+<h3>与既有架构的复用</h3>
+
+<table>
+  <thead><tr><th>已有资产</th><th>本期复用方式</th></tr></thead>
+  <tbody>
+    <tr><td><code>general-roundtable-private-store.js</code> 私聊存储</td><td>独享期间消息直接进此 store，新增 soloSession 时间戳</td></tr>
+    <tr><td><code>summary-engine.js</code> 摘要引擎</td><td>本期需扩展支持 Claude/Codex/DeepSeek/GLM（一次性投资，未来其他场景可复用）</td></tr>
+    <tr><td><code>meeting._timeline</code> + <code>_cursors</code> 增量同步机制</td><td>solo-recap 摘要存进 timeline，靠既有 incrementalContext 机制让其他 AI 看到</td></tr>
+    <tr><td><code>_immersiveByMeeting</code> per-meeting toggle 模式</td><td>新 <code>soloSlotByMeeting</code> 完全照搬此模式（state.json 持久化 + 启动恢复）</td></tr>
+    <tr><td>既有 mention 解析 / RT_MENTION_ITEMS</td><td>独享开启时 mention 灰显，关闭时恢复</td></tr>
+  </tbody>
+</table>
+
+<!-- =========================== 决策 =========================== -->
+<h2><span class="badge" style="background:var(--purple)">决策</span>需要你拍板</h2>
+
+<table>
+  <thead><tr><th>#</th><th>决策点</th><th>默认</th><th>是否同意</th></tr></thead>
+  <tbody>
+    <tr><td>D1</td><td>UI · toolbar 加 [🔓 独享] toggle，位置：总结人 dropdown 与状态徽章之间</td><td>是</td><td>—</td></tr>
+    <tr><td>D2</td><td>独享开启时：群策群力/总结发言/总结人 灰显禁用；卡片 dim/locked 视觉</td><td>是</td><td>—</td></tr>
+    <tr><td>D3</td><td>独享期间消息走 private store，不入 timeline / turns</td><td>是</td><td>—</td></tr>
+    <tr><td>D4</td><td>切回多人时：默认走方案 D（自动摘要注入），不弹选择器</td><td>是</td><td>—</td></tr>
+    <tr><td>D5</td><td>摘要由"被锁定的 AI 自己"生成（最准），需扩展 summary-engine 支持 Claude/Codex/DeepSeek/GLM</td><td>是</td><td>—</td></tr>
+    <tr><td>D6</td><td>摘要存入 meeting._timeline 作为 system 消息（tag: solo-recap），UI 折叠展示</td><td>是</td><td>—</td></tr>
+    <tr><td>D7</td><td>下一轮 fanout/debate prompt 中，给"独享期间不在场的 AI"自动加摘要前缀</td><td>是</td><td>—</td></tr>
+    <tr><td>D8</td><td>独享 ≤ 1 轮时跳过摘要，直接拼 user 原话给其他 AI</td><td>是</td><td>—</td></tr>
+    <tr><td>D9</td><td>持久化 soloSlot per-meetingId，下次进同会议室记忆状态</td><td>是</td><td>—</td></tr>
+    <tr><td>D10</td><td>方案 E（弹窗选择器）作为高级模式，hub 设置开关默认关闭</td><td>是</td><td>—</td></tr>
+    <tr><td>D11</td><td>本期立项前后置于 meeting-create-modal plan 之后（依赖 slot index 重构）</td><td>是</td><td>—</td></tr>
+  </tbody>
+</table>
+
+<div class="footer">
+  立花道雪 · Claude Session Hub · roundtable-solo-mode-2026-05-01<br>
+  确认决策后将走 <code>spec → plan → 执行</code> 三段流程
+</div>
+
+</div>
+</body>
+</html>

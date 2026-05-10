@@ -18,6 +18,7 @@ const DEFAULTS = {
   glm_base_url: 'https://mydamoxing.cn',
   glm_model: 'glm-5.1',
   codex_backend: 'subscription',
+  codex_subscription_profile: 'default',
   codex_api_base_url: 'https://www.packyapi.com/v1',
   codex_api_model: 'gpt-5.5',
   codex_api_provider: 'packycode',
@@ -72,11 +73,38 @@ function normalizeBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '');
 }
 
+function defaultCodexSubscriptionProfiles() {
+  return [
+    { id: 'default', label: '主账号', home: '' },
+    { id: 'second', label: '新账号', home: path.join(os.homedir(), '.codex-profiles', 'second') },
+  ];
+}
+
+function normalizeCodexSubscriptionProfiles(profiles) {
+  const byId = new Map(defaultCodexSubscriptionProfiles().map(p => [p.id, p]));
+  if (Array.isArray(profiles)) {
+    for (const p of profiles) {
+      if (!p || typeof p !== 'object') continue;
+      const id = String(p.id || '').trim();
+      if (!id) continue;
+      byId.set(id, {
+        id,
+        label: String(p.label || p.name || id).trim() || id,
+        home: String(p.home || '').trim(),
+      });
+    }
+  }
+  return [...byId.values()];
+}
+
 // 导出配置值（惰性求值，首次访问时计算）
 let _cachedConfig = null;
 
 function getConfig() {
   if (_cachedConfig) return _cachedConfig;
+  const rawConfig = loadConfigJson();
+  const codexProvider = (rawConfig.providers && rawConfig.providers.codex) || {};
+  const codexSubscriptionProfiles = normalizeCodexSubscriptionProfiles(codexProvider.subscription_profiles);
 
   _cachedConfig = {
     proxy: getConfigValue('proxy', 'CLAUDE_PROXY', 'proxy.http', DEFAULTS.proxy),
@@ -95,6 +123,8 @@ function getConfig() {
     qwenBaseUrl: normalizeBaseUrl(getConfigValue('qwenBaseUrl', 'PACKY_QWEN_BASE_URL', 'providers.qwen.base_url', DEFAULTS.qwen_base_url)),
     qwenModel: getConfigValue('qwenModel', 'PACKY_QWEN_MODEL', 'providers.qwen.model', DEFAULTS.qwen_model),
     codexBackend: getConfigValue('codexBackend', 'HUB_CODEX_BACKEND', 'providers.codex.backend', DEFAULTS.codex_backend),
+    codexSubscriptionProfile: getConfigValue('codexSubscriptionProfile', 'HUB_CODEX_PROFILE', 'providers.codex.subscription_profile', DEFAULTS.codex_subscription_profile),
+    codexSubscriptionProfiles,
     codexApiKey: getConfigValue('codexApiKey', 'HUB_CODEX_API_KEY', 'providers.codex.api_key', ''),
     codexApiBaseUrl: normalizeBaseUrl(getConfigValue('codexApiBaseUrl', 'HUB_CODEX_API_BASE_URL', 'providers.codex.base_url', DEFAULTS.codex_api_base_url)),
     codexApiModel: getConfigValue('codexApiModel', 'HUB_CODEX_API_MODEL', 'providers.codex.model', DEFAULTS.codex_api_model),

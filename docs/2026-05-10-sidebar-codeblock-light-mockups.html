@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hub sidebar + 代码块 浅色风备选 · 2026-05-10</title>
+<style>
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+  font-size: 14px;
+  color: #111827;
+  background: #fafafa;
+  -webkit-font-smoothing: antialiased;
+}
+
+.toc-bar {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid #e5e7eb;
+  padding: 14px 28px;
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+}
+.toc-title { font-weight: 700; font-size: 15px; letter-spacing: -0.2px; }
+.toc-title small { color: #6b7280; font-weight: 400; margin-left: 6px; font-size: 12px; }
+.toc-tabs {
+  display: flex; gap: 4px;
+  background: #f3f4f6;
+  padding: 3px; border-radius: 8px;
+  margin-left: auto;
+}
+.toc-tab {
+  border: none; background: transparent;
+  padding: 6px 14px; border-radius: 6px;
+  cursor: pointer; font-size: 12.5px; color: #6b7280;
+  font-weight: 500; font-family: inherit;
+}
+.toc-tab:hover { color: #111827; }
+.toc-tab.active { background: white; color: #111827; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+
+.summary {
+  padding: 20px 28px 0;
+  max-width: 1180px; margin: 0 auto;
+  color: #4b5563; font-size: 13px; line-height: 1.65;
+}
+.summary h2 { color: #111827; font-size: 15px; margin: 0 0 10px; }
+.summary code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+.style-frame {
+  display: none;
+  padding: 28px;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+.style-frame.active { display: block; }
+
+.style-meta {
+  margin-bottom: 18px;
+  padding: 14px 18px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+.style-meta h3 { margin: 0 0 6px; font-size: 16px; letter-spacing: -0.2px; }
+.style-meta p { margin: 0; color: #6b7280; font-size: 12.5px; line-height: 1.6; }
+
+/* === Hub 模拟壳：标题栏 + 左侧栏 + 主区 === */
+.hub-stage {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  background: white;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+}
+.hub-titlebar {
+  background: linear-gradient(180deg, #fafafa 0%, #f3f4f6 100%);
+  padding: 10px 14px;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex; gap: 6px; align-items: center;
+}
+.hub-titlebar .dot { width: 11px; height: 11px; border-radius: 50%; }
+.hub-titlebar .dot.r { background: #ff5f57; }
+.hub-titlebar .dot.y { background: #ffbd2e; }
+.hub-titlebar .dot.g { background: #28c940; }
+.hub-titlebar .title { margin-left: 12px; font-size: 12px; color: #6b7280; font-weight: 500; }
+
+.hub-body { display: flex; min-height: 600px; }
+
+/* 通用 sidebar 骨架 */
+.sb {
+  width: 220px; flex-shrink: 0;
+  display: flex; flex-direction: column;
+  border-right: 1px solid #e5e7eb;
+}
+.sb-header {
+  padding: 10px 12px;
+  display: flex; gap: 6px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.sb-btn-new, .sb-btn-rt {
+  font-size: 12px; padding: 5px 10px; border-radius: 6px;
+  border: none; cursor: pointer; font-weight: 600;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.sb-btn-new { background: #07c160; color: white; }
+.sb-btn-rt { background: #4f46e5; color: white; }
+.sb-toolbar {
+  padding: 6px 10px; display: flex; gap: 8px;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 13px;
+}
+.sb-toolbar a { color: #6b7280; cursor: pointer; }
+.sb-toolbar a:hover { color: #111827; }
+.sb-list { flex: 1; overflow-y: auto; padding: 6px 0; }
+.sb-item {
+  padding: 8px 12px; margin: 2px 6px;
+  border-radius: 6px; cursor: pointer;
+  display: flex; gap: 8px; align-items: flex-start;
+  font-size: 12.5px; line-height: 1.4;
+  position: relative;
+}
+.sb-item-avatar {
+  width: 26px; height: 26px; border-radius: 6px;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600; color: white;
+}
+.sb-item-content { flex: 1; min-width: 0; }
+.sb-item-title { font-weight: 600; margin-bottom: 2px; display: flex; justify-content: space-between; align-items: baseline; }
+.sb-item-time { font-size: 10.5px; font-weight: 400; }
+.sb-item-preview { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 主区骨架（共用） */
+.main {
+  flex: 1; display: flex; flex-direction: column;
+  background: #f3f4f6;
+}
+.main-toolbar {
+  padding: 8px 14px;
+  background: white;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex; gap: 8px; align-items: center;
+}
+.main-toolbar .tab-group {
+  display: flex; gap: 0;
+  background: #f3f4f6; padding: 2px;
+  border-radius: 6px; margin-left: auto;
+}
+.main-toolbar .tab-group button {
+  border: none; background: transparent; padding: 4px 10px;
+  border-radius: 4px; cursor: pointer; font-size: 11.5px;
+  color: #6b7280; font-family: inherit;
+}
+.main-toolbar .tab-group button.active { background: white; color: #111827; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+
+.main-msgs {
+  flex: 1; padding: 18px 22px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.user-bubble {
+  max-width: 70%; align-self: flex-end;
+  background: #95ec69; padding: 10px 14px;
+  border-radius: 12px; border-top-right-radius: 4px;
+  line-height: 1.5; font-size: 13.5px;
+}
+.user-bubble code {
+  background: rgba(255,255,255,0.55); color: #1f2937;
+  padding: 1px 5px; border-radius: 3px; font-family: ui-monospace, Consolas, monospace; font-size: 0.88em;
+}
+.ai-bubble {
+  max-width: 80%; background: white;
+  border: 1px solid #e5e7eb; border-radius: 12px; border-top-left-radius: 4px;
+  padding: 11px 14px; line-height: 1.55; font-size: 13.5px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.ai-bubble code:not(pre code) {
+  background: rgba(0,0,0,0.06); color: #9d174d;
+  padding: 1px 5px; border-radius: 3px; font-family: ui-monospace, Consolas, monospace; font-size: 0.88em;
+}
+
+/* === 方案 A · sidebar 纯白 + 代码块 GitHub Light === */
+[data-style="a"] .sb { background: #ffffff; }
+[data-style="a"] .sb-item:hover { background: #f3f4f6; }
+[data-style="a"] .sb-item.active { background: #e6f4ea; box-shadow: inset 3px 0 0 #07c160; }
+[data-style="a"] .sb-item-avatar { background: #cc785c; }
+[data-style="a"] .sb-item-avatar.gpt { background: #6366f1; }
+[data-style="a"] .sb-item-avatar.gem { background: linear-gradient(135deg, #4285f4, #34a853); }
+[data-style="a"] .sb-item-time { color: #9ca3af; }
+[data-style="a"] .sb-item-preview { color: #6b7280; }
+[data-style="a"] .ai-bubble pre {
+  background: #f6f8fa;
+  color: #1f2328;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 12px 14px; margin: 8px 0;
+  overflow-x: auto;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 12px; line-height: 1.55;
+}
+[data-style="a"] .ai-bubble pre .k { color: #cf222e; }   /* keyword */
+[data-style="a"] .ai-bubble pre .s { color: #0a3069; }   /* string */
+[data-style="a"] .ai-bubble pre .n { color: #953800; }   /* number/value */
+[data-style="a"] .ai-bubble pre .c { color: #6e7781; font-style: italic; } /* comment */
+[data-style="a"] .ai-bubble pre .p { color: #1f2328; }   /* punctuation */
+
+/* === 方案 B · sidebar 微浅灰 + 代码块 极简浅灰 === */
+[data-style="b"] .sb { background: #f9fafb; }
+[data-style="b"] .sb-item:hover { background: #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+[data-style="b"] .sb-item.active { background: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,0.06), inset 3px 0 0 #4f46e5; }
+[data-style="b"] .sb-item-avatar { background: #cc785c; }
+[data-style="b"] .sb-item-avatar.gpt { background: #6366f1; }
+[data-style="b"] .sb-item-avatar.gem { background: linear-gradient(135deg, #4285f4, #34a853); }
+[data-style="b"] .sb-item-time { color: #9ca3af; }
+[data-style="b"] .sb-item-preview { color: #6b7280; }
+[data-style="b"] .ai-bubble pre {
+  background: #fafafa;
+  color: #1f2937;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 12px 14px; margin: 8px 0;
+  overflow-x: auto;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 12px; line-height: 1.55;
+}
+[data-style="b"] .ai-bubble pre .k { color: #7c3aed; }
+[data-style="b"] .ai-bubble pre .s { color: #047857; }
+[data-style="b"] .ai-bubble pre .n { color: #b45309; }
+[data-style="b"] .ai-bubble pre .c { color: #9ca3af; font-style: italic; }
+[data-style="b"] .ai-bubble pre .p { color: #4b5563; }
+
+/* === 方案 C · sidebar 冷蓝灰 + 代码块 米色暖调 === */
+[data-style="c"] .sb { background: #f5f8fc; }
+[data-style="c"] .sb-item:hover { background: #ffffff; }
+[data-style="c"] .sb-item.active { background: #ffffff; box-shadow: 0 2px 8px rgba(15,23,42,0.06), inset 3px 0 0 #3b82f6; }
+[data-style="c"] .sb-item-avatar { background: linear-gradient(135deg, #cc785c, #b45309); border-radius: 8px; }
+[data-style="c"] .sb-item-avatar.gpt { background: linear-gradient(135deg, #4f46e5, #6366f1); }
+[data-style="c"] .sb-item-avatar.gem { background: linear-gradient(135deg, #4285f4, #34a853); }
+[data-style="c"] .sb-item-time { color: #94a3b8; }
+[data-style="c"] .sb-item-preview { color: #64748b; }
+[data-style="c"] .ai-bubble pre {
+  background: #fafaf5;
+  color: #1f2937;
+  border: 1px solid #e7e5d8;
+  border-radius: 8px;
+  padding: 12px 14px; margin: 8px 0;
+  overflow-x: auto;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 12px; line-height: 1.55;
+}
+[data-style="c"] .ai-bubble pre .k { color: #b91c1c; }
+[data-style="c"] .ai-bubble pre .s { color: #15803d; }
+[data-style="c"] .ai-bubble pre .n { color: #c2410c; }
+[data-style="c"] .ai-bubble pre .c { color: #a8a29e; font-style: italic; }
+[data-style="c"] .ai-bubble pre .p { color: #1f2937; }
+
+/* === 方案 D · sidebar VibeChat 直搬 + 代码块 GitHub Light === */
+[data-style="d"] .sb { background: #ffffff; }
+[data-style="d"] .sb-item { border-bottom: 1px solid #f3f4f6; margin: 0; border-radius: 0; padding: 10px 12px; }
+[data-style="d"] .sb-item:hover { background: #f9fafb; }
+[data-style="d"] .sb-item.active { background: #e6f4ea; box-shadow: inset 3px 0 0 #07c160; }
+[data-style="d"] .sb-item-avatar { background: #cc785c; }
+[data-style="d"] .sb-item-avatar.gpt { background: #6366f1; }
+[data-style="d"] .sb-item-avatar.gem { background: linear-gradient(135deg, #4285f4, #34a853); }
+[data-style="d"] .sb-item-time { color: #9ca3af; }
+[data-style="d"] .sb-item-preview { color: #6b7280; }
+[data-style="d"] .ai-bubble pre {
+  background: #f6f8fa;
+  color: #1f2328;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 12px 14px; margin: 8px 0;
+  overflow-x: auto;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 12px; line-height: 1.55;
+}
+[data-style="d"] .ai-bubble pre .k { color: #cf222e; }
+[data-style="d"] .ai-bubble pre .s { color: #0a3069; }
+[data-style="d"] .ai-bubble pre .n { color: #953800; }
+[data-style="d"] .ai-bubble pre .c { color: #6e7781; font-style: italic; }
+[data-style="d"] .ai-bubble pre .p { color: #1f2328; }
+
+.footer {
+  max-width: 1180px; margin: 32px auto; padding: 0 28px 40px;
+  font-size: 12px; color: #9ca3af; line-height: 1.7;
+}
+</style>
+</head>
+<body>
+
+<div class="toc-bar">
+  <div class="toc-title">Hub sidebar + 代码块 浅色风备选 <small>2026-05-10</small></div>
+  <div class="toc-tabs">
+    <button class="toc-tab active" data-target="a">A · 纯白 + GitHub light</button>
+    <button class="toc-tab" data-target="b">B · 微浅灰 + 极简</button>
+    <button class="toc-tab" data-target="c">C · 冷蓝灰 + 米色码块</button>
+    <button class="toc-tab" data-target="d">D · VibeChat 直搬 + GitHub light</button>
+  </div>
+</div>
+
+<div class="summary">
+  <h2>说明</h2>
+  <p>4 个备选都是<strong>把左侧栏 + 代码块从深色变成浅色风</strong>。每个方案下面用同一段对话场景演示真实信息密度。每个方案区别主要在两点：</p>
+  <ul style="margin: 4px 0 0; padding-left: 22px;">
+    <li><strong>sidebar 底色</strong>：纯白 / 微浅灰 / 冷蓝灰 / VibeChat 原版分割线风</li>
+    <li><strong>代码块底色 + 高亮配色</strong>：GitHub light / 极简浅灰 / 米色暖调</li>
+  </ul>
+  <p style="margin-top: 8px;">所有方案保持 user 气泡微信绿、AI 气泡白底（vibechat-light 主题已落地的部分不变）。</p>
+</div>
+
+<!-- ========== A ========== -->
+<div class="style-frame active" data-style="a">
+  <div class="style-meta">
+    <h3>方案 A · sidebar 纯白 + 代码块 GitHub Light</h3>
+    <p>sidebar 用纯白底 <code>#ffffff</code>，hover 浅灰 <code>#f3f4f6</code>，选中带微信绿左侧色条 + 浅绿底（与 user 气泡同色系）。代码块用 GitHub light 风 <code>#f6f8fa</code> + 经典 GitHub 高亮配色（红 keyword / 深蓝 string / 棕 number）。最贴近 VibeChat 原版的纯白 IM 风。</p>
+  </div>
+  <div class="hub-stage">
+    <div class="hub-titlebar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="title">Claude Session Hub · vibechat-light</span>
+    </div>
+    <div class="hub-body">
+      <div class="sb">
+        <div class="sb-header">
+          <button class="sb-btn-new">+ 新建</button>
+          <button class="sb-btn-rt">圆桌</button>
+        </div>
+        <div class="sb-toolbar">
+          <a>↻</a><a>☀</a><a style="margin-left:auto;color:#9ca3af;">⚙</a>
+        </div>
+        <div class="sb-list">
+          <div class="sb-item active">
+            <div class="sb-item-avatar">CL</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Claude · styles 改造 <span class="sb-item-time">14:22</span></div>
+              <div class="sb-item-preview">已定位到样式，给你 3 个柔和方案……</div>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-item-avatar gpt">GP</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Codex · refactor <span class="sb-item-time">12:08</span></div>
+              <div class="sb-item-preview">已合并 12 个文件改动</div>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-item-avatar gem">GE</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Gemini · stock查询 <span class="sb-item-time">昨天</span></div>
+              <div class="sb-item-preview">2026-05-09 收盘后 Top10……</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="main">
+        <div class="main-toolbar">
+          <span style="font-size:12px;color:#6b7280;font-weight:500;">📂 styles 改造 · session-2026-05-10-01</span>
+          <div class="tab-group">
+            <button class="active">📇 卡片</button>
+            <button>⌨ PTY</button>
+            <button>📱 简洁</button>
+          </div>
+        </div>
+        <div class="main-msgs">
+          <div class="user-bubble">帮我看下 <code>renderer/styles.css:2731</code> 的 <code>.turn-card</code>，能不能把 user 卡片左侧那条紫边改成更柔和的样式？</div>
+          <div class="ai-bubble">
+            <p style="margin:0 0 6px;color:#4b5563;font-size:11px;">CLAUDE · 14:22</p>
+            <p style="margin:0 0 6px;">方案 1 最不破坏现有视觉：</p>
+<pre><span class="p">.</span><span class="k">turn-card</span><span class="p">.</span><span class="k">user</span> <span class="p">{</span>
+  <span class="k">background</span><span class="p">:</span> <span class="s">var(--turn-bg-user)</span><span class="p">;</span>
+  <span class="k">border-left</span><span class="p">:</span> <span class="n">none</span><span class="p">;</span>
+  <span class="k">background-image</span><span class="p">:</span> <span class="s">linear-gradient(90deg,</span>
+    <span class="s">rgba(167,139,250,0.18), transparent 28px)</span><span class="p">;</span>
+<span class="p">}</span></pre>
+            <p style="margin:6px 0 0;">这样保留紫色提示，但从硬边变成 28px 渐隐，质感更柔。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========== B ========== -->
+<div class="style-frame" data-style="b">
+  <div class="style-meta">
+    <h3>方案 B · sidebar 微浅灰 + 代码块 极简浅灰</h3>
+    <p>sidebar 微浅灰底 <code>#f9fafb</code>（不刺眼），hover 弹起到白色 + 微阴影；选中是白卡 + 紫色左侧条。代码块用极简浅灰 <code>#fafafa</code> + 紫色 keyword + 绿 string + 棕 number 配色（更接近 hub 既有紫色调）。最低对比度，最柔和。</p>
+  </div>
+  <div class="hub-stage">
+    <div class="hub-titlebar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="title">Claude Session Hub · vibechat-light</span>
+    </div>
+    <div class="hub-body">
+      <div class="sb">
+        <div class="sb-header">
+          <button class="sb-btn-new">+ 新建</button>
+          <button class="sb-btn-rt">圆桌</button>
+        </div>
+        <div class="sb-toolbar">
+          <a>↻</a><a>☀</a><a style="margin-left:auto;color:#9ca3af;">⚙</a>
+        </div>
+        <div class="sb-list">
+          <div class="sb-item active">
+            <div class="sb-item-avatar">CL</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Claude · styles 改造 <span class="sb-item-time">14:22</span></div>
+              <div class="sb-item-preview">已定位到样式，给你 3 个柔和方案……</div>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-item-avatar gpt">GP</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Codex · refactor <span class="sb-item-time">12:08</span></div>
+              <div class="sb-item-preview">已合并 12 个文件改动</div>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-item-avatar gem">GE</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Gemini · stock查询 <span class="sb-item-time">昨天</span></div>
+              <div class="sb-item-preview">2026-05-09 收盘后 Top10……</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="main">
+        <div class="main-toolbar">
+          <span style="font-size:12px;color:#6b7280;font-weight:500;">📂 styles 改造 · session-2026-05-10-01</span>
+          <div class="tab-group">
+            <button class="active">📇 卡片</button>
+            <button>⌨ PTY</button>
+            <button>📱 简洁</button>
+          </div>
+        </div>
+        <div class="main-msgs">
+          <div class="user-bubble">帮我看下 <code>renderer/styles.css:2731</code> 的 <code>.turn-card</code>，能不能把 user 卡片左侧那条紫边改成更柔和的样式？</div>
+          <div class="ai-bubble">
+            <p style="margin:0 0 6px;color:#4b5563;font-size:11px;">CLAUDE · 14:22</p>
+            <p style="margin:0 0 6px;">方案 1 最不破坏现有视觉：</p>
+<pre><span class="p">.</span><span class="k">turn-card</span><span class="p">.</span><span class="k">user</span> <span class="p">{</span>
+  <span class="k">background</span><span class="p">:</span> <span class="s">var(--turn-bg-user)</span><span class="p">;</span>
+  <span class="k">border-left</span><span class="p">:</span> <span class="n">none</span><span class="p">;</span>
+  <span class="k">background-image</span><span class="p">:</span> <span class="s">linear-gradient(90deg,</span>
+    <span class="s">rgba(167,139,250,0.18), transparent 28px)</span><span class="p">;</span>
+<span class="p">}</span></pre>
+            <p style="margin:6px 0 0;">这样保留紫色提示，但从硬边变成 28px 渐隐，质感更柔。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========== C ========== -->
+<div class="style-frame" data-style="c">
+  <div class="style-meta">
+    <h3>方案 C · sidebar 冷蓝灰 + 代码块 米色暖调</h3>
+    <p>sidebar 冷蓝灰 <code>#f5f8fc</code>（飞书企微感），头像加 8px 圆角变得稍方，hover/选中弹起白卡。代码块米色暖调 <code>#fafaf5</code>（vintage warm），不刺眼适合长时间阅读。整体最"高级感"。</p>
+  </div>
+  <div class="hub-stage">
+    <div class="hub-titlebar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="title">Claude Session Hub · vibechat-light</span>
+    </div>
+    <div class="hub-body">
+      <div class="sb">
+        <div class="sb-header">
+          <button class="sb-btn-new">+ 新建</button>
+          <button class="sb-btn-rt">圆桌</button>
+        </div>
+        <div class="sb-toolbar">
+          <a>↻</a><a>☀</a><a style="margin-left:auto;color:#94a3b8;">⚙</a>
+        </div>
+        <div class="sb-list">
+          <div class="sb-item active">
+            <div class="sb-item-avatar">CL</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Claude · styles 改造 <span class="sb-item-time">14:22</span></div>
+              <div class="sb-item-preview">已定位到样式，给你 3 个柔和方案……</div>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-item-avatar gpt">GP</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Codex · refactor <span class="sb-item-time">12:08</span></div>
+              <div class="sb-item-preview">已合并 12 个文件改动</div>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-item-avatar gem">GE</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Gemini · stock查询 <span class="sb-item-time">昨天</span></div>
+              <div class="sb-item-preview">2026-05-09 收盘后 Top10……</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="main">
+        <div class="main-toolbar">
+          <span style="font-size:12px;color:#6b7280;font-weight:500;">📂 styles 改造 · session-2026-05-10-01</span>
+          <div class="tab-group">
+            <button class="active">📇 卡片</button>
+            <button>⌨ PTY</button>
+            <button>📱 简洁</button>
+          </div>
+        </div>
+        <div class="main-msgs">
+          <div class="user-bubble">帮我看下 <code>renderer/styles.css:2731</code> 的 <code>.turn-card</code>，能不能把 user 卡片左侧那条紫边改成更柔和的样式？</div>
+          <div class="ai-bubble">
+            <p style="margin:0 0 6px;color:#4b5563;font-size:11px;">CLAUDE · 14:22</p>
+            <p style="margin:0 0 6px;">方案 1 最不破坏现有视觉：</p>
+<pre><span class="p">.</span><span class="k">turn-card</span><span class="p">.</span><span class="k">user</span> <span class="p">{</span>
+  <span class="k">background</span><span class="p">:</span> <span class="s">var(--turn-bg-user)</span><span class="p">;</span>
+  <span class="k">border-left</span><span class="p">:</span> <span class="n">none</span><span class="p">;</span>
+  <span class="k">background-image</span><span class="p">:</span> <span class="s">linear-gradient(90deg,</span>
+    <span class="s">rgba(167,139,250,0.18), transparent 28px)</span><span class="p">;</span>
+<span class="p">}</span></pre>
+            <p style="margin:6px 0 0;">这样保留紫色提示，但从硬边变成 28px 渐隐，质感更柔。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ========== D ========== -->
+<div class="style-frame" data-style="d">
+  <div class="style-meta">
+    <h3>方案 D · sidebar VibeChat 直搬 + 代码块 GitHub Light</h3>
+    <p>sidebar 直搬 VibeChat 原版 <code>contact-list</code> 风：纯白 + 每行底部 1px 灰分割线（不再用圆角悬浮卡片，而是连续 list）。这是 VibeChat 截图里最显著的特征。代码块用 GitHub light（同方案 A）。最"WeChat 体验复刻"。</p>
+  </div>
+  <div class="hub-stage">
+    <div class="hub-titlebar">
+      <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+      <span class="title">Claude Session Hub · vibechat-light</span>
+    </div>
+    <div class="hub-body">
+      <div class="sb">
+        <div class="sb-header">
+          <button class="sb-btn-new">+ 新建</button>
+          <button class="sb-btn-rt">圆桌</button>
+        </div>
+        <div class="sb-toolbar">
+          <a>↻</a><a>☀</a><a style="margin-left:auto;color:#9ca3af;">⚙</a>
+        </div>
+        <div class="sb-list">
+          <div class="sb-item active">
+            <div class="sb-item-avatar">CL</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Claude · styles 改造 <span class="sb-item-time">14:22</span></div>
+              <div class="sb-item-preview">已定位到样式，给你 3 个柔和方案……</div>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-item-avatar gpt">GP</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Codex · refactor <span class="sb-item-time">12:08</span></div>
+              <div class="sb-item-preview">已合并 12 个文件改动</div>
+            </div>
+          </div>
+          <div class="sb-item">
+            <div class="sb-item-avatar gem">GE</div>
+            <div class="sb-item-content">
+              <div class="sb-item-title">Gemini · stock查询 <span class="sb-item-time">昨天</span></div>
+              <div class="sb-item-preview">2026-05-09 收盘后 Top10……</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="main">
+        <div class="main-toolbar">
+          <span style="font-size:12px;color:#6b7280;font-weight:500;">📂 styles 改造 · session-2026-05-10-01</span>
+          <div class="tab-group">
+            <button class="active">📇 卡片</button>
+            <button>⌨ PTY</button>
+            <button>📱 简洁</button>
+          </div>
+        </div>
+        <div class="main-msgs">
+          <div class="user-bubble">帮我看下 <code>renderer/styles.css:2731</code> 的 <code>.turn-card</code>，能不能把 user 卡片左侧那条紫边改成更柔和的样式？</div>
+          <div class="ai-bubble">
+            <p style="margin:0 0 6px;color:#4b5563;font-size:11px;">CLAUDE · 14:22</p>
+            <p style="margin:0 0 6px;">方案 1 最不破坏现有视觉：</p>
+<pre><span class="p">.</span><span class="k">turn-card</span><span class="p">.</span><span class="k">user</span> <span class="p">{</span>
+  <span class="k">background</span><span class="p">:</span> <span class="s">var(--turn-bg-user)</span><span class="p">;</span>
+  <span class="k">border-left</span><span class="p">:</span> <span class="n">none</span><span class="p">;</span>
+  <span class="k">background-image</span><span class="p">:</span> <span class="s">linear-gradient(90deg,</span>
+    <span class="s">rgba(167,139,250,0.18), transparent 28px)</span><span class="p">;</span>
+<span class="p">}</span></pre>
+            <p style="margin:6px 0 0;">这样保留紫色提示，但从硬边变成 28px 渐隐，质感更柔。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  备注：以上 mockup 都基于已落地的 vibechat-light 主题（user 气泡微信绿、AI 气泡白底、思考块浅灰等）。选定方案后实施步骤：(1) 在 styles.css 的 vibechat-light 主题段中增加 sidebar 相关 selector 覆盖（.app-container / .sidebar / .session-list / .session-item / .session-active / .session-waiting 等）。(2) 修改 .code-block-wrap pre 的浅色配色 + Prism 配色 token override。预计追加 ~80 行 CSS。
+</div>
+
+<script>
+  document.querySelectorAll('.toc-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.target;
+      document.querySelectorAll('.toc-tab').forEach(b => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.style-frame').forEach(f => f.classList.toggle('active', f.dataset.style === target));
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  });
+</script>
+</body>
+</html>

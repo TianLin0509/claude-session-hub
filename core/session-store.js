@@ -54,6 +54,8 @@ function saveSessionFile(hubId, data) {
     pinned: !!data.pinned,
     ccSessionId: data.ccSessionId || null,
     codexSid: data.codexSid || null,
+    codexProfile: data.codexProfile || null,
+    codexProfileLabel: data.codexProfileLabel || null,
     geminiChatId: data.geminiChatId || null,
     geminiProjectHash: data.geminiProjectHash || null,
     geminiProjectRoot: data.geminiProjectRoot || null,
