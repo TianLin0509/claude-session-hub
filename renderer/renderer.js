@@ -4337,9 +4337,9 @@ ipcRenderer.on('agent-usage', (_e, totals) => {
     agentUsage.gemini = totals.gemini;
     agentUsageLastSeen.gemini = totals.gemini._ts || Date.now();
   }
-  if (totals.codex && (totals.codex.usage5h || totals.codex.usage7d)) {
+  if (Object.prototype.hasOwnProperty.call(totals || {}, 'codex')) {
     agentUsage.codex = totals.codex;
-    agentUsageLastSeen.codex = totals.codex._ts || Date.now();
+    agentUsageLastSeen.codex = (totals.codex && totals.codex._ts) || Date.now();
   }
   renderAccountUsage();
 });
@@ -4583,13 +4583,14 @@ function renderAccountUsage() {
     if (badgeClass === 'cx') return 'assets/ai-logos/codex.svg';
     return '';
   };
-  const renderUsageRow = (badgeClass, name, u5h, u7d) => {
+  const renderUsageRow = (badgeClass, name, u5h, u7d, meta = {}) => {
     const src = logoSrc(badgeClass);
     const logoHtml = src
       ? `<img class="acc-ai-logo" src="${src}" alt="${escapeHtml(name)}" title="${escapeHtml(name)}">`
       : `<span class="acc-ai-letters">${badgeClass.toUpperCase()}</span>`;
+    const title = meta.profileLabel ? `${name} - ${meta.profileLabel}` : name;
     return `
-      <div class="acc-usage-row" title="${escapeHtml(name)}">
+      <div class="acc-usage-row" title="${escapeHtml(title)}">
         <span class="acc-ai-badge ${badgeClass}">${logoHtml}</span>
         <div class="acc-bars">
           ${renderBar('5h', u5h)}
@@ -4641,7 +4642,7 @@ function renderAccountUsage() {
   const c = agentUsage.codex || {};
   el.innerHTML =
     renderUsageRow('cl', 'Claude', accountUsage.usage5h, accountUsage.usage7d) +
-    renderUsageRow('cx', 'Codex', c.usage5h, c.usage7d) +
+    renderUsageRow('cx', 'Codex', c.usage5h, c.usage7d, c) +
     renderPackyRow(packyAccountData);
 
   // 充值按钮 — 打开 packyapi console

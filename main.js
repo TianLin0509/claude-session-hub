@@ -40,6 +40,11 @@ const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js')
 const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-config.js');
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
 const packyBalance = require('./core/packy-balance.js');
+const {
+  resolveCodexUsageScope,
+  attachCodexUsageScope,
+  filterUsageCacheForCodexScope,
+} = require('./core/codex-usage-scope.js');
 const { isClaudeFamily, SLOT_IDS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
 const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
@@ -3470,10 +3475,13 @@ function cacheAccountUsage(data) {
   } catch {}
 }
 
-function cacheAgentUsage(provider, tokenData) {
+function cacheAgentUsage(provider, tokenData, scope = null) {
   try {
     const existing = loadUsageCache();
-    existing[provider] = { ...tokenData, ts: Date.now() };
+    const scoped = provider === 'codex' && scope
+      ? attachCodexUsageScope(tokenData, scope)
+      : tokenData;
+    existing[provider] = { ...scoped, ts: Date.now() };
     fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
     fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(existing));
   } catch {}
@@ -3492,7 +3500,18 @@ function loadUsageCache() {
   try { return JSON.parse(fs.readFileSync(USAGE_CACHE_FILE, 'utf8')); } catch { return {}; }
 }
 
-ipcMain.handle('get-usage-cache', () => loadUsageCache());
+function currentCodexUsageScope() {
+  return resolveCodexUsageScope(getHubConfig(), {
+    hubDataDir: getHubDataDir(),
+    homeDir: os.homedir(),
+  });
+}
+
+function loadUsageCacheForCurrentConfig() {
+  return filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope());
+}
+
+ipcMain.handle('get-usage-cache', () => loadUsageCacheForCurrentConfig());
 
 // PackyAPI 账户(余额 + 消耗)异步拉取 + 缓存。
 // 调用方:启动后台 timer + IPC 'refresh-packy-account'(用户设置改 cookie 时强制刷新)。
@@ -3665,6 +3684,12 @@ ipcMain.handle('save-hub-config', (_e, newConfig) => {
   if (newConfig.packySessionCookie !== undefined) {
     fetchAndCachePackyAccount().catch(() => {});
   }
+  if (newConfig.codexBackend !== undefined || newConfig.codexSubscriptionProfile !== undefined) {
+    const scope = currentCodexUsageScope();
+    _codexJsonlCachedByRoot.clear();
+    sendToRenderer('agent-usage', { codex: attachCodexUsageScope({ usage5h: null, usage7d: null, unavailable: true }, scope) });
+    setImmediate(() => scanAgentSessions());
+  }
   return { success: true };
 });
 
@@ -3753,13 +3778,13 @@ function parseCodexUsage(plain) {
 // --- Codex JSONL-based usage scanner ---
 // Codex CLI writes authoritative rate_limits to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
 // Each file contains token_count events with primary (5h) and secondary (7d) windows.
+const DEFAULT_CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
 let _codexJsonlLastScan = 0;
 let _codexJsonlCached = null;
+const _codexJsonlCachedByRoot = new Map();
 const CODEX_JSONL_THROTTLE_MS = 30_000;
 
-function scanCodexJsonlUsage() {
-  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
-  const sessionsDir = path.join(home, '.codex', 'sessions');
+function scanCodexJsonlUsage(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT) {
   try {
     const now = new Date();
     const pad = (n) => String(n).padStart(2, '0');
@@ -3818,12 +3843,16 @@ function extractCodexRateLimits(filePath) {
   } catch { return null; }
 }
 
-function scanCodexJsonlUsageThrottled() {
+function scanCodexJsonlUsageThrottled(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT) {
   const now = Date.now();
-  if (now - _codexJsonlLastScan < CODEX_JSONL_THROTTLE_MS && _codexJsonlCached) return _codexJsonlCached;
+  const key = path.resolve(sessionsDir || DEFAULT_CODEX_SESSIONS_ROOT).toLowerCase();
+  const cached = _codexJsonlCachedByRoot.get(key);
+  if (cached && now - cached.ts < CODEX_JSONL_THROTTLE_MS) return cached.data;
+  const data = scanCodexJsonlUsage(sessionsDir);
+  _codexJsonlCachedByRoot.set(key, { ts: now, data });
   _codexJsonlLastScan = now;
-  _codexJsonlCached = scanCodexJsonlUsage();
-  return _codexJsonlCached;
+  _codexJsonlCached = data;
+  return data;
 }
 
 // Token-based rolling-window tracker for Gemini/Codex (fallback).
@@ -3833,12 +3862,16 @@ const AGENT_LIMITS = {
 };
 const _agentTokenLog = { gemini: [], codex: [] }; // [{ts, tokens}]
 
-function recordAgentTokens(kind, tokens) {
-  if (!_agentTokenLog[kind]) return;
-  _agentTokenLog[kind].push({ ts: Date.now(), tokens });
+function agentUsageScopeKey(sessionsRoot) {
+  return path.resolve(sessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT).toLowerCase();
 }
 
-function calcAgentUsage(kind) {
+function recordAgentTokens(kind, tokens, scopeKey = null) {
+  if (!_agentTokenLog[kind]) return;
+  _agentTokenLog[kind].push({ ts: Date.now(), tokens, scopeKey });
+}
+
+function calcAgentUsage(kind, scopeOrRoot = null) {
   const log = _agentTokenLog[kind];
   if (!log) return null;
   const now = Date.now();
@@ -3846,8 +3879,10 @@ function calcAgentUsage(kind) {
   const D7 = 7 * 86400 * 1000;
   // Prune entries older than 7d
   while (log.length && log[0].ts < now - D7) log.shift();
-  const tok5h = log.filter(e => e.ts >= now - H5).reduce((s, e) => s + e.tokens, 0);
-  const tok7d = log.reduce((s, e) => s + e.tokens, 0);
+  const scopeKey = scopeOrRoot ? agentUsageScopeKey(scopeOrRoot) : null;
+  const scopedLog = scopeKey ? log.filter(e => e.scopeKey === scopeKey) : log;
+  const tok5h = scopedLog.filter(e => e.ts >= now - H5).reduce((s, e) => s + e.tokens, 0);
+  const tok7d = scopedLog.reduce((s, e) => s + e.tokens, 0);
   const lim = AGENT_LIMITS[kind];
   if (!lim) return null;
   if (tok5h === 0 && tok7d === 0) return null;
@@ -3870,7 +3905,10 @@ function scanAgentSessions() {
       const prev = _agentLastStatus.get(s.id + ':tok');
       if (prev !== parsed.tokensUsed) {
         const delta = prev ? parsed.tokensUsed - prev : parsed.tokensUsed;
-        if (delta > 0) recordAgentTokens(s.kind, delta);
+        const scopeKey = s.kind === 'codex'
+          ? agentUsageScopeKey(s.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT)
+          : null;
+        if (delta > 0) recordAgentTokens(s.kind, delta, scopeKey);
         _agentLastStatus.set(s.id + ':tok', parsed.tokensUsed);
       }
     }
@@ -3904,16 +3942,22 @@ function scanAgentSessions() {
   // Priority: Codex JSONL (authoritative) > ring buffer quota > token estimates.
   const agentData = {};
   // Codex: try JSONL first
-  const codexJsonl = scanCodexJsonlUsageThrottled();
+  const codexScope = currentCodexUsageScope();
+  const codexJsonl = scanCodexJsonlUsageThrottled(codexScope.sessionsRoot);
   if (codexJsonl) {
-    agentData.codex = codexJsonl;
-    cacheAgentUsage('codex', codexJsonl);
+    agentData.codex = attachCodexUsageScope({ ...codexJsonl, source: 'jsonl' }, codexScope);
+    cacheAgentUsage('codex', codexJsonl, codexScope);
   } else if (_agentQuota.codex) {
-    agentData.codex = _agentQuota.codex;
-    cacheAgentUsage('codex', _agentQuota.codex);
+    agentData.codex = attachCodexUsageScope({ ..._agentQuota.codex, source: 'cli' }, codexScope);
+    cacheAgentUsage('codex', _agentQuota.codex, codexScope);
   } else {
-    const usage = calcAgentUsage('codex');
-    if (usage) { agentData.codex = usage; cacheAgentUsage('codex', usage); }
+    const usage = calcAgentUsage('codex', codexScope.sessionsRoot);
+    if (usage) {
+      agentData.codex = attachCodexUsageScope({ ...usage, source: 'estimate' }, codexScope);
+      cacheAgentUsage('codex', usage, codexScope);
+    } else {
+      agentData.codex = attachCodexUsageScope({ usage5h: null, usage7d: null, unavailable: true }, codexScope);
+    }
   }
   // Gemini: quota from CLI footer > token estimates
   if (_agentQuota.gemini) {
