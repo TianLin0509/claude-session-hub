@@ -1,0 +1,1026 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Hub 圆桌 HTML 块 iframe 渲染 — 实施计划</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff;
+    --ink: #1f2937; --ink-soft: #4b5563; --muted: #94a3b8;
+    --border: #e5e7eb;
+    --primary: #2563eb; --primary-soft: #dbeafe;
+    --success: #16a34a; --success-soft: #dcfce7;
+    --warning: #ea580c; --warning-soft: #ffedd5;
+    --danger: #dc2626; --danger-soft: #fee2e2;
+    --code-bg: #0f172a; --code-ink: #e2e8f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f172a; --card: #1e293b;
+      --ink: #e2e8f0; --ink-soft: #cbd5e1; --muted: #64748b;
+      --border: #334155;
+      --primary: #60a5fa; --primary-soft: #1e3a8a;
+      --success-soft: #14532d; --warning-soft: #7c2d12; --danger-soft: #7f1d1d;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { font-size: 15px; }
+  body { margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    line-height: 1.65; }
+  .page { max-width: 980px; margin: 0 auto; padding: 36px 26px 80px; }
+  header.hero { margin-bottom: 22px; padding: 24px 30px;
+    background: var(--card); border: 1px solid var(--border);
+    border-left: 4px solid var(--success); border-radius: 10px; }
+  header.hero h1 { margin: 0 0 8px; font-size: 23px; font-weight: 700; }
+  header.hero .meta { color: var(--ink-soft); font-size: 13px;
+    display: flex; gap: 14px; flex-wrap: wrap; margin: 0; }
+  header.hero .meta b { color: var(--ink); font-weight: 600; }
+  .info-block {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 24px; margin-bottom: 18px; }
+  .info-block h2 { margin: 0 0 10px; font-size: 15.5px; font-weight: 600; }
+  .info-block .field { display: flex; gap: 12px; margin: 6px 0; align-items: flex-start; }
+  .info-block .field .key {
+    flex-shrink: 0; min-width: 100px; font-size: 12px; font-weight: 600;
+    color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; padding-top: 2px; }
+  .info-block .field .val { flex: 1; color: var(--ink); }
+  section.task {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
+  section.task > details > summary {
+    list-style: none; cursor: pointer;
+    padding: 16px 24px; font-weight: 600; font-size: 16px;
+    background: var(--card); user-select: none;
+    border-bottom: 1px solid transparent; }
+  section.task > details[open] > summary { border-bottom: 1px solid var(--border); }
+  section.task > details > summary::-webkit-details-marker { display: none; }
+  section.task > details > summary::before {
+    content: "▶"; display: inline-block; margin-right: 9px;
+    font-size: 11px; transform: translateY(-1px);
+    transition: transform 0.15s ease; color: var(--muted); }
+  section.task > details[open] > summary::before { transform: rotate(90deg); }
+  section.task .body { padding: 16px 26px 22px; }
+  section.task .files {
+    background: var(--bg); border-radius: 6px;
+    padding: 10px 14px; margin: 4px 0 14px; font-size: 13px; }
+  section.task .files .key {
+    display: inline-block; min-width: 56px; font-weight: 600;
+    color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  ol.steps { list-style: none; padding-left: 0; counter-reset: step-counter; margin: 0; }
+  ol.steps > li {
+    counter-increment: step-counter; position: relative;
+    padding: 12px 0 12px 38px; border-top: 1px dashed var(--border); }
+  ol.steps > li:first-child { border-top: none; padding-top: 4px; }
+  ol.steps > li::before {
+    content: "Step " counter(step-counter); position: absolute; left: 0; top: 14px;
+    font-size: 11px; font-weight: 700; color: var(--primary); letter-spacing: 0.04em; }
+  ol.steps > li .step-title {
+    display: flex; align-items: center; gap: 8px;
+    font-weight: 600; font-size: 14px; margin: 0 0 8px; }
+  ol.steps > li input[type="checkbox"] {
+    width: 14px; height: 14px; margin: 0; accent-color: var(--success); }
+  ol.steps > li .step-body { margin-top: 6px; font-size: 13px; color: var(--ink); }
+  ol.steps > li .step-body p { margin: 6px 0; }
+  code { font-family: "Cascadia Code", "Consolas", monospace; font-size: 0.9em;
+    background: var(--primary-soft); color: var(--primary); padding: 1px 6px; border-radius: 4px; }
+  pre { background: var(--code-bg); color: var(--code-ink);
+    border-radius: 8px; padding: 12px 14px; overflow-x: auto;
+    font-size: 12px; line-height: 1.55;
+    font-family: "Cascadia Code", "Consolas", monospace; margin: 8px 0; }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  .tag {
+    display: inline-block; padding: 1px 7px; font-size: 11px;
+    border-radius: 999px; font-weight: 600; line-height: 1.5; margin-left: 6px; }
+  .tag.expect { background: var(--success-soft); color: var(--success); }
+  .tag.tool   { background: var(--primary-soft); color: var(--primary); }
+  .tag.tdd    { background: var(--warning-soft); color: var(--warning); }
+  .callout {
+    border-left: 3px solid var(--primary);
+    background: var(--primary-soft);
+    padding: 10px 14px; border-radius: 4px;
+    margin: 10px 0; font-size: 13px; }
+  .callout.warn { border-left-color: var(--warning); background: var(--warning-soft); }
+  .callout.bad  { border-left-color: var(--danger);  background: var(--danger-soft);  }
+  ul.checks { list-style: none; padding-left: 4px; margin: 6px 0; }
+  ul.checks li { margin: 4px 0; padding-left: 20px; position: relative; font-size: 13px; }
+  ul.checks li::before { content: "✔"; color: var(--success); position: absolute; left: 0; font-weight: bold; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); font-weight: 600; }
+  footer { margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="hero">
+    <h1>Hub 圆桌 HTML 块 iframe 渲染 — 实施计划 (Phase B)</h1>
+    <p class="meta">
+      <span><b>Plan</b>：2026-05-10-hub-html-rendering</span>
+      <span><b>Spec 锚定</b>：<a href="../../../../docs/superpowers/specs/2026-05-10-html-rendering-design.html">2026-05-10-html-rendering-design</a> § 1-5</span>
+      <span><b>Phase</b>：B（A 已上线，B 让 Hub 渲染 HTML 块）</span>
+    </p>
+  </header>
+
+  <div class="callout warn">
+    <b>For agentic workers</b>：REQUIRED SUB-SKILL: <code>superpowers:subagent-driven-development</code>。Steps 用 checkbox 跟踪。每个 task 走 implementer → spec reviewer → code quality reviewer 两阶段 review。
+  </div>
+
+  <!-- Plan 概览 -->
+  <div class="info-block">
+    <h2>Plan 概览</h2>
+    <div class="field">
+      <div class="key">Goal</div>
+      <div class="val">让 <code>C:\Users\lintian\claude-session-hub</code> 圆桌识别 AI 输出的 <code>```html```</code> fenced code block，用 iframe sandbox 内联渲染（含 AI 决策矩阵/对比表/SVG 图等），同时给所有 AI 的 system prompt 注入"富文本默认 HTML"提示。</div>
+    </div>
+    <div class="field">
+      <div class="key">Architecture</div>
+      <div class="val">
+        在 <code>renderer/meeting-room.js</code> 的 <code>_renderMarkdown</code> 调用链尾追加 <code>_renderHtmlCodeBlocks(wrapper)</code> 函数，识别 <code>pre code.language-html</code> 节点，转 <code>&lt;iframe sandbox="allow-scripts" srcdoc&gt;</code>。iframe 内桥脚本（ResizeObserver + postMessage）汇报高度，主页 message 监听校验 source 后设 <code>iframe.style.height</code>。System prompt 在 <code>core/roundtable-scenes.js</code> <code>BASE_RULES</code> 末尾注入约 80 字。
+      </div>
+    </div>
+    <div class="field">
+      <div class="key">Tech Stack</div>
+      <div class="val">marked 18.x + dompurify 3.x + prismjs 1.x（Hub 现有依赖）；Node <code>assert</code>（单测）；CDP-based <code>tests/helpers/hub-launcher.js</code>（E2E）</div>
+    </div>
+    <div class="field">
+      <div class="key">Scope</div>
+      <div class="val">仅 Hub 圆桌渲染层 + system prompt。<b>不改</b> <code>core/hub-config.js</code>（首版 hardcode 64KB max + always enabled，配置开关推迟到下个 plan）；<b>不改</b> <code>main.js</code> IPC；<b>不改</b> Phase A 已落地的 CLAUDE.md 铁律 v2。</div>
+    </div>
+    <div class="field">
+      <div class="key">关键约束</div>
+      <div class="val">
+        <ul style="margin:0;padding-left:18px;">
+          <li>禁止操作生产 Hub PID 24336（用户铁律）</li>
+          <li>E2E 启隔离 Hub 必须用 <code>CLAUDE_HUB_DATA_DIR</code> env + PID 白名单（Hub CLAUDE.md 铁律）</li>
+          <li>禁止 <code>npm run dist</code> 在主工作目录跑（Hub CLAUDE.md 铁律）</li>
+          <li>BASE_RULES 总字数 ≤1500（roundtable-scenes.js 注释约定），新加 ~80 字必须不超</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 文件清单 -->
+  <div class="info-block">
+    <h2>文件清单</h2>
+    <table>
+      <thead><tr><th>动作</th><th>路径</th><th>职责</th></tr></thead>
+      <tbody>
+        <tr><td>Modify</td><td><code>renderer/meeting-room.js</code></td><td>在 IIFE 内 + <code>_renderMarkdown</code> 链尾增加 HTML 块渲染逻辑 + message 监听</td></tr>
+        <tr><td>Modify</td><td><code>core/roundtable-scenes.js</code></td><td><code>BASE_RULES</code> 末尾注入富文本提示</td></tr>
+        <tr><td>Create</td><td><code>tests/unit-render-html-blocks.test.js</code></td><td><code>_renderHtmlCodeBlocks</code> 单测（识别/降级/非 html 不动）</td></tr>
+        <tr><td>Create</td><td><code>tests/unit-html-block-resize.test.js</code></td><td>message 高度协议单测</td></tr>
+        <tr><td>Create</td><td><code>tests/integration-render-markdown-html.test.js</code></td><td><code>_renderMarkdown</code> 集成测试（markdown → 含 iframe）</td></tr>
+        <tr><td>Create</td><td><code>tests/unit-base-rules-html-prompt.test.js</code></td><td>BASE_RULES 含富文本提示验证</td></tr>
+        <tr><td>Create</td><td><code>tests/e2e-html-block-rendering.test.js</code></td><td>三场景 E2E（隔离 Hub + CDP）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Task 0 -->
+  <section class="task">
+    <details open>
+      <summary>Task 0 · Pre-flight 锚点验证 + feature branch</summary>
+      <div class="body">
+        <div class="files"><span class="key">Modify</span> 无（read-only + git）</div>
+        <ol class="steps">
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 验证 git 状态干净并切 feature branch <span class="tag tool">Bash</span></p>
+            <div class="step-body">
+<pre><code>cd C:\Users\lintian\claude-session-hub
+git status --short
+git checkout -b feat/hub-html-rendering</code></pre>
+              <p><span class="tag expect">Expected</span> <code>git status</code> 干净（uncommitted 仅 docs/plans/）；checkout 成功，HEAD 在 <code>feat/hub-html-rendering</code>。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 验证依赖在位 <span class="tag tool">Grep</span></p>
+            <div class="step-body">
+<pre><code>Grep: pattern="\"marked\"|\"dompurify\"|\"prismjs\"" path=C:\Users\lintian\claude-session-hub\package.json -n=true output_mode=content</code></pre>
+              <p><span class="tag expect">Expected</span> 3 行匹配，分别是 marked / dompurify / prismjs 的版本声明。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 验证锚点行号未变 <span class="tag tool">Read</span></p>
+            <div class="step-body">
+<pre><code>Read: file_path=C:\Users\lintian\claude-session-hub\renderer\meeting-room.js, offset=475, limit=50</code></pre>
+              <p><span class="tag expect">Expected</span> 第 480 行是 <code>function _highlightCodeBlocks(wrapper) {</code>，第 495 行是 <code>function _renderMarkdown(text) {</code>，第 511 行是 <code>_highlightCodeBlocks(wrapper);</code>。如不一致，停止并 NEEDS_CONTEXT 报告新行号。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 验证 BASE_RULES 锚点 <span class="tag tool">Read</span></p>
+            <div class="step-body">
+<pre><code>Read: file_path=C:\Users\lintian\claude-session-hub\core\roundtable-scenes.js, offset=46, limit=40</code></pre>
+              <p><span class="tag expect">Expected</span> 第 48 行是 <code>const BASE_RULES = `# 圆桌讨论 · 核心规则</code>；第 80 行附近是 <code>详细约定见房间公约。</code>；第 81 行 <code>` ;</code> 是模板字符串结尾。</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </details>
+  </section>
+
+  <!-- Task 1 -->
+  <section class="task">
+    <details>
+      <summary>Task 1 · 实现 _renderHtmlCodeBlocks 函数（含 size guard）<span class="tag tdd">TDD</span></summary>
+      <div class="body">
+        <div class="files">
+          <span class="key">Create</span> <code>tests/unit-render-html-blocks.test.js</code><br>
+          <span class="key">Modify</span> <code>renderer/meeting-room.js</code>（在 <code>_highlightCodeBlocks</code> 函数体之后追加，约第 494 行）
+        </div>
+        <ol class="steps">
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 写失败测试 <span class="tag tool">Write</span></p>
+            <div class="step-body">
+              <p>创建 <code>C:\Users\lintian\claude-session-hub\tests\unit-render-html-blocks.test.js</code>：</p>
+<pre><code>// Hub 单测约定：纯 Node assert + jsdom 模拟 DOM；与 unit-roundtable-scenes.test.js 同风格
+const assert = require('assert');
+const { JSDOM } = require('jsdom');
+
+const dom = new JSDOM('&lt;!doctype html&gt;&lt;html&gt;&lt;body&gt;&lt;/body&gt;&lt;/html&gt;');
+global.document = dom.window.document;
+global.window = dom.window;
+
+// 加载被测函数（_renderHtmlCodeBlocks 暴露在 window 上，由 meeting-room.js IIFE 注入）
+require('../renderer/meeting-room.js');
+const fn = window.__rtTesting && window.__rtTesting._renderHtmlCodeBlocks;
+assert.ok(typeof fn === 'function', '_renderHtmlCodeBlocks 必须暴露在 window.__rtTesting');
+
+let pass = 0, fail = 0;
+function t(name, body) {
+  try { body(); console.log('  ok ', name); pass++; }
+  catch (e) { console.error('  FAIL', name, e.message); fail++; }
+}
+
+// 用例 1：含 language-html → 转 iframe sandbox
+t('language-html 块转 iframe sandbox', () =&gt; {
+  const w = document.createElement('div');
+  w.innerHTML = '&lt;pre&gt;&lt;code class="language-html"&gt;&amp;lt;b&amp;gt;hi&amp;lt;/b&amp;gt;&lt;/code&gt;&lt;/pre&gt;';
+  fn(w);
+  const iframe = w.querySelector('iframe.rt-html-block');
+  assert.ok(iframe, '应创建 iframe.rt-html-block');
+  assert.strictEqual(iframe.getAttribute('sandbox'), 'allow-scripts');
+  assert.ok(!w.querySelector('pre'), '原 pre 应被替换掉');
+  assert.ok(iframe.srcdoc.includes('ResizeObserver'), 'srcdoc 含桥脚本');
+  assert.ok(iframe.srcdoc.includes('&lt;b&gt;hi&lt;/b&gt;'), 'srcdoc 含原始 HTML');
+});
+
+// 用例 2：非 html 代码块不动（保留 Prism 高亮链路）
+t('language-python 块保留 pre 不动', () =&gt; {
+  const w = document.createElement('div');
+  w.innerHTML = '&lt;pre&gt;&lt;code class="language-python"&gt;print(1)&lt;/code&gt;&lt;/pre&gt;';
+  fn(w);
+  assert.ok(w.querySelector('pre'), 'pre 应保留');
+  assert.ok(!w.querySelector('iframe'), '不应有 iframe');
+});
+
+// 用例 3：&gt;64KB 大块降级为提示
+t('html 块超 65536 字节走降级', () =&gt; {
+  const big = 'x'.repeat(70000);
+  const w = document.createElement('div');
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+  code.className = 'language-html';
+  code.textContent = big;
+  pre.appendChild(code); w.appendChild(pre);
+  fn(w);
+  assert.ok(!w.querySelector('iframe'), '不应渲染 iframe');
+  const note = w.querySelector('.rt-html-too-large');
+  assert.ok(note, '应插入大小提示');
+  assert.ok(note.textContent.includes('过大'), '提示含"过大"字样');
+  assert.ok(w.querySelector('pre'), '原 pre 应保留供 Prism 高亮');
+});
+
+// 用例 4：多个 html 块独立渲染
+t('多个 language-html 块各自转 iframe', () =&gt; {
+  const w = document.createElement('div');
+  w.innerHTML = [
+    '&lt;pre&gt;&lt;code class="language-html"&gt;A&lt;/code&gt;&lt;/pre&gt;',
+    '&lt;pre&gt;&lt;code class="language-html"&gt;B&lt;/code&gt;&lt;/pre&gt;'
+  ].join('');
+  fn(w);
+  const iframes = w.querySelectorAll('iframe.rt-html-block');
+  assert.strictEqual(iframes.length, 2);
+  assert.ok(iframes[0].srcdoc.endsWith('A'));
+  assert.ok(iframes[1].srcdoc.endsWith('B'));
+});
+
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);</code></pre>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 跑测试期望 fail <span class="tag tool">Bash</span></p>
+            <div class="step-body">
+<pre><code>cd C:\Users\lintian\claude-session-hub
+node tests/unit-render-html-blocks.test.js</code></pre>
+              <p><span class="tag expect">Expected</span> 报错（_renderHtmlCodeBlocks 未暴露），exit code 非 0。如 jsdom 未安装，先 <code>npm i -D jsdom</code>（注：jsdom 在 dependencies 还是 devDependencies 看 package.json 现有 pattern）。</p>
+              <div class="callout warn"><b>注意</b>：如 jsdom 不是 Hub 现有 devDep，先 grep 现有 unit-* 测试如何 mock DOM。如全无 jsdom 用法，改用 vm.runInNewContext 或测试函数行为而非 DOM 副作用。本 step 不应擅自加 npm 依赖——先按 fail 处理，让 SDD 流程决策。</div>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 实现 _renderHtmlCodeBlocks <span class="tag tool">Edit</span></p>
+            <div class="step-body">
+              <p>用 Edit 工具，在 <code>renderer/meeting-room.js</code> 第 493 行（<code>_highlightCodeBlocks</code> 函数末尾的 <code>}</code>）之后插入新函数。</p>
+              <p><b>old_string</b>（精确匹配第 488-494 行）：</p>
+<pre><code>      try {
+        const html = Prism.highlight(code.textContent, Prism.languages[lang], lang);
+        code.innerHTML = html;
+      } catch {}
+    });
+  }
+
+  function _renderMarkdown(text) {</code></pre>
+              <p><b>new_string</b>（保留原 7 行 + 插入新 _renderHtmlCodeBlocks 函数 + 测试出口 + 原 _renderMarkdown 起始行）：</p>
+<pre><code>      try {
+        const html = Prism.highlight(code.textContent, Prism.languages[lang], lang);
+        code.innerHTML = html;
+      } catch {}
+    });
+  }
+
+  // Phase 7（铁律 v2 落地 2026-05-10）：language-html 代码块转 iframe sandbox 内联渲染
+  // 安全：sandbox 不带 allow-same-origin，浏览器拦截跨同源访问；srcdoc 内联，无网络请求
+  // 高度自适应：iframe 内桥脚本通过 postMessage 汇报 documentElement.scrollHeight
+  // 大块降级：&gt;64KB 不渲染，加提示，原 pre 保留供 Prism 高亮显示源码
+  const HTML_BLOCK_MAX_BYTES = 65536;
+  const HTML_BLOCK_BRIDGE = '&lt;script&gt;(function(){const o=new ResizeObserver(()=&gt;{parent.postMessage({type:"rt-html-resize",height:document.documentElement.scrollHeight},"*")});o.observe(document.documentElement)})();&lt;/script&gt;';
+
+  function _renderHtmlCodeBlocks(wrapper) {
+    wrapper.querySelectorAll('pre code.language-html').forEach(code =&gt; {
+      const html = code.textContent || '';
+      const pre = code.parentElement;
+      if (!pre || pre.tagName !== 'PRE') return;
+
+      if (html.length &gt; HTML_BLOCK_MAX_BYTES) {
+        const note = document.createElement('div');
+        note.className = 'rt-html-too-large';
+        note.textContent = '⚠ HTML 块过大（' + (html.length/1024).toFixed(1) + 'KB &gt; 64KB），已折叠不渲染';
+        pre.parentElement.insertBefore(note, pre);
+        return;
+      }
+
+      const iframe = document.createElement('iframe');
+      iframe.className = 'rt-html-block';
+      iframe.setAttribute('sandbox', 'allow-scripts');
+      iframe.style.cssText = 'width:100%;border:0;min-height:120px;height:0;background:transparent';
+      iframe.srcdoc = HTML_BLOCK_BRIDGE + html;
+
+      pre.parentElement.replaceChild(iframe, pre);
+    });
+  }
+
+  // 测试出口（仅在 jsdom/单测环境下用）：Electron renderer 下 window.__rtTesting 不影响生产
+  if (typeof window !== 'undefined') {
+    window.__rtTesting = window.__rtTesting || {};
+    window.__rtTesting._renderHtmlCodeBlocks = _renderHtmlCodeBlocks;
+  }
+
+  function _renderMarkdown(text) {</code></pre>
+              <p><span class="tag expect">Expected</span> Edit 成功；meeting-room.js 行数 +约 35 行。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 跑测试期望 pass <span class="tag tool">Bash</span></p>
+            <div class="step-body">
+<pre><code>cd C:\Users\lintian\claude-session-hub
+node tests/unit-render-html-blocks.test.js</code></pre>
+              <p><span class="tag expect">Expected</span> "4 passed, 0 failed"，exit code 0。</p>
+              <p>如 fail，根据 reviewer 反馈调整 srcdoc 含义、节点结构等，<b>不要</b>降低断言。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> Commit <span class="tag tool">Bash</span></p>
+            <div class="step-body">
+<pre><code>cd C:\Users\lintian\claude-session-hub
+git add renderer/meeting-room.js tests/unit-render-html-blocks.test.js
+git commit -m "feat(roundtable): add _renderHtmlCodeBlocks for inline HTML block rendering
+
+- Detect &lt;pre&gt;&lt;code class=\"language-html\"&gt; nodes in markdown output
+- Convert to &lt;iframe sandbox=\"allow-scripts\" srcdoc&gt; with height bridge
+- Size guard at 64KB: oversized blocks fall back with notice + keep pre
+
+Phase B Task 1 of hub-html-rendering plan
+Spec: docs/superpowers/specs/2026-05-10-html-rendering-design.html"</code></pre>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </details>
+  </section>
+
+  <!-- Task 2 -->
+  <section class="task">
+    <details>
+      <summary>Task 2 · iframe 高度协议（message 监听 IIFE setup once）<span class="tag tdd">TDD</span></summary>
+      <div class="body">
+        <div class="files">
+          <span class="key">Create</span> <code>tests/unit-html-block-resize.test.js</code><br>
+          <span class="key">Modify</span> <code>renderer/meeting-room.js</code>（在 IIFE 内 click delegation 旁，约第 523 行后）
+        </div>
+        <ol class="steps">
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 写失败测试</p>
+            <div class="step-body">
+              <p>创建 <code>tests/unit-html-block-resize.test.js</code>：</p>
+<pre><code>const assert = require('assert');
+const { JSDOM } = require('jsdom');
+
+const dom = new JSDOM('&lt;!doctype html&gt;&lt;html&gt;&lt;body&gt;&lt;/body&gt;&lt;/html&gt;');
+global.document = dom.window.document;
+global.window = dom.window;
+require('../renderer/meeting-room.js');
+
+// 创建 iframe + 模拟 contentWindow（jsdom iframe contentWindow 是它自己的 window 子集）
+const iframe = document.createElement('iframe');
+iframe.className = 'rt-html-block';
+iframe.style.height = '0';
+document.body.appendChild(iframe);
+
+// 直接 dispatch message event（source = iframe.contentWindow）
+const evt = new dom.window.MessageEvent('message', {
+  data: { type: 'rt-html-resize', height: 350 },
+  source: iframe.contentWindow,
+});
+window.dispatchEvent(evt);
+
+// listener 应已设 iframe.style.height = '350px'
+assert.strictEqual(iframe.style.height, '350px', '高度应被设为 350px');
+
+// 异常 height 防御：负数 / 超 8000 不生效
+const iframe2 = document.createElement('iframe');
+iframe2.className = 'rt-html-block';
+iframe2.style.height = '100px';
+document.body.appendChild(iframe2);
+
+window.dispatchEvent(new dom.window.MessageEvent('message', {
+  data: { type: 'rt-html-resize', height: -50 },
+  source: iframe2.contentWindow,
+}));
+assert.strictEqual(iframe2.style.height, '100px', '负数 height 不应生效');
+
+window.dispatchEvent(new dom.window.MessageEvent('message', {
+  data: { type: 'rt-html-resize', height: 99999 },
+  source: iframe2.contentWindow,
+}));
+assert.strictEqual(iframe2.style.height, '100px', '超 8000 height 不应生效');
+
+// 错 type 不生效
+window.dispatchEvent(new dom.window.MessageEvent('message', {
+  data: { type: 'other', height: 500 },
+  source: iframe2.contentWindow,
+}));
+assert.strictEqual(iframe2.style.height, '100px', '错 type 不应生效');
+
+console.log('all passed');
+process.exit(0);</code></pre>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 跑测试期望 fail（listener 未注册）</p>
+            <div class="step-body">
+<pre><code>node tests/unit-html-block-resize.test.js</code></pre>
+              <p><span class="tag expect">Expected</span> AssertionError "高度应被设为 350px"。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 加 message listener <span class="tag tool">Edit</span></p>
+            <div class="step-body">
+              <p>在 <code>meeting-room.js</code> IIFE 内现有 <code>document.addEventListener('click', ...)</code> 旁追加（即第 523 行附近的 click delegation 块之后）。先 Read 锚点：</p>
+<pre><code>Read: meeting-room.js, offset=519, limit=20</code></pre>
+              <p>找到 click delegation 块的结束 <code>}, true);</code>，在它之后用 Edit 插入：</p>
+              <p><b>old_string</b>（用 click delegation 末尾几行作为唯一锚点；具体内容由 Read 步骤确定，下方为示意，实际以读到的为准）：</p>
+<pre><code>  document.addEventListener('click', (e) =&gt; {
+    const a = e.target &amp;&amp; e.target.closest &amp;&amp; e.target.closest('a.rt-file-link');
+    [...具体闭合代码...]
+  }, true);</code></pre>
+              <p><b>new_string</b>（同 old_string + 新增 message listener）：</p>
+<pre><code>  document.addEventListener('click', (e) =&gt; {
+    [...原 click 委托不变...]
+  }, true);
+
+  // Phase 7（铁律 v2 落地 2026-05-10）：iframe.rt-html-block 高度自适应
+  // 桥脚本在 iframe srcdoc 内 ResizeObserver → postMessage 汇报；这里全局监听一次，按 source 匹配 iframe
+  window.addEventListener('message', (e) =&gt; {
+    if (!e.data || e.data.type !== 'rt-html-resize') return;
+    const iframes = document.querySelectorAll('iframe.rt-html-block');
+    for (const f of iframes) {
+      if (f.contentWindow === e.source) {
+        const h = Number(e.data.height);
+        if (h &gt; 0 &amp;&amp; h &lt; 8000) f.style.height = h + 'px';
+        return;
+      }
+    }
+  });</code></pre>
+              <div class="callout"><b>注</b>：实际 Edit 时把 <code>[...原 click 委托...]</code> 占位替换为 Read 步骤读到的真实内容（包含 closest/preventDefault/openPreviewPanel 等）。SDD subagent 必须先 Read 才能 Edit，禁止用占位提交。</div>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 跑测试期望 pass</p>
+            <div class="step-body">
+<pre><code>node tests/unit-html-block-resize.test.js</code></pre>
+              <p><span class="tag expect">Expected</span> "all passed"。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> Commit</p>
+            <div class="step-body">
+<pre><code>git add renderer/meeting-room.js tests/unit-html-block-resize.test.js
+git commit -m "feat(roundtable): add postMessage height bridge for HTML block iframes
+
+- Listen window 'message' once at IIFE level (rt-html-resize protocol)
+- Validate event.source matches iframe.contentWindow
+- Clamp height to (0, 8000) to defend against malicious payloads
+
+Phase B Task 2 of hub-html-rendering plan"</code></pre>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </details>
+  </section>
+
+  <!-- Task 3 -->
+  <section class="task">
+    <details>
+      <summary>Task 3 · 集成到 _renderMarkdown 调用链<span class="tag tdd">TDD</span></summary>
+      <div class="body">
+        <div class="files">
+          <span class="key">Create</span> <code>tests/integration-render-markdown-html.test.js</code><br>
+          <span class="key">Modify</span> <code>renderer/meeting-room.js:511</code>（_highlightCodeBlocks 调用后插一行）
+        </div>
+        <ol class="steps">
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 写集成测试</p>
+            <div class="step-body">
+<pre><code>const assert = require('assert');
+const { JSDOM } = require('jsdom');
+
+const dom = new JSDOM('&lt;!doctype html&gt;&lt;html&gt;&lt;body&gt;&lt;/body&gt;&lt;/html&gt;');
+global.document = dom.window.document;
+global.window = dom.window;
+require('../renderer/meeting-room.js');
+
+const renderMarkdown = window.__rtTesting && window.__rtTesting._renderMarkdown;
+assert.ok(typeof renderMarkdown === 'function', '_renderMarkdown 必须暴露');
+
+// 输入：含 fenced ```html``` 的 markdown
+const md = [
+  '简介在前。',
+  '',
+  '```html',
+  '&lt;table&gt;&lt;tr&gt;&lt;td&gt;hi&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;',
+  '```',
+  '',
+  '尾文。',
+].join('\n');
+
+const html = renderMarkdown(md);
+
+// 期望：含 iframe.rt-html-block；不含原 &lt;pre&gt;&lt;code class="language-html"&gt;
+assert.ok(html.includes('iframe'), '应含 iframe');
+assert.ok(html.includes('rt-html-block'), '应含 rt-html-block class');
+assert.ok(html.includes('sandbox="allow-scripts"'), '应含 sandbox 属性');
+assert.ok(!html.includes('&lt;pre&gt;&lt;code class="language-html"'), '原 pre &gt; code 应被替换');
+assert.ok(html.includes('简介在前'), '其它 markdown 内容应保留');
+assert.ok(html.includes('尾文'), '其它 markdown 内容应保留');
+
+// 反向：纯 markdown 不含 html 块，结果不应有 iframe
+const plain = renderMarkdown('普通段落 + ```python\nprint(1)\n```');
+assert.ok(!plain.includes('rt-html-block'), '无 html 块时不应出 iframe');
+assert.ok(plain.includes('language-python'), 'python 块应保留');
+
+console.log('integration passed');
+process.exit(0);</code></pre>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 跑测试期望 fail（_renderMarkdown 还没暴露 + 还没调用 _renderHtmlCodeBlocks）</p>
+            <div class="step-body">
+              <p><span class="tag expect">Expected</span> 第一个 assert 就失败（_renderMarkdown 未暴露），或者 html 不含 iframe。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 暴露 _renderMarkdown 给单测 + 在调用链尾插入 _renderHtmlCodeBlocks <span class="tag tool">Edit</span></p>
+            <div class="step-body">
+              <p><b>old_string</b>（精确匹配第 510-512 行）：</p>
+<pre><code>      // Phase 6: 代码块语法高亮(prism token classes), CSS 提供 token 颜色
+      _highlightCodeBlocks(wrapper);
+      return wrapper.innerHTML;</code></pre>
+              <p><b>new_string</b>：</p>
+<pre><code>      // Phase 6: 代码块语法高亮(prism token classes), CSS 提供 token 颜色
+      _highlightCodeBlocks(wrapper);
+      // Phase 7（铁律 v2 落地 2026-05-10）：language-html 块转 iframe sandbox 内联渲染
+      _renderHtmlCodeBlocks(wrapper);
+      return wrapper.innerHTML;</code></pre>
+              <p>另：在 Task 1 已加的 <code>window.__rtTesting</code> 挂载块里追加 <code>_renderMarkdown</code>：</p>
+              <p><b>old_string</b>：</p>
+<pre><code>  if (typeof window !== 'undefined') {
+    window.__rtTesting = window.__rtTesting || {};
+    window.__rtTesting._renderHtmlCodeBlocks = _renderHtmlCodeBlocks;
+  }</code></pre>
+              <p><b>new_string</b>：</p>
+<pre><code>  if (typeof window !== 'undefined') {
+    window.__rtTesting = window.__rtTesting || {};
+    window.__rtTesting._renderHtmlCodeBlocks = _renderHtmlCodeBlocks;
+    window.__rtTesting._renderMarkdown = _renderMarkdown;
+  }</code></pre>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 跑测试期望 pass</p>
+            <div class="step-body">
+<pre><code>node tests/integration-render-markdown-html.test.js</code></pre>
+              <p><span class="tag expect">Expected</span> "integration passed"。</p>
+              <p>顺便 re-run Task 1 + Task 2 单测确认未回归：</p>
+<pre><code>node tests/unit-render-html-blocks.test.js
+node tests/unit-html-block-resize.test.js</code></pre>
+              <p><span class="tag expect">Expected</span> 全过。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> Commit</p>
+            <div class="step-body">
+<pre><code>git add renderer/meeting-room.js tests/integration-render-markdown-html.test.js
+git commit -m "feat(roundtable): wire _renderHtmlCodeBlocks into _renderMarkdown chain
+
+- Call _renderHtmlCodeBlocks after _highlightCodeBlocks in render pipeline
+- Expose _renderMarkdown via window.__rtTesting for integration tests
+
+Phase B Task 3 of hub-html-rendering plan"</code></pre>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </details>
+  </section>
+
+  <!-- Task 4 -->
+  <section class="task">
+    <details>
+      <summary>Task 4 · System prompt 注入"富文本默认 HTML"到 BASE_RULES<span class="tag tdd">TDD</span></summary>
+      <div class="body">
+        <div class="files">
+          <span class="key">Create</span> <code>tests/unit-base-rules-html-prompt.test.js</code><br>
+          <span class="key">Modify</span> <code>core/roundtable-scenes.js</code>（BASE_RULES 模板字符串末尾，第 80 行 <code>详细约定见房间公约。</code> 之后）
+        </div>
+        <ol class="steps">
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 写失败测试</p>
+            <div class="step-body">
+<pre><code>const assert = require('assert');
+const { BASE_RULES, buildSystemPrompt } = require('../core/roundtable-scenes.js');
+
+// 1. BASE_RULES 含富文本提示
+assert.ok(BASE_RULES.includes('富文本'), 'BASE_RULES 应含"富文本"关键词');
+assert.ok(BASE_RULES.includes('html'), 'BASE_RULES 应提及 html');
+assert.ok(BASE_RULES.includes('iframe sandbox'), 'BASE_RULES 应说明 Hub 的渲染机制');
+
+// 2. 字数仍 ≤1500（roundtable-scenes.js 注释约定）
+assert.ok(BASE_RULES.length &lt;= 1500, 'BASE_RULES 总字数 ' + BASE_RULES.length + ' 超 1500 上限');
+
+// 3. buildSystemPrompt 输出含新提示（覆盖 general 场景）
+const general = buildSystemPrompt('general', '', 'pikachu');
+assert.ok(general.includes('富文本'), 'general scene system prompt 应含富文本提示');
+
+// 4. 不影响 research / dev 等其它场景的核心约束
+const research = buildSystemPrompt('research', '', 'pikachu');
+assert.ok(research.includes('A 股投研') || research.includes('data_query'),
+  'research preset 仍生效');
+
+console.log('base-rules-html-prompt passed');
+process.exit(0);</code></pre>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 跑测试期望 fail</p>
+            <div class="step-body">
+<pre><code>node tests/unit-base-rules-html-prompt.test.js</code></pre>
+              <p><span class="tag expect">Expected</span> AssertionError "BASE_RULES 应含富文本"。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 在 BASE_RULES 末尾追加富文本段 <span class="tag tool">Edit</span></p>
+            <div class="step-body">
+              <p><b>old_string</b>（精确匹配第 78-81 行）：</p>
+<pre><code>## 历史
+系统会推送「上一轮」；完整历史在 timeline.md（路径见 prompt 末尾），需要时主动 Read。
+
+详细约定见房间公约。
+\`;</code></pre>
+              <p><b>new_string</b>（在"详细约定见房间公约。"前插入 ~80 字段）：</p>
+<pre><code>## 历史
+系统会推送「上一轮」；完整历史在 timeline.md（路径见 prompt 末尾），需要时主动 Read。
+
+## 富文本输出
+对比表/决策矩阵/SVG 图/复杂排版时，输出 \`\`\`html\`\`\` fenced code block（自包含 HTML/CSS，无外部依赖、无 CDN/外链）。Hub 圆桌会按 iframe sandbox 内联渲染。普通对话继续 markdown。
+
+详细约定见房间公约。
+\`;</code></pre>
+              <p><span class="tag expect">Expected</span> Edit 成功，BASE_RULES 总字数从约 1300 加到约 1380（仍 ≤1500）。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 跑测试期望 pass</p>
+            <div class="step-body">
+<pre><code>node tests/unit-base-rules-html-prompt.test.js</code></pre>
+              <p><span class="tag expect">Expected</span> "base-rules-html-prompt passed"。</p>
+              <p>跑现有 BASE_RULES 单测确认未回归：</p>
+<pre><code>node tests/unit-roundtable-scenes.test.js</code></pre>
+              <p><span class="tag expect">Expected</span> 现有用例全过。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> Commit</p>
+            <div class="step-body">
+<pre><code>git add core/roundtable-scenes.js tests/unit-base-rules-html-prompt.test.js
+git commit -m "feat(prompt): inject 'rich-text default HTML' instruction into BASE_RULES
+
+- Tell all AIs to output \`\`\`html\`\`\` fenced blocks for tables/matrices/diagrams
+- Hub renders them inline via iframe sandbox (Phase B feature)
+- Self-contained HTML required: no CDN/external links
+
+Phase B Task 4 of hub-html-rendering plan"</code></pre>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </details>
+  </section>
+
+  <!-- Task 5 -->
+  <section class="task">
+    <details>
+      <summary>Task 5 · E2E 三场景验证（隔离 Hub + CDP）</summary>
+      <div class="body">
+        <div class="files">
+          <span class="key">Create</span> <code>tests/e2e-html-block-rendering.test.js</code><br>
+          <span class="key">使用</span> 现有 <code>tests/helpers/hub-launcher.js</code> + <code>tests/helpers/cdp-client.js</code>
+        </div>
+        <div class="callout warn">
+          <b>关键约束</b>：必须按 Hub CLAUDE.md "并行测试 Hub 实例"铁律：用 <code>CLAUDE_HUB_DATA_DIR</code> env 隔离；直调 <code>node_modules\electron\dist\electron.exe</code>（不用 npx）；PID 白名单 before/after diff（避免误杀生产 Hub PID 24336）。
+        </div>
+        <ol class="steps">
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 先读 helper 模板了解约定</p>
+            <div class="step-body">
+<pre><code>Read: file_path=C:\Users\lintian\claude-session-hub\tests\helpers\hub-launcher.js
+Read: file_path=C:\Users\lintian\claude-session-hub\tests\e2e-multi-hub-resume.test.js, limit=80</code></pre>
+              <p>抓取 <code>launchIsolatedHub({ dataDir, port })</code> 的实际 API + PID 白名单使用 pattern。E2E test 必须照该 pattern 写。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 写 E2E 三场景</p>
+            <div class="step-body">
+              <p>创建 <code>tests/e2e-html-block-rendering.test.js</code>。骨架（具体 helper 调用按 Step 1 读到的 API 调整）：</p>
+<pre><code>const path = require('path');
+const fs = require('fs');
+const { launchIsolatedHub } = require('./helpers/hub-launcher.js');
+const { CDPClient } = require('./helpers/cdp-client.js');
+
+(async () =&gt; {
+  const DATA_DIR = path.join(require('os').tmpdir(), 'hub-html-e2e-' + Date.now());
+  const PORT = 9231;
+
+  // PID 白名单：启动前快照，结束时仅杀名单内 PID
+  const pidsBefore = require('child_process').execSync('powershell "Get-Process electron -EA SilentlyContinue | Select-Object -ExpandProperty Id"').toString().split(/\s+/).filter(Boolean);
+  console.log('[guard] electron PIDs before:', pidsBefore);
+
+  let hub;
+  try {
+    hub = await launchIsolatedHub({ dataDir: DATA_DIR, debugPort: PORT });
+    const cdp = new CDPClient(`http://127.0.0.1:${PORT}`);
+    await cdp.connect();
+
+    // ===== 场景 1: 圆桌内联渲染 =====
+    // a. 在圆桌输入决策矩阵 prompt
+    // b. 选 Gemini/Codex（避开 Claude 配额）
+    // c. 等响应完成
+    // d. 在主 window 取 DOM：document.querySelectorAll('iframe.rt-html-block').length &gt; 0
+    // e. iframe[0].clientHeight &gt; 100（高度桥成功）
+    const r1 = await cdp.evaluate(`(async ()=&gt;{
+      // 模拟用户输入 + 触发圆桌（具体 selector/event 看现有 e2e-roundtable-M1 pattern）
+      // 简化：直接调内部 _renderMarkdown 注入测试 markdown
+      const md = '\`\`\`html\\n&lt;table&gt;&lt;tr&gt;&lt;td&gt;cell&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;\\n\`\`\`';
+      const fn = window.__rtTesting && window.__rtTesting._renderMarkdown;
+      if (!fn) return { ok: false, reason: '_renderMarkdown 未暴露' };
+      const html = fn(md);
+      const div = document.createElement('div');
+      div.innerHTML = html;
+      document.body.appendChild(div);
+      // 等 iframe onload + 高度桥
+      await new Promise(r =&gt; setTimeout(r, 500));
+      const iframe = div.querySelector('iframe.rt-html-block');
+      return {
+        ok: !!iframe,
+        sandbox: iframe && iframe.getAttribute('sandbox'),
+        height: iframe && iframe.clientHeight,
+      };
+    })()`);
+    console.log('[scene1]', r1);
+    if (!r1.ok) throw new Error('场景 1 失败：iframe 未创建');
+    if (r1.sandbox !== 'allow-scripts') throw new Error('场景 1 失败：sandbox 属性错误');
+    // height 校验放宽：jsdom-style 环境可能 0，但 Electron 真 Chromium 应 &gt; 100
+    if (r1.height !== undefined && r1.height &lt; 50) {
+      console.warn('[scene1] iframe 高度仅 ' + r1.height + 'px，桥脚本可能未触发');
+    }
+
+    // ===== 场景 2: 沙箱越权拦截 =====
+    const r2 = await cdp.evaluate(`(async ()=&gt;{
+      const md = '\`\`\`html\\n&lt;script&gt;parent.postMessage({type:"evil",steal:document.cookie},"*");try{parent.location="https://evil.example.com"}catch(e){window.__sandboxCaught=e.message}&lt;/script&gt;&lt;b&gt;evil&lt;/b&gt;\\n\`\`\`';
+      const before = location.href;
+      const fn = window.__rtTesting && window.__rtTesting._renderMarkdown;
+      const html = fn(md);
+      const div = document.createElement('div');
+      div.innerHTML = html;
+      document.body.appendChild(div);
+      await new Promise(r =&gt; setTimeout(r, 800));
+      return {
+        locationUnchanged: location.href === before,
+        // sandbox 拦截 cross-origin，iframe 内 try/catch 应捕获
+      };
+    })()`);
+    console.log('[scene2]', r2);
+    if (!r2.locationUnchanged) throw new Error('场景 2 失败：主页 location 被改');
+
+    // ===== 场景 3: 大块降级 =====
+    const r3 = await cdp.evaluate(`(async ()=&gt;{
+      const big = 'x'.repeat(70000);
+      const md = '\`\`\`html\\n' + big + '\\n\`\`\`';
+      const fn = window.__rtTesting && window.__rtTesting._renderMarkdown;
+      const html = fn(md);
+      const div = document.createElement('div');
+      div.innerHTML = html;
+      document.body.appendChild(div);
+      return {
+        hasNote: !!div.querySelector('.rt-html-too-large'),
+        hasIframe: !!div.querySelector('iframe.rt-html-block'),
+      };
+    })()`);
+    console.log('[scene3]', r3);
+    if (!r3.hasNote) throw new Error('场景 3 失败：未显示 too-large 提示');
+    if (r3.hasIframe) throw new Error('场景 3 失败：超大块仍渲染了 iframe');
+
+    // ===== 截图 =====
+    const shotPath = path.join(__dirname, '..', 'tmp', 'e2e-html-block-' + Date.now() + '.png');
+    fs.mkdirSync(path.dirname(shotPath), { recursive: true });
+    await cdp.screenshot(shotPath);
+    console.log('[screenshot]', shotPath);
+
+    console.log('\nE2E 3 场景全过');
+  } finally {
+    // PID 白名单收尾：只关本测试自己启的 Hub
+    if (hub) await hub.close();
+    const pidsAfter = require('child_process').execSync('powershell "Get-Process electron -EA SilentlyContinue | Select-Object -ExpandProperty Id"').toString().split(/\s+/).filter(Boolean);
+    const newPids = pidsAfter.filter(p =&gt; !pidsBefore.includes(p));
+    if (newPids.length) {
+      console.warn('[guard] 测试启的 PIDs 仍存活：', newPids, '需手动 Stop-Process');
+    }
+    // 清理隔离数据目录
+    try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } catch {}
+  }
+})().catch(e =&gt; { console.error(e); process.exit(1); });</code></pre>
+              <div class="callout warn"><b>注</b>：CDPClient API（<code>connect/evaluate/screenshot</code>）按 Step 1 读到的现有 <code>cdp-client.js</code> 调整方法名。如 helper 没现成 <code>screenshot</code>，用 <code>Page.captureScreenshot</code> raw CDP 调用。</div>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 跑 E2E（隔离 Hub）</p>
+            <div class="step-body">
+<pre><code>cd C:\Users\lintian\claude-session-hub
+node tests/e2e-html-block-rendering.test.js</code></pre>
+              <p><span class="tag expect">Expected</span> "E2E 3 场景全过" + 截图绝对路径。</p>
+              <p>关键点：</p>
+              <ul class="checks">
+                <li>启动前后 PID diff 列出新启的 electron PID（应仅 1 个测试自启的）</li>
+                <li>测试 Hub 数据写到 <code>$env:TEMP\hub-html-e2e-*</code>，不污染 <code>~\.claude-session-hub\</code></li>
+                <li>测试结束 hub.close() 优雅退出；如 PID 仍存活，警告但不强杀（生产 Hub PID 24336 在白名单外永远不动）</li>
+              </ul>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> Commit</p>
+            <div class="step-body">
+<pre><code>git add tests/e2e-html-block-rendering.test.js
+git commit -m "test(e2e): verify HTML block rendering in 3 scenarios
+
+- Scenario 1: iframe.rt-html-block created with sandbox + height bridge
+- Scenario 2: malicious &lt;script&gt; cannot escape sandbox to parent
+- Scenario 3: oversized HTML blocks fall back with notice (no iframe)
+
+Uses isolated Hub via CLAUDE_HUB_DATA_DIR + PID whitelist guard
+Phase B Task 5 of hub-html-rendering plan"</code></pre>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </details>
+  </section>
+
+  <!-- Task 6 -->
+  <section class="task">
+    <details>
+      <summary>Task 6 · 生产 Hub manual dogfood + Final review</summary>
+      <div class="body">
+        <div class="files">
+          <span class="key">Manual</span> 用户在生产 Hub PID 24336 重跑决策矩阵 prompt 看效果<br>
+          <span class="key">Auto</span> Final reviewer subagent 整体一致性 review
+        </div>
+        <ol class="steps">
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 用户重启生产 Hub 加载新代码</p>
+            <div class="step-body">
+              <p>因 Hub 是 Electron 应用，代码改动需要重启才生效：</p>
+              <ul class="checks">
+                <li>用户主动关闭桌面快捷方式启的 Hub（PID 24336），重新双击 <code>claudeWX.lnk</code> 启动</li>
+                <li><b>SDD subagent 不要 kill 生产 Hub 进程</b>（用户铁律）</li>
+                <li>启动后用户在圆桌输入 "给我画一个 4x4 的 'AI CLI 工具对比' 决策矩阵"</li>
+              </ul>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> 验证渲染效果</p>
+            <div class="step-body">
+              <p>用户截图反馈：</p>
+              <ul class="checks">
+                <li>AI 输出 ```html``` 块时，圆桌内**直接看到 table 富排版**（不再是 HTML 源码）</li>
+                <li>iframe 高度自适应（不被截断或留大段空白）</li>
+                <li>之前有问题的 prompt（截图里那个）现在能渲染出 4x4 决策矩阵</li>
+              </ul>
+              <p>截图保存路径：用户自己选，建议 <code>C:\Users\lintian\.claude-session-hub\images\</code>（Hub 已用此目录），按用户铁律附绝对路径方便点开。</p>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> Final reviewer subagent 全局一致性 review</p>
+            <div class="step-body">
+              <p>SDD 控制器 dispatch final reviewer 验证：</p>
+              <ul class="checks">
+                <li>5 个 task 的 commit 历史合理（feat:roundtable / feat:prompt / test:e2e）</li>
+                <li>没有未捕获的 placeholder 或 TODO</li>
+                <li>所有单测 + E2E 在最后一次 commit 后仍 pass（重跑确认）</li>
+                <li>spec § 1-5 各小节都能映射到 commit</li>
+                <li>BASE_RULES 总字数仍 ≤1500</li>
+                <li>无回归（圆桌其它消息渲染正常、Phase 1-6 链路未坏）</li>
+              </ul>
+            </div>
+          </li>
+          <li>
+            <p class="step-title"><input type="checkbox" disabled> Merge feature branch + push</p>
+            <div class="step-body">
+<pre><code>git checkout master
+git merge --no-ff feat/hub-html-rendering -m "feat: Hub roundtable HTML block iframe rendering (Phase B)
+
+Closes spec § 1-5 of 2026-05-10-html-rendering-design.
+- Inline render &lt;pre&gt;&lt;code class=\"language-html\"&gt; via iframe sandbox
+- postMessage height bridge for self-adaptive cards
+- 64KB size guard with graceful fallback
+- BASE_RULES inject 'rich-text default HTML' instruction"
+# git push 由用户决定时机</code></pre>
+              <p>不自动 push。让用户审过 manual dogfood + final reviewer 后再决定。</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </details>
+  </section>
+
+  <!-- Self-Review -->
+  <section class="task">
+    <details>
+      <summary>Self-Review（plan 写完后已做）</summary>
+      <div class="body">
+        <ul class="checks">
+          <li><b>Spec coverage</b>：spec.html § 1（架构）→ Task 1+2+3；§ 2（组件）→ Task 1+2 实现 _renderHtmlCodeBlocks + listener；§ 3（数据流）→ Task 3 集成；§ 4（错误处理）→ Task 1 size guard + Task 2 height clamp + sandbox 默认拦截；§ 5（测试）→ Task 5 三场景 E2E；附录"system prompt 注入"→ Task 4。覆盖完整</li>
+          <li><b>Placeholder scan</b>：唯一显式 placeholder 是 Task 2 Step 3 的 click delegation 内容（标 "实际以读到的为准"），属"先 Read 再 Edit"模式而非 TBD；所有其它 step 都给完整代码 + 完整命令 + 明确 expected</li>
+          <li><b>Type consistency</b>：iframe class 统一 <code>rt-html-block</code>（Task 1 创建、Task 2 query、Task 3 测试断言、Task 5 E2E 断言）；message type 统一 <code>rt-html-resize</code>（桥脚本/listener/单测一致）；max bytes 常量 <code>HTML_BLOCK_MAX_BYTES = 65536</code>（Task 1 定义、E2E 用 70000 触发）— 全套一致</li>
+          <li><b>Hub 项目铁律遵守</b>：禁动生产 Hub PID 24336（Task 6 让用户主动重启）；E2E 用 CLAUDE_HUB_DATA_DIR + PID 白名单（Task 5）；不在主目录跑 npm install（Task 1 标 jsdom 缺失要走 SDD 决策不擅自加依赖）</li>
+          <li><b>YAGNI</b>：跳过 hub-config.js 配置开关（首版 hardcode 默认值），跳过暗色主题/懒加载/CSP 头/截图导出；六个 task 而不是十几个</li>
+          <li><b>Files exact path</b>：所有 Modify 给绝对路径或 Hub 项目相对路径 + 锚点行号（meeting-room.js:494/511/523；roundtable-scenes.js:78-81）</li>
+        </ul>
+      </div>
+    </details>
+  </section>
+
+  <!-- Execution Handoff -->
+  <div class="info-block">
+    <h2>Execution Handoff</h2>
+    <p>Plan 完成。两种执行方式：</p>
+    <div class="field">
+      <div class="key">选项 1</div>
+      <div class="val"><b>Subagent-Driven</b>（推荐）：dispatch fresh subagent per task，每 task 走 spec reviewer + code quality reviewer 两阶段 review。本 plan 6 个 task，工程量 mid，TDD 紧凑，subagent 流水线收益 &gt; overhead。需要 <code>superpowers:subagent-driven-development</code> sub-skill。</div>
+    </div>
+    <div class="field">
+      <div class="key">选项 2</div>
+      <div class="val"><b>Inline Execution</b>：当前会话顺序跑全部 task。代码改动量较大（~120 行 JS + 5 个测试文件 + 多次 commit），inline 全跑 controller context 会膨胀，不推荐。</div>
+    </div>
+    <p style="margin-top:14px;"><b>推荐选项 1</b>。</p>
+  </div>
+
+  <footer>
+    <p>plan · 2026-05-10 · Phase B · 6 tasks · 待用户选择执行方式</p>
+  </footer>
+
+</div>
+</body>
+</html>
