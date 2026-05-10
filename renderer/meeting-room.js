@@ -545,6 +545,13 @@ if (typeof document !== 'undefined') (function () {
     }
   }
 
+  // E2E 测试出口（Phase 7 / 2026-05-10）：暴露 _renderMarkdown 给 tests/e2e-html-block-rendering
+  // 仅 renderer 环境（IIFE 已 typeof document !== 'undefined' 守卫），生产无副作用
+  if (typeof window !== 'undefined') {
+    window.__rtTesting = window.__rtTesting || {};
+    window.__rtTesting._renderMarkdown = _renderMarkdown;
+  }
+
   // 卡片优化（2026-05-03 道雪）：路径链接 click 全局委托。
   //   meeting-room.js IIFE 内 setup 一次（IIFE 只运行一次，幂等）。捕获阶段
   //   先于 marked HTML 内任何 a 元素的默认行为，让 .rt-file-link 路由到 hub
