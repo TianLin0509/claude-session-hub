@@ -3250,3 +3250,277 @@ body.compact-mode .empty-state .launcher-title { font-size: calc(17px * var(--ma
 .empty-state .launcher-subtitle { font-size: calc(13px * var(--main-zoom)); }
 .empty-state .launcher-cta { font-size: calc(14px * var(--main-zoom)); }
 .empty-state .launcher-secondary { font-size: calc(12px * var(--main-zoom)); }
+
+/* ============================================================== */
+/* === 2026-05-10 · 主题 vibechat-light · 浅色微信 IM 风卡片视图 === */
+/* 仅覆盖 turn-card 区域（.msg-overlay 内）；sidebar / launcher /     */
+/* terminal-header 等其他区域保持当前主题深色基底。开关方式：           */
+/* body.theme-vibechat-light（通过选项 → 主题切换启用）。              */
+/* ============================================================== */
+
+body.theme-vibechat-light .msg-overlay {
+  background: #f3f4f6;
+  color: #111827;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+               "Microsoft YaHei", "Segoe UI", sans-serif;
+  padding: 16px 20px;
+}
+
+/* turn-card：白底 AI 气泡 / 微信绿 user 气泡，气泡尾巴 4px
+   显式声明 display:flex/gap 防御原 .turn-card 默认布局被重构丢失 */
+body.theme-vibechat-light .turn-card {
+  display: flex;
+  gap: 10px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  border-top-left-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  padding: 11px 14px;
+  margin-bottom: 12px;
+  color: #1f2937;
+  max-width: 80%;
+}
+body.theme-vibechat-light .turn-card.user {
+  background: #95ec69;
+  border: none;
+  border-radius: 12px;
+  border-top-right-radius: 4px;
+  border-top-left-radius: 12px;
+  margin-left: auto;
+  color: #1f2937;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+
+/* turn-head / who / meta */
+body.theme-vibechat-light .turn-who {
+  color: #4b5563;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+body.theme-vibechat-light .turn-card.user .turn-who { color: #1f2937; }
+body.theme-vibechat-light .turn-meta { color: #6b7280; }
+body.theme-vibechat-light .turn-card.user .turn-meta { color: #374151; }
+body.theme-vibechat-light .turn-body { color: #1f2937; }
+body.theme-vibechat-light .turn-card.user .turn-body { color: #1f2937; }
+
+/* metadata pills：浅灰 chip，语义色按 token/tool/ctx/time 区分
+   主文字色提到 #4b5563 满足 WCAG AA 4.5:1 */
+body.theme-vibechat-light .pill {
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  color: #4b5563;
+  border-radius: 10px;
+}
+body.theme-vibechat-light .pill-tool { color: #92400e; background: #fef3c7; border-color: #fde68a; }
+body.theme-vibechat-light .pill-token { color: #065f46; background: #d1fae5; border-color: #a7f3d0; }
+body.theme-vibechat-light .pill-ctx { color: #1e40af; background: #dbeafe; border-color: #bfdbfe; }
+body.theme-vibechat-light .pill-time { color: #4b5563; }
+
+/* 思考折叠块：灰底虚线斜体（可读性优先：summary/body 用 #4b5563 ≥ 7:1） */
+body.theme-vibechat-light .turn-thinking {
+  background: #f3f4f6;
+  border-left: 2px dashed #d1d5db;
+  border-radius: 4px;
+  color: #4b5563;
+}
+body.theme-vibechat-light .turn-thinking-summary { color: #4b5563; }
+body.theme-vibechat-light .turn-thinking-summary:hover { color: #1f2937; }
+body.theme-vibechat-light .turn-thinking-body { color: #4b5563; }
+
+/* 工具调用 .tc 单个块 */
+body.theme-vibechat-light .tc {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+body.theme-vibechat-light .tc-name { color: #b45309; }
+body.theme-vibechat-light .tc-meta { color: #6b7280; }
+body.theme-vibechat-light .tc-ok { color: #059669; }
+body.theme-vibechat-light .tc-fail { color: #dc2626; }
+body.theme-vibechat-light .tc-out {
+  color: #4b5563;
+  background: #f9fafb;
+  border-top: 1px solid #e5e7eb;
+}
+body.theme-vibechat-light .tc-toggle {
+  color: #4b5563;
+  border-top: 1px solid #e5e7eb;
+}
+body.theme-vibechat-light .tc-toggle:hover { background: rgba(0,0,0,0.03); }
+
+/* 工具簇 .tc-cluster */
+body.theme-vibechat-light .tc-cluster {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+body.theme-vibechat-light .tc-cluster-head { color: #4b5563; }
+body.theme-vibechat-light .tc-cluster-head::before { color: #6b7280; }
+body.theme-vibechat-light .tc-cluster[open] .tc-cluster-head::before { color: #4b5563; }
+body.theme-vibechat-light .tc-cluster-head:hover { color: #374151; }
+body.theme-vibechat-light .tc-row {
+  background: rgba(0,0,0,0.03);
+  color: #4b5563;
+}
+body.theme-vibechat-light .tc-row-name { color: #b45309; }
+body.theme-vibechat-light .tc-row-cmd { color: #111827; }
+
+/* tc-row-with-result（折叠 stdout 行） */
+body.theme-vibechat-light .tc-row-with-result { background: rgba(0,0,0,0.03); }
+body.theme-vibechat-light .tc-row-with-result.tc-row-err summary.tc-row-head {
+  background: rgba(220, 38, 38, 0.06);
+}
+body.theme-vibechat-light .tc-result {
+  background: #f3f4f6;
+  color: #4b5563;
+  border-top: 1px solid #e5e7eb;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+body.theme-vibechat-light .tc-result-err {
+  color: #b91c1c;
+  border-left: 2px solid #dc2626;
+}
+body.theme-vibechat-light .tc-row-errbadge { color: #dc2626; }
+
+/* 头像：方形圆角 6px，渐变底，IM 感 */
+body.theme-vibechat-light .turn-avatar {
+  border-radius: 6px;
+  background: #e5e7eb;
+}
+body.theme-vibechat-light .turn-avatar.av-user {
+  background: #fcd34d;
+}
+body.theme-vibechat-light .turn-avatar.av-letter {
+  background: linear-gradient(135deg, #c4b5fd, #8b5cf6);
+}
+body.theme-vibechat-light .turn-avatar.av-poke { background: #fef3c7; }
+
+/* streaming 指示器：微信绿点点 */
+body.theme-vibechat-light .streaming-indicator {
+  background: rgba(7, 193, 96, 0.06);
+  border-left: 3px solid #07c160;
+}
+body.theme-vibechat-light .streaming-indicator .dot { background: #07c160; }
+body.theme-vibechat-light .streaming-indicator .text {
+  color: #047857;
+  font-style: italic;
+}
+
+/* 长 markdown 折叠淡出渐变（暗色 mask 在浅底上不对） */
+body.theme-vibechat-light .turn-body.body-foldable.folded {
+  -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+}
+body.theme-vibechat-light .body-fold-toggle {
+  color: #4b5563;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+}
+body.theme-vibechat-light .body-fold-toggle:hover {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+/* turn-body 表格 */
+body.theme-vibechat-light .turn-body table { border-color: #e5e7eb; }
+body.theme-vibechat-light .turn-body th,
+body.theme-vibechat-light .turn-body td { border-color: #e5e7eb; }
+body.theme-vibechat-light .turn-body th {
+  background: #f9fafb;
+  color: #111827;
+}
+body.theme-vibechat-light .turn-body tbody tr:nth-child(even) td {
+  background: #fafafa;
+}
+body.theme-vibechat-light .turn-body table code {
+  background: rgba(0,0,0,0.06);
+  color: #9d174d;
+}
+body.theme-vibechat-light .turn-body a.rt-file-link { color: #0969da; }
+body.theme-vibechat-light .turn-body a.rt-file-link:hover { color: #0550ae; }
+
+/* turn-body 内 inline code（非表格）：颜色加深至 #9d174d，AI 白底对比度 ≥ 4.5:1 */
+body.theme-vibechat-light .turn-body code {
+  background: rgba(0,0,0,0.06);
+  color: #9d174d;
+}
+body.theme-vibechat-light .turn-card.user .turn-body code {
+  background: rgba(255,255,255,0.55);
+  color: #1f2937;
+}
+
+/* blockquote / hr：补齐 markdown 元素的浅色样式（防止浏览器默认样式视觉割裂） */
+body.theme-vibechat-light .turn-body blockquote {
+  margin: 8px 0;
+  padding: 6px 12px;
+  border-left: 3px solid #d1d5db;
+  background: #f9fafb;
+  color: #4b5563;
+  border-radius: 0 4px 4px 0;
+}
+body.theme-vibechat-light .turn-card.user .turn-body blockquote {
+  border-left-color: rgba(0,0,0,0.20);
+  background: rgba(255,255,255,0.40);
+  color: #1f2937;
+}
+body.theme-vibechat-light .turn-body hr {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 12px 0;
+}
+body.theme-vibechat-light .turn-card.user .turn-body hr {
+  border-top-color: rgba(0,0,0,0.18);
+}
+
+/* 代码块 .code-block-wrap：保持深色（GitHub IM 风惯例：浅底气泡里嵌深码块） */
+body.theme-vibechat-light .code-block-wrap pre {
+  background: #0d1117 !important;
+  border: 1px solid #21262d;
+  color: #c9d1d9;
+}
+body.theme-vibechat-light .code-copy {
+  background: rgba(139, 92, 246, 0.15);
+  border: 1px solid rgba(139, 92, 246, 0.30);
+  color: #6d28d9;
+}
+body.theme-vibechat-light .code-copy:hover {
+  background: rgba(139, 92, 246, 0.30);
+  color: #5b21b6;
+}
+body.theme-vibechat-light .code-toggle {
+  background: #f9fafb;
+  color: #4b5563;
+  border: 1px solid #e5e7eb;
+  border-top: none;
+}
+body.theme-vibechat-light .code-toggle:hover {
+  background: #f3f4f6;
+  color: #1f2937;
+}
+
+/* turn-actions hover 按钮（默认色加深至可达 4.5:1） */
+body.theme-vibechat-light .ta-btn { color: #6b7280; }
+body.theme-vibechat-light .ta-btn:hover {
+  border-color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.08);
+  color: #6d28d9;
+}
+
+/* msg-overlay 内 placeholder */
+body.theme-vibechat-light .msg-overlay-placeholder {
+  color: #4b5563;
+  font-style: normal;
+}
+body.theme-vibechat-light .msg-overlay-placeholder a {
+  color: #0969da;
+}
+
+/* turn-meta-pills 容器（含右上角操作按钮 hover 时仍可见 pills） */
+body.theme-vibechat-light .turn-meta-pills .pill { vertical-align: middle; }
+
+/* swatch（主题选择器小色块） */
+.swatch-vibechat-light {
+  background: linear-gradient(135deg, #f3f4f6 50%, #95ec69 50%);
+}

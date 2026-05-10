@@ -5138,7 +5138,7 @@ function toggleSidebar() {
 btnExpandEl.addEventListener('click', toggleSidebar);
 
 // --- Theme selector ---
-const THEME_CLASSES = ['theme-midnight', 'theme-obsidian', 'theme-aurora', 'theme-light'];
+const THEME_CLASSES = ['theme-midnight', 'theme-obsidian', 'theme-aurora', 'theme-light', 'theme-vibechat-light'];
 const XTERM_THEMES = {
   default: {
     background: '#0d1117', foreground: '#f0f6fc', cursor: '#58a6ff',
