@@ -5182,13 +5182,15 @@ const XTERM_THEMES = {
     brightCyan: '#a0f0d8', brightWhite: '#d0e8f0',
   },
   'vibechat-light': {
-    background: '#ffffff', foreground: '#1f2328', cursor: '#0969da',
-    cursorAccent: '#ffffff', selectionBackground: 'rgba(9, 105, 218, 0.20)',
-    black: '#24292f', red: '#cf222e', green: '#1a7f37', yellow: '#9a6700',
-    blue: '#0969da', magenta: '#8250df', cyan: '#1b7c83', white: '#6e7781',
-    brightBlack: '#57606a', brightRed: '#a40e26', brightGreen: '#2da44e',
-    brightYellow: '#bf8700', brightBlue: '#218bff', brightMagenta: '#a475f9',
-    brightCyan: '#3192aa', brightWhite: '#1f2328',
+    // Catppuccin Latte（社区现代柔和浅色，米白 #eff1f5 + 高饱和柔色调）
+    // diff 色块感优于纯白 GitHub PR 风（参考 mockup vibechat-pty-diff-blocks-7d3f1c.html）
+    background: '#eff1f5', foreground: '#4c4f69', cursor: '#dc8a78',
+    cursorAccent: '#eff1f5', selectionBackground: 'rgba(114, 135, 253, 0.20)',
+    black: '#5c5f77', red: '#d20f39', green: '#40a02b', yellow: '#df8e1d',
+    blue: '#1e66f5', magenta: '#8839ef', cyan: '#179299', white: '#acb0be',
+    brightBlack: '#6c6f85', brightRed: '#d20f39', brightGreen: '#40a02b',
+    brightYellow: '#df8e1d', brightBlue: '#1e66f5', brightMagenta: '#8839ef',
+    brightCyan: '#179299', brightWhite: '#4c4f69',
   },
 };
 function applyTheme(name) {
