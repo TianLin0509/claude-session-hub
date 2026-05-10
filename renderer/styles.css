@@ -3252,11 +3252,54 @@ body.compact-mode .empty-state .launcher-title { font-size: calc(17px * var(--ma
 .empty-state .launcher-secondary { font-size: calc(12px * var(--main-zoom)); }
 
 /* ============================================================== */
-/* === 2026-05-10 · 主题 vibechat-light · 浅色微信 IM 风卡片视图 === */
-/* 仅覆盖 turn-card 区域（.msg-overlay 内）；sidebar / launcher /     */
-/* terminal-header 等其他区域保持当前主题深色基底。开关方式：           */
-/* body.theme-vibechat-light（通过选项 → 主题切换启用）。              */
+/* === 2026-05-10 · 主题 vibechat-light · 浅色微信 IM 风全局主题 === */
+/* 改造范围：sidebar / launcher / terminal-header / msg-overlay     */
+/* 全套浅色化。代码块 + Prism 高亮也走 GitHub Light 风。              */
+/* 通过覆盖 :root 主题变量驱动 sidebar 自动浅色，再单独 override     */
+/* turn-card 区域（msg-overlay 内）保持微信 IM 气泡风。               */
+/* 开关方式：body.theme-vibechat-light（选项 → 主题切换启用）。       */
 /* ============================================================== */
+
+/* === 主题变量覆盖（参考 theme-light + active 用微信绿）=== */
+body.theme-vibechat-light {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f6f8fa;
+  --bg-tertiary: #eef0f3;
+  --border: #d0d7de;
+  --text-primary: #1f2328;
+  --text-secondary: #4b5563;
+  --text-muted: #6b7280;
+  --accent-green: #07c160;       /* 微信绿，替代 GitHub 1a7f37 */
+  --accent-blue: #0969da;
+  --accent-orange: #bc4c00;
+  --accent-red: #cf222e;
+  --session-active: #e6f4ea;     /* 微信绿浅底 */
+  --session-waiting: #ddf4ff;
+  --session-selected: #f0fdf4;
+}
+
+/* === sidebar：浅色下淡化 hover 阴影、active 左条改微信绿 === */
+body.theme-vibechat-light .session-item:hover {
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  border-color: rgba(7, 193, 96, 0.18);
+}
+body.theme-vibechat-light .session-item.selected {
+  background: var(--session-selected);
+  border: 1px solid #d1f4d8;
+  border-left: 3px solid var(--accent-green);
+  box-shadow: 0 1px 4px rgba(7, 193, 96, 0.10);
+}
+body.theme-vibechat-light .session-item.has-unread {
+  border-left: 3px solid var(--accent-red);
+  box-shadow: 0 0 6px rgba(207, 34, 46, 0.10);
+}
+/* hover 涟漪/雷达圆点用微信绿色调 */
+body.theme-vibechat-light .session-item::before {
+  background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(7,193,96,0.07), transparent 60%);
+}
+body.theme-vibechat-light .session-item .ripple-fx {
+  background: rgba(7,193,96,0.12);
+}
 
 body.theme-vibechat-light .msg-overlay {
   background: #f3f4f6;
@@ -3474,31 +3517,59 @@ body.theme-vibechat-light .turn-card.user .turn-body hr {
   border-top-color: rgba(0,0,0,0.18);
 }
 
-/* 代码块 .code-block-wrap：保持深色（GitHub IM 风惯例：浅底气泡里嵌深码块） */
+/* 代码块 .code-block-wrap：GitHub Light 风（浅灰底 + 深文字 + 浅边框） */
 body.theme-vibechat-light .code-block-wrap pre {
-  background: #0d1117 !important;
-  border: 1px solid #21262d;
-  color: #c9d1d9;
+  background: #f6f8fa !important;
+  border: 1px solid #d0d7de;
+  color: #1f2328;
 }
 body.theme-vibechat-light .code-copy {
-  background: rgba(139, 92, 246, 0.15);
-  border: 1px solid rgba(139, 92, 246, 0.30);
-  color: #6d28d9;
+  background: rgba(9, 105, 218, 0.10);
+  border: 1px solid rgba(9, 105, 218, 0.25);
+  color: #0550ae;
 }
 body.theme-vibechat-light .code-copy:hover {
-  background: rgba(139, 92, 246, 0.30);
-  color: #5b21b6;
+  background: rgba(9, 105, 218, 0.18);
+  color: #033d8b;
 }
 body.theme-vibechat-light .code-toggle {
-  background: #f9fafb;
+  background: #f6f8fa;
   color: #4b5563;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #d0d7de;
   border-top: none;
 }
 body.theme-vibechat-light .code-toggle:hover {
-  background: #f3f4f6;
-  color: #1f2937;
+  background: #eef0f3;
+  color: #1f2328;
 }
+
+/* Prism token 浅色配色（GitHub Light 风，覆盖 :root 默认紫调）
+   原 :root 用的是 prism-tomorrow 紫色 override，这里全部重定义为 GitHub Light */
+body.theme-vibechat-light .token.keyword,
+body.theme-vibechat-light .token.operator,
+body.theme-vibechat-light .token.tag,
+body.theme-vibechat-light .token.atrule,
+body.theme-vibechat-light .token.selector { color: #cf222e !important; }
+body.theme-vibechat-light .token.string,
+body.theme-vibechat-light .token.attr-value,
+body.theme-vibechat-light .token.regex { color: #0a3069 !important; }
+body.theme-vibechat-light .token.number,
+body.theme-vibechat-light .token.boolean,
+body.theme-vibechat-light .token.constant,
+body.theme-vibechat-light .token.symbol,
+body.theme-vibechat-light .token.deleted { color: #953800 !important; }
+body.theme-vibechat-light .token.function,
+body.theme-vibechat-light .token.class-name { color: #8250df !important; font-style: normal; }
+body.theme-vibechat-light .token.comment,
+body.theme-vibechat-light .token.prolog,
+body.theme-vibechat-light .token.doctype,
+body.theme-vibechat-light .token.cdata { color: #6e7781 !important; font-style: italic; }
+body.theme-vibechat-light .token.property,
+body.theme-vibechat-light .token.attr-name,
+body.theme-vibechat-light .token.builtin { color: #0550ae !important; }
+body.theme-vibechat-light .token.punctuation { color: #1f2328 !important; }
+body.theme-vibechat-light .token.variable,
+body.theme-vibechat-light .token.parameter { color: #953800 !important; }
 
 /* turn-actions hover 按钮（默认色加深至可达 4.5:1） */
 body.theme-vibechat-light .ta-btn { color: #6b7280; }
