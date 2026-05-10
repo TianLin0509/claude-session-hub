@@ -976,7 +976,10 @@ function getOrCreateTerminal(sessionId) {
   registerLocalPathLinks(terminal, sessionId);
   terminal.unicode.activeVersion = '11';
 
-  terminal.onData((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
+  terminal.onData((data) => {
+    if (data) clearSessionWaitingState(sessionId);
+    ipcRenderer.send('terminal-input', { sessionId, data });
+  });
   terminal.onBinary((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
 
   // Claude Code emits an OSC set-title escape sequence once near the start of a
@@ -2429,6 +2432,8 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
     kind,
   } = payload || {};
 
+  onReplyCompleteFromTranscriptEvent(payload);
+
   // 1. 圆桌 path — meeting-room.js handles its own card rendering
   if (meetingId) return;
 
@@ -2831,6 +2836,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     const session = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
       ? sessions.get(sessionId) : null;
     const kind = session && session.kind ? session.kind : null;
+    clearSessionWaitingState(sessionId);
 
     // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
     //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
@@ -4848,6 +4854,54 @@ function onPromptSubmittedFromHook(sessionId) {
 // 的窗口期会误判 → 错弹红点）。
 let _lastWindowFocusAt = Date.now();
 window.addEventListener('focus', () => { _lastWindowFocusAt = Date.now(); });
+
+function buildReplyReadyPreview(text, fallback = 'Codex 回复完成，等你继续') {
+  const raw = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return fallback;
+  return raw.length > 120 ? raw.slice(0, 118) + '…' : raw;
+}
+
+function clearSessionWaitingState(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session || !session.isWaiting) return;
+  session.isWaiting = false;
+  session.waitingReason = null;
+  session.waitingText = null;
+  renderSessionList();
+  schedulePersist();
+}
+
+function onReplyCompleteFromTranscriptEvent(payload) {
+  const { hubSessionId, text, completedAt, meetingId, kind } = payload || {};
+  if (meetingId) return;
+  if (!hubSessionId) return;
+  if (kind !== 'codex' && kind !== 'codex-resume') return;
+
+  const session = sessions.get(hubSessionId);
+  if (!session) return;
+
+  const preview = buildReplyReadyPreview(text);
+  const sig = `${completedAt || ''}:${preview}`;
+  if (session._lastTranscriptReadySig === sig) return;
+  session._lastTranscriptReadySig = sig;
+
+  const wasWaiting = !!session.isWaiting;
+  session.lastOutputPreview = preview;
+  session.isWaiting = true;
+  session.waitingReason = 'reply-ready';
+  session.waitingText = preview;
+  session.lastMessageTime = completedAt || Date.now();
+
+  const isActive = hubSessionId === activeSessionId;
+  const focusOk = document.hasFocus() || (Date.now() - _lastWindowFocusAt < 500);
+  const seenByUser = isActive && focusOk;
+  if (!seenByUser) {
+    session.unreadCount = (session.unreadCount || 0) + 1;
+  }
+  if (!isActive || !wasWaiting) maybeNotify(session);
+  renderSessionList();
+  schedulePersist();
+}
 
 // Hook-server health indicator (banner in sidebar when down)
 let hookUp = true;
