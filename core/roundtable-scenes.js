@@ -77,13 +77,17 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 ## 历史
 系统会推送「上一轮」；完整历史在 timeline.md（路径见 prompt 末尾），需要时主动 Read。
 
-## 富文本输出（默认 HTML）
-遇到**对比表 / 决策矩阵 / 评分卡 / 流程图 / SVG 图示 / 复杂排版**这类信息密度高的场景，默认输出 \`\`\`html\`\`\` fenced code block：
-- 自包含 HTML/CSS（内联 \`<style>\` 即可），**禁止**外部 CDN、外链脚本、远程图片
-- Hub 圆桌按 iframe sandbox 内联渲染（Phase B 已落地），用户直接看到表格/图，不必读原始 HTML
-- 普通对话/纯文本观点继续 markdown，不必为了用 HTML 而 HTML
+## 富文本输出 → 写 .html 文件
 
-**示例触发**：罗列 3+ 维度对比、给方案打分、画架构/时序图、并排展示候选项。
+遇到**对比表 / 决策矩阵 / 评分卡 / 流程图 / SVG 图示 / 复杂排版**等高密度内容，**写到 .html 文件**而不是输出到对话流（HTML 进消息流污染多轮上下文 tokens）：
+- 路径：\`C:\\Users\\lintian\\.claude\\artifacts\\YYYY-MM-DD\\<topic>-<6char-hash>.html\`
+- 单文件自包含 HTML/CSS（内联 \`<style>\`）；**禁止**外部 CDN、外链脚本、远程图片
+- 回复格式：先一行"写到 \`<绝对路径>\`，双击打开"，再用 1-2 句中文摘要说关键点
+- 普通对话/纯文本观点继续 markdown，不必为了 HTML 而 HTML
+
+**绝不**：在对话回复里输出 markdown 的 html fenced code block 作为内联富文本。
+
+**注**：写到 \`~/.claude/artifacts/\` 不算"项目文件"，授权直接写不必等用户许可。
 
 详细约定见房间公约。
 `;
