@@ -85,6 +85,15 @@ test('index.html includes meeting-create-modal css + js', () => {
   assert.match(HTML, /<script\s+src="meeting-create-modal\.js"/);
 });
 
+test('new session menu has one Codex CLI option using settings default profile', () => {
+  const codexButtons = HTML.match(/class="new-session-option" data-kind="codex"/g) || [];
+  assert.strictEqual(codexButtons.length, 1, 'new session menu should expose exactly one Codex CLI option');
+  assert.ok(!/new-session-option[^>]*data-kind="codex"[^>]*data-codex-profile/.test(HTML),
+    'new Codex sessions must not override the settings default profile');
+  assert.ok(!/dataset\.codexProfile\b/.test(RENDERER_JS),
+    'renderer new-session click handler should not pass a per-button Codex profile');
+});
+
 test('renderer.js createMeetingByMode opens modal (no longer loops add-meeting-sub)', () => {
   const start = RENDERER_JS.indexOf('function createMeetingByMode');
   assert.ok(start > 0, 'createMeetingByMode not found');
