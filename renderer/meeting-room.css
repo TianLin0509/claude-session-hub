@@ -3358,3 +3358,164 @@ body.theme-vibechat-light .mr-send-btn:hover {
 body.theme-vibechat-light .mr-free-avatar-chk.checked {
   outline: 2px solid var(--accent);
 }
+
+/* ============================================================== */
+/* === 2026-05-10 v2 · 精致化补强（按钮/边框/active 状态/徽章）===
+   用户反馈"按钮和框线在浅色下不够凸显，UI 要做精致些"。
+   增强 visible structure：
+   - 卡片网格 border 用 #94a3b8（深一档，从 #cbd5e1 → #94a3b8）
+   - .mr-ft.active 用 slot 色 box-shadow ring 强化选中态
+   - 底部按钮 .mr-ft-escape-btn 白底 + 1px 深边 + hover 微信绿
+   - 状态徽章 .mr-ft-status.* 在浅底深字浅底
+   - .mr-tab.active / .mr-card-view-tab.active 微信绿主色
+   - .mr-ft-bottom border-top / .mr-ft-escape-bar 半透明白底反向 */
+/* ============================================================== */
+
+/* 卡片网格分隔线加深一档（用户反馈分不开） */
+body.theme-vibechat-light .mr-ft-strip { border-bottom-color: #94a3b8; }
+body.theme-vibechat-light .mr-ft:not(:last-child) { border-right-color: #94a3b8; }
+
+/* mr-ft.active 强化选中态：slot 色 inset ring + 加深底色染色 */
+body.theme-vibechat-light .mr-ft.slot-1.active {
+  background: rgba(var(--c-slot-1-rgb), 0.08);
+  box-shadow: inset 0 0 0 2px rgba(var(--c-slot-1-rgb), 0.45);
+}
+body.theme-vibechat-light .mr-ft.slot-2.active {
+  background: rgba(var(--c-slot-2-rgb), 0.08);
+  box-shadow: inset 0 0 0 2px rgba(var(--c-slot-2-rgb), 0.45);
+}
+body.theme-vibechat-light .mr-ft.slot-3.active {
+  background: rgba(var(--c-slot-3-rgb), 0.08);
+  box-shadow: inset 0 0 0 2px rgba(var(--c-slot-3-rgb), 0.45);
+}
+
+/* mr-ft-bottom border-top 反向（半透明白 → 半透明黑） */
+body.theme-vibechat-light .mr-ft-bottom {
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* mr-ft-escape-bar 顶部 dashed 分隔反向 */
+body.theme-vibechat-light .mr-ft-escape-bar {
+  border-top: 1px dashed rgba(0, 0, 0, 0.10);
+}
+
+/* 底部三按钮（一键提取 / 跳过 / 发送）凸显：白底 + 深 1px 边 + 加粗 */
+body.theme-vibechat-light .mr-ft-escape-btn {
+  background: #ffffff;
+  border: 1px solid #94a3b8;
+  color: #334155;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+body.theme-vibechat-light .mr-ft-escape-btn:hover:not([disabled]) {
+  background: #e6f4ea;
+  border-color: var(--accent);
+  color: #0f5132;
+  box-shadow: 0 1px 3px rgba(7, 193, 96, 0.15);
+}
+body.theme-vibechat-light .mr-ft-escape-bar-terminal {
+  border-top-color: rgba(207, 34, 46, 0.30);
+  background: rgba(207, 34, 46, 0.05);
+}
+body.theme-vibechat-light .mr-ft-escape-bar-terminal .mr-ft-escape-btn {
+  border-color: rgba(207, 34, 46, 0.40);
+  color: #cf222e;
+}
+
+/* 状态徽章 .mr-ft-status.*：浅底色块 + 深字 */
+body.theme-vibechat-light .mr-ft-status.completed {
+  background: #d1fae5; color: #065f46;
+}
+body.theme-vibechat-light .mr-ft-status.thinking {
+  background: #fef3c7; color: #92400e;
+}
+body.theme-vibechat-light .mr-ft-status.streaming {
+  background: #dbeafe; color: #1e40af;
+}
+body.theme-vibechat-light .mr-ft-status.idle {
+  background: #f1f5f9; color: #475569;
+}
+body.theme-vibechat-light .mr-ft-status.initializing {
+  background: #ede9fe; color: #5b21b6;
+}
+body.theme-vibechat-light .mr-ft-status.timeout,
+body.theme-vibechat-light .mr-ft-status.errored,
+body.theme-vibechat-light .mr-ft-status.send_stuck,
+body.theme-vibechat-light .mr-ft-status.transport_lost {
+  background: #fee2e2; color: #b91c1c;
+}
+body.theme-vibechat-light .mr-ft-status.manual_extracted {
+  background: #d1fae5; color: #047857; opacity: 0.85;
+}
+body.theme-vibechat-light .mr-ft-status.absent {
+  background: #f1f5f9; color: #94a3b8;
+}
+body.theme-vibechat-light .mr-ft-status.soft_alert,
+body.theme-vibechat-light .mr-ft-status.interrupted {
+  background: #ffedd5; color: #9a3412;
+}
+
+/* 血缘 chip 半透明白底反向 */
+body.theme-vibechat-light .mr-ft-lineage-chip {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+body.theme-vibechat-light .mr-ft-lineage-chip:hover { background: #e2e8f0; }
+body.theme-vibechat-light .mr-ft-lineage-chip.slot-1 { color: #b45309; border-color: rgba(var(--c-slot-1-rgb), 0.40); }
+body.theme-vibechat-light .mr-ft-lineage-chip.slot-2 { color: #c2410c; border-color: rgba(var(--c-slot-2-rgb), 0.40); }
+body.theme-vibechat-light .mr-ft-lineage-chip.slot-3 { color: #1e40af; border-color: rgba(var(--c-slot-3-rgb), 0.40); }
+
+/* 顶部 mr-tab.active 用微信绿（覆盖默认 var(--accent) 已在 styles.css 声明微信绿，
+   这里多加 hover 强化保险） */
+body.theme-vibechat-light .mr-tab.active {
+  background: var(--accent);
+  color: white;
+  font-weight: 600;
+}
+body.theme-vibechat-light .mr-tab:hover:not(.active) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* mr-card-view-tab.active 用微信绿（替代默认 indigo） */
+body.theme-vibechat-light .mr-card-view-tab.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+  box-shadow: 0 1px 3px rgba(7, 193, 96, 0.20);
+}
+
+/* mr-view-toggle 切换按钮 */
+body.theme-vibechat-light .mr-view-toggle {
+  border: 1px solid var(--border);
+  background: #ffffff;
+}
+body.theme-vibechat-light .mr-view-toggle .mr-view-btn {
+  color: var(--text-secondary);
+}
+body.theme-vibechat-light .mr-view-toggle .mr-view-btn.active {
+  background: var(--accent);
+  color: white;
+}
+body.theme-vibechat-light .mr-view-toggle .mr-view-btn:not(.active):hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* mr-header-btn 凸显：默认浅底 + 1px 深边 + hover */
+body.theme-vibechat-light .mr-header-btn {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+body.theme-vibechat-light .mr-header-btn:hover {
+  background: var(--bg-hover);
+  border-color: #94a3b8;
+  color: var(--text-primary);
+}
+body.theme-vibechat-light .mr-header-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
