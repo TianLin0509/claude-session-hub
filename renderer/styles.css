@@ -3278,65 +3278,81 @@ body.compact-mode .empty-state .launcher-title { font-size: calc(17px * var(--ma
 /* 开关方式：body.theme-vibechat-light（选项 → 主题切换启用）。       */
 /* ============================================================== */
 
-/* === 主题变量覆盖（参考 theme-light + active 用微信绿）=== */
+/* === 主题变量覆盖（冷蓝灰预设 5 + 微信绿 active）=== */
 body.theme-vibechat-light {
-  --bg-primary: #ffffff;
-  --bg-secondary: #f6f8fa;
-  --bg-tertiary: #eef0f3;
-  --border: #d0d7de;
-  --text-primary: #1f2328;
-  --text-secondary: #4b5563;
-  --text-muted: #6b7280;
+  --bg-primary: #f5f8fc;
+  --bg-secondary: #eef2f7;
+  --bg-tertiary: #e3e9f0;
+  --border: #cbd5e1;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
   --accent-green: #07c160;       /* 微信绿，替代 GitHub 1a7f37 */
   --accent-blue: #0969da;
   --accent-orange: #bc4c00;
   --accent-red: #cf222e;
   --session-active: #e6f4ea;     /* 微信绿浅底 */
   --session-waiting: #ddf4ff;
-  --session-selected: #f0fdf4;
+  --session-selected: #e6f4ea;   /* selected 同 active 微信绿浅底 */
 }
 
-/* === sidebar：浅色下淡化 hover 阴影、active 左条改微信绿 === */
+/* === sidebar 档位 1（横线分隔，VibeChat 原版连续 list 风）===
+   覆盖全局 .session-item 默认样式：去除 margin/radius/transform/shadow，
+   改成连续 list 用 border-bottom 分隔。 */
+body.theme-vibechat-light .session-item {
+  margin: 0;
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid #d8dee5;
+  border-left: 3px solid transparent;
+  transition: background 0.12s;
+}
 body.theme-vibechat-light .session-item:hover {
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-  border-color: rgba(7, 193, 96, 0.18);
+  transform: none;
+  box-shadow: none;
+  background: var(--bg-tertiary);
+  border-color: transparent;     /* 防 .session-item:hover 默认蓝色 border */
+  border-bottom-color: #d8dee5;
+  border-left-color: transparent;
 }
 body.theme-vibechat-light .session-item.selected {
   background: var(--session-selected);
-  border: 1px solid #d1f4d8;
+  border: none;
+  border-bottom: 1px solid #d8dee5;
   border-left: 3px solid var(--accent-green);
-  box-shadow: 0 1px 4px rgba(7, 193, 96, 0.10);
+  box-shadow: inset 0 0 0 1px rgba(7, 193, 96, 0.08);
 }
 body.theme-vibechat-light .session-item.has-unread {
   border-left: 3px solid var(--accent-red);
-  box-shadow: 0 0 6px rgba(207, 34, 46, 0.10);
+  box-shadow: none;
 }
 /* hover 涟漪/雷达圆点用微信绿色调 */
 body.theme-vibechat-light .session-item::before {
-  background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(7,193,96,0.07), transparent 60%);
+  background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(7,193,96,0.05), transparent 60%);
 }
 body.theme-vibechat-light .session-item .ripple-fx {
-  background: rgba(7,193,96,0.12);
+  background: rgba(7,193,96,0.10);
 }
 
 body.theme-vibechat-light .msg-overlay {
-  background: #f3f4f6;
-  color: #111827;
+  background: #eef2f7;
+  color: #0f172a;
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
                "Microsoft YaHei", "Segoe UI", sans-serif;
   padding: 16px 20px;
 }
 
 /* turn-card：白底 AI 气泡 / 微信绿 user 气泡，气泡尾巴 4px
-   显式声明 display:flex/gap 防御原 .turn-card 默认布局被重构丢失 */
+   显式声明 display:flex/gap 防御原 .turn-card 默认布局被重构丢失
+   border 用 #cbd5e1 提高在冷蓝灰底上的可见度 */
 body.theme-vibechat-light .turn-card {
   display: flex;
   gap: 10px;
   background: #ffffff;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #cbd5e1;
   border-radius: 12px;
   border-top-left-radius: 4px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  box-shadow: 0 1px 2px rgba(15,23,42,0.05);
   padding: 11px 14px;
   margin-bottom: 12px;
   color: #1f2937;
@@ -3367,11 +3383,12 @@ body.theme-vibechat-light .turn-body { color: #1f2937; }
 body.theme-vibechat-light .turn-card.user .turn-body { color: #1f2937; }
 
 /* metadata pills：浅灰 chip，语义色按 token/tool/ctx/time 区分
-   主文字色提到 #4b5563 满足 WCAG AA 4.5:1 */
+   主文字色提到 #4b5563 满足 WCAG AA 4.5:1
+   背景与冷蓝灰底协调（e9eef4） */
 body.theme-vibechat-light .pill {
-  background: #f3f4f6;
-  border: 1px solid #e5e7eb;
-  color: #4b5563;
+  background: #e9eef4;
+  border: 1px solid #cbd5e1;
+  color: #475569;
   border-radius: 10px;
 }
 body.theme-vibechat-light .pill-tool { color: #92400e; background: #fef3c7; border-color: #fde68a; }
@@ -3379,21 +3396,22 @@ body.theme-vibechat-light .pill-token { color: #065f46; background: #d1fae5; bor
 body.theme-vibechat-light .pill-ctx { color: #1e40af; background: #dbeafe; border-color: #bfdbfe; }
 body.theme-vibechat-light .pill-time { color: #4b5563; }
 
-/* 思考折叠块：灰底虚线斜体（可读性优先：summary/body 用 #4b5563 ≥ 7:1） */
+/* 思考折叠块：灰底虚线斜体（可读性优先：summary/body 用 #4b5563 ≥ 7:1）
+   背景与冷蓝灰底协调（e9eef4） */
 body.theme-vibechat-light .turn-thinking {
-  background: #f3f4f6;
-  border-left: 2px dashed #d1d5db;
+  background: #e9eef4;
+  border-left: 2px dashed #94a3b8;
   border-radius: 4px;
-  color: #4b5563;
+  color: #475569;
 }
 body.theme-vibechat-light .turn-thinking-summary { color: #4b5563; }
 body.theme-vibechat-light .turn-thinking-summary:hover { color: #1f2937; }
 body.theme-vibechat-light .turn-thinking-body { color: #4b5563; }
 
-/* 工具调用 .tc 单个块 */
+/* 工具调用 .tc 单个块（档位 1：浅色但有清晰边） */
 body.theme-vibechat-light .tc {
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
+  background: #e9eef4;
+  border: 1px solid #cbd5e1;
   border-radius: 6px;
 }
 body.theme-vibechat-light .tc-name { color: #b45309; }
@@ -3411,10 +3429,10 @@ body.theme-vibechat-light .tc-toggle {
 }
 body.theme-vibechat-light .tc-toggle:hover { background: rgba(0,0,0,0.03); }
 
-/* 工具簇 .tc-cluster */
+/* 工具簇 .tc-cluster（档位 1：浅色但有清晰边） */
 body.theme-vibechat-light .tc-cluster {
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
+  background: #e9eef4;
+  border: 1px solid #cbd5e1;
   border-radius: 6px;
 }
 body.theme-vibechat-light .tc-cluster-head { color: #4b5563; }
