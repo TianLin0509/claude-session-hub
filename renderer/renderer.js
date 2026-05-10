@@ -1,5 +1,5 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
-const { isClaudeFamily, isAiKind } = require('../core/ai-kinds.js');
+const { isClaudeFamily, isAiKind, isPasteSensitive } = require('../core/ai-kinds.js');
 const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
@@ -2748,13 +2748,41 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   if (panel) panel.appendChild(bar);
   else termContainer.appendChild(bar);
 
+  // paste-sensitive TUI（claude/gemini/codex 等 9 家 AI CLI）会把紧贴到达的字符
+  //   当成 paste 事件 — 紧贴的 \r 被当作 paste 内容吞掉，消息卡在输入框不提交
+  //   （2026-05-10 用户反馈：按 Enter 后内容进了 shell 输入框但不发送）。
+  //   修复参考 roundtable-watcher.js 1A fast-path：claude 家族用 BP marker 显式
+  //   标记 paste 结束 + 500ms 间隔后单独发 \r；gemini/codex 不识别 BP，靠静默期
+  //   触发 paste-detect 完成（≥400ms）；普通 shell 无 paste-detect，保持原行为。
+  const BP_START = '\x1b[200~';
+  const BP_END = '\x1b[201~';
+
   function sendInput() {
     const text = inputBox.innerText;
     if (!text || !text.trim()) return;
-    ipcRenderer.send('terminal-input', { sessionId, data: text + '\r' });
+
+    // 立即清 UI + scroll + 还焦给终端，让用户立刻感知"已发送"。后续异步往 PTY 写。
     inputBox.textContent = '';
     terminal.scrollToBottom();
     terminal.focus();
+
+    const session = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
+      ? sessions.get(sessionId) : null;
+    const kind = session && session.kind ? session.kind : null;
+
+    if (kind && isClaudeFamily(kind)) {
+      ipcRenderer.send('terminal-input', { sessionId, data: BP_START + text + BP_END });
+      setTimeout(() => {
+        ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
+      }, 500);
+    } else if (kind && isPasteSensitive(kind)) {
+      ipcRenderer.send('terminal-input', { sessionId, data: text });
+      setTimeout(() => {
+        ipcRenderer.send('terminal-input', { sessionId, data: '\r' });
+      }, 450);
+    } else {
+      ipcRenderer.send('terminal-input', { sessionId, data: text + '\r' });
+    }
   }
 
   inputBox.addEventListener('keydown', (e) => {
