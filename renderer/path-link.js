@@ -2,11 +2,35 @@
 // 支持: .html .htm .md .markdown .json .py .js .ts .css .png .jpg .pdf 等常见后缀
 // 支持: 相对路径(docs/foo.md), Windows 绝对(C:\..), POSIX 绝对(/usr/..), URL(http(s)://)
 // 注意: 变量名加 _PL_ 前缀，避免与 renderer.js 的全局 const URL_RE / FILE_EXT_RE 冲突
-const _PL_FILE_EXT_RE = /\b[\w./\\\-]+\.(html?|markdown|md|json|py|jsx?|tsx?|css|scss|png|jpg|jpeg|gif|svg|pdf|txt|log|yaml|yml|toml|sh|ps1|bat)\b/gi;
+const _PL_FILE_EXT_RE = /(?<![\w:./\\-])[\w:./\\\-]+\.(html?|markdown|md|json|py|jsx?|tsx?|css|scss|png|jpg|jpeg|gif|svg|pdf|txt|log|yaml|yml|toml|sh|ps1|bat)\b/gi;
 const _PL_URL_RE = /\bhttps?:\/\/[^\s<>'"]+/gi;
+const _PL_PATH_TOKEN_BREAK_RE = /([^\s"'`<>|]+)\r?\n[ \t]*([^\s"'`<>|]+)/g;
+
+function _looksLikeWrappedPathToken(left, right) {
+  const combined = String(left || '') + String(right || '');
+  const startsLikeLocalPath = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/]|\.{1,2}[\\/]|[^\\/:*?"<>|\r\n\s]+[\\/])/.test(combined);
+  if (!startsLikeLocalPath) return false;
+  if (!/\.(?:html?|markdown|md|json|py|jsx?|tsx?|css|scss|png|jpg|jpeg|gif|svg|pdf|txt|log|yaml|yml|toml|sh|ps1|bat)(?:[.,;:!?)\]}>'"]*)?$/i.test(combined)) return false;
+  return /^[^\\/:*?"<>|\r\n\s]+/.test(String(right || ''));
+}
+
+function normalizeWrappedPathBreaks(text) {
+  let out = String(text || '');
+  for (let i = 0; i < 20; i++) {
+    let changed = false;
+    out = out.replace(_PL_PATH_TOKEN_BREAK_RE, (full, left, right) => {
+      if (!_looksLikeWrappedPathToken(left, right)) return full;
+      changed = true;
+      return left + right;
+    });
+    if (!changed) break;
+  }
+  return out;
+}
 
 function extractPathLinks(text) {
   if (!text) return [];
+  text = normalizeWrappedPathBreaks(text);
   const out = [];
   let m;
   // URL 优先(避免 URL 里的 .html 被当文件路径)
@@ -47,7 +71,7 @@ function wrapPathLinksInElement(rootEl) {
   let n;
   while ((n = walker.nextNode())) nodes.push(n);
   for (const node of nodes) {
-    const text = node.nodeValue;
+    const text = normalizeWrappedPathBreaks(node.nodeValue);
     const links = extractPathLinks(text);
     if (!links.length) continue;
     const frag = document.createDocumentFragment();
@@ -70,9 +94,10 @@ function wrapPathLinksInElement(rootEl) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { extractPathLinks, wrapPathLinksInElement };
+  module.exports = { extractPathLinks, wrapPathLinksInElement, normalizeWrappedPathBreaks };
 }
 if (typeof window !== 'undefined') {
+  window.normalizeWrappedPathBreaks = normalizeWrappedPathBreaks;
   window.extractPathLinks = extractPathLinks;
   window.wrapPathLinksInElement = wrapPathLinksInElement;
 }

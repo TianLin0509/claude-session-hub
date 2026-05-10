@@ -383,6 +383,13 @@ if (typeof document !== 'undefined') (function () {
   let _markedCache = null;
   let _domPurifyCache = null;
 
+  function _normalizeMarkdownPathBreaks(text) {
+    if (typeof window !== 'undefined' && typeof window.normalizeWrappedPathBreaks === 'function') {
+      return window.normalizeWrappedPathBreaks(text);
+    }
+    return String(text || '');
+  }
+
   // 卡片优化（2026-05-03 道雪）：与 renderer.js 的 ABS_PATH_RE 同源 — 绝对路径
   //   (Windows C:\... / UNC \\server\... / ~ 起始)，扩展名 1-8 ASCII。圆桌卡片
   //   场景下 AI 输出多绝对路径；相对路径需 cwd 上下文，本卡片层不易拿到，先不做。
@@ -498,7 +505,7 @@ if (typeof document !== 'undefined') (function () {
       if (!_markedCache) _markedCache = require('marked').marked;
       if (!_domPurifyCache) _domPurifyCache = require('dompurify');
       const sanitized = _domPurifyCache.sanitize(
-        _markedCache.parse(text, { breaks: true, gfm: true }),
+        _markedCache.parse(_normalizeMarkdownPathBreaks(text), { breaks: true, gfm: true }),
         { ADD_ATTR: ['data-path', 'class'] }
       );
       // 后处理：扫文件路径包 <a class="rt-file-link"> 让用户点开预览（卡片优化 2026-05-03）。

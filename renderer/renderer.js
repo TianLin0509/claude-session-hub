@@ -644,6 +644,13 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function normalizeMarkdownPathBreaks(text) {
+  if (typeof window !== 'undefined' && typeof window.normalizeWrappedPathBreaks === 'function') {
+    return window.normalizeWrappedPathBreaks(text);
+  }
+  return String(text || '');
+}
+
 // --- Sidebar tree state: which meeting entries are expanded to show their sub-sessions ---
 // Persists across reloads. Default = collapsed (白名单未命中即折叠)；用户点 ▶ 后才进
 // _expandedMeetings 集合并落盘。2026-05-05 道雪改：新圆桌不再默认展开，折叠态本来
@@ -1883,7 +1890,7 @@ function renderTurnCard(turn) {
       : `<span class="turn-avatar av-letter">${escapeHtml(aiLetterFallback(turn.kind))}</span>`;
   }
 
-  const rawHtml = marked.parse(turn.text || '', { breaks: true, gfm: true });
+  const rawHtml = marked.parse(normalizeMarkdownPathBreaks(turn.text), { breaks: true, gfm: true });
   const body = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target', 'data-lang'] });
   // Spec 3 方案 E：工具簇折叠（之前每 tool 单独大块 → 信息密度极低）
   const toolHtml = renderToolCluster(turn.id || '', turn.toolCalls);
@@ -1894,7 +1901,7 @@ function renderTurnCard(turn) {
   // Only attached for assistant role with non-empty string; user turns never carry thinking.
   let thinkingHtml = '';
   if (!isUser && typeof turn.thinking === 'string' && turn.thinking.length > 0) {
-    const thinkingRaw = marked.parse(turn.thinking, { breaks: true, gfm: true });
+    const thinkingRaw = marked.parse(normalizeMarkdownPathBreaks(turn.thinking), { breaks: true, gfm: true });
     const thinkingBody = DOMPurify.sanitize(thinkingRaw, { ADD_ATTR: ['target', 'data-lang'] });
     // Long thinking (>5KB): summary shows first-200-char preview (HTML-escaped, newlines→space)
     let summaryLabel = '💭 思考过程';
@@ -2513,10 +2520,10 @@ function wrapPathLinksInElement(rootEl, opts = {}) {
   const targets = [];
   let node;
   while ((node = walker.nextNode())) {
-    if (collectPathCandidates(node.nodeValue || '', cwd).length > 0) targets.push(node);
+    if (collectPathCandidates(normalizeMarkdownPathBreaks(node.nodeValue), cwd).length > 0) targets.push(node);
   }
   for (const textNode of targets) {
-    const text = textNode.nodeValue || '';
+    const text = normalizeMarkdownPathBreaks(textNode.nodeValue);
     const candidates = collectPathCandidates(text, cwd);
     if (!candidates.length) continue;
     const frag = document.createDocumentFragment();
