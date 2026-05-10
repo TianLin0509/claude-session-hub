@@ -66,7 +66,7 @@ function isInjectedContextText(text) {
 }
 
 function hasNearbyEventUserDuplicate(entries, entryIndex, text) {
-  const normalized = String(text || '').trim();
+  const normalized = normalizeUserDuplicateText(text);
   if (!normalized) return false;
   const maxLookahead = Math.min(entries.length, entryIndex + 6);
   for (let i = entryIndex + 1; i < maxLookahead; i++) {
@@ -74,9 +74,16 @@ function hasNearbyEventUserDuplicate(entries, entryIndex, text) {
     if (!obj || obj.type !== 'event_msg') continue;
     const payload = obj.payload || {};
     if (payload.type !== 'user_message') continue;
-    if (textFromPayload(payload).trim() === normalized) return true;
+    if (normalizeUserDuplicateText(textFromPayload(payload)) === normalized) return true;
   }
   return false;
+}
+
+function normalizeUserDuplicateText(text) {
+  return String(text || '')
+    .replace(/<image\b[^>]*>/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function parseCodexRolloutToTurns(jsonlPath, opts = {}) {

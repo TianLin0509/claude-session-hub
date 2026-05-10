@@ -671,6 +671,7 @@ function registerSessionForTap(session) {
       cwd: session.cwd,
       sessionsRoot: session.codexSessionsRoot || undefined,
       codexSid: session.codexSid || undefined,
+      allowMtimeFallback: !!session.codexAllowMtimeFallback,
     });
   }
   catch (e) {

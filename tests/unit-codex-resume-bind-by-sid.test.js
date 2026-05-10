@@ -59,7 +59,7 @@ async function testResumeBindsOldRolloutByFreshMtimeWhenSidMissing() {
   const tap = new CodexTap({ sessionsRoot: tmpRoot, pollIntervalMs: 50 });
   const hubSid = 'hub-resume-codex-mtime';
   try {
-    tap.registerSession(hubSid, { cwd });
+    tap.registerSession(hubSid, { cwd, allowMtimeFallback: true });
     const bound = await waitFor(() => {
       const snap = tap.getDebugSnapshot();
       return snap.bound.find((b) => b.hubSessionId === hubSid);
@@ -75,10 +75,36 @@ async function testResumeBindsOldRolloutByFreshMtimeWhenSidMissing() {
   }
 }
 
+async function testFreshSessionDoesNotBindOldRolloutByFreshMtime() {
+  const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'codex-fresh-no-mtime-'));
+  const cwd = path.join(os.tmpdir(), 'codex-fresh-project-no-mtime');
+  const codexSid = '019e9999-cccc-7ddd-8eee-123456789abc';
+  const oldStart = new Date(Date.now() - 6 * 60 * 60 * 1000);
+  const fr = new FakeCodexRollout({ sessionsRoot: tmpRoot, cwd, sid: codexSid, startAt: oldStart });
+  await fr.start();
+  await fr.writeTaskComplete('external session answer should not bind to fresh hub session', 100, { at: new Date() });
+  await fr.close();
+
+  const tap = new CodexTap({ sessionsRoot: tmpRoot, pollIntervalMs: 50 });
+  const hubSid = 'hub-fresh-codex-no-mtime';
+  try {
+    tap.registerSession(hubSid, { cwd });
+    const bound = await waitFor(() => {
+      const snap = tap.getDebugSnapshot();
+      return snap.bound.find((b) => b.hubSessionId === hubSid);
+    }, 500, 50);
+    assert.strictEqual(bound, null, 'fresh Codex sessions must not bind old rollout files by mtime fallback');
+  } finally {
+    tap.unregisterSession(hubSid);
+    await fr.cleanup();
+  }
+}
+
 (async () => {
   console.log('Running Codex resume bind-by-sid test...');
   await testResumeBindsExistingRolloutByCodexSid();
   await testResumeBindsOldRolloutByFreshMtimeWhenSidMissing();
+  await testFreshSessionDoesNotBindOldRolloutByFreshMtime();
   console.log('  OK');
 })().catch((err) => {
   console.error(err);

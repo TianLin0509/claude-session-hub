@@ -583,12 +583,13 @@ class CodexTap extends EventEmitter {
                                // both _tryBind() and double-bind a file.
   }
 
-  registerSession(hubSessionId, { cwd, sessionsRoot, codexSid } = {}) {
+  registerSession(hubSessionId, { cwd, sessionsRoot, codexSid, allowMtimeFallback = false } = {}) {
     const normCwd = normalizePathForCompare(cwd || process.cwd());
     if (sessionsRoot) this._sessionsRoots.add(sessionsRoot);
     this._pending.set(hubSessionId, {
       cwd: normCwd,
       spawnTime: Date.now(),
+      allowMtimeFallback: !!allowMtimeFallback,
     });
     this._ensureWatcher();
     if (codexSid) {
@@ -843,7 +844,7 @@ class CodexTap extends EventEmitter {
         const metaDelta = effectiveTs - entry.spawnTime;
         if (metaDelta >= -10000 && metaDelta <= 300000) delta = metaDelta;
       }
-      if (delta == null && statMtime != null) {
+      if (delta == null && statMtime != null && entry.allowMtimeFallback) {
         // Resume can append to an old rollout whose session_meta timestamp is
         // hours old. mtime is the only fresh signal for `codex resume --last`.
         const mtimeDelta = statMtime - entry.spawnTime;
