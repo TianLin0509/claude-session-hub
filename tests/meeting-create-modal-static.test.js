@@ -25,18 +25,19 @@ const MODAL_JS = fs.readFileSync(path.join(ROOT, 'renderer', 'meeting-create-mod
 const MODAL_CSS = fs.readFileSync(path.join(ROOT, 'renderer', 'meeting-create-modal.css'), 'utf-8');
 const HTML = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf-8');
 const RENDERER_JS = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf-8');
+const { MODEL_OPTIONS_BY_KIND } = require('../core/model-options.js');
 
 test('modal js has MODELS_BY_KIND with all 5 kinds non-empty', () => {
   for (const k of ['claude', 'gemini', 'codex', 'deepseek', 'glm']) {
-    const re = new RegExp(`${k}:\\s*\\[`);
-    assert.ok(re.test(MODAL_JS), `MODELS_BY_KIND.${k} missing`);
+    assert.ok(Array.isArray(MODEL_OPTIONS_BY_KIND[k]) && MODEL_OPTIONS_BY_KIND[k].length > 0,
+      `MODEL_OPTIONS_BY_KIND.${k} missing`);
   }
-  // explicit known-good models
-  assert.match(MODAL_JS, /'claude-opus-4-7\[1m\]'/);
-  assert.match(MODAL_JS, /'gemini-2.5-flash'/);
-  assert.match(MODAL_JS, /'gpt-5.5'/);
-  assert.match(MODAL_JS, /'deepseek-v4-pro'/);
-  assert.match(MODAL_JS, /'glm-/);
+  const modelIds = Object.values(MODEL_OPTIONS_BY_KIND).flat().map(x => x.id).join('\n');
+  assert.match(modelIds, /claude-opus-4-7\[1m\]/);
+  assert.match(modelIds, /gemini-2.5-flash/);
+  assert.match(modelIds, /gpt-5.5/);
+  assert.match(modelIds, /deepseek-v4-pro/);
+  assert.match(modelIds, /glm-/);
 });
 
 test('DEFAULT_SLOTS = strongest (claude opus 4.7 [1M] / codex gpt-5.5 / deepseek v4-pro)', () => {
@@ -116,10 +117,21 @@ test('modal sends create-meeting IPC with slots[] payload', () => {
   // ipcRenderer.invoke('create-meeting', { mode, scene, slots })
   assert.match(MODAL_JS, /ipcRenderer\.invoke\s*\(\s*['"]create-meeting['"]/);
   // 提交时构造 slots 数组（包含 index/kind/model）
-  assert.match(MODAL_JS, /slots\.push\s*\(\s*\{/);
+  assert.match(MODAL_JS, /const\s+slots\s*=\s*Array\.from/);
   assert.match(MODAL_JS, /index:/);
   assert.match(MODAL_JS, /kind:/);
   assert.match(MODAL_JS, /model:/);
+});
+
+test('modal supports flexible group chat creation', () => {
+  assert.match(MODAL_JS, /mode\s*===\s*['"]group['"]/);
+  assert.match(MODAL_JS, /DEFAULT_GROUP_MEMBERS/);
+  assert.match(MODAL_JS, /mcm-add-member/);
+  assert.match(MODAL_JS, /groupChat:\s*_isGroupChat/);
+  assert.match(MODAL_JS, /groupMode:\s*_isGroupChat\s*\?\s*['"]deliberation['"]/);
+  assert.match(MODAL_JS, /participants:\s*_isGroupChat\s*\?\s*slots\.map/);
+  assert.match(HTML, /id="btn-group-chat"/);
+  assert.match(RENDERER_JS, /openMeetingCreateModal\(['"]group['"]\)/);
 });
 
 console.log('All passed.');

@@ -45,7 +45,7 @@ const {
   attachCodexUsageScope,
   filterUsageCacheForCodexScope,
 } = require('./core/codex-usage-scope.js');
-const { isClaudeFamily, SLOT_IDS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
+const { isClaudeFamily, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
 const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
 const {
@@ -712,7 +712,10 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
   let slotId = null;
   if (meeting && !sessionOpts.title) {
     const currentSubCount = (meeting.subSessions || []).length;
-    if (currentSubCount < SLOT_IDS.length) {
+    if (meeting.groupChat) {
+      const label = KIND_LABELS[kind] || kind || 'AI';
+      sessionOpts.title = `${label} ${currentSubCount + 1}`;
+    } else if (currentSubCount < SLOT_IDS.length) {
       slotId = SLOT_IDS[currentSubCount];
       sessionOpts.title = getSlotPromptName(slotId); // "皮卡丘" / "小火龙" / "杰尼龟"
     }
@@ -827,6 +830,9 @@ ipcMain.handle('create-meeting', async (_e, opts) => {
       index: typeof s.index === 'number' ? s.index : null,
       kind: s.kind, model: s.model || null,
     }));
+    if (safe.groupChat && !Array.isArray(safe.participants)) {
+      safe.participants = safe.slots.map((_, i) => i);
+    }
   }
   const meeting = meetingManager.createMeeting(safe);
 
@@ -1047,11 +1053,24 @@ ipcMain.handle('roundtable:set-meeting-mode', async (_e, { meetingId, mode } = {
 //   接受空数组（Q11=A：尊重用户清空，UI 已防发送）
 ipcMain.handle('roundtable:set-participants', async (_e, { meetingId, participants } = {}) => {
   if (!meetingId) throw new Error('Missing meetingId');
-  const free = require('./core/roundtable-free');
-  const validated = free._validateParticipants(participants);
-
   const meeting = meetingManager.getMeeting(meetingId);
   if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
+  let validated;
+  if (meeting.groupChat) {
+    if (!Array.isArray(participants)) throw new Error(`participants must be array, got ${typeof participants}`);
+    const max = Array.isArray(meeting.subSessions) ? meeting.subSessions.length : 0;
+    const seen = new Set();
+    for (const x of participants) {
+      if (!Number.isInteger(x) || x < 0 || x >= max) {
+        throw new Error(`Invalid group participant index: ${JSON.stringify(x)}`);
+      }
+      seen.add(x);
+    }
+    validated = [...seen].sort((a, b) => a - b);
+  } else {
+    const free = require('./core/roundtable-free');
+    validated = free._validateParticipants(participants);
+  }
 
   // FIX(T4 HIGH): 用 setter 写回 Map 原始对象（getMeeting 返回浅拷贝，赋值不写回）
   meetingManager.setParticipants(meetingId, validated);
@@ -1080,6 +1099,7 @@ ipcMain.handle('roundtable:set-participants', async (_e, { meetingId, participan
 // Roundtable Mode (Sprint 2): fanout / debate / summary 三种轮次
 // =====================================================================
 const roundtable = require('./core/roundtable-orchestrator.js');
+const groupchat = require('./core/group-chat-orchestrator.js');
 const rtTimeline = require('./core/roundtable-timeline.js');
 const rtInjection = require('./core/roundtable-injection.js');
 const rtWatcher = require('./core/roundtable-watcher.js');
@@ -1878,6 +1898,177 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, dispatchMode
   }
 }
 
+const _groupChatInProgress = new Set();
+
+function _groupMembersForMeeting(meeting) {
+  const subSids = Array.isArray(meeting && meeting.subSessions) ? meeting.subSessions : [];
+  const specs = Array.isArray(meeting && meeting.slotSpecs) ? meeting.slotSpecs : [];
+  const kindCounts = {};
+  for (const sid of subSids) {
+    const s = sessionManager.getSession(sid);
+    if (!s) continue;
+    kindCounts[s.kind] = (kindCounts[s.kind] || 0) + 1;
+  }
+  const seenKind = {};
+  return subSids.map((sid, idx) => {
+    const s = sessionManager.getSession(sid);
+    if (!s || s.status === 'dormant') return null;
+    const spec = specs[idx] || {};
+    const kind = s.kind || spec.kind || 'ai';
+    seenKind[kind] = (seenKind[kind] || 0) + 1;
+    const kindLabel = KIND_LABELS[kind] || kind || 'AI';
+    const dupSuffix = kindCounts[kind] > 1 ? String(seenKind[kind]) : '';
+    const displayName = s.title || `${kindLabel}${dupSuffix ? ' ' + dupSuffix : ''}`;
+    const memberId = `m${idx + 1}`;
+    const model = (s.currentModel && s.currentModel.id) || spec.model || null;
+    const aliases = [
+      memberId,
+      displayName,
+      kindLabel,
+      kind,
+      `${kindLabel}${seenKind[kind]}`,
+      `${kind}${seenKind[kind]}`,
+    ].filter(Boolean);
+    return {
+      sid,
+      index: idx,
+      memberId,
+      kind,
+      model,
+      displayName,
+      aliases: [...new Set(aliases.map(x => String(x)))],
+    };
+  }).filter(Boolean);
+}
+
+function _parseGroupTargets(userInput, members, participants) {
+  const selected = Array.isArray(participants) ? participants : [];
+  const selectedMembers = members.filter(m => selected.includes(m.index));
+  const mentionRe = /@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g;
+  const mentioned = [];
+  let m;
+  while ((m = mentionRe.exec(userInput || '')) !== null) {
+    const token = String(m[1] || '').toLowerCase();
+    if (token === 'all' || token === '全部' || token === '所有人') {
+      return { targets: members, mentions: ['all'] };
+    }
+    const hits = members.filter(mem => {
+      const keys = [mem.memberId, mem.displayName, mem.kind, ...(mem.aliases || [])]
+        .filter(Boolean).map(x => String(x).toLowerCase());
+      return keys.includes(token);
+    });
+    const hit = hits.length === 1 ? hits[0] : null;
+    if (hit && !mentioned.some(x => x.sid === hit.sid)) mentioned.push(hit);
+  }
+  if (mentioned.length > 0) return { targets: mentioned, mentions: mentioned.map(x => x.memberId) };
+  return { targets: selectedMembers, mentions: [] };
+}
+
+async function dispatchGroupChatTurn(meetingId, { userInput }) {
+  if (_groupChatInProgress.has(meetingId)) return { status: 'busy', turnNum: null };
+  _groupChatInProgress.add(meetingId);
+  try {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting || !meeting.groupChat) {
+      return { status: 'error', reason: 'not group chat meeting', turnNum: null };
+    }
+    const members = _groupMembersForMeeting(meeting);
+    if (members.length === 0) return { status: 'no_subs', turnNum: null };
+
+    const routed = _parseGroupTargets(userInput || '', members, meeting.participants);
+    const targetMembers = routed.targets || [];
+    if (targetMembers.length === 0) {
+      return { status: 'error', reason: '请先勾选至少一位 AI 成员，或用 @ 指定成员', turnNum: null };
+    }
+
+    for (const member of members) {
+      try { transcriptTap.clearStreamingBuf(member.sid); } catch {}
+    }
+
+    const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+    const { turnNum } = orch.beginTurn(userInput || '');
+    const targets = targetMembers.map(member => ({
+      sid: member.sid,
+      kind: member.kind,
+      label: member.displayName,
+      member,
+      prompt: orch.buildPrompt({
+        meeting,
+        members,
+        selfMember: member,
+        targetMembers,
+        userInput: userInput || '',
+        turnNum,
+      }),
+    }));
+
+    for (const t of targets) {
+      cancelPatchListenersForSid(t.sid);
+      try { orch.recordTurnPrompt(turnNum, t.sid, t.prompt); }
+      catch (e) { console.warn('[groupchat] recordTurnPrompt threw:', e && e.message); }
+    }
+
+    const sentTargets = [];
+    await Promise.all(targets.map(async (t) => {
+      try {
+        const sendResult = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
+        const ok = sendResult && sendResult.ok;
+        const sendStatus = sendResult && sendResult.sendStatus;
+        if (sendStatus === 'stuck' && t.kind !== 'codex') {
+          sendToRenderer('roundtable-send-stuck', { meetingId, sid: t.sid, kind: t.kind });
+        }
+        if (ok) {
+          sentTargets.push(t);
+          if (sendStatus !== 'stuck' || t.kind === 'codex') {
+            _startPasteTrappedMonitor(t.sid, t.kind, meetingId);
+          }
+        }
+      } catch (e) {
+        console.warn(`[groupchat] turn ${turnNum} sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
+      }
+    }));
+
+    if (sentTargets.length === 0) {
+      orch.rollbackTurn(turnNum);
+      return { status: 'no_sent', turnNum };
+    }
+
+    const settled = await Promise.allSettled(sentTargets.map(t =>
+      _rtWaitTurnComplete(t.sid, t.label, {
+        meetingId, mode: 'group', turnNum,
+        onPartial: (partial) => {
+          sendToRenderer('roundtable-partial-update', {
+            meetingId, turnNum, mode: 'group',
+            sid: partial.sid, label: partial.label,
+            status: partial.status,
+            text: partial.text,
+            blocks: partial.blocks,
+            source: partial.source,
+            thinkSec: partial.thinkSec, tokens: partial.tokens,
+            cleanBufLen: partial.cleanBufLen,
+          });
+        },
+      })
+    ));
+
+    const results = settled.map((s, i) => s.status === 'fulfilled' ? s.value : {
+      sid: sentTargets[i].sid,
+      label: sentTargets[i].label,
+      status: 'errored',
+      text: '',
+      reason: s.reason?.message || 'Promise rejected',
+    });
+    const memberBySid = {};
+    for (const m of members) memberBySid[m.sid] = m;
+    const turnRecord = orch.completeTurn(turnNum, userInput || '', results, memberBySid);
+    const meta = turnRecord.meta || { dispatchMode: 'group' };
+    sendToRenderer('roundtable-turn-complete', { meetingId, turnNum, mode: 'group', results, meta });
+    return { status: 'completed', turnNum, results, meta };
+  } finally {
+    _groupChatInProgress.delete(meetingId);
+  }
+}
+
 ipcMain.handle('roundtable:turn', async (_e, args) => {
   // silent-failure-hunter M1（2026-05-04 道雪）：dispatchRoundtableTurn 多数错误返回
   //   { status: 'error' } 不抛，但 beginTurn → _saveState 在磁盘满 / EBUSY 等场景会
@@ -1891,6 +2082,15 @@ ipcMain.handle('roundtable:turn', async (_e, args) => {
   }
 });
 
+ipcMain.handle('groupchat:turn', async (_e, args = {}) => {
+  try {
+    return await dispatchGroupChatTurn(args.meetingId, args);
+  } catch (e) {
+    console.error('[groupchat:turn] unhandled throw, returning error to renderer:', e);
+    return { status: 'error', reason: (e && e.message) || 'internal_error', turnNum: null };
+  }
+});
+
 // 摘要功能 2026-05-08 整体下线：原 'roundtable:summary-trigger' IPC handler 已删
 
 ipcMain.handle('roundtable:get-state', (_e, { meetingId }) => {
@@ -1898,6 +2098,21 @@ ipcMain.handle('roundtable:get-state', (_e, { meetingId }) => {
   const sceneObj = meeting ? scenes.getScene(meeting.scene) : null;
   const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
   return orch.getState();
+});
+
+ipcMain.handle('groupchat:get-state', (_e, { meetingId }) => {
+  const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+  return orch.getState();
+});
+
+ipcMain.handle('groupchat:search-raw', (_e, { meetingId, query, limit } = {}) => {
+  const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+  return orch.searchRaw(query, limit);
+});
+
+ipcMain.handle('groupchat:read-raw', (_e, { meetingId, messageId } = {}) => {
+  const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+  return orch.readRaw(messageId);
 });
 
 // ===== Stage 2 容错升级（2026-05-01）— 圆桌逃生工具 IPC =====
@@ -2796,6 +3011,13 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
           ? rendererMeeting.pilotSlot
           : (authoritative.pilotSlot ?? null),
         dispatchMode: rendererMeeting.dispatchMode || authoritative.dispatchMode || 'all',
+        groupChat: typeof rendererMeeting.groupChat === 'boolean'
+          ? rendererMeeting.groupChat
+          : !!authoritative.groupChat,
+        groupMode: rendererMeeting.groupMode || authoritative.groupMode || 'deliberation',
+        groupRecentRawN: Number.isInteger(rendererMeeting.groupRecentRawN)
+          ? rendererMeeting.groupRecentRawN
+          : (Number.isInteger(authoritative.groupRecentRawN) ? authoritative.groupRecentRawN : 5),
         participants: Array.isArray(rendererMeeting.participants)
           ? rendererMeeting.participants
           : (Array.isArray(authoritative.participants) ? authoritative.participants : null),
@@ -2859,6 +3081,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
   // 上的 kind 共享同一 resume + system prompt 注入路径，单一真理源。
   const isClaudeCliResumable = isClaudeFamily(meta.kind);
   const isGeminiOrCodex = (meta.kind === 'gemini' || meta.kind === 'codex');
+  const codexMissingSid = (meta.kind === 'codex' && !meta.codexSid);
 
   // resume 时根据会议模式重新注入 prompt 文件(research/general 公约)。
   // 注意三家 CLI 各走自己的注入字段(与 add-meeting-sub 对齐):
@@ -2904,6 +3127,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
     resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
     useContinue: isClaudeCliResumable && !meta.ccSessionId,
     useResume: isGeminiOrCodex,
+    codexResumePicker: codexMissingSid,
     codexSid: meta.kind === 'codex' ? (meta.codexSid || null) : null,
     codexProfile: meta.kind === 'codex' ? (meta.codexProfile || null) : null,
     geminiChatId: meta.kind === 'gemini' ? (meta.geminiChatId || null) : null,

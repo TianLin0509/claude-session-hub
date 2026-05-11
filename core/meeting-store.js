@@ -51,6 +51,9 @@ function saveMeetingFile(id, data) {
     dispatchMode: ['all', 'pilot', 'observer'].includes(data.dispatchMode) ? data.dispatchMode : 'all',
     mode: ['pilot', 'free'].includes(data.mode) ? data.mode : 'free',
     participants: Array.isArray(data.participants) ? data.participants : null,
+    groupChat: !!data.groupChat,
+    groupMode: typeof data.groupMode === 'string' ? data.groupMode : 'deliberation',
+    groupRecentRawN: Number.isInteger(data.groupRecentRawN) ? data.groupRecentRawN : 5,
     // ── v2 新增：完整 meeting metadata（用于 boot 自我修复） ──
     title: typeof data.title === 'string' ? data.title : null,
     scene: typeof data.scene === 'string' ? data.scene : null,
@@ -85,6 +88,9 @@ function loadMeetingFile(id) {
     }
     // 通用兜底
     if (!['pilot', 'free'].includes(obj.mode)) obj.mode = 'free';
+    obj.groupChat = !!obj.groupChat;
+    if (typeof obj.groupMode !== 'string') obj.groupMode = 'deliberation';
+    if (!Number.isInteger(obj.groupRecentRawN)) obj.groupRecentRawN = 5;
     if (!Array.isArray(obj.participants)) obj.participants = null;
     if (typeof obj.updatedAt !== 'number') obj.updatedAt = obj.savedAt || 0;
     if (v === 1) {
@@ -134,7 +140,8 @@ const _timers = new Map();
 function markDirty(id, data) {
   if (!id) return;
   if (_isMeetingRemoved(id)) return;  // 防复活
-  _dirty.set(id, data);
+  const prev = _dirty.get(id) || loadMeetingFile(id) || {};
+  _dirty.set(id, { ...prev, ...(data || {}) });
   if (_timers.has(id)) clearTimeout(_timers.get(id));
   const t = setTimeout(() => {
     if (_isMeetingRemoved(id)) {

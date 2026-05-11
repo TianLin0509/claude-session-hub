@@ -69,6 +69,37 @@ function testEmptyArrayParticipantsAllowed() {
   assert.deepStrictEqual(re.participants, [], 'empty array preserved');
 }
 
+function testGroupChatFieldsPersist() {
+  store.saveMeetingFile('m-group', {
+    mode: 'free',
+    participants: [0, 2, 4],
+    groupChat: true,
+    groupMode: 'deliberation',
+    groupRecentRawN: 5,
+  });
+  const re = store.loadMeetingFile('m-group');
+  assert.strictEqual(re.groupChat, true, 'groupChat preserved');
+  assert.strictEqual(re.groupMode, 'deliberation', 'groupMode preserved');
+  assert.strictEqual(re.groupRecentRawN, 5, 'groupRecentRawN preserved');
+  assert.deepStrictEqual(re.participants, [0, 2, 4], 'arbitrary group participants preserved');
+}
+
+function testMarkDirtyMergesPartialUpdates() {
+  store.saveMeetingFile('m-merge', {
+    mode: 'free',
+    participants: [0, 1, 2, 3],
+    groupChat: true,
+    groupMode: 'deliberation',
+    groupRecentRawN: 5,
+  });
+  store.markDirty('m-merge', { _nextIdx: 3 });
+  store.flushAll();
+  const re = store.loadMeetingFile('m-merge');
+  assert.strictEqual(re.groupChat, true, 'partial dirty update must not drop groupChat');
+  assert.deepStrictEqual(re.participants, [0, 1, 2, 3], 'partial dirty update must not drop participants');
+  assert.strictEqual(re._nextIdx, 3, 'partial dirty update applies changed field');
+}
+
 function testLegacyJsonOnDiskLoadFallback() {
   // 直接写无 mode/participants 字段的老 JSON 到磁盘，验证 loadMeetingFile 兜底
   const dir = path.join(TEST_DIR, 'meetings');
@@ -94,6 +125,8 @@ run('testLegacyMeetingDefaultsToFree', testLegacyMeetingDefaultsToFree);
 run('testInvalidModeFallsBackToFree', testInvalidModeFallsBackToFree);
 run('testInvalidParticipantsFallsBackToNull', testInvalidParticipantsFallsBackToNull);
 run('testEmptyArrayParticipantsAllowed', testEmptyArrayParticipantsAllowed);
+run('testGroupChatFieldsPersist', testGroupChatFieldsPersist);
+run('testMarkDirtyMergesPartialUpdates', testMarkDirtyMergesPartialUpdates);
 run('testLegacyJsonOnDiskLoadFallback', testLegacyJsonOnDiskLoadFallback);
 
 // cleanup

@@ -165,6 +165,25 @@ if (typeof document !== 'undefined') (function () {
   }
   _applyCardViewModeClass(_getCardViewMode());
 
+  const _GROUP_VIEW_MODE_KEY = 'mr-group-chat-view-mode';
+  function _getGroupViewMode() {
+    try {
+      const mode = typeof localStorage !== 'undefined' ? localStorage.getItem(_GROUP_VIEW_MODE_KEY) : null;
+      return mode === 'card' ? 'card' : 'chat';
+    } catch { return 'chat'; }
+  }
+  function _setGroupViewMode(mode, meeting) {
+    const next = mode === 'card' ? 'card' : 'chat';
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(_GROUP_VIEW_MODE_KEY, next);
+    } catch {}
+    const active = meeting || (activeMeetingId && meetingData[activeMeetingId]);
+    if (active && _isPanelCapableMeeting(active)) refreshRoundtablePanel(active);
+    if (typeof _relayoutMeetingRoom === 'function') {
+      setTimeout(() => _relayoutMeetingRoom(), 160);
+    }
+  }
+
   // F3 Phase 2(2026-05-04 道雪 / spec F3): 多卡 Ctrl/Cmd+click 对比模式
   //   状态: Set<sid>。空 = 默认; ≥1 = 对比模式 (body.mr-card-compare-on)
   //   spec §5 状态优先级: compare-selected 与 focus 互斥(进入对比时清 focus)
@@ -719,20 +738,24 @@ if (typeof document !== 'undefined') (function () {
   //     - label:         纯英文 slot 名（"Pikachu"），给 prompt / @解析 / 后端字段用
   //     - displayLabel:  双语带 emoji（"⚡ Pikachu · 皮卡丘"），给卡片 UI 用
   function _getRtSlots(meeting) {
-    const slots = [null, null, null];
+    const maxSlots = meeting && meeting.groupChat && Array.isArray(meeting.subSessions)
+      ? meeting.subSessions.length
+      : 3;
+    const slots = Array.from({ length: maxSlots }, () => null);
     if (!meeting || !Array.isArray(meeting.subSessions)) return slots;
-    for (let i = 0; i < meeting.subSessions.length && i < 3; i++) {
+    for (let i = 0; i < meeting.subSessions.length && i < maxSlots; i++) {
       const sid = meeting.subSessions[i];
       const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
       if (!s) continue;
       const slotId = slotIndexToId(i);
+      const kindLabel = getKindLabel(s.kind);
       slots[i] = {
         sid,
         kind: s.kind,
         slotId,
         slotIndex: i,
-        label: slotId ? getSlotPromptName(slotId) : (s.title || s.kind || `Slot ${i + 1}`),
-        displayLabel: slotId ? getSlotDisplayLabel(slotId) : (s.title || s.kind || `Slot ${i + 1}`),
+        label: meeting.groupChat ? (s.title || `${kindLabel} ${i + 1}`) : (slotId ? getSlotPromptName(slotId) : (s.title || s.kind || `Slot ${i + 1}`)),
+        displayLabel: meeting.groupChat ? (s.title || `${kindLabel} ${i + 1}`) : (slotId ? getSlotDisplayLabel(slotId) : (s.title || s.kind || `Slot ${i + 1}`)),
       };
     }
     return slots;
@@ -957,7 +980,7 @@ if (typeof document !== 'undefined') (function () {
       kind, isActive, sub.sid, labelDisplay, statusLabel, status,
       modelName, modelCls, ctxPct, ctxCls, bottomHtml,
       thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge,
-      slotIndex, sendStuck, lineageHtml
+      slotIndex, sendStuck, lineageHtml, !!meeting.groupChat
     );
     return { html, anyThinking };
   }
@@ -986,7 +1009,7 @@ if (typeof document !== 'undefined') (function () {
       meeting, slots, lastTurn: effectiveLastTurn, meetingId, focused,
       isTimeTravel,
     };
-    for (let slotIndex = 0; slotIndex < 3; slotIndex++) {
+    for (let slotIndex = 0; slotIndex < slots.length; slotIndex++) {
       const { html, anyThinking: t } = _renderSlotCard(slotIndex, ctx);
       if (html) tabs.push(html);
       if (t) anyThinking = true;
@@ -1003,7 +1026,7 @@ if (typeof document !== 'undefined') (function () {
       ? meeting.focusedSub
       : meeting.subSessions[0];
     const items = [];
-    for (let slotIndex = 0; slotIndex < 3; slotIndex++) {
+    for (let slotIndex = 0; slotIndex < slots.length; slotIndex++) {
       const slot = slots[slotIndex];
       if (!slot || !slot.sid) continue;
       const slotCls = `slot-${slotIndex + 1}`;
@@ -1020,7 +1043,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, bottomHtml,
-                   thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge, slotIndex, sendStuck, lineageHtml) {
+                   thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge, slotIndex, sendStuck, lineageHtml, isGroupChat) {
     // 圆桌主题色按 slot 上色（slot 1/2/3 = 皮卡丘/小火龙/杰尼龟），与 kind 解耦：
     // kind 仍保留为 data-attribute 标识 AI 身份，但 CSS 视觉风格只跟槽位走，
     // 未来加任意 AI 都不需要补 CSS。
@@ -1042,7 +1065,7 @@ if (typeof document !== 'undefined') (function () {
     // 圆桌卡片头像与 slot 位置绑定（不与 kind 绑定）。
     //   slot 1 永远皮卡丘，slot 2 永远小火龙，slot 3 永远杰尼龟，便于用户视觉识别
     //   "哪一格是哪家"。CSS 主题色亦按 slot 上色（见 .mr-ft.slot-N），kind 仅作 data-attribute。
-    const avatarSrc = _avatarBySlot(slotIdx);
+    const avatarSrc = isGroupChat ? `assets/ai-logos/${kind}.svg` : _avatarBySlot(slotIdx);
     const avatarFb = _avatarFallbackBySlot(slotIdx);
     const avatarHtml = avatarSrc
       ? `<div class="mr-ft-avatar"><img src="${avatarSrc}" alt="${kind || 'slot' + (slotIdx + 1)}" onerror="this.parentNode.textContent='${avatarFb}'; this.parentNode.style.cssText+=';display:flex;align-items:center;justify-content:center;font-size:30px;'"></div>`
@@ -1365,17 +1388,45 @@ if (typeof document !== 'undefined') (function () {
       : '等你抛话题';
 
     // D1 Phase 4(2026-05-05 道雪): 圆桌角色 PNG 头像 stack(与卡片头像一致)
-    //   slot 头像绑定: 0=Pikachu / 1=Charmander / 2=Squirtle (与 _SLOT_AVATARS 一致)
+    //   groupChat uses company logos instead of slot-bound Pokemon avatars.
+    const slots = _getRtSlots(meeting);
     const avatarsHtml = sids.map((sid, idx) => {
-      const src = _avatarBySlot(idx);
-      const fb = _avatarFallbackBySlot(idx);
+      const slot = slots[idx] || {};
+      const src = meeting && meeting.groupChat && slot.kind
+        ? `assets/ai-logos/${slot.kind}.svg`
+        : _avatarBySlot(idx);
+      const fb = meeting && meeting.groupChat
+        ? escapeHtml((slot.displayLabel || slot.kind || `AI ${idx + 1}`).slice(0, 2))
+        : _avatarFallbackBySlot(idx);
       return src
-        ? `<img src="${src}" class="mr-rt-ob-avatar" alt="slot${idx+1}" onerror="this.outerHTML='<span class=\\'mr-rt-ob-avatar-fb\\'>${fb}</span>'" />`
+        ? `<img src="${src}" class="mr-rt-ob-avatar${meeting && meeting.groupChat ? ' group' : ''}" alt="slot${idx+1}" onerror="this.outerHTML='<span class=\\'mr-rt-ob-avatar-fb\\'>${fb}</span>'" />`
         : `<span class="mr-rt-ob-avatar-fb">${fb}</span>`;
     }).join('');
 
-    // D1 Phase 4: 三步引导卡片 — 让新用户秒懂圆桌使用流程
-    const stepsHtml = `
+    // D1 Phase 4: 三步引导卡片 — 群聊去掉固定辩论/总结轮次暗示。
+    const stepsHtml = meeting && meeting.groupChat ? `
+      <div class="mr-rt-ob-step">
+        <div class="mr-rt-ob-step-num">1</div>
+        <div class="mr-rt-ob-step-body">
+          <div class="mr-rt-ob-step-title">提问</div>
+          <div class="mr-rt-ob-step-desc">勾选成员，或用 @m1 / @all 指定发言人</div>
+        </div>
+      </div>
+      <div class="mr-rt-ob-step">
+        <div class="mr-rt-ob-step-num">2</div>
+        <div class="mr-rt-ob-step-body">
+          <div class="mr-rt-ob-step-title">争鸣</div>
+          <div class="mr-rt-ob-step-desc">成员基于历史摘要与最近原文独立回答</div>
+        </div>
+      </div>
+      <div class="mr-rt-ob-step">
+        <div class="mr-rt-ob-step-num">3</div>
+        <div class="mr-rt-ob-step-body">
+          <div class="mr-rt-ob-step-title">追问</div>
+          <div class="mr-rt-ob-step-desc">继续点名、改勾选，或按 raw anchor 核对原文</div>
+        </div>
+      </div>
+    ` : `
       <div class="mr-rt-ob-step">
         <div class="mr-rt-ob-step-num">1</div>
         <div class="mr-rt-ob-step-body">
@@ -1516,6 +1567,157 @@ if (typeof document !== 'undefined') (function () {
     </div>`;
   }
 
+  function _groupMemberMap(meeting) {
+    const map = {};
+    for (const slot of _getRtSlots(meeting)) {
+      if (!slot || !slot.sid) continue;
+      map[slot.sid] = slot;
+    }
+    return map;
+  }
+
+  function _groupLogoSrc(kind) {
+    return `assets/ai-logos/${escapeHtml(kind || 'claude')}.svg`;
+  }
+
+  function _formatGroupChatTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return '';
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
+
+  function _renderGroupAvatar(slot, isUser) {
+    if (isUser) return '<div class="mr-gc-avatar mr-gc-avatar-user">我</div>';
+    if (!slot) return '<div class="mr-gc-avatar mr-gc-avatar-fallback">AI</div>';
+    const label = slot.displayLabel || slot.label || slot.kind || 'AI';
+    return `<div class="mr-gc-avatar"><img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" /></div>`;
+  }
+
+  function _renderGroupChatMessage(message, meeting, memberBySid, opts = {}) {
+    if (!message) return '';
+    const isUser = message.role === 'user';
+    const slot = isUser ? null : memberBySid[message.sid];
+    const slotCls = slot ? ` slot-${(slot.slotIndex || 0) + 1}` : '';
+    const label = isUser ? '我' : (message.speaker || (slot && slot.displayLabel) || 'AI');
+    const time = _formatGroupChatTime(message.createdAt);
+    const status = opts.status || message.status || '';
+    const statusText = opts.pending ? '正在发言' : (status === 'errored' ? '发送失败' : '');
+    const body = opts.empty
+      ? '<span class="mr-gc-waiting">思考中...</span>'
+      : `<div class="mr-gc-md">${_renderMarkdown(message.content || '')}</div>`;
+    const anchor = message.anchor
+      ? `<button type="button" class="mr-gc-anchor" data-gc-anchor="${escapeHtml(message.anchor)}" title="原文索引">${escapeHtml(message.anchor)}</button>`
+      : '';
+    const meta = `<div class="mr-gc-meta"><span>${escapeHtml(label)}</span>${time ? `<span>${escapeHtml(time)}</span>` : ''}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}</div>`;
+    return `
+      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${opts.pending ? ' pending' : ''}">
+        ${!isUser ? _renderGroupAvatar(slot, false) : ''}
+        <div class="mr-gc-msg-body">
+          ${meta}
+          <div class="mr-gc-bubble">${body}${opts.pending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
+          ${anchor}
+        </div>
+        ${isUser ? _renderGroupAvatar(null, true) : ''}
+      </article>
+    `;
+  }
+
+  function _renderGroupChatPending(state, meeting, memberBySid) {
+    const partialBy = state && state._partialBy ? state._partialBy : null;
+    if (!partialBy) return '';
+    const slots = _getRtSlots(meeting).filter(Boolean);
+    const parts = [];
+    for (const slot of slots) {
+      const partial = partialBy[slot.sid];
+      const participating = isSlotParticipatingThisTurn(meeting, slot.slotIndex);
+      if (!partial && !participating) continue;
+      const text = partial && partial.text ? partial.text : '';
+      const status = partial && partial.status ? partial.status : (participating ? 'thinking' : 'idle');
+      const empty = !text && status !== 'errored';
+      parts.push(_renderGroupChatMessage({
+        id: `pending-${slot.sid}`,
+        role: 'assistant',
+        sid: slot.sid,
+        speaker: slot.displayLabel || slot.label,
+        content: status === 'errored' ? '本轮发送失败，可切换到卡片视图查看处理按钮。' : text,
+        status,
+      }, meeting, memberBySid, { pending: status !== 'completed' && status !== 'manual_extracted', empty, status }));
+    }
+    return parts.join('');
+  }
+
+  function _renderGroupChatView(state, meeting, softBanner, totalSecTxt) {
+    const messages = Array.isArray(state.messages) ? state.messages : [];
+    const memberBySid = _groupMemberMap(meeting);
+    const slots = _getRtSlots(meeting).filter(Boolean);
+    const selected = new Set(Array.isArray(meeting.participants) ? meeting.participants : slots.map(slot => slot.slotIndex));
+    const summaryCount = Array.isArray(state.summarySegments) ? state.summarySegments.length : 0;
+    const rawCount = messages.length;
+    const mode = state.currentMode || 'idle';
+    const messageHtml = messages.map(m => _renderGroupChatMessage(m, meeting, memberBySid)).join('');
+    const pendingHtml = mode !== 'idle' ? _renderGroupChatPending(state, meeting, memberBySid) : '';
+    const emptyHtml = (!messageHtml && !pendingHtml) ? `
+      <div class="mr-gc-empty">
+        <div class="mr-gc-empty-title">还没有群聊消息</div>
+        <div class="mr-gc-empty-sub">直接提问会发给当前勾选成员；输入 @m1、@m2 或 @all 可以指定发言成员。</div>
+      </div>
+    ` : '';
+    const memberRows = slots.map((slot) => {
+      const checked = selected.has(slot.slotIndex);
+      const label = slot.displayLabel || slot.label || slot.kind || 'AI';
+      const model = (() => {
+        const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(slot.sid) : null;
+        return s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
+      })();
+      return `
+        <button type="button" class="mr-gc-member ${checked ? 'selected' : ''}" data-gc-member-idx="${slot.slotIndex}">
+          <img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" />
+          <span class="mr-gc-member-main">
+            <span class="mr-gc-member-name">${escapeHtml(label)}</span>
+            <span class="mr-gc-member-meta">@m${slot.slotIndex + 1}${model ? ` · ${escapeHtml(model)}` : ''}</span>
+          </span>
+          <span class="mr-gc-member-check">${checked ? 'ON' : ''}</span>
+        </button>
+      `;
+    }).join('');
+
+    return `
+      ${softBanner}
+      <section class="mr-gc-shell" aria-label="AI 群聊">
+        <main class="mr-gc-thread">
+          <div class="mr-gc-topbar">
+            <div>
+              <div class="mr-gc-title">AI 群聊</div>
+              <div class="mr-gc-subtitle">${slots.length} 位成员 · ${rawCount} 条原文 · ${summaryCount} 段摘要 · 总耗时 ${escapeHtml(totalSecTxt)}</div>
+            </div>
+            <button type="button" class="mr-gc-card-link" data-gc-view-card="1">卡片视图</button>
+          </div>
+          <div class="mr-gc-dayline">摘要账本会索引原文，最近原文默认保留 5 条进入上下文</div>
+          <div class="mr-gc-messages">
+            ${emptyHtml}
+            ${messageHtml}
+            ${pendingHtml}
+          </div>
+        </main>
+        <aside class="mr-gc-side" aria-label="群成员">
+          <div class="mr-gc-side-head">
+            <span>群成员</span>
+            <span>${selected.size}/${slots.length}</span>
+          </div>
+          <div class="mr-gc-members">${memberRows}</div>
+          <div class="mr-gc-ledger">
+            <div class="mr-gc-ledger-title">上下文</div>
+            <div>摘要段：${summaryCount}</div>
+            <div>原文索引：${rawCount}</div>
+          </div>
+        </aside>
+      </section>
+    `;
+  }
+
   function _renderRtPanelHtml(state, meeting) {
     const subs = _getRtSubInfo(meeting);
     const mode = state.currentMode || 'idle';
@@ -1527,7 +1729,7 @@ if (typeof document !== 'undefined') (function () {
     //   保留 _renderRtHistory 函数本身以防其他地方调用, 仅删此处渲染。
     // 2026-05-05 道雪：标题统一为「圆桌轮次」(用户偏好统一标题,不区分 general/research/dev)。
     //   不动 _scenes.getScene().name —— 那个 name 同时给 covenant prompt header 用,改了会污染发给 AI 的 prompt。
-    const titleText = '圆桌轮次';
+    const titleText = meeting.groupChat ? 'AI 群聊' : '圆桌轮次';
     const viewingTurnN = _rtViewingTurnN[meeting.id];
     const stepper = _renderTurnStepper(state.turns, mode, viewingTurnN);
     // Phase 5: 时光机 banner — 仅 viewingTurnN 设置时渲染
@@ -1570,6 +1772,9 @@ if (typeof document !== 'undefined') (function () {
     _updateHeaderProgress(meeting, state, mode, totalSec);
     // Phase 4 v2(2026-05-05): panel 重渲后 onboarding head 占位空, 异步 microtask 触发 _refreshSoftAlert 填充
     setTimeout(() => { try { _refreshSoftAlert(meeting); } catch {} }, 0);
+    if (meeting.groupChat && _getGroupViewMode() === 'chat') {
+      return _renderGroupChatView(state, meeting, softBanner, totalSecTxt);
+    }
     // D1 v2(2026-05-05 道雪): 欢迎区从 fusedTabs 之后上移到 fusedTabs 之前,
     //   位置在 "圆桌讨论" 标题正下方与 3 张 AI 卡片之间, 视觉权重更高 + 更早被注意到。
     // 2026-05-05 道雪: 用户提问 banner 紧贴 fusedTabs 之上 — 让"标题/stepper → 你的提问 → AI 答复"
@@ -1620,7 +1825,7 @@ if (typeof document !== 'undefined') (function () {
     if (!_isPanelCapableMeeting(meeting)) return { state: null, ok: false };
     let state;
     try {
-      state = await ipcRenderer.invoke('roundtable:get-state', { meetingId: meeting.id });
+      state = await ipcRenderer.invoke(meeting.groupChat ? 'groupchat:get-state' : 'roundtable:get-state', { meetingId: meeting.id });
     } catch (e) {
       console.error('[roundtable] get-state failed:', e.message);
       return { state: null, ok: false };
@@ -1644,6 +1849,30 @@ if (typeof document !== 'undefined') (function () {
     return { state, ok: true };
   }
 
+  function _captureGroupChatScroll(panel, meeting) {
+    if (!panel || !meeting || !meeting.groupChat || _getGroupViewMode() !== 'chat') return null;
+    const el = panel.querySelector('.mr-gc-messages');
+    if (!el) return null;
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    const bottomGap = Math.max(0, maxTop - el.scrollTop);
+    return {
+      scrollTop: el.scrollTop,
+      stickToBottom: bottomGap <= 48,
+    };
+  }
+
+  function _restoreGroupChatScroll(panel, snapshot) {
+    if (!panel || !snapshot) return;
+    const apply = () => {
+      const el = panel.querySelector('.mr-gc-messages');
+      if (!el) return;
+      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      el.scrollTop = snapshot.stickToBottom ? maxTop : Math.min(snapshot.scrollTop, maxTop);
+    };
+    apply();
+    requestAnimationFrame(apply);
+  }
+
   async function refreshRoundtablePanel(meeting) {
     if (!_isPanelCapableMeeting(meeting)) { _removeRtPanel(); return; }
     const { state, ok } = await _syncRoundtableCacheFromServer(meeting);
@@ -1651,8 +1880,10 @@ if (typeof document !== 'undefined') (function () {
     // 修2：async race guard — await 期间用户切走，老 refresh 不写 DOM（避免 panel 被错圆桌内容覆盖）
     if (meeting.id !== activeMeetingId) return;
     const panel = _ensureRtPanel();
+    const groupScroll = _captureGroupChatScroll(panel, meeting);
     panel.innerHTML = _renderRtPanelHtml(state, meeting);
     _bindRtPanelEvents(panel, meeting);
+    _restoreGroupChatScroll(panel, groupScroll);
     // pilot redesign（2026-05-02）：panel.innerHTML 重渲后用 rAF 包裹，确保 paint 后再涂卡片视觉。
     //   旧实现直接调用，理论上同步生效，但截图显示 class 偶尔没生效——猜测是 panel innerHTML 后浏览器
     //   还没完成布局/合成的瞬间 querySelectorAll 拿到的引用与最终 paint 的 DOM 不一致。
@@ -1952,6 +2183,36 @@ if (typeof document !== 'undefined') (function () {
         ev.stopPropagation();
         const sid = tab.getAttribute('data-rt-card-tab-sid');
         if (sid) _focusRoundtableSession(meeting, sid);
+      });
+    });
+    panel.querySelectorAll('[data-gc-view-card]').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        _setGroupViewMode('card', meeting);
+        renderHeader(meeting);
+      });
+    });
+    panel.querySelectorAll('[data-gc-member-idx]').forEach(btn => {
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const idx = parseInt(btn.getAttribute('data-gc-member-idx') || '-1', 10);
+        const sid = Array.isArray(meeting.subSessions) ? meeting.subSessions[idx] : null;
+        if (!sid) return;
+        const allIndexes = meeting.subSessions.map((_, i) => i);
+        const current = Array.isArray(meeting.participants) ? meeting.participants.slice() : allIndexes;
+        const set = new Set(current);
+        if (set.has(idx)) set.delete(idx);
+        else set.add(idx);
+        const next = allIndexes.filter(i => set.has(i));
+        meeting.participants = next;
+        try {
+          const updated = await ipcRenderer.invoke('roundtable:set-participants', { meetingId: meeting.id, participants: next });
+          if (updated) meetingData[meeting.id] = updated;
+        } catch (err) {
+          console.error('[groupchat] set participants failed:', err);
+        }
+        renderToolbar(meetingData[meeting.id] || meeting);
+        refreshRoundtablePanel(meetingData[meeting.id] || meeting);
       });
     });
     // 时光机 banner 退出按钮
@@ -2303,6 +2564,47 @@ if (typeof document !== 'undefined') (function () {
     ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
   }
 
+  function triggerGroupChat(meeting, opts = {}) {
+    const cached = _rtPanelState[meeting.id];
+    _rtTurnStartTs[meeting.id] = Date.now();
+    _rtOptimisticTurn[meeting.id] = { mode: 'group', t: Date.now() };
+    if (cached) {
+      cached.currentMode = 'group';
+      cached._partialBy = null;
+    }
+    refreshRoundtablePanel(meeting);
+    renderToolbar(meeting);
+
+    const clearOptimistic = () => {
+      delete _rtOptimisticTurn[meeting.id];
+      const c = _rtPanelState[meeting.id];
+      if (c) c.currentMode = null;
+      refreshRoundtablePanel(meeting);
+      renderToolbar(meeting);
+    };
+
+    ipcRenderer.invoke('groupchat:turn', {
+      meetingId: meeting.id,
+      userInput: opts.userInput || '',
+    }).then((result) => {
+      console.log('[groupchat] turn IPC resolved:', result && result.status, 'turn=', result && result.turnNum);
+      clearOptimistic();
+      if (result && (result.status === 'busy' || result.status === 'error')) {
+        const inp = document.getElementById('mr-input-box');
+        if (inp && !inp.innerText.trim()) {
+          inp.textContent = opts.userInput || '';
+          _placeCaretAtEnd(inp);
+        }
+        alert(result.reason || 'AI 群聊发送失败');
+      }
+    }).catch((e) => {
+      console.error('[groupchat] turn IPC failed:', e.message);
+      clearOptimistic();
+    });
+    meeting.lastMessageTime = Date.now();
+    ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
+  }
+
   function findSessionByKind(meeting, kind) {
     if (!meeting || !meeting.subSessions) return null;
     for (const sid of meeting.subSessions) {
@@ -2471,9 +2773,11 @@ if (typeof document !== 'undefined') (function () {
       // silent-failure-hunter L1（2026-05-04 道雪）：并发场景（partial-update 在 turn-complete
       //   之后到、cached 字段意外 null）下 _renderRtPanelHtml 可能抛 TypeError，
       //   原版无 try/catch → 整个 IPC 回调崩溃，panel 残破。包一层让回调能 return。
+      const groupScroll = _captureGroupChatScroll(panel, meeting);
       try {
         panel.innerHTML = _renderRtPanelHtml(cached, meeting);
         _bindRtPanelEvents(panel, meeting);
+        _restoreGroupChatScroll(panel, groupScroll);
       } catch (e) {
         console.error('[roundtable] partial-update fallback rebuild failed:', e);
       }
@@ -2919,6 +3223,16 @@ if (typeof document !== 'undefined') (function () {
 
     // Arch refactor 2026-05-02: 沉浸/调试切换按钮已删除。圆桌界面只有一种
     // 视图（永远纯卡片），shell 沉到子 session 主区。
+    const groupViewMode = meeting.groupChat ? _getGroupViewMode() : null;
+    const viewToggleHtml = meeting.groupChat ? `
+        <div class="mr-view-toggle mr-group-view-toggle" role="group" aria-label="AI group chat view mode">
+          <button class="mr-header-btn mr-view-btn ${groupViewMode === 'chat' ? 'active' : ''}" id="mr-btn-group-chat-view" title="聊天流视图">聊天</button>
+          <button class="mr-header-btn mr-view-btn ${groupViewMode === 'card' ? 'active' : ''}" id="mr-btn-group-card-view" title="卡片视图">卡片</button>
+        </div>` : `
+        <div class="mr-view-toggle" role="group" aria-label="Card view mode">
+          <button class="mr-header-btn mr-view-btn ${!_isCardTabMode() ? 'active' : ''}" id="mr-btn-view-parallel" title="并列显示 3 张 AI 卡片">并列</button>
+          <button class="mr-header-btn mr-view-btn ${_isCardTabMode() ? 'active' : ''}" id="mr-btn-view-tab" title="Tab 模式：主界面只显示当前 AI 卡片">Tab</button>
+        </div>`;
 
     el.innerHTML = `
       <div class="mr-header-left">
@@ -2927,10 +3241,7 @@ if (typeof document !== 'undefined') (function () {
       </div>
       <div class="mr-header-progress" id="mr-header-progress" title="本轮发言进度"></div>
       <div class="mr-header-right">${layoutButtonsHtml}
-        <div class="mr-view-toggle" role="group" aria-label="Card view mode">
-          <button class="mr-header-btn mr-view-btn ${!_isCardTabMode() ? 'active' : ''}" id="mr-btn-view-parallel" title="并列显示 3 张 AI 卡片">并列</button>
-          <button class="mr-header-btn mr-view-btn ${_isCardTabMode() ? 'active' : ''}" id="mr-btn-view-tab" title="Tab 模式：主界面只显示当前 AI 卡片">Tab</button>
-        </div>
+        ${viewToggleHtml}
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
         <button class="mr-header-btn compact-toggle-btn ${document.body.classList.contains('compact-mode') ? 'active' : ''}" title="简洁模式（手机远程友好）">📱 简洁</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
@@ -2944,12 +3255,22 @@ if (typeof document !== 'undefined') (function () {
     if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
     const parallelBtn = document.getElementById('mr-btn-view-parallel');
     const tabBtn = document.getElementById('mr-btn-view-tab');
+    const groupChatBtn = document.getElementById('mr-btn-group-chat-view');
+    const groupCardBtn = document.getElementById('mr-btn-group-card-view');
     if (parallelBtn) parallelBtn.addEventListener('click', () => {
       _setCardViewMode('parallel', meeting);
       renderHeader(meeting);
     });
     if (tabBtn) tabBtn.addEventListener('click', () => {
       _setCardViewMode('tab', meeting);
+      renderHeader(meeting);
+    });
+    if (groupChatBtn) groupChatBtn.addEventListener('click', () => {
+      _setGroupViewMode('chat', meeting);
+      renderHeader(meeting);
+    });
+    if (groupCardBtn) groupCardBtn.addEventListener('click', () => {
+      _setGroupViewMode('card', meeting);
       renderHeader(meeting);
     });
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
@@ -3583,6 +3904,15 @@ if (typeof document !== 'undefined') (function () {
       // T6：mode toggle segmented control（必须在 debateDisabled 之前，因为 debateDisabled 依赖 meetingMode）
       // 2026-05-05 道雪：主驾入口废弃，fallback 'pilot' → 'free'（与 core 一致）。
       const meetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'free';
+      const isGroupChat = !!meeting.groupChat;
+      const participantIndexes = isGroupChat
+        ? slotsArr.map((s, idx) => s ? idx : null).filter(idx => idx !== null)
+        : [0, 1, 2];
+      const slotDisplayLabel = (idx) => {
+        const slot = slotsArr[idx];
+        if (!slot) return `AI ${idx + 1}`;
+        return slot.displayLabel || slot.label || slot.kind || `AI ${idx + 1}`;
+      };
 
       // debate: free 模式需 >=2 人；pilot 模式下一家无法辩论 → disable
       const debateDisabled = (() => {
@@ -3618,16 +3948,15 @@ if (typeof document !== 'undefined') (function () {
       let statusLine;
       if (meetingMode === 'free') {
         const parts = Array.isArray(meeting.participants) ? meeting.participants : [];
-        const SLOT_NAMES_S = ['⚡皮卡丘', '🔥小火龙', '💎杰尼龟'];
-        let speakerStr;
-        if (parts.length === 0) {
-          speakerStr = '<strong style="color:#f85149">⚠ 请勾选至少一位发言人</strong>';
-        } else {
-          speakerStr = '发言人: <strong>' + parts.map(i => SLOT_NAMES_S[i]).join(', ') + '</strong>';
-        }
-        statusLine = `<div class="mr-status-line">分发: <strong>自由</strong> · ${speakerStr}${
-          inProgress ? ' · <strong>⏳ 处理中</strong>' : (turns > 0 ? ` · 已 ${turns} 轮` : '')
-        }</div>`;
+          let speakerStr;
+          if (parts.length === 0) {
+            speakerStr = '<strong style="color:#f85149">⚠ 请勾选至少一位发言人</strong>';
+          } else {
+            speakerStr = '发言人: <strong>' + parts.map(i => escapeHtml(slotDisplayLabel(i))).join(', ') + '</strong>';
+          }
+          statusLine = `<div class="mr-status-line">分发: <strong>${isGroupChat ? '群聊' : '自由'}</strong> · ${speakerStr}${
+            inProgress ? ' · <strong>⏳ 处理中</strong>' : (turns > 0 ? ` · 已 ${turns} 轮` : '')
+          }</div>`;
       } else {
         // pilot 路径：原状态行不动
         const dispatchModeLabel = { all: '群策群力', pilot: '主驾发言', observer: '副驾发言' }[dispatchMode];
@@ -3641,18 +3970,27 @@ if (typeof document !== 'undefined') (function () {
       // T6：dispatch 区域按 mode 分支
       const SLOT_AVATARS = ['pikachu.png', 'charmander.png', 'squirtle.png'];
       const SLOT_LABELS = ['⚡ Pikachu · 皮卡丘', '🔥 Charmander · 小火龙', '💎 Squirtle · 杰尼龟'];
+      const slotAvatarSrc = (idx) => {
+        const slot = slotsArr[idx] || {};
+        if (isGroupChat) return `assets/ai-logos/${escapeHtml(slot.kind || 'claude')}.svg`;
+        return `assets/pokemon/${SLOT_AVATARS[idx] || SLOT_AVATARS[idx % SLOT_AVATARS.length]}`;
+      };
+      const slotLabelFull = (idx) => isGroupChat
+        ? slotDisplayLabel(idx)
+        : (SLOT_LABELS[idx] || `AI ${idx + 1}`);
       const dispatchAreaHtml = (() => {
         if (meetingMode === 'free') {
           const participants = Array.isArray(meeting.participants) ? meeting.participants : [];
           const partSet = new Set(participants);
-          const slotsHtml = [0, 1, 2].map(idx => {
+          const slotsHtml = participantIndexes.map(idx => {
             const checked = partSet.has(idx);
             const disabled = inProgress ? 'disabled' : '';
+            const label = slotLabelFull(idx);
             return `
               <label class="mr-free-slot ${checked ? 'checked' : ''} ${disabled}" data-slot-idx="${idx}">
                 <input type="checkbox" class="mr-free-slot-cb" data-slot-idx="${idx}" ${checked ? 'checked' : ''} ${disabled} />
-                <img src="assets/pokemon/${SLOT_AVATARS[idx]}" alt="${SLOT_LABELS[idx]}" />
-                <span class="mr-free-slot-label">${SLOT_LABELS[idx]}</span>
+                <img src="${slotAvatarSrc(idx)}" alt="${escapeHtml(label)}" />
+                <span class="mr-free-slot-label">${escapeHtml(label)}</span>
               </label>
             `;
           }).join('');
@@ -3693,15 +4031,15 @@ if (typeof document !== 'undefined') (function () {
         if (avatarsRow) {
           const participants = Array.isArray(meeting.participants) ? meeting.participants : [];
           const partSet = new Set(participants);
-          const SLOT_LABELS_FULL = ['⚡ Pikachu · 皮卡丘', '🔥 Charmander · 小火龙', '💎 Squirtle · 杰尼龟'];
-          avatarsRow.innerHTML = [0, 1, 2].map(idx => {
+          avatarsRow.innerHTML = participantIndexes.map(idx => {
             const checked = partSet.has(idx);
             const disabledAttr = inProgress ? 'disabled' : '';
+            const label = slotLabelFull(idx);
             return `
-              <label class="mr-free-avatar-chk ${checked ? 'checked' : ''} ${disabledAttr}"
-                     data-slot-idx="${idx}" title="${SLOT_LABELS_FULL[idx]}">
+              <label class="mr-free-avatar-chk ${isGroupChat ? 'group' : ''} ${checked ? 'checked' : ''} ${disabledAttr}"
+                     data-slot-idx="${idx}" title="${escapeHtml(label)}">
                 <input type="checkbox" class="mr-free-slot-cb" data-slot-idx="${idx}" ${checked ? 'checked' : ''} ${disabledAttr} />
-                <img src="assets/pokemon/${SLOT_AVATARS[idx]}" alt="${SLOT_LABELS_FULL[idx]}" />
+                <img src="${slotAvatarSrc(idx)}" alt="${escapeHtml(label)}" />
                 <span class="mr-free-avatar-chk-mark">✓</span>
               </label>
             `;
@@ -3710,7 +4048,7 @@ if (typeof document !== 'undefined') (function () {
         // 2. 模式 dropdown → #mr-input-mode-chips（摘要功能 2026-05-08 下线后仅剩"辩论"）
         const modeChipsEl = document.getElementById('mr-input-mode-chips');
         if (modeChipsEl) {
-          modeChipsEl.innerHTML = `
+          modeChipsEl.innerHTML = isGroupChat ? '' : `
             <div class="mr-mode-dropdown">
               <button class="mr-mode-trigger" id="mr-mode-trigger" title="选择动作: 辩论">
                 <span>🎯 模式</span><span class="mr-mode-arrow">▾</span>
@@ -3827,6 +4165,7 @@ if (typeof document !== 'undefined') (function () {
   function buildRtMentionItems(meeting) {
     const items = [];
     const subSids = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions : [];
+    const isGroupChat = !!(meeting && meeting.groupChat);
     const sidKind = {};
     const kindCount = {};
     for (const sid of subSids) {
@@ -3841,10 +4180,12 @@ if (typeof document !== 'undefined') (function () {
       const sid = subSids[i];
       const k = sidKind[sid] || null;
       const kindLabel = k ? (_KIND_LABELS[k] || k) : '';
+      const session = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+      const title = session ? (session.title || kindLabel || `AI ${i + 1}`) : (kindLabel || `AI ${i + 1}`);
       items.push({
-        value: `@slot${i + 1}`,
-        label: `Slot ${i + 1}${kindLabel ? ' · ' + kindLabel : ''}`,
-        hint: 'private ask',
+        value: isGroupChat ? `@m${i + 1}` : `@slot${i + 1}`,
+        label: isGroupChat ? `m${i + 1} · ${title}` : `Slot ${i + 1}${kindLabel ? ' · ' + kindLabel : ''}`,
+        hint: isGroupChat ? 'group target' : 'private ask',
         sid,
         kind: k,
         slotIndex: i,
@@ -3862,8 +4203,12 @@ if (typeof document !== 'undefined') (function () {
         });
       }
     }
-    // mode 触发（静态；摘要功能 2026-05-08 下线后仅剩 @debate）
-    items.push({ value: '@debate', label: '@debate', hint: 'cross-review' });
+    if (isGroupChat) {
+      items.unshift({ value: '@all', label: '@all · 全体成员', hint: 'group target' });
+    } else {
+      // mode 触发（静态；摘要功能 2026-05-08 下线后仅剩 @debate）
+      items.push({ value: '@debate', label: '@debate', hint: 'cross-review' });
+    }
     return items;
   }
 
@@ -3941,6 +4286,7 @@ if (typeof document !== 'undefined') (function () {
     inputBox.focus();
     _placeCaretAtTextOffset(inputBox, match.start + inserted.length);
     _hideRtMentionMenu();
+    if (meeting && meeting.groupChat) return;
     // meeting-create-modal：slot mentions 优先按 sid focus（精确指向 slot）；
     //   kind alias 走老 _focusRoundtableKind（kind 唯一时才注册此别名，确定不歧义）。
     if (item.sid) _focusRoundtableSession(meeting, item.sid);
@@ -4066,14 +4412,20 @@ if (typeof document !== 'undefined') (function () {
     // T7: free 模式 0 人勾选时灰态保护
     // 2026-05-05 道雪：主驾入口废弃，fallback 'pilot' → 'free'（与 core 一致）。
     const _curMeetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'free';
-    const isFreeZeroSelected = (_curMeetingMode === 'free') &&
+    const zeroParticipantsSelected = (_curMeetingMode === 'free') &&
       (Array.isArray(meeting.participants) && meeting.participants.length === 0);
+    const isFreeZeroSelected = zeroParticipantsSelected && !meeting.groupChat;
     if (meeting.scene) {
       inputBox.dataset.placeholder = isFreeZeroSelected
         ? '请先勾选至少一位发言人'
         : '圆桌讨论：发普通文本启动一轮 / @debate / @<slot> 单聊';
     } else {
       inputBox.dataset.placeholder = '输入消息...';
+    }
+    if (meeting.scene && meeting.groupChat) {
+      inputBox.dataset.placeholder = zeroParticipantsSelected
+        ? 'AI 群聊：请勾选成员，或用 @成员名 / @m1 / @all 指定发言人'
+        : 'AI 群聊：发消息给勾选成员，或 @成员名 / @m1 / @all';
     }
     // 灰态：readonly + class 切换
     if (isFreeZeroSelected) {
@@ -4144,7 +4496,7 @@ if (typeof document !== 'undefined') (function () {
       if (!m) return;
       // free-mode（2026-05-04）：0 人勾选时拒绝发送
       // CSS readonly 对 contenteditable 无效，必须 JS 二次防御，防 race 导致按钮意外还原
-      if (m.mode === 'free') {
+      if (m.mode === 'free' && !m.groupChat) {
         const parts = Array.isArray(m.participants) ? m.participants : [];
         if (parts.length === 0) {
           alert('请先勾选至少一位发言人');
@@ -4212,6 +4564,15 @@ if (typeof document !== 'undefined') (function () {
     // --- Research Mode routing 优先 ---
     // 路由由 fanout/debate 决定（摘要功能 2026-05-08 整体下线）。
     if (current.scene) {
+      if (current.groupChat) {
+        const _userInputForBanner = text.trim();
+        if (_userInputForBanner) _currentTurnUserInputByMeeting[meeting.id] = _userInputForBanner;
+        try {
+          await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
+        } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
+        triggerGroupChat(current, { userInput: text });
+        return;
+      }
       const cmd = parseRoundtableCommand(text, current);
       // 公共轮次：fanout / debate 走 orchestrator
       if (cmd.type === 'rt-fanout' || cmd.type === 'rt-debate') {

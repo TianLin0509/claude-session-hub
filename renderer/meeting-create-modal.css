@@ -85,12 +85,13 @@
 
 .mcm-slots {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
 
 .mcm-slot {
+  position: relative;
   background: var(--bg-card-2, #1c232c);
   border: 1px solid var(--border, #30363d);
   border-radius: 8px;
@@ -99,6 +100,45 @@
   flex-direction: column;
   gap: 10px;
   align-items: center;
+}
+.mcm-group-member .mcm-avatar {
+  background: #fff;
+  padding: 8px;
+  object-fit: contain;
+}
+.mcm-remove-member {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--border, #30363d);
+  background: var(--bg, #0d1117);
+  color: var(--text-dim, #8b949e);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+.mcm-remove-member:hover {
+  color: var(--text, #e6edf3);
+  border-color: var(--accent, #58a6ff);
+}
+.mcm-add-member {
+  align-items: center;
+  justify-content: center;
+  margin: -4px 0 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px dashed var(--border, #30363d);
+  background: transparent;
+  color: var(--text, #e6edf3);
+  cursor: pointer;
+  font-family: inherit;
+}
+.mcm-add-member:hover {
+  border-color: var(--accent, #58a6ff);
+  background: rgba(88, 166, 255, 0.08);
 }
 .mcm-avatar {
   width: 56px;

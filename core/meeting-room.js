@@ -26,7 +26,7 @@ class MeetingRoomManager {
   createMeeting(opts = {}) {
     const id = uuid();
     const mode = MODE_TITLE_PREFIX[opts.mode] ? opts.mode : 'general';
-    const titlePrefix = MODE_TITLE_PREFIX[mode];
+    const titlePrefix = opts.groupChat ? 'AI 群聊' : MODE_TITLE_PREFIX[mode];
     const seq = ++this._counters[mode];
     // meeting-create-modal（2026-05-05 道雪）：用户在 Modal 房名输入框填了非空字符串
     //   则用用户的（trim 后），否则走默认编号 title。modal 留空 = undefined，向后兼容。
@@ -47,6 +47,9 @@ class MeetingRoomManager {
       lastScene: 'free_discussion',
       scene: MEETING_MODES.includes(mode) ? mode : 'general',
       covenantText: '',
+      groupChat: !!opts.groupChat,
+      groupMode: typeof opts.groupMode === 'string' ? opts.groupMode : 'deliberation',
+      groupRecentRawN: Number.isInteger(opts.groupRecentRawN) ? opts.groupRecentRawN : 5,
       // meeting-create-modal（2026-05-01）：用户在 Modal 选定的 slots 列表，
       //   形如 [{ index, kind, model }, ...]。subSessions 数组顺序与 slot index 同步，
       //   slotSpecs 保留 kind/model 是为了"再来一次"或诊断信息。
@@ -65,7 +68,7 @@ class MeetingRoomManager {
       //   不再有 pilot 入口。opts.meetingMode 字段被忽略。
       mode: 'free',
       // free-mode（2026-05-04）：自由模式参与者 slot 列表，默认全员勾选
-      participants: [0, 1, 2],
+      participants: Array.isArray(opts.participants) ? opts.participants.slice() : [0, 1, 2],
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -182,6 +185,9 @@ class MeetingRoomManager {
       dispatchMode: m.dispatchMode || 'all',
       // 2026-05-05 道雪：fallback 从 'pilot' 改 'free'（与新建路径一致），主驾入口废弃。
       mode: ['pilot', 'free'].includes(m.mode) ? m.mode : 'free',
+      groupChat: !!m.groupChat,
+      groupMode: m.groupMode || 'deliberation',
+      groupRecentRawN: Number.isInteger(m.groupRecentRawN) ? m.groupRecentRawN : 5,
       participants: Array.isArray(m.participants) ? [...m.participants] : null,
     } : null;
   }
@@ -197,6 +203,9 @@ class MeetingRoomManager {
       dispatchMode: m.dispatchMode || 'all',
       // 2026-05-05 道雪：fallback 从 'pilot' 改 'free'（与新建路径一致），主驾入口废弃。
       mode: ['pilot', 'free'].includes(m.mode) ? m.mode : 'free',
+      groupChat: !!m.groupChat,
+      groupMode: m.groupMode || 'deliberation',
+      groupRecentRawN: Number.isInteger(m.groupRecentRawN) ? m.groupRecentRawN : 5,
       participants: Array.isArray(m.participants) ? [...m.participants] : null,
     }));
   }
@@ -208,7 +217,7 @@ class MeetingRoomManager {
       // Already a member: idempotent, cursor preserved (regardless of capacity)
       return { ...m, subSessions: [...m.subSessions], _timeline: [...m._timeline], _cursors: { ...m._cursors } };
     }
-    if (m.subSessions.length >= 3) return null;
+    if (!m.groupChat && m.subSessions.length >= 3) return null;
     m.subSessions.push(sessionId);
     if (!(sessionId in m._cursors)) {
       m._cursors[sessionId] = 0; // new join: see full history
@@ -306,6 +315,9 @@ class MeetingRoomManager {
       lastScene: meetingData.lastScene || 'free_discussion',
       scene,
       covenantText: meetingData.covenantText || meetingData.generalRoundtableCovenant || '',
+      groupChat: !!meetingData.groupChat,
+      groupMode: meetingData.groupMode || 'deliberation',
+      groupRecentRawN: Number.isInteger(meetingData.groupRecentRawN) ? meetingData.groupRecentRawN : 5,
       // meeting-create-modal（2026-05-01）：从 state.json 还原 slot 规格；
       //   老 meeting 没有此字段时为 null，渲染逻辑会按 subSessions 顺序兜底分配 slot。
       slotSpecs: Array.isArray(meetingData.slotSpecs) ? meetingData.slotSpecs.slice() : null,

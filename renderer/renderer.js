@@ -389,6 +389,7 @@ const btnResume = document.getElementById('btn-resume');
 const resumeMenuEl = document.getElementById('resume-picker-menu');
 const resumeWrapperEl = document.getElementById('resume-picker-wrapper');
 const btnRoundtable = document.getElementById('btn-roundtable');
+const btnGroupChat = document.getElementById('btn-group-chat');
 const contextMenuEl = document.getElementById('context-menu');
 const appContainerEl = document.getElementById('app-container');
 // btn-collapse-sidebar 已删除 (v0.8.4) — 用 Ctrl+B 折叠;展开按钮 btn-expand-sidebar 在折叠态仍提供
@@ -727,9 +728,11 @@ function renderSessionList() {
       const div = document.createElement('div');
       // 2026-05-05 道雪 修3：圆桌 item 也应用 has-unread CSS（跟普通 session 一致），
       //   全员答完且非 active 时高亮提醒；用户点进圆桌后清零。
-      const hasUnread = !isActive && (s.unreadCount > 0);
+      const isDormantMeeting = s.status === 'dormant';
+      const hasUnread = !isDormantMeeting && !isActive && (s.unreadCount > 0);
       div.className = 'session-item meeting' + (isActive ? ' selected' : '')
-        + (isExpanded ? ' expanded' : '') + (hasUnread ? ' has-unread' : '');
+        + (isExpanded ? ' expanded' : '') + (hasUnread ? ' has-unread' : '')
+        + (isDormantMeeting ? ' dormant' : '');
       div.dataset.meetingId = s.id;
       // Phase 8(2026-05-05 道雪): 折叠/展开态都显示 3 个迷你头像跳转按钮(替代旧 "N 个子会话" 文字)。
       //   slot 配色绑定: subSessions[0]=Pikachu(slot1) / [1]=Charmander(slot2) / [2]=Squirtle(slot3),
@@ -737,19 +740,27 @@ function renderSessionList() {
       //   状态点: thinking/streaming(running)=黄, errored=红, idle/completed=绿, 创建中=灰。
       const SLOT_AVATAR_FILES = ['pikachu.png', 'charmander.png', 'squirtle.png'];
       const SLOT_LABELS_M = ['⚡ 皮卡丘', '🔥 小火龙', '💎 杰尼龟'];
-      const miniJumpsHtml = (s._meeting.subSessions || []).slice(0, 3).map((subId, idx) => {
+      const isGroupChat = !!s._meeting.groupChat;
+      const miniSids = isGroupChat ? (s._meeting.subSessions || []) : (s._meeting.subSessions || []).slice(0, 3);
+      const miniJumpsHtml = miniSids.map((subId, idx) => {
         const sub = sessions.get(subId);
-        const label = SLOT_LABELS_M[idx] || `Slot ${idx + 1}`;
+        const label = isGroupChat
+          ? ((sub && (sub.title || sub.kind)) || `AI ${idx + 1}`)
+          : (SLOT_LABELS_M[idx] || `Slot ${idx + 1}`);
+        const avatarSrc = isGroupChat && sub && sub.kind
+          ? `assets/ai-logos/${sub.kind}.svg`
+          : `assets/pokemon/${SLOT_AVATAR_FILES[idx]}`;
         const modelLabel = sub && sub.currentModel ? (typeof modelShort === 'function' ? modelShort(sub.currentModel) : sub.currentModel.id) : '';
         // 状态点配色: 复用 sub.status(running/idle/errored), 配合 cliReadyCache 推断 initializing
         let statusCls = 'mini-st-ready';
         if (!sub) statusCls = 'mini-st-init';
+        else if (sub.status === 'dormant') statusCls = 'mini-st-dormant';
         else if (sub.status === 'errored' || sub.status === 'error') statusCls = 'mini-st-error';
         else if (sub.status === 'running') statusCls = 'mini-st-thinking';
         const isActiveChild = subId === activeSessionId;
         const tooltip = `${label}${modelLabel ? ' · ' + modelLabel : ''} (点击跳转)`;
-        return `<button class="mini-jump-btn slot-${idx + 1}${isActiveChild ? ' active' : ''}" data-sub-id="${subId}" title="${escapeHtml(tooltip)}">
-          <img src="assets/pokemon/${SLOT_AVATAR_FILES[idx]}" alt="${label}" />
+        return `<button class="mini-jump-btn slot-${idx + 1}${isGroupChat ? ' group' : ''}${isActiveChild ? ' active' : ''}" data-sub-id="${subId}" title="${escapeHtml(tooltip)}">
+          <img src="${avatarSrc}" alt="${escapeHtml(label)}" />
           <span class="mini-jump-status-dot ${statusCls}"></span>
         </button>`;
       }).join('');
@@ -758,9 +769,10 @@ function renderSessionList() {
           <span class="session-title">
             <span class="expand-arrow" data-action="toggle-expand" title="${isExpanded ? '折叠' : '展开'}">▶</span>
             ${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}
-            <span class="session-status running"></span>🎯 ${escapeHtml(s.title)}<span class="meeting-badge">${s._meeting.subSessions.length}</span>
+            <span class="session-status ${isDormantMeeting ? 'dormant' : 'running'}"></span>${isGroupChat ? '💬' : '🎯'} ${escapeHtml(s.title)}<span class="meeting-badge">${s._meeting.subSessions.length}</span>
           </span>
           <span class="session-header-right">
+            ${isDormantMeeting ? `<span class="dormant-badge" title="休眠中，点击唤醒">休眠</span>` : ''}
             ${hasUnread ? `<span class="unread-badge" title="新轮次完成">⏸ 等你</span>` : ''}
             <span class="session-time">${formatTime(s.lastMessageTime)}</span>
           </span>
@@ -793,7 +805,8 @@ function renderSessionList() {
           if (!sub) continue;
           const childDiv = document.createElement('div');
           const isChildActive = subId === activeSessionId;
-          childDiv.className = 'session-item child' + (isChildActive ? ' selected' : '');
+          const childDormantCls = sub.status === 'dormant' ? ' dormant' : '';
+          childDiv.className = 'session-item child' + (isChildActive ? ' selected' : '') + childDormantCls;
           childDiv.dataset.sessionId = subId;
           const modelLabel = sub.currentModel
             ? `<span class="child-model-badge ${modelClass(sub.currentModel.id)}" title="${escapeHtml(sub.currentModel.displayName || sub.currentModel.id)}">${escapeHtml(modelShort(sub.currentModel))}</span>`
@@ -816,9 +829,12 @@ function renderSessionList() {
 
     const isActive = s.id === activeSessionId;
     const div = document.createElement('div');
-    const dormantCls = s.status === 'dormant' ? ' dormant' : '';
-    const waitingCls = s.isWaiting && !isActive ? ' is-waiting' : '';
-    div.className = 'session-item' + (isActive ? ' selected' : '') + (!isActive && s.unreadCount > 0 ? ' has-unread' : '') + waitingCls + dormantCls;
+    const isDormant = s.status === 'dormant';
+    const dormantCls = isDormant ? ' dormant' : '';
+    const showWaiting = !isDormant && s.isWaiting && !isActive;
+    const showUnread = !isDormant && s.unreadCount > 0 && !isActive && !s.isWaiting;
+    const waitingCls = showWaiting ? ' is-waiting' : '';
+    div.className = 'session-item' + (isActive ? ' selected' : '') + (showUnread ? ' has-unread' : '') + waitingCls + dormantCls;
     const ctxBadge = typeof s.contextPct === 'number'
       ? `<span class="ctx-badge ${pctClass(s.contextPct)}" title="Context ${s.contextPct}%">Ctx ${s.contextPct}%</span>`
       : '';
@@ -835,12 +851,13 @@ function renderSessionList() {
       <div class="session-item-header">
         <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status ${s.status}"></span>${escapeHtml(s.title)}</span>
         <span class="session-header-right">
-          ${s.isWaiting && !isActive ? `<span class="waiting-badge" title="${escapeHtml(s.waitingText || 'Claude is waiting for your input')}">⏸ 等你</span>` : ''}
-          ${s.unreadCount > 0 && !isActive && !s.isWaiting ? `<span class="unread-badge" title="${escapeHtml(s.lastOutputPreview || 'AI 有新消息')}">⏸ 等你</span>` : ''}
+          ${isDormant ? `<span class="dormant-badge" title="休眠中，点击唤醒">休眠</span>` : ''}
+          ${showWaiting ? `<span class="waiting-badge" title="${escapeHtml(s.waitingText || 'Claude is waiting for your input')}">⏸ 等你</span>` : ''}
+          ${showUnread ? `<span class="unread-badge" title="${escapeHtml(s.lastOutputPreview || 'AI 有新消息')}">⏸ 等你</span>` : ''}
           <span class="session-time">${formatTime(s.lastMessageTime)}</span>
         </span>
       </div>
-      <div class="session-preview">${escapeHtml((s.isWaiting && s.waitingText) || s.lastOutputPreview || 'No output yet')}</div>
+      <div class="session-preview">${escapeHtml((!isDormant && s.isWaiting && s.waitingText) || s.lastOutputPreview || 'No output yet')}</div>
       ${footerInner ? `<div class="session-footer">${footerInner}</div>` : ''}
     `;
     div.addEventListener('click', () => selectSession(s.id));
@@ -3087,6 +3104,13 @@ for (const link of document.querySelectorAll('.launcher-link')) {
 btnRoundtable.addEventListener('click', async () => {
   await createMeetingByMode('general');
 });
+if (btnGroupChat) {
+  btnGroupChat.addEventListener('click', async () => {
+    if (typeof window.openMeetingCreateModal === 'function') {
+      window.openMeetingCreateModal('group');
+    }
+  });
+}
 
 // --- Resume past session modal ---
 const resumeModalEl = document.getElementById('resume-modal');
@@ -3507,13 +3531,25 @@ function registerLocalPathLinks(terminal, sessionId) {
     if (!prevLine || !currentLine) return false;
     const cols = terminal.cols;
     const prevTrim = prevLine.translateToString(true);
-    if (prevTrim.length !== cols) return false;
     const prevLast = prevTrim[prevTrim.length - 1];
     const curRaw = currentLine.translateToString(false);
-    const curFirst = curRaw[0];
-    return !!(prevLast && curFirst
+    const curTokenMatch = curRaw.match(/^\s*([^\s'"`<>|]+)/);
+    const curFirst = curTokenMatch && curTokenMatch[1] ? curTokenMatch[1][0] : null;
+    if (!(prevLast && curFirst
       && PATH_BOUNDARY_RE.test(prevLast)
-      && PATH_BOUNDARY_RE.test(curFirst));
+      && PATH_BOUNDARY_RE.test(curFirst))) return false;
+
+    if (prevTrim.length === cols) return true;
+
+    const prevToken = (prevTrim.match(/[^\s'"`<>|]+$/) || [''])[0];
+    const curToken = curTokenMatch && curTokenMatch[1] ? curTokenMatch[1] : '';
+    if (!prevToken || !curToken) return false;
+    const joined = _cleanPathCandidate(prevToken + curToken);
+    if (!PREVIEW_PATH_RE.test(joined)) return false;
+
+    const prevTokenLooksPath = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/]|\.{1,2}[\\/]|.*[\\/])/.test(prevToken);
+    const nearRightEdge = prevTrim.length >= Math.max(20, cols - 8);
+    return !!(prevLine.isWrapped || prevTokenLooksPath || nearRightEdge);
   };
 
   terminal.registerLinkProvider({
@@ -3538,16 +3574,22 @@ function registerLocalPathLinks(terminal, sessionId) {
       // split across wrap can be matched whole.
       let text = '';
       const lineWidths = [];
+      const linePrefixSkips = [];
       for (let i = groupIdx; ; i++) {
         const l = buf.getLine(i);
         if (!l) break;
+        let heuristicCont = false;
         if (i > groupIdx) {
           const prev = buf.getLine(i - 1);
-          if (!l.isWrapped && !_isHeuristicCont(prev, l)) break;
+          heuristicCont = !l.isWrapped && _isHeuristicCont(prev, l);
+          if (!l.isWrapped && !heuristicCont) break;
         }
-        const lt = l.translateToString(true);
+        const raw = l.translateToString(true);
+        const prefixSkip = heuristicCont ? ((raw.match(/^\s+/) || [''])[0].length) : 0;
+        const lt = prefixSkip ? raw.slice(prefixSkip) : raw;
         text += lt;
         lineWidths.push(lt.length);
+        linePrefixSkips.push(prefixSkip);
       }
 
       // Phase 0 — collect URL matches. Catches http(s)://host:port forms
@@ -3619,9 +3661,10 @@ function registerLocalPathLinks(terminal, sessionId) {
           const yLine = groupLine + i;
           if (yLine !== lineNumber) continue;
           const segStartOff = Math.max(c.start, lineStart);
-          const segEndOff = Math.min(c.end, lineEnd - 1);
-          const startX = segStartOff - lineStart + 1; // xterm cols are 1-based
-          const endX = segEndOff - lineStart + 1;
+            const segEndOff = Math.min(c.end, lineEnd - 1);
+            const prefixSkip = linePrefixSkips[i] || 0;
+            const startX = segStartOff - lineStart + 1 + prefixSkip; // xterm cols are 1-based
+            const endX = segEndOff - lineStart + 1 + prefixSkip;
           const fullPath = c.openPath;
           const isUrl = !!c.isUrl;
           // hover/leave/dispose route through _activeLinkGroups so all
@@ -5882,10 +5925,10 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
   if (!ev || !ev.hubSessionId) return;
   const s = sessions.get(ev.hubSessionId);
   if (!s) return;
-  if (ev.codexSid && !s.codexSid) s.codexSid = ev.codexSid;
-  if (ev.geminiChatId && !s.geminiChatId) s.geminiChatId = ev.geminiChatId;
-  if (ev.geminiProjectHash && !s.geminiProjectHash) s.geminiProjectHash = ev.geminiProjectHash;
-  if (ev.geminiProjectRoot && !s.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
+  if (ev.codexSid) s.codexSid = ev.codexSid;
+  if (ev.geminiChatId) s.geminiChatId = ev.geminiChatId;
+  if (ev.geminiProjectHash) s.geminiProjectHash = ev.geminiProjectHash;
+  if (ev.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
 });
 
 // Spec 3 · W13：清理 _cardReloadState 的 session 条目，防 Map 长期累积。
