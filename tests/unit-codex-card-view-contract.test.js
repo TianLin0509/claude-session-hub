@@ -36,6 +36,18 @@ assert.ok(
   'renderer must retry transient Codex rollout binding during resume',
 );
 assert.ok(
+  rendererSrc.includes("const _bodyFoldState = new Map()") &&
+  rendererSrc.includes("_bodyFoldState.set(turnId, true)") &&
+  rendererSrc.includes("_bodyFoldState.get(turnId) === true"),
+  'card body expand/collapse state must survive incremental Codex card re-renders',
+);
+assert.ok(
+  rendererSrc.includes("function turnRenderSignature") &&
+  rendererSrc.includes("const _turnRenderSigs = new Map()") &&
+  rendererSrc.includes("prevSig === nextSig"),
+  'incremental card reload must skip unchanged turn replacement to avoid disrupting reading',
+);
+assert.ok(
   tapSrc.includes("getCodexRolloutPath(hubSessionId)"),
   'TranscriptTap must expose the bound Codex rollout path to the IPC parser',
 );

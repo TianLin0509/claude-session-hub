@@ -28,9 +28,23 @@ assert.ok(
 );
 
 assert.ok(
-  /function\s+onPromptSubmittedFromTranscriptEvent\s*\([\s\S]{0,900}session\.status\s*=\s*['"]running['"]/.test(rendererSrc) &&
+  /function\s+onPromptSubmittedFromTranscriptEvent\s*\([\s\S]{0,900}markCodexCardWorking\(hubSessionId/.test(rendererSrc) &&
+  /function\s+markCodexCardWorking\s*\([\s\S]{0,500}session\.status\s*=\s*['"]running['"]/.test(rendererSrc) &&
   /function\s+onPromptSubmittedFromTranscriptEvent\s*\([\s\S]{0,900}buildPreviewFromUserMessage\(text\)/.test(rendererSrc),
   'Codex prompt event must mark the session running and update sidebar preview from user text',
+);
+
+assert.ok(
+  /function\s+hasSemanticCardWorking/.test(rendererSrc) &&
+  /if \(!hasSemanticCardWorking\(session\)\) session\.status\s*=\s*['"]idle['"]/.test(rendererSrc),
+  'Codex semantic working state must survive PTY silence until task_complete clears it',
+);
+
+assert.ok(
+  rendererSrc.includes("_codexSubmitPendingTimers") &&
+  rendererSrc.includes("_CODEX_CARD_SUBMIT_PENDING_MS") &&
+  rendererSrc.includes("cardWorkingSource === 'floating_input'"),
+  'Codex optimistic submit indicator must self-expire if rollout user_message never confirms work',
 );
 
 assert.ok(

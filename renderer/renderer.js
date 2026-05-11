@@ -1987,6 +1987,8 @@ window._renderTurnCard = renderTurnCard;
 // === Spec 1 v0.9.0 · 代码块强化 (D2) ===
 let _codeFoldThreshold = 30;
 const _foldedCodesState = new Map();
+const _bodyFoldState = new Map(); // turnId -> true(expanded) / false(folded)
+const _turnRenderSigs = new Map(); // turnId -> compact content signature
 
 function postProcessCardCodeBlocks(cardEl) {
   if (!cardEl) return;
@@ -2047,11 +2049,14 @@ function postProcessLongTextFold(cardEl) {
   // 已存在折叠按钮（rerender 路径） → 跳过
   if (cardEl.querySelector('.body-fold-toggle')) return;
   if (body.scrollHeight <= _BODY_FOLD_THRESHOLD_PX) return;
-  body.classList.add('body-foldable', 'folded');
+  const turnId = cardEl.dataset.turnId || '';
+  const expanded = turnId && _bodyFoldState.get(turnId) === true;
+  body.classList.add('body-foldable');
+  if (!expanded) body.classList.add('folded');
   const btn = document.createElement('div');
   btn.className = 'body-fold-toggle';
-  btn.dataset.action = 'body-expand';
-  btn.textContent = '▾ 展开全文';
+  btn.dataset.action = expanded ? 'body-collapse' : 'body-expand';
+  btn.textContent = expanded ? '▴ 折叠' : '▾ 展开全文';
   body.parentElement.insertBefore(btn, body.nextSibling);
 }
 
@@ -2063,11 +2068,14 @@ document.addEventListener('click', (e) => {
   if (!card) return;
   const body = card.querySelector('.turn-body');
   if (!body) return;
+  const turnId = card.dataset.turnId || '';
   if (btn.dataset.action === 'body-expand') {
+    if (turnId) _bodyFoldState.set(turnId, true);
     body.classList.remove('folded');
     btn.dataset.action = 'body-collapse';
     btn.textContent = '▴ 折叠';
   } else {
+    if (turnId) _bodyFoldState.set(turnId, false);
     body.classList.add('folded');
     btn.dataset.action = 'body-expand';
     btn.textContent = '▾ 展开全文';
@@ -2167,6 +2175,26 @@ function mountOptimisticUserCard(sessionId, text, kind) {
 }
 window._mountOptimisticUserCard = mountOptimisticUserCard;
 
+function turnRenderSignature(turn) {
+  if (!turn) return '';
+  const raw = JSON.stringify({
+    role: turn.role || '',
+    text: turn.text || '',
+    thinking: turn.thinking || '',
+    stopReason: turn.stopReason || '',
+    durationMs: turn.durationMs || null,
+    tsEnd: turn.tsEnd || null,
+    toolCalls: Array.isArray(turn.toolCalls) ? turn.toolCalls : [],
+    usage: turn.usage || null,
+  });
+  let hash = 2166136261;
+  for (let i = 0; i < raw.length; i++) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${raw.length}:${hash >>> 0}`;
+}
+
 function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 1. validate inputs
   if (!turn || !turn.id || !turn.role) {
@@ -2206,10 +2234,19 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 副作用：替换瞬间该卡片如有 hover 操作菜单会闪一下，可接受。
   const existing = container.querySelector(`.turn-card[data-turn-id="${CSS.escape(turn.id)}"]`);
   if (existing) {
+    const turnForRender2 = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
+    const prevTurn = window._sessionTurns.get(turn.id);
+    const prevSig = _turnRenderSigs.get(turn.id) || turnRenderSignature(prevTurn);
+    const nextSig = turnRenderSignature(turnForRender2);
+    if (prevSig === nextSig) {
+      window._sessionTurns.set(turn.id, turnForRender2);
+      _turnRenderSigs.set(turn.id, nextSig);
+      if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
+      return existing;
+    }
     let newCard = null;
     try {
       const tmp2 = document.createElement('div');
-      const turnForRender2 = (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn;
       tmp2.innerHTML = renderTurnCard(turnForRender2);
       newCard = tmp2.firstElementChild;
     } catch (err) {
@@ -2224,6 +2261,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     if (bodyEl2 && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl2, { sessionId });
     if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
     window._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
+    _turnRenderSigs.set(turn.id, nextSig);
     return newCard;
   }
 
@@ -2276,6 +2314,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 8. register in _sessionTurns (turnId → turn) — keep spec1 Map shape
   // Use turnForRender (kind merged) so rerenderTurn won't lose kind on fold/unfold
   window._sessionTurns.set(turn.id, turnForRender);
+  _turnRenderSigs.set(turn.id, turnRenderSignature(turnForRender));
 
   // 9. autoScroll — 2026-05-06 道雪 scroll-respect-user:仅当用户原本在底部时才滚
   //   (向上翻历史时不打断,避免被新 turn 拍回底部)
@@ -2358,6 +2397,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     container.innerHTML = '';
     if (!window._sessionTurns) window._sessionTurns = new Map();
     window._sessionTurns.clear();
+    _turnRenderSigs.clear();
   } else if (!window._sessionTurns) {
     window._sessionTurns = new Map();
   }
@@ -2777,12 +2817,85 @@ let currentView = 'pty'; // 'card' | 'pty'
 //     ≥1 卡时显示"Claude 还在生成更多回复…"（暗示后续还有，user 关心的核心）。
 const _W16_DELAYED_REMOVE_MS = 1500;
 const _w16RemoveTimers = new Map(); // sessionId → setTimeout id
+const _codexSubmitPendingTimers = new Map(); // sessionId -> setTimeout id
+const _CODEX_CARD_SUBMIT_PENDING_MS = 15 * 1000;
+const _CODEX_CARD_WORK_MAX_MS = 45 * 60 * 1000;
+
+function isCodexKind(kind) {
+  return kind === 'codex' || kind === 'codex-resume';
+}
+
+function markCodexCardWorking(sessionId, source = 'prompt') {
+  const session = sessions.get(sessionId);
+  if (!session || !isCodexKind(session.kind) || session.status === 'dormant') return;
+  if (_codexSubmitPendingTimers.has(sessionId)) {
+    clearTimeout(_codexSubmitPendingTimers.get(sessionId));
+    _codexSubmitPendingTimers.delete(sessionId);
+  }
+  session.cardWorkingSince = Date.now();
+  session.cardWorkingSource = source;
+  session.isWaiting = false;
+  session.waitingReason = null;
+  session.waitingText = null;
+  session.status = 'running';
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
+  if (source === 'floating_input') {
+    const timer = setTimeout(() => {
+      _codexSubmitPendingTimers.delete(sessionId);
+      const latest = sessions.get(sessionId);
+      if (!latest || latest.cardWorkingSource !== 'floating_input') return;
+      latest.cardWorkingSince = null;
+      latest.cardWorkingSource = null;
+      latest.status = 'idle';
+      if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
+      renderSessionList();
+    }, _CODEX_CARD_SUBMIT_PENDING_MS);
+    _codexSubmitPendingTimers.set(sessionId, timer);
+  }
+}
+
+function clearCodexCardWorking(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  if (_codexSubmitPendingTimers.has(sessionId)) {
+    clearTimeout(_codexSubmitPendingTimers.get(sessionId));
+    _codexSubmitPendingTimers.delete(sessionId);
+  }
+  session.cardWorkingSince = null;
+  session.cardWorkingSource = null;
+}
+
+function hasSemanticCardWorking(session) {
+  if (!session) return false;
+  if (!isCodexKind(session.kind) || session.isWaiting || !session.cardWorkingSince) return false;
+  const maxAge = session.cardWorkingSource === 'floating_input'
+    ? _CODEX_CARD_SUBMIT_PENDING_MS
+    : _CODEX_CARD_WORK_MAX_MS;
+  if (Date.now() - session.cardWorkingSince > maxAge) {
+    session.cardWorkingSince = null;
+    session.cardWorkingSource = null;
+    return false;
+  }
+  return true;
+}
+
+function isSessionCardWorking(session) {
+  if (!session) return false;
+  return session.status === 'running' || hasSemanticCardWorking(session);
+}
+
+function cardWorkingLabel(session) {
+  if (!session) return 'AI';
+  const base = isCodexKind(session.kind) ? 'Codex' : (session.kind || 'AI');
+  return base.charAt(0).toUpperCase() + base.slice(1).replace(/-resume$/i, '');
+}
+
 function _updateStreamingIndicator(sessionId) {
   if (sessionId !== activeSessionId) return;
   const overlay = document.getElementById('msg-overlay');
   if (!overlay) return;
   const sess = sessions.get(sessionId);
-  const isRunning = sess && sess.status === 'running';
+  const isRunning = isSessionCardWorking(sess);
   // 多方审查 P1 (DeepSeek + Claude 共识)：querySelector 不带 dataset 过滤会拿到
   // 别 session 残留的 indicator（1.5s 延迟移除期间），快速切 session 时新 session
   // 会"接管"旧 indicator 导致显示错乱或 timer 触发时误删新 session 的 indicator。
@@ -2820,7 +2933,13 @@ function _updateStreamingIndicator(sessionId) {
     }
     // 文案放 title 属性 hover 显示（不占视觉空间）
     const cardCount = overlay.querySelectorAll('.turn-card[data-turn-id]').length;
-    indicator.title = cardCount === 0 ? 'Claude 正在思考…' : 'Claude 还在生成更多回复';
+    const label = cardWorkingLabel(sess);
+    const pendingSubmit = sess && sess.cardWorkingSource === 'floating_input';
+    indicator.title = pendingSubmit
+      ? `${label} 正在接收输入…`
+      : (cardCount === 0 ? `${label} 正在工作…` : `${label} 仍在工作，可能还会更新卡片`);
+    indicator.setAttribute('aria-label', indicator.title);
+    indicator.dataset.label = cardCount === 0 ? indicator.title : '';
   } else if (!isRunning && indicator) {
     // 延迟 1.5s 移除（防 silence gap 闪烁）
     const timer = setTimeout(() => {
@@ -2931,12 +3050,13 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       ? sessions.get(sessionId) : null;
     const kind = session && session.kind ? session.kind : null;
     clearSessionWaitingState(sessionId);
+    if (isCodexKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
 
     // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
     //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
     //   也走 transcript reload 路径，但 Claude CLI 通常等 LLM call 启动才把 user entry append
     //   到 JSONL（实测 1-3s 滞后）。聊天 app 标准做法是发出即 mount，待权威 entry 到时 dedup。
-    if (currentView === 'card' && kind && isClaudeFamily(kind) && typeof mountOptimisticUserCard === 'function') {
+    if (currentView === 'card' && kind && (isClaudeFamily(kind) || isCodexKind(kind)) && typeof mountOptimisticUserCard === 'function') {
       try {
         mountOptimisticUserCard(sessionId, text.trim(), kind);
       } catch (err) {
@@ -4315,7 +4435,7 @@ function onTerminalOutput(sessionId, dataLen) {
 
     const wasRunning = session.status === 'running';
     if (wasRunning) {
-      session.status = 'idle';
+      if (!hasSemanticCardWorking(session)) session.status = 'idle';
       if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
     }
 
@@ -5006,6 +5126,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   session._lastTranscriptReadySig = sig;
 
   const wasWaiting = !!session.isWaiting;
+  clearCodexCardWorking(hubSessionId);
   session.lastOutputPreview = preview;
   session.status = 'idle';
   session.isWaiting = true;
@@ -5044,10 +5165,7 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
     session.lastOutputPreview = preview;
     session._previewFromTranscript = true;
   }
-  session.isWaiting = false;
-  session.waitingReason = null;
-  session.waitingText = null;
-  session.status = 'running';
+  markCodexCardWorking(hubSessionId, 'rollout_user_message');
   session.lastMessageTime = submittedAt || Date.now();
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
   renderSessionList();
@@ -6012,6 +6130,10 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     const st = window._codexHistoryRetryState.get(sessionId);
     if (st && st.timer) { try { clearTimeout(st.timer); } catch {} }
     window._codexHistoryRetryState.delete(sessionId);
+  }
+  if (_codexSubmitPendingTimers.has(sessionId)) {
+    clearTimeout(_codexSubmitPendingTimers.get(sessionId));
+    _codexSubmitPendingTimers.delete(sessionId);
   }
   // 多方审查 P1 (Claude 共识)：W16 _w16RemoveTimers 也要在 session-closed 时清理，
   // 否则 1.5s 后 timer 触发时 sessions.get(sessionId) === undefined → 走 .remove() 分支，

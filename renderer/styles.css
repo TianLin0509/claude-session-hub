@@ -3035,7 +3035,7 @@ body.theme-light .floating-scroll-btn {
   opacity: 0.75;
 }
 .msg-overlay > .streaming-indicator::after {
-  content: '思考中…';
+  content: attr(data-label);
   color: currentColor;
   font-size: 12px;
   font-style: italic;
