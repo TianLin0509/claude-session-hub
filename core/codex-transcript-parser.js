@@ -9,6 +9,41 @@ const os = require('node:os');
 
 const DEFAULT_CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
 
+function normalizePathForCompare(p) {
+  if (!p) return '';
+  try { return path.resolve(p).replace(/\\/g, '/').toLowerCase(); }
+  catch { return String(p).replace(/\\/g, '/').toLowerCase(); }
+}
+
+function readFirstLineSync(filePath, maxBytes = 512 * 1024) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const chunks = [];
+    let total = 0;
+    const buf = Buffer.alloc(64 * 1024);
+    while (total < maxBytes) {
+      const n = fs.readSync(fd, buf, 0, Math.min(buf.length, maxBytes - total), total);
+      if (n <= 0) break;
+      const slice = buf.subarray(0, n);
+      const nl = slice.indexOf(0x0a);
+      if (nl >= 0) {
+        chunks.push(slice.subarray(0, nl));
+        break;
+      }
+      chunks.push(Buffer.from(slice));
+      total += n;
+    }
+    return Buffer.concat(chunks).toString('utf8').replace(/\r$/, '');
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+}
+
 function toMs(timestamp) {
   if (!timestamp) return null;
   const ms = new Date(timestamp).getTime();
@@ -231,10 +266,45 @@ function findCodexRolloutBySid(codexSid, sessionsRoot = DEFAULT_CODEX_SESSIONS_R
   return best ? best.path : null;
 }
 
+function findCodexRolloutByCwd(cwd, sessionsRoot = DEFAULT_CODEX_SESSIONS_ROOT, opts = {}) {
+  const targetCwd = normalizePathForCompare(cwd);
+  if (!targetCwd || !sessionsRoot) return null;
+  const sinceMs = Number.isFinite(opts.sinceMs) ? opts.sinceMs : null;
+  const beforeMs = Number.isFinite(opts.beforeMs) ? opts.beforeMs : 10000;
+  const afterMs = Number.isFinite(opts.afterMs) ? opts.afterMs : 300000;
+  let best = null;
+  const visit = (dir, depth) => {
+    if (depth > 3) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        visit(full, depth + 1);
+        continue;
+      }
+      if (!ent.isFile() || !ent.name.startsWith('rollout-') || !ent.name.endsWith('.jsonl')) continue;
+      let stat;
+      try { stat = fs.statSync(full); } catch { continue; }
+      const mtime = stat.mtimeMs || 0;
+      if (sinceMs !== null && (mtime < sinceMs - beforeMs || mtime > sinceMs + afterMs)) continue;
+      const first = readFirstLineSync(full);
+      if (!first) continue;
+      let meta;
+      try { meta = JSON.parse(first); } catch { continue; }
+      if (meta?.type !== 'session_meta' || normalizePathForCompare(meta.payload?.cwd || '') !== targetCwd) continue;
+      if (!best || mtime > best.mtime) best = { path: full, mtime };
+    }
+  };
+  visit(sessionsRoot, 0);
+  return best ? best.path : null;
+}
+
 module.exports = {
   DEFAULT_CODEX_SESSIONS_ROOT,
   parseCodexRolloutToTurns,
   findCodexRolloutBySid,
+  findCodexRolloutByCwd,
   textFromContent,
   isInjectedContextText,
 };

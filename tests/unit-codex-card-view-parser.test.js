@@ -6,6 +6,7 @@ const path = require('path');
 const {
   parseCodexRolloutToTurns,
   findCodexRolloutBySid,
+  findCodexRolloutByCwd,
 } = require('../core/codex-transcript-parser');
 const { FakeCodexRollout } = require('./helpers/fake-codex-rollout');
 
@@ -97,6 +98,10 @@ async function main() {
     await fr.close();
 
     assert.strictEqual(findCodexRolloutBySid(sid, tmpRoot), fr.rolloutPath);
+    assert.strictEqual(
+      findCodexRolloutByCwd(cwd, tmpRoot, { sinceMs: Date.now() - 10000 }),
+      fr.rolloutPath,
+    );
 
     const turns = parseCodexRolloutToTurns(fr.rolloutPath, { limit: 10, fromTail: true });
     assert.strictEqual(turns.length, 6);

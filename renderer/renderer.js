@@ -2296,6 +2296,24 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
 }
 window._mountSessionTurnCard = mountSessionTurnCard;
 
+function scheduleCodexHistoryRetry(sessionId, attempt = 0) {
+  if (!sessionId || attempt >= 6) return;
+  if (!window._codexHistoryRetryState) window._codexHistoryRetryState = new Map();
+  const prev = window._codexHistoryRetryState.get(sessionId);
+  if (prev && prev.timer) {
+    try { clearTimeout(prev.timer); } catch {}
+  }
+  const delay = Math.min(1000 + attempt * 500, 3000);
+  const timer = setTimeout(() => {
+    window._codexHistoryRetryState.delete(sessionId);
+    if (sessionId !== activeSessionId || currentView !== 'card') return;
+    loadSessionHistoryToOverlay(sessionId, { codexRetryAttempt: attempt + 1 }).catch(err => {
+      console.warn('[codex-history-retry] reload failed:', err);
+    });
+  }, delay);
+  window._codexHistoryRetryState.set(sessionId, { timer, attempt });
+}
+
 // === Spec 2 v1.0.0 · S5 loadSessionHistoryToOverlay ===
 // Load historical turns for a session and mount them as cards into #msg-overlay.
 //
@@ -2404,6 +2422,14 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       txt = ccSid
         ? `会话尚未产生历史（transcript 文件可能已被移走或删除：${ccSid.slice(0, 8)}…）`
         : '此会话从未发送过消息，无对话历史可显示';
+    } else if ((kind === 'codex' || kind === 'codex-resume') && ipcError === 'codex rollout not found') {
+      const attempt = Number.isInteger(opts.codexRetryAttempt) ? opts.codexRetryAttempt : 0;
+      if (attempt < 6) {
+        scheduleCodexHistoryRetry(sessionId, attempt);
+        txt = '正在绑定 Codex 历史（resume 后通常需要几秒）';
+      } else {
+        txt = '加载历史失败：Codex rollout 尚未绑定或已被移动';
+      }
     } else {
       txt = '加载历史失败：' + ipcError;
     }
@@ -2416,6 +2442,11 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
 
   // 6b. no turns, no error → fresh session
   if (turns.length === 0) {
+    if (window._codexHistoryRetryState) {
+      const st = window._codexHistoryRetryState.get(sessionId);
+      if (st && st.timer) { try { clearTimeout(st.timer); } catch {} }
+      window._codexHistoryRetryState.delete(sessionId);
+    }
     showPlaceholder(
       '新会话，发首条消息试试看 — '
       + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
@@ -2424,6 +2455,11 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   }
 
   // 6c. mount each turn; pass kind through opts so renderTurnCard picks it up.
+  if (window._codexHistoryRetryState) {
+    const st = window._codexHistoryRetryState.get(sessionId);
+    if (st && st.timer) { try { clearTimeout(st.timer); } catch {} }
+    window._codexHistoryRetryState.delete(sessionId);
+  }
   // Use a default kind 'claude' if session lookup failed but main.js still
   // returned turns — they came from a Claude transcript by definition.
   const mountKind = kind || 'claude';
@@ -5971,6 +6007,11 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     const st = window._cardReloadState.get(sessionId);
     if (st && st.pendingTimer) { try { clearTimeout(st.pendingTimer); } catch {} }
     window._cardReloadState.delete(sessionId);
+  }
+  if (window._codexHistoryRetryState && window._codexHistoryRetryState.has(sessionId)) {
+    const st = window._codexHistoryRetryState.get(sessionId);
+    if (st && st.timer) { try { clearTimeout(st.timer); } catch {} }
+    window._codexHistoryRetryState.delete(sessionId);
   }
   // 多方审查 P1 (Claude 共识)：W16 _w16RemoveTimers 也要在 session-closed 时清理，
   // 否则 1.5s 后 timer 触发时 sessions.get(sessionId) === undefined → 走 .remove() 分支，

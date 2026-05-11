@@ -16,6 +16,10 @@ assert.ok(
   'parse-session-transcript must recover persisted Codex sessions by codexSid',
 );
 assert.ok(
+  mainSrc.includes("findCodexRolloutByCwd"),
+  'parse-session-transcript must recover Codex resume sessions without codexSid by cwd + mtime',
+);
+assert.ok(
   mainSrc.includes("kind === 'codex' || kind === 'codex-resume'"),
   'parse-session-transcript must branch for codex and codex-resume',
 );
@@ -26,6 +30,10 @@ assert.ok(
 assert.ok(
   rendererSrc.includes("isClaudeFamily(kind) || kind === 'codex' || kind === 'codex-resume'"),
   'renderer card history gate must preserve Claude support and add Codex',
+);
+assert.ok(
+  rendererSrc.includes("scheduleCodexHistoryRetry"),
+  'renderer must retry transient Codex rollout binding during resume',
 );
 assert.ok(
   tapSrc.includes("getCodexRolloutPath(hubSessionId)"),

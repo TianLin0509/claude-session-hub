@@ -53,6 +53,7 @@ const {
   DEFAULT_CODEX_SESSIONS_ROOT,
   parseCodexRolloutToTurns,
   findCodexRolloutBySid,
+  findCodexRolloutByCwd,
 } = require('./core/codex-transcript-parser.js');
 
 // === EPIPE 防护（隔离 Hub 启动必需）===
@@ -2777,6 +2778,13 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
         transcriptPath = findCodexRolloutBySid(
           session.codexSid,
           session.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT,
+        );
+      }
+      if (!transcriptPath && session && session.codexAllowMtimeFallback && session.cwd) {
+        transcriptPath = findCodexRolloutByCwd(
+          session.cwd,
+          session.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT,
+          { sinceMs: session.createdAt || Date.now() },
         );
       }
       if (!transcriptPath) {
