@@ -656,7 +656,7 @@ class SessionManager extends EventEmitter {
       codexSessionsRoot,
       ...(isCodex && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
       ...(opts.codexSid ? { codexSid: opts.codexSid } : {}),
-      ...(isCodex && opts.useResume && !opts.codexSid ? { codexAllowMtimeFallback: true } : {}),
+      ...(isCodex && (kind === 'codex-resume' || opts.codexResumePicker || (opts.useResume && !opts.codexSid)) ? { codexAllowMtimeFallback: true } : {}),
       // Spec 3 · W3 resume bug fix (a)：resume 启动时立即写入已知 ccSessionId，
       // 不等 Stop hook 第一次回调。否则 spawn 到第一次 Stop 之间 (~数秒) 卡片视图
       // 拿不到 ccSessionId → IPC parse-session-transcript 返 'transcript not found' → 空白。
@@ -799,7 +799,7 @@ class SessionManager extends EventEmitter {
       const cv = getConfigValues();
       const codexModel = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
       let cmd;
-      if (kind === 'codex-resume') {
+      if (kind === 'codex-resume' || opts.codexResumePicker) {
         // codex resume 无参 = picker by default
         cmd = ` codex resume --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
       } else if (opts.useResume && opts.codexSid) {
