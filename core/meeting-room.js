@@ -31,10 +31,14 @@ class MeetingRoomManager {
     // meeting-create-modal（2026-05-05 道雪）：用户在 Modal 房名输入框填了非空字符串
     //   则用用户的（trim 后），否则走默认编号 title。modal 留空 = undefined，向后兼容。
     const customTitle = typeof opts.title === 'string' ? opts.title.trim() : '';
+    const userRenamed = customTitle ? true : !!opts.userRenamed;
     const meeting = {
       id,
       type: 'meeting',
       title: customTitle || `${titlePrefix} #${seq}`,
+      userRenamed,
+      autoTitlePending: opts.autoTitlePending !== undefined ? !!opts.autoTitlePending : !userRenamed,
+      autoTitleGenerated: !!opts.autoTitleGenerated,
       subSessions: [],
       layout: 'focus',
       focusedSub: null,
@@ -188,6 +192,9 @@ class MeetingRoomManager {
       groupChat: !!m.groupChat,
       groupMode: m.groupMode || 'deliberation',
       groupRecentRawN: Number.isInteger(m.groupRecentRawN) ? m.groupRecentRawN : 5,
+      userRenamed: !!m.userRenamed,
+      autoTitlePending: !!m.autoTitlePending,
+      autoTitleGenerated: !!m.autoTitleGenerated,
       participants: Array.isArray(m.participants) ? [...m.participants] : null,
     } : null;
   }
@@ -206,6 +213,9 @@ class MeetingRoomManager {
       groupChat: !!m.groupChat,
       groupMode: m.groupMode || 'deliberation',
       groupRecentRawN: Number.isInteger(m.groupRecentRawN) ? m.groupRecentRawN : 5,
+      userRenamed: !!m.userRenamed,
+      autoTitlePending: !!m.autoTitlePending,
+      autoTitleGenerated: !!m.autoTitleGenerated,
       participants: Array.isArray(m.participants) ? [...m.participants] : null,
     }));
   }
@@ -249,6 +259,7 @@ class MeetingRoomManager {
     const allowed = [
       'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned',
       'lastMessageTime', 'status', 'lastScene', 'scene', 'covenantText',
+      'userRenamed', 'autoTitlePending', 'autoTitleGenerated',
     ];
     for (const key of allowed) {
       if (key in fields) m[key] = fields[key];
@@ -299,10 +310,19 @@ class MeetingRoomManager {
     //   meetings 数组也带上修正后的 scene —— 否则 boot 时 save 用原始 bootMeetings 会把
     //   修正前的 'general' 写回 state.json，下次重启又重复迁移、永不收敛。
     meetingData.scene = scene;
+    const restoredTitle = meetingData.title || '会议室';
+    const restoredUserRenamed = !!meetingData.userRenamed;
+    const restoredAutoTitleGenerated = !!meetingData.autoTitleGenerated;
+    const restoredAutoTitlePending = meetingData.autoTitlePending !== undefined
+      ? !!meetingData.autoTitlePending
+      : (!restoredUserRenamed && !restoredAutoTitleGenerated && /^(?:通用|投研|开发|AI 群聊) #\d+$/.test(restoredTitle));
     this.meetings.set(meetingData.id, {
       id: meetingData.id,
       type: 'meeting',
-      title: meetingData.title || '会议室',
+      title: restoredTitle,
+      userRenamed: restoredUserRenamed,
+      autoTitlePending: restoredAutoTitlePending,
+      autoTitleGenerated: restoredAutoTitleGenerated,
       subSessions: meetingData.subSessions || [],
       layout: meetingData.layout || 'focus',
       focusedSub: meetingData.focusedSub || null,

@@ -46,7 +46,7 @@ const {
   attachCodexUsageScope,
   filterUsageCacheForCodexScope,
 } = require('./core/codex-usage-scope.js');
-const { isClaudeFamily, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
+const { ALL_AI_KINDS, isClaudeFamily, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
 const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
 const {
@@ -481,14 +481,33 @@ transcriptTap.on('turn-complete', (ev) => {
 });
 
 const _autoTitleInFlight = new Set();
+const _autoMeetingTitleInFlight = new Set();
+const AUTO_TITLE_BASE_KINDS = new Set(ALL_AI_KINDS);
+const AUTO_TITLE_LABELS = Object.values(KIND_LABELS)
+  .map(label => String(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .sort((a, b) => b.length - a.length)
+  .join('|');
+const AUTO_TITLE_SESSION_RE = new RegExp(`^(?:${AUTO_TITLE_LABELS})(?: Resume)? \\d+$`, 'i');
+const AUTO_TITLE_MEETING_RE = /^(?:通用|投研|开发|AI 群聊) #\d+$/;
+
 function fallbackSessionTitleFromPrompt(text, kind) {
   const clean = String(text || '')
     .replace(/[#*_`>\[\](){}<>]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const prefix = kind === 'codex' ? 'Codex' : '会话';
+  const baseKind = String(kind || '').replace(/-resume$/, '');
+  const prefix = KIND_LABELS[baseKind] || '会话';
   if (!clean) return '';
   return `${prefix} · ${clean.slice(0, 18)}`;
+}
+
+function fallbackMeetingTitleFromPrompt(text, meeting) {
+  const clean = String(text || '')
+    .replace(/[#*_`>\[\](){}<>]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return '';
+  return `${meeting && meeting.groupChat ? '群聊' : '圆桌'} · ${clean.slice(0, 18)}`;
 }
 
 function postJsonForAutoTitle(endpoint, payload, headers, timeoutMs) {
@@ -519,15 +538,18 @@ function postJsonForAutoTitle(endpoint, payload, headers, timeoutMs) {
   });
 }
 
-async function generateSessionTitleFromPrompt(text) {
+async function generateSessionTitleFromPrompt(text, scope = 'session') {
   const cfg = getHubConfig();
   const prompt = String(text || '').trim().slice(0, 1200);
   if (!prompt) return '';
   if (!cfg.deepseekApiKey) return '';
+  const system = scope === 'meeting'
+    ? '你是房间命名器。根据用户在AI圆桌或AI群聊中的第一句话生成中文短标题，8到16个汉字或等长短语，不要引号，不要解释。'
+    : '你是会话命名器。根据用户第一句话生成中文短标题，8到16个汉字或等长短语，不要引号，不要解释。';
   const { status, body } = await postJsonForAutoTitle('https://api.deepseek.com/chat/completions', {
     model: 'deepseek-chat',
     messages: [
-      { role: 'system', content: '你是会话命名器。根据用户第一句话生成中文短标题，8到16个汉字或等长短语，不要引号，不要解释。' },
+      { role: 'system', content: system },
       { role: 'user', content: prompt },
     ],
     temperature: 0.2,
@@ -539,19 +561,33 @@ async function generateSessionTitleFromPrompt(text) {
   return String(raw || '').replace(/["'“”‘’\r\n]/g, '').trim().slice(0, 30);
 }
 
+function isAutoTitleSessionKind(kind) {
+  const base = String(kind || '').replace(/-resume$/, '');
+  return AUTO_TITLE_BASE_KINDS.has(base);
+}
+
+function isGenericAutoSessionTitle(title) {
+  return !title || AUTO_TITLE_SESSION_RE.test(String(title).trim());
+}
+
+function isGenericAutoMeetingTitle(title) {
+  return !title || AUTO_TITLE_MEETING_RE.test(String(title).trim());
+}
+
 function maybeAutoTitleSessionFromPrompt(ev) {
   const { hubSessionId, text } = ev || {};
   if (!hubSessionId || !text || _autoTitleInFlight.has(hubSessionId)) return;
   const session = sessionManager.getSession(hubSessionId);
   if (!session || session.meetingId || session.userRenamed) return;
-  if (!/^(codex|codex-resume)$/.test(session.kind || '')) return;
+  if (!isAutoTitleSessionKind(session.kind)) return;
   if (session.autoTitleGenerated) return;
-  if (session.title && !/^Codex( Resume)? \d+$/i.test(session.title)) return;
+  if (!isGenericAutoSessionTitle(session.title)) return;
   _autoTitleInFlight.add(hubSessionId);
   setTimeout(async () => {
     try {
       const latest = sessionManager.getSession(hubSessionId);
       if (!latest || latest.userRenamed || latest.autoTitleGenerated || latest.meetingId) return;
+      if (!isAutoTitleSessionKind(latest.kind) || !isGenericAutoSessionTitle(latest.title)) return;
       let title = '';
       try { title = await generateSessionTitleFromPrompt(text); } catch (e) {
         console.warn('[auto-title] AI title failed:', e && e.message);
@@ -565,6 +601,35 @@ function maybeAutoTitleSessionFromPrompt(ev) {
       if (updated) sendToRenderer('session-updated', { session: updated });
     } finally {
       _autoTitleInFlight.delete(hubSessionId);
+    }
+  }, 0);
+}
+
+function maybeAutoTitleMeetingFromPrompt(meetingId, text) {
+  if (!meetingId || !text || _autoMeetingTitleInFlight.has(meetingId)) return;
+  const meeting = meetingManager.getMeeting(meetingId);
+  if (!meeting || meeting.userRenamed || meeting.autoTitleGenerated) return;
+  if (!meeting.autoTitlePending && !isGenericAutoMeetingTitle(meeting.title)) return;
+  _autoMeetingTitleInFlight.add(meetingId);
+  setTimeout(async () => {
+    try {
+      const latest = meetingManager.getMeeting(meetingId);
+      if (!latest || latest.userRenamed || latest.autoTitleGenerated) return;
+      if (!latest.autoTitlePending && !isGenericAutoMeetingTitle(latest.title)) return;
+      let title = '';
+      try { title = await generateSessionTitleFromPrompt(text, 'meeting'); } catch (e) {
+        console.warn('[auto-title] meeting AI title failed:', e && e.message);
+      }
+      if (!title) title = fallbackMeetingTitleFromPrompt(text, latest);
+      if (!title) return;
+      const updated = meetingManager.updateMeeting(meetingId, {
+        title,
+        autoTitleGenerated: true,
+        autoTitlePending: false,
+      });
+      if (updated) sendToRenderer('meeting-updated', { meeting: updated });
+    } finally {
+      _autoMeetingTitleInFlight.delete(meetingId);
     }
   }, 0);
 }
@@ -916,6 +981,9 @@ ipcMain.handle('create-meeting', async (_e, opts) => {
   //   2026-05-05 道雪：title 由 modal 房名输入框填入，非空覆盖默认编号 title；
   //   留空/未传则 createMeeting 内部走 `通用 #N` 等默认编号路径。
   const safe = { ...(opts || {}) };
+  const hasCustomTitle = typeof safe.title === 'string' && safe.title.trim().length > 0;
+  safe.autoTitlePending = !hasCustomTitle;
+  safe.userRenamed = hasCustomTitle;
   if (Array.isArray(safe.slots) && safe.slots.length > 0) {
     safe.slotSpecs = safe.slots.map(s => ({
       index: typeof s.index === 'number' ? s.index : null,
@@ -1663,6 +1731,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, dispatchMode
     if (targetSubs.length === 0) {
       return { status: 'error', reason: 'dispatch 过滤后无活跃目标 session', turnNum: null };
     }
+    maybeAutoTitleMeetingFromPrompt(meetingId, userInput || '');
 
     // 方案 F · 2026-05-02：计算注入 map / projectCwd / timelinePath / sidRoleFn
     //   - sidRoleFn：哪些 sid 是主驾、哪些是副驾（仅 pilotSlot 非 null 时有意义）
@@ -2071,6 +2140,7 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
     if (targetMembers.length === 0) {
       return { status: 'error', reason: '请先勾选至少一位 AI 成员，或用 @ 指定成员', turnNum: null };
     }
+    maybeAutoTitleMeetingFromPrompt(meetingId, userInput || '');
 
     for (const member of members) {
       try { transcriptTap.clearStreamingBuf(member.sid); } catch {}
@@ -2789,11 +2859,17 @@ ipcMain.handle('get-summary-scenes', () => {
 // Module C 后 blackboard 已删除,该 handler 不再被任何前端代码调用,清理。
 
 ipcMain.on('update-meeting', (_e, { meetingId, fields }) => {
+  if (fields && typeof fields.title === 'string' && !fields.autoTitleGenerated) {
+    fields = { ...fields, userRenamed: true, autoTitlePending: false };
+  }
   const updated = meetingManager.updateMeeting(meetingId, fields);
   if (updated) sendToRenderer('meeting-updated', { meeting: updated });
 });
 
 ipcMain.handle('update-meeting-sync', (_e, { meetingId, fields }) => {
+  if (fields && typeof fields.title === 'string' && !fields.autoTitleGenerated) {
+    fields = { ...fields, userRenamed: true, autoTitlePending: false };
+  }
   const updated = meetingManager.updateMeeting(meetingId, fields);
   if (updated) sendToRenderer('meeting-updated', { meeting: updated });
   return !!updated;
@@ -3046,7 +3122,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   // 2026-05-05 fix: 字段名是 'currentModel'（renderer.js:5287 持久化用的字段），
   //   旧版误写成 'model' → 兜底机制对 model 永不触发，任何一次 race 把 currentModel
   //   写成 null 都会永久污染 state.json，dormant 唤醒丢失原 model（落到默认 opus 等）。
-  const RESUME_META_FIELDS = ['codexSid', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel', 'contextPct', 'contextUsed', 'contextMax', 'userRenamed'];
+  const RESUME_META_FIELDS = ['codexSid', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel', 'contextPct', 'contextUsed', 'contextMax', 'userRenamed', 'autoTitleGenerated'];
   const oldByHubId = new Map(lastPersistedSessions.map(s => [s.hubId, s]));
   for (const newSession of list) {
     if (!newSession || !newSession.hubId) continue;
@@ -3113,6 +3189,15 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
         groupRecentRawN: Number.isInteger(rendererMeeting.groupRecentRawN)
           ? rendererMeeting.groupRecentRawN
           : (Number.isInteger(authoritative.groupRecentRawN) ? authoritative.groupRecentRawN : 5),
+        userRenamed: typeof rendererMeeting.userRenamed === 'boolean'
+          ? rendererMeeting.userRenamed
+          : !!authoritative.userRenamed,
+        autoTitlePending: typeof rendererMeeting.autoTitlePending === 'boolean'
+          ? rendererMeeting.autoTitlePending
+          : !!authoritative.autoTitlePending,
+        autoTitleGenerated: typeof rendererMeeting.autoTitleGenerated === 'boolean'
+          ? rendererMeeting.autoTitleGenerated
+          : !!authoritative.autoTitleGenerated,
         participants: Array.isArray(rendererMeeting.participants)
           ? rendererMeeting.participants
           : (Array.isArray(authoritative.participants) ? authoritative.participants : null),
@@ -3227,6 +3312,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
     codexProfile: meta.kind === 'codex' ? (meta.codexProfile || null) : null,
     geminiChatId: meta.kind === 'gemini' ? (meta.geminiChatId || null) : null,
     geminiProjectRoot: meta.kind === 'gemini' ? (meta.geminiProjectRoot || null) : null,
+    autoTitleGenerated: !!meta.autoTitleGenerated,
     lastMessageTime: meta.lastMessageTime,
     lastOutputPreview: meta.lastOutputPreview,
     ...resumeOpts,

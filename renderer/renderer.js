@@ -1055,7 +1055,7 @@ function getOrCreateTerminal(sessionId) {
     terminal.onTitleChange((newTitle) => {
       const s = sessions.get(sessionId);
       if (!s) return;
-      if (s.userRenamed) return; // user's Hub rename is authoritative
+      if (s.userRenamed || s.autoTitleGenerated) return; // user's Hub rename / Hub auto-title is authoritative
       // slot 化（2026-05-03 道雪）：圆桌 sub session title 永久绑定 slot 名
       //   （Pikachu/Charmander/Squirtle），不接受 OSC 自动覆盖。
       //   主桌单 session（meetingId === null）仍走 OSC 自动命名（Claude 给的简短摘要）。
@@ -4491,7 +4491,7 @@ ipcRenderer.on('status-event', (_e, payload) => {
     // The /rename we inject comes back via this same field — the guard below prevents loops.
     // Meeting room subs keep their default "Claude N" name — auto-rename produces
     // long titles that clutter the narrow tab headers.
-    if (payload.sessionName && !session.userRenamed && !session.meetingId && session.title !== payload.sessionName) {
+    if (payload.sessionName && !session.userRenamed && !session.autoTitleGenerated && !session.meetingId && session.title !== payload.sessionName) {
       session.title = payload.sessionName;
       session.claudeSessionName = payload.sessionName;
       if (payload.sessionId === activeSessionId) {
@@ -6014,6 +6014,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   // Merge server updates but keep local preview/status (managed by renderer)
   if (!local.userRenamed && session.title) local.title = session.title;
   if (session.userRenamed) local.userRenamed = true;
+  if (session.autoTitleGenerated) local.autoTitleGenerated = true;
   if (typeof session.contextPct === 'number') local.contextPct = session.contextPct;
   if (typeof session.contextUsed === 'number') local.contextUsed = session.contextUsed;
   if (typeof session.contextMax === 'number') local.contextMax = session.contextMax;
@@ -6048,6 +6049,7 @@ function schedulePersist() {
         contextUsed: typeof s.contextUsed === 'number' ? s.contextUsed : null,
         contextMax: typeof s.contextMax === 'number' ? s.contextMax : null,
         userRenamed: !!s.userRenamed,
+        autoTitleGenerated: !!s.autoTitleGenerated,
         // T10: include resume-meta in persist payload so main.js merge has the latest
         codexSid: s.codexSid || null,
         codexProfile: s.codexProfile || null,
@@ -6068,6 +6070,9 @@ function schedulePersist() {
       sendTarget: m.sendTarget, createdAt: m.createdAt, lastMessageTime: m.lastMessageTime,
       pinned: m.pinned || false, lastScene: m.lastScene || null,
       scene: m.scene, mode: m.mode,
+      userRenamed: !!m.userRenamed,
+      autoTitlePending: !!m.autoTitlePending,
+      autoTitleGenerated: !!m.autoTitleGenerated,
       pilotSlot: (typeof m.pilotSlot === 'number') ? m.pilotSlot : null,
       dispatchMode: m.dispatchMode || 'all',
       participants: Array.isArray(m.participants) ? m.participants : null,
@@ -6102,6 +6107,7 @@ async function resumeDormantSession(hubId) {
     geminiChatId: dormant.geminiChatId || null,
     geminiProjectHash: dormant.geminiProjectHash || null,
     geminiProjectRoot: dormant.geminiProjectRoot || null,
+    autoTitleGenerated: !!dormant.autoTitleGenerated,
   });
   // v0.13 · P0 #2: 不再反向清零 dormant 累积的 unread。睡前积压的对话用户还
   // 没看 → 应保留红点直到用户真正点击进入（selectSession 会清零）。原代码会
@@ -6154,6 +6160,7 @@ async function resumeDormantSession(hubId) {
         contextUsed: typeof meta.contextUsed === 'number' ? meta.contextUsed : null,
         contextMax: typeof meta.contextMax === 'number' ? meta.contextMax : null,
         userRenamed: !!meta.userRenamed,
+        autoTitleGenerated: !!meta.autoTitleGenerated,
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
         codexProfile: meta.codexProfile || null,

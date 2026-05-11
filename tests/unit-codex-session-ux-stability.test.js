@@ -47,6 +47,18 @@ test('xterm resize goes through the de-jittered fit helper', () => {
 test('first prompt can auto-title generic Codex sessions without overwriting manual renames', () => {
   assert.match(mainSrc, /function maybeAutoTitleSessionFromPrompt/);
   assert.match(mainSrc, /generateSessionTitleFromPrompt/);
+  assert.match(mainSrc, /ALL_AI_KINDS/);
+  assert.match(mainSrc, /isAutoTitleSessionKind\(session\.kind\)/);
   assert.match(mainSrc, /latest\.userRenamed/);
+  assert.match(mainSrc, /latest\.autoTitleGenerated/);
+  assert.match(rendererSrc, /!session\.userRenamed && !session\.autoTitleGenerated/);
   assert.match(rendererSrc, /rename-session', \{ sessionId, title: trimmed, userRenamed: true \}/);
+});
+
+test('roundtable and group-chat rooms can auto-title only default names', () => {
+  assert.match(mainSrc, /function maybeAutoTitleMeetingFromPrompt/);
+  assert.match(mainSrc, /AUTO_TITLE_MEETING_RE/);
+  assert.match(mainSrc, /safe\.autoTitlePending = !hasCustomTitle/);
+  assert.match(mainSrc, /maybeAutoTitleMeetingFromPrompt\(meetingId, userInput \|\| ''\)/);
+  assert.match(mainSrc, /autoTitleGenerated: true/);
 });

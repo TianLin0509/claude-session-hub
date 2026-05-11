@@ -17,6 +17,11 @@ const { loadMeetingFile, flushAll } = require('../core/meeting-store');
 (async () => {
   const mgr = new MeetingRoomManager();
   const m = mgr.createMeeting();
+  assert.strictEqual(m.autoTitlePending, true, 'blank meeting title should allow auto title');
+  assert.strictEqual(m.userRenamed, false, 'blank meeting title is not user renamed');
+  const named = mgr.createMeeting({ title: '用户自定义房间' });
+  assert.strictEqual(named.autoTitlePending, false, 'custom meeting title should not allow auto title');
+  assert.strictEqual(named.userRenamed, true, 'custom meeting title is user renamed');
   mgr.addSubSession(m.id, 'sid-A');
   mgr.appendTurn(m.id, 'sid-A', 'hello world', 1000);
   mgr.appendTurn(m.id, 'user', 'reply', 2000);
