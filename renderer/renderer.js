@@ -876,14 +876,18 @@ function renderSessionList() {
     const burnBadge = (burn && burn.pctPerHour >= 0.5)
       ? `<span class="burn-badge ${burn.pctPerHour >= 5 ? 'danger' : burn.pctPerHour >= 2 ? 'warn' : 'ok'}" title="Est. share of 5h cap / hour at current rate (${Math.round(burn.tokensPerMin).toLocaleString()} tok/min)">🔥 ${burn.pctPerHour.toFixed(1)}%/h</span>`
       : '';
-    const footerInner = [modelBadge, ctxBadge, burnBadge].filter(Boolean).join('');
+    const statusBadge = isDormant
+      ? `<span class="dormant-badge" title="休眠中，点击唤醒">休眠</span>`
+      : (showWaiting
+        ? `<span class="waiting-badge" title="${escapeHtml(s.waitingText || 'Claude is waiting for your input')}">⏸ 等你</span>`
+        : (showUnread
+          ? `<span class="unread-badge" title="${escapeHtml(s.lastOutputPreview || 'AI 有新消息')}">⏸ 等你</span>`
+          : ''));
+    const footerInner = [statusBadge, modelBadge, ctxBadge, burnBadge].filter(Boolean).join('');
     div.innerHTML = `
       <div class="session-item-header">
         <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status ${s.status}"></span>${escapeHtml(s.title)}</span>
         <span class="session-header-right">
-          ${isDormant ? `<span class="dormant-badge" title="休眠中，点击唤醒">休眠</span>` : ''}
-          ${showWaiting ? `<span class="waiting-badge" title="${escapeHtml(s.waitingText || 'Claude is waiting for your input')}">⏸ 等你</span>` : ''}
-          ${showUnread ? `<span class="unread-badge" title="${escapeHtml(s.lastOutputPreview || 'AI 有新消息')}">⏸ 等你</span>` : ''}
           <span class="session-time">${formatTime(s.lastMessageTime)}</span>
         </span>
       </div>
@@ -4958,6 +4962,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
 
   const session = sessions.get(hubSessionId);
   if (!session) return;
+  if (session.status === 'dormant') return;
 
   const preview = buildReplyReadyPreview(text);
   const sig = `${completedAt || ''}:${preview}`;
@@ -4992,6 +4997,7 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
 
   const session = sessions.get(hubSessionId);
   if (!session) return;
+  if (session.status === 'dormant') return;
 
   const preview = buildPreviewFromUserMessage(text);
   const sig = `${submittedAt || ''}:${preview}`;
@@ -5049,6 +5055,7 @@ function renderHookStatus() {
 function onReplyCompleteFromHook(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  if (session.status === 'dormant') return;
 
   // v0.13 · P1 #5: Stop hook 500ms 去重窗口。CC 在 agent 子任务 / streaming
   // 抖动场景下偶尔会发两次 Stop，无去重导致 unread 计数加倍。
@@ -5094,6 +5101,7 @@ function onReplyCompleteFromHook(sessionId) {
 // --- System notification (fire when window is in background) ---
 async function maybeNotify(session) {
   try {
+    if (!session || session.status === 'dormant') return;
     const focused = await ipcRenderer.invoke('is-window-focused');
     if (focused) return;
     const isW = !!session.isWaiting;

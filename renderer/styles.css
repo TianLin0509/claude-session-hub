@@ -3386,11 +3386,233 @@ body.theme-vibechat-light .session-item.has-unread {
   box-shadow: none;
 }
 /* hover 涟漪/雷达圆点用微信绿色调 */
+body.theme-vibechat-light .session-item.dormant {
+  background: #f8fafc;
+  border-left: 3px solid #94a3b8;
+  box-shadow: none;
+}
+body.theme-vibechat-light .session-item.dormant:hover {
+  background: #eef2f7;
+  border-left-color: #64748b;
+}
+body.theme-vibechat-light .dormant-badge {
+  background: #e2e8f0;
+  color: #475569;
+  border-color: #cbd5e1;
+}
 body.theme-vibechat-light .session-item::before {
   background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(7,193,96,0.05), transparent 60%);
 }
 body.theme-vibechat-light .session-item .ripple-fx {
   background: rgba(7,193,96,0.10);
+}
+
+/* Sidebar C2 candy style: light, soft, but still scannable. */
+body.theme-vibechat-light .session-list {
+  padding: 4px 8px 10px;
+  border-top: 1px solid #f8c7d8;
+  background:
+    radial-gradient(circle at 24px 28px, rgba(251, 113, 133, 0.18) 0 8px, transparent 9px),
+    radial-gradient(circle at 92% 18px, rgba(250, 204, 21, 0.16) 0 10px, transparent 11px),
+    linear-gradient(180deg, #fff7fb 0%, #f8fafc 100%);
+}
+body.theme-vibechat-light .session-item {
+  margin: 7px 2px;
+  padding: 12px 12px 11px;
+  border: 1px solid #f8c6d5;
+  border-left: 4px solid transparent;
+  border-bottom-color: #f8c6d5;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 2px 0 rgba(244, 114, 182, 0.10);
+  transition: transform 160ms ease, box-shadow 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+body.theme-vibechat-light .session-item::before {
+  border-radius: 12px;
+  background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(244, 114, 182, 0.16), transparent 58%);
+}
+body.theme-vibechat-light .session-item:hover {
+  transform: translateY(-2px) rotate(-0.18deg);
+  background: #ffffff;
+  border-color: #f4a9c0;
+  border-left-color: #fb7185;
+  box-shadow: 0 8px 18px rgba(244, 114, 182, 0.16);
+}
+body.theme-vibechat-light .session-item:active {
+  transform: translateY(0) scale(0.995);
+}
+body.theme-vibechat-light .session-item.selected {
+  background: #fff1f7;
+  border: 1px solid #f4a9c0;
+  border-left: 4px solid #fb7185;
+  box-shadow: 0 0 0 1px rgba(244, 114, 182, 0.16), 0 8px 18px rgba(244, 114, 182, 0.12);
+}
+body.theme-vibechat-light .session-item.has-unread {
+  border-left: 4px solid #fb7185;
+  box-shadow: 0 2px 0 rgba(244, 114, 182, 0.12), 0 0 0 1px rgba(251, 113, 133, 0.14);
+}
+body.theme-vibechat-light .session-item.is-waiting {
+  background: #fff7ed;
+  border-left: 4px solid #fb923c;
+}
+body.theme-vibechat-light .session-item.dormant {
+  background: #faf7ff;
+  border: 1px solid #ddd6fe;
+  border-left: 4px solid #c4b5fd;
+  box-shadow: 0 2px 0 rgba(167, 139, 250, 0.10);
+}
+body.theme-vibechat-light .session-item.dormant:hover {
+  background: #ffffff;
+  border-color: #c4b5fd;
+  border-left-color: #a78bfa;
+}
+body.theme-vibechat-light .session-title {
+  color: #4a2540;
+  font-weight: 750;
+  max-width: 208px;
+}
+body.theme-vibechat-light .session-preview {
+  color: #7c5a70;
+  margin-top: 7px;
+  line-height: 1.45;
+}
+body.theme-vibechat-light .session-time {
+  min-width: 58px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  border: 1px solid #fed7aa;
+  border-radius: 999px;
+  background: #ffedd5;
+  color: #7c2d12;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+body.theme-vibechat-light .session-footer {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #fae0e8;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+body.theme-vibechat-light .model-badge,
+body.theme-vibechat-light .ctx-badge,
+body.theme-vibechat-light .burn-badge {
+  height: 21px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+body.theme-vibechat-light .model-badge.opus {
+  background: #f3e8ff;
+  color: #7c3aed;
+  border-color: #e9d5ff;
+}
+body.theme-vibechat-light .model-badge.sonnet {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+body.theme-vibechat-light .model-badge.gemini {
+  background: #dbeafe;
+  color: #2563eb;
+  border-color: #bfdbfe;
+}
+body.theme-vibechat-light .model-badge.codex {
+  background: #f3e8ff;
+  color: #7c3aed;
+  border-color: #e9d5ff;
+}
+body.theme-vibechat-light .model-badge.deepseek,
+body.theme-vibechat-light .model-badge.glm {
+  background: #ede9fe;
+  color: #6d28d9;
+  border-color: #ddd6fe;
+}
+body.theme-vibechat-light .model-badge:not(.opus):not(.sonnet):not(.haiku):not(.gemini):not(.codex):not(.deepseek):not(.glm) {
+  background: #f3e8ff;
+  color: #7c3aed;
+  border-color: #e9d5ff;
+}
+body.theme-vibechat-light .ctx-badge.ok {
+  background: #d9f99d;
+  color: #3f6212;
+  border-color: #bef264;
+}
+body.theme-vibechat-light .ctx-badge.warn {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+}
+body.theme-vibechat-light .ctx-badge.danger {
+  background: #ffe4e6;
+  color: #be123c;
+  border-color: #fecdd3;
+}
+body.theme-vibechat-light .unread-badge,
+body.theme-vibechat-light .waiting-badge,
+body.theme-vibechat-light .dormant-badge {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0;
+  box-shadow: none;
+}
+body.theme-vibechat-light .unread-badge {
+  background: #ffe4e6;
+  color: #be123c;
+  border-color: #fecdd3;
+}
+body.theme-vibechat-light .waiting-badge {
+  background: #ffedd5;
+  color: #9a3412;
+  border-color: #fed7aa;
+}
+body.theme-vibechat-light .dormant-badge {
+  background: #ede9fe;
+  color: #6d28d9;
+  border-color: #ddd6fe;
+}
+body.theme-vibechat-light .session-status.running {
+  background: #fb7185;
+  box-shadow: 0 0 0 3px rgba(251, 113, 133, 0.12);
+  animation: none;
+}
+body.theme-vibechat-light .session-status.running::before {
+  border-color: #fb7185;
+}
+body.theme-vibechat-light .session-status.idle {
+  border-color: #c08497;
+}
+body.theme-vibechat-light .session-status.dormant {
+  background: #ede9fe;
+  border-color: #a78bfa;
+}
+@media (prefers-reduced-motion: reduce) {
+  body.theme-vibechat-light .session-item,
+  body.theme-vibechat-light .session-item::before {
+    transition: none;
+  }
+  body.theme-vibechat-light .session-item:hover {
+    transform: none;
+  }
 }
 
 body.theme-vibechat-light .msg-overlay {
