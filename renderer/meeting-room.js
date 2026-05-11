@@ -183,6 +183,25 @@ if (typeof document !== 'undefined') (function () {
       setTimeout(() => _relayoutMeetingRoom(), 160);
     }
   }
+  const _GROUP_SIDE_STATE_KEY = 'mr-group-chat-side-state';
+  function _getGroupSideCollapsed() {
+    try {
+      const state = typeof localStorage !== 'undefined' ? localStorage.getItem(_GROUP_SIDE_STATE_KEY) : null;
+      return state !== 'expanded';
+    } catch { return true; }
+  }
+  function _setGroupSideCollapsed(collapsed, meeting) {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(_GROUP_SIDE_STATE_KEY, collapsed ? 'collapsed' : 'expanded');
+      }
+    } catch {}
+    const active = meeting || (activeMeetingId && meetingData[activeMeetingId]);
+    if (active && _isPanelCapableMeeting(active)) refreshRoundtablePanel(active);
+    if (typeof _relayoutMeetingRoom === 'function') {
+      setTimeout(() => _relayoutMeetingRoom(), 120);
+    }
+  }
 
   // F3 Phase 2(2026-05-04 道雪 / spec F3): 多卡 Ctrl/Cmd+click 对比模式
   //   状态: Set<sid>。空 = 默认; ≥1 = 对比模式 (body.mr-card-compare-on)
@@ -1657,6 +1676,7 @@ if (typeof document !== 'undefined') (function () {
     const summaryCount = Array.isArray(state.summarySegments) ? state.summarySegments.length : 0;
     const rawCount = messages.length;
     const mode = state.currentMode || 'idle';
+    const sideCollapsed = _getGroupSideCollapsed();
     const messageHtml = messages.map(m => _renderGroupChatMessage(m, meeting, memberBySid)).join('');
     const pendingHtml = mode !== 'idle' ? _renderGroupChatPending(state, meeting, memberBySid) : '';
     const emptyHtml = (!messageHtml && !pendingHtml) ? `
@@ -1686,14 +1706,17 @@ if (typeof document !== 'undefined') (function () {
 
     return `
       ${softBanner}
-      <section class="mr-gc-shell" aria-label="AI 群聊">
+      <section class="mr-gc-shell ${sideCollapsed ? 'side-collapsed' : ''}" aria-label="AI 群聊">
         <main class="mr-gc-thread">
           <div class="mr-gc-topbar">
             <div>
               <div class="mr-gc-title">AI 群聊</div>
               <div class="mr-gc-subtitle">${slots.length} 位成员 · ${rawCount} 条原文 · ${summaryCount} 段摘要 · 总耗时 ${escapeHtml(totalSecTxt)}</div>
             </div>
-            <button type="button" class="mr-gc-card-link" data-gc-view-card="1">卡片视图</button>
+            <div class="mr-gc-top-actions">
+              <button type="button" class="mr-gc-card-link" data-gc-side-toggle="1">${sideCollapsed ? `群成员 ${selected.size}/${slots.length}` : '收起成员'}</button>
+              <button type="button" class="mr-gc-card-link" data-gc-view-card="1">卡片视图</button>
+            </div>
           </div>
           <div class="mr-gc-dayline">摘要账本会索引原文，最近原文默认保留 5 条进入上下文</div>
           <div class="mr-gc-messages">
@@ -1705,7 +1728,7 @@ if (typeof document !== 'undefined') (function () {
         <aside class="mr-gc-side" aria-label="群成员">
           <div class="mr-gc-side-head">
             <span>群成员</span>
-            <span>${selected.size}/${slots.length}</span>
+            <button type="button" class="mr-gc-side-collapse" data-gc-side-toggle="1" title="收起群成员">${selected.size}/${slots.length}</button>
           </div>
           <div class="mr-gc-members">${memberRows}</div>
           <div class="mr-gc-ledger">
@@ -2190,6 +2213,12 @@ if (typeof document !== 'undefined') (function () {
         ev.stopPropagation();
         _setGroupViewMode('card', meeting);
         renderHeader(meeting);
+      });
+    });
+    panel.querySelectorAll('[data-gc-side-toggle]').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        _setGroupSideCollapsed(!_getGroupSideCollapsed(), meeting);
       });
     });
     panel.querySelectorAll('[data-gc-member-idx]').forEach(btn => {

@@ -174,6 +174,7 @@ function assertOk(cond, message, detail) {
 
     await evalJs(ws, `(() => {
       localStorage.removeItem('mr-group-chat-view-mode');
+      localStorage.removeItem('mr-group-chat-side-state');
       const item = Array.from(document.querySelectorAll('.session-item.meeting'))
         .find(el => el.textContent.includes('AI 群聊'));
       if (item) item.click();
@@ -182,20 +183,36 @@ function assertOk(cond, message, detail) {
     shots.push(await screenshot(ws, 'group-room'));
     const chatState = await evalJs(ws, `(() => ({
       hasChatShell: !!document.querySelector('.mr-gc-shell'),
+      sideCollapsed: document.querySelector('.mr-gc-shell')?.classList.contains('side-collapsed') || false,
+      sideDisplay: document.querySelector('.mr-gc-side') ? getComputedStyle(document.querySelector('.mr-gc-side')).display : '',
       hasCardStrip: !!document.querySelector('.mr-ft-strip'),
       chatButtonActive: document.getElementById('mr-btn-group-chat-view')?.classList.contains('active') || false,
       cardButtonExists: !!document.getElementById('mr-btn-group-card-view'),
+      sideToggleText: document.querySelector('[data-gc-side-toggle]')?.textContent || '',
       sideMemberCount: document.querySelectorAll('.mr-gc-member').length,
       sideLogoSrcs: Array.from(document.querySelectorAll('.mr-gc-member img')).map(img => img.getAttribute('src') || ''),
       sidebarSrcs: Array.from(document.querySelectorAll('.session-item.meeting .mini-jump-btn img')).map(img => img.getAttribute('src') || ''),
     }))()`);
     assertOk(chatState.hasChatShell, 'group room defaults to WeChat-like chat view', chatState);
+    assertOk(chatState.sideCollapsed && chatState.sideDisplay === 'none' && chatState.sideToggleText.includes('4/4'),
+      'group chat side member list is collapsed by default', chatState);
     assertOk(!chatState.hasCardStrip, 'group default view does not render roundtable cards', chatState);
     assertOk(chatState.chatButtonActive && chatState.cardButtonExists, 'group header exposes chat/card view toggle', chatState);
-    assertOk(chatState.sideMemberCount === 4 && chatState.sideLogoSrcs.every(src => src.includes('assets/ai-logos/')),
-      'group chat side members use AI company logo avatars', chatState);
     assertOk(chatState.sidebarSrcs.length === 4 && chatState.sidebarSrcs.every(src => src.includes('assets/ai-logos/')),
       'group sidebar mini avatars use AI company logos', chatState);
+
+    await evalJs(ws, `document.querySelector('[data-gc-side-toggle]')?.click()`);
+    await sleep(500);
+    const sideExpandedState = await evalJs(ws, `(() => ({
+      sideCollapsed: document.querySelector('.mr-gc-shell')?.classList.contains('side-collapsed') || false,
+      sideMemberCount: document.querySelectorAll('.mr-gc-member').length,
+      sideLogoSrcs: Array.from(document.querySelectorAll('.mr-gc-member img')).map(img => img.getAttribute('src') || ''),
+      sideCollapseText: document.querySelector('.mr-gc-side-collapse')?.textContent || '',
+    }))()`);
+    assertOk(!sideExpandedState.sideCollapsed && sideExpandedState.sideMemberCount === 4 && sideExpandedState.sideCollapseText.includes('4/4'),
+      'group chat side member list expands from the top toggle', sideExpandedState);
+    assertOk(sideExpandedState.sideLogoSrcs.every(src => src.includes('assets/ai-logos/')),
+      'expanded group chat side members use AI company logo avatars', sideExpandedState);
 
     await evalJs(ws, `document.getElementById('mr-btn-group-card-view').click()`);
     await sleep(800);
