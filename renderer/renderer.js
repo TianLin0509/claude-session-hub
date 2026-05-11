@@ -365,6 +365,41 @@ const sessions = new Map();
 let activeSessionId = null;
 const terminalCache = new Map();
 
+function fitAndResizeTerminal(sessionId, cached, opts = {}) {
+  if (!sessionId || !cached || !cached.opened || !cached.container) return false;
+  const rect = cached.container.getBoundingClientRect();
+  if (rect.width < 4 || rect.height < 4 || !cached.container.offsetWidth) return false;
+  const boxSig = [
+    Math.round(rect.width),
+    Math.round(rect.height),
+    currentFontSize,
+    currentZoom,
+  ].join('x');
+  if (!opts.force && cached._lastFitBoxSig === boxSig) return false;
+  cached._lastFitBoxSig = boxSig;
+  try { cached.fitAddon.fit(); } catch (_) { return false; }
+  const resizeSig = `${cached.terminal.cols}x${cached.terminal.rows}`;
+  if (cached._lastResizeSig !== resizeSig) {
+    cached._lastResizeSig = resizeSig;
+    ipcRenderer.send('terminal-resize', {
+      sessionId,
+      cols: cached.terminal.cols,
+      rows: cached.terminal.rows,
+    });
+  }
+  if (cached._minimap) cached._minimap.invalidate();
+  return true;
+}
+
+function scheduleFitAndResizeTerminal(sessionId, cached, opts = {}) {
+  if (!sessionId || !cached) return;
+  if (cached._fitRaf) cancelAnimationFrame(cached._fitRaf);
+  cached._fitRaf = requestAnimationFrame(() => {
+    cached._fitRaf = 0;
+    fitAndResizeTerminal(sessionId, cached, opts);
+  });
+}
+
 // --- DOM refs ---
 const sessionListEl = document.getElementById('session-list');
 const terminalPanelEl = document.getElementById('terminal-panel');
@@ -412,10 +447,10 @@ function setFontSize(size) {
   // 2026-05-09 主区 zoom 联动：卡片视图 / 启动器 / 圆桌 fullscreen 等通过 CSS calc(... * --main-zoom) 跟随
   // 写到 :root（documentElement），让圆桌（#meeting-room-panel，#terminal-panel 的兄弟节点）也能继承
   document.documentElement.style.setProperty('--main-zoom', (size / 16).toFixed(3));
-  for (const [, c] of terminalCache) {
+  for (const [sid, c] of terminalCache) {
     c.terminal.options.fontSize = size;
     if (c.opened) {
-      try { c.fitAddon.fit(); } catch {}
+      scheduleFitAndResizeTerminal(sid, c, { force: true });
     }
   }
 }
@@ -443,7 +478,7 @@ function toggleCompactMode(enabled) {
   if (typeof terminalCache !== 'undefined' && activeSessionId) {
     const cached = terminalCache.get(activeSessionId);
     if (cached && cached.opened) {
-      try { cached.fitAddon.fit(); } catch {}
+      scheduleFitAndResizeTerminal(activeSessionId, cached, { force: true });
     }
   }
 }
@@ -475,12 +510,7 @@ function applyZoom(level) {
   // Re-fit the active xterm so terminal cols/rows match the new render size.
   const active = activeSessionId && terminalCache.get(activeSessionId);
   if (active && active.opened) {
-    try { active.fitAddon.fit(); } catch {}
-    ipcRenderer.send('terminal-resize', {
-      sessionId: activeSessionId,
-      cols: active.terminal.cols,
-      rows: active.terminal.rows,
-    });
+    scheduleFitAndResizeTerminal(activeSessionId, active, { force: true });
   }
 }
 
@@ -570,7 +600,7 @@ function toggleMemoPanel() {
   // Re-fit active terminal after layout change
   const active = activeSessionId && terminalCache.get(activeSessionId);
   if (active && active.opened) {
-    setTimeout(() => { try { active.fitAddon.fit(); } catch {} }, 50);
+    setTimeout(() => scheduleFitAndResizeTerminal(activeSessionId, active, { force: true }), 50);
   }
 }
 
@@ -1041,7 +1071,7 @@ function getOrCreateTerminal(sessionId) {
       s.title = clean;
       s.claudeAutoTitle = clean;
       // Persist server-side so reloads / session-updated echoes stay consistent.
-      ipcRenderer.invoke('rename-session', { sessionId, title: clean });
+      ipcRenderer.invoke('rename-session', { sessionId, title: clean, userRenamed: false });
     });
   }
 
@@ -1305,9 +1335,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
   requestAnimationFrame(() => {
     const dbg = window.__scrollDebug;
     if (dbg && dbg.isOn()) dbg.log('show:raf-enter', { focus: opts.focus, ...dbg.snap(cached.terminal, sessionId) });
-    cached.fitAddon.fit();
+    fitAndResizeTerminal(sessionId, cached, { force: true });
     if (dbg && dbg.isOn()) dbg.log('show:after-fit', dbg.snap(cached.terminal, sessionId));
-    ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
     if (opts.focus) {
       cached.terminal.scrollToBottom();
       if (dbg && dbg.isOn()) dbg.log('show:after-stb', dbg.snap(cached.terminal, sessionId));
@@ -1348,10 +1377,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     // is display:none (e.g. another workspace panel is active). Fitting against a zero-width
     // container collapses xterm to the minimum 1 col and the canvas stays
     // squeezed even after the panel re-opens.
-    if (!cached.container.offsetWidth) return;
-    cached.fitAddon.fit();
-    ipcRenderer.send('terminal-resize', { sessionId, cols: cached.terminal.cols, rows: cached.terminal.rows });
-    if (cached._minimap) cached._minimap.invalidate();
+    scheduleFitAndResizeTerminal(sessionId, cached);
   };
   cached._resizeHandler = handleResize;
   window.addEventListener('resize', handleResize);
@@ -2788,7 +2814,7 @@ function applyViewMode(mode) {
   // 切到 PTY 时 refit xterm
   if (mode === 'pty' && typeof terminalCache !== 'undefined') {
     const cached = terminalCache.get(activeSessionId);
-    if (cached && cached.fitAddon) cached.fitAddon.fit();
+    if (cached && cached.fitAddon) scheduleFitAndResizeTerminal(activeSessionId, cached, { force: true });
   }
   // Spec 3 · W3 resume bug fix (b)：切到卡片时若 overlay 没卡片（既无 turn-card 也无 placeholder），
   // 主动 trigger load — 因为 showTerminal 在切 session 时只在 currentView==='card' 才 load，
@@ -2993,7 +3019,7 @@ function startRename(sessionId, titleSpan) {
         renderSessionList();
         schedulePersist();
       } else {
-        await ipcRenderer.invoke('rename-session', { sessionId, title: trimmed });
+        await ipcRenderer.invoke('rename-session', { sessionId, title: trimmed, userRenamed: true });
         if (session.kind === 'claude' || session.kind === 'claude-resume') {
           syncRenameToClaude(sessionId, trimmed);
         }
@@ -4061,8 +4087,7 @@ function refitActiveTerminal() {
   if (!cached || !cached.opened) return;
   requestAnimationFrame(() => {
     if (!cached.container.offsetWidth) return;
-    try { cached.fitAddon.fit(); } catch (_) {}
-    ipcRenderer.send('terminal-resize', { sessionId: sid, cols: cached.terminal.cols, rows: cached.terminal.rows });
+    fitAndResizeTerminal(sid, cached, { force: true });
   });
 }
 
@@ -4438,9 +4463,9 @@ function sessionBurnRate(session) {
 ipcRenderer.on('status-event', (_e, payload) => {
   const session = sessions.get(payload.sessionId);
   if (session) {
-    session.contextPct = payload.contextPct;
-    session.contextUsed = payload.contextUsed;
-    session.contextMax = payload.contextMax;
+    if (Object.prototype.hasOwnProperty.call(payload, 'contextPct')) session.contextPct = payload.contextPct;
+    if (Object.prototype.hasOwnProperty.call(payload, 'contextUsed')) session.contextUsed = payload.contextUsed;
+    if (Object.prototype.hasOwnProperty.call(payload, 'contextMax')) session.contextMax = payload.contextMax;
     if (typeof payload.contextUsed === 'number') {
       if (!session._tokenSamples) session._tokenSamples = [];
       session._tokenSamples.push({ t: Date.now(), used: payload.contextUsed });
@@ -5383,12 +5408,7 @@ function applySidebarCollapsed(collapsed) {
   setTimeout(() => {
     const cached = terminalCache.get(activeSessionId);
     if (!cached) return;
-    try { cached.fitAddon.fit(); } catch (_) {}
-    ipcRenderer.send('terminal-resize', {
-      sessionId: activeSessionId,
-      cols: cached.terminal.cols,
-      rows: cached.terminal.rows,
-    });
+    scheduleFitAndResizeTerminal(activeSessionId, cached, { force: true });
   }, 200);
 }
 const initialCollapsed = localStorage.getItem(SIDEBAR_KEY) === '1';
@@ -5913,8 +5933,8 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   if (terminalPanelEl) terminalPanelEl.style.display = '';
   ipcRenderer.send('focus-session', { sessionId: session.id });
   renderSessionList();
-  // 新建/resume session 强制 PTY 视图，用户手动点"卡片"才进卡片模式
-  applyViewMode('pty');
+  // 新建 session 默认进 PTY；dormant resume 保留用户当前视图，避免卡片视图被唤醒流程打断。
+  applyViewMode(wasDormant ? currentView : 'pty');
   showTerminal(session.id);
 });
 
@@ -5929,6 +5949,11 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
   if (ev.geminiChatId) s.geminiChatId = ev.geminiChatId;
   if (ev.geminiProjectHash) s.geminiProjectHash = ev.geminiProjectHash;
   if (ev.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
+  if (ev.hubSessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
+    loadSessionHistoryToOverlay(ev.hubSessionId).catch(err => {
+      console.warn('[session-meta-updated] card reload failed:', err);
+    });
+  }
 });
 
 // Spec 3 · W13：清理 _cardReloadState 的 session 条目，防 Map 长期累积。
@@ -5979,7 +6004,11 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!sessions.has(session.id)) return;
   const local = sessions.get(session.id);
   // Merge server updates but keep local preview/status (managed by renderer)
-  local.title = session.title;
+  if (!local.userRenamed && session.title) local.title = session.title;
+  if (session.userRenamed) local.userRenamed = true;
+  if (typeof session.contextPct === 'number') local.contextPct = session.contextPct;
+  if (typeof session.contextUsed === 'number') local.contextUsed = session.contextUsed;
+  if (typeof session.contextMax === 'number') local.contextMax = session.contextMax;
   renderSessionList();
 });
 
@@ -6007,6 +6036,10 @@ function schedulePersist() {
         lastOutputPreview: s.lastOutputPreview || '',
         unreadCount: s.unreadCount || 0,
         currentModel: s.currentModel || null,
+        contextPct: typeof s.contextPct === 'number' ? s.contextPct : null,
+        contextUsed: typeof s.contextUsed === 'number' ? s.contextUsed : null,
+        contextMax: typeof s.contextMax === 'number' ? s.contextMax : null,
+        userRenamed: !!s.userRenamed,
         // T10: include resume-meta in persist payload so main.js merge has the latest
         codexSid: s.codexSid || null,
         codexProfile: s.codexProfile || null,
@@ -6109,6 +6142,10 @@ async function resumeDormantSession(hubId) {
         ccSessionId: meta.ccSessionId || null,
         meetingId: meta.meetingId || null,
         currentModel: resolvedModel,
+        contextPct: typeof meta.contextPct === 'number' ? meta.contextPct : null,
+        contextUsed: typeof meta.contextUsed === 'number' ? meta.contextUsed : null,
+        contextMax: typeof meta.contextMax === 'number' ? meta.contextMax : null,
+        userRenamed: !!meta.userRenamed,
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
         codexProfile: meta.codexProfile || null,

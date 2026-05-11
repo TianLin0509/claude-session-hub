@@ -601,7 +601,9 @@ class SessionManager extends EventEmitter {
       // renderer xterm attached). TeamSessionManager sets noInheritCursor for
       // background character sessions. Normal user sessions don't set it, so
       // the default stays true for backward compatibility.
-      conptyInheritCursor: !opts.noInheritCursor,
+      // Codex's TUI does dense cursor-addressed redraws; inheriting the host
+      // cursor makes Windows ConPTY more prone to transient cursor ghosts.
+      conptyInheritCursor: isCodex ? false : !opts.noInheritCursor,
     });
 
     let currentModel = null;
@@ -1077,10 +1079,11 @@ class SessionManager extends EventEmitter {
     // `session-closed` — which is exactly the "X button does nothing" bug.
   }
 
-  renameSession(sessionId, title) {
+  renameSession(sessionId, title, opts = {}) {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
     session.info.title = title;
+    if (opts.userRenamed === true) session.info.userRenamed = true;
     return { ...session.info };
   }
 
@@ -1207,6 +1210,11 @@ class SessionManager extends EventEmitter {
       ...(info.pinned !== undefined ? { pinned: info.pinned } : {}),
       ...(info.ccSessionId !== undefined ? { ccSessionId: info.ccSessionId } : {}),
       ...(info.currentModel ? { model: info.currentModel.id } : {}),
+      ...(info.currentModel ? { currentModel: info.currentModel } : {}),
+      ...(typeof info.contextPct === 'number' ? { contextPct: info.contextPct } : {}),
+      ...(typeof info.contextUsed === 'number' ? { contextUsed: info.contextUsed } : {}),
+      ...(typeof info.contextMax === 'number' ? { contextMax: info.contextMax } : {}),
+      ...(info.userRenamed ? { userRenamed: true } : {}),
     };
   }
 

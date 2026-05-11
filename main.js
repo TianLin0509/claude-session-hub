@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
+const https = require('https');
 const os = require('os');
 let QRCode = null;
 const { SessionManager, clearSessionManagerConfigCache } = require('./core/session-manager.js');
@@ -479,10 +480,100 @@ transcriptTap.on('turn-complete', (ev) => {
   }
 });
 
+const _autoTitleInFlight = new Set();
+function fallbackSessionTitleFromPrompt(text, kind) {
+  const clean = String(text || '')
+    .replace(/[#*_`>\[\](){}<>]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const prefix = kind === 'codex' ? 'Codex' : '会话';
+  if (!clean) return '';
+  return `${prefix} · ${clean.slice(0, 18)}`;
+}
+
+function postJsonForAutoTitle(endpoint, payload, headers, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(endpoint);
+    const lib = u.protocol === 'https:' ? https : http;
+    const body = JSON.stringify(payload);
+    const req = lib.request({
+      hostname: u.hostname,
+      port: u.port,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+        ...headers,
+      },
+      timeout: timeoutMs,
+    }, res => {
+      let buf = '';
+      res.on('data', d => { buf += d; });
+      res.on('end', () => resolve({ status: res.statusCode, body: buf }));
+    });
+    req.on('timeout', () => req.destroy(new Error(`auto-title timeout after ${timeoutMs}ms`)));
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+async function generateSessionTitleFromPrompt(text) {
+  const cfg = getHubConfig();
+  const prompt = String(text || '').trim().slice(0, 1200);
+  if (!prompt) return '';
+  if (!cfg.deepseekApiKey) return '';
+  const { status, body } = await postJsonForAutoTitle('https://api.deepseek.com/chat/completions', {
+    model: 'deepseek-chat',
+    messages: [
+      { role: 'system', content: '你是会话命名器。根据用户第一句话生成中文短标题，8到16个汉字或等长短语，不要引号，不要解释。' },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 0.2,
+    max_tokens: 40,
+  }, { authorization: `Bearer ${cfg.deepseekApiKey}` }, 8000);
+  if (status !== 200) throw new Error(`DeepSeek HTTP ${status}`);
+  const parsed = JSON.parse(body);
+  const raw = parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content;
+  return String(raw || '').replace(/["'“”‘’\r\n]/g, '').trim().slice(0, 30);
+}
+
+function maybeAutoTitleSessionFromPrompt(ev) {
+  const { hubSessionId, text } = ev || {};
+  if (!hubSessionId || !text || _autoTitleInFlight.has(hubSessionId)) return;
+  const session = sessionManager.getSession(hubSessionId);
+  if (!session || session.meetingId || session.userRenamed) return;
+  if (!/^(codex|codex-resume)$/.test(session.kind || '')) return;
+  if (session.autoTitleGenerated) return;
+  if (session.title && !/^Codex( Resume)? \d+$/i.test(session.title)) return;
+  _autoTitleInFlight.add(hubSessionId);
+  setTimeout(async () => {
+    try {
+      const latest = sessionManager.getSession(hubSessionId);
+      if (!latest || latest.userRenamed || latest.autoTitleGenerated || latest.meetingId) return;
+      let title = '';
+      try { title = await generateSessionTitleFromPrompt(text); } catch (e) {
+        console.warn('[auto-title] AI title failed:', e && e.message);
+      }
+      if (!title) title = fallbackSessionTitleFromPrompt(text, (latest.kind || '').replace(/-resume$/, ''));
+      if (!title) return;
+      const updated = sessionManager.updateSessionMeta(hubSessionId, {
+        title,
+        autoTitleGenerated: true,
+      });
+      if (updated) sendToRenderer('session-updated', { session: updated });
+    } finally {
+      _autoTitleInFlight.delete(hubSessionId);
+    }
+  }, 0);
+}
+
 transcriptTap.on('prompt-submitted', (ev) => {
   const { hubSessionId, text, submittedAt } = ev || {};
   if (!hubSessionId) return;
   const session = sessionManager.getSession(hubSessionId);
+  maybeAutoTitleSessionFromPrompt(ev);
   try {
     sendToRenderer('prompt-submitted-event', {
       hubSessionId,
@@ -2849,8 +2940,8 @@ ipcMain.on('focus-session', (_e, { sessionId }) => {
   sessionManager.markRead(sessionId);
 });
 
-ipcMain.handle('rename-session', (_e, { sessionId, title }) => {
-  const session = sessionManager.renameSession(sessionId, title);
+ipcMain.handle('rename-session', (_e, { sessionId, title, userRenamed }) => {
+  const session = sessionManager.renameSession(sessionId, title, { userRenamed: !!userRenamed });
   if (session) sendToRenderer('session-updated', { session });
   return session;
 });
@@ -2955,13 +3046,17 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   // 2026-05-05 fix: 字段名是 'currentModel'（renderer.js:5287 持久化用的字段），
   //   旧版误写成 'model' → 兜底机制对 model 永不触发，任何一次 race 把 currentModel
   //   写成 null 都会永久污染 state.json，dormant 唤醒丢失原 model（落到默认 opus 等）。
-  const RESUME_META_FIELDS = ['codexSid', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel'];
+  const RESUME_META_FIELDS = ['codexSid', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel', 'contextPct', 'contextUsed', 'contextMax', 'userRenamed'];
   const oldByHubId = new Map(lastPersistedSessions.map(s => [s.hubId, s]));
   for (const newSession of list) {
     if (!newSession || !newSession.hubId) continue;
     const oldSession = oldByHubId.get(newSession.hubId);
     if (!oldSession) continue;
     for (const field of RESUME_META_FIELDS) {
+      if (field === 'userRenamed' && oldSession.userRenamed === true) {
+        newSession.userRenamed = true;
+        continue;
+      }
       if (newSession[field] == null && oldSession[field] != null) {
         newSession[field] = oldSession[field];
       }
@@ -3667,6 +3762,14 @@ const hookServer = http.createServer((req, res) => {
         // and immediately trigger a stale update.
         if (event === 'stop' && parsed.transcriptPath) {
           transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath).catch(() => {});
+        }
+        if (event === 'prompt' && latestUserMessage) {
+          maybeAutoTitleSessionFromPrompt({
+            hubSessionId: parsed.sessionId,
+            text: latestUserMessage,
+            submittedAt: Date.now(),
+            signalSource: 'hook_prompt',
+          });
         }
         sendToRenderer('hook-event', {
           event,
