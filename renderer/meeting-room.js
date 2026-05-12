@@ -4620,6 +4620,7 @@ if (typeof document !== 'undefined') (function () {
 
     inputBox.addEventListener('input', () => {
       const mid = activeMeetingId;
+      _saveInputDraft();
       _updateRtMentionMenu(inputBox, meetingData[mid] || meeting);
     });
     inputBox.addEventListener('keyup', (e) => {

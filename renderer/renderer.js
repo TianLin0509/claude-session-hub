@@ -364,6 +364,23 @@ function hidePreview() {
 const sessions = new Map();
 let activeSessionId = null;
 const terminalCache = new Map();
+const floatingInputDrafts = new Map();
+
+function readContenteditablePlainText(el) {
+  if (!el) return '';
+  return typeof el.innerText === 'string' ? el.innerText : (el.textContent || '');
+}
+
+function saveFloatingInputDraft(sessionId, inputBox) {
+  if (!sessionId || !inputBox) return;
+  const text = readContenteditablePlainText(inputBox);
+  if (text) floatingInputDrafts.set(sessionId, text);
+  else floatingInputDrafts.delete(sessionId);
+}
+
+function clearFloatingInputDraft(sessionId) {
+  if (sessionId) floatingInputDrafts.delete(sessionId);
+}
 
 function fitAndResizeTerminal(sessionId, cached, opts = {}) {
   if (!sessionId || !cached || !cached.opened || !cached.container) return false;
@@ -3016,6 +3033,9 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   inputBox.className = 'floating-input-box';
   inputBox.contentEditable = 'true';
   inputBox.setAttribute('data-placeholder', '输入消息… Enter 发送, Shift+Enter 换行');
+  if (floatingInputDrafts.has(sessionId)) {
+    inputBox.textContent = floatingInputDrafts.get(sessionId);
+  }
 
   const sendBtn = document.createElement('button');
   sendBtn.className = 'floating-input-send';
@@ -3039,11 +3059,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const BP_END = '\x1b[201~';
 
   function sendInput() {
-    const text = inputBox.innerText;
+    const text = readContenteditablePlainText(inputBox);
     if (!text || !text.trim()) return;
 
     // 立即清 UI + scroll + 还焦给终端，让用户立刻感知"已发送"。后续异步往 PTY 写。
     inputBox.textContent = '';
+    clearFloatingInputDraft(sessionId);
     terminal.scrollToBottom();
     terminal.focus();
 
@@ -3100,6 +3121,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     }
   });
 
+  inputBox.addEventListener('input', () => {
+    saveFloatingInputDraft(sessionId, inputBox);
+  });
+
   // 卡片优化（2026-05-03）：粘贴图片到浮动输入框 → save-clipboard-image
   //   IPC 取得绝对路径 → execCommand('insertText') 插入到 caret 位置。
   //   语义与 xterm 的 handlePasteForSession 一致（用户粘图后路径文字流到 PTY）。
@@ -3115,6 +3140,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 
   return {
     dispose() {
+      saveFloatingInputDraft(sessionId, inputBox);
       if (bar.parentNode) bar.parentNode.removeChild(bar);
     },
   };
@@ -6138,6 +6164,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     clearTimeout(_codexSubmitPendingTimers.get(sessionId));
     _codexSubmitPendingTimers.delete(sessionId);
   }
+  clearFloatingInputDraft(sessionId);
   // 多方审查 P1 (Claude 共识)：W16 _w16RemoveTimers 也要在 session-closed 时清理，
   // 否则 1.5s 后 timer 触发时 sessions.get(sessionId) === undefined → 走 .remove() 分支，
   // 加上未做 dataset 过滤前会误删别 session 的 indicator。即使加了 dataset 过滤，timer
