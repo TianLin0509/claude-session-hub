@@ -385,31 +385,74 @@
 }
 .mr-gc-md {
   font-size: 13px;
+  line-height: 1.58;
+  color: #111827;
+  overflow-wrap: anywhere;
 }
 .mr-gc-md p { margin: 0.25em 0; }
 .mr-gc-md p:first-child { margin-top: 0; }
 .mr-gc-md p:last-child { margin-bottom: 0; }
 .mr-gc-md ul,
 .mr-gc-md ol { margin: 0.35em 0; padding-left: 1.3em; }
+.mr-gc-md a {
+  color: #0969da;
+  font-weight: 600;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.mr-gc-md a:hover {
+  color: #0550ae;
+  background: rgba(9,105,218,0.08);
+}
+.mr-gc-md code {
+  padding: 1px 5px;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  background: #f6f8fa;
+  color: #8250df;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.92em;
+}
 .mr-gc-md pre {
   max-width: 100%;
   overflow-x: auto;
-  background: rgba(17,24,39,0.08);
-  border-radius: 5px;
-  padding: 8px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid #d0d7de;
+  border-left: 4px solid #6e7781;
+  border-radius: 6px;
+  background: #f6f8fa;
+  color: #24292f;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.75);
 }
-.mr-gc-anchor {
-  margin-top: 4px;
+.mr-gc-md pre code {
   padding: 0;
   border: 0;
   background: transparent;
-  color: #64748b;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.mr-gc-anchor {
+  margin-top: 4px;
+  padding: 2px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
   font-size: 10px;
-  cursor: default;
+  cursor: pointer;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.mr-gc-anchor:hover {
+  background: #eef6ff;
+  border-color: #93c5fd;
+  color: #075985;
 }
 .mr-gc-waiting {
   color: #6b7280;
@@ -475,12 +518,25 @@
   background: #e7f8ef;
   border-color: rgba(7,193,96,0.28);
 }
-.mr-gc-member img {
+.mr-gc-member-logo {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+.mr-gc-member-logo:hover {
+  background: #fff;
+  border-color: rgba(37,99,235,0.22);
+}
+.mr-gc-member-logo img {
   width: 30px;
   height: 30px;
   border-radius: 6px;
   object-fit: cover;
-  flex: 0 0 30px;
 }
 .mr-gc-member-main {
   min-width: 0;
@@ -503,12 +559,50 @@
   font-size: 10px;
   color: #6b7280;
 }
-.mr-gc-member-check {
-  width: 26px;
-  color: #07c160;
+.mr-gc-member-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.mr-gc-member-ctx {
+  min-width: 48px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #64748b;
   font-size: 10px;
   font-weight: 700;
-  text-align: right;
+  text-align: center;
+}
+.mr-gc-member-ctx.warn {
+  background: #fff7ed;
+  color: #c2410c;
+}
+.mr-gc-member-ctx.high {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+.mr-gc-member-ctx.unknown {
+  color: #94a3b8;
+}
+.mr-gc-member-check {
+  min-width: 38px;
+  padding: 2px 7px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #fff;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  cursor: pointer;
+}
+.mr-gc-member-check.on {
+  background: #dcfce7;
+  border-color: rgba(7,193,96,0.32);
+  color: #059669;
 }
 .mr-gc-ledger {
   margin-top: auto;
@@ -1713,11 +1807,44 @@ body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active):hover {
 /* 文件路径链接（marked HTML 后处理识别 .html/.md/.csv 等路径并包 <a class="rt-file-link">）。
    悬停下划线 + 鼠标手型；click 走委托调 openPreviewPanel。 */
 .mr-ft-md a.rt-file-link, .mr-ft-preview-md a.rt-file-link, .mr-rt-tl-body a.rt-file-link {
-  color: #79c0ff; cursor: pointer; text-decoration: none;
-  border-bottom: 1px dashed #79c0ff; transition: border-color .15s;
+  color: #79c0ff;
+  cursor: pointer;
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+  transition: color .15s, background-color .15s, text-decoration-color .15s;
 }
 .mr-ft-md a.rt-file-link:hover, .mr-ft-preview-md a.rt-file-link:hover, .mr-rt-tl-body a.rt-file-link:hover {
-  border-bottom-color: #a5d6ff;
+  color: #a5d6ff;
+  background: rgba(121,192,255,0.10);
+}
+.mr-ft-md a:not(.rt-file-link),
+.mr-ft-preview-md a:not(.rt-file-link),
+.mr-rt-tl-body a:not(.rt-file-link) {
+  color: #79c0ff;
+  cursor: pointer;
+  font-weight: 600;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.mr-ft-md a:not(.rt-file-link):hover,
+.mr-ft-preview-md a:not(.rt-file-link):hover,
+.mr-rt-tl-body a:not(.rt-file-link):hover {
+  color: #a5d6ff;
+  background: rgba(121,192,255,0.10);
+}
+.mr-ft-md a:focus-visible,
+.mr-ft-preview-md a:focus-visible,
+.mr-rt-tl-body a:focus-visible,
+.mr-gc-md a:focus-visible,
+.mr-gc-anchor:focus-visible {
+  outline: 2px solid rgba(9,105,218,0.55);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 /* Card redesign：bottom 区（flex:1 撑满，含 preview / progress / escape-bar / corner-badge） */
@@ -3687,10 +3814,26 @@ body.theme-vibechat-light .mr-ft-md em {
 body.theme-vibechat-light .mr-ft-preview-md a,
 body.theme-vibechat-light .mr-ft-md a,
 body.theme-vibechat-light .mr-ft-md a.rt-file-link,
-body.theme-vibechat-light .mr-ft-preview-md a.rt-file-link {
+body.theme-vibechat-light .mr-ft-preview-md a.rt-file-link,
+body.theme-vibechat-light .mr-rt-tl-body a,
+body.theme-vibechat-light .mr-rt-tl-body a.rt-file-link {
   color: #075985;
-  border-bottom-color: rgba(7, 89, 133, 0.45);
-  text-decoration-color: rgba(7, 89, 133, 0.45);
+  text-decoration-line: underline;
+  text-decoration-color: rgba(7, 89, 133, 0.70);
+}
+body.theme-vibechat-light .mr-ft-md a.rt-file-link,
+body.theme-vibechat-light .mr-ft-preview-md a.rt-file-link,
+body.theme-vibechat-light .mr-rt-tl-body a.rt-file-link {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: #eef6ff;
+  text-decoration-style: dashed;
+}
+body.theme-vibechat-light .mr-ft-preview-md a:hover,
+body.theme-vibechat-light .mr-ft-md a:hover,
+body.theme-vibechat-light .mr-rt-tl-body a:hover {
+  color: #0c4a6e;
+  background: rgba(14,165,233,0.12);
 }
 body.theme-vibechat-light .mr-ft-expand {
   background: rgba(15, 23, 42, 0.05);
@@ -3706,6 +3849,8 @@ body.theme-vibechat-light .mr-ft-md pre {
   background: #f6f8fa;
   color: #1f2328;
   border: 1px solid var(--border);
+  border-left: 4px solid #6e7781;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
 }
 body.theme-vibechat-light .mr-ft-md code {
   background: #eef2ff;
@@ -3736,7 +3881,8 @@ body.theme-vibechat-light .mr-ft-preview-md pre {
   background: #f6f8fa;
   color: #1f2328;
   border: 1px solid var(--border);
-  border-left: 3px solid #94a3b8;
+  border-left: 4px solid #6e7781;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
 }
 body.theme-vibechat-light .mr-ft-preview-md pre code {
   background: transparent;
@@ -3758,6 +3904,35 @@ body.theme-vibechat-light .mr-ft-preview-ellip {
 }
 body.theme-vibechat-light .mr-ft-preview.streaming {
   color: #1f2937;
+}
+body.theme-vibechat-light .mr-rt-tl-body {
+  color: #1f2937;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+}
+body.theme-vibechat-light .mr-rt-tl-body code {
+  background: #eef2ff;
+  color: #7e22ce;
+  border: 1px solid #c7d2fe;
+}
+body.theme-vibechat-light .mr-rt-tl-body pre {
+  background: #f6f8fa;
+  color: #1f2328;
+  border: 1px solid var(--border);
+  border-left: 4px solid #6e7781;
+}
+body.theme-vibechat-light .mr-rt-tl-body pre code {
+  background: transparent;
+  color: inherit;
+  border: 0;
+}
+body.theme-vibechat-light .mr-rt-tl-body th,
+body.theme-vibechat-light .mr-rt-tl-body td {
+  border-color: var(--border);
+}
+body.theme-vibechat-light .mr-rt-tl-body th {
+  background: #f1f5f9;
+  color: #0f172a;
 }
 
 /* mr-tab.has-new 黄色提示边在浅底上加深 */
@@ -4098,4 +4273,406 @@ body.theme-vibechat-light .mr-ft-strip > .mr-ft:hover:not(.active) {
    万一变量没生效 fallback 到深色） */
 body.theme-vibechat-light .meeting-room-panel {
   background: var(--bg-primary) !important;
+}
+
+/* Theme bridge: keep roundtable/group-chat surfaces in sync with Hub theme. */
+.meeting-room-panel {
+  --mr-surface: var(--bg-primary, #0d1117);
+  --mr-surface-2: var(--bg-secondary, #161b22);
+  --mr-surface-3: var(--bg-tertiary, #1c2128);
+  --mr-card-bg: var(--bg-secondary, #161b22);
+  --mr-card-hover: color-mix(in srgb, var(--bg-tertiary, #1c2128) 82%, var(--text-primary, #f0f6fc) 6%);
+  --mr-line: var(--border, #30363d);
+  --mr-text: var(--text-primary, #f0f6fc);
+  --mr-muted: var(--text-secondary, #8b949e);
+  --mr-dim: var(--text-muted, #6e7681);
+  --mr-link: var(--accent-blue, #58a6ff);
+  --mr-code-bg: #0d1117;
+  --mr-code-text: #e6edf3;
+  --mr-inline-code-bg: rgba(255, 255, 255, 0.08);
+  --mr-blockquote-bg: rgba(255, 255, 255, 0.035);
+  --mr-shadow: rgba(0, 0, 0, 0.36);
+}
+
+body.theme-light .meeting-room-panel,
+body.theme-vibechat-light .meeting-room-panel {
+  --mr-surface: var(--bg-primary, #ffffff);
+  --mr-surface-2: var(--bg-secondary, #f6f8fa);
+  --mr-surface-3: var(--bg-tertiary, #eaeef2);
+  --mr-card-bg: #ffffff;
+  --mr-card-hover: #f6f8fa;
+  --mr-line: var(--border, #d0d7de);
+  --mr-text: var(--text-primary, #1f2328);
+  --mr-muted: #475569;
+  --mr-dim: #64748b;
+  --mr-link: var(--accent-blue, #0969da);
+  --mr-code-bg: #f6f8fa;
+  --mr-code-text: #1f2328;
+  --mr-inline-code-bg: #eef2ff;
+  --mr-blockquote-bg: #f8fafc;
+  --mr-shadow: rgba(15, 23, 42, 0.10);
+}
+
+.meeting-room-panel,
+.mr-rt-panel {
+  background: var(--mr-surface) !important;
+  color: var(--mr-text) !important;
+}
+.meeting-room-panel::after {
+  background: radial-gradient(ellipse at center bottom,
+    color-mix(in srgb, var(--accent-blue, #58a6ff) 16%, transparent) 0%,
+    color-mix(in srgb, var(--accent-blue, #58a6ff) 5%, transparent) 42%,
+    transparent 72%);
+}
+.mr-rt-track,
+.mr-card-view-tabs {
+  background: var(--mr-surface-2) !important;
+  border-color: var(--mr-line) !important;
+  color: var(--mr-text) !important;
+}
+.mr-ft-strip {
+  border-color: var(--mr-line) !important;
+  background: var(--mr-surface) !important;
+}
+.mr-ft-strip > .mr-ft,
+body.theme-vibechat-light .mr-ft-strip > .mr-ft {
+  background-color: var(--mr-card-bg) !important;
+  color: var(--mr-text) !important;
+  border-right-color: var(--mr-line) !important;
+}
+.mr-ft-strip > .mr-ft:hover:not(.active),
+body.theme-vibechat-light .mr-ft-strip > .mr-ft:hover:not(.active) {
+  background-color: var(--mr-card-hover) !important;
+}
+.mr-ft.slot-1.active,
+body.theme-vibechat-light .mr-ft-strip > .mr-ft.slot-1.active {
+  background-color: var(--mr-card-bg) !important;
+  background-image: linear-gradient(rgba(var(--c-slot-1-rgb), 0.10), rgba(var(--c-slot-1-rgb), 0.10)) !important;
+}
+.mr-ft.slot-2.active,
+body.theme-vibechat-light .mr-ft-strip > .mr-ft.slot-2.active {
+  background-color: var(--mr-card-bg) !important;
+  background-image: linear-gradient(rgba(var(--c-slot-2-rgb), 0.10), rgba(var(--c-slot-2-rgb), 0.10)) !important;
+}
+.mr-ft.slot-3.active,
+body.theme-vibechat-light .mr-ft-strip > .mr-ft.slot-3.active {
+  background-color: var(--mr-card-bg) !important;
+  background-image: linear-gradient(rgba(var(--c-slot-3-rgb), 0.10), rgba(var(--c-slot-3-rgb), 0.10)) !important;
+}
+.mr-ft:not(:last-child) { border-right-color: var(--mr-line) !important; }
+.mr-ft-preview,
+.mr-ft-think,
+.mr-ft-stat-inline,
+.mr-rt-step-counter,
+.mr-rt-tb-status,
+.mr-rt-dispatch-label,
+.mr-free-participants-title,
+.mr-free-slot-label {
+  color: var(--mr-muted) !important;
+}
+.mr-ft-bottom,
+.mr-ft-escape-bar {
+  border-color: var(--mr-line) !important;
+}
+.mr-ft-md,
+.mr-ft-preview-md,
+.mr-rt-tl-body {
+  color: var(--mr-text) !important;
+}
+.mr-ft-md strong,
+.mr-ft-preview-md strong,
+.mr-rt-tl-body strong {
+  color: var(--mr-text) !important;
+}
+.mr-ft-md a,
+.mr-ft-preview-md a,
+.mr-rt-tl-body a {
+  color: var(--mr-link) !important;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.mr-ft-md code,
+.mr-ft-preview-md code,
+.mr-rt-tl-body code {
+  background: var(--mr-inline-code-bg) !important;
+  color: color-mix(in srgb, var(--mr-text) 82%, var(--accent-orange, #f0883e)) !important;
+  border-color: color-mix(in srgb, var(--mr-line) 78%, transparent) !important;
+}
+.mr-ft-md pre,
+.mr-ft-preview-md pre,
+.mr-rt-tl-body pre {
+  background: var(--mr-code-bg) !important;
+  color: var(--mr-code-text) !important;
+  border-color: var(--mr-line) !important;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--mr-text) 6%, transparent);
+}
+.mr-ft-md pre code,
+.mr-ft-preview-md pre code,
+.mr-rt-tl-body pre code {
+  background: transparent !important;
+  color: inherit !important;
+  border: 0 !important;
+}
+.mr-ft-md th,
+.mr-ft-md td,
+.mr-ft-preview-md th,
+.mr-ft-preview-md td,
+.mr-rt-tl-body th,
+.mr-rt-tl-body td {
+  border-color: var(--mr-line) !important;
+}
+.mr-ft-md th,
+.mr-ft-preview-md th,
+.mr-rt-tl-body th {
+  background: var(--mr-surface-3) !important;
+  color: var(--mr-text) !important;
+}
+.mr-ft-md tr:nth-child(even) td,
+.mr-ft-preview-md tr:nth-child(even) td,
+.mr-rt-tl-body tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--mr-surface-3) 58%, transparent) !important;
+}
+.mr-ft-md blockquote,
+.mr-ft-preview-md blockquote,
+.mr-rt-tl-body blockquote {
+  background: var(--mr-blockquote-bg) !important;
+  color: var(--mr-muted) !important;
+  border-left-color: color-mix(in srgb, var(--accent-orange, #f0883e) 72%, var(--mr-line)) !important;
+}
+.mr-card-view-tab,
+.mr-view-toggle,
+.mr-header-btn,
+.mr-mode-toggle,
+.mr-free-participants,
+.mr-free-slot,
+.mr-ft-escape-btn,
+.mr-ft-lineage-chip,
+.mr-ft-mem-btn,
+.mr-rt-tb-btn,
+.mr-rt-tb-pick select,
+.mr-rt-scene-card,
+.mr-rt-ob-step,
+.mr-rt-userq {
+  background: var(--mr-surface-2) !important;
+  border-color: var(--mr-line) !important;
+  color: var(--mr-muted) !important;
+}
+.mr-card-view-tab:hover,
+.mr-header-btn:hover,
+.mr-ft-escape-btn:hover:not([disabled]),
+.mr-ft-mem-btn:hover,
+.mr-rt-tb-btn:hover:not([disabled]),
+.mr-rt-scene-card-btn-secondary:hover {
+  background: var(--mr-card-hover) !important;
+  color: var(--mr-text) !important;
+}
+.mr-card-view-tab.active,
+.mr-view-toggle .mr-view-btn.active,
+.mr-header-btn.active,
+.mr-mode-toggle-btn.active,
+.mr-rt-tb-btn.active {
+  background: var(--accent, var(--accent-blue, #58a6ff)) !important;
+  border-color: var(--accent, var(--accent-blue, #58a6ff)) !important;
+  color: #ffffff !important;
+}
+.mr-rt-stepper {
+  background: color-mix(in srgb, var(--mr-surface-2) 88%, transparent) !important;
+  border-color: var(--mr-line) !important;
+}
+.mr-rt-stepper::before {
+  background: var(--mr-line) !important;
+}
+.mr-rt-timetravel-banner,
+.mr-input-row-tt {
+  background: color-mix(in srgb, #a855f7 14%, var(--mr-surface)) !important;
+  border-color: color-mix(in srgb, #a855f7 42%, var(--mr-line)) !important;
+  color: color-mix(in srgb, #a855f7 76%, var(--mr-text)) !important;
+}
+.mr-rt-tl-drawer,
+.mr-rt-tl-drawer-head,
+.mr-rt-tl-tabs,
+.mr-rt-tl-tab.active {
+  background: var(--mr-surface-2) !important;
+  border-color: var(--mr-line) !important;
+  color: var(--mr-text) !important;
+}
+.mr-rt-tl-tab,
+.mr-rt-tl-drawer-meta,
+.mr-rt-tl-empty {
+  color: var(--mr-muted) !important;
+}
+
+body.theme-light .mr-ft-status.completed,
+body.theme-vibechat-light .mr-ft-status.completed { background: #d1fae5 !important; color: #065f46 !important; }
+body.theme-light .mr-ft-status.thinking,
+body.theme-vibechat-light .mr-ft-status.thinking { background: #fef3c7 !important; color: #92400e !important; }
+body.theme-light .mr-ft-status.streaming,
+body.theme-vibechat-light .mr-ft-status.streaming { background: #dbeafe !important; color: #1e40af !important; }
+body.theme-light .mr-ft-status.idle,
+body.theme-vibechat-light .mr-ft-status.idle,
+body.theme-light .mr-ft-status.absent,
+body.theme-vibechat-light .mr-ft-status.absent { background: #f1f5f9 !important; color: #475569 !important; }
+body.theme-light .mr-ft-status.errored,
+body.theme-vibechat-light .mr-ft-status.errored,
+body.theme-light .mr-ft-status.timeout,
+body.theme-vibechat-light .mr-ft-status.timeout,
+body.theme-light .mr-ft-status.send_stuck,
+body.theme-vibechat-light .mr-ft-status.send_stuck,
+body.theme-light .mr-ft-status.transport_lost,
+body.theme-vibechat-light .mr-ft-status.transport_lost { background: #fee2e2 !important; color: #b91c1c !important; }
+
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-shell {
+  background: var(--mr-surface) !important;
+  color: var(--mr-text) !important;
+  border-top-color: var(--mr-line) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-thread,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-topbar,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-side,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-ledger,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-empty {
+  background: var(--mr-surface-2) !important;
+  border-color: var(--mr-line) !important;
+  color: var(--mr-text) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-messages {
+  background: var(--mr-surface) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-bubble {
+  background: var(--mr-card-bg) !important;
+  color: var(--mr-text) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-msg.mine .mr-gc-bubble {
+  background: color-mix(in srgb, var(--accent-green, #3fb950) 35%, var(--mr-card-bg)) !important;
+  color: var(--mr-text) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member-check,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-card-link {
+  background: var(--mr-surface-2) !important;
+  border-color: var(--mr-line) !important;
+  color: var(--mr-muted) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member:hover,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member-logo:hover,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-card-link:hover {
+  background: var(--mr-card-hover) !important;
+  color: var(--mr-text) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-dayline {
+  background: var(--mr-surface-3) !important;
+  color: var(--mr-muted) !important;
+}
+
+/* Group chat dark-mode readability repair.
+   The base chat view is light-theme-first, so nested markdown/member text has
+   explicit dark colors that do not inherit .mr-gc-bubble's dark theme color. */
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-topbar {
+  box-shadow: 0 1px 0 var(--mr-line);
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-title,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-side-head,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-ledger-title,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-empty-title,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member-name {
+  color: var(--mr-text) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-subtitle,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-meta,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member-meta,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-empty-sub,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-ledger,
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-waiting {
+  color: var(--mr-muted) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-md {
+  color: var(--mr-text) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-md a {
+  color: var(--mr-link) !important;
+  text-decoration-color: color-mix(in srgb, var(--mr-link) 70%, transparent);
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-md a:hover {
+  color: color-mix(in srgb, var(--mr-link) 78%, #ffffff) !important;
+  background: color-mix(in srgb, var(--mr-link) 14%, transparent) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-md code {
+  background: var(--mr-inline-code-bg) !important;
+  border-color: color-mix(in srgb, var(--mr-line) 78%, transparent) !important;
+  color: color-mix(in srgb, var(--mr-text) 76%, #d8b4fe) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-md pre {
+  background: var(--mr-code-bg) !important;
+  border-color: var(--mr-line) !important;
+  border-left-color: color-mix(in srgb, var(--mr-link) 62%, var(--mr-line)) !important;
+  color: var(--mr-code-text) !important;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--mr-text) 5%, transparent);
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-md pre code {
+  background: transparent !important;
+  color: inherit !important;
+  border: 0 !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-msg.ai .mr-gc-bubble::before {
+  border-right-color: var(--mr-card-bg) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-msg.mine .mr-gc-bubble::after {
+  border-left-color: color-mix(in srgb, var(--accent-green, #3fb950) 35%, var(--mr-card-bg)) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-avatar {
+  background: var(--mr-surface-3) !important;
+  border-color: var(--mr-line) !important;
+  color: var(--mr-text) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-avatar-user {
+  background: var(--accent-green, #238636) !important;
+  border-color: color-mix(in srgb, var(--accent-green, #3fb950) 80%, #ffffff 8%) !important;
+  color: #ffffff !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member.selected {
+  background: color-mix(in srgb, var(--accent-green, #3fb950) 14%, var(--mr-surface-2)) !important;
+  border-color: color-mix(in srgb, var(--accent-green, #3fb950) 44%, var(--mr-line)) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member-check.on {
+  background: color-mix(in srgb, var(--accent-green, #3fb950) 18%, var(--mr-surface-2)) !important;
+  border-color: color-mix(in srgb, var(--accent-green, #3fb950) 46%, var(--mr-line)) !important;
+  color: color-mix(in srgb, var(--accent-green, #3fb950) 72%, #ffffff) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member-ctx {
+  background: var(--mr-surface-3) !important;
+  color: var(--mr-muted) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member-ctx.warn {
+  background: color-mix(in srgb, var(--accent-orange, #f0883e) 16%, var(--mr-surface-2)) !important;
+  color: color-mix(in srgb, var(--accent-orange, #f0883e) 76%, #ffffff) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member-ctx.high {
+  background: color-mix(in srgb, var(--accent-red, #f85149) 16%, var(--mr-surface-2)) !important;
+  color: color-mix(in srgb, var(--accent-red, #f85149) 74%, #ffffff) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-member-ctx.unknown {
+  color: var(--mr-dim) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-anchor {
+  background: var(--mr-surface-3) !important;
+  border-color: var(--mr-line) !important;
+  color: var(--mr-link) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-anchor:hover {
+  background: color-mix(in srgb, var(--mr-link) 14%, var(--mr-surface-3)) !important;
+  border-color: color-mix(in srgb, var(--mr-link) 46%, var(--mr-line)) !important;
+  color: color-mix(in srgb, var(--mr-link) 78%, #ffffff) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-side-collapse {
+  background: var(--mr-surface-2) !important;
+  border-color: var(--mr-line) !important;
+  color: var(--mr-muted) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-side-collapse:hover {
+  background: var(--mr-card-hover) !important;
+  color: var(--mr-text) !important;
+}
+body:not(.theme-light):not(.theme-vibechat-light) .mr-gc-empty {
+  border-style: dashed;
 }
