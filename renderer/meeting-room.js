@@ -1624,13 +1624,16 @@ if (typeof document !== 'undefined') (function () {
     const time = _formatGroupChatTime(message.createdAt);
     const status = opts.status || message.status || '';
     const statusText = opts.pending ? '正在发言' : (status === 'errored' ? '发送失败' : '');
+    const syncAction = (!isUser && message.sid)
+      ? `<button type="button" class="mr-gc-sync-btn" data-gc-sync-answer="${escapeHtml(message.sid)}" data-gc-sync-turn="${escapeHtml(message.turnNum || '')}" title="从该 AI 的 shell/transcript 手动同步本轮回答">同步</button>`
+      : '';
     const body = opts.empty
       ? '<span class="mr-gc-waiting">思考中...</span>'
       : `<div class="mr-gc-md">${_renderMarkdown(message.content || '')}</div>`;
     const anchor = message.anchor
       ? `<button type="button" class="mr-gc-anchor" data-gc-anchor="${escapeHtml(message.anchor)}" title="原文索引">${escapeHtml(message.anchor)}</button>`
       : '';
-    const meta = `<div class="mr-gc-meta"><span>${escapeHtml(label)}</span>${time ? `<span>${escapeHtml(time)}</span>` : ''}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}</div>`;
+    const meta = `<div class="mr-gc-meta"><span>${escapeHtml(label)}</span>${time ? `<span>${escapeHtml(time)}</span>` : ''}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}</div>`;
     return `
       <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${opts.pending ? ' pending' : ''}">
         ${!isUser ? _renderGroupAvatar(slot, false) : ''}
@@ -1660,6 +1663,7 @@ if (typeof document !== 'undefined') (function () {
         id: `pending-${slot.sid}`,
         role: 'assistant',
         sid: slot.sid,
+        turnNum: state.currentTurn || '',
         speaker: slot.displayLabel || slot.label,
         content: status === 'errored' ? '本轮发送失败，可切换到卡片视图查看处理按钮。' : text,
         status,
@@ -2223,6 +2227,47 @@ if (typeof document !== 'undefined') (function () {
       btn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         _setGroupSideCollapsed(!_getGroupSideCollapsed(), meeting);
+      });
+    });
+    panel.querySelectorAll('[data-gc-sync-answer]').forEach(btn => {
+      btn.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (btn.disabled) return;
+        const sid = btn.getAttribute('data-gc-sync-answer');
+        const turnRaw = parseInt(btn.getAttribute('data-gc-sync-turn') || '', 10);
+        if (!sid) return;
+        const oldText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '同步中';
+        try {
+          const payload = {
+            meetingId: meeting.id,
+            sid,
+            turnNum: Number.isFinite(turnRaw) ? turnRaw : undefined,
+            sincePromptTs: _rtTurnStartTs[meeting.id] || 0,
+          };
+          const r = await ipcRenderer.invoke('roundtable-manual-extract', payload);
+          if (!r || !r.ok) {
+            const detail = r && (r.detail || r.reason) ? (r.detail || r.reason) : 'unknown';
+            _showRtEscapeNotice(`同步失败：${detail}`, 'error');
+            btn.textContent = '失败';
+            setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1500);
+            return;
+          }
+          btn.textContent = '已同步';
+          btn.classList.add('ok');
+          await refreshRoundtablePanel(meeting);
+          setTimeout(() => {
+            btn.textContent = oldText;
+            btn.classList.remove('ok');
+            btn.disabled = false;
+          }, 1200);
+        } catch (e) {
+          _showRtEscapeNotice(`同步失败：${e && e.message ? e.message : String(e)}`, 'error');
+          btn.textContent = '失败';
+          setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1500);
+        }
       });
     });
     panel.querySelectorAll('[data-gc-member-idx]').forEach(btn => {

@@ -1449,6 +1449,7 @@ const _CODEX_AUTO_EXTRACT_INTERVAL_MS = 2 * 1000;
 
 function _rtWaitTurnComplete(sid, label, opts = {}) {
   const { meetingId, mode, turnNum, onPartial } = opts;
+  const disableHardTimeout = opts.disableHardTimeout === true;
 
   // Card redesign（2026-05-01）：记录本轮起始时刻 + 清除上轮 token 缓存。
   //   settle 后注入 result.thinkSec（0.1s 精度）+ result.tokens（仅 Gemini 有）。
@@ -1476,8 +1477,9 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
     onTurnPatched: ({ sid: patchedSid, text, status }) => {
       try {
         const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-        const sceneObj = meeting ? scenes.getScene(meeting.scene) : null;
-        const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+        const orch = meeting && meeting.groupChat
+          ? groupchat.getOrchestrator(getHubDataDir(), meetingId)
+          : roundtable.getOrchestrator(getHubDataDir(), meetingId, meeting ? scenes.getScene(meeting.scene) : null);
         // 防护 #2：不覆盖 manual_extracted 状态（spec 要求）
         const turn = orch.state.turns.find(t => t.n === turnNum);
         const currentStatus = turn?.byStatus?.[patchedSid];
@@ -1535,13 +1537,17 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
     }, 1500);
   }
 
-  // 过渡期硬 timeout（FIX-B 已 30min→5min）
-  const hardTimeout = setTimeout(() => {
-    if (watcher.isSettled()) return;
-    console.warn(`[roundtable] transitional hard timeout (5min) hit for ${label}(${sid.slice(0, 8)}), forcing skip`);
-    watcher.skip();
-  }, RT_TRANSITIONAL_HARD_TIMEOUT_MS);
-  hardTimeout.unref?.();
+  // 过渡期硬 timeout（FIX-B 已 30min→5min）。
+  // AI 圆桌/群聊允许长时间自由发言，不能因为固定 5min 把已在 shell 输出中的慢回答落成空气泡。
+  let hardTimeout = null;
+  if (!disableHardTimeout) {
+    hardTimeout = setTimeout(() => {
+      if (watcher.isSettled()) return;
+      console.warn(`[roundtable] transitional hard timeout (5min) hit for ${label}(${sid.slice(0, 8)}), forcing skip`);
+      watcher.skip();
+    }, RT_TRANSITIONAL_HARD_TIMEOUT_MS);
+    hardTimeout.unref?.();
+  }
 
   // FIX-D（2026-05-01）：宿主 shell prompt 心跳检测，10-15s 内识别 CLI 自我退出
   let hostShellHits = 0;
@@ -1590,7 +1596,7 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   }
 
   return watcher.wait().then(result => {
-    clearTimeout(hardTimeout);
+    if (hardTimeout) clearTimeout(hardTimeout);
     clearInterval(hostShellHeartbeat);
     if (codexAutoExtractTimer) clearInterval(codexAutoExtractTimer);
     if (streamTimer) clearInterval(streamTimer);
@@ -1951,6 +1957,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, dispatchMode
     const settled = await Promise.allSettled(sentTargets.map(t =>
       _rtWaitTurnComplete(t.sid, t.label, {
         meetingId, mode, turnNum,
+        disableHardTimeout: true,
         onPartial: (partial) => {
           const partialTextLen = (partial.text || '').length;
           console.log(`[roundtable] turn ${turnNum} partial: ${partial.label} ${partial.status} (${partialTextLen} chars, ${(partial.blocks || []).length} blocks, src=${partial.source || '-'})`);
@@ -2198,6 +2205,7 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
     const settled = await Promise.allSettled(sentTargets.map(t =>
       _rtWaitTurnComplete(t.sid, t.label, {
         meetingId, mode: 'group', turnNum,
+        disableHardTimeout: true,
         onPartial: (partial) => {
           sendToRenderer('roundtable-partial-update', {
             meetingId, turnNum, mode: 'group',
@@ -2295,15 +2303,29 @@ ipcMain.handle('groupchat:read-raw', (_e, { meetingId, messageId } = {}) => {
 // 此外移除"必须有 active watcher 才能提取"的硬限制：active watcher 缺失只意味着本轮已 settle，
 // 但 transcript 文件中的 last assistant 仍然有意义（用户想拿当前最新答案 patch 进 lastTurn）。
 // 有 watcher 走 manualExtract（让本轮 settle 走完整流程）；无 watcher 走 patchTurnResult 直接更新 lastTurn。
-ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePromptTs } = {}) => {
+ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePromptTs, turnNum } = {}) => {
   if (!sid) return { ok: false, reason: 'missing_sid' };
 
   let extracted = null;
   try { extracted = await transcriptTap.extractLatestTurn(sid, sincePromptTs || 0); }
   catch (e) { return { ok: false, reason: 'extract_failed', detail: e.message }; }
+  const session = sessionManager.getSession(sid);
+  const kind = session?.kind || 'unknown';
   if (!extracted || !extracted.text) {
-    const session = sessionManager.getSession(sid);
-    const kind = session?.kind || 'unknown';
+    try {
+      const fromPty = rtWatcher.extractStreamingText(sid, kind);
+      if (fromPty && fromPty.text && fromPty.text.trim().length > 0) {
+        extracted = {
+          text: fromPty.text,
+          source: fromPty.source || 'pty_buffer',
+          extractMode: 'pty_buffer_fallback',
+        };
+      }
+    } catch (e) {
+      console.warn('[manual-extract] PTY fallback failed:', e && e.message);
+    }
+  }
+  if (!extracted || !extracted.text) {
     // 2026-05-04 codex equiv (Spec S2 + extract-failure TDD)：detail 按 extractMode 分级。
     //   v2.1 加了 extractMode 透传但 detail 仍写死，用户截图重现仍看到笼统"提取失败"。
     //   现在按 4 态给针对性 hint，让用户知道下一步该做什么（等几秒 / 进 shell / 检查路径）。
@@ -2336,26 +2358,47 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
   if (meetingId) {
     try {
       const meeting = meetingManager.getMeeting(meetingId);
-      const sceneObj = meeting ? scenes.getScene(meeting.scene) : null;
-      const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
-      const lastTurn = orch.getLastTurn();
-      if (lastTurn) {
-        const patched = orch.patchTurnResult(lastTurn.n, sid, {
-          text: extracted.text,
-          status: 'manual_extracted',
-        });
-        if (patched) {
-          // 摘要功能 2026-05-08 整体下线：原 patched.mode==='summary' + archivedTo 重写归档分支已删
-          // 2026-05-04 道雪：单家 patch 改发 partial-update（仅本卡片局部刷新），
-          //   不再复用整轮 turn-complete —— 避免 renderer 把整个 _partialBy 清空、
-          //   导致本轮还在跑的其他家退化成 thinking 流光态（Bug：点 A 一键提取，B/C 出现流光）。
-          sendToRenderer('roundtable-partial-update', {
-            meetingId, sid,
-            status: 'manual_extracted',
+      if (meeting && meeting.groupChat) {
+        const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+        const turns = Array.isArray(orch.state.turns) ? orch.state.turns : [];
+        const requestedTurn = Number.isFinite(Number(turnNum)) ? Number(turnNum) : null;
+        const lastTurn = requestedTurn
+          ? turns.find(t => t && t.n === requestedTurn)
+          : turns[turns.length - 1];
+        if (lastTurn) {
+          const patched = orch.patchTurnResult(lastTurn.n, sid, {
             text: extracted.text,
-            source: extracted.source || 'manual',
+            status: 'manual_extracted',
           });
-          return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_last_turn', extractMode: extracted.extractMode || null };
+          if (patched) {
+            sendToRenderer('roundtable-turn-patched', {
+              meetingId, turnNum: lastTurn.n, sid, charCount: (extracted.text || '').length,
+            });
+            return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_groupchat_turn', extractMode: extracted.extractMode || null };
+          }
+        }
+      } else {
+        const sceneObj = meeting ? scenes.getScene(meeting.scene) : null;
+        const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+        const lastTurn = orch.getLastTurn();
+        if (lastTurn) {
+          const patched = orch.patchTurnResult(lastTurn.n, sid, {
+            text: extracted.text,
+            status: 'manual_extracted',
+          });
+          if (patched) {
+            // 摘要功能 2026-05-08 整体下线：原 patched.mode==='summary' + archivedTo 重写归档分支已删
+            // 2026-05-04 道雪：单家 patch 改发 partial-update（仅本卡片局部刷新），
+            //   不再复用整轮 turn-complete —— 避免 renderer 把整个 _partialBy 清空、
+            //   导致本轮还在跑的其他家退化成 thinking 流光态（Bug：点 A 一键提取，B/C 出现流光）。
+            sendToRenderer('roundtable-partial-update', {
+              meetingId, sid,
+              status: 'manual_extracted',
+              text: extracted.text,
+              source: extracted.source || 'manual',
+            });
+            return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_last_turn', extractMode: extracted.extractMode || null };
+          }
         }
       }
     } catch (e) {

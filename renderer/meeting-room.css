@@ -326,6 +326,29 @@
 .mr-gc-msg.mine .mr-gc-meta {
   justify-content: flex-end;
 }
+.mr-gc-sync-btn {
+  border: 1px solid #cfd6df;
+  background: rgba(255,255,255,0.72);
+  color: #4b5563;
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 17px;
+  cursor: pointer;
+}
+.mr-gc-sync-btn:hover {
+  border-color: #94a3b8;
+  color: #111827;
+}
+.mr-gc-sync-btn:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+.mr-gc-sync-btn.ok {
+  border-color: #16a34a;
+  background: #dcfce7;
+  color: #166534;
+}
 .mr-gc-avatar {
   width: 36px;
   height: 36px;
