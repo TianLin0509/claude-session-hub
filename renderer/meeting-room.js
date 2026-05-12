@@ -1884,29 +1884,33 @@ if (typeof document !== 'undefined') (function () {
     };
   }
 
-  function _restoreGroupChatScroll(panel, snapshot) {
+  function _restoreGroupChatScroll(panel, snapshot, opts = {}) {
     if (!panel || !snapshot) return;
+    const forceBottom = !!opts.forceBottom;
     const apply = () => {
       const el = panel.querySelector('.mr-gc-messages');
       if (!el) return;
       const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
-      el.scrollTop = snapshot.stickToBottom ? maxTop : Math.min(snapshot.scrollTop, maxTop);
+      el.scrollTop = (forceBottom || snapshot.stickToBottom) ? maxTop : Math.min(snapshot.scrollTop, maxTop);
     };
     apply();
     requestAnimationFrame(apply);
   }
 
-  async function refreshRoundtablePanel(meeting) {
+  async function refreshRoundtablePanel(meeting, opts = {}) {
     if (!_isPanelCapableMeeting(meeting)) { _removeRtPanel(); return; }
     const { state, ok } = await _syncRoundtableCacheFromServer(meeting);
     if (!ok) return;
     // 修2：async race guard — await 期间用户切走，老 refresh 不写 DOM（避免 panel 被错圆桌内容覆盖）
     if (meeting.id !== activeMeetingId) return;
     const panel = _ensureRtPanel();
-    const groupScroll = _captureGroupChatScroll(panel, meeting);
+    const forceGroupChatBottom = !!opts.forceGroupChatBottom && !!meeting.groupChat && _getGroupViewMode() === 'chat';
+    const groupScroll = forceGroupChatBottom
+      ? { scrollTop: 0, stickToBottom: true }
+      : _captureGroupChatScroll(panel, meeting);
     panel.innerHTML = _renderRtPanelHtml(state, meeting);
     _bindRtPanelEvents(panel, meeting);
-    _restoreGroupChatScroll(panel, groupScroll);
+    _restoreGroupChatScroll(panel, groupScroll, { forceBottom: forceGroupChatBottom });
     // pilot redesign（2026-05-02）：panel.innerHTML 重渲后用 rAF 包裹，确保 paint 后再涂卡片视觉。
     //   旧实现直接调用，理论上同步生效，但截图显示 class 偶尔没生效——猜测是 panel innerHTML 后浏览器
     //   还没完成布局/合成的瞬间 querySelectorAll 拿到的引用与最终 paint 的 DOM 不一致。
@@ -3040,7 +3044,7 @@ if (typeof document !== 'undefined') (function () {
     // 两模式(通用/投研)进入会议室即刷新持久化面板
     // 先做一次同步渲染（保持响应不阻塞），await 首次 poll 后再 refresh 一次（修首屏闪烁）
     if (_isPanelCapableMeeting(meeting)) {
-      refreshRoundtablePanel(meeting);
+      refreshRoundtablePanel(meeting, { forceGroupChatBottom: true });
       // 异步等首次 poll 后再 refresh 一次（poll 内部已会重渲，这里只是兜底，不阻塞 UI）
       if (firstPoll && typeof firstPoll.then === 'function') {
         firstPoll.then(() => {

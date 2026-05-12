@@ -36,6 +36,16 @@ assert.ok(
   'renderer must retry transient Codex rollout binding during resume',
 );
 assert.ok(
+  rendererSrc.includes("const forceScrollBottom = !!(session && isCodexKind(session.kind));") &&
+  rendererSrc.includes("showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });"),
+  'sidebar clicks on Codex sessions must request an explicit bottom pin even when reselecting the active session',
+);
+assert.ok(
+  rendererSrc.includes("loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom })") &&
+  rendererSrc.includes("const _batchWasAtBottom = forceScrollBottom || _isCardOverlayAtBottom(container);"),
+  'Codex card overlay reload must honor explicit sidebar bottom pinning',
+);
+assert.ok(
   rendererSrc.includes("const _bodyFoldState = new Map()") &&
   rendererSrc.includes("_bodyFoldState.set(turnId, true)") &&
   rendererSrc.includes("_bodyFoldState.get(turnId) === true"),

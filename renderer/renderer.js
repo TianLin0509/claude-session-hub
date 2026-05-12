@@ -1341,10 +1341,10 @@ function showTerminal(sessionId, opts = { focus: true }) {
     if (dbg && dbg.isOn()) dbg.log('show:raf-enter', { focus: opts.focus, ...dbg.snap(cached.terminal, sessionId) });
     fitAndResizeTerminal(sessionId, cached, { force: true });
     if (dbg && dbg.isOn()) dbg.log('show:after-fit', dbg.snap(cached.terminal, sessionId));
-    if (opts.focus) {
+    if (opts.focus || opts.forceScrollBottom) {
       cached.terminal.scrollToBottom();
       if (dbg && dbg.isOn()) dbg.log('show:after-stb', dbg.snap(cached.terminal, sessionId));
-      cached.terminal.focus();
+      if (opts.focus) cached.terminal.focus();
       const vp = cached.container.querySelector('.xterm-viewport');
       if (vp) vp.scrollTop = vp.scrollHeight;
       if (dbg && dbg.isOn()) dbg.log('show:after-vp1', dbg.snap(cached.terminal, sessionId));
@@ -1403,7 +1403,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     // loadSessionHistoryToOverlay handles its own clear + Map.clear + placeholder
     // for empty/error/non-Claude cases. Don't pre-clear here.
     if (typeof loadSessionHistoryToOverlay === 'function') {
-      loadSessionHistoryToOverlay(sessionId).catch(err => {
+      loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom }).catch(err => {
         console.warn('[showTerminal] loadSessionHistoryToOverlay failed:', err);
       });
     }
@@ -2384,6 +2384,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   // 用于 throttle reload（同 sessionId 反复）— 把"全清重建"压成"只 append 新增"。
   // 切 session 时调用方传默认（incremental=false）走全量。
   const incremental = opts.incremental === true;
+  const forceScrollBottom = opts.forceScrollBottom === true;
 
   // 1. resolve container
   const container = document.getElementById('msg-overlay');
@@ -2509,7 +2510,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   //   incremental=false(切 session): line 2179 已清 container.innerHTML='' →
   //     scrollTop=0/scrollHeight=0 → helper 自然返回 true → 初次加载行为不退化。
   //   incremental=true(throttle reload): container 保留旧内容 → 反映用户真实位置。
-  const _batchWasAtBottom = _isCardOverlayAtBottom(container);
+  const _batchWasAtBottom = forceScrollBottom || _isCardOverlayAtBottom(container);
   let mounted = 0;
   let lastCardEl = null;
   for (const turn of turns) {
@@ -3218,6 +3219,8 @@ function selectSession(id) {
     return;
   }
   const switching = activeSessionId !== id;
+  const forceScrollBottom = !!(session && isCodexKind(session.kind));
+  const shouldFocusTerminal = switching || (forceScrollBottom && currentView === 'pty');
   activeSessionId = id;
   if (session) {
     session.unreadCount = 0;
@@ -3227,7 +3230,7 @@ function selectSession(id) {
   }
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
-  showTerminal(id, { focus: switching });
+  showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });
   // Snapshot the current question signature as "read" AFTER showTerminal —
   // on first selection that's when cached.opened flips to true, and
   // getQuestionsSignature needs an opened buffer to read. Calling before
