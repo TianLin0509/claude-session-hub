@@ -1,11 +1,15 @@
 #!/usr/bin/env node
-// Research Roundtable MCP server (2026-05-03 重构)。
+// Research Roundtable MCP server (2026-05-14 Plan 2 改造)。
 // Spawned by Claude/Codex/Gemini CLI per research mode meeting，through MCP config 注入。
-// 暴露 2 个工具：
-//   fetch_lindang_stock(symbol)         — 一站式快照（gate + basic + price + 17 指标 + 资金流）
-//   fetch_lindang_field(op, symbol, …)  — 按需取单字段（financial/flow/dragon-tiger/...）
+// 暴露 3 个新聚合工具（v3）：
+//   stock_static(symbol)  — 慢变维度，9 个 op 并行（gate/basic/financial/valuation/peers/holders/pledge/funds/research）
+//   stock_market(symbol)  — 实时维度，6 个 op 并行（price/indicators/flow/dragon-tiger/northbound/margin）
+//   stock_news(symbol)    — 消息面，2 个 op 并行（announcement + market_news）
 //
-// 调用链：tool call → HTTP POST → Hub hookServer (loopback) → core/lindang-bridge.js → data_query.py
+// 兼容保留旧 2 个工具（fetch_lindang_stock / fetch_lindang_field）→ 调 LinDangAgent.data_query.py。
+// 新 3 个工具走 research-mcp 聚合层（C:\research-mcp\query.py）。
+//
+// 调用链：tool call → HTTP POST → Hub hookServer (loopback) → core/lindang-bridge.js → research-mcp/query.py
 // 详见 <LINDANG_DIR>/data/AGENT_GUIDE.md
 //
 // 旧的 fetch_concept_stocks / fetch_sector_overview 已下线（依赖 Stock_top10 已删）。
@@ -84,10 +88,45 @@ const TOOLS = [
       required: ['op', 'symbol'],
     },
   },
+  // ─── Plan 2 新增：research-mcp 聚合工具（3 个）───────────────────────
+  {
+    name: 'stock_static',
+    description: '【慢变维度，AI 第一次接触某只股优先调】拉 A 股单股的画像类信息：闸门(gate) + 基本面(basic,PE/PB/市值) + 财报(financial) + 估值分位(valuation) + 同行对比(peers,加强版) + 大股东(holders) + 股权质押(pledge) + 基金持仓(funds) + 券商研报(research)。一年内变化有限的画像类数据。后端聚合 9 个原子 op，含 LinDangAgent 5-6 层兜底 + akshare/THS 行业估值兜底。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'A股代码或名称（"600519" / "600519.SH" / "贵州茅台" 都可）' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'stock_market',
+    description: '【实时维度，讨论买卖时机/技术形态/资金动向时调】拉 A 股单股的行情和资金面：K线+走势摘要(price,含 Ashare 救场) + 17 项技术指标(indicators,RSI/MACD/KDJ等) + 主力净流入(flow) + 龙虎榜(dragon-tiger) + 北向持股(northbound) + 融资融券(margin)。后端聚合 6 个原子 op 并行。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'A股代码或名称' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'stock_news',
+    description: '【消息面，讨论催化剂/突发事件/定期报告时调】拉 A 股单股相关消息：公司公告(announcement,巨潮官方法定披露：年报/停牌/重大事项) + 大盘新闻(market_news,财新主新闻 100 条市场背景)。注意：v1 不含"个股新闻"（akshare 接口存在 pyarrow bug，将在 v2 补）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'A股代码或名称' },
+      },
+      required: ['symbol'],
+    },
+  },
 ];
 
 // --- HTTP helper ---
-function postFetch(endpoint, body, timeoutMs = 100000) {
+// Plan 2: 默认 200s 给 stock_static（9 个 op 并行，180s bridge 超时 + 20s 余量）留足。
+function postFetch(endpoint, body, timeoutMs = 200000) {
   return new Promise((resolve) => {
     const data = JSON.stringify(body);
     const req = http.request({
@@ -160,6 +199,31 @@ async function handleRequest(req) {
       }
       const r = await postFetch('/api/research/fetch-field', { ...baseBody, op, symbol });
       const text = r.ok ? r.body : `数据后端 ${op} 查询失败（${r.status}）：${r.body}`;
+      return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
+    }
+
+    // ── Plan 2: 3 个新聚合工具，调 research-mcp/query.py ────────────
+    if (name === 'stock_static') {
+      const symbol = String(args.symbol || '');
+      if (!symbol) return reply(id, { content: [{ type: 'text', text: '错误：symbol 参数必填' }], isError: true });
+      const r = await postFetch('/api/research/stock-static', { ...baseBody, symbol });
+      const text = r.ok ? r.body : `stock-static 失败（${r.status}）：${r.body}`;
+      return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
+    }
+
+    if (name === 'stock_market') {
+      const symbol = String(args.symbol || '');
+      if (!symbol) return reply(id, { content: [{ type: 'text', text: '错误：symbol 参数必填' }], isError: true });
+      const r = await postFetch('/api/research/stock-market', { ...baseBody, symbol });
+      const text = r.ok ? r.body : `stock-market 失败（${r.status}）：${r.body}`;
+      return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
+    }
+
+    if (name === 'stock_news') {
+      const symbol = String(args.symbol || '');
+      if (!symbol) return reply(id, { content: [{ type: 'text', text: '错误：symbol 参数必填' }], isError: true });
+      const r = await postFetch('/api/research/stock-news', { ...baseBody, symbol });
+      const text = r.ok ? r.body : `stock-news 失败（${r.status}）：${r.body}`;
       return reply(id, { content: [{ type: 'text', text }], isError: !r.ok });
     }
 

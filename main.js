@@ -3765,7 +3765,12 @@ const hookServer = http.createServer((req, res) => {
   const isResearchFetchField = req.method === 'POST' && req.url === '/api/research/fetch-field';
   const isResearchFetchConcept = req.method === 'POST' && req.url === '/api/research/fetch-concept';
   const isResearchFetchSector = req.method === 'POST' && req.url === '/api/research/fetch-sector';
-  const isResearchFetch = isResearchFetchStock || isResearchFetchField || isResearchFetchConcept || isResearchFetchSector;
+  // Plan 2: 3 个新聚合 endpoint（走 research-mcp/query.py 而非 LinDangAgent.data_query.py）
+  const isResearchStockStatic = req.method === 'POST' && req.url === '/api/research/stock-static';
+  const isResearchStockMarket = req.method === 'POST' && req.url === '/api/research/stock-market';
+  const isResearchStockNews = req.method === 'POST' && req.url === '/api/research/stock-news';
+  const isResearchFetch = isResearchFetchStock || isResearchFetchField || isResearchFetchConcept || isResearchFetchSector
+    || isResearchStockStatic || isResearchStockMarket || isResearchStockNews;
   // plan 2026-05-05 阶段 0: 圆桌记忆 MCP 回调（loopback）
   const isMemoryWrite = req.method === 'POST' && req.url === '/api/roundtable/memory-write';
   const isMemorySearch = req.method === 'POST' && req.url === '/api/roundtable/memory-search';
@@ -3804,6 +3809,12 @@ const hookServer = http.createServer((req, res) => {
           result = await lindangBridge.fetchField(op, symbol);
         } else if (isResearchFetchConcept) {
           result = await lindangBridge.fetchConcept(concept, top_n || 10);
+        } else if (isResearchStockStatic) {
+          result = await lindangBridge.fetchStatic(symbol);
+        } else if (isResearchStockMarket) {
+          result = await lindangBridge.fetchMarket(symbol);
+        } else if (isResearchStockNews) {
+          result = await lindangBridge.fetchNews(symbol);
         } else {
           result = await lindangBridge.fetchSector(sector);
         }
