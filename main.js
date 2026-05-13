@@ -879,22 +879,31 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
   }
 
   // 阶段乙（2026-05-03 道雪）：隔离 hub 模式下，sub session cwd 走
-  //   <HUB_DATA_DIR>/workspaces/<meetingId>/，避免归档（.arena/sessions/）
-  //   落到生产 ~/.arena/ 污染用户真实档案。
-  //   生产 hub（无 CLAUDE_HUB_DATA_DIR env）保持 sessionManager 默认行为
-  //   （USERPROFILE）以维持向后兼容 + 让 Claude CLI 找到用户级 CLAUDE.md。
+  //   <HUB_DATA_DIR>/workspaces/<meetingId>/。
+  // 2026-05-12：生产 hub 也走独立 workspace（~/.arena/groupchat/<id>/ 或
+  //   ~/.arena/roundtable/<id>/），加载 ~/.arena/CLAUDE.md 作项目地图，
+  //   避免 sub-session cwd 落在 USERPROFILE 上（沙箱化 + 文件隔离）。
   //   不覆盖调用方显式传入的 opts.cwd（保留 add-meeting-sub 自定义入口）。
-  if (isIsolatedHub() && !sessionOpts.cwd) {
-    const workspaceDir = getMeetingWorkspaceDir(meetingId);
-    try {
-      fs.mkdirSync(workspaceDir, { recursive: true });
-      sessionOpts.cwd = workspaceDir;
-    } catch (e) {
-      console.warn(`[meeting-sub] isolated workspace mkdir failed for ${meetingId}: ${e.message}; sub will use default cwd (may pollute production .arena)`);
+  if (!sessionOpts.cwd) {
+    let workspaceDir = null;
+    if (isIsolatedHub()) {
+      workspaceDir = getMeetingWorkspaceDir(meetingId);
+    } else if (meeting) {
+      const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
+      const bucket = meeting.groupChat ? 'groupchat' : 'roundtable';
+      workspaceDir = path.join(homeDir, '.arena', bucket, meetingId);
+    }
+    if (workspaceDir) {
+      try {
+        fs.mkdirSync(workspaceDir, { recursive: true });
+        sessionOpts.cwd = workspaceDir;
+      } catch (e) {
+        console.warn(`[meeting-sub] workspace mkdir failed for ${meetingId}: ${e.message}; sub will use default cwd`);
+      }
     }
   }
 
-  if (meeting && meeting.scene) {
+  if (meeting && meeting.scene && !meeting.groupChat) {
     const hubDataDir = getHubDataDir();
     const sceneObj = scenes.getScene(meeting.scene);
     const covenantText = (typeof meeting.covenantText === 'string')
@@ -1913,6 +1922,7 @@ async function dispatchRoundtableTurn(meetingId, { mode, userInput, dispatchMode
         // Resend & Auto-Recovery（2026-05-03）— sendToPty 现在返回 { ok, sendStatus } 或 false
         //   sendStatus ∈ 'ok' | 'auto_recovered' | 'stuck'。stuck 时推 send-stuck IPC 让
         //   renderer 把 [📤 发送] 按钮亮起；其它状态写到 _activePrompts 供 UI 调试。
+        try { transcriptTap.notePrompt(t.sid, t.kind, t.prompt); } catch {}
         const sendResult = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
         const ok = sendResult && sendResult.ok;
         const sendStatus = sendResult && sendResult.sendStatus;
@@ -2154,22 +2164,21 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
       try { transcriptTap.clearStreamingBuf(member.sid); } catch {}
     }
 
-    const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+    const hubDataDir = getHubDataDir();
+    const orch = groupchat.getOrchestrator(hubDataDir, meetingId);
     const { turnNum } = orch.beginTurn(userInput || '');
-    const targets = targetMembers.map(member => ({
-      sid: member.sid,
-      kind: member.kind,
-      label: member.displayName,
-      member,
-      prompt: orch.buildPrompt({
-        meeting,
-        members,
-        selfMember: member,
-        targetMembers,
-        userInput: userInput || '',
-        turnNum,
-      }),
-    }));
+    const deliveredIdx = orch.state.messages.length - 1;
+    const targets = targetMembers.map(member => {
+      const systemPromptText = groupchat.buildSystemPromptText(member.displayName, meeting.scene);
+      return {
+        sid: member.sid,
+        kind: member.kind,
+        label: member.displayName,
+        member,
+        deliveredIdx,
+        prompt: orch.buildFirstDelta(member.sid, userInput || '', systemPromptText),
+      };
+    });
 
     for (const t of targets) {
       cancelPatchListenersForSid(t.sid);
@@ -2180,6 +2189,7 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
     const sentTargets = [];
     await Promise.all(targets.map(async (t) => {
       try {
+        try { transcriptTap.notePrompt(t.sid, t.kind, t.prompt); } catch {}
         const sendResult = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
         const ok = sendResult && sendResult.ok;
         const sendStatus = sendResult && sendResult.sendStatus;
@@ -2227,7 +2237,10 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
       status: 'errored',
       text: '',
       reason: s.reason?.message || 'Promise rejected',
-    });
+    }).map((r, i) => ({
+      ...r,
+      deliveredIdx: sentTargets[i] && sentTargets[i].deliveredIdx,
+    }));
     const memberBySid = {};
     for (const m of members) memberBySid[m.sid] = m;
     const turnRecord = orch.completeTurn(turnNum, userInput || '', results, memberBySid);
@@ -2587,6 +2600,7 @@ ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = 
   //   且本路径已经有自己的 errored partial-update 兜底）
   let sent = false;
   try {
+    try { transcriptTap.notePrompt(sid, kind, prompt); } catch {}
     const sendResult = await rtWatcher.sendToPty(sid, prompt, kind);
     sent = sendResult && sendResult.ok;
   }
@@ -3323,7 +3337,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
   if (meta.meetingId) {
     const meeting = meetingManager.getMeeting(meta.meetingId);
     let promptFile = null;
-    if (meeting && meeting.scene) {
+    if (meeting && meeting.scene && !meeting.groupChat) {
       const hubDataDir = getHubDataDir();
       const covenantText = (typeof meeting.covenantText === 'string' && meeting.covenantText.length > 0)
         ? meeting.covenantText

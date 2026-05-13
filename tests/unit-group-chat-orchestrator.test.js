@@ -35,27 +35,82 @@ const members = [
 
 console.log('--- group chat orchestrator ---');
 
-test('prompt includes member manifest, summary ledger, recent raw, and same-turn isolation rule', () => {
-  const { orch } = fresh();
-  const { turnNum } = orch.beginTurn('Explain OFDM pilot contamination.');
-  const prompt = orch.buildPrompt({
-    meeting: { groupRecentRawN: 5, groupMode: 'deliberation' },
-    members,
-    selfMember: members[0],
-    targetMembers: members,
-    userInput: 'Explain OFDM pilot contamination.',
-    turnNum,
-  });
-  assert.match(prompt, /m1: Claude/);
-  assert.match(prompt, /m2: Codex/);
-  assert.match(prompt, /历史摘要账本/);
-  assert.match(prompt, /最近 5 条原文/);
-  assert.match(prompt, /raw:\/\/group\//);
-  assert.match(prompt, /同一轮的多位 AI 彼此看不到本轮实时输出/);
+test('buildSystemPromptText contains required markers and no banned terms', () => {
+  const text = groupchat.buildSystemPromptText('TestAI');
+  assert.ok(text.includes('自由发言：可赞同'), 'missing colon in free-speech rule');
+  assert.ok(text.includes('反问用户'), 'missing reverse-ask hint merged into rule 1');
+  assert.ok(text.includes('独到 > 全面'), 'missing 独到 rule');
+  assert.ok(text.includes('未实际调用不许说"已核实"'), 'missing anti-hallucination rule');
+  assert.ok(text.includes('简单问题直答'), 'missing simple-answer fast path');
+  assert.ok(text.includes('plan -> .arena'), 'missing arrow before artifact path');
+  assert.ok(text.includes('-> recap'), 'missing arrow before recap');
+  assert.ok(text.includes('msg-{msgId}-{name}.html'), 'missing file naming template');
+  assert.ok(text.includes('你是TestAI'), 'missing self name substitution');
+  assert.ok(!text.includes('皮卡丘'), 'hardcoded member name 皮卡丘 leaked');
+  assert.ok(!text.includes('小火龙'), 'hardcoded member name 小火龙 leaked');
+  assert.ok(!text.includes('杰尼龟'), 'hardcoded member name 杰尼龟 leaked');
+  assert.ok(!text.includes('「同意，无补充」'), 'dead rule "同意无补充" should not be in prompt');
+  assert.ok(!text.includes('新观点、新数据'), 'redundant 4-type list should be removed');
+  assert.ok(!text.includes('## 成员'), 'member table section should not exist');
+  assert.ok(!text.includes('同台'), 'stage concept leaked');
+  assert.ok(!text.includes('## 投研场景'), 'research prompt should not leak into general group chat');
 });
 
-test('completeTurn records provisional five-field summary and raw anchors', () => {
-  const { orch, meetingId } = fresh();
+test('buildSystemPromptText appends lightweight research scene prompt only for research scene', () => {
+  const general = groupchat.buildSystemPromptText('TestAI', 'general');
+  const research = groupchat.buildSystemPromptText('TestAI', 'research');
+
+  assert.ok(!general.includes('## 投研场景'));
+  assert.ok(research.includes('## 投研场景'));
+  assert.ok(research.includes('优先补充他人未覆盖的角度、证据缺口或反例'));
+  assert.ok(research.includes('尽量挖掘新线索、变量或解释路径'));
+  assert.ok(research.includes('事实和数字标来源，未查证就说明不确定'));
+  assert.ok(research.includes('先问用户 1-2 个会改变结论的问题'));
+  assert.ok(!research.includes('cli.py analyze'));
+  assert.ok(!research.includes('皮卡丘'));
+});
+
+test('buildDelta sends only user input when no other assistant messages are new', () => {
+  const { orch } = fresh();
+  orch.beginTurn('Explain OFDM pilot contamination.');
+  const delta = orch.buildDelta('s-claude', 'Explain OFDM pilot contamination.');
+  assert.ok(!delta.includes('## 新增发言'));
+  assert.match(delta, /^## 用户\nExplain OFDM pilot contamination\.\n\n请发言。$/);
+  assert.ok(!delta.includes('## 成员'));
+  assert.ok(!delta.includes('历史摘要账本'));
+  assert.ok(!delta.includes('raw://group/'));
+});
+
+test('buildDelta keeps historical user messages for a late participant but excludes current user message from added section', () => {
+  const { orch } = fresh();
+  orch.state.messages = [
+    { id: 'u1', role: 'user', speaker: '用户', content: 'Q1: 背景问题', sid: null },
+    { id: 'a1-claude', role: 'assistant', speaker: 'Claude', content: 'R1: 回答背景问题', sid: 's-claude' },
+    { id: 'u2', role: 'user', speaker: '用户', content: 'Q2: 当前追问', sid: null },
+  ];
+
+  const delta = orch.buildDelta('s-codex', 'Q2: 当前追问');
+  const beforeUser = delta.split('## 用户')[0];
+  assert.ok(beforeUser.includes('用户：Q1: 背景问题'));
+  assert.ok(beforeUser.includes('Claude：R1: 回答背景问题'));
+  assert.ok(!beforeUser.includes('Q2: 当前追问'));
+  assert.match(delta, /## 用户\nQ2: 当前追问\n\n请发言。$/);
+});
+
+test('buildFirstDelta prepends system prompt only before the sid is delivered', () => {
+  const { orch } = fresh();
+  orch.beginTurn('Hello');
+  const sysText = groupchat.buildSystemPromptText('Claude');
+  const first = orch.buildFirstDelta('s-claude', 'Hello', sysText);
+  assert.ok(first.startsWith(sysText + '\n\n## 用户\nHello'));
+  orch.state.lastDeliveredIdx['s-claude'] = orch.state.messages.length - 1;
+  const next = orch.buildFirstDelta('s-claude', 'Again', sysText);
+  assert.ok(!next.startsWith('## 规则'));
+  assert.match(next, /^## 用户\nAgain\n\n请发言。$/);
+});
+
+test('completeTurn records assistant messages and delivery indexes without summaries', () => {
+  const { orch } = fresh();
   const { turnNum } = orch.beginTurn('Compare OFDMA and SC-FDMA.');
   const turn = orch.completeTurn(turnNum, 'Compare OFDMA and SC-FDMA.', [
     { sid: 's-claude', status: 'completed', text: 'OFDMA is efficient for downlink scheduling.' },
@@ -64,15 +119,49 @@ test('completeTurn records provisional five-field summary and raw anchors', () =
 
   const state = orch.getState();
   assert.strictEqual(turn.meta.dispatchMode, 'group');
-  assert.strictEqual(state.summarySegments.length, 1);
-  const seg = state.summarySegments[0];
-  assert.strictEqual(seg.schema, 'deliberation-v1');
-  assert.strictEqual(seg.status, 'provisional');
-  for (const key of ['Position:', 'Evidence:', 'Assumptions:', 'Counterpoints:', 'Follow-up:']) {
-    assert.ok(seg.summary.includes(key), key + ' missing');
-  }
-  assert.ok(seg.anchors.includes(groupchat.rawMessageAnchor(meetingId, 'u1')));
-  assert.ok(seg.anchors.some(x => x.includes('/msg/a1-m1')));
+  assert.strictEqual(state.summarySegments, undefined);
+  assert.strictEqual(turn.meta.summarySegmentId, undefined);
+  assert.strictEqual(turn.meta.rawAnchors, undefined);
+  assert.strictEqual(state.messages.length, 3);
+  assert.strictEqual(state.lastDeliveredIdx['s-claude'], 2);
+  assert.strictEqual(state.lastDeliveredIdx['s-codex'], 2);
+});
+
+test('completeTurn can preserve prompt-time delivered index so peers see same-turn replies later', () => {
+  const { orch } = fresh();
+  const { turnNum } = orch.beginTurn('First question.');
+  const deliveredIdx = orch.state.messages.length - 1;
+  orch.completeTurn(turnNum, 'First question.', [
+    { sid: 's-claude', status: 'completed', text: 'Claude first reply.', deliveredIdx },
+    { sid: 's-codex', status: 'completed', text: 'Codex first reply.', deliveredIdx },
+  ], Object.fromEntries(members.map(m => [m.sid, m])));
+
+  orch.beginTurn('Second question.');
+  const delta = orch.buildDelta('s-claude', 'Second question.');
+  assert.match(delta, /## 新增发言\nCodex：Codex first reply\./);
+  assert.ok(!delta.includes('Claude first reply.'));
+  assert.match(delta, /## 用户\nSecond question\.\n\n请发言。$/);
+});
+
+test('patchTurnResult updates final turn and raw assistant message without summary ledger', () => {
+  const { orch } = fresh();
+  const { turnNum } = orch.beginTurn('Convert this HTML to an editable PPT.');
+  orch.completeTurn(turnNum, 'Convert this HTML to an editable PPT.', [
+    { sid: 's-codex', status: 'completed', text: '' },
+  ], { 's-codex': members[1] });
+
+  const patched = orch.patchTurnResult(turnNum, 's-codex', {
+    status: 'completed',
+    text: 'Use native PowerPoint shapes for each semantic block.',
+  });
+  const state = orch.getState();
+  const raw = state.messages.find(m => m.role === 'assistant' && m.sid === 's-codex' && m.turnNum === turnNum);
+
+  assert.ok(patched);
+  assert.strictEqual(patched.by['s-codex'], 'Use native PowerPoint shapes for each semantic block.');
+  assert.strictEqual(raw.content, 'Use native PowerPoint shapes for each semantic block.');
+  assert.strictEqual(raw.status, 'completed');
+  assert.strictEqual(state.summarySegments, undefined);
 });
 
 test('searchRaw and readRaw expose indexed original messages', () => {
