@@ -365,6 +365,9 @@ const sessions = new Map();
 let activeSessionId = null;
 const terminalCache = new Map();
 const floatingInputDrafts = new Map();
+const CODEX_BOTTOM_LOCK_EPSILON = 24;
+const CODEX_SCROLL_INTENT_MS = 1500;
+const CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS = 120;
 
 function readContenteditablePlainText(el) {
   if (!el) return '';
@@ -382,10 +385,78 @@ function clearFloatingInputDraft(sessionId) {
   if (sessionId) floatingInputDrafts.delete(sessionId);
 }
 
+function getTerminalViewport(cached) {
+  return cached && cached.container ? cached.container.querySelector('.xterm-viewport') : null;
+}
+
+function isTerminalViewportAtBottom(cached, epsilon = CODEX_BOTTOM_LOCK_EPSILON) {
+  const vp = getTerminalViewport(cached);
+  if (!vp) return true;
+  return (vp.scrollHeight - vp.scrollTop - vp.clientHeight) <= epsilon;
+}
+
+function shouldAutoPinCodexTerminal(sessionId, cached) {
+  const session = sessions.get(sessionId);
+  if (!session || !isCodexKind(session.kind) || !cached || !cached.opened) return false;
+  if (!cached.container || !cached.container.offsetWidth) return false;
+  return cached._codexFollowBottom !== false;
+}
+
+function pinTerminalViewportToBottom(cached) {
+  if (!cached || !cached.terminal) return;
+  cached._codexProgrammaticScrollUntil = performance.now() + CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS;
+  try { cached.terminal.scrollToBottom(); } catch {}
+  const vp = getTerminalViewport(cached);
+  if (vp) vp.scrollTop = vp.scrollHeight;
+}
+
+function scheduleCodexBottomPin(sessionId, cached) {
+  if (!shouldAutoPinCodexTerminal(sessionId, cached)) return;
+  pinTerminalViewportToBottom(cached);
+  requestAnimationFrame(() => {
+    if (shouldAutoPinCodexTerminal(sessionId, cached)) pinTerminalViewportToBottom(cached);
+  });
+}
+
+function updateCodexFollowBottomFromUserScroll(sessionId, cached) {
+  const session = sessions.get(sessionId);
+  if (!session || !isCodexKind(session.kind) || !cached) return;
+  requestAnimationFrame(() => {
+    const now = performance.now();
+    if (cached._codexProgrammaticScrollUntil && now < cached._codexProgrammaticScrollUntil) return;
+    cached._codexFollowBottom = isTerminalViewportAtBottom(cached);
+  });
+}
+
+function markCodexUserScrollIntent(sessionId, cached) {
+  const session = sessions.get(sessionId);
+  if (!session || !isCodexKind(session.kind) || !cached) return;
+  cached._codexUserScrollIntentUntil = performance.now() + CODEX_SCROLL_INTENT_MS;
+}
+
+function setupCodexViewportScrollTracker(sessionId, cached) {
+  const session = sessions.get(sessionId);
+  if (!session || !isCodexKind(session.kind) || !cached) return;
+  const vp = getTerminalViewport(cached);
+  if (!vp || cached._codexTrackedViewport === vp) return;
+  if (cached._codexTrackedViewport && cached._codexViewportScrollHandler) {
+    try { cached._codexTrackedViewport.removeEventListener('scroll', cached._codexViewportScrollHandler); } catch {}
+  }
+  cached._codexTrackedViewport = vp;
+  cached._codexViewportScrollHandler = () => {
+    const now = performance.now();
+    if (cached._codexProgrammaticScrollUntil && now < cached._codexProgrammaticScrollUntil) return;
+    if (!cached._codexUserScrollIntentUntil || now > cached._codexUserScrollIntentUntil) return;
+    cached._codexFollowBottom = isTerminalViewportAtBottom(cached);
+  };
+  vp.addEventListener('scroll', cached._codexViewportScrollHandler, { passive: true });
+}
+
 function fitAndResizeTerminal(sessionId, cached, opts = {}) {
   if (!sessionId || !cached || !cached.opened || !cached.container) return false;
   const rect = cached.container.getBoundingClientRect();
   if (rect.width < 4 || rect.height < 4 || !cached.container.offsetWidth) return false;
+  const pinAfterFit = shouldAutoPinCodexTerminal(sessionId, cached);
   const boxSig = [
     Math.round(rect.width),
     Math.round(rect.height),
@@ -405,6 +476,7 @@ function fitAndResizeTerminal(sessionId, cached, opts = {}) {
     });
   }
   if (cached._minimap) cached._minimap.invalidate();
+  if (pinAfterFit) scheduleCodexBottomPin(sessionId, cached);
   return true;
 }
 
@@ -1100,6 +1172,9 @@ function getOrCreateTerminal(sessionId) {
   // doesn't fire paste events on xterm's helper textarea for real keystrokes.
   terminal.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
+    if (['PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) {
+      markCodexUserScrollIntent(sessionId, terminalCache.get(sessionId));
+    }
 
     // --- Word-like selection editing on the input line ---
     if (terminal.hasSelection()) {
@@ -1199,9 +1274,26 @@ function getOrCreateTerminal(sessionId) {
         window.__scrollDebug.log('wheel:after-raf', window.__scrollDebug.snap(terminal, sessionId));
       });
     }
-    if (!e.ctrlKey && !e.metaKey) return;
+    if (!e.ctrlKey && !e.metaKey) {
+      const c = terminalCache.get(sessionId);
+      markCodexUserScrollIntent(sessionId, c);
+      updateCodexFollowBottomFromUserScroll(sessionId, c);
+      return;
+    }
     const delta = e.deltaY < 0 ? 1 : -1;
     setFontSize(currentFontSize + delta);
+  }, { passive: true });
+
+  container.addEventListener('pointerdown', () => {
+    markCodexUserScrollIntent(sessionId, terminalCache.get(sessionId));
+  }, { passive: true });
+
+  container.addEventListener('mousedown', () => {
+    markCodexUserScrollIntent(sessionId, terminalCache.get(sessionId));
+  }, { passive: true });
+
+  container.addEventListener('touchstart', () => {
+    markCodexUserScrollIntent(sessionId, terminalCache.get(sessionId));
   }, { passive: true });
 
   // Click-to-position: clicking on the cursor's row sends arrow-key
@@ -1244,6 +1336,7 @@ function getOrCreateTerminal(sessionId) {
 
   const cached = {
     terminal, fitAddon, searchAddon, container, opened: false,
+    _codexFollowBottom: true,
   };
   terminalCache.set(sessionId, cached);
   return cached;
@@ -1352,6 +1445,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     loadGpuRenderer(cached);
     setupImageHover(cached.terminal, cached.container);
   }
+  setupCodexViewportScrollTracker(sessionId, cached);
 
   requestAnimationFrame(() => {
     const dbg = window.__scrollDebug;
@@ -1359,6 +1453,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     fitAndResizeTerminal(sessionId, cached, { force: true });
     if (dbg && dbg.isOn()) dbg.log('show:after-fit', dbg.snap(cached.terminal, sessionId));
     if (opts.focus || opts.forceScrollBottom) {
+      if (opts.forceScrollBottom) cached._codexFollowBottom = true;
       cached.terminal.scrollToBottom();
       if (dbg && dbg.isOn()) dbg.log('show:after-stb', dbg.snap(cached.terminal, sessionId));
       if (opts.focus) cached.terminal.focus();
@@ -4517,7 +4612,8 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   const cached = terminalCache.get(sessionId);
   if (!cached) return;
   const sess = sessions.get(sessionId);
-  if (sess && sess.kind === 'codex') {
+  if (sess && isCodexKind(sess.kind)) {
+    const pinAfterWrite = shouldAutoPinCodexTerminal(sessionId, cached);
     let filtered = data;
     if (filtered.includes('prove documentation')) {
       filtered = filtered.replace(CODEX_PLACEHOLDER_RE, '');
@@ -4528,6 +4624,7 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
     _cursorDebounce.set(sessionId, setTimeout(() => {
       cached.terminal.write('\x1b[?25h');
     }, 150));
+    if (pinAfterWrite) scheduleCodexBottomPin(sessionId, cached);
   } else {
     cached.terminal.write(data);
   }
