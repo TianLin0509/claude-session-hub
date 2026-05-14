@@ -161,7 +161,7 @@ async function handleRequest(req) {
     return reply(id, {
       protocolVersion: '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'arena-research', version: '2.0.0' },
+      serverInfo: { name: 'stock-research', version: '2.0.0' },
     });
   }
   if (method === 'notifications/initialized') {
@@ -172,7 +172,7 @@ async function handleRequest(req) {
   }
   if (method === 'tools/call') {
     if (STUB_MODE) {
-      return replyError(id, -32601, 'arena-research server in stub mode (not in research roundtable)');
+      return replyError(id, -32601, 'stock-research server in stub mode (not in research roundtable)');
     }
     const name = params && params.name;
     const args = (params && params.arguments) || {};
