@@ -24,6 +24,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const readline = require('readline');
+const { parseClaudeTranscriptToTurns } = require('./claude-transcript-parser');
 
 function codexTextFromContent(content) {
   if (typeof content === 'string') return content;
@@ -247,10 +248,13 @@ class ClaudeTap extends EventEmitter {
   //   last assistant text。sincePromptTs 暂不过滤（Claude transcript 末尾通常就是本轮，
   //   误差可接受；后续可加 timestamp 字段过滤）。
   //   返回 { text, source } 与 GeminiTap 同形；transcriptPath 未知（hook/scan 都未拿到）→ null。
+  //
+  // 2026-05-14 道雪：切到合并版 readLastAssistantTurnMergedTextFromClaudeTranscript，
+  //   修群聊只拿到 [3] recap 段的 bug（plan 段在首条 entry，旧函数只读末条）。
   async extractLatestTurn(hubSessionId, _sincePromptTs = 0) {
     const entry = this._bound.get(hubSessionId);
     if (!entry || !entry.transcriptPath) return null;
-    const text = await readLastAssistantMessageFromClaudeTranscript(entry.transcriptPath);
+    const text = await readLastAssistantTurnMergedTextFromClaudeTranscript(entry.transcriptPath);
     if (!text || !text.trim()) return null;
     return { text: text.trim(), source: 'manual_claude_transcript' };
   }
@@ -331,9 +335,10 @@ class ClaudeTap extends EventEmitter {
     }
 
     // Stop hook 触发 → 取消 idle timer + stop_reason timer，走快路径直接读 transcript 末尾立即 emit
+    // 2026-05-14 道雪：用合并版读，避免群聊丢失 [1] plan 段（多 entry 合并 bug 修复）
     this._cancelIdleEmit(hubSessionId);
     this._cancelStopReasonEmit(hubSessionId);
-    const text = await readLastAssistantMessageFromClaudeTranscript(transcriptPath);
+    const text = await readLastAssistantTurnMergedTextFromClaudeTranscript(transcriptPath);
     if (text && text !== entry.lastText) {
       entry.lastText = text;
       this.emit('turn-complete', {
@@ -401,7 +406,8 @@ class ClaudeTap extends EventEmitter {
       entry._stopReasonTimer = null;
       if (!entry.transcriptPath) return;
       try {
-        const text = await readLastAssistantMessageFromClaudeTranscript(entry.transcriptPath);
+        // 2026-05-14 道雪：用合并版（多 entry 合并 bug 修复）
+        const text = await readLastAssistantTurnMergedTextFromClaudeTranscript(entry.transcriptPath);
         if (!text || !text.trim()) return;
         if (text === entry.lastText) return; // 已 emit 过相同内容（如 Stop hook 抢先）
         entry.lastText = text;
@@ -471,58 +477,56 @@ function normalizePromptForCompare(text) {
   return String(text || '').replace(/\r\n/g, '\n').trim();
 }
 
+// 2026-05-14 道雪：多 entry 合并版 — 修群聊只拿到 [3] recap 段的 bug。
+//   Claude CLI 把"1 个 user prompt + N 次工具调用"拆成 N+1 条 assistant entry，
+//   中间 stop_reason='tool_use'、末条 stop_reason='end_turn'。旧版
+//   readLastAssistantMessageFromClaudeTranscript 只读末条，导致首条 entry 的 text
+//   （三段式输出里就是 [1] plan）丢失。
+//   复用 parseClaudeTranscriptToTurns 的 _mergeConsecutiveAssistantTurns 把 N+1 条
+//   合并成 1 个 logical turn 后取 text。limit=1 + fromTail 让 parser 只解析末尾窗口，
+//   避免大 transcript 全量读。
+//   未完成轮（stop_reason 一直 'tool_use'）→ 合并器 acc 不 flush → turns 为空或末轮
+//   不存在 → 返回 null，与旧函数 null 兜底语义一致（不向群聊 emit 半截内容）。
+//   返回纯字符串（与旧函数同形），便于 4 处出口直接替换。
+async function readLastAssistantTurnMergedTextFromClaudeTranscript(transcriptPath) {
+  try {
+    const turns = parseClaudeTranscriptToTurns(transcriptPath, { limit: 1, fromTail: true });
+    const last = turns[turns.length - 1];
+    if (!last || last.role !== 'assistant') return null;
+    const text = typeof last.text === 'string' ? last.text.trim() : '';
+    return text || null;
+  } catch {
+    return null;
+  }
+}
+
 // 2026-05-05 道雪：终态 stop_reason 过滤版本 — 用于 idle 兜底 emit。
 // 从尾部向前扫，找第一个 stop_reason ∈ {end_turn, max_tokens, refusal} 且 content
 // 含 text 块的 assistant message。
 // 与 readLastAssistantMessageFromClaudeTranscript 的区别：本函数会跳过 stop_reason='tool_use'
 // 等中间态行（这些行的 text 块是工具调用前的"我先读取..."类中间输出，不是本轮真答案）。
 // 返回 { text, stopReason } 或 null（找不到 terminal 行）。
+//
+// 2026-05-14 道雪 升级：上述老版本只读末条 entry → 群聊丢 [1] plan。改为复用合并版
+// readLastAssistantTurnMergedTextFromClaudeTranscript 取整段 turn，stopReason 从
+// 合并后的 turn 取（_mergeConsecutiveAssistantTurns 已保证末条决定 stopReason）。
+// 终态过滤语义保留：未 flush 的 turn（stop_reason 一直 'tool_use'）合并器返回为空，
+// 这里的 null 兜底等价于"还没到终态"。
 const _CLAUDE_TERMINAL_STOP_REASONS = new Set(['end_turn', 'max_tokens', 'refusal']);
 async function readLastTerminalAssistantTextFromClaudeTranscript(transcriptPath) {
-  const CHUNK = 65536;
-  let fh;
   try {
-    fh = await fs.promises.open(transcriptPath, 'r');
-    const { size } = await fh.stat();
-    let pos = size;
-    let tail = '';
-    while (pos > 0) {
-      const readLen = Math.min(CHUNK, pos);
-      pos -= readLen;
-      const buf = Buffer.alloc(readLen);
-      await fh.read(buf, 0, readLen, pos);
-      tail = buf.toString('utf8') + tail;
-      const lines = tail.split('\n');
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim();
-        if (!line) continue;
-        let obj;
-        try { obj = JSON.parse(line); } catch { continue; }
-        if (obj?.type !== 'assistant' || !obj.message) continue;
-        const stopReason = obj.message.stop_reason;
-        if (!_CLAUDE_TERMINAL_STOP_REASONS.has(stopReason)) continue;
-        const content = obj.message.content;
-        if (Array.isArray(content)) {
-          const parts = [];
-          for (const p of content) {
-            if (p && typeof p === 'object' && p.type === 'text' && typeof p.text === 'string') {
-              parts.push(p.text);
-            }
-          }
-          const joined = parts.join('').trim();
-          if (joined) return { text: joined, stopReason };
-        } else if (typeof content === 'string') {
-          if (content.trim()) return { text: content.trim(), stopReason };
-        }
-      }
-      if (pos === 0) break;
-      tail = lines[0] || '';
-    }
-    return null;
+    const turns = parseClaudeTranscriptToTurns(transcriptPath, { limit: 1, fromTail: true });
+    const last = turns[turns.length - 1];
+    if (!last || last.role !== 'assistant') return null;
+    // _mergeConsecutiveAssistantTurns 已经按 stopReason !== 'tool_use' 终止 flush，
+    // 末轮 stopReason 必是 terminal 或末轮根本没 flush 进 turns。这里再 double-check
+    // 一次终态过滤保住对老语义的契约（防 parser 未来改 flush 规则误放行 tool_use）。
+    if (!_CLAUDE_TERMINAL_STOP_REASONS.has(last.stopReason)) return null;
+    const text = typeof last.text === 'string' ? last.text.trim() : '';
+    if (!text) return null;
+    return { text, stopReason: last.stopReason };
   } catch {
     return null;
-  } finally {
-    try { await fh?.close(); } catch {}
   }
 }
 

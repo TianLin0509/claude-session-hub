@@ -28,6 +28,52 @@ function appendAssistantTurn(file, text) {
     type: 'assistant',
     message: {
       content: [{ type: 'text', text }],
+      stop_reason: 'end_turn',
+    },
+    timestamp: new Date().toISOString(),
+  };
+  fs.appendFileSync(file, JSON.stringify(obj) + '\n');
+}
+
+// 2026-05-14 道雪 bug fix（群聊只拿到 [3] recap）配套 fixture：
+//   Claude CLI 把"一个 user prompt + N 次工具调用"拆成 N+1 条 assistant entry，
+//   中间 stop_reason='tool_use'、末条 stop_reason='end_turn'。Hub 必须把整段合并
+//   后再 emit 给群聊，否则只剩末条 entry 的 text。下面三个 helper 用于构造这类
+//   多 entry transcript。
+function appendAssistantWithToolUse(file, text, toolName, toolUseId) {
+  const obj = {
+    type: 'assistant',
+    uuid: `a-tool-${toolUseId}`,
+    message: {
+      model: 'claude-opus-4-7',
+      stop_reason: 'tool_use',
+      content: [
+        { type: 'text', text },
+        { type: 'tool_use', id: toolUseId, name: toolName, input: {} },
+      ],
+    },
+    timestamp: new Date().toISOString(),
+  };
+  fs.appendFileSync(file, JSON.stringify(obj) + '\n');
+}
+function appendToolResult(file, toolUseId, content) {
+  const obj = {
+    type: 'user',
+    message: {
+      content: [{ type: 'tool_result', tool_use_id: toolUseId, content }],
+    },
+    timestamp: new Date().toISOString(),
+  };
+  fs.appendFileSync(file, JSON.stringify(obj) + '\n');
+}
+function appendAssistantTerminal(file, text) {
+  const obj = {
+    type: 'assistant',
+    uuid: `a-final-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    message: {
+      model: 'claude-opus-4-7',
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text }],
     },
     timestamp: new Date().toISOString(),
   };
@@ -113,6 +159,46 @@ async function testNotifyStopEmitsWithSignalSource() {
   tap.unregisterSession(sid);
   fs.rmSync(path.dirname(file), { recursive: true, force: true });
   console.log('  ✓ testNotifyStopEmitsWithSignalSource');
+}
+
+// ---------------- 测 4.5：多 entry 合并 — notifyStop emit 必须含 plan + recap ----------------
+// 2026-05-14 道雪 bug fix：群聊只拿到末条 entry 的 text（[3] recap 之后），plan 段丢失。
+//   现象：用户三段式输出 [1]plan→工具→[3]recap，plan 落在 entry #1（stop_reason='tool_use'），
+//   recap 落在 entry #N（stop_reason='end_turn'）。Hub emit 出去给群聊的 text 必须是整段
+//   logical turn 的合并结果，不能只取末条 entry。
+async function testMultiEntryTurnMergedOnEmit() {
+  const tap = new TranscriptTap();
+  const sid = 'test-multi-entry-sid';
+  tap.registerSession(sid, 'claude', { cwd: process.cwd() });
+
+  const file = makeFakeClaudeJsonl();
+  // 模拟带工具的一轮：plan → tool → recap
+  appendAssistantWithToolUse(file, '[1] plan 段：先查蓝特，再补新闻', 'Bash', 'toolu_1');
+  appendToolResult(file, 'toolu_1', 'ok');
+  appendAssistantTerminal(file, '[3] recap：结论是回调有机会');
+
+  let received = null;
+  tap.on('turn-complete', (evt) => { if (evt.hubSessionId === sid) received = evt; });
+
+  await tap.notifyClaudeStop(sid, file);
+
+  assert.ok(received, 'turn-complete 必须被 emit');
+  assert.ok(/\[1\] plan/.test(received.text),
+    'emit 的 text 必须含 [1] plan 段（来自首条 stop_reason=tool_use 的 entry）');
+  assert.ok(/\[3\] recap/.test(received.text),
+    'emit 的 text 必须含 [3] recap 段（来自末条 stop_reason=end_turn 的 entry）');
+
+  // 手动一键提取也必须返回合并后的 text
+  const extracted = await tap.extractLatestTurn(sid);
+  assert.ok(extracted && extracted.text, 'extractLatestTurn 必须返回非空');
+  assert.ok(/\[1\] plan/.test(extracted.text),
+    'extractLatestTurn 必须返回合并后的 text（含 plan 段）');
+  assert.ok(/\[3\] recap/.test(extracted.text),
+    'extractLatestTurn 必须返回合并后的 text（含 recap 段）');
+
+  tap.unregisterSession(sid);
+  fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  console.log('  ✓ testMultiEntryTurnMergedOnEmit');
 }
 
 // ---------------- 测 5：契约测试 — main.js IPC 必须用统一入口 ----------------
@@ -248,6 +334,7 @@ function testAllBackendsHaveExtractLatestTurn() {
     testDeepseekGlmExtractGoesThroughClaudeTap,
     testExtractReturnsNullWhenUnbound,
     testNotifyStopEmitsWithSignalSource,
+    testMultiEntryTurnMergedOnEmit,
     testMainJsUsesUnifiedExtractEntry,
     testClaudeTapHasIdleEmitFallback,
     testGeminiTapHasIdleEmitFallback,
