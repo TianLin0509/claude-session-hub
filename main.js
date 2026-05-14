@@ -663,9 +663,12 @@ transcriptTap.on('session-bound', (ev) => {
   if (!ev || !ev.hubSessionId) return;
   try {
     if (ev.kind === 'codex' && (ev.codexSid || ev.rolloutPath)) {
+      const current = sessionManager.getSession(ev.hubSessionId);
       const patch = {};
       if (ev.codexSid) patch.codexSid = ev.codexSid;
       if (ev.rolloutPath) patch.transcriptPath = ev.rolloutPath;
+      if (current && current.codexSessionsRoot) patch.codexSessionsRoot = current.codexSessionsRoot;
+      if (current && current.codexAllowMtimeFallback) patch.codexAllowMtimeFallback = true;
       sessionManager.updateSessionMeta(ev.hubSessionId, patch);
     }
   } catch {}
@@ -678,6 +681,8 @@ transcriptTap.on('session-bound', (ev) => {
         kind: ev.kind,
         codexSid: ev.codexSid,
         transcriptPath: ev.rolloutPath,
+        codexSessionsRoot: sessionManager.getSession(ev.hubSessionId)?.codexSessionsRoot || null,
+        codexAllowMtimeFallback: !!sessionManager.getSession(ev.hubSessionId)?.codexAllowMtimeFallback,
       });
     }
     return;
@@ -690,6 +695,15 @@ transcriptTap.on('session-bound', (ev) => {
   }
   if (ev.kind === 'codex' && ev.rolloutPath && cur.transcriptPath !== ev.rolloutPath) {
     cur.transcriptPath = ev.rolloutPath;
+    changed = true;
+  }
+  const liveSession = ev.kind === 'codex' ? sessionManager.getSession(ev.hubSessionId) : null;
+  if (ev.kind === 'codex' && liveSession && liveSession.codexSessionsRoot && cur.codexSessionsRoot !== liveSession.codexSessionsRoot) {
+    cur.codexSessionsRoot = liveSession.codexSessionsRoot;
+    changed = true;
+  }
+  if (ev.kind === 'codex' && liveSession && liveSession.codexAllowMtimeFallback && cur.codexAllowMtimeFallback !== true) {
+    cur.codexAllowMtimeFallback = true;
     changed = true;
   }
   if (ev.kind === 'gemini') {
@@ -721,6 +735,8 @@ transcriptTap.on('session-bound', (ev) => {
       kind: ev.kind,
       codexSid: cur.codexSid,
       transcriptPath: cur.transcriptPath,
+      codexSessionsRoot: cur.codexSessionsRoot,
+      codexAllowMtimeFallback: !!cur.codexAllowMtimeFallback,
       geminiChatId: cur.geminiChatId,
       geminiProjectHash: cur.geminiProjectHash,
       geminiProjectRoot: cur.geminiProjectRoot,
@@ -2861,11 +2877,12 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
     const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
     const kind = session ? session.kind : inKind;
     if (kind === 'codex' || kind === 'codex-resume') {
+      const liveRolloutPath = hubSessionId ? transcriptTap.getCodexRolloutPath(hubSessionId) : null;
+      if (liveRolloutPath) {
+        transcriptPath = liveRolloutPath;
+      }
       if (!transcriptPath && session && session.transcriptPath) {
         transcriptPath = session.transcriptPath;
-      }
-      if (!transcriptPath && hubSessionId) {
-        transcriptPath = transcriptTap.getCodexRolloutPath(hubSessionId);
       }
       if (!transcriptPath && session && session.codexSid) {
         transcriptPath = findCodexRolloutBySid(
@@ -3233,7 +3250,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   // 2026-05-05 fix: 字段名是 'currentModel'（renderer.js:5287 持久化用的字段），
   //   旧版误写成 'model' → 兜底机制对 model 永不触发，任何一次 race 把 currentModel
   //   写成 null 都会永久污染 state.json，dormant 唤醒丢失原 model（落到默认 opus 等）。
-  const RESUME_META_FIELDS = ['transcriptPath', 'codexSid', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel', 'contextPct', 'contextUsed', 'contextMax', 'userRenamed', 'autoTitleGenerated'];
+  const RESUME_META_FIELDS = ['transcriptPath', 'codexSid', 'codexSessionsRoot', 'codexAllowMtimeFallback', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel', 'contextPct', 'contextUsed', 'contextMax', 'userRenamed', 'autoTitleGenerated'];
   const oldByHubId = new Map(lastPersistedSessions.map(s => [s.hubId, s]));
   for (const newSession of list) {
     if (!newSession || !newSession.hubId) continue;

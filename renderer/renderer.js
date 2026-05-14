@@ -6284,10 +6284,12 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
   if (ev.ccSessionId) s.ccSessionId = ev.ccSessionId;
   if (ev.transcriptPath) s.transcriptPath = ev.transcriptPath;
   if (ev.codexSid) s.codexSid = ev.codexSid;
+  if (ev.codexSessionsRoot) s.codexSessionsRoot = ev.codexSessionsRoot;
+  if (ev.codexAllowMtimeFallback) s.codexAllowMtimeFallback = true;
   if (ev.geminiChatId) s.geminiChatId = ev.geminiChatId;
   if (ev.geminiProjectHash) s.geminiProjectHash = ev.geminiProjectHash;
   if (ev.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
-  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot) {
+  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot) {
     schedulePersist();
   }
   if (ev.hubSessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
@@ -6358,6 +6360,8 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!local.userRenamed && session.title) local.title = session.title;
   if (session.ccSessionId) local.ccSessionId = session.ccSessionId;
   if (session.transcriptPath) local.transcriptPath = session.transcriptPath;
+  if (session.codexSessionsRoot) local.codexSessionsRoot = session.codexSessionsRoot;
+  if (session.codexAllowMtimeFallback) local.codexAllowMtimeFallback = true;
   if (session.userRenamed) local.userRenamed = true;
   if (session.autoTitleGenerated) local.autoTitleGenerated = true;
   if (typeof session.contextPct === 'number') local.contextPct = session.contextPct;
@@ -6398,6 +6402,8 @@ function schedulePersist() {
         autoTitleGenerated: !!s.autoTitleGenerated,
         // T10: include resume-meta in persist payload so main.js merge has the latest
         codexSid: s.codexSid || null,
+        codexSessionsRoot: s.codexSessionsRoot || null,
+        codexAllowMtimeFallback: !!s.codexAllowMtimeFallback,
         codexProfile: s.codexProfile || null,
         codexProfileLabel: s.codexProfileLabel || null,
         geminiChatId: s.geminiChatId || null,
@@ -6450,6 +6456,8 @@ async function resumeDormantSession(hubId) {
     model: (dormant.currentModel && dormant.currentModel.id) || null,
     // T10: pass resume-meta so main.js Codex/Gemini precise resume works
     codexSid: dormant.codexSid || null,
+    codexSessionsRoot: dormant.codexSessionsRoot || null,
+    codexAllowMtimeFallback: !!dormant.codexAllowMtimeFallback,
     codexProfile: dormant.codexProfile || null,
     geminiChatId: dormant.geminiChatId || null,
     geminiProjectHash: dormant.geminiProjectHash || null,
@@ -6511,6 +6519,8 @@ async function resumeDormantSession(hubId) {
         autoTitleGenerated: !!meta.autoTitleGenerated,
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
+        codexSessionsRoot: meta.codexSessionsRoot || null,
+        codexAllowMtimeFallback: !!meta.codexAllowMtimeFallback,
         codexProfile: meta.codexProfile || null,
         codexProfileLabel: meta.codexProfileLabel || null,
         geminiChatId: meta.geminiChatId || null,

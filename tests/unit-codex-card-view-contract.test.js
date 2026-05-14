@@ -6,6 +6,7 @@ const root = path.join(__dirname, '..');
 const mainSrc = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
 const tapSrc = fs.readFileSync(path.join(root, 'core', 'transcript-tap.js'), 'utf8');
+const sessionStoreSrc = fs.readFileSync(path.join(root, 'core', 'session-store.js'), 'utf8');
 
 assert.ok(
   mainSrc.includes("parseCodexRolloutToTurns"),
@@ -20,8 +21,9 @@ assert.ok(
   'parse-session-transcript must recover Codex resume sessions without codexSid by cwd + mtime',
 );
 assert.ok(
-  /if\s*\(!transcriptPath\s*&&\s*session\s*&&\s*session\.transcriptPath\)/.test(mainSrc),
-  'parse-session-transcript must prefer persisted Codex rollout path before live tap or scans',
+  /const liveRolloutPath = hubSessionId \? transcriptTap\.getCodexRolloutPath\(hubSessionId\) : null;/.test(mainSrc)
+    && /if \(liveRolloutPath\) \{\s*transcriptPath = liveRolloutPath;\s*\}/.test(mainSrc),
+  'parse-session-transcript must prefer the live CodexTap rollout over stale renderer transcriptPath',
 );
 assert.ok(
   /findCodexRolloutBySid\(meta\.codexSid,\s*meta\.codexSessionsRoot\s*\|\|\s*DEFAULT_CODEX_SESSIONS_ROOT\)/.test(mainSrc),
@@ -87,6 +89,14 @@ assert.ok(
 assert.ok(
   /transcriptPath:\s*cur\.transcriptPath/.test(mainSrc),
   'session-bound Codex metadata must broadcast transcriptPath to renderer memory',
+);
+assert.ok(
+  rendererSrc.includes('codexSessionsRoot: s.codexSessionsRoot || null')
+    && rendererSrc.includes('codexAllowMtimeFallback: !!s.codexAllowMtimeFallback')
+    && mainSrc.includes("'codexSessionsRoot', 'codexAllowMtimeFallback'")
+    && sessionStoreSrc.includes('transcriptPath: data.transcriptPath || null')
+    && sessionStoreSrc.includes('codexSessionsRoot: data.codexSessionsRoot || null'),
+  'Codex card history metadata must persist transcriptPath, sessionsRoot, and mtime fallback',
 );
 
 console.log('codex single-session card view contract ok');

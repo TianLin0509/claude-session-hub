@@ -25,7 +25,7 @@ const sessionStore = require('../core/session-store');
     console.log('PASS S1 round-trip');
   }
 
-  // S2: missing → null
+  // S2: missing -> null
   {
     assert.strictEqual(sessionStore.loadSessionFile('nonexistent'), null);
     console.log('PASS S2 missing returns null');
@@ -71,13 +71,35 @@ const sessionStore = require('../core/session-store');
     console.log('PASS S6 markDirty + flushAll');
   }
 
-  // S7: markDirtySync — 立即落盘，无防抖
+  // S7: markDirtySync - immediate persist, no debounce
   {
     sessionStore.markDirtySync('h4', { kind: 'codex', title: 'C4', codexSid: 'sid-immediate', updatedAt: 4000 });
     const loaded = sessionStore.loadSessionFile('h4');
     assert.ok(loaded);
     assert.strictEqual(loaded.codexSid, 'sid-immediate');
     console.log('PASS S7 markDirtySync');
+  }
+
+  // S8: Codex card-view resume metadata survives per-session persistence.
+  {
+    const transcriptPath = path.join(TEMP, 'profiles', 'second', 'sessions', 'rollout-demo.jsonl');
+    const codexSessionsRoot = path.join(TEMP, 'profiles', 'second', 'sessions');
+    sessionStore.saveSessionFile('h5', {
+      kind: 'codex',
+      title: 'Codex 2',
+      cwd: path.join(TEMP, 'groupchat', 'meeting-1'),
+      transcriptPath,
+      codexSid: '019e2772-1ba9-7440-afef-3f767ad02765',
+      codexSessionsRoot,
+      codexAllowMtimeFallback: true,
+      updatedAt: 5000,
+    });
+    const loaded = sessionStore.loadSessionFile('h5');
+    assert.ok(loaded);
+    assert.strictEqual(loaded.transcriptPath, transcriptPath);
+    assert.strictEqual(loaded.codexSessionsRoot, codexSessionsRoot);
+    assert.strictEqual(loaded.codexAllowMtimeFallback, true);
+    console.log('PASS S8 codex card metadata');
   }
 
   console.log('\n[ALL session-store tests PASSED]');
