@@ -1634,8 +1634,13 @@ if (typeof document !== 'undefined') (function () {
       ? `<button type="button" class="mr-gc-anchor" data-gc-anchor="${escapeHtml(message.anchor)}" title="原文索引">${escapeHtml(message.anchor)}</button>`
       : '';
     const meta = `<div class="mr-gc-meta"><span>${escapeHtml(label)}</span>${time ? `<span>${escapeHtml(time)}</span>` : ''}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}</div>`;
+    // 2026-05-15 道雪 群聊弹顶 bug 修复：article 上加 data-gc-msg-id 作 partial-update
+    //   局部 patch 的稳定 anchor。pending 区调用方传入 id='pending-${sid}'；真消息
+    //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串
+    //   不会阻断渲染。
+    const anchorId = escapeHtml(message.id || '');
     return `
-      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${opts.pending ? ' pending' : ''}">
+      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${opts.pending ? ' pending' : ''}" data-gc-msg-id="${anchorId}">
         ${!isUser ? _renderGroupAvatar(slot, false) : ''}
         <div class="mr-gc-msg-body">
           ${meta}
@@ -1899,6 +1904,55 @@ if (typeof document !== 'undefined') (function () {
     };
     apply();
     requestAnimationFrame(apply);
+  }
+
+  // 2026-05-15 道雪 群聊弹顶 bug 修复：partial-update 局部 patch
+  //   旧路径：partial-update 在群聊视图下走"找不到 .mr-ft → panel.innerHTML 全量重渲"
+  //     兜底，每次心跳都新建 .mr-gc-messages 容器 → scrollTop 重置 0 → 用户视觉"弹顶"。
+  //   新路径：本函数按 data-gc-msg-id="pending-${sid}" 找已渲染的 pending article，
+  //     用 partial 最新数据 outerHTML 替换该 article 本身；.mr-gc-messages 容器 +
+  //     其他兄弟 article DOM 节点完全不动，scrollTop 自然保留。
+  //   返回 true 表示 patch 成功；false 让调用方走 fallback（极少见，如 pending 区
+  //     还未首次渲染、参与本轮的成员名单变化等）。
+  //   stickToBottom 跟随：patch 前抓底距（bottomGap≤48），patch 后若在底就 scrollTo
+  //     底部，保持"用户在底部 → 跟随新内容"的微信式体验；不在底部就完全不动。
+  function _patchGroupChatPendingMessage(panel, meeting, sid, state) {
+    if (!panel || !meeting || !meeting.groupChat || _getGroupViewMode() !== 'chat') return false;
+    if (!sid || !state) return false;
+    const partial = state._partialBy && state._partialBy[sid];
+    if (!partial) return false;
+    const messagesEl = panel.querySelector('.mr-gc-messages');
+    if (!messagesEl) return false;
+    const articleEl = messagesEl.querySelector(`.mr-gc-msg[data-gc-msg-id="pending-${CSS.escape(sid)}"]`);
+    if (!articleEl) return false;
+    const memberBySid = _groupMemberMap(meeting);
+    const slot = memberBySid[sid];
+    if (!slot) return false;
+    const text = partial.text || '';
+    const status = partial.status || 'thinking';
+    const empty = !text && status !== 'errored';
+    const newHtml = _renderGroupChatMessage({
+      id: `pending-${sid}`,
+      role: 'assistant',
+      sid,
+      turnNum: state.currentTurn || '',
+      speaker: slot.displayLabel || slot.label,
+      content: status === 'errored' ? '本轮发送失败，可切换到卡片视图查看处理按钮。' : text,
+      status,
+    }, meeting, memberBySid, { pending: status !== 'completed' && status !== 'manual_extracted', empty, status });
+    // 抓底距决定 patch 后是否跟随：bottomGap ≤ 48 视为"贴底"，patch 后 scrollTo 底
+    const maxTop0 = Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight);
+    const stick = (maxTop0 - messagesEl.scrollTop) <= 48;
+    // outerHTML 替换：article 内部无 listener（事件委托在 panel 层 _bindRtPanelEvents），
+    //   替换不会留死引用。messagesEl 容器 + 其他兄弟 article 完全不动 → scrollTop 自然保留。
+    articleEl.outerHTML = newHtml;
+    if (stick) {
+      requestAnimationFrame(() => {
+        const after = panel.querySelector('.mr-gc-messages');
+        if (after) after.scrollTop = Math.max(0, after.scrollHeight - after.clientHeight);
+      });
+    }
+    return true;
   }
 
   async function refreshRoundtablePanel(meeting, opts = {}) {
@@ -2843,8 +2897,27 @@ if (typeof document !== 'undefined') (function () {
     //   refreshRoundtablePanel 全量路径走 _renderFusedTabs 已有 isTimeTravel 分支，不受影响。
     if (typeof _rtViewingTurnN[meetingId] === 'number') return;
 
-    // T2 局部 patch：找到该 sid 的 slot DOM，outerHTML 替换；其他两个 slot 完全不动
+    // 2026-05-15 道雪 群聊弹顶 bug 修复：群聊视图（聊天流模式）走专属局部 patch
+    //   旧路径下群聊视图 DOM 没有 .mr-ft 元素 → 必走下面的 fallback 全量重渲 →
+    //   每次 partial 都重建 .mr-gc-messages 容器 → scrollTop 丢失。新路径优先
+    //   走 _patchGroupChatPendingMessage 只替换单条 pending article。patch 失败
+    //   （DOM 节点找不到等）才退到全量重渲兜底。
     const panel = _ensureRtPanel();
+    if (meeting.groupChat && _getGroupViewMode() === 'chat') {
+      if (_patchGroupChatPendingMessage(panel, meeting, sid, cached)) return;
+      // patch 失败：可能 pending 区还没首次渲染（meeting 刚切换、cache 刚同步），
+      //   走下方 fallback 全量重渲（仍带 capture+restore 保护 scrollTop）
+      const groupScroll = _captureGroupChatScroll(panel, meeting);
+      try {
+        panel.innerHTML = _renderRtPanelHtml(cached, meeting);
+        _bindRtPanelEvents(panel, meeting);
+        _restoreGroupChatScroll(panel, groupScroll);
+      } catch (e) {
+        console.error('[groupchat] partial-update fallback rebuild failed:', e);
+      }
+      return;
+    }
+    // T2 局部 patch：找到该 sid 的 slot DOM，outerHTML 替换；其他两个 slot 完全不动
     const slotEl = panel.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
     if (!slotEl) {
       // 兜底：DOM 找不到该 slot（panel 还没渲染过）→ 全量重渲
