@@ -145,7 +145,11 @@ function assertOk(cond, message, detail) {
       const vp = cached.container.querySelector('.xterm-viewport');
       if (!vp) return JSON.stringify({ error: 'viewport missing' });
       try { cached.terminal.scrollToTop(); } catch {}
+      vp.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -240 }));
       vp.scrollTop = 0;
+      vp.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
       const before = {
         top: vp.scrollTop,
         height: vp.scrollHeight,
@@ -170,9 +174,9 @@ function assertOk(cond, message, detail) {
     const result = JSON.parse(raw);
     assertOk(!result.error, 'test Codex session mounted in isolated renderer', result);
     assertOk(result.before.max > 0 && result.before.top <= 2, 'test starts away from bottom', result);
-    assertOk(result.after.max > 0 && result.after.top >= result.after.max - 8,
-      'clicking the active Codex sidebar item scrolls PTY to bottom', result);
-    shots.push(await screenshot(ws, 'codex-sidebar-bottom'));
+    assertOk(result.after.max > 0 && result.after.top <= 24,
+      'clicking the active Codex sidebar item preserves user-scrolled history position', result);
+    shots.push(await screenshot(ws, 'codex-sidebar-preserve-scroll'));
     console.log(JSON.stringify({ ok: true, dataDir: DATA_DIR, screenshots: shots }, null, 2));
   } catch (err) {
     console.error('[hub logs tail]\\n' + logs.join('').slice(-4000));
