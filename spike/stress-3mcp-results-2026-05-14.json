@@ -1,0 +1,330 @@
+{
+  "started": "2026-05-14T04:45:25.848Z",
+  "symbols": [
+    {
+      "code": "600519",
+      "name": "贵州茅台"
+    },
+    {
+      "code": "000001",
+      "name": "平安银行"
+    },
+    {
+      "code": "300750",
+      "name": "宁德时代"
+    },
+    {
+      "code": "688981",
+      "name": "中芯国际"
+    },
+    {
+      "code": "600036",
+      "name": "招商银行"
+    }
+  ],
+  "tools": [
+    "stock_static",
+    "stock_market",
+    "stock_news"
+  ],
+  "rounds": 2,
+  "results": [
+    {
+      "round": 1,
+      "tool": "stock_static",
+      "symbol": "600519",
+      "ms": 9219,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 13
+    },
+    {
+      "round": 1,
+      "tool": "stock_market",
+      "symbol": "600519",
+      "ms": 3465,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 10
+    },
+    {
+      "round": 1,
+      "tool": "stock_news",
+      "symbol": "600519",
+      "ms": 3532,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 9
+    },
+    {
+      "round": 1,
+      "tool": "stock_static",
+      "symbol": "000001",
+      "ms": 8013,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 13
+    },
+    {
+      "round": 1,
+      "tool": "stock_market",
+      "symbol": "000001",
+      "ms": 4278,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 10
+    },
+    {
+      "round": 1,
+      "tool": "stock_news",
+      "symbol": "000001",
+      "ms": 1571,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 9
+    },
+    {
+      "round": 1,
+      "tool": "stock_static",
+      "symbol": "300750",
+      "ms": 8270,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 13
+    },
+    {
+      "round": 1,
+      "tool": "stock_market",
+      "symbol": "300750",
+      "ms": 5252,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 10
+    },
+    {
+      "round": 1,
+      "tool": "stock_news",
+      "symbol": "300750",
+      "ms": 3132,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 9
+    },
+    {
+      "round": 1,
+      "tool": "stock_static",
+      "symbol": "688981",
+      "ms": 8831,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 13
+    },
+    {
+      "round": 1,
+      "tool": "stock_market",
+      "symbol": "688981",
+      "ms": 2665,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 10
+    },
+    {
+      "round": 1,
+      "tool": "stock_news",
+      "symbol": "688981",
+      "ms": 1731,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 9
+    },
+    {
+      "round": 1,
+      "tool": "stock_static",
+      "symbol": "600036",
+      "ms": 7430,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 13
+    },
+    {
+      "round": 1,
+      "tool": "stock_market",
+      "symbol": "600036",
+      "ms": 3530,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 10
+    },
+    {
+      "round": 1,
+      "tool": "stock_news",
+      "symbol": "600036",
+      "ms": 1568,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 9
+    },
+    {
+      "round": 2,
+      "tool": "stock_static",
+      "symbol": "600519",
+      "ms": 7972,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 13
+    },
+    {
+      "round": 2,
+      "tool": "stock_market",
+      "symbol": "600519",
+      "ms": 3269,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 10
+    },
+    {
+      "round": 2,
+      "tool": "stock_news",
+      "symbol": "600519",
+      "ms": 1796,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 9
+    },
+    {
+      "round": 2,
+      "tool": "stock_static",
+      "symbol": "000001",
+      "ms": 8431,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 13
+    },
+    {
+      "round": 2,
+      "tool": "stock_market",
+      "symbol": "000001",
+      "ms": 3319,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 10
+    },
+    {
+      "round": 2,
+      "tool": "stock_news",
+      "symbol": "000001",
+      "ms": 1554,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 9
+    },
+    {
+      "round": 2,
+      "tool": "stock_static",
+      "symbol": "300750",
+      "ms": 8128,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 13
+    },
+    {
+      "round": 2,
+      "tool": "stock_market",
+      "symbol": "300750",
+      "ms": 2855,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 10
+    },
+    {
+      "round": 2,
+      "tool": "stock_news",
+      "symbol": "300750",
+      "ms": 1722,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 9
+    },
+    {
+      "round": 2,
+      "tool": "stock_static",
+      "symbol": "688981",
+      "ms": 8531,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 13
+    },
+    {
+      "round": 2,
+      "tool": "stock_market",
+      "symbol": "688981",
+      "ms": 2658,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 10
+    },
+    {
+      "round": 2,
+      "tool": "stock_news",
+      "symbol": "688981",
+      "ms": 1819,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 9
+    },
+    {
+      "round": 2,
+      "tool": "stock_static",
+      "symbol": "600036",
+      "ms": 8605,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 13
+    },
+    {
+      "round": 2,
+      "tool": "stock_market",
+      "symbol": "600036",
+      "ms": 3042,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 10
+    },
+    {
+      "round": 2,
+      "tool": "stock_news",
+      "symbol": "600036",
+      "ms": 1542,
+      "ok": true,
+      "sub_errors": [],
+      "data_keys": 9
+    }
+  ],
+  "summary_by_tool": {
+    "stock_static": {
+      "ok_count": 10,
+      "total": 10,
+      "success_rate": 1,
+      "avg_ms": 8343,
+      "min_ms": 7430,
+      "max_ms": 9219
+    },
+    "stock_market": {
+      "ok_count": 10,
+      "total": 10,
+      "success_rate": 1,
+      "avg_ms": 3433.3,
+      "min_ms": 2658,
+      "max_ms": 5252
+    },
+    "stock_news": {
+      "ok_count": 10,
+      "total": 10,
+      "success_rate": 1,
+      "avg_ms": 1996.7,
+      "min_ms": 1542,
+      "max_ms": 3532
+    }
+  },
+  "sub_op_errors": {}
+}
