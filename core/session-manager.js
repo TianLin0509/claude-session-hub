@@ -666,6 +666,7 @@ class SessionManager extends EventEmitter {
       // 普通新建（非 resume）opts.resumeCCSessionId 为 undefined，info.ccSessionId 也为 undefined，
       // _toPublic 的 `info.ccSessionId !== undefined` 检查会跳过该字段，行为不变。
       ...(opts.resumeCCSessionId ? { ccSessionId: opts.resumeCCSessionId } : {}),
+      ...(opts.resumeTranscriptPath ? { transcriptPath: opts.resumeTranscriptPath } : {}),
     };
 
     const pendingTimers = [];
@@ -1210,6 +1211,7 @@ class SessionManager extends EventEmitter {
       lastOutputPreview: info.lastOutputPreview,
       ...(info.pinned !== undefined ? { pinned: info.pinned } : {}),
       ...(info.ccSessionId !== undefined ? { ccSessionId: info.ccSessionId } : {}),
+      ...(info.transcriptPath !== undefined ? { transcriptPath: info.transcriptPath } : {}),
       ...(info.currentModel ? { model: info.currentModel.id } : {}),
       ...(info.currentModel ? { currentModel: info.currentModel } : {}),
       ...(typeof info.contextPct === 'number' ? { contextPct: info.contextPct } : {}),

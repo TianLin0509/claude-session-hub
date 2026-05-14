@@ -8,6 +8,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 const DEFAULT_CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
+const CODEX_TAIL_WINDOW_INITIAL_BYTES = 8 * 1024 * 1024;
 
 function normalizePathForCompare(p) {
   if (!p) return '';
@@ -121,11 +122,29 @@ function normalizeUserDuplicateText(text) {
     .trim();
 }
 
-function parseCodexRolloutToTurns(jsonlPath, opts = {}) {
-  const { limit, fromTail = false } = opts;
-  if (typeof limit === 'number' && limit <= 0) return [];
+function readCodexTailWindowText(jsonlPath, maxBytes) {
+  let stat;
+  try { stat = fs.statSync(jsonlPath); } catch { return ''; }
+  const size = stat.size || 0;
+  if (size <= maxBytes) return fs.readFileSync(jsonlPath, 'utf8');
 
-  const raw = fs.readFileSync(jsonlPath, 'utf8');
+  const start = Math.max(0, size - maxBytes);
+  const fd = fs.openSync(jsonlPath, 'r');
+  try {
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    let text = buf.toString('utf8');
+    if (start > 0) {
+      const nl = text.indexOf('\n');
+      text = nl >= 0 ? text.slice(nl + 1) : '';
+    }
+    return text;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function parseCodexRolloutText(raw) {
   const lines = raw.split(/\r?\n/);
   const entries = [];
   lines.forEach((line, index) => {
@@ -236,11 +255,42 @@ function parseCodexRolloutToTurns(jsonlPath, opts = {}) {
   });
 
   flushAssistant();
+  return turns;
+}
 
+function applyTurnLimit(turns, limit, fromTail) {
   if (typeof limit === 'number' && limit < turns.length) {
     return fromTail ? turns.slice(turns.length - limit) : turns.slice(0, limit);
   }
   return turns;
+}
+
+function parseCodexRolloutToTurns(jsonlPath, opts = {}) {
+  const { limit, fromTail = false } = opts;
+  if (typeof limit === 'number' && limit <= 0) return [];
+
+  const shouldTailRead = fromTail && typeof limit === 'number';
+  if (!shouldTailRead) {
+    const turns = parseCodexRolloutText(fs.readFileSync(jsonlPath, 'utf8'));
+    return applyTurnLimit(turns, limit, fromTail);
+  }
+
+  let stat;
+  try { stat = fs.statSync(jsonlPath); } catch { stat = null; }
+  if (!stat || stat.size <= CODEX_TAIL_WINDOW_INITIAL_BYTES) {
+    const turns = parseCodexRolloutText(fs.readFileSync(jsonlPath, 'utf8'));
+    return applyTurnLimit(turns, limit, fromTail);
+  }
+
+  let windowBytes = CODEX_TAIL_WINDOW_INITIAL_BYTES;
+  while (windowBytes < stat.size) {
+    const turns = parseCodexRolloutText(readCodexTailWindowText(jsonlPath, windowBytes));
+    if (turns.length >= limit) return applyTurnLimit(turns, limit, fromTail);
+    windowBytes = Math.min(stat.size, windowBytes * 2);
+  }
+
+  const turns = parseCodexRolloutText(fs.readFileSync(jsonlPath, 'utf8'));
+  return applyTurnLimit(turns, limit, fromTail);
 }
 
 function findCodexRolloutBySid(codexSid, sessionsRoot = DEFAULT_CODEX_SESSIONS_ROOT) {

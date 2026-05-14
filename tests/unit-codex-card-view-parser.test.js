@@ -95,8 +95,6 @@ async function main() {
         duration_ms: 456,
       },
     });
-    await fr.close();
-
     assert.strictEqual(findCodexRolloutBySid(sid, tmpRoot), fr.rolloutPath);
     assert.strictEqual(
       findCodexRolloutByCwd(cwd, tmpRoot, { sinceMs: Date.now() - 10000 }),
@@ -120,6 +118,34 @@ async function main() {
 
     const tail = parseCodexRolloutToTurns(fr.rolloutPath, { limit: 2, fromTail: true });
     assert.deepStrictEqual(tail.map(t => t.text), ['third question with image', 'final answer three']);
+
+    await fr.writeRaw({
+      timestamp: '2026-05-10T10:02:30.000Z',
+      type: 'noise',
+      payload: { blob: 'x'.repeat(9 * 1024 * 1024) },
+    });
+    await fr.writeRaw({
+      timestamp: '2026-05-10T10:03:00.000Z',
+      type: 'event_msg',
+      payload: { type: 'user_message', message: 'tail window question' },
+    });
+    await fr.writeRaw({
+      timestamp: '2026-05-10T10:03:01.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        last_agent_message: 'tail window answer',
+        duration_ms: 789,
+      },
+    });
+    await fr.close();
+
+    const largeTail = parseCodexRolloutToTurns(fr.rolloutPath, { limit: 2, fromTail: true });
+    assert.deepStrictEqual(
+      largeTail.map(t => t.text),
+      ['tail window question', 'tail window answer'],
+      'large rollout parsing should use the tail window and still render the latest cards',
+    );
   } finally {
     await fr.cleanup().catch(() => {});
     await fs.promises.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});

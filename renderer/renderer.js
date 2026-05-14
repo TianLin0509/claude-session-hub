@@ -1452,13 +1452,15 @@ function showTerminal(sessionId, opts = { focus: true }) {
     if (dbg && dbg.isOn()) dbg.log('show:raf-enter', { focus: opts.focus, ...dbg.snap(cached.terminal, sessionId) });
     fitAndResizeTerminal(sessionId, cached, { force: true });
     if (dbg && dbg.isOn()) dbg.log('show:after-fit', dbg.snap(cached.terminal, sessionId));
-    if (opts.focus || opts.forceScrollBottom) {
+    const isCodexSession = isCodexKind(session.kind);
+    const pinOnShow = !!opts.forceScrollBottom || (!isCodexSession && !!opts.focus);
+    if (pinOnShow || opts.focus) {
       if (opts.forceScrollBottom) cached._codexFollowBottom = true;
-      cached.terminal.scrollToBottom();
+      if (pinOnShow) cached.terminal.scrollToBottom();
       if (dbg && dbg.isOn()) dbg.log('show:after-stb', dbg.snap(cached.terminal, sessionId));
       if (opts.focus) cached.terminal.focus();
       const vp = cached.container.querySelector('.xterm-viewport');
-      if (vp) vp.scrollTop = vp.scrollHeight;
+      if (pinOnShow && vp) vp.scrollTop = vp.scrollHeight;
       if (dbg && dbg.isOn()) dbg.log('show:after-vp1', dbg.snap(cached.terminal, sessionId));
 
       // Ask xterm's Viewport to sync its inner .xterm-scroll-area height with
@@ -1477,10 +1479,12 @@ function showTerminal(sessionId, opts = { focus: true }) {
       } catch {}
       if (dbg && dbg.isOn()) dbg.log('show:after-refresh', dbg.snap(cached.terminal, sessionId));
       requestAnimationFrame(() => {
-        if (vp) vp.scrollTop = vp.scrollHeight;
+        if (pinOnShow && vp) vp.scrollTop = vp.scrollHeight;
         // Re-pin xterm's logical viewport too (scrollToBottom may have been
         // a no-op the first time when scrollArea was still stale).
-        try { cached.terminal.scrollToBottom(); } catch {}
+        if (pinOnShow) {
+          try { cached.terminal.scrollToBottom(); } catch {}
+        }
         if (dbg && dbg.isOn()) dbg.log('show:raf2-final', dbg.snap(cached.terminal, sessionId));
       });
     }
@@ -2504,6 +2508,10 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     console.warn('[loadSessionHistoryToOverlay] container not found (msg-overlay missing)');
     return { mounted: 0, error: 'container missing' };
   }
+  const overlayScrollBeforeLoad = {
+    top: container.scrollTop,
+    wasAtBottom: forceScrollBottom || _isCardOverlayAtBottom(container),
+  };
 
   // 2. clear container + Map (avoid stale turns from previous session)
   if (!incremental) {
@@ -2532,6 +2540,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     console.warn('[loadSessionHistoryToOverlay] sessions.get threw:', err);
   }
   const ccSessionId = session ? (session.ccSessionId || null) : null;
+  const transcriptPath = session ? (session.transcriptPath || null) : null;
   const kind = session ? (session.kind || null) : null;
 
   // 4. kind gate — spec 2 only supports Claude family; show placeholder for others
@@ -2544,15 +2553,29 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     return { mounted: 0, error: null };
   }
 
+  const loadSeq = Date.now() + ':' + Math.random().toString(36).slice(2);
+  if (!window._cardLoadSeqBySid) window._cardLoadSeqBySid = new Map();
+  if (!incremental) window._cardLoadSeqBySid.set(sessionId, loadSeq);
+  const isStaleLoad = () => (
+    !incremental &&
+    (sessionId !== activeSessionId || window._cardLoadSeqBySid.get(sessionId) !== loadSeq)
+  );
+  if (!incremental) {
+    showPlaceholder('正在加载历史卡片…');
+  }
+
   // 5. invoke IPC (let main.js apply default opts: limit:50, fromTail:true)
   let result;
   try {
     result = await ipcRenderer.invoke('parse-session-transcript', {
       hubSessionId: sessionId,
       ccSessionId,
+      transcriptPath,
+      kind,
       opts: opts.parseOpts,
     });
   } catch (err) {
+    if (isStaleLoad()) return { mounted: 0, error: 'stale load' };
     const msg = (err && err.message) ? err.message : String(err);
     console.warn('[loadSessionHistoryToOverlay] IPC invoke threw:', err);
     showPlaceholder(
@@ -2560,6 +2583,19 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
     );
     return { mounted: 0, error: msg };
+  }
+  if (isStaleLoad()) return { mounted: 0, error: 'stale load' };
+  if (result && result.transcriptPath && session && session.transcriptPath !== result.transcriptPath) {
+    session.transcriptPath = result.transcriptPath;
+    if (typeof schedulePersist === 'function') schedulePersist();
+  }
+  if (result && typeof result.parseMs === 'number' && result.parseMs > 150) {
+    console.warn('[loadSessionHistoryToOverlay] slow parse', {
+      sessionId,
+      parseMs: result.parseMs,
+      transcriptPath: result.transcriptPath || transcriptPath || null,
+      incremental,
+    });
   }
 
   const turns = (result && Array.isArray(result.turns)) ? result.turns : [];
@@ -2616,13 +2652,16 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   // Use a default kind 'claude' if session lookup failed but main.js still
   // returned turns — they came from a Claude transcript by definition.
   const mountKind = kind || 'claude';
+  if (!incremental) {
+    container.innerHTML = '';
+  }
   // 2026-05-06 道雪 scroll-respect-user (Codex 多方审查发现):
   //   incremental=true 路径(streaming partial-update throttle)反复触发本函数,
   //   末尾的 batch scrollIntoView 没 guard → 用户上翻历史时仍被拍回底部。
   //   incremental=false(切 session): line 2179 已清 container.innerHTML='' →
   //     scrollTop=0/scrollHeight=0 → helper 自然返回 true → 初次加载行为不退化。
   //   incremental=true(throttle reload): container 保留旧内容 → 反映用户真实位置。
-  const _batchWasAtBottom = forceScrollBottom || _isCardOverlayAtBottom(container);
+  const _batchWasAtBottom = forceScrollBottom || (incremental ? _isCardOverlayAtBottom(container) : overlayScrollBeforeLoad.wasAtBottom);
   let mounted = 0;
   let lastCardEl = null;
   for (const turn of turns) {
@@ -2641,6 +2680,11 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     } catch {
       container.scrollTop = container.scrollHeight;
     }
+  } else if (!incremental && !_batchWasAtBottom) {
+    container.scrollTop = Math.min(
+      overlayScrollBeforeLoad.top,
+      Math.max(0, container.scrollHeight - container.clientHeight),
+    );
   }
 
   return { mounted, error: null };
@@ -3340,8 +3384,9 @@ function selectSession(id) {
     return;
   }
   const switching = activeSessionId !== id;
-  const forceScrollBottom = !!(session && isCodexKind(session.kind));
-  const shouldFocusTerminal = switching || (forceScrollBottom && currentView === 'pty');
+  const cachedBeforeSelect = terminalCache.get(id);
+  const forceScrollBottom = !!(session && isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));
+  const shouldFocusTerminal = switching || currentView === 'pty';
   activeSessionId = id;
   if (session) {
     session.unreadCount = 0;
@@ -3485,7 +3530,7 @@ function renderResumeList(items) {
       closeResumeModal();
       await ipcRenderer.invoke('create-session', {
         kind: 'claude-resume',
-        opts: { resumeCCSessionId: it.sessionId, cwd: it.cwd || undefined },
+        opts: { resumeCCSessionId: it.sessionId, resumeTranscriptPath: it.path || undefined, cwd: it.cwd || undefined },
       });
     });
     frag.appendChild(row);
@@ -3570,7 +3615,7 @@ function renderSearchHits(hits, query, truncated) {
       closeSearchModal();
       await ipcRenderer.invoke('create-session', {
         kind: 'claude-resume',
-        opts: { resumeCCSessionId: h.sessionId },
+        opts: { resumeCCSessionId: h.sessionId, resumeTranscriptPath: h.path || undefined },
       });
     });
     frag.appendChild(row);
@@ -4633,17 +4678,19 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   // Spec 2 partial-update workaround + Spec 3 · B1+B3 优化:
   // transcriptTap.emit('turn-complete') only fires on stop_reason ∈ {end_turn, max_tokens, refusal} —
   // assistant turns with stop_reason='tool_use' wait for the next message; card view lags PTY.
-  // Throttle (leading edge) reload card every ~250ms while PTY streams. Not debounce — debounce
+  // Throttle (leading edge) reload card while PTY streams. Not debounce — debounce
   // resets timer on every PTY chunk, so during streaming it never fires until full silence.
   // Spec 3 · B1：传 incremental:true → mount dedup 自动跳过已存在 turn id，无需全清重建
-  // Spec 3 · B3：throttle 800→250ms（B1+B2 完成后单次 reload <50ms 才安全调小，否则反向打负载）
+  // P1：大 transcript 下 250ms 会造成 UI 卡顿，改为约 1.2s + stream-end final reload。
   if (sessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
     if (!window._cardReloadState) window._cardReloadState = new Map();
     let st = window._cardReloadState.get(sessionId);
+    const sessForReload = sessions.get(sessionId);
+    if (!sessForReload || (!sessForReload.transcriptPath && !sessForReload.ccSessionId)) return;
     if (!st) { st = { lastReloadAt: 0, pendingTimer: null, inProgress: false }; window._cardReloadState.set(sessionId, st); }
     if (!st.pendingTimer && !st.inProgress) {
       const sinceLast = Date.now() - st.lastReloadAt;
-      const delay = Math.max(80, 250 - sinceLast);
+      const delay = Math.max(200, 1200 - sinceLast);
       st.pendingTimer = setTimeout(() => {
         st.pendingTimer = null;
         // Spec 3 · W2 throttle race fix：timer 创建时 sessionId === activeSessionId，
@@ -4674,7 +4721,7 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
         loadSessionHistoryToOverlay(sessionId, { incremental: true })
           .catch(err => console.warn('[card stream-end fallback] failed:', err));
       }
-    }, 800));
+    }, 1000));
   }
 });
 
@@ -5777,9 +5824,9 @@ function applyTheme(name) {
   }
 }
 (function initThemePicker() {
-  // 默认主题 vibechat-light（2026-05-10 起；之前是 default 紫调深色）
-  // 已设过偏好的用户保留旧值；新装 / 从未切过主题的用户首次启动即看到 vibechat-light
-  const saved = localStorage.getItem('claude-hub-theme') || 'vibechat-light';
+  // 默认主题 default（Default Dark，经典深色）
+  // 已设过偏好的用户保留 localStorage 旧值；新装 / 从未切过主题的用户首次启动即看到 Default Dark
+  const saved = localStorage.getItem('claude-hub-theme') || 'default';
   applyTheme(saved);
   // 主题切换通过"选项"菜单触发
   const optionsBtn = document.getElementById('btn-options');
@@ -6190,7 +6237,8 @@ ipcRenderer.on('session-created', (_e, { session }) => {
       status: 'idle',
       // preserve persisted UX state
       pinned: existing.pinned,
-      ccSessionId: existing.ccSessionId,
+      ccSessionId: existing.ccSessionId || session.ccSessionId,
+      transcriptPath: existing.transcriptPath || session.transcriptPath,
       lastOutputPreview: existing.lastOutputPreview,
     });
   } else {
@@ -6233,10 +6281,15 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
   if (!ev || !ev.hubSessionId) return;
   const s = sessions.get(ev.hubSessionId);
   if (!s) return;
+  if (ev.ccSessionId) s.ccSessionId = ev.ccSessionId;
+  if (ev.transcriptPath) s.transcriptPath = ev.transcriptPath;
   if (ev.codexSid) s.codexSid = ev.codexSid;
   if (ev.geminiChatId) s.geminiChatId = ev.geminiChatId;
   if (ev.geminiProjectHash) s.geminiProjectHash = ev.geminiProjectHash;
   if (ev.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
+  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot) {
+    schedulePersist();
+  }
   if (ev.hubSessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
     loadSessionHistoryToOverlay(ev.hubSessionId).catch(err => {
       console.warn('[session-meta-updated] card reload failed:', err);
@@ -6303,6 +6356,8 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   const local = sessions.get(session.id);
   // Merge server updates but keep local preview/status (managed by renderer)
   if (!local.userRenamed && session.title) local.title = session.title;
+  if (session.ccSessionId) local.ccSessionId = session.ccSessionId;
+  if (session.transcriptPath) local.transcriptPath = session.transcriptPath;
   if (session.userRenamed) local.userRenamed = true;
   if (session.autoTitleGenerated) local.autoTitleGenerated = true;
   if (typeof session.contextPct === 'number') local.contextPct = session.contextPct;
@@ -6330,6 +6385,7 @@ function schedulePersist() {
         cwd: s.cwd || null,
         pinned: !!s.pinned,
         ccSessionId: s.ccSessionId || null,
+        transcriptPath: s.transcriptPath || null,
         meetingId: s.meetingId || null,
         lastMessageTime: s.lastMessageTime || Date.now(),
         lastOutputPreview: s.lastOutputPreview || '',
@@ -6385,6 +6441,7 @@ async function resumeDormantSession(hubId) {
     title: dormant.title,
     cwd: dormant.cwd,
     ccSessionId: dormant.ccSessionId,
+    transcriptPath: dormant.transcriptPath,
     meetingId: dormant.meetingId || null,
     lastMessageTime: dormant.lastMessageTime,
     lastOutputPreview: dormant.lastOutputPreview,
@@ -6444,6 +6501,7 @@ async function resumeDormantSession(hubId) {
         cwd: meta.cwd || null,
         pinned: !!meta.pinned,
         ccSessionId: meta.ccSessionId || null,
+        transcriptPath: meta.transcriptPath || null,
         meetingId: meta.meetingId || null,
         currentModel: resolvedModel,
         contextPct: typeof meta.contextPct === 'number' ? meta.contextPct : null,

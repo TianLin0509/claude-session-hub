@@ -462,6 +462,9 @@ transcriptTap.on('turn-complete', (ev) => {
   // 注意：这里独立于上面的 meeting timeline 逻辑——非圆桌的普通会话也要广播。
   try {
     let transcriptPath = ev && ev.transcriptPath ? ev.transcriptPath : null;
+    if (!transcriptPath && session && session.transcriptPath) {
+      transcriptPath = session.transcriptPath;
+    }
     if (!transcriptPath && session && session.ccSessionId) {
       try { transcriptPath = findTranscriptByCCSessionId(session.ccSessionId); } catch {}
     }
@@ -659,16 +662,22 @@ transcriptTap.on('prompt-submitted', (ev) => {
 transcriptTap.on('session-bound', (ev) => {
   if (!ev || !ev.hubSessionId) return;
   try {
-    if (ev.kind === 'codex' && ev.codexSid) sessionManager.updateSessionMeta(ev.hubSessionId, { codexSid: ev.codexSid });
+    if (ev.kind === 'codex' && (ev.codexSid || ev.rolloutPath)) {
+      const patch = {};
+      if (ev.codexSid) patch.codexSid = ev.codexSid;
+      if (ev.rolloutPath) patch.transcriptPath = ev.rolloutPath;
+      sessionManager.updateSessionMeta(ev.hubSessionId, patch);
+    }
   } catch {}
   // Find the session in lastPersistedSessions and merge new fields.
   const idx = lastPersistedSessions.findIndex(s => s.hubId === ev.hubSessionId);
   if (idx < 0) {
-    if (ev.kind === 'codex' && ev.codexSid) {
+    if (ev.kind === 'codex' && (ev.codexSid || ev.rolloutPath)) {
       sendToRenderer('session-meta-updated', {
         hubSessionId: ev.hubSessionId,
         kind: ev.kind,
         codexSid: ev.codexSid,
+        transcriptPath: ev.rolloutPath,
       });
     }
     return;
@@ -677,6 +686,10 @@ transcriptTap.on('session-bound', (ev) => {
   let changed = false;
   if (ev.kind === 'codex' && ev.codexSid && cur.codexSid !== ev.codexSid) {
     cur.codexSid = ev.codexSid;
+    changed = true;
+  }
+  if (ev.kind === 'codex' && ev.rolloutPath && cur.transcriptPath !== ev.rolloutPath) {
+    cur.transcriptPath = ev.rolloutPath;
     changed = true;
   }
   if (ev.kind === 'gemini') {
@@ -707,6 +720,7 @@ transcriptTap.on('session-bound', (ev) => {
       hubSessionId: ev.hubSessionId,
       kind: ev.kind,
       codexSid: cur.codexSid,
+      transcriptPath: cur.transcriptPath,
       geminiChatId: cur.geminiChatId,
       geminiProjectHash: cur.geminiProjectHash,
       geminiProjectRoot: cur.geminiProjectRoot,
@@ -826,6 +840,7 @@ function registerSessionForTap(session) {
   try {
     transcriptTap.registerSession(session.id, session.kind, {
       cwd: session.cwd,
+      transcriptPath: session.transcriptPath || undefined,
       sessionsRoot: session.codexSessionsRoot || undefined,
       codexSid: session.codexSid || undefined,
       allowMtimeFallback: !!session.codexAllowMtimeFallback,
@@ -836,6 +851,24 @@ function registerSessionForTap(session) {
     //   信号 → 圆桌等到 180s 软提醒才感知该家"卡住"。日志方便定位根因。
     console.warn('[tap] registerSession failed for', session.id.slice(0, 8), session.kind, ':', e && e.message);
   }
+}
+
+function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
+  if (!hubSessionId) return null;
+  const next = {};
+  if (fields.ccSessionId) next.ccSessionId = fields.ccSessionId;
+  if (fields.transcriptPath) next.transcriptPath = fields.transcriptPath;
+  if (Object.keys(next).length === 0) return null;
+  const current = sessionManager.getSession(hubSessionId);
+  if (!current) return null;
+  const changed = Object.keys(next).some(k => current[k] !== next[k]);
+  if (!changed) return current;
+  const updated = sessionManager.updateSessionMeta(hubSessionId, next);
+  if (updated) {
+    sendToRenderer('session-updated', { session: updated });
+    sendToRenderer('session-meta-updated', { hubSessionId, ...next });
+  }
+  return updated || null;
 }
 
 ipcMain.handle('create-session', (_e, arg) => {
@@ -2822,12 +2855,15 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
   // 不上 worker_threads 是为避免 transcript-parser 跨边界引入序列化开销 + 复杂度。
   await new Promise(resolve => setImmediate(resolve));
 
-  const { hubSessionId, ccSessionId, transcriptPath: inPath, opts } = args || {};
+  const { hubSessionId, ccSessionId, transcriptPath: inPath, kind: inKind, opts } = args || {};
   let transcriptPath = inPath || null;
   try {
     const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
-    const kind = session ? session.kind : null;
+    const kind = session ? session.kind : inKind;
     if (kind === 'codex' || kind === 'codex-resume') {
+      if (!transcriptPath && session && session.transcriptPath) {
+        transcriptPath = session.transcriptPath;
+      }
       if (!transcriptPath && hubSessionId) {
         transcriptPath = transcriptTap.getCodexRolloutPath(hubSessionId);
       }
@@ -2847,9 +2883,15 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
       if (!transcriptPath) {
         return { turns: [], transcriptPath: null, error: 'codex rollout not found' };
       }
+      if (hubSessionId && transcriptPath && session && session.transcriptPath !== transcriptPath) {
+        updateSessionTranscriptBinding(hubSessionId, { transcriptPath });
+      }
       const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
       const turns = parseCodexRolloutToTurns(transcriptPath, parseOpts);
       return { turns: Array.isArray(turns) ? turns : [], transcriptPath, error: null };
+    }
+    if (!transcriptPath && session && session.transcriptPath) {
+      transcriptPath = session.transcriptPath;
     }
     if (!transcriptPath && ccSessionId) {
       transcriptPath = findTranscriptByCCSessionId(ccSessionId);
@@ -2862,9 +2904,13 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
     if (!transcriptPath) {
       return { turns: [], transcriptPath: null, error: 'transcript not found' };
     }
+    if (hubSessionId && transcriptPath && session && session.transcriptPath !== transcriptPath) {
+      updateSessionTranscriptBinding(hubSessionId, { transcriptPath });
+    }
     const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
+    const parseStartedAt = Date.now();
     const turns = await parseClaudeTranscriptToTurns(transcriptPath, parseOpts);
-    return { turns: Array.isArray(turns) ? turns : [], transcriptPath, error: null };
+    return { turns: Array.isArray(turns) ? turns : [], transcriptPath, parseMs: Date.now() - parseStartedAt, error: null };
   } catch (err) {
     return { turns: [], transcriptPath, error: err && err.message ? err.message : String(err) };
   }
@@ -3187,7 +3233,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   // 2026-05-05 fix: 字段名是 'currentModel'（renderer.js:5287 持久化用的字段），
   //   旧版误写成 'model' → 兜底机制对 model 永不触发，任何一次 race 把 currentModel
   //   写成 null 都会永久污染 state.json，dormant 唤醒丢失原 model（落到默认 opus 等）。
-  const RESUME_META_FIELDS = ['codexSid', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel', 'contextPct', 'contextUsed', 'contextMax', 'userRenamed', 'autoTitleGenerated'];
+  const RESUME_META_FIELDS = ['transcriptPath', 'codexSid', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel', 'contextPct', 'contextUsed', 'contextMax', 'userRenamed', 'autoTitleGenerated'];
   const oldByHubId = new Map(lastPersistedSessions.map(s => [s.hubId, s]));
   for (const newSession of list) {
     if (!newSession || !newSession.hubId) continue;
@@ -3363,6 +3409,14 @@ ipcMain.handle('resume-session', async (_e, meta) => {
     }
   }
 
+  let resumeTranscriptPath = meta.transcriptPath || null;
+  if (!resumeTranscriptPath && isClaudeCliResumable && meta.ccSessionId) {
+    try { resumeTranscriptPath = findTranscriptByCCSessionId(meta.ccSessionId); } catch {}
+  }
+  if (!resumeTranscriptPath && meta.kind === 'codex' && meta.codexSid) {
+    try { resumeTranscriptPath = findCodexRolloutBySid(meta.codexSid, meta.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT); } catch {}
+  }
+
   const session = sessionManager.createSession(meta.kind || 'claude', {
     id: meta.hubId,
     title: meta.title,
@@ -3370,6 +3424,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
     meetingId: meta.meetingId || null,
     model: meta.model || undefined,
     resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
+    resumeTranscriptPath: resumeTranscriptPath || undefined,
     useContinue: isClaudeCliResumable && !meta.ccSessionId,
     useResume: isGeminiOrCodex,
     codexResumePicker: codexMissingSid,
@@ -3922,6 +3977,12 @@ const hookServer = http.createServer((req, res) => {
         // — UserPromptSubmit fires before the assistant has responded, so the
         // transcript tail's last-assistant entry would be the previous turn
         // and immediately trigger a stale update.
+        if (parsed.claudeSessionId || parsed.transcriptPath) {
+          updateSessionTranscriptBinding(parsed.sessionId, {
+            ccSessionId: parsed.claudeSessionId,
+            transcriptPath: parsed.transcriptPath,
+          });
+        }
         if (event === 'stop' && parsed.transcriptPath) {
           transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath).catch(() => {});
         }

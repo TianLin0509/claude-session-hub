@@ -199,7 +199,7 @@ class ClaudeTap extends EventEmitter {
     this._bound = new Map(); // hubSessionId → { transcriptPath, lastText, _streamingBuf, _tail }
   }
 
-  registerSession(hubSessionId /* , ctx */) {
+  registerSession(hubSessionId, ctx = {}) {
     if (!this._bound.has(hubSessionId)) {
       this._bound.set(hubSessionId, {
         transcriptPath: null,
@@ -211,6 +211,14 @@ class ClaudeTap extends EventEmitter {
         _pendingEmitText: null,
       });
     }
+    const entry = this._bound.get(hubSessionId);
+    if (ctx && typeof ctx.transcriptPath === 'string' && ctx.transcriptPath) {
+      entry.transcriptPath = ctx.transcriptPath;
+    }
+  }
+
+  hasSession(hubSessionId) {
+    return this._bound.has(hubSessionId);
   }
 
   unregisterSession(hubSessionId) {
@@ -265,7 +273,7 @@ class ClaudeTap extends EventEmitter {
     if (!this._bound.has(hubSessionId)) {
       this._bound.set(hubSessionId, {
         transcriptPath: null, lastText: null, _streamingBuf: [], _tail: null,
-        _idleTimer: null, _pendingEmitText: null,
+        _idleTimer: null, _stopReasonTimer: null, _pendingEmitText: null,
       });
     }
     const entry = this._bound.get(hubSessionId);
@@ -442,6 +450,27 @@ function readFirstLine(filepath) {
   });
 }
 
+async function readCodexUserMessages(rolloutPath) {
+  let raw;
+  try { raw = await fs.promises.readFile(rolloutPath, 'utf8'); }
+  catch { return []; }
+  const out = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj;
+    try { obj = JSON.parse(trimmed); } catch { continue; }
+    if (obj?.type !== 'event_msg' || obj.payload?.type !== 'user_message') continue;
+    const text = codexTextFromPayload(obj.payload).trim();
+    if (text) out.push(text);
+  }
+  return out;
+}
+
+function normalizePromptForCompare(text) {
+  return String(text || '').replace(/\r\n/g, '\n').trim();
+}
+
 // 2026-05-05 道雪：终态 stop_reason 过滤版本 — 用于 idle 兜底 emit。
 // 从尾部向前扫，找第一个 stop_reason ∈ {end_turn, max_tokens, refusal} 且 content
 // 含 text 块的 assistant message。
@@ -583,20 +612,43 @@ class CodexTap extends EventEmitter {
                                // both _tryBind() and double-bind a file.
   }
 
-  registerSession(hubSessionId, { cwd, sessionsRoot, codexSid, allowMtimeFallback = false } = {}) {
+  registerSession(hubSessionId, { cwd, sessionsRoot, codexSid, transcriptPath, allowMtimeFallback = false } = {}) {
     const normCwd = normalizePathForCompare(cwd || process.cwd());
     if (sessionsRoot) this._sessionsRoots.add(sessionsRoot);
     this._pending.set(hubSessionId, {
       cwd: normCwd,
       spawnTime: Date.now(),
       allowMtimeFallback: !!allowMtimeFallback,
+      expectedPrompt: null,
+      expectedPromptAt: null,
     });
     this._ensureWatcher();
+    if (transcriptPath) {
+      this._pending.delete(hubSessionId);
+      this._seen.add(transcriptPath);
+      this._bindRolloutToHubSession(hubSessionId, transcriptPath).catch((e) => {
+        console.warn('[codex-tap] bind by transcriptPath failed:', e.message);
+      });
+      return;
+    }
     if (codexSid) {
       this._bindByCodexSid(hubSessionId, codexSid).catch((e) => {
         console.warn('[codex-tap] bind by codexSid failed:', e.message);
       });
     }
+  }
+
+  hasSession(hubSessionId) {
+    return this._pending.has(hubSessionId) || this._bound.has(hubSessionId);
+  }
+
+  notePrompt(hubSessionId, prompt) {
+    if (!hubSessionId || typeof prompt !== 'string') return;
+    const entry = this._pending.get(hubSessionId);
+    if (!entry) return;
+    entry.expectedPrompt = normalizePromptForCompare(prompt);
+    entry.expectedPromptAt = Date.now();
+    this._ensureWatcher();
   }
 
   unregisterSession(hubSessionId) {
@@ -635,6 +687,8 @@ class CodexTap extends EventEmitter {
         cwd: entry.cwd,
         spawnTime: entry.spawnTime,
         ageMs: now - entry.spawnTime,
+        hasExpectedPrompt: !!entry.expectedPrompt,
+        expectedPromptAt: entry.expectedPromptAt || null,
       });
     }
     const bound = [];
@@ -834,7 +888,7 @@ class CodexTap extends EventEmitter {
     let effectiveTs = Number.isFinite(metaTs) ? metaTs : null;
     if (effectiveTs == null) effectiveTs = statMtime;
 
-    let best = null;
+    const candidates = [];
     let sawMatchingPendingCwd = false;
     for (const [hubSessionId, entry] of this._pending) {
       if (entry.cwd !== metaCwd) continue;
@@ -850,12 +904,30 @@ class CodexTap extends EventEmitter {
         const mtimeDelta = statMtime - entry.spawnTime;
         if (mtimeDelta >= -10000 && mtimeDelta <= 300000) delta = mtimeDelta;
       }
-      if (delta == null && effectiveTs == null && !best) {
+      if (delta == null && effectiveTs == null && candidates.length === 0) {
         delta = 0;
       }
       if (delta == null) continue;
-      if (!best || Math.abs(delta) < Math.abs(best.delta)) {
-        best = { hubSessionId, delta };
+      candidates.push({ hubSessionId, entry, delta });
+    }
+    let best = null;
+    if (candidates.length === 1) {
+      best = candidates[0];
+    } else if (candidates.length > 1) {
+      const promptCandidates = candidates.filter(c => c.entry.expectedPrompt);
+      if (promptCandidates.length === 0) return;
+      const userMessages = (await readCodexUserMessages(rolloutPath)).map(normalizePromptForCompare);
+      if (userMessages.length === 0) return;
+      const matched = promptCandidates.filter(c =>
+        userMessages.some(msg => msg === c.entry.expectedPrompt)
+      );
+      if (matched.length === 1) {
+        best = matched[0];
+      } else if (matched.length > 1) {
+        matched.sort((a, b) => Math.abs(a.delta) - Math.abs(b.delta));
+        best = matched[0];
+      } else {
+        return;
       }
     }
     if (!best) {
@@ -1019,6 +1091,10 @@ class GeminiTap extends EventEmitter {
       projectDir: null,
     });
     this._ensureWatcher();
+  }
+
+  hasSession(hubSessionId) {
+    return this._pending.has(hubSessionId) || this._bound.has(hubSessionId);
   }
 
   unregisterSession(hubSessionId) {
@@ -1386,6 +1462,14 @@ class TranscriptTap extends EventEmitter {
     }
   }
 
+  hasSession(hubSessionId) {
+    return (
+      this._claude.hasSession(hubSessionId) ||
+      this._codex.hasSession(hubSessionId) ||
+      this._gemini.hasSession(hubSessionId)
+    );
+  }
+
   // kind: 'claude' | 'claude-resume' | 'codex' | 'gemini'
   // ctx: { cwd }
   registerSession(hubSessionId, kind, ctx = {}) {
@@ -1394,6 +1478,14 @@ class TranscriptTap extends EventEmitter {
     if (!backend) return;
     try { backend.registerSession(hubSessionId, ctx); }
     catch (e) { console.warn(`[transcript-tap] registerSession(${kind}) failed:`, e.message); }
+  }
+
+  notePrompt(hubSessionId, kind, prompt) {
+    if (!hubSessionId || !kind || typeof prompt !== 'string') return;
+    const backend = this._backendFor(kind);
+    if (!backend || typeof backend.notePrompt !== 'function') return;
+    try { backend.notePrompt(hubSessionId, prompt); }
+    catch (e) { console.warn(`[transcript-tap] notePrompt(${kind}) failed:`, e.message); }
   }
 
   unregisterSession(hubSessionId) {
@@ -1445,17 +1537,25 @@ class TranscriptTap extends EventEmitter {
   //   → 用户报告"提取按钮假的"。统一入口后所有 backend 都能真正工作。
   //   返回 { text, source } 或 null。调用方应顺序尝试三个 backend，因为同一 sid 只在一个里。
   async extractLatestTurn(hubSessionId, sincePromptTs = 0) {
-    // 三个 backend 的 _bound 互斥（一个 sid 只在一个 tap 里），按概率序尝试
-    let r = null;
-    try { r = await this._claude.extractLatestTurn(hubSessionId, sincePromptTs); } catch {}
-    if (r && r.text) return r;
-    try { r = await this._gemini.extractLatestGeminiTurn(hubSessionId, sincePromptTs); } catch {}
-    if (r && r.text) return r;
-    try { r = await this._codex.extractLatestTurn(hubSessionId, sincePromptTs); } catch {}
-    if (r && r.text) return r;
+    // 一个 sid 只属于一个 backend。按注册归属路由，避免 Claude 未绑定
+    // transcriptPath 时继续落到 Codex 并返回 no_rollout_bound 空结果。
+    if (this._claude.hasSession(hubSessionId)) {
+      try { return await this._claude.extractLatestTurn(hubSessionId, sincePromptTs); } catch { return null; }
+    }
+    if (this._gemini.hasSession(hubSessionId)) {
+      try { return await this._gemini.extractLatestGeminiTurn(hubSessionId, sincePromptTs); } catch { return null; }
+    }
+    if (this._codex.hasSession(hubSessionId)) {
+      let r = null;
+      try { r = await this._codex.extractLatestTurn(hubSessionId, sincePromptTs); } catch {}
+      if (r && r.text) return r;
+      // 2026-05-04 codex equiv：codex 4 态契约——即便 text='' 也要把 extractMode 透传给 IPC
+      // （承载 'no_task_complete_yet' / 'no_rollout_bound'，让 UI 区分原因，不再笼统 no_content）
+      if (r && r.extractMode) return r;
+      return null;
+    }
     // 2026-05-04 codex equiv：codex 4 态契约——即便 text='' 也要把 extractMode 透传给 IPC
     // （承载 'no_task_complete_yet' / 'no_rollout_bound'，让 UI 区分原因，不再笼统 no_content）
-    if (r && r.extractMode) return r;
     return null;
   }
 

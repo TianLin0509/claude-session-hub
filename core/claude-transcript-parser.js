@@ -216,13 +216,29 @@ function _mergeConsecutiveAssistantTurns(turns) {
   return merged;
 }
 
-function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
-  const { limit, fromTail = false } = opts;
-  if (typeof limit === 'number' && limit <= 0) return [];
+const TAIL_WINDOW_INITIAL_BYTES = 8 * 1024 * 1024;
 
-  // 简化：D3 实测 5MB transcript readFileSync 仅 9ms（B2 tail-only over-engineered）。
-  // merge 必须基于完整 entries（局部 tail 会切断 merge group 头），所以全 read 后 merge。
-  const raw = fs.readFileSync(jsonlPath, 'utf8');
+function readTailWindowText(jsonlPath, bytes) {
+  const stat = fs.statSync(jsonlPath);
+  const size = stat.size;
+  const start = Math.max(0, size - bytes);
+  const len = size - start;
+  const fd = fs.openSync(jsonlPath, 'r');
+  try {
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, start);
+    let raw = buf.toString('utf8');
+    if (start > 0) {
+      const firstNewline = raw.indexOf('\n');
+      raw = firstNewline >= 0 ? raw.slice(firstNewline + 1) : '';
+    }
+    return { raw, size, start };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function parseClaudeTranscriptText(raw) {
   const lines = raw.split(/\r?\n/);
   const rawTurns = [];
   // Spec 3 · W9：tool_use_id → result 映射，用于关联 stdout 到 toolCall
@@ -267,12 +283,39 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
   // Spec 3 · W5：合并连续 assistant entries
   const merged = _mergeConsecutiveAssistantTurns(rawTurns);
 
-  if (typeof limit === 'number' && limit < merged.length) {
-    return fromTail
-      ? merged.slice(merged.length - limit)
-      : merged.slice(0, limit);
-  }
   return merged;
+}
+
+function applyTurnLimit(turns, limit, fromTail) {
+  if (typeof limit === 'number' && limit < turns.length) {
+    return fromTail
+      ? turns.slice(turns.length - limit)
+      : turns.slice(0, limit);
+  }
+  return turns;
+}
+
+function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
+  const { limit, fromTail = false } = opts;
+  if (typeof limit === 'number' && limit <= 0) return [];
+
+  if (fromTail && typeof limit === 'number') {
+    const stat = fs.statSync(jsonlPath);
+    if (stat.size > TAIL_WINDOW_INITIAL_BYTES) {
+      let windowBytes = Math.min(stat.size, TAIL_WINDOW_INITIAL_BYTES);
+      while (true) {
+        const { raw, start } = readTailWindowText(jsonlPath, windowBytes);
+        const turns = parseClaudeTranscriptText(raw);
+        if (turns.length >= limit || start === 0) {
+          return applyTurnLimit(turns, limit, true);
+        }
+        windowBytes = Math.min(stat.size, windowBytes * 2);
+      }
+    }
+  }
+
+  const raw = fs.readFileSync(jsonlPath, 'utf8');
+  return applyTurnLimit(parseClaudeTranscriptText(raw), limit, fromTail);
 }
 
 module.exports = {
@@ -280,4 +323,5 @@ module.exports = {
   parseAssistantContent,
   isToolResultEntry,
   extractToolResults,
+  parseClaudeTranscriptText,
 };
