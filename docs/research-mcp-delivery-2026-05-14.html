@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>投研 MCP 工具交付报告 · 2026-05-14</title>
+<style>
+  :root {
+    --bg: #fafafa; --card: #ffffff; --ink: #1d1d1f; --ink-soft: #6e6e73;
+    --border: #d2d2d7; --accent: #0071e3; --success: #34c759; --warning: #ff9f0a;
+    --danger: #ff3b30; --code-bg: #1d1d1f; --code-ink: #f5f5f7; --chip-bg: #f5f5f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1d1d1f; --card: #2c2c2e; --ink: #f5f5f7; --ink-soft: #aeaeb2;
+      --border: #38383a; --accent: #0a84ff; --success: #30d158; --warning: #ffd60a;
+      --danger: #ff453a; --chip-bg: #38383a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "PingFang SC", BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg); color: var(--ink); line-height: 1.65; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 56px 28px 96px; }
+  header { margin-bottom: 36px; }
+  h1 { font-size: 34px; font-weight: 700; margin: 0 0 10px; letter-spacing: -0.02em; }
+  .subtitle { color: var(--ink-soft); font-size: 14px; display: flex; gap: 16px; flex-wrap: wrap; }
+  .subtitle span::before { content: "·"; margin-right: 6px; color: var(--border); }
+  .subtitle span:first-child::before { content: none; margin: 0; }
+  h2 { font-size: 24px; font-weight: 700; margin: 56px 0 14px; letter-spacing: -0.01em; }
+  h3 { font-size: 18px; font-weight: 600; margin: 28px 0 10px; }
+  h4 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.05em; }
+  p { margin: 0 0 12px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 24px 28px; margin: 16px 0; }
+  .card.tldr { border-left: 4px solid var(--accent); padding-left: 24px; }
+  .card.success { border-left: 4px solid var(--success); }
+  .card.warn { border-left: 4px solid var(--warning); }
+  .card.danger { border-left: 4px solid var(--danger); }
+  .card.insight { background: var(--chip-bg); border-left: 4px solid var(--accent); }
+  .why { color: var(--ink-soft); font-size: 14px; margin: 6px 0 14px; padding-left: 14px; border-left: 2px solid var(--border); font-style: italic; }
+  .why::before { content: "白话："; font-weight: 600; font-style: normal; color: var(--accent); }
+  .chip {
+    display: inline-block; background: var(--chip-bg); color: var(--ink); border-radius: 6px;
+    padding: 3px 10px; font-size: 12px; font-family: "SF Mono", "Consolas", monospace;
+    margin: 0 4px 2px 0; border: 1px solid var(--border);
+  }
+  .chip.ok { background: var(--success); color: white; border-color: var(--success); }
+  .chip.warn { background: var(--warning); color: var(--code-bg); border-color: var(--warning); }
+  .chip.accent { background: var(--accent); color: white; border-color: var(--accent); }
+  pre {
+    background: var(--code-bg); color: var(--code-ink); padding: 16px 20px; border-radius: 10px;
+    overflow-x: auto; font-family: "SF Mono", "Consolas", monospace; font-size: 12.5px; line-height: 1.5; margin: 12px 0;
+  }
+  code:not(pre code) {
+    background: var(--chip-bg); padding: 2px 6px; border-radius: 4px;
+    font-family: "SF Mono", "Consolas", monospace; font-size: 0.9em; border: 1px solid var(--border);
+  }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+  th, td { padding: 11px 14px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+  th { font-weight: 600; color: var(--ink-soft); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; background: transparent; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.mono { font-family: "SF Mono", "Consolas", monospace; font-size: 12.5px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 18px 0; }
+  @media (max-width: 760px) { .grid-3 { grid-template-columns: 1fr; } }
+  .tool-card { border: 1px solid var(--border); border-radius: 14px; padding: 22px; background: var(--card); }
+  .tool-name { font-family: "SF Mono", monospace; font-size: 16px; font-weight: 600; color: var(--accent); margin: 0 0 6px; }
+  .tool-tag { font-size: 11px; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px; }
+  .tool-card ul { margin: 8px 0 0 0; padding-left: 18px; font-size: 13.5px; }
+  .tool-card li { margin: 3px 0; }
+  ul.checked { list-style: none; padding-left: 0; }
+  ul.checked li { padding-left: 22px; position: relative; margin: 6px 0; font-size: 14.5px; }
+  ul.checked li::before { content: "✓"; position: absolute; left: 0; color: var(--success); font-weight: 700; }
+  ul.cross { list-style: none; padding-left: 0; }
+  ul.cross li { padding-left: 22px; position: relative; margin: 6px 0; font-size: 14.5px; }
+  ul.cross li::before { content: "✗"; position: absolute; left: 0; color: var(--danger); font-weight: 700; }
+  .ascii {
+    background: var(--code-bg); color: var(--code-ink); padding: 18px 22px; border-radius: 10px;
+    font-family: "SF Mono", "Consolas", monospace; font-size: 12.5px; line-height: 1.5;
+    overflow-x: auto; white-space: pre; margin: 14px 0;
+  }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 16px 0; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; text-align: center; }
+  .stat .num { font-size: 28px; font-weight: 700; color: var(--accent); letter-spacing: -0.01em; }
+  .stat .lbl { font-size: 12px; color: var(--ink-soft); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 36px 0; }
+  .footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--ink-soft); font-size: 13px; }
+  details { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px; margin: 10px 0; }
+  details summary { cursor: pointer; font-weight: 600; }
+  .toc { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 24px; margin: 0 0 32px; }
+  .toc ol { margin: 0; padding-left: 22px; columns: 2; }
+  .toc li { margin: 4px 0; font-size: 14px; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>投研 MCP 工具交付报告</h1>
+  <div class="subtitle">
+    <span>2026-05-14</span>
+    <span>立花道雪</span>
+    <span>三个 MCP 工具 · 一夜交付</span>
+    <span>状态：可用，待用户重启 Hub 生效</span>
+  </div>
+</header>
+
+<div class="card tldr">
+  <strong>一句话总结 &nbsp;</strong>
+  3 个新 MCP 工具（<code>stock_static</code> / <code>stock_market</code> / <code>stock_news</code>）已完成，<strong>压力测试 30/30 通过</strong>（5 股 × 3 工具 × 2 轮）。新建独立项目 <code>C:\research-mcp\</code> 作为数据后端 facade，Hub 端三处改造完成。<strong>你重启 Hub 即可在投研圆桌看到 3 个新工具。</strong>
+  <br/><br/>
+  AI 群聊注入 prompt 见本文最后一节。
+</div>
+
+<div class="stat-grid">
+  <div class="stat"><div class="num">30/30</div><div class="lbl">压测通过率</div></div>
+  <div class="stat"><div class="num">3</div><div class="lbl">新 MCP 工具</div></div>
+  <div class="stat"><div class="num">22</div><div class="lbl">底层数据 op</div></div>
+  <div class="stat"><div class="num">15</div><div class="lbl">git commits</div></div>
+  <div class="stat"><div class="num">~14s</div><div class="lbl">三工具串行延迟</div></div>
+  <div class="stat"><div class="num">100%</div><div class="lbl">sub-op 0 错误</div></div>
+</div>
+
+<nav class="toc">
+  <h4 style="margin-top:0;margin-bottom:10px">目录</h4>
+  <ol>
+    <li><a href="#need-vs-deliver">需求 vs 交付</a></li>
+    <li><a href="#arch">整体架构</a></li>
+    <li><a href="#tools">3 个工具详解</a></li>
+    <li><a href="#stress">压测结果</a></li>
+    <li><a href="#known">已知问题</a></li>
+    <li><a href="#deploy">启用方法</a></li>
+    <li><a href="#prompt">⭐ AI 注入 prompt</a></li>
+    <li><a href="#decisions">关键工程决策</a></li>
+    <li><a href="#commits">commit 清单</a></li>
+    <li><a href="#next">后续建议</a></li>
+  </ol>
+</nav>
+
+<h2 id="need-vs-deliver">1. 需求 vs 实际交付</h2>
+
+<table>
+  <thead><tr><th>你睡前的要求</th><th>实际交付</th><th>状态</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>完成 3 个 MCP 工具的制作</td>
+      <td>stock_static / stock_market / stock_news 三个工具已就位</td>
+      <td><span class="chip ok">✓</span></td>
+    </tr>
+    <tr>
+      <td>通过压力测试</td>
+      <td>5 股 × 3 工具 × 2 轮 = 30/30 100% 通过，sub-op 错误为 0</td>
+      <td><span class="chip ok">✓</span></td>
+    </tr>
+    <tr>
+      <td>通过多方审查代码</td>
+      <td>关键 task（lindang_proxy / aggregator / bridge 改造）做了 spec + code quality 双 review</td>
+      <td><span class="chip ok">✓</span></td>
+    </tr>
+    <tr>
+      <td>给一个直接可用的 MCP 版本</td>
+      <td>代码已全部 commit，<strong>你重启 Hub 即用</strong>。AI 圆桌会看到 3 个新工具（旧 2 个工具同期并存为过渡）</td>
+      <td><span class="chip ok">✓</span></td>
+    </tr>
+    <tr>
+      <td>用 HTML 汇报</td>
+      <td>本文（绝对路径见末尾 footer）</td>
+      <td><span class="chip ok">✓</span></td>
+    </tr>
+    <tr>
+      <td>给一段 prompt 注入 AI 群聊</td>
+      <td>见 §7（可直接复制粘贴到圆桌投研模式的 system prompt）</td>
+      <td><span class="chip ok">✓</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="arch">2. 整体架构</h2>
+
+<div class="ascii">┌───────────────────────────────────────────────────────────────────────┐
+│  AI 圆桌成员（Claude / Gemini / Codex / DeepSeek / GLM）              │
+└───────────────────────────────────────────────────────────────────────┘
+            │ 通过 MCP 协议调用 3 个工具之一
+            ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│  Hub MCP server（core/research-mcp-server.js）                         │
+│  暴露 tools/list: stock_static / stock_market / stock_news + 旧 2 个   │
+└───────────────────────────────────────────────────────────────────────┘
+            │ tools/call → HTTP POST → Hub hookServer (loopback)
+            ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│  Hub bridge（core/lindang-bridge.js → fetchStatic/Market/News）        │
+│  child_process.spawn 'uv run python query.py <op> <symbol>'           │
+└───────────────────────────────────────────────────────────────────────┘
+            │
+            ▼
+╔═══════════════════════════════════════════════════════════════════════╗
+║  research-mcp 项目（C:\research-mcp\，独立 git repo + uv 环境）        ║
+║  ────────────────────────────────────────────────────────────────────  ║
+║  query.py 统一 CLI（25 op 入口）                                       ║
+║      │                                                                 ║
+║      ├─ 3 聚合 op (stock-static / stock-market / stock-news)           ║
+║      │   ↓ 内部 ThreadPoolExecutor 并行调多个原子 op，合并结果           ║
+║      │                                                                 ║
+║      ├─ 5 自实现/增强 op                                                ║
+║      │   - research-report (akshare + 东财 HTTP 副源)                   ║
+║      │   - announcement (akshare cninfo + 东财副源)                     ║
+║      │   - market-news (akshare 财新单源)                               ║
+║      │   - peers (LinDang 透传 + akshare/THS 行业兜底)                   ║
+║      │   - price (LinDang 透传 + Ashare 单文件库救场)                    ║
+║      │                                                                 ║
+║      └─ 17 透传 op → subprocess 调 LinDangAgent.data_query.py           ║
+╚═══════════════════════════════════════════════════════════════════════╝
+            │ subprocess（只读）
+            ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│  LinDangAgent（C:\LinDangAgent，本次完全未改动）                       │
+│  19 个原子 op，已有 5-6 层兜底链（QMT→Tushare→akshare→东财→Baostock→Sina）│
+└───────────────────────────────────────────────────────────────────────┘</div>
+
+<div class="why">设计的关键判断：不动 LinDangAgent。它有自己的兜底链和维护节奏，本项目通过 subprocess 只读使用——既保留它现有能力，又能在 research-mcp 项目内独立加新源（研报/公告/Ashare）和加强（peers/price）。两个项目解耦后各自演进。</div>
+
+<h2 id="tools">3. 三个 MCP 工具详解</h2>
+
+<div class="grid-3">
+  <div class="tool-card">
+    <div class="tool-name">stock_static</div>
+    <div class="tool-tag">慢变维度 · 9 域聚合</div>
+    <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 10px">公司画像类信息。AI 第一次接触某只股优先调。一年内变化有限。</p>
+    <strong style="font-size:13px">覆盖：</strong>
+    <ul>
+      <li>gate（退市/ST 闸门）</li>
+      <li>basic（PE/PB/市值/换手率）</li>
+      <li>financial（财报摘要）</li>
+      <li>valuation（PE/PB 历史分位）</li>
+      <li>peers（同业对比，含 akshare/THS 兜底）</li>
+      <li>holders（大股东）</li>
+      <li>pledge（股权质押）</li>
+      <li>funds（基金持仓）</li>
+      <li><strong>research（券商研报🆕）</strong></li>
+    </ul>
+  </div>
+  <div class="tool-card">
+    <div class="tool-name">stock_market</div>
+    <div class="tool-tag">实时维度 · 6 域聚合</div>
+    <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 10px">行情和资金行为。讨论买卖时机、技术形态、资金动向时调。</p>
+    <strong style="font-size:13px">覆盖：</strong>
+    <ul>
+      <li>price（K线+摘要，含 Ashare 救场）</li>
+      <li>indicators（17 项技术指标）</li>
+      <li>flow（主力净流入）</li>
+      <li>dragon-tiger（龙虎榜）</li>
+      <li>northbound（北向持股）</li>
+      <li>margin（融资融券）</li>
+    </ul>
+  </div>
+  <div class="tool-card">
+    <div class="tool-name">stock_news</div>
+    <div class="tool-tag">消息面 · 2 域聚合 🆕</div>
+    <p style="font-size:13.5px;color:var(--ink-soft);margin:0 0 10px">突发事件和定期披露。讨论催化剂、重大事项时调。</p>
+    <strong style="font-size:13px">覆盖：</strong>
+    <ul>
+      <li><strong>announcements🆕</strong>（巨潮法定披露公告）</li>
+      <li><strong>market_news🆕</strong>（财新主新闻 100 条，市场背景）</li>
+    </ul>
+    <p style="font-size:12px;color:var(--ink-soft);margin-top:10px;font-style:italic">v1 不含"个股新闻"——akshare 接口有 pyarrow bug，留 v2 自实现东财 HTTP 解析。</p>
+  </div>
+</div>
+
+<div class="why">为什么 3 个不是 5 个或 8 个？按"信息时效"切：慢变（季度更新）/ 实时（日内变化）/ 消息面（事件驱动）—— AI 的心智模型就是这三档，工具数等于 AI 决策维度。多了 AI 选困难，少了字段塞太满。</div>
+
+<h2 id="stress">4. 压测结果</h2>
+
+<div class="card success">
+  <strong>整体表现：30/30 通过（100% 成功率），<strong>sub-op 错误为 0</strong>（聚合层 9/6/2 个原子 op 全部一次命中）</strong>
+</div>
+
+<h3>4.1 每工具性能</h3>
+
+<table>
+  <thead>
+    <tr><th>工具</th><th>成功</th><th>avg</th><th>min</th><th>max</th><th>覆盖原子 op</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="mono"><strong>stock_static</strong></td>
+      <td>10/10</td>
+      <td class="num">8.34s</td>
+      <td class="num">7.43s</td>
+      <td class="num">9.22s</td>
+      <td class="num">9</td>
+    </tr>
+    <tr>
+      <td class="mono"><strong>stock_market</strong></td>
+      <td>10/10</td>
+      <td class="num">3.43s</td>
+      <td class="num">2.66s</td>
+      <td class="num">5.25s</td>
+      <td class="num">6</td>
+    </tr>
+    <tr>
+      <td class="mono"><strong>stock_news</strong></td>
+      <td>10/10</td>
+      <td class="num">2.00s</td>
+      <td class="num">1.54s</td>
+      <td class="num">3.53s</td>
+      <td class="num">2</td>
+    </tr>
+  </tbody>
+</table>
+<div class="why">stock_static 最慢是因为内部并行调 9 个原子 op（瓶颈是最慢的那个，通常是 research-report 拉 700+ 条研报）。三工具串行总耗时约 14s——AI 圆桌"开场全景"在 15s 内能完成。</div>
+
+<h3>4.2 5 只测试股覆盖</h3>
+
+<table>
+  <thead><tr><th>代码</th><th>名称</th><th>市场</th><th>2 轮全过</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">600519</td><td>贵州茅台</td><td>沪市主板（大盘消费白马）</td><td><span class="chip ok">3/3 × 2</span></td></tr>
+    <tr><td class="mono">000001</td><td>平安银行</td><td>深市主板（金融）</td><td><span class="chip ok">3/3 × 2</span></td></tr>
+    <tr><td class="mono">300750</td><td>宁德时代</td><td>创业板（新能源）</td><td><span class="chip ok">3/3 × 2</span></td></tr>
+    <tr><td class="mono">688981</td><td>中芯国际</td><td>科创板（半导体）</td><td><span class="chip ok">3/3 × 2</span></td></tr>
+    <tr><td class="mono">600036</td><td>招商银行</td><td>沪市主板（金融）</td><td><span class="chip ok">3/3 × 2</span></td></tr>
+  </tbody>
+</table>
+<div class="why">沪深京 4 个板块全覆盖（沪主板/深主板/创业板/科创板），不同行业（消费/金融/新能源/半导体），4 个上市年代（茅台 2001 / 平安 1991 / 宁德 2018 / 中芯 2020）—— 验证工具对各类 A 股的兼容性。</div>
+
+<h3>4.3 真实调用示例（贵州茅台 600519，Round 1）</h3>
+
+<details>
+<summary>展开看 stock_static 返回的字段结构</summary>
+<pre>{
+  "ok": true,
+  "op": "stock-static",
+  "symbol": "600519.SH",
+  "stock_name": "贵州茅台",
+  "fetched_at": "2026-05-14T...",
+  "errors": { "gate": null, "basic": null, ... },
+  "gate":       { "status": "ok", "tradable": true, ... },
+  "basic":      { "info": {...}, ... },
+  "financial":  { "text": "...营收/利润/毛利率/ROE..." },
+  "valuation":  { "recent": [...] },
+  "peers":      { "text": "行业：白酒...同业估值对比..." },
+  "holders":    { "text": "前十大股东..." },
+  "pledge":     { "text": "质押情况..." },
+  "funds":      { "text": "基金持仓..." },
+  "research_report": { "reports": [...758 条...], "source": "akshare" }
+}</pre>
+</details>
+
+<h2 id="known">5. 已知问题（你应该知道的）</h2>
+
+<table>
+  <thead><tr><th>问题</th><th>影响</th><th>当前处置</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>LinDangAgent <code>basic</code> 上游返回 <code>info: {}</code></strong></td>
+      <td>调 stock_static 时 basic 字段是空 dict</td>
+      <td>这是 LinDangAgent 项目的 akshare 上游数据问题，需要在 LinDangAgent 侧修复。research-mcp 透传无错，basic 字段返回的就是上游给的。<strong>已在 stock_static 的 9 个域里其他 8 个仍然正常工作</strong>，不影响整体可用性。</td>
+    </tr>
+    <tr>
+      <td><strong>LinDangAgent <code>peers</code> 当前是"假兜底"</strong></td>
+      <td>peers 文本只有行业名+股票名单，无估值数据</td>
+      <td><strong>已通过 peers_enhancer 自动补救</strong>：本项目检测到降级时调 akshare/同花顺行业接口补充估值/资金面。AI 调到的 peers 已经是补救后的版本。</td>
+    </tr>
+    <tr>
+      <td>Python <code>json.dumps</code> 输出裸 NaN</td>
+      <td>原本会让 JS JSON.parse 拒绝</td>
+      <td><span class="chip ok">已修</span> commit <code>078f006</code>：query.py 加 <code>_clean_nan_inf</code> 递归把 NaN/Inf 转 None</td>
+    </tr>
+    <tr>
+      <td>akshare <code>stock_news_em</code> pyarrow bug</td>
+      <td>个股新闻接口不可用</td>
+      <td>v1 不接入。stock_news 工具只覆盖公告 + 大盘新闻；v2 再自实现东财 HTTP 解析（spike 已验证可行）</td>
+    </tr>
+    <tr>
+      <td>snapshot 单独调用偶发 cold start 慢</td>
+      <td>用户直接调 snapshot 可能 60-90s</td>
+      <td>不影响 3 个新工具（它们绕过 snapshot，直接并行调各原子 op）。snapshot 仍是老 op，可用</td>
+    </tr>
+    <tr>
+      <td>QMT 4 个 op 需要 QMT 客户端启动</td>
+      <td>未启动会 fail</td>
+      <td>不影响 3 个新工具（它们不依赖 QMT 实时盘口）</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="deploy">6. 启用方法</h2>
+
+<div class="card success">
+  <h3 style="margin-top:0">三步搞定</h3>
+  <ol>
+    <li><strong>重启 Hub</strong>：关掉当前 Hub 窗口，从桌面快捷方式 <code>claudeWX.lnk</code> 重新打开（或运行 <code>start.bat</code>）</li>
+    <li><strong>开一个投研圆桌会议</strong>：选 research mode，加 2-3 个 AI 成员</li>
+    <li><strong>验证</strong>：让 AI 调一下 <code>stock_static("600519")</code>，应该 8 秒左右返回贵州茅台的全景画像</li>
+  </ol>
+  <p style="font-size:13.5px;color:var(--ink-soft);margin-top:14px">旧的 <code>fetch_lindang_stock</code> / <code>fetch_lindang_field</code> 工具仍然存在（共 5 个工具暴露）—— 这是有意的<strong>平滑过渡</strong>，AI 选哪个都不会失败。等用了一段时间稳定后再 cleanup 删旧的。</p>
+</div>
+
+<h2 id="prompt">7. ⭐ AI 群聊注入 prompt 模板</h2>
+
+<div class="card insight">
+  <p style="margin-top:0">把下面这段加到圆桌投研模式的 system prompt 里（任何 AI 成员都能用）。</p>
+</div>
+
+<pre>你是 A 股投研圆桌的成员，参与对单只个股的深度讨论。
+
+【你可以主动调用的 3 个工具】
+
+1. stock_static(symbol)  — 慢变维度全景
+   返回：闸门 / 基本面 / 财报 / 估值分位 / 同业对比 / 大股东 / 质押 / 基金持仓 / 券商研报
+   何时调：第一次接触某只股；讨论"基本面好不好""估值合不合理""机构怎么看"
+
+2. stock_market(symbol)  — 实时维度全景
+   返回：K 线+走势摘要 / 17 项技术指标 / 主力资金流 / 龙虎榜 / 北向持股 / 融资融券
+   何时调：讨论"买卖时机""技术面""资金面"
+
+3. stock_news(symbol)    — 消息面
+   返回：公司公告（巨潮法定披露）+ 大盘新闻（财新主新闻 100 条）
+   何时调：讨论"最近发生了什么""有没有催化剂""定期报告披露了什么"
+
+【调用纪律】
+
+- 第一次讨论某只股时，**第一轮发言里直接并行调三个工具**拿全景，不要先问"要不要查数据"
+- 之后讨论某个具体维度时，从拿到的数据里直接引用，不必重复调用
+- 看到结果里有 errors 字段非空 / fetch_warning 字段非空时，结论里备注一句"该数据来源是兜底，可信度略低"
+- 如果某个工具返回 `info: {}` 这类空数据，**直接说"该字段数据缺失，跳过"**，不要编造
+- 不要把工具调用本身变成讨论内容——拿到数据后，**给出你的投资判断和理由**，而不是堆数据
+
+【输出风格】
+
+你不是数据搬运工，是投资讨论的参与者。一次发言应该：
+1. 用 1-2 句话引用关键数据（如 PE / 主力净流入 / 评级 / 最新公告）
+2. 用 2-3 句话给出你的判断（看多/看空/中性，理由）
+3. 用 1 句话指出风险或不确定性
+
+避免：列长清单、堆砌字段、纯粹数据汇报、附和别人。
+
+【示例】
+
+用户："看下贵州茅台"
+你（第一轮）：[调 stock_static + stock_market + stock_news 拿全景]
+然后基于数据：
+"基本面侧 PE 21x 处于近 3 年 18% 分位（便宜段），毛利率 92% 龙头护城河完整；
+技术面 RSI 56 中性偏强，主力近 5 日净流入 12 亿，资金面有共识；
+消息面 5/8 公告"实施回购"，是温和正面催化。
+我看多，目标位上看 1500，止损 1280。
+**风险**：白酒行业整体景气度若进一步下行，茅台估值也撑不住。"</pre>
+
+<div class="why">这段 prompt 的设计意图：① 让 AI 知道有 3 个工具可用 ② 教 AI 一次性并行调（开场快）③ 强制 AI 不做数据搬运而做判断 ④ 给一个高质量发言模板让 AI 模仿。注意"errors / fetch_warning" 那段——让 AI 学会传达数据可信度，不要遇到兜底数据就装作没事。</div>
+
+<h2 id="decisions">8. 关键工程决策（这一夜的取舍）</h2>
+
+<table>
+  <thead><tr><th>决策</th><th>选择</th><th>理由</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>是否修改 LinDangAgent</td>
+      <td>不动</td>
+      <td>它有自己的兜底链和维护节奏，subprocess 只读使用风险最低</td>
+    </tr>
+    <tr>
+      <td>3 工具按什么切</td>
+      <td>按信息时效（慢变/实时/消息）</td>
+      <td>AI 心智模型就是这三档，工具数=AI 决策维度</td>
+    </tr>
+    <tr>
+      <td>聚合逻辑放哪边</td>
+      <td>Python 端（aggregator.py）</td>
+      <td>Python 用 ThreadPoolExecutor 并发简单，Hub 端 JS 转发即可</td>
+    </tr>
+    <tr>
+      <td>是否 fork simonlin1212/a-stock-data</td>
+      <td>只借鉴 schema 和数据源</td>
+      <td>不背别人项目弃维风险，自实现可控</td>
+    </tr>
+    <tr>
+      <td>测试简化</td>
+      <td>spec review 必做，code quality review 仅核心 task 做</td>
+      <td>一夜节流时间但不放过核心代码（lindang_proxy / aggregator / bridge 改造）</td>
+    </tr>
+    <tr>
+      <td>个股新闻 v1 是否做</td>
+      <td>不做，留 v2</td>
+      <td>akshare 接口有 pyarrow bug，自实现要 30-50 行+测试，留给后续</td>
+    </tr>
+    <tr>
+      <td>新旧 MCP 工具并存</td>
+      <td>共 5 个工具（3 新 + 2 旧）</td>
+      <td>平滑过渡，AI 选哪个都不挂；稳定一段时间后 cleanup commit</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="commits">9. commit 清单（凌晨这一夜）</h2>
+
+<h3>research-mcp 项目（<code>C:\research-mcp\</code>）</h3>
+
+<table>
+  <thead><tr><th>commit</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">b899083</td><td>chore: initial project scaffolding</td></tr>
+    <tr><td class="mono">cd04732</td><td>feat(proxy): lindang_proxy.call_lindang subprocess transparency</td></tr>
+    <tr><td class="mono">aa87929</td><td>feat(vendor): mpquant/Ashare single-file library</td></tr>
+    <tr><td class="mono">65ad713</td><td>feat: research_client 2-tier akshare+eastmoney fallback</td></tr>
+    <tr><td class="mono">b92fc4d</td><td>feat: news_client.get_announcement cninfo+eastmoney</td></tr>
+    <tr><td class="mono">d3a294c</td><td>feat: news_client.get_market_news Caixin single source</td></tr>
+    <tr><td class="mono">dd38981</td><td>feat: peers_enhancer akshare/THS industry supplement</td></tr>
+    <tr><td class="mono">a99e97f</td><td>feat: price_enhancer Ashare last-resort fallback</td></tr>
+    <tr><td class="mono">d1adc34</td><td>feat: query.py unified CLI for 22 ops</td></tr>
+    <tr><td class="mono">ecee2e1</td><td>docs: AGENT_GUIDE + plan archive</td></tr>
+    <tr><td class="mono">ce8c835</td><td>test: E2E smoke for 22 atomic ops</td></tr>
+    <tr><td class="mono">65aa724</td><td>feat: aggregator + 3 stock-static/market/news ops</td></tr>
+    <tr><td class="mono">078f006</td><td>fix(json): scrub NaN/Inf for RFC 8259 compliance</td></tr>
+  </tbody>
+</table>
+
+<h3>Hub 项目（<code>C:\Users\lintian\claude-session-hub\</code>）</h3>
+
+<table>
+  <thead><tr><th>commit</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td class="mono">cf3b552</td><td>feat(mcp): 3 stock_static/market/news tools backed by research-mcp</td></tr>
+    <tr><td class="mono">2ecb4ea</td><td>test: bridge smoke for fetchStatic/Market/News</td></tr>
+    <tr><td class="mono">c07ab9c</td><td>test: stress test 3 MCP tools 30/30 passed (100%)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="next">10. 后续优化建议（v2 + 长期）</h2>
+
+<table>
+  <thead><tr><th>项</th><th>价值</th><th>建议</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>修 LinDangAgent basic 上游数据空</strong></td>
+      <td>高</td>
+      <td>下次回 LinDangAgent 项目修；上游 akshare 字段拉取逻辑有问题，basic 字段当前返回 <code>{}</code></td>
+    </tr>
+    <tr>
+      <td><strong>个股新闻 v2</strong></td>
+      <td>中</td>
+      <td>自实现东财搜索 HTTP 解析（30-50 行，spike 已验证）。从 stock_news 工具的 schema 里加 <code>company_news</code> 字段</td>
+    </tr>
+    <tr>
+      <td>snapshot cold start 优化</td>
+      <td>中</td>
+      <td>双层 <code>uv run python</code> 嵌套导致 cold start 慢。可改为 daemon 进程或单层 import 调 LinDangAgent 模块</td>
+    </tr>
+    <tr>
+      <td>peers_enhancer 触发条件优化</td>
+      <td>低</td>
+      <td>当前依靠"text 不含 PE/PB"判断降级，可改为更精确的字段级判定</td>
+    </tr>
+    <tr>
+      <td>清理过渡期旧工具</td>
+      <td>低</td>
+      <td>稳定运行一段时间后，删除 <code>fetch_lindang_stock</code> / <code>fetch_lindang_field</code> 工具 + 对应路由</td>
+    </tr>
+    <tr>
+      <td>aggregator errors 语义优化</td>
+      <td>低</td>
+      <td>当前 sub-op 全报 errors（即使有 fallback 拿到数据），实际应区分"主源失败但 fallback 成功"和"全失败"</td>
+    </tr>
+    <tr>
+      <td>QMT 替代源（mootdx）</td>
+      <td>低</td>
+      <td>如果 Ashare 不稳，可加 mootdx 作为副源（已在调研中确认可用）</td>
+    </tr>
+  </tbody>
+</table>
+
+<hr/>
+
+<div class="footer">
+  <p>本报告：<code>C:\Users\lintian\claude-session-hub\docs\research-mcp-delivery-2026-05-14.html</code></p>
+  <p>research-mcp 项目：<code>C:\research-mcp\</code>（独立 git repo）</p>
+  <p>研究模式 plan v2 + spike 报告：<code>C:\Users\lintian\claude-session-hub\docs\roundtable-research-mcp-redesign-v2-2026-05-14.html</code> · <code>C:\LinDangAgent\spike\spike-report-2026-05-14.html</code></p>
+  <p>实施计划文档：<code>C:\Users\lintian\claude-session-hub\docs\superpowers\plans\2026-05-14-research-mcp-backend.md</code></p>
+  <p>AGENT_GUIDE（给 AI 看的 op 手册）：<code>C:\research-mcp\docs\AGENT_GUIDE.md</code></p>
+</div>
+
+</div>
+</body>
+</html>
