@@ -1633,6 +1633,7 @@ if (typeof document !== 'undefined') (function () {
     const anchor = message.anchor
       ? `<button type="button" class="mr-gc-anchor" data-gc-anchor="${escapeHtml(message.anchor)}" title="原文索引">${escapeHtml(message.anchor)}</button>`
       : '';
+    const copyAction = `<button type="button" class="mr-gc-copy-btn" data-gc-copy-message="1" title="复制此条消息" aria-label="复制此条消息">📋</button>`;
     const meta = `<div class="mr-gc-meta"><span>${escapeHtml(label)}</span>${time ? `<span>${escapeHtml(time)}</span>` : ''}${statusText ? `<span>${escapeHtml(statusText)}</span>` : ''}${syncAction}</div>`;
     // 2026-05-15 道雪 群聊弹顶 bug 修复：article 上加 data-gc-msg-id 作 partial-update
     //   局部 patch 的稳定 anchor。pending 区调用方传入 id='pending-${sid}'；真消息
@@ -1644,7 +1645,11 @@ if (typeof document !== 'undefined') (function () {
         ${!isUser ? _renderGroupAvatar(slot, false) : ''}
         <div class="mr-gc-msg-body">
           ${meta}
-          <div class="mr-gc-bubble">${body}${opts.pending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
+          <div class="mr-gc-bubble-row">
+            ${isUser ? copyAction : ''}
+            <div class="mr-gc-bubble">${body}${opts.pending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
+            ${!isUser ? copyAction : ''}
+          </div>
           ${anchor}
         </div>
         ${isUser ? _renderGroupAvatar(null, true) : ''}
@@ -2281,6 +2286,33 @@ if (typeof document !== 'undefined') (function () {
       btn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         _setGroupSideCollapsed(!_getGroupSideCollapsed(), meeting);
+      });
+    });
+    panel.querySelectorAll('[data-gc-copy-message]').forEach(btn => {
+      btn.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const msgEl = btn.closest('.mr-gc-msg');
+        const text = (msgEl?.querySelector('.mr-gc-bubble')?.innerText || '').trim();
+        const oldText = btn.textContent;
+        if (!text) {
+          btn.textContent = '空';
+          setTimeout(() => { btn.textContent = oldText; }, 900);
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(text);
+          btn.textContent = '✓';
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.textContent = oldText;
+            btn.classList.remove('copied');
+          }, 1200);
+        } catch (e) {
+          console.warn('[groupchat] copy message failed:', e);
+          btn.textContent = '失败';
+          setTimeout(() => { btn.textContent = oldText; }, 1200);
+        }
       });
     });
     panel.querySelectorAll('[data-gc-sync-answer]').forEach(btn => {
