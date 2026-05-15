@@ -5443,6 +5443,13 @@ async function maybeNotify(session) {
 document.addEventListener('keydown', (e) => {
   if (!(e.ctrlKey || e.metaKey)) return;
 
+  // Ctrl+Alt+Home: emergency return to the launcher shell.
+  if (!e.shiftKey && e.altKey && e.key === 'Home') {
+    e.preventDefault();
+    escapeToHome();
+    return;
+  }
+
   // Ctrl+N: new Claude session
   if (!e.shiftKey && !e.altKey && (e.key === 'n' || e.key === 'N')) {
     e.preventDefault();
@@ -5756,6 +5763,66 @@ function toggleSidebar() {
   applySidebarCollapsed(next);
 }
 btnExpandEl.addEventListener('click', toggleSidebar);
+
+function hideEscapeOverlayTargets() {
+  for (const el of [
+    menuEl,
+    resumeMenuEl,
+    contextMenuEl,
+    termCtxMenuEl,
+    document.getElementById('options-menu'),
+    document.getElementById('theme-picker-popup'),
+  ]) {
+    if (el) el.style.display = 'none';
+  }
+
+  for (const id of ['resume-modal', 'search-modal']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  }
+
+  for (const el of document.querySelectorAll('.config-modal-overlay, .pair-modal-overlay, .meeting-create-modal-overlay')) {
+    el.classList.add('hidden');
+  }
+
+  if (typeof closeTerminalSearch === 'function') closeTerminalSearch();
+}
+
+function restoreLauncherShell() {
+  for (const [, cached] of terminalCache) {
+    if (cached && cached.container) cached.container.style.display = 'none';
+  }
+
+  preserveAndClearTerminalPanel();
+  if (emptyStateEl) {
+    emptyStateEl.style.display = '';
+    terminalPanelEl.insertBefore(emptyStateEl, terminalPanelEl.firstChild);
+  }
+
+  const overlay = document.getElementById('msg-overlay');
+  if (overlay) {
+    overlay.innerHTML = '';
+    overlay.classList.add('hidden');
+  }
+
+  terminalPanelEl.style.display = '';
+  if (typeof applyViewMode === 'function') applyViewMode('pty');
+}
+
+function escapeToHome() {
+  try { hideEscapeOverlayTargets(); } catch (err) { console.warn('[escape-home] hide overlays failed:', err); }
+  try { if (typeof closePreviewPanel === 'function') closePreviewPanel(); } catch (err) { console.warn('[escape-home] close preview failed:', err); }
+  try { if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel(); } catch (err) { console.warn('[escape-home] close meeting failed:', err); }
+
+  activeSessionId = null;
+  activeMeetingId = null;
+  applySidebarCollapsed(false);
+  restoreLauncherShell();
+  renderSessionList();
+}
+
+const hubEscapeHomeBtn = document.getElementById('hub-escape-home');
+if (hubEscapeHomeBtn) hubEscapeHomeBtn.addEventListener('click', escapeToHome);
 
 // --- Theme selector ---
 const THEME_CLASSES = ['theme-midnight', 'theme-obsidian', 'theme-aurora', 'theme-light', 'theme-vibechat-light'];
