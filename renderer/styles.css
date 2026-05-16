@@ -2129,6 +2129,10 @@ body.theme-light .prompt-line-marker {
 }
 
 .preview-header {
+  /* 2026-05-16 道雪：方向 A 防卡死 — 永远 40px+ 安全条，
+     flex-shrink:0 防止被 webview/iframe 占满空间压扁；
+     position:relative + z-index 高于 preview-body 默认 stack，
+     确保即使 webview 的 native overlay 渲染到 panel 顶部也露出 header。 */
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   display: flex;
@@ -2136,6 +2140,9 @@ body.theme-light .prompt-line-marker {
   justify-content: space-between;
   background: var(--bg-secondary);
   min-height: 40px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 2;
 }
 
 .preview-title {
