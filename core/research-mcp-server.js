@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Research Roundtable MCP server (2026-05-14 Plan 2 改造)。
+// Research Group Chat MCP server (2026-05-14 Plan 2 改造)。
 // Spawned by Claude/Codex/Gemini CLI per research mode meeting，through MCP config 注入。
 // 暴露 3 个新聚合工具（v3）：
 //   stock_static(symbol)  — 慢变维度，9 个 op 并行（gate/basic/financial/valuation/peers/holders/pledge/funds/research）
@@ -39,7 +39,7 @@ function logErr(msg) {
 
 logErr('startup pid=' + process.pid + ' meeting=' + MEETING_ID + ' port=' + HUB_PORT + ' kind=' + AI_KIND);
 
-// Stub mode: 当 ARENA_* env 缺失（例如用户在终端独立跑 gemini，或非 research 圆桌会议
+// Stub mode: 当 ARENA_* env 缺失（例如用户在终端独立跑 gemini，或非 research 群聊会议
 // spawn gemini）时，server 不退出而是进入 stub —— 响应 initialize、tools/list 返回空，
 // 避免 gemini settings.json 里全局注册的 arena-research server 在无 ARENA_* 环境下报错。
 const STUB_MODE = !MEETING_ID || !HUB_PORT || !HOOK_TOKEN;
@@ -172,7 +172,7 @@ async function handleRequest(req) {
   }
   if (method === 'tools/call') {
     if (STUB_MODE) {
-      return replyError(id, -32601, 'stock-research server in stub mode (not in research roundtable)');
+      return replyError(id, -32601, 'stock-research server in stub mode (not in research group chat)');
     }
     const name = params && params.name;
     const args = (params && params.arguments) || {};
