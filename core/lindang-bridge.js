@@ -37,7 +37,7 @@ function _runDataQuery(op, args, timeoutMs = null) {
       return resolve({
         ok: false,
         op,
-        error: '投研数据后端未配置：投研场景需要 A 股数据后端 + 设置环境变量 LINDANG_DIR 指向项目根目录。详见 README → 协作集成。当前圆桌可改用通用 / 开发场景。',
+        error: '投研数据后端未配置：投研场景需要 A 股数据后端 + 设置环境变量 LINDANG_DIR 指向项目根目录。详见 README → 协作集成。当前群聊可改用通用 / 开发场景。',
       });
     }
     let child;
@@ -117,7 +117,7 @@ async function fetchConcept(_concept, _topN = 10) {
   return {
     ok: false,
     op: 'concept',
-    error: '概念龙头查询已下线（依赖 Stock_top10 已删）。圆桌请改用 fetch_lindang_stock(symbol) 或 fetch_lindang_field(op, symbol)。',
+    error: '概念龙头查询已下线（依赖 Stock_top10 已删）。群聊请改用 fetch_lindang_stock(symbol) 或 fetch_lindang_field(op, symbol)。',
   };
 }
 

@@ -30,7 +30,7 @@ const DEFAULT_USER_INPUT_BUDGET = 500;   // userInput 截断长度
 
 /**
  * 从 orchestrator 取最近 N 轮历史，拼成 markdown instructions 文本。
- * @param {object} orchestrator           圆桌 orchestrator 实例（必须有 getState()）
+ * @param {object} orchestrator           群聊 orchestrator 实例（必须有 getState()）
  * @param {object} [opts]
  * @param {number} [opts.maxTurns=3]      最多取多少轮
  * @param {number} [opts.perAiBudget=800] 单家文本截断长度
@@ -60,7 +60,7 @@ function buildContextInstructions(orchestrator, opts = {}) {
   const sections = [];
   sections.push('# 历史会议上下文（fresh + ctx 注入）');
   sections.push('');
-  sections.push('你正在通过 fresh-with-context 模式恢复一个圆桌会议。原 codex sid 已不可用，');
+  sections.push('你正在通过 fresh-with-context 模式恢复一个 AI 群聊。原 codex sid 已不可用，');
   sections.push('以下是最近若干轮的会议历史，作为你继续讨论的背景。请基于此理解上下文，');
   sections.push('然后等待用户的下一轮 prompt。');
   sections.push('');

@@ -359,7 +359,7 @@ function gatewayMessageTitle(type) {
     help: 'Hub 提示',
     error: 'Hub 错误',
   };
-  return titleByType[type] || '圆桌';
+  return titleByType[type] || 'AI 群聊';
 }
 
 function gatewayHeaderTemplate(type) {
