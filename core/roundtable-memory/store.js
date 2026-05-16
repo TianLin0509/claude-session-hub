@@ -1,5 +1,5 @@
 'use strict';
-// 圆桌记忆存储层（plan 2026-05-05 阶段 0 / phase 3 identity 重构 2026-05-07 / phase 4 family 共享 2026-05-08）
+// AI 群聊记忆存储层（plan 2026-05-05 阶段 0 / phase 3 identity 重构 2026-05-07 / phase 4 family 共享 2026-05-08）
 //
 // 文件路径：<projectCwd>/.arena/rooms/{scene}/memory/{identity}.md
 //   - projectCwd 由 _resolveMemoryProjectCwd 给出（phase 2：scene 共享根 / 用户项目根双路径）
@@ -128,7 +128,7 @@ function renderEntry(e) {
 }
 
 function rewriteAll(fp, entries) {
-  const header = '# Roundtable Memory\n# 行格式见 core/roundtable-memory/store.js · plan §4.6\n---\n';
+  const header = '# Group Chat Memory\n# 行格式见 core/roundtable-memory/store.js · plan §4.6\n---\n';
   const body = entries.map(renderEntry).join('\n');
   fs.writeFileSync(fp, header + '\n' + body, 'utf-8');
 }
@@ -136,7 +136,7 @@ function rewriteAll(fp, entries) {
 function ensureFileWithHeader(fp) {
   if (fs.existsSync(fp)) return;
   ensureDir(path.dirname(fp));
-  const header = '# Roundtable Memory\n# 行格式见 core/roundtable-memory/store.js · plan §4.6\n---\n\n';
+  const header = '# Group Chat Memory\n# 行格式见 core/roundtable-memory/store.js · plan §4.6\n---\n\n';
   fs.writeFileSync(fp, header, 'utf-8');
 }
 

@@ -1426,7 +1426,7 @@ if (typeof document !== 'undefined') (function () {
       return _OB_LABEL[sess && sess.kind] || (sess && sess.title) || 'AI';
     });
     const cnNum = ['零','一','两','三','四','五','六','七','八','九'][labels.length] || String(labels.length);
-    const headText = labels.length > 0 ? `${cnNum}个 AI 已就绪` : '圆桌已就位';
+    const headText = labels.length > 0 ? `${cnNum}个 AI 已就绪` : 'AI 群聊已就位';
     const subText = labels.length > 0
       ? `${labels.join(' · ')} 等你抛话题`
       : '等你抛话题';
@@ -1563,16 +1563,16 @@ if (typeof document !== 'undefined') (function () {
   const SCENE_ONBOARDING_ENABLED = false;
   const SCENE_ONBOARDING_CONTENT = {
     general: {
-      head: '🎯 通用圆桌 · 使用提示',
+      head: '🎯 通用群聊 · 使用提示',
       bullets: [
         '三家平等给观点，不预设领域；技术辩论、代码评审、开放讨论都行。',
         '默认提问 → 三家并行；输入"<strong>@debate</strong>"触发辩论。',
         '想点名某家：用"<strong>@pikachu / @charmander / @squirtle</strong>"指定发言人。',
-        '圆桌产物是<strong>可讨论的判断</strong>，不是研报或可执行方案。需要落地操作时，结论里会建议你切独立 session 实操。',
+        '群聊产物是<strong>可讨论的判断</strong>，不是研报或可执行方案。需要落地操作时，结论里会建议你切独立 session 实操。',
       ],
     },
     research: {
-      head: '📊 投研圆桌 · 使用提示',
+      head: '📊 投研群聊 · 使用提示',
       bullets: [
         '三家偏置已固化：<strong>Pikachu</strong> 对抗硬度派（最尖锐空头）/ <strong>Charmander</strong> 反直觉校验派（找盲点）/ <strong>Squirtle</strong> 极简克制派（快速初筛）。',
         '输入个股代码 / 问题即可；三家会自动调数据后端拿最新数据，从基本面 + 资金面 + 技术面 + 情绪面给观点。',
@@ -1581,7 +1581,7 @@ if (typeof document !== 'undefined') (function () {
       ],
     },
     dev: {
-      head: '🛠️ 开发圆桌 · 使用提示',
+      head: '🛠️ 开发群聊 · 使用提示',
       bullets: [
         '三家先帮你问清需求、讨论方案，默认只交给 1 个 Driver 实操。',
         '你可以跳过问题；跳过项会在交接单里作为默认假设回显。',
@@ -1789,9 +1789,9 @@ if (typeof document !== 'undefined') (function () {
     // Phase 5(2026-05-05 道雪): 删除 _renderRtHistory 渲染调用。
     //   旧版底部"历史轮次 (N)"折叠按钮 + 列表已被 stepper mini-map 完全替代;
     //   保留 _renderRtHistory 函数本身以防其他地方调用, 仅删此处渲染。
-    // 2026-05-05 道雪：标题统一为「圆桌轮次」(用户偏好统一标题,不区分 general/research/dev)。
+    // 2026-05-05 道雪：标题统一为轮次视图(不区分 general/research/dev)。
     //   不动 _scenes.getScene().name —— 那个 name 同时给 covenant prompt header 用,改了会污染发给 AI 的 prompt。
-    const titleText = meeting.groupChat ? 'AI 群聊' : '圆桌轮次';
+    const titleText = meeting.groupChat ? 'AI 群聊' : 'AI 群聊轮次';
     const viewingTurnN = _rtViewingTurnN[meeting.id];
     const stepper = _renderTurnStepper(state.turns, mode, viewingTurnN);
     // Phase 5: 时光机 banner — 仅 viewingTurnN 设置时渲染
@@ -3679,7 +3679,7 @@ if (typeof document !== 'undefined') (function () {
     } else {
       head.classList.remove('loading');
       head.classList.add('ready');
-      const defaultText = head.getAttribute('data-default-text') || '圆桌已就位';
+      const defaultText = head.getAttribute('data-default-text') || 'AI 群聊已就位';
       const defaultSub = head.getAttribute('data-default-sub') || '等你抛话题';
       head.innerHTML = `
         <span class="mr-rt-ob-head-icon">✓</span>
@@ -3984,7 +3984,7 @@ if (typeof document !== 'undefined') (function () {
       const dispatchLabel = { all: '群策群力', pilot: '主驾发言', observer: '副驾发言' }[mode];
       inputBox.dataset.placeholder = pilotSlot !== null
         ? `🚗 主驾: Slot ${pilotSlot + 1} · ${slotPokemon[pilotSlot]} · 当前分发: ${dispatchLabel}`
-        : '圆桌讨论：发普通文本启动一轮 / @debate';
+        : 'AI 群聊：发普通文本启动一轮 / @debate';
     }
   }
 
@@ -4533,7 +4533,7 @@ if (typeof document !== 'undefined') (function () {
     if (meeting.scene) {
       inputBox.dataset.placeholder = isFreeZeroSelected
         ? '请先勾选至少一位发言人'
-        : '圆桌讨论：发普通文本启动一轮 / @debate / @<slot> 单聊';
+        : 'AI 群聊：发普通文本启动一轮 / @debate / @<slot> 单聊';
     } else {
       inputBox.dataset.placeholder = '输入消息...';
     }

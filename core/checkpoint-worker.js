@@ -168,7 +168,7 @@ function buildDerivePrompt({ timelineTail, individualByIdentity, profileEntries 
     `    "${id}": [{ "kind": "preference", "key": "...", "content": "...", "reason": "..." }]`
   ).join(',\n');
 
-  const system = `你是圆桌共识层提炼器。下面是 N 家 AI（每家是独立模型身份）对同一用户的最新记忆 + 圆桌讨论上下文。
+  const system = `你是 AI 群聊共识层提炼器。下面是 N 家 AI（每家是独立模型身份）对同一用户的最新记忆 + 群聊讨论上下文。
 
 任务：
 1. 找出至少 2 家共现的稳定偏好/规则 → 输出 _profile.md 更新
@@ -221,7 +221,7 @@ ${profileText}
 ## 各家 AI 个体记忆（按 identity）
 ${identitySections}
 
-## 圆桌讨论上下文（timeline 末 200 行）
+## AI 群聊讨论上下文（timeline 末 200 行）
 ${timelineTail || '(无 timeline)'}
 
 请按上述要求输出 JSON。`;

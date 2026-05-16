@@ -1,9 +1,9 @@
 'use strict';
-// Roundtable Scenes — 统一的场景注册表 + prompt 拼装
+// Group Chat Scenes — 统一的场景注册表 + prompt 拼装
 // 替代 general-roundtable-mode.js 和 research-mode.js 中 80% 重复的内容
 //
 // 导出：
-//   BASE_RULES                       — L1 共享圆桌基础规则
+//   BASE_RULES                       — L1 共享 AI 群聊基础规则
 //   SCENE_REGISTRY                   — { general, research, dev } 场景定义
 //   COVENANT_GENERAL                 — L2 通用房间公约
 //   COVENANT_RESEARCH                — L2 投研差量公约
@@ -42,12 +42,12 @@ const path = require('path');
 //      plugin,settings 完全禁不掉,只能 BASE_RULES 软约束
 //   3. "Edit / Write 文件" → "Edit / Write **项目文件**" — memory 文件不在禁令内
 //   4. 显式 memory 写入白名单 — 鼓励每 AI 积累自己记忆,建议 frontmatter
-//      `source: roundtable` 标记 (来自 P2-4 设计)
+//      `source: group-chat` 标记 (来自 P2-4 设计)
 //
 // 字数限制 (≤ 1500 字) 与 L3 "轻提醒"字段一致;请勿单独修改一处导致漂移。
-const BASE_RULES = `# 圆桌讨论 · 核心规则
+const BASE_RULES = `# AI 群聊 · 核心规则
 
-## ⚠️ 铁律：圆桌讨论 ≠ 独立任务执行
+## ⚠️ 铁律：AI 群聊 ≠ 独立任务执行
 本轮只输出**观点**，不展开多步骤工作流。**首句给结论**。
 字数量级：默认观点轮 ≤600 字；多点对比/方案设计 ≤1500 字；简短确认 ≤200 字。
 
@@ -62,10 +62,10 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 - **Auto-memory 写入**：写自身 memory 目录（详见用户级 CLAUDE.md）
 - 已注入的 MCP 工具（具体清单见房间公约/preset）
 
-**写文件按用户表达**：用户明确请求 → 直接写；AI 觉得该写但用户未明确 → 提议路径+内容待用户许可。圆桌产物建议落 \`.arena/artifacts/\`（推荐路径，非分档依据）。构建/部署/长命令 → 默认建议切独立 session。
+**写文件按用户表达**：用户明确请求 → 直接写；AI 觉得该写但用户未明确 → 提议路径+内容待用户许可。群聊产物建议落 \`.arena/artifacts/\`（推荐路径，非分档依据）。构建/部署/长命令 → 默认建议切独立 session。
 
 ## 你是谁
-用户的 AI 智囊。圆桌最多 3 席：**皮卡丘 / 小火龙 / 杰尼龟**。
+用户的 AI 智囊。AI 群聊最多 3 位成员：**皮卡丘 / 小火龙 / 杰尼龟**。
 本轮身份/同台者/调度模式 → 见 prompt 头部「调度上下文」。**地位平等，本色发挥，不扮演角色。**
 
 ## 输出原则
@@ -81,7 +81,7 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 `;
 
 // ===========================================================================
-// Scene: research — 投研圆桌 preset (P1 瘦身 · 2026-05-04 / Bash escape 修复 · 2026-05-04)
+// Scene: research — 投研群聊 preset (P1 瘦身 · 2026-05-04 / Bash escape 修复 · 2026-05-04)
 // ===========================================================================
 // L2 research 准入闸门 (Squirtle 三条规则):
 //   1. 所有具体工具 / 数据入口 / 命令 / 旧入口禁令,只能在 RESEARCH_PRESET
@@ -90,7 +90,7 @@ const BASE_RULES = `# 圆桌讨论 · 核心规则
 //
 // P1 改动 (2026-05-04):
 //   - 删"纯读不写" (与 L1 BASE_RULES "禁 Edit/Write 文件" 重复)
-//   - 迁出"圆桌产物是观点不是研报" 到 COVENANT_RESEARCH (属判断纪律)
+//   - 迁出"群聊产物是观点不是研报" 到 COVENANT_RESEARCH (属判断纪律)
 //   - 19 op 详细清单 → 留 4 常用,余下指向 AGENT_GUIDE.md
 //   - 兜底链路展开 → 简化为"失败自动兜底 + fetch_warning 处理"
 //
@@ -139,14 +139,14 @@ bash 把反斜杠当 escape 序列处理（\`\\L\` \`\\d\` 等会被吞），无
 - **只缺一个单字段** → \`fetch_lindang_field\`
 - **实时新闻/政策** → WebFetch / WebSearch（Claude）/ Google Search grounding（Gemini）/ web_search（Codex）
 
-### 圆桌使用纪律（仅操作禁令）
+### AI 群聊使用纪律（仅操作禁令）
 - ❌ 严禁旧入口（已下线）：\`cli.py analyze / war-room / kline / top10-* / sentiment-* / dragon-* / intel-* / event-recon\`、\`services.fetch_for_arena\`、\`Stock_top10/\` 模块、老 MCP 工具 \`fetch_concept_stocks\` / \`fetch_sector_overview\`
 - ❌ 严禁裸反斜杠 Windows 路径调 Bash（详见上文 ⚠ Bash 路径规则）
 - ✅ 失败自动兜底；若结果含 \`fetch_warning\`，结论里声明数据可信度略低
 `;
 
 // ===========================================================================
-// Scene: general — 通用圆桌 preset (P3 补强 · 2026-05-04)
+// Scene: general — 通用群聊 preset (P3 补强 · 2026-05-04)
 // ===========================================================================
 // GENERAL_PRESET 准入 (融合 Squirtle 负约束 + Charmander 跨层禁令):
 //   1. 不含场景特定知识 (投研/技术辩论/写作等)
@@ -156,7 +156,7 @@ bash 把反斜杠当 escape 序列处理（\`\\L\` \`\\d\` 等会被吞），无
 //   5. 长度上限 ≤ 350 中文字 (含标点),由 unit test 兜底
 //
 // P3 补强 (2026-05-04): 从 ~50 字 (空话) → ~210 字 (4 条协作策略 + 1 段场景定位)
-const GENERAL_PRESET = `## 通用圆桌
+const GENERAL_PRESET = `## 通用群聊
 开放话题讨论，不预设领域。
 
 ### 协作策略
@@ -165,7 +165,7 @@ const GENERAL_PRESET = `## 通用圆桌
 - 问题有多解 → 先一句澄清，不赌一种解释长篇展开
 
 ### 场景定位
-圆桌产物是**可讨论的判断**。写文件按用户表达决定（详见 BASE_RULES 写文件规则）。构建/部署/长命令建议切独立 session。
+群聊产物是**可讨论的判断**。写文件按用户表达决定（详见 BASE_RULES 写文件规则）。构建/部署/长命令建议切独立 session。
 `;
 
 // ===========================================================================
@@ -173,7 +173,7 @@ const GENERAL_PRESET = `## 通用圆桌
 // ===========================================================================
 // 方案 F (2026-05-02): timeline 用法等"详细约定"集中在 L2。
 // 摘要功能 2026-05-08 整体下线：原"摘要按钮机制 / 五元组定义 / dispatchMode 切换工作流 / 协作礼仪 / 留白"等段已删。
-const COVENANT_GENERAL = `# 房间公约 · 圆桌协作手册
+const COVENANT_GENERAL = `# 房间公约 · AI 群聊协作手册
 
 ## 关于 timeline.md
 路径：每轮 prompt 末尾会附绝对路径
@@ -192,7 +192,7 @@ const COVENANT_GENERAL = `# 房间公约 · 圆桌协作手册
 
 **该记**：preference（协作偏好）/ fact（项目稳定信息）/ observation（对用户稳定理解）。
 **不要记**：单轮观点（如"本轮倾向方案 A"）/ 临时立场 / 具体决策 —— 防思维固化。
-写前自问：这条放到下一场圆桌还有用吗？—— no 就别记。
+写前自问：这条放到下一场 AI 群聊还有用吗？—— no 就别记。
 
 **两个硬要求**：
 - 用户说"记住"/"记下" → 必调 \`memory_write\`，告知"已记下：<key>"
@@ -221,14 +221,14 @@ memory MCP 工具不可用时，告知用户「memory 工具暂不可用，本�
 //   v2 (P1 · 2026-05-04 上午): 重写为 4 块差量(证据/假设/分歧/输出),profile
 //     外置,但缺乏 24 轮发现的"此刻硬约束"/"4 档结论"/"收束 3 句"等核心机制。
 //   v3 (P0 · 2026-05-04 下午): 直接灌入 24 轮共享核心,加 L3 三派偏置层。
-const COVENANT_RESEARCH = `# 投研圆桌 · 研究纪律（24 轮共享核心 · 三派共用）
+const COVENANT_RESEARCH = `# 投研群聊 · 研究纪律（24 轮共享核心 · 三派共用）
 
 ## 元规则（凌驾所有具体规则）
 只保留会改变"此刻买/不买/等一等"判断的内容。
 任何段落若不能改变此判断，即使正确也默认省略。
 
 ## 系统身份与目标
-你是 A 股投研圆桌成员，服务于一位价值投机风格投资者。
+你是 A 股投研群聊成员，服务于一位价值投机风格投资者。
 **唯一目标**：让用户读完后越来越快地知道——该盯什么、该怕什么、为什么此刻买/不买。
 **核心原则**：基本面定锚，资金面定节奏，技术面定位置，预期差定赔率，对手盘定成败。
 用户画像详见 \`~/.arena/research-profile.md\`（涉及个股/板块决策时主动 Read，不假设用户风格）。
@@ -389,7 +389,7 @@ const RESEARCH_SLOT_BIASES = {
 };
 
 // ===========================================================================
-// Scene: dev — 开发圆桌 preset (v3 final · plan-dev-scenario.md)
+// Scene: dev — 开发群聊 preset (v3 final · plan-dev-scenario.md)
 // ===========================================================================
 // 设计来源: 17 轮三家 AI 圆桌讨论收敛 → docs/plan-dev-scenario.md
 //
@@ -401,10 +401,10 @@ const RESEARCH_SLOT_BIASES = {
 //   享受 cache)。L2b 详细规则层 (clarify/handoff/review) 由 orchestrator 按
 //   关键词触发追注到 per-turn user message (不进 system prompt, 避免占 cache
 //   且只在需要时出现)。
-const DEV_PRESET = `## 开发圆桌 · L1 永真规则
+const DEV_PRESET = `## 开发群聊 · L1 永真规则
 
 拓扑：用户=supervisor，你=advisor，Driver=worker。
-圆桌产物是决策素材，非执行指令。
+群聊产物是决策素材，非执行指令。
 
 权限：允许 Read/Grep/Glob；禁 Edit/Write/workflow skill/sub-agent。
 
@@ -551,7 +551,7 @@ function buildDevL2bSection(trigger) {
 const SCENE_REGISTRY = {
   general: {
     key: 'general',
-    name: '通用圆桌',
+    name: '通用群聊',
     icon: '🎯',
     preset: GENERAL_PRESET,
     defaultCovenant: COVENANT_GENERAL,
@@ -559,13 +559,13 @@ const SCENE_REGISTRY = {
     dataPackEnabled: false,
     onboardingExamples: [
       { icon: '💡', title: '技术辩论', q: '用 Rust 重写 Python CLI 值得吗？', hint: '默认提问 → @debate' },
-      { icon: '🔍', title: '代码评审', q: '看下 core/foo.js，三席各挑 3 个问题', hint: '默认提问 → 三家并行' },
+      { icon: '🔍', title: '代码评审', q: '看下 core/foo.js，三位成员各挑 3 个问题', hint: '默认提问 → 三家并行' },
       { icon: '🎲', title: '开放讨论', q: 'Anthropic 的 MCP 协议会赢吗？', hint: '默认提问 → 自由展开' },
     ],
   },
   research: {
     key: 'research',
-    name: '投研圆桌',
+    name: '投研群聊',
     icon: '📊',
     preset: RESEARCH_PRESET,
     defaultCovenant: COVENANT_GENERAL + '\n\n---\n\n' + COVENANT_RESEARCH,
@@ -579,7 +579,7 @@ const SCENE_REGISTRY = {
   },
   dev: {
     key: 'dev',
-    name: '开发圆桌',
+    name: '开发群聊',
     icon: '🛠️',
     preset: DEV_PRESET,
     defaultCovenant: COVENANT_GENERAL,
@@ -770,7 +770,7 @@ function buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken) {
 }
 
 /**
- * 写 MCP config 文件（用于 Claude --mcp-config 注入圆桌 memory 工具，plan 2026-05-05 阶段 0）
+ * 写 MCP config 文件（用于 Claude --mcp-config 注入群聊 memory 工具，plan 2026-05-05 阶段 0）
  */
 function writeRoundtableMemoryMcpConfig(hubDataDir, meetingId, hookPort, hookToken, aiKind, slot, aiModel) {
   const dir = arenaPromptsDir(hubDataDir);
@@ -779,7 +779,7 @@ function writeRoundtableMemoryMcpConfig(hubDataDir, meetingId, hookPort, hookTok
   const mcpServerPath = path.resolve(__dirname, 'roundtable-memory-mcp-server.js');
   const config = {
     mcpServers: {
-      'arena-roundtable-memory': {
+      'arena-group-chat-memory': {
         command: process.execPath,
         args: [mcpServerPath],
         env: {
@@ -805,7 +805,7 @@ function writeRoundtableMemoryMcpConfig(hubDataDir, meetingId, hookPort, hookTok
 function buildRoundtableMemoryMcpEntryForCodex(meetingId, hookPort, hookToken, slot, aiModel) {
   const mcpServerPath = path.resolve(__dirname, 'roundtable-memory-mcp-server.js');
   return {
-    name: 'arena_roundtable_memory', // codex toml 中 key 不能含 -
+    name: 'arena_group_chat_memory', // codex toml 中 key 不能含 -
     command: process.execPath,
     args: [mcpServerPath],
     env: {

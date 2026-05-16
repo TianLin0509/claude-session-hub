@@ -259,7 +259,7 @@ function ensureGeminiMcpInstalled() {
     args: [researchMcpPath],
     env: { ELECTRON_RUN_AS_NODE: '1' },
   };
-  // plan 2026-05-05 阶段 0: arena-roundtable-memory 同样全局注册到 gemini，
+  // plan 2026-05-05 阶段 0: arena-group-chat-memory 同样全局注册到 gemini，
   //   靠 ARENA_AI_SLOT/MEETING_ID/HUB_PORT/HOOK_TOKEN env 启 STUB 决定是否暴露 tools。
   const desiredMemory = {
     command: process.execPath,
@@ -271,14 +271,18 @@ function ensureGeminiMcpInstalled() {
     settings.mcpServers['arena-research'] = desiredResearch;
     dirty = true;
   }
-  if (JSON.stringify(settings.mcpServers['arena-roundtable-memory']) !== JSON.stringify(desiredMemory)) {
-    settings.mcpServers['arena-roundtable-memory'] = desiredMemory;
+  if (settings.mcpServers['arena-roundtable-memory']) {
+    delete settings.mcpServers['arena-roundtable-memory'];
+    dirty = true;
+  }
+  if (JSON.stringify(settings.mcpServers['arena-group-chat-memory']) !== JSON.stringify(desiredMemory)) {
+    settings.mcpServers['arena-group-chat-memory'] = desiredMemory;
     dirty = true;
   }
   if (!dirty) return;
   try {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    console.log('[圆桌] arena-research + arena-roundtable-memory MCP installed into Gemini settings.json');
+    console.log('[群聊] arena-research + arena-group-chat-memory MCP installed into Gemini settings.json');
   } catch (e) {
     console.warn('[圆桌] gemini mcp install failed:', e.message);
   }
@@ -561,7 +565,7 @@ async function generateSessionTitleFromPrompt(text, scope = 'session') {
   if (!prompt) return '';
   if (!cfg.deepseekApiKey) return '';
   const system = scope === 'meeting'
-    ? '你是房间命名器。根据用户在AI圆桌或AI群聊中的第一句话生成中文短标题，8到16个汉字或等长短语，不要引号，不要解释。'
+    ? '你是房间命名器。根据用户在 AI 群聊中的第一句话生成中文短标题，8到16个汉字或等长短语，不要引号，不要解释。'
     : '你是会话命名器。根据用户第一句话生成中文短标题，8到16个汉字或等长短语，不要引号，不要解释。';
   const { status, body } = await postJsonForAutoTitle('https://api.deepseek.com/chat/completions', {
     model: 'deepseek-chat',
@@ -2317,12 +2321,6 @@ ipcMain.handle('switch-scene', (_e, { meetingId, scene, covenant } = {}) => {
   return _switchScene(meetingId, scene, covenant);
 });
 
-// 兼容旧名（前端还在用，Task 5 改完后可删）
-ipcMain.handle('toggle-roundtable-mode', (_e, { meetingId, enabled, covenant } = {}) => {
-  if (!enabled) return { ok: true };
-  return _switchScene(meetingId, 'general', covenant);
-});
-
 ipcMain.handle('get-meetings', () => {
   return meetingManager.getAllMeetings();
 });
@@ -2790,7 +2788,7 @@ ipcMain.handle('restart-session', (_e, sessionId) => {
 // Show a Windows/OS notification. Renderer decides when to call it.
 ipcMain.on('show-notification', (_e, { title, body }) => {
   if (!Notification.isSupported()) return;
-  const n = new Notification({ title: title || '圆桌宝可梦', body: body || '', silent: false });
+  const n = new Notification({ title: title || 'AI 群聊', body: body || '', silent: false });
   n.on('click', () => {
     if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
   });
@@ -2980,7 +2978,7 @@ ipcMain.handle('arena:open-memory-file', async (_e, { meetingId, slot, type } = 
       try {
         fs.mkdirSync(path.dirname(fp), { recursive: true });
         if (!fs.existsSync(fp)) {
-          fs.writeFileSync(fp, '# Roundtable Memory\n# 行格式见 core/roundtable-memory/store.js · plan §4.6\n---\n\n', 'utf-8');
+          fs.writeFileSync(fp, '# Group Chat Memory\n# 行格式见 core/roundtable-memory/store.js · plan §4.6\n---\n\n', 'utf-8');
         }
       } catch (e) { return 'create file failed: ' + e.message; }
     } else {
@@ -3018,7 +3016,7 @@ ipcMain.handle('arena:resolve-memory-file', async (_e, { meetingId, slot, type }
       try {
         fs.mkdirSync(path.dirname(fp), { recursive: true });
         if (!fs.existsSync(fp)) {
-          fs.writeFileSync(fp, '# Roundtable Memory\n# See core/roundtable-memory/store.js\n---\n\n', 'utf-8');
+          fs.writeFileSync(fp, '# Group Chat Memory\n# See core/roundtable-memory/store.js\n---\n\n', 'utf-8');
         }
       } catch (e) {
         return { error: 'create file failed: ' + e.message };
@@ -3110,10 +3108,10 @@ const hookServer = http.createServer((req, res) => {
   const isResearchStockNews = req.method === 'POST' && req.url === '/api/research/stock-news';
   const isResearchFetch = isResearchFetchStock || isResearchFetchField || isResearchFetchConcept || isResearchFetchSector
     || isResearchStockStatic || isResearchStockMarket || isResearchStockNews;
-  // plan 2026-05-05 阶段 0: 圆桌记忆 MCP 回调（loopback）
-  const isMemoryWrite = req.method === 'POST' && req.url === '/api/roundtable/memory-write';
-  const isMemorySearch = req.method === 'POST' && req.url === '/api/roundtable/memory-search';
-  const isMemoryList = req.method === 'POST' && req.url === '/api/roundtable/memory-list';
+  // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调（loopback）。保留旧 roundtable URL 兼容已启动的旧 MCP 进程。
+  const isMemoryWrite = req.method === 'POST' && (req.url === '/api/groupchat/memory-write' || req.url === '/api/roundtable/memory-write');
+  const isMemorySearch = req.method === 'POST' && (req.url === '/api/groupchat/memory-search' || req.url === '/api/roundtable/memory-search');
+  const isMemoryList = req.method === 'POST' && (req.url === '/api/groupchat/memory-list' || req.url === '/api/roundtable/memory-list');
   const isMemoryRoute = isMemoryWrite || isMemorySearch || isMemoryList;
   if (!isHook && !isStatus && !isResearchFetch && !isMemoryRoute && !isEscapeHome) {
     res.writeHead(404); res.end('{}'); return;
@@ -3188,7 +3186,7 @@ const hookServer = http.createServer((req, res) => {
       res.end(JSON.stringify(result));
       return;
     }
-    // plan 2026-05-05 阶段 0: 圆桌记忆 MCP 回调
+    // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调
     if (isMemoryRoute) {
       if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
       // Phase 3：从 (aiKind, aiModel) 派生 identity；slot 仅日志/UI 关联用

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Roundtable Memory MCP server (plan 2026-05-05 阶段 0)。
-// Spawned by 圆桌 sub session 的 Claude/Codex/Gemini CLI（per meeting per slot），
+// Group Chat Memory MCP server (plan 2026-05-05 阶段 0)。
+// Spawned by AI 群聊 sub session 的 Claude/Codex/Gemini CLI（per meeting per slot），
 // 通过 MCP config 注入。暴露 3 个 tool：
 //   memory_write({scope, kind, key, content, source})
 //   memory_search({query, limit})
@@ -39,7 +39,7 @@ function logErr(msg) {
 logErr('startup pid=' + process.pid + ' meeting=' + MEETING_ID + ' port=' + HUB_PORT + ' kind=' + AI_KIND + ' model=' + AI_MODEL + ' slot=' + AI_SLOT);
 
 // Phase 3：以 AI 身份（kind+model）作为存储 key，slot 仅 UI 标识。
-//   STUB 判定保留 slot 检查（无 slot 视为非圆桌环境，进 STUB），不强制 model 存在 — model 缺失时 hookServer 会兜底为 'default'。
+//   STUB 判定保留 slot 检查（无 slot 视为非群聊环境，进 STUB），不强制 model 存在 — model 缺失时 hookServer 会兜底为 'default'。
 const STUB_MODE = !MEETING_ID || !HUB_PORT || !HOOK_TOKEN || !AI_SLOT;
 if (STUB_MODE) {
   logErr('no/partial ARENA_* env detected, running in STUB mode (tools list will be empty)');
@@ -48,7 +48,7 @@ if (STUB_MODE) {
 const TOOLS = [
   {
     name: 'memory_write',
-    description: '写一条圆桌记忆到自己的个体记忆文件 (slot.md)。仅记录长期偏好/稳定事实/对用户的稳定理解，不要记录单轮讨论结论或一次性观察（防思维固化）。同 key 重复写入会更新最新内容并 +1 recall。用户说"记住这个/记下"时必须立即调用，source="explicit"。',
+    description: '写一条 AI 群聊记忆到自己的个体记忆文件 (slot.md)。仅记录长期偏好/稳定事实/对用户的稳定理解，不要记录单轮群聊结论或一次性观察（防思维固化）。同 key 重复写入会更新最新内容并 +1 recall。用户说"记住这个/记下"时必须立即调用，source="explicit"。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -144,7 +144,7 @@ async function handleRequest(req) {
     return reply(id, {
       protocolVersion: '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'arena-roundtable-memory', version: '0.1.0' },
+      serverInfo: { name: 'arena-group-chat-memory', version: '0.1.0' },
     });
   }
   if (method === 'notifications/initialized') {
@@ -155,7 +155,7 @@ async function handleRequest(req) {
   }
   if (method === 'tools/call') {
     if (STUB_MODE) {
-      return replyError(id, -32601, 'arena-roundtable-memory in stub mode (not in roundtable session)');
+      return replyError(id, -32601, 'arena-group-chat-memory in stub mode (not in group chat session)');
     }
     const name = params && params.name;
     const args = (params && params.arguments) || {};
@@ -165,7 +165,7 @@ async function handleRequest(req) {
     const baseBody = { token: HOOK_TOKEN, meetingId: MEETING_ID, aiKind: AI_KIND, aiModel: AI_MODEL, slot: AI_SLOT };
 
     if (name === 'memory_write') {
-      const r = await postFetch('/api/roundtable/memory-write', { ...baseBody, ...args });
+      const r = await postFetch('/api/groupchat/memory-write', { ...baseBody, ...args });
       if (!r.ok) {
         return reply(id, { content: [{ type: 'text', text: `memory_write 失败 (${r.status}): ${r.body}` }], isError: true });
       }
@@ -173,7 +173,7 @@ async function handleRequest(req) {
     }
 
     if (name === 'memory_search') {
-      const r = await postFetch('/api/roundtable/memory-search', { ...baseBody, ...args });
+      const r = await postFetch('/api/groupchat/memory-search', { ...baseBody, ...args });
       if (!r.ok) {
         return reply(id, { content: [{ type: 'text', text: `memory_search 失败 (${r.status}): ${r.body}` }], isError: true });
       }
@@ -181,7 +181,7 @@ async function handleRequest(req) {
     }
 
     if (name === 'memory_list') {
-      const r = await postFetch('/api/roundtable/memory-list', { ...baseBody, ...args });
+      const r = await postFetch('/api/groupchat/memory-list', { ...baseBody, ...args });
       if (!r.ok) {
         return reply(id, { content: [{ type: 'text', text: `memory_list 失败 (${r.status}): ${r.body}` }], isError: true });
       }
