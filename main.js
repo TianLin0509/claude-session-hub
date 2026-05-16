@@ -1360,7 +1360,7 @@ function _computeDispatchSpec(self, targetSubs, pilotSlot, subSidsRaw, effective
 
 // 群聊 PTY 通信 helpers（waitCliReady / sendToPty / extractStreamingText / cleanBufLen
 // / checkHostShellTakeover）已抽到 core/group-chat-watcher.js（groupChatWatcher）。
-// 调用方走 groupChatWatcher.X。dispatchGroupChatTurn 与 _rtWaitTurnComplete 仍在 main.js
+// 调用方走 groupChatWatcher.X。dispatchGroupChatTurn 与 _gcWaitTurnComplete 仍在 main.js
 // 这里（依赖闭包过深，留下次专项 → core/group-chat-dispatcher.js）。
 
 
@@ -1476,7 +1476,7 @@ const _HOST_SHELL_CONSECUTIVE_HITS = 2;
 const _CODEX_AUTO_EXTRACT_DELAY_MS = 3 * 1000;
 const _CODEX_AUTO_EXTRACT_INTERVAL_MS = 2 * 1000;
 
-function _rtWaitTurnComplete(sid, label, opts = {}) {
+function _gcWaitTurnComplete(sid, label, opts = {}) {
   const { meetingId, mode, turnNum, onPartial } = opts;
   const disableHardTimeout = opts.disableHardTimeout === true;
 
@@ -1792,7 +1792,7 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
     }
 
     const settled = await Promise.allSettled(sentTargets.map(t =>
-      _rtWaitTurnComplete(t.sid, t.label, {
+      _gcWaitTurnComplete(t.sid, t.label, {
         meetingId, mode: 'group', turnNum,
         disableHardTimeout: true,
         onPartial: (partial) => {
@@ -2034,7 +2034,7 @@ ipcMain.handle('groupchat-skip-participant', async (_e, { meetingId, sid } = {})
 // 流程：
 //   1. 检测 PTY 是否已切到宿主 shell（CLI 自我退出场景）→ 调 sessionManager.relaunchCli 重启
 //   2. rebuild 该家本轮 prompt（按 lastTurn.mode：fanout / debate / summary）
-//   3. _rtSendToPty 发送（内含 _rtWaitCliReady 冷启动等待）
+//   3. groupChatWatcher.sendToPty 发送（内含 groupChatWatcher.waitCliReady 冷启动等待）
 //   4. 创建独立 watcher 等 turn-complete（不挂到原 dispatch 的 Promise.allSettled）
 //   5. 期间推 partial-update 让卡片 UI 切回 thinking → streaming → completed
 //   6. settle 后调 orch.patchTurnResult patch lastTurn + 推 turn-complete 让 renderer 刷新
@@ -2069,7 +2069,7 @@ ipcMain.handle('cli-ready-status', (_e, sessionId) => {
   if (!sessionId) return false;
   const session = sessionManager.getSession(sessionId);
   if (!session) return false;
-  // 快路径：server 端任何路径确认 ready 后立即 surface（如 _rtSendToPty 已成功发过 prompt）
+  // 快路径：server 端任何路径确认 ready 后立即 surface（如 groupChatWatcher.sendToPty 已成功发过 prompt）
   if (sessionManager.getGroupChatReady(sessionId)) {
     cliReadyDetector.markReady(sessionId);
     return true;

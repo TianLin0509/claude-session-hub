@@ -157,10 +157,10 @@ function assert(cond, msg) {
 
   // IF-C4
   // toolbar 顺序：debate-btn 出现在 summary-btn 之前，summary-btn 出现在 divider 之前
-  const debateIdx = mrJsSrc.indexOf('id="mr-rt-debate-btn"');
-  const summaryIdx = mrJsSrc.indexOf('id="mr-rt-summary-btn"');
-  const dividerIdx = mrJsSrc.indexOf('class="mr-rt-tb-divider"');
-  const pickIdx = mrJsSrc.indexOf('id="mr-rt-summary-pick"');
+  const debateIdx = mrJsSrc.indexOf('id="mr-gc-debate-btn"');
+  const summaryIdx = mrJsSrc.indexOf('id="mr-gc-summary-btn"');
+  const dividerIdx = mrJsSrc.indexOf('class="mr-gc-tb-divider"');
+  const pickIdx = mrJsSrc.indexOf('id="mr-gc-summary-pick"');
   assert(debateIdx >= 0 && summaryIdx > debateIdx,
     'toolbar: 群策群力 button before 总结发言 button');
   assert(summaryIdx > 0 && dividerIdx > summaryIdx,

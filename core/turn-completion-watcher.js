@@ -1,7 +1,7 @@
 'use strict';
 // Stage 2 容错升级（2026-05-01）— 单家 AI 群聊等待器
 //
-// 替代 main.js 老 _rtWaitTurnComplete 内联实现的"硬性 watchdog"：
+// 替代 main.js 老 _gcWaitTurnComplete 内联实现的"硬性 watchdog"：
 //   旧版：600s 强制 timeout → 整轮 settle → 按钮锁 10 分钟。
 //   新版：永不自动 settle，只在 T1=90s / T2=180s 触发非阻塞软提醒回调；
 //        真正退出由用户操作（manualExtract / skip）或 transcriptTap 的协议级

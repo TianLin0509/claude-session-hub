@@ -82,8 +82,8 @@ test('partial-update fallback 全量重渲仍保留（兼容卡片视图 + 群�
   const handlerIdx = src.indexOf("ipcRenderer.on('groupchat-partial-update'");
   const nextIpcIdx = src.indexOf('ipcRenderer.on(', handlerIdx + 1);
   const body = src.slice(handlerIdx, nextIpcIdx > 0 ? nextIpcIdx : handlerIdx + 8000);
-  // 兜底 panel.innerHTML = _renderRtPanelHtml 调用必须仍存在（卡片视图 + 群聊兜底用）
-  assert.ok(/panel\.innerHTML\s*=\s*_renderRtPanelHtml/.test(body),
+  // 兜底 panel.innerHTML = _renderGcPanelHtml 调用必须仍存在（卡片视图 + 群聊兜底用）
+  assert.ok(/panel\.innerHTML\s*=\s*_renderGcPanelHtml/.test(body),
     '全量重渲分支必须保留作为兜底（用于：① 卡片视图首次渲染 ② 群聊视图 patch 失败时）');
   // 但群聊视图的"找不到 .mr-ft"路径不能再直接掉进全量重渲（必须先尝试群聊 patch）
   // 反向锁：找不到 .mr-ft 时，必须先调 _patchGroupChatPendingMessage 而非直接 fallback

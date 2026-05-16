@@ -159,7 +159,7 @@ class JsonlTail {
 //   旧实现：只在 Stop hook 触发时一次性读 transcript 末尾的 last assistant；renderer 看不到 thinking/tool_use。
 //   新实现：notifyStop 首次拿到 transcriptPath 后，启动 JsonlTail；
 //          后续每条新 assistant message_id 块（thinking / text / tool_use）累积到 _streamingBuf；
-//          getStreamingText / clearStreamingBuf 暴露给上层（main.js _rtExtractStreamingText 优先使用）。
+//          getStreamingText / clearStreamingBuf 暴露给上层（main.js groupChatWatcher.extractStreamingText 优先使用）。
 //   降级：notifyStop 永不被调用 → _streamingBuf 永远空 → main.js 走 PTY 兜底（既有体验，不回归）。
 //
 // 2026-05-02 根治升级（Bug "DeepSeek/GLM 卡片不更新"）：
@@ -1122,7 +1122,7 @@ class GeminiTap extends EventEmitter {
 
   // Card redesign（2026-05-01）— 最新 token 计数缓存：
   //   GeminiTap onLine 看到 obj.tokens.total 时调 this._recordTokens(sid, obj.tokens) 缓存。
-  //   _rtWaitTurnComplete 在 watcher settle 时调 this.getLastTokens(sid) 拿到最新值，
+  //   _gcWaitTurnComplete 在 watcher settle 时调 this.getLastTokens(sid) 拿到最新值，
   //   附到 result.tokens 上传给 renderer 卡片 row4 显示"本轮 X tokens · 累计 Y tokens"。
   _recordTokens(hubSessionId, tokens) {
     if (!hubSessionId || !tokens || typeof tokens.total !== 'number') return;
@@ -1143,7 +1143,7 @@ class GeminiTap extends EventEmitter {
 
   // Card optimization Task 2（2026-05-01）— 流式 streamingBuf 接口。
   //   onLine 累积逻辑见 _bindSession 的 onLine（type:"gemini" 分支）。
-  //   返回数组 Array<Block> | null，与 ClaudeTap 同形（main.js _rtExtractStreamingText 统一处理）。
+  //   返回数组 Array<Block> | null，与 ClaudeTap 同形（main.js groupChatWatcher.extractStreamingText 统一处理）。
   getStreamingText(hubSessionId) {
     const entry = this._bound.get(hubSessionId);
     if (!entry || !Array.isArray(entry._streamingBuf) || entry._streamingBuf.length === 0) return null;
@@ -1262,7 +1262,7 @@ class GeminiTap extends EventEmitter {
   }
 
   async _bindSession(hubSessionId, sessionPath, isJsonl) {
-    // Card optimization Task 2（2026-05-01）— streamingBuf 累积流式 chunk，让 main.js _rtExtractStreamingText
+    // Card optimization Task 2（2026-05-01）— streamingBuf 累积流式 chunk，让 main.js groupChatWatcher.extractStreamingText
     //   优先用 tap 的 blocks 数组渲染（替代 PTY ringBuffer 过滤），preview 区不再有 throbbing 字符。
     // 2026-05-02 加 _idleTimer 字段：用户反馈"Gemini 第一轮没快速提取"，token 信号
     //   延迟到达时三层 emit 都不触发；idle-timer 兜底见 _scheduleGeminiIdleEmit。
@@ -1300,7 +1300,7 @@ class GeminiTap extends EventEmitter {
 
     // Stage 2 容错升级（2026-05-01）：emit payload 增加 signalSource 字段，
     //   让下游 turn-completion-watcher 区分 L1（result/message_update）/ L3（tokens_total）信号。
-    //   向后兼容——既有调用方（main.js _rtWaitTurnComplete）忽略此字段不影响。
+    //   向后兼容——既有调用方（main.js _gcWaitTurnComplete）忽略此字段不影响。
     // 2026-05-02：emit 时取消 idle timer（避免重复 emit）。
     const emitIfComplete = (content, meta = {}) => {
       const text = (content || '').trim();
@@ -1399,7 +1399,7 @@ class GeminiTap extends EventEmitter {
         // L3 — tokens.total 启发式（保留向后兼容；慢响应/限流时永不写入）
         if (obj?.type === 'gemini' && obj.tokens && obj.tokens.total != null
             && typeof obj.content === 'string' && obj.content.trim().length > 0) {
-          // Card redesign（2026-05-01）：缓存最新 token 计数，让 _rtWaitTurnComplete 在 settle
+          // Card redesign（2026-05-01）：缓存最新 token 计数，让 _gcWaitTurnComplete 在 settle
           //   时把数据透传给 watcher.wait() 的 result.tokens。卡片 row4 显示"本轮 X tokens"。
           this._recordTokens(hubSessionId, obj.tokens);
           _pushStreamBlock(obj.content);

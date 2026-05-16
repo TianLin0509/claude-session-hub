@@ -29,11 +29,11 @@
 
 ## 决策
 
-**跳过 Task 4 全部步骤。** Codex 仍走 main.js PTY 兜底（`_rtExtractStreamingText` 无 tap blocks 时的 fallback 路径）。
+**跳过 Task 4 全部步骤。** Codex 仍走 main.js PTY 兜底（`groupChatWatcher.extractStreamingText` 无 tap blocks 时的 fallback 路径）。
 
 后续 Codex 升级到带 delta 协议的版本时，可重跑此 spike 决定是否回头补 CodexTap.delta 实现。
 
 ## 后续 plan 影响
 
 - Task 3 (TranscriptTap 顶层代理) 仍保留 `this._codex.getStreamingText?.(sid)` 的可选链调用（spec §3.4.4），不会因为 codex 没实现而抛错。
-- Task 5 (`_rtExtractStreamingText`) 对 codex 的 sid 永远走 PTY 兜底路径——和现状一致，无回归风险。
+- Task 5 (`groupChatWatcher.extractStreamingText`) 对 codex 的 sid 永远走 PTY 兜底路径——和现状一致，无回归风险。

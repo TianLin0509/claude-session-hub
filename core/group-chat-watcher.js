@@ -4,7 +4,7 @@
 // 从 main.js 抽出 5 个 helper：waitCliReady / sendToPty / extractStreamingText /
 //   cleanBufLen / checkHostShellTakeover。
 //
-// 不抽：_rtWaitTurnComplete + _activeWatchers Map + dispatchGroupChatTurn。
+// 不抽：_gcWaitTurnComplete + _activeWatchers Map + dispatchGroupChatTurn。
 //   它们闭包依赖太深（meetingManager/scenes/orchestrator/rtTimeline/rtInjection/
 //   sendToRenderer/_computeDispatchSpec...），一次性抽风险高，
 //   留下次专项做（backlog）。

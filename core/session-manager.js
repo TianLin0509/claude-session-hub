@@ -671,7 +671,7 @@ class SessionManager extends EventEmitter {
 
     const pendingTimers = [];
     // groupChatReady：群聊"快路径"缓存，CLI 首次 ready 后置 true，
-    //   后续 _rtSendToPty 跳过 8s/8s/5s 硬 sleep；活性兜底失败时重置 false。
+    //   后续 groupChatWatcher.sendToPty 跳过 8s/8s/5s 硬 sleep；活性兜底失败时重置 false。
     // groupChatLastActivity：PTY 最近一次产出输出的 ms 时间戳，用于活性兜底判断。
     this.sessions.set(id, { info, pty: ptyProcess, pendingTimers, ringBuffer: '', groupChatReady: false, groupChatLastActivity: 0 });
 
@@ -1124,7 +1124,7 @@ class SessionManager extends EventEmitter {
     return s ? { ...s.info } : undefined;
   }
 
-  // 群聊快路径缓存：首次 _rtWaitCliReady 通过后置 true，后续 _rtSendToPty 跳过冷启动 sleep。
+  // 群聊快路径缓存：首次 groupChatWatcher.waitCliReady 通过后置 true，后续 groupChatWatcher.sendToPty 跳过冷启动 sleep。
   getGroupChatReady(sessionId) {
     const s = this.sessions.get(sessionId);
     return s ? !!s.groupChatReady : false;
@@ -1135,7 +1135,7 @@ class SessionManager extends EventEmitter {
     if (s) s.groupChatReady = !!ready;
   }
 
-  // 返回 PTY 最近一次产出输出的 ms 时间戳，用于 _rtSendToPty 活性兜底（write 后 300ms 内有无 echo）。
+  // 返回 PTY 最近一次产出输出的 ms 时间戳，用于 groupChatWatcher.sendToPty 活性兜底（write 后 300ms 内有无 echo）。
   getGroupChatLastActivity(sessionId) {
     const s = this.sessions.get(sessionId);
     return s ? (s.groupChatLastActivity || 0) : 0;

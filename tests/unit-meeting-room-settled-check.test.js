@@ -35,9 +35,9 @@ test('_allParticipantsSettled uses expectedSids.every', () => {
   assert.ok(!/Object\.keys\(partialBy\)\.every/.test(body), 'must NOT use Object.keys(partialBy).every (legacy bug)');
 });
 
-test('_renderRtPanelHtml derives expectedSids from meeting.subSessions', () => {
+test('_renderGcPanelHtml derives expectedSids from meeting.subSessions', () => {
   const m = src.match(/const\s+expectedSids\s*=\s*Array\.isArray\(meeting\.subSessions\)\s*\?\s*meeting\.subSessions\.slice\(\)\s*:\s*\[\]/);
-  assert.ok(m, '_renderRtPanelHtml must derive expectedSids from meeting.subSessions');
+  assert.ok(m, '_renderGcPanelHtml must derive expectedSids from meeting.subSessions');
 });
 
 // 行为级模拟：用一个本地副本验证 settled 判定逻辑

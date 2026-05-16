@@ -10,7 +10,7 @@ assert.ok(js.includes("_CARD_VIEW_MODE_KEY = 'mr-card-view-mode'"), 'card view m
 assert.ok(js.includes('id="mr-btn-view-parallel"'), 'header renders parallel mode button');
 assert.ok(js.includes('id="mr-btn-view-tab"'), 'header renders tab mode button');
 assert.ok(!js.includes('id="mr-btn-density"'), 'old density button is removed from header');
-assert.ok(js.includes('data-rt-card-tab-sid'), 'tab mode renders per-AI card tabs');
+assert.ok(js.includes('data-gc-card-tab-sid'), 'tab mode renders per-AI card tabs');
 assert.ok(js.includes("_focusGroupChatSession(meeting, sid)"), 'card tab click switches focused AI');
 assert.ok(js.includes('if (_isCardTabMode()) return;'), 'card body click is inert in tab mode');
 
@@ -21,7 +21,7 @@ assert.ok(css.includes('grid-template-columns: minmax(0, 1fr)'), 'tab mode uses 
 assert.ok(css.includes('body.mr-card-tab-mode .mr-ft-head'), 'tab mode hides card header chrome');
 assert.ok(css.includes('body.mr-card-tab-mode .mr-ft-escape-bar'), 'tab mode hides card action bar');
 assert.ok(css.includes('body.mr-card-tab-mode .mr-ft-bottom'), 'tab mode gives preview the full card body');
-assert.ok(css.includes('body.mr-card-tab-mode .mr-rt-timetravel-banner'), 'tab mode hides time-travel banner');
-assert.ok(css.includes('body.mr-card-tab-mode .mr-rt-userq'), 'tab mode hides question banner');
+assert.ok(css.includes('body.mr-card-tab-mode .mr-gc-timetravel-banner'), 'tab mode hides time-travel banner');
+assert.ok(css.includes('body.mr-card-tab-mode .mr-gc-userq'), 'tab mode hides question banner');
 
 console.log('meeting-room card view mode contract ok');

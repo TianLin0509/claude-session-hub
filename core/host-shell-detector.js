@@ -1,7 +1,7 @@
 'use strict';
 // FIX-D（2026-05-01）：检测 PTY ring buffer 末尾是否回到宿主 shell prompt（PowerShell / bash / cmd）。
 //   命中 → 视为 CLI 自我退出（Codex 自动更新 / Gemini OAuth refresh / Claude panic 等）。
-//   配合 main.js _rtWaitTurnComplete 里的 10s 心跳 + 连续 2 次命中机制使用，让 watcher 在
+//   配合 main.js _gcWaitTurnComplete 里的 10s 心跳 + 连续 2 次命中机制使用，让 watcher 在
 //   ~10-20s 内 settle errored，而不是等 5min 硬 timeout。
 //
 // 误判防护：

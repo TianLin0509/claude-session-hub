@@ -73,27 +73,27 @@ if (typeof document !== 'undefined') (function () {
   }
 
   // --- Group Chat Mode: 持久化 AI 群聊面板（始终显示当前状态 + 历史）---
-  // Phase 5(2026-05-05 道雪): 时光机模式状态 — _rtViewingTurnN[meetingId] = N 表示正在查看第 N 轮历史。
+  // Phase 5(2026-05-05 道雪): 时光机模式状态 — _gcViewingTurnN[meetingId] = N 表示正在查看第 N 轮历史。
   //   null / undefined = 默认查看最新轮(实时模式), 数字 = 查看第 N 轮(只读历史模式)。
   //   切换由 stepper dot click 触发 → 重渲 panel + _renderSlotCard 拿 turn.by[sid] 渲染历史内容。
-  const _rtViewingTurnN = {};
+  const _gcViewingTurnN = {};
 
-  // _rtPanelState[meetingId] 缓存渲染状态，避免 IPC 频繁调用
+  // _gcPanelState[meetingId] 缓存渲染状态，避免 IPC 频繁调用
   // partialBy: 当前进行中轮次的部分回答 { sid: { text, status } } — 单家完成立即更新
-  const _rtPanelState = {};
-  let _rtHistoryExpanded = false;
+  const _gcPanelState = {};
+  let _gcHistoryExpanded = false;
   // T3（2026-05-04 道雪）：抽屉实时订阅状态。打开时设 { sid, mid, kind }，关时清 null。
   //   partial-update handler 命中同 sid + 用户当前 active 的是 live tab 时，更新抽屉内容。
-  let _rtTimelineLive = null;
+  let _gcTimelineLive = null;
   // T3 fix（2026-05-04 道雪）：上一次抽屉的清理函数，开新抽屉前先调，避免 escHandler 累积绑定 + 闭包内存泄漏。
-  let _rtTimelineCleanup = null;
+  let _gcTimelineCleanup = null;
   // pilot redesign（2026-05-02）：_privateCountCache 已废弃（AI 群聊不再桥接子会话私聊）
   const _thinkStartTs = {};
   let _thinkTimer = null;
   // F0 Phase 1(2026-05-04 道雪): 卡片聚焦态全局状态。null = 默认态; sid = 该卡聚焦中。
   //   触发: click 任一 .mr-ft → 进入; 再次 click 同卡 / Esc / 点空白 → 退出。
   //   退出后 meeting.focusedSub 不变(主显仍是该 sid)。
-  let _rtFocusedCardSid = null;
+  let _gcFocusedCardSid = null;
 
   // F9 Phase 2(2026-05-04 道雪): 卡片密度切换 (常规 220px / 紧凑 120px)。
   //   localStorage 持久化, per-Hub 全局态, 不与 meeting 绑定。
@@ -149,7 +149,7 @@ if (typeof document !== 'undefined') (function () {
     _applyCardViewModeClass(next);
     if (next === 'tab') {
       _clearCompareSelect();
-      _rtFocusedCardSid = null;
+      _gcFocusedCardSid = null;
       document.body.classList.remove('mr-card-focus-on');
       const m = meeting || (activeMeetingId && meetingData[activeMeetingId]);
       if (m && !m.focusedSub && Array.isArray(m.subSessions) && m.subSessions[0]) {
@@ -210,16 +210,16 @@ if (typeof document !== 'undefined') (function () {
   function _renderActivePanelFromCache(meeting, opts = {}) {
     const active = meeting || (activeMeetingId && meetingData[activeMeetingId]);
     if (!active || active.id !== activeMeetingId || !_isPanelCapableMeeting(active)) return false;
-    const state = _rtPanelState[active.id];
+    const state = _gcPanelState[active.id];
     if (!state) return false;
-    const panel = _ensureRtPanel();
+    const panel = _ensureGcPanel();
     const forceGroupChatBottom = !!opts.forceGroupChatBottom && !!active.groupChat && _getGroupViewMode() === 'chat';
     const groupScroll = forceGroupChatBottom
       ? { scrollTop: 0, stickToBottom: true }
       : _captureGroupChatScroll(panel, active);
     try {
-      panel.innerHTML = _renderRtPanelHtml(state, active);
-      _bindRtPanelEvents(panel, active);
+      panel.innerHTML = _renderGcPanelHtml(state, active);
+      _bindGcPanelEvents(panel, active);
       _restoreGroupChatScroll(panel, groupScroll, { forceBottom: forceGroupChatBottom });
       return true;
     } catch (e) {
@@ -233,29 +233,29 @@ if (typeof document !== 'undefined') (function () {
   //   spec §5 状态优先级: compare-selected 与 focus 互斥(进入对比时清 focus)
   //   退出: Esc / 点空白 / 取消最后一张
   //   简化版: 仅视觉描边(蓝色 dashed)+ 邻居淡化, 不动 grid 重分配
-  const _rtCompareSlots = new Set();
+  const _gcCompareSlots = new Set();
   function _toggleCompareSelect(sid) {
     if (!sid) return;
-    if (_rtFocusedCardSid) {
-      _rtFocusedCardSid = null;
+    if (_gcFocusedCardSid) {
+      _gcFocusedCardSid = null;
       document.body.classList.remove('mr-card-focus-on');
     }
-    if (_rtCompareSlots.has(sid)) _rtCompareSlots.delete(sid);
-    else _rtCompareSlots.add(sid);
+    if (_gcCompareSlots.has(sid)) _gcCompareSlots.delete(sid);
+    else _gcCompareSlots.add(sid);
     _applyCompareVisual();
   }
   function _clearCompareSelect() {
-    if (_rtCompareSlots.size === 0) return;
-    _rtCompareSlots.clear();
+    if (_gcCompareSlots.size === 0) return;
+    _gcCompareSlots.clear();
     _applyCompareVisual();
   }
   function _applyCompareVisual() {
     document.querySelectorAll('.mr-ft[data-ft-sid]').forEach(card => {
       const cardSid = card.getAttribute('data-ft-sid');
-      if (_rtCompareSlots.has(cardSid)) card.classList.add('compare-selected');
+      if (_gcCompareSlots.has(cardSid)) card.classList.add('compare-selected');
       else card.classList.remove('compare-selected');
     });
-    if (_rtCompareSlots.size > 0) document.body.classList.add('mr-card-compare-on');
+    if (_gcCompareSlots.size > 0) document.body.classList.add('mr-card-compare-on');
     else document.body.classList.remove('mr-card-compare-on');
   }
 
@@ -263,8 +263,8 @@ if (typeof document !== 'undefined') (function () {
   //   流程: mouseup 选中 .mr-ft-bottom 内文本 → 浮按钮 [💎 引用追问] → 加 chip 到输入框上方区
   //   提交时: chips 内容拼到 prompt 头部"基于以下引用追问:\n[💎 第N轮 X: \"...\"]\n用户问题: ..."
   //   清空: 提交后 / 切 meeting 时
-  let _rtQuoteChips = [];     // [{ sid, slotIndex, slotLabel, turnN, text }]
-  let _rtQuoteFloatBtn = null; // body 级浮按钮 DOM, lazy 创建
+  let _gcQuoteChips = [];     // [{ sid, slotIndex, slotLabel, turnN, text }]
+  let _gcQuoteFloatBtn = null; // body 级浮按钮 DOM, lazy 创建
 
   function _renderQuoteChips() {
     const inputRow = document.getElementById('mr-input-row');
@@ -276,27 +276,27 @@ if (typeof document !== 'undefined') (function () {
       row.className = 'mr-quote-chips-row';
       inputRow.parentNode.insertBefore(row, inputRow);
     }
-    if (_rtQuoteChips.length === 0) {
+    if (_gcQuoteChips.length === 0) {
       row.style.display = 'none';
       row.innerHTML = '';
       return;
     }
     row.style.display = '';
-    row.innerHTML = _rtQuoteChips.map((c, i) => {
+    row.innerHTML = _gcQuoteChips.map((c, i) => {
       const slotCls = (c.slotIndex >= 0 && c.slotIndex < 3) ? `slot-${c.slotIndex + 1}` : '';
       const truncated = c.text.length > 60 ? c.text.slice(0, 60) + '…' : c.text;
-      return `<span class="mr-rt-quote-chip ${slotCls}" data-quote-idx="${i}">
-        <span class="mr-rt-quote-label">💎 第${c.turnN}轮 ${escapeHtml(c.slotLabel)}</span>
-        <span class="mr-rt-quote-text">"${escapeHtml(truncated)}"</span>
-        <button class="mr-rt-quote-close" data-quote-close="${i}" title="移除此引用">✕</button>
+      return `<span class="mr-gc-quote-chip ${slotCls}" data-quote-idx="${i}">
+        <span class="mr-gc-quote-label">💎 第${c.turnN}轮 ${escapeHtml(c.slotLabel)}</span>
+        <span class="mr-gc-quote-text">"${escapeHtml(truncated)}"</span>
+        <button class="mr-gc-quote-close" data-quote-close="${i}" title="移除此引用">✕</button>
       </span>`;
     }).join('');
     row.querySelectorAll('[data-quote-close]').forEach(btn => {
       btn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         const idx = parseInt(btn.getAttribute('data-quote-close'), 10);
-        if (!isNaN(idx) && idx >= 0 && idx < _rtQuoteChips.length) {
-          _rtQuoteChips.splice(idx, 1);
+        if (!isNaN(idx) && idx >= 0 && idx < _gcQuoteChips.length) {
+          _gcQuoteChips.splice(idx, 1);
           _renderQuoteChips();
         }
       });
@@ -305,15 +305,15 @@ if (typeof document !== 'undefined') (function () {
 
   function _addQuoteChip(meeting, sid, text) {
     if (!sid || !text || !text.trim()) return;
-    if (_rtQuoteChips.length >= 5) return;  // 最多 5 条引用 (避免 prompt 爆炸)
-    const slots = _getRtSlots(meeting);
+    if (_gcQuoteChips.length >= 5) return;  // 最多 5 条引用 (避免 prompt 爆炸)
+    const slots = _getGcSlots(meeting);
     const slotIndex = slots.findIndex(s => s && s.sid === sid);
     const slot = (slotIndex >= 0 && slotIndex < slots.length) ? slots[slotIndex] : null;
     if (!slot) return;
-    const cached = _rtPanelState[meeting.id];
+    const cached = _gcPanelState[meeting.id];
     const turnsArr = (cached && Array.isArray(cached.turns)) ? cached.turns : [];
     const turnN = turnsArr.length > 0 ? (turnsArr[turnsArr.length - 1].n || turnsArr.length) : 1;
-    _rtQuoteChips.push({
+    _gcQuoteChips.push({
       sid, slotIndex,
       slotLabel: slot.label || sid.slice(0, 8),
       turnN,
@@ -323,16 +323,16 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _clearQuoteChips() {
-    if (_rtQuoteChips.length === 0) return;
-    _rtQuoteChips = [];
+    if (_gcQuoteChips.length === 0) return;
+    _gcQuoteChips = [];
     _renderQuoteChips();
   }
 
   // mouseup 选区检测 + 浮按钮 (IIFE 顶层一次性挂)
-  document.addEventListener('mouseup', function _rtQuoteSelHandler(ev) {
+  document.addEventListener('mouseup', function _gcQuoteSelHandler(ev) {
     if (!ev.target || typeof ev.target.closest !== 'function') return;
     const card = ev.target.closest('.mr-ft[data-ft-sid]');
-    const hideBtn = () => { if (_rtQuoteFloatBtn) _rtQuoteFloatBtn.style.display = 'none'; };
+    const hideBtn = () => { if (_gcQuoteFloatBtn) _gcQuoteFloatBtn.style.display = 'none'; };
     if (!card) { hideBtn(); return; }
     const sel = window.getSelection();
     const selText = sel ? sel.toString().trim() : '';
@@ -345,60 +345,60 @@ if (typeof document !== 'undefined') (function () {
     let range; try { range = sel.getRangeAt(0); } catch { hideBtn(); return; }
     const rect = range.getBoundingClientRect();
     // lazy 创建浮按钮
-    if (!_rtQuoteFloatBtn) {
-      _rtQuoteFloatBtn = document.createElement('button');
-      _rtQuoteFloatBtn.id = 'mr-rt-quote-float-btn';
-      _rtQuoteFloatBtn.className = 'mr-rt-quote-float-btn';
-      _rtQuoteFloatBtn.type = 'button';
-      _rtQuoteFloatBtn.textContent = '💎 引用追问';
-      _rtQuoteFloatBtn.title = '把选中文本作为引用加入下一轮 prompt (Phase 3 F6)';
-      document.body.appendChild(_rtQuoteFloatBtn);
-      _rtQuoteFloatBtn.addEventListener('mousedown', (e) => e.preventDefault()); // 防失焦清选区
-      _rtQuoteFloatBtn.addEventListener('click', () => {
-        const fSid = _rtQuoteFloatBtn.dataset.sid;
-        const fText = _rtQuoteFloatBtn.dataset.text;
+    if (!_gcQuoteFloatBtn) {
+      _gcQuoteFloatBtn = document.createElement('button');
+      _gcQuoteFloatBtn.id = 'mr-gc-quote-float-btn';
+      _gcQuoteFloatBtn.className = 'mr-gc-quote-float-btn';
+      _gcQuoteFloatBtn.type = 'button';
+      _gcQuoteFloatBtn.textContent = '💎 引用追问';
+      _gcQuoteFloatBtn.title = '把选中文本作为引用加入下一轮 prompt (Phase 3 F6)';
+      document.body.appendChild(_gcQuoteFloatBtn);
+      _gcQuoteFloatBtn.addEventListener('mousedown', (e) => e.preventDefault()); // 防失焦清选区
+      _gcQuoteFloatBtn.addEventListener('click', () => {
+        const fSid = _gcQuoteFloatBtn.dataset.sid;
+        const fText = _gcQuoteFloatBtn.dataset.text;
         const mid = activeMeetingId;
         const meeting = meetingData[mid];
         if (fSid && fText && meeting) _addQuoteChip(meeting, fSid, fText);
-        _rtQuoteFloatBtn.style.display = 'none';
+        _gcQuoteFloatBtn.style.display = 'none';
         try { window.getSelection().removeAllRanges(); } catch {}
       });
     }
-    _rtQuoteFloatBtn.dataset.sid = sid;
-    _rtQuoteFloatBtn.dataset.text = selText;
-    _rtQuoteFloatBtn.style.display = 'inline-flex';
+    _gcQuoteFloatBtn.dataset.sid = sid;
+    _gcQuoteFloatBtn.dataset.text = selText;
+    _gcQuoteFloatBtn.style.display = 'inline-flex';
     // 选区右上方 + window scroll 偏移
-    _rtQuoteFloatBtn.style.top = `${rect.top + window.scrollY - 34}px`;
-    _rtQuoteFloatBtn.style.left = `${rect.right + window.scrollX - 90}px`;
+    _gcQuoteFloatBtn.style.top = `${rect.top + window.scrollY - 34}px`;
+    _gcQuoteFloatBtn.style.left = `${rect.right + window.scrollX - 90}px`;
   });
 
   // F0 + F3 Phase 1/2 + Phase 5: 全局 Esc — 退出聚焦/对比/时光机。IIFE 顶层挂载, 只挂一次。
-  document.addEventListener('keydown', function _rtFocusEscHandler(ev) {
+  document.addEventListener('keydown', function _gcFocusEscHandler(ev) {
     if (ev.key !== 'Escape') return;
     // F6: Esc 也关闭引用浮按钮
-    if (_rtQuoteFloatBtn && _rtQuoteFloatBtn.style.display !== 'none') {
-      _rtQuoteFloatBtn.style.display = 'none';
+    if (_gcQuoteFloatBtn && _gcQuoteFloatBtn.style.display !== 'none') {
+      _gcQuoteFloatBtn.style.display = 'none';
     }
-    if (_rtFocusedCardSid) {
-      _rtFocusedCardSid = null;
+    if (_gcFocusedCardSid) {
+      _gcFocusedCardSid = null;
       document.body.classList.remove('mr-card-focus-on');
     }
-    if (_rtCompareSlots.size > 0) _clearCompareSelect();
+    if (_gcCompareSlots.size > 0) _clearCompareSelect();
     // Phase 5: Esc 退出时光机模式(对当前 active meeting)。
     //   meetings 是 plain object(不是 Map), 用 meetings[id] 取
-    if (typeof activeMeetingId !== 'undefined' && activeMeetingId && _rtViewingTurnN[activeMeetingId]) {
-      delete _rtViewingTurnN[activeMeetingId];
+    if (typeof activeMeetingId !== 'undefined' && activeMeetingId && _gcViewingTurnN[activeMeetingId]) {
+      delete _gcViewingTurnN[activeMeetingId];
       const m = (typeof meetings !== 'undefined' && meetings) ? meetings[activeMeetingId] : null;
       if (m) refreshGroupChatPanel(m);
     }
   });
-  document.addEventListener('click', function _rtFocusBlankClickHandler(ev) {
+  document.addEventListener('click', function _gcFocusBlankClickHandler(ev) {
     if (ev.target && ev.target.closest && ev.target.closest('.mr-ft')) return;
-    if (_rtFocusedCardSid) {
-      _rtFocusedCardSid = null;
+    if (_gcFocusedCardSid) {
+      _gcFocusedCardSid = null;
       document.body.classList.remove('mr-card-focus-on');
     }
-    if (_rtCompareSlots.size > 0) _clearCompareSelect();
+    if (_gcCompareSlots.size > 0) _clearCompareSelect();
   });
 
   // 2026-05-05 道雪：聚焦主卡 Ctrl+滚轮缩放字号。IIFE 顶层挂载只挂一次。
@@ -424,7 +424,7 @@ if (typeof document !== 'undefined') (function () {
   }
   // 启动时把上次/默认 scale 写到 body —— 之后任何 .active 卡渲染都自动继承
   _applyCardFocusScale(_cardFocusFontScale);
-  document.body.addEventListener('wheel', function _rtCardFocusWheelHandler(e) {
+  document.body.addEventListener('wheel', function _gcCardFocusWheelHandler(e) {
     if (!e.ctrlKey) return;
     if (!document.body.classList.contains('mr-card-focus-on')) return;
     const inActive = e.target && e.target.closest && e.target.closest('.mr-ft.active');
@@ -435,7 +435,7 @@ if (typeof document !== 'undefined') (function () {
     _applyCardFocusScale(_cardFocusFontScale + dir * CARD_FOCUS_SCALE_STEP);
   }, { passive: false });
   // Stage 2 容错升级：每轮 prompt 发送时间戳（用于 manual-extract IPC 的 sincePromptTs 参数）
-  const _rtTurnStartTs = {};
+  const _gcTurnStartTs = {};
 
   // Card optimization Task 9（2026-05-01）— 沉浸/调试模式 per-meetingId 状态（renderer 内存镜像）。
   //   首次 openMeeting 走 IPC 'get-immersive-mode' 拿主进程持久化值；切换走 'save-immersive-mode' 写回。
@@ -670,12 +670,12 @@ if (typeof document !== 'undefined') (function () {
   //   （2026-05-04 决策：scene 创建时确定，运行时不可切换）。
   //   IPC `switch-scene` handler 保留，避免破坏其它代码路径。
 
-  function _ensureRtPanel() {
+  function _ensureGcPanel() {
     let panel = document.getElementById('mr-group-chat-panel');
     if (!panel) {
       panel = document.createElement('div');
       panel.id = 'mr-group-chat-panel';
-      panel.className = 'mr-rt-panel';
+      panel.className = 'mr-gc-panel';
       // Arch refactor 2026-05-02: mr-terminals removed. Anchor the cards panel
       // before mr-toolbar so it occupies the main flex area between header and
       // toolbar / input-row.
@@ -690,7 +690,7 @@ if (typeof document !== 'undefined') (function () {
     return panel;
   }
 
-  function _removeRtPanel() {
+  function _removeGcPanel() {
     const p = document.getElementById('mr-group-chat-panel');
     if (p && p.parentElement) p.remove();
   }
@@ -699,7 +699,7 @@ if (typeof document !== 'undefined') (function () {
   // Plan 阶段 2: 改为按 _KIND_LABELS 动态生成 5 家槽位（claude/gemini/codex/deepseek/glm），
   // 自动支持 deepseek/glm 私聊与 @summary。每个 kind 只取首个匹配的 sub-session
   // (5 选 3 + 同 kind 重复 的语义由 slotSpecs 处理，本函数仍按 kind 单值索引)。
-  function _getRtSubInfo(meeting) {
+  function _getGcSubInfo(meeting) {
     const subs = {};
     for (const kind of Object.keys(_KIND_LABELS)) subs[kind] = null;
     if (!meeting || !meeting.subSessions) return subs;
@@ -781,7 +781,7 @@ if (typeof document !== 'undefined') (function () {
   //     - slotId:        'pikachu' / 'charmander' / 'squirtle'（slot 化 2026-05-03）
   //     - label:         纯英文 slot 名（"Pikachu"），给 prompt / @解析 / 后端字段用
   //     - displayLabel:  双语带 emoji（"⚡ Pikachu · 皮卡丘"），给卡片 UI 用
-  function _getRtSlots(meeting) {
+  function _getGcSlots(meeting) {
     const maxSlots = meeting && meeting.groupChat && Array.isArray(meeting.subSessions)
       ? meeting.subSessions.length
       : 3;
@@ -983,7 +983,7 @@ if (typeof document !== 'undefined') (function () {
     //       → "本轮"的"上一轮"是 turns[N-2] ≠ lastTurn ✓
     //
     //   规则: 本轮 sid X 的血缘 = lineageRefTurn.by 中除 X 外的所有 sid (排除 absent/errored)
-    //   实现限制: 不点击跳转(避免 _openRtTimeline 加 initialTurnN); chip hover tooltip
+    //   实现限制: 不点击跳转(避免 _openGcTimeline 加 initialTurnN); chip hover tooltip
     //   spec §F4 同组跳过(pilot→pilot/observer→observer)由后端 prompt 注入决定, UI 仅展示参考
     let lineageHtml = '';
     let lineageRefTurn = null;
@@ -1034,7 +1034,7 @@ if (typeof document !== 'undefined') (function () {
     // Phase 5(2026-05-05 道雪): 时光机模式 — viewingTurnN 设置则将 ctx 切换到该历史轮快照,
     //   _renderSlotCard 内部 "已完成轮 → 显示 lastTurn.by[sid]" 分支(line 723-735)直接复用,
     //   纯前端切换。partialBy 设为 null + currentMode 设为 'idle' 避免触发 thinking/streaming 分支。
-    const viewN = _rtViewingTurnN[meetingId];
+    const viewN = _gcViewingTurnN[meetingId];
     const isTimeTravel = (typeof viewN === 'number' && viewN >= 1 && viewN <= state.turns.length);
     const effectiveLastTurn = isTimeTravel
       ? state.turns[viewN - 1]
@@ -1047,7 +1047,7 @@ if (typeof document !== 'undefined') (function () {
       ? meeting.focusedSub
       : meeting.subSessions[0];
     let anyThinking = false;
-    const slots = _getRtSlots(meeting);
+    const slots = _getGcSlots(meeting);
     const ctx = {
       state, currentMode: effectiveCurrentMode, partialBy: effectivePartialBy,
       meeting, slots, lastTurn: effectiveLastTurn, meetingId, focused,
@@ -1065,7 +1065,7 @@ if (typeof document !== 'undefined') (function () {
 
   function _renderCardViewTabs(meeting) {
     if (!_isCardTabMode() || !meeting) return '';
-    const slots = _getRtSlots(meeting);
+    const slots = _getGcSlots(meeting);
     const focused = (Array.isArray(meeting.subSessions) && meeting.subSessions.includes(meeting.focusedSub))
       ? meeting.focusedSub
       : meeting.subSessions[0];
@@ -1077,7 +1077,7 @@ if (typeof document !== 'undefined') (function () {
       const active = slot.sid === focused;
       const label = slot.label || getKindLabel(slot.kind) || `AI ${slotIndex + 1}`;
       const kind = slot.kind ? getKindLabel(slot.kind) : '';
-      items.push(`<button type="button" class="mr-card-view-tab ${slotCls}${active ? ' active' : ''}" data-rt-card-tab-sid="${escapeHtml(slot.sid)}" title="${escapeHtml(kind || label)}">
+      items.push(`<button type="button" class="mr-card-view-tab ${slotCls}${active ? ' active' : ''}" data-gc-card-tab-sid="${escapeHtml(slot.sid)}" title="${escapeHtml(kind || label)}">
         <span class="mr-card-view-tab-dot"></span>
         <span class="mr-card-view-tab-label">${escapeHtml(label)}</span>
       </button>`);
@@ -1129,13 +1129,13 @@ if (typeof document !== 'undefined') (function () {
     //   截断提示链接（.mr-truncated-hint）仍可触发 enter-shell 切到子 session 主区。
     const isTerminalErrorState = statusCls === 'errored' || statusCls === 'absent';
     const relaunchBtn = isTerminalErrorState
-      ? `<button class="mr-ft-escape-btn" data-rt-escape="resend" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重新拉起该家：重发本轮 prompt">🔄 重新拉起</button>`
+      ? `<button class="mr-ft-escape-btn" data-gc-escape="resend" data-gc-sid="${sid}" data-gc-kind="${kind}" title="重新拉起该家：重发本轮 prompt">🔄 重新拉起</button>`
       : '';
     const escapeBar = `
       <div class="mr-ft-escape-bar">
-        <button class="mr-ft-escape-btn" data-rt-escape="extract" data-rt-sid="${sid}" data-rt-kind="${kind}" title="从 transcript 直读拼接（卡死时绕过完成检测）">一键提取</button>
-        <button class="mr-ft-escape-btn" data-rt-escape="skip" data-rt-sid="${sid}" data-rt-kind="${kind}" title="本轮跳过这家，下游 prompt 不引用">跳过</button>
-        <button class="mr-ft-escape-btn" data-rt-escape="resend-prompt" data-rt-sid="${sid}" data-rt-kind="${kind}" title="重发本轮 prompt 给该家（自动判定输入框是否已含 prompt）">📤 发送</button>
+        <button class="mr-ft-escape-btn" data-gc-escape="extract" data-gc-sid="${sid}" data-gc-kind="${kind}" title="从 transcript 直读拼接（卡死时绕过完成检测）">一键提取</button>
+        <button class="mr-ft-escape-btn" data-gc-escape="skip" data-gc-sid="${sid}" data-gc-kind="${kind}" title="本轮跳过这家，下游 prompt 不引用">跳过</button>
+        <button class="mr-ft-escape-btn" data-gc-escape="resend-prompt" data-gc-sid="${sid}" data-gc-kind="${kind}" title="重发本轮 prompt 给该家（自动判定输入框是否已含 prompt）">📤 发送</button>
         ${relaunchBtn}
       </div>`;
 
@@ -1152,9 +1152,9 @@ if (typeof document !== 'undefined') (function () {
     //   按钮: 📋 复制全文 / @ 追问 / " 引用入下轮(F6 占位, Phase 3 实施)
     //   交互: hover 卡片 0.25s 浮出, 移出消失。stopPropagation 不触发 F0 focus
     const hoverActionsHtml = `<div class="mr-ft-hover-actions">
-        <button data-rt-action="copy" data-rt-sid="${sid}" title="复制本卡内容">📋</button>
-        <button data-rt-action="mention" data-rt-sid="${sid}" data-rt-kind="${kind}" title="在输入框插入 @ 该家">@</button>
-        <button data-rt-action="quote" data-rt-sid="${sid}" title="引用本卡内容入下一轮(Phase 3)">&ldquo;</button>
+        <button data-gc-action="copy" data-gc-sid="${sid}" title="复制本卡内容">📋</button>
+        <button data-gc-action="mention" data-gc-sid="${sid}" data-gc-kind="${kind}" title="在输入框插入 @ 该家">@</button>
+        <button data-gc-action="quote" data-gc-sid="${sid}" title="引用本卡内容入下一轮(Phase 3)">&ldquo;</button>
       </div>`;
 
     return `<div class="${cls.join(' ')}" data-ft-sid="${sid}" data-ft-kind="${kind}">
@@ -1193,12 +1193,12 @@ if (typeof document !== 'undefined') (function () {
     const idHint = familyHint
       ? (modelHint ? `\n${modelHint} → 写入 ${familyHint}（家族共享）` : `\n写入 ${familyHint}`)
       : '';
-    const ownBtn = `<button class="mr-ft-mem-btn" data-rt-mem-action="open-own" data-rt-mem-sid="${sid}" data-rt-mem-slot="${slot}" title="打开家族记忆 .md${idHint}\n${meta.count} 条 entry">📒 ${meta.count}</button>`;
+    const ownBtn = `<button class="mr-ft-mem-btn" data-gc-mem-action="open-own" data-gc-mem-sid="${sid}" data-gc-mem-slot="${slot}" title="打开家族记忆 .md${idHint}\n${meta.count} 条 entry">📒 ${meta.count}</button>`;
     const inboxBtn = meta.pending > 0
-      ? `<button class="mr-ft-mem-btn pending" data-rt-mem-action="open-pending" data-rt-mem-sid="${sid}" data-rt-mem-slot="${slot}" title="打开 inbox 候选${idHint}\n${meta.pending} 条待 AI 采纳/拒绝">📥 <span class="dot">${meta.pending}</span></button>`
+      ? `<button class="mr-ft-mem-btn pending" data-gc-mem-action="open-pending" data-gc-mem-sid="${sid}" data-gc-mem-slot="${slot}" title="打开 inbox 候选${idHint}\n${meta.pending} 条待 AI 采纳/拒绝">📥 <span class="dot">${meta.pending}</span></button>`
       : '';
     const profileBtn = meta.hasProfile
-      ? `<button class="mr-ft-mem-btn" data-rt-mem-action="open-profile" data-rt-mem-sid="${sid}" data-rt-mem-slot="${slot}" title="打开 _profile.md（共识层）">📊</button>`
+      ? `<button class="mr-ft-mem-btn" data-gc-mem-action="open-profile" data-gc-mem-sid="${sid}" data-gc-mem-slot="${slot}" title="打开 _profile.md（共识层）">📊</button>`
       : '';
     // Phase 2 P1（2026-05-07）：worker 失败状态灯（meeting 级共享 — 仅在第一个 slot 显示，避免冗余）
     let healthBtn = '';
@@ -1208,7 +1208,7 @@ if (typeof document !== 'undefined') (function () {
         const cls = wh.failures >= 3 ? 'health-bad' : 'health-warn';
         const reason = wh.lastReason || '(原因未知)';
         const reasonAttr = String(reason).replace(/"/g, '&quot;').slice(0, 240);
-        healthBtn = `<button class="mr-ft-mem-btn ${cls}" data-rt-mem-action="open-worker" data-rt-mem-sid="${sid}" data-rt-mem-slot="${slot}" title="后台 worker 连续失败 ${wh.failures} 次&#10;最近原因: ${reasonAttr}&#10;点击查看 checkpoint state.json">🧠 ${wh.failures}</button>`;
+        healthBtn = `<button class="mr-ft-mem-btn ${cls}" data-gc-mem-action="open-worker" data-gc-mem-sid="${sid}" data-gc-mem-slot="${slot}" title="后台 worker 连续失败 ${wh.failures} 次&#10;最近原因: ${reasonAttr}&#10;点击查看 checkpoint state.json">🧠 ${wh.failures}</button>`;
       }
     }
     return `${ownBtn}${inboxBtn}${profileBtn}${healthBtn}`;
@@ -1272,12 +1272,12 @@ if (typeof document !== 'undefined') (function () {
       const cfg = _STATUS_BADGE_CONFIG[status];
       if (!cfg) continue;
       const label = sidLabelLookup ? (sidLabelLookup(sid) || sid.slice(0, 6)) : sid.slice(0, 6);
-      badges.push(`<span class="mr-rt-history-status ${cfg.cls}" title="${escapeHtml(label)}: ${cfg.title}">${escapeHtml(label)} ${cfg.icon}</span>`);
+      badges.push(`<span class="mr-gc-history-status ${cfg.cls}" title="${escapeHtml(label)}: ${cfg.title}">${escapeHtml(label)} ${cfg.icon}</span>`);
     }
     return badges.join('');
   }
 
-  function _renderRtHistory(state, meeting) {
+  function _renderGcHistory(state, meeting) {
     if (!state.turns || state.turns.length === 0) return '';
     // 构造 sid → label 查表，从 meeting.subSessions 推 kind label
     const sidToLabel = {};
@@ -1293,19 +1293,19 @@ if (typeof document !== 'undefined') (function () {
       const userIn = (t.userInput || '').slice(0, 60);
       const meta = t.decisionTitle ? ` · 标题: ${escapeHtml(t.decisionTitle.slice(0, 40))}` : '';
       const statusBadges = _renderHistoryStatusBadges(t, lookupLabel);
-      return `<div class="mr-rt-history-item">
-        <span class="mr-rt-history-turn">第 ${t.n} 轮</span>
-        <span class="mr-rt-history-mode ${escapeHtml(t.mode)}">${escapeHtml(t.mode)}</span>
-        <span class="mr-rt-history-input">${escapeHtml(userIn)}${(t.userInput || '').length > 60 ? '…' : ''}</span>
-        <span class="mr-rt-history-meta">${meta}</span>
-        ${statusBadges ? `<span class="mr-rt-history-statuses">${statusBadges}</span>` : ''}
+      return `<div class="mr-gc-history-item">
+        <span class="mr-gc-history-turn">第 ${t.n} 轮</span>
+        <span class="mr-gc-history-mode ${escapeHtml(t.mode)}">${escapeHtml(t.mode)}</span>
+        <span class="mr-gc-history-input">${escapeHtml(userIn)}${(t.userInput || '').length > 60 ? '…' : ''}</span>
+        <span class="mr-gc-history-meta">${meta}</span>
+        ${statusBadges ? `<span class="mr-gc-history-statuses">${statusBadges}</span>` : ''}
       </div>`;
     }).join('');
-    const expanded = _rtHistoryExpanded;
-    const toggle = `<span class="mr-rt-history-toggle" id="mr-rt-history-toggle">${expanded ? '▾' : '▸'} 历史轮次（${state.turns.length}）</span>`;
-    return `<div class="mr-rt-history">
+    const expanded = _gcHistoryExpanded;
+    const toggle = `<span class="mr-gc-history-toggle" id="mr-gc-history-toggle">${expanded ? '▾' : '▸'} 历史轮次（${state.turns.length}）</span>`;
+    return `<div class="mr-gc-history">
       ${toggle}
-      <div class="mr-rt-history-list" style="display:${expanded ? 'flex' : 'none'}">${items}</div>
+      <div class="mr-gc-history-list" style="display:${expanded ? 'flex' : 'none'}">${items}</div>
     </div>`;
   }
 
@@ -1314,7 +1314,7 @@ if (typeof document !== 'undefined') (function () {
   //   新版: 每轮一个可 click/hover 的 dot(progress track 风, A 方案), mode 配色,
   //         当前轮蓝光圈放大, 末尾 "N/N" 数字直白显示进度。
   //         数据 attr (data-turn-n / data-turn-mode) 支持 click/hover 时光机切换。
-  //         "历史轮次"按钮 + _renderRtHistory 渲染删除(功能被 mini-map 完全替代)。
+  //         "历史轮次"按钮 + _renderGcHistory 渲染删除(功能被 mini-map 完全替代)。
   function _renderTurnStepper(turns, currentMode, viewingTurnN) {
     const totalTurns = turns.length;
     if (totalTurns === 0 && (!currentMode || currentMode === 'idle')) return '';
@@ -1326,18 +1326,18 @@ if (typeof document !== 'undefined') (function () {
 
     const dots = turns.map(t => {
       const isCurrent = t.n === viewN;
-      const cls = `mr-rt-step-dot ${escapeHtml(t.mode)}${isCurrent ? ' current' : ''}`;
+      const cls = `mr-gc-step-dot ${escapeHtml(t.mode)}${isCurrent ? ' current' : ''}`;
       return `<span class="${cls}" data-turn-n="${t.n}" data-turn-mode="${escapeHtml(t.mode)}" title="第 ${t.n} 轮 · ${escapeHtml(t.mode)}"></span>`;
     }).join('');
     // active(进行中)轮的 placeholder dot
     const activeDot = isActive
-      ? `<span class="mr-rt-step-dot ${escapeHtml(currentMode)} active${activeTurnN === viewN ? ' current' : ''}" data-turn-n="${activeTurnN}" data-turn-active="1" title="第 ${activeTurnN} 轮 · ${escapeHtml(currentMode)} (进行中)"></span>`
+      ? `<span class="mr-gc-step-dot ${escapeHtml(currentMode)} active${activeTurnN === viewN ? ' current' : ''}" data-turn-n="${activeTurnN}" data-turn-active="1" title="第 ${activeTurnN} 轮 · ${escapeHtml(currentMode)} (进行中)"></span>`
       : '';
     // N/N 进度数字 — 时光机模式时显示 "viewN/totalDisplay" 蓝色, 默认显示 "current/total" 灰色
     const totalDisplay = isActive ? activeTurnN : totalTurns;
     const isViewingHistory = (typeof viewingTurnN === 'number' && viewingTurnN < activeTurnN);
-    const counter = `<span class="mr-rt-step-counter${isViewingHistory ? ' viewing' : ''}">${viewN}/${totalDisplay}</span>`;
-    return `<span class="mr-rt-stepper" id="mr-rt-stepper">${dots}${activeDot}${counter}</span>`;
+    const counter = `<span class="mr-gc-step-counter${isViewingHistory ? ' viewing' : ''}">${viewN}/${totalDisplay}</span>`;
+    return `<span class="mr-gc-stepper" id="mr-gc-stepper">${dots}${activeDot}${counter}</span>`;
   }
 
   // 2026-05-05 道雪：用户提问 banner（A+D 混合：黄色引用条 + 单行紧凑布局）。
@@ -1378,11 +1378,11 @@ if (typeof document !== 'undefined') (function () {
     }
     if (!userInput) return '';
     return `
-      <div class="mr-rt-userq" data-mode="${bannerMode}">
-        <span class="mr-rt-userq-label">💬 你的提问</span>
-        <span class="mr-rt-userq-text">${escapeHtml(userInput)}</span>
-        <span class="mr-rt-userq-tag">第 ${turnNum} 轮 · ${escapeHtml(turnLabel)}</span>
-        <button class="mr-rt-userq-toggle" data-action="userq-toggle" title="展开/折叠全文" aria-label="展开/折叠全文">▾</button>
+      <div class="mr-gc-userq" data-mode="${bannerMode}">
+        <span class="mr-gc-userq-label">💬 你的提问</span>
+        <span class="mr-gc-userq-text">${escapeHtml(userInput)}</span>
+        <span class="mr-gc-userq-tag">第 ${turnNum} 轮 · ${escapeHtml(turnLabel)}</span>
+        <button class="mr-gc-userq-toggle" data-action="userq-toggle" title="展开/折叠全文" aria-label="展开/折叠全文">▾</button>
       </div>
     `;
   }
@@ -1433,7 +1433,7 @@ if (typeof document !== 'undefined') (function () {
 
     // D1 Phase 4(2026-05-05 道雪): AI 群聊角色 PNG 头像 stack(与卡片头像一致)
     //   groupChat uses company logos instead of slot-bound Pokemon avatars.
-    const slots = _getRtSlots(meeting);
+    const slots = _getGcSlots(meeting);
     const avatarsHtml = sids.map((sid, idx) => {
       const slot = slots[idx] || {};
       const src = meeting && meeting.groupChat && slot.kind
@@ -1443,53 +1443,53 @@ if (typeof document !== 'undefined') (function () {
         ? escapeHtml((slot.displayLabel || slot.kind || `AI ${idx + 1}`).slice(0, 2))
         : _avatarFallbackBySlot(idx);
       return src
-        ? `<img src="${src}" class="mr-rt-ob-avatar${meeting && meeting.groupChat ? ' group' : ''}" alt="slot${idx+1}" onerror="this.outerHTML='<span class=\\'mr-rt-ob-avatar-fb\\'>${fb}</span>'" />`
-        : `<span class="mr-rt-ob-avatar-fb">${fb}</span>`;
+        ? `<img src="${src}" class="mr-gc-ob-avatar${meeting && meeting.groupChat ? ' group' : ''}" alt="slot${idx+1}" onerror="this.outerHTML='<span class=\\'mr-gc-ob-avatar-fb\\'>${fb}</span>'" />`
+        : `<span class="mr-gc-ob-avatar-fb">${fb}</span>`;
     }).join('');
 
     // D1 Phase 4: 三步引导卡片 — 群聊去掉固定辩论/总结轮次暗示。
     const stepsHtml = meeting && meeting.groupChat ? `
-      <div class="mr-rt-ob-step">
-        <div class="mr-rt-ob-step-num">1</div>
-        <div class="mr-rt-ob-step-body">
-          <div class="mr-rt-ob-step-title">提问</div>
-          <div class="mr-rt-ob-step-desc">勾选成员，或用 @m1 / @all 指定发言人</div>
+      <div class="mr-gc-ob-step">
+        <div class="mr-gc-ob-step-num">1</div>
+        <div class="mr-gc-ob-step-body">
+          <div class="mr-gc-ob-step-title">提问</div>
+          <div class="mr-gc-ob-step-desc">勾选成员，或用 @m1 / @all 指定发言人</div>
         </div>
       </div>
-      <div class="mr-rt-ob-step">
-        <div class="mr-rt-ob-step-num">2</div>
-        <div class="mr-rt-ob-step-body">
-          <div class="mr-rt-ob-step-title">争鸣</div>
-          <div class="mr-rt-ob-step-desc">成员基于历史摘要与最近原文独立回答</div>
+      <div class="mr-gc-ob-step">
+        <div class="mr-gc-ob-step-num">2</div>
+        <div class="mr-gc-ob-step-body">
+          <div class="mr-gc-ob-step-title">争鸣</div>
+          <div class="mr-gc-ob-step-desc">成员基于历史摘要与最近原文独立回答</div>
         </div>
       </div>
-      <div class="mr-rt-ob-step">
-        <div class="mr-rt-ob-step-num">3</div>
-        <div class="mr-rt-ob-step-body">
-          <div class="mr-rt-ob-step-title">追问</div>
-          <div class="mr-rt-ob-step-desc">继续点名、改勾选，或按 raw anchor 核对原文</div>
+      <div class="mr-gc-ob-step">
+        <div class="mr-gc-ob-step-num">3</div>
+        <div class="mr-gc-ob-step-body">
+          <div class="mr-gc-ob-step-title">追问</div>
+          <div class="mr-gc-ob-step-desc">继续点名、改勾选，或按 raw anchor 核对原文</div>
         </div>
       </div>
     ` : `
-      <div class="mr-rt-ob-step">
-        <div class="mr-rt-ob-step-num">1</div>
-        <div class="mr-rt-ob-step-body">
-          <div class="mr-rt-ob-step-title">提问</div>
-          <div class="mr-rt-ob-step-desc">输入框输入问题,${labels.length || 3} 个 AI 同时启动思考</div>
+      <div class="mr-gc-ob-step">
+        <div class="mr-gc-ob-step-num">1</div>
+        <div class="mr-gc-ob-step-body">
+          <div class="mr-gc-ob-step-title">提问</div>
+          <div class="mr-gc-ob-step-desc">输入框输入问题,${labels.length || 3} 个 AI 同时启动思考</div>
         </div>
       </div>
-      <div class="mr-rt-ob-step">
-        <div class="mr-rt-ob-step-num">2</div>
-        <div class="mr-rt-ob-step-body">
-          <div class="mr-rt-ob-step-title">交叉迭代</div>
-          <div class="mr-rt-ob-step-desc">他们引用彼此观点, 多轮收敛核心论点</div>
+      <div class="mr-gc-ob-step">
+        <div class="mr-gc-ob-step-num">2</div>
+        <div class="mr-gc-ob-step-body">
+          <div class="mr-gc-ob-step-title">交叉迭代</div>
+          <div class="mr-gc-ob-step-desc">他们引用彼此观点, 多轮收敛核心论点</div>
         </div>
       </div>
-      <div class="mr-rt-ob-step">
-        <div class="mr-rt-ob-step-num">3</div>
-        <div class="mr-rt-ob-step-body">
-          <div class="mr-rt-ob-step-title">总结</div>
-          <div class="mr-rt-ob-step-desc">点输入框左侧 📝 总结, 选一人输出交接单</div>
+      <div class="mr-gc-ob-step">
+        <div class="mr-gc-ob-step-num">3</div>
+        <div class="mr-gc-ob-step-body">
+          <div class="mr-gc-ob-step-title">总结</div>
+          <div class="mr-gc-ob-step-desc">点输入框左侧 📝 总结, 选一人输出交接单</div>
         </div>
       </div>
     `;
@@ -1498,19 +1498,19 @@ if (typeof document !== 'undefined') (function () {
     //   启动中(notReady>0) → 黄色启动文字, 全员 ready → 绿色"X 个 AI 已就绪"。
     //   sub 行(label list)隐藏不渲染(信息已在 head 内, 避免重复)。
     //   data-default-* 属性记录默认全员 ready 文案, 让 head refresh 函数能 fallback。
-    return `<div class="mr-rt-onboarding">
-      <div class="mr-rt-ob-avatars">${avatarsHtml}</div>
-      <div class="mr-rt-ob-head" id="mr-rt-ob-head"
+    return `<div class="mr-gc-onboarding">
+      <div class="mr-gc-ob-avatars">${avatarsHtml}</div>
+      <div class="mr-gc-ob-head" id="mr-gc-ob-head"
            data-default-text="${escapeHtml(headText)}"
            data-default-sub="${escapeHtml(subText)}"></div>
-      <div class="mr-rt-ob-steps">${stepsHtml}</div>
+      <div class="mr-gc-ob-steps">${stepsHtml}</div>
     </div>`;
   }
 
   // H3 Phase 4(2026-05-05 道雪): 更新 mr-header 的 meta 文字 + 进度条。
   //   meta: "已 N 轮 · ⏱ 总耗时"; 进度条: 本轮已 settled 的 sid 数 / 总人数, 渐变填充。
   //   header 骨架由 renderHeader 一次性 mount, 这里只刷新 #mr-header-meta + #mr-header-progress 内容,
-  //   不动其他 listener。每次 _renderRtPanelHtml 时同步调用一次。
+  //   不动其他 listener。每次 _renderGcPanelHtml 时同步调用一次。
   function _updateHeaderProgress(meeting, state, mode, totalSec) {
     const metaEl = document.getElementById('mr-header-meta');
     const progEl = document.getElementById('mr-header-progress');
@@ -1601,19 +1601,19 @@ if (typeof document !== 'undefined') (function () {
       if (localStorage.getItem(lsKey) === '1') return '';
     } catch {} // localStorage 不可用时按"未持久化"处理
     const bulletsHtml = content.bullets.map(b => `<li>${b}</li>`).join('');
-    return `<div class="mr-rt-scene-card" data-rt-scene-card data-rt-scene-key="${sceneKey}">
-      <div class="mr-rt-scene-card-head">${content.head}</div>
-      <ul class="mr-rt-scene-card-body">${bulletsHtml}</ul>
-      <div class="mr-rt-scene-card-actions">
-        <button class="mr-rt-scene-card-btn" data-rt-scene-card-action="dismiss-once">我知道了</button>
-        <button class="mr-rt-scene-card-btn mr-rt-scene-card-btn-secondary" data-rt-scene-card-action="dismiss-forever">不再显示</button>
+    return `<div class="mr-gc-scene-card" data-gc-scene-card data-gc-scene-key="${sceneKey}">
+      <div class="mr-gc-scene-card-head">${content.head}</div>
+      <ul class="mr-gc-scene-card-body">${bulletsHtml}</ul>
+      <div class="mr-gc-scene-card-actions">
+        <button class="mr-gc-scene-card-btn" data-gc-scene-card-action="dismiss-once">我知道了</button>
+        <button class="mr-gc-scene-card-btn mr-gc-scene-card-btn-secondary" data-gc-scene-card-action="dismiss-forever">不再显示</button>
       </div>
     </div>`;
   }
 
   function _groupMemberMap(meeting) {
     const map = {};
-    for (const slot of _getRtSlots(meeting)) {
+    for (const slot of _getGcSlots(meeting)) {
       if (!slot || !slot.sid) continue;
       map[slot.sid] = slot;
     }
@@ -1685,7 +1685,7 @@ if (typeof document !== 'undefined') (function () {
   function _renderGroupChatPending(state, meeting, memberBySid) {
     const partialBy = state && state._partialBy ? state._partialBy : null;
     if (!partialBy) return '';
-    const slots = _getRtSlots(meeting).filter(Boolean);
+    const slots = _getGcSlots(meeting).filter(Boolean);
     const parts = [];
     for (const slot of slots) {
       const partial = partialBy[slot.sid];
@@ -1710,7 +1710,7 @@ if (typeof document !== 'undefined') (function () {
   function _renderGroupChatView(state, meeting, softBanner, totalSecTxt) {
     const messages = Array.isArray(state.messages) ? state.messages : [];
     const memberBySid = _groupMemberMap(meeting);
-    const slots = _getRtSlots(meeting).filter(Boolean);
+    const slots = _getGcSlots(meeting).filter(Boolean);
     const selected = new Set(Array.isArray(meeting.participants) ? meeting.participants : slots.map(slot => slot.slotIndex));
     const summaryCount = Array.isArray(state.summarySegments) ? state.summarySegments.length : 0;
     const rawCount = messages.length;
@@ -1780,32 +1780,32 @@ if (typeof document !== 'undefined') (function () {
     `;
   }
 
-  function _renderRtPanelHtml(state, meeting) {
-    const subs = _getRtSubInfo(meeting);
+  function _renderGcPanelHtml(state, meeting) {
+    const subs = _getGcSubInfo(meeting);
     const mode = state.currentMode || 'idle';
     const partialBy = state._partialBy || null;
     const fusedTabs = _renderFusedTabs(state, subs, mode, partialBy, meeting);
     const cardViewTabs = _renderCardViewTabs(meeting);
-    // Phase 5(2026-05-05 道雪): 删除 _renderRtHistory 渲染调用。
+    // Phase 5(2026-05-05 道雪): 删除 _renderGcHistory 渲染调用。
     //   旧版底部"历史轮次 (N)"折叠按钮 + 列表已被 stepper mini-map 完全替代;
-    //   保留 _renderRtHistory 函数本身以防其他地方调用, 仅删此处渲染。
+    //   保留 _renderGcHistory 函数本身以防其他地方调用, 仅删此处渲染。
     // 2026-05-05 道雪：标题统一为轮次视图(不区分 general/research/dev)。
     //   不动 _scenes.getScene().name —— 那个 name 同时给 covenant prompt header 用,改了会污染发给 AI 的 prompt。
     const titleText = meeting.groupChat ? 'AI 群聊' : 'AI 群聊轮次';
-    const viewingTurnN = _rtViewingTurnN[meeting.id];
+    const viewingTurnN = _gcViewingTurnN[meeting.id];
     const stepper = _renderTurnStepper(state.turns, mode, viewingTurnN);
     // Phase 5: 时光机 banner — 仅 viewingTurnN 设置时渲染
     const timeTravelBanner = (typeof viewingTurnN === 'number' && viewingTurnN >= 1)
-      ? `<div class="mr-rt-timetravel-banner">
-          <span class="mr-rt-tt-icon">⌛</span>
-          <span class="mr-rt-tt-text">时光机模式 · 第 <b>${viewingTurnN}</b> 轮 · ${escapeHtml((state.turns[viewingTurnN - 1] && state.turns[viewingTurnN - 1].mode) || '')} (只读历史)</span>
-          <button class="mr-rt-tt-exit" id="mr-rt-tt-exit" data-rt-tt-exit="1">回到最新 (Esc)</button>
+      ? `<div class="mr-gc-timetravel-banner">
+          <span class="mr-gc-tt-icon">⌛</span>
+          <span class="mr-gc-tt-text">时光机模式 · 第 <b>${viewingTurnN}</b> 轮 · ${escapeHtml((state.turns[viewingTurnN - 1] && state.turns[viewingTurnN - 1].mode) || '')} (只读历史)</span>
+          <button class="mr-gc-tt-exit" id="mr-gc-tt-exit" data-gc-tt-exit="1">回到最新 (Esc)</button>
         </div>`
       : '';
 
     // F5 Phase 3(2026-05-04 道雪 简化版): 仅整轮总耗时
     //   token + cost 因 transcript-tap 通路缺失暂不显示, 等后续扩展再启用。
-    const slots = _getRtSlots(meeting);
+    const slots = _getGcSlots(meeting);
     const aiStats = state.aiStats || {};
     let totalSec = 0;
     for (const slot of slots) {
@@ -1815,8 +1815,8 @@ if (typeof document !== 'undefined') (function () {
       totalSec += stats.totalThinkSec || 0;
     }
     const totalSecTxt = totalSec > 0 ? _formatThinkTime(totalSec) : '--';
-    const costBarHtml = `<div class="mr-rt-cost-bar" title="本对话累计总耗时(三家相加)">
-      <span class="mr-rt-cost-item"><span class="ico">⏱</span> 总耗时 <span class="num">${escapeHtml(totalSecTxt)}</span></span>
+    const costBarHtml = `<div class="mr-gc-cost-bar" title="本对话累计总耗时(三家相加)">
+      <span class="mr-gc-cost-item"><span class="ico">⏱</span> 总耗时 <span class="num">${escapeHtml(totalSecTxt)}</span></span>
     </div>`;
     // FIX-E（2026-05-01）：cmdBar 推进按钮判定要按"期望家集合"，不是 partialBy 自身的 keys。
     // meeting-create-modal（2026-05-01）：期望家 = meeting.subSessions（按 slot 顺序），
@@ -1828,7 +1828,7 @@ if (typeof document !== 'undefined') (function () {
     // 场景一次性引导卡片 (general/research/dev 共用): 与 onboarding 独立, 跨 panel 始终展示直至用户"不再显示"
     const devCard = _renderSceneOnboardingCard(meeting);
     // Stage 2 容错升级：软提醒 banner 容器
-    const softBanner = `<div id="mr-rt-soft-alert-banner" class="mr-rt-soft-alert-banner" style="display:none"></div>`;
+    const softBanner = `<div id="mr-gc-soft-alert-banner" class="mr-gc-soft-alert-banner" style="display:none"></div>`;
     // pilot redesign（2026-05-02）：废弃 pilotRecaps 卡片 + 主驾占位容器（AI 群聊不再桥接子会话私聊）。
     // H3 Phase 4(2026-05-05 道雪): 同步刷新 header 进度条 + meta(每次 panel re-render)
     _updateHeaderProgress(meeting, state, mode, totalSec);
@@ -1843,10 +1843,10 @@ if (typeof document !== 'undefined') (function () {
     //   形成 Q→A 视觉流。空提问/空 turns 时 banner 自动 return '' 不渲染。
     const userQBanner = _renderUserQuestionBanner(state, meeting, viewingTurnN);
     return `
-      <div class="mr-rt-track">
-        <div class="mr-rt-track-row">
-          <div class="mr-rt-track-title-grp">
-            <span class="mr-rt-title">${titleText}</span>
+      <div class="mr-gc-track">
+        <div class="mr-gc-track-row">
+          <div class="mr-gc-track-title-grp">
+            <span class="mr-gc-title">${titleText}</span>
             ${stepper}
           </div>
           ${costBarHtml}
@@ -1864,8 +1864,8 @@ if (typeof document !== 'undefined') (function () {
 
 
   // 主渲染：从 IPC 拿最新 state 后重绘。
-  // 乐观字段（currentMode）的保留条件：**只有 _rtOptimisticTurn[id] 还在**
-  // —— 也就是 IPC 还在飞行中。IPC resolve 后 _rtOptimisticTurn 已被 clearOptimistic 清，
+  // 乐观字段（currentMode）的保留条件：**只有 _gcOptimisticTurn[id] 还在**
+  // —— 也就是 IPC 还在飞行中。IPC resolve 后 _gcOptimisticTurn 已被 clearOptimistic 清，
   // 此时 server state 真实状态（含 idle）才被采纳。
   // partialBy 单独保留：轮中单家完成 IPC 推 partial-update，这是轮内增量，独立处理。
   // 2026-05-05 道雪 修3：cache 与 DOM 解耦的设计原则
@@ -1880,8 +1880,8 @@ if (typeof document !== 'undefined') (function () {
   //       内含 activeMeetingId race guard（修2 内置）
   //   这样所有 AI 群聊的 cache 始终跟 server 同步，切换体验一致，杜绝残留。
 
-  // 拉 server state + merge cache（含 optimistic 与 prev._partialBy 合并），写 _rtPanelState。
-  // 不写 DOM 不调 _ensureRtPanel，任何 meeting 都能调。
+  // 拉 server state + merge cache（含 optimistic 与 prev._partialBy 合并），写 _gcPanelState。
+  // 不写 DOM 不调 _ensureGcPanel，任何 meeting 都能调。
   // 返回 { state, ok: bool }，ok=false 表示 server state 拉取失败或 meeting 不可 panel。
   async function _syncGroupChatCacheFromServer(meeting) {
     if (!_isPanelCapableMeeting(meeting)) return { state: null, ok: false };
@@ -1893,8 +1893,8 @@ if (typeof document !== 'undefined') (function () {
       return { state: null, ok: false };
     }
     if (!state) return { state: null, ok: false };
-    const prev = _rtPanelState[meeting.id];
-    const optimistic = _rtOptimisticTurn[meeting.id];
+    const prev = _gcPanelState[meeting.id];
+    const optimistic = _gcOptimisticTurn[meeting.id];
     if (optimistic && (!state.currentMode || state.currentMode === 'idle')) {
       // IPC 飞行期间 + server 还没 begin → 显示乐观态
       state.currentMode = optimistic.mode;
@@ -1907,7 +1907,7 @@ if (typeof document !== 'undefined') (function () {
     if (prev && prev._partialBy && !serverIdle) {
       state._partialBy = prev._partialBy;
     }
-    _rtPanelState[meeting.id] = state;
+    _gcPanelState[meeting.id] = state;
     return { state, ok: true };
   }
 
@@ -1972,8 +1972,9 @@ if (typeof document !== 'undefined') (function () {
     }, meeting, memberBySid, { pending: status !== 'completed' && status !== 'manual_extracted', empty, status });
     // 抓底距决定 patch 后是否跟随：bottomGap ≤ 48 视为"贴底"，patch 后 scrollTo 底
     const maxTop0 = Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight);
+    const savedScrollTop = messagesEl.scrollTop;
     const stick = (maxTop0 - messagesEl.scrollTop) <= 48;
-    // outerHTML 替换：article 内部无 listener（事件委托在 panel 层 _bindRtPanelEvents），
+    // outerHTML 替换：article 内部无 listener（事件委托在 panel 层 _bindGcPanelEvents），
     //   替换不会留死引用。messagesEl 容器 + 其他兄弟 article 完全不动 → scrollTop 自然保留。
     articleEl.outerHTML = newHtml;
     if (stick) {
@@ -1981,12 +1982,21 @@ if (typeof document !== 'undefined') (function () {
         const after = panel.querySelector('.mr-gc-messages');
         if (after) after.scrollTop = Math.max(0, after.scrollHeight - after.clientHeight);
       });
+    } else {
+      const restore = () => {
+        const after = panel.querySelector('.mr-gc-messages');
+        if (!after) return;
+        const maxTop = Math.max(0, after.scrollHeight - after.clientHeight);
+        after.scrollTop = Math.min(savedScrollTop, maxTop);
+      };
+      restore();
+      requestAnimationFrame(restore);
     }
     return true;
   }
 
   async function refreshGroupChatPanel(meeting, opts = {}) {
-    if (!_isPanelCapableMeeting(meeting)) { _removeRtPanel(); return; }
+    if (!_isPanelCapableMeeting(meeting)) { _removeGcPanel(); return; }
     const expectedGroupViewMode = opts.expectedGroupViewMode || (meeting.groupChat ? _getGroupViewMode() : null);
     const { state, ok } = await _syncGroupChatCacheFromServer(meeting);
     if (!ok) return;
@@ -1995,13 +2005,13 @@ if (typeof document !== 'undefined') (function () {
     // 群聊"聊天/卡片"切换期间可能有上一轮 refresh 仍在飞行中。若它返回时视图模式
     // 已改变，直接丢弃，避免 header 已是新模式、panel 却被旧模式重写。
     if (meeting.groupChat && expectedGroupViewMode && _getGroupViewMode() !== expectedGroupViewMode) return;
-    const panel = _ensureRtPanel();
+    const panel = _ensureGcPanel();
     const forceGroupChatBottom = !!opts.forceGroupChatBottom && !!meeting.groupChat && _getGroupViewMode() === 'chat';
     const groupScroll = forceGroupChatBottom
       ? { scrollTop: 0, stickToBottom: true }
       : _captureGroupChatScroll(panel, meeting);
-    panel.innerHTML = _renderRtPanelHtml(state, meeting);
-    _bindRtPanelEvents(panel, meeting);
+    panel.innerHTML = _renderGcPanelHtml(state, meeting);
+    _bindGcPanelEvents(panel, meeting);
     _restoreGroupChatScroll(panel, groupScroll, { forceBottom: forceGroupChatBottom });
     // pilot redesign（2026-05-02）：panel.innerHTML 重渲后用 rAF 包裹，确保 paint 后再涂卡片视觉。
     //   旧实现直接调用，理论上同步生效，但截图显示 class 偶尔没生效——猜测是 panel innerHTML 后浏览器
@@ -2024,21 +2034,21 @@ if (typeof document !== 'undefined') (function () {
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
   // T2（2026-05-04 道雪）：单 slot 卡片的事件绑定独立成函数，让 partial-update 局部 patch 后只 rebind 单卡片。
-  //   覆盖范围：① 卡片本体 click（focus session）② ↗ 展开按钮 ③ [data-rt-escape] 工具栏按钮组。
-  //   不覆盖：history-toggle / soft-alert banner-close / mr-rt-ob-card（这些是 panel 级，由 _bindRtPanelEvents 管）。
-  function _showRtEscapeNotice(message, level = 'warn') {
-    const banner = document.getElementById('mr-rt-soft-alert-banner');
+  //   覆盖范围：① 卡片本体 click（focus session）② ↗ 展开按钮 ③ [data-gc-escape] 工具栏按钮组。
+  //   不覆盖：history-toggle / soft-alert banner-close / mr-gc-ob-card（这些是 panel 级，由 _bindGcPanelEvents 管）。
+  function _showGcEscapeNotice(message, level = 'warn') {
+    const banner = document.getElementById('mr-gc-soft-alert-banner');
     if (!banner) return false;
     const cls = level === 'error' ? 'urgent' : 'warn';
-    banner.className = `mr-rt-soft-alert-banner ${cls}`;
+    banner.className = `mr-gc-soft-alert-banner ${cls}`;
     banner.innerHTML = `
-      <div class="mr-rt-soft-alert-msg">
+      <div class="mr-gc-soft-alert-msg">
         <strong>${escapeHtml(level === 'error' ? '操作失败' : '提示')}</strong>
-        <span class="mr-rt-soft-alert-hint">${escapeHtml(message || '')}</span>
+        <span class="mr-gc-soft-alert-hint">${escapeHtml(message || '')}</span>
       </div>
-      <button class="mr-rt-soft-alert-close" data-rt-banner-close="1" title="关闭提示">×</button>`;
+      <button class="mr-gc-soft-alert-close" data-gc-banner-close="1" title="关闭提示">×</button>`;
     banner.style.display = 'flex';
-    const close = banner.querySelector('[data-rt-banner-close]');
+    const close = banner.querySelector('[data-gc-banner-close]');
     if (close) close.addEventListener('click', () => { banner.style.display = 'none'; banner.innerHTML = ''; }, { once: true });
     return true;
   }
@@ -2058,7 +2068,7 @@ if (typeof document !== 'undefined') (function () {
           return;
         }
         // 无 modifier click: 进入 focus 前清 compare(状态优先级)
-        if (_rtCompareSlots.size > 0) _clearCompareSelect();
+        if (_gcCompareSlots.size > 0) _clearCompareSelect();
         // F0 v3(2026-05-05 道雪): 聚焦态下任何卡片点击都"收回放大",不打开新卡。
         //   场景: 用户聚焦 A 后, 想恢复全员等宽时常点到 B 卡区域 — 应理解为"收回",
         //         而非"切换聚焦到 B"。再次进入聚焦需先收回再点目标卡。
@@ -2068,20 +2078,20 @@ if (typeof document !== 'undefined') (function () {
         // 2026-05-09: 简洁模式（手机阅读场景）下,聚焦态升级为 fullscreen
         //   - 同卡再点 → 退出（手机 tap 没法选文本，再点就是想关）
         //   - CSS body.compact-mode.mr-card-focus-on 自动应用 fullscreen 样式
-        if (_rtFocusedCardSid) {
+        if (_gcFocusedCardSid) {
           if (document.body.classList.contains('compact-mode')) {
-            _rtFocusedCardSid = null;
+            _gcFocusedCardSid = null;
             document.body.classList.remove('mr-card-focus-on');
             return;
           }
-          if (_rtFocusedCardSid !== sid) {
-            _rtFocusedCardSid = null;
+          if (_gcFocusedCardSid !== sid) {
+            _gcFocusedCardSid = null;
             document.body.classList.remove('mr-card-focus-on');
           }
           return;
         }
         _focusGroupChatSession(meeting, sid);
-        _rtFocusedCardSid = sid;
+        _gcFocusedCardSid = sid;
         document.body.classList.add('mr-card-focus-on');
       });
     }
@@ -2091,17 +2101,17 @@ if (typeof document !== 'undefined') (function () {
         e.stopPropagation();
         const sid = btn.getAttribute('data-ft-expand-sid');
         const kind = btn.getAttribute('data-ft-expand-kind');
-        _openRtTimeline(meeting, sid, kind);
+        _openGcTimeline(meeting, sid, kind);
       });
     });
-    // 逃生工具栏 [data-rt-escape] —— 与原 _bindRtPanelEvents 中的 click handler 字节等价（4 分支：extract / skip / enter-shell / resend / resend-prompt）。
-    slotEl.querySelectorAll('[data-rt-escape]').forEach(btn => {
+    // 逃生工具栏 [data-gc-escape] —— 与原 _bindGcPanelEvents 中的 click handler 字节等价（4 分支：extract / skip / enter-shell / resend / resend-prompt）。
+    slotEl.querySelectorAll('[data-gc-escape]').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         if (btn.hasAttribute('disabled')) return;
-        const action = btn.getAttribute('data-rt-escape');
-        const sid = btn.getAttribute('data-rt-sid');
-        const kind = btn.getAttribute('data-rt-kind');
+        const action = btn.getAttribute('data-gc-escape');
+        const sid = btn.getAttribute('data-gc-sid');
+        const kind = btn.getAttribute('data-gc-kind');
         if (!sid) return;
         // 防重入：临时 disable + 操作期 spinner
         btn.disabled = true;
@@ -2113,12 +2123,12 @@ if (typeof document !== 'undefined') (function () {
         try {
           if (action === 'extract') {
             const r = await ipcRenderer.invoke('groupchat-manual-extract', {
-              meetingId: meeting.id, sid, sincePromptTs: _rtTurnStartTs[meeting.id] || 0,
+              meetingId: meeting.id, sid, sincePromptTs: _gcTurnStartTs[meeting.id] || 0,
             });
             if (!r || !r.ok) {
               console.warn(`[rt-escape] extract failed: ${r?.reason} (${r?.detail || ''})`);
               const detail = r?.detail ? `：${r.detail}` : '';
-              _showRtEscapeNotice(`提取失败（${r?.reason || 'unknown'}）${detail}`, 'error');
+              _showGcEscapeNotice(`提取失败（${r?.reason || 'unknown'}）${detail}`, 'error');
             } else {
               // 2026-05-02 Bug 修复：用户视觉反馈。
               //   旧版本只 console.log → 用户看不到"提取成功"，加上 IPC 永远失败（Bug 2），
@@ -2158,7 +2168,7 @@ if (typeof document !== 'undefined') (function () {
               btn.textContent = `✓ 已重发`;
               _btnTextHandledExternally = true;
               // H2 数据驱动：重发成功后清掉 sendStatus='stuck'，由 refreshGroupChatPanel 重渲清除视觉
-              const cachedForResend = _rtPanelState[meeting.id];
+              const cachedForResend = _gcPanelState[meeting.id];
               if (cachedForResend && cachedForResend._partialBy && cachedForResend._partialBy[sid]) {
                 delete cachedForResend._partialBy[sid].sendStatus;
               }
@@ -2198,13 +2208,13 @@ if (typeof document !== 'undefined') (function () {
     });
 
     // AI 群聊记忆 phase 1（2026-05-07）：📒 / 📥 / 📊 三按钮
-    //   data-rt-mem-action: 'open-own' | 'open-pending' | 'open-profile'
+    //   data-gc-mem-action: 'open-own' | 'open-pending' | 'open-profile'
     //   stopPropagation 避免冒泡到 .mr-ft 卡片 click（不要触发 focus）
-    slotEl.querySelectorAll('[data-rt-mem-action]').forEach(btn => {
+    slotEl.querySelectorAll('[data-gc-mem-action]').forEach(btn => {
       btn.addEventListener('click', async (ev) => {
         ev.stopPropagation();
-        const action = btn.getAttribute('data-rt-mem-action');
-        const slot = btn.getAttribute('data-rt-mem-slot');
+        const action = btn.getAttribute('data-gc-mem-action');
+        const slot = btn.getAttribute('data-gc-mem-slot');
         if (!slot || !action) return;
         const typeMap = { 'open-own': 'own', 'open-pending': 'pending', 'open-profile': 'profile', 'open-worker': 'worker-state' };
         const type = typeMap[action];
@@ -2230,8 +2240,8 @@ if (typeof document !== 'undefined') (function () {
     slotEl.querySelectorAll('.mr-ft-hover-actions button').forEach(btn => {
       btn.addEventListener('click', async (ev) => {
         ev.stopPropagation();
-        const action = btn.getAttribute('data-rt-action');
-        const f2Kind = btn.getAttribute('data-rt-kind');
+        const action = btn.getAttribute('data-gc-action');
+        const f2Kind = btn.getAttribute('data-gc-kind');
         const card = btn.closest('.mr-ft');
         if (action === 'copy') {
           const previewText = (card?.querySelector('.mr-ft-bottom')?.innerText || '').trim();
@@ -2276,31 +2286,31 @@ if (typeof document !== 'undefined') (function () {
     });
   }
 
-  function _bindRtPanelEvents(panel, meeting) {
+  function _bindGcPanelEvents(panel, meeting) {
     // Phase 5(2026-05-05 道雪): 旧 history-toggle 已删除(被 stepper mini-map 替代),
     //   新加 stepper dot click + 时光机 banner exit click handlers。
-    panel.querySelectorAll('.mr-rt-step-dot[data-turn-n]').forEach(dot => {
+    panel.querySelectorAll('.mr-gc-step-dot[data-turn-n]').forEach(dot => {
       dot.addEventListener('click', (ev) => {
         ev.stopPropagation();
         const n = parseInt(dot.getAttribute('data-turn-n'), 10);
         if (!Number.isFinite(n) || n < 1) return;
-        const cached = _rtPanelState[meeting.id];
+        const cached = _gcPanelState[meeting.id];
         const totalTurns = cached && Array.isArray(cached.turns) ? cached.turns.length : 0;
         const isActive = cached && cached.currentMode && cached.currentMode !== 'idle';
         const latestN = isActive ? totalTurns + 1 : totalTurns;
         // 点击当前最新轮 = 退出时光机; 否则进入/切换时光机到第 N 轮
         if (n === latestN || dot.hasAttribute('data-turn-active')) {
-          delete _rtViewingTurnN[meeting.id];
+          delete _gcViewingTurnN[meeting.id];
         } else {
-          _rtViewingTurnN[meeting.id] = n;
+          _gcViewingTurnN[meeting.id] = n;
         }
         refreshGroupChatPanel(meeting);
       });
     });
-    panel.querySelectorAll('[data-rt-card-tab-sid]').forEach(tab => {
+    panel.querySelectorAll('[data-gc-card-tab-sid]').forEach(tab => {
       tab.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        const sid = tab.getAttribute('data-rt-card-tab-sid');
+        const sid = tab.getAttribute('data-gc-card-tab-sid');
         if (sid) _focusGroupChatSession(meeting, sid);
       });
     });
@@ -2360,12 +2370,12 @@ if (typeof document !== 'undefined') (function () {
             meetingId: meeting.id,
             sid,
             turnNum: Number.isFinite(turnRaw) ? turnRaw : undefined,
-            sincePromptTs: _rtTurnStartTs[meeting.id] || 0,
+            sincePromptTs: _gcTurnStartTs[meeting.id] || 0,
           };
           const r = await ipcRenderer.invoke('groupchat-manual-extract', payload);
           if (!r || !r.ok) {
             const detail = r && (r.detail || r.reason) ? (r.detail || r.reason) : 'unknown';
-            _showRtEscapeNotice(`同步失败：${detail}`, 'error');
+            _showGcEscapeNotice(`同步失败：${detail}`, 'error');
             btn.textContent = '失败';
             setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1500);
             return;
@@ -2379,7 +2389,7 @@ if (typeof document !== 'undefined') (function () {
             btn.disabled = false;
           }, 1200);
         } catch (e) {
-          _showRtEscapeNotice(`同步失败：${e && e.message ? e.message : String(e)}`, 'error');
+          _showGcEscapeNotice(`同步失败：${e && e.message ? e.message : String(e)}`, 'error');
           btn.textContent = '失败';
           setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1500);
         }
@@ -2409,10 +2419,10 @@ if (typeof document !== 'undefined') (function () {
       });
     });
     // 时光机 banner 退出按钮
-    const ttExitBtn = panel.querySelector('[data-rt-tt-exit]');
+    const ttExitBtn = panel.querySelector('[data-gc-tt-exit]');
     if (ttExitBtn) {
       ttExitBtn.addEventListener('click', () => {
-        delete _rtViewingTurnN[meeting.id];
+        delete _gcViewingTurnN[meeting.id];
         refreshGroupChatPanel(meeting);
       });
     }
@@ -2423,7 +2433,7 @@ if (typeof document !== 'undefined') (function () {
     if (userqToggle) {
       userqToggle.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        const banner = userqToggle.closest('.mr-rt-userq');
+        const banner = userqToggle.closest('.mr-gc-userq');
         if (banner) banner.classList.toggle('expanded');
       });
     }
@@ -2431,7 +2441,7 @@ if (typeof document !== 'undefined') (function () {
     const inputBox = document.getElementById('mr-input-box');
     const sendBtn = document.getElementById('mr-send-btn');
     const inputRow = document.getElementById('mr-input-row');
-    const isTT = !!_rtViewingTurnN[meeting.id];
+    const isTT = !!_gcViewingTurnN[meeting.id];
     if (inputBox) {
       inputBox.setAttribute('contenteditable', isTT ? 'false' : 'true');
       inputBox.setAttribute('data-placeholder', isTT
@@ -2444,14 +2454,14 @@ if (typeof document !== 'undefined') (function () {
     panel.querySelectorAll('.mr-ft[data-ft-sid]').forEach(slotEl => {
       _bindSlotCardEvents(slotEl, meeting);
     });
-    // E3 修复 (2026-05-03)：cmd-bar 的 .mr-rt-cmd-btn click handler 删除（按钮已不渲染）
-    const hasThinking = panel.querySelector('.mr-rt-think-elapsed');
+    // E3 修复 (2026-05-03)：cmd-bar 的 .mr-gc-cmd-btn click handler 删除（按钮已不渲染）
+    const hasThinking = panel.querySelector('.mr-gc-think-elapsed');
     if (hasThinking && !_thinkTimer) {
       const mid = meeting.id;
       _thinkTimer = setInterval(() => {
         const ts = _thinkStartTs[mid];
         if (!ts) { clearInterval(_thinkTimer); _thinkTimer = null; return; }
-        const els = document.querySelectorAll('.mr-rt-think-elapsed');
+        const els = document.querySelectorAll('.mr-gc-think-elapsed');
         if (els.length === 0) { clearInterval(_thinkTimer); _thinkTimer = null; return; }
         const sec = Math.round((Date.now() - ts) / 1000);
         els.forEach(el => { el.textContent = `已 ${sec}s`; });
@@ -2459,7 +2469,7 @@ if (typeof document !== 'undefined') (function () {
     } else if (!hasThinking && _thinkTimer) {
       clearInterval(_thinkTimer); _thinkTimer = null;
     }
-    panel.querySelectorAll('.mr-rt-ob-card[data-ob-q]').forEach(card => {
+    panel.querySelectorAll('.mr-gc-ob-card[data-ob-q]').forEach(card => {
       card.addEventListener('click', () => {
         const q = card.getAttribute('data-ob-q');
         const input = document.getElementById('mr-input-box');
@@ -2470,13 +2480,13 @@ if (typeof document !== 'undefined') (function () {
       });
     });
 
-    // T2（2026-05-04 道雪）：[data-rt-escape] 工具栏按钮的绑定已迁入 _bindSlotCardEvents
+    // T2（2026-05-04 道雪）：[data-gc-escape] 工具栏按钮的绑定已迁入 _bindSlotCardEvents
     //   （上方 panel.querySelectorAll('.mr-ft[data-ft-sid]') 循环已覆盖）。
 
     // 软提醒 banner 关闭按钮
-    const banner = panel.querySelector('#mr-rt-soft-alert-banner');
+    const banner = panel.querySelector('#mr-gc-soft-alert-banner');
     if (banner) {
-      banner.querySelectorAll('[data-rt-banner-close]').forEach(btn => {
+      banner.querySelectorAll('[data-gc-banner-close]').forEach(btn => {
         btn.addEventListener('click', () => {
           banner.style.display = 'none';
           banner.innerHTML = '';
@@ -2486,13 +2496,13 @@ if (typeof document !== 'undefined') (function () {
 
     // 场景引导卡片按钮 (general/research/dev 共用)
     //   "我知道了" 仅当前视图隐藏 (DOM remove); "不再显示" 写对应 scene 的 localStorage key 永久
-    const sceneCard = panel.querySelector('[data-rt-scene-card]');
+    const sceneCard = panel.querySelector('[data-gc-scene-card]');
     if (sceneCard) {
-      const sceneKey = sceneCard.getAttribute('data-rt-scene-key');
+      const sceneKey = sceneCard.getAttribute('data-gc-scene-key');
       const lsKey = SCENE_ONBOARDING_LS_KEY[sceneKey];
-      sceneCard.querySelectorAll('[data-rt-scene-card-action]').forEach(btn => {
+      sceneCard.querySelectorAll('[data-gc-scene-card-action]').forEach(btn => {
         btn.addEventListener('click', () => {
-          const action = btn.getAttribute('data-rt-scene-card-action');
+          const action = btn.getAttribute('data-gc-scene-card-action');
           if (action === 'dismiss-forever' && lsKey) {
             try { localStorage.setItem(lsKey, '1'); } catch {}
           }
@@ -2515,14 +2525,14 @@ if (typeof document !== 'undefined') (function () {
   // 点击任意卡片 → 打开右侧抽屉，顶部 Tab 列轮次（最新在最左 = 默认 active），点 Tab 切换内容。
   // T3（2026-05-04 道雪）：合并 _partialBy[sid] 作为「实时」虚拟轮次（如果有内容）；
   //   抽屉打开期间订阅 partial-update 实时更新内容（修复 B1 看不到本轮 partial）。
-  function _openRtTimeline(meeting, sid, kind) {
+  function _openGcTimeline(meeting, sid, kind) {
     // T3 fix（2026-05-04 道雪）：开新抽屉前先清掉上一次的 escHandler + 订阅状态。
-    if (_rtTimelineCleanup) { _rtTimelineCleanup(); _rtTimelineCleanup = null; }
-    const state = _rtPanelState[meeting.id];
+    if (_gcTimelineCleanup) { _gcTimelineCleanup(); _gcTimelineCleanup = null; }
+    const state = _gcPanelState[meeting.id];
     if (!state || !Array.isArray(state.turns)) return;
 
     const labelDisplay = _KIND_LABELS[kind] || kind;
-    const subs = _getRtSubInfo(meeting);
+    const subs = _getGcSubInfo(meeting);
     const sub = subs[kind];
     const headerLabel = sub && sub.label ? sub.label : labelDisplay;
     const slotIdxTl = (meeting && Array.isArray(meeting.subSessions))
@@ -2555,16 +2565,16 @@ if (typeof document !== 'undefined') (function () {
       turnsWithAns.unshift(liveTurn);
     }
 
-    let overlay = document.getElementById('mr-rt-timeline-overlay');
+    let overlay = document.getElementById('mr-gc-timeline-overlay');
     if (!overlay) {
       overlay = document.createElement('div');
-      overlay.id = 'mr-rt-timeline-overlay';
-      overlay.className = 'mr-rt-tl-overlay';
+      overlay.id = 'mr-gc-timeline-overlay';
+      overlay.className = 'mr-gc-tl-overlay';
       document.body.appendChild(overlay);
     }
 
     const renderTurnBody = (turn) => {
-      if (!turn) return '<div class="mr-rt-tl-empty">该 AI 还没有可显示的历史回答。</div>';
+      if (!turn) return '<div class="mr-gc-tl-empty">该 AI 还没有可显示的历史回答。</div>';
       // T3：_live 走 partial blocks（如有）→ markdown text → 占位
       let bodyHtml;
       if (turn._live) {
@@ -2573,7 +2583,7 @@ if (typeof document !== 'undefined') (function () {
         } else if (turn.by[sid]) {
           bodyHtml = _renderMarkdown(turn.by[sid]);
         } else {
-          bodyHtml = '<div class="mr-rt-tl-empty" style="opacity:.6">💭 思考中…等待 AI 输出</div>';
+          bodyHtml = '<div class="mr-gc-tl-empty" style="opacity:.6">💭 思考中…等待 AI 输出</div>';
         }
         // 加流式光标
         bodyHtml += '<span class="mr-ft-cursor"></span>';
@@ -2583,22 +2593,22 @@ if (typeof document !== 'undefined') (function () {
       }
       const userIn = (turn.userInput || '').trim();
       const userBlock = userIn
-        ? `<div class="mr-rt-tl-user">用户输入：${escapeHtml(userIn.slice(0, 400))}${userIn.length > 400 ? '…' : ''}</div>`
+        ? `<div class="mr-gc-tl-user">用户输入：${escapeHtml(userIn.slice(0, 400))}${userIn.length > 400 ? '…' : ''}</div>`
         : '';
       const decisionTag = turn.decisionTitle
-        ? `<div class="mr-rt-tl-decision-row">📌 决策标题：${escapeHtml(turn.decisionTitle)}</div>`
+        ? `<div class="mr-gc-tl-decision-row">📌 决策标题：${escapeHtml(turn.decisionTitle)}</div>`
         : '';
-      return `${decisionTag}${userBlock}<div class="mr-rt-tl-body">${bodyHtml}</div>`;
+      return `${decisionTag}${userBlock}<div class="mr-gc-tl-body">${bodyHtml}</div>`;
     };
 
     const tabsHtml = turnsWithAns.map((t, i) => {
       const modeLabel = { fanout: '提问', debate: '辩论', summary: '综合' }[t.mode] || t.mode;
       const isLatest = i === 0;
-      const liveTag = t._live ? '<span class="mr-rt-tl-tab-latest" style="background:#22863a">实时</span>' : '';
-      const latestTag = (isLatest && !t._live) ? '<span class="mr-rt-tl-tab-latest">最新</span>' : '';
-      return `<button type="button" class="mr-rt-tl-tab ${isLatest ? 'active' : ''}" data-tab-idx="${i}" data-tab-live="${t._live ? '1' : '0'}" title="第 ${t.n} 轮 · ${escapeHtml(modeLabel)}">
-        <span class="mr-rt-tl-tab-turn">第 ${t.n} 轮</span>
-        <span class="mr-rt-tl-tab-mode ${escapeHtml(t.mode)}">${escapeHtml(modeLabel)}</span>
+      const liveTag = t._live ? '<span class="mr-gc-tl-tab-latest" style="background:#22863a">实时</span>' : '';
+      const latestTag = (isLatest && !t._live) ? '<span class="mr-gc-tl-tab-latest">最新</span>' : '';
+      return `<button type="button" class="mr-gc-tl-tab ${isLatest ? 'active' : ''}" data-tab-idx="${i}" data-tab-live="${t._live ? '1' : '0'}" title="第 ${t.n} 轮 · ${escapeHtml(modeLabel)}">
+        <span class="mr-gc-tl-tab-turn">第 ${t.n} 轮</span>
+        <span class="mr-gc-tl-tab-mode ${escapeHtml(t.mode)}">${escapeHtml(modeLabel)}</span>
         ${liveTag}${latestTag}
       </button>`;
     }).join('');
@@ -2606,15 +2616,15 @@ if (typeof document !== 'undefined') (function () {
     const hasAnyTab = turnsWithAns.length > 0;
 
     overlay.innerHTML = `
-      <div class="mr-rt-tl-backdrop" data-rt-tl-close="1"></div>
-      <aside class="mr-rt-tl-drawer mr-rt-tl-${slotClsTl}" role="dialog" aria-label="${escapeHtml(headerLabel)} 时间线">
-        <header class="mr-rt-tl-drawer-head">
-          <span class="mr-rt-tl-drawer-title">${escapeHtml(headerLabel)} · 历史回答</span>
-          <span class="mr-rt-tl-drawer-meta">共 ${turnsWithAns.length} 轮</span>
-          <button type="button" class="mr-rt-tl-close" data-rt-tl-close="1" aria-label="关闭">×</button>
+      <div class="mr-gc-tl-backdrop" data-gc-tl-close="1"></div>
+      <aside class="mr-gc-tl-drawer mr-gc-tl-${slotClsTl}" role="dialog" aria-label="${escapeHtml(headerLabel)} 时间线">
+        <header class="mr-gc-tl-drawer-head">
+          <span class="mr-gc-tl-drawer-title">${escapeHtml(headerLabel)} · 历史回答</span>
+          <span class="mr-gc-tl-drawer-meta">共 ${turnsWithAns.length} 轮</span>
+          <button type="button" class="mr-gc-tl-close" data-gc-tl-close="1" aria-label="关闭">×</button>
         </header>
-        ${hasAnyTab ? `<nav class="mr-rt-tl-tabs" role="tablist">${tabsHtml}</nav>` : ''}
-        <div class="mr-rt-tl-content" id="mr-rt-tl-content">${renderTurnBody(turnsWithAns[0])}</div>
+        ${hasAnyTab ? `<nav class="mr-gc-tl-tabs" role="tablist">${tabsHtml}</nav>` : ''}
+        <div class="mr-gc-tl-content" id="mr-gc-tl-content">${renderTurnBody(turnsWithAns[0])}</div>
       </aside>
     `;
     overlay.style.display = 'block';
@@ -2622,8 +2632,8 @@ if (typeof document !== 'undefined') (function () {
     // 2026-05-05 道雪：抽屉字号 scale —— 打开时从 localStorage 读上次值（默认 1.2，正文从
     //   13px 提升到 ~16px），Ctrl+滚轮 ±0.1 调整，clamp [0.8, 2.0]，preventDefault 拦掉
     //   Electron 默认整窗 zoom（仅抽屉内拦，抽屉外仍可整窗 zoom）。CSS 通过 --drawer-font-scale
-    //   缩放 .mr-rt-tl-content 内的正文；header/tab 不受影响。
-    const _drawerEl = overlay.querySelector('.mr-rt-tl-drawer');
+    //   缩放 .mr-gc-tl-content 内的正文；header/tab 不受影响。
+    const _drawerEl = overlay.querySelector('.mr-gc-tl-drawer');
     const FONT_SCALE_KEY = 'mr-drawer-font-scale';
     const FONT_SCALE_MIN = 0.8;
     const FONT_SCALE_MAX = 2.0;
@@ -2650,13 +2660,13 @@ if (typeof document !== 'undefined') (function () {
     }
 
     // T3：注册 live 订阅（仅当有 liveTurn 且默认 active 是它时）
-    _rtTimelineLive = (liveTurn && turnsWithAns[0] && turnsWithAns[0]._live)
+    _gcTimelineLive = (liveTurn && turnsWithAns[0] && turnsWithAns[0]._live)
       ? { sid, mid: meeting.id, kind } : null;
 
-    const contentEl = overlay.querySelector('#mr-rt-tl-content');
-    overlay.querySelectorAll('.mr-rt-tl-tab').forEach(btn => {
+    const contentEl = overlay.querySelector('#mr-gc-tl-content');
+    overlay.querySelectorAll('.mr-gc-tl-tab').forEach(btn => {
       btn.addEventListener('click', () => {
-        overlay.querySelectorAll('.mr-rt-tl-tab').forEach(b => b.classList.remove('active'));
+        overlay.querySelectorAll('.mr-gc-tl-tab').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         const idx = parseInt(btn.getAttribute('data-tab-idx') || '0', 10);
         const isLive = btn.getAttribute('data-tab-live') === '1';
@@ -2665,34 +2675,34 @@ if (typeof document !== 'undefined') (function () {
           contentEl.scrollTop = 0;
         }
         // T3：用户切走 live tab → 解订阅；切回 live tab → 重订阅
-        _rtTimelineLive = (isLive && liveTurn) ? { sid, mid: meeting.id, kind } : null;
+        _gcTimelineLive = (isLive && liveTurn) ? { sid, mid: meeting.id, kind } : null;
       });
     });
 
     const closeAll = () => {
       overlay.style.display = 'none';
       document.removeEventListener('keydown', escHandler);
-      _rtTimelineLive = null;  // T3：关抽屉清订阅
-      _rtTimelineCleanup = null;  // T3 fix：清掉自身指针，避免下次开抽屉重复 cleanup
+      _gcTimelineLive = null;  // T3：关抽屉清订阅
+      _gcTimelineCleanup = null;  // T3 fix：清掉自身指针，避免下次开抽屉重复 cleanup
     };
     const escHandler = (ev) => { if (ev.key === 'Escape') closeAll(); };
-    overlay.querySelectorAll('[data-rt-tl-close]').forEach(el => {
+    overlay.querySelectorAll('[data-gc-tl-close]').forEach(el => {
       el.addEventListener('click', closeAll);
     });
     document.addEventListener('keydown', escHandler);
     // T3 fix（2026-05-04 道雪）：把本次 closeAll 注册为模块级清理函数。
-    //   下次 _openRtTimeline 调用时会先调它，避免 escHandler 累积。
-    _rtTimelineCleanup = closeAll;
+    //   下次 _openGcTimeline 调用时会先调它，避免 escHandler 累积。
+    _gcTimelineCleanup = closeAll;
   }
 
-  // 乐观态生命周期：renderer 在 IPC 飞行期间用 _rtOptimisticTurn 标记自己写的乐观字段，
+  // 乐观态生命周期：renderer 在 IPC 飞行期间用 _gcOptimisticTurn 标记自己写的乐观字段，
   // 一旦 IPC resolve / reject 或 server 推 turn-complete，就清掉这个标记 —— 之后 refresh
-  const _rtOptimisticTurn = {}; // { [meetingId]: { mode, t } }
+  const _gcOptimisticTurn = {}; // { [meetingId]: { mode, t } }
 
   function triggerGroupChat(meeting, opts = {}) {
-    const cached = _rtPanelState[meeting.id];
-    _rtTurnStartTs[meeting.id] = Date.now();
-    _rtOptimisticTurn[meeting.id] = { mode: 'group', t: Date.now() };
+    const cached = _gcPanelState[meeting.id];
+    _gcTurnStartTs[meeting.id] = Date.now();
+    _gcOptimisticTurn[meeting.id] = { mode: 'group', t: Date.now() };
     if (cached) {
       cached.currentMode = 'group';
       cached._partialBy = null;
@@ -2701,8 +2711,8 @@ if (typeof document !== 'undefined') (function () {
     renderToolbar(meeting);
 
     const clearOptimistic = () => {
-      delete _rtOptimisticTurn[meeting.id];
-      const c = _rtPanelState[meeting.id];
+      delete _gcOptimisticTurn[meeting.id];
+      const c = _gcPanelState[meeting.id];
       if (c) c.currentMode = null;
       refreshGroupChatPanel(meeting);
       renderToolbar(meeting);
@@ -2779,10 +2789,10 @@ if (typeof document !== 'undefined') (function () {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // === Phase 1: cache 清理（所有 meeting 都做）===
-    delete _rtOptimisticTurn[meetingId];
+    delete _gcOptimisticTurn[meetingId];
     // 2026-05-05 道雪：本轮已 settle,state.turns[N].userInput 接管,清掉进行中缓存。
     delete _currentTurnUserInputByMeeting[meetingId];
-    const cached = _rtPanelState[meetingId];
+    const cached = _gcPanelState[meetingId];
     if (cached) {
       cached._partialBy = null;
       cached.currentMode = null;
@@ -2833,7 +2843,7 @@ if (typeof document !== 'undefined') (function () {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // === Phase 1: cache 同步（任何 meeting 都做，含非 active）===
-    let cached = _rtPanelState[meetingId];
+    let cached = _gcPanelState[meetingId];
     if (!cached) {
       // 没 cache 说明用户从没打开过这个 AI 群聊 → 异步拉 server state 建 cache。
       //   本次 partial 不写（下次 partial 来时 cache 已建会正常合并），
@@ -2873,22 +2883,22 @@ if (typeof document !== 'undefined') (function () {
     //   不应该把卡片 outerHTML 替换为最新 streaming 内容（否则用户感知"被强制跳回最新轮"）。
     //   cache 已经在上面更新（保持一致性，用户退出时光机后即可看到最新态），仅跳过 DOM patch。
     //   refreshGroupChatPanel 全量路径走 _renderFusedTabs 已有 isTimeTravel 分支，不受影响。
-    if (typeof _rtViewingTurnN[meetingId] === 'number') return;
+    if (typeof _gcViewingTurnN[meetingId] === 'number') return;
 
     // 2026-05-15 道雪 群聊弹顶 bug 修复：群聊视图（聊天流模式）走专属局部 patch
     //   旧路径下群聊视图 DOM 没有 .mr-ft 元素 → 必走下面的 fallback 全量重渲 →
     //   每次 partial 都重建 .mr-gc-messages 容器 → scrollTop 丢失。新路径优先
     //   走 _patchGroupChatPendingMessage 只替换单条 pending article。patch 失败
     //   （DOM 节点找不到等）才退到全量重渲兜底。
-    const panel = _ensureRtPanel();
+    const panel = _ensureGcPanel();
     if (meeting.groupChat && _getGroupViewMode() === 'chat') {
       if (_patchGroupChatPendingMessage(panel, meeting, sid, cached)) return;
       // patch 失败：可能 pending 区还没首次渲染（meeting 刚切换、cache 刚同步），
       //   走下方 fallback 全量重渲（仍带 capture+restore 保护 scrollTop）
       const groupScroll = _captureGroupChatScroll(panel, meeting);
       try {
-        panel.innerHTML = _renderRtPanelHtml(cached, meeting);
-        _bindRtPanelEvents(panel, meeting);
+        panel.innerHTML = _renderGcPanelHtml(cached, meeting);
+        _bindGcPanelEvents(panel, meeting);
         _restoreGroupChatScroll(panel, groupScroll);
       } catch (e) {
         console.error('[groupchat] partial-update fallback rebuild failed:', e);
@@ -2900,12 +2910,12 @@ if (typeof document !== 'undefined') (function () {
     if (!slotEl) {
       // 兜底：DOM 找不到该 slot（panel 还没渲染过）→ 全量重渲
       // silent-failure-hunter L1（2026-05-04 道雪）：并发场景（partial-update 在 turn-complete
-      //   之后到、cached 字段意外 null）下 _renderRtPanelHtml 可能抛 TypeError，
+      //   之后到、cached 字段意外 null）下 _renderGcPanelHtml 可能抛 TypeError，
       //   原版无 try/catch → 整个 IPC 回调崩溃，panel 残破。包一层让回调能 return。
       const groupScroll = _captureGroupChatScroll(panel, meeting);
       try {
-        panel.innerHTML = _renderRtPanelHtml(cached, meeting);
-        _bindRtPanelEvents(panel, meeting);
+        panel.innerHTML = _renderGcPanelHtml(cached, meeting);
+        _bindGcPanelEvents(panel, meeting);
         _restoreGroupChatScroll(panel, groupScroll);
       } catch (e) {
     console.error('[groupchat] partial-update fallback rebuild failed:', e);
@@ -2916,7 +2926,7 @@ if (typeof document !== 'undefined') (function () {
     const prevPreview = slotEl.querySelector('.mr-ft-preview');
     const savedScrollTop = prevPreview ? prevPreview.scrollTop : 0;
     // 计算新 HTML
-    const slots = _getRtSlots(meeting);
+    const slots = _getGcSlots(meeting);
     const slotIndex = slots.findIndex(slot => slot && slot.sid === sid);
     if (slotIndex < 0) return;
     const lastTurn = cached.turns.length > 0 ? cached.turns[cached.turns.length - 1] : null;
@@ -2948,11 +2958,11 @@ if (typeof document !== 'undefined') (function () {
       });
     }
     // T3（2026-05-04 道雪）：抽屉实时订阅 — 用户打开 ↗ 看本 sid 的实时 tab 时，
-    //   不重建 overlay，仅 mutate `.mr-rt-tl-body` innerHTML，保留用户的滚动位置。
-    if (_rtTimelineLive && _rtTimelineLive.sid === sid && _rtTimelineLive.mid === meetingId) {
-      const overlay = document.getElementById('mr-rt-timeline-overlay');
+    //   不重建 overlay，仅 mutate `.mr-gc-tl-body` innerHTML，保留用户的滚动位置。
+    if (_gcTimelineLive && _gcTimelineLive.sid === sid && _gcTimelineLive.mid === meetingId) {
+      const overlay = document.getElementById('mr-gc-timeline-overlay');
       if (overlay && overlay.style.display !== 'none') {
-        const tlBody = overlay.querySelector('.mr-rt-tl-body');
+        const tlBody = overlay.querySelector('.mr-gc-tl-body');
         if (tlBody) {
           let inner;
           if (Array.isArray(next.blocks) && next.blocks.length > 0) {
@@ -2960,10 +2970,10 @@ if (typeof document !== 'undefined') (function () {
           } else if (next.text) {
             inner = _renderMarkdown(next.text);
           } else {
-            inner = '<div class="mr-rt-tl-empty" style="opacity:.6">💭 思考中…等待 AI 输出</div>';
+            inner = '<div class="mr-gc-tl-empty" style="opacity:.6">💭 思考中…等待 AI 输出</div>';
           }
-          // T3 滚动保留：mutate innerHTML 时记录旧 scrollTop，在父容器（.mr-rt-tl-content）层面恢复
-          const tlContent = overlay.querySelector('#mr-rt-tl-content');
+          // T3 滚动保留：mutate innerHTML 时记录旧 scrollTop，在父容器（.mr-gc-tl-content）层面恢复
+          const tlContent = overlay.querySelector('#mr-gc-tl-content');
           const savedScroll = tlContent ? tlContent.scrollTop : 0;
           tlBody.innerHTML = inner;
           if (tlContent && savedScroll > 0) tlContent.scrollTop = savedScroll;
@@ -2983,7 +2993,7 @@ if (typeof document !== 'undefined') (function () {
     //   banner DOM 仅 active 时弹（跨 meeting 弹 banner 文案"XX 已等待"会让用户混乱当前看的不是这个 AI 群聊）。
     //   非 active AI 群聊的 soft-alert 不接入侧栏 unread —— 这是"AI 慢响应"信号，
     //   语义跟"全员完成"不同，混入侧栏会让"⏸ 等你"badge 含义模糊。
-    const cached = _rtPanelState[meetingId];
+    const cached = _gcPanelState[meetingId];
     if (cached) {
       if (!cached._partialBy) cached._partialBy = {};
       const existing = cached._partialBy[sid] || {};
@@ -2991,7 +3001,7 @@ if (typeof document !== 'undefined') (function () {
     }
     // === Phase 2: banner DOM 与 panel 重渲（仅 active）===
     if (meetingId !== activeMeetingId) return;
-    const banner = document.getElementById('mr-rt-soft-alert-banner');
+    const banner = document.getElementById('mr-gc-soft-alert-banner');
     if (banner) {
       const levelLabel = level === 't2' ? '3 分钟' : '90 秒';
       const urgency = level === 't2' ? 'urgent' : '';
@@ -2999,23 +3009,23 @@ if (typeof document !== 'undefined') (function () {
       const hint = level === 't2'
         ? '⚠ 已等待 3 分钟仍无响应，大概率卡死。请用卡片上的「一键提取 / 跳过 / 重新拉起」按钮处理这家。'
         : '可能是慢响应 / 限流 / 卡死。可用卡片上的"一键提取 / 跳过"绕过，或继续等待自然完成。';
-      banner.className = `mr-rt-soft-alert-banner ${urgency}`;
+      banner.className = `mr-gc-soft-alert-banner ${urgency}`;
       banner.innerHTML = `
-        <div class="mr-rt-soft-alert-msg">
+        <div class="mr-gc-soft-alert-msg">
           <strong>${escapeHtml(label || sid.slice(0, 8))}</strong> 已等待 <strong>${levelLabel}</strong>。
-          <span class="mr-rt-soft-alert-hint">${hint}</span>
+          <span class="mr-gc-soft-alert-hint">${hint}</span>
         </div>
-        <button class="mr-rt-soft-alert-close" data-rt-banner-close="1" title="关闭提示">×</button>
+        <button class="mr-gc-soft-alert-close" data-gc-banner-close="1" title="关闭提示">×</button>
       `;
       banner.style.display = 'flex';
-      banner.querySelectorAll('[data-rt-banner-close]').forEach(b => {
+      banner.querySelectorAll('[data-gc-banner-close]').forEach(b => {
         b.addEventListener('click', () => { banner.style.display = 'none'; banner.innerHTML = ''; }, { once: true });
       });
     }
     if (cached) {
-      const panel = _ensureRtPanel();
-      panel.innerHTML = _renderRtPanelHtml(cached, meeting);
-      _bindRtPanelEvents(panel, meeting);
+      const panel = _ensureGcPanel();
+      panel.innerHTML = _renderGcPanelHtml(cached, meeting);
+      _bindGcPanelEvents(panel, meeting);
     }
   });
 
@@ -3028,7 +3038,7 @@ if (typeof document !== 'undefined') (function () {
     // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 sendStatus='stuck'），
     //   切回该 AI 群聊时卡片自动显示"⚠ 输入卡顿"状态 + [📤 发送] 按钮亮起。
     //   panel DOM 重渲仅 active 做。
-    const cached = _rtPanelState[meetingId];
+    const cached = _gcPanelState[meetingId];
     if (cached) {
       if (!cached._partialBy) cached._partialBy = {};
       const existing = cached._partialBy[sid] || {};
@@ -3038,9 +3048,9 @@ if (typeof document !== 'undefined') (function () {
     console.warn(`[renderer] groupchat-send-stuck meeting=${meetingId} sid=${sid.slice(0,8)}`);
     if (meetingId !== activeMeetingId) return;
     if (cached) {
-      const panel = _ensureRtPanel();
-      panel.innerHTML = _renderRtPanelHtml(cached, meeting);
-      _bindRtPanelEvents(panel, meeting);
+      const panel = _ensureGcPanel();
+      panel.innerHTML = _renderGcPanelHtml(cached, meeting);
+      _bindGcPanelEvents(panel, meeting);
     }
   });
 
@@ -3150,7 +3160,7 @@ if (typeof document !== 'undefined') (function () {
         }).catch(() => {});
       }
     } else {
-      _removeRtPanel();
+      _removeGcPanel();
     }
 
     // IF-C3（2026-05-01）：进会议室立即刷一次软提醒 banner（AI 未 ready 时提示用户）
@@ -3194,7 +3204,7 @@ if (typeof document !== 'undefined') (function () {
     if (typeof _teardownMeetingResizeObserver === 'function') _teardownMeetingResizeObserver();
     // F6 Phase 3: 切 meeting 清引用 chips, 避免跨 meeting 误带
     if (typeof _clearQuoteChips === 'function') _clearQuoteChips();
-    if (_rtQuoteFloatBtn) _rtQuoteFloatBtn.style.display = 'none';
+    if (_gcQuoteFloatBtn) _gcQuoteFloatBtn.style.display = 'none';
     const panel = panelEl();
     if (panel) panel.style.display = 'none';
     const el = terminalsEl();
@@ -3315,7 +3325,7 @@ if (typeof document !== 'undefined') (function () {
         if (_isPanelCapableMeeting(updated)) {
           refreshGroupChatPanel(updated);
         } else {
-          _removeRtPanel();
+          _removeGcPanel();
         }
         const term = terminalsEl();
         if (term) applyModeContainerVisibility(updated, term);
@@ -3588,11 +3598,11 @@ if (typeof document !== 'undefined') (function () {
       if (activeMeetingId !== startActiveMeetingId) return;
       if (needRefresh && _isPanelCapableMeeting(meeting)) {
         // 触发 panel 重渲染让 isInitializing 立即生效（卡片切到"待命"）
-        const cached = _rtPanelState[startActiveMeetingId];
+        const cached = _gcPanelState[startActiveMeetingId];
         if (cached) {
-          const panel = _ensureRtPanel();
-          panel.innerHTML = _renderRtPanelHtml(cached, meeting);
-          _bindRtPanelEvents(panel, meeting);
+          const panel = _ensureGcPanel();
+          panel.innerHTML = _renderGcPanelHtml(cached, meeting);
+          _bindGcPanelEvents(panel, meeting);
         }
       }
       // 软提醒 banner（IF-C3 实装后会调），保护性调用——不存在时静默
@@ -3638,7 +3648,7 @@ if (typeof document !== 'undefined') (function () {
   //
   // 函数名保持 _refreshSoftAlert 兼容现有调用点(避免大面积改 ipc handler), 实际行为变了。
   function _refreshSoftAlert(meeting) {
-    const head = document.getElementById('mr-rt-ob-head');
+    const head = document.getElementById('mr-gc-ob-head');
     if (!head || !meeting || !Array.isArray(meeting.subSessions)) return;
 
     const labelOf = sid => {
@@ -3651,7 +3661,7 @@ if (typeof document !== 'undefined') (function () {
     document.querySelectorAll('.mr-ft').forEach(card => {
       const status = (card.querySelector('.mr-ft-status')?.textContent || '').trim();
       if (status && status.includes('创建中')) {
-        const sid = card.querySelector('[data-rt-sid]')?.dataset?.rtSid;
+        const sid = card.querySelector('[data-gc-sid]')?.dataset?.gcSid;
         if (sid) domNotReadySids.add(sid);
       }
     });
@@ -3673,7 +3683,7 @@ if (typeof document !== 'undefined') (function () {
       head.classList.remove('ready');
       head.classList.add('loading');
       head.innerHTML = `
-        <span class="mr-rt-ob-head-icon">⏳</span>
+        <span class="mr-gc-ob-head-icon">⏳</span>
         <span><strong>${notReady.join(' / ')}</strong> 启动中, 建议等到状态变 <strong>"待命"</strong> 再发送(避免输入丢失)</span>
       `;
     } else {
@@ -3682,7 +3692,7 @@ if (typeof document !== 'undefined') (function () {
       const defaultText = head.getAttribute('data-default-text') || 'AI 群聊已就位';
       const defaultSub = head.getAttribute('data-default-sub') || '等你抛话题';
       head.innerHTML = `
-        <span class="mr-rt-ob-head-icon">✓</span>
+        <span class="mr-gc-ob-head-icon">✓</span>
         <span><strong>${escapeHtml(defaultText)}</strong> · ${escapeHtml(defaultSub)}</span>
       `;
     }
@@ -3954,7 +3964,7 @@ if (typeof document !== 'undefined') (function () {
   //            会和真实 PTY 状态打架（出现"灰化但又部分动"的怪异中间态）。
   //   dispatchMode 仍保留参数：仅用于输入框 placeholder 的文本提示。
   function _applyPilotCardVisual(meeting, pilotSlot, dispatchMode) {
-    const panel = document.getElementById('mr-rt-panel');
+    const panel = document.getElementById('mr-gc-panel');
     const cards = panel
       ? panel.querySelectorAll('.mr-ft-strip > .mr-ft')
       : document.querySelectorAll('.mr-ft-strip > .mr-ft');
@@ -3997,18 +4007,18 @@ if (typeof document !== 'undefined') (function () {
     // Module C 后 blackboard layout 已废弃,layout 字段只剩 'focus' 一种语义。
     // 两模式(通用/投研)统一 toolbar：群策群力 / 总结发言。
     if (_isPanelCapableMeeting(meeting)) {
-      const subs = _getRtSubInfo(meeting);
+      const subs = _getGcSubInfo(meeting);
       // slot 化（2026-05-03）：dropdown 改按 slot 枚举（不再按 kind 去重）。
       //   关键修复：3 claude 群聊时，原 kind 索引只显 1 个"Claude"选项，
       //   sidByKind 也只返回首个，导致后两位 claude 永远当不了总结人。
       //   现在改 slot：3 个选项 ⚡Pikachu / 🔥Charmander / 💎Squirtle，
       //   value=slotId 直接对应到后端 sidBySlot。
-      const slotsArr = _getRtSlots(meeting);
+      const slotsArr = _getGcSlots(meeting);
       const opts = slotsArr
         .filter(s => s)
         .map(s => `<option value="${s.slotId}">${escapeHtml(s.displayLabel)}</option>`)
         .join('');
-      const cached = _rtPanelState[meeting.id];
+      const cached = _gcPanelState[meeting.id];
       const inProgress = cached && cached.currentMode && cached.currentMode !== 'idle';
       const turns = cached ? (cached.turns || []).length : 0;
       // pilot redesign（2026-05-02）：pilotSlot 是"主驾角色"标识（红框），dispatchMode 控制本轮谁开口。
@@ -4071,7 +4081,7 @@ if (typeof document !== 'undefined') (function () {
       // 主驾按钮 label
       const slotPokemon = ['⚡皮卡丘', '🔥小火龙', '💎杰尼龟'];
       const pilotBtnLabel = pilotOn ? `${slotPokemon[pilotSlot]}` : '未选';
-      const pilotBtnCls = pilotOn ? 'mr-rt-tb-btn pilot active' : 'mr-rt-tb-btn pilot';
+      const pilotBtnCls = pilotOn ? 'mr-gc-tb-btn pilot active' : 'mr-gc-tb-btn pilot';
 
       // 状态行（toolbar 顶部一行小字，文字冗余兜底）—— T7: free/pilot 分支
       let statusLine;
@@ -4129,17 +4139,17 @@ if (typeof document !== 'undefined') (function () {
           </div>`;
         }
         // pilot 模式：原三按钮组（一行不动）
-        return `<div class="mr-rt-dispatch-group" role="group" aria-label="分发模式">
-          <button class="mr-rt-dispatch-btn ${dispatchMode === 'all' ? 'active' : ''}" data-dispatch-mode="all" ${dispatchAllDisabled} title="群策群力：本轮 prompt 发给全员">🤝 群策群力</button>
-          <button class="mr-rt-dispatch-btn ${dispatchMode === 'pilot' ? 'active' : ''}" data-dispatch-mode="pilot" ${dispatchPilotDisabled} title="${dispatchPilotTitle}">🎯 主驾发言</button>
-          <button class="mr-rt-dispatch-btn ${dispatchMode === 'observer' ? 'active' : ''}" data-dispatch-mode="observer" ${dispatchObserverDisabled} title="${dispatchObserverTitle}">👥 副驾发言</button>
+        return `<div class="mr-gc-dispatch-group" role="group" aria-label="分发模式">
+          <button class="mr-gc-dispatch-btn ${dispatchMode === 'all' ? 'active' : ''}" data-dispatch-mode="all" ${dispatchAllDisabled} title="群策群力：本轮 prompt 发给全员">🤝 群策群力</button>
+          <button class="mr-gc-dispatch-btn ${dispatchMode === 'pilot' ? 'active' : ''}" data-dispatch-mode="pilot" ${dispatchPilotDisabled} title="${dispatchPilotTitle}">🎯 主驾发言</button>
+          <button class="mr-gc-dispatch-btn ${dispatchMode === 'observer' ? 'active' : ''}" data-dispatch-mode="observer" ${dispatchObserverDisabled} title="${dispatchObserverTitle}">👥 副驾发言</button>
         </div>`;
       })();
 
       // T6：pilot wrap 仅 pilot 模式显示
       const pilotWrapHtml = (meetingMode === 'pilot') ? `
-        <span class="mr-rt-tb-divider"></span>
-        <span class="mr-rt-tb-pilot-wrap">
+        <span class="mr-gc-tb-divider"></span>
+        <span class="mr-gc-tb-pilot-wrap">
           <button class="${pilotBtnCls}" id="mr-pilot-btn" title="选定一家为主驾角色（红框标记）；不会切换全局模式，仅是身份标签。配合分发模式按钮使用。">🚗 主驾角色:<span id="mr-pilot-label">${pilotBtnLabel}</span> ▾</button>
           <span id="mr-pilot-menu" class="mr-pilot-menu" style="display:none;">
             <div class="mr-pilot-option" data-slot="0">⚡ Slot 1 · 皮卡丘</div>
@@ -4183,7 +4193,7 @@ if (typeof document !== 'undefined') (function () {
                 <span>🎯 模式</span><span class="mr-mode-arrow">▾</span>
               </button>
               <div class="mr-mode-popup">
-                <button class="mr-mode-item" id="mr-rt-debate-btn" ${debateDisabled} title="${debateBtnTitle}">
+                <button class="mr-mode-item" id="mr-gc-debate-btn" ${debateDisabled} title="${debateBtnTitle}">
                   <span>🗣 辩论</span><span class="mr-mode-item-hint">让 AI 互辩</span>
                 </button>
               </div>
@@ -4193,10 +4203,10 @@ if (typeof document !== 'undefined') (function () {
       } else {
         // pilot 模式: 老 toolbar 渲染（摘要功能 2026-05-08 下线后仅剩"辩论"）
         el.innerHTML = `
-          <div class="mr-rt-toolbar">
+          <div class="mr-gc-toolbar">
             ${dispatchAreaHtml}
-            <span class="mr-rt-tb-divider"></span>
-            <button class="mr-rt-tb-btn" id="mr-rt-debate-btn" ${debateDisabled} title="${debateBtnTitle}">🗣 辩论</button>
+            <span class="mr-gc-tb-divider"></span>
+            <button class="mr-gc-tb-btn" id="mr-gc-debate-btn" ${debateDisabled} title="${debateBtnTitle}">🗣 辩论</button>
             ${pilotWrapHtml}
           </div>
         `;
@@ -4242,7 +4252,7 @@ if (typeof document !== 'undefined') (function () {
       });
 
       // dispatchMode 切换：调 IPC 'groupchat:dispatch-mode-set'，server 推 meeting-updated 回来重渲
-      el.querySelectorAll('.mr-rt-dispatch-btn[data-dispatch-mode]').forEach(btn => {
+      el.querySelectorAll('.mr-gc-dispatch-btn[data-dispatch-mode]').forEach(btn => {
         btn.addEventListener('click', async () => {
           if (btn.hasAttribute('disabled')) return;
           const newMode = btn.getAttribute('data-dispatch-mode');
@@ -4270,14 +4280,14 @@ if (typeof document !== 'undefined') (function () {
   // --- Input & Broadcasting ---
 
   let _inputBound = false;
-  let _rtMentionActiveIndex = 0;
+  let _gcMentionActiveIndex = 0;
 
   // meeting-create-modal（2026-05-01）：mention 列表按当前 meeting 动态构建，
   //   支持 5 选 3（claude/gemini/codex/deepseek/glm）+ 同 kind 重复（如 3 Claude）。
   //   默认插入 @slot1 / @slot2 / @slot3（按 slot 位置精确指向）；
   //   当 meeting 内某个 kind 唯一出现时，额外注册 @<kind> 别名（向后兼容老 prompt）；
   //   重复 kind 时该 kind 的 @<kind> 别名不注册（避免歧义）。
-  function buildRtMentionItems(meeting) {
+  function buildGcMentionItems(meeting) {
     const items = [];
     const subSids = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions : [];
     const isGroupChat = !!(meeting && meeting.groupChat);
@@ -4327,12 +4337,12 @@ if (typeof document !== 'undefined') (function () {
     return items;
   }
 
-  function _getRtMentionMenu() {
-    let menu = document.getElementById('mr-rt-mention-menu');
+  function _getGcMentionMenu() {
+    let menu = document.getElementById('mr-gc-mention-menu');
     if (!menu) {
       menu = document.createElement('div');
-      menu.id = 'mr-rt-mention-menu';
-      menu.className = 'mr-rt-mention-menu';
+      menu.id = 'mr-gc-mention-menu';
+      menu.className = 'mr-gc-mention-menu';
       menu.setAttribute('role', 'listbox');
       menu.style.display = 'none';
       const row = document.getElementById('mr-input-row');
@@ -4341,13 +4351,13 @@ if (typeof document !== 'undefined') (function () {
     return menu;
   }
 
-  function _hideRtMentionMenu() {
-    const menu = document.getElementById('mr-rt-mention-menu');
+  function _hideGcMentionMenu() {
+    const menu = document.getElementById('mr-gc-mention-menu');
     if (menu) {
       menu.style.display = 'none';
       menu.innerHTML = '';
     }
-    _rtMentionActiveIndex = 0;
+    _gcMentionActiveIndex = 0;
   }
 
   function _getTextCaretOffset(el) {
@@ -4380,7 +4390,7 @@ if (typeof document !== 'undefined') (function () {
     _placeCaretAtEnd(el);
   }
 
-  function _getRtMentionMatch(inputBox) {
+  function _getGcMentionMatch(inputBox) {
     const text = inputBox.innerText || '';
     const caret = _getTextCaretOffset(inputBox);
     const beforeCaret = text.slice(0, caret);
@@ -4391,8 +4401,8 @@ if (typeof document !== 'undefined') (function () {
     return { text, caret, start: at, query: query.toLowerCase() };
   }
 
-  function _insertRtMention(inputBox, item, meeting) {
-    const match = _getRtMentionMatch(inputBox);
+  function _insertGcMention(inputBox, item, meeting) {
+    const match = _getGcMentionMatch(inputBox);
     if (!match) return;
     const suffix = match.text.slice(match.caret);
     const spacer = suffix.startsWith(' ') || suffix.length === 0 ? '' : ' ';
@@ -4400,7 +4410,7 @@ if (typeof document !== 'undefined') (function () {
     inputBox.textContent = match.text.slice(0, match.start) + inserted + spacer + suffix;
     inputBox.focus();
     _placeCaretAtTextOffset(inputBox, match.start + inserted.length);
-    _hideRtMentionMenu();
+    _hideGcMentionMenu();
     if (meeting && meeting.groupChat) return;
     // meeting-create-modal：slot mentions 优先按 sid focus（精确指向 slot）；
     //   kind alias 走老 _focusGroupChatKind（kind 唯一时才注册此别名，确定不歧义）。
@@ -4408,53 +4418,53 @@ if (typeof document !== 'undefined') (function () {
     else if (item.kind) _focusGroupChatKind(meeting, item.kind);
   }
 
-  function _updateRtMentionMenu(inputBox, meeting) {
+  function _updateGcMentionMenu(inputBox, meeting) {
     if (!_isPanelCapableMeeting(meeting)) {
-      _hideRtMentionMenu();
+      _hideGcMentionMenu();
       return;
     }
     // pilot-mode Task 9（2026-05-01）：主驾期间 mention 灰显——所有 @ 候选都不可用，
     //   仅显示一行 disabled 提示让用户知道为什么。
     const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
       ? meeting.pilotSlot : null;
-    const match = _getRtMentionMatch(inputBox);
+    const match = _getGcMentionMatch(inputBox);
     if (!match) {
-      _hideRtMentionMenu();
+      _hideGcMentionMenu();
       return;
     }
     if (pilotSlot !== null) {
-      const menu = _getRtMentionMenu();
+      const menu = _getGcMentionMenu();
       menu.style.left = `${inputBox.offsetLeft}px`;
       menu.style.minWidth = `${Math.min(Math.max(inputBox.offsetWidth, 260), 420)}px`;
-      menu.innerHTML = `<div class="mr-rt-mention-disabled-hint">主驾模式中（仅 Slot ${pilotSlot + 1} 接收），请先 [🚗 主驾:▾ 关闭主驾] 再使用 @ 提及</div>`;
+      menu.innerHTML = `<div class="mr-gc-mention-disabled-hint">主驾模式中（仅 Slot ${pilotSlot + 1} 接收），请先 [🚗 主驾:▾ 关闭主驾] 再使用 @ 提及</div>`;
       menu.style.display = 'block';
       return;
     }
-    const items = buildRtMentionItems(meeting).filter(item => {
+    const items = buildGcMentionItems(meeting).filter(item => {
       const haystack = `${item.value} ${item.label}`.toLowerCase().replace(/^@/, '');
       return haystack.includes(match.query);
     });
     if (items.length === 0) {
-      _hideRtMentionMenu();
+      _hideGcMentionMenu();
       return;
     }
-    if (_rtMentionActiveIndex >= items.length) _rtMentionActiveIndex = 0;
-    const menu = _getRtMentionMenu();
+    if (_gcMentionActiveIndex >= items.length) _gcMentionActiveIndex = 0;
+    const menu = _getGcMentionMenu();
     menu.style.left = `${inputBox.offsetLeft}px`;
     menu.style.minWidth = `${Math.min(Math.max(inputBox.offsetWidth, 260), 420)}px`;
     menu.innerHTML = items.map((item, index) => `
-      <button type="button" class="mr-rt-mention-item${index === _rtMentionActiveIndex ? ' active' : ''}" data-mention-index="${index}" role="option" aria-selected="${index === _rtMentionActiveIndex ? 'true' : 'false'}">
-        <span class="mr-rt-mention-label">${escapeHtml(item.label)}</span>
-        <span class="mr-rt-mention-value">${escapeHtml(item.value)}</span>
-        <span class="mr-rt-mention-hint">${escapeHtml(item.hint)}</span>
+      <button type="button" class="mr-gc-mention-item${index === _gcMentionActiveIndex ? ' active' : ''}" data-mention-index="${index}" role="option" aria-selected="${index === _gcMentionActiveIndex ? 'true' : 'false'}">
+        <span class="mr-gc-mention-label">${escapeHtml(item.label)}</span>
+        <span class="mr-gc-mention-value">${escapeHtml(item.value)}</span>
+        <span class="mr-gc-mention-hint">${escapeHtml(item.hint)}</span>
       </button>
     `).join('');
     menu.style.display = 'block';
-    menu.querySelectorAll('.mr-rt-mention-item').forEach(btn => {
+    menu.querySelectorAll('.mr-gc-mention-item').forEach(btn => {
       btn.addEventListener('mousedown', (e) => {
         e.preventDefault();
         const index = Number(btn.getAttribute('data-mention-index'));
-        _insertRtMention(inputBox, items[index], meeting);
+        _insertGcMention(inputBox, items[index], meeting);
       });
     });
   }
@@ -4479,12 +4489,12 @@ if (typeof document !== 'undefined') (function () {
     return _focusGroupChatSession(meeting, sid);
   }
 
-  function _handleRtMentionKeydown(e, inputBox, meeting) {
-    const menu = document.getElementById('mr-rt-mention-menu');
+  function _handleGcMentionKeydown(e, inputBox, meeting) {
+    const menu = document.getElementById('mr-gc-mention-menu');
     const isOpen = menu && menu.style.display !== 'none';
     if (!isOpen) return false;
-    const items = buildRtMentionItems(meeting).filter(item => {
-      const match = _getRtMentionMatch(inputBox);
+    const items = buildGcMentionItems(meeting).filter(item => {
+      const match = _getGcMentionMatch(inputBox);
       if (!match) return false;
       const haystack = `${item.value} ${item.label}`.toLowerCase().replace(/^@/, '');
       return haystack.includes(match.query);
@@ -4492,24 +4502,24 @@ if (typeof document !== 'undefined') (function () {
     if (items.length === 0) return false;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      _rtMentionActiveIndex = (_rtMentionActiveIndex + 1) % items.length;
-      _updateRtMentionMenu(inputBox, meeting);
+      _gcMentionActiveIndex = (_gcMentionActiveIndex + 1) % items.length;
+      _updateGcMentionMenu(inputBox, meeting);
       return true;
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault();
-      _rtMentionActiveIndex = (_rtMentionActiveIndex + items.length - 1) % items.length;
-      _updateRtMentionMenu(inputBox, meeting);
+      _gcMentionActiveIndex = (_gcMentionActiveIndex + items.length - 1) % items.length;
+      _updateGcMentionMenu(inputBox, meeting);
       return true;
     }
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault();
-      _insertRtMention(inputBox, items[_rtMentionActiveIndex], meeting);
+      _insertGcMention(inputBox, items[_gcMentionActiveIndex], meeting);
       return true;
     }
     if (e.key === 'Escape') {
       e.preventDefault();
-      _hideRtMentionMenu();
+      _hideGcMentionMenu();
       return true;
     }
     return false;
@@ -4545,11 +4555,11 @@ if (typeof document !== 'undefined') (function () {
     // 灰态：readonly + class 切换
     if (isFreeZeroSelected) {
       inputBox.setAttribute('readonly', '');
-      inputBox.classList.add('mr-rt-input-disabled');
+      inputBox.classList.add('mr-gc-input-disabled');
       sendBtn.disabled = true;
     } else {
       inputBox.removeAttribute('readonly');
-      inputBox.classList.remove('mr-rt-input-disabled');
+      inputBox.classList.remove('mr-gc-input-disabled');
       sendBtn.disabled = false;
     }
 
@@ -4605,7 +4615,7 @@ if (typeof document !== 'undefined') (function () {
       const box = document.getElementById('mr-input-box');
       const userText = box ? box.innerText.trim() : '';
       // F6 Phase 3: 既无 text 又无 quote chips → 不发
-      if (!userText && _rtQuoteChips.length === 0) return;
+      if (!userText && _gcQuoteChips.length === 0) return;
       const mid = activeMeetingId;
       const m = meetingData[mid];
       if (!m) return;
@@ -4626,8 +4636,8 @@ if (typeof document !== 'undefined') (function () {
       }
       // F6 Phase 3: 拼接引用 chips 到 prompt 头部, 让 AI 知道用户基于哪些片段追问
       let finalText = userText;
-      if (_rtQuoteChips.length > 0) {
-        const quoteSection = '基于以下引用追问:\n' + _rtQuoteChips.map(c =>
+      if (_gcQuoteChips.length > 0) {
+        const quoteSection = '基于以下引用追问:\n' + _gcQuoteChips.map(c =>
           `[💎 第${c.turnN}轮 ${c.slotLabel}: "${c.text}"]`
         ).join('\n');
         finalText = userText
@@ -4648,7 +4658,7 @@ if (typeof document !== 'undefined') (function () {
       if (e.isComposing || e.keyCode === 229) return;
       const mid = activeMeetingId;
       const currentMeeting = meetingData[mid] || meeting;
-      if (_handleRtMentionKeydown(e, inputBox, currentMeeting)) return;
+      if (_handleGcMentionKeydown(e, inputBox, currentMeeting)) return;
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         doSend();
@@ -4658,19 +4668,19 @@ if (typeof document !== 'undefined') (function () {
     inputBox.addEventListener('input', () => {
       const mid = activeMeetingId;
       _saveInputDraft();
-      _updateRtMentionMenu(inputBox, meetingData[mid] || meeting);
+      _updateGcMentionMenu(inputBox, meetingData[mid] || meeting);
     });
     inputBox.addEventListener('keyup', (e) => {
       if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key)) return;
       const mid = activeMeetingId;
-      _updateRtMentionMenu(inputBox, meetingData[mid] || meeting);
+      _updateGcMentionMenu(inputBox, meetingData[mid] || meeting);
     });
     inputBox.addEventListener('click', () => {
       const mid = activeMeetingId;
-      _updateRtMentionMenu(inputBox, meetingData[mid] || meeting);
+      _updateGcMentionMenu(inputBox, meetingData[mid] || meeting);
     });
     inputBox.addEventListener('blur', () => {
-      setTimeout(_hideRtMentionMenu, 120);
+      setTimeout(_hideGcMentionMenu, 120);
     });
   }
 
@@ -4908,11 +4918,11 @@ if (typeof document !== 'undefined') (function () {
     if (_cliReadyCache[sessionId] !== undefined) {
       delete _cliReadyCache[sessionId];
       if (activeMeetingId && _isPanelCapableMeeting(meetingData[activeMeetingId])) {
-        const cached = _rtPanelState[activeMeetingId];
+        const cached = _gcPanelState[activeMeetingId];
         if (cached) {
-          const panel = _ensureRtPanel();
-          panel.innerHTML = _renderRtPanelHtml(cached, meetingData[activeMeetingId]);
-          _bindRtPanelEvents(panel, meetingData[activeMeetingId]);
+          const panel = _ensureGcPanel();
+          panel.innerHTML = _renderGcPanelHtml(cached, meetingData[activeMeetingId]);
+          _bindGcPanelEvents(panel, meetingData[activeMeetingId]);
         }
       }
     }

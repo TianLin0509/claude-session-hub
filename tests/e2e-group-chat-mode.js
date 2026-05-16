@@ -250,7 +250,7 @@ function assertOk(cond, message, detail) {
       sel.addRange(range);
       input.dispatchEvent(new Event('input', { bubbles: true }));
       await new Promise(r => setTimeout(r, 160));
-      const menu = document.getElementById('mr-rt-mention-menu');
+      const menu = document.getElementById('mr-gc-mention-menu');
       const beforeMenuVisible = !!menu && getComputedStyle(menu).display !== 'none';
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
       await new Promise(r => setTimeout(r, 260));
