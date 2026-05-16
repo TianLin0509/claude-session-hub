@@ -515,7 +515,6 @@ const wrapperEl = document.getElementById('new-session-wrapper');
 const btnResume = document.getElementById('btn-resume');
 const resumeMenuEl = document.getElementById('resume-picker-menu');
 const resumeWrapperEl = document.getElementById('resume-picker-wrapper');
-const btnRoundtable = document.getElementById('btn-roundtable');
 const btnGroupChat = document.getElementById('btn-group-chat');
 const contextMenuEl = document.getElementById('context-menu');
 const appContainerEl = document.getElementById('app-container');
@@ -3446,12 +3445,12 @@ for (const btn of document.querySelectorAll('.resume-option')) {
 }
 
 // --- Launcher (启动面板 v0.8.3 · 三精灵海报) ---
-// 主 CTA 召集圆桌(走现有 createMeetingByMode);底部超链接 1v1 单聊(走 create-session)。
+// 主 CTA 召集 AI 群聊;底部超链接 1v1 单聊(走 create-session)。
 // 静态 DOM,无最近会话,无磁盘 IO,无 IPC 启动开销。
 for (const cta of document.querySelectorAll('.launcher-cta')) {
   cta.addEventListener('click', () => {
-    if (cta.dataset.launcherAction === 'roundtable') {
-      createMeetingByMode('general');
+    if (cta.dataset.launcherAction === 'group' || cta.dataset.launcherAction === 'roundtable') {
+      createMeetingByMode('group');
     }
   });
 }
@@ -3462,10 +3461,7 @@ for (const link of document.querySelectorAll('.launcher-link')) {
   });
 }
 
-// --- Roundtable button ---
-btnRoundtable.addEventListener('click', async () => {
-  await createMeetingByMode('general');
-});
+// --- Meeting buttons ---
 if (btnGroupChat) {
   btnGroupChat.addEventListener('click', async () => {
     if (typeof window.openMeetingCreateModal === 'function') {
@@ -3497,14 +3493,14 @@ function closeResumeModal() {
   resumeModalEl.style.display = 'none';
 }
 
-// --- Create Meeting (mode-driven, no modal) ---
-// meeting-create-modal（2026-05-01）：+号菜单的圆桌入口现在弹 Modal 让用户选 AI/model，
-//   不再"立即创建 Claude+Gemini+Codex"。Modal 在 renderer/meeting-create-modal.js，
+// --- Create Meeting ---
+// meeting-create-modal：前端创建入口统一为 AI 群聊。旧的 mode 参数只保留调用兼容，
+//   不再从 UI 新建 legacy 圆桌。Modal 在 renderer/meeting-create-modal.js，
 //   提交后调 create-meeting IPC（带 slots），main.js 内部循环 add-meeting-sub +
 //   持久化 slotSpecs，返回完整 meeting 对象，Modal 再调 selectMeeting(meeting.id)。
 function createMeetingByMode(mode) {
   if (typeof window.openMeetingCreateModal === 'function') {
-    window.openMeetingCreateModal(mode || 'general');
+    window.openMeetingCreateModal('group');
   } else {
     console.error('[createMeetingByMode] meeting-create-modal not loaded');
   }

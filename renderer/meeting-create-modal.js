@@ -24,7 +24,7 @@ const SLOT_NAMES = ['皮卡丘位', '小火龙位', '杰尼龟位'];
 
 let _modalEl = null;
 let _currentMode = 'general';
-let _isGroupChat = false;
+let _isGroupChat = true;
 let _groupSlots = DEFAULT_GROUP_MEMBERS.map(x => ({ ...x }));
 let _escListener = null;
 
@@ -119,17 +119,17 @@ function _ensureModal() {
   _modalEl.innerHTML = `
     <div class="mcm-dialog" role="dialog" aria-labelledby="mcm-title-text">
       <div class="mcm-header">
-        <span class="mcm-title" id="mcm-title-text">新建<span id="mcm-mode-label">通用</span>圆桌</span>
+        <span class="mcm-title" id="mcm-title-text">新建<span id="mcm-mode-label">AI 群聊</span></span>
         <button class="mcm-close" aria-label="关闭">×</button>
       </div>
       <div class="mcm-body">
         <div class="mcm-name-row">
           <label class="mcm-name-label" for="mcm-title-input">房名（可选）</label>
           <input id="mcm-title-input" class="mcm-title-input" type="text" maxlength="40"
-                 placeholder="留空则自动编号" autocomplete="off">
+                 placeholder="留空则自动编号：AI 群聊 #N" autocomplete="off">
         </div>
         <div class="mcm-slots"></div>
-        <button type="button" class="mcm-add-member" id="mcm-add-member" style="display:none">+ 添加成员</button>
+        <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
         <div class="mcm-scene">
           场景:
           <label><input type="radio" name="mcm-scene" value="general" checked> 通用</label>
@@ -139,7 +139,7 @@ function _ensureModal() {
       </div>
       <div class="mcm-footer">
         <button class="mcm-cancel">取消</button>
-        <button class="mcm-create mcm-primary">创建圆桌</button>
+        <button class="mcm-create mcm-primary">创建群聊</button>
       </div>
     </div>
   `;
@@ -175,7 +175,7 @@ async function _onCreate() {
 
   const createBtn = _modalEl.querySelector('.mcm-create');
   createBtn.disabled = true;
-  createBtn.textContent = _isGroupChat ? '创建群聊中...' : '创建中...';
+  createBtn.textContent = '创建群聊中...';
   _clearError();
   try {
     const meeting = await ipcRenderer.invoke('create-meeting', {
@@ -183,10 +183,10 @@ async function _onCreate() {
       scene,
       slots,
       title,
-      groupChat: _isGroupChat,
-      groupMode: _isGroupChat ? 'deliberation' : undefined,
-      groupRecentRawN: _isGroupChat ? 5 : undefined,
-      participants: _isGroupChat ? slots.map((_, i) => i) : undefined,
+      groupChat: true,
+      groupMode: 'deliberation',
+      groupRecentRawN: 5,
+      participants: slots.map((_, i) => i),
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
     closeMeetingCreateModal();
@@ -196,7 +196,7 @@ async function _onCreate() {
     console.error('[meeting-create-modal] create failed:', e);
     _showError((e && e.message) ? e.message : String(e));
     createBtn.disabled = false;
-    createBtn.textContent = _isGroupChat ? '创建群聊' : '创建圆桌';
+    createBtn.textContent = '创建群聊';
   }
 }
 
@@ -217,35 +217,28 @@ function _clearError() {
 }
 
 function openMeetingCreateModal(mode = 'general') {
-  _isGroupChat = mode === 'group';
-  _currentMode = (mode === 'research' || mode === 'dev') ? mode : 'general';
+  _isGroupChat = true;
+  _currentMode = 'general';
   _ensureModal();
   _clearError();
   _groupSlots = DEFAULT_GROUP_MEMBERS.map(x => ({ ...x }));
   _renderSlots();
 
   const modeLabel = _modalEl.querySelector('#mcm-mode-label');
-  const titleText = _modalEl.querySelector('#mcm-title-text');
-  if (_isGroupChat) {
-    modeLabel.textContent = 'AI 群聊';
-    titleText.lastChild.textContent = '';
-  } else {
-    modeLabel.textContent = _currentMode === 'research' ? '投研' : (_currentMode === 'dev' ? '开发' : '通用');
-    titleText.lastChild.textContent = '圆桌';
-  }
+  modeLabel.textContent = 'AI 群聊';
 
   const titleInput = _modalEl.querySelector('#mcm-title-input');
   if (titleInput) {
     titleInput.value = '';
-    titleInput.placeholder = _isGroupChat ? '留空则自动编号：AI 群聊 #N' : '留空则自动编号';
+    titleInput.placeholder = '留空则自动编号：AI 群聊 #N';
   }
   const sceneRadio = _modalEl.querySelector(`input[name="mcm-scene"][value="${_currentMode}"]`);
   if (sceneRadio) sceneRadio.checked = true;
   const addBtn = _modalEl.querySelector('#mcm-add-member');
-  if (addBtn) addBtn.style.display = _isGroupChat ? 'inline-flex' : 'none';
+  if (addBtn) addBtn.style.display = 'inline-flex';
   const createBtn = _modalEl.querySelector('.mcm-create');
   createBtn.disabled = false;
-  createBtn.textContent = _isGroupChat ? '创建群聊' : '创建圆桌';
+  createBtn.textContent = '创建群聊';
   _modalEl.style.display = 'flex';
   if (_escListener) document.removeEventListener('keydown', _escListener);
   _escListener = (e) => {

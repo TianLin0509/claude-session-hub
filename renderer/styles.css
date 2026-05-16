@@ -1351,8 +1351,8 @@ body.theme-light .prompt-line-marker {
   font-size: 11px;
 }
 
-/* --- Roundtable button(v0.8.4 GitHub Primer · 蓝填充) --- */
-.btn-roundtable {
+/* --- Group chat button(v0.8.4 GitHub Primer · 蓝填充) --- */
+.btn-group-chat {
   height: 28px;
   padding: 0 10px;
   border-radius: 6px;
@@ -1369,10 +1369,10 @@ body.theme-light .prompt-line-marker {
   font-size: 12px;
   transition: background 0.12s;
 }
-.btn-roundtable .btn-icon {
+.btn-group-chat .btn-icon {
   display: none;
 }
-.btn-roundtable:hover {
+.btn-group-chat:hover {
   background: #2c7eff;
 }
 
@@ -3305,8 +3305,8 @@ body.compact-mode .session-footer .burn-badge { display: none; }
 body.compact-mode .session-item { padding-top: 6px; padding-bottom: 6px; }
 body.compact-mode .session-time { display: none; }
 
-/* --- 3. 侧栏头部按钮收纳（圆桌/恢复/选项） --- */
-body.compact-mode .btn-roundtable,
+/* --- 3. 侧栏头部按钮收纳（群聊/恢复/选项） --- */
+body.compact-mode .btn-group-chat,
 body.compact-mode .resume-picker-wrapper,
 body.compact-mode .options-wrapper { display: none; }
 

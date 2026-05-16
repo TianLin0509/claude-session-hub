@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' file: data:;">
-  <title>圆桌宝可梦</title>
+  <title>AI 群聊 Hub</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="meeting-room.css">
@@ -38,8 +38,7 @@
             <button class="new-session-option" data-kind="powershell"><span class="ai-logo logo-powershell"></span>PowerShell</button>
           </div>
         </div>
-        <button class="btn-roundtable" id="btn-roundtable" title="创建圆桌"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="6" r="2" fill="currentColor"/><circle cx="6.5" cy="15" r="2" fill="currentColor"/><circle cx="17.5" cy="15" r="2" fill="currentColor"/></svg><span class="btn-label">圆桌</span></button>
-        <button class="btn-roundtable" id="btn-group-chat" title="创建 AI 群聊"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10"/><path d="M7 12h6"/><path d="M6 18l-3 3V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6Z"/></svg><span class="btn-label">群聊</span></button>
+        <button class="btn-group-chat" id="btn-group-chat" title="创建 AI 群聊"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10"/><path d="M7 12h6"/><path d="M6 18l-3 3V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6Z"/></svg><span class="btn-label">群聊</span></button>
         <div class="resume-picker-wrapper" id="resume-picker-wrapper">
           <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg></button>
           <div class="resume-picker-menu" id="resume-picker-menu" style="display:none">
@@ -114,9 +113,9 @@
               <span class="launcher-trio-name">杰尼龟</span>
             </div>
           </div>
-          <div class="launcher-title">召集你的 AI 智囊</div>
-          <div class="launcher-subtitle">3 个 AI 席位,你来配:Claude / Gemini / Codex / DeepSeek / GLM / 千问 …… 任意搭配,真实碰撞,而非 AI 合唱。</div>
-          <button class="launcher-cta" data-launcher-action="roundtable">🎯 开始圆桌讨论</button>
+          <div class="launcher-title">召集你的 AI 群聊</div>
+          <div class="launcher-subtitle">多位 AI 成员,你来配:Claude / Gemini / Codex / DeepSeek / GLM / 千问 …… 任意搭配,真实碰撞,而非 AI 合唱。</div>
+          <button class="launcher-cta" data-launcher-action="group">💬 开始 AI 群聊</button>
           <div class="launcher-secondary">
             <span>想 1 v 1?</span>
             <a class="launcher-link" data-launcher-kind="claude">Claude</a><span class="launcher-sep">·</span>

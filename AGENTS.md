@@ -1,4 +1,4 @@
-# 圆桌 Codex Rules
+# Hub Codex Rules
 
 ## 基本规则
 
