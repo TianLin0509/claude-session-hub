@@ -5823,6 +5823,8 @@ function escapeToHome() {
 
 const hubEscapeHomeBtn = document.getElementById('hub-escape-home');
 if (hubEscapeHomeBtn) hubEscapeHomeBtn.addEventListener('click', escapeToHome);
+// 2026-05-16 道雪：外部 HTTP 救援入口 — main.js POST /api/escape-home 通过这个 IPC 触发
+ipcRenderer.on('escape-home', escapeToHome);
 
 // --- Theme selector ---
 const THEME_CLASSES = ['theme-midnight', 'theme-obsidian', 'theme-aurora', 'theme-light', 'theme-vibechat-light'];
