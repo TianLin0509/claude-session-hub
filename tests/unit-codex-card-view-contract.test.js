@@ -47,9 +47,20 @@ assert.ok(
 );
 assert.ok(
   rendererSrc.includes("const cachedBeforeSelect = terminalCache.get(id);") &&
-  rendererSrc.includes("const forceScrollBottom = !!(session && isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));") &&
+  rendererSrc.includes("const requestedBottomPin = opts && opts.forceScrollBottom === true;") &&
+  rendererSrc.includes("const forceScrollBottom = !!(session && isCodexKind(session.kind) && (requestedBottomPin || !cachedBeforeSelect || !cachedBeforeSelect.opened));") &&
   rendererSrc.includes("showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });"),
-  'Codex sidebar selection must only force bottom pin on first terminal mount',
+  'Codex sidebar selection must force bottom pin when requested and on first terminal mount',
+);
+assert.ok(
+  rendererSrc.includes("selectSession(s.id, { forceScrollBottom: true })") &&
+  rendererSrc.includes("selectSession(subId, { forceScrollBottom: true })"),
+  'left sidebar clicks must request bottom pinning for Codex sessions',
+);
+assert.ok(
+  rendererSrc.includes("detachFromBottom") &&
+  rendererSrc.includes("cached._codexFollowBottom = false;"),
+  'Codex wheel-up intent must immediately disable bottom following before the next streaming write',
 );
 assert.ok(
   rendererSrc.includes("loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom })") &&

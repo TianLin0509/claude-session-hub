@@ -399,6 +399,7 @@ function shouldAutoPinCodexTerminal(sessionId, cached) {
   const session = sessions.get(sessionId);
   if (!session || !isCodexKind(session.kind) || !cached || !cached.opened) return false;
   if (!cached.container || !cached.container.offsetWidth) return false;
+  if (cached._codexUserScrollIntentUntil && performance.now() < cached._codexUserScrollIntentUntil && cached._codexFollowBottom === false) return false;
   return cached._codexFollowBottom !== false;
 }
 
@@ -428,10 +429,12 @@ function updateCodexFollowBottomFromUserScroll(sessionId, cached) {
   });
 }
 
-function markCodexUserScrollIntent(sessionId, cached) {
+function markCodexUserScrollIntent(sessionId, cached, opts = {}) {
   const session = sessions.get(sessionId);
   if (!session || !isCodexKind(session.kind) || !cached) return;
   cached._codexUserScrollIntentUntil = performance.now() + CODEX_SCROLL_INTENT_MS;
+  if (opts.detachFromBottom) cached._codexFollowBottom = false;
+  if (opts.attachToBottom) cached._codexFollowBottom = true;
 }
 
 function setupCodexViewportScrollTracker(sessionId, cached) {
@@ -904,7 +907,7 @@ function renderSessionList() {
         if (jumpBtn) {
           e.stopPropagation();
           const subId = jumpBtn.getAttribute('data-sub-id');
-          if (subId) selectSession(subId);
+          if (subId) selectSession(subId, { forceScrollBottom: true });
           return;
         }
         if (e.target.closest('[data-action="toggle-expand"]')) {
@@ -938,7 +941,7 @@ function renderSessionList() {
           // Use the existing selectSession path: it hides meeting-room-panel,
           // shows terminal-panel, and mounts the cached xterm container.
           // This is exactly the "single-viewer strict switch" the spec calls for.
-          childDiv.addEventListener('click', () => selectSession(subId));
+          childDiv.addEventListener('click', () => selectSession(subId, { forceScrollBottom: true }));
           childDiv.addEventListener('contextmenu', (ev) => { ev.preventDefault(); openContextMenu(subId, ev.clientX, ev.clientY); });
           sessionListEl.appendChild(childDiv);
         }
@@ -983,7 +986,7 @@ function renderSessionList() {
       <div class="session-preview">${escapeHtml((!isDormant && s.isWaiting && s.waitingText) || s.lastOutputPreview || 'No output yet')}</div>
       ${footerInner ? `<div class="session-footer">${footerInner}</div>` : ''}
     `;
-    div.addEventListener('click', () => selectSession(s.id));
+    div.addEventListener('click', () => selectSession(s.id, { forceScrollBottom: true }));
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
     sessionListEl.appendChild(div);
   }
@@ -1173,7 +1176,10 @@ function getOrCreateTerminal(sessionId) {
   terminal.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     if (['PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) {
-      markCodexUserScrollIntent(sessionId, terminalCache.get(sessionId));
+      markCodexUserScrollIntent(sessionId, terminalCache.get(sessionId), {
+        detachFromBottom: e.key === 'PageUp' || e.key === 'Home',
+        attachToBottom: e.key === 'End',
+      });
     }
 
     // --- Word-like selection editing on the input line ---
@@ -1276,7 +1282,7 @@ function getOrCreateTerminal(sessionId) {
     }
     if (!e.ctrlKey && !e.metaKey) {
       const c = terminalCache.get(sessionId);
-      markCodexUserScrollIntent(sessionId, c);
+      markCodexUserScrollIntent(sessionId, c, { detachFromBottom: e.deltaY < 0 });
       updateCodexFollowBottomFromUserScroll(sessionId, c);
       return;
     }
@@ -3367,7 +3373,7 @@ function startRename(sessionId, titleSpan) {
 }
 
 // --- Session selection ---
-function selectSession(id) {
+function selectSession(id, opts = {}) {
   savePreviewState();
   activeMeetingId = null;
   const mrp = document.getElementById('meeting-room-panel');
@@ -3385,7 +3391,8 @@ function selectSession(id) {
   }
   const switching = activeSessionId !== id;
   const cachedBeforeSelect = terminalCache.get(id);
-  const forceScrollBottom = !!(session && isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));
+  const requestedBottomPin = opts && opts.forceScrollBottom === true;
+  const forceScrollBottom = !!(session && isCodexKind(session.kind) && (requestedBottomPin || !cachedBeforeSelect || !cachedBeforeSelect.opened));
   const shouldFocusTerminal = switching || currentView === 'pty';
   activeSessionId = id;
   if (session) {
