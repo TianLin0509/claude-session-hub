@@ -6,7 +6,6 @@
 
 if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
-  const _scenes = require('../core/roundtable-scenes.js');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
   const { isPasteSensitive, kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
           SLOT_IDS, SLOT_DISPLAY, getSlotPromptName, getSlotDisplayLabel,
@@ -2152,7 +2151,7 @@ if (typeof document !== 'undefined') (function () {
               console.warn('[rt-escape] enter-shell: selectSession not available');
             }
           } else if (action === 'resend-prompt') {
-            const r = await ipcRenderer.invoke('roundtable-resend-prompt', { meetingId: meeting.id, sid });
+            const r = await ipcRenderer.invoke('groupchat-resend-prompt', { meetingId: meeting.id, sid });
             if (r && r.ok) {
               btn.style.background = '#2da44e';
               btn.style.color = '#fff';
@@ -2174,7 +2173,7 @@ if (typeof document !== 'undefined') (function () {
               alert(`重发失败：${r?.reason || 'unknown'}\n\n建议：\n1. 检查该家 PTY 是否还活着（左侧 sidebar 点进去看）\n2. 或者按"跳过"绕过这家，下一轮会自动重启 CLI`);
             }
           } else if (action === 'resend') {
-            const r = await ipcRenderer.invoke('roundtable-resend-participant', { meetingId: meeting.id, sid });
+            const r = await ipcRenderer.invoke('groupchat-resend-participant', { meetingId: meeting.id, sid });
             if (r && r.ok) {
               console.log(`[rt-escape] resend ok: ${kind}`);
             } else {
@@ -2688,75 +2687,7 @@ if (typeof document !== 'undefined') (function () {
 
   // 乐观态生命周期：renderer 在 IPC 飞行期间用 _rtOptimisticTurn 标记自己写的乐观字段，
   // 一旦 IPC resolve / reject 或 server 推 turn-complete，就清掉这个标记 —— 之后 refresh
-  // 拿到的 server state（含 idle）就是真值，merge 不再覆盖。
-  // 不用单纯依赖 cached.currentMode 比对，避免轮次完成后 server.idle 被永远 merge 成乐观值。
   const _rtOptimisticTurn = {}; // { [meetingId]: { mode, t } }
-
-  // 兼容旧调用名（handleMeetingSend 还在用 renderRoundtableBanner）
-  function renderRoundtableBanner(meeting, result) {
-    refreshRoundtablePanel(meeting);
-    const cached = _rtPanelState[meeting.id];
-    if (cached) renderToolbar(meeting);
-  }
-
-  // 投研圆桌触发器：按钮/输入框统一入口。立即给 UI pending 反馈，再异步 invoke IPC。
-  function triggerRoundtable(meeting, mode, opts = {}) {
-    const cached = _rtPanelState[meeting.id];
-    // Stage 2 容错升级：记录本轮 prompt 发送时间戳，逃生工具栏的 manual-extract 用此过滤 JSONL
-    _rtTurnStartTs[meeting.id] = Date.now();
-    // 立即写本地乐观状态 + 标 _rtOptimisticTurn（IPC 完成后清掉）
-    // 摘要功能 2026-05-08 整体下线：mode 仅 'fanout' / 'debate'
-    _rtOptimisticTurn[meeting.id] = {
-      mode,
-      t: Date.now(),
-    };
-    if (cached) {
-      cached.currentMode = mode;
-      cached._partialBy = null;
-    }
-    refreshRoundtablePanel(meeting);
-    renderToolbar(meeting); // 立即把按钮 disable，状态条改"⏳ 处理中…"
-
-    const clearOptimistic = () => {
-      delete _rtOptimisticTurn[meeting.id];
-      const c = _rtPanelState[meeting.id];
-      if (c) {
-        // 不强写 idle —— 让 refresh 从 server 拿真值。但本地乐观字段必须先清，否则 merge 会保留它。
-        c.currentMode = null; // null = 触发 merge 分支用 server 真值
-      }
-      refreshRoundtablePanel(meeting);
-      renderToolbar(meeting);
-    };
-
-    ipcRenderer.invoke('roundtable:turn', {
-      meetingId: meeting.id,
-      mode,
-      userInput: opts.userInput || '',
-      // pilot redesign（2026-05-02）：传当前 dispatchMode（'all'|'pilot'|'observer'）。
-      //   后端会校验 + 按值过滤 targetSubs；未传时按 meeting 持久化字段兜底（默认 'all'）。
-      dispatchMode: meeting.dispatchMode || 'all',
-    }).then((result) => {
-      // 不论 completed / busy / error / no_sent，IPC 已返回 → 清乐观态，后续完全信任 server
-      console.log('[roundtable] turn IPC resolved:', result && result.status, 'turn=', result && result.turnNum);
-      clearOptimistic();
-      // 用户血泪反馈"输入框卡死"根因：上一轮还在跑（_roundtableInProgress 占用）→ server
-      // 返回 status='busy' → doSend 已清空 input → 用户感觉"按发送没反应消息消失"。
-      // 这里识别 busy 时把原文还原回 input + 给清晰提示。
-      if (result && result.status === 'busy') {
-        const inp = document.getElementById('mr-input-box');
-        if (inp && !inp.innerText.trim()) {
-          inp.textContent = opts.userInput || '';
-          _placeCaretAtEnd(inp);
-        }
-        alert('上一轮圆桌还在等其他家完成，无法发起新一轮。\n\n请用卡片上的"跳过"按钮处理仍在等待的家，或等他们自然完成后再发送。');
-      }
-    }).catch((e) => {
-      console.error('[roundtable] turn IPC failed:', e.message);
-      clearOptimistic();
-    });
-    meeting.lastMessageTime = Date.now();
-    ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
-  }
 
   function triggerGroupChat(meeting, opts = {}) {
     const cached = _rtPanelState[meeting.id];
@@ -2844,7 +2775,7 @@ if (typeof document !== 'undefined') (function () {
     }
   });
 
-  ipcRenderer.on('roundtable-turn-complete', (_event, { meetingId }) => {
+  ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // === Phase 1: cache 清理（所有 meeting 都做）===
@@ -2862,21 +2793,6 @@ if (typeof document !== 'undefined') (function () {
     if (meetingId !== activeMeetingId) return;
     refreshRoundtablePanel(meeting);
     if (cached) renderToolbar(meeting);
-  });
-
-  // Roundtable state 元数据变更（轮次启停等）
-  // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（含非 active），DOM 重渲仅 active。
-  //   非 active 圆桌的 currentMode 也得跟 server 同步，否则切回时 panel 显示老状态。
-  ipcRenderer.on('roundtable-state-update', (_event, { meetingId }) => {
-    const meeting = meetingData[meetingId];
-    if (!_isPanelCapableMeeting(meeting)) return;
-    if (meetingId === activeMeetingId) {
-      // active：cache 同步 + DOM 重渲
-      refreshRoundtablePanel(meeting);
-    } else {
-      // 非 active：仅 cache 同步（不动 DOM）
-      _syncRoundtableCacheFromServer(meeting);
-    }
   });
 
   // pilot redesign（2026-05-02）：timeline-append / timeline-update / _updatePilotPlaceholder 整体废弃
@@ -2913,7 +2829,7 @@ if (typeof document !== 'undefined') (function () {
   //   旧版 `meetingId !== activeMeetingId → return` 让非 active 圆桌的 cache 永远跟不上 server，
   //   切回时残留 streaming partial → 卡片显示错状态。新版 cache 同步对所有 meeting 都做，
   //   DOM 操作仅 active 时执行。
-  ipcRenderer.on('roundtable-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen }) => {
+  ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // === Phase 1: cache 同步（任何 meeting 都做，含非 active）===
@@ -3059,7 +2975,7 @@ if (typeof document !== 'undefined') (function () {
   // Stage 2 容错升级：软提醒 banner —— watcher 在 T1=90s/T2=180s 触发，UI 弹非阻塞 banner
   // 提示用户"还在等"，提供"一键提取/跳过/继续等"操作。永不阻塞按钮（按钮 disabled
   // 由 _allParticipantsSettled 决定，与本 banner 无关）。
-  ipcRenderer.on('roundtable-soft-alert', (_event, { meetingId, sid, label, level, mode, turnNum }) => {
+  ipcRenderer.on('groupchat-soft-alert', (_event, { meetingId, sid, label, level, mode, turnNum }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 _partialBy[sid].status='soft_alert'），
@@ -3106,7 +3022,7 @@ if (typeof document !== 'undefined') (function () {
   // T6（2026-05-03）：send-stuck 事件 → 数据驱动写 _partialBy[sid].sendStatus='stuck'，
   //   再 refreshRoundtablePanel 重渲——这样 innerHTML 重渲后状态也能保留（H2 数据驱动方案）。
   //   H1 修复：补 activeMeetingId 守卫，与其他 roundtable-* 监听器保持一致。
-  ipcRenderer.on('roundtable-send-stuck', (_e, { meetingId, sid /*, kind, mode */ }) => {
+  ipcRenderer.on('groupchat-send-stuck', (_e, { meetingId, sid /*, kind, mode */ }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 sendStatus='stuck'），
@@ -3132,7 +3048,7 @@ if (typeof document !== 'undefined') (function () {
   //   H1 修复：补 activeMeetingId 守卫。
   //   M2 修复（最小化方案）：先 await refreshRoundtablePanel 拿最新 turn meta 重渲，
   //     再追加 badge 到新 DOM 节点上（旧节点已被 innerHTML 替换），避免 badge 被立即抹掉。
-  ipcRenderer.on('roundtable-turn-patched', async (_e, { meetingId, turnNum, sid, charCount }) => {
+  ipcRenderer.on('groupchat-turn-patched', async (_e, { meetingId, turnNum, sid, charCount }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // 2026-05-05 道雪 修3：cache 同步（拉 server state 拿到 patch 后的 lastTurn.by）对所有 meeting 都做，
@@ -4016,7 +3932,7 @@ if (typeof document !== 'undefined') (function () {
         const oldLabel = labelSpan ? labelSpan.textContent : '';
         if (labelSpan) labelSpan.textContent = '切换中…';
         try {
-          const result = await ipcRenderer.invoke('roundtable:pilot-toggle', {
+          const result = await ipcRenderer.invoke('groupchat:pilot-toggle', {
             meetingId: meeting.id, slotIndex: targetSlot,
           });
           // pilot redesign（2026-05-02）：pilot-toggle 仅设置 pilotSlot，无副作用（无 recap 生成）。
@@ -4332,7 +4248,7 @@ if (typeof document !== 'undefined') (function () {
           const newMode = btn.getAttribute('data-dispatch-mode');
           if (newMode === dispatchMode) return;  // 已选中
           try {
-            await ipcRenderer.invoke('roundtable:dispatch-mode-set', { meetingId: meeting.id, dispatchMode: newMode });
+            await ipcRenderer.invoke('groupchat:dispatch-mode-set', { meetingId: meeting.id, dispatchMode: newMode });
           } catch (err) {
             console.error('[dispatch-mode-set] failed:', err);
             alert('切换分发模式失败：' + (err && err.message ? err.message : String(err)));
@@ -4340,20 +4256,6 @@ if (typeof document !== 'undefined') (function () {
         });
       });
 
-      // 摘要功能 2026-05-08 整体下线：原 mr-rt-summary-btn / mr-rt-brief-summary-btn /
-      //   mr-mode-subitem[data-summarizer-slot] 事件绑定全删。仅保留辩论按钮。
-      const debateBtn = document.getElementById('mr-rt-debate-btn');
-      if (debateBtn) debateBtn.addEventListener('click', () => {
-        if (debateBtn.hasAttribute('disabled')) return;
-        const inputBox = document.getElementById('mr-input-box');
-        const extra = inputBox ? inputBox.innerText.trim() : '';
-        // 2026-05-05 道雪：辩论无附加 userInput 时也缓存固定标识,banner 可显示"辩论中"语义
-        if (extra) _currentTurnUserInputByMeeting[meeting.id] = extra;
-        else delete _currentTurnUserInputByMeeting[meeting.id];
-        triggerRoundtable(meeting, 'debate', { userInput: extra });
-        if (inputBox) inputBox.textContent = '';
-        delete _inputDraftByMeeting[meeting.id];
-      });
       _bindPilotEvents(meeting, pilotSlot);
       // pilot redesign（2026-05-02）：不在这里调 _applyPilotCardVisual——renderToolbar 在 panel.innerHTML
       //   重渲之前执行，对旧卡片设的 class 会被冲掉。统一由 refreshRoundtablePanel 在 DOM 重建后调用。

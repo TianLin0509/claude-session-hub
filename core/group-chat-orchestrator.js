@@ -153,6 +153,16 @@ class GroupChatOrchestrator {
     this._activePrompts[turnNum][sid] = prompt || '';
   }
 
+  getActivePrompt(turnNum) {
+    const promptBy = this._activePrompts[turnNum];
+    return promptBy ? { promptBy } : null;
+  }
+
+  setSendStatus(_turnNum, _sid, _status) {
+    // Group chat keeps transient send state in renderer partials; this method
+    // preserves the shared watcher recovery contract.
+  }
+
   buildDelta(selfSid, userInput) {
     const lastIdx = this.state.lastDeliveredIdx[selfSid] ?? -1;
     const cutoff = this.state.messages.length - 1;

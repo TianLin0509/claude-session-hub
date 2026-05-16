@@ -6671,7 +6671,7 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
 //   触发侧栏 has-unread 视觉提醒（unread-badge "⏸ 等你" + slot 1 边框）。
 //   active 圆桌不累加（用户正在看，不需要打扰）。
 //   同 IPC 在 meeting-room.js 里也有监听器（cache 同步 + DOM 重渲），与本监听器职责正交。
-ipcRenderer.on('roundtable-turn-complete', (_event, { meetingId }) => {
+ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
   if (!meetingId || meetingId === activeMeetingId) return;
   const meeting = meetings[meetingId];
   if (!meeting) return;

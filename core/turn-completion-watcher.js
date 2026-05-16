@@ -22,10 +22,8 @@
 // 注意：watcher 本身不处理 L2（PTY exit）信号——P1 阶段在 main.js 里通过
 //   onProcessExit 钩子注入。本文件只暴露 onProcessExit 占位，预留 P1 接入。
 
-const {
-  SOFT_ALERT_T1_MS: DEFAULT_T1_MS,
-  SOFT_ALERT_T2_MS: DEFAULT_T2_MS,
-} = require('./roundtable-orchestrator.js');
+const DEFAULT_T1_MS = 90000;
+const DEFAULT_T2_MS = 180000;
 
 const PATCH_WINDOW_MS = 300_000;  // 5 分钟（spec 2026-05-03）
 

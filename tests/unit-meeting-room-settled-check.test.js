@@ -21,29 +21,23 @@ function test(name, fn) {
 
 console.log('Running meeting-room settled-check tests...');
 
-test('_allParticipantsSettled 签名必须接 expectedSids', () => {
+test('_allParticipantsSettled accepts expectedSids', () => {
   const m = src.match(/function\s+_allParticipantsSettled\s*\(\s*partialBy\s*,\s*expectedSids\s*\)/);
   assert.ok(m, '_allParticipantsSettled must have signature (partialBy, expectedSids)');
 });
 
-test('函数体必须用 expectedSids.every 而非 Object.keys(partialBy).every', () => {
+test('_allParticipantsSettled uses expectedSids.every', () => {
   const start = src.indexOf('function _allParticipantsSettled');
-  const end = src.indexOf('function _renderCmdBar', start);
+  const end = src.indexOf('function _renderOnboarding', start);
   assert.ok(start >= 0 && end > start);
   const body = src.slice(start, end);
   assert.ok(/expectedSids\.every/.test(body), 'must call expectedSids.every');
   assert.ok(!/Object\.keys\(partialBy\)\.every/.test(body), 'must NOT use Object.keys(partialBy).every (legacy bug)');
 });
 
-test('_renderCmdBar 签名接 expectedSids', () => {
-  const m = src.match(/function\s+_renderCmdBar\s*\(\s*turns\s*,\s*currentMode\s*,\s*partialBy\s*,\s*expectedSids\s*\)/);
-  assert.ok(m, '_renderCmdBar must accept expectedSids');
-});
-
-test('调用方 _renderRtPanelHtml 必须从 subs 派生 expectedSids 并传入', () => {
-  const m = src.match(/expectedSids\s*=\s*\[\s*'claude'\s*,\s*'gemini'\s*,\s*'codex'\s*\]\s*\.map[\s\S]*?\.filter\(Boolean\)/);
-  assert.ok(m, '_renderRtPanelHtml must derive expectedSids from subs');
-  assert.ok(/_renderCmdBar\([^)]*expectedSids[^)]*\)/.test(src), '_renderCmdBar must be called with expectedSids');
+test('_renderRtPanelHtml derives expectedSids from meeting.subSessions', () => {
+  const m = src.match(/const\s+expectedSids\s*=\s*Array\.isArray\(meeting\.subSessions\)\s*\?\s*meeting\.subSessions\.slice\(\)\s*:\s*\[\]/);
+  assert.ok(m, '_renderRtPanelHtml must derive expectedSids from meeting.subSessions');
 });
 
 // 行为级模拟：用一个本地副本验证 settled 判定逻辑

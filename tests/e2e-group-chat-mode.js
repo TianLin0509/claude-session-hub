@@ -309,7 +309,7 @@ function assertOk(cond, message, detail) {
       const maxTop = scroller ? Math.max(0, scroller.scrollHeight - scroller.clientHeight) : 0;
       if (scroller) scroller.scrollTop = Math.min(520, Math.max(120, Math.floor(maxTop / 2)));
       const before = scroller ? scroller.scrollTop : -1;
-      ipcRenderer.emit('roundtable-partial-update', {}, {
+      ipcRenderer.emit('groupchat-partial-update', {}, {
         meetingId: ${JSON.stringify(meeting.id)},
         sid: sid2,
         status: 'streaming',
@@ -328,7 +328,7 @@ function assertOk(cond, message, detail) {
 
     const emptySend = await evalJs(ws, `(async () => {
       const { ipcRenderer } = require('electron');
-      await ipcRenderer.invoke('roundtable:set-participants', { meetingId: ${JSON.stringify(meeting.id)}, participants: [] });
+      await ipcRenderer.invoke('groupchat:set-participants', { meetingId: ${JSON.stringify(meeting.id)}, participants: [] });
       await new Promise(r => setTimeout(r, 600));
       const result = await ipcRenderer.invoke('groupchat:turn', { meetingId: ${JSON.stringify(meeting.id)}, userInput: '没有 @ 且无人勾选时应被拒绝' });
       const input = document.getElementById('mr-input-box');

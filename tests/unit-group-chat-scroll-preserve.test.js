@@ -46,9 +46,9 @@ test('_renderGroupChatMessage 给 article.mr-gc-msg 加 data-gc-msg-id（局部 
 });
 
 // ---------------- 契约 2：partial-update 群聊视图走专属 patch 路径 ----------------
-test('roundtable-partial-update 在群聊视图下走局部 patch 而非全量重渲', () => {
-  const handlerIdx = src.indexOf("ipcRenderer.on('roundtable-partial-update'");
-  assert.ok(handlerIdx > 0, 'roundtable-partial-update handler 必须存在');
+test('groupchat-partial-update 在群聊视图下走局部 patch 而非全量重渲', () => {
+  const handlerIdx = src.indexOf("ipcRenderer.on('groupchat-partial-update'");
+  assert.ok(handlerIdx > 0, 'groupchat-partial-update handler 必须存在');
   // 取整个 handler 函数体（足够长覆盖到下一个 ipcRenderer.on）
   const nextIpcIdx = src.indexOf('ipcRenderer.on(', handlerIdx + 1);
   const body = src.slice(handlerIdx, nextIpcIdx > 0 ? nextIpcIdx : handlerIdx + 8000);
@@ -79,7 +79,7 @@ test('群聊 partial-update patch 路径只更新单条 article，不动 .mr-gc-
 
 // ---------------- 契约 4：fallback 全量重渲仅在 patch 失败/非群聊视图时走 ----------------
 test('partial-update fallback 全量重渲仍保留（兼容圆桌 + 群聊 patch 失败兜底）', () => {
-  const handlerIdx = src.indexOf("ipcRenderer.on('roundtable-partial-update'");
+  const handlerIdx = src.indexOf("ipcRenderer.on('groupchat-partial-update'");
   const nextIpcIdx = src.indexOf('ipcRenderer.on(', handlerIdx + 1);
   const body = src.slice(handlerIdx, nextIpcIdx > 0 ? nextIpcIdx : handlerIdx + 8000);
   // 兜底 panel.innerHTML = _renderRtPanelHtml 调用必须仍存在（圆桌卡片视图 + 群聊兜底用）

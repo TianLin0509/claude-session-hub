@@ -47,7 +47,7 @@ const transcriptTap = new TranscriptTap();
 try { transcriptTap.setMaxListeners(100); } catch {}
 const { DeepSummaryService } = require('./core/deep-summary-service.js');
 const scenes = require('./core/roundtable-scenes.js');
-const cliReadyDetector = require('./core/roundtable-cli-ready-detector.js');
+const cliReadyDetector = require('./core/group-chat-cli-ready-detector.js');
 const lindangBridge = require('./core/lindang-bridge.js');
 const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
 const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
@@ -852,7 +852,7 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
   }
 
   try { transcriptTap.unregisterSession(sessionId); } catch {}
-  // 圆桌 cli-ready monotonic guard 清理（独立模块，详见 core/roundtable-cli-ready-detector.js）
+  // 圆桌 cli-ready monotonic guard 清理（独立模块，详见 core/group-chat-cli-ready-detector.js）
   try { cliReadyDetector.cleanup(sessionId); } catch {}
   sendToRenderer('session-closed', { sessionId });
   if (meetingId) {
@@ -1172,7 +1172,7 @@ ipcMain.handle('save-immersive-mode', () => {
 //   slotIndex ∈ {0,1,2,null}：设置主驾"角色"标识。仅是 UI 红框，不切换全局模式。
 //   切换或取消主驾时 dispatchMode 自动 reset 'all'（由 meetingManager.setPilotSlot 内部处理）。
 //   旧版本会在关主驾时触发 _generatePilotRecap 生成 recap 卡片——已废弃（圆桌不再桥接子会话私聊）。
-ipcMain.handle('roundtable:pilot-toggle', async (_e, { meetingId, slotIndex } = {}) => {
+ipcMain.handle('groupchat:pilot-toggle', async (_e, { meetingId, slotIndex } = {}) => {
   if (!meetingId) throw new Error('Missing meetingId');
   if (slotIndex !== null && (typeof slotIndex !== 'number' || slotIndex < 0 || slotIndex > 2)) {
     throw new Error(`Invalid slotIndex: ${slotIndex}`);
@@ -1209,7 +1209,7 @@ ipcMain.handle('roundtable:pilot-toggle', async (_e, { meetingId, slotIndex } = 
 // pilot redesign（2026-05-02）— 设置当前轮 dispatchMode。
 //   mode ∈ {'all','pilot','observer'}：'pilot'/'observer' 要求 pilotSlot !== null。
 //   失败抛错（前端兜底应该已 disable 按钮，这里再校验一次防绕过）。
-ipcMain.handle('roundtable:dispatch-mode-set', async (_e, { meetingId, dispatchMode } = {}) => {
+ipcMain.handle('groupchat:dispatch-mode-set', async (_e, { meetingId, dispatchMode } = {}) => {
   if (!meetingId) throw new Error('Missing meetingId');
   if (!['all', 'pilot', 'observer'].includes(dispatchMode)) {
     throw new Error(`Invalid dispatchMode: ${dispatchMode}`);
@@ -1245,64 +1245,21 @@ ipcMain.handle('roundtable:dispatch-mode-set', async (_e, { meetingId, dispatchM
 // free-mode（2026-05-04）— 切换 meeting.mode 'pilot' ⇄ 'free'
 //   inProgress=true 时拒绝（Q9=A：避免半轮发言后改语义）
 //   切到 free 模式时若 meeting.participants===null，首次初始化为 [0,1,2]
-ipcMain.handle('roundtable:set-meeting-mode', async (_e, { meetingId, mode } = {}) => {
-  if (!meetingId) throw new Error('Missing meetingId');
-  const free = require('./core/roundtable-free');
-  const validMode = free._validateMode(mode);
-
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
-
-  // Q9=A：inProgress 时拒绝
-  if (_roundtableInProgress.has(meetingId)) {
-    throw new Error('正在跑一轮，请等结束后再切模式');
-  }
-
-  // FIX(T4 HIGH): 用 setter 写回 Map 原始对象（getMeeting 返回浅拷贝，赋值不写回）
-  meetingManager.setMeetingMode(meetingId, validMode);
-
-  let persistWarning = null;
-  try {
-    stateStore.save({
-      version: 1,
-      cleanShutdown: false,
-      sessions: lastPersistedSessions,
-      meetings: meetingManager.getAllMeetings(),
-      immersiveByMeeting: _immersiveByMeeting,
-      pilotSlotByMeeting: _pilotSlotByMeeting,
-      dispatchModeByMeeting: _dispatchModeByMeeting,
-    });
-  } catch (e) {
-    console.warn('[圆桌] roundtable:set-meeting-mode persist failed:', e.message);
-    persistWarning = `state.json 持久化失败：${e.message}（meeting 已存到 per-meeting JSON，重启后仍生效）`;
-  }
-
-  sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
-  return persistWarning ? { ok: true, persistWarning } : { ok: true };
-});
-
-// free-mode（2026-05-04）— 设置 free 模式参与者勾选
-//   接受空数组（Q11=A：尊重用户清空，UI 已防发送）
 ipcMain.handle('groupchat:set-participants', async (_e, { meetingId, participants } = {}) => {
   if (!meetingId) throw new Error('Missing meetingId');
   const meeting = meetingManager.getMeeting(meetingId);
   if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
-  let validated;
-  if (meeting.groupChat) {
-    if (!Array.isArray(participants)) throw new Error(`participants must be array, got ${typeof participants}`);
-    const max = Array.isArray(meeting.subSessions) ? meeting.subSessions.length : 0;
-    const seen = new Set();
-    for (const x of participants) {
-      if (!Number.isInteger(x) || x < 0 || x >= max) {
-        throw new Error(`Invalid group participant index: ${JSON.stringify(x)}`);
-      }
-      seen.add(x);
+  if (!meeting.groupChat) throw new Error('Meeting is not a group chat');
+  if (!Array.isArray(participants)) throw new Error(`participants must be array, got ${typeof participants}`);
+  const max = Array.isArray(meeting.subSessions) ? meeting.subSessions.length : 0;
+  const seen = new Set();
+  for (const x of participants) {
+    if (!Number.isInteger(x) || x < 0 || x >= max) {
+      throw new Error(`Invalid group participant index: ${JSON.stringify(x)}`);
     }
-    validated = [...seen].sort((a, b) => a - b);
-  } else {
-    const free = require('./core/roundtable-free');
-    validated = free._validateParticipants(participants);
+    seen.add(x);
   }
+  const validated = [...seen].sort((a, b) => a - b);
 
   // FIX(T4 HIGH): 用 setter 写回 Map 原始对象（getMeeting 返回浅拷贝，赋值不写回）
   meetingManager.setParticipants(meetingId, validated);
@@ -1330,17 +1287,14 @@ ipcMain.handle('groupchat:set-participants', async (_e, { meetingId, participant
 // =====================================================================
 // Roundtable Mode (Sprint 2): fanout / debate / summary 三种轮次
 // =====================================================================
-const roundtable = require('./core/roundtable-orchestrator.js');
 const groupchat = require('./core/group-chat-orchestrator.js');
-const rtTimeline = require('./core/roundtable-timeline.js');
-const rtInjection = require('./core/roundtable-injection.js');
-const rtWatcher = require('./core/roundtable-watcher.js');
+const groupChatWatcher = require('./core/group-chat-watcher.js');
 const rtMemoryStore = require('./core/roundtable-memory/store.js');
 const rtCkptState = require('./core/roundtable-memory/checkpoint-state.js');
 const rtCkptTrigger = require('./core/roundtable-memory/checkpoint-trigger.js');
 const rtInbox = require('./core/roundtable-memory/inbox.js');
-rtWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
-let _roundtableInProgress = new Set(); // 同会议室单一并发：set of meetingId
+groupChatWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
+let _groupChatInProgress = new Set(); // 同一群聊单一并发：set of meetingId
 
 // Resend & Auto-Recovery（2026-05-03）—— per-sid patch-listener 注册表
 //   防跨轮污染：dispatchRoundtableTurn 入口先 cancelPatchListenersForSid(sid)
@@ -1400,8 +1354,8 @@ function _computeDispatchSpec(self, targetSubs, pilotSlot, subSidsRaw, effective
 }
 
 // 圆桌 PTY 通信 helpers（waitCliReady / sendToPty / extractStreamingText / cleanBufLen
-// / checkHostShellTakeover）已抽到 core/roundtable-watcher.js（rtWatcher）。
-// 调用方走 rtWatcher.X。dispatchRoundtableTurn 与 _rtWaitTurnComplete 仍在 main.js
+// / checkHostShellTakeover）已抽到 core/group-chat-watcher.js（groupChatWatcher）。
+// 调用方走 groupChatWatcher.X。dispatchRoundtableTurn 与 _rtWaitTurnComplete 仍在 main.js
 // 这里（依赖闭包过深，留下次专项 → core/roundtable-dispatcher.js）。
 
 
@@ -1459,9 +1413,8 @@ function _startPasteTrappedMonitor(sid, kind, meetingId) {
           try {
             sessionManager.writeToSession(sid, '\r');
             const meeting = meetingManager.getMeeting(meetingId);
-            if (meeting) {
-              const sceneObj = scenes.getScene(meeting.scene);
-              const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+            if (meeting && meeting.groupChat) {
+              const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
               const turnNum = orch && orch.state && orch.state.currentTurn;
               if (turnNum) orch.setSendStatus(turnNum, sid, 'enter_retry');
             }
@@ -1475,14 +1428,13 @@ function _startPasteTrappedMonitor(sid, kind, meetingId) {
         console.warn(`[paste-trapped] confirmed stuck for ${kind}(${sid.slice(0,8)}) — pushing roundtable-send-stuck IPC`);
         try {
           const meeting = meetingManager.getMeeting(meetingId);
-          if (meeting) {
-            const sceneObj = scenes.getScene(meeting.scene);
-            const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+          if (meeting && meeting.groupChat) {
+            const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
             const turnNum = orch && orch.state && orch.state.currentTurn;
             if (turnNum) orch.setSendStatus(turnNum, sid, 'stuck');
           }
         } catch (e) { console.warn('[paste-trapped] setSendStatus threw:', e && e.message); }
-        sendToRenderer('roundtable-send-stuck', { meetingId, sid, kind });
+        sendToRenderer('groupchat-send-stuck', { meetingId, sid, kind });
         _stopPasteTrappedMonitor(sid);
       } else if (r === 'ok') {
         // marker 消失 = paste 已被 \r 提交（或 streaming 内容覆盖输入框区域），停 monitor
@@ -1536,7 +1488,7 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
     onSoftAlert: (level) => {
       // 软提醒：T1=90s 推一次 banner；T2=180s 升级。永不强制 settle。
       try {
-        sendToRenderer('roundtable-soft-alert', {
+        sendToRenderer('groupchat-soft-alert', {
           meetingId, turnNum, mode, sid, label, level,
         });
       } catch {}
@@ -1549,15 +1501,13 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
     onTurnPatched: ({ sid: patchedSid, text, status }) => {
       try {
         const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-        const orch = meeting && meeting.groupChat
-          ? groupchat.getOrchestrator(getHubDataDir(), meetingId)
-          : roundtable.getOrchestrator(getHubDataDir(), meetingId, meeting ? scenes.getScene(meeting.scene) : null);
+        const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
         // 防护 #2：不覆盖 manual_extracted 状态（spec 要求）
         const turn = orch.state.turns.find(t => t.n === turnNum);
         const currentStatus = turn?.byStatus?.[patchedSid];
         const finalStatus = (currentStatus === 'manual_extracted') ? 'manual_extracted' : status;
         orch.patchTurnResult(turnNum, patchedSid, { text, status: finalStatus });
-        sendToRenderer('roundtable-turn-patched', {
+        sendToRenderer('groupchat-turn-patched', {
           meetingId, turnNum, sid: patchedSid, charCount: (text || '').length,
         });
       } catch (e) {
@@ -1582,13 +1532,13 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
       if (watcher.isSettled()) { clearInterval(streamTimer); streamTimer = null; return; }
       const session = sessionManager.getSession(sid);
       const kind = session?.kind || 'unknown';
-      const result = rtWatcher.extractStreamingText(sid, kind);
+      const result = groupChatWatcher.extractStreamingText(sid, kind);
       const hasContent = result.text.length > 10 || result.blocks.length > 0;
       // B1（2026-05-03 道雪）：每次心跳都计算 cleanBufLen 让 renderer 显示"已输出约 N 字"
       //   placeholder 路径改为每次都推（原 placeholderEmitted=true 后只推一次）。
       //   代价：60s 圆桌每家多 ~40 次 IPC（~120 次/3 sub），远小于真 streaming 的事件量。
       const buf = sessionManager.getSessionBuffer(sid) || '';
-      const cleanBufLen = rtWatcher.cleanBufLen(buf);
+      const cleanBufLen = groupChatWatcher.cleanBufLen(buf);
       if (hasContent) {
         try {
           onPartial({
@@ -1625,7 +1575,7 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   let hostShellHits = 0;
   const hostShellHeartbeat = setInterval(() => {
     if (watcher.isSettled()) { clearInterval(hostShellHeartbeat); return; }
-    if (rtWatcher.checkHostShellTakeover(sid)) {
+    if (groupChatWatcher.checkHostShellTakeover(sid)) {
       hostShellHits += 1;
       if (hostShellHits >= _HOST_SHELL_CONSECUTIVE_HITS) {
         console.warn(`[roundtable] host shell prompt detected for ${label}(${sid.slice(0, 8)}) on hit #${hostShellHits} — CLI self-exited, marking errored`);
@@ -1702,445 +1652,6 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
 // 主调度：mode = 'fanout' | 'debate'
 // userInput: 用户输入（fanout 是问题，debate 是补充）
 // 摘要功能 2026-05-08 整体下线：原 mode='summary' / @summary 命令路径已删
-async function dispatchRoundtableTurn(meetingId, { mode, userInput, dispatchMode }) {
-  if (_roundtableInProgress.has(meetingId)) {
-    return { status: 'busy', turnNum: null };
-  }
-  _roundtableInProgress.add(meetingId);
-  try {
-    const meeting = meetingManager.getMeeting(meetingId);
-    if (!isRoundtableCapableMeeting(meeting)) {
-      return { status: 'error', reason: 'not roundtable-capable mode', turnNum: null };
-    }
-
-    // 收集活跃 sid + 推 slot 索引（slot 由在 subSessions 数组的位置决定，与 kind 解耦）
-    const subSidsRaw = meeting.subSessions || [];
-    const subs = subSidsRaw
-      .map((sid, idx) => {
-        const s = sessionManager.getSession(sid);
-        if (!s || s.status === 'dormant') return null;
-        const slotId = slotIndexToId(idx);                    // 'pikachu'/'charmander'/'squirtle'/null（>3）
-        const slotName = slotId ? getSlotPromptName(slotId) : (s.title || s.kind || 'AI'); // "皮卡丘"/...
-        return { sid, kind: s.kind, slotId, slotIndex: idx, label: slotName };
-      })
-      .filter(Boolean);
-    if (subs.length === 0) return { status: 'no_subs', turnNum: null };
-
-    const labelMap = new Map(subs.map(x => [x.sid, x.label]));
-    const sidLabelFn = (sid) => labelMap.get(sid) || 'AI';
-    const sidBySlot = (slotId) => subs.find(x => x.slotId === slotId)?.sid;
-
-    // Card optimization Task 6（2026-05-01）— 本轮开始前清空所有 sub 的 streamingBuf。
-    //   不清的话，上一轮残留的 thinking/text/tool_use blocks 会污染本轮 partial preview。
-    for (const sub of subs) {
-      try { transcriptTap.clearStreamingBuf(sub.sid); } catch {}
-    }
-
-    const sceneObj = scenes.getScene(meeting.scene);
-    const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
-    // meeting-create-modal（2026-05-01）：把 sid → {kind, model} 注入 orchestrator，
-    //   触发老 aiStats kind 索引格式迁移，并让 completeTurn 给新 sid 项写元数据。
-    const sidInfoMap = {};
-    for (const sub of subs) {
-      const s = sessionManager.getSession(sub.sid);
-      sidInfoMap[sub.sid] = {
-        kind: sub.kind,
-        model: (s && s.currentModel && s.currentModel.id) || null,
-      };
-    }
-    if (typeof orch.setMeetingContext === 'function') orch.setMeetingContext(sidInfoMap);
-
-    // pilot redesign（2026-05-02）：dispatchMode × mode 正交路由。
-    // free-mode（2026-05-04）：meeting.mode === 'free' 时改为 participants 派生路由。
-
-    const isFreeMode = meeting.mode === 'free';
-    const free = isFreeMode ? require('./core/roundtable-free') : null;
-
-    let pilotSlot;
-    let effectiveDispatchMode;
-    let targetSubs;
-
-    if (isFreeMode) {
-      // Free 模式：从 participants 派生 effectiveDispatchMode + targets
-      pilotSlot = null;  // free 模式无主驾
-      // 容错：若 participants 仍是 null（异常状态），UI 应该已防发送，这里兜底为 [0,1,2]
-      const parts = Array.isArray(meeting.participants) ? meeting.participants : [0, 1, 2];
-
-      if (parts.length === 0) {
-        return { status: 'error', reason: '请勾选至少一位发言人', turnNum: null };
-      }
-      if (mode === 'debate' && parts.length < 2) {
-        return { status: 'error', reason: '辩论需要至少 2 位发言人', turnNum: null };
-      }
-
-      effectiveDispatchMode = free.derivePilotCompatDispatchMode(parts, mode);
-
-      // fanout / debate：按 participants 过滤
-      const partSet = new Set(parts);
-      targetSubs = subs.filter(x => partSet.has(x.slotIndex));
-    } else {
-      // Pilot 模式：原路径完全不动（一行不改）
-      //   pilotSlot ∈ {0,1,2,null}：主驾"角色"标识（仅 UI 红框，不影响 dispatch）。
-      //   dispatchMode ∈ {'all','pilot','observer'}：本轮谁开口。'pilot'/'observer' 要求 pilotSlot !== null。
-      //   兜底：dispatchMode 未传时取 meeting 持久化字段（默认 'all'）。
-      pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
-        ? meeting.pilotSlot : null;
-      effectiveDispatchMode = ['all', 'pilot', 'observer'].includes(dispatchMode)
-        ? dispatchMode
-        : (meeting.dispatchMode || 'all');
-
-      if (effectiveDispatchMode !== 'all' && pilotSlot === null) {
-        return { status: 'error', reason: `dispatchMode '${effectiveDispatchMode}' 需要先选定主驾`, turnNum: null };
-      }
-      if (effectiveDispatchMode === 'pilot' && mode === 'debate') {
-        // 主驾发言只有一家无法辩论
-        return { status: 'error', reason: '主驾发言模式下无法辩论（一家无法互辩）', turnNum: null };
-      }
-
-      targetSubs = (() => {
-        if (effectiveDispatchMode === 'all') return subs;
-        if (effectiveDispatchMode === 'pilot') {
-          return subs.filter(x => subSidsRaw.indexOf(x.sid) === pilotSlot);
-        }
-        // observer：排除主驾
-        return subs.filter(x => subSidsRaw.indexOf(x.sid) !== pilotSlot);
-      })();
-    }
-
-    if (targetSubs.length === 0) {
-      return { status: 'error', reason: 'dispatch 过滤后无活跃目标 session', turnNum: null };
-    }
-    maybeAutoTitleMeetingFromPrompt(meetingId, userInput || '');
-
-    // 方案 F · 2026-05-02：计算注入 map / projectCwd / timelinePath / sidRoleFn
-    //   - sidRoleFn：哪些 sid 是主驾、哪些是副驾（仅 pilotSlot 非 null 时有意义）
-    //   - projectCwd：用于决定 timeline.md 写哪里（主驾 cwd 优先，否则第一活跃 sub）
-    //   - timelinePath：每轮 prompt 末尾会附此路径
-    const sidRoleFn = (sid) => {
-      if (pilotSlot === null) return null;
-      const idx = subSidsRaw.indexOf(sid);
-      if (idx < 0) return null;
-      return idx === pilotSlot ? 'pilot' : 'observer';
-    };
-    const projectCwd = (() => {
-      const pilotSub = pilotSlot !== null ? subs.find(x => subSidsRaw.indexOf(x.sid) === pilotSlot) : null;
-      const candidate = pilotSub || subs[0];
-      if (!candidate) return null;
-      const sess = sessionManager.getSession(candidate.sid);
-      return (sess && sess.cwd) ? sess.cwd : null;
-    })();
-    let timelinePath = null;
-    try {
-      timelinePath = rtTimeline.ensureFile(meetingId, projectCwd, getHubDataDir(), sceneObj?.name || '通用圆桌');
-    } catch (e) {
-      console.warn('[roundtable] timeline ensureFile failed:', e.message);
-    }
-
-    // 圆桌记忆 phase 1（2026-05-07）：fanout 模式 bump user_msg_count（debate 不 bump）
-    //   debate 是同一用户问题的延续，不算"新一轮 user 发言"。
-    //   bump 失败不阻塞 dispatch（memory 是辅助层，主流程对其错误零依赖）。
-    // Phase 2 P0（2026-05-07）：memory 用独立 _memProjectCwd（跨 meeting 共享根），
-    //   与 timeline 的 projectCwd（per-meeting）解耦。
-    const _memScene = sceneObj?.key || meeting.scene || 'general';
-    const _memProjectCwd = _resolveMemoryProjectCwd(meetingId);
-    if (_memProjectCwd && _memScene && mode === 'fanout') {
-      try { rtCkptState.bumpUserMsgCount(_memProjectCwd, _memScene); }
-      catch (e) { console.warn('[mem-ckpt] bumpUserMsgCount failed:', e.message); }
-    }
-
-    // 决定本轮的目标 sid 集合 + 拼 per-sid prompt
-    const targets = []; // [{ sid, kind, label, prompt }]
-    let turnNum;
-
-    if (mode === 'fanout') {
-      // BUGFIX (4-way review · Codex#1)：旧逻辑 length > 1 是 off-by-one
-      //   beginTurn 不 push turns（completeTurn 才 push），所以 turns.length 即"已完成轮数"
-      //   第 2 轮 fanout 前 length===1（已完成第 1 轮），应注入；旧 length > 1 → 错过
-      //   改用 orch.getLastTurn() 正确取最近已完成轮（首轮自然返回 null）
-      const lastTurn = orch.getLastTurn();
-      turnNum = orch.beginTurn('fanout');
-      const targetSids = targetSubs.map(t => t.sid);
-      const injectMap = rtInjection.computeLastTurnInjection(lastTurn, targetSids, sidLabelFn, sidRoleFn);
-      for (const x of targetSubs) {
-        let prompt;
-        if (isFreeMode) {
-          // P6 (2026-05-04): 补传 sceneName + timelinePath 给字段化调度上下文 + footer
-          prompt = free.buildFreeFanoutPrompt({
-            meeting,
-            selfSlot: x.slotIndex,
-            participants: meeting.participants,
-            userInput,
-            lastTurnInjection: injectMap[x.sid] || null,
-            turnNum,
-            sceneName: sceneObj?.name || '通用圆桌',
-            timelinePath,
-          });
-        } else {
-          // BUGFIX (4-way review · Codex#2)：sameStageLabels 应基于 targetSubs（本轮真发言者）
-          //   而非全员 subs，否则 pilot/observer 模式下"同台"会含静音 AI
-          const dispatchSpec = _computeDispatchSpec(x, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
-          // P6 (2026-05-04): 补传 mySid + sidLabelFn 给字段化调度上下文用
-          prompt = orch.buildFanoutPrompt(turnNum, userInput, null, dispatchSpec, injectMap[x.sid] || null, timelinePath, x.sid, sidLabelFn);
-        }
-        targets.push({ ...x, prompt });
-      }
-    } else if (mode === 'debate') {
-      const last = orch.getLastTurn();
-      if (!last) {
-        orch.rollbackTurn(orch.state.currentTurn + 1); // 没启动也无所谓
-        return { status: 'error', reason: '没有上一轮可中转，请先用 fanout 提问', turnNum: null };
-      }
-      turnNum = orch.beginTurn('debate');
-      const targetSids = targetSubs.map(t => t.sid);
-      const injectMap = rtInjection.computeLastTurnInjection(last, targetSids, sidLabelFn, sidRoleFn);
-      for (const x of targetSubs) {
-        let prompt;
-        if (isFreeMode) {
-          // P6 (2026-05-04): 补传 sceneName + timelinePath
-          prompt = free.buildFreeDebatePrompt({
-            meeting,
-            selfSlot: x.slotIndex,
-            participants: meeting.participants,
-            userInput,
-            lastTurnInjection: injectMap[x.sid] || null,
-            turnNum,
-            sceneName: sceneObj?.name || '通用圆桌',
-            timelinePath,
-          });
-        } else {
-          const dispatchSpec = _computeDispatchSpec(x, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode);
-          // P6 (2026-05-04): 补传 mySid + sidLabelFn 给字段化调度上下文用
-          prompt = orch.buildDebatePrompt(turnNum, userInput, dispatchSpec, injectMap[x.sid] || null, timelinePath, x.sid, sidLabelFn);
-        }
-        targets.push({ ...x, prompt });
-      }
-    } else {
-      return { status: 'error', reason: 'unknown mode', turnNum: null };
-    }
-
-    // 圆桌记忆 phase 1（2026-05-07）：dispatch 前给每 slot prepend pending inbox（如有）
-    //   - 取候选时 remind_count++（pickForInject 内部）
-    //   - 注入到 prompt 头部，AI 自决调 memory_write 采纳 / 不调即拒绝
-    //   - 失败不阻塞主流程
-    //
-    // [Bug 1 fix · 2026-05-07 多路评审 P0] worker 跑期间跳过注入，避免主进程 pickForInject 与
-    //   worker reconcile/appendCandidates 并发读写 pending-{slot}.json 互相覆盖。
-    //   降级行为：worker 5s 窗口内 inbox 不显示 → 下回合就显示。可接受。
-    const _memWorkerLocked = (_memProjectCwd && _memScene)
-      ? rtCkptTrigger.isLocked(_memProjectCwd, _memScene)
-      : false;
-    if (_memProjectCwd && _memScene && !_memWorkerLocked) {
-      // [Bug 9 + Bug 14 fix · v2/v3 P2] pickForInject 写盘前再校验一次 lock
-      const _memIsLockedCheck = () => rtCkptTrigger.isLocked(_memProjectCwd, _memScene);
-      for (const t of targets) {
-        if (typeof t.slotId !== 'string') continue;
-        // Phase 3：从 sub session 派生 identity 而非直接用 slot
-        const _idInfo = _identityFromMeetingSlot(meeting, t.slotId);
-        if (!_idInfo || !_idInfo.identity) continue;
-        const _identity = _idInfo.identity;
-        try {
-          const r = rtInbox.pickForInject(_memProjectCwd, _memScene, _identity, 5, { isLockedCheck: _memIsLockedCheck });
-          // 防御性显式跳过 skippedSave（worker 在 picking 期间抢到 lock）— 不 inject 未持久化的 items
-          if (!r || r.skippedSave || !r.items || r.items.length === 0) continue;
-          const lines = r.items.map((it, i) =>
-            `${i + 1}. \`${it.kind || 'preference'}:${it.key}\` — ${it.content}\n   reason: ${it.reason || '-'} · priority: ${!!it.priority} · 已提醒 ${it.remind_count || 0}/${rtInbox.MAX_REMIND_COUNT} 次`
-          ).join('\n');
-          const head = `## [INBOX] 后台 worker 派生的记忆候选（${r.items.length} 条）\n\n` +
-            '检视后决策：\n' +
-            '- 看下来正确 → 调 `memory_write({scope:"scene", kind:"...", key:"...", content:"...", source:"inbox"})` 写到自己的记忆\n' +
-            '- 看下来不对 → 不必处理（提醒 ' + rtInbox.MAX_REMIND_COUNT + ' 次后自动归档；或直接 Edit 文件删该 item）\n\n' +
-            '候选列表：\n' + lines + '\n\n---\n\n';
-          t.prompt = head + (t.prompt || '');
-        } catch (e) {
-          console.warn('[mem-inbox] pickForInject failed slot=' + t.slotId + ':', e.message);
-        }
-      }
-    }
-
-    // Resend & Auto-Recovery（2026-05-03）— Step 1：每家 dispatch 前清掉它身上的老 patch listener
-    //   防跨轮污染：上一轮 patch 窗口可能还在 5min 内（PATCH_WINDOW_MS = 300_000）。
-    //   不清的话，本轮新 prompt 提交后老 listener 仍然听 turn-complete，
-    //   一旦 transcriptTap 再 emit 就会用新文本覆盖上一轮 record（污染历史）。
-    for (const t of targets) {
-      cancelPatchListenersForSid(t.sid);
-    }
-    // Resend & Auto-Recovery（2026-05-03）— Step 2：把 prompt 落到 orchestrator._activePrompts
-    //   resendCurrentPrompt（手动 [📤 发送] 按钮）从这里取 promptBy / promptHeaderBy；
-    //   completeTurn 时合并 promptHeaderBy / sendStatus 到 record（节流策略，promptBy 只活跃轮持有）。
-    for (const t of targets) {
-      try { orch.recordTurnPrompt(turnNum, t.sid, t.prompt); }
-      catch (e) { console.warn('[roundtable] recordTurnPrompt threw:', e && e.message); }
-    }
-
-    // 并行发送到所有目标 PTY
-    const sentTargets = [];
-    await Promise.all(targets.map(async (t) => {
-      // P0-4 修复(silent-failure-audit-2026-05-03): _rtSendToPty 在 session 并发关闭等
-      // 场景下可能抛 TypeError(getSessionBuffer 返回 undefined 后访问 .length)。原本未捕获
-      // 会让 Promise.all reject → dispatchRoundtableTurn try 直接跳 finally,turnNum 已经
-      // beginTurn 写了 state.json 但 rollbackTurn 永不调用 → orchestrator 留在非 idle 状态
-      // → 圆桌死锁需重启 Hub 才能恢复。lambda 内 try/catch 把异常降级为"未发出",
-      // 自动走下面 sentTargets.length === 0 的 rollback 兜底。
-      try {
-        // Resend & Auto-Recovery（2026-05-03）— sendToPty 现在返回 { ok, sendStatus } 或 false
-        //   sendStatus ∈ 'ok' | 'auto_recovered' | 'stuck'。stuck 时推 send-stuck IPC 让
-        //   renderer 把 [📤 发送] 按钮亮起；其它状态写到 _activePrompts 供 UI 调试。
-        try { transcriptTap.notePrompt(t.sid, t.kind, t.prompt); } catch {}
-        const sendResult = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
-        const ok = sendResult && sendResult.ok;
-        const sendStatus = sendResult && sendResult.sendStatus;
-        if (sendStatus) {
-          try { orch.setSendStatus(turnNum, t.sid, sendStatus); }
-          catch (e) { console.warn('[roundtable] setSendStatus threw:', e && e.message); }
-        }
-        if (sendStatus === 'stuck' && t.kind !== 'codex') {
-          // TODO（spec 协议偏差，2026-05-03 review）：spec 定义此 IPC payload 字段为
-          //   `mode: 'enter_only' | 'rewrite_full'`，但 T4 sendToPty 返回 { ok, sendStatus }
-          //   未带 mode 字段。当前推送 kind（AI 类型）作为占位，renderer 暂不消费此字段。
-          //   后续若 renderer 要按 mode 决定 resend 策略，需在 T4 sendToPty stuck 路径
-          //   返回 mode（echoSeen ? 'enter_only' : 'rewrite_full'），main.js 这里改读 sendResult.mode。
-          sendToRenderer('roundtable-send-stuck', {
-            meetingId, sid: t.sid, kind: t.kind,
-          });
-        }
-        if (ok) {
-          sentTargets.push(t);
-          console.log(`[roundtable] turn ${turnNum} ${mode} sent to ${t.kind}(${t.sid.slice(0,8)}) sendStatus=${sendStatus || 'ok'}`);
-          // 2026-05-05 P0 2A：sendToPty 自己说 ok，但 marker（如 codex 的
-          //   `[[Pasted Content N chars]]`）可能仍卡输入框。启 paste-trapped 监控；
-          //   Codex 先自动补 Enter，仍失败才推 send-stuck。非 Codex 保持旧提示。
-          if (sendStatus !== 'stuck' || t.kind === 'codex') {
-            _startPasteTrappedMonitor(t.sid, t.kind, meetingId);
-          }
-        } else {
-          console.log(`[roundtable] turn ${turnNum} ${mode} skip ${t.kind}(${t.sid.slice(0,8)}): not ready`);
-        }
-      } catch (e) {
-        console.warn(`[roundtable] turn ${turnNum} ${mode} sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
-      }
-    }));
-    if (sentTargets.length === 0) {
-      orch.rollbackTurn(turnNum);
-      return { status: 'no_sent', turnNum };
-    }
-
-    // 等所有 sent 的 turn-complete；单家完成立即推 partial-update 给 renderer 单卡片刷新
-    // Stage 2: Promise.all → Promise.allSettled，单家卡死/异常不阻塞整轮（其他家照常 settle）
-    console.log(`[roundtable] turn ${turnNum} waiting for ${sentTargets.length} turn-complete`);
-    const settled = await Promise.allSettled(sentTargets.map(t =>
-      _rtWaitTurnComplete(t.sid, t.label, {
-        meetingId, mode, turnNum,
-        disableHardTimeout: true,
-        onPartial: (partial) => {
-          const partialTextLen = (partial.text || '').length;
-          console.log(`[roundtable] turn ${turnNum} partial: ${partial.label} ${partial.status} (${partialTextLen} chars, ${(partial.blocks || []).length} blocks, src=${partial.source || '-'})`);
-          // Card redesign：转发 thinkSec/tokens 给 renderer 让卡片实时显示"本轮"统计
-          // Card optimization Task 6：blocks + source 字段让 renderer 用结构化渲染替代 plain text
-          sendToRenderer('roundtable-partial-update', {
-            meetingId, turnNum, mode,
-            sid: partial.sid, label: partial.label,
-            status: partial.status,
-            text: partial.text,
-            blocks: partial.blocks,
-            source: partial.source,
-            thinkSec: partial.thinkSec, tokens: partial.tokens,
-            cleanBufLen: partial.cleanBufLen,   // B1 道雪 2026-05-03 心跳字数
-          });
-        },
-      })
-    ));
-    // watcher 自身不会 reject（settle 都走 resolve 路径），但 Promise.allSettled 兜底处理
-    const results = settled.map((s, i) => s.status === 'fulfilled' ? s.value : {
-      sid: sentTargets[i].sid,
-      label: sentTargets[i].label,
-      status: 'errored',
-      text: '',
-      reason: s.reason?.message || 'Promise rejected',
-    });
-
-    // 持久化轮记录
-    // Stage 2 容错升级：构建 byMap + byStatus，让下个 turn 的 prompt builder 区分
-    //   completed/manual_extracted（正常引用文本）vs absent/errored（明确加注未参与）。
-    // Card redesign（2026-05-01）：构建 stats 让 orchestrator 累加 state.aiStats
-    //   跨轮持久化"累计思考秒数 / 累计 tokens"，卡片 row3/row4 显示。
-    // meeting-create-modal（2026-05-01）：sid 索引化，去掉硬编码 thinkSecByKind 字典。
-    //   orchestrator 会按 sid 累加到 state.aiStats[<sid>]，多 Claude slot 各自独立。
-    const byMap = {};
-    const byStatus = {};
-    const thinkSecBy = {};
-    const tokensBy = {};
-    for (const r of results) {
-      byMap[r.sid] = r.text || '';
-      byStatus[r.sid] = r.status || 'completed';
-      thinkSecBy[r.sid] = typeof r.thinkSec === 'number' ? r.thinkSec : 0;
-      tokensBy[r.sid]   = (r.tokens && typeof r.tokens.total === 'number') ? r.tokens.total : 0;
-    }
-    // 方案 F：在 meta 带上 dispatchMode，让 timeline 写入能记录
-    // 摘要功能 2026-05-08 整体下线：原 mode='summary' 的 meta.summarizer*/decisionTitle/
-    // archivedTo 写入及 .arena/sessions/ 归档已删。timeline.writeTurn 仍保留通用追加。
-    const meta = { dispatchMode: effectiveDispatchMode };
-    const turnRecord = orch.completeTurn(turnNum, mode, userInput || '', byMap, meta, byStatus, {
-      thinkSecBy, tokensBy,
-    });
-
-    // 方案 F：turn-complete 后追加到 timeline.md（系统侧自动维护）
-    try {
-      rtTimeline.writeTurn(meetingId, turnRecord, sceneObj?.name || '通用圆桌', projectCwd, getHubDataDir(), sidLabelFn);
-    } catch (e) {
-      console.warn(`[roundtable] timeline.writeTurn failed for turn ${turnNum}:`, e.message);
-      // 不阻塞主流程
-    }
-
-    sendToRenderer('roundtable-turn-complete', { meetingId, turnNum, mode, results, meta });
-
-    // 圆桌记忆 phase 1（2026-05-07）：本轮发完后异步触发 checkpoint worker（如条件达标）
-    //   - 仅 fanout/debate 触发
-    //   - 显式触发：用户输入含"记一下/总结一下/记下来/存档"
-    //   - setImmediate 延后到当前栈结束，避免阻塞 turn-complete 通知 renderer
-    //   - 失败不影响 turn 流程，已由 worker 自身写 checkpoint-state.last_failure_reason
-    if (_memProjectCwd && _memScene && (mode === 'fanout' || mode === 'debate')) {
-      const force = /记一下|总结一下|记下来|存档|存一下/.test(userInput || '');
-      // Phase 3：从本轮 sub sessions 派生当前 identities（worker 用作 IDENTITIES 列表）
-      const _curIdentities = [];
-      for (const sub of subs) {
-        if (typeof sub.slotId !== 'string') continue;
-        const idi = _identityFromMeetingSlot(meeting, sub.slotId);
-        if (idi && idi.identity && !_curIdentities.includes(idi.identity)) _curIdentities.push(idi.identity);
-      }
-      setImmediate(() => {
-        try {
-          const r = rtCkptTrigger.maybeRunCheckpoint({
-            projectCwd: _memProjectCwd,
-            scene: _memScene,
-            identities: _curIdentities,
-            turn: turnNum,
-            force,
-            onComplete: (res) => {
-              console.log(`[mem-ckpt] worker done turn=${turnNum} code=${res.code}`);
-              sendToRenderer('memory-event', { type: 'checkpoint-done', meetingId, scene: _memScene });
-            },
-            onError: (err, res) => {
-              const tail = (res && res.stderrTail) ? res.stderrTail.slice(-400) : '';
-              console.warn(`[mem-ckpt] worker failed turn=${turnNum}: ${err.message} ${tail}`);
-              sendToRenderer('memory-event', { type: 'checkpoint-failed', meetingId, scene: _memScene, error: err.message });
-            },
-          });
-          if (r.spawned) console.log(`[mem-ckpt] worker spawned turn=${turnNum} reason=${r.reason}`);
-          else console.log(`[mem-ckpt] worker skipped turn=${turnNum}: ${r.reason}`);
-        } catch (e) {
-          console.warn('[mem-ckpt] maybeRunCheckpoint threw:', e.message);
-        }
-      });
-    }
-
-    return { status: 'completed', turnNum, results, meta };
-  } finally {
-    _roundtableInProgress.delete(meetingId);
-  }
-}
-
-const _groupChatInProgress = new Set();
-
 function _groupMembersForMeeting(meeting) {
   const subSids = Array.isArray(meeting && meeting.subSessions) ? meeting.subSessions : [];
   const specs = Array.isArray(meeting && meeting.slotSpecs) ? meeting.slotSpecs : [];
@@ -2253,11 +1764,11 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
     await Promise.all(targets.map(async (t) => {
       try {
         try { transcriptTap.notePrompt(t.sid, t.kind, t.prompt); } catch {}
-        const sendResult = await rtWatcher.sendToPty(t.sid, t.prompt, t.kind);
+        const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
         const ok = sendResult && sendResult.ok;
         const sendStatus = sendResult && sendResult.sendStatus;
         if (sendStatus === 'stuck' && t.kind !== 'codex') {
-          sendToRenderer('roundtable-send-stuck', { meetingId, sid: t.sid, kind: t.kind });
+          sendToRenderer('groupchat-send-stuck', { meetingId, sid: t.sid, kind: t.kind });
         }
         if (ok) {
           sentTargets.push(t);
@@ -2280,7 +1791,7 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
         meetingId, mode: 'group', turnNum,
         disableHardTimeout: true,
         onPartial: (partial) => {
-          sendToRenderer('roundtable-partial-update', {
+          sendToRenderer('groupchat-partial-update', {
             meetingId, turnNum, mode: 'group',
             sid: partial.sid, label: partial.label,
             status: partial.status,
@@ -2308,25 +1819,12 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
     for (const m of members) memberBySid[m.sid] = m;
     const turnRecord = orch.completeTurn(turnNum, userInput || '', results, memberBySid);
     const meta = turnRecord.meta || { dispatchMode: 'group' };
-    sendToRenderer('roundtable-turn-complete', { meetingId, turnNum, mode: 'group', results, meta });
+    sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results, meta });
     return { status: 'completed', turnNum, results, meta };
   } finally {
     _groupChatInProgress.delete(meetingId);
   }
 }
-
-ipcMain.handle('roundtable:turn', async (_e, args) => {
-  // silent-failure-hunter M1（2026-05-04 道雪）：dispatchRoundtableTurn 多数错误返回
-  //   { status: 'error' } 不抛，但 beginTurn → _saveState 在磁盘满 / EBUSY 等场景会
-  //   throw 穿透 finally，rollbackTurn 跑不到 → orchestrator currentTurn 已递增但
-  //   永不复位 → 圆桌死锁要重启 Hub。包一层兜底变成 status=error 让 renderer 可恢复。
-  try {
-    return await dispatchRoundtableTurn(args.meetingId, args);
-  } catch (e) {
-    console.error('[roundtable:turn] unhandled throw, returning error to renderer:', e);
-    return { status: 'error', reason: (e && e.message) || 'internal_error', turnNum: null };
-  }
-});
 
 ipcMain.handle('groupchat:turn', async (_e, args = {}) => {
   try {
@@ -2338,13 +1836,6 @@ ipcMain.handle('groupchat:turn', async (_e, args = {}) => {
 });
 
 // 摘要功能 2026-05-08 整体下线：原 'roundtable:summary-trigger' IPC handler 已删
-
-ipcMain.handle('roundtable:get-state', (_e, { meetingId }) => {
-  const meeting = meetingManager.getMeeting(meetingId);
-  const sceneObj = meeting ? scenes.getScene(meeting.scene) : null;
-  const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
-  return orch.getState();
-});
 
 ipcMain.handle('groupchat:get-state', (_e, { meetingId }) => {
   const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
@@ -2389,7 +1880,7 @@ ipcMain.handle('groupchat-manual-extract', async (_e, { meetingId, sid, sincePro
   const kind = session?.kind || 'unknown';
   if (!extracted || !extracted.text) {
     try {
-      const fromPty = rtWatcher.extractStreamingText(sid, kind);
+      const fromPty = groupChatWatcher.extractStreamingText(sid, kind);
       if (fromPty && fromPty.text && fromPty.text.trim().length > 0) {
         extracted = {
           text: fromPty.text,
@@ -2447,7 +1938,7 @@ ipcMain.handle('groupchat-manual-extract', async (_e, { meetingId, sid, sincePro
             status: 'manual_extracted',
           });
           if (patched) {
-            sendToRenderer('roundtable-turn-patched', {
+            sendToRenderer('groupchat-turn-patched', {
               meetingId, turnNum: lastTurn.n, sid, charCount: (extracted.text || '').length,
             });
             return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_groupchat_turn', extractMode: extracted.extractMode || null };
@@ -2468,7 +1959,7 @@ ipcMain.handle('groupchat-manual-extract', async (_e, { meetingId, sid, sincePro
 //     才能区分"绑定失败"vs"绑定成功但 task_complete 未写"vs"任何 backend 都没该 sid"。
 //   返回值：JSON 可序列化的 { sessionsRoot, pending: [], bound: [], seen: [] } 快照。
 //   不暴露 timer / tail object / EventEmitter listeners 等内部句柄。
-ipcMain.handle('roundtable-codex-debug-state', async () => {
+ipcMain.handle('groupchat-codex-debug-state', async () => {
   try {
     return { ok: true, snapshot: transcriptTap.getCodexDebugSnapshot() };
   } catch (e) {
@@ -2480,7 +1971,7 @@ ipcMain.handle('roundtable-codex-debug-state', async () => {
 //   触发场景：用户报告"gemini 已回答但卡片提取不到"，需要看 _bound / _pending / _seen / projectDir
 //     状态来区分"projectDir 没解析到"vs"绑定成功但 turn-complete 未 emit"vs"任何 backend 都没该 sid"。
 //   返回 { tmpRoot, pending: [], bound: [], seen: [] }（gemini 单 root，不像 codex 多 sessionsRoots）。
-ipcMain.handle('roundtable-gemini-debug-state', async () => {
+ipcMain.handle('groupchat-gemini-debug-state', async () => {
   try {
     return { ok: true, snapshot: transcriptTap.getGeminiDebugSnapshot() };
   } catch (e) {
@@ -2493,17 +1984,14 @@ ipcMain.handle('roundtable-gemini-debug-state', async () => {
 //     renderer 收到 'roundtable-send-stuck' IPC 后让卡片亮 [📤 发送] 按钮，
 //     用户手动点击 → renderer invoke('roundtable-resend-prompt') → 走这里。
 //   行为：从 orchestrator._activePrompts 取本轮 prompt + promptHeader →
-//     调 rtWatcher.resendCurrentPrompt（按 promptHeader 指纹判 enter_only / rewrite_full）。
+//     调 groupChatWatcher.resendCurrentPrompt（按 promptHeader 指纹判 enter_only / rewrite_full）。
 //   成功后 setSendStatus 'auto_recovered' 让 UI 调试能看到。
-ipcMain.handle('roundtable-resend-prompt', async (_e, { meetingId, sid } = {}) => {
+ipcMain.handle('groupchat-resend-prompt', async (_e, { meetingId, sid } = {}) => {
   if (!meetingId || !sid) return { ok: false, reason: 'invalid_args' };
   const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting) return { ok: false, reason: 'meeting_not_found' };
-  const sceneObj = scenes.getScene(meeting.scene);
-  const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
+  if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
+  const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
   const turnNum = orch.state.currentTurn;
-  // 用 currentMode === 'idle' 检测活跃轮（completeTurn 不重置 currentTurn，只改 currentMode；
-  //   极短并发窗口下用户可能在 turn 已 settled 后点重发，需要拒掉避免二次发送）
   if (!turnNum || orch.state.currentMode === 'idle') {
     return { ok: false, reason: 'no_active_turn' };
   }
@@ -2511,27 +1999,22 @@ ipcMain.handle('roundtable-resend-prompt', async (_e, { meetingId, sid } = {}) =
   if (!active || !active.promptBy || !active.promptBy[sid]) {
     return { ok: false, reason: 'no_active_prompt' };
   }
-  const prompt = active.promptBy[sid];
-  const promptHeader = active.promptHeaderBy?.[sid] || '';
   const session = sessionManager.getSession(sid);
   const kind = session ? session.kind : 'unknown';
   try {
-    const r = await rtWatcher.resendCurrentPrompt({
-      sid, kind, prompt, promptHeader,
+    return await groupChatWatcher.resendCurrentPrompt({
+      sid,
+      kind,
+      prompt: active.promptBy[sid],
+      promptHeader: '',
       timing: { ENTER_RETRY_GAP_MS: 150, POST_ENTER_VERIFY_MS: 500 },
     });
-    if (r.ok) {
-      try { orch.setSendStatus(turnNum, sid, 'auto_recovered'); } catch {}
-    }
-    return r;
   } catch (e) {
-    console.error('[roundtable-resend-prompt] threw:', e);
+    console.error('[groupchat-resend-prompt] threw:', e);
     return { ok: false, reason: 'exception', detail: e.message };
   }
 });
 
-// 跳过本家：watcher settle 为 absent 状态，下游 prompt builder 过滤这家
-//   （过滤逻辑由 commit 4 P0-14 落地；本 commit 只设状态）。
 ipcMain.handle('groupchat-skip-participant', async (_e, { meetingId, sid } = {}) => {
   if (!sid) return { ok: false, reason: 'missing sid' };
   const watcher = _activeWatchers.get(sid);
@@ -2550,217 +2033,8 @@ ipcMain.handle('groupchat-skip-participant', async (_e, { meetingId, sid } = {})
 //   4. 创建独立 watcher 等 turn-complete（不挂到原 dispatch 的 Promise.allSettled）
 //   5. 期间推 partial-update 让卡片 UI 切回 thinking → streaming → completed
 //   6. settle 后调 orch.patchTurnResult patch lastTurn + 推 turn-complete 让 renderer 刷新
-ipcMain.handle('roundtable-resend-participant', async (_e, { meetingId, sid } = {}) => {
-  if (!meetingId || !sid) return { ok: false, reason: 'missing_args' };
-
-  // 防重入：同一 sid 同时只能跑一个 resend
-  if (_activeWatchers.has(sid)) {
-    return { ok: false, reason: 'already_active', detail: '该家正在等待中（resend 或原 turn 还没结束）' };
-  }
-
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting) return { ok: false, reason: 'meeting_not_found' };
-
-  const sceneObj = scenes.getScene(meeting.scene);
-  const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
-  const lastTurn = orch.getLastTurn();
-  if (!lastTurn) return { ok: false, reason: 'no_last_turn', detail: '没有可重新拉起的轮次' };
-
-  const session = sessionManager.getSession(sid);
-  if (!session) return { ok: false, reason: 'session_not_found' };
-  const kind = session.kind;
-  const label = session.title || kind;
-
-  console.log(`[resend] start sid=${sid.slice(0, 8)} kind=${kind} turn=${lastTurn.n} mode=${lastTurn.mode}`);
-
-  // Card optimization Task 6（2026-05-01）— resend 开始前清这家 streamingBuf
-  try { transcriptTap.clearStreamingBuf(sid); } catch {}
-
-  // 1. 立即推 partial-update：卡片切回 thinking（红色 → 进度条）
-  sendToRenderer('roundtable-partial-update', {
-    meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-    sid, label, status: 'streaming', text: '', blocks: [], source: 'tap',
-  });
-
-  // 2. 检测 PTY 是否需要重启 CLI
-  const needRelaunch = rtWatcher.checkHostShellTakeover(sid);
-  if (needRelaunch) {
-    console.log(`[resend] host shell detected, relaunching ${kind} CLI`);
-    if (!sessionManager.relaunchCli(sid)) {
-      sendToRenderer('roundtable-partial-update', {
-        meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-        sid, label, status: 'errored', text: '',
-      });
-      return { ok: false, reason: 'relaunch_failed', detail: `不支持的 kind=${kind}` };
-    }
-  } else {
-    // CLI 还活着但状态可能不对（被 PTY 末尾紊乱内容污染）→ 强制下次走冷启动确认 ready
-    sessionManager.setRoundtableReady(sid, false);
-  }
-
-  // 3. rebuild 本轮 prompt
-  const sidLabelFn = (s) => {
-    const sess = sessionManager.getSession(s);
-    return sess?.title || sess?.kind || 'AI';
-  };
-  let prompt;
-  try {
-    // FIX-F resend 路径：异常路径单家重发，使用最小可用参数（null 全部 → 退化为基本 prompt，
-    //   不含调度上下文段 / 上一轮注入 / timeline footer）。这是可接受降级，因为：
-    //   1. 主任务说明仍在（fanout 用户问题、debate 任务说明）
-    //   2. 该 sid PTY 上下文里仍有自己之前的轮次记忆
-    //   3. resend 是修复异常，不必复刻完整 plan-F prompt
-    if (lastTurn.mode === 'fanout') {
-      prompt = orch.buildFanoutPrompt(lastTurn.n, lastTurn.userInput, '', null, null, null);
-    } else if (lastTurn.mode === 'debate') {
-      // debate resend：仍构造 injectionPayload 让 AI 看到上上轮内容（如可用）
-      const prevTurn = orch.state.turns.length > 1 ? orch.state.turns[orch.state.turns.length - 2] : null;
-      const inj = rtInjection.computeLastTurnInjection(prevTurn, [sid], sidLabelFn, null);
-      prompt = orch.buildDebatePrompt(lastTurn.n, lastTurn.userInput, null, inj[sid] || null, null);
-    } else {
-      // 摘要功能 2026-05-08 整体下线：原 mode='summary' resend 分支已删
-      sendToRenderer('roundtable-partial-update', {
-        meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-        sid, label, status: 'errored', text: '',
-      });
-      return { ok: false, reason: 'unsupported_mode', detail: `未知 mode=${lastTurn.mode}` };
-    }
-  } catch (e) {
-    console.error('[resend] prompt build failed:', e);
-    sendToRenderer('roundtable-partial-update', {
-      meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-      sid, label, status: 'errored', text: '',
-    });
-    return { ok: false, reason: 'prompt_build_failed', detail: e.message };
-  }
-
-  // 4. _rtSendToPty 发送（含 ready 等待 + paste-detect 安静期）
-  // Resend & Auto-Recovery（2026-05-03）— sendToPty 返回 { ok, sendStatus } 或 false
-  //   resend-participant 路径不写 setSendStatus / 不推 send-stuck（无 turnNum 上下文，
-  //   且本路径已经有自己的 errored partial-update 兜底）
-  let sent = false;
-  try {
-    try { transcriptTap.notePrompt(sid, kind, prompt); } catch {}
-    const sendResult = await rtWatcher.sendToPty(sid, prompt, kind);
-    sent = sendResult && sendResult.ok;
-  }
-  catch (e) {
-    console.error('[resend] _rtSendToPty threw:', e);
-    sendToRenderer('roundtable-partial-update', {
-      meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-      sid, label, status: 'errored', text: '',
-    });
-    return { ok: false, reason: 'send_threw', detail: e.message };
-  }
-  if (!sent) {
-    sendToRenderer('roundtable-partial-update', {
-      meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-      sid, label, status: 'errored', text: '',
-    });
-    return { ok: false, reason: 'send_failed', detail: 'CLI 未就绪或活性兜底失败' };
-  }
-
-  // 5. 创建独立 watcher 等 turn-complete
-  const startTs = Date.now();
-  const watcher = createTurnCompletionWatcher({
-    transcriptTap, hubSessionId: sid, label,
-    onSoftAlert: (level) => {
-      try {
-        sendToRenderer('roundtable-soft-alert', {
-          meetingId, turnNum: lastTurn.n, mode: lastTurn.mode, sid, label, level,
-        });
-      } catch {}
-    },
-  });
-  _activeWatchers.set(sid, watcher);
-
-  // streaming partial（同 _rtWaitTurnComplete 的体验）
-  // Card optimization Task 5+6（2026-05-01）：partial-update payload 现在带 blocks/source 字段。
-  const streamTimer = setInterval(() => {
-    if (watcher.isSettled()) { clearInterval(streamTimer); return; }
-    const result = rtWatcher.extractStreamingText(sid, kind);
-    if (result.text.length > 10 || result.blocks.length > 0) {
-      try {
-        sendToRenderer('roundtable-partial-update', {
-          meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-          sid, label, status: 'streaming',
-          text: result.text,
-          blocks: result.blocks,
-          source: result.source,
-        });
-      } catch {}
-    }
-  }, 1500);
-
-  // 5min 硬 timeout（与原 dispatch 一致）
-  const hardTimeout = setTimeout(() => {
-    if (!watcher.isSettled()) {
-      console.warn(`[resend] hard timeout (5min) for ${label}, forcing skip`);
-      watcher.skip();
-    }
-  }, RT_TRANSITIONAL_HARD_TIMEOUT_MS);
-  hardTimeout.unref?.();
-
-  // FIX-D：心跳检测同样适用 resend
-  let hostShellHits = 0;
-  const heartbeat = setInterval(() => {
-    if (watcher.isSettled()) { clearInterval(heartbeat); return; }
-    if (rtWatcher.checkHostShellTakeover(sid)) {
-      hostShellHits += 1;
-      if (hostShellHits >= _HOST_SHELL_CONSECUTIVE_HITS) {
-        console.warn(`[resend] host shell during resend for ${label}, errored`);
-        try { watcher.markProcessExit({ code: -1, signal: 'cli_self_exit_during_resend' }); }
-        catch (e) {
-          // silent-failure-hunter M4（2026-05-04 道雪）：极端场景 watcher 引用坏掉时
-          //   markProcessExit throw 被吞 → watcher 不 settle → 等 5min 硬 timeout
-          //   才强制 skip。日志方便回查。
-          console.warn(`[resend] markProcessExit threw for ${label}:`, e && e.message);
-        }
-      }
-    } else {
-      hostShellHits = 0;
-    }
-  }, _HOST_SHELL_HEARTBEAT_MS);
-  heartbeat.unref?.();
-
-  let result;
-  try {
-    result = await watcher.wait();
-  } finally {
-    clearInterval(streamTimer);
-    clearInterval(heartbeat);
-    clearTimeout(hardTimeout);
-    _activeWatchers.delete(sid);
-  }
-
-  // 注入 thinkSec / tokens（同 _rtWaitTurnComplete 的逻辑）
-  result.thinkSec = Math.round((Date.now() - startTs) / 100) / 10;
-  try { result.tokens = transcriptTap.getLastTokens(sid) || null; }
-  catch { result.tokens = null; }
-
-  // 6. patch lastTurn + 推 partial-update 让 renderer 局部刷新
-  orch.patchTurnResult(lastTurn.n, sid, {
-    text: result.text || '',
-    status: result.status,
-    thinkSec: result.thinkSec,
-    tokens: result.tokens,
-  });
-
-  // 2026-05-04 道雪：单家 resend 只发 partial-update，不再复用整轮 turn-complete
-  //   —— 同 manual-extract 修复，避免误清整个 _partialBy 让其他家进 thinking 流光态。
-  sendToRenderer('roundtable-partial-update', {
-    meetingId, turnNum: lastTurn.n, mode: lastTurn.mode,
-    sid, label, status: result.status, text: result.text || '',
-    thinkSec: result.thinkSec, tokens: result.tokens,
-  });
-
-  console.log(`[resend] done sid=${sid.slice(0, 8)} status=${result.status} chars=${(result.text || '').length}`);
-  return {
-    ok: result.status === 'completed' || result.status === 'manual_extracted',
-    status: result.status,
-    text: result.text || '',
-    thinkSec: result.thinkSec,
-  };
+ipcMain.handle('groupchat-resend-participant', async () => {
+  return { ok: false, reason: 'unsupported', detail: 'group chat uses resend-prompt, manual extract, and skip recovery actions' };
 });
 
 ipcMain.handle('get-ring-buffer', (_e, sessionId) => {
@@ -2784,7 +2058,7 @@ ipcMain.handle('marker-status', (_e, sessionId) => {
 });
 
 // cli-ready-status IPC handler — 只负责"参数转发到 detector + 透传 roundtableReady 快路径"。
-//   判定逻辑全部在 core/roundtable-cli-ready-detector.js（marker + 静默双门 + monotonic guard）。
+//   判定逻辑全部在 core/group-chat-cli-ready-detector.js（marker + 静默双门 + monotonic guard）。
 //   renderer 每秒 invoke 一次，缓存到 _cliReadyCache[sid] 驱动卡片"创建中→待命"切换。
 ipcMain.handle('cli-ready-status', (_e, sessionId) => {
   if (!sessionId) return false;

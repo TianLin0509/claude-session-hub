@@ -9,7 +9,7 @@
 //      → 触发 triggerGroupChat → optimisticPartialBy 写 4 个 sid 的 thinking partial
 //      → refreshRoundtablePanel 渲染 4 个 pending article（data-gc-msg-id=pending-${sid}）
 //   5. 程序设置 .mr-gc-messages scrollTop 到中间位置（撑高内容确保可滚）
-//   6. 直接通过 ipcRenderer.emit 触发 'roundtable-partial-update' 模拟 backend
+//   6. 直接通过 ipcRenderer.emit 触发 'groupchat-partial-update' 模拟 backend
 //      流式回调（事件结构与真实 backend 一致，是 main → renderer 通道的内部 dispatch）
 //   7. 断言 .mr-gc-messages 仍存在、scrollTop 没被钳到 0
 //      （旧代码：partial 走 fallback panel.innerHTML 重渲 → scrollTop 被清；
@@ -234,15 +234,15 @@ function assertOk(cond, message, detail) {
     assertOk(scrollSetup.actual > 48 && scrollSetup.actual < scrollSetup.maxTop - 48, 'scrollTop 已设到中间（不在底部 48px stickToBottom 阈值内）', scrollSetup);
     await screenshot(ws, '3-scrolled-to-middle');
 
-    // === 6. 真实 dispatch 一次 'roundtable-partial-update' 事件（结构与 backend 真实 emit 一致） ===
+    // === 6. 真实 dispatch 一次 'groupchat-partial-update' 事件（结构与 backend 真实 emit 一致） ===
     //   ipcRenderer 是 EventEmitter，main 进程 webContents.send 在 renderer 端走的就是 emit。
     //   这里 renderer 自己 emit 等价于"main 真发了一次"，事件 payload 与真实 backend
-    //   transcript-tap.js / roundtable-partial-update 路径完全一致。
+    //   transcript-tap.js / groupchat-partial-update 路径完全一致。
     const sidForPartial = subSessions[0];
     const partialResult = await evalJs(ws, `(() => {
       const { ipcRenderer } = require('electron');
       // 模拟一次 streaming partial（status='streaming', text 含一段文字）
-      ipcRenderer.emit('roundtable-partial-update', null, {
+      ipcRenderer.emit('groupchat-partial-update', null, {
         meetingId: ${JSON.stringify(meetingId)},
         sid: ${JSON.stringify(sidForPartial)},
         status: 'streaming',
@@ -281,7 +281,7 @@ function assertOk(cond, message, detail) {
     // === 8. 再来一次 partial（completed 态）— 完整 streaming → completed 流程 ===
     await evalJs(ws, `(() => {
       const { ipcRenderer } = require('electron');
-      ipcRenderer.emit('roundtable-partial-update', null, {
+      ipcRenderer.emit('groupchat-partial-update', null, {
         meetingId: ${JSON.stringify(meetingId)},
         sid: ${JSON.stringify(sidForPartial)},
         status: 'completed',

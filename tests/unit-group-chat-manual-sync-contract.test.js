@@ -14,17 +14,14 @@ assert.ok(
   'AI waits must opt out of the transitional 5-minute hard timeout',
 );
 
-const roundtableWaitIdx = mainSrc.indexOf('console.log(`[roundtable] turn ${turnNum} waiting');
 const groupWaitIdx = mainSrc.indexOf("mode: 'group', turnNum");
-assert.ok(roundtableWaitIdx > 0, 'roundtable wait block must exist');
-assert.ok(groupWaitIdx > roundtableWaitIdx, 'group chat wait block must follow roundtable wait block');
 assert.ok(
-  mainSrc.slice(roundtableWaitIdx, groupWaitIdx).includes('disableHardTimeout: true,'),
-  'roundtable waits must also opt out of the transitional 5-minute hard timeout',
+  groupWaitIdx > 0 && mainSrc.slice(groupWaitIdx, groupWaitIdx + 400).includes('disableHardTimeout: true,'),
+  'group chat waits must opt out of the transitional 5-minute hard timeout',
 );
 
 assert.ok(
-  mainSrc.includes('rtWatcher.extractStreamingText(sid, kind)') &&
+  mainSrc.includes('groupChatWatcher.extractStreamingText(sid, kind)') &&
   mainSrc.includes("extractMode: 'pty_buffer_fallback'"),
   'manual extract must fall back to the visible PTY buffer when transcript extraction is not ready',
 );
@@ -38,7 +35,7 @@ assert.ok(
 
 assert.ok(
   rendererSrc.includes('data-gc-sync-answer') &&
-  rendererSrc.includes("ipcRenderer.invoke('roundtable-manual-extract'") &&
+  rendererSrc.includes("ipcRenderer.invoke('groupchat-manual-extract'") &&
   rendererSrc.includes('await refreshRoundtablePanel(meeting)'),
   'group chat AI bubbles must expose a manual sync button that refreshes the panel after extraction',
 );
