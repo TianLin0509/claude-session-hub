@@ -3843,6 +3843,8 @@ const hookServer = http.createServer((req, res) => {
 
   const isHook = req.method === 'POST' && req.url.startsWith('/api/hook/');
   const isStatus = req.method === 'POST' && req.url === '/api/status';
+  // 2026-05-16 道雪：防卡死 — 外部 HTTP 救援入口，tools/hub-escape.ps1 调
+  const isEscapeHome = req.method === 'POST' && req.url === '/api/escape-home';
   const isResearchFetchStock = req.method === 'POST' && req.url === '/api/research/fetch-stock';
   const isResearchFetchField = req.method === 'POST' && req.url === '/api/research/fetch-field';
   const isResearchFetchConcept = req.method === 'POST' && req.url === '/api/research/fetch-concept';
@@ -3858,7 +3860,7 @@ const hookServer = http.createServer((req, res) => {
   const isMemorySearch = req.method === 'POST' && req.url === '/api/roundtable/memory-search';
   const isMemoryList = req.method === 'POST' && req.url === '/api/roundtable/memory-list';
   const isMemoryRoute = isMemoryWrite || isMemorySearch || isMemoryList;
-  if (!isHook && !isStatus && !isResearchFetch && !isMemoryRoute) {
+  if (!isHook && !isStatus && !isResearchFetch && !isMemoryRoute && !isEscapeHome) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -3874,6 +3876,15 @@ const hookServer = http.createServer((req, res) => {
     if (tooBig) { res.writeHead(413); res.end('{}'); return; }
     let parsed;
     try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+    // 2026-05-16 道雪：外部 HTTP 救援 — tools/hub-escape.ps1 调这条路由触发 escapeToHome()
+    if (isEscapeHome) {
+      if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
+      console.log('[escape-home] HTTP triggered');
+      sendToRenderer('escape-home');
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true, pid: process.pid }));
+      return;
+    }
     // Research mode MCP callbacks (loopback)：fetch_lindang_stock / fetch_concept_stocks / fetch_sector_overview
     if (isResearchFetch) {
       if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
