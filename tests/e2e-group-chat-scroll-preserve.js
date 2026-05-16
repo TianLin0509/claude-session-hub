@@ -7,7 +7,7 @@
 //   3. 按 e2e-group-chat-mode.js 模板创建 4 成员群聊 meeting，切到聊天视图
 //   4. 通过 ipcRenderer 真实 invoke 'groupchat:turn' 发一条 user 消息
 //      → 触发 triggerGroupChat → optimisticPartialBy 写 4 个 sid 的 thinking partial
-//      → refreshRoundtablePanel 渲染 4 个 pending article（data-gc-msg-id=pending-${sid}）
+//      → refreshGroupChatPanel 渲染 4 个 pending article（data-gc-msg-id=pending-${sid}）
 //   5. 程序设置 .mr-gc-messages scrollTop 到中间位置（撑高内容确保可滚）
 //   6. 直接通过 ipcRenderer.emit 触发 'groupchat-partial-update' 模拟 backend
 //      流式回调（事件结构与真实 backend 一致，是 main → renderer 通道的内部 dispatch）

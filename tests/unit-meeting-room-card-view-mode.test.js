@@ -11,7 +11,7 @@ assert.ok(js.includes('id="mr-btn-view-parallel"'), 'header renders parallel mod
 assert.ok(js.includes('id="mr-btn-view-tab"'), 'header renders tab mode button');
 assert.ok(!js.includes('id="mr-btn-density"'), 'old density button is removed from header');
 assert.ok(js.includes('data-rt-card-tab-sid'), 'tab mode renders per-AI card tabs');
-assert.ok(js.includes("_focusRoundtableSession(meeting, sid)"), 'card tab click switches focused AI');
+assert.ok(js.includes("_focusGroupChatSession(meeting, sid)"), 'card tab click switches focused AI');
 assert.ok(js.includes('if (_isCardTabMode()) return;'), 'card body click is inert in tab mode');
 
 assert.ok(css.includes('.mr-view-toggle'), 'header segmented view toggle is styled');

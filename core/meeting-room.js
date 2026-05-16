@@ -472,7 +472,7 @@ class MeetingRoomManager {
   }
 }
 
-function isRoundtableCapableMeeting(meeting) {
+function isGroupChatCapableMeeting(meeting) {
   return !!(meeting && meeting.scene);
 }
 
@@ -513,7 +513,7 @@ function isSlotParticipatingThisTurn(meeting, slotIndex) {
 
 module.exports = {
   MeetingRoomManager,
-  isRoundtableCapableMeeting,
+  isGroupChatCapableMeeting,
   isSlotParticipatingThisTurn,
   MEETING_MODES,
 };

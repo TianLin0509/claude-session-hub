@@ -36,7 +36,7 @@ assert.ok(
 assert.ok(
   rendererSrc.includes('data-gc-sync-answer') &&
   rendererSrc.includes("ipcRenderer.invoke('groupchat-manual-extract'") &&
-  rendererSrc.includes('await refreshRoundtablePanel(meeting)'),
+  rendererSrc.includes('await refreshGroupChatPanel(meeting)'),
   'group chat AI bubbles must expose a manual sync button that refreshes the panel after extraction',
 );
 

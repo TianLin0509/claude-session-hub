@@ -36,7 +36,7 @@ if (typeof document !== 'undefined') (function () {
   // are accessible via the global lexical scope. We access them directly.
 
   // 所有场景(general/research)在 UI 渲染上完全一致(卡片+CLI)。
-  // 与 core/meeting-room.js 的 isRoundtableCapableMeeting 语义一致。
+  // 与 core/meeting-room.js 的 isGroupChatCapableMeeting 语义一致。
   function _isPanelCapableMeeting(m) {
     return !!(m && m.scene);
   }
@@ -46,7 +46,7 @@ if (typeof document !== 'undefined') (function () {
   // 现仅支持 @debate / @all / @<slot>（@<slot> 仅用于剥前缀，仍走 fanout）
   const _RT_SLOT_ALT = slotIdRegexAlternation();
   const _tokenRe = new RegExp('^@(' + _RT_SLOT_ALT + ')\\b\\s*', 'i');
-  function parseRoundtableCommand(text, meeting) {
+  function parseGroupChatCommand(text, meeting) {
     if (!meeting || !meeting.scene) return { type: 'normal', text, targets: null };
     let rest = text.trim();
     const debateRe = /^@debate\b\s*/i;
@@ -157,7 +157,7 @@ if (typeof document !== 'undefined') (function () {
       }
     }
     const active = meeting || (activeMeetingId && meetingData[activeMeetingId]);
-    if (active && _isPanelCapableMeeting(active)) refreshRoundtablePanel(active);
+    if (active && _isPanelCapableMeeting(active)) refreshGroupChatPanel(active);
     if (typeof _relayoutMeetingRoom === 'function') {
       setTimeout(() => _relayoutMeetingRoom(), 260);
     }
@@ -181,7 +181,7 @@ if (typeof document !== 'undefined') (function () {
       // 视图切换是纯 renderer 状态，先用已有 cache 同步重绘，避免 header 已切换
       // 但异步 get-state 尚未返回时主体仍停在上一种视图。
       _renderActivePanelFromCache(active);
-      refreshRoundtablePanel(active, { expectedGroupViewMode: next });
+      refreshGroupChatPanel(active, { expectedGroupViewMode: next });
     }
     if (typeof _relayoutMeetingRoom === 'function') {
       setTimeout(() => _relayoutMeetingRoom(), 160);
@@ -201,7 +201,7 @@ if (typeof document !== 'undefined') (function () {
       }
     } catch {}
     const active = meeting || (activeMeetingId && meetingData[activeMeetingId]);
-    if (active && _isPanelCapableMeeting(active)) refreshRoundtablePanel(active);
+    if (active && _isPanelCapableMeeting(active)) refreshGroupChatPanel(active);
     if (typeof _relayoutMeetingRoom === 'function') {
       setTimeout(() => _relayoutMeetingRoom(), 120);
     }
@@ -389,7 +389,7 @@ if (typeof document !== 'undefined') (function () {
     if (typeof activeMeetingId !== 'undefined' && activeMeetingId && _rtViewingTurnN[activeMeetingId]) {
       delete _rtViewingTurnN[activeMeetingId];
       const m = (typeof meetings !== 'undefined' && meetings) ? meetings[activeMeetingId] : null;
-      if (m) refreshRoundtablePanel(m);
+      if (m) refreshGroupChatPanel(m);
     }
   });
   document.addEventListener('click', function _rtFocusBlankClickHandler(ev) {
@@ -1100,7 +1100,7 @@ if (typeof document !== 'undefined') (function () {
     else if (statusCls === 'streaming') cls.push('streaming-card');
     // Phase 6(2026-05-05 道雪): completed-card → 触发头像旁完成打勾动画(0.4s 弹出 + 留显)
     else if (statusCls === 'completed' || statusCls === 'manual_extracted') cls.push('completed-card');
-    // T6（2026-05-03）：send-stuck 数据驱动，refreshRoundtablePanel 重渲后保留
+    // T6（2026-05-03）：send-stuck 数据驱动，refreshGroupChatPanel 重渲后保留
     if (sendStuck) cls.push('send-stuck');
 
     const modelBadge = modelName ? `<span class="mr-ft-model ${slotCls}">${escapeHtml(modelName)}</span>` : '';
@@ -1215,7 +1215,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   // Lazy load memory status for a meeting — 通过 IPC 同步三家 count/pending/hasProfile，
-  //   有变化才 trigger refreshRoundtablePanel。在 selectMeeting / 圆桌轮完成后调用。
+  //   有变化才 trigger refreshGroupChatPanel。在 selectMeeting / 圆桌轮完成后调用。
   async function _loadMemoryStatusForMeeting(meeting) {
     if (!meeting || !meeting.id || !Array.isArray(meeting.subSessions)) return;
     const meetingId = meeting.id;
@@ -1251,7 +1251,7 @@ if (typeof document !== 'undefined') (function () {
     }
     if (dirty && meetingId === activeMeetingId) {
       const m = meetingData[meetingId];
-      if (m) refreshRoundtablePanel(m);
+      if (m) refreshGroupChatPanel(m);
     }
   }
 
@@ -1869,21 +1869,21 @@ if (typeof document !== 'undefined') (function () {
   // 此时 server state 真实状态（含 idle）才被采纳。
   // partialBy 单独保留：轮中单家完成 IPC 推 partial-update，这是轮内增量，独立处理。
   // 2026-05-05 道雪 修3：cache 与 DOM 解耦的设计原则
-  //   旧实现：refreshRoundtablePanel 一手包办"拉 server state + merge cache + 写 DOM"，
+  //   旧实现：refreshGroupChatPanel 一手包办"拉 server state + merge cache + 写 DOM"，
   //     调用方必须保证 meeting 是当前 active 才能调，否则 DOM 会被错圆桌内容覆盖。
   //     副作用：所有 IPC handler 都用 `meetingId !== activeMeetingId → return` 守卫，
   //     非 active 圆桌的 cache 永远跟不上 server，切回时 partial 残留 → 卡片状态错乱。
   //   新设计：拆成两个函数 ——
-  //     _syncRoundtableCacheFromServer(meeting): 纯 cache 同步，**任何 meeting 都安全调用**
+  //     _syncGroupChatCacheFromServer(meeting): 纯 cache 同步，**任何 meeting 都安全调用**
   //       不动 DOM，IPC handler 在守卫之外也可调用
-  //     refreshRoundtablePanel(meeting): cache sync + DOM 重渲，**仅 active meeting 调用**
+  //     refreshGroupChatPanel(meeting): cache sync + DOM 重渲，**仅 active meeting 调用**
   //       内含 activeMeetingId race guard（修2 内置）
   //   这样所有圆桌的 cache 始终跟 server 同步，切换体验一致，杜绝残留。
 
   // 拉 server state + merge cache（含 optimistic 与 prev._partialBy 合并），写 _rtPanelState。
   // 不写 DOM 不调 _ensureRtPanel，任何 meeting 都能调。
   // 返回 { state, ok: bool }，ok=false 表示 server state 拉取失败或 meeting 不可 panel。
-  async function _syncRoundtableCacheFromServer(meeting) {
+  async function _syncGroupChatCacheFromServer(meeting) {
     if (!_isPanelCapableMeeting(meeting)) return { state: null, ok: false };
     let state;
     try {
@@ -1985,10 +1985,10 @@ if (typeof document !== 'undefined') (function () {
     return true;
   }
 
-  async function refreshRoundtablePanel(meeting, opts = {}) {
+  async function refreshGroupChatPanel(meeting, opts = {}) {
     if (!_isPanelCapableMeeting(meeting)) { _removeRtPanel(); return; }
     const expectedGroupViewMode = opts.expectedGroupViewMode || (meeting.groupChat ? _getGroupViewMode() : null);
-    const { state, ok } = await _syncRoundtableCacheFromServer(meeting);
+    const { state, ok } = await _syncGroupChatCacheFromServer(meeting);
     if (!ok) return;
     // 修2：async race guard — await 期间用户切走，老 refresh 不写 DOM（避免 panel 被错圆桌内容覆盖）
     if (meeting.id !== activeMeetingId) return;
@@ -2080,7 +2080,7 @@ if (typeof document !== 'undefined') (function () {
           }
           return;
         }
-        _focusRoundtableSession(meeting, sid);
+        _focusGroupChatSession(meeting, sid);
         _rtFocusedCardSid = sid;
         document.body.classList.add('mr-card-focus-on');
       });
@@ -2157,12 +2157,12 @@ if (typeof document !== 'undefined') (function () {
               btn.style.color = '#fff';
               btn.textContent = `✓ 已重发`;
               _btnTextHandledExternally = true;
-              // H2 数据驱动：重发成功后清掉 sendStatus='stuck'，由 refreshRoundtablePanel 重渲清除视觉
+              // H2 数据驱动：重发成功后清掉 sendStatus='stuck'，由 refreshGroupChatPanel 重渲清除视觉
               const cachedForResend = _rtPanelState[meeting.id];
               if (cachedForResend && cachedForResend._partialBy && cachedForResend._partialBy[sid]) {
                 delete cachedForResend._partialBy[sid].sendStatus;
               }
-              refreshRoundtablePanel(meeting);
+              refreshGroupChatPanel(meeting);
               setTimeout(() => {
                 btn.style.background = '';
                 btn.style.color = '';
@@ -2294,14 +2294,14 @@ if (typeof document !== 'undefined') (function () {
         } else {
           _rtViewingTurnN[meeting.id] = n;
         }
-        refreshRoundtablePanel(meeting);
+        refreshGroupChatPanel(meeting);
       });
     });
     panel.querySelectorAll('[data-rt-card-tab-sid]').forEach(tab => {
       tab.addEventListener('click', (ev) => {
         ev.stopPropagation();
         const sid = tab.getAttribute('data-rt-card-tab-sid');
-        if (sid) _focusRoundtableSession(meeting, sid);
+        if (sid) _focusGroupChatSession(meeting, sid);
       });
     });
     panel.querySelectorAll('[data-gc-view-card]').forEach(btn => {
@@ -2372,7 +2372,7 @@ if (typeof document !== 'undefined') (function () {
           }
           btn.textContent = '已同步';
           btn.classList.add('ok');
-          await refreshRoundtablePanel(meeting);
+          await refreshGroupChatPanel(meeting);
           setTimeout(() => {
             btn.textContent = oldText;
             btn.classList.remove('ok');
@@ -2405,7 +2405,7 @@ if (typeof document !== 'undefined') (function () {
           console.error('[groupchat] set participants failed:', err);
         }
         renderToolbar(meetingData[meeting.id] || meeting);
-        refreshRoundtablePanel(meetingData[meeting.id] || meeting);
+        refreshGroupChatPanel(meetingData[meeting.id] || meeting);
       });
     });
     // 时光机 banner 退出按钮
@@ -2413,12 +2413,12 @@ if (typeof document !== 'undefined') (function () {
     if (ttExitBtn) {
       ttExitBtn.addEventListener('click', () => {
         delete _rtViewingTurnN[meeting.id];
-        refreshRoundtablePanel(meeting);
+        refreshGroupChatPanel(meeting);
       });
     }
     // 2026-05-05 道雪：用户提问 banner 展开/折叠按钮。点 ▾ → 切 .expanded class,
     //   text 从 ellipsis 单行变 pre-wrap 多行;按钮 transform rotate 180° (CSS 控制)。
-    //   局部 toggle 不调 refreshRoundtablePanel,避免重渲后 expanded 状态丢失。
+    //   局部 toggle 不调 refreshGroupChatPanel,避免重渲后 expanded 状态丢失。
     const userqToggle = panel.querySelector('[data-action="userq-toggle"]');
     if (userqToggle) {
       userqToggle.addEventListener('click', (ev) => {
@@ -2697,14 +2697,14 @@ if (typeof document !== 'undefined') (function () {
       cached.currentMode = 'group';
       cached._partialBy = null;
     }
-    refreshRoundtablePanel(meeting);
+    refreshGroupChatPanel(meeting);
     renderToolbar(meeting);
 
     const clearOptimistic = () => {
       delete _rtOptimisticTurn[meeting.id];
       const c = _rtPanelState[meeting.id];
       if (c) c.currentMode = null;
-      refreshRoundtablePanel(meeting);
+      refreshGroupChatPanel(meeting);
       renderToolbar(meeting);
     };
 
@@ -2762,7 +2762,7 @@ if (typeof document !== 'undefined') (function () {
       if (typeof count === 'number') _memStatusBy[meetingId][slot].count = count;
       if (meetingId === activeMeetingId) {
         const m = meetingData[meetingId];
-        if (m) refreshRoundtablePanel(m);
+        if (m) refreshGroupChatPanel(m);
       }
       return;
     }
@@ -2791,7 +2791,7 @@ if (typeof document !== 'undefined') (function () {
     //   非 active 圆桌的全员完成通知由 renderer.js 监听同 IPC 累加 meeting.unreadCount
     //   触发侧栏 has-unread + ⏸ 等你 badge，不在此处理。
     if (meetingId !== activeMeetingId) return;
-    refreshRoundtablePanel(meeting);
+    refreshGroupChatPanel(meeting);
     if (cached) renderToolbar(meeting);
   });
 
@@ -2838,8 +2838,8 @@ if (typeof document !== 'undefined') (function () {
       // 没 cache 说明用户从没打开过这个圆桌 → 异步拉 server state 建 cache。
       //   本次 partial 不写（下次 partial 来时 cache 已建会正常合并），
       //   保持与旧版行为一致避免占位 cache 导致 lastTurn=null 渲染不完整。
-      _syncRoundtableCacheFromServer(meeting).then(({ ok }) => {
-        if (ok && meetingId === activeMeetingId) refreshRoundtablePanel(meeting);
+      _syncGroupChatCacheFromServer(meeting).then(({ ok }) => {
+        if (ok && meetingId === activeMeetingId) refreshGroupChatPanel(meeting);
       });
       return;
     }
@@ -2872,7 +2872,7 @@ if (typeof document !== 'undefined') (function () {
     // 2026-05-05 道雪：时光机模式短路 — 用户在看第 N 轮历史快照时，partial-update
     //   不应该把卡片 outerHTML 替换为最新 streaming 内容（否则用户感知"被强制跳回最新轮"）。
     //   cache 已经在上面更新（保持一致性，用户退出时光机后即可看到最新态），仅跳过 DOM patch。
-    //   refreshRoundtablePanel 全量路径走 _renderFusedTabs 已有 isTimeTravel 分支，不受影响。
+    //   refreshGroupChatPanel 全量路径走 _renderFusedTabs 已有 isTimeTravel 分支，不受影响。
     if (typeof _rtViewingTurnN[meetingId] === 'number') return;
 
     // 2026-05-15 道雪 群聊弹顶 bug 修复：群聊视图（聊天流模式）走专属局部 patch
@@ -2937,7 +2937,7 @@ if (typeof document !== 'undefined') (function () {
       const newPreview = newSlotEl.querySelector('.mr-ft-preview');
       if (newPreview && savedScrollTop > 0) newPreview.scrollTop = savedScrollTop;
     }
-    // 应用 pilot 视觉（红框）— 与全量 refreshRoundtablePanel 保持一致
+    // 应用 pilot 视觉（红框）— 与全量 refreshGroupChatPanel 保持一致
     if (meeting.mode !== 'free') {
       const pilotSlotForVisual = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
         ? meeting.pilotSlot : null;
@@ -3020,7 +3020,7 @@ if (typeof document !== 'undefined') (function () {
   });
 
   // T6（2026-05-03）：send-stuck 事件 → 数据驱动写 _partialBy[sid].sendStatus='stuck'，
-  //   再 refreshRoundtablePanel 重渲——这样 innerHTML 重渲后状态也能保留（H2 数据驱动方案）。
+  //   再 refreshGroupChatPanel 重渲——这样 innerHTML 重渲后状态也能保留（H2 数据驱动方案）。
   //   H1 修复：补 activeMeetingId 守卫，与其他 roundtable-* 监听器保持一致。
   ipcRenderer.on('groupchat-send-stuck', (_e, { meetingId, sid /*, kind, mode */ }) => {
     const meeting = meetingData[meetingId];
@@ -3046,7 +3046,7 @@ if (typeof document !== 'undefined') (function () {
 
   // T6（2026-05-03）：turn-patched 事件 → 卡片右上角浮"自动补全 +N 字"角标 + 触发刷新
   //   H1 修复：补 activeMeetingId 守卫。
-  //   M2 修复（最小化方案）：先 await refreshRoundtablePanel 拿最新 turn meta 重渲，
+  //   M2 修复（最小化方案）：先 await refreshGroupChatPanel 拿最新 turn meta 重渲，
   //     再追加 badge 到新 DOM 节点上（旧节点已被 innerHTML 替换），避免 badge 被立即抹掉。
   ipcRenderer.on('groupchat-turn-patched', async (_e, { meetingId, turnNum, sid, charCount }) => {
     const meeting = meetingData[meetingId];
@@ -3056,7 +3056,7 @@ if (typeof document !== 'undefined') (function () {
     //   "自动补全 +N 字"badge 是 3s 浮动动画，仅 active 时追加（跨切换语义弱，非 active 期间错过没影响）。
     if (meetingId === activeMeetingId) {
       // active：先重渲拿最新 turn meta，badge 在新 DOM 上追加
-      await refreshRoundtablePanel(meeting);
+      await refreshGroupChatPanel(meeting);
       const card = document.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
       if (card) {
         let badge = card.querySelector('.mr-ft-auto-patched-badge');
@@ -3073,7 +3073,7 @@ if (typeof document !== 'undefined') (function () {
       }
     } else {
       // 非 active：仅 cache 同步（不动 DOM）
-      _syncRoundtableCacheFromServer(meeting);
+      _syncGroupChatCacheFromServer(meeting);
     }
     console.log(`[renderer] roundtable-turn-patched turn=${turnNum} sid=${sid.slice(0,8)} +${charCount} chars`);
   });
@@ -3140,7 +3140,7 @@ if (typeof document !== 'undefined') (function () {
     // 两模式(通用/投研)进入会议室即刷新持久化面板
     // 先做一次同步渲染（保持响应不阻塞），await 首次 poll 后再 refresh 一次（修首屏闪烁）
     if (_isPanelCapableMeeting(meeting)) {
-      refreshRoundtablePanel(meeting, { forceGroupChatBottom: true });
+      refreshGroupChatPanel(meeting, { forceGroupChatBottom: true });
       // 异步等首次 poll 后再 refresh 一次（poll 内部已会重渲，这里只是兜底，不阻塞 UI）
       if (firstPoll && typeof firstPoll.then === 'function') {
         firstPoll.then(() => {
@@ -3313,7 +3313,7 @@ if (typeof document !== 'undefined') (function () {
         renderToolbar(updated);
         // 模式切换时同步刷新面板与终端容器可见性（E2E 修复）
         if (_isPanelCapableMeeting(updated)) {
-          refreshRoundtablePanel(updated);
+          refreshGroupChatPanel(updated);
         } else {
           _removeRtPanel();
         }
@@ -4258,7 +4258,7 @@ if (typeof document !== 'undefined') (function () {
 
       _bindPilotEvents(meeting, pilotSlot);
       // pilot redesign（2026-05-02）：不在这里调 _applyPilotCardVisual——renderToolbar 在 panel.innerHTML
-      //   重渲之前执行，对旧卡片设的 class 会被冲掉。统一由 refreshRoundtablePanel 在 DOM 重建后调用。
+      //   重渲之前执行，对旧卡片设的 class 会被冲掉。统一由 refreshGroupChatPanel 在 DOM 重建后调用。
       return;
     }
 
@@ -4403,9 +4403,9 @@ if (typeof document !== 'undefined') (function () {
     _hideRtMentionMenu();
     if (meeting && meeting.groupChat) return;
     // meeting-create-modal：slot mentions 优先按 sid focus（精确指向 slot）；
-    //   kind alias 走老 _focusRoundtableKind（kind 唯一时才注册此别名，确定不歧义）。
-    if (item.sid) _focusRoundtableSession(meeting, item.sid);
-    else if (item.kind) _focusRoundtableKind(meeting, item.kind);
+    //   kind alias 走老 _focusGroupChatKind（kind 唯一时才注册此别名，确定不歧义）。
+    if (item.sid) _focusGroupChatSession(meeting, item.sid);
+    else if (item.kind) _focusGroupChatKind(meeting, item.kind);
   }
 
   function _updateRtMentionMenu(inputBox, meeting) {
@@ -4459,7 +4459,7 @@ if (typeof document !== 'undefined') (function () {
     });
   }
 
-  function _focusRoundtableSession(meeting, sid) {
+  function _focusGroupChatSession(meeting, sid) {
     if (!meeting || !sid || !Array.isArray(meeting.subSessions) || !meeting.subSessions.includes(sid)) return false;
     const focused = meeting.focusedSub || meeting.subSessions[0];
     if (sid === focused) return true;
@@ -4468,15 +4468,15 @@ if (typeof document !== 'undefined') (function () {
     meeting.focusedSub = sid;
     ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { focusedSub: sid } });
     switchFocusTab(meeting, sid);
-    refreshRoundtablePanel(meeting);
+    refreshGroupChatPanel(meeting);
     renderHeader(meeting);
     return true;
   }
 
-  function _focusRoundtableKind(meeting, kind) {
+  function _focusGroupChatKind(meeting, kind) {
     const sid = findSessionByKind(meeting, kind);
     if (!sid) return false;
-    return _focusRoundtableSession(meeting, sid);
+    return _focusGroupChatSession(meeting, sid);
   }
 
   function _handleRtMentionKeydown(e, inputBox, meeting) {

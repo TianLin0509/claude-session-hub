@@ -9,8 +9,8 @@ const OPEN_MEETING_SRC = openMeetingMatch[0];
 
 assert.match(
   SRC,
-  /async function refreshRoundtablePanel\s*\(\s*meeting,\s*opts\s*=\s*\{\}\s*\)/,
-  'refreshRoundtablePanel must accept options for open-time scroll behavior'
+  /async function refreshGroupChatPanel\s*\(\s*meeting,\s*opts\s*=\s*\{\}\s*\)/,
+  'refreshGroupChatPanel must accept options for open-time scroll behavior'
 );
 
 assert.match(
@@ -21,7 +21,7 @@ assert.match(
 
 assert.match(
   OPEN_MEETING_SRC,
-  /refreshRoundtablePanel\s*\(\s*meeting,\s*\{\s*forceGroupChatBottom:\s*true\s*\}\s*\)/,
+  /refreshGroupChatPanel\s*\(\s*meeting,\s*\{\s*forceGroupChatBottom:\s*true\s*\}\s*\)/,
   'openMeeting must request bottom pinning when the meeting is opened from the sidebar'
 );
 
