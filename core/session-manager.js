@@ -118,12 +118,12 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
   }
 }
 
-// 圆桌 CLI 隔离 — 软隔离方案 (2026-05-02 / v2 白名单优化 2026-05-04 道雪)
-// 目的：圆桌成员的 Claude/DeepSeek/GLM CLI 启动时,
+// 群聊 CLI 隔离 — 软隔离方案 (2026-05-02 / v2 白名单优化 2026-05-04 道雪)
+// 目的：群聊成员的 Claude/DeepSeek/GLM CLI 启动时,
 //   `--settings <path>`  merge 一份"全 plugin disabled"的 settings.json
 //   （只覆盖 enabledPlugins 字段，不动主目录的 hooks/permissions/statusLine 等）。
 // 不动 CLAUDE_CONFIG_DIR — auto-memory / CLAUDE.md / OAuth 凭证全部继续共享。
-// 仅当 opts.meetingId 存在（即圆桌成员）时启用,主桌 Claude 会话不受影响。
+// 仅当 opts.meetingId 存在（即群聊成员）时启用,主桌 Claude 会话不受影响。
 //
 // ⚠ settings 兜底盲区 (v2 修订 · 2026-05-04 道雪):
 //   `enabledPlugins` 仅对 **plugin 内的 skill** 生效。
@@ -139,7 +139,7 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
 //   原方案另加 `--disable-slash-commands` (CLI 参数) 一刀切禁用所有斜杠命令,
 //   误杀 /model /compact /help /clear /config 等用户基本操作 (用户反馈痛点)。
 //   v2 删除该参数,改靠 settings 禁 plugin + BASE_RULES 软约束自定义 skill 双层兜底。
-const _ROUNDTABLE_DISABLE_PLUGINS = {
+const _GROUP_CHAT_DISABLE_PLUGINS = {
   'hookify@claude-plugins-official': false,
   'code-review@claude-plugins-official': false,
   'security-guidance@claude-plugins-official': false,
@@ -165,9 +165,9 @@ const _ROUNDTABLE_DISABLE_PLUGINS = {
   'ui-ux-pro-max@ui-ux-pro-max-skill': false,
 };
 
-function ensureRoundtableSettings(hubDataDir) {
-  const fp = path.join(hubDataDir, 'roundtable-claude-settings.json');
-  const content = JSON.stringify({ enabledPlugins: _ROUNDTABLE_DISABLE_PLUGINS }, null, 2);
+function ensureGroupChatSettings(hubDataDir) {
+  const fp = path.join(hubDataDir, 'group-chat-claude-settings.json');
+  const content = JSON.stringify({ enabledPlugins: _GROUP_CHAT_DISABLE_PLUGINS }, null, 2);
   try {
     let cur = '';
     try { cur = fs.readFileSync(fp, 'utf8'); } catch {}
@@ -176,14 +176,14 @@ function ensureRoundtableSettings(hubDataDir) {
       fs.writeFileSync(fp, content, 'utf8');
     }
   } catch (err) {
-    console.warn('[hub] failed to write roundtable settings:', err.message);
+    console.warn('[hub] failed to write group chat settings:', err.message);
   }
   return fp;
 }
 
-function buildRoundtableIsolationFlags(meetingId) {
+function buildGroupChatIsolationFlags(meetingId) {
   if (!meetingId) return '';
-  const settingsPath = ensureRoundtableSettings(getHubDataDir());
+  const settingsPath = ensureGroupChatSettings(getHubDataDir());
   // settings 路径含反斜杠 — Claude CLI 在 PowerShell 下接受双反斜杠转义
   const escaped = settingsPath.replace(/\\/g, '\\\\');
   // v2 (2026-05-04): 仅 --settings 单层兜底 (禁 plugin 内 skill);
@@ -670,14 +670,14 @@ class SessionManager extends EventEmitter {
     };
 
     const pendingTimers = [];
-    // roundtableReady：圆桌"快路径"缓存，CLI 首次 ready 后置 true，
+    // groupChatReady：群聊"快路径"缓存，CLI 首次 ready 后置 true，
     //   后续 _rtSendToPty 跳过 8s/8s/5s 硬 sleep；活性兜底失败时重置 false。
-    // roundtableLastActivity：PTY 最近一次产出输出的 ms 时间戳，用于活性兜底判断。
-    this.sessions.set(id, { info, pty: ptyProcess, pendingTimers, ringBuffer: '', roundtableReady: false, roundtableLastActivity: 0 });
+    // groupChatLastActivity：PTY 最近一次产出输出的 ms 时间戳，用于活性兜底判断。
+    this.sessions.set(id, { info, pty: ptyProcess, pendingTimers, ringBuffer: '', groupChatReady: false, groupChatLastActivity: 0 });
 
     ptyProcess.onData((data) => {
       const entry = this.sessions.get(id);
-      if (entry) entry.roundtableLastActivity = Date.now();
+      if (entry) entry.groupChatLastActivity = Date.now();
       this._appendToRingBuffer(id, data);
       this.onData(id, data);
       this._outputSeq += 1;
@@ -695,7 +695,7 @@ class SessionManager extends EventEmitter {
       const mid = entry.info ? entry.info.meetingId : null;
       this.sessions.delete(id);
       // Stage 2 P1-1：把 exit code/signal 透传给 onSessionClosed，
-      //   让 main.js 能把"PTY 异常退出"作为 L2 完成信号通知圆桌 watcher。
+      //   让 main.js 能把"PTY 异常退出"作为 L2 完成信号通知群聊 watcher。
       //   exitInfo 来自 node-pty：{ exitCode: number, signal: number | undefined }
       //   老调用方只用前两参（id, mid），无需调整；第 3 参可选。
       this.onSessionClosed(id, mid, exitInfo || null);
@@ -731,8 +731,8 @@ class SessionManager extends EventEmitter {
       if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
       }
-      // 圆桌成员：禁 skill + plugin（保留 auto-memory / CLAUDE.md / OAuth）
-      cmd += buildRoundtableIsolationFlags(opts.meetingId);
+      // 群聊成员：禁 skill + plugin（保留 auto-memory / CLAUDE.md / OAuth）
+      cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -870,8 +870,8 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${opts.model || 'deepseek-v4-pro'} --permission-mode bypassPermissions`;
       }
-      // 圆桌成员：禁 skill + plugin
-      cmd += buildRoundtableIsolationFlags(opts.meetingId);
+      // 群聊成员：禁 skill + plugin
+      cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -912,8 +912,8 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${opts.model || cv.GLM_MODEL} --permission-mode bypassPermissions`;
       }
-      // 圆桌成员：禁 skill + plugin
-      cmd += buildRoundtableIsolationFlags(opts.meetingId);
+      // 群聊成员：禁 skill + plugin
+      cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -954,8 +954,8 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${opts.model || cv.GPT_MODEL || 'gpt-5.4-high'} --permission-mode bypassPermissions`;
       }
-      // 圆桌成员：禁 skill + plugin
-      cmd += buildRoundtableIsolationFlags(opts.meetingId);
+      // 群聊成员：禁 skill + plugin
+      cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -996,8 +996,8 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${opts.model || cv.KIMI_MODEL || 'kimi-k2.5'} --permission-mode bypassPermissions`;
       }
-      // 圆桌成员：禁 skill + plugin
-      cmd += buildRoundtableIsolationFlags(opts.meetingId);
+      // 群聊成员：禁 skill + plugin
+      cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -1038,8 +1038,8 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${opts.model || cv.QWEN_MODEL || 'qwen3.6-plus'} --permission-mode bypassPermissions`;
       }
-      // 圆桌成员：禁 skill + plugin
-      cmd += buildRoundtableIsolationFlags(opts.meetingId);
+      // 群聊成员：禁 skill + plugin
+      cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -1124,21 +1124,21 @@ class SessionManager extends EventEmitter {
     return s ? { ...s.info } : undefined;
   }
 
-  // 圆桌快路径缓存：首次 _rtWaitCliReady 通过后置 true，后续 _rtSendToPty 跳过冷启动 sleep。
-  getRoundtableReady(sessionId) {
+  // 群聊快路径缓存：首次 _rtWaitCliReady 通过后置 true，后续 _rtSendToPty 跳过冷启动 sleep。
+  getGroupChatReady(sessionId) {
     const s = this.sessions.get(sessionId);
-    return s ? !!s.roundtableReady : false;
+    return s ? !!s.groupChatReady : false;
   }
 
-  setRoundtableReady(sessionId, ready) {
+  setGroupChatReady(sessionId, ready) {
     const s = this.sessions.get(sessionId);
-    if (s) s.roundtableReady = !!ready;
+    if (s) s.groupChatReady = !!ready;
   }
 
   // 返回 PTY 最近一次产出输出的 ms 时间戳，用于 _rtSendToPty 活性兜底（write 后 300ms 内有无 echo）。
-  getRoundtableLastActivity(sessionId) {
+  getGroupChatLastActivity(sessionId) {
     const s = this.sessions.get(sessionId);
-    return s ? (s.roundtableLastActivity || 0) : 0;
+    return s ? (s.groupChatLastActivity || 0) : 0;
   }
 
   // FIX-F（2026-05-01）：在已存在的 PTY 上重新启动 CLI 进程（不重 spawn PTY）。
@@ -1153,12 +1153,12 @@ class SessionManager extends EventEmitter {
     const kind = s.info && s.info.kind;
     const modelId = s.info && s.info.currentModel && s.info.currentModel.id;
     const meetingId = s.info && s.info.meetingId;
-    // 圆桌成员：复用 buildRoundtableIsolationFlags 输出 (v2 后仅 --settings,不含
+    // 群聊成员：复用 buildGroupChatIsolationFlags 输出 (v2 后仅 --settings,不含
     //   --disable-slash-commands;详见该函数注释)。
     // 用 isClaudeFamily 同时覆盖主 kind 与 *-resume 形态（含 gpt/kimi/qwen 跑在 Claude CLI 上）。
     const baseKind = (typeof kind === 'string') ? kind.replace(/-resume$/, '') : kind;
     const isClaudeCli = isClaudeFamily(baseKind);
-    const isolation = isClaudeCli ? buildRoundtableIsolationFlags(meetingId) : '';
+    const isolation = isClaudeCli ? buildGroupChatIsolationFlags(meetingId) : '';
     let cmd;
     if (kind === 'codex' || kind === 'codex-resume') {
       // relaunch：API 模式时 codex 用 isolated CODEX_HOME，从 info.codexSessionsRoot 反推
@@ -1189,7 +1189,7 @@ class SessionManager extends EventEmitter {
     }
     s.pty.write(cmd);
     // 重置 roundtable 快路径缓存：CLI 是新启动，必须重新走冷启动流程
-    s.roundtableReady = false;
+    s.groupChatReady = false;
     return true;
   }
 

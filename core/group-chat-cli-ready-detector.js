@@ -1,8 +1,8 @@
 'use strict';
-// 圆桌 CLI ready 判定（2026-05-03 道雪精测重构）
+// 群聊 CLI ready 判定（2026-05-03 道雪精测重构）
 //
-// 抽离动机：原 cli-ready 判定逻辑内联在 main.js 中，但本质是圆桌专属功能
-//   （非圆桌会话不需要"启动期检测"），混在 main.js 里跟其他 IPC/启动逻辑纠缠。
+// 抽离动机：原 cli-ready 判定逻辑内联在 main.js 中，但本质是群聊专属功能
+//   （非群聊会话不需要"启动期检测"），混在 main.js 里跟其他 IPC/启动逻辑纠缠。
 //   独立模块后 main.js 只管 IPC 转发 + sessionManager 桥接。
 //
 // 判定模型（双门 + monotonic guard）：
@@ -79,7 +79,7 @@ function isReady(sessionId, kind, buf) {
   }
 }
 
-// markReady(sessionId) — 外部强制锁（如 sessionManager.getRoundtableReady 已 true 时）
+// markReady(sessionId) — 外部强制锁（如 sessionManager.getGroupChatReady 已 true 时）
 function markReady(sessionId) {
   if (sessionId) {
     _stableState.delete(sessionId);

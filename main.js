@@ -839,7 +839,7 @@ sessionManager.onData = (sessionId, data) => {
 };
 
 sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
-  // Stage 2 P1-1：把 PTY 退出作为 L2 完成信号通知圆桌 watcher。
+  // Stage 2 P1-1：把 PTY 退出作为 L2 完成信号通知群聊 watcher。
   //   如果该 sid 当前正在 turn 等待中（_activeWatchers 命中），调 markProcessExit
   //   让 watcher 立即 settle（completed if exit=0 else errored），不再被任何
   //   "永远不来"的 L1 信号或 30min 过渡 timeout 拖住。
@@ -849,14 +849,14 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
     const adapted = exitInfo
       ? { code: typeof exitInfo.exitCode === 'number' ? exitInfo.exitCode : null, signal: exitInfo.signal }
       : { code: null };
-    console.log(`[roundtable] PTY exit detected for sid=${sessionId.slice(0, 8)} (code=${adapted.code} signal=${adapted.signal || 'none'}), notifying watcher`);
+    console.log(`[group-chat] PTY exit detected for sid=${sessionId.slice(0, 8)} (code=${adapted.code} signal=${adapted.signal || 'none'}), notifying watcher`);
     try { watcher.markProcessExit(adapted); } catch (e) {
-      console.warn('[roundtable] markProcessExit threw:', e.message);
+      console.warn('[group-chat] markProcessExit threw:', e.message);
     }
   }
 
   try { transcriptTap.unregisterSession(sessionId); } catch {}
-  // 圆桌 cli-ready monotonic guard 清理（独立模块，详见 core/group-chat-cli-ready-detector.js）
+  // 群聊 cli-ready monotonic guard 清理（独立模块，详见 core/group-chat-cli-ready-detector.js）
   try { cliReadyDetector.cleanup(sessionId); } catch {}
   sendToRenderer('session-closed', { sessionId });
   if (meetingId) {
@@ -881,7 +881,7 @@ function registerSessionForTap(session) {
   }
   catch (e) {
     // silent-failure-hunter L2（2026-05-04 道雪）：注册失败 → watcher 收不到 turn-complete L1
-    //   信号 → 圆桌等到 180s 软提醒才感知该家"卡住"。日志方便定位根因。
+    //   信号 → 群聊等到 180s 软提醒才感知该家"卡住"。日志方便定位根因。
     console.warn('[tap] registerSession failed for', session.id.slice(0, 8), session.kind, ':', e && e.message);
   }
 }
@@ -1408,7 +1408,7 @@ function _startPasteTrappedMonitor(sid, kind, meetingId) {
         return;
       }
       const buf = sessionManager.getSessionBuffer(sid) || '';
-      const activity = sessionManager.getRoundtableLastActivity(sid);
+      const activity = sessionManager.getGroupChatLastActivity(sid);
       const r = pasteTrappedDetector.tick(sid, buf, activity);
       if (r === 'stuck') {
         if (kind === 'codex' && monitor.enterRetries < PASTE_TRAPPED_CODEX_ENTER_RETRIES) {
@@ -1564,12 +1564,12 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
   }
 
   // 过渡期硬 timeout（FIX-B 已 30min→5min）。
-  // AI 圆桌/群聊允许长时间自由发言，不能因为固定 5min 把已在 shell 输出中的慢回答落成空气泡。
+  // AI 群聊允许长时间自由发言，不能因为固定 5min 把已在 shell 输出中的慢回答落成空气泡。
   let hardTimeout = null;
   if (!disableHardTimeout) {
     hardTimeout = setTimeout(() => {
       if (watcher.isSettled()) return;
-      console.warn(`[roundtable] transitional hard timeout (5min) hit for ${label}(${sid.slice(0, 8)}), forcing skip`);
+      console.warn(`[group-chat] transitional hard timeout (5min) hit for ${label}(${sid.slice(0, 8)}), forcing skip`);
       watcher.skip();
     }, RT_TRANSITIONAL_HARD_TIMEOUT_MS);
     hardTimeout.unref?.();
@@ -1582,9 +1582,9 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
     if (groupChatWatcher.checkHostShellTakeover(sid)) {
       hostShellHits += 1;
       if (hostShellHits >= _HOST_SHELL_CONSECUTIVE_HITS) {
-        console.warn(`[roundtable] host shell prompt detected for ${label}(${sid.slice(0, 8)}) on hit #${hostShellHits} — CLI self-exited, marking errored`);
+        console.warn(`[group-chat] host shell prompt detected for ${label}(${sid.slice(0, 8)}) on hit #${hostShellHits} — CLI self-exited, marking errored`);
         try { watcher.markProcessExit({ code: -1, signal: 'cli_self_exit' }); }
-        catch (e) { console.warn('[roundtable] markProcessExit (heartbeat) threw:', e.message); }
+        catch (e) { console.warn('[group-chat] markProcessExit (heartbeat) threw:', e.message); }
       }
     } else {
       hostShellHits = 0;
@@ -1609,11 +1609,11 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
       try {
         const extracted = await transcriptTap.extractLatestTurn(sid, sincePromptTs);
         if (extracted?.extractMode === 'final_answer' && extracted.text) {
-          console.log(`[roundtable] codex auto-extract final_answer for ${label}(${sid.slice(0, 8)}) ${extracted.text.length} chars`);
+          console.log(`[group-chat] codex auto-extract final_answer for ${label}(${sid.slice(0, 8)}) ${extracted.text.length} chars`);
           watcher.completeFromTranscript(extracted.text, 'codex_auto_extract_final_answer');
         }
       } catch (e) {
-        console.warn('[roundtable] codex auto-extract failed:', e && e.message);
+        console.warn('[group-chat] codex auto-extract failed:', e && e.message);
       } finally {
         autoExtractBusy = false;
       }
@@ -1647,7 +1647,7 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
     catch { result.tokens = null; }
 
     if (typeof onPartial === 'function') {
-      try { onPartial(result); } catch (e) { console.warn('[roundtable] onPartial error:', e.message); }
+      try { onPartial(result); } catch (e) { console.warn('[group-chat] onPartial error:', e.message); }
     }
     return result;
   });
@@ -2061,7 +2061,7 @@ ipcMain.handle('marker-status', (_e, sessionId) => {
   return summaryEngine.markerStatus(raw || '', sessionId);
 });
 
-// cli-ready-status IPC handler — 只负责"参数转发到 detector + 透传 roundtableReady 快路径"。
+// cli-ready-status IPC handler — 只负责"参数转发到 detector + 透传 groupChatReady 快路径"。
 //   判定逻辑全部在 core/group-chat-cli-ready-detector.js（marker + 静默双门 + monotonic guard）。
 //   renderer 每秒 invoke 一次，缓存到 _cliReadyCache[sid] 驱动卡片"创建中→待命"切换。
 ipcMain.handle('cli-ready-status', (_e, sessionId) => {
@@ -2069,7 +2069,7 @@ ipcMain.handle('cli-ready-status', (_e, sessionId) => {
   const session = sessionManager.getSession(sessionId);
   if (!session) return false;
   // 快路径：server 端任何路径确认 ready 后立即 surface（如 _rtSendToPty 已成功发过 prompt）
-  if (sessionManager.getRoundtableReady(sessionId)) {
+  if (sessionManager.getGroupChatReady(sessionId)) {
     cliReadyDetector.markReady(sessionId);
     return true;
   }
