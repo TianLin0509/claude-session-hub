@@ -5,6 +5,15 @@ const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
 const os = require('os');
+
+// 2026-05-16 道雪：防卡死后门 — 默认开 Chromium CDP 端口（OS 自动分配）。
+//   实际分配的端口在启动后写入 <dataDir>/control/<pid>.json 的 cdpPort 字段，
+//   救援脚本 tools/hub-escape.ps1 + Playwright/DevTools 可 attach 进 Hub。
+//   设环境变量 CLAUDE_HUB_NO_CDP=1 可关闭。
+//   必须在 app.whenReady() 之前 appendSwitch 才生效。
+if (process.env.CLAUDE_HUB_NO_CDP !== '1') {
+  app.commandLine.appendSwitch('remote-debugging-port', '0');
+}
 let QRCode = null;
 const { SessionManager, clearSessionManagerConfigCache } = require('./core/session-manager.js');
 const stateStore = require('./core/state-store.js');
