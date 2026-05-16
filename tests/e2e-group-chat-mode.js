@@ -196,7 +196,7 @@ function assertOk(cond, message, detail) {
     assertOk(chatState.hasChatShell, 'group room defaults to WeChat-like chat view', chatState);
     assertOk(chatState.sideCollapsed && chatState.sideDisplay === 'none' && chatState.sideToggleText.includes('4/4'),
       'group chat side member list is collapsed by default', chatState);
-    assertOk(!chatState.hasCardStrip, 'group default view does not render roundtable cards', chatState);
+    assertOk(!chatState.hasCardStrip, 'group default view does not render legacy card strip', chatState);
     assertOk(chatState.chatButtonActive && chatState.cardButtonExists, 'group header exposes chat/card view toggle', chatState);
     assertOk(chatState.sidebarSrcs.length === 4 && chatState.sidebarSrcs.every(src => src.includes('assets/ai-logos/')),
       'group sidebar mini avatars use AI company logos', chatState);
@@ -349,7 +349,7 @@ function assertOk(cond, message, detail) {
     assertOk(emptyState.placeholder.includes('@m1'), 'zero-selected placeholder explains @ routing', emptyState);
     assertOk(emptyState.avatarCount === 4, 'group toolbar renders all four selectable members', emptyState);
     assertOk(emptyState.memberCount === 4, 'group chat view keeps member list visible at zero selected members', emptyState);
-    assertOk(emptyState.modeChipsText.trim() === '', 'group chat hides fixed roundtable debate mode menu', emptyState);
+    assertOk(emptyState.modeChipsText.trim() === '', 'group chat hides fixed debate mode menu', emptyState);
 
     shots.push(await screenshot(ws, 'zero-selected-state'));
     console.log(JSON.stringify({ ok: true, dataDir: DATA_DIR, screenshots: shots }, null, 2));

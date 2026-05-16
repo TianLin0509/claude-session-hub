@@ -22,7 +22,7 @@
 //   detector.stop(sid)
 //
 // 调用方（main.js dispatch 路径）每 3s 跑一次 tick，看到 'stuck' 后决定
-// 自动补 Enter 或推 'roundtable-send-stuck' IPC。
+// 自动补 Enter 或推 'groupchat-send-stuck' IPC。
 
 // 三家 paste marker 通配。覆盖：
 //   "[[Pasted Content 4834 chars]]"  codex

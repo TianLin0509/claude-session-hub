@@ -2712,7 +2712,7 @@ body.theme-light .floating-scroll-btn {
   color: var(--text-primary, #f0f6fc);
 }
 
-/* Phase 8(2026-05-05 道雪): 圆桌项迷你跳转按钮 — 折叠/展开态都显示, 替代旧 "N 个子会话" 文字 */
+/* Phase 8(2026-05-05 道雪): AI 群聊项迷你跳转按钮 — 折叠/展开态都显示, 替代旧 "N 个子会话" 文字 */
 .session-mini-jumps {
   display: flex; gap: 8px;
   padding-left: 22px;
@@ -3283,8 +3283,8 @@ body.theme-vibechat-light .streaming-indicator { color: #07c160; }
 /* === 2026-05-09 简洁模式（手机远程友好） + 主区 zoom ===
    - body.compact-mode 是叠加 toggle，纯 CSS 关闭低优先级 UI
    - --main-zoom 定义在 :root，由 setFontSize() 联动（base=16）
-   - 注：原本定义在 #terminal-panel 上，但圆桌 #meeting-room-panel 是兄弟节点
-     不会继承到该变量，导致圆桌 fullscreen 字号 calc 无法跟随缩放（多路审查发现）
+   - 注：原本定义在 #terminal-panel 上，但 AI 群聊 #meeting-room-panel 是兄弟节点
+     不会继承到该变量，导致 AI 群聊 fullscreen 字号 calc 无法跟随缩放（多路审查发现）
 */
 
 :root { --main-zoom: 1; }
@@ -3392,12 +3392,12 @@ body.theme-vibechat-light {
   --bg-primary: #f5f8fc;
   --bg-secondary: #eef2f7;
   --bg-tertiary: #e3e9f0;
-  --bg-hover: #e3e9f0;           /* hover 浅灰（圆桌 mr-tab/mr-header-btn 等用 var(--bg-hover) fallback 到深 #1c2128，在浅底上需要本地化）*/
+  --bg-hover: #e3e9f0;           /* hover 浅灰（AI 群聊 mr-tab/mr-header-btn 等用 var(--bg-hover) fallback 到深 #1c2128，在浅底上需要本地化）*/
   --border: #cbd5e1;
   --text-primary: #0f172a;
   --text-secondary: #475569;
   --text-muted: #64748b;
-  --accent: #07c160;             /* 微信绿（圆桌 mr-tab.active/mr-header-btn.active 用 var(--accent) fallback 到紫 #6366f1，统一改微信绿）*/
+  --accent: #07c160;             /* 微信绿（AI 群聊 mr-tab.active/mr-header-btn.active 用 var(--accent) fallback 到紫 #6366f1，统一改微信绿）*/
   --accent-green: #07c160;       /* 微信绿，替代 GitHub 1a7f37 */
   --accent-blue: #0969da;
   --accent-orange: #bc4c00;

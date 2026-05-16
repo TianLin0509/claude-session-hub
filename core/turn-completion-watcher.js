@@ -1,5 +1,5 @@
 'use strict';
-// Stage 2 容错升级（2026-05-01）— 单家圆桌等待器
+// Stage 2 容错升级（2026-05-01）— 单家 AI 群聊等待器
 //
 // 替代 main.js 老 _rtWaitTurnComplete 内联实现的"硬性 watchdog"：
 //   旧版：600s 强制 timeout → 整轮 settle → 按钮锁 10 分钟。
@@ -8,8 +8,7 @@
 //        L1/L2 事件（turn-complete / turn-error）决定。
 //
 // 设计文档：
-//   docs/superpowers/specs/2026-04-30-roundtable-resilience-design.md
-//   docs/superpowers/plans/2026-04-30-roundtable-resilience.md (Task 2)
+//   历史韧性设计文档 (Task 2)
 //
 // 状态机：
 //   wait() called → submitted（监听 + T1/T2 定时器启动）

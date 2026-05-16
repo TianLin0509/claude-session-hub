@@ -41,7 +41,7 @@ test('modal js has MODELS_BY_KIND with all 5 kinds non-empty', () => {
 });
 
 test('DEFAULT_SLOTS = strongest (claude opus 4.7 [1M] / codex gpt-5.5 / deepseek v4-pro)', () => {
-  // 2026-05-11：道雪指定圆桌默认全用最强模型。
+  // 2026-05-11：道雪指定 AI 群聊默认全用最强模型。
   // slot 2 用 'codex' kind（OpenAI codex CLI 直连订阅）+ 'gpt-5.5'，不再用 PackyAPI 中转的
   // 'gpt' kind（PackyAPI 中转最高到 5.4，'gpt-5.5' 限定 codex kind）。
   assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*'claude-opus-4-7\[1m\]'\s*\}/);

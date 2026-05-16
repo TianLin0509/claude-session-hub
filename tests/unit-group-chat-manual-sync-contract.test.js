@@ -30,7 +30,7 @@ assert.ok(
   mainSrc.includes('meeting && meeting.groupChat') &&
   mainSrc.includes('groupchat.getOrchestrator(getHubDataDir(), meetingId)') &&
   mainSrc.includes("mode: 'patch_groupchat_turn'"),
-  'manual extract must patch settled group-chat state instead of roundtable state',
+  'manual extract must patch settled group-chat state',
 );
 
 assert.ok(

@@ -1,6 +1,6 @@
 /* AI Identity Color Tokens (legacy kind-based — used by feed / summary panels
  * that semantically tag content by *AI identity* rather than *seat position*).
- * Roundtable cards (.mr-ft.* / .mr-rt-card.* / .mr-ft-progress-bar.* etc.)
+ * Group chat cards (.mr-ft.* / .mr-rt-card.* / .mr-ft-progress-bar.* etc.)
  * use the slot-based palette below: 3 fixed visual themes per round-table
  * seat (slot 1 / 2 / 3), independent of which AI kind sits there.
  * 御三家配色 — 槽位 1 永远皮卡丘黄, 2 永远小火龙橙, 3 永远杰尼龟蓝. */
@@ -37,7 +37,7 @@
   background: var(--bg-primary, #0d1117);
   color: var(--text-primary, #c9d1d9);
   /* Phase 7(2026-05-05 道雪): G 方案 — 地平线光晕。卡片底部 ~80px 高度有微蓝径向光晕,
-     暗示"圆桌中心"。pointer-events:none 防止挡 click;伪元素层 z-index 低于 footer。 */
+     暗示"AI 群聊中心"。pointer-events:none 防止挡 click;伪元素层 z-index 低于 footer。 */
   position: relative;
 }
 .meeting-room-panel::after {
@@ -716,7 +716,7 @@
 }
 
 /* Arch refactor 2026-05-02: .mr-terminals + .mr-terminals.focus-mode 已删除
-   (圆桌界面不再 mount xterm，shell 沉到子 session 主区 view)。 */
+   (AI 群聊界面不再 mount xterm，shell 沉到子 session 主区 view)。 */
 
 /* Sub-session slot */
 .mr-sub-slot {
@@ -1244,7 +1244,7 @@
 }
 
 
-/* ===== 投研圆桌持久化面板（research mode 专用） ===== */
+/* ===== 投研 AI 群聊持久化面板（research mode 专用） ===== */
 .mr-rt-panel {
   background: linear-gradient(180deg, #1a1f2b 0%, #141821 100%);
   /* 2026-05-05 道雪: 删除 border-top 2px transparent + border-image 渐变流光线
@@ -1783,7 +1783,7 @@ body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active):hover {
 }
 /* 卡片优化（2026-05-03 道雪）：mr-ft-md（fused tab 当前轮卡片）补齐 markdown 元素样式。
    原本只有字号/行高，<table>/<th>/<td>/<pre>/<code> 没 CSS → 浏览器默认样式渲染表格无边框，
-   用户感觉"表格散了"。与 .mr-rt-tl-body（圆桌历史区）保持视觉一致。 */
+   用户感觉"表格散了"。与 .mr-rt-tl-body（AI 群聊历史区）保持视觉一致。 */
 .mr-ft-md p { margin: .4em 0; }
 .mr-ft-md h1, .mr-ft-md h2, .mr-ft-md h3 { margin: .7em 0 .25em; }
 .mr-ft-md ul, .mr-ft-md ol { margin: .4em 0; padding-left: 1.5em; }
@@ -2353,7 +2353,7 @@ body.mr-density-compact .mr-rt-cost-bar {
 .mr-ft-ctx.warn { background: rgba(250,204,21,0.15); color: #fde68a; }
 .mr-ft-ctx.high { background: rgba(248,113,113,0.15); color: #fca5a5; }
 
-/* 圆桌记忆 phase 1（2026-05-07）：📒 N / 📥 / 📊 三按钮（紧邻 Ctx 角标）
+/* AI 群聊记忆 phase 1（2026-05-07）：📒 N / 📥 / 📊 三按钮（紧邻 Ctx 角标）
    极简风：emoji + 数字，hover 高亮，点击 = 打开对应 .md 文件 */
 .mr-ft-mem-btn {
   font-size: 10px;
@@ -2906,7 +2906,7 @@ body.mr-density-compact .mr-rt-cost-bar {
   opacity: 0.4; cursor: not-allowed;
 }
 
-/* ---- Roundtable card 点击 / summarizer 标识 / standby 状态 ---- */
+/* ---- Group chat card 点击 / summarizer 标识 / standby 状态 ---- */
 .mr-rt-card { cursor: pointer; transition: transform .12s ease, box-shadow .12s ease; }
 .mr-rt-card:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(0,0,0,.35); }
 .mr-rt-card:focus { outline: 2px solid rgba(255,255,255,.25); outline-offset: 2px; }
@@ -2923,7 +2923,7 @@ body.mr-density-compact .mr-rt-cost-bar {
 }
 .mr-rt-standby-hint { margin-left: 6px; font-size: 11px; color: #888; }
 
-/* ---- Roundtable AI timeline 浮层 ---- */
+/* ---- Group chat AI timeline 浮层 ---- */
 .mr-rt-tl-overlay {
   position: fixed; inset: 0; z-index: 9000; display: none;
 }
@@ -3131,7 +3131,7 @@ body.mr-density-compact .mr-rt-cost-bar {
   color: #c9d1d9;
 }
 
-/* ---- 圆桌 toolbar：群策群力 / 总结发言 ---- */
+/* ---- AI 群聊 toolbar：群策群力 / 总结发言 ---- */
 .mr-rt-toolbar {
   display: flex; align-items: center; gap: 10px;
   padding: 6px 12px;
@@ -3203,10 +3203,10 @@ body.mr-density-compact .mr-rt-cost-bar {
   color: var(--ink-2, #a0a8b9);
 }
 
-/* === 投研圆桌 / 通用圆桌：隐藏 3-xterm 终端容器 === */
+/* === 投研 AI 群聊 / 通用 AI 群聊：隐藏 3-xterm 终端容器 === */
 .mr-terminals-hidden { display: none !important; }
 
-/* === 模式切换按钮（圆桌 / 投研）— 样式已移至 Free Mode 块（2026-05-04）=== */
+/* === 模式切换按钮（群聊 / 投研）— 样式已移至 Free Mode 块（2026-05-04）=== */
 
 /* ========================================================================
    Stage 2 容错升级（2026-05-01）—— 逃生工具栏 + 角标 + 软提醒 banner
@@ -3471,7 +3471,7 @@ body.mr-density-compact .mr-rt-cost-bar {
 }
 
 /* ========================================================================
-   Arch refactor 2026-05-02 —— 圆桌界面去 shell + 删除沉浸/调试切换。
+   Arch refactor 2026-05-02 —— AI 群聊界面去 shell + 删除沉浸/调试切换。
    原沉浸模式（hide .mr-terminals + 让 .mr-rt-panel 抢空间）已变成"唯一视图"：
    .mr-terminals 已删除，.mr-rt-panel 直接 flex:1 占主区。
    保留以下规则把"原沉浸态布局"作为默认应用到 .mr-rt-panel 及其内部 strip/cards。
@@ -3664,7 +3664,7 @@ body.mr-density-compact .mr-rt-cost-bar {
 }
 
 /* ============================================================
-   Free Mode (2026-05-04) — 圆桌自由模式样式
+   Free Mode (2026-05-04) — AI 群聊自由模式样式
    ============================================================ */
 
 /* mode toggle segmented control（顶部） */
@@ -3763,7 +3763,7 @@ body.mr-density-compact .mr-rt-cost-bar {
   cursor: not-allowed;
 }
 
-/* === 2026-05-09 简洁模式 + 圆桌焦点 = 单卡全屏阅读模式 ===
+/* === 2026-05-09 简洁模式 + AI 群聊焦点 = 单卡全屏阅读模式 ===
  * 复用现有 mr-card-focus-on 焦点机制，简洁模式下升级为单卡撑满主区（保留输入框）：
  *   - 隐藏 mr-header / mr-toolbar（让 strip 接管 input-row 上面所有空间）
  *   - mr-input-row 保留显示，方便用户阅读后立刻输入下一条
@@ -3796,20 +3796,20 @@ body.compact-mode.mr-card-focus-on .mr-ft-strip .mr-ft.active {
 }
 
 /* ============================================================== */
-/* === 2026-05-10 · vibechat-light 主题下圆桌浅色化（风格 A 浅色竞技场）===
+/* === 2026-05-10 · vibechat-light 主题下 AI 群聊浅色化（风格 A 浅色竞技场）===
    保留 3 列 grid + 御三家 slot 配色 (黄/橙/蓝)；
    仅把所有 hardcoded 深色 (rgba(255,255,255,*) 半透明白 / #1f2735 网格线 /
    #0d1117 代码块 / rgba(13,17,23,*) 深底 等) 在 vibechat-light scope 下
-   反向改成浅色版本。设计依据：artifacts/2026-05-10/vibechat-roundtable-styles-d4f8a2.html 方案 A。 */
+   反向改成浅色版本。设计依据：历史 vibechat 群聊浅色化方案 A。 */
 /* ============================================================== */
 
-/* 圆桌底部蓝色径向光晕：浅底下不刺眼（保留淡光晕暗示"圆桌中心"） */
+/* AI 群聊底部蓝色径向光晕：浅底下不刺眼（保留淡光晕暗示"AI 群聊中心"） */
 body.theme-vibechat-light .meeting-room-panel::after {
   background: radial-gradient(ellipse at center bottom,
     rgba(7, 193, 96, 0.05) 0%, rgba(7, 193, 96, 0.015) 40%, transparent 70%);
 }
 
-/* 主圆桌面板原样式写死深色渐变和浅色文字，必须在 light scope 下整体切回主题变量。 */
+/* 主 AI 群聊面板原样式写死深色渐变和浅色文字，必须在 light scope 下整体切回主题变量。 */
 body.theme-vibechat-light .mr-rt-panel {
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -4338,13 +4338,13 @@ body.theme-vibechat-light .mr-ft-strip > .mr-ft:hover:not(.active) {
   background-color: rgba(0, 0, 0, 0.025) !important;
 }
 
-/* 圆桌主容器底色也兜底（meeting-room-panel 用 var(--bg-primary, #0d1117)，
+/* AI 群聊主容器底色也兜底（meeting-room-panel 用 var(--bg-primary, #0d1117)，
    万一变量没生效 fallback 到深色） */
 body.theme-vibechat-light .meeting-room-panel {
   background: var(--bg-primary) !important;
 }
 
-/* Theme bridge: keep roundtable/group-chat surfaces in sync with Hub theme. */
+/* Theme bridge: keep group-chat surfaces in sync with Hub theme. */
 .meeting-room-panel {
   --mr-surface: var(--bg-primary, #0d1117);
   --mr-surface-2: var(--bg-secondary, #161b22);

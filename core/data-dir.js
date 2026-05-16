@@ -26,7 +26,7 @@ function getMeetingWorkspaceDir(meetingId) {
 
 // Phase 2 P0（2026-05-07）：scene 级 memory 共享根
 // 原 fallback 用 getMeetingWorkspaceDir(meetingId)→ 每 meeting 一份，导致
-// "AI 越来越懂我"产品愿景失效（用户每开新圆桌 AI 从 0 开始）。
+// "AI 越来越懂我"产品愿景失效（用户每开新 AI 群聊 AI 从 0 开始）。
 // scene 级共享根让同 scene 跨 meeting 自然共享 _profile.md / 个体 .md / inbox。
 function getSceneMemoryRoot(scene) {
   return path.join(getHubDataDir(), 'memory-scenes', String(scene || 'general'));

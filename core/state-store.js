@@ -10,7 +10,7 @@ const CURRENT_VERSION = 1;
 
 // 2026-05-07 道雪 — 多 Hub 并发安全：
 //   - 旧版 save() 是 last-writer-wins 全量覆盖，多 Hub 共享同一份 ~/.claude-session-hub
-//     时会互相吞 session/圆桌；这版改为 acquireLock + read-merge-write。
+//     时会互相吞 session/AI 群聊；这版改为 acquireLock + read-merge-write。
 //   - 每条 session/meeting 加 updatedAt（毫秒），merge 时 LWW 仲裁。
 //   - 删除靠显式 _removedSessionIds/_removedMeetingIds set（main.js 持续 push），
 //     不依赖"内存里没有 = 已删除"，避免某 Hub 启动时把别 Hub 的进展抹掉。

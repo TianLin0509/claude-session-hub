@@ -1,10 +1,10 @@
 'use strict';
-// core/roundtable-watcher.js
+// core/group-chat-watcher.js
 // 群聊 PTY 通信工具集（2026-05-03 道雪 阶段丙）。
 // 从 main.js 抽出 5 个 helper：waitCliReady / sendToPty / extractStreamingText /
 //   cleanBufLen / checkHostShellTakeover。
 //
-// 不抽：_rtWaitTurnComplete + _activeWatchers Map + dispatchRoundtableTurn。
+// 不抽：_rtWaitTurnComplete + _activeWatchers Map + dispatchGroupChatTurn。
 //   它们闭包依赖太深（meetingManager/scenes/orchestrator/rtTimeline/rtInjection/
 //   sendToRenderer/_computeDispatchSpec...），一次性抽风险高，
 //   留下次专项做（backlog）。
@@ -31,7 +31,7 @@ function init(deps) {
 
 // ---------------------------------------------------------------------------
 // waitCliReady — 群聊发送 prompt 前的等待轮询。判定逻辑独立到
-//   core/roundtable-cli-ready-detector.js（marker + buffer 静默双门 + monotonic guard）。
+//   core/group-chat-cli-ready-detector.js（marker + buffer 静默双门 + monotonic guard）。
 //   timeout 提到 60s 兜底（Claude Opus 1M 启动 + 配置加载在慢机可能 30s+）。
 async function waitCliReady(sid, kind, maxMs = 60000) {
   const { sessionManager, cliReadyDetector } = _deps;

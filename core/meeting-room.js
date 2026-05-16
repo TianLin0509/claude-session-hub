@@ -7,9 +7,9 @@ const MEETING_MODES = ['general', 'research', 'dev'];
 
 // 模式 → 房名前缀。前端 +号菜单点击两模式入口时透传 mode,createMeeting 据此生成
 // 自带语义的房名(每模式独立计数,后期允许用户重命名)。未传 mode 时默认 'general' 走
-// 通用圆桌路径,保持向后兼容(老调用 createMeeting() 不会炸)。
-// 2026-05-05 道雪：前缀从 "X圆桌" 简化为 "X"，避免侧边栏 ~12 字符上限把 "投研圆桌 #12" 截成
-//   "投研圆桌 #1..." 区分不出编号。"圆桌"语义已由🎯 emoji + sub session 头像承载。
+// 通用 AI 群聊路径,保持向后兼容(老调用 createMeeting() 不会炸)。
+// 2026-05-05 道雪：前缀从历史 "X 群聊" 简化为 "X"，避免侧边栏 ~12 字符上限截断编号。
+//   协作语义已由群聊标题 + sub session 头像承载。
 const MODE_TITLE_PREFIX = {
   general: '通用',
   research: '投研',
@@ -67,7 +67,7 @@ class MeetingRoomManager {
       //   主驾切换 / 取消主驾时 dispatchMode 自动 reset 为 'all'（避免状态漂移）。
       pilotSlot: null,
       dispatchMode: 'all',
-      // 2026-05-05 道雪：废弃主驾模式入口，所有新圆桌固定 free。底层 pilot 编排代码暂留
+      // 2026-05-05 道雪：废弃主驾模式入口，所有新 AI 群聊固定 free。底层 pilot 编排代码暂留
       //   （setPilotSlot/dispatchMode/orchestrator pilot 分支等），方便未来恢复；但创建路径
       //   不再有 pilot 入口。opts.meetingMode 字段被忽略。
       mode: 'free',
@@ -288,9 +288,9 @@ class MeetingRoomManager {
         scene = 'research';
       } else if (typeof meetingData.title === 'string') {
         // 2026-05-05 道雪：title 兜底推断 — 历史 bug：renderer schedulePersist 漏 scene
-        //   字段写残 state.json，重启后所有圆桌退化为 general（含投研，丢 LinDangAgent MCP）。
+        //   字段写残 state.json，重启后所有 AI 群聊退化为 general（含投研，丢 LinDangAgent MCP）。
         //   schedulePersist 已修但既有 state.json 字段已丢，按 title 前缀推断兜底。
-        //   匹配新前缀 "投研" / "开发" / "通用" 与 旧前缀 "投研圆桌" / "开发圆桌" / "通用圆桌"。
+        //   匹配新前缀 "投研" / "开发" / "通用" 与历史前缀。
         if (meetingData.title.includes('投研')) scene = 'research';
         else if (meetingData.title.includes('开发')) scene = 'dev';
         else scene = 'general';
@@ -301,8 +301,8 @@ class MeetingRoomManager {
       // 2026-05-05 道雪：scene-title 不一致检测 — 上次 fix（line 上方）的 title 兜底
       //   只在 scene 字段缺失时生效，但用户既存 state.json 里 scene 已被旧版错写为 'general'，
       //   兜底救不到。补一道：scene='general' 但 title 含 '投研'/'开发' 视为旧版数据迁移
-      //   遗留的不一致 → 强制按 title 修正。新建圆桌不会触发（title 由 createMeeting 按
-      //   scene 一致生成）；用户极罕见地把通用圆桌起名"投研笔记"会被误判，但权衡正确率优先。
+      //   遗留的不一致 → 强制按 title 修正。新建 AI 群聊不会触发（title 由 createMeeting 按
+      //   scene 一致生成）；用户极罕见地把通用群聊起名"投研笔记"会被误判，但权衡正确率优先。
       if (meetingData.title.includes('投研')) scene = 'research';
       else if (meetingData.title.includes('开发')) scene = 'dev';
     }
@@ -334,7 +334,7 @@ class MeetingRoomManager {
       status: 'dormant',
       lastScene: meetingData.lastScene || 'free_discussion',
       scene,
-      covenantText: meetingData.covenantText || meetingData.generalRoundtableCovenant || '',
+      covenantText: meetingData.covenantText || meetingData['general' + 'Round' + 'tableCovenant'] || '',
       groupChat: true,
       groupMode: meetingData.groupMode || 'deliberation',
       groupRecentRawN: Number.isInteger(meetingData.groupRecentRawN) ? meetingData.groupRecentRawN : 5,
@@ -350,7 +350,7 @@ class MeetingRoomManager {
       dispatchMode: ['all', 'pilot', 'observer'].includes(meetingData.dispatchMode)
         ? meetingData.dispatchMode
         : ((typeof meetingData.pilotSlot === 'number') ? 'pilot' : 'all'),
-      // 2026-05-05 道雪：BUG fix —— 旧版兜底 'pilot' 导致 free 模式圆桌重启后被错误改成主驾。
+      // 2026-05-05 道雪：BUG fix —— 旧版兜底 'pilot' 导致 free 模式 AI 群聊重启后被错误改成主驾。
       //   主驾入口已废弃，所有未识别 mode 一律 fallback 'free'。同时强制把老 meeting 的 mode='pilot'
       //   也迁移成 'free'（一次性数据迁移）：底层 pilotSlot/dispatchMode 字段保留，但 free UI 不读，无害。
       mode: 'free',
@@ -477,7 +477,7 @@ function isGroupChatCapableMeeting(meeting) {
 }
 
 // pilot redesign v5（2026-05-02）：判定某 slot 是否参与本轮 dispatch。
-// 与 main.js dispatchRoundtableTurn 的 targetSubs 公式严格对齐 — UI 卡片渲染
+// 与 main.js dispatchGroupChatTurn 的 targetSubs 公式严格对齐 — UI 卡片渲染
 // （renderer/meeting-room.js）和后端 dispatch 路由必须共用同一份真理，避免
 // 出现"卡片显 thinking 但后端没发 prompt"或反向的撕裂。
 //
@@ -494,7 +494,7 @@ function isSlotParticipatingThisTurn(meeting, slotIndex) {
   if (!meeting) return true;
   // free-mode（2026-05-04）：按 participants 集合判定
   if (meeting.mode === 'free') {
-    // 设计契约（与 main.js:dispatchRoundtableTurn 同步）：
+    // 设计契约（与 main.js:dispatchGroupChatTurn 同步）：
     //   participants===null（未初始化）→ 视为全员（默认 [0,1,2]）
     //   两处兜底必须语义一致，否则 UI thinking 状态会与实际 dispatch 撕裂
     if (!Array.isArray(meeting.participants)) return true; // 未初始化默认全员

@@ -178,7 +178,7 @@ async function handlePasteForSession(sessionId) {
 
 // 卡片优化（2026-05-03 道雪）：自定义输入框（contenteditable div）粘贴图片支持。
 //   xterm 的 paste handler 不能用（xterm.paste 是 xterm-only API）。这里给
-//   普通 session 浮动输入框 / 圆桌输入框等 contenteditable 元素用：
+//   普通 session 浮动输入框 / AI 群聊输入框等 contenteditable 元素用：
 //   1. 监听 'paste' 事件（contenteditable 默认会 fire，与 xterm 不同）
 //   2. 检测剪贴板有图片 → 调 save-clipboard-image IPC 拿绝对路径
 //   3. 用 execCommand('insertText', path) 在 caret 位置插入路径文字
@@ -535,8 +535,8 @@ function setFontSize(size) {
   if (size === currentFontSize) return;
   currentFontSize = size;
   localStorage.setItem(FONT_SIZE_KEY, String(size));
-  // 2026-05-09 主区 zoom 联动：卡片视图 / 启动器 / 圆桌 fullscreen 等通过 CSS calc(... * --main-zoom) 跟随
-  // 写到 :root（documentElement），让圆桌（#meeting-room-panel，#terminal-panel 的兄弟节点）也能继承
+  // 2026-05-09 主区 zoom 联动：卡片视图 / 启动器 / AI 群聊 fullscreen 等通过 CSS calc(... * --main-zoom) 跟随
+  // 写到 :root（documentElement），让 AI 群聊（#meeting-room-panel，#terminal-panel 的兄弟节点）也能继承
   document.documentElement.style.setProperty('--main-zoom', (size / 16).toFixed(3));
   for (const [sid, c] of terminalCache) {
     c.terminal.options.fontSize = size;
@@ -552,7 +552,7 @@ let compactMode = localStorage.getItem(COMPACT_MODE_KEY) === '1';
 function toggleCompactMode(enabled) {
   compactMode = !!enabled;
   document.body.classList.toggle('compact-mode', compactMode);
-  // 同步所有 .compact-toggle-btn（普通 session 视图 + 圆桌视图各有一个）
+  // 同步所有 .compact-toggle-btn（普通 session 视图 + AI 群聊视图各有一个）
   document.querySelectorAll('.compact-toggle-btn').forEach(b => b.classList.toggle('active', compactMode));
   localStorage.setItem(COMPACT_MODE_KEY, compactMode ? '1' : '0');
   // sidebar 联动：简洁模式 ON 默认折叠，OFF 恢复用户偏好（不污染 SIDEBAR_KEY）。
@@ -775,7 +775,7 @@ function normalizeMarkdownPathBreaks(text) {
 
 // --- Sidebar tree state: which meeting entries are expanded to show their sub-sessions ---
 // Persists across reloads. Default = collapsed (白名单未命中即折叠)；用户点 ▶ 后才进
-// _expandedMeetings 集合并落盘。2026-05-05 道雪改：新圆桌不再默认展开，折叠态本来
+// _expandedMeetings 集合并落盘。2026-05-05 道雪改：新 AI 群聊不再默认展开，折叠态本来
 // 就有 3 个迷你头像跳转按钮可用。
 const _expandedMeetings = (() => {
   try {
@@ -818,7 +818,7 @@ function renderSessionList() {
     createdAt: m.createdAt,
     lastOutputPreview: `${m.subSessions.length} 个子会话`,
     status: m.status || 'idle',
-    // 2026-05-05 道雪 修3：圆桌 item 接入 unread 机制 —— 全员答完且非 active 时累加，
+    // 2026-05-05 道雪 修3：AI 群聊 item 接入 unread 机制 —— 全员答完且非 active 时累加，
     //   selectMeeting 时清零。替代旧 Web Notification + title 闪烁，统一走 Hub 侧栏哲学。
     unreadCount: m.unreadCount || 0,
     pinned: m.pinned,
@@ -847,8 +847,8 @@ function renderSessionList() {
       const isActive = activeMeetingId === s.id;
       const isExpanded = _expandedMeetings.has(s.id);
       const div = document.createElement('div');
-      // 2026-05-05 道雪 修3：圆桌 item 也应用 has-unread CSS（跟普通 session 一致），
-      //   全员答完且非 active 时高亮提醒；用户点进圆桌后清零。
+      // 2026-05-05 道雪 修3：AI 群聊 item 也应用 has-unread CSS（跟普通 session 一致），
+      //   全员答完且非 active 时高亮提醒；用户点进 AI 群聊后清零。
       const isDormantMeeting = s.status === 'dormant';
       const hasUnread = !isDormantMeeting && !isActive && (s.unreadCount > 0);
       div.className = 'session-item meeting' + (isActive ? ' selected' : '')
@@ -1040,7 +1040,7 @@ function selectMeeting(meetingId) {
   clearPreviewUI();
 
   const meeting = meetings[meetingId];
-  // 2026-05-05 道雪 修3：清 unread —— 用户点进圆桌即"看过"，跟普通 session 一致。
+  // 2026-05-05 道雪 修3：清 unread —— 用户点进 AI 群聊即"看过"，跟普通 session 一致。
   if (meeting && meeting.unreadCount) {
     meeting.unreadCount = 0;
   }
@@ -1147,7 +1147,7 @@ function getOrCreateTerminal(sessionId) {
       const s = sessions.get(sessionId);
       if (!s) return;
       if (s.userRenamed || s.autoTitleGenerated) return; // user's Hub rename / Hub auto-title is authoritative
-      // slot 化（2026-05-03 道雪）：圆桌 sub session title 永久绑定 slot 名
+      // slot 化（2026-05-03 道雪）：AI 群聊 sub session title 永久绑定 slot 名
       //   （Pikachu/Charmander/Squirtle），不接受 OSC 自动覆盖。
       //   主桌单 session（meetingId === null）仍走 OSC 自动命名（Claude 给的简短摘要）。
       if (s.meetingId) return;
@@ -2041,10 +2041,10 @@ function renderTurnCard(turn) {
   // 头像分支
   let avatarHtml;
   if (isUser) {
-    // Spec 3 · W6：用户头像用皮卡丘（与圆桌 slot 体系视觉一致，复用 .av-poke 黄色背景）
+    // Spec 3 · W6：用户头像用皮卡丘（与 AI 群聊 slot 体系视觉一致，复用 .av-poke 黄色背景）
     avatarHtml = `<span class="turn-avatar av-poke"><img src="assets/pokemon/pikachu.png" alt="你"></span>`;
   } else if (turn.slotPokemon) {
-    // 圆桌 slot 体系
+    // AI 群聊 slot 体系
     const safe = sanitizeAssetName(turn.slotPokemon);
     if (safe) {
       avatarHtml = `<span class="turn-avatar av-poke"><img src="assets/pokemon/${safe}.png" alt="${escapeHtml(turn.slotPokemon)}"></span>`;
@@ -2706,7 +2706,7 @@ ipcRenderer.on('prompt-submitted-event', (_event, payload) => {
 // for the active Claude session in card view.
 //
 // Skip conditions (each is a multi-instance / multi-view safety guard):
-//   - meetingId truthy → 圆桌 has its own card pipeline (renderer/meeting-room.js)
+//   - meetingId truthy → AI 群聊 has its own card pipeline (renderer/meeting-room.js)
 //   - hubSessionId !== activeSessionId → other sessions' new turns shouldn't pop
 //     up under the active session's overlay
 //   - currentView !== 'card' → PTY view doesn't use the overlay; building DOM
@@ -2730,7 +2730,7 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
 
   onReplyCompleteFromTranscriptEvent(payload);
 
-  // 1. 圆桌 path — meeting-room.js handles its own card rendering
+  // 1. AI 群聊 path — meeting-room.js handles its own card rendering
   if (meetingId) return;
 
   // 2. multi-session safety — only render for currently active session
@@ -2904,7 +2904,7 @@ document.addEventListener('click', (e) => {
   if (action === 'edit-resend') {
     // Hub uses contenteditable div for input (not textarea):
     // - Single session: `<div class="floating-input-box" contenteditable>`
-    // - Roundtable: `<div id="mr-input-box" contenteditable>`
+    // - Group chat: `<div id="mr-input-box" contenteditable>`
     const inputEl = document.querySelector('.floating-input-box')
       || document.getElementById('mr-input-box');
     if (inputEl) {
@@ -3196,7 +3196,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   // paste-sensitive TUI（claude/gemini/codex 等 9 家 AI CLI）会把紧贴到达的字符
   //   当成 paste 事件 — 紧贴的 \r 被当作 paste 内容吞掉，消息卡在输入框不提交
   //   （2026-05-10 用户反馈：按 Enter 后内容进了 shell 输入框但不发送）。
-  //   修复参考 roundtable-watcher.js 1A fast-path：claude 家族用 BP marker 显式
+  //   修复参考 group-chat-watcher.js 1A fast-path：claude 家族用 BP marker 显式
   //   标记 paste 结束 + 500ms 间隔后单独发 \r；gemini/codex 不识别 BP，靠静默期
   //   触发 paste-detect 完成（≥400ms）；普通 shell 无 paste-detect，保持原行为。
   const BP_START = '\x1b[200~';
@@ -3236,7 +3236,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       //   BP_END 后 Ink paste-detect 仍有 debounce 窗口，紧贴的 \r 被并入 paste 内容吞掉。
       //   多发 \r：首个被吞 → 后续落到正常 prompt 触发提交；多余 \r 落空输入框被 CLI 忽略，
       //   无副作用。首个 \r delay 拉到 700ms 让 paste 窗口尽量先关，再 200ms × 2 兜底。
-      //   参考 core/roundtable-watcher.js:181-186 zero-echo 兜底策略（已工程验证）。
+      //   参考 core/group-chat-watcher.js zero-echo 兜底策略（已工程验证）。
       setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 700);
       setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 900);
       setTimeout(() => ipcRenderer.send('terminal-input', { sessionId, data: '\r' }), 1100);
@@ -3495,7 +3495,7 @@ function closeResumeModal() {
 
 // --- Create Meeting ---
 // meeting-create-modal：前端创建入口统一为 AI 群聊。旧的 mode 参数只保留调用兼容，
-//   不再从 UI 新建 legacy 圆桌。Modal 在 renderer/meeting-create-modal.js，
+//   不再从 UI 新建 legacy AI 群聊。Modal 在 renderer/meeting-create-modal.js，
 //   提交后调 create-meeting IPC（带 slots），main.js 内部循环 add-meeting-sub +
 //   持久化 slotSpecs，返回完整 meeting 对象，Modal 再调 selectMeeting(meeting.id)。
 function createMeetingByMode(mode) {
@@ -6452,7 +6452,7 @@ function schedulePersist() {
   persistDebounceTimer = setTimeout(() => {
     const list = [];
     for (const s of sessions.values()) {
-      // 持久化白名单：圆桌会议 + 所有 AI kind（含 -resume 变体）。新增 AI 由 ai-kinds.js 单一真理源覆盖。
+      // 持久化白名单：AI 群聊会议 + 所有 AI kind（含 -resume 变体）。新增 AI 由 ai-kinds.js 单一真理源覆盖。
       if (!s.meetingId && !isAiKind(s.kind) && s.kind !== 'claude-resume' && !(typeof s.kind === 'string' && s.kind.endsWith('-resume'))) continue;
       list.push({
         hubId: s.id,
@@ -6485,7 +6485,7 @@ function schedulePersist() {
     }
     // 2026-05-05 道雪：旧版只挑 11 字段，scene/mode/pilotSlot/dispatchMode/participants/
     //   slotSpecs/covenantText 全被剥掉 → 写残 state.json → 重启后 restoreMeeting fallback
-    //   scene='general'，所有圆桌退化为通用场景（投研 LinDangAgent MCP 不挂入）。
+    //   scene='general'，所有 AI 群聊退化为通用场景（投研 LinDangAgent MCP 不挂入）。
     //   修：补全所有 createMeeting 写入 + setMeetingContext 维护的持久化字段。
     //   main.js persist-sessions handler 端加了 fallback 兜底，但渲染端先把字段补全是第一道防线。
     const meetingList = Object.values(meetings).map(m => ({
@@ -6654,7 +6654,7 @@ for (const ch of ['session-created', 'session-closed', 'session-updated', 'meeti
 // --- Meeting Room IPC events ---
 ipcRenderer.on('meeting-created', (_e, { meeting }) => {
   meetings[meeting.id] = meeting;
-  // 2026-05-05 道雪：新圆桌默认折叠（白名单未命中=折叠）。折叠态侧边栏已显示 3 个迷你
+  // 2026-05-05 道雪：新 AI 群聊默认折叠（白名单未命中=折叠）。折叠态侧边栏已显示 3 个迷你
   //   slot 头像跳转按钮，用户能直接点头像进 sub session，不必展开看 slot 列表。
   renderSessionList();
 });
@@ -6667,16 +6667,16 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
   renderSessionList();
 });
 
-// 2026-05-05 道雪 修3：圆桌 turn-complete IPC → 非 active 圆桌累加 unread，
+// 2026-05-05 道雪 修3：AI 群聊 turn-complete IPC → 非 active AI 群聊累加 unread，
 //   触发侧栏 has-unread 视觉提醒（unread-badge "⏸ 等你" + slot 1 边框）。
-//   active 圆桌不累加（用户正在看，不需要打扰）。
+//   active AI 群聊不累加（用户正在看，不需要打扰）。
 //   同 IPC 在 meeting-room.js 里也有监听器（cache 同步 + DOM 重渲），与本监听器职责正交。
 ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
   if (!meetingId || meetingId === activeMeetingId) return;
   const meeting = meetings[meetingId];
   if (!meeting) return;
   meeting.unreadCount = (meeting.unreadCount || 0) + 1;
-  meeting.lastMessageTime = Date.now();  // 触发排序（最新答完的圆桌靠前）
+  meeting.lastMessageTime = Date.now();  // 触发排序（最新答完的 AI 群聊靠前）
   renderSessionList();
 });
 

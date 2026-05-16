@@ -18,7 +18,7 @@ function _isMeetingRemoved(meetingId) {
 
 // 2026-05-07 道雪 — schemaVersion 1→2：补全 title/scene/createdAt/subSessions/...
 //   字段，让 per-meeting JSON 成为完整权威备份。即使 state.json 损坏或被外部 Hub
-//   覆盖，下次 boot 也能从 meetings/<id>.json 单独恢复整间圆桌。
+//   覆盖，下次 boot 也能从 meetings/<id>.json 单独恢复整间 AI 群聊。
 //   loadMeetingFile 同时支持 v1（部分字段）与 v2（完整字段），调用方按 schemaVersion
 //   决定是否需要再去 state.json 取兜底。
 const SCHEMA_VERSION = 2;

@@ -1055,7 +1055,7 @@ class GeminiTap extends EventEmitter {
   }
 
   // 2026-05-04 gemini equiv extract-failure debug —— 暴露 _pending / _bound / _seen 当前状态。
-  // main.js 的 roundtable-gemini-debug-state IPC handler 转发此快照给 renderer，
+  // main.js 的 groupchat-gemini-debug-state IPC handler 转发此快照给 renderer，
   // 用户报告"gemini 已回答但卡片提取不到"时排查为什么没 bind / 已 bind 但未 emit。
   // 不暴露 timer / tail object / EventEmitter listeners 等内部句柄；JSON 可序列化。
   getDebugSnapshot() {
@@ -1580,7 +1580,7 @@ class TranscriptTap extends EventEmitter {
   }
 
   // 2026-05-04 codex equiv extract-failure debug —— TranscriptTap 转发 CodexTap 调试快照
-  // 给 main.js 的 roundtable-codex-debug-state IPC handler 用，
+  // 给 main.js 的 groupchat-codex-debug-state IPC handler 用，
   // renderer 可以拿到当前 _bound / _pending / _seen 状态排查为什么 manual-extract 拿不到。
   getCodexDebugSnapshot() {
     return this._codex.getDebugSnapshot();
@@ -1590,7 +1590,7 @@ class TranscriptTap extends EventEmitter {
     return this._codex.getRolloutPath(hubSessionId);
   }
 
-  // 2026-05-04 gemini equiv：与 codex 镜像，给 roundtable-gemini-debug-state IPC handler 用。
+  // 2026-05-04 gemini equiv：与 codex 镜像，给 groupchat-gemini-debug-state IPC handler 用。
   getGeminiDebugSnapshot() {
     return this._gemini.getDebugSnapshot();
   }
@@ -1598,7 +1598,7 @@ class TranscriptTap extends EventEmitter {
   _backendFor(kind) {
     // DeepSeek/GLM/GPT/Kimi/Qwen 跑在 Claude Code CLI 上（CLAUDE_CONFIG_DIR 隔离），transcript
     // JSONL 与 Claude 同 shape（spike 验证：tests/_spike-deepseek-stop-hook-result.md），
-    // 直接复用 ClaudeTap 即让圆桌 timeline + streaming preview 自动接入。CLAUDE_FAMILY 是单一
+    // 直接复用 ClaudeTap 即让 AI 群聊 timeline + streaming preview 自动接入。CLAUDE_FAMILY 是单一
     // 真理源，含 claude/claude-resume/deepseek/glm/gpt/kimi/qwen，未来加新 Claude 衍生家族自动覆盖。
     if (isClaudeFamily(kind)) {
       return this._claude;

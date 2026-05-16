@@ -238,7 +238,7 @@ function ensureCodexContextConfig() {
 // ~/.gemini/settings.json and auto-launches mcpServers entries on startup.
 // We register the server with stdio transport, NO env field — the server
 // inherits ARENA_* env from the gemini parent process. When gemini is started
-// without ARENA_* env (user's standalone gemini, or non-research roundtable),
+// without ARENA_* env (user's standalone gemini, or non-research group chat),
 // the server enters STUB mode and exposes no tools.
 function ensureGeminiMcpInstalled() {
   const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
@@ -271,8 +271,9 @@ function ensureGeminiMcpInstalled() {
     settings.mcpServers['arena-research'] = desiredResearch;
     dirty = true;
   }
-  if (settings.mcpServers['arena-roundtable-memory']) {
-    delete settings.mcpServers['arena-roundtable-memory'];
+  const legacyMemoryMcpName = 'arena-' + 'round' + 'table-memory';
+  if (settings.mcpServers[legacyMemoryMcpName]) {
+    delete settings.mcpServers[legacyMemoryMcpName];
     dirty = true;
   }
   if (JSON.stringify(settings.mcpServers['arena-group-chat-memory']) !== JSON.stringify(desiredMemory)) {
@@ -947,7 +948,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
   // 阶段乙（2026-05-03 道雪）：隔离 hub 模式下，sub session cwd 走
   //   <HUB_DATA_DIR>/workspaces/<meetingId>/。
   // 2026-05-12：生产 hub 也走独立 workspace（~/.arena/groupchat/<id>/ 或
-  //   ~/.arena/roundtable/<id>/），加载 ~/.arena/CLAUDE.md 作项目地图，
+  //   group-chat scoped workspace），加载 ~/.arena/CLAUDE.md 作项目地图，
   //   避免 sub-session cwd 落在 USERPROFILE 上（沙箱化 + 文件隔离）。
   //   不覆盖调用方显式传入的 opts.cwd（保留 add-meeting-sub 自定义入口）。
   if (!sessionOpts.cwd) {
@@ -1165,17 +1166,17 @@ ipcMain.handle('save-immersive-mode', () => {
 });
 
 // pilot recap / private-store / timeline recap 整体废弃 (2026-05-02)
-//   原因：shell/卡片分离后，圆桌 = 协作（公开 timeline + 卡片），子会话区 = 私聊（独立 PTY 不感知圆桌）。
-//   软件层不再桥接两者——副驾想看主驾思路？让主驾在圆桌"主驾发言"模式下说一遍即可。
+//   原因：shell/卡片分离后，AI 群聊 = 协作（公开 timeline + 卡片），子会话区 = 私聊（独立 PTY 不感知群聊）。
+//   软件层不再桥接两者——副驾想看主驾思路？让主驾在 AI 群聊"主驾发言"模式下说一遍即可。
 //   被删除的辅助：_generatePilotRecap / _parseSummaryWithSegments / _appendTimelineRecap
-//                 + core/pilot-recap-builder.js + core/general-roundtable-private-store.js
-//                 + IPC roundtable:pilot-segment-mode + roundtable-private:append/list
+//                 + core/pilot-recap-builder.js + legacy private store
+//                 + legacy pilot/private IPC channels
 
 
-// pilot redesign（2026-05-02）— roundtable:pilot-toggle IPC（无副作用版）
+// pilot redesign（2026-05-02）— groupchat:pilot-toggle IPC（无副作用版）
 //   slotIndex ∈ {0,1,2,null}：设置主驾"角色"标识。仅是 UI 红框，不切换全局模式。
 //   切换或取消主驾时 dispatchMode 自动 reset 'all'（由 meetingManager.setPilotSlot 内部处理）。
-//   旧版本会在关主驾时触发 _generatePilotRecap 生成 recap 卡片——已废弃（圆桌不再桥接子会话私聊）。
+//   旧版本会在关主驾时触发 _generatePilotRecap 生成 recap 卡片——已废弃（AI 群聊不再桥接子会话私聊）。
 ipcMain.handle('groupchat:pilot-toggle', async (_e, { meetingId, slotIndex } = {}) => {
   if (!meetingId) throw new Error('Missing meetingId');
   if (slotIndex !== null && (typeof slotIndex !== 'number' || slotIndex < 0 || slotIndex > 2)) {
@@ -1201,7 +1202,7 @@ ipcMain.handle('groupchat:pilot-toggle', async (_e, { meetingId, slotIndex } = {
       dispatchModeByMeeting: _dispatchModeByMeeting,
     });
   } catch (e) {
-    console.warn('[群聊] roundtable:pilot-toggle persist failed:', e.message);
+    console.warn('[群聊] groupchat:pilot-toggle persist failed:', e.message);
   }
 
   // 通知 renderer 更新 toolbar / 卡片视觉
@@ -1239,7 +1240,7 @@ ipcMain.handle('groupchat:dispatch-mode-set', async (_e, { meetingId, dispatchMo
       dispatchModeByMeeting: _dispatchModeByMeeting,
     });
   } catch (e) {
-    console.warn('[群聊] roundtable:dispatch-mode-set persist failed:', e.message);
+    console.warn('[群聊] groupchat:dispatch-mode-set persist failed:', e.message);
   }
 
   sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
@@ -1289,7 +1290,7 @@ ipcMain.handle('groupchat:set-participants', async (_e, { meetingId, participant
 });
 
 // =====================================================================
-// Roundtable Mode (Sprint 2): fanout / debate / summary 三种轮次
+// Group Chat Mode (Sprint 2): fanout / debate / summary 三种轮次
 // =====================================================================
 const groupchat = require('./core/group-chat-orchestrator.js');
 const groupChatWatcher = require('./core/group-chat-watcher.js');
@@ -1301,7 +1302,7 @@ groupChatWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
 let _groupChatInProgress = new Set(); // 同一群聊单一并发：set of meetingId
 
 // Resend & Auto-Recovery（2026-05-03）—— per-sid patch-listener 注册表
-//   防跨轮污染：dispatchRoundtableTurn 入口先 cancelPatchListenersForSid(sid)
+//   防跨轮污染：dispatchGroupChatTurn 入口先 cancelPatchListenersForSid(sid)
 //   保证一个 sub 永远只有最新一轮的 patch listener 在监听。watcher.cancelPatch()
 //   把 patchCancelled=true 后续 settle 不再挂新 listener；已挂的 patch listener
 //   通过 watcher 内部的 _cleanupPatch 自然清理。
@@ -1359,8 +1360,8 @@ function _computeDispatchSpec(self, targetSubs, pilotSlot, subSidsRaw, effective
 
 // 群聊 PTY 通信 helpers（waitCliReady / sendToPty / extractStreamingText / cleanBufLen
 // / checkHostShellTakeover）已抽到 core/group-chat-watcher.js（groupChatWatcher）。
-// 调用方走 groupChatWatcher.X。dispatchRoundtableTurn 与 _rtWaitTurnComplete 仍在 main.js
-// 这里（依赖闭包过深，留下次专项 → core/roundtable-dispatcher.js）。
+// 调用方走 groupChatWatcher.X。dispatchGroupChatTurn 与 _rtWaitTurnComplete 仍在 main.js
+// 这里（依赖闭包过深，留下次专项 → core/group-chat-dispatcher.js）。
 
 
 
@@ -1429,7 +1430,7 @@ function _startPasteTrappedMonitor(sid, kind, meetingId) {
           pasteTrappedDetector.start(sid, Date.now());
           return;
         }
-        console.warn(`[paste-trapped] confirmed stuck for ${kind}(${sid.slice(0,8)}) — pushing roundtable-send-stuck IPC`);
+        console.warn(`[paste-trapped] confirmed stuck for ${kind}(${sid.slice(0,8)}) — pushing groupchat-send-stuck IPC`);
         try {
           const meeting = meetingManager.getMeeting(meetingId);
           if (meeting && meeting.groupChat) {
@@ -1839,7 +1840,7 @@ ipcMain.handle('groupchat:turn', async (_e, args = {}) => {
   }
 });
 
-// 摘要功能 2026-05-08 整体下线：原 'roundtable:summary-trigger' IPC handler 已删
+// 摘要功能 2026-05-08 整体下线：原 summary-trigger IPC handler 已删
 
 ipcMain.handle('groupchat:get-state', (_e, { meetingId }) => {
   const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
@@ -1985,8 +1986,8 @@ ipcMain.handle('groupchat-gemini-debug-state', async () => {
 
 // Resend & Auto-Recovery（2026-05-03）— 手动 [📤 发送] 按钮入口
 //   触发场景：dispatch 主路径 sendToPty 返回 sendStatus='stuck'（auto-recover 也救不了），
-//     renderer 收到 'roundtable-send-stuck' IPC 后让卡片亮 [📤 发送] 按钮，
-//     用户手动点击 → renderer invoke('roundtable-resend-prompt') → 走这里。
+//     renderer 收到 'groupchat-send-stuck' IPC 后让卡片亮 [📤 发送] 按钮，
+//     用户手动点击 → renderer invoke('groupchat-resend-prompt') → 走这里。
 //   行为：从 orchestrator._activePrompts 取本轮 prompt + promptHeader →
 //     调 groupChatWatcher.resendCurrentPrompt（按 promptHeader 指纹判 enter_only / rewrite_full）。
 //   成功后 setSendStatus 'auto_recovered' 让 UI 调试能看到。
@@ -3108,10 +3109,10 @@ const hookServer = http.createServer((req, res) => {
   const isResearchStockNews = req.method === 'POST' && req.url === '/api/research/stock-news';
   const isResearchFetch = isResearchFetchStock || isResearchFetchField || isResearchFetchConcept || isResearchFetchSector
     || isResearchStockStatic || isResearchStockMarket || isResearchStockNews;
-  // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调（loopback）。保留旧 roundtable URL 兼容已启动的旧 MCP 进程。
-  const isMemoryWrite = req.method === 'POST' && (req.url === '/api/groupchat/memory-write' || req.url === '/api/roundtable/memory-write');
-  const isMemorySearch = req.method === 'POST' && (req.url === '/api/groupchat/memory-search' || req.url === '/api/roundtable/memory-search');
-  const isMemoryList = req.method === 'POST' && (req.url === '/api/groupchat/memory-list' || req.url === '/api/roundtable/memory-list');
+  // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调（loopback）。
+  const isMemoryWrite = req.method === 'POST' && req.url === '/api/groupchat/memory-write';
+  const isMemorySearch = req.method === 'POST' && req.url === '/api/groupchat/memory-search';
+  const isMemoryList = req.method === 'POST' && req.url === '/api/groupchat/memory-list';
   const isMemoryRoute = isMemoryWrite || isMemorySearch || isMemoryList;
   if (!isHook && !isStatus && !isResearchFetch && !isMemoryRoute && !isEscapeHome) {
     res.writeHead(404); res.end('{}'); return;

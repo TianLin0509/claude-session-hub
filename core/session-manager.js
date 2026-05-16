@@ -194,7 +194,7 @@ function buildGroupChatIsolationFlags(meetingId) {
 
 // dismissCodexUpdatePrompt — 阻止 codex CLI 启动时弹 "Update available! X -> Y" 提示。
 //
-// 历史 bug：codex 在 alt-screen TUI 弹 update prompt 阻塞主循环，圆桌发 prompt 时
+// 历史 bug：codex 在 alt-screen TUI 弹 update prompt 阻塞主循环，AI 群聊发 prompt 时
 // 字符进 update 选择菜单 → codex 选 "1.Update now" 自动跑 npm install -g → 升级完
 // codex 自退、PowerShell 接管 PTY → Hub 的 prompt 被 PowerShell 当命令执行 + 解析失败。
 //
@@ -608,7 +608,7 @@ class SessionManager extends EventEmitter {
 
     let currentModel = null;
     if (isClaude) {
-      // 默认 Opus 4.7 1M；圆桌 Modal 选 sonnet-4.5 等时透传 opts.model。
+      // 默认 Opus 4.7 1M；AI 群聊 Modal 选 sonnet-4.5 等时透传 opts.model。
       const mid = opts.model || 'claude-opus-4-7[1m]';
       currentModel = { id: mid, displayName: mid };
     } else if (isGemini) {
@@ -618,7 +618,7 @@ class SessionManager extends EventEmitter {
       const cv = getConfigValues();
       // opts.model（modal/picker 用户选择）必须最高优先级；只有未传时才落到 backend 默认 / 'gpt-5.5'。
       // 旧写法 `isCodexApiBackend ? cv.CODEX_API_MODEL : (opts.model || ...)` 在 packy api 模式下
-      // 强制覆盖用户选择，圆桌选 5.4/5.3 实际跑出来都是 5.5。
+      // 强制覆盖用户选择，AI 群聊选 5.4/5.3 实际跑出来都是 5.5。
       const cmid = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
       currentModel = { id: cmid, displayName: cmid.toUpperCase() };
     } else if (isDeepSeek) {
@@ -823,7 +823,7 @@ class SessionManager extends EventEmitter {
           cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
         }
         // 注：曾尝试 --no-alt-screen 改善观感，实测无明显改善 + Enter 提交失效 → 撤回。
-        // 渲染观感问题改由"持久化圆桌面板"（直接展示干净回答预览）绕过。
+        // 渲染观感问题改由"持久化 AI 群聊面板"（直接展示干净回答预览）绕过。
         if (opts.codexInstructionFile) {
           cmd += ` -c "model_instructions_file=${opts.codexInstructionFile.replace(/\\/g, '\\\\')}"`;
         }
@@ -1188,7 +1188,7 @@ class SessionManager extends EventEmitter {
       return false;
     }
     s.pty.write(cmd);
-    // 重置 roundtable 快路径缓存：CLI 是新启动，必须重新走冷启动流程
+    // 重置 group-chat 快路径缓存：CLI 是新启动，必须重新走冷启动流程
     s.groupChatReady = false;
     return true;
   }
@@ -1296,7 +1296,7 @@ class SessionManager extends EventEmitter {
 //   sourcePath: kind-specific transcript file path
 //
 // 2026-05-02 修复：deepseek/glm 跑在 Claude CLI 上，transcript JSONL shape 与 Claude
-//   完全一致，原本应复用 'claude' 分支但代码里完全没分支 → resume 时圆桌历史上下文
+//   完全一致，原本应复用 'claude' 分支但代码里完全没分支 → resume 时 AI 群聊历史上下文
 //   注入失败。下面把 Claude 家族判定改为 isClaudeFamily helper（已在文件顶部 require）。
 async function readTranscriptTail(kind, sourcePath, n = 10) {
   if (!sourcePath) return null;

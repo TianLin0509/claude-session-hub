@@ -1,6 +1,6 @@
 'use strict';
 // Group Chat Scenes — 统一的场景注册表 + prompt 拼装
-// 替代 general-roundtable-mode.js 和 research-mode.js 中 80% 重复的内容
+// 替代旧通用模式和投研模式中 80% 重复的内容
 //
 // 导出：
 //   BASE_RULES                       — L1 共享 AI 群聊基础规则
@@ -609,7 +609,7 @@ const SCENE_REGISTRY = {
 //     2. user 主动写入机制 (UI 入口 / 命令行)
 //     3. 与 timeline.md 的边界 (避免功能重叠)
 //     4. 跨会议同步策略 (mtime 检测 / hash 对比)
-//   群聊 22 轮讨论档案: docs/roundtable-prompt-refactor-plan.md (P5 段)
+//   群聊 22 轮讨论档案见历史提示重构计划（P5 段）
 
 // ===========================================================================
 // Public API

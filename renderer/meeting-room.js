@@ -20,7 +20,7 @@ if (typeof document !== 'undefined') (function () {
   //   驱动 isInitializing 判断（修 P0 阻塞 bug B：原 markerStatus 永远 'none' 导致永久卡"创建中"）
   let _cliReadyCache = {};
   let _cliReadyPollTimer = null;
-  // 圆桌记忆 phase 1（2026-05-07）：per-(meetingId, slot) 状态缓存
+  // AI 群聊记忆 phase 1（2026-05-07）：per-(meetingId, slot) 状态缓存
   //   { meetingId: { slot: { count, pending, hasProfile } } }
   //   memory-event IPC 增量更新；首次进 panel 时 _loadMemoryStatusForMeeting 拉取
   let _memStatusBy = {};
@@ -41,7 +41,7 @@ if (typeof document !== 'undefined') (function () {
     return !!(m && m.scene);
   }
 
-  // --- Roundtable @command parser ---
+  // --- Group chat @command parser ---
   // 摘要功能 2026-05-08 整体下线：原 @summary @<slot> 命令路径已删
   // 现仅支持 @debate / @all / @<slot>（@<slot> 仅用于剥前缀，仍走 fanout）
   const _RT_SLOT_ALT = slotIdRegexAlternation();
@@ -67,12 +67,12 @@ if (typeof document !== 'undefined') (function () {
       rest = rest.slice(t[0].length);
     }
     // pilot redesign（2026-05-02）：旧 @xxx 私聊解析整体废弃。
-    //   想私聊就直接进对应 AI 子会话区聊（圆桌不再桥接子会话，rt-private 类型已删）。
+    //   想私聊就直接进对应 AI 子会话区聊（AI 群聊不再桥接子会话，private bridge 类型已删）。
     //   保留 @xxx 前缀剥离能力，但全部走 fanout（@xxx 与不带 @ 等价）。
     return { type: 'rt-fanout', text: rest };
   }
 
-  // --- Roundtable Mode: 持久化圆桌面板（始终显示当前状态 + 历史）---
+  // --- Group Chat Mode: 持久化 AI 群聊面板（始终显示当前状态 + 历史）---
   // Phase 5(2026-05-05 道雪): 时光机模式状态 — _rtViewingTurnN[meetingId] = N 表示正在查看第 N 轮历史。
   //   null / undefined = 默认查看最新轮(实时模式), 数字 = 查看第 N 轮(只读历史模式)。
   //   切换由 stepper dot click 触发 → 重渲 panel + _renderSlotCard 拿 turn.by[sid] 渲染历史内容。
@@ -87,7 +87,7 @@ if (typeof document !== 'undefined') (function () {
   let _rtTimelineLive = null;
   // T3 fix（2026-05-04 道雪）：上一次抽屉的清理函数，开新抽屉前先调，避免 escHandler 累积绑定 + 闭包内存泄漏。
   let _rtTimelineCleanup = null;
-  // pilot redesign（2026-05-02）：_privateCountCache 已废弃（圆桌不再桥接子会话私聊）
+  // pilot redesign（2026-05-02）：_privateCountCache 已废弃（AI 群聊不再桥接子会话私聊）
   const _thinkStartTs = {};
   let _thinkTimer = null;
   // F0 Phase 1(2026-05-04 道雪): 卡片聚焦态全局状态。null = 默认态; sid = 该卡聚焦中。
@@ -121,7 +121,7 @@ if (typeof document !== 'undefined') (function () {
 
   // F7 Phase 3 全员完成通知（Web Notification + title 闪烁）已废弃。
   //   2026-05-05 道雪 修3：改用侧栏 unread 机制（renderer.js 监听 turn-complete IPC，
-  //   非 active 圆桌累加 meeting.unreadCount → renderSessionList 渲染 has-unread + ⏸ 等你 badge），
+  //   非 active AI 群聊累加 meeting.unreadCount → renderSessionList 渲染 has-unread + ⏸ 等你 badge），
   //   与普通 session 的提醒哲学一致，不再用 Web Notification / title 闪烁打扰用户。
 
   const _CARD_VIEW_MODE_KEY = 'mr-card-view-mode';
@@ -223,7 +223,7 @@ if (typeof document !== 'undefined') (function () {
       _restoreGroupChatScroll(panel, groupScroll, { forceBottom: forceGroupChatBottom });
       return true;
     } catch (e) {
-      console.error('[roundtable] cached panel render failed:', e);
+      console.error('[groupchat] cached panel render failed:', e);
       return false;
     }
   }
@@ -454,7 +454,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   // 卡片优化（2026-05-03 道雪）：与 renderer.js 的 ABS_PATH_RE 同源 — 绝对路径
-  //   (Windows C:\... / UNC \\server\... / ~ 起始)，扩展名 1-8 ASCII。圆桌卡片
+  //   (Windows C:\... / UNC \\server\... / ~ 起始)，扩展名 1-8 ASCII。AI 群聊卡片
   //   场景下 AI 输出多绝对路径；相对路径需 cwd 上下文，本卡片层不易拿到，先不做。
   const _ABS_PATH_RE = /(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/])(?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
 
@@ -666,15 +666,15 @@ if (typeof document !== 'undefined') (function () {
     return html.join('');
   }
 
-  // 注：顶部 scene toggle（圆桌/投研）的 _renderModeToggle/_bindModeToggle 已删除
+  // 注：顶部 scene toggle（群聊/投研）的 _renderModeToggle/_bindModeToggle 已删除
   //   （2026-05-04 决策：scene 创建时确定，运行时不可切换）。
   //   IPC `switch-scene` handler 保留，避免破坏其它代码路径。
 
   function _ensureRtPanel() {
-    let panel = document.getElementById('mr-roundtable-panel');
+    let panel = document.getElementById('mr-group-chat-panel');
     if (!panel) {
       panel = document.createElement('div');
-      panel.id = 'mr-roundtable-panel';
+      panel.id = 'mr-group-chat-panel';
       panel.className = 'mr-rt-panel';
       // Arch refactor 2026-05-02: mr-terminals removed. Anchor the cards panel
       // before mr-toolbar so it occupies the main flex area between header and
@@ -691,7 +691,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _removeRtPanel() {
-    const p = document.getElementById('mr-roundtable-panel');
+    const p = document.getElementById('mr-group-chat-panel');
     if (p && p.parentElement) p.remove();
   }
 
@@ -759,7 +759,7 @@ if (typeof document !== 'undefined') (function () {
       deepseek: '🟢', glm: '🟣', gpt: '⚪', kimi: '🟤', qwen: '🔴',
     })[kind] || '🤖';
   }
-  // meeting-create-modal（2026-05-01）：圆桌卡片头像与 slot 位置绑定（不与 kind 绑定）。
+  // meeting-create-modal（2026-05-01）：AI 群聊卡片头像与 slot 位置绑定（不与 kind 绑定）。
   //   slot 1 = 皮卡丘永远（即使该 slot 是 DeepSeek）；slot 2 小火龙；slot 3 杰尼龟。
   //   理由：用户视觉上把"slot 位置"和某只宝可梦稳定挂钩，方便快速识别哪一格是哪家。
   //   侧边栏单 session 列表仍按 kind 显头像（_avatarSrcFor），逻辑没变。
@@ -1088,7 +1088,7 @@ if (typeof document !== 'undefined') (function () {
 
   function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, bottomHtml,
                    thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge, slotIndex, sendStuck, lineageHtml, isGroupChat) {
-    // 圆桌主题色按 slot 上色（slot 1/2/3 = 皮卡丘/小火龙/杰尼龟），与 kind 解耦：
+    // AI 群聊主题色按 slot 上色（slot 1/2/3 = 皮卡丘/小火龙/杰尼龟），与 kind 解耦：
     // kind 仍保留为 data-attribute 标识 AI 身份，但 CSS 视觉风格只跟槽位走，
     // 未来加任意 AI 都不需要补 CSS。
     const slotIdx = (typeof slotIndex === 'number' && slotIndex >= 0) ? slotIndex : 0;
@@ -1106,7 +1106,7 @@ if (typeof document !== 'undefined') (function () {
     const modelBadge = modelName ? `<span class="mr-ft-model ${slotCls}">${escapeHtml(modelName)}</span>` : '';
     const ctxBadge = ctxPct !== null ? `<span class="mr-ft-ctx ${ctxCls}">Ctx ${ctxPct}%</span>` : '';
 
-    // 圆桌卡片头像与 slot 位置绑定（不与 kind 绑定）。
+    // AI 群聊卡片头像与 slot 位置绑定（不与 kind 绑定）。
     //   slot 1 永远皮卡丘，slot 2 永远小火龙，slot 3 永远杰尼龟，便于用户视觉识别
     //   "哪一格是哪家"。CSS 主题色亦按 slot 上色（见 .mr-ft.slot-N），kind 仅作 data-attribute。
     const avatarSrc = isGroupChat ? `assets/ai-logos/${kind}.svg` : _avatarBySlot(slotIdx);
@@ -1176,7 +1176,7 @@ if (typeof document !== 'undefined') (function () {
     </div>`;
   }
 
-  // 圆桌记忆 phase 1（2026-05-07）：右上角 📒 N / 📥 / 📊 三个按钮
+  // AI 群聊记忆 phase 1（2026-05-07）：右上角 📒 N / 📥 / 📊 三个按钮
   //   📒 N — 个体 .md 条目数。点击 → 打开 {slot}.md。N=0 也显示（点了会创建空文件 + header）
   //   📥   — 仅 pending-{slot}.json 含 status='pending' 的 item 时显示（带数字 dot）
   //   📊   — 仅 _profile.md 存在时显示（worker 派生的共识层；阶段 0 不存在）
@@ -1215,7 +1215,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   // Lazy load memory status for a meeting — 通过 IPC 同步三家 count/pending/hasProfile，
-  //   有变化才 trigger refreshGroupChatPanel。在 selectMeeting / 圆桌轮完成后调用。
+  //   有变化才 trigger refreshGroupChatPanel。在 selectMeeting / AI 群聊轮完成后调用。
   async function _loadMemoryStatusForMeeting(meeting) {
     if (!meeting || !meeting.id || !Array.isArray(meeting.subSessions)) return;
     const meetingId = meeting.id;
@@ -1431,7 +1431,7 @@ if (typeof document !== 'undefined') (function () {
       ? `${labels.join(' · ')} 等你抛话题`
       : '等你抛话题';
 
-    // D1 Phase 4(2026-05-05 道雪): 圆桌角色 PNG 头像 stack(与卡片头像一致)
+    // D1 Phase 4(2026-05-05 道雪): AI 群聊角色 PNG 头像 stack(与卡片头像一致)
     //   groupChat uses company logos instead of slot-bound Pokemon avatars.
     const slots = _getRtSlots(meeting);
     const avatarsHtml = sids.map((sid, idx) => {
@@ -1820,7 +1820,7 @@ if (typeof document !== 'undefined') (function () {
     </div>`;
     // FIX-E（2026-05-01）：cmdBar 推进按钮判定要按"期望家集合"，不是 partialBy 自身的 keys。
     // meeting-create-modal（2026-05-01）：期望家 = meeting.subSessions（按 slot 顺序），
-    //   不再硬编码 ['claude','gemini','codex']——多 claude / DeepSeek+GLM 混搭的圆桌也能正确判完成。
+    //   不再硬编码 ['claude','gemini','codex']——多 claude / DeepSeek+GLM 混搭的 AI 群聊也能正确判完成。
     const expectedSids = Array.isArray(meeting.subSessions) ? meeting.subSessions.slice() : [];
     // E3 修复 (2026-05-03)：删除 _renderCmdBar 调用 — panel 顶部按钮组与 toolbar 重复，
     //   toolbar 已覆盖所有功能，删 cmd-bar 单一来源。
@@ -1829,7 +1829,7 @@ if (typeof document !== 'undefined') (function () {
     const devCard = _renderSceneOnboardingCard(meeting);
     // Stage 2 容错升级：软提醒 banner 容器
     const softBanner = `<div id="mr-rt-soft-alert-banner" class="mr-rt-soft-alert-banner" style="display:none"></div>`;
-    // pilot redesign（2026-05-02）：废弃 pilotRecaps 卡片 + 主驾占位容器（圆桌不再桥接子会话私聊）。
+    // pilot redesign（2026-05-02）：废弃 pilotRecaps 卡片 + 主驾占位容器（AI 群聊不再桥接子会话私聊）。
     // H3 Phase 4(2026-05-05 道雪): 同步刷新 header 进度条 + meta(每次 panel re-render)
     _updateHeaderProgress(meeting, state, mode, totalSec);
     // Phase 4 v2(2026-05-05): panel 重渲后 onboarding head 占位空, 异步 microtask 触发 _refreshSoftAlert 填充
@@ -1838,7 +1838,7 @@ if (typeof document !== 'undefined') (function () {
       return _renderGroupChatView(state, meeting, softBanner, totalSecTxt);
     }
     // D1 v2(2026-05-05 道雪): 欢迎区从 fusedTabs 之后上移到 fusedTabs 之前,
-    //   位置在 "圆桌讨论" 标题正下方与 3 张 AI 卡片之间, 视觉权重更高 + 更早被注意到。
+    //   位置在 "AI 群聊" 标题正下方与 3 张 AI 卡片之间, 视觉权重更高 + 更早被注意到。
     // 2026-05-05 道雪: 用户提问 banner 紧贴 fusedTabs 之上 — 让"标题/stepper → 你的提问 → AI 答复"
     //   形成 Q→A 视觉流。空提问/空 turns 时 banner 自动 return '' 不渲染。
     const userQBanner = _renderUserQuestionBanner(state, meeting, viewingTurnN);
@@ -1870,15 +1870,15 @@ if (typeof document !== 'undefined') (function () {
   // partialBy 单独保留：轮中单家完成 IPC 推 partial-update，这是轮内增量，独立处理。
   // 2026-05-05 道雪 修3：cache 与 DOM 解耦的设计原则
   //   旧实现：refreshGroupChatPanel 一手包办"拉 server state + merge cache + 写 DOM"，
-  //     调用方必须保证 meeting 是当前 active 才能调，否则 DOM 会被错圆桌内容覆盖。
+  //     调用方必须保证 meeting 是当前 active 才能调，否则 DOM 会被错群聊内容覆盖。
   //     副作用：所有 IPC handler 都用 `meetingId !== activeMeetingId → return` 守卫，
-  //     非 active 圆桌的 cache 永远跟不上 server，切回时 partial 残留 → 卡片状态错乱。
+  //     非 active AI 群聊的 cache 永远跟不上 server，切回时 partial 残留 → 卡片状态错乱。
   //   新设计：拆成两个函数 ——
   //     _syncGroupChatCacheFromServer(meeting): 纯 cache 同步，**任何 meeting 都安全调用**
   //       不动 DOM，IPC handler 在守卫之外也可调用
   //     refreshGroupChatPanel(meeting): cache sync + DOM 重渲，**仅 active meeting 调用**
   //       内含 activeMeetingId race guard（修2 内置）
-  //   这样所有圆桌的 cache 始终跟 server 同步，切换体验一致，杜绝残留。
+  //   这样所有 AI 群聊的 cache 始终跟 server 同步，切换体验一致，杜绝残留。
 
   // 拉 server state + merge cache（含 optimistic 与 prev._partialBy 合并），写 _rtPanelState。
   // 不写 DOM 不调 _ensureRtPanel，任何 meeting 都能调。
@@ -1889,7 +1889,7 @@ if (typeof document !== 'undefined') (function () {
     try {
       state = await ipcRenderer.invoke('groupchat:get-state', { meetingId: meeting.id });
     } catch (e) {
-      console.error('[roundtable] get-state failed:', e.message);
+      console.error('[groupchat] get-state failed:', e.message);
       return { state: null, ok: false };
     }
     if (!state) return { state: null, ok: false };
@@ -1990,7 +1990,7 @@ if (typeof document !== 'undefined') (function () {
     const expectedGroupViewMode = opts.expectedGroupViewMode || (meeting.groupChat ? _getGroupViewMode() : null);
     const { state, ok } = await _syncGroupChatCacheFromServer(meeting);
     if (!ok) return;
-    // 修2：async race guard — await 期间用户切走，老 refresh 不写 DOM（避免 panel 被错圆桌内容覆盖）
+    // 修2：async race guard — await 期间用户切走，老 refresh 不写 DOM（避免 panel 被错群聊内容覆盖）
     if (meeting.id !== activeMeetingId) return;
     // 群聊"聊天/卡片"切换期间可能有上一轮 refresh 仍在飞行中。若它返回时视图模式
     // 已改变，直接丢弃，避免 header 已是新模式、panel 却被旧模式重写。
@@ -2016,7 +2016,7 @@ if (typeof document !== 'undefined') (function () {
         _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
       });
     }
-    // 圆桌记忆 phase 1（2026-05-07）：lazy 拉取 count/pending/hasProfile（fire-and-forget）
+    // AI 群聊记忆 phase 1（2026-05-07）：lazy 拉取 count/pending/hasProfile（fire-and-forget）
     //   首次进 panel 时 cache 空 → 显示 0 → 拉取后若有 dirty 自然触发 refresh 二次渲染
     //   memory-event IPC 后续会做增量推送，所以这里只补"冷启动 / 切回"场景
     _loadMemoryStatusForMeeting(meeting);
@@ -2123,7 +2123,7 @@ if (typeof document !== 'undefined') (function () {
               // 2026-05-02 Bug 修复：用户视觉反馈。
               //   旧版本只 console.log → 用户看不到"提取成功"，加上 IPC 永远失败（Bug 2），
               //   感觉按钮完全是假的。新版本：按钮短暂变绿显示 "✓ 已同步 N 字"，
-              //   1.5s 后恢复；卡片本身会被 sendToRenderer('roundtable-turn-complete') 触发刷新。
+              //   1.5s 后恢复；卡片本身会被 sendToRenderer('groupchat-turn-complete') 触发刷新。
               const charCount = (r.text || '').length;
               console.log(`[rt-escape] extract ok: ${kind} got ${charCount} chars (mode=${r.mode}, source=${r.source})`);
               btn.style.background = '#2da44e';
@@ -2197,7 +2197,7 @@ if (typeof document !== 'undefined') (function () {
       });
     });
 
-    // 圆桌记忆 phase 1（2026-05-07）：📒 / 📥 / 📊 三按钮
+    // AI 群聊记忆 phase 1（2026-05-07）：📒 / 📥 / 📊 三按钮
     //   data-rt-mem-action: 'open-own' | 'open-pending' | 'open-profile'
     //   stopPropagation 避免冒泡到 .mr-ft 卡片 click（不要触发 focus）
     slotEl.querySelectorAll('[data-rt-mem-action]').forEach(btn => {
@@ -2744,12 +2744,12 @@ if (typeof document !== 'undefined') (function () {
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  // Roundtable 轮次完成：清掉 partialBy + 乐观标记（防止 turn-complete 比 IPC.then 更早），
+  // Group chat 轮次完成：清掉 partialBy + 乐观标记（防止 turn-complete 比 IPC.then 更早），
   // 从 IPC 拉最终 state（含 turn N 已持久化）
   // 2026-05-05 道雪 修3：cache 清理对所有 meeting 都做（含非 active），DOM 重渲仅 active 做。
-  //   之前的 `meetingId === activeMeetingId` 守卫导致非 active 圆桌 _partialBy 残留，
+  //   之前的 `meetingId === activeMeetingId` 守卫导致非 active AI 群聊 _partialBy 残留，
   //   切回时 cached.currentMode!=idle 但实际 server 已 idle → 卡片显示 streaming 假象。
-  // 圆桌记忆 phase 1（2026-05-07）：主进程 memory-event 广播
+  // AI 群聊记忆 phase 1（2026-05-07）：主进程 memory-event 广播
   //   type:'write'             — memory_write 命中后；含 slot/count，增量更新该 slot count
   //   type:'checkpoint-done'   — worker 跑完 _profile.md + pending；触发整 meeting 状态重拉
   //   type:'checkpoint-failed' — worker 失败；触发重拉（让 pending count 仍刷新）
@@ -2788,7 +2788,7 @@ if (typeof document !== 'undefined') (function () {
       cached.currentMode = null;
     }
     // === Phase 2: DOM 重渲（仅 active meeting）===
-    //   非 active 圆桌的全员完成通知由 renderer.js 监听同 IPC 累加 meeting.unreadCount
+    //   非 active AI 群聊的全员完成通知由 renderer.js 监听同 IPC 累加 meeting.unreadCount
     //   触发侧栏 has-unread + ⏸ 等你 badge，不在此处理。
     if (meetingId !== activeMeetingId) return;
     refreshGroupChatPanel(meeting);
@@ -2796,7 +2796,7 @@ if (typeof document !== 'undefined') (function () {
   });
 
   // pilot redesign（2026-05-02）：timeline-append / timeline-update / _updatePilotPlaceholder 整体废弃
-  //   （pilot recap 卡片不再生成，圆桌 timeline 只保留 fanout/debate/summary 公开发言记录）。
+  //   （pilot recap 卡片不再生成，AI 群聊 timeline 只保留 fanout/debate/summary 公开发言记录）。
 
   // T2（2026-05-04 道雪）：partial diff 短路 — 内容完全没变就不动 DOM，
   //   修复 B2「皮卡丘已 settled 后小火龙心跳仍打回皮卡丘卡片滚动条」。
@@ -2822,11 +2822,11 @@ if (typeof document !== 'undefined') (function () {
     return true;
   }
 
-  // Roundtable 单家 partial-update：T2（2026-05-04 道雪）局部 patch + diff 短路 + scrollTop 保留
+  // Group chat 单家 partial-update：T2（2026-05-04 道雪）局部 patch + diff 短路 + scrollTop 保留
   //   修复 B2 滚动条弹回：旧版 panel.innerHTML 全量重渲，三家卡片 DOM 全销毁→
   //   皮卡丘 settled 后小火龙心跳仍把皮卡丘 .mr-ft-preview 的 scrollTop 拍回 0。
   // 2026-05-05 道雪 修3：cache 同步与 DOM 解耦 ——
-  //   旧版 `meetingId !== activeMeetingId → return` 让非 active 圆桌的 cache 永远跟不上 server，
+  //   旧版 `meetingId !== activeMeetingId → return` 让非 active AI 群聊的 cache 永远跟不上 server，
   //   切回时残留 streaming partial → 卡片显示错状态。新版 cache 同步对所有 meeting 都做，
   //   DOM 操作仅 active 时执行。
   ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen }) => {
@@ -2835,7 +2835,7 @@ if (typeof document !== 'undefined') (function () {
     // === Phase 1: cache 同步（任何 meeting 都做，含非 active）===
     let cached = _rtPanelState[meetingId];
     if (!cached) {
-      // 没 cache 说明用户从没打开过这个圆桌 → 异步拉 server state 建 cache。
+      // 没 cache 说明用户从没打开过这个 AI 群聊 → 异步拉 server state 建 cache。
       //   本次 partial 不写（下次 partial 来时 cache 已建会正常合并），
       //   保持与旧版行为一致避免占位 cache 导致 lastTurn=null 渲染不完整。
       _syncGroupChatCacheFromServer(meeting).then(({ ok }) => {
@@ -2908,7 +2908,7 @@ if (typeof document !== 'undefined') (function () {
         _bindRtPanelEvents(panel, meeting);
         _restoreGroupChatScroll(panel, groupScroll);
       } catch (e) {
-        console.error('[roundtable] partial-update fallback rebuild failed:', e);
+    console.error('[groupchat] partial-update fallback rebuild failed:', e);
       }
       return;
     }
@@ -2979,9 +2979,9 @@ if (typeof document !== 'undefined') (function () {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 _partialBy[sid].status='soft_alert'），
-    //   切回该圆桌时卡片自动显示"等待中…"状态。
-    //   banner DOM 仅 active 时弹（跨 meeting 弹 banner 文案"XX 已等待"会让用户混乱当前看的不是这个圆桌）。
-    //   非 active 圆桌的 soft-alert 不接入侧栏 unread —— 这是"AI 慢响应"信号，
+    //   切回该 AI 群聊时卡片自动显示"等待中…"状态。
+    //   banner DOM 仅 active 时弹（跨 meeting 弹 banner 文案"XX 已等待"会让用户混乱当前看的不是这个 AI 群聊）。
+    //   非 active AI 群聊的 soft-alert 不接入侧栏 unread —— 这是"AI 慢响应"信号，
     //   语义跟"全员完成"不同，混入侧栏会让"⏸ 等你"badge 含义模糊。
     const cached = _rtPanelState[meetingId];
     if (cached) {
@@ -3021,12 +3021,12 @@ if (typeof document !== 'undefined') (function () {
 
   // T6（2026-05-03）：send-stuck 事件 → 数据驱动写 _partialBy[sid].sendStatus='stuck'，
   //   再 refreshGroupChatPanel 重渲——这样 innerHTML 重渲后状态也能保留（H2 数据驱动方案）。
-  //   H1 修复：补 activeMeetingId 守卫，与其他 roundtable-* 监听器保持一致。
+  //   H1 修复：补 activeMeetingId 守卫，与其他 groupchat-* 监听器保持一致。
   ipcRenderer.on('groupchat-send-stuck', (_e, { meetingId, sid /*, kind, mode */ }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 sendStatus='stuck'），
-    //   切回该圆桌时卡片自动显示"⚠ 输入卡顿"状态 + [📤 发送] 按钮亮起。
+    //   切回该 AI 群聊时卡片自动显示"⚠ 输入卡顿"状态 + [📤 发送] 按钮亮起。
     //   panel DOM 重渲仅 active 做。
     const cached = _rtPanelState[meetingId];
     if (cached) {
@@ -3035,7 +3035,7 @@ if (typeof document !== 'undefined') (function () {
       // 保留已有 text/status/blocks，仅追加 sendStatus='stuck'
       cached._partialBy[sid] = { ...existing, sendStatus: 'stuck' };
     }
-    console.warn(`[renderer] roundtable-send-stuck meeting=${meetingId} sid=${sid.slice(0,8)}`);
+    console.warn(`[renderer] groupchat-send-stuck meeting=${meetingId} sid=${sid.slice(0,8)}`);
     if (meetingId !== activeMeetingId) return;
     if (cached) {
       const panel = _ensureRtPanel();
@@ -3052,7 +3052,7 @@ if (typeof document !== 'undefined') (function () {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // 2026-05-05 道雪 修3：cache 同步（拉 server state 拿到 patch 后的 lastTurn.by）对所有 meeting 都做，
-    //   切回该圆桌时 lastTurn 自动是 patch 后的最新文本。
+    //   切回该 AI 群聊时 lastTurn 自动是 patch 后的最新文本。
     //   "自动补全 +N 字"badge 是 3s 浮动动画，仅 active 时追加（跨切换语义弱，非 active 期间错过没影响）。
     if (meetingId === activeMeetingId) {
       // active：先重渲拿最新 turn meta，badge 在新 DOM 上追加
@@ -3075,7 +3075,7 @@ if (typeof document !== 'undefined') (function () {
       // 非 active：仅 cache 同步（不动 DOM）
       _syncGroupChatCacheFromServer(meeting);
     }
-    console.log(`[renderer] roundtable-turn-patched turn=${turnNum} sid=${sid.slice(0,8)} +${charCount} chars`);
+    console.log(`[renderer] groupchat-turn-patched turn=${turnNum} sid=${sid.slice(0,8)} +${charCount} chars`);
   });
 
   const panelEl = () => document.getElementById('meeting-room-panel');
@@ -3086,7 +3086,7 @@ if (typeof document !== 'undefined') (function () {
   const sendBtnEl = () => document.getElementById('mr-send-btn');
 
   // 2026-05-05 道雪：输入框草稿 per meeting 独立。#mr-input-box 是全局唯一 DOM,
-  //   切换不同圆桌时 textContent 不变 → 用户感知"输入框被共享/串味"。
+  //   切换不同 AI 群聊时 textContent 不变 → 用户感知"输入框被共享/串味"。
   //   切换前 save 当前 mid 的草稿、切换后 restore 新 mid 的草稿即可独立。
   //   仅内存级（不落盘）：重启 Hub 草稿丢失，与"输入未发送临时缓冲"语义一致。
   const _inputDraftByMeeting = {};
@@ -3176,7 +3176,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function closeMeetingPanel() {
-    // 离开圆桌前先保存草稿，下次重新进入时恢复。
+    // 离开 AI 群聊前先保存草稿，下次重新进入时恢复。
     _saveInputDraft();
     activeMeetingId = null;
     _inputBound = false;
@@ -3202,7 +3202,7 @@ if (typeof document !== 'undefined') (function () {
     subTerminals = {};
   }
 
-  // Arch refactor 2026-05-02: 沉浸/调试模式切换已删除。圆桌只有一种视图，
+  // Arch refactor 2026-05-02: 沉浸/调试模式切换已删除。AI 群聊只有一种视图，
   // 这些函数保留为 no-op 以兼容内部调用（openMeeting 仍调 _restoreMeetingMode）。
   function _toggleMeetingMode() { /* removed: only one view now */ }
   function _applyMeetingMode(_immersive) { /* removed */ }
@@ -3350,7 +3350,7 @@ if (typeof document !== 'undefined') (function () {
     const layoutButtonsHtml = showLayoutButtons ? `
         <button class="mr-header-btn ${meeting.layout === 'focus' ? 'active' : ''}" id="mr-btn-focus">Focus</button>` : '';
 
-    // Arch refactor 2026-05-02: 沉浸/调试切换按钮已删除。圆桌界面只有一种
+    // Arch refactor 2026-05-02: 沉浸/调试切换按钮已删除。AI 群聊界面只有一种
     // 视图（永远纯卡片），shell 沉到子 session 主区。
     const groupViewMode = meeting.groupChat ? _getGroupViewMode() : null;
     const viewToggleHtml = meeting.groupChat ? `
@@ -3403,7 +3403,7 @@ if (typeof document !== 'undefined') (function () {
       renderHeader(meeting);
     });
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
-    // 注：顶部 scene toggle（圆桌/投研）已删除（2026-05-04 决策：scene 创建时确定，运行时不可切换）。
+    // 注：顶部 scene toggle（群聊/投研）已删除（2026-05-04 决策：scene 创建时确定，运行时不可切换）。
     // Arch refactor 2026-05-02: 沉浸/调试 toggle 删除，无需 binding。
     document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
     document.getElementById('mr-btn-zoom-out').addEventListener('click', () => { if (typeof applyZoom === 'function') applyZoom(currentZoom - 1); });
@@ -3505,7 +3505,7 @@ if (typeof document !== 'undefined') (function () {
     container.classList.remove('mr-terminals-hidden');
   }
 
-  // Arch refactor 2026-05-02: 圆桌界面去 shell。原 #mr-terminals 已删除，xterm
+  // Arch refactor 2026-05-02: AI 群聊界面去 shell。原 #mr-terminals 已删除，xterm
   // 仅在子 session 主区 shell view 挂载（renderer.js: showTerminal）。这些
   // mount/render 函数保留签名以兼容调用方，body 改为 no-op。subTerminals 永远
   // 为空对象，下游 fit 循环空跑无害。
@@ -3567,7 +3567,7 @@ if (typeof document !== 'undefined') (function () {
       // 2026-05-05 道雪：activeMeetingId 快照 + race guard。
       //   原版在 await invoke 后用全局 activeMeetingId 拿 cached、用 T0 闭包的 meeting 写 panel —
       //   用户在 await 期间切到 B 时，cached=cachedB + meeting=meetingA 混渲（标题来自 A 但 stepper/
-      //   turns 来自 B）。同样可能让 panel 在用户感知"未操作"瞬间显示错圆桌内容。
+      //   turns 来自 B）。同样可能让 panel 在用户感知"未操作"瞬间显示错群聊内容。
       const startActiveMeetingId = activeMeetingId;
       const meeting = meetingData[startActiveMeetingId];
       if (!meeting || !Array.isArray(meeting.subSessions)) return;
@@ -3767,7 +3767,7 @@ if (typeof document !== 'undefined') (function () {
     return slot;
   }
 
-  // Arch refactor 2026-05-02: shell 不再在圆桌界面 mount，no-op。
+  // Arch refactor 2026-05-02: shell 不再在 AI 群聊界面 mount，no-op。
   function fitSubTerminal(_sessionId) { /* removed */ }
   function mountSubTerminal(_sessionId) { /* removed */ }
 
@@ -3999,7 +3999,7 @@ if (typeof document !== 'undefined') (function () {
     if (_isPanelCapableMeeting(meeting)) {
       const subs = _getRtSubInfo(meeting);
       // slot 化（2026-05-03）：dropdown 改按 slot 枚举（不再按 kind 去重）。
-      //   关键修复：3 claude 圆桌时，原 kind 索引只显 1 个"Claude"选项，
+      //   关键修复：3 claude 群聊时，原 kind 索引只显 1 个"Claude"选项，
       //   sidByKind 也只返回首个，导致后两位 claude 永远当不了总结人。
       //   现在改 slot：3 个选项 ⚡Pikachu / 🔥Charmander / 💎Squirtle，
       //   value=slotId 直接对应到后端 sidBySlot。
@@ -4241,7 +4241,7 @@ if (typeof document !== 'undefined') (function () {
         });
       });
 
-      // dispatchMode 切换：调 IPC 'roundtable:dispatch-mode-set'，server 推 meeting-updated 回来重渲
+      // dispatchMode 切换：调 IPC 'groupchat:dispatch-mode-set'，server 推 meeting-updated 回来重渲
       el.querySelectorAll('.mr-rt-dispatch-btn[data-dispatch-mode]').forEach(btn => {
         btn.addEventListener('click', async () => {
           if (btn.hasAttribute('disabled')) return;
@@ -4263,7 +4263,7 @@ if (typeof document !== 'undefined') (function () {
     }
 
     // fallback toolbar:仅在老数据/异常 meeting(无 mode flag)出现,清空即可,
-    // 用户应通过模式 toggle 切到圆桌或投研以使用主功能。
+    // 用户应通过模式 toggle 切到群聊或投研以使用主功能。
     el.innerHTML = '';
   }
 
@@ -4587,7 +4587,7 @@ if (typeof document !== 'undefined') (function () {
     if (_inputBound) return;
     _inputBound = true;
     // IF-C2：仅首次绑定时设内容（避免后续重渲染 setupInput 擦掉用户已输入未发送内容）。
-    // 2026-05-05 道雪：从清空改为按 meeting.id 恢复草稿 — 切换不同圆桌时各自独立。
+    // 2026-05-05 道雪：从清空改为按 meeting.id 恢复草稿 — 切换不同 AI 群聊时各自独立。
     inputBox.textContent = _inputDraftByMeeting[meeting.id] || '';
 
     if (targetSelect) {
@@ -4987,7 +4987,7 @@ if (typeof document !== 'undefined') (function () {
 
 // Node 测试环境兼容（renderer 真实运行时为 IIFE 浏览器环境，typeof module 为 undefined 走不到这）
 if (typeof module !== 'undefined' && module.exports) {
-  // 让 unit test 能 require 到 _isPartialUnchanged。这种"双模兼容"模式同 core/roundtable-free.js。
+  // 让 unit test 能 require 到 _isPartialUnchanged。这种"双模兼容"模式同 group-chat modules。
   // 双份函数体看起来 DRY 违反，但 IIFE 内部变量（document、ipcRenderer）在 Node require 时不存在 →
   // 把整个 IIFE 移出来代价巨大。_isPartialUnchanged 是纯函数无外部依赖 → 复制一份是最低成本路径。
   module.exports = {
