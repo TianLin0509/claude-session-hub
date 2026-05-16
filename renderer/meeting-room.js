@@ -178,7 +178,12 @@ if (typeof document !== 'undefined') (function () {
       if (typeof localStorage !== 'undefined') localStorage.setItem(_GROUP_VIEW_MODE_KEY, next);
     } catch {}
     const active = meeting || (activeMeetingId && meetingData[activeMeetingId]);
-    if (active && _isPanelCapableMeeting(active)) refreshRoundtablePanel(active);
+    if (active && _isPanelCapableMeeting(active)) {
+      // 视图切换是纯 renderer 状态，先用已有 cache 同步重绘，避免 header 已切换
+      // 但异步 get-state 尚未返回时主体仍停在上一种视图。
+      _renderActivePanelFromCache(active);
+      refreshRoundtablePanel(active, { expectedGroupViewMode: next });
+    }
     if (typeof _relayoutMeetingRoom === 'function') {
       setTimeout(() => _relayoutMeetingRoom(), 160);
     }
@@ -200,6 +205,27 @@ if (typeof document !== 'undefined') (function () {
     if (active && _isPanelCapableMeeting(active)) refreshRoundtablePanel(active);
     if (typeof _relayoutMeetingRoom === 'function') {
       setTimeout(() => _relayoutMeetingRoom(), 120);
+    }
+  }
+
+  function _renderActivePanelFromCache(meeting, opts = {}) {
+    const active = meeting || (activeMeetingId && meetingData[activeMeetingId]);
+    if (!active || active.id !== activeMeetingId || !_isPanelCapableMeeting(active)) return false;
+    const state = _rtPanelState[active.id];
+    if (!state) return false;
+    const panel = _ensureRtPanel();
+    const forceGroupChatBottom = !!opts.forceGroupChatBottom && !!active.groupChat && _getGroupViewMode() === 'chat';
+    const groupScroll = forceGroupChatBottom
+      ? { scrollTop: 0, stickToBottom: true }
+      : _captureGroupChatScroll(panel, active);
+    try {
+      panel.innerHTML = _renderRtPanelHtml(state, active);
+      _bindRtPanelEvents(panel, active);
+      _restoreGroupChatScroll(panel, groupScroll, { forceBottom: forceGroupChatBottom });
+      return true;
+    } catch (e) {
+      console.error('[roundtable] cached panel render failed:', e);
+      return false;
     }
   }
 
@@ -1962,10 +1988,14 @@ if (typeof document !== 'undefined') (function () {
 
   async function refreshRoundtablePanel(meeting, opts = {}) {
     if (!_isPanelCapableMeeting(meeting)) { _removeRtPanel(); return; }
+    const expectedGroupViewMode = opts.expectedGroupViewMode || (meeting.groupChat ? _getGroupViewMode() : null);
     const { state, ok } = await _syncRoundtableCacheFromServer(meeting);
     if (!ok) return;
     // 修2：async race guard — await 期间用户切走，老 refresh 不写 DOM（避免 panel 被错圆桌内容覆盖）
     if (meeting.id !== activeMeetingId) return;
+    // 群聊"聊天/卡片"切换期间可能有上一轮 refresh 仍在飞行中。若它返回时视图模式
+    // 已改变，直接丢弃，避免 header 已是新模式、panel 却被旧模式重写。
+    if (meeting.groupChat && expectedGroupViewMode && _getGroupViewMode() !== expectedGroupViewMode) return;
     const panel = _ensureRtPanel();
     const forceGroupChatBottom = !!opts.forceGroupChatBottom && !!meeting.groupChat && _getGroupViewMode() === 'chat';
     const groupScroll = forceGroupChatBottom
@@ -4962,8 +4992,8 @@ if (typeof document !== 'undefined') (function () {
   // --- Helpers ---
 
   function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    if (str == null) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   // --- Tab output state tracking ---
