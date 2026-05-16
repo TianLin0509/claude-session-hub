@@ -16,7 +16,7 @@
 //   单测 unit-ai-kinds-no-hardcode.test.js 用 grep 兜底防回归。
 
 // ---------------------------------------------------------------------------
-// 全部支持的 AI kind（圆桌可参与的）。
+// 全部支持的 AI kind（群聊可参与的）。
 //   新增 AI 时只需追加这个数组 + 补 KIND_LABELS。
 //   不含 'powershell' 等非 AI 类型。
 // ---------------------------------------------------------------------------
@@ -93,13 +93,13 @@ function kindRegexAlternation() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4 family canonical 映射（圆桌记忆系统按家族存储）
+// Phase 4 family canonical 映射（群聊记忆系统按家族存储）
 //   - 'codex' (Codex CLI) 与 'gpt' (packy-gpt 跑 GPT-5.5) 都是 OpenAI 家族 → 合并到 'gpt'
 //   - 'claude-resume' 是 Claude resume 路径（语义同 'claude'）→ 归为 'claude'
 //   - 其他 7 个 kind 各自独立家族
 //   返回 7 个家族字符串：claude / gemini / gpt / deepseek / glm / kimi / qwen
 // ---------------------------------------------------------------------------
-// 圆桌记忆系统的 7 个家族存储 key 集合（去重 canonical 后）
+// 群聊记忆系统的 7 个家族存储 key 集合（去重 canonical 后）
 const FAMILY_KINDS = ['claude', 'gemini', 'gpt', 'deepseek', 'glm', 'kimi', 'qwen'];
 const _FAMILY_SET = new Set(FAMILY_KINDS);
 
@@ -117,8 +117,8 @@ function canonicalAiKind(rawKind) {
 }
 
 // ---------------------------------------------------------------------------
-// 圆桌席位（slot）单一真理源 — 2026-05-03 道雪
-//   背景：圆桌允许 5 选 3 + 同 kind 多份（如 3 claude），按 kind 区分总结人/@对象
+// 群聊席位（slot）单一真理源 — 2026-05-03 道雪
+//   背景：群聊允许 5 选 3 + 同 kind 多份（如 3 claude），按 kind 区分总结人/@对象
 //     不可行（dropdown 只显 1 个 Claude，sidByKind 永远返回首匹配）。改为按 slot 索引
 //     绑定 stable id（pikachu/charmander/squirtle），@解析、prompt、归档全用 slot id。
 //   命名：内部 id 走 ASCII（让正则 \b 边界正常工作），UI 显示中英双语方便用户识别。
@@ -169,7 +169,7 @@ module.exports = {
   isAiKind,
   getKindLabel,
   kindRegexAlternation,
-  // Phase 4 圆桌记忆家族级共享
+  // Phase 4 群聊记忆家族级共享
   canonicalAiKind,
   FAMILY_KINDS,
   // slot 单一真理源

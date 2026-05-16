@@ -1,8 +1,8 @@
 'use strict';
-// 圆桌记忆 · checkpoint trigger（主进程，plan §5.2 / §10 #1+#6）
+// 群聊记忆 · checkpoint trigger（主进程，plan §5.2 / §10 #1+#6）
 //
 // 职责：
-//   1. 每个圆桌轮完成后调 maybeRunCheckpoint(meetingId, scene, projectCwd, turn)
+//   1. 每个群聊轮完成后调 maybeRunCheckpoint(meetingId, scene, projectCwd, turn)
 //   2. 判断是否触发：
 //      - 必要：state.last_user_msg_count ≥ 3
 //      - 显式：用户说"记一下/总结一下"（force=true）
@@ -186,7 +186,7 @@ function maybeRunCheckpoint(args) {
   try { if (fs.existsSync(sidecarFp)) fs.unlinkSync(sidecarFp); } catch {}
 
   const workerPath = path.resolve(__dirname, '..', 'checkpoint-worker.js');
-  // Phase 3：identities 是 main.js 从 meeting.subSessions 派生的当前圆桌身份列表。
+  // Phase 3：identities 是 main.js 从 meeting.subSessions 派生的当前群聊身份列表。
   //   留空时 worker 自己 listAllIdentities 扫 memDir，覆盖文件已存在但本轮未参与的历史身份。
   const identitiesCsv = Array.isArray(identities) && identities.length > 0 ? identities.join(',') : '';
 

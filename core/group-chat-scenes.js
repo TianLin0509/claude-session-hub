@@ -391,7 +391,7 @@ const RESEARCH_SLOT_BIASES = {
 // ===========================================================================
 // Scene: dev — 开发群聊 preset (v3 final · plan-dev-scenario.md)
 // ===========================================================================
-// 设计来源: 17 轮三家 AI 圆桌讨论收敛 → docs/plan-dev-scenario.md
+// 设计来源: 17 轮三家 AI 群聊讨论收敛 → docs/plan-dev-scenario.md
 //
 // 定位: human-supervised hierarchical 协作的 advisor council
 //   闭环: clarify(并行澄清) → discuss(方案) → handoff(交接) → 单 Driver 实操
@@ -609,7 +609,7 @@ const SCENE_REGISTRY = {
 //     2. user 主动写入机制 (UI 入口 / 命令行)
 //     3. 与 timeline.md 的边界 (避免功能重叠)
 //     4. 跨会议同步策略 (mtime 检测 / hash 对比)
-//   圆桌 22 轮讨论档案: docs/roundtable-prompt-refactor-plan.md (P5 段)
+//   群聊 22 轮讨论档案: docs/roundtable-prompt-refactor-plan.md (P5 段)
 
 // ===========================================================================
 // Public API

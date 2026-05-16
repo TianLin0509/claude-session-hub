@@ -1,5 +1,5 @@
 'use strict';
-// 圆桌记忆 · _profile.md 读写（plan §4.4 / §4.5）
+// 群聊记忆 · _profile.md 读写（plan §4.4 / §4.5）
 //
 // 路径：<projectCwd>/.arena/rooms/{scene}/memory/_profile.md
 // 角色：worker 派生的"共识层"（三家共现的稳定偏好/规则），AI 只读不写

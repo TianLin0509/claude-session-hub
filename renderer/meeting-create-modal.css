@@ -1,4 +1,4 @@
-/* meeting-create-modal（2026-05-01）：新建圆桌 Modal — 横排 3 slot 选 AI + Model。
+/* meeting-create-modal（2026-05-01）：新建群聊 Modal — 横排 3 slot 选 AI + Model。
    遮罩 z-index 9999；色板/边框遵循全局 theme variables (--bg-card / --border / --accent)。 */
 
 .mcm-overlay {

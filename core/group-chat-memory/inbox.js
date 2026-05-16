@@ -1,5 +1,5 @@
 'use strict';
-// 圆桌记忆 · pending-{identity}.json 读写 + 生命周期（plan §4.2 / §4.3 / §10 #7）
+// 群聊记忆 · pending-{identity}.json 读写 + 生命周期（plan §4.2 / §4.3 / §10 #7）
 //
 // Phase 3 identity 重构（2026-05-07）：
 //   path 从 pending-{slot}.json 改为 pending-{identity}.json

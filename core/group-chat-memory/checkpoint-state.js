@@ -1,5 +1,5 @@
 'use strict';
-// 圆桌记忆 · checkpoint-state.json 读写（plan §4.1）
+// 群聊记忆 · checkpoint-state.json 读写（plan §4.1）
 //
 // 路径：<projectCwd>/.arena/rooms/{scene}/checkpoint-state.json
 // 文件 < 1KB，每次 user msg / worker 完成都覆写（不是 append）

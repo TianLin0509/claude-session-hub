@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// 圆桌记忆 · checkpoint-worker.js（plan §5.2）
+// 群聊记忆 · checkpoint-worker.js（plan §5.2）
 //
-// 由主进程 `child_process.fork` 拉起，独立进程跑 ~3-5s，0 阻塞圆桌主流程。
+// 由主进程 `child_process.fork` 拉起，独立进程跑 ~3-5s，0 阻塞群聊主流程。
 //
 // 职责：
-//   1. 读 timeline.md 末 200 行（圆桌上下文）
+//   1. 读 timeline.md 末 200 行（群聊上下文）
 //   2. 读三家 individual .md (store.loadEntries)
 //   3. 读当前 _profile.md
 //   4. 调 DeepSeek v4-pro / chat（带反固化约束 prompt §5.5）
@@ -143,7 +143,7 @@ function removeLock() {
   } catch {}
 }
 
-// ---- Timeline 末 200 行（圆桌共享上下文）----
+// ---- Timeline 末 200 行（群聊共享上下文）----
 function readTimelineTail(meetingProjectCwd) {
   // timeline 文件名形如 timeline-<meetingId>.md，但 worker 只知道 projectCwd 不知道 meetingId
   // 读 .arena/timeline-*.md 中最新修改的那个

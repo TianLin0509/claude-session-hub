@@ -12,7 +12,7 @@
 //     （TUI 屏幕真稳定，OAuth/初始化已完成）
 //   - 一旦判 true → 加入 onceTrue Set 永久锁，防 PTY 心跳/光标重绘触发回退
 //
-// 详见 docs/superpowers/specs/2026-05-03-roundtable-3claude-debug-design.md §3 Bug #1-#3
+// 详见 docs/superpowers/specs/2026-05-03-group-chat-3claude-debug-design.md §3 Bug #1-#3
 
 // kind → marker 字符串数组。空数组表示 "无 marker，仅靠 buffer 静默兜底"。
 const MARKERS = {
@@ -44,7 +44,7 @@ const _stableState = new Map(); // sid → { lastBufLen, lastChangeTs }
 const _onceTrue = new Set();    // sid → 一旦 true 永久锁
 
 // isReady(sessionId, kind, buf) → boolean
-//   非圆桌可参与 kind（powershell 等）：默认 ready
+//   非群聊可参与 kind（powershell 等）：默认 ready
 //   _STRONG_MARKER_KINDS 含 marker → marker 命中 + buf ≥ MIN 即 ready（无静默期）
 //   其他 kind 含 marker → marker 命中 + 静默期双门
 //   不含 marker（空数组）→ 仅静默期
