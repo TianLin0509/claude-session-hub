@@ -123,7 +123,7 @@ function ensureHooksDeployed(claudeDirPath) {
     }
     if (needsCopy) {
       fs.copyFileSync(src, dest);
-      console.log(`[圆桌] deployed ${file} -> ${dest}`);
+      console.log(`[群聊] deployed ${file} -> ${dest}`);
     }
   }
 
@@ -189,7 +189,7 @@ function ensureHooksDeployed(claudeDirPath) {
   if (changed) {
     fs.mkdirSync(claudeDir, { recursive: true });
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    console.log('[圆桌] settings.json updated with hook config');
+    console.log('[群聊] settings.json updated with hook config');
   }
 
   // 4. Ensure .claude.json project trust — Claude Code 将"信任文件夹"状态
@@ -205,12 +205,12 @@ function ensureHooksDeployed(claudeDirPath) {
         if (proj && typeof proj === 'object' && proj.hasTrustDialogAccepted === false) {
           proj.hasTrustDialogAccepted = true;
           trustChanged = true;
-          console.log(`[圆桌] .claude.json trust fixed: ${projectDir}`);
+          console.log(`[群聊] .claude.json trust fixed: ${projectDir}`);
         }
       }
       if (trustChanged) {
         fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
-        console.log('[圆桌] .claude.json trust state updated');
+        console.log('[群聊] .claude.json trust state updated');
       }
     }
   } catch { /* .claude.json 不存在或格式异常，跳过（首次启动可能尚未生成） */ }
@@ -228,9 +228,9 @@ function ensureCodexContextConfig() {
     const line = '\n[tui]\nstatus_line = ["model-with-reasoning", "context-remaining", "current-dir"]\n';
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.appendFileSync(configPath, line);
-    console.log('[圆桌] codex config.toml patched with context-remaining');
+    console.log('[群聊] codex config.toml patched with context-remaining');
   } catch (e) {
-    console.warn('[圆桌] codex config patch failed:', e.message);
+    console.warn('[群聊] codex config patch failed:', e.message);
   }
 }
 
@@ -284,7 +284,7 @@ function ensureGeminiMcpInstalled() {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
     console.log('[群聊] arena-research + arena-group-chat-memory MCP installed into Gemini settings.json');
   } catch (e) {
-    console.warn('[圆桌] gemini mcp install failed:', e.message);
+    console.warn('[群聊] gemini mcp install failed:', e.message);
   }
 }
 
@@ -352,7 +352,7 @@ function healPersistedCwds(sessions) {
     if (!tp) continue;
     const realCwd = extractCwdFromTranscript(tp);
     if (realCwd && realCwd !== s.cwd) {
-      console.log(`[圆桌] heal cwd: "${s.title}" ${s.cwd} -> ${realCwd}`);
+      console.log(`[群聊] heal cwd: "${s.title}" ${s.cwd} -> ${realCwd}`);
       s.cwd = realCwd;
       fixed++;
     }
@@ -476,7 +476,7 @@ transcriptTap.on('turn-complete', (ev) => {
   }
 
   // spec2/S3：把 turn-complete 广播给 renderer，供历史会话/侧边栏卡片实时刷新。
-  // 注意：这里独立于上面的 meeting timeline 逻辑——非圆桌的普通会话也要广播。
+  // 注意：这里独立于上面的 meeting timeline 逻辑——非群聊的普通会话也要广播。
   try {
     let transcriptPath = ev && ev.transcriptPath ? ev.transcriptPath : null;
     if (!transcriptPath && session && session.transcriptPath) {
@@ -758,7 +758,7 @@ transcriptTap.on('session-bound', (ev) => {
       geminiProjectHash: cur.geminiProjectHash,
       geminiProjectRoot: cur.geminiProjectRoot,
     });
-    console.log(`[圆桌] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
+    console.log(`[群聊] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
   }
 });
 
@@ -800,7 +800,7 @@ function createWindow() {
       webviewTag: true,
     },
   });
-  // index.html 的 <title>圆桌宝可梦</title> 在页面加载完成后会触发 page-title-updated 覆盖
+  // index.html 的 <title>AI 群聊 Hub</title> 在页面加载完成后会触发 page-title-updated 覆盖
   // BrowserWindow.title — preventDefault 阻止覆盖，保留带 PID 的标题
   mainWindow.on('page-title-updated', (e) => { e.preventDefault(); });
 
@@ -927,9 +927,9 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
   // opts.model 透传给 sessionManager（让 Claude/Codex/DeepSeek/GLM/Gemini 用对应 model）
   if (opts && opts.model) sessionOpts.model = opts.model;
 
-  // 圆桌 slot 化（2026-05-03 道雪）：圆桌 meeting 的 sub 按加入顺序分配 slot id
+  // 群聊 slot 化（2026-05-03 道雪）：群聊 meeting 的 sub 按加入顺序分配 slot id
   //   (pikachu/charmander/squirtle)，title 走 slot 中文名（"皮卡丘" 等）。
-  //   单 session 主桌（meeting 为空或非圆桌）不受影响（走 sessionManager 默认计数器）。
+  //   单 session 主桌（meeting 为空或非群聊）不受影响（走 sessionManager 默认计数器）。
   //   slot 仅识别前 3 个 sub；第 4+ sub 视为额外，title 退回 sessionManager 默认。
   //   不覆盖调用方显式传入的 opts.title。
   let slotId = null;
@@ -980,7 +980,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
     }
     // P2 (2026-05-04 道雪): 投研场景 per-slot prompt 文件 (L3 偏置层注入)。
     //   slotId 在 line 575-582 已计算 (前 3 个 sub 按加入顺序映射 SLOT_IDS);
-    //   slotId === null (第 4+ sub 或非圆桌) 时 writePromptFile 退回老文件名。
+    //   slotId === null (第 4+ sub 或非群聊) 时 writePromptFile 退回老文件名。
     const promptFile = scenes.writePromptFile(hubDataDir, meetingId, meeting.scene, covenantText, slotId);
     // DeepSeek/GLM/GPT/Kimi/Qwen 跑在 Claude CLI 上（CLAUDE_CONFIG_DIR 隔离），需要相同的 system prompt 注入。
     // plan 2026-05-05 阶段 0：非 research 场景且 slot 已分配时，启用 memory MCP（跨 general/dev）。
@@ -997,7 +997,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
       if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
         sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude');
       } else if (sceneObj && sceneObj.mcpConfig === 'research' && !hookPort) {
-        console.warn('[圆桌] research scene Claude/DS/GLM in meeting ' + meetingId + ' but hookPort unavailable — MCP tools unavailable');
+        console.warn('[群聊] research scene Claude/DS/GLM in meeting ' + meetingId + ' but hookPort unavailable — MCP tools unavailable');
       } else if (memoryMcpEnabled) {
         // Phase 3：MCP config 多写一个 ARENA_AI_MODEL env（让 mcp-server 把 model 透传到 hookServer）
         sessionOpts.mcpConfigFile = scenes.writeGroupChatMemoryMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude', slotId, aiModelEnv);
@@ -1152,7 +1152,7 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
   return true;
 });
 
-// Arch refactor 2026-05-02: 沉浸/调试模式切换已删除。圆桌只有一种视图。
+// Arch refactor 2026-05-02: 沉浸/调试模式切换已删除。群聊只有一种视图。
 // 这两个 handler 保留为 no-op：避免老 state.json (含 immersiveByMeeting 字段)
 // 在 renderer 调 get-immersive-mode 时报 'No handler registered'。新 renderer
 // 永远不调这两个 IPC，但保留 handler 兼容老前端代码（已嵌进 dist 的版本）。
@@ -1201,7 +1201,7 @@ ipcMain.handle('groupchat:pilot-toggle', async (_e, { meetingId, slotIndex } = {
       dispatchModeByMeeting: _dispatchModeByMeeting,
     });
   } catch (e) {
-    console.warn('[圆桌] roundtable:pilot-toggle persist failed:', e.message);
+    console.warn('[群聊] roundtable:pilot-toggle persist failed:', e.message);
   }
 
   // 通知 renderer 更新 toolbar / 卡片视觉
@@ -1239,7 +1239,7 @@ ipcMain.handle('groupchat:dispatch-mode-set', async (_e, { meetingId, dispatchMo
       dispatchModeByMeeting: _dispatchModeByMeeting,
     });
   } catch (e) {
-    console.warn('[圆桌] roundtable:dispatch-mode-set persist failed:', e.message);
+    console.warn('[群聊] roundtable:dispatch-mode-set persist failed:', e.message);
   }
 
   sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
@@ -1357,7 +1357,7 @@ function _computeDispatchSpec(self, targetSubs, pilotSlot, subSidsRaw, effective
   };
 }
 
-// 圆桌 PTY 通信 helpers（waitCliReady / sendToPty / extractStreamingText / cleanBufLen
+// 群聊 PTY 通信 helpers（waitCliReady / sendToPty / extractStreamingText / cleanBufLen
 // / checkHostShellTakeover）已抽到 core/group-chat-watcher.js（groupChatWatcher）。
 // 调用方走 groupChatWatcher.X。dispatchRoundtableTurn 与 _rtWaitTurnComplete 仍在 main.js
 // 这里（依赖闭包过深，留下次专项 → core/roundtable-dispatcher.js）。
@@ -1540,7 +1540,7 @@ function _rtWaitTurnComplete(sid, label, opts = {}) {
       const hasContent = result.text.length > 10 || result.blocks.length > 0;
       // B1（2026-05-03 道雪）：每次心跳都计算 cleanBufLen 让 renderer 显示"已输出约 N 字"
       //   placeholder 路径改为每次都推（原 placeholderEmitted=true 后只推一次）。
-      //   代价：60s 圆桌每家多 ~40 次 IPC（~120 次/3 sub），远小于真 streaming 的事件量。
+      //   代价：60s 群聊每家多 ~40 次 IPC（~120 次/3 sub），远小于真 streaming 的事件量。
       const buf = sessionManager.getSessionBuffer(sid) || '';
       const cleanBufLen = groupChatWatcher.cleanBufLen(buf);
       if (hasContent) {
@@ -1856,9 +1856,9 @@ ipcMain.handle('groupchat:read-raw', (_e, { meetingId, messageId } = {}) => {
   return orch.readRaw(messageId);
 });
 
-// ===== Stage 2 容错升级（2026-05-01）— 圆桌逃生工具 IPC =====
+// ===== Stage 2 容错升级（2026-05-01）— 群聊逃生工具 IPC =====
 //
-// 这三个 IPC 让 UI 在某家 AI 卡死时绕过完成检测，不再让整个圆桌锁 10 分钟。
+// 这三个 IPC 让 UI 在某家 AI 卡死时绕过完成检测，不再让整个群聊锁 10 分钟。
 // 与 turn-completion-watcher 配合使用：watcher.wait() 期间，IPC 可以通过
 // _activeWatchers Map 找到对应 watcher 并触发 manualExtract / skip。
 //
@@ -2136,7 +2136,7 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
   // Spec 3 · W10：在调 sync parser 之前 setImmediate yield 一次让 main loop 喘气。
   // parser 是 sync（fs.readFileSync + JSON.parse loop + merge），5MB transcript 实测
   // ~218ms 主线程阻塞。yield 不能消除阻塞，但能确保此 IPC 不和上一条 IPC 背靠背执行，
-  // 让 PTY data / hook-event / 圆桌广播 等其它 IPC 在阻塞间隙里被处理。
+  // 让 PTY data / hook-event / 群聊广播 等其它 IPC 在阻塞间隙里被处理。
   // 不上 worker_threads 是为避免 transcript-parser 跨边界引入序列化开销 + 复杂度。
   await new Promise(resolve => setImmediate(resolve));
 
@@ -2280,7 +2280,7 @@ ipcMain.handle('get-scene-covenant', (_e, sceneKey) => {
 // 兼容旧名（前端 Task 5 改完后可删）
 ipcMain.handle('get-research-covenant-template', () => scenes.COVENANT_RESEARCH);
 
-// 通用圆桌：开关 + 公约写盘 + 私聊存储
+// 通用群聊：开关 + 公约写盘 + 私聊存储
 function _isValidMeetingId(id) {
   // 仅允许 uuid 风格的字母数字+连字符；阻止任何路径分隔符或控制字符
   return typeof id === 'string' && /^[a-zA-Z0-9_\-]+$/.test(id) && id.length > 0 && id.length < 256;
@@ -2367,12 +2367,12 @@ ipcMain.handle('get-deep-summary-config', async () => _deepSummaryConfig.ui);
 const sessionArchive = require('./core/session-archive.js');
 ipcMain.handle('list-past-sessions', async (_e, { limit = 50 } = {}) => {
   try { return await sessionArchive.listRecent(limit); }
-  catch (e) { console.warn('[圆桌] list-past-sessions failed:', e.message); return []; }
+  catch (e) { console.warn('[群聊] list-past-sessions failed:', e.message); return []; }
 });
 
 ipcMain.handle('search-past-sessions', async (_e, { query, limit = 50 } = {}) => {
   try { return await sessionArchive.searchAcross(query, { limit }); }
-  catch (e) { console.warn('[圆桌] search-past-sessions failed:', e.message); return { hits: [], truncated: false }; }
+  catch (e) { console.warn('[群聊] search-past-sessions failed:', e.message); return { hits: [], truncated: false }; }
 });
 
 ipcMain.handle('close-session', (_e, sessionId) => {
@@ -2456,7 +2456,7 @@ let _dispatchModeByMeeting = (bootState.dispatchModeByMeeting && typeof bootStat
 // Heal any cwds that legacy code corrupted (see extractCwdFromTranscript).
 // This reads CC's own JSONL transcripts which carry the authoritative cwd.
 const healed = healPersistedCwds(lastPersistedSessions);
-if (healed > 0) console.log(`[圆桌] healed ${healed} stale cwd(s) from CC transcripts`);
+if (healed > 0) console.log(`[群聊] healed ${healed} stale cwd(s) from CC transcripts`);
 // Restore persisted meetings on boot
 const bootMeetings = Array.isArray(bootState.meetings) ? bootState.meetings : [];
 for (const m of bootMeetings) {
@@ -2554,7 +2554,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
 
   lastPersistedSessions = list;
   // 2026-05-05 道雪：第二道防线 — renderer 传来的 meeting 列表如果缺字段（历史 bug 漏 scene 等
-  //   导致重启后所有圆桌退化为 general），按 id 从 meetingManager 拿权威对象做字段补全。
+  //   导致重启后所有群聊退化为 general），按 id 从 meetingManager 拿权威对象做字段补全。
   //   renderer 的字段是 UI 派生快照（lastMessageTime / focusedSub 等），优先用它；
   //   meetingManager 的字段是 backend 真理源（scene / mode / pilotSlot / dispatchMode /
   //   participants / slotSpecs / covenantText），这些字段始终从 manager 兜底，
@@ -2751,16 +2751,16 @@ ipcMain.handle('resume-session', async (_e, meta) => {
           try {
             const sess = sessionManager.getSession(session.id);
             if (!sess || sess.status === 'dormant') {
-              console.warn(`[圆桌] Level 3 inject skipped: session ${session.id.slice(0,8)} no longer active`);
+              console.warn(`[群聊] Level 3 inject skipped: session ${session.id.slice(0,8)} no longer active`);
               return;
             }
             sessionManager.writeToSession(session.id, msg);
-            console.log(`[圆桌] Level 3 fallback: injected ${tail.length}-char transcript tail to ${meta.kind} session ${session.id.slice(0,8)}`);
+            console.log(`[群聊] Level 3 fallback: injected ${tail.length}-char transcript tail to ${meta.kind} session ${session.id.slice(0,8)}`);
           } catch (e) {
-            console.warn(`[圆桌] Level 3 inject failed:`, e.message);
+            console.warn(`[群聊] Level 3 inject failed:`, e.message);
           }
         }, 5000);
-      }).catch(e => console.warn('[圆桌] Level 3 fallback error:', e.message));
+      }).catch(e => console.warn('[群聊] Level 3 fallback error:', e.message));
     }
   }
 
@@ -2818,7 +2818,7 @@ ipcMain.handle('save-clipboard-image', () => {
     fs.writeFileSync(filePath, img.toPNG());
     return filePath;
   } catch (e) {
-    console.warn('[圆桌] save-clipboard-image failed:', e.message);
+    console.warn('[群聊] save-clipboard-image failed:', e.message);
     return null;
   }
 });
@@ -2842,7 +2842,7 @@ ipcMain.handle('open-path', async (_e, filePath) => {
   }
 });
 
-// 圆桌记忆 · plan 阶段 1（2026-05-07）：
+// 群聊记忆 · plan 阶段 1（2026-05-07）：
 //   per-meeting per-slot 取 memory 状态（条目数 + pending 数 + _profile 是否存在）
 //   供卡片右上角 📒 N / 📥 / 📊 三个按钮的角标 / 点击行为使用。
 //   不读 .md 内容（只 stat / count），便于高频刷新。
@@ -3340,7 +3340,7 @@ function listenWithFallback() {
       hookServer.removeAllListeners('error');
       hookServer.removeAllListeners('listening');
       hookServer.once('error', (e) => {
-        console.warn(`[圆桌] hook server bind failed on :${port} (${e.code}): ${e.message}`);
+        console.warn(`[群聊] hook server bind failed on :${port} (${e.code}): ${e.message}`);
         tryNext();
       });
       hookServer.once('listening', () => resolve(port));
@@ -3891,7 +3891,7 @@ app.whenReady().then(async () => {
   // 2026-05-05 道雪：所有 Claude family 隔离配置目录都必须部署 Stop hook，否则
   //   该家族 sub session 完成时 CC 不调 hook → notifyClaudeStop 永不触发 →
   //   ClaudeTap.JsonlTail 永不启动 → stop_reason 主路径 + idle 兜底全失效 →
-  //   圆桌卡片自动同步死，只能等 5min 硬 timeout 或用户手动点提取。
+  //   群聊卡片自动同步死，只能等 5min 硬 timeout 或用户手动点提取。
   //   原版漏了 packy 3 家（gpt/kimi/qwen），settings.json 完全没 hook 注册，
   //   scripts/session-hub-hook.py 也不存在。与 findTranscriptByCCSessionId 的
   //   candidateRoots 列表对齐，单一真理源应在 ai-kinds.js（后续可重构）。
@@ -3912,10 +3912,10 @@ app.whenReady().then(async () => {
   traceStartup('hook listen start');
   hookPort = await listenWithFallback();
   if (hookPort) {
-    console.log(`[圆桌] hook server listening on 127.0.0.1:${hookPort}`);
+    console.log(`[群聊] hook server listening on 127.0.0.1:${hookPort}`);
     sessionManager.hookPort = hookPort;
   } else {
-    console.warn('[圆桌] hook server failed to bind — falling back to silence detection');
+    console.warn('[群聊] hook server failed to bind — falling back to silence detection');
   }
   traceStartup(`hook listen done (${hookPort || 'none'})`);
   sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
@@ -4192,9 +4192,9 @@ app.on('before-quit', async () => {
   if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
   try {
     await meetingStore.flushAll();
-    console.log('[圆桌] meeting-store flushed on quit');
+    console.log('[群聊] meeting-store flushed on quit');
   } catch (err) {
-    console.warn('[圆桌] meeting-store flush failed:', err.message);
+    console.warn('[群聊] meeting-store flush failed:', err.message);
   }
   try {
     sessionStore.flushAll();
