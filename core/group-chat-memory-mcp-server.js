@@ -6,7 +6,7 @@
 //   memory_search({query, limit})
 //   memory_list({kind})
 //
-// 调用链：tool call → HTTP POST → Hub hookServer (loopback) → core/roundtable-memory/store.js
+// 调用链：tool call → HTTP POST → Hub hookServer (loopback) → core/group-chat-memory/store.js
 //
 // STUB_MODE：当 ARENA_* env 缺失（用户独立终端跑 gemini 等）时进入 stub
 //   —— 响应 initialize、tools/list 返回空，避免 gemini settings.json 全局注册的 server 报错。

@@ -1,7 +1,7 @@
 const { v4: uuid } = require('uuid');
 const meetingStore = require('./meeting-store');
 
-// scene 白名单 (与 core/roundtable-scenes.js SCENE_REGISTRY keys 同步)
+// scene 白名单 (与 core/group-chat-scenes.js SCENE_REGISTRY keys 同步)
 //   2026-05-04 道雪: 'dev' 加入 (plan-dev-scenario.md MVP)
 const MEETING_MODES = ['general', 'research', 'dev'];
 

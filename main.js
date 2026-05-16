@@ -46,7 +46,7 @@ const transcriptTap = new TranscriptTap();
 //   ＞ Node 默认 10 个会触发 MaxListenersExceededWarning。提升上限到 100 安全冗余。
 try { transcriptTap.setMaxListeners(100); } catch {}
 const { DeepSummaryService } = require('./core/deep-summary-service.js');
-const scenes = require('./core/roundtable-scenes.js');
+const scenes = require('./core/group-chat-scenes.js');
 const cliReadyDetector = require('./core/group-chat-cli-ready-detector.js');
 const lindangBridge = require('./core/lindang-bridge.js');
 const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
@@ -253,7 +253,7 @@ function ensureGeminiMcpInstalled() {
     settings.mcpServers = {};
   }
   const researchMcpPath = path.resolve(__dirname, 'core', 'research-mcp-server.js');
-  const memoryMcpPath = path.resolve(__dirname, 'core', 'roundtable-memory-mcp-server.js');
+  const memoryMcpPath = path.resolve(__dirname, 'core', 'group-chat-memory-mcp-server.js');
   const desiredResearch = {
     command: process.execPath,
     args: [researchMcpPath],
@@ -1000,7 +1000,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
         console.warn('[圆桌] research scene Claude/DS/GLM in meeting ' + meetingId + ' but hookPort unavailable — MCP tools unavailable');
       } else if (memoryMcpEnabled) {
         // Phase 3：MCP config 多写一个 ARENA_AI_MODEL env（让 mcp-server 把 model 透传到 hookServer）
-        sessionOpts.mcpConfigFile = scenes.writeRoundtableMemoryMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude', slotId, aiModelEnv);
+        sessionOpts.mcpConfigFile = scenes.writeGroupChatMemoryMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude', slotId, aiModelEnv);
       }
     } else if (kind === 'gemini') {
       sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
@@ -1029,7 +1029,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
       if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
         sessionOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN)];
       } else if (memoryMcpEnabled) {
-        sessionOpts.codexMcpEntries = [scenes.buildRoundtableMemoryMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN, slotId, aiModelEnv)];
+        sessionOpts.codexMcpEntries = [scenes.buildGroupChatMemoryMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN, slotId, aiModelEnv)];
       }
     }
   }
@@ -1293,10 +1293,10 @@ ipcMain.handle('groupchat:set-participants', async (_e, { meetingId, participant
 // =====================================================================
 const groupchat = require('./core/group-chat-orchestrator.js');
 const groupChatWatcher = require('./core/group-chat-watcher.js');
-const rtMemoryStore = require('./core/roundtable-memory/store.js');
-const rtCkptState = require('./core/roundtable-memory/checkpoint-state.js');
-const rtCkptTrigger = require('./core/roundtable-memory/checkpoint-trigger.js');
-const rtInbox = require('./core/roundtable-memory/inbox.js');
+const rtMemoryStore = require('./core/group-chat-memory/store.js');
+const rtCkptState = require('./core/group-chat-memory/checkpoint-state.js');
+const rtCkptTrigger = require('./core/group-chat-memory/checkpoint-trigger.js');
+const rtInbox = require('./core/group-chat-memory/inbox.js');
 groupChatWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
 let _groupChatInProgress = new Set(); // 同一群聊单一并发：set of meetingId
 
@@ -2978,7 +2978,7 @@ ipcMain.handle('arena:open-memory-file', async (_e, { meetingId, slot, type } = 
       try {
         fs.mkdirSync(path.dirname(fp), { recursive: true });
         if (!fs.existsSync(fp)) {
-          fs.writeFileSync(fp, '# Group Chat Memory\n# 行格式见 core/roundtable-memory/store.js · plan §4.6\n---\n\n', 'utf-8');
+          fs.writeFileSync(fp, '# Group Chat Memory\n# 行格式见 core/group-chat-memory/store.js · plan §4.6\n---\n\n', 'utf-8');
         }
       } catch (e) { return 'create file failed: ' + e.message; }
     } else {
@@ -3016,7 +3016,7 @@ ipcMain.handle('arena:resolve-memory-file', async (_e, { meetingId, slot, type }
       try {
         fs.mkdirSync(path.dirname(fp), { recursive: true });
         if (!fs.existsSync(fp)) {
-          fs.writeFileSync(fp, '# Group Chat Memory\n# See core/roundtable-memory/store.js\n---\n\n', 'utf-8');
+          fs.writeFileSync(fp, '# Group Chat Memory\n# See core/group-chat-memory/store.js\n---\n\n', 'utf-8');
         }
       } catch (e) {
         return { error: 'create file failed: ' + e.message };

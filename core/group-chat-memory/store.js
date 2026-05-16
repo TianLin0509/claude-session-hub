@@ -128,7 +128,7 @@ function renderEntry(e) {
 }
 
 function rewriteAll(fp, entries) {
-  const header = '# Group Chat Memory\n# 行格式见 core/roundtable-memory/store.js · plan §4.6\n---\n';
+  const header = '# Group Chat Memory\n# 行格式见 core/group-chat-memory/store.js · plan §4.6\n---\n';
   const body = entries.map(renderEntry).join('\n');
   fs.writeFileSync(fp, header + '\n' + body, 'utf-8');
 }
@@ -136,7 +136,7 @@ function rewriteAll(fp, entries) {
 function ensureFileWithHeader(fp) {
   if (fs.existsSync(fp)) return;
   ensureDir(path.dirname(fp));
-  const header = '# Group Chat Memory\n# 行格式见 core/roundtable-memory/store.js · plan §4.6\n---\n\n';
+  const header = '# Group Chat Memory\n# 行格式见 core/group-chat-memory/store.js · plan §4.6\n---\n\n';
   fs.writeFileSync(fp, header, 'utf-8');
 }
 

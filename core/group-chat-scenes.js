@@ -772,11 +772,11 @@ function buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken) {
 /**
  * 写 MCP config 文件（用于 Claude --mcp-config 注入群聊 memory 工具，plan 2026-05-05 阶段 0）
  */
-function writeRoundtableMemoryMcpConfig(hubDataDir, meetingId, hookPort, hookToken, aiKind, slot, aiModel) {
+function writeGroupChatMemoryMcpConfig(hubDataDir, meetingId, hookPort, hookToken, aiKind, slot, aiModel) {
   const dir = arenaPromptsDir(hubDataDir);
   ensureDir(dir);
   const filePath = path.join(dir, `${meetingId}-${slot || 'unknown'}-memory-mcp.json`);
-  const mcpServerPath = path.resolve(__dirname, 'roundtable-memory-mcp-server.js');
+  const mcpServerPath = path.resolve(__dirname, 'group-chat-memory-mcp-server.js');
   const config = {
     mcpServers: {
       'arena-group-chat-memory': {
@@ -802,8 +802,8 @@ function writeRoundtableMemoryMcpConfig(hubDataDir, meetingId, hookPort, hookTok
 /**
  * 给 Codex 启动命令的 memory MCP entry
  */
-function buildRoundtableMemoryMcpEntryForCodex(meetingId, hookPort, hookToken, slot, aiModel) {
-  const mcpServerPath = path.resolve(__dirname, 'roundtable-memory-mcp-server.js');
+function buildGroupChatMemoryMcpEntryForCodex(meetingId, hookPort, hookToken, slot, aiModel) {
+  const mcpServerPath = path.resolve(__dirname, 'group-chat-memory-mcp-server.js');
   return {
     name: 'arena_group_chat_memory', // codex toml 中 key 不能含 -
     command: process.execPath,
@@ -843,6 +843,6 @@ module.exports = {
   cleanup,
   writeResearchMcpConfig,
   buildResearchMcpEntryForCodex,
-  writeRoundtableMemoryMcpConfig,
-  buildRoundtableMemoryMcpEntryForCodex,
+  writeGroupChatMemoryMcpConfig,
+  buildGroupChatMemoryMcpEntryForCodex,
 };

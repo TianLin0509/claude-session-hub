@@ -132,7 +132,7 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
 //        feature-dev/skill-creator/claude-md-management 等 23 个 plugin。
 //     ❌ 兜不住: 用户自定义 skill (位于 ~/.claude/skills/),如 cli-caller / init / loop /
 //        schedule / design-review。它们不属于任何 plugin,settings 完全无法禁用。
-//   这部分必须靠 BASE_RULES (core/roundtable-scenes.js) 软约束兜底,详见该文件
+//   这部分必须靠 BASE_RULES (core/group-chat-scenes.js) 软约束兜底,详见该文件
 //   "AI 禁止主动调用" 段。
 //
 // 历史 (v1 · 2026-05-02):

@@ -36,10 +36,10 @@ const TURN = process.env.ARENA_CHECKPOINT_TURN || null;
 // Phase 3：env 优先；否则空（main.main 里会调 listAllIdentities 扫 memDir）
 const IDENTITIES_FROM_ENV = (process.env.ARENA_CHECKPOINT_IDENTITIES || '').split(',').map(s => s.trim()).filter(Boolean);
 
-const memoryStore = require('./roundtable-memory/store.js');
-const profile = require('./roundtable-memory/profile.js');
-const inbox = require('./roundtable-memory/inbox.js');
-const ckptState = require('./roundtable-memory/checkpoint-state.js');
+const memoryStore = require('./group-chat-memory/store.js');
+const profile = require('./group-chat-memory/profile.js');
+const inbox = require('./group-chat-memory/inbox.js');
+const ckptState = require('./group-chat-memory/checkpoint-state.js');
 const { DeepSeekProvider } = require('./summary-providers/deepseek-api.js');
 const { loadConfig: loadDsConfig } = require('./deep-summary-config.js');
 const { getConfig: getHubConfig } = require('./hub-config.js');
