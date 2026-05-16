@@ -11,7 +11,10 @@ const os = require('os');
 //   救援脚本 tools/hub-escape.ps1 + Playwright/DevTools 可 attach 进 Hub。
 //   设环境变量 CLAUDE_HUB_NO_CDP=1 可关闭。
 //   必须在 app.whenReady() 之前 appendSwitch 才生效。
-if (process.env.CLAUDE_HUB_NO_CDP !== '1') {
+//   注：如果启动命令行已经传了 --remote-debugging-port（E2E 测试用 hub-launcher 的场景），
+//   不重复 append，避免 Chromium argv 冲突。
+const _hasCdpSwitch = process.argv.some(a => a.startsWith('--remote-debugging-port'));
+if (process.env.CLAUDE_HUB_NO_CDP !== '1' && !_hasCdpSwitch) {
   app.commandLine.appendSwitch('remote-debugging-port', '0');
 }
 let QRCode = null;
