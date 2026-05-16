@@ -14,6 +14,13 @@ function groupChatStatePath(hubDataDir, meetingId) {
   return path.join(arenaPromptsDir(hubDataDir), `${meetingId}-groupchat.json`);
 }
 
+function cleanup(hubDataDir, meetingId) {
+  const fp = groupChatStatePath(hubDataDir, meetingId);
+  try {
+    if (fs.existsSync(fp)) fs.unlinkSync(fp);
+  } catch {}
+}
+
 function rawMessageAnchor(meetingId, messageId) {
   return `raw://group/${meetingId}/msg/${messageId}`;
 }
@@ -36,13 +43,11 @@ function buildSystemPromptText(displayName, scene) {
   const name = displayName || 'AI';
   const parts = [
     '## 规则',
-    `- 你是${name}。自由发言：可赞同、反对、追问、反问用户或另起话题。`,
-    '- 独到 > 全面。',
-    '- 工具：grep / Read / WebSearch / MCP。未实际调用不许说"已核实"。',
+    `- 这里是AI群聊，你是${name}。可赞同、反对、追问、反问用户及其他群聊队友或另起话题。`,
+    '- 独到见解 > 全面但泛泛而谈。',
     '',
     '## 输出',
-    '简单问题直答；复杂分析 / 多方案 / 含表格 / 预计 > 300 字 -> HTML 三段式（plan -> .arena/artifacts/msg-{msgId}-{name}.html -> recap）。',
-    'HTML 用 ~/.claude/protocols/html-output.md 样式。',
+    '简单问题直答；复杂分析 / 多方案 / 含表格 / 预计 > 300 字 -> HTML 三段式（先口头大纲 -> 写 C:\\Users\\lintian\\artifacts\\{msgId}-{name}.html -> 贴绝对路径+3-8 条摘要卡片）。',
   ];
   if (scene === 'research') {
     parts.push('', RESEARCH_SCENE_PROMPT);
@@ -287,6 +292,7 @@ function getOrchestrator(hubDataDir, meetingId) {
 module.exports = {
   getOrchestrator,
   groupChatStatePath,
+  cleanup,
   rawMessageAnchor,
   buildSystemPromptText,
   _private: { buildSystemPromptText, RESEARCH_SCENE_PROMPT },

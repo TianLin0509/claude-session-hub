@@ -3449,7 +3449,7 @@ for (const btn of document.querySelectorAll('.resume-option')) {
 // 静态 DOM,无最近会话,无磁盘 IO,无 IPC 启动开销。
 for (const cta of document.querySelectorAll('.launcher-cta')) {
   cta.addEventListener('click', () => {
-    if (cta.dataset.launcherAction === 'group' || cta.dataset.launcherAction === 'roundtable') {
+    if (cta.dataset.launcherAction === 'group') {
       createMeetingByMode('group');
     }
   });

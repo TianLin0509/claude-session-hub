@@ -183,10 +183,10 @@ async function _onCreate() {
       scene,
       slots,
       title,
-      groupChat: true,
-      groupMode: 'deliberation',
+      groupChat: _isGroupChat,
+      groupMode: _isGroupChat ? 'deliberation' : null,
       groupRecentRawN: 5,
-      participants: slots.map((_, i) => i),
+      participants: _isGroupChat ? slots.map((_, i) => i) : null,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
     closeMeetingCreateModal();
@@ -217,7 +217,11 @@ function _clearError() {
 }
 
 function openMeetingCreateModal(mode = 'general') {
-  _isGroupChat = true;
+  if (mode === 'group') {
+    _isGroupChat = true;
+  } else {
+    _isGroupChat = true;
+  }
   _currentMode = 'general';
   _ensureModal();
   _clearError();

@@ -37,14 +37,12 @@ console.log('--- group chat orchestrator ---');
 
 test('buildSystemPromptText contains required markers and no banned terms', () => {
   const text = groupchat.buildSystemPromptText('TestAI');
-  assert.ok(text.includes('自由发言：可赞同'), 'missing colon in free-speech rule');
-  assert.ok(text.includes('反问用户'), 'missing reverse-ask hint merged into rule 1');
-  assert.ok(text.includes('独到 > 全面'), 'missing 独到 rule');
-  assert.ok(text.includes('未实际调用不许说"已核实"'), 'missing anti-hallucination rule');
+  assert.ok(text.includes('这里是AI群聊'), 'missing group-chat scene framing');
+  assert.ok(text.includes('可赞同、反对、追问、反问用户及其他群聊队友'), 'missing peer-interaction hint');
+  assert.ok(text.includes('独到见解 > 全面但泛泛而谈'), 'missing 独到见解 rule');
   assert.ok(text.includes('简单问题直答'), 'missing simple-answer fast path');
-  assert.ok(text.includes('plan -> .arena'), 'missing arrow before artifact path');
-  assert.ok(text.includes('-> recap'), 'missing arrow before recap');
-  assert.ok(text.includes('msg-{msgId}-{name}.html'), 'missing file naming template');
+  assert.ok(text.includes('C:\\Users\\lintian\\artifacts\\{msgId}-{name}.html'), 'missing absolute artifact path template');
+  assert.ok(text.includes('贴绝对路径'), 'missing recap-step plain-language hint');
   assert.ok(text.includes('你是TestAI'), 'missing self name substitution');
   assert.ok(!text.includes('皮卡丘'), 'hardcoded member name 皮卡丘 leaked');
   assert.ok(!text.includes('小火龙'), 'hardcoded member name 小火龙 leaked');

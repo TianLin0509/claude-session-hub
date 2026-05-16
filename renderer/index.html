@@ -142,9 +142,9 @@
     </div>
     <div class="meeting-room-panel" id="meeting-room-panel" style="display:none">
       <div class="mr-header" id="mr-header"></div>
-      <!-- Arch refactor 2026-05-02: 圆桌界面去 shell。原 #mr-terminals
-           (xterm 多家平铺) 已删除。Shell PTY 流通过左侧栏树形展开后点击
-           子 session 进入主区 shell view 查看 (复用 selectSession 路径)。 -->
+        <!-- Arch refactor 2026-05-02: 群聊界面去 shell。原 #mr-terminals
+             (xterm 多家平铺) 已删除。Shell PTY 流通过左侧栏树形展开后点击
+             子 session 进入主区 shell view 查看 (复用 selectSession 路径)。 -->
       <div class="mr-toolbar" id="mr-toolbar"></div>
       <!-- Phase 4 v2(2026-05-05): IF-C3 软提醒 banner 已删除, 启动状态文字上移到 onboarding head;
            下方 mr-input-row 新增头像组 + 模式 dropdown 占位实现一行化 footer -->
@@ -159,9 +159,9 @@
       </div>
     </div>
     <!-- 2026-05-05 道雪：preview-splitter + preview-panel 从 terminal-panel 之后挪到
-         meeting-room-panel 之后。flex 排版下，普通 session 时 mr-panel 隐藏 →
-         排成 [terminal | preview]，圆桌时 terminal 隐藏 → 排成 [meeting-room | preview]，
-         两种模式预览统一在右侧。挪之前圆桌模式预览跑在左边，与普通 session 不一致。 -->
+           meeting-room-panel 之后。flex 排版下，普通 session 时 mr-panel 隐藏 →
+           排成 [terminal | preview]，群聊时 terminal 隐藏 → 排成 [meeting-room | preview]，
+           两种模式预览统一在右侧。挪之前群聊模式预览跑在左边，与普通 session 不一致。 -->
     <div class="preview-splitter" id="preview-splitter" style="display:none"></div>
     <div class="preview-panel" id="preview-panel" style="display:none">
       <div class="preview-header">
@@ -355,7 +355,7 @@
               </select>
             </div>
             <div class="config-field">
-              <label>订阅账号 <span class="config-label-hint">（新建 Codex/圆桌默认使用）</span></label>
+                <label>订阅账号 <span class="config-label-hint">（新建 Codex/群聊默认使用）</span></label>
               <select id="cfg-codex-subscription-profile"></select>
             </div>
             <div class="config-field">

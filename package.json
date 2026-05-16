@@ -1,7 +1,7 @@
 {
-  "name": "roundtable",
+  "name": "ai-group-chat-hub",
   "version": "1.0.5",
-  "description": "多模型协作圆桌宝可梦终端",
+  "description": "多模型 AI 群聊 Hub",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -42,18 +42,18 @@
   },
   "build": {
     "npmRebuild": false,
-    "appId": "com.roundtable",
-    "productName": "圆桌宝可梦",
+    "appId": "com.ai-group-chat-hub",
+    "productName": "AI 群聊 Hub",
     "win": {
       "target": "nsis",
-      "icon": "roundtable.ico",
+      "icon": "claude-wx.ico",
       "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "installerIcon": "roundtable.ico",
-      "uninstallerIcon": "roundtable.ico",
+      "installerIcon": "claude-wx.ico",
+      "uninstallerIcon": "claude-wx.ico",
       "createDesktopShortcut": true
     },
     "files": [
@@ -63,7 +63,7 @@
       "renderer-mobile/**/*",
       "scripts/**/*",
       "!scripts/firewall-whitelist-electron.ps1",
-      "roundtable.ico",
+      "claude-wx.ico",
       "package.json"
     ],
     "extraResources": [

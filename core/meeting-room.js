@@ -26,7 +26,7 @@ class MeetingRoomManager {
   createMeeting(opts = {}) {
     const id = uuid();
     const mode = MODE_TITLE_PREFIX[opts.mode] ? opts.mode : 'general';
-    const titlePrefix = opts.groupChat ? 'AI 群聊' : MODE_TITLE_PREFIX[mode];
+    const titlePrefix = 'AI 群聊';
     const seq = ++this._counters[mode];
     // meeting-create-modal（2026-05-05 道雪）：用户在 Modal 房名输入框填了非空字符串
     //   则用用户的（trim 后），否则走默认编号 title。modal 留空 = undefined，向后兼容。
@@ -51,7 +51,7 @@ class MeetingRoomManager {
       lastScene: 'free_discussion',
       scene: MEETING_MODES.includes(mode) ? mode : 'general',
       covenantText: '',
-      groupChat: !!opts.groupChat,
+      groupChat: true,
       groupMode: typeof opts.groupMode === 'string' ? opts.groupMode : 'deliberation',
       groupRecentRawN: Number.isInteger(opts.groupRecentRawN) ? opts.groupRecentRawN : 5,
       // meeting-create-modal（2026-05-01）：用户在 Modal 选定的 slots 列表，
@@ -281,7 +281,7 @@ class MeetingRoomManager {
 
   restoreMeeting(meetingData) {
     if (!meetingData || !meetingData.id) return;
-    // 向后兼容：从旧的 researchMode/roundtableMode 推断 scene
+    // 向后兼容：从旧的 researchMode/legacy meeting 字段推断 scene
     let scene = meetingData.scene;
     if (!scene) {
       if (meetingData.researchMode) {
@@ -335,7 +335,7 @@ class MeetingRoomManager {
       lastScene: meetingData.lastScene || 'free_discussion',
       scene,
       covenantText: meetingData.covenantText || meetingData.generalRoundtableCovenant || '',
-      groupChat: !!meetingData.groupChat,
+      groupChat: true,
       groupMode: meetingData.groupMode || 'deliberation',
       groupRecentRawN: Number.isInteger(meetingData.groupRecentRawN) ? meetingData.groupRecentRawN : 5,
       // meeting-create-modal（2026-05-01）：从 state.json 还原 slot 规格；

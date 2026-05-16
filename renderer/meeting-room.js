@@ -1888,7 +1888,7 @@ if (typeof document !== 'undefined') (function () {
     if (!_isPanelCapableMeeting(meeting)) return { state: null, ok: false };
     let state;
     try {
-      state = await ipcRenderer.invoke(meeting.groupChat ? 'groupchat:get-state' : 'roundtable:get-state', { meetingId: meeting.id });
+      state = await ipcRenderer.invoke('groupchat:get-state', { meetingId: meeting.id });
     } catch (e) {
       console.error('[roundtable] get-state failed:', e.message);
       return { state: null, ok: false };
@@ -2113,7 +2113,7 @@ if (typeof document !== 'undefined') (function () {
         let _btnTextHandledExternally = false;
         try {
           if (action === 'extract') {
-            const r = await ipcRenderer.invoke('roundtable-manual-extract', {
+            const r = await ipcRenderer.invoke('groupchat-manual-extract', {
               meetingId: meeting.id, sid, sincePromptTs: _rtTurnStartTs[meeting.id] || 0,
             });
             if (!r || !r.ok) {
@@ -2139,7 +2139,7 @@ if (typeof document !== 'undefined') (function () {
               }, 1500);
             }
           } else if (action === 'skip') {
-            const r = await ipcRenderer.invoke('roundtable-skip-participant', { meetingId: meeting.id, sid });
+            const r = await ipcRenderer.invoke('groupchat-skip-participant', { meetingId: meeting.id, sid });
             if (!r || !r.ok) console.warn(`[rt-escape] skip failed: ${r?.reason}`);
           } else if (action === 'enter-shell') {
             // Arch refactor 2026-05-02 (Task 5): 切到该子 session 主区 shell view，
@@ -2363,7 +2363,7 @@ if (typeof document !== 'undefined') (function () {
             turnNum: Number.isFinite(turnRaw) ? turnRaw : undefined,
             sincePromptTs: _rtTurnStartTs[meeting.id] || 0,
           };
-          const r = await ipcRenderer.invoke('roundtable-manual-extract', payload);
+          const r = await ipcRenderer.invoke('groupchat-manual-extract', payload);
           if (!r || !r.ok) {
             const detail = r && (r.detail || r.reason) ? (r.detail || r.reason) : 'unknown';
             _showRtEscapeNotice(`同步失败：${detail}`, 'error');
@@ -2400,7 +2400,7 @@ if (typeof document !== 'undefined') (function () {
         const next = allIndexes.filter(i => set.has(i));
         meeting.participants = next;
         try {
-          const updated = await ipcRenderer.invoke('roundtable:set-participants', { meetingId: meeting.id, participants: next });
+          const updated = await ipcRenderer.invoke('groupchat:set-participants', { meetingId: meeting.id, participants: next });
           if (updated) meetingData[meeting.id] = updated;
         } catch (err) {
           console.error('[groupchat] set participants failed:', err);
@@ -4315,7 +4315,7 @@ if (typeof document !== 'undefined') (function () {
             : [...current, slotIdx];
           next.sort((a, b) => a - b);
           try {
-            await ipcRenderer.invoke('roundtable:set-participants', { meetingId: meeting.id, participants: next });
+            await ipcRenderer.invoke('groupchat:set-participants', { meetingId: meeting.id, participants: next });
           } catch (err) {
             console.error('[set-participants] failed:', err);
             alert('保存失败:' + (err && err.message ? err.message : String(err)));
@@ -4775,36 +4775,15 @@ if (typeof document !== 'undefined') (function () {
   async function handleMeetingSend(text, meeting) {
     const current = meetingData[meeting.id] || meeting;
 
-    // --- Research Mode routing 优先 ---
-    // 路由由 fanout/debate 决定（摘要功能 2026-05-08 整体下线）。
+    // AI 群聊统一路由。
     if (current.scene) {
-      if (current.groupChat) {
-        const _userInputForBanner = text.trim();
-        if (_userInputForBanner) _currentTurnUserInputByMeeting[meeting.id] = _userInputForBanner;
-        try {
-          await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
-        } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
-        triggerGroupChat(current, { userInput: text });
-        return;
-      }
-      const cmd = parseRoundtableCommand(text, current);
-      // 公共轮次：fanout / debate 走 orchestrator
-      if (cmd.type === 'rt-fanout' || cmd.type === 'rt-debate') {
-        const mode = cmd.type === 'rt-fanout' ? 'fanout' : 'debate';
-        // 2026-05-05 道雪：本轮 userInput 立即缓存,让"用户提问 banner"在 turn-complete 之前就能显示。
-        const _userInputForBanner = (cmd.text || '').trim();
-        if (_userInputForBanner) _currentTurnUserInputByMeeting[meeting.id] = _userInputForBanner;
-        // 也写入 meeting timeline（黑板视图回放用）
-        try {
-          await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
-        } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
-        triggerRoundtable(current, mode, {
-          userInput: cmd.text || '',
-        });
-        return;
-      }
-      // pilot redesign（2026-05-02）：rt-private 类型完全废弃，圆桌不再处理 @<who> 私聊。
-      //   想私聊就直接进 AI 子会话区聊。parseRoundtableCommand 会把 @xxx 前缀的输入归一为 rt-fanout。
+      const _userInputForBanner = text.trim();
+      if (_userInputForBanner) _currentTurnUserInputByMeeting[meeting.id] = _userInputForBanner;
+      try {
+        await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
+      } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
+      triggerGroupChat(current, { userInput: text });
+      return;
     }
 
     const targets = current.sendTarget === 'all' ? current.subSessions : [current.sendTarget];

@@ -33,7 +33,7 @@ try {
 }
 const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir, getSceneMemoryRoot, isUserProjectCwd } = require('./core/data-dir.js');
 const hubControl = require('./core/hub-control.js');
-const { MeetingRoomManager, isRoundtableCapableMeeting } = require('./core/meeting-room.js');
+const { MeetingRoomManager } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
 const sessionStore = require('./core/session-store.js');
 const { SummaryEngine } = require('./core/summary-engine');
@@ -524,7 +524,7 @@ function fallbackMeetingTitleFromPrompt(text, meeting) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!clean) return '';
-  return `${meeting && meeting.groupChat ? '群聊' : '圆桌'} · ${clean.slice(0, 18)}`;
+  return `群聊 · ${clean.slice(0, 18)}`;
 }
 
 function postJsonForAutoTitle(endpoint, payload, headers, timeoutMs) {
@@ -771,7 +771,7 @@ function createWindow() {
   // Load the icon as a NativeImage so we can pass it to BrowserWindow AND
   // re-apply via setIcon — on Windows the constructor `icon` alone sometimes
   // misses the taskbar; the explicit setIcon nails it.
-  const iconPath = path.join(__dirname, 'roundtable.ico');
+  const iconPath = path.join(__dirname, 'claude-wx.ico');
   const winIcon = nativeImage.createFromPath(iconPath);
 
   // 标题动态读 package.json 版本号，避免硬编码漂移（card-redesign 0.2.0 起）
@@ -780,7 +780,7 @@ function createWindow() {
   })();
   // 2026-05-03 道雪：标题带 PID，方便桌面同时存在多个 Hub 窗口（生产+测试）时
   //   一眼区分哪个对应哪个 PID — 调试时不再需要 Get-Process 反查。
-  const _hubTitle = `圆桌宝可梦：PID ${process.pid}${_pkgVersion ? ` v${_pkgVersion}` : ''}`;
+  const _hubTitle = `AI 群聊 Hub：PID ${process.pid}${_pkgVersion ? ` v${_pkgVersion}` : ''}`;
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -952,7 +952,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
       workspaceDir = getMeetingWorkspaceDir(meetingId);
     } else if (meeting) {
       const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
-      const bucket = meeting.groupChat ? 'groupchat' : 'roundtable';
+      const bucket = 'groupchat';
       workspaceDir = path.join(homeDir, '.arena', bucket, meetingId);
     }
     if (workspaceDir) {
@@ -965,7 +965,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
     }
   }
 
-  if (meeting && meeting.scene && !meeting.groupChat) {
+  if (false && meeting && meeting.scene && !meeting.groupChat) {
     const hubDataDir = getHubDataDir();
     const sceneObj = scenes.getScene(meeting.scene);
     const covenantText = (typeof meeting.covenantText === 'string')
@@ -1053,6 +1053,7 @@ ipcMain.handle('create-meeting', async (_e, opts) => {
   //   2026-05-05 道雪：title 由 modal 房名输入框填入，非空覆盖默认编号 title；
   //   留空/未传则 createMeeting 内部走 `通用 #N` 等默认编号路径。
   const safe = { ...(opts || {}) };
+  safe.groupChat = true;
   const hasCustomTitle = typeof safe.title === 'string' && safe.title.trim().length > 0;
   safe.autoTitlePending = !hasCustomTitle;
   safe.userRenamed = hasCustomTitle;
@@ -1091,7 +1092,7 @@ ipcMain.handle('create-meeting', async (_e, opts) => {
     if (subCount === 0) {
       // 全失败：清理空 meeting + 抛错给 renderer
       try { meetingManager.closeMeeting(meeting.id); } catch (e) { console.warn('[create-meeting] close empty meeting failed:', e.message); }
-      try { scenes.cleanup(getHubDataDir(), meeting.id); } catch {}
+    try { groupchat.cleanup?.(getHubDataDir(), meeting.id); } catch {}
       const detail = errors.map(er => `· ${er.slot.kind}（${er.slot.model || 'default'}）：${er.message}`).join('\n');
       throw new Error('所有子会话创建失败：\n' + (detail || '（未知原因）'));
     }
@@ -1136,7 +1137,7 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
     sessionStore.deleteSessionFile(sid);
     sessionStore.cancelDirty(sid);
   }
-  scenes.cleanup(getHubDataDir(), meetingId);
+  groupchat.cleanup?.(getHubDataDir(), meetingId);
   // 2026-05-07：会议在 state.json 里也要标记 removed
   stateStore.markRemovedMeeting(meetingId);
   // immersive 状态从 dict 一并清掉（避免 state.json 越长越大）
@@ -1282,7 +1283,7 @@ ipcMain.handle('roundtable:set-meeting-mode', async (_e, { meetingId, mode } = {
 
 // free-mode（2026-05-04）— 设置 free 模式参与者勾选
 //   接受空数组（Q11=A：尊重用户清空，UI 已防发送）
-ipcMain.handle('roundtable:set-participants', async (_e, { meetingId, participants } = {}) => {
+ipcMain.handle('groupchat:set-participants', async (_e, { meetingId, participants } = {}) => {
   if (!meetingId) throw new Error('Missing meetingId');
   const meeting = meetingManager.getMeeting(meetingId);
   if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
@@ -1318,7 +1319,7 @@ ipcMain.handle('roundtable:set-participants', async (_e, { meetingId, participan
       dispatchModeByMeeting: _dispatchModeByMeeting,
     });
   } catch (e) {
-    console.warn('[圆桌] roundtable:set-participants persist failed:', e.message);
+    console.warn('[groupchat] set-participants persist failed:', e.message);
     persistWarning = `state.json 持久化失败：${e.message}（meeting 已存到 per-meeting JSON，重启后仍生效）`;
   }
 
@@ -2378,7 +2379,7 @@ ipcMain.handle('groupchat:read-raw', (_e, { meetingId, messageId } = {}) => {
 // 此外移除"必须有 active watcher 才能提取"的硬限制：active watcher 缺失只意味着本轮已 settle，
 // 但 transcript 文件中的 last assistant 仍然有意义（用户想拿当前最新答案 patch 进 lastTurn）。
 // 有 watcher 走 manualExtract（让本轮 settle 走完整流程）；无 watcher 走 patchTurnResult 直接更新 lastTurn。
-ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePromptTs, turnNum } = {}) => {
+ipcMain.handle('groupchat-manual-extract', async (_e, { meetingId, sid, sincePromptTs, turnNum } = {}) => {
   if (!sid) return { ok: false, reason: 'missing_sid' };
 
   let extracted = null;
@@ -2433,7 +2434,7 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
   if (meetingId) {
     try {
       const meeting = meetingManager.getMeeting(meetingId);
-      if (meeting && meeting.groupChat) {
+      if (meeting) {
         const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
         const turns = Array.isArray(orch.state.turns) ? orch.state.turns : [];
         const requestedTurn = Number.isFinite(Number(turnNum)) ? Number(turnNum) : null;
@@ -2450,29 +2451,6 @@ ipcMain.handle('roundtable-manual-extract', async (_e, { meetingId, sid, sincePr
               meetingId, turnNum: lastTurn.n, sid, charCount: (extracted.text || '').length,
             });
             return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_groupchat_turn', extractMode: extracted.extractMode || null };
-          }
-        }
-      } else {
-        const sceneObj = meeting ? scenes.getScene(meeting.scene) : null;
-        const orch = roundtable.getOrchestrator(getHubDataDir(), meetingId, sceneObj);
-        const lastTurn = orch.getLastTurn();
-        if (lastTurn) {
-          const patched = orch.patchTurnResult(lastTurn.n, sid, {
-            text: extracted.text,
-            status: 'manual_extracted',
-          });
-          if (patched) {
-            // 摘要功能 2026-05-08 整体下线：原 patched.mode==='summary' + archivedTo 重写归档分支已删
-            // 2026-05-04 道雪：单家 patch 改发 partial-update（仅本卡片局部刷新），
-            //   不再复用整轮 turn-complete —— 避免 renderer 把整个 _partialBy 清空、
-            //   导致本轮还在跑的其他家退化成 thinking 流光态（Bug：点 A 一键提取，B/C 出现流光）。
-            sendToRenderer('roundtable-partial-update', {
-              meetingId, sid,
-              status: 'manual_extracted',
-              text: extracted.text,
-              source: extracted.source || 'manual',
-            });
-            return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_last_turn', extractMode: extracted.extractMode || null };
           }
         }
       }
@@ -2554,7 +2532,7 @@ ipcMain.handle('roundtable-resend-prompt', async (_e, { meetingId, sid } = {}) =
 
 // 跳过本家：watcher settle 为 absent 状态，下游 prompt builder 过滤这家
 //   （过滤逻辑由 commit 4 P0-14 落地；本 commit 只设状态）。
-ipcMain.handle('roundtable-skip-participant', async (_e, { meetingId, sid } = {}) => {
+ipcMain.handle('groupchat-skip-participant', async (_e, { meetingId, sid } = {}) => {
   if (!sid) return { ok: false, reason: 'missing sid' };
   const watcher = _activeWatchers.get(sid);
   if (!watcher) return { ok: false, reason: 'not_active' };
