@@ -29,6 +29,7 @@ try {
   console.warn('[feishu] client module unavailable, feishu integration disabled:', err.message);
 }
 const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir, getSceneMemoryRoot, isUserProjectCwd } = require('./core/data-dir.js');
+const hubControl = require('./core/hub-control.js');
 const { MeetingRoomManager, isRoundtableCapableMeeting } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
 const sessionStore = require('./core/session-store.js');
@@ -4641,6 +4642,32 @@ app.whenReady().then(async () => {
   }
   traceStartup(`hook listen done (${hookPort || 'none'})`);
   sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
+
+  // 2026-05-16 道雪：写 per-PID 控制文件（含 hookPort + cdpPort + HOOK_TOKEN）。
+  //   救援脚本 tools/hub-escape.ps1 通过 <dataDir>/control/<pid>.json 发现 Hub
+  //   端口和 token。CDP 端口从 <userData>/DevToolsActivePort 读取（Chromium 写入）。
+  try {
+    const dataDir = getHubDataDir();
+    let cdpPort = null;
+    if (process.env.CLAUDE_HUB_NO_CDP !== '1') {
+      cdpPort = await hubControl.readDevToolsActivePort(app.getPath('userData'));
+      if (!cdpPort) console.warn('[hub-control] DevToolsActivePort not ready within 3s — CDP backdoor may be unreachable');
+    }
+    const removed = hubControl.cleanStale(dataDir);
+    if (removed.length) console.log(`[hub-control] cleaned stale entries for pids: ${removed.join(', ')}`);
+    hubControl.writeControlFile({
+      pid: process.pid,
+      hookPort,
+      cdpPort,
+      token: HOOK_TOKEN,
+      dataDir,
+      startedAt: Date.now(),
+    });
+    console.log(`[hub-control] control file written: pid=${process.pid} hookPort=${hookPort} cdpPort=${cdpPort}`);
+  } catch (e) {
+    console.warn('[hub-control] init failed:', e.message);
+  }
+
   traceStartup('startAgentScanner');
   startAgentScanner();
   // PackyAPI 账户(余额 + 消耗)— 启动 1.5s 后首次拉取,之后每 5 分钟刷新一次。
@@ -4888,6 +4915,9 @@ app.on('before-quit', async () => {
   } catch (err) {
     console.warn('[hub] session-store flush failed:', err.message);
   }
+
+  // 2026-05-16 道雪：清理自己的控制文件。失败留给下次启动 cleanStale 兜底。
+  try { hubControl.unlinkSelf(getHubDataDir(), process.pid); } catch {}
 });
 
 app.on('window-all-closed', () => {
