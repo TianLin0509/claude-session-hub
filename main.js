@@ -3881,7 +3881,20 @@ const hookServer = http.createServer((req, res) => {
     try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
     // 2026-05-16 道雪：外部 HTTP 救援 — tools/hub-escape.ps1 调这条路由触发 escapeToHome()
     if (isEscapeHome) {
-      if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
+      if (parsed.token !== HOOK_TOKEN) {
+        console.warn('[escape-home] 403 wrong token from', req.socket && req.socket.remoteAddress);
+        res.writeHead(403); res.end('{}'); return;
+      }
+      // 检查 renderer 真的可达 — mainWindow.isDestroyed() 不够，renderer 进程 crash 时
+      // webContents.send 会静默 drop。这种场景下回 503 让 ps1 提示"需手动重启 Hub"。
+      const rendererReachable = mainWindow && !mainWindow.isDestroyed()
+        && mainWindow.webContents && !mainWindow.webContents.isCrashed();
+      if (!rendererReachable) {
+        console.warn('[escape-home] renderer unreachable (destroyed or crashed) — endpoint returns 503');
+        res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, pid: process.pid, error: 'renderer unreachable' }));
+        return;
+      }
       console.log('[escape-home] HTTP triggered');
       sendToRenderer('escape-home');
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -4664,8 +4677,18 @@ app.whenReady().then(async () => {
     const dataDir = getHubDataDir();
     let cdpPort = null;
     if (process.env.CLAUDE_HUB_NO_CDP !== '1') {
-      cdpPort = await hubControl.readDevToolsActivePort(app.getPath('userData'));
-      if (!cdpPort) console.warn('[hub-control] DevToolsActivePort not ready within 3s — CDP backdoor may be unreachable');
+      // Chromium 只在 --remote-debugging-port=0（OS 自动分配）时才写 DevToolsActivePort 文件；
+      // 当 CLI 已传明确端口（E2E hub-launcher 场景）时直接从 argv 解析。
+      if (_hasCdpSwitch) {
+        const m = process.argv.find(a => a.startsWith('--remote-debugging-port='));
+        if (m) {
+          const p = parseInt(m.split('=')[1], 10);
+          if (!isNaN(p) && p > 0) cdpPort = p;
+        }
+      } else {
+        cdpPort = await hubControl.readDevToolsActivePort(app.getPath('userData'));
+        if (!cdpPort) console.warn('[hub-control] DevToolsActivePort not ready within 3s — CDP backdoor may be unreachable');
+      }
     }
     const removed = hubControl.cleanStale(dataDir);
     if (removed.length) console.log(`[hub-control] cleaned stale entries for pids: ${removed.join(', ')}`);
@@ -4930,8 +4953,9 @@ app.on('before-quit', async () => {
     console.warn('[hub] session-store flush failed:', err.message);
   }
 
-  // 2026-05-16 道雪：清理自己的控制文件。失败留给下次启动 cleanStale 兜底。
-  try { hubControl.unlinkSelf(getHubDataDir(), process.pid); } catch {}
+  // 2026-05-16 道雪：清理自己的控制文件。unlinkSelf 内部已 try/catch + warn 非 ENOENT 错误，
+  // 不外抛，所以这里裸调即可，不再加外层 catch（避免盖住内部 warn）。
+  hubControl.unlinkSelf(getHubDataDir(), process.pid);
 });
 
 app.on('window-all-closed', () => {

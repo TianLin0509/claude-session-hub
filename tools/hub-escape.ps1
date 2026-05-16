@@ -32,8 +32,18 @@ $entries = @()
 Get-ChildItem -Path $controlDir -Filter '*.json' | ForEach-Object {
   try {
     $obj = Get-Content $_.FullName -Raw -Encoding utf8 | ConvertFrom-Json
+    # 测活：区分"进程不存在"（ProcessCommandException → 真死）与"无权限查询"（其他异常 → 视为活）
+    # 防止 UAC 隔离环境下把活 Hub 误判成死的，导致救援脚本找不到目标。
     $alive = $false
-    try { Get-Process -Id $obj.pid -ErrorAction Stop | Out-Null; $alive = $true } catch {}
+    try {
+      Get-Process -Id $obj.pid -ErrorAction Stop | Out-Null
+      $alive = $true
+    } catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
+      $alive = $false
+    } catch {
+      $alive = $true
+      Write-Warning "pid $($obj.pid) 测活异常（视为活，可能权限隔离）: $($_.Exception.Message)"
+    }
     if ($alive) {
       $entries += [pscustomobject]@{
         Pid       = $obj.pid
@@ -82,6 +92,14 @@ try {
   $resp = Invoke-RestMethod -Uri $uri -Method POST -Body $body -ContentType 'application/json' -TimeoutSec 5
   Write-Output "OK: $($resp | ConvertTo-Json -Compress)"
 } catch {
-  Write-Error "调用失败: $($_.Exception.Message)"
+  $statusCode = $null
+  if ($_.Exception.Response) { $statusCode = $_.Exception.Response.StatusCode.value__ }
+  if ($statusCode -eq 503) {
+    Write-Error "Hub renderer 不可达（已 crash 或被 destroy）。HTTP 救援无效，需手动重启 Hub（会丢 session）。"
+  } elseif ($statusCode -eq 403) {
+    Write-Error "token 鉴权失败。control 文件可能过期 — 重新读控制文件或确认 Hub 未重启。"
+  } else {
+    Write-Error "调用失败: $($_.Exception.Message)"
+  }
   exit 1
 }
