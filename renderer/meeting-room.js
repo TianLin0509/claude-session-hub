@@ -189,10 +189,12 @@ if (typeof document !== 'undefined') (function () {
   }
   const _GROUP_SIDE_STATE_KEY = 'mr-group-chat-side-state';
   function _getGroupSideCollapsed() {
+    // 2026-05-17 道雪: 默认展开右侧"群成员"栏（之前因含 ctx 占比、需要随时可见，
+    //   只有用户显式点过"收起"才折叠）。localStorage 缺失/异常时也展开。
     try {
       const state = typeof localStorage !== 'undefined' ? localStorage.getItem(_GROUP_SIDE_STATE_KEY) : null;
-      return state !== 'expanded';
-    } catch { return true; }
+      return state === 'collapsed';
+    } catch { return false; }
   }
   function _setGroupSideCollapsed(collapsed, meeting) {
     try {
@@ -1727,10 +1729,14 @@ if (typeof document !== 'undefined') (function () {
     const memberRows = slots.map((slot) => {
       const checked = selected.has(slot.slotIndex);
       const label = slot.displayLabel || slot.label || slot.kind || 'AI';
-      const model = (() => {
-        const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(slot.sid) : null;
-        return s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
-      })();
+      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(slot.sid) : null;
+      const model = s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
+      // 2026-05-17 道雪: 群成员行新增 ctx 占比。数据来自 statusline → /api/status → session.contextPct
+      //   （仅 Claude 子会话原生上报，Codex/Gemini/DeepSeek 缺值时显示 "--" + unknown 色）。
+      const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
+      const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
+      const ctxText = ctxPct == null ? 'Ctx --' : `Ctx ${ctxPct}%`;
+      const ctxTitle = ctxPct == null ? '上下文占比未上报（非 Claude CLI 暂无原生信号）' : `上下文已用 ${ctxPct}%`;
       return `
         <button type="button" class="mr-gc-member ${checked ? 'selected' : ''}" data-gc-member-idx="${slot.slotIndex}">
           <img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" />
@@ -1738,7 +1744,10 @@ if (typeof document !== 'undefined') (function () {
             <span class="mr-gc-member-name">${escapeHtml(label)}</span>
             <span class="mr-gc-member-meta">@m${slot.slotIndex + 1}${model ? ` · ${escapeHtml(model)}` : ''}</span>
           </span>
-          <span class="mr-gc-member-check">${checked ? 'ON' : ''}</span>
+          <span class="mr-gc-member-side">
+            <span class="mr-gc-member-ctx ${ctxCls}" title="${escapeHtml(ctxTitle)}">${escapeHtml(ctxText)}</span>
+            <span class="mr-gc-member-check">${checked ? 'ON' : ''}</span>
+          </span>
         </button>
       `;
     }).join('');
