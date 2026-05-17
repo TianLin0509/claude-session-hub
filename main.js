@@ -1035,6 +1035,30 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
     }
   }
 
+  // 群聊保持极简 prompt，但 research 场景仍需要挂载 stock MCP 工具。
+  // 注意：上面的历史分支被 if(false) 关闭，避免恢复 BASE_RULES/COVENANT 大 prompt；
+  // 这里只注入 MCP，不写 appendSystemPromptFile / codexInstructionFile。
+  if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
+    const hubDataDir = getHubDataDir();
+    if (isClaudeFamily(kind)) {
+      sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, kind);
+    } else if (kind === 'gemini') {
+      sessionOpts.extraEnv = {
+        ...(sessionOpts.extraEnv || {}),
+        ELECTRON_RUN_AS_NODE: '1',
+        ARENA_MEETING_ID: meetingId,
+        ARENA_HUB_PORT: String(hookPort),
+        ARENA_HOOK_TOKEN: HOOK_TOKEN,
+        ARENA_AI_KIND: 'gemini',
+      };
+    } else if (kind === 'codex') {
+      sessionOpts.codexBypassApprovals = true;
+      sessionOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN)];
+    }
+  } else if (meeting && meeting.groupChat && meeting.scene === 'research' && !hookPort) {
+    console.warn('[群聊] research scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
+  }
+
   const session = sessionManager.createSession(kind, sessionOpts);
   if (!session) return null;
   const updated = meetingManager.addSubSession(meetingId, session.id);
@@ -2687,6 +2711,26 @@ ipcMain.handle('resume-session', async (_e, meta) => {
       } else if (meta.kind === 'codex') {
         resumeOpts.codexInstructionFile = promptFile;
       }
+    }
+    if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
+      const hubDataDir = getHubDataDir();
+      if (isClaudeCliResumable) {
+        resumeOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meta.meetingId, hookPort, HOOK_TOKEN, meta.kind || 'claude');
+      } else if (meta.kind === 'gemini') {
+        resumeOpts.extraEnv = {
+          ...(resumeOpts.extraEnv || {}),
+          ELECTRON_RUN_AS_NODE: '1',
+          ARENA_MEETING_ID: meta.meetingId,
+          ARENA_HUB_PORT: String(hookPort),
+          ARENA_HOOK_TOKEN: HOOK_TOKEN,
+          ARENA_AI_KIND: 'gemini',
+        };
+      } else if (meta.kind === 'codex') {
+        resumeOpts.codexBypassApprovals = true;
+        resumeOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meta.meetingId, hookPort, HOOK_TOKEN)];
+      }
+    } else if (meeting && meeting.groupChat && meeting.scene === 'research' && !hookPort) {
+      console.warn('[群聊] research scene resume for meeting ' + meta.meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
     }
   }
 

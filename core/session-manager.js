@@ -276,6 +276,10 @@ function tomlString(value) {
   return JSON.stringify(String(value || ''));
 }
 
+function tomlArray(values) {
+  return '[' + (Array.isArray(values) ? values : []).map(tomlString).join(', ') + ']';
+}
+
 function getCodexApiHome() {
   return path.join(getHubDataDir(), 'codex-api-profile');
 }
@@ -357,6 +361,55 @@ function ensureCodexCwdTrusted(projectDir, configDir = null) {
     fs.appendFileSync(cfgPath, append, 'utf8');
   } catch (err) {
     console.warn('[hub] failed to pretrust codex cwd:', err.message);
+  }
+}
+
+function ensureCodexMcpEntries(configDir, entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return;
+  try {
+    const codexHome = configDir || path.join(os.homedir(), '.codex');
+    fs.mkdirSync(codexHome, { recursive: true });
+    const cfgPath = path.join(codexHome, 'config.toml');
+    let cfg = '';
+    try { cfg = fs.readFileSync(cfgPath, 'utf8'); } catch {}
+
+    for (const entry of entries) {
+      const name = String(entry && entry.name || '').trim();
+      if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
+      const prefix = `[mcp_servers.${name}`;
+      const lines = cfg.split(/\r?\n/);
+      const kept = [];
+      let skipping = false;
+      for (const line of lines) {
+        const section = line.trim().match(/^\[([^\]]+)\]$/);
+        if (section) {
+          const header = `[${section[1]}`;
+          skipping = header === prefix || header.startsWith(prefix + '.');
+        }
+        if (!skipping) kept.push(line);
+      }
+      cfg = kept.join('\n').replace(/\s+$/u, '');
+
+      const env = entry.env && typeof entry.env === 'object' ? entry.env : {};
+      const block = [
+        '',
+        `[mcp_servers.${name}]`,
+        `command = ${tomlString(entry.command || '')}`,
+        `args = ${tomlArray(entry.args || [])}`,
+      ];
+      const envKeys = Object.keys(env).sort();
+      if (envKeys.length > 0) {
+        block.push('', `[mcp_servers.${name}.env]`);
+        for (const key of envKeys) {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+          block.push(`${key} = ${tomlString(env[key])}`);
+        }
+      }
+      cfg += block.join('\n') + '\n';
+    }
+    fs.writeFileSync(cfgPath, cfg, 'utf8');
+  } catch (err) {
+    console.warn('[hub] failed to configure Codex MCP entries:', err.message);
   }
 }
 
@@ -798,6 +851,7 @@ class SessionManager extends EventEmitter {
     }
 
     if (isCodex) {
+      ensureCodexMcpEntries(sessionEnv.CODEX_HOME || null, opts.codexMcpEntries);
       dismissCodexUpdatePrompt(undefined, sessionEnv.CODEX_HOME || null);
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       const cv = getConfigValues();

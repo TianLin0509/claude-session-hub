@@ -64,6 +64,9 @@ test('buildSystemPromptText appends lightweight research scene prompt only for r
   assert.ok(research.includes('尽量挖掘新线索、变量或解释路径'));
   assert.ok(research.includes('事实和数字标来源，未查证就说明不确定'));
   assert.ok(research.includes('先问用户 1-2 个会改变结论的问题'));
+  assert.ok(research.includes('stock_static(symbol)、stock_market(symbol)、stock_news(symbol)'));
+  assert.ok(research.includes('首次接触个股先 static+market'));
+  assert.ok(research.includes('工具不可用或数据缺失时明确说未查到'));
   assert.ok(!research.includes('cli.py analyze'));
   assert.ok(!research.includes('皮卡丘'));
 });

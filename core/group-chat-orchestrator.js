@@ -37,6 +37,8 @@ function _memberLabel(member) {
 const RESEARCH_SCENE_PROMPT = [
   '## 投研场景',
   '优先补充他人未覆盖的角度、证据缺口或反例。在评价已知材料的基础上，尽量挖掘新线索、变量或解释路径，为讨论带回新信息、方向。涉及股票、板块、消息和近期行情时，尽量查证；事实和数字标来源，未查证就说明不确定。不要只顺着已有倾向，主动指出风险或证伪信号。若信息不足或判断分叉，先问用户 1-2 个会改变结论的问题。',
+  '涉及具体 A 股、板块或买卖时机时，优先主动调用已注入的 stock_static(symbol)、stock_market(symbol)、stock_news(symbol)：首次接触个股先 static+market，涉及公告、催化、突发消息或定报再补 news。',
+  '只引用工具返回中能改变判断的关键字段；工具不可用或数据缺失时明确说未查到，不要凭记忆补数字。',
 ].join('\n');
 
 function buildSystemPromptText(displayName, scene) {
