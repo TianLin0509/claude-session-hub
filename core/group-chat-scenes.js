@@ -127,15 +127,22 @@ bash 把反斜杠当 escape 序列处理（\`\\L\` \`\\d\` 等会被吞），无
 - \`basic <code>\` — PE/PB/市值/换手率
 - \`price <code>\` / \`indicators <code>\` — K 线 + 17 项指标
 
-### MCP 工具 ⭐ 优先用 MCP
-- **\`fetch_lindang_stock(symbol)\`** ⭐ — 一站式快照
-- **\`fetch_lindang_field(op, symbol)\`** — 按需取单字段
+### MCP 工具 ⭐ 优先用 MCP（与 RESEARCH_SCENE_PROMPT 一致）
+**Plan 2 聚合工具（推荐）**：
+- **\`stock_static(symbol)\`** ⭐ — 慢变维度：gate / basic / financial / valuation / peers / holders / pledge / funds / research
+- **\`stock_market(symbol)\`** ⭐ — 实时维度：price / indicators / flow / dragon-tiger / northbound / margin
+- **\`stock_news(symbol)\`** — 消息面：公司公告 + 大盘新闻
+
+**单字段补充（老工具仍兼容）**：
+- \`fetch_lindang_stock(symbol)\` — 一站式 snapshot
+- \`fetch_lindang_field(op, symbol)\` — 单字段（19 op，清单见上方）
 
 **优先级**：MCP > Bash。MCP 输出结构化、省 token、错误清晰，且**无路径转义陷阱**。
 
 ### 数据策略（按场景）
 - **用户已贴数据** → 直接基于数据给观点，不要再查
-- **第一次接触某只股** → 调一次 \`fetch_lindang_stock\` 拿全景
+- **首次接触某只股** → \`stock_static\` + \`stock_market\`（一次拉全画像 + 行情）
+- **公告/催化/突发/定报** → 再补 \`stock_news\`
 - **只缺一个单字段** → \`fetch_lindang_field\`
 - **实时新闻/政策** → WebFetch / WebSearch（Claude）/ Google Search grounding（Gemini）/ web_search（Codex）
 
