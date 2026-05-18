@@ -17,5 +17,13 @@ tests/_*.js
 tests/_*.html
 tests/_*.png
 
+# E2E proof screenshots / json reports (per-run evidence, not source of truth)
+tests/e2e-proof-screenshots/
+tests/screenshots/
+tests/screenshots-sprint1/
+
+# Isolated-Hub data dirs / cdp probes / e2e scratch
+.tmp-e2e/
+
 # Per-meeting runtime artifacts (covenant snapshots, session state)
 .arena/
