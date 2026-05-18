@@ -51,4 +51,19 @@ test('codex picker resume enables mtime fallback binding', () => {
   );
 });
 
+test('codex PTY sessions default to high reasoning effort', () => {
+  assert.match(
+    SRC,
+    /CODEX_REASONING_CONFIG_ARG = ` -c 'model_reasoning_effort="\$\{CODEX_REASONING_EFFORT\}"'`/,
+    'codex command builder must define a reasoning-effort override',
+  );
+  assert.match(
+    SRC,
+    /const CODEX_REASONING_EFFORT = 'high';/,
+    'codex reasoning-effort override must default to high',
+  );
+  const commandUses = SRC.match(/\$\{CODEX_REASONING_CONFIG_ARG\}/g) || [];
+  assert.ok(commandUses.length >= 6, 'new/resume/relaunch codex commands must include high reasoning override');
+});
+
 console.log('All passed.');

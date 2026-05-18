@@ -9,6 +9,8 @@ const { getHubDataDir } = require('./data-dir');
 const { isClaudeFamily } = require('./ai-kinds.js');
 
 const RING_BUFFER_BYTES = 16384;
+const CODEX_REASONING_EFFORT = 'high';
+const CODEX_REASONING_CONFIG_ARG = ` -c 'model_reasoning_effort="${CODEX_REASONING_EFFORT}"'`;
 
 // 配置从 hub-config.js 加载（优先级：env > config.json > secrets.toml）
 // 老用户无感知：如果 config.json 不存在，自动 fallback 到 secrets.toml
@@ -859,22 +861,22 @@ class SessionManager extends EventEmitter {
       let cmd;
       if (kind === 'codex-resume' || opts.codexResumePicker) {
         // codex resume 无参 = picker by default
-        cmd = ` codex resume --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
+        cmd = ` codex resume --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
       } else if (opts.useResume && opts.codexSid) {
         // Level 1: precise resume by sid
-        cmd = ` codex resume ${opts.codexSid} --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
+        cmd = ` codex resume ${opts.codexSid} --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
       } else if (opts.useResume) {
         // Level 2 degradation: no sid recorded → use --last
-        cmd = ` codex resume --last --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
+        cmd = ` codex resume --last --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
       } else {
         // Research mode：完全 bypass approvals + sandbox（含 MCP 工具调用、shell 命令、文件写）
         // 避免任何 "Allow ... ?" 弹窗阻塞投研讨论流程；
         // 安全约束完全靠 prompt/covenant 软约束（已强化"不要改代码 / 不要 git / 不要删除"）
         // opts.model 让 meeting-create-modal 选定的非默认 model（如 gpt-5.4）生效。
         if (opts.codexBypassApprovals) {
-          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
+          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
         } else {
-          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}`;
+          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
         }
         // 注：曾尝试 --no-alt-screen 改善观感，实测无明显改善 + Enter 提交失效 → 撤回。
         // 渲染观感问题改由"持久化 AI 群聊面板"（直接展示干净回答预览）绕过。
@@ -1219,7 +1221,7 @@ class SessionManager extends EventEmitter {
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
-      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}\r\n`;
+      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}${CODEX_REASONING_CONFIG_ARG}\r\n`;
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
       cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
     } else if (kind === 'claude' || kind === 'claude-resume') {
