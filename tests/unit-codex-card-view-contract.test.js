@@ -6,6 +6,7 @@ const root = path.join(__dirname, '..');
 const mainSrc = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const transcriptIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'transcript-handlers.js'), 'utf8');
 const persistenceIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'persistence-handlers.js'), 'utf8');
+const resumeIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'resume-session-handlers.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
 const tapSrc = fs.readFileSync(path.join(root, 'core', 'transcript-tap.js'), 'utf8');
 const sessionStoreSrc = fs.readFileSync(path.join(root, 'core', 'session-store.js'), 'utf8');
@@ -28,7 +29,7 @@ assert.ok(
   'parse-session-transcript must prefer the live CodexTap rollout over stale renderer transcriptPath',
 );
 assert.ok(
-  /findCodexRolloutBySid\(meta\.codexSid,\s*meta\.codexSessionsRoot\s*\|\|\s*DEFAULT_CODEX_SESSIONS_ROOT\)/.test(mainSrc),
+  /findCodexRolloutBySid\(meta\.codexSid,\s*meta\.codexSessionsRoot\s*\|\|\s*defaultCodexSessionsRoot\)/.test(resumeIpcSrc),
   'resume-session must recover a Codex rollout path from persisted codexSid',
 );
 assert.ok(

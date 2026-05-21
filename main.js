@@ -56,11 +56,13 @@ const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
+const { registerResumeSessionIpc } = require('./main/ipc/resume-session-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
 }
 const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
+const { readTranscriptTail } = require('./core/session-manager');
 const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
 const {
   DEFAULT_CODEX_SESSIONS_ROOT,
@@ -1698,151 +1700,26 @@ registerPersistenceIpc(ipcMain, {
   stateStore,
 });
 
-// Wake a dormant session: spawn PTY with the same hubId, reusing stored cwd,
-// CC session id, title. The session-manager handles `claude --resume <id>` or
-// `--continue` as fallback when we don't have a CC id recorded.
-ipcMain.handle('resume-session', async (_e, meta) => {
-  if (!meta || !meta.hubId) return null;
-  const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume' || isClaudeWebKind(meta.kind));
-  const isDeepSeek = (meta.kind === 'deepseek');
-  const isGlm = (meta.kind === 'glm');
-  // CLAUDE_FAMILY 含 claude/claude-resume/deepseek/glm/gpt/kimi/qwen — 所有跑在 Claude CLI
-  // 上的 kind 共享同一 resume + system prompt 注入路径，单一真理源。
-  const isClaudeCliResumable = isClaudeFamily(meta.kind);
-  const isGeminiOrCodex = (meta.kind === 'gemini' || isCodexBaseKind(meta.kind));
-  const codexMissingSid = (isCodexBaseKind(meta.kind) && !meta.codexSid);
-
-  // resume 时根据会议模式重新注入 prompt 文件(research/general 公约)。
-  // 注意三家 CLI 各走自己的注入字段(与 add-meeting-sub 对齐):
-  //   Claude  → appendSystemPromptFile (CLI 参数)
-  //   Gemini  → extraEnv.GEMINI_SYSTEM_MD (env)
-  //   Codex   → codexInstructionFile (CLI 参数)
-  let resumeOpts = {};
-  if (meta.meetingId) {
-    const meeting = meetingManager.getMeeting(meta.meetingId);
-    let promptFile = null;
-    if (meeting && meeting.scene && !meeting.groupChat) {
-      const hubDataDir = getHubDataDir();
-      const covenantText = (typeof meeting.covenantText === 'string' && meeting.covenantText.length > 0)
-        ? meeting.covenantText
-        : scenes.readCovenantSnapshot(hubDataDir, meta.meetingId);
-      // P2 (2026-05-04 道雪): resume 时按 subSessions index 推 slotId,
-      //   保证 dormant→awake 后注入与首次启动一致的 L3 偏置。
-      //   meta.hubId 不在 subSessions 时 (异常路径) → slotId=null,退回老 fallback。
-      let slotId = null;
-      if (Array.isArray(meeting.subSessions)) {
-        const idx = meeting.subSessions.indexOf(meta.hubId);
-        if (idx >= 0 && idx < SLOT_IDS.length) slotId = SLOT_IDS[idx];
-      }
-      promptFile = scenes.writePromptFile(hubDataDir, meta.meetingId, meeting.scene, covenantText, slotId);
-    }
-    if (promptFile) {
-      if (isClaude || isGlm) {
-        resumeOpts.appendSystemPromptFile = promptFile;
-      } else if (meta.kind === 'gemini') {
-        resumeOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
-      } else if (isCodexBaseKind(meta.kind)) {
-        resumeOpts.codexInstructionFile = promptFile;
-      }
-    }
-    if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
-      const hubDataDir = getHubDataDir();
-      if (isClaudeCliResumable) {
-        resumeOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meta.meetingId, hookPort, HOOK_TOKEN, meta.kind || 'claude');
-      } else if (meta.kind === 'gemini') {
-        resumeOpts.extraEnv = {
-          ...(resumeOpts.extraEnv || {}),
-          ELECTRON_RUN_AS_NODE: '1',
-          ARENA_MEETING_ID: meta.meetingId,
-          ARENA_HUB_PORT: String(hookPort),
-          ARENA_HOOK_TOKEN: HOOK_TOKEN,
-          ARENA_AI_KIND: 'gemini',
-        };
-      } else if (isCodexBaseKind(meta.kind)) {
-        resumeOpts.codexBypassApprovals = true;
-        resumeOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meta.meetingId, hookPort, HOOK_TOKEN)];
-      }
-    } else if (meeting && meeting.groupChat && meeting.scene === 'research' && !hookPort) {
-      console.warn('[群聊] research scene resume for meeting ' + meta.meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
-    }
-  }
-
-  let resumeTranscriptPath = meta.transcriptPath || null;
-  if (!resumeTranscriptPath && isClaudeCliResumable && meta.ccSessionId) {
-    try { resumeTranscriptPath = findTranscriptByCCSessionId(meta.ccSessionId); } catch {}
-  }
-  if (!resumeTranscriptPath && isCodexBaseKind(meta.kind) && meta.codexSid) {
-    try { resumeTranscriptPath = findCodexRolloutBySid(meta.codexSid, meta.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT); } catch {}
-  }
-
-  const session = sessionManager.createSession(meta.kind || 'claude', {
-    id: meta.hubId,
-    title: meta.title,
-    cwd: (meta.kind === 'gemini' && meta.geminiProjectRoot) ? meta.geminiProjectRoot : meta.cwd,
-    meetingId: meta.meetingId || null,
-    model: meta.model || undefined,
-    resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
-    resumeTranscriptPath: resumeTranscriptPath || undefined,
-    useContinue: isClaudeCliResumable && !meta.ccSessionId,
-    useResume: isGeminiOrCodex,
-    codexResumePicker: codexMissingSid,
-    codexSid: isCodexBaseKind(meta.kind) ? (meta.codexSid || null) : null,
-    codexProfile: isCodexBaseKind(meta.kind) ? (meta.codexProfile || null) : null,
-    geminiChatId: meta.kind === 'gemini' ? (meta.geminiChatId || null) : null,
-    geminiProjectRoot: meta.kind === 'gemini' ? (meta.geminiProjectRoot || null) : null,
-    autoTitleGenerated: !!meta.autoTitleGenerated,
-    lastMessageTime: meta.lastMessageTime,
-    lastOutputPreview: meta.lastOutputPreview,
-    ...resumeOpts,
-  });
-  registerSessionForTap(session);
-  sendToRenderer('session-created', { session });
-
-  // Level 3 fallback: when native resume is unavailable (Level 1+2 both fail),
-  // inject transcript tail as [CONTEXT] block into PTY after spawn settles.
-  const needsLevel3 = (
-    (isCodexBaseKind(meta.kind) && !meta.codexSid) ||
-    (meta.kind === 'gemini' && !meta.geminiChatId)
-  );
-
-  if (needsLevel3) {
-    const { readTranscriptTail } = require('./core/session-manager');
-    let sourcePath = null;
-    if (meta.kind === 'gemini' && meta.geminiProjectHash && meta.geminiChatId) {
-      try {
-        const dir = require('path').join(require('os').homedir(), '.gemini', 'tmp', meta.geminiProjectHash, 'chats');
-        const f = require('fs').readdirSync(dir).find(n => n.includes(meta.geminiChatId));
-        if (f) sourcePath = require('path').join(dir, f);
-      } catch {}
-    }
-    // Note: Codex Level 3 not implemented in this PR — sourcePath stays null,
-    // so codex falls through to Level 2 (`codex resume --last`) which T8 already handles.
-    // If future need: derive from `~/.codex/sessions/<YYYY/MM/DD>/rollout-<...>-<sid>.jsonl`.
-
-    if (sourcePath) {
-      readTranscriptTail(meta.kind, sourcePath, 10).then(tail => {
-        if (!tail) return;
-        const msg = `[CONTEXT FROM PREVIOUS SESSION]\n${tail}\n\n[END CONTEXT]\n`;
-        // Wait 5s for spawn to settle (covers Gemini cold start ~3-5s; was 2s but T13 fix found
-        // it could collide with CLI banner). Verify session still alive before inject.
-        setTimeout(() => {
-          try {
-            const sess = sessionManager.getSession(session.id);
-            if (!sess || sess.status === 'dormant') {
-              console.warn(`[群聊] Level 3 inject skipped: session ${session.id.slice(0,8)} no longer active`);
-              return;
-            }
-            sessionManager.writeToSession(session.id, msg);
-            console.log(`[群聊] Level 3 fallback: injected ${tail.length}-char transcript tail to ${meta.kind} session ${session.id.slice(0,8)}`);
-          } catch (e) {
-            console.warn(`[群聊] Level 3 inject failed:`, e.message);
-          }
-        }, 5000);
-      }).catch(e => console.warn('[群聊] Level 3 fallback error:', e.message));
-    }
-  }
-
-  return session;
+registerResumeSessionIpc(ipcMain, {
+  defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
+  findCodexRolloutBySid,
+  findTranscriptByCCSessionId,
+  fs,
+  getHookPort: () => hookPort,
+  getHubDataDir,
+  hookToken: HOOK_TOKEN,
+  isClaudeFamily,
+  isClaudeWebKind,
+  isCodexBaseKind,
+  meetingManager,
+  os,
+  path,
+  readTranscriptTail,
+  registerSessionForTap,
+  scenes,
+  sendToRenderer,
+  sessionManager,
+  slotIds: SLOT_IDS,
 });
 
 const imageDir = path.join(getHubDataDir(), 'images');
