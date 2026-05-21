@@ -52,6 +52,7 @@ const { registerTranscriptIpc } = require('./main/ipc/transcript-handlers.js');
 const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
+const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -1639,19 +1640,10 @@ ipcMain.handle('groupchat:turn', async (_e, args = {}) => {
 
 // 摘要功能 2026-05-08 整体下线：原 summary-trigger IPC handler 已删
 
-ipcMain.handle('groupchat:get-state', (_e, { meetingId }) => {
-  const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-  return orch.getState();
-});
-
-ipcMain.handle('groupchat:search-raw', (_e, { meetingId, query, limit } = {}) => {
-  const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-  return orch.searchRaw(query, limit);
-});
-
-ipcMain.handle('groupchat:read-raw', (_e, { meetingId, messageId } = {}) => {
-  const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-  return orch.readRaw(messageId);
+registerGroupchatQueryIpc(ipcMain, {
+  getHubDataDir,
+  groupchat,
+  transcriptTap,
 });
 
 // ===== Stage 2 容错升级（2026-05-01）— 群聊逃生工具 IPC =====
@@ -1754,31 +1746,6 @@ ipcMain.handle('groupchat-manual-extract', async (_e, { meetingId, sid, sincePro
 
   // 无 meetingId / 没有 lastTurn → 仍返回提取的文字让 UI 显示
   return { ok: true, text: extracted.text, source: extracted.source, mode: 'text_only', extractMode: extracted.extractMode || null };
-});
-
-// 2026-05-04 codex equiv extract-failure TDD —— 调试入口暴露 CodexTap 内部状态。
-//   触发场景：用户报告"codex 已回答但卡片提取不到"，需要看 _bound / _pending / _seen 状态
-//     才能区分"绑定失败"vs"绑定成功但 task_complete 未写"vs"任何 backend 都没该 sid"。
-//   返回值：JSON 可序列化的 { sessionsRoot, pending: [], bound: [], seen: [] } 快照。
-//   不暴露 timer / tail object / EventEmitter listeners 等内部句柄。
-ipcMain.handle('groupchat-codex-debug-state', async () => {
-  try {
-    return { ok: true, snapshot: transcriptTap.getCodexDebugSnapshot() };
-  } catch (e) {
-    return { ok: false, reason: 'snapshot_failed', detail: e.message };
-  }
-});
-
-// 2026-05-04 gemini equiv —— 与 codex 镜像，暴露 GeminiTap 内部状态给 renderer/E2E 用。
-//   触发场景：用户报告"gemini 已回答但卡片提取不到"，需要看 _bound / _pending / _seen / projectDir
-//     状态来区分"projectDir 没解析到"vs"绑定成功但 turn-complete 未 emit"vs"任何 backend 都没该 sid"。
-//   返回 { tmpRoot, pending: [], bound: [], seen: [] }（gemini 单 root，不像 codex 多 sessionsRoots）。
-ipcMain.handle('groupchat-gemini-debug-state', async () => {
-  try {
-    return { ok: true, snapshot: transcriptTap.getGeminiDebugSnapshot() };
-  } catch (e) {
-    return { ok: false, reason: 'snapshot_failed', detail: e.message };
-  }
 });
 
 // Resend & Auto-Recovery（2026-05-03）— 手动 [📤 发送] 按钮入口
