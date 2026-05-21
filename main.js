@@ -1713,44 +1713,13 @@ ipcMain.handle('groupchat-manual-extract', async (_e, { meetingId, sid, sincePro
   return { ok: true, text: extracted.text, source: extracted.source, mode: 'text_only', extractMode: extracted.extractMode || null };
 });
 
-// Resend & Auto-Recovery（2026-05-03）— 手动 [📤 发送] 按钮入口
-//   触发场景：dispatch 主路径 sendToPty 返回 sendStatus='stuck'（auto-recover 也救不了），
-//     renderer 收到 'groupchat-send-stuck' IPC 后让卡片亮 [📤 发送] 按钮，
-//     用户手动点击 → renderer invoke('groupchat-resend-prompt') → 走这里。
-//   行为：从 orchestrator._activePrompts 取本轮 prompt + promptHeader →
-//     调 groupChatWatcher.resendCurrentPrompt（按 promptHeader 指纹判 enter_only / rewrite_full）。
-//   成功后 setSendStatus 'auto_recovered' 让 UI 调试能看到。
-ipcMain.handle('groupchat-resend-prompt', async (_e, { meetingId, sid } = {}) => {
-  if (!meetingId || !sid) return { ok: false, reason: 'invalid_args' };
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
-  const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-  const turnNum = orch.state.currentTurn;
-  if (!turnNum || orch.state.currentMode === 'idle') {
-    return { ok: false, reason: 'no_active_turn' };
-  }
-  const active = orch.getActivePrompt(turnNum);
-  if (!active || !active.promptBy || !active.promptBy[sid]) {
-    return { ok: false, reason: 'no_active_prompt' };
-  }
-  const session = sessionManager.getSession(sid);
-  const kind = session ? session.kind : 'unknown';
-  try {
-    return await groupChatWatcher.resendCurrentPrompt({
-      sid,
-      kind,
-      prompt: active.promptBy[sid],
-      promptHeader: '',
-      timing: { ENTER_RETRY_GAP_MS: 150, POST_ENTER_VERIFY_MS: 500 },
-    });
-  } catch (e) {
-    console.error('[groupchat-resend-prompt] threw:', e);
-    return { ok: false, reason: 'exception', detail: e.message };
-  }
-});
-
 registerGroupchatRecoveryIpc(ipcMain, {
+  getHubDataDir,
   getActiveWatchers: () => _activeWatchers,
+  groupchat,
+  groupChatWatcher,
+  meetingManager,
+  sessionManager,
 });
 
 registerCliStatusIpc(ipcMain, {
