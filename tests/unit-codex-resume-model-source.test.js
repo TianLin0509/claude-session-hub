@@ -46,8 +46,8 @@ test('codex picker resume carries explicit --model', () => {
 test('codex picker resume enables mtime fallback binding', () => {
   assert.match(
     SRC,
-    /\(kind === 'codex-resume'\s*\|\|\s*opts\.codexResumePicker\s*\|\|\s*\(opts\.useResume && !opts\.codexSid\)\)/,
-    'codex-resume picker must bind old rollout files by fresh mtime after user selects a session',
+    /\(kind === 'codex-resume'\s*\|\|\s*kind === 'codex-web-resume'\s*\|\|\s*opts\.codexResumePicker\s*\|\|\s*\(opts\.useResume && !opts\.codexSid\)\)/,
+    'codex resume picker variants must bind old rollout files by fresh mtime after user selects a session',
   );
 });
 

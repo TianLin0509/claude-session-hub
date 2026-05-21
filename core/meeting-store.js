@@ -47,8 +47,6 @@ function saveMeetingFile(id, data) {
     _cursors: data._cursors && typeof data._cursors === 'object' ? data._cursors : {},
     _nextIdx: typeof data._nextIdx === 'number' ? data._nextIdx : 0,
     slotSpecs: Array.isArray(data.slotSpecs) ? data.slotSpecs : null,
-    pilotSlot: (typeof data.pilotSlot === 'number') ? data.pilotSlot : null,
-    dispatchMode: ['all', 'pilot', 'observer'].includes(data.dispatchMode) ? data.dispatchMode : 'all',
     mode: ['pilot', 'free'].includes(data.mode) ? data.mode : 'free',
     participants: Array.isArray(data.participants) ? data.participants : null,
     groupChat: !!data.groupChat,

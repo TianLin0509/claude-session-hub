@@ -12,7 +12,7 @@
 //     （TUI 屏幕真稳定，OAuth/初始化已完成）
 //   - 一旦判 true → 加入 onceTrue Set 永久锁，防 PTY 心跳/光标重绘触发回退
 //
-// 详见 docs/superpowers/specs/2026-05-03-group-chat-3claude-debug-design.md §3 Bug #1-#3
+// Historical 3-Claude debug design notes were removed during slimdown.
 
 // kind → marker 字符串数组。空数组表示 "无 marker，仅靠 buffer 静默兜底"。
 const MARKERS = {

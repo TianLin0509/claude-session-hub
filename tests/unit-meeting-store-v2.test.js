@@ -20,8 +20,7 @@ const meetingStore = require('../core/meeting-store');
     meetingStore.saveMeetingFile('m1', {
       id: 'm1',
       _timeline: [{ idx: 0, sid: 'user', text: 'hi', ts: 1 }], _cursors: { sub1: 0 }, _nextIdx: 1,
-      slotSpecs: [{ index: 0, kind: 'claude', model: 'opus' }],
-      pilotSlot: 0, dispatchMode: 'pilot', mode: 'free', participants: [0, 1, 2],
+      slotSpecs: [{ index: 0, kind: 'claude', model: 'opus' }], mode: 'free', participants: [0, 1, 2],
       title: '通用 #1', scene: 'general', createdAt: 1234567890,
       subSessions: ['sub1', 'sub2'], layout: 'focus', focusedSub: 'sub1',
       syncContext: false, sendTarget: 'all', pinned: true,
@@ -48,7 +47,7 @@ const meetingStore = require('../core/meeting-store');
     fs.writeFileSync(v1Path, JSON.stringify({
       schemaVersion: 1, id: 'm-old',
       _timeline: [], _cursors: {}, _nextIdx: 0,
-      slotSpecs: null, pilotSlot: null, dispatchMode: 'all', mode: 'pilot', participants: null,
+      slotSpecs: null, mode: 'pilot', participants: null,
       savedAt: 1000,
     }));
     const loaded = meetingStore.loadMeetingFile('m-old');
@@ -90,7 +89,6 @@ const meetingStore = require('../core/meeting-store');
     meetingStore.saveMeetingFile('m3', { id: 'm3', _timeline: [], _cursors: {}, _nextIdx: 0 });
     const loaded = meetingStore.loadMeetingFile('m3');
     assert.strictEqual(loaded.mode, 'free', 'mode 默认 free');
-    assert.strictEqual(loaded.dispatchMode, 'all', 'dispatchMode 默认 all');
     assert.strictEqual(loaded.participants, null, 'participants 默认 null');
     console.log('PASS V5 schema defaults');
   }

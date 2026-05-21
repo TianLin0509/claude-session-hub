@@ -15,7 +15,6 @@
 //   Gemini:  JSONL 新增 type:"gemini" 行且 tokens.total != null（非流式中间态）
 //
 // Fallback：若任一 Tap 未捕获（hook 未触发 / 文件路径漂移 / CLI 版本不兼容），
-// summary-engine.js 会回退到原 marker 扫描。Tap 不抛错，不崩 Hub。
 
 const { EventEmitter } = require('events');
 const { isClaudeFamily } = require('./ai-kinds.js');
@@ -25,6 +24,7 @@ const path = require('path');
 const os = require('os');
 const readline = require('readline');
 const { parseClaudeTranscriptToTurns } = require('./claude-transcript-parser');
+const codexAppRegistry = require('./codex-app-registry.js');
 
 function codexTextFromContent(content) {
   if (typeof content === 'string') return content;
@@ -1032,6 +1032,61 @@ class CodexTap extends EventEmitter {
   }
 }
 
+class CodexAppTap extends EventEmitter {
+  constructor() {
+    super();
+    this._bound = new Map();
+  }
+
+  registerSession(hubSessionId) {
+    const client = codexAppRegistry.getClient(hubSessionId);
+    if (!client || this._bound.has(hubSessionId)) return;
+    const onTurnComplete = (ev) => this.emit('turn-complete', ev);
+    const onSessionBound = (ev) => this.emit('session-bound', ev);
+    const onPromptSubmitted = (ev) => this.emit('prompt-submitted', ev);
+    client.on('turn-complete', onTurnComplete);
+    client.on('session-bound', onSessionBound);
+    client.on('prompt-submitted', onPromptSubmitted);
+    this._bound.set(hubSessionId, { client, onTurnComplete, onSessionBound, onPromptSubmitted });
+  }
+
+  hasSession(hubSessionId) {
+    return this._bound.has(hubSessionId) || codexAppRegistry.hasClient(hubSessionId);
+  }
+
+  unregisterSession(hubSessionId) {
+    const entry = this._bound.get(hubSessionId);
+    if (!entry) return;
+    entry.client.removeListener('turn-complete', entry.onTurnComplete);
+    entry.client.removeListener('session-bound', entry.onSessionBound);
+    entry.client.removeListener('prompt-submitted', entry.onPromptSubmitted);
+    this._bound.delete(hubSessionId);
+  }
+
+  getLastAssistantText(hubSessionId) {
+    const client = this._bound.get(hubSessionId)?.client || codexAppRegistry.getClient(hubSessionId);
+    return client ? client.getLastAssistantText() : null;
+  }
+
+  getStreamingText(hubSessionId) {
+    const client = this._bound.get(hubSessionId)?.client || codexAppRegistry.getClient(hubSessionId);
+    return client ? client.getStreamingText() : null;
+  }
+
+  clearStreamingBuf(hubSessionId) {
+    const client = this._bound.get(hubSessionId)?.client || codexAppRegistry.getClient(hubSessionId);
+    if (client) client.clearStreamingBuf();
+  }
+
+  async extractLatestTurn(hubSessionId) {
+    const text = this.getLastAssistantText(hubSessionId);
+    if (!text || !String(text).trim()) {
+      return { text: '', extractMode: 'no_codex_app_text', source: null };
+    }
+    return { text: String(text).trim(), extractMode: 'final_answer', source: 'codex_app_server' };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // GeminiTap — 扫 ~/.gemini/tmp/*/.project_root 反查 cwd → 匹配 chats/ 目录，
 // fs.watch 等待 session-*.jsonl 创建，tail 到 type:"gemini" 且 tokens 完整触发
@@ -1458,8 +1513,9 @@ class TranscriptTap extends EventEmitter {
     super();
     this._claude = new ClaudeTap();
     this._codex = new CodexTap();
+    this._codexApp = new CodexAppTap();
     this._gemini = new GeminiTap();
-    for (const b of [this._claude, this._codex, this._gemini]) {
+    for (const b of [this._claude, this._codex, this._codexApp, this._gemini]) {
       b.on('turn-complete', (ev) => this.emit('turn-complete', ev));
       b.on('session-bound', (ev) => this.emit('session-bound', ev));
       b.on('prompt-submitted', (ev) => this.emit('prompt-submitted', ev));
@@ -1470,6 +1526,7 @@ class TranscriptTap extends EventEmitter {
     return (
       this._claude.hasSession(hubSessionId) ||
       this._codex.hasSession(hubSessionId) ||
+      this._codexApp.hasSession(hubSessionId) ||
       this._gemini.hasSession(hubSessionId)
     );
   }
@@ -1493,7 +1550,7 @@ class TranscriptTap extends EventEmitter {
   }
 
   unregisterSession(hubSessionId) {
-    for (const b of [this._claude, this._codex, this._gemini]) {
+    for (const b of [this._claude, this._codex, this._codexApp, this._gemini]) {
       try { b.unregisterSession(hubSessionId); } catch {}
     }
   }
@@ -1502,6 +1559,7 @@ class TranscriptTap extends EventEmitter {
     return (
       this._claude.getLastAssistantText(hubSessionId) ||
       this._codex.getLastAssistantText(hubSessionId) ||
+      this._codexApp.getLastAssistantText(hubSessionId) ||
       this._gemini.getLastAssistantText(hubSessionId) ||
       null
     );
@@ -1514,13 +1572,14 @@ class TranscriptTap extends EventEmitter {
     return (
       this._claude.getStreamingText(hubSessionId) ||
       this._gemini.getStreamingText(hubSessionId) ||
+      this._codexApp.getStreamingText(hubSessionId) ||
       (this._codex.getStreamingText ? this._codex.getStreamingText(hubSessionId) : null) ||
       null
     );
   }
 
   clearStreamingBuf(hubSessionId) {
-    for (const b of [this._claude, this._gemini, this._codex]) {
+    for (const b of [this._claude, this._gemini, this._codexApp, this._codex]) {
       try {
         if (typeof b.clearStreamingBuf === 'function') b.clearStreamingBuf(hubSessionId);
       } catch {}
@@ -1557,6 +1616,9 @@ class TranscriptTap extends EventEmitter {
       // （承载 'no_task_complete_yet' / 'no_rollout_bound'，让 UI 区分原因，不再笼统 no_content）
       if (r && r.extractMode) return r;
       return null;
+    }
+    if (this._codexApp.hasSession(hubSessionId)) {
+      try { return await this._codexApp.extractLatestTurn(hubSessionId, sincePromptTs); } catch { return null; }
     }
     // 2026-05-04 codex equiv：codex 4 态契约——即便 text='' 也要把 extractMode 透传给 IPC
     // （承载 'no_task_complete_yet' / 'no_rollout_bound'，让 UI 区分原因，不再笼统 no_content）
@@ -1603,7 +1665,8 @@ class TranscriptTap extends EventEmitter {
     if (isClaudeFamily(kind)) {
       return this._claude;
     }
-    if (kind === 'codex' || kind === 'codex-resume') return this._codex;
+    if (kind === 'codex' || kind === 'codex-resume' || kind === 'codex-web' || kind === 'codex-web-resume') return this._codex;
+    if (kind === 'codex-app') return this._codexApp;
     if (kind === 'gemini') return this._gemini;
     return null;
   }
@@ -1646,6 +1709,7 @@ function extractGeminiProjectHashFromDir(projectDir) {
 module.exports = {
   TranscriptTap,
   CodexTap,           // 2026-05-04 codex equiv：单测注入 sessionsRoot 直测 4 态 extractMode
+  CodexAppTap,
   GeminiTap,          // 2026-05-04 gemini equiv：单测注入 tmpRoot 直测 _bound 字段
   JsonlTail,
   readLastAssistantMessageFromClaudeTranscript,

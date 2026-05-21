@@ -3,8 +3,7 @@
 //   控制文件：<dataDir>/control/<pid>.json，含 hookPort/cdpPort/token/dataDir/pid/startedAt
 //   救援脚本（tools/hub-escape.ps1）通过这个文件发现目标 Hub 的端口和 token
 //
-// Spec: docs/superpowers/specs/2026-05-16-hub-escape-backdoors-design.md
-// Plan: docs/superpowers/plans/2026-05-16-hub-escape-backdoors.md
+// Hub control file used by local escape/recovery helpers.
 
 const fs = require('fs');
 const path = require('path');

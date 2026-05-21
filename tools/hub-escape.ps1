@@ -1,4 +1,4 @@
-# tools/hub-escape.ps1
+﻿# tools/hub-escape.ps1
 # 一键 Hub 防卡死救援脚本 — 道雪 2026-05-16
 #
 # 用法：

@@ -46,16 +46,8 @@ except Exception:
     pass
 
 try:
-    mobile_port = os.environ.get('CLAUDE_HUB_MOBILE_PORT', '3470')
     if event == 'tool-use':
-        # tool-use events route to the mobile-server (for permission-card
-        # preview on phone). Mobile server enforces loopback-only for this route.
-        url = f'http://127.0.0.1:{mobile_port}/api/hook/tool-use'
-        body = {'sessionId': sid}
-        if tool_name:
-            body['toolName'] = tool_name
-        if tool_input is not None:
-            body['toolInput'] = tool_input
+        raise SystemExit(0)
     else:
         url = f'http://127.0.0.1:{port}/api/hook/{event}'
         body = {'sessionId': sid, 'token': token}

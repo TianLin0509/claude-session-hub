@@ -133,15 +133,6 @@ function getConfig() {
     packySessionCookie: getConfigValue('packySessionCookie', 'PACKY_SESSION_COOKIE', 'providers.packy.session_cookie', ''),
     uiToolFoldThreshold: parseInt(getConfigValue('uiToolFoldThreshold', 'HUB_UI_TOOL_FOLD', 'ui.tool_fold_threshold', DEFAULTS.ui_tool_fold_threshold), 10),
     uiCodeFoldThreshold: parseInt(getConfigValue('uiCodeFoldThreshold', 'HUB_UI_CODE_FOLD', 'ui.code_fold_threshold', DEFAULTS.ui_code_fold_threshold), 10),
-    feishuCodex: {
-      token: getConfigValue('feishuCodexToken', 'HUB_FEISHU_CODEX_TOKEN', 'channels.feishuCodex.token', ''),
-      appId: getConfigValue('feishuAppId', 'HUB_FEISHU_APP_ID', 'channels.feishuCodex.app_id', ''),
-      appSecret: getConfigValue('feishuAppSecret', 'HUB_FEISHU_APP_SECRET', 'channels.feishuCodex.app_secret', ''),
-      domain: getConfigValue('feishuDomain', 'HUB_FEISHU_DOMAIN', 'channels.feishuCodex.domain', 'feishu'),
-      defaultCwd: getConfigValue('feishuCodexCwd', 'HUB_FEISHU_CODEX_CWD', 'channels.feishuCodex.cwd', ''),
-      replyInThread: getConfigValue('feishuReplyInThread', 'HUB_FEISHU_REPLY_IN_THREAD', 'channels.feishuCodex.reply_in_thread', '1') !== '0',
-      ws: getConfigValue('feishuWs', 'HUB_FEISHU_WS', 'channels.feishuCodex.ws', '1') !== '0',
-    },
   };
 
   return _cachedConfig;

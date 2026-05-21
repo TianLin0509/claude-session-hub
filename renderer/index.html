@@ -26,8 +26,11 @@
           <div class="new-session-menu" id="new-session-menu" style="display:none">
             <div class="menu-group-label">AI CLI</div>
             <button class="new-session-option" data-kind="claude"><span class="ai-logo logo-claude"></span>Claude Code</button>
+            <button class="new-session-option" data-kind="claude-web"><span class="ai-logo logo-claude"></span>Claude Web<span class="web-badge-inline">WEB</span></button>
             <button class="new-session-option" data-kind="gemini"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
             <button class="new-session-option" data-kind="codex"><span class="ai-logo logo-codex"></span>Codex CLI</button>
+            <button class="new-session-option" data-kind="codex-web"><span class="ai-logo logo-codex"></span>Codex Web<span class="web-badge-inline">WEB</span></button>
+            <button class="new-session-option" data-kind="codex-app"><span class="ai-logo logo-codex"></span>Codex App</button>
             <button class="new-session-option" data-kind="deepseek"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
             <button class="new-session-option" data-kind="glm"><span class="ai-logo logo-glm"></span>GLM</button>
             <button class="new-session-option" data-kind="gpt"><span class="ai-logo logo-gpt"></span>GPT 5.4 high</button>
@@ -43,8 +46,10 @@
           <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg></button>
           <div class="resume-picker-menu" id="resume-picker-menu" style="display:none">
             <button class="resume-option" data-kind="claude-resume"><span class="ai-logo logo-claude"></span>Claude<span class="hint">PTY picker</span></button>
+            <button class="resume-option" data-kind="claude-web-resume"><span class="ai-logo logo-claude"></span>Claude Web<span class="web-badge-inline">WEB</span><span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="gemini-resume"><span class="ai-logo logo-gemini"></span>Gemini<span class="hint">最近一次</span></button>
             <button class="resume-option" data-kind="codex-resume"><span class="ai-logo logo-codex"></span>Codex<span class="hint">PTY picker</span></button>
+            <button class="resume-option" data-kind="codex-web-resume"><span class="ai-logo logo-codex"></span>Codex Web<span class="web-badge-inline">WEB</span><span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="deepseek-resume"><span class="ai-logo logo-deepseek"></span>DeepSeek<span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="glm-resume"><span class="ai-logo logo-glm"></span>GLM<span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="gpt-resume"><span class="ai-logo logo-gpt"></span>GPT 5.4 high<span class="hint">PTY picker</span></button>
@@ -231,7 +236,6 @@
   <script src="path-link.js"></script>
   <script src="renderer.js"></script>
   <script src="meeting-room.js"></script>
-  <script src="meeting-summary-modal.js"></script>
   <script src="meeting-create-modal.js"></script>
 
   <div id="config-modal" class="config-modal-overlay hidden">
@@ -478,34 +482,6 @@
         </div>
         <div class="config-save-msg" id="config-save-msg" style="display:none"></div>
       </div>
-    </div>
-  </div>
-
-  <div id="pair-modal" class="pair-modal-overlay hidden">
-    <div class="pair-modal-content">
-      <button class="pair-modal-close" id="pair-close">×</button>
-      <h2>配对手机 · Pair Phone</h2>
-      <div class="pair-layout">
-        <div class="pair-left">
-          <h3>1. 地址清单</h3>
-          <p class="hint">默认填入内网 IP。添加 Tailscale / 公网域名以便在外网也能连。</p>
-          <ul id="pair-addr-list"></ul>
-          <div class="pair-addr-add">
-            <input id="pair-addr-input" placeholder="如 100.64.0.12:3470 或 hub.example.com" />
-            <button id="pair-addr-add">添加</button>
-          </div>
-          <label>设备名 <input id="pair-device-name" value="华为 Mate X6" /></label>
-          <button id="pair-generate" class="primary">生成配对二维码</button>
-        </div>
-        <div class="pair-right">
-          <h3>2. 用手机扫码</h3>
-          <div id="pair-qr-area"><p class="hint">点左侧"生成"按钮</p></div>
-          <p class="hint">配对只需一次，之后手机永久可用（直到你在下方撤销）</p>
-        </div>
-      </div>
-      <hr />
-      <h3>已配对设备</h3>
-      <ul id="pair-devices"></ul>
     </div>
   </div>
 </body>

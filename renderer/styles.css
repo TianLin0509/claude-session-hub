@@ -1302,6 +1302,39 @@ body.theme-light .prompt-line-marker {
   font-size: 11px;
 }
 
+/* --- Claude Web 模式角标 ---
+   在新建/resume 下拉菜单里，紧贴 "Claude Web" 文本右侧的小型 WEB 标识。
+   卡片视图角标使用同一 class，靠 .session-card-web-badge 容器定位（见下文）。 */
+.web-badge-inline {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  background: var(--accent, #0071e3);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border-radius: 3px;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
+/* 卡片视图右上角 WEB 角标——绝对定位，覆盖在 Claude 卡片右上角 */
+.session-card-web-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 6px;
+  background: var(--accent, #0071e3);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border-radius: 4px;
+  z-index: 2;
+  pointer-events: none;
+}
+
 .new-session-divider {
   height: 1px;
   background: var(--border);

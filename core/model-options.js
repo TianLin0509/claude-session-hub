@@ -2,7 +2,7 @@
 // Per-CLI model lists — single source of truth for the single-session top-bar
 // model picker (renderer.js) and round-table create modal (meeting-create-modal.js).
 //
-// Spec: docs/superpowers/specs/2026-05-01-per-cli-model-picker-design.md §6.1
+// Model picker options used by the renderer config modal.
 //
 // `canSwitchInline(kind)`: claude CLI 接受 `/model <id>\r` 原地切换；deepseek / glm /
 // gpt / kimi / qwen 都是 claude CLI + ANTHROPIC_BASE_URL 中转，同样走该路径。codex /

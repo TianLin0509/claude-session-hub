@@ -29,7 +29,7 @@ const workerSrc = [
   "    stateStore.save({",
   "      version: 1, cleanShutdown: false,",
   "      sessions: [{ hubId, kind: 'claude', title: 'T-' + workerId + '-' + i, updatedAt: Date.now() }],",
-  "      meetings: [], immersiveByMeeting: {}, pilotSlotByMeeting: {}, dispatchModeByMeeting: {},",
+  "      meetings: [], immersiveByMeeting: {},",
   "    }, { sync: true });",
   "    await new Promise(r => setImmediate(r));",
   "  }",

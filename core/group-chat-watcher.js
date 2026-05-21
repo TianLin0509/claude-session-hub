@@ -6,7 +6,7 @@
 //
 // 不抽：_gcWaitTurnComplete + _activeWatchers Map + dispatchGroupChatTurn。
 //   它们闭包依赖太深（meetingManager/scenes/orchestrator/rtTimeline/rtInjection/
-//   sendToRenderer/_computeDispatchSpec...），一次性抽风险高，
+//   sendToRenderer...），一次性抽风险高，
 //   留下次专项做（backlog）。
 //
 // 依赖注入（init）：sessionManager / cliReadyDetector

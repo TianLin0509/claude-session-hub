@@ -799,7 +799,11 @@ function toggleMeetingExpand(meetingId) {
 // classes already defined in styles.css for the toolbar dropdown.
 //   - 'powershell' 不是 AI kind 但侧边栏需展示 logo，在 ALL_AI_KINDS 之外单独保留。
 function _aiLogoHtml(kind) {
-  const k = String(kind || '').replace(/-resume$/, '');
+  let k = String(kind || '').replace(/-resume$/, '');
+  // Claude Web 是 Claude 的风格变体，复用同一 logo（卡片视图另叠加 WEB 角标）
+  if (k === 'claude-web') k = 'claude';
+  if (k === 'codex-web') k = 'codex';
+  if (k === 'codex-app') return `<span class="ai-logo logo-codex" aria-hidden="true"></span>`;
   if (k !== 'powershell' && !isAiKind(k)) return '';
   return `<span class="ai-logo logo-${k}" aria-hidden="true"></span>`;
 }
@@ -975,9 +979,14 @@ function renderSessionList() {
           ? `<span class="unread-badge" title="${escapeHtml(s.lastOutputPreview || 'AI 有新消息')}">⏸ 等你</span>`
           : ''));
     const footerInner = [statusBadge, modelBadge, ctxBadge, burnBadge].filter(Boolean).join('');
+    // Claude Web 模式角标：在标题右侧、时间左边附一个小 WEB 标识
+    // 复用 .web-badge-inline 样式（在下拉菜单内已使用相同视觉）
+    const webBadge = (s.kind === 'claude-web' || s.kind === 'claude-web-resume' || s.kind === 'codex-web' || s.kind === 'codex-web-resume')
+      ? '<span class="web-badge-inline" title="Web 模式 — 风格对齐网页端体验">WEB</span>'
+      : '';
     div.innerHTML = `
       <div class="session-item-header">
-        <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status ${s.status}"></span>${escapeHtml(s.title)}</span>
+        <span class="session-title">${s.pinned ? '<span class="pin-icon" title="Pinned">📌</span>' : ''}<span class="session-status ${s.status}"></span>${escapeHtml(s.title)}${webBadge}</span>
         <span class="session-header-right">
           <span class="session-time">${formatTime(s.lastMessageTime)}</span>
         </span>
@@ -1973,7 +1982,11 @@ function aiLogoSrc(kind) {
   // Spec 3 · W6 fix：claude-resume / gemini-resume / codex-resume / deepseek-resume / 等
   // 都共享对应 base kind 的 logo（之前 -resume 后缀漏映射 → 字母 fallback "CL"）。
   const known = ['claude','codex','gemini','deepseek','glm','gpt','kimi','qwen'];
-  const k = (kind || '').toLowerCase().replace(/-resume$/, '');
+  let k = (kind || '').toLowerCase().replace(/-resume$/, '');
+  // Claude Web 复用 Claude logo（kind === 'claude-web' / 'claude-web-resume' → 都映射到 claude）
+  if (k === 'claude-web') k = 'claude';
+  if (k === 'codex-web') k = 'codex';
+  if (k === 'codex-app') return 'assets/ai-logos/codex.svg';
   if (known.includes(k)) return `assets/ai-logos/${k}.svg`;
   return null;
 }
@@ -2549,7 +2562,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const kind = session ? (session.kind || null) : null;
 
   // 4. kind gate — spec 2 only supports Claude family; show placeholder for others
-  const supportsCardHistory = kind && (isClaudeFamily(kind) || kind === 'codex' || kind === 'codex-resume');
+  const supportsCardHistory = kind && (isClaudeFamily(kind) || isCodexKind(kind));
   if (kind && !supportsCardHistory) {
     showPlaceholder(
       '卡片视图当前仅支持 Claude session — '
@@ -2616,7 +2629,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       txt = ccSid
         ? `会话尚未产生历史（transcript 文件可能已被移走或删除：${ccSid.slice(0, 8)}…）`
         : '此会话从未发送过消息，无对话历史可显示';
-    } else if ((kind === 'codex' || kind === 'codex-resume') && ipcError === 'codex rollout not found') {
+    } else if (isCodexKind(kind) && ipcError === 'codex rollout not found') {
       const attempt = Number.isInteger(opts.codexRetryAttempt) ? opts.codexRetryAttempt : 0;
       if (attempt < 6) {
         scheduleCodexHistoryRetry(sessionId, attempt);
@@ -2984,7 +2997,7 @@ const _CODEX_CARD_SUBMIT_PENDING_MS = 15 * 1000;
 const _CODEX_CARD_WORK_MAX_MS = 45 * 60 * 1000;
 
 function isCodexKind(kind) {
-  return kind === 'codex' || kind === 'codex-resume';
+  return kind === 'codex' || kind === 'codex-resume' || kind === 'codex-web' || kind === 'codex-web-resume' || kind === 'codex-app';
 }
 
 function markCodexCardWorking(sessionId, source = 'prompt') {
@@ -4918,7 +4931,7 @@ function updateActiveModelBadge() {
 }
 
 // ---- Model picker dropdown ----
-// Per-kind \u6e05\u5355\u5355\u4e00\u771f\u7406\u6e90\u5728 core/model-options.js\uff08spec docs/superpowers/specs/2026-05-01-per-cli-model-picker-design.md\uff09\u3002
+// Per-kind model option source of truth lives in core/model-options.js.
 // claude / deepseek / glm / gpt / kimi / qwen \u90fd\u8dd1\u5728 claude CLI \u4e0a\uff08\u76f4\u8fde\u6216 ANTHROPIC_BASE_URL \u4e2d\u8f6c\uff09\uff0c
 // \u8d70\u539f\u5730 `/model <id>\r` \u5207\u6362\u3002codex / gemini \u7684 PTY \u4e0d\u8bc6\u522b inline `/model`\uff08spec \u00a73.1 \u5df2\u8bba\u8bc1\uff09\uff0c
 // picker \u6539\u4e3a\u663e\u793a\u53ea\u8bfb\u6e05\u5355 + \u63d0\u793a"\u91cd\u65b0\u5efa\u7acb session"\u2014\u2014\u907f\u514d\u53d1\u9001\u65e0\u6548\u5207\u6362\u8ba9\u7528\u6237\u8bef\u4ee5\u4e3a\u5207\u4e86\u3002
@@ -5290,7 +5303,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   const { hubSessionId, text, completedAt, meetingId, kind } = payload || {};
   if (meetingId) return;
   if (!hubSessionId) return;
-  if (kind !== 'codex' && kind !== 'codex-resume') return;
+  if (!isCodexKind(kind)) return;
 
   const session = sessions.get(hubSessionId);
   if (!session) return;
@@ -5326,7 +5339,7 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
   const { hubSessionId, text, submittedAt, meetingId, kind } = payload || {};
   if (meetingId) return;
   if (!hubSessionId) return;
-  if (kind !== 'codex' && kind !== 'codex-resume') return;
+  if (!isCodexKind(kind)) return;
 
   const session = sessions.get(hubSessionId);
   if (!session) return;
@@ -6356,12 +6369,13 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
   if (ev.ccSessionId) s.ccSessionId = ev.ccSessionId;
   if (ev.transcriptPath) s.transcriptPath = ev.transcriptPath;
   if (ev.codexSid) s.codexSid = ev.codexSid;
+  if (ev.codexAppThreadId) s.codexAppThreadId = ev.codexAppThreadId;
   if (ev.codexSessionsRoot) s.codexSessionsRoot = ev.codexSessionsRoot;
   if (ev.codexAllowMtimeFallback) s.codexAllowMtimeFallback = true;
   if (ev.geminiChatId) s.geminiChatId = ev.geminiChatId;
   if (ev.geminiProjectHash) s.geminiProjectHash = ev.geminiProjectHash;
   if (ev.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
-  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot) {
+  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexAppThreadId || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot) {
     schedulePersist();
   }
   if (ev.hubSessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
@@ -6432,6 +6446,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!local.userRenamed && session.title) local.title = session.title;
   if (session.ccSessionId) local.ccSessionId = session.ccSessionId;
   if (session.transcriptPath) local.transcriptPath = session.transcriptPath;
+  if (session.codexAppThreadId) local.codexAppThreadId = session.codexAppThreadId;
   if (session.codexSessionsRoot) local.codexSessionsRoot = session.codexSessionsRoot;
   if (session.codexAllowMtimeFallback) local.codexAllowMtimeFallback = true;
   if (session.userRenamed) local.userRenamed = true;
@@ -6453,7 +6468,7 @@ function schedulePersist() {
     const list = [];
     for (const s of sessions.values()) {
       // 持久化白名单：AI 群聊会议 + 所有 AI kind（含 -resume 变体）。新增 AI 由 ai-kinds.js 单一真理源覆盖。
-      if (!s.meetingId && !isAiKind(s.kind) && s.kind !== 'claude-resume' && !(typeof s.kind === 'string' && s.kind.endsWith('-resume'))) continue;
+      if (!s.meetingId && !isAiKind(s.kind) && s.kind !== 'codex-app' && s.kind !== 'claude-resume' && !(typeof s.kind === 'string' && s.kind.endsWith('-resume'))) continue;
       list.push({
         hubId: s.id,
         title: s.title,
@@ -6474,6 +6489,7 @@ function schedulePersist() {
         autoTitleGenerated: !!s.autoTitleGenerated,
         // T10: include resume-meta in persist payload so main.js merge has the latest
         codexSid: s.codexSid || null,
+        codexAppThreadId: s.codexAppThreadId || null,
         codexSessionsRoot: s.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!s.codexAllowMtimeFallback,
         codexProfile: s.codexProfile || null,
@@ -6483,8 +6499,7 @@ function schedulePersist() {
         geminiProjectRoot: s.geminiProjectRoot || null,
       });
     }
-    // 2026-05-05 道雪：旧版只挑 11 字段，scene/mode/pilotSlot/dispatchMode/participants/
-    //   slotSpecs/covenantText 全被剥掉 → 写残 state.json → 重启后 restoreMeeting fallback
+        //   slotSpecs/covenantText 全被剥掉 → 写残 state.json → 重启后 restoreMeeting fallback
     //   scene='general'，所有 AI 群聊退化为通用场景（投研 LinDangAgent MCP 不挂入）。
     //   修：补全所有 createMeeting 写入 + setMeetingContext 维护的持久化字段。
     //   main.js persist-sessions handler 端加了 fallback 兜底，但渲染端先把字段补全是第一道防线。
@@ -6497,8 +6512,6 @@ function schedulePersist() {
       userRenamed: !!m.userRenamed,
       autoTitlePending: !!m.autoTitlePending,
       autoTitleGenerated: !!m.autoTitleGenerated,
-      pilotSlot: (typeof m.pilotSlot === 'number') ? m.pilotSlot : null,
-      dispatchMode: m.dispatchMode || 'all',
       participants: Array.isArray(m.participants) ? m.participants : null,
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs : null,
       covenantText: m.covenantText || '',
@@ -6591,6 +6604,7 @@ async function resumeDormantSession(hubId) {
         autoTitleGenerated: !!meta.autoTitleGenerated,
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
+        codexAppThreadId: meta.codexAppThreadId || null,
         codexSessionsRoot: meta.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!meta.codexAllowMtimeFallback,
         codexProfile: meta.codexProfile || null,
@@ -6693,125 +6707,3 @@ ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
   }
   renderSessionList();
 });
-
-// --- Mobile Pair Dialog ---
-// This file is loaded as a synchronous <script> in <body> BEFORE the
-// #pair-modal element is parsed. Guard with DOMContentLoaded so all
-// IDs are present when we wire up listeners.
-function initMobilePair() {
-  const modal = document.getElementById('pair-modal');
-  if (!modal) return; // pair UI not present (dev fallback)
-
-  const btn = document.getElementById('btn-mobile');
-  const closeBtn = document.getElementById('pair-close');
-  const addrList = document.getElementById('pair-addr-list');
-  const addrInput = document.getElementById('pair-addr-input');
-  const addrAddBtn = document.getElementById('pair-addr-add');
-  const deviceNameInput = document.getElementById('pair-device-name');
-  const generateBtn = document.getElementById('pair-generate');
-  const qrArea = document.getElementById('pair-qr-area');
-  const devicesList = document.getElementById('pair-devices');
-
-  let addresses = [];
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  }
-
-  function renderAddrs() {
-    addrList.innerHTML = '';
-    addresses.forEach((a, i) => {
-      const li = document.createElement('li');
-      li.innerHTML = `<span>${escapeHtml(a)}</span><button aria-label="删除">×</button>`;
-      li.querySelector('button').addEventListener('click', () => {
-        addresses.splice(i, 1);
-        renderAddrs();
-      });
-      addrList.appendChild(li);
-    });
-  }
-
-  async function refreshDevices() {
-    const list = await ipcRenderer.invoke('mobile:list-devices');
-    devicesList.innerHTML = '';
-    if (!list.length) {
-      const li = document.createElement('li');
-      li.className = 'hint';
-      li.textContent = '暂无已配对设备';
-      devicesList.appendChild(li);
-      return;
-    }
-    for (const d of list) {
-      const li = document.createElement('li');
-      const seen = d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : '—';
-      li.innerHTML = `
-        <div class="device-info">
-          <span class="device-name">${escapeHtml(d.name)}</span>
-          <span class="device-meta">最近连接 ${escapeHtml(seen)} · IP ${escapeHtml(d.lastIp || '—')}</span>
-        </div>
-        <button class="revoke-btn" data-id="${escapeHtml(d.deviceId)}">撤销</button>
-      `;
-      li.querySelector('.revoke-btn').addEventListener('click', async () => {
-        if (!confirm(`确定撤销设备 "${d.name}"？撤销后该手机将无法连接`)) return;
-        await ipcRenderer.invoke('mobile:revoke-device', d.deviceId);
-        refreshDevices();
-      });
-      devicesList.appendChild(li);
-    }
-  }
-
-  async function openModal() {
-    modal.classList.remove('hidden');
-    // Default addresses = LAN IPs + actual mobile port
-    const [ips, port] = await Promise.all([
-      ipcRenderer.invoke('mobile:get-ips'),
-      ipcRenderer.invoke('mobile:get-port'),
-    ]);
-    addresses = ips.map(i => `${i.address}:${port}`);
-    renderAddrs();
-    qrArea.innerHTML = '<p class="hint">点左侧"生成"按钮</p>';
-    refreshDevices();
-  }
-
-  function closeModal() { modal.classList.add('hidden'); }
-
-  btn && btn.addEventListener('click', openModal);
-  closeBtn.addEventListener('click', closeModal);
-  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeModal();
-  });
-
-  addrAddBtn.addEventListener('click', () => {
-    const v = addrInput.value.trim();
-    if (v && !addresses.includes(v)) {
-      addresses.push(v);
-      addrInput.value = '';
-      renderAddrs();
-    }
-  });
-  addrInput.addEventListener('keydown', (e) => { if (e.isComposing || e.keyCode === 229) return; if (e.key === 'Enter') addrAddBtn.click(); });
-
-  generateBtn.addEventListener('click', async () => {
-    if (!addresses.length) { alert('至少填一个地址'); return; }
-    generateBtn.disabled = true;
-    try {
-      const { qrDataUrl, pairUrl } = await ipcRenderer.invoke('mobile:create-pairing', {
-        addresses,
-        deviceName: deviceNameInput.value.trim() || 'Phone',
-      });
-      qrArea.innerHTML = `<img src="${qrDataUrl}" alt="Pair QR" /><p>${escapeHtml(pairUrl)}</p>`;
-    } catch (e) {
-      qrArea.innerHTML = `<p style="color:#e24a4a">生成失败: ${escapeHtml(e.message || String(e))}</p>`;
-    } finally {
-      generateBtn.disabled = false;
-    }
-  });
-}
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initMobilePair);
-} else {
-  initMobilePair();
-}
-

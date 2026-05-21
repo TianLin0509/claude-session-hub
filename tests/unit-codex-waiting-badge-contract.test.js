@@ -10,8 +10,8 @@ assert.ok(
 );
 
 assert.ok(
-  /kind\s*!==\s*['"]codex['"][\s\S]{0,80}kind\s*!==\s*['"]codex-resume['"]/.test(rendererSrc),
-  'transcript completion handler must be scoped to Codex and Codex resume sessions',
+  /if\s*\(\s*!isCodexKind\(kind\)\s*\)\s*return/.test(rendererSrc),
+  'transcript completion handler must be scoped to Codex CLI variants',
 );
 
 assert.ok(

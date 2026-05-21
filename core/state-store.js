@@ -45,8 +45,6 @@ function defaultState() {
     sessions: [],
     meetings: [],
     immersiveByMeeting: {},
-    pilotSlotByMeeting: {},
-    dispatchModeByMeeting: {},
   };
 }
 
@@ -80,8 +78,6 @@ function _normalizeState(parsed) {
     if (typeof m.updatedAt !== 'number') m.updatedAt = 0;
   }
   if (!parsed.immersiveByMeeting || typeof parsed.immersiveByMeeting !== 'object') parsed.immersiveByMeeting = {};
-  if (!parsed.pilotSlotByMeeting || typeof parsed.pilotSlotByMeeting !== 'object') parsed.pilotSlotByMeeting = {};
-  if (!parsed.dispatchModeByMeeting || typeof parsed.dispatchModeByMeeting !== 'object') parsed.dispatchModeByMeeting = {};
   return parsed;
 }
 
@@ -97,7 +93,7 @@ function load() {
 //   返回 healed state.
 function loadAndSelfHeal({ sessionStore, meetingStore } = {}) {
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  const fd = acquireLock(LOCK_FILE);
+  const fd = acquireLock(LOCK_FILE, { retries: 300, retryDelayMs: 10 });
   // 2026-05-07 多方审查 fix：原版即使 fd==null 仍 read+merge+write，
   //   两 Hub 同时 boot 时第二个会盖掉第一个还没完成的写。
   // 改为：拿不到锁时只读不写，返回当前盘上 state（仍执行 self-heal 合并扫描，
@@ -200,8 +196,6 @@ function mergeState(diskState, memState, removed = { sessions: [], meetings: [] 
     sessions: [...sessByHubId.values()],
     meetings: [...meetByMtgId.values()],
     immersiveByMeeting: { ...(diskState.immersiveByMeeting || {}), ...(memState.immersiveByMeeting || {}) },
-    pilotSlotByMeeting: { ...(diskState.pilotSlotByMeeting || {}), ...(memState.pilotSlotByMeeting || {}) },
-    dispatchModeByMeeting: { ...(diskState.dispatchModeByMeeting || {}), ...(memState.dispatchModeByMeeting || {}) },
   };
 }
 
@@ -221,7 +215,7 @@ function _saveImpl(state) {
     for (const m of state.meetings) if (typeof m.updatedAt !== 'number') m.updatedAt = now;
   }
 
-  const fd = acquireLock(LOCK_FILE);
+  const fd = acquireLock(LOCK_FILE, { retries: 300, retryDelayMs: 10 });
   if (fd == null) {
     // 2026-05-07 多方审查 fix：原版锁拿不到直接 _writeMergedToDisk(state) 全量覆盖，
     //   绕过 mergeState/disk-reread/removed tombstone。多 Hub 同时拿不到锁时双方都

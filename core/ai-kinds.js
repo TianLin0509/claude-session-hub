@@ -21,6 +21,7 @@
 //   不含 'powershell' 等非 AI 类型。
 // ---------------------------------------------------------------------------
 const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen'];
+const WEB_STYLE_KINDS = ['claude-web', 'codex-web'];
 
 // ---------------------------------------------------------------------------
 // 显示标签（UI 各处显示家族短名用）。
@@ -28,8 +29,10 @@ const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'glm', 'gpt', 'ki
 // ---------------------------------------------------------------------------
 const KIND_LABELS = {
   claude: 'Claude',
+  'claude-web': 'Claude Web',
   gemini: 'Gemini',
   codex: 'Codex',
+  'codex-web': 'Codex Web',
   deepseek: 'DeepSeek',
   glm: 'GLM',
   gpt: 'GPT',
@@ -48,7 +51,9 @@ const KIND_LABELS = {
 //   - qwen           走 ~/.claude-packy-qwen 隔离配置（PackyAPI bailian 分组，跑 qwen3.6-plus）
 // 共享：transcript JSONL shape / Stop hook / OSC title 协议 / system prompt 注入参数 (--append-system-prompt)
 // ---------------------------------------------------------------------------
-const CLAUDE_FAMILY = ['claude', 'claude-resume', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen'];
+// 注意：claude-web / claude-web-resume 也跑在 Claude CLI 上，只是启动时多了 --system-prompt-file。
+// 加入 CLAUDE_FAMILY 让 isClaudeFamily() 返回 true，从而走相同的 transcript / Stop hook / OSC title 路径。
+const CLAUDE_FAMILY = ['claude', 'claude-resume', 'claude-web', 'claude-web-resume', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen'];
 
 // ---------------------------------------------------------------------------
 // TUI alt-screen 程序（paste-sensitive）：
@@ -56,7 +61,7 @@ const CLAUDE_FAMILY = ['claude', 'claude-resume', 'deepseek', 'glm', 'gpt', 'kim
 //   所有 8 家 AI CLI 都是 TUI alt-screen；powershell 等普通 shell 不是。
 //   普通模式发送 prompt 时这些 kind 需要 ≥400ms 延迟才能让 paste-detect 完成。
 // ---------------------------------------------------------------------------
-const PASTE_SENSITIVE_KINDS = ['claude', 'claude-resume', 'gemini', 'codex', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen'];
+const PASTE_SENSITIVE_KINDS = ['claude', 'claude-resume', 'claude-web', 'claude-web-resume', 'gemini', 'codex', 'codex-resume', 'codex-web', 'codex-web-resume', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen'];
 
 // ---------------------------------------------------------------------------
 // 跑在 Claude CLI 上、复用 Stop hook + transcript JSONL 的 kind。
@@ -76,7 +81,7 @@ function isPasteSensitive(kind) {
 }
 
 function isAiKind(kind) {
-  return ALL_AI_KINDS.includes(kind);
+  return ALL_AI_KINDS.includes(kind) || WEB_STYLE_KINDS.includes(kind);
 }
 
 function getKindLabel(kind) {
@@ -105,7 +110,11 @@ const _FAMILY_SET = new Set(FAMILY_KINDS);
 
 function canonicalAiKind(rawKind) {
   if (rawKind === 'codex') return 'gpt';
+  if (rawKind === 'codex-web' || rawKind === 'codex-web-resume') return 'gpt';
   if (rawKind === 'claude-resume') return 'claude';
+  // claude-web 是 claude 的"风格变体"——同一 Claude CLI、同一鉴权、同一 transcript 格式，
+  // 只是启动时挂载了不同 system prompt。家族级归并到 'claude'。
+  if (rawKind === 'claude-web' || rawKind === 'claude-web-resume') return 'claude';
   const out = rawKind || 'unknown';
   // [Phase 4 silent-failure-hunt] 静默 fall-through 会让未来新加的 kind（如 'mistral'）
   //   生成预期外的 .md 文件，且 _runLegacyMigration 不会归档它（因为不在 FAMILY_SET）。
@@ -160,6 +169,7 @@ function slotIndexToId(idx) {
 
 module.exports = {
   ALL_AI_KINDS,
+  WEB_STYLE_KINDS,
   KIND_LABELS,
   CLAUDE_FAMILY,
   CLAUDE_HOOK_BACKED,

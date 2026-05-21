@@ -30,16 +30,16 @@ assert.ok(
   'resume-session must recover a Codex rollout path from persisted codexSid',
 );
 assert.ok(
-  mainSrc.includes("kind === 'codex' || kind === 'codex-resume'"),
-  'parse-session-transcript must branch for codex and codex-resume',
+  mainSrc.includes('isCodexCliKind(kind)'),
+  'parse-session-transcript must branch for Codex CLI variants',
 );
 assert.ok(
-  rendererSrc.includes("kind === 'codex'"),
-  'renderer card history gate must allow Codex sessions',
+  rendererSrc.includes('function isCodexKind(kind)'),
+  'renderer must centralize Codex session kind detection',
 );
 assert.ok(
-  rendererSrc.includes("isClaudeFamily(kind) || kind === 'codex' || kind === 'codex-resume'"),
-  'renderer card history gate must preserve Claude support and add Codex',
+  rendererSrc.includes('isClaudeFamily(kind) || isCodexKind(kind)'),
+  'renderer card history gate must preserve Claude support and add Codex variants',
 );
 assert.ok(
   rendererSrc.includes("scheduleCodexHistoryRetry"),

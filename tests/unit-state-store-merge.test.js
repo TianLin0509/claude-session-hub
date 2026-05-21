@@ -12,7 +12,7 @@ process.env.CLAUDE_HUB_DATA_DIR = TEMP;
 const { mergeState } = require('../core/state-store');
 
 function defState() {
-  return { version: 1, cleanShutdown: false, sessions: [], meetings: [], immersiveByMeeting: {}, pilotSlotByMeeting: {}, dispatchModeByMeeting: {} };
+  return { version: 1, cleanShutdown: false, sessions: [], meetings: [], immersiveByMeeting: {} };
 }
 
 (function run() {
@@ -100,14 +100,12 @@ function defState() {
     console.log('PASS M7 meeting multi-hub merge');
   }
 
-  // M8: dict union — immersiveByMeeting / pilotSlotByMeeting / dispatchModeByMeeting
+  // M8: dict union - immersiveByMeeting
   {
-    const disk = { ...defState(), immersiveByMeeting: { x: true }, pilotSlotByMeeting: { x: 0 }, dispatchModeByMeeting: { x: 'pilot' } };
-    const mem = { ...defState(), immersiveByMeeting: { y: true }, pilotSlotByMeeting: { y: 1 }, dispatchModeByMeeting: { y: 'observer' } };
+    const disk = { ...defState(), immersiveByMeeting: { x: true } };
+    const mem = { ...defState(), immersiveByMeeting: { y: true } };
     const out = mergeState(disk, mem);
     assert.deepStrictEqual(out.immersiveByMeeting, { x: true, y: true }, 'M8: dict union');
-    assert.deepStrictEqual(out.pilotSlotByMeeting, { x: 0, y: 1 });
-    assert.deepStrictEqual(out.dispatchModeByMeeting, { x: 'pilot', y: 'observer' });
     console.log('PASS M8 by-meeting dicts union');
   }
 

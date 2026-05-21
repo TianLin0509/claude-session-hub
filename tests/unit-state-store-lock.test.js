@@ -45,7 +45,7 @@ const stateStore = require('../core/state-store');
     stateStore.save({
       version: 1, cleanShutdown: false,
       sessions: [{ hubId: 'h1', kind: 'claude', title: 'T1', updatedAt: 1000 }],
-      meetings: [], immersiveByMeeting: {}, pilotSlotByMeeting: {}, dispatchModeByMeeting: {},
+      meetings: [], immersiveByMeeting: {},
     }, { sync: true });
     const loaded = stateStore.load();
     assert.strictEqual(loaded.sessions.length, 1);
@@ -68,7 +68,7 @@ const stateStore = require('../core/state-store');
         { hubId: 'h1', kind: 'claude', title: 'T1-updated', updatedAt: 1500 },
         { hubId: 'h3', kind: 'gemini', title: 'T3', updatedAt: 1500 },
       ],
-      meetings: [], immersiveByMeeting: {}, pilotSlotByMeeting: {}, dispatchModeByMeeting: {},
+      meetings: [], immersiveByMeeting: {},
     }, { sync: true });
 
     const loaded = stateStore.load();
@@ -88,7 +88,7 @@ const stateStore = require('../core/state-store');
         { hubId: 'h1', kind: 'claude', title: 'T1-updated', updatedAt: 1500 },
         { hubId: 'h3', kind: 'gemini', title: 'T3', updatedAt: 1500 },
       ],
-      meetings: [], immersiveByMeeting: {}, pilotSlotByMeeting: {}, dispatchModeByMeeting: {},
+      meetings: [], immersiveByMeeting: {},
     }, { sync: true });
     const loaded = stateStore.load();
     const ids = loaded.sessions.map(s => s.hubId).sort();

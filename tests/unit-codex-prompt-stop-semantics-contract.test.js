@@ -27,11 +27,19 @@ assert.ok(
   'renderer must listen for prompt-submitted-event',
 );
 
+const promptStart = rendererSrc.indexOf('function onPromptSubmittedFromTranscriptEvent');
+const promptEnd = rendererSrc.indexOf('\n// Hook-server health indicator', promptStart);
+const promptSubmittedFn = promptStart >= 0 && promptEnd > promptStart
+  ? rendererSrc.slice(promptStart, promptEnd)
+  : '';
 assert.ok(
-  /function\s+onPromptSubmittedFromTranscriptEvent\s*\([\s\S]{0,900}markCodexCardWorking\(hubSessionId/.test(rendererSrc) &&
-  /function\s+markCodexCardWorking\s*\([\s\S]{0,500}session\.status\s*=\s*['"]running['"]/.test(rendererSrc) &&
-  /function\s+onPromptSubmittedFromTranscriptEvent\s*\([\s\S]{0,900}buildPreviewFromUserMessage\(text\)/.test(rendererSrc),
+  promptSubmittedFn.includes('buildPreviewFromUserMessage(text)') &&
+  promptSubmittedFn.includes('markCodexCardWorking(hubSessionId'),
   'Codex prompt event must mark the session running and update sidebar preview from user text',
+);
+assert.ok(
+  /function\s+markCodexCardWorking\s*\([\s\S]{0,800}session\.status\s*=\s*['"]running['"]/.test(rendererSrc),
+  'markCodexCardWorking must set Codex session status to running',
 );
 
 assert.ok(

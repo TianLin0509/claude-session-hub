@@ -6,17 +6,12 @@
   "scripts": {
     "start": "electron .",
     "test": "node test-e2e.js",
-    "test:mobile": "node tests/mobile/test-all.js",
-    "test:mobile:auth": "node tests/mobile/test-auth.js",
-    "test:mobile:rest": "node tests/mobile/test-rest.js",
-    "test:mobile:ws": "node tests/mobile/test-ws.js",
     "dist": "electron-builder --win"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.62.1",
     "@xterm/addon-canvas": "^0.7.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.16.0",
@@ -24,13 +19,10 @@
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^5.5.0",
-    "bcryptjs": "^2.4.3",
     "dompurify": "^3.4.0",
-    "express": "^4.22.1",
     "marked": "^18.0.1",
     "node-pty": "^1.0.0",
     "prismjs": "^1.30.0",
-    "qrcode": "^1.5.4",
     "uuid": "^10.0.0",
     "ws": "^8.20.0"
   },
@@ -60,7 +52,6 @@
       "main.js",
       "core/**/*",
       "renderer/**/*",
-      "renderer-mobile/**/*",
       "scripts/**/*",
       "!scripts/firewall-whitelist-electron.ps1",
       "claude-wx.ico",

@@ -17,27 +17,13 @@ const _hasCdpSwitch = process.argv.some(a => a.startsWith('--remote-debugging-po
 if (process.env.CLAUDE_HUB_NO_CDP !== '1' && !_hasCdpSwitch) {
   app.commandLine.appendSwitch('remote-debugging-port', '0');
 }
-let QRCode = null;
 const { SessionManager, clearSessionManagerConfigCache } = require('./core/session-manager.js');
 const stateStore = require('./core/state-store.js');
-const { createMobileServer } = require('./core/mobile-server.js');
-const mobileAuth = require('./core/mobile-auth.js');
-// 防御性 require：feishu-client.js 缺失时（极端情况下打包遗漏）只 disable 飞书发送，
-// 不让 Hub 启动崩溃。下游 createFeishuMessageSender 调用处有 null guard。
-let FeishuClient = null;
-let createFeishuMessageSender = null;
-try {
-  ({ FeishuClient, createFeishuMessageSender } = require('./core/feishu-client.js'));
-} catch (err) {
-  console.warn('[feishu] client module unavailable, feishu integration disabled:', err.message);
-}
-const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir, getSceneMemoryRoot, isUserProjectCwd } = require('./core/data-dir.js');
+const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
 const hubControl = require('./core/hub-control.js');
 const { MeetingRoomManager } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
 const sessionStore = require('./core/session-store.js');
-const { SummaryEngine } = require('./core/summary-engine');
-const summaryEngine = new SummaryEngine();
 const { TranscriptTap } = require('./core/transcript-tap');
 const { createUsageFilter } = require('./core/usage-filter.js');
 const transcriptTap = new TranscriptTap();
@@ -45,13 +31,9 @@ const transcriptTap = new TranscriptTap();
 //   transcriptTap 在 5 分钟 patch 窗口内挂多个 listener。3 sub × 1 watcher/sub × 多轮重叠
 //   ＞ Node 默认 10 个会触发 MaxListenersExceededWarning。提升上限到 100 安全冗余。
 try { transcriptTap.setMaxListeners(100); } catch {}
-const { DeepSummaryService } = require('./core/deep-summary-service.js');
 const scenes = require('./core/group-chat-scenes.js');
 const cliReadyDetector = require('./core/group-chat-cli-ready-detector.js');
 const lindangBridge = require('./core/lindang-bridge.js');
-const { GeminiCliProvider } = require('./core/summary-providers/gemini-cli.js');
-const { DeepSeekProvider } = require('./core/summary-providers/deepseek-api.js');
-const { loadConfig: loadDeepSummaryConfig } = require('./core/deep-summary-config.js');
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
 const packyBalance = require('./core/packy-balance.js');
 const {
@@ -60,6 +42,14 @@ const {
   filterUsageCacheForCodexScope,
 } = require('./core/codex-usage-scope.js');
 const { ALL_AI_KINDS, isClaudeFamily, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
+
+function isCodexCliKind(kind) {
+  return kind === 'codex' || kind === 'codex-resume' || kind === 'codex-web' || kind === 'codex-web-resume';
+}
+
+function isCodexBaseKind(kind) {
+  return isCodexCliKind(kind);
+}
 const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
 const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
 const {
@@ -253,17 +243,9 @@ function ensureGeminiMcpInstalled() {
     settings.mcpServers = {};
   }
   const researchMcpPath = path.resolve(__dirname, 'core', 'research-mcp-server.js');
-  const memoryMcpPath = path.resolve(__dirname, 'core', 'group-chat-memory-mcp-server.js');
   const desiredResearch = {
     command: process.execPath,
     args: [researchMcpPath],
-    env: { ELECTRON_RUN_AS_NODE: '1' },
-  };
-  // plan 2026-05-05 阶段 0: arena-group-chat-memory 同样全局注册到 gemini，
-  //   靠 ARENA_AI_SLOT/MEETING_ID/HUB_PORT/HOOK_TOKEN env 启 STUB 决定是否暴露 tools。
-  const desiredMemory = {
-    command: process.execPath,
-    args: [memoryMcpPath],
     env: { ELECTRON_RUN_AS_NODE: '1' },
   };
   let dirty = false;
@@ -271,19 +253,10 @@ function ensureGeminiMcpInstalled() {
     settings.mcpServers['arena-research'] = desiredResearch;
     dirty = true;
   }
-  const legacyMemoryMcpName = 'arena-' + 'round' + 'table-memory';
-  if (settings.mcpServers[legacyMemoryMcpName]) {
-    delete settings.mcpServers[legacyMemoryMcpName];
-    dirty = true;
-  }
-  if (JSON.stringify(settings.mcpServers['arena-group-chat-memory']) !== JSON.stringify(desiredMemory)) {
-    settings.mcpServers['arena-group-chat-memory'] = desiredMemory;
-    dirty = true;
-  }
   if (!dirty) return;
   try {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    console.log('[群聊] arena-research + arena-group-chat-memory MCP installed into Gemini settings.json');
+    console.log('[群聊] arena-research MCP installed into Gemini settings.json');
   } catch (e) {
     console.warn('[群聊] gemini mcp install failed:', e.message);
   }
@@ -430,7 +403,6 @@ const HOOK_PORT_CANDIDATES = [
 const HOOK_TOKEN = crypto.randomBytes(16).toString('hex');
 
 let hookPort = null;  // set after listen() succeeds
-let mobileSrv = null; // set after app.whenReady startup
 
 let mainWindow;
 const sessionManager = new SessionManager();
@@ -438,24 +410,6 @@ const meetingManager = new MeetingRoomManager();
 
 // Deep-summary service singleton: instantiated from config-driven fallback chain.
 // Providers tried in order; first one with a parseable response wins.
-const _deepSummaryConfig = loadDeepSummaryConfig();
-function _buildDeepSummaryProviders() {
-  const providers = [];
-  for (const name of _deepSummaryConfig.fallback_chain) {
-    if (name === 'gemini-cli') {
-      providers.push(new GeminiCliProvider(_deepSummaryConfig.gemini_cli));
-    } else if (name === 'deepseek-api') {
-      providers.push(new DeepSeekProvider(_deepSummaryConfig.deepseek_api));
-    } else {
-      console.warn('[deep-summary] unknown provider in fallback_chain:', name);
-    }
-  }
-  if (providers.length === 0) {
-    throw new Error('deep-summary fallback_chain produced 0 providers');
-  }
-  return providers;
-}
-const deepSummaryService = new DeepSummaryService({ providers: _buildDeepSummaryProviders() });
 
 // Wire TranscriptTap → MeetingRoomManager timeline.
 // When a sub-session's CLI finishes a turn, append the AI text to its
@@ -504,7 +458,7 @@ transcriptTap.on('turn-complete', (ev) => {
 
 const _autoTitleInFlight = new Set();
 const _autoMeetingTitleInFlight = new Set();
-const AUTO_TITLE_BASE_KINDS = new Set(ALL_AI_KINDS);
+const AUTO_TITLE_BASE_KINDS = new Set([...ALL_AI_KINDS, 'claude-web', 'codex-web']);
 const AUTO_TITLE_LABELS = Object.values(KIND_LABELS)
   .map(label => String(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   .sort((a, b) => b.length - a.length)
@@ -680,7 +634,7 @@ transcriptTap.on('prompt-submitted', (ev) => {
 transcriptTap.on('session-bound', (ev) => {
   if (!ev || !ev.hubSessionId) return;
   try {
-    if (ev.kind === 'codex' && (ev.codexSid || ev.rolloutPath)) {
+    if (isCodexCliKind(ev.kind) && (ev.codexSid || ev.rolloutPath)) {
       const current = sessionManager.getSession(ev.hubSessionId);
       const patch = {};
       if (ev.codexSid) patch.codexSid = ev.codexSid;
@@ -688,12 +642,14 @@ transcriptTap.on('session-bound', (ev) => {
       if (current && current.codexSessionsRoot) patch.codexSessionsRoot = current.codexSessionsRoot;
       if (current && current.codexAllowMtimeFallback) patch.codexAllowMtimeFallback = true;
       sessionManager.updateSessionMeta(ev.hubSessionId, patch);
+    } else if (ev.kind === 'codex-app' && ev.threadId) {
+      sessionManager.updateSessionMeta(ev.hubSessionId, { codexAppThreadId: ev.threadId });
     }
   } catch {}
   // Find the session in lastPersistedSessions and merge new fields.
   const idx = lastPersistedSessions.findIndex(s => s.hubId === ev.hubSessionId);
   if (idx < 0) {
-    if (ev.kind === 'codex' && (ev.codexSid || ev.rolloutPath)) {
+    if (isCodexCliKind(ev.kind) && (ev.codexSid || ev.rolloutPath)) {
       sendToRenderer('session-meta-updated', {
         hubSessionId: ev.hubSessionId,
         kind: ev.kind,
@@ -702,26 +658,36 @@ transcriptTap.on('session-bound', (ev) => {
         codexSessionsRoot: sessionManager.getSession(ev.hubSessionId)?.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!sessionManager.getSession(ev.hubSessionId)?.codexAllowMtimeFallback,
       });
+    } else if (ev.kind === 'codex-app' && ev.threadId) {
+      sendToRenderer('session-meta-updated', {
+        hubSessionId: ev.hubSessionId,
+        kind: ev.kind,
+        codexAppThreadId: ev.threadId,
+      });
     }
     return;
   }
   const cur = lastPersistedSessions[idx];
   let changed = false;
-  if (ev.kind === 'codex' && ev.codexSid && cur.codexSid !== ev.codexSid) {
+  if (isCodexCliKind(ev.kind) && ev.codexSid && cur.codexSid !== ev.codexSid) {
     cur.codexSid = ev.codexSid;
     changed = true;
   }
-  if (ev.kind === 'codex' && ev.rolloutPath && cur.transcriptPath !== ev.rolloutPath) {
+  if (isCodexCliKind(ev.kind) && ev.rolloutPath && cur.transcriptPath !== ev.rolloutPath) {
     cur.transcriptPath = ev.rolloutPath;
     changed = true;
   }
-  const liveSession = ev.kind === 'codex' ? sessionManager.getSession(ev.hubSessionId) : null;
-  if (ev.kind === 'codex' && liveSession && liveSession.codexSessionsRoot && cur.codexSessionsRoot !== liveSession.codexSessionsRoot) {
+  const liveSession = isCodexCliKind(ev.kind) ? sessionManager.getSession(ev.hubSessionId) : null;
+  if (isCodexCliKind(ev.kind) && liveSession && liveSession.codexSessionsRoot && cur.codexSessionsRoot !== liveSession.codexSessionsRoot) {
     cur.codexSessionsRoot = liveSession.codexSessionsRoot;
     changed = true;
   }
-  if (ev.kind === 'codex' && liveSession && liveSession.codexAllowMtimeFallback && cur.codexAllowMtimeFallback !== true) {
+  if (isCodexCliKind(ev.kind) && liveSession && liveSession.codexAllowMtimeFallback && cur.codexAllowMtimeFallback !== true) {
     cur.codexAllowMtimeFallback = true;
+    changed = true;
+  }
+  if (ev.kind === 'codex-app' && ev.threadId && cur.codexAppThreadId !== ev.threadId) {
+    cur.codexAppThreadId = ev.threadId;
     changed = true;
   }
   if (ev.kind === 'gemini') {
@@ -737,8 +703,6 @@ transcriptTap.on('session-bound', (ev) => {
       sessions: lastPersistedSessions,
       meetings: meetingManager.getAllMeetings(),
       immersiveByMeeting: _immersiveByMeeting,
-      pilotSlotByMeeting: _pilotSlotByMeeting,
-      dispatchModeByMeeting: _dispatchModeByMeeting,
     });
     // 2026-05-07 道雪：sid 类字段一旦确定就立刻 sync 写 per-session JSON。
     //   不靠 200ms debounce，不靠 state.json 防抖 500ms——任何一个 race / crash
@@ -755,6 +719,7 @@ transcriptTap.on('session-bound', (ev) => {
       transcriptPath: cur.transcriptPath,
       codexSessionsRoot: cur.codexSessionsRoot,
       codexAllowMtimeFallback: !!cur.codexAllowMtimeFallback,
+      codexAppThreadId: cur.codexAppThreadId,
       geminiChatId: cur.geminiChatId,
       geminiProjectHash: cur.geminiProjectHash,
       geminiProjectRoot: cur.geminiProjectRoot,
@@ -825,6 +790,31 @@ function createWindow() {
     sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
   });
   setTimeout(showMainWindow, 4000);
+
+  // 主 webContents 导航防护（2026-05-17 道雪）：renderer 若误把 https 链接渲染成
+  //   <a> 或 location.href = url，会让主 webContents 整个 navigate 走，preload IPC
+  //   失效、Hub 卡死。把外部协议一律转发系统浏览器，主窗口只允许 file://。
+  //   webview 内部导航走 webview 的 webContents，不受这里影响。
+  const isInternalNavUrl = (urlStr) => {
+    try {
+      const u = new URL(urlStr);
+      return u.protocol === 'file:' || u.protocol === 'about:' || u.protocol === 'chrome:' || u.protocol === 'devtools:';
+    } catch { return true; }
+  };
+  const interceptNavigate = (event, urlStr) => {
+    if (isInternalNavUrl(urlStr)) return;
+    event.preventDefault();
+    console.log('[nav-guard] block main webContents navigate to', urlStr, '→ openExternal');
+    shell.openExternal(urlStr).catch((e) => console.warn('[nav-guard] openExternal failed:', e && e.message));
+  };
+  mainWindow.webContents.on('will-navigate', interceptNavigate);
+  mainWindow.webContents.on('will-redirect', interceptNavigate);
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isInternalNavUrl(url)) return { action: 'allow' };
+    shell.openExternal(url).catch((e) => console.warn('[nav-guard] openExternal failed:', e && e.message));
+    return { action: 'deny' };
+  });
+
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => { mainWindow = null; });
 }
@@ -928,20 +918,24 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
   // opts.model 透传给 sessionManager（让 Claude/Codex/DeepSeek/GLM/Gemini 用对应 model）
   if (opts && opts.model) sessionOpts.model = opts.model;
 
-  // 群聊 slot 化（2026-05-03 道雪）：群聊 meeting 的 sub 按加入顺序分配 slot id
-  //   (pikachu/charmander/squirtle)，title 走 slot 中文名（"皮卡丘" 等）。
-  //   单 session 主桌（meeting 为空或非群聊）不受影响（走 sessionManager 默认计数器）。
-  //   slot 仅识别前 3 个 sub；第 4+ sub 视为额外，title 退回 sessionManager 默认。
-  //   不覆盖调用方显式传入的 opts.title。
+  // 群聊 slot 化（2026-05-03 道雪 / 2026-05-17 修复）：每个 sub 按加入顺序分配 slot id
+  //   (pikachu/charmander/squirtle)。slot 仅识别前 3 个 sub；第 4+ sub 视为额外，slotId=null。
+  //   2026-05-17 修复：原代码 `if (meeting.groupChat)` 分支不赋 slotId，删圆桌后所有 meeting
+  //   ?? groupChat?????? slotId ????? per-slot ???
+  //   现在 slotId 计算与 title 命名解耦——slotId 总按 subCount 计算；title 命名按 groupChat 区分。
   let slotId = null;
-  if (meeting && !sessionOpts.title) {
+  if (meeting) {
     const currentSubCount = (meeting.subSessions || []).length;
-    if (meeting.groupChat) {
-      const label = KIND_LABELS[kind] || kind || 'AI';
-      sessionOpts.title = `${label} ${currentSubCount + 1}`;
-    } else if (currentSubCount < SLOT_IDS.length) {
+    if (currentSubCount < SLOT_IDS.length) {
       slotId = SLOT_IDS[currentSubCount];
-      sessionOpts.title = getSlotPromptName(slotId); // "皮卡丘" / "小火龙" / "杰尼龟"
+    }
+    if (!sessionOpts.title) {
+      if (meeting.groupChat) {
+        const label = KIND_LABELS[kind] || kind || 'AI';
+        sessionOpts.title = `${label} ${currentSubCount + 1}`;
+      } else if (slotId) {
+        sessionOpts.title = getSlotPromptName(slotId); // "皮卡丘" / "小火龙" / "杰尼龟"
+      }
     }
   }
 
@@ -970,70 +964,6 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
     }
   }
 
-  if (false && meeting && meeting.scene && !meeting.groupChat) {
-    const hubDataDir = getHubDataDir();
-    const sceneObj = scenes.getScene(meeting.scene);
-    const covenantText = (typeof meeting.covenantText === 'string')
-      ? meeting.covenantText
-      : scenes.readCovenantSnapshot(hubDataDir, meetingId);
-    if (covenantText && covenantText.trim().length > 0) {
-      scenes.writeCovenantSnapshot(hubDataDir, meetingId, covenantText);
-    }
-    // P2 (2026-05-04 道雪): 投研场景 per-slot prompt 文件 (L3 偏置层注入)。
-    //   slotId 在 line 575-582 已计算 (前 3 个 sub 按加入顺序映射 SLOT_IDS);
-    //   slotId === null (第 4+ sub 或非群聊) 时 writePromptFile 退回老文件名。
-    const promptFile = scenes.writePromptFile(hubDataDir, meetingId, meeting.scene, covenantText, slotId);
-    // DeepSeek/GLM/GPT/Kimi/Qwen 跑在 Claude CLI 上（CLAUDE_CONFIG_DIR 隔离），需要相同的 system prompt 注入。
-    // plan 2026-05-05 阶段 0：非 research 场景且 slot 已分配时，启用 memory MCP（跨 general/dev）。
-    //   research scene 单 mcpConfig 文件名额仍归 research（合并方案推迟到阶段 1+）。
-    //   slotId === null（第 4+ sub）→ 不启 memory（无个体 .md 文件可写）。
-    const memoryMcpEnabled = !!(slotId && hookPort
-      && sceneObj && sceneObj.mcpConfig !== 'research');
-    // Phase 3：把当前 sub 的 model 传给 MCP server，作为 identity 派生输入。
-    //   model 可能是字符串（"claude-opus-4-7" / "gemini-3-pro" / "gpt-5.2-codex" / null）。
-    //   缺失时透传空串 → hookServer 兜底 'default' 派生 'claude-default' 等 identity。
-    const aiModelEnv = (sessionOpts.model && typeof sessionOpts.model === 'string') ? sessionOpts.model : '';
-    if (isClaudeFamily(kind)) {
-      sessionOpts.appendSystemPromptFile = promptFile;
-      if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
-        sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude');
-      } else if (sceneObj && sceneObj.mcpConfig === 'research' && !hookPort) {
-        console.warn('[群聊] research scene Claude/DS/GLM in meeting ' + meetingId + ' but hookPort unavailable — MCP tools unavailable');
-      } else if (memoryMcpEnabled) {
-        // Phase 3：MCP config 多写一个 ARENA_AI_MODEL env（让 mcp-server 把 model 透传到 hookServer）
-        sessionOpts.mcpConfigFile = scenes.writeGroupChatMemoryMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, 'claude', slotId, aiModelEnv);
-      }
-    } else if (kind === 'gemini') {
-      sessionOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
-      if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
-        Object.assign(sessionOpts.extraEnv, {
-          ELECTRON_RUN_AS_NODE: '1',
-          ARENA_MEETING_ID: meetingId,
-          ARENA_HUB_PORT: String(hookPort),
-          ARENA_HOOK_TOKEN: HOOK_TOKEN,
-          ARENA_AI_KIND: 'gemini',
-        });
-      } else if (memoryMcpEnabled) {
-        Object.assign(sessionOpts.extraEnv, {
-          ELECTRON_RUN_AS_NODE: '1',
-          ARENA_MEETING_ID: meetingId,
-          ARENA_HUB_PORT: String(hookPort),
-          ARENA_HOOK_TOKEN: HOOK_TOKEN,
-          ARENA_AI_KIND: 'gemini',
-          ARENA_AI_MODEL: aiModelEnv,
-          ARENA_AI_SLOT: slotId,
-        });
-      }
-    } else if (kind === 'codex') {
-      sessionOpts.codexInstructionFile = promptFile;
-      sessionOpts.codexBypassApprovals = true;
-      if (sceneObj && sceneObj.mcpConfig === 'research' && hookPort) {
-        sessionOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN)];
-      } else if (memoryMcpEnabled) {
-        sessionOpts.codexMcpEntries = [scenes.buildGroupChatMemoryMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN, slotId, aiModelEnv)];
-      }
-    }
-  }
 
   // 群聊保持极简 prompt，但 research 场景仍需要挂载 stock MCP 工具。
   // 注意：上面的历史分支被 if(false) 关闭，避免恢复 BASE_RULES/COVENANT 大 prompt；
@@ -1051,7 +981,7 @@ async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
         ARENA_HOOK_TOKEN: HOOK_TOKEN,
         ARENA_AI_KIND: 'gemini',
       };
-    } else if (kind === 'codex') {
+    } else if (isCodexBaseKind(kind)) {
       sessionOpts.codexBypassApprovals = true;
       sessionOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN)];
     }
@@ -1171,8 +1101,6 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
   stateStore.markRemovedMeeting(meetingId);
   // immersive 状态从 dict 一并清掉（避免 state.json 越长越大）
   delete _immersiveByMeeting[meetingId];
-  delete _pilotSlotByMeeting[meetingId];
-  delete _dispatchModeByMeeting[meetingId];
   sendToRenderer('meeting-closed', { meetingId });
   return true;
 });
@@ -1186,88 +1114,6 @@ ipcMain.handle('get-immersive-mode', () => {
 });
 
 ipcMain.handle('save-immersive-mode', () => {
-  return { ok: true };
-});
-
-// pilot recap / private-store / timeline recap 整体废弃 (2026-05-02)
-//   原因：shell/卡片分离后，AI 群聊 = 协作（公开 timeline + 卡片），子会话区 = 私聊（独立 PTY 不感知群聊）。
-//   软件层不再桥接两者——副驾想看主驾思路？让主驾在 AI 群聊"主驾发言"模式下说一遍即可。
-//   被删除的辅助：_generatePilotRecap / _parseSummaryWithSegments / _appendTimelineRecap
-//                 + core/pilot-recap-builder.js + legacy private store
-//                 + legacy pilot/private IPC channels
-
-
-// pilot redesign（2026-05-02）— groupchat:pilot-toggle IPC（无副作用版）
-//   slotIndex ∈ {0,1,2,null}：设置主驾"角色"标识。仅是 UI 红框，不切换全局模式。
-//   切换或取消主驾时 dispatchMode 自动 reset 'all'（由 meetingManager.setPilotSlot 内部处理）。
-//   旧版本会在关主驾时触发 _generatePilotRecap 生成 recap 卡片——已废弃（AI 群聊不再桥接子会话私聊）。
-ipcMain.handle('groupchat:pilot-toggle', async (_e, { meetingId, slotIndex } = {}) => {
-  if (!meetingId) throw new Error('Missing meetingId');
-  if (slotIndex !== null && (typeof slotIndex !== 'number' || slotIndex < 0 || slotIndex > 2)) {
-    throw new Error(`Invalid slotIndex: ${slotIndex}`);
-  }
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
-
-  meetingManager.setPilotSlot(meetingId, slotIndex);
-  if (slotIndex === null) delete _pilotSlotByMeeting[meetingId];
-  else _pilotSlotByMeeting[meetingId] = slotIndex;
-  // setPilotSlot 内部已 reset dispatchMode='all'，同步更新 dict
-  delete _dispatchModeByMeeting[meetingId];
-
-  try {
-    stateStore.save({
-      version: 1,
-      cleanShutdown: false,
-      sessions: lastPersistedSessions,
-      meetings: meetingManager.getAllMeetings(),
-      immersiveByMeeting: _immersiveByMeeting,
-      pilotSlotByMeeting: _pilotSlotByMeeting,
-      dispatchModeByMeeting: _dispatchModeByMeeting,
-    });
-  } catch (e) {
-    console.warn('[群聊] groupchat:pilot-toggle persist failed:', e.message);
-  }
-
-  // 通知 renderer 更新 toolbar / 卡片视觉
-  sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
-
-  return { ok: true };
-});
-
-// pilot redesign（2026-05-02）— 设置当前轮 dispatchMode。
-//   mode ∈ {'all','pilot','observer'}：'pilot'/'observer' 要求 pilotSlot !== null。
-//   失败抛错（前端兜底应该已 disable 按钮，这里再校验一次防绕过）。
-ipcMain.handle('groupchat:dispatch-mode-set', async (_e, { meetingId, dispatchMode } = {}) => {
-  if (!meetingId) throw new Error('Missing meetingId');
-  if (!['all', 'pilot', 'observer'].includes(dispatchMode)) {
-    throw new Error(`Invalid dispatchMode: ${dispatchMode}`);
-  }
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
-  if (dispatchMode !== 'all' && (meeting.pilotSlot === null || meeting.pilotSlot === undefined)) {
-    throw new Error(`dispatchMode '${dispatchMode}' requires pilotSlot to be set`);
-  }
-
-  meetingManager.setDispatchMode(meetingId, dispatchMode);
-  if (dispatchMode === 'all') delete _dispatchModeByMeeting[meetingId];
-  else _dispatchModeByMeeting[meetingId] = dispatchMode;
-
-  try {
-    stateStore.save({
-      version: 1,
-      cleanShutdown: false,
-      sessions: lastPersistedSessions,
-      meetings: meetingManager.getAllMeetings(),
-      immersiveByMeeting: _immersiveByMeeting,
-      pilotSlotByMeeting: _pilotSlotByMeeting,
-      dispatchModeByMeeting: _dispatchModeByMeeting,
-    });
-  } catch (e) {
-    console.warn('[群聊] groupchat:dispatch-mode-set persist failed:', e.message);
-  }
-
-  sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
   return { ok: true };
 });
 
@@ -1301,8 +1147,6 @@ ipcMain.handle('groupchat:set-participants', async (_e, { meetingId, participant
       sessions: lastPersistedSessions,
       meetings: meetingManager.getAllMeetings(),
       immersiveByMeeting: _immersiveByMeeting,
-      pilotSlotByMeeting: _pilotSlotByMeeting,
-      dispatchModeByMeeting: _dispatchModeByMeeting,
     });
   } catch (e) {
     console.warn('[groupchat] set-participants persist failed:', e.message);
@@ -1318,10 +1162,6 @@ ipcMain.handle('groupchat:set-participants', async (_e, { meetingId, participant
 // =====================================================================
 const groupchat = require('./core/group-chat-orchestrator.js');
 const groupChatWatcher = require('./core/group-chat-watcher.js');
-const rtMemoryStore = require('./core/group-chat-memory/store.js');
-const rtCkptState = require('./core/group-chat-memory/checkpoint-state.js');
-const rtCkptTrigger = require('./core/group-chat-memory/checkpoint-trigger.js');
-const rtInbox = require('./core/group-chat-memory/inbox.js');
 groupChatWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
 let _groupChatInProgress = new Set(); // 同一群聊单一并发：set of meetingId
 
@@ -1350,39 +1190,6 @@ function unregisterPatchListener(sid, watcher) {
 }
 
 // 方案 F · 2026-05-02：计算单个 sub 视角的"调度上下文" spec，喂给 build*Prompt
-//   targetSubs = [{ sid, kind, label }] 本轮真正发言的 sub（按 dispatchMode 过滤后）
-//                ← BUGFIX (Codex#2)：之前用全员 subs，pilot/observer 模式下"同台"会含静音 AI
-//   self       = 当前要拼 prompt 的 sub
-//   pilotSlot  = 主驾 slot 索引（0/1/2/null）
-//   subSidsRaw = meeting.subSessions 数组（决定 slot index）
-//   effectiveDispatchMode = 'all' | 'pilot' | 'observer'
-//   pilotLabel 仍按 subSidsRaw 全集找（即使主驾本轮静音也能在 dispatchSpec 标识"主驾是谁"）
-function _computeDispatchSpec(self, targetSubs, pilotSlot, subSidsRaw, effectiveDispatchMode) {
-  if (!self) return null;
-  const selfSlotIdx = subSidsRaw.indexOf(self.sid);
-  const isPilotSelf = pilotSlot !== null && selfSlotIdx === pilotSlot;
-  let selfRole = null;
-  if (pilotSlot !== null) selfRole = isPilotSelf ? 'pilot' : 'observer';
-  // 同台名单：本轮真发言者中除自己外
-  const sameStageLabels = (targetSubs || []).filter(x => x.sid !== self.sid).map(x => x.label || x.kind || 'AI');
-  // 主驾名（如有）—— 跨 subSidsRaw 全集找，即使本轮静音也要能告诉副驾"主驾是谁"
-  const pilotLabel = (() => {
-    if (pilotSlot === null) return null;
-    const pilotSid = subSidsRaw[pilotSlot];
-    if (!pilotSid) return null;
-    const inTarget = (targetSubs || []).find(x => x.sid === pilotSid);
-    if (inTarget) return inTarget.label || inTarget.kind || 'AI';
-    return 'pilot';  // 主驾不在 targetSubs 时仍标 'pilot'（避免缺名）
-  })();
-  return {
-    mode: effectiveDispatchMode || 'all',
-    selfRole,
-    sameStageLabels,
-    pilotLabel,
-  };
-}
-
-// 群聊 PTY 通信 helpers（waitCliReady / sendToPty / extractStreamingText / cleanBufLen
 // / checkHostShellTakeover）已抽到 core/group-chat-watcher.js（groupChatWatcher）。
 // 调用方走 groupChatWatcher.X。dispatchGroupChatTurn 与 _gcWaitTurnComplete 仍在 main.js
 // 这里（依赖闭包过深，留下次专项 → core/group-chat-dispatcher.js）。
@@ -1436,7 +1243,7 @@ function _startPasteTrappedMonitor(sid, kind, meetingId) {
       const activity = sessionManager.getGroupChatLastActivity(sid);
       const r = pasteTrappedDetector.tick(sid, buf, activity);
       if (r === 'stuck') {
-        if (kind === 'codex' && monitor.enterRetries < PASTE_TRAPPED_CODEX_ENTER_RETRIES) {
+        if (isCodexBaseKind(kind) && monitor.enterRetries < PASTE_TRAPPED_CODEX_ENTER_RETRIES) {
           monitor.enterRetries += 1;
           console.warn(`[paste-trapped] codex(${sid.slice(0,8)}) paste marker stable; sending retry Enter #${monitor.enterRetries}`);
           try {
@@ -1619,7 +1426,7 @@ function _gcWaitTurnComplete(sid, label, opts = {}) {
 
   let codexAutoExtractTimer = null;
   const waitSession = sessionManager.getSession(sid);
-  if (waitSession?.kind === 'codex') {
+  if (isCodexBaseKind(waitSession?.kind)) {
     const sincePromptTs = Math.max(0, _startTs - 1000);
     let autoExtractBusy = false;
     codexAutoExtractTimer = setInterval(async () => {
@@ -1796,12 +1603,12 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
         const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
         const ok = sendResult && sendResult.ok;
         const sendStatus = sendResult && sendResult.sendStatus;
-        if (sendStatus === 'stuck' && t.kind !== 'codex') {
+        if (sendStatus === 'stuck' && !isCodexBaseKind(t.kind)) {
           sendToRenderer('groupchat-send-stuck', { meetingId, sid: t.sid, kind: t.kind });
         }
         if (ok) {
           sentTargets.push(t);
-          if (sendStatus !== 'stuck' || t.kind === 'codex') {
+          if (sendStatus !== 'stuck' || isCodexBaseKind(t.kind)) {
             _startPasteTrappedMonitor(t.sid, t.kind, meetingId);
           }
         }
@@ -2070,22 +1877,6 @@ ipcMain.handle('get-ring-buffer', (_e, sessionId) => {
   return sessionManager.getSessionBuffer(sessionId);
 });
 
-ipcMain.handle('quick-summary', (_e, sessionId) => {
-  // Authoritative-first: transcript tap (Stop hook / rollout / chats JSONL).
-  // Falls back to marker scan from PTY ring buffer when tap has no value.
-  // This makes buildContextSummary / checkDivergence pick up transcript-tap
-  // content without changing each call site.
-  const tapped = transcriptTap.getLastAssistantText(sessionId);
-  if (tapped && tapped.trim()) return tapped;
-  const raw = sessionManager.getSessionBuffer(sessionId);
-  return summaryEngine.quickSummary(raw || '', sessionId);
-});
-
-ipcMain.handle('marker-status', (_e, sessionId) => {
-  const raw = sessionManager.getSessionBuffer(sessionId);
-  return summaryEngine.markerStatus(raw || '', sessionId);
-});
-
 // cli-ready-status IPC handler — 只负责"参数转发到 detector + 透传 groupChatReady 快路径"。
 //   判定逻辑全部在 core/group-chat-cli-ready-detector.js（marker + 静默双门 + monotonic guard）。
 //   renderer 每秒 invoke 一次，缓存到 _cliReadyCache[sid] 驱动卡片"创建中→待命"切换。
@@ -2100,10 +1891,6 @@ ipcMain.handle('cli-ready-status', (_e, sessionId) => {
   }
   const buf = sessionManager.getSessionBuffer(sessionId) || '';
   return cliReadyDetector.isReady(sessionId, session.kind, buf);
-});
-
-ipcMain.handle('get-marker-instruction', () => {
-  return summaryEngine.getMarkerInstruction();
 });
 
 // Hub Timeline IPC: append a user turn to the meeting timeline.
@@ -2170,7 +1957,7 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
   try {
     const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
     const kind = session ? session.kind : inKind;
-    if (kind === 'codex' || kind === 'codex-resume') {
+    if (isCodexCliKind(kind)) {
       const liveRolloutPath = hubSessionId ? transcriptTap.getCodexRolloutPath(hubSessionId) : null;
       if (liveRolloutPath) {
         transcriptPath = liveRolloutPath;
@@ -2201,6 +1988,25 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
       const turns = parseCodexRolloutToTurns(transcriptPath, parseOpts);
       return { turns: Array.isArray(turns) ? turns : [], transcriptPath, error: null };
     }
+    if (kind === 'codex-app') {
+      const extracted = hubSessionId ? await transcriptTap.extractLatestTurn(hubSessionId, 0) : null;
+      if (!extracted || !extracted.text) {
+        return { turns: [], transcriptPath: null, error: 'codex app-server transcript not materialized' };
+      }
+      return {
+        turns: [{
+          id: `codex-app-assistant-${hubSessionId || Date.now()}`,
+          role: 'assistant',
+          text: extracted.text,
+          ts: Date.now(),
+          tsEnd: Date.now(),
+          stopReason: 'turn_completed',
+          source: 'codex_app_server',
+        }],
+        transcriptPath: null,
+        error: null,
+      };
+    }
     if (!transcriptPath && session && session.transcriptPath) {
       transcriptPath = session.transcriptPath;
     }
@@ -2225,56 +2031,6 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
   } catch (err) {
     return { turns: [], transcriptPath, error: err && err.message ? err.message : String(err) };
   }
-});
-
-function collectAgentOutputs(meetingId) {
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting) return null;
-  const outputs = {};
-  for (const sid of meeting.subSessions) {
-    // Authoritative-first: transcript tap, then marker scan fallback.
-    let content = transcriptTap.getLastAssistantText(sid);
-    if (!content || !content.trim()) {
-      const raw = sessionManager.getSessionBuffer(sid);
-      content = summaryEngine.extractMarker(raw || '', sid);
-    }
-    if (content) {
-      const session = sessionManager.getSession(sid);
-      const label = session ? (session.kind || 'AI') : 'AI';
-      outputs[label] = content;
-    }
-  }
-  return Object.keys(outputs).length >= 2 ? outputs : null;
-}
-
-ipcMain.handle('compress-context', async (_e, { content, maxChars }) => {
-  return await summaryEngine.compressContext(content, maxChars || 1000);
-});
-
-ipcMain.handle('detect-divergence', async (_e, { meetingId }) => {
-  const outputs = collectAgentOutputs(meetingId);
-  if (!outputs) return { consensus: [], divergence: [] };
-  return await summaryEngine.detectDivergence(outputs);
-});
-
-ipcMain.handle('deep-summary', async (_e, { sessionId, scene, question, agentName }) => {
-  // Prefer authoritative transcript-tap content; fall back to PTY ring buffer
-  // (which feeds extractMarker inside deepSummary). When tap has content we
-  // synthesize a marker-wrapped string so deepSummary's existing extractMarker
-  // path picks it up without changing the summary-engine API.
-  const tapped = transcriptTap.getLastAssistantText(sessionId);
-  let raw;
-  if (tapped && tapped.trim()) {
-    raw = `\nSM-START\n${tapped}\nSM-END\n`;
-  } else {
-    raw = sessionManager.getSessionBuffer(sessionId) || '';
-  }
-  if (!raw) return '';
-  return await summaryEngine.deepSummary(raw, { agentName, question, scene });
-});
-
-ipcMain.handle('get-summary-scenes', () => {
-  return summaryEngine.getScenes();
 });
 
 // build-injection IPC 历史用于 blackboard 用户输入合成注入子会话(meeting-blackboard.js)。
@@ -2350,43 +2106,6 @@ ipcMain.handle('get-meetings', () => {
   return meetingManager.getAllMeetings();
 });
 
-// Deep-summary IPC: generate structured meeting summary from full timeline via
-// config-driven provider fallback chain (gemini-cli → deepseek-api). This is
-// distinct from the older `'deep-summary'` channel above (single-session marker
-// summary). Returns the full service result envelope (status / data / _meta).
-ipcMain.handle('generate-meeting-summary', async (_event, meetingId) => {
-  try {
-    // T11 fix: ensure timeline loaded from disk (otherwise restored meetings
-    // produce summaries from 0 turns).
-    if (meetingId) meetingManager.loadTimelineLazy(meetingId);
-    const meeting = meetingManager.getMeeting(meetingId);
-    if (!meeting) {
-      return {
-        status: 'failed',
-        _meta: { last_error: `meeting not found: ${meetingId}`, parse_status: 'failed' },
-      };
-    }
-    const timeline = meetingManager.getTimeline(meetingId);
-    const labelMap = new Map();
-    const presentAIs = new Set(['user']);
-    for (const sid of meeting.subSessions) {
-      const s = sessionManager.sessions.get(sid);
-      if (s && s.info) {
-        labelMap.set(sid, { label: s.info.title || s.info.kind || 'AI', kind: s.info.kind });
-        if (s.info.kind) presentAIs.add(s.info.kind);
-      }
-    }
-    return await deepSummaryService.generate(timeline, presentAIs, labelMap);
-  } catch (e) {
-    console.error('[generate-meeting-summary] error:', e);
-    return {
-      status: 'failed',
-      _meta: { last_error: e.message, parse_status: 'failed' },
-    };
-  }
-});
-
-ipcMain.handle('get-deep-summary-config', async () => _deepSummaryConfig.ui);
 
 // Archive scanner: enumerate past Claude Code sessions for the Resume picker.
 const sessionArchive = require('./core/session-archive.js');
@@ -2465,39 +2184,8 @@ let lastPersistedSessions = Array.isArray(bootState.sessions) ? bootState.sessio
 //   每个 stateStore.save 调用都把这份 dict 一起写回，避免被覆盖。
 let _immersiveByMeeting = (bootState.immersiveByMeeting && typeof bootState.immersiveByMeeting === 'object')
   ? bootState.immersiveByMeeting : {};
-
-// pilot-mode Task 1（2026-05-01）— 主驾 slot per-meeting 状态（持久化）
-//   key = meetingId，value = 0|1|2|null（null = 关闭主驾，全员协作）。
-//   与 _immersiveByMeeting 同模式：所有 stateStore.save 都一起写回。
-//   restoreMeeting 阶段已经把每个 meeting.pilotSlot 还原；此处保留 dict 是为了让
-//   stateStore.save 携带最新视图（避免 meeting 关闭后状态丢失）。
-let _pilotSlotByMeeting = (bootState.pilotSlotByMeeting && typeof bootState.pilotSlotByMeeting === 'object')
-  ? bootState.pilotSlotByMeeting : {};
-// pilot redesign（2026-05-02）— dispatchMode per-meeting 持久化字典，与 _pilotSlotByMeeting 同模式。
-//   restoreMeeting 阶段把 dispatchModeByMeeting[id] 合并到 meeting.dispatchMode；旧数据缺字段时
-//   restoreMeeting 内会按 pilotSlot 推断（pilotSlot !== null → 'pilot'，否则 'all'）。
-let _dispatchModeByMeeting = (bootState.dispatchModeByMeeting && typeof bootState.dispatchModeByMeeting === 'object')
-  ? bootState.dispatchModeByMeeting : {};
-// Heal any cwds that legacy code corrupted (see extractCwdFromTranscript).
-// This reads CC's own JSONL transcripts which carry the authoritative cwd.
-const healed = healPersistedCwds(lastPersistedSessions);
-if (healed > 0) console.log(`[群聊] healed ${healed} stale cwd(s) from CC transcripts`);
-// Restore persisted meetings on boot
 const bootMeetings = Array.isArray(bootState.meetings) ? bootState.meetings : [];
 for (const m of bootMeetings) {
-  if (m.layout === 'split') m.layout = 'focus';
-  // pilot-mode：把 _pilotSlotByMeeting 里的状态合并到 meeting 字段里再 restore，
-  //   兼容老 meeting（无 m.pilotSlot 字段）+ 新 dict 结构（独立持久化）。
-  const dictPilot = _pilotSlotByMeeting[m.id];
-  if (typeof dictPilot === 'number' && (m.pilotSlot === null || m.pilotSlot === undefined)) {
-    m.pilotSlot = dictPilot;
-  }
-  // pilot redesign（2026-05-02）：dispatchMode 同模式合并；restoreMeeting 内会按
-  //   pilotSlot 推断默认值（pilotSlot !== null → 'pilot'，否则 'all'）作为旧数据兜底。
-  const dictDispatch = _dispatchModeByMeeting[m.id];
-  if (['all', 'pilot', 'observer'].includes(dictDispatch) && !m.dispatchMode) {
-    m.dispatchMode = dictDispatch;
-  }
   meetingManager.restoreMeeting(m);
 }
 
@@ -2538,7 +2226,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   // 2026-05-05 fix: 字段名是 'currentModel'（renderer.js:5287 持久化用的字段），
   //   旧版误写成 'model' → 兜底机制对 model 永不触发，任何一次 race 把 currentModel
   //   写成 null 都会永久污染 state.json，dormant 唤醒丢失原 model（落到默认 opus 等）。
-  const RESUME_META_FIELDS = ['transcriptPath', 'codexSid', 'codexSessionsRoot', 'codexAllowMtimeFallback', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel', 'contextPct', 'contextUsed', 'contextMax', 'userRenamed', 'autoTitleGenerated'];
+  const RESUME_META_FIELDS = ['transcriptPath', 'codexSid', 'codexAppThreadId', 'codexSessionsRoot', 'codexAllowMtimeFallback', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel', 'contextPct', 'contextUsed', 'contextMax', 'userRenamed', 'autoTitleGenerated'];
   const oldByHubId = new Map(lastPersistedSessions.map(s => [s.hubId, s]));
   for (const newSession of list) {
     if (!newSession || !newSession.hubId) continue;
@@ -2581,7 +2269,6 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
   // 2026-05-05 道雪：第二道防线 — renderer 传来的 meeting 列表如果缺字段（历史 bug 漏 scene 等
   //   导致重启后所有群聊退化为 general），按 id 从 meetingManager 拿权威对象做字段补全。
   //   renderer 的字段是 UI 派生快照（lastMessageTime / focusedSub 等），优先用它；
-  //   meetingManager 的字段是 backend 真理源（scene / mode / pilotSlot / dispatchMode /
   //   participants / slotSpecs / covenantText），这些字段始终从 manager 兜底，
   //   确保即使未来 renderer 有调用方再漏字段也不会写残 state.json。
   let meetingsForState;
@@ -2594,10 +2281,6 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
         ...rendererMeeting,
         scene: rendererMeeting.scene || authoritative.scene,
         mode: rendererMeeting.mode || authoritative.mode,
-        pilotSlot: (typeof rendererMeeting.pilotSlot === 'number')
-          ? rendererMeeting.pilotSlot
-          : (authoritative.pilotSlot ?? null),
-        dispatchMode: rendererMeeting.dispatchMode || authoritative.dispatchMode || 'all',
         groupChat: typeof rendererMeeting.groupChat === 'boolean'
           ? rendererMeeting.groupChat
           : !!authoritative.groupChat,
@@ -2660,8 +2343,6 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
     sessions: list,
     meetings: meetingsForState,
     immersiveByMeeting: _immersiveByMeeting,
-    pilotSlotByMeeting: _pilotSlotByMeeting,
-    dispatchModeByMeeting: _dispatchModeByMeeting,
   });
 });
 
@@ -2670,14 +2351,14 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
 // `--continue` as fallback when we don't have a CC id recorded.
 ipcMain.handle('resume-session', async (_e, meta) => {
   if (!meta || !meta.hubId) return null;
-  const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume');
+  const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume' || meta.kind === 'claude-web' || meta.kind === 'claude-web-resume');
   const isDeepSeek = (meta.kind === 'deepseek');
   const isGlm = (meta.kind === 'glm');
   // CLAUDE_FAMILY 含 claude/claude-resume/deepseek/glm/gpt/kimi/qwen — 所有跑在 Claude CLI
   // 上的 kind 共享同一 resume + system prompt 注入路径，单一真理源。
   const isClaudeCliResumable = isClaudeFamily(meta.kind);
-  const isGeminiOrCodex = (meta.kind === 'gemini' || meta.kind === 'codex');
-  const codexMissingSid = (meta.kind === 'codex' && !meta.codexSid);
+  const isGeminiOrCodex = (meta.kind === 'gemini' || isCodexBaseKind(meta.kind));
+  const codexMissingSid = (isCodexBaseKind(meta.kind) && !meta.codexSid);
 
   // resume 时根据会议模式重新注入 prompt 文件(research/general 公约)。
   // 注意三家 CLI 各走自己的注入字段(与 add-meeting-sub 对齐):
@@ -2708,7 +2389,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
         resumeOpts.appendSystemPromptFile = promptFile;
       } else if (meta.kind === 'gemini') {
         resumeOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
-      } else if (meta.kind === 'codex') {
+      } else if (isCodexBaseKind(meta.kind)) {
         resumeOpts.codexInstructionFile = promptFile;
       }
     }
@@ -2725,7 +2406,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
           ARENA_HOOK_TOKEN: HOOK_TOKEN,
           ARENA_AI_KIND: 'gemini',
         };
-      } else if (meta.kind === 'codex') {
+      } else if (isCodexBaseKind(meta.kind)) {
         resumeOpts.codexBypassApprovals = true;
         resumeOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meta.meetingId, hookPort, HOOK_TOKEN)];
       }
@@ -2738,7 +2419,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
   if (!resumeTranscriptPath && isClaudeCliResumable && meta.ccSessionId) {
     try { resumeTranscriptPath = findTranscriptByCCSessionId(meta.ccSessionId); } catch {}
   }
-  if (!resumeTranscriptPath && meta.kind === 'codex' && meta.codexSid) {
+  if (!resumeTranscriptPath && isCodexBaseKind(meta.kind) && meta.codexSid) {
     try { resumeTranscriptPath = findCodexRolloutBySid(meta.codexSid, meta.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT); } catch {}
   }
 
@@ -2753,8 +2434,8 @@ ipcMain.handle('resume-session', async (_e, meta) => {
     useContinue: isClaudeCliResumable && !meta.ccSessionId,
     useResume: isGeminiOrCodex,
     codexResumePicker: codexMissingSid,
-    codexSid: meta.kind === 'codex' ? (meta.codexSid || null) : null,
-    codexProfile: meta.kind === 'codex' ? (meta.codexProfile || null) : null,
+    codexSid: isCodexBaseKind(meta.kind) ? (meta.codexSid || null) : null,
+    codexProfile: isCodexBaseKind(meta.kind) ? (meta.codexProfile || null) : null,
     geminiChatId: meta.kind === 'gemini' ? (meta.geminiChatId || null) : null,
     geminiProjectRoot: meta.kind === 'gemini' ? (meta.geminiProjectRoot || null) : null,
     autoTitleGenerated: !!meta.autoTitleGenerated,
@@ -2768,7 +2449,7 @@ ipcMain.handle('resume-session', async (_e, meta) => {
   // Level 3 fallback: when native resume is unavailable (Level 1+2 both fail),
   // inject transcript tail as [CONTEXT] block into PTY after spawn settles.
   const needsLevel3 = (
-    (meta.kind === 'codex' && !meta.codexSid) ||
+    (isCodexBaseKind(meta.kind) && !meta.codexSid) ||
     (meta.kind === 'gemini' && !meta.geminiChatId)
   );
 
@@ -2891,188 +2572,6 @@ ipcMain.handle('open-path', async (_e, filePath) => {
 //   per-meeting per-slot 取 memory 状态（条目数 + pending 数 + _profile 是否存在）
 //   供卡片右上角 📒 N / 📥 / 📊 三个按钮的角标 / 点击行为使用。
 //   不读 .md 内容（只 stat / count），便于高频刷新。
-function _resolveMemoryProjectCwd(meetingId) {
-  // Phase 2 P0（2026-05-07）：跨 meeting memory 共享。
-  //   优先：sub session cwd 是用户真实项目目录（vs hub 自动分配的 workspaces/<mid>）
-  //         → 用之，per-project 跨 meeting 共享（用户在生产 hub 主驾指真实仓库）
-  //   否则：scene 级共享根 <HUB>/memory-scenes/<scene>
-  //         → per-scene 跨 meeting 共享（隔离 hub / 无 pilot / fallback workspace）
-  // 之前 fallback 用 getMeetingWorkspaceDir(meetingId)，每 meeting 独立 → AI 不会"越来越懂我"。
-  const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-  if (!meeting) return null;
-  const subSessions = (meeting.subSessions || []).map(sid => sessionManager.getSession(sid)).filter(Boolean);
-  let candidate = null;
-  if (typeof meeting.pilotSlot === 'number' && subSessions[meeting.pilotSlot]) {
-    candidate = subSessions[meeting.pilotSlot].cwd || null;
-  }
-  if (!candidate && subSessions.length > 0) {
-    candidate = subSessions[0].cwd || null;
-  }
-  if (candidate && isUserProjectCwd(candidate)) {
-    return candidate;
-  }
-  const scene = meeting.scene || 'general';
-  const root = getSceneMemoryRoot(scene);
-  try { fs.mkdirSync(root, { recursive: true }); } catch {}
-  return root;
-}
-
-// Phase 3：从 (meeting, slot) 反推 sub session → 派生 (aiKind, aiModel, identity)。
-//   slot = pikachu/charmander/squirtle，UI 仍用之；底层都按 identity 存。
-//   返回 null 表示找不到（slot 越界 / sub 已关）。
-function _identityFromMeetingSlot(meeting, slot) {
-  if (!meeting || !slot) return null;
-  const subSidsRaw = meeting.subSessions || [];
-  const slotIdx = SLOT_IDS.indexOf(slot);
-  if (slotIdx < 0 || slotIdx >= subSidsRaw.length) return null;
-  const sub = sessionManager.getSession(subSidsRaw[slotIdx]);
-  if (!sub) return null;
-  const aiKind = sub.kind || 'unknown';
-  const aiModel = (sub.currentModel && sub.currentModel.id) || sub.model || '';
-  return { aiKind, aiModel, identity: rtMemoryStore.makeIdentity(aiKind, aiModel) };
-}
-
-ipcMain.handle('arena:get-memory-status', (_e, { meetingId, slot } = {}) => {
-  const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-  if (!meeting || !slot) return { ok: false, count: 0, pending: 0, hasProfile: false };
-  const projectCwd = _resolveMemoryProjectCwd(meetingId);
-  const scene = meeting.scene || 'general';
-  // Phase 3：派生 identity；slot 仍是 UI 标识但底层全按 identity
-  const idInfo = _identityFromMeetingSlot(meeting, slot);
-  if (!idInfo) {
-    // sub 还没创建（如刚 createMeeting 模板未填）→ 返回空 status
-    return { ok: true, count: 0, pending: 0, hasProfile: false, projectCwd, scene, identity: null, aiKind: null, aiModel: null };
-  }
-  const { aiKind, aiModel, identity } = idInfo;
-  let count = 0;
-  const readErrors = [];
-  try {
-    const list = rtMemoryStore.listMemory({ projectCwd, scene, identity });
-    count = (list && list.results && list.results.length) || 0;
-  } catch (e) {
-    console.warn('[memory-status] listMemory failed:', meetingId, slot, identity, e.message);
-    readErrors.push('listMemory: ' + e.message);
-  }
-  // pending / _profile 阶段 1 worker 才生成 — stat 路径但不报错
-  const memDir = path.join(projectCwd, '.arena', 'rooms', scene, 'memory');
-  let pending = 0;
-  let hasProfile = false;
-  try {
-    const pendingFile = path.join(memDir, `pending-${identity}.json`);
-    if (fs.existsSync(pendingFile)) {
-      const data = JSON.parse(fs.readFileSync(pendingFile, 'utf-8'));
-      pending = (Array.isArray(data.items) ? data.items : []).filter(x => x.status === 'pending').length;
-    }
-  } catch (e) {
-    console.warn('[memory-status] pending parse failed:', meetingId, slot, identity, e.message);
-    readErrors.push('pending: ' + e.message);
-  }
-  try {
-    hasProfile = fs.existsSync(path.join(memDir, '_profile.md'));
-  } catch (e) {
-    console.warn('[memory-status] profile stat failed:', e.message);
-    readErrors.push('profile: ' + e.message);
-  }
-  // Phase 2 P1（2026-05-07）：worker 健康状态（meeting 级 — slot 级共享同一份 checkpoint state）
-  let workerHealth = { failures: 0, lastReason: null, healthy: true };
-  try {
-    const st = rtCkptState.readState(projectCwd, scene);
-    workerHealth = {
-      failures: st.consecutive_failures || 0,
-      lastReason: st.last_failure_reason || null,
-      healthy: (st.consecutive_failures || 0) === 0,
-    };
-  } catch (e) {
-    console.warn('[memory-status] readState failed:', e.message);
-    readErrors.push('state: ' + e.message);
-  }
-  return {
-    ok: true, count, pending, hasProfile, projectCwd, scene, workerHealth,
-    // Phase 3：返回 identity / aiKind / aiModel 让 UI 顶部显示当前 AI 身份
-    identity, aiKind, aiModel,
-    readError: readErrors.length > 0 ? readErrors.join('; ') : null,
-  };
-});
-
-ipcMain.handle('arena:open-memory-file', async (_e, { meetingId, slot, type } = {}) => {
-  // type: 'own' | 'pending' | 'profile' | 'worker-state'（Phase 2 P1）
-  const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-  if (!meeting || !slot || !type) return 'missing meetingId/slot/type';
-  const projectCwd = _resolveMemoryProjectCwd(meetingId);
-  const scene = meeting.scene || 'general';
-  const memDir = path.join(projectCwd, '.arena', 'rooms', scene, 'memory');
-  // Phase 3：own / pending 路径按 identity 而非 slot
-  const idInfo = _identityFromMeetingSlot(meeting, slot);
-  const identity = idInfo ? idInfo.identity : null;
-  if ((type === 'own' || type === 'pending') && !identity) {
-    return 'cannot resolve AI identity for slot: ' + slot;
-  }
-  const fileMap = {
-    own: identity ? path.join(memDir, `${identity}.md`) : null,
-    pending: identity ? path.join(memDir, `pending-${identity}.json`) : null,
-    profile: path.join(memDir, '_profile.md'),
-    // checkpoint-state.json 在 rooms/{scene}/ 根（非 memory/ 子目录），见 checkpoint-state.js:23
-    'worker-state': path.join(projectCwd, '.arena', 'rooms', scene, 'checkpoint-state.json'),
-  };
-  const fp = fileMap[type];
-  if (!fp) return 'invalid type';
-  // 文件不存在时也允许打开 'own'（store 会按需创建头部）
-  if (!fs.existsSync(fp)) {
-    if (type === 'own') {
-      // 尚无任何 entry — 创建空文件方便用户预览（与 store.ensureFileWithHeader 同款 header）
-      try {
-        fs.mkdirSync(path.dirname(fp), { recursive: true });
-        if (!fs.existsSync(fp)) {
-          fs.writeFileSync(fp, '# Group Chat Memory\n# 行格式见 core/group-chat-memory/store.js · plan §4.6\n---\n\n', 'utf-8');
-        }
-      } catch (e) { return 'create file failed: ' + e.message; }
-    } else {
-      return `file not yet created: ${fp}`;
-    }
-  }
-  try {
-    return await shell.openPath(fp);
-  } catch (e) {
-    return String(e && e.message || e);
-  }
-});
-
-ipcMain.handle('arena:resolve-memory-file', async (_e, { meetingId, slot, type } = {}) => {
-  const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-  if (!meeting || !slot || !type) return { error: 'missing meetingId/slot/type' };
-  const projectCwd = _resolveMemoryProjectCwd(meetingId);
-  const scene = meeting.scene || 'general';
-  const memDir = path.join(projectCwd, '.arena', 'rooms', scene, 'memory');
-  const idInfo = _identityFromMeetingSlot(meeting, slot);
-  const identity = idInfo ? idInfo.identity : null;
-  if ((type === 'own' || type === 'pending') && !identity) {
-    return { error: 'cannot resolve AI identity for slot: ' + slot };
-  }
-  const fileMap = {
-    own: identity ? path.join(memDir, `${identity}.md`) : null,
-    pending: identity ? path.join(memDir, `pending-${identity}.json`) : null,
-    profile: path.join(memDir, '_profile.md'),
-    'worker-state': path.join(projectCwd, '.arena', 'rooms', scene, 'checkpoint-state.json'),
-  };
-  const fp = fileMap[type];
-  if (!fp) return { error: 'invalid type' };
-  if (!fs.existsSync(fp)) {
-    if (type === 'own') {
-      try {
-        fs.mkdirSync(path.dirname(fp), { recursive: true });
-        if (!fs.existsSync(fp)) {
-          fs.writeFileSync(fp, '# Group Chat Memory\n# See core/group-chat-memory/store.js\n---\n\n', 'utf-8');
-        }
-      } catch (e) {
-        return { error: 'create file failed: ' + e.message };
-      }
-    } else {
-      return { error: `file not yet created: ${fp}` };
-    }
-  }
-  return { path: fp };
-});
-
 const READ_FILE_EXTS = new Set([
   '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl',
   '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs',
@@ -3093,44 +2592,6 @@ ipcMain.handle('read-file', async (_e, filePath) => {
   } catch (e) {
     return { error: String(e && e.message || e) };
   }
-});
-
-// --- Mobile remote IPC handlers ---
-
-ipcMain.handle('mobile:get-ips', () => {
-  const nets = os.networkInterfaces();
-  const out = [];
-  for (const [name, addrs] of Object.entries(nets)) {
-    if (!addrs) continue;
-    for (const a of addrs) {
-      if (a.family === 'IPv4' && !a.internal) out.push({ name, address: a.address });
-    }
-  }
-  return out;
-});
-
-ipcMain.handle('mobile:get-port', () => {
-  return (mobileSrv && mobileSrv.port) || 3470;
-});
-
-ipcMain.handle('mobile:create-pairing', async (_e, { addresses, deviceName }) => {
-  const token = mobileAuth.generateToken();
-  const port = (mobileSrv && mobileSrv.port) || 3470;
-  const addrs = (addresses && addresses.length) ? addresses : [`127.0.0.1:${port}`];
-  const payload = Buffer.from(JSON.stringify(addrs)).toString('base64url');
-  const first = addrs[0];
-  const scheme = first.startsWith('http://') || first.startsWith('https://') ? '' : 'http://';
-  const host = first.replace(/^https?:\/\//, '');
-  const pairUrl = `${scheme}${host}/pair?token=${token}&addresses=${payload}&name=${encodeURIComponent(deviceName || 'Phone')}`;
-  if (!QRCode) QRCode = require('qrcode');
-  const qrDataUrl = await QRCode.toDataURL(pairUrl, { margin: 1, width: 360 });
-  return { token, pairUrl, qrDataUrl };
-});
-
-ipcMain.handle('mobile:list-devices', () => mobileAuth.listDevices());
-
-ipcMain.handle('mobile:revoke-device', (_e, deviceId) => {
-  return mobileAuth.revokeDevice(deviceId);
 });
 
 // --- Hook HTTP server ---
@@ -3154,11 +2615,7 @@ const hookServer = http.createServer((req, res) => {
   const isResearchFetch = isResearchFetchStock || isResearchFetchField || isResearchFetchConcept || isResearchFetchSector
     || isResearchStockStatic || isResearchStockMarket || isResearchStockNews;
   // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调（loopback）。
-  const isMemoryWrite = req.method === 'POST' && req.url === '/api/groupchat/memory-write';
-  const isMemorySearch = req.method === 'POST' && req.url === '/api/groupchat/memory-search';
-  const isMemoryList = req.method === 'POST' && req.url === '/api/groupchat/memory-list';
-  const isMemoryRoute = isMemoryWrite || isMemorySearch || isMemoryList;
-  if (!isHook && !isStatus && !isResearchFetch && !isMemoryRoute && !isEscapeHome) {
+  if (!isHook && !isStatus && !isResearchFetch && !isEscapeHome) {
     res.writeHead(404); res.end('{}'); return;
   }
 
@@ -3191,6 +2648,19 @@ const hookServer = http.createServer((req, res) => {
         return;
       }
       console.log('[escape-home] HTTP triggered');
+      // 2026-05-17 道雪：主 webContents 可能已被外部 URL navigate 走（renderer 跑的
+      //   是远程网页，preload IPC 失效，sendToRenderer('escape-home') 收不到）。
+      //   此时直接 loadFile 拉回 index.html — Hub 主进程没死，session 子进程没丢，
+      //   只是 renderer 重新初始化从 state.json 恢复。
+      const currentUrl = mainWindow.webContents.getURL();
+      const navigatedAway = !currentUrl.startsWith('file:') || !currentUrl.includes('/renderer/index.html');
+      if (navigatedAway) {
+        console.warn('[escape-home] main webContents has been navigated to', currentUrl, '→ loadFile back to index.html');
+        mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, pid: process.pid, recovered: 'loadFile', from: currentUrl }));
+        return;
+      }
       sendToRenderer('escape-home');
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ ok: true, pid: process.pid }));
@@ -3227,79 +2697,6 @@ const hookServer = http.createServer((req, res) => {
       }
       const elapsed = Date.now() - t0;
       console.log(`[research] ${req.url.split('/').pop()} kind=${kind} elapsed=${elapsed}ms ok=${result.ok}`);
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(result));
-      return;
-    }
-    // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调
-    if (isMemoryRoute) {
-      if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
-      // Phase 3：从 (aiKind, aiModel) 派生 identity；slot 仅日志/UI 关联用
-      const { meetingId, slot, aiKind, aiModel } = parsed;
-      const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-      if (!meeting) {
-        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: false, error: 'meeting not found: ' + meetingId }));
-        return;
-      }
-      const projectCwd = _resolveMemoryProjectCwd(meetingId);
-      if (!projectCwd) {
-        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: false, error: 'memory route: failed to resolve projectCwd' }));
-        return;
-      }
-      const scene = meeting.scene || 'general';
-      // Phase 3：派生 identity（aiKind=claude/gemini/codex, model=具体型号字符串）
-      const identity = rtMemoryStore.makeIdentity(aiKind, aiModel);
-      if (!rtMemoryStore.isValidIdentity(identity)) {
-        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: false, error: 'invalid identity derived from aiKind/aiModel: ' + identity }));
-        return;
-      }
-      const t0 = Date.now();
-      let result;
-      try {
-        if (isMemoryWrite) {
-          result = rtMemoryStore.appendMemoryEntry({
-            projectCwd, scene, identity,
-            scope: parsed.scope || 'scene',
-            kind: parsed.kind,
-            key: parsed.key,
-            content: parsed.content,
-            source: parsed.source || 'self',
-          });
-          if (result.ok) {
-            // UI 角标更新：广播 memory-event（仍按 slot 通知，UI 通过 slot→identity 映射拉新 count）
-            try {
-              const list = rtMemoryStore.listMemory({ projectCwd, scene, identity });
-              const count = (list && list.results && list.results.length) || 0;
-              sendToRenderer('memory-event', {
-                type: 'write',
-                meetingId, scene, slot, identity,
-                action: result.action,
-                key: result.entry && result.entry.key,
-                count,
-                file: result.file,
-              });
-            } catch (e) { /* renderer 没起也无所谓 */ }
-          }
-        } else if (isMemorySearch) {
-          result = rtMemoryStore.searchMemory({
-            projectCwd, scene, identity,
-            query: parsed.query,
-            limit: parsed.limit,
-          });
-        } else {
-          result = rtMemoryStore.listMemory({
-            projectCwd, scene, identity,
-            kind: parsed.kind, // 注：这里 kind 是 entry kind（preference/...），与 aiKind 字段同名但语义不同
-          });
-        }
-      } catch (e) {
-        result = { ok: false, error: 'memory route throw: ' + e.message };
-      }
-      const elapsed = Date.now() - t0;
-      console.log(`[memory] ${req.url.split('/').pop()} identity=${identity} slot=${slot} scene=${scene} elapsed=${elapsed}ms ok=${result && result.ok}`);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(result));
       return;
@@ -3845,7 +3242,7 @@ function calcAgentUsage(kind, scopeOrRoot = null) {
 function scanAgentSessions() {
   const allSessions = sessionManager.getAllSessions();
   for (const s of allSessions) {
-    if (s.kind !== 'gemini' && s.kind !== 'codex') continue;
+    if (s.kind !== 'gemini' && !isCodexBaseKind(s.kind)) continue;
     if (s.status === 'dormant') continue;
     const buf = sessionManager.getSessionBuffer(s.id);
     if (!buf) continue;
@@ -3855,10 +3252,10 @@ function scanAgentSessions() {
       const prev = _agentLastStatus.get(s.id + ':tok');
       if (prev !== parsed.tokensUsed) {
         const delta = prev ? parsed.tokensUsed - prev : parsed.tokensUsed;
-        const scopeKey = s.kind === 'codex'
+        const scopeKey = isCodexBaseKind(s.kind)
           ? agentUsageScopeKey(s.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT)
           : null;
-        if (delta > 0) recordAgentTokens(s.kind, delta, scopeKey);
+        if (delta > 0) recordAgentTokens(isCodexBaseKind(s.kind) ? 'codex' : s.kind, delta, scopeKey);
         _agentLastStatus.set(s.id + ':tok', parsed.tokensUsed);
       }
     }
@@ -4006,235 +3403,13 @@ app.whenReady().then(async () => {
   // 延后启动避免拖慢首屏;失败静默不影响其他功能。
   setTimeout(() => { fetchAndCachePackyAccount().catch(() => {}); }, 1500);
   setInterval(() => { fetchAndCachePackyAccount().catch(() => {}); }, 5 * 60 * 1000);
-  // Phase 2 P2（2026-05-07）：inbox-archived/ 自动 GC（180 天保留）
-  //   启动 5 秒后异步跑一次（启动期 active meetings 通常为空，主要清 scene roots）。
-  //   之后每 6 小时跑一次（覆盖 per-project 路径——用户开过的真实项目目录会出现在 active meetings）。
-  //   失败静默 — 不阻塞启动；不影响主流程。
-  //   1. <HUB>/memory-scenes/<scene>/ — scene 共享根（隔离 hub / 无 pilot 的 fallback）
-  //   2. 已知 meeting 的 pilot.cwd 是真实项目目录的（per-project 共享路径）
-  //      [Phase 2 silent-failure-hunt fix · CRITICAL] 不扫 per-project 会让该路径归档无限堆积。
-  function _runMemArchiveGc() {
-    try {
-      // 收集待扫描 (root, scene) 对，去重
-      const targets = new Map(); // key = `${root}|${scene}`，value = { root, scene }
-      // (1) scene 共享根
-      const scenesRoot = path.join(getHubDataDir(), 'memory-scenes');
-      if (fs.existsSync(scenesRoot)) {
-        try {
-          const sceneDirs = fs.readdirSync(scenesRoot, { withFileTypes: true })
-            .filter(d => d.isDirectory()).map(d => d.name);
-          for (const scene of sceneDirs) {
-            const root = path.join(scenesRoot, scene);
-            targets.set(`${root}|${scene}`, { root, scene });
-          }
-        } catch (e) { console.warn('[mem-gc] readdir scenesRoot failed:', e.message); }
-      }
-      // (2) 当前已知 meeting 的 pilot/sub real-project cwd
-      try {
-        const meetings = meetingManager.getAllMeetings ? meetingManager.getAllMeetings() : [];
-        for (const m of (meetings || [])) {
-          if (!m || !m.scene) continue;
-          const subSessions = (m.subSessions || []).map(sid => sessionManager.getSession(sid)).filter(Boolean);
-          let candidate = null;
-          if (typeof m.pilotSlot === 'number' && subSessions[m.pilotSlot]) candidate = subSessions[m.pilotSlot].cwd || null;
-          if (!candidate && subSessions.length > 0) candidate = subSessions[0].cwd || null;
-          if (candidate && isUserProjectCwd(candidate)) {
-            targets.set(`${candidate}|${m.scene}`, { root: candidate, scene: m.scene });
-          }
-        }
-      } catch (e) { console.warn('[mem-gc] meetings scan failed:', e.message); }
-
-      let totalRemoved = 0, totalScanned = 0, sceneCount = 0;
-      for (const { root, scene } of targets.values()) {
-        try {
-          const r = rtInbox.gcArchive(root, scene);
-          totalScanned += r.scanned;
-          totalRemoved += r.removed;
-          if (r.errors.length) console.warn(`[mem-gc] ${scene} (${root}) errors:`, r.errors);
-          sceneCount += 1;
-        } catch (e) {
-          console.warn(`[mem-gc] scene=${scene} root=${root} threw:`, e.message);
-        }
-      }
-      if (totalScanned > 0 || totalRemoved > 0) {
-        console.log(`[mem-gc] inbox-archived sceneRoots=${sceneCount} scanned=${totalScanned} removed=${totalRemoved} (180-day retention)`);
-      }
-    } catch (e) {
-      console.warn('[mem-gc] gc failed:', e.message);
-    }
-  }
-  // Phase 3（2026-05-07）：legacy slot 数据迁移到 legacy-by-slot/
-  //   phase 1/2 把 pikachu.md / charmander.md / squirtle.md / pending-{slot}.json 当存储 key 写入。
-  //   phase 3 改用 identity 后，老文件会和新 identity 文件同目录共存且语义错位（slot 不是 AI 身份）。
-  //   启动时一次性把 legacy 文件 mv 到 memory/legacy-by-slot/，不删除便于审计/手动复用。
-  //   只迁移 hub 管理的 scene roots（用户真实项目的 .arena 不动 — 那是用户自己的）。
-  //
-  // [Phase 3 silent-failure-hunt fix · CRITICAL] 顺序：先迁移（5s），再 GC（迁移 done 后立即 trigger）。
-  //   原本 GC 5s + migration 7s 同 dir 并发扫描有 race；改成串行 + migration 在 GC 之前。
-  function _runLegacyMigration() {
-    try {
-      const { FAMILY_KINDS, canonicalAiKind } = require('./core/ai-kinds.js');
-      const FAMILY_SET = new Set(FAMILY_KINDS); // claude/gemini/gpt/deepseek/glm/kimi/qwen
-      const SLOT_NAMES = new Set(['pikachu', 'charmander', 'squirtle']); // phase 1/2 legacy
-      // [Phase 4 三路评审 · DeepSeek] 边界 case：phase 3 写入 'codex.md'（不含 '-'）的话
-      //   原判别 `id.includes('-') && !FAMILY_SET.has(id)` 会跳过它，但 canonicalAiKind('codex') = 'gpt'
-      //   说明应该迁移到 legacy-by-version。所以另加一条：canonical 后变了 → 迁移。
-      const _shouldMigrateToVersion = (id) => {
-        // phase 3 命名（含 '-' 但非家族字符串）：claude-opus-4-7, gemini-3-pro 等
-        if (id.includes('-') && !FAMILY_SET.has(id)) return true;
-        // phase 3 'codex.md'（被 phase 4 canonical 到 gpt.md，旧文件应归档）
-        if (canonicalAiKind(id) !== id) return true;
-        return false;
-      };
-      const scenesRoot = path.join(getHubDataDir(), 'memory-scenes');
-      if (!fs.existsSync(scenesRoot)) return;
-      let sceneDirs = [];
-      try {
-        sceneDirs = fs.readdirSync(scenesRoot, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
-      } catch (e) { console.warn('[mem-legacy] readdir scenesRoot failed:', e.message); return; }
-      let movedSlot = 0, movedVersion = 0;
-      for (const scene of sceneDirs) {
-        const memDir = path.join(scenesRoot, scene, '.arena', 'rooms', scene, 'memory');
-        if (!fs.existsSync(memDir)) continue;
-        const legacySlotDir = path.join(memDir, 'legacy-by-slot');
-        const legacyVersionDir = path.join(memDir, 'legacy-by-version'); // Phase 4 新增
-        let names;
-        try { names = fs.readdirSync(memDir); } catch { continue; }
-        for (const name of names) {
-          if (name === 'legacy-by-slot' || name === 'legacy-by-version' || name === 'inbox-archived') continue;
-          // 个体 .md
-          if (name.endsWith('.md')) {
-            if (name === '_profile.md') continue;
-            const id = name.slice(0, -3);
-            // Phase 1/2 legacy slot 文件 → legacy-by-slot/
-            if (SLOT_NAMES.has(id)) {
-              try {
-                fs.mkdirSync(legacySlotDir, { recursive: true });
-                fs.renameSync(path.join(memDir, name), path.join(legacySlotDir, name));
-                movedSlot += 1;
-              } catch (e) { console.warn('[mem-legacy] move slot-file failed:', name, e.message); }
-              continue;
-            }
-            // Phase 4：phase 3 的 {kind}-{model}.md（如 claude-opus-4-7.md）→ legacy-by-version/
-            //   判定：含 '-' 且 id 不在 FAMILY_KINDS 集合内
-            //   ⚠ [silent-failure-hunt] 未来若加含连字符的家族名（如 'claude-code'），
-            //     必须**先**把它加到 ai-kinds.js FAMILY_KINDS，再部署代码 — 否则现有家族 .md
-            //     会被误迁到 legacy-by-version/ 导致用户感知"那家失忆"。canonicalAiKind 已会
-            //     warn 未注册 kind，是双重防线。
-            if (_shouldMigrateToVersion(id)) {
-              try {
-                fs.mkdirSync(legacyVersionDir, { recursive: true });
-                fs.renameSync(path.join(memDir, name), path.join(legacyVersionDir, name));
-                movedVersion += 1;
-              } catch (e) { console.warn('[mem-legacy] move version-file failed:', name, e.message); }
-            }
-            continue;
-          }
-          // pending-*.json
-          const m = name.match(/^pending-(.+)\.json$/);
-          if (m) {
-            const id = m[1];
-            // Phase 1/2 pending-{slot}.json
-            if (SLOT_NAMES.has(id)) {
-              try {
-                fs.mkdirSync(legacySlotDir, { recursive: true });
-                fs.renameSync(path.join(memDir, name), path.join(legacySlotDir, name));
-                movedSlot += 1;
-              } catch (e) { console.warn('[mem-legacy] move pending-slot failed:', name, e.message); }
-              continue;
-            }
-            // Phase 4：phase 3 的 pending-{kind}-{model}.json
-            if (_shouldMigrateToVersion(id)) {
-              try {
-                fs.mkdirSync(legacyVersionDir, { recursive: true });
-                fs.renameSync(path.join(memDir, name), path.join(legacyVersionDir, name));
-                movedVersion += 1;
-              } catch (e) { console.warn('[mem-legacy] move pending-version failed:', name, e.message); }
-            }
-          }
-        }
-      }
-      if (movedSlot > 0) {
-        console.log(`[mem-legacy] phase 1/2→3 migration: moved ${movedSlot} slot files to legacy-by-slot/`);
-      }
-      if (movedVersion > 0) {
-        console.log(`[mem-legacy] phase 3→4 migration: moved ${movedVersion} version files to legacy-by-version/`);
-      }
-    } catch (e) {
-      console.warn('[mem-legacy] migration failed:', e.message);
-    }
-  }
-  // 串行：5s 跑 migration（双层 phase 1/2 + phase 3）→ 完成后立即跑 GC
-  setTimeout(() => {
-    _runLegacyMigration();
-    _runMemArchiveGc();
-  }, 5000);
-  // 每 6 小时复跑 GC（不需要重跑 migration — 一次性操作）
-  setInterval(_runMemArchiveGc, 6 * 60 * 60 * 1000);
-  // Mobile server starts after window — no need to block UI for phone pairing.
-  try {
-    traceStartup('mobile server start');
-    const hubConfig = getHubConfig();
-    const feishuConfig = hubConfig.feishuCodex || {};
-    const feishuCodexToken = feishuConfig.token || '';
-    const feishuAppId = feishuConfig.appId || '';
-    const feishuAppSecret = feishuConfig.appSecret || '';
-    const feishuSender = (feishuAppId && feishuAppSecret && FeishuClient && createFeishuMessageSender)
-      ? createFeishuMessageSender(new FeishuClient({
-        appId: feishuAppId,
-        appSecret: feishuAppSecret,
-        domain: feishuConfig.domain || 'feishu',
-        baseUrl: process.env.HUB_FEISHU_BASE_URL || null,
-      }), {
-        replyInThread: feishuConfig.replyInThread !== false,
-      })
-      : async (msg) => {
-        // MVP fallback: inbound Feishu-compatible events are functional without
-        // credentials. Official Feishu delivery is enabled by HUB_FEISHU_APP_ID
-        // + HUB_FEISHU_APP_SECRET.
-        console.log('[feishu-codex]', JSON.stringify({
-          threadKey: msg.threadKey,
-          chatId: msg.chatId,
-          messageId: msg.messageId,
-          type: msg.type,
-          text: msg.text,
-        }));
-      };
-    mobileSrv = await createMobileServer({
-      sessionManager,
-      preferredPort: 3470,
-      getDormantSessions: () => lastPersistedSessions,
-      feishuCodex: feishuCodexToken ? {
-        token: feishuCodexToken,
-        appId: feishuAppId,
-        appSecret: feishuAppSecret,
-        domain: feishuConfig.domain || 'feishu',
-        ws: feishuConfig.ws !== false,
-        defaultCwd: feishuConfig.defaultCwd || path.join(_home, 'claude-session-hub'),
-        sendMessage: feishuSender,
-        onSessionCreated: (session) => {
-          registerSessionForTap(session);
-          sendToRenderer('session-created', { session });
-        },
-        getCleanOutput: (sessionId) => transcriptTap.getLastAssistantText(sessionId),
-        transcriptTap,
-      } : null,
-    });
-    console.log(`[mobile] listening on :${mobileSrv.port}`);
-    global.__mobileSrv = mobileSrv;
-    traceStartup(`mobile server done (${mobileSrv.port})`);
-  } catch (e) {
-    console.error('[mobile] failed to start:', e);
-    global.__mobileSrv = null;
-  }
 });
 
 app.on('before-quit', async () => {
   // 2026-05-07 道雪：退出时保证三层都同步落盘——state.json（lock + merge）、
   //   per-meeting JSON、per-session JSON。任意一层丢了，下次 boot 的 selfHeal
   //   都能从另一层恢复。
-  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting, pilotSlotByMeeting: _pilotSlotByMeeting, dispatchModeByMeeting: _dispatchModeByMeeting }, { sync: true });
-  if (mobileSrv) { try { await mobileSrv.close(); } catch {} }
+  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting }, { sync: true });
   try {
     await meetingStore.flushAll();
     console.log('[群聊] meeting-store flushed on quit');

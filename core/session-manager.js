@@ -7,6 +7,8 @@ const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
 const { isClaudeFamily } = require('./ai-kinds.js');
+const { CodexAppServerClient } = require('./codex-app-server-client.js');
+const codexAppRegistry = require('./codex-app-registry.js');
 
 const RING_BUFFER_BYTES = 16384;
 const CODEX_REASONING_EFFORT = 'high';
@@ -447,21 +449,28 @@ class SessionManager extends EventEmitter {
   //   geminiProjectRoot:  required for Gemini resume (T8 new, used as cwd for correct project scoping)
   createSession(kind = 'powershell', opts = {}) {
     const id = opts.id || uuid();
-    const isClaude = kind === 'claude' || kind === 'claude-resume';
+    const isClaude = kind === 'claude' || kind === 'claude-resume' || kind === 'claude-web' || kind === 'claude-web-resume';
+    const isClaudeWeb = kind === 'claude-web' || kind === 'claude-web-resume';
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
-    const isCodex = kind === 'codex' || kind === 'codex-resume';
+    const isCodex = kind === 'codex' || kind === 'codex-resume' || kind === 'codex-web' || kind === 'codex-web-resume';
+    const isCodexWeb = kind === 'codex-web' || kind === 'codex-web-resume';
+    const isCodexApp = kind === 'codex-app';
     const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';
     const isGlm = kind === 'glm' || kind === 'glm-resume';
     const isGpt = kind === 'gpt' || kind === 'gpt-resume';
     const isKimi = kind === 'kimi' || kind === 'kimi-resume';
     const isQwen = kind === 'qwen' || kind === 'qwen-resume';
-    const isAgent = isClaude || isGemini || isCodex || isDeepSeek || isGlm || isGpt || isKimi || isQwen;
+    const isAgent = isClaude || isGemini || isCodex || isCodexApp || isDeepSeek || isGlm || isGpt || isKimi || isQwen;
     let title;
     if (opts.title) title = opts.title;
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
     else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
+    else if (kind === 'claude-web') { this.claudeWebCounter = (this.claudeWebCounter || 0) + 1; title = `Claude Web ${this.claudeWebCounter}`; }
+    else if (kind === 'claude-web-resume') title = `Claude Web Resume ${++this.resumeCounter}`;
     else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Gemini ${this.geminiCounter}`; }
     else if (kind === 'codex') { this.codexCounter = (this.codexCounter || 0) + 1; title = `Codex ${this.codexCounter}`; }
+    else if (kind === 'codex-web') { this.codexWebCounter = (this.codexWebCounter || 0) + 1; title = `Codex Web ${this.codexWebCounter}`; }
+    else if (kind === 'codex-app') { this.codexAppCounter = (this.codexAppCounter || 0) + 1; title = `Codex App ${this.codexAppCounter}`; }
     else if (kind === 'deepseek') { this.deepseekCounter = (this.deepseekCounter || 0) + 1; title = `DeepSeek ${this.deepseekCounter}`; }
     else if (kind === 'glm') { this.glmCounter = (this.glmCounter || 0) + 1; title = `GLM ${this.glmCounter}`; }
     else if (kind === 'gpt') { this.gptCounter = (this.gptCounter || 0) + 1; title = `GPT ${this.gptCounter}`; }
@@ -469,6 +478,7 @@ class SessionManager extends EventEmitter {
     else if (kind === 'qwen') { this.qwenCounter = (this.qwenCounter || 0) + 1; title = `Qwen ${this.qwenCounter}`; }
     else if (kind === 'gemini-resume') title = `Gemini Resume ${++this.resumeCounter}`;
     else if (kind === 'codex-resume') title = `Codex Resume ${++this.resumeCounter}`;
+    else if (kind === 'codex-web-resume') title = `Codex Web Resume ${++this.resumeCounter}`;
     else if (kind === 'deepseek-resume') title = `DeepSeek Resume ${++this.resumeCounter}`;
     else if (kind === 'glm-resume') title = `GLM Resume ${++this.resumeCounter}`;
     else if (kind === 'gpt-resume') title = `GPT Resume ${++this.resumeCounter}`;
@@ -496,7 +506,6 @@ class SessionManager extends EventEmitter {
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
-      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
       // Propagate data-dir override so the statusline script writes its cache
       // into the isolated test dir instead of the production ~/.claude-session-hub.
       if (process.env.CLAUDE_HUB_DATA_DIR) {
@@ -538,7 +547,6 @@ class SessionManager extends EventEmitter {
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
-      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
@@ -553,7 +561,6 @@ class SessionManager extends EventEmitter {
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
-      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
@@ -569,7 +576,6 @@ class SessionManager extends EventEmitter {
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
-      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
@@ -584,7 +590,6 @@ class SessionManager extends EventEmitter {
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
-      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
@@ -599,7 +604,6 @@ class SessionManager extends EventEmitter {
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
-      sessionEnv.CLAUDE_HUB_MOBILE_PORT = String((global.__mobileSrv && global.__mobileSrv.port) || 3470);
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
@@ -618,6 +622,86 @@ class SessionManager extends EventEmitter {
       try { fs.accessSync(spawnCwd); } catch { spawnCwd = null; }
     }
     if (!spawnCwd) spawnCwd = process.env.USERPROFILE || process.env.HOME || '.';
+
+    if (isCodexApp) {
+      const cv = getConfigValues();
+      const cmid = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
+      const now = Date.now();
+      const info = {
+        id,
+        kind,
+        title,
+        status: 'idle',
+        lastMessageTime: opts.lastMessageTime || now,
+        lastOutputPreview: opts.lastOutputPreview || '',
+        unreadCount: 0,
+        createdAt: now,
+        cwd: spawnCwd,
+        meetingId: opts.meetingId || null,
+        currentModel: { id: cmid, displayName: cmid.toUpperCase() },
+        ...(opts.autoTitleGenerated ? { autoTitleGenerated: true } : {}),
+      };
+      const pendingTimers = [];
+      const clientEnv = { ...sessionEnv };
+      if (isCodexApiBackend(cv)) {
+        clearProxyEnv(clientEnv);
+        clientEnv.CODEX_HOME = ensureCodexApiProfile(cv, spawnCwd);
+      } else {
+        const profile = resolveCodexSubscriptionProfile(cv, opts.codexProfile);
+        if (profile.home) {
+          clientEnv.CODEX_HOME = profile.home;
+          ensureCodexCwdTrusted(spawnCwd, profile.home);
+        } else {
+          delete clientEnv.CODEX_HOME;
+          ensureCodexCwdTrusted(spawnCwd);
+        }
+        clientEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
+        clientEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
+        clientEnv.NO_PROXY = 'localhost,127.0.0.1';
+      }
+      const appClient = new CodexAppServerClient({
+        sessionId: id,
+        cwd: spawnCwd,
+        model: cmid,
+        env: clientEnv,
+      });
+      this.sessions.set(id, {
+        info,
+        pty: null,
+        appClient,
+        pendingTimers,
+        ringBuffer: '',
+        groupChatReady: true,
+        groupChatLastActivity: now,
+      });
+      codexAppRegistry.setClient(id, appClient);
+      appClient.on('output', ({ data }) => {
+        const entry = this.sessions.get(id);
+        if (!entry) return;
+        entry.groupChatLastActivity = Date.now();
+        this._appendToRingBuffer(id, data);
+        this.onData(id, data);
+        this._outputSeq += 1;
+        this.emit('output', { sessionId: id, seq: this._outputSeq, data });
+      });
+      appClient.on('session-bound', (ev) => {
+        const entry = this.sessions.get(id);
+        if (!entry) return;
+        entry.info.codexAppThreadId = ev.threadId;
+        this.emit('session-updated', this._toPublic(entry.info));
+      });
+      appClient.on('exit', (exitInfo) => {
+        const entry = this.sessions.get(id);
+        if (!entry || entry.appClient !== appClient) return;
+        this.sessions.delete(id);
+        codexAppRegistry.deleteClient(id);
+        this.onSessionClosed(id, entry.info ? entry.info.meetingId : null, exitInfo);
+      });
+      appClient.start().catch((e) => {
+        appClient.emit('output', { sessionId: id, data: `[codex-app] start failed: ${e.message}\r\n` });
+      });
+      return { ...info };
+    }
 
     let codexSessionsRoot = null;
     if (isCodex) {
@@ -713,7 +797,7 @@ class SessionManager extends EventEmitter {
       codexSessionsRoot,
       ...(isCodex && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
       ...(opts.codexSid ? { codexSid: opts.codexSid } : {}),
-      ...(isCodex && (kind === 'codex-resume' || opts.codexResumePicker || (opts.useResume && !opts.codexSid)) ? { codexAllowMtimeFallback: true } : {}),
+      ...(isCodex && (kind === 'codex-resume' || kind === 'codex-web-resume' || opts.codexResumePicker || (opts.useResume && !opts.codexSid)) ? { codexAllowMtimeFallback: true } : {}),
       ...(opts.autoTitleGenerated ? { autoTitleGenerated: true } : {}),
       // Spec 3 · W3 resume bug fix (a)：resume 启动时立即写入已知 ccSessionId，
       // 不等 Stop hook 第一次回调。否则 spawn 到第一次 Stop 之间 (~数秒) 卡片视图
@@ -773,10 +857,18 @@ class SessionManager extends EventEmitter {
         cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model}`;
       } else if (opts.useContinue) {
         cmd = ` claude --continue --model ${model}`;
-      } else if (kind === 'claude-resume') {
+      } else if (kind === 'claude-resume' || kind === 'claude-web-resume') {
         cmd = ` claude --resume --model ${model}`;
       } else {
         cmd = ` claude --model ${model}`;
+      }
+      // Claude Web 模式：用 --system-prompt-file 完全替换默认 system prompt，
+      // 从根上消除 CC 默认的 terse / no preamble 风格偏置，加载 web 风格指令。
+      // 注意：与 --append-system-prompt-file 可共存（前者替换、后者追加），但本期
+      // claude-web 不进群聊，不会触发同时注入场景。
+      if (isClaudeWeb) {
+        const promptPath = path.join(__dirname, 'claude-web-prompt.md');
+        cmd += ` --system-prompt-file "${promptPath.replace(/\\/g, '\\\\')}"`;
       }
       // Append system prompt file if provided (TeamSessionManager injects character prompt)
       if (opts.appendSystemPromptFile) {
@@ -858,8 +950,9 @@ class SessionManager extends EventEmitter {
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       const cv = getConfigValues();
       const codexModel = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
+      const codexInstructionFile = opts.codexInstructionFile || (isCodexWeb ? path.join(__dirname, 'codex-web-prompt.md') : null);
       let cmd;
-      if (kind === 'codex-resume' || opts.codexResumePicker) {
+      if (kind === 'codex-resume' || kind === 'codex-web-resume' || opts.codexResumePicker) {
         // codex resume 无参 = picker by default
         cmd = ` codex resume --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
       } else if (opts.useResume && opts.codexSid) {
@@ -880,9 +973,9 @@ class SessionManager extends EventEmitter {
         }
         // 注：曾尝试 --no-alt-screen 改善观感，实测无明显改善 + Enter 提交失效 → 撤回。
         // 渲染观感问题改由"持久化 AI 群聊面板"（直接展示干净回答预览）绕过。
-        if (opts.codexInstructionFile) {
-          cmd += ` -c "model_instructions_file=${opts.codexInstructionFile.replace(/\\/g, '\\\\')}"`;
-        }
+      }
+      if (codexInstructionFile) {
+        cmd += ` -c "model_instructions_file=${codexInstructionFile.replace(/\\/g, '\\\\')}"`;
       }
       cmd += '\r\n';
       let sent = false;
@@ -1128,6 +1221,13 @@ class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     for (const t of session.pendingTimers) clearTimeout(t);
+    if (session.appClient) {
+      this.sessions.delete(sessionId);
+      codexAppRegistry.deleteClient(sessionId);
+      try { session.appClient.close(); } catch {}
+      this.onSessionClosed(sessionId, session.info ? session.info.meetingId : null, { code: 0, signal: 'client_close' });
+      return;
+    }
     session.pty.kill();
     // Do NOT delete from this.sessions here — the onExit handler does it.
     // The guard in onExit (entry.pty !== ptyProcess) requires the entry to
@@ -1155,12 +1255,13 @@ class SessionManager extends EventEmitter {
 
   writeToSession(sessionId, data) {
     const s = this.sessions.get(sessionId);
+    if (s && s.appClient) return s.appClient.handleInput(data);
     if (s && s.pty) s.pty.write(data);
   }
 
   resizeSession(sessionId, cols, rows) {
     const s = this.sessions.get(sessionId);
-    if (s) s.pty.resize(Math.max(cols, 60), rows);
+    if (s && s.pty) s.pty.resize(Math.max(cols, 60), rows);
   }
 
   setFocusedSession(sessionId) {
@@ -1216,12 +1317,17 @@ class SessionManager extends EventEmitter {
     const isClaudeCli = isClaudeFamily(baseKind);
     const isolation = isClaudeCli ? buildGroupChatIsolationFlags(meetingId) : '';
     let cmd;
-    if (kind === 'codex' || kind === 'codex-resume') {
+    if (kind === 'codex' || kind === 'codex-resume' || kind === 'codex-web' || kind === 'codex-web-resume') {
       // relaunch：API 模式时 codex 用 isolated CODEX_HOME，从 info.codexSessionsRoot 反推
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
-      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}${CODEX_REASONING_CONFIG_ARG}\r\n`;
+      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}${CODEX_REASONING_CONFIG_ARG}`;
+      if (kind === 'codex-web' || kind === 'codex-web-resume') {
+        const promptPath = path.join(__dirname, 'codex-web-prompt.md');
+        cmd += ` -c "model_instructions_file=${promptPath.replace(/\\/g, '\\\\')}"`;
+      }
+      cmd += '\r\n';
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
       cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
     } else if (kind === 'claude' || kind === 'claude-resume') {
@@ -1255,7 +1361,7 @@ class SessionManager extends EventEmitter {
       .sort((a, b) => b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt);
   }
 
-  // Returns the public shape used by mobile API and 'session-updated' events.
+  // Returns the public shape used by renderer IPC and 'session-updated' events.
   _toPublic(info) {
     return {
       id: info.id,
@@ -1270,6 +1376,7 @@ class SessionManager extends EventEmitter {
       ...(info.transcriptPath !== undefined ? { transcriptPath: info.transcriptPath } : {}),
       ...(info.currentModel ? { model: info.currentModel.id } : {}),
       ...(info.currentModel ? { currentModel: info.currentModel } : {}),
+      ...(info.codexAppThreadId !== undefined ? { codexAppThreadId: info.codexAppThreadId } : {}),
       ...(typeof info.contextPct === 'number' ? { contextPct: info.contextPct } : {}),
       ...(typeof info.contextUsed === 'number' ? { contextUsed: info.contextUsed } : {}),
       ...(typeof info.contextMax === 'number' ? { contextMax: info.contextMax } : {}),
@@ -1278,7 +1385,7 @@ class SessionManager extends EventEmitter {
     };
   }
 
-  // Returns array of public session objects for mobile API.
+  // Returns array of public session objects for renderer IPC.
   listSessions() {
     return Array.from(this.sessions.values())
       .map(s => this._toPublic(s.info))
@@ -1326,8 +1433,13 @@ class SessionManager extends EventEmitter {
   dispose() {
     for (const s of this.sessions.values()) {
       for (const t of s.pendingTimers) clearTimeout(t);
-      s.pty.kill();
+      if (s.appClient) {
+        try { s.appClient.close(); } catch {}
+      } else if (s.pty) {
+        s.pty.kill();
+      }
     }
+    for (const id of this.sessions.keys()) codexAppRegistry.deleteClient(id);
     this.sessions.clear();
   }
 
@@ -1394,7 +1506,7 @@ async function readTranscriptTail(kind, sourcePath, n = 10) {
           const txt = obj.message.content.filter(c => c.type === 'text').map(c => c.text).join('');
           if (txt) out.push(`ASSISTANT: ${txt}`);
         }
-      } else if (kind === 'codex') {
+      } else if (kind === 'codex' || kind === 'codex-web') {
         if (obj.type === 'event_msg' && obj.payload?.type === 'task_complete' && obj.payload?.last_agent_message) {
           out.push(`ASSISTANT: ${obj.payload.last_agent_message}`);
         } else if (obj.type === 'response_item' && obj.payload?.role === 'user' && obj.payload?.content) {

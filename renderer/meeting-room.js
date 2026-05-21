@@ -14,16 +14,10 @@ if (typeof document !== 'undefined') (function () {
   let activeMeetingId = null;
   let meetingData = {};
   let subTerminals = {};
-  let _markerStatusCache = {};
-  let _markerPollTimer = null;
   // IF-C1（2026-05-01）：CLI ready 状态 cache（per-sid bool），由 cli-ready-status IPC 1s 轮询填充
   //   驱动 isInitializing 判断（修 P0 阻塞 bug B：原 markerStatus 永远 'none' 导致永久卡"创建中"）
   let _cliReadyCache = {};
   let _cliReadyPollTimer = null;
-  // AI 群聊记忆 phase 1（2026-05-07）：per-(meetingId, slot) 状态缓存
-  //   { meetingId: { slot: { count, pending, hasProfile } } }
-  //   memory-event IPC 增量更新；首次进 panel 时 _loadMemoryStatusForMeeting 拉取
-  let _memStatusBy = {};
   // IF-C3（2026-05-01）：banner dismiss 状态记录 — meetingId，dismiss 后同会议不再显示，
   //   关闭会议（closeMeetingPanel）会重置，下次进同会议又显示
   let _bannerDismissedFor = null;
@@ -43,35 +37,9 @@ if (typeof document !== 'undefined') (function () {
 
   // --- Group chat @command parser ---
   // 摘要功能 2026-05-08 整体下线：原 @summary @<slot> 命令路径已删
-  // 现仅支持 @debate / @all / @<slot>（@<slot> 仅用于剥前缀，仍走 fanout）
+  // 现仅支持 @m1 / @all / @<slot>（@<slot> 仅用于剥前缀，仍走 fanout）
   const _RT_SLOT_ALT = slotIdRegexAlternation();
   const _tokenRe = new RegExp('^@(' + _RT_SLOT_ALT + ')\\b\\s*', 'i');
-  function parseGroupChatCommand(text, meeting) {
-    if (!meeting || !meeting.scene) return { type: 'normal', text, targets: null };
-    let rest = text.trim();
-    const debateRe = /^@debate\b\s*/i;
-    let m;
-    if ((m = rest.match(debateRe))) {
-      return { type: 'rt-debate', text: rest.slice(m[0].length) };
-    }
-    const allRe = /^@all\b\s*/i;
-    if ((m = rest.match(allRe))) {
-      return { type: 'rt-fanout', text: rest.slice(m[0].length) };
-    }
-    // @<who> 私聊
-    const targets = [];
-    while (true) {
-      const t = rest.match(_tokenRe);
-      if (!t) break;
-      targets.push(t[1].toLowerCase());
-      rest = rest.slice(t[0].length);
-    }
-    // pilot redesign（2026-05-02）：旧 @xxx 私聊解析整体废弃。
-    //   想私聊就直接进对应 AI 子会话区聊（AI 群聊不再桥接子会话，private bridge 类型已删）。
-    //   保留 @xxx 前缀剥离能力，但全部走 fanout（@xxx 与不带 @ 等价）。
-    return { type: 'rt-fanout', text: rest };
-  }
-
   // --- Group Chat Mode: 持久化 AI 群聊面板（始终显示当前状态 + 历史）---
   // Phase 5(2026-05-05 道雪): 时光机模式状态 — _gcViewingTurnN[meetingId] = N 表示正在查看第 N 轮历史。
   //   null / undefined = 默认查看最新轮(实时模式), 数字 = 查看第 N 轮(只读历史模式)。
@@ -816,7 +784,7 @@ if (typeof document !== 'undefined') (function () {
   //         slots, lastTurn, meetingId, focused }；
   //         IIFE 私有 helper / 全局：_avatarBySlot, _avatarFallbackBySlot, _renderPreviewBlocks,
   //         isSlotParticipatingThisTurn, _ftCtxClass, _formatThinkTime, _formatTokens, _ftHtml,
-  //         _thinkStartTs, _markerStatusCache, _cliReadyCache, _tabState, sessions,
+  //         _thinkStartTs, _cliReadyCache, _tabState, sessions,
   //         _KIND_LABELS, modelShort, modelClass。
   // 返回：{ html, anyThinking }（anyThinking 由调用方累加，不再 mutate 闭包变量）
   function _renderSlotCard(slotIndex, ctx) {
@@ -827,7 +795,6 @@ if (typeof document !== 'undefined') (function () {
     const sub = { sid: slot.sid, label: slot.label };
     const partial = partialBy ? partialBy[sub.sid] : null;
     const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sub.sid) : null;
-    const markerState = _markerStatusCache[sub.sid];
     const isInitializing = s && !_cliReadyCache[sub.sid];
     let status = 'idle';
     let preview = '';
@@ -1170,91 +1137,12 @@ if (typeof document !== 'undefined') (function () {
             <span class="mr-ft-status ${statusCls}${sendStuck ? ' send-stuck' : ''}">${statusLabel}</span>${newBadge}
             ${timeStat}
           </div>
-          <div class="mr-ft-row2">${modelBadge}${ctxBadge}${tokenStat}${_memBadgesHtml(activeMeetingId, slotIdx, sid)}</div>
+          <div class="mr-ft-row2">${modelBadge}${ctxBadge}${tokenStat}</div>
           ${lineageHtml || ''}
         </div>
       </div>
       <div class="mr-ft-bottom">${bottomHtml}${escapeBar}</div>
     </div>`;
-  }
-
-  // AI 群聊记忆 phase 1（2026-05-07）：右上角 📒 N / 📥 / 📊 三个按钮
-  //   📒 N — 个体 .md 条目数。点击 → 打开 {slot}.md。N=0 也显示（点了会创建空文件 + header）
-  //   📥   — 仅 pending-{slot}.json 含 status='pending' 的 item 时显示（带数字 dot）
-  //   📊   — 仅 _profile.md 存在时显示（worker 派生的共识层；阶段 0 不存在）
-  function _memBadgesHtml(meetingId, slotIdx, sid) {
-    if (!meetingId || typeof slotIdx !== 'number' || slotIdx < 0 || slotIdx >= SLOT_IDS.length) return '';
-    const slot = SLOT_IDS[slotIdx];
-    const meta = _memStatusBy[meetingId] && _memStatusBy[meetingId][slot] || { count: 0, pending: 0, hasProfile: false, identity: null, aiKind: null, aiModel: null };
-    // Phase 4 tooltip：identity 是家族存储 key（claude/gpt/...），model 是用户可见的具体型号
-    //   [silent-failure-hunt] aiModel 来自 session.currentModel.id，理论上来源可控，但
-    //     防御性 HTML escape 避免引号 / < 等字符破坏 title 属性。
-    const _esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const familyHint = meta.identity ? _esc(meta.identity) + '.md' : '';
-    const modelHint = meta.aiModel ? `当前: ${_esc(meta.aiModel)}` : '';
-    const idHint = familyHint
-      ? (modelHint ? `\n${modelHint} → 写入 ${familyHint}（家族共享）` : `\n写入 ${familyHint}`)
-      : '';
-    const ownBtn = `<button class="mr-ft-mem-btn" data-gc-mem-action="open-own" data-gc-mem-sid="${sid}" data-gc-mem-slot="${slot}" title="打开家族记忆 .md${idHint}\n${meta.count} 条 entry">📒 ${meta.count}</button>`;
-    const inboxBtn = meta.pending > 0
-      ? `<button class="mr-ft-mem-btn pending" data-gc-mem-action="open-pending" data-gc-mem-sid="${sid}" data-gc-mem-slot="${slot}" title="打开 inbox 候选${idHint}\n${meta.pending} 条待 AI 采纳/拒绝">📥 <span class="dot">${meta.pending}</span></button>`
-      : '';
-    const profileBtn = meta.hasProfile
-      ? `<button class="mr-ft-mem-btn" data-gc-mem-action="open-profile" data-gc-mem-sid="${sid}" data-gc-mem-slot="${slot}" title="打开 _profile.md（共识层）">📊</button>`
-      : '';
-    // Phase 2 P1（2026-05-07）：worker 失败状态灯（meeting 级共享 — 仅在第一个 slot 显示，避免冗余）
-    let healthBtn = '';
-    if (slotIdx === 0) {
-      const wh = _memStatusBy[meetingId] && _memStatusBy[meetingId]._worker;
-      if (wh && wh.failures > 0) {
-        const cls = wh.failures >= 3 ? 'health-bad' : 'health-warn';
-        const reason = wh.lastReason || '(原因未知)';
-        const reasonAttr = String(reason).replace(/"/g, '&quot;').slice(0, 240);
-        healthBtn = `<button class="mr-ft-mem-btn ${cls}" data-gc-mem-action="open-worker" data-gc-mem-sid="${sid}" data-gc-mem-slot="${slot}" title="后台 worker 连续失败 ${wh.failures} 次&#10;最近原因: ${reasonAttr}&#10;点击查看 checkpoint state.json">🧠 ${wh.failures}</button>`;
-      }
-    }
-    return `${ownBtn}${inboxBtn}${profileBtn}${healthBtn}`;
-  }
-
-  // Lazy load memory status for a meeting — 通过 IPC 同步三家 count/pending/hasProfile，
-  //   有变化才 trigger refreshGroupChatPanel。在 selectMeeting / AI 群聊轮完成后调用。
-  async function _loadMemoryStatusForMeeting(meeting) {
-    if (!meeting || !meeting.id || !Array.isArray(meeting.subSessions)) return;
-    const meetingId = meeting.id;
-    if (!_memStatusBy[meetingId]) _memStatusBy[meetingId] = {};
-    let dirty = false;
-    const slotsToCheck = Math.min(meeting.subSessions.length, SLOT_IDS.length);
-    for (let i = 0; i < slotsToCheck; i++) {
-      const slot = SLOT_IDS[i];
-      try {
-        const r = await ipcRenderer.invoke('arena:get-memory-status', { meetingId, slot });
-        if (!r || !r.ok) continue;
-        const cur = _memStatusBy[meetingId][slot];
-        // Phase 3：缓存 identity / aiKind / aiModel 用于 tooltip + open 时确认提示
-        const identityChanged = !cur || cur.identity !== r.identity;
-        if (!cur || cur.count !== r.count || cur.pending !== r.pending || cur.hasProfile !== r.hasProfile || identityChanged) {
-          _memStatusBy[meetingId][slot] = {
-            count: r.count, pending: r.pending, hasProfile: r.hasProfile,
-            identity: r.identity || null, aiKind: r.aiKind || null, aiModel: r.aiModel || null,
-          };
-          dirty = true;
-        }
-        // Phase 2 P1（2026-05-07）：worker 健康（meeting 级 — 三家返回相同值，存到 _worker key）
-        if (r.workerHealth) {
-          const wPrev = _memStatusBy[meetingId]._worker;
-          if (!wPrev || wPrev.failures !== r.workerHealth.failures || wPrev.lastReason !== r.workerHealth.lastReason) {
-            _memStatusBy[meetingId]._worker = r.workerHealth;
-            dirty = true;
-          }
-        }
-      } catch (e) {
-        // memory IPC 失败不影响其他 panel 行为，静默 skip
-      }
-    }
-    if (dirty && meetingId === activeMeetingId) {
-      const m = meetingData[meetingId];
-      if (m) refreshGroupChatPanel(m);
-    }
   }
 
   // Stage 2 P1-2：历史轮次面板状态角标 — 把每家本轮的 byStatus 渲染成 [Claude ✓][Gemini 手动][Codex 缺席]
@@ -1568,7 +1456,7 @@ if (typeof document !== 'undefined') (function () {
       head: '🎯 通用群聊 · 使用提示',
       bullets: [
         '三家平等给观点，不预设领域；技术辩论、代码评审、开放讨论都行。',
-        '默认提问 → 三家并行；输入"<strong>@debate</strong>"触发辩论。',
+        '默认提问 → 三家并行；输入"<strong>@m1</strong>"触发辩论。',
         '想点名某家：用"<strong>@pikachu / @charmander / @squirtle</strong>"指定发言人。',
         '群聊产物是<strong>可讨论的判断</strong>，不是研报或可执行方案。需要落地操作时，结论里会建议你切独立 session 实操。',
       ],
@@ -2022,23 +1910,6 @@ if (typeof document !== 'undefined') (function () {
     panel.innerHTML = _renderGcPanelHtml(state, meeting);
     _bindGcPanelEvents(panel, meeting);
     _restoreGroupChatScroll(panel, groupScroll, { forceBottom: forceGroupChatBottom });
-    // pilot redesign（2026-05-02）：panel.innerHTML 重渲后用 rAF 包裹，确保 paint 后再涂卡片视觉。
-    //   旧实现直接调用，理论上同步生效，但截图显示 class 偶尔没生效——猜测是 panel innerHTML 后浏览器
-    //   还没完成布局/合成的瞬间 querySelectorAll 拿到的引用与最终 paint 的 DOM 不一致。
-    const pilotSlotForVisual = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
-      ? meeting.pilotSlot : null;
-    // T6：free 模式不调 _applyPilotCardVisual（无红框逻辑）
-    if (meeting.mode !== 'free') {
-      const dispatchModeForVisual = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
-        ? meeting.dispatchMode : 'all';
-      requestAnimationFrame(() => {
-        _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
-      });
-    }
-    // AI 群聊记忆 phase 1（2026-05-07）：lazy 拉取 count/pending/hasProfile（fire-and-forget）
-    //   首次进 panel 时 cache 空 → 显示 0 → 拉取后若有 dirty 自然触发 refresh 二次渲染
-    //   memory-event IPC 后续会做增量推送，所以这里只补"冷启动 / 切回"场景
-    _loadMemoryStatusForMeeting(meeting);
   }
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
@@ -2197,7 +2068,7 @@ if (typeof document !== 'undefined') (function () {
               console.log(`[rt-escape] resend ok: ${kind}`);
             } else {
               // FIX-C 阶段：FIX-F 还没落地前，重发 IPC 是 stub，给用户清晰指引
-              alert(`暂未支持单家"重新拉起"。\n\n建议操作：\n1. 在该卡片底部按"跳过"，下游 prompt 不会引用此家。\n2. 或者发起新一轮（直接提问 / @debate），系统会自动重启卡死的 CLI。\n3. 或者从左侧 sidebar 点该子 session 进 shell 看 PTY 真实情况。\n\n（错误信息：${r?.reason || 'unknown'}）`);
+              alert(`暂未支持单家"重新拉起"。\n\n建议操作：\n1. 在该卡片底部按"跳过"，下游 prompt 不会引用此家。\n2. 或者发起新一轮（直接提问），系统会自动重启卡死的 CLI。\n3. 或者从左侧 sidebar 点该子 session 进 shell 看 PTY 真实情况。\n\n（错误信息：${r?.reason || 'unknown'}）`);
             }
           }
         } catch (err) {
@@ -2212,33 +2083,6 @@ if (typeof document !== 'undefined') (function () {
             btn.disabled = false;
             btn.textContent = oldText;
           }
-        }
-      });
-    });
-
-    // AI 群聊记忆 phase 1（2026-05-07）：📒 / 📥 / 📊 三按钮
-    //   data-gc-mem-action: 'open-own' | 'open-pending' | 'open-profile'
-    //   stopPropagation 避免冒泡到 .mr-ft 卡片 click（不要触发 focus）
-    slotEl.querySelectorAll('[data-gc-mem-action]').forEach(btn => {
-      btn.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        const action = btn.getAttribute('data-gc-mem-action');
-        const slot = btn.getAttribute('data-gc-mem-slot');
-        if (!slot || !action) return;
-        const typeMap = { 'open-own': 'own', 'open-pending': 'pending', 'open-profile': 'profile', 'open-worker': 'worker-state' };
-        const type = typeMap[action];
-        if (!type) return;
-        const r = await ipcRenderer.invoke('arena:resolve-memory-file', { meetingId: meeting.id, slot, type });
-        if (r && r.path) {
-          if (typeof window !== 'undefined' && typeof window.openPathInHub === 'function') {
-            await window.openPathInHub(r.path, { cwd: _activeMeetingCwd(), requireExistsForRel: false });
-          } else if (typeof openPreviewPanel === 'function') {
-            openPreviewPanel(r.path);
-          }
-        } else {
-          const msg = (r && r.error) || 'unknown';
-          console.warn(`[mr-mem] resolve ${type} for ${slot} failed: ${msg}`);
-          alert(`打开记忆文件失败：${msg}`);
         }
       });
     });
@@ -2768,32 +2612,6 @@ if (typeof document !== 'undefined') (function () {
   // 2026-05-05 道雪 修3：cache 清理对所有 meeting 都做（含非 active），DOM 重渲仅 active 做。
   //   之前的 `meetingId === activeMeetingId` 守卫导致非 active AI 群聊 _partialBy 残留，
   //   切回时 cached.currentMode!=idle 但实际 server 已 idle → 卡片显示 streaming 假象。
-  // AI 群聊记忆 phase 1（2026-05-07）：主进程 memory-event 广播
-  //   type:'write'             — memory_write 命中后；含 slot/count，增量更新该 slot count
-  //   type:'checkpoint-done'   — worker 跑完 _profile.md + pending；触发整 meeting 状态重拉
-  //   type:'checkpoint-failed' — worker 失败；触发重拉（让 pending count 仍刷新）
-  ipcRenderer.on('memory-event', (_event, payload) => {
-    if (!payload || !payload.meetingId) return;
-    const { meetingId, slot, count, type } = payload;
-    if (type === 'write' && slot) {
-      if (!_memStatusBy[meetingId]) _memStatusBy[meetingId] = {};
-      if (!_memStatusBy[meetingId][slot]) _memStatusBy[meetingId][slot] = { count: 0, pending: 0, hasProfile: false };
-      if (typeof count === 'number') _memStatusBy[meetingId][slot].count = count;
-      if (meetingId === activeMeetingId) {
-        const m = meetingData[meetingId];
-        if (m) refreshGroupChatPanel(m);
-      }
-      return;
-    }
-    if (type === 'checkpoint-done' || type === 'checkpoint-failed') {
-      // worker 改了 _profile.md / pending-{slot}.json → 全 slot 重拉 status（lazy IPC 调）
-      if (meetingId === activeMeetingId) {
-        const m = meetingData[meetingId];
-        if (m) _loadMemoryStatusForMeeting(m);
-      }
-    }
-  });
-
   ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
@@ -2955,16 +2773,6 @@ if (typeof document !== 'undefined') (function () {
       // 恢复 scrollTop
       const newPreview = newSlotEl.querySelector('.mr-ft-preview');
       if (newPreview && savedScrollTop > 0) newPreview.scrollTop = savedScrollTop;
-    }
-    // 应用 pilot 视觉（红框）— 与全量 refreshGroupChatPanel 保持一致
-    if (meeting.mode !== 'free') {
-      const pilotSlotForVisual = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
-        ? meeting.pilotSlot : null;
-      const dispatchModeForVisual = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
-        ? meeting.dispatchMode : 'all';
-      requestAnimationFrame(() => {
-        _applyPilotCardVisual(meeting, pilotSlotForVisual, dispatchModeForVisual);
-      });
     }
     // T3（2026-05-04 道雪）：抽屉实时订阅 — 用户打开 ↗ 看本 sid 的实时 tab 时，
     //   不重建 overlay，仅 mutate `.mr-gc-tl-body` innerHTML，保留用户的滚动位置。
@@ -3150,7 +2958,6 @@ if (typeof document !== 'undefined') (function () {
     // 这里兜底恢复草稿:无论 setupInput 内是首次绑定路径还是 bypass 路径,都保证
     // 切换 meeting 后 inputBox 显示当前 meeting 的草稿。
     _restoreInputDraft(meetingId);
-    startMarkerPoll();
     // IF-C1：开启 CLI ready 轮询，驱动卡片"创建中→待命"切换。
     // IF-C6（多方审查 medium 修复）：拿首次 poll 的 promise，等它返回后再 refresh panel
     //   避免首屏闪烁——一次 IPC < 100ms，对用户感知近乎瞬间。
@@ -3199,8 +3006,6 @@ if (typeof document !== 'undefined') (function () {
     _saveInputDraft();
     activeMeetingId = null;
     _inputBound = false;
-    stopMarkerPoll();
-    _markerStatusCache = {};
     // IF-C1：关闭轮询并清空 ready cache，下次 openMeeting 重新检测
     stopCliReadyPoll();
     _cliReadyCache = {};
@@ -3545,40 +3350,6 @@ if (typeof document !== 'undefined') (function () {
     return `<span class="ctx-badge ${cls}" title="Context ${session.contextPct}%">Ctx ${session.contextPct}%</span>`;
   }
 
-  function markerStatusHtml(sessionId) {
-    const cache = _markerStatusCache[sessionId];
-    if (cache === 'done') return '<span class="mr-marker-status mr-marker-badge done">✓</span>';
-    if (cache === 'streaming') return '<span class="mr-marker-status mr-marker-badge streaming">⏳</span>';
-    return '<span class="mr-marker-status mr-marker-badge none">—</span>';
-  }
-
-  function startMarkerPoll() {
-    if (_markerPollTimer) return;
-    _markerPollTimer = setInterval(async () => {
-      if (!activeMeetingId) return;
-      const meeting = meetingData[activeMeetingId];
-      if (!meeting) return;
-      let changed = false;
-      for (const sid of meeting.subSessions) {
-        const status = await ipcRenderer.invoke('marker-status', sid);
-        if (_markerStatusCache[sid] !== status) {
-          _markerStatusCache[sid] = status;
-          changed = true;
-        }
-      }
-      if (changed) {
-        updateMarkerBadges(meeting);
-      }
-    }, 2000);
-  }
-
-  function stopMarkerPoll() {
-    if (_markerPollTimer) { clearInterval(_markerPollTimer); _markerPollTimer = null; }
-  }
-
-  // IF-C1（2026-05-01）— 修 P0 阻塞 bug B：永久卡死"创建中"
-  // 每秒 invoke cli-ready-status IPC 更新 _cliReadyCache，驱动 isInitializing。
-  // 一家 ready 后置 true 不再变（除非会议关闭重置），避免实时切换造成 UI 抖动。
   function startCliReadyPoll() {
     if (_cliReadyPollTimer) return;
     const pollOnce = async () => {
@@ -3707,16 +3478,6 @@ if (typeof document !== 'undefined') (function () {
     }
   }
 
-  function updateMarkerBadges(meeting) {
-    for (const sid of meeting.subSessions) {
-      const newHtml = markerStatusHtml(sid);
-      const slotBadge = document.querySelector(`.mr-sub-slot[data-session-id="${sid}"] .mr-marker-badge`);
-      if (slotBadge) slotBadge.outerHTML = newHtml;
-      const tabBadge = document.querySelector(`.mr-tab[data-sid="${sid}"] .mr-marker-badge`);
-      if (tabBadge) tabBadge.outerHTML = newHtml;
-    }
-  }
-
   function createSubSlot(meeting, sessionId) {
     const session = sessions ? sessions.get(sessionId) : null;
     const isDormant = session && session.status === 'dormant';
@@ -3728,11 +3489,11 @@ if (typeof document !== 'undefined') (function () {
     slot.dataset.sessionId = sessionId;
 
     const badgeHtml = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
-    const markerBadge = markerStatusHtml(sessionId);
+
     const header = document.createElement('div');
     header.className = 'mr-sub-header';
     header.innerHTML = `
-      <span class="mr-sub-label">${escapeHtml(slotTitle)}${badgeHtml ? ' ' + badgeHtml : ''} ${markerBadge}</span>
+      <span class="mr-sub-label">${escapeHtml(slotTitle)}${badgeHtml ? ' ' + badgeHtml : ''} </span>
       <button class="mr-sub-close" title="关闭此会话">✕</button>
     `;
 
@@ -3748,7 +3509,7 @@ if (typeof document !== 'undefined') (function () {
     header.querySelector('.mr-sub-close').addEventListener('click', async () => {
       const result = await ipcRenderer.invoke('remove-meeting-sub', { meetingId: meeting.id, sessionId });
       if (result) {
-        delete _markerStatusCache[sessionId];
+
         meetingData[meeting.id] = result;
         renderTerminals(result);
         renderToolbar(result);
@@ -3915,375 +3676,86 @@ if (typeof document !== 'undefined') (function () {
   // pilot-mode Task 3（2026-05-01）：主驾按钮事件绑定 + 卡片视觉切换。
   //   按钮点击展开 dropdown；选 slot 0/1/2 → 调 IPC 开主驾；选 -1 关主驾。
   //   IPC 返回后由 'meeting-updated' 事件触发 renderToolbar 重渲（按钮 active + 卡片 dim）。
-  function _bindPilotEvents(meeting, _pilotSlot) {
-    const btn = document.getElementById('mr-pilot-btn');
-    const menu = document.getElementById('mr-pilot-menu');
-    if (!btn || !menu) return;
-
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
-    });
-
-    // 点外部关闭菜单
-    const offClickHandler = (e) => {
-      if (!btn.contains(e.target) && !menu.contains(e.target)) {
-        menu.style.display = 'none';
-      }
-    };
-    document.addEventListener('mousedown', offClickHandler, { once: true });
-
-    menu.querySelectorAll('.mr-pilot-option').forEach(opt => {
-      opt.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const slotStr = opt.dataset.slot;
-        const slotIndex = parseInt(slotStr, 10);
-        const targetSlot = slotIndex === -1 ? null : slotIndex;
-        // 检查目标 slot 真的有 sub session（避免开到空槽）
-        if (targetSlot !== null && (!meeting.subSessions || !meeting.subSessions[targetSlot])) {
-          alert(`Slot ${targetSlot + 1} 没有活跃 session`);
-          return;
-        }
-        menu.style.display = 'none';
-        // 防重复点击：disable 按钮直到 IPC 完成
-        btn.disabled = true;
-        const labelSpan = document.getElementById('mr-pilot-label');
-        const oldLabel = labelSpan ? labelSpan.textContent : '';
-        if (labelSpan) labelSpan.textContent = '切换中…';
-        try {
-          const result = await ipcRenderer.invoke('groupchat:pilot-toggle', {
-            meetingId: meeting.id, slotIndex: targetSlot,
-          });
-          // pilot redesign（2026-05-02）：pilot-toggle 仅设置 pilotSlot，无副作用（无 recap 生成）。
-          if (!result || !result.ok) throw new Error('pilot-toggle returned non-ok');
-        } catch (err) {
-          console.error('[pilot-toggle] failed:', err);
-          alert('切换主驾失败：' + (err && err.message ? err.message : String(err)));
-          if (labelSpan) labelSpan.textContent = oldLabel;
-        } finally {
-          btn.disabled = false;
-        }
-      });
-    });
-  }
-
   // pilot redesign v4（2026-05-02）：卡片只保留"角色层"红框，删除 dispatch 视觉特效。
   //   设计准则：副驾发言时主驾卡片保持原状，主驾发言时副驾同理。卡片自然反映真实 PTY
   //            状态（thinking/done/idle）即可——dispatch 视觉特效是"多此一举"，反而
   //            会和真实 PTY 状态打架（出现"灰化但又部分动"的怪异中间态）。
   //   dispatchMode 仍保留参数：仅用于输入框 placeholder 的文本提示。
-  function _applyPilotCardVisual(meeting, pilotSlot, dispatchMode) {
-    const panel = document.getElementById('mr-gc-panel');
-    const cards = panel
-      ? panel.querySelectorAll('.mr-ft-strip > .mr-ft')
-      : document.querySelectorAll('.mr-ft-strip > .mr-ft');
-    const mode = ['all', 'pilot', 'observer'].includes(dispatchMode) ? dispatchMode : 'all';
-    cards.forEach((card, i) => {
-      // 角色层：主驾红框 + 左上角"主驾"三角标
-      card.classList.toggle('pilot-role', pilotSlot === i);
-      // 兜底清理旧 v3 dispatch class（用户从老版本升级时卡片可能仍带这两个 class）
-      card.classList.remove('dispatch-active', 'dispatch-inactive');
-      // 主驾角色 corner 三角
-      let cornerEl = card.querySelector('.ft-corner-pilot');
-      if (pilotSlot === i) {
-        if (!cornerEl) {
-          cornerEl = document.createElement('div');
-          cornerEl.className = 'ft-corner-pilot';
-          cornerEl.textContent = '主驾';
-          card.appendChild(cornerEl);
-        }
-      } else if (cornerEl) {
-        cornerEl.remove();
-      }
-    });
-    // 输入框 placeholder
-    const inputBox = document.getElementById('mr-input-box');
-    if (inputBox) {
-      const slotPokemon = ['皮卡丘', '小火龙', '杰尼龟'];
-      const dispatchLabel = { all: '群策群力', pilot: '主驾发言', observer: '副驾发言' }[mode];
-      inputBox.dataset.placeholder = pilotSlot !== null
-        ? `🚗 主驾: Slot ${pilotSlot + 1} · ${slotPokemon[pilotSlot]} · 当前分发: ${dispatchLabel}`
-        : 'AI 群聊：发普通文本启动一轮 / @debate';
-    }
-  }
-
   // --- Toolbar ---
 
   function renderToolbar(meeting) {
     const el = toolbarEl();
     if (!el) return;
-
-    // Module C 后 blackboard layout 已废弃,layout 字段只剩 'focus' 一种语义。
-    // 两模式(通用/投研)统一 toolbar：群策群力 / 总结发言。
-    if (_isPanelCapableMeeting(meeting)) {
-      const subs = _getGcSubInfo(meeting);
-      // slot 化（2026-05-03）：dropdown 改按 slot 枚举（不再按 kind 去重）。
-      //   关键修复：3 claude 群聊时，原 kind 索引只显 1 个"Claude"选项，
-      //   sidByKind 也只返回首个，导致后两位 claude 永远当不了总结人。
-      //   现在改 slot：3 个选项 ⚡Pikachu / 🔥Charmander / 💎Squirtle，
-      //   value=slotId 直接对应到后端 sidBySlot。
-      const slotsArr = _getGcSlots(meeting);
-      const opts = slotsArr
-        .filter(s => s)
-        .map(s => `<option value="${s.slotId}">${escapeHtml(s.displayLabel)}</option>`)
-        .join('');
-      const cached = _gcPanelState[meeting.id];
-      const inProgress = cached && cached.currentMode && cached.currentMode !== 'idle';
-      const turns = cached ? (cached.turns || []).length : 0;
-      // pilot redesign（2026-05-02）：pilotSlot 是"主驾角色"标识（红框），dispatchMode 控制本轮谁开口。
-      const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
-        ? meeting.pilotSlot : null;
-      const pilotOn = pilotSlot !== null;
-      const dispatchMode = ['all', 'pilot', 'observer'].includes(meeting.dispatchMode)
-        ? meeting.dispatchMode : 'all';
-
-      // dispatchMode segmented control: pilot/observer 要求 pilotSlot !== null
-      const dispatchPilotDisabled = (!pilotOn || inProgress) ? 'disabled' : '';
-      const dispatchObserverDisabled = (!pilotOn || inProgress) ? 'disabled' : '';
-      // E5 修复 (2026-05-03)：disabled 时 title 解释原因（之前 title 仍是按钮功能描述，
-      //   用户点不动不知道为啥）。优先级：处理中 > 没选主驾。
-      const _pilotObsHint = inProgress
-        ? '上一轮还在跑，请等结束'
-        : (!pilotOn ? '请先在右侧 🚗 主驾角色 选定一家 AI 才能切到此模式' : null);
-      const dispatchPilotTitle = _pilotObsHint || '主驾发言：本轮 prompt 仅发给主驾';
-      const dispatchObserverTitle = _pilotObsHint || '副驾发言：本轮 prompt 仅发给副驾两家';
-      const dispatchAllDisabled = inProgress ? 'disabled' : '';
-
-      // T6：mode toggle segmented control（必须在 debateDisabled 之前，因为 debateDisabled 依赖 meetingMode）
-      // 2026-05-05 道雪：主驾入口废弃，fallback 'pilot' → 'free'（与 core 一致）。
-      const meetingMode = (meeting.mode === 'free' || meeting.mode === 'pilot') ? meeting.mode : 'free';
-      const isGroupChat = !!meeting.groupChat;
-      const participantIndexes = isGroupChat
-        ? slotsArr.map((s, idx) => s ? idx : null).filter(idx => idx !== null)
-        : [0, 1, 2];
-      const slotDisplayLabel = (idx) => {
-        const slot = slotsArr[idx];
-        if (!slot) return `AI ${idx + 1}`;
-        return slot.displayLabel || slot.label || slot.kind || `AI ${idx + 1}`;
-      };
-
-      // debate: free 模式需 >=2 人；pilot 模式下一家无法辩论 → disable
-      const debateDisabled = (() => {
-        if (turns < 1 || inProgress) return 'disabled';
-        if (meetingMode === 'free') {
-          const parts = Array.isArray(meeting.participants) ? meeting.participants : [];
-          return parts.length < 2 ? 'disabled' : '';
-        }
-        // pilot 模式：原条件
-        return dispatchMode === 'pilot' ? 'disabled' : '';
-      })();
-
-      const debateBtnTitle = (() => {
-        if (turns < 1) return '至少完成 1 轮 fanout 才能辩论';
-        if (inProgress) return '上一轮还在跑，请等结束';
-        if (meetingMode === 'free') {
-          const parts = Array.isArray(meeting.participants) ? meeting.participants : [];
-          if (parts.length < 2) return '勾选至少 2 位才能辩论';
-          return '让目标范围内的 AI 结合彼此观点重新发言';
-        }
-        if (dispatchMode === 'pilot') return '主驾发言模式下一家无法辩论';
-        return '让目标范围内的 AI 结合彼此观点重新发言';
-      })();
-
-      // 摘要功能 2026-05-08 整体下线：原 summaryDisabled / summaryPickDisabled / briefSummaryDisabled 已删
-
-      // 主驾按钮 label
-      const slotPokemon = ['⚡皮卡丘', '🔥小火龙', '💎杰尼龟'];
-      const pilotBtnLabel = pilotOn ? `${slotPokemon[pilotSlot]}` : '未选';
-      const pilotBtnCls = pilotOn ? 'mr-gc-tb-btn pilot active' : 'mr-gc-tb-btn pilot';
-
-      // 状态行（toolbar 顶部一行小字，文字冗余兜底）—— T7: free/pilot 分支
-      let statusLine;
-      if (meetingMode === 'free') {
-        const parts = Array.isArray(meeting.participants) ? meeting.participants : [];
-          let speakerStr;
-          if (parts.length === 0) {
-            speakerStr = '<strong style="color:#f85149">⚠ 请勾选至少一位发言人</strong>';
-          } else {
-            speakerStr = '发言人: <strong>' + parts.map(i => escapeHtml(slotDisplayLabel(i))).join(', ') + '</strong>';
-          }
-          statusLine = `<div class="mr-status-line">分发: <strong>${isGroupChat ? '群聊' : '自由'}</strong> · ${speakerStr}${
-            inProgress ? ' · <strong>⏳ 处理中</strong>' : (turns > 0 ? ` · 已 ${turns} 轮` : '')
-          }</div>`;
-      } else {
-        // pilot 路径：原状态行不动
-        const dispatchModeLabel = { all: '群策群力', pilot: '主驾发言', observer: '副驾发言' }[dispatchMode];
-        const pilotLabel = pilotOn ? `Slot ${pilotSlot + 1}` : '未选';
-        statusLine = `<div class="mr-status-line">分发: <strong>${dispatchModeLabel}</strong> · 主驾: <strong>${pilotLabel}</strong>${
-          inProgress ? ' · <strong>⏳ 处理中</strong>' : (turns > 0 ? ` · 已 ${turns} 轮` : '')
-        }</div>`;
-      }
-      // 注：mode（free/pilot）在创建会议时确定，运行时不可切换；旧的 mode toggle 已删除（2026-05-04 决策）。
-
-      // T6：dispatch 区域按 mode 分支
-      const SLOT_AVATARS = ['pikachu.png', 'charmander.png', 'squirtle.png'];
-      const SLOT_LABELS = ['⚡ Pikachu · 皮卡丘', '🔥 Charmander · 小火龙', '💎 Squirtle · 杰尼龟'];
-      const slotAvatarSrc = (idx) => {
-        const slot = slotsArr[idx] || {};
-        if (isGroupChat) return `assets/ai-logos/${escapeHtml(slot.kind || 'claude')}.svg`;
-        return `assets/pokemon/${SLOT_AVATARS[idx] || SLOT_AVATARS[idx % SLOT_AVATARS.length]}`;
-      };
-      const slotLabelFull = (idx) => isGroupChat
-        ? slotDisplayLabel(idx)
-        : (SLOT_LABELS[idx] || `AI ${idx + 1}`);
-      const dispatchAreaHtml = (() => {
-        if (meetingMode === 'free') {
-          const participants = Array.isArray(meeting.participants) ? meeting.participants : [];
-          const partSet = new Set(participants);
-          const slotsHtml = participantIndexes.map(idx => {
-            const checked = partSet.has(idx);
-            const disabled = inProgress ? 'disabled' : '';
-            const label = slotLabelFull(idx);
-            return `
-              <label class="mr-free-slot ${checked ? 'checked' : ''} ${disabled}" data-slot-idx="${idx}">
-                <input type="checkbox" class="mr-free-slot-cb" data-slot-idx="${idx}" ${checked ? 'checked' : ''} ${disabled} />
-                <img src="${slotAvatarSrc(idx)}" alt="${escapeHtml(label)}" />
-                <span class="mr-free-slot-label">${escapeHtml(label)}</span>
-              </label>
-            `;
-          }).join('');
-          return `<div class="mr-free-participants" role="group" aria-label="本轮发言人">
-            <span class="mr-free-participants-title">本轮发言人</span>
-            ${slotsHtml}
-          </div>`;
-        }
-        // pilot 模式：原三按钮组（一行不动）
-        return `<div class="mr-gc-dispatch-group" role="group" aria-label="分发模式">
-          <button class="mr-gc-dispatch-btn ${dispatchMode === 'all' ? 'active' : ''}" data-dispatch-mode="all" ${dispatchAllDisabled} title="群策群力：本轮 prompt 发给全员">🤝 群策群力</button>
-          <button class="mr-gc-dispatch-btn ${dispatchMode === 'pilot' ? 'active' : ''}" data-dispatch-mode="pilot" ${dispatchPilotDisabled} title="${dispatchPilotTitle}">🎯 主驾发言</button>
-          <button class="mr-gc-dispatch-btn ${dispatchMode === 'observer' ? 'active' : ''}" data-dispatch-mode="observer" ${dispatchObserverDisabled} title="${dispatchObserverTitle}">👥 副驾发言</button>
-        </div>`;
-      })();
-
-      // T6：pilot wrap 仅 pilot 模式显示
-      const pilotWrapHtml = (meetingMode === 'pilot') ? `
-        <span class="mr-gc-tb-divider"></span>
-        <span class="mr-gc-tb-pilot-wrap">
-          <button class="${pilotBtnCls}" id="mr-pilot-btn" title="选定一家为主驾角色（红框标记）；不会切换全局模式，仅是身份标签。配合分发模式按钮使用。">🚗 主驾角色:<span id="mr-pilot-label">${pilotBtnLabel}</span> ▾</button>
-          <span id="mr-pilot-menu" class="mr-pilot-menu" style="display:none;">
-            <div class="mr-pilot-option" data-slot="0">⚡ Slot 1 · 皮卡丘</div>
-            <div class="mr-pilot-option" data-slot="1">🔥 Slot 2 · 小火龙</div>
-            <div class="mr-pilot-option" data-slot="2">💎 Slot 3 · 杰尼龟</div>
-            <div class="mr-pilot-option mr-pilot-option-off" data-slot="-1">取消主驾</div>
-          </span>
-        </span>
-      ` : '';
-
-      // Phase 4 v2(2026-05-05 道雪): footer 一行化重构
-      //   free 模式: toolbar 完全空, 头像组 + 模式 dropdown 渲到 input-row 内占位。
-      //   pilot 模式: 走老 toolbar 路径(本次未优化, 用户主要使用 free)。
-      if (meetingMode === 'free') {
-        el.innerHTML = ''; // toolbar 空, 高度由 input-row 接管
-        // 1. 头像 checkbox 组 → #mr-free-avatars-row(只 logo, 无文字)
-        const avatarsRow = document.getElementById('mr-free-avatars-row');
-        if (avatarsRow) {
-          const participants = Array.isArray(meeting.participants) ? meeting.participants : [];
-          const partSet = new Set(participants);
-          avatarsRow.innerHTML = participantIndexes.map(idx => {
-            const checked = partSet.has(idx);
-            const disabledAttr = inProgress ? 'disabled' : '';
-            const label = slotLabelFull(idx);
-            return `
-              <label class="mr-free-avatar-chk ${isGroupChat ? 'group' : ''} ${checked ? 'checked' : ''} ${disabledAttr}"
-                     data-slot-idx="${idx}" title="${escapeHtml(label)}">
-                <input type="checkbox" class="mr-free-slot-cb" data-slot-idx="${idx}" ${checked ? 'checked' : ''} ${disabledAttr} />
-                <img src="${slotAvatarSrc(idx)}" alt="${escapeHtml(label)}" />
-                <span class="mr-free-avatar-chk-mark">✓</span>
-              </label>
-            `;
-          }).join('');
-        }
-        // 2. 模式 dropdown → #mr-input-mode-chips（摘要功能 2026-05-08 下线后仅剩"辩论"）
-        const modeChipsEl = document.getElementById('mr-input-mode-chips');
-        if (modeChipsEl) {
-          modeChipsEl.innerHTML = isGroupChat ? '' : `
-            <div class="mr-mode-dropdown">
-              <button class="mr-mode-trigger" id="mr-mode-trigger" title="选择动作: 辩论">
-                <span>🎯 模式</span><span class="mr-mode-arrow">▾</span>
-              </button>
-              <div class="mr-mode-popup">
-                <button class="mr-mode-item" id="mr-gc-debate-btn" ${debateDisabled} title="${debateBtnTitle}">
-                  <span>🗣 辩论</span><span class="mr-mode-item-hint">让 AI 互辩</span>
-                </button>
-              </div>
-            </div>
-          `;
-        }
-      } else {
-        // pilot 模式: 老 toolbar 渲染（摘要功能 2026-05-08 下线后仅剩"辩论"）
-        el.innerHTML = `
-          <div class="mr-gc-toolbar">
-            ${dispatchAreaHtml}
-            <span class="mr-gc-tb-divider"></span>
-            <button class="mr-gc-tb-btn" id="mr-gc-debate-btn" ${debateDisabled} title="${debateBtnTitle}">🗣 辩论</button>
-            ${pilotWrapHtml}
-          </div>
-        `;
-        // free 模式占位也清掉(避免老元素残留)
-        const arRow = document.getElementById('mr-free-avatars-row');
-        if (arRow) arRow.innerHTML = '';
-        const mc = document.getElementById('mr-input-mode-chips');
-        if (mc) mc.innerHTML = '';
-      }
-
-      // 注：mode toggle click handler 已删除（mode 创建时确定，运行时不可切换）。
-
-      // 头像勾选 click handler — Phase 4 v2(2026-05-05 道雪) 重写:
-      //   旧版: listener 绑在 el.querySelectorAll('.mr-free-slot-cb'), 但 free 模式 el(toolbar) 已空,
-      //        头像组在 input-row 内 → listener 无法找到 → 点击无反应。
-      //   新版: 直接给 label(.mr-free-avatar-chk) 绑 click, document 全局查找;
-      //         点击 logo / checkmark / label 任何位置均触发, UI 状态等 IPC 重渲后由 panel 刷新。
-      //   race guard: 仍用 _freeSlotUpdating 防连击。
-      let _freeSlotUpdating = false;
-      document.querySelectorAll('.mr-free-avatar-chk[data-slot-idx]').forEach(label => {
-        label.addEventListener('click', async (ev) => {
-          ev.preventDefault();   // 阻止 native label→input 触发(避免双触发)
-          ev.stopPropagation();
-          if (label.classList.contains('disabled')) return;
-          if (_freeSlotUpdating) return;
-          _freeSlotUpdating = true;
-          const slotIdx = parseInt(label.getAttribute('data-slot-idx'), 10);
-          const current = Array.isArray(meeting.participants) ? [...meeting.participants] : [0, 1, 2];
-          const wasChecked = current.includes(slotIdx);
-          const next = wasChecked
-            ? current.filter(x => x !== slotIdx)
-            : [...current, slotIdx];
-          next.sort((a, b) => a - b);
-          try {
-            await ipcRenderer.invoke('groupchat:set-participants', { meetingId: meeting.id, participants: next });
-          } catch (err) {
-            console.error('[set-participants] failed:', err);
-            alert('保存失败:' + (err && err.message ? err.message : String(err)));
-          } finally {
-            _freeSlotUpdating = false;
-          }
-        });
-      });
-
-      // dispatchMode 切换：调 IPC 'groupchat:dispatch-mode-set'，server 推 meeting-updated 回来重渲
-      el.querySelectorAll('.mr-gc-dispatch-btn[data-dispatch-mode]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          if (btn.hasAttribute('disabled')) return;
-          const newMode = btn.getAttribute('data-dispatch-mode');
-          if (newMode === dispatchMode) return;  // 已选中
-          try {
-            await ipcRenderer.invoke('groupchat:dispatch-mode-set', { meetingId: meeting.id, dispatchMode: newMode });
-          } catch (err) {
-            console.error('[dispatch-mode-set] failed:', err);
-            alert('切换分发模式失败：' + (err && err.message ? err.message : String(err)));
-          }
-        });
-      });
-
-      _bindPilotEvents(meeting, pilotSlot);
-      // pilot redesign（2026-05-02）：不在这里调 _applyPilotCardVisual——renderToolbar 在 panel.innerHTML
-      //   重渲之前执行，对旧卡片设的 class 会被冲掉。统一由 refreshGroupChatPanel 在 DOM 重建后调用。
+    if (!_isPanelCapableMeeting(meeting)) {
+      el.innerHTML = '';
       return;
     }
 
-    // fallback toolbar:仅在老数据/异常 meeting(无 mode flag)出现,清空即可,
-    // 用户应通过模式 toggle 切到群聊或投研以使用主功能。
+    const slotsArr = _getGcSlots(meeting);
+    const cached = _gcPanelState[meeting.id];
+    const inProgress = cached && cached.currentMode && cached.currentMode !== 'idle';
+    const isGroupChat = !!meeting.groupChat;
+    const participantIndexes = isGroupChat
+      ? slotsArr.map((s, idx) => s ? idx : null).filter(idx => idx !== null)
+      : [0, 1, 2];
+
+    const slotDisplayLabel = (idx) => {
+      const slot = slotsArr[idx];
+      if (!slot) return `AI ${idx + 1}`;
+      return slot.displayLabel || slot.label || slot.kind || `AI ${idx + 1}`;
+    };
+    const slotAvatarSrc = (idx) => {
+      const slot = slotsArr[idx] || {};
+      if (isGroupChat) return `assets/ai-logos/${escapeHtml(slot.kind || 'claude')}.svg`;
+      const avatars = ['pikachu.png', 'charmander.png', 'squirtle.png'];
+      return `assets/pokemon/${avatars[idx] || avatars[idx % avatars.length]}`;
+    };
+
     el.innerHTML = '';
+    const avatarsRow = document.getElementById('mr-free-avatars-row');
+    if (avatarsRow) {
+      const participants = Array.isArray(meeting.participants) ? meeting.participants : [];
+      const partSet = new Set(participants);
+      avatarsRow.innerHTML = participantIndexes.map(idx => {
+        const checked = partSet.has(idx);
+        const disabledAttr = inProgress ? 'disabled' : '';
+        const label = slotDisplayLabel(idx);
+        return `
+          <label class="mr-free-avatar-chk ${isGroupChat ? 'group' : ''} ${checked ? 'checked' : ''} ${disabledAttr}"
+                 data-slot-idx="${idx}" title="${escapeHtml(label)}">
+            <input type="checkbox" class="mr-free-slot-cb" data-slot-idx="${idx}" ${checked ? 'checked' : ''} ${disabledAttr} />
+            <img src="${slotAvatarSrc(idx)}" alt="${escapeHtml(label)}" />
+            <span class="mr-free-avatar-chk-mark">OK</span>
+          </label>
+        `;
+      }).join('');
+    }
+
+    const modeChipsEl = document.getElementById('mr-input-mode-chips');
+    if (modeChipsEl) modeChipsEl.innerHTML = '';
+
+    let updating = false;
+    document.querySelectorAll('.mr-free-avatar-chk[data-slot-idx]').forEach(label => {
+      label.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (label.classList.contains('disabled') || updating) return;
+        updating = true;
+        const slotIdx = parseInt(label.getAttribute('data-slot-idx'), 10);
+        const current = Array.isArray(meeting.participants) ? [...meeting.participants] : [0, 1, 2];
+        const wasChecked = current.includes(slotIdx);
+        const next = wasChecked ? current.filter(x => x !== slotIdx) : [...current, slotIdx];
+        next.sort((a, b) => a - b);
+        try {
+          await ipcRenderer.invoke('groupchat:set-participants', { meetingId: meeting.id, participants: next });
+        } catch (err) {
+          console.error('[set-participants] failed:', err);
+          alert('????: ' + (err && err.message ? err.message : String(err)));
+        } finally {
+          updating = false;
+        }
+      });
+    });
   }
 
   // --- Input & Broadcasting ---
@@ -4340,8 +3812,6 @@ if (typeof document !== 'undefined') (function () {
     if (isGroupChat) {
       items.unshift({ value: '@all', label: '@all · 全体成员', hint: 'group target' });
     } else {
-      // mode 触发（静态；摘要功能 2026-05-08 下线后仅剩 @debate）
-      items.push({ value: '@debate', label: '@debate', hint: 'cross-review' });
     }
     return items;
   }
@@ -4432,21 +3902,9 @@ if (typeof document !== 'undefined') (function () {
       _hideGcMentionMenu();
       return;
     }
-    // pilot-mode Task 9（2026-05-01）：主驾期间 mention 灰显——所有 @ 候选都不可用，
-    //   仅显示一行 disabled 提示让用户知道为什么。
-    const pilotSlot = (typeof meeting.pilotSlot === 'number' && meeting.pilotSlot >= 0 && meeting.pilotSlot <= 2)
-      ? meeting.pilotSlot : null;
     const match = _getGcMentionMatch(inputBox);
     if (!match) {
       _hideGcMentionMenu();
-      return;
-    }
-    if (pilotSlot !== null) {
-      const menu = _getGcMentionMenu();
-      menu.style.left = `${inputBox.offsetLeft}px`;
-      menu.style.minWidth = `${Math.min(Math.max(inputBox.offsetWidth, 260), 420)}px`;
-      menu.innerHTML = `<div class="mr-gc-mention-disabled-hint">主驾模式中（仅 Slot ${pilotSlot + 1} 接收），请先 [🚗 主驾:▾ 关闭主驾] 再使用 @ 提及</div>`;
-      menu.style.display = 'block';
       return;
     }
     const items = buildGcMentionItems(meeting).filter(item => {
@@ -4552,7 +4010,7 @@ if (typeof document !== 'undefined') (function () {
     if (meeting.scene) {
       inputBox.dataset.placeholder = isFreeZeroSelected
         ? '请先勾选至少一位发言人'
-        : 'AI 群聊：发普通文本启动一轮 / @debate / @<slot> 单聊';
+        : 'AI 群聊：发普通文本启动一轮 / @<slot> 单聊';
     } else {
       inputBox.dataset.placeholder = '输入消息...';
     }
@@ -4577,8 +4035,6 @@ if (typeof document !== 'undefined') (function () {
     if (typeof window.attachContenteditablePasteImage === 'function') {
       window.attachContenteditablePasteImage(inputBox);
     }
-
-    // 两模式(通用/投研)统一隐藏目标选择(路由由 fanout/debate/summary/private/@command 决定)。
     if (targetSelect) {
       if (_isPanelCapableMeeting(meeting)) {
         targetSelect.style.display = 'none';
@@ -4748,7 +4204,6 @@ if (typeof document !== 'undefined') (function () {
 
     meeting.lastMessageTime = Date.now();
     ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
-    _contextCompressCache.clear();
   }
 
   // Format incremental-context turns as a clear "meeting sync" prefix the AI can
@@ -4773,8 +4228,6 @@ if (typeof document !== 'undefined') (function () {
     return lines.join('\n');
   }
 
-  const _contextCompressCache = new Map();
-
   async function buildContextSummary(meeting, excludeSessionId) {
     const others = meeting.subSessions.filter(id => id !== excludeSessionId);
     if (others.length === 0) return '';
@@ -4784,42 +4237,15 @@ if (typeof document !== 'undefined') (function () {
       const session = sessions ? sessions.get(id) : null;
       const label = session ? (session.kind || 'session') : 'session';
 
-      // 1. Try SM marker content first
-      let content = await ipcRenderer.invoke('quick-summary', id);
-
-      // 2. Fallback to ring buffer last 1000 chars
-      if (!content) {
-        const raw = await ipcRenderer.invoke('get-ring-buffer', id);
-        if (raw) content = raw.length > 1000 ? raw.slice(-1000) : raw;
-      }
-
+      const raw = await ipcRenderer.invoke('get-ring-buffer', id);
+      let content = raw ? (raw.length > 1000 ? raw.slice(-1000) : raw) : '';
       if (!content) continue;
-
-      // 3. Threshold: ≤1000 use as-is, >1000 compress via Gemini Flash
-      if (content.length > 1000) {
-        const cacheKey = id + ':' + simpleHash(content);
-        if (_contextCompressCache.has(cacheKey)) {
-          content = _contextCompressCache.get(cacheKey);
-        } else {
-          const compressed = await ipcRenderer.invoke('compress-context', { content, maxChars: 1000 });
-          _contextCompressCache.set(cacheKey, compressed);
-          content = compressed;
-        }
-      }
 
       lines.push(`【${label}】${content}`);
     }
 
     if (lines.length === 0) return '';
     return `[会议室协作同步]\n${lines.join('\n')}\n---\n`;
-  }
-
-  function simpleHash(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-    }
-    return hash.toString(36);
   }
 
   // --- Quote (Right-click) ---
@@ -4972,13 +4398,13 @@ if (typeof document !== 'undefined') (function () {
     if (!session) return;
     const title = session.title || session.kind || 'session';
     const badges = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
-    const markerBadge = markerStatusHtml(payload.sessionId);
+
     const newHtml = `${escapeHtml(title)}${badges ? ' ' + badges : ''}`;
     // Update sub-slot header
     const slot = document.querySelector(`.mr-sub-slot[data-session-id="${payload.sessionId}"]`);
     if (slot) {
       const label = slot.querySelector('.mr-sub-label');
-      if (label) label.innerHTML = `${newHtml} ${markerBadge}`;
+      if (label) label.innerHTML = `${newHtml} `;
     }
     // Update focus-mode tab (preserve status dot + NEW badge + marker badge)
     const tab = document.querySelector(`.mr-tab[data-sid="${payload.sessionId}"]`);
@@ -4986,7 +4412,7 @@ if (typeof document !== 'undefined') (function () {
       const state = _tabState[payload.sessionId] || 'idle';
       const statusDot = `<span class="mr-tab-status ${state}"></span>`;
       const newBadge = state === 'new-output' ? ' <span class="new-badge">NEW</span>' : '';
-      tab.innerHTML = `${statusDot}${newHtml} ${markerBadge}${newBadge}`;
+      tab.innerHTML = `${statusDot}${newHtml} ${newBadge}`;
     }
   });
 

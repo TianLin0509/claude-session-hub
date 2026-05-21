@@ -51,8 +51,7 @@ const meetingStore = require('../core/meeting-store');
     const v1Path = path.join(TEMP, 'meetings', 'v1-only.json');
     fs.writeFileSync(v1Path, JSON.stringify({
       schemaVersion: 1, id: 'v1-only',
-      _timeline: [], _cursors: {}, _nextIdx: 0,
-      pilotSlot: null, dispatchMode: 'all', mode: 'free', participants: null,
+      _timeline: [], _cursors: {}, _nextIdx: 0, mode: 'free', participants: null,
       savedAt: 1000,
     }));
     const healed = stateStore.loadAndSelfHeal({ sessionStore, meetingStore });
@@ -68,7 +67,7 @@ const meetingStore = require('../core/meeting-store');
       version: 1, cleanShutdown: false,
       sessions: [{ hubId: 'sess-A', kind: 'claude', title: 'old-title', updatedAt: 100 }],
       meetings: [],
-      immersiveByMeeting: {}, pilotSlotByMeeting: {}, dispatchModeByMeeting: {},
+      immersiveByMeeting: {},
     }, { sync: true });
     // sessions/<sess-A>.json 写一个更新版（updatedAt=500）
     sessionStore.saveSessionFile('sess-A', {
@@ -88,7 +87,7 @@ const meetingStore = require('../core/meeting-store');
       version: 1, cleanShutdown: false,
       sessions: [{ hubId: 'sess-B', kind: 'claude', title: 'state-newer', updatedAt: 9999 }],
       meetings: [],
-      immersiveByMeeting: {}, pilotSlotByMeeting: {}, dispatchModeByMeeting: {},
+      immersiveByMeeting: {},
     }, { sync: true });
     sessionStore.saveSessionFile('sess-B', {
       kind: 'claude', title: 'sessions-older', updatedAt: 100,

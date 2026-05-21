@@ -55,6 +55,7 @@ function saveSessionFile(hubId, data) {
     ccSessionId: data.ccSessionId || null,
     transcriptPath: data.transcriptPath || null,
     codexSid: data.codexSid || null,
+    codexAppThreadId: data.codexAppThreadId || null,
     codexSessionsRoot: data.codexSessionsRoot || null,
     codexAllowMtimeFallback: !!data.codexAllowMtimeFallback,
     codexProfile: data.codexProfile || null,

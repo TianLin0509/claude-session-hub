@@ -1,6 +1,13 @@
 node_modules/
 dist/
 .superpowers/
+__pycache__/
+*.pyc
+
+# Android build/cache outputs
+android-app/.gradle/
+android-app/**/build/
+android-app/local.properties
 
 # Ad-hoc diagnostic probes + experiment files (not part of the product)
 _probe-*.js

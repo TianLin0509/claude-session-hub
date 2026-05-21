@@ -38,8 +38,6 @@ function testLegacyMeetingDefaultsToFree() {
     _timeline: [],
     _cursors: {},
     _nextIdx: 0,
-    pilotSlot: null,
-    dispatchMode: 'all',
     savedAt: Date.now(),
   }));
   // 用 saveMeetingFile 重写一次（loadMeetingFile 不做兜底，兜底在 main.js 读取后做）
@@ -110,8 +108,6 @@ function testLegacyJsonOnDiskLoadFallback() {
     _timeline: [],
     _cursors: {},
     _nextIdx: 0,
-    pilotSlot: null,
-    dispatchMode: 'all',
     savedAt: Date.now(),
   }));
   const re = store.loadMeetingFile('m-on-disk');
