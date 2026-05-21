@@ -53,6 +53,7 @@ const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
+const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -1771,26 +1772,8 @@ ipcMain.handle('groupchat-resend-prompt', async (_e, { meetingId, sid } = {}) =>
   }
 });
 
-ipcMain.handle('groupchat-skip-participant', async (_e, { meetingId, sid } = {}) => {
-  if (!sid) return { ok: false, reason: 'missing sid' };
-  const watcher = _activeWatchers.get(sid);
-  if (!watcher) return { ok: false, reason: 'not_active' };
-  watcher.skip();
-  return { ok: true };
-});
-
-// FIX-F（2026-05-01）：单家"重新拉起"——已结束轮上某家结果不理想时，
-//   不重启整轮，仅让该家用本轮 prompt 再答一次，patch 进 lastTurn。
-//
-// 流程：
-//   1. 检测 PTY 是否已切到宿主 shell（CLI 自我退出场景）→ 调 sessionManager.relaunchCli 重启
-//   2. rebuild 该家本轮 prompt（按 lastTurn.mode：fanout / debate / summary）
-//   3. groupChatWatcher.sendToPty 发送（内含 groupChatWatcher.waitCliReady 冷启动等待）
-//   4. 创建独立 watcher 等 turn-complete（不挂到原 dispatch 的 Promise.allSettled）
-//   5. 期间推 partial-update 让卡片 UI 切回 thinking → streaming → completed
-//   6. settle 后调 orch.patchTurnResult patch lastTurn + 推 turn-complete 让 renderer 刷新
-ipcMain.handle('groupchat-resend-participant', async () => {
-  return { ok: false, reason: 'unsupported', detail: 'group chat uses resend-prompt, manual extract, and skip recovery actions' };
+registerGroupchatRecoveryIpc(ipcMain, {
+  getActiveWatchers: () => _activeWatchers,
 });
 
 registerCliStatusIpc(ipcMain, {
