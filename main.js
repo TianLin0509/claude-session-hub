@@ -47,6 +47,7 @@ const { registerPathIpc } = require('./main/ipc/path-handlers.js');
 const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
 const { registerUsageIpc } = require('./main/ipc/usage-handlers.js');
 const { registerMeetingIpc } = require('./main/ipc/meeting-handlers.js');
+const { registerMeetingTimelineIpc } = require('./main/ipc/meeting-timeline-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -1854,43 +1855,6 @@ ipcMain.handle('cli-ready-status', (_e, sessionId) => {
   return cliReadyDetector.isReady(sessionId, session.kind, buf);
 });
 
-// Hub Timeline IPC: append a user turn to the meeting timeline.
-// Renderer calls this when user submits a message in meeting room before
-// the message goes to PTY(s).
-ipcMain.handle('meeting-append-user-turn', (_e, { meetingId, text }) => {
-  if (!meetingId || typeof text !== 'string' || !text) return null;
-  const turn = meetingManager.appendTurn(meetingId, 'user', text, Date.now());
-  if (turn) {
-    sendToRenderer('meeting-timeline-updated', { meetingId, turn });
-  }
-  return turn;
-});
-
-// Hub Timeline IPC: full snapshot of meeting timeline (for Feed UI rerender).
-ipcMain.handle('meeting-get-timeline', (_e, meetingId) => {
-  // T11 fix: ensure timeline loaded from disk for restored (dormant) meetings;
-  // loadTimelineLazy is idempotent (early-returns when already loaded).
-  if (meetingId) meetingManager.loadTimelineLazy(meetingId);
-  return meetingManager.getTimeline(meetingId);
-});
-
-// Hub Timeline IPC: compute incremental context for a target sub-session.
-// Returns { turns: [...], advancedTo: int }. Side effect: cursor advanced.
-// Renderer calls this in handleMeetingSend when syncContext is ON.
-ipcMain.handle('meeting-incremental-context', (_e, { meetingId, targetSid }) => {
-  if (!meetingId || !targetSid) return { turns: [], advancedTo: 0 };
-  // T11 fix: ensure timeline loaded from disk before computing context
-  // (otherwise restored meetings always return empty turns).
-  meetingManager.loadTimelineLazy(meetingId);
-  // Surface misconfiguration: cursor not registered for this target means
-  // the sub-session was never added (or already removed) — silent empty
-  // return would mask wrong meetingId / sid bugs in callers.
-  if (meetingManager.getCursor(meetingId, targetSid) === null) {
-    console.warn(`[meeting-ipc] incremental-context called with unregistered targetSid=${targetSid} in meetingId=${meetingId}`);
-  }
-  return meetingManager.incrementalContext(meetingId, targetSid);
-});
-
 // Read the authoritative last-assistant text captured by the transcript tap.
 // Returns null if no tap backend has fired for this session yet (CLI hasn't
 // finished a turn, hook hasn't triggered, or file path couldn't be resolved).
@@ -2027,6 +1991,11 @@ for (const m of bootMeetings) {
   meetingManager.restoreMeeting(m);
 }
 
+registerMeetingTimelineIpc(ipcMain, {
+  meetingManager,
+  sendToRenderer,
+});
+
 // 2026-05-07：loadAndSelfHeal 内部已经写过一次 cleanShutdown=false 的快照，
 //   这里不再重复写。原本的"flip flag immediately on boot"语义由 selfHeal 承担。
 
@@ -2036,20 +2005,6 @@ for (const m of bootMeetings) {
 //   未感知到的条目抹掉。
 let _lastPersistedSessionIds = new Set(lastPersistedSessions.map(s => s.hubId).filter(Boolean));
 let _lastPersistedMeetingIds = new Set(bootMeetings.map(m => m && m.id).filter(Boolean));
-
-ipcMain.handle('get-dormant-meetings', () => meetingManager.getAllMeetings());
-
-// Lazy load timeline for a restored meeting (called when user opens the meeting view).
-// Idempotent: safe to call multiple times; second+ call returns same in-memory state.
-ipcMain.handle('meeting-load-timeline', (_e, meetingId) => {
-  if (!meetingId) return { ok: false, reason: 'missing meetingId' };
-  const ok = meetingManager.loadTimelineLazy(meetingId);
-  if (!ok) return { ok: false, reason: 'no persisted timeline (or meeting unknown)' };
-  return {
-    ok: true,
-    timeline: meetingManager.getTimeline(meetingId),
-  };
-});
 
 ipcMain.handle('get-dormant-sessions', () => ({
   sessions: lastPersistedSessions,
