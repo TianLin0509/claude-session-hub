@@ -4,6 +4,7 @@ const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
 const { installScrollDebug } = require('./scroll-debug.js');
+const { createMemoPanel } = require('./memo-panel.js');
 const RENDER_STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const RENDER_STARTUP_T0 = performance.now();
 function traceRendererStartup(msg) {
@@ -526,152 +527,16 @@ function applyZoom(level) {
 applyZoom(currentZoom);
 
 // --- Global Memo Panel ---
-const MEMO_OPEN_KEY = 'claude-hub-memo-open';
-const _memoFs = require('fs');
-const _memoPath = require('path');
-const _memoFile = _memoPath.join(
-  require('../core/data-dir').getHubDataDir(), 'memo.json'
-);
-
-function loadMemoItems() {
-  try { return JSON.parse(_memoFs.readFileSync(_memoFile, 'utf8')); }
-  catch { return []; }
-}
-function saveMemoItems(items) {
-  try {
-    _memoFs.mkdirSync(_memoPath.dirname(_memoFile), { recursive: true });
-    _memoFs.writeFileSync(_memoFile, JSON.stringify(items, null, 2), 'utf8');
-  } catch (e) { console.error('[memo] save failed:', e.message); }
-}
-
-function formatMemoTime(ts) {
-  const d = new Date(ts);
-  const now = new Date();
-  const sameDay = d.getFullYear() === now.getFullYear()
-    && d.getMonth() === now.getMonth()
-    && d.getDate() === now.getDate();
-  if (sameDay) return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
-}
-
-function renderMemoList() {
-  const listEl = document.getElementById('memo-list');
-  if (!listEl) return;
-  const items = loadMemoItems();
-  if (items.length === 0) {
-    listEl.innerHTML = '<div class="memo-empty">暂无备忘</div>';
-    return;
-  }
-  listEl.innerHTML = items.map(item => `
-    <div class="memo-item" data-id="${item.id}">
-      <div class="memo-item-time">${formatMemoTime(item.ts)}</div>
-      <div class="memo-item-body">
-        <span class="memo-item-text">${escapeHtml(item.text)}</span>
-        <span class="memo-item-actions">
-          <button class="memo-item-btn memo-copy-btn" title="复制">📋</button>
-          <button class="memo-item-btn memo-del-btn" title="删除">🗑</button>
-        </span>
-      </div>
-    </div>
-  `).join('');
-}
-
-function addMemoItem(text) {
-  if (!text.trim()) return;
-  const items = loadMemoItems();
-  items.unshift({ id: 'm_' + Date.now(), text: text.trim(), ts: Date.now() });
-  saveMemoItems(items);
-  renderMemoList();
-}
-
-function deleteMemoItem(id) {
-  const items = loadMemoItems().filter(i => i.id !== id);
-  saveMemoItems(items);
-  renderMemoList();
-}
-
-function clearAllMemo() {
-  saveMemoItems([]);
-  renderMemoList();
-}
-
-function toggleMemoPanel() {
-  const panel = document.getElementById('memo-panel');
-  if (!panel) return;
-  const isOpen = panel.style.display !== 'none';
-  panel.style.display = isOpen ? 'none' : 'flex';
-  localStorage.setItem(MEMO_OPEN_KEY, String(!isOpen));
-  document.querySelectorAll('.btn-memo-toggle').forEach(btn => {
-    btn.classList.toggle('active', !isOpen);
-  });
-  if (!isOpen) renderMemoList();
-  // Re-fit active terminal after layout change
-  const active = activeSessionId && terminalCache.get(activeSessionId);
-  if (active && active.opened) {
-    setTimeout(() => scheduleFitAndResizeTerminal(activeSessionId, active, { force: true }), 50);
-  }
-}
-
-// Memo panel event delegation (runs once on DOMContentLoaded)
-function initMemoPanel() {
-  const addBtn = document.getElementById('memo-add-btn');
-  const input = document.getElementById('memo-input');
-  const clearBtn = document.getElementById('memo-clear-btn');
-  const listEl = document.getElementById('memo-list');
-  if (!addBtn || !input) return;
-
-  // Prevent keyboard events from reaching xterm
-  input.addEventListener('keydown', e => e.stopPropagation());
-  input.addEventListener('keypress', e => e.stopPropagation());
-  input.addEventListener('keyup', e => e.stopPropagation());
-
-  addBtn.addEventListener('click', () => {
-    addMemoItem(input.value);
-    input.value = '';
-    input.focus();
-  });
-
-  input.addEventListener('keydown', e => {
-    if (e.isComposing || e.keyCode === 229) return;
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      addMemoItem(input.value);
-      input.value = '';
-    }
-  });
-
-  clearBtn.addEventListener('click', () => toggleMemoPanel());
-
-  listEl.addEventListener('click', e => {
-    const copyBtn = e.target.closest('.memo-copy-btn');
-    if (copyBtn) {
-      const item = copyBtn.closest('.memo-item');
-      const text = item.querySelector('.memo-item-text').textContent;
-      clipboard.writeText(text);
-      copyBtn.textContent = '✓';
-      setTimeout(() => { copyBtn.textContent = '📋'; }, 1200);
-      return;
-    }
-    const delBtn = e.target.closest('.memo-del-btn');
-    if (delBtn) {
-      const item = delBtn.closest('.memo-item');
-      deleteMemoItem(item.dataset.id);
-    }
-  });
-
-  // Restore open state
-  if (localStorage.getItem(MEMO_OPEN_KEY) === 'true') {
-    const panel = document.getElementById('memo-panel');
-    if (panel) {
-      panel.style.display = 'flex';
-      renderMemoList();
-      document.querySelectorAll('.btn-memo-toggle').forEach(btn => btn.classList.add('active'));
-    }
-  }
-}
-
-initMemoPanel();
-
+const memoPanel = createMemoPanel({
+  baseDir: __dirname,
+  clipboard,
+  document,
+  getActiveSessionId: () => activeSessionId,
+  getActiveTerminal: () => activeSessionId && terminalCache.get(activeSessionId),
+  localStorage,
+  scheduleRefit: scheduleFitAndResizeTerminal,
+});
+memoPanel.init();
 // --- Helpers ---
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1349,8 +1214,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
   memoBtn.className = 'btn-zoom btn-memo-toggle';
   memoBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg>';
   memoBtn.title = 'Toggle memo panel';
-  if (localStorage.getItem(MEMO_OPEN_KEY) === 'true') memoBtn.classList.add('active');
-  memoBtn.addEventListener('click', () => toggleMemoPanel());
+  if (memoPanel.isOpen()) memoBtn.classList.add('active');
+  memoBtn.addEventListener('click', () => memoPanel.toggle());
 
   headerActions.append(memoBtn, zoomOutBtn, zoomInBtn, closeBtn);
 
