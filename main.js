@@ -50,6 +50,7 @@ const { registerMeetingIpc } = require('./main/ipc/meeting-handlers.js');
 const { registerMeetingTimelineIpc } = require('./main/ipc/meeting-timeline-handlers.js');
 const { registerTranscriptIpc } = require('./main/ipc/transcript-handlers.js');
 const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
+const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -1903,137 +1904,19 @@ registerMeetingTimelineIpc(ipcMain, {
 let _lastPersistedSessionIds = new Set(lastPersistedSessions.map(s => s.hubId).filter(Boolean));
 let _lastPersistedMeetingIds = new Set(bootMeetings.map(m => m && m.id).filter(Boolean));
 
-ipcMain.handle('get-dormant-sessions', () => ({
-  sessions: lastPersistedSessions,
-  wasCleanShutdown: bootWasClean,
-}));
-
-ipcMain.on('persist-sessions', (_e, list, meetingList) => {
-  if (!Array.isArray(list)) return;
-  // Preserve resume meta fields (codexSid/geminiChatId/geminiProjectHash/geminiProjectRoot)
-  // that renderer is unaware of. Without this merge, every renderer schedulePersist
-  // would silently wipe these fields populated by transcript-tap session-bound handler.
-  // 2026-05-05 fix: 字段名是 'currentModel'（renderer.js:5287 持久化用的字段），
-  //   旧版误写成 'model' → 兜底机制对 model 永不触发，任何一次 race 把 currentModel
-  //   写成 null 都会永久污染 state.json，dormant 唤醒丢失原 model（落到默认 opus 等）。
-  const RESUME_META_FIELDS = ['transcriptPath', 'codexSid', 'codexAppThreadId', 'codexSessionsRoot', 'codexAllowMtimeFallback', 'codexProfile', 'codexProfileLabel', 'geminiChatId', 'geminiProjectHash', 'geminiProjectRoot', 'currentModel', 'contextPct', 'contextUsed', 'contextMax', 'userRenamed', 'autoTitleGenerated'];
-  const oldByHubId = new Map(lastPersistedSessions.map(s => [s.hubId, s]));
-  for (const newSession of list) {
-    if (!newSession || !newSession.hubId) continue;
-    const oldSession = oldByHubId.get(newSession.hubId);
-    if (!oldSession) continue;
-    for (const field of RESUME_META_FIELDS) {
-      if (field === 'userRenamed' && oldSession.userRenamed === true) {
-        newSession.userRenamed = true;
-        continue;
-      }
-      if (newSession[field] == null && oldSession[field] != null) {
-        newSession[field] = oldSession[field];
-      }
-    }
-  }
-
-  // 2026-05-07 道雪：updatedAt + removed diff + per-id JSON 双备份。
-  const nowTs = Date.now();
-  for (const s of list) {
-    if (s && s.hubId) s.updatedAt = nowTs;
-  }
-
-  // diff 出"上次 persist 有但这次没了"的 hubId → 视为用户主动关闭，标记 removed
-  const newSessionIds = new Set(list.map(s => s && s.hubId).filter(Boolean));
-  for (const oldId of _lastPersistedSessionIds) {
-    if (!newSessionIds.has(oldId)) {
-      stateStore.markRemovedSession(oldId);
-      sessionStore.deleteSessionFile(oldId);
-      sessionStore.cancelDirty(oldId);
-    }
-  }
-  _lastPersistedSessionIds = newSessionIds;
-
-  // per-session JSON 备份：debounced 写盘，sid 类字段在 transcript-tap 路径走 sync
-  for (const s of list) {
-    if (s && s.hubId) sessionStore.markDirty(s.hubId, s);
-  }
-
-  lastPersistedSessions = list;
-  // 2026-05-05 道雪：第二道防线 — renderer 传来的 meeting 列表如果缺字段（历史 bug 漏 scene 等
-  //   导致重启后所有群聊退化为 general），按 id 从 meetingManager 拿权威对象做字段补全。
-  //   renderer 的字段是 UI 派生快照（lastMessageTime / focusedSub 等），优先用它；
-  //   participants / slotSpecs / covenantText），这些字段始终从 manager 兜底，
-  //   确保即使未来 renderer 有调用方再漏字段也不会写残 state.json。
-  let meetingsForState;
-  if (Array.isArray(meetingList)) {
-    meetingsForState = meetingList.map(rendererMeeting => {
-      if (!rendererMeeting || !rendererMeeting.id) return rendererMeeting;
-      const authoritative = meetingManager.getMeeting(rendererMeeting.id);
-      if (!authoritative) return rendererMeeting;
-      return {
-        ...rendererMeeting,
-        scene: rendererMeeting.scene || authoritative.scene,
-        mode: rendererMeeting.mode || authoritative.mode,
-        groupChat: typeof rendererMeeting.groupChat === 'boolean'
-          ? rendererMeeting.groupChat
-          : !!authoritative.groupChat,
-        groupMode: rendererMeeting.groupMode || authoritative.groupMode || 'deliberation',
-        groupRecentRawN: Number.isInteger(rendererMeeting.groupRecentRawN)
-          ? rendererMeeting.groupRecentRawN
-          : (Number.isInteger(authoritative.groupRecentRawN) ? authoritative.groupRecentRawN : 5),
-        userRenamed: typeof rendererMeeting.userRenamed === 'boolean'
-          ? rendererMeeting.userRenamed
-          : !!authoritative.userRenamed,
-        autoTitlePending: typeof rendererMeeting.autoTitlePending === 'boolean'
-          ? rendererMeeting.autoTitlePending
-          : !!authoritative.autoTitlePending,
-        autoTitleGenerated: typeof rendererMeeting.autoTitleGenerated === 'boolean'
-          ? rendererMeeting.autoTitleGenerated
-          : !!authoritative.autoTitleGenerated,
-        participants: Array.isArray(rendererMeeting.participants)
-          ? rendererMeeting.participants
-          : (Array.isArray(authoritative.participants) ? authoritative.participants : null),
-        slotSpecs: Array.isArray(rendererMeeting.slotSpecs)
-          ? rendererMeeting.slotSpecs
-          : (Array.isArray(authoritative.slotSpecs) ? authoritative.slotSpecs : null),
-        covenantText: (typeof rendererMeeting.covenantText === 'string' && rendererMeeting.covenantText)
-          ? rendererMeeting.covenantText
-          : (authoritative.covenantText || ''),
-      };
-    });
-  } else {
-    meetingsForState = meetingManager.getAllMeetings();
-  }
-
-  // 2026-05-07 道雪：meeting 同样加 updatedAt + removed diff + per-id JSON 双备份
-  for (const m of meetingsForState) {
-    if (m && m.id) m.updatedAt = nowTs;
-  }
-  const newMeetingIds = new Set(meetingsForState.map(m => m && m.id).filter(Boolean));
-  for (const oldId of _lastPersistedMeetingIds) {
-    if (!newMeetingIds.has(oldId)) {
-      stateStore.markRemovedMeeting(oldId);
-      // meeting-store 已在 closeMeeting 路径调过 deleteMeetingFile + cancelDirty；
-      // 这里再补一次防御写：renderer 推 persist-sessions 时偶发先于 closeMeeting 路径。
-      meetingStore.deleteMeetingFile(oldId);
-      meetingStore.cancelDirty(oldId);
-    }
-  }
-  _lastPersistedMeetingIds = newMeetingIds;
-
-  // 把 immersive 状态合并进 meeting 字段，让 per-meeting JSON 也带上（v2 schema）
-  for (const m of meetingsForState) {
-    if (m && m.id) {
-      const im = _immersiveByMeeting[m.id];
-      if (typeof im === 'boolean') m.immersive = im;
-      meetingStore.markDirty(m.id, m);
-    }
-  }
-
-  stateStore.save({
-    version: 1,
-    cleanShutdown: false,
-    sessions: list,
-    meetings: meetingsForState,
-    immersiveByMeeting: _immersiveByMeeting,
-  });
+registerPersistenceIpc(ipcMain, {
+  bootWasClean,
+  getImmersiveByMeeting: () => _immersiveByMeeting,
+  getLastPersistedMeetingIds: () => _lastPersistedMeetingIds,
+  getLastPersistedSessionIds: () => _lastPersistedSessionIds,
+  getLastPersistedSessions: () => lastPersistedSessions,
+  meetingManager,
+  meetingStore,
+  sessionStore,
+  setLastPersistedMeetingIds: (ids) => { _lastPersistedMeetingIds = ids; },
+  setLastPersistedSessionIds: (ids) => { _lastPersistedSessionIds = ids; },
+  setLastPersistedSessions: (sessions) => { lastPersistedSessions = sessions; },
+  stateStore,
 });
 
 // Wake a dormant session: spawn PTY with the same hubId, reusing stored cwd,

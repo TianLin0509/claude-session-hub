@@ -5,6 +5,7 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const mainSrc = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const transcriptIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'transcript-handlers.js'), 'utf8');
+const persistenceIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'persistence-handlers.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
 const tapSrc = fs.readFileSync(path.join(root, 'core', 'transcript-tap.js'), 'utf8');
 const sessionStoreSrc = fs.readFileSync(path.join(root, 'core', 'session-store.js'), 'utf8');
@@ -105,7 +106,8 @@ assert.ok(
 assert.ok(
   rendererSrc.includes('codexSessionsRoot: s.codexSessionsRoot || null')
     && rendererSrc.includes('codexAllowMtimeFallback: !!s.codexAllowMtimeFallback')
-    && mainSrc.includes("'codexSessionsRoot', 'codexAllowMtimeFallback'")
+    && persistenceIpcSrc.includes("'codexSessionsRoot'")
+    && persistenceIpcSrc.includes("'codexAllowMtimeFallback'")
     && sessionStoreSrc.includes('transcriptPath: data.transcriptPath || null')
     && sessionStoreSrc.includes('codexSessionsRoot: data.codexSessionsRoot || null'),
   'Codex card history metadata must persist transcriptPath, sessionsRoot, and mtime fallback',
