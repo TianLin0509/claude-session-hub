@@ -4,6 +4,7 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const mainSrc = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
+const recoverySrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'groupchat-recovery-handlers.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.js'), 'utf8');
 const cssSrc = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.css'), 'utf8');
 
@@ -21,15 +22,14 @@ assert.ok(
 );
 
 assert.ok(
-  mainSrc.includes('groupChatWatcher.extractStreamingText(sid, kind)') &&
-  mainSrc.includes("extractMode: 'pty_buffer_fallback'"),
+  recoverySrc.includes('groupChatWatcher.extractStreamingText(sid, kind)') &&
+  recoverySrc.includes("extractMode: 'pty_buffer_fallback'"),
   'manual extract must fall back to the visible PTY buffer when transcript extraction is not ready',
 );
 
 assert.ok(
-  mainSrc.includes('meeting && meeting.groupChat') &&
-  mainSrc.includes('groupchat.getOrchestrator(getHubDataDir(), meetingId)') &&
-  mainSrc.includes("mode: 'patch_groupchat_turn'"),
+  recoverySrc.includes('groupchat.getOrchestrator(getHubDataDir(), meetingId)') &&
+  recoverySrc.includes("mode: 'patch_groupchat_turn'"),
   'manual extract must patch settled group-chat state',
 );
 

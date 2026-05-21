@@ -37,8 +37,130 @@ test('registers recovery channels', () => {
   });
 
   assert.ok(ipc.handlers.has('groupchat-resend-prompt'));
+  assert.ok(ipc.handlers.has('groupchat-manual-extract'));
   assert.ok(ipc.handlers.has('groupchat-skip-participant'));
   assert.ok(ipc.handlers.has('groupchat-resend-participant'));
+});
+
+test('manual extract settles active watcher with transcript text', async () => {
+  const ipc = createFakeIpc();
+  const calls = [];
+  const watchers = new Map([
+    ['s1', { manualExtract: (text) => calls.push(['manualExtract', text]) }],
+  ]);
+  registerGroupchatRecoveryIpc(ipc, {
+    getActiveWatchers: () => watchers,
+    getHubDataDir: () => 'C:\\hub',
+    groupchat: {},
+    groupChatWatcher: { extractStreamingText: () => null },
+    meetingManager: {},
+    sendToRenderer: () => {},
+    sessionManager: { getSession: () => ({ kind: 'codex' }) },
+    transcriptTap: { extractLatestTurn: async () => ({ text: 'answer', source: 'transcript', extractMode: 'task_complete' }) },
+  });
+
+  const result = await ipc.handlers.get('groupchat-manual-extract')(null, { sid: 's1', sincePromptTs: 123 });
+
+  assert.deepStrictEqual(result, {
+    ok: true,
+    text: 'answer',
+    source: 'transcript',
+    mode: 'watcher_settle',
+    extractMode: 'task_complete',
+  });
+  assert.deepStrictEqual(calls, [['manualExtract', 'answer']]);
+});
+
+test('manual extract patches settled groupchat turn and emits update', async () => {
+  const ipc = createFakeIpc();
+  const emitted = [];
+  const calls = [];
+  registerGroupchatRecoveryIpc(ipc, {
+    getActiveWatchers: () => new Map(),
+    getHubDataDir: () => 'C:\\hub',
+    groupchat: {
+      getOrchestrator(root, meetingId) {
+        calls.push(['getOrchestrator', root, meetingId]);
+        return {
+          state: { turns: [{ n: 1 }, { n: 2 }] },
+          patchTurnResult(turnNum, sid, fields) {
+            calls.push(['patchTurnResult', turnNum, sid, fields]);
+            return true;
+          },
+        };
+      },
+    },
+    groupChatWatcher: { extractStreamingText: () => null },
+    meetingManager: { getMeeting: (meetingId) => ({ id: meetingId }) },
+    sendToRenderer: (channel, payload) => emitted.push([channel, payload]),
+    sessionManager: { getSession: () => ({ kind: 'claude' }) },
+    transcriptTap: { extractLatestTurn: async () => ({ text: 'manual text', source: 'transcript' }) },
+  });
+
+  const result = await ipc.handlers.get('groupchat-manual-extract')(null, {
+    meetingId: 'm1',
+    sid: 's1',
+    turnNum: 2,
+  });
+
+  assert.deepStrictEqual(result, {
+    ok: true,
+    text: 'manual text',
+    source: 'transcript',
+    mode: 'patch_groupchat_turn',
+    extractMode: null,
+  });
+  assert.deepStrictEqual(calls, [
+    ['getOrchestrator', 'C:\\hub', 'm1'],
+    ['patchTurnResult', 2, 's1', { text: 'manual text', status: 'manual_extracted' }],
+  ]);
+  assert.deepStrictEqual(emitted, [['groupchat-turn-patched', {
+    meetingId: 'm1',
+    turnNum: 2,
+    sid: 's1',
+    charCount: 11,
+  }]]);
+});
+
+test('manual extract falls back to PTY text and explains no-content modes', async () => {
+  const ipc = createFakeIpc();
+  registerGroupchatRecoveryIpc(ipc, {
+    getActiveWatchers: () => new Map(),
+    getHubDataDir: () => 'C:\\hub',
+    groupchat: {},
+    groupChatWatcher: { extractStreamingText: () => ({ text: 'pty text', source: 'pty' }) },
+    meetingManager: {},
+    sendToRenderer: () => {},
+    sessionManager: { getSession: () => ({ kind: 'codex' }) },
+    transcriptTap: { extractLatestTurn: async () => ({ text: '', extractMode: 'no_task_complete_yet' }) },
+  });
+
+  const pty = await ipc.handlers.get('groupchat-manual-extract')(null, { sid: 's1' });
+  assert.deepStrictEqual(pty, {
+    ok: true,
+    text: 'pty text',
+    source: 'pty',
+    mode: 'text_only',
+    extractMode: 'pty_buffer_fallback',
+  });
+
+  const ipcNoContent = createFakeIpc();
+  registerGroupchatRecoveryIpc(ipcNoContent, {
+    getActiveWatchers: () => new Map(),
+    getHubDataDir: () => 'C:\\hub',
+    groupchat: {},
+    groupChatWatcher: { extractStreamingText: () => null },
+    meetingManager: {},
+    sendToRenderer: () => {},
+    sessionManager: { getSession: () => ({ kind: 'codex' }) },
+    transcriptTap: { extractLatestTurn: async () => ({ text: '', extractMode: 'no_task_complete_yet' }) },
+  });
+
+  const noContent = await ipcNoContent.handlers.get('groupchat-manual-extract')(null, { sid: 's1' });
+  assert.strictEqual(noContent.ok, false);
+  assert.strictEqual(noContent.reason, 'no_content');
+  assert.strictEqual(noContent.extractMode, 'no_task_complete_yet');
+  assert.ok(noContent.detail.includes('task_complete'));
 });
 
 test('resend prompt validates args and delegates active prompt', async () => {

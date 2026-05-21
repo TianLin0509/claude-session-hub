@@ -1605,115 +1605,15 @@ registerGroupchatQueryIpc(ipcMain, {
   transcriptTap,
 });
 
-// ===== Stage 2 容错升级（2026-05-01）— 群聊逃生工具 IPC =====
-//
-// 这三个 IPC 让 UI 在某家 AI 卡死时绕过完成检测，不再让整个群聊锁 10 分钟。
-// 与 turn-completion-watcher 配合使用：watcher.wait() 期间，IPC 可以通过
-// _activeWatchers Map 找到对应 watcher 并触发 manualExtract / skip。
-//
-// 调用前提：必须在某 turn 的 wait() 期间调用（即 watcher 还在 _activeWatchers 中）。
-// turn 已结束（watcher 已 settle 并从 Map 移除）后调这些 IPC 返回 not_active。
-
-// 一键提取：从 Gemini JSONL 直接读 sincePromptTs 之后的 content 拼接，
-//   绕过完成检测设为该家本轮答案。仅 Gemini 需要（Claude/Codex 都有可靠 L1）。
-// 2026-05-02 Bug 修复：手动提取扩展到所有 backend（Claude/DeepSeek/GLM/Codex/Gemini）。
-//   旧版本只调 extractLatestGeminiTurn → Claude/DeepSeek/GLM/Codex 永远 null → UI 报"提取失败"
-//   → 用户感觉按钮是假的。新版本走 transcriptTap.extractLatestTurn 统一入口按 backend 路由。
-//
-// 此外移除"必须有 active watcher 才能提取"的硬限制：active watcher 缺失只意味着本轮已 settle，
-// 但 transcript 文件中的 last assistant 仍然有意义（用户想拿当前最新答案 patch 进 lastTurn）。
-// 有 watcher 走 manualExtract（让本轮 settle 走完整流程）；无 watcher 走 patchTurnResult 直接更新 lastTurn。
-ipcMain.handle('groupchat-manual-extract', async (_e, { meetingId, sid, sincePromptTs, turnNum } = {}) => {
-  if (!sid) return { ok: false, reason: 'missing_sid' };
-
-  let extracted = null;
-  try { extracted = await transcriptTap.extractLatestTurn(sid, sincePromptTs || 0); }
-  catch (e) { return { ok: false, reason: 'extract_failed', detail: e.message }; }
-  const session = sessionManager.getSession(sid);
-  const kind = session?.kind || 'unknown';
-  if (!extracted || !extracted.text) {
-    try {
-      const fromPty = groupChatWatcher.extractStreamingText(sid, kind);
-      if (fromPty && fromPty.text && fromPty.text.trim().length > 0) {
-        extracted = {
-          text: fromPty.text,
-          source: fromPty.source || 'pty_buffer',
-          extractMode: 'pty_buffer_fallback',
-        };
-      }
-    } catch (e) {
-      console.warn('[manual-extract] PTY fallback failed:', e && e.message);
-    }
-  }
-  if (!extracted || !extracted.text) {
-    // 2026-05-04 codex equiv (Spec S2 + extract-failure TDD)：detail 按 extractMode 分级。
-    //   v2.1 加了 extractMode 透传但 detail 仍写死，用户截图重现仍看到笼统"提取失败"。
-    //   现在按 4 态给针对性 hint，让用户知道下一步该做什么（等几秒 / 进 shell / 检查路径）。
-    const extractMode = extracted?.extractMode || null;
-    let detail;
-    if (extractMode === 'no_rollout_bound') {
-      detail = `Codex rollout 文件尚未绑定（kind=${kind}）。可能原因：（a）当天目录 ~/.codex/sessions/<今日>/ 还没新文件；（b）codex spawn 时的 cwd 与 rollout session_meta.cwd 不一致；（c）timestamp 超出绑定窗口 [-10s, +5min]。建议：等 5-10s（codex 通常 spawn 后才写 rollout 首行），或点"🔧 进 shell"看真实 PTY 输出确认 codex 是否真的启动了。`;
-    } else if (extractMode === 'no_task_complete_yet') {
-      detail = `Codex 已绑定 rollout 但 task_complete 事件尚未写入（kind=${kind}）。可能原因：（a）codex 仍在思考；（b）codex 在等 MCP 工具确认弹窗（如 ai-team team_respond），需要进 shell 点"Allow"；（c）codex 多 task 场景含 3s debounce，最后一个 task 完成后才 emit。建议：点"🔧 进 shell"看 codex 当前是否被 confirm 弹窗阻塞。`;
-    } else {
-      // null（claude/gemini/deepseek/glm 等非 codex backend，无 extractMode）或未知态
-      detail = `transcript 中没有可读的 last assistant 内容（kind=${kind}）。可能原因：CLI 还没真正回答 / transcript 路径未绑定 / Stop hook 没触发且 idle-timer 还没到期。建议稍等几秒重试，或点"🔧 进 shell"看真实 PTY 输出。`;
-    }
-    return {
-      ok: false,
-      reason: 'no_content',
-      extractMode,
-      detail,
-    };
-  }
-
-  const watcher = _activeWatchers.get(sid);
-  if (watcher) {
-    // 本轮还在等：让 watcher settle 走 manual_extracted 状态
-    watcher.manualExtract(extracted.text);
-    return { ok: true, text: extracted.text, source: extracted.source, mode: 'watcher_settle', extractMode: extracted.extractMode || null };
-  }
-
-  // 本轮已 settle 但用户仍想刷新卡片 → patch lastTurn
-  if (meetingId) {
-    try {
-      const meeting = meetingManager.getMeeting(meetingId);
-      if (meeting) {
-        const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-        const turns = Array.isArray(orch.state.turns) ? orch.state.turns : [];
-        const requestedTurn = Number.isFinite(Number(turnNum)) ? Number(turnNum) : null;
-        const lastTurn = requestedTurn
-          ? turns.find(t => t && t.n === requestedTurn)
-          : turns[turns.length - 1];
-        if (lastTurn) {
-          const patched = orch.patchTurnResult(lastTurn.n, sid, {
-            text: extracted.text,
-            status: 'manual_extracted',
-          });
-          if (patched) {
-            sendToRenderer('groupchat-turn-patched', {
-              meetingId, turnNum: lastTurn.n, sid, charCount: (extracted.text || '').length,
-            });
-            return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_groupchat_turn', extractMode: extracted.extractMode || null };
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[manual-extract] patch lastTurn failed:', e.message);
-    }
-  }
-
-  // 无 meetingId / 没有 lastTurn → 仍返回提取的文字让 UI 显示
-  return { ok: true, text: extracted.text, source: extracted.source, mode: 'text_only', extractMode: extracted.extractMode || null };
-});
-
 registerGroupchatRecoveryIpc(ipcMain, {
   getHubDataDir,
   getActiveWatchers: () => _activeWatchers,
   groupchat,
   groupChatWatcher,
   meetingManager,
+  sendToRenderer,
   sessionManager,
+  transcriptTap,
 });
 
 registerCliStatusIpc(ipcMain, {
