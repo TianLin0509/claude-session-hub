@@ -55,6 +55,7 @@ const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js')
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
+const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -1594,14 +1595,7 @@ async function dispatchGroupChatTurn(meetingId, { userInput }) {
   }
 }
 
-ipcMain.handle('groupchat:turn', async (_e, args = {}) => {
-  try {
-    return await dispatchGroupChatTurn(args.meetingId, args);
-  } catch (e) {
-    console.error('[groupchat:turn] unhandled throw, returning error to renderer:', e);
-    return { status: 'error', reason: (e && e.message) || 'internal_error', turnNum: null };
-  }
-});
+registerGroupchatTurnIpc(ipcMain, { dispatchGroupChatTurn });
 
 // 摘要功能 2026-05-08 整体下线：原 summary-trigger IPC handler 已删
 
