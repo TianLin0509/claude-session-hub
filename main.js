@@ -32,6 +32,7 @@ const transcriptTap = new TranscriptTap();
 //   ＞ Node 默认 10 个会触发 MaxListenersExceededWarning。提升上限到 100 安全冗余。
 try { transcriptTap.setMaxListeners(100); } catch {}
 const scenes = require('./core/group-chat-scenes.js');
+const groupchat = require('./core/group-chat-orchestrator.js');
 const cliReadyDetector = require('./core/group-chat-cli-ready-detector.js');
 const lindangBridge = require('./core/lindang-bridge.js');
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
@@ -1074,40 +1075,17 @@ ipcMain.handle('add-meeting-sub', async (_e, args = {}) => {
   return _addMeetingSubInternal(meetingId, kind, opts);
 });
 
-ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId }) => {
-  sessionManager.closeSession(sessionId);
-  const updated = meetingManager.removeSubSession(meetingId, sessionId);
-  if (updated) sendToRenderer('meeting-updated', { meeting: updated });
-  return updated;
-});
-
-ipcMain.handle('close-meeting', (_e, meetingId) => {
-  const subIds = meetingManager.closeMeeting(meetingId);
-  if (!subIds) return false;
-  for (const sid of subIds) {
-    sessionManager.closeSession(sid);
-    // 2026-05-07：关掉的子会话立刻 removed，避免下一轮 persist-sessions diff 没赶上时
-    //   state.json 还残留 dormant 条目。
-    stateStore.markRemovedSession(sid);
-    sessionStore.deleteSessionFile(sid);
-    sessionStore.cancelDirty(sid);
-  }
-  groupchat.cleanup?.(getHubDataDir(), meetingId);
-  // 2026-05-07：会议在 state.json 里也要标记 removed
-  stateStore.markRemovedMeeting(meetingId);
-  // immersive 状态从 dict 一并清掉（避免 state.json 越长越大）
-  delete _immersiveByMeeting[meetingId];
-  sendToRenderer('meeting-closed', { meetingId });
-  return true;
-});
-
 registerMeetingIpc(ipcMain, {
+  deleteImmersiveByMeeting: (meetingId) => { delete _immersiveByMeeting[meetingId]; },
   getHubDataDir,
   getImmersiveByMeeting: () => _immersiveByMeeting,
   getLastPersistedSessions: () => lastPersistedSessions,
+  groupchat,
   meetingManager,
   scenes,
   sendToRenderer,
+  sessionManager,
+  sessionStore,
   slotIds: SLOT_IDS,
   stateStore,
 });
@@ -1115,7 +1093,6 @@ registerMeetingIpc(ipcMain, {
 // =====================================================================
 // Group Chat Mode (Sprint 2): fanout / debate / summary 三种轮次
 // =====================================================================
-const groupchat = require('./core/group-chat-orchestrator.js');
 const groupChatWatcher = require('./core/group-chat-watcher.js');
 groupChatWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
 let _groupChatInProgress = new Set(); // 同一群聊单一并发：set of meetingId

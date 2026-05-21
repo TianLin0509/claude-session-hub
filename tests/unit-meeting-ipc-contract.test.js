@@ -47,6 +47,17 @@ function createFakeMeetingManager() {
       calls.push(['getAllMeetings']);
       return [{ ...meeting }];
     },
+    removeSubSession(id, sessionId) {
+      calls.push(['removeSubSession', id, sessionId]);
+      if (id !== meeting.id) return null;
+      meeting.subSessions = meeting.subSessions.filter(sid => sid !== sessionId);
+      return { ...meeting };
+    },
+    closeMeeting(id) {
+      calls.push(['closeMeeting', id]);
+      if (id !== meeting.id) return null;
+      return ['s1', 's2'];
+    },
   };
 }
 
@@ -103,6 +114,8 @@ test('registers expected meeting channels', () => {
     'get-research-covenant-template',
     'switch-scene',
     'get-meetings',
+    'remove-meeting-sub',
+    'close-meeting',
   ]) {
     assert.ok(ipc.handlers.has(channel), `${channel} should be registered as handle`);
   }
@@ -168,6 +181,75 @@ test('groupchat:set-participants validates, dedupes, sorts, persists, and emits'
   assert.deepStrictEqual(saves[0].sessions, [{ hubId: 's1' }]);
   assert.deepStrictEqual(saves[0].immersiveByMeeting, { 'meet-1': false });
   assert.strictEqual(emitted.at(-1)[0], 'meeting-updated');
+});
+
+test('remove-meeting-sub closes session, updates meeting, and emits', () => {
+  const ipc = createFakeIpc();
+  const meetingManager = createFakeMeetingManager();
+  const closed = [];
+  const emitted = [];
+  registerMeetingIpc(ipc, {
+    getHubDataDir: () => 'C:\\tmp\\hub',
+    groupchat: { cleanup() {} },
+    meetingManager,
+    scenes: createFakeScenes(),
+    sendToRenderer: (channel, payload) => emitted.push([channel, payload]),
+    sessionManager: { closeSession: (sid) => closed.push(sid) },
+    sessionStore: { deleteSessionFile() {}, cancelDirty() {} },
+    stateStore: { save() {}, markRemovedSession() {}, markRemovedMeeting() {} },
+  });
+
+  const updated = ipc.handlers.get('remove-meeting-sub')(null, { meetingId: 'meet-1', sessionId: 's2' });
+
+  assert.deepStrictEqual(closed, ['s2']);
+  assert.deepStrictEqual(meetingManager.calls.at(-1), ['removeSubSession', 'meet-1', 's2']);
+  assert.deepStrictEqual(updated.subSessions, ['s1', 's3']);
+  assert.strictEqual(emitted.at(-1)[0], 'meeting-updated');
+});
+
+test('close-meeting closes subs, removes persisted state, cleans groupchat, and emits', () => {
+  const ipc = createFakeIpc();
+  const meetingManager = createFakeMeetingManager();
+  const calls = [];
+  const emitted = [];
+  registerMeetingIpc(ipc, {
+    deleteImmersiveByMeeting: (meetingId) => calls.push(['deleteImmersiveByMeeting', meetingId]),
+    getHubDataDir: () => 'C:\\tmp\\hub',
+    groupchat: { cleanup: (root, meetingId) => calls.push(['cleanup', root, meetingId]) },
+    meetingManager,
+    scenes: createFakeScenes(),
+    sendToRenderer: (channel, payload) => emitted.push([channel, payload]),
+    sessionManager: { closeSession: (sid) => calls.push(['closeSession', sid]) },
+    sessionStore: {
+      deleteSessionFile: (sid) => calls.push(['deleteSessionFile', sid]),
+      cancelDirty: (sid) => calls.push(['cancelDirty', sid]),
+    },
+    stateStore: {
+      save() {},
+      markRemovedSession: (sid) => calls.push(['markRemovedSession', sid]),
+      markRemovedMeeting: (meetingId) => calls.push(['markRemovedMeeting', meetingId]),
+    },
+  });
+
+  const ok = ipc.handlers.get('close-meeting')(null, 'meet-1');
+  const missing = ipc.handlers.get('close-meeting')(null, 'missing');
+
+  assert.strictEqual(ok, true);
+  assert.strictEqual(missing, false);
+  assert.deepStrictEqual(calls, [
+    ['closeSession', 's1'],
+    ['markRemovedSession', 's1'],
+    ['deleteSessionFile', 's1'],
+    ['cancelDirty', 's1'],
+    ['closeSession', 's2'],
+    ['markRemovedSession', 's2'],
+    ['deleteSessionFile', 's2'],
+    ['cancelDirty', 's2'],
+    ['cleanup', 'C:\\tmp\\hub', 'meet-1'],
+    ['markRemovedMeeting', 'meet-1'],
+    ['deleteImmersiveByMeeting', 'meet-1'],
+  ]);
+  assert.deepStrictEqual(emitted, [['meeting-closed', { meetingId: 'meet-1' }]]);
 });
 
 test('switch-scene writes covenant and prompt files for research slots', () => {

@@ -59,9 +59,12 @@ function registerMeetingIpc(ipcMain, deps) {
   const {
     getImmersiveByMeeting = () => ({}),
     getLastPersistedSessions = () => [],
+    groupchat,
     meetingManager,
     scenes,
     sendToRenderer,
+    sessionManager,
+    sessionStore,
     stateStore,
   } = deps;
 
@@ -134,6 +137,29 @@ function registerMeetingIpc(ipcMain, deps) {
 
   ipcMain.handle('get-meetings', () => {
     return meetingManager.getAllMeetings();
+  });
+
+  ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId }) => {
+    sessionManager.closeSession(sessionId);
+    const updated = meetingManager.removeSubSession(meetingId, sessionId);
+    if (updated) sendToRenderer('meeting-updated', { meeting: updated });
+    return updated;
+  });
+
+  ipcMain.handle('close-meeting', (_e, meetingId) => {
+    const subIds = meetingManager.closeMeeting(meetingId);
+    if (!subIds) return false;
+    for (const sid of subIds) {
+      sessionManager.closeSession(sid);
+      stateStore.markRemovedSession(sid);
+      sessionStore.deleteSessionFile(sid);
+      sessionStore.cancelDirty(sid);
+    }
+    groupchat.cleanup?.(deps.getHubDataDir(), meetingId);
+    stateStore.markRemovedMeeting(meetingId);
+    deps.deleteImmersiveByMeeting?.(meetingId);
+    sendToRenderer('meeting-closed', { meetingId });
+    return true;
   });
 }
 
