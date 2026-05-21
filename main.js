@@ -58,6 +58,7 @@ const {
   findCodexRolloutBySid,
   findCodexRolloutByCwd,
 } = require('./core/codex-transcript-parser.js');
+const { registerArchiveIpc } = require('./main/ipc/archive-handlers.js');
 
 // === EPIPE 防护（隔离 Hub 启动必需）===
 // PowerShell `& exe ...` + run_in_background 启动模式下，parent 退出后
@@ -2106,18 +2107,7 @@ ipcMain.handle('get-meetings', () => {
   return meetingManager.getAllMeetings();
 });
 
-
-// Archive scanner: enumerate past Claude Code sessions for the Resume picker.
-const sessionArchive = require('./core/session-archive.js');
-ipcMain.handle('list-past-sessions', async (_e, { limit = 50 } = {}) => {
-  try { return await sessionArchive.listRecent(limit); }
-  catch (e) { console.warn('[群聊] list-past-sessions failed:', e.message); return []; }
-});
-
-ipcMain.handle('search-past-sessions', async (_e, { query, limit = 50 } = {}) => {
-  try { return await sessionArchive.searchAcross(query, { limit }); }
-  catch (e) { console.warn('[群聊] search-past-sessions failed:', e.message); return { hits: [], truncated: false }; }
-});
+registerArchiveIpc(ipcMain);
 
 registerSessionIpc(ipcMain, {
   sendToRenderer,
