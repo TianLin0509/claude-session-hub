@@ -6,6 +6,7 @@ const DOMPurify = require('dompurify');
 const { installScrollDebug } = require('./scroll-debug.js');
 const { createMemoPanel } = require('./memo-panel.js');
 const { createTerminalSearch } = require('./terminal-search.js');
+const { createSessionContextMenuController, createTerminalContextMenuController } = require('./context-menus.js');
 const { XTERM_THEMES, createThemeController } = require('./theme-controller.js');
 const { createTerminalInputController } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
@@ -246,11 +247,11 @@ const resumeMenuEl = document.getElementById('resume-picker-menu');
 const resumeWrapperEl = document.getElementById('resume-picker-wrapper');
 const btnGroupChat = document.getElementById('btn-group-chat');
 const contextMenuEl = document.getElementById('context-menu');
+const termCtxMenuEl = document.getElementById('terminal-context-menu');
 const appContainerEl = document.getElementById('app-container');
 // btn-collapse-sidebar 已删除 (v0.8.4) — 用 Ctrl+B 折叠;展开按钮 btn-expand-sidebar 在折叠态仍提供
 const btnExpandEl = document.getElementById('btn-expand-sidebar');
 
-let contextMenuSessionId = null;
 const modelUi = createModelUiController({
   document,
   ipcRenderer,
@@ -4835,124 +4836,36 @@ function jumpToSessionByIndex(idx) {
   selectSession(ids[idx]);
 }
 
-// --- Context menu (right-click session) ---
-function openContextMenu(sessionId, x, y) {
-  contextMenuSessionId = sessionId;
-  contextMenuEl.style.display = 'block';
-  contextMenuEl.style.left = `${x}px`;
-  contextMenuEl.style.top = `${y}px`;
-  requestAnimationFrame(() => {
-    const rect = contextMenuEl.getBoundingClientRect();
-    if (rect.right > window.innerWidth) contextMenuEl.style.left = `${x - rect.width}px`;
-    if (rect.bottom > window.innerHeight) contextMenuEl.style.top = `${y - rect.height}px`;
-  });
-  const pinBtn = contextMenuEl.querySelector('[data-action="pin"]');
-  const restartBtn = contextMenuEl.querySelector('[data-action="restart"]');
-  if (pinBtn) pinBtn.style.display = '';
-  const session = sessions.get(sessionId);
-  const meeting = meetings[sessionId];
-  if (restartBtn) restartBtn.style.display = session ? '' : 'none';
-  if (pinBtn) {
-    const target = session || meeting;
-    pinBtn.textContent = target && target.pinned ? 'Unpin' : 'Pin to top';
-  }
-}
-
-function closeContextMenu() {
-  contextMenuEl.style.display = 'none';
-  contextMenuSessionId = null;
-}
-
-document.addEventListener('mousedown', (e) => {
-  if (contextMenuEl.style.display === 'block' && !contextMenuEl.contains(e.target)) {
-    closeContextMenu();
-  }
+// --- Context menus ---
+const sessionContextMenu = createSessionContextMenuController({
+  document,
+  window,
+  contextMenuEl,
+  sessions,
+  meetings,
+  ipcRenderer,
+  getActiveSessionId: () => activeSessionId,
+  setActiveSessionId: (value) => { activeSessionId = value; },
+  getActiveMeetingId: () => activeMeetingId,
+  setActiveMeetingId: (value) => { activeMeetingId = value; },
+  closeMeetingPanel: () => { if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel(); },
+  emptyStateEl,
+  renderSessionList,
+  schedulePersist,
 });
+sessionContextMenu.init();
+const openContextMenu = sessionContextMenu.open;
+const closeContextMenu = sessionContextMenu.close;
 
-for (const btn of contextMenuEl.querySelectorAll('.context-menu-item')) {
-  btn.addEventListener('click', async () => {
-    const action = btn.dataset.action;
-    const sid = contextMenuSessionId;
-    closeContextMenu();
-    if (!sid) return;
-
-    const session = sessions.get(sid);
-    const meeting = meetings[sid];
-
-    if (action === 'close' && meeting) {
-      await ipcRenderer.invoke('close-meeting', sid);
-      delete meetings[sid];
-      if (activeMeetingId === sid) {
-        activeMeetingId = null;
-        if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel();
-        if (emptyStateEl) emptyStateEl.style.display = '';
-      }
-      renderSessionList();
-      schedulePersist();
-      return;
-    }
-
-    if (action === 'pin' && meeting) {
-      meeting.pinned = !meeting.pinned;
-      ipcRenderer.send('update-meeting', { meetingId: sid, fields: { pinned: !!meeting.pinned } });
-      renderSessionList();
-      schedulePersist();
-      return;
-    }
-
-    if (!session) return;
-
-    if (action === 'pin') {
-      session.pinned = !session.pinned;
-      renderSessionList();
-      schedulePersist();
-    } else if (action === 'restart') {
-      await ipcRenderer.invoke('restart-session', sid);
-    } else if (action === 'close') {
-      if (session && session.status === 'dormant') {
-        sessions.delete(sid);
-        if (activeSessionId === sid) activeSessionId = null;
-        renderSessionList();
-        schedulePersist();
-      } else {
-        await ipcRenderer.invoke('close-session', sid);
-      }
-    }
-  });
-}
-
-// --- Terminal context menu (right-click selected text → Preview) ---
-const termCtxMenuEl = document.getElementById('terminal-context-menu');
-let termCtxMenuSelection = null;
-
-function openTerminalContextMenu(selection, x, y) {
-  termCtxMenuSelection = selection;
-  termCtxMenuEl.style.display = 'block';
-  termCtxMenuEl.style.left = `${x}px`;
-  termCtxMenuEl.style.top = `${y}px`;
-  requestAnimationFrame(() => {
-    const rect = termCtxMenuEl.getBoundingClientRect();
-    if (rect.right > window.innerWidth) termCtxMenuEl.style.left = `${x - rect.width}px`;
-    if (rect.bottom > window.innerHeight) termCtxMenuEl.style.top = `${y - rect.height}px`;
-  });
-}
-
-function closeTerminalContextMenu() {
-  termCtxMenuEl.style.display = 'none';
-  termCtxMenuSelection = null;
-}
-
-document.addEventListener('mousedown', (e) => {
-  if (termCtxMenuEl.style.display === 'block' && !termCtxMenuEl.contains(e.target)) {
-    closeTerminalContextMenu();
-  }
+const terminalContextMenu = createTerminalContextMenuController({
+  document,
+  window,
+  termCtxMenuEl,
+  openPreviewPanel: (target) => openPreviewPanel(target),
 });
-
-termCtxMenuEl.querySelector('[data-action="preview"]').addEventListener('click', () => {
-  const sel = termCtxMenuSelection;
-  closeTerminalContextMenu();
-  if (sel) openPreviewPanel(sel.trim());
-});
+terminalContextMenu.init();
+const openTerminalContextMenu = terminalContextMenu.open;
+const closeTerminalContextMenu = terminalContextMenu.close;
 
 // --- Terminal in-buffer search (Ctrl+F) ---
 const terminalSearch = createTerminalSearch({
@@ -5049,18 +4962,18 @@ if (hubEscapeHomeBtn) hubEscapeHomeBtn.addEventListener('click', escapeToHome);
 // 2026-05-16 道雪：外部 HTTP 救援入口 — main.js POST /api/escape-home 通过这个 IPC 触发
 ipcRenderer.on('escape-home', escapeToHome);
 
-const themeController = createThemeController({
-  document,
-  localStorage,
-  terminalCache,
-  openConfigModal: () => openConfigModal(),
-});
-const applyTheme = themeController.applyTheme;
-
 const { createConfigModalController } = require('./config-modal.js');
 const configModal = createConfigModalController({ document, ipcRenderer, providerModes, renderAccountUsage });
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
+
+const themeController = createThemeController({
+  document,
+  localStorage,
+  terminalCache,
+  openConfigModal,
+});
+const applyTheme = themeController.applyTheme;
 
 if (typeof MeetingRoom !== 'undefined') {
   MeetingRoom.init(sessions, getOrCreateTerminal);

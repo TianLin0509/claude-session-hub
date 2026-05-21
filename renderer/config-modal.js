@@ -231,7 +231,11 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
   }
   
   async function openConfigModal() {
-    const modal = document.getElementById('config-modal');
+    let modal = document.getElementById('config-modal');
+    if (!modal && document.readyState === 'loading') {
+      await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
+      modal = document.getElementById('config-modal');
+    }
     if (!modal) return;
   
     // 加载当前配置
