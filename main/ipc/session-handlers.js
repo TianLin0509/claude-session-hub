@@ -2,6 +2,7 @@
 
 function registerSessionIpc(ipcMain, deps) {
   const {
+    registerSessionForTap = () => {},
     sendToRenderer,
     sessionManager,
   } = deps;
@@ -43,6 +44,20 @@ function registerSessionIpc(ipcMain, deps) {
 
   ipcMain.handle('debug:get-session-buffer', (_e, sessionId) => {
     return sessionManager.getSessionBuffer(sessionId);
+  });
+
+  ipcMain.handle('restart-session', (_e, sessionId) => {
+    const old = sessionManager.getSession(sessionId);
+    if (!old) return null;
+    sessionManager.closeSession(sessionId);
+    const fresh = sessionManager.createSession(old.kind, {
+      id: old.id,
+      cwd: old.cwd,
+      meetingId: old.meetingId || undefined,
+    });
+    registerSessionForTap(fresh);
+    sendToRenderer('session-created', { session: fresh });
+    return fresh;
   });
 
   return { lastResizeBySid };

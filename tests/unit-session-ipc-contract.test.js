@@ -48,6 +48,15 @@ function createFakeSessionManager() {
       calls.push(['getSessionBuffer', sessionId]);
       return `buffer:${sessionId}`;
     },
+    getSession(sessionId) {
+      calls.push(['getSession', sessionId]);
+      if (sessionId === 'missing') return null;
+      return { id: sessionId, kind: 'powershell', cwd: 'C:\\work', meetingId: 'm1' };
+    },
+    createSession(kind, opts) {
+      calls.push(['createSession', kind, opts]);
+      return { id: opts.id, kind, cwd: opts.cwd, meetingId: opts.meetingId };
+    },
   };
 }
 
@@ -69,7 +78,7 @@ test('registers expected session channels', () => {
   const sessionManager = createFakeSessionManager();
   registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
 
-  for (const channel of ['close-session', 'rename-session', 'get-sessions', 'debug:get-session-buffer']) {
+  for (const channel of ['close-session', 'rename-session', 'get-sessions', 'debug:get-session-buffer', 'restart-session']) {
     assert.ok(ipc.handlers.has(channel), `${channel} should be registered as handle`);
   }
   for (const channel of ['terminal-input', 'terminal-resize', 'focus-session']) {
@@ -143,6 +152,35 @@ test('focus, input, get-sessions, debug buffer delegate unchanged', () => {
     ['getAllSessions'],
     ['getSessionBuffer', 's1'],
   ]);
+});
+
+test('restart-session closes, recreates, registers tap, and emits session-created', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  const emitted = [];
+  const tapped = [];
+  registerSessionIpc(ipc, {
+    registerSessionForTap: (session) => tapped.push(session),
+    sessionManager,
+    sendToRenderer: (channel, payload) => emitted.push([channel, payload]),
+  });
+
+  const fresh = ipc.handlers.get('restart-session')(null, 's1');
+  const missing = ipc.handlers.get('restart-session')(null, 'missing');
+
+  assert.deepStrictEqual(fresh, { id: 's1', kind: 'powershell', cwd: 'C:\\work', meetingId: 'm1' });
+  assert.strictEqual(missing, null);
+  assert.deepStrictEqual(
+    sessionManager.calls.filter(call => ['getSession', 'closeSession', 'createSession'].includes(call[0])),
+    [
+      ['getSession', 's1'],
+      ['closeSession', 's1'],
+      ['createSession', 'powershell', { id: 's1', cwd: 'C:\\work', meetingId: 'm1' }],
+      ['getSession', 'missing'],
+    ]
+  );
+  assert.deepStrictEqual(tapped, [fresh]);
+  assert.deepStrictEqual(emitted, [['session-created', { session: fresh }]]);
 });
 
 console.log('All session IPC contract tests passed.');

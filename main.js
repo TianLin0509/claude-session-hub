@@ -1863,6 +1863,7 @@ registerTranscriptIpc(ipcMain, {
 registerArchiveIpc(ipcMain);
 
 registerSessionIpc(ipcMain, {
+  registerSessionForTap,
   sendToRenderer,
   sessionManager,
 });
@@ -2065,24 +2066,6 @@ ipcMain.handle('resume-session', async (_e, meta) => {
   }
 
   return session;
-});
-
-// Restart a Claude/PowerShell session in place: close old PTY, spawn a new one
-// with the same kind. The session gets a new id because PTY identity changes.
-ipcMain.handle('restart-session', (_e, sessionId) => {
-  const old = sessionManager.getSession(sessionId);
-  if (!old) return null;
-  // closeSession triggers the onExit callback which emits session-closed;
-  // don't emit it a second time here.
-  sessionManager.closeSession(sessionId);
-  const fresh = sessionManager.createSession(old.kind, {
-    id: old.id,
-    cwd: old.cwd,
-    meetingId: old.meetingId || undefined,
-  });
-  registerSessionForTap(fresh);
-  sendToRenderer('session-created', { session: fresh });
-  return fresh;
 });
 
 const imageDir = path.join(getHubDataDir(), 'images');
