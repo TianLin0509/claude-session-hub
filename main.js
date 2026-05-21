@@ -3,7 +3,6 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
-const https = require('https');
 const os = require('os');
 
 // 2026-05-16 道雪：防卡死后门 — 默认开 Chromium CDP 端口（OS 自动分配）。
@@ -59,6 +58,7 @@ const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
 const { registerResumeSessionIpc } = require('./main/ipc/resume-session-handlers.js');
 const { createGroupChatDispatcher } = require('./main/groupchat/dispatcher.js');
+const { createAutoTitleManager } = require('./main/auto-title-manager.js');
 const {
   extractCodexRateLimits,
   parseCodexUsage,
@@ -477,160 +477,15 @@ transcriptTap.on('turn-complete', (ev) => {
   }
 });
 
-const _autoTitleInFlight = new Set();
-const _autoMeetingTitleInFlight = new Set();
-const AUTO_TITLE_BASE_KINDS = new Set([...ALL_AI_KINDS, 'claude-web', 'codex-web']);
-const AUTO_TITLE_LABELS = Object.values(KIND_LABELS)
-  .map(label => String(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-  .sort((a, b) => b.length - a.length)
-  .join('|');
-const AUTO_TITLE_SESSION_RE = new RegExp(`^(?:${AUTO_TITLE_LABELS})(?: Resume)? \\d+$`, 'i');
-const AUTO_TITLE_MEETING_RE = /^(?:通用|投研|开发|AI 群聊) #\d+$/;
-
-function fallbackSessionTitleFromPrompt(text, kind) {
-  const clean = String(text || '')
-    .replace(/[#*_`>\[\](){}<>]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const baseKind = String(kind || '').replace(/-resume$/, '');
-  const prefix = KIND_LABELS[baseKind] || '会话';
-  if (!clean) return '';
-  return `${prefix} · ${clean.slice(0, 18)}`;
-}
-
-function fallbackMeetingTitleFromPrompt(text, meeting) {
-  const clean = String(text || '')
-    .replace(/[#*_`>\[\](){}<>]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!clean) return '';
-  return `群聊 · ${clean.slice(0, 18)}`;
-}
-
-function postJsonForAutoTitle(endpoint, payload, headers, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const u = new URL(endpoint);
-    const lib = u.protocol === 'https:' ? https : http;
-    const body = JSON.stringify(payload);
-    const req = lib.request({
-      hostname: u.hostname,
-      port: u.port,
-      path: u.pathname + u.search,
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(body),
-        ...headers,
-      },
-      timeout: timeoutMs,
-    }, res => {
-      let buf = '';
-      res.on('data', d => { buf += d; });
-      res.on('end', () => resolve({ status: res.statusCode, body: buf }));
-    });
-    req.on('timeout', () => req.destroy(new Error(`auto-title timeout after ${timeoutMs}ms`)));
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-}
-
-async function generateSessionTitleFromPrompt(text, scope = 'session') {
-  const cfg = getHubConfig();
-  const prompt = String(text || '').trim().slice(0, 1200);
-  if (!prompt) return '';
-  if (!cfg.deepseekApiKey) return '';
-  const system = scope === 'meeting'
-    ? '你是房间命名器。根据用户在 AI 群聊中的第一句话生成中文短标题，8到16个汉字或等长短语，不要引号，不要解释。'
-    : '你是会话命名器。根据用户第一句话生成中文短标题，8到16个汉字或等长短语，不要引号，不要解释。';
-  const { status, body } = await postJsonForAutoTitle('https://api.deepseek.com/chat/completions', {
-    model: 'deepseek-chat',
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: prompt },
-    ],
-    temperature: 0.2,
-    max_tokens: 40,
-  }, { authorization: `Bearer ${cfg.deepseekApiKey}` }, 8000);
-  if (status !== 200) throw new Error(`DeepSeek HTTP ${status}`);
-  const parsed = JSON.parse(body);
-  const raw = parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content;
-  return String(raw || '').replace(/["'“”‘’\r\n]/g, '').trim().slice(0, 30);
-}
-
-function isAutoTitleSessionKind(kind) {
-  const base = String(kind || '').replace(/-resume$/, '');
-  return AUTO_TITLE_BASE_KINDS.has(base);
-}
-
-function isGenericAutoSessionTitle(title) {
-  return !title || AUTO_TITLE_SESSION_RE.test(String(title).trim());
-}
-
-function isGenericAutoMeetingTitle(title) {
-  return !title || AUTO_TITLE_MEETING_RE.test(String(title).trim());
-}
-
-function maybeAutoTitleSessionFromPrompt(ev) {
-  const { hubSessionId, text } = ev || {};
-  if (!hubSessionId || !text || _autoTitleInFlight.has(hubSessionId)) return;
-  const session = sessionManager.getSession(hubSessionId);
-  if (!session || session.meetingId || session.userRenamed) return;
-  if (!isAutoTitleSessionKind(session.kind)) return;
-  if (session.autoTitleGenerated) return;
-  if (!isGenericAutoSessionTitle(session.title)) return;
-  _autoTitleInFlight.add(hubSessionId);
-  setTimeout(async () => {
-    try {
-      const latest = sessionManager.getSession(hubSessionId);
-      if (!latest || latest.userRenamed || latest.autoTitleGenerated || latest.meetingId) return;
-      if (!isAutoTitleSessionKind(latest.kind) || !isGenericAutoSessionTitle(latest.title)) return;
-      let title = '';
-      try { title = await generateSessionTitleFromPrompt(text); } catch (e) {
-        console.warn('[auto-title] AI title failed:', e && e.message);
-      }
-      if (!title) title = fallbackSessionTitleFromPrompt(text, (latest.kind || '').replace(/-resume$/, ''));
-      if (!title) return;
-      const updated = sessionManager.updateSessionMeta(hubSessionId, {
-        title,
-        autoTitleGenerated: true,
-      });
-      if (updated) sendToRenderer('session-updated', { session: updated });
-    } finally {
-      _autoTitleInFlight.delete(hubSessionId);
-    }
-  }, 0);
-}
-
-function maybeAutoTitleMeetingFromPrompt(meetingId, text) {
-  if (!meetingId || !text || _autoMeetingTitleInFlight.has(meetingId)) return;
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting || meeting.userRenamed || meeting.autoTitleGenerated) return;
-  if (!meeting.autoTitlePending && !isGenericAutoMeetingTitle(meeting.title)) return;
-  _autoMeetingTitleInFlight.add(meetingId);
-  setTimeout(async () => {
-    try {
-      const latest = meetingManager.getMeeting(meetingId);
-      if (!latest || latest.userRenamed || latest.autoTitleGenerated) return;
-      if (!latest.autoTitlePending && !isGenericAutoMeetingTitle(latest.title)) return;
-      let title = '';
-      try { title = await generateSessionTitleFromPrompt(text, 'meeting'); } catch (e) {
-        console.warn('[auto-title] meeting AI title failed:', e && e.message);
-      }
-      if (!title) title = fallbackMeetingTitleFromPrompt(text, latest);
-      if (!title) return;
-      const updated = meetingManager.updateMeeting(meetingId, {
-        title,
-        autoTitleGenerated: true,
-        autoTitlePending: false,
-      });
-      if (updated) sendToRenderer('meeting-updated', { meeting: updated });
-    } finally {
-      _autoMeetingTitleInFlight.delete(meetingId);
-    }
-  }, 0);
-}
-
+const autoTitleManager = createAutoTitleManager({
+  allAiKinds: ALL_AI_KINDS,
+  getHubConfig,
+  kindLabels: KIND_LABELS,
+  meetingManager,
+  sendToRenderer,
+  sessionManager,
+});
+const { maybeAutoTitleMeetingFromPrompt, maybeAutoTitleSessionFromPrompt } = autoTitleManager;
 transcriptTap.on('prompt-submitted', (ev) => {
   const { hubSessionId, text, submittedAt } = ev || {};
   if (!hubSessionId) return;
