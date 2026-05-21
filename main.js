@@ -48,6 +48,7 @@ const { registerPathIpc } = require('./main/ipc/path-handlers.js');
 const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
 const { registerUsageIpc } = require('./main/ipc/usage-handlers.js');
 const { registerMeetingIpc } = require('./main/ipc/meeting-handlers.js');
+const { registerMeetingCreateIpc } = require('./main/ipc/meeting-create-handlers.js');
 const { registerMeetingTimelineIpc } = require('./main/ipc/meeting-timeline-handlers.js');
 const { registerTranscriptIpc } = require('./main/ipc/transcript-handlers.js');
 const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
@@ -908,174 +909,25 @@ function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
   return updated || null;
 }
 
-// --- Meeting Room IPC ---
-
-// meeting-create-modal（2026-05-01）：把 add-meeting-sub IPC 的核心逻辑抽出来，
-//   create-meeting 内部循环也复用，避免重复 sceneObj/promptFile 计算。
-async function _addMeetingSubInternal(meetingId, kind, opts = {}) {
-  const meeting = meetingManager.getMeeting(meetingId);
-  let sessionOpts = { ...(opts || {}), meetingId };
-  // opts.model 透传给 sessionManager（让 Claude/Codex/DeepSeek/GLM/Gemini 用对应 model）
-  if (opts && opts.model) sessionOpts.model = opts.model;
-
-  // 群聊 slot 化（2026-05-03 道雪 / 2026-05-17 修复）：每个 sub 按加入顺序分配 slot id
-  //   (pikachu/charmander/squirtle)。slot 仅识别前 3 个 sub；第 4+ sub 视为额外，slotId=null。
-  //   2026-05-17 修复：原代码 `if (meeting.groupChat)` 分支不赋 slotId，删圆桌后所有 meeting
-  //   ?? groupChat?????? slotId ????? per-slot ???
-  //   现在 slotId 计算与 title 命名解耦——slotId 总按 subCount 计算；title 命名按 groupChat 区分。
-  let slotId = null;
-  if (meeting) {
-    const currentSubCount = (meeting.subSessions || []).length;
-    if (currentSubCount < SLOT_IDS.length) {
-      slotId = SLOT_IDS[currentSubCount];
-    }
-    if (!sessionOpts.title) {
-      if (meeting.groupChat) {
-        const label = KIND_LABELS[kind] || kind || 'AI';
-        sessionOpts.title = `${label} ${currentSubCount + 1}`;
-      } else if (slotId) {
-        sessionOpts.title = getSlotPromptName(slotId); // "皮卡丘" / "小火龙" / "杰尼龟"
-      }
-    }
-  }
-
-  // 阶段乙（2026-05-03 道雪）：隔离 hub 模式下，sub session cwd 走
-  //   <HUB_DATA_DIR>/workspaces/<meetingId>/。
-  // 2026-05-12：生产 hub 也走独立 workspace（~/.arena/groupchat/<id>/ 或
-  //   group-chat scoped workspace），加载 ~/.arena/CLAUDE.md 作项目地图，
-  //   避免 sub-session cwd 落在 USERPROFILE 上（沙箱化 + 文件隔离）。
-  //   不覆盖调用方显式传入的 opts.cwd（保留 add-meeting-sub 自定义入口）。
-  if (!sessionOpts.cwd) {
-    let workspaceDir = null;
-    if (isIsolatedHub()) {
-      workspaceDir = getMeetingWorkspaceDir(meetingId);
-    } else if (meeting) {
-      const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
-      const bucket = 'groupchat';
-      workspaceDir = path.join(homeDir, '.arena', bucket, meetingId);
-    }
-    if (workspaceDir) {
-      try {
-        fs.mkdirSync(workspaceDir, { recursive: true });
-        sessionOpts.cwd = workspaceDir;
-      } catch (e) {
-        console.warn(`[meeting-sub] workspace mkdir failed for ${meetingId}: ${e.message}; sub will use default cwd`);
-      }
-    }
-  }
-
-
-  // 群聊保持极简 prompt，但 research 场景仍需要挂载 stock MCP 工具。
-  // 注意：上面的历史分支被 if(false) 关闭，避免恢复 BASE_RULES/COVENANT 大 prompt；
-  // 这里只注入 MCP，不写 appendSystemPromptFile / codexInstructionFile。
-  if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
-    const hubDataDir = getHubDataDir();
-    if (isClaudeFamily(kind)) {
-      sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, HOOK_TOKEN, kind);
-    } else if (kind === 'gemini') {
-      sessionOpts.extraEnv = {
-        ...(sessionOpts.extraEnv || {}),
-        ELECTRON_RUN_AS_NODE: '1',
-        ARENA_MEETING_ID: meetingId,
-        ARENA_HUB_PORT: String(hookPort),
-        ARENA_HOOK_TOKEN: HOOK_TOKEN,
-        ARENA_AI_KIND: 'gemini',
-      };
-    } else if (isCodexBaseKind(kind)) {
-      sessionOpts.codexBypassApprovals = true;
-      sessionOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, HOOK_TOKEN)];
-    }
-  } else if (meeting && meeting.groupChat && meeting.scene === 'research' && !hookPort) {
-    console.warn('[群聊] research scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
-  }
-
-  const session = sessionManager.createSession(kind, sessionOpts);
-  if (!session) return null;
-  const updated = meetingManager.addSubSession(meetingId, session.id);
-  if (!updated) {
-    sessionManager.closeSession(session.id);
-    return null;
-  }
-
-  registerSessionForTap(session);
-  sendToRenderer('session-created', { session });
-  const freshMeeting = meetingManager.getMeeting(meetingId);
-  sendToRenderer('meeting-updated', { meeting: freshMeeting || updated });
-  return { session, meeting: freshMeeting || updated };
-}
-
-ipcMain.handle('create-meeting', async (_e, opts) => {
-  // opts: { mode?, scene?, slots?: [{index, kind, model}, ...], title? }
-  //   meeting-create-modal（2026-05-01）：当 slots 数组传入时，立即按 slot 顺序
-  //   逐个 _addMeetingSubInternal(kind, model)，并把 slotSpecs 落盘。renderer 旧路径
-  //   不传 slots → 仍只 createMeeting，由 renderer 后续逐个 add-meeting-sub（向后兼容）。
-  //   2026-05-05 道雪：title 由 modal 房名输入框填入，非空覆盖默认编号 title；
-  //   留空/未传则 createMeeting 内部走 `通用 #N` 等默认编号路径。
-  const safe = { ...(opts || {}) };
-  safe.groupChat = true;
-  const hasCustomTitle = typeof safe.title === 'string' && safe.title.trim().length > 0;
-  safe.autoTitlePending = !hasCustomTitle;
-  safe.userRenamed = hasCustomTitle;
-  if (Array.isArray(safe.slots) && safe.slots.length > 0) {
-    safe.slotSpecs = safe.slots.map(s => ({
-      index: typeof s.index === 'number' ? s.index : null,
-      kind: s.kind, model: s.model || null,
-    }));
-    if (safe.groupChat && !Array.isArray(safe.participants)) {
-      safe.participants = safe.slots.map((_, i) => i);
-    }
-  }
-  const meeting = meetingManager.createMeeting(safe);
-
-  if (Array.isArray(safe.slots) && safe.slots.length > 0) {
-    // 不抢先 sendToRenderer('meeting-created')—— 那样 renderer 先看到空 subSessions 列表，
-    // 之后每个 add-sub 触发 'meeting-updated' 才补 sub，会造成 0→1→2→3 的视觉抖动。
-    // 改成 add-sub 完成后再发 'meeting-created' 一次性带齐 subSessions（modal 走这条路径）。
-    //
-    // E1 silent failure 修复 (2026-05-03)：
-    //   旧代码 add-sub 失败仅 console.warn 吞掉，全失败时仍返回非空 meeting，
-    //   renderer selectMeeting() 进入空房间——用户感知"按钮不响应预期"的根因。
-    //   修复：收集 errors。全失败→closeMeeting + throw（让 IPC 在 renderer 端 reject）；
-    //         部分失败→额外发 meeting-created-with-errors 事件让 UI 显示警告。
-    const errors = [];
-    for (const slot of safe.slots) {
-      try {
-        await _addMeetingSubInternal(meeting.id, slot.kind, { model: slot.model });
-      } catch (e) {
-        errors.push({ slot, message: e && e.message || String(e) });
-        console.warn('[create-meeting] add-sub failed for slot', slot, e && e.message);
-      }
-    }
-    const finalMeeting = meetingManager.getMeeting(meeting.id);
-    const subCount = finalMeeting ? (finalMeeting.subSessions || []).length : 0;
-    if (subCount === 0) {
-      // 全失败：清理空 meeting + 抛错给 renderer
-      try { meetingManager.closeMeeting(meeting.id); } catch (e) { console.warn('[create-meeting] close empty meeting failed:', e.message); }
-    try { groupchat.cleanup?.(getHubDataDir(), meeting.id); } catch {}
-      const detail = errors.map(er => `· ${er.slot.kind}（${er.slot.model || 'default'}）：${er.message}`).join('\n');
-      throw new Error('所有子会话创建失败：\n' + (detail || '（未知原因）'));
-    }
-    meetingManager.setSlotSpecs(meeting.id, safe.slotSpecs);
-    if (errors.length > 0) {
-      // 部分失败：UI 显示警告条
-      sendToRenderer('meeting-created-with-errors', { meeting: finalMeeting, errors });
-    }
-    sendToRenderer('meeting-created', { meeting: finalMeeting });
-  } else {
-    // 老路径（renderer 后续会自己 add-meeting-sub）保持先发的语义不变
-    sendToRenderer('meeting-created', { meeting });
-  }
-
-  // 返回最终 meeting（含 subSessions + slotSpecs）
-  return meetingManager.getMeeting(meeting.id) || meeting;
-});
-
-ipcMain.handle('add-meeting-sub', async (_e, args = {}) => {
-  // 兼容老 payload { meetingId, kind, opts } + 新 payload { meetingId, kind, model, opts }
-  const { meetingId, kind, model } = args;
-  const opts = args.opts || {};
-  if (model && !opts.model) opts.model = model;
-  return _addMeetingSubInternal(meetingId, kind, opts);
+registerMeetingCreateIpc(ipcMain, {
+  fs,
+  getHookPort: () => hookPort,
+  getHubDataDir,
+  getMeetingWorkspaceDir,
+  getSlotPromptName,
+  groupchat,
+  hookToken: HOOK_TOKEN,
+  isClaudeFamily,
+  isCodexBaseKind,
+  isIsolatedHub,
+  kindLabels: KIND_LABELS,
+  meetingManager,
+  path,
+  registerSessionForTap,
+  scenes,
+  sendToRenderer,
+  sessionManager,
+  slotIds: SLOT_IDS,
 });
 
 registerMeetingIpc(ipcMain, {
