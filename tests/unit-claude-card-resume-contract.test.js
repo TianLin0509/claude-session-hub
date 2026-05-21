@@ -29,11 +29,12 @@ test('renderer persists and restores transcriptPath session meta', () => {
   assert.match(src, /transcriptPath:\s*existing\.transcriptPath\s*\|\|\s*session\.transcriptPath/);
 });
 
-test('main parse-session-transcript uses session transcriptPath before ccSession scan', () => {
-  const src = read('main.js');
+test('parse-session-transcript uses session transcriptPath before ccSession scan', () => {
+  const src = read('main/ipc/transcript-handlers.js');
+  const mainSrc = read('main.js');
   assert.match(src, /if\s*\(!transcriptPath\s*&&\s*session\s*&&\s*session\.transcriptPath\)/);
   assert.match(src, /updateSessionTranscriptBinding\(hubSessionId,\s*\{\s*transcriptPath\s*\}/);
-  assert.match(src, /transcriptPath:\s*session\.transcriptPath\s*\|\|\s*undefined/);
+  assert.match(mainSrc, /transcriptPath:\s*session\.transcriptPath\s*\|\|\s*undefined/);
 });
 
 test('TranscriptTap extractLatestTurn routes by registered backend ownership', () => {

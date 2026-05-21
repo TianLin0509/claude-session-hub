@@ -48,6 +48,7 @@ const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
 const { registerUsageIpc } = require('./main/ipc/usage-handlers.js');
 const { registerMeetingIpc } = require('./main/ipc/meeting-handlers.js');
 const { registerMeetingTimelineIpc } = require('./main/ipc/meeting-timeline-handlers.js');
+const { registerTranscriptIpc } = require('./main/ipc/transcript-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -1855,107 +1856,17 @@ ipcMain.handle('cli-ready-status', (_e, sessionId) => {
   return cliReadyDetector.isReady(sessionId, session.kind, buf);
 });
 
-// Read the authoritative last-assistant text captured by the transcript tap.
-// Returns null if no tap backend has fired for this session yet (CLI hasn't
-// finished a turn, hook hasn't triggered, or file path couldn't be resolved).
-// Renderer falls back to marker-based extraction when null.
-ipcMain.handle('get-last-assistant-text', (_e, sessionId) => {
-  return transcriptTap.getLastAssistantText(sessionId);
-});
-
-// spec2/S3：解析任意会话的 JSONL transcript 为结构化 turns 列表。
-// 入参三选一：transcriptPath > ccSessionId > hubSessionId（按优先级 fallback）。
-// 出参：{ turns: [...], transcriptPath, error: null|string }
-//   - 找不到 transcript → { turns: [], transcriptPath: null, error: 'transcript not found' }
-//   - 解析抛错 → { turns: [], transcriptPath, error: err.message }
-// opts 透传给 parseClaudeTranscriptToTurns，默认 { limit: 50, fromTail: true }。
-ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
-  // Spec 3 · W10：在调 sync parser 之前 setImmediate yield 一次让 main loop 喘气。
-  // parser 是 sync（fs.readFileSync + JSON.parse loop + merge），5MB transcript 实测
-  // ~218ms 主线程阻塞。yield 不能消除阻塞，但能确保此 IPC 不和上一条 IPC 背靠背执行，
-  // 让 PTY data / hook-event / 群聊广播 等其它 IPC 在阻塞间隙里被处理。
-  // 不上 worker_threads 是为避免 transcript-parser 跨边界引入序列化开销 + 复杂度。
-  await new Promise(resolve => setImmediate(resolve));
-
-  const { hubSessionId, ccSessionId, transcriptPath: inPath, kind: inKind, opts } = args || {};
-  let transcriptPath = inPath || null;
-  try {
-    const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
-    const kind = session ? session.kind : inKind;
-    if (isCodexCliKind(kind)) {
-      const liveRolloutPath = hubSessionId ? transcriptTap.getCodexRolloutPath(hubSessionId) : null;
-      if (liveRolloutPath) {
-        transcriptPath = liveRolloutPath;
-      }
-      if (!transcriptPath && session && session.transcriptPath) {
-        transcriptPath = session.transcriptPath;
-      }
-      if (!transcriptPath && session && session.codexSid) {
-        transcriptPath = findCodexRolloutBySid(
-          session.codexSid,
-          session.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT,
-        );
-      }
-      if (!transcriptPath && session && session.codexAllowMtimeFallback && session.cwd) {
-        transcriptPath = findCodexRolloutByCwd(
-          session.cwd,
-          session.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT,
-          { sinceMs: session.createdAt || Date.now() },
-        );
-      }
-      if (!transcriptPath) {
-        return { turns: [], transcriptPath: null, error: 'codex rollout not found' };
-      }
-      if (hubSessionId && transcriptPath && session && session.transcriptPath !== transcriptPath) {
-        updateSessionTranscriptBinding(hubSessionId, { transcriptPath });
-      }
-      const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
-      const turns = parseCodexRolloutToTurns(transcriptPath, parseOpts);
-      return { turns: Array.isArray(turns) ? turns : [], transcriptPath, error: null };
-    }
-    if (kind === 'codex-app') {
-      const extracted = hubSessionId ? await transcriptTap.extractLatestTurn(hubSessionId, 0) : null;
-      if (!extracted || !extracted.text) {
-        return { turns: [], transcriptPath: null, error: 'codex app-server transcript not materialized' };
-      }
-      return {
-        turns: [{
-          id: `codex-app-assistant-${hubSessionId || Date.now()}`,
-          role: 'assistant',
-          text: extracted.text,
-          ts: Date.now(),
-          tsEnd: Date.now(),
-          stopReason: 'turn_completed',
-          source: 'codex_app_server',
-        }],
-        transcriptPath: null,
-        error: null,
-      };
-    }
-    if (!transcriptPath && session && session.transcriptPath) {
-      transcriptPath = session.transcriptPath;
-    }
-    if (!transcriptPath && ccSessionId) {
-      transcriptPath = findTranscriptByCCSessionId(ccSessionId);
-    }
-    if (!transcriptPath && hubSessionId) {
-      if (session && session.ccSessionId) {
-        transcriptPath = findTranscriptByCCSessionId(session.ccSessionId);
-      }
-    }
-    if (!transcriptPath) {
-      return { turns: [], transcriptPath: null, error: 'transcript not found' };
-    }
-    if (hubSessionId && transcriptPath && session && session.transcriptPath !== transcriptPath) {
-      updateSessionTranscriptBinding(hubSessionId, { transcriptPath });
-    }
-    const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
-    const parseStartedAt = Date.now();
-    const turns = await parseClaudeTranscriptToTurns(transcriptPath, parseOpts);
-    return { turns: Array.isArray(turns) ? turns : [], transcriptPath, parseMs: Date.now() - parseStartedAt, error: null };
-  } catch (err) {
-    return { turns: [], transcriptPath, error: err && err.message ? err.message : String(err) };
-  }
+registerTranscriptIpc(ipcMain, {
+  defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
+  findCodexRolloutByCwd,
+  findCodexRolloutBySid,
+  findTranscriptByCCSessionId,
+  isCodexCliKind,
+  parseClaudeTranscriptToTurns,
+  parseCodexRolloutToTurns,
+  sessionManager,
+  transcriptTap,
+  updateSessionTranscriptBinding,
 });
 
 // build-injection IPC 历史用于 blackboard 用户输入合成注入子会话(meeting-blackboard.js)。

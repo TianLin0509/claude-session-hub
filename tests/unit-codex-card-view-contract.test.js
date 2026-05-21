@@ -4,25 +4,26 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const mainSrc = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
+const transcriptIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'transcript-handlers.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
 const tapSrc = fs.readFileSync(path.join(root, 'core', 'transcript-tap.js'), 'utf8');
 const sessionStoreSrc = fs.readFileSync(path.join(root, 'core', 'session-store.js'), 'utf8');
 
 assert.ok(
-  mainSrc.includes("parseCodexRolloutToTurns"),
+  transcriptIpcSrc.includes("parseCodexRolloutToTurns"),
   'parse-session-transcript must route Codex sessions through the Codex rollout parser',
 );
 assert.ok(
-  mainSrc.includes("findCodexRolloutBySid"),
+  transcriptIpcSrc.includes("findCodexRolloutBySid"),
   'parse-session-transcript must recover persisted Codex sessions by codexSid',
 );
 assert.ok(
-  mainSrc.includes("findCodexRolloutByCwd"),
+  transcriptIpcSrc.includes("findCodexRolloutByCwd"),
   'parse-session-transcript must recover Codex resume sessions without codexSid by cwd + mtime',
 );
 assert.ok(
-  /const liveRolloutPath = hubSessionId \? transcriptTap\.getCodexRolloutPath\(hubSessionId\) : null;/.test(mainSrc)
-    && /if \(liveRolloutPath\) \{\s*transcriptPath = liveRolloutPath;\s*\}/.test(mainSrc),
+  /const liveRolloutPath = hubSessionId \? transcriptTap\.getCodexRolloutPath\(hubSessionId\) : null;/.test(transcriptIpcSrc)
+    && /if \(liveRolloutPath\) \{\s*transcriptPath = liveRolloutPath;\s*\}/.test(transcriptIpcSrc),
   'parse-session-transcript must prefer the live CodexTap rollout over stale renderer transcriptPath',
 );
 assert.ok(
@@ -30,7 +31,7 @@ assert.ok(
   'resume-session must recover a Codex rollout path from persisted codexSid',
 );
 assert.ok(
-  mainSrc.includes('isCodexCliKind(kind)'),
+  transcriptIpcSrc.includes('isCodexCliKind(kind)'),
   'parse-session-transcript must branch for Codex CLI variants',
 );
 assert.ok(
