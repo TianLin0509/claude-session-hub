@@ -69,7 +69,7 @@ assert(
 
 // 8. thinking goes through marked + DOMPurify (same pipeline as main body)
 assert(
-  /marked\.parse\(turn\.thinking/.test(src) &&
+  /marked\.parse\((?:normalizeMarkdownPathBreaks\()?turn\.thinking/.test(src) &&
     /DOMPurify\.sanitize\(thinkingRaw/.test(src),
   'thinking content is marked-parsed and DOMPurify-sanitized',
 );

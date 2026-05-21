@@ -46,6 +46,7 @@ const { registerConfigIpc } = require('./main/ipc/config-handlers.js');
 const { registerPathIpc } = require('./main/ipc/path-handlers.js');
 const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
 const { registerUsageIpc } = require('./main/ipc/usage-handlers.js');
+const { registerMeetingIpc } = require('./main/ipc/meeting-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -1106,56 +1107,15 @@ ipcMain.handle('close-meeting', (_e, meetingId) => {
   return true;
 });
 
-// Arch refactor 2026-05-02: 沉浸/调试模式切换已删除。群聊只有一种视图。
-// 这两个 handler 保留为 no-op：避免老 state.json (含 immersiveByMeeting 字段)
-// 在 renderer 调 get-immersive-mode 时报 'No handler registered'。新 renderer
-// 永远不调这两个 IPC，但保留 handler 兼容老前端代码（已嵌进 dist 的版本）。
-ipcMain.handle('get-immersive-mode', () => {
-  return { immersive: false };
-});
-
-ipcMain.handle('save-immersive-mode', () => {
-  return { ok: true };
-});
-
-// free-mode（2026-05-04）— 切换 meeting.mode 'pilot' ⇄ 'free'
-//   inProgress=true 时拒绝（Q9=A：避免半轮发言后改语义）
-//   切到 free 模式时若 meeting.participants===null，首次初始化为 [0,1,2]
-ipcMain.handle('groupchat:set-participants', async (_e, { meetingId, participants } = {}) => {
-  if (!meetingId) throw new Error('Missing meetingId');
-  const meeting = meetingManager.getMeeting(meetingId);
-  if (!meeting) throw new Error(`Meeting not found: ${meetingId}`);
-  if (!meeting.groupChat) throw new Error('Meeting is not a group chat');
-  if (!Array.isArray(participants)) throw new Error(`participants must be array, got ${typeof participants}`);
-  const max = Array.isArray(meeting.subSessions) ? meeting.subSessions.length : 0;
-  const seen = new Set();
-  for (const x of participants) {
-    if (!Number.isInteger(x) || x < 0 || x >= max) {
-      throw new Error(`Invalid group participant index: ${JSON.stringify(x)}`);
-    }
-    seen.add(x);
-  }
-  const validated = [...seen].sort((a, b) => a - b);
-
-  // FIX(T4 HIGH): 用 setter 写回 Map 原始对象（getMeeting 返回浅拷贝，赋值不写回）
-  meetingManager.setParticipants(meetingId, validated);
-
-  let persistWarning = null;
-  try {
-    stateStore.save({
-      version: 1,
-      cleanShutdown: false,
-      sessions: lastPersistedSessions,
-      meetings: meetingManager.getAllMeetings(),
-      immersiveByMeeting: _immersiveByMeeting,
-    });
-  } catch (e) {
-    console.warn('[groupchat] set-participants persist failed:', e.message);
-    persistWarning = `state.json 持久化失败：${e.message}（meeting 已存到 per-meeting JSON，重启后仍生效）`;
-  }
-
-  sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
-  return persistWarning ? { ok: true, persistWarning } : { ok: true };
+registerMeetingIpc(ipcMain, {
+  getHubDataDir,
+  getImmersiveByMeeting: () => _immersiveByMeeting,
+  getLastPersistedSessions: () => lastPersistedSessions,
+  meetingManager,
+  scenes,
+  sendToRenderer,
+  slotIds: SLOT_IDS,
+  stateStore,
 });
 
 // =====================================================================
@@ -2036,76 +1996,6 @@ ipcMain.handle('parse-session-transcript', async (_e, args = {}) => {
 
 // build-injection IPC 历史用于 blackboard 用户输入合成注入子会话(meeting-blackboard.js)。
 // Module C 后 blackboard 已删除,该 handler 不再被任何前端代码调用,清理。
-
-ipcMain.on('update-meeting', (_e, { meetingId, fields }) => {
-  if (fields && typeof fields.title === 'string' && !fields.autoTitleGenerated) {
-    fields = { ...fields, userRenamed: true, autoTitlePending: false };
-  }
-  const updated = meetingManager.updateMeeting(meetingId, fields);
-  if (updated) sendToRenderer('meeting-updated', { meeting: updated });
-});
-
-ipcMain.handle('update-meeting-sync', (_e, { meetingId, fields }) => {
-  if (fields && typeof fields.title === 'string' && !fields.autoTitleGenerated) {
-    fields = { ...fields, userRenamed: true, autoTitlePending: false };
-  }
-  const updated = meetingManager.updateMeeting(meetingId, fields);
-  if (updated) sendToRenderer('meeting-updated', { meeting: updated });
-  return !!updated;
-});
-
-// Scene covenant API（renderer 创建会议室对话框预填用）
-ipcMain.handle('get-scene-covenant', (_e, sceneKey) => {
-  const s = scenes.getScene(sceneKey || 'research');
-  return s ? s.defaultCovenant : '';
-});
-// 兼容旧名（前端 Task 5 改完后可删）
-ipcMain.handle('get-research-covenant-template', () => scenes.COVENANT_RESEARCH);
-
-// 通用群聊：开关 + 公约写盘 + 私聊存储
-function _isValidMeetingId(id) {
-  // 仅允许 uuid 风格的字母数字+连字符；阻止任何路径分隔符或控制字符
-  return typeof id === 'string' && /^[a-zA-Z0-9_\-]+$/.test(id) && id.length > 0 && id.length < 256;
-}
-
-function _switchScene(meetingId, scene, covenant) {
-  if (!_isValidMeetingId(meetingId)) return { ok: false, error: 'invalid meetingId' };
-  if (!scenes.getScene(scene)) return { ok: false, error: `invalid scene: ${scene}` };
-  const m = meetingManager.getMeeting(meetingId);
-  if (!m) return { ok: false, error: 'meeting not found' };
-  const fields = { scene };
-  if (typeof covenant === 'string') fields.covenantText = covenant;
-  let updated;
-  try { updated = meetingManager.updateMeeting(meetingId, fields); }
-  catch (e) { return { ok: false, error: e.message }; }
-  if (!updated) return { ok: false, error: 'update failed' };
-  const text = typeof covenant === 'string' ? covenant : (updated.covenantText || '');
-  try {
-    scenes.writeCovenantSnapshot(getHubDataDir(), meetingId, text);
-    // P2 (2026-05-04 道雪): research 场景预生成 3 个 slot prompt 文件 (L3 偏置),
-    //   后续 add-meeting-sub / resume 直接读取;非 research 场景仍写单一 fallback。
-    //   预生成不占代价 (~3KB/文件,cleanup 时一并删) 但消除 race window
-    //   (sub 启动前文件就已就绪,即便 add-meeting-sub 路径漏写也有兜底)。
-    if (scene === 'research') {
-      for (const sid of SLOT_IDS) {
-        scenes.writePromptFile(getHubDataDir(), meetingId, scene, text, sid);
-      }
-    }
-    scenes.writePromptFile(getHubDataDir(), meetingId, scene, text);
-  } catch (e) {
-    console.warn(`[switch-scene] write prompt files failed: ${e.message}`);
-  }
-  sendToRenderer('meeting-updated', { meeting: updated });
-  return { ok: true, meeting: updated };
-}
-
-ipcMain.handle('switch-scene', (_e, { meetingId, scene, covenant } = {}) => {
-  return _switchScene(meetingId, scene, covenant);
-});
-
-ipcMain.handle('get-meetings', () => {
-  return meetingManager.getAllMeetings();
-});
 
 registerArchiveIpc(ipcMain);
 
