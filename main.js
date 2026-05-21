@@ -44,6 +44,7 @@ const {
 const { ALL_AI_KINDS, isClaudeFamily, isCodexCliKind, isClaudeWebKind, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 const { registerConfigIpc } = require('./main/ipc/config-handlers.js');
 const { registerPathIpc } = require('./main/ipc/path-handlers.js');
+const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
 const { registerUsageIpc } = require('./main/ipc/usage-handlers.js');
 
 function isCodexBaseKind(kind) {
@@ -2118,51 +2119,9 @@ ipcMain.handle('search-past-sessions', async (_e, { query, limit = 50 } = {}) =>
   catch (e) { console.warn('[群聊] search-past-sessions failed:', e.message); return { hits: [], truncated: false }; }
 });
 
-ipcMain.handle('close-session', (_e, sessionId) => {
-  // No explicit sendToRenderer here — closeSession kills the PTY, which fires
-  // the onExit callback wired up above (line 87) and emits session-closed for
-  // us. Emitting twice would spam the renderer for no benefit.
-  _ptyLastResizeBySid.delete(sessionId);  // P0-4 cache cleanup
-  sessionManager.closeSession(sessionId);
-});
-
-ipcMain.on('terminal-input', (_e, { sessionId, data }) => {
-  sessionManager.writeToSession(sessionId, data);
-});
-
-// SIGWINCH 去重缓存（xterm-render-stabilize P0-4, 2026-05-01）：
-//   渲染端 robustFit 已经做了一层 cols/rows 不变就不发的去重；这里是主进程
-//   第二层防护，覆盖任何漏过的重复 resize（例如同一帧多个调用方触发）。
-//   CLI TUI（Claude/Gemini/Codex）对 SIGWINCH 高度敏感，错值或重复值都会
-//   触发整屏重绘 → 导致用户看到"重复行 / 字符叠加"。
-const _ptyLastResizeBySid = new Map();  // sid → { cols, rows }
-ipcMain.on('terminal-resize', (_e, { sessionId, cols, rows }) => {
-  if (typeof sessionId !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') return;
-  if (cols <= 0 || rows <= 0) return;  // 非法尺寸直接丢弃, 避免 fit 错值打到 PTY
-  const last = _ptyLastResizeBySid.get(sessionId);
-  if (last && last.cols === cols && last.rows === rows) return;  // 同尺寸去重
-  _ptyLastResizeBySid.set(sessionId, { cols, rows });
-  sessionManager.resizeSession(sessionId, cols, rows);
-});
-
-ipcMain.on('focus-session', (_e, { sessionId }) => {
-  sessionManager.setFocusedSession(sessionId);
-  sessionManager.markRead(sessionId);
-});
-
-ipcMain.handle('rename-session', (_e, { sessionId, title, userRenamed }) => {
-  const session = sessionManager.renameSession(sessionId, title, { userRenamed: !!userRenamed });
-  if (session) sendToRenderer('session-updated', { session });
-  return session;
-});
-
-ipcMain.handle('get-sessions', () => {
-  return sessionManager.getAllSessions();
-});
-
-// Diagnostic: read the PTY ring buffer for a session (used by E2E smoke tests).
-ipcMain.handle('debug:get-session-buffer', (_e, sessionId) => {
-  return sessionManager.getSessionBuffer(sessionId);
+registerSessionIpc(ipcMain, {
+  sendToRenderer,
+  sessionManager,
 });
 
 // --- Dormant session persistence ---
