@@ -50,6 +50,7 @@
     },
     "files": [
       "main.js",
+      "main/**/*",
       "core/**/*",
       "renderer/**/*",
       "scripts/**/*",

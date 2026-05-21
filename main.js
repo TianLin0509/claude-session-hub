@@ -42,6 +42,9 @@ const {
   filterUsageCacheForCodexScope,
 } = require('./core/codex-usage-scope.js');
 const { ALL_AI_KINDS, isClaudeFamily, isCodexCliKind, isClaudeWebKind, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
+const { registerConfigIpc } = require('./main/ipc/config-handlers.js');
+const { registerPathIpc } = require('./main/ipc/path-handlers.js');
+const { registerUsageIpc } = require('./main/ipc/usage-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -2551,44 +2554,7 @@ ipcMain.handle('get-hook-status', () => ({
   port: hookPort,
 }));
 
-// Ctrl+click on a file path in the terminal routes here. shell.openPath
-// launches the OS default handler (.md → markdown viewer, .png → image
-// viewer, .html → browser, etc). Returns '' on success, error string on
-// failure — we surface it back so renderer can log.
-ipcMain.handle('open-path', async (_e, filePath) => {
-  if (typeof filePath !== 'string' || !filePath.trim()) return 'empty path';
-  try {
-    return await shell.openPath(filePath);
-  } catch (e) {
-    return String(e && e.message || e);
-  }
-});
-
-// 群聊记忆 · plan 阶段 1（2026-05-07）：
-//   per-meeting per-slot 取 memory 状态（条目数 + pending 数 + _profile 是否存在）
-//   供卡片右上角 📒 N / 📥 / 📊 三个按钮的角标 / 点击行为使用。
-//   不读 .md 内容（只 stat / count），便于高频刷新。
-const READ_FILE_EXTS = new Set([
-  '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl',
-  '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs',
-  '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp', '.cs',
-  '.txt', '.log', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
-  '.sh', '.bat', '.ps1', '.xml', '.sql', '.r', '.rb', '.php',
-  '.swift', '.kt', '.lua', '.zig', '.asm', '.css', '.scss', '.less',
-]);
-ipcMain.handle('read-file', async (_e, filePath) => {
-  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return { error: 'invalid path' };
-  const ext = path.extname(filePath).toLowerCase();
-  if (!READ_FILE_EXTS.has(ext)) return { error: 'unsupported extension' };
-  try {
-    const stat = await fs.promises.stat(filePath);
-    if (stat.size > 5 * 1024 * 1024) return { error: 'file too large (>5MB)' };
-    const content = await fs.promises.readFile(filePath, 'utf-8');
-    return { content };
-  } catch (e) {
-    return { error: String(e && e.message || e) };
-  }
-});
+registerPathIpc(ipcMain);
 
 // --- Hook HTTP server ---
 // Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code
@@ -2849,8 +2815,6 @@ function loadUsageCacheForCurrentConfig() {
   return filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope());
 }
 
-ipcMain.handle('get-usage-cache', () => loadUsageCacheForCurrentConfig());
-
 // PackyAPI 账户(余额 + 消耗)异步拉取 + 缓存。
 // 调用方:启动后台 timer + IPC 'refresh-packy-account'(用户设置改 cookie 时强制刷新)。
 async function fetchAndCachePackyAccount() {
@@ -2876,173 +2840,19 @@ async function fetchAndCachePackyAccount() {
   return payload;
 }
 
-ipcMain.handle('refresh-packy-account', async () => {
-  return await fetchAndCachePackyAccount();
+registerUsageIpc(ipcMain, {
+  fetchAndCachePackyAccount,
+  loadUsageCacheForCurrentConfig,
 });
 
-// 打开外部 URL(用系统默认浏览器,而不是 Electron BrowserWindow)
-ipcMain.handle('open-external-url', async (_e, url) => {
-  if (!url || !/^https?:\/\//i.test(url)) return { success: false };
-  await shell.openExternal(url);
-  return { success: true };
-});
-
-// --- Hub Config IPC handlers ---
-// 配置 UI 和首次启动向导使用
-const { getConfig, saveConfig, checkMissingConfig, clearConfigCache, getConfigPath, DEFAULTS } = require('./core/hub-config.js');
-
-ipcMain.handle('get-hub-config', () => {
-  const config = getConfig();
-  return {
-    proxy: config.proxy,
-    deepseekApiKey: config.deepseekApiKey ? '***' + config.deepseekApiKey.slice(-4) : '',
-    deepseekApiKeySet: !!config.deepseekApiKey,
-    glmApiKey: config.glmApiKey ? '***' + config.glmApiKey.slice(-4) : '',
-    glmApiKeySet: !!config.glmApiKey,
-    glmBaseUrl: config.glmBaseUrl,
-    glmModel: config.glmModel,
-    gptApiKey: config.gptApiKey ? '***' + config.gptApiKey.slice(-4) : '',
-    gptApiKeySet: !!config.gptApiKey,
-    gptBaseUrl: config.gptBaseUrl,
-    gptModel: config.gptModel,
-    kimiApiKey: config.kimiApiKey ? '***' + config.kimiApiKey.slice(-4) : '',
-    kimiApiKeySet: !!config.kimiApiKey,
-    kimiBaseUrl: config.kimiBaseUrl,
-    kimiModel: config.kimiModel,
-    qwenApiKey: config.qwenApiKey ? '***' + config.qwenApiKey.slice(-4) : '',
-    qwenApiKeySet: !!config.qwenApiKey,
-    qwenBaseUrl: config.qwenBaseUrl,
-    qwenModel: config.qwenModel,
-    codexBackend: config.codexBackend,
-    codexSubscriptionProfile: config.codexSubscriptionProfile,
-    codexSubscriptionProfiles: config.codexSubscriptionProfiles || [],
-    codexApiKey: config.codexApiKey ? '***' + config.codexApiKey.slice(-4) : '',
-    codexApiKeySet: !!config.codexApiKey,
-    codexApiBaseUrl: config.codexApiBaseUrl,
-    codexApiModel: config.codexApiModel,
-  };
-});
-
-ipcMain.handle('get-hub-config-raw', () => {
-  // 返回完整配置（用于编辑），但 API key 仍然脱敏
-  const config = getConfig();
-  return {
-    proxy: config.proxy,
-    deepseekApiKey: config.deepseekApiKey || '',
-    glmApiKey: config.glmApiKey || '',
-    glmBaseUrl: config.glmBaseUrl,
-    glmModel: config.glmModel,
-    gptApiKey: config.gptApiKey || '',
-    gptBaseUrl: config.gptBaseUrl,
-    gptModel: config.gptModel,
-    kimiApiKey: config.kimiApiKey || '',
-    kimiBaseUrl: config.kimiBaseUrl,
-    kimiModel: config.kimiModel,
-    qwenApiKey: config.qwenApiKey || '',
-    qwenBaseUrl: config.qwenBaseUrl,
-    qwenModel: config.qwenModel,
-    codexBackend: config.codexBackend,
-    codexSubscriptionProfile: config.codexSubscriptionProfile,
-    codexSubscriptionProfiles: config.codexSubscriptionProfiles || [],
-    codexApiKey: config.codexApiKey || '',
-    codexApiBaseUrl: config.codexApiBaseUrl,
-    codexApiModel: config.codexApiModel,
-    packySessionCookie: config.packySessionCookie || '',
-    uiToolFoldThreshold: Number.isFinite(config.uiToolFoldThreshold) ? config.uiToolFoldThreshold : 15,
-    uiCodeFoldThreshold: Number.isFinite(config.uiCodeFoldThreshold) ? config.uiCodeFoldThreshold : 30,
-  };
-});
-
-ipcMain.handle('save-hub-config', (_e, newConfig) => {
-  // 读取现有 config.json（如果存在），合并更新
-  const configPath = getConfigPath();
-  let existing = {};
-  try {
-    const raw = fs.readFileSync(configPath, 'utf8');
-    existing = JSON.parse(raw);
-  } catch {}
-
-  // 合并配置
-  const merged = {
-    ...existing,
-    proxy: { http: newConfig.proxy || DEFAULTS.proxy },
-    providers: {
-      ...(existing.providers || {}),
-      deepseek: {
-        ...(existing.providers?.deepseek || {}),
-        api_key: newConfig.deepseekApiKey || undefined,
-      },
-      glm: {
-        ...(existing.providers?.glm || {}),
-        api_key: newConfig.glmApiKey || undefined,
-        base_url: newConfig.glmBaseUrl || DEFAULTS.glm_base_url,
-        model: newConfig.glmModel || DEFAULTS.glm_model,
-      },
-      gpt: {
-        ...(existing.providers?.gpt || {}),
-        api_key: newConfig.gptApiKey || undefined,
-        base_url: newConfig.gptBaseUrl || DEFAULTS.gpt_base_url,
-        model: newConfig.gptModel || DEFAULTS.gpt_model,
-      },
-      kimi: {
-        ...(existing.providers?.kimi || {}),
-        api_key: newConfig.kimiApiKey || undefined,
-        base_url: newConfig.kimiBaseUrl || DEFAULTS.kimi_base_url,
-        model: newConfig.kimiModel || DEFAULTS.kimi_model,
-      },
-      qwen: {
-        ...(existing.providers?.qwen || {}),
-        api_key: newConfig.qwenApiKey || undefined,
-        base_url: newConfig.qwenBaseUrl || DEFAULTS.qwen_base_url,
-        model: newConfig.qwenModel || DEFAULTS.qwen_model,
-      },
-      codex: {
-        ...(existing.providers?.codex || {}),
-        backend: newConfig.codexBackend === 'api' ? 'api' : DEFAULTS.codex_backend,
-        subscription_profile: newConfig.codexSubscriptionProfile || DEFAULTS.codex_subscription_profile,
-        subscription_profiles: Array.isArray(newConfig.codexSubscriptionProfiles) ? newConfig.codexSubscriptionProfiles : undefined,
-        api_key: newConfig.codexApiKey || undefined,
-        base_url: newConfig.codexApiBaseUrl || DEFAULTS.codex_api_base_url,
-        model: newConfig.codexApiModel || DEFAULTS.codex_api_model,
-        provider: DEFAULTS.codex_api_provider,
-      },
-      packy: {
-        ...(existing.providers?.packy || {}),
-        session_cookie: newConfig.packySessionCookie || undefined,
-      },
-    },
-  };
-
-  // 清除空值
-  if (!merged.providers.deepseek.api_key) delete merged.providers.deepseek.api_key;
-  if (!merged.providers.glm.api_key) delete merged.providers.glm.api_key;
-  if (!merged.providers.gpt.api_key) delete merged.providers.gpt.api_key;
-  if (!merged.providers.kimi.api_key) delete merged.providers.kimi.api_key;
-  if (!merged.providers.qwen.api_key) delete merged.providers.qwen.api_key;
-  if (!merged.providers.codex.api_key) delete merged.providers.codex.api_key;
-  if (!merged.providers.packy.session_cookie) delete merged.providers.packy.session_cookie;
-
-  saveConfig(merged);
-  clearSessionManagerConfigCache();
-  // packy cookie 改了立即重拉,UI 不用等下个 5 分钟
-  if (newConfig.packySessionCookie !== undefined) {
-    fetchAndCachePackyAccount().catch(() => {});
-  }
-  if (newConfig.codexBackend !== undefined || newConfig.codexSubscriptionProfile !== undefined) {
-    const scope = currentCodexUsageScope();
-    _codexJsonlCachedByRoot.clear();
-    sendToRenderer('agent-usage', { codex: attachCodexUsageScope({ usage5h: null, usage7d: null, unavailable: true }, scope) });
-    setImmediate(() => scanAgentSessions());
-  }
-  return { success: true };
-});
-
-ipcMain.handle('check-config-missing', () => {
-  return checkMissingConfig();
-});
-
-ipcMain.handle('get-config-path', () => {
-  return getConfigPath();
+registerConfigIpc(ipcMain, {
+  attachCodexUsageScope,
+  clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
+  clearSessionManagerConfigCache,
+  currentCodexUsageScope,
+  fetchAndCachePackyAccount,
+  scanAgentSessions,
+  sendToRenderer,
 });
 
 // --- Gemini/Codex ring-buffer usage scanner ---
