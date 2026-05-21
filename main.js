@@ -903,19 +903,6 @@ function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
   return updated || null;
 }
 
-ipcMain.handle('create-session', (_e, arg) => {
-  // Back-compat: legacy callers pass just a `kind` string. New callers pass
-  // `{ kind, opts }` so they can request `resumeCCSessionId` / custom cwd / etc.
-  let kind, opts;
-  if (typeof arg === 'string') { kind = arg; opts = {}; }
-  else if (arg && typeof arg === 'object') { kind = arg.kind; opts = arg.opts || {}; }
-  else { kind = 'powershell'; opts = {}; }
-  const session = sessionManager.createSession(kind, opts);
-  registerSessionForTap(session);
-  sendToRenderer('session-created', { session });
-  return session;
-});
-
 // --- Meeting Room IPC ---
 
 // meeting-create-modal（2026-05-01）：把 add-meeting-sub IPC 的核心逻辑抽出来，

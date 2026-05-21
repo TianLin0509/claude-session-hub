@@ -81,9 +81,41 @@ test('registers expected session channels', () => {
   for (const channel of ['close-session', 'rename-session', 'get-sessions', 'debug:get-session-buffer', 'restart-session']) {
     assert.ok(ipc.handlers.has(channel), `${channel} should be registered as handle`);
   }
+  assert.ok(ipc.handlers.has('create-session'), 'create-session should be registered as handle');
   for (const channel of ['terminal-input', 'terminal-resize', 'focus-session']) {
     assert.ok(ipc.listeners.has(channel), `${channel} should be registered as listener`);
   }
+});
+
+test('create-session preserves legacy and object payloads', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  const emitted = [];
+  const tapped = [];
+  registerSessionIpc(ipc, {
+    registerSessionForTap: (session) => tapped.push(session),
+    sessionManager,
+    sendToRenderer: (channel, payload) => emitted.push([channel, payload]),
+  });
+
+  const legacy = ipc.handlers.get('create-session')(null, 'powershell');
+  const objectPayload = ipc.handlers.get('create-session')(null, { kind: 'codex', opts: { cwd: 'C:\\repo' } });
+  const fallback = ipc.handlers.get('create-session')(null, null);
+
+  assert.strictEqual(legacy.kind, 'powershell');
+  assert.strictEqual(objectPayload.kind, 'codex');
+  assert.strictEqual(fallback.kind, 'powershell');
+  assert.deepStrictEqual(
+    sessionManager.calls.filter(call => call[0] === 'createSession'),
+    [
+      ['createSession', 'powershell', {}],
+      ['createSession', 'codex', { cwd: 'C:\\repo' }],
+      ['createSession', 'powershell', {}],
+    ]
+  );
+  assert.strictEqual(tapped.length, 3);
+  assert.strictEqual(emitted.length, 3);
+  assert.strictEqual(emitted[0][0], 'session-created');
 });
 
 test('rename-session returns updated session and emits session-updated', () => {

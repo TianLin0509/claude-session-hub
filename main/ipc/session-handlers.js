@@ -9,6 +9,26 @@ function registerSessionIpc(ipcMain, deps) {
 
   const lastResizeBySid = new Map();
 
+  ipcMain.handle('create-session', (_e, arg) => {
+    // Back-compat: legacy callers pass just a kind string; newer callers pass { kind, opts }.
+    let kind;
+    let opts;
+    if (typeof arg === 'string') {
+      kind = arg;
+      opts = {};
+    } else if (arg && typeof arg === 'object') {
+      kind = arg.kind;
+      opts = arg.opts || {};
+    } else {
+      kind = 'powershell';
+      opts = {};
+    }
+    const session = sessionManager.createSession(kind, opts);
+    registerSessionForTap(session);
+    sendToRenderer('session-created', { session });
+    return session;
+  });
+
   ipcMain.handle('close-session', (_e, sessionId) => {
     lastResizeBySid.delete(sessionId);
     sessionManager.closeSession(sessionId);
