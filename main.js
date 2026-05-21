@@ -49,6 +49,7 @@ const { registerUsageIpc } = require('./main/ipc/usage-handlers.js');
 const { registerMeetingIpc } = require('./main/ipc/meeting-handlers.js');
 const { registerMeetingTimelineIpc } = require('./main/ipc/meeting-timeline-handlers.js');
 const { registerTranscriptIpc } = require('./main/ipc/transcript-handlers.js');
+const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -1836,24 +1837,9 @@ ipcMain.handle('groupchat-resend-participant', async () => {
   return { ok: false, reason: 'unsupported', detail: 'group chat uses resend-prompt, manual extract, and skip recovery actions' };
 });
 
-ipcMain.handle('get-ring-buffer', (_e, sessionId) => {
-  return sessionManager.getSessionBuffer(sessionId);
-});
-
-// cli-ready-status IPC handler — 只负责"参数转发到 detector + 透传 groupChatReady 快路径"。
-//   判定逻辑全部在 core/group-chat-cli-ready-detector.js（marker + 静默双门 + monotonic guard）。
-//   renderer 每秒 invoke 一次，缓存到 _cliReadyCache[sid] 驱动卡片"创建中→待命"切换。
-ipcMain.handle('cli-ready-status', (_e, sessionId) => {
-  if (!sessionId) return false;
-  const session = sessionManager.getSession(sessionId);
-  if (!session) return false;
-  // 快路径：server 端任何路径确认 ready 后立即 surface（如 groupChatWatcher.sendToPty 已成功发过 prompt）
-  if (sessionManager.getGroupChatReady(sessionId)) {
-    cliReadyDetector.markReady(sessionId);
-    return true;
-  }
-  const buf = sessionManager.getSessionBuffer(sessionId) || '';
-  return cliReadyDetector.isReady(sessionId, session.kind, buf);
+registerCliStatusIpc(ipcMain, {
+  cliReadyDetector,
+  sessionManager,
 });
 
 registerTranscriptIpc(ipcMain, {
