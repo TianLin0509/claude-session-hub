@@ -5,6 +5,7 @@ const { marked } = require('marked');
 const DOMPurify = require('dompurify');
 const { installScrollDebug } = require('./scroll-debug.js');
 const { createMemoPanel } = require('./memo-panel.js');
+const { createTerminalSearch } = require('./terminal-search.js');
 const RENDER_STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const RENDER_STARTUP_T0 = performance.now();
 function traceRendererStartup(msg) {
@@ -5483,57 +5484,14 @@ termCtxMenuEl.querySelector('[data-action="preview"]').addEventListener('click',
 });
 
 // --- Terminal in-buffer search (Ctrl+F) ---
-const termSearchEl = document.getElementById('terminal-search');
-const termSearchInput = document.getElementById('terminal-search-input');
-const termSearchCount = document.getElementById('terminal-search-count');
-const termSearchPrev = document.getElementById('terminal-search-prev');
-const termSearchNext = document.getElementById('terminal-search-next');
-const termSearchClose = document.getElementById('terminal-search-close');
-
-function openTerminalSearch() {
-  termSearchEl.style.display = 'flex';
-  termSearchInput.focus();
-  termSearchInput.select();
-}
-function closeTerminalSearch() {
-  termSearchEl.style.display = 'none';
-  const cached = terminalCache.get(activeSessionId);
-  if (cached && cached.searchAddon) cached.searchAddon.clearDecorations();
-  if (cached) cached.terminal.focus();
-}
-
-const SEARCH_OPTS = {
-  decorations: {
-    matchBackground: '#58a6ff66',
-    matchBorder: '#58a6ff',
-    matchOverviewRuler: '#58a6ff',
-    activeMatchBackground: '#f0883e88',
-    activeMatchBorder: '#f0883e',
-    activeMatchColorOverviewRuler: '#f0883e',
-  },
-};
-
-function runSearch(direction) {
-  const cached = terminalCache.get(activeSessionId);
-  if (!cached || !cached.searchAddon) return;
-  const q = termSearchInput.value;
-  if (!q) { cached.searchAddon.clearDecorations(); termSearchCount.textContent = ''; return; }
-  const found = direction >= 0
-    ? cached.searchAddon.findNext(q, SEARCH_OPTS)
-    : cached.searchAddon.findPrevious(q, SEARCH_OPTS);
-  termSearchCount.textContent = found ? '' : 'no match';
-}
-
-termSearchInput.addEventListener('input', () => runSearch(1));
-termSearchInput.addEventListener('keydown', (e) => {
-  if (e.isComposing || e.keyCode === 229) return;
-  if (e.key === 'Enter') { e.preventDefault(); runSearch(e.shiftKey ? -1 : 1); }
-  else if (e.key === 'Escape') { e.preventDefault(); closeTerminalSearch(); }
+const terminalSearch = createTerminalSearch({
+  document,
+  getActiveSessionId: () => activeSessionId,
+  getTerminalCache: () => terminalCache,
 });
-termSearchPrev.addEventListener('click', () => runSearch(-1));
-termSearchNext.addEventListener('click', () => runSearch(1));
-termSearchClose.addEventListener('click', closeTerminalSearch);
-
+terminalSearch.init();
+const openTerminalSearch = terminalSearch.open;
+const closeTerminalSearch = terminalSearch.close;
 // --- Sidebar collapse ---
 const SIDEBAR_KEY = 'claude-hub-sidebar-collapsed';
 function applySidebarCollapsed(collapsed) {
