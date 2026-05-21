@@ -22,6 +22,10 @@
 // ---------------------------------------------------------------------------
 const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen'];
 const WEB_STYLE_KINDS = ['claude-web', 'codex-web'];
+const CODEX_CLI_KINDS = ['codex', 'codex-resume', 'codex-web', 'codex-web-resume'];
+const CODEX_SESSION_KINDS = [...CODEX_CLI_KINDS, 'codex-app'];
+const CLAUDE_WEB_KINDS = ['claude-web', 'claude-web-resume'];
+const CODEX_WEB_KINDS = ['codex-web', 'codex-web-resume'];
 
 // ---------------------------------------------------------------------------
 // 显示标签（UI 各处显示家族短名用）。
@@ -82,6 +86,26 @@ function isPasteSensitive(kind) {
 
 function isAiKind(kind) {
   return ALL_AI_KINDS.includes(kind) || WEB_STYLE_KINDS.includes(kind);
+}
+
+function isCodexCliKind(kind) {
+  return CODEX_CLI_KINDS.includes(kind);
+}
+
+function isCodexSessionKind(kind) {
+  return CODEX_SESSION_KINDS.includes(kind);
+}
+
+function isClaudeWebKind(kind) {
+  return CLAUDE_WEB_KINDS.includes(kind);
+}
+
+function isCodexWebKind(kind) {
+  return CODEX_WEB_KINDS.includes(kind);
+}
+
+function isWebStyleKind(kind) {
+  return isClaudeWebKind(kind) || isCodexWebKind(kind);
 }
 
 function getKindLabel(kind) {
@@ -170,6 +194,10 @@ function slotIndexToId(idx) {
 module.exports = {
   ALL_AI_KINDS,
   WEB_STYLE_KINDS,
+  CODEX_CLI_KINDS,
+  CODEX_SESSION_KINDS,
+  CLAUDE_WEB_KINDS,
+  CODEX_WEB_KINDS,
   KIND_LABELS,
   CLAUDE_FAMILY,
   CLAUDE_HOOK_BACKED,
@@ -177,6 +205,11 @@ module.exports = {
   isClaudeFamily,
   isPasteSensitive,
   isAiKind,
+  isCodexCliKind,
+  isCodexSessionKind,
+  isClaudeWebKind,
+  isCodexWebKind,
+  isWebStyleKind,
   getKindLabel,
   kindRegexAlternation,
   // Phase 4 群聊记忆家族级共享

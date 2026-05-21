@@ -1,5 +1,5 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
-const { isClaudeFamily, isAiKind, isPasteSensitive } = require('../core/ai-kinds.js');
+const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind } = require('../core/ai-kinds.js');
 const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
@@ -2995,10 +2995,6 @@ const _w16RemoveTimers = new Map(); // sessionId → setTimeout id
 const _codexSubmitPendingTimers = new Map(); // sessionId -> setTimeout id
 const _CODEX_CARD_SUBMIT_PENDING_MS = 15 * 1000;
 const _CODEX_CARD_WORK_MAX_MS = 45 * 60 * 1000;
-
-function isCodexKind(kind) {
-  return kind === 'codex' || kind === 'codex-resume' || kind === 'codex-web' || kind === 'codex-web-resume' || kind === 'codex-app';
-}
 
 function markCodexCardWorking(sessionId, source = 'prompt') {
   const session = sessions.get(sessionId);

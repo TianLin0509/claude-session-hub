@@ -41,11 +41,7 @@ const {
   attachCodexUsageScope,
   filterUsageCacheForCodexScope,
 } = require('./core/codex-usage-scope.js');
-const { ALL_AI_KINDS, isClaudeFamily, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
-
-function isCodexCliKind(kind) {
-  return kind === 'codex' || kind === 'codex-resume' || kind === 'codex-web' || kind === 'codex-web-resume';
-}
+const { ALL_AI_KINDS, isClaudeFamily, isCodexCliKind, isClaudeWebKind, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -2351,7 +2347,7 @@ ipcMain.on('persist-sessions', (_e, list, meetingList) => {
 // `--continue` as fallback when we don't have a CC id recorded.
 ipcMain.handle('resume-session', async (_e, meta) => {
   if (!meta || !meta.hubId) return null;
-  const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume' || meta.kind === 'claude-web' || meta.kind === 'claude-web-resume');
+  const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume' || isClaudeWebKind(meta.kind));
   const isDeepSeek = (meta.kind === 'deepseek');
   const isGlm = (meta.kind === 'glm');
   // CLAUDE_FAMILY 含 claude/claude-resume/deepseek/glm/gpt/kimi/qwen — 所有跑在 Claude CLI

@@ -6,7 +6,7 @@ const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
-const { isClaudeFamily } = require('./ai-kinds.js');
+const { isClaudeFamily, isClaudeWebKind, isCodexCliKind, isCodexWebKind } = require('./ai-kinds.js');
 const { CodexAppServerClient } = require('./codex-app-server-client.js');
 const codexAppRegistry = require('./codex-app-registry.js');
 
@@ -449,11 +449,11 @@ class SessionManager extends EventEmitter {
   //   geminiProjectRoot:  required for Gemini resume (T8 new, used as cwd for correct project scoping)
   createSession(kind = 'powershell', opts = {}) {
     const id = opts.id || uuid();
-    const isClaude = kind === 'claude' || kind === 'claude-resume' || kind === 'claude-web' || kind === 'claude-web-resume';
-    const isClaudeWeb = kind === 'claude-web' || kind === 'claude-web-resume';
+    const isClaude = kind === 'claude' || kind === 'claude-resume' || isClaudeWebKind(kind);
+    const isClaudeWeb = isClaudeWebKind(kind);
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
-    const isCodex = kind === 'codex' || kind === 'codex-resume' || kind === 'codex-web' || kind === 'codex-web-resume';
-    const isCodexWeb = kind === 'codex-web' || kind === 'codex-web-resume';
+    const isCodex = isCodexCliKind(kind);
+    const isCodexWeb = isCodexWebKind(kind);
     const isCodexApp = kind === 'codex-app';
     const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';
     const isGlm = kind === 'glm' || kind === 'glm-resume';
@@ -1317,13 +1317,13 @@ class SessionManager extends EventEmitter {
     const isClaudeCli = isClaudeFamily(baseKind);
     const isolation = isClaudeCli ? buildGroupChatIsolationFlags(meetingId) : '';
     let cmd;
-    if (kind === 'codex' || kind === 'codex-resume' || kind === 'codex-web' || kind === 'codex-web-resume') {
+    if (isCodexCliKind(kind)) {
       // relaunch：API 模式时 codex 用 isolated CODEX_HOME，从 info.codexSessionsRoot 反推
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}${CODEX_REASONING_CONFIG_ARG}`;
-      if (kind === 'codex-web' || kind === 'codex-web-resume') {
+      if (isCodexWebKind(kind)) {
         const promptPath = path.join(__dirname, 'codex-web-prompt.md');
         cmd += ` -c "model_instructions_file=${promptPath.replace(/\\/g, '\\\\')}"`;
       }

@@ -34,8 +34,8 @@ assert.ok(
   'parse-session-transcript must branch for Codex CLI variants',
 );
 assert.ok(
-  rendererSrc.includes('function isCodexKind(kind)'),
-  'renderer must centralize Codex session kind detection',
+  rendererSrc.includes('isCodexSessionKind: isCodexKind'),
+  'renderer must import centralized Codex session kind detection',
 );
 assert.ok(
   rendererSrc.includes('isClaudeFamily(kind) || isCodexKind(kind)'),

@@ -17,7 +17,7 @@
 // Fallback：若任一 Tap 未捕获（hook 未触发 / 文件路径漂移 / CLI 版本不兼容），
 
 const { EventEmitter } = require('events');
-const { isClaudeFamily } = require('./ai-kinds.js');
+const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
 const { StringDecoder } = require('string_decoder');
 const fs = require('fs');
 const path = require('path');
@@ -1665,7 +1665,7 @@ class TranscriptTap extends EventEmitter {
     if (isClaudeFamily(kind)) {
       return this._claude;
     }
-    if (kind === 'codex' || kind === 'codex-resume' || kind === 'codex-web' || kind === 'codex-web-resume') return this._codex;
+    if (isCodexCliKind(kind)) return this._codex;
     if (kind === 'codex-app') return this._codexApp;
     if (kind === 'gemini') return this._gemini;
     return null;
