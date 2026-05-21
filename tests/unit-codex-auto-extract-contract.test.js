@@ -5,25 +5,25 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const mainSrc = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
+const dispatcherSrc = fs.readFileSync(path.join(root, 'main', 'groupchat', 'dispatcher.js'), 'utf8');
 const watcherSrc = fs.readFileSync(path.join(root, 'core', 'turn-completion-watcher.js'), 'utf8');
 
-assert.ok(/_CODEX_AUTO_EXTRACT_DELAY_MS\s*=\s*3\s*\*\s*1000/.test(mainSrc),
+assert.ok(/CODEX_AUTO_EXTRACT_DELAY_MS\s*=\s*3\s*\*\s*1000/.test(dispatcherSrc),
   'Codex auto extract should wait 3s before probing the rollout');
 
-assert.ok(/isCodexBaseKind\(waitSession\?\.kind\)/.test(mainSrc),
+assert.ok(/isCodexBaseKind\(waitSession\?\.kind\)/.test(dispatcherSrc),
   'auto extract fallback must be Codex-family only');
 
-assert.ok(/transcriptTap\.extractLatestTurn\(sid,\s*sincePromptTs\)/.test(mainSrc),
+assert.ok(/transcriptTap\.extractLatestTurn\(sid,\s*sincePromptTs\)/.test(dispatcherSrc),
   'auto extract must reuse the same transcript extraction path as manual extract');
 
-assert.ok(/extractMode\s*===\s*['"]final_answer['"]/.test(mainSrc),
+assert.ok(/extractMode\s*===\s*['"]final_answer['"]/.test(dispatcherSrc),
   'auto extract must only settle on final_answer, not partial commentary');
 
-assert.ok(/watcher\.completeFromTranscript\(extracted\.text,\s*['"]codex_auto_extract_final_answer['"]\)/.test(mainSrc),
+assert.ok(/watcher\.completeFromTranscript\(extracted\.text,\s*['"]codex_auto_extract_final_answer['"]\)/.test(dispatcherSrc),
   'auto extract should settle the watcher as completed with a distinct signal source');
 
-assert.ok(/if \(codexAutoExtractTimer\) clearInterval\(codexAutoExtractTimer\)/.test(mainSrc),
+assert.ok(/if \(codexAutoExtractTimer\) clearInterval\(codexAutoExtractTimer\)/.test(dispatcherSrc),
   'auto extract timer must be cleared when the watcher settles');
 
 assert.ok(/completeFromTranscript\(text,\s*signalSource\s*=\s*['"]auto_extract['"]\)/.test(watcherSrc),

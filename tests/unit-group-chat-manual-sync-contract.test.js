@@ -3,21 +3,21 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
-const mainSrc = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
+const dispatcherSrc = fs.readFileSync(path.join(root, 'main', 'groupchat', 'dispatcher.js'), 'utf8');
 const recoverySrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'groupchat-recovery-handlers.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.js'), 'utf8');
 const cssSrc = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.css'), 'utf8');
 
 assert.ok(
-  mainSrc.includes('const disableHardTimeout = opts.disableHardTimeout === true;') &&
-  mainSrc.includes('if (!disableHardTimeout) {') &&
-  mainSrc.includes('disableHardTimeout: true,'),
+  dispatcherSrc.includes('const disableHardTimeout = opts.disableHardTimeout === true;') &&
+  dispatcherSrc.includes('if (!disableHardTimeout) {') &&
+  dispatcherSrc.includes('disableHardTimeout: true,'),
   'AI waits must opt out of the transitional 5-minute hard timeout',
 );
 
-const groupWaitIdx = mainSrc.indexOf("mode: 'group', turnNum");
+const groupWaitIdx = dispatcherSrc.indexOf("mode: 'group', turnNum");
 assert.ok(
-  groupWaitIdx > 0 && mainSrc.slice(groupWaitIdx, groupWaitIdx + 400).includes('disableHardTimeout: true,'),
+  groupWaitIdx > 0 && dispatcherSrc.slice(groupWaitIdx, groupWaitIdx + 400).includes('disableHardTimeout: true,'),
   'group chat waits must opt out of the transitional 5-minute hard timeout',
 );
 

@@ -58,6 +58,7 @@ const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handle
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
 const { registerResumeSessionIpc } = require('./main/ipc/resume-session-handlers.js');
+const { createGroupChatDispatcher } = require('./main/groupchat/dispatcher.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -839,26 +840,14 @@ function sendToRenderer(channel, data) {
   }
 }
 
+let groupChatDispatcher = null;
+
 sessionManager.onData = (sessionId, data) => {
   sendToRenderer('terminal-data', { sessionId, data });
 };
 
 sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
-  // Stage 2 P1-1：把 PTY 退出作为 L2 完成信号通知群聊 watcher。
-  //   如果该 sid 当前正在 turn 等待中（_activeWatchers 命中），调 markProcessExit
-  //   让 watcher 立即 settle（completed if exit=0 else errored），不再被任何
-  //   "永远不来"的 L1 信号或 30min 过渡 timeout 拖住。
-  const watcher = _activeWatchers.get(sessionId);
-  if (watcher) {
-    // node-pty 的 exitInfo 是 { exitCode, signal }，watcher 接受 { code, signal }——做名称适配
-    const adapted = exitInfo
-      ? { code: typeof exitInfo.exitCode === 'number' ? exitInfo.exitCode : null, signal: exitInfo.signal }
-      : { code: null };
-    console.log(`[group-chat] PTY exit detected for sid=${sessionId.slice(0, 8)} (code=${adapted.code} signal=${adapted.signal || 'none'}), notifying watcher`);
-    try { watcher.markProcessExit(adapted); } catch (e) {
-      console.warn('[group-chat] markProcessExit threw:', e.message);
-    }
-  }
+  groupChatDispatcher?.markProcessExitForSession(sessionId, exitInfo);
 
   try { transcriptTap.unregisterSession(sessionId); } catch {}
   // 群聊 cli-ready monotonic guard 清理（独立模块，详见 core/group-chat-cli-ready-detector.js）
@@ -946,512 +935,24 @@ registerMeetingIpc(ipcMain, {
 });
 
 // =====================================================================
-// Group Chat Mode (Sprint 2): fanout / debate / summary 三种轮次
+// Group Chat Mode dispatch
 // =====================================================================
-const groupChatWatcher = require('./core/group-chat-watcher.js');
-groupChatWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
-let _groupChatInProgress = new Set(); // 同一群聊单一并发：set of meetingId
+groupChatDispatcher = createGroupChatDispatcher({
+  cliReadyDetector,
+  getHubDataDir,
+  groupchat,
+  isCodexBaseKind,
+  kindLabels: KIND_LABELS,
+  maybeAutoTitleMeetingFromPrompt,
+  meetingManager,
+  sendToRenderer,
+  sessionManager,
+  transcriptTap,
+});
 
-// Resend & Auto-Recovery（2026-05-03）—— per-sid patch-listener 注册表
-//   防跨轮污染：dispatchGroupChatTurn 入口先 cancelPatchListenersForSid(sid)
-//   保证一个 sub 永远只有最新一轮的 patch listener 在监听。watcher.cancelPatch()
-//   把 patchCancelled=true 后续 settle 不再挂新 listener；已挂的 patch listener
-//   通过 watcher 内部的 _cleanupPatch 自然清理。
-const _patchListenersBySid = new Map(); // sid → Set<watcher>
-
-function registerPatchListener(sid, watcher) {
-  if (!_patchListenersBySid.has(sid)) _patchListenersBySid.set(sid, new Set());
-  _patchListenersBySid.get(sid).add(watcher);
-}
-function cancelPatchListenersForSid(sid) {
-  const set = _patchListenersBySid.get(sid);
-  if (!set) return;
-  for (const w of set) {
-    try { w.cancelPatch?.(); } catch (e) { console.warn('[patch] cancelPatch threw:', e && e.message); }
-  }
-  set.clear();
-}
-function unregisterPatchListener(sid, watcher) {
-  const set = _patchListenersBySid.get(sid);
-  if (set) set.delete(watcher);
-}
-
-// 方案 F · 2026-05-02：计算单个 sub 视角的"调度上下文" spec，喂给 build*Prompt
-// / checkHostShellTakeover）已抽到 core/group-chat-watcher.js（groupChatWatcher）。
-// 调用方走 groupChatWatcher.X。dispatchGroupChatTurn 与 _gcWaitTurnComplete 仍在 main.js
-// 这里（依赖闭包过深，留下次专项 → core/group-chat-dispatcher.js）。
-
-
-
-
-// Stage 2 容错升级（2026-05-01）— 用 turn-completion-watcher 替代老 watchdog 实现
-//
-// 架构变更：
-//   - 老逻辑：内联 transcriptTap.on('turn-complete') + 600s 强制 timeout → 整轮锁死
-//   - 新逻辑：watcher 状态机管理（completed/errored/manual_extracted/absent），
-//            T1=90s/T2=180s 软提醒 banner（不阻塞），用户可点 UI 触发点退出。
-//
-// **过渡期兜底**（FIX-B 2026-05-01 缩短）：原 30min 太长——Codex 自动更新 / Gemini OAuth 退出
-//   等 CLI 自我退出场景，PTY 宿主 shell 还活，markProcessExit 不会被触发，watcher 唯一兜底就是
-//   这个 timeout。30min 期间用户面板按钮锁死、卡片显错状态。
-//   缩到 5min 覆盖 Opus 极慢推理上限，让"真卡死"场景能更快释放。彻底治本靠 FIX-D 的
-//   shell prompt 心跳检测（10-15s 内识别 CLI 自我退出）。
-const RT_TRANSITIONAL_HARD_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
-
-// 模块级活跃 watcher 注册表：让 IPC handler 能找到当前 turn 中等待的 watcher
-//   key = hubSessionId（每家 sid 同时最多一个 watcher）；value = watcher
-const _activeWatchers = new Map();
-
-const { createTurnCompletionWatcher } = require('./core/turn-completion-watcher.js');
-const pasteTrappedDetector = require('./core/paste-trapped-detector.js');
-
-// paste-trapped 监控注册表（2026-05-05 道雪 P0 2A）：dispatch sendToPty 看似 ok 但
-//   marker 卡输入框时主动确诊。Codex 先自动补 Enter（只补 \r，不重发 prompt），
-//   仍卡住再推 send-stuck IPC。
-//   key = sid，value = setInterval id。watcher settle / sendToPty stuck / hard timeout
-//   任一触发都要清。
-const _pasteTrappedMonitors = new Map();
-const PASTE_TRAPPED_TICK_MS = 3000;
-const PASTE_TRAPPED_HARD_TIMEOUT_MS = 60_000;
-const PASTE_TRAPPED_CODEX_ENTER_RETRIES = 2;
-
-function _startPasteTrappedMonitor(sid, kind, meetingId) {
-  if (_pasteTrappedMonitors.has(sid)) return;
-  pasteTrappedDetector.start(sid, Date.now());
-  const startedAt = Date.now();
-  const monitor = { intervalId: null, enterRetries: 0 };
-  const intervalId = setInterval(() => {
-    try {
-      if (Date.now() - startedAt >= PASTE_TRAPPED_HARD_TIMEOUT_MS) {
-        _stopPasteTrappedMonitor(sid);
-        return;
-      }
-      const buf = sessionManager.getSessionBuffer(sid) || '';
-      const activity = sessionManager.getGroupChatLastActivity(sid);
-      const r = pasteTrappedDetector.tick(sid, buf, activity);
-      if (r === 'stuck') {
-        if (isCodexBaseKind(kind) && monitor.enterRetries < PASTE_TRAPPED_CODEX_ENTER_RETRIES) {
-          monitor.enterRetries += 1;
-          console.warn(`[paste-trapped] codex(${sid.slice(0,8)}) paste marker stable; sending retry Enter #${monitor.enterRetries}`);
-          try {
-            sessionManager.writeToSession(sid, '\r');
-            const meeting = meetingManager.getMeeting(meetingId);
-            if (meeting && meeting.groupChat) {
-              const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-              const turnNum = orch && orch.state && orch.state.currentTurn;
-              if (turnNum) orch.setSendStatus(turnNum, sid, 'enter_retry');
-            }
-          } catch (e) {
-            console.warn('[paste-trapped] codex retry Enter threw:', e && e.message);
-          }
-          // 重新开始 3s 时间门 + marker 稳定观察，避免连续补 Enter 抢在 TUI 重绘前。
-          pasteTrappedDetector.start(sid, Date.now());
-          return;
-        }
-        console.warn(`[paste-trapped] confirmed stuck for ${kind}(${sid.slice(0,8)}) — pushing groupchat-send-stuck IPC`);
-        try {
-          const meeting = meetingManager.getMeeting(meetingId);
-          if (meeting && meeting.groupChat) {
-            const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-            const turnNum = orch && orch.state && orch.state.currentTurn;
-            if (turnNum) orch.setSendStatus(turnNum, sid, 'stuck');
-          }
-        } catch (e) { console.warn('[paste-trapped] setSendStatus threw:', e && e.message); }
-        sendToRenderer('groupchat-send-stuck', { meetingId, sid, kind });
-        _stopPasteTrappedMonitor(sid);
-      } else if (r === 'ok') {
-        // marker 消失 = paste 已被 \r 提交（或 streaming 内容覆盖输入框区域），停 monitor
-        _stopPasteTrappedMonitor(sid);
-      }
-      // 'unknown' → 继续 tick
-    } catch (e) {
-      console.warn('[paste-trapped] tick threw:', e && e.message);
-    }
-  }, PASTE_TRAPPED_TICK_MS);
-  intervalId.unref?.();
-  monitor.intervalId = intervalId;
-  _pasteTrappedMonitors.set(sid, monitor);
-}
-
-function _stopPasteTrappedMonitor(sid) {
-  const entry = _pasteTrappedMonitors.get(sid);
-  const intervalId = entry && typeof entry === 'object' ? entry.intervalId : entry;
-  if (intervalId) {
-    clearInterval(intervalId);
-    _pasteTrappedMonitors.delete(sid);
-  }
-  try { pasteTrappedDetector.stop(sid); } catch {}
-}
-
-// FIX-D（2026-05-01）：宿主 shell prompt 心跳检测——CLI 自我退出（Codex 自动更新 / Gemini OAuth
-//   异常 / Claude 内部 panic 等）后 PTY 控制权回到宿主 shell（PowerShell / bash），但 PTY 进程
-//   本身没退，markProcessExit 不会触发。watcher 因此只能等 5min 硬 timeout。
-//   解决：每 10s 检查 PTY ring buffer 末尾是否回到宿主 shell prompt，连续 2 次命中视为 CLI 已死，
-//   立即 markProcessExit({ code: -1, signal: 'cli_self_exit' }) 让 watcher 切 errored。
-//   核心检测函数抽到 core/host-shell-detector.js 方便单测。
-const _HOST_SHELL_HEARTBEAT_MS = 10 * 1000;
-const _HOST_SHELL_CONSECUTIVE_HITS = 2;
-const _CODEX_AUTO_EXTRACT_DELAY_MS = 3 * 1000;
-const _CODEX_AUTO_EXTRACT_INTERVAL_MS = 2 * 1000;
-
-function _gcWaitTurnComplete(sid, label, opts = {}) {
-  const { meetingId, mode, turnNum, onPartial } = opts;
-  const disableHardTimeout = opts.disableHardTimeout === true;
-
-  // Card redesign（2026-05-01）：记录本轮起始时刻 + 清除上轮 token 缓存。
-  //   settle 后注入 result.thinkSec（0.1s 精度）+ result.tokens（仅 Gemini 有）。
-  //   卡片 row3/row4 用这两个字段做"本轮"统计 + orchestrator 做"累计"累加。
-  const _startTs = Date.now();
-  try { transcriptTap.clearLastTokens(sid); } catch {}
-
-  const watcher = createTurnCompletionWatcher({
-    transcriptTap,
-    hubSessionId: sid,
-    label,
-    onSoftAlert: (level) => {
-      // 软提醒：T1=90s 推一次 banner；T2=180s 升级。永不强制 settle。
-      try {
-        sendToRenderer('groupchat-soft-alert', {
-          meetingId, turnNum, mode, sid, label, level,
-        });
-      } catch {}
-    },
-    // Resend & Auto-Recovery（2026-05-03）— onTurnPatched：watcher settle 后 5min 内
-    //   transcriptTap 再 emit turn-complete（且文本更长）则 patch lastTurn。
-    //   防护 #2：不覆盖 manual_extracted（用户手动提取的内容是权威，patch 不许覆盖）。
-    //   闭包用 meetingId（来自 opts）→ 通过 meetingManager + scenes 拿 sceneObj → orch。
-    //   turnNum 也从 opts 闭包读取。
-    onTurnPatched: ({ sid: patchedSid, text, status }) => {
-      try {
-        const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-        const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
-        // 防护 #2：不覆盖 manual_extracted 状态（spec 要求）
-        const turn = orch.state.turns.find(t => t.n === turnNum);
-        const currentStatus = turn?.byStatus?.[patchedSid];
-        const finalStatus = (currentStatus === 'manual_extracted') ? 'manual_extracted' : status;
-        orch.patchTurnResult(turnNum, patchedSid, { text, status: finalStatus });
-        sendToRenderer('groupchat-turn-patched', {
-          meetingId, turnNum, sid: patchedSid, charCount: (text || '').length,
-        });
-      } catch (e) {
-        console.warn('[patch] onTurnPatched threw:', e && e.message);
-      }
-    },
-  });
-  _activeWatchers.set(sid, watcher);
-  // Resend & Auto-Recovery（2026-05-03）— 注册到全局 patch-listener 表
-  //   下一轮 dispatch 同 sid 时通过 cancelPatchListenersForSid 强制 cancel 老 patch listener
-  registerPatchListener(sid, watcher);
-
-  // streaming partial 流式推送（保留现有体验，每 1500ms 推一次终端实时文本）
-  // Card optimization Task 5+6（2026-05-01）：onPartial 现在收到 { sid, label, status, blocks, source, text }
-  //   — blocks 让 renderer 结构化渲染（thinking/tool_use 高亮）；text 是兼容字段。
-  // fix（2026-05-01 多方审查反馈）：tap 没数据时 result.blocks 为空 + source='placeholder'，
-  //   仍然推一次 partial 让 renderer 切到 streaming 状态显示"💭 思考中…"占位（避免卡片
-  //   一直停在 idle / initializing）。同时 watcher 自身已发 status 信号，partial 是补充。
-  let streamTimer = null;
-  if (typeof onPartial === 'function') {
-    streamTimer = setInterval(() => {
-      if (watcher.isSettled()) { clearInterval(streamTimer); streamTimer = null; return; }
-      const session = sessionManager.getSession(sid);
-      const kind = session?.kind || 'unknown';
-      const result = groupChatWatcher.extractStreamingText(sid, kind);
-      const hasContent = result.text.length > 10 || result.blocks.length > 0;
-      // B1（2026-05-03 道雪）：每次心跳都计算 cleanBufLen 让 renderer 显示"已输出约 N 字"
-      //   placeholder 路径改为每次都推（原 placeholderEmitted=true 后只推一次）。
-      //   代价：60s 群聊每家多 ~40 次 IPC（~120 次/3 sub），远小于真 streaming 的事件量。
-      const buf = sessionManager.getSessionBuffer(sid) || '';
-      const cleanBufLen = groupChatWatcher.cleanBufLen(buf);
-      if (hasContent) {
-        try {
-          onPartial({
-            sid, label, status: 'streaming',
-            blocks: result.blocks, source: result.source, text: result.text,
-            cleanBufLen,
-          });
-        } catch {}
-      } else {
-        try {
-          onPartial({
-            sid, label, status: 'streaming',
-            blocks: [], source: 'placeholder', text: '',
-            cleanBufLen,
-          });
-        } catch {}
-      }
-    }, 1500);
-  }
-
-  // 过渡期硬 timeout（FIX-B 已 30min→5min）。
-  // AI 群聊允许长时间自由发言，不能因为固定 5min 把已在 shell 输出中的慢回答落成空气泡。
-  let hardTimeout = null;
-  if (!disableHardTimeout) {
-    hardTimeout = setTimeout(() => {
-      if (watcher.isSettled()) return;
-      console.warn(`[group-chat] transitional hard timeout (5min) hit for ${label}(${sid.slice(0, 8)}), forcing skip`);
-      watcher.skip();
-    }, RT_TRANSITIONAL_HARD_TIMEOUT_MS);
-    hardTimeout.unref?.();
-  }
-
-  // FIX-D（2026-05-01）：宿主 shell prompt 心跳检测，10-15s 内识别 CLI 自我退出
-  let hostShellHits = 0;
-  const hostShellHeartbeat = setInterval(() => {
-    if (watcher.isSettled()) { clearInterval(hostShellHeartbeat); return; }
-    if (groupChatWatcher.checkHostShellTakeover(sid)) {
-      hostShellHits += 1;
-      if (hostShellHits >= _HOST_SHELL_CONSECUTIVE_HITS) {
-        console.warn(`[group-chat] host shell prompt detected for ${label}(${sid.slice(0, 8)}) on hit #${hostShellHits} — CLI self-exited, marking errored`);
-        try { watcher.markProcessExit({ code: -1, signal: 'cli_self_exit' }); }
-        catch (e) { console.warn('[group-chat] markProcessExit (heartbeat) threw:', e.message); }
-      }
-    } else {
-      hostShellHits = 0;
-    }
-  }, _HOST_SHELL_HEARTBEAT_MS);
-  hostShellHeartbeat.unref?.();
-
-  let codexAutoExtractTimer = null;
-  const waitSession = sessionManager.getSession(sid);
-  if (isCodexBaseKind(waitSession?.kind)) {
-    const sincePromptTs = Math.max(0, _startTs - 1000);
-    let autoExtractBusy = false;
-    codexAutoExtractTimer = setInterval(async () => {
-      if (watcher.isSettled()) {
-        clearInterval(codexAutoExtractTimer);
-        codexAutoExtractTimer = null;
-        return;
-      }
-      if (Date.now() - _startTs < _CODEX_AUTO_EXTRACT_DELAY_MS) return;
-      if (autoExtractBusy) return;
-      autoExtractBusy = true;
-      try {
-        const extracted = await transcriptTap.extractLatestTurn(sid, sincePromptTs);
-        if (extracted?.extractMode === 'final_answer' && extracted.text) {
-          console.log(`[group-chat] codex auto-extract final_answer for ${label}(${sid.slice(0, 8)}) ${extracted.text.length} chars`);
-          watcher.completeFromTranscript(extracted.text, 'codex_auto_extract_final_answer');
-        }
-      } catch (e) {
-        console.warn('[group-chat] codex auto-extract failed:', e && e.message);
-      } finally {
-        autoExtractBusy = false;
-      }
-    }, _CODEX_AUTO_EXTRACT_INTERVAL_MS);
-    codexAutoExtractTimer.unref?.();
-  }
-
-  return watcher.wait().then(result => {
-    if (hardTimeout) clearTimeout(hardTimeout);
-    clearInterval(hostShellHeartbeat);
-    if (codexAutoExtractTimer) clearInterval(codexAutoExtractTimer);
-    if (streamTimer) clearInterval(streamTimer);
-    _activeWatchers.delete(sid);
-    // 2026-05-05 P0 2A：watcher settle = turn 收尾，paste-trapped 监控不再需要
-    _stopPasteTrappedMonitor(sid);
-    // 305s 后清理 _patchListenersBySid 中的 watcher 引用（与 watcher 内部 patch 窗口 300s 对齐 + 5s 余量）。
-    //   防 watcher settle 后 ref 永远留在 main.js 全局表（dead ref 累积内存压力）。
-    //   不能立即 unregister——cancelPatchListenersForSid 需要在新一轮 dispatch 时
-    //   还能找到老 watcher 取消其 patch listener。305s 后 watcher 自己已 cleanup，
-    //   ref 留着也无意义，此时 unregister 干净。
-    setTimeout(() => {
-      try { unregisterPatchListener(sid, watcher); }
-      catch (e) { console.warn('[patch] unregisterPatchListener throw:', e && e.message); }
-    }, 305_000).unref?.();
-
-    // Card redesign（2026-05-01）：注入本轮统计字段供 orchestrator 累加 + 卡片渲染。
-    //   thinkSec 精度 0.1s（Math.round((..)*10)/10）；tokens 仅 Gemini 有，其他家 null。
-    const elapsedMs = Date.now() - _startTs;
-    result.thinkSec = Math.round(elapsedMs / 100) / 10;
-    try { result.tokens = transcriptTap.getLastTokens(sid) || null; }
-    catch { result.tokens = null; }
-
-    if (typeof onPartial === 'function') {
-      try { onPartial(result); } catch (e) { console.warn('[group-chat] onPartial error:', e.message); }
-    }
-    return result;
-  });
-}
-
-// 主调度：mode = 'fanout' | 'debate'
-// userInput: 用户输入（fanout 是问题，debate 是补充）
-// 摘要功能 2026-05-08 整体下线：原 mode='summary' / @summary 命令路径已删
-function _groupMembersForMeeting(meeting) {
-  const subSids = Array.isArray(meeting && meeting.subSessions) ? meeting.subSessions : [];
-  const specs = Array.isArray(meeting && meeting.slotSpecs) ? meeting.slotSpecs : [];
-  const kindCounts = {};
-  for (const sid of subSids) {
-    const s = sessionManager.getSession(sid);
-    if (!s) continue;
-    kindCounts[s.kind] = (kindCounts[s.kind] || 0) + 1;
-  }
-  const seenKind = {};
-  return subSids.map((sid, idx) => {
-    const s = sessionManager.getSession(sid);
-    if (!s || s.status === 'dormant') return null;
-    const spec = specs[idx] || {};
-    const kind = s.kind || spec.kind || 'ai';
-    seenKind[kind] = (seenKind[kind] || 0) + 1;
-    const kindLabel = KIND_LABELS[kind] || kind || 'AI';
-    const dupSuffix = kindCounts[kind] > 1 ? String(seenKind[kind]) : '';
-    const displayName = s.title || `${kindLabel}${dupSuffix ? ' ' + dupSuffix : ''}`;
-    const memberId = `m${idx + 1}`;
-    const model = (s.currentModel && s.currentModel.id) || spec.model || null;
-    const aliases = [
-      memberId,
-      displayName,
-      kindLabel,
-      kind,
-      `${kindLabel}${seenKind[kind]}`,
-      `${kind}${seenKind[kind]}`,
-    ].filter(Boolean);
-    return {
-      sid,
-      index: idx,
-      memberId,
-      kind,
-      model,
-      displayName,
-      aliases: [...new Set(aliases.map(x => String(x)))],
-    };
-  }).filter(Boolean);
-}
-
-function _parseGroupTargets(userInput, members, participants) {
-  const selected = Array.isArray(participants) ? participants : [];
-  const selectedMembers = members.filter(m => selected.includes(m.index));
-  const mentionRe = /@([A-Za-z0-9_\-\u4e00-\u9fff]+)/g;
-  const mentioned = [];
-  let m;
-  while ((m = mentionRe.exec(userInput || '')) !== null) {
-    const token = String(m[1] || '').toLowerCase();
-    if (token === 'all' || token === '全部' || token === '所有人') {
-      return { targets: members, mentions: ['all'] };
-    }
-    const hits = members.filter(mem => {
-      const keys = [mem.memberId, mem.displayName, mem.kind, ...(mem.aliases || [])]
-        .filter(Boolean).map(x => String(x).toLowerCase());
-      return keys.includes(token);
-    });
-    const hit = hits.length === 1 ? hits[0] : null;
-    if (hit && !mentioned.some(x => x.sid === hit.sid)) mentioned.push(hit);
-  }
-  if (mentioned.length > 0) return { targets: mentioned, mentions: mentioned.map(x => x.memberId) };
-  return { targets: selectedMembers, mentions: [] };
-}
-
-async function dispatchGroupChatTurn(meetingId, { userInput }) {
-  if (_groupChatInProgress.has(meetingId)) return { status: 'busy', turnNum: null };
-  _groupChatInProgress.add(meetingId);
-  try {
-    const meeting = meetingManager.getMeeting(meetingId);
-    if (!meeting || !meeting.groupChat) {
-      return { status: 'error', reason: 'not group chat meeting', turnNum: null };
-    }
-    const members = _groupMembersForMeeting(meeting);
-    if (members.length === 0) return { status: 'no_subs', turnNum: null };
-
-    const routed = _parseGroupTargets(userInput || '', members, meeting.participants);
-    const targetMembers = routed.targets || [];
-    if (targetMembers.length === 0) {
-      return { status: 'error', reason: '请先勾选至少一位 AI 成员，或用 @ 指定成员', turnNum: null };
-    }
-    maybeAutoTitleMeetingFromPrompt(meetingId, userInput || '');
-
-    for (const member of members) {
-      try { transcriptTap.clearStreamingBuf(member.sid); } catch {}
-    }
-
-    const hubDataDir = getHubDataDir();
-    const orch = groupchat.getOrchestrator(hubDataDir, meetingId);
-    const { turnNum } = orch.beginTurn(userInput || '');
-    const deliveredIdx = orch.state.messages.length - 1;
-    const targets = targetMembers.map(member => {
-      const systemPromptText = groupchat.buildSystemPromptText(member.displayName, meeting.scene);
-      return {
-        sid: member.sid,
-        kind: member.kind,
-        label: member.displayName,
-        member,
-        deliveredIdx,
-        prompt: orch.buildFirstDelta(member.sid, userInput || '', systemPromptText),
-      };
-    });
-
-    for (const t of targets) {
-      cancelPatchListenersForSid(t.sid);
-      try { orch.recordTurnPrompt(turnNum, t.sid, t.prompt); }
-      catch (e) { console.warn('[groupchat] recordTurnPrompt threw:', e && e.message); }
-    }
-
-    const sentTargets = [];
-    await Promise.all(targets.map(async (t) => {
-      try {
-        try { transcriptTap.notePrompt(t.sid, t.kind, t.prompt); } catch {}
-        const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
-        const ok = sendResult && sendResult.ok;
-        const sendStatus = sendResult && sendResult.sendStatus;
-        if (sendStatus === 'stuck' && !isCodexBaseKind(t.kind)) {
-          sendToRenderer('groupchat-send-stuck', { meetingId, sid: t.sid, kind: t.kind });
-        }
-        if (ok) {
-          sentTargets.push(t);
-          if (sendStatus !== 'stuck' || isCodexBaseKind(t.kind)) {
-            _startPasteTrappedMonitor(t.sid, t.kind, meetingId);
-          }
-        }
-      } catch (e) {
-        console.warn(`[groupchat] turn ${turnNum} sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
-      }
-    }));
-
-    if (sentTargets.length === 0) {
-      orch.rollbackTurn(turnNum);
-      return { status: 'no_sent', turnNum };
-    }
-
-    const settled = await Promise.allSettled(sentTargets.map(t =>
-      _gcWaitTurnComplete(t.sid, t.label, {
-        meetingId, mode: 'group', turnNum,
-        disableHardTimeout: true,
-        onPartial: (partial) => {
-          sendToRenderer('groupchat-partial-update', {
-            meetingId, turnNum, mode: 'group',
-            sid: partial.sid, label: partial.label,
-            status: partial.status,
-            text: partial.text,
-            blocks: partial.blocks,
-            source: partial.source,
-            thinkSec: partial.thinkSec, tokens: partial.tokens,
-            cleanBufLen: partial.cleanBufLen,
-          });
-        },
-      })
-    ));
-
-    const results = settled.map((s, i) => s.status === 'fulfilled' ? s.value : {
-      sid: sentTargets[i].sid,
-      label: sentTargets[i].label,
-      status: 'errored',
-      text: '',
-      reason: s.reason?.message || 'Promise rejected',
-    }).map((r, i) => ({
-      ...r,
-      deliveredIdx: sentTargets[i] && sentTargets[i].deliveredIdx,
-    }));
-    const memberBySid = {};
-    for (const m of members) memberBySid[m.sid] = m;
-    const turnRecord = orch.completeTurn(turnNum, userInput || '', results, memberBySid);
-    const meta = turnRecord.meta || { dispatchMode: 'group' };
-    sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results, meta });
-    return { status: 'completed', turnNum, results, meta };
-  } finally {
-    _groupChatInProgress.delete(meetingId);
-  }
-}
-
-registerGroupchatTurnIpc(ipcMain, { dispatchGroupChatTurn });
-
-// 摘要功能 2026-05-08 整体下线：原 summary-trigger IPC handler 已删
+registerGroupchatTurnIpc(ipcMain, {
+  dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
+});
 
 registerGroupchatQueryIpc(ipcMain, {
   getHubDataDir,
@@ -1461,15 +962,14 @@ registerGroupchatQueryIpc(ipcMain, {
 
 registerGroupchatRecoveryIpc(ipcMain, {
   getHubDataDir,
-  getActiveWatchers: () => _activeWatchers,
+  getActiveWatchers: groupChatDispatcher.getActiveWatchers,
   groupchat,
-  groupChatWatcher,
+  groupChatWatcher: groupChatDispatcher.getGroupChatWatcher(),
   meetingManager,
   sendToRenderer,
   sessionManager,
   transcriptTap,
 });
-
 registerCliStatusIpc(ipcMain, {
   cliReadyDetector,
   sessionManager,
