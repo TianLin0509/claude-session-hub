@@ -51,6 +51,7 @@ const { registerMeetingTimelineIpc } = require('./main/ipc/meeting-timeline-hand
 const { registerTranscriptIpc } = require('./main/ipc/transcript-handlers.js');
 const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
+const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -2084,49 +2085,17 @@ ipcMain.handle('restart-session', (_e, sessionId) => {
   return fresh;
 });
 
-// Show a Windows/OS notification. Renderer decides when to call it.
-ipcMain.on('show-notification', (_e, { title, body }) => {
-  if (!Notification.isSupported()) return;
-  const n = new Notification({ title: title || 'AI 群聊', body: body || '', silent: false });
-  n.on('click', () => {
-    if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
-  });
-  n.show();
-});
-
-ipcMain.handle('is-window-focused', () => {
-  return mainWindow ? mainWindow.isFocused() : false;
-});
-
-// --- Clipboard image paste support ---
 const imageDir = path.join(getHubDataDir(), 'images');
-
-ipcMain.handle('save-clipboard-image', () => {
-  try {
-    const img = clipboard.readImage();
-    if (img.isEmpty()) return null;
-
-    fs.mkdirSync(imageDir, { recursive: true });
-
-    const now = new Date();
-    const ts = now.toISOString().replace(/[-:T]/g, '').slice(0, 14); // 20260412143052
-    const id = crypto.randomBytes(3).toString('hex'); // a1b2c3
-    const filename = `${ts}-${id}.png`;
-    const filePath = path.join(imageDir, filename);
-
-    fs.writeFileSync(filePath, img.toPNG());
-    return filePath;
-  } catch (e) {
-    console.warn('[群聊] save-clipboard-image failed:', e.message);
-    return null;
-  }
+registerAppUtilityIpc(ipcMain, {
+  clipboard,
+  crypto,
+  fs,
+  getHookPort: () => hookPort,
+  getMainWindow: () => mainWindow,
+  imageDir,
+  Notification,
+  path,
 });
-
-// Let renderer inspect current hook server health for UI indicator.
-ipcMain.handle('get-hook-status', () => ({
-  up: hookPort !== null,
-  port: hookPort,
-}));
 
 registerPathIpc(ipcMain);
 
