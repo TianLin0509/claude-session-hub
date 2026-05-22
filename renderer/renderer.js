@@ -1,4 +1,5 @@
 ﻿const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
+const fs = require('fs');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind } = require('../core/ai-kinds.js');
 const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
@@ -12,6 +13,7 @@ const { createTerminalInputController } = require('./terminal-input-controller.j
 const { createAccountUsageController } = require('./account-usage-controller.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
+const { createPreviewPanelController } = require('./preview-panel-controller.js');
 const {
   PREVIEW_PATH_RE,
   HUB_IMG_PATH_RE,
@@ -3311,356 +3313,7 @@ function buildPreviewFromUserMessage(raw) {
 }
 
 // --- File Preview Panel ---
-const previewPanelEl = document.getElementById('preview-panel');
-const previewTitleEl = document.getElementById('preview-title');
-const previewBodyEl = document.getElementById('preview-body');
-const previewSplitterEl = document.getElementById('preview-splitter');
-let previewSourcePanel = null;
-let currentPreviewPath = null;
-let previewIsFullscreen = false;
-let previewSplitRatio = 0.5;
-
-const sessionPreviewStates = new Map();
-
-function getActiveContextKey() {
-  if (activeSessionId) return `session:${activeSessionId}`;
-  if (activeMeetingId) return `meeting:${activeMeetingId}`;
-  return null;
-}
-
-function savePreviewState() {
-  const key = getActiveContextKey();
-  if (!key || !currentPreviewPath) return;
-  sessionPreviewStates.set(key, {
-    path: currentPreviewPath,
-    isFullscreen: previewIsFullscreen,
-    zoomLevel: previewZoomLevel,
-    splitRatio: previewSplitRatio,
-  });
-}
-
-function clearPreviewUI() {
-  previewPanelEl.style.display = 'none';
-  previewPanelEl.classList.remove('preview-split');
-  previewSplitterEl.style.display = 'none';
-  currentPreviewPath = null;
-  previewIsFullscreen = false;
-  previewSplitRatio = 0.5;
-  previewSourcePanel = null;
-  applySplitWidths(null);
-  resetPreviewZoom();
-}
-
-function restorePreviewForContext(key) {
-  const state = sessionPreviewStates.get(key);
-  if (!state) return;
-  previewIsFullscreen = state.isFullscreen;
-  previewSplitRatio = state.splitRatio || 0.5;
-  openPreviewPanel(state.path).then(() => {
-    setPreviewZoom(state.zoomLevel);
-    const btn = document.getElementById('preview-toggle-layout');
-    if (btn) {
-      btn.textContent = previewIsFullscreen ? '◫' : '□';
-      btn.title = previewIsFullscreen ? '并列预览' : '全屏预览';
-    }
-  });
-}
-
-async function openPreviewPanel(filePath) {
-  filePath = filePath.replace(/[\r\n]+/g, '').trim();
-  currentPreviewPath = filePath;
-  resetPreviewZoom();
-  const isUrl = /^https?:\/\//i.test(filePath);
-  const fileName = isUrl ? filePath.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] : filePath.replace(/^.*[\\/]/, '');
-  previewTitleEl.textContent = fileName;
-  previewTitleEl.title = filePath;
-
-  // 0.8.2: 文件类型角标 + 大小信息
-  const badgeEl = document.getElementById('preview-file-badge');
-  const metaEl = document.getElementById('preview-file-meta');
-  if (badgeEl && metaEl) {
-    if (isUrl) {
-      badgeEl.textContent = 'URL';
-      metaEl.textContent = '';
-    } else {
-      const m = filePath.match(/\.([a-zA-Z0-9]+)$/);
-      badgeEl.textContent = m ? m[1].toUpperCase().slice(0, 4) : '--';
-      try {
-        const size = fs.statSync(filePath).size;
-        if (size < 1024) metaEl.textContent = size + ' B';
-        else if (size < 1024 * 1024) metaEl.textContent = (size / 1024).toFixed(1) + ' KB';
-        else metaEl.textContent = (size / 1024 / 1024).toFixed(1) + ' MB';
-      } catch {
-        metaEl.textContent = '';
-      }
-    }
-  }
-
-  if (!previewSourcePanel) {
-    if (document.getElementById('meeting-room-panel').style.display !== 'none'
-        && document.getElementById('meeting-room-panel').style.display !== '') {
-      previewSourcePanel = 'meeting-room-panel';
-    } else {
-      previewSourcePanel = 'terminal-panel';
-    }
-  }
-
-  const src = document.getElementById(previewSourcePanel);
-  if (previewIsFullscreen) {
-    if (src) src.style.display = 'none';
-  }
-  const emptyEl = document.getElementById('empty-state');
-  if (emptyEl) emptyEl.style.display = 'none';
-  previewPanelEl.style.display = 'flex';
-  const isSplit = !previewIsFullscreen;
-  previewPanelEl.classList.toggle('preview-split', isSplit);
-  previewSplitterEl.style.display = isSplit ? '' : 'none';
-  applySplitWidths(isSplit ? previewSplitRatio : null);
-  if (isSplit) refitActiveTerminal();
-
-  previewBodyEl.innerHTML = '';
-
-  if (isUrl) {
-    const wv = document.createElement('webview');
-    wv.src = filePath;
-    wv.style.cssText = 'width:100%;height:100%;border:none;';
-    previewBodyEl.style.alignItems = 'stretch';
-    previewBodyEl.style.justifyContent = 'stretch';
-    previewBodyEl.appendChild(wv);
-    return;
-  }
-
-  const ext = filePath.replace(/^.*\./, '.').toLowerCase();
-
-  if (ext === '.html' || ext === '.htm') {
-    const wv = document.createElement('webview');
-    wv.src = 'file:///' + filePath.replace(/\\/g, '/');
-    wv.style.cssText = 'width:100%;height:100%;border:none;';
-    previewBodyEl.style.alignItems = 'stretch';
-    previewBodyEl.style.justifyContent = 'stretch';
-    previewBodyEl.appendChild(wv);
-  } else if (ext === '.md' || ext === '.markdown') {
-    const { marked } = require('marked');
-    const DOMPurify = require('dompurify');
-    const result = await ipcRenderer.invoke('read-file', filePath);
-    if (result.error) {
-      previewBodyEl.innerHTML = `<div class="preview-markdown" style="color:var(--text-secondary)">Failed to load: ${result.error}</div>`;
-      return;
-    }
-    const html = DOMPurify.sanitize(marked.parse(result.content));
-    previewBodyEl.style.alignItems = 'flex-start';
-    previewBodyEl.style.justifyContent = 'flex-start';
-    previewBodyEl.innerHTML = `<div class="preview-markdown">${html}</div>`;
-  } else if (ext === '.svg' || ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.gif' || ext === '.webp' || ext === '.bmp') {
-    const fileUrl = 'file:///' + filePath.replace(/\\/g, '/');
-    previewBodyEl.style.alignItems = 'center';
-    previewBodyEl.style.justifyContent = 'center';
-    previewBodyEl.innerHTML = `<img src="${fileUrl}" class="preview-image">`;
-  } else if (ext === '.pdf') {
-    const wv = document.createElement('webview');
-    wv.src = 'file:///' + filePath.replace(/\\/g, '/');
-    wv.style.cssText = 'width:100%;height:100%;border:none;';
-    previewBodyEl.style.alignItems = 'stretch';
-    previewBodyEl.style.justifyContent = 'stretch';
-    previewBodyEl.appendChild(wv);
-  } else if (ext === '.csv' || ext === '.tsv') {
-    const result = await ipcRenderer.invoke('read-file', filePath);
-    if (result.error) {
-      previewBodyEl.innerHTML = `<div class="preview-markdown" style="color:var(--text-secondary)">Failed to load: ${result.error}</div>`;
-      return;
-    }
-    const sep = ext === '.tsv' ? '\t' : ',';
-    const rows = result.content.split(/\r?\n/).filter(l => l.trim());
-    let tableHtml = '<div class="preview-csv-wrap"><table class="preview-csv"><thead><tr>';
-    if (rows.length > 0) {
-      for (const cell of rows[0].split(sep)) tableHtml += `<th>${cell.replace(/</g, '&lt;')}</th>`;
-      tableHtml += '</tr></thead><tbody>';
-      for (let i = 1; i < rows.length; i++) {
-        tableHtml += '<tr>';
-        for (const cell of rows[i].split(sep)) tableHtml += `<td>${cell.replace(/</g, '&lt;')}</td>`;
-        tableHtml += '</tr>';
-      }
-      tableHtml += '</tbody>';
-    }
-    tableHtml += '</table></div>';
-    previewBodyEl.style.alignItems = 'flex-start';
-    previewBodyEl.style.justifyContent = 'flex-start';
-    previewBodyEl.innerHTML = tableHtml;
-  } else {
-    const result = await ipcRenderer.invoke('read-file', filePath);
-    if (result.error) {
-      previewBodyEl.innerHTML = `<div class="preview-markdown" style="color:var(--text-secondary)">Failed to load: ${result.error}</div>`;
-      return;
-    }
-    let content = result.content;
-    if (ext === '.json' || ext === '.jsonl') {
-      try { content = JSON.stringify(JSON.parse(content), null, 2); } catch {}
-    }
-    const escaped = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const lines = escaped.split('\n');
-    const numbered = lines.map((line, i) => `<span class="preview-line-num">${i + 1}</span>${line}`).join('\n');
-    previewBodyEl.style.alignItems = 'flex-start';
-    previewBodyEl.style.justifyContent = 'flex-start';
-    previewBodyEl.innerHTML = `<pre class="preview-code">${numbered}</pre>`;
-  }
-}
-
-function closePreviewPanel() {
-  const key = getActiveContextKey();
-  if (key) sessionPreviewStates.delete(key);
-
-  previewPanelEl.style.display = 'none';
-  previewPanelEl.classList.remove('preview-split');
-  previewSplitterEl.style.display = 'none';
-  currentPreviewPath = null;
-  previewIsFullscreen = false;
-  previewSplitRatio = 0.5;
-  applySplitWidths(null);
-  resetPreviewZoom();
-
-  if (previewSourcePanel) {
-    const src = document.getElementById(previewSourcePanel);
-    if (src) src.style.display = previewSourcePanel === 'terminal-panel' ? '' : 'flex';
-    previewSourcePanel = null;
-  }
-  refitActiveTerminal();
-}
-
-function togglePreviewLayout() {
-  previewIsFullscreen = !previewIsFullscreen;
-  const btn = document.getElementById('preview-toggle-layout');
-  if (previewIsFullscreen) {
-    btn.textContent = '◫';
-    btn.title = '并列预览';
-    previewPanelEl.classList.remove('preview-split');
-    previewSplitterEl.style.display = 'none';
-    applySplitWidths(null);
-    if (previewSourcePanel) {
-      const src = document.getElementById(previewSourcePanel);
-      if (src) src.style.display = 'none';
-    }
-  } else {
-    btn.textContent = '□';
-    btn.title = '全屏预览';
-    previewPanelEl.classList.add('preview-split');
-    previewSplitterEl.style.display = '';
-    applySplitWidths(previewSplitRatio);
-    if (previewSourcePanel) {
-      const src = document.getElementById(previewSourcePanel);
-      if (src) src.style.display = previewSourcePanel === 'terminal-panel' ? '' : 'flex';
-    }
-  }
-  refitActiveTerminal();
-}
-
-// 2026-05-05 道雪 bug：预览面板内的 <a> 点击默认行为是 navigate 整个 renderer
-// 进程,会把 index.html 替换为对 href 的 file:// 加载——结果就是"完全黑屏"。
-// 典型触发：预览 .md 文件,内有指向其他 .md 的相对链接,marked 渲染成 <a href="x.md">,
-// 用户点击 → 整个 hub UI 消失。这里委托拦截,路由回 openPreviewPanel。
-//
-// 2026-05-06 道雪 多方审查后增强:
-//   1. mailto:/tel:/sms: 走 shell.openExternal 让 OS 处理(原版会落入 path.resolve 错误拼接)
-//   2. 其它非 http(s)/file scheme(javascript:/data: 等)直接丢弃(双层防御,DOMPurify 已 sanitize)
-//   3. URL-encode 解码(中文/空格文件名)
-//   4. 跨文件锚点 other.md#section 拆 hash 后再 resolve(原版会把整串当文件名,扩展名匹配失败)
-previewBodyEl.addEventListener('click', (e) => {
-  const a = e.target && e.target.closest && e.target.closest('a[href]');
-  if (!a) return;
-  if (a.classList.contains('rt-file-link')) return; // 已有专门处理
-  const rawHref = a.getAttribute('href') || '';
-  if (!rawHref || rawHref.startsWith('#')) return; // 同页锚点保持默认
-  e.preventDefault();
-  e.stopPropagation();
-  // mailto:/tel:/sms: 等用 OS 默认应用打开
-  if (/^(mailto|tel|sms|callto|skype):/i.test(rawHref)) {
-    try { shell.openExternal(rawHref); } catch (err) { console.warn('[hub] openExternal failed:', err); }
-    return;
-  }
-  // javascript:/data: 等危险协议丢弃(DOMPurify 应已 sanitize,这里多一层兜底)
-  const proto = /^([a-z][a-z0-9+.-]*):/i.exec(rawHref);
-  if (proto && !/^(https?|file)$/i.test(proto[1])) {
-    console.warn('[hub] unsupported scheme blocked:', rawHref);
-    return;
-  }
-  // 拆 fragment(other.md#section 这种跨文件锚点),路径解析忽略 hash
-  const hashIdx = rawHref.indexOf('#');
-  const pathOnly = hashIdx >= 0 ? rawHref.slice(0, hashIdx) : rawHref;
-  let href;
-  try { href = decodeURIComponent(pathOnly); } catch (_) { href = pathOnly; }
-  if (/^https?:\/\//i.test(href)) { openPreviewPanel(href); return; }
-  let target = href.replace(/^file:\/+/i, '');
-  const isAbs = /^[a-zA-Z]:[\\/]/.test(target) || target.startsWith('/');
-  if (!isAbs && currentPreviewPath && !/^https?:\/\//i.test(currentPreviewPath)) {
-    try {
-      const dir = require('path').dirname(currentPreviewPath);
-      target = require('path').resolve(dir, target);
-    } catch (err) { console.warn('[hub] preview link resolve failed:', err); }
-  }
-  openPreviewPanel(target);
-});
-
-document.getElementById('preview-close').addEventListener('click', closePreviewPanel);
-document.getElementById('preview-toggle-layout').addEventListener('click', togglePreviewLayout);
-document.getElementById('preview-open-external').addEventListener('click', async () => {
-  if (currentPreviewPath) {
-    if (/^https?:\/\//i.test(currentPreviewPath)) {
-      shell.openExternal(currentPreviewPath);
-    } else {
-      const err = await ipcRenderer.invoke('open-path', currentPreviewPath);
-      if (err) console.warn('[hub] open-path for preview failed:', currentPreviewPath, '→', err);
-    }
-  }
-});
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && previewPanelEl.style.display === 'flex') {
-    e.preventDefault();
-    closePreviewPanel();
-  }
-});
-
-// --- Preview zoom ---
-let previewZoomLevel = 1.0;
-const previewZoomLabelEl = document.getElementById('preview-zoom-label');
-
-function setPreviewZoom(level) {
-  previewZoomLevel = Math.max(0.25, Math.min(5.0, level));
-  previewBodyEl.style.zoom = previewZoomLevel;
-  // Also zoom webview content if present
-  const wv = previewBodyEl.querySelector('webview');
-  if (wv) try { wv.setZoomFactor(previewZoomLevel); } catch {}
-  previewZoomLabelEl.textContent = Math.round(previewZoomLevel * 100) + '%';
-}
-
-function resetPreviewZoom() {
-  setPreviewZoom(1.0);
-}
-
-document.getElementById('preview-zoom-out').addEventListener('click', () => setPreviewZoom(previewZoomLevel - 0.1));
-document.getElementById('preview-zoom-in').addEventListener('click', () => setPreviewZoom(previewZoomLevel + 0.1));
-document.getElementById('preview-zoom-reset').addEventListener('click', resetPreviewZoom);
-
-previewBodyEl.addEventListener('wheel', (e) => {
-  if (!e.ctrlKey && !e.metaKey) return;
-  e.preventDefault();
-  const delta = e.deltaY < 0 ? 0.1 : -0.1;
-  setPreviewZoom(previewZoomLevel + delta);
-}, { passive: false });
-
-// --- Preview splitter drag ---
-
-function applySplitWidths(ratio) {
-  const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
-  if (!ratio) {
-    if (src) { src.style.flex = ''; }
-    previewPanelEl.style.flex = '';
-    return;
-  }
-  const r = Math.max(0.1, Math.min(0.9, ratio));
-  if (src) src.style.flex = String(r);
-  previewPanelEl.style.flex = String(1 - r);
-}
-
-function refitActiveTerminal() {
+function refitActiveTerminalFromPreview() {
   const sid = activeSessionId;
   if (!sid) return;
   const cached = terminalCache.get(sid);
@@ -3671,46 +3324,23 @@ function refitActiveTerminal() {
   });
 }
 
-(function initSplitterDrag() {
-  let dragging = false;
-  let rafId = 0;
-  previewSplitterEl.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    dragging = true;
-    previewSplitterEl.classList.add('dragging');
-    previewBodyEl.style.pointerEvents = 'none';
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-  });
-  document.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    if (rafId) return;
-    rafId = requestAnimationFrame(() => {
-      rafId = 0;
-      const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
-      if (!src) return;
-      const srcRect = src.getBoundingClientRect();
-      const previewRect = previewPanelEl.getBoundingClientRect();
-      const totalContent = srcRect.width + previewRect.width;
-      if (totalContent <= 0) return;
-      const desired = e.clientX - srcRect.left;
-      previewSplitRatio = Math.max(0.1, Math.min(0.9, desired / totalContent));
-      applySplitWidths(previewSplitRatio);
-    });
-  });
-  document.addEventListener('mouseup', () => {
-    if (!dragging) return;
-    dragging = false;
-    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
-    previewSplitterEl.classList.remove('dragging');
-    previewBodyEl.style.pointerEvents = '';
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-    refitActiveTerminal();
-  });
-})();
-
+const previewPanel = createPreviewPanelController({
+  document,
+  ipcRenderer,
+  shell,
+  fs,
+  marked,
+  DOMPurify,
+  getActiveSessionId: () => activeSessionId,
+  getActiveMeetingId: () => activeMeetingId,
+  refitActiveTerminal: refitActiveTerminalFromPreview,
+});
+const {
+  openPreviewPanel,
+  savePreviewState,
+  clearPreviewUI,
+  restorePreviewForContext,
+} = previewPanel;
 // --- Terminal buffer reading (xterm.js buffer API) ---
 
 const silenceTimers = new Map();
