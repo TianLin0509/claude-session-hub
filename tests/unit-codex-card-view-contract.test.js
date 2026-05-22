@@ -8,6 +8,8 @@ const transcriptIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'transcr
 const persistenceIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'persistence-handlers.js'), 'utf8');
 const resumeIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'resume-session-handlers.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
+const turnCardSrc = fs.readFileSync(path.join(root, 'renderer', 'turn-card-renderer.js'), 'utf8');
+const rendererCardSrc = rendererSrc + '\n' + turnCardSrc;
 const tapSrc = fs.readFileSync(path.join(root, 'core', 'transcript-tap.js'), 'utf8');
 const sessionStoreSrc = fs.readFileSync(path.join(root, 'core', 'session-store.js'), 'utf8');
 
@@ -77,15 +79,15 @@ assert.ok(
   'full card reload must decide bottom state before clearing and restore user-scrolled position',
 );
 assert.ok(
-  rendererSrc.includes("const _bodyFoldState = new Map()") &&
-  rendererSrc.includes("_bodyFoldState.set(turnId, true)") &&
-  rendererSrc.includes("_bodyFoldState.get(turnId) === true"),
+  rendererCardSrc.includes("const _bodyFoldState = new Map()") &&
+  rendererCardSrc.includes("_bodyFoldState.set(turnId, true)") &&
+  rendererCardSrc.includes("_bodyFoldState.get(turnId) === true"),
   'card body expand/collapse state must survive incremental Codex card re-renders',
 );
 assert.ok(
-  rendererSrc.includes("function turnRenderSignature") &&
-  rendererSrc.includes("const _turnRenderSigs = new Map()") &&
-  rendererSrc.includes("prevSig === nextSig"),
+  rendererCardSrc.includes("function turnRenderSignature") &&
+  rendererCardSrc.includes("const _turnRenderSigs = new Map()") &&
+  rendererCardSrc.includes("prevSig === nextSig"),
   'incremental card reload must skip unchanged turn replacement to avoid disrupting reading',
 );
 assert.ok(

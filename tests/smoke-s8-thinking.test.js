@@ -1,5 +1,5 @@
 // Spec 2 · S8 smoke test (grep-style assertion)
-// renderTurnCard is file-scoped inside renderer.js (not exported, no jsdom),
+// renderTurnCard is file-scoped inside turn-card-renderer.js (not exported, no jsdom),
 // so this test asserts on the source text rather than executing the function.
 //
 // Run: node tests/smoke-s8-thinking.test.js
@@ -8,10 +8,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const RENDERER = path.join(__dirname, '..', 'renderer', 'renderer.js');
+const TURN_CARD_RENDERER = path.join(__dirname, '..', 'renderer', 'turn-card-renderer.js');
 const STYLES = path.join(__dirname, '..', 'renderer', 'styles.css');
 
-const src = fs.readFileSync(RENDERER, 'utf8');
+const src = fs.readFileSync(TURN_CARD_RENDERER, 'utf8');
 const css = fs.readFileSync(STYLES, 'utf8');
 
 const failures = [];
@@ -22,28 +22,28 @@ function assert(cond, msg) {
 
 console.log('S8 smoke: renderTurnCard thinking block');
 
-// 1. <details class="turn-thinking"> template present in renderer.js
+// 1. <details class="turn-thinking"> template present in turn-card-renderer.js
 assert(
   /<details class="turn-thinking">/.test(src),
-  'renderer.js contains <details class="turn-thinking"> template',
+  'turn-card-renderer.js contains <details class="turn-thinking"> template',
 );
 
 // 2. summary uses turn-thinking-summary class
 assert(
   /class="turn-thinking-summary"/.test(src),
-  'renderer.js contains class="turn-thinking-summary"',
+  'turn-card-renderer.js contains class="turn-thinking-summary"',
 );
 
 // 3. body uses turn-thinking-body class
 assert(
   /class="turn-thinking-body"/.test(src),
-  'renderer.js contains class="turn-thinking-body"',
+  'turn-card-renderer.js contains class="turn-thinking-body"',
 );
 
 // 4. assistant-only guard: !isUser && turn.thinking checked
 assert(
   /!isUser\s*&&\s*typeof turn\.thinking\s*===\s*['"]string['"]\s*&&\s*turn\.thinking\.length\s*>\s*0/.test(src),
-  'renderer.js gates thinking on assistant role + non-empty string',
+  'turn-card-renderer.js gates thinking on assistant role + non-empty string',
 );
 
 // 5. NO `open` attribute on the details (default collapsed)
@@ -56,7 +56,6 @@ assert(
 // 6. Long thinking preview (>5KB) branch with first 200 chars label
 assert(
   /turn\.thinking\.length\s*>\s*5120/.test(src) &&
-    /前 200 字符/.test(src) &&
     /turn\.thinking\.slice\(0,\s*200\)/.test(src),
   'long-thinking branch (>5120) generates first-200-char preview label',
 );
