@@ -17,6 +17,7 @@ const { createPreviewPanelController } = require('./preview-panel-controller.js'
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
 const { createPastSessionModals } = require('./past-session-modals.js');
 const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
+const { createShellController } = require('./shell-controller.js');
 const {
   PREVIEW_PATH_RE,
   HUB_IMG_PATH_RE,
@@ -3718,63 +3719,28 @@ function toggleSidebar() {
 }
 btnExpandEl.addEventListener('click', toggleSidebar);
 
-function hideEscapeOverlayTargets() {
-  for (const el of [
-    menuEl,
-    resumeMenuEl,
-    contextMenuEl,
-    termCtxMenuEl,
-    document.getElementById('options-menu'),
-    document.getElementById('theme-picker-popup'),
-  ]) {
-    if (el) el.style.display = 'none';
-  }
-
-  for (const id of ['resume-modal', 'search-modal']) {
-    const el = document.getElementById(id);
-    if (el) el.style.display = 'none';
-  }
-
-  for (const el of document.querySelectorAll('.config-modal-overlay, .pair-modal-overlay, .meeting-create-modal-overlay')) {
-    el.classList.add('hidden');
-  }
-
-  if (typeof closeTerminalSearch === 'function') closeTerminalSearch();
-}
-
-function restoreLauncherShell() {
-  for (const [, cached] of terminalCache) {
-    if (cached && cached.container) cached.container.style.display = 'none';
-  }
-
-  preserveAndClearTerminalPanel();
-  if (emptyStateEl) {
-    emptyStateEl.style.display = '';
-    terminalPanelEl.insertBefore(emptyStateEl, terminalPanelEl.firstChild);
-  }
-
-  const overlay = document.getElementById('msg-overlay');
-  if (overlay) {
-    overlay.innerHTML = '';
-    overlay.classList.add('hidden');
-  }
-
-  terminalPanelEl.style.display = '';
-  if (typeof applyViewMode === 'function') applyViewMode('pty');
-}
-
+const shellController = createShellController({
+  document,
+  menuEl,
+  resumeMenuEl,
+  contextMenuEl,
+  termCtxMenuEl,
+  terminalCache,
+  terminalPanelEl,
+  emptyStateEl,
+  closeTerminalSearch: () => closeTerminalSearch(),
+  closePreviewPanel: () => closePreviewPanel(),
+  closeMeetingPanel: () => { if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel(); },
+  setActiveSessionId: (value) => { activeSessionId = value; },
+  setActiveMeetingId: (value) => { activeMeetingId = value; },
+  applySidebarCollapsed,
+  preserveAndClearTerminalPanel,
+  applyViewMode,
+  renderSessionList,
+});
 function escapeToHome() {
-  try { hideEscapeOverlayTargets(); } catch (err) { console.warn('[escape-home] hide overlays failed:', err); }
-  try { if (typeof closePreviewPanel === 'function') closePreviewPanel(); } catch (err) { console.warn('[escape-home] close preview failed:', err); }
-  try { if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel(); } catch (err) { console.warn('[escape-home] close meeting failed:', err); }
-
-  activeSessionId = null;
-  activeMeetingId = null;
-  applySidebarCollapsed(false);
-  restoreLauncherShell();
-  renderSessionList();
+  shellController.escapeToHome();
 }
-
 const hubEscapeHomeBtn = document.getElementById('hub-escape-home');
 if (hubEscapeHomeBtn) hubEscapeHomeBtn.addEventListener('click', escapeToHome);
 // 2026-05-16 道雪：外部 HTTP 救援入口 — main.js POST /api/escape-home 通过这个 IPC 触发
