@@ -1419,23 +1419,11 @@ function mountPromptNavButtons(sessionId, termContainer, minimap) {
   };
 }
 
-// === Spec 1 v0.9.0 · 工具调用块 + 折叠状态 ===
+// === Spec 1 v0.9.0 · 工具调用块 ===
 // _sessionTurns: turnId -> turn object map. Initialized here so rerenderTurn
 // works for T5 toggle even before T10 wires real session.turns data.
 // T10 will populate this from session.turns[]; for now it's an empty map.
 if (!window._sessionTurns) window._sessionTurns = new Map();
-
-const _foldedToolsState = new Map(); // 'turnId:toolIdx' -> bool(expanded)
-let _toolFoldThreshold = 15; // 启动时从 config 拉
-
-function setFoldedTool(turnId, idx, expanded) {
-  _foldedToolsState.set(`${turnId}:${idx}`, expanded);
-}
-function getFoldedTool(turnId, idx, defaultExpanded) {
-  const key = `${turnId}:${idx}`;
-  if (_foldedToolsState.has(key)) return _foldedToolsState.get(key);
-  return defaultExpanded;
-}
 
 // === Spec 3 · UI 方案 E (CardCluster) — 工具簇 ===
 // 多 tool 同 turn 合并显示：1 行 cluster summary 默认折叠，展开后是工具列表。
@@ -1503,40 +1491,6 @@ function renderToolCluster(turnId, toolCalls) {
     <div class="tc-cluster-list">${items}</div>
   </details>`;
 }
-
-function renderToolCall(turnId, idx, tc) {
-  // tc = { name, cmd, stdout, ok, durationMs, exitCode? }
-  const lines = (tc.stdout || '').split('\n').length;
-  const isFail = tc.ok === false;
-  const shouldFold = lines > _toolFoldThreshold && !isFail;
-  const expanded = getFoldedTool(turnId, idx, !shouldFold);
-  const status = isFail
-    ? `<span class="tc-fail">✗</span>${tc.exitCode != null ? ' exit ' + tc.exitCode : ''}`
-    : `<span class="tc-ok">✓</span>`;
-  const dur = tc.durationMs != null ? ` · ${(tc.durationMs/1000).toFixed(1)}s` : '';
-  const meta = `${lines} line${lines===1?'':'s'}${dur}`;
-  return `<div class="tc" data-turn="${escapeHtml(turnId)}" data-idx="${idx}">
-    <div class="tc-head">
-      <span><span class="tc-name">${escapeHtml(tc.name)}</span> ${escapeHtml(tc.cmd || '')}</span>
-      <span class="tc-meta">${status} ${meta}</span>
-    </div>
-    ${shouldFold && !expanded
-      ? `<div class="tc-toggle" data-action="tc-expand">▸ 展开 ${lines} 行(折叠 >${_toolFoldThreshold} 行)</div>`
-      : `<pre class="tc-out">${escapeHtml(tc.stdout || '')}</pre>${shouldFold ? '<div class="tc-toggle" data-action="tc-collapse">▾ 折叠</div>' : ''}`}
-  </div>`;
-}
-
-// 全局 click handler: 工具块展开/折叠
-document.addEventListener('click', (e) => {
-  const btn = e.target.closest('[data-action="tc-expand"], [data-action="tc-collapse"]');
-  if (!btn) return;
-  const wrap = btn.closest('.tc');
-  const turnId = wrap.dataset.turn;
-  const idx = parseInt(wrap.dataset.idx, 10);
-  const want = btn.dataset.action === 'tc-expand';
-  setFoldedTool(turnId, idx, want);
-  rerenderTurn(turnId);
-});
 
 function rerenderTurn(turnId) {
   // 重渲染整张 turn 卡片 + 调 postProcessCardCodeBlocks 保留代码块交互
@@ -4083,7 +4037,6 @@ async function resumeDormantSession(hubId) {
     if (!cfg) return;
     providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
     setCodexProfileForm(cfg.codexSubscriptionProfiles, cfg.codexSubscriptionProfile);
-    if (typeof cfg.uiToolFoldThreshold === 'number' && !isNaN(cfg.uiToolFoldThreshold)) _toolFoldThreshold = cfg.uiToolFoldThreshold;
     if (typeof cfg.uiCodeFoldThreshold === 'number' && !isNaN(cfg.uiCodeFoldThreshold)) _codeFoldThreshold = cfg.uiCodeFoldThreshold;
     // 不在这里调 renderAccountUsage —— packyAccountData 还没从 cache 加载完成,
     // 提前渲染会出现一帧"未接入"假象(get-usage-cache 慢于本 promise resolve)。
