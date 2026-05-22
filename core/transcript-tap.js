@@ -18,13 +18,13 @@
 
 const { EventEmitter } = require('events');
 const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
-const { StringDecoder } = require('string_decoder');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const readline = require('readline');
 const { parseClaudeTranscriptToTurns } = require('./claude-transcript-parser');
 const codexAppRegistry = require('./codex-app-registry.js');
+const { JsonlTail } = require('./jsonl-tail.js');
 
 function codexTextFromContent(content) {
   if (typeof content === 'string') return content;
@@ -70,83 +70,6 @@ function timestampToMs(timestamp) {
 // - 维护 offset，每次增长从 offset 读到尾，按 \n 切行
 // - StringDecoder 处理 UTF-8 跨 chunk 边界
 // - onLine 回调的异常静默吞掉（单行坏不影响整体）
-
-class JsonlTail {
-  constructor(filepath, onLine) {
-    this._filepath = filepath;
-    this._onLine = onLine;
-    this._offset = 0;
-    this._buf = '';
-    this._decoder = new StringDecoder('utf8');
-    this._watcher = null;
-    this._pollTimer = null;
-    this._closed = false;
-    this._reading = false;
-  }
-
-  async start() {
-    if (this._closed) return;
-    // First pass: drain any existing content — caller may have registered
-    // after lines were already written.
-    try { await this._drain(); } catch {}
-
-    try {
-      this._watcher = fs.watch(this._filepath, { persistent: false }, () => {
-        this._drain().catch(() => {});
-      });
-      this._watcher.on('error', () => {});
-    } catch {
-      // fs.watch can fail on network drives / exotic FS — fall through to poll
-    }
-
-    // Defensive polling: Windows fs.watch occasionally misses events.
-    this._pollTimer = setInterval(() => {
-      this._drain().catch(() => {});
-    }, 500);
-    this._pollTimer.unref?.();
-  }
-
-  async _drain() {
-    if (this._closed || this._reading) return;
-    this._reading = true;
-    try {
-      const stat = await fs.promises.stat(this._filepath);
-      if (stat.size <= this._offset) return;
-      const fh = await fs.promises.open(this._filepath, 'r');
-      try {
-        const len = stat.size - this._offset;
-        const buf = Buffer.alloc(len);
-        await fh.read(buf, 0, len, this._offset);
-        this._offset = stat.size;
-        this._buf += this._decoder.write(buf);
-        const lines = this._buf.split('\n');
-        this._buf = lines.pop() || '';
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          let obj;
-          try { obj = JSON.parse(trimmed); } catch { continue; }
-          try { this._onLine(obj); } catch {}
-        }
-      } finally {
-        await fh.close();
-      }
-    } catch {
-      // Transient IO errors (file rotated, deleted) — next tick will retry.
-    } finally {
-      this._reading = false;
-    }
-  }
-
-  close() {
-    this._closed = true;
-    try { this._watcher?.close(); } catch {}
-    try { clearInterval(this._pollTimer); } catch {}
-    this._watcher = null;
-    this._pollTimer = null;
-    this._decoder.end();
-  }
-}
 
 // ---------------------------------------------------------------------------
 // ClaudeTap — Stop hook 驱动，直接读 transcript JSONL 尾部找 last assistant
