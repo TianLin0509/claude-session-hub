@@ -15,6 +15,7 @@ const { modelClass, modelShort, createModelUiController } = require('./model-ui.
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
+const { createPastSessionModals } = require('./past-session-modals.js');
 const {
   PREVIEW_PATH_RE,
   HUB_IMG_PATH_RE,
@@ -3063,34 +3064,7 @@ if (btnGroupChat) {
   });
 }
 
-// --- Resume past session modal ---
-const resumeModalEl = document.getElementById('resume-modal');
-const resumeListEl = document.getElementById('resume-list');
-const resumeFilterEl = document.getElementById('resume-filter');
-let resumeItems = [];
-
-function openResumeModal() {
-  resumeModalEl.style.display = 'flex';
-  resumeFilterEl.value = '';
-  resumeListEl.innerHTML = '<div class="modal-empty">Scanning…</div>';
-  requestAnimationFrame(() => resumeFilterEl.focus());
-  ipcRenderer.invoke('list-past-sessions', { limit: 50 }).then((items) => {
-    resumeItems = items || [];
-    renderResumeList(resumeItems);
-  }).catch(() => {
-    resumeListEl.innerHTML = '<div class="modal-empty">Scan failed.</div>';
-  });
-}
-
-function closeResumeModal() {
-  resumeModalEl.style.display = 'none';
-}
-
 // --- Create Meeting ---
-// meeting-create-modal：前端创建入口统一为 AI 群聊。旧的 mode 参数只保留调用兼容，
-//   不再从 UI 新建 legacy AI 群聊。Modal 在 renderer/meeting-create-modal.js，
-//   提交后调 create-meeting IPC（带 slots），main.js 内部循环 add-meeting-sub +
-//   持久化 slotSpecs，返回完整 meeting 对象，Modal 再调 selectMeeting(meeting.id)。
 function createMeetingByMode(mode) {
   if (typeof window.openMeetingCreateModal === 'function') {
     window.openMeetingCreateModal('group');
@@ -3099,166 +3073,13 @@ function createMeetingByMode(mode) {
   }
 }
 
-function renderResumeList(items) {
-  if (!items || items.length === 0) {
-    resumeListEl.innerHTML = '<div class="modal-empty">No past sessions found.</div>';
-    return;
-  }
-  const frag = document.createDocumentFragment();
-  for (const it of items) {
-    const row = document.createElement('div');
-    row.className = 'modal-row';
-    const mtimeStr = it.mtime ? new Date(it.mtime).toLocaleString('zh-CN', { hour12: false }) : '';
-    const preview = it.firstUserMessage || '(no user prompt captured)';
-    const modelShort = (it.model || '').replace(/^claude-/, '').replace(/-\d+$/, '');
-    row.innerHTML = `
-      <div class="modal-row-main">
-        <span class="modal-row-preview">${escapeHtml(preview)}</span>
-      </div>
-      <div class="modal-row-meta">
-        <span class="modal-meta-time">${escapeHtml(mtimeStr)}</span>
-        ${it.turnCount ? `<span class="modal-meta-chip">${it.turnCount}T</span>` : ''}
-        ${modelShort ? `<span class="modal-meta-chip">${escapeHtml(modelShort)}</span>` : ''}
-        ${it.cwd ? `<span class="modal-meta-cwd" title="${escapeHtml(it.cwd)}">${escapeHtml(it.cwd)}</span>` : ''}
-      </div>
-    `;
-    row.addEventListener('click', async () => {
-      closeResumeModal();
-      await ipcRenderer.invoke('create-session', {
-        kind: 'claude-resume',
-        opts: { resumeCCSessionId: it.sessionId, resumeTranscriptPath: it.path || undefined, cwd: it.cwd || undefined },
-      });
-    });
-    frag.appendChild(row);
-  }
-  resumeListEl.innerHTML = '';
-  resumeListEl.appendChild(frag);
-}
-
-resumeFilterEl.addEventListener('input', () => {
-  const q = resumeFilterEl.value.trim().toLowerCase();
-  if (!q) { renderResumeList(resumeItems); return; }
-  const filtered = resumeItems.filter(it => {
-    const hay = ((it.firstUserMessage || '') + ' ' + (it.cwd || '') + ' ' + (it.model || '')).toLowerCase();
-    return hay.includes(q);
-  });
-  renderResumeList(filtered);
+// --- Resume/search past session modals ---
+const pastSessionModals = createPastSessionModals({
+  document,
+  ipcRenderer,
+  escapeHtml,
 });
-
-document.getElementById('resume-modal-close').addEventListener('click', closeResumeModal);
-resumeModalEl.addEventListener('click', (e) => {
-  if (e.target === resumeModalEl) closeResumeModal();
-});
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && resumeModalEl.style.display === 'flex') {
-    e.preventDefault(); closeResumeModal();
-  }
-});
-
-// --- "昨日之我" past-session full-text search (Ctrl+Shift+F) ---
-const searchModalEl = document.getElementById('search-modal');
-const searchQueryEl = document.getElementById('search-query');
-const searchResultsEl = document.getElementById('search-results');
-let searchDebounce = null;
-let searchSeq = 0; // guard against out-of-order async responses
-
-function openSearchModal() {
-  searchModalEl.style.display = 'flex';
-  searchQueryEl.value = '';
-  searchResultsEl.innerHTML = '<div class="modal-empty">Type ≥ 2 chars to search.</div>';
-  requestAnimationFrame(() => searchQueryEl.focus());
-}
-function closeSearchModal() { searchModalEl.style.display = 'none'; }
-
-function highlightMatch(text, query) {
-  if (!query) return escapeHtml(text);
-  const ql = query.toLowerCase();
-  const tl = text.toLowerCase();
-  const out = [];
-  let i = 0;
-  while (i < text.length) {
-    const hit = tl.indexOf(ql, i);
-    if (hit < 0) { out.push(escapeHtml(text.slice(i))); break; }
-    out.push(escapeHtml(text.slice(i, hit)));
-    out.push('<mark>' + escapeHtml(text.slice(hit, hit + query.length)) + '</mark>');
-    i = hit + query.length;
-  }
-  return out.join('');
-}
-
-function renderSearchHits(hits, query, truncated) {
-  if (!hits.length) {
-    searchResultsEl.innerHTML = '<div class="modal-empty">No matches.</div>';
-    return;
-  }
-  const frag = document.createDocumentFragment();
-  for (const h of hits) {
-    const row = document.createElement('div');
-    row.className = 'modal-row';
-    const when = new Date(h.mtime).toLocaleString('zh-CN', { hour12: false });
-    row.innerHTML = `
-      <div class="modal-row-main">
-        <span class="modal-row-preview">${highlightMatch(h.snippet, query)}</span>
-      </div>
-      <div class="modal-row-meta">
-        <span class="modal-meta-time">${escapeHtml(when)}</span>
-        <span class="modal-meta-chip">${h.role || '?'}</span>
-        <span class="modal-meta-chip">line ${h.lineNo}</span>
-      </div>
-    `;
-    row.title = 'Click to resume this session';
-    row.addEventListener('click', async () => {
-      closeSearchModal();
-      await ipcRenderer.invoke('create-session', {
-        kind: 'claude-resume',
-        opts: { resumeCCSessionId: h.sessionId, resumeTranscriptPath: h.path || undefined },
-      });
-    });
-    frag.appendChild(row);
-  }
-  searchResultsEl.innerHTML = '';
-  if (truncated) {
-    const note = document.createElement('div');
-    note.className = 'modal-empty';
-    note.style.padding = '8px 14px';
-    note.style.textAlign = 'left';
-    note.textContent = `Showing first ${hits.length} matches (scan truncated — refine query for more).`;
-    searchResultsEl.appendChild(note);
-  }
-  searchResultsEl.appendChild(frag);
-}
-
-searchQueryEl.addEventListener('input', () => {
-  const q = searchQueryEl.value.trim();
-  if (q.length < 2) {
-    searchResultsEl.innerHTML = '<div class="modal-empty">Type ≥ 2 chars to search.</div>';
-    return;
-  }
-  if (searchDebounce) clearTimeout(searchDebounce);
-  searchDebounce = setTimeout(async () => {
-    const seq = ++searchSeq;
-    searchResultsEl.innerHTML = '<div class="modal-empty">Searching…</div>';
-    const res = await ipcRenderer.invoke('search-past-sessions', { query: q, limit: 50 });
-    if (seq !== searchSeq) return; // newer query in flight
-    renderSearchHits(res.hits || [], q, !!res.truncated);
-  }, 300);
-});
-
-document.getElementById('search-modal-close').addEventListener('click', closeSearchModal);
-searchModalEl.addEventListener('click', (e) => {
-  if (e.target === searchModalEl) closeSearchModal();
-});
-document.addEventListener('keydown', (e) => {
-  // Ctrl+Shift+F — global search
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
-    e.preventDefault(); openSearchModal();
-    return;
-  }
-  if (e.key === 'Escape' && searchModalEl.style.display === 'flex') {
-    e.preventDefault(); closeSearchModal();
-  }
-});
-
+const { openResumeModal, openSearchModal } = pastSessionModals;
 // Ctrl+click on a local file path in the terminal → open with OS default app.
 // xterm's WebLinksAddon only handles URLs, so we register a separate link
 // provider. Scans each line for ABS_PATH_RE (high confidence, no validation)

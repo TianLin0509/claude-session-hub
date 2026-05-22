@@ -10,7 +10,7 @@ function read(rel) {
 }
 
 test('resume picker passes transcriptPath into created Claude resume session', () => {
-  const src = read('renderer/renderer.js');
+  const src = read('renderer/past-session-modals.js');
   assert.match(
     src,
     /resumeCCSessionId:\s*it\.sessionId,\s*resumeTranscriptPath:\s*it\.path/,
