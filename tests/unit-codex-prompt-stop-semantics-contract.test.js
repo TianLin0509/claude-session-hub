@@ -6,6 +6,7 @@ const root = path.join(__dirname, '..');
 const tapSrc = fs.readFileSync(path.join(root, 'core', 'transcript-tap.js'), 'utf8');
 const mainSrc = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
+const activitySrc = fs.readFileSync(path.join(root, 'renderer', 'terminal-activity-monitor.js'), 'utf8');
 
 assert.ok(
   /eventType\s*===\s*['"]user_message['"][\s\S]{0,500}this\.emit\(['"]prompt-submitted['"]/.test(tapSrc),
@@ -44,7 +45,7 @@ assert.ok(
 
 assert.ok(
   /function\s+hasSemanticCardWorking/.test(rendererSrc) &&
-  /if \(!hasSemanticCardWorking\(session\)\) session\.status\s*=\s*['"]idle['"]/.test(rendererSrc),
+  /if \(!hasSemanticCardWorking\(session\)\) session\.status\s*=\s*['"]idle['"]/.test(activitySrc),
   'Codex semantic working state must survive PTY silence until task_complete clears it',
 );
 
