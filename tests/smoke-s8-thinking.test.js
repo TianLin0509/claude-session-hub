@@ -7,25 +7,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readCssWithImports } = require('./helpers/read-css-with-imports.js');
 
 const TURN_CARD_RENDERER = path.join(__dirname, '..', 'renderer', 'turn-card-renderer.js');
 const STYLES = path.join(__dirname, '..', 'renderer', 'styles.css');
 
 const src = fs.readFileSync(TURN_CARD_RENDERER, 'utf8');
-const seenCssFiles = new Set();
-function readCssWithImports(filePath) {
-  if (seenCssFiles.has(filePath)) return '';
-  seenCssFiles.add(filePath);
-
-  const current = fs.readFileSync(filePath, 'utf8');
-  const dir = path.dirname(filePath);
-  const imports = [...current.matchAll(/@import\s+url\(['"]?([^'")]+)['"]?\);/g)]
-    .map(match => path.resolve(dir, match[1]))
-    .map(readCssWithImports)
-    .join('\n');
-
-  return `${current}\n${imports}`;
-}
 const css = readCssWithImports(STYLES);
 
 const failures = [];

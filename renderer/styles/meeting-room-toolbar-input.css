@@ -1,0 +1,530 @@
+/* Sub-session slot */
+.mr-sub-slot {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-primary, #0d1117);
+}
+
+.mr-sub-slot.dormant {
+  opacity: 0.5;
+}
+
+.mr-sub-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: var(--bg-secondary, #161b22);
+  border-bottom: 1px solid var(--border, #30363d);
+  cursor: pointer;
+  user-select: none;
+}
+
+.mr-sub-header:hover {
+  background: var(--bg-hover, #1c2128);
+}
+
+.mr-sub-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary, #8b949e);
+}
+
+.mr-sub-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #8b949e);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.mr-sub-close:hover {
+  color: #f85149;
+}
+
+.mr-sub-terminal {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Focus mode preview bar */
+.mr-preview-bar {
+  display: flex;
+  gap: 1px;
+  background: var(--border, #30363d);
+  max-height: 80px;
+  min-height: 60px;
+}
+
+.mr-preview-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary, #161b22);
+  cursor: pointer;
+  padding: 4px 8px;
+  overflow: hidden;
+}
+
+.mr-preview-item:hover {
+  background: var(--bg-hover, #1c2128);
+}
+
+.mr-preview-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent, #6366f1);
+  margin-bottom: 2px;
+}
+
+.mr-preview-text {
+  font-size: 10px;
+  color: var(--text-secondary, #8b949e);
+  font-family: monospace;
+  white-space: pre;
+  overflow: hidden;
+  line-height: 1.3;
+}
+
+/* Toolbar */
+.mr-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: transparent;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+/* Phase 7(2026-05-05): free 模式 toolbar 完全空时, 不占任何高度(避免空灰线) */
+.mr-toolbar:empty {
+  padding: 0;
+  height: 0;
+  min-height: 0;
+}
+
+.mr-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary, #8b949e);
+}
+
+.mr-target-select {
+  padding: 2px 6px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  background: var(--bg-primary, #0d1117);
+  color: var(--text-primary, #c9d1d9);
+  font-size: 12px;
+}
+
+.mr-sync-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: var(--text-secondary, #8b949e);
+}
+
+.mr-sync-toggle.active {
+  color: var(--accent, #6366f1);
+}
+
+/* Input Row */
+.mr-input-row {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  padding: 8px 12px;
+  gap: 8px;
+  background: transparent;
+  flex-shrink: 0;
+  z-index: 2; /* 浮于 G 地平线光晕之上 */
+}
+
+/* Phase 4 v2(2026-05-05): footer 一行化 — 头像 checkbox 组(只 logo, 无文字) */
+.mr-free-avatars-row {
+  display: inline-flex; gap: 4px; padding: 4px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 22px;
+  background: var(--bg-secondary, #161b22);
+  flex-shrink: 0;
+  align-self: center;
+  max-width: min(38vw, 360px);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.mr-free-avatar-chk {
+  position: relative;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid transparent;
+  transition: all .15s;
+}
+.mr-free-avatar-chk img {
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.mr-free-avatar-chk.group img {
+  object-fit: contain;
+  background: #fff;
+  padding: 4px;
+  box-sizing: border-box;
+}
+.mr-free-avatar-chk input { display: none; }
+.mr-free-avatar-chk-mark {
+  position: absolute; bottom: -2px; right: -2px;
+  width: 14px; height: 14px;
+  background: #56d364;
+  border: 1.5px solid var(--bg-secondary, #161b22);
+  border-radius: 50%;
+  font-size: 9px; color: white; font-weight: bold;
+  display: flex; align-items: center; justify-content: center;
+}
+.mr-free-avatar-chk:not(.checked) .mr-free-avatar-chk-mark {
+  display: none;
+}
+.mr-free-avatar-chk:not(.checked) img {
+  opacity: 0.4;
+  filter: grayscale(0.7);
+}
+.mr-free-avatar-chk.checked {
+  border-color: rgba(86,211,100,0.4);
+}
+.mr-free-avatar-chk:hover:not(.disabled) {
+  transform: scale(1.05);
+}
+.mr-free-avatar-chk.disabled {
+  cursor: not-allowed; opacity: 0.5;
+}
+
+/* Phase 4 v2: 模式 dropdown — hover 展开一级 popup, 总结 hover 二级向上展开 */
+.mr-input-mode-chips {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  align-self: center;
+}
+.mr-mode-dropdown {
+  position: relative;
+}
+.mr-mode-trigger {
+  padding: 7px 14px;
+  border: 1px solid rgba(245,215,110,0.3);
+  border-radius: 18px;
+  background: rgba(245,215,110,0.10);
+  color: #f5d76e;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex; gap: 4px; align-items: center;
+  white-space: nowrap;
+  transition: all .15s;
+}
+.mr-mode-trigger:hover {
+  background: rgba(245,215,110,0.18);
+  border-color: #f5d76e;
+}
+.mr-mode-arrow { font-size: 9px; }
+
+/* 一级 popup: hover 主按钮 → 显示, 向上展开 */
+.mr-mode-popup {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  background: var(--bg-secondary, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 220px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  display: none;
+  z-index: 10;
+}
+.mr-mode-dropdown:hover .mr-mode-popup,
+.mr-mode-popup:hover { display: block; }
+/* hover 缓冲区(防止鼠标穿越间距时关闭) */
+.mr-mode-dropdown::after {
+  content: '';
+  position: absolute;
+  bottom: 100%; left: 0; right: 0;
+  height: 8px;
+  display: none;
+}
+.mr-mode-dropdown:hover::after { display: block; }
+
+.mr-mode-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-radius: 5px;
+  font-size: 13px; color: var(--text-primary, #c9d1d9);
+  cursor: pointer;
+  background: transparent; border: none;
+  width: 100%; text-align: left;
+}
+.mr-mode-item:hover:not([disabled]):not(.disabled) {
+  background: rgba(88,166,255,0.12);
+}
+.mr-mode-item[disabled],
+.mr-mode-item.disabled {
+  opacity: 0.4; cursor: not-allowed;
+}
+.mr-mode-item-hint {
+  font-size: 10.5px; color: var(--text-muted, #6e7681);
+}
+.mr-mode-item-summary {
+  position: relative;
+  background: rgba(245,215,110,0.04);
+}
+.mr-mode-item-summary:hover:not(.disabled) {
+  background: rgba(245,215,110,0.12);
+}
+.mr-mode-item-summary:hover:not(.disabled) .mr-mode-item-hint {
+  color: #f5d76e;
+}
+
+/* 二级 popup: hover 总结项 → 向右展开 + 向上对齐(避免溢出窗口底部) */
+.mr-mode-subpopup {
+  position: absolute;
+  left: calc(100% + 4px);
+  bottom: 0; /* 底部对齐总结项底部, 内容向上延伸 — 避免靠近窗口底时溢出 */
+  background: var(--bg-secondary, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 200px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+  display: none;
+}
+.mr-mode-item-summary:hover:not(.disabled) .mr-mode-subpopup {
+  display: block;
+}
+.mr-mode-subpopup-title {
+  padding: 6px 12px; font-size: 11px; color: var(--text-muted, #6e7681);
+  border-bottom: 1px solid var(--border, #30363d);
+  margin-bottom: 4px;
+}
+.mr-mode-subpopup-empty {
+  padding: 8px 12px; font-size: 12px; color: var(--text-muted, #6e7681);
+}
+.mr-mode-subitem {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border-radius: 5px;
+  font-size: 12.5px; color: var(--text-primary, #c9d1d9);
+  cursor: pointer;
+  background: transparent; border: none;
+  width: 100%; text-align: left;
+}
+.mr-mode-subitem img {
+  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+}
+.mr-mode-subitem:hover:not([disabled]) {
+  background: rgba(245,215,110,0.12); color: #f5d76e;
+}
+.mr-mode-subitem[disabled] {
+  opacity: 0.4; cursor: not-allowed;
+}
+
+/* Phase 4 v2: 欢迎 head 动态状态 — 启动中黄色 / 全员就绪绿色 */
+.mr-gc-ob-head {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 14px;
+  margin: 0 auto 22px;
+  max-width: 640px;
+  line-height: 1.5;
+}
+.mr-gc-ob-head.loading {
+  background: rgba(245,215,110,0.08);
+  border: 1px solid rgba(245,215,110,0.2);
+  color: #f5d76e;
+}
+.mr-gc-ob-head.loading strong { color: #fde68a; }
+.mr-gc-ob-head.ready {
+  background: rgba(86,211,100,0.08);
+  border: 1px solid rgba(86,211,100,0.2);
+  color: #56d364;
+}
+.mr-gc-ob-head.ready strong { color: #7ee990; }
+.mr-gc-ob-head-icon { font-size: 16px; }
+
+#mr-input-target {
+  padding: 8px 6px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg-primary, #0d1117);
+  color: var(--text-primary, #c9d1d9);
+  font-size: 12px;
+  min-width: 80px;
+  align-self: stretch;
+}
+
+.mr-input-box {
+  flex: 1;
+  min-height: 36px;
+  max-height: 120px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg-primary, #0d1117);
+  color: var(--text-primary, #c9d1d9);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  overflow-y: auto;
+  word-break: break-word;
+}
+
+.mr-input-box:focus {
+  border-color: var(--accent, #6366f1);
+}
+
+.mr-input-box:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-secondary, #8b949e);
+}
+
+.mr-gc-mention-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  z-index: 1200;
+  padding: 4px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg-secondary, #161b22);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.mr-gc-mention-item {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(92px, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary, #c9d1d9);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.mr-gc-mention-item:hover,
+.mr-gc-mention-item.active {
+  background: var(--bg-hover, #1c2128);
+}
+
+.mr-gc-mention-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mr-gc-mention-value {
+  color: var(--accent, #6366f1);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  white-space: nowrap;
+}
+
+.mr-gc-mention-hint {
+  color: var(--text-secondary, #8b949e);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.mr-send-btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent, #6366f1);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.mr-send-btn:hover {
+  opacity: 0.9;
+}
+
+/* Right-click context menu for quoting */
+.mr-quote-menu {
+  position: fixed;
+  background: var(--bg-secondary, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 160px;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+.mr-quote-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--text-primary, #c9d1d9);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mr-quote-menu-item:hover {
+  background: var(--bg-hover, #1c2128);
+}
+
+/* Sidebar meeting item badge */
+.meeting-badge {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--accent, #6366f1);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.mr-ft-md a.rt-file-link:hover, .mr-ft-preview-md a.rt-file-link:hover, .mr-gc-tl-body a.rt-file-link:hover {
+  color: #a5d6ff;
+  background: rgba(121,192,255,0.10);
+}
+.mr-ft-md a:not(.rt-file-link),
+.mr-ft-preview-md a:not(.rt-file-link),
+.mr-gc-tl-body a:not(.rt-file-link) {
+  color: #79c0ff;
+  cursor: pointer;
+  font-weight: 600;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.mr-ft-md a:not(.rt-file-link):hover,
+.mr-ft-preview-md a:not(.rt-file-link):hover,
+.mr-gc-tl-body a:not(.rt-file-link):hover {
+  color: #a5d6ff;
+  background: rgba(121,192,255,0.10);
+}
+.mr-ft-md a:focus-visible,
+.mr-ft-preview-md a:focus-visible,
+.mr-gc-tl-body a:focus-visible,
+.mr-gc-md a:focus-visible,
+.mr-gc-anchor:focus-visible {
+  outline: 2px solid rgba(9,105,218,0.55);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+

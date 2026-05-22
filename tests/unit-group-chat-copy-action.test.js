@@ -3,10 +3,11 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { readCssWithImports } = require('./helpers/read-css-with-imports.js');
 
 const root = path.join(__dirname, '..');
 const js = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.js'), 'utf8');
-const css = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.css'), 'utf8');
+const css = readCssWithImports(path.join(root, 'renderer', 'meeting-room.css'));
 
 let failed = 0;
 function test(name, fn) {

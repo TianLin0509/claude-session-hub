@@ -1,0 +1,632 @@
+/* Card redesign：bottom 区（flex:1 撑满，含 preview / progress / escape-bar / corner-badge） */
+.mr-ft-bottom {
+  margin-top: 8px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid rgba(255,255,255,0.04);
+  padding-top: 6px;
+  overflow: hidden;
+}
+
+.mr-ft-row1 { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.mr-ft-name { font-weight: 700; font-size: 14px; }
+.mr-ft-name.slot-1 { color: var(--c-slot-1); }
+.mr-ft-name.slot-2 { color: var(--c-slot-2); }
+.mr-ft-name.slot-3 { color: var(--c-slot-3); }
+.mr-ft-status { font-size: 11px; padding: 2px 8px; border-radius: 8px; font-weight: 600; }
+.mr-ft-status.completed { background: rgba(74,222,128,0.2); color: #86efac; }
+.mr-ft-status.thinking  { background: rgba(250,204,21,0.2); color: #fde68a; animation: gc-pulse 1.5s ease-in-out infinite; }
+.mr-ft-status.streaming { background: rgba(99,102,241,0.2); color: #a5b4fc; animation: gc-pulse 1.5s ease-in-out infinite; }
+.mr-ft-status.idle      { background: rgba(139,148,158,0.2); color: #a0a8b9; }
+.mr-ft-status.initializing { background: rgba(99,102,241,0.2); color: #a5b4fc; animation: gc-pulse 1.5s ease-in-out infinite; }
+.mr-ft-status.timeout   { background: rgba(248,113,113,0.2); color: #fca5a5; }
+/* === F1 13 态徽章配色补完(Phase 1 / 2026-05-04 道雪 / spec F1 v3) ===
+ * 上方 6 种(completed/thinking/streaming/idle/initializing/timeout)保持。
+ * 补 7 种异常态: errored / manual_extracted / absent / soft_alert / send_stuck / interrupted / transport_lost
+ * statusLabel 文本已在 meeting-room.js:479-492 配齐, 本节只补颜色 + 关键 ::before 前缀。
+ */
+.mr-ft-status.errored        { background: rgba(239,68,68,0.28); color: #fca5a5; font-weight: 700; }
+.mr-ft-status.errored::before { content: '✗ '; }
+.mr-ft-status.manual_extracted { background: rgba(74,222,128,0.15); color: #86efac; opacity: 0.85; }
+.mr-ft-status.absent         { background: rgba(139,148,158,0.15); color: #707783; }
+.mr-ft-status.soft_alert     { background: rgba(251,146,60,0.22); color: #fdba74; animation: gc-pulse 1.5s ease-in-out infinite; }
+.mr-ft-status.send_stuck     { background: rgba(239,68,68,0.32); color: #fca5a5; animation: gc-pulse 1.5s ease-in-out infinite; }
+.mr-ft-status.interrupted    { background: rgba(251,146,60,0.22); color: #fdba74; }
+.mr-ft-status.transport_lost { background: rgba(239,68,68,0.32); color: #fca5a5; }
+/* F1 thinking 三跳点动画(spec §2.1 thinking) */
+.mr-ft-status.thinking::after {
+  content: ' ●●●';
+  font-size: 9px;
+  letter-spacing: 1px;
+  animation: mr-think-dots-pulse 1.4s ease-in-out infinite;
+}
+@keyframes mr-think-dots-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+/* === /F1 === */
+/* === F4 Phase 2(2026-05-04 道雪 / spec F4): 上一轮注入血缘 chip === */
+.mr-ft-lineage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+  align-items: center;
+  /* 防止 chip 数 ≥3 时撑破宽度: 横向滚动 */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.mr-ft-lineage::-webkit-scrollbar { display: none; }
+.mr-ft-lineage-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #8b949e;
+  white-space: nowrap;
+  cursor: help;
+  transition: background .15s, border-color .15s;
+  font-variant-numeric: tabular-nums;
+}
+.mr-ft-lineage-chip:hover {
+  background: rgba(255,255,255,0.08);
+}
+.mr-ft-lineage-chip.slot-1 { color: #fde68a; border-color: rgba(251,191,36,0.32); }
+.mr-ft-lineage-chip.slot-2 { color: #fdba74; border-color: rgba(249,115,22,0.32); }
+.mr-ft-lineage-chip.slot-3 { color: #93c5fd; border-color: rgba(59,130,246,0.32); }
+/* F0 聚焦态时邻居隐藏 lineage(节省空间给 4 行 preview) */
+body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) .mr-ft-lineage {
+  display: none;
+}
+/* === /F4 === */
+
+/* === F9 Phase 2(2026-05-04 道雪 / spec F9): 卡片密度切换 ===
+ * 常规模式 (默认): 卡片高度跟随 strip 撑满主区 (Arch refactor 2026-05-02 设定)
+ * 紧凑模式 (body.mr-density-compact): 卡片固定 130px, 仅 head 区可见, strip 内 cards 居顶
+ * F0 聚焦态优先: 若同时 mr-card-focus-on, 主卡恢复 stretch (用户聚焦看完整内容)
+ * 切换平滑: height transition 0.3s
+ *
+ * 实施细节: line 1869 .mr-ft-strip { align-items: stretch } 隐式默认 + line 1880 .mr-ft { height: 100% }
+ *   覆盖 line 514 的 height: 220px 让卡片填满 row。 紧凑模式必须用 !important 覆盖 line 1880。
+ */
+.mr-ft {
+  transition: background .15s, border-color .15s,
+              transform .45s cubic-bezier(0.22, 1, 0.36, 1),
+              opacity .45s cubic-bezier(0.22, 1, 0.36, 1),
+              filter .45s cubic-bezier(0.22, 1, 0.36, 1),
+              height .3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+body.mr-density-compact .mr-ft-strip {
+  align-items: start;             /* 覆盖隐式 stretch, 让 cells 不拉伸到 row 高度 */
+}
+body.mr-density-compact .mr-ft {
+  height: 130px !important;        /* 覆盖 line 1880 .mr-ft { height: 100% } */
+  min-height: 0 !important;        /* 覆盖 line 1879 / 1919 的 min-height */
+}
+body.mr-density-compact .mr-ft .mr-ft-bottom {
+  display: none;
+}
+body.mr-density-compact .mr-ft .mr-ft-corner-badge {
+  font-size: 9px;
+}
+/* F0 聚焦态优先 — 主卡恢复 stretch (用户聚焦看完整内容), 邻居仍紧凑 */
+body.mr-card-focus-on.mr-density-compact .mr-ft.active {
+  height: 100% !important;
+}
+body.mr-card-focus-on.mr-density-compact .mr-ft.active .mr-ft-bottom {
+  display: flex;
+  flex-direction: column;
+}
+/* === /F9 === */
+
+/* === F3 Phase 2(2026-05-04 道雪 / spec F3): 多卡对比模式 ===
+ * 触发: ctrl/cmd+click 任一卡 → body.mr-card-compare-on + .compare-selected on cards
+ * 视觉: 选中卡蓝色 dashed 描边 + 蓝色光晕 box-shadow; 邻居(未选中)淡化
+ * 退出: Esc / 点空白 / 取消最后一张
+ * 状态优先级 spec §5: compare-selected 互斥 focus (进入对比时清 focus)
+ * 简化: 不动 grid 重分配, 仅视觉描边(避免与 F0 grid:has 冲突)
+ */
+body.mr-card-compare-on .mr-ft.compare-selected {
+  outline: 3px dashed #58a6ff;
+  outline-offset: -3px;
+  z-index: 2;
+  box-shadow:
+    0 0 18px rgba(88, 166, 255, 0.45),
+    0 0 42px rgba(88, 166, 255, 0.18);
+}
+body.mr-card-compare-on .mr-ft:not(.compare-selected) {
+  opacity: 0.55;
+  filter: brightness(0.7);
+}
+/* 多张选中时,最后选中态视觉(后选中的 z-index 略高,通过 hover 强化区分) */
+body.mr-card-compare-on .mr-ft.compare-selected:hover {
+  z-index: 3;
+  box-shadow:
+    0 0 24px rgba(88, 166, 255, 0.6),
+    0 0 50px rgba(88, 166, 255, 0.22);
+}
+/* === /F3 === */
+
+/* === F2 Phase 2(2026-05-04 道雪 / spec F2): hover 卡片快捷操作浮条 ===
+ * 位置: 卡片右上, ↗ 按钮(right: 8px, 24px 宽)左侧
+ * 按钮: 📋 复制 / @ 追问 / " 引用
+ * 交互: hover 卡片 0.25s 浮出(translateY -4 → 0, opacity 0 → 1), 移出消失
+ * 不影响选中文本(pointer-events 默认), z-index 5 在 ::after 描边之上
+ */
+.mr-ft-hover-actions {
+  position: absolute;
+  top: 8px;
+  right: 38px;            /* ↗ 按钮 right: 8px + width 24 + margin 6 */
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity .25s ease-out, transform .25s ease-out;
+  z-index: 5;
+  pointer-events: none;   /* 默认不可点(hover 后才启用), 避免误击 */
+}
+.mr-ft:hover .mr-ft-hover-actions {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.mr-ft-hover-actions button {
+  width: 26px;
+  height: 26px;
+  background: rgba(33, 38, 45, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #c9d1d9;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  padding: 0;
+  font-family: inherit;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.mr-ft-hover-actions button:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+/* F0 聚焦/F3 对比/F9 紧凑下也保持 hover-actions 可访问 */
+body.mr-density-compact .mr-ft-hover-actions {
+  /* 紧凑模式下 hover-actions 仍可见 */
+}
+/* === /F2 === */
+
+/* === F6 Phase 3(2026-05-04 道雪 / spec F6): 选中文本引用 chip ===
+ * 浮按钮: body 级 absolute 定位, 选区右上方
+ * 引用 chip 区: 输入框上方, JS 动态注入到 #mr-input-row 之前
+ * chip: slot 主题色 + 引用片段截断显示 + ✕ 移除按钮
+ */
+.mr-gc-quote-float-btn {
+  position: absolute;
+  z-index: 1000;
+  background: rgba(88, 166, 255, 0.95);
+  color: #fff;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5), 0 0 18px rgba(88, 166, 255, 0.45);
+  display: none;
+  user-select: none;
+  white-space: nowrap;
+}
+.mr-gc-quote-float-btn:hover {
+  background: rgba(88, 166, 255, 1);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5), 0 0 24px rgba(88, 166, 255, 0.6);
+  transform: translateY(-1px);
+}
+
+.mr-quote-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px;
+  border-top: 1px solid #21262d;
+  background: rgba(88, 166, 255, 0.04);
+  align-items: center;
+  max-height: 90px;
+  overflow-y: auto;
+}
+.mr-gc-quote-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 10px;
+  background: rgba(88, 166, 255, 0.1);
+  border: 1px solid rgba(88, 166, 255, 0.32);
+  border-radius: 12px;
+  font-size: 11.5px;
+  color: #c9d1d9;
+  max-width: 380px;
+}
+.mr-gc-quote-chip .mr-gc-quote-label {
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.mr-gc-quote-chip.slot-1 .mr-gc-quote-label { color: #fde68a; }
+.mr-gc-quote-chip.slot-2 .mr-gc-quote-label { color: #fdba74; }
+.mr-gc-quote-chip.slot-3 .mr-gc-quote-label { color: #93c5fd; }
+.mr-gc-quote-chip .mr-gc-quote-text {
+  color: #8b949e;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+.mr-gc-quote-chip .mr-gc-quote-close {
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.mr-gc-quote-chip .mr-gc-quote-close:hover {
+  background: rgba(248, 81, 73, 0.18);
+  color: #f85149;
+}
+/* === /F6 === */
+
+/* === F5 Phase 3(2026-05-04 道雪 / spec F5): 整轮 + 累计成本 status bar ===
+ * 位置: panel 顶部 .mr-gc-track-row 右侧 (titleText + stepper 之后)
+ * 内容: ⏱ 总耗时 · 🪙 总 tokens · 💰 累计成本
+ * 精度: ±30% (input:output 比例视为固定 6:4, 不分单独计费)
+ */
+.mr-gc-cost-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  font-size: 11.5px;
+  color: #8b949e;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+}
+.mr-gc-cost-bar .mr-gc-cost-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+}
+.mr-gc-cost-bar .mr-gc-cost-item .ico {
+  opacity: 0.78;
+  font-size: 12px;
+}
+.mr-gc-cost-bar .mr-gc-cost-item .num {
+  color: #fde68a;
+  font-weight: 600;
+}
+.mr-gc-cost-bar .mr-gc-cost-item.cost .num {
+  color: #86efac;
+}
+.mr-gc-cost-bar .mr-gc-cost-divider {
+  color: rgba(255, 255, 255, 0.15);
+  margin: 0 1px;
+}
+
+/* === 2026-05-05 道雪: 用户提问 banner (A+D 混合: 黄色引用条 + 单行紧凑) ===
+ * 位置: panel 内 onboarding 之后, fusedTabs 之前 (title+stepper 与 3 张 AI 卡片之间)
+ * 三态(JS 写 data-mode):
+ *   latest  — 默认 idle 看最新轮, 琥珀色边线/标签
+ *   live    — 进行中(用户已发, turn-complete 未到), 琥珀色 + ⏳进行中
+ *   history — 时光机看历史轮, 边线/标签变蓝, 暗示只读快照
+ * 单行紧凑: 提问超长 ellipsis, 点 ▾ 按钮展开全文(JS 切 .expanded class)。 */
+.mr-gc-userq {
+  display: flex; align-items: center; gap: 10px;
+  margin: 8px 0; padding: 7px 12px 7px 14px;
+  background: rgba(245, 215, 110, 0.05);
+  border-left: 3px solid #d29922;
+  border-radius: 0 4px 4px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.mr-gc-userq-label {
+  color: #d29922; font-weight: 600; flex-shrink: 0;
+  font-size: 11.5px;
+}
+.mr-gc-userq-text {
+  flex: 1; min-width: 0;
+  color: #e6edf3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mr-gc-userq.expanded {
+  align-items: flex-start;
+}
+.mr-gc-userq.expanded .mr-gc-userq-text {
+  white-space: pre-wrap; word-break: break-word;
+}
+.mr-gc-userq-tag {
+  flex-shrink: 0; padding: 1px 7px;
+  background: rgba(252, 211, 77, 0.12);
+  color: #fcd34d;
+  border-radius: 999px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mr-gc-userq-toggle {
+  flex-shrink: 0; background: none; border: none;
+  color: #d29922; cursor: pointer;
+  padding: 2px 6px; font-size: 12px;
+  border-radius: 3px;
+  transition: color .15s, transform .2s, background .15s;
+}
+.mr-gc-userq-toggle:hover {
+  color: #fcd34d;
+  background: rgba(252, 211, 77, 0.08);
+}
+.mr-gc-userq.expanded .mr-gc-userq-toggle {
+  transform: rotate(180deg);
+}
+/* 时光机态: 边线 + 标签 + 按钮变蓝, 暗示只读历史快照 */
+.mr-gc-userq[data-mode="history"] {
+  background: rgba(88, 166, 255, 0.06);
+  border-left-color: #58a6ff;
+}
+.mr-gc-userq[data-mode="history"] .mr-gc-userq-label,
+.mr-gc-userq[data-mode="history"] .mr-gc-userq-toggle {
+  color: #58a6ff;
+}
+.mr-gc-userq[data-mode="history"] .mr-gc-userq-toggle:hover {
+  color: #79b8ff; background: rgba(88, 166, 255, 0.1);
+}
+.mr-gc-userq[data-mode="history"] .mr-gc-userq-tag {
+  background: rgba(88, 166, 255, 0.14);
+  color: #79b8ff;
+}
+/* 进行中态: 标签前缀 ⏳ + 轻微脉冲提示用户本轮还在跑 */
+.mr-gc-userq[data-mode="live"] .mr-gc-userq-tag::before {
+  content: '⏳ ';
+}
+.mr-gc-userq[data-mode="live"] .mr-gc-userq-tag {
+  animation: mr-gc-userq-live-pulse 1.8s ease-in-out infinite;
+}
+@keyframes mr-gc-userq-live-pulse {
+  0%, 100% { background: rgba(252, 211, 77, 0.12); }
+  50% { background: rgba(252, 211, 77, 0.25); }
+}
+/* 紧凑模式下隐藏 cost bar 节省空间 */
+body.mr-density-compact .mr-gc-cost-bar {
+  display: none;
+}
+/* === /F5 === */
+.mr-ft-elapsed { font-size: 11px; color: #fde68a; margin-left: auto; font-variant-numeric: tabular-nums; font-family: "Cascadia Mono", Consolas, monospace; }
+.mr-ft-expand {
+  position: absolute; top: 8px; right: 8px;
+  background: rgba(255,255,255,0.06); border: none; color: #8b949e;
+  width: 22px; height: 22px; border-radius: 4px; cursor: pointer;
+  font-size: 13px; display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .15s;
+}
+.mr-ft:hover .mr-ft-expand { opacity: 1; }
+.mr-ft-expand:hover { background: rgba(255,255,255,0.12); color: #c9d1d9; }
+.mr-ft-row2 { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.mr-ft-model { font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: 600; color: #fff; }
+.mr-ft-model.slot-1 { background: rgba(var(--c-slot-1-rgb),0.65); }
+.mr-ft-model.slot-2 { background: rgba(var(--c-slot-2-rgb),0.65); }
+.mr-ft-model.slot-3 { background: rgba(var(--c-slot-3-rgb),0.65); }
+.mr-ft-ctx { font-size: 10px; padding: 2px 6px; border-radius: 3px; font-variant-numeric: tabular-nums; }
+.mr-ft-ctx.ok   { background: rgba(74,222,128,0.15); color: #4ade80; }
+.mr-ft-ctx.warn { background: rgba(250,204,21,0.15); color: #fde68a; }
+.mr-ft-ctx.high { background: rgba(248,113,113,0.15); color: #fca5a5; }
+
+/* AI 群聊记忆 phase 1（2026-05-07）：📒 N / 📥 / 📊 三按钮（紧邻 Ctx 角标）
+   极简风：emoji + 数字，hover 高亮，点击 = 打开对应 .md 文件 */
+.mr-ft-mem-btn {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.04);
+  color: #c9d1d9;
+  border: 1px solid rgba(255,255,255,0.08);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: background 120ms ease, border-color 120ms ease;
+  line-height: 1.2;
+  margin-left: 2px;
+}
+.mr-ft-mem-btn:hover {
+  background: rgba(255,255,255,0.10);
+  border-color: rgba(255,255,255,0.18);
+  color: #f0f6fc;
+}
+.mr-ft-mem-btn.pending {
+  background: rgba(250,204,21,0.14);
+  color: #fde68a;
+  border-color: rgba(250,204,21,0.3);
+}
+.mr-ft-mem-btn .dot {
+  display: inline-block;
+  background: #f59e0b;
+  color: #1a1a1a;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 0 5px;
+  margin-left: 2px;
+  line-height: 1.4;
+}
+/* Phase 2 P1（2026-05-07）：worker 失败状态灯
+   health-warn: 1-2 次失败（橙）/ health-bad: ≥3 次连续失败（红） */
+.mr-ft-mem-btn.health-warn {
+  background: rgba(251,146,60,0.16);
+  color: #fdba74;
+  border-color: rgba(251,146,60,0.35);
+}
+.mr-ft-mem-btn.health-warn:hover {
+  background: rgba(251,146,60,0.26);
+  border-color: rgba(251,146,60,0.55);
+  color: #fed7aa;
+}
+.mr-ft-mem-btn.health-bad {
+  background: rgba(248,113,113,0.18);
+  color: #fca5a5;
+  border-color: rgba(248,113,113,0.4);
+  animation: mr-ft-mem-pulse 2.4s ease-in-out infinite;
+}
+.mr-ft-mem-btn.health-bad:hover {
+  background: rgba(248,113,113,0.30);
+  border-color: rgba(248,113,113,0.6);
+  color: #fecaca;
+}
+@keyframes mr-ft-mem-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0.0); }
+  50% { box-shadow: 0 0 0 3px rgba(248,113,113,0.18); }
+}
+.mr-ft-preview {
+  font-size: 12px; color: #8b949e; line-height: 1.5;
+  flex: 1;                  /* card-redesign：在 .mr-ft-bottom 里撑满，不再硬限高度 */
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* IF-C0（2026-05-01）：卡片预览 markdown 渲染样式
+ *   - h1/h2/h3 在 13/12/11px 卡片预览里缩小到合理字号
+ *   - p / li 紧凑 line-height，避免在 220px 卡片里浪费纵向空间
+ *   - code 等宽字体小一号
+ *   - 列表符号缩进
+ */
+.mr-ft-preview-md h1, .mr-ft-preview-md h2, .mr-ft-preview-md h3,
+.mr-ft-preview-md h4, .mr-ft-preview-md h5, .mr-ft-preview-md h6 {
+  font-size: 13px; font-weight: 700;
+  margin: 4px 0 2px;
+  color: #c9d1d9;
+  line-height: 1.3;
+}
+.mr-ft-preview-md h1 { font-size: 14px; }
+.mr-ft-preview-md p { margin: 2px 0; line-height: 1.5; }
+.mr-ft-preview-md ul, .mr-ft-preview-md ol {
+  margin: 2px 0; padding-left: 18px;
+}
+.mr-ft-preview-md li { margin: 1px 0; line-height: 1.4; }
+.mr-ft-preview-md strong { color: #c9d1d9; font-weight: 600; }
+.mr-ft-preview-md em { color: #c9d1d9; font-style: italic; }
+.mr-ft-preview-md code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  background: rgba(255,255,255,0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #fde68a;
+}
+.mr-ft-preview-md pre {
+  margin: 4px 0;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 11px;
+}
+.mr-ft-preview-md pre code { background: transparent; padding: 0; }
+.mr-ft-preview-md blockquote {
+  margin: 2px 0; padding-left: 8px;
+  border-left: 2px solid rgba(255,255,255,0.15);
+  color: #6e7681;
+}
+.mr-ft-preview-md hr {
+  margin: 4px 0; border: 0;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.mr-ft-preview-md a { color: #79b8ff; text-decoration: underline; }
+.mr-ft-preview-md table { font-size: 11px; }
+.mr-ft-preview-ellip { color: #8b949e; opacity: 0.6; }
+.mr-ft-preview.streaming { color: #c8d3e6; }
+.mr-ft-cursor {
+  display: inline-block; width: 5px; height: 10px;
+  background: #fde68a; vertical-align: text-bottom;
+  animation: mr-ft-blink 1s steps(2) infinite;
+}
+@keyframes mr-ft-blink { 50% { opacity: 0; } }
+.mr-ft-progress { margin-top: 4px; height: 3px; border-radius: 2px; overflow: hidden; background: rgba(255,255,255,0.04); }
+.mr-ft-progress-bar {
+  height: 100%; border-radius: 2px;
+  background-size: 200% 100%;
+  animation: mr-gc-flowbar 1.6s linear infinite;
+}
+.mr-ft-progress-bar.slot-1 { background: linear-gradient(90deg, var(--c-slot-1) 0%, rgba(var(--c-slot-1-rgb),0.2) 50%, transparent 100%); background-size: 200% 100%; }
+.mr-ft-progress-bar.slot-2 { background: linear-gradient(90deg, var(--c-slot-2) 0%, rgba(var(--c-slot-2-rgb),0.2) 50%, transparent 100%); background-size: 200% 100%; }
+.mr-ft-progress-bar.slot-3 { background: linear-gradient(90deg, var(--c-slot-3) 0%, rgba(var(--c-slot-3-rgb),0.2) 50%, transparent 100%); background-size: 200% 100%; }
+.mr-ft .mr-ft-new { font-size: 8px; padding: 1px 4px; border-radius: 3px; background: rgba(250,204,21,0.3); color: #fde68a; margin-left: 4px; font-weight: 600; }
+
+.mr-gc-title {
+  font-weight: 700;
+  font-size: 13px;
+  background: linear-gradient(135deg, var(--c-claude) 0%, var(--c-gemini) 50%, var(--c-codex) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.mr-gc-meta { font-size: 11px; color: #8b949e; display: flex; gap: 10px; align-items: center; }
+.mr-gc-mode-tag {
+  display: inline-block; padding: 2px 8px; border-radius: 8px; font-weight: 600;
+  font-size: 10px; letter-spacing: 0.4px; text-transform: uppercase;
+}
+.mr-gc-mode-tag.idle { background: rgba(139,148,158,0.15); color: #a0a8b9; }
+.mr-gc-mode-tag.fanout { background: rgba(91,141,239,0.18); color: #7eb6ff; }
+.mr-gc-mode-tag.debate { background: rgba(250,204,21,0.18); color: #fde68a; }
+.mr-gc-mode-tag.summary { background: rgba(74,222,128,0.18); color: #86efac; }
+.mr-gc-cards {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+}
+.mr-gc-card {
+  background: #232b3a; border-radius: 8px; padding: 8px 10px;
+  border-left: 3px solid #6c7385;
+  transition: border-left-color 0.3s, background 0.3s;
+}
+.mr-gc-card.slot-1 { border-left-color: var(--c-slot-1); }
+.mr-gc-card.slot-2 { border-left-color: var(--c-slot-2); }
+.mr-gc-card.slot-3 { border-left-color: var(--c-slot-3); }
+.mr-gc-card.slot-1.active {
+  background: linear-gradient(180deg, rgba(var(--c-slot-1-rgb),0.08) 0%, #232b3a 100%);
+  box-shadow: 0 0 0 1px rgba(var(--c-slot-1-rgb),0.3);
+}
+.mr-gc-card.slot-2.active {
+  background: linear-gradient(180deg, rgba(var(--c-slot-2-rgb),0.08) 0%, #232b3a 100%);
+  box-shadow: 0 0 0 1px rgba(var(--c-slot-2-rgb),0.3);
+}
+.mr-gc-card.slot-3.active {
+  background: linear-gradient(180deg, rgba(var(--c-slot-3-rgb),0.08) 0%, #232b3a 100%);
+  box-shadow: 0 0 0 1px rgba(var(--c-slot-3-rgb),0.3);
+}
+.mr-gc-card-head {
+  display: flex; align-items: center; gap: 6px;
+  font-weight: 700; font-size: 12px; margin-bottom: 4px;
+}
+.mr-gc-card.slot-1 .mr-gc-card-head { color: var(--c-slot-1); }
+.mr-gc-card.slot-2 .mr-gc-card-head { color: var(--c-slot-2); }
+.mr-gc-card.slot-3 .mr-gc-card-head { color: var(--c-slot-3); }
+.mr-gc-status {
+  font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  font-weight: 600; letter-spacing: 0.3px;
+}
+.mr-gc-status.idle { background: rgba(139,148,158,0.2); color: #a0a8b9; }
+.mr-gc-status.thinking { background: rgba(250,204,21,0.2); color: #fde68a; animation: gc-pulse 1.5s ease-in-out infinite; }
+.mr-gc-status.completed { background: rgba(74,222,128,0.2); color: #86efac; }
+.mr-gc-status.timeout { background: rgba(248,113,113,0.2); color: #fca5a5; }
+@keyframes gc-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}

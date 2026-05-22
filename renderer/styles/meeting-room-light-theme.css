@@ -1,0 +1,548 @@
+/* === 2026-05-10 · vibechat-light 主题下 AI 群聊浅色化（风格 A 浅色竞技场）===
+   保留 3 列 grid + 御三家 slot 配色 (黄/橙/蓝)；
+   仅把所有 hardcoded 深色 (rgba(255,255,255,*) 半透明白 / #1f2735 网格线 /
+   #0d1117 代码块 / rgba(13,17,23,*) 深底 等) 在 vibechat-light scope 下
+   反向改成浅色版本。设计依据：历史 vibechat 群聊浅色化方案 A。 */
+/* ============================================================== */
+
+/* AI 群聊底部蓝色径向光晕：浅底下不刺眼（保留淡光晕暗示"AI 群聊中心"） */
+body.theme-vibechat-light .meeting-room-panel::after {
+  background: radial-gradient(ellipse at center bottom,
+    rgba(7, 193, 96, 0.05) 0%, rgba(7, 193, 96, 0.015) 40%, transparent 70%);
+}
+
+/* 主 AI 群聊面板原样式写死深色渐变和浅色文字，必须在 light scope 下整体切回主题变量。 */
+body.theme-vibechat-light .mr-gc-panel {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* mr-ft-strip 网格分隔线 */
+body.theme-vibechat-light .mr-ft-strip { border-bottom-color: var(--border); }
+body.theme-vibechat-light .mr-ft:not(:last-child) { border-right-color: var(--border); }
+
+/* mr-ft 单席位卡片：白底 + slot 色 active 浅底 */
+body.theme-vibechat-light .mr-ft {
+  background: #ffffff;
+  color: var(--text-primary);
+}
+body.theme-vibechat-light .mr-ft:hover { background: rgba(0, 0, 0, 0.025); }
+body.theme-vibechat-light .mr-ft.slot-1 { border-bottom-color: rgba(var(--c-slot-1-rgb), 0.25); }
+body.theme-vibechat-light .mr-ft.slot-2 { border-bottom-color: rgba(var(--c-slot-2-rgb), 0.25); }
+body.theme-vibechat-light .mr-ft.slot-3 { border-bottom-color: rgba(var(--c-slot-3-rgb), 0.25); }
+body.theme-vibechat-light .mr-ft.slot-1.active { background: rgba(var(--c-slot-1-rgb), 0.05); }
+body.theme-vibechat-light .mr-ft.slot-2.active { background: rgba(var(--c-slot-2-rgb), 0.05); }
+body.theme-vibechat-light .mr-ft.slot-3.active { background: rgba(var(--c-slot-3-rgb), 0.05); }
+
+/* mr-card-view-tabs 顶部 tab 区 */
+body.theme-vibechat-light .mr-card-view-tabs {
+  background: var(--bg-secondary);
+  border-bottom-color: var(--border);
+}
+body.theme-vibechat-light .mr-card-view-tab {
+  background: #ffffff;
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+body.theme-vibechat-light .mr-card-view-tab:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* mr-ft-name 在浅底上加深 slot 色（深底深字现在浅底要保持可读） */
+body.theme-vibechat-light .mr-ft-name.slot-1 { color: #b45309; }
+body.theme-vibechat-light .mr-ft-name.slot-2 { color: #c2410c; }
+body.theme-vibechat-light .mr-ft-name.slot-3 { color: #1e40af; }
+body.theme-vibechat-light .mr-ft-preview,
+body.theme-vibechat-light .mr-ft-think,
+body.theme-vibechat-light .mr-ft-stat-inline {
+  color: #334155;
+}
+body.theme-vibechat-light .mr-ft-md,
+body.theme-vibechat-light .mr-ft-preview-md {
+  color: #1f2937;
+}
+body.theme-vibechat-light .mr-ft-stat-inline .num {
+  color: #0f766e;
+}
+body.theme-vibechat-light .mr-ft-preview-md h1,
+body.theme-vibechat-light .mr-ft-preview-md h2,
+body.theme-vibechat-light .mr-ft-preview-md h3,
+body.theme-vibechat-light .mr-ft-preview-md h4,
+body.theme-vibechat-light .mr-ft-preview-md h5,
+body.theme-vibechat-light .mr-ft-preview-md h6 {
+  color: var(--text-primary);
+}
+body.theme-vibechat-light .mr-ft-preview-md strong,
+body.theme-vibechat-light .mr-ft-md strong {
+  color: #0f172a;
+  font-weight: 700;
+}
+body.theme-vibechat-light .mr-ft-preview-md em,
+body.theme-vibechat-light .mr-ft-md em {
+  color: #1f2937;
+}
+body.theme-vibechat-light .mr-ft-preview-md a,
+body.theme-vibechat-light .mr-ft-md a,
+body.theme-vibechat-light .mr-ft-md a.rt-file-link,
+body.theme-vibechat-light .mr-ft-preview-md a.rt-file-link,
+body.theme-vibechat-light .mr-gc-tl-body a,
+body.theme-vibechat-light .mr-gc-tl-body a.rt-file-link {
+  color: #075985;
+  text-decoration-line: underline;
+  text-decoration-color: rgba(7, 89, 133, 0.70);
+}
+body.theme-vibechat-light .mr-ft-md a.rt-file-link,
+body.theme-vibechat-light .mr-ft-preview-md a.rt-file-link,
+body.theme-vibechat-light .mr-gc-tl-body a.rt-file-link {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: #eef6ff;
+  text-decoration-style: dashed;
+}
+body.theme-vibechat-light .mr-ft-preview-md a:hover,
+body.theme-vibechat-light .mr-ft-md a:hover,
+body.theme-vibechat-light .mr-gc-tl-body a:hover {
+  color: #0c4a6e;
+  background: rgba(14,165,233,0.12);
+}
+body.theme-vibechat-light .mr-ft-expand {
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--text-secondary);
+}
+body.theme-vibechat-light .mr-ft-expand:hover {
+  background: rgba(15, 23, 42, 0.09);
+  color: var(--text-primary);
+}
+
+/* mr-ft-md 内联 markdown：代码块 / 表格浅化 */
+body.theme-vibechat-light .mr-ft-md pre {
+  background: #f6f8fa;
+  color: #1f2328;
+  border: 1px solid var(--border);
+  border-left: 4px solid #6e7781;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
+}
+body.theme-vibechat-light .mr-ft-md code {
+  background: #eef2ff;
+  color: #7e22ce;
+  border: 1px solid #c7d2fe;
+}
+body.theme-vibechat-light .mr-ft-md pre code {
+  background: transparent;
+  color: inherit;
+  border: 0;
+}
+body.theme-vibechat-light .mr-ft-md th,
+body.theme-vibechat-light .mr-ft-md td { border-color: var(--border); }
+body.theme-vibechat-light .mr-ft-md th {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+body.theme-vibechat-light .mr-ft-md tr:nth-child(even) td,
+body.theme-vibechat-light .mr-ft-preview-md tr:nth-child(even) td {
+  background: #f8fafc;
+}
+body.theme-vibechat-light .mr-ft-preview-md code {
+  background: #eef2ff;
+  color: #7e22ce;
+  border: 1px solid #c7d2fe;
+}
+body.theme-vibechat-light .mr-ft-preview-md pre {
+  background: #f6f8fa;
+  color: #1f2328;
+  border: 1px solid var(--border);
+  border-left: 4px solid #6e7781;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
+}
+body.theme-vibechat-light .mr-ft-preview-md pre code {
+  background: transparent;
+  color: inherit;
+  border: 0;
+}
+
+/* 半透明白底反向（在浅底上 rgba(255,255,255,*) 看不出，改成 rgba(0,0,0,*) 让元素深一档） */
+body.theme-vibechat-light .mr-ft-progress { background: rgba(0, 0, 0, 0.06); }
+body.theme-vibechat-light .mr-ft-md blockquote,
+body.theme-vibechat-light .mr-ft-preview-md blockquote {
+  border-left: 3px solid #94a3b8;
+  background: #f8fafc;
+  color: #334155;
+}
+body.theme-vibechat-light .mr-ft-preview-ellip {
+  color: #64748b;
+  opacity: 1;
+}
+body.theme-vibechat-light .mr-ft-preview.streaming {
+  color: #1f2937;
+}
+body.theme-vibechat-light .mr-gc-tl-body {
+  color: #1f2937;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+}
+body.theme-vibechat-light .mr-gc-tl-body code {
+  background: #eef2ff;
+  color: #7e22ce;
+  border: 1px solid #c7d2fe;
+}
+body.theme-vibechat-light .mr-gc-tl-body pre {
+  background: #f6f8fa;
+  color: #1f2328;
+  border: 1px solid var(--border);
+  border-left: 4px solid #6e7781;
+}
+body.theme-vibechat-light .mr-gc-tl-body pre code {
+  background: transparent;
+  color: inherit;
+  border: 0;
+}
+body.theme-vibechat-light .mr-gc-tl-body th,
+body.theme-vibechat-light .mr-gc-tl-body td {
+  border-color: var(--border);
+}
+body.theme-vibechat-light .mr-gc-tl-body th {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+/* mr-tab.has-new 黄色提示边在浅底上加深 */
+body.theme-vibechat-light .mr-tab.has-new {
+  border-color: rgba(180, 83, 9, 0.6);
+}
+body.theme-vibechat-light .mr-tab .new-badge {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* 进度条 bar 颜色（thinking / idle 状态切换在浅底上更明显） */
+body.theme-vibechat-light .mr-header-progress { background: rgba(0, 0, 0, 0.06); }
+body.theme-vibechat-light .mr-header-progress-fill {
+  background: linear-gradient(90deg, var(--c-slot-1), var(--c-slot-3));
+}
+
+/* mr-input-row 输入区：使用主题变量自动浅化（已通过 var 自动适配，
+   这里仅 fix mr-input-box 的 contenteditable focus 边框 */
+body.theme-vibechat-light .mr-input-box:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(7, 193, 96, 0.10);
+}
+
+/* mr-send-btn 发送按钮：微信绿（跟全局 send 一致） */
+body.theme-vibechat-light .mr-send-btn {
+  background: var(--accent);
+  color: white;
+}
+body.theme-vibechat-light .mr-send-btn:hover {
+  background: #06ad57;
+}
+
+/* mr-free-avatar-chk 头像 checkbox 选中态 */
+body.theme-vibechat-light .mr-free-avatar-chk.checked {
+  outline: 2px solid var(--accent);
+}
+
+/* ============================================================== */
+/* === 2026-05-10 v2 · 精致化补强（按钮/边框/active 状态/徽章）===
+   用户反馈"按钮和框线在浅色下不够凸显，UI 要做精致些"。
+   增强 visible structure：
+   - 卡片网格 border 用 #94a3b8（深一档，从 #cbd5e1 → #94a3b8）
+   - .mr-ft.active 用 slot 色 box-shadow ring 强化选中态
+   - 底部按钮 .mr-ft-escape-btn 白底 + 1px 深边 + hover 微信绿
+   - 状态徽章 .mr-ft-status.* 在浅底深字浅底
+   - .mr-tab.active / .mr-card-view-tab.active 微信绿主色
+   - .mr-ft-bottom border-top / .mr-ft-escape-bar 半透明白底反向 */
+/* ============================================================== */
+
+/* 卡片网格分隔线加深一档（用户反馈分不开） */
+body.theme-vibechat-light .mr-ft-strip { border-bottom-color: #94a3b8; }
+body.theme-vibechat-light .mr-ft:not(:last-child) { border-right-color: #94a3b8; }
+
+/* mr-ft.active 强化选中态：slot 色 inset ring + 加深底色染色 */
+body.theme-vibechat-light .mr-ft.slot-1.active {
+  background: rgba(var(--c-slot-1-rgb), 0.08);
+  box-shadow: inset 0 0 0 2px rgba(var(--c-slot-1-rgb), 0.45);
+}
+body.theme-vibechat-light .mr-ft.slot-2.active {
+  background: rgba(var(--c-slot-2-rgb), 0.08);
+  box-shadow: inset 0 0 0 2px rgba(var(--c-slot-2-rgb), 0.45);
+}
+body.theme-vibechat-light .mr-ft.slot-3.active {
+  background: rgba(var(--c-slot-3-rgb), 0.08);
+  box-shadow: inset 0 0 0 2px rgba(var(--c-slot-3-rgb), 0.45);
+}
+
+/* mr-ft-bottom border-top 反向（半透明白 → 半透明黑） */
+body.theme-vibechat-light .mr-ft-bottom {
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* mr-ft-escape-bar 顶部 dashed 分隔反向 */
+body.theme-vibechat-light .mr-ft-escape-bar {
+  border-top: 1px dashed rgba(0, 0, 0, 0.10);
+}
+
+/* 底部三按钮（一键提取 / 跳过 / 发送）凸显：白底 + 深 1px 边 + 加粗 */
+body.theme-vibechat-light .mr-ft-escape-btn {
+  background: #ffffff;
+  border: 1px solid #94a3b8;
+  color: #334155;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+body.theme-vibechat-light .mr-ft-escape-btn:hover:not([disabled]) {
+  background: #e6f4ea;
+  border-color: var(--accent);
+  color: #0f5132;
+  box-shadow: 0 1px 3px rgba(7, 193, 96, 0.15);
+}
+body.theme-vibechat-light .mr-ft-escape-bar-terminal {
+  border-top-color: rgba(207, 34, 46, 0.30);
+  background: rgba(207, 34, 46, 0.05);
+}
+body.theme-vibechat-light .mr-ft-escape-bar-terminal .mr-ft-escape-btn {
+  border-color: rgba(207, 34, 46, 0.40);
+  color: #cf222e;
+}
+
+/* 状态徽章 .mr-ft-status.*：浅底色块 + 深字 */
+body.theme-vibechat-light .mr-ft-status.completed {
+  background: #d1fae5; color: #065f46;
+}
+body.theme-vibechat-light .mr-ft-status.thinking {
+  background: #fef3c7; color: #92400e;
+}
+body.theme-vibechat-light .mr-ft-status.streaming {
+  background: #dbeafe; color: #1e40af;
+}
+body.theme-vibechat-light .mr-ft-status.idle {
+  background: #f1f5f9; color: #475569;
+}
+body.theme-vibechat-light .mr-ft-status.initializing {
+  background: #ede9fe; color: #5b21b6;
+}
+body.theme-vibechat-light .mr-ft-status.timeout,
+body.theme-vibechat-light .mr-ft-status.errored,
+body.theme-vibechat-light .mr-ft-status.send_stuck,
+body.theme-vibechat-light .mr-ft-status.transport_lost {
+  background: #fee2e2; color: #b91c1c;
+}
+body.theme-vibechat-light .mr-ft-status.manual_extracted {
+  background: #d1fae5; color: #047857; opacity: 0.85;
+}
+body.theme-vibechat-light .mr-ft-status.absent {
+  background: #f1f5f9; color: #475569;
+}
+body.theme-vibechat-light .mr-ft-status.soft_alert,
+body.theme-vibechat-light .mr-ft-status.interrupted {
+  background: #ffedd5; color: #9a3412;
+}
+
+/* 血缘 chip 半透明白底反向 */
+body.theme-vibechat-light .mr-ft-lineage-chip {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+body.theme-vibechat-light .mr-ft-lineage-chip:hover { background: #e2e8f0; }
+body.theme-vibechat-light .mr-ft-lineage-chip.slot-1 { color: #b45309; border-color: rgba(var(--c-slot-1-rgb), 0.40); }
+body.theme-vibechat-light .mr-ft-lineage-chip.slot-2 { color: #c2410c; border-color: rgba(var(--c-slot-2-rgb), 0.40); }
+body.theme-vibechat-light .mr-ft-lineage-chip.slot-3 { color: #1e40af; border-color: rgba(var(--c-slot-3-rgb), 0.40); }
+
+body.theme-vibechat-light .mr-ft-ctx.ok {
+  background: #d1fae5;
+  color: #047857;
+}
+body.theme-vibechat-light .mr-ft-ctx.warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+body.theme-vibechat-light .mr-ft-ctx.high {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+body.theme-vibechat-light .mr-ft-mem-btn {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #334155;
+}
+body.theme-vibechat-light .mr-ft-mem-btn:hover {
+  background: #eef2f7;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+body.theme-vibechat-light .mr-ft-mem-btn.pending {
+  background: #fef3c7;
+  border-color: #fcd34d;
+  color: #92400e;
+}
+body.theme-vibechat-light .mr-ft-mem-btn.health-warn {
+  background: #ffedd5;
+  border-color: #fdba74;
+  color: #9a3412;
+}
+body.theme-vibechat-light .mr-ft-mem-btn.health-bad {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+body.theme-vibechat-light .mr-gc-userq {
+  background: #fff7ed;
+  border-left-color: #f59e0b;
+  color: #334155;
+}
+body.theme-vibechat-light .mr-gc-userq-label,
+body.theme-vibechat-light .mr-gc-userq-toggle {
+  color: #92400e;
+}
+body.theme-vibechat-light .mr-gc-userq-text {
+  color: #1f2937;
+}
+body.theme-vibechat-light .mr-gc-userq-tag {
+  background: #ffedd5;
+  color: #9a3412;
+}
+body.theme-vibechat-light .mr-gc-scene-card,
+body.theme-vibechat-light .mr-gc-ob-step {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+body.theme-vibechat-light .mr-gc-scene-card-head {
+  color: #1e40af;
+}
+body.theme-vibechat-light .mr-gc-scene-card-body {
+  color: #334155;
+}
+body.theme-vibechat-light .mr-gc-scene-card-body strong {
+  color: #b45309;
+}
+body.theme-vibechat-light .mr-gc-scene-card-btn-secondary {
+  background: #ffffff;
+  border-color: #94a3b8;
+  color: #475569;
+}
+body.theme-vibechat-light .mr-gc-scene-card-btn-secondary:hover {
+  background: #f1f5f9;
+  border-color: #64748b;
+  color: #0f172a;
+}
+body.theme-vibechat-light .mr-gc-ob-step-title {
+  color: #0f172a;
+  font-weight: 700;
+}
+body.theme-vibechat-light .mr-gc-ob-step-desc {
+  color: #475569;
+}
+body.theme-vibechat-light .mr-gc-ob-step-num {
+  background: #e0e7ff;
+  color: #4f46e5;
+  border-color: #a5b4fc;
+}
+
+/* focus/compare 的旧深色规则会把非 active 卡片 brightness 压暗；浅色主题下保持白卡一致。 */
+body.theme-vibechat-light.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active),
+body.theme-vibechat-light.mr-card-compare-on .mr-ft:not(.compare-selected) {
+  opacity: 1;
+  filter: none;
+  background-color: #f8fafc !important;
+}
+body.theme-vibechat-light.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active):hover {
+  opacity: 1;
+  filter: none;
+  background-color: #f1f5f9 !important;
+}
+body.theme-vibechat-light.mr-card-focus-on .mr-ft-strip .mr-ft.active {
+  box-shadow:
+    inset 0 0 0 2px rgba(var(--c-slot-glow), 0.45),
+    0 10px 24px rgba(15, 23, 42, 0.10);
+}
+body.theme-vibechat-light.mr-card-focus-on .mr-ft-strip .mr-ft.active::after {
+  background: linear-gradient(135deg,
+    rgba(var(--c-slot-glow), 0.70),
+    rgba(255, 255, 255, 0.85),
+    rgba(var(--c-slot-glow), 0.70));
+}
+
+/* 顶部 mr-tab.active 用微信绿（覆盖默认 var(--accent) 已在 styles.css 声明微信绿，
+   这里多加 hover 强化保险） */
+body.theme-vibechat-light .mr-tab.active {
+  background: var(--accent);
+  color: white;
+  font-weight: 600;
+}
+body.theme-vibechat-light .mr-tab:hover:not(.active) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* mr-card-view-tab.active 用微信绿（替代默认 indigo） */
+body.theme-vibechat-light .mr-card-view-tab.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+  box-shadow: 0 1px 3px rgba(7, 193, 96, 0.20);
+}
+
+/* mr-view-toggle 切换按钮 */
+body.theme-vibechat-light .mr-view-toggle {
+  border: 1px solid var(--border);
+  background: #ffffff;
+}
+body.theme-vibechat-light .mr-view-toggle .mr-view-btn {
+  color: var(--text-secondary);
+}
+body.theme-vibechat-light .mr-view-toggle .mr-view-btn.active {
+  background: var(--accent);
+  color: white;
+}
+body.theme-vibechat-light .mr-view-toggle .mr-view-btn:not(.active):hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* mr-header-btn 凸显：默认浅底 + 1px 深边 + hover */
+body.theme-vibechat-light .mr-header-btn {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+body.theme-vibechat-light .mr-header-btn:hover {
+  background: var(--bg-hover);
+  border-color: #94a3b8;
+  color: var(--text-primary);
+}
+body.theme-vibechat-light .mr-header-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+/* ============================================================== */
+/* === 兜底：强制 .mr-ft 浅色背景（防止某个 status class / 子 wrap
+       覆盖整个卡片底色为深色，用户截图反复出现单卡深色 island） ===
+   用 .mr-ft-strip > .mr-ft child combinator + body class + !important
+   提到最高 specificity，压住任何深色覆盖。 */
+/* ============================================================== */
+body.theme-vibechat-light .mr-ft-strip > .mr-ft {
+  background-color: #ffffff !important;
+}
+body.theme-vibechat-light .mr-ft-strip > .mr-ft.slot-1.active {
+  background-color: rgba(var(--c-slot-1-rgb), 0.10) !important;
+}
+body.theme-vibechat-light .mr-ft-strip > .mr-ft.slot-2.active {
+  background-color: rgba(var(--c-slot-2-rgb), 0.10) !important;
+}
+body.theme-vibechat-light .mr-ft-strip > .mr-ft.slot-3.active {
+  background-color: rgba(var(--c-slot-3-rgb), 0.10) !important;
+}
+body.theme-vibechat-light .mr-ft-strip > .mr-ft:hover:not(.active) {
+  background-color: rgba(0, 0, 0, 0.025) !important;
+}
+
+/* AI 群聊主容器底色也兜底（meeting-room-panel 用 var(--bg-primary, #0d1117)，
+   万一变量没生效 fallback 到深色） */
+body.theme-vibechat-light .meeting-room-panel {
+  background: var(--bg-primary) !important;
+}
+

@@ -5,6 +5,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { readCssWithImports } = require('./helpers/read-css-with-imports.js');
 
 function test(name, fn) {
   try { fn(); console.log(`  ✓ ${name}`); }
@@ -15,7 +16,7 @@ console.log('Running meeting-room relayout tests...');
 
 const ROOT = path.join(__dirname, '..');
 const SRC = fs.readFileSync(path.join(ROOT, 'renderer', 'meeting-room.js'), 'utf-8');
-const CSS = fs.readFileSync(path.join(ROOT, 'renderer', 'meeting-room.css'), 'utf-8');
+const CSS = readCssWithImports(path.join(ROOT, 'renderer', 'meeting-room.css'));
 
 test('_relayoutMeetingRoom 函数定义', () => {
   assert.match(SRC, /function\s+_relayoutMeetingRoom\s*\(/);

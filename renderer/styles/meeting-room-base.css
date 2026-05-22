@@ -1,0 +1,221 @@
+/* AI Identity Color Tokens (legacy kind-based — used by feed / summary panels
+ * that semantically tag content by *AI identity* rather than *seat position*).
+ * Group chat cards (.mr-ft.* / .mr-gc-card.* / .mr-ft-progress-bar.* etc.)
+ * use the slot-based palette below: 3 fixed visual themes per round-table
+ * seat (slot 1 / 2 / 3), independent of which AI kind sits there.
+ * 御三家配色 — 槽位 1 永远皮卡丘黄, 2 永远小火龙橙, 3 永远杰尼龟蓝. */
+:root {
+  --c-claude: #f0843a;
+  --c-claude-rgb: 240, 132, 58;
+  --c-gemini: #5b8def;
+  --c-gemini-rgb: 91, 141, 239;
+  --c-codex: #4ad28b;
+  --c-codex-rgb: 74, 210, 139;
+  /* 2026-05-02 修复：补 DeepSeek/GLM 主题色变量。
+     旧版本只定义三家，使用 var(--c-deepseek-rgb) / var(--c-glm-rgb) 的位置
+     fallback 到 inherit，DS/GLM 用户在 feed/summary 等 kind-tagged 面板视觉退化。 */
+  --c-deepseek: #58a6ff;
+  --c-deepseek-rgb: 88, 166, 255;
+  --c-glm: #d96aa8;
+  --c-glm-rgb: 217, 106, 168;
+
+  /* Slot tokens — 御三家 (Pikachu / Charmander / Squirtle) */
+  --c-slot-1: #fbbf24;
+  --c-slot-1-rgb: 251, 191, 36;
+  --c-slot-2: #f97316;
+  --c-slot-2-rgb: 249, 115, 22;
+  --c-slot-3: #3b82f6;
+  --c-slot-3-rgb: 59, 130, 246;
+}
+
+/* Meeting Room Panel */
+.meeting-room-panel {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-primary, #0d1117);
+  color: var(--text-primary, #c9d1d9);
+  /* Phase 7(2026-05-05 道雪): G 方案 — 地平线光晕。卡片底部 ~80px 高度有微蓝径向光晕,
+     暗示"AI 群聊中心"。pointer-events:none 防止挡 click;伪元素层 z-index 低于 footer。 */
+  position: relative;
+}
+.meeting-room-panel::after {
+  content: '';
+  position: absolute;
+  bottom: 56px; /* footer 高度上方,正对卡片底部边界 */
+  left: 0; right: 0;
+  height: 96px;
+  background: radial-gradient(ellipse at center bottom, rgba(88,166,255,0.08) 0%, rgba(88,166,255,0.02) 40%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Header */
+.mr-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: var(--bg-secondary, #161b22);
+  border-bottom: 1px solid var(--border, #30363d);
+  min-height: 40px;
+}
+
+.mr-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mr-header-title {
+  font-weight: 600;
+  font-size: 14px;
+  cursor: text;
+}
+
+.mr-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mr-header-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* H3 Phase 4(2026-05-05): Header meta + 进度条 */
+.mr-header-meta {
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+  font-weight: 400;
+  white-space: nowrap;
+  margin-left: 4px;
+}
+.mr-header-meta .mr-header-meta-active {
+  color: var(--accent, #58a6ff);
+  font-weight: 600;
+}
+.mr-header-progress {
+  flex: 0 1 240px;
+  max-width: 240px;
+  height: 4px;
+  margin: 0 14px;
+  background: var(--bg-primary, #0d1117);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+.mr-header-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #f5d76e 0%, #ff7849 50%, #5dade2 100%);
+  transition: width .3s ease-out;
+}
+.mr-header-progress.mr-header-progress-thinking .mr-header-progress-fill {
+  animation: mr-header-prog-pulse 1.4s ease-in-out infinite;
+}
+.mr-header-progress.mr-header-progress-idle .mr-header-progress-fill {
+  background: var(--bg-tertiary, #21262d);
+  opacity: 0.5;
+}
+@keyframes mr-header-prog-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Focus mode tabs */
+.mr-tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: 12px;
+  padding: 2px;
+  background: var(--bg-primary, #0d1117);
+  border-radius: 6px;
+}
+
+.mr-tab {
+  padding: 4px 12px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mr-tab:hover {
+  background: var(--bg-hover, #1c2128);
+  color: var(--text-primary, #c9d1d9);
+}
+
+.mr-tab.active {
+  background: var(--accent, #6366f1);
+  color: #fff;
+}
+
+.mr-tab-status {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.mr-tab-status.streaming  { background: #22c55e; }
+.mr-tab-status.new-output { background: #eab308; }
+.mr-tab-status.idle       { background: #6b7280; }
+.mr-tab-status.error      { background: #ef4444; }
+.mr-tab .new-badge {
+  font-size: 9px;
+  padding: 1px 4px;
+  background: rgba(250,204,21,0.25);
+  border-radius: 3px;
+  color: #eab308;
+  font-weight: 600;
+  margin-left: 4px;
+}
+.mr-tab.has-new {
+  border: 1px solid rgba(250,204,21,0.5);
+}
+
+.mr-header-btn:hover {
+  background: var(--bg-hover, #1c2128);
+  color: var(--text-primary, #c9d1d9);
+}
+
+.mr-header-btn.active {
+  background: var(--accent, #6366f1);
+  color: #fff;
+  border-color: var(--accent, #6366f1);
+}
+
+.mr-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg-primary, #0d1117);
+}
+.mr-view-toggle .mr-view-btn {
+  min-width: 42px;
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 4px;
+}
+.mr-view-toggle .mr-view-btn:not(.active) {
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+}
+.mr-view-toggle .mr-view-btn:focus-visible {
+  outline: 2px solid rgba(88, 166, 255, 0.75);
+  outline-offset: 1px;
+}
+

@@ -1,12 +1,13 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { readCssWithImports } = require('./helpers/read-css-with-imports.js');
 
 const root = path.join(__dirname, '..');
 const dispatcherSrc = fs.readFileSync(path.join(root, 'main', 'groupchat', 'dispatcher.js'), 'utf8');
 const recoverySrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'groupchat-recovery-handlers.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.js'), 'utf8');
-const cssSrc = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.css'), 'utf8');
+const cssSrc = readCssWithImports(path.join(root, 'renderer', 'meeting-room.css'));
 
 assert.ok(
   dispatcherSrc.includes('const disableHardTimeout = opts.disableHardTimeout === true;') &&
