@@ -16,6 +16,7 @@ const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
 const { createPastSessionModals } = require('./past-session-modals.js');
+const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
 const {
   PREVIEW_PATH_RE,
   HUB_IMG_PATH_RE,
@@ -3638,135 +3639,21 @@ async function maybeNotify(session) {
 }
 
 // --- Keyboard shortcuts ---
-document.addEventListener('keydown', (e) => {
-  if (!(e.ctrlKey || e.metaKey)) return;
-
-  // Ctrl+Alt+Home: emergency return to the launcher shell.
-  if (!e.shiftKey && e.altKey && e.key === 'Home') {
-    e.preventDefault();
-    escapeToHome();
-    return;
-  }
-
-  // Ctrl+N: new Claude session
-  if (!e.shiftKey && !e.altKey && (e.key === 'n' || e.key === 'N')) {
-    e.preventDefault();
-    ipcRenderer.invoke('create-session', 'claude');
-    return;
-  }
-
-  // Ctrl+W: close active session
-  if (!e.shiftKey && !e.altKey && (e.key === 'w' || e.key === 'W')) {
-    e.preventDefault();
-    if (activeSessionId) ipcRenderer.invoke('close-session', activeSessionId);
-    return;
-  }
-
-  // Ctrl+B: toggle sidebar
-  if (!e.shiftKey && !e.altKey && (e.key === 'b' || e.key === 'B')) {
-    e.preventDefault();
-    toggleSidebar();
-    return;
-  }
-
-  // Ctrl+Tab / Ctrl+Shift+Tab: cycle sessions
-  if (e.key === 'Tab') {
-    e.preventDefault();
-    cycleSession(e.shiftKey ? -1 : 1);
-    return;
-  }
-
-  // Ctrl+1..9: jump to Nth session in current sort order
-  if (!e.shiftKey && !e.altKey && /^[1-9]$/.test(e.key)) {
-    e.preventDefault();
-    jumpToSessionByIndex(parseInt(e.key, 10) - 1);
-    return;
-  }
-
-  // Ctrl+F: terminal in-buffer search (when a terminal is active)
-  if (!e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
-    e.preventDefault();
-    if (activeSessionId) openTerminalSearch();
-    return;
-  }
-
-  // Ctrl+Shift+C: copy selected terminal text
-  if (e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C' || e.code === 'KeyC')) {
-    const cached = terminalCache.get(activeSessionId);
-    const sel = cached && cached.terminal.getSelection();
-    if (sel) {
-      e.preventDefault();
-      clipboard.writeText(sel);
-    }
-    return;
-  }
-
-  // Ctrl+End: jump to bottom
-  if (!e.shiftKey && !e.altKey && e.key === 'End') {
-    e.preventDefault();
-    const c = terminalCache.get(activeSessionId);
-    if (c) c.terminal.scrollToBottom();
-    return;
-  }
-  // Ctrl+Home: jump to top
-  if (!e.shiftKey && !e.altKey && e.key === 'Home') {
-    e.preventDefault();
-    const c = terminalCache.get(activeSessionId);
-    if (c) c.terminal.scrollToTop();
-    return;
-  }
-
-  // Ctrl+Up / Ctrl+Down: jump to previous/next user prompt.
-  // 委派 minimap.navPrev/navNext —— 和 xterm-level keydown handler (renderer.js:~941)
-  // 共用同一份跳转实现。stopPropagation 阻止后续 xterm handler 重复跳，避免双触发。
-  if (!e.shiftKey && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-    if (e.defaultPrevented) return; // xterm-level handler already handled this event
-    const c = terminalCache.get(activeSessionId);
-    if (!c || !c._minimap) return;
-    const moved = e.key === 'ArrowUp' ? c._minimap.navPrev() : c._minimap.navNext();
-    if (moved) {
-      e.preventDefault();
-    }
-    return;
-  }
-
-  // Ctrl+Plus / Ctrl+Minus / Ctrl+0: font size
-  if (!e.shiftKey && !e.altKey && (e.key === '=' || e.key === '+')) {
-    e.preventDefault(); setFontSize(currentFontSize + 1); return;
-  }
-  if (!e.shiftKey && !e.altKey && e.key === '-') {
-    e.preventDefault(); setFontSize(currentFontSize - 1); return;
-  }
-  if (!e.shiftKey && !e.altKey && e.key === '0') {
-    e.preventDefault(); setFontSize(16); return;
-  }
-}, true);
-
-function getSortedVisibleSessionIds() {
-  // Same sort as renderSessionList so Ctrl+N maps to what user sees.
-  const all = Array.from(sessions.values());
-  return all
-    .sort((a, b) => {
-      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
-      return b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt;
-    })
-    .map(s => s.id);
-}
-
-function cycleSession(direction) {
-  const ids = getSortedVisibleSessionIds();
-  if (ids.length === 0) return;
-  const i = Math.max(0, ids.indexOf(activeSessionId));
-  const next = (i + direction + ids.length) % ids.length;
-  selectSession(ids[next]);
-}
-
-function jumpToSessionByIndex(idx) {
-  const ids = getSortedVisibleSessionIds();
-  if (idx < 0 || idx >= ids.length) return;
-  selectSession(ids[idx]);
-}
-
+const keyboardShortcuts = createKeyboardShortcuts({
+  document,
+  ipcRenderer,
+  clipboard,
+  sessions,
+  terminalCache,
+  getActiveSessionId: () => activeSessionId,
+  getCurrentFontSize: () => currentFontSize,
+  selectSession,
+  escapeToHome,
+  toggleSidebar,
+  openTerminalSearch: () => openTerminalSearch(),
+  setFontSize,
+});
+keyboardShortcuts.init();
 // --- Context menus ---
 const sessionContextMenu = createSessionContextMenuController({
   document,
