@@ -9,7 +9,9 @@ const persistenceIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'persis
 const resumeIpcSrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'resume-session-handlers.js'), 'utf8');
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
 const turnCardSrc = fs.readFileSync(path.join(root, 'renderer', 'turn-card-renderer.js'), 'utf8');
+const sessionListSrc = fs.readFileSync(path.join(root, 'renderer', 'session-list-renderer.js'), 'utf8');
 const rendererCardSrc = rendererSrc + '\n' + turnCardSrc;
+const rendererSidebarSrc = rendererSrc + '\n' + sessionListSrc;
 const tapSrc = fs.readFileSync(path.join(root, 'core', 'transcript-tap.js'), 'utf8');
 const sessionStoreSrc = fs.readFileSync(path.join(root, 'core', 'session-store.js'), 'utf8');
 
@@ -58,8 +60,8 @@ assert.ok(
   'Codex sidebar selection must force bottom pin when requested and on first terminal mount',
 );
 assert.ok(
-  rendererSrc.includes("selectSession(s.id, { forceScrollBottom: true })") &&
-  rendererSrc.includes("selectSession(subId, { forceScrollBottom: true })"),
+  rendererSidebarSrc.includes("selectSession(s.id, { forceScrollBottom: true })") &&
+  rendererSidebarSrc.includes("selectSession(subId, { forceScrollBottom: true })"),
   'left sidebar clicks must request bottom pinning for Codex sessions',
 );
 assert.ok(
