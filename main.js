@@ -73,6 +73,10 @@ const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
 const { readTranscriptTail } = require('./core/session-manager');
 const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
 const {
+  findTranscriptByCCSessionId,
+  healPersistedCwds,
+} = require('./core/claude-transcript-locator.js');
+const {
   DEFAULT_CODEX_SESSIONS_ROOT,
   parseCodexRolloutToTurns,
   findCodexRolloutBySid,
@@ -281,78 +285,6 @@ function ensureGeminiMcpInstalled() {
   } catch (e) {
     console.warn('[群聊] gemini mcp install failed:', e.message);
   }
-}
-
-// Find the project directory holding a given CC session's JSONL by globbing
-// ~/.claude/projects/<slug>/<ccSessionId>.jsonl across all project slugs.
-// Returns the full path, or null if not found.
-function findTranscriptByCCSessionId(ccSessionId) {
-  if (!ccSessionId) return null;
-  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
-  // 枚举所有 CLAUDE_FAMILY 隔离配置目录（与 core/ai-kinds.js CLAUDE_FAMILY 对齐）：
-  //   claude/claude-resume → ~/.claude
-  //   deepseek → ~/.claude-deepseek
-  //   glm → ~/.claude-glm
-  //   gpt/kimi/qwen → ~/.claude-packy-{gpt,kimi,qwen}
-  // 缺一个目录会让对应家族的 transcript 全找不到（spec 2 卡片视图空白）。
-  const candidateRoots = [
-    path.join(home, '.claude', 'projects'),
-    path.join(home, '.claude-deepseek', 'projects'),
-    path.join(home, '.claude-glm', 'projects'),
-    path.join(home, '.claude-packy-gpt', 'projects'),
-    path.join(home, '.claude-packy-kimi', 'projects'),
-    path.join(home, '.claude-packy-qwen', 'projects'),
-  ];
-  for (const projectsDir of candidateRoots) {
-    try {
-      const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
-      for (const d of entries) {
-        if (!d.isDirectory()) continue;
-        const candidate = path.join(projectsDir, d.name, ccSessionId + '.jsonl');
-        if (fs.existsSync(candidate)) return candidate;
-      }
-    } catch {}
-  }
-  return null;
-}
-
-// Pull the original cwd out of a transcript JSONL. CC embeds `cwd` in most
-// message entries as JSON; we read enough to grab the first occurrence.
-// Authoritative — this is what the session was actually running in when the
-// transcript was written, so using it guarantees `claude --resume <id>` can
-// locate the project slug.
-function extractCwdFromTranscript(transcriptPath) {
-  try {
-    const fd = fs.openSync(transcriptPath, 'r');
-    try {
-      // Read up to 64KB from the head; cwd appears very early.
-      const buf = Buffer.alloc(64 * 1024);
-      const n = fs.readSync(fd, buf, 0, buf.length, 0);
-      const text = buf.slice(0, n).toString('utf-8');
-      const m = text.match(/"cwd":"((?:[^"\\]|\\.)*)"/);
-      if (m) return JSON.parse('"' + m[1] + '"');
-    } finally { fs.closeSync(fd); }
-  } catch {}
-  return null;
-}
-
-// Heal stale cwds in a persisted session list by looking up each session's
-// transcript file and reading the authoritative cwd. Fixes legacy entries
-// that were corrupted by the old `status-event` overwrite bug.
-function healPersistedCwds(sessions) {
-  let fixed = 0;
-  for (const s of sessions) {
-    if (!s.ccSessionId) continue;
-    const tp = findTranscriptByCCSessionId(s.ccSessionId);
-    if (!tp) continue;
-    const realCwd = extractCwdFromTranscript(tp);
-    if (realCwd && realCwd !== s.cwd) {
-      console.log(`[群聊] heal cwd: "${s.title}" ${s.cwd} -> ${realCwd}`);
-      s.cwd = realCwd;
-      fixed++;
-    }
-  }
-  return fixed;
 }
 
 // Read the last user message text from a Claude Code transcript JSONL file.
