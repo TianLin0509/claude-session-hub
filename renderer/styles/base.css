@@ -1,0 +1,143 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #1c2128;
+  --border: #21262d;
+  --text-primary: #f0f6fc;
+  --text-secondary: #8b949e;
+  --text-muted: #484f58;
+  --accent-green: #3fb950;
+  --accent-blue: #58a6ff;
+  --accent-orange: #f0883e;
+  --accent-red: #e74c3c;
+  --session-active: #1c2d1c;
+  --session-waiting: #1c2333;
+  --session-selected: #1c2128;
+}
+
+/* === Spec 1 v0.9.0 · UI redesign · 紫色基调 === */
+:root {
+  /* P 紫色基调 */
+  --ui-purple-1: #8b5cf6;
+  --ui-purple-2: #a78bfa;
+  --ui-purple-3: #c4b5fd;
+  --ui-purple-tint-bg: #2a2335;
+  --ui-purple-glow: rgba(139, 92, 246, 0.5);
+
+  /* 卡片 */
+  --turn-bg-assistant: #1c1d23;
+  --turn-bg-user: var(--ui-purple-tint-bg);
+  --turn-meta-fg: #71717a;
+  --turn-body-fg: #d4d4d8;
+  --turn-radius: 8px;
+  --turn-padding: 10px 14px;
+  --turn-gap: 8px;
+
+  /* 工具调用块 */
+  --tool-call-bg: #14151a;
+  --tool-call-border: #2a2b32;
+  --tool-call-name: #fbbf24;
+  --tool-call-toggle: var(--ui-purple-2);
+  --tool-call-ok: #34d399;
+  --tool-call-fail: #f87171;
+}
+
+body.theme-midnight {
+  --bg-primary: #080c14;
+  --bg-secondary: #0b1020;
+  --bg-tertiary: #0e1525;
+  --border: #141c2e;
+  --text-primary: #c8d8f0;
+  --text-secondary: #6880a0;
+  --text-muted: #3a4a68;
+  --accent-green: #39d353;
+  --accent-blue: #58a6ff;
+  --accent-orange: #79c0ff;
+  --accent-red: #ff7b72;
+  --session-active: #0c1a2e;
+  --session-waiting: #0e1830;
+  --session-selected: #101828;
+}
+
+body.theme-obsidian {
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #0e0e0e;
+  --bg-tertiary: #141414;
+  --border: #1a1a1a;
+  --text-primary: #d4c4a8;
+  --text-secondary: #807060;
+  --text-muted: #504030;
+  --accent-green: #e8a040;
+  --accent-blue: #f0b860;
+  --accent-orange: #e8a040;
+  --accent-red: #ff7b72;
+  --session-active: #1a1408;
+  --session-waiting: #18140c;
+  --session-selected: #141210;
+}
+
+body.theme-aurora {
+  --bg-primary: #0b0e13;
+  --bg-secondary: #0e1118;
+  --bg-tertiary: #10141c;
+  --border: #1a1f28;
+  --text-primary: #b0d0e0;
+  --text-secondary: #607888;
+  --text-muted: #384858;
+  --accent-green: #7ee8c8;
+  --accent-blue: #7ee8c8;
+  --accent-orange: #bc8cff;
+  --accent-red: #ff7b72;
+  --session-active: #0c1618;
+  --session-waiting: #0e1220;
+  --session-selected: #0e1318;
+}
+
+body.theme-light {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f6f8fa;
+  --bg-tertiary: #eaeef2;
+  --border: #d0d7de;
+  --text-primary: #1f2328;
+  --text-secondary: #6e7781;
+  --text-muted: #9ca3af;
+  --accent-green: #1a7f37;
+  --accent-blue: #0969da;
+  --accent-orange: #bc4c00;
+  --accent-red: #cf222e;
+  --session-active: #dafbe1;
+  --session-waiting: #ddf4ff;
+  --session-selected: #eaeef2;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--text-muted);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
