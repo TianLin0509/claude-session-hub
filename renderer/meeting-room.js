@@ -10,6 +10,16 @@ if (typeof document !== 'undefined') (function () {
   const { isPasteSensitive, kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
           SLOT_IDS, SLOT_DISPLAY, getSlotPromptName, getSlotDisplayLabel,
           slotIdRegexAlternation, slotIdToIndex, slotIndexToId } = require('../core/ai-kinds.js');
+  const {
+    avatarBySlot: _avatarBySlot,
+    avatarFallbackBySlot: _avatarFallbackBySlot,
+    avatarFallbackFor: _avatarFallbackFor,
+    avatarSrcFor: _avatarSrcFor,
+    escapeHtml,
+    formatThinkTime: _formatThinkTime,
+    formatTokens: _formatTokens,
+    ftCtxClass: _ftCtxClass,
+  } = require('./meeting-room-format.js');
 
   let activeMeetingId = null;
   let meetingData = {};
@@ -681,69 +691,6 @@ if (typeof document !== 'undefined') (function () {
       }
     }
     return subs;
-  }
-
-  function _ftCtxClass(pct) {
-    if (typeof pct !== 'number') return 'ok';
-    if (pct >= 80) return 'high';
-    if (pct >= 50) return 'warn';
-    return 'ok';
-  }
-
-  // Card redesign（2026-05-01）— 卡片统计格式化 helper
-  function _formatTokens(n) {
-    if (n == null || n === 0) return '-';
-    if (n < 1000) return String(n);
-    if (n < 1000000) {
-      const v = (n / 1000).toFixed(1);
-      return v.replace(/\.0$/, '') + 'k';
-    }
-    return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-  }
-  function _formatThinkTime(seconds) {
-    if (seconds == null || seconds === 0) return '-';
-    if (seconds < 60) {
-      // 1.0s 显示 1s（秒级），<10s 显示 1 位小数（避免抖动到 1 整数粒度）
-      return seconds < 10 ? `${seconds.toFixed(1).replace(/\.0$/, '')}s` : `${Math.round(seconds)}s`;
-    }
-    const m = Math.floor(seconds / 60);
-    const s = Math.round(seconds % 60);
-    return s === 0 ? `${m}m` : `${m}m${String(s).padStart(2, '0')}s`;
-  }
-  function _avatarSrcFor(kind) {
-    return ({
-      claude: 'assets/pokemon/pikachu.png',
-      gemini: 'assets/pokemon/charmander.png',
-      codex:  'assets/pokemon/squirtle.png',
-      // 下列 kind 都跑在 claude CLI 上（CLAUDE_CONFIG_DIR 隔离）→ 共用皮卡丘
-      deepseek: 'assets/pokemon/pikachu.png',
-      glm:      'assets/pokemon/pikachu.png',
-      gpt:      'assets/pokemon/pikachu.png',
-      kimi:     'assets/pokemon/pikachu.png',
-      qwen:     'assets/pokemon/pikachu.png',
-    })[kind] || '';
-  }
-  function _avatarFallbackFor(kind) {
-    return ({
-      claude: '🟡', gemini: '🟠', codex: '🔵',
-      deepseek: '🟢', glm: '🟣', gpt: '⚪', kimi: '🟤', qwen: '🔴',
-    })[kind] || '🤖';
-  }
-  // meeting-create-modal（2026-05-01）：AI 群聊卡片头像与 slot 位置绑定（不与 kind 绑定）。
-  //   slot 1 = 皮卡丘永远（即使该 slot 是 DeepSeek）；slot 2 小火龙；slot 3 杰尼龟。
-  //   理由：用户视觉上把"slot 位置"和某只宝可梦稳定挂钩，方便快速识别哪一格是哪家。
-  //   侧边栏单 session 列表仍按 kind 显头像（_avatarSrcFor），逻辑没变。
-  const _SLOT_AVATARS = [
-    'assets/pokemon/pikachu.png',
-    'assets/pokemon/charmander.png',
-    'assets/pokemon/squirtle.png',
-  ];
-  const _SLOT_AVATAR_FB = ['🟡', '🟠', '🔵'];
-  function _avatarBySlot(i) {
-    return _SLOT_AVATARS[i] || '';
-  }
-  function _avatarFallbackBySlot(i) {
-    return _SLOT_AVATAR_FB[i] || '🤖';
   }
 
   // meeting-create-modal（2026-05-01）：按 subSessions 数组顺序还原 slot 数组。
@@ -2602,11 +2549,6 @@ if (typeof document !== 'undefined') (function () {
     return null;
   }
 
-  function escapeHtml(str) {
-    if (str == null) return '';
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
-
   // Group chat 轮次完成：清掉 partialBy + 乐观标记（防止 turn-complete 比 IPC.then 更早），
   // 从 IPC 拉最终 state（含 turn N 已持久化）
   // 2026-05-05 道雪 修3：cache 清理对所有 meeting 都做（含非 active），DOM 重渲仅 active 做。
@@ -4316,11 +4258,6 @@ if (typeof document !== 'undefined') (function () {
   }
 
   // --- Helpers ---
-
-  function escapeHtml(str) {
-    if (str == null) return '';
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  }
 
   // --- Tab output state tracking ---
   ipcRenderer.on('terminal-data', (_e, { sessionId }) => {
