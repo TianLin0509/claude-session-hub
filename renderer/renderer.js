@@ -2072,6 +2072,24 @@ const {
   clearPreviewUI,
   restorePreviewForContext,
 } = previewPanel;
+
+// 2026-05-23 道雪：补全 main.js nav-guard 副作用 — 群聊/会议消息中 marked 渲染
+//   出的 <a href="http(s)://..."> 若不在 capture 阶段截走，会触发主 webContents
+//   will-navigate / setWindowOpenHandler，被 nav-guard 一律 shell.openExternal
+//   弹到系统浏览器，绕过 in-app 预览。preview-body 内由 controller 自己处理，
+//   rt-file-link 由 meeting-room.js 处理，其余 http(s) 链接统一走预览面板。
+document.addEventListener('click', (e) => {
+  const a = e.target && e.target.closest && e.target.closest('a[href]');
+  if (!a) return;
+  if (a.closest('#preview-body')) return;
+  if (a.classList.contains('rt-file-link')) return;
+  const href = a.getAttribute('href') || '';
+  if (!/^https?:\/\//i.test(href)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  openPreviewPanel(href);
+}, true);
+
 // --- Terminal buffer reading and activity monitor ---
 const terminalActivityMonitor = createTerminalActivityMonitor({
   sessions,
