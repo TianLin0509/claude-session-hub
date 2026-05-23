@@ -35,6 +35,22 @@ class CodexAppServerClient extends EventEmitter {
     this._proc = null;
     this._started = false;
     this._closed = false;
+    // 卡片视图历史:append-only 内存 ring。每条 user prompt + 每个 turn/completed
+    // 各 append 一个 turn 对象。transcript-handlers.js 的 codex-app 分支读这里
+    // 而不是只取 lastText,否则卡片视图只能显示最新一轮。
+    this._turns = [];
+    this._maxTurns = 200;
+  }
+
+  _appendTurn(turn) {
+    this._turns.push(turn);
+    if (this._turns.length > this._maxTurns) {
+      this._turns = this._turns.slice(-this._maxTurns);
+    }
+  }
+
+  getAllTurns() {
+    return this._turns.slice();
   }
 
   async start() {
@@ -125,6 +141,12 @@ class CodexAppServerClient extends EventEmitter {
     if (!this.threadId) throw new Error('thread is not ready');
     this.streamingBuf = [];
     this.lastText = '';
+    this._appendTurn({
+      id: `codex-app-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      role: 'user',
+      text,
+      ts: Date.now(),
+    });
     this.emit('prompt-submitted', {
       hubSessionId: this.sessionId,
       text,
@@ -216,6 +238,16 @@ class CodexAppServerClient extends EventEmitter {
       const turn = p.turn || {};
       const finalText = this._extractAssistantText(turn) || this.lastText;
       if (finalText) this.lastText = finalText;
+      if (this.lastText) {
+        this._appendTurn({
+          id: `codex-app-assistant-${turn.id || this.currentTurnId || Date.now()}`,
+          role: 'assistant',
+          text: this.lastText,
+          ts: Date.now(),
+          stopReason: 'turn_completed',
+          source: 'codex_app_server',
+        });
+      }
       this._emitOutput(`\r\n[codex-app] turn completed (${turn.status && turn.status.type || turn.status || 'unknown'})\r\n`);
       this.emit('turn-complete', {
         hubSessionId: this.sessionId,

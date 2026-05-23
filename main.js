@@ -50,6 +50,7 @@ const { registerMeetingIpc } = require('./main/ipc/meeting-handlers.js');
 const { registerMeetingCreateIpc } = require('./main/ipc/meeting-create-handlers.js');
 const { registerMeetingTimelineIpc } = require('./main/ipc/meeting-timeline-handlers.js');
 const { registerTranscriptIpc } = require('./main/ipc/transcript-handlers.js');
+const codexAppRegistry = require('./core/codex-app-registry.js');
 const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
@@ -769,6 +770,7 @@ registerCliStatusIpc(ipcMain, {
 });
 
 registerTranscriptIpc(ipcMain, {
+  codexAppRegistry,
   defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
   findCodexRolloutByCwd,
   findCodexRolloutBySid,

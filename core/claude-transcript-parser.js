@@ -97,13 +97,29 @@ function toMs(timestamp) {
 function _entryToTurn(entry) {
   if (entry.type === 'user') {
     const message = entry.message || {};
-    if (typeof message.content !== 'string') return null;
-    return {
-      id: entry.uuid,
-      role: 'user',
-      text: message.content,
-      ts: toMs(entry.timestamp),
-    };
+    if (typeof message.content === 'string') {
+      return {
+        id: entry.uuid,
+        role: 'user',
+        text: message.content,
+        ts: toMs(entry.timestamp),
+      };
+    }
+    // 数组 content（多模态 / 附件）→ 提取 text blocks 拼接为纯文本
+    if (Array.isArray(message.content)) {
+      const textBlocks = message.content
+        .filter(c => c && c.type === 'text' && typeof c.text === 'string')
+        .map(c => c.text);
+      if (textBlocks.length) {
+        return {
+          id: entry.uuid,
+          role: 'user',
+          text: textBlocks.join('\n'),
+          ts: toMs(entry.timestamp),
+        };
+      }
+    }
+    return null;
   }
   if (entry.type === 'assistant') {
     const message = entry.message || {};

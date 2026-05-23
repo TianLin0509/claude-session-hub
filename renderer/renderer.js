@@ -63,6 +63,8 @@ const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 // --- State ---
 const sessions = new Map();
 let activeSessionId = null;
+let _cardHistoryHydratedSid = null; // 已完成全量历史卡片加载的 sessionId
+const _turnCompleteBackfillTimers = new Map(); // sid -> timerId,debounce turn-complete 后的兜底 incremental reload
 const terminalCache = new Map();
 const terminalInputController = createTerminalInputController({
   document,
@@ -890,6 +892,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (currentView === 'card') {
     // loadSessionHistoryToOverlay handles its own clear + Map.clear + placeholder
     // for empty/error/non-Claude cases. Don't pre-clear here.
+    _cardHistoryHydratedSid = null; // 切 session 重置，等 loadSessionHistoryToOverlay 成功后再设
     if (typeof loadSessionHistoryToOverlay === 'function') {
       loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom }).catch(err => {
         console.warn('[showTerminal] loadSessionHistoryToOverlay failed:', err);
@@ -902,6 +905,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
       overlay.innerHTML = '';
       if (window._sessionTurns) window._sessionTurns.clear();
     }
+    _cardHistoryHydratedSid = null;
   }
   // Spec 3 · W15：切 session 时清旧 indicator + 按新 active session 状态重建
   if (typeof _updateStreamingIndicator === 'function') {
@@ -1131,6 +1135,11 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       '新会话，发首条消息试试看 — '
       + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
     );
+    // 空 session 也算 hydrated:已经确认"历史为空",后续 turn-complete 走增量
+    // 挂卡 + 250ms 补全 reload 即可,不必再触发全量。否则首条消息发出后,
+    // mountOptimisticUserCard 把 placeholder 隐藏,turn-complete 又看到 hydrated=null
+    // 反而触发全量 reload → 闪烁。
+    if (!incremental) _cardHistoryHydratedSid = sessionId;
     return { mounted: 0, error: null };
   }
 
@@ -1176,6 +1185,11 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       overlayScrollBeforeLoad.top,
       Math.max(0, container.scrollHeight - container.clientHeight),
     );
+  }
+
+  // Mark history as hydrated for this session (non-incremental full load only)
+  if (!incremental && mounted > 0) {
+    _cardHistoryHydratedSid = sessionId;
   }
 
   return { mounted, error: null };
@@ -1225,18 +1239,42 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
   // 3. only render in card view (PTY view doesn't use msg-overlay)
   if (currentView !== 'card') return;
 
-  // 4. If overlay is in placeholder state (history failed to load earlier, e.g.
-  //    ccSessionId was null when showTerminal ran), trigger full reload instead
-  //    of appending a single card on top of the placeholder.
-  const overlay = document.getElementById('msg-overlay');
-  if (overlay && overlay.querySelector('.msg-overlay-placeholder')) {
+  // 4. If history was never fully hydrated for this session, trigger backfill
+  //    before appending the single new turn. Use explicit state flag instead of
+  //    DOM placeholder detection — placeholder can be removed by optimistic card
+  //    (mountOptimisticUserCard) before we get here, breaking the old check.
+  if (_cardHistoryHydratedSid !== hubSessionId) {
     if (typeof loadSessionHistoryToOverlay === 'function') {
-      loadSessionHistoryToOverlay(hubSessionId).catch(err => {
-        console.warn('[turn-complete-event] reload after placeholder failed:', err);
-      });
+      try {
+        const r = await loadSessionHistoryToOverlay(hubSessionId);
+        if (r && r.mounted > 0) {
+          _cardHistoryHydratedSid = hubSessionId;
+          // 全量 reload 已经把最新 turn 也挂上去了(fromTail+limit:50 含末条),
+          // 不必再走下面的 limit:1 IPC + mount(dedup 会跳过,但浪费一次 IPC)。
+          return;
+        }
+      } catch (err) {
+        console.warn('[turn-complete-event] history backfill failed:', err);
+      }
     }
-    return;
   }
+
+  // 5. 挂完 limit:1 增量卡后,debounce 一次 incremental reload 兜底:
+  //    - fresh session 误判(transcript 真新但 ccSid 后到 → 错过历史)
+  //    - 同 session 多 turn-complete 快速到达(reset timer 合并成一次)
+  //    incremental=true 时 mountSessionTurnCard 内 dedup 保证不重复挂卡,
+  //    只把 turn-complete 增量分支漏掉的旧 turn 补回来。
+  const scheduleBackfill = () => {
+    const existing = _turnCompleteBackfillTimers.get(hubSessionId);
+    if (existing) clearTimeout(existing);
+    _turnCompleteBackfillTimers.set(hubSessionId, setTimeout(() => {
+      _turnCompleteBackfillTimers.delete(hubSessionId);
+      if (hubSessionId !== activeSessionId || currentView !== 'card') return;
+      if (typeof loadSessionHistoryToOverlay !== 'function') return;
+      loadSessionHistoryToOverlay(hubSessionId, { incremental: true })
+        .catch(err => console.warn('[turn-complete backfill] incremental reload failed:', err));
+    }, 350));
+  };
 
   try {
     const r = await ipcRenderer.invoke('parse-session-transcript', {
@@ -1251,9 +1289,16 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
       // turn-complete should always be assistant; defend against future broadcast scope changes
       if (turn.role !== 'assistant') return;
       // Dedup: skip if turn already mounted (race with loadSessionHistoryToOverlay)
-      if (window._sessionTurns && window._sessionTurns.has(turn.id)) return;
-      if (document.querySelector('.turn-card[data-turn-id="' + CSS.escape(turn.id) + '"]')) return;
+      if (window._sessionTurns && window._sessionTurns.has(turn.id)) {
+        scheduleBackfill();
+        return;
+      }
+      if (document.querySelector('.turn-card[data-turn-id="' + CSS.escape(turn.id) + '"]')) {
+        scheduleBackfill();
+        return;
+      }
       mountSessionTurnCard(hubSessionId, turn, { kind, autoScroll: true });
+      scheduleBackfill();
       return;
     }
 
@@ -1266,9 +1311,16 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
       kind,
     };
     // Dedup: skip if turn already mounted (race with loadSessionHistoryToOverlay)
-    if (window._sessionTurns && window._sessionTurns.has(fallbackTurn.id)) return;
-    if (document.querySelector('.turn-card[data-turn-id="' + CSS.escape(fallbackTurn.id) + '"]')) return;
+    if (window._sessionTurns && window._sessionTurns.has(fallbackTurn.id)) {
+      scheduleBackfill();
+      return;
+    }
+    if (document.querySelector('.turn-card[data-turn-id="' + CSS.escape(fallbackTurn.id) + '"]')) {
+      scheduleBackfill();
+      return;
+    }
     mountSessionTurnCard(hubSessionId, fallbackTurn, { kind, autoScroll: true });
+    scheduleBackfill();
   } catch (err) {
     console.warn('[turn-complete-event] failed to render new turn:', err);
   }
@@ -1588,14 +1640,14 @@ function applyViewMode(mode) {
     const cached = terminalCache.get(activeSessionId);
     if (cached && cached.fitAddon) scheduleFitAndResizeTerminal(activeSessionId, cached, { force: true });
   }
-  // Spec 3 · W3 resume bug fix (b)：切到卡片时若 overlay 没卡片（既无 turn-card 也无 placeholder），
-  // 主动 trigger load — 因为 showTerminal 在切 session 时只在 currentView==='card' 才 load，
-  // 默认 PTY 模式下 overlay 始终空，user 手动切到 card 时该看到历史。
-  // 已有卡片或 placeholder 则不 reload（避免重复 IPC + reflow）。
+  // Spec 3 · W3 resume bug fix (b)：切到卡片时若历史从未全量加载过，
+  // 主动 trigger load — 用 _cardHistoryHydratedSid 状态标记而非 DOM 检测，
+  // 因为 turn-complete-event 可能已在 overlay 留了单张卡但历史并未 hydrate。
   if (mode === 'card' && overlay && typeof loadSessionHistoryToOverlay === 'function' && activeSessionId) {
-    const hasContent = overlay.querySelector('.turn-card, .msg-overlay-placeholder');
-    if (!hasContent) {
-      loadSessionHistoryToOverlay(activeSessionId).catch(err => {
+    if (_cardHistoryHydratedSid !== activeSessionId) {
+      loadSessionHistoryToOverlay(activeSessionId).then(r => {
+        if (r && r.mounted > 0) _cardHistoryHydratedSid = activeSessionId;
+      }).catch(err => {
         console.warn('[applyViewMode card] auto-load failed:', err);
       });
     }
@@ -2712,6 +2764,11 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     _codexSubmitPendingTimers.delete(sessionId);
   }
   clearFloatingInputDraft(sessionId);
+  if (_cardHistoryHydratedSid === sessionId) _cardHistoryHydratedSid = null;
+  if (_turnCompleteBackfillTimers.has(sessionId)) {
+    try { clearTimeout(_turnCompleteBackfillTimers.get(sessionId)); } catch {}
+    _turnCompleteBackfillTimers.delete(sessionId);
+  }
   // 多方审查 P1 (Claude 共识)：W16 _w16RemoveTimers 也要在 session-closed 时清理，
   // 否则 1.5s 后 timer 触发时 sessions.get(sessionId) === undefined → 走 .remove() 分支，
   // 加上未做 dataset 过滤前会误删别 session 的 indicator。即使加了 dataset 过滤，timer

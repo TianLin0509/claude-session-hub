@@ -229,12 +229,14 @@ function parseCodexRolloutText(raw) {
       }
       if (eventType === 'task_complete') {
         const text = textFromContent(payload.last_agent_message).trim();
-        if (!text) return;
+        // 空 last_agent_message 但已有 agentMessages 时，不要丢轮；
+        // 让 flushAssistant 走 agentMessages 拼接 fallback
+        if (!text && (!pendingAssistant || !pendingAssistant.agentMessages.length)) return;
         const pending = ensurePendingAssistant();
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
         pending.ts = pending.ts || toMs(obj.timestamp);
         pending.tsEnd = toMs(obj.timestamp);
-        pending.finalText = text;
+        if (text) pending.finalText = text;
         pending.durationMs = typeof payload.duration_ms === 'number' ? payload.duration_ms : null;
         return;
       }

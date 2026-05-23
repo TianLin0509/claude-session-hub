@@ -412,9 +412,10 @@ function _isCardOverlayAtBottom(el) {
 function mountOptimisticUserCard(sessionId, text, kind) {
   const container = doc.getElementById('msg-overlay');
   if (!container) return null;
-  // 移除"新会话，发首条消息"占位 placeholder（如果存在）— S5 默认会写一个
+  // 隐藏 placeholder 而非删除 — 后续 turn-complete-event / applyViewMode
+  // 仍需通过 _cardHistoryHydratedSid 判是否需要全量重载，但保留 DOM 节点做 fallback
   const placeholder = container.querySelector('.msg-overlay-placeholder');
-  if (placeholder) placeholder.remove();
+  if (placeholder) placeholder.style.display = 'none';
 
   const optimisticId = 'pending-user-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
   const turn = { id: optimisticId, role: 'user', text, ts: Date.now(), kind };
