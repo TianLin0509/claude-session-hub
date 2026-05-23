@@ -74,6 +74,7 @@ function createBaseDeps(overrides = {}) {
     path: require('path'),
     registerSessionForTap: (session) => calls.push(['registerSessionForTap', session.id]),
     scenes: {
+      buildAiTeamMcpEntryForCodex: (...args) => ({ aiTeamArgs: args }),
       buildResearchMcpEntryForCodex: (...args) => ({ args }),
       writeResearchMcpConfig: (...args) => {
         calls.push(['writeResearchMcpConfig', ...args]);
@@ -147,7 +148,28 @@ test('add-meeting-sub applies Codex research MCP entries without overwriting exp
   assert.strictEqual(result.session.opts.cwd, 'C:\\custom');
   assert.strictEqual(result.session.opts.title, 'Codex 2');
   assert.strictEqual(result.session.opts.codexBypassApprovals, true);
-  assert.deepStrictEqual(result.session.opts.codexMcpEntries, [{ args: ['m1', 4567, 'token'] }]);
+  assert.deepStrictEqual(result.session.opts.codexMcpEntries, [
+    { aiTeamArgs: ['m1', 'codex'] },
+    { args: ['m1', 4567, 'token'] },
+  ]);
+});
+
+test('add-meeting-sub applies Codex ai-team MCP entry for non-research group chat', async () => {
+  const addSub = createMeetingSubAdder(createBaseDeps({
+    meetingManager: (() => {
+      const manager = createFakeMeetingManager();
+      manager.setMeeting({ id: 'm2', groupChat: true, scene: 'general', subSessions: [] });
+      return manager;
+    })(),
+  }));
+
+  const result = await addSub('m2', 'codex', {});
+
+  assert.strictEqual(result.session.opts.title, 'Codex 1');
+  assert.strictEqual(result.session.opts.codexBypassApprovals, undefined);
+  assert.deepStrictEqual(result.session.opts.codexMcpEntries, [
+    { aiTeamArgs: ['m2', 'codex'] },
+  ]);
 });
 
 test('create-meeting with slots emits final meeting once and persists slot specs', async () => {

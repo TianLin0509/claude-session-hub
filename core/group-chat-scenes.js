@@ -3,6 +3,7 @@
 // Prompt assembly lives in core/group-chat-orchestrator.js.
 // This file only keeps the two helpers needed to attach stock research tools.
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 function arenaPromptsDir(hubDataDir) {
@@ -59,7 +60,27 @@ function buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken) {
   };
 }
 
+function defaultAiTeamPython() {
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  return path.join(localAppData, 'Programs', 'Python', 'Python312', 'python.exe');
+}
+
+function buildAiTeamMcpEntryForCodex(meetingId, characterId = 'codex') {
+  return {
+    name: 'ai-team',
+    command: process.env.AI_TEAM_PYTHON || process.env.PYTHON || defaultAiTeamPython(),
+    args: ['-m', 'ai_team.mcp_server'],
+    env: {
+      PYTHONPATH: path.join(os.homedir(), '.ai-team'),
+      PYTHONUTF8: '1',
+      AI_TEAM_ROOM_ID: meetingId || '',
+      AI_TEAM_CHARACTER_ID: characterId || 'codex',
+    },
+  };
+}
+
 module.exports = {
   writeResearchMcpConfig,
   buildResearchMcpEntryForCodex,
+  buildAiTeamMcpEntryForCodex,
 };

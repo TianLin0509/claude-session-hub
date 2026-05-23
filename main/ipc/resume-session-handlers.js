@@ -24,6 +24,11 @@ function registerResumeSessionIpc(ipcMain, deps) {
     slotIds,
   } = deps;
 
+  function addCodexMcpEntry(resumeOpts, entry) {
+    if (!entry) return;
+    resumeOpts.codexMcpEntries = [...(resumeOpts.codexMcpEntries || []), entry];
+  }
+
   ipcMain.handle('resume-session', async (_e, meta) => {
     if (!meta || !meta.hubId) return null;
     const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume' || isClaudeWebKind(meta.kind));
@@ -58,6 +63,9 @@ function registerResumeSessionIpc(ipcMain, deps) {
           resumeOpts.codexInstructionFile = promptFile;
         }
       }
+      if (meeting && meeting.groupChat && isCodexBaseKind(meta.kind) && scenes.buildAiTeamMcpEntryForCodex) {
+        addCodexMcpEntry(resumeOpts, scenes.buildAiTeamMcpEntryForCodex(meta.meetingId, meta.kind || 'codex'));
+      }
       if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
         const hubDataDir = getHubDataDir();
         if (isClaudeCliResumable) {
@@ -73,7 +81,7 @@ function registerResumeSessionIpc(ipcMain, deps) {
           };
         } else if (isCodexBaseKind(meta.kind)) {
           resumeOpts.codexBypassApprovals = true;
-          resumeOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meta.meetingId, hookPort, hookToken)];
+          addCodexMcpEntry(resumeOpts, scenes.buildResearchMcpEntryForCodex(meta.meetingId, hookPort, hookToken));
         }
       } else if (meeting && meeting.groupChat && meeting.scene === 'research' && !hookPort) {
         logger.warn('[群聊] research scene resume for meeting ' + meta.meetingId + ' but hookPort unavailable — stock MCP tools unavailable');

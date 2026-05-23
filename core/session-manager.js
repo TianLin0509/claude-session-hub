@@ -368,31 +368,40 @@ function ensureCodexCwdTrusted(projectDir, configDir = null) {
   }
 }
 
-function ensureCodexMcpEntries(configDir, entries) {
-  if (!Array.isArray(entries) || entries.length === 0) return;
+const CODEX_MANAGED_MCP_NAMES = ['ai-team', 'arena_research'];
+
+function stripCodexMcpEntries(cfg, names) {
+  const managed = new Set((names || []).map(name => String(name || '').trim()).filter(Boolean));
+  if (managed.size === 0 || !cfg) return cfg || '';
+  const lines = cfg.split(/\r?\n/);
+  const kept = [];
+  let skipping = false;
+  for (const line of lines) {
+    const section = line.trim().match(/^\[([^\]]+)\]$/);
+    if (section) {
+      const name = section[1].match(/^mcp_servers\.([^.]+)(?:\.|$)/)?.[1] || '';
+      skipping = managed.has(name);
+    }
+    if (!skipping) kept.push(line);
+  }
+  return kept.join('\n').replace(/\s+$/u, '');
+}
+
+function ensureCodexMcpEntries(configDir, entries, managedNames = []) {
+  const safeEntries = Array.isArray(entries) ? entries : [];
+  if (safeEntries.length === 0 && (!Array.isArray(managedNames) || managedNames.length === 0)) return;
   try {
     const codexHome = configDir || path.join(os.homedir(), '.codex');
     fs.mkdirSync(codexHome, { recursive: true });
     const cfgPath = path.join(codexHome, 'config.toml');
     let cfg = '';
     try { cfg = fs.readFileSync(cfgPath, 'utf8'); } catch {}
+    cfg = stripCodexMcpEntries(cfg, managedNames);
 
-    for (const entry of entries) {
+    for (const entry of safeEntries) {
       const name = String(entry && entry.name || '').trim();
       if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
-      const prefix = `[mcp_servers.${name}`;
-      const lines = cfg.split(/\r?\n/);
-      const kept = [];
-      let skipping = false;
-      for (const line of lines) {
-        const section = line.trim().match(/^\[([^\]]+)\]$/);
-        if (section) {
-          const header = `[${section[1]}`;
-          skipping = header === prefix || header.startsWith(prefix + '.');
-        }
-        if (!skipping) kept.push(line);
-      }
-      cfg = kept.join('\n').replace(/\s+$/u, '');
+      cfg = stripCodexMcpEntries(cfg, [name]);
 
       const env = entry.env && typeof entry.env === 'object' ? entry.env : {};
       const block = [
@@ -409,7 +418,7 @@ function ensureCodexMcpEntries(configDir, entries) {
           block.push(`${key} = ${tomlString(env[key])}`);
         }
       }
-      cfg += block.join('\n') + '\n';
+      cfg += (cfg ? '\n' : '') + block.join('\n') + '\n';
     }
     fs.writeFileSync(cfgPath, cfg, 'utf8');
   } catch (err) {
@@ -945,7 +954,7 @@ class SessionManager extends EventEmitter {
     }
 
     if (isCodex) {
-      ensureCodexMcpEntries(sessionEnv.CODEX_HOME || null, opts.codexMcpEntries);
+      ensureCodexMcpEntries(sessionEnv.CODEX_HOME || null, opts.codexMcpEntries, CODEX_MANAGED_MCP_NAMES);
       dismissCodexUpdatePrompt(undefined, sessionEnv.CODEX_HOME || null);
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       const cv = getConfigValues();

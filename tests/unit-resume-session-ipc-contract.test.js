@@ -38,6 +38,7 @@ function createBaseDeps(overrides = {}) {
     readTranscriptTail: async () => null,
     registerSessionForTap: (session) => calls.push(['registerSessionForTap', session.id]),
     scenes: {
+      buildAiTeamMcpEntryForCodex: (meetingId, kind) => ({ aiTeamMeetingId: meetingId, aiTeamKind: kind }),
       buildResearchMcpEntryForCodex: (meetingId, port, token) => ({ meetingId, port, token }),
       readCovenantSnapshot: () => 'snapshot covenant',
       writePromptFile: (...args) => {
@@ -145,7 +146,10 @@ test('resumes Codex group research sessions with MCP entries and rollout path', 
   assert.strictEqual(session.opts.resumeTranscriptPath, 'rollout:codex-1');
   assert.strictEqual(session.opts.useResume, true);
   assert.strictEqual(session.opts.codexBypassApprovals, true);
-  assert.deepStrictEqual(session.opts.codexMcpEntries, [{ meetingId: 'm1', port: 3456, token: 'token' }]);
+  assert.deepStrictEqual(session.opts.codexMcpEntries, [
+    { aiTeamMeetingId: 'm1', aiTeamKind: 'codex' },
+    { meetingId: 'm1', port: 3456, token: 'token' },
+  ]);
   assert.deepStrictEqual(deps.calls.filter(call => call[0] === 'findCodexRolloutBySid'), [
     ['findCodexRolloutBySid', 'codex-1', 'C:\\codex\\sessions'],
   ]);

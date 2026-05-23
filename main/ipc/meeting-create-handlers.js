@@ -23,6 +23,11 @@ function createMeetingSubAdder(deps) {
     slotIds,
   } = deps;
 
+  function addCodexMcpEntry(sessionOpts, entry) {
+    if (!entry) return;
+    sessionOpts.codexMcpEntries = [...(sessionOpts.codexMcpEntries || []), entry];
+  }
+
   return async function addMeetingSubInternal(meetingId, kind, opts = {}) {
     const meeting = meetingManager.getMeeting(meetingId);
     let sessionOpts = { ...(opts || {}), meetingId };
@@ -64,6 +69,10 @@ function createMeetingSubAdder(deps) {
     }
 
     const hookPort = getHookPort();
+    if (meeting && meeting.groupChat && isCodexBaseKind(kind) && scenes.buildAiTeamMcpEntryForCodex) {
+      addCodexMcpEntry(sessionOpts, scenes.buildAiTeamMcpEntryForCodex(meetingId, kind));
+    }
+
     if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
       const hubDataDir = getHubDataDir();
       if (isClaudeFamily(kind)) {
@@ -79,7 +88,7 @@ function createMeetingSubAdder(deps) {
         };
       } else if (isCodexBaseKind(kind)) {
         sessionOpts.codexBypassApprovals = true;
-        sessionOpts.codexMcpEntries = [scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken)];
+        addCodexMcpEntry(sessionOpts, scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken));
       }
     } else if (meeting && meeting.groupChat && meeting.scene === 'research' && !hookPort) {
       logger.warn('[群聊] research scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
