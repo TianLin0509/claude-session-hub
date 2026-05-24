@@ -64,7 +64,7 @@ const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 const sessions = new Map();
 let activeSessionId = null;
 let _cardHistoryHydratedSid = null; // 已完成全量历史卡片加载的 sessionId
-const _turnCompleteBackfillTimers = new Map(); // sid -> timerId,debounce turn-complete 后的兜底 incremental reload
+const _turnCompleteBackfillTimers = new Map(); // sid -> Promise; in-flight guard 防止并发 backfill (2026-05-24 道雪：原 timer-debounce 改为立即 trigger)
 const terminalCache = new Map();
 const terminalInputController = createTerminalInputController({
   document,
@@ -1259,21 +1259,21 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
     }
   }
 
-  // 5. 挂完 limit:1 增量卡后,debounce 一次 incremental reload 兜底:
-  //    - fresh session 误判(transcript 真新但 ccSid 后到 → 错过历史)
-  //    - 同 session 多 turn-complete 快速到达(reset timer 合并成一次)
-  //    incremental=true 时 mountSessionTurnCard 内 dedup 保证不重复挂卡,
-  //    只把 turn-complete 增量分支漏掉的旧 turn 补回来。
+  // 5. 挂完 limit:1 增量卡后,立即 trigger incremental reload 兜底:
+  //    2026-05-24 道雪 — 原版 setTimeout 350ms debounce 被 race 失效（隔离 Hub
+  //    stress-3 实测：禁用 setTimeout 后 cards 卡在残缺数量持久化）。改成立即
+  //    触发 + Promise 级 in-flight guard：每 turn-complete 至多 1 个 backfill
+  //    在跑且必定执行，不再被 timer cancel/clear 取消。incremental=true 时
+  //    mountSessionTurnCard 内 dedup 保证不重复挂卡,只把增量分支漏掉的旧 turn
+  //    补回来。
   const scheduleBackfill = () => {
-    const existing = _turnCompleteBackfillTimers.get(hubSessionId);
-    if (existing) clearTimeout(existing);
-    _turnCompleteBackfillTimers.set(hubSessionId, setTimeout(() => {
-      _turnCompleteBackfillTimers.delete(hubSessionId);
-      if (hubSessionId !== activeSessionId || currentView !== 'card') return;
-      if (typeof loadSessionHistoryToOverlay !== 'function') return;
-      loadSessionHistoryToOverlay(hubSessionId, { incremental: true })
-        .catch(err => console.warn('[turn-complete backfill] incremental reload failed:', err));
-    }, 350));
+    if (_turnCompleteBackfillTimers.has(hubSessionId)) return; // in-flight guard
+    if (hubSessionId !== activeSessionId || currentView !== 'card') return;
+    if (typeof loadSessionHistoryToOverlay !== 'function') return;
+    const p = loadSessionHistoryToOverlay(hubSessionId, { incremental: true })
+      .catch(err => console.warn('[turn-complete backfill] incremental reload failed:', err))
+      .finally(() => _turnCompleteBackfillTimers.delete(hubSessionId));
+    _turnCompleteBackfillTimers.set(hubSessionId, p);
   };
 
   try {
