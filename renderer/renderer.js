@@ -8,6 +8,7 @@ const { installScrollDebug } = require('./scroll-debug.js');
 const { createMemoPanel } = require('./memo-panel.js');
 const { createTerminalSearch } = require('./terminal-search.js');
 const { createSessionContextMenuController, createTerminalContextMenuController } = require('./context-menus.js');
+const { createPathLinkContextMenuController } = require('./path-link-context-menu.js');
 const { XTERM_THEMES, createThemeController } = require('./theme-controller.js');
 const { createTerminalInputController } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
@@ -2042,6 +2043,13 @@ function getSessionCwd(sessionId) {
 const registerLocalPathLinks = createTerminalLinkRegistrar({
   getCwd: getSessionCwd,
   openPathInHub,
+  onContextMenu: (rawPath, x, y) => {
+    // pathLinkContextMenu is initialized later in this file; callback body
+    // runs only when user right-clicks, by then it's been assigned.
+    if (typeof pathLinkContextMenu !== 'undefined' && pathLinkContextMenu) {
+      pathLinkContextMenu.open(rawPath, x, y);
+    }
+  },
 });
 
 // Strip artifacts we ourselves injected into the user's prompt before
@@ -2623,6 +2631,19 @@ const terminalContextMenu = createTerminalContextMenuController({
 terminalContextMenu.init();
 const openTerminalContextMenu = terminalContextMenu.open;
 const closeTerminalContextMenu = terminalContextMenu.close;
+
+const pathLinkContextMenu = createPathLinkContextMenuController({
+  document,
+  window,
+  menuEl: document.getElementById('path-link-context-menu'),
+  clipboard,
+  shell,
+  ipcRenderer,
+  normalizeLocalPathForOpen: _normalizeLocalPathForOpen,
+  getSessionCwd,
+  getActiveSessionId: () => activeSessionId,
+});
+pathLinkContextMenu.init();
 
 // --- Terminal in-buffer search (Ctrl+F) ---
 const terminalSearch = createTerminalSearch({

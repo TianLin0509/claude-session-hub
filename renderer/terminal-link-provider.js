@@ -8,7 +8,7 @@ const {
   _resolveRelPathIfExists,
 } = require('./path-candidates.js');
 
-function createTerminalLinkRegistrar({ getCwd, openPathInHub }) {
+function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu }) {
   const activeLinkGroups = new Map();
 
   function registerLinkInGroup(fullPath, link) {
@@ -162,7 +162,13 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub }) {
               },
               text: fullPath,
               decorations: { pointerCursor: true, underline: true },
-              activate: async () => openPathInHub(fullPath, { cwd, requireExistsForRel: false }),
+              activate: async (event) => {
+                if (event && event.button === 2 && typeof onContextMenu === 'function') {
+                  onContextMenu(fullPath, event.clientX, event.clientY);
+                  return;
+                }
+                openPathInHub(fullPath, { cwd, requireExistsForRel: false });
+              },
               hover: () => setGroupUnderline(fullPath, true),
               leave: () => setGroupUnderline(fullPath, true),
             };

@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const { shell } = require('electron');
 
 const READ_FILE_EXTS = new Set([
@@ -41,6 +42,55 @@ function registerPathIpc(ipcMain) {
     if (!url || !/^https?:\/\//i.test(url)) return { success: false };
     await shell.openExternal(url);
     return { success: true };
+  });
+
+  ipcMain.handle('show-in-folder', async (_e, filePath) => {
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
+      return { error: 'invalid path' };
+    }
+    if (!fs.existsSync(filePath)) return { error: 'file not found' };
+    try {
+      shell.showItemInFolder(filePath);
+      return { success: true };
+    } catch (e) {
+      return { error: String(e && e.message || e) };
+    }
+  });
+
+  ipcMain.handle('clipboard-copy-file', async (_e, filePath) => {
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
+      return { error: 'invalid path' };
+    }
+    try {
+      const stat = await fs.promises.stat(filePath);
+      if (!stat.isFile() && !stat.isDirectory()) {
+        return { error: 'not a file or directory' };
+      }
+    } catch (e) {
+      return { error: 'file not found' };
+    }
+
+    if (process.platform !== 'win32') {
+      return { error: 'platform not supported' };
+    }
+
+    return new Promise((resolve) => {
+      const escaped = filePath.replace(/'/g, "''");
+      const ps = spawn('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Set-Clipboard -LiteralPath '${escaped}'`,
+      ], { windowsHide: true });
+
+      let stderr = '';
+      ps.stderr.on('data', (d) => { stderr += d.toString(); });
+      ps.on('close', (code) => {
+        if (code === 0) resolve({ success: true });
+        else resolve({ error: stderr.trim() || `exit ${code}` });
+      });
+      ps.on('error', (e) => resolve({ error: String(e && e.message || e) }));
+    });
   });
 }
 

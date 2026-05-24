@@ -99,6 +99,14 @@
       <div class="context-menu" id="terminal-context-menu" style="display:none">
         <button class="context-menu-item" data-action="preview">预览</button>
       </div>
+      <div class="context-menu" id="path-link-context-menu" style="display:none">
+        <button class="context-menu-item" data-action="copy-abs-path"
+                data-label-file="复制绝对路径" data-label-url="复制 URL">复制绝对路径</button>
+        <button class="context-menu-item" data-action="copy-file" data-file-only>复制对应文件</button>
+        <div class="context-menu-separator" data-file-only></div>
+        <button class="context-menu-item" data-action="show-in-folder" data-file-only>打开上一级文件夹</button>
+        <button class="context-menu-item" data-action="open-external">在外部打开</button>
+      </div>
     </div>
     <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="切换侧栏 (Ctrl+B)">❯</button>
     <div class="terminal-panel" id="terminal-panel">
