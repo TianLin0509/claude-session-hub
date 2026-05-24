@@ -63,6 +63,10 @@ const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 // --- State ---
 const sessions = new Map();
 let activeSessionId = null;
+// 2026-05-24 道雪：DeepSeek 自动命名启用标志。启用时让 DeepSeek 中文标题独占 Claude family
+//   session，OSC title（"Greeting in Chinese" 这种 Claude 自带英文摘要）仅作影子记录、不落地。
+//   在启动 get-hub-config-raw 回调里根据 cfg.deepseekApiKey 设置。
+let _deepseekAutoTitleEnabled = false;
 let _cardHistoryHydratedSid = null; // 已完成全量历史卡片加载的 sessionId
 const _turnCompleteBackfillTimers = new Map(); // sid -> Promise; in-flight guard 防止并发 backfill (2026-05-24 道雪：原 timer-debounce 改为立即 trigger)
 const terminalCache = new Map();
@@ -531,6 +535,15 @@ function getOrCreateTerminal(sessionId) {
       // conversation title. Reject anything that looks like a file path / exe.
       if (/[\\\/]/.test(clean)) return;
       if (/\.exe$/i.test(clean)) return;
+      // 2026-05-24 道雪：DeepSeek 中文自动命名启用时，OSC 是抢跑赛道（PTY 同步、~ms 内到达），
+      //   会先于 DeepSeek HTTP（~数百 ms—秒）落地 s.title，导致 auto-title-manager 的
+      //   isGenericAutoSessionTitle 检查失败、DeepSeek 中文结果被丢弃 → 用户全英文。
+      //   解决：DeepSeek 启用时 OSC 仅记影子字段不动 s.title；让 DeepSeek 独占主标题。
+      //   DeepSeek API 失败时 auto-title-manager 自己有 fallbackSessionTitleFromPrompt 兜底（中文）。
+      if (_deepseekAutoTitleEnabled) {
+        s.claudeAutoTitle = clean;
+        return;
+      }
       if (clean === s.title) return;
       s.title = clean;
       s.claudeAutoTitle = clean;
@@ -3011,6 +3024,7 @@ async function resumeDormantSession(hubId) {
 
   ipcRenderer.invoke('get-hub-config-raw').then((cfg) => {
     if (!cfg) return;
+    _deepseekAutoTitleEnabled = !!cfg.deepseekApiKey;
     providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
     setCodexProfileForm(cfg.codexSubscriptionProfiles, cfg.codexSubscriptionProfile);
     turnCardRenderer.setCodeFoldThreshold(cfg.uiCodeFoldThreshold);
