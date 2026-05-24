@@ -434,7 +434,10 @@ function mountOptimisticUserCard(sessionId, text, kind) {
   cardEl.dataset.optimisticText = text;
 
   // 插在 streaming-indicator 之前（与 mountSessionTurnCard 一致），保证位置正确
-  const streamingTail = container.querySelector('.streaming-indicator');
+  // 2026-05-24：必须用 `:scope > .streaming-indicator` 限定为 container 直接子。
+  // 否则 W15 v2 把 indicator 迁进 turn-card.turn-head 后，querySelector 递归到嵌套
+  // 节点 → insertBefore 撞 ref 非直接子节点抛 NotFoundError → mount 链路被静默吞掉。
+  const streamingTail = container.querySelector(':scope > .streaming-indicator');
   if (streamingTail) container.insertBefore(cardEl, streamingTail);
   else container.appendChild(cardEl);
 
@@ -562,8 +565,12 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 5. insert into container — Spec 3 W16：streaming indicator 必须在末尾，
   // 所以新卡插在 indicator 之前（如果存在）
   // 2026-05-06 道雪 scroll-respect-user：append 前先记录用户是否在底部,给 step 9 用
+  // 2026-05-24：必须用 `:scope > .streaming-indicator` 限定为 container 直接子。
+  // W15 v2 (_updateStreamingIndicator) 把 indicator 迁进 turn-card.turn-head 后，
+  // 普通 querySelector 会递归命中嵌套节点 → insertBefore 撞 ref 非直接子抛
+  // NotFoundError → for 循环中断后续 turn 全丢，外层 .catch 静默吞。
   const _wasAtBottom = _isCardOverlayAtBottom(container);
-  const _streamingTail = container.querySelector('.streaming-indicator');
+  const _streamingTail = container.querySelector(':scope > .streaming-indicator');
   if (_streamingTail) {
     container.insertBefore(cardEl, _streamingTail);
   } else {
