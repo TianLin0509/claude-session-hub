@@ -452,6 +452,115 @@
   border-color: rgba(7,193,96,0.32);
   color: #059669;
 }
+.mr-duty-hats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+.mr-duty-hats-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 700;
+}
+.mr-duty-hats-count {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+}
+.mr-duty-hat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mr-duty-hat-row {
+  display: grid;
+  grid-template-columns: minmax(82px, 1fr) minmax(0, 112px);
+  align-items: center;
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 7px;
+  background: #fff;
+}
+.mr-duty-hat-row.assigned {
+  background: #eef7ff;
+  border-color: rgba(37, 99, 235, 0.22);
+}
+.mr-duty-hat-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 650;
+}
+.mr-duty-hat-icon {
+  width: 18px;
+  text-align: center;
+  flex: 0 0 18px;
+}
+.mr-duty-hat-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mr-duty-hat-select {
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #334155;
+  font: inherit;
+  font-size: 11px;
+  outline: none;
+}
+.mr-duty-hat-select:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+.mr-duty-hat-actions {
+  display: grid;
+  grid-template-columns: 1fr 72px;
+  gap: 6px;
+}
+.mr-duty-hat-action {
+  height: 28px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.mr-duty-hat-action.primary {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: #2563eb;
+  color: #fff;
+}
+.mr-duty-hat-action:hover:not(:disabled) {
+  filter: brightness(0.98);
+}
+.mr-duty-hat-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.mr-duty-hat-hint {
+  color: #6b7280;
+  font-size: 10px;
+  line-height: 1.5;
+}
 .mr-gc-ledger {
   margin-top: auto;
   padding: 10px;

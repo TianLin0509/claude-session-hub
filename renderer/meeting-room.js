@@ -725,6 +725,292 @@ if (typeof document !== 'undefined') (function () {
   // 用 ai-kinds.js 的 KIND_LABELS 单一真理源（含 deepseek/glm/gpt/kimi/qwen），未来加新 AI 自动覆盖。
   const _KIND_LABELS = KIND_LABELS;
 
+  const _DUTY_HAT_PROMPT_MARKER = '## 临时职责帽（本轮有效，不写入长期记忆）';
+  const _DUTY_HATS_BY_SCENE = {
+    general: [
+      {
+        id: 'clarifier',
+        icon: '❓',
+        label: '问题澄清员',
+        short: '澄清',
+        duty: '负责拆解用户问题、补齐前提、指出会改变答案的关键缺口；不要直接替其他角色下结论。',
+        format: '问题拆解 / 已知前提 / 缺失信息 / 关键追问 / 默认假设',
+      },
+      {
+        id: 'fact_check',
+        icon: '🔍',
+        label: '事实核验员',
+        short: '核验',
+        duty: '负责核验关键事实、数字、引用、时间点与来源；不确定内容必须明确标注。',
+        format: '已确认事实 / 来源与时间 / 不确定项 / 冲突口径 / 需补查',
+      },
+      {
+        id: 'options',
+        icon: '🧩',
+        label: '方案设计师',
+        short: '方案',
+        duty: '负责提出可选方案和执行路径，说明每个方案的适用条件，不负责风险挑错。',
+        format: '方案 A / 方案 B / 适用条件 / 成本收益 / 推荐前提',
+      },
+      {
+        id: 'critic',
+        icon: '⚠️',
+        label: '反方挑战者',
+        short: '反方',
+        duty: '负责寻找遗漏、反例、逻辑跳跃和失败路径；避免复述方案优点。',
+        format: '最大风险 / 反例 / 隐含假设 / 失败信号 / 修正建议',
+      },
+      {
+        id: 'judge',
+        icon: '🎯',
+        label: '综合裁判',
+        short: '裁判',
+        duty: '负责收敛共识与分歧，给出可执行结论和取舍理由；不做无差别折中。',
+        format: '结论 / 取舍理由 / 主要分歧 / 决策条件 / 下一步',
+      },
+      {
+        id: 'action',
+        icon: '✅',
+        label: '行动拆解员',
+        short: '行动',
+        duty: '负责把结论拆成下一步动作、负责人、验证方式和截止条件。',
+        format: '下一步 / 优先级 / 负责人或角色 / 验证标准 / 截止条件',
+      },
+    ],
+    research: [
+      {
+        id: 'data',
+        icon: '🔍',
+        label: '数据核验员',
+        short: '核验',
+        duty: '只负责核验关键数字、事实、来源与时间点；未查到或未确认的内容必须标注“未核验”。',
+        format: '已核验数据 / 数据来源 / 数据时点 / 未核验项 / 口径或冲突风险',
+      },
+      {
+        id: 'bear',
+        icon: '🧨',
+        label: '空头审稿人',
+        short: '空头',
+        duty: '只负责攻击前面观点，寻找反例、逻辑跳跃、过期数据、证伪条件；不要输出综合结论。',
+        format: '最大漏洞 / 反例 / 需要补查 / 证伪条件 / 是否建议打回',
+      },
+      {
+        id: 'bull',
+        icon: '📈',
+        label: '多头论证员',
+        short: '多头',
+        duty: '负责构建最强看多逻辑链，但必须给出验证条件和失效条件，避免只讲叙事。',
+        format: '看多主张 / 关键证据 / 验证条件 / 失效条件 / 置信度',
+      },
+      {
+        id: 'judge',
+        icon: '🎯',
+        label: '综合裁判',
+        short: '裁判',
+        duty: '负责在其他成员发言后收敛，不负责和稀泥；合并共识与分歧，给出行动前复核清单。',
+        format: '结论等级 / 置信度 / 主要分歧 / 需要补查的数据 / 行动前复核清单',
+      },
+      {
+        id: 'catalyst',
+        icon: '📰',
+        label: '消息催化帽',
+        short: '催化',
+        duty: '负责公告、财报日历、政策、监管、新闻事件与催化剂时间表，区分已发生、已知未兑现和待确认信息。',
+        format: '最新事件 / 来源与时间 / 影响路径 / 待兑现节点 / 可靠性',
+      },
+      {
+        id: 'technical',
+        icon: '📊',
+        label: '技术分析师',
+        short: '技术',
+        duty: '负责趋势、量价、资金流、龙虎榜、融资融券、北向等交易层信号，回答市场现在在做什么。',
+        format: '趋势方向 / 关键价位 / 量能资金 / 短期风险 / 失效信号',
+      },
+    ],
+    dev: [
+      {
+        id: 'requirements',
+        icon: '🧭',
+        label: '需求澄清员',
+        short: '需求',
+        duty: '负责确认目标、验收标准、边界条件和用户真实工作流；不急于给实现方案。',
+        format: '目标 / 验收标准 / 边界条件 / 待确认问题 / 非目标',
+      },
+      {
+        id: 'architect',
+        icon: '🏗️',
+        label: '架构设计师',
+        short: '架构',
+        duty: '负责判断模块边界、数据流、接口契约和可维护性取舍；避免过度设计。',
+        format: '影响范围 / 模块边界 / 数据流 / 关键取舍 / 迁移风险',
+      },
+      {
+        id: 'implementer',
+        icon: '🛠️',
+        label: '实现工程师',
+        short: '实现',
+        duty: '负责给出最小可落地实现路径、关键文件、伪代码或补丁思路。',
+        format: '改动文件 / 实现步骤 / 关键代码点 / 兼容性 / 回滚方式',
+      },
+      {
+        id: 'reviewer',
+        icon: '🔎',
+        label: '代码审稿人',
+        short: '审稿',
+        duty: '负责从缺陷、回归、并发、状态一致性和可读性角度挑错；不要重写完整方案。',
+        format: '高风险点 / 可能回归 / 可读性问题 / 必改项 / 可缓项',
+      },
+      {
+        id: 'tester',
+        icon: '🧪',
+        label: '测试守门员',
+        short: '测试',
+        duty: '负责设计验证路径、红绿测试、手工检查和日志证据；明确哪些无法验证。',
+        format: '必测场景 / 自动化测试 / 手工验证 / 日志证据 / 剩余风险',
+      },
+      {
+        id: 'release',
+        icon: '🚦',
+        label: '发布排障员',
+        short: '发布',
+        duty: '负责关注配置、构建、部署、回滚、兼容环境和线上排障路径。',
+        format: '配置检查 / 构建发布 / 环境依赖 / 回滚方案 / 排障入口',
+      },
+    ],
+  };
+  const _dutyHatAssignmentsByMeeting = {};
+
+  function _getDutyHatScene(meeting) {
+    const scene = meeting && typeof meeting.scene === 'string' ? meeting.scene : 'general';
+    return _DUTY_HATS_BY_SCENE[scene] ? scene : 'general';
+  }
+
+  function _getDutyHats(meeting) {
+    return _DUTY_HATS_BY_SCENE[_getDutyHatScene(meeting)];
+  }
+
+  function _getDutyHatAssignmentKey(meeting) {
+    if (!meeting || !meeting.id) return '';
+    return `${meeting.id}:${_getDutyHatScene(meeting)}`;
+  }
+
+  function _getDutyHatAssignments(meeting) {
+    const key = _getDutyHatAssignmentKey(meeting);
+    if (!key) return {};
+    if (!_dutyHatAssignmentsByMeeting[key]) _dutyHatAssignmentsByMeeting[key] = {};
+    return _dutyHatAssignmentsByMeeting[key];
+  }
+
+  function _clearDutyHatAssignments(meeting) {
+    const key = _getDutyHatAssignmentKey(meeting);
+    if (key) delete _dutyHatAssignmentsByMeeting[key];
+  }
+
+  function _memberMentionLabel(slot) {
+    if (!slot) return 'AI';
+    const label = slot.displayLabel || slot.label || slot.kind || `AI ${slot.slotIndex + 1}`;
+    return `m${slot.slotIndex + 1}（${label}）`;
+  }
+
+  function _renderDutyHatPanel(meeting, slots) {
+    if (!meeting || !meeting.groupChat || !Array.isArray(slots) || slots.length === 0) return '';
+    const dutyHats = _getDutyHats(meeting);
+    const assignments = _getDutyHatAssignments(meeting);
+    const validSlots = slots.filter(slot => slot && slot.sid);
+    const validSids = new Set(validSlots.map(slot => slot.sid));
+    const assignedCount = dutyHats.filter(h => assignments[h.id] && validSids.has(assignments[h.id])).length;
+    const rows = dutyHats.map(hat => {
+      const sid = validSids.has(assignments[hat.id]) ? assignments[hat.id] : '';
+      const optionsHtml = validSlots.map(slot => {
+        const label = _memberMentionLabel(slot);
+        return `<option value="${escapeHtml(slot.sid)}" ${slot.sid === sid ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+      }).join('');
+      return `
+        <label class="mr-duty-hat-row ${sid ? 'assigned' : ''}" title="${escapeHtml(hat.duty)}">
+          <span class="mr-duty-hat-label">
+            <span class="mr-duty-hat-icon" aria-hidden="true">${hat.icon}</span>
+            <span class="mr-duty-hat-text">${escapeHtml(hat.label)}</span>
+          </span>
+          <select class="mr-duty-hat-select" data-duty-hat-id="${escapeHtml(hat.id)}" aria-label="${escapeHtml(hat.label)}">
+            <option value="">未指定</option>
+            ${optionsHtml}
+          </select>
+        </label>
+      `;
+    }).join('');
+    return `
+      <section class="mr-duty-hats" aria-label="临时职责帽">
+        <div class="mr-duty-hats-head">
+          <span>临时职责帽</span>
+          <span class="mr-duty-hats-count">${assignedCount}/${dutyHats.length}</span>
+        </div>
+        <div class="mr-duty-hat-list">${rows}</div>
+        <div class="mr-duty-hat-actions">
+          <button type="button" class="mr-duty-hat-action primary" data-duty-hat-insert="1" ${assignedCount ? '' : 'disabled'}>更新分工</button>
+          <button type="button" class="mr-duty-hat-action" data-duty-hat-clear="1" ${assignedCount ? '' : 'disabled'}>清空</button>
+        </div>
+        <div class="mr-duty-hat-hint">选择后自动同步到输入框，发送前可编辑。</div>
+      </section>
+    `;
+  }
+
+  function _buildDutyHatPrompt(meeting) {
+    if (!meeting) return '';
+    const dutyHats = _getDutyHats(meeting);
+    const assignments = _getDutyHatAssignments(meeting);
+    const slotsBySid = {};
+    for (const slot of _getGcSlots(meeting).filter(Boolean)) {
+      slotsBySid[slot.sid] = slot;
+    }
+    const selected = dutyHats
+      .map(hat => ({ hat, slot: slotsBySid[assignments[hat.id]] }))
+      .filter(item => item.slot);
+    if (selected.length === 0) return '';
+
+    const summary = selected
+      .map(({ hat, slot }) => `${_memberMentionLabel(slot)}=${hat.short}`)
+      .join('；');
+    const lines = [
+      _DUTY_HAT_PROMPT_MARKER,
+      `【本轮完整分工：${summary}】`,
+      '所有成员都能看到完整分工；请只按自己的职责发言，不重复他人观点。涉及数字必须说明来源和时间点；无法核验请明确标注“未核验”。',
+      '',
+    ];
+    for (const { hat, slot } of selected) {
+      lines.push(`- ${_memberMentionLabel(slot)}：${hat.label}。${hat.duty}`);
+      lines.push(`  输出格式：${hat.format}`);
+    }
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  function _replaceDutyHatPromptInText(text, prompt) {
+    const current = String(text || '').trim();
+    const blockRe = new RegExp(`${_DUTY_HAT_PROMPT_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?(?=\\n\\n(?!- )|$)`, 'm');
+    if (!prompt) return current.replace(blockRe, '').trim();
+    if (blockRe.test(current)) return current.replace(blockRe, prompt.trim()).trim();
+    return current ? `${prompt.trim()}\n\n${current}` : prompt.trim();
+  }
+
+  function _setMeetingInputText(meetingId, text) {
+    const input = document.getElementById('mr-input-box');
+    if (!input) return;
+    input.textContent = text || '';
+    if (text && text.trim()) _inputDraftByMeeting[meetingId] = text;
+    else delete _inputDraftByMeeting[meetingId];
+    input.focus();
+    _placeCaretAtEnd(input);
+  }
+
+  function _syncDutyHatPromptToInput(meeting) {
+    if (!meeting || !meeting.id) return;
+    const prompt = _buildDutyHatPrompt(meeting);
+    const input = document.getElementById('mr-input-box');
+    const currentText = input ? (input.innerText || '') : '';
+    const nextText = _replaceDutyHatPromptInText(currentText, prompt);
+    _setMeetingInputText(meeting.id, nextText);
+  }
+
   // T1（2026-05-04 道雪）：抽出单 slot 卡片渲染，让 partial-update IPC handler
   //   能复用同一份模板做局部 patch（不再 panel.innerHTML 全量替换）。
   //   依赖：函数参数（slotIndex, ctx）+ ctx 字段 { state, currentMode, partialBy, meeting,
@@ -1561,6 +1847,7 @@ if (typeof document !== 'undefined') (function () {
         <div class="mr-gc-empty-sub">直接提问会发给当前勾选成员；输入 @m1、@m2 或 @all 可以指定发言成员。</div>
       </div>
     ` : '';
+    const dutyHatPanel = _renderDutyHatPanel(meeting, slots);
     const memberRows = slots.map((slot) => {
       const checked = selected.has(slot.slotIndex);
       const label = slot.displayLabel || slot.label || slot.kind || 'AI';
@@ -1614,6 +1901,7 @@ if (typeof document !== 'undefined') (function () {
             <button type="button" class="mr-gc-side-collapse" data-gc-side-toggle="1" title="收起群成员">${selected.size}/${slots.length}</button>
           </div>
           <div class="mr-gc-members">${memberRows}</div>
+          ${dutyHatPanel}
           <div class="mr-gc-ledger">
             <div class="mr-gc-ledger-title">上下文</div>
             <div>摘要段：${summaryCount}</div>
@@ -2218,6 +2506,54 @@ if (typeof document !== 'undefined') (function () {
         refreshGroupChatPanel(meetingData[meeting.id] || meeting);
       });
     });
+    panel.querySelectorAll('[data-duty-hat-id]').forEach(select => {
+      select.addEventListener('change', async (ev) => {
+        ev.stopPropagation();
+        const hatId = select.getAttribute('data-duty-hat-id');
+        const sid = select.value || '';
+        const assignments = _getDutyHatAssignments(meeting);
+        const validSids = new Set((meeting.subSessions || []).filter(Boolean));
+        if (sid && validSids.has(sid)) assignments[hatId] = sid;
+        else delete assignments[hatId];
+        if (sid && validSids.has(sid)) {
+          const slotIdx = (meeting.subSessions || []).indexOf(sid);
+          const allIndexes = (meeting.subSessions || []).map((_, i) => i);
+          const current = Array.isArray(meeting.participants) ? meeting.participants.slice() : allIndexes;
+          if (slotIdx >= 0 && !current.includes(slotIdx)) {
+            const next = allIndexes.filter(i => current.includes(i) || i === slotIdx);
+            meeting.participants = next;
+            try {
+              const updated = await ipcRenderer.invoke('groupchat:set-participants', { meetingId: meeting.id, participants: next });
+              if (updated) meetingData[meeting.id] = updated;
+            } catch (err) {
+              console.error('[groupchat] set participants for duty hat failed:', err);
+            }
+          }
+        }
+        const latestMeeting = meetingData[meeting.id] || meeting;
+        _syncDutyHatPromptToInput(latestMeeting);
+        refreshGroupChatPanel(latestMeeting);
+      });
+    });
+    const dutyInsertBtn = panel.querySelector('[data-duty-hat-insert]');
+    if (dutyInsertBtn) {
+      dutyInsertBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        _syncDutyHatPromptToInput(meetingData[meeting.id] || meeting);
+      });
+    }
+    const dutyClearBtn = panel.querySelector('[data-duty-hat-clear]');
+    if (dutyClearBtn) {
+      dutyClearBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        _clearDutyHatAssignments(meetingData[meeting.id] || meeting);
+        const input = document.getElementById('mr-input-box');
+        const currentText = input ? (input.innerText || '') : '';
+        const nextText = _replaceDutyHatPromptInText(currentText, '');
+        _setMeetingInputText(meeting.id, nextText);
+        refreshGroupChatPanel(meetingData[meeting.id] || meeting);
+      });
+    }
     // 时光机 banner 退出按钮
     const ttExitBtn = panel.querySelector('[data-gc-tt-exit]');
     if (ttExitBtn) {
