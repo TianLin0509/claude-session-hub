@@ -1028,6 +1028,10 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${opts.model || 'deepseek-v4-pro'} --permission-mode bypassPermissions`;
       }
+      // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
+      if (opts.mcpConfigFile) {
+        cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
+      }
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
@@ -1069,6 +1073,10 @@ class SessionManager extends EventEmitter {
         cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
       } else {
         cmd = ` claude --model ${opts.model || cv.GLM_MODEL} --permission-mode bypassPermissions`;
+      }
+      // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
+      if (opts.mcpConfigFile) {
+        cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
       }
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
@@ -1112,6 +1120,10 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${opts.model || cv.GPT_MODEL || 'gpt-5.4-high'} --permission-mode bypassPermissions`;
       }
+      // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
+      if (opts.mcpConfigFile) {
+        cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
+      }
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
@@ -1154,6 +1166,10 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${opts.model || cv.KIMI_MODEL || 'kimi-k2.5'} --permission-mode bypassPermissions`;
       }
+      // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
+      if (opts.mcpConfigFile) {
+        cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
+      }
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
@@ -1195,6 +1211,10 @@ class SessionManager extends EventEmitter {
         cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
       } else {
         cmd = ` claude --model ${opts.model || cv.QWEN_MODEL || 'qwen3.6-plus'} --permission-mode bypassPermissions`;
+      }
+      // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
+      if (opts.mcpConfigFile) {
+        cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
       }
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
