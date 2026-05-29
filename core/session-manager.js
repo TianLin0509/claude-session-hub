@@ -7,11 +7,12 @@ const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
 const { isClaudeFamily, isClaudeWebKind, isCodexCliKind, isCodexWebKind } = require('./ai-kinds.js');
+const { normalizeDeepSeekModel, deepseekDisplayName } = require('./model-options.js');
 const { CodexAppServerClient } = require('./codex-app-server-client.js');
 const codexAppRegistry = require('./codex-app-registry.js');
 
 const RING_BUFFER_BYTES = 16384;
-const CODEX_REASONING_EFFORT = 'high';
+const CODEX_REASONING_EFFORT = 'xhigh';
 const CODEX_REASONING_CONFIG_ARG = ` -c 'model_reasoning_effort="${CODEX_REASONING_EFFORT}"'`;
 
 // 配置从 hub-config.js 加载（优先级：env > config.json > secrets.toml）
@@ -300,7 +301,7 @@ function ensureCodexApiProfile(cv, projectDir) {
     'disable_response_storage = true',
     `model = ${tomlString(model)}`,
     `model_provider = ${tomlString(provider)}`,
-    'model_reasoning_effort = "high"',
+    'model_reasoning_effort = "xhigh"',
     'approval_policy = "never"',
     'sandbox_mode = "danger-full-access"',
     '',
@@ -770,8 +771,8 @@ class SessionManager extends EventEmitter {
       const cmid = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
       currentModel = { id: cmid, displayName: cmid.toUpperCase() };
     } else if (isDeepSeek) {
-      const mid = opts.model || 'deepseek-v4-pro';
-      currentModel = { id: mid, displayName: mid === 'deepseek-v4-pro' ? 'DS V4 Pro' : 'DS V4 Flash' };
+      const mid = normalizeDeepSeekModel(opts.model);
+      currentModel = { id: mid, displayName: deepseekDisplayName(mid) };
     } else if (isGlm) {
       const cv = getConfigValues();
       const mid = opts.model || cv.GLM_MODEL;
@@ -889,6 +890,11 @@ class SessionManager extends EventEmitter {
       }
       // 群聊成员：禁 skill + plugin（保留 auto-memory / CLAUDE.md / OAuth）
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
+      // 默认开启 fast 模式（仅 Opus 4.6/4.7/4.8 生效，非 Opus 会被忽略）。
+      // 通过 --settings 叠加用户既有 settings；用户仍可在 session 内 /fast 关闭。
+      // 用 settings 文件而非 inline JSON，规避 PS 5.1 向 native exe 传内嵌双引号的 quoting bug。
+      const fastSettingsPath = path.join(__dirname, 'claude-fast-settings.json');
+      cmd += ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -1017,16 +1023,16 @@ class SessionManager extends EventEmitter {
       // 让 DeepSeek 会话和 Claude 会话一样直接启动（~/.claude-deepseek 是隔离配置，
       // 不像 ~/.claude 有历史累积的信任状态，必须靠 CLI 参数兜底）。
       if (kind === 'deepseek-resume') {
-        const model = opts.model || 'deepseek-v4-pro';
+        const model = normalizeDeepSeekModel(opts.model);
         cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.resumeCCSessionId) {
-        const model = opts.model || 'deepseek-v4-pro';
+        const model = normalizeDeepSeekModel(opts.model);
         cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
-        const model = opts.model || 'deepseek-v4-pro';
+        const model = normalizeDeepSeekModel(opts.model);
         cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
       } else {
-        cmd = ` claude --model ${opts.model || 'deepseek-v4-pro'} --permission-mode bypassPermissions`;
+        cmd = ` claude --model ${normalizeDeepSeekModel(opts.model)} --permission-mode bypassPermissions`;
       }
       // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
       if (opts.mcpConfigFile) {
@@ -1362,7 +1368,7 @@ class SessionManager extends EventEmitter {
     } else if (kind === 'claude' || kind === 'claude-resume') {
       cmd = ` claude --model ${modelId || 'claude-opus-4-7[1m]'}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
-      cmd = ` claude --model ${modelId || 'deepseek-v4-pro'} --permission-mode bypassPermissions${isolation}\r\n`;
+      cmd = ` claude --model ${normalizeDeepSeekModel(modelId)} --permission-mode bypassPermissions${isolation}\r\n`;
     } else if (kind === 'glm' || kind === 'glm-resume') {
       const cv = getConfigValues();
       cmd = ` claude --model ${modelId || cv.GLM_MODEL || 'glm-5.1'} --permission-mode bypassPermissions${isolation}\r\n`;

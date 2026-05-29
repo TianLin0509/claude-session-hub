@@ -11,6 +11,8 @@
 
 const MODEL_OPTIONS_BY_KIND = {
   claude: [
+    { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M context)' },
+    { id: 'claude-opus-4-8',     label: 'Opus 4.8' },
     { id: 'claude-opus-4-7[1m]', label: 'Opus 4.7 (1M context)' },
     { id: 'claude-opus-4-7',     label: 'Opus 4.7' },
     { id: 'claude-opus-4-6[1m]', label: 'Opus 4.6 (1M context)' },
@@ -30,8 +32,8 @@ const MODEL_OPTIONS_BY_KIND = {
     { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
   ],
   deepseek: [
-    { id: 'deepseek-v4-pro',   label: 'DeepSeek V4 Pro' },
-    { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+    { id: 'deepseek-v4-pro[1m]',   label: 'DeepSeek V4 Pro (1M context)' },
+    { id: 'deepseek-v4-flash[1m]', label: 'DeepSeek V4 Flash (1M context)' },
   ],
   glm: [
     { id: 'glm-5.1',     label: 'GLM 5.1' },
@@ -53,6 +55,33 @@ const MODEL_OPTIONS_BY_KIND = {
   ],
 };
 
+const DEFAULT_MODEL_BY_KIND = {
+  claude: 'claude-opus-4-7[1m]',
+  gemini: 'gemini-3-pro-preview',
+  codex: 'gpt-5.5',
+  deepseek: 'deepseek-v4-pro[1m]',
+  glm: 'glm-5.1',
+  gpt: 'gpt-5.4-high',
+  kimi: 'kimi-k2.5',
+  qwen: 'qwen3.6-plus',
+};
+
+function normalizeDeepSeekModel(modelId) {
+  const raw = String(modelId || DEFAULT_MODEL_BY_KIND.deepseek).trim();
+  if (!raw) return DEFAULT_MODEL_BY_KIND.deepseek;
+  if (/^deepseek-/i.test(raw) && !/\[1m\]$/i.test(raw)) return `${raw}[1m]`;
+  return raw;
+}
+
+function deepseekDisplayName(modelId) {
+  const normalized = normalizeDeepSeekModel(modelId);
+  const isOneM = /\[1m\]$/i.test(normalized);
+  const base = normalized.replace(/\[1m\]$/i, '');
+  if (base === 'deepseek-v4-pro') return isOneM ? 'DS V4 Pro 1M' : 'DS V4 Pro';
+  if (base === 'deepseek-v4-flash') return isOneM ? 'DS V4 Flash 1M' : 'DS V4 Flash';
+  return normalized;
+}
+
 // `<base>-resume` kinds 复用对应 base kind 清单（claude-resume → claude，等）。
 function modelOptionsFor(kind) {
   if (!kind) return [];
@@ -71,4 +100,11 @@ function canSwitchInline(kind) {
   return INLINE_SWITCH_BASE_KINDS.has(base);
 }
 
-module.exports = { MODEL_OPTIONS_BY_KIND, modelOptionsFor, canSwitchInline };
+module.exports = {
+  MODEL_OPTIONS_BY_KIND,
+  DEFAULT_MODEL_BY_KIND,
+  modelOptionsFor,
+  canSwitchInline,
+  normalizeDeepSeekModel,
+  deepseekDisplayName,
+};
