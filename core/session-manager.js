@@ -15,6 +15,13 @@ const RING_BUFFER_BYTES = 16384;
 const CODEX_REASONING_EFFORT = 'xhigh';
 const CODEX_REASONING_CONFIG_ARG = ` -c 'model_reasoning_effort="${CODEX_REASONING_EFFORT}"'`;
 
+// 打包后 __dirname 指向 app.asar 内部，外部进程（claude/codex CLI）读不到。
+// 用 asarUnpack 解压副本 + 路径替换，源码模式 __dirname 不含 app.asar，noop。
+function resolveAsarUnpacked(filename) {
+  const baseDir = __dirname.replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2');
+  return path.join(baseDir, filename);
+}
+
 // 配置从 hub-config.js 加载（优先级：env > config.json > secrets.toml）
 // 老用户无感知：如果 config.json 不存在，自动 fallback 到 secrets.toml
 function _loadConfigValues() {
@@ -877,7 +884,7 @@ class SessionManager extends EventEmitter {
       // 注意：与 --append-system-prompt-file 可共存（前者替换、后者追加），但本期
       // claude-web 不进群聊，不会触发同时注入场景。
       if (isClaudeWeb) {
-        const promptPath = path.join(__dirname, 'claude-web-prompt.md');
+        const promptPath = resolveAsarUnpacked('claude-web-prompt.md');
         cmd += ` --system-prompt-file "${promptPath.replace(/\\/g, '\\\\')}"`;
       }
       // Append system prompt file if provided (TeamSessionManager injects character prompt)
@@ -893,7 +900,7 @@ class SessionManager extends EventEmitter {
       // 默认开启 fast 模式（仅 Opus 4.6/4.7/4.8 生效，非 Opus 会被忽略）。
       // 通过 --settings 叠加用户既有 settings；用户仍可在 session 内 /fast 关闭。
       // 用 settings 文件而非 inline JSON，规避 PS 5.1 向 native exe 传内嵌双引号的 quoting bug。
-      const fastSettingsPath = path.join(__dirname, 'claude-fast-settings.json');
+      const fastSettingsPath = resolveAsarUnpacked('claude-fast-settings.json');
       cmd += ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
       cmd += '\r\n';
       let sent = false;
@@ -965,7 +972,7 @@ class SessionManager extends EventEmitter {
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       const cv = getConfigValues();
       const codexModel = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
-      const codexInstructionFile = opts.codexInstructionFile || (isCodexWeb ? path.join(__dirname, 'codex-web-prompt.md') : null);
+      const codexInstructionFile = opts.codexInstructionFile || (isCodexWeb ? resolveAsarUnpacked('codex-web-prompt.md') : null);
       let cmd;
       if (kind === 'codex-resume' || kind === 'codex-web-resume' || opts.codexResumePicker) {
         // codex resume 无参 = picker by default
@@ -1359,7 +1366,7 @@ class SessionManager extends EventEmitter {
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}${CODEX_REASONING_CONFIG_ARG}`;
       if (isCodexWebKind(kind)) {
-        const promptPath = path.join(__dirname, 'codex-web-prompt.md');
+        const promptPath = resolveAsarUnpacked('codex-web-prompt.md');
         cmd += ` -c "model_instructions_file=${promptPath.replace(/\\/g, '\\\\')}"`;
       }
       cmd += '\r\n';
