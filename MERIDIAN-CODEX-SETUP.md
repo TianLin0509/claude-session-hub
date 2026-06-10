@@ -152,17 +152,28 @@ npm install
 
 ## Stage 6 · 教用户开 AI 群聊（核心功能 demo）
 
-群聊功能让多个 AI 在一个房间协作回答用户问题。**Claude 已经可用**（走 Meridian）。其他 AI（Codex/Gemini/DeepSeek/GLM 等）需要用户**后续自己**装 CLI 或配 API key。
+群聊功能让多个 AI 在一个房间协作回答用户问题。**启用 Meridian 后 Claude 和 Codex 都自动可用**（团队 VPS 共享 Max + ChatGPT Pro 订阅，零额外配置）。其他 AI（Gemini/DeepSeek/GLM 等）需要用户**后续自己**装 CLI 或配 API key。
 
-**先 demo 一个只含 Claude 的群聊**（验证群聊功能 OK）：
+### Codex 自动联动（v1.3.0 起）
+
+如果你勾选了 Stage 4 的 "启用 Meridian"，Hub 启动 Codex 会话时会**自动**走团队 codex relay：
+
+- backend = `api`
+- base url = `https://meridian.lthub.xyz:8443/codex/v1`
+- model = `gpt-5.5`
+- API key = 你的 Meridian Token（同一个）
+
+**用户什么都不用配**。直接：起 Codex Code session → 输 "你好" → 看到 GPT-5.5 响应 = ✓
+
+### Demo 一个含 Claude + Codex 的群聊
 
 1. 在 sidebar 顶部找 **"群聊"按钮**（聊天气泡图标，"+ 新建" 旁边）
 2. 点击 → 弹出"创建群聊"对话框
-3. 在 AI 选择区域，勾选 **"Claude"**（其他 AI 灰色不可选是正常的，没装 CLI/没填 key）
-4. 在主题输入框打 "你好，自我介绍一下"
+3. 在 AI 选择区域，勾选 **"Claude"** 和 **"Codex"**（两个都已启用走团队订阅）
+4. 在主题输入框打 "你好，请各自介绍一下"
 5. 点 **"创建"按钮** → 群聊房间打开
-6. Claude 会自动发言介绍自己
-7. 用户可以在底部输入框继续发消息，让 Claude 回应
+6. Claude 和 Codex 都会自动发言介绍自己
+7. 用户可以在底部输入框继续发消息，让两个 AI 协作回应
 
 ---
 

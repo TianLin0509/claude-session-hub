@@ -96,7 +96,16 @@ async function main() {
     assertEq(cfg.providers && cfg.providers.meridian && cfg.providers.meridian.url, MERIDIAN_URL, 'config.json meridian.url');
     assertEq(cfg.providers.meridian.token, MERIDIAN_TOKEN, 'config.json meridian.token');
     assertEq(cfg.providers.meridian.enabled, true, 'config.json meridian.enabled');
-    console.log(`    ✓ config.json 持久化 OK（含 enabled=true）\n`);
+    console.log(`    ✓ meridian providers 持久化 OK`);
+
+    // 验证 Codex 联动：meridianEnabled=true 应该自动配置 codex 走团队 relay
+    const codex = cfg.providers.codex || {};
+    assertEq(codex.backend, 'api', 'codex.backend联动→api');
+    assertEq(codex.base_url, `${MERIDIAN_URL}/codex/v1`, 'codex.base_url联动→meridian/codex/v1');
+    assertEq(codex.api_key, MERIDIAN_TOKEN, 'codex.api_key联动→meridian token');
+    assertEq(codex.model, 'gpt-5.5', 'codex.model联动→gpt-5.5');
+    assertEq(codex.provider, 'meridian', 'codex.provider联动→meridian');
+    console.log(`    ✓ codex 配置联动 OK · backend=${codex.backend} base_url=${codex.base_url}\n`);
 
     console.log('Step 5: IPC get-hub-config-raw（验证读回）');
     const editable = await client.eval(`(async () => await ipcRenderer.invoke('get-hub-config-raw'))()`);

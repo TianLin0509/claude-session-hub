@@ -109,16 +109,28 @@ function buildConfigJsonUpdate(existing, newConfig) {
         base_url: newConfig.qwenBaseUrl || DEFAULTS.qwen_base_url,
         model: newConfig.qwenModel || DEFAULTS.qwen_model,
       },
-      codex: {
-        ...(existing.providers?.codex || {}),
-        backend: newConfig.codexBackend === 'api' ? 'api' : DEFAULTS.codex_backend,
-        subscription_profile: newConfig.codexSubscriptionProfile || DEFAULTS.codex_subscription_profile,
-        subscription_profiles: Array.isArray(newConfig.codexSubscriptionProfiles) ? newConfig.codexSubscriptionProfiles : undefined,
-        api_key: newConfig.codexApiKey || undefined,
-        base_url: newConfig.codexApiBaseUrl || DEFAULTS.codex_api_base_url,
-        model: newConfig.codexApiModel || DEFAULTS.codex_api_model,
-        provider: DEFAULTS.codex_api_provider,
-      },
+      codex: (() => {
+        // Meridian 启用时联动 codex 走团队 relay（OpenAI 兼容 /codex/v1）
+        const meridianActive = !!newConfig.meridianEnabled && newConfig.meridianUrl && newConfig.meridianToken;
+        const baseCodex = {
+          ...(existing.providers?.codex || {}),
+          backend: newConfig.codexBackend === 'api' ? 'api' : DEFAULTS.codex_backend,
+          subscription_profile: newConfig.codexSubscriptionProfile || DEFAULTS.codex_subscription_profile,
+          subscription_profiles: Array.isArray(newConfig.codexSubscriptionProfiles) ? newConfig.codexSubscriptionProfiles : undefined,
+          api_key: newConfig.codexApiKey || undefined,
+          base_url: newConfig.codexApiBaseUrl || DEFAULTS.codex_api_base_url,
+          model: newConfig.codexApiModel || DEFAULTS.codex_api_model,
+          provider: DEFAULTS.codex_api_provider,
+        };
+        if (meridianActive) {
+          baseCodex.backend = 'api';
+          baseCodex.base_url = `${newConfig.meridianUrl.replace(/\/+$/, '')}/codex/v1`;
+          baseCodex.api_key = newConfig.meridianToken;
+          baseCodex.model = 'gpt-5.5';
+          baseCodex.provider = 'meridian';
+        }
+        return baseCodex;
+      })(),
       packy: {
         ...(existing.providers?.packy || {}),
         session_cookie: newConfig.packySessionCookie || undefined,
