@@ -134,6 +134,51 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     el.textContent = label;
     el.className = 'config-ai-status ' + (cls || '');
   }
+
+  function fmtTokens(n) {
+    if (!n) return '0';
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
+    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+    return String(n);
+  }
+
+  async function refreshMeridianUsage() {
+    const el = document.getElementById('cfg-meridian-usage');
+    if (!el) return;
+    const url = (document.getElementById('cfg-meridian-url') || {}).value;
+    const token = (document.getElementById('cfg-meridian-token') || {}).value;
+    if (!url || !token) {
+      el.innerHTML = '<span class="config-label-hint">未配置（填好 URL + Token 后保存即可拉取）</span>';
+      return;
+    }
+    el.innerHTML = '<span class="config-label-hint">加载中…</span>';
+    try {
+      const r = await ipcRenderer.invoke('get-meridian-usage', { url: url.trim(), token: token.trim() });
+      if (!r || !r.ok) {
+        el.innerHTML = `<span class="config-label-hint" style="color:#f85149">拉取失败：${(r && r.errorMessage) || '未知'}</span>`;
+        return;
+      }
+      const inPct = Math.min(100, Math.round((r.daily.input / r.limits.input) * 100));
+      const outPct = Math.min(100, Math.round((r.daily.output / r.limits.output) * 100));
+      el.innerHTML = `
+        <div style="font-size: 12px; line-height: 1.6;">
+          <div>请求数 <strong>${r.daily.requests}</strong> · cache hit <strong>${fmtTokens(r.daily.cacheRead)}</strong></div>
+          <div>Input <strong>${fmtTokens(r.daily.input)}</strong> / ${fmtTokens(r.limits.input)}
+            <div style="background:#222; height:6px; border-radius:3px; margin-top:3px;">
+              <div style="background:${inPct > 80 ? '#f85149' : '#3fb950'}; width:${inPct}%; height:100%; border-radius:3px;"></div>
+            </div>
+          </div>
+          <div style="margin-top:6px;">Output <strong>${fmtTokens(r.daily.output)}</strong> / ${fmtTokens(r.limits.output)}
+            <div style="background:#222; height:6px; border-radius:3px; margin-top:3px;">
+              <div style="background:${outPct > 80 ? '#f85149' : '#3fb950'}; width:${outPct}%; height:100%; border-radius:3px;"></div>
+            </div>
+          </div>
+        </div>
+      `;
+    } catch (e) {
+      el.innerHTML = `<span class="config-label-hint" style="color:#f85149">出错：${e.message || e}</span>`;
+    }
+  }
   
   function updateConfigSummaries() {
     const codexBackend = configEl('cfg-codex-backend') ? configEl('cfg-codex-backend').value : 'subscription';
@@ -187,6 +232,22 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     const qwenSummary = configEl('cfg-summary-qwen');
     if (qwenSummary) qwenSummary.textContent = qwenKey ? `API · ${qwenModel} · Packy` : 'API · 未配置 Key';
     setConfigStatus(configEl('cfg-status-qwen'), qwenKey ? 'API' : '缺 Key', qwenKey ? 'api' : 'missing');
+
+    const meridianUrl = configEl('cfg-meridian-url') ? configEl('cfg-meridian-url').value.trim() : '';
+    const meridianToken = configEl('cfg-meridian-token') ? configEl('cfg-meridian-token').value.trim() : '';
+    const claudeSummary = configEl('cfg-summary-claude');
+    if (claudeSummary) {
+      claudeSummary.textContent = (meridianUrl && meridianToken)
+        ? `VPS 代理 · ${meridianUrl.replace(/^https?:\/\//, '')}`
+        : '订阅模式 · claude-opus-4-8[1m]';
+    }
+    if (activeConfigAi === 'claude') {
+      setConfigStatus(
+        configEl('cfg-detail-status'),
+        (meridianUrl && meridianToken) ? 'VPS 代理' : '订阅',
+        (meridianUrl && meridianToken) ? 'api' : 'subscription'
+      );
+    }
   
     if (activeConfigAi === 'codex') {
       setConfigStatus(
@@ -261,6 +322,11 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
       document.getElementById('cfg-qwen-key').value = cfg.qwenApiKey || '';
       document.getElementById('cfg-qwen-url').value = cfg.qwenBaseUrl || '';
       document.getElementById('cfg-qwen-model').value = cfg.qwenModel || '';
+      if (document.getElementById('cfg-meridian-url')) {
+        document.getElementById('cfg-meridian-url').value = cfg.meridianUrl || '';
+        document.getElementById('cfg-meridian-token').value = cfg.meridianToken || '';
+        refreshMeridianUsage();
+      }
       const packyEl = document.getElementById('cfg-packy-cookie');
       if (packyEl) packyEl.value = cfg.packySessionCookie || '';
       const expiresEl = document.getElementById('cfg-packy-expires');
@@ -292,11 +358,46 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     document.querySelectorAll('.config-ai-row').forEach(row => {
       row.addEventListener('click', () => showConfigDetail(row.dataset.ai));
     });
-    ['cfg-codex-backend', 'cfg-codex-subscription-profile', 'cfg-codex-profile-default-label', 'cfg-codex-profile-second-label', 'cfg-codex-profile-second-home', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key', 'cfg-glm-key', 'cfg-glm-url', 'cfg-glm-model', 'cfg-gpt-key', 'cfg-gpt-url', 'cfg-gpt-model', 'cfg-kimi-key', 'cfg-kimi-url', 'cfg-kimi-model', 'cfg-qwen-key', 'cfg-qwen-url', 'cfg-qwen-model'].forEach(id => {
+    ['cfg-codex-backend', 'cfg-codex-subscription-profile', 'cfg-codex-profile-default-label', 'cfg-codex-profile-second-label', 'cfg-codex-profile-second-home', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key', 'cfg-glm-key', 'cfg-glm-url', 'cfg-glm-model', 'cfg-gpt-key', 'cfg-gpt-url', 'cfg-gpt-model', 'cfg-kimi-key', 'cfg-kimi-url', 'cfg-kimi-model', 'cfg-qwen-key', 'cfg-qwen-url', 'cfg-qwen-model', 'cfg-meridian-url', 'cfg-meridian-token'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('input', updateConfigSummaries);
       if (el) el.addEventListener('change', updateConfigSummaries);
     });
+
+    const testBtn = document.getElementById('cfg-meridian-test-btn');
+    if (testBtn) {
+      testBtn.addEventListener('click', async () => {
+        const url = document.getElementById('cfg-meridian-url').value.trim();
+        const token = document.getElementById('cfg-meridian-token').value.trim();
+        const resultEl = document.getElementById('cfg-meridian-test-result');
+        if (!url || !token) {
+          resultEl.textContent = '⚠ URL 和 Token 都必填';
+          resultEl.style.color = '#e0a800';
+          return;
+        }
+        testBtn.disabled = true;
+        resultEl.textContent = '测试中…';
+        resultEl.style.color = '';
+        try {
+          const r = await ipcRenderer.invoke('test-meridian-health', { url, token });
+          if (r.healthOk && r.authOk) {
+            resultEl.textContent = `✓ 成功 · 模型 ${r.model} · 延迟 ${r.latencyMs}ms`;
+            resultEl.style.color = '#3fb950';
+          } else if (r.healthOk && !r.authOk) {
+            resultEl.textContent = `✗ URL 通但 Token 失败：${r.errorMessage}`;
+            resultEl.style.color = '#f85149';
+          } else {
+            resultEl.textContent = `✗ ${r.errorMessage}`;
+            resultEl.style.color = '#f85149';
+          }
+        } catch (e) {
+          resultEl.textContent = `✗ 测试出错：${e.message || e}`;
+          resultEl.style.color = '#f85149';
+        } finally {
+          testBtn.disabled = false;
+        }
+      });
+    }
     modal.addEventListener('click', (e) => { if (e.target === modal) closeConfigModal(); });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
@@ -327,6 +428,8 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
         qwenApiKey: document.getElementById('cfg-qwen-key').value.trim() || undefined,
         qwenBaseUrl: document.getElementById('cfg-qwen-url').value.trim() || undefined,
         qwenModel: document.getElementById('cfg-qwen-model').value.trim() || undefined,
+        meridianUrl: document.getElementById('cfg-meridian-url') ? (document.getElementById('cfg-meridian-url').value.trim() || undefined) : undefined,
+        meridianToken: document.getElementById('cfg-meridian-token') ? (document.getElementById('cfg-meridian-token').value.trim() || undefined) : undefined,
         packySessionCookie: (document.getElementById('cfg-packy-cookie') && document.getElementById('cfg-packy-cookie').value.trim()) || undefined,
       };
       try {

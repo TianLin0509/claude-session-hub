@@ -62,7 +62,34 @@
           <div class="options-menu" id="options-menu" style="display:none">
             <div class="options-item" id="options-theme">🎨 切换主题</div>
             <div class="options-divider"></div>
+            <div class="options-item" id="options-meridian">
+              🔌 Meridian 代理
+              <span id="meridian-status-badge" class="meridian-status-badge meridian-badge-off">未启用</span>
+            </div>
+            <div class="options-divider"></div>
             <div class="options-item" id="options-settings">⚙️ 设置</div>
+          </div>
+          <div class="meridian-config-popup" id="meridian-config-popup" style="display:none">
+            <div class="meridian-popup-title">Meridian VPS 代理</div>
+            <div class="meridian-popup-hint">勾选后所有新建 Claude 会话经 VPS 共享团队 Max 订阅</div>
+            <label class="meridian-toggle-row">
+              <input type="checkbox" id="meridian-popup-enable">
+              <span>启用 Meridian</span>
+            </label>
+            <div class="meridian-field">
+              <label>Meridian URL</label>
+              <input type="text" id="meridian-popup-url" placeholder="https://meridian.lthub.xyz:8443" spellcheck="false">
+            </div>
+            <div class="meridian-field">
+              <label>团队令牌</label>
+              <input type="password" id="meridian-popup-token" placeholder="64 字符 hex（向团队管理员获取）" spellcheck="false">
+            </div>
+            <div class="meridian-actions">
+              <button type="button" id="meridian-popup-test" class="meridian-btn meridian-btn-secondary">测试连接</button>
+              <button type="button" id="meridian-popup-save" class="meridian-btn meridian-btn-primary">保存</button>
+              <button type="button" id="meridian-popup-cancel" class="meridian-btn meridian-btn-ghost">关闭</button>
+            </div>
+            <div id="meridian-popup-result" class="meridian-result-hint">配置后立即生效（仅影响新建 Claude 会话）</div>
           </div>
           <div class="theme-picker-popup" id="theme-picker-popup" style="display:none">
             <div class="theme-picker-title">选择主题</div>
@@ -348,6 +375,27 @@
             <div class="config-mode-card selected">
               <strong>订阅 / Claude Code 登录</strong>
               <span>使用当前本机 Claude Code 登录状态。Hub 会保持现有订阅启动方式，不写入 API Key。</span>
+            </div>
+
+            <div class="config-section-label" style="margin-top: 18px;">
+              <span>VPS 代理（可选 · 团队共享）</span>
+              <span class="config-label-hint">填了 URL + Token 后 Claude 会话改走 VPS 共享订阅；留空 = 本机订阅</span>
+            </div>
+            <div class="config-field">
+              <label>Meridian URL</label>
+              <input type="text" id="cfg-meridian-url" placeholder="https://meridian.lthub.xyz:8443" spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>团队令牌 <span class="config-label-hint">（64 字符 hex，向团队管理员索取）</span></label>
+              <input type="password" id="cfg-meridian-token" placeholder="0123abcd...（保存后会自动隐藏）" spellcheck="false">
+            </div>
+            <div class="config-field" style="display: flex; align-items: center; gap: 10px;">
+              <button type="button" id="cfg-meridian-test-btn" class="config-mini-btn">测试连接</button>
+              <span id="cfg-meridian-test-result" class="config-label-hint">点击测试：先 /healthz，再用 Token 发 5-token 微请求</span>
+            </div>
+            <div class="config-field">
+              <label>今日用量 <span class="config-label-hint">（近 24h，需先保存配置）</span></label>
+              <div id="cfg-meridian-usage" class="config-label-hint">未加载（保存配置后自动拉取）</div>
             </div>
           </div>
 

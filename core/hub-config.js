@@ -29,6 +29,10 @@ const DEFAULTS = {
   kimi_model: 'kimi-k2.5',
   qwen_base_url: 'https://www.packyapi.com',
   qwen_model: 'qwen3.6-plus',
+  // Meridian VPS proxy (route Claude Code through team-shared Max subscription)
+  meridian_url: 'https://meridian.lthub.xyz:8443',
+  meridian_token: '',
+  meridian_enabled: false,
   ui_tool_fold_threshold: 15,
   ui_code_fold_threshold: 30,
 };
@@ -122,6 +126,9 @@ function getConfig() {
     qwenApiKey: getConfigValue('qwenApiKey', 'PACKY_QWEN_API_KEY', 'providers.qwen.api_key', ''),
     qwenBaseUrl: normalizeBaseUrl(getConfigValue('qwenBaseUrl', 'PACKY_QWEN_BASE_URL', 'providers.qwen.base_url', DEFAULTS.qwen_base_url)),
     qwenModel: getConfigValue('qwenModel', 'PACKY_QWEN_MODEL', 'providers.qwen.model', DEFAULTS.qwen_model),
+    meridianUrl: normalizeBaseUrl(getConfigValue('meridianUrl', 'MERIDIAN_URL', 'providers.meridian.url', DEFAULTS.meridian_url)),
+    meridianToken: getConfigValue('meridianToken', 'MERIDIAN_TOKEN', 'providers.meridian.token', DEFAULTS.meridian_token),
+    meridianEnabled: Boolean(rawConfig.providers?.meridian?.enabled),
     codexBackend: getConfigValue('codexBackend', 'HUB_CODEX_BACKEND', 'providers.codex.backend', DEFAULTS.codex_backend),
     codexSubscriptionProfile: getConfigValue('codexSubscriptionProfile', 'HUB_CODEX_PROFILE', 'providers.codex.subscription_profile', DEFAULTS.codex_subscription_profile),
     codexSubscriptionProfiles,

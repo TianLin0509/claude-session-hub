@@ -48,6 +48,9 @@ function _loadConfigValues() {
     QWEN_API_KEY: config.qwenApiKey,
     QWEN_BASE_URL: config.qwenBaseUrl,
     QWEN_MODEL: config.qwenModel,
+    MERIDIAN_URL: config.meridianUrl,
+    MERIDIAN_TOKEN: config.meridianToken,
+    MERIDIAN_ENABLED: config.meridianEnabled,
   };
 }
 // 惰性求值：首次使用时加载，之后缓存
@@ -507,19 +510,37 @@ class SessionManager extends EventEmitter {
     let codexProfile = null;
 
     if (isClaude) {
-      // Force subscription OAuth (Claude Max): strip custom-endpoint env vars
-      // that would otherwise route Claude Code to cc-switch / CCR.
-      delete sessionEnv.ANTHROPIC_BASE_URL;
-      delete sessionEnv.ANTHROPIC_API_BASE_URL;
-      delete sessionEnv.ANTHROPIC_AUTH_TOKEN;
-      delete sessionEnv.ANTHROPIC_API_KEY;
-      delete sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
-      delete sessionEnv.ANTHROPIC_MODEL;
       const cv = getConfigValues();
-      sessionEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
-      sessionEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
-      sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
-      // Attribution + auth for the Stop/UserPromptSubmit hook script
+      if (cv.MERIDIAN_ENABLED && cv.MERIDIAN_URL && cv.MERIDIAN_TOKEN) {
+        // Meridian VPS proxy mode: route Claude Code through team-shared Max
+        // via the Anthropic-compatible endpoint at https://meridian host:8443.
+        // ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN are exactly the same pattern
+        // Claude Code uses for any 3rd-party-compatible backend.
+        delete sessionEnv.ANTHROPIC_API_KEY;
+        delete sessionEnv.ANTHROPIC_API_BASE_URL;
+        delete sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+        delete sessionEnv.ANTHROPIC_MODEL;
+        sessionEnv.ANTHROPIC_BASE_URL = cv.MERIDIAN_URL;
+        sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.MERIDIAN_TOKEN;
+        // Meridian endpoint is plain HTTPS, do NOT route through local proxy.
+        // (CLAUDE_PROXY 7890 is for direct-to-Anthropic with VPN; not needed here.)
+        delete sessionEnv.HTTP_PROXY;
+        delete sessionEnv.HTTPS_PROXY;
+        sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+      } else {
+        // Force subscription OAuth (Claude Max): strip custom-endpoint env vars
+        // that would otherwise route Claude Code to cc-switch / CCR.
+        delete sessionEnv.ANTHROPIC_BASE_URL;
+        delete sessionEnv.ANTHROPIC_API_BASE_URL;
+        delete sessionEnv.ANTHROPIC_AUTH_TOKEN;
+        delete sessionEnv.ANTHROPIC_API_KEY;
+        delete sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+        delete sessionEnv.ANTHROPIC_MODEL;
+        sessionEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
+        sessionEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
+        sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+      }
+      // Attribution + auth for the Stop/UserPromptSubmit hook script (both modes)
       sessionEnv.CLAUDE_HUB_SESSION_ID = id;
       if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
       if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;

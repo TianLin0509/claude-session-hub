@@ -261,6 +261,112 @@ body.theme-light .hub-escape-home {
   animation: dropdown-in 120ms ease-out;
 }
 
+/* Meridian VPS proxy status badge inside options-menu */
+.meridian-status-badge {
+  margin-left: auto;
+  padding: 1px 7px;
+  font-size: 11px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.meridian-badge-on {
+  background: rgba(63, 185, 80, 0.18);
+  color: #3fb950;
+}
+.meridian-badge-off {
+  background: rgba(110, 118, 129, 0.18);
+  color: var(--text-muted);
+}
+
+/* Meridian config popup (sibling to theme-picker-popup under options-wrapper) */
+.options-wrapper .meridian-config-popup {
+  position: absolute;
+  top: 100%;
+  right: -4px;
+  margin-top: 6px;
+  width: 320px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  z-index: 1000;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.04);
+  animation: dropdown-in 120ms ease-out;
+}
+.meridian-popup-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.meridian-popup-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+  line-height: 1.45;
+}
+.meridian-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.meridian-field {
+  margin-top: 8px;
+}
+.meridian-field label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+.meridian-field input {
+  width: 100%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: "SF Mono", "Consolas", monospace;
+}
+.meridian-field input:focus {
+  outline: none;
+  border-color: rgba(88, 166, 255, 0.5);
+}
+.meridian-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+.meridian-btn {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 100ms, border-color 100ms;
+}
+.meridian-btn:hover { background: rgba(88, 166, 255, 0.08); border-color: rgba(88, 166, 255, 0.3); color: var(--text-primary); }
+.meridian-btn:disabled { opacity: 0.5; cursor: wait; }
+.meridian-btn-primary { background: rgba(63, 185, 80, 0.18); border-color: rgba(63, 185, 80, 0.3); color: #3fb950; }
+.meridian-btn-primary:hover { background: rgba(63, 185, 80, 0.28); }
+.meridian-btn-ghost { background: transparent; }
+.meridian-result-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  min-height: 14px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 .btn-zoom {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);

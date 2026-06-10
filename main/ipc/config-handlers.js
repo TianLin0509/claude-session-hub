@@ -37,6 +37,10 @@ function toMaskedConfig(config) {
     codexApiKeySet: !!config.codexApiKey,
     codexApiBaseUrl: config.codexApiBaseUrl,
     codexApiModel: config.codexApiModel,
+    meridianUrl: config.meridianUrl,
+    meridianToken: config.meridianToken ? '***' + config.meridianToken.slice(-4) : '',
+    meridianTokenSet: !!config.meridianToken,
+    meridianEnabled: !!config.meridianEnabled,
   };
 }
 
@@ -63,6 +67,9 @@ function toEditableConfig(config) {
     codexApiBaseUrl: config.codexApiBaseUrl,
     codexApiModel: config.codexApiModel,
     packySessionCookie: config.packySessionCookie || '',
+    meridianUrl: config.meridianUrl || '',
+    meridianToken: config.meridianToken || '',
+    meridianEnabled: !!config.meridianEnabled,
     uiToolFoldThreshold: Number.isFinite(config.uiToolFoldThreshold) ? config.uiToolFoldThreshold : 15,
     uiCodeFoldThreshold: Number.isFinite(config.uiCodeFoldThreshold) ? config.uiCodeFoldThreshold : 30,
   };
@@ -116,6 +123,12 @@ function buildConfigJsonUpdate(existing, newConfig) {
         ...(existing.providers?.packy || {}),
         session_cookie: newConfig.packySessionCookie || undefined,
       },
+      meridian: {
+        ...(existing.providers?.meridian || {}),
+        url: newConfig.meridianUrl || undefined,
+        token: newConfig.meridianToken || undefined,
+        enabled: newConfig.meridianEnabled === undefined ? (existing.providers?.meridian?.enabled || false) : !!newConfig.meridianEnabled,
+      },
     },
   };
 
@@ -126,8 +139,101 @@ function buildConfigJsonUpdate(existing, newConfig) {
   if (!merged.providers.qwen.api_key) delete merged.providers.qwen.api_key;
   if (!merged.providers.codex.api_key) delete merged.providers.codex.api_key;
   if (!merged.providers.packy.session_cookie) delete merged.providers.packy.session_cookie;
+  if (!merged.providers.meridian.url && !merged.providers.meridian.token) delete merged.providers.meridian;
 
   return merged;
+}
+
+/**
+ * Test Meridian VPS proxy health and auth in two steps:
+ *   1. GET /healthz - URL reachability
+ *   2. POST /v1/messages with 5-token micro-request - token auth + end-to-end
+ */
+async function testMeridianHealth(url, token) {
+  const result = { healthOk: false, authOk: false, latencyMs: 0, model: '', errorMessage: '' };
+  if (!url || !token) {
+    result.errorMessage = 'URL 和 Token 都必填';
+    return result;
+  }
+  const base = String(url).trim().replace(/\/+$/, '');
+
+  try {
+    const r1 = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(8000) });
+    result.healthOk = r1.ok;
+    if (!r1.ok) {
+      result.errorMessage = `健康检查失败：HTTP ${r1.status}`;
+      return result;
+    }
+  } catch (e) {
+    result.errorMessage = `URL 不可达：${e.message || e}`;
+    return result;
+  }
+
+  try {
+    const t0 = Date.now();
+    const r2 = await fetch(`${base}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': token,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 5,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    result.latencyMs = Date.now() - t0;
+    if (r2.ok) {
+      const data = await r2.json();
+      result.authOk = true;
+      result.model = data.model || '';
+    } else if (r2.status === 401) {
+      result.errorMessage = 'Token 鉴权失败（401）';
+    } else {
+      const text = await r2.text().catch(() => '');
+      result.errorMessage = `请求失败 HTTP ${r2.status}：${text.slice(0, 200)}`;
+    }
+  } catch (e) {
+    result.errorMessage = `请求失败：${e.message || e}`;
+  }
+
+  return result;
+}
+
+/**
+ * Fetch Meridian telemetry ring buffer (HTTP API, not SQLite) and
+ * aggregate the last-24h token usage for the Hub UI progress bar.
+ */
+async function getMeridianUsage(url, token) {
+  if (!url || !token) return { ok: false, errorMessage: 'URL 和 Token 都必填' };
+  const base = String(url).trim().replace(/\/+$/, '');
+  try {
+    const r = await fetch(`${base}/telemetry/requests`, {
+      headers: { 'x-api-key': token },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return { ok: false, errorMessage: `HTTP ${r.status}` };
+    const rows = await r.json();
+    if (!Array.isArray(rows)) return { ok: false, errorMessage: 'response shape unexpected' };
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    const today = rows.filter(row => (row.timestamp || 0) > cutoff);
+    const totals = today.reduce((s, row) => ({
+      requests: s.requests + 1,
+      input: s.input + (row.inputTokens || 0),
+      output: s.output + (row.outputTokens || 0),
+      cacheRead: s.cacheRead + (row.cacheReadInputTokens || 0),
+    }), { requests: 0, input: 0, output: 0, cacheRead: 0 });
+    return {
+      ok: true,
+      daily: totals,
+      limits: { input: 50_000_000, output: 5_000_000 },
+    };
+  } catch (e) {
+    return { ok: false, errorMessage: e.message || String(e) };
+  }
 }
 
 function registerConfigIpc(ipcMain, deps) {
@@ -175,6 +281,14 @@ function registerConfigIpc(ipcMain, deps) {
 
   ipcMain.handle('get-config-path', () => {
     return getConfigPath();
+  });
+
+  ipcMain.handle('test-meridian-health', async (_e, { url, token } = {}) => {
+    return await testMeridianHealth(url, token);
+  });
+
+  ipcMain.handle('get-meridian-usage', async (_e, { url, token } = {}) => {
+    return await getMeridianUsage(url, token);
   });
 }
 

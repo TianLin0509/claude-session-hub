@@ -122,10 +122,128 @@ function createThemeController({ document, localStorage, terminalCache, openConf
         openConfigModal();
       });
     }
+
+    initMeridianPopup(optionsMenu);
+  }
+
+  async function refreshMeridianBadge() {
+    const badge = document.getElementById('meridian-status-badge');
+    if (!badge) return;
+    try {
+      const cfg = await ipcRenderer.invoke('get-hub-config-raw');
+      const active = cfg.meridianEnabled && cfg.meridianUrl && cfg.meridianToken;
+      badge.textContent = active ? '已启用' : '未启用';
+      badge.classList.toggle('meridian-badge-on', !!active);
+      badge.classList.toggle('meridian-badge-off', !active);
+    } catch {
+      badge.textContent = '未配置';
+    }
+  }
+
+  function initMeridianPopup(optionsMenu) {
+    const item = document.getElementById('options-meridian');
+    const popup = document.getElementById('meridian-config-popup');
+    if (!item || !popup) return;
+
+    const urlInput = document.getElementById('meridian-popup-url');
+    const tokenInput = document.getElementById('meridian-popup-token');
+    const enableCb = document.getElementById('meridian-popup-enable');
+    const testBtn = document.getElementById('meridian-popup-test');
+    const saveBtn = document.getElementById('meridian-popup-save');
+    const cancelBtn = document.getElementById('meridian-popup-cancel');
+    const resultEl = document.getElementById('meridian-popup-result');
+
+    item.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      optionsMenu.style.display = 'none';
+      try {
+        const cfg = await ipcRenderer.invoke('get-hub-config-raw');
+        urlInput.value = cfg.meridianUrl || 'https://meridian.lthub.xyz:8443';
+        tokenInput.value = cfg.meridianToken || '';
+        enableCb.checked = !!cfg.meridianEnabled;
+        resultEl.textContent = '配置后立即生效（仅影响新建 Claude 会话）';
+        resultEl.style.color = '';
+      } catch {
+        urlInput.value = 'https://meridian.lthub.xyz:8443';
+        tokenInput.value = '';
+        enableCb.checked = false;
+      }
+      popup.style.display = 'block';
+    });
+
+    cancelBtn.addEventListener('click', () => { popup.style.display = 'none'; });
+
+    testBtn.addEventListener('click', async () => {
+      const url = urlInput.value.trim();
+      const token = tokenInput.value.trim();
+      if (!url || !token) {
+        resultEl.textContent = '⚠ URL 和 Token 都必填';
+        resultEl.style.color = '#e0a800';
+        return;
+      }
+      testBtn.disabled = true;
+      resultEl.textContent = '测试中…';
+      resultEl.style.color = '';
+      try {
+        const r = await ipcRenderer.invoke('test-meridian-health', { url, token });
+        if (r.healthOk && r.authOk) {
+          resultEl.textContent = `✓ 成功 · 模型 ${r.model} · 延迟 ${r.latencyMs}ms`;
+          resultEl.style.color = '#3fb950';
+        } else if (r.healthOk && !r.authOk) {
+          resultEl.textContent = `✗ URL 通但 Token 失败：${r.errorMessage}`;
+          resultEl.style.color = '#f85149';
+        } else {
+          resultEl.textContent = `✗ ${r.errorMessage}`;
+          resultEl.style.color = '#f85149';
+        }
+      } catch (e) {
+        resultEl.textContent = `✗ 测试出错：${e.message || e}`;
+        resultEl.style.color = '#f85149';
+      } finally {
+        testBtn.disabled = false;
+      }
+    });
+
+    saveBtn.addEventListener('click', async () => {
+      const url = urlInput.value.trim();
+      const token = tokenInput.value.trim();
+      const enabled = enableCb.checked;
+      if (enabled && (!url || !token)) {
+        resultEl.textContent = '⚠ 启用前请先填 URL 和 Token';
+        resultEl.style.color = '#e0a800';
+        return;
+      }
+      saveBtn.disabled = true;
+      try {
+        await ipcRenderer.invoke('save-hub-config', {
+          meridianUrl: url || undefined,
+          meridianToken: token || undefined,
+          meridianEnabled: enabled,
+        });
+        resultEl.textContent = '✓ 已保存';
+        resultEl.style.color = '#3fb950';
+        await refreshMeridianBadge();
+        setTimeout(() => { popup.style.display = 'none'; }, 600);
+      } catch (e) {
+        resultEl.textContent = `✗ 保存失败：${e.message || e}`;
+        resultEl.style.color = '#f85149';
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    document.addEventListener('mousedown', (e) => {
+      if (popup.style.display !== 'none' && !popup.contains(e.target) && e.target !== item && !item.contains(e.target)) {
+        popup.style.display = 'none';
+      }
+    });
+
+    refreshMeridianBadge();
+    if (typeof window !== 'undefined') window.refreshMeridianBadge = refreshMeridianBadge;
   }
 
   init();
-  return { applyTheme, init };
+  return { applyTheme, init, refreshMeridianBadge };
 }
 
 module.exports = { XTERM_THEMES, createThemeController };
