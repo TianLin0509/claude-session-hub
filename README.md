@@ -4,8 +4,24 @@
 
 ## 🚀 团队成员一键安装（推荐 · 有团队 Token 就用这个）
 
-> **🤖 如果你是 AI Agent（Codex / Claude / 任意助手）**：不要看后面任何章节，不要点任何 GUI。
-> 只需向用户要一个东西——**团队管理员发的 64 位 hex Token**——然后在 PowerShell 里跑下面三行，等它打出 `SETUP COMPLETE` 即全部完成。脚本会自己装依赖、写配置、在线验证 Token、创建桌面快捷方式并启动 Hub。
+挑一条最顺手的，三选一，都装到同一个可用状态：
+
+### 方式 A · 双击安装（最省心，不碰命令行）
+
+1. 下载这两个文件到同一个文件夹（或直接 `git clone` 本仓库）：[`install-hub.bat`](./install-hub.bat) 和 [`setup.ps1`](./setup.ps1)（`install-hub.bat` 找不到 `setup.ps1` 时会自己联网下载，所以只下 `.bat` 也行）
+2. **双击 `install-hub.bat`**
+3. 弹出输入框 → 粘贴团队管理员发的 **64 位 Token** → 确定
+4. 全自动装完，看到绿色 `安装结束：成功` 即可。中途可能弹 1-2 次 UAC 窗，点"是"
+
+### 方式 B · 让 AI Agent 代办（你什么都不用做）
+
+把这句话发给你的 Codex / Claude / 任意助手即可：
+
+> 帮我装一个工具。仓库 https://github.com/TianLin0509/claude-session-hub ，按它 README 的"团队成员一键安装"章节操作，跑到打印 `SETUP COMPLETE` 为止。我的团队 Token 是 `<把这里换成64位Token>`，中途弹 UAC 窗我会点"是"。
+
+> **🤖 Agent 注意**：不要点任何 GUI，直接用下面方式 C 的命令。看到红色 `FAIL: <原因>` 就停下并把那行报给用户，不要瞎试。
+
+### 方式 C · 一条命令（适合自己跑或 Agent 执行）
 
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
