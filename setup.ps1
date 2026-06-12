@@ -20,6 +20,7 @@ param(
   [string]$MeridianUrl = "https://meridian.lthub.xyz:8443",
   [string]$HubDir = "$env:USERPROFILE\claude-session-hub",
   [string]$DataDir = "$env:USERPROFILE\.claude-session-hub",
+  [string]$LocalSource = "",
   [switch]$NoLaunch,
   [switch]$SkipHealthCheck
 )
@@ -76,15 +77,41 @@ $nodeMajor = [int]((node --version) -replace '^v(\d+).*', '$1')
 if ($nodeMajor -lt 18) { Fail "Node.js >= 18 required, found $(node --version). Upgrade Node and re-run." }
 Ok "node $(node --version)"
 
-# ---------- 3. clone or update repo ----------
-Step "Getting Hub source -> $HubDir"
-if (Test-Path "$HubDir\.git") {
+# ---------- 3. get Hub source (local copy > existing clone > git clone) ----------
+function Test-HubRepo([string]$p) {
+  return ($p -and (Test-Path "$p\package.json") -and (Test-Path "$p\main.js") -and (Test-Path "$p\core"))
+}
+
+# Where is this script? If it sits inside an already-downloaded Hub repo
+# (e.g. an extracted GitHub/Gitee zip), use that as the source - no network.
+$selfDir = $PSScriptRoot
+if (-not $selfDir) { $selfDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $LocalSource -and (Test-HubRepo $selfDir)) { $LocalSource = $selfDir }
+
+if ($LocalSource) {
+  Step "Getting Hub source -> using local copy (offline, no git clone)"
+  if (-not (Test-HubRepo $LocalSource)) {
+    Fail "LocalSource '$LocalSource' is not the Hub repo (missing package.json / main.js / core)."
+  }
+  $srcFull = (Resolve-Path $LocalSource).Path
+  if (-not $PSBoundParameters.ContainsKey('HubDir')) { $HubDir = $srcFull }  # install in place
+  $dstFull = $HubDir
+  try { $dstFull = (Resolve-Path $HubDir -ErrorAction Stop).Path } catch {}
+  if ($srcFull -ne $dstFull) {
+    Write-Host "    copying source $srcFull -> $HubDir (excluding node_modules/.git) ..."
+    robocopy $srcFull $HubDir /E /XD node_modules .git /XF "*.log" /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { Fail "copy from LocalSource failed (robocopy exit $LASTEXITCODE)." }
+  }
+  Ok "using local source ($HubDir)"
+} elseif (Test-Path "$HubDir\.git") {
+  Step "Getting Hub source -> updating existing clone at $HubDir"
   Push-Location $HubDir
   git pull origin master
-  if ($LASTEXITCODE -ne 0) { Pop-Location; Fail "git pull failed. Fix network access to github.com then re-run." }
+  if ($LASTEXITCODE -ne 0) { Pop-Location; Fail "git pull failed. Check network then re-run." }
   Pop-Location
   Ok "updated existing clone"
 } else {
+  Step "Getting Hub source -> $HubDir (git clone)"
   # Try Gitee first (reachable from mainland / locked-down corp networks),
   # fall back to GitHub. First mirror that succeeds wins.
   $mirrors = @(
@@ -99,7 +126,9 @@ if (Test-Path "$HubDir\.git") {
     Write-Host "    (that mirror failed, trying next)" -ForegroundColor Yellow
     if (Test-Path $HubDir) { Remove-Item -Recurse -Force $HubDir -ErrorAction SilentlyContinue }
   }
-  if (-not $cloned) { Fail "git clone failed from all mirrors (Gitee + GitHub). Check network access then re-run." }
+  if (-not $cloned) {
+    Fail "git clone failed from all mirrors (Gitee + GitHub). If your network blocks git, download the repo zip manually and run setup.ps1 from inside the extracted folder (offline mode)."
+  }
 }
 
 # ---------- 4. npm install ----------

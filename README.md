@@ -43,6 +43,21 @@ powershell -ExecutionPolicy Bypass -File $dst -Token <把这里换成64位Token>
 - 镜像仓库：GitHub `https://github.com/TianLin0509/claude-session-hub` · Gitee `https://gitee.com/lt17210720082/claude-session-hub`（管理员双推保持一致，两者代码同步）
 - 装好后日常启动：双击桌面 **AI Hub** 图标；更新版本：重跑同一条命令即可（幂等）
 
+### 方式 D · 离线源安装（公司网封 git / 连不上 GitHub 时）
+
+如果 `git clone` 通不了（公司代理常允许浏览器访问但封 git 协议），改用"先下整包、再离线装"：
+
+1. 用浏览器下载**完整源码 zip**（任选其一，都行）：
+   - GitHub：仓库页绿色 **Code → Download ZIP**，或任一 Release 的 **Source code (zip)**
+   - Gitee：`https://gitee.com/lt17210720082/claude-session-hub` → **克隆/下载 → 下载ZIP**
+2. 解压到一个**你会长期保留的文件夹**（别放临时目录/下载文件夹，装好后 Hub 就住在这）
+3. 进解压出来的文件夹，**双击 `install-hub.bat`** → 弹框粘 Token → 确定
+
+`setup.ps1` 会**自动识别自己就在源码里 → 跳过 git clone、直接用本地文件**装，全程不碰 GitHub。
+（仍需要能访问 npm 源装依赖 + 能连 Meridian VPS 验证 Token，这两个都是下行，一般没问题。）
+
+> 命令行等价写法（在解压文件夹里）：`powershell -ExecutionPolicy Bypass -File setup.ps1 -Token <Token>`
+
 ## 下载安装（无团队 Token 的公网用户）
 
 1. 到 [Releases](https://github.com/TianLin0509/claude-session-hub/releases/latest) 下载最新的 `AIGroupChatHub-Setup-x.y.z.exe`
