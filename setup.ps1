@@ -85,9 +85,21 @@ if (Test-Path "$HubDir\.git") {
   Pop-Location
   Ok "updated existing clone"
 } else {
-  git clone https://github.com/TianLin0509/claude-session-hub.git $HubDir
-  if ($LASTEXITCODE -ne 0) { Fail "git clone failed. Fix network access to github.com then re-run." }
-  Ok "cloned fresh copy"
+  # Try Gitee first (reachable from mainland / locked-down corp networks),
+  # fall back to GitHub. First mirror that succeeds wins.
+  $mirrors = @(
+    "https://gitee.com/lt17210720082/claude-session-hub.git",
+    "https://github.com/TianLin0509/claude-session-hub.git"
+  )
+  $cloned = $false
+  foreach ($m in $mirrors) {
+    Write-Host "    trying $m ..."
+    git clone $m $HubDir
+    if ($LASTEXITCODE -eq 0) { $cloned = $true; Ok "cloned from $m"; break }
+    Write-Host "    (that mirror failed, trying next)" -ForegroundColor Yellow
+    if (Test-Path $HubDir) { Remove-Item -Recurse -Force $HubDir -ErrorAction SilentlyContinue }
+  }
+  if (-not $cloned) { Fail "git clone failed from all mirrors (Gitee + GitHub). Check network access then re-run." }
 }
 
 # ---------- 4. npm install ----------
