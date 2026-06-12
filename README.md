@@ -23,17 +23,24 @@
 
 ### 方式 C · 一条命令（适合自己跑或 Agent 执行）
 
+下面这段会**优先从 Gitee 拉脚本（国内/公司内网友好）、失败自动回退 GitHub**：
+
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol = 'Tls12'
-iwr -useb https://raw.githubusercontent.com/TianLin0509/claude-session-hub/master/setup.ps1 -OutFile "$env:TEMP\hub-setup.ps1"
-powershell -ExecutionPolicy Bypass -File "$env:TEMP\hub-setup.ps1" -Token <把这里换成64位Token>
+$dst = "$env:TEMP\hub-setup.ps1"
+foreach ($s in @(
+  'https://gitee.com/lt17210720082/claude-session-hub/raw/master/setup.ps1',
+  'https://raw.githubusercontent.com/TianLin0509/claude-session-hub/master/setup.ps1')) {
+  try { iwr -useb $s -OutFile $dst; break } catch {}
+}
+powershell -ExecutionPolicy Bypass -File $dst -Token <把这里换成64位Token>
 ```
 
-脚本自动完成：装 Git/Node（已装则跳过）→ clone 本仓库 → `npm install` → 装 Claude CLI → 写入 Meridian 配置（**Claude 和 Codex 同时走团队共享订阅，零手工配置**）→ 用真实请求在线验证 Token → 桌面快捷方式 → 启动 Hub。
+脚本自动完成：装 Git/Node（已装则跳过）→ **clone 本仓库（Gitee 优先，GitHub 兜底）** → `npm install` → 装 Claude CLI → 写入 Meridian 配置（**Claude 和 Codex 同时走团队共享订阅，零手工配置**）→ 用真实请求在线验证 Token → 桌面快捷方式 → 启动 Hub。
 
 - 中途可能弹 1-2 次 UAC 管理员确认窗（winget 装 Git/Node），点"是"即可
 - 任何一步失败脚本会停下并打出红色 `FAIL: <原因>`，把那一行发给团队管理员即可
-- 如果 `raw.githubusercontent.com` 被防火墙挡：先 `git clone https://github.com/TianLin0509/claude-session-hub.git`，再进目录跑 `powershell -ExecutionPolicy Bypass -File setup.ps1 -Token <Token>`
+- 镜像仓库：GitHub `https://github.com/TianLin0509/claude-session-hub` · Gitee `https://gitee.com/lt17210720082/claude-session-hub`（管理员双推保持一致，两者代码同步）
 - 装好后日常启动：双击桌面 **AI Hub** 图标；更新版本：重跑同一条命令即可（幂等）
 
 ## 下载安装（无团队 Token 的公网用户）
