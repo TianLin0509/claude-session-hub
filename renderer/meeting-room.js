@@ -566,8 +566,7 @@ if (typeof document !== 'undefined') (function () {
     return out;
   }
 
-  function _renderMarkdown(text) {
-    if (!text) return '';
+  function _renderMarkdownUncached(text) {
     try {
       if (!_markedCache) _markedCache = require('marked').marked;
       if (!_domPurifyCache) _domPurifyCache = require('dompurify');
@@ -588,6 +587,35 @@ if (typeof document !== 'undefined') (function () {
       // 回退到纯文本（escapeHtml）
       return escapeHtml(text).replace(/\n/g, '<br>');
     }
+  }
+  // #1 流式/重渲性能：_renderMarkdown 对相同文本会被反复调用——committee/全量 panel 每个
+  //   partial tick 重渲所有已完成消息、tab 切换/时光机/soft-alert 亦然。同一 text 经
+  //   marked+DOMPurify+Prism 必得同一 HTML（运行期配置稳定），故按 text 做 LRU memo：
+  //   稳定内容直接命中缓存，跳过 parse+sanitize+DOM walk+Prism；流式增长中的那条每 tick
+  //   text 不同必然 miss（不影响正确性），命中的是其周围大量稳定内容。输出逐字节一致，
+  //   零视觉/行为变化。Map 迭代序=插入序，命中即 delete+set 重置到队尾，超上限驱逐最旧。
+  const _mdCache = new Map();
+  const _MD_CACHE_MAX = 300;
+  const _mdStats = { renders: 0, hits: 0 };
+  function _renderMarkdown(text) {
+    if (!text) return '';
+    const hit = _mdCache.get(text);
+    if (hit !== undefined) {
+      _mdCache.delete(text); _mdCache.set(text, hit);
+      _mdStats.hits++;
+      return hit;
+    }
+    const out = _renderMarkdownUncached(text);
+    _mdStats.renders++;
+    _mdCache.set(text, out);
+    if (_mdCache.size > _MD_CACHE_MAX) _mdCache.delete(_mdCache.keys().next().value);
+    return out;
+  }
+  if (typeof window !== 'undefined') {
+    // 可观测/E2E seam（同底部 module.exports 暴露 _isPartialUnchanged 之意图）：
+    //   供 CDP 度量 memo 命中率、验证相同 text 输出逐字节一致。
+    window.__mrMarkdownStats = _mdStats;
+    window.__mrRenderMarkdown = _renderMarkdown;
   }
 
   // 卡片优化（2026-05-03 道雪）：路径链接 click 全局委托。
