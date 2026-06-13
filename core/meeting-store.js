@@ -109,7 +109,12 @@ function listMeetingFiles() {
     return fs.readdirSync(meetingsDir())
       .filter(f => f.endsWith('.json') && !f.endsWith('.tmp'))
       .map(f => f.slice(0, -5));
-  } catch { return []; }
+  } catch (e) {
+    // ENOENT = meetings 目录尚不存在（首次/无会议），属正常，静默返回。
+    // 其它错误（权限/磁盘）会让 boot 孤儿恢复静默跳过，至少留日志以便排查。
+    if (e && e.code !== 'ENOENT') console.warn('[meeting-store] listMeetingFiles 读取目录失败:', e && e.message);
+    return [];
+  }
 }
 
 // Boot 自我修复用：扫目录返回所有 per-meeting JSON 内容（含 schemaVersion）。

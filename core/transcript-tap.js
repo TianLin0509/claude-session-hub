@@ -1142,8 +1142,8 @@ class GeminiTap extends EventEmitter {
 
   _ensureWatcher() {
     if (this._pollTimer) return;
-    this._scanOnce().catch(() => {});
-    this._pollTimer = setInterval(() => this._scanOnce().catch(() => {}), 1000);
+    this._scanOnce().catch((e) => console.warn('[gemini-tap] scan error:', e && e.message));
+    this._pollTimer = setInterval(() => this._scanOnce().catch((e) => console.warn('[gemini-tap] scan error:', e && e.message)), 1000);
     this._pollTimer.unref?.();
   }
 

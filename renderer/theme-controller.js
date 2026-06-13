@@ -215,11 +215,17 @@ function createThemeController({ document, localStorage, terminalCache, openConf
       }
       saveBtn.disabled = true;
       try {
-        await ipcRenderer.invoke('save-hub-config', {
+        const result = await ipcRenderer.invoke('save-hub-config', {
           meridianUrl: url || undefined,
           meridianToken: token || undefined,
           meridianEnabled: enabled,
         });
+        // save-hub-config 读现有配置失败时返回 {success:false} 中止保存（防静默覆盖其它 provider 字段）。
+        // 必须如实反映失败，否则会"已中止却假报已保存"。
+        if (!result || !result.success) {
+          throw new Error(result && result.error === 'config_read_failed'
+            ? '配置文件暂时不可读（可能被占用），请稍后重试' : '保存失败');
+        }
         resultEl.textContent = '✓ 已保存';
         resultEl.style.color = '#3fb950';
         await refreshMeridianBadge();

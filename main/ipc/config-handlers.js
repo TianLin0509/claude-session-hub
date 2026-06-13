@@ -269,7 +269,16 @@ function registerConfigIpc(ipcMain, deps) {
     try {
       const raw = fs.readFileSync(configPath, 'utf8');
       existing = JSON.parse(raw);
-    } catch {}
+    } catch (e) {
+      // ENOENT = 配置文件还不存在（首次运行），existing={} 合法，继续保存。
+      // 其它错误（文件被锁 EBUSY/EPERM、JSON 损坏等）说明现有配置确实读不到——
+      // 此时若用空对象合并，部分字段提交（如 Meridian 弹窗只发 3 个字段）会静默
+      // 抹掉其它 provider 的已存 API key。宁可中止本次保存，也不能静默覆盖。
+      if (!e || e.code !== 'ENOENT') {
+        console.error('[config] save-hub-config: 读取现有配置失败，已中止保存以防覆盖其它字段:', e && e.message);
+        return { success: false, error: 'config_read_failed' };
+      }
+    }
 
     const merged = buildConfigJsonUpdate(existing, newConfig);
     saveConfig(merged);

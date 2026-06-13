@@ -55,7 +55,7 @@ class JsonlTail {
           if (!trimmed) continue;
           let obj;
           try { obj = JSON.parse(trimmed); } catch { continue; }
-          try { this._onLine(obj); } catch {}
+          try { this._onLine(obj); } catch (e) { console.warn('[jsonl-tail] onLine 回调抛出异常（该行已丢弃，不重试）:', e && e.message, '| file:', this._filepath); }
         }
       } finally {
         await fh.close();
