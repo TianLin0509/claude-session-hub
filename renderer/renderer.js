@@ -3177,5 +3177,18 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
     selectMeeting: (meetingId) => selectMeeting(meetingId),
     getActiveMeetingId: () => activeMeetingId,
     getMeeting: (meetingId) => meetings[meetingId] || null,
+    // 侧栏时间分组 E2E：注入指定 lastMessageTime 的测试会话并重渲，读分组 DOM。
+    addFakeSession: (s) => {
+      const id = s && s.id; if (!id) return;
+      sessions.set(id, Object.assign(
+        { id, kind: 'claude', title: id, status: 'idle', lastMessageTime: Date.now(), createdAt: Date.now() }, s));
+      renderSessionList();
+    },
+    clearSessions: () => { sessions.clear(); renderSessionList(); },
+    sidebarGroups: () => Array.prototype.map.call(
+      document.querySelectorAll('.session-time-group-header'),
+      (h) => ({ key: h.dataset.timeGroup, expanded: h.classList.contains('expanded'), count: (h.querySelector('.stg-count') || {}).textContent })),
+    sidebarTopItemCount: () => document.querySelectorAll('#session-list .session-item:not(.child)').length,
+    clickTimeGroup: (key) => { const h = document.querySelector('.session-time-group-header[data-time-group="' + key + '"]'); if (h) h.click(); },
   };
 }

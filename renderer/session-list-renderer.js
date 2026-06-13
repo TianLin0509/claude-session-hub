@@ -1,3 +1,18 @@
+// 纯函数：按 lastMessageTime 年龄分桶。pinned 永远进 recent（置顶不折叠）。
+//   recent: <24h（保持现状 UI 置顶）· mid: 24-72h · old: ≥72h
+function partitionSessionsByAge(items, now) {
+  const DAY = 86400000;
+  const recent = [], mid = [], old = [];
+  for (const s of items || []) {
+    const t = s.lastMessageTime || s.createdAt || now;
+    const age = now - t;
+    if (s.pinned || age < DAY) recent.push(s);
+    else if (age < 3 * DAY) mid.push(s);
+    else old.push(s);
+  }
+  return { recent, mid, old };
+}
+
 function createSessionListRenderer(options = {}) {
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
@@ -37,6 +52,36 @@ function toggleMeetingExpand(meetingId) {
   else _expandedMeetings.add(meetingId);
   _persistExpandedMeetings();
   renderSessionList();
+}
+
+// --- 按时间分组折叠状态（24-72h / 72h+ 两组，默认折叠，落盘）---
+//   侧栏过长治理：24h 内保持现状置顶，更久的会话收进可展开的时间组。
+const _expandedTimeGroups = (() => {
+  try { const raw = storage.getItem('hubExpandedTimeGroups'); return new Set(raw ? JSON.parse(raw) : []); }
+  catch { return new Set(); }
+})();
+function _persistExpandedTimeGroups() {
+  try { storage.setItem('hubExpandedTimeGroups', JSON.stringify([..._expandedTimeGroups])); } catch {}
+}
+function toggleTimeGroup(key) {
+  if (_expandedTimeGroups.has(key)) _expandedTimeGroups.delete(key);
+  else _expandedTimeGroups.add(key);
+  _persistExpandedTimeGroups();
+  renderSessionList();
+}
+function _ensureTimeGroupStyle() {
+  if (doc.getElementById('hub-stg-style')) return;
+  const st = doc.createElement('style');
+  st.id = 'hub-stg-style';
+  st.textContent = [
+    '.session-time-group-header{display:flex;align-items:center;gap:6px;padding:8px 12px 5px;margin-top:2px;cursor:pointer;user-select:none;font-size:11.5px;font-weight:600;letter-spacing:.02em;color:#8a8a8e;}',
+    '.session-time-group-header:hover{color:#0a84ff;}',
+    '.session-time-group-header .stg-arrow{display:inline-block;transition:transform .15s;font-size:9px;}',
+    '.session-time-group-header.expanded .stg-arrow{transform:rotate(90deg);}',
+    '.session-time-group-header .stg-label{flex:1;}',
+    '.session-time-group-header .stg-count{background:rgba(128,128,128,.22);border-radius:9px;padding:1px 7px;font-size:10.5px;font-weight:500;}',
+  ].join('\n');
+  (doc.head || doc.documentElement).appendChild(st);
 }
 
 // AI mini logo for sidebar sub-session items. Reuses the .ai-logo + .logo-<kind>
@@ -91,8 +136,10 @@ function renderSessionList() {
   // back to the top, which feels like the sidebar is "fighting" the user.
   const savedScrollTop = sessionListEl.scrollTop;
   sessionListEl.innerHTML = '';
+  _ensureTimeGroupStyle();
 
-  for (const s of visible) {
+  // 单条渲染（会话/会议），供「置顶 recent + 时间组」复用。
+  function appendItem(s) {
     if (s._isMeeting) {
       const isActive = getActiveMeetingId() === s.id;
       const isExpanded = _expandedMeetings.has(s.id);
@@ -204,7 +251,7 @@ function renderSessionList() {
           sessionListEl.appendChild(childDiv);
         }
       }
-      continue;
+      return;
     }
 
     const isActive = s.id === getActiveSessionId();
@@ -253,6 +300,28 @@ function renderSessionList() {
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
     sessionListEl.appendChild(div);
   }
+
+  // === 按时间分组渲染：24h 内置顶（保持现状 UI），24-72h / 72h+ 折叠成可展开的组 ===
+  const { recent, mid, old } = partitionSessionsByAge(visible, Date.now());
+  const activeSid = getActiveSessionId();
+  const activeMid = getActiveMeetingId();
+  const isActiveItem = (s) => s._isMeeting ? s.id === activeMid : s.id === activeSid;
+  function appendTimeGroup(key, label, items) {
+    if (!items.length) return;
+    // active 所在组自动展开，避免当前会话被折叠藏起；其余按落盘状态（默认折叠）。
+    const expanded = _expandedTimeGroups.has(key) || items.some(isActiveItem);
+    const header = doc.createElement('div');
+    header.className = 'session-time-group-header' + (expanded ? ' expanded' : '');
+    header.dataset.timeGroup = key;
+    header.innerHTML = `<span class="stg-arrow">▶</span><span class="stg-label">${escapeHtml(label)}</span><span class="stg-count">${items.length}</span>`;
+    header.addEventListener('click', () => toggleTimeGroup(key));
+    sessionListEl.appendChild(header);
+    if (expanded) for (const s of items) appendItem(s);
+  }
+  for (const s of recent) appendItem(s);
+  appendTimeGroup('mid', '3 天内', mid);
+  appendTimeGroup('old', '更早', old);
+
   sessionListEl.scrollTop = savedScrollTop;
 }
 
@@ -283,4 +352,4 @@ sessionListEl.addEventListener('mousedown', (e) => {
   return { renderSessionList };
 }
 
-module.exports = { createSessionListRenderer };
+module.exports = { createSessionListRenderer, partitionSessionsByAge };
