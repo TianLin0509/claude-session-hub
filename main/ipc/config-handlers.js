@@ -76,38 +76,46 @@ function toEditableConfig(config) {
 }
 
 function buildConfigJsonUpdate(existing, newConfig) {
+  // 2026-06-14 修复部分提交数据丢失：config-modal 全量提交始终带全部字段，而 Meridian
+  //   弹窗(theme-controller)只发 3 个 meridian 字段。旧逻辑对每个 provider 字段无条件
+  //   `newConfig.X || default/undefined`，使部分提交把未提交的 deepseek/glm/gpt/kimi/qwen
+  //   api_key、各 base_url/model、proxy、packy cookie 全部重置/抹掉。
+  //   修法：仅当 newConfig 显式带了该字段(hasOwnProperty)才用其值，否则保留 existing。
+  //   全量提交所有 key 都在 → 行为与旧版完全一致(零回归)；部分提交其余字段原样保留。
+  //   codex/meridian 块与 meridian relay 联动且为在制功能，本次不动。
+  const H = (k) => Object.prototype.hasOwnProperty.call(newConfig, k);
   const merged = {
     ...existing,
-    proxy: { http: newConfig.proxy || DEFAULTS.proxy },
+    proxy: { http: H('proxy') ? (newConfig.proxy || DEFAULTS.proxy) : (existing.proxy?.http || DEFAULTS.proxy) },
     providers: {
       ...(existing.providers || {}),
       deepseek: {
         ...(existing.providers?.deepseek || {}),
-        api_key: newConfig.deepseekApiKey || undefined,
+        api_key: H('deepseekApiKey') ? (newConfig.deepseekApiKey || undefined) : existing.providers?.deepseek?.api_key,
       },
       glm: {
         ...(existing.providers?.glm || {}),
-        api_key: newConfig.glmApiKey || undefined,
-        base_url: newConfig.glmBaseUrl || DEFAULTS.glm_base_url,
-        model: newConfig.glmModel || DEFAULTS.glm_model,
+        api_key: H('glmApiKey') ? (newConfig.glmApiKey || undefined) : existing.providers?.glm?.api_key,
+        base_url: H('glmBaseUrl') ? (newConfig.glmBaseUrl || DEFAULTS.glm_base_url) : (existing.providers?.glm?.base_url || DEFAULTS.glm_base_url),
+        model: H('glmModel') ? (newConfig.glmModel || DEFAULTS.glm_model) : (existing.providers?.glm?.model || DEFAULTS.glm_model),
       },
       gpt: {
         ...(existing.providers?.gpt || {}),
-        api_key: newConfig.gptApiKey || undefined,
-        base_url: newConfig.gptBaseUrl || DEFAULTS.gpt_base_url,
-        model: newConfig.gptModel || DEFAULTS.gpt_model,
+        api_key: H('gptApiKey') ? (newConfig.gptApiKey || undefined) : existing.providers?.gpt?.api_key,
+        base_url: H('gptBaseUrl') ? (newConfig.gptBaseUrl || DEFAULTS.gpt_base_url) : (existing.providers?.gpt?.base_url || DEFAULTS.gpt_base_url),
+        model: H('gptModel') ? (newConfig.gptModel || DEFAULTS.gpt_model) : (existing.providers?.gpt?.model || DEFAULTS.gpt_model),
       },
       kimi: {
         ...(existing.providers?.kimi || {}),
-        api_key: newConfig.kimiApiKey || undefined,
-        base_url: newConfig.kimiBaseUrl || DEFAULTS.kimi_base_url,
-        model: newConfig.kimiModel || DEFAULTS.kimi_model,
+        api_key: H('kimiApiKey') ? (newConfig.kimiApiKey || undefined) : existing.providers?.kimi?.api_key,
+        base_url: H('kimiBaseUrl') ? (newConfig.kimiBaseUrl || DEFAULTS.kimi_base_url) : (existing.providers?.kimi?.base_url || DEFAULTS.kimi_base_url),
+        model: H('kimiModel') ? (newConfig.kimiModel || DEFAULTS.kimi_model) : (existing.providers?.kimi?.model || DEFAULTS.kimi_model),
       },
       qwen: {
         ...(existing.providers?.qwen || {}),
-        api_key: newConfig.qwenApiKey || undefined,
-        base_url: newConfig.qwenBaseUrl || DEFAULTS.qwen_base_url,
-        model: newConfig.qwenModel || DEFAULTS.qwen_model,
+        api_key: H('qwenApiKey') ? (newConfig.qwenApiKey || undefined) : existing.providers?.qwen?.api_key,
+        base_url: H('qwenBaseUrl') ? (newConfig.qwenBaseUrl || DEFAULTS.qwen_base_url) : (existing.providers?.qwen?.base_url || DEFAULTS.qwen_base_url),
+        model: H('qwenModel') ? (newConfig.qwenModel || DEFAULTS.qwen_model) : (existing.providers?.qwen?.model || DEFAULTS.qwen_model),
       },
       codex: (() => {
         // Meridian 启用时联动 codex 走团队 relay（OpenAI 兼容 /codex/v1）
@@ -133,7 +141,7 @@ function buildConfigJsonUpdate(existing, newConfig) {
       })(),
       packy: {
         ...(existing.providers?.packy || {}),
-        session_cookie: newConfig.packySessionCookie || undefined,
+        session_cookie: H('packySessionCookie') ? (newConfig.packySessionCookie || undefined) : existing.providers?.packy?.session_cookie,
       },
       meridian: {
         ...(existing.providers?.meridian || {}),

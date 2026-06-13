@@ -130,4 +130,39 @@ test('save payload keeps existing provider data and removes blank secrets', () =
   assert.strictEqual(merged.providers.codex.subscription_profiles[0].id, 'second');
 });
 
+test('partial submit (Meridian popup) preserves other providers keys', () => {
+  // 模拟 theme-controller 的 Meridian 弹窗：只发 3 个 meridian 字段（部分提交）。
+  // 修复前 buildConfigJsonUpdate 会把未提交的 deepseek/glm/packy key、proxy 全部抹掉。
+  const existing = {
+    proxy: { http: 'http://127.0.0.1:7890' },
+    providers: {
+      deepseek: { api_key: 'sk-deepseek-KEEP' },
+      glm: { api_key: 'sk-glm-KEEP', base_url: 'https://glm.custom', model: 'glm-custom' },
+      gpt: { api_key: 'sk-gpt-KEEP' },
+      kimi: { api_key: 'sk-kimi-KEEP' },
+      qwen: { api_key: 'sk-qwen-KEEP' },
+      packy: { session_cookie: 'cookie-KEEP' },
+    },
+  };
+  const merged = buildConfigJsonUpdate(existing, {
+    meridianUrl: 'https://meridian.test:8443',
+    meridianToken: 'tok-123',
+    meridianEnabled: true,
+  });
+  // 其它 provider 的 key / base_url / model 必须原样保留（修复目标）
+  assert.strictEqual(merged.providers.deepseek.api_key, 'sk-deepseek-KEEP');
+  assert.strictEqual(merged.providers.glm.api_key, 'sk-glm-KEEP');
+  assert.strictEqual(merged.providers.glm.base_url, 'https://glm.custom');
+  assert.strictEqual(merged.providers.glm.model, 'glm-custom');
+  assert.strictEqual(merged.providers.gpt.api_key, 'sk-gpt-KEEP');
+  assert.strictEqual(merged.providers.kimi.api_key, 'sk-kimi-KEEP');
+  assert.strictEqual(merged.providers.qwen.api_key, 'sk-qwen-KEEP');
+  assert.strictEqual(merged.providers.packy.session_cookie, 'cookie-KEEP');
+  assert.strictEqual(merged.proxy.http, 'http://127.0.0.1:7890');
+  // meridian 字段应已写入
+  assert.strictEqual(merged.providers.meridian.url, 'https://meridian.test:8443');
+  assert.strictEqual(merged.providers.meridian.token, 'tok-123');
+  assert.strictEqual(merged.providers.meridian.enabled, true);
+});
+
 console.log('All config IPC contract tests passed.');
