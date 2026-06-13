@@ -80,7 +80,7 @@ class CodexAppServerClient extends EventEmitter {
     });
 
     const init = await this.request('initialize', {
-      clientInfo: { name: 'claude-session-hub', title: 'Claude Session Hub', version: '1.0.5' },
+      clientInfo: { name: 'claude-session-hub', title: 'Claude Session Hub', version: '1.0.6' },
       capabilities: { experimentalApi: true },
     });
     this._emitOutput(`[codex-app] initialized ${init.userAgent || ''}\r\n`);

@@ -166,10 +166,28 @@
 
 /* Phase 8(2026-05-05 道雪): AI 群聊项迷你跳转按钮 — 折叠/展开态都显示, 替代旧 "N 个子会话" 文字 */
 .session-mini-jumps {
-  display: flex; gap: 8px;
+  display: flex; gap: 6px;
   padding-left: 22px;
   margin-top: 6px;
+  flex-wrap: wrap;
 }
+/* 2026-05-31 道雪：群聊场景每个 mini-jump 按钮右侧贴一个 Ctx% 小标签，需要 cell 容器才能让它们成对排版 */
+.mini-jump-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.mini-jump-ctx {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 2px;
+  color: var(--ink-soft, #8b949e);
+  white-space: nowrap;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.mini-jump-ctx.warn   { color: #f5a623; }
+.mini-jump-ctx.danger { color: #f87171; }
 .mini-jump-btn {
   width: 30px; height: 30px;
   border-radius: 50%;
@@ -498,6 +516,119 @@
   border-radius: 0 0 4px 4px;
 }
 .tc-result-err { color: #fca5a5; border-left: 2px solid var(--accent-red); }
+
+/* === Spec 4 · 工具返回预览（按钮 + JSON 高亮 + 长内容折叠） === */
+/* summary 右侧操作区（保持 baseline 对齐，不挤压 cmd 文字） */
+.tc-row-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.tc-row-preview-btn {
+  background: rgba(124, 99, 255, 0.12);
+  color: var(--ui-purple-2);
+  border: 1px solid rgba(124, 99, 255, 0.28);
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-family: inherit;
+  padding: 1px 8px;
+  cursor: pointer;
+  line-height: 1.55;
+  user-select: none;
+  transition: background-color 0.15s, color 0.15s;
+}
+.tc-row-preview-btn:hover {
+  background: rgba(124, 99, 255, 0.22);
+  color: var(--ui-purple-3);
+}
+.tc-row-with-result.tc-row-err .tc-row-preview-btn {
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.3);
+  color: var(--accent-red);
+}
+
+/* 结果区外壳 — 包住 toolbar + pre，统一边角和背景 */
+.tc-result-wrap {
+  background: #08070d;
+  border-top: 1px solid var(--tool-call-border);
+  border-radius: 0 0 4px 4px;
+  overflow: hidden;
+}
+.tc-result-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: rgba(124, 99, 255, 0.04);
+  border-bottom: 1px solid rgba(124, 99, 255, 0.08);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+}
+.tc-result-meta {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+.tc-result-copy,
+.tc-result-expand {
+  background: transparent;
+  color: var(--ui-purple-2);
+  border: 1px solid rgba(124, 99, 255, 0.28);
+  border-radius: 3px;
+  font-size: 10.5px;
+  font-family: inherit;
+  padding: 1px 7px;
+  cursor: pointer;
+  line-height: 1.55;
+  user-select: none;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+.tc-result-copy { margin-left: auto; }
+.tc-result-copy:hover,
+.tc-result-expand:hover {
+  background: rgba(124, 99, 255, 0.16);
+  color: var(--ui-purple-3);
+}
+.tc-result-copy.copied {
+  background: rgba(52, 199, 89, 0.18);
+  border-color: rgba(52, 199, 89, 0.5);
+  color: #6ee7a3;
+}
+
+/* 被 .tc-result-wrap 包住后取消 pre 自身的边框圆角，由 wrap 统一控制 */
+.tc-result-wrap .tc-result {
+  border-top: none;
+  border-radius: 0;
+}
+
+/* 超长 result 折叠：默认 180px + 底部渐变遮罩（暗示还有内容） */
+.tc-result.tc-result-foldable.is-folded {
+  max-height: 180px;
+  overflow: hidden;
+  position: relative;
+}
+.tc-result.tc-result-foldable.is-folded::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 48px;
+  background: linear-gradient(to bottom, rgba(8, 7, 13, 0), rgba(8, 7, 13, 0.95));
+  pointer-events: none;
+}
+.tc-result.tc-result-foldable:not(.is-folded) {
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+/* JSON 语法高亮 token 配色（适配 #08070d 深底） */
+.tc-result.is-json .token.property { color: #79c0ff; }
+.tc-result.is-json .token.string { color: #a5d6ff; }
+.tc-result.is-json .token.number { color: #ffa657; }
+.tc-result.is-json .token.boolean,
+.tc-result.is-json .token.null { color: #ff7b72; }
+.tc-result.is-json .token.punctuation { color: #8b949e; }
+.tc-result.is-json .token.operator { color: #d2a8ff; }
 
 /* === Spec 3 · W15 v2 (2026-05-10): streaming indicator
    旧版是 turn-card 之间的大 banner（"Claude 还在生成更多回复…" + 3 dot 跳动），

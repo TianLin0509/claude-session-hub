@@ -3,6 +3,7 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 val keystoreProperties = Properties()
@@ -11,18 +12,18 @@ if (keystorePropertiesFile.exists()) {
     keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
 }
 fun signingProp(name: String): String? =
-    keystoreProperties.getProperty(name) ?: keystoreProperties.getProperty("\uFEFF$name")
+    keystoreProperties.getProperty(name) ?: keystoreProperties.getProperty("﻿$name")
 
 android {
-    namespace = "com.lintian.codexhubmobile"
+    namespace = "com.lintian.hubmobile"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.lintian.codexhubmobile"
+        applicationId = "com.lintian.hubmobile"
         minSdk = 23
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.4.0"
     }
 
     buildFeatures {
@@ -44,17 +45,29 @@ android {
     buildTypes {
         debug {
             isDebuggable = true
+            applicationIdSuffix = ".debug"
         }
         release {
             isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("releaseLocal")
         }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
     }
 }
 
 dependencies {
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.activity:activity-ktx:1.9.0")
+    implementation("androidx.webkit:webkit:1.11.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("androidx.core:core:1.13.1")
 }
 
 tasks.withType<JavaCompile>().configureEach {

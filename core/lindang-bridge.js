@@ -8,6 +8,13 @@
 //   fetchField(op, symbol, extra) — 按需取单字段（op = financial/flow/indicators/dragon-tiger/...）
 //   fetchStock(symbol, name)     — 兼容老接口，内部 = fetchSnapshot
 //   fetchConcept / fetchSector   — 已下线，返回错误（依赖 Stock_top10 已删）
+//
+// ⚠️ 历史 endpoint 兼容说明（2026-06-04）：
+//   /api/research/fetch-stock 与 /api/research/fetch-field（由 main.js 路由）以及本文件的
+//   fetchStock / fetchField 函数，原由 MCP 工具 fetch_lindang_stock / fetch_lindang_field 调用。
+//   两 MCP 工具已于 2026-06-04 完全下线（三件套 stock_static/market/news 全覆盖），
+//   Hub 内零调用。仅保留以备外部脚本兼容，2026-09 之后可彻底删除本文件相关函数 + main.js
+//   对应 endpoint 路由。
 
 const { spawn } = require('child_process');
 
@@ -117,7 +124,7 @@ async function fetchConcept(_concept, _topN = 10) {
   return {
     ok: false,
     op: 'concept',
-    error: '概念龙头查询已下线（依赖 Stock_top10 已删）。群聊请改用 fetch_lindang_stock(symbol) 或 fetch_lindang_field(op, symbol)。',
+    error: '概念龙头查询已下线（依赖 Stock_top10 已删）。群聊请改用 stock_static / stock_market / stock_news 三件套，或 scan_sector_flow 找概念主线。',
   };
 }
 
@@ -125,7 +132,7 @@ async function fetchSector(_sector) {
   return {
     ok: false,
     op: 'sector',
-    error: '板块概况查询已下线。如需板块成分，可改用 fetch_lindang_field(op="qmt-sector", symbol="<板块名>")，但需要 QMT 客户端启动。',
+    error: '板块概况查询已下线。如需板块成分/资金流，请改用 scan_sector_flow；单板块成分可直接 Bash 调 `python C:\\LinDangAgent\\data_query.py qmt-sector <板块名>`，但需要 QMT 客户端启动。',
   };
 }
 
@@ -137,19 +144,51 @@ async function fetchSector(_sector) {
 //   stock-news    — 2 op：announcement + market_news
 
 const RESEARCH_MCP_DIR = process.env.RESEARCH_MCP_DIR || 'C:\\research-mcp';
+const RESEARCH_MCP_UV_BIN = process.env.RESEARCH_MCP_UV || 'uv';
 const RESEARCH_MCP_TIMEOUTS = {
-  'stock-static': 180000,
-  'stock-market': 120000,
-  'stock-news': 90000,
+  // Codex/Claude MCP clients time out tools/call at about 120s. Return a
+  // controlled result before that budget so one slow tool does not block the
+  // whole research MCP queue.
+  'stock-static': 110000,
+  'stock-market': 110000,
+  'stock-news': 60000,
+  'stock-sentiment': 90000,
+  'stock-scan': 110000,
+  // K 线相似度：默认 ensemble（RRF 3 方法融合），首次冷启动拉 200 候选 OHLCV ~30s
+  // disk cache 命中后 5-10s；matrix_profile 单 method 始终 ~5s
+  'kline-similarity-search': 120000,
 };
+
+function _killProcessTree(child) {
+  if (!child || !child.pid) return;
+  if (process.platform === 'win32') {
+    try {
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      killer.on('error', () => {});
+    } catch {}
+    return;
+  }
+  try { child.kill('SIGKILL'); } catch {}
+}
 
 function _runResearchMcp(op, args, timeoutMs) {
   if (timeoutMs == null) timeoutMs = RESEARCH_MCP_TIMEOUTS[op] || 90000;
   return new Promise((resolve) => {
     let child;
+    let settled = false;
+    let timer = null;
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(payload);
+    };
     try {
       // 调 uv run python query.py <op> [args...]，cwd=research-mcp
-      child = spawn('uv', ['run', 'python', 'query.py', op, ...args], {
+      child = spawn(RESEARCH_MCP_UV_BIN, ['run', 'python', 'query.py', op, ...args], {
         cwd: RESEARCH_MCP_DIR,
         env: {
           ...process.env,
@@ -158,29 +197,26 @@ function _runResearchMcp(op, args, timeoutMs) {
           NO_PROXY: 'localhost,127.0.0.1',
         },
         windowsHide: true,
-        shell: true,  // Windows 上 uv.exe 可能需要 shell 才能解析
       });
     } catch (e) {
-      return resolve({ ok: false, op, error: 'spawn failed: ' + e.message });
+      return finish({ ok: false, op, error: 'spawn failed: ' + e.message });
     }
     const stdoutChunks = [];
     const stderrChunks = [];
     child.stdout.on('data', (c) => stdoutChunks.push(c));
     child.stderr.on('data', (c) => stderrChunks.push(c));
-    const timer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch {}
-      resolve({ ok: false, op, error: 'timeout (' + timeoutMs + 'ms)' });
+    timer = setTimeout(() => {
+      _killProcessTree(child);
+      finish({ ok: false, op, error: 'timeout (' + timeoutMs + 'ms)' });
     }, timeoutMs);
     child.on('error', (e) => {
-      clearTimeout(timer);
-      resolve({ ok: false, op, error: 'process error: ' + e.message });
+      finish({ ok: false, op, error: 'process error: ' + e.message });
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
       const stdout = Buffer.concat(stdoutChunks).toString('utf-8').trim();
       const stderr = Buffer.concat(stderrChunks).toString('utf-8');
       if (!stdout) {
-        return resolve({ ok: false, op, error: 'exit ' + code, stderr: stderr.slice(0, 1500) });
+        return finish({ ok: false, op, error: 'exit ' + code, stderr: stderr.slice(0, 1500) });
       }
       // research-mcp query.py 输出严格 JSON，但可能有 stderr 污染 stdout 极少数情况
       const jsonStart = stdout.search(/[{\[]/);
@@ -199,9 +235,9 @@ function _runResearchMcp(op, args, timeoutMs) {
             throw new Error('no closing brace');
           }
         }
-        resolve(parsed);
+        finish(parsed);
       } catch (e) {
-        resolve({
+        finish({
           ok: false, op,
           error: 'json parse: ' + e.message,
           stdout: jsonText.slice(0, 800),
@@ -212,19 +248,57 @@ function _runResearchMcp(op, args, timeoutMs) {
   });
 }
 
-async function fetchStatic(symbol) {
+function _depthArg(depth) {
+  return ['brief', 'medium', 'full'].includes(depth) ? ['--depth', depth] : [];
+}
+
+function _modeArg(mode) {
+  return ['daily', 'intraday'].includes(mode) ? ['--mode', mode] : [];
+}
+
+async function fetchStatic(symbol, depth = 'medium') {
   if (!symbol) return { ok: false, op: 'stock-static', error: 'symbol 必填' };
-  return await _runResearchMcp('stock-static', [symbol]);
+  return await _runResearchMcp('stock-static', [symbol, ..._depthArg(depth)]);
 }
 
-async function fetchMarket(symbol) {
+async function fetchMarket(symbol, depth = 'medium', mode = 'daily') {
   if (!symbol) return { ok: false, op: 'stock-market', error: 'symbol 必填' };
-  return await _runResearchMcp('stock-market', [symbol]);
+  return await _runResearchMcp('stock-market', [symbol, ..._depthArg(depth), ..._modeArg(mode)]);
 }
 
-async function fetchNews(symbol) {
+async function fetchNews(symbol, depth = 'medium') {
   if (!symbol) return { ok: false, op: 'stock-news', error: 'symbol 必填' };
-  return await _runResearchMcp('stock-news', [symbol]);
+  return await _runResearchMcp('stock-news', [symbol, ..._depthArg(depth)]);
+}
+
+async function fetchSentiment(symbol, depth = 'medium', only_subject_stock = false) {
+  if (!symbol) return { ok: false, op: 'stock-sentiment', error: 'symbol 必填' };
+  const extraArgs = only_subject_stock ? ['--only-subject-stock'] : [];
+  return await _runResearchMcp('stock-sentiment', [symbol, ..._depthArg(depth), ...extraArgs]);
+}
+
+async function fetchScan(scanType, depth = 'medium') {
+  if (!scanType) return { ok: false, op: 'stock-scan', error: 'scan_type 必填' };
+  return await _runResearchMcp('stock-scan', [scanType, ..._depthArg(depth)]);
+}
+
+// K 线历史相似走势检索（STUMPY Matrix Profile）
+async function fetchKlineSimilarity(symbol, opts = {}) {
+  if (!symbol) return { ok: false, op: 'kline-similarity-search', error: 'symbol 必填' };
+  const window = opts.window || 20;
+  const top_k = opts.top_k || 10;
+  const method = opts.method || 'matrix_profile';
+  const feature = opts.feature || 'close';
+  const exclude_self_recent = (opts.exclude_self_recent == null) ? 60 : opts.exclude_self_recent;
+  const args = [
+    symbol,
+    '--window', String(window),
+    '--top-k', String(top_k),
+    '--method', method,
+    '--feature', feature,
+    '--exclude-self-recent', String(exclude_self_recent),
+  ];
+  return await _runResearchMcp('kline-similarity-search', args);
 }
 
 module.exports = {
@@ -236,6 +310,9 @@ module.exports = {
   fetchStatic,
   fetchMarket,
   fetchNews,
+  fetchSentiment,
+  fetchScan,
+  fetchKlineSimilarity,
   LINDANG_DIR,
   PYTHON_BIN,
   RESEARCH_MCP_DIR,

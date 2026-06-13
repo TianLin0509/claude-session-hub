@@ -2,7 +2,7 @@
 // meeting-create-modal Tasks 12-13（2026-05-01）— 静态分析单测：锁住 Modal 关键不变量
 // 不启动 Hub。覆盖：
 //   1. modal js 里 5 家 AI 的 model 列表都有 ≥1 个 model（不能空）
-//   2. 默认 slots = Claude/Opus 4.7 + Gemini/2.5 Flash + Codex/gpt-5.5（保持现状）
+//   2. 默认 slots = Claude/Opus 4.8 + Codex/gpt-5.5 + DeepSeek v4-pro 1M
 //   3. SLOT_AVATARS 三个路径都指向 renderer/assets/pokemon/*.png（皮卡丘/小火龙/杰尼龟）
 //   4. window.openMeetingCreateModal / window.closeMeetingCreateModal 都暴露
 //   5. modal 必须 IIFE 包裹（防 ipcRenderer/sessions 等顶层 const 重复声明）
@@ -25,7 +25,11 @@ const MODAL_JS = fs.readFileSync(path.join(ROOT, 'renderer', 'meeting-create-mod
 const MODAL_CSS = fs.readFileSync(path.join(ROOT, 'renderer', 'meeting-create-modal.css'), 'utf-8');
 const HTML = fs.readFileSync(path.join(ROOT, 'renderer', 'index.html'), 'utf-8');
 const RENDERER_JS = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf-8');
-const { MODEL_OPTIONS_BY_KIND } = require('../core/model-options.js');
+const {
+  MODEL_OPTIONS_BY_KIND,
+  DEFAULT_MODEL_BY_KIND,
+  normalizeDeepSeekModel,
+} = require('../core/model-options.js');
 
 test('modal js has MODELS_BY_KIND with all 5 kinds non-empty', () => {
   for (const k of ['claude', 'gemini', 'codex', 'deepseek', 'glm']) {
@@ -33,20 +37,42 @@ test('modal js has MODELS_BY_KIND with all 5 kinds non-empty', () => {
       `MODEL_OPTIONS_BY_KIND.${k} missing`);
   }
   const modelIds = Object.values(MODEL_OPTIONS_BY_KIND).flat().map(x => x.id).join('\n');
-  assert.match(modelIds, /claude-opus-4-7\[1m\]/);
+  assert.match(modelIds, /claude-opus-4-8\[1m\]/);
   assert.match(modelIds, /gemini-2.5-flash/);
   assert.match(modelIds, /gpt-5.5/);
-  assert.match(modelIds, /deepseek-v4-pro/);
+  assert.match(modelIds, /deepseek-v4-pro\[1m\]/);
   assert.match(modelIds, /glm-/);
 });
 
-test('DEFAULT_SLOTS = strongest (claude opus 4.7 [1M] / codex gpt-5.5 / deepseek v4-pro)', () => {
+test('DEFAULT_SLOTS = strongest (claude opus 4.8 [1M] / codex gpt-5.5 / deepseek v4-pro [1M])', () => {
   // 2026-05-11：道雪指定 AI 群聊默认全用最强模型。
   // slot 2 用 'codex' kind（OpenAI codex CLI 直连订阅）+ 'gpt-5.5'，不再用 PackyAPI 中转的
   // 'gpt' kind（PackyAPI 中转最高到 5.4，'gpt-5.5' 限定 codex kind）。
-  assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*'claude-opus-4-7\[1m\]'\s*\}/);
+  // 2026-05-29：道雪指定 Claude 默认升级到 Opus 4.8 1M（4.8 于 2026-05-28 发布）。
+  assert.strictEqual(DEFAULT_MODEL_BY_KIND.claude, 'claude-opus-4-8[1m]');
+  assert.strictEqual(DEFAULT_MODEL_BY_KIND.codex, 'gpt-5.5');
+  assert.strictEqual(DEFAULT_MODEL_BY_KIND.deepseek, 'deepseek-v4-pro[1m]');
+  assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.claude\s*\}/);
+  assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.codex\s*\}/);
+  assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.deepseek\s*\}/);
+});
+
+test('DeepSeek model defaults and legacy ids normalize to 1M', () => {
+  assert.strictEqual(normalizeDeepSeekModel(), 'deepseek-v4-pro[1m]');
+  assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-pro'), 'deepseek-v4-pro[1m]');
+  assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-pro[1m]'), 'deepseek-v4-pro[1m]');
+});
+
+test('COMMITTEE_SLOTS = DeepSeek + Claude 4.8 + Codex + Codex + Claude chair', () => {
+  assert.match(MODAL_JS, /const COMMITTEE_SLOTS = \[/);
+  assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*,\s*model:\s*'deepseek-v4-pro\[1m\]'\s*\}/);
+  // 2026-06-13：Claude slot 改用 DEFAULT_MODEL_BY_KIND.claude 变量引用（当前=Opus 4.8）
+  assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.claude\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*,\s*model:\s*'gpt-5\.5'\s*\}/);
-  assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*,\s*model:\s*'deepseek-v4-pro'\s*\}/);
+  assert.match(MODAL_JS, /消息面官=Claude Opus 4\.8/);
+  assert.match(MODAL_JS, /技术面官=Codex GPT-5\.5/);
+  assert.ok(!/消息面官=Kimi/.test(MODAL_JS), 'committee preset must not use Kimi as news seat');
+  assert.ok(!/技术面官=Qwen/.test(MODAL_JS), 'committee preset must not use Qwen as tech seat');
 });
 
 test('SLOT_AVATARS = pikachu / charmander / squirtle (slot-bound, not kind-bound)', () => {

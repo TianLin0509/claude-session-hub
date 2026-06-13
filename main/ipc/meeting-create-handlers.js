@@ -1,5 +1,7 @@
 'use strict';
 
+const { ensureClaudeMemoryFile } = require('../../core/claude-memory-loader.js');
+
 function createMeetingSubAdder(deps) {
   const {
     fs,
@@ -49,14 +51,22 @@ function createMeetingSubAdder(deps) {
       }
     }
 
+    if (meeting && meeting.groupChat && sessionOpts.noInheritCursor === undefined) {
+      // Headless/background group-chat members often have no renderer xterm
+      // attached. With inherited cursor enabled, Windows ConPTY can stop
+      // delivering Claude-family TUI output; Codex already forces this off in
+      // session-manager. Apply the same safety to every group member.
+      sessionOpts.noInheritCursor = true;
+    }
+
     if (!sessionOpts.cwd) {
       let workspaceDir = null;
       if (isIsolatedHub()) {
         workspaceDir = getMeetingWorkspaceDir(meetingId);
       } else if (meeting) {
-        const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
-        const bucket = 'groupchat';
-        workspaceDir = path.join(homeDir, '.arena', bucket, meetingId);
+        // 群聊 cwd 统一到主工作台，让 AI 原生 auto-memory 写到主项目目录
+        // 下次群聊启动时联邦索引脚本能自动捞起新记忆，形成闭环
+        workspaceDir = process.env.USERPROFILE || process.env.HOME || '.';
       }
       if (workspaceDir) {
         try {
@@ -68,12 +78,29 @@ function createMeetingSubAdder(deps) {
       }
     }
 
+    // 2026-06-05 联邦记忆下线：群聊只在 DeepSeek 上注入 Claude 主 MEMORY.md。
+    // Claude/Codex/Qwen/GLM/Kimi/GPT 都不再额外注入，依赖各自原生 auto-memory。
+    if (meeting && meeting.groupChat && kind === 'deepseek' && !sessionOpts.appendSystemPromptFile) {
+      try {
+        const hubDataDir = getHubDataDir();
+        const injectPath = ensureClaudeMemoryFile(hubDataDir);
+        if (injectPath) {
+          sessionOpts.appendSystemPromptFile = injectPath;
+        }
+      } catch (err) {
+        logger.warn(`[meeting-sub] claude-memory injection failed for ${meetingId}: ${err.message}`);
+      }
+    }
+
     const hookPort = getHookPort();
     if (meeting && meeting.groupChat && isCodexBaseKind(kind) && scenes.buildAiTeamMcpEntryForCodex) {
       addCodexMcpEntry(sessionOpts, scenes.buildAiTeamMcpEntryForCodex(meetingId, kind));
     }
 
-    if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
+    // 投委会场景复用投研 MCP 工具栈（stock_* + scan_*）
+    const needsResearchMcp = meeting && meeting.groupChat &&
+      (meeting.scene === 'research' || meeting.scene === 'committee');
+    if (needsResearchMcp && hookPort) {
       const hubDataDir = getHubDataDir();
       if (isClaudeFamily(kind)) {
         sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, hookToken, kind);
@@ -90,8 +117,8 @@ function createMeetingSubAdder(deps) {
         sessionOpts.codexBypassApprovals = true;
         addCodexMcpEntry(sessionOpts, scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken));
       }
-    } else if (meeting && meeting.groupChat && meeting.scene === 'research' && !hookPort) {
-      logger.warn('[群聊] research scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
+    } else if (needsResearchMcp && !hookPort) {
+      logger.warn('[群聊] ' + meeting.scene + ' scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
     }
 
     const session = sessionManager.createSession(kind, sessionOpts);

@@ -11,6 +11,7 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
   const agentUsage = { gemini: null, codex: null };
   const agentUsageLastSeen = { gemini: 0, codex: 0 };
   let _claudeUsageLastSeen = 0;
+  const usageRefreshState = { inFlight: false, error: null, lastManualAt: 0 };
 
   const BURN_HISTORY_MS = 15 * 60 * 1000;
   const globalUsageSamples = []; // [{t, pct, totalUsedTokens}]
@@ -63,9 +64,9 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
 
   function recordStatusUsage(payload) {
     if (!payload) return;
+    if (payload.usage5h || payload.usage7d) _claudeUsageLastSeen = Date.now();
     if (payload.usage5h) {
       accountUsage.usage5h = payload.usage5h;
-      _claudeUsageLastSeen = Date.now();
       const now = Date.now();
       globalUsageSamples.push({ t: now, pct: payload.usage5h.pct, totalUsedTokens: aggregateUsedTokens(now) });
       pruneSamples(globalUsageSamples, now);
@@ -120,6 +121,47 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
     const d = Math.floor(h / 24);
     return `${d}d ${h % 24}h`;
   }
+
+  function formatAge(ts) {
+    if (!ts) return '未刷新';
+    const ms = Math.max(0, Date.now() - ts);
+    const sec = Math.floor(ms / 1000);
+    if (sec < 45) return '刚刚';
+    if (sec < 60) return `${sec}s`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m`;
+    const h = Math.floor(min / 60);
+    if (h < 24) return `${h}h`;
+    return `${Math.floor(h / 24)}d`;
+  }
+
+  function usageFreshnessClass(ts) {
+    if (!ts) return 'unknown';
+    return Date.now() - ts > 2 * 60 * 1000 ? 'stale' : 'fresh';
+  }
+
+  function refreshUsageNow() {
+    if (usageRefreshState.inFlight) return Promise.resolve(null);
+    usageRefreshState.inFlight = true;
+    usageRefreshState.error = null;
+    render();
+    return Promise.resolve(ipcRenderer.invoke('refresh-usage-now'))
+      .then((result) => {
+        if (result && result.cache) applyUsageCache(result.cache);
+        if (result && result.packyAccount) packyAccountData = result.packyAccount;
+        if (result && result.agentData) recordAgentUsage(result.agentData);
+        usageRefreshState.lastManualAt = (result && result.refreshedAt) || Date.now();
+        return result;
+      })
+      .catch((err) => {
+        usageRefreshState.error = err && err.message ? err.message : '刷新失败';
+        throw err;
+      })
+      .finally(() => {
+        usageRefreshState.inFlight = false;
+        render();
+      });
+  }
   
   // PackyAPI 账户数据(余额 / 今日消耗 / 累计消耗) - main 后台 5min 拉取后通过 IPC 推送
   let packyAccountData = null;
@@ -155,14 +197,34 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
       const logoHtml = src
         ? `<img class="acc-ai-logo" src="${src}" alt="${escapeHtml(name)}" title="${escapeHtml(name)}">`
         : `<span class="acc-ai-letters">${badgeClass.toUpperCase()}</span>`;
+      const accountLabel = meta.accountEmail || meta.profileLabel || '';
       const title = meta.profileLabel ? `${name} · ${meta.profileLabel}` : name;
+      const age = formatAge(meta.lastSeen || 0);
+      const source = meta.source ? ` · ${meta.source}` : '';
+      const staleCls = usageFreshnessClass(meta.lastSeen || 0);
+      const stateText = meta.unavailable ? '无数据' : age;
+      const refreshTitle = usageRefreshState.error
+        ? `立即刷新用量 · 上次失败: ${usageRefreshState.error}`
+        : `立即刷新用量 · ${stateText}${source}`;
+      const refreshHtml = meta.refreshable
+        ? `<button class="acc-refresh-btn${usageRefreshState.inFlight ? ' loading' : ''}" data-action="refresh-usage" title="${escapeHtml(refreshTitle)}" aria-label="立即刷新用量">${usageRefreshState.inFlight ? '...' : '↻'}</button>`
+        : '';
+      // profileLabel 只在 Codex 行显示（Claude 没有 profile 概念）。
+      // 直接显示在 badge 旁边，让用户一眼看出当前监控的是哪个账号——
+      // 否则 UI 上没有区分线索，会和 codex /status 的另一个账号配额混淆。
+      const profileChip = accountLabel
+        ? `<span class="acc-ai-profile" title="${escapeHtml(accountLabel)}">${escapeHtml(accountLabel)}</span>`
+        : '';
+      const metaHtml = `<div class="acc-row-meta"><span class="acc-row-age ${staleCls}" title="${escapeHtml(title)} · ${escapeHtml(stateText)}${escapeHtml(source)}">${escapeHtml(stateText)}</span>${refreshHtml}</div>`;
       return `
-        <div class="acc-usage-row" title="${escapeHtml(title)}">
+        <div class="acc-usage-row" title="${escapeHtml(title)} · ${escapeHtml(stateText)}${escapeHtml(source)}">
           <span class="acc-ai-badge ${badgeClass}">${logoHtml}</span>
+          ${profileChip}
           <div class="acc-bars">
             ${renderBar('5h', u5h)}
             ${renderBar('7d', u7d)}
           </div>
+          ${metaHtml}
         </div>
       `;
     };
@@ -208,10 +270,25 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
   
     const c = agentUsage.codex || {};
     el.innerHTML =
-      renderUsageRow('cl', 'Claude', accountUsage.usage5h, accountUsage.usage7d) +
-      renderUsageRow('cx', 'Codex', c.usage5h, c.usage7d, c) +
+      renderUsageRow('cl', 'Claude', accountUsage.usage5h, accountUsage.usage7d, {
+        lastSeen: _claudeUsageLastSeen,
+        refreshable: true,
+        source: 'statusline',
+      }) +
+      renderUsageRow('cx', 'Codex', c.usage5h, c.usage7d, {
+        ...c,
+        lastSeen: agentUsageLastSeen.codex,
+        refreshable: true,
+      }) +
       renderPackyRow(packyAccountData);
   
+    el.querySelectorAll('[data-action="refresh-usage"]').forEach(refreshBtn => {
+      refreshBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        refreshUsageNow().catch(() => {});
+      });
+    });
+
     // 充值按钮 — 打开 packyapi console
     const topupBtn = el.querySelector('[data-action="packy-topup"]');
     if (topupBtn) {
@@ -257,6 +334,7 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
     recordStatusUsage,
     recordAgentUsage,
     applyUsageCache,
+    refreshUsageNow,
   };
 }
 

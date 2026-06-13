@@ -1419,3 +1419,158 @@ body.theme-light .prompt-line-marker {
   margin: 4px 0;
 }
 
+/* ════════════════════════════════════════════════════════════════
+   v1.5.1 (2026-06-13)：侧栏顶部弹出菜单升级为页面居中模态弹窗
+   起因：原 absolute 锚定按钮下方，被 .session-sidebar overflow:hidden
+        裁掉、被主面板覆盖、宽弹窗（如 meridian 配置 320px）溢出左边界。
+   方案：fixed 居中 + 全屏半透明遮罩 + 弹入动画；对齐 meeting-create-modal。
+   覆盖：.new-session-menu / .resume-picker-menu / .options-menu /
+        .theme-picker-popup / .meridian-config-popup。
+   DOM 结构与外点关闭逻辑均不变；JS 仅增加遮罩点击关闭。
+   ════════════════════════════════════════════════════════════════ */
+.new-session-menu,
+.resume-picker-menu,
+.options-menu,
+.options-wrapper .theme-picker-popup,
+.options-wrapper .meridian-config-popup {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  right: auto !important;
+  margin: 0 !important;
+  transform: translate(-50%, -50%);
+  z-index: 10000;
+  min-width: 320px;
+  max-width: min(92vw, 480px);
+  max-height: 82vh;
+  overflow-y: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  box-shadow:
+    0 32px 96px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 2px 8px rgba(0, 0, 0, 0.3);
+  animation: hub-modal-pop 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 全屏 scrim：::before 铺满 viewport；pointer-events 接收点击交给 JS 处理 */
+.new-session-menu::before,
+.resume-picker-menu::before,
+.options-menu::before,
+.theme-picker-popup::before,
+.meridian-config-popup::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: -1;
+  animation: hub-modal-scrim-fade 200ms ease-out;
+}
+
+@keyframes hub-modal-pop {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.94); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes hub-modal-scrim-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* —— 各弹窗的尺寸/留白微调（仍可被滚动条兜底） —— */
+.new-session-menu {
+  min-width: 360px;
+  padding: 14px 10px;
+}
+.resume-picker-menu {
+  min-width: 340px;
+  padding: 12px 0;
+}
+.options-menu {
+  min-width: 260px;
+  padding: 10px 0;
+}
+.options-wrapper .theme-picker-popup {
+  min-width: 340px;
+  padding: 18px;
+}
+.options-wrapper .meridian-config-popup {
+  min-width: 400px;
+  padding: 22px;
+}
+
+/* —— 列表型弹窗顶部 group label 紧凑一点 —— */
+.new-session-menu .menu-group-label:first-child {
+  font-size: 11px;
+  padding-top: 4px;
+}
+
+/* —— options-menu 项目加圆角呼吸感 —— */
+.options-menu .options-item {
+  margin: 0 8px;
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+.options-menu .options-divider {
+  margin: 6px 12px;
+}
+
+/* —— new-session / resume 选项条更舒服的 hover —— */
+.new-session-menu .new-session-option,
+.resume-picker-menu .resume-option {
+  border-radius: 6px;
+  margin: 0 4px;
+}
+
+/* —— meridian 配置：表单字号略大、间距更松 —— */
+.options-wrapper .meridian-config-popup .meridian-popup-title {
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+.options-wrapper .meridian-config-popup .meridian-popup-hint {
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+.options-wrapper .meridian-config-popup .meridian-field {
+  margin-top: 12px;
+}
+.options-wrapper .meridian-config-popup .meridian-field input {
+  font-size: 13px;
+  padding: 8px 10px;
+}
+.options-wrapper .meridian-config-popup .meridian-actions {
+  margin-top: 16px;
+  gap: 8px;
+}
+.options-wrapper .meridian-config-popup .meridian-btn {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+/* —— theme-picker：标题和选项都给点空间 —— */
+.options-wrapper .theme-picker-popup .theme-picker-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+/* —— Hover 时遮罩稍稍变深，让用户感知"点这里就关" —— */
+.new-session-menu:hover::before,
+.resume-picker-menu:hover::before,
+.options-menu:hover::before,
+.theme-picker-popup:hover::before,
+.meridian-config-popup:hover::before {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+/* —— 浅色主题（vibechat-light）下遮罩用浅灰，避免太黑 —— */
+body.theme-vibechat-light .new-session-menu::before,
+body.theme-vibechat-light .resume-picker-menu::before,
+body.theme-vibechat-light .options-menu::before,
+body.theme-vibechat-light .theme-picker-popup::before,
+body.theme-vibechat-light .meridian-config-popup::before {
+  background: rgba(20, 24, 32, 0.45);
+}
+

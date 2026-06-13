@@ -179,6 +179,78 @@ async function testExtractModeFinalAnswerWithSinceTsFilter() {
   }
 }
 
+async function testHasUserMessageSinceUsesPromptWindow() {
+  const tmpRoot = _tmpRoot('usermsg');
+  const cwd = 'C:\\test\\proj-usermsg';
+  const tap = new CodexTap({ sessionsRoot: tmpRoot, pollIntervalMs: 100 });
+  try {
+    const baseTime = new Date();
+    const fr = new FakeCodexRollout({ sessionsRoot: tmpRoot, cwd, startAt: baseTime });
+    await fr.start();
+    await fr.writeRaw({
+      timestamp: new Date(baseTime.getTime() + 100).toISOString(),
+      type: 'event_msg',
+      payload: { type: 'user_message', message: 'old prompt' },
+    });
+    await fr.writeRaw({
+      timestamp: new Date(baseTime.getTime() + 300).toISOString(),
+      type: 'event_msg',
+      payload: { type: 'user_message', message: 'new prompt' },
+    });
+    await fr.close();
+
+    const hubSid = 'hub-usermsg-1';
+    tap.registerSession(hubSid, { cwd });
+    const bound = await _waitForBind(tap, hubSid);
+    assert.ok(bound, 'must bind');
+
+    assert.strictEqual(await tap.hasUserMessageSince(hubSid, baseTime.getTime() + 250), true,
+      'should detect a user_message after the prompt send window');
+    assert.strictEqual(await tap.hasUserMessageSince(hubSid, baseTime.getTime() + 350), false,
+      'should not detect a user_message after the last submitted prompt');
+  } finally {
+    tap.unregisterSession('hub-usermsg-1');
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+async function testExtractDoesNotReusePreviousTaskAfterNewUserMessage() {
+  const tmpRoot = _tmpRoot('turn-boundary');
+  const cwd = 'C:\\test\\proj-turn-boundary';
+  const tap = new CodexTap({ sessionsRoot: tmpRoot, pollIntervalMs: 100 });
+  try {
+    const baseTime = new Date();
+    const fr = new FakeCodexRollout({ sessionsRoot: tmpRoot, cwd, startAt: baseTime });
+    await fr.start();
+    await fr.writeRaw({
+      timestamp: new Date(baseTime.getTime() + 100).toISOString(),
+      type: 'event_msg',
+      payload: { type: 'user_message', message: 'rollcall prompt' },
+    });
+    await fr.writeTaskComplete('就位', 1000, { at: new Date(baseTime.getTime() + 200) });
+    await fr.writeRaw({
+      timestamp: new Date(baseTime.getTime() + 300).toISOString(),
+      type: 'event_msg',
+      payload: { type: 'user_message', message: 'main analyst prompt' },
+    });
+    await fr.close();
+
+    const hubSid = 'hub-turn-boundary-1';
+    tap.registerSession(hubSid, { cwd });
+    const bound = await _waitForBind(tap, hubSid);
+    assert.ok(bound, 'must bind');
+
+    const r = await tap.extractLatestTurn(hubSid, baseTime.getTime() + 150);
+    assert.ok(r, 'must return object');
+    assert.strictEqual(r.extractMode, 'no_task_complete_yet',
+      'new user_message should make the previous task_complete ineligible for this turn');
+    assert.strictEqual(r.text || '', '', 'must not reuse rollcall text for the next analyst turn');
+  } finally {
+    tap.unregisterSession('hub-turn-boundary-1');
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 // === runner ===
 
 const tests = [
@@ -187,6 +259,8 @@ const tests = [
   testExtractModeNoTaskCompleteYet,
   testExtractModeNoRolloutBound,
   testExtractModeFinalAnswerWithSinceTsFilter,
+  testHasUserMessageSinceUsesPromptWindow,
+  testExtractDoesNotReusePreviousTaskAfterNewUserMessage,
 ];
 
 (async () => {

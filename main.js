@@ -55,6 +55,7 @@ const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
+const { registerPptModeIpc, killPptServer } = require('./main/ipc/ppt-mode-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
 const { registerResumeSessionIpc } = require('./main/ipc/resume-session-handlers.js');
@@ -62,6 +63,7 @@ const { createGroupChatDispatcher } = require('./main/groupchat/dispatcher.js');
 const { createAutoTitleManager } = require('./main/auto-title-manager.js');
 const {
   extractCodexRateLimits,
+  mergeCodexRateLimitCandidates,
   parseCodexUsage,
   parseGeminiUsage,
   stripAnsi,
@@ -744,8 +746,18 @@ groupChatDispatcher = createGroupChatDispatcher({
   transcriptTap,
 });
 
+const { createCommitteeConductor } = require('./main/groupchat/committee-conductor.js');
+const committeeConductor = createCommitteeConductor({
+  dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
+  meetingManager,
+  sessionManager,
+  sendToRenderer,
+  logger: console,
+});
+
 registerGroupchatTurnIpc(ipcMain, {
   dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
+  committeeConductor,
 });
 
 registerGroupchatQueryIpc(ipcMain, {
@@ -882,6 +894,7 @@ registerAppUtilityIpc(ipcMain, {
 });
 
 registerPathIpc(ipcMain);
+registerPptModeIpc(ipcMain);
 
 // --- Hook HTTP server ---
 // Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code
@@ -901,8 +914,12 @@ const hookServer = http.createServer((req, res) => {
   const isResearchStockStatic = req.method === 'POST' && req.url === '/api/research/stock-static';
   const isResearchStockMarket = req.method === 'POST' && req.url === '/api/research/stock-market';
   const isResearchStockNews = req.method === 'POST' && req.url === '/api/research/stock-news';
+  const isResearchStockSentiment = req.method === 'POST' && req.url === '/api/research/stock-sentiment';
+  const isResearchStockScan = req.method === 'POST' && req.url === '/api/research/stock-scan';
+  const isResearchKlineSimilarity = req.method === 'POST' && req.url === '/api/research/kline-similarity';
   const isResearchFetch = isResearchFetchStock || isResearchFetchField || isResearchFetchConcept || isResearchFetchSector
-    || isResearchStockStatic || isResearchStockMarket || isResearchStockNews;
+    || isResearchStockStatic || isResearchStockMarket || isResearchStockNews || isResearchStockSentiment || isResearchStockScan
+    || isResearchKlineSimilarity;
   // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调（loopback）。
   if (!isHook && !isStatus && !isResearchFetch && !isEscapeHome) {
     res.writeHead(404); res.end('{}'); return;
@@ -955,12 +972,17 @@ const hookServer = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: true, pid: process.pid }));
       return;
     }
-    // Research mode MCP callbacks (loopback)：fetch_lindang_stock / fetch_concept_stocks / fetch_sector_overview
+    // Research mode MCP callbacks (loopback)：stock_static / stock_market / stock_news / scan_* 系列。
+    // 旧 endpoint /api/research/fetch-stock 和 /api/research/fetch-field 保留向后兼容（MCP 工具
+    // fetch_lindang_stock / fetch_lindang_field 已于 2026-06-04 完全下线，Hub 内零调用，
+    // 仅 lindang-bridge.js 的外部脚本可能仍在用，2026-09 后可彻底删除）。
     if (isResearchFetch) {
       if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
-      const { meetingId, kind, symbol, name, concept, top_n, sector, op } = parsed;
+      const { meetingId, kind, symbol, name, concept, top_n, sector, op, depth, mode, scan_type, only_subject_stock,
+              window: ksWindow, top_k: ksTopK, method: ksMethod, feature: ksFeature, exclude_self_recent: ksExclude } = parsed;
       const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-      if (!meeting || meeting.scene !== 'research') {
+      // committee（投委会）复用整套投研 MCP 工具栈
+      if (!meeting || (meeting.scene !== 'research' && meeting.scene !== 'committee')) {
         res.writeHead(400); res.end('{"error":"not research mode"}'); return;
       }
       const t0 = Date.now();
@@ -973,11 +995,20 @@ const hookServer = http.createServer((req, res) => {
         } else if (isResearchFetchConcept) {
           result = await lindangBridge.fetchConcept(concept, top_n || 10);
         } else if (isResearchStockStatic) {
-          result = await lindangBridge.fetchStatic(symbol);
+          result = await lindangBridge.fetchStatic(symbol, depth);
         } else if (isResearchStockMarket) {
-          result = await lindangBridge.fetchMarket(symbol);
+          result = await lindangBridge.fetchMarket(symbol, depth, mode);
         } else if (isResearchStockNews) {
-          result = await lindangBridge.fetchNews(symbol);
+          result = await lindangBridge.fetchNews(symbol, depth);
+        } else if (isResearchStockSentiment) {
+          result = await lindangBridge.fetchSentiment(symbol, depth, only_subject_stock);
+        } else if (isResearchStockScan) {
+          result = await lindangBridge.fetchScan(scan_type, depth);
+        } else if (isResearchKlineSimilarity) {
+          result = await lindangBridge.fetchKlineSimilarity(symbol, {
+            window: ksWindow, top_k: ksTopK, method: ksMethod,
+            feature: ksFeature, exclude_self_recent: ksExclude,
+          });
         } else {
           result = await lindangBridge.fetchSector(sector);
         }
@@ -1085,6 +1116,7 @@ function listenWithFallback() {
 // Persist the latest Claude account usage so the sidebar renders immediately on
 // restart without waiting for the first statusline callback.
 const USAGE_CACHE_FILE = path.join(getHubDataDir(), 'usage-cache.json');
+const STATUSLINE_CACHE_FILE = path.join(getHubDataDir(), 'statusline-cache.json');
 
 // See core/usage-filter.js for why this filter exists (rate_limits monotonic
 // within a window — stale low-pct snapshots from idle sessions must not
@@ -1099,11 +1131,49 @@ function cacheAccountUsage(data) {
     existing.claude = {
       usage5h: data.usage5h || cur.usage5h || null,
       usage7d: data.usage7d || cur.usage7d || null,
-      ts: Date.now(),
+      ts: data.ts || Date.now(),
     };
     fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
     fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(existing));
   } catch {}
+}
+
+function loadStatuslineCache() {
+  try { return JSON.parse(fs.readFileSync(STATUSLINE_CACHE_FILE, 'utf8')); } catch { return {}; }
+}
+
+function selectClaudeStatuslineUsage(cache) {
+  const entries = Object.values(cache || {})
+    .filter(entry => entry && typeof entry === 'object' && (entry.usage5h || entry.usage7d))
+    .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  if (entries.length === 0) return null;
+
+  const usage5Entry = entries.find(entry => entry.usage5h);
+  const usage7Entry = entries.find(entry => entry.usage7d);
+  const latestTs = Math.max(
+    usage5Entry ? usage5Entry.ts || 0 : 0,
+    usage7Entry ? usage7Entry.ts || 0 : 0,
+  );
+  return {
+    usage5h: usage5Entry ? usage5Entry.usage5h : null,
+    usage7d: usage7Entry ? usage7Entry.usage7d : null,
+    ts: latestTs || Date.now(),
+    source: 'statusline-cache',
+  };
+}
+
+function refreshClaudeAccountUsageFromStatuslineCache() {
+  const snapshot = selectClaudeStatuslineUsage(loadStatuslineCache());
+  if (!snapshot) return null;
+  const filtered = claudeUsageFilter.filter(snapshot.usage5h, snapshot.usage7d);
+  if (filtered.anyAccepted) {
+    cacheAccountUsage({
+      usage5h: filtered.usage5h,
+      usage7d: filtered.usage7d,
+      ts: snapshot.ts,
+    });
+  }
+  return loadUsageCache().claude || null;
 }
 
 function cacheAgentUsage(provider, tokenData, scope = null) {
@@ -1168,8 +1238,11 @@ async function fetchAndCachePackyAccount() {
 }
 
 registerUsageIpc(ipcMain, {
+  clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
   fetchAndCachePackyAccount,
   loadUsageCacheForCurrentConfig,
+  refreshClaudeAccountUsage: refreshClaudeAccountUsageFromStatuslineCache,
+  scanAgentSessions,
 });
 
 registerConfigIpc(ipcMain, {
@@ -1187,6 +1260,7 @@ registerConfigIpc(ipcMain, {
 // and emits status-event so the renderer can show context/usage badges.
 const _agentLastStatus = new Map();
 const _agentQuota = { gemini: null, codex: null };
+const CODEX_CLI_USAGE_FRESH_MS = 2 * 60 * 1000;
 
 // --- Codex JSONL-based usage scanner ---
 // Codex CLI writes authoritative rate_limits to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
@@ -1194,9 +1268,10 @@ const _agentQuota = { gemini: null, codex: null };
 let _codexJsonlLastScan = 0;
 let _codexJsonlCached = null;
 const _codexJsonlCachedByRoot = new Map();
-const CODEX_JSONL_THROTTLE_MS = 30_000;
+const CODEX_JSONL_THROTTLE_MS = 5_000;
+const CODEX_JSONL_CANDIDATE_LIMIT = 20;
 
-function scanCodexJsonlUsage(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT) {
+function scanCodexJsonlUsage(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT, opts = {}) {
   try {
     const now = new Date();
     const pad = (n) => String(n).padStart(2, '0');
@@ -1205,7 +1280,7 @@ function scanCodexJsonlUsage(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT) {
     const yesterday = new Date(now.getTime() - 86400000);
     datePaths.push(path.join(sessionsDir, String(yesterday.getFullYear()), pad(yesterday.getMonth() + 1), pad(yesterday.getDate())));
 
-    let newestEntry = null;
+    const candidates = [];
     for (const dir of datePaths) {
       let files;
       try { files = fs.readdirSync(dir).filter(f => f.startsWith('rollout-') && f.endsWith('.jsonl')); } catch { continue; }
@@ -1214,22 +1289,32 @@ function scanCodexJsonlUsage(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT) {
         try { return { path: fp, mtime: fs.statSync(fp).mtimeMs }; } catch { return null; }
       }).filter(Boolean);
       withStats.sort((a, b) => b.mtime - a.mtime);
-      for (const file of withStats.slice(0, 3)) {
+      for (const file of withStats.slice(0, CODEX_JSONL_CANDIDATE_LIMIT)) {
         const entry = extractCodexRateLimits(file.path);
-        if (entry) { newestEntry = entry; break; }
+        if (entry) {
+          candidates.push({
+            ...entry,
+            rolloutPath: file.path,
+            observedAt: file.mtime,
+          });
+        }
       }
-      if (newestEntry) break;
     }
-    return newestEntry;
+    return mergeCodexRateLimitCandidates(candidates, Date.now(), {
+      minObservedAt: opts.minObservedAt || 0,
+    });
   } catch { return null; }
 }
 
-function scanCodexJsonlUsageThrottled(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT) {
+function scanCodexJsonlUsageThrottled(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT, opts = {}) {
   const now = Date.now();
-  const key = path.resolve(sessionsDir || DEFAULT_CODEX_SESSIONS_ROOT).toLowerCase();
+  const key = [
+    path.resolve(sessionsDir || DEFAULT_CODEX_SESSIONS_ROOT).toLowerCase(),
+    Math.floor(Number(opts.minObservedAt) || 0),
+  ].join('|');
   const cached = _codexJsonlCachedByRoot.get(key);
-  if (cached && now - cached.ts < CODEX_JSONL_THROTTLE_MS) return cached.data;
-  const data = scanCodexJsonlUsage(sessionsDir);
+  if (!opts.force && cached && now - cached.ts < CODEX_JSONL_THROTTLE_MS) return cached.data;
+  const data = scanCodexJsonlUsage(sessionsDir, opts);
   _codexJsonlCachedByRoot.set(key, { ts: now, data });
   _codexJsonlLastScan = now;
   _codexJsonlCached = data;
@@ -1273,7 +1358,8 @@ function calcAgentUsage(kind, scopeOrRoot = null) {
   };
 }
 
-function scanAgentSessions() {
+function scanAgentSessions(opts = {}) {
+  const force = !!opts.force;
   const allSessions = sessionManager.getAllSessions();
   for (const s of allSessions) {
     if (s.kind !== 'gemini' && !isCodexBaseKind(s.kind)) continue;
@@ -1282,6 +1368,18 @@ function scanAgentSessions() {
     if (!buf) continue;
     const plain = stripAnsi(buf);
     const parsed = s.kind === 'gemini' ? parseGeminiUsage(plain) : parseCodexUsage(plain);
+    if (isCodexBaseKind(s.kind) && (parsed.usage5h || parsed.usage7d)) {
+      const usageSig = JSON.stringify({ usage5h: parsed.usage5h || null, usage7d: parsed.usage7d || null });
+      const usageKey = s.id + ':codex-cli-usage';
+      if (_agentLastStatus.get(usageKey) !== usageSig) {
+        _agentLastStatus.set(usageKey, usageSig);
+        _agentQuota.codex = {
+          usage5h: parsed.usage5h || null,
+          usage7d: parsed.usage7d || null,
+          _ts: Date.now(),
+        };
+      }
+    }
     if (parsed.tokensUsed) {
       const prev = _agentLastStatus.get(s.id + ':tok');
       if (prev !== parsed.tokensUsed) {
@@ -1322,20 +1420,34 @@ function scanAgentSessions() {
   // Build and broadcast per-provider usage.
   // Priority: Codex JSONL (authoritative) > ring buffer quota > token estimates.
   const agentData = {};
-  // Codex: try JSONL first
+  // Codex: visible `/usage` output is the freshest user-triggered source.
+  // Fall back to JSONL token_count snapshots, then local token estimates.
   const codexScope = currentCodexUsageScope();
-  const codexJsonl = scanCodexJsonlUsageThrottled(codexScope.sessionsRoot);
-  if (codexJsonl) {
-    agentData.codex = attachCodexUsageScope({ ...codexJsonl, source: 'jsonl' }, codexScope);
-    cacheAgentUsage('codex', codexJsonl, codexScope);
+  const freshCodexCliUsage = _agentQuota.codex && _agentQuota.codex._ts && now - _agentQuota.codex._ts <= CODEX_CLI_USAGE_FRESH_MS
+    ? _agentQuota.codex
+    : null;
+  const codexJsonl = freshCodexCliUsage ? null : scanCodexJsonlUsageThrottled(codexScope.sessionsRoot, {
+    force,
+    minObservedAt: codexScope.authSinceMs || 0,
+  });
+  if (freshCodexCliUsage) {
+    const payload = { ...freshCodexCliUsage, source: 'cli-usage', _ts: Date.now() };
+    agentData.codex = attachCodexUsageScope(payload, codexScope);
+    cacheAgentUsage('codex', payload, codexScope);
+  } else if (codexJsonl) {
+    const payload = { ...codexJsonl, source: 'jsonl', _ts: Date.now() };
+    agentData.codex = attachCodexUsageScope(payload, codexScope);
+    cacheAgentUsage('codex', payload, codexScope);
   } else if (_agentQuota.codex) {
-    agentData.codex = attachCodexUsageScope({ ..._agentQuota.codex, source: 'cli' }, codexScope);
-    cacheAgentUsage('codex', _agentQuota.codex, codexScope);
+    const payload = { ..._agentQuota.codex, source: 'cli', _ts: Date.now() };
+    agentData.codex = attachCodexUsageScope(payload, codexScope);
+    cacheAgentUsage('codex', payload, codexScope);
   } else {
     const usage = calcAgentUsage('codex', codexScope.sessionsRoot);
     if (usage) {
-      agentData.codex = attachCodexUsageScope({ ...usage, source: 'estimate' }, codexScope);
-      cacheAgentUsage('codex', usage, codexScope);
+      const payload = { ...usage, source: 'estimate', _ts: Date.now() };
+      agentData.codex = attachCodexUsageScope(payload, codexScope);
+      cacheAgentUsage('codex', payload, codexScope);
     } else {
       agentData.codex = attachCodexUsageScope({ usage5h: null, usage7d: null, unavailable: true }, codexScope);
     }
@@ -1352,6 +1464,7 @@ function scanAgentSessions() {
     if (usage) { agentData.gemini = usage; cacheAgentUsage('gemini', usage); }
   }
   if (Object.keys(agentData).length > 0) sendToRenderer('agent-usage', agentData);
+  return agentData;
 }
 
 let _agentScanInterval = null;
@@ -1395,6 +1508,275 @@ app.whenReady().then(async () => {
   }
   traceStartup(`hook listen done (${hookPort || 'none'})`);
   sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
+
+  // === Mobile Bridge (opt-in via CLAUDE_HUB_MOBILE_ENABLED env) ===
+  // 默认关；启用需要同时设：CLAUDE_HUB_MOBILE_ENABLED=true + MOBILE_VPS_URL + MOBILE_BEARER_TOKEN
+  // 模块崩溃不影响 Hub 主进程。详见 mobile/README.md
+  // 隔离实例（CLAUDE_HUB_DATA_DIR 已设）继承 User 级 env 会全部挂上网关，
+  // 造成多 Hub 注册混乱（2026-06-11 网关同时挂 3 个本机 Hub）。
+  // 隔离实例必须额外显式设 CLAUDE_HUB_MOBILE_ISOLATED_OPTIN=true 才连。
+  const _mobileBlockedByIsolation = process.env.CLAUDE_HUB_DATA_DIR
+    && process.env.CLAUDE_HUB_MOBILE_ISOLATED_OPTIN !== 'true';
+  if (process.env.CLAUDE_HUB_MOBILE_ENABLED === 'true' && _mobileBlockedByIsolation) {
+    console.log('[mobile-bridge] skipped: isolated instance (CLAUDE_HUB_DATA_DIR set) without CLAUDE_HUB_MOBILE_ISOLATED_OPTIN');
+  }
+  if (process.env.CLAUDE_HUB_MOBILE_ENABLED === 'true' && !_mobileBlockedByIsolation) {
+    try {
+      const { startMobileBridge } = require('./mobile/hub-bridge');
+      const mobileBridge = startMobileBridge({
+        sessionManager,
+        transcriptTap,
+        meetingManager,
+        dispatchGroupChatTurn: groupChatDispatcher && groupChatDispatcher.dispatchGroupChatTurn,
+        getHubDataDir,
+        captureHubView: async ({ maxWidth, mimeType, quality } = {}) => {
+          if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents || mainWindow.webContents.isCrashed()) {
+            throw new Error('main_window_unavailable');
+          }
+          let image = await mainWindow.webContents.capturePage();
+          const original = image.getSize();
+          if (maxWidth && original.width > maxWidth) {
+            const width = Math.max(320, Math.min(Number(maxWidth) || original.width, original.width));
+            image = image.resize({ width });
+          }
+          const size = image.getSize();
+          const useJpeg = String(mimeType || '').toLowerCase().includes('jpeg') || String(mimeType || '').toLowerCase().includes('jpg');
+          const jpegQuality = Math.max(35, Math.min(92, Math.round(Number(quality) || 72)));
+          const encoded = useJpeg && typeof image.toJPEG === 'function'
+            ? image.toJPEG(jpegQuality)
+            : image.toPNG();
+          return {
+            imageBase64: encoded.toString('base64'),
+            mimeType: useJpeg ? 'image/jpeg' : 'image/png',
+            width: size.width,
+            height: size.height,
+            originalWidth: original.width,
+            originalHeight: original.height,
+            byteLength: encoded.length,
+            quality: useJpeg ? jpegQuality : null,
+            capturedAt: Date.now(),
+          };
+        },
+        sendHubViewInput: async ({ input } = {}) => {
+          if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents || mainWindow.webContents.isCrashed()) {
+            throw new Error('main_window_unavailable');
+          }
+          const kind = input && input.kind;
+          const mapHubViewPoint = () => {
+            const contentSize = mainWindow.getContentSize();
+            const targetWidth = Math.max(1, Number(contentSize[0]) || Number(input.originalWidth) || Number(input.width) || 1);
+            const targetHeight = Math.max(1, Number(contentSize[1]) || Number(input.originalHeight) || Number(input.height) || 1);
+            const srcWidth = Math.max(1, Number(input.width) || Number(input.originalWidth) || targetWidth);
+            const srcHeight = Math.max(1, Number(input.height) || Number(input.originalHeight) || targetHeight);
+            const x = Math.max(0, Math.min(targetWidth - 1, Math.round((Number(input.x) || 0) * targetWidth / srcWidth)));
+            const y = Math.max(0, Math.min(targetHeight - 1, Math.round((Number(input.y) || 0) * targetHeight / srcHeight)));
+            return { x, y, targetWidth, targetHeight, srcWidth, srcHeight };
+          };
+          const sanitizeInputModifiers = (extra = []) => {
+            const allowedModifiers = new Set(['shift', 'control', 'alt', 'meta', 'leftButtonDown', 'rightButtonDown', 'middleButtonDown']);
+            const source = Array.isArray(input.modifiers) ? input.modifiers : [];
+            const out = [];
+            for (const value of source.concat(extra)) {
+              const key = String(value || '');
+              if (allowedModifiers.has(key) && !out.includes(key)) out.push(key);
+            }
+            return out;
+          };
+          if (kind === 'text-paste') {
+            const text = String(input.text || '').slice(0, 5000);
+            if (!text) throw new Error('empty_text');
+            mainWindow.webContents.focus();
+            if (typeof mainWindow.webContents.insertText === 'function') {
+              await mainWindow.webContents.insertText(text);
+            } else {
+              const priorText = clipboard.readText();
+              clipboard.writeText(text);
+              mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
+              mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] });
+              setTimeout(() => {
+                try { clipboard.writeText(priorText || ''); } catch {}
+              }, 800);
+            }
+            return { ok: true, kind, length: text.length };
+          }
+          if (kind === 'clipboard-read') {
+            const priorText = clipboard.readText();
+            mainWindow.webContents.focus();
+            if (input.copy !== false) {
+              mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'C', modifiers: ['control'] });
+              mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'C', modifiers: ['control'] });
+              await new Promise(resolve => setTimeout(resolve, 120));
+            }
+            const text = String(clipboard.readText() || '').slice(0, 20000);
+            if (input.restore !== false) {
+              setTimeout(() => {
+                try { clipboard.writeText(priorText || ''); } catch {}
+              }, 800);
+            }
+            return { ok: true, kind, text, length: text.length };
+          }
+          if (kind === 'clipboard-write') {
+            const text = String(input.text || '').slice(0, 20000);
+            if (!text) throw new Error('empty_clipboard_text');
+            clipboard.writeText(text);
+            return { ok: true, kind, length: text.length };
+          }
+          if (kind === 'file-transfer') {
+            const nameRaw = String(input.name || 'upload.bin').slice(0, 180);
+            const safeName = nameRaw
+              .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+              .replace(/^\.+/, '_')
+              .trim()
+              .slice(0, 120) || 'upload.bin';
+            const dataBase64 = String(input.dataBase64 || '');
+            const declaredSize = Number(input.size) || 0;
+            if (!dataBase64) throw new Error('empty_file');
+            if (declaredSize > 8 * 1024 * 1024 || dataBase64.length > 12 * 1024 * 1024) {
+              throw new Error('file_too_large');
+            }
+            const buf = Buffer.from(dataBase64, 'base64');
+            if (buf.length > 8 * 1024 * 1024) throw new Error('file_too_large');
+            const uploadDir = path.join(getHubDataDir(), 'mobile-uploads');
+            fs.mkdirSync(uploadDir, { recursive: true });
+            const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+            const outPath = path.join(uploadDir, `${stamp}-${crypto.randomBytes(3).toString('hex')}-${safeName}`);
+            const resolvedDir = path.resolve(uploadDir);
+            const resolvedOut = path.resolve(outPath);
+            if (!resolvedOut.startsWith(resolvedDir + path.sep)) throw new Error('path_escape');
+            fs.writeFileSync(resolvedOut, buf);
+            clipboard.writeText(resolvedOut);
+            if (input.pastePath !== false) {
+              mainWindow.webContents.focus();
+              if (typeof mainWindow.webContents.insertText === 'function') {
+                await mainWindow.webContents.insertText(resolvedOut);
+              } else {
+                const priorText = clipboard.readText();
+                clipboard.writeText(resolvedOut);
+                mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
+                mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] });
+                setTimeout(() => {
+                  try { clipboard.writeText(priorText || ''); } catch {}
+                }, 800);
+              }
+            }
+            return { ok: true, kind, path: resolvedOut, name: safeName, size: buf.length, pasted: input.pastePath !== false };
+          }
+          if (kind === 'mouse-wheel') {
+            const { x, y } = mapHubViewPoint();
+            const deltaX = Math.max(-2400, Math.min(2400, Math.round(Number(input.deltaX) || 0)));
+            const deltaY = Math.max(-2400, Math.min(2400, Math.round(Number(input.deltaY) || 0)));
+            if (!deltaX && !deltaY) throw new Error('empty_wheel_delta');
+            const modifiers = sanitizeInputModifiers();
+            mainWindow.webContents.focus();
+            mainWindow.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers });
+            mainWindow.webContents.sendInputEvent({ type: 'mouseWheel', x, y, deltaX, deltaY, modifiers });
+            return { ok: true, kind, x, y, deltaX, deltaY, modifiers };
+          }
+          if (kind === 'mouse-move') {
+            const { x, y } = mapHubViewPoint();
+            const modifiers = sanitizeInputModifiers();
+            mainWindow.webContents.focus();
+            mainWindow.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers });
+            return { ok: true, kind, x, y, modifiers };
+          }
+          if (kind === 'key-press') {
+            const keyCode = String(input.keyCode || '').slice(0, 32);
+            if (!keyCode) throw new Error('empty_key_code');
+            const allowedModifiers = new Set(['shift', 'control', 'alt', 'meta']);
+            const modifiers = Array.isArray(input.modifiers)
+              ? input.modifiers.map(x => String(x).toLowerCase()).filter(x => allowedModifiers.has(x)).slice(0, 4)
+              : [];
+            mainWindow.webContents.focus();
+            mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
+            mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
+            return { ok: true, kind, keyCode, modifiers };
+          }
+          if (kind === 'mouse-drag') {
+            const { x, y } = mapHubViewPoint();
+            const button = input.button === 'right' ? 'right' : 'left';
+            const phase = String(input.phase || 'move');
+            const buttonModifier = button === 'right' ? 'rightButtonDown' : 'leftButtonDown';
+            mainWindow.webContents.focus();
+            if (phase === 'down') {
+              const modifiers = sanitizeInputModifiers();
+              mainWindow.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers });
+              mainWindow.webContents.sendInputEvent({ type: 'mouseDown', x, y, button, clickCount: 1, modifiers });
+            } else if (phase === 'move') {
+              mainWindow.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers: sanitizeInputModifiers([buttonModifier]) });
+            } else if (phase === 'up') {
+              mainWindow.webContents.sendInputEvent({ type: 'mouseUp', x, y, button, clickCount: 1, modifiers: sanitizeInputModifiers() });
+            } else {
+              throw new Error('unsupported_drag_phase');
+            }
+            return { ok: true, kind, phase, x, y, modifiers: sanitizeInputModifiers(phase === 'move' ? [buttonModifier] : []) };
+          }
+          if (kind !== 'mouse-click') throw new Error('unsupported_input_kind');
+          const { x, y } = mapHubViewPoint();
+          const button = input.button === 'right' ? 'right' : 'left';
+          const clickCount = Math.max(1, Math.min(Number(input.clickCount) || 1, 2));
+          const modifiers = sanitizeInputModifiers();
+          mainWindow.webContents.focus();
+          mainWindow.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers });
+          mainWindow.webContents.sendInputEvent({ type: 'mouseDown', x, y, button, clickCount, modifiers });
+          mainWindow.webContents.sendInputEvent({ type: 'mouseUp', x, y, button, clickCount, modifiers });
+          return { ok: true, kind, x, y, modifiers };
+        },
+        logger: console,
+      });
+      if (mobileBridge) {
+        global.__mobileBridge = mobileBridge; // 供 renderer IPC 调用 generatePin/listDevices
+        console.log('[mobile-bridge] enabled');
+      }
+    } catch (e) {
+      console.warn('[mobile-bridge] startup failed (Hub continues normally):', e && e.message);
+    }
+  }
+
+  // === Remote Hub Client（远程模式：本 Hub 作为瘦客户端经 VPS 中继操作另一台 Hub）===
+  // 不能和执行端 mobile-bridge 同进程自动连接：两者若复用同一个 device token，
+  // remote client 会占用 /pwa 连接槽并把真正的手机/浏览器 PWA 踢下线。
+  const _remoteClientBlockedByAgent = process.env.CLAUDE_HUB_MOBILE_ENABLED === 'true' && !_mobileBlockedByIsolation;
+  if (_remoteClientBlockedByAgent) {
+    console.log('[remote-hub] skipped: this Hub is the mobile-bridge agent');
+  } else {
+    // 未配置（dataDir/remote-hub.json 无 deviceToken）时惰性闲置，零开销。
+    try {
+      const { startRemoteClient } = require('./mobile/remote-client');
+      global.__remoteClient = startRemoteClient({ getHubDataDir, sendToRenderer, logger: console });
+    } catch (e) {
+      console.warn('[remote-hub] startup failed (Hub continues normally):', e && e.message);
+    }
+  }
+
+  // === Self-Update（源码热更新：VPS 更新通道，公司便携部署免重装）===
+  try {
+    const { SelfUpdater } = require('./core/self-update.js');
+    const updater = new SelfUpdater({
+      appRoot: __dirname,
+      getRemoteConfig: () => {
+        try {
+          return JSON.parse(require('fs').readFileSync(
+            require('path').join(getHubDataDir(), 'remote-hub.json'), 'utf8'));
+        } catch { return null; }
+      },
+      logger: console,
+    });
+    ipcMain.handle('hub-update-check', async () => {
+      try { return { ok: true, ...(await updater.check()) }; }
+      catch (e) { return { ok: false, error: e.message }; }
+    });
+    ipcMain.handle('hub-update-apply', async () => {
+      try {
+        const r = await updater.apply();
+        if (r.ok) setTimeout(() => updater.relaunch(), 800);
+        return r;
+      } catch (e) { return { ok: false, error: e.message }; }
+    });
+  } catch (e) {
+    console.warn('[self-update] init failed (Hub continues normally):', e && e.message);
+  }
+
+  // 2026-06-05 联邦记忆下线：claude-memory-loader 只做 readFileSync，无需预热
 
   // 2026-05-16 道雪：写 per-PID 控制文件（含 hookPort + cdpPort + HOOK_TOKEN）。
   //   救援脚本 tools/hub-escape.ps1 通过 <dataDir>/control/<pid>.json 发现 Hub
@@ -1460,6 +1842,9 @@ app.on('before-quit', async () => {
   // 2026-05-16 道雪：清理自己的控制文件。unlinkSelf 内部已 try/catch + warn 非 ENOENT 错误，
   // 不外抛，所以这里裸调即可，不再加外层 catch（避免盖住内部 warn）。
   hubControl.unlinkSelf(getHubDataDir(), process.pid);
+
+  // PPT 模式：只回收 Hub 自己 spawn 的 oneclick server（外部启动的不动）
+  killPptServer();
 });
 
 app.on('window-all-closed', () => {

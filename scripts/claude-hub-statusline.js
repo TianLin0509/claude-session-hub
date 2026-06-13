@@ -37,19 +37,26 @@ function main() {
   const modelDisplay = (data.model && data.model.display_name) || null;
   const sessionName = data.session_name || null;
   const cwd = (data.workspace && data.workspace.current_dir) || null;
+  const h5 = data.rate_limits && data.rate_limits.five_hour;
+  const d7 = data.rate_limits && data.rate_limits.seven_day;
+  const usage5Sig = h5 ? `${h5.used_percentage}:${h5.resets_at}` : '';
+  const usage7Sig = d7 ? `${d7.used_percentage}:${d7.resets_at}` : '';
 
   // Throttle — but bypass throttle when UX-visible state changes (model / cwd /
-  // session_name), so /model, cd, /rename surface to the Hub immediately.
+  // session_name / usage), so /model, cd, /rename and quota changes surface to
+  // the Hub immediately.
   let cache = {};
   try { cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')); } catch {}
   const key = 'session-' + sessionId;
   const entry = typeof cache[key] === 'object'
     ? cache[key]
-    : { ts: cache[key] || 0, model: null, cwd: null, name: null };
+    : { ts: cache[key] || 0, model: null, cwd: null, name: null, usage5Sig: '', usage7Sig: '' };
   const stateChanged =
     (modelId && entry.model !== modelId) ||
     (cwd && entry.cwd !== cwd) ||
-    (sessionName && entry.name !== sessionName);
+    (sessionName && entry.name !== sessionName) ||
+    (usage5Sig && entry.usage5Sig !== usage5Sig) ||
+    (usage7Sig && entry.usage7Sig !== usage7Sig);
   if (!stateChanged && Date.now() - entry.ts < THROTTLE_MS) return;
 
   // Claude Code already computes used_percentage for us — that accounts for
@@ -66,9 +73,6 @@ function main() {
 
   // resets_at is Unix seconds — convert to ms if it looks like seconds
   const toMs = (t) => (typeof t === 'number' && t < 1e12) ? t * 1000 : t;
-  const h5 = data.rate_limits && data.rate_limits.five_hour;
-  const d7 = data.rate_limits && data.rate_limits.seven_day;
-
   const cost = data.cost || {};
   const payload = JSON.stringify({
     sessionId,
@@ -102,7 +106,16 @@ function main() {
   req.write(payload);
   req.end();
 
-  cache[key] = { ts: Date.now(), model: modelId, cwd, name: sessionName };
+  cache[key] = {
+    ts: Date.now(),
+    model: modelId,
+    cwd,
+    name: sessionName,
+    usage5Sig,
+    usage7Sig,
+    usage5h: h5 ? { pct: h5.used_percentage, resetsAt: toMs(h5.resets_at) } : null,
+    usage7d: d7 ? { pct: d7.used_percentage, resetsAt: toMs(d7.resets_at) } : null,
+  };
   try {
     fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
     fs.writeFileSync(CACHE_FILE, JSON.stringify(cache));

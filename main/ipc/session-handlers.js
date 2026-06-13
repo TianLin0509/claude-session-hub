@@ -66,6 +66,10 @@ function registerSessionIpc(ipcMain, deps) {
     return sessionManager.getSessionBuffer(sessionId);
   });
 
+  ipcMain.handle('debug:get-last-session-write', () => {
+    return typeof sessionManager.getLastWrite === 'function' ? sessionManager.getLastWrite() : null;
+  });
+
   ipcMain.handle('restart-session', (_e, sessionId) => {
     const old = sessionManager.getSession(sessionId);
     if (!old) return null;

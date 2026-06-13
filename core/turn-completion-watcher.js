@@ -231,6 +231,16 @@ function createTurnCompletionWatcher(opts) {
       }
     },
 
+    markErrored(reason = 'unknown') {
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'errored',
+        text: '',
+        reason,
+      });
+    },
+
     isSettled() { return settled; },
 
     cancelPatch() {

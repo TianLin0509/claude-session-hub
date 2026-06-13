@@ -68,7 +68,9 @@ function renderSessionList() {
     status: m.status || 'idle',
     // 2026-05-05 道雪 修3：AI 群聊 item 接入 unread 机制 —— 全员答完且非 active 时累加，
     //   selectMeeting 时清零。替代旧 Web Notification + title 闪烁，统一走 Hub 侧栏哲学。
-    unreadCount: m.unreadCount || 0,
+    // 2026-05-31 道雪：unread 语义改为"本轮已答 AI 数（Set<sid>.size）" — 任一 AI 答完 +1，
+    //   显示"等你 N"（1-3）；turnNum 变 / selectMeeting 时清零（详见 renderer.js partial-update handler）。
+    unreadAnsweredSize: m.unreadAnswered instanceof Set ? m.unreadAnswered.size : 0,
     pinned: m.pinned,
     _isMeeting: true,
     _meeting: m,
@@ -98,7 +100,7 @@ function renderSessionList() {
       // 2026-05-05 道雪 修3：AI 群聊 item 也应用 has-unread CSS（跟普通 session 一致），
       //   全员答完且非 active 时高亮提醒；用户点进 AI 群聊后清零。
       const isDormantMeeting = s.status === 'dormant';
-      const hasUnread = !isDormantMeeting && !isActive && (s.unreadCount > 0);
+      const hasUnread = !isDormantMeeting && !isActive && (s.unreadAnsweredSize > 0);
       div.className = 'session-item meeting' + (isActive ? ' selected' : '')
         + (isExpanded ? ' expanded' : '') + (hasUnread ? ' has-unread' : '')
         + (isDormantMeeting ? ' dormant' : '');
@@ -127,11 +129,20 @@ function renderSessionList() {
         else if (sub.status === 'errored' || sub.status === 'error') statusCls = 'mini-st-error';
         else if (sub.status === 'running') statusCls = 'mini-st-thinking';
         const isActiveChild = subId === getActiveSessionId();
-        const tooltip = `${label}${modelLabel ? ' · ' + modelLabel : ''} (点击跳转)`;
-        return `<button class="mini-jump-btn slot-${idx + 1}${isGroupChat ? ' group' : ''}${isActiveChild ? ' active' : ''}" data-sub-id="${subId}" title="${escapeHtml(tooltip)}">
-          <img src="${avatarSrc}" alt="${escapeHtml(label)}" />
-          <span class="mini-jump-status-dot ${statusCls}"></span>
-        </button>`;
+        // 2026-05-31 道雪：群聊侧栏每个 AI logo 右侧贴 Ctx% 小标签，让用户一眼看到上下文占用。
+        //   数据已由 statusline → /api/status → sessions.contextPct 注入；为 null 时不渲染。
+        const ctxPct = isGroupChat && sub && typeof sub.contextPct === 'number' ? sub.contextPct : null;
+        const ctxCls = ctxPct != null && typeof pctClass === 'function' ? pctClass(ctxPct) : '';
+        const ctxLabelHtml = ctxPct != null
+          ? `<span class="mini-jump-ctx ${ctxCls}" title="Context ${ctxPct}%">${ctxPct}%</span>`
+          : '';
+        const tooltip = `${label}${modelLabel ? ' · ' + modelLabel : ''}${ctxPct != null ? ' · Ctx ' + ctxPct + '%' : ''} (点击跳转)`;
+        return `<span class="mini-jump-cell">
+          <button class="mini-jump-btn slot-${idx + 1}${isGroupChat ? ' group' : ''}${isActiveChild ? ' active' : ''}" data-sub-id="${subId}" title="${escapeHtml(tooltip)}">
+            <img src="${avatarSrc}" alt="${escapeHtml(label)}" />
+            <span class="mini-jump-status-dot ${statusCls}"></span>
+          </button>${ctxLabelHtml}
+        </span>`;
       }).join('');
       div.innerHTML = `
         <div class="session-item-header">
@@ -142,7 +153,7 @@ function renderSessionList() {
           </span>
           <span class="session-header-right">
             ${isDormantMeeting ? `<span class="dormant-badge" title="休眠中，点击唤醒">休眠</span>` : ''}
-            ${hasUnread ? `<span class="unread-badge" title="新轮次完成">⏸ 等你</span>` : ''}
+            ${hasUnread ? `<span class="unread-badge" title="本轮已 ${s.unreadAnsweredSize} 个 AI 答完">⏸ 等你 ${s.unreadAnsweredSize}</span>` : ''}
             <span class="session-time">${formatTime(s.lastMessageTime)}</span>
           </span>
         </div>

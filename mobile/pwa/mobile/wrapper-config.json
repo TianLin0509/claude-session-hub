@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "pwaUrl": "https://lthub.xyz:8443/",
+  "updateCheckUrl": "https://lthub.xyz:8443/mobile/wrapper-version.json",
+  "remoteConfigUrl": "https://lthub.xyz:8443/mobile/wrapper-config.json",
+  "cacheEpoch": "20260610-aihub-mvp",
+  "forceNoCache": false,
+  "forceReload": false
+}

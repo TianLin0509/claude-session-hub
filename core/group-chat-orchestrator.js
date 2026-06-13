@@ -37,11 +37,15 @@ function _memberLabel(member) {
 const RESEARCH_SCENE_PROMPT = [
   '## 投研场景',
   '优先补充他人未覆盖的角度、证据缺口或反例。在评价已知材料的基础上，尽量挖掘新线索、变量或解释路径，为讨论带回新信息、方向。涉及股票、板块、消息和近期行情时，尽量查证；事实和数字标来源，未查证就说明不确定。不要只顺着已有倾向，主动指出风险或证伪信号。若信息不足或判断分叉，先问用户 1-2 个会改变结论的问题。',
-  '涉及具体 A 股、板块或买卖时机时，优先主动调用已注入的 stock_static(symbol)、stock_market(symbol)、stock_news(symbol)：首次接触个股先 static+market，涉及公告、催化、突发消息或定报再补 news。',
+  '涉及具体 A 股、板块或买卖时机时，优先主动调用已注入的 stock_market(symbol)、stock_news(symbol)，stock_static(symbol) 仅在单只核心标的需要估值/基本面画像时再补。不要在同一轮对多只股票批量发 static+market；多股对比先 news 或至多 1-3 个 market，避免 MCP 客户端 120s 工具超时。',
   '只引用工具返回中能改变判断的关键字段；工具不可用或数据缺失时明确说未查到，不要凭记忆补数字。',
+  'stock_static 返回的估值/基本面字段带 `confidence` 标签（HIGH/MEDIUM/LOW/CONFLICT/UNAVAILABLE，详细措辞规则见该工具 description），引用前先看 `_meta.warnings` 扫一眼非 HIGH 字段；CONFLICT/UNAVAILABLE 时 value=null，禁止编数值或填默认值。',
 ].join('\n');
 
-function buildSystemPromptText(displayName, scene) {
+// 2026-06-05 联邦记忆下线：原 MEMORY_DISCIPLINE_PROMPT 教各家 AI 写 memory 的指令段已删除。
+// 记忆维护完全交给 Claude/Codex 各自原生 auto-memory 能力，群聊 prompt 不再越俎代庖。
+
+function buildSystemPromptText(displayName, scene, opts = {}) {
   const name = displayName || 'AI';
   const parts = [
     '## 规则',
@@ -53,6 +57,18 @@ function buildSystemPromptText(displayName, scene) {
   ];
   if (scene === 'research') {
     parts.push('', RESEARCH_SCENE_PROMPT);
+  } else if (scene === 'committee') {
+    // 投委会复用投研场景的 MCP 工具使用纪律 + 按席位优先注入 persona
+    parts.push('', RESEARCH_SCENE_PROMPT);
+    try {
+      const committee = require('./committee-scene.js');
+      const persona = committee.buildCommitteePersona(opts.seatKey || opts.kind);
+      if (persona) parts.push('', persona);
+      parts.push('', '## 投委会输出例外',
+        '投委会幕一/幕二/幕三的发言**直接输出在对话里**（口头要点 + ```json 块），不要走 HTML 三段式——编排层要机器解析你的 JSON。');
+    } catch (e) {
+      console.warn('[groupchat] committee persona inject failed:', e.message);
+    }
   }
   return parts.join('\n');
 }

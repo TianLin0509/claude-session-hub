@@ -1,0 +1,17 @@
+{
+  "name": "hub-mobile-gateway",
+  "version": "0.1.0",
+  "description": "VPS-side WSS gateway that bridges Hub (outbound) and PWA (inbound). Dumb relay, no message persistence.",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}

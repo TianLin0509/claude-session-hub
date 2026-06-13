@@ -48,6 +48,33 @@ test('delegates meetingId and args to dispatcher', async () => {
   assert.deepStrictEqual(calls, [['m1', args]]);
 });
 
+test('awaits async committee intent before running conductor', async () => {
+  const ipc = createFakeIpc();
+  const calls = [];
+  registerGroupchatTurnIpc(ipc, {
+    dispatchGroupChatTurn: async () => {
+      calls.push('dispatch');
+      return { status: 'completed', turnNum: 4 };
+    },
+    committeeConductor: {
+      isCommitteeCommand: async () => {
+        calls.push('route');
+        await new Promise(resolve => setTimeout(resolve, 5));
+        return true;
+      },
+      runCommitteeSession: async () => {
+        calls.push('committee');
+        return { status: 'completed', turnNum: null, meta: { committee: true } };
+      },
+    },
+  });
+
+  const result = await ipc.handlers.get('groupchat:turn')(null, { meetingId: 'm1', userInput: '赛力斯怎么样' });
+
+  assert.deepStrictEqual(result, { status: 'completed', turnNum: null, meta: { committee: true } });
+  assert.deepStrictEqual(calls, ['route', 'committee']);
+});
+
 test('converts dispatcher exceptions to existing error response', async () => {
   const ipc = createFakeIpc();
   const errors = [];

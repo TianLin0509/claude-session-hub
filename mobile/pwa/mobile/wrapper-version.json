@@ -1,0 +1,6 @@
+{
+  "versionCode": 4,
+  "versionName": "0.4.0",
+  "apkUrl": "",
+  "releaseNotes": "AI Hub long-lived wrapper. Future routine updates should ship through PWA and wrapper-config.json."
+}

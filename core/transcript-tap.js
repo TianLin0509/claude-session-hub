@@ -93,6 +93,8 @@ class ClaudeTap extends EventEmitter {
       this._bound.set(hubSessionId, {
         transcriptPath: null,
         lastText: null,
+        lastModel: null,    // T13: 最近一条 assistant message.model
+        lastUsage: null,    // T13: 最近一条 assistant message.usage
         _streamingBuf: [],
         _tail: null,
         _idleTimer: null,
@@ -164,7 +166,9 @@ class ClaudeTap extends EventEmitter {
     if (!transcriptPath || !hubSessionId) return;
     if (!this._bound.has(hubSessionId)) {
       this._bound.set(hubSessionId, {
-        transcriptPath: null, lastText: null, _streamingBuf: [], _tail: null,
+        transcriptPath: null, lastText: null,
+        lastModel: null, lastUsage: null,    // T13
+        _streamingBuf: [], _tail: null,
         _idleTimer: null, _stopReasonTimer: null, _pendingEmitText: null,
       });
     }
@@ -177,6 +181,23 @@ class ClaudeTap extends EventEmitter {
         if (obj?.type !== 'assistant' || !obj.message?.content) return;
         const content = obj.message.content;
         if (!Array.isArray(content)) return;
+        // T13（2026-06-08）：抽 message.model + message.usage 缓存到 entry，turn emit 时附给 PWA。
+        //   transcript 每行 assistant message 都带这两个字段（CC CLI 包装 anthropic API 响应原样落盘）。
+        //   model 形如 "claude-opus-4-7" / "claude-sonnet-4-5"；usage 含 input/output/cache_read/cache_creation。
+        //   tool_use 中间行的 usage 是"到目前为止"的累积值（API 行为），所以无脑覆盖到 terminal 行
+        //   就是本轮最终值，符合 PWA 卡片"显示本轮消耗"的语义。
+        if (typeof obj.message.model === 'string' && obj.message.model) {
+          entry.lastModel = obj.message.model;
+        }
+        if (obj.message.usage && typeof obj.message.usage === 'object') {
+          const u = obj.message.usage;
+          entry.lastUsage = {
+            input_tokens: u.input_tokens || 0,
+            output_tokens: u.output_tokens || 0,
+            cache_read_input_tokens: u.cache_read_input_tokens || 0,
+            cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+          };
+        }
         for (const block of content) {
           if (!block || typeof block !== 'object') continue;
           if (block.type === 'text' && typeof block.text === 'string') {
@@ -234,6 +255,9 @@ class ClaudeTap extends EventEmitter {
         text,
         completedAt: Date.now(),
         signalSource: 'stop_hook',
+        // T13: 附带 model + usage 给 PWA 显示真实模型名 + token chip
+        modelId: entry.lastModel || null,
+        usage: entry.lastUsage || null,
       });
     }
   }
@@ -265,6 +289,9 @@ class ClaudeTap extends EventEmitter {
           text: result.text,
           completedAt: Date.now(),
           signalSource: 'idle_timer_terminal',
+          // T13: 附带 model + usage 给 PWA 显示真实模型名 + token chip
+          modelId: entry.lastModel || null,
+          usage: entry.lastUsage || null,
         });
       } catch (e) {
         console.warn('[claude-tap] idle-emit read failed:', e.message);
@@ -304,6 +331,9 @@ class ClaudeTap extends EventEmitter {
           text,
           completedAt: Date.now(),
           signalSource: 'stop_reason_terminal',
+          // T13: 附带 model + usage 给 PWA 显示真实模型名 + token chip
+          modelId: entry.lastModel || null,
+          usage: entry.lastUsage || null,
         });
       } catch (e) {
         console.warn('[claude-tap] stop_reason emit read failed:', e.message);
@@ -344,7 +374,7 @@ function readFirstLine(filepath) {
   });
 }
 
-async function readCodexUserMessages(rolloutPath) {
+async function readCodexUserMessageEvents(rolloutPath) {
   let raw;
   try { raw = await fs.promises.readFile(rolloutPath, 'utf8'); }
   catch { return []; }
@@ -356,13 +386,31 @@ async function readCodexUserMessages(rolloutPath) {
     try { obj = JSON.parse(trimmed); } catch { continue; }
     if (obj?.type !== 'event_msg' || obj.payload?.type !== 'user_message') continue;
     const text = codexTextFromPayload(obj.payload).trim();
-    if (text) out.push(text);
+    if (text) {
+      out.push({
+        text,
+        submittedAt: timestampToMs(obj.timestamp) || 0,
+      });
+    }
   }
   return out;
 }
 
+async function readCodexUserMessages(rolloutPath) {
+  return (await readCodexUserMessageEvents(rolloutPath)).map(ev => ev.text);
+}
+
 function normalizePromptForCompare(text) {
   return String(text || '').replace(/\r\n/g, '\n').trim();
+}
+
+function codexPromptMatchesExpected(userMessage, expectedPrompt) {
+  const msg = normalizePromptForCompare(userMessage);
+  const expected = normalizePromptForCompare(expectedPrompt);
+  if (!msg || !expected) return false;
+  if (msg === expected) return true;
+  if (!expected.includes('A UTF-8 group-chat prompt has been saved to this file:')) return false;
+  return msg.includes(expected);
 }
 
 // 2026-05-14 道雪：多 entry 合并版 — 修群聊只拿到 [3] recap 段的 bug。
@@ -567,6 +615,14 @@ class CodexTap extends EventEmitter {
     return this._bound.get(hubSessionId)?.rolloutPath || null;
   }
 
+  async hasUserMessageSince(hubSessionId, sincePromptTs = 0) {
+    const rolloutPath = this.getRolloutPath(hubSessionId);
+    if (!rolloutPath) return false;
+    const threshold = Math.max(0, Number(sincePromptTs) || 0);
+    const events = await readCodexUserMessageEvents(rolloutPath);
+    return events.some(ev => (Number(ev.submittedAt) || 0) >= threshold);
+  }
+
   // 2026-05-04 codex equiv extract-failure debug —— 给运行时排查"为什么没 bind"用。
   //   不暴露 timer / tail object / EventEmitter listeners 等内部句柄；
   //   返回值必须 JSON 可序列化（IPC 跨进程边界）。
@@ -621,6 +677,18 @@ class CodexTap extends EventEmitter {
     try { raw = await fs.promises.readFile(entry.rolloutPath, 'utf8'); }
     catch { return { text: '', extractMode: 'no_rollout_bound', source: null }; }
     const lines = raw.split('\n');
+    let effectiveSinceTs = Math.max(0, Number(sincePromptTs) || 0);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let obj;
+      try { obj = JSON.parse(trimmed); } catch { continue; }
+      if (obj?.type !== 'event_msg' || obj.payload?.type !== 'user_message') continue;
+      const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+      if (Number.isFinite(ts) && ts >= effectiveSinceTs) {
+        effectiveSinceTs = ts;
+      }
+    }
 
     // 优先：从尾向前扫 task_complete.last_agent_message（带 sincePromptTs 过滤）
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -630,7 +698,7 @@ class CodexTap extends EventEmitter {
       try { obj = JSON.parse(line); } catch { continue; }
       if (obj?.type !== 'event_msg' || obj.payload?.type !== 'task_complete') continue;
       const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
-      if (sincePromptTs && Number.isFinite(ts) && ts < sincePromptTs) continue;
+      if (effectiveSinceTs && Number.isFinite(ts) && ts < effectiveSinceTs) continue;
       const text = obj.payload.last_agent_message;
       if (typeof text !== 'string' || !text.trim()) continue;
       return {
@@ -649,7 +717,7 @@ class CodexTap extends EventEmitter {
       try { obj = JSON.parse(trimmed); } catch { continue; }
       if (obj?.type !== 'event_msg' || obj.payload?.type !== 'agent_message') continue;
       const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
-      if (sincePromptTs && Number.isFinite(ts) && ts < sincePromptTs) continue;
+      if (effectiveSinceTs && Number.isFinite(ts) && ts < effectiveSinceTs) continue;
       const msg = obj.payload.message;
       if (typeof msg !== 'string' || !msg.trim()) continue;
       collected.push(msg.trim());
@@ -811,7 +879,7 @@ class CodexTap extends EventEmitter {
       const userMessages = (await readCodexUserMessages(rolloutPath)).map(normalizePromptForCompare);
       if (userMessages.length === 0) return;
       const matched = promptCandidates.filter(c =>
-        userMessages.some(msg => msg === c.entry.expectedPrompt)
+        userMessages.some(msg => codexPromptMatchesExpected(msg, c.entry.expectedPrompt))
       );
       if (matched.length === 1) {
         best = matched[0];
@@ -844,19 +912,54 @@ class CodexTap extends EventEmitter {
     const codexSid = extractCodexSidFromRolloutPath(rolloutPath);
     this.emit('session-bound', { hubSessionId, kind: 'codex', codexSid, rolloutPath });
 
-    // Stage 2 P2-1：Codex 多 turn 加固 — task_complete 后 3s debounce 防误判。
+    // Stage 2 P2-1：Codex 多 turn 加固 — task_complete 后短 debounce 防误判。
     //   场景：codex 一次 prompt 内可能跑多个 task（think → search → think 再 task_complete），
     //   每个 task 都会写一条 task_complete 事件。我们要的是"全部 task 完成后的最终消息"。
-    //   策略：task_complete 触发后启动 3s timer 暂存 pendingText；
-    //         若 3s 内观察到新的 task_started 事件（明确表示又起新 task），
+    //   策略：task_complete 触发后启动 timer 暂存 pendingText；
+    //         若 timer 内观察到新的 task_started 事件（明确表示又起新 task），
     //         取消 pending 并丢弃旧 text，等下一次 task_complete；
-    //         3s 静默后才真 emit 'turn-complete'。
-    const TASK_COMPLETE_DEBOUNCE_MS = 3000;
+    //         静默后才真 emit 'turn-complete'。
+    //
+    // 2026-06-07 道雪：原 3000ms 拖累 mobile PWA 体验 — 用户原话"hub 已经显示了 codex
+    //   回复，但还是没及时返回到手机"。每个简单 prompt（如"你好"、"1+1"）codex 只产生
+    //   1 个 task_complete，3s debounce 是纯 dead time。多 task 场景下 codex 写下一条
+    //   task_started 间隔通常 50-200ms（核心 event loop 同步），400ms 足够防误判。
+    //   对比 ClaudeTap stop_reason 终态 emit 只用 200ms debounce。
+    const TASK_COMPLETE_DEBOUNCE_MS = 400;
     const onLine = (obj) => {
+      // T13（2026-06-08）：turn_context 不是 event_msg，单独分发，提早抽 model 字段。
+      //   Codex CLI 每次切模型/起新 turn 都写一条 turn_context 行，含 payload.model（如 "gpt-5.5"）。
+      //   不命中 event_msg guard → 必须提前 short-circuit 单独处理。
+      if (obj?.type === 'turn_context' && obj.payload?.model) {
+        const entry2 = this._bound.get(hubSessionId);
+        if (entry2 && typeof obj.payload.model === 'string') {
+          entry2.lastModel = obj.payload.model;
+        }
+        return;
+      }
       if (obj?.type !== 'event_msg' || !obj.payload) return;
       const entry = this._bound.get(hubSessionId);
       if (!entry) return;
       const eventType = obj.payload.type;
+
+      // T13: token_count 事件含 last_token_usage（本轮）+ total_token_usage（累计）
+      //   Codex 一个 turn 内可能写多次 token_count（每个 task 完成都写），last_token_usage 是
+      //   最近一次 task 的 token，不是整 turn 累加；total_token_usage 是 session 起算的累计。
+      //   PWA 卡片"本轮消耗"语义 → 用最后一条 token_count 的 last_token_usage（最后 task 的实际值，
+      //   也是最贴近"本轮回复"的语义）。多 task 时各自的 token 看不到，但首屏体验已经足够。
+      if (eventType === 'token_count' && obj.payload.info) {
+        const info = obj.payload.info;
+        const lastU = info.last_token_usage;
+        if (lastU && typeof lastU === 'object') {
+          entry.lastUsage = {
+            input_tokens: lastU.input_tokens || 0,
+            output_tokens: lastU.output_tokens || 0,
+            cache_read_input_tokens: lastU.cached_input_tokens || 0,
+            cache_creation_input_tokens: 0,    // Codex 不区分 5m/1h，统一塞 0
+            reasoning_output_tokens: lastU.reasoning_output_tokens || 0,
+          };
+        }
+      }
 
       if (eventType === 'user_message') {
         const text = codexTextFromPayload(obj.payload).trim();
@@ -905,6 +1008,9 @@ class CodexTap extends EventEmitter {
             completedAt: Date.now(),
             durationMs: finalDuration,
             signalSource: 'task_complete',
+            // T13: 附带 model + usage 给 PWA 显示真实模型名 + token chip
+            modelId: entry.lastModel || null,
+            usage: entry.lastUsage || null,
           });
         }, TASK_COMPLETE_DEBOUNCE_MS);
       }
@@ -913,6 +1019,7 @@ class CodexTap extends EventEmitter {
     const tail = new JsonlTail(rolloutPath, onLine);
     this._bound.set(hubSessionId, {
       rolloutPath, tail, lastText: null,
+      lastModel: null, lastUsage: null,    // T13
       _pendingEmitTimer: null, _pendingText: null, _pendingDurationMs: null,
       _lastPromptSig: null,
     });
@@ -1540,6 +1647,11 @@ class TranscriptTap extends EventEmitter {
     return this._codex.getRolloutPath(hubSessionId);
   }
 
+  async hasCodexUserMessageSince(hubSessionId, sincePromptTs = 0) {
+    if (!this._codex.hasSession(hubSessionId)) return false;
+    return this._codex.hasUserMessageSince(hubSessionId, sincePromptTs);
+  }
+
   // 2026-05-04 gemini equiv：与 codex 镜像，给 groupchat-gemini-debug-state IPC handler 用。
   getGeminiDebugSnapshot() {
     return this._gemini.getDebugSnapshot();
@@ -1602,6 +1714,7 @@ module.exports = {
   JsonlTail,
   readLastAssistantMessageFromClaudeTranscript,
   readLastTerminalAssistantTextFromClaudeTranscript,
+  readCodexUserMessageEvents,
   extractCodexSidFromRolloutPath,
   extractGeminiChatIdFromSessionPath,
   extractGeminiProjectHashFromDir,

@@ -9,11 +9,13 @@
 //   sendToRenderer...），一次性抽风险高，
 //   留下次专项做（backlog）。
 //
-// 依赖注入（init）：sessionManager / cliReadyDetector
-//   transcriptTap 不在 deps —— 因为本模块的 5 个 helper 都不用。
+// 依赖注入（init）：sessionManager / cliReadyDetector / transcriptTap
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { detectHostShellTakeover } = require('./host-shell-detector.js');
-const { isClaudeFamily } = require('./ai-kinds.js');
+const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
 
 // xterm bracketed paste mode markers（标准协议，claude code TUI 完整识别）。
 //   marker 之间的内容被 CLI 视作"一次粘贴"整体处理，无需 paste-detect timing 探测，
@@ -27,6 +29,91 @@ let _deps = null;
 
 function init(deps) {
   _deps = deps;
+}
+
+function writeCodexPromptFile(sessionManager, sid, text) {
+  const session = typeof sessionManager.getSession === 'function' ? sessionManager.getSession(sid) : null;
+  const baseDir = session && session.cwd ? session.cwd : os.tmpdir();
+  const dir = path.join(baseDir, '.hub-codex-prompts');
+  fs.mkdirSync(dir, { recursive: true });
+  const safeSid = String(sid || 'session').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || 'session';
+  const fp = path.join(dir, `groupchat-${safeSid}-${Date.now()}.md`);
+  fs.writeFileSync(fp, text, 'utf8');
+  return fp;
+}
+
+async function writePromptToSession(sessionManager, sid, prompt, kind) {
+  const text = String(prompt || '');
+  if (!isCodexCliKind(kind)) {
+    sessionManager.writeToSession(sid, text);
+    return text;
+  }
+  if (/[^\x00-\x7F]/.test(text)) {
+    try {
+      const fp = writeCodexPromptFile(sessionManager, sid, text);
+      const pointerPrompt = [
+        `A UTF-8 group-chat prompt has been saved to this file: ${fp}.`,
+        'Read that file, follow its instructions exactly, and answer in the language/schema requested inside it.',
+        'If it asks for JSON, include the required JSON block exactly.',
+        'Do not summarize the prompt file; execute the prompt.',
+      ].join(' ');
+      sessionManager.writeToSession(sid, pointerPrompt);
+      return pointerPrompt;
+    } catch (e) {
+      console.warn(`[group-chat] failed to write Codex prompt file for ${sid}:`, e && e.message);
+    }
+  }
+  if (text.length <= 8000) {
+    sessionManager.writeToSession(sid, text);
+    return text;
+  }
+  const chunkSize = 2048;
+  for (let i = 0; i < text.length; i += chunkSize) {
+    sessionManager.writeToSession(sid, text.slice(i, i + chunkSize));
+    await new Promise(r => setTimeout(r, 12));
+  }
+  return text;
+}
+
+function noteSubmittedPrompt(sid, kind, actualPrompt) {
+  if (!isCodexCliKind(kind)) return;
+  const tap = _deps && _deps.transcriptTap;
+  if (!tap || typeof tap.notePrompt !== 'function') return;
+  try { tap.notePrompt(sid, kind, actualPrompt); }
+  catch (e) { console.warn(`[group-chat] transcriptTap.notePrompt failed for ${kind}(${String(sid).slice(0, 8)}):`, e && e.message); }
+}
+
+async function clearCodexInputLine(sessionManager, sid, kind) {
+  if (!isCodexCliKind(kind)) return false;
+  // Codex can keep an unsubmitted prompt in the input box after zero-echo /
+  // timeout. Clear the line before an automatic rewrite so the next prompt
+  // does not concatenate with the previous file-pointer prompt.
+  sessionManager.writeToSession(sid, '\x15'); // Ctrl+U
+  await new Promise(r => setTimeout(r, 80));
+  return true;
+}
+
+function writeSubmitSignal(sessionManager, sid, kind, attempt = 0) {
+  if (!isCodexCliKind(kind)) {
+    sessionManager.writeToSession(sid, '\r');
+    return 'cr';
+  }
+  const variants = ['\r', '\n', '\r\n'];
+  const signal = variants[Math.max(0, Number(attempt) || 0) % variants.length];
+  sessionManager.writeToSession(sid, signal);
+  if (signal === '\n') return 'lf';
+  if (signal === '\r\n') return 'crlf';
+  return 'cr';
+}
+
+async function writeSubmitFallbackSignals(sessionManager, sid, kind, tries = 1, gapMs = 150) {
+  const total = isCodexCliKind(kind) ? Math.max(1, Number(tries) || 1) : 1;
+  for (let i = 0; i < total; i += 1) {
+    writeSubmitSignal(sessionManager, sid, kind, i);
+    if (i < total - 1) {
+      await new Promise(r => setTimeout(r, gapMs));
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +159,11 @@ async function sendToPty(sid, prompt, kind) {
   if (!sessionManager.getGroupChatReady(sid)) {
     const ready = await waitCliReady(sid, kind, 60000);
     // CLI 完全没启动 → prompt 都没写，可以正当放弃
-    if (!ready) return false;
+    if (!ready) {
+      const buf = sessionManager.getSessionBuffer(sid) || '';
+      console.warn(`[group-chat] cli not ready for ${kind}(${sid.slice(0, 8)}) after 60s; bufLen=${buf.length}; tail=${JSON.stringify(buf.slice(-160))}`);
+      return false;
+    }
     sessionManager.setGroupChatReady(sid, true);
   }
 
@@ -91,7 +182,12 @@ async function sendToPty(sid, prompt, kind) {
     // 500ms 给 Ink useEffect 消化 paste 块，BP_END 紧贴 \r 时 Ink 把 \r 当 paste
     //   尾巴在内部某些版本下被忽略；间隔 500ms 后 \r 是干净提交信号。
     await new Promise(r => setTimeout(r, 500));
-    sessionManager.writeToSession(sid, '\r');
+    for (let i = 0; i < ENTER_RETRY_TRIES; i += 1) {
+      sessionManager.writeToSession(sid, '\r');
+      if (i < ENTER_RETRY_TRIES - 1) {
+        await new Promise(r => setTimeout(r, ENTER_RETRY_GAP_MS));
+      }
+    }
 
     // 2026-05-05 fix（虚警 bug）：单点 500ms 后查一次 lastActivity 变化，对 claude
     //   慢启动场景误判 stuck（实测：\r 后 claude TUI 渲染 user message + 启 streaming
@@ -144,7 +240,9 @@ async function sendToPty(sid, prompt, kind) {
 
   // 第 1 次 write：仅 prompt（不带 '\r'）
   const beforeWrite = sessionManager.getGroupChatLastActivity(sid);
-  sessionManager.writeToSession(sid, prompt);
+  await clearCodexInputLine(sessionManager, sid, kind);
+  const actualPrompt = await writePromptToSession(sessionManager, sid, prompt, kind);
+  noteSubmittedPrompt(sid, kind, actualPrompt);
 
   // 自适应安静期等待：每 50ms 检查 lastActivity，
   //   连续 250ms 无变化 → CLI paste-detect timer 已 fire，安全发 Enter
@@ -174,12 +272,14 @@ async function sendToPty(sid, prompt, kind) {
   // 决策：echo 正常 → 发 1 次 \r；零 echo → 发 3 次 \r（间隔 150ms），让 paste-end
   //   状态机被卡在 throbbing/工具调用中的 CLI 也能"看见" Enter。
   const echoSeen = lastSeen !== beforeWrite;
-  if (echoSeen) {
-    sessionManager.writeToSession(sid, '\r');
+  if (isCodexCliKind(kind)) {
+    await writeSubmitFallbackSignals(sessionManager, sid, kind, ENTER_RETRY_TRIES, ENTER_RETRY_GAP_MS);
+  } else if (echoSeen) {
+    writeSubmitSignal(sessionManager, sid, kind, 0);
   } else {
-    console.warn(`[group-chat] zero-echo for ${kind}(${sid.slice(0, 8)}) — sending ${ENTER_RETRY_TRIES}x \\r as belt-and-suspenders submit (prompt already in PTY stdin, MUST commit)`);
+    console.warn(`[group-chat] zero-echo for ${kind}(${sid.slice(0, 8)}) — sending ${ENTER_RETRY_TRIES} submit fallback signals (prompt already in PTY stdin, MUST commit)`);
     for (let i = 0; i < ENTER_RETRY_TRIES; i++) {
-      sessionManager.writeToSession(sid, '\r');
+      writeSubmitSignal(sessionManager, sid, kind, i);
       if (i < ENTER_RETRY_TRIES - 1) {
         await new Promise(r => setTimeout(r, ENTER_RETRY_GAP_MS));
       }
@@ -264,11 +364,13 @@ async function _autoRecoverSend({ sid, kind, prompt, echoSeen, timing }) {
   const { sessionManager } = _deps;
   const before = sessionManager.getGroupChatLastActivity(sid);
   if (echoSeen) {
-    sessionManager.writeToSession(sid, '\r');
+    writeSubmitSignal(sessionManager, sid, kind, 1);
   } else {
-    sessionManager.writeToSession(sid, prompt);
+    await clearCodexInputLine(sessionManager, sid, kind);
+    const actualPrompt = await writePromptToSession(sessionManager, sid, prompt, kind);
+    noteSubmittedPrompt(sid, kind, actualPrompt);
     await new Promise(r => setTimeout(r, (timing && timing.ENTER_RETRY_GAP_MS) || 150));
-    sessionManager.writeToSession(sid, '\r');
+    writeSubmitSignal(sessionManager, sid, kind, 1);
   }
   await new Promise(r => setTimeout(r, (timing && timing.POST_ENTER_VERIFY_MS) || 500));
   const after = sessionManager.getGroupChatLastActivity(sid);
@@ -294,16 +396,20 @@ async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing }) 
 
   const before = sessionManager.getGroupChatLastActivity(sid);
   let mode;
+  const submitTries = isCodexCliKind(kind) ? 3 : 1;
+  const rewriteSettleMs = isCodexCliKind(kind) ? 500 : ((timing && timing.ENTER_RETRY_GAP_MS) || 150);
   if (inInputBox) {
     mode = 'enter_only';
-    sessionManager.writeToSession(sid, '\r');
+    await writeSubmitFallbackSignals(sessionManager, sid, kind, submitTries, (timing && timing.ENTER_RETRY_GAP_MS) || 150);
   } else {
     mode = 'rewrite_full';
-    sessionManager.writeToSession(sid, prompt);
-    await new Promise(r => setTimeout(r, (timing && timing.ENTER_RETRY_GAP_MS) || 150));
-    sessionManager.writeToSession(sid, '\r');
+    await clearCodexInputLine(sessionManager, sid, kind);
+    const actualPrompt = await writePromptToSession(sessionManager, sid, prompt, kind);
+    noteSubmittedPrompt(sid, kind, actualPrompt);
+    await new Promise(r => setTimeout(r, rewriteSettleMs));
+    await writeSubmitFallbackSignals(sessionManager, sid, kind, submitTries, (timing && timing.ENTER_RETRY_GAP_MS) || 150);
   }
-  await new Promise(r => setTimeout(r, (timing && timing.POST_ENTER_VERIFY_MS) || 500));
+  await new Promise(r => setTimeout(r, isCodexCliKind(kind) ? 1500 : ((timing && timing.POST_ENTER_VERIFY_MS) || 500)));
   const after = sessionManager.getGroupChatLastActivity(sid);
   const verified = after !== before;
   void kind;
@@ -330,6 +436,7 @@ module.exports = {
   extractStreamingText,
   cleanBufLen,
   checkHostShellTakeover,
+  _private: { writePromptToSession, writeSubmitSignal, clearCodexInputLine },
   _autoRecoverSend,           // 新增（测试 + 同模块调用）
   resendCurrentPrompt,         // 新增（main.js IPC handler 调用）
 };

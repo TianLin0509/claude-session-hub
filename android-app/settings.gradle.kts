@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "CodexHubMobile"
+rootProject.name = "HubMobile"
 include(":app")

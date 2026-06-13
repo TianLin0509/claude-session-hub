@@ -23,6 +23,7 @@ function createPreviewPanelController({
   let previewIsFullscreen = false;
   let previewSplitRatio = 0.5;
   let previewZoomLevel = 1.0;
+  let previewRestoreToken = 0;
 
   function getActiveContextKey() {
     const sessionId = getActiveSessionId && getActiveSessionId();
@@ -44,6 +45,14 @@ function createPreviewPanelController({
     previewPanelEl.style.flex = String(1 - r);
   }
 
+  function resetPreviewLayoutEffects() {
+    for (const id of ['terminal-panel', 'meeting-room-panel']) {
+      const el = document.getElementById(id);
+      if (el) el.style.flex = '';
+    }
+    previewPanelEl.style.flex = '';
+  }
+
   function setPreviewZoom(level) {
     previewZoomLevel = Math.max(0.25, Math.min(5.0, level));
     previewBodyEl.style.zoom = previewZoomLevel;
@@ -56,7 +65,33 @@ function createPreviewPanelController({
     setPreviewZoom(1.0);
   }
 
-  function savePreviewState() {
+  async function capturePreviewScroll() {
+    const wv = previewBodyEl.querySelector('webview');
+    if (wv && typeof wv.executeJavaScript === 'function') {
+      try {
+        const pos = await wv.executeJavaScript(`(() => {
+          const de = document.documentElement || {};
+          const body = document.body || {};
+          return {
+            x: window.scrollX || de.scrollLeft || body.scrollLeft || 0,
+            y: window.scrollY || de.scrollTop || body.scrollTop || 0
+          };
+        })()`);
+        return {
+          type: 'webview',
+          x: Math.max(0, Number(pos && pos.x) || 0),
+          y: Math.max(0, Number(pos && pos.y) || 0),
+        };
+      } catch {}
+    }
+    return {
+      type: 'body',
+      x: Math.max(0, Number(previewBodyEl.scrollLeft) || 0),
+      y: Math.max(0, Number(previewBodyEl.scrollTop) || 0),
+    };
+  }
+
+  async function savePreviewState() {
     const key = getActiveContextKey();
     if (!key || !currentPreviewPath) return;
     sessionPreviewStates.set(key, {
@@ -64,10 +99,12 @@ function createPreviewPanelController({
       isFullscreen: previewIsFullscreen,
       zoomLevel: previewZoomLevel,
       splitRatio: previewSplitRatio,
+      scroll: await capturePreviewScroll(),
     });
   }
 
   function clearPreviewUI() {
+    previewRestoreToken += 1;
     previewPanelEl.style.display = 'none';
     previewPanelEl.classList.remove('preview-split');
     previewSplitterEl.style.display = 'none';
@@ -75,11 +112,12 @@ function createPreviewPanelController({
     previewIsFullscreen = false;
     previewSplitRatio = 0.5;
     previewSourcePanel = null;
-    applySplitWidths(null);
+    previewBodyEl.innerHTML = '';
+    resetPreviewLayoutEffects();
     resetPreviewZoom();
   }
 
-  function restorePreviewForContext(key) {
+  function restorePreviewForContextLegacy(key) {
     const state = sessionPreviewStates.get(key);
     if (!state) return;
     previewIsFullscreen = state.isFullscreen;
@@ -94,27 +132,70 @@ function createPreviewPanelController({
     });
   }
 
+  async function restorePreviewForContext(key) {
+    const state = sessionPreviewStates.get(key);
+    if (!state) return;
+    previewIsFullscreen = state.isFullscreen;
+    previewSplitRatio = state.splitRatio || 0.5;
+    await openPreviewPanel(state.path, {
+      zoomLevel: state.zoomLevel,
+      scroll: state.scroll,
+      preserveZoom: true,
+    });
+    const btn = document.getElementById('preview-toggle-layout');
+    if (btn) {
+      btn.textContent = previewIsFullscreen ? 'Split' : 'Full';
+      btn.title = previewIsFullscreen ? '并列预览' : '全屏预览';
+    }
+  }
+
   function setPreviewBodyLayout(alignItems, justifyContent) {
     previewBodyEl.style.alignItems = alignItems;
     previewBodyEl.style.justifyContent = justifyContent;
   }
 
-  function makeWebview(src) {
+  function restoreBodyScroll(scroll) {
+    if (!scroll) return;
+    requestAnimationFrame(() => {
+      previewBodyEl.scrollLeft = Math.max(0, Number(scroll.x) || 0);
+      previewBodyEl.scrollTop = Math.max(0, Number(scroll.y) || 0);
+    });
+  }
+
+  function restoreWebviewScroll(wv, scroll, token) {
+    if (!scroll || !wv || typeof wv.executeJavaScript !== 'function') return;
+    const x = Math.max(0, Number(scroll.x) || 0);
+    const y = Math.max(0, Number(scroll.y) || 0);
+    const js = `window.scrollTo(${JSON.stringify(x)}, ${JSON.stringify(y)});`;
+    const apply = () => {
+      if (token !== previewRestoreToken) return;
+      try { wv.executeJavaScript(js); } catch {}
+    };
+    try { wv.addEventListener('dom-ready', apply, { once: true }); } catch {}
+    try { wv.addEventListener('did-finish-load', apply, { once: true }); } catch {}
+    setTimeout(apply, 80);
+    setTimeout(apply, 300);
+  }
+
+  function makeWebview(src, scroll, token) {
     const wv = document.createElement('webview');
     wv.src = src;
     wv.style.cssText = 'width:100%;height:100%;border:none;';
     setPreviewBodyLayout('stretch', 'stretch');
     previewBodyEl.appendChild(wv);
+    restoreWebviewScroll(wv, scroll, token);
   }
 
   function showPreviewError(result) {
     previewBodyEl.innerHTML = `<div class="preview-markdown" style="color:var(--text-secondary)">Failed to load: ${result.error}</div>`;
   }
 
-  async function openPreviewPanel(filePath) {
+  async function openPreviewPanel(filePath, options = {}) {
     filePath = filePath.replace(/[\r\n]+/g, '').trim();
+    const token = ++previewRestoreToken;
     currentPreviewPath = filePath;
-    resetPreviewZoom();
+    if (options.preserveZoom) setPreviewZoom(options.zoomLevel || 1.0);
+    else resetPreviewZoom();
     const isUrl = /^https?:\/\//i.test(filePath);
     const fileName = isUrl ? filePath.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] : filePath.replace(/^.*[\\/]/, '');
     previewTitleEl.textContent = fileName;
@@ -163,26 +244,28 @@ function createPreviewPanelController({
     previewBodyEl.innerHTML = '';
 
     if (isUrl) {
-      makeWebview(filePath);
+      makeWebview(filePath, options.scroll, token);
       return;
     }
 
     const ext = filePath.replace(/^.*\./, '.').toLowerCase();
 
     if (ext === '.html' || ext === '.htm') {
-      makeWebview('file:///' + filePath.replace(/\\/g, '/'));
+      makeWebview('file:///' + filePath.replace(/\\/g, '/'), options.scroll, token);
     } else if (ext === '.md' || ext === '.markdown') {
       const result = await ipcRenderer.invoke('read-file', filePath);
       if (result.error) { showPreviewError(result); return; }
       const html = DOMPurify.sanitize(marked.parse(result.content));
       setPreviewBodyLayout('flex-start', 'flex-start');
       previewBodyEl.innerHTML = `<div class="preview-markdown">${html}</div>`;
+      restoreBodyScroll(options.scroll);
     } else if (ext === '.svg' || ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.gif' || ext === '.webp' || ext === '.bmp') {
       const fileUrl = 'file:///' + filePath.replace(/\\/g, '/');
       setPreviewBodyLayout('center', 'center');
       previewBodyEl.innerHTML = `<img src="${fileUrl}" class="preview-image">`;
+      restoreBodyScroll(options.scroll);
     } else if (ext === '.pdf') {
-      makeWebview('file:///' + filePath.replace(/\\/g, '/'));
+      makeWebview('file:///' + filePath.replace(/\\/g, '/'), options.scroll, token);
     } else if (ext === '.csv' || ext === '.tsv') {
       const result = await ipcRenderer.invoke('read-file', filePath);
       if (result.error) { showPreviewError(result); return; }
@@ -202,6 +285,7 @@ function createPreviewPanelController({
       tableHtml += '</table></div>';
       setPreviewBodyLayout('flex-start', 'flex-start');
       previewBodyEl.innerHTML = tableHtml;
+      restoreBodyScroll(options.scroll);
     } else {
       const result = await ipcRenderer.invoke('read-file', filePath);
       if (result.error) { showPreviewError(result); return; }
@@ -214,6 +298,7 @@ function createPreviewPanelController({
       const numbered = lines.map((line, i) => `<span class="preview-line-num">${i + 1}</span>${line}`).join('\n');
       setPreviewBodyLayout('flex-start', 'flex-start');
       previewBodyEl.innerHTML = `<pre class="preview-code">${numbered}</pre>`;
+      restoreBodyScroll(options.scroll);
     }
   }
 
@@ -227,7 +312,7 @@ function createPreviewPanelController({
     currentPreviewPath = null;
     previewIsFullscreen = false;
     previewSplitRatio = 0.5;
-    applySplitWidths(null);
+    resetPreviewLayoutEffects();
     resetPreviewZoom();
 
     if (previewSourcePanel) {

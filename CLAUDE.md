@@ -90,6 +90,15 @@ C:\Users\lintian\claude-session-hub\node_modules\electron\dist\electron.exe C:\t
 
 ### 硬性规则
 
+0. **从 Claude Code 会话里 spawn 测试 Hub 必须先剥离嵌套 env**（血泪 2026-06-11，排查 1.5h）：
+   ```powershell
+   Remove-Item env:CLAUDECODE, env:CLAUDE_CODE_CHILD_SESSION, env:CLAUDE_CODE_ENTRYPOINT, `
+     env:CLAUDE_CODE_SESSION_ID, env:CLAUDE_HUB_PORT, env:CLAUDE_HUB_TOKEN, env:CLAUDE_HUB_SESSION_ID -ErrorAction SilentlyContinue
+   ```
+   否则测试 Hub spawn 的 claude 继承 `CLAUDECODE=1` 自认嵌套子会话 → **不写 transcript jsonl**（/exit 都不 flush）→
+   transcript-tap 拿不到 turn 文本 → 手机 PWA / 远程模式收不到回复；且 `CLAUDE_HUB_PORT` 残留会让 stop hook 投给错误的 Hub。
+   生产 Hub 从桌面快捷方式启动无此问题。
+
 1. **禁止 `npx electron`**：junction 目录下 npx 会绕到全局 npm 的 electron 安装，抛 "Electron failed to install correctly"。必须直调 `<hub-dir>/node_modules/electron/dist/electron.exe`
 
 2. **禁止 `npm install` 在测试副本里**：每次装 742MB 纯浪费。唯一正解是 `cmd /c mklink /J <worktree>/node_modules <main>/node_modules`。副作用：稳定路径让 Windows 防火墙/Defender 不会把每次测试的 electron.exe 当新未知程序

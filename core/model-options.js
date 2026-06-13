@@ -51,12 +51,14 @@ const MODEL_OPTIONS_BY_KIND = {
     { id: 'kimi-k2.5', label: 'Kimi K2.5' },
   ],
   qwen: [
+    { id: 'qwen3.7-max',  label: 'Qwen 3.7 Max' },
+    { id: 'qwen3.7-plus', label: 'Qwen 3.7 Plus' },
     { id: 'qwen3.6-plus', label: 'Qwen 3.6 Plus' },
   ],
 };
 
 const DEFAULT_MODEL_BY_KIND = {
-  claude: 'claude-opus-4-7[1m]',
+  claude: 'claude-opus-4-8[1m]',
   gemini: 'gemini-3-pro-preview',
   codex: 'gpt-5.5',
   deepseek: 'deepseek-v4-pro[1m]',

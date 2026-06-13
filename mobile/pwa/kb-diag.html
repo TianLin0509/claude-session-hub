@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- 故意不加 interactive-widget，独立小页面看默认行为；想测带的话改成 ?iw=1 -->
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#000">
+<title>kb-diag</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { background: #000; color: #f5f5f7; font-family: -apple-system, "PingFang SC", system-ui, sans-serif; height: 100dvh; overflow: hidden; }
+  body { display: flex; flex-direction: column; padding-top: max(env(safe-area-inset-top), 24px); }
+
+  /* 顶部固定 HUD: 实时指标 */
+  .hud {
+    flex-shrink: 0;
+    padding: 10px 12px;
+    background: rgba(20, 20, 30, .92);
+    border-bottom: 1px solid #38383a;
+    font-family: "SF Mono", "Consolas", monospace;
+    font-size: 11px;
+    line-height: 1.7;
+    backdrop-filter: blur(8px);
+  }
+  .hud .title { font-size: 12px; font-weight: 700; color: #0a84ff; margin-bottom: 6px; letter-spacing: .04em; }
+  .hud .row { display: flex; justify-content: space-between; gap: 8px; }
+  .hud .k { color: #8e8e93; }
+  .hud .v { color: #f5f5f7; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .hud .v.delta-pos { color: #ff9f0a; }
+  .hud .v.delta-zero { color: #34c759; }
+  .hud .hr { height: 1px; background: #38383a; margin: 6px 0; }
+  .hud .note { color: #8e8e93; font-size: 10px; margin-top: 4px; line-height: 1.45; }
+
+  /* 中部内容: textarea + 各种参考线 */
+  .body {
+    flex: 1; min-height: 0; overflow-y: auto;
+    padding: 16px 14px 100px; /* 底部留空给红色对照条 */
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .info {
+    background: #1c1c1e; border: 1px solid #38383a; border-radius: 10px;
+    padding: 12px 14px; font-size: 13px; line-height: 1.55;
+  }
+  .info code { font-family: "SF Mono", monospace; color: #0a84ff; }
+
+  textarea {
+    width: 100%; min-height: 96px;
+    background: #1c1c1e; color: #f5f5f7;
+    border: 2px solid #0a84ff; border-radius: 12px;
+    padding: 12px 14px; font-size: 16px; font-family: inherit;
+    outline: none; resize: none;
+  }
+  textarea:focus { border-color: #34c759; }
+
+  /* 100dvh / 100lvh / 100svh 对比标尺 */
+  .ruler { position: relative; height: 60px; background: #1c1c1e; border: 1px solid #38383a; border-radius: 10px; padding: 8px 10px; font-size: 11px; }
+  .ruler .bar { position: absolute; left: 8px; right: 8px; height: 4px; border-radius: 2px; }
+  .ruler .bar.dvh { background: #34c759; top: 24px; }
+  .ruler .bar.lvh { background: #ff9f0a; top: 36px; }
+  .ruler .bar.svh { background: #ff3b30; top: 48px; }
+  .ruler .lbl { font-family: "SF Mono", monospace; color: #aeaeb2; }
+
+  /* 测试按钮 */
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn { flex: 1; min-width: 80px; padding: 9px 6px; background: #1c1c1e; color: #f5f5f7; border: 1px solid #38383a; border-radius: 8px; font-size: 12px; font-family: inherit; cursor: pointer; }
+  .btn.primary { background: #0a84ff; border-color: #0a84ff; }
+  .btn:active { opacity: .7; }
+
+  /* 底部固定红色对照条: position:fixed bottom:0 */
+  .anchor {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: env(safe-area-inset-bottom);
+    height: 44px;
+    background: linear-gradient(90deg, #ff3b30 0%, #ff9f0a 100%);
+    color: #fff; font-weight: 700; font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 10;
+    box-shadow: 0 -4px 16px rgba(255, 59, 48, .35);
+  }
+
+  /* 事件日志 */
+  .log {
+    background: #000; border: 1px solid #38383a; border-radius: 8px;
+    padding: 8px 10px; max-height: 140px; overflow-y: auto;
+    font-family: "SF Mono", monospace; font-size: 10px; line-height: 1.55;
+  }
+  .log .line { color: #aeaeb2; }
+  .log .line .ts { color: #6e6e73; margin-right: 6px; }
+  .log .line.r { color: #34c759; }
+  .log .line.g { color: #0a84ff; }
+  .log .line.f { color: #ff9f0a; }
+</style>
+</head>
+<body>
+
+<div class="hud">
+  <div class="title">⌨️ KEYBOARD DIAG · 100ms 实时</div>
+  <div class="row"><span class="k">window.innerHeight</span><span class="v" id="ih">-</span></div>
+  <div class="row"><span class="k">vv.height</span><span class="v" id="vvh">-</span></div>
+  <div class="row"><span class="k">vv.offsetTop</span><span class="v" id="vvo">-</span></div>
+  <div class="row"><span class="k">vv.pageTop</span><span class="v" id="vvp">-</span></div>
+  <div class="hr"></div>
+  <div class="row"><span class="k">100dvh →</span><span class="v" id="dvh">-</span></div>
+  <div class="row"><span class="k">100lvh →</span><span class="v" id="lvh">-</span></div>
+  <div class="row"><span class="k">100svh →</span><span class="v" id="svh">-</span></div>
+  <div class="hr"></div>
+  <div class="row"><span class="k">Δ kbHeight (vv-ih)</span><span class="v" id="kh">-</span></div>
+  <div class="row"><span class="k">virtualKeyboard API</span><span class="v" id="vk">-</span></div>
+  <div class="note" id="note"></div>
+</div>
+
+<div class="body">
+  <div class="info">
+    <b>判定方法</b>：<br>
+    1. 看 <code>kbHeight = vv.height - innerHeight</code>：弹键盘后变成大负数 = 键盘高度<br>
+    2. 看 <code>100dvh</code>：弹键盘后是否变小 = <code>interactive-widget</code> 是否生效<br>
+    3. 红色对照条用 <code>position: fixed; bottom: 0</code>：被键盘盖住 = layout viewport 没缩；浮起来 = 浏览器自己处理了<br>
+    4. 点击下面 textarea 让键盘弹起，观察数值变化
+  </div>
+
+  <textarea id="ta" placeholder="点这里弹键盘…输入任意字符…"></textarea>
+
+  <div class="ruler">
+    <div class="lbl">100dvh / 100lvh / 100svh 当前像素值条形对照（视觉比例）</div>
+    <div class="bar dvh" id="bar-dvh"></div>
+    <div class="bar lvh" id="bar-lvh"></div>
+    <div class="bar svh" id="bar-svh"></div>
+  </div>
+
+  <div class="btns">
+    <button class="btn primary" id="btn-focus">focus textarea</button>
+    <button class="btn" id="btn-blur">blur</button>
+    <button class="btn" id="btn-vk-on">vk overlay=true</button>
+    <button class="btn" id="btn-vk-off">vk overlay=false</button>
+    <button class="btn" id="btn-clear">clear log</button>
+  </div>
+
+  <div class="info">
+    <b>事件日志</b>（visualViewport.resize / scroll / focusin / focusout / window.resize）：
+  </div>
+  <div class="log" id="log"></div>
+
+  <div class="info" style="font-size: 11px; color: #8e8e93">
+    UA: <code id="ua"></code>
+  </div>
+</div>
+
+<div class="anchor">⬇ fixed bottom:0 锚条（键盘弹起后看是否被盖住）</div>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const logEl = $('log');
+  const MAX_LOG = 40;
+  function log(kind, msg) {
+    const div = document.createElement('div');
+    div.className = 'line ' + (kind || '');
+    const ts = new Date().toTimeString().slice(0, 8);
+    div.innerHTML = '<span class="ts">' + ts + '</span>' + msg;
+    logEl.insertBefore(div, logEl.firstChild);
+    while (logEl.children.length > MAX_LOG) logEl.removeChild(logEl.lastChild);
+  }
+
+  function readDvh(unit) {
+    // 通过创建临时元素读取 100dvh 等的实际像素值
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;top:0;left:-9999px;width:1px;height:100' + unit + ';pointer-events:none;visibility:hidden';
+    document.body.appendChild(probe);
+    const h = probe.getBoundingClientRect().height;
+    document.body.removeChild(probe);
+    return h;
+  }
+
+  let lastIh = -1, lastVvh = -1, lastDvh = -1;
+  function tick() {
+    const ih = window.innerHeight;
+    const vv = window.visualViewport;
+    const vvh = vv ? Math.round(vv.height) : -1;
+    const vvo = vv ? Math.round(vv.offsetTop) : -1;
+    const vvp = vv ? Math.round(vv.pageTop) : -1;
+    const dvh = Math.round(readDvh('dvh'));
+    const lvh = Math.round(readDvh('lvh'));
+    const svh = Math.round(readDvh('svh'));
+    const kh = vvh > 0 ? (ih - vvh) : 0;
+
+    $('ih').textContent = ih + 'px';
+    $('vvh').textContent = vvh + 'px';
+    $('vvo').textContent = vvo + 'px';
+    $('vvp').textContent = vvp + 'px';
+    $('dvh').textContent = dvh + 'px';
+    $('lvh').textContent = lvh + 'px';
+    $('svh').textContent = svh + 'px';
+    $('kh').textContent = (kh > 0 ? '+' : '') + kh + 'px (>0 = 键盘高度)';
+    $('kh').className = 'v ' + (kh > 50 ? 'delta-pos' : 'delta-zero');
+
+    // 条形对照: 按 lvh 为 100% 比例画
+    if (lvh > 0) {
+      $('bar-dvh').style.width = Math.round(dvh / lvh * 100) + '%';
+      $('bar-lvh').style.width = '100%';
+      $('bar-svh').style.width = Math.round(svh / lvh * 100) + '%';
+    }
+
+    // 判定提示
+    let note = '';
+    if (kh > 50 && dvh < lvh - 50) note = '✅ interactive-widget 生效：dvh 跟着键盘收缩了';
+    else if (kh > 50 && Math.abs(dvh - lvh) < 20) note = '❌ interactive-widget 不生效：dvh 没收缩 → fixed bottom 会被盖；需要 JS 兜底';
+    else if (kh > 50) note = '⚠️ 数值反常，看条形对照';
+    else if (vv && Math.abs(vv.height - ih) < 5) note = '键盘未弹起或浏览器把键盘视作 OS overlay';
+    $('note').textContent = note;
+
+    // 边沿触发日志
+    if (lastIh !== -1) {
+      if (Math.abs(ih - lastIh) > 30) log('g', 'innerHeight: ' + lastIh + ' → ' + ih + ' (Δ' + (ih - lastIh) + ')');
+      if (vvh > 0 && Math.abs(vvh - lastVvh) > 30) log('r', 'vv.height: ' + lastVvh + ' → ' + vvh + ' (Δ' + (vvh - lastVvh) + ')');
+      if (Math.abs(dvh - lastDvh) > 30) log('f', '100dvh: ' + lastDvh + ' → ' + dvh + ' (Δ' + (dvh - lastDvh) + ')');
+    }
+    lastIh = ih; lastVvh = vvh; lastDvh = dvh;
+  }
+
+  // virtualKeyboard API 状态
+  $('vk').textContent = ('virtualKeyboard' in navigator)
+    ? ('available, overlaysContent=' + navigator.virtualKeyboard.overlaysContent)
+    : '不可用';
+
+  $('ua').textContent = navigator.userAgent;
+
+  // 事件监听
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => log('r', 'vv.resize → h=' + Math.round(visualViewport.height) + ' top=' + Math.round(visualViewport.offsetTop)));
+    window.visualViewport.addEventListener('scroll', () => log('r', 'vv.scroll → top=' + Math.round(visualViewport.offsetTop)));
+  } else {
+    log('f', '⚠️ window.visualViewport 不存在');
+  }
+  window.addEventListener('resize', () => log('g', 'window.resize → innerHeight=' + window.innerHeight));
+  document.addEventListener('focusin', (e) => log('', 'focusin: ' + (e.target.tagName || '?')));
+  document.addEventListener('focusout', (e) => log('', 'focusout: ' + (e.target.tagName || '?')));
+
+  // 按钮
+  $('btn-focus').addEventListener('click', () => $('ta').focus());
+  $('btn-blur').addEventListener('click', () => $('ta').blur());
+  $('btn-vk-on').addEventListener('click', () => {
+    if ('virtualKeyboard' in navigator) {
+      navigator.virtualKeyboard.overlaysContent = true;
+      log('g', 'set virtualKeyboard.overlaysContent = true');
+      $('vk').textContent = 'available, overlaysContent=true';
+    } else log('f', 'no virtualKeyboard API');
+  });
+  $('btn-vk-off').addEventListener('click', () => {
+    if ('virtualKeyboard' in navigator) {
+      navigator.virtualKeyboard.overlaysContent = false;
+      log('g', 'set virtualKeyboard.overlaysContent = false');
+      $('vk').textContent = 'available, overlaysContent=false';
+    } else log('f', 'no virtualKeyboard API');
+  });
+  $('btn-clear').addEventListener('click', () => { logEl.innerHTML = ''; });
+
+  // 100ms tick
+  tick();
+  setInterval(tick, 100);
+  log('g', 'diag started');
+})();
+</script>
+</body>
+</html>

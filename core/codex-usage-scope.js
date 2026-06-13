@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
@@ -22,6 +23,76 @@ function normalizePath(value) {
 
 function normalizeKey(value) {
   return normalizePath(value).toLowerCase();
+}
+
+function parseDateMs(value) {
+  if (!value) return 0;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function base64UrlJson(value) {
+  try {
+    const part = String(value || '').split('.')[1];
+    if (!part) return {};
+    const normalized = part.replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(Buffer.from(normalized, 'base64').toString('utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function findStringByKey(value, keyName, depth = 0) {
+  if (!value || typeof value !== 'object' || depth > 6) return '';
+  for (const [key, child] of Object.entries(value)) {
+    if (key === keyName && typeof child === 'string' && child.trim()) return child.trim();
+    const nested = findStringByKey(child, keyName, depth + 1);
+    if (nested) return nested;
+  }
+  return '';
+}
+
+function normalizeAccountKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function readCodexAuthInfo(home) {
+  const authPath = path.join(home, 'auth.json');
+  try {
+    const stat = fs.statSync(authPath);
+    const raw = JSON.parse(fs.readFileSync(authPath, 'utf8').replace(/^\uFEFF/, ''));
+    const idPayload = base64UrlJson(raw && raw.tokens && raw.tokens.id_token);
+    const accountId = findStringByKey(raw, 'account_id') || findStringByKey(raw, 'accountId') || '';
+    const email = typeof idPayload.email === 'string' ? idPayload.email.trim() : '';
+    const name = typeof idPayload.name === 'string' ? idPayload.name.trim() : '';
+    const subject = typeof idPayload.sub === 'string' ? idPayload.sub.trim() : '';
+    const lastRefreshMs = parseDateMs(raw && raw.last_refresh);
+    const mtimeMs = stat && Number.isFinite(stat.mtimeMs) ? stat.mtimeMs : 0;
+    const accountKey = normalizeAccountKey(accountId || subject || email);
+    return {
+      authPath,
+      accountId,
+      accountEmail: email,
+      accountName: name,
+      accountSubject: subject,
+      accountKey,
+      authLastRefreshMs: lastRefreshMs,
+      authMtimeMs: mtimeMs,
+      authSinceMs: lastRefreshMs || mtimeMs || 0,
+    };
+  } catch {
+    return {
+      authPath,
+      accountId: '',
+      accountEmail: '',
+      accountName: '',
+      accountSubject: '',
+      accountKey: '',
+      authLastRefreshMs: 0,
+      authMtimeMs: 0,
+      authSinceMs: 0,
+    };
+  }
 }
 
 function resolveSubscriptionProfile(config, homeDir) {
@@ -62,6 +133,8 @@ function resolveCodexUsageScope(config = {}, opts = {}) {
   const profile = resolveSubscriptionProfile(config, homeDir);
   const home = profile.home || path.join(homeDir, '.codex');
   const sessionsRoot = path.join(home, 'sessions');
+  const auth = readCodexAuthInfo(home);
+  const authScope = auth.accountKey ? `:auth:${auth.accountKey}` : '';
   return {
     provider: 'codex',
     backend,
@@ -69,7 +142,15 @@ function resolveCodexUsageScope(config = {}, opts = {}) {
     profileLabel: profile.label,
     home,
     sessionsRoot,
-    scopeKey: `subscription:${profile.id}:${normalizeKey(sessionsRoot)}`,
+    accountId: auth.accountId,
+    accountEmail: auth.accountEmail,
+    accountName: auth.accountName,
+    accountSubject: auth.accountSubject,
+    authPath: auth.authPath,
+    authLastRefreshMs: auth.authLastRefreshMs,
+    authMtimeMs: auth.authMtimeMs,
+    authSinceMs: auth.authSinceMs,
+    scopeKey: `subscription:${profile.id}:${normalizeKey(sessionsRoot)}${authScope}`,
   };
 }
 
@@ -89,6 +170,10 @@ function attachCodexUsageScope(data, scope) {
     backend: scope.backend,
     profileId: scope.profileId,
     profileLabel: scope.profileLabel,
+    accountId: scope.accountId,
+    accountEmail: scope.accountEmail,
+    accountName: scope.accountName,
+    authSinceMs: scope.authSinceMs,
     sessionsRoot: scope.sessionsRoot,
     scopeKey: scope.scopeKey,
   };
@@ -104,6 +189,7 @@ function filterUsageCacheForCodexScope(cache, scope) {
 
 module.exports = {
   expandHomePath,
+  readCodexAuthInfo,
   resolveCodexUsageScope,
   sameCodexUsageScope,
   attachCodexUsageScope,

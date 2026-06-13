@@ -3,16 +3,27 @@
 (function () {
 const { ipcRenderer } = require('electron');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
-const { MODEL_OPTIONS_BY_KIND } = require('../core/model-options.js');
+const { MODEL_OPTIONS_BY_KIND, DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
 
 const MODELS_BY_KIND = Object.fromEntries(
   Object.entries(MODEL_OPTIONS_BY_KIND).map(([kind, opts]) => [kind, opts.map(o => o.id)])
 );
 
 const DEFAULT_SLOTS = [
-  { kind: 'claude', model: 'claude-opus-4-7[1m]' },
-  { kind: 'codex', model: 'gpt-5.5' },
-  { kind: 'deepseek', model: 'deepseek-v4-pro' },
+  { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
+  { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
+  { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
+];
+// 投委会五席预设（三面五席；席位映射见 core/committee-scene.js）
+// 2026-06-12：消息面官改 Claude，技术面官改 Codex GPT-5.5，避开 Kimi/Qwen 登录链路。
+// 2026-06-13：消息面官 + 主席统一跟随 DEFAULT_MODEL_BY_KIND.claude（用户偏好"立花道雪
+//   工作台"所有 Claude 会话默认走最新模型 = Opus 4.8 1M）。
+const COMMITTEE_SLOTS = [
+  { kind: 'deepseek', model: 'deepseek-v4-pro[1m]' },         // 🛡️ 基本面官
+  { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },     // 📡 消息面官
+  { kind: 'codex', model: 'gpt-5.5' },                         // 📈 技术面官
+  { kind: 'codex', model: 'gpt-5.5' },                         // ⚔️ 质询官
+  { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },     // ⚖️ 主席
 ];
 const DEFAULT_GROUP_MEMBERS = DEFAULT_SLOTS.map(x => ({ ...x }));
 const SLOT_AVATARS = [
@@ -134,8 +145,10 @@ function _ensureModal() {
           场景:
           <label><input type="radio" name="mcm-scene" value="general" checked> 通用</label>
           <label><input type="radio" name="mcm-scene" value="research"> 投研</label>
+          <label><input type="radio" name="mcm-scene" value="committee"> ⚖️ 投委会</label>
           <label><input type="radio" name="mcm-scene" value="dev"> 开发</label>
         </div>
+        <div class="mcm-scene-hint" id="mcm-scene-hint" style="display:none; font-size:12px; color:#888; margin-top:6px; line-height:1.6;"></div>
       </div>
       <div class="mcm-footer">
         <button class="mcm-cancel">取消</button>
@@ -157,6 +170,22 @@ function _bindEvents() {
     _groupSlots.push({ ...DEFAULT_GROUP_MEMBERS[_groupSlots.length % DEFAULT_GROUP_MEMBERS.length] });
     _renderSlots();
   });
+  // 选中投委会场景 → 自动装填五席预设（三面五席）
+  _modalEl.querySelectorAll('input[name="mcm-scene"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      const hint = _modalEl.querySelector('#mcm-scene-hint');
+      if (radio.value === 'committee' && radio.checked) {
+        _groupSlots = COMMITTEE_SLOTS.map(x => ({ ...x }));
+        _renderSlots();
+        if (hint) {
+          hint.style.display = 'block';
+          hint.textContent = '五席已自动装填：🛡️基本面官=DeepSeek · 📡消息面官=Claude Opus 4.8 · 📈技术面官=Codex GPT-5.5 · ⚔️质询官=Codex GPT-5.5 · ⚖️主席=Claude Opus 4.8。创建后可直接输入股票中文名/代码，例如“赛力斯怎么样”“中远海控深挖一下”；多票对比会先识别并防止误跑第一只。';
+        }
+      } else if (radio.checked && hint) {
+        hint.style.display = 'none';
+      }
+    });
+  });
   _modalEl.addEventListener('click', (e) => {
     if (e.target === _modalEl) closeMeetingCreateModal();
   });
@@ -169,7 +198,8 @@ async function _onCreate() {
     model: el.querySelector('.mcm-model-select').value,
   }));
   const scene = _modalEl.querySelector('input[name="mcm-scene"]:checked').value;
-  const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
+  // createMeeting 的 scene 实际取自 mode（过 MEETING_MODES 白名单），scene 字段只是透传
+  const mode = (scene === 'research' || scene === 'dev' || scene === 'committee') ? scene : 'general';
   const titleInput = _modalEl.querySelector('#mcm-title-input');
   const title = titleInput ? titleInput.value.trim() : '';
 

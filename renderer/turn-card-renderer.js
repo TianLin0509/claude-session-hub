@@ -37,9 +37,13 @@ function _toolCmdFromInput(input) {
   }
   return '';
 }
-// Spec 3 · W9：渲染单条 tool row。如果有 result（tool stdout），
-// 用 details/summary 折叠；否则纯 div。result 默认折叠，长 result 截断 5KB。
-const _TOOL_RESULT_PREVIEW_LIMIT = 5000;
+// Spec 3 · W9 / Spec 4 · 工具返回预览：渲染单条 tool row。
+// 有 result 时用 <details>/<summary>/<pre> 折叠；summary 右侧加 👁 预览按钮 +
+// 结果区头部带 toolbar（meta + 复制全文 + [postProcess 动态注入]展开按钮）。
+// 完整原文整体塞 <pre>，由 postProcessToolResults 接管：JSON 检测+Prism 高亮，
+// >2KB 默认折叠（CSS max-height + 渐变遮罩，点"展开全部"放开）。
+// 超大异常防御：>50KB 硬截断（防 MCP 返回 几百 KB 把 DOM 撑爆）。
+const _TOOL_RESULT_HARD_LIMIT = 50000;
 function _renderToolRow(tc) {
   const name = escapeHtml((tc && tc.name) || '?');
   const cmd = escapeHtml(_toolCmdFromInput(tc && tc.input));
@@ -49,14 +53,22 @@ function _renderToolRow(tc) {
     return `<div class="tc-row">${head}</div>`;
   }
   const isErr = tc.isError === true;
-  const truncated = tc.result.length > _TOOL_RESULT_PREVIEW_LIMIT;
-  const preview = truncated
-    ? tc.result.slice(0, _TOOL_RESULT_PREVIEW_LIMIT) + '\n…(已截断 ' + (tc.result.length - _TOOL_RESULT_PREVIEW_LIMIT) + ' 字符)'
+  const rawLen = tc.result.length;
+  const truncated = rawLen > _TOOL_RESULT_HARD_LIMIT;
+  const body = truncated
+    ? tc.result.slice(0, _TOOL_RESULT_HARD_LIMIT) + '\n\n…(超长截断，剩余 ' + (rawLen - _TOOL_RESULT_HARD_LIMIT) + ' 字符；点复制可拿到截断后的内容)'
     : tc.result;
-  const errBadge = isErr ? ' <span class="tc-row-errbadge">✗ 错误</span>' : '';
-  return `<details class="tc-row tc-row-with-result${isErr ? ' tc-row-err' : ''}">
-    <summary class="tc-row-head">${head}${errBadge}</summary>
-    <pre class="tc-result${isErr ? ' tc-result-err' : ''}">${escapeHtml(preview)}</pre>
+  const sizeText = rawLen >= 1024 ? (rawLen / 1024).toFixed(1) + ' KB' : rawLen + ' B';
+  const errBadge = isErr ? '<span class="tc-row-errbadge">✗ 错误</span>' : '';
+  return `<details class="tc-row tc-row-with-result${isErr ? ' tc-row-err' : ''}" data-tool-result-len="${rawLen}">
+    <summary class="tc-row-head">${head}${errBadge}<span class="tc-row-actions"><button class="tc-row-preview-btn" data-action="tc-toggle-preview" type="button" title="预览工具返回">👁 预览</button></span></summary>
+    <div class="tc-result-wrap">
+      <div class="tc-result-toolbar">
+        <span class="tc-result-meta">${sizeText}${truncated ? ' · 已硬截断' : ''}</span>
+        <button class="tc-result-copy" data-action="tc-copy-result" type="button" title="复制全文">📋 复制</button>
+      </div>
+      <pre class="tc-result${isErr ? ' tc-result-err' : ''}" data-result-raw>${escapeHtml(body)}</pre>
+    </div>
   </details>`;
 }
 
@@ -102,6 +114,7 @@ function rerenderTurn(turnId) {
     if (typeof postProcessCardCodeBlocks === 'function') {
       postProcessCardCodeBlocks(newCard);
     }
+    if (typeof postProcessToolResults === 'function') postProcessToolResults(newCard);
     const bodyEl = newCard.querySelector('.turn-body');
     if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId: card.dataset.sessionId });
     card.replaceWith(newCard);
@@ -354,11 +367,120 @@ doc.addEventListener('click', (e) => {
   }
 });
 
+// === Spec 4 · 工具返回预览 (postProcessToolResults) ===
+// _renderToolRow 已经把完整 result 塞进 <pre data-result-raw>。这里做三件事：
+//   1) JSON 自动检测：trim 后首字符是 { 或 [ 且 JSON.parse 成功 → 重排 + Prism 高亮
+//   2) >2KB 加 is-folded class（CSS 控制 max-height + 渐变），toolbar 注入"展开全部"按钮
+//   3) 已处理过的 <pre> 用 data-tc-processed=1 防重入（rerender 路径会重跑）
+const _TOOL_RESULT_FOLD_THRESHOLD = 2048;
+function postProcessToolResults(cardEl) {
+  if (!cardEl) return;
+  const pres = cardEl.querySelectorAll('pre.tc-result[data-result-raw]');
+  pres.forEach((pre) => {
+    if (pre.dataset.tcProcessed === '1') return;
+    pre.dataset.tcProcessed = '1';
+    const raw = pre.textContent;
+    // JSON 检测：避免对纯文本/HTML/log 做无意义解析
+    const lead = raw.trimStart()[0];
+    if ((lead === '{' || lead === '[') && raw.length < _TOOL_RESULT_HARD_LIMIT) {
+      try {
+        const parsed = JSON.parse(raw.trim());
+        const formatted = JSON.stringify(parsed, null, 2);
+        if (win.Prism && win.Prism.languages && win.Prism.languages.json) {
+          pre.innerHTML = win.Prism.highlight(formatted, win.Prism.languages.json, 'json');
+        } else {
+          pre.textContent = formatted;
+        }
+        pre.classList.add('is-json');
+      } catch {
+        // 不是合法 JSON（如 mcp 错误回包是 JSON 头但坏掉）→ 保留原文
+      }
+    }
+    // 长内容折叠 — 走 dataset 里 <details> 的真实长度，比 textContent.length 准
+    // （Prism 高亮后 innerHTML 多了 span tag，但 textContent 仍是纯文本所以也对，留 dataset 兜底）
+    const details = pre.closest('.tc-row-with-result');
+    const lenBytes = details ? parseInt(details.dataset.toolResultLen || '0', 10) : raw.length;
+    if (lenBytes > _TOOL_RESULT_FOLD_THRESHOLD) {
+      pre.classList.add('tc-result-foldable', 'is-folded');
+      const toolbar = pre.parentElement && pre.parentElement.querySelector('.tc-result-toolbar');
+      if (toolbar && !toolbar.querySelector('.tc-result-expand')) {
+        const sizeKb = (lenBytes / 1024).toFixed(1);
+        const btn = doc.createElement('button');
+        btn.type = 'button';
+        btn.className = 'tc-result-expand';
+        btn.dataset.action = 'tc-toggle-fold';
+        btn.textContent = `⏷ 展开全部 (${sizeKb} KB)`;
+        btn.title = '展开/折叠完整返回';
+        toolbar.appendChild(btn);
+      }
+    }
+  });
+}
+
+// 全局 click handler: 👁 预览 toggle + 复制全文 + 展开/折叠超长
+doc.addEventListener('click', (e) => {
+  const t = e.target;
+  if (!t || !t.closest) return;
+
+  // [1] 👁 预览按钮：toggle 父 <details>（按钮自身阻止冒泡防止"双重 toggle"）
+  const previewBtn = t.closest('[data-action="tc-toggle-preview"]');
+  if (previewBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const details = previewBtn.closest('details.tc-row-with-result');
+    if (details) {
+      details.open = !details.open;
+      previewBtn.textContent = details.open ? '👁 收起' : '👁 预览';
+    }
+    return;
+  }
+
+  // [2] 📋 复制全文：取 pre.textContent（Prism 高亮后仍是纯文本节点，OK）
+  const copyResultBtn = t.closest('[data-action="tc-copy-result"]');
+  if (copyResultBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const wrap = copyResultBtn.closest('.tc-result-wrap');
+    const pre = wrap && wrap.querySelector('pre.tc-result');
+    if (pre) {
+      Promise.resolve(clipboardApi.writeText(pre.textContent || ''))
+        .then(() => {
+          copyResultBtn.textContent = '✓ 已复制';
+          copyResultBtn.classList.add('copied');
+          setTimeout(() => {
+            copyResultBtn.textContent = '📋 复制';
+            copyResultBtn.classList.remove('copied');
+          }, 1500);
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+
+  // [3] ⏷ 展开/折叠超长 result
+  const foldBtn = t.closest('[data-action="tc-toggle-fold"]');
+  if (foldBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const wrap = foldBtn.closest('.tc-result-wrap');
+    const pre = wrap && wrap.querySelector('pre.tc-result');
+    const details = foldBtn.closest('.tc-row-with-result');
+    if (pre && details) {
+      const folded = pre.classList.toggle('is-folded');
+      const lenBytes = parseInt(details.dataset.toolResultLen || '0', 10);
+      const sizeKb = (lenBytes / 1024).toFixed(1);
+      foldBtn.textContent = folded ? `⏷ 展开全部 (${sizeKb} KB)` : '⏶ 折叠';
+    }
+    return;
+  }
+});
+
 function mountTurnCard(container, turn) {
   const tmp = doc.createElement('div');
   tmp.innerHTML = renderTurnCard(turn);
   const cardEl = tmp.firstElementChild;
   postProcessCardCodeBlocks(cardEl);
+  postProcessToolResults(cardEl);
   // 路径识别 (T7 风险条款: 卡片内 .md / URL 必须可点击触发预览)
   const bodyEl = cardEl.querySelector('.turn-body');
   if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId: getActiveSessionId() });
@@ -533,6 +655,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     newCard.dataset.sessionId = String(sessionId || '');
     existing.replaceWith(newCard);
     if (typeof postProcessCardCodeBlocks === 'function') postProcessCardCodeBlocks(newCard);
+    if (typeof postProcessToolResults === 'function') postProcessToolResults(newCard);
     const bodyEl2 = newCard.querySelector('.turn-body');
     if (bodyEl2 && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl2, { sessionId });
     if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
@@ -580,6 +703,10 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 6. post-process code blocks (Prism + Copy + folding)
   if (typeof postProcessCardCodeBlocks === 'function') {
     postProcessCardCodeBlocks(cardEl);
+  }
+  // 6b. Spec 4 · 工具返回预览（JSON 高亮 + 长内容折叠 + 复制按钮事件）
+  if (typeof postProcessToolResults === 'function') {
+    postProcessToolResults(cardEl);
   }
   // 7. path link recognition (scoped to .turn-body to avoid touching meta/actions)
   const bodyEl = cardEl.querySelector('.turn-body');
@@ -663,6 +790,7 @@ doc.addEventListener('click', (e) => {
     rerenderTurn,
     postProcessCardCodeBlocks,
     postProcessLongTextFold,
+    postProcessToolResults,
     mountTurnCard,
     isCardOverlayAtBottom: _isCardOverlayAtBottom,
     mountOptimisticUserCard,

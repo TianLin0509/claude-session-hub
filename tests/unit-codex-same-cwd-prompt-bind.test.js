@@ -58,6 +58,52 @@ async function testSameCwdWaitsForPromptMatch() {
   }
 }
 
+async function testSameCwdBindsWhenCodexPointerPromptIsConcatenated() {
+  const tmpRoot = path.join(os.tmpdir(), `codex-same-cwd-concat-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+  const cwd = 'C:\\test\\shared-cwd-concat';
+  const tap = new CodexTap({ sessionsRoot: tmpRoot, pollIntervalMs: 50 });
+  const startAt = new Date();
+  const frA = new FakeCodexRollout({ sessionsRoot: tmpRoot, cwd, sid: '019ecccc-0000-7000-8000-000000000003', startAt });
+  const frB = new FakeCodexRollout({ sessionsRoot: tmpRoot, cwd, sid: '019edddd-0000-7000-8000-000000000004', startAt });
+  const oldPointer = [
+    'A UTF-8 group-chat prompt has been saved to this file:',
+    'C:\\temp\\.hub-codex-prompts\\old.md',
+    '',
+    'Read that file, follow its instructions exactly, and answer in the language/schema requested inside it.',
+  ].join('\n');
+  const latestPointer = [
+    'A UTF-8 group-chat prompt has been saved to this file:',
+    'C:\\temp\\.hub-codex-prompts\\latest.md',
+    '',
+    'Read that file, follow its instructions exactly, and answer in the language/schema requested inside it.',
+  ].join('\n');
+
+  try {
+    tap.registerSession('hub-A', { cwd });
+    tap.registerSession('hub-B', { cwd });
+    await frA.start();
+    await frB.start();
+
+    tap.notePrompt('hub-A', latestPointer);
+    tap.notePrompt('hub-B', [
+      'A UTF-8 group-chat prompt has been saved to this file:',
+      'C:\\temp\\.hub-codex-prompts\\other.md',
+    ].join('\n'));
+    await writeUserMessage(frA, `${oldPointer}\n\n${latestPointer}`);
+
+    assert.ok(await waitFor(() => tap.getRolloutPath('hub-A') === frA.rolloutPath),
+      'hub-A should bind when Codex submits a concatenated input line containing the latest prompt pointer');
+    assert.notStrictEqual(tap.getRolloutPath('hub-B'), frA.rolloutPath,
+      'hub-B must not bind to a rollout that only contains hub-A prompt pointer');
+  } finally {
+    tap.unregisterSession('hub-A');
+    tap.unregisterSession('hub-B');
+    await frA.close();
+    await frB.close();
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testTranscriptTapExposesNotePrompt() {
   const tap = new TranscriptTap();
   assert.strictEqual(typeof tap.notePrompt, 'function', 'TranscriptTap must expose notePrompt');
@@ -67,6 +113,7 @@ function testTranscriptTapExposesNotePrompt() {
   const tests = [
     testTranscriptTapExposesNotePrompt,
     testSameCwdWaitsForPromptMatch,
+    testSameCwdBindsWhenCodexPointerPromptIsConcatenated,
   ];
   let failed = 0;
   for (const t of tests) {

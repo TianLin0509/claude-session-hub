@@ -7,6 +7,7 @@
 if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
+  const { CLAUDE_MEMORY_INDEX: _CLAUDE_MEMORY_INDEX } = require('../core/claude-memory-loader.js');
   const { isPasteSensitive, kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
           SLOT_IDS, SLOT_DISPLAY, getSlotPromptName, getSlotDisplayLabel,
           slotIdRegexAlternation, slotIdToIndex, slotIndexToId } = require('../core/ai-kinds.js');
@@ -59,6 +60,8 @@ if (typeof document !== 'undefined') (function () {
   // _gcPanelState[meetingId] 缓存渲染状态，避免 IPC 频繁调用
   // partialBy: 当前进行中轮次的部分回答 { sid: { text, status } } — 单家完成立即更新
   const _gcPanelState = {};
+  const _committeeRunState = {};
+  let _committeePulseTimer = null;
   let _gcHistoryExpanded = false;
   // T3（2026-05-04 道雪）：抽屉实时订阅状态。打开时设 { sid, mid, kind }，关时清 null。
   //   partial-update handler 命中同 sid + 用户当前 active 的是 live tab 时，更新抽屉内容。
@@ -1815,6 +1818,31 @@ if (typeof document !== 'undefined') (function () {
     return `<div class="mr-gc-avatar"><img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" /></div>`;
   }
 
+  function _committeeVerboseMessageInfo(message) {
+    const text = String((message && message.content) || '');
+    if (!text) return null;
+    const isUser = message.role === 'user';
+    if (/^【投委会\s*·/.test(text)) {
+      return {
+        title: isUser ? '内部调度指令已收起' : '投委会原始回复已收起',
+        reason: '机器调度文本',
+      };
+    }
+    if (/```json/i.test(text) || /"confidence"\s*:|"rating"\s*:|"checkups"\s*:|"positions"\s*:/.test(text)) {
+      return {
+        title: 'JSON 原始记录已收起',
+        reason: '结构化校验数据',
+      };
+    }
+    if (text.length > 1400 && /投委会|研判|裁决|持仓|案卷|质询/.test(text)) {
+      return {
+        title: '长原文已收起',
+        reason: '详细过程记录',
+      };
+    }
+    return null;
+  }
+
   function _renderGroupChatMessage(message, meeting, memberBySid, opts = {}) {
     if (!message) return '';
     const isUser = message.role === 'user';
@@ -1830,6 +1858,18 @@ if (typeof document !== 'undefined') (function () {
     const body = opts.empty
       ? '<span class="mr-gc-waiting">思考中...</span>'
       : `<div class="mr-gc-md">${_renderMarkdown(message.content || '')}</div>`;
+    const committeeVerbose = meeting && meeting.scene === 'committee' && !opts.pending
+      ? _committeeVerboseMessageInfo(message)
+      : null;
+    const renderedBody = committeeVerbose
+      ? `<details class="mr-committee-raw-log">
+          <summary>
+            <span>${escapeHtml(committeeVerbose.title)}</span>
+            <b>${escapeHtml(committeeVerbose.reason)}</b>
+          </summary>
+          <div class="mr-committee-raw-body">${body}</div>
+        </details>`
+      : body;
     const anchor = message.anchor
       ? `<button type="button" class="mr-gc-anchor" data-gc-anchor="${escapeHtml(message.anchor)}" title="原文索引">${escapeHtml(message.anchor)}</button>`
       : '';
@@ -1847,7 +1887,7 @@ if (typeof document !== 'undefined') (function () {
           ${meta}
           <div class="mr-gc-bubble-row">
             ${isUser ? copyAction : ''}
-            <div class="mr-gc-bubble">${body}${opts.pending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
+            <div class="mr-gc-bubble">${renderedBody}${opts.pending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
             ${!isUser ? copyAction : ''}
           </div>
           ${anchor}
@@ -1882,6 +1922,415 @@ if (typeof document !== 'undefined') (function () {
     return parts.join('');
   }
 
+  const _COMMITTEE_STAGE_SINGLE = [
+    ['route', '路由'],
+    ['prep', '备料'],
+    ['opening', '点名'],
+    ['analysis', '研判'],
+    ['challenge', '质询'],
+    ['verdict', '裁决'],
+    ['save', '落盘'],
+  ];
+  const _COMMITTEE_STAGE_CHECKUP = [
+    ['route', '路由'],
+    ['identify', '识别'],
+    ['prep', '备料'],
+    ['analysis', '研判'],
+    ['verdict', '裁决'],
+    ['save', '落盘'],
+  ];
+
+  function _committeeStages(kind) {
+    return kind === 'checkup' ? _COMMITTEE_STAGE_CHECKUP : _COMMITTEE_STAGE_SINGLE;
+  }
+
+  function _committeeIssueHint(text) {
+    const raw = String(text || '');
+    if (/持仓识别|Read|image|图片|OCR/i.test(raw)) {
+      return '优先检查主席 Claude 是否能读取该图片路径；确认图片存在、权限可读，再切到卡片视图查看 PTY 原始输出。';
+    }
+    if (/send|no_sent|卡顿|stuck|发送|输入/i.test(raw)) {
+      return '这是席位发送链路卡住，先用卡片视图的发送/跳过按钮恢复；若重复出现，查看对应席位 PTY 输出。';
+    }
+    if (/MCP|doctor|auth|登录|认证/i.test(raw)) {
+      return '这是 CLI 或 MCP 环境问题，优先在对应席位 PTY 中跑 doctor/auth 检查，不要静默降级。';
+    }
+    if (/席位|缺席|成员|seat/i.test(raw)) {
+      return '投委会成员不完整，建议重新用投委会预设创建会议，确保主席、新闻、技术、质询席齐全。';
+    }
+    return '先保留现场，切到卡片视图查看具体席位输出；若仍无进展，再从 PTY 原始日志定位根因。';
+  }
+
+  function _classifyCommitteeProgress(text) {
+    const raw = String(text || '').trim();
+    const first = raw.split('\n')[0].replace(/^[^\w\u4e00-\u9fa5]+/u, '').slice(0, 120);
+    let kind = /持仓|体检|逐票|图片|OCR/i.test(raw) ? 'checkup' : 'single';
+    let key = 'route';
+    let title = first || '投委会运行中';
+    let severity = 'normal';
+    let status = 'running';
+    if (/持仓识别/i.test(raw)) { kind = 'checkup'; key = 'identify'; title = '持仓识别中'; }
+    else if (/逐票备料/i.test(raw)) { kind = 'checkup'; key = 'prep'; title = '逐票备料中'; }
+    else if (/体检研判/i.test(raw)) { kind = 'checkup'; key = 'analysis'; title = '逐票研判中'; }
+    else if (/体检裁决/i.test(raw)) { kind = 'checkup'; key = 'verdict'; title = '主席裁决中'; }
+    else if (/体检落盘/i.test(raw)) { kind = 'checkup'; key = 'save'; title = '体检结果已落盘'; status = 'done'; }
+    else if (/立项路由/i.test(raw)) { key = 'route'; title = '意图路由中'; }
+    else if (/幕[〇0]|备料/i.test(raw)) { key = 'prep'; title = '投研备料中'; }
+    else if (/开场点名/i.test(raw)) { key = 'opening'; title = '席位点名中'; }
+    else if (/幕一/i.test(raw)) { key = 'analysis'; title = '独立研判中'; }
+    else if (/幕二/i.test(raw)) { key = 'challenge'; title = /跳过/i.test(raw) ? '质询已跳过' : '交叉质询中'; }
+    else if (/幕三|主席裁决/i.test(raw)) { key = 'verdict'; title = '主席裁决中'; }
+    else if (/决议落盘|Dashboard|案卷|质询/i.test(raw)) { key = 'save'; title = '决议已落盘'; status = 'done'; }
+    else if (/请求已收到|正在启动|正在解析/i.test(raw)) {
+      key = 'route';
+      title = '请求已收到';
+      if (/图片路径|持仓体检/i.test(raw)) kind = 'checkup';
+    }
+    if (/失败|异常|中断|未过|缺席|timeout|stuck|no_sent|auth|MCP|doctor|卡顿/i.test(raw)) {
+      severity = /失败|异常|中断|timeout|auth|MCP|doctor/i.test(raw) ? 'error' : 'warn';
+      status = 'attention';
+    }
+    return { key, kind, title, detail: first, severity, status, hint: severity === 'normal' ? '' : _committeeIssueHint(raw) };
+  }
+
+  function _committeeAcceptedProgressText(userInput) {
+    const raw = String(userInput || '').trim();
+    if (/[A-Za-z]:\\[^\r\n]+?\.(png|jpe?g|webp|bmp)\b/i.test(raw)) {
+      return '请求已收到：识别到图片路径，正在启动持仓体检';
+    }
+    if (/(对比|相比|比较|vs|VS|和).*(\d{6}|[\u4e00-\u9fa5]{2,})/.test(raw)) {
+      return '请求已收到：正在解析股票对比请求';
+    }
+    if (raw) return '请求已收到：正在启动投委会研判';
+    return '请求已收到：正在启动投委会流程';
+  }
+
+  function _extractCommitteeOutcome(text) {
+    const raw = String(text || '');
+    if (!/落盘/.test(raw)) return null;
+    const kind = /体检落盘/.test(raw) ? 'checkup' : 'verdict';
+    const idMatch = raw.match(/(?:决议落盘|体检落盘)：([^\n\r]+)/);
+    const dashboardMatch = raw.match(/Dashboard：([^\n\r]+)/);
+    const caseMatch = raw.match(/案卷：([^\n\r]+)/);
+    const challengeMatch = raw.match(/质询：([^\n\r]+)/);
+    const idText = idMatch ? idMatch[1].trim() : '';
+    const success = !!idText && !/^❌/.test(idText) && !/失败/.test(idText);
+    return {
+      kind,
+      success,
+      id: idText.replace(/^❌\s*/, ''),
+      dashboardPath: dashboardMatch ? dashboardMatch[1].trim() : '',
+      casePath: caseMatch ? caseMatch[1].trim() : '',
+      challenge: challengeMatch ? challengeMatch[1].trim() : '',
+      title: kind === 'checkup' ? '体检结果已生成' : '投委会决议已生成',
+    };
+  }
+
+  // 累积 conductor 发来的结构化富数据（红旗/各官研判/质询/裁决/复盘路径），
+  // 供 _renderCommitteeDashboard 实时渲染成卡片——让用户看到"逐步分析出来"的实质内容。
+  function _mergeCommitteeRich(prevRich, data) {
+    const rich = prevRich || { analysts: {}, redFlags: null, coverageGate: null, challenge: null, verdict: null, replayPath: null };
+    if (!data || !data.stage) return rich;
+    if (data.stage === 'prep') {
+      rich.redFlags = data.red_flags || rich.redFlags;
+      rich.coverageGate = data.coverage_gate || rich.coverageGate;
+      rich.objective = data.objective || rich.objective;
+      rich.symbol = data.symbol || rich.symbol;
+      rich.name = data.name || rich.name;
+    } else if (data.stage === 'analyst' && data.seat) {
+      rich.analysts = { ...rich.analysts, [data.seat]: { label: data.label, ...(data.report || {}) } };
+    } else if (data.stage === 'challenge') {
+      rich.challenge = data;
+    } else if (data.stage === 'verdict') {
+      rich.verdict = data.verdict || rich.verdict;
+    } else if (data.stage === 'save') {
+      rich.replayPath = data.replayPath || rich.replayPath;
+    }
+    return rich;
+  }
+
+  function _recordCommitteeProgress(meetingId, text, data) {
+    const now = Date.now();
+    const next = _classifyCommitteeProgress(text);
+    const outcome = _extractCommitteeOutcome(text);
+    const prev = _committeeRunState[meetingId] || {
+      meetingId,
+      startedAt: now,
+      events: [],
+      kind: next.kind,
+      status: 'running',
+      severity: 'normal',
+    };
+    const rich = _mergeCommitteeRich(prev.rich, data);
+    const events = Array.isArray(prev.events) ? prev.events.slice(-7) : [];
+    if (next.detail) events.push({ ts: now, text: next.detail, severity: next.severity });
+    _committeeRunState[meetingId] = {
+      ...prev,
+      ...next,
+      rich,
+      kind: next.kind || prev.kind || 'single',
+      startedAt: prev.startedAt || now,
+      updatedAt: now,
+      outcome: outcome || prev.outcome || null,
+      severity: outcome && !outcome.success ? 'warn' : next.severity,
+      status: outcome ? (outcome.success ? 'done' : 'attention') : next.status,
+      title: outcome ? outcome.title : next.title,
+      events,
+    };
+    return _committeeRunState[meetingId];
+  }
+
+  function _recordCommitteeIssue(meetingId, text, severity = 'warn') {
+    const now = Date.now();
+    const prev = _committeeRunState[meetingId] || {
+      meetingId,
+      startedAt: now,
+      updatedAt: now,
+      events: [],
+      kind: 'single',
+      key: 'route',
+      title: '投委会需要处理',
+    };
+    const raw = String(text || '投委会运行异常');
+    const events = Array.isArray(prev.events) ? prev.events.slice(-7) : [];
+    events.push({ ts: now, text: raw.slice(0, 120), severity });
+    _committeeRunState[meetingId] = {
+      ...prev,
+      updatedAt: now,
+      status: 'attention',
+      severity,
+      detail: raw.slice(0, 120),
+      hint: _committeeIssueHint(raw),
+      events,
+    };
+    return _committeeRunState[meetingId];
+  }
+
+  function _committeeElapsed(ts) {
+    if (!ts) return '0s';
+    const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    const min = Math.floor(sec / 60);
+    const rest = sec % 60;
+    return min > 0 ? `${min}m ${rest}s` : `${rest}s`;
+  }
+
+  function _committeeAge(ts) {
+    if (!ts) return '暂无更新';
+    const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (sec < 3) return '刚刚更新';
+    if (sec < 60) return `${sec}s 前更新`;
+    return `${Math.floor(sec / 60)}m 前更新`;
+  }
+
+  function _committeeStageIndex(dash) {
+    const stages = _committeeStages(dash && dash.kind);
+    const idx = stages.findIndex(([key]) => key === (dash && dash.key));
+    return idx < 0 ? 0 : idx;
+  }
+
+  // 把累积的结构化富数据渲染成实时卡片：红旗→各官研判卡→质询→裁决英雄行→复盘入口。
+  // 这是"逐步分析出来"沉浸感的核心——各官的 signal/信心/论点/证据不再被折叠隐藏。
+  function _committeeSigClass(s) {
+    const t = String(s || '');
+    if (t.indexOf('多') >= 0) return 'long';
+    if (t.indexOf('空') >= 0) return 'short';
+    return 'neutral';
+  }
+  function _committeeAnalystCard(seat, a) {
+    const emoji = { fund: '🛡️', news: '📡', tech: '📈' }[seat] || '🎯';
+    const sc = _committeeSigClass(a.signal);
+    const conf = (a.confidence == null) ? '—' : a.confidence;
+    const confW = (typeof a.confidence === 'number') ? a.confidence : 0;
+    const tags = [];
+    const ex = a.extras || {};
+    [['story_level', '故事'], ['story_grade', '叙事'], ['sector_position', '卡位'], ['trend_stage', '趋势']]
+      .forEach(([k, p]) => { if (ex[k]) tags.push(`${p}:${ex[k]}`); });
+    const tagHtml = tags.map(t => `<span class="mr-cm-tag">${escapeHtml(t)}</span>`).join('');
+    const asm = (a.assumptions || []).map(x => `<li>${escapeHtml(x)}</li>`).join('');
+    const evi = (a.evidence || []).map(e =>
+      `<div class="mr-cm-evi"><span class="mr-cm-str ${escapeHtml((e && e.strength) || '')}">${escapeHtml((e && e.strength) || '?')}</span>${escapeHtml((e && e.claim) || '')} <i>${escapeHtml((e && e.source) || '')}</i></div>`).join('');
+    const valid = a.valid !== false;
+    const body = valid ? `
+      ${tagHtml ? `<div class="mr-cm-tags">${tagHtml}</div>` : ''}
+      ${asm ? `<div class="mr-cm-sub">核心假设</div><ul class="mr-cm-ul">${asm}</ul>` : ''}
+      ${evi ? `<div class="mr-cm-sub">证据链</div>${evi}` : ''}
+      ${a.kill_switch ? `<div class="mr-cm-kill">证伪：${escapeHtml(a.kill_switch)}</div>` : ''}`
+      : '<div class="mr-cm-kill">本席未过校验/缺席，主席将在决议中声明。</div>';
+    return `<details class="mr-cm-analyst ${sc}">
+      <summary>
+        <span class="mr-cm-emoji">${emoji}</span>
+        <span class="mr-cm-name">${escapeHtml(a.label || seat)}</span>
+        <span class="mr-cm-thesis">${escapeHtml(a.core_thesis || (valid ? '' : '缺席'))}</span>
+        <span class="mr-cm-badge ${sc}">${escapeHtml(a.signal || '—')}</span>
+        <span class="mr-cm-conf"><i style="width:${confW}%"></i></span>
+        <span class="mr-cm-confn">${escapeHtml(conf)}</span>
+      </summary>
+      <div class="mr-cm-body">${body}</div>
+    </details>`;
+  }
+  function _committeeRichHtml(dash) {
+    const rich = dash && dash.rich;
+    if (!rich) return '';
+    let html = '';
+    const order = ['fund', 'news', 'tech'];
+    const cards = order.filter(k => rich.analysts && rich.analysts[k]).map(k => _committeeAnalystCard(k, rich.analysts[k])).join('');
+    if (cards) html += `<div class="mr-cm-section"><div class="mr-cm-title">🎭 三官研判（点击展开论据）</div>${cards}</div>`;
+    const ch = rich.challenge;
+    if (ch && ch.held) {
+      const n = ((ch.attack && ch.attack.targets) || []).length;
+      const risk = (ch.attack && ch.attack.priced_in_risk) || ch.priced_in_risk;
+      html += `<div class="mr-cm-section"><div class="mr-cm-title">⚔️ 交叉质询</div>
+        <div class="mr-cm-chal">质疑 ${n} 条${risk ? ` · price-in 风险 <b>${escapeHtml(risk)}</b>` : ''}${(ch.attack && ch.attack.summary) ? ` · ${escapeHtml(ch.attack.summary)}` : ''}</div></div>`;
+    }
+    const v = rich.verdict;
+    if (v && v.rating) {
+      const rc = { S: '#ff3b30', A: '#ff9f0a', B: '#0071e3', C: '#8e8e93' }[v.rating] || '#8e8e93';
+      const vs = v.value_speculation || {};
+      const four = [['托底', vs.fundamental_floor], ['题材', vs.theme_purity], ['预期差', vs.expectation_gap], ['弹性', vs.flow_elasticity]]
+        .filter(([, x]) => x).map(([l, x]) => `<span class="mr-cm-vs"><small>${l}</small>${escapeHtml(x)}</span>`).join('');
+      const pf = v.portfolio || {};
+      html += `<div class="mr-cm-section"><div class="mr-cm-title">⚖️ 主席裁决</div>
+        <div class="mr-cm-verdict">
+          <span class="mr-cm-rating" style="background:${rc}">${escapeHtml(v.rating)}</span>
+          <div class="mr-cm-vmain"><div class="mr-cm-vthesis">${escapeHtml(v.core_thesis || '')}</div>
+          ${four ? `<div class="mr-cm-vsrow">${four}${vs.composite_score != null ? `<span class="mr-cm-vs hot"><small>价投</small>${escapeHtml(vs.composite_score)}</span>` : ''}</div>` : ''}
+          ${(pf.role || pf.suggested_cap_pct != null) ? `<div class="mr-cm-vpf">仓位 ${escapeHtml(pf.role || '—')} · 上限 ${escapeHtml(pf.suggested_cap_pct == null ? '—' : pf.suggested_cap_pct)}%${v.stop ? ` · 止损 ${escapeHtml(v.stop)}` : ''}</div>` : ''}
+          </div></div></div>`;
+    }
+    if (rich.replayPath) {
+      html += `<div class="mr-cm-replaybar"><button type="button" class="mr-gc-card-link mr-cm-replaybtn" data-committee-open-path="${escapeHtml(rich.replayPath)}">🎬 打开沉浸式复盘</button></div>`;
+    }
+    return html ? `<div class="mr-committee-rich">${html}</div>` : '';
+  }
+
+  function _renderCommitteeDashboard(meeting, state, slots) {
+    if (!meeting || meeting.scene !== 'committee') return '';
+    const dash = _committeeRunState[meeting.id] || null;
+    const mode = state && state.currentMode ? state.currentMode : 'idle';
+    const running = mode !== 'idle' || (dash && dash.status === 'running');
+    const display = dash || {
+      meetingId: meeting.id,
+      startedAt: null,
+      updatedAt: null,
+      kind: 'single',
+      key: 'route',
+      title: '投委会待命',
+      detail: '等待研判请求',
+      severity: 'normal',
+      status: running ? 'running' : 'idle',
+      events: [],
+    };
+    const stages = _committeeStages(display.kind);
+    const stageIdx = _committeeStageIndex(display);
+    const progressPct = display.status === 'done' ? 100 : Math.round((stageIdx / Math.max(1, stages.length - 1)) * 100);
+    const partialBy = state && state._partialBy ? state._partialBy : {};
+    const selected = new Set(Array.isArray(meeting.participants) ? meeting.participants : (slots || []).map(slot => slot.slotIndex));
+    const seatHtml = (slots || []).map((slot) => {
+      const partial = partialBy[slot.sid] || {};
+      const label = slot.displayLabel || slot.label || `M${slot.slotIndex + 1}`;
+      let seatState = selected.has(slot.slotIndex) ? '待命' : '未选';
+      let seatClass = selected.has(slot.slotIndex) ? 'ready' : 'muted';
+      if (partial.sendStatus === 'stuck') { seatState = '发送卡住'; seatClass = 'warn'; }
+      else if (partial.status === 'errored') { seatState = '错误'; seatClass = 'error'; }
+      else if (partial.status === 'soft_alert') { seatState = '等待中'; seatClass = 'warn'; }
+      else if (partial.status === 'thinking') { seatState = '运行中'; seatClass = 'running'; }
+      else if (partial.status === 'completed' || partial.status === 'manual_extracted') { seatState = '完成'; seatClass = 'done'; }
+      return `<div class="mr-committee-seat ${seatClass}" data-committee-sid="${escapeHtml(slot.sid)}">
+        <span class="mr-committee-seat-name">${escapeHtml(label)}</span>
+        <span class="mr-committee-seat-state">${escapeHtml(seatState)}</span>
+      </div>`;
+    }).join('');
+    const stageHtml = stages.map(([key, label], idx) => {
+      const cls = idx < stageIdx || display.status === 'done' ? 'done' : (idx === stageIdx ? 'active' : 'todo');
+      return `<div class="mr-committee-stage ${cls}" data-stage="${escapeHtml(key)}"><span></span><b>${escapeHtml(label)}</b></div>`;
+    }).join('');
+    const eventHtml = (display.events || []).slice(-5).reverse().map((event) => (
+      `<li class="${event.severity === 'error' ? 'error' : event.severity === 'warn' ? 'warn' : ''}">
+        <span>${escapeHtml(_committeeAge(event.ts))}</span>
+        <b>${escapeHtml(event.text || '')}</b>
+      </li>`
+    )).join('') || '<li><span>暂无</span><b>等待第一条进度</b></li>';
+    const issueHtml = display.hint ? `
+      <div class="mr-committee-issue" role="alert">
+        <strong>故障提示</strong>
+        <span>${escapeHtml(display.hint)}</span>
+      </div>
+    ` : '';
+    const outcome = display.outcome || null;
+    const outcomeHtml = outcome ? `
+      <div class="mr-committee-outcome ${outcome.success ? 'success' : 'warn'}">
+        <div class="mr-committee-outcome-main">
+          <span class="mr-committee-outcome-label">${escapeHtml(outcome.kind === 'checkup' ? '体检结果' : '最终决议')}</span>
+          <strong>${escapeHtml(outcome.success ? (outcome.id || '已落盘') : '落盘未完成')}</strong>
+          ${outcome.challenge ? `<span>${escapeHtml('质询：' + outcome.challenge)}</span>` : ''}
+        </div>
+        <div class="mr-committee-outcome-actions">
+          ${outcome.dashboardPath ? `<button type="button" class="mr-gc-card-link" data-committee-open-path="${escapeHtml(outcome.dashboardPath)}">打开台账</button>` : ''}
+          ${outcome.casePath ? `<button type="button" class="mr-gc-card-link" data-committee-open-path="${escapeHtml(outcome.casePath)}">打开案卷</button>` : ''}
+        </div>
+      </div>
+    ` : '';
+    return `
+      <section class="mr-committee-console ${display.severity || 'normal'}" data-meeting-id="${escapeHtml(meeting.id)}" data-running="${running ? '1' : '0'}" aria-label="投委会运行控制台">
+        <div class="mr-committee-head">
+          <div>
+            <div class="mr-committee-kicker">Committee Console</div>
+            <div class="mr-committee-title" aria-live="polite">${escapeHtml(display.title || '投委会运行中')}</div>
+            <div class="mr-committee-detail">${escapeHtml(display.detail || '')}</div>
+          </div>
+          <div class="mr-committee-metrics">
+            <span>耗时 <b data-committee-elapsed-for="${escapeHtml(meeting.id)}">${escapeHtml(_committeeElapsed(display.startedAt))}</b></span>
+            <span data-committee-age-for="${escapeHtml(meeting.id)}">${escapeHtml(_committeeAge(display.updatedAt))}</span>
+          </div>
+        </div>
+        <div class="mr-committee-stale-note" data-committee-stale-for="${escapeHtml(meeting.id)}" role="status" aria-live="polite"></div>
+        <div class="mr-committee-progress" aria-hidden="true"><i style="width:${progressPct}%"></i></div>
+        <div class="mr-committee-stages">${stageHtml}</div>
+        <div class="mr-committee-grid">
+          <div class="mr-committee-seats">${seatHtml}</div>
+          <ol class="mr-committee-events">${eventHtml}</ol>
+        </div>
+        ${_committeeRichHtml(display)}
+        ${outcomeHtml}
+        ${issueHtml}
+        <div class="mr-committee-actions">
+          <button type="button" class="mr-gc-card-link" data-committee-copy-diagnostics="1">复制诊断</button>
+          <button type="button" class="mr-gc-card-link" data-gc-view-card="1">查看席位</button>
+          <button type="button" class="mr-gc-card-link" data-committee-open-ledger="1">打开台账</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function _ensureCommitteePulseTimer() {
+    if (_committeePulseTimer) return;
+    _committeePulseTimer = setInterval(() => {
+      const consoles = document.querySelectorAll('.mr-committee-console[data-meeting-id]');
+      if (!consoles.length) {
+        clearInterval(_committeePulseTimer);
+        _committeePulseTimer = null;
+        return;
+      }
+      consoles.forEach((consoleEl) => {
+        const meetingId = consoleEl.getAttribute('data-meeting-id');
+        const dash = _committeeRunState[meetingId];
+        const elapsedEl = consoleEl.querySelector(`[data-committee-elapsed-for="${CSS.escape(meetingId || '')}"]`);
+        const ageEl = consoleEl.querySelector(`[data-committee-age-for="${CSS.escape(meetingId || '')}"]`);
+        if (elapsedEl) elapsedEl.textContent = _committeeElapsed(dash && dash.startedAt);
+        if (ageEl) ageEl.textContent = _committeeAge(dash && dash.updatedAt);
+        const isRunning = consoleEl.getAttribute('data-running') === '1';
+        const stale = isRunning && dash && dash.updatedAt && (Date.now() - dash.updatedAt > 45000);
+        consoleEl.classList.toggle('stale', !!stale);
+        const staleEl = consoleEl.querySelector(`[data-committee-stale-for="${CSS.escape(meetingId || '')}"]`);
+        if (staleEl) {
+          staleEl.textContent = stale
+            ? '超过 45 秒没有新进展。建议先点“查看席位”确认哪一席卡住，必要时进入 PTY 查看原始输出。'
+            : '';
+        }
+      });
+    }, 1000);
+  }
+
   function _renderGroupChatView(state, meeting, softBanner, totalSecTxt) {
     const messages = Array.isArray(state.messages) ? state.messages : [];
     const memberBySid = _groupMemberMap(meeting);
@@ -1893,6 +2342,7 @@ if (typeof document !== 'undefined') (function () {
     const sideCollapsed = _getGroupSideCollapsed();
     const messageHtml = messages.map(m => _renderGroupChatMessage(m, meeting, memberBySid)).join('');
     const pendingHtml = mode !== 'idle' ? _renderGroupChatPending(state, meeting, memberBySid) : '';
+    const committeeDashboard = _renderCommitteeDashboard(meeting, state, slots);
     const emptyHtml = (!messageHtml && !pendingHtml) ? `
       <div class="mr-gc-empty">
         <div class="mr-gc-empty-title">还没有群聊消息</div>
@@ -1941,6 +2391,7 @@ if (typeof document !== 'undefined') (function () {
             </div>
           </div>
           <div class="mr-gc-dayline">摘要账本会索引原文，最近原文默认保留 5 条进入上下文</div>
+          ${committeeDashboard}
           <div class="mr-gc-messages">
             ${emptyHtml}
             ${messageHtml}
@@ -2461,6 +2912,58 @@ if (typeof document !== 'undefined') (function () {
         renderHeader(meeting);
       });
     });
+    panel.querySelectorAll('[data-committee-copy-diagnostics]').forEach(btn => {
+      btn.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const dash = _committeeRunState[meeting.id] || null;
+        const cached = _gcPanelState[meeting.id] || {};
+        const partialBy = cached._partialBy || {};
+        const lines = [
+          `meeting=${meeting.id}`,
+          `scene=${meeting.scene || ''}`,
+          `mode=${cached.currentMode || 'idle'}`,
+          `stage=${dash ? `${dash.kind || ''}/${dash.key || ''}` : 'none'}`,
+          `status=${dash ? `${dash.status || ''}/${dash.severity || ''}` : 'none'}`,
+          `detail=${dash ? dash.detail || '' : ''}`,
+          `updated=${dash && dash.updatedAt ? new Date(dash.updatedAt).toISOString() : ''}`,
+          `hint=${dash ? dash.hint || '' : ''}`,
+          `partial=${JSON.stringify(partialBy)}`,
+          'events:',
+          ...((dash && dash.events) || []).map(e => `- ${new Date(e.ts).toISOString()} [${e.severity || 'normal'}] ${e.text || ''}`),
+        ];
+        const oldText = btn.textContent;
+        try {
+          await navigator.clipboard.writeText(lines.join('\n'));
+          btn.textContent = '已复制';
+          setTimeout(() => { btn.textContent = oldText; }, 1200);
+        } catch (e) {
+          console.warn('[committee-dashboard] copy diagnostics failed:', e);
+          btn.textContent = '复制失败';
+          setTimeout(() => { btn.textContent = oldText; }, 1200);
+        }
+      });
+    });
+    panel.querySelectorAll('[data-committee-open-ledger]').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const COMMITTEE_DASHBOARD = 'C:\\LinDangAgent\\data\\knowledge\\committee\\dashboard.html';
+        if (window.openPreviewPanel) window.openPreviewPanel(COMMITTEE_DASHBOARD);
+        else console.warn('[committee-dashboard] window.openPreviewPanel not available');
+      });
+    });
+    panel.querySelectorAll('[data-committee-open-path]').forEach(btn => {
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const targetPath = btn.getAttribute('data-committee-open-path');
+        if (!targetPath) return;
+        if (window.openPreviewPanel) window.openPreviewPanel(targetPath);
+        else console.warn('[committee-dashboard] window.openPreviewPanel not available');
+      });
+    });
+    if (panel.querySelector('.mr-committee-console')) _ensureCommitteePulseTimer();
     panel.querySelectorAll('[data-gc-side-toggle]').forEach(btn => {
       btn.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -2891,6 +3394,9 @@ if (typeof document !== 'undefined') (function () {
     const cached = _gcPanelState[meeting.id];
     _gcTurnStartTs[meeting.id] = Date.now();
     _gcOptimisticTurn[meeting.id] = { mode: 'group', t: Date.now() };
+    if (meeting.scene === 'committee') {
+      _recordCommitteeProgress(meeting.id, _committeeAcceptedProgressText(opts.userInput || ''));
+    }
     if (cached) {
       cached.currentMode = 'group';
       cached._partialBy = null;
@@ -2913,6 +3419,10 @@ if (typeof document !== 'undefined') (function () {
       console.log('[groupchat] turn IPC resolved:', result && result.status, 'turn=', result && result.turnNum);
       clearOptimistic();
       if (result && (result.status === 'busy' || result.status === 'error')) {
+        if (meeting.scene === 'committee') {
+          _recordCommitteeIssue(meeting.id, result.reason || '投委会发送失败', result.status === 'error' ? 'error' : 'warn');
+          refreshGroupChatPanel(meeting);
+        }
         const inp = document.getElementById('mr-input-box');
         if (inp && !inp.innerText.trim()) {
           inp.textContent = opts.userInput || '';
@@ -2923,6 +3433,10 @@ if (typeof document !== 'undefined') (function () {
     }).catch((e) => {
       console.error('[groupchat] turn IPC failed:', e.message);
       clearOptimistic();
+      if (meeting.scene === 'committee') {
+        _recordCommitteeIssue(meeting.id, e && e.message ? e.message : '投委会发送异常', 'error');
+        refreshGroupChatPanel(meeting);
+      }
     });
     meeting.lastMessageTime = Date.now();
     ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
@@ -3035,6 +3549,18 @@ if (typeof document !== 'undefined') (function () {
 
     // === Phase 2: DOM 更新（仅 active meeting 做）===
     if (meetingId !== activeMeetingId) return;
+    if (meeting.scene === 'committee' && meeting.groupChat && _getGroupViewMode() === 'chat') {
+      const panel = _ensureGcPanel();
+      const groupScroll = _captureGroupChatScroll(panel, meeting);
+      try {
+        panel.innerHTML = _renderGcPanelHtml(cached, meeting);
+        _bindGcPanelEvents(panel, meeting);
+        _restoreGroupChatScroll(panel, groupScroll);
+      } catch (e) {
+        console.error('[committee-dashboard] partial refresh failed:', e);
+      }
+      return;
+    }
 
     // 2026-05-05 道雪：时光机模式短路 — 用户在看第 N 轮历史快照时，partial-update
     //   不应该把卡片 outerHTML 替换为最新 streaming 内容（否则用户感知"被强制跳回最新轮"）。
@@ -3132,9 +3658,31 @@ if (typeof document !== 'undefined') (function () {
   // Stage 2 容错升级：软提醒 banner —— watcher 在 T1=90s/T2=180s 触发，UI 弹非阻塞 banner
   // 提示用户"还在等"，提供"一键提取/跳过/继续等"操作。永不阻塞按钮（按钮 disabled
   // 由 _allParticipantsSettled 决定，与本 banner 无关）。
+  // 投委会编排进度（2026-06-12）：conductor 各幕推进时把状态显示在会议头部进度区，
+  // 用户不用盯终端就知道现在跑到哪一幕（备料/幕一/质询/裁决/落盘回执）。
+  ipcRenderer.on('committee-progress', (_event, { meetingId, text, data }) => {
+    const meeting = meetingData[meetingId];
+    if (!meeting) return;
+    _recordCommitteeProgress(meetingId, text, data);
+    if (meeting.id !== activeMeetingId) return;
+    const progEl = document.getElementById('mr-header-progress');
+    const firstLine = String(text || '').split('\n')[0].slice(0, 90);
+    if (progEl) {
+      progEl.textContent = `投委会：${firstLine}`;
+      progEl.title = String(text || '');
+    }
+    if (meeting.scene === 'committee' && meeting.groupChat && _getGroupViewMode() === 'chat') {
+      _renderActivePanelFromCache(meeting);
+    }
+  });
+
   ipcRenderer.on('groupchat-soft-alert', (_event, { meetingId, sid, label, level, mode, turnNum }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
+    if (meeting.scene === 'committee') {
+      const waitText = level === 't2' ? '等待超过 3 分钟' : '等待超过 90 秒';
+      _recordCommitteeIssue(meetingId, `${label || sid.slice(0, 8)} ${waitText}，可能慢响应或卡住`, level === 't2' ? 'error' : 'warn');
+    }
     // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 _partialBy[sid].status='soft_alert'），
     //   切回该 AI 群聊时卡片自动显示"等待中…"状态。
     //   banner DOM 仅 active 时弹（跨 meeting 弹 banner 文案"XX 已等待"会让用户混乱当前看的不是这个 AI 群聊）。
@@ -3171,8 +3719,12 @@ if (typeof document !== 'undefined') (function () {
     }
     if (cached) {
       const panel = _ensureGcPanel();
+      // 群聊弹顶 bug 修复（2026-06-05 道雪）：soft-alert 90s/180s 触发时全量重渲
+      //   过去无 capture/restore → .mr-gc-messages 容器 scrollTop 被拍回 0,视觉弹顶。
+      const groupScroll = _captureGroupChatScroll(panel, meeting);
       panel.innerHTML = _renderGcPanelHtml(cached, meeting);
       _bindGcPanelEvents(panel, meeting);
+      _restoreGroupChatScroll(panel, groupScroll);
     }
   });
 
@@ -3182,6 +3734,9 @@ if (typeof document !== 'undefined') (function () {
   ipcRenderer.on('groupchat-send-stuck', (_e, { meetingId, sid /*, kind, mode */ }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
+    if (meeting.scene === 'committee') {
+      _recordCommitteeIssue(meetingId, `${sid.slice(0, 8)} 发送卡住，需要查看对应席位 PTY 或用卡片视图恢复`, 'warn');
+    }
     // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 sendStatus='stuck'），
     //   切回该 AI 群聊时卡片自动显示"⚠ 输入卡顿"状态 + [📤 发送] 按钮亮起。
     //   panel DOM 重渲仅 active 做。
@@ -3196,8 +3751,12 @@ if (typeof document !== 'undefined') (function () {
     if (meetingId !== activeMeetingId) return;
     if (cached) {
       const panel = _ensureGcPanel();
+      // 群聊弹顶 bug 修复（2026-06-05 道雪）：send-stuck 在用户提问瞬间常触发,
+      //   过去无 capture/restore → 整个 panel 重渲后 scrollTop=0,用户视觉"弹顶"。
+      const groupScroll = _captureGroupChatScroll(panel, meeting);
       panel.innerHTML = _renderGcPanelHtml(cached, meeting);
       _bindGcPanelEvents(panel, meeting);
+      _restoreGroupChatScroll(panel, groupScroll);
     }
   });
 
@@ -3525,6 +4084,8 @@ if (typeof document !== 'undefined') (function () {
       <div class="mr-header-progress" id="mr-header-progress" title="本轮发言进度"></div>
       <div class="mr-header-right">${layoutButtonsHtml}
         ${viewToggleHtml}
+        ${meeting.groupChat ? `<button class="mr-header-btn" id="mr-btn-memory-preview" title="预览注入给 DeepSeek 的 Claude 主 MEMORY.md">📖 记忆</button>` : ''}
+        ${meeting.scene === 'committee' ? `<button class="mr-header-btn" id="mr-btn-committee-dashboard" title="打开投委会 Dashboard（决议台账/记分牌/教训库）">📊 投委会</button>` : ''}
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
         <button class="mr-header-btn compact-toggle-btn ${document.body.classList.contains('compact-mode') ? 'active' : ''}" title="简洁模式（手机远程友好）">📱 简洁</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
@@ -3557,6 +4118,29 @@ if (typeof document !== 'undefined') (function () {
       renderHeader(meeting);
     });
     document.getElementById('mr-btn-add-sub').addEventListener('click', () => showAddSubMenu(meeting.id));
+    // 2026-06-05 联邦记忆下线：📖 记忆按钮直接预览 Claude 主 MEMORY.md
+    const memoryBtn = document.getElementById('mr-btn-memory-preview');
+    if (memoryBtn) {
+      memoryBtn.addEventListener('click', () => {
+        if (typeof window.openPreviewPanel === 'function') {
+          window.openPreviewPanel(_CLAUDE_MEMORY_INDEX);
+        } else {
+          console.warn('[memory-preview] window.openPreviewPanel not available');
+        }
+      });
+    }
+    // 投委会 Dashboard 按钮：预览面板打开机构记忆仪表盘（committee_memory.py report 每场自动刷新）
+    const committeeDashBtn = document.getElementById('mr-btn-committee-dashboard');
+    if (committeeDashBtn) {
+      committeeDashBtn.addEventListener('click', () => {
+        const COMMITTEE_DASHBOARD = 'C:\\LinDangAgent\\data\\knowledge\\committee\\dashboard.html';
+        if (typeof window.openPreviewPanel === 'function') {
+          window.openPreviewPanel(COMMITTEE_DASHBOARD);
+        } else {
+          console.warn('[committee-dashboard] window.openPreviewPanel not available');
+        }
+      });
+    }
     // 注：顶部 scene toggle（群聊/投研）已删除（2026-05-04 决策：scene 创建时确定，运行时不可切换）。
     // Arch refactor 2026-05-02: 沉浸/调试 toggle 删除，无需 binding。
     document.getElementById('mr-btn-memo').addEventListener('click', () => { if (typeof toggleMemoPanel === 'function') toggleMemoPanel(); });
@@ -3711,8 +4295,12 @@ if (typeof document !== 'undefined') (function () {
         const cached = _gcPanelState[startActiveMeetingId];
         if (cached) {
           const panel = _ensureGcPanel();
+          // 群聊弹顶 bug 修复（2026-06-05 道雪）：CLI ready poll 每秒触发,
+          //   首次 AI 思考期间从"创建中→待命"切换时会重渲,过去无 capture/restore → 弹顶。
+          const groupScroll = _captureGroupChatScroll(panel, meeting);
           panel.innerHTML = _renderGcPanelHtml(cached, meeting);
           _bindGcPanelEvents(panel, meeting);
+          _restoreGroupChatScroll(panel, groupScroll);
         }
       }
       // 软提醒 banner（IF-C3 实装后会调），保护性调用——不存在时静默
@@ -4681,8 +5269,13 @@ if (typeof document !== 'undefined') (function () {
         const cached = _gcPanelState[activeMeetingId];
         if (cached) {
           const panel = _ensureGcPanel();
-          panel.innerHTML = _renderGcPanelHtml(cached, meetingData[activeMeetingId]);
-          _bindGcPanelEvents(panel, meetingData[activeMeetingId]);
+          // 群聊弹顶 bug 修复（2026-06-05 道雪）：session-closed 在 CLI 崩溃时触发全量重渲,
+          //   过去无 capture/restore → scrollTop=0,刚崩溃用户视觉"弹顶"信息找不回。
+          const meeting = meetingData[activeMeetingId];
+          const groupScroll = _captureGroupChatScroll(panel, meeting);
+          panel.innerHTML = _renderGcPanelHtml(cached, meeting);
+          _bindGcPanelEvents(panel, meeting);
+          _restoreGroupChatScroll(panel, groupScroll);
         }
       }
     }
@@ -4743,7 +5336,7 @@ if (typeof document !== 'undefined') (function () {
 
   // --- Expose global ---
 
-  window.MeetingRoom = {
+  const meetingRoomApi = {
     init,
     openMeeting,
     closeMeetingPanel,
@@ -4752,6 +5345,18 @@ if (typeof document !== 'undefined') (function () {
     updateMeetingData,
     mountSubTerminal,
   };
+  if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
+    meetingRoomApi.debugRenderGroupChatState = function debugRenderGroupChatState(meetingId, state) {
+      const meeting = meetingData[meetingId];
+      if (!meeting || !_isPanelCapableMeeting(meeting)) return { ok: false, reason: 'meeting_not_found' };
+      const panel = _ensureGcPanel();
+      _gcPanelState[meetingId] = state || {};
+      panel.innerHTML = _renderGcPanelHtml(_gcPanelState[meetingId], meeting);
+      _bindGcPanelEvents(panel, meeting);
+      return { ok: true, text: panel.innerText || '' };
+    };
+  }
+  window.MeetingRoom = meetingRoomApi;
 
 })();
 

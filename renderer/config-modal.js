@@ -9,7 +9,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
   const CONFIG_AI_META = {
     claude: {
       title: 'Claude 设置',
-      hint: '使用当前本机 Claude Code 订阅登录状态。Hub 保持现有订阅启动方式。',
+      hint: '默认使用本机 Claude Code 订阅。可选填 VPS 代理走团队共享 Max。',
       status: '订阅',
       statusClass: 'subscription',
     },
@@ -214,7 +214,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     );
   
     const deepseekSummary = configEl('cfg-summary-deepseek');
-    if (deepseekSummary) deepseekSummary.textContent = deepseekKey ? 'API · deepseek-v4-pro' : 'API · 未配置 Key';
+    if (deepseekSummary) deepseekSummary.textContent = deepseekKey ? 'API · deepseek-v4-pro[1m]' : 'API · 未配置 Key';
     setConfigStatus(configEl('cfg-status-deepseek'), deepseekKey ? 'API' : '缺 Key', deepseekKey ? 'api' : 'missing');
   
     const glmSummary = configEl('cfg-summary-glm');

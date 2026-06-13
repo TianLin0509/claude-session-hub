@@ -17,15 +17,24 @@
 // kind → marker 字符串数组。空数组表示 "无 marker，仅靠 buffer 静默兜底"。
 const MARKERS = {
   // Claude Code TUI 输入框就绪后状态栏稳定含 'shift+tab to cycle' 字符串
-  claude: ['shift+tab'],
+  // 2026-06-12 live committee E2E: newer Claude-family TUI can render
+  // "? for shortcuts" without the old shift+tab footer in the ring buffer.
+  claude: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
   gemini: ['Type your message', 'YOLO', 'gemini-'],
-  codex: ['gpt-5.5', 'gpt-5.4', 'Context 100%', 'send'],
+  // Do not use model ids such as "gpt-5.5" here: the PowerShell launch
+  // command itself contains "--model gpt-5.5", which can falsely mark Codex
+  // ready before the TUI input box exists.
+  codex: ['Context '],
   // GLM/DeepSeek/GPT/Kimi/Qwen 都跑在 claude CLI 上（CLAUDE_CONFIG_DIR 隔离） — 复用 Claude marker
-  glm: ['shift+tab'],
-  deepseek: ['shift+tab'],
-  gpt: ['shift+tab'],
-  kimi: ['shift+tab'],
-  qwen: ['shift+tab'],
+  glm: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
+  deepseek: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
+  gpt: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
+  kimi: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
+  qwen: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
+};
+
+const BLOCKERS = {
+  codex: [/Do you trust the contents of this directory/i, /Booting MCP server/i, /esc to interrupt/i],
 };
 
 const MIN_BUF_LEN = 500;
@@ -54,6 +63,12 @@ function isReady(sessionId, kind, buf) {
   const need = MARKERS[kind];
   if (!need) return true; // 未注册 kind（如 powershell）默认 ready
   buf = buf || '';
+  const tail = buf.slice(-2000);
+  const blockers = BLOCKERS[kind] || [];
+  if (blockers.some(re => re.test(tail))) {
+    _stableState.delete(sessionId);
+    return false;
+  }
   const markerHit = need.length > 0 && need.some(m => buf.includes(m));
   const noMarker = need.length === 0;
   if (!(markerHit || noMarker)) return false;
@@ -98,6 +113,7 @@ module.exports = {
   markReady,
   cleanup,
   MARKERS,
+  BLOCKERS,
   MIN_BUF_LEN,
   STABLE_MS,
 };

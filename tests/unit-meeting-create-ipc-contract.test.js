@@ -128,6 +128,7 @@ test('add-meeting-sub assigns slot title, isolated workspace, and Claude MCP con
   assert.strictEqual(result.session.opts.cwd, 'C:\\isolated\\m1');
   assert.strictEqual(result.session.opts.model, 'opus');
   assert.strictEqual(result.session.opts.mcpConfigFile, 'C:\\hub\\mcp.json');
+  assert.strictEqual(result.session.opts.noInheritCursor, true);
   assert.deepStrictEqual(deps.calls.filter(call => call[0] === 'writeResearchMcpConfig'), [
     ['writeResearchMcpConfig', 'C:\\hub', 'm1', 4567, 'token', 'claude'],
   ]);

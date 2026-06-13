@@ -7,13 +7,23 @@ const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
 const { isClaudeFamily, isClaudeWebKind, isCodexCliKind, isCodexWebKind } = require('./ai-kinds.js');
-const { normalizeDeepSeekModel, deepseekDisplayName } = require('./model-options.js');
+const { normalizeDeepSeekModel, deepseekDisplayName, DEFAULT_MODEL_BY_KIND } = require('./model-options.js');
 const { CodexAppServerClient } = require('./codex-app-server-client.js');
 const codexAppRegistry = require('./codex-app-registry.js');
 
 const RING_BUFFER_BYTES = 16384;
-const CODEX_REASONING_EFFORT = 'xhigh';
-const CODEX_REASONING_CONFIG_ARG = ` -c 'model_reasoning_effort="${CODEX_REASONING_EFFORT}"'`;
+const CODEX_REASONING_EFFORT = 'high';
+const CODEX_GROUP_CHAT_REASONING_EFFORT = 'medium';
+function buildCodexReasoningConfigArg(effort = CODEX_REASONING_EFFORT) {
+  return [
+    ` -c 'model_reasoning_effort="${effort}"'`,
+    ` -c 'approval_policy="never"'`,
+    ` -c 'sandbox_mode="danger-full-access"'`,
+    ` -c 'windows.sandbox="unelevated"'`,
+    ` -c 'notice.hide_full_access_warning=true'`,
+  ].join('');
+}
+const CODEX_REASONING_CONFIG_ARG = buildCodexReasoningConfigArg(CODEX_REASONING_EFFORT);
 
 // 打包后 __dirname 指向 app.asar 内部，外部进程（claude/codex CLI）读不到。
 // 用 asarUnpack 解压副本 + 路径替换，源码模式 __dirname 不含 app.asar，noop。
@@ -254,6 +264,49 @@ function dismissCodexUpdatePrompt(homeDir = process.env.USERPROFILE || process.e
 //
 // 默认对订阅模式 ~/.codex/config.toml；API 模式（isolated CODEX_HOME）必须显式传
 //   configDir，否则 dismiss 写到错误位置不生效（同 dismissCodexUpdatePrompt 约定）。
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function ensureTomlSectionKey(content, sectionName, key, value) {
+  const src = String(content || '');
+  const desiredLine = `${key} = ${value}`;
+  const headerRe = new RegExp(`^\\s*\\[${escapeRegExp(sectionName)}\\]\\s*$`, 'im');
+  const headerMatch = src.match(headerRe);
+
+  if (!headerMatch) {
+    const sep = src ? (src.endsWith('\n') ? '\n' : '\n\n') : '';
+    return {
+      content: src + sep + `[${sectionName}]\n${desiredLine}\n`,
+      changed: true,
+    };
+  }
+
+  const sectionStart = headerMatch.index + headerMatch[0].length;
+  const tail = src.slice(sectionStart);
+  const nextHeaderMatch = tail.match(/\n\s*\[[^\]]+\]\s*$/m);
+  const sectionEnd = nextHeaderMatch ? sectionStart + nextHeaderMatch.index : src.length;
+  const section = src.slice(sectionStart, sectionEnd);
+  const desiredRe = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*${escapeRegExp(value)}\\s*$`, 'im');
+  if (desiredRe.test(section)) {
+    return { content: src, changed: false };
+  }
+
+  const keyRe = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=.*$`, 'im');
+  if (keyRe.test(section)) {
+    const nextSection = section.replace(keyRe, desiredLine);
+    return {
+      content: src.slice(0, sectionStart) + nextSection + src.slice(sectionEnd),
+      changed: true,
+    };
+  }
+
+  return {
+    content: src.slice(0, sectionStart) + `\n${desiredLine}` + src.slice(sectionStart),
+    changed: true,
+  };
+}
+
 function dismissCodexRateLimitDialog(homeDir = process.env.USERPROFILE || process.env.HOME || os.homedir(), configDir = null) {
   const configPath = configDir
     ? path.join(configDir, 'config.toml')
@@ -263,26 +316,37 @@ function dismissCodexRateLimitDialog(homeDir = process.env.USERPROFILE || proces
     try { content = fs.readFileSync(configPath, 'utf8'); } catch { /* 文件不存在 → 视作空 */ }
 
     // 幂等：key 已存在且为 true → 跳过写盘
-    if (/^\s*hide_rate_limit_model_nudge\s*=\s*true\b/m.test(content)) return false;
-
-    let newContent;
+    let newContent = content;
     // 已有 [notice] section（任意大小写 / 前后空格）→ 在 section 头之后插入 key
     const noticeMatch = content.match(/^\s*\[notice\]\s*$/m);
-    if (noticeMatch) {
+    if (noticeMatch && !/^\s*hide_rate_limit_model_nudge\s*=\s*true\b/m.test(content)) {
       const insertPos = noticeMatch.index + noticeMatch[0].length;
       newContent = content.slice(0, insertPos) + '\nhide_rate_limit_model_nudge = true' + content.slice(insertPos);
-    } else {
+    } else if (!noticeMatch && !/^\s*hide_rate_limit_model_nudge\s*=\s*true\b/m.test(content)) {
       // 没 [notice] → 文件末尾追加完整 section
       const sep = (content && !content.endsWith('\n')) ? '\n' : '';
       newContent = content + sep + '\n[notice]\nhide_rate_limit_model_nudge = true\n';
     }
 
+    const requiredKeys = [
+      ['notice', 'hide_rate_limit_model_nudge', 'true'],
+      ['notice', 'hide_full_access_warning', 'true'],
+      ['windows', 'sandbox', '"unelevated"'],
+    ];
+    let changed = false;
+    for (const [section, key, value] of requiredKeys) {
+      const next = ensureTomlSectionKey(newContent, section, key, value);
+      newContent = next.content;
+      changed = changed || next.changed;
+    }
+    if (!changed) return false;
+
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, newContent, 'utf8');
-    console.log(`[hub] dismissed Codex rate-limit dialog at ${configPath}`);
+    console.log(`[hub] ensured Codex silent full-access config at ${configPath}`);
     return true;
   } catch (err) {
-    console.warn('[hub] failed to dismiss Codex rate-limit dialog:', err.message);
+    console.warn('[hub] failed to ensure Codex silent full-access config:', err.message);
     return false;
   }
 }
@@ -311,9 +375,16 @@ function ensureCodexApiProfile(cv, projectDir) {
     'disable_response_storage = true',
     `model = ${tomlString(model)}`,
     `model_provider = ${tomlString(provider)}`,
-    'model_reasoning_effort = "xhigh"',
+    `model_reasoning_effort = ${tomlString(CODEX_REASONING_EFFORT)}`,
     'approval_policy = "never"',
     'sandbox_mode = "danger-full-access"',
+    '',
+    '[notice]',
+    'hide_rate_limit_model_nudge = true',
+    'hide_full_access_warning = true',
+    '',
+    '[windows]',
+    'sandbox = "unelevated"',
     '',
     `[model_providers.${provider}]`,
     `base_url = ${tomlString(baseUrl)}`,
@@ -367,12 +438,20 @@ function ensureCodexCwdTrusted(projectDir, configDir = null) {
     fs.mkdirSync(codexHome, { recursive: true });
     const cfgPath = path.join(codexHome, 'config.toml');
     const projectKey = path.resolve(projectDir);
+    const projectKeys = Array.from(new Set([
+      projectKey,
+      projectKey.toLowerCase(),
+    ]));
     let cfg = '';
     try { cfg = fs.readFileSync(cfgPath, 'utf8'); } catch {}
-    const headerNeedle = `[projects.'${projectKey}']`.toLowerCase();
-    if (cfg.toLowerCase().includes(headerNeedle)) return;
-    const append = (cfg && !cfg.endsWith('\n') ? '\n' : '')
-      + `\n[projects.'${projectKey}']\ntrust_level = "trusted"\n`;
+    const chunks = [];
+    for (const key of projectKeys) {
+      const headerNeedle = `[projects.'${key}']`;
+      if (cfg.includes(headerNeedle)) continue;
+      chunks.push(`\n[projects.'${key}']\ntrust_level = "trusted"\n`);
+    }
+    if (chunks.length === 0) return;
+    const append = (cfg && !cfg.endsWith('\n') ? '\n' : '') + chunks.join('');
     fs.appendFileSync(cfgPath, append, 'utf8');
   } catch (err) {
     console.warn('[hub] failed to pretrust codex cwd:', err.message);
@@ -444,6 +523,7 @@ class SessionManager extends EventEmitter {
   resumeCounter = 0;
   psCounter = 0;
   _outputSeq = 0;
+  _lastWrite = null;
 
   // Injected by main: the chosen hook HTTP port + per-launch auth token.
   hookPort = null;
@@ -557,11 +637,18 @@ class SessionManager extends EventEmitter {
         sessionEnv.CODEX_HOME = getCodexApiHome();
       } else {
         if (isCodex) {
-          codexProfile = resolveCodexSubscriptionProfile(cv, opts.codexProfile);
-          if (codexProfile.home) {
-            sessionEnv.CODEX_HOME = codexProfile.home;
-          } else {
+          if (opts.meetingId) {
+            // 群聊 Codex 统一用默认 ~/.codex/，记忆汇合到一处方便管理
+            // 跟 Hub 直开 Codex 共享 1.9MB 历史记忆库
             delete sessionEnv.CODEX_HOME;
+          } else {
+            // 非群聊（Hub 直开 Codex）保留原有 profile 逻辑
+            codexProfile = resolveCodexSubscriptionProfile(cv, opts.codexProfile);
+            if (codexProfile.home) {
+              sessionEnv.CODEX_HOME = codexProfile.home;
+            } else {
+              delete sessionEnv.CODEX_HOME;
+            }
           }
         }
         // Gemini 走 google.com / Codex 订阅走 openai.com，需走代理过 GFW
@@ -684,6 +771,13 @@ class SessionManager extends EventEmitter {
       if (isCodexApiBackend(cv)) {
         clearProxyEnv(clientEnv);
         clientEnv.CODEX_HOME = ensureCodexApiProfile(cv, spawnCwd);
+      } else if (opts.meetingId) {
+        // 群聊 Codex App 用默认 ~/.codex/，跟普通 Codex 群聊保持一致
+        delete clientEnv.CODEX_HOME;
+        ensureCodexCwdTrusted(spawnCwd);
+        clientEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
+        clientEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
+        clientEnv.NO_PROXY = 'localhost,127.0.0.1';
       } else {
         const profile = resolveCodexSubscriptionProfile(cv, opts.codexProfile);
         if (profile.home) {
@@ -697,6 +791,7 @@ class SessionManager extends EventEmitter {
         clientEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
         clientEnv.NO_PROXY = 'localhost,127.0.0.1';
       }
+      dismissCodexRateLimitDialog(undefined, clientEnv.CODEX_HOME || null);
       const appClient = new CodexAppServerClient({
         sessionId: id,
         cwd: spawnCwd,
@@ -749,6 +844,12 @@ class SessionManager extends EventEmitter {
         // API 模式 codex 把 rollout 写到 isolated home（不写 ~/.codex/sessions）。
         // 记到 info 让 transcript-tap 注册时把这个 root 加进 CodexTap 的扫描列表。
         codexSessionsRoot = path.join(sessionEnv.CODEX_HOME, 'sessions');
+      } else if (opts.meetingId) {
+        // 群聊 Codex 用默认 ~/.codex/（跟 env 准备阶段一致，让 Codex 自动
+        // 写到主 memory，跟 Hub 直开 Codex 共享 1.9MB 历史）
+        delete sessionEnv.CODEX_HOME;
+        ensureCodexCwdTrusted(spawnCwd);
+        // codexSessionsRoot 保持 null，让 CodexTap 扫默认 ~/.codex/sessions
       } else {
         codexProfile = codexProfile || resolveCodexSubscriptionProfile(cv, opts.codexProfile);
         if (codexProfile.home) {
@@ -785,8 +886,9 @@ class SessionManager extends EventEmitter {
 
     let currentModel = null;
     if (isClaude) {
-      // 默认 Opus 4.7 1M；AI 群聊 Modal 选 sonnet-4.5 等时透传 opts.model。
-      const mid = opts.model || 'claude-opus-4-7[1m]';
+      // 默认走 DEFAULT_MODEL_BY_KIND.claude（当前 Opus 4.8 1M）；
+      // AI 群聊 Modal 选 sonnet-4.5 等时透传 opts.model。
+      const mid = opts.model || DEFAULT_MODEL_BY_KIND.claude;
       currentModel = { id: mid, displayName: mid };
     } else if (isGemini) {
       const mid = opts.model || 'gemini-3-pro-preview';
@@ -889,16 +991,28 @@ class SessionManager extends EventEmitter {
       // 不从 transcript 反推 model 设置；下一条消息的 model 解析顺序为
       // CLI --model > env > settings 文件，所以必须显式覆盖。
       // opts.model 让 meeting-create-modal 选定的非默认 model（如 sonnet-4.5）生效。
-      const model = opts.model || 'claude-opus-4-7[1m]';
+      const model = opts.model || DEFAULT_MODEL_BY_KIND.claude;
+      // 默认 --effort max：用户偏好"立花道雪工作台"所有 Claude 会话上 max effort。
+      // settings.json 持久档为 effortLevel: max（CLI --effort 合法枚举：low/medium/high/xhigh/max；
+      // ultracode 不是合法 --effort 枚举值，旧注释把它当 enum 是错的）。
+      // 这里 --effort max 与 settings.effortLevel=max 同值，作为"防御性显式指定"——
+      //   防止 settings.local.json 或 /effort 命令污染把会话降到低档。
+      // ultracode 是独立的 per-turn 关键词触发器（在 prompt 里输入 "ultracode" 字面词
+      //   即可本回合 opt-in workflow tool + xhigh effort），由 settings.json 的
+      //   `workflowKeywordTriggerEnabled` 控制（默认 on，无需显式写）。注意：UI/遥测
+      //   名为 ultracodeKeywordTrigger，但 on-disk key 实际是 workflowKeywordTriggerEnabled。
+      //   --effort max 不会阻塞该触发器，因为触发器是会话内独立 toggle，与启动 flag 解耦。
+      // CLAUDE_HUB_NO_EFFORT_MAX=1 可关启动期注入。
+      const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ' --effort max';
       let cmd;
       if (opts.resumeCCSessionId) {
-        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model}`;
+        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model}${effortFlag}`;
       } else if (opts.useContinue) {
-        cmd = ` claude --continue --model ${model}`;
+        cmd = ` claude --continue --model ${model}${effortFlag}`;
       } else if (kind === 'claude-resume' || kind === 'claude-web-resume') {
-        cmd = ` claude --resume --model ${model}`;
+        cmd = ` claude --resume --model ${model}${effortFlag}`;
       } else {
-        cmd = ` claude --model ${model}`;
+        cmd = ` claude --model ${model}${effortFlag}`;
       }
       // Claude Web 模式：用 --system-prompt-file 完全替换默认 system prompt，
       // 从根上消除 CC 默认的 terse / no preamble 风格偏置，加载 web 风格指令。
@@ -921,8 +1035,13 @@ class SessionManager extends EventEmitter {
       // 默认开启 fast 模式（仅 Opus 4.6/4.7/4.8 生效，非 Opus 会被忽略）。
       // 通过 --settings 叠加用户既有 settings；用户仍可在 session 内 /fast 关闭。
       // 用 settings 文件而非 inline JSON，规避 PS 5.1 向 native exe 传内嵌双引号的 quoting bug。
-      const fastSettingsPath = resolveAsarUnpacked('claude-fast-settings.json');
-      cmd += ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
+      // 2026-06-11：实测 fastMode 交互式会话不落盘 transcript jsonl（/exit 后仍空），
+      //   导致 transcript-tap 拿不到 turn 文本 → 手机 PWA / 远程模式收不到回复。
+      //   CLAUDE_HUB_NO_FAST=1 可全局禁用 fast 注入（远程/移动场景建议设置）。
+      if (process.env.CLAUDE_HUB_NO_FAST !== '1') {
+        const fastSettingsPath = resolveAsarUnpacked('claude-fast-settings.json');
+        cmd += ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
+      }
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -993,26 +1112,29 @@ class SessionManager extends EventEmitter {
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       const cv = getConfigValues();
       const codexModel = opts.model || (isCodexApiBackend(cv) ? cv.CODEX_API_MODEL : 'gpt-5.5');
+      const codexReasoningArg = buildCodexReasoningConfigArg(
+        opts.meetingId ? CODEX_GROUP_CHAT_REASONING_EFFORT : CODEX_REASONING_EFFORT
+      );
       const codexInstructionFile = opts.codexInstructionFile || (isCodexWeb ? resolveAsarUnpacked('codex-web-prompt.md') : null);
       let cmd;
       if (kind === 'codex-resume' || kind === 'codex-web-resume' || opts.codexResumePicker) {
         // codex resume 无参 = picker by default
-        cmd = ` codex resume --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
+        cmd = ` codex resume --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
       } else if (opts.useResume && opts.codexSid) {
         // Level 1: precise resume by sid
-        cmd = ` codex resume ${opts.codexSid} --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
+        cmd = ` codex resume ${opts.codexSid} --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
       } else if (opts.useResume) {
         // Level 2 degradation: no sid recorded → use --last
-        cmd = ` codex resume --last --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
+        cmd = ` codex resume --last --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
       } else {
         // Research mode：完全 bypass approvals + sandbox（含 MCP 工具调用、shell 命令、文件写）
         // 避免任何 "Allow ... ?" 弹窗阻塞投研讨论流程；
         // 安全约束完全靠 prompt/covenant 软约束（已强化"不要改代码 / 不要 git / 不要删除"）
         // opts.model 让 meeting-create-modal 选定的非默认 model（如 gpt-5.4）生效。
         if (opts.codexBypassApprovals) {
-          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
+          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
         } else {
-          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${CODEX_REASONING_CONFIG_ARG}`;
+          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
         }
         // 注：曾尝试 --no-alt-screen 改善观感，实测无明显改善 + Enter 提交失效 → 撤回。
         // 渲染观感问题改由"持久化 AI 群聊面板"（直接展示干净回答预览）绕过。
@@ -1066,6 +1188,10 @@ class SessionManager extends EventEmitter {
       if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
       }
+      // P0.4 STEP 1 补齐：5 家 Claude-family 都拼 --append-system-prompt-file
+      if (opts.appendSystemPromptFile) {
+        cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
+      }
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
@@ -1111,6 +1237,10 @@ class SessionManager extends EventEmitter {
       // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
       if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
+      }
+      // P0.4 STEP 1 补齐：5 家 Claude-family 都拼 --append-system-prompt-file
+      if (opts.appendSystemPromptFile) {
+        cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
       }
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
@@ -1158,6 +1288,10 @@ class SessionManager extends EventEmitter {
       if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
       }
+      // P0.4 STEP 1 补齐：5 家 Claude-family 都拼 --append-system-prompt-file
+      if (opts.appendSystemPromptFile) {
+        cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
+      }
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
@@ -1204,6 +1338,10 @@ class SessionManager extends EventEmitter {
       if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
       }
+      // P0.4 STEP 1 补齐：5 家 Claude-family 都拼 --append-system-prompt-file
+      if (opts.appendSystemPromptFile) {
+        cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
+      }
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
@@ -1249,6 +1387,10 @@ class SessionManager extends EventEmitter {
       // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
       if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
+      }
+      // P0.4 STEP 1 补齐：5 家 Claude-family 都拼 --append-system-prompt-file
+      if (opts.appendSystemPromptFile) {
+        cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
       }
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
@@ -1318,8 +1460,18 @@ class SessionManager extends EventEmitter {
 
   writeToSession(sessionId, data) {
     const s = this.sessions.get(sessionId);
-    if (s && s.appClient) return s.appClient.handleInput(data);
-    if (s && s.pty) s.pty.write(data);
+    if (s && s.appClient) {
+      this._lastWrite = { sessionId, data, target: 'appClient', ts: Date.now() };
+      return s.appClient.handleInput(data);
+    }
+    if (s && s.pty) {
+      this._lastWrite = { sessionId, data, target: 'pty', ts: Date.now() };
+      s.pty.write(data);
+    }
+  }
+
+  getLastWrite() {
+    return this._lastWrite ? { ...this._lastWrite } : null;
   }
 
   resizeSession(sessionId, cols, rows) {
@@ -1385,7 +1537,10 @@ class SessionManager extends EventEmitter {
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
-      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}${CODEX_REASONING_CONFIG_ARG}`;
+      const codexReasoningArg = buildCodexReasoningConfigArg(
+        meetingId ? CODEX_GROUP_CHAT_REASONING_EFFORT : CODEX_REASONING_EFFORT
+      );
+      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || 'gpt-5.5'}${codexReasoningArg}`;
       if (isCodexWebKind(kind)) {
         const promptPath = resolveAsarUnpacked('codex-web-prompt.md');
         cmd += ` -c "model_instructions_file=${promptPath.replace(/\\/g, '\\\\')}"`;
@@ -1394,7 +1549,17 @@ class SessionManager extends EventEmitter {
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
       cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
     } else if (kind === 'claude' || kind === 'claude-resume') {
-      cmd = ` claude --model ${modelId || 'claude-opus-4-7[1m]'}${isolation}\r\n`;
+      // 默认 --effort max（CLAUDE_HUB_NO_EFFORT_MAX=1 可关）；
+      // 默认 model 跟随 DEFAULT_MODEL_BY_KIND.claude（当前 Opus 4.8 1M）。
+      // 默认叠 fast 模式 settings（CLAUDE_HUB_NO_FAST=1 可关）—— 与 createSession
+      //   spawn block 对齐，防止 relaunch 后丢 fast 状态。
+      const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ' --effort max';
+      let fastFlag = '';
+      if (process.env.CLAUDE_HUB_NO_FAST !== '1') {
+        const fastSettingsPath = resolveAsarUnpacked('claude-fast-settings.json');
+        fastFlag = ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
+      }
+      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${fastFlag}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
       cmd = ` claude --model ${normalizeDeepSeekModel(modelId)} --permission-mode bypassPermissions${isolation}\r\n`;
     } else if (kind === 'glm' || kind === 'glm-resume') {
@@ -1592,4 +1757,11 @@ async function readTranscriptTail(kind, sourcePath, n = 10) {
   }
 }
 
-module.exports = { SessionManager, readTranscriptTail, dismissCodexUpdatePrompt, dismissCodexRateLimitDialog, clearSessionManagerConfigCache };
+module.exports = {
+  SessionManager,
+  readTranscriptTail,
+  dismissCodexUpdatePrompt,
+  dismissCodexRateLimitDialog,
+  clearSessionManagerConfigCache,
+  _private: { ensureCodexCwdTrusted },
+};

@@ -404,8 +404,8 @@ function formatRelativeTime(ts) {
 }
 
 
-function selectMeeting(meetingId) {
-  savePreviewState();
+async function selectMeeting(meetingId) {
+  await savePreviewState();
   activeSessionId = null;
   activeMeetingId = meetingId;
 
@@ -415,8 +415,10 @@ function selectMeeting(meetingId) {
 
   const meeting = meetings[meetingId];
   // 2026-05-05 道雪 修3：清 unread —— 用户点进 AI 群聊即"看过"，跟普通 session 一致。
-  if (meeting && meeting.unreadCount) {
+  // 2026-05-31 道雪：新语义清"本轮已答 sid 集合"；_lastUnreadTurnNum 保留，避免离开后同一轮再答完又从 1 起跳。
+  if (meeting) {
     meeting.unreadCount = 0;
+    if (meeting.unreadAnswered instanceof Set) meeting.unreadAnswered.clear();
   }
   if (meeting && typeof MeetingRoom !== 'undefined') {
     if (meeting.status === 'dormant') {
@@ -432,7 +434,7 @@ function selectMeeting(meetingId) {
   }
 
   renderSessionList();
-  restorePreviewForContext(`meeting:${meetingId}`);
+  await restorePreviewForContext(`meeting:${meetingId}`);
 }
 
 // --- Terminal management ---
@@ -1889,8 +1891,8 @@ function startRename(sessionId, titleSpan) {
 }
 
 // --- Session selection ---
-function selectSession(id, opts = {}) {
-  savePreviewState();
+async function selectSession(id, opts = {}) {
+  await savePreviewState();
   activeMeetingId = null;
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
@@ -1928,7 +1930,26 @@ function selectSession(id, opts = {}) {
   if (session) {
     session.readSignature = getQuestionsSignature(id);
   }
-  restorePreviewForContext(`session:${id}`);
+  // auto-focus 浮动输入框 — 与群聊 openMeeting (meeting-room.js IF-C2) 对称：
+  //   点进 session 后用户可直接键盘输入，无需先点输入框。defer 50ms 让 xterm
+  //   open + robustFit 的 rAF 链先跑完，避免被它抢焦点回去。
+  setTimeout(() => {
+    if (activeSessionId !== id) return; // 50ms 内用户又切走了
+    const inputBox = document.querySelector('.terminal-panel .floating-input-box');
+    if (inputBox && document.activeElement !== inputBox) {
+      inputBox.focus();
+      // caret 移到内容末尾（保留草稿 caret 体验）
+      const sel = window.getSelection();
+      if (sel) {
+        const range = document.createRange();
+        range.selectNodeContents(inputBox);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }
+  }, 50);
+  await restorePreviewForContext(`session:${id}`);
 }
 
 // --- Dropdown menu ---
@@ -1939,6 +1960,24 @@ btnNew.addEventListener('click', () => {
 document.addEventListener('mousedown', (e) => {
   if (!wrapperEl.contains(e.target)) menuEl.style.display = 'none';
   if (resumeWrapperEl && !resumeWrapperEl.contains(e.target)) resumeMenuEl.style.display = 'none';
+});
+
+// v1.5.1：弹窗升级为居中 modal 后，遮罩(::before)铺满 viewport，
+// 点击遮罩区会落到弹窗元素本身（e.target === menuEl）→ 关闭。
+// 点击内部 option/按钮 → e.target 是子元素，不关闭。
+menuEl.addEventListener('mousedown', (e) => {
+  if (e.target === menuEl) menuEl.style.display = 'none';
+});
+resumeMenuEl.addEventListener('mousedown', (e) => {
+  if (e.target === resumeMenuEl) resumeMenuEl.style.display = 'none';
+});
+
+// ESC 关闭任意打开的侧栏 modal
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  for (const el of [menuEl, resumeMenuEl]) {
+    if (el && el.style.display !== 'none') el.style.display = 'none';
+  }
 });
 
 for (const btn of document.querySelectorAll('.new-session-option')) {
@@ -2093,6 +2132,8 @@ const {
   clearPreviewUI,
   restorePreviewForContext,
 } = previewPanel;
+// P0.6+: 暴露给 meeting-room.js 的"📖 记忆"按钮使用
+window.openPreviewPanel = openPreviewPanel;
 
 // 2026-05-23 道雪：补全 main.js nav-guard 副作用 — 群聊/会议消息中 marked 渲染
 //   出的 <a href="http(s)://..."> 若不在 capture 阶段截走，会触发主 webContents
@@ -2722,7 +2763,7 @@ if (typeof MeetingRoom !== 'undefined') {
   MeetingRoom.init(sessions, getOrCreateTerminal);
 }
 
-ipcRenderer.on('session-created', (_e, { session }) => {
+ipcRenderer.on('session-created', async (_e, { session }) => {
   // When resuming a dormant session, the hubId matches an existing dormant
   // entry. Merge live PTY info on top of the dormant metadata so title /
   // preview / unread / pinned aren't wiped.
@@ -2760,6 +2801,8 @@ ipcRenderer.on('session-created', (_e, { session }) => {
     renderSessionList();
     return;
   }
+  await savePreviewState();
+  clearPreviewUI();
   activeSessionId = session.id;
   activeMeetingId = null;
   const mrp = document.getElementById('meeting-room-panel');
@@ -2770,6 +2813,7 @@ ipcRenderer.on('session-created', (_e, { session }) => {
   // 新建 session 默认进 PTY；dormant resume 保留用户当前视图，避免卡片视图被唤醒流程打断。
   applyViewMode(wasDormant ? currentView : 'pty');
   showTerminal(session.id);
+  await restorePreviewForContext(`session:${session.id}`);
 });
 
 // Spec 3 · W12：transcript-tap session-bound 触发的 IPC，内存 sessions Map 同步
@@ -3084,15 +3128,32 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
   renderSessionList();
 });
 
-// 2026-05-05 道雪 修3：AI 群聊 turn-complete IPC → 非 active AI 群聊累加 unread，
-//   触发侧栏 has-unread 视觉提醒（unread-badge "⏸ 等你" + slot 1 边框）。
-//   active AI 群聊不累加（用户正在看，不需要打扰）。
-//   同 IPC 在 meeting-room.js 里也有监听器（cache 同步 + DOM 重渲），与本监听器职责正交。
-ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
-  if (!meetingId || meetingId === activeMeetingId) return;
+// 2026-05-31 道雪：群聊侧栏"等你 N" 状态机 —— 单个 AI 答完即累加（1-3），跨轮自动清零。
+//   partial-update IPC 在终态（completed/manual_extracted）触发；turnNum 与上次记录不同时清空 Set 重新计数；
+//   active meeting 不累加（用户正看着，不打扰）。selectMeeting 时 clear（在 selectMeeting 函数内）。
+//   meeting-room.js 也监听 partial-update 但职责是渲染抽屉/卡片内容，与本侧栏聚合器互不干扰。
+ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, status }) => {
+  if (!meetingId || !sid) return;
+  if (status !== 'completed' && status !== 'manual_extracted') return;
   const meeting = meetings[meetingId];
   if (!meeting) return;
-  meeting.unreadCount = (meeting.unreadCount || 0) + 1;
+  if (!(meeting.unreadAnswered instanceof Set)) meeting.unreadAnswered = new Set();
+  if (meeting._lastUnreadTurnNum !== turnNum) {
+    meeting.unreadAnswered.clear();
+    meeting._lastUnreadTurnNum = turnNum;
+  }
+  if (meetingId === activeMeetingId) return;  // 用户正在看，不打扰
+  meeting.unreadAnswered.add(sid);
+  renderSessionList();
+});
+
+// 2026-05-05 道雪 修3：AI 群聊 turn-complete IPC → 触发侧栏排序刷新（最新答完的 AI 群聊靠前）。
+//   2026-05-31 道雪：旧版在这里 unreadCount++ 作"轮粒度未读"，已被 partial-update 聚合的"本轮已答 AI 数"取代。
+//   同 IPC 在 meeting-room.js 里也有监听器（cache 同步 + DOM 重渲），与本监听器职责正交。
+ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
+  if (!meetingId) return;
+  const meeting = meetings[meetingId];
+  if (!meeting) return;
   meeting.lastMessageTime = Date.now();  // 触发排序（最新答完的 AI 群聊靠前）
   renderSessionList();
 });
@@ -3110,3 +3171,11 @@ ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
   }
   renderSessionList();
 });
+
+if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
+  window.__hubE2E = {
+    selectMeeting: (meetingId) => selectMeeting(meetingId),
+    getActiveMeetingId: () => activeMeetingId,
+    getMeeting: (meetingId) => meetings[meetingId] || null,
+  };
+}

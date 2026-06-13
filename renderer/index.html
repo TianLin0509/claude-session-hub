@@ -42,6 +42,7 @@
           </div>
         </div>
         <button class="btn-group-chat" id="btn-group-chat" title="创建 AI 群聊"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10"/><path d="M7 12h6"/><path d="M6 18l-3 3V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6Z"/></svg><span class="btn-label">群聊</span></button>
+        <button class="btn-group-chat btn-remote-hub" id="btn-remote-hub" title="远程 Hub（经 VPS 中继操作另一台 Hub）"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span class="btn-label">远程</span><span class="remote-status-dot" id="remote-status-dot"></span></button>
         <div class="resume-picker-wrapper" id="resume-picker-wrapper">
           <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg></button>
           <div class="resume-picker-menu" id="resume-picker-menu" style="display:none">
@@ -167,7 +168,7 @@
             <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
             <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
             <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
-            <span class="launcher-version">v1.0.5</span>
+            <span class="launcher-version">v1.5.3</span>
           </div>
         </div>
       </div>
@@ -178,6 +179,7 @@
         <button class="view-toggle-btn active" data-view="card" title="卡片视图(默认)">📇 卡片</button>
         <button class="view-toggle-btn" data-view="pty" title="PTY 视图(原始终端)">⌨ PTY</button>
         <button class="view-toggle-btn compact-toggle-btn" id="btn-compact-toggle" title="简洁模式（手机远程友好）">📱 简洁</button>
+        <button class="view-toggle-btn ppt-toggle-btn" id="btn-ppt-toggle" title="PPT 模式（华为风格一键生成）">🎨 PPT</button>
       </div>
     </div>
     <div class="meeting-room-panel" id="meeting-room-panel" style="display:none">
@@ -198,6 +200,9 @@
         <button class="mr-send-btn" id="mr-send-btn" title="发送">▶</button>
       </div>
     </div>
+    <!-- 2026-06-11 远程 Hub 模式：本 Hub 作为瘦客户端，经 VPS 中继操作另一台 Hub。
+         内部 DOM 由 remote-mode.js 动态构建（setup 表单 / 会话列表 / 消息时间线）。 -->
+    <div class="remote-panel" id="remote-panel" style="display:none"></div>
     <!-- 2026-05-05 道雪：preview-splitter + preview-panel 从 terminal-panel 之后挪到
            meeting-room-panel 之后。flex 排版下，普通 session 时 mr-panel 隐藏 →
            排成 [terminal | preview]，群聊时 terminal 隐藏 → 排成 [meeting-room | preview]，
@@ -272,6 +277,8 @@
   <script src="renderer.js"></script>
   <script src="meeting-room.js"></script>
   <script src="meeting-create-modal.js"></script>
+  <script src="ppt-mode.js"></script>
+  <script src="remote-mode.js"></script>
 
   <div id="config-modal" class="config-modal-overlay hidden">
     <div class="config-modal-content">
@@ -295,7 +302,7 @@
               <span class="config-ai-mark claude">CL</span>
               <span class="config-ai-copy">
                 <strong>Claude</strong>
-                <small id="cfg-summary-claude">订阅模式 · claude-opus-4-7[1m]</small>
+                <small id="cfg-summary-claude">订阅模式 · claude-opus-4-8[1m]</small>
               </span>
               <span class="config-ai-status subscription">订阅</span>
             </button>

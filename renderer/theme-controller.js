@@ -1,5 +1,7 @@
 'use strict';
 
+const { ipcRenderer } = require('electron');
+
 const THEME_CLASSES = ['theme-midnight', 'theme-obsidian', 'theme-aurora', 'theme-light', 'theme-vibechat-light'];
 const XTERM_THEMES = {
   default: {
@@ -94,6 +96,10 @@ function createThemeController({ document, localStorage, terminalCache, openConf
         optionsMenu.style.display = 'none';
       }
     });
+    // v1.5.1：弹窗升级为居中 modal 后，点击遮罩区(e.target===optionsMenu)关闭
+    optionsMenu.addEventListener('mousedown', (e) => {
+      if (e.target === optionsMenu) optionsMenu.style.display = 'none';
+    });
 
     // 主题选项点击 -> 显示主题选择弹窗
     if (themeItem && themePopup) {
@@ -111,7 +117,19 @@ function createThemeController({ document, localStorage, terminalCache, openConf
       document.addEventListener('mousedown', (e) => {
         if (!themePopup.contains(e.target)) themePopup.style.display = 'none';
       });
+      // v1.5.1：遮罩点击关闭
+      themePopup.addEventListener('mousedown', (e) => {
+        if (e.target === themePopup) themePopup.style.display = 'none';
+      });
     }
+
+    // v1.5.1：ESC 一键关闭所有 options 系列 modal
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      for (const el of [optionsMenu, themePopup, document.getElementById('meridian-config-popup')]) {
+        if (el && el.style.display !== 'none') el.style.display = 'none';
+      }
+    });
 
     // 设置选项点击 -> 打开配置面板
     const settingsItem = document.getElementById('options-settings');
@@ -172,6 +190,10 @@ function createThemeController({ document, localStorage, terminalCache, openConf
     });
 
     cancelBtn.addEventListener('click', () => { popup.style.display = 'none'; });
+    // v1.5.1：遮罩点击关闭
+    popup.addEventListener('mousedown', (e) => {
+      if (e.target === popup) popup.style.display = 'none';
+    });
 
     testBtn.addEventListener('click', async () => {
       const url = urlInput.value.trim();

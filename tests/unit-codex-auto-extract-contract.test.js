@@ -11,7 +11,7 @@ const watcherSrc = fs.readFileSync(path.join(root, 'core', 'turn-completion-watc
 assert.ok(/CODEX_AUTO_EXTRACT_DELAY_MS\s*=\s*3\s*\*\s*1000/.test(dispatcherSrc),
   'Codex auto extract should wait 3s before probing the rollout');
 
-assert.ok(/isCodexBaseKind\(waitSession\?\.kind\)/.test(dispatcherSrc),
+assert.ok(/isCodexBaseKind\(waitKind\)/.test(dispatcherSrc),
   'auto extract fallback must be Codex-family only');
 
 assert.ok(/transcriptTap\.extractLatestTurn\(sid,\s*sincePromptTs\)/.test(dispatcherSrc),
