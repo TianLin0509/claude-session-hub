@@ -101,13 +101,19 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
     const meeting = meetingManager.getMeeting(meetingId);
     if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
     const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+    // 无条件重发「最新轮用户原始问题」：不依赖会被清空的 _activePrompts，
+    //   整轮结束 / idle 也能发（用户要"点了就发最新轮的问题"，2026-06-19）。
+    //   最新轮号 = state.currentTurn（完成后仍保留），原话存在 messages 的 u{n}。
     const turnNum = orch.state.currentTurn;
-    if (!turnNum || orch.state.currentMode === 'idle') {
-      return { ok: false, reason: 'no_active_turn' };
+    if (!turnNum) {
+      return { ok: false, reason: 'no_turn_yet' };
     }
-    const active = orch.getActivePrompt(turnNum);
-    if (!active || !active.promptBy || !active.promptBy[sid]) {
-      return { ok: false, reason: 'no_active_prompt' };
+    const userMsg = (orch.state.messages || []).find(
+      m => m && m.id === `u${turnNum}` && m.role === 'user'
+    );
+    const promptText = userMsg && userMsg.content;
+    if (!promptText) {
+      return { ok: false, reason: 'no_user_input' };
     }
     const session = sessionManager.getSession(sid);
     const kind = session ? session.kind : 'unknown';
@@ -115,7 +121,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       return await groupChatWatcher.resendCurrentPrompt({
         sid,
         kind,
-        prompt: active.promptBy[sid],
+        prompt: promptText,
         promptHeader: '',
         timing: { ENTER_RETRY_GAP_MS: 150, POST_ENTER_VERIFY_MS: 500 },
       });

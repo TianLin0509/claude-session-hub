@@ -163,14 +163,18 @@ test('manual extract falls back to PTY text and explains no-content modes', asyn
   assert.ok(noContent.detail.includes('task_complete'));
 });
 
-test('resend prompt validates args and delegates active prompt', async () => {
+test('resend prompt sends latest-turn user input regardless of state', async () => {
   const ipc = createFakeIpc();
   const calls = [];
   const orch = {
-    state: { currentTurn: 2, currentMode: 'debate' },
-    getActivePrompt(turnNum) {
-      calls.push(['getActivePrompt', turnNum]);
-      return { promptBy: { s1: 'prompt text' } };
+    // currentMode 'idle' = 整轮已结束，仍应能重发最新轮用户原话
+    state: {
+      currentTurn: 2,
+      currentMode: 'idle',
+      messages: [
+        { id: 'u1', role: 'user', content: 'old turn' },
+        { id: 'u2', role: 'user', content: 'prompt text' },
+      ],
     },
   };
   registerGroupchatRecoveryIpc(ipc, {
@@ -210,7 +214,6 @@ test('resend prompt validates args and delegates active prompt', async () => {
   assert.deepStrictEqual(calls, [
     ['getMeeting', 'm1'],
     ['getOrchestrator', 'C:\\hub', 'm1'],
-    ['getActivePrompt', 2],
     ['getSession', 's1'],
     ['resendCurrentPrompt', {
       sid: 's1',
@@ -222,12 +225,11 @@ test('resend prompt validates args and delegates active prompt', async () => {
   ]);
 });
 
-test('resend prompt preserves negative and exception responses', async () => {
+test('resend prompt handles missing input and exception responses', async () => {
   const ipc = createFakeIpc();
   const errors = [];
   const orch = {
-    state: { currentTurn: 2, currentMode: 'debate' },
-    getActivePrompt: () => ({ promptBy: { s1: 'prompt text' } }),
+    state: { currentTurn: 2, currentMode: 'idle', messages: [] },
   };
   const deps = {
     getActiveWatchers: () => new Map(),
@@ -245,10 +247,12 @@ test('resend prompt preserves negative and exception responses', async () => {
   registerGroupchatRecoveryIpc(ipc, deps);
 
   const handler = ipc.handlers.get('groupchat-resend-prompt');
-  assert.deepStrictEqual(await handler(null, { meetingId: 'm1', sid: 'missing' }), { ok: false, reason: 'no_active_prompt' });
+  // 最新轮没有用户输入消息 → no_user_input
+  assert.deepStrictEqual(await handler(null, { meetingId: 'm1', sid: 's1' }), { ok: false, reason: 'no_user_input' });
 
-  orch.getActivePrompt = () => ({ promptBy: { missing: 'prompt text' } });
-  assert.deepStrictEqual(await handler(null, { meetingId: 'm1', sid: 'missing' }), {
+  // 有输入但 PTY 发送抛异常 → exception 透传
+  orch.state.messages = [{ id: 'u2', role: 'user', content: 'prompt text' }];
+  assert.deepStrictEqual(await handler(null, { meetingId: 'm1', sid: 's1' }), {
     ok: false,
     reason: 'exception',
     detail: 'pty failed',
