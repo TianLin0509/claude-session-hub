@@ -110,11 +110,6 @@
   outline: none;
 }
 
-body.theme-light .hub-escape-home {
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.16);
-}
-
 .sidebar-header {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
@@ -243,128 +238,6 @@ body.theme-light .hub-escape-home {
   height: 1px;
   background: var(--border);
   margin: 4px 0;
-}
-
-/* Theme picker popup (nested under options-wrapper) */
-.options-wrapper .theme-picker-popup {
-  position: absolute;
-  top: 100%;
-  right: -4px;
-  margin-top: 6px;
-  width: 230px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
-  z-index: 1000;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.04);
-  animation: dropdown-in 120ms ease-out;
-}
-
-/* Meridian VPS proxy status badge inside options-menu */
-.meridian-status-badge {
-  margin-left: auto;
-  padding: 1px 7px;
-  font-size: 11px;
-  border-radius: 4px;
-  font-weight: 500;
-}
-.meridian-badge-on {
-  background: rgba(63, 185, 80, 0.18);
-  color: #3fb950;
-}
-.meridian-badge-off {
-  background: rgba(110, 118, 129, 0.18);
-  color: var(--text-muted);
-}
-
-/* Meridian config popup (sibling to theme-picker-popup under options-wrapper) */
-.options-wrapper .meridian-config-popup {
-  position: absolute;
-  top: 100%;
-  right: -4px;
-  margin-top: 6px;
-  width: 320px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 14px;
-  z-index: 1000;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.04);
-  animation: dropdown-in 120ms ease-out;
-}
-.meridian-popup-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 4px;
-}
-.meridian-popup-hint {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-bottom: 10px;
-  line-height: 1.45;
-}
-.meridian-toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  font-size: 12px;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.meridian-field {
-  margin-top: 8px;
-}
-.meridian-field label {
-  display: block;
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-bottom: 3px;
-}
-.meridian-field input {
-  width: 100%;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  color: var(--text-primary);
-  border-radius: 5px;
-  padding: 6px 8px;
-  font-size: 12px;
-  font-family: "SF Mono", "Consolas", monospace;
-}
-.meridian-field input:focus {
-  outline: none;
-  border-color: rgba(88, 166, 255, 0.5);
-}
-.meridian-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 10px;
-}
-.meridian-btn {
-  flex: 1;
-  padding: 6px 10px;
-  border-radius: 5px;
-  border: 1px solid var(--border);
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-  transition: background 100ms, border-color 100ms;
-}
-.meridian-btn:hover { background: rgba(88, 166, 255, 0.08); border-color: rgba(88, 166, 255, 0.3); color: var(--text-primary); }
-.meridian-btn:disabled { opacity: 0.5; cursor: wait; }
-.meridian-btn-primary { background: rgba(63, 185, 80, 0.18); border-color: rgba(63, 185, 80, 0.3); color: #3fb950; }
-.meridian-btn-primary:hover { background: rgba(63, 185, 80, 0.28); }
-.meridian-btn-ghost { background: transparent; }
-.meridian-result-hint {
-  margin-top: 8px;
-  font-size: 11px;
-  color: var(--text-muted);
-  min-height: 14px;
-  line-height: 1.4;
-  word-break: break-word;
 }
 
 .btn-zoom {
@@ -669,16 +542,17 @@ body.theme-light .hub-escape-home {
   font-variant-numeric: tabular-nums;
 }
 
-body.theme-light .session-time {
-  color: #1f2328;
-}
-
 .session-preview {
   font-size: 13px;
   color: var(--text-secondary);
   margin-top: 5px;
   white-space: pre-line;
-  max-height: 4.2em;
+  /* 2026-06-21 道雪：原 max-height:4.2em + overflow:hidden 把预览硬切 3 行、无任何
+     省略号，看着像缺字。改用 line-clamp，超 3 行结尾显示 … 提示"还有更多"。 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
   overflow: hidden;
   line-height: 1.4;
 }
@@ -997,15 +871,6 @@ body.theme-light .session-time {
 }
 .minimap-tick:hover { height: 8px; opacity: 1; background: #ffc869; }
 
-/* Light theme overrides — dark amber that reads on white background */
-body.theme-light .minimap-tick {
-  background: var(--accent-orange, #bc4c00);
-  box-shadow: 0 0 4px rgba(188, 76, 0, 0.5);
-}
-body.theme-light .minimap-tick:hover {
-  background: #d36a23;
-}
-
 .minimap-viewport {
   position: absolute;
   left: 0;
@@ -1031,10 +896,6 @@ body.theme-light .minimap-tick:hover {
 }
 
 .prompt-line-marker-active {
-  display: none;
-}
-
-body.theme-light .prompt-line-marker {
   display: none;
 }
 
@@ -1079,43 +940,6 @@ body.theme-light .prompt-line-marker {
   gap: 18px;
   width: 100%;
   max-width: 560px;
-}
-
-.launcher-trio {
-  display: flex;
-  gap: 18px;
-  justify-content: center;
-  margin-bottom: 2px;
-}
-.launcher-trio-slot {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  transition: transform 0.18s ease;
-}
-.launcher-trio-slot:hover {
-  transform: translateY(-3px);
-}
-.launcher-trio-slot img {
-  width: 78px;
-  height: 78px;
-  background: var(--bg-secondary);
-  border: 2px solid var(--border);
-  border-radius: 50%;
-  object-fit: cover;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  user-select: none;
-  -webkit-user-drag: none;
-}
-.launcher-trio-slot.pikachu img    { border-color: rgba(255, 221, 0, 0.55); }
-.launcher-trio-slot.charmander img { border-color: rgba(248, 81, 73, 0.55); }
-.launcher-trio-slot.squirtle img   { border-color: rgba(88, 166, 255, 0.55); }
-.launcher-trio-name {
-  font-size: 11px;
-  color: var(--text-muted);
-  font-weight: 500;
-  letter-spacing: 0.3px;
 }
 
 .launcher-title {
@@ -1265,39 +1089,6 @@ body.theme-light .prompt-line-marker {
   font-size: 11px;
 }
 
-/* --- Claude Web 模式角标 ---
-   在新建/resume 下拉菜单里，紧贴 "Claude Web" 文本右侧的小型 WEB 标识。
-   卡片视图角标使用同一 class，靠 .session-card-web-badge 容器定位（见下文）。 */
-.web-badge-inline {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 1px 5px;
-  background: var(--accent, #0071e3);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  border-radius: 3px;
-  line-height: 1.4;
-  vertical-align: middle;
-}
-
-/* 卡片视图右上角 WEB 角标——绝对定位，覆盖在 Claude 卡片右上角 */
-.session-card-web-badge {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  padding: 2px 6px;
-  background: var(--accent, #0071e3);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  border-radius: 4px;
-  z-index: 2;
-  pointer-events: none;
-}
-
 .new-session-divider {
   height: 1px;
   background: var(--border);
@@ -1422,17 +1213,14 @@ body.theme-light .prompt-line-marker {
 /* ════════════════════════════════════════════════════════════════
    v1.5.1 (2026-06-13)：侧栏顶部弹出菜单升级为页面居中模态弹窗
    起因：原 absolute 锚定按钮下方，被 .session-sidebar overflow:hidden
-        裁掉、被主面板覆盖、宽弹窗（如 meridian 配置 320px）溢出左边界。
+        裁掉或被主面板覆盖。
    方案：fixed 居中 + 全屏半透明遮罩 + 弹入动画；对齐 meeting-create-modal。
-   覆盖：.new-session-menu / .resume-picker-menu / .options-menu /
-        .theme-picker-popup / .meridian-config-popup。
+   覆盖：.new-session-menu / .resume-picker-menu / .options-menu。
    DOM 结构与外点关闭逻辑均不变；JS 仅增加遮罩点击关闭。
    ════════════════════════════════════════════════════════════════ */
 .new-session-menu,
 .resume-picker-menu,
-.options-menu,
-.options-wrapper .theme-picker-popup,
-.options-wrapper .meridian-config-popup {
+.options-menu {
   position: fixed !important;
   top: 50% !important;
   left: 50% !important;
@@ -1457,9 +1245,7 @@ body.theme-light .prompt-line-marker {
 /* 全屏 scrim：::before 铺满 viewport；pointer-events 接收点击交给 JS 处理 */
 .new-session-menu::before,
 .resume-picker-menu::before,
-.options-menu::before,
-.theme-picker-popup::before,
-.meridian-config-popup::before {
+.options-menu::before {
   content: "";
   position: fixed;
   inset: 0;
@@ -1492,14 +1278,6 @@ body.theme-light .prompt-line-marker {
   min-width: 260px;
   padding: 10px 0;
 }
-.options-wrapper .theme-picker-popup {
-  min-width: 340px;
-  padding: 18px;
-}
-.options-wrapper .meridian-config-popup {
-  min-width: 400px;
-  padding: 22px;
-}
 
 /* —— 列表型弹窗顶部 group label 紧凑一点 —— */
 .new-session-menu .menu-group-label:first-child {
@@ -1524,53 +1302,10 @@ body.theme-light .prompt-line-marker {
   margin: 0 4px;
 }
 
-/* —— meridian 配置：表单字号略大、间距更松 —— */
-.options-wrapper .meridian-config-popup .meridian-popup-title {
-  font-size: 15px;
-  margin-bottom: 6px;
-}
-.options-wrapper .meridian-config-popup .meridian-popup-hint {
-  font-size: 12px;
-  margin-bottom: 14px;
-}
-.options-wrapper .meridian-config-popup .meridian-field {
-  margin-top: 12px;
-}
-.options-wrapper .meridian-config-popup .meridian-field input {
-  font-size: 13px;
-  padding: 8px 10px;
-}
-.options-wrapper .meridian-config-popup .meridian-actions {
-  margin-top: 16px;
-  gap: 8px;
-}
-.options-wrapper .meridian-config-popup .meridian-btn {
-  padding: 8px 14px;
-  font-size: 13px;
-}
-
-/* —— theme-picker：标题和选项都给点空间 —— */
-.options-wrapper .theme-picker-popup .theme-picker-title {
-  font-size: 15px;
-  font-weight: 600;
-  margin-bottom: 10px;
-}
-
 /* —— Hover 时遮罩稍稍变深，让用户感知"点这里就关" —— */
 .new-session-menu:hover::before,
 .resume-picker-menu:hover::before,
-.options-menu:hover::before,
-.theme-picker-popup:hover::before,
-.meridian-config-popup:hover::before {
+.options-menu:hover::before {
   background: rgba(0, 0, 0, 0.6);
-}
-
-/* —— 浅色主题（vibechat-light）下遮罩用浅灰，避免太黑 —— */
-body.theme-vibechat-light .new-session-menu::before,
-body.theme-vibechat-light .resume-picker-menu::before,
-body.theme-vibechat-light .options-menu::before,
-body.theme-vibechat-light .theme-picker-popup::before,
-body.theme-vibechat-light .meridian-config-popup::before {
-  background: rgba(20, 24, 32, 0.45);
 }
 

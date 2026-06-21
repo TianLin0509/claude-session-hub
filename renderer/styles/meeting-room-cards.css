@@ -85,15 +85,6 @@ body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) .mr-ft-lineage {
 }
 /* === /F4 === */
 
-/* === F9 Phase 2(2026-05-04 道雪 / spec F9): 卡片密度切换 ===
- * 常规模式 (默认): 卡片高度跟随 strip 撑满主区 (Arch refactor 2026-05-02 设定)
- * 紧凑模式 (body.mr-density-compact): 卡片固定 130px, 仅 head 区可见, strip 内 cards 居顶
- * F0 聚焦态优先: 若同时 mr-card-focus-on, 主卡恢复 stretch (用户聚焦看完整内容)
- * 切换平滑: height transition 0.3s
- *
- * 实施细节: line 1869 .mr-ft-strip { align-items: stretch } 隐式默认 + line 1880 .mr-ft { height: 100% }
- *   覆盖 line 514 的 height: 220px 让卡片填满 row。 紧凑模式必须用 !important 覆盖 line 1880。
- */
 .mr-ft {
   transition: background .15s, border-color .15s,
               transform .45s cubic-bezier(0.22, 1, 0.36, 1),
@@ -101,28 +92,6 @@ body.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) .mr-ft-lineage {
               filter .45s cubic-bezier(0.22, 1, 0.36, 1),
               height .3s cubic-bezier(0.22, 1, 0.36, 1);
 }
-body.mr-density-compact .mr-ft-strip {
-  align-items: start;             /* 覆盖隐式 stretch, 让 cells 不拉伸到 row 高度 */
-}
-body.mr-density-compact .mr-ft {
-  height: 130px !important;        /* 覆盖 line 1880 .mr-ft { height: 100% } */
-  min-height: 0 !important;        /* 覆盖 line 1879 / 1919 的 min-height */
-}
-body.mr-density-compact .mr-ft .mr-ft-bottom {
-  display: none;
-}
-body.mr-density-compact .mr-ft .mr-ft-corner-badge {
-  font-size: 9px;
-}
-/* F0 聚焦态优先 — 主卡恢复 stretch (用户聚焦看完整内容), 邻居仍紧凑 */
-body.mr-card-focus-on.mr-density-compact .mr-ft.active {
-  height: 100% !important;
-}
-body.mr-card-focus-on.mr-density-compact .mr-ft.active .mr-ft-bottom {
-  display: flex;
-  flex-direction: column;
-}
-/* === /F9 === */
 
 /* === F3 Phase 2(2026-05-04 道雪 / spec F3): 多卡对比模式 ===
  * 触发: ctrl/cmd+click 任一卡 → body.mr-card-compare-on + .compare-selected on cards
@@ -195,10 +164,6 @@ body.mr-card-compare-on .mr-ft.compare-selected:hover {
   background: rgba(255, 255, 255, 0.16);
   border-color: rgba(255, 255, 255, 0.3);
   color: #fff;
-}
-/* F0 聚焦/F3 对比/F9 紧凑下也保持 hover-actions 可访问 */
-body.mr-density-compact .mr-ft-hover-actions {
-  /* 紧凑模式下 hover-actions 仍可见 */
 }
 /* === /F2 === */
 
@@ -410,10 +375,6 @@ body.mr-density-compact .mr-ft-hover-actions {
   0%, 100% { background: rgba(252, 211, 77, 0.12); }
   50% { background: rgba(252, 211, 77, 0.25); }
 }
-/* 紧凑模式下隐藏 cost bar 节省空间 */
-body.mr-density-compact .mr-gc-cost-bar {
-  display: none;
-}
 /* === /F5 === */
 .mr-ft-elapsed { font-size: 11px; color: #fde68a; margin-left: auto; font-variant-numeric: tabular-nums; font-family: "Cascadia Mono", Consolas, monospace; }
 .mr-ft-expand {
@@ -502,7 +463,11 @@ body.mr-density-compact .mr-gc-cost-bar {
   font-size: 12px; color: #8b949e; line-height: 1.5;
   flex: 1;                  /* card-redesign：在 .mr-ft-bottom 里撑满，不再硬限高度 */
   min-height: 0;
-  overflow: hidden;
+  /* 2026-06-21 道雪：原 overflow:hidden 把超出卡片的长回答直接切掉、卡内无法滚动看下半段
+     （tab 模式靠 .mr-ft-bottom overflow:auto 解决，并列模式漏了）。改 overflow-y:auto 让
+     长内容卡内可滚，与 tab 模式行为对齐；overflow-x:hidden 防横向溢出。 */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* IF-C0（2026-05-01）：卡片预览 markdown 渲染样式

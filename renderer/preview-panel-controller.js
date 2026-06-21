@@ -435,12 +435,15 @@ function createPreviewPanelController({
     const err = await ipcRenderer.invoke('open-path', currentPreviewPath);
     if (err) console.warn('[hub] open-path for preview failed:', currentPreviewPath, '->', err);
   });
+  // 2026-06-21 道雪：用捕获阶段 + stopPropagation 让预览 ESC 独占本次按键，避免冒泡到
+  //   meeting-room 的时光机/聚焦/对比 ESC 处理器（否则一次 ESC 会连带退出时光机）。
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && previewPanelEl.style.display === 'flex') {
       e.preventDefault();
+      e.stopPropagation();
       closePreviewPanel();
     }
-  });
+  }, true);
   document.getElementById('preview-zoom-out').addEventListener('click', () => setPreviewZoom(previewZoomLevel - 0.1));
   document.getElementById('preview-zoom-in').addEventListener('click', () => setPreviewZoom(previewZoomLevel + 0.1));
   document.getElementById('preview-zoom-reset').addEventListener('click', resetPreviewZoom);

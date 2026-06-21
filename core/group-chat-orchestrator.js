@@ -4,6 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const { KIND_LABELS } = require('./ai-kinds.js');
 
+// 投研场景反空话禁用词：命中即要求重写为有数字/来源的判断。
+const BANNED_PHRASES = ['基本面良好', '前景广阔', '值得关注', '拭目以待', '综合来看值得', '具有投资价值'];
+
 const STATE_VERSION = 2;
 
 function arenaPromptsDir(hubDataDir) {
@@ -40,6 +43,7 @@ const RESEARCH_SCENE_PROMPT = [
   '涉及具体 A 股、板块或买卖时机时，优先主动调用已注入的 stock_market(symbol)、stock_news(symbol)，stock_static(symbol) 仅在单只核心标的需要估值/基本面画像时再补。不要在同一轮对多只股票批量发 static+market；多股对比先 news 或至多 1-3 个 market，避免 MCP 客户端 120s 工具超时。',
   '只引用工具返回中能改变判断的关键字段；工具不可用或数据缺失时明确说未查到，不要凭记忆补数字。',
   'stock_static 返回的估值/基本面字段带 `confidence` 标签（HIGH/MEDIUM/LOW/CONFLICT/UNAVAILABLE，详细措辞规则见该工具 description），引用前先看 `_meta.warnings` 扫一眼非 HIGH 字段；CONFLICT/UNAVAILABLE 时 value=null，禁止编数值或填默认值。',
+  `反空话铁律：结论必须落到具体数字或可查事实上，禁用空话套话（${BANNED_PHRASES.join('、')} 等同类表述）——出现即视为无效结论，请用带数字/来源的判断重写。`,
 ].join('\n');
 
 // 2026-06-05 联邦记忆下线：原 MEMORY_DISCIPLINE_PROMPT 教各家 AI 写 memory 的指令段已删除。
@@ -57,18 +61,6 @@ function buildSystemPromptText(displayName, scene, opts = {}) {
   ];
   if (scene === 'research') {
     parts.push('', RESEARCH_SCENE_PROMPT);
-  } else if (scene === 'committee') {
-    // 投委会复用投研场景的 MCP 工具使用纪律 + 按席位优先注入 persona
-    parts.push('', RESEARCH_SCENE_PROMPT);
-    try {
-      const committee = require('./committee-scene.js');
-      const persona = committee.buildCommitteePersona(opts.seatKey || opts.kind);
-      if (persona) parts.push('', persona);
-      parts.push('', '## 投委会输出例外',
-        '投委会幕一/幕二/幕三的发言**直接输出在对话里**（口头要点 + ```json 块），不要走 HTML 三段式——编排层要机器解析你的 JSON。');
-    } catch (e) {
-      console.warn('[groupchat] committee persona inject failed:', e.message);
-    }
   }
   return parts.join('\n');
 }
@@ -128,19 +120,28 @@ class GroupChatOrchestrator {
     return _clone(this.state);
   }
 
-  beginTurn(userInput) {
-    const n = (this.state.currentTurn || 0) + 1;
-    this.state.currentTurn = n;
+  beginTurn(userInput, opts = {}) {
+    const requestedTurnNum = Number(opts.turnNum);
+    const n = Number.isInteger(requestedTurnNum) && requestedTurnNum > 0
+      ? requestedTurnNum
+      : (this.state.currentTurn || 0) + 1;
+    const appendUserMessage = opts.appendUserMessage !== false;
+    this.state.currentTurn = Math.max(this.state.currentTurn || 0, n);
     this.state.currentMode = 'group';
-    const msg = this._appendMessage({
-      id: `u${n}`,
-      turnNum: n,
-      role: 'user',
-      speaker: '你',
-      content: userInput || '',
-    });
+    let msg = this.state.messages.find(m => m.id === `u${n}` && m.role === 'user') || null;
+    let didAppendUserMessage = false;
+    if (appendUserMessage && !msg) {
+      msg = this._appendMessage({
+        id: `u${n}`,
+        turnNum: n,
+        role: 'user',
+        speaker: '你',
+        content: userInput || '',
+      });
+      didAppendUserMessage = true;
+    }
     this._saveState();
-    return { turnNum: n, userMessage: msg };
+    return { turnNum: n, userMessage: msg, didAppendUserMessage };
   }
 
   rollbackTurn(turnNum) {
@@ -181,12 +182,15 @@ class GroupChatOrchestrator {
     // preserves the shared watcher recovery contract.
   }
 
-  buildDelta(selfSid, userInput) {
+  buildDelta(selfSid, userInput, opts = {}) {
     const lastIdx = this.state.lastDeliveredIdx[selfSid] ?? -1;
-    const cutoff = this.state.messages.length - 1;
+    const currentUserMessageAppended = opts.currentUserMessageAppended !== false;
+    const cutoff = currentUserMessageAppended
+      ? Math.max(0, this.state.messages.length - 1)
+      : this.state.messages.length;
     const newMsgs = this.state.messages
       .slice(lastIdx + 1, cutoff)
-      .filter(m => m.sid !== selfSid && m.content);
+      .filter(m => m.role !== 'user' && m.sid !== selfSid && m.content);
     const parts = [];
     if (newMsgs.length > 0) {
       parts.push('## 新增发言\n' + newMsgs.map(m => `${m.speaker}：${m.content}`).join('\n\n'));
@@ -196,37 +200,54 @@ class GroupChatOrchestrator {
     return parts.join('\n\n');
   }
 
-  buildFirstDelta(selfSid, userInput, systemPromptText) {
+  buildFirstDelta(selfSid, userInput, systemPromptText, opts = {}) {
     if (this.state.lastDeliveredIdx[selfSid] === undefined) {
-      return String(systemPromptText || '') + '\n\n' + this.buildDelta(selfSid, userInput);
+      return String(systemPromptText || '') + '\n\n' + this.buildDelta(selfSid, userInput, opts);
     }
-    return this.buildDelta(selfSid, userInput);
+    return this.buildDelta(selfSid, userInput, opts);
   }
 
-  completeTurn(turnNum, userInput, results, memberBySid, statsBySid = {}) {
-    const by = {};
-    const byStatus = {};
-    const thinkSecBy = {};
-    const tokensBy = {};
+  completeTurn(turnNum, userInput, results, memberBySid, statsBySid = {}, opts = {}) {
+    let turn = this.state.turns.find(t => t.n === turnNum);
+    const isExistingTurn = !!turn;
+    const by = isExistingTurn && turn.by && typeof turn.by === 'object' ? turn.by : {};
+    const byStatus = isExistingTurn && turn.byStatus && typeof turn.byStatus === 'object' ? turn.byStatus : {};
+    const thinkSecBy = isExistingTurn && turn.thinkSecBy && typeof turn.thinkSecBy === 'object' ? turn.thinkSecBy : {};
+    const tokensBy = isExistingTurn && turn.tokensBy && typeof turn.tokensBy === 'object' ? turn.tokensBy : {};
     const aiMessages = [];
 
     for (const r of results) {
       const sid = r.sid;
       const member = memberBySid[sid] || {};
-      by[sid] = r.text || '';
-      byStatus[sid] = r.status || 'completed';
+      // 2026-06-21 道雪：与 patchTurnResult 对齐——仅成功态或确有新文本时写正文；
+      //   errored/超时返回空文本时保留已有答案，防重发/串行工作流抹掉已生成内容。
+      const _rStatus = r.status || 'completed';
+      const _writeContent = _rStatus === 'completed' || _rStatus === 'manual_extracted' || !!(r.text && r.text.length);
+      by[sid] = _writeContent ? (r.text || '') : (by[sid] || '');
+      byStatus[sid] = _rStatus;
       thinkSecBy[sid] = statsBySid[sid]?.thinkSec || r.thinkSec || 0;
       tokensBy[sid] = statsBySid[sid]?.tokens || (r.tokens && r.tokens.total) || 0;
-      const msg = this._appendMessage({
-        id: `a${turnNum}-${member.memberId || sid.slice(0, 8)}`,
-        turnNum,
-        role: 'assistant',
-        sid,
-        memberId: member.memberId || sid,
-        speaker: _memberLabel(member),
-        content: r.text || '',
-        status: r.status || 'completed',
-      });
+      const messageId = `a${turnNum}-${member.memberId || sid.slice(0, 8)}`;
+      let msg = this.state.messages.find(m => m.id === messageId && m.role === 'assistant');
+      if (msg) {
+        msg.sid = sid;
+        msg.memberId = member.memberId || sid;
+        msg.speaker = _memberLabel(member);
+        if (_writeContent) msg.content = r.text || '';
+        msg.status = _rStatus;
+        msg.updatedAt = Date.now();
+      } else {
+        msg = this._appendMessage({
+          id: messageId,
+          turnNum,
+          role: 'assistant',
+          sid,
+          memberId: member.memberId || sid,
+          speaker: _memberLabel(member),
+          content: r.text || '',
+          status: r.status || 'completed',
+        });
+      }
       aiMessages.push(msg);
 
       const prev = this.state.aiStats[sid] || { totalThinkSec: 0, totalTokens: 0, turns: 0 };
@@ -238,20 +259,31 @@ class GroupChatOrchestrator {
       this.state.aiStats[sid] = prev;
     }
 
-    const turn = {
-      n: turnNum,
-      mode: 'group',
-      userInput: userInput || '',
-      by,
-      byStatus,
-      thinkSecBy,
-      tokensBy,
-      timestamp: Date.now(),
-      meta: {
-        dispatchMode: 'group',
-      },
-    };
-    this.state.turns.push(turn);
+    if (!turn) {
+      turn = {
+        n: turnNum,
+        mode: 'group',
+        userInput: userInput || '',
+        by,
+        byStatus,
+        thinkSecBy,
+        tokensBy,
+        timestamp: Date.now(),
+        meta: {
+          dispatchMode: opts.dispatchMode || 'group',
+        },
+      };
+      this.state.turns.push(turn);
+    } else {
+      turn.userInput = turn.userInput || userInput || '';
+      turn.by = by;
+      turn.byStatus = byStatus;
+      turn.thinkSecBy = thinkSecBy;
+      turn.tokensBy = tokensBy;
+      turn.lastUpdatedAt = Date.now();
+      turn.meta = turn.meta && typeof turn.meta === 'object' ? turn.meta : {};
+      if (opts.dispatchMode) turn.meta.dispatchMode = opts.dispatchMode;
+    }
     this.state.currentMode = 'idle';
     delete this._activePrompts[turnNum];
     const lastIdx = this.state.messages.length - 1;
@@ -260,6 +292,13 @@ class GroupChatOrchestrator {
     }
     this._saveState();
     return turn;
+  }
+
+  clearTurnInProgress(turnNum) {
+    if (!turnNum || this.state.currentTurn !== turnNum) return;
+    this.state.currentMode = 'idle';
+    delete this._activePrompts[turnNum];
+    this._saveState();
   }
 
   patchTurnResult(turnNum, sid, { text, status, thinkSec, tokens } = {}) {

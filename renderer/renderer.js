@@ -4,6 +4,26 @@ const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexK
 const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
+// ── Bug 修复（2026-06-21 道雪）：marked 默认透传裸 HTML，AI/用户消息正文里的字面
+//    <script>/<style>/未闭合 <tag>（含数学 a<b、泛型 List<String>）会被浏览器 HTML
+//    解析器当成元素、把后续内容当作其文本吞掉，再被 DOMPurify 整段删除 → 消息正文
+//    静默截断/丢失（群聊真实消息 u4 实测 615 字只剩 152 字，丢 75%）。
+//    这里把裸 HTML token 统一转义为可见文本：代码块/粗体/链接/列表等正常 markdown 不受
+//    影响，DOMPurify 仍作安全兜底。marked 单例被群聊(meeting-room)、会话卡片
+//    (turn-card-renderer)、文件预览共用，一处配置即全覆盖。已用真实 marked+DOMPurify
+//    管线做 before/after 实测（tools/_gc_render_test）：修复后内容零丢失。
+marked.use({
+  renderer: {
+    html(token) {
+      const raw = typeof token === 'string' ? token : (token && (token.text ?? token.raw)) || '';
+      return String(raw)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    },
+  },
+});
 const { installScrollDebug } = require('./scroll-debug.js');
 const { createMemoPanel } = require('./memo-panel.js');
 const { createTerminalSearch } = require('./terminal-search.js');
@@ -276,45 +296,12 @@ function setFontSize(size) {
   }
 }
 
-// 2026-05-09 简洁模式：手机远程时一键切换的低密度 UI（纯 CSS 通过 body.compact-mode 控制）
-const COMPACT_MODE_KEY = 'claude-hub-compact-mode';
-let compactMode = localStorage.getItem(COMPACT_MODE_KEY) === '1';
-function toggleCompactMode(enabled) {
-  compactMode = !!enabled;
-  document.body.classList.toggle('compact-mode', compactMode);
-  // 同步所有 .compact-toggle-btn（普通 session 视图 + AI 群聊视图各有一个）
-  document.querySelectorAll('.compact-toggle-btn').forEach(b => b.classList.toggle('active', compactMode));
-  localStorage.setItem(COMPACT_MODE_KEY, compactMode ? '1' : '0');
-  // sidebar 联动：简洁模式 ON 默认折叠，OFF 恢复用户偏好（不污染 SIDEBAR_KEY）。
-  // 启动 init 时 applySidebarCollapsed 还没定义，typeof 检查跳过 — line 5113 后会兜底。
-  if (typeof applySidebarCollapsed === 'function') {
-    if (compactMode) {
-      applySidebarCollapsed(true);
-    } else {
-      const userPref = localStorage.getItem('claude-hub-sidebar-collapsed') === '1';
-      applySidebarCollapsed(userPref);
-    }
-  }
-  // 侧栏宽度变化要 refit xterm
-  if (typeof terminalCache !== 'undefined' && activeSessionId) {
-    const cached = terminalCache.get(activeSessionId);
-    if (cached && cached.opened) {
-      scheduleFitAndResizeTerminal(activeSessionId, cached, { force: true });
-    }
-  }
-}
-// 启动应用持久化状态 + 初始化 --main-zoom（首次 setFontSize 才设变量，启动时手动设一次到 :root）
-toggleCompactMode(compactMode);
+// 启动时初始化 --main-zoom（首次 setFontSize 才设变量，启动时手动设一次到 :root）
 document.documentElement.style.setProperty('--main-zoom', (currentFontSize / 16).toFixed(3));
-document.addEventListener('click', (e) => {
-  if (e.target.closest('.compact-toggle-btn')) {
-    toggleCompactMode(!compactMode);
-  }
-});
 
 // --- Global UI zoom (Electron webFrame) ---
 // Scales the entire renderer: sidebar, buttons, xterm cells, modals. Used
-// mainly to bump everything up for remote/phone control vs. shrink for
+// mainly to bump everything up for dense displays vs. shrink for
 // desktop. Distinct from setFontSize, which only touches the xterm font.
 // Level is an integer; each step is ~20% per Electron's zoom curve. 0 = 100%.
 const ZOOM_KEY = 'claude-hub-zoom-level';
@@ -464,17 +451,8 @@ function loadGpuRenderer(cached) {
 function getOrCreateTerminal(sessionId) {
   if (terminalCache.has(sessionId)) return terminalCache.get(sessionId);
 
-  const currentTheme = localStorage.getItem('claude-hub-theme') || 'default';
   const terminal = new Terminal({
-    theme: (typeof XTERM_THEMES !== 'undefined' && XTERM_THEMES[currentTheme]) || {
-      background: '#0d1117', foreground: '#f0f6fc', cursor: '#58a6ff',
-      cursorAccent: '#0d1117', selectionBackground: 'rgba(88, 166, 255, 0.3)',
-      black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
-      blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#f0f6fc',
-      brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
-      brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
-      brightCyan: '#56d364', brightWhite: '#ffffff',
-    },
+    theme: XTERM_THEMES.default,
     fontSize: currentFontSize,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
     cursorBlink: true,
@@ -512,10 +490,9 @@ function getOrCreateTerminal(sessionId) {
   // xterm fires onTitleChange for it. We capture that as the session title
   // unless the user already renamed in Hub (userRenamed wins). Only for Claude
   // kinds — PowerShell emits title sequences on every prompt, which we don't want.
-  // 2026-05-02 修复：DeepSeek/GLM 也跑在 Claude CLI 上、emit 同样的 OSC title
+  // 2026-05-02 修复：DeepSeek 也跑在 Claude CLI 上、emit 同样的 OSC title
   //   序列，但旧版本 isClaudeKind 只含 'claude'/'claude-resume' 把这两家排除 →
-  //   DS/GLM 子 session 永远叫 'Claude' 不能自动获标题。改用 isClaudeFamily helper
-  //   （CLAUDE_FAMILY 含 deepseek/glm），单一真理源，未来加新 Claude 衍生家族自动覆盖。
+  //   DS 子 session 永远叫 'Claude' 不能自动获标题。改用 isClaudeFamily helper。
   const session = sessions.get(sessionId);
   const isClaudeKind = session && isClaudeFamily(session.kind);
   if (isClaudeKind) {
@@ -786,7 +763,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const zoomInBtn = document.createElement('button');
   zoomInBtn.className = 'btn-zoom';
   zoomInBtn.textContent = 'A+';
-  zoomInBtn.title = 'Enlarge UI (for remote / phone)';
+  zoomInBtn.title = 'Enlarge UI';
   zoomInBtn.addEventListener('click', () => applyZoom(currentZoom + 1));
 
   const closeBtn = document.createElement('button');
@@ -1648,7 +1625,7 @@ function applyViewMode(mode) {
   const overlay = document.getElementById('msg-overlay');
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
   document.querySelectorAll('.view-toggle-btn').forEach(b => {
-    if (!b.dataset.view) return; // 跳过非视图按钮（如 #btn-compact-toggle 简洁模式独立 toggle）
+    if (!b.dataset.view) return;
     b.classList.toggle('active', b.dataset.view === mode);
   });
   // 切到 PTY 时 refit xterm
@@ -2268,18 +2245,12 @@ const providerModes = {
   gemini: 'subscription',
   codex: 'subscription',
   deepseek: 'api',
-  glm: 'api',
-  gpt: 'api',
-  kimi: 'api',
-  qwen: 'api',
 };
 const accountUsageController = createAccountUsageController({
   document,
-  window,
   ipcRenderer,
   sessions,
   escapeHtml,
-  openConfigModal: () => openConfigModal(),
 });
 const renderAccountUsage = accountUsageController.render;
 const sessionBurnRate = accountUsageController.sessionBurnRate;
@@ -2710,8 +2681,6 @@ function applySidebarCollapsed(collapsed) {
 }
 const initialCollapsed = localStorage.getItem(SIDEBAR_KEY) === '1';
 applySidebarCollapsed(initialCollapsed);
-// 简洁模式启动时强制折叠 sidebar（不污染 SIDEBAR_KEY 用户偏好）
-if (compactMode) applySidebarCollapsed(true);
 function toggleSidebar() {
   const next = !appContainerEl.classList.contains('sidebar-collapsed');
   localStorage.setItem(SIDEBAR_KEY, next ? '1' : '0');
@@ -2757,7 +2726,6 @@ const themeController = createThemeController({
   terminalCache,
   openConfigModal,
 });
-const applyTheme = themeController.applyTheme;
 
 if (typeof MeetingRoom !== 'undefined') {
   MeetingRoom.init(sessions, getOrCreateTerminal);
@@ -2783,21 +2751,11 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   } else {
     sessions.set(session.id, session);
   }
-  // Sub-sessions belonging to a meeting: add to sessions Map and, if the
-  // meeting room is currently showing this meeting, mount the xterm for
-  // any slot that was dormant (dormant slots skip xterm creation).
+  // Sub-sessions belonging to a meeting: add to sessions Map and keep their
+  // terminal cache warm for later sidebar entry. Meeting room no longer mounts
+  // embedded xterms.
   if (session.meetingId) {
-    // Pre-create the xterm instance so PTY 'terminal-data' events arriving
-    // before renderTerminals() (which runs only after add-meeting-sub IPC
-    // returns) land in the xterm buffer instead of being silent-dropped at
-    // the terminal-data handler's `if (!cached) return`. Was most visible on
-    // Claude — short startup output → permanent blank PowerShell box in the
-    // meeting room. Gemini/Codex masked the bug via continuous streaming.
     getOrCreateTerminal(session.id);
-    if (wasDormant && typeof MeetingRoom !== 'undefined' &&
-        MeetingRoom.getActiveMeetingId() === session.meetingId) {
-      MeetingRoom.mountSubTerminal(session.id);
-    }
     renderSessionList();
     return;
   }
@@ -2826,13 +2784,12 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
   if (ev.ccSessionId) s.ccSessionId = ev.ccSessionId;
   if (ev.transcriptPath) s.transcriptPath = ev.transcriptPath;
   if (ev.codexSid) s.codexSid = ev.codexSid;
-  if (ev.codexAppThreadId) s.codexAppThreadId = ev.codexAppThreadId;
   if (ev.codexSessionsRoot) s.codexSessionsRoot = ev.codexSessionsRoot;
   if (ev.codexAllowMtimeFallback) s.codexAllowMtimeFallback = true;
   if (ev.geminiChatId) s.geminiChatId = ev.geminiChatId;
   if (ev.geminiProjectHash) s.geminiProjectHash = ev.geminiProjectHash;
   if (ev.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
-  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexAppThreadId || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot) {
+  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot) {
     schedulePersist();
   }
   if (ev.hubSessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
@@ -2904,7 +2861,6 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!local.userRenamed && session.title) local.title = session.title;
   if (session.ccSessionId) local.ccSessionId = session.ccSessionId;
   if (session.transcriptPath) local.transcriptPath = session.transcriptPath;
-  if (session.codexAppThreadId) local.codexAppThreadId = session.codexAppThreadId;
   if (session.codexSessionsRoot) local.codexSessionsRoot = session.codexSessionsRoot;
   if (session.codexAllowMtimeFallback) local.codexAllowMtimeFallback = true;
   if (session.userRenamed) local.userRenamed = true;
@@ -2926,7 +2882,7 @@ function schedulePersist() {
     const list = [];
     for (const s of sessions.values()) {
       // 持久化白名单：AI 群聊会议 + 所有 AI kind（含 -resume 变体）。新增 AI 由 ai-kinds.js 单一真理源覆盖。
-      if (!s.meetingId && !isAiKind(s.kind) && s.kind !== 'codex-app' && s.kind !== 'claude-resume' && !(typeof s.kind === 'string' && s.kind.endsWith('-resume'))) continue;
+      if (!s.meetingId && !isAiKind(s.kind) && s.kind !== 'claude-resume' && !(typeof s.kind === 'string' && s.kind.endsWith('-resume'))) continue;
       list.push({
         hubId: s.id,
         title: s.title,
@@ -2947,7 +2903,6 @@ function schedulePersist() {
         autoTitleGenerated: !!s.autoTitleGenerated,
         // T10: include resume-meta in persist payload so main.js merge has the latest
         codexSid: s.codexSid || null,
-        codexAppThreadId: s.codexAppThreadId || null,
         codexSessionsRoot: s.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!s.codexAllowMtimeFallback,
         codexProfile: s.codexProfile || null,
@@ -2973,10 +2928,13 @@ function schedulePersist() {
       participants: Array.isArray(m.participants) ? m.participants : null,
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs : null,
       covenantText: m.covenantText || '',
+      serialWorkflow: (m.serialWorkflow && typeof m.serialWorkflow === 'object') ? m.serialWorkflow : null,
     }));
     ipcRenderer.send('persist-sessions', list, meetingList);
   }, 400);
 }
+// 暴露给 meeting-room.js 等 renderer 子模块：配置变更后可主动落 state.json
+window.schedulePersist = schedulePersist;
 
 // Wake a dormant session: call main to spawn PTY with --resume, then wait for
 // session-created which will replace the dormant entry.
@@ -3062,7 +3020,6 @@ async function resumeDormantSession(hubId) {
         autoTitleGenerated: !!meta.autoTitleGenerated,
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
-        codexAppThreadId: meta.codexAppThreadId || null,
         codexSessionsRoot: meta.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!meta.codexAllowMtimeFallback,
         codexProfile: meta.codexProfile || null,
@@ -3093,9 +3050,7 @@ async function resumeDormantSession(hubId) {
     providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
     setCodexProfileForm(cfg.codexSubscriptionProfiles, cfg.codexSubscriptionProfile);
     turnCardRenderer.setCodeFoldThreshold(cfg.uiCodeFoldThreshold);
-    // 不在这里调 renderAccountUsage —— packyAccountData 还没从 cache 加载完成,
-    // 提前渲染会出现一帧"未接入"假象(get-usage-cache 慢于本 promise resolve)。
-    // 余额/用量行的渲染统一交给下面的 cache promise。
+    // Usage rows are rendered from the cache promise below.
     traceRendererStartup('hub config loaded');
   }).catch(() => {});
 

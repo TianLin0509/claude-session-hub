@@ -41,80 +41,6 @@
   color: white;
 }
 
-/* --- Theme picker --- */
-.theme-picker-wrapper {
-  position: relative;
-}
-.theme-picker-popup {
-  position: absolute;
-  top: 32px;
-  right: 0;
-  width: 220px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
-  z-index: 100;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-}
-.theme-picker-title {
-  font-size: 11px;
-  color: var(--text-muted);
-  padding: 4px 8px 6px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.theme-option {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-.theme-option:hover {
-  background: var(--bg-tertiary);
-}
-.theme-option.active {
-  background: var(--bg-tertiary);
-  outline: 1px solid var(--accent-blue);
-}
-.theme-swatch {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  flex-shrink: 0;
-  border: 1px solid rgba(255,255,255,0.08);
-}
-.swatch-default {
-  background: linear-gradient(135deg, #0d1117 50%, #161b22 50%);
-}
-.swatch-midnight {
-  background: linear-gradient(135deg, #080c14 40%, #1a3a6a 100%);
-}
-.swatch-obsidian {
-  background: linear-gradient(135deg, #0a0a0a 40%, #2a1f10 100%);
-}
-.swatch-aurora {
-  background: linear-gradient(135deg, #0b0e13 30%, #1a4060 65%, #2a1850 100%);
-}
-.theme-option-info {
-  min-width: 0;
-}
-.theme-option-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-}
-.theme-option-desc {
-  font-size: 10px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
 /* AI logo 通用样式（Toolbar dropdown 用） */
 .ai-logo {
   display: inline-block;
@@ -132,10 +58,6 @@
 .logo-gemini    { background-image: url('assets/ai-logos/gemini.svg'); }
 .logo-codex     { background-image: url('assets/ai-logos/codex.svg'); }
 .logo-deepseek  { background-image: url('assets/ai-logos/deepseek.svg'); }
-.logo-glm       { background-image: url('assets/ai-logos/glm.svg'); }
-.logo-gpt       { background-image: url('assets/ai-logos/gpt.svg'); }
-.logo-kimi      { background-image: url('assets/ai-logos/kimi.svg'); }
-.logo-qwen      { background-image: url('assets/ai-logos/qwen.svg'); }
 .logo-powershell{ background-image: url('assets/ai-logos/powershell.svg'); }
 
 /* === Sidebar tree (meeting + child sub-sessions) === */
@@ -395,7 +317,10 @@
   padding: 4px 10px 8px;
   color: #a1a1aa;
   border-top: 1px solid var(--tool-call-border);
-  white-space: pre;
+  /* 2026-06-21 道雪：原 white-space:pre 不换行，超长单行(路径/JSON)横向溢出出横滚条。
+     改 pre-wrap + break-word，与 .tc-result 一致，纵向滚动即可。 */
+  white-space: pre-wrap;
+  word-break: break-word;
   font-size: 10.5px;
   line-height: 1.45;
   max-height: 480px;
@@ -676,9 +601,6 @@
   font-style: italic;
   margin-left: 6px;
 }
-/* vibechat-light 主题下 spinner 用微信绿 */
-body.theme-vibechat-light .streaming-indicator { color: #07c160; }
-
 /* === Spec 3 · 长 markdown 文本默认折叠 === */
 .turn-body.body-foldable.folded {
   max-height: 400px;
@@ -807,12 +729,6 @@ body.theme-vibechat-light .streaming-indicator { color: #07c160; }
   overflow: hidden;
 }
 .turn-avatar.av-user { background: var(--ui-purple-tint-bg); }
-.turn-avatar.av-logo img,
-.turn-avatar.av-poke img {
-  width: 100%; height: 100%;
-  object-fit: contain;
-}
-.turn-avatar.av-poke { background: #fef3c7; padding: 2px; }
 .turn-avatar.av-letter {
   font-size: 11px;
   font-weight: 700;

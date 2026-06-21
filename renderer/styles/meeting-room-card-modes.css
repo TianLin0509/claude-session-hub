@@ -1,6 +1,3 @@
-/* === 投研 AI 群聊 / 通用 AI 群聊：隐藏 3-xterm 终端容器 === */
-.mr-terminals-hidden { display: none !important; }
-
 /* === 模式切换按钮（群聊 / 投研）— 样式已移至 Free Mode 块（2026-05-04）=== */
 
 /* ========================================================================
@@ -136,38 +133,6 @@
   color: var(--text-primary, #c9d1d9);
 }
 
-/* P1-2：历史轮次面板每家状态角标 */
-.mr-gc-history-statuses {
-  display: inline-flex;
-  gap: 4px;
-  margin-left: 8px;
-}
-.mr-gc-history-status {
-  display: inline-block;
-  padding: 1px 6px;
-  font-size: 10px;
-  line-height: 1.4;
-  border-radius: 8px;
-  font-weight: 500;
-  white-space: nowrap;
-  user-select: none;
-}
-.mr-gc-history-status.completed {
-  background: rgba(74, 210, 139, 0.18);
-  color: #56d4a4;
-  border: 1px solid rgba(74, 210, 139, 0.3);
-}
-.mr-gc-history-status.manual {
-  background: rgba(91, 141, 239, 0.18);
-  color: #79b8ff;
-  border: 1px solid rgba(91, 141, 239, 0.3);
-}
-.mr-gc-history-status.absent {
-  background: rgba(139, 148, 158, 0.18);
-  color: #b1bac4;
-  border: 1px solid rgba(139, 148, 158, 0.3);
-}
-
 /* ============================================================================
    Resend & Auto-Recovery（2026-05-03）
    ============================================================================ */
@@ -218,12 +183,6 @@
 .mr-ft-auto-patched-badge.fade-out {
   opacity: 0;
 }
-.mr-gc-history-status.errored {
-  background: rgba(248, 81, 73, 0.18);
-  color: #f85149;
-  border: 1px solid rgba(248, 81, 73, 0.3);
-}
-
 /* ========================================================================
    IF-C3（2026-05-01）—— 软提醒 banner（输入区上方）
    AI 启动中时提示用户哪几家未 ready，引导"等几秒再发送"避免输入丢失。
@@ -282,6 +241,14 @@
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
+  /* 2026-06-21 道雪：基础 display:grid 此前丢失（疑历史重构），导致并列模式 N 张 AI 卡
+     竖叠、被 .mr-gc-panel overflow:hidden 裁到只剩第 1 张可见（tab 模式因只显 1 张而掩盖）。
+     card-modes.css 下方 tab 规则给本元素设 grid-template-columns 已证本意为 grid。恢复
+     grid + 自动列，让并列模式 N 张卡横向等宽并排（真机 harness 已验证 strip.png）。 */
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 8px;
   grid-auto-rows: 1fr;
   align-items: stretch;
   transition: flex 240ms ease-out;
@@ -295,9 +262,70 @@
   min-height: 0;
   overflow-y: auto;
 }
-.mr-gc-history {
-  margin-top: auto;
-  flex-shrink: 0;
+
+.mr-card-view-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin: 8px 0 10px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.mr-card-view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.mr-card-view-tab:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary, #c9d1d9);
+}
+.mr-card-view-tab.active {
+  background: rgba(88, 166, 255, 0.18);
+  color: var(--text-primary, #c9d1d9);
+}
+.mr-card-view-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+.mr-card-view-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.mr-card-tab-mode .mr-ft-strip {
+  grid-template-columns: minmax(0, 1fr);
+}
+body.mr-card-tab-mode .mr-ft-strip .mr-ft:not(.active) {
+  display: none;
+}
+body.mr-card-tab-mode .mr-ft-head,
+body.mr-card-tab-mode .mr-ft-escape-bar {
+  display: none;
+}
+body.mr-card-tab-mode .mr-ft-bottom {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border-top: 0;
+}
+body.mr-card-tab-mode .mr-gc-timetravel-banner,
+body.mr-card-tab-mode .mr-gc-userq {
+  display: none;
 }
 
 /* Arch refactor 2026-05-02 (Task 6): 截断提示链接（卡片摘要超长时附加） */
@@ -436,37 +464,3 @@
   color: #6e7681;
   cursor: not-allowed;
 }
-
-/* === 2026-05-09 简洁模式 + AI 群聊焦点 = 单卡全屏阅读模式 ===
- * 复用现有 mr-card-focus-on 焦点机制，简洁模式下升级为单卡撑满主区（保留输入框）：
- *   - 隐藏 mr-header / mr-toolbar（让 strip 接管 input-row 上面所有空间）
- *   - mr-input-row 保留显示，方便用户阅读后立刻输入下一条
- *   - mr-ft-strip 单列 grid，flex:1 撑满高度
- *   - active 卡片去边距、边角铺满，padding 加大、字号略增便于阅读
- *   - 非主卡（slot邻居）display:none
- * 退出：再次点击同卡（meeting-room.js click handler 已为 compact-mode 分支处理）
- */
-body.compact-mode.mr-card-focus-on .mr-header,
-body.compact-mode.mr-card-focus-on .mr-toolbar {
-  display: none !important;
-}
-body.compact-mode.mr-card-focus-on .mr-ft-strip {
-  grid-template-columns: 1fr !important;
-  flex: 1 1 auto !important;
-  height: 100% !important;
-  border-bottom: none !important;
-}
-body.compact-mode.mr-card-focus-on .mr-ft-strip .mr-ft:not(.active) {
-  display: none !important;
-}
-body.compact-mode.mr-card-focus-on .mr-ft-strip .mr-ft.active {
-  height: 100% !important;
-  min-height: 0;
-  padding: 28px 36px !important;
-  border-radius: 0 !important;
-  border-bottom: none !important;
-  font-size: calc(15px * var(--main-zoom, 1));
-  overflow-y: auto;
-}
-
-/* ============================================================== */

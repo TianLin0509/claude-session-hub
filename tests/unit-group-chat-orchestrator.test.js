@@ -84,17 +84,17 @@ test('buildDelta sends only user input when no other assistant messages are new'
   assert.ok(!delta.includes('raw://group/'));
 });
 
-test('buildDelta keeps historical user messages for a late participant but excludes current user message from added section', () => {
+test('buildDelta excludes user messages from added section because current user text is appended at prompt end', () => {
   const { orch } = fresh();
   orch.state.messages = [
-    { id: 'u1', role: 'user', speaker: '用户', content: 'Q1: 背景问题', sid: null },
+    { id: 'u1', role: 'user', speaker: '你', content: 'Q1: 背景问题', sid: null },
     { id: 'a1-claude', role: 'assistant', speaker: 'Claude', content: 'R1: 回答背景问题', sid: 's-claude' },
-    { id: 'u2', role: 'user', speaker: '用户', content: 'Q2: 当前追问', sid: null },
+    { id: 'u2', role: 'user', speaker: '你', content: 'Q2: 当前追问', sid: null },
   ];
 
   const delta = orch.buildDelta('s-codex', 'Q2: 当前追问');
   const beforeUser = delta.split('## 用户')[0];
-  assert.ok(beforeUser.includes('用户：Q1: 背景问题'));
+  assert.ok(!beforeUser.includes('你：Q1: 背景问题'));
   assert.ok(beforeUser.includes('Claude：R1: 回答背景问题'));
   assert.ok(!beforeUser.includes('Q2: 当前追问'));
   assert.match(delta, /## 用户\nQ2: 当前追问\n\n请发言。$/);
@@ -144,6 +144,58 @@ test('completeTurn can preserve prompt-time delivered index so peers see same-tu
   assert.match(delta, /## 新增发言\nCodex：Codex first reply\./);
   assert.ok(!delta.includes('Claude first reply.'));
   assert.match(delta, /## 用户\nSecond question\.\n\n请发言。$/);
+});
+
+test('serial workflow can reuse one visible turn and one user message for multiple AI answers', () => {
+  const { orch } = fresh();
+  const first = orch.beginTurn('Same serial question.');
+  const deliveredIdx1 = orch.state.messages.length - 1;
+  orch.completeTurn(first.turnNum, 'Same serial question.', [
+    { sid: 's-claude', status: 'completed', text: 'Claude serial reply.', deliveredIdx: deliveredIdx1 },
+  ], Object.fromEntries(members.map(m => [m.sid, m])), {}, { dispatchMode: 'serial' });
+
+  const second = orch.beginTurn('Same serial question.', {
+    turnNum: first.turnNum,
+    appendUserMessage: false,
+  });
+  const delta = orch.buildFirstDelta('s-codex', 'Same serial question.', 'SYS', {
+    currentUserMessageAppended: second.didAppendUserMessage,
+  });
+  assert.ok(delta.includes('Claude：Claude serial reply.'));
+  assert.ok(!delta.includes('你：Same serial question.'));
+
+  const deliveredIdx2 = orch.state.messages.length - 1;
+  orch.completeTurn(first.turnNum, 'Same serial question.', [
+    { sid: 's-codex', status: 'completed', text: 'Codex serial reply.', deliveredIdx: deliveredIdx2 },
+  ], Object.fromEntries(members.map(m => [m.sid, m])), {}, { dispatchMode: 'serial' });
+
+  const state = orch.getState();
+  assert.strictEqual(state.messages.filter(m => m.role === 'user').length, 1);
+  assert.strictEqual(state.messages.filter(m => m.role === 'assistant').length, 2);
+  assert.strictEqual(state.turns.length, 1);
+  assert.strictEqual(state.turns[0].by['s-claude'], 'Claude serial reply.');
+  assert.strictEqual(state.turns[0].by['s-codex'], 'Codex serial reply.');
+  assert.strictEqual(state.turns[0].meta.dispatchMode, 'serial');
+});
+
+test('completeTurn keeps existing answer when a later errored result returns empty text', () => {
+  const { orch } = fresh();
+  const { turnNum } = orch.beginTurn('Question that gets answered then errors on resend.');
+  const deliveredIdx = orch.state.messages.length - 1;
+  const bySid = Object.fromEntries(members.map(m => [m.sid, m]));
+  // 第一次 claude 正常答完
+  orch.completeTurn(turnNum, 'Q.', [
+    { sid: 's-claude', status: 'completed', text: 'Good full answer.', deliveredIdx },
+  ], bySid);
+  // 重发 / 串行复用同 turn+sid：这次 errored 且空文本，不应抹掉已有答案
+  orch.completeTurn(turnNum, 'Q.', [
+    { sid: 's-claude', status: 'errored', text: '', deliveredIdx },
+  ], bySid);
+  const state = orch.getState();
+  assert.strictEqual(state.turns[0].by['s-claude'], 'Good full answer.', 'turn.by 应保留旧答案');
+  const msg = state.messages.find(m => m.role === 'assistant' && m.sid === 's-claude');
+  assert.strictEqual(msg.content, 'Good full answer.', 'message.content 应保留旧答案');
+  assert.strictEqual(state.turns[0].byStatus['s-claude'], 'errored', '状态仍可更新为 errored');
 });
 
 test('patchTurnResult updates final turn and raw assistant message without summary ledger', () => {

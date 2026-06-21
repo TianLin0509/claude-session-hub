@@ -24,7 +24,6 @@ if (typeof document !== 'undefined') (function () {
 
   let activeMeetingId = null;
   let meetingData = {};
-  let subTerminals = {};
   // IF-C1（2026-05-01）：CLI ready 状态 cache（per-sid bool），由 cli-ready-status IPC 1s 轮询填充
   //   驱动 isInitializing 判断（修 P0 阻塞 bug B：原 markerStatus 永远 'none' 导致永久卡"创建中"）
   let _cliReadyCache = {};
@@ -60,9 +59,7 @@ if (typeof document !== 'undefined') (function () {
   // _gcPanelState[meetingId] 缓存渲染状态，避免 IPC 频繁调用
   // partialBy: 当前进行中轮次的部分回答 { sid: { text, status } } — 单家完成立即更新
   const _gcPanelState = {};
-  const _committeeRunState = {};
-  let _committeePulseTimer = null;
-  let _gcHistoryExpanded = false;
+
   // T3（2026-05-04 道雪）：抽屉实时订阅状态。打开时设 { sid, mid, kind }，关时清 null。
   //   partial-update handler 命中同 sid + 用户当前 active 的是 live tab 时，更新抽屉内容。
   let _gcTimelineLive = null;
@@ -75,25 +72,6 @@ if (typeof document !== 'undefined') (function () {
   //   触发: click 任一 .mr-ft → 进入; 再次 click 同卡 / Esc / 点空白 → 退出。
   //   退出后 meeting.focusedSub 不变(主显仍是该 sid)。
   let _gcFocusedCardSid = null;
-
-  // F9 Phase 2(2026-05-04 道雪): 卡片密度切换 (常规 220px / 紧凑 120px)。
-  //   localStorage 持久化, per-Hub 全局态, 不与 meeting 绑定。
-  function _isDensityCompact() {
-    try {
-      return typeof localStorage !== 'undefined' && localStorage.getItem('mr-density-compact') === 'true';
-    } catch { return false; }
-  }
-  function _setDensityCompact(compact) {
-    try { if (typeof localStorage !== 'undefined') localStorage.setItem('mr-density-compact', compact ? 'true' : 'false'); } catch {}
-    if (compact) document.body.classList.add('mr-density-compact');
-    else document.body.classList.remove('mr-density-compact');
-    // 触发 _relayoutMeetingRoom 让 xterm 等重新 fit (Card optimization Task 10 提供)
-    if (typeof _relayoutMeetingRoom === 'function') {
-      setTimeout(() => _relayoutMeetingRoom(), 260);
-    }
-  }
-  // 启动时立即应用持久化状态
-  if (_isDensityCompact()) document.body.classList.add('mr-density-compact');
 
   // F5 Phase 3(2026-05-04 道雪 / spec F5 简化版): 整轮总耗时
   //   原本 token + 成本估算因 transcript-tap 仅 GeminiTap 提供 token 数据,
@@ -117,14 +95,12 @@ if (typeof document !== 'undefined') (function () {
   }
   function _applyCardViewModeClass(mode) {
     document.body.classList.toggle('mr-card-tab-mode', mode === 'tab');
-    document.body.classList.remove('mr-density-compact');
   }
   function _setCardViewMode(mode, meeting) {
     const next = mode === 'tab' ? 'tab' : 'parallel';
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(_CARD_VIEW_MODE_KEY, next);
-        localStorage.removeItem('mr-density-compact');
       }
     } catch {}
     _applyCardViewModeClass(next);
@@ -201,14 +177,25 @@ if (typeof document !== 'undefined') (function () {
       ? { scrollTop: 0, stickToBottom: true }
       : _captureGroupChatScroll(panel, active);
     try {
-      panel.innerHTML = _renderGcPanelHtml(state, active);
-      _bindGcPanelEvents(panel, active);
-      _restoreGroupChatScroll(panel, groupScroll, { forceBottom: forceGroupChatBottom });
+      _renderGcPanelInto(panel, active, state, {
+        scroll: groupScroll,
+        restoreOpts: { forceBottom: forceGroupChatBottom },
+      });
       return true;
     } catch (e) {
       console.error('[groupchat] cached panel render failed:', e);
       return false;
     }
+  }
+
+  function _renderGcPanelInto(panel, meeting, state, opts = {}) {
+    if (!panel || !meeting || !state) return false;
+    panel.innerHTML = _renderGcPanelHtml(state, meeting);
+    _bindGcPanelEvents(panel, meeting);
+    if (opts.scroll) {
+      _restoreGroupChatScroll(panel, opts.scroll, opts.restoreOpts || {});
+    }
+    return true;
   }
 
   // F3 Phase 2(2026-05-04 道雪 / spec F3): 多卡 Ctrl/Cmd+click 对比模式
@@ -262,6 +249,7 @@ if (typeof document !== 'undefined') (function () {
     if (_gcQuoteChips.length === 0) {
       row.style.display = 'none';
       row.innerHTML = '';
+      _updateInputPreflight(meetingData[activeMeetingId]);
       return;
     }
     row.style.display = '';
@@ -284,6 +272,7 @@ if (typeof document !== 'undefined') (function () {
         }
       });
     });
+    _updateInputPreflight(meetingData[activeMeetingId]);
   }
 
   function _addQuoteChip(meeting, sid, text) {
@@ -419,11 +408,6 @@ if (typeof document !== 'undefined') (function () {
   }, { passive: false });
   // Stage 2 容错升级：每轮 prompt 发送时间戳（用于 manual-extract IPC 的 sincePromptTs 参数）
   const _gcTurnStartTs = {};
-
-  // Card optimization Task 9（2026-05-01）— 沉浸/调试模式 per-meetingId 状态（renderer 内存镜像）。
-  //   首次 openMeeting 走 IPC 'get-immersive-mode' 拿主进程持久化值；切换走 'save-immersive-mode' 写回。
-  //   _toggleMeetingMode 切换 panel.classList.immersive + 按钮 .active class + icon/label 文本。
-  const _immersiveByMeeting = {};
 
   // markdown 渲染（用项目已有的 marked + DOMPurify）
   let _markedCache = null;
@@ -591,7 +575,7 @@ if (typeof document !== 'undefined') (function () {
       return escapeHtml(text).replace(/\n/g, '<br>');
     }
   }
-  // #1 流式/重渲性能：_renderMarkdown 对相同文本会被反复调用——committee/全量 panel 每个
+  // #1 流式/重渲性能：_renderMarkdown 对相同文本会被反复调用——chat/full-panel panel 每个
   //   partial tick 重渲所有已完成消息、tab 切换/时光机/soft-alert 亦然。同一 text 经
   //   marked+DOMPurify+Prism 必得同一 HTML（运行期配置稳定），故按 text 做 LRU memo：
   //   稳定内容直接命中缓存，跳过 parse+sanitize+DOM walk+Prism；流式增长中的那条每 tick
@@ -731,9 +715,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   // sub session 信息（kind → {sid, label}）— 用于按 kind 索引找子 session 显示信息。
-  // Plan 阶段 2: 改为按 _KIND_LABELS 动态生成 5 家槽位（claude/gemini/codex/deepseek/glm），
-  // 自动支持 deepseek/glm 私聊与 @summary。每个 kind 只取首个匹配的 sub-session
-  // (5 选 3 + 同 kind 重复 的语义由 slotSpecs 处理，本函数仍按 kind 单值索引)。
+  // Build a first-session lookup for the active core AI kinds. Duplicate-kind slot semantics are handled by slot specs.
   function _getGcSubInfo(meeting) {
     const subs = {};
     for (const kind of Object.keys(_KIND_LABELS)) subs[kind] = null;
@@ -750,9 +732,7 @@ if (typeof document !== 'undefined') (function () {
 
   // meeting-create-modal（2026-05-01）：按 subSessions 数组顺序还原 slot 数组。
   //   返回 [slot0, slot1, slot2]，每个 slot 是 { sid, kind, slotId, slotIndex, label, displayLabel }
-  //     - slotId:        'pikachu' / 'charmander' / 'squirtle'（slot 化 2026-05-03）
-  //     - label:         纯英文 slot 名（"Pikachu"），给 prompt / @解析 / 后端字段用
-  //     - displayLabel:  双语带 emoji（"⚡ Pikachu · 皮卡丘"），给卡片 UI 用
+  // Restore slot metadata from subSessions order. slotId is member1/member2/member3.
   function _getGcSlots(meeting) {
     const maxSlots = meeting && meeting.groupChat && Array.isArray(meeting.subSessions)
       ? meeting.subSessions.length
@@ -776,8 +756,7 @@ if (typeof document !== 'undefined') (function () {
     }
     return slots;
   }
-
-  // 用 ai-kinds.js 的 KIND_LABELS 单一真理源（含 deepseek/glm/gpt/kimi/qwen），未来加新 AI 自动覆盖。
+  // ai-kinds.js is the single source of truth for supported AI labels.
   const _KIND_LABELS = KIND_LABELS;
 
   const _DUTY_HAT_PROMPT_MARKER = '## 临时职责帽（本轮有效，不写入长期记忆）';
@@ -838,7 +817,7 @@ if (typeof document !== 'undefined') (function () {
         icon: '🔍',
         label: '数据核验员',
         short: '核验',
-        duty: '只负责核验关键数字、事实、来源与时间点；未查到或未确认的内容必须标注“未核验”。',
+        duty: '只负责核验关键数字、事实、来源与时间点；未查到或未确认的内容必须标注“未核验”。核验前先调 stock_static(symbol) 拿财务/估值/股东/质押底数，对照其 confidence 标签，非 HIGH 字段必须提示口径风险。',
         format: '已核验数据 / 数据来源 / 数据时点 / 未核验项 / 口径或冲突风险',
       },
       {
@@ -846,7 +825,7 @@ if (typeof document !== 'undefined') (function () {
         icon: '🧨',
         label: '空头审稿人',
         short: '空头',
-        duty: '只负责攻击前面观点，寻找反例、逻辑跳跃、过期数据、证伪条件；不要输出综合结论。',
+        duty: '只负责攻击前面观点，寻找反例、逻辑跳跃、过期数据、证伪条件；不要输出综合结论。攻击要落到实据：调 stock_static 查质押/商誉/股东减持等雷点，必要时调 stock_news 反证催化是否已被 price-in；质疑同样标证据强度（strong/medium/weak），weak 级不能单独作为“建议打回”的理由。',
         format: '最大漏洞 / 反例 / 需要补查 / 证伪条件 / 是否建议打回',
       },
       {
@@ -854,7 +833,7 @@ if (typeof document !== 'undefined') (function () {
         icon: '📈',
         label: '多头论证员',
         short: '多头',
-        duty: '负责构建最强看多逻辑链，但必须给出验证条件和失效条件，避免只讲叙事。',
+        duty: '负责构建最强看多逻辑链，但必须给出验证条件和失效条件，避免只讲叙事。看多链必须挂在数据上：调 stock_static 验财务/估值底子、stock_news 找催化与一致预期；关键证据标 strong/medium/weak，weak 不得单独支撑高置信。',
         format: '看多主张 / 关键证据 / 验证条件 / 失效条件 / 置信度',
       },
       {
@@ -862,7 +841,7 @@ if (typeof document !== 'undefined') (function () {
         icon: '🎯',
         label: '综合裁判',
         short: '裁判',
-        duty: '负责在其他成员发言后收敛，不负责和稀泥；合并共识与分歧，给出行动前复核清单。',
+        duty: '负责在其他成员发言后收敛，不负责和稀泥；合并共识与分歧，给出行动前复核清单。原则上不另调数据工具，专注收敛各方已查证据；若有机器基线分/体检卡则以其为量化锚，偏离要说明理由。',
         format: '结论等级 / 置信度 / 主要分歧 / 需要补查的数据 / 行动前复核清单',
       },
       {
@@ -870,7 +849,7 @@ if (typeof document !== 'undefined') (function () {
         icon: '📰',
         label: '消息催化帽',
         short: '催化',
-        duty: '负责公告、财报日历、政策、监管、新闻事件与催化剂时间表，区分已发生、已知未兑现和待确认信息。',
+        duty: '负责公告、财报日历、政策、监管、新闻事件与催化剂时间表，区分已发生、已知未兑现和待确认信息。优先调 stock_news(symbol) 拿公告/新闻/快讯；若要看社区情绪、争议焦点、V大观点，再调 stock_sentiment(symbol)。每个催化剂必须带日期与来源，并指出市场已知与可能的预期差。',
         format: '最新事件 / 来源与时间 / 影响路径 / 待兑现节点 / 可靠性',
       },
       {
@@ -878,7 +857,7 @@ if (typeof document !== 'undefined') (function () {
         icon: '📊',
         label: '技术分析师',
         short: '技术',
-        duty: '负责趋势、量价、资金流、龙虎榜、融资融券、北向等交易层信号，回答市场现在在做什么。',
+        duty: '负责趋势、量价、资金流、融资融券、实时盘口等交易层信号，回答市场现在在做什么。优先调 stock_market(symbol) 拿 K线/RSI/MACD/资金流/融资融券；支撑、压力、止损位必须基于真实指标算，不得凭记忆估。问“历史上类似形态后来怎么走”时再调 kline_similarity(symbol)。',
         format: '趋势方向 / 关键价位 / 量能资金 / 短期风险 / 失效信号',
       },
     ],
@@ -1051,8 +1030,8 @@ if (typeof document !== 'undefined') (function () {
     const input = document.getElementById('mr-input-box');
     if (!input) return;
     input.textContent = text || '';
-    if (text && text.trim()) _inputDraftByMeeting[meetingId] = text;
-    else delete _inputDraftByMeeting[meetingId];
+    _setInputDraft(meetingId, text || '');
+    _updateInputPreflight(meetingData[meetingId]);
     input.focus();
     _placeCaretAtEnd(input);
   }
@@ -1113,7 +1092,12 @@ if (typeof document !== 'undefined') (function () {
         preview = partial.text || '';
       }
     } else if (currentMode && currentMode !== 'idle') {
-      if (!isSlotParticipatingThisTurn(meeting, slotIndex)) {
+      // 本轮真正被 dispatch 的 sid 集合（串行工作流每步只发子集）；未设置则 fallback participants
+      const activeSids = _gcActiveSids[meetingId];
+      const isActiveThisTurn = activeSids
+        ? activeSids.has(sub.sid)
+        : isSlotParticipatingThisTurn(meeting, slotIndex);
+      if (!isActiveThisTurn) {
         status = lastTurn && lastTurn.by && lastTurn.by[sub.sid] ? 'completed' : 'idle';
         preview = lastTurn ? (lastTurn.by[sub.sid] || '') : '';
       } else {
@@ -1433,66 +1417,12 @@ if (typeof document !== 'undefined') (function () {
     </div>`;
   }
 
-  // Stage 2 P1-2：历史轮次面板状态角标 — 把每家本轮的 byStatus 渲染成 [Claude ✓][Gemini 手动][Codex 缺席]
-  // 让用户回看时一眼能看出哪轮哪家"未参与/出错/手动提取"。老格式 byStatus=null 时显示空（默默兼容）。
-  const _STATUS_BADGE_CONFIG = {
-    completed:        { icon: '✓',   cls: 'completed', title: '已答' },
-    manual_extracted: { icon: '手动', cls: 'manual',    title: '手动提取' },
-    absent:           { icon: '缺席', cls: 'absent',    title: '本轮缺席' },
-    errored:          { icon: '错误', cls: 'errored',   title: '错误未输出' },
-    interrupted:      { icon: '中断', cls: 'errored',   title: '已中断' },
-    transport_lost:   { icon: '断连', cls: 'errored',   title: '连接断开' },
-  };
-  function _renderHistoryStatusBadges(turn, sidLabelLookup) {
-    if (!turn || !turn.byStatus) return '';
-    const badges = [];
-    for (const [sid, status] of Object.entries(turn.byStatus)) {
-      const cfg = _STATUS_BADGE_CONFIG[status];
-      if (!cfg) continue;
-      const label = sidLabelLookup ? (sidLabelLookup(sid) || sid.slice(0, 6)) : sid.slice(0, 6);
-      badges.push(`<span class="mr-gc-history-status ${cfg.cls}" title="${escapeHtml(label)}: ${cfg.title}">${escapeHtml(label)} ${cfg.icon}</span>`);
-    }
-    return badges.join('');
-  }
-
-  function _renderGcHistory(state, meeting) {
-    if (!state.turns || state.turns.length === 0) return '';
-    // 构造 sid → label 查表，从 meeting.subSessions 推 kind label
-    const sidToLabel = {};
-    if (meeting && Array.isArray(meeting.subSessions) && typeof sessions !== 'undefined') {
-      for (const sid of meeting.subSessions) {
-        const s = sessions.get(sid);
-        if (s) sidToLabel[sid] = _KIND_LABELS[s.kind] || s.kind;
-      }
-    }
-    const lookupLabel = sid => sidToLabel[sid] || sid.slice(0, 6);
-
-    const items = state.turns.map(t => {
-      const userIn = (t.userInput || '').slice(0, 60);
-      const meta = t.decisionTitle ? ` · 标题: ${escapeHtml(t.decisionTitle.slice(0, 40))}` : '';
-      const statusBadges = _renderHistoryStatusBadges(t, lookupLabel);
-      return `<div class="mr-gc-history-item">
-        <span class="mr-gc-history-turn">第 ${t.n} 轮</span>
-        <span class="mr-gc-history-mode ${escapeHtml(t.mode)}">${escapeHtml(t.mode)}</span>
-        <span class="mr-gc-history-input">${escapeHtml(userIn)}${(t.userInput || '').length > 60 ? '…' : ''}</span>
-        <span class="mr-gc-history-meta">${meta}</span>
-        ${statusBadges ? `<span class="mr-gc-history-statuses">${statusBadges}</span>` : ''}
-      </div>`;
-    }).join('');
-    const expanded = _gcHistoryExpanded;
-    const toggle = `<span class="mr-gc-history-toggle" id="mr-gc-history-toggle">${expanded ? '▾' : '▸'} 历史轮次（${state.turns.length}）</span>`;
-    return `<div class="mr-gc-history">
-      ${toggle}
-      <div class="mr-gc-history-list" style="display:${expanded ? 'flex' : 'none'}">${items}</div>
-    </div>`;
-  }
-
   // Phase 5(2026-05-05 道雪): stepper 升级为 progress track mini-map + N/N 当前轮指示。
   //   旧版: 装饰性 dot, 不可交互, 数据来源轻; 底部独立"历史轮次 (N)"按钮折叠列表。
   //   新版: 每轮一个可 click/hover 的 dot(progress track 风, A 方案), mode 配色,
   //         当前轮蓝光圈放大, 末尾 "N/N" 数字直白显示进度。
   //         数据 attr (data-turn-n / data-turn-mode) 支持 click/hover 时光机切换。
-  //         "历史轮次"按钮 + _renderGcHistory 渲染删除(功能被 mini-map 完全替代)。
+  //         旧历史列表已被 mini-map 完全替代。
   function _renderTurnStepper(turns, currentMode, viewingTurnN) {
     const totalTurns = turns.length;
     if (totalTurns === 0 && (!currentMode || currentMode === 'idle')) return '';
@@ -1587,6 +1517,21 @@ if (typeof document !== 'undefined') (function () {
     return expectedSids.every(sid =>
       partialBy[sid] && _SETTLED_STATUSES.has(partialBy[sid].status)
     );
+  }
+
+  // 2026-06-21 道雪：判断某群聊/投研会议「本轮仍在进行且未全员结束」。
+  //   与推进解锁同口径：currentMode 活跃 且 未 _allParticipantsSettled 即视为忙碌。
+  //   用于发送 guard——本轮没跑完时拦截再次提问（普通群聊无超时，卡死的 AI 会让后端
+  //   串行队列无限期挂起、用户第二问凭空消失）。
+  function _isGroupTurnBusy(meeting) {
+    if (!meeting || !_isPanelCapableMeeting(meeting)) return false;
+    const st = _gcPanelState[meeting.id];
+    if (!st) return false;
+    const mode = st.currentMode;
+    if (!mode || mode === 'idle') return false;
+    const expected = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
+    if (expected.length === 0) return false;
+    return !_allParticipantsSettled(st._partialBy, expected);
   }
 
   // E3 修复 (2026-05-03)：_renderCmdBar 删除（与 toolbar 重复的 ask/debate/summary 按钮组）。
@@ -1729,66 +1674,6 @@ if (typeof document !== 'undefined') (function () {
     }
   }
 
-  // dev scene 一次性引导卡片 (plan-dev-scenario.md §5.2)
-  //   按 meeting.scene 分发到三套文案 + 三个 localStorage key
-  //   "不再显示" → setItem('1') 永久不再出现; "我知道了" → 仅当前视图隐藏 (DOM 删除), 下次进 panel 仍出现
-  //   D1 v2 (master) 把欢迎区上移到 fusedTabs 之前; scene card 同属欢迎区, 跟随上移待遇 (在 onboarding 之上).
-  const SCENE_ONBOARDING_LS_KEY = {
-    general: 'hub-general-scenario-onboarding-dismissed-v1',
-    research: 'hub-research-scenario-onboarding-dismissed-v1',
-    dev: 'hub-dev-scenario-onboarding-dismissed-v1',
-  };
-  const SCENE_ONBOARDING_ENABLED = false;
-  const SCENE_ONBOARDING_CONTENT = {
-    general: {
-      head: '🎯 通用群聊 · 使用提示',
-      bullets: [
-        '三家平等给观点，不预设领域；技术辩论、代码评审、开放讨论都行。',
-        '默认提问 → 三家并行；输入"<strong>@m1</strong>"触发辩论。',
-        '想点名某家：用"<strong>@pikachu / @charmander / @squirtle</strong>"指定发言人。',
-        '群聊产物是<strong>可讨论的判断</strong>，不是研报或可执行方案。需要落地操作时，结论里会建议你切独立 session 实操。',
-      ],
-    },
-    research: {
-      head: '📊 投研群聊 · 使用提示',
-      bullets: [
-        '三家偏置已固化：<strong>Pikachu</strong> 对抗硬度派（最尖锐空头）/ <strong>Charmander</strong> 反直觉校验派（找盲点）/ <strong>Squirtle</strong> 极简克制派（快速初筛）。',
-        '输入个股代码 / 问题即可；三家会自动调数据后端拿最新数据，从基本面 + 资金面 + 技术面 + 情绪面给观点。',
-        '结论必走 <strong>4 档</strong>（强烈推荐 / 可买需条件 / 不建议买 / 强烈回避），不允许"建议关注 / 可跟踪"等模糊话术。',
-        '想跳过首轮反问，直接输入"<strong>直接分析</strong>"；想看深度推演（含对手盘 + 预期差分层），输入"<strong>@深度</strong>"。',
-      ],
-    },
-    dev: {
-      head: '🛠️ 开发群聊 · 使用提示',
-      bullets: [
-        '三家先帮你问清需求、讨论方案，默认只交给 1 个 Driver 实操。',
-        '你可以跳过问题；跳过项会在交接单里作为默认假设回显。',
-        '需要交接时输入"<strong>生成交接单</strong>"；Driver 改完后输入"<strong>帮我审一下</strong>"。',
-        '如需一对一深聊，建议直接打开对应 AI 子会话（左侧栏点 slot 头像跳转）。',
-      ],
-    },
-  };
-  function _renderSceneOnboardingCard(meeting) {
-    if (!SCENE_ONBOARDING_ENABLED) return '';
-    if (!meeting) return '';
-    const sceneKey = meeting.scene;
-    const content = SCENE_ONBOARDING_CONTENT[sceneKey];
-    const lsKey = SCENE_ONBOARDING_LS_KEY[sceneKey];
-    if (!content || !lsKey) return ''; // 未注册场景不渲染
-    try {
-      if (localStorage.getItem(lsKey) === '1') return '';
-    } catch {} // localStorage 不可用时按"未持久化"处理
-    const bulletsHtml = content.bullets.map(b => `<li>${b}</li>`).join('');
-    return `<div class="mr-gc-scene-card" data-gc-scene-card data-gc-scene-key="${sceneKey}">
-      <div class="mr-gc-scene-card-head">${content.head}</div>
-      <ul class="mr-gc-scene-card-body">${bulletsHtml}</ul>
-      <div class="mr-gc-scene-card-actions">
-        <button class="mr-gc-scene-card-btn" data-gc-scene-card-action="dismiss-once">我知道了</button>
-        <button class="mr-gc-scene-card-btn mr-gc-scene-card-btn-secondary" data-gc-scene-card-action="dismiss-forever">不再显示</button>
-      </div>
-    </div>`;
-  }
-
   function _groupMemberMap(meeting) {
     const map = {};
     for (const slot of _getGcSlots(meeting)) {
@@ -1818,31 +1703,6 @@ if (typeof document !== 'undefined') (function () {
     return `<div class="mr-gc-avatar"><img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" /></div>`;
   }
 
-  function _committeeVerboseMessageInfo(message) {
-    const text = String((message && message.content) || '');
-    if (!text) return null;
-    const isUser = message.role === 'user';
-    if (/^【投委会\s*·/.test(text)) {
-      return {
-        title: isUser ? '内部调度指令已收起' : '投委会原始回复已收起',
-        reason: '机器调度文本',
-      };
-    }
-    if (/```json/i.test(text) || /"confidence"\s*:|"rating"\s*:|"checkups"\s*:|"positions"\s*:/.test(text)) {
-      return {
-        title: 'JSON 原始记录已收起',
-        reason: '结构化校验数据',
-      };
-    }
-    if (text.length > 1400 && /投委会|研判|裁决|持仓|案卷|质询/.test(text)) {
-      return {
-        title: '长原文已收起',
-        reason: '详细过程记录',
-      };
-    }
-    return null;
-  }
-
   function _renderGroupChatMessage(message, meeting, memberBySid, opts = {}) {
     if (!message) return '';
     const isUser = message.role === 'user';
@@ -1852,25 +1712,18 @@ if (typeof document !== 'undefined') (function () {
     const time = _formatGroupChatTime(message.createdAt);
     const status = opts.status || message.status || '';
     const statusText = opts.pending ? '正在发言' : (status === 'errored' ? '发送失败' : '');
-    const syncAction = (!isUser && message.sid)
+    // 2026-06-21 道雪：「同步」是 AI 卡住/没抓到回答时手动从 shell/transcript 补抓的逃生入口，
+    //   对已 completed/manual_extracted 的回答无意义且误导用户以为"没同步成功"，故仅非成功态渲染。
+    const _syncSettled = status === 'completed' || status === 'manual_extracted';
+    const syncAction = (!isUser && message.sid && !_syncSettled)
       ? `<button type="button" class="mr-gc-sync-btn" data-gc-sync-answer="${escapeHtml(message.sid)}" data-gc-sync-turn="${escapeHtml(message.turnNum || '')}" title="从该 AI 的 shell/transcript 手动同步本轮回答">同步</button>`
       : '';
     const body = opts.empty
       ? '<span class="mr-gc-waiting">思考中...</span>'
       : `<div class="mr-gc-md">${_renderMarkdown(message.content || '')}</div>`;
-    const committeeVerbose = meeting && meeting.scene === 'committee' && !opts.pending
-      ? _committeeVerboseMessageInfo(message)
-      : null;
-    const renderedBody = committeeVerbose
-      ? `<details class="mr-committee-raw-log">
-          <summary>
-            <span>${escapeHtml(committeeVerbose.title)}</span>
-            <b>${escapeHtml(committeeVerbose.reason)}</b>
-          </summary>
-          <div class="mr-committee-raw-body">${body}</div>
-        </details>`
-      : body;
-    const anchor = message.anchor
+    // 2026-06-21 道雪：raw anchor 是内部原文索引，只对 AI 消息有意义（点开核对原文）；
+    //   用户看自己刚发的提问不需要、且会暴露 raw://group/... 内部串，故仅 AI 消息渲染。
+    const anchor = (!isUser && message.anchor)
       ? `<button type="button" class="mr-gc-anchor" data-gc-anchor="${escapeHtml(message.anchor)}" title="原文索引">${escapeHtml(message.anchor)}</button>`
       : '';
     const copyAction = `<button type="button" class="mr-gc-copy-btn" data-gc-copy-message="1" title="复制此条消息" aria-label="复制此条消息">📋</button>`;
@@ -1887,7 +1740,7 @@ if (typeof document !== 'undefined') (function () {
           ${meta}
           <div class="mr-gc-bubble-row">
             ${isUser ? copyAction : ''}
-            <div class="mr-gc-bubble">${renderedBody}${opts.pending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
+            <div class="mr-gc-bubble">${body}${opts.pending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
             ${!isUser ? copyAction : ''}
           </div>
           ${anchor}
@@ -1904,7 +1757,12 @@ if (typeof document !== 'undefined') (function () {
     const parts = [];
     for (const slot of slots) {
       const partial = partialBy[slot.sid];
-      const participating = isSlotParticipatingThisTurn(meeting, slot.slotIndex);
+      // 本轮真正被 dispatch 的 sid 集合（串行工作流每步只发子集）；未设置则 fallback participants。
+      // 修复：之前对全员 participating 都显示 thinking 气泡，串行时只 1 个真动却全员"思考中"。
+      const activeSids = _gcActiveSids[meeting.id];
+      const participating = activeSids
+        ? activeSids.has(slot.sid)
+        : isSlotParticipatingThisTurn(meeting, slot.slotIndex);
       if (!partial && !participating) continue;
       const text = partial && partial.text ? partial.text : '';
       const status = partial && partial.status ? partial.status : (participating ? 'thinking' : 'idle');
@@ -1922,415 +1780,6 @@ if (typeof document !== 'undefined') (function () {
     return parts.join('');
   }
 
-  const _COMMITTEE_STAGE_SINGLE = [
-    ['route', '路由'],
-    ['prep', '备料'],
-    ['opening', '点名'],
-    ['analysis', '研判'],
-    ['challenge', '质询'],
-    ['verdict', '裁决'],
-    ['save', '落盘'],
-  ];
-  const _COMMITTEE_STAGE_CHECKUP = [
-    ['route', '路由'],
-    ['identify', '识别'],
-    ['prep', '备料'],
-    ['analysis', '研判'],
-    ['verdict', '裁决'],
-    ['save', '落盘'],
-  ];
-
-  function _committeeStages(kind) {
-    return kind === 'checkup' ? _COMMITTEE_STAGE_CHECKUP : _COMMITTEE_STAGE_SINGLE;
-  }
-
-  function _committeeIssueHint(text) {
-    const raw = String(text || '');
-    if (/持仓识别|Read|image|图片|OCR/i.test(raw)) {
-      return '优先检查主席 Claude 是否能读取该图片路径；确认图片存在、权限可读，再切到卡片视图查看 PTY 原始输出。';
-    }
-    if (/send|no_sent|卡顿|stuck|发送|输入/i.test(raw)) {
-      return '这是席位发送链路卡住，先用卡片视图的发送/跳过按钮恢复；若重复出现，查看对应席位 PTY 输出。';
-    }
-    if (/MCP|doctor|auth|登录|认证/i.test(raw)) {
-      return '这是 CLI 或 MCP 环境问题，优先在对应席位 PTY 中跑 doctor/auth 检查，不要静默降级。';
-    }
-    if (/席位|缺席|成员|seat/i.test(raw)) {
-      return '投委会成员不完整，建议重新用投委会预设创建会议，确保主席、新闻、技术、质询席齐全。';
-    }
-    return '先保留现场，切到卡片视图查看具体席位输出；若仍无进展，再从 PTY 原始日志定位根因。';
-  }
-
-  function _classifyCommitteeProgress(text) {
-    const raw = String(text || '').trim();
-    const first = raw.split('\n')[0].replace(/^[^\w\u4e00-\u9fa5]+/u, '').slice(0, 120);
-    let kind = /持仓|体检|逐票|图片|OCR/i.test(raw) ? 'checkup' : 'single';
-    let key = 'route';
-    let title = first || '投委会运行中';
-    let severity = 'normal';
-    let status = 'running';
-    if (/持仓识别/i.test(raw)) { kind = 'checkup'; key = 'identify'; title = '持仓识别中'; }
-    else if (/逐票备料/i.test(raw)) { kind = 'checkup'; key = 'prep'; title = '逐票备料中'; }
-    else if (/体检研判/i.test(raw)) { kind = 'checkup'; key = 'analysis'; title = '逐票研判中'; }
-    else if (/体检裁决/i.test(raw)) { kind = 'checkup'; key = 'verdict'; title = '主席裁决中'; }
-    else if (/体检落盘/i.test(raw)) { kind = 'checkup'; key = 'save'; title = '体检结果已落盘'; status = 'done'; }
-    else if (/立项路由/i.test(raw)) { key = 'route'; title = '意图路由中'; }
-    else if (/幕[〇0]|备料/i.test(raw)) { key = 'prep'; title = '投研备料中'; }
-    else if (/开场点名/i.test(raw)) { key = 'opening'; title = '席位点名中'; }
-    else if (/幕一/i.test(raw)) { key = 'analysis'; title = '独立研判中'; }
-    else if (/幕二/i.test(raw)) { key = 'challenge'; title = /跳过/i.test(raw) ? '质询已跳过' : '交叉质询中'; }
-    else if (/幕三|主席裁决/i.test(raw)) { key = 'verdict'; title = '主席裁决中'; }
-    else if (/决议落盘|Dashboard|案卷|质询/i.test(raw)) { key = 'save'; title = '决议已落盘'; status = 'done'; }
-    else if (/请求已收到|正在启动|正在解析/i.test(raw)) {
-      key = 'route';
-      title = '请求已收到';
-      if (/图片路径|持仓体检/i.test(raw)) kind = 'checkup';
-    }
-    if (/失败|异常|中断|未过|缺席|timeout|stuck|no_sent|auth|MCP|doctor|卡顿/i.test(raw)) {
-      severity = /失败|异常|中断|timeout|auth|MCP|doctor/i.test(raw) ? 'error' : 'warn';
-      status = 'attention';
-    }
-    return { key, kind, title, detail: first, severity, status, hint: severity === 'normal' ? '' : _committeeIssueHint(raw) };
-  }
-
-  function _committeeAcceptedProgressText(userInput) {
-    const raw = String(userInput || '').trim();
-    if (/[A-Za-z]:\\[^\r\n]+?\.(png|jpe?g|webp|bmp)\b/i.test(raw)) {
-      return '请求已收到：识别到图片路径，正在启动持仓体检';
-    }
-    if (/(对比|相比|比较|vs|VS|和).*(\d{6}|[\u4e00-\u9fa5]{2,})/.test(raw)) {
-      return '请求已收到：正在解析股票对比请求';
-    }
-    if (raw) return '请求已收到：正在启动投委会研判';
-    return '请求已收到：正在启动投委会流程';
-  }
-
-  function _extractCommitteeOutcome(text) {
-    const raw = String(text || '');
-    if (!/落盘/.test(raw)) return null;
-    const kind = /体检落盘/.test(raw) ? 'checkup' : 'verdict';
-    const idMatch = raw.match(/(?:决议落盘|体检落盘)：([^\n\r]+)/);
-    const dashboardMatch = raw.match(/Dashboard：([^\n\r]+)/);
-    const caseMatch = raw.match(/案卷：([^\n\r]+)/);
-    const challengeMatch = raw.match(/质询：([^\n\r]+)/);
-    const idText = idMatch ? idMatch[1].trim() : '';
-    const success = !!idText && !/^❌/.test(idText) && !/失败/.test(idText);
-    return {
-      kind,
-      success,
-      id: idText.replace(/^❌\s*/, ''),
-      dashboardPath: dashboardMatch ? dashboardMatch[1].trim() : '',
-      casePath: caseMatch ? caseMatch[1].trim() : '',
-      challenge: challengeMatch ? challengeMatch[1].trim() : '',
-      title: kind === 'checkup' ? '体检结果已生成' : '投委会决议已生成',
-    };
-  }
-
-  // 累积 conductor 发来的结构化富数据（红旗/各官研判/质询/裁决/复盘路径），
-  // 供 _renderCommitteeDashboard 实时渲染成卡片——让用户看到"逐步分析出来"的实质内容。
-  function _mergeCommitteeRich(prevRich, data) {
-    const rich = prevRich || { analysts: {}, redFlags: null, coverageGate: null, challenge: null, verdict: null, replayPath: null };
-    if (!data || !data.stage) return rich;
-    if (data.stage === 'prep') {
-      rich.redFlags = data.red_flags || rich.redFlags;
-      rich.coverageGate = data.coverage_gate || rich.coverageGate;
-      rich.objective = data.objective || rich.objective;
-      rich.symbol = data.symbol || rich.symbol;
-      rich.name = data.name || rich.name;
-    } else if (data.stage === 'analyst' && data.seat) {
-      rich.analysts = { ...rich.analysts, [data.seat]: { label: data.label, ...(data.report || {}) } };
-    } else if (data.stage === 'challenge') {
-      rich.challenge = data;
-    } else if (data.stage === 'verdict') {
-      rich.verdict = data.verdict || rich.verdict;
-    } else if (data.stage === 'save') {
-      rich.replayPath = data.replayPath || rich.replayPath;
-    }
-    return rich;
-  }
-
-  function _recordCommitteeProgress(meetingId, text, data) {
-    const now = Date.now();
-    const next = _classifyCommitteeProgress(text);
-    const outcome = _extractCommitteeOutcome(text);
-    const prev = _committeeRunState[meetingId] || {
-      meetingId,
-      startedAt: now,
-      events: [],
-      kind: next.kind,
-      status: 'running',
-      severity: 'normal',
-    };
-    const rich = _mergeCommitteeRich(prev.rich, data);
-    const events = Array.isArray(prev.events) ? prev.events.slice(-7) : [];
-    if (next.detail) events.push({ ts: now, text: next.detail, severity: next.severity });
-    _committeeRunState[meetingId] = {
-      ...prev,
-      ...next,
-      rich,
-      kind: next.kind || prev.kind || 'single',
-      startedAt: prev.startedAt || now,
-      updatedAt: now,
-      outcome: outcome || prev.outcome || null,
-      severity: outcome && !outcome.success ? 'warn' : next.severity,
-      status: outcome ? (outcome.success ? 'done' : 'attention') : next.status,
-      title: outcome ? outcome.title : next.title,
-      events,
-    };
-    return _committeeRunState[meetingId];
-  }
-
-  function _recordCommitteeIssue(meetingId, text, severity = 'warn') {
-    const now = Date.now();
-    const prev = _committeeRunState[meetingId] || {
-      meetingId,
-      startedAt: now,
-      updatedAt: now,
-      events: [],
-      kind: 'single',
-      key: 'route',
-      title: '投委会需要处理',
-    };
-    const raw = String(text || '投委会运行异常');
-    const events = Array.isArray(prev.events) ? prev.events.slice(-7) : [];
-    events.push({ ts: now, text: raw.slice(0, 120), severity });
-    _committeeRunState[meetingId] = {
-      ...prev,
-      updatedAt: now,
-      status: 'attention',
-      severity,
-      detail: raw.slice(0, 120),
-      hint: _committeeIssueHint(raw),
-      events,
-    };
-    return _committeeRunState[meetingId];
-  }
-
-  function _committeeElapsed(ts) {
-    if (!ts) return '0s';
-    const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-    const min = Math.floor(sec / 60);
-    const rest = sec % 60;
-    return min > 0 ? `${min}m ${rest}s` : `${rest}s`;
-  }
-
-  function _committeeAge(ts) {
-    if (!ts) return '暂无更新';
-    const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-    if (sec < 3) return '刚刚更新';
-    if (sec < 60) return `${sec}s 前更新`;
-    return `${Math.floor(sec / 60)}m 前更新`;
-  }
-
-  function _committeeStageIndex(dash) {
-    const stages = _committeeStages(dash && dash.kind);
-    const idx = stages.findIndex(([key]) => key === (dash && dash.key));
-    return idx < 0 ? 0 : idx;
-  }
-
-  // 把累积的结构化富数据渲染成实时卡片：红旗→各官研判卡→质询→裁决英雄行→复盘入口。
-  // 这是"逐步分析出来"沉浸感的核心——各官的 signal/信心/论点/证据不再被折叠隐藏。
-  function _committeeSigClass(s) {
-    const t = String(s || '');
-    if (t.indexOf('多') >= 0) return 'long';
-    if (t.indexOf('空') >= 0) return 'short';
-    return 'neutral';
-  }
-  function _committeeAnalystCard(seat, a) {
-    const emoji = { fund: '🛡️', news: '📡', tech: '📈' }[seat] || '🎯';
-    const sc = _committeeSigClass(a.signal);
-    const conf = (a.confidence == null) ? '—' : a.confidence;
-    const confW = (typeof a.confidence === 'number') ? a.confidence : 0;
-    const tags = [];
-    const ex = a.extras || {};
-    [['story_level', '故事'], ['story_grade', '叙事'], ['sector_position', '卡位'], ['trend_stage', '趋势']]
-      .forEach(([k, p]) => { if (ex[k]) tags.push(`${p}:${ex[k]}`); });
-    const tagHtml = tags.map(t => `<span class="mr-cm-tag">${escapeHtml(t)}</span>`).join('');
-    const asm = (a.assumptions || []).map(x => `<li>${escapeHtml(x)}</li>`).join('');
-    const evi = (a.evidence || []).map(e =>
-      `<div class="mr-cm-evi"><span class="mr-cm-str ${escapeHtml((e && e.strength) || '')}">${escapeHtml((e && e.strength) || '?')}</span>${escapeHtml((e && e.claim) || '')} <i>${escapeHtml((e && e.source) || '')}</i></div>`).join('');
-    const valid = a.valid !== false;
-    const body = valid ? `
-      ${tagHtml ? `<div class="mr-cm-tags">${tagHtml}</div>` : ''}
-      ${asm ? `<div class="mr-cm-sub">核心假设</div><ul class="mr-cm-ul">${asm}</ul>` : ''}
-      ${evi ? `<div class="mr-cm-sub">证据链</div>${evi}` : ''}
-      ${a.kill_switch ? `<div class="mr-cm-kill">证伪：${escapeHtml(a.kill_switch)}</div>` : ''}`
-      : '<div class="mr-cm-kill">本席未过校验/缺席，主席将在决议中声明。</div>';
-    return `<details class="mr-cm-analyst ${sc}">
-      <summary>
-        <span class="mr-cm-emoji">${emoji}</span>
-        <span class="mr-cm-name">${escapeHtml(a.label || seat)}</span>
-        <span class="mr-cm-thesis">${escapeHtml(a.core_thesis || (valid ? '' : '缺席'))}</span>
-        <span class="mr-cm-badge ${sc}">${escapeHtml(a.signal || '—')}</span>
-        <span class="mr-cm-conf"><i style="width:${confW}%"></i></span>
-        <span class="mr-cm-confn">${escapeHtml(conf)}</span>
-      </summary>
-      <div class="mr-cm-body">${body}</div>
-    </details>`;
-  }
-  function _committeeRichHtml(dash) {
-    const rich = dash && dash.rich;
-    if (!rich) return '';
-    let html = '';
-    const order = ['fund', 'news', 'tech'];
-    const cards = order.filter(k => rich.analysts && rich.analysts[k]).map(k => _committeeAnalystCard(k, rich.analysts[k])).join('');
-    if (cards) html += `<div class="mr-cm-section"><div class="mr-cm-title">🎭 三官研判（点击展开论据）</div>${cards}</div>`;
-    const ch = rich.challenge;
-    if (ch && ch.held) {
-      const n = ((ch.attack && ch.attack.targets) || []).length;
-      const risk = (ch.attack && ch.attack.priced_in_risk) || ch.priced_in_risk;
-      html += `<div class="mr-cm-section"><div class="mr-cm-title">⚔️ 交叉质询</div>
-        <div class="mr-cm-chal">质疑 ${n} 条${risk ? ` · price-in 风险 <b>${escapeHtml(risk)}</b>` : ''}${(ch.attack && ch.attack.summary) ? ` · ${escapeHtml(ch.attack.summary)}` : ''}</div></div>`;
-    }
-    const v = rich.verdict;
-    if (v && v.rating) {
-      const rc = { S: '#ff3b30', A: '#ff9f0a', B: '#0071e3', C: '#8e8e93' }[v.rating] || '#8e8e93';
-      const vs = v.value_speculation || {};
-      const four = [['托底', vs.fundamental_floor], ['题材', vs.theme_purity], ['预期差', vs.expectation_gap], ['弹性', vs.flow_elasticity]]
-        .filter(([, x]) => x).map(([l, x]) => `<span class="mr-cm-vs"><small>${l}</small>${escapeHtml(x)}</span>`).join('');
-      const pf = v.portfolio || {};
-      html += `<div class="mr-cm-section"><div class="mr-cm-title">⚖️ 主席裁决</div>
-        <div class="mr-cm-verdict">
-          <span class="mr-cm-rating" style="background:${rc}">${escapeHtml(v.rating)}</span>
-          <div class="mr-cm-vmain"><div class="mr-cm-vthesis">${escapeHtml(v.core_thesis || '')}</div>
-          ${four ? `<div class="mr-cm-vsrow">${four}${vs.composite_score != null ? `<span class="mr-cm-vs hot"><small>价投</small>${escapeHtml(vs.composite_score)}</span>` : ''}</div>` : ''}
-          ${(pf.role || pf.suggested_cap_pct != null) ? `<div class="mr-cm-vpf">仓位 ${escapeHtml(pf.role || '—')} · 上限 ${escapeHtml(pf.suggested_cap_pct == null ? '—' : pf.suggested_cap_pct)}%${v.stop ? ` · 止损 ${escapeHtml(v.stop)}` : ''}</div>` : ''}
-          </div></div></div>`;
-    }
-    if (rich.replayPath) {
-      html += `<div class="mr-cm-replaybar"><button type="button" class="mr-gc-card-link mr-cm-replaybtn" data-committee-open-path="${escapeHtml(rich.replayPath)}">🎬 打开沉浸式复盘</button></div>`;
-    }
-    return html ? `<div class="mr-committee-rich">${html}</div>` : '';
-  }
-
-  function _renderCommitteeDashboard(meeting, state, slots) {
-    if (!meeting || meeting.scene !== 'committee') return '';
-    const dash = _committeeRunState[meeting.id] || null;
-    const mode = state && state.currentMode ? state.currentMode : 'idle';
-    const running = mode !== 'idle' || (dash && dash.status === 'running');
-    const display = dash || {
-      meetingId: meeting.id,
-      startedAt: null,
-      updatedAt: null,
-      kind: 'single',
-      key: 'route',
-      title: '投委会待命',
-      detail: '等待研判请求',
-      severity: 'normal',
-      status: running ? 'running' : 'idle',
-      events: [],
-    };
-    const stages = _committeeStages(display.kind);
-    const stageIdx = _committeeStageIndex(display);
-    const progressPct = display.status === 'done' ? 100 : Math.round((stageIdx / Math.max(1, stages.length - 1)) * 100);
-    const partialBy = state && state._partialBy ? state._partialBy : {};
-    const selected = new Set(Array.isArray(meeting.participants) ? meeting.participants : (slots || []).map(slot => slot.slotIndex));
-    const seatHtml = (slots || []).map((slot) => {
-      const partial = partialBy[slot.sid] || {};
-      const label = slot.displayLabel || slot.label || `M${slot.slotIndex + 1}`;
-      let seatState = selected.has(slot.slotIndex) ? '待命' : '未选';
-      let seatClass = selected.has(slot.slotIndex) ? 'ready' : 'muted';
-      if (partial.sendStatus === 'stuck') { seatState = '发送卡住'; seatClass = 'warn'; }
-      else if (partial.status === 'errored') { seatState = '错误'; seatClass = 'error'; }
-      else if (partial.status === 'soft_alert') { seatState = '等待中'; seatClass = 'warn'; }
-      else if (partial.status === 'thinking') { seatState = '运行中'; seatClass = 'running'; }
-      else if (partial.status === 'completed' || partial.status === 'manual_extracted') { seatState = '完成'; seatClass = 'done'; }
-      return `<div class="mr-committee-seat ${seatClass}" data-committee-sid="${escapeHtml(slot.sid)}">
-        <span class="mr-committee-seat-name">${escapeHtml(label)}</span>
-        <span class="mr-committee-seat-state">${escapeHtml(seatState)}</span>
-      </div>`;
-    }).join('');
-    const stageHtml = stages.map(([key, label], idx) => {
-      const cls = idx < stageIdx || display.status === 'done' ? 'done' : (idx === stageIdx ? 'active' : 'todo');
-      return `<div class="mr-committee-stage ${cls}" data-stage="${escapeHtml(key)}"><span></span><b>${escapeHtml(label)}</b></div>`;
-    }).join('');
-    const eventHtml = (display.events || []).slice(-5).reverse().map((event) => (
-      `<li class="${event.severity === 'error' ? 'error' : event.severity === 'warn' ? 'warn' : ''}">
-        <span>${escapeHtml(_committeeAge(event.ts))}</span>
-        <b>${escapeHtml(event.text || '')}</b>
-      </li>`
-    )).join('') || '<li><span>暂无</span><b>等待第一条进度</b></li>';
-    const issueHtml = display.hint ? `
-      <div class="mr-committee-issue" role="alert">
-        <strong>故障提示</strong>
-        <span>${escapeHtml(display.hint)}</span>
-      </div>
-    ` : '';
-    const outcome = display.outcome || null;
-    const outcomeHtml = outcome ? `
-      <div class="mr-committee-outcome ${outcome.success ? 'success' : 'warn'}">
-        <div class="mr-committee-outcome-main">
-          <span class="mr-committee-outcome-label">${escapeHtml(outcome.kind === 'checkup' ? '体检结果' : '最终决议')}</span>
-          <strong>${escapeHtml(outcome.success ? (outcome.id || '已落盘') : '落盘未完成')}</strong>
-          ${outcome.challenge ? `<span>${escapeHtml('质询：' + outcome.challenge)}</span>` : ''}
-        </div>
-        <div class="mr-committee-outcome-actions">
-          ${outcome.dashboardPath ? `<button type="button" class="mr-gc-card-link" data-committee-open-path="${escapeHtml(outcome.dashboardPath)}">打开台账</button>` : ''}
-          ${outcome.casePath ? `<button type="button" class="mr-gc-card-link" data-committee-open-path="${escapeHtml(outcome.casePath)}">打开案卷</button>` : ''}
-        </div>
-      </div>
-    ` : '';
-    return `
-      <section class="mr-committee-console ${display.severity || 'normal'}" data-meeting-id="${escapeHtml(meeting.id)}" data-running="${running ? '1' : '0'}" aria-label="投委会运行控制台">
-        <div class="mr-committee-head">
-          <div>
-            <div class="mr-committee-kicker">Committee Console</div>
-            <div class="mr-committee-title" aria-live="polite">${escapeHtml(display.title || '投委会运行中')}</div>
-            <div class="mr-committee-detail">${escapeHtml(display.detail || '')}</div>
-          </div>
-          <div class="mr-committee-metrics">
-            <span>耗时 <b data-committee-elapsed-for="${escapeHtml(meeting.id)}">${escapeHtml(_committeeElapsed(display.startedAt))}</b></span>
-            <span data-committee-age-for="${escapeHtml(meeting.id)}">${escapeHtml(_committeeAge(display.updatedAt))}</span>
-          </div>
-        </div>
-        <div class="mr-committee-stale-note" data-committee-stale-for="${escapeHtml(meeting.id)}" role="status" aria-live="polite"></div>
-        <div class="mr-committee-progress" aria-hidden="true"><i style="width:${progressPct}%"></i></div>
-        <div class="mr-committee-stages">${stageHtml}</div>
-        <div class="mr-committee-grid">
-          <div class="mr-committee-seats">${seatHtml}</div>
-          <ol class="mr-committee-events">${eventHtml}</ol>
-        </div>
-        ${_committeeRichHtml(display)}
-        ${outcomeHtml}
-        ${issueHtml}
-        <div class="mr-committee-actions">
-          <button type="button" class="mr-gc-card-link" data-committee-copy-diagnostics="1">复制诊断</button>
-          <button type="button" class="mr-gc-card-link" data-gc-view-card="1">查看席位</button>
-          <button type="button" class="mr-gc-card-link" data-committee-open-ledger="1">打开台账</button>
-        </div>
-      </section>
-    `;
-  }
-
-  function _ensureCommitteePulseTimer() {
-    if (_committeePulseTimer) return;
-    _committeePulseTimer = setInterval(() => {
-      const consoles = document.querySelectorAll('.mr-committee-console[data-meeting-id]');
-      if (!consoles.length) {
-        clearInterval(_committeePulseTimer);
-        _committeePulseTimer = null;
-        return;
-      }
-      consoles.forEach((consoleEl) => {
-        const meetingId = consoleEl.getAttribute('data-meeting-id');
-        const dash = _committeeRunState[meetingId];
-        const elapsedEl = consoleEl.querySelector(`[data-committee-elapsed-for="${CSS.escape(meetingId || '')}"]`);
-        const ageEl = consoleEl.querySelector(`[data-committee-age-for="${CSS.escape(meetingId || '')}"]`);
-        if (elapsedEl) elapsedEl.textContent = _committeeElapsed(dash && dash.startedAt);
-        if (ageEl) ageEl.textContent = _committeeAge(dash && dash.updatedAt);
-        const isRunning = consoleEl.getAttribute('data-running') === '1';
-        const stale = isRunning && dash && dash.updatedAt && (Date.now() - dash.updatedAt > 45000);
-        consoleEl.classList.toggle('stale', !!stale);
-        const staleEl = consoleEl.querySelector(`[data-committee-stale-for="${CSS.escape(meetingId || '')}"]`);
-        if (staleEl) {
-          staleEl.textContent = stale
-            ? '超过 45 秒没有新进展。建议先点“查看席位”确认哪一席卡住，必要时进入 PTY 查看原始输出。'
-            : '';
-        }
-      });
-    }, 1000);
-  }
-
   function _renderGroupChatView(state, meeting, softBanner, totalSecTxt) {
     const messages = Array.isArray(state.messages) ? state.messages : [];
     const memberBySid = _groupMemberMap(meeting);
@@ -2342,7 +1791,7 @@ if (typeof document !== 'undefined') (function () {
     const sideCollapsed = _getGroupSideCollapsed();
     const messageHtml = messages.map(m => _renderGroupChatMessage(m, meeting, memberBySid)).join('');
     const pendingHtml = mode !== 'idle' ? _renderGroupChatPending(state, meeting, memberBySid) : '';
-    const committeeDashboard = _renderCommitteeDashboard(meeting, state, slots);
+
     const emptyHtml = (!messageHtml && !pendingHtml) ? `
       <div class="mr-gc-empty">
         <div class="mr-gc-empty-title">还没有群聊消息</div>
@@ -2391,7 +1840,7 @@ if (typeof document !== 'undefined') (function () {
             </div>
           </div>
           <div class="mr-gc-dayline">摘要账本会索引原文，最近原文默认保留 5 条进入上下文</div>
-          ${committeeDashboard}
+
           <div class="mr-gc-messages">
             ${emptyHtml}
             ${messageHtml}
@@ -2421,9 +1870,6 @@ if (typeof document !== 'undefined') (function () {
     const partialBy = state._partialBy || null;
     const fusedTabs = _renderFusedTabs(state, subs, mode, partialBy, meeting);
     const cardViewTabs = _renderCardViewTabs(meeting);
-    // Phase 5(2026-05-05 道雪): 删除 _renderGcHistory 渲染调用。
-    //   旧版底部"历史轮次 (N)"折叠按钮 + 列表已被 stepper mini-map 完全替代;
-    //   保留 _renderGcHistory 函数本身以防其他地方调用, 仅删此处渲染。
     // 2026-05-05 道雪：标题统一为轮次视图(不区分 general/research/dev)。
     //   不动 _scenes.getScene().name —— 那个 name 同时给 covenant prompt header 用,改了会污染发给 AI 的 prompt。
     const titleText = meeting.groupChat ? 'AI 群聊' : 'AI 群聊轮次';
@@ -2460,8 +1906,6 @@ if (typeof document !== 'undefined') (function () {
     // E3 修复 (2026-05-03)：删除 _renderCmdBar 调用 — panel 顶部按钮组与 toolbar 重复，
     //   toolbar 已覆盖所有功能，删 cmd-bar 单一来源。
     const onboarding = (state.turns.length === 0 && mode === 'idle') ? _renderOnboarding(meeting) : '';
-    // 场景一次性引导卡片 (general/research/dev 共用): 与 onboarding 独立, 跨 panel 始终展示直至用户"不再显示"
-    const devCard = _renderSceneOnboardingCard(meeting);
     // Stage 2 容错升级：软提醒 banner 容器
     const softBanner = `<div id="mr-gc-soft-alert-banner" class="mr-gc-soft-alert-banner" style="display:none"></div>`;
     // pilot redesign（2026-05-02）：废弃 pilotRecaps 卡片 + 主驾占位容器（AI 群聊不再桥接子会话私聊）。
@@ -2489,7 +1933,6 @@ if (typeof document !== 'undefined') (function () {
       </div>
       ${softBanner}
       ${timeTravelBanner}
-      ${devCard}
       ${onboarding}
       ${userQBanner}
       ${cardViewTabs}
@@ -2645,15 +2088,16 @@ if (typeof document !== 'undefined') (function () {
     const groupScroll = forceGroupChatBottom
       ? { scrollTop: 0, stickToBottom: true }
       : _captureGroupChatScroll(panel, meeting);
-    panel.innerHTML = _renderGcPanelHtml(state, meeting);
-    _bindGcPanelEvents(panel, meeting);
-    _restoreGroupChatScroll(panel, groupScroll, { forceBottom: forceGroupChatBottom });
+    _renderGcPanelInto(panel, meeting, state, {
+      scroll: groupScroll,
+      restoreOpts: { forceBottom: forceGroupChatBottom },
+    });
   }
 
   // 绑定 panel 内部所有交互（折叠 / 卡片点击）。每次 innerHTML 重绘后都要重新调用。
   // T2（2026-05-04 道雪）：单 slot 卡片的事件绑定独立成函数，让 partial-update 局部 patch 后只 rebind 单卡片。
   //   覆盖范围：① 卡片本体 click（focus session）② ↗ 展开按钮 ③ [data-gc-escape] 工具栏按钮组。
-  //   不覆盖：history-toggle / soft-alert banner-close / mr-gc-ob-card（这些是 panel 级，由 _bindGcPanelEvents 管）。
+  //   不覆盖：soft-alert banner-close / mr-gc-ob-card（这些是 panel 级，由 _bindGcPanelEvents 管）。
   function _showGcEscapeNotice(message, level = 'warn') {
     const banner = document.getElementById('mr-gc-soft-alert-banner');
     if (!banner) return false;
@@ -2673,462 +2117,449 @@ if (typeof document !== 'undefined') (function () {
 
   function _bindSlotCardEvents(slotEl, meeting) {
     if (!slotEl) return;
-    // 卡片本体 click（mr-ft 自身），focus 该 sid 的 session
-    if (slotEl.matches('.mr-ft[data-ft-sid]')) {
-      const sid = slotEl.getAttribute('data-ft-sid');
-      slotEl.addEventListener('click', (ev) => {
-        if (!sid) return;
-        if (_isCardTabMode()) return;
-        // F3 Phase 2: Ctrl/Cmd+click → 对比模式多选(状态优先级: 互斥 focus)
-        if (ev && (ev.ctrlKey || ev.metaKey)) {
-          ev.stopPropagation();   // 阻止冒泡到全局 click 退出 handler
-          _toggleCompareSelect(sid);
-          return;
-        }
-        // 无 modifier click: 进入 focus 前清 compare(状态优先级)
-        if (_gcCompareSlots.size > 0) _clearCompareSelect();
-        // F0 v3(2026-05-05 道雪): 聚焦态下任何卡片点击都"收回放大",不打开新卡。
-        //   场景: 用户聚焦 A 后, 想恢复全员等宽时常点到 B 卡区域 — 应理解为"收回",
-        //         而非"切换聚焦到 B"。再次进入聚焦需先收回再点目标卡。
-        //   - 同卡再点: 不动作(让用户选文本/复制), 显式退出走 Esc / 点空白
-        //   - 不同卡再点: 退出聚焦(收回放大), 不打开新卡
-        //   - 无聚焦时点卡: 进入聚焦
-        // 2026-05-09: 简洁模式（手机阅读场景）下,聚焦态升级为 fullscreen
-        //   - 同卡再点 → 退出（手机 tap 没法选文本，再点就是想关）
-        //   - CSS body.compact-mode.mr-card-focus-on 自动应用 fullscreen 样式
-        if (_gcFocusedCardSid) {
-          if (document.body.classList.contains('compact-mode')) {
-            _gcFocusedCardSid = null;
-            document.body.classList.remove('mr-card-focus-on');
-            return;
-          }
-          if (_gcFocusedCardSid !== sid) {
-            _gcFocusedCardSid = null;
-            document.body.classList.remove('mr-card-focus-on');
-          }
-          return;
-        }
-        _focusGroupChatSession(meeting, sid);
-        _gcFocusedCardSid = sid;
-        document.body.classList.add('mr-card-focus-on');
-      });
-    }
-    // ↗ 展开
-    slotEl.querySelectorAll('.mr-ft-expand[data-ft-expand-sid]').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const sid = btn.getAttribute('data-ft-expand-sid');
-        const kind = btn.getAttribute('data-ft-expand-kind');
-        _openGcTimeline(meeting, sid, kind);
-      });
-    });
-    // 逃生工具栏 [data-gc-escape] —— 与原 _bindGcPanelEvents 中的 click handler 字节等价（4 分支：extract / skip / enter-shell / resend / resend-prompt）。
-    slotEl.querySelectorAll('[data-gc-escape]').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        if (btn.hasAttribute('disabled')) return;
-        const action = btn.getAttribute('data-gc-escape');
-        const sid = btn.getAttribute('data-gc-sid');
-        const kind = btn.getAttribute('data-gc-kind');
-        if (!sid) return;
-        // 防重入：临时 disable + 操作期 spinner
-        btn.disabled = true;
-        const oldText = btn.textContent;
-        btn.textContent = '...';
-        // 标记是否已由按钮内部接管 textContent 还原（如 extract 走 1.5s setTimeout），
-        //   finally 看到此 flag 就不再立即覆盖按钮文字。
-        let _btnTextHandledExternally = false;
-        try {
-          if (action === 'extract') {
-            const r = await ipcRenderer.invoke('groupchat-manual-extract', {
-              meetingId: meeting.id, sid, sincePromptTs: _gcTurnStartTs[meeting.id] || 0,
-            });
-            if (!r || !r.ok) {
-              console.warn(`[rt-escape] extract failed: ${r?.reason} (${r?.detail || ''})`);
-              const detail = r?.detail ? `：${r.detail}` : '';
-              _showGcEscapeNotice(`提取失败（${r?.reason || 'unknown'}）${detail}`, 'error');
-            } else {
-              // 2026-05-02 Bug 修复：用户视觉反馈。
-              //   旧版本只 console.log → 用户看不到"提取成功"，加上 IPC 永远失败（Bug 2），
-              //   感觉按钮完全是假的。新版本：按钮短暂变绿显示 "✓ 已同步 N 字"，
-              //   1.5s 后恢复；卡片本身会被 sendToRenderer('groupchat-turn-complete') 触发刷新。
-              const charCount = (r.text || '').length;
-              console.log(`[rt-escape] extract ok: ${kind} got ${charCount} chars (mode=${r.mode}, source=${r.source})`);
-              btn.style.background = '#2da44e';
-              btn.style.color = '#fff';
-              btn.textContent = `✓ 已同步 ${charCount}字`;
-              _btnTextHandledExternally = true;
-              setTimeout(() => {
-                btn.style.background = '';
-                btn.style.color = '';
-                btn.textContent = oldText;
-                btn.disabled = false;
-              }, 1500);
-            }
-          } else if (action === 'skip') {
-            const r = await ipcRenderer.invoke('groupchat-skip-participant', { meetingId: meeting.id, sid });
-            if (!r || !r.ok) console.warn(`[rt-escape] skip failed: ${r?.reason}`);
-          } else if (action === 'enter-shell') {
-            // Arch refactor 2026-05-02 (Task 5): 切到该子 session 主区 shell view，
-            // 复用已有 selectSession 路径（隐藏 mr-panel + 显示 terminal-panel + mount xterm）。
-            if (typeof window !== 'undefined' && typeof window.selectSession === 'function') {
-              window.selectSession(sid);
-            } else if (typeof selectSession === 'function') {
-              selectSession(sid);
-            } else {
-              console.warn('[rt-escape] enter-shell: selectSession not available');
-            }
-          } else if (action === 'resend-prompt') {
-            const r = await ipcRenderer.invoke('groupchat-resend-prompt', { meetingId: meeting.id, sid });
-            if (r && r.ok) {
-              btn.style.background = '#2da44e';
-              btn.style.color = '#fff';
-              btn.textContent = `✓ 已重发`;
-              _btnTextHandledExternally = true;
-              // H2 数据驱动：重发成功后清掉 sendStatus='stuck'，由 refreshGroupChatPanel 重渲清除视觉
-              const cachedForResend = _gcPanelState[meeting.id];
-              if (cachedForResend && cachedForResend._partialBy && cachedForResend._partialBy[sid]) {
-                delete cachedForResend._partialBy[sid].sendStatus;
-              }
-              refreshGroupChatPanel(meeting);
-              setTimeout(() => {
-                btn.style.background = '';
-                btn.style.color = '';
-                btn.textContent = oldText;
-                btn.disabled = false;
-              }, 1500);
-            } else {
-              alert(`重发失败：${r?.reason || 'unknown'}\n\n建议：\n1. 检查该家 PTY 是否还活着（左侧 sidebar 点进去看）\n2. 或者按"跳过"绕过这家，下一轮会自动重启 CLI`);
-            }
-          } else if (action === 'resend') {
-            const r = await ipcRenderer.invoke('groupchat-resend-participant', { meetingId: meeting.id, sid });
-            if (r && r.ok) {
-              console.log(`[rt-escape] resend ok: ${kind}`);
-            } else {
-              // FIX-C 阶段：FIX-F 还没落地前，重发 IPC 是 stub，给用户清晰指引
-              alert(`暂未支持单家"重新拉起"。\n\n建议操作：\n1. 在该卡片底部按"跳过"，下游 prompt 不会引用此家。\n2. 或者发起新一轮（直接提问），系统会自动重启卡死的 CLI。\n3. 或者从左侧 sidebar 点该子 session 进 shell 看 PTY 真实情况。\n\n（错误信息：${r?.reason || 'unknown'}）`);
-            }
-          }
-        } catch (err) {
-          console.error(`[rt-escape] ${action} threw:`, err);
-          // M1（T6 fix）：resend-prompt 是用户主动触发，IPC handler 未注册时静默失败体验差，
-          //   加 alert 告知用户（"No handler registered" 说明 T5 IPC 还没部署）。
-          if (action === 'resend-prompt') {
-            alert(`📤 发送失败：${err && err.message ? err.message : 'unknown'}\n\n（如果错误说"No handler registered"，说明后端 IPC 还没部署，需要等待 T5 落地）`);
-          }
-        } finally {
-          if (!_btnTextHandledExternally) {
-            btn.disabled = false;
-            btn.textContent = oldText;
-          }
-        }
-      });
-    });
-
-    // F2 Phase 2(2026-05-04 道雪 / spec F2): hover-actions 浮条按钮
-    //   📋 复制本卡 preview 全文 / @ 输入框插入 @AI / " 引用 (F6 占位 Phase 3)
-    //   stopPropagation 避免冒泡到卡片 click 触发 F0 focus
-    slotEl.querySelectorAll('.mr-ft-hover-actions button').forEach(btn => {
-      btn.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        const action = btn.getAttribute('data-gc-action');
-        const f2Kind = btn.getAttribute('data-gc-kind');
-        const card = btn.closest('.mr-ft');
-        if (action === 'copy') {
-          const previewText = (card?.querySelector('.mr-ft-bottom')?.innerText || '').trim();
-          if (!previewText) {
-            const oldT = btn.textContent;
-            btn.textContent = '空';
-            setTimeout(() => { btn.textContent = oldT; }, 1000);
-            return;
-          }
-          try {
-            await navigator.clipboard.writeText(previewText);
-            const oldT = btn.textContent;
-            btn.textContent = '✓';
-            btn.style.background = '#2da44e';
-            btn.style.color = '#fff';
-            setTimeout(() => {
-              btn.textContent = oldT;
-              btn.style.background = '';
-              btn.style.color = '';
-            }, 1200);
-          } catch (e) {
-            console.warn('[hover-actions] copy failed:', e);
-          }
-        } else if (action === 'mention') {
-          const input = document.getElementById('mr-input-box');
-          if (input) {
-            const labelEl = card?.querySelector('.mr-ft-name');
-            const fullLabel = (labelEl?.textContent || f2Kind || '').trim();
-            // 剥离前导 emoji / 非文字字符, 再按 · 或空格切第一段
-            const cleanLabel = fullLabel.replace(/^[^A-Za-z0-9_一-鿿]+/, '');
-            const shortLabel = cleanLabel.split(/[·\s]/)[0] || f2Kind || '';
-            const cur = input.textContent || '';
-            input.textContent = (cur && !cur.endsWith(' ') ? cur + ' ' : cur) + `@${shortLabel} `;
-            input.focus();
-            if (typeof _placeCaretAtEnd === 'function') _placeCaretAtEnd(input);
-          }
-        } else if (action === 'quote') {
-          // F6 占位:Phase 3 实施完整选中文本引用流程
-          alert('"引用本卡内容入下一轮" 将在 Phase 3 (F6) 实施。\n当前可先用 📋 复制后粘贴到输入框。');
-        }
-      });
-    });
+    slotEl.__mrSlotMeeting = meeting || null;
   }
 
-  function _bindGcPanelEvents(panel, meeting) {
-    // Phase 5(2026-05-05 道雪): 旧 history-toggle 已删除(被 stepper mini-map 替代),
-    //   新加 stepper dot click + 时光机 banner exit click handlers。
-    panel.querySelectorAll('.mr-gc-step-dot[data-turn-n]').forEach(dot => {
-      dot.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        const n = parseInt(dot.getAttribute('data-turn-n'), 10);
-        if (!Number.isFinite(n) || n < 1) return;
-        const cached = _gcPanelState[meeting.id];
-        const totalTurns = cached && Array.isArray(cached.turns) ? cached.turns.length : 0;
-        const isActive = cached && cached.currentMode && cached.currentMode !== 'idle';
-        const latestN = isActive ? totalTurns + 1 : totalTurns;
-        // 点击当前最新轮 = 退出时光机; 否则进入/切换时光机到第 N 轮
-        if (n === latestN || dot.hasAttribute('data-turn-active')) {
-          delete _gcViewingTurnN[meeting.id];
+  function _eventTargetEl(target) {
+    if (!target) return null;
+    return target.nodeType === 1 ? target : target.parentElement;
+  }
+
+  function _closestInPanel(target, selector, panel) {
+    const start = _eventTargetEl(target);
+    const el = start && typeof start.closest === 'function' ? start.closest(selector) : null;
+    return el && panel && panel.contains(el) ? el : null;
+  }
+
+  function _currentGcPanelMeeting(panel) {
+    const meeting = panel && panel.__mrGcMeeting;
+    return meeting && meeting.id ? (meetingData[meeting.id] || meeting) : meeting;
+  }
+
+  function _handleSlotCardClick(card, ev, meeting) {
+    const sid = card.getAttribute('data-ft-sid');
+    if (!sid) return;
+    if (_isCardTabMode()) return;
+    if (ev && (ev.ctrlKey || ev.metaKey)) {
+      ev.stopPropagation();
+      _toggleCompareSelect(sid);
+      return;
+    }
+    if (_gcCompareSlots.size > 0) _clearCompareSelect();
+    if (_gcFocusedCardSid) {
+      if (_gcFocusedCardSid !== sid) {
+        _gcFocusedCardSid = null;
+        document.body.classList.remove('mr-card-focus-on');
+      }
+      return;
+    }
+    _focusGroupChatSession(meeting, sid);
+    _gcFocusedCardSid = sid;
+    document.body.classList.add('mr-card-focus-on');
+  }
+
+  async function _handleGcEscapeAction(btn, meeting) {
+    if (btn.hasAttribute('disabled')) return;
+    const action = btn.getAttribute('data-gc-escape');
+    const sid = btn.getAttribute('data-gc-sid');
+    const kind = btn.getAttribute('data-gc-kind');
+    if (!sid) return;
+    btn.disabled = true;
+    const oldText = btn.textContent;
+    btn.textContent = '...';
+    let _btnTextHandledExternally = false;
+    try {
+      if (action === 'extract') {
+        const r = await ipcRenderer.invoke('groupchat-manual-extract', {
+          meetingId: meeting.id, sid, sincePromptTs: _gcTurnStartTs[meeting.id] || 0,
+        });
+        if (!r || !r.ok) {
+          console.warn(`[rt-escape] extract failed: ${r?.reason} (${r?.detail || ''})`);
+          const detail = r?.detail ? `：${r.detail}` : '';
+          _showGcEscapeNotice(`提取失败（${r?.reason || 'unknown'}）${detail}`, 'error');
         } else {
-          _gcViewingTurnN[meeting.id] = n;
-        }
-        refreshGroupChatPanel(meeting);
-      });
-    });
-    panel.querySelectorAll('[data-gc-card-tab-sid]').forEach(tab => {
-      tab.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        const sid = tab.getAttribute('data-gc-card-tab-sid');
-        if (sid) _focusGroupChatSession(meeting, sid);
-      });
-    });
-    panel.querySelectorAll('[data-gc-view-card]').forEach(btn => {
-      btn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        _setGroupViewMode('card', meeting);
-        renderHeader(meeting);
-      });
-    });
-    panel.querySelectorAll('[data-committee-copy-diagnostics]').forEach(btn => {
-      btn.addEventListener('click', async (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const dash = _committeeRunState[meeting.id] || null;
-        const cached = _gcPanelState[meeting.id] || {};
-        const partialBy = cached._partialBy || {};
-        const lines = [
-          `meeting=${meeting.id}`,
-          `scene=${meeting.scene || ''}`,
-          `mode=${cached.currentMode || 'idle'}`,
-          `stage=${dash ? `${dash.kind || ''}/${dash.key || ''}` : 'none'}`,
-          `status=${dash ? `${dash.status || ''}/${dash.severity || ''}` : 'none'}`,
-          `detail=${dash ? dash.detail || '' : ''}`,
-          `updated=${dash && dash.updatedAt ? new Date(dash.updatedAt).toISOString() : ''}`,
-          `hint=${dash ? dash.hint || '' : ''}`,
-          `partial=${JSON.stringify(partialBy)}`,
-          'events:',
-          ...((dash && dash.events) || []).map(e => `- ${new Date(e.ts).toISOString()} [${e.severity || 'normal'}] ${e.text || ''}`),
-        ];
-        const oldText = btn.textContent;
-        try {
-          await navigator.clipboard.writeText(lines.join('\n'));
-          btn.textContent = '已复制';
-          setTimeout(() => { btn.textContent = oldText; }, 1200);
-        } catch (e) {
-          console.warn('[committee-dashboard] copy diagnostics failed:', e);
-          btn.textContent = '复制失败';
-          setTimeout(() => { btn.textContent = oldText; }, 1200);
-        }
-      });
-    });
-    panel.querySelectorAll('[data-committee-open-ledger]').forEach(btn => {
-      btn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const COMMITTEE_DASHBOARD = 'C:\\LinDangAgent\\data\\knowledge\\committee\\dashboard.html';
-        if (window.openPreviewPanel) window.openPreviewPanel(COMMITTEE_DASHBOARD);
-        else console.warn('[committee-dashboard] window.openPreviewPanel not available');
-      });
-    });
-    panel.querySelectorAll('[data-committee-open-path]').forEach(btn => {
-      btn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const targetPath = btn.getAttribute('data-committee-open-path');
-        if (!targetPath) return;
-        if (window.openPreviewPanel) window.openPreviewPanel(targetPath);
-        else console.warn('[committee-dashboard] window.openPreviewPanel not available');
-      });
-    });
-    if (panel.querySelector('.mr-committee-console')) _ensureCommitteePulseTimer();
-    panel.querySelectorAll('[data-gc-side-toggle]').forEach(btn => {
-      btn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        _setGroupSideCollapsed(!_getGroupSideCollapsed(), meeting);
-      });
-    });
-    panel.querySelectorAll('[data-gc-copy-message]').forEach(btn => {
-      btn.addEventListener('click', async (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const msgEl = btn.closest('.mr-gc-msg');
-        const text = (msgEl?.querySelector('.mr-gc-bubble')?.innerText || '').trim();
-        const oldText = btn.textContent;
-        if (!text) {
-          btn.textContent = '空';
-          setTimeout(() => { btn.textContent = oldText; }, 900);
-          return;
-        }
-        try {
-          await navigator.clipboard.writeText(text);
-          btn.textContent = '✓';
-          btn.classList.add('copied');
+          const charCount = (r.text || '').length;
+          console.log(`[rt-escape] extract ok: ${kind} got ${charCount} chars (mode=${r.mode}, source=${r.source})`);
+          btn.style.background = '#2da44e';
+          btn.style.color = '#fff';
+          btn.textContent = `✓ 已同步 ${charCount}字`;
+          _btnTextHandledExternally = true;
           setTimeout(() => {
+            btn.style.background = '';
+            btn.style.color = '';
             btn.textContent = oldText;
-            btn.classList.remove('copied');
-          }, 1200);
-        } catch (e) {
-          console.warn('[groupchat] copy message failed:', e);
-          btn.textContent = '失败';
-          setTimeout(() => { btn.textContent = oldText; }, 1200);
-        }
-      });
-    });
-    panel.querySelectorAll('[data-gc-sync-answer]').forEach(btn => {
-      btn.addEventListener('click', async (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (btn.disabled) return;
-        const sid = btn.getAttribute('data-gc-sync-answer');
-        const turnRaw = parseInt(btn.getAttribute('data-gc-sync-turn') || '', 10);
-        if (!sid) return;
-        const oldText = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = '同步中';
-        try {
-          const payload = {
-            meetingId: meeting.id,
-            sid,
-            turnNum: Number.isFinite(turnRaw) ? turnRaw : undefined,
-            sincePromptTs: _gcTurnStartTs[meeting.id] || 0,
-          };
-          const r = await ipcRenderer.invoke('groupchat-manual-extract', payload);
-          if (!r || !r.ok) {
-            const detail = r && (r.detail || r.reason) ? (r.detail || r.reason) : 'unknown';
-            _showGcEscapeNotice(`同步失败：${detail}`, 'error');
-            btn.textContent = '失败';
-            setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1500);
-            return;
-          }
-          btn.textContent = '已同步';
-          btn.classList.add('ok');
-          await refreshGroupChatPanel(meeting);
-          setTimeout(() => {
-            btn.textContent = oldText;
-            btn.classList.remove('ok');
             btn.disabled = false;
-          }, 1200);
-        } catch (e) {
-          _showGcEscapeNotice(`同步失败：${e && e.message ? e.message : String(e)}`, 'error');
-          btn.textContent = '失败';
-          setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1500);
+          }, 1500);
         }
-      });
-    });
-    panel.querySelectorAll('[data-gc-member-idx]').forEach(btn => {
-      btn.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        const idx = parseInt(btn.getAttribute('data-gc-member-idx') || '-1', 10);
-        const sid = Array.isArray(meeting.subSessions) ? meeting.subSessions[idx] : null;
-        if (!sid) return;
-        const allIndexes = meeting.subSessions.map((_, i) => i);
-        const current = Array.isArray(meeting.participants) ? meeting.participants.slice() : allIndexes;
-        const set = new Set(current);
-        if (set.has(idx)) set.delete(idx);
-        else set.add(idx);
-        const next = allIndexes.filter(i => set.has(i));
-        meeting.participants = next;
-        try {
-          const updated = await ipcRenderer.invoke('groupchat:set-participants', { meetingId: meeting.id, participants: next });
-          if (updated) meetingData[meeting.id] = updated;
-        } catch (err) {
-          console.error('[groupchat] set participants failed:', err);
+      } else if (action === 'skip') {
+        const r = await ipcRenderer.invoke('groupchat-skip-participant', { meetingId: meeting.id, sid });
+        if (!r || !r.ok) console.warn(`[rt-escape] skip failed: ${r?.reason}`);
+      } else if (action === 'enter-shell') {
+        if (typeof window !== 'undefined' && typeof window.selectSession === 'function') {
+          window.selectSession(sid);
+        } else if (typeof selectSession === 'function') {
+          selectSession(sid);
+        } else {
+          console.warn('[rt-escape] enter-shell: selectSession not available');
         }
-        renderToolbar(meetingData[meeting.id] || meeting);
-        refreshGroupChatPanel(meetingData[meeting.id] || meeting);
-      });
-    });
-    panel.querySelectorAll('[data-duty-hat-id]').forEach(select => {
-      select.addEventListener('change', async (ev) => {
-        ev.stopPropagation();
-        const hatId = select.getAttribute('data-duty-hat-id');
-        const sid = select.value || '';
-        const assignments = _getDutyHatAssignments(meeting);
-        const validSids = new Set((meeting.subSessions || []).filter(Boolean));
-        if (sid && validSids.has(sid)) assignments[hatId] = sid;
-        else delete assignments[hatId];
-        if (sid && validSids.has(sid)) {
-          const slotIdx = (meeting.subSessions || []).indexOf(sid);
-          const allIndexes = (meeting.subSessions || []).map((_, i) => i);
-          const current = Array.isArray(meeting.participants) ? meeting.participants.slice() : allIndexes;
-          if (slotIdx >= 0 && !current.includes(slotIdx)) {
-            const next = allIndexes.filter(i => current.includes(i) || i === slotIdx);
-            meeting.participants = next;
-            try {
-              const updated = await ipcRenderer.invoke('groupchat:set-participants', { meetingId: meeting.id, participants: next });
-              if (updated) meetingData[meeting.id] = updated;
-            } catch (err) {
-              console.error('[groupchat] set participants for duty hat failed:', err);
-            }
+      } else if (action === 'resend-prompt') {
+        const r = await ipcRenderer.invoke('groupchat-resend-prompt', { meetingId: meeting.id, sid });
+        if (r && r.ok) {
+          btn.style.background = '#2da44e';
+          btn.style.color = '#fff';
+          btn.textContent = `✓ 已重发`;
+          _btnTextHandledExternally = true;
+          const cachedForResend = _gcPanelState[meeting.id];
+          if (cachedForResend && cachedForResend._partialBy && cachedForResend._partialBy[sid]) {
+            delete cachedForResend._partialBy[sid].sendStatus;
           }
+          refreshGroupChatPanel(meeting);
+          setTimeout(() => {
+            btn.style.background = '';
+            btn.style.color = '';
+            btn.textContent = oldText;
+            btn.disabled = false;
+          }, 1500);
+        } else {
+          alert(`重发失败：${r?.reason || 'unknown'}\n\n建议：\n1. 检查该家 PTY 是否还活着（左侧 sidebar 点进去看）\n2. 或者按"跳过"绕过这家，下一轮会自动重启 CLI`);
         }
-        const latestMeeting = meetingData[meeting.id] || meeting;
-        _syncDutyHatPromptToInput(latestMeeting);
-        refreshGroupChatPanel(latestMeeting);
-      });
-    });
-    const dutyInsertBtn = panel.querySelector('[data-duty-hat-insert]');
-    if (dutyInsertBtn) {
-      dutyInsertBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        _syncDutyHatPromptToInput(meetingData[meeting.id] || meeting);
-      });
+      } else if (action === 'resend') {
+        const r = await ipcRenderer.invoke('groupchat-resend-participant', { meetingId: meeting.id, sid });
+        if (r && r.ok) {
+          console.log(`[rt-escape] resend ok: ${kind}`);
+        } else {
+          alert(`暂未支持单家"重新拉起"。\n\n建议操作：\n1. 在该卡片底部按"跳过"，下游 prompt 不会引用此家。\n2. 或者发起新一轮（直接提问），系统会自动重启卡死的 CLI。\n3. 或者从左侧 sidebar 点该子 session 进 shell 看 PTY 真实情况。\n\n（错误信息：${r?.reason || 'unknown'}）`);
+        }
+      }
+    } catch (err) {
+      console.error(`[rt-escape] ${action} threw:`, err);
+      if (action === 'resend-prompt') {
+        alert(`📤 发送失败：${err && err.message ? err.message : 'unknown'}\n\n（如果错误说"No handler registered"，说明后端 IPC 还没部署，需要等待 T5 落地）`);
+      }
+    } finally {
+      if (!_btnTextHandledExternally) {
+        btn.disabled = false;
+        btn.textContent = oldText;
+      }
     }
-    const dutyClearBtn = panel.querySelector('[data-duty-hat-clear]');
-    if (dutyClearBtn) {
-      dutyClearBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        _clearDutyHatAssignments(meetingData[meeting.id] || meeting);
-        const input = document.getElementById('mr-input-box');
-        const currentText = input ? (input.innerText || '') : '';
-        const nextText = _replaceDutyHatPromptInText(currentText, '');
-        _setMeetingInputText(meeting.id, nextText);
-        refreshGroupChatPanel(meetingData[meeting.id] || meeting);
-      });
+  }
+
+  async function _handleSlotHoverAction(btn) {
+    const action = btn.getAttribute('data-gc-action');
+    const f2Kind = btn.getAttribute('data-gc-kind');
+    const card = btn.closest('.mr-ft');
+    if (action === 'copy') {
+      const previewText = (card?.querySelector('.mr-ft-bottom')?.innerText || '').trim();
+      if (!previewText) {
+        const oldT = btn.textContent;
+        btn.textContent = '空';
+        setTimeout(() => { btn.textContent = oldT; }, 1000);
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(previewText);
+        const oldT = btn.textContent;
+        btn.textContent = '✓';
+        btn.style.background = '#2da44e';
+        btn.style.color = '#fff';
+        setTimeout(() => {
+          btn.textContent = oldT;
+          btn.style.background = '';
+          btn.style.color = '';
+        }, 1200);
+      } catch (e) {
+        console.warn('[hover-actions] copy failed:', e);
+      }
+    } else if (action === 'mention') {
+      const input = document.getElementById('mr-input-box');
+      if (input) {
+        const labelEl = card?.querySelector('.mr-ft-name');
+        const fullLabel = (labelEl?.textContent || f2Kind || '').trim();
+        const cleanLabel = fullLabel.replace(/^[^A-Za-z0-9_一-鿿]+/, '');
+        const shortLabel = cleanLabel.split(/[·\s]/)[0] || f2Kind || '';
+        const cur = input.textContent || '';
+        input.textContent = (cur && !cur.endsWith(' ') ? cur + ' ' : cur) + `@${shortLabel} `;
+        input.focus();
+        if (typeof _placeCaretAtEnd === 'function') _placeCaretAtEnd(input);
+      }
+    } else if (action === 'quote') {
+      alert('"引用本卡内容入下一轮" 将在 Phase 3 (F6) 实施。\n当前可先用 📋 复制后粘贴到输入框。');
     }
-    // 时光机 banner 退出按钮
-    const ttExitBtn = panel.querySelector('[data-gc-tt-exit]');
-    if (ttExitBtn) {
-      ttExitBtn.addEventListener('click', () => {
+  }
+
+  async function _handleGcMessageCopy(btn) {
+    const msgEl = btn.closest('.mr-gc-msg');
+    const text = (msgEl?.querySelector('.mr-gc-bubble')?.innerText || '').trim();
+    const oldText = btn.textContent;
+    if (!text) {
+      btn.textContent = '空';
+      setTimeout(() => { btn.textContent = oldText; }, 900);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = '✓';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = oldText;
+        btn.classList.remove('copied');
+      }, 1200);
+    } catch (e) {
+      console.warn('[groupchat] copy message failed:', e);
+      btn.textContent = '失败';
+      setTimeout(() => { btn.textContent = oldText; }, 1200);
+    }
+  }
+
+  async function _handleGcManualSync(btn, meeting) {
+    if (btn.disabled) return;
+    const sid = btn.getAttribute('data-gc-sync-answer');
+    const turnRaw = parseInt(btn.getAttribute('data-gc-sync-turn') || '', 10);
+    if (!sid) return;
+    const oldText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '同步中';
+    try {
+      const payload = {
+        meetingId: meeting.id,
+        sid,
+        turnNum: Number.isFinite(turnRaw) ? turnRaw : undefined,
+        sincePromptTs: _gcTurnStartTs[meeting.id] || 0,
+      };
+      const r = await ipcRenderer.invoke('groupchat-manual-extract', payload);
+      if (!r || !r.ok) {
+        const detail = r && (r.detail || r.reason) ? (r.detail || r.reason) : 'unknown';
+        _showGcEscapeNotice(`同步失败：${detail}`, 'error');
+        btn.textContent = '失败';
+        setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1500);
+        return;
+      }
+      btn.textContent = '已同步';
+      btn.classList.add('ok');
+      await refreshGroupChatPanel(meeting);
+      setTimeout(() => {
+        btn.textContent = oldText;
+        btn.classList.remove('ok');
+        btn.disabled = false;
+      }, 1200);
+    } catch (e) {
+      _showGcEscapeNotice(`同步失败：${e && e.message ? e.message : String(e)}`, 'error');
+      btn.textContent = '失败';
+      setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1500);
+    }
+  }
+
+  async function _handleGcMemberToggle(btn, meeting) {
+    const latestMeeting = meetingData[meeting.id] || meeting;
+    const idx = parseInt(btn.getAttribute('data-gc-member-idx') || '-1', 10);
+    const sid = Array.isArray(latestMeeting.subSessions) ? latestMeeting.subSessions[idx] : null;
+    if (!sid) return;
+    const allIndexes = latestMeeting.subSessions.map((_, i) => i);
+    const current = Array.isArray(latestMeeting.participants) ? latestMeeting.participants.slice() : allIndexes;
+    const set = new Set(current);
+    if (set.has(idx)) set.delete(idx);
+    else set.add(idx);
+    const next = allIndexes.filter(i => set.has(i));
+    latestMeeting.participants = next;
+    try {
+      const updated = await ipcRenderer.invoke('groupchat:set-participants', { meetingId: latestMeeting.id, participants: next });
+      if (updated) meetingData[latestMeeting.id] = updated;
+    } catch (err) {
+      console.error('[groupchat] set participants failed:', err);
+    }
+    renderToolbar(meetingData[latestMeeting.id] || latestMeeting);
+    refreshGroupChatPanel(meetingData[latestMeeting.id] || latestMeeting);
+  }
+
+  async function _handleDutyHatChange(select, meeting) {
+    const latestMeeting = meetingData[meeting.id] || meeting;
+    const hatId = select.getAttribute('data-duty-hat-id');
+    const sid = select.value || '';
+    const assignments = _getDutyHatAssignments(latestMeeting);
+    const validSids = new Set((latestMeeting.subSessions || []).filter(Boolean));
+    if (sid && validSids.has(sid)) assignments[hatId] = sid;
+    else delete assignments[hatId];
+    if (sid && validSids.has(sid)) {
+      const slotIdx = (latestMeeting.subSessions || []).indexOf(sid);
+      const allIndexes = (latestMeeting.subSessions || []).map((_, i) => i);
+      const current = Array.isArray(latestMeeting.participants) ? latestMeeting.participants.slice() : allIndexes;
+      if (slotIdx >= 0 && !current.includes(slotIdx)) {
+        const next = allIndexes.filter(i => current.includes(i) || i === slotIdx);
+        latestMeeting.participants = next;
+        try {
+          const updated = await ipcRenderer.invoke('groupchat:set-participants', { meetingId: latestMeeting.id, participants: next });
+          if (updated) meetingData[latestMeeting.id] = updated;
+        } catch (err) {
+          console.error('[groupchat] set participants for duty hat failed:', err);
+        }
+      }
+    }
+    const refreshedMeeting = meetingData[latestMeeting.id] || latestMeeting;
+    _syncDutyHatPromptToInput(refreshedMeeting);
+    refreshGroupChatPanel(refreshedMeeting);
+  }
+
+  async function _handleGcPanelClick(ev, panel) {
+    const meeting = _currentGcPanelMeeting(panel);
+    if (!meeting) return;
+
+    const stepDot = _closestInPanel(ev.target, '.mr-gc-step-dot[data-turn-n]', panel);
+    if (stepDot) {
+      ev.stopPropagation();
+      const n = parseInt(stepDot.getAttribute('data-turn-n'), 10);
+      if (!Number.isFinite(n) || n < 1) return;
+      const cached = _gcPanelState[meeting.id];
+      const totalTurns = cached && Array.isArray(cached.turns) ? cached.turns.length : 0;
+      const isActive = cached && cached.currentMode && cached.currentMode !== 'idle';
+      const latestN = isActive ? totalTurns + 1 : totalTurns;
+      if (n === latestN || stepDot.hasAttribute('data-turn-active')) {
         delete _gcViewingTurnN[meeting.id];
-        refreshGroupChatPanel(meeting);
-      });
+      } else {
+        _gcViewingTurnN[meeting.id] = n;
+      }
+      refreshGroupChatPanel(meeting);
+      return;
     }
-    // 2026-05-05 道雪：用户提问 banner 展开/折叠按钮。点 ▾ → 切 .expanded class,
-    //   text 从 ellipsis 单行变 pre-wrap 多行;按钮 transform rotate 180° (CSS 控制)。
-    //   局部 toggle 不调 refreshGroupChatPanel,避免重渲后 expanded 状态丢失。
-    const userqToggle = panel.querySelector('[data-action="userq-toggle"]');
+
+    const cardTab = _closestInPanel(ev.target, '[data-gc-card-tab-sid]', panel);
+    if (cardTab) {
+      ev.stopPropagation();
+      const sid = cardTab.getAttribute('data-gc-card-tab-sid');
+      if (sid) _focusGroupChatSession(meeting, sid);
+      return;
+    }
+
+    if (_closestInPanel(ev.target, '[data-gc-view-card]', panel)) {
+      ev.stopPropagation();
+      _setGroupViewMode('card', meeting);
+      renderHeader(meeting);
+      return;
+    }
+
+    if (_closestInPanel(ev.target, '[data-gc-side-toggle]', panel)) {
+      ev.stopPropagation();
+      _setGroupSideCollapsed(!_getGroupSideCollapsed(), meeting);
+      return;
+    }
+
+    const copyBtn = _closestInPanel(ev.target, '[data-gc-copy-message]', panel);
+    if (copyBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      await _handleGcMessageCopy(copyBtn);
+      return;
+    }
+
+    const syncBtn = _closestInPanel(ev.target, '[data-gc-sync-answer]', panel);
+    if (syncBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      await _handleGcManualSync(syncBtn, meeting);
+      return;
+    }
+
+    const memberBtn = _closestInPanel(ev.target, '[data-gc-member-idx]', panel);
+    if (memberBtn) {
+      ev.stopPropagation();
+      await _handleGcMemberToggle(memberBtn, meeting);
+      return;
+    }
+
+    if (_closestInPanel(ev.target, '[data-duty-hat-insert]', panel)) {
+      ev.stopPropagation();
+      _syncDutyHatPromptToInput(meetingData[meeting.id] || meeting);
+      return;
+    }
+
+    if (_closestInPanel(ev.target, '[data-duty-hat-clear]', panel)) {
+      ev.stopPropagation();
+      const latestMeeting = meetingData[meeting.id] || meeting;
+      _clearDutyHatAssignments(latestMeeting);
+      const input = document.getElementById('mr-input-box');
+      const currentText = input ? (input.innerText || '') : '';
+      const nextText = _replaceDutyHatPromptInText(currentText, '');
+      _setMeetingInputText(latestMeeting.id, nextText);
+      refreshGroupChatPanel(latestMeeting);
+      return;
+    }
+
+    if (_closestInPanel(ev.target, '[data-gc-tt-exit]', panel)) {
+      ev.stopPropagation();
+      delete _gcViewingTurnN[meeting.id];
+      refreshGroupChatPanel(meeting);
+      return;
+    }
+
+    const userqToggle = _closestInPanel(ev.target, '[data-action="userq-toggle"]', panel);
     if (userqToggle) {
-      userqToggle.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        const banner = userqToggle.closest('.mr-gc-userq');
-        if (banner) banner.classList.toggle('expanded');
+      ev.stopPropagation();
+      const banner = userqToggle.closest('.mr-gc-userq');
+      if (banner) banner.classList.toggle('expanded');
+      return;
+    }
+
+    const obCard = _closestInPanel(ev.target, '.mr-gc-ob-card[data-ob-q]', panel);
+    if (obCard) {
+      const q = obCard.getAttribute('data-ob-q');
+      const input = document.getElementById('mr-input-box');
+      if (input && q && !(input.innerText || '').trim()) {
+        input.textContent = q; input.focus(); _placeCaretAtEnd(input);
+      }
+      return;
+    }
+
+    const bannerClose = _closestInPanel(ev.target, '[data-gc-banner-close]', panel);
+    if (bannerClose) {
+      const banner = bannerClose.closest('#mr-gc-soft-alert-banner');
+      if (banner) {
+        banner.style.display = 'none';
+        banner.innerHTML = '';
+      }
+      return;
+    }
+
+    const expandBtn = _closestInPanel(ev.target, '.mr-ft-expand[data-ft-expand-sid]', panel);
+    if (expandBtn) {
+      ev.stopPropagation();
+      const sid = expandBtn.getAttribute('data-ft-expand-sid');
+      const kind = expandBtn.getAttribute('data-ft-expand-kind');
+      _openGcTimeline(meeting, sid, kind);
+      return;
+    }
+
+    const escapeBtn = _closestInPanel(ev.target, '[data-gc-escape]', panel);
+    if (escapeBtn) {
+      ev.stopPropagation();
+      await _handleGcEscapeAction(escapeBtn, meeting);
+      return;
+    }
+
+    const hoverBtn = _closestInPanel(ev.target, '.mr-ft-hover-actions button', panel);
+    if (hoverBtn) {
+      ev.stopPropagation();
+      await _handleSlotHoverAction(hoverBtn);
+      return;
+    }
+
+    const card = _closestInPanel(ev.target, '.mr-ft[data-ft-sid]', panel);
+    if (card) {
+      _handleSlotCardClick(card, ev, meeting);
+    }
+  }
+
+  function _handleGcPanelChange(ev, panel) {
+    const meeting = _currentGcPanelMeeting(panel);
+    if (!meeting) return;
+    const dutyHatSelect = _closestInPanel(ev.target, '[data-duty-hat-id]', panel);
+    if (dutyHatSelect) {
+      ev.stopPropagation();
+      void _handleDutyHatChange(dutyHatSelect, meeting).catch(err => {
+        console.error('[groupchat] duty hat change failed:', err);
       });
     }
-    // 时光机模式 input/send disable(只读历史不许新发轮)
+  }
+
+  function _syncGcPanelTransientState(panel, meeting) {
     const inputBox = document.getElementById('mr-input-box');
     const sendBtn = document.getElementById('mr-send-btn');
     const inputRow = document.getElementById('mr-input-row');
@@ -3141,11 +2572,7 @@ if (typeof document !== 'undefined') (function () {
     }
     if (sendBtn) sendBtn.disabled = isTT;
     if (inputRow) inputRow.classList.toggle('mr-input-row-tt', isTT);
-    // T2（2026-05-04 道雪）：每个 slot 卡片走 _bindSlotCardEvents（同一函数 partial 局部 rebind 复用）
-    panel.querySelectorAll('.mr-ft[data-ft-sid]').forEach(slotEl => {
-      _bindSlotCardEvents(slotEl, meeting);
-    });
-    // E3 修复 (2026-05-03)：cmd-bar 的 .mr-gc-cmd-btn click handler 删除（按钮已不渲染）
+
     const hasThinking = panel.querySelector('.mr-gc-think-elapsed');
     if (hasThinking && !_thinkTimer) {
       const mid = meeting.id;
@@ -3160,47 +2587,23 @@ if (typeof document !== 'undefined') (function () {
     } else if (!hasThinking && _thinkTimer) {
       clearInterval(_thinkTimer); _thinkTimer = null;
     }
-    panel.querySelectorAll('.mr-gc-ob-card[data-ob-q]').forEach(card => {
-      card.addEventListener('click', () => {
-        const q = card.getAttribute('data-ob-q');
-        const input = document.getElementById('mr-input-box');
-        // 2026-05-09 道雪：输入框已有内容时不覆盖（用户原则）
-        if (input && q && !(input.innerText || '').trim()) {
-          input.textContent = q; input.focus(); _placeCaretAtEnd(input);
-        }
-      });
-    });
+  }
 
-    // T2（2026-05-04 道雪）：[data-gc-escape] 工具栏按钮的绑定已迁入 _bindSlotCardEvents
-    //   （上方 panel.querySelectorAll('.mr-ft[data-ft-sid]') 循环已覆盖）。
-
-    // 软提醒 banner 关闭按钮
-    const banner = panel.querySelector('#mr-gc-soft-alert-banner');
-    if (banner) {
-      banner.querySelectorAll('[data-gc-banner-close]').forEach(btn => {
-        btn.addEventListener('click', () => {
-          banner.style.display = 'none';
-          banner.innerHTML = '';
+  function _bindGcPanelEvents(panel, meeting) {
+    if (!panel || !meeting) return;
+    panel.__mrGcMeeting = meeting;
+    if (!panel.__mrGcDelegated) {
+      panel.addEventListener('click', (ev) => {
+        void _handleGcPanelClick(ev, panel).catch(err => {
+          console.error('[groupchat] delegated click failed:', err);
         });
       });
-    }
-
-    // 场景引导卡片按钮 (general/research/dev 共用)
-    //   "我知道了" 仅当前视图隐藏 (DOM remove); "不再显示" 写对应 scene 的 localStorage key 永久
-    const sceneCard = panel.querySelector('[data-gc-scene-card]');
-    if (sceneCard) {
-      const sceneKey = sceneCard.getAttribute('data-gc-scene-key');
-      const lsKey = SCENE_ONBOARDING_LS_KEY[sceneKey];
-      sceneCard.querySelectorAll('[data-gc-scene-card-action]').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const action = btn.getAttribute('data-gc-scene-card-action');
-          if (action === 'dismiss-forever' && lsKey) {
-            try { localStorage.setItem(lsKey, '1'); } catch {}
-          }
-          sceneCard.remove();
-        });
+      panel.addEventListener('change', (ev) => {
+        _handleGcPanelChange(ev, panel);
       });
+      panel.__mrGcDelegated = true;
     }
+    _syncGcPanelTransientState(panel, meeting);
   }
 
   function _placeCaretAtEnd(el) {
@@ -3389,14 +2792,15 @@ if (typeof document !== 'undefined') (function () {
   // 乐观态生命周期：renderer 在 IPC 飞行期间用 _gcOptimisticTurn 标记自己写的乐观字段，
   // 一旦 IPC resolve / reject 或 server 推 turn-complete，就清掉这个标记 —— 之后 refresh
   const _gcOptimisticTurn = {}; // { [meetingId]: { mode, t } }
+  // 本轮/本步真正被 dispatch 的 sid 集合（串行工作流每步只发子集）。渲染 thinking 时用它过滤；
+  // 未设置时 fallback 到 meeting.participants（普通群聊全员），保持原行为。
+  const _gcActiveSids = {}; // { [meetingId]: Set<sid> }
 
   function triggerGroupChat(meeting, opts = {}) {
     const cached = _gcPanelState[meeting.id];
     _gcTurnStartTs[meeting.id] = Date.now();
     _gcOptimisticTurn[meeting.id] = { mode: 'group', t: Date.now() };
-    if (meeting.scene === 'committee') {
-      _recordCommitteeProgress(meeting.id, _committeeAcceptedProgressText(opts.userInput || ''));
-    }
+
     if (cached) {
       cached.currentMode = 'group';
       cached._partialBy = null;
@@ -3419,10 +2823,7 @@ if (typeof document !== 'undefined') (function () {
       console.log('[groupchat] turn IPC resolved:', result && result.status, 'turn=', result && result.turnNum);
       clearOptimistic();
       if (result && (result.status === 'busy' || result.status === 'error')) {
-        if (meeting.scene === 'committee') {
-          _recordCommitteeIssue(meeting.id, result.reason || '投委会发送失败', result.status === 'error' ? 'error' : 'warn');
-          refreshGroupChatPanel(meeting);
-        }
+
         const inp = document.getElementById('mr-input-box');
         if (inp && !inp.innerText.trim()) {
           inp.textContent = opts.userInput || '';
@@ -3433,13 +2834,96 @@ if (typeof document !== 'undefined') (function () {
     }).catch((e) => {
       console.error('[groupchat] turn IPC failed:', e.message);
       clearOptimistic();
-      if (meeting.scene === 'committee') {
-        _recordCommitteeIssue(meeting.id, e && e.message ? e.message : '投委会发送异常', 'error');
-        refreshGroupChatPanel(meeting);
-      }
+
     });
     meeting.lastMessageTime = Date.now();
     ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
+  }
+
+  // === 串行工作流（2026-06-17 道雪）===
+  // 复用 groupchat:turn（已透传 targetMemberIds）逐步派发：每步换一组 AI、await 串行；
+  // 步内多 AI 由 dispatcher 的 Promise.all 并行；跨步上下文靠 orchestrator delta 机制自动透传
+  //（后说话的 AI 首次参与时 delta 会补齐它没看过的前序发言），故后端零改动，这里只是驱动循环。
+  function _buildWorkflowMembers(meeting) {
+    const subSids = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions : [];
+    const out = [];
+    for (let i = 0; i < subSids.length; i++) {
+      const sid = subSids[i];
+      const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
+      if (!s || s.status === 'dormant') continue;
+      const kind = s.kind || 'claude';
+      const title = s.title || (typeof _KIND_LABELS !== 'undefined' && _KIND_LABELS[kind]) || kind || `AI ${i + 1}`;
+      // memberId 必须与后端 dispatcher.groupMembersForMeeting 的 `m${idx+1}` 对齐（idx = subSessions 原始下标）
+      out.push({ memberId: `m${i + 1}`, kind, title });
+    }
+    return out;
+  }
+
+  function _updateWorkflowBtnState(meeting) {
+    const btn = document.getElementById('mr-workflow-btn');
+    if (!btn) return;
+    const badge = document.getElementById('mr-workflow-badge');
+    const wf = meeting && meeting.serialWorkflow;
+    const on = !!(wf && wf.enabled && Array.isArray(wf.steps) && wf.steps.length);
+    btn.classList.toggle('active', on);
+    if (badge) badge.textContent = on ? String(wf.steps.length) : '';
+    btn.title = on ? `串行工作流已启用：${wf.steps.length} 步（点击修改）` : '串行工作流设置';
+  }
+
+  async function runSerialWorkflow(meeting, userInput) {
+    const m = meetingData[meeting.id] || meeting;
+    const steps = (m.serialWorkflow && Array.isArray(m.serialWorkflow.steps)) ? m.serialWorkflow.steps : [];
+    if (!steps.length) { handleMeetingSend(userInput, m); return; }
+
+    // 用户问题进 timeline/groupchat 消息各一次；后续步骤复用同一个可见 turn，只追加 AI 回答。
+    const trimmed = (userInput || '').trim();
+    if (trimmed) _currentTurnUserInputByMeeting[m.id] = trimmed;
+    try {
+      await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: m.id, text: userInput });
+    } catch (e) { console.warn('[workflow] append-user-turn failed:', e && e.message); }
+
+    _gcTurnStartTs[m.id] = Date.now();
+    let workflowTurnNum = null;
+    for (let i = 0; i < steps.length; i++) {
+      const targetMemberIds = (steps[i] || []).filter(Boolean);
+      if (!targetMemberIds.length) continue;
+      _gcOptimisticTurn[m.id] = { mode: 'group', t: Date.now() };
+      // 本步活跃 sid：memberId 'm{i+1}' → subSessions[i]，让 UI 只对本步真正在动的 AI 显示思考中
+      _gcActiveSids[m.id] = new Set(
+        targetMemberIds.map(id => m.subSessions[parseInt(String(id).slice(1), 10) - 1]).filter(Boolean)
+      );
+      const cached = _gcPanelState[m.id];
+      if (cached) { cached.currentMode = 'group'; cached._partialBy = null; }
+      refreshGroupChatPanel(m);
+      renderToolbar(m);
+      try {
+        const result = await ipcRenderer.invoke('groupchat:turn', {
+          meetingId: m.id,
+          userInput,                 // 每步重发同一原问题；后说话的 AI 经 delta 已能看到前面各步回答
+          targetMemberIds,
+          reuseTurnNum: workflowTurnNum,
+          appendUserMessage: !workflowTurnNum,
+          dispatchMode: 'serial',
+        });
+        if (result && result.turnNum && !workflowTurnNum) workflowTurnNum = result.turnNum;
+        if (!result || result.status !== 'completed') {
+          alert(`串行工作流第 ${i + 1}/${steps.length} 步失败：${(result && result.reason) || ''}`);
+          break;
+        }
+      } catch (e) {
+        console.error('[workflow] step failed:', e);
+        alert(`串行工作流第 ${i + 1}/${steps.length} 步异常：${(e && e.message) ? e.message : e}`);
+        break;
+      }
+    }
+    delete _gcOptimisticTurn[m.id];
+    delete _gcActiveSids[m.id];
+    const c = _gcPanelState[m.id];
+    if (c) c.currentMode = null;
+    refreshGroupChatPanel(m);
+    renderToolbar(m);
+    m.lastMessageTime = Date.now();
+    ipcRenderer.send('update-meeting', { meetingId: m.id, fields: { lastMessageTime: m.lastMessageTime } });
   }
 
   function findSessionByKind(meeting, kind) {
@@ -3549,19 +3033,6 @@ if (typeof document !== 'undefined') (function () {
 
     // === Phase 2: DOM 更新（仅 active meeting 做）===
     if (meetingId !== activeMeetingId) return;
-    if (meeting.scene === 'committee' && meeting.groupChat && _getGroupViewMode() === 'chat') {
-      const panel = _ensureGcPanel();
-      const groupScroll = _captureGroupChatScroll(panel, meeting);
-      try {
-        panel.innerHTML = _renderGcPanelHtml(cached, meeting);
-        _bindGcPanelEvents(panel, meeting);
-        _restoreGroupChatScroll(panel, groupScroll);
-      } catch (e) {
-        console.error('[committee-dashboard] partial refresh failed:', e);
-      }
-      return;
-    }
-
     // 2026-05-05 道雪：时光机模式短路 — 用户在看第 N 轮历史快照时，partial-update
     //   不应该把卡片 outerHTML 替换为最新 streaming 内容（否则用户感知"被强制跳回最新轮"）。
     //   cache 已经在上面更新（保持一致性，用户退出时光机后即可看到最新态），仅跳过 DOM patch。
@@ -3580,9 +3051,7 @@ if (typeof document !== 'undefined') (function () {
       //   走下方 fallback 全量重渲（仍带 capture+restore 保护 scrollTop）
       const groupScroll = _captureGroupChatScroll(panel, meeting);
       try {
-        panel.innerHTML = _renderGcPanelHtml(cached, meeting);
-        _bindGcPanelEvents(panel, meeting);
-        _restoreGroupChatScroll(panel, groupScroll);
+        _renderGcPanelInto(panel, meeting, cached, { scroll: groupScroll });
       } catch (e) {
         console.error('[groupchat] partial-update fallback rebuild failed:', e);
       }
@@ -3597,9 +3066,7 @@ if (typeof document !== 'undefined') (function () {
       //   原版无 try/catch → 整个 IPC 回调崩溃，panel 残破。包一层让回调能 return。
       const groupScroll = _captureGroupChatScroll(panel, meeting);
       try {
-        panel.innerHTML = _renderGcPanelHtml(cached, meeting);
-        _bindGcPanelEvents(panel, meeting);
-        _restoreGroupChatScroll(panel, groupScroll);
+        _renderGcPanelInto(panel, meeting, cached, { scroll: groupScroll });
       } catch (e) {
     console.error('[groupchat] partial-update fallback rebuild failed:', e);
       }
@@ -3658,31 +3125,10 @@ if (typeof document !== 'undefined') (function () {
   // Stage 2 容错升级：软提醒 banner —— watcher 在 T1=90s/T2=180s 触发，UI 弹非阻塞 banner
   // 提示用户"还在等"，提供"一键提取/跳过/继续等"操作。永不阻塞按钮（按钮 disabled
   // 由 _allParticipantsSettled 决定，与本 banner 无关）。
-  // 投委会编排进度（2026-06-12）：conductor 各幕推进时把状态显示在会议头部进度区，
-  // 用户不用盯终端就知道现在跑到哪一幕（备料/幕一/质询/裁决/落盘回执）。
-  ipcRenderer.on('committee-progress', (_event, { meetingId, text, data }) => {
-    const meeting = meetingData[meetingId];
-    if (!meeting) return;
-    _recordCommitteeProgress(meetingId, text, data);
-    if (meeting.id !== activeMeetingId) return;
-    const progEl = document.getElementById('mr-header-progress');
-    const firstLine = String(text || '').split('\n')[0].slice(0, 90);
-    if (progEl) {
-      progEl.textContent = `投委会：${firstLine}`;
-      progEl.title = String(text || '');
-    }
-    if (meeting.scene === 'committee' && meeting.groupChat && _getGroupViewMode() === 'chat') {
-      _renderActivePanelFromCache(meeting);
-    }
-  });
-
   ipcRenderer.on('groupchat-soft-alert', (_event, { meetingId, sid, label, level, mode, turnNum }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
-    if (meeting.scene === 'committee') {
-      const waitText = level === 't2' ? '等待超过 3 分钟' : '等待超过 90 秒';
-      _recordCommitteeIssue(meetingId, `${label || sid.slice(0, 8)} ${waitText}，可能慢响应或卡住`, level === 't2' ? 'error' : 'warn');
-    }
+
     // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 _partialBy[sid].status='soft_alert'），
     //   切回该 AI 群聊时卡片自动显示"等待中…"状态。
     //   banner DOM 仅 active 时弹（跨 meeting 弹 banner 文案"XX 已等待"会让用户混乱当前看的不是这个 AI 群聊）。
@@ -3722,9 +3168,7 @@ if (typeof document !== 'undefined') (function () {
       // 群聊弹顶 bug 修复（2026-06-05 道雪）：soft-alert 90s/180s 触发时全量重渲
       //   过去无 capture/restore → .mr-gc-messages 容器 scrollTop 被拍回 0,视觉弹顶。
       const groupScroll = _captureGroupChatScroll(panel, meeting);
-      panel.innerHTML = _renderGcPanelHtml(cached, meeting);
-      _bindGcPanelEvents(panel, meeting);
-      _restoreGroupChatScroll(panel, groupScroll);
+      _renderGcPanelInto(panel, meeting, cached, { scroll: groupScroll });
     }
   });
 
@@ -3734,9 +3178,7 @@ if (typeof document !== 'undefined') (function () {
   ipcRenderer.on('groupchat-send-stuck', (_e, { meetingId, sid /*, kind, mode */ }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
-    if (meeting.scene === 'committee') {
-      _recordCommitteeIssue(meetingId, `${sid.slice(0, 8)} 发送卡住，需要查看对应席位 PTY 或用卡片视图恢复`, 'warn');
-    }
+
     // 2026-05-05 道雪 修3：cache 同步对所有 meeting 都做（写 sendStatus='stuck'），
     //   切回该 AI 群聊时卡片自动显示"⚠ 输入卡顿"状态 + [📤 发送] 按钮亮起。
     //   panel DOM 重渲仅 active 做。
@@ -3754,9 +3196,7 @@ if (typeof document !== 'undefined') (function () {
       // 群聊弹顶 bug 修复（2026-06-05 道雪）：send-stuck 在用户提问瞬间常触发,
       //   过去无 capture/restore → 整个 panel 重渲后 scrollTop=0,用户视觉"弹顶"。
       const groupScroll = _captureGroupChatScroll(panel, meeting);
-      panel.innerHTML = _renderGcPanelHtml(cached, meeting);
-      _bindGcPanelEvents(panel, meeting);
-      _restoreGroupChatScroll(panel, groupScroll);
+      _renderGcPanelInto(panel, meeting, cached, { scroll: groupScroll });
     }
   });
 
@@ -3801,11 +3241,344 @@ if (typeof document !== 'undefined') (function () {
   const inputBoxEl = () => document.getElementById('mr-input-box');
   const sendBtnEl = () => document.getElementById('mr-send-btn');
 
-  // 2026-05-05 道雪：输入框草稿 per meeting 独立。#mr-input-box 是全局唯一 DOM,
-  //   切换不同 AI 群聊时 textContent 不变 → 用户感知"输入框被共享/串味"。
-  //   切换前 save 当前 mid 的草稿、切换后 restore 新 mid 的草稿即可独立。
-  //   仅内存级（不落盘）：重启 Hub 草稿丢失，与"输入未发送临时缓冲"语义一致。
-  const _inputDraftByMeeting = {};
+  const _INPUT_DRAFTS_STORAGE_KEY = 'mr-input-drafts-v1';
+  const _INPUT_HISTORY_STORAGE_KEY = 'mr-input-history-v1';
+  const _INPUT_HISTORY_LIMIT = 20;
+  const _LONG_INPUT_CHAR_THRESHOLD = 1200;
+
+  function _readJsonStorage(key, fallback) {
+    try {
+      if (typeof localStorage === 'undefined') return fallback;
+      const raw = localStorage.getItem(key);
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function _writeJsonStorage(key, value) {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      localStorage.setItem(key, JSON.stringify(value || {}));
+    } catch (err) {
+      console.warn('[meeting-room] input storage write failed:', err && err.message ? err.message : err);
+    }
+  }
+
+  // 2026-05-05 道雪：输入框草稿 per meeting 独立。2026-06-20: 升级为本地持久化，
+  //   避免 Hub 重启、误刷新或切会时未发送 prompt 丢失。
+  const _inputDraftByMeeting = _readJsonStorage(_INPUT_DRAFTS_STORAGE_KEY, {});
+  let _inputHistoryMenuEl = null;
+
+  function _setInputDraft(meetingId, text) {
+    if (!meetingId) return;
+    const normalized = String(text || '');
+    if (normalized.trim()) _inputDraftByMeeting[meetingId] = normalized;
+    else delete _inputDraftByMeeting[meetingId];
+    _writeJsonStorage(_INPUT_DRAFTS_STORAGE_KEY, _inputDraftByMeeting);
+  }
+
+  function _clearInputDraft(meetingId) {
+    if (!meetingId) return;
+    delete _inputDraftByMeeting[meetingId];
+    _writeJsonStorage(_INPUT_DRAFTS_STORAGE_KEY, _inputDraftByMeeting);
+  }
+
+  function _getPromptHistory(meetingId) {
+    const all = _readJsonStorage(_INPUT_HISTORY_STORAGE_KEY, {});
+    const items = meetingId && Array.isArray(all[meetingId]) ? all[meetingId] : [];
+    return items.filter(item => typeof item === 'string' && item.trim());
+  }
+
+  function _pushPromptHistory(meetingId, text) {
+    const normalized = String(text || '').trim();
+    if (!meetingId || !normalized) return;
+    const all = _readJsonStorage(_INPUT_HISTORY_STORAGE_KEY, {});
+    const prev = Array.isArray(all[meetingId]) ? all[meetingId] : [];
+    all[meetingId] = [normalized, ...prev.filter(item => item !== normalized)].slice(0, _INPUT_HISTORY_LIMIT);
+    _writeJsonStorage(_INPUT_HISTORY_STORAGE_KEY, all);
+  }
+
+  function _compactInputLine(text, maxLen = 72) {
+    const oneLine = String(text || '').replace(/\s+/g, ' ').trim();
+    return oneLine.length > maxLen ? oneLine.slice(0, maxLen - 1) + '…' : oneLine;
+  }
+
+  function _ensureInputPreflightRow() {
+    const inputRow = document.getElementById('mr-input-row');
+    if (!inputRow || !inputRow.parentNode) return null;
+    let row = document.getElementById('mr-input-preflight');
+    if (!row) {
+      row = document.createElement('div');
+      row.id = 'mr-input-preflight';
+      row.className = 'mr-input-preflight';
+      inputRow.parentNode.insertBefore(row, inputRow);
+    }
+    return row;
+  }
+
+  // 2026-06-21 道雪：本轮进行中拦截发送时的临时提示（自包含内联样式，不依赖 CSS；
+  //   独立于 soft-alert 以免被其刷新生命周期覆盖）。展示后 ~4.5s 自动隐藏。
+  let _busyHintTimer = null;
+  function _flashInputBusyHint(meeting) {
+    const inputRow = document.getElementById('mr-input-row');
+    if (!inputRow || !inputRow.parentNode) return;
+    let hint = document.getElementById('mr-input-busy-hint');
+    if (!hint) {
+      hint = document.createElement('div');
+      hint.id = 'mr-input-busy-hint';
+      hint.style.cssText = 'margin:4px 12px 0;padding:7px 12px;border-radius:6px;font-size:12px;'
+        + 'line-height:1.5;background:rgba(240,132,58,0.12);border:1px solid rgba(240,132,58,0.4);'
+        + 'color:var(--text-primary,#c9d1d9);';
+      inputRow.parentNode.insertBefore(hint, inputRow);
+    }
+    let prog = '';
+    try {
+      const st = meeting && _gcPanelState[meeting.id];
+      const expected = (meeting && Array.isArray(meeting.subSessions)) ? meeting.subSessions : [];
+      if (st && st._partialBy && expected.length) {
+        let done = 0;
+        for (const sid of expected) {
+          const p = st._partialBy[sid];
+          if (p && _SETTLED_STATUSES.has(p.status)) done++;
+        }
+        prog = ` (${done}/${expected.length} 已回)`;
+      }
+    } catch {}
+    hint.textContent = `⏳ 当前轮还在进行${prog}，已为你保留输入。请等本轮结束再发，或在卡片上「跳过/同步」卡住的 AI。`;
+    hint.style.display = '';
+    if (_busyHintTimer) clearTimeout(_busyHintTimer);
+    _busyHintTimer = setTimeout(() => {
+      const h = document.getElementById('mr-input-busy-hint');
+      if (h) h.style.display = 'none';
+    }, 4500);
+  }
+
+  function _ensureInputTools() {
+    const inputBox = document.getElementById('mr-input-box');
+    if (!inputBox || !inputBox.parentNode) return;
+    let historyBtn = document.getElementById('mr-input-history-btn');
+    if (!historyBtn) {
+      historyBtn = document.createElement('button');
+      historyBtn.id = 'mr-input-history-btn';
+      historyBtn.type = 'button';
+      historyBtn.className = 'mr-input-tool-btn';
+      historyBtn.title = '最近输入';
+      historyBtn.setAttribute('aria-label', '最近输入');
+      historyBtn.textContent = '↺';
+      inputBox.parentNode.insertBefore(historyBtn, inputBox.nextSibling);
+    }
+    if (!historyBtn.dataset.bound) {
+      historyBtn.dataset.bound = '1';
+      historyBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        _togglePromptHistoryMenu(historyBtn, meetingData[activeMeetingId]);
+      });
+    }
+
+    let expandBtn = document.getElementById('mr-input-expand-btn');
+    if (!expandBtn) {
+      expandBtn = document.createElement('button');
+      expandBtn.id = 'mr-input-expand-btn';
+      expandBtn.type = 'button';
+      expandBtn.className = 'mr-input-tool-btn';
+      expandBtn.title = '展开编辑';
+      expandBtn.setAttribute('aria-label', '展开编辑');
+      expandBtn.textContent = '⤢';
+      inputBox.parentNode.insertBefore(expandBtn, historyBtn.nextSibling);
+    }
+    if (!expandBtn.dataset.bound) {
+      expandBtn.dataset.bound = '1';
+      expandBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        _openLongInputEditor(meetingData[activeMeetingId]);
+      });
+    }
+  }
+
+  function _updateInputHistoryButton(meeting) {
+    const btn = document.getElementById('mr-input-history-btn');
+    if (!btn) return;
+    const count = _getPromptHistory(meeting && meeting.id).length;
+    btn.disabled = count === 0;
+    btn.title = count ? `最近输入 (${count})` : '最近输入为空';
+  }
+
+  function _getInputRawText() {
+    const input = document.getElementById('mr-input-box');
+    return input ? (input.innerText || input.textContent || '') : '';
+  }
+
+  function _renderInputChip(label, value, cls = '') {
+    return `<span class="mr-input-preflight-chip ${cls}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></span>`;
+  }
+
+  function _updateInputPreflight(meeting) {
+    const row = _ensureInputPreflightRow();
+    if (!row) return;
+    const current = meeting || meetingData[activeMeetingId];
+    if (!current) {
+      row.style.display = 'none';
+      return;
+    }
+    row.style.display = '';
+    const raw = _getInputRawText();
+    const charCount = raw.length;
+    const chips = [];
+    if (_isPanelCapableMeeting(current)) {
+      const slots = _getGcSlots(current).filter(Boolean);
+      const total = slots.length || (Array.isArray(current.subSessions) ? current.subSessions.length : 0);
+      const selected = Array.isArray(current.participants) ? current.participants.length : total;
+      const workflowSteps = current.serialWorkflow && Array.isArray(current.serialWorkflow.steps)
+        ? current.serialWorkflow.steps.length
+        : 0;
+      if (current.serialWorkflow && current.serialWorkflow.enabled && workflowSteps > 0) {
+        chips.push(_renderInputChip('发送', `工作流 ${workflowSteps} 步`, 'accent'));
+      } else {
+        chips.push(_renderInputChip('目标', `${selected}/${total || selected || 0}`, selected === 0 ? 'warn' : ''));
+      }
+    } else {
+      const sel = document.getElementById('mr-input-target');
+      const targetLabel = sel && sel.selectedOptions && sel.selectedOptions[0]
+        ? sel.selectedOptions[0].textContent
+        : '全部';
+      chips.push(_renderInputChip('目标', targetLabel || '全部'));
+    }
+    chips.push(_renderInputChip('引用', `${_gcQuoteChips.length}`, _gcQuoteChips.length ? 'accent' : ''));
+    chips.push(_renderInputChip('字数', `${charCount}`, charCount > _LONG_INPUT_CHAR_THRESHOLD ? 'warn' : ''));
+    if (_inputDraftByMeeting[current.id]) chips.push(_renderInputChip('草稿', '已保存', 'saved'));
+    row.innerHTML = chips.join('');
+
+    const expandBtn = document.getElementById('mr-input-expand-btn');
+    if (expandBtn) expandBtn.classList.toggle('attention', charCount > _LONG_INPUT_CHAR_THRESHOLD);
+    _updateInputHistoryButton(current);
+  }
+
+  function _closePromptHistoryMenu() {
+    if (_inputHistoryMenuEl) {
+      _inputHistoryMenuEl.remove();
+      _inputHistoryMenuEl = null;
+    }
+    document.removeEventListener('mousedown', _handlePromptHistoryOutside);
+    document.removeEventListener('keydown', _handlePromptHistoryKeydown);
+  }
+
+  function _handlePromptHistoryOutside(ev) {
+    const btn = document.getElementById('mr-input-history-btn');
+    if (_inputHistoryMenuEl && !_inputHistoryMenuEl.contains(ev.target) && ev.target !== btn) {
+      _closePromptHistoryMenu();
+    }
+  }
+
+  function _handlePromptHistoryKeydown(ev) {
+    if (ev.key === 'Escape') _closePromptHistoryMenu();
+  }
+
+  function _togglePromptHistoryMenu(anchor, meeting) {
+    if (_inputHistoryMenuEl) {
+      _closePromptHistoryMenu();
+      return;
+    }
+    const items = _getPromptHistory(meeting && meeting.id);
+    const rect = anchor.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.id = 'mr-input-history-menu';
+    menu.className = 'mr-input-history-menu';
+    menu.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - 360))}px`;
+    menu.style.bottom = `${Math.max(64, window.innerHeight - rect.top + 6)}px`;
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'mr-input-history-empty';
+      empty.textContent = '暂无历史输入';
+      menu.appendChild(empty);
+    } else {
+      items.forEach((item, idx) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'mr-input-history-item';
+        btn.innerHTML = `<span>${escapeHtml(_compactInputLine(item))}</span><small>${idx + 1}</small>`;
+        btn.addEventListener('click', () => {
+          _setMeetingInputText(meeting.id, item);
+          _closePromptHistoryMenu();
+        });
+        menu.appendChild(btn);
+      });
+    }
+    document.body.appendChild(menu);
+    _inputHistoryMenuEl = menu;
+    setTimeout(() => {
+      document.addEventListener('mousedown', _handlePromptHistoryOutside);
+      document.addEventListener('keydown', _handlePromptHistoryKeydown);
+    }, 0);
+  }
+
+  function _openLongInputEditor(meeting) {
+    const current = meeting || meetingData[activeMeetingId];
+    if (!current) return;
+    const existing = document.getElementById('mr-input-editor-overlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'mr-input-editor-overlay';
+    overlay.className = 'mr-input-editor-overlay';
+    overlay.innerHTML = `
+      <div class="mr-input-editor" role="dialog" aria-modal="true" aria-label="展开编辑">
+        <div class="mr-input-editor-head">
+          <strong>展开编辑</strong>
+          <span id="mr-input-editor-count">0 字</span>
+        </div>
+        <textarea id="mr-input-editor-textarea" class="mr-input-editor-textarea" spellcheck="false"></textarea>
+        <div class="mr-input-editor-actions">
+          <button type="button" class="mr-input-editor-btn" data-action="cancel">取消</button>
+          <button type="button" class="mr-input-editor-btn primary" data-action="apply">应用</button>
+          <button type="button" class="mr-input-editor-btn send" data-action="send">发送</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const textarea = overlay.querySelector('#mr-input-editor-textarea');
+    const countEl = overlay.querySelector('#mr-input-editor-count');
+    const updateCount = () => {
+      if (countEl) countEl.textContent = `${textarea.value.length} 字`;
+    };
+    const applyText = () => {
+      _setMeetingInputText(current.id, textarea.value);
+      _updateInputPreflight(current);
+    };
+    const close = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKeydown);
+    };
+    const onKeydown = (ev) => {
+      if (ev.key === 'Escape') close();
+    };
+    textarea.value = _getInputRawText();
+    updateCount();
+    textarea.addEventListener('input', updateCount);
+    overlay.querySelectorAll('[data-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.getAttribute('data-action');
+        if (action === 'cancel') {
+          close();
+          return;
+        }
+        applyText();
+        close();
+        if (action === 'send') {
+          const sendBtn = document.getElementById('mr-send-btn');
+          if (sendBtn) sendBtn.click();
+        }
+      });
+    });
+    overlay.addEventListener('mousedown', (ev) => {
+      if (ev.target === overlay) close();
+    });
+    document.addEventListener('keydown', onKeydown);
+    setTimeout(() => textarea.focus(), 0);
+  }
 
   // 2026-05-05 道雪：用户提问 banner 的"进行中轮"缓存。
   //   handleMeetingSend 入口写入 → turn-complete 清空 → state.turns[N].userInput 接管。
@@ -3817,13 +3590,14 @@ if (typeof document !== 'undefined') (function () {
     const inp = document.getElementById('mr-input-box');
     if (!inp) return;
     const text = inp.innerText || '';
-    if (text.trim()) _inputDraftByMeeting[activeMeetingId] = text;
-    else delete _inputDraftByMeeting[activeMeetingId];
+    _setInputDraft(activeMeetingId, text);
+    _updateInputPreflight(meetingData[activeMeetingId]);
   }
   function _restoreInputDraft(meetingId) {
     const inp = document.getElementById('mr-input-box');
     if (!inp) return;
     inp.textContent = _inputDraftByMeeting[meetingId] || '';
+    _updateInputPreflight(meetingData[meetingId]);
   }
 
   function init() {
@@ -3835,6 +3609,15 @@ if (typeof document !== 'undefined') (function () {
     if (activeMeetingId && activeMeetingId !== meetingId) _saveInputDraft();
     activeMeetingId = meetingId;
     meetingData[meetingId] = meeting;
+
+    // 2026-06-21 道雪：mr-card-tab-mode 是「非群聊会议」的并列/Tab 全局态，会误伤群聊
+    //   卡片视图（CSS 隐藏非 active 卡 + 头部 + 逃生栏 + 提问横幅）且群聊内无切回入口，
+    //   造成跨会议污染。进群聊时清除该 body class；进非群聊会议时按 localStorage 恢复。
+    if (meeting && meeting.groupChat) {
+      document.body.classList.remove('mr-card-tab-mode');
+    } else {
+      _applyCardViewModeClass(_getCardViewMode());
+    }
 
     const panel = panelEl();
     panel.style.display = 'flex';
@@ -3871,17 +3654,11 @@ if (typeof document !== 'undefined') (function () {
     // IF-C3（2026-05-01）：进会议室立即刷一次软提醒 banner（AI 未 ready 时提示用户）
     try { _refreshSoftAlert(meeting); } catch {}
 
-    // Card optimization Task 9（2026-05-01）：恢复持久化的沉浸/调试模式
-    if (_isPanelCapableMeeting(meeting)) {
-      _restoreMeetingMode(meeting).catch(() => {});
-    }
-
     // Card optimization Task 10（2026-05-01）：开启 ResizeObserver 防溢出兜底（Task 10 提供）
     if (typeof _setupMeetingResizeObserver === 'function') _setupMeetingResizeObserver();
 
-    // IF-C2（2026-05-01）：auto-focus 输入框 — 修 P1 bug A（输入框暂时不可用）。
-    //   xterm.terminal.open() + robustFit 的 rAF 循环会抢焦点；用 setTimeout 50ms
-    //   defer 到 xterm 初始化稳定后再 focus，让用户进会议室立即可键盘输入。
+    // IF-C2（2026-05-01）：auto-focus 输入框 — defer 到本轮渲染稳定后再 focus，
+    //   让用户进会议室立即可键盘输入。
     setTimeout(() => {
       const inputBox = document.getElementById('mr-input-box');
       if (inputBox && document.activeElement !== inputBox) {
@@ -3903,6 +3680,9 @@ if (typeof document !== 'undefined') (function () {
     _lastNotReadyCount = 0;
     const _banner = document.getElementById('mr-input-soft-alert');
     if (_banner) { _banner.style.display = 'none'; _banner.innerHTML = ''; }
+    // 2026-06-21 道雪：切会议时隐藏"本轮进行中"提示，避免跨会议残留。
+    const _busyHint = document.getElementById('mr-input-busy-hint');
+    if (_busyHint) _busyHint.style.display = 'none';
     // Card optimization Task 10（2026-05-01）：拆 ResizeObserver / window resize 监听，避免 panel 隐藏后还触发 fit
     if (typeof _teardownMeetingResizeObserver === 'function') _teardownMeetingResizeObserver();
     // F6 Phase 3: 切 meeting 清引用 chips, 避免跨 meeting 误带
@@ -3912,22 +3692,14 @@ if (typeof document !== 'undefined') (function () {
     if (panel) panel.style.display = 'none';
     const el = terminalsEl();
     if (el) el.innerHTML = '';
-    subTerminals = {};
   }
-
-  // Arch refactor 2026-05-02: 沉浸/调试模式切换已删除。AI 群聊只有一种视图，
-  // 这些函数保留为 no-op 以兼容内部调用（openMeeting 仍调 _restoreMeetingMode）。
-  function _toggleMeetingMode() { /* removed: only one view now */ }
-  function _applyMeetingMode(_immersive) { /* removed */ }
-  async function _restoreMeetingMode(_meeting) { /* removed */ }
 
   // Card optimization Task 10（2026-05-01）— 动态重排兜底：
   //   触发场景：窗口 resize / 沉浸切换 / 历史面板展开 / preview markdown 长度跳变 /
   //             session 加减 / devtools 开关
   //   策略：ResizeObserver 监 #meeting-room-panel 尺寸 + window 'resize' →
-  //         debounce 100ms → 强制 reflow + 对所有 subTerminals 调 fitAddon.fit()
-  //   subTerminals[sid] 结构（renderer.js:919）：{ terminal, fitAddon, searchAddon, container, opened }。
-  //   T9 已预先在 openMeeting / closeMeetingPanel 调 setup/teardown（typeof 守卫）。
+  //         debounce 100ms → 强制 reflow + 刷新历史面板高度。
+  //   2026-06-18：AI 群聊内嵌 xterm 已下线，移除旧 fit 兼容路径。
   function _debounce(fn, wait) {
     let t = null;
     return function (...args) {
@@ -3947,21 +3719,6 @@ if (typeof document !== 'undefined') (function () {
 
     // 强制 reflow（避免延迟到下次 paint）
     void panel.offsetHeight;
-
-    // 沉浸模式下 .mr-terminals height:0 + opacity:0，xterm 容器尺寸为 0，
-    //   FitAddon.fit() 在 rows/cols < 1 时可能抛 (xterm 协议下限)。即便外层 try/catch
-    //   吃掉异常，频繁失败调用也是浪费——直接 skip。
-    //   多方审查反馈（DeepSeek V4-pro 中置信度 #1）。
-    const skipFit = panel.classList.contains('immersive');
-
-    if (!skipFit && typeof subTerminals === 'object' && subTerminals) {
-      for (const sid of Object.keys(subTerminals)) {
-        const cached = subTerminals[sid];
-        if (cached && cached.fitAddon && typeof cached.fitAddon.fit === 'function') {
-          try { cached.fitAddon.fit(); } catch (_) {}
-        }
-      }
-    }
 
     // history panel 高度（如展开）— 当前 DOM 暂未引入 #mr-history-panel，保留兜底以防未来加入
     const hp = document.getElementById('mr-history-panel');
@@ -4030,8 +3787,6 @@ if (typeof document !== 'undefined') (function () {
         } else {
           _removeGcPanel();
         }
-        const term = terminalsEl();
-        if (term) applyModeContainerVisibility(updated, term);
         const prevSubs = prev ? prev.subSessions.join(',') : '';
         const newSubs = updated.subSessions ? updated.subSessions.join(',') : '';
         const modeChanged = prev && (prev.scene !== updated.scene);
@@ -4085,9 +3840,8 @@ if (typeof document !== 'undefined') (function () {
       <div class="mr-header-right">${layoutButtonsHtml}
         ${viewToggleHtml}
         ${meeting.groupChat ? `<button class="mr-header-btn" id="mr-btn-memory-preview" title="预览注入给 DeepSeek 的 Claude 主 MEMORY.md">📖 记忆</button>` : ''}
-        ${meeting.scene === 'committee' ? `<button class="mr-header-btn" id="mr-btn-committee-dashboard" title="打开投委会 Dashboard（决议台账/记分牌/教训库）">📊 投委会</button>` : ''}
+
         <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
-        <button class="mr-header-btn compact-toggle-btn ${document.body.classList.contains('compact-mode') ? 'active' : ''}" title="简洁模式（手机远程友好）">📱 简洁</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
         <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
         <button class="btn-zoom" id="mr-btn-zoom-in" title="Enlarge UI">A+</button>
@@ -4126,18 +3880,6 @@ if (typeof document !== 'undefined') (function () {
           window.openPreviewPanel(_CLAUDE_MEMORY_INDEX);
         } else {
           console.warn('[memory-preview] window.openPreviewPanel not available');
-        }
-      });
-    }
-    // 投委会 Dashboard 按钮：预览面板打开机构记忆仪表盘（committee_memory.py report 每场自动刷新）
-    const committeeDashBtn = document.getElementById('mr-btn-committee-dashboard');
-    if (committeeDashBtn) {
-      committeeDashBtn.addEventListener('click', () => {
-        const COMMITTEE_DASHBOARD = 'C:\\LinDangAgent\\data\\knowledge\\committee\\dashboard.html';
-        if (typeof window.openPreviewPanel === 'function') {
-          window.openPreviewPanel(COMMITTEE_DASHBOARD);
-        } else {
-          console.warn('[committee-dashboard] window.openPreviewPanel not available');
         }
       });
     }
@@ -4236,33 +3978,9 @@ if (typeof document !== 'undefined') (function () {
     setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
   }
 
-  // --- Terminal Rendering ---
-
-  function applyModeContainerVisibility(meeting, container) {
-    if (!container) return;
-    container.classList.remove('mr-terminals-hidden');
-  }
-
-  // Arch refactor 2026-05-02: AI 群聊界面去 shell。原 #mr-terminals 已删除，xterm
-  // 仅在子 session 主区 shell view 挂载（renderer.js: showTerminal）。这些
-  // mount/render 函数保留签名以兼容调用方，body 改为 no-op。subTerminals 永远
-  // 为空对象，下游 fit 循环空跑无害。
+  // Arch refactor 2026-05-02: AI 群聊界面去 shell。子 session shell 只在主区挂载
+  // （renderer.js: showTerminal）。保留 renderTerminals 兼容旧调用点，body 为 no-op。
   function renderTerminals(_meeting) { /* removed: shell moved to sub-session view */ }
-
-  function openSubTerminal(_sessionId) { /* removed */ }
-
-  function subModelBadgeHtml(session) {
-    if (!session || !session.currentModel) return '';
-    const cls = typeof modelClass === 'function' ? modelClass(session.currentModel.id) : '';
-    const label = typeof modelShort === 'function' ? modelShort(session.currentModel) : (session.currentModel.displayName || '');
-    return `<span class="model-badge ${cls}" title="${escapeHtml(session.currentModel.id)}">${escapeHtml(label)}</span>`;
-  }
-
-  function subCtxBadgeHtml(session) {
-    if (!session || typeof session.contextPct !== 'number') return '';
-    const cls = typeof pctClass === 'function' ? pctClass(session.contextPct) : 'ok';
-    return `<span class="ctx-badge ${cls}" title="Context ${session.contextPct}%">Ctx ${session.contextPct}%</span>`;
-  }
 
   function startCliReadyPoll() {
     if (_cliReadyPollTimer) return;
@@ -4298,9 +4016,7 @@ if (typeof document !== 'undefined') (function () {
           // 群聊弹顶 bug 修复（2026-06-05 道雪）：CLI ready poll 每秒触发,
           //   首次 AI 思考期间从"创建中→待命"切换时会重渲,过去无 capture/restore → 弹顶。
           const groupScroll = _captureGroupChatScroll(panel, meeting);
-          panel.innerHTML = _renderGcPanelHtml(cached, meeting);
-          _bindGcPanelEvents(panel, meeting);
-          _restoreGroupChatScroll(panel, groupScroll);
+          _renderGcPanelInto(panel, meeting, cached, { scroll: groupScroll });
         }
       }
       // 软提醒 banner（IF-C3 实装后会调），保护性调用——不存在时静默
@@ -4396,186 +4112,7 @@ if (typeof document !== 'undefined') (function () {
     }
   }
 
-  function createSubSlot(meeting, sessionId) {
-    const session = sessions ? sessions.get(sessionId) : null;
-    const isDormant = session && session.status === 'dormant';
-    const isSelected = meeting.sendTarget === sessionId;
-    const slotTitle = session ? (session.title || session.kind || 'session') : 'session';
-
-    const slot = document.createElement('div');
-    slot.className = 'mr-sub-slot' + (isSelected ? ' selected' : '') + (isDormant ? ' dormant' : '');
-    slot.dataset.sessionId = sessionId;
-
-    const badgeHtml = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
-
-    const header = document.createElement('div');
-    header.className = 'mr-sub-header';
-    header.innerHTML = `
-      <span class="mr-sub-label">${escapeHtml(slotTitle)}${badgeHtml ? ' ' + badgeHtml : ''} </span>
-      <button class="mr-sub-close" title="关闭此会话">✕</button>
-    `;
-
-    header.addEventListener('click', (e) => {
-      if (e.target.classList.contains('mr-sub-close')) return;
-      const newTarget = meeting.sendTarget === sessionId ? 'all' : sessionId;
-      meeting.sendTarget = newTarget;
-      ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { sendTarget: newTarget } });
-      renderTerminals(meeting);
-      renderToolbar(meeting);
-    });
-
-    header.querySelector('.mr-sub-close').addEventListener('click', async () => {
-      const result = await ipcRenderer.invoke('remove-meeting-sub', { meetingId: meeting.id, sessionId });
-      if (result) {
-
-        meetingData[meeting.id] = result;
-        renderTerminals(result);
-        renderToolbar(result);
-      }
-    });
-
-    slot.appendChild(header);
-
-    const termContainer = document.createElement('div');
-    termContainer.className = 'mr-sub-terminal';
-    termContainer.addEventListener('click', () => {
-      const cached = subTerminals[sessionId];
-      if (cached && cached.terminal) cached.terminal.scrollToBottom();
-    });
-    slot.appendChild(termContainer);
-
-    if (!isDormant && typeof getOrCreateTerminal === 'function') {
-      const cached = getOrCreateTerminal(sessionId);
-      if (cached && cached.container) {
-        cached.container.style.display = 'block';
-        // 幂等防护：cached.container 是单例（renderer.js:708 cache）, 反复 appendChild
-        //   会让 DOM 自动 detach + reattach, 期间 Canvas/WebGL 上下文可能丢帧。
-        //   只在父节点变更时才挂载, layout 切换 / 主驾切换的高频重渲不再抖动。
-        if (cached.container.parentNode !== termContainer) {
-          termContainer.appendChild(cached.container);
-        }
-        subTerminals[sessionId] = cached;
-      }
-    }
-
-    slot.addEventListener('contextmenu', (e) => {
-      handleQuoteContext(e, meeting, sessionId);
-    });
-
-    return slot;
-  }
-
-  // Arch refactor 2026-05-02: shell 不再在 AI 群聊界面 mount，no-op。
-  function fitSubTerminal(_sessionId) { /* removed */ }
-  function mountSubTerminal(_sessionId) { /* removed */ }
-
-  // --- Focus Mode ---
-
-  function renderFocusMode(meeting, container) {
-    const focused = meeting.focusedSub || meeting.subSessions[0];
-    if (!focused) return;
-
-    for (const sessionId of meeting.subSessions) {
-      const slot = createSubSlot(meeting, sessionId);
-      slot.style.flex = '1';
-      slot.style.display = sessionId === focused ? '' : 'none';
-      container.appendChild(slot);
-    }
-
-    for (const sessionId of meeting.subSessions) {
-      openSubTerminal(sessionId);
-    }
-    // Only fit the visible (focused) terminal; hidden ones get wrong dims
-    robustFit(focused);
-  }
-
-  // rAF-loop until container has real width AND height, then fit + resize PTY.
-  // 旧实现的 `cached.container || ... ? null : ...` 因 ||/?: 优先级 bug 让 el 永远是 null，
-  // offsetWidth 门禁形同虚设，fit 在容器无 layout 时执行 → 错 cols/rows → SIGWINCH 风暴
-  // → CLI 错位重绘（用户看到的"重复渲染/字符叠加"老 bug）。
-  // 同时加 SIGWINCH 去重：cols/rows 没变就不再发 terminal-resize（第二层防护，主进程也再去重一次）。
-  function robustFit(sessionId) {
-    const _refit = () => {
-      const cached = subTerminals[sessionId];
-      if (!cached || !cached.fitAddon) return;
-      const el = cached.container || cached.terminal.element;
-      if (!el || !el.offsetWidth || !el.offsetHeight) {
-        requestAnimationFrame(_refit);
-        return;
-      }
-      try {
-        const beforeCols = cached.terminal.cols;
-        const beforeRows = cached.terminal.rows;
-        cached.fitAddon.fit();
-        const afterCols = cached.terminal.cols;
-        const afterRows = cached.terminal.rows;
-        if (afterCols !== beforeCols || afterRows !== beforeRows) {
-          ipcRenderer.send('terminal-resize', { sessionId, cols: afterCols, rows: afterRows });
-        }
-        // Canvas/WebGL 后端在 display:none→block 或 reparent 后, 浏览器合成层
-        // 可能保留旧帧或缺帧；不强制 refresh 会留下"残影 / 字符叠加"。
-        // 排在 fit 之后的下一帧确保 cols/rows 已稳定。
-        requestAnimationFrame(() => {
-          try { cached.terminal.refresh(0, cached.terminal.rows - 1); } catch (_) {}
-        });
-      } catch (_) {}
-    };
-    requestAnimationFrame(_refit);
-  }
-
-  const _savedScrollPos = {}; // sessionId → { viewportY, vpScrollTop }
-
-  function switchFocusTab(meeting, newSid) {
-    const container = terminalsEl();
-    if (!container) return;
-
-    // Save scroll position of the previously focused terminal
-    const prevSid = meeting.focusedSub || meeting.subSessions[0];
-    if (prevSid && prevSid !== newSid) {
-      const prev = subTerminals[prevSid];
-      if (prev && prev.terminal) {
-        const pvp = prev.container && prev.container.querySelector('.xterm-viewport');
-        _savedScrollPos[prevSid] = {
-          viewportY: prev.terminal.buffer.active.viewportY,
-          vpScrollTop: pvp ? pvp.scrollTop : 0,
-          atBottom: pvp ? (pvp.scrollTop + pvp.clientHeight >= pvp.scrollHeight - 5) : true,
-        };
-      }
-    }
-
-    const slots = container.querySelectorAll('.mr-sub-slot');
-    for (const slot of slots) {
-      slot.style.display = slot.dataset.sessionId === newSid ? '' : 'none';
-    }
-    robustFit(newSid);
-    setTimeout(() => {
-      const cached = subTerminals[newSid];
-      if (!cached || !cached.terminal) return;
-      // Sync xterm's internal scroll area — same pattern as renderer.js showSession
-      try {
-        const vpInst = cached.terminal._core && cached.terminal._core.viewport;
-        if (vpInst && typeof vpInst.syncScrollArea === 'function') {
-          vpInst.syncScrollArea(true);
-        }
-      } catch (_) {}
-
-      // Restore saved position or scroll to bottom for fresh tabs
-      const saved = _savedScrollPos[newSid];
-      const vp = cached.container && cached.container.querySelector('.xterm-viewport');
-      if (saved && !saved.atBottom) {
-        try { cached.terminal.scrollToLine(saved.viewportY); } catch (_) {}
-        if (vp) vp.scrollTop = saved.vpScrollTop;
-      } else {
-        cached.terminal.scrollToBottom();
-        if (vp) vp.scrollTop = vp.scrollHeight;
-        requestAnimationFrame(() => {
-          if (vp) vp.scrollTop = vp.scrollHeight;
-          try { cached.terminal.scrollToBottom(); } catch (_) {}
-        });
-      }
-      cached.terminal.focus();
-    }, 100);
-  }
+  function switchFocusTab(_meeting, _newSid) { /* removed: embedded xterm tabs no longer exist */ }
 
   // --- Layout Toggle ---
 
@@ -4624,9 +4161,7 @@ if (typeof document !== 'undefined') (function () {
     };
     const slotAvatarSrc = (idx) => {
       const slot = slotsArr[idx] || {};
-      if (isGroupChat) return `assets/ai-logos/${escapeHtml(slot.kind || 'claude')}.svg`;
-      const avatars = ['pikachu.png', 'charmander.png', 'squirtle.png'];
-      return `assets/pokemon/${avatars[idx] || avatars[idx % avatars.length]}`;
+      return `assets/ai-logos/${escapeHtml(slot.kind || 'claude')}.svg`;
     };
 
     el.innerHTML = '';
@@ -4666,6 +4201,9 @@ if (typeof document !== 'undefined') (function () {
         next.sort((a, b) => a - b);
         try {
           await ipcRenderer.invoke('groupchat:set-participants', { meetingId: meeting.id, participants: next });
+          meeting.participants = next;
+          if (meetingData[meeting.id]) meetingData[meeting.id].participants = next;
+          _updateInputPreflight(meetingData[meeting.id] || meeting);
         } catch (err) {
           console.error('[set-participants] failed:', err);
           alert('????: ' + (err && err.message ? err.message : String(err)));
@@ -4682,8 +4220,7 @@ if (typeof document !== 'undefined') (function () {
   let _gcMentionActiveIndex = 0;
 
   // meeting-create-modal（2026-05-01）：mention 列表按当前 meeting 动态构建，
-  //   支持 5 选 3（claude/gemini/codex/deepseek/glm）+ 同 kind 重复（如 3 Claude）。
-  //   默认插入 @slot1 / @slot2 / @slot3（按 slot 位置精确指向）；
+  // Mention list supports core AI kinds, repeated kinds, and precise @m1/@m2/@m3 slot mentions.
   //   当 meeting 内某个 kind 唯一出现时，额外注册 @<kind> 别名（向后兼容老 prompt）；
   //   重复 kind 时该 kind 的 @<kind> 别名不注册（避免歧义）。
   function buildGcMentionItems(meeting) {
@@ -4948,11 +4485,17 @@ if (typeof document !== 'undefined') (function () {
       sendBtn.disabled = false;
     }
 
+    // 串行工作流按钮状态随 meeting 切换刷新（active 高亮 + 步数角标）
+    _updateWorkflowBtnState(meeting);
+
     // 卡片优化（2026-05-03 道雪）：粘贴图片支持。绑一次（idempotent guard 在 helper 内）。
     //   helper 由 renderer.js 暴露为 window.attachContenteditablePasteImage（先于 meeting-room.js 加载）。
     if (typeof window.attachContenteditablePasteImage === 'function') {
       window.attachContenteditablePasteImage(inputBox);
     }
+    _ensureInputPreflightRow();
+    _ensureInputTools();
+    _updateInputPreflight(meeting);
     if (targetSelect) {
       if (_isPanelCapableMeeting(meeting)) {
         targetSelect.style.display = 'none';
@@ -4982,6 +4525,7 @@ if (typeof document !== 'undefined') (function () {
     // IF-C2：仅首次绑定时设内容（避免后续重渲染 setupInput 擦掉用户已输入未发送内容）。
     // 2026-05-05 道雪：从清空改为按 meeting.id 恢复草稿 — 切换不同 AI 群聊时各自独立。
     inputBox.textContent = _inputDraftByMeeting[meeting.id] || '';
+    _updateInputPreflight(meeting);
 
     if (targetSelect) {
       targetSelect.addEventListener('change', (e) => {
@@ -4990,6 +4534,7 @@ if (typeof document !== 'undefined') (function () {
         if (m) {
           m.sendTarget = e.target.value;
           ipcRenderer.send('update-meeting', { meetingId: m.id, fields: { sendTarget: m.sendTarget } });
+          _updateInputPreflight(m);
         }
       });
     }
@@ -5011,6 +4556,13 @@ if (typeof document !== 'undefined') (function () {
           return;
         }
       }
+      // 2026-06-21 道雪：本轮还在进行且未全员结束时拦截再次提问——不静默排队
+      //   （普通群聊无超时，卡死的 AI 会让后端串行队列无限期挂起、用户第二问凭空消失）。
+      //   保留输入框文本 + 引用 chips（不清空、不发送），并给明确"本轮进行中"提示。
+      if (_isGroupTurnBusy(m)) {
+        _flashInputBusyHint(m);
+        return;
+      }
       if (!m.scene) {
         const sel = document.getElementById('mr-input-target');
         if (sel) m.sendTarget = sel.value;
@@ -5027,13 +4579,43 @@ if (typeof document !== 'undefined') (function () {
           ? `${quoteSection}\n\n用户问题: ${userText}`
           : `${quoteSection}\n\n(请就以上引用展开评论或继续讨论)`;
       }
-      handleMeetingSend(finalText, m);
+      // 串行工作流已启用 → 逐步派发；否则普通群聊单轮
+      if (m.scene && m.serialWorkflow && m.serialWorkflow.enabled &&
+          Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
+        runSerialWorkflow(m, finalText);
+      } else {
+        handleMeetingSend(finalText, m);
+      }
+      _pushPromptHistory(m.id, userText || finalText);
       if (box) box.textContent = '';
-      delete _inputDraftByMeeting[m.id];
+      _clearInputDraft(m.id);
       _clearQuoteChips();
+      _updateInputPreflight(m);
     };
 
     sendBtn.addEventListener('click', doSend);
+
+    const workflowBtn = document.getElementById('mr-workflow-btn');
+    if (workflowBtn) {
+      workflowBtn.addEventListener('click', () => {
+        const m = meetingData[activeMeetingId];
+        if (!m || !m.groupChat) return;
+        const members = _buildWorkflowMembers(m);
+        if (!members.length) { alert('群里还没有可用的 AI 成员，先添加成员再配置工作流'); return; }
+        window.openWorkflowConfigModal({
+          members,
+          config: m.serialWorkflow || null,
+          onSave: (config) => {
+            m.serialWorkflow = config;
+            ipcRenderer.send('update-meeting', { meetingId: m.id, fields: { serialWorkflow: config } });
+            _updateWorkflowBtnState(m);
+            _updateInputPreflight(m);
+            // 主动落 state.json（boot 恢复源），不赌 schedulePersist 时机
+            if (typeof window.schedulePersist === 'function') window.schedulePersist();
+          },
+        });
+      });
+    }
 
     inputBox.addEventListener('keydown', (e) => {
       // IME composition (中/日/韩) 中, 回车/方向键是给候选词用的, 不是给应用层。
@@ -5166,73 +4748,6 @@ if (typeof document !== 'undefined') (function () {
     return `[会议室协作同步]\n${lines.join('\n')}\n---\n`;
   }
 
-  // --- Quote (Right-click) ---
-
-  function handleQuoteContext(e, meeting, sourceSessionId) {
-    const cached = subTerminals[sourceSessionId];
-    if (!cached || !cached.terminal) return;
-
-    const selection = cached.terminal.getSelection();
-    if (!selection) return;
-
-    e.preventDefault();
-
-    const old = document.getElementById('mr-quote-context-menu');
-    if (old) old.remove();
-
-    const others = meeting.subSessions.filter(id => id !== sourceSessionId);
-    if (others.length === 0) return;
-
-    const sourceSession = sessions ? sessions.get(sourceSessionId) : null;
-    const sourceLabel = sourceSession ? sourceSession.kind : 'session';
-
-    const menu = document.createElement('div');
-    menu.id = 'mr-quote-context-menu';
-    menu.className = 'mr-quote-menu';
-    menu.style.top = e.clientY + 'px';
-    menu.style.left = e.clientX + 'px';
-
-    for (const targetId of others) {
-      const targetSession = sessions ? sessions.get(targetId) : null;
-      const targetLabel = targetSession ? targetSession.kind : 'session';
-      const item = document.createElement('button');
-      item.className = 'mr-quote-menu-item';
-      item.textContent = `引用到 ${targetLabel}`;
-      item.addEventListener('click', () => {
-        menu.remove();
-        const inputBox = document.getElementById('mr-input-box');
-        // 2026-05-09 道雪：输入框已有内容时不覆盖，给用户提示
-        if (inputBox && (inputBox.innerText || '').trim()) {
-          alert('当前输入框已有内容，请先清空或手动追加引用后再使用此功能');
-          return;
-        }
-        if (inputBox) {
-          inputBox.textContent = `> [来自 ${sourceLabel}] ${selection}\n`;
-          const range = document.createRange();
-          range.selectNodeContents(inputBox);
-          range.collapse(false);
-          const sel = window.getSelection();
-          sel.removeAllRanges();
-          sel.addRange(range);
-        }
-        meeting.sendTarget = targetId;
-        ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { sendTarget: targetId } });
-        renderToolbar(meeting);
-        renderTerminals(meeting);
-      });
-      menu.appendChild(item);
-    }
-
-    document.body.appendChild(menu);
-    const dismiss = (ev) => {
-      if (!menu.contains(ev.target)) {
-        menu.remove();
-        document.removeEventListener('mousedown', dismiss);
-      }
-    };
-    setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
-  }
-
   // --- Helpers ---
 
   // --- Tab output state tracking ---
@@ -5273,9 +4788,7 @@ if (typeof document !== 'undefined') (function () {
           //   过去无 capture/restore → scrollTop=0,刚崩溃用户视觉"弹顶"信息找不回。
           const meeting = meetingData[activeMeetingId];
           const groupScroll = _captureGroupChatScroll(panel, meeting);
-          panel.innerHTML = _renderGcPanelHtml(cached, meeting);
-          _bindGcPanelEvents(panel, meeting);
-          _restoreGroupChatScroll(panel, groupScroll);
+          _renderGcPanelInto(panel, meeting, cached, { scroll: groupScroll });
         }
       }
     }
@@ -5307,33 +4820,6 @@ if (typeof document !== 'undefined') (function () {
     }
   }
 
-  // --- Live badge refresh on status-event ---
-  ipcRenderer.on('status-event', (_e, payload) => {
-    if (!activeMeetingId) return;
-    const meeting = meetingData[activeMeetingId];
-    if (!meeting || !meeting.subSessions.includes(payload.sessionId)) return;
-    const session = sessions ? sessions.get(payload.sessionId) : null;
-    if (!session) return;
-    const title = session.title || session.kind || 'session';
-    const badges = subModelBadgeHtml(session) + subCtxBadgeHtml(session);
-
-    const newHtml = `${escapeHtml(title)}${badges ? ' ' + badges : ''}`;
-    // Update sub-slot header
-    const slot = document.querySelector(`.mr-sub-slot[data-session-id="${payload.sessionId}"]`);
-    if (slot) {
-      const label = slot.querySelector('.mr-sub-label');
-      if (label) label.innerHTML = `${newHtml} `;
-    }
-    // Update focus-mode tab (preserve status dot + NEW badge + marker badge)
-    const tab = document.querySelector(`.mr-tab[data-sid="${payload.sessionId}"]`);
-    if (tab) {
-      const state = _tabState[payload.sessionId] || 'idle';
-      const statusDot = `<span class="mr-tab-status ${state}"></span>`;
-      const newBadge = state === 'new-output' ? ' <span class="new-badge">NEW</span>' : '';
-      tab.innerHTML = `${statusDot}${newHtml} ${newBadge}`;
-    }
-  });
-
   // --- Expose global ---
 
   const meetingRoomApi = {
@@ -5343,7 +4829,6 @@ if (typeof document !== 'undefined') (function () {
     getActiveMeetingId,
     getMeetingData,
     updateMeetingData,
-    mountSubTerminal,
   };
   if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
     meetingRoomApi.debugRenderGroupChatState = function debugRenderGroupChatState(meetingId, state) {
@@ -5351,8 +4836,7 @@ if (typeof document !== 'undefined') (function () {
       if (!meeting || !_isPanelCapableMeeting(meeting)) return { ok: false, reason: 'meeting_not_found' };
       const panel = _ensureGcPanel();
       _gcPanelState[meetingId] = state || {};
-      panel.innerHTML = _renderGcPanelHtml(_gcPanelState[meetingId], meeting);
-      _bindGcPanelEvents(panel, meeting);
+      _renderGcPanelInto(panel, meeting, _gcPanelState[meetingId]);
       return { ok: true, text: panel.innerText || '' };
     };
   }

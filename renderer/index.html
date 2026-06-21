@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="meeting-room.css">
   <link rel="stylesheet" href="meeting-create-modal.css">
+  <link rel="stylesheet" href="workflow-config-modal.css">
   <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
   <script src="../node_modules/prismjs/prism.js"></script>
   <script src="../node_modules/prismjs/components/prism-bash.min.js"></script>
@@ -26,94 +27,28 @@
           <div class="new-session-menu" id="new-session-menu" style="display:none">
             <div class="menu-group-label">AI CLI</div>
             <button class="new-session-option" data-kind="claude"><span class="ai-logo logo-claude"></span>Claude Code</button>
-            <button class="new-session-option" data-kind="claude-web"><span class="ai-logo logo-claude"></span>Claude Web<span class="web-badge-inline">WEB</span></button>
             <button class="new-session-option" data-kind="gemini"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
             <button class="new-session-option" data-kind="codex"><span class="ai-logo logo-codex"></span>Codex CLI</button>
-            <button class="new-session-option" data-kind="codex-web"><span class="ai-logo logo-codex"></span>Codex Web<span class="web-badge-inline">WEB</span></button>
-            <button class="new-session-option" data-kind="codex-app"><span class="ai-logo logo-codex"></span>Codex App</button>
             <button class="new-session-option" data-kind="deepseek"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
-            <button class="new-session-option" data-kind="glm"><span class="ai-logo logo-glm"></span>GLM</button>
-            <button class="new-session-option" data-kind="gpt"><span class="ai-logo logo-gpt"></span>GPT 5.4 high</button>
-            <button class="new-session-option" data-kind="kimi"><span class="ai-logo logo-kimi"></span>Kimi K2.5</button>
-            <button class="new-session-option" data-kind="qwen"><span class="ai-logo logo-qwen"></span>Qwen 3.6 Plus</button>
             <div class="new-session-divider"></div>
             <div class="menu-group-label">终端</div>
             <button class="new-session-option" data-kind="powershell"><span class="ai-logo logo-powershell"></span>PowerShell</button>
           </div>
         </div>
         <button class="btn-group-chat" id="btn-group-chat" title="创建 AI 群聊"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10"/><path d="M7 12h6"/><path d="M6 18l-3 3V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6Z"/></svg><span class="btn-label">群聊</span></button>
-        <button class="btn-group-chat btn-remote-hub" id="btn-remote-hub" title="远程 Hub（经 VPS 中继操作另一台 Hub）"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span class="btn-label">远程</span><span class="remote-status-dot" id="remote-status-dot"></span></button>
         <div class="resume-picker-wrapper" id="resume-picker-wrapper">
           <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg></button>
           <div class="resume-picker-menu" id="resume-picker-menu" style="display:none">
             <button class="resume-option" data-kind="claude-resume"><span class="ai-logo logo-claude"></span>Claude<span class="hint">PTY picker</span></button>
-            <button class="resume-option" data-kind="claude-web-resume"><span class="ai-logo logo-claude"></span>Claude Web<span class="web-badge-inline">WEB</span><span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="gemini-resume"><span class="ai-logo logo-gemini"></span>Gemini<span class="hint">最近一次</span></button>
             <button class="resume-option" data-kind="codex-resume"><span class="ai-logo logo-codex"></span>Codex<span class="hint">PTY picker</span></button>
-            <button class="resume-option" data-kind="codex-web-resume"><span class="ai-logo logo-codex"></span>Codex Web<span class="web-badge-inline">WEB</span><span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="deepseek-resume"><span class="ai-logo logo-deepseek"></span>DeepSeek<span class="hint">PTY picker</span></button>
-            <button class="resume-option" data-kind="glm-resume"><span class="ai-logo logo-glm"></span>GLM<span class="hint">PTY picker</span></button>
-            <button class="resume-option" data-kind="gpt-resume"><span class="ai-logo logo-gpt"></span>GPT 5.4 high<span class="hint">PTY picker</span></button>
-            <button class="resume-option" data-kind="kimi-resume"><span class="ai-logo logo-kimi"></span>Kimi K2.5<span class="hint">PTY picker</span></button>
-            <button class="resume-option" data-kind="qwen-resume"><span class="ai-logo logo-qwen"></span>Qwen 3.6 Plus<span class="hint">PTY picker</span></button>
           </div>
         </div>
         <div class="options-wrapper">
           <button class="btn-options" id="btn-options" title="选项"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.66-7.66l-4.24 4.24m-7.07 7.07L4.34 19.66m13.32 0l-4.24-4.24m-7.07-7.07L4.34 4.34"/></svg></button>
           <div class="options-menu" id="options-menu" style="display:none">
-            <div class="options-item" id="options-theme">🎨 切换主题</div>
-            <div class="options-divider"></div>
-            <div class="options-item" id="options-meridian">
-              🔌 Meridian 代理
-              <span id="meridian-status-badge" class="meridian-status-badge meridian-badge-off">未启用</span>
-            </div>
-            <div class="options-divider"></div>
             <div class="options-item" id="options-settings">⚙️ 设置</div>
-          </div>
-          <div class="meridian-config-popup" id="meridian-config-popup" style="display:none">
-            <div class="meridian-popup-title">Meridian VPS 代理</div>
-            <div class="meridian-popup-hint">勾选后所有新建 Claude 会话经 VPS 共享团队 Max 订阅</div>
-            <label class="meridian-toggle-row">
-              <input type="checkbox" id="meridian-popup-enable">
-              <span>启用 Meridian</span>
-            </label>
-            <div class="meridian-field">
-              <label>Meridian URL</label>
-              <input type="text" id="meridian-popup-url" placeholder="https://meridian.lthub.xyz:8443" spellcheck="false">
-            </div>
-            <div class="meridian-field">
-              <label>团队令牌</label>
-              <input type="password" id="meridian-popup-token" placeholder="64 字符 hex（向团队管理员获取）" spellcheck="false">
-            </div>
-            <div class="meridian-actions">
-              <button type="button" id="meridian-popup-test" class="meridian-btn meridian-btn-secondary">测试连接</button>
-              <button type="button" id="meridian-popup-save" class="meridian-btn meridian-btn-primary">保存</button>
-              <button type="button" id="meridian-popup-cancel" class="meridian-btn meridian-btn-ghost">关闭</button>
-            </div>
-            <div id="meridian-popup-result" class="meridian-result-hint">配置后立即生效（仅影响新建 Claude 会话）</div>
-          </div>
-          <div class="theme-picker-popup" id="theme-picker-popup" style="display:none">
-            <div class="theme-picker-title">选择主题</div>
-            <div class="theme-option" data-theme="default">
-              <div class="theme-swatch swatch-default"></div>
-              <div class="theme-option-info"><div class="theme-option-name">Default Dark</div><div class="theme-option-desc">经典深色</div></div>
-            </div>
-            <div class="theme-option" data-theme="midnight">
-              <div class="theme-swatch swatch-midnight"></div>
-              <div class="theme-option-info"><div class="theme-option-name">Midnight Abyss</div><div class="theme-option-desc">深邃海蓝 + 冰蓝</div></div>
-            </div>
-            <div class="theme-option" data-theme="obsidian">
-              <div class="theme-swatch swatch-obsidian"></div>
-              <div class="theme-option-info"><div class="theme-option-name">Obsidian Ember</div><div class="theme-option-desc">纯黑 + 琥珀暖光</div></div>
-            </div>
-            <div class="theme-option" data-theme="aurora">
-              <div class="theme-swatch swatch-aurora"></div>
-              <div class="theme-option-info"><div class="theme-option-name">Aurora Borealis</div><div class="theme-option-desc">极光渐变 蓝绿紫</div></div>
-            </div>
-            <div class="theme-option" data-theme="vibechat-light">
-              <div class="theme-swatch swatch-vibechat-light"></div>
-              <div class="theme-option-info"><div class="theme-option-name">VibeChat Light</div><div class="theme-option-desc">浅色微信 IM 卡片</div></div>
-            </div>
           </div>
         </div>
       </div>
@@ -140,22 +75,8 @@
     <div class="terminal-panel" id="terminal-panel">
       <div class="empty-state" id="empty-state">
         <div class="launcher launcher-poster">
-          <div class="launcher-trio">
-            <div class="launcher-trio-slot pikachu">
-              <img src="assets/pokemon/pikachu.png" alt="皮卡丘">
-              <span class="launcher-trio-name">皮卡丘</span>
-            </div>
-            <div class="launcher-trio-slot charmander">
-              <img src="assets/pokemon/charmander.png" alt="小火龙">
-              <span class="launcher-trio-name">小火龙</span>
-            </div>
-            <div class="launcher-trio-slot squirtle">
-              <img src="assets/pokemon/squirtle.png" alt="杰尼龟">
-              <span class="launcher-trio-name">杰尼龟</span>
-            </div>
-          </div>
           <div class="launcher-title">召集你的 AI 群聊</div>
-          <div class="launcher-subtitle">多位 AI 成员,你来配:Claude / Gemini / Codex / DeepSeek / GLM / 千问 …… 任意搭配,真实碰撞,而非 AI 合唱。</div>
+          <div class="launcher-subtitle">多位 AI 成员,你来配:Claude / Gemini / Codex / DeepSeek。保留核心碰撞,减少低频入口。</div>
           <button class="launcher-cta" data-launcher-action="group">💬 开始 AI 群聊</button>
           <div class="launcher-secondary">
             <span>想 1 v 1?</span>
@@ -168,7 +89,7 @@
             <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
             <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
             <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
-            <span class="launcher-version">v1.5.3</span>
+            <span class="launcher-version">v1.6.1</span>
           </div>
         </div>
       </div>
@@ -178,8 +99,6 @@
       <div class="view-toggle">
         <button class="view-toggle-btn active" data-view="card" title="卡片视图(默认)">📇 卡片</button>
         <button class="view-toggle-btn" data-view="pty" title="PTY 视图(原始终端)">⌨ PTY</button>
-        <button class="view-toggle-btn compact-toggle-btn" id="btn-compact-toggle" title="简洁模式（手机远程友好）">📱 简洁</button>
-        <button class="view-toggle-btn ppt-toggle-btn" id="btn-ppt-toggle" title="PPT 模式（华为风格一键生成）">🎨 PPT</button>
       </div>
     </div>
     <div class="meeting-room-panel" id="meeting-room-panel" style="display:none">
@@ -197,12 +116,16 @@
         <span class="mr-input-mode-chips" id="mr-input-mode-chips"></span>
         <select class="mr-target-select" id="mr-input-target" title="发送目标"></select>
         <div class="mr-input-box" id="mr-input-box" contenteditable="true" data-placeholder="输入消息..."></div>
+        <button class="mr-workflow-btn" id="mr-workflow-btn" title="串行工作流设置">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="4" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
+            <path d="M6 12h4M14 12h4"/>
+          </svg>
+          <span class="mr-workflow-badge" id="mr-workflow-badge"></span>
+        </button>
         <button class="mr-send-btn" id="mr-send-btn" title="发送">▶</button>
       </div>
     </div>
-    <!-- 2026-06-11 远程 Hub 模式：本 Hub 作为瘦客户端，经 VPS 中继操作另一台 Hub。
-         内部 DOM 由 remote-mode.js 动态构建（setup 表单 / 会话列表 / 消息时间线）。 -->
-    <div class="remote-panel" id="remote-panel" style="display:none"></div>
     <!-- 2026-05-05 道雪：preview-splitter + preview-panel 从 terminal-panel 之后挪到
            meeting-room-panel 之后。flex 排版下，普通 session 时 mr-panel 隐藏 →
            排成 [terminal | preview]，群聊时 terminal 隐藏 → 排成 [meeting-room | preview]，
@@ -277,8 +200,7 @@
   <script src="renderer.js"></script>
   <script src="meeting-room.js"></script>
   <script src="meeting-create-modal.js"></script>
-  <script src="ppt-mode.js"></script>
-  <script src="remote-mode.js"></script>
+  <script src="workflow-config-modal.js"></script>
 
   <div id="config-modal" class="config-modal-overlay hidden">
     <div class="config-modal-content">
@@ -288,7 +210,7 @@
       </div>
       <div class="config-modal-body">
         <div id="config-main-view">
-          <p class="config-hint">配置全局代理和各 AI 的接入方式。Codex / DeepSeek / GLM / GPT / Kimi / Qwen 的变更会在新建会话时生效。</p>
+          <p class="config-hint">配置全局代理和核心 AI 的接入方式。Codex / DeepSeek 的变更会在新建会话时生效。</p>
           <div class="config-field">
             <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
             <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
@@ -330,43 +252,6 @@
               </span>
               <span class="config-ai-status api" id="cfg-status-deepseek">API</span>
             </button>
-            <button class="config-ai-row" type="button" data-ai="glm">
-              <span class="config-ai-mark glm">GL</span>
-              <span class="config-ai-copy">
-                <strong>GLM</strong>
-                <small id="cfg-summary-glm">API · glm-5.1</small>
-              </span>
-              <span class="config-ai-status api" id="cfg-status-glm">API</span>
-            </button>
-            <button class="config-ai-row" type="button" data-ai="gpt">
-              <span class="config-ai-mark gpt">GP</span>
-              <span class="config-ai-copy">
-                <strong>GPT</strong>
-                <small id="cfg-summary-gpt">API · gpt-5.4-high · Packy</small>
-              </span>
-              <span class="config-ai-status api" id="cfg-status-gpt">API</span>
-            </button>
-            <button class="config-ai-row" type="button" data-ai="kimi">
-              <span class="config-ai-mark kimi">KI</span>
-              <span class="config-ai-copy">
-                <strong>Kimi</strong>
-                <small id="cfg-summary-kimi">API · kimi-k2.5 · Packy</small>
-              </span>
-              <span class="config-ai-status api" id="cfg-status-kimi">API</span>
-            </button>
-            <button class="config-ai-row" type="button" data-ai="qwen">
-              <span class="config-ai-mark qwen">QW</span>
-              <span class="config-ai-copy">
-                <strong>Qwen</strong>
-                <small id="cfg-summary-qwen">API · qwen3.6-plus · Packy</small>
-              </span>
-              <span class="config-ai-status api" id="cfg-status-qwen">API</span>
-            </button>
-          </div>
-
-          <div class="config-field">
-            <label>PackyAPI Cookie <span class="config-label-hint">（侧栏余额监控，从 packyapi.com cookies 复制 session 字段值）</span> <span id="cfg-packy-expires" class="config-label-hint"></span></label>
-            <input type="password" id="cfg-packy-cookie" placeholder="MTc3NzY0NTUwM3xEWDhFQVFMX2dBQUJF..." spellcheck="false">
           </div>
         </div>
 
@@ -382,27 +267,6 @@
             <div class="config-mode-card selected">
               <strong>订阅 / Claude Code 登录</strong>
               <span>使用当前本机 Claude Code 登录状态。Hub 会保持现有订阅启动方式，不写入 API Key。</span>
-            </div>
-
-            <div class="config-section-label" style="margin-top: 18px;">
-              <span>VPS 代理（可选 · 团队共享）</span>
-              <span class="config-label-hint">填了 URL + Token 后 Claude 会话改走 VPS 共享订阅；留空 = 本机订阅</span>
-            </div>
-            <div class="config-field">
-              <label>Meridian URL</label>
-              <input type="text" id="cfg-meridian-url" placeholder="https://meridian.lthub.xyz:8443" spellcheck="false">
-            </div>
-            <div class="config-field">
-              <label>团队令牌 <span class="config-label-hint">（64 字符 hex，向团队管理员索取）</span></label>
-              <input type="password" id="cfg-meridian-token" placeholder="0123abcd...（保存后会自动隐藏）" spellcheck="false">
-            </div>
-            <div class="config-field" style="display: flex; align-items: center; gap: 10px;">
-              <button type="button" id="cfg-meridian-test-btn" class="config-mini-btn">测试连接</button>
-              <span id="cfg-meridian-test-result" class="config-label-hint">点击测试：先 /healthz，再用 Token 发 5-token 微请求</span>
-            </div>
-            <div class="config-field">
-              <label>今日用量 <span class="config-label-hint">（近 24h，需先保存配置）</span></label>
-              <div id="cfg-meridian-usage" class="config-label-hint">未加载（保存配置后自动拉取）</div>
             </div>
           </div>
 
@@ -463,81 +327,6 @@
             </div>
           </div>
 
-          <div class="config-ai-detail" id="cfg-detail-glm">
-            <div class="config-mode-card selected">
-              <strong>API 模式</strong>
-              <span>GLM 当前通过 Anthropic 兼容 API 接入，Base URL 和模型可自定义。</span>
-            </div>
-            <div class="config-field">
-              <label>GLM API Key</label>
-              <input type="password" id="cfg-glm-key" placeholder="sk-..." spellcheck="false">
-            </div>
-            <div class="config-field">
-              <label>GLM Base URL</label>
-              <input type="text" id="cfg-glm-url" placeholder="https://mydamoxing.cn" spellcheck="false">
-            </div>
-            <div class="config-field">
-              <label>GLM Model</label>
-              <input type="text" id="cfg-glm-model" placeholder="glm-5.1" spellcheck="false">
-            </div>
-          </div>
-
-          <div class="config-ai-detail" id="cfg-detail-gpt">
-            <div class="config-mode-card selected">
-              <strong>API 模式</strong>
-              <span>GPT 5.4 high 通过 PackyAPI codex 分组的 Anthropic 兼容端点接入（服务端做 OpenAI ↔ Anthropic 协议翻译），使用隔离 Claude 配置目录。</span>
-            </div>
-            <div class="config-field">
-              <label>GPT API Key（PackyAPI codex 分组）</label>
-              <input type="password" id="cfg-gpt-key" placeholder="sk-..." spellcheck="false">
-            </div>
-            <div class="config-field">
-              <label>Base URL</label>
-              <input type="text" id="cfg-gpt-url" placeholder="https://www.packyapi.com" spellcheck="false">
-            </div>
-            <div class="config-field">
-              <label>模型</label>
-              <input type="text" id="cfg-gpt-model" placeholder="gpt-5.4-high" spellcheck="false">
-            </div>
-          </div>
-
-          <div class="config-ai-detail" id="cfg-detail-kimi">
-            <div class="config-mode-card selected">
-              <strong>API 模式</strong>
-              <span>Kimi K2.5 通过 PackyAPI bailian 分组的 Anthropic 兼容端点接入，使用隔离 Claude 配置目录。</span>
-            </div>
-            <div class="config-field">
-              <label>Kimi API Key（PackyAPI bailian 分组）</label>
-              <input type="password" id="cfg-kimi-key" placeholder="sk-..." spellcheck="false">
-            </div>
-            <div class="config-field">
-              <label>Base URL</label>
-              <input type="text" id="cfg-kimi-url" placeholder="https://www.packyapi.com" spellcheck="false">
-            </div>
-            <div class="config-field">
-              <label>模型</label>
-              <input type="text" id="cfg-kimi-model" placeholder="kimi-k2.5" spellcheck="false">
-            </div>
-          </div>
-
-          <div class="config-ai-detail" id="cfg-detail-qwen">
-            <div class="config-mode-card selected">
-              <strong>API 模式</strong>
-              <span>Qwen 3.6 Plus 通过 PackyAPI bailian 分组的 Anthropic 兼容端点接入（与 Kimi 共享同一 bailian key），使用隔离 Claude 配置目录。</span>
-            </div>
-            <div class="config-field">
-              <label>Qwen API Key（PackyAPI bailian 分组）</label>
-              <input type="password" id="cfg-qwen-key" placeholder="sk-..." spellcheck="false">
-            </div>
-            <div class="config-field">
-              <label>Base URL</label>
-              <input type="text" id="cfg-qwen-url" placeholder="https://www.packyapi.com" spellcheck="false">
-            </div>
-            <div class="config-field">
-              <label>模型</label>
-              <input type="text" id="cfg-qwen-model" placeholder="qwen3.6-plus" spellcheck="false">
-            </div>
-          </div>
         </div>
         <div class="config-modal-actions">
           <button class="config-btn config-btn-save" id="config-save">保存</button>
