@@ -125,7 +125,7 @@
   //   （DOM + _liveState 全保留，progress 继续在后台累积，切回该 session 即恢复，不丢进度）。
   function _applyPanelVisibility() {
     if (!_panelEl) return;
-    const mine = !!(_meetingId && _activeMeetingId === _meetingId);
+    const mine = _meetingId ? _activeMeetingId === _meetingId : _view === 'screener';
     _panelEl.style.display = mine ? '' : 'none';
   }
   // meeting-room 切换/打开 session 时调用，告知现在在看哪个 meeting（null = 离开群聊）。
@@ -158,7 +158,9 @@
 
   // 技术初筛 = 独立功能（趋势龙雷达 / 投研门户），与投委会解耦；在 Hub 内显示进度和最终榜单。
   async function showScreener(meeting) {
-    if (meeting && meeting.id) { _meetingId = meeting.id; _activeMeetingId = meeting.id; }
+    const nextMeetingId = (meeting && meeting.id) || _activeMeetingId || null;
+    _meetingId = nextMeetingId;
+    if ((meeting && meeting.id) || _activeMeetingId) _activeMeetingId = nextMeetingId;
     const runId = _newRunId();
     _screenerState = core.reduceScreenerProgress(core.initScreenerState({ meetingId: _meetingId, runId }), {
       type: 'start',

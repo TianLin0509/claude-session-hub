@@ -135,9 +135,11 @@ ok(mrSrc.includes('data-committee-open') && mrSrc.includes("_getDutyHatScene(mee
 ok(mrSrc.includes('data-committee-screener'), '钩子: 技术初筛按钮（独立入口）');
 ok(mrSrc.includes('window.committeeUI.showModal(meeting)'), '钩子: 点击→committeeUI.showModal');
 ok(mrSrc.includes('data-committee-history') && mrSrc.includes('window.committeeUI.showHistory'), '钩子: 过往投委会固定按钮 → showHistory');
+ok(mrSrc.includes('window.committeeUI.showScreenerHint(meeting)'), '钩子: 技术初筛点击→showScreenerHint(meeting)，不漏传当前 meeting');
 const uiSrc = fs.readFileSync(path.join(root, 'renderer', 'committee-ui.js'), 'utf8');
 ok(uiSrc.includes("ipcRenderer.invoke('committee:screener:run'") && uiSrc.includes("committee:screener:progress"), 'committee-ui.js: 技术初筛接 IPC 进度流');
 ok(uiSrc.includes('showScreenerHint: showScreener'), 'committee-ui.js: 旧按钮调用名兼容到面板实现');
+ok(uiSrc.includes("_meetingId ? _activeMeetingId === _meetingId : _view === 'screener'"), 'committee-ui.js: 无 meeting 绑定时技术初筛面板仍可见');
 const htmlSrc = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');
 ok(htmlSrc.includes('committee-ui.js') && htmlSrc.includes('committee-ui.css'), 'index.html: 加载 committee-ui js+css');
 

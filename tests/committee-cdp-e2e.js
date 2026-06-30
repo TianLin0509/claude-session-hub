@@ -2,7 +2,7 @@
 /**
  * 投委会真实 CDP E2E（task#8 · TDD）。连隔离 Hub 的 renderer，真实执行 committee-ui + IPC，
  * 模拟用户潜在场景：开投委会弹窗（各输入格式）→ 全自动五幕面板渲染 → 矛盾/隔离/主席/降级/错误态
- * → 技术初筛 toast → IPC 真实链路 → XSS 边界。不 mock，真实 DOM + 真实 ipcRenderer.invoke。
+ * → 技术初筛按钮真实点击 → IPC 真实链路 → XSS 边界。不 mock，真实 DOM + 真实 ipcRenderer.invoke。
  *
  * 用法：起隔离 Hub（--remote-debugging-port=9344）后  node tests/committee-cdp-e2e.js
  */
@@ -105,9 +105,23 @@ async function main() {
 
   // ── 场景 4：技术初筛面板（解耦但可见进度/结果）──
   await reset();
-  await ev(`await window.committeeUI.showScreenerHint({id:'e2e-1'});return '';`);
-  await okv(`return !!document.querySelector('.cm-panel') && document.querySelector('.cm-panel').textContent.indexOf('技术初筛')>=0`, true, '4.1 技术初筛点击→面板出现');
-  await okv(`return document.querySelector('.cm-panel').textContent.indexOf('已生成')>=0 || document.querySelector('.cm-panel').textContent.indexOf('初筛进行中')>=0`, true, '4.2 技术初筛面板显示进度/结果状态');
+  await okv(`return !!(window.MeetingRoom && window.MeetingRoom.openMeeting)`, true, '4.0 meeting-room API 可用');
+  await okv(`
+    var orig = window.committeeUI.showScreenerHint;
+    window.__screenerArg = null;
+    window.committeeUI.showScreenerHint = function(arg){ window.__screenerArg = arg; return orig.call(window.committeeUI, arg); };
+    var m = { id:'e2e-scr-room', title:'技术初筛按钮真点', scene:'research', mode:'research', groupChat:true, sessions:[], subSessions:[] };
+    window.MeetingRoom.openMeeting(m.id, m);
+    await new Promise(r => setTimeout(r, 250));
+    var btn = document.querySelector('[data-committee-screener]');
+    if (!btn) return 'NO_BTN';
+    btn.click();
+    await new Promise(r => setTimeout(r, 250));
+    return window.__screenerArg && window.__screenerArg.id || 'NO_ARG';
+  `, 'e2e-scr-room', '4.1 真实技术初筛按钮点击传入当前 meeting');
+  await okv(`return !!document.querySelector('.cm-panel') && document.querySelector('.cm-panel').textContent.indexOf('技术初筛')>=0`, true, '4.2 技术初筛点击→面板出现');
+  await okv(`return document.querySelector('.cm-panel').style.display !== 'none'`, true, '4.3 技术初筛面板未被 session 可见性逻辑隐藏');
+  await okv(`return document.querySelector('.cm-panel').textContent.indexOf('已生成')>=0 || document.querySelector('.cm-panel').textContent.indexOf('初筛进行中')>=0`, true, '4.4 技术初筛面板显示进度/结果状态');
 
   // ── 场景 5：XSS 边界（股票名注入）──
   await reset();

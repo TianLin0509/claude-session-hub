@@ -1840,6 +1840,7 @@ if (typeof document !== 'undefined') (function () {
             </div>
           </div>
           <div class="mr-gc-dayline">摘要账本会索引原文，最近原文默认保留 5 条进入上下文</div>
+          ${_getDutyHatScene(meeting) === 'research' ? `<div class="mr-gc-topbar"><div class="mr-gc-top-actions"><button type="button" class="mr-gc-card-link cm-open-btn" data-committee-open="1" title="open investment committee">&#9878;&#65039; &#24320;&#25237;&#22996;&#20250;</button><button type="button" class="mr-gc-card-link" data-committee-history="1" title="investment committee history">&#128203; &#36807;&#24448;&#25237;&#22996;&#20250;</button><button type="button" class="mr-gc-card-link" data-committee-screener="1" title="show technical screener progress and result">&#128202; &#25216;&#26415;&#21021;&#31579;</button></div></div>` : ''}
 
           <div class="mr-gc-messages">
             ${emptyHtml}
@@ -2426,6 +2427,21 @@ if (typeof document !== 'undefined') (function () {
       ev.stopPropagation();
       const sid = cardTab.getAttribute('data-gc-card-tab-sid');
       if (sid) _focusGroupChatSession(meeting, sid);
+      return;
+    }
+    if (_closestInPanel(ev.target, '[data-committee-open]', panel)) {
+      ev.stopPropagation();
+      if (window.committeeUI && window.committeeUI.showModal) window.committeeUI.showModal(meeting);
+      return;
+    }
+    if (_closestInPanel(ev.target, '[data-committee-history]', panel)) {
+      ev.stopPropagation();
+      if (window.committeeUI && window.committeeUI.showHistory) window.committeeUI.showHistory(meeting);
+      return;
+    }
+    if (_closestInPanel(ev.target, '[data-committee-screener]', panel)) {
+      ev.stopPropagation();
+      if (window.committeeUI && window.committeeUI.showScreenerHint) window.committeeUI.showScreenerHint(meeting);
       return;
     }
 
