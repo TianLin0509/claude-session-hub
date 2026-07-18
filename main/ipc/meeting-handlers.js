@@ -11,6 +11,42 @@ function isValidMeetingId(id) {
   return typeof id === 'string' && /^[a-zA-Z0-9_-]+$/.test(id) && id.length > 0 && id.length < 256;
 }
 
+function reindexParticipantsAfterRemoval(participants, removedIndex) {
+  if (!Array.isArray(participants)) return null;
+  return participants
+    .filter(index => index !== removedIndex)
+    .map(index => index > removedIndex ? index - 1 : index);
+}
+
+function reindexSerialWorkflowAfterRemoval(serialWorkflow, removedIndex) {
+  if (!serialWorkflow || typeof serialWorkflow !== 'object' || !Array.isArray(serialWorkflow.steps)) {
+    return serialWorkflow || null;
+  }
+  const removedMemberId = 'm' + (removedIndex + 1);
+  const remapMemberId = (memberId) => {
+    const match = /^m(\d+)$/.exec(String(memberId || ''));
+    if (!match) return memberId;
+    const oneBased = Number(match[1]);
+    if (memberId === removedMemberId) return null;
+    return oneBased > removedIndex + 1 ? 'm' + (oneBased - 1) : memberId;
+  };
+  const steps = serialWorkflow.steps
+    .map(step => Array.isArray(step) ? step.map(remapMemberId).filter(Boolean) : [])
+    .filter(step => step.length > 0);
+  const loop = serialWorkflow.loop && typeof serialWorkflow.loop === 'object'
+    ? {
+        ...serialWorkflow.loop,
+        enabled: serialWorkflow.loop.enabled && steps.length >= 2,
+      }
+    : serialWorkflow.loop;
+  return {
+    ...serialWorkflow,
+    enabled: !!serialWorkflow.enabled && steps.length > 0,
+    steps,
+    ...(loop ? { loop } : {}),
+  };
+}
+
 function switchScene({ meetingId, scene, covenant, deps }) {
   const {
     getHubDataDir,
@@ -57,6 +93,7 @@ function switchScene({ meetingId, scene, covenant, deps }) {
 
 function registerMeetingIpc(ipcMain, deps) {
   const {
+    getHubDataDir = () => null,
     getImmersiveByMeeting = () => ({}),
     getLastPersistedSessions = () => [],
     groupchat,
@@ -109,8 +146,13 @@ function registerMeetingIpc(ipcMain, deps) {
       persistWarning = `state.json persist failed: ${err.message} (meeting already persisted to per-meeting JSON)`;
     }
 
-    sendToRenderer('meeting-updated', { meeting: meetingManager.getMeeting(meetingId) });
-    return persistWarning ? { ok: true, persistWarning } : { ok: true };
+    const freshMeeting = meetingManager.getMeeting(meetingId);
+    sendToRenderer('meeting-updated', { meeting: freshMeeting });
+    return {
+      ok: true,
+      meeting: freshMeeting,
+      ...(persistWarning ? { persistWarning } : {}),
+    };
   });
 
   ipcMain.on('update-meeting', (_e, { meetingId, fields }) => {
@@ -139,11 +181,71 @@ function registerMeetingIpc(ipcMain, deps) {
     return meetingManager.getAllMeetings();
   });
 
-  ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId }) => {
+  ipcMain.handle('remove-meeting-sub', (_e, { meetingId, sessionId } = {}) => {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting) return { ok: false, reason: 'meeting_not_found' };
+    const subSessions = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
+    const removedIndex = subSessions.indexOf(sessionId);
+    if (removedIndex < 0) return { ok: false, reason: 'not_member' };
+    if (meeting.groupChat && subSessions.length <= 1) return { ok: false, reason: 'last_member' };
+
+    if (meeting.groupChat && groupchat && typeof groupchat.getOrchestrator === 'function') {
+      try {
+        const state = groupchat.getOrchestrator(getHubDataDir(), meetingId).getState();
+        if (state && state.currentMode && state.currentMode !== 'idle') {
+          return { ok: false, reason: 'turn_in_progress' };
+        }
+      } catch (err) {
+        console.warn('[groupchat] cannot verify turn state before member removal:', err && err.message);
+        return { ok: false, reason: 'turn_state_unavailable' };
+      }
+    }
+
+    const removed = meetingManager.removeSubSession(meetingId, sessionId);
+    if (!removed) return { ok: false, reason: 'remove_failed' };
+
+    if (Array.isArray(meeting.participants)) {
+      meetingManager.setParticipants(
+        meetingId,
+        reindexParticipantsAfterRemoval(meeting.participants, removedIndex)
+      );
+    }
+    if (Array.isArray(meeting.slotSpecs)) {
+      const slotSpecs = meeting.slotSpecs.slice();
+      if (removedIndex < slotSpecs.length) slotSpecs.splice(removedIndex, 1);
+      meetingManager.setSlotSpecs(meetingId, slotSpecs);
+    }
+    if (meeting.serialWorkflow && typeof meeting.serialWorkflow === 'object') {
+      meetingManager.updateMeeting(meetingId, {
+        serialWorkflow: reindexSerialWorkflowAfterRemoval(meeting.serialWorkflow, removedIndex),
+      });
+    }
+
     sessionManager.closeSession(sessionId);
-    const updated = meetingManager.removeSubSession(meetingId, sessionId);
-    if (updated) sendToRenderer('meeting-updated', { meeting: updated });
-    return updated;
+    stateStore.markRemovedSession?.(sessionId);
+    sessionStore.deleteSessionFile?.(sessionId);
+    sessionStore.cancelDirty?.(sessionId);
+
+    const freshMeeting = meetingManager.getMeeting(meetingId);
+    let persistWarning = null;
+    try {
+      stateStore.save({
+        version: 1,
+        cleanShutdown: false,
+        sessions: getLastPersistedSessions(),
+        meetings: meetingManager.getAllMeetings(),
+        immersiveByMeeting: getImmersiveByMeeting(),
+      });
+    } catch (err) {
+      console.warn('[groupchat] remove member persist failed:', err.message);
+      persistWarning = `state.json persist failed: ${err.message}`;
+    }
+    sendToRenderer('meeting-updated', { meeting: freshMeeting });
+    return {
+      ok: true,
+      meeting: freshMeeting,
+      ...(persistWarning ? { persistWarning } : {}),
+    };
   });
 
   ipcMain.handle('close-meeting', (_e, meetingId) => {
@@ -165,6 +267,8 @@ function registerMeetingIpc(ipcMain, deps) {
 
 module.exports = {
   isValidMeetingId,
+  reindexParticipantsAfterRemoval,
+  reindexSerialWorkflowAfterRemoval,
   registerMeetingIpc,
   switchScene,
   withUserRenameFields,

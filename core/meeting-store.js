@@ -49,6 +49,9 @@ function saveMeetingFile(id, data) {
     slotSpecs: Array.isArray(data.slotSpecs) ? data.slotSpecs : null,
     mode: ['pilot', 'free'].includes(data.mode) ? data.mode : 'free',
     participants: Array.isArray(data.participants) ? data.participants : null,
+    serialWorkflow: data.serialWorkflow && typeof data.serialWorkflow === 'object'
+      ? data.serialWorkflow
+      : null,
     groupChat: !!data.groupChat,
     groupMode: typeof data.groupMode === 'string' ? data.groupMode : 'deliberation',
     groupRecentRawN: Number.isInteger(data.groupRecentRawN) ? data.groupRecentRawN : 5,
@@ -90,6 +93,7 @@ function loadMeetingFile(id) {
     if (typeof obj.groupMode !== 'string') obj.groupMode = 'deliberation';
     if (!Number.isInteger(obj.groupRecentRawN)) obj.groupRecentRawN = 5;
     if (!Array.isArray(obj.participants)) obj.participants = null;
+    if (!obj.serialWorkflow || typeof obj.serialWorkflow !== 'object') obj.serialWorkflow = null;
     if (typeof obj.updatedAt !== 'number') obj.updatedAt = obj.savedAt || 0;
     if (v === 1) {
       // v1 → 缺 title/scene/createdAt/subSessions 等。返回时显式带 schemaVersion=1

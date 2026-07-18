@@ -146,12 +146,11 @@ if (typeof document !== 'undefined') (function () {
   }
   const _GROUP_SIDE_STATE_KEY = 'mr-group-chat-side-state';
   function _getGroupSideCollapsed() {
-    // 2026-05-17 道雪: 默认展开右侧"群成员"栏（之前因含 ctx 占比、需要随时可见，
-    //   只有用户显式点过"收起"才折叠）。localStorage 缺失/异常时也展开。
+    // 普通聊天优先保证消息阅读宽度；用户显式展开后记住选择。
     try {
       const state = typeof localStorage !== 'undefined' ? localStorage.getItem(_GROUP_SIDE_STATE_KEY) : null;
-      return state === 'collapsed';
-    } catch { return false; }
+      return state !== 'expanded';
+    } catch { return true; }
   }
   function _setGroupSideCollapsed(collapsed, meeting) {
     try {
@@ -1525,6 +1524,7 @@ if (typeof document !== 'undefined') (function () {
   //   串行队列无限期挂起、用户第二问凭空消失）。
   function _isGroupTurnBusy(meeting) {
     if (!meeting || !_isPanelCapableMeeting(meeting)) return false;
+    if (_pendingUserMessages(meeting.id).length > 0) return true;
     const st = _gcPanelState[meeting.id];
     if (!st) return false;
     const mode = st.currentMode;
@@ -1634,6 +1634,15 @@ if (typeof document !== 'undefined') (function () {
   //   meta: "已 N 轮 · ⏱ 总耗时"; 进度条: 本轮已 settled 的 sid 数 / 总人数, 渐变填充。
   //   header 骨架由 renderHeader 一次性 mount, 这里只刷新 #mr-header-meta + #mr-header-progress 内容,
   //   不动其他 listener。每次 _renderGcPanelHtml 时同步调用一次。
+  function _expectedParticipantSids(meeting) {
+    const subSessions = meeting && Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
+    const activeSids = meeting && _gcActiveSids[meeting.id];
+    if (activeSids) return subSessions.filter(sid => activeSids.has(sid));
+    if (!meeting || !Array.isArray(meeting.participants)) return subSessions;
+    const selected = new Set(meeting.participants);
+    return subSessions.filter((_sid, index) => selected.has(index));
+  }
+
   function _updateHeaderProgress(meeting, state, mode, totalSec) {
     const metaEl = document.getElementById('mr-header-meta');
     const progEl = document.getElementById('mr-header-progress');
@@ -1642,7 +1651,7 @@ if (typeof document !== 'undefined') (function () {
     const totalSecTxt = totalSec > 0 ? _formatThinkTime(totalSec) : null;
     // 进度计算: 非 idle = 本轮 partialBy 中 settled 的数 / 期望家总数
     //          idle    = 0/N (无活跃轮, 进度条灰色 0%)
-    const expectedSids = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
+    const expectedSids = _expectedParticipantSids(meeting);
     const total = expectedSids.length || 0;
     let done = 0;
     let isThinking = false;
@@ -1751,8 +1760,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _renderGroupChatPending(state, meeting, memberBySid) {
-    const partialBy = state && state._partialBy ? state._partialBy : null;
-    if (!partialBy) return '';
+    const partialBy = state && state._partialBy ? state._partialBy : {};
     const slots = _getGcSlots(meeting).filter(Boolean);
     const parts = [];
     for (const slot of slots) {
@@ -1789,7 +1797,22 @@ if (typeof document !== 'undefined') (function () {
     const rawCount = messages.length;
     const mode = state.currentMode || 'idle';
     const sideCollapsed = _getGroupSideCollapsed();
-    const messageHtml = messages.map(m => _renderGroupChatMessage(m, meeting, memberBySid)).join('');
+    const renderMessages = messages.slice();
+    for (const pendingUser of _pendingUserMessages(meeting.id)) {
+      const pendingConfirmed = messages.some(message =>
+        message && message.role === 'user' && Number(message.turnNum) > pendingUser.afterTurn
+      );
+      if (!pendingConfirmed) {
+        renderMessages.push({
+          id: 'pending-user-' + pendingUser.clientId,
+          role: 'user',
+          turnNum: pendingUser.afterTurn + 1,
+          content: pendingUser.content,
+          createdAt: pendingUser.createdAt,
+        });
+      }
+    }
+    const messageHtml = renderMessages.map(m => _renderGroupChatMessage(m, meeting, memberBySid)).join('');
     const pendingHtml = mode !== 'idle' ? _renderGroupChatPending(state, meeting, memberBySid) : '';
 
     const emptyHtml = (!messageHtml && !pendingHtml) ? `
@@ -1810,18 +1833,26 @@ if (typeof document !== 'undefined') (function () {
       const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
       const ctxText = ctxPct == null ? 'Ctx --' : `Ctx ${ctxPct}%`;
       const ctxTitle = ctxPct == null ? '上下文占比未上报（非 Claude CLI 暂无原生信号）' : `上下文已用 ${ctxPct}%`;
+      const canRemove = slots.length > 1 && mode === 'idle';
+      const removeTitle = slots.length <= 1
+        ? '群聊至少保留一位成员'
+        : mode !== 'idle' ? '本轮回答结束后可移除' : `移除 ${label}`;
       return `
-        <button type="button" class="mr-gc-member ${checked ? 'selected' : ''}" data-gc-member-idx="${slot.slotIndex}">
-          <img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" />
-          <span class="mr-gc-member-main">
-            <span class="mr-gc-member-name">${escapeHtml(label)}</span>
-            <span class="mr-gc-member-meta">@m${slot.slotIndex + 1}${model ? ` · ${escapeHtml(model)}` : ''}</span>
-          </span>
-          <span class="mr-gc-member-side">
-            <span class="mr-gc-member-ctx ${ctxCls}" title="${escapeHtml(ctxTitle)}">${escapeHtml(ctxText)}</span>
-            <span class="mr-gc-member-check">${checked ? 'ON' : ''}</span>
-          </span>
-        </button>
+        <div class="mr-gc-member-row">
+          <button type="button" class="mr-gc-member ${checked ? 'selected' : ''}" data-gc-member-idx="${slot.slotIndex}">
+            <img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" />
+            <span class="mr-gc-member-main">
+              <span class="mr-gc-member-name">${escapeHtml(label)}</span>
+              <span class="mr-gc-member-meta">@m${slot.slotIndex + 1}${model ? ` · ${escapeHtml(model)}` : ''}</span>
+            </span>
+            <span class="mr-gc-member-side">
+              <span class="mr-gc-member-ctx ${ctxCls}" title="${escapeHtml(ctxTitle)}">${escapeHtml(ctxText)}</span>
+              <span class="mr-gc-member-check">${checked ? 'ON' : ''}</span>
+            </span>
+          </button>
+          <button type="button" class="mr-gc-member-remove" data-gc-member-remove-sid="${escapeHtml(slot.sid)}"
+                  title="${escapeHtml(removeTitle)}" aria-label="${escapeHtml(removeTitle)}" ${canRemove ? '' : 'disabled'}>移除</button>
+        </div>
       `;
     }).join('');
 
@@ -1851,7 +1882,10 @@ if (typeof document !== 'undefined') (function () {
         <aside class="mr-gc-side" aria-label="群成员">
           <div class="mr-gc-side-head">
             <span>群成员</span>
-            <button type="button" class="mr-gc-side-collapse" data-gc-side-toggle="1" title="收起群成员">${selected.size}/${slots.length}</button>
+            <span class="mr-gc-side-actions">
+              <button type="button" class="mr-gc-side-add" data-gc-add-member="1" title="添加新的 AI 成员">+ 成员</button>
+              <button type="button" class="mr-gc-side-collapse" data-gc-side-toggle="1" title="收起群成员">${selected.size}/${slots.length}</button>
+            </span>
           </div>
           <div class="mr-gc-members">${memberRows}</div>
           ${dutyHatPanel}
@@ -2350,6 +2384,18 @@ if (typeof document !== 'undefined') (function () {
     }
   }
 
+  async function _setMeetingParticipants(meeting, participants) {
+    const response = await ipcRenderer.invoke('groupchat:set-participants', {
+      meetingId: meeting.id,
+      participants,
+    });
+    if (!response || !response.ok || !response.meeting) {
+      throw new Error((response && response.reason) || '参与者状态未保存');
+    }
+    meetingData[meeting.id] = response.meeting;
+    return response.meeting;
+  }
+
   async function _handleGcMemberToggle(btn, meeting) {
     const latestMeeting = meetingData[meeting.id] || meeting;
     const idx = parseInt(btn.getAttribute('data-gc-member-idx') || '-1', 10);
@@ -2361,12 +2407,11 @@ if (typeof document !== 'undefined') (function () {
     if (set.has(idx)) set.delete(idx);
     else set.add(idx);
     const next = allIndexes.filter(i => set.has(i));
-    latestMeeting.participants = next;
     try {
-      const updated = await ipcRenderer.invoke('groupchat:set-participants', { meetingId: latestMeeting.id, participants: next });
-      if (updated) meetingData[latestMeeting.id] = updated;
+      await _setMeetingParticipants(latestMeeting, next);
     } catch (err) {
       console.error('[groupchat] set participants failed:', err);
+      _showGcEscapeNotice('成员选择保存失败：' + (err && err.message ? err.message : String(err)), 'error');
     }
     renderToolbar(meetingData[latestMeeting.id] || latestMeeting);
     refreshGroupChatPanel(meetingData[latestMeeting.id] || latestMeeting);
@@ -2386,10 +2431,8 @@ if (typeof document !== 'undefined') (function () {
       const current = Array.isArray(latestMeeting.participants) ? latestMeeting.participants.slice() : allIndexes;
       if (slotIdx >= 0 && !current.includes(slotIdx)) {
         const next = allIndexes.filter(i => current.includes(i) || i === slotIdx);
-        latestMeeting.participants = next;
         try {
-          const updated = await ipcRenderer.invoke('groupchat:set-participants', { meetingId: latestMeeting.id, participants: next });
-          if (updated) meetingData[latestMeeting.id] = updated;
+          await _setMeetingParticipants(latestMeeting, next);
         } catch (err) {
           console.error('[groupchat] set participants for duty hat failed:', err);
         }
@@ -2400,9 +2443,72 @@ if (typeof document !== 'undefined') (function () {
     refreshGroupChatPanel(refreshedMeeting);
   }
 
+  function _memberRemoveErrorText(reason) {
+    return {
+      last_member: '群聊至少需要保留一位成员',
+      turn_in_progress: '本轮回答进行中，请在本轮结束后移除成员',
+      turn_state_unavailable: '暂时无法确认本轮是否结束，为避免误删成员已取消操作',
+      not_member: '该成员已不在当前群聊中',
+      meeting_not_found: '当前群聊已不存在',
+    }[reason] || '成员移除失败';
+  }
+
+  async function _handleGcMemberRemove(btn, meeting) {
+    if (!btn || btn.disabled) return;
+    const latestMeeting = meetingData[meeting.id] || meeting;
+    const sid = btn.getAttribute('data-gc-member-remove-sid');
+    const index = Array.isArray(latestMeeting.subSessions) ? latestMeeting.subSessions.indexOf(sid) : -1;
+    if (index < 0) return;
+    const slot = _getGcSlots(latestMeeting)[index] || {};
+    const label = slot.displayLabel || slot.label || slot.kind || ('成员 ' + (index + 1));
+    if (typeof window.confirm === 'function' && !window.confirm('移除“' + label + '”并关闭它的会话？')) return;
+
+    btn.disabled = true;
+    const oldText = btn.textContent;
+    btn.textContent = '移除中';
+    try {
+      const response = await ipcRenderer.invoke('remove-meeting-sub', {
+        meetingId: latestMeeting.id,
+        sessionId: sid,
+      });
+      if (!response || !response.ok || !response.meeting) {
+        throw new Error(_memberRemoveErrorText(response && response.reason));
+      }
+      meetingData[latestMeeting.id] = response.meeting;
+      delete _cliReadyCache[sid];
+      const assignments = _getDutyHatAssignments(response.meeting);
+      for (const [hatId, assignedSid] of Object.entries(assignments)) {
+        if (assignedSid === sid) delete assignments[hatId];
+      }
+      renderHeader(response.meeting);
+      renderToolbar(response.meeting);
+      setupInput(response.meeting);
+      await refreshGroupChatPanel(response.meeting);
+    } catch (err) {
+      console.error('[groupchat] remove member failed:', err);
+      _showGcEscapeNotice(err && err.message ? err.message : String(err), 'error');
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  }
+
   async function _handleGcPanelClick(ev, panel) {
     const meeting = _currentGcPanelMeeting(panel);
     if (!meeting) return;
+
+    const addMemberBtn = _closestInPanel(ev.target, '[data-gc-add-member]', panel);
+    if (addMemberBtn) {
+      ev.stopPropagation();
+      showAddSubMenu(meeting.id, addMemberBtn);
+      return;
+    }
+
+    const removeMemberBtn = _closestInPanel(ev.target, '[data-gc-member-remove-sid]', panel);
+    if (removeMemberBtn) {
+      ev.stopPropagation();
+      await _handleGcMemberRemove(removeMemberBtn, meeting);
+      return;
+    }
 
     const stepDot = _closestInPanel(ev.target, '.mr-gc-step-dot[data-turn-n]', panel);
     if (stepDot) {
@@ -2816,6 +2922,7 @@ if (typeof document !== 'undefined') (function () {
     const cached = _gcPanelState[meeting.id];
     _gcTurnStartTs[meeting.id] = Date.now();
     _gcOptimisticTurn[meeting.id] = { mode: 'group', t: Date.now() };
+    _gcActiveSids[meeting.id] = new Set(_expectedParticipantSids(meeting));
 
     if (cached) {
       cached.currentMode = 'group';
@@ -2832,25 +2939,27 @@ if (typeof document !== 'undefined') (function () {
       renderToolbar(meeting);
     };
 
+    const restoreFailedSend = (reason) => {
+      delete _gcActiveSids[meeting.id];
+      _discardPendingUserMessage(meeting.id, { clientId: opts.pendingClientId });
+      clearOptimistic();
+      const recovery = _restoreQuestionAndPreserveDraft(meeting.id, opts.userInput);
+      const recoveryText = recovery.mergedWithDraft
+        ? '；失败问题与当前草稿均已保留在输入框'
+        : recovery.restored ? '；问题已恢复到输入框' : '';
+      _showGcEscapeNotice((reason || 'AI 群聊发送失败') + recoveryText, 'error');
+    };
+
     ipcRenderer.invoke('groupchat:turn', {
       meetingId: meeting.id,
       userInput: opts.userInput || '',
     }).then((result) => {
       console.log('[groupchat] turn IPC resolved:', result && result.status, 'turn=', result && result.turnNum);
-      clearOptimistic();
-      if (result && (result.status === 'busy' || result.status === 'error')) {
-
-        const inp = document.getElementById('mr-input-box');
-        if (inp && !inp.innerText.trim()) {
-          inp.textContent = opts.userInput || '';
-          _placeCaretAtEnd(inp);
-        }
-        alert(result.reason || 'AI 群聊发送失败');
-      }
+      if (result && result.status === 'completed') clearOptimistic();
+      else restoreFailedSend((result && result.reason) || `AI 群聊发送失败（${(result && result.status) || 'unknown'}）`);
     }).catch((e) => {
       console.error('[groupchat] turn IPC failed:', e.message);
-      clearOptimistic();
-
+      restoreFailedSend(`AI 群聊发送异常：${e && e.message ? e.message : String(e)}`);
     });
     meeting.lastMessageTime = Date.now();
     ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { lastMessageTime: meeting.lastMessageTime } });
@@ -2893,13 +3002,14 @@ if (typeof document !== 'undefined') (function () {
 
     // 用户问题进 timeline/groupchat 消息各一次；后续步骤复用同一个可见 turn，只追加 AI 回答。
     const trimmed = (userInput || '').trim();
-    if (trimmed) _currentTurnUserInputByMeeting[m.id] = trimmed;
+    const pendingUser = trimmed ? _rememberPendingUserMessage(m, trimmed) : null;
     try {
       await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: m.id, text: userInput });
     } catch (e) { console.warn('[workflow] append-user-turn failed:', e && e.message); }
 
     _gcTurnStartTs[m.id] = Date.now();
     let workflowTurnNum = null;
+    let workflowFailure = null;
     for (let i = 0; i < steps.length; i++) {
       const targetMemberIds = (steps[i] || []).filter(Boolean);
       if (!targetMemberIds.length) continue;
@@ -2921,14 +3031,14 @@ if (typeof document !== 'undefined') (function () {
           appendUserMessage: !workflowTurnNum,
           dispatchMode: 'serial',
         });
-        if (result && result.turnNum && !workflowTurnNum) workflowTurnNum = result.turnNum;
+        if (result && result.status === 'completed' && result.turnNum && !workflowTurnNum) workflowTurnNum = result.turnNum;
         if (!result || result.status !== 'completed') {
-          alert(`串行工作流第 ${i + 1}/${steps.length} 步失败：${(result && result.reason) || ''}`);
+          workflowFailure = `串行工作流第 ${i + 1}/${steps.length} 步失败：${(result && result.reason) || (result && result.status) || '未知错误'}`;
           break;
         }
       } catch (e) {
         console.error('[workflow] step failed:', e);
-        alert(`串行工作流第 ${i + 1}/${steps.length} 步异常：${(e && e.message) ? e.message : e}`);
+        workflowFailure = `串行工作流第 ${i + 1}/${steps.length} 步异常：${(e && e.message) ? e.message : e}`;
         break;
       }
     }
@@ -2938,6 +3048,16 @@ if (typeof document !== 'undefined') (function () {
     if (c) c.currentMode = null;
     refreshGroupChatPanel(m);
     renderToolbar(m);
+    if (workflowFailure) {
+      _discardPendingUserMessage(m.id, { clientId: pendingUser && pendingUser.clientId });
+      const recovery = !workflowTurnNum
+        ? _restoreQuestionAndPreserveDraft(m.id, trimmed)
+        : { restored: false, mergedWithDraft: false };
+      const recoveryText = recovery.mergedWithDraft
+        ? '；失败问题与当前草稿均已保留在输入框'
+        : recovery.restored ? '；问题已恢复到输入框' : '';
+      _showGcEscapeNotice(`${workflowFailure}${recoveryText}`, 'error');
+    }
     m.lastMessageTime = Date.now();
     ipcRenderer.send('update-meeting', { meetingId: m.id, fields: { lastMessageTime: m.lastMessageTime } });
   }
@@ -2956,13 +3076,14 @@ if (typeof document !== 'undefined') (function () {
   // 2026-05-05 道雪 修3：cache 清理对所有 meeting 都做（含非 active），DOM 重渲仅 active 做。
   //   之前的 `meetingId === activeMeetingId` 守卫导致非 active AI 群聊 _partialBy 残留，
   //   切回时 cached.currentMode!=idle 但实际 server 已 idle → 卡片显示 streaming 假象。
-  ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
+  ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId, turnNum }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;
     // === Phase 1: cache 清理（所有 meeting 都做）===
     delete _gcOptimisticTurn[meetingId];
+    delete _gcActiveSids[meetingId];
     // 2026-05-05 道雪：本轮已 settle,state.turns[N].userInput 接管,清掉进行中缓存。
-    delete _currentTurnUserInputByMeeting[meetingId];
+    _discardPendingUserMessage(meetingId, { throughTurn: turnNum });
     const cached = _gcPanelState[meetingId];
     if (cached) {
       cached._partialBy = null;
@@ -3601,6 +3722,70 @@ if (typeof document !== 'undefined') (function () {
   //   这样从用户点发送 → server 推 turn-complete 之间(数秒到数分钟),banner 就能立即显示
   //   "你刚发的提问 + 进行中"标签,不必等本轮 settle 才出现。
   const _currentTurnUserInputByMeeting = {};
+  const _gcPendingUserMessageByMeeting = {};
+  function _pendingUserMessages(meetingId) {
+    const pending = _gcPendingUserMessageByMeeting[meetingId];
+    return Array.isArray(pending) ? pending : [];
+  }
+  function _rememberPendingUserMessage(meeting, text) {
+    const content = String(text || '').trim();
+    if (!meeting || !meeting.id || !content) return null;
+    const state = _gcPanelState[meeting.id] || {};
+    const turns = Array.isArray(state.turns) ? state.turns : [];
+    const latestSettledTurn = turns.reduce((max, turn) => Math.max(max, Number(turn && turn.n) || 0), 0);
+    const pendingMessages = _pendingUserMessages(meeting.id).slice();
+    const previousPending = pendingMessages[pendingMessages.length - 1];
+    const pendingBaseTurn = previousPending ? previousPending.afterTurn + 1 : 0;
+    const afterTurn = Math.max(Number(state.currentTurn) || 0, latestSettledTurn, pendingBaseTurn);
+    _currentTurnUserInputByMeeting[meeting.id] = content;
+    const pending = {
+      content,
+      afterTurn,
+      createdAt: Date.now(),
+      clientId: String(Date.now()) + '-' + Math.random().toString(36).slice(2, 8),
+    };
+    pendingMessages.push(pending);
+    _gcPendingUserMessageByMeeting[meeting.id] = pendingMessages;
+    if (meeting.id === activeMeetingId) {
+      _renderActivePanelFromCache(meetingData[meeting.id] || meeting);
+    }
+    return pending;
+  }
+  function _discardPendingUserMessage(meetingId, opts = {}) {
+    let remaining = _pendingUserMessages(meetingId);
+    if (opts.clientId) {
+      remaining = remaining.filter(pending => pending.clientId !== opts.clientId);
+    } else if (Number.isInteger(Number(opts.throughTurn)) && Number(opts.throughTurn) > 0) {
+      const throughTurn = Number(opts.throughTurn);
+      remaining = remaining.filter(pending => pending.afterTurn + 1 > throughTurn);
+    } else {
+      remaining = [];
+    }
+    if (remaining.length > 0) {
+      _gcPendingUserMessageByMeeting[meetingId] = remaining;
+      _currentTurnUserInputByMeeting[meetingId] = remaining[remaining.length - 1].content;
+    } else {
+      delete _currentTurnUserInputByMeeting[meetingId];
+      delete _gcPendingUserMessageByMeeting[meetingId];
+    }
+  }
+  function _restoreQuestionAndPreserveDraft(meetingId, text) {
+    const restoredText = String(text || '').trim();
+    if (!restoredText) return { restored: false, mergedWithDraft: false };
+    const inp = meetingId === activeMeetingId ? document.getElementById('mr-input-box') : null;
+    const liveDraft = inp ? String(inp.innerText || '').trim() : '';
+    const storedDraft = String(_inputDraftByMeeting[meetingId] || '').trim();
+    const existingDraft = liveDraft || storedDraft;
+    const mergedWithDraft = !!existingDraft && !existingDraft.includes(restoredText);
+    const merged = mergedWithDraft ? `${restoredText}\n\n${existingDraft}` : (existingDraft || restoredText);
+    _setInputDraft(meetingId, merged);
+    if (inp) {
+      inp.textContent = merged;
+      _placeCaretAtEnd(inp);
+    }
+    return { restored: true, mergedWithDraft };
+  }
+
   function _saveInputDraft() {
     if (!activeMeetingId) return;
     const inp = document.getElementById('mr-input-box');
@@ -3857,7 +4042,7 @@ if (typeof document !== 'undefined') (function () {
         ${viewToggleHtml}
         ${meeting.groupChat ? `<button class="mr-header-btn" id="mr-btn-memory-preview" title="预览注入给 DeepSeek 的 Claude 主 MEMORY.md">📖 记忆</button>` : ''}
 
-        <button class="mr-header-btn" id="mr-btn-add-sub" title="添加子会话">+ 添加</button>
+        <button class="mr-header-btn" id="mr-btn-add-sub" title="${meeting.groupChat ? '添加新的 AI 成员' : '添加子会话'}">${meeting.groupChat ? '+ 成员' : '+ 添加'}</button>
         <button class="btn-zoom btn-memo-toggle ${typeof localStorage !== 'undefined' && localStorage.getItem('claude-hub-memo-open') === 'true' ? 'active' : ''}" id="mr-btn-memo" title="Toggle memo panel"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg></button>
         <button class="btn-zoom" id="mr-btn-zoom-out" title="Shrink UI">A−</button>
         <button class="btn-zoom" id="mr-btn-zoom-in" title="Enlarge UI">A+</button>
@@ -3942,11 +4127,12 @@ if (typeof document !== 'undefined') (function () {
 
   // --- Add Sub-Session Menu ---
 
-  function showAddSubMenu(meetingId) {
+  function showAddSubMenu(meetingId, anchorEl = null) {
     const meeting = meetingData[meetingId];
-    if (!meeting || meeting.subSessions.length >= 3) return;
+    if (!meeting || (!meeting.groupChat && meeting.subSessions.length >= 3)) return;
 
-    const btn = document.getElementById('mr-btn-add-sub');
+    const btn = anchorEl || document.getElementById('mr-btn-add-sub');
+    if (!btn) return;
     const rect = btn.getBoundingClientRect();
 
     const old = document.getElementById('mr-add-sub-menu');
@@ -3973,12 +4159,21 @@ if (typeof document !== 'undefined') (function () {
       item.textContent = label;
       item.addEventListener('click', async () => {
         menu.remove();
-        const result = await ipcRenderer.invoke('add-meeting-sub', { meetingId, kind });
-        if (result && result.meeting) {
+        try {
+          const result = await ipcRenderer.invoke('add-meeting-sub', { meetingId, kind });
+          if (!result || !result.meeting) throw new Error('新成员会话创建失败');
+          if (result.session && typeof sessions !== 'undefined' && sessions) {
+            sessions.set(result.session.id, result.session);
+          }
           meetingData[meetingId] = result.meeting;
+          renderHeader(result.meeting);
           renderTerminals(result.meeting);
           renderToolbar(result.meeting);
           setupInput(result.meeting);
+          await refreshGroupChatPanel(result.meeting);
+        } catch (err) {
+          console.error('[groupchat] add member failed:', err);
+          _showGcEscapeNotice('添加成员失败：' + (err && err.message ? err.message : String(err)), 'error');
         }
       });
       menu.appendChild(item);
@@ -4211,18 +4406,21 @@ if (typeof document !== 'undefined') (function () {
         if (label.classList.contains('disabled') || updating) return;
         updating = true;
         const slotIdx = parseInt(label.getAttribute('data-slot-idx'), 10);
-        const current = Array.isArray(meeting.participants) ? [...meeting.participants] : [0, 1, 2];
+        const latestMeeting = meetingData[meeting.id] || meeting;
+        const allIndexes = Array.isArray(latestMeeting.subSessions)
+          ? latestMeeting.subSessions.map((_sid, index) => index)
+          : [];
+        const current = Array.isArray(latestMeeting.participants) ? [...latestMeeting.participants] : allIndexes;
         const wasChecked = current.includes(slotIdx);
         const next = wasChecked ? current.filter(x => x !== slotIdx) : [...current, slotIdx];
         next.sort((a, b) => a - b);
         try {
-          await ipcRenderer.invoke('groupchat:set-participants', { meetingId: meeting.id, participants: next });
-          meeting.participants = next;
-          if (meetingData[meeting.id]) meetingData[meeting.id].participants = next;
-          _updateInputPreflight(meetingData[meeting.id] || meeting);
+          const updated = await _setMeetingParticipants(latestMeeting, next);
+          renderToolbar(updated);
+          _updateInputPreflight(updated);
         } catch (err) {
           console.error('[set-participants] failed:', err);
-          alert('????: ' + (err && err.message ? err.message : String(err)));
+          _showGcEscapeNotice('成员选择保存失败：' + (err && err.message ? err.message : String(err)), 'error');
         } finally {
           updating = false;
         }
@@ -4671,11 +4869,13 @@ if (typeof document !== 'undefined') (function () {
     // AI 群聊统一路由。
     if (current.scene) {
       const _userInputForBanner = text.trim();
-      if (_userInputForBanner) _currentTurnUserInputByMeeting[meeting.id] = _userInputForBanner;
+      const pendingUser = _userInputForBanner
+        ? _rememberPendingUserMessage(current, _userInputForBanner)
+        : null;
       try {
         await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
       } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
-      triggerGroupChat(current, { userInput: text });
+      triggerGroupChat(current, { userInput: text, pendingClientId: pendingUser && pendingUser.clientId });
       return;
     }
 

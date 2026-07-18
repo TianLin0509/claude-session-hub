@@ -129,6 +129,30 @@ function createMeetingSubAdder(deps) {
       return null;
     }
 
+    if (meeting && meeting.groupChat) {
+      const addedIndex = updated.subSessions.indexOf(session.id);
+      if (Array.isArray(updated.participants) && addedIndex >= 0) {
+        const validParticipants = updated.participants.filter(index =>
+          Number.isInteger(index) && index >= 0 && index < updated.subSessions.length
+        );
+        if (!validParticipants.includes(addedIndex)) validParticipants.push(addedIndex);
+        meetingManager.setParticipants(meetingId, [...new Set(validParticipants)].sort((a, b) => a - b));
+      }
+      if (addedIndex >= 0 && typeof meetingManager.setSlotSpecs === 'function') {
+        const latest = meetingManager.getMeeting(meetingId) || updated;
+        const slotSpecs = Array.isArray(latest.slotSpecs) ? latest.slotSpecs.slice() : [];
+        while (slotSpecs.length < addedIndex) slotSpecs.push(null);
+        const currentModel = session.currentModel && typeof session.currentModel === 'object'
+          ? session.currentModel.id
+          : session.currentModel;
+        slotSpecs[addedIndex] = {
+          kind,
+          model: opts.model || currentModel || null,
+        };
+        meetingManager.setSlotSpecs(meetingId, slotSpecs);
+      }
+    }
+
     registerSessionForTap(session);
     sendToRenderer('session-created', { session });
     const freshMeeting = meetingManager.getMeeting(meetingId);

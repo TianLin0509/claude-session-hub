@@ -46,6 +46,11 @@ function createFakeMeetingManager() {
     setMeeting(meeting) {
       meetings.set(meeting.id, { ...meeting, subSessions: [...(meeting.subSessions || [])] });
     },
+    setParticipants(meetingId, participants) {
+      calls.push(['setParticipants', meetingId, participants]);
+      const meeting = meetings.get(meetingId);
+      if (meeting) meeting.participants = participants;
+    },
     setSlotSpecs(meetingId, specs) {
       calls.push(['setSlotSpecs', meetingId, specs]);
       const meeting = meetings.get(meetingId);
@@ -118,7 +123,14 @@ test('registers create-meeting and add-meeting-sub', () => {
 test('add-meeting-sub assigns slot title, isolated workspace, and Claude MCP config', async () => {
   const ipc = createFakeIpc();
   const deps = createBaseDeps();
-  deps.meetingManager.setMeeting({ id: 'm1', groupChat: true, scene: 'research', subSessions: [] });
+  deps.meetingManager.setMeeting({
+    id: 'm1',
+    groupChat: true,
+    scene: 'research',
+    subSessions: [],
+    participants: [0, 1, 2],
+    slotSpecs: [],
+  });
   registerMeetingCreateIpc(ipc, deps);
 
   const result = await ipc.handlers.get('add-meeting-sub')(null, { meetingId: 'm1', kind: 'claude', model: 'opus' });
@@ -129,6 +141,8 @@ test('add-meeting-sub assigns slot title, isolated workspace, and Claude MCP con
   assert.strictEqual(result.session.opts.model, 'opus');
   assert.strictEqual(result.session.opts.mcpConfigFile, 'C:\\hub\\mcp.json');
   assert.strictEqual(result.session.opts.noInheritCursor, true);
+  assert.deepStrictEqual(result.meeting.participants, [0]);
+  assert.deepStrictEqual(result.meeting.slotSpecs, [{ kind: 'claude', model: 'opus' }]);
   assert.deepStrictEqual(deps.calls.filter(call => call[0] === 'writeResearchMcpConfig'), [
     ['writeResearchMcpConfig', 'C:\\hub', 'm1', 4567, 'token', 'claude'],
   ]);

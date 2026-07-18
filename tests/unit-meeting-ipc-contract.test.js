@@ -16,18 +16,30 @@ function createFakeIpc() {
   };
 }
 
-function createFakeMeetingManager() {
+function createFakeMeetingManager(overrides = {}) {
   const meeting = {
     id: 'meet-1',
     title: 'Old',
     groupChat: true,
     subSessions: ['s1', 's2', 's3'],
-    participants: [0, 1, 2],
+    participants: [0, 2],
+    slotSpecs: [
+      { kind: 'claude', model: 'sonnet' },
+      { kind: 'codex', model: 'gpt-5' },
+      { kind: 'gemini', model: 'pro' },
+    ],
+    serialWorkflow: {
+      enabled: true,
+      steps: [['m1'], ['m2', 'm3']],
+      loop: { enabled: true },
+    },
     scene: 'general',
     covenantText: 'old covenant',
+    ...overrides,
   };
   const calls = [];
   return {
+    meeting,
     calls,
     getMeeting(id) {
       calls.push(['getMeeting', id]);
@@ -42,6 +54,12 @@ function createFakeMeetingManager() {
     setParticipants(id, participants) {
       calls.push(['setParticipants', id, participants]);
       if (id === meeting.id) meeting.participants = participants;
+      return id === meeting.id ? { ...meeting } : null;
+    },
+    setSlotSpecs(id, slotSpecs) {
+      calls.push(['setSlotSpecs', id, slotSpecs]);
+      if (id === meeting.id) meeting.slotSpecs = slotSpecs;
+      return id === meeting.id ? { ...meeting } : null;
     },
     getAllMeetings() {
       calls.push(['getAllMeetings']);
@@ -175,7 +193,8 @@ test('groupchat:set-participants validates, dedupes, sorts, persists, and emits'
     participants: [2, 0, 2],
   });
 
-  assert.deepStrictEqual(result, { ok: true });
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(result.meeting.participants, [0, 2]);
   assert.deepStrictEqual(meetingManager.calls.find(call => call[0] === 'setParticipants'), ['setParticipants', 'meet-1', [0, 2]]);
   assert.strictEqual(saves.length, 1);
   assert.deepStrictEqual(saves[0].sessions, [{ hubId: 's1' }]);
@@ -183,28 +202,115 @@ test('groupchat:set-participants validates, dedupes, sorts, persists, and emits'
   assert.strictEqual(emitted.at(-1)[0], 'meeting-updated');
 });
 
-test('remove-meeting-sub closes session, updates meeting, and emits', () => {
+test('remove-meeting-sub closes only a real member, reindexes dependent state, cleans persistence, and emits', () => {
   const ipc = createFakeIpc();
   const meetingManager = createFakeMeetingManager();
-  const closed = [];
+  const calls = [];
   const emitted = [];
+  const saves = [];
   registerMeetingIpc(ipc, {
     getHubDataDir: () => 'C:\\tmp\\hub',
-    groupchat: { cleanup() {} },
+    groupchat: {
+      cleanup() {},
+      getOrchestrator() {
+        return { getState: () => ({ currentMode: 'idle' }) };
+      },
+    },
     meetingManager,
     scenes: createFakeScenes(),
     sendToRenderer: (channel, payload) => emitted.push([channel, payload]),
-    sessionManager: { closeSession: (sid) => closed.push(sid) },
-    sessionStore: { deleteSessionFile() {}, cancelDirty() {} },
-    stateStore: { save() {}, markRemovedSession() {}, markRemovedMeeting() {} },
+    sessionManager: { closeSession: (sid) => calls.push(['closeSession', sid]) },
+    sessionStore: {
+      deleteSessionFile: (sid) => calls.push(['deleteSessionFile', sid]),
+      cancelDirty: (sid) => calls.push(['cancelDirty', sid]),
+    },
+    stateStore: {
+      save(state) { saves.push(state); },
+      markRemovedSession: (sid) => calls.push(['markRemovedSession', sid]),
+      markRemovedMeeting() {},
+    },
   });
 
-  const updated = ipc.handlers.get('remove-meeting-sub')(null, { meetingId: 'meet-1', sessionId: 's2' });
+  const result = ipc.handlers.get('remove-meeting-sub')(null, { meetingId: 'meet-1', sessionId: 's2' });
 
-  assert.deepStrictEqual(closed, ['s2']);
-  assert.deepStrictEqual(meetingManager.calls.at(-1), ['removeSubSession', 'meet-1', 's2']);
-  assert.deepStrictEqual(updated.subSessions, ['s1', 's3']);
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(result.meeting.subSessions, ['s1', 's3']);
+  assert.deepStrictEqual(result.meeting.participants, [0, 1]);
+  assert.deepStrictEqual(result.meeting.slotSpecs, [
+    { kind: 'claude', model: 'sonnet' },
+    { kind: 'gemini', model: 'pro' },
+  ]);
+  assert.deepStrictEqual(result.meeting.serialWorkflow.steps, [['m1'], ['m2']]);
+  assert.deepStrictEqual(
+    meetingManager.calls.find(call => call[0] === 'updateMeeting')[2].serialWorkflow.steps,
+    [['m1'], ['m2']],
+    'reindexed serial workflow must be written through the manager contract'
+  );
+  assert.deepStrictEqual(calls, [
+    ['closeSession', 's2'],
+    ['markRemovedSession', 's2'],
+    ['deleteSessionFile', 's2'],
+    ['cancelDirty', 's2'],
+  ]);
   assert.strictEqual(emitted.at(-1)[0], 'meeting-updated');
+  assert.strictEqual(saves.length, 1, 'member removal should persist the fresh meeting snapshot immediately');
+});
+
+test('remove-meeting-sub rejects non-members, the last member, and active turns without closing sessions', () => {
+  const cases = [
+    {
+      overrides: {},
+      sessionId: 'outside',
+      mode: 'idle',
+      reason: 'not_member',
+    },
+    {
+      overrides: { subSessions: ['s1'], participants: [0], slotSpecs: [{ kind: 'claude' }] },
+      sessionId: 's1',
+      mode: 'idle',
+      reason: 'last_member',
+    },
+    {
+      overrides: {},
+      sessionId: 's2',
+      mode: 'group',
+      reason: 'turn_in_progress',
+    },
+    {
+      overrides: {},
+      sessionId: 's2',
+      mode: 'throws',
+      reason: 'turn_state_unavailable',
+    },
+  ];
+
+  for (const item of cases) {
+    const ipc = createFakeIpc();
+    const meetingManager = createFakeMeetingManager(item.overrides);
+    const closed = [];
+    registerMeetingIpc(ipc, {
+      getHubDataDir: () => 'C:\\tmp\\hub',
+      groupchat: {
+        getOrchestrator() {
+          if (item.mode === 'throws') throw new Error('corrupt orchestrator state');
+          return { getState: () => ({ currentMode: item.mode }) };
+        },
+      },
+      meetingManager,
+      scenes: createFakeScenes(),
+      sendToRenderer() {},
+      sessionManager: { closeSession: (sid) => closed.push(sid) },
+      sessionStore: { deleteSessionFile() {}, cancelDirty() {} },
+      stateStore: { save() {}, markRemovedSession() {} },
+    });
+
+    const result = ipc.handlers.get('remove-meeting-sub')(null, {
+      meetingId: 'meet-1',
+      sessionId: item.sessionId,
+    });
+    assert.deepStrictEqual(result, { ok: false, reason: item.reason });
+    assert.deepStrictEqual(closed, []);
+  }
 });
 
 test('close-meeting closes subs, removes persisted state, cleans groupchat, and emits', () => {

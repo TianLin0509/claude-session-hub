@@ -555,7 +555,16 @@ function createGroupChatDispatcher(deps) {
     return { status: 'completed', turnNum: null, results, meta: { dispatchMode: 'internal' } };
   }
 
-  async function dispatchGroupChatTurn(meetingId, { userInput, turnTimeoutMs, targetMemberIds, silent, allowActiveExtend } = {}) {
+  async function dispatchGroupChatTurn(meetingId, {
+    userInput,
+    turnTimeoutMs,
+    targetMemberIds,
+    silent,
+    allowActiveExtend,
+    appendUserMessage,
+    reuseTurnNum,
+    dispatchMode,
+  } = {}) {
     if (groupChatInProgress.has(meetingId)) return { status: 'busy', turnNum: null };
     groupChatInProgress.add(meetingId);
     try {
@@ -590,7 +599,13 @@ function createGroupChatDispatcher(deps) {
 
       const hubDataDir = getHubDataDir();
       const orch = groupchat.getOrchestrator(hubDataDir, meetingId);
-      const { turnNum } = orch.beginTurn(userInput || '');
+      const requestedTurnNum = Number(reuseTurnNum);
+      const isReusedTurn = Number.isInteger(requestedTurnNum) && requestedTurnNum > 0;
+      const begin = orch.beginTurn(userInput || '', {
+        turnNum: isReusedTurn ? requestedTurnNum : undefined,
+        appendUserMessage: appendUserMessage !== false,
+      });
+      const { turnNum } = begin;
       const deliveredIdx = orch.state.messages.length - 1;
       const targets = targetMembers.map(member => {
         const committeeSeatKey = meeting.scene === 'committee'
@@ -606,7 +621,9 @@ function createGroupChatDispatcher(deps) {
           label: member.displayName,
           member,
           deliveredIdx,
-          prompt: orch.buildFirstDelta(member.sid, userInput || '', systemPromptText),
+          prompt: orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
+            currentUserMessageAppended: begin.didAppendUserMessage,
+          }),
         };
       });
 
@@ -639,7 +656,8 @@ function createGroupChatDispatcher(deps) {
       }));
 
       if (sentTargets.length === 0) {
-        orch.rollbackTurn(turnNum);
+        if (isReusedTurn) orch.clearTurnInProgress(turnNum);
+        else orch.rollbackTurn(turnNum);
         return { status: 'no_sent', turnNum };
       }
 
@@ -683,7 +701,9 @@ function createGroupChatDispatcher(deps) {
         orch.rollbackTurn(turnNum);
         return { status: 'completed', turnNum: null, results, meta: { dispatchMode: 'silent' } };
       }
-      const turnRecord = orch.completeTurn(turnNum, userInput || '', results, memberBySid);
+      const turnRecord = orch.completeTurn(turnNum, userInput || '', results, memberBySid, {}, {
+        dispatchMode: dispatchMode || 'group',
+      });
       const meta = turnRecord.meta || { dispatchMode: 'group' };
       sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results, meta });
       return { status: 'completed', turnNum, results, meta };

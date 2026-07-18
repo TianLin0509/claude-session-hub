@@ -17,6 +17,11 @@ const MODE_TITLE_PREFIX = {
   dev: '开发',
 };
 
+function cloneSerialWorkflow(workflow) {
+  if (!workflow || typeof workflow !== 'object' || Array.isArray(workflow)) return null;
+  return JSON.parse(JSON.stringify(workflow));
+}
+
 class MeetingRoomManager {
   constructor() {
     this.meetings = new Map();
@@ -62,6 +67,7 @@ class MeetingRoomManager {
       mode: 'free',
       // free-mode（2026-05-04）：自由模式参与者 slot 列表，默认全员勾选
       participants: Array.isArray(opts.participants) ? opts.participants.slice() : [0, 1, 2],
+      serialWorkflow: cloneSerialWorkflow(opts.serialWorkflow),
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -136,6 +142,7 @@ class MeetingRoomManager {
       autoTitlePending: !!m.autoTitlePending,
       autoTitleGenerated: !!m.autoTitleGenerated,
       participants: Array.isArray(m.participants) ? [...m.participants] : null,
+      serialWorkflow: cloneSerialWorkflow(m.serialWorkflow),
     } : null;
   }
 
@@ -155,6 +162,7 @@ class MeetingRoomManager {
       autoTitlePending: !!m.autoTitlePending,
       autoTitleGenerated: !!m.autoTitleGenerated,
       participants: Array.isArray(m.participants) ? [...m.participants] : null,
+      serialWorkflow: cloneSerialWorkflow(m.serialWorkflow),
     }));
   }
 
@@ -172,7 +180,7 @@ class MeetingRoomManager {
     }
     m.lastMessageTime = Date.now();
     // T11 fix: persist cursor change so membership/cursors survive restart.
-    meetingStore.markDirty(meetingId, { _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx });
+    meetingStore.markDirty(meetingId, m);
     return { ...m, subSessions: [...m.subSessions], _timeline: [...m._timeline], _cursors: { ...m._cursors } };
   }
 
@@ -184,7 +192,7 @@ class MeetingRoomManager {
     if (m.focusedSub === sessionId) m.focusedSub = m.subSessions[0] || null;
     if (m.sendTarget === sessionId) m.sendTarget = 'all';
     // T11 fix: persist cursor removal so stale cursors don't reappear after restart.
-    meetingStore.markDirty(meetingId, { _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx });
+    meetingStore.markDirty(meetingId, m);
     return { ...m, subSessions: [...m.subSessions], _timeline: [...m._timeline], _cursors: { ...m._cursors } };
   }
 
@@ -198,11 +206,21 @@ class MeetingRoomManager {
       'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned',
       'lastMessageTime', 'status', 'lastScene', 'scene', 'covenantText',
       'userRenamed', 'autoTitlePending', 'autoTitleGenerated',
+      'serialWorkflow',
     ];
     for (const key of allowed) {
-      if (key in fields) m[key] = fields[key];
+      if (key in fields) {
+        m[key] = key === 'serialWorkflow' ? cloneSerialWorkflow(fields[key]) : fields[key];
+      }
     }
-    return { ...m, subSessions: [...m.subSessions] };
+    if ('serialWorkflow' in fields) {
+      meetingStore.markDirty(meetingId, m);
+    }
+    return {
+      ...m,
+      subSessions: [...m.subSessions],
+      serialWorkflow: cloneSerialWorkflow(m.serialWorkflow),
+    };
   }
 
   closeMeeting(meetingId) {
@@ -284,6 +302,7 @@ class MeetingRoomManager {
       mode: 'free',
       // free-mode（2026-05-04）：null=首次未初始化，空数组=用户已清空（Q11=A）
       participants: Array.isArray(meetingData.participants) ? meetingData.participants : null,
+      serialWorkflow: cloneSerialWorkflow(meetingData.serialWorkflow),
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,
@@ -318,6 +337,9 @@ class MeetingRoomManager {
     }
     if (!Array.isArray(m.participants) && Array.isArray(data.participants)) {
       m.participants = data.participants;
+    }
+    if (!m.serialWorkflow && data.serialWorkflow && typeof data.serialWorkflow === 'object') {
+      m.serialWorkflow = cloneSerialWorkflow(data.serialWorkflow);
     }
     return true;
   }
