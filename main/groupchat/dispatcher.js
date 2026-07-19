@@ -3,6 +3,7 @@
 const groupChatWatcher = require('../../core/group-chat-watcher.js');
 const { createTurnCompletionWatcher } = require('../../core/turn-completion-watcher.js');
 const pasteTrappedDetector = require('../../core/paste-trapped-detector.js');
+const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js');
 
 const RT_TRANSITIONAL_HARD_TIMEOUT_MS = 5 * 60 * 1000;
 const PASTE_TRAPPED_TICK_MS = 3000;
@@ -20,7 +21,9 @@ const CODEX_PROMPT_SUBMIT_WAIT_EXTEND_MS = 60 * 1000;
 const HARD_TIMEOUT_ACTIVE_GRACE_MS = 150 * 1000;
 const HARD_TIMEOUT_ACTIVE_EXTEND_MS = 180 * 1000;
 const HARD_TIMEOUT_ACTIVE_MAX_EXTRA_MS = 8 * 60 * 1000;
-const AUTH_FAILURE_RE = /(not logged in|please run\s+\/login|run\s+\/login|authentication required|login required)/i;
+// AUTH_FAILURE_RE 已移到 core/host-shell-detector.js 的 createAuthBannerMonitor：
+//   旧实现对整个 ring buffer 裸测，AI 回答里提到 "not logged in" 就误杀（2026-07-12）。
+const AUTH_DETECT_WINDOW_MS = 120 * 1000;
 
 function parseGroupTargets(userInput, members, participants) {
   const selected = Array.isArray(participants) ? participants : [];
@@ -45,6 +48,17 @@ function parseGroupTargets(userInput, members, participants) {
   return { targets: selectedMembers, mentions: [] };
 }
 
+function appendWorkflowStepPrompt(basePrompt, meeting, workflowStepIndex, memberId) {
+  const stepIndex = Number(workflowStepIndex);
+  if (!Number.isInteger(stepIndex) || stepIndex < 0) return basePrompt;
+  const stepPrompts = meeting && meeting.serialWorkflow && meeting.serialWorkflow.stepPrompts;
+  const promptByMember = Array.isArray(stepPrompts) ? stepPrompts[stepIndex] : null;
+  const raw = promptByMember && typeof promptByMember === 'object' ? promptByMember[memberId] : '';
+  const extraPrompt = typeof raw === 'string' ? raw.trim().slice(0, 12_000) : '';
+  if (!extraPrompt) return basePrompt;
+  return `${basePrompt}\n\n## 串行工作流：本步骤追加要求（仅给当前 AI）\n${extraPrompt}`;
+}
+
 function createGroupChatDispatcher(deps) {
   const {
     cliReadyDetector,
@@ -62,10 +76,14 @@ function createGroupChatDispatcher(deps) {
 
   groupChatWatcher.init({ sessionManager, cliReadyDetector, transcriptTap });
 
-  const groupChatInProgress = new Set();
+  const groupChatTurnQueue = new Map();
   const patchListenersBySid = new Map();
   const activeWatchers = new Map();
+  const activeWatcherContexts = new Map();
   const pasteTrappedMonitors = new Map();
+  // 抢占式连发（2026-06-24 道雪）：每个 meeting 的派发序号，单调递增。runGroupChatTurn
+  //   完成时比对，若已有更新的轮号 → 自己是被抢占的旧轮，给前端的 turn-complete 带 superseded。
+  const meetingDispatchSeq = new Map();
 
   function warn(...args) {
     if (logger && typeof logger.warn === 'function') logger.warn(...args);
@@ -212,6 +230,12 @@ function createGroupChatDispatcher(deps) {
       },
     });
     activeWatchers.set(sid, watcher);
+    activeWatcherContexts.set(sid, {
+      watcher,
+      meetingId: String(meetingId || ''),
+      turnNum,
+      startedAt: Number(opts.startedAt) || startTs,
+    });
     registerPatchListener(sid, watcher);
 
     let streamTimer = null;
@@ -306,11 +330,19 @@ function createGroupChatDispatcher(deps) {
     }
 
     let hostShellHits = 0;
+    const authBannerMonitor = createAuthBannerMonitor();
     const hostShellHeartbeat = setInterval(() => {
       if (watcher.isSettled()) { clearInterval(hostShellHeartbeat); return; }
       const buf = sessionManager.getSessionBuffer(sid) || '';
-      if (AUTH_FAILURE_RE.test(buf)) {
-        warn(`[group-chat] auth failure detected for ${label}(${sid.slice(0, 8)}) - marking errored`);
+      // 登录失效判定收紧（2026-07-12）：tail + 连续 2 次命中 + 期间 PTY 静默才 confirmed，
+      //   防 AI 回答/gh CLI 输出里提到 "not logged in" 等字样时误杀正常回答。
+      // 二轮加固（多方审查）：真登录横幅必然出现在 prompt 提交后早期（CLI 拒答即静止）；
+      //   轮次开跑 AUTH_DETECT_WINDOW_MS 之后出现的 auth 字样几乎必是回答内容/工具输出，
+      //   不再检测——消灭"回答末尾提到 login 短语 + settle 信号迟到"竞态窗口的误杀。
+      //   代价：>2min 后才真失效的会话不自动 errored，由 T1/T2 soft-alert 人工兜底。
+      if (Date.now() - startTs < AUTH_DETECT_WINDOW_MS
+        && authBannerMonitor.tick(buf, sessionManager.getGroupChatLastActivity(sid)) === 'confirmed') {
+        warn(`[group-chat] auth failure banner confirmed for ${label}(${sid.slice(0, 8)}) - marking errored`);
         try { watcher.markErrored('auth_required'); }
         catch (e) { warn('[group-chat] markErrored auth_required threw:', e && e.message); }
         return;
@@ -429,7 +461,8 @@ function createGroupChatDispatcher(deps) {
         try { transcriptTap.removeListener('prompt-submitted', onCodexPromptSubmitted); } catch {}
       }
       if (streamTimer) clearInterval(streamTimer);
-      activeWatchers.delete(sid);
+      if (activeWatchers.get(sid) === watcher) activeWatchers.delete(sid);
+      if (activeWatcherContexts.get(sid)?.watcher === watcher) activeWatcherContexts.delete(sid);
       stopPasteTrappedMonitor(sid);
     };
 
@@ -441,6 +474,8 @@ function createGroupChatDispatcher(deps) {
       }, 305_000).unref?.();
 
       const elapsedMs = Date.now() - startTs;
+      result.startedAt = Number(opts.startedAt) || startTs;
+      if (!Number.isFinite(Number(result.completedAt))) result.completedAt = Date.now();
       result.thinkSec = Math.round(elapsedMs / 100) / 10;
       try { result.tokens = transcriptTap.getLastTokens(sid) || null; }
       catch { result.tokens = null; }
@@ -501,20 +536,23 @@ function createGroupChatDispatcher(deps) {
       try { transcriptTap.clearStreamingBuf(member.sid); } catch {}
       cancelPatchListenersForSid(member.sid);
     }
+    const _orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+    // [全量注入] 记录本幕发言前的位置——markDeliveredSilent 用它把各委员「已读位置」停在本幕发言前，
+    //   使下一幕 buildDelta 能带上本幕全部委员发言（群聊式全量注入，复用自由群聊 deliveredIdx 机制）。
+    const deliveredIdx = _orch.state.messages.length - 1;
     const targets = targetMembers.map(member => {
-      const committeeSeatKey = meeting.scene === 'committee'
-        ? require('../../core/committee-scene.js').SEAT_ORDER[member.index]
-        : null;
       const systemPromptText = groupchat.buildSystemPromptText(member.displayName, meeting.scene, {
         kind: member.kind,
-        seatKey: committeeSeatKey,
       });
       return {
         sid: member.sid,
         kind: member.kind,
         label: member.displayName,
         member,
-        prompt: `${systemPromptText}\n\n${userInput || ''}`,
+        deliveredIdx,
+        // 点2：首次带 systemPrompt(整套规则)、之后只发增量。[全量注入] includeCommitteeMid:true —— 把
+        //   上一幕委员发言全文注入本幕，每个 AI 看到队友调研全文（点评看建库、辩论看点评），不再瞎猜。
+        prompt: _orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, { currentUserMessageAppended: false, includeCommitteeMid: true }),
       };
     });
     const sentTargets = [];
@@ -545,17 +583,91 @@ function createGroupChatDispatcher(deps) {
         allowActiveExtend: false,
       })
     ));
-    const results = settled.map((s, i) => s.status === 'fulfilled' ? s.value : {
-      sid: sentTargets[i].sid,
-      label: sentTargets[i].label,
-      status: 'errored',
-      text: '',
-      reason: s.reason?.message || 'Promise rejected',
+    const results = settled.map((s, i) => {
+      // [查看本轮 prompt] 把该委员本幕实际收到的 prompt 带进 result，供 conductor→appendSpeeches 落进消息。
+      const _srcPrompt = (sentTargets[i] && sentTargets[i].prompt) || '';
+      // [全量注入] 带出 deliveredIdx → markDeliveredSilent 把「已读位置」停在本幕发言前，下一幕看得到本幕发言。
+      const _deliveredIdx = sentTargets[i] && sentTargets[i].deliveredIdx;
+      return s.status === 'fulfilled'
+        ? { ...s.value, sourcePrompt: _srcPrompt, deliveredIdx: _deliveredIdx }
+        : { sid: sentTargets[i].sid, label: sentTargets[i].label, status: 'errored', text: '', reason: s.reason?.message || 'Promise rejected', sourcePrompt: _srcPrompt, deliveredIdx: _deliveredIdx };
     });
+    // 点2：标记这些委员已收过 systemPrompt → 下一幕 buildFirstDelta 走增量、不再重发整套规则。
+    try { _orch.markDeliveredSilent(results); } catch (e) { warn('[committee] markDeliveredSilent threw:', e && e.message); }
     return { status: 'completed', turnNum: null, results, meta: { dispatchMode: 'internal' } };
   }
 
-  async function dispatchGroupChatTurn(meetingId, {
+  // 抢占式结算（2026-06-24 道雪）：用户点发送即放行的核心。新一轮进来时，把这个
+  //   meeting 当前所有还在等待回答的 AI（上一轮没答完的）立即结算为 superseded，让它们的
+  //   waitTurnComplete Promise 立刻 resolve → 上一轮 runGroupChatTurn 的 Promise.allSettled
+  //   立即完成 → 串行队列放行新轮，不再被卡死的 AI 无限期挂起。
+  //   只结算属于本 meeting 的 watcher（activeWatchers 以 sid 为键，跨 meeting 不共享 sid）。
+  function supersedeActiveWatchersForMeeting(meetingId) {
+    let count = 0;
+    for (const [sid, context] of activeWatcherContexts) {
+      if (!context || context.meetingId !== String(meetingId || '')) continue;
+      const watcher = context.watcher;
+      if (watcher && !watcher.isSettled()) {
+        try { watcher.supersede(); count += 1; }
+        catch (e) { warn('[groupchat] supersede watcher threw:', e && e.message); }
+      }
+    }
+    if (count > 0) log(`[groupchat] preempted ${count} in-flight AI(s) for meeting ${meetingId} — user sent next turn`);
+    return count;
+  }
+
+  function interruptGroupChatTurn(meetingId) {
+    const meetingKey = String(meetingId || '');
+    const interruptedSids = [];
+    const writeFailures = [];
+    let turnNum = null;
+    for (const [sid, context] of activeWatcherContexts) {
+      if (!context || context.meetingId !== meetingKey) continue;
+      const watcher = context.watcher;
+      if (!watcher || watcher.isSettled()) continue;
+      turnNum = turnNum || context.turnNum || null;
+      try { sessionManager.writeToSession(sid, '\x03'); }
+      catch (e) {
+        writeFailures.push({ sid, reason: (e && e.message) || 'write_failed' });
+        warn(`[groupchat] Ctrl+C write failed for ${sid}:`, e && e.message);
+      }
+      try {
+        watcher.interrupt();
+        interruptedSids.push(sid);
+      } catch (e) {
+        warn(`[groupchat] interrupt watcher failed for ${sid}:`, e && e.message);
+      }
+      stopPasteTrappedMonitor(sid);
+    }
+    if (interruptedSids.length === 0) {
+      return { ok: false, status: 'idle', reason: 'no_active_turn', interruptedSids: [] };
+    }
+    log(`[groupchat] interrupted ${interruptedSids.length} in-flight AI(s) for meeting ${meetingKey}`);
+    return { ok: true, status: 'interrupted', turnNum, interruptedSids, writeFailures };
+  }
+
+  async function dispatchGroupChatTurn(meetingId, args = {}) {
+    const key = String(meetingId || '');
+    // 真实用户发送（非 silent 内部编排）进来时，先抢占结算上一轮没答完的 AI，再排队 ——
+    //   这样上一轮立刻收尾、本轮几乎零延迟开跑。dispatchSeq 供 runGroupChatTurn 判断
+    //   自己完成时是否已被更新的轮抢占（决定给前端的 superseded flag）。
+    let dispatchSeq = null;
+    if (!args.silent) {
+      dispatchSeq = (meetingDispatchSeq.get(key) || 0) + 1;
+      meetingDispatchSeq.set(key, dispatchSeq);
+      try { supersedeActiveWatchersForMeeting(meetingId); }
+      catch (e) { warn('[groupchat] preempt supersede threw:', e && e.message); }
+    }
+    const previous = groupChatTurnQueue.get(key) || Promise.resolve();
+    const task = previous.catch(() => {}).then(() => runGroupChatTurn(meetingId, { ...args, _dispatchSeq: dispatchSeq }));
+    groupChatTurnQueue.set(key, task);
+    task.finally(() => {
+      if (groupChatTurnQueue.get(key) === task) groupChatTurnQueue.delete(key);
+    }).catch(() => {});
+    return task;
+  }
+
+  async function runGroupChatTurn(meetingId, {
     userInput,
     turnTimeoutMs,
     targetMemberIds,
@@ -564,10 +676,11 @@ function createGroupChatDispatcher(deps) {
     appendUserMessage,
     reuseTurnNum,
     dispatchMode,
+    workflowStepIndex,
+    clientGeneration,
+    _dispatchSeq,
   } = {}) {
-    if (groupChatInProgress.has(meetingId)) return { status: 'busy', turnNum: null };
-    groupChatInProgress.add(meetingId);
-    try {
+    {
       const meeting = meetingManager.getMeeting(meetingId);
       if (!meeting || !meeting.groupChat) {
         return { status: 'error', reason: 'not group chat meeting', turnNum: null };
@@ -608,12 +721,12 @@ function createGroupChatDispatcher(deps) {
       const { turnNum } = begin;
       const deliveredIdx = orch.state.messages.length - 1;
       const targets = targetMembers.map(member => {
-        const committeeSeatKey = meeting.scene === 'committee'
-          ? require('../../core/committee-scene.js').SEAT_ORDER[member.index]
-          : null;
         const systemPromptText = groupchat.buildSystemPromptText(member.displayName, meeting.scene, {
           kind: member.kind,
-          seatKey: committeeSeatKey,
+        });
+        const basePrompt = orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
+          currentUserMessageAppended: begin.didAppendUserMessage,
+          currentTurnNum: turnNum,
         });
         return {
           sid: member.sid,
@@ -621,9 +734,7 @@ function createGroupChatDispatcher(deps) {
           label: member.displayName,
           member,
           deliveredIdx,
-          prompt: orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
-            currentUserMessageAppended: begin.didAppendUserMessage,
-          }),
+          prompt: appendWorkflowStepPrompt(basePrompt, meeting, workflowStepIndex, member.memberId),
         };
       });
 
@@ -644,6 +755,7 @@ function createGroupChatDispatcher(deps) {
             sendToRenderer('groupchat-send-stuck', { meetingId, sid: t.sid, kind: t.kind });
           }
           if (ok) {
+            t.startedAt = sendStartedAt;
             t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
             sentTargets.push(t);
             if (!silent && (sendStatus !== 'stuck' || isCodexBaseKind(t.kind))) {
@@ -661,25 +773,35 @@ function createGroupChatDispatcher(deps) {
         return { status: 'no_sent', turnNum };
       }
 
-      // 投委会等编排式调用可传 turnTimeoutMs：卡住的成员到点强制 skip，
+      // 内部编排式调用可传 turnTimeoutMs：卡住的成员到点强制 skip，
       // 不阻塞整轮（防 paste-trapped 无限等待）。普通群聊保持无硬超时。
       const settled = await Promise.allSettled(sentTargets.map(t =>
         waitTurnComplete(t.sid, t.label, {
           meetingId, mode: 'group', turnNum, kind: t.kind, prompt: t.prompt, promptSubmitSinceTs: t.promptSubmitSinceTs,
+          startedAt: t.startedAt,
           disableHardTimeout: !(Number(turnTimeoutMs) > 0),
           hardTimeoutMs: Number(turnTimeoutMs) > 0 ? Number(turnTimeoutMs) : undefined,
           allowActiveExtend,
           silent,
           onPartial: silent ? null : (partial) => {
+            // 抢占结算的 superseded 是内部信号，不推 partial-update：此刻新一轮已乐观清空
+            //   partialBy，推过去会让被抢占的卡片闪一下「已被覆盖」再跳回思考中。旧轮的
+            //   superseded 已随 turn-complete 持久化进 state.turns，历史回看可见。
+            if (partial.status === 'superseded') return;
             sendToRenderer('groupchat-partial-update', {
               meetingId, turnNum, mode: 'group',
+              clientGeneration,
               sid: partial.sid, label: partial.label,
               status: partial.status,
               text: partial.text,
               blocks: partial.blocks,
               source: partial.source,
               thinkSec: partial.thinkSec, tokens: partial.tokens,
+              startedAt: partial.startedAt || t.startedAt,
+              completedAt: partial.completedAt,
               cleanBufLen: partial.cleanBufLen,
+              // errored settle 也走 onPartial：带上失败原因，让气泡占位文案能解释"为什么失败"
+              reason: partial.reason,
             });
           },
         })
@@ -691,6 +813,8 @@ function createGroupChatDispatcher(deps) {
         status: 'errored',
         text: '',
         reason: s.reason?.message || 'Promise rejected',
+        startedAt: sentTargets[i].startedAt,
+        completedAt: Date.now(),
       }).map((r, i) => ({
         ...r,
         deliveredIdx: sentTargets[i] && sentTargets[i].deliveredIdx,
@@ -699,16 +823,27 @@ function createGroupChatDispatcher(deps) {
       for (const m of members) memberBySid[m.sid] = m;
       if (silent) {
         orch.rollbackTurn(turnNum);
+        // 标记已投递：后续幕 buildFirstDelta 走增量，不再每幕重发完整 systemPrompt（含战法规则）。点2。
+        try { orch.markDeliveredSilent(results); } catch (e) { warn('[group-chat] markDeliveredSilent threw:', e && e.message); }
         return { status: 'completed', turnNum: null, results, meta: { dispatchMode: 'silent' } };
       }
       const turnRecord = orch.completeTurn(turnNum, userInput || '', results, memberBySid, {}, {
         dispatchMode: dispatchMode || 'group',
+        workflowStepIndex,
       });
       const meta = turnRecord.meta || { dispatchMode: 'group' };
-      sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results, meta });
-      return { status: 'completed', turnNum, results, meta };
-    } finally {
-      groupChatInProgress.delete(meetingId);
+      // 被抢占判定：完成时若 meeting 的最新派发序号已超过自己 → 用户已发更新的轮，
+      //   本轮是被 supersede 的旧轮。前端据此跳过「清 currentMode」避免抹掉新轮思考态。
+      const wasSuperseded = _dispatchSeq != null && meetingDispatchSeq.get(String(meetingId || '')) !== _dispatchSeq;
+      const wasInterrupted = results.some(r => r && r.status === 'interrupted');
+      const finalStatus = wasInterrupted ? 'interrupted' : 'completed';
+      sendToRenderer('groupchat-turn-complete', {
+        meetingId, turnNum, mode: 'group', results, meta,
+        clientGeneration,
+        status: finalStatus,
+        superseded: wasSuperseded,
+      });
+      return { status: finalStatus, turnNum, results, meta, superseded: wasSuperseded, clientGeneration };
     }
   }
 
@@ -727,6 +862,8 @@ function createGroupChatDispatcher(deps) {
 
   return {
     dispatchGroupChatTurn,
+    interruptGroupChatTurn,
+    groupMembersForMeeting,
     getActiveWatchers: () => activeWatchers,
     getGroupChatWatcher: () => groupChatWatcher,
     markProcessExitForSession,
@@ -737,4 +874,5 @@ module.exports = {
   CODEX_AUTO_EXTRACT_DELAY_MS,
   createGroupChatDispatcher,
   _parseGroupTargets: parseGroupTargets,
+  _appendWorkflowStepPrompt: appendWorkflowStepPrompt,
 };

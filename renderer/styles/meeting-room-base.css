@@ -11,13 +11,10 @@
   --c-gemini-rgb: 91, 141, 239;
   --c-codex: #4ad28b;
   --c-codex-rgb: 74, 210, 139;
-  /* 2026-05-02 修复：补 DeepSeek/GLM 主题色变量。
-     旧版本只定义三家，使用 var(--c-deepseek-rgb) / var(--c-glm-rgb) 的位置
-     fallback 到 inherit，DS/GLM 用户在 feed/summary 等 kind-tagged 面板视觉退化。 */
   --c-deepseek: #58a6ff;
   --c-deepseek-rgb: 88, 166, 255;
-  --c-glm: #d96aa8;
-  --c-glm-rgb: 217, 106, 168;
+  --c-kimi: #e6b800;
+  --c-kimi-rgb: 230, 184, 0;
 
   /* Slot tokens — 御三家 (Pikachu / Charmander / Squirtle) */
   --c-slot-1: #fbbf24;
@@ -78,6 +75,24 @@
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.mr-header-primary-actions,
+.mr-header-secondary-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mr-header-secondary-actions {
+  padding-left: 8px;
+  margin-left: 2px;
+  border-left: 1px solid rgba(139, 148, 158, 0.22);
+}
+
+.mr-header-secondary-actions .mr-header-btn,
+.mr-header-secondary-actions .btn-zoom {
+  opacity: 0.86;
 }
 
 .mr-header-btn {
@@ -218,4 +233,3 @@
   outline: 2px solid rgba(88, 166, 255, 0.75);
   outline-offset: 1px;
 }
-

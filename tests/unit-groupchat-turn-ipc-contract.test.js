@@ -31,6 +31,50 @@ test('registers groupchat turn channel', () => {
   assert.ok(ipc.handlers.has('groupchat:turn'));
 });
 
+test('registers meeting-scoped groupchat interrupt channel', async () => {
+  const ipc = createFakeIpc();
+  const calls = [];
+  registerGroupchatTurnIpc(ipc, {
+    dispatchGroupChatTurn: async () => ({ status: 'completed' }),
+    interruptGroupChatTurn: async (meetingId) => {
+      calls.push(meetingId);
+      return { ok: true, status: 'interrupted', interruptedSids: ['s1'] };
+    },
+  });
+
+  assert.ok(ipc.handlers.has('groupchat:interrupt'));
+  const result = await ipc.handlers.get('groupchat:interrupt')(null, { meetingId: 'm-interrupt' });
+  assert.deepStrictEqual(result, { ok: true, status: 'interrupted', interruptedSids: ['s1'] });
+  assert.deepStrictEqual(calls, ['m-interrupt']);
+});
+
+test('interrupt also cancels an active committee workflow between AI acts', async () => {
+  const ipc = createFakeIpc();
+  const calls = [];
+  registerGroupchatTurnIpc(ipc, {
+    dispatchGroupChatTurn: async () => ({ status: 'completed' }),
+    interruptGroupChatTurn: async (meetingId) => {
+      calls.push(['watchers', meetingId]);
+      return { ok: false, status: 'idle', reason: 'no_active_turn', interruptedSids: [] };
+    },
+    committeeConductor: {
+      cancelCommitteeSession(meetingId, status) {
+        calls.push(['committee', meetingId, status]);
+        return true;
+      },
+    },
+  });
+
+  const result = await ipc.handlers.get('groupchat:interrupt')(null, { meetingId: 'm-committee' });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.status, 'interrupted');
+  assert.strictEqual(result.committeeInterrupted, true);
+  assert.deepStrictEqual(calls, [
+    ['committee', 'm-committee', 'interrupted'],
+    ['watchers', 'm-committee'],
+  ]);
+});
+
 test('delegates meetingId and args to dispatcher', async () => {
   const ipc = createFakeIpc();
   const calls = [];
@@ -73,6 +117,31 @@ test('awaits async committee intent before running conductor', async () => {
 
   assert.deepStrictEqual(result, { status: 'completed', turnNum: null, meta: { committee: true } });
   assert.deepStrictEqual(calls, ['route', 'committee']);
+});
+
+test('a new user turn supersedes an older committee workflow before routing', async () => {
+  const ipc = createFakeIpc();
+  const calls = [];
+  registerGroupchatTurnIpc(ipc, {
+    dispatchGroupChatTurn: async () => ({ status: 'completed', turnNum: 9 }),
+    committeeConductor: {
+      cancelCommitteeSession: (meetingId, status) => {
+        calls.push(['cancel', meetingId, status]);
+        return true;
+      },
+      isCommitteeCommand: async () => {
+        calls.push(['route']);
+        return false;
+      },
+    },
+  });
+
+  const result = await ipc.handlers.get('groupchat:turn')(null, { meetingId: 'm-old-committee', userInput: 'new question' });
+  assert.strictEqual(result.status, 'completed');
+  assert.deepStrictEqual(calls, [
+    ['cancel', 'm-old-committee', 'superseded'],
+    ['route'],
+  ]);
 });
 
 test('converts dispatcher exceptions to existing error response', async () => {

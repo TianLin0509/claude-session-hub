@@ -56,6 +56,8 @@ test('basic: 1 user + 1 assistant → 2 turns with correct fields', () => {
     assert.strictEqual(turns[1].id, 'a-1');
     assert.strictEqual(turns[1].model, 'claude-opus-4-7');
     assert.strictEqual(turns[1].stopReason, 'end_turn');
+    assert.strictEqual(turns[1].startedAt, new Date('2026-05-04T08:00:00.000Z').getTime());
+    assert.strictEqual(turns[1].completedAt, new Date('2026-05-04T08:00:01.000Z').getTime());
     assert.deepStrictEqual(turns[1].toolCalls, []);
     assert.strictEqual(turns[1].thinking, null);
     assert.deepStrictEqual(turns[1].usage, { input_tokens: 10, output_tokens: 5 });
@@ -593,6 +595,8 @@ test('W5 merge: 5 consecutive 1-tool entries + 1 final = 1 user + 1 merged turn 
       'all thinking concatenated');
     assert.strictEqual(a.stopReason, 'end_turn', 'last entry stop_reason wins');
     assert.strictEqual(a.tsEnd, new Date('2026-01-01T00:01:00Z').getTime(), 'tsEnd = last entry ts');
+    assert.strictEqual(a.startedAt, new Date('2026-01-01T00:00:00Z').getTime(), 'startedAt = preceding user prompt');
+    assert.strictEqual(a.completedAt, new Date('2026-01-01T00:01:00Z').getTime(), 'completedAt = last assistant entry');
     // 多方审查 P0 fix：input_tokens 不累加，取最后一条 (a-final 是 5000)
     // 因为 Claude API 每次 call 的 input_tokens 含完整历史，累加 = O(N²) 虚高
     assert.strictEqual(a.usage.input_tokens, 5000, 'input_tokens = last entry value (not summed)');

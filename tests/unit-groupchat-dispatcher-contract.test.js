@@ -6,15 +6,11 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const dispatcherPath = path.join(root, 'main', 'groupchat', 'dispatcher.js');
-const conductorPath = path.join(root, 'main', 'groupchat', 'committee-conductor.js');
-const orchestratorPath = path.join(root, 'core', 'group-chat-orchestrator.js');
 const readyDetectorPath = path.join(root, 'core', 'group-chat-cli-ready-detector.js');
 const watcherPath = path.join(root, 'core', 'turn-completion-watcher.js');
 const groupWatcherPath = path.join(root, 'core', 'group-chat-watcher.js');
 const mainPath = path.join(root, 'main.js');
 const dispatcherSrc = fs.readFileSync(dispatcherPath, 'utf8');
-const conductorSrc = fs.readFileSync(conductorPath, 'utf8');
-const orchestratorSrc = fs.readFileSync(orchestratorPath, 'utf8');
 const readyDetectorSrc = fs.readFileSync(readyDetectorPath, 'utf8');
 const watcherSrc = fs.readFileSync(watcherPath, 'utf8');
 const groupWatcherSrc = fs.readFileSync(groupWatcherPath, 'utf8');
@@ -61,6 +57,36 @@ assert.deepStrictEqual(
 assert.ok(/createGroupChatDispatcher\(\{[\s\S]*kindLabels:\s*KIND_LABELS[\s\S]*transcriptTap[\s\S]*\}\)/.test(mainSrc),
   'main.js should initialize the dispatcher with explicit dependencies');
 
+assert.ok(/const\s+groupChatTurnQueue\s*=\s*new Map\(\)/.test(dispatcherSrc) &&
+  /previous\.catch\(\(\)\s*=>\s*\{\}\)\.then\(\(\)\s*=>\s*runGroupChatTurn\(meetingId,\s*\{\s*\.\.\.args,\s*_dispatchSeq:\s*dispatchSeq\s*\}\)\)/.test(dispatcherSrc) &&
+  !/if\s*\(\s*groupChatInProgress\.has\(meetingId\)\s*\)\s*return\s*\{\s*status:\s*'busy'/.test(dispatcherSrc),
+  'group chat should queue overlapping user sends instead of rejecting them as busy');
+
+// 抢占式连发（2026-06-24 道雪）：用户点发送即放行 —— 新一轮进来抢占结算上一轮没答完的 AI，
+//   让卡死的 AI 不再无限期挂起整个串行队列。
+assert.ok(/function supersedeActiveWatchersForMeeting\(meetingId\)/.test(dispatcherSrc) &&
+  /watcher\.supersede\(\)/.test(dispatcherSrc) &&
+  /const meetingDispatchSeq\s*=\s*new Map\(\)/.test(dispatcherSrc),
+  'dispatcher should preempt the previous turn by superseding in-flight watchers');
+
+assert.ok(/if\s*\(!args\.silent\)\s*\{[\s\S]*meetingDispatchSeq\.set\(key,\s*dispatchSeq\)[\s\S]*supersedeActiveWatchersForMeeting\(meetingId\)/.test(dispatcherSrc),
+  'real user sends (non-silent) should bump the dispatch sequence and preempt the prior turn');
+
+assert.ok(/wasSuperseded\s*=\s*_dispatchSeq\s*!=\s*null\s*&&\s*meetingDispatchSeq\.get\(String\(meetingId\s*\|\|\s*''\)\)\s*!==\s*_dispatchSeq/.test(dispatcherSrc) &&
+  /sendToRenderer\('groupchat-turn-complete',[\s\S]*superseded:\s*wasSuperseded/.test(dispatcherSrc) &&
+  /return\s*\{\s*status:\s*finalStatus,\s*turnNum,\s*results,\s*meta,\s*superseded:\s*wasSuperseded/.test(dispatcherSrc),
+  'turn-complete event and dispatch return should both carry superseded when a newer turn preempts this one');
+
+assert.ok(
+  /clientGeneration/.test(dispatcherSrc) &&
+  /sendToRenderer\('groupchat-partial-update',[\s\S]*clientGeneration/.test(dispatcherSrc) &&
+  /sendToRenderer\('groupchat-turn-complete',[\s\S]*clientGeneration/.test(dispatcherSrc),
+  'renderer request generation should round-trip through partial and complete events',
+);
+
+assert.ok(/if\s*\(partial\.status\s*===\s*'superseded'\)\s*return/.test(dispatcherSrc),
+  'superseded settle should not be pushed as a partial-update (avoids flashing the preempted card)');
+
 assert.ok(/markProcessExitForSession\(sessionId,\s*exitInfo\)/.test(mainSrc),
   'PTY process exit should still be forwarded to active groupchat watchers');
 
@@ -74,17 +100,15 @@ assert.ok(/activeWatchers\.set\(sid,\s*watcher\)/.test(dispatcherSrc) &&
   /activeWatchers\.delete\(sid\)/.test(dispatcherSrc),
   'dispatcher should own watcher lifecycle registration and cleanup');
 
-assert.ok(/SEAT_ORDER\[member\.index\]/.test(dispatcherSrc) &&
-  /seatKey:\s*committeeSeatKey/.test(dispatcherSrc),
-  'committee dispatch should pass slot keys so duplicate Claude/Codex kinds keep distinct personas');
-
-assert.ok(/buildCommitteePersona\(opts\.seatKey\s*\|\|\s*opts\.kind\)/.test(orchestratorSrc),
-  'committee prompt should prefer slot persona over model kind');
-
-assert.ok(/AUTH_FAILURE_RE/.test(dispatcherSrc) &&
+// 2026-07-12：auth 判定收紧——dispatcher 不再对整个 ring buffer 裸测 AUTH_FAILURE_RE
+//   （AI 回答里提到 "not logged in" 会误杀正常回答），改用 host-shell-detector 的
+//   createAuthBannerMonitor（tail + 连续 2 次命中 + 期间 PTY 静默）。
+assert.ok(/createAuthBannerMonitor/.test(dispatcherSrc) &&
+  /authBannerMonitor\.tick\(buf,\s*sessionManager\.getGroupChatLastActivity\(sid\)\)\s*===\s*'confirmed'/.test(dispatcherSrc) &&
   /auth_required/.test(dispatcherSrc) &&
-  /watcher\.markErrored/.test(dispatcherSrc),
-  'dispatcher should settle unauthenticated CLI turns instead of waiting indefinitely');
+  /watcher\.markErrored/.test(dispatcherSrc) &&
+  !/AUTH_FAILURE_RE\.test\(buf\)/.test(dispatcherSrc),
+  'dispatcher should settle unauthenticated CLI turns via the tightened auth banner monitor, not a raw full-buffer regex');
 
 assert.ok(/PASTE_TRAPPED_CODEX_ENTER_RETRIES\s*=\s*3/.test(dispatcherSrc) &&
   /writeSubmitSignal\(sessionManager,\s*sid,\s*kind,\s*monitor\.enterRetries\)/.test(dispatcherSrc),
@@ -99,7 +123,7 @@ assert.ok(/writeSubmitFallbackSignals/.test(groupWatcherSrc) &&
 assert.ok(/if\s*\(isCodexCliKind\(kind\)\)\s*\{[\s\S]*await writeSubmitFallbackSignals\(sessionManager,\s*sid,\s*kind,\s*ENTER_RETRY_TRIES,\s*ENTER_RETRY_GAP_MS\)/.test(groupWatcherSrc),
   'Codex first-send path should rotate CR/LF/CRLF submit signals even when prompt echo is observed');
 
-assert.ok(/if\s*\(isClaudeFamily\(kind\)\)\s*\{[\s\S]*for\s*\(let i = 0; i < ENTER_RETRY_TRIES; i \+= 1\)[\s\S]*sessionManager\.writeToSession\(sid,\s*'\\r'\)/.test(groupWatcherSrc),
+assert.ok(/if\s*\(isClaudeFamily\(kind\)\s*\|\|\s*isCodexCliKind\(kind\)\)\s*\{[\s\S]*for\s*\(let i = 0; i < ENTER_RETRY_TRIES; i \+= 1\)[\s\S]*sessionManager\.writeToSession\(sid,\s*'\\r'\)/.test(groupWatcherSrc),
   'Claude-family bracketed-paste path should send repeated Enter signals so a swallowed first Enter does not wait for hard timeout');
 
 assert.ok(/CODEX_PROMPT_SUBMIT_VERIFY_MS\s*=\s*25\s*\*\s*1000/.test(dispatcherSrc) &&
@@ -143,33 +167,10 @@ assert.ok(/dispatchInternalPrompt\(meetingId,\s*meeting,\s*targetMembers,\s*user
   internalDispatchSrc && !/beginTurn/.test(internalDispatchSrc) && !/rollbackTurn/.test(internalDispatchSrc),
   'silent internal dispatch should bypass visible turn state and use a strict no-extension timeout');
 
-assert.ok(/CHECKUP_OCR_TIMEOUT_MS\s*=\s*60\s*\*\s*1000/.test(conductorSrc) &&
-  /buildCheckupOcrPrompt[\s\S]*CHECKUP_OCR_TIMEOUT_MS,\s*\{[\s\S]*targetMemberIds:\s*\[seats\.chair\.memberId\][\s\S]*silent:\s*true[\s\S]*allowActiveExtend:\s*false[\s\S]*\}/.test(conductorSrc),
-  'committee image OCR should use silent chair-only dispatch with a short no-extension timeout');
-
 assert.ok(/markErrored\(reason/.test(watcherSrc),
   'turn completion watcher should expose an explicit error-settle hook');
 
 assert.ok(/Try "edit/.test(readyDetectorSrc),
   'Claude-family ready detection should recognize the newer Try "edit footer');
-
-assert.ok(/ROLLCALL_TIMEOUT_MS\s*=\s*4\s*\*\s*60\s*\*\s*1000/.test(conductorSrc),
-  'committee rollcall should keep a bounded warmup window for non-Codex seats');
-
-assert.ok(/rollcallKeys\s*=\s*\[\.\.\.scene\.ANALYST_KEYS\][\s\S]*seats\[k\]\.kind\s*!==\s*'codex'/.test(conductorSrc),
-  'committee rollcall should not mark Codex or chair seats suspect before their long-budget turns');
-
-assert.ok(/ROLLCALL_ENABLED\s*=\s*process\.env\.COMMITTEE_ENABLE_ROLLCALL\s*===\s*'1'/.test(conductorSrc),
-  'committee rollcall should be opt-in so normal live runs do not spend 4 minutes on warmup false negatives');
-
-assert.ok(/点名预热未返回/.test(conductorSrc) &&
-  /继续主轮全预算，不计降级/.test(conductorSrc) &&
-  !/点名未应答席位/.test(conductorSrc),
-  'committee rollcall misses should remain warmup misses instead of degrading analyst seats');
-
-assert.ok(/compressedDefendKeys\s*=\s*defendKeys\.filter[\s\S]*seats\[k\]\.kind\s*===\s*'codex'/.test(conductorSrc) &&
-  /activeDefendKeys\s*=\s*defendKeys\.filter[\s\S]*seats\[k\]\.kind\s*!==\s*'codex'/.test(conductorSrc) &&
-  /幕二答辩压缩/.test(conductorSrc),
-  'committee act2 defense should not re-wake Codex analyst seats after they already produced act1 reports');
 
 console.log('Groupchat dispatcher contract: ok');

@@ -20,7 +20,7 @@ const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
 // xterm bracketed paste mode markers（标准协议，claude code TUI 完整识别）。
 //   marker 之间的内容被 CLI 视作"一次粘贴"整体处理，无需 paste-detect timing 探测，
 //   BP_END 之后的 \r 直接作为提交信号被识别。
-//   2026-05-05 实测：claude family（claude/deepseek/glm/gpt/kimi/qwen 都跑在 claude CLI 上）
+//   2026-05-05 实测：claude family（claude/deepseek 都跑在 claude CLI 上）
 //   全部识别；codex/gemini 协议层不识别 → 仍走旧主路径。
 const BP_START = '\x1b[200~';
 const BP_END = '\x1b[201~';
@@ -175,10 +175,15 @@ async function sendToPty(sid, prompt, kind) {
   //   信号失真，timing 经常上限超时硬冲、\r 被吃掉、prompt 留输入框没提交。
   //   bracketed paste markers 是显式协议，CLI 一看到 BP_END 就明确"粘贴结束"，
   //   无需任何 timing 探测。claude family 实测稳定通过。
-  //   codex / gemini 协议不识别（marker 被吃但 \r 不提交），保留旧主路径。
-  if (isClaudeFamily(kind)) {
+  //   2026-06-18 道雪 实测：codex 0.137 也已支持 BP 协议（BP 包裹中文立即提交、不进
+  //     [Pasted Content] 粘贴态、不卡输入框）→ codex 改走此 fast-path，一并解决"卡输入框
+  //     未提交"(Bug B) + "中文走 .md 文件中转嵌入"(Bug C：BP 直接发中文，不再经 writePromptToSession)。
+  //   gemini 协议仍不识别（marker 被吃但 \r 不提交），保留旧主路径。
+  if (isClaudeFamily(kind) || isCodexCliKind(kind)) {
+    await clearCodexInputLine(sessionManager, sid, kind); // codex 清输入框残留，防与上次未提交内容拼接（claude no-op）
     const beforeWrite = sessionManager.getGroupChatLastActivity(sid);
     sessionManager.writeToSession(sid, BP_START + prompt + BP_END);
+    noteSubmittedPrompt(sid, kind, prompt); // codex 记录原始 prompt 供 transcript 提交校验（claude no-op）
     // 500ms 给 Ink useEffect 消化 paste 块，BP_END 紧贴 \r 时 Ink 把 \r 当 paste
     //   尾巴在内部某些版本下被忽略；间隔 500ms 后 \r 是干净提交信号。
     await new Promise(r => setTimeout(r, 500));

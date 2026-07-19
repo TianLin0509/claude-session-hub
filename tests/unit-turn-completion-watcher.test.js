@@ -101,6 +101,22 @@ async function testSkip() {
   console.log('  ✓ testSkip');
 }
 
+async function testInterrupt() {
+  const tap = mkTap();
+  const w = createTurnCompletionWatcher({
+    transcriptTap: tap, hubSessionId: 'sid-C2', label: 'claude-1',
+    softAlertT1Ms: 5000, softAlertT2Ms: 10000,
+  });
+  const p = w.wait();
+  setImmediate(() => w.interrupt());
+  const r = await p;
+  assert.strictEqual(r.status, 'interrupted');
+  assert.strictEqual(r.text, '');
+  assert.strictEqual(r.signalSource, 'user_interrupt');
+  assert.strictEqual(typeof r.completedAt, 'number');
+  console.log('  ✓ testInterrupt');
+}
+
 async function testSoftAlertDoesNotSettle() {
   // 关键不变式：T1/T2 触发 onSoftAlert 但 watcher 仍处于 unsettled。
   // 只有外部触发点（manualExtract/skip/turn-complete/turn-error）才能 settle。
@@ -217,6 +233,7 @@ function testThrowsWithoutTap() {
   await testManualExtract();
   await testCompleteFromTranscript();
   await testSkip();
+  await testInterrupt();
   await testSoftAlertDoesNotSettle();
   await testErrored();
   await testIdempotentSettle();

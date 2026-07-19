@@ -334,3 +334,20 @@ test('streaming indicator at overlay direct child: insertBefore mounts new card 
   assert.ok(tail && (tail.className || '').includes('streaming-indicator'),
     `indicator should remain at overlay tail; got className=${tail && tail.className}`);
 });
+
+test('assistant card renders both started-at and completed-at timestamps', () => {
+  const { renderer } = makeRenderer();
+  const html = renderer.renderTurnCard({
+    id: 'a-timed',
+    role: 'assistant',
+    text: 'done',
+    ts: 3_000,
+    startedAt: 1_000,
+    completedAt: 2_000,
+    toolCalls: [],
+  });
+  assert.match(html, /开始/);
+  assert.match(html, /完成/);
+  assert.ok(html.includes(new Date(1_000).toISOString()));
+  assert.ok(html.includes(new Date(2_000).toISOString()));
+});

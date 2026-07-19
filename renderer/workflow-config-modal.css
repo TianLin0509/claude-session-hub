@@ -1,0 +1,368 @@
+/* 串行工作流（2026-06-17 道雪）：群聊输入框旁「串行工作流」按钮 + 配置弹窗。
+   复用 meeting-create-modal.css 的 mcm-* 骨架（overlay/dialog/header/body/footer/primary）；
+   本文件只定义工作流专属元素 wf-* + 触发按钮 .mr-workflow-btn。色板全部跟随全局 theme variables。 */
+
+/* ---- 输入框旁触发按钮 ---- */
+.mr-workflow-btn {
+  position: relative;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #30363d);
+  background: var(--bg-card-2, #1c232c);
+  color: var(--text-dim, #8b949e);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+  padding: 0;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.mr-workflow-btn:hover {
+  color: var(--text, #e6edf3);
+  border-color: var(--accent, #58a6ff);
+}
+.mr-workflow-btn.active {
+  color: var(--accent, #58a6ff);
+  border-color: var(--accent, #58a6ff);
+  background: rgba(88, 166, 255, 0.12);
+}
+/* active 时步数角标 */
+.mr-workflow-btn .mr-workflow-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent, #58a6ff);
+  color: #000;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  display: none;
+}
+.mr-workflow-btn.active .mr-workflow-badge { display: block; }
+
+.mr-interrupt-btn {
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid rgba(248, 81, 73, .58);
+  border-radius: 8px;
+  background: rgba(248, 81, 73, .12);
+  color: #ff7b72;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+.mr-interrupt-btn:hover { background: rgba(248, 81, 73, .22); border-color: #ff7b72; }
+.mr-interrupt-btn:disabled { opacity: .52; cursor: wait; }
+.mr-interrupt-btn[hidden] { display: none !important; }
+
+/* ---- 弹窗内部专属元素 ---- */
+
+/* 启用开关行 */
+.wf-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border-soft, #21262d);
+}
+.wf-toggle-row .wf-toggle-text { flex: 1; }
+.wf-toggle-row .wf-toggle-title { font-size: 14px; font-weight: 600; color: var(--text, #e6edf3); }
+.wf-toggle-row .wf-toggle-sub { font-size: 11.5px; color: var(--text-dim, #8b949e); margin-top: 2px; }
+
+/* iOS 风格开关 */
+.wf-switch {
+  flex-shrink: 0;
+  width: 42px;
+  height: 24px;
+  border-radius: 12px;
+  background: var(--border, #30363d);
+  border: none;
+  cursor: pointer;
+  position: relative;
+  transition: background .18s;
+  padding: 0;
+}
+.wf-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform .18s;
+}
+.wf-switch.on { background: var(--accent, #58a6ff); }
+.wf-switch.on::after { transform: translateX(18px); }
+
+/* 配置区：未启用时整体灰掉、禁交互 */
+.wf-config-area { transition: opacity .15s; }
+.wf-config-area.disabled { opacity: 0.4; pointer-events: none; }
+
+/* 小节标题 */
+.wf-section-label {
+  font-size: 11.5px;
+  color: var(--text-dim, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 16px 0 8px;
+}
+.wf-section-label:first-child { margin-top: 0; }
+
+/* 模板卡片 */
+.wf-templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.wf-tpl-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  background: var(--bg-card-2, #1c232c);
+  transition: border-color .15s, background .15s;
+}
+.wf-tpl-card:hover { border-color: var(--accent, #58a6ff); }
+.wf-tpl-card.selected {
+  border-color: var(--accent, #58a6ff);
+  background: rgba(88, 166, 255, 0.10);
+}
+.wf-tpl-name { font-size: 13px; font-weight: 600; color: var(--text, #e6edf3); }
+.wf-tpl-name,
+.wf-tpl-desc { display: block; }
+.wf-tpl-desc { font-size: 11px; color: var(--text-dim, #8b949e); margin-top: 4px; line-height: 1.5; }
+
+/* 步数 stepper */
+.wf-stepcount {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.wf-stepper-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #30363d);
+  background: var(--bg-card-2, #1c232c);
+  color: var(--text, #e6edf3);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.wf-stepper-btn:hover:not(:disabled) { border-color: var(--accent, #58a6ff); }
+.wf-stepper-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.wf-stepcount-val { font-size: 15px; font-weight: 600; min-width: 20px; text-align: center; color: var(--text, #e6edf3); }
+
+/* 步骤列表 */
+.wf-step-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--border-soft, #21262d);
+}
+.wf-step-row:last-child { border-bottom: none; }
+.wf-step-block:last-child .wf-step-row { border-bottom: none; }
+.wf-step-index {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--bg-card-2, #1c232c);
+  border: 1px solid var(--border, #30363d);
+  color: var(--text-dim, #8b949e);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+.wf-member-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1;
+}
+.wf-member-control {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+}
+.wf-member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 28px 5px 6px;
+  border-radius: 16px;
+  border: 1px solid var(--border, #30363d);
+  background: var(--bg, #0d1117);
+  color: var(--text-dim, #8b949e);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color .12s, background .12s, color .12s;
+}
+.wf-prompt-trigger {
+  position: absolute;
+  right: 3px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-dim, #8b949e);
+  cursor: pointer;
+  opacity: 0;
+}
+.wf-member-control:hover .wf-prompt-trigger,
+.wf-prompt-trigger:focus-visible { opacity: 1; color: var(--accent, #58a6ff); }
+.wf-prompt-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--accent, #58a6ff);
+  color: #07121f;
+  font-size: 9px;
+  font-weight: 800;
+}
+.wf-member-chip:hover { border-color: var(--accent, #58a6ff); }
+.wf-member-chip.selected {
+  border-color: var(--accent, #58a6ff);
+  background: rgba(88, 166, 255, 0.14);
+  color: var(--text, #e6edf3);
+}
+.wf-member-chip img {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  padding: 1px;
+  object-fit: contain;
+}
+
+.wf-prompt-editor {
+  margin: 2px 0 10px 38px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent, #58a6ff) 46%, var(--border, #30363d));
+  border-radius: 9px;
+  background: var(--bg, #0d1117);
+}
+.wf-prompt-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--text, #e6edf3);
+  font-size: 12px;
+}
+.wf-prompt-editor-head button {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim, #8b949e);
+  cursor: pointer;
+  font-size: 18px;
+}
+.wf-prompt-editor textarea {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+  box-sizing: border-box;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 7px;
+  padding: 9px 10px;
+  background: var(--bg-card-2, #1c232c);
+  color: var(--text, #e6edf3);
+  font: 12px/1.55 system-ui, sans-serif;
+}
+.wf-prompt-editor textarea:focus { outline: 2px solid color-mix(in srgb, var(--accent, #58a6ff) 35%, transparent); border-color: var(--accent, #58a6ff); }
+.wf-prompt-suggestions,
+.wf-loop-templates,
+.wf-loop-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wf-prompt-suggestions { margin-top: 8px; color: var(--text-dim, #8b949e); font-size: 11px; }
+.wf-prompt-suggestions button,
+.wf-loop-template {
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: var(--bg-card-2, #1c232c);
+  color: var(--text, #e6edf3);
+  cursor: pointer;
+  font-size: 11px;
+}
+.wf-prompt-suggestions button:hover,
+.wf-loop-template:hover,
+.wf-loop-template.selected { border-color: var(--accent, #58a6ff); color: var(--accent, #58a6ff); }
+.wf-role-tag {
+  flex: 0 0 auto;
+  margin-top: 4px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.wf-role-tag.is-builder { color: #58a6ff; background: rgba(88, 166, 255, .15); }
+.wf-role-tag.is-reviewer { color: #ff7b72; background: rgba(255, 123, 114, .14); }
+.wf-loop-title { margin-top: 16px; }
+.wf-loop-row { gap: 18px; padding: 4px 0; color: var(--text, #e6edf3); font-size: 12px; }
+.wf-loop-row label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.wf-loop-row input[type="number"] { width: 48px; padding: 3px 5px; }
+.wf-loop-hint { margin-top: 4px; color: var(--text-dim, #8b949e); font-size: 11px; }
+.wf-loop-templates { margin-top: 9px; color: var(--text-dim, #8b949e); font-size: 11px; }
+
+.wf-footer { justify-content: space-between; }
+.wf-autosave-state {
+  color: var(--text-dim, #8b949e);
+  font-size: 12px;
+  transition: color .15s;
+}
+.wf-autosave-state.is-saved { color: #3fb950; }
+
+/* 预览条 */
+.wf-preview {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--bg, #0d1117);
+  border: 1px solid var(--border-soft, #21262d);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text, #e6edf3);
+  word-break: break-word;
+}
+.wf-preview .wf-preview-label {
+  font-size: 11px;
+  color: var(--text-dim, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  display: block;
+  margin-bottom: 4px;
+}
+.wf-preview .wf-arrow { color: var(--accent, #58a6ff); margin: 0 6px; font-weight: 700; }
+.wf-preview .wf-plus { color: var(--text-dim, #8b949e); margin: 0 3px; }
+.wf-preview .wf-empty { color: var(--text-dim, #8b949e); font-style: italic; }

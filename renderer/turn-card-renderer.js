@@ -187,8 +187,10 @@ function _renderMetaPills(turn) {
     const pct = Math.min(100, Math.round(turn.usage.input_tokens / win * 100));
     pills.push(`<span class="pill pill-ctx">📊 ${pct}% ctx</span>`);
   }
-  if (typeof turn.tsEnd === 'number' && typeof turn.ts === 'number' && turn.tsEnd > turn.ts) {
-    pills.push(`<span class="pill pill-time">⏱ ${_fmtDuration(turn.tsEnd - turn.ts)}</span>`);
+  const durationStart = typeof turn.startedAt === 'number' ? turn.startedAt : turn.ts;
+  const durationEnd = typeof turn.completedAt === 'number' ? turn.completedAt : turn.tsEnd;
+  if (typeof durationEnd === 'number' && typeof durationStart === 'number' && durationEnd > durationStart) {
+    pills.push(`<span class="pill pill-time">⏱ ${_fmtDuration(durationEnd - durationStart)}</span>`);
   }
   if (pills.length === 0) return '';
   return `<span class="turn-meta-pills">${pills.join('')}</span>`;
@@ -200,7 +202,12 @@ function renderTurnCard(turn) {
   const isUser = turn.role === 'user';
   const cls = isUser ? 'turn-card user' : 'turn-card';
   const who = isUser ? '你' : (turn.model || turn.kind || 'Claude');
-  const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
+  const sentAt = turn.ts || turn.startedAt;
+  const startedAt = turn.startedAt || turn.ts;
+  const completedAt = turn.completedAt || turn.tsEnd;
+  const ts = isUser
+    ? (sentAt ? `发送 ${formatAbsoluteTime(sentAt, new Date(), { includeSeconds: true })}` : '')
+    : `开始 ${startedAt ? formatAbsoluteTime(startedAt, new Date(), { includeSeconds: true }) : '--:--:--'} · 完成 ${completedAt ? formatAbsoluteTime(completedAt, new Date(), { includeSeconds: true }) : '进行中'}`;
 
   // 头像分支
   let avatarHtml;
@@ -582,6 +589,8 @@ function turnRenderSignature(turn) {
     stopReason: turn.stopReason || '',
     durationMs: turn.durationMs || null,
     tsEnd: turn.tsEnd || null,
+    startedAt: turn.startedAt || null,
+    completedAt: turn.completedAt || null,
     toolCalls: Array.isArray(turn.toolCalls) ? turn.toolCalls : [],
     usage: turn.usage || null,
   });

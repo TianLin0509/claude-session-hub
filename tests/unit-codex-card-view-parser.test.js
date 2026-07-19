@@ -109,9 +109,12 @@ async function main() {
     assert.strictEqual(turns[1].text, 'final answer one');
     assert.strictEqual(turns[1].stopReason, 'task_complete');
     assert.strictEqual(turns[1].durationMs, 1234);
+    assert.strictEqual(turns[1].startedAt, new Date('2026-05-10T10:00:00.000Z').getTime());
+    assert.strictEqual(turns[1].completedAt, new Date('2026-05-10T10:00:02.000Z').getTime());
     assert.strictEqual(turns[2].text, 'second question');
     assert.strictEqual(turns[3].text, 'partial answer two');
     assert.strictEqual(turns[3].stopReason, 'partial_commentary');
+    assert.strictEqual(turns[3].startedAt, new Date('2026-05-10T10:00:59.000Z').getTime());
     assert.strictEqual(turns[4].text, 'third question with image');
     assert.ok(!turns.some(t => /^<image name=/.test(t.text)), 'image-only prompt marker must not create a duplicate user turn');
     assert.strictEqual(turns[5].text, 'final answer three');

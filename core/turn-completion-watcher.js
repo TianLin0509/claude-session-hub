@@ -203,6 +203,39 @@ function createTurnCompletionWatcher(opts) {
     },
 
     /**
+     * 用户主动中断当前群聊轮。PTY 的 Ctrl+C 由 dispatcher 发送；watcher 只负责
+     * 立即结算等待链，避免 Promise.allSettled 继续占住群聊输入区。
+     */
+    interrupt() {
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'interrupted',
+        text: '',
+        signalSource: 'user_interrupt',
+        completedAt: Date.now(),
+      });
+    },
+
+    /**
+     * 抢占式结算（2026-06-24 道雪）：用户在本轮还没答完时就发了下一轮 —— 立即把
+     *   这家「未完成的旧轮」结算掉，让 dispatcher 的 Promise.allSettled 立刻 resolve、
+     *   串行队列放行新轮，不再因卡死的 AI 无限期挂起。
+     *   状态 'superseded'（被新问题覆盖），空文本 —— 下游 prompt 构建器按 content
+     *   过滤，自然不把这家的半截回答喂给其他队友（用户确认：直接丢弃）。
+     *   不进 patch 窗口（superseded 不在 PATCHABLE_STATUSES）：旧轮已废弃，CLI 后续
+     *   吐的收尾内容不该再回填这条被覆盖的记录。
+     */
+    supersede() {
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'superseded',
+        text: '',
+      });
+    },
+
+    /**
      * P1 钩子：PTY 子进程退出时由 main.js 调用，作为 L2 完成信号。
      *   exitCode === 0 视为"自然退出但无 L1 信号"→ completed（兜底，无文本）；
      *   exitCode !== 0 / signal 视为 errored。

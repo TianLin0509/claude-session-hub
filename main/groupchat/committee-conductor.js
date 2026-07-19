@@ -30,6 +30,20 @@ const SUSPECT_RETRY_TIMEOUT_MS = 3 * 60 * 1000; // 点名缺席席位的降级�
 const CHAIR_DISPATCH_ATTEMPTS = 2;          // 主席派发失败（no_sent 等）重试次数——主席是唯一关键路径
 const ROUTER_TIMEOUT_MS = 30 * 1000;        // 立项路由只做 JSON 翻译，必须短预算失败回退
 
+class CommitteeAbortError extends Error {
+  constructor(status, detail) {
+    super(detail || `committee ${status}`);
+    this.name = 'CommitteeAbortError';
+    this.committeeAbort = true;
+    this.status = status;
+  }
+}
+
+function isCommitteeAbort(error) {
+  return !!(error && error.committeeAbort === true &&
+    (error.status === 'interrupted' || error.status === 'superseded'));
+}
+
 function runPython(args, timeoutMs) {
   return new Promise((resolve) => {
     let child;
@@ -91,10 +105,43 @@ function createCommitteeConductor(deps) {
   } = deps;
 
   const inProgress = new Set();
+  const cancellationByMeeting = new Map();
   const routeCache = new Map();
 
   function log(...a) { try { logger.log('[committee]', ...a); } catch {} }
   function warn(...a) { try { logger.warn('[committee]', ...a); } catch {} }
+
+  function cancelCommitteeSession(meetingId, status = 'interrupted') {
+    if (!inProgress.has(meetingId)) return false;
+    const normalized = status === 'superseded' ? 'superseded' : 'interrupted';
+    cancellationByMeeting.set(meetingId, normalized);
+    return true;
+  }
+
+  function throwIfCommitteeCancelled(meetingId) {
+    const status = cancellationByMeeting.get(meetingId);
+    if (status) throw new CommitteeAbortError(status, status === 'interrupted'
+      ? '用户已中断投委会编排'
+      : '投委会编排已被新提问覆盖');
+  }
+
+  function waitWithCommitteeCancellation(meetingId, ms) {
+    return new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      const timer = setInterval(() => {
+        try {
+          throwIfCommitteeCancelled(meetingId);
+          if (Date.now() - startedAt >= ms) {
+            clearInterval(timer);
+            resolve();
+          }
+        } catch (error) {
+          clearInterval(timer);
+          reject(error);
+        }
+      }, Math.min(100, Math.max(10, ms)));
+    });
+  }
 
   // 投委会允许重复 kind（例如消息面官/主席都可用 Claude，技术面官/质询官都可用 Codex）。
   // 因此优先按预设 slot 顺序绑定席位；再用 kind 做旧会议兜底。
@@ -144,7 +191,15 @@ function createCommitteeConductor(deps) {
   }
 
   async function dispatch(meetingId, userInput, timeoutMs = ACT_TIMEOUT_MS, extra = {}) {
+    throwIfCommitteeCancelled(meetingId);
     const r = await dispatchGroupChatTurn(meetingId, { userInput, turnTimeoutMs: timeoutMs, ...extra });
+    throwIfCommitteeCancelled(meetingId);
+    if (r && r.superseded) {
+      throw new CommitteeAbortError('superseded', '投委会本幕已被新提问覆盖');
+    }
+    if (r && r.status === 'interrupted') {
+      throw new CommitteeAbortError('interrupted', '用户已中断投委会本幕');
+    }
     if (!r || r.status !== 'completed') {
       throw new Error(`dispatch failed: ${(r && (r.reason || r.status)) || 'unknown'}`);
     }
@@ -200,6 +255,7 @@ function createCommitteeConductor(deps) {
       }
       warn('立项路由 JSON 未通过校验，回退确定性解析：', String(text || '').slice(0, 200));
     } catch (e) {
+      if (isCommitteeAbort(e)) throw e;
       warn('立项路由异常，回退确定性解析：', e && e.message);
     }
     return null;
@@ -299,6 +355,7 @@ function createCommitteeConductor(deps) {
           json = scene.extractJsonBlock(text) || json;
           v = scene.validateAnalystReport(json, key);
         } catch (e) {
+          if (isCommitteeAbort(e)) throw e;
           warn(`retry dispatch failed for ${key}:`, e.message);
           break;
         }
@@ -358,9 +415,11 @@ function createCommitteeConductor(deps) {
       };
     }
 
+    cancellationByMeeting.delete(meetingId);
     inProgress.add(meetingId);
     const deadline = Date.now() + SESSION_DEADLINE_MS;
     const checkDeadline = (stage) => {
+      throwIfCommitteeCancelled(meetingId);
       if (Date.now() > deadline) throw new Error(`投委会整场超时（40min 硬上限）于 ${stage}`);
     };
 
@@ -392,6 +451,7 @@ function createCommitteeConductor(deps) {
             progress(meetingId, `点名预热未返回：${warmupMissKeys.map(k => scene.SEATS[k].label).join('、')}（继续主轮全预算，不计降级）`);
           }
         } catch (e) {
+          if (isCommitteeAbort(e)) throw e;
           warn('点名轮异常（不阻塞）：', e.message);
         }
       }
@@ -401,6 +461,7 @@ function createCommitteeConductor(deps) {
       const prep = await runPython(
         ['-m', 'committee.prep_case', cmd.symbol, ...(cmd.mode === 'quick' ? ['--fast'] : [])],
         PREP_TIMEOUT_MS[cmd.mode]);
+      throwIfCommitteeCancelled(meetingId);
       if (!prep.ok) {
         return { status: 'error', turnNum: null, reason: `幕〇备料失败：${prep.error || '未知'}` };
       }
@@ -496,6 +557,7 @@ function createCommitteeConductor(deps) {
             });
           }
         } catch (e) {
+          if (isCommitteeAbort(e)) throw e;
           challengeHeld = false;
           warn('幕二异常（不阻塞，直接进裁决）：', e.message);
           progress(meetingId, `幕二异常已跳过（${e.message}），直接进入主席裁决`);
@@ -530,10 +592,11 @@ function createCommitteeConductor(deps) {
         for (let d = 1; d <= CHAIR_DISPATCH_ATTEMPTS; d++) {
           try { act3 = await dispatch(meetingId, prompt); break; }
           catch (e) {
+            if (isCommitteeAbort(e)) throw e;
             warn(`幕三派发失败 #${d}：`, e.message);
             if (d === CHAIR_DISPATCH_ATTEMPTS) throw e;
             progress(meetingId, `主席派发失败（${e.message}），20s 后重试...`);
-            await new Promise(r => setTimeout(r, 20000));
+            await waitWithCommitteeCancellation(meetingId, 20000);
           }
         }
         chairText = resultText(act3, seats.chair.sid) || chairText;
@@ -553,6 +616,7 @@ function createCommitteeConductor(deps) {
       // ---- 落盘 + 回执 ----
       let saved = { ok: false, error: '决议未通过校验，未落盘' };
       if (v.ok && verdict) {
+        throwIfCommitteeCancelled(meetingId);
         const record = {
           symbol: prep.symbol, name: prep.name, mode: cmd.mode,
           rating: verdict.rating, core_thesis: verdict.core_thesis,
@@ -582,6 +646,7 @@ function createCommitteeConductor(deps) {
         const tmp = path.join(os.tmpdir(), `committee-verdict-${Date.now()}.json`);
         fs.writeFileSync(tmp, JSON.stringify(record), 'utf-8');
         saved = await runPython(['-m', 'committee.committee_memory', 'append-verdict', '--file', tmp], MEMORY_TIMEOUT_MS);
+        throwIfCommitteeCancelled(meetingId);
         try { fs.unlinkSync(tmp); } catch {}
         if (verdict.lesson_suggest && verdict.lesson_suggest.text && saved.ok) {
           const ltmp = path.join(os.tmpdir(), `committee-lesson-${Date.now()}.json`);
@@ -589,6 +654,7 @@ function createCommitteeConductor(deps) {
             ...verdict.lesson_suggest, src_verdicts: [saved.id],
           }), 'utf-8');
           await runPython(['-m', 'committee.committee_memory', 'add-lesson', '--file', ltmp], MEMORY_TIMEOUT_MS);
+          throwIfCommitteeCancelled(meetingId);
           try { fs.unlinkSync(ltmp); } catch {}
         }
       }
@@ -621,9 +687,13 @@ function createCommitteeConductor(deps) {
           const ttmp = path.join(os.tmpdir(), `committee-transcript-${Date.now()}.json`);
           fs.writeFileSync(ttmp, JSON.stringify(transcript), 'utf-8');
           const rep = await runPython(['-m', 'committee.replay_gen', 'save', '--file', ttmp], MEMORY_TIMEOUT_MS);
+          throwIfCommitteeCancelled(meetingId);
           try { fs.unlinkSync(ttmp); } catch {}
           if (rep && rep.ok) replayPath = rep.html;
-        } catch (e) { warn('replay 生成失败（不影响会议）：', e.message); }
+        } catch (e) {
+          if (isCommitteeAbort(e)) throw e;
+          warn('replay 生成失败（不影响会议）：', e.message);
+        }
       }
 
       const receipt = [
@@ -651,9 +721,13 @@ function createCommitteeConductor(deps) {
       };
     } catch (e) {
       warn('session failed:', e.message);
+      if (isCommitteeAbort(e)) {
+        return { status: e.status, turnNum: null, reason: e.message, superseded: e.status === 'superseded' };
+      }
       return { status: 'error', turnNum: null, reason: `投委会中断：${e.message}` };
     } finally {
       inProgress.delete(meetingId);
+      cancellationByMeeting.delete(meetingId);
     }
   }
 
@@ -667,9 +741,11 @@ function createCommitteeConductor(deps) {
     if (!seats.chair || !seats.fund || !seats.tech) {
       return { status: 'error', turnNum: null, reason: '体检需要 基本面官(deepseek)+技术面官(codex)+主席(claude) 三席在场' };
     }
+    cancellationByMeeting.delete(meetingId);
     inProgress.add(meetingId);
     const deadline = Date.now() + SESSION_DEADLINE_MS;
     const checkDeadline = (stage) => {
+      throwIfCommitteeCancelled(meetingId);
       if (Date.now() > deadline) throw new Error(`体检整场超时（40min）于 ${stage}`);
     };
     try {
@@ -705,6 +781,7 @@ function createCommitteeConductor(deps) {
       const preps = await Promise.all(positions.map(p =>
         runPython(['-m', 'committee.prep_case', String(p.symbol), '--fast'], PREP_TIMEOUT_MS.quick)
           .then(r => ({ symbol: p.symbol, prep: r }))));
+      throwIfCommitteeCancelled(meetingId);
       const casesMarkdown = preps
         .map(x => x.prep && x.prep.ok ? x.prep.markdown : `# ${x.symbol} 案卷生成失败：${(x.prep && x.prep.error) || '未知'}`)
         .join('\n\n---\n\n');
@@ -752,6 +829,7 @@ function createCommitteeConductor(deps) {
         const tmp = path.join(os.tmpdir(), `committee-checkup-${Date.now()}.json`);
         fs.writeFileSync(tmp, JSON.stringify(record), 'utf-8');
         saved = await runPython(['-m', 'committee.committee_memory', 'append-checkup', '--file', tmp], MEMORY_TIMEOUT_MS);
+        throwIfCommitteeCancelled(meetingId);
         try { fs.unlinkSync(tmp); } catch {}
       }
       progress(meetingId, `📥 体检落盘：${saved.ok ? saved.id : '❌ ' + (saved.error || '失败')}\n📊 Dashboard：C:\\LinDangAgent\\data\\knowledge\\committee\\dashboard.html`);
@@ -761,15 +839,21 @@ function createCommitteeConductor(deps) {
       };
     } catch (e) {
       warn('checkup failed:', e.message);
+      if (isCommitteeAbort(e)) {
+        return { status: e.status, turnNum: null, reason: e.message, superseded: e.status === 'superseded' };
+      }
       return { status: 'error', turnNum: null, reason: `体检中断：${e.message}` };
     } finally {
       inProgress.delete(meetingId);
+      cancellationByMeeting.delete(meetingId);
     }
   }
 
   return {
     isCommitteeCommand,
     runCommitteeSession,
+    cancelCommitteeSession,
+    _dispatchForTest: dispatch,
     _resolveSeats: resolveSeats,
     _resolveCommitteeRoute: resolveCommitteeRoute,
   };

@@ -112,6 +112,29 @@ test('buildFirstDelta prepends system prompt only before the sid is delivered', 
   assert.match(next, /^## 用户\nAgain\n\n请发言。$/);
 });
 
+test('buildFirstDelta gives a newly added member every unseen user question and AI reply', () => {
+  const { orch } = fresh();
+  orch.state.messages = [
+    { id: 'u1', turnNum: 1, role: 'user', speaker: '你', content: 'Q1：先解释背景', sid: null },
+    { id: 'a1-claude', turnNum: 1, role: 'assistant', speaker: 'Claude', content: 'A1：这是背景答案', sid: 's-claude' },
+    { id: 'u2', turnNum: 2, role: 'user', speaker: '你', content: 'Q2：再比较两个方案', sid: null },
+    { id: 'a2-codex', turnNum: 2, role: 'assistant', speaker: 'Codex', content: 'A2：这是方案比较', sid: 's-codex' },
+    { id: 'u3', turnNum: 3, role: 'user', speaker: '你', content: 'Q3：当前问题', sid: null },
+  ];
+
+  const first = orch.buildFirstDelta('s-new-member', 'Q3：当前问题', 'SYS', {
+    currentUserMessageAppended: true,
+  });
+
+  assert.ok(first.startsWith('SYS\n\n## 群聊历史（新成员首次同步）'));
+  assert.ok(first.includes('你：Q1：先解释背景'));
+  assert.ok(first.includes('Claude：A1：这是背景答案'));
+  assert.ok(first.includes('你：Q2：再比较两个方案'));
+  assert.ok(first.includes('Codex：A2：这是方案比较'));
+  assert.strictEqual((first.match(/Q3：当前问题/g) || []).length, 1, '当前问题只能出现在当前用户段一次');
+  assert.match(first, /## 用户\nQ3：当前问题\n\n请发言。$/);
+});
+
 test('completeTurn records assistant messages and delivery indexes without summaries', () => {
   const { orch } = fresh();
   const { turnNum } = orch.beginTurn('Compare OFDMA and SC-FDMA.');
@@ -128,6 +151,24 @@ test('completeTurn records assistant messages and delivery indexes without summa
   assert.strictEqual(state.messages.length, 3);
   assert.strictEqual(state.lastDeliveredIdx['s-claude'], 2);
   assert.strictEqual(state.lastDeliveredIdx['s-codex'], 2);
+});
+
+test('completeTurn persists per-AI start/end timestamps and orders cards by real completion time', () => {
+  const { orch } = fresh();
+  const { turnNum } = orch.beginTurn('Who finishes first?');
+  const turn = orch.completeTurn(turnNum, 'Who finishes first?', [
+    { sid: 's-claude', status: 'completed', text: 'Claude later.', startedAt: 1_000, completedAt: 5_000 },
+    { sid: 's-codex', status: 'completed', text: 'Codex earlier.', startedAt: 1_100, completedAt: 3_000 },
+  ], Object.fromEntries(members.map(m => [m.sid, m])));
+
+  const assistantMessages = orch.getState().messages.filter(m => m.role === 'assistant');
+  assert.deepStrictEqual(assistantMessages.map(m => m.sid), ['s-codex', 's-claude']);
+  assert.deepStrictEqual(
+    assistantMessages.map(m => [m.startedAt, m.completedAt, m.createdAt]),
+    [[1_100, 3_000, 3_000], [1_000, 5_000, 5_000]],
+  );
+  assert.strictEqual(turn.startedAtBy['s-claude'], 1_000);
+  assert.strictEqual(turn.completedAtBy['s-codex'], 3_000);
 });
 
 test('completeTurn can preserve prompt-time delivered index so peers see same-turn replies later', () => {

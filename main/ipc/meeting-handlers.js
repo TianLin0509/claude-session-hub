@@ -30,9 +30,21 @@ function reindexSerialWorkflowAfterRemoval(serialWorkflow, removedIndex) {
     if (memberId === removedMemberId) return null;
     return oneBased > removedIndex + 1 ? 'm' + (oneBased - 1) : memberId;
   };
-  const steps = serialWorkflow.steps
-    .map(step => Array.isArray(step) ? step.map(remapMemberId).filter(Boolean) : [])
-    .filter(step => step.length > 0);
+  const promptSteps = Array.isArray(serialWorkflow.stepPrompts) ? serialWorkflow.stepPrompts : [];
+  const reindexed = serialWorkflow.steps.map((step, stepIndex) => {
+    const nextStep = Array.isArray(step) ? step.map(remapMemberId).filter(Boolean) : [];
+    const sourcePrompts = promptSteps[stepIndex] && typeof promptSteps[stepIndex] === 'object'
+      ? promptSteps[stepIndex]
+      : {};
+    const nextPrompts = {};
+    for (const [memberId, prompt] of Object.entries(sourcePrompts)) {
+      const nextMemberId = remapMemberId(memberId);
+      if (nextMemberId && typeof prompt === 'string' && prompt.trim()) nextPrompts[nextMemberId] = prompt;
+    }
+    return { step: nextStep, prompts: nextPrompts };
+  }).filter(item => item.step.length > 0);
+  const steps = reindexed.map(item => item.step);
+  const stepPrompts = reindexed.map(item => item.prompts);
   const loop = serialWorkflow.loop && typeof serialWorkflow.loop === 'object'
     ? {
         ...serialWorkflow.loop,
@@ -43,6 +55,7 @@ function reindexSerialWorkflowAfterRemoval(serialWorkflow, removedIndex) {
     ...serialWorkflow,
     enabled: !!serialWorkflow.enabled && steps.length > 0,
     steps,
+    stepPrompts,
     ...(loop ? { loop } : {}),
   };
 }

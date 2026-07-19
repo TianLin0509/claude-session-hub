@@ -637,6 +637,7 @@ function sendToRenderer(channel, data) {
 }
 
 let groupChatDispatcher = null;
+let loopEngine = null;
 
 sessionManager.onData = (sessionId, data) => {
   sendToRenderer('terminal-data', { sessionId, data });
@@ -757,8 +758,31 @@ const committeeConductor = createCommitteeConductor({
 
 registerGroupchatTurnIpc(ipcMain, {
   dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
+  interruptGroupChatTurn: groupChatDispatcher.interruptGroupChatTurn,
   committeeConductor,
 });
+
+try {
+  loopEngine = require('./main/groupchat/loop-engine.js').createLoopEngine({
+    getDispatcher: () => groupChatDispatcher,
+    meetingManager,
+    sessionManager,
+    sendToRenderer,
+    writeReport: (html) => {
+      try {
+        const dir = path.join(os.homedir(), 'artifacts');
+        fs.mkdirSync(dir, { recursive: true });
+        const reportPath = path.join(dir, `loop-report-${Date.now()}.html`);
+        fs.writeFileSync(reportPath, html, 'utf8');
+        return reportPath;
+      } catch { return null; }
+    },
+    logger: console,
+  });
+  require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, { loopEngine });
+} catch (e) {
+  console.warn('[loop] engine init failed:', e && e.message);
+}
 
 registerGroupchatQueryIpc(ipcMain, {
   getHubDataDir,
@@ -1815,6 +1839,10 @@ app.whenReady().then(async () => {
 
   traceStartup('startAgentScanner');
   startAgentScanner();
+  setTimeout(() => {
+    try { loopEngine?.resumePending(); }
+    catch (e) { console.warn('[loop] resumePending failed:', e && e.message); }
+  }, 2000);
   // PackyAPI 账户(余额 + 消耗)— 启动 1.5s 后首次拉取,之后每 5 分钟刷新一次。
   // 延后启动避免拖慢首屏;失败静默不影响其他功能。
   setTimeout(() => { fetchAndCachePackyAccount().catch(() => {}); }, 1500);

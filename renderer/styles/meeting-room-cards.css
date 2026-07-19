@@ -12,6 +12,12 @@
 
 .mr-ft-row1 { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
 .mr-ft-name { font-weight: 700; font-size: 14px; }
+.mr-ft-timing {
+  color: var(--text-secondary, #8b949e);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .mr-ft-name.slot-1 { color: var(--c-slot-1); }
 .mr-ft-name.slot-2 { color: var(--c-slot-2); }
 .mr-ft-name.slot-3 { color: var(--c-slot-3); }
@@ -250,7 +256,274 @@ body.mr-card-compare-on .mr-ft.compare-selected:hover {
   background: rgba(248, 81, 73, 0.18);
   color: #f85149;
 }
+.mr-ft-hover-actions button.quoted {
+  background: rgba(63, 185, 80, 0.24);
+  border-color: rgba(63, 185, 80, 0.55);
+  color: #7ee787;
+}
 /* === /F6 === */
+
+.mr-turn-lane {
+  margin: 8px 14px;
+  padding: 9px 10px;
+  border: 1px solid rgba(139, 148, 158, 0.18);
+  border-radius: 7px;
+  background: rgba(13, 17, 23, 0.42);
+  flex-shrink: 0;
+}
+.mr-turn-lane-head,
+.mr-card-roster-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+}
+.mr-turn-lane-head strong,
+.mr-card-roster-head strong {
+  color: var(--text-primary, #c9d1d9);
+  font-size: 12.5px;
+}
+.mr-turn-lane-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 7px;
+}
+.mr-turn-lane-item {
+  min-width: 0;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid rgba(139, 148, 158, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.mr-turn-lane-item img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  border-radius: 5px;
+  background: #fff;
+  flex: 0 0 26px;
+}
+.mr-turn-lane-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+}
+.mr-turn-lane-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary, #c9d1d9);
+  font-size: 12px;
+  font-weight: 700;
+}
+.mr-turn-lane-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary, #8b949e);
+  font-size: 11px;
+}
+.mr-turn-lane-item.is-done { border-color: rgba(63, 185, 80, 0.34); background: rgba(63, 185, 80, 0.07); }
+.mr-turn-lane-item.is-running { border-color: rgba(88, 166, 255, 0.34); background: rgba(88, 166, 255, 0.08); }
+.mr-turn-lane-item.is-warn { border-color: rgba(248, 81, 73, 0.36); background: rgba(248, 81, 73, 0.08); }
+.mr-turn-lane-item.is-muted { opacity: 0.68; }
+.mr-turn-lane-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.mr-turn-lane-actions button,
+.mr-next-actions button,
+.mr-mobile-workbench button {
+  min-height: 26px;
+  border: 1px solid rgba(139, 148, 158, 0.26);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-primary, #c9d1d9);
+  font-size: 11.5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.mr-turn-lane-actions button {
+  padding: 2px 6px;
+}
+.mr-next-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 8px 14px;
+  padding: 7px 9px;
+  border: 1px solid rgba(88, 166, 255, 0.22);
+  border-radius: 7px;
+  background: rgba(88, 166, 255, 0.06);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+.mr-next-actions-label {
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+  white-space: nowrap;
+  margin-right: auto;
+}
+.mr-next-actions button {
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+.mr-next-actions button:hover,
+.mr-turn-lane-actions button:hover,
+.mr-mobile-workbench button:hover {
+  border-color: rgba(88, 166, 255, 0.48);
+  background: rgba(88, 166, 255, 0.12);
+}
+.mr-card-roster {
+  margin: 8px 14px 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(139, 148, 158, 0.18);
+  border-radius: 7px;
+  background: rgba(13, 17, 23, 0.36);
+  flex-shrink: 0;
+}
+.mr-card-roster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 7px;
+}
+.mr-card-roster-member {
+  min-width: 0;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(139, 148, 158, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.mr-card-roster-member.selected {
+  border-color: rgba(63, 185, 80, 0.36);
+  background: rgba(63, 185, 80, 0.06);
+}
+.mr-card-roster-member img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #fff;
+  flex: 0 0 30px;
+}
+.mr-card-roster-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.mr-card-roster-name,
+.mr-card-roster-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mr-card-roster-name {
+  color: var(--text-primary, #c9d1d9);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.mr-card-roster-meta {
+  color: var(--text-secondary, #8b949e);
+  font-size: 11px;
+}
+.mr-card-roster-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-secondary, #8b949e);
+}
+.mr-card-roster-status {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(139, 148, 158, 0.2);
+}
+.mr-card-roster-status.is-done { color: #7ee787; border-color: rgba(63, 185, 80, 0.36); }
+.mr-card-roster-status.is-running { color: #79c0ff; border-color: rgba(88, 166, 255, 0.36); }
+.mr-card-roster-status.is-warn { color: #fca5a5; border-color: rgba(248, 81, 73, 0.36); }
+.mr-card-roster-ctx.warn { color: #f5d76e; }
+.mr-card-roster-ctx.danger { color: #f87171; }
+.mr-latest-round {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0 14px 10px;
+}
+.mr-latest-round-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 2px 7px;
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.mr-latest-round-head strong {
+  color: var(--text-primary, #c9d1d9);
+  font-size: 12.5px;
+}
+.mr-latest-round .mr-card-view-tabs {
+  margin-left: 0;
+  margin-right: 0;
+}
+.mr-latest-round .mr-ft-strip {
+  flex: 1 1 auto;
+}
+.mr-mobile-workbench {
+  display: none;
+  gap: 6px;
+  padding: 7px 10px;
+  border-top: 1px solid rgba(139, 148, 158, 0.18);
+  background: rgba(13, 17, 23, 0.92);
+  flex-shrink: 0;
+}
+.mr-mobile-workbench button {
+  flex: 1 1 0;
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .mr-card-roster-grid,
+  .mr-turn-lane-grid {
+    grid-template-columns: 1fr;
+  }
+  .mr-card-roster-side {
+    display: none;
+  }
+  .mr-next-actions {
+    margin-left: 8px;
+    margin-right: 8px;
+  }
+  .mr-mobile-workbench {
+    display: flex;
+  }
+}
 
 /* === F5 Phase 3(2026-05-04 道雪 / spec F5): 整轮 + 累计成本 status bar ===
  * 位置: panel 顶部 .mr-gc-track-row 右侧 (titleText + stepper 之后)

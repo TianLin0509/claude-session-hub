@@ -169,6 +169,7 @@ function _entryToTurn(entry) {
 function _mergeConsecutiveAssistantTurns(turns) {
   const merged = [];
   let acc = null;
+  let lastUserTs = null;
 
   const flush = () => {
     if (acc) {
@@ -185,6 +186,7 @@ function _mergeConsecutiveAssistantTurns(turns) {
     if (t.role === 'user') {
       flush();
       merged.push(t);
+      lastUserTs = t.ts;
       continue;
     }
     // assistant
@@ -195,6 +197,8 @@ function _mergeConsecutiveAssistantTurns(turns) {
         text: t.text || '',
         ts: t.ts,
         tsEnd: t.ts,
+        startedAt: lastUserTs || t.ts,
+        completedAt: t.ts,
         model: t.model,
         stopReason: t.stopReason,
         thinking: t.thinking ? [t.thinking] : [],
@@ -209,6 +213,7 @@ function _mergeConsecutiveAssistantTurns(turns) {
       if (t.thinking) acc.thinking.push(t.thinking);
       if (Array.isArray(t.toolCalls) && t.toolCalls.length) acc.toolCalls.push(...t.toolCalls);
       acc.tsEnd = t.ts;
+      acc.completedAt = t.ts;
       acc.stopReason = t.stopReason || acc.stopReason;
       if (t.model) acc.model = t.model;
       if (t.usage) {

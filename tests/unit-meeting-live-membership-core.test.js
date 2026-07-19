@@ -34,6 +34,7 @@ try {
   const workflow = {
     enabled: true,
     steps: [['m1'], ['m2', 'm3']],
+    stepPrompts: [{ m1: 'plan' }, { m2: 'review', m3: 'execute' }],
     loop: { enabled: true, maxRounds: 3 },
   };
   const updated = manager.updateMeeting(created.id, { serialWorkflow: workflow });
@@ -88,6 +89,7 @@ try {
     { kind: 'gemini' },
   ]);
   assert.deepStrictEqual(removal.meeting.serialWorkflow.steps, [['m1'], ['m2']]);
+  assert.deepStrictEqual(removal.meeting.serialWorkflow.stepPrompts, [{ m1: 'plan' }, { m2: 'execute' }]);
   assert.deepStrictEqual(closed, ['s2']);
 
   meetingStore.flushAll();
@@ -99,6 +101,7 @@ try {
     { kind: 'gemini' },
   ]);
   assert.deepStrictEqual(persistedAfterRemoval.serialWorkflow.steps, [['m1'], ['m2']]);
+  assert.deepStrictEqual(persistedAfterRemoval.serialWorkflow.stepPrompts, [{ m1: 'plan' }, { m2: 'execute' }]);
 
   const restored = new MeetingRoomManager();
   restored.restoreMeeting(manager.getMeeting(created.id));

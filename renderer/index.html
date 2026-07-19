@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="meeting-room.css">
   <link rel="stylesheet" href="meeting-create-modal.css">
+  <link rel="stylesheet" href="committee-ui.css">
   <link rel="stylesheet" href="workflow-config-modal.css">
   <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
   <script src="../node_modules/prismjs/prism.js"></script>
@@ -30,6 +31,7 @@
             <button class="new-session-option" data-kind="gemini"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
             <button class="new-session-option" data-kind="codex"><span class="ai-logo logo-codex"></span>Codex CLI</button>
             <button class="new-session-option" data-kind="deepseek"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
+            <button class="new-session-option" data-kind="kimi"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
             <div class="new-session-divider"></div>
             <div class="menu-group-label">终端</div>
             <button class="new-session-option" data-kind="powershell"><span class="ai-logo logo-powershell"></span>PowerShell</button>
@@ -43,6 +45,7 @@
             <button class="resume-option" data-kind="gemini-resume"><span class="ai-logo logo-gemini"></span>Gemini<span class="hint">最近一次</span></button>
             <button class="resume-option" data-kind="codex-resume"><span class="ai-logo logo-codex"></span>Codex<span class="hint">PTY picker</span></button>
             <button class="resume-option" data-kind="deepseek-resume"><span class="ai-logo logo-deepseek"></span>DeepSeek<span class="hint">PTY picker</span></button>
+            <button class="resume-option" data-kind="kimi-resume"><span class="ai-logo logo-kimi"></span>Kimi<span class="hint">PTY picker</span></button>
           </div>
         </div>
         <div class="options-wrapper">
@@ -76,20 +79,21 @@
       <div class="empty-state" id="empty-state">
         <div class="launcher launcher-poster">
           <div class="launcher-title">召集你的 AI 群聊</div>
-          <div class="launcher-subtitle">多位 AI 成员,你来配:Claude / Gemini / Codex / DeepSeek。保留核心碰撞,减少低频入口。</div>
+          <div class="launcher-subtitle">多位 AI 成员,你来配:Claude / Gemini / Codex / DeepSeek / Kimi K3。保留核心碰撞,减少低频入口。</div>
           <button class="launcher-cta" data-launcher-action="group">💬 开始 AI 群聊</button>
           <div class="launcher-secondary">
             <span>想 1 v 1?</span>
             <a class="launcher-link" data-launcher-kind="claude">Claude</a><span class="launcher-sep">·</span>
             <a class="launcher-link" data-launcher-kind="gemini">Gemini</a><span class="launcher-sep">·</span>
             <a class="launcher-link" data-launcher-kind="codex">Codex</a><span class="launcher-sep">·</span>
+            <a class="launcher-link" data-launcher-kind="kimi">Kimi K3</a><span class="launcher-sep">·</span>
             <a class="launcher-link" data-launcher-kind="claude-resume">↻ 恢复历史</a>
           </div>
           <div class="launcher-kbd-row">
             <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
             <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
             <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
-            <span class="launcher-version">v1.6.1</span>
+            <span class="launcher-version">v1.6.10</span>
           </div>
         </div>
       </div>
@@ -123,6 +127,8 @@
           </svg>
           <span class="mr-workflow-badge" id="mr-workflow-badge"></span>
         </button>
+        <button class="mr-interrupt-btn" id="mr-interrupt-btn" type="button" hidden
+                title="中断本轮（向所有正在回答的 AI 发送 Ctrl+C）" aria-label="中断本轮">■ 中断</button>
         <button class="mr-send-btn" id="mr-send-btn" title="发送">▶</button>
       </div>
     </div>
@@ -193,13 +199,12 @@
       <button class="terminal-search-btn" id="terminal-search-close" title="Close (Esc)">✕</button>
     </div>
   </div>
-  <button class="hub-escape-home" id="hub-escape-home" type="button" title="回到初始界面 (Ctrl+Alt+Home)" aria-label="回到初始界面">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10.5V20h13v-9.5"/><path d="M10 20v-5h4v5"/></svg>
-  </button>
   <script src="path-link.js"></script>
   <script src="renderer.js"></script>
+  <script src="loop-workflow.js"></script>
   <script src="meeting-room.js"></script>
   <script src="meeting-create-modal.js"></script>
+  <script src="committee-ui.js"></script>
   <script src="workflow-config-modal.js"></script>
 
   <div id="config-modal" class="config-modal-overlay hidden">
@@ -210,7 +215,7 @@
       </div>
       <div class="config-modal-body">
         <div id="config-main-view">
-          <p class="config-hint">配置全局代理和核心 AI 的接入方式。Codex / DeepSeek 的变更会在新建会话时生效。</p>
+          <p class="config-hint">配置全局代理和核心 AI 的接入方式；Claude、Codex、Kimi 与 DeepSeek 的状态会在新建会话时生效。</p>
           <div class="config-field">
             <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
             <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
@@ -226,7 +231,7 @@
                 <strong>Claude</strong>
                 <small id="cfg-summary-claude">订阅模式 · claude-opus-4-8[1m]</small>
               </span>
-              <span class="config-ai-status subscription">订阅</span>
+              <span class="config-ai-status subscription" id="cfg-status-claude">订阅</span>
             </button>
             <button class="config-ai-row" type="button" data-ai="gemini">
               <span class="config-ai-mark gemini">GE</span>
@@ -240,9 +245,17 @@
               <span class="config-ai-mark codex">CX</span>
               <span class="config-ai-copy">
                 <strong>Codex</strong>
-                <small id="cfg-summary-codex">订阅模式 · gpt-5.5</small>
+                <small id="cfg-summary-codex">订阅模式 · gpt-5.6-sol</small>
               </span>
               <span class="config-ai-status" id="cfg-status-codex">订阅</span>
+            </button>
+            <button class="config-ai-row" type="button" data-ai="kimi">
+              <span class="config-ai-mark kimi">KI</span>
+              <span class="config-ai-copy">
+                <strong>Kimi Code</strong>
+                <small id="cfg-summary-kimi">本机登录 · Kimi K3</small>
+              </span>
+              <span class="config-ai-status subscription" id="cfg-status-kimi">订阅</span>
             </button>
             <button class="config-ai-row" type="button" data-ai="deepseek">
               <span class="config-ai-mark deepseek">DS</span>
@@ -264,9 +277,33 @@
           <p class="config-hint" id="cfg-detail-hint">全 Hub 新建 Codex 会话统一生效。</p>
 
           <div class="config-ai-detail" id="cfg-detail-claude">
-            <div class="config-mode-card selected">
-              <strong>订阅 / Claude Code 登录</strong>
+            <div class="config-field">
+              <label>Claude Backend <span class="config-label-hint">(new sessions)</span></label>
+              <select id="cfg-claude-backend">
+                <option value="subscription">当前订阅 / Claude Code 登录（默认）</option>
+                <option value="api">同事中转 / Fable 5 · 1M</option>
+              </select>
+            </div>
+            <div class="config-mode-card selected" id="cfg-claude-subscription-card">
+              <strong>当前订阅 / Claude Code 登录</strong>
               <span>使用当前本机 Claude Code 登录状态。Hub 会保持现有订阅启动方式，不写入 API Key。</span>
+            </div>
+            <div class="config-mode-card" id="cfg-claude-api-card">
+              <strong>同事中转 / Fable 5 · 1M</strong>
+              <span>仅影响切换后新建的 Claude 会话；已有会话不会被迁移，订阅登录也不会被覆盖。</span>
+            </div>
+            <div class="config-note" id="cfg-claude-route-note">中转参数已保存备用；当前订阅模式不会读取或发送中转 Key。</div>
+            <div class="config-field">
+              <label>同事中转 API Key</label>
+              <input type="password" id="cfg-claude-key" placeholder="sk-..." spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>中转 Base URL</label>
+              <input type="text" id="cfg-claude-url" placeholder="http://3.142.133.116:8080" spellcheck="false">
+            </div>
+            <div class="config-field">
+              <label>中转模型 <span class="config-label-hint">（Fable 5 · 1M）</span></label>
+              <input type="text" id="cfg-claude-model" placeholder="claude-fable-5" spellcheck="false">
             </div>
           </div>
 
@@ -301,7 +338,7 @@
               <label>新账号 CODEX_HOME</label>
               <input type="text" id="cfg-codex-profile-second-home" placeholder="C:\Users\lintian\.codex-profiles\second" spellcheck="false">
             </div>
-            <div class="config-note">API 模式仍以 gpt-5.5、YOLO、信任当前目录启动，目标是和订阅模式体感一致。</div>
+            <div class="config-note">API 模式仍以 gpt-5.6-sol、YOLO、信任当前目录启动，目标是和订阅模式体感一致。</div>
             <div class="config-field">
               <label>Codex API Key</label>
               <input type="password" id="cfg-codex-key" placeholder="sk-..." spellcheck="false">
@@ -312,8 +349,16 @@
             </div>
             <div class="config-field">
               <label>Codex API Model</label>
-              <input type="text" id="cfg-codex-model" placeholder="gpt-5.5" spellcheck="false">
+              <input type="text" id="cfg-codex-model" placeholder="gpt-5.6-sol" spellcheck="false">
             </div>
+          </div>
+
+          <div class="config-ai-detail" id="cfg-detail-kimi">
+            <div class="config-mode-card selected">
+              <strong>订阅 / Kimi Code CLI 登录</strong>
+              <span>使用当前本机 Kimi Code 登录状态与 K3 模型。账号额度会在侧栏与 Claude、Codex 一起刷新。</span>
+            </div>
+            <div class="config-note">登录或切换账号请在 Kimi PTY 中执行 /login；Hub 不保存额外的 Kimi API Key。</div>
           </div>
 
           <div class="config-ai-detail" id="cfg-detail-deepseek">

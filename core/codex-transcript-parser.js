@@ -157,6 +157,8 @@ function parseCodexRolloutText(raw) {
   });
   const turns = [];
   let pendingAssistant = null;
+  let lastUserTs = null;
+  let lastTaskStartedAt = null;
 
   const ensurePendingAssistant = () => {
     if (!pendingAssistant) {
@@ -164,6 +166,7 @@ function parseCodexRolloutText(raw) {
         id: null,
         ts: null,
         tsEnd: null,
+        startedAt: null,
         text: '',
         finalText: '',
         durationMs: null,
@@ -183,10 +186,13 @@ function parseCodexRolloutText(raw) {
         text,
         ts: pendingAssistant.ts,
         tsEnd: pendingAssistant.tsEnd || pendingAssistant.ts,
+        startedAt: pendingAssistant.startedAt || pendingAssistant.ts,
+        completedAt: pendingAssistant.tsEnd || pendingAssistant.ts,
         stopReason: pendingAssistant.finalText ? 'task_complete' : 'partial_commentary',
         durationMs: pendingAssistant.durationMs || undefined,
         source: pendingAssistant.finalText ? 'codex_rollout' : 'codex_rollout_streaming',
       });
+      lastTaskStartedAt = null;
     }
     pendingAssistant = null;
   };
@@ -199,12 +205,14 @@ function parseCodexRolloutText(raw) {
         flushAssistant();
         const text = textFromPayload(payload).trim();
         if (text) {
+          const userTs = toMs(obj.timestamp);
           turns.push({
             id: _makeTurnId('codex-user', obj, index),
             role: 'user',
             text,
-            ts: toMs(obj.timestamp),
+            ts: userTs,
           });
+          lastUserTs = userTs;
         }
         return;
       }
@@ -213,8 +221,10 @@ function parseCodexRolloutText(raw) {
           flushAssistant();
         }
         const pending = ensurePendingAssistant();
+        lastTaskStartedAt = toMs(obj.timestamp);
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
-        pending.ts = pending.ts || toMs(obj.timestamp);
+        pending.ts = pending.ts || lastTaskStartedAt;
+        pending.startedAt = pending.startedAt || lastTaskStartedAt;
         return;
       }
       if (eventType === 'agent_message') {
@@ -223,6 +233,7 @@ function parseCodexRolloutText(raw) {
         const pending = ensurePendingAssistant();
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
         pending.ts = pending.ts || toMs(obj.timestamp);
+        pending.startedAt = pending.startedAt || lastTaskStartedAt || lastUserTs || pending.ts;
         pending.tsEnd = toMs(obj.timestamp);
         pending.agentMessages.push(text);
         return;
@@ -235,6 +246,7 @@ function parseCodexRolloutText(raw) {
         const pending = ensurePendingAssistant();
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
         pending.ts = pending.ts || toMs(obj.timestamp);
+        pending.startedAt = pending.startedAt || lastTaskStartedAt || lastUserTs || pending.ts;
         pending.tsEnd = toMs(obj.timestamp);
         if (text) pending.finalText = text;
         pending.durationMs = typeof payload.duration_ms === 'number' ? payload.duration_ms : null;
@@ -246,12 +258,14 @@ function parseCodexRolloutText(raw) {
       const text = textFromPayload(obj.payload).trim();
       if (text && !isInjectedContextText(text) && !hasNearbyEventUserDuplicate(entries, entryIndex, text)) {
         flushAssistant();
+        const userTs = toMs(obj.timestamp);
         turns.push({
           id: _makeTurnId('codex-user', obj, index),
           role: 'user',
           text,
-          ts: toMs(obj.timestamp),
+          ts: userTs,
         });
+        lastUserTs = userTs;
       }
     }
   });
