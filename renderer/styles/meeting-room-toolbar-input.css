@@ -1,96 +1,3 @@
-/* Sub-session slot */
-.mr-sub-slot {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  background: var(--bg-primary, #0d1117);
-}
-
-.mr-sub-slot.dormant {
-  opacity: 0.5;
-}
-
-.mr-sub-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 8px;
-  background: var(--bg-secondary, #161b22);
-  border-bottom: 1px solid var(--border, #30363d);
-  cursor: pointer;
-  user-select: none;
-}
-
-.mr-sub-header:hover {
-  background: var(--bg-hover, #1c2128);
-}
-
-.mr-sub-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary, #8b949e);
-}
-
-.mr-sub-close {
-  background: none;
-  border: none;
-  color: var(--text-secondary, #8b949e);
-  cursor: pointer;
-  font-size: 14px;
-  padding: 0 4px;
-  line-height: 1;
-}
-
-.mr-sub-close:hover {
-  color: #f85149;
-}
-
-.mr-sub-terminal {
-  flex: 1;
-  min-height: 0;
-}
-
-/* Focus mode preview bar */
-.mr-preview-bar {
-  display: flex;
-  gap: 1px;
-  background: var(--border, #30363d);
-  max-height: 80px;
-  min-height: 60px;
-}
-
-.mr-preview-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-secondary, #161b22);
-  cursor: pointer;
-  padding: 4px 8px;
-  overflow: hidden;
-}
-
-.mr-preview-item:hover {
-  background: var(--bg-hover, #1c2128);
-}
-
-.mr-preview-label {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--accent, #6366f1);
-  margin-bottom: 2px;
-}
-
-.mr-preview-text {
-  font-size: 10px;
-  color: var(--text-secondary, #8b949e);
-  font-family: monospace;
-  white-space: pre;
-  overflow: hidden;
-  line-height: 1.3;
-}
-
 /* Toolbar */
 .mr-toolbar {
   display: flex;
@@ -146,6 +53,93 @@
   background: transparent;
   flex-shrink: 0;
   z-index: 2; /* 浮于 G 地平线光晕之上 */
+}
+
+.mr-input-preflight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 4px 12px 0;
+  background: transparent;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary, #8b949e);
+}
+
+.mr-input-preflight-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(139, 148, 158, 0.22);
+  border-radius: 6px;
+  background: rgba(139, 148, 158, 0.08);
+  white-space: nowrap;
+}
+
+.mr-input-preflight-chip strong {
+  color: var(--text-primary, #c9d1d9);
+  font-weight: 600;
+}
+
+.mr-input-preflight-chip.accent {
+  border-color: rgba(88, 166, 255, 0.34);
+  background: rgba(88, 166, 255, 0.10);
+}
+
+.mr-input-preflight-chip.saved {
+  border-color: rgba(86, 211, 100, 0.28);
+  background: rgba(86, 211, 100, 0.09);
+}
+
+.mr-input-preflight-chip.warn {
+  border-color: rgba(245, 215, 110, 0.38);
+  background: rgba(245, 215, 110, 0.11);
+}
+
+.mr-input-battle-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 9px;
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  border-radius: 6px;
+  background: rgba(88, 166, 255, 0.10);
+  color: var(--text-primary, #c9d1d9);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.mr-input-battle-detail {
+  min-width: 160px;
+  max-width: min(520px, 46vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary, #8b949e);
+}
+
+.mr-input-battle-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* 2026-06-28 道雪：把聊天区的 nextActions（综合共识/互相挑错/生成交接/引用焦点卡）融入作战面板这一行——
+   去掉独立卡片的边框/外边距/背景，靠右排，与目标/引用/字数 chips 同行。 */
+.mr-input-preflight .mr-next-actions {
+  margin: 0 0 0 auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  gap: 6px;
+}
+.mr-input-preflight .mr-next-actions-label {
+  margin-right: 2px;
 }
 
 /* Phase 4 v2(2026-05-05): footer 一行化 — 头像 checkbox 组(只 logo, 无文字) */
@@ -207,130 +201,7 @@
   cursor: not-allowed; opacity: 0.5;
 }
 
-/* Phase 4 v2: 模式 dropdown — hover 展开一级 popup, 总结 hover 二级向上展开 */
-.mr-input-mode-chips {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  align-self: center;
-}
-.mr-mode-dropdown {
-  position: relative;
-}
-.mr-mode-trigger {
-  padding: 7px 14px;
-  border: 1px solid rgba(245,215,110,0.3);
-  border-radius: 18px;
-  background: rgba(245,215,110,0.10);
-  color: #f5d76e;
-  font-size: 12px;
-  cursor: pointer;
-  display: inline-flex; gap: 4px; align-items: center;
-  white-space: nowrap;
-  transition: all .15s;
-}
-.mr-mode-trigger:hover {
-  background: rgba(245,215,110,0.18);
-  border-color: #f5d76e;
-}
-.mr-mode-arrow { font-size: 9px; }
-
-/* 一级 popup: hover 主按钮 → 显示, 向上展开 */
-.mr-mode-popup {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  background: var(--bg-secondary, #161b22);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 8px;
-  padding: 4px;
-  min-width: 220px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-  display: none;
-  z-index: 10;
-}
-.mr-mode-dropdown:hover .mr-mode-popup,
-.mr-mode-popup:hover { display: block; }
-/* hover 缓冲区(防止鼠标穿越间距时关闭) */
-.mr-mode-dropdown::after {
-  content: '';
-  position: absolute;
-  bottom: 100%; left: 0; right: 0;
-  height: 8px;
-  display: none;
-}
-.mr-mode-dropdown:hover::after { display: block; }
-
-.mr-mode-item {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; border-radius: 5px;
-  font-size: 13px; color: var(--text-primary, #c9d1d9);
-  cursor: pointer;
-  background: transparent; border: none;
-  width: 100%; text-align: left;
-}
-.mr-mode-item:hover:not([disabled]):not(.disabled) {
-  background: rgba(88,166,255,0.12);
-}
-.mr-mode-item[disabled],
-.mr-mode-item.disabled {
-  opacity: 0.4; cursor: not-allowed;
-}
-.mr-mode-item-hint {
-  font-size: 10.5px; color: var(--text-muted, #6e7681);
-}
-.mr-mode-item-summary {
-  position: relative;
-  background: rgba(245,215,110,0.04);
-}
-.mr-mode-item-summary:hover:not(.disabled) {
-  background: rgba(245,215,110,0.12);
-}
-.mr-mode-item-summary:hover:not(.disabled) .mr-mode-item-hint {
-  color: #f5d76e;
-}
-
-/* 二级 popup: hover 总结项 → 向右展开 + 向上对齐(避免溢出窗口底部) */
-.mr-mode-subpopup {
-  position: absolute;
-  left: calc(100% + 4px);
-  bottom: 0; /* 底部对齐总结项底部, 内容向上延伸 — 避免靠近窗口底时溢出 */
-  background: var(--bg-secondary, #161b22);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 8px;
-  padding: 4px;
-  min-width: 200px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-  display: none;
-}
-.mr-mode-item-summary:hover:not(.disabled) .mr-mode-subpopup {
-  display: block;
-}
-.mr-mode-subpopup-title {
-  padding: 6px 12px; font-size: 11px; color: var(--text-muted, #6e7681);
-  border-bottom: 1px solid var(--border, #30363d);
-  margin-bottom: 4px;
-}
-.mr-mode-subpopup-empty {
-  padding: 8px 12px; font-size: 12px; color: var(--text-muted, #6e7681);
-}
-.mr-mode-subitem {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 12px; border-radius: 5px;
-  font-size: 12.5px; color: var(--text-primary, #c9d1d9);
-  cursor: pointer;
-  background: transparent; border: none;
-  width: 100%; text-align: left;
-}
-.mr-mode-subitem img {
-  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
-}
-.mr-mode-subitem:hover:not([disabled]) {
-  background: rgba(245,215,110,0.12); color: #f5d76e;
-}
-.mr-mode-subitem[disabled] {
-  opacity: 0.4; cursor: not-allowed;
-}
+/* 2026-07-20 道雪 [修#10]：模式 dropdown 死样式已删（功能早移除，原 125 行） */
 
 /* Phase 4 v2: 欢迎 head 动态状态 — 启动中黄色 / 全员就绪绿色 */
 .mr-gc-ob-head {
@@ -381,6 +252,8 @@
   outline: none;
   overflow-y: auto;
   word-break: break-word;
+  /* 2026-07-20 道雪 [修#7a]：JS 写入（草稿恢复/模板注入）后换行不再被折叠成空格 */
+  white-space: pre-wrap;
 }
 
 .mr-input-box:focus {
@@ -390,6 +263,176 @@
 .mr-input-box:empty::before {
   content: attr(data-placeholder);
   color: var(--text-secondary, #8b949e);
+}
+
+.mr-input-tool-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 36px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg-primary, #0d1117);
+  color: var(--text-primary, #c9d1d9);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mr-input-tool-btn:hover:not(:disabled) {
+  border-color: var(--accent, #6366f1);
+  background: var(--bg-hover, #1c2128);
+}
+
+.mr-input-tool-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.mr-input-tool-btn.attention {
+  border-color: rgba(245, 215, 110, 0.48);
+  color: #f5d76e;
+}
+
+.mr-input-history-menu {
+  position: fixed;
+  width: min(348px, calc(100vw - 24px));
+  max-height: min(360px, calc(100vh - 120px));
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  background: var(--bg-secondary, #161b22);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  z-index: 1600;
+}
+
+.mr-input-history-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary, #c9d1d9);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.mr-input-history-item:hover {
+  background: var(--bg-hover, #1c2128);
+}
+
+.mr-input-history-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mr-input-history-item small,
+.mr-input-history-empty {
+  color: var(--text-secondary, #8b949e);
+  font-size: 11px;
+}
+
+.mr-input-history-empty {
+  padding: 10px;
+}
+
+.mr-input-editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1700;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 22px;
+  background: rgba(1, 4, 9, 0.56);
+}
+
+.mr-input-editor {
+  width: min(960px, 100%);
+  max-height: min(72vh, 720px);
+  display: grid;
+  grid-template-rows: auto minmax(220px, 1fr) auto;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 8px;
+  background: var(--bg-secondary, #161b22);
+  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.48);
+}
+
+.mr-input-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-primary, #c9d1d9);
+  font-size: 13px;
+}
+
+.mr-input-editor-head span {
+  color: var(--text-secondary, #8b949e);
+  font-size: 12px;
+}
+
+.mr-input-editor-textarea {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg-primary, #0d1117);
+  color: var(--text-primary, #c9d1d9);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  outline: none;
+}
+
+.mr-input-editor-textarea:focus {
+  border-color: var(--accent, #6366f1);
+}
+
+.mr-input-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mr-input-editor-btn {
+  min-width: 72px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  background: var(--bg-primary, #0d1117);
+  color: var(--text-primary, #c9d1d9);
+  cursor: pointer;
+}
+
+.mr-input-editor-btn:hover {
+  background: var(--bg-hover, #1c2128);
+}
+
+.mr-input-editor-btn.primary {
+  border-color: rgba(88, 166, 255, 0.42);
+}
+
+.mr-input-editor-btn.send {
+  border-color: transparent;
+  background: var(--accent, #6366f1);
+  color: #fff;
 }
 
 .mr-gc-mention-menu {
@@ -528,3 +571,11 @@
   border-radius: 3px;
 }
 
+
+/* 2026-07-20 道雪 [修#3a]：休眠成员头像灰显（配合 JS 的 disabled 禁勾） */
+.mr-free-avatar-chk.dormant img { opacity: 0.45; filter: grayscale(0.8); }
+.mr-free-avatar-chk.dormant { cursor: not-allowed; }
+
+/* 2026-07-20 道雪 [修#8]：可点击 chip（循环状态停止钮） */
+.mr-input-preflight-chip.clickable { cursor: pointer; }
+.mr-input-preflight-chip.clickable:hover { border-color: rgba(245, 215, 110, 0.6); background: rgba(245, 215, 110, 0.16); }

@@ -1,7 +1,7 @@
 'use strict';
 // core/transcript-tap.js
 //
-// 统一 Transcript 抽取适配器：从三家 CLI（Claude / Codex / Gemini）各自自动落盘的
+// 统一 Transcript 抽取适配器：从各 CLI（Claude / Codex / Gemini / Kimi）自动落盘的
 // 权威 transcript 文件读取最后一轮 AI 回答，替代会议室 SM-START/SM-END 标识符协议。
 //
 // 路径（已在 2026-04-25 实测确认）：
@@ -17,15 +17,19 @@
 // Fallback：若任一 Tap 未捕获（hook 未触发 / 文件路径漂移 / CLI 版本不兼容），
 
 const { EventEmitter } = require('events');
-const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
+const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const readline = require('readline');
 const { parseClaudeTranscriptToTurns } = require('./claude-transcript-parser');
-const codexAppRegistry = require('./codex-app-registry.js');
+const {
+  isCodexTopLevelRolloutMeta,
+  readCodexRolloutMeta,
+} = require('./codex-transcript-parser.js');
 const { JsonlTail } = require('./jsonl-tail.js');
 const { codexTextFromPayload, timestampToMs } = require('./transcript-payload-utils.js');
+const { KimiTap } = require('./kimi-transcript-tap.js');
 
 // ---------------------------------------------------------------------------
 // JsonlTail — 共用工具：监听 JSONL 文件增长，按行回调 JSON.parse 后的对象
@@ -134,19 +138,30 @@ class ClaudeTap extends EventEmitter {
   // 2026-05-02 Bug 修复：扩展手动提取支持 Claude/DeepSeek/GLM。
   //   旧版本仅 GeminiTap 有 extractLatestGeminiTurn → 用户对 Claude/DeepSeek/GLM 卡片点
   //   "一键提取"永远拿到 null，UI 显"提取失败"——按钮形同虚设。
-  //   新版本：复用 readLastAssistantMessageFromClaudeTranscript 读 transcript 末尾的
-  //   last assistant text。sincePromptTs 暂不过滤（Claude transcript 末尾通常就是本轮，
-  //   误差可接受；后续可加 timestamp 字段过滤）。
+  //   新版本：复用 parseClaudeTranscriptToTurns 读 transcript 末尾的合并 turn，并按
+  //   sincePromptTs 做时间窗下界过滤（见下方 2026-07-20 修复说明）。
   //   返回 { text, source } 与 GeminiTap 同形；transcriptPath 未知（hook/scan 都未拿到）→ null。
   //
   // 2026-05-14 道雪：切到合并版 readLastAssistantTurnMergedTextFromClaudeTranscript，
   //   修群聊只拿到 [3] recap 段的 bug（plan 段在首条 entry，旧函数只读末条）。
-  async extractLatestTurn(hubSessionId, _sincePromptTs = 0) {
+  //
+  // 2026-07-20 道雪 [修#1]：补上 sincePromptTs 时间窗下界。旧版忽略该参数 —— AI 卡住
+  //   /思考中时 transcript 最后一个完整 turn 是「上一轮」的答案，一键提取会把它抓进
+  //   本轮（张冠李戴）。现在末轮完成时间早于本轮 prompt 5s 以上 → 视为旧答案拒绝提取。
+  async extractLatestTurn(hubSessionId, sincePromptTs = 0) {
     const entry = this._bound.get(hubSessionId);
     if (!entry || !entry.transcriptPath) return null;
-    const text = await readLastAssistantTurnMergedTextFromClaudeTranscript(entry.transcriptPath);
-    if (!text || !text.trim()) return null;
-    return { text: text.trim(), source: 'manual_claude_transcript' };
+    let last = null;
+    try {
+      const turns = parseClaudeTranscriptToTurns(entry.transcriptPath, { limit: 1, fromTail: true });
+      last = turns[turns.length - 1];
+    } catch { return null; }
+    if (!last || last.role !== 'assistant') return null;
+    const turnEndMs = last.tsEnd || last.ts || 0;
+    if (sincePromptTs && turnEndMs && turnEndMs < sincePromptTs - 5000) return null;
+    const text = typeof last.text === 'string' ? last.text.trim() : '';
+    if (!text) return null;
+    return { text, source: 'manual_claude_transcript' };
   }
 
   getStreamingText(hubSessionId) {
@@ -181,11 +196,11 @@ class ClaudeTap extends EventEmitter {
         if (obj?.type !== 'assistant' || !obj.message?.content) return;
         const content = obj.message.content;
         if (!Array.isArray(content)) return;
-        // T13（2026-06-08）：抽 message.model + message.usage 缓存到 entry，turn emit 时附给 PWA。
+        // T13（2026-06-08）：抽 message.model + message.usage 缓存到 entry，turn emit 时附给卡片视图。
         //   transcript 每行 assistant message 都带这两个字段（CC CLI 包装 anthropic API 响应原样落盘）。
         //   model 形如 "claude-opus-4-7" / "claude-sonnet-4-5"；usage 含 input/output/cache_read/cache_creation。
         //   tool_use 中间行的 usage 是"到目前为止"的累积值（API 行为），所以无脑覆盖到 terminal 行
-        //   就是本轮最终值，符合 PWA 卡片"显示本轮消耗"的语义。
+        //   就是本轮最终值，符合卡片视图"显示本轮消耗"的语义。
         if (typeof obj.message.model === 'string' && obj.message.model) {
           entry.lastModel = obj.message.model;
         }
@@ -255,7 +270,7 @@ class ClaudeTap extends EventEmitter {
         text,
         completedAt: Date.now(),
         signalSource: 'stop_hook',
-        // T13: 附带 model + usage 给 PWA 显示真实模型名 + token chip
+        // T13: 附带 model + usage 给卡片视图显示真实模型名 + token chip
         modelId: entry.lastModel || null,
         usage: entry.lastUsage || null,
       });
@@ -289,7 +304,7 @@ class ClaudeTap extends EventEmitter {
           text: result.text,
           completedAt: Date.now(),
           signalSource: 'idle_timer_terminal',
-          // T13: 附带 model + usage 给 PWA 显示真实模型名 + token chip
+          // T13: 附带 model + usage 给卡片视图显示真实模型名 + token chip
           modelId: entry.lastModel || null,
           usage: entry.lastUsage || null,
         });
@@ -331,7 +346,7 @@ class ClaudeTap extends EventEmitter {
           text,
           completedAt: Date.now(),
           signalSource: 'stop_reason_terminal',
-          // T13: 附带 model + usage 给 PWA 显示真实模型名 + token chip
+          // T13: 附带 model + usage 给卡片视图显示真实模型名 + token chip
           modelId: entry.lastModel || null,
           usage: entry.lastUsage || null,
         });
@@ -404,13 +419,29 @@ function normalizePromptForCompare(text) {
   return String(text || '').replace(/\r\n/g, '\n').trim();
 }
 
+function canonicalizeLongPromptForTuiCompare(text) {
+  // Codex TUI 0.144 can drop presentation-only Unicode characters while a
+  // bracketed paste crosses the Windows PTY boundary (observed: em dashes and
+  // circled list numbers). Keep semantic letters + decimal digits so a long
+  // group-chat prompt still binds to its rollout without weakening matching
+  // for short prompts where punctuation may be meaningful.
+  return normalizePromptForCompare(text)
+    .normalize('NFC')
+    .replace(/[^\p{L}\p{Nd}]+/gu, '')
+    .toLowerCase();
+}
+
 function codexPromptMatchesExpected(userMessage, expectedPrompt) {
   const msg = normalizePromptForCompare(userMessage);
   const expected = normalizePromptForCompare(expectedPrompt);
   if (!msg || !expected) return false;
   if (msg === expected) return true;
-  if (!expected.includes('A UTF-8 group-chat prompt has been saved to this file:')) return false;
-  return msg.includes(expected);
+  if (expected.includes('A UTF-8 group-chat prompt has been saved to this file:')) {
+    return msg.includes(expected);
+  }
+  const expectedCanonical = canonicalizeLongPromptForTuiCompare(expected);
+  if (expectedCanonical.length < 80) return false;
+  return canonicalizeLongPromptForTuiCompare(msg) === expectedCanonical;
 }
 
 // 2026-05-14 道雪：多 entry 合并版 — 修群聊只拿到 [3] recap 段的 bug。
@@ -552,21 +583,31 @@ class CodexTap extends EventEmitter {
                                // both _tryBind() and double-bind a file.
   }
 
-  registerSession(hubSessionId, { cwd, sessionsRoot, codexSid, transcriptPath, allowMtimeFallback = false } = {}) {
+  registerSession(hubSessionId, {
+    cwd,
+    sessionsRoot,
+    codexSid,
+    transcriptPath,
+    allowMtimeFallback = false,
+    requirePromptMatch = false,
+  } = {}) {
     const normCwd = normalizePathForCompare(cwd || process.cwd());
     if (sessionsRoot) this._sessionsRoots.add(sessionsRoot);
     this._pending.set(hubSessionId, {
       cwd: normCwd,
       spawnTime: Date.now(),
       allowMtimeFallback: !!allowMtimeFallback,
+      requirePromptMatch: !!requirePromptMatch,
       expectedPrompt: null,
       expectedPromptAt: null,
     });
     this._ensureWatcher();
     if (transcriptPath) {
-      this._pending.delete(hubSessionId);
-      this._seen.add(transcriptPath);
-      this._bindRolloutToHubSession(hubSessionId, transcriptPath).catch((e) => {
+      this._bindRolloutToHubSession(hubSessionId, transcriptPath).then((bound) => {
+        if (!bound) return;
+        this._pending.delete(hubSessionId);
+        this._seen.add(transcriptPath);
+      }).catch((e) => {
         console.warn('[codex-tap] bind by transcriptPath failed:', e.message);
       });
       return;
@@ -668,7 +709,11 @@ class CodexTap extends EventEmitter {
   //   - no_rollout_bound      ← _bound.get(hubSessionId).rolloutPath 不存在
   //   返回值始终是对象（不再返回 null），text='' 时由调用方按 extractMode 区分原因。
   //   `source` 字段（manual_codex_rollout / manual_codex_rollout_streaming）保留用于日志追溯。
-  async extractLatestTurn(hubSessionId, sincePromptTs = 0) {
+  // 2026-07-12 道雪：新增 opts.untilTs —— 轮次窗口上界（开区间）。
+  //   「重新提取」旧轮时，调用方传该轮用户消息时间做 sincePromptTs、下一轮用户消息
+  //   时间做 untilTs，把提取严格框在该轮内；否则"从尾向前扫最新 task_complete"
+  //   永远拿到最新轮的答案，patch 回旧轮 = 内容张冠李戴。untilTs 缺省 null = 原行为。
+  async extractLatestTurn(hubSessionId, sincePromptTs = 0, opts = {}) {
     const entry = this._bound.get(hubSessionId);
     if (!entry || !entry.rolloutPath) {
       return { text: '', extractMode: 'no_rollout_bound', source: null };
@@ -676,6 +721,8 @@ class CodexTap extends EventEmitter {
     let raw;
     try { raw = await fs.promises.readFile(entry.rolloutPath, 'utf8'); }
     catch { return { text: '', extractMode: 'no_rollout_bound', source: null }; }
+    const untilTs = Number.isFinite(Number(opts.untilTs)) && Number(opts.untilTs) > 0 ? Number(opts.untilTs) : null;
+    const beyondWindow = (ts) => untilTs !== null && Number.isFinite(ts) && ts >= untilTs;
     const lines = raw.split('\n');
     let effectiveSinceTs = Math.max(0, Number(sincePromptTs) || 0);
     for (const line of lines) {
@@ -685,12 +732,16 @@ class CodexTap extends EventEmitter {
       try { obj = JSON.parse(trimmed); } catch { continue; }
       if (obj?.type !== 'event_msg' || obj.payload?.type !== 'user_message') continue;
       const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
-      if (Number.isFinite(ts) && ts >= effectiveSinceTs) {
+      // 窗口内的最后一条 user_message 才能推进下界；窗口外（下一轮）的不算
+      if (Number.isFinite(ts) && ts >= effectiveSinceTs && !beyondWindow(ts)) {
         effectiveSinceTs = ts;
       }
     }
 
-    // 优先：从尾向前扫 task_complete.last_agent_message（带 sincePromptTs 过滤）
+    // 优先：从尾向前扫 task_complete.last_agent_message（带 since/until 窗口过滤）
+    // 二轮加固（多方审查）：窗口模式（untilTs 有值 = 精确旧轮重提取）下，时间戳缺失/
+    //   非法的事件一律不信任——NaN 会同时穿过 since 和 until 过滤，把别轮答案带进窗口。
+    //   无窗口（最新轮/兼容旧调用）保持宽松原行为。
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();
       if (!line) continue;
@@ -698,7 +749,9 @@ class CodexTap extends EventEmitter {
       try { obj = JSON.parse(line); } catch { continue; }
       if (obj?.type !== 'event_msg' || obj.payload?.type !== 'task_complete') continue;
       const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+      if (untilTs !== null && !Number.isFinite(ts)) continue;
       if (effectiveSinceTs && Number.isFinite(ts) && ts < effectiveSinceTs) continue;
+      if (beyondWindow(ts)) continue;
       const text = obj.payload.last_agent_message;
       if (typeof text !== 'string' || !text.trim()) continue;
       return {
@@ -708,7 +761,7 @@ class CodexTap extends EventEmitter {
       };
     }
 
-    // 降级：streaming 中（无 task_complete）→ 拼 sincePromptTs 之后所有 agent_message
+    // 降级：streaming 中（无 task_complete）→ 拼窗口内所有 agent_message
     const collected = [];
     for (const line of lines) {
       const trimmed = line.trim();
@@ -717,7 +770,9 @@ class CodexTap extends EventEmitter {
       try { obj = JSON.parse(trimmed); } catch { continue; }
       if (obj?.type !== 'event_msg' || obj.payload?.type !== 'agent_message') continue;
       const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+      if (untilTs !== null && !Number.isFinite(ts)) continue;
       if (effectiveSinceTs && Number.isFinite(ts) && ts < effectiveSinceTs) continue;
+      if (beyondWindow(ts)) continue;
       const msg = obj.payload.message;
       if (typeof msg !== 'string' || !msg.trim()) continue;
       collected.push(msg.trim());
@@ -790,9 +845,10 @@ class CodexTap extends EventEmitter {
     if (!hubSessionId || !codexSid || this._bound.has(hubSessionId)) return false;
     const rolloutPath = await this._findRolloutByCodexSid(codexSid);
     if (!rolloutPath) return false;
+    const bound = await this._bindRolloutToHubSession(hubSessionId, rolloutPath);
+    if (!bound) return false;
     this._pending.delete(hubSessionId);
     this._seen.add(rolloutPath);
-    await this._bindRolloutToHubSession(hubSessionId, rolloutPath);
     return true;
   }
 
@@ -837,6 +893,14 @@ class CodexTap extends EventEmitter {
       meta = obj.payload;
     } catch { return; }
 
+    // Hub sessions own top-level Codex TUI threads. Codex subagents write
+    // sibling rollout files in the same cwd and often within the same second;
+    // accepting one here permanently cross-wires card history and PTY state.
+    if (!isCodexTopLevelRolloutMeta(meta)) {
+      this._seen.add(rolloutPath);
+      return;
+    }
+
     const metaCwd = normalizePathForCompare(meta.cwd || '');
     const metaTs = Date.parse(meta.timestamp || '');
     if (!metaCwd) { console.warn(`[codex-tap] rollout has no cwd: ${rolloutPath}`); return; }
@@ -849,6 +913,7 @@ class CodexTap extends EventEmitter {
     if (effectiveTs == null) effectiveTs = statMtime;
 
     const candidates = [];
+    let normalizedUserMessages = null;
     let sawMatchingPendingCwd = false;
     for (const [hubSessionId, entry] of this._pending) {
       if (entry.cwd !== metaCwd) continue;
@@ -868,6 +933,13 @@ class CodexTap extends EventEmitter {
         delta = 0;
       }
       if (delta == null) continue;
+      if (entry.requirePromptMatch) {
+        if (!entry.expectedPrompt) continue;
+        if (normalizedUserMessages === null) {
+          normalizedUserMessages = (await readCodexUserMessages(rolloutPath)).map(normalizePromptForCompare);
+        }
+        if (!normalizedUserMessages.some(msg => codexPromptMatchesExpected(msg, entry.expectedPrompt))) continue;
+      }
       candidates.push({ hubSessionId, entry, delta });
     }
     let best = null;
@@ -876,7 +948,8 @@ class CodexTap extends EventEmitter {
     } else if (candidates.length > 1) {
       const promptCandidates = candidates.filter(c => c.entry.expectedPrompt);
       if (promptCandidates.length === 0) return;
-      const userMessages = (await readCodexUserMessages(rolloutPath)).map(normalizePromptForCompare);
+      const userMessages = normalizedUserMessages
+        || (await readCodexUserMessages(rolloutPath)).map(normalizePromptForCompare);
       if (userMessages.length === 0) return;
       const matched = promptCandidates.filter(c =>
         userMessages.some(msg => codexPromptMatchesExpected(msg, c.entry.expectedPrompt))
@@ -908,6 +981,13 @@ class CodexTap extends EventEmitter {
   }
 
   async _bindRolloutToHubSession(hubSessionId, rolloutPath) {
+    const existing = this._bound.get(hubSessionId);
+    if (existing) return existing.rolloutPath === rolloutPath;
+    const meta = readCodexRolloutMeta(rolloutPath);
+    if (!isCodexTopLevelRolloutMeta(meta)) {
+      this._seen.add(rolloutPath);
+      return false;
+    }
     // Emit session-bound so main.js can persist codexSid for future resume.
     const codexSid = extractCodexSidFromRolloutPath(rolloutPath);
     this.emit('session-bound', { hubSessionId, kind: 'codex', codexSid, rolloutPath });
@@ -920,8 +1000,7 @@ class CodexTap extends EventEmitter {
     //         取消 pending 并丢弃旧 text，等下一次 task_complete；
     //         静默后才真 emit 'turn-complete'。
     //
-    // 2026-06-07 道雪：原 3000ms 拖累 mobile PWA 体验 — 用户原话"hub 已经显示了 codex
-    //   回复，但还是没及时返回到手机"。每个简单 prompt（如"你好"、"1+1"）codex 只产生
+    // 2026-06-07 道雪：原 3000ms 拖累卡片同步体验。每个简单 prompt（如"你好"、"1+1"）codex 只产生
     //   1 个 task_complete，3s debounce 是纯 dead time。多 task 场景下 codex 写下一条
     //   task_started 间隔通常 50-200ms（核心 event loop 同步），400ms 足够防误判。
     //   对比 ClaudeTap stop_reason 终态 emit 只用 200ms debounce。
@@ -945,7 +1024,7 @@ class CodexTap extends EventEmitter {
       // T13: token_count 事件含 last_token_usage（本轮）+ total_token_usage（累计）
       //   Codex 一个 turn 内可能写多次 token_count（每个 task 完成都写），last_token_usage 是
       //   最近一次 task 的 token，不是整 turn 累加；total_token_usage 是 session 起算的累计。
-      //   PWA 卡片"本轮消耗"语义 → 用最后一条 token_count 的 last_token_usage（最后 task 的实际值，
+      //   卡片视图"本轮消耗"语义 → 用最后一条 token_count 的 last_token_usage（最后 task 的实际值，
       //   也是最贴近"本轮回复"的语义）。多 task 时各自的 token 看不到，但首屏体验已经足够。
       if (eventType === 'token_count' && obj.payload.info) {
         const info = obj.payload.info;
@@ -1008,7 +1087,7 @@ class CodexTap extends EventEmitter {
             completedAt: Date.now(),
             durationMs: finalDuration,
             signalSource: 'task_complete',
-            // T13: 附带 model + usage 给 PWA 显示真实模型名 + token chip
+            // T13: 附带 model + usage 给卡片视图显示真实模型名 + token chip
             modelId: entry.lastModel || null,
             usage: entry.lastUsage || null,
           });
@@ -1024,61 +1103,7 @@ class CodexTap extends EventEmitter {
       _lastPromptSig: null,
     });
     await tail.start();
-  }
-}
-
-class CodexAppTap extends EventEmitter {
-  constructor() {
-    super();
-    this._bound = new Map();
-  }
-
-  registerSession(hubSessionId) {
-    const client = codexAppRegistry.getClient(hubSessionId);
-    if (!client || this._bound.has(hubSessionId)) return;
-    const onTurnComplete = (ev) => this.emit('turn-complete', ev);
-    const onSessionBound = (ev) => this.emit('session-bound', ev);
-    const onPromptSubmitted = (ev) => this.emit('prompt-submitted', ev);
-    client.on('turn-complete', onTurnComplete);
-    client.on('session-bound', onSessionBound);
-    client.on('prompt-submitted', onPromptSubmitted);
-    this._bound.set(hubSessionId, { client, onTurnComplete, onSessionBound, onPromptSubmitted });
-  }
-
-  hasSession(hubSessionId) {
-    return this._bound.has(hubSessionId) || codexAppRegistry.hasClient(hubSessionId);
-  }
-
-  unregisterSession(hubSessionId) {
-    const entry = this._bound.get(hubSessionId);
-    if (!entry) return;
-    entry.client.removeListener('turn-complete', entry.onTurnComplete);
-    entry.client.removeListener('session-bound', entry.onSessionBound);
-    entry.client.removeListener('prompt-submitted', entry.onPromptSubmitted);
-    this._bound.delete(hubSessionId);
-  }
-
-  getLastAssistantText(hubSessionId) {
-    const client = this._bound.get(hubSessionId)?.client || codexAppRegistry.getClient(hubSessionId);
-    return client ? client.getLastAssistantText() : null;
-  }
-
-  getStreamingText(hubSessionId) {
-    const client = this._bound.get(hubSessionId)?.client || codexAppRegistry.getClient(hubSessionId);
-    return client ? client.getStreamingText() : null;
-  }
-
-  clearStreamingBuf(hubSessionId) {
-    const client = this._bound.get(hubSessionId)?.client || codexAppRegistry.getClient(hubSessionId);
-    if (client) client.clearStreamingBuf();
-  }
-
-  async extractLatestTurn(hubSessionId) {
-    const text = this.getLastAssistantText(hubSessionId);
-    if (!text || !String(text).trim()) {
-      return { text: '', extractMode: 'no_codex_app_text', source: null };
-    }
-    return { text: String(text).trim(), extractMode: 'final_answer', source: 'codex_app_server' };
+    return true;
   }
 }
 
@@ -1500,7 +1525,7 @@ class GeminiTap extends EventEmitter {
 }
 
 // ---------------------------------------------------------------------------
-// TranscriptTap — 外部入口，组合三个后端
+// TranscriptTap — 外部入口，组合各 CLI transcript 后端
 // ---------------------------------------------------------------------------
 
 class TranscriptTap extends EventEmitter {
@@ -1508,9 +1533,9 @@ class TranscriptTap extends EventEmitter {
     super();
     this._claude = new ClaudeTap();
     this._codex = new CodexTap();
-    this._codexApp = new CodexAppTap();
     this._gemini = new GeminiTap();
-    for (const b of [this._claude, this._codex, this._codexApp, this._gemini]) {
+    this._kimi = new KimiTap();
+    for (const b of [this._claude, this._codex, this._gemini, this._kimi]) {
       b.on('turn-complete', (ev) => this.emit('turn-complete', ev));
       b.on('session-bound', (ev) => this.emit('session-bound', ev));
       b.on('prompt-submitted', (ev) => this.emit('prompt-submitted', ev));
@@ -1521,18 +1546,18 @@ class TranscriptTap extends EventEmitter {
     return (
       this._claude.hasSession(hubSessionId) ||
       this._codex.hasSession(hubSessionId) ||
-      this._codexApp.hasSession(hubSessionId) ||
-      this._gemini.hasSession(hubSessionId)
+      this._gemini.hasSession(hubSessionId) ||
+      this._kimi.hasSession(hubSessionId)
     );
   }
 
-  // kind: 'claude' | 'claude-resume' | 'codex' | 'gemini'
+  // kind: 'claude' | 'claude-resume' | 'codex' | 'gemini' | 'kimi'
   // ctx: { cwd }
   registerSession(hubSessionId, kind, ctx = {}) {
     if (!hubSessionId || !kind) return;
     const backend = this._backendFor(kind);
     if (!backend) return;
-    try { backend.registerSession(hubSessionId, ctx); }
+    try { backend.registerSession(hubSessionId, { ...ctx, kind, allowExistingSession: ctx.allowExistingSession || kind === 'kimi-resume' }); }
     catch (e) { console.warn(`[transcript-tap] registerSession(${kind}) failed:`, e.message); }
   }
 
@@ -1545,7 +1570,7 @@ class TranscriptTap extends EventEmitter {
   }
 
   unregisterSession(hubSessionId) {
-    for (const b of [this._claude, this._codex, this._codexApp, this._gemini]) {
+    for (const b of [this._claude, this._codex, this._gemini, this._kimi]) {
       try { b.unregisterSession(hubSessionId); } catch {}
     }
   }
@@ -1554,8 +1579,8 @@ class TranscriptTap extends EventEmitter {
     return (
       this._claude.getLastAssistantText(hubSessionId) ||
       this._codex.getLastAssistantText(hubSessionId) ||
-      this._codexApp.getLastAssistantText(hubSessionId) ||
       this._gemini.getLastAssistantText(hubSessionId) ||
+      this._kimi.getLastAssistantText(hubSessionId) ||
       null
     );
   }
@@ -1567,14 +1592,14 @@ class TranscriptTap extends EventEmitter {
     return (
       this._claude.getStreamingText(hubSessionId) ||
       this._gemini.getStreamingText(hubSessionId) ||
-      this._codexApp.getStreamingText(hubSessionId) ||
+      this._kimi.getStreamingText(hubSessionId) ||
       (this._codex.getStreamingText ? this._codex.getStreamingText(hubSessionId) : null) ||
       null
     );
   }
 
   clearStreamingBuf(hubSessionId) {
-    for (const b of [this._claude, this._gemini, this._codexApp, this._codex]) {
+    for (const b of [this._claude, this._gemini, this._codex, this._kimi]) {
       try {
         if (typeof b.clearStreamingBuf === 'function') b.clearStreamingBuf(hubSessionId);
       } catch {}
@@ -1588,13 +1613,16 @@ class TranscriptTap extends EventEmitter {
   }
 
   // 2026-05-02 Bug 修复：统一手动提取入口，按 backend 路由。
-  //   Claude/DeepSeek/GLM → ClaudeTap.extractLatestTurn（读 transcript 末 last assistant）
+  //   Claude/DeepSeek     → ClaudeTap.extractLatestTurn（读 transcript 末 last assistant）
   //   Codex               → CodexTap.extractLatestTurn（读 rollout 末 task_complete）
   //   Gemini              → GeminiTap.extractLatestGeminiTurn（既有实现，过滤 sincePromptTs）
-  //   旧 IPC handler 只调 extractLatestGeminiTurn，对 Claude/DeepSeek/GLM/Codex 永远返回 null
+  //   旧 IPC handler 只调 extractLatestGeminiTurn，对 Claude/DeepSeek/Codex 永远返回 null
   //   → 用户报告"提取按钮假的"。统一入口后所有 backend 都能真正工作。
   //   返回 { text, source } 或 null。调用方应顺序尝试三个 backend，因为同一 sid 只在一个里。
-  async extractLatestTurn(hubSessionId, sincePromptTs = 0) {
+  // opts.untilTs（2026-07-12）：轮次窗口上界，仅 Codex 后端支持（rollout 事件带时间戳，
+  //   可精确框定旧轮）；Claude/Gemini 后端只能读"最新回答"，忽略该参数——调用方
+  //   （groupchat-recovery-handlers）对非 Codex 的旧轮重提取会提前拒绝，不会静默错位。
+  async extractLatestTurn(hubSessionId, sincePromptTs = 0, opts = {}) {
     // 一个 sid 只属于一个 backend。按注册归属路由，避免 Claude 未绑定
     // transcriptPath 时继续落到 Codex 并返回 no_rollout_bound 空结果。
     if (this._claude.hasSession(hubSessionId)) {
@@ -1605,15 +1633,15 @@ class TranscriptTap extends EventEmitter {
     }
     if (this._codex.hasSession(hubSessionId)) {
       let r = null;
-      try { r = await this._codex.extractLatestTurn(hubSessionId, sincePromptTs); } catch {}
+      try { r = await this._codex.extractLatestTurn(hubSessionId, sincePromptTs, opts); } catch {}
       if (r && r.text) return r;
       // 2026-05-04 codex equiv：codex 4 态契约——即便 text='' 也要把 extractMode 透传给 IPC
       // （承载 'no_task_complete_yet' / 'no_rollout_bound'，让 UI 区分原因，不再笼统 no_content）
       if (r && r.extractMode) return r;
       return null;
     }
-    if (this._codexApp.hasSession(hubSessionId)) {
-      try { return await this._codexApp.extractLatestTurn(hubSessionId, sincePromptTs); } catch { return null; }
+    if (this._kimi.hasSession(hubSessionId)) {
+      try { return await this._kimi.extractLatestTurn(hubSessionId, sincePromptTs); } catch { return null; }
     }
     // 2026-05-04 codex equiv：codex 4 态契约——即便 text='' 也要把 extractMode 透传给 IPC
     // （承载 'no_task_complete_yet' / 'no_rollout_bound'，让 UI 区分原因，不再笼统 no_content）
@@ -1657,17 +1685,21 @@ class TranscriptTap extends EventEmitter {
     return this._gemini.getDebugSnapshot();
   }
 
+  getKimiDebugSnapshot() {
+    return this._kimi.getDebugSnapshot();
+  }
+
   _backendFor(kind) {
-    // DeepSeek/GLM/GPT/Kimi/Qwen 跑在 Claude Code CLI 上（CLAUDE_CONFIG_DIR 隔离），transcript
+    // DeepSeek 跑在 Claude Code CLI 上（CLAUDE_CONFIG_DIR 隔离），transcript
     // JSONL 与 Claude 同 shape（spike 验证：tests/_spike-deepseek-stop-hook-result.md），
     // 直接复用 ClaudeTap 即让 AI 群聊 timeline + streaming preview 自动接入。CLAUDE_FAMILY 是单一
-    // 真理源，含 claude/claude-resume/deepseek/glm/gpt/kimi/qwen，未来加新 Claude 衍生家族自动覆盖。
+    // 真理源，含 claude/claude-resume/deepseek，未来加新 Claude 衍生家族自动覆盖。
     if (isClaudeFamily(kind)) {
       return this._claude;
     }
     if (isCodexCliKind(kind)) return this._codex;
-    if (kind === 'codex-app') return this._codexApp;
     if (kind === 'gemini') return this._gemini;
+    if (isKimiCliKind(kind)) return this._kimi;
     return null;
   }
 }
@@ -1709,7 +1741,6 @@ function extractGeminiProjectHashFromDir(projectDir) {
 module.exports = {
   TranscriptTap,
   CodexTap,           // 2026-05-04 codex equiv：单测注入 sessionsRoot 直测 4 态 extractMode
-  CodexAppTap,
   GeminiTap,          // 2026-05-04 gemini equiv：单测注入 tmpRoot 直测 _bound 字段
   JsonlTail,
   readLastAssistantMessageFromClaudeTranscript,

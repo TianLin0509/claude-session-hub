@@ -41,9 +41,23 @@ const RESEARCH_SCENE_PROMPT = [
   '## 投研场景',
   '优先补充他人未覆盖的角度、证据缺口或反例。在评价已知材料的基础上，尽量挖掘新线索、变量或解释路径，为讨论带回新信息、方向。涉及股票、板块、消息和近期行情时，尽量查证；事实和数字标来源，未查证就说明不确定。不要只顺着已有倾向，主动指出风险或证伪信号。若信息不足或判断分叉，先问用户 1-2 个会改变结论的问题。',
   '涉及具体 A 股、板块或买卖时机时，优先主动调用已注入的 stock_market(symbol)、stock_news(symbol)，stock_static(symbol) 仅在单只核心标的需要估值/基本面画像时再补。不要在同一轮对多只股票批量发 static+market；多股对比先 news 或至多 1-3 个 market，避免 MCP 客户端 120s 工具超时。',
+  '用户写“@英灵”、点名巴菲特/利弗莫尔镜头或要求英灵对抗时：先用 stock_* 补齐与该镜头有关的证据，再调用 spirit_prepare 生成统一 Lens Packet；所有席位按同一 rule_id 与 manifest_hash 发言。英灵只是有边界的方法论，禁止自称历史人物本人，也不得把英灵建议当成交易执行。',
   '只引用工具返回中能改变判断的关键字段；工具不可用或数据缺失时明确说未查到，不要凭记忆补数字。',
   'stock_static 返回的估值/基本面字段带 `confidence` 标签（HIGH/MEDIUM/LOW/CONFLICT/UNAVAILABLE，详细措辞规则见该工具 description），引用前先看 `_meta.warnings` 扫一眼非 HIGH 字段；CONFLICT/UNAVAILABLE 时 value=null，禁止编数值或填默认值。',
   `反空话铁律：结论必须落到具体数字或可查事实上，禁用空话套话（${BANNED_PHRASES.join('、')} 等同类表述）——出现即视为无效结论，请用带数字/来源的判断重写。`,
+].join('\n');
+
+// 右侧交易战法纪律（投委会「纪律底色」，常驻 research 场景）。与「流程档位」解耦：
+// 纪律永远在（自由聊也带），五幕固定流程只在 committee-conductor 投委会档激活。
+// 内容 = 用户锁定的追涨/低吸右侧画像表（preference_invest_chase_vs_dip）。
+const COMMITTEE_DISCIPLINE = [
+  '## 右侧交易战法纪律（底色）',
+  '本群偏中短线**右侧交易**。评估个股先归位是「追涨」还是「低吸」——两者**都是右侧、都在上升趋势**，差异只在阶段，不是方向：',
+  '- 共同底座（缺一即降级）：右侧上升趋势 · 板块龙头/认同度高 · 题材正宗够硬 · 基本面硬 · 关键趋势线不破。',
+  '- **追涨**（主升进行中）：5/10 日线强趋势、空中加油、接力强势龙；主升浪里跟随。',
+  '- **低吸**（回调赌第二波）：强势股大涨后回调 15–30%、重新站上 20 日线、缩量企稳、有催化预期。**这是右侧回调再进场，不是左侧抄底/价值反弹**。',
+  '否决线（命中即降级到观察/风险隔离，不进买入）：趋势破位 · 题材不正宗(蹭概念/相关营收占比极低) · 量价背离 · 高位假强势 · 基本面证伪。',
+  '每条信息都想一层：它对「追涨」更有价值，还是对「低吸」更有价值？给出倾向。选股看：睡得着 · 预期差 · 催化剂 · 资金利用效率。**宁可错过，不可做错**。',
 ].join('\n');
 
 // 2026-06-05 联邦记忆下线：原 MEMORY_DISCIPLINE_PROMPT 教各家 AI 写 memory 的指令段已删除。
@@ -60,7 +74,7 @@ function buildSystemPromptText(displayName, scene, opts = {}) {
     '简单问题直答；复杂分析 / 多方案 / 含表格 / 预计 > 300 字 -> HTML 三段式（先口头大纲 -> 写 C:\\Users\\lintian\\artifacts\\{msgId}-{name}.html -> 贴绝对路径+3-8 条摘要卡片）。',
   ];
   if (scene === 'research') {
-    parts.push('', RESEARCH_SCENE_PROMPT);
+    parts.push('', RESEARCH_SCENE_PROMPT, '', COMMITTEE_DISCIPLINE);
   }
   return parts.join('\n');
 }
@@ -104,6 +118,17 @@ class GroupChatOrchestrator {
           messages: Array.isArray(raw.messages) ? raw.messages : [],
           lastDeliveredIdx: raw.lastDeliveredIdx && typeof raw.lastDeliveredIdx === 'object' ? raw.lastDeliveredIdx : {},
         };
+        // 2026-07-20 道雪 [修#9]：崩溃/重启后的悬空轮标记——用户消息所在轮没有任何
+        //   turn 记录时，给该消息打"已被重启打断"标记（此前问题孤悬、无任何提示）。
+        const turnNums = new Set((this.state.turns || []).map(t => t && t.n));
+        let touched = false;
+        for (const m of this.state.messages) {
+          if (m && m.role === 'user' && Number(m.turnNum) > 0 && !turnNums.has(Number(m.turnNum)) && !m.interruptedNote) {
+            m.interruptedNote = true;
+            touched = true;
+          }
+        }
+        if (touched) this._saveState();
       }
     } catch (e) {
       console.warn(`[groupchat] load state failed for ${this.meetingId}:`, e.message);
@@ -185,12 +210,16 @@ class GroupChatOrchestrator {
   buildDelta(selfSid, userInput, opts = {}) {
     const lastIdx = this.state.lastDeliveredIdx[selfSid] ?? -1;
     const currentUserMessageAppended = opts.currentUserMessageAppended !== false;
+    // [全量注入] 投委会幕间传 includeCommitteeMid:true——把中间幕发言全文注入下一幕，让每个委员看到
+    //   队友调研全文（群聊式，dispatchInternalPrompt 用）。自由聊默认 false：中间幕不灌回、只带 outcome
+    //   （末轮辩论+收敛），省 token 不灌爆上下文（点6）。
+    const includeCommitteeMid = opts.includeCommitteeMid === true;
     const cutoff = currentUserMessageAppended
       ? Math.max(0, this.state.messages.length - 1)
       : this.state.messages.length;
     const newMsgs = this.state.messages
       .slice(lastIdx + 1, cutoff)
-      .filter(m => m.role !== 'user' && m.sid !== selfSid && m.content);
+      .filter(m => m.role !== 'user' && m.sid !== selfSid && m.content && (includeCommitteeMid || !(m.committeeAct && !m.committeeOutcome)));
     const parts = [];
     if (newMsgs.length > 0) {
       parts.push('## 新增发言\n' + newMsgs.map(m => `${m.speaker}：${m.content}`).join('\n\n'));
@@ -219,23 +248,40 @@ class GroupChatOrchestrator {
     for (const r of results) {
       const sid = r.sid;
       const member = memberBySid[sid] || {};
-      // 2026-06-21 道雪：与 patchTurnResult 对齐——仅成功态或确有新文本时写正文；
+      // [查看本轮 prompt] 该 AI 本轮实际收到的完整 prompt（dispatcher 已 recordTurnPrompt 存入 _activePrompts，
+      //   本循环结束前不会被 delete），随消息持久化，供前端气泡「📥 查看 prompt」弹窗复盘/优化。
+      const _srcPrompt = (this._activePrompts[turnNum] && this._activePrompts[turnNum][sid]) || '';
+      // 2026-06-21 道雪：与 patchTurnResult 对齐——仅确有新文本时写正文；
       //   errored/超时返回空文本时保留已有答案，防重发/串行工作流抹掉已生成内容。
+      // 2026-07-12 道雪收紧：completed 空文本（process_exit_clean 兜底 settle）同样
+      //   不得覆盖——旧规则"成功态无条件写"会让干净退出的 CLI 把已有/已手动同步的
+      //   答案抹成空气泡。真理源统一为 by[sid]，消息正文从 by[sid] 取，不再直接用 r.text。
       const _rStatus = r.status || 'completed';
-      const _writeContent = _rStatus === 'completed' || _rStatus === 'manual_extracted' || !!(r.text && r.text.length);
-      by[sid] = _writeContent ? (r.text || '') : (by[sid] || '');
-      byStatus[sid] = _rStatus;
-      thinkSecBy[sid] = statsBySid[sid]?.thinkSec || r.thinkSec || 0;
-      tokensBy[sid] = statsBySid[sid]?.tokens || (r.tokens && r.tokens.total) || 0;
+      // trim 判空与渲染层口径一致（多方审查加固）：纯空白文本视为无内容，不覆盖已有答案。
+      const _writeContent = !!(r.text && String(r.text).trim().length);
+      by[sid] = _writeContent ? r.text : (by[sid] || '');
+      // 状态守卫：本轮已被手动同步（manual_extracted）且新结果没带更有效文本时，
+      //   保留 manual_extracted——对齐 waitTurnComplete.onTurnPatched 的同名守卫，
+      //   防止"手动救回的答案"在整轮 settle 时又被标回 errored。
+      const _prevStatus = byStatus[sid];
+      byStatus[sid] = (_prevStatus === 'manual_extracted' && !_writeContent) ? 'manual_extracted' : _rStatus;
+      // 空结果（重发失败/干净退出兜底）不把已有 thinkSec/tokens 统计清零（多方审查加固）。
+      thinkSecBy[sid] = statsBySid[sid]?.thinkSec || r.thinkSec || thinkSecBy[sid] || 0;
+      tokensBy[sid] = statsBySid[sid]?.tokens || (r.tokens && r.tokens.total) || tokensBy[sid] || 0;
       const messageId = `a${turnNum}-${member.memberId || sid.slice(0, 8)}`;
+      const _failReason = (byStatus[sid] === 'errored' && r.reason) ? String(r.reason) : null;
       let msg = this.state.messages.find(m => m.id === messageId && m.role === 'assistant');
       if (msg) {
         msg.sid = sid;
         msg.memberId = member.memberId || sid;
         msg.speaker = _memberLabel(member);
-        if (_writeContent) msg.content = r.text || '';
-        msg.status = _rStatus;
+        msg.content = by[sid] || '';
+        msg.status = byStatus[sid];
         msg.updatedAt = Date.now();
+        if (_srcPrompt) msg.sourcePrompt = _srcPrompt;
+        // 迟到的无 reason errored 不抹掉已持久化的失败原因；非 errored 终态才清除。
+        if (_failReason) msg.statusReason = _failReason;
+        else if (byStatus[sid] !== 'errored') delete msg.statusReason;
       } else {
         msg = this._appendMessage({
           id: messageId,
@@ -244,8 +290,10 @@ class GroupChatOrchestrator {
           sid,
           memberId: member.memberId || sid,
           speaker: _memberLabel(member),
-          content: r.text || '',
-          status: r.status || 'completed',
+          content: by[sid] || '',
+          status: byStatus[sid],
+          sourcePrompt: _srcPrompt,
+          ...(_failReason ? { statusReason: _failReason } : {}),
         });
       }
       aiMessages.push(msg);
@@ -294,6 +342,48 @@ class GroupChatOrchestrator {
     return turn;
   }
 
+  // silent 内部编排（投委会五幕）每幕后调：标记这些委员已收到 systemPrompt 并对齐到当前 messages
+  // 末尾，使后续幕 buildFirstDelta 走增量、不再每幕全量重发规则（点2 上下文污染根因）。故意不写
+  // messages（silent 不污染自由聊 transcript）——委员靠各自持久 CLI 会话记忆延续上下文。
+  markDeliveredSilent(results) {
+    const lastIdx = this.state.messages.length - 1;
+    for (const r of results || []) {
+      if (!r || !r.sid) continue;
+      this.state.lastDeliveredIdx[r.sid] = Number.isInteger(r.deliveredIdx) ? r.deliveredIdx : lastIdx;
+    }
+    this._saveState();
+  }
+
+  // 投委会发言落进群聊 messages（带 committeeAct 幕次 meta）——每个 AI 发言以气泡卡片承载在群聊主
+  // 界面、按时间排列（阶段二 UI）。actMeta.outcome=true 的（末轮辩论 / 主席收敛）额外标 committeeOutcome：
+  // 这类会被 buildDelta 带给回归自由聊后没看到的 AI（点6）；中间幕发言 buildDelta 跳过（省 token）。
+  // 只写 messages、不写 turns —— 不进群聊 turn 列表，仅作气泡渲染 + 选择性上下文传递。
+  appendCommitteeSpeeches(items, actMeta = {}) {
+    const list = (items || []).filter(it => it && it.sid && String(it.content || '').trim());
+    if (!list.length) return 0;
+    for (const it of list) {
+      this._appendMessage({
+        id: `committee-${actMeta.act || 'x'}-${String(it.sid).slice(0, 8)}-${this.state.messages.length}`,
+        role: 'assistant',
+        sid: it.sid,
+        memberId: it.memberId || it.sid,
+        speaker: it.speaker || '委员',
+        content: String(it.content),
+        status: 'completed',
+        committeeAct: actMeta.act || '',
+        committeeRound: actMeta.round,
+        committeeSub: actMeta.sub || '',
+        committeeOutcome: !!actMeta.outcome,
+        sourcePrompt: it.prompt || '',
+      });
+    }
+    this._saveState();
+    return list.length;
+  }
+
+  // 兼容旧入口（点6）：末轮+主席发言，标 outcome。新代码走 appendCommitteeSpeeches。
+  appendCommitteeOutcome(items) { return this.appendCommitteeSpeeches(items, { outcome: true }); }
+
   clearTurnInProgress(turnNum) {
     if (!turnNum || this.state.currentTurn !== turnNum) return;
     this.state.currentMode = 'idle';
@@ -308,19 +398,31 @@ class GroupChatOrchestrator {
     turn.byStatus = turn.byStatus || {};
     turn.thinkSecBy = turn.thinkSecBy || {};
     turn.tokensBy = turn.tokensBy || {};
-    if (status === 'completed' || status === 'manual_extracted') {
-      turn.by[sid] = text || '';
+    // 2026-07-12 道雪：成功态也必须"确有文本"才写——空文本 patch 不得抹掉已有答案
+    //   （与 completeTurn 同规则，真理源 by[sid]；trim 判空与渲染层口径一致）。
+    const _writeContent = (status === 'completed' || status === 'manual_extracted') && !!(text && String(text).trim().length);
+    if (_writeContent) {
+      turn.by[sid] = text;
     }
-    turn.byStatus[sid] = status || 'completed';
+    // manual_extracted 守卫与 completeTurn 对齐（多方审查加固）：没带更有效文本的
+    //   patch 不得把手动救回的状态打回。现有调用方（manual-extract handler /
+    //   onTurnPatched）本就传对状态，这里是状态机层面的不变量兜底。
+    const _prevPatchStatus = turn.byStatus[sid];
+    const _finalStatus = (_prevPatchStatus === 'manual_extracted' && !_writeContent)
+      ? 'manual_extracted'
+      : (status || 'completed');
+    turn.byStatus[sid] = _finalStatus;
     if (typeof thinkSec === 'number') turn.thinkSecBy[sid] = thinkSec;
     if (tokens && typeof tokens.total === 'number') turn.tokensBy[sid] = tokens.total;
     turn.lastPatchedAt = Date.now();
 
     const msg = this.state.messages.find(m => m.turnNum === turnNum && m.role === 'assistant' && m.sid === sid);
     if (msg) {
-      if (status === 'completed' || status === 'manual_extracted') msg.content = text || '';
-      msg.status = status || msg.status || 'completed';
+      if (_writeContent) msg.content = text;
+      msg.status = _finalStatus;
       msg.patchedAt = turn.lastPatchedAt;
+      // 手动同步/补全成功即撤掉旧失败原因，避免"已修复但仍显示失败原因"。
+      if (_writeContent) delete msg.statusReason;
     }
 
     this._saveState();
@@ -362,5 +464,5 @@ module.exports = {
   cleanup,
   rawMessageAnchor,
   buildSystemPromptText,
-  _private: { buildSystemPromptText, RESEARCH_SCENE_PROMPT },
+  _private: { buildSystemPromptText, RESEARCH_SCENE_PROMPT, COMMITTEE_DISCIPLINE },
 };
