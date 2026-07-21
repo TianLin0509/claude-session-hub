@@ -3941,6 +3941,17 @@ if (typeof document !== 'undefined') (function () {
   //   旧版 `meetingId !== activeMeetingId → return` 让非 active AI 群聊的 cache 永远跟不上 server，
   //   切回时残留 streaming partial → 卡片显示错状态。新版 cache 同步对所有 meeting 都做，
   //   DOM 操作仅 active 时执行。
+  // 2026-07-21 道雪 [修思考中口径]：后端实际发送目标 → 覆盖乐观猜测的 _gcActiveSids，
+  //   思考中气泡/进度分母立即与真实发言一致（_expectedParticipantSids 优先读 _gcActiveSids）。
+  ipcRenderer.on('groupchat-turn-targets', (_event, { meetingId, sids }) => {
+    if (!meetingId || !Array.isArray(sids)) return;
+    _gcActiveSids[meetingId] = new Set(sids);
+    if (meetingId === activeMeetingId) {
+      const m0 = meetingData[meetingId] || (typeof meetings !== 'undefined' && meetings[meetingId]);
+      if (m0) refreshGroupChatPanel(m0);
+    }
+  });
+
   ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, sid, status, text, thinkSec, tokens, blocks, source, cleanBufLen, reason }) => {
     const meeting = meetingData[meetingId];
     if (!_isPanelCapableMeeting(meeting)) return;

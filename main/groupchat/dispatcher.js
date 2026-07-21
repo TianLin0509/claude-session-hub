@@ -745,6 +745,15 @@ function createGroupChatDispatcher(deps) {
         return { status: 'no_sent', turnNum };
       }
 
+      // 2026-07-21 道雪 [修思考中口径]：把本轮真正发出 prompt 的 sid 列表告诉 renderer——
+      //   此前 renderer 用"勾选成员"乐观猜测（triggerGroupChat 的 _gcActiveSids），
+      //   @ 点名/部分勾选时没收到提问的 AI 也显示"思考中"。
+      if (!silent) {
+        try {
+          sendToRenderer('groupchat-turn-targets', { meetingId, turnNum, sids: sentTargets.map(t => t.sid) });
+        } catch {}
+      }
+
       // 内部编排式调用可传 turnTimeoutMs：卡住的成员到点强制 skip，
       // 不阻塞整轮（防 paste-trapped 无限等待）。普通群聊保持无硬超时。
       const settled = await Promise.allSettled(sentTargets.map(t =>
