@@ -116,6 +116,10 @@ function createTerminalActivityMonitor({
     const session = sessions.get(sessionId);
     if (!session) return;
 
+    // 2026-07-21 道雪 [修进行中误判]：记录最近输出时间，供周期性兜底回收
+    //   判断"语义 running 但 45min 无任何输出 = 卡死"。
+    session._lastOutputTs = Date.now();
+
     dataCounters.set(sessionId, (dataCounters.get(sessionId) || 0) + dataLen);
 
     // 2026-07-20 道雪：byte burst 只在"无语义工作信号"的 kind 上标记 running

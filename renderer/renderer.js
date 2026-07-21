@@ -1566,6 +1566,7 @@ function markCodexCardWorking(sessionId, source = 'prompt') {
   session.status = 'running';
   session._agentWorking = 'card';
   session._runSource = 'semantic';
+  session._lastOutputTs = Date.now();
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
   if (source === 'floating_input') {
     const timer = setTimeout(() => {
@@ -1930,8 +1931,39 @@ function updateFloatingBarState() {
   if (stop) stop.classList.toggle('visible', s.status === 'running');
 }
 
-// 2026-07-19 道雪 · 方案C：等你响应浮动条——统计口径与侧栏分区完全一致
-//   （普通：isWaiting 或 unreadCount>0；群聊：本轮已答 AI 数>0；均排除 active 与 dormant）。
+// 2026-07-21 道雪 [修进行中误判]：周期性兜底回收"卡死的进行中"。
+//   此前回收路径都有洞：hook 系（claude）stop hook 丢失/hook server 掉线/事件错过时
+//   无任何回收 → 实测卡在运行中 4 小时；card 系的 45min maxAge 只在静默计时器里
+//   检查（完全无输出时永远不会触发）；gcWorking 在 watcher 卡死且无 turn-complete 时
+//   永久置位。规则：
+//   - card 系：hasSemanticCardWorking 的 45min maxAge（每次扫都真正执行）
+//   - hook 系：45min 无任何 PTY 输出判卡死（_lastOutputTs 由 onTerminalOutput/语义起点维护）
+//   - gcWorking：10min 无任何 partial-update（活着的 watcher 每 1.5s 必有 streaming）
+function sweepStaleRunning() {
+  const now = Date.now();
+  let dirty = false;
+  for (const s of sessions.values()) {
+    if (s.status === 'running' && s._runSource === 'semantic') {
+      if (s._agentWorking === 'card' && !hasSemanticCardWorking(s)) {
+        s.status = 'idle';
+        s._runSource = null;
+        s._agentWorking = null;
+        dirty = true;
+      } else if (s._agentWorking === 'hook' && s._lastOutputTs && now - s._lastOutputTs > 45 * 60 * 1000) {
+        s.status = 'idle';
+        s._runSource = null;
+        s._agentWorking = null;
+        dirty = true;
+      }
+    }
+    if (s.gcWorking && s._gcWorkingLastTs && now - s._gcWorkingLastTs > 10 * 60 * 1000) {
+      s.gcWorking = false;
+      dirty = true;
+    }
+  }
+  if (dirty) renderSessionList();
+}
+setInterval(sweepStaleRunning, 60 * 1000);
 function updateRespondPill() {
   const pill = document.getElementById('respond-pill');
   if (!pill) return;
@@ -2600,6 +2632,7 @@ function onPromptSubmittedFromHook(sessionId) {
   // 2026-07-20 道雪：hook prompt = claude 语义工作开始（与 stop hook 配对收尾）
   session._agentWorking = 'hook';
   session._runSource = 'semantic';
+  session._lastOutputTs = Date.now();
   if (session.status !== 'running') {
     session.status = 'running';
     renderSessionList();
@@ -3303,6 +3336,7 @@ ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, s
   const sub = sessions.get(sid);
   if (sub) {
     const nextWorking = status === 'streaming' || status === 'thinking' || status === 'soft_alert';
+    if (nextWorking) sub._gcWorkingLastTs = Date.now();
     if (!!sub.gcWorking !== nextWorking) {
       sub.gcWorking = nextWorking;
       renderSessionList();
