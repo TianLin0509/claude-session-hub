@@ -56,6 +56,7 @@ function createTerminalActivityMonitor({
   schedulePersist,
   updateStreamingIndicator,
   hasSemanticCardWorking,
+  hasSemanticWorking,
 }) {
   const silenceTimers = new Map();
   const dataCounters = new Map();
@@ -117,8 +118,14 @@ function createTerminalActivityMonitor({
 
     dataCounters.set(sessionId, (dataCounters.get(sessionId) || 0) + dataLen);
 
-    if (dataCounters.get(sessionId) > 200 && session.status !== 'running') {
+    // 2026-07-20 道雪：byte burst 只在"无语义工作信号"的 kind 上标记 running
+    //   （powershell / gemini / deepseek 等）。claude(hook prompt/stop) 与
+    //   codex/kimi(transcript/cardWorking) 的 running 由语义事件驱动——否则
+    //   用户在 TUI 输入框打字时的整屏重绘 >200B 会被误判为"agent 运行中"。
+    const semanticCovered = typeof hasSemanticWorking === 'function' && hasSemanticWorking(session);
+    if (!semanticCovered && dataCounters.get(sessionId) > 200 && session.status !== 'running') {
       session.status = 'running';
+      session._runSource = 'burst';
       renderSessionList();
       updateStreamingIndicator(sessionId);
     }
@@ -128,10 +135,21 @@ function createTerminalActivityMonitor({
       silenceTimers.delete(sessionId);
       dataCounters.delete(sessionId);
 
-      const wasRunning = session.status === 'running';
-      if (wasRunning) {
-        if (!hasSemanticCardWorking(session)) session.status = 'idle';
+      // burst 来源的 running：静默即退场（语义来源的 running 由各自完成事件收尾）。
+      if (session.status === 'running' && session._runSource === 'burst') {
+        session.status = 'idle';
+        session._runSource = null;
         updateStreamingIndicator(sessionId);
+      }
+      // transcript 系(codex/kimi)语义 running 的兜底回收：
+      //   完成事件丢失时，hasSemanticCardWorking 的 maxAge 到期 → 收回 running。
+      if (session._agentWorking === 'card' && !hasSemanticCardWorking(session)) {
+        session._agentWorking = null;
+        if (session.status === 'running' && session._runSource === 'semantic') {
+          session.status = 'idle';
+          session._runSource = null;
+          updateStreamingIndicator(sessionId);
+        }
       }
 
       readTerminalPreview(sessionId);

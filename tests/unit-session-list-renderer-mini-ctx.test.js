@@ -48,6 +48,9 @@ function makeEl() {
 function mockDoc() {
   return {
     createElement: () => makeEl(),
+    getElementById: () => null,
+    head: makeEl(),
+    documentElement: makeEl(),
   };
 }
 function pctClass(pct) {
@@ -65,7 +68,7 @@ function makeRenderer({ sessions, meetings, activeMeetingId = null }) {
     getMeetings: () => meetings,
     getActiveSessionId: () => null,
     getActiveMeetingId: () => activeMeetingId,
-    isAiKind: (k) => ['claude', 'codex', 'gemini', 'qwen'].includes(k),
+    isAiKind: (k) => ['claude', 'codex', 'gemini', 'deepseek'].includes(k),
     modelShort: (m) => m && m.displayName || '',
     modelClass: () => 'opus',
     escapeHtml: (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])),
@@ -84,11 +87,11 @@ test('群聊 sub 有 contextPct 时 mini-jump 右侧渲染 Ctx% 小标签', () =
   const sessions = new Map();
   sessions.set('sid-a', { id: 'sid-a', title: 'AI-A', kind: 'gemini', status: 'idle', contextPct: 22 });
   sessions.set('sid-b', { id: 'sid-b', title: 'AI-B', kind: 'codex', status: 'idle', contextPct: 88 });
-  sessions.set('sid-c', { id: 'sid-c', title: 'AI-C', kind: 'qwen', status: 'idle', contextPct: 55 });
+  sessions.set('sid-c', { id: 'sid-c', title: 'AI-C', kind: 'deepseek', status: 'idle', contextPct: 55 });
   const meetings = {
     m1: {
       id: 'm1', title: '群聊1', subSessions: ['sid-a', 'sid-b', 'sid-c'],
-      groupChat: true, status: 'idle',
+      groupChat: true, status: 'idle', participants: [0, 2],
       lastMessageTime: Date.now(), createdAt: Date.now(),
     }
   };
@@ -96,6 +99,8 @@ test('群聊 sub 有 contextPct 时 mini-jump 右侧渲染 Ctx% 小标签', () =
   renderSessionList();
   const html = sessionListEl.children.map(c => c.innerHTML || '').join('\n');
   assert.ok(/mini-jump-cell/.test(html), 'mini-jump 必须 wrap 在 .mini-jump-cell 容器内');
+  assert.ok(/sl-members-hint/.test(html), '群聊父项行2 末尾必须显示成员摘要（已选数），折叠时也能看懂层级');
+  assert.ok(/2\/3 已选/.test(html), '父项摘要必须显示已选成员数');
   assert.ok(/mini-jump-ctx ok[^>]*>22%/.test(html), 'sub-a (22%) 应渲染 mini-jump-ctx ok 22%');
   assert.ok(/mini-jump-ctx danger[^>]*>88%/.test(html), 'sub-b (88%) 应渲染 danger 配色');
   assert.ok(/mini-jump-ctx warn[^>]*>55%/.test(html), 'sub-c (55%) 应渲染 warn 配色');
@@ -153,7 +158,7 @@ test('meeting.unreadAnswered 有 N 个 sid 时侧栏显示 "⏸ 等你 N"', () =
   const { renderSessionList, sessionListEl } = makeRenderer({ sessions, meetings, activeMeetingId: null });
   renderSessionList();
   const html = sessionListEl.children.map(c => c.innerHTML || '').join('\n');
-  assert.ok(/unread-badge[^>]*>⏸ 等你 2</.test(html), 'badge 必须显示"⏸ 等你 2"反映本轮已答 AI 数');
+  assert.ok(/sl-state unread[^>]*>等你 2</.test(html), 'sl-state 必须显示"等你 2"反映本轮已答 AI 数（方案C 两行卡）');
 });
 
 // ---------------- 用例 5：active 时不显示 badge（即便 unreadAnswered 非空） ----------------
@@ -171,7 +176,7 @@ test('meeting 当前 active 时不显示 unread badge', () => {
   const { renderSessionList, sessionListEl } = makeRenderer({ sessions, meetings, activeMeetingId: 'm1' });
   renderSessionList();
   const html = sessionListEl.children.map(c => c.innerHTML || '').join('\n');
-  assert.ok(!/unread-badge/.test(html), 'active meeting 不应显示 unread badge（用户正看着，不打扰）');
+  assert.ok(!/sl-state unread/.test(html), 'active meeting 不应显示等你状态（用户正看着，不打扰）');
 });
 
 console.log('Running unit-session-list-renderer-mini-ctx tests...');

@@ -1,17 +1,26 @@
 'use strict';
 
-function createAccountUsageController({ document, window, ipcRenderer, sessions, escapeHtml, openConfigModal, setIntervalFn = setInterval, setTimeoutFn = setTimeout }) {
+function createAccountUsageController({
+  document,
+  ipcRenderer,
+  sessions,
+  escapeHtml,
+  setIntervalFn = setInterval,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+  nowFn = Date.now,
+}) {
   if (!document) throw new Error('document is required');
   if (!ipcRenderer) throw new Error('ipcRenderer is required');
   if (!sessions) throw new Error('sessions is required');
   if (typeof escapeHtml !== 'function') throw new Error('escapeHtml is required');
-  if (typeof openConfigModal !== 'function') throw new Error('openConfigModal is required');
 
   const accountUsage = { usage5h: null, usage7d: null };
-  const agentUsage = { gemini: null, codex: null };
-  const agentUsageLastSeen = { gemini: 0, codex: 0 };
+  const agentUsage = { gemini: null, codex: null, kimi: null };
+  const agentUsageLastSeen = { gemini: 0, codex: 0, kimi: 0 };
   let _claudeUsageLastSeen = 0;
-  const usageRefreshState = { inFlight: false, error: null, lastManualAt: 0 };
+  const usageRefreshState = { inFlight: false, error: null, lastManualAt: 0, providerResults: null };
+  let _refreshStatusTimer = null;
 
   const BURN_HISTORY_MS = 15 * 60 * 1000;
   const globalUsageSamples = []; // [{t, pct, totalUsedTokens}]
@@ -64,10 +73,10 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
 
   function recordStatusUsage(payload) {
     if (!payload) return;
-    if (payload.usage5h || payload.usage7d) _claudeUsageLastSeen = Date.now();
+    if (payload.usage5h || payload.usage7d) _claudeUsageLastSeen = payload.observedAt || nowFn();
     if (payload.usage5h) {
       accountUsage.usage5h = payload.usage5h;
-      const now = Date.now();
+      const now = nowFn();
       globalUsageSamples.push({ t: now, pct: payload.usage5h.pct, totalUsedTokens: aggregateUsedTokens(now) });
       pruneSamples(globalUsageSamples, now);
     }
@@ -78,18 +87,22 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
   function recordSessionContextSample(session, contextUsed) {
     if (!session || typeof contextUsed !== 'number') return;
     if (!session._tokenSamples) session._tokenSamples = [];
-    session._tokenSamples.push({ t: Date.now(), used: contextUsed });
-    pruneSamples(session._tokenSamples, Date.now());
+    session._tokenSamples.push({ t: nowFn(), used: contextUsed });
+    pruneSamples(session._tokenSamples, nowFn());
   }
 
   function recordAgentUsage(totals) {
     if (totals && totals.gemini && (totals.gemini.usage5h || totals.gemini.usage7d)) {
       agentUsage.gemini = totals.gemini;
-      agentUsageLastSeen.gemini = totals.gemini._ts || Date.now();
+      agentUsageLastSeen.gemini = totals.gemini.observedAt || totals.gemini._ts || nowFn();
     }
     if (Object.prototype.hasOwnProperty.call(totals || {}, 'codex')) {
       agentUsage.codex = totals.codex;
-      agentUsageLastSeen.codex = (totals.codex && totals.codex._ts) || Date.now();
+      agentUsageLastSeen.codex = (totals.codex && (totals.codex.observedAt || totals.codex._ts)) || nowFn();
+    }
+    if (Object.prototype.hasOwnProperty.call(totals || {}, 'kimi')) {
+      agentUsage.kimi = totals.kimi;
+      agentUsageLastSeen.kimi = (totals.kimi && (totals.kimi.observedAt || totals.kimi._ts)) || nowFn();
     }
     render();
   }
@@ -99,19 +112,20 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
     if (cached.claude && cached.claude.usage5h) {
       accountUsage.usage5h = cached.claude.usage5h;
       accountUsage.usage7d = cached.claude.usage7d;
-      if (cached.claude.ts) _claudeUsageLastSeen = cached.claude.ts;
+      _claudeUsageLastSeen = cached.claude.observedAt || cached.claude.ts || _claudeUsageLastSeen;
     }
     if (cached.gemini) agentUsage.gemini = cached.gemini;
-    if (cached.gemini && cached.gemini.ts) agentUsageLastSeen.gemini = cached.gemini.ts;
+    if (cached.gemini) agentUsageLastSeen.gemini = cached.gemini.observedAt || cached.gemini.ts || agentUsageLastSeen.gemini;
     if (cached.codex) agentUsage.codex = cached.codex;
-    if (cached.codex && cached.codex.ts) agentUsageLastSeen.codex = cached.codex.ts;
-    if (cached.packy) packyAccountData = cached.packy;
+    if (cached.codex) agentUsageLastSeen.codex = cached.codex.observedAt || cached.codex.ts || agentUsageLastSeen.codex;
+    if (cached.kimi) agentUsage.kimi = cached.kimi;
+    if (cached.kimi) agentUsageLastSeen.kimi = cached.kimi.observedAt || cached.kimi.ts || agentUsageLastSeen.kimi;
     render();
   }
 
   function formatResetIn(resetsAt) {
     if (!resetsAt) return '';
-    const ms = new Date(resetsAt).getTime() - Date.now();
+    const ms = new Date(resetsAt).getTime() - nowFn();
     if (isNaN(ms) || ms <= 0) return '';
     const mins = Math.round(ms / 60000);
     if (mins < 60) return `${mins}m`;
@@ -124,7 +138,7 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
 
   function formatAge(ts) {
     if (!ts) return '未刷新';
-    const ms = Math.max(0, Date.now() - ts);
+    const ms = Math.max(0, nowFn() - ts);
     const sec = Math.floor(ms / 1000);
     if (sec < 45) return '刚刚';
     if (sec < 60) return `${sec}s`;
@@ -137,7 +151,7 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
 
   function usageFreshnessClass(ts) {
     if (!ts) return 'unknown';
-    return Date.now() - ts > 2 * 60 * 1000 ? 'stale' : 'fresh';
+    return nowFn() - ts > 2 * 60 * 1000 ? 'stale' : 'fresh';
   }
 
   function refreshUsageNow() {
@@ -147,10 +161,15 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
     render();
     return Promise.resolve(ipcRenderer.invoke('refresh-usage-now'))
       .then((result) => {
+        usageRefreshState.providerResults = result && result.providerResults || null;
+        usageRefreshState.lastManualAt = (result && result.refreshedAt) || nowFn();
+        if (_refreshStatusTimer !== null) clearTimeoutFn(_refreshStatusTimer);
+        _refreshStatusTimer = setTimeoutFn(() => {
+          _refreshStatusTimer = null;
+          render();
+        }, Math.max(1, usageRefreshState.lastManualAt + 60_001 - nowFn()));
         if (result && result.cache) applyUsageCache(result.cache);
-        if (result && result.packyAccount) packyAccountData = result.packyAccount;
         if (result && result.agentData) recordAgentUsage(result.agentData);
-        usageRefreshState.lastManualAt = (result && result.refreshedAt) || Date.now();
         return result;
       })
       .catch((err) => {
@@ -163,124 +182,55 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
       });
   }
   
-  // PackyAPI 账户数据(余额 / 今日消耗 / 累计消耗) - main 后台 5min 拉取后通过 IPC 推送
-  let packyAccountData = null;
-  
   function render() {
-    const el = document.getElementById('account-usage');
+    // 2026-07-19 道雪 · 方案C：用量面板从侧栏迁移为顶部全局 ticker。
+    // 铁律：每个窗口都显示「用量% + 重置时间」（5h 重置是用户最高频关注点，不可省略）。
+    const el = document.getElementById('quota-ticker');
     if (!el) return;
-    el.style.display = 'block';
+    el.style.display = 'flex';
   
     const pctCls = (pct) => pct >= 85 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
   
-    const renderBar = (label, u) => {
-      const resetTxt = u && u.resetsAt ? formatResetIn(u.resetsAt) : '';
-      const resetHtml = resetTxt
-        ? `<span class="acc-bar-reset" title="距离 ${label} 配额刷新还有 ${resetTxt}">${resetTxt}</span>`
-        : `<span class="acc-bar-reset"></span>`;
-      if (!u || u.pct === null || u.pct === undefined) {
-        return `<div class="acc-bar-line"><span class="acc-bar-label">${label}</span><div class="acc-bar-track"><div class="acc-bar-fill dim" style="width:0%"></div></div><span class="acc-bar-pct dim">—</span>${resetHtml}</div>`;
-      }
-      const pct = Math.round(u.pct);
-      const cls = pctCls(pct);
-      const w = Math.max(2, pct);
-      return `<div class="acc-bar-line"><span class="acc-bar-label">${label}</span><div class="acc-bar-track"><div class="acc-bar-fill ${cls}" style="width:${w}%"></div></div><span class="acc-bar-pct ${cls}">${pct}%</span>${resetHtml}</div>`;
+    const renderWindow = (fallbackLabel, usage) => {
+      const label = usage && usage.label ? usage.label : fallbackLabel;
+      const resetTxt = usage && usage.resetsAt ? formatResetIn(usage.resetsAt) : '';
+      const pct = usage && typeof usage.pct === 'number' ? Math.round(usage.pct) : null;
+      const cls = pct == null ? 'dim' : pctCls(pct);
+      const resetTitle = resetTxt ? `距离 ${label} 配额刷新还有 ${resetTxt}` : `${label} 重置时间未知`;
+      return `<span class="qt-win"><i>${escapeHtml(label)}</i><b class="${cls}">${pct == null ? '—' : `${pct}%`}</b><em title="${escapeHtml(resetTitle)}">↻${escapeHtml(resetTxt || '—')}</em></span>`;
     };
-  
-    const logoSrc = (badgeClass) => {
-      if (badgeClass === 'cl') return 'assets/ai-logos/claude.svg';
-      if (badgeClass === 'cx') return 'assets/ai-logos/codex.svg';
-      return '';
-    };
-    const renderUsageRow = (badgeClass, name, u5h, u7d, meta = {}) => {
-      const src = logoSrc(badgeClass);
-      const logoHtml = src
-        ? `<img class="acc-ai-logo" src="${src}" alt="${escapeHtml(name)}" title="${escapeHtml(name)}">`
-        : `<span class="acc-ai-letters">${badgeClass.toUpperCase()}</span>`;
-      const accountLabel = meta.accountEmail || meta.profileLabel || '';
+
+    const renderSeg = (name, u5h, u7d, meta = {}) => {
       const title = meta.profileLabel ? `${name} · ${meta.profileLabel}` : name;
       const age = formatAge(meta.lastSeen || 0);
       const source = meta.source ? ` · ${meta.source}` : '';
-      const staleCls = usageFreshnessClass(meta.lastSeen || 0);
-      const stateText = meta.unavailable ? '无数据' : age;
-      const refreshTitle = usageRefreshState.error
-        ? `立即刷新用量 · 上次失败: ${usageRefreshState.error}`
-        : `立即刷新用量 · ${stateText}${source}`;
-      const refreshHtml = meta.refreshable
-        ? `<button class="acc-refresh-btn${usageRefreshState.inFlight ? ' loading' : ''}" data-action="refresh-usage" title="${escapeHtml(refreshTitle)}" aria-label="立即刷新用量">${usageRefreshState.inFlight ? '...' : '↻'}</button>`
-        : '';
-      // profileLabel 只在 Codex 行显示（Claude 没有 profile 概念）。
-      // 直接显示在 badge 旁边，让用户一眼看出当前监控的是哪个账号——
-      // 否则 UI 上没有区分线索，会和 codex /status 的另一个账号配额混淆。
-      const profileChip = accountLabel
-        ? `<span class="acc-ai-profile" title="${escapeHtml(accountLabel)}">${escapeHtml(accountLabel)}</span>`
-        : '';
-      const metaHtml = `<div class="acc-row-meta"><span class="acc-row-age ${staleCls}" title="${escapeHtml(title)} · ${escapeHtml(stateText)}${escapeHtml(source)}">${escapeHtml(stateText)}</span>${refreshHtml}</div>`;
-      return `
-        <div class="acc-usage-row" title="${escapeHtml(title)} · ${escapeHtml(stateText)}${escapeHtml(source)}">
-          <span class="acc-ai-badge ${badgeClass}">${logoHtml}</span>
-          ${profileChip}
-          <div class="acc-bars">
-            ${renderBar('5h', u5h)}
-            ${renderBar('7d', u7d)}
-          </div>
-          ${metaHtml}
-        </div>
-      `;
+      const accountLabel = meta.accountEmail || '';
+      const tip = `${title} · 数据更新于 ${age}前${source}${accountLabel ? ` · ${accountLabel}` : ''}`;
+      return `<span class="qt-seg" title="${escapeHtml(tip)}"><span class="qt-name">${escapeHtml(name)}</span>${renderWindow('5h', u5h)}${renderWindow('7d', u7d)}</span>`;
     };
-  
-    const renderPackyRow = (data) => {
-      if (!data || !data.enabled) {
-        return `<div class="acc-packy-row no-cookie clickable" data-action="open-packy-settings" title="点击打开设置 → 填 PackyAPI cookie 启用余额监控">
-          <span class="acc-packy-icon">$</span>
-          <div class="acc-packy-text">
-            <div class="acc-packy-balance-line"><span class="acc-packy-balance">未接入</span></div>
-            <div class="acc-packy-spend-line">点击此处填 cookie</div>
-          </div>
-        </div>`;
-      }
-      const fmt = (n) => '$' + (typeof n === 'number' ? n.toFixed(2) : '—');
-      if (data.error && (data.balanceUsd === null || data.balanceUsd === undefined)) {
-        return `<div class="acc-packy-row error clickable" data-action="open-packy-settings" title="${escapeHtml(data.error)} · 点击打开设置重填 cookie">
-          <span class="acc-packy-icon">!</span>
-          <div class="acc-packy-text">
-            <div class="acc-packy-balance-line"><span class="acc-packy-balance">cookie 失效</span></div>
-            <div class="acc-packy-spend-line">今日 ${fmt(data.todayUsd)} · 点击重填</div>
-          </div>
-        </div>`;
-      }
-      const balance = (data.balanceUsd !== null && data.balanceUsd !== undefined) ? fmt(data.balanceUsd) : '—';
-      const total = (data.usedUsd !== null && data.usedUsd !== undefined) ? fmt(data.usedUsd) : '—';
-      // 注:packyapi 的 /v1/dashboard/billing/usage 端点不响应 date 参数,
-      // 无法做"今日 vs 累计"的区分。只显示累计消耗,避免数据相同造成误导。
-      return `<div class="acc-packy-row" title="PackyAPI · ${escapeHtml(data.displayName || '账户')}">
-        <span class="acc-packy-icon">¥</span>
-        <div class="acc-packy-text">
-          <div class="acc-packy-balance-line">
-            <span class="acc-packy-balance">${balance}</span>
-            <span class="acc-packy-balance-label">余额</span>
-          </div>
-          <div class="acc-packy-spend-line">
-            <span>累计消耗 <span class="acc-packy-spend-today">${total}</span></span>
-          </div>
-        </div>
-        <button class="acc-packy-topup" data-action="packy-topup">充值</button>
-      </div>`;
-    };
-  
+
     const c = agentUsage.codex || {};
+    const k = agentUsage.kimi || {};
+    const refreshTitle = usageRefreshState.error
+      ? `刷新账户用量 · 上次失败: ${usageRefreshState.error}`
+      : '刷新 Claude、Codex 与 Kimi 账户用量';
+    // freshness 取三家最旧（保守）：任一数据过期则整灯变橙。
+    const lastSeens = [_claudeUsageLastSeen, agentUsageLastSeen.codex, agentUsageLastSeen.kimi].filter(Boolean);
+    const oldest = lastSeens.length ? Math.min(...lastSeens) : 0;
+    const freshCls = usageFreshnessClass(oldest);
+    const ageTxt = lastSeens.length ? formatAge(oldest) : '未刷新';
     el.innerHTML =
-      renderUsageRow('cl', 'Claude', accountUsage.usage5h, accountUsage.usage7d, {
+      `<span class="qt-cap">用量</span>` +
+      renderSeg('Claude', accountUsage.usage5h, accountUsage.usage7d, {
         lastSeen: _claudeUsageLastSeen,
-        refreshable: true,
         source: 'statusline',
       }) +
-      renderUsageRow('cx', 'Codex', c.usage5h, c.usage7d, {
-        ...c,
-        lastSeen: agentUsageLastSeen.codex,
-        refreshable: true,
-      }) +
-      renderPackyRow(packyAccountData);
+      `<span class="qt-div"></span>` +
+      renderSeg('Codex', c.usage5h, c.usage7d, { ...c, lastSeen: agentUsageLastSeen.codex }) +
+      `<span class="qt-div"></span>` +
+      renderSeg('Kimi', k.usage5h, k.usage7d, { ...k, lastSeen: agentUsageLastSeen.kimi }) +
+      `<span class="qt-right"><span class="qt-fresh ${freshCls}" title="数据更新于 ${escapeHtml(ageTxt)}前（取三家最旧）"></span><span class="qt-age">${escapeHtml(ageTxt)}</span>` +
+      `<button class="qt-refresh${usageRefreshState.inFlight ? ' loading' : ''}" data-action="refresh-usage" title="${escapeHtml(refreshTitle)}" aria-label="刷新账户用量">${usageRefreshState.inFlight ? '刷新中' : '⟳ 刷新'}</button></span>`;
   
     el.querySelectorAll('[data-action="refresh-usage"]').forEach(refreshBtn => {
       refreshBtn.addEventListener('click', (event) => {
@@ -289,34 +239,7 @@ function createAccountUsageController({ document, window, ipcRenderer, sessions,
       });
     });
 
-    // 充值按钮 — 打开 packyapi console
-    const topupBtn = el.querySelector('[data-action="packy-topup"]');
-    if (topupBtn) {
-      topupBtn.addEventListener('click', () => {
-        ipcRenderer.invoke('open-external-url', 'https://www.packyapi.com/console').catch(() => {
-          window.open('https://www.packyapi.com/console', '_blank');
-        });
-      });
-    }
-    // 未接入 / cookie 失效 整行可点击 → 打开设置并定位到 cookie 输入框
-    el.querySelectorAll('[data-action="open-packy-settings"]').forEach(row => {
-      row.addEventListener('click', async () => {
-        try {
-          await openConfigModal();
-          const cookieEl = document.getElementById('cfg-packy-cookie');
-          if (cookieEl) {
-            cookieEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            setTimeoutFn(() => cookieEl.focus(), 200);
-          }
-        } catch {}
-      });
-    });
   }
-  
-  ipcRenderer.on('packy-account-updated', (_e, data) => {
-    packyAccountData = data;
-    render();
-  });
   
   setIntervalFn(render, 60000);
   

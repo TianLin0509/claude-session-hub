@@ -1,6 +1,6 @@
-﻿const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
+const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
 const fs = require('fs');
-const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind } = require('../core/ai-kinds.js');
+const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
 const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
@@ -48,6 +48,10 @@ const {
   _isDirectoryPath,
 } = require('./path-candidates.js');
 const { modelOptionsFor } = require('../core/model-options.js');
+const {
+  isStableSessionTitle,
+  shouldAcceptExternalSessionTitle,
+} = require('../core/session-title-guards.js');
 const RENDER_STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
 const RENDER_STARTUP_T0 = performance.now();
 function traceRendererStartup(msg) {
@@ -108,6 +112,10 @@ const floatingInputDrafts = new Map();
 const CODEX_BOTTOM_LOCK_EPSILON = 24;
 const CODEX_SCROLL_INTENT_MS = 1500;
 const CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS = 120;
+
+function isTranscriptCliKind(kind) {
+  return isCodexKind(kind) || isKimiCliKind(kind);
+}
 
 function readContenteditablePlainText(el) {
   if (!el) return '';
@@ -337,8 +345,15 @@ const memoPanel = createMemoPanel({
 });
 memoPanel.init();
 // --- Helpers ---
+// 2026-07-20 道雪：侧栏时间显示规则——2h 内显示具体时刻（HH:MM），
+//   24h 内显示「N 小时前」，更早显示「N 天前」（N 小时前超过 24 可读性差）。
 function formatTime(ts) {
-  return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const diff = Date.now() - ts;
+  if (diff < 2 * 3600000) {
+    return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  }
+  if (diff < 24 * 3600000) return `${Math.floor(diff / 3600000)}小时前`;
+  return `${Math.floor(diff / 86400000)}天前`;
 }
 
 function escapeHtml(text) {
@@ -373,6 +388,7 @@ const sessionListRenderer = createSessionListRenderer({
   selectSession: (id, opts) => selectSession(id, opts),
   selectMeeting: (id) => selectMeeting(id),
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
+  afterRender: () => { updateFloatingBarState(); updateRespondPill(); },
 });
 const renderSessionList = sessionListRenderer.renderSessionList;
 let activeMeetingId = null;
@@ -410,6 +426,10 @@ async function selectMeeting(meetingId) {
   if (meeting && typeof MeetingRoom !== 'undefined') {
     if (meeting.status === 'dormant') {
       meeting.status = 'idle';
+      // 2026-07-20 道雪 [修#2]：唤醒状态同步落后端——否则下一次 meeting-updated
+      //   （发消息/auto-title 必触发）又把 dormant 覆盖回来，侧栏"等你 N"与
+      //   respond pill 对该会议永久失声。后端 updateMeeting 的 allowed 字段含 status。
+      ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { status: 'idle' } });
       for (const sid of meeting.subSessions) {
         const s = sessions.get(sid);
         if (s && s.status === 'dormant') {
@@ -505,16 +525,7 @@ function getOrCreateTerminal(sessionId) {
       //   主桌单 session（meetingId === null）仍走 OSC 自动命名（Claude 给的简短摘要）。
       if (s.meetingId) return;
       const clean = String(newTitle || '').trim();
-      if (!clean) return;
-      if (clean === 'Claude Code') return; // generic startup title — ignore
-      // When `claude --resume <id>` fails (stale id, missing transcript), the
-      // PTY falls back to a plain PowerShell prompt, which emits OSC sequences
-      // setting the title to its own executable path (e.g.
-      // "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe") or
-      // the current working directory. Any of these would clobber the real
-      // conversation title. Reject anything that looks like a file path / exe.
-      if (/[\\\/]/.test(clean)) return;
-      if (/\.exe$/i.test(clean)) return;
+      if (!shouldAcceptExternalSessionTitle(s, clean)) return;
       // 2026-05-24 道雪：DeepSeek 中文自动命名启用时，OSC 是抢跑赛道（PTY 同步、~ms 内到达），
       //   会先于 DeepSeek HTTP（~数百 ms—秒）落地 s.title，导致 auto-title-manager 的
       //   isGenericAutoSessionTitle 检查失败、DeepSeek 中文结果被丢弃 → 用户全英文。
@@ -751,20 +762,43 @@ function showTerminal(sessionId, opts = { focus: true }) {
     titleSection.appendChild(modelSpan);
   }
 
-  // Zoom controls live right next to the close button so they're always at
-  // the top-right of whichever session you're in. Buttons are recreated per
-  // showTerminal call; no need to worry about stale references.
-  const zoomOutBtn = document.createElement('button');
-  zoomOutBtn.className = 'btn-zoom';
-  zoomOutBtn.textContent = 'A−';
-  zoomOutBtn.title = 'Shrink UI (for local screen)';
-  zoomOutBtn.addEventListener('click', () => applyZoom(currentZoom - 1));
-
-  const zoomInBtn = document.createElement('button');
-  zoomInBtn.className = 'btn-zoom';
-  zoomInBtn.textContent = 'A+';
-  zoomInBtn.title = 'Enlarge UI';
-  zoomInBtn.addEventListener('click', () => applyZoom(currentZoom + 1));
+  // 2026-07-19 道雪 · 方案C：A−/A+ 低频缩放折叠进 ⋯ 溢出菜单（顶栏 8 控件 → 5 个）
+  const overflowWrap = document.createElement('div');
+  overflowWrap.className = 'header-overflow-wrap';
+  const overflowBtn = document.createElement('button');
+  overflowBtn.className = 'btn-zoom';
+  overflowBtn.textContent = '⋯';
+  overflowBtn.title = '更多（界面缩放）';
+  overflowBtn.setAttribute('aria-label', '更多操作');
+  const overflowMenu = document.createElement('div');
+  overflowMenu.className = 'header-overflow-menu';
+  overflowMenu.style.display = 'none';
+  const mkOverflowItem = (label, key, fn) => {
+    const b = document.createElement('button');
+    const lbl = document.createElement('span');
+    lbl.textContent = label;
+    const kbd = document.createElement('span');
+    kbd.className = 'ho-key';
+    kbd.textContent = key;
+    b.append(lbl, kbd);
+    b.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      overflowMenu.style.display = 'none';
+      fn();
+    });
+    return b;
+  };
+  overflowMenu.append(
+    mkOverflowItem('放大界面', 'A+', () => applyZoom(currentZoom + 1)),
+    mkOverflowItem('缩小界面', 'A−', () => applyZoom(currentZoom - 1)),
+    mkOverflowItem('重置缩放', '1:1', () => applyZoom(0)),
+  );
+  overflowBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    overflowMenu.style.display = overflowMenu.style.display === 'none' ? 'block' : 'none';
+  });
+  document.addEventListener('click', () => { overflowMenu.style.display = 'none'; });
+  overflowWrap.append(overflowBtn, overflowMenu);
 
   const closeBtn = document.createElement('button');
   closeBtn.className = 'btn-close-session';
@@ -781,6 +815,22 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   const headerActions = document.createElement('div');
   headerActions.className = 'terminal-header-actions';
+
+  const canForkSession = session.kind === 'claude'
+    || session.kind === 'claude-resume'
+    || isCodexKind(session.kind);
+  let forkBtn = null;
+  if (canForkSession) {
+    forkBtn = document.createElement('button');
+    forkBtn.className = 'btn-zoom btn-fork-session';
+    forkBtn.textContent = '分支';
+    forkBtn.title = '创建继承当前上下文的独立会话 (Ctrl+Shift+B)';
+    forkBtn.setAttribute('aria-label', '创建当前会话分支');
+    forkBtn.addEventListener('click', () => {
+      void keyboardShortcuts.forkSession(sessionId);
+    });
+  }
+
   const memoBtn = document.createElement('button');
   memoBtn.className = 'btn-zoom btn-memo-toggle';
   memoBtn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5v9a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12.5v-9zM4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" fill="none"/></svg>';
@@ -788,7 +838,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (memoPanel.isOpen()) memoBtn.classList.add('active');
   memoBtn.addEventListener('click', () => memoPanel.toggle());
 
-  headerActions.append(memoBtn, zoomOutBtn, zoomInBtn, closeBtn);
+  if (forkBtn) headerActions.appendChild(forkBtn);
+  headerActions.append(memoBtn, overflowWrap, closeBtn);
 
   titleRow.append(titleSection, headerActions);
 
@@ -880,6 +931,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   cached._navButtons = mountPromptNavButtons(sessionId, termContainer, cached._minimap);
   if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
   cached._floatingInput = mountFloatingInput(sessionId, termContainer, cached.terminal);
+  updateFloatingBarState();
 
   // === Spec 2 · S7: 切换 session 时加载真实历史卡片 ===
   if (currentView === 'card') {
@@ -887,7 +939,11 @@ function showTerminal(sessionId, opts = { focus: true }) {
     // for empty/error/non-Claude cases. Don't pre-clear here.
     _cardHistoryHydratedSid = null; // 切 session 重置，等 loadSessionHistoryToOverlay 成功后再设
     if (typeof loadSessionHistoryToOverlay === 'function') {
-      loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom }).catch(err => {
+      // 卡片视图切换 session 时也跳到最新对话，与上方 PTY 的 pinOnShow focus 兜底对称：
+      // selectSession 给非 codex 传的 forceScrollBottom 被 isCodexKind 限定为 false，
+      // 故这里用 opts.focus（切到不同 session 时为 true）兜底，否则卡片视图会停在历史顶部。
+      // view 切换（PTY↔卡片）走 applyViewMode 不经此处、不传 forceScrollBottom，保持阅读位置不受影响。
+      loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom || !!opts.focus }).catch(err => {
         console.warn('[showTerminal] loadSessionHistoryToOverlay failed:', err);
       });
     }
@@ -939,7 +995,7 @@ const {
   mountSessionTurnCard,
   isCardOverlayAtBottom: _isCardOverlayAtBottom,
 } = turnCardRenderer;
-function scheduleCodexHistoryRetry(sessionId, attempt = 0) {
+function scheduleCodexHistoryRetry(sessionId, attempt = 0, opts = {}) {
   if (!sessionId || attempt >= 6) return;
   if (!window._codexHistoryRetryState) window._codexHistoryRetryState = new Map();
   const prev = window._codexHistoryRetryState.get(sessionId);
@@ -950,7 +1006,10 @@ function scheduleCodexHistoryRetry(sessionId, attempt = 0) {
   const timer = setTimeout(() => {
     window._codexHistoryRetryState.delete(sessionId);
     if (sessionId !== activeSessionId || currentView !== 'card') return;
-    loadSessionHistoryToOverlay(sessionId, { codexRetryAttempt: attempt + 1 }).catch(err => {
+    loadSessionHistoryToOverlay(sessionId, {
+      codexRetryAttempt: attempt + 1,
+      incremental: opts.incremental === true,
+    }).catch(err => {
       console.warn('[codex-history-retry] reload failed:', err);
     });
   }, delay);
@@ -961,14 +1020,14 @@ function scheduleCodexHistoryRetry(sessionId, attempt = 0) {
 // Load historical turns for a session and mount them as cards into #msg-overlay.
 //
 // Used by:
-//   - showTerminal (S7) when switching to a Claude session in card view
+//   - showTerminal (S7) when switching to a Claude/Codex/Kimi session in card view
 //   - User explicit "reload history" action (future)
 //
 // Workflow:
 //   1. Resolve container = #msg-overlay; missing → warn + bail
 //   2. Clear container + clear _sessionTurns Map (multi-session safety)
 //   3. Look up session via existing `sessions` Map (showTerminal pattern, line ~1080)
-//   4. kind !== 'claude' (per isClaudeFamily) → friendly placeholder, skip IPC
+//   4. unsupported kind (outside Claude/Codex/Kimi families) → friendly placeholder, skip IPC
 //   5. invoke('parse-session-transcript', { hubSessionId, ccSessionId, opts })
 //   6. Handle result:
 //      - turns.length === 0 → placeholder ("会话尚未产生历史" or error text)
@@ -1012,7 +1071,8 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   }
 
   // helper: render a placeholder line inside the cleared container.
-  // 增量模式下若需要显示 placeholder（如 IPC error）说明出了问题，仍然清掉重写。
+  // Incremental refreshes must never call this: a transient empty/error result
+  // is not evidence that already-rendered authoritative turns disappeared.
   const showPlaceholder = (html) => {
     container.innerHTML =
       '<div class="msg-overlay-placeholder">' + html + '</div>';
@@ -1031,11 +1091,11 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   const transcriptPath = session ? (session.transcriptPath || null) : null;
   const kind = session ? (session.kind || null) : null;
 
-  // 4. kind gate — spec 2 only supports Claude family; show placeholder for others
-  const supportsCardHistory = kind && (isClaudeFamily(kind) || isCodexKind(kind));
+  // 4. kind gate — all transcript-backed coding CLIs share the card experience.
+  const supportsCardHistory = kind && (isClaudeFamily(kind) || isCodexKind(kind) || isKimiCliKind(kind));
   if (kind && !supportsCardHistory) {
     showPlaceholder(
-      '卡片视图当前仅支持 Claude session — '
+      '卡片视图当前支持 Claude、Codex 与 Kimi session — '
       + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
     );
     return { mounted: 0, error: null };
@@ -1043,10 +1103,11 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
 
   const loadSeq = Date.now() + ':' + Math.random().toString(36).slice(2);
   if (!window._cardLoadSeqBySid) window._cardLoadSeqBySid = new Map();
-  if (!incremental) window._cardLoadSeqBySid.set(sessionId, loadSeq);
+  window._cardLoadSeqBySid.set(sessionId, loadSeq);
   const isStaleLoad = () => (
-    !incremental &&
-    (sessionId !== activeSessionId || window._cardLoadSeqBySid.get(sessionId) !== loadSeq)
+    sessionId !== activeSessionId
+    || currentView !== 'card'
+    || window._cardLoadSeqBySid.get(sessionId) !== loadSeq
   );
   if (!incremental) {
     showPlaceholder('正在加载历史卡片…');
@@ -1066,10 +1127,12 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     if (isStaleLoad()) return { mounted: 0, error: 'stale load' };
     const msg = (err && err.message) ? err.message : String(err);
     console.warn('[loadSessionHistoryToOverlay] IPC invoke threw:', err);
-    showPlaceholder(
-      '加载历史失败：' + msg + ' — '
-      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
-    );
+    if (!incremental) {
+      showPlaceholder(
+        '加载历史失败：' + msg + ' — '
+        + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
+      );
+    }
     return { mounted: 0, error: msg };
   }
   if (isStaleLoad()) return { mounted: 0, error: 'stale load' };
@@ -1102,7 +1165,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     } else if (isCodexKind(kind) && ipcError === 'codex rollout not found') {
       const attempt = Number.isInteger(opts.codexRetryAttempt) ? opts.codexRetryAttempt : 0;
       if (attempt < 6) {
-        scheduleCodexHistoryRetry(sessionId, attempt);
+        scheduleCodexHistoryRetry(sessionId, attempt, { incremental });
         txt = '正在绑定 Codex 历史（resume 后通常需要几秒）';
       } else {
         txt = '加载历史失败：Codex rollout 尚未绑定或已被移动';
@@ -1110,10 +1173,12 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     } else {
       txt = '加载历史失败：' + ipcError;
     }
-    showPlaceholder(
-      txt + ' — '
-      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
-    );
+    if (!incremental) {
+      showPlaceholder(
+        txt + ' — '
+        + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
+      );
+    }
     return { mounted: 0, error: ipcError };
   }
 
@@ -1124,10 +1189,12 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       if (st && st.timer) { try { clearTimeout(st.timer); } catch {} }
       window._codexHistoryRetryState.delete(sessionId);
     }
-    showPlaceholder(
-      '新会话，发首条消息试试看 — '
-      + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
-    );
+    if (!incremental) {
+      showPlaceholder(
+        '新会话，发首条消息试试看 — '
+        + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
+      );
+    }
     // 空 session 也算 hydrated:已经确认"历史为空",后续 turn-complete 走增量
     // 挂卡 + 250ms 补全 reload 即可,不必再触发全量。否则首条消息发出后,
     // mountOptimisticUserCard 把 placeholder 隐藏,turn-complete 又看到 hydrated=null
@@ -1196,7 +1263,7 @@ ipcRenderer.on('prompt-submitted-event', (_event, payload) => {
 // === Spec 2 v1.0.0 · S6 turn-complete-event listener ===
 // main.js (S3) broadcasts 'turn-complete-event' whenever an assistant turn
 // finishes streaming. Append the just-completed turn as a card to #msg-overlay
-// for the active Claude session in card view.
+// for the active Claude/Codex session in card view.
 //
 // Skip conditions (each is a multi-instance / multi-view safety guard):
 //   - meetingId truthy → AI 群聊 has its own card pipeline (renderer/meeting-room.js)
@@ -1275,6 +1342,7 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
       transcriptPath,
       opts: { limit: 1, fromTail: true },
     });
+    if (hubSessionId !== activeSessionId || currentView !== 'card') return;
 
     if (r && !r.error && Array.isArray(r.turns) && r.turns.length > 0) {
       // got the structured turn from S1 parser
@@ -1485,7 +1553,7 @@ const _CODEX_CARD_WORK_MAX_MS = 45 * 60 * 1000;
 
 function markCodexCardWorking(sessionId, source = 'prompt') {
   const session = sessions.get(sessionId);
-  if (!session || !isCodexKind(session.kind) || session.status === 'dormant') return;
+  if (!session || !isTranscriptCliKind(session.kind) || session.status === 'dormant') return;
   if (_codexSubmitPendingTimers.has(sessionId)) {
     clearTimeout(_codexSubmitPendingTimers.get(sessionId));
     _codexSubmitPendingTimers.delete(sessionId);
@@ -1496,6 +1564,8 @@ function markCodexCardWorking(sessionId, source = 'prompt') {
   session.waitingReason = null;
   session.waitingText = null;
   session.status = 'running';
+  session._agentWorking = 'card';
+  session._runSource = 'semantic';
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
   if (source === 'floating_input') {
     const timer = setTimeout(() => {
@@ -1504,6 +1574,8 @@ function markCodexCardWorking(sessionId, source = 'prompt') {
       if (!latest || latest.cardWorkingSource !== 'floating_input') return;
       latest.cardWorkingSince = null;
       latest.cardWorkingSource = null;
+      latest._agentWorking = null;
+      latest._runSource = null;
       latest.status = 'idle';
       if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
       renderSessionList();
@@ -1521,11 +1593,13 @@ function clearCodexCardWorking(sessionId) {
   }
   session.cardWorkingSince = null;
   session.cardWorkingSource = null;
+  session._agentWorking = null;
+  session._runSource = null;
 }
 
 function hasSemanticCardWorking(session) {
   if (!session) return false;
-  if (!isCodexKind(session.kind) || session.isWaiting || !session.cardWorkingSince) return false;
+  if (!isTranscriptCliKind(session.kind) || session.isWaiting || !session.cardWorkingSince) return false;
   const maxAge = session.cardWorkingSource === 'floating_input'
     ? _CODEX_CARD_SUBMIT_PENDING_MS
     : _CODEX_CARD_WORK_MAX_MS;
@@ -1544,7 +1618,7 @@ function isSessionCardWorking(session) {
 
 function cardWorkingLabel(session) {
   if (!session) return 'AI';
-  const base = isCodexKind(session.kind) ? 'Codex' : (session.kind || 'AI');
+  const base = isCodexKind(session.kind) ? 'Codex' : isKimiCliKind(session.kind) ? 'Kimi' : (session.kind || 'AI');
   return base.charAt(0).toUpperCase() + base.slice(1).replace(/-resume$/i, '');
 }
 
@@ -1672,17 +1746,34 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const inputBox = document.createElement('div');
   inputBox.className = 'floating-input-box';
   inputBox.contentEditable = 'true';
-  inputBox.setAttribute('data-placeholder', '输入消息… Enter 发送, Shift+Enter 换行');
+  inputBox.setAttribute('data-placeholder', '输入消息…');
   if (floatingInputDrafts.has(sessionId)) {
     inputBox.textContent = floatingInputDrafts.get(sessionId);
   }
 
+  // 2026-07-19 道雪 · 方案C：ctx chip（发送前看到成本）+ 运行中红色中断钮（发 \x03=SIGINT）
+  const ctxChip = document.createElement('span');
+  ctxChip.className = 'fi-ctx';
+  ctxChip.style.display = 'none';
+
+  const stopBtn = document.createElement('button');
+  stopBtn.className = 'floating-input-stop';
+  stopBtn.title = '中断当前 AI（发送 Ctrl+C）';
+  stopBtn.setAttribute('aria-label', '中断当前 AI');
+  stopBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
+  stopBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    ipcRenderer.send('terminal-input', { sessionId, data: '\x03' });
+    terminal.focus();
+  });
+
   const sendBtn = document.createElement('button');
   sendBtn.className = 'floating-input-send';
-  sendBtn.title = '发送 (Enter)';
-  sendBtn.textContent = '▶';
+  sendBtn.title = '发送 (Enter) · Shift+Enter 换行';
+  sendBtn.setAttribute('aria-label', '发送');
+  sendBtn.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 4l7 7h-4v9h-6v-9H5z"/></svg>';
 
-  bar.append(inputBox, sendBtn);
+  bar.append(inputBox, ctxChip, stopBtn, sendBtn);
   bar.classList.add('visible');
 
   const panel = termContainer.closest('.terminal-panel');
@@ -1712,13 +1803,13 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       ? sessions.get(sessionId) : null;
     const kind = session && session.kind ? session.kind : null;
     clearSessionWaitingState(sessionId);
-    if (isCodexKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
+    if (isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
 
     // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
     //   2026-05-10 用户反馈：在卡片视图按 Enter 后约 5 秒才看到自己的气泡卡。根因是 user 气泡
     //   也走 transcript reload 路径，但 Claude CLI 通常等 LLM call 启动才把 user entry append
     //   到 JSONL（实测 1-3s 滞后）。聊天 app 标准做法是发出即 mount，待权威 entry 到时 dedup。
-    if (currentView === 'card' && kind && (isClaudeFamily(kind) || isCodexKind(kind)) && typeof mountOptimisticUserCard === 'function') {
+    if (currentView === 'card' && kind && (isClaudeFamily(kind) || isCodexKind(kind) || isKimiCliKind(kind)) && typeof mountOptimisticUserCard === 'function') {
       try {
         mountOptimisticUserCard(sessionId, text.trim(), kind);
       } catch (err) {
@@ -1775,6 +1866,37 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     sendInput();
   });
 
+  bar.addEventListener('wheel', (e) => {
+    if (e.ctrlKey || e.metaKey) return;
+
+    const targetInput = e.target && e.target.closest && e.target.closest('.floating-input-box');
+    if (targetInput && targetInput.scrollHeight > targetInput.clientHeight) {
+      const maxTop = Math.max(0, targetInput.scrollHeight - targetInput.clientHeight);
+      const canScrollInput = (e.deltaY < 0 && targetInput.scrollTop > 0)
+        || (e.deltaY > 0 && targetInput.scrollTop < maxTop);
+      if (canScrollInput) return;
+    }
+
+    const cached = terminalCache.get(sessionId);
+    const vp = getTerminalViewport(cached);
+    if (!vp) return;
+
+    e.preventDefault();
+    markCodexUserScrollIntent(sessionId, cached, { detachFromBottom: e.deltaY < 0 });
+    vp.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      deltaMode: e.deltaMode,
+      ctrlKey: e.ctrlKey,
+      metaKey: e.metaKey,
+      shiftKey: e.shiftKey,
+      altKey: e.altKey,
+    }));
+    updateCodexFollowBottomFromUserScroll(sessionId, cached);
+  }, { passive: false });
+
   bar.addEventListener('click', (e) => e.stopPropagation());
   bar.addEventListener('mousedown', (e) => e.stopPropagation());
 
@@ -1783,6 +1905,60 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       saveFloatingInputDraft(sessionId, inputBox);
       if (bar.parentNode) bar.parentNode.removeChild(bar);
     },
+  };
+}
+
+// 2026-07-19 道雪 · 方案C：刷新浮动输入栏的 ctx chip 与中断钮（跟随 active session 状态）。
+//   调用时机：mountFloatingInput 后 + 每次 renderSessionList（status 事件驱动）。
+function updateFloatingBarState() {
+  const bar = document.querySelector('.terminal-panel .floating-input-bar');
+  if (!bar || !activeSessionId) return;
+  const s = sessions.get(activeSessionId);
+  if (!s) return;
+  const chip = bar.querySelector('.fi-ctx');
+  if (chip) {
+    if (typeof s.contextPct === 'number') {
+      chip.style.display = '';
+      chip.textContent = `ctx ${s.contextPct}%`;
+      chip.className = 'fi-ctx ' + pctClass(s.contextPct);
+      chip.title = `当前会话上下文占用 ${s.contextPct}%`;
+    } else {
+      chip.style.display = 'none';
+    }
+  }
+  const stop = bar.querySelector('.floating-input-stop');
+  if (stop) stop.classList.toggle('visible', s.status === 'running');
+}
+
+// 2026-07-19 道雪 · 方案C：等你响应浮动条——统计口径与侧栏分区完全一致
+//   （普通：isWaiting 或 unreadCount>0；群聊：本轮已答 AI 数>0；均排除 active 与 dormant）。
+function updateRespondPill() {
+  const pill = document.getElementById('respond-pill');
+  if (!pill) return;
+  const items = [];
+  for (const s of sessions.values()) {
+    if (s.meetingId || s.id === activeSessionId || s.status === 'dormant') continue;
+    if (s.isWaiting) items.push({ id: s.id, meeting: false, wait: true, t: s.lastMessageTime || 0 });
+    else if ((s.unreadCount || 0) > 0) items.push({ id: s.id, meeting: false, wait: false, t: s.lastMessageTime || 0 });
+  }
+  for (const m of Object.values(meetings || {})) {
+    if (m.id === activeMeetingId || m.status === 'dormant') continue;
+    const n = m.unreadAnswered instanceof Set ? m.unreadAnswered.size : 0;
+    if (n > 0) items.push({ id: m.id, meeting: true, wait: false, t: m.lastMessageTime || 0 });
+  }
+  if (!items.length) { pill.style.display = 'none'; return; }
+  const waitN = items.filter(i => i.wait).length;
+  const unreadN = items.length - waitN;
+  let txt = `⏸ <b>${items.length}</b> 个会话等你响应`;
+  if (waitN && unreadN) txt += `（<span class="rp-unread">${unreadN} 未读</span>）`;
+  txt += ' · 点击跳转 →';
+  pill.innerHTML = txt;
+  pill.style.display = 'flex';
+  pill.onclick = () => {
+    items.sort((a, b) => b.t - a.t);
+    const top = items[0];
+    if (top.meeting) selectMeeting(top.id);
+    else selectSession(top.id, { forceScrollBottom: true });
   };
 }
 
@@ -2140,6 +2316,8 @@ const terminalActivityMonitor = createTerminalActivityMonitor({
     if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
   },
   hasSemanticCardWorking,
+  // 2026-07-20 道雪：这些 kind 的 running 由语义事件驱动，byte burst 不得标记 running
+  hasSemanticWorking: (s) => !!(s && (isClaudeFamily(s.kind) || isTranscriptCliKind(s.kind))),
 });
 const {
   getQuestionsSignature,
@@ -2230,6 +2408,7 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
     if (!window._cardStopFallbackBySid) window._cardStopFallbackBySid = new Map();
     clearTimeout(window._cardStopFallbackBySid.get(sessionId));
     window._cardStopFallbackBySid.set(sessionId, setTimeout(() => {
+      window._cardStopFallbackBySid.delete(sessionId);
       if (sessionId === activeSessionId && currentView === 'card') {
         loadSessionHistoryToOverlay(sessionId, { incremental: true })
           .catch(err => console.warn('[card stream-end fallback] failed:', err));
@@ -2244,6 +2423,7 @@ const providerModes = {
   claude: 'subscription',
   gemini: 'subscription',
   codex: 'subscription',
+  kimi: 'subscription',
   deepseek: 'api',
 };
 const accountUsageController = createAccountUsageController({
@@ -2282,15 +2462,19 @@ ipcRenderer.on('status-event', (_e, payload) => {
     // The /rename we inject comes back via this same field — the guard below prevents loops.
     // Meeting room subs keep their default "Claude N" name — auto-rename produces
     // long titles that clutter the narrow tab headers.
-    if (payload.sessionName && !session.userRenamed && !session.autoTitleGenerated && !session.meetingId && session.title !== payload.sessionName) {
-      session.title = payload.sessionName;
-      session.claudeSessionName = payload.sessionName;
+    const cleanSessionName = typeof payload.sessionName === 'string' ? payload.sessionName.trim() : '';
+    if (shouldAcceptExternalSessionTitle(session, cleanSessionName) && session.title !== cleanSessionName) {
+      session.title = cleanSessionName;
+      session.claudeSessionName = cleanSessionName;
       if (payload.sessionId === activeSessionId) {
         const el = terminalPanelEl.querySelector('.terminal-title');
-        if (el) el.textContent = payload.sessionName;
+        if (el) el.textContent = cleanSessionName;
       }
     }
     if (payload.sessionId === activeSessionId) updateActiveMetricsRow();
+    if (typeof MeetingRoom !== 'undefined' && MeetingRoom.refreshSessionMetrics) {
+      MeetingRoom.refreshSessionMetrics(payload.sessionId);
+    }
   }
   accountUsageController.recordStatusUsage(payload);
   renderSessionList();
@@ -2413,6 +2597,9 @@ ipcRenderer.on('hook-event', (_e, { event, sessionId, claudeSessionId, cwd, late
 function onPromptSubmittedFromHook(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  // 2026-07-20 道雪：hook prompt = claude 语义工作开始（与 stop hook 配对收尾）
+  session._agentWorking = 'hook';
+  session._runSource = 'semantic';
   if (session.status !== 'running') {
     session.status = 'running';
     renderSessionList();
@@ -2445,7 +2632,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   const { hubSessionId, text, completedAt, meetingId, kind } = payload || {};
   if (meetingId) return;
   if (!hubSessionId) return;
-  if (!isCodexKind(kind)) return;
+  if (!isTranscriptCliKind(kind)) return;
 
   const session = sessions.get(hubSessionId);
   if (!session) return;
@@ -2481,7 +2668,7 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
   const { hubSessionId, text, submittedAt, meetingId, kind } = payload || {};
   if (meetingId) return;
   if (!hubSessionId) return;
-  if (!isCodexKind(kind)) return;
+  if (!isTranscriptCliKind(kind)) return;
 
   const session = sessions.get(hubSessionId);
   if (!session) return;
@@ -2547,6 +2734,12 @@ function onReplyCompleteFromHook(sessionId) {
   const now = Date.now();
   if (session._lastStopHookTs && now - session._lastStopHookTs < 500) return;
   session._lastStopHookTs = now;
+
+  // 2026-07-20 道雪：stop hook = claude 语义工作结束，与 prompt hook 配对。
+  //   此前 idle-down 只靠 2s 静默计时器，语义化后必须在这里显式收尾。
+  session._agentWorking = null;
+  session._runSource = null;
+  if (session.status === 'running') session.status = 'idle';
 
   // Fallback preview from xterm buffer — only matters when hook didn't supply
   // a transcript-sourced preview (very rare). Primary preview is written by
@@ -2710,9 +2903,8 @@ const shellController = createShellController({
 function escapeToHome() {
   shellController.escapeToHome();
 }
-const hubEscapeHomeBtn = document.getElementById('hub-escape-home');
-if (hubEscapeHomeBtn) hubEscapeHomeBtn.addEventListener('click', escapeToHome);
 // 2026-05-16 道雪：外部 HTTP 救援入口 — main.js POST /api/escape-home 通过这个 IPC 触发
+// （右下角可见的 🏠 按钮已于 2026-06-28 移除，仅保留此救援后门 + Ctrl+Alt+Home 快捷键）
 ipcRenderer.on('escape-home', escapeToHome);
 
 const { createConfigModalController } = require('./config-modal.js');
@@ -2789,7 +2981,9 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
   if (ev.geminiChatId) s.geminiChatId = ev.geminiChatId;
   if (ev.geminiProjectHash) s.geminiProjectHash = ev.geminiProjectHash;
   if (ev.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
-  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot) {
+  if (ev.kimiSid) s.kimiSid = ev.kimiSid;
+  if (ev.kimiSessionDir) s.kimiSessionDir = ev.kimiSessionDir;
+  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot || ev.kimiSid || ev.kimiSessionDir) {
     schedulePersist();
   }
   if (ev.hubSessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
@@ -2802,6 +2996,11 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
 // Spec 3 · W13：清理 _cardReloadState 的 session 条目，防 Map 长期累积。
 // session-closed 触发，确保即使 inProgress 异常残留也不影响新生命周期同 sessionId 的 session。
 ipcRenderer.on('session-closed', (_e, { sessionId }) => {
+  if (window._cardLoadSeqBySid) window._cardLoadSeqBySid.delete(sessionId);
+  if (window._cardStopFallbackBySid && window._cardStopFallbackBySid.has(sessionId)) {
+    clearTimeout(window._cardStopFallbackBySid.get(sessionId));
+    window._cardStopFallbackBySid.delete(sessionId);
+  }
   if (window._cardReloadState && window._cardReloadState.has(sessionId)) {
     const st = window._cardReloadState.get(sessionId);
     if (st && st.pendingTimer) { try { clearTimeout(st.pendingTimer); } catch {} }
@@ -2863,6 +3062,8 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.transcriptPath) local.transcriptPath = session.transcriptPath;
   if (session.codexSessionsRoot) local.codexSessionsRoot = session.codexSessionsRoot;
   if (session.codexAllowMtimeFallback) local.codexAllowMtimeFallback = true;
+  if (session.kimiSid) local.kimiSid = session.kimiSid;
+  if (session.kimiSessionDir) local.kimiSessionDir = session.kimiSessionDir;
   if (session.userRenamed) local.userRenamed = true;
   if (session.autoTitleGenerated) local.autoTitleGenerated = true;
   if (typeof session.contextPct === 'number') local.contextPct = session.contextPct;
@@ -2910,6 +3111,8 @@ function schedulePersist() {
         geminiChatId: s.geminiChatId || null,
         geminiProjectHash: s.geminiProjectHash || null,
         geminiProjectRoot: s.geminiProjectRoot || null,
+        kimiSid: s.kimiSid || null,
+        kimiSessionDir: s.kimiSessionDir || null,
       });
     }
         //   slotSpecs/covenantText 全被剥掉 → 写残 state.json → 重启后 restoreMeeting fallback
@@ -2963,7 +3166,10 @@ async function resumeDormantSession(hubId) {
     geminiChatId: dormant.geminiChatId || null,
     geminiProjectHash: dormant.geminiProjectHash || null,
     geminiProjectRoot: dormant.geminiProjectRoot || null,
-    autoTitleGenerated: !!dormant.autoTitleGenerated,
+    kimiSid: dormant.kimiSid || null,
+    kimiSessionDir: dormant.kimiSessionDir || null,
+    userRenamed: !!dormant.userRenamed,
+    autoTitleGenerated: !!dormant.autoTitleGenerated || isStableSessionTitle(dormant.title, dormant.kind),
   });
   // v0.13 · P0 #2: 不再反向清零 dormant 累积的 unread。睡前积压的对话用户还
   // 没看 → 应保留红点直到用户真正点击进入（selectSession 会清零）。原代码会
@@ -3017,7 +3223,7 @@ async function resumeDormantSession(hubId) {
         contextUsed: typeof meta.contextUsed === 'number' ? meta.contextUsed : null,
         contextMax: typeof meta.contextMax === 'number' ? meta.contextMax : null,
         userRenamed: !!meta.userRenamed,
-        autoTitleGenerated: !!meta.autoTitleGenerated,
+        autoTitleGenerated: !!meta.autoTitleGenerated || isStableSessionTitle(meta.title, meta.kind),
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
         codexSessionsRoot: meta.codexSessionsRoot || null,
@@ -3027,6 +3233,8 @@ async function resumeDormantSession(hubId) {
         geminiChatId: meta.geminiChatId || null,
         geminiProjectHash: meta.geminiProjectHash || null,
         geminiProjectRoot: meta.geminiProjectRoot || null,
+        kimiSid: meta.kimiSid || null,
+        kimiSessionDir: meta.kimiSessionDir || null,
       });
     }
   }
@@ -3089,6 +3297,17 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
 //   meeting-room.js 也监听 partial-update 但职责是渲染抽屉/卡片内容，与本侧栏聚合器互不干扰。
 ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, status }) => {
   if (!meetingId || !sid) return;
+  // 2026-07-21 道雪 [修状态灯]：群聊成员的"运行中"权威信号取 dispatcher 的 watcher
+  //   生命周期（streaming=未结算，终态=已结算），不依赖子会话自己的 hook/transcript
+  //   running 管线——避免管线未绑定时 AI 明明在跑、状态灯却常绿。
+  const sub = sessions.get(sid);
+  if (sub) {
+    const nextWorking = status === 'streaming' || status === 'thinking' || status === 'soft_alert';
+    if (!!sub.gcWorking !== nextWorking) {
+      sub.gcWorking = nextWorking;
+      renderSessionList();
+    }
+  }
   if (status !== 'completed' && status !== 'manual_extracted') return;
   const meeting = meetings[meetingId];
   if (!meeting) return;
@@ -3110,6 +3329,12 @@ ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
   const meeting = meetings[meetingId];
   if (!meeting) return;
   meeting.lastMessageTime = Date.now();  // 触发排序（最新答完的 AI 群聊靠前）
+  // 2026-07-21 道雪 [修状态灯]：轮次收尾兜底清 gcWorking（覆盖 superseded 等
+  //   不经 partial-update 终态的路径，防止状态灯卡在黄灯）。
+  for (const sid of meeting.subSessions || []) {
+    const s = sessions.get(sid);
+    if (s && s.gcWorking) s.gcWorking = false;
+  }
   renderSessionList();
 });
 
