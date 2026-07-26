@@ -2,7 +2,7 @@
  * Hub 配置加载器
  *
  * 优先级（从高到低）：
- * 1. 环境变量（DEEPSEEK_API_KEY, GLM_API_KEY, GLM_BASE_URL, GLM_MODEL, CLAUDE_PROXY）
+ * 1. 环境变量（DEEPSEEK_API_KEY, CLAUDE_PROXY）
  * 2. config.json（~/.claude-session-hub/config.json）
  * 3. 默认值
  */
@@ -11,28 +11,21 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { getHubDataDir } = require('./data-dir');
+const { DEFAULT_MODEL_BY_KIND } = require('./model-options.js');
 
 // 默认值
 const DEFAULTS = {
   proxy: 'http://127.0.0.1:7890',
-  glm_base_url: 'https://mydamoxing.cn',
-  glm_model: 'glm-5.1',
+  claude_backend: 'subscription',
+  // 同事提供的 Claude-compatible Fable 网关。只预置连接参数；
+  // backend 仍默认 subscription，未显式切换时绝不会使用该网关。
+  claude_api_base_url: 'http://3.142.133.116:8080',
+  claude_api_model: 'claude-fable-5',
   codex_backend: 'subscription',
   codex_subscription_profile: 'default',
   codex_api_base_url: 'https://www.packyapi.com/v1',
-  codex_api_model: 'gpt-5.5',
+  codex_api_model: DEFAULT_MODEL_BY_KIND.codex,
   codex_api_provider: 'packycode',
-  // PackyAPI multi-model sessions (Anthropic-format endpoint)
-  gpt_base_url: 'https://www.packyapi.com',
-  gpt_model: 'gpt-5.4-high',
-  kimi_base_url: 'https://www.packyapi.com',
-  kimi_model: 'kimi-k2.5',
-  qwen_base_url: 'https://www.packyapi.com',
-  qwen_model: 'qwen3.6-plus',
-  // Meridian VPS proxy (route Claude Code through team-shared Max subscription)
-  meridian_url: 'https://meridian.lthub.xyz:8443',
-  meridian_token: '',
-  meridian_enabled: false,
   ui_tool_fold_threshold: 15,
   ui_code_fold_threshold: 30,
 };
@@ -112,23 +105,11 @@ function getConfig() {
 
   _cachedConfig = {
     proxy: getConfigValue('proxy', 'CLAUDE_PROXY', 'proxy.http', DEFAULTS.proxy),
+    claudeBackend: getConfigValue('claudeBackend', 'HUB_CLAUDE_BACKEND', 'providers.claude.backend', DEFAULTS.claude_backend),
+    claudeApiKey: getConfigValue('claudeApiKey', 'HUB_CLAUDE_API_KEY', 'providers.claude.api_key', ''),
+    claudeApiBaseUrl: normalizeBaseUrl(getConfigValue('claudeApiBaseUrl', 'HUB_CLAUDE_API_BASE_URL', 'providers.claude.base_url', DEFAULTS.claude_api_base_url)),
+    claudeApiModel: getConfigValue('claudeApiModel', 'HUB_CLAUDE_API_MODEL', 'providers.claude.model', DEFAULTS.claude_api_model),
     deepseekApiKey: getConfigValue('deepseekApiKey', 'DEEPSEEK_API_KEY', 'providers.deepseek.api_key', ''),
-    glmApiKey: getConfigValue('glmApiKey', 'GLM_API_KEY', 'providers.glm.api_key', ''),
-    glmBaseUrl: normalizeBaseUrl(getConfigValue('glmBaseUrl', 'GLM_BASE_URL', 'providers.glm.base_url', DEFAULTS.glm_base_url)),
-    glmModel: getConfigValue('glmModel', 'GLM_MODEL', 'providers.glm.model', DEFAULTS.glm_model),
-    // PackyAPI multi-model sessions
-    gptApiKey: getConfigValue('gptApiKey', 'PACKY_GPT_API_KEY', 'providers.gpt.api_key', ''),
-    gptBaseUrl: normalizeBaseUrl(getConfigValue('gptBaseUrl', 'PACKY_GPT_BASE_URL', 'providers.gpt.base_url', DEFAULTS.gpt_base_url)),
-    gptModel: getConfigValue('gptModel', 'PACKY_GPT_MODEL', 'providers.gpt.model', DEFAULTS.gpt_model),
-    kimiApiKey: getConfigValue('kimiApiKey', 'PACKY_KIMI_API_KEY', 'providers.kimi.api_key', ''),
-    kimiBaseUrl: normalizeBaseUrl(getConfigValue('kimiBaseUrl', 'PACKY_KIMI_BASE_URL', 'providers.kimi.base_url', DEFAULTS.kimi_base_url)),
-    kimiModel: getConfigValue('kimiModel', 'PACKY_KIMI_MODEL', 'providers.kimi.model', DEFAULTS.kimi_model),
-    qwenApiKey: getConfigValue('qwenApiKey', 'PACKY_QWEN_API_KEY', 'providers.qwen.api_key', ''),
-    qwenBaseUrl: normalizeBaseUrl(getConfigValue('qwenBaseUrl', 'PACKY_QWEN_BASE_URL', 'providers.qwen.base_url', DEFAULTS.qwen_base_url)),
-    qwenModel: getConfigValue('qwenModel', 'PACKY_QWEN_MODEL', 'providers.qwen.model', DEFAULTS.qwen_model),
-    meridianUrl: normalizeBaseUrl(getConfigValue('meridianUrl', 'MERIDIAN_URL', 'providers.meridian.url', DEFAULTS.meridian_url)),
-    meridianToken: getConfigValue('meridianToken', 'MERIDIAN_TOKEN', 'providers.meridian.token', DEFAULTS.meridian_token),
-    meridianEnabled: Boolean(rawConfig.providers?.meridian?.enabled),
     codexBackend: getConfigValue('codexBackend', 'HUB_CODEX_BACKEND', 'providers.codex.backend', DEFAULTS.codex_backend),
     codexSubscriptionProfile: getConfigValue('codexSubscriptionProfile', 'HUB_CODEX_PROFILE', 'providers.codex.subscription_profile', DEFAULTS.codex_subscription_profile),
     codexSubscriptionProfiles,
@@ -136,8 +117,6 @@ function getConfig() {
     codexApiBaseUrl: normalizeBaseUrl(getConfigValue('codexApiBaseUrl', 'HUB_CODEX_API_BASE_URL', 'providers.codex.base_url', DEFAULTS.codex_api_base_url)),
     codexApiModel: getConfigValue('codexApiModel', 'HUB_CODEX_API_MODEL', 'providers.codex.model', DEFAULTS.codex_api_model),
     codexApiProvider: getConfigValue('codexApiProvider', 'HUB_CODEX_API_PROVIDER', 'providers.codex.provider', DEFAULTS.codex_api_provider),
-    // PackyAPI 账户面板(余额 + 消耗,通过网站 cookie 接入)
-    packySessionCookie: getConfigValue('packySessionCookie', 'PACKY_SESSION_COOKIE', 'providers.packy.session_cookie', ''),
     uiToolFoldThreshold: parseInt(getConfigValue('uiToolFoldThreshold', 'HUB_UI_TOOL_FOLD', 'ui.tool_fold_threshold', DEFAULTS.ui_tool_fold_threshold), 10),
     uiCodeFoldThreshold: parseInt(getConfigValue('uiCodeFoldThreshold', 'HUB_UI_CODE_FOLD', 'ui.code_fold_threshold', DEFAULTS.ui_code_fold_threshold), 10),
   };
@@ -176,13 +155,10 @@ function checkMissingConfig() {
   const config = getConfig();
   const missing = [];
 
-  // DeepSeek 和 GLM 都是可选功能，不强制要求
+  // DeepSeek 是可选功能，不强制要求
   // 但如果用户想用，需要配置
   if (!config.deepseekApiKey) {
     missing.push({ key: 'deepseek', label: 'DeepSeek API Key', required: false });
-  }
-  if (!config.glmApiKey) {
-    missing.push({ key: 'glm', label: 'GLM API Key', required: false });
   }
 
   return missing;

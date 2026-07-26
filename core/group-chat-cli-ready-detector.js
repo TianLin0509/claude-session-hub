@@ -17,24 +17,29 @@
 // kind → marker 字符串数组。空数组表示 "无 marker，仅靠 buffer 静默兜底"。
 const MARKERS = {
   // Claude Code TUI 输入框就绪后状态栏稳定含 'shift+tab to cycle' 字符串
-  // 2026-06-12 live committee E2E: newer Claude-family TUI can render
+  // Newer Claude-family TUI can render
   // "? for shortcuts" without the old shift+tab footer in the ring buffer.
   claude: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
   gemini: ['Type your message', 'YOLO', 'gemini-'],
-  // Do not use model ids such as "gpt-5.5" here: the PowerShell launch
-  // command itself contains "--model gpt-5.5", which can falsely mark Codex
+  // Do not use model ids such as "gpt-5.6-sol" here: the PowerShell launch
+  // command itself contains "--model gpt-5.6-sol", which can falsely mark Codex
   // ready before the TUI input box exists.
   codex: ['Context '],
-  // GLM/DeepSeek/GPT/Kimi/Qwen 都跑在 claude CLI 上（CLAUDE_CONFIG_DIR 隔离） — 复用 Claude marker
-  glm: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
   deepseek: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
-  gpt: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
-  kimi: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
-  qwen: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
+  // Kimi Code 官方 TUI 状态栏稳定显示小写 `context:`。不能设为强 marker：
+  // 未登录启动也会短暂渲染状态栏，随后才显示 OAuth login expired。
+  kimi: ['context:'],
 };
 
 const BLOCKERS = {
   codex: [/Do you trust the contents of this directory/i, /Booting MCP server/i, /esc to interrupt/i],
+  kimi: [
+    /OAuth login expired/i,
+    /No active session\. Send \/login to login/i,
+    /requires login/i,
+    /Run \/login or \/provider to get started/i,
+    /Model:\s+not set/i,
+  ],
 };
 
 const MIN_BUF_LEN = 500;

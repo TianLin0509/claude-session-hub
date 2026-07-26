@@ -68,6 +68,38 @@ function parseCodexUsage(plain) {
   return result;
 }
 
+function parseCompactTokenCount(value) {
+  const match = String(value || '').trim().replace(/,/g, '').match(/^(\d+(?:\.\d+)?)\s*([km])?$/i);
+  if (!match) return null;
+  const multiplier = match[2] && match[2].toLowerCase() === 'm'
+    ? 1_000_000
+    : match[2] && match[2].toLowerCase() === 'k'
+      ? 1_000
+      : 1;
+  const parsed = Number(match[1]) * multiplier;
+  return Number.isFinite(parsed) ? Math.round(parsed) : null;
+}
+
+function parseKimiUsage(plain) {
+  const text = String(plain || '');
+  const result = {};
+  const contextRe = /context:\s*(\d+(?:\.\d+)?)%\s*(?:\(([\d.,]+\s*[km]?)\s*\/\s*([\d.,]+\s*[km]?)\))?/gi;
+  let match = null;
+  let current;
+  while ((current = contextRe.exec(text)) !== null) match = current;
+  if (match) {
+    result.contextPct = Number(match[1]);
+    const used = parseCompactTokenCount(match[2]);
+    const max = parseCompactTokenCount(match[3]);
+    if (used != null) result.contextUsed = used;
+    if (max != null) result.contextMax = max;
+  }
+  if (/\b(?:kimi(?:-code)?\/)?k3\b/i.test(text) || /\bKimi\s+K3\b/i.test(text)) {
+    result.model = { id: 'kimi-code/k3', displayName: 'Kimi K3' };
+  }
+  return result;
+}
+
 function parseCodexCliUsageLimits(plain) {
   const text = String(plain || '');
   const usageHeader = text.toLowerCase().lastIndexOf('https://chatgpt.com/codex/settings/usage');
@@ -146,6 +178,8 @@ function parseCodexRateLimitLine(line) {
     if (rl.secondary && typeof rl.secondary.used_percent === 'number') {
       result.usage7d = { pct: Math.round(rl.secondary.used_percent), resetsAt: toMs(rl.secondary.resets_at) };
     }
+    const observedAt = new Date(obj.timestamp || 0).getTime();
+    if (Number.isFinite(observedAt) && observedAt > 0) result.observedAt = observedAt;
     return (result.usage5h || result.usage7d) ? result : null;
   } catch {
     return null;
@@ -190,56 +224,60 @@ function extractCodexRateLimits(filePath, opts = {}) {
 }
 
 function selectCodexUsageWindow(candidates, windowKey, now = Date.now(), opts = {}) {
-  const usable = [];
-  const expired = [];
+  const entries = [];
   for (const candidate of candidates || []) {
     const usage = candidate && candidate[windowKey];
     if (!usage || typeof usage.pct !== 'number') continue;
-    const resetsAt = new Date(usage.resetsAt || 0).getTime();
-    if (Number.isFinite(resetsAt) && resetsAt > 0 && resetsAt <= now - 60_000) {
-      expired.push({ candidate, usage });
-      continue;
-    }
-    usable.push({ candidate, usage });
+    entries.push({ candidate, usage });
   }
-  if (usable.length === 0) {
-    // 窗口已过期（codex 端 5h/7d 已重置），但我们曾观察到过 candidate：
-    // 显示 0%（已重置）而不是 null（无数据）。否则 UI 渲染成 "—"，
-    // 用户误以为「读不到数据」，和 codex /status 显示的「0%」对不上。
-    if (expired.length === 0) return null;
-    expired.sort((a, b) => (b.candidate.observedAt || 0) - (a.candidate.observedAt || 0));
+  if (entries.length === 0) return null;
+
+  entries.sort((a, b) => (b.candidate.observedAt || 0) - (a.candidate.observedAt || 0));
+  const latest = entries[0];
+  const latestReset = new Date(latest.usage.resetsAt || 0).getTime();
+  if (Number.isFinite(latestReset) && latestReset > 0 && latestReset <= now - 60_000) {
+    // The newest observed window has expired. Older overlapping snapshots must
+    // not resurrect usage from a previous account/window.
     return {
       usage: { pct: 0, resetsAt: null, expired: true },
-      candidate: expired[0].candidate,
+      candidate: latest.candidate,
     };
   }
 
-  const positive = usable.filter(item => item.usage.pct > 0);
-  const pool = positive.length ? positive : usable;
+  // Treat the newest reset boundary as the coherent window identity. Session
+  // files can coexist across account/window changes; maxing across all of them
+  // pins the UI to a stale historical peak.
+  const sameWindow = entries.filter(item => {
+    const reset = new Date(item.usage.resetsAt || 0).getTime();
+    if (!Number.isFinite(latestReset) || latestReset <= 0) {
+      return !Number.isFinite(reset) || reset <= 0;
+    }
+    return Number.isFinite(reset) && Math.abs(reset - latestReset) <= 60_000;
+  });
+
   if (opts.rolling) {
-    pool.sort((a, b) => (b.candidate.observedAt || 0) - (a.candidate.observedAt || 0));
     return {
-      usage: pool[0].usage,
-      candidate: pool[0].candidate,
+      usage: latest.usage,
+      candidate: latest.candidate,
     };
   }
 
-  pool.sort((a, b) => {
+  sameWindow.sort((a, b) => {
     const pctDelta = (b.usage.pct || 0) - (a.usage.pct || 0);
     if (pctDelta) return pctDelta;
     return (b.candidate.observedAt || 0) - (a.candidate.observedAt || 0);
   });
+  const selected = sameWindow[0] || latest;
   return {
-    usage: pool[0].usage,
-    candidate: pool[0].candidate,
+    usage: selected.usage,
+    candidate: selected.candidate,
   };
 }
 
 function selectCurrentAuthCandidates(candidates, minObservedAt) {
   const cutoff = Number(minObservedAt) || 0;
   if (cutoff <= 0) return candidates || [];
-  const scoped = (candidates || []).filter(candidate => (candidate.observedAt || 0) >= cutoff);
-  return scoped.length ? scoped : (candidates || []);
+  return (candidates || []).filter(candidate => (candidate.observedAt || 0) >= cutoff);
 }
 
 function mergeCodexRateLimitCandidates(candidates, now = Date.now(), opts = {}) {
@@ -248,14 +286,17 @@ function mergeCodexRateLimitCandidates(candidates, now = Date.now(), opts = {}) 
   const usage7d = selectCodexUsageWindow(effectiveCandidates, 'usage7d', now, { rolling: true });
   if (!usage5h && !usage7d) return null;
   const primaryCandidate = (usage5h && usage5h.candidate) || (usage7d && usage7d.candidate);
+  const observationTimes = [
+    usage5h && usage5h.candidate ? usage5h.candidate.observedAt || 0 : 0,
+    usage7d && usage7d.candidate ? usage7d.candidate.observedAt || 0 : 0,
+  ].filter(Boolean);
   return {
     usage5h: usage5h ? usage5h.usage : null,
     usage7d: usage7d ? usage7d.usage : null,
     rolloutPath: primaryCandidate && primaryCandidate.rolloutPath,
-    observedAt: Math.max(
-      usage5h && usage5h.candidate ? usage5h.candidate.observedAt || 0 : 0,
-      usage7d && usage7d.candidate ? usage7d.candidate.observedAt || 0 : 0,
-    ) || undefined,
+    // The row contains both windows, so report the older selected observation
+    // rather than making one fresh window disguise another stale one.
+    observedAt: observationTimes.length ? Math.min(...observationTimes) : undefined,
   };
 }
 
@@ -264,5 +305,6 @@ module.exports = {
   mergeCodexRateLimitCandidates,
   parseCodexUsage,
   parseGeminiUsage,
+  parseKimiUsage,
   stripAnsi,
 };

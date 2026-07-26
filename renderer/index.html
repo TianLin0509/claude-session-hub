@@ -2,14 +2,16 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' file: data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' file: data:; connect-src 'self' http://127.0.0.1:* http://localhost:*; frame-src 'self' http://127.0.0.1:* http://localhost:*;">
   <title>AI 群聊 Hub</title>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="workspace.css">
   <link rel="stylesheet" href="meeting-room.css">
   <link rel="stylesheet" href="meeting-create-modal.css">
   <link rel="stylesheet" href="committee-ui.css">
   <link rel="stylesheet" href="workflow-config-modal.css">
+  <link rel="stylesheet" href="chuxin.css">
   <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
   <script src="../node_modules/prismjs/prism.js"></script>
   <script src="../node_modules/prismjs/components/prism-bash.min.js"></script>
@@ -31,18 +33,43 @@
         <div class="new-session-wrapper" id="new-session-wrapper">
           <button class="btn-new-session" id="btn-new" title="新建会话 (Ctrl+N)"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span class="btn-label">新建</span><svg class="btn-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
           <div class="new-session-menu" id="new-session-menu" style="display:none">
-            <div class="menu-group-label">AI CLI</div>
-            <button class="new-session-option" data-kind="claude"><span class="ai-logo logo-claude"></span>Claude Code</button>
-            <button class="new-session-option" data-kind="gemini"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
-            <button class="new-session-option" data-kind="codex"><span class="ai-logo logo-codex"></span>Codex CLI</button>
-            <button class="new-session-option" data-kind="deepseek"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
-            <button class="new-session-option" data-kind="kimi"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
-            <div class="new-session-divider"></div>
-            <div class="menu-group-label">终端</div>
-            <button class="new-session-option" data-kind="powershell"><span class="ai-logo logo-powershell"></span>PowerShell</button>
+            <div class="session-create-head">
+              <div><strong>新建会话</strong><span>选择 AI 与工作目录</span></div>
+              <button type="button" class="session-create-close" id="new-session-close" aria-label="关闭新建会话">×</button>
+            </div>
+            <div class="menu-group-label">AI / 终端</div>
+            <div class="session-kind-grid" role="group" aria-label="选择 AI 或终端">
+              <button class="new-session-option selected" data-kind="claude" aria-pressed="true"><span class="ai-logo logo-claude"></span>Claude Code</button>
+              <button class="new-session-option" data-kind="gemini" aria-pressed="false"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
+              <button class="new-session-option" data-kind="codex" aria-pressed="false"><span class="ai-logo logo-codex"></span>Codex CLI</button>
+              <button class="new-session-option" data-kind="deepseek" aria-pressed="false"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
+              <button class="new-session-option" data-kind="kimi" aria-pressed="false"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
+              <button class="new-session-option" data-kind="powershell" aria-pressed="false"><span class="ai-logo logo-powershell"></span>PowerShell</button>
+            </div>
+            <div class="menu-group-label">Workspace</div>
+            <div class="session-workspace-grid" role="radiogroup" aria-label="选择 workspace 方式">
+              <button type="button" class="session-workspace-choice selected" data-workspace-mode="scratch" role="radio" aria-checked="true">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                <span><strong>完全新开</strong><small>创建独立临时目录，首问后自动生成显示名</small></span>
+              </button>
+              <button type="button" class="session-workspace-choice" data-workspace-mode="existing" role="radio" aria-checked="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+                <span><strong>选择已有路径</strong><small>在现有项目或 Git 仓库中继续</small></span>
+              </button>
+            </div>
+            <div class="session-existing-path" id="new-session-existing-path" hidden>
+              <div><span>已选目录</span><code id="new-session-path-value">尚未选择</code></div>
+              <button type="button" id="new-session-pick-path">选择文件夹…</button>
+            </div>
+            <div class="session-create-error" id="new-session-error" hidden></div>
+            <div class="session-create-footer">
+              <span id="new-session-summary">Claude Code · 新建临时 workspace</span>
+              <div><button type="button" class="session-create-cancel" id="new-session-cancel">取消</button><button type="button" class="session-create-submit" id="new-session-submit">创建会话</button></div>
+            </div>
           </div>
         </div>
         <button class="btn-group-chat" id="btn-group-chat" title="创建 AI 群聊"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10"/><path d="M7 12h6"/><path d="M6 18l-3 3V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6Z"/></svg><span class="btn-label">群聊</span></button>
+        <button class="btn-group-chat" id="btn-chuxin" title="初心投研 · 英雄 Agent 参谋"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg><span class="btn-label">投研</span></button>
         <div class="resume-picker-wrapper" id="resume-picker-wrapper">
           <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg></button>
           <div class="resume-picker-menu" id="resume-picker-menu" style="display:none">
@@ -137,6 +164,9 @@
         <button class="mr-send-btn" id="mr-send-btn" title="发送" aria-label="发送"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 4l7 7h-4v9h-6v-9H5z"/></svg></button>
       </div>
     </div>
+    <!-- 2026-07-23 Kimi 移植：初心投研面板（第三主区视图，与 terminal/mr 平级互斥）。
+         骨架由 renderer/chuxin.js 自构建，数据来自本机 chuxin-research API。 -->
+    <div class="chuxin-panel" id="chuxin-panel" style="display:none"></div>
     <!-- 2026-05-05 道雪：preview-splitter + preview-panel 从 terminal-panel 之后挪到
            meeting-room-panel 之后。flex 排版下，普通 session 时 mr-panel 隐藏 →
            排成 [terminal | preview]，群聊时 terminal 隐藏 → 排成 [meeting-room | preview]，
@@ -206,12 +236,16 @@
     </div>
   </div>
   <script src="path-link.js"></script>
+  <script src="task-presets.js"></script>
+  <script src="workspace-controller.js"></script>
   <script src="renderer.js"></script>
   <script src="loop-workflow.js"></script>
+  <script src="workflow-templates.js"></script>
   <script src="meeting-room.js"></script>
   <script src="meeting-create-modal.js"></script>
   <script src="committee-ui.js"></script>
   <script src="workflow-config-modal.js"></script>
+  <script src="chuxin.js"></script>
 
   <div id="config-modal" class="config-modal-overlay hidden">
     <div class="config-modal-content">
@@ -235,7 +269,7 @@
               <span class="config-ai-mark claude">CL</span>
               <span class="config-ai-copy">
                 <strong>Claude</strong>
-                <small id="cfg-summary-claude">订阅模式 · claude-opus-4-8[1m]</small>
+                <small id="cfg-summary-claude">订阅模式 · claude-opus-5[1m]</small>
               </span>
               <span class="config-ai-status subscription" id="cfg-status-claude">订阅</span>
             </button>

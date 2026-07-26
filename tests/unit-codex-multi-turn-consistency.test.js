@@ -162,14 +162,14 @@ async function testTwoWatchersAreIndependent() {
   const watcherA = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-A',
-    label: 'pikachu',
+    label: 'member1',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
   });
   const watcherB = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-B',
-    label: 'charmander',
+    label: 'member2',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
   });
@@ -199,14 +199,14 @@ async function testWatcherErrorIsolation() {
   const watcherA = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-A',
-    label: 'pikachu',
+    label: 'member1',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
   });
   const watcherB = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-B',
-    label: 'charmander',
+    label: 'member2',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
   });

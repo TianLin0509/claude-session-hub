@@ -36,25 +36,59 @@ function createTerminalInputController({ document, window, ipcRenderer, clipboar
   //   2. 检测剪贴板有图片 → 调 save-clipboard-image IPC 拿绝对路径
   //   3. 用 execCommand('insertText', path) 在 caret 位置插入路径文字
   //      （execCommand 比 selection.insertNode 更稳：自动处理 caret/undo stack/IME）
-  //   4. 文本粘贴走浏览器默认（不 preventDefault）
+  //   4. 文本粘贴显式插入 text/plain，避免 HTML 源格式进入输入框
   // 暴露为 window.attachContenteditablePasteImage 供 meeting-room.js IIFE 使用。
+  function htmlToPlainText(html) {
+    if (!html) return '';
+    const DOMParserCtor = window && window.DOMParser;
+    if (typeof DOMParserCtor === 'function') {
+      const parsed = new DOMParserCtor().parseFromString(html, 'text/html');
+      return (parsed && parsed.body && (parsed.body.innerText || parsed.body.textContent)) || '';
+    }
+    return '';
+  }
+
+  function getPastePlainText(e) {
+    const cd = e && e.clipboardData;
+    if (cd && typeof cd.getData === 'function') {
+      const plainText = cd.getData('text/plain') || '';
+      if (plainText) return plainText;
+      return htmlToPlainText(cd.getData('text/html') || '');
+    }
+    return clipboard.readText ? (clipboard.readText() || '') : '';
+  }
+
+  function hasClipboardImage(e) {
+    const cd = e && e.clipboardData;
+    if (cd && cd.items) {
+      for (const it of cd.items) {
+        if (it.kind === 'file' && /^image\//.test(it.type)) return true;
+      }
+    }
+    const img = clipboard.readImage();
+    return !!(img && !img.isEmpty());
+  }
+
+  function insertContenteditableText(inputEl, text) {
+    document.execCommand('insertText', false, text);
+    inputEl.dispatchEvent(new EventCtor('input', { bubbles: true }));
+  }
+
+  // Text paste is normalized to text/plain; image-only paste still inserts a
+  // saved local image path. Keep the public name for existing callers.
   function attachContenteditablePasteImage(inputEl) {
     if (!inputEl || inputEl.dataset.imgPasteBound === '1') return;
     inputEl.dataset.imgPasteBound = '1';
     inputEl.addEventListener('paste', async (e) => {
-      // 优先看事件携带的 clipboardData（同步），其次 fallback 到 Electron clipboard
-      const cd = e.clipboardData;
-      let hasImage = false;
-      if (cd && cd.items) {
-        for (const it of cd.items) {
-          if (it.kind === 'file' && /^image\//.test(it.type)) { hasImage = true; break; }
-        }
+      // Text wins over image so copied HTML selections become plain prompts.
+      const plainText = getPastePlainText(e);
+      if (plainText) {
+        e.preventDefault();
+        insertContenteditableText(inputEl, plainText);
+        return;
       }
-      if (!hasImage) {
-        const img = clipboard.readImage();
-        if (img && !img.isEmpty()) hasImage = true;
-      }
-      if (!hasImage) return; // 纯文本粘贴走浏览器默认
+
+      if (!hasClipboardImage(e)) return;
       e.preventDefault();
       try {
         const filePath = await ipcRenderer.invoke('save-clipboard-image');
@@ -62,8 +96,7 @@ function createTerminalInputController({ document, window, ipcRenderer, clipboar
         // 在 caret 位置插入路径文本（保持 selection / 维护 undo stack）
         // execCommand 在 contenteditable 里仍然可用（虽然标记 deprecated，浏览器仍支持
         // 且对 Electron renderer 是稳定 API，与 xterm.paste 等价语义）
-        document.execCommand('insertText', false, filePath);
-        inputEl.dispatchEvent(new EventCtor('input', { bubbles: true }));
+        insertContenteditableText(inputEl, filePath);
       } catch (err) {
         console.warn('[paste-image] save-clipboard-image failed:', err && err.message);
       }

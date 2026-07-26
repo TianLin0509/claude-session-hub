@@ -1,5 +1,9 @@
 'use strict';
 
+const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
+const DEFAULT_CLAUDE_SUBSCRIPTION_MODEL = 'claude-opus-5[1m]';
+const DEFAULT_CLAUDE_FABLE_MODEL = 'claude-fable-5';
+
 function createConfigModalController({ document, ipcRenderer, providerModes, renderAccountUsage }) {
   if (!document) throw new Error('document is required');
   if (!ipcRenderer) throw new Error('ipcRenderer is required');
@@ -9,7 +13,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
   const CONFIG_AI_META = {
     claude: {
       title: 'Claude 设置',
-      hint: '默认使用本机 Claude Code 订阅。可选填 VPS 代理走团队共享 Max。',
+      hint: '使用当前本机 Claude Code 登录状态。新建 Claude 会话会走本机订阅和本机代理配置。',
       status: '订阅',
       statusClass: 'subscription',
     },
@@ -23,33 +27,15 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
       title: 'Codex 设置',
       hint: '全 Hub 新建 Codex 会话统一生效。API 模式会使用隔离 CODEX_HOME，不污染本机订阅配置。',
     },
+    kimi: {
+      title: 'Kimi Code 设置',
+      hint: '使用当前本机 Kimi Code CLI 登录状态；新建会话与群聊成员默认使用 Kimi K3。',
+      status: '订阅',
+      statusClass: 'subscription',
+    },
     deepseek: {
       title: 'DeepSeek 设置',
       hint: 'DeepSeek 当前通过 API 接入，新建 DeepSeek 会话生效。',
-      status: 'API',
-      statusClass: 'api',
-    },
-    glm: {
-      title: 'GLM 设置',
-      hint: 'GLM 当前通过 API 接入，新建 GLM 会话生效。',
-      status: 'API',
-      statusClass: 'api',
-    },
-    gpt: {
-      title: 'GPT 设置',
-      hint: 'GPT 当前通过 PackyAPI codex 分组的 Anthropic 兼容端点接入，新建 GPT 会话生效。',
-      status: 'API',
-      statusClass: 'api',
-    },
-    kimi: {
-      title: 'Kimi 设置',
-      hint: 'Kimi 当前通过 PackyAPI bailian 分组的 Anthropic 兼容端点接入，新建 Kimi 会话生效。',
-      status: 'API',
-      statusClass: 'api',
-    },
-    qwen: {
-      title: 'Qwen 设置',
-      hint: 'Qwen 当前通过 PackyAPI bailian 分组的 Anthropic 兼容端点接入（与 Kimi 共享 bailian key），新建 Qwen 会话生效。',
       status: 'API',
       statusClass: 'api',
     },
@@ -135,54 +121,41 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     el.className = 'config-ai-status ' + (cls || '');
   }
 
-  function fmtTokens(n) {
-    if (!n) return '0';
-    if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
-    if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
-    return String(n);
+  function updateClaudeBackendControls() {
+    const backend = configEl('cfg-claude-backend') ? configEl('cfg-claude-backend').value : 'subscription';
+    const isApi = backend === 'api';
+    for (const id of ['cfg-claude-key', 'cfg-claude-url', 'cfg-claude-model']) {
+      const el = configEl(id);
+      if (el) el.disabled = !isApi;
+    }
+    const subscriptionCard = configEl('cfg-claude-subscription-card');
+    const apiCard = configEl('cfg-claude-api-card');
+    if (subscriptionCard) subscriptionCard.classList.toggle('selected', !isApi);
+    if (apiCard) apiCard.classList.toggle('selected', isApi);
+    const routeNote = configEl('cfg-claude-route-note');
+    if (routeNote) {
+      routeNote.textContent = isApi
+        ? '中转端当前使用 HTTP 明文连接。Key、提示词和回复可能在传输链路上被读取。'
+        : '中转参数已保存备用；当前订阅模式不会读取或发送中转 Key。';
+      routeNote.className = isApi ? 'config-note warning' : 'config-note';
+    }
+    if (activeConfigAi === 'claude' && configEl('cfg-detail-hint')) {
+      configEl('cfg-detail-hint').textContent = isApi
+        ? '新建 Claude 会话将直连同事中转，使用已保存的 Key 与 Fable 5 模型。'
+        : CONFIG_AI_META.claude.hint;
+    }
   }
 
-  async function refreshMeridianUsage() {
-    const el = document.getElementById('cfg-meridian-usage');
-    if (!el) return;
-    const url = (document.getElementById('cfg-meridian-url') || {}).value;
-    const token = (document.getElementById('cfg-meridian-token') || {}).value;
-    if (!url || !token) {
-      el.innerHTML = '<span class="config-label-hint">未配置（填好 URL + Token 后保存即可拉取）</span>';
-      return;
-    }
-    el.innerHTML = '<span class="config-label-hint">加载中…</span>';
-    try {
-      const r = await ipcRenderer.invoke('get-meridian-usage', { url: url.trim(), token: token.trim() });
-      if (!r || !r.ok) {
-        el.innerHTML = `<span class="config-label-hint" style="color:#f85149">拉取失败：${(r && r.errorMessage) || '未知'}</span>`;
-        return;
-      }
-      const inPct = Math.min(100, Math.round((r.daily.input / r.limits.input) * 100));
-      const outPct = Math.min(100, Math.round((r.daily.output / r.limits.output) * 100));
-      el.innerHTML = `
-        <div style="font-size: 12px; line-height: 1.6;">
-          <div>请求数 <strong>${r.daily.requests}</strong> · cache hit <strong>${fmtTokens(r.daily.cacheRead)}</strong></div>
-          <div>Input <strong>${fmtTokens(r.daily.input)}</strong> / ${fmtTokens(r.limits.input)}
-            <div style="background:#222; height:6px; border-radius:3px; margin-top:3px;">
-              <div style="background:${inPct > 80 ? '#f85149' : '#3fb950'}; width:${inPct}%; height:100%; border-radius:3px;"></div>
-            </div>
-          </div>
-          <div style="margin-top:6px;">Output <strong>${fmtTokens(r.daily.output)}</strong> / ${fmtTokens(r.limits.output)}
-            <div style="background:#222; height:6px; border-radius:3px; margin-top:3px;">
-              <div style="background:${outPct > 80 ? '#f85149' : '#3fb950'}; width:${outPct}%; height:100%; border-radius:3px;"></div>
-            </div>
-          </div>
-        </div>
-      `;
-    } catch (e) {
-      el.innerHTML = `<span class="config-label-hint" style="color:#f85149">出错：${e.message || e}</span>`;
-    }
+  function claudeModelDisplayName(model) {
+    return model === DEFAULT_CLAUDE_FABLE_MODEL ? 'Fable 5 · 1M' : model;
   }
-  
+
   function updateConfigSummaries() {
+    const claudeBackend = configEl('cfg-claude-backend') ? configEl('cfg-claude-backend').value : 'subscription';
+    const claudeModel = configEl('cfg-claude-model') ? (configEl('cfg-claude-model').value.trim() || DEFAULT_CLAUDE_FABLE_MODEL) : DEFAULT_CLAUDE_FABLE_MODEL;
+    const claudeKey = configEl('cfg-claude-key') ? configEl('cfg-claude-key').value.trim() : '';
     const codexBackend = configEl('cfg-codex-backend') ? configEl('cfg-codex-backend').value : 'subscription';
-    const codexModel = configEl('cfg-codex-model') ? (configEl('cfg-codex-model').value.trim() || 'gpt-5.5') : 'gpt-5.5';
+    const codexModel = configEl('cfg-codex-model') ? (configEl('cfg-codex-model').value.trim() || DEFAULT_CODEX_MODEL) : DEFAULT_CODEX_MODEL;
     const codexKey = configEl('cfg-codex-key') ? configEl('cfg-codex-key').value.trim() : '';
     const profiles = readCodexProfilesFromForm();
     const profileSelect = configEl('cfg-codex-subscription-profile');
@@ -192,14 +165,6 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     codexSubscriptionProfile = selectedProfile ? selectedProfile.id : 'default';
     updateCodexProfileMenuLabels();
     const deepseekKey = configEl('cfg-deepseek-key') ? configEl('cfg-deepseek-key').value.trim() : '';
-    const glmKey = configEl('cfg-glm-key') ? configEl('cfg-glm-key').value.trim() : '';
-    const glmModel = configEl('cfg-glm-model') ? (configEl('cfg-glm-model').value.trim() || 'glm-5.1') : 'glm-5.1';
-    const gptKey = configEl('cfg-gpt-key') ? configEl('cfg-gpt-key').value.trim() : '';
-    const gptModel = configEl('cfg-gpt-model') ? (configEl('cfg-gpt-model').value.trim() || 'gpt-5.4-high') : 'gpt-5.4-high';
-    const kimiKey = configEl('cfg-kimi-key') ? configEl('cfg-kimi-key').value.trim() : '';
-    const kimiModel = configEl('cfg-kimi-model') ? (configEl('cfg-kimi-model').value.trim() || 'kimi-k2.5') : 'kimi-k2.5';
-    const qwenKey = configEl('cfg-qwen-key') ? configEl('cfg-qwen-key').value.trim() : '';
-    const qwenModel = configEl('cfg-qwen-model') ? (configEl('cfg-qwen-model').value.trim() || 'qwen3.6-plus') : 'qwen3.6-plus';
   
     const codexSummary = configEl('cfg-summary-codex');
     if (codexSummary) {
@@ -216,39 +181,26 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     const deepseekSummary = configEl('cfg-summary-deepseek');
     if (deepseekSummary) deepseekSummary.textContent = deepseekKey ? 'API · deepseek-v4-pro[1m]' : 'API · 未配置 Key';
     setConfigStatus(configEl('cfg-status-deepseek'), deepseekKey ? 'API' : '缺 Key', deepseekKey ? 'api' : 'missing');
-  
-    const glmSummary = configEl('cfg-summary-glm');
-    if (glmSummary) glmSummary.textContent = glmKey ? `API · ${glmModel}` : 'API · 未配置 Key';
-    setConfigStatus(configEl('cfg-status-glm'), glmKey ? 'API' : '缺 Key', glmKey ? 'api' : 'missing');
-  
-    const gptSummary = configEl('cfg-summary-gpt');
-    if (gptSummary) gptSummary.textContent = gptKey ? `API · ${gptModel} · Packy` : 'API · 未配置 Key';
-    setConfigStatus(configEl('cfg-status-gpt'), gptKey ? 'API' : '缺 Key', gptKey ? 'api' : 'missing');
-  
-    const kimiSummary = configEl('cfg-summary-kimi');
-    if (kimiSummary) kimiSummary.textContent = kimiKey ? `API · ${kimiModel} · Packy` : 'API · 未配置 Key';
-    setConfigStatus(configEl('cfg-status-kimi'), kimiKey ? 'API' : '缺 Key', kimiKey ? 'api' : 'missing');
-  
-    const qwenSummary = configEl('cfg-summary-qwen');
-    if (qwenSummary) qwenSummary.textContent = qwenKey ? `API · ${qwenModel} · Packy` : 'API · 未配置 Key';
-    setConfigStatus(configEl('cfg-status-qwen'), qwenKey ? 'API' : '缺 Key', qwenKey ? 'api' : 'missing');
 
-    const meridianUrl = configEl('cfg-meridian-url') ? configEl('cfg-meridian-url').value.trim() : '';
-    const meridianToken = configEl('cfg-meridian-token') ? configEl('cfg-meridian-token').value.trim() : '';
     const claudeSummary = configEl('cfg-summary-claude');
     if (claudeSummary) {
-      claudeSummary.textContent = (meridianUrl && meridianToken)
-        ? `VPS 代理 · ${meridianUrl.replace(/^https?:\/\//, '')}`
-        : '订阅模式 · claude-opus-4-8[1m]';
+      claudeSummary.textContent = claudeBackend === 'api'
+        ? `同事中转 · ${claudeModelDisplayName(claudeModel)}`
+        : `订阅模式 · ${DEFAULT_CLAUDE_SUBSCRIPTION_MODEL}`;
     }
+    setConfigStatus(
+      configEl('cfg-status-claude'),
+      claudeBackend === 'api' ? (claudeKey ? '中转' : '缺 Key') : '订阅',
+      claudeBackend === 'api' ? (claudeKey ? 'api' : 'missing') : 'subscription'
+    );
     if (activeConfigAi === 'claude') {
       setConfigStatus(
         configEl('cfg-detail-status'),
-        (meridianUrl && meridianToken) ? 'VPS 代理' : '订阅',
-        (meridianUrl && meridianToken) ? 'api' : 'subscription'
+        claudeBackend === 'api' ? (claudeKey ? '中转' : '缺 Key') : '订阅',
+        claudeBackend === 'api' ? (claudeKey ? 'api' : 'missing') : 'subscription'
       );
     }
-  
+
     if (activeConfigAi === 'codex') {
       setConfigStatus(
         configEl('cfg-detail-status'),
@@ -257,14 +209,6 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
       );
     } else if (activeConfigAi === 'deepseek') {
       setConfigStatus(configEl('cfg-detail-status'), deepseekKey ? 'API' : '缺 Key', deepseekKey ? 'api' : 'missing');
-    } else if (activeConfigAi === 'glm') {
-      setConfigStatus(configEl('cfg-detail-status'), glmKey ? 'API' : '缺 Key', glmKey ? 'api' : 'missing');
-    } else if (activeConfigAi === 'gpt') {
-      setConfigStatus(configEl('cfg-detail-status'), gptKey ? 'API' : '缺 Key', gptKey ? 'api' : 'missing');
-    } else if (activeConfigAi === 'kimi') {
-      setConfigStatus(configEl('cfg-detail-status'), kimiKey ? 'API' : '缺 Key', kimiKey ? 'api' : 'missing');
-    } else if (activeConfigAi === 'qwen') {
-      setConfigStatus(configEl('cfg-detail-status'), qwenKey ? 'API' : '缺 Key', qwenKey ? 'api' : 'missing');
     }
   }
   
@@ -288,6 +232,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     if (meta.status) {
       setConfigStatus(configEl('cfg-detail-status'), meta.status, meta.statusClass);
     }
+    if (activeConfigAi === 'claude') updateClaudeBackendControls();
     updateConfigSummaries();
   }
   
@@ -302,35 +247,20 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     // 加载当前配置
     try {
       const cfg = await ipcRenderer.invoke('get-hub-config-raw');
+      providerModes.claude = cfg.claudeBackend === 'api' ? 'api' : 'subscription';
       providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
       setCodexProfileForm(cfg.codexSubscriptionProfiles, cfg.codexSubscriptionProfile);
       document.getElementById('cfg-proxy').value = cfg.proxy || '';
+      document.getElementById('cfg-claude-backend').value = cfg.claudeBackend || 'subscription';
+      document.getElementById('cfg-claude-key').value = cfg.claudeApiKey || '';
+      document.getElementById('cfg-claude-url').value = cfg.claudeApiBaseUrl || '';
+      document.getElementById('cfg-claude-model').value = cfg.claudeApiModel || DEFAULT_CLAUDE_FABLE_MODEL;
       document.getElementById('cfg-deepseek-key').value = cfg.deepseekApiKey || '';
       document.getElementById('cfg-codex-backend').value = cfg.codexBackend || 'subscription';
       document.getElementById('cfg-codex-key').value = cfg.codexApiKey || '';
       document.getElementById('cfg-codex-url').value = cfg.codexApiBaseUrl || '';
       document.getElementById('cfg-codex-model').value = cfg.codexApiModel || '';
-      document.getElementById('cfg-glm-key').value = cfg.glmApiKey || '';
-      document.getElementById('cfg-glm-url').value = cfg.glmBaseUrl || '';
-      document.getElementById('cfg-glm-model').value = cfg.glmModel || '';
-      document.getElementById('cfg-gpt-key').value = cfg.gptApiKey || '';
-      document.getElementById('cfg-gpt-url').value = cfg.gptBaseUrl || '';
-      document.getElementById('cfg-gpt-model').value = cfg.gptModel || '';
-      document.getElementById('cfg-kimi-key').value = cfg.kimiApiKey || '';
-      document.getElementById('cfg-kimi-url').value = cfg.kimiBaseUrl || '';
-      document.getElementById('cfg-kimi-model').value = cfg.kimiModel || '';
-      document.getElementById('cfg-qwen-key').value = cfg.qwenApiKey || '';
-      document.getElementById('cfg-qwen-url').value = cfg.qwenBaseUrl || '';
-      document.getElementById('cfg-qwen-model').value = cfg.qwenModel || '';
-      if (document.getElementById('cfg-meridian-url')) {
-        document.getElementById('cfg-meridian-url').value = cfg.meridianUrl || '';
-        document.getElementById('cfg-meridian-token').value = cfg.meridianToken || '';
-        refreshMeridianUsage();
-      }
-      const packyEl = document.getElementById('cfg-packy-cookie');
-      if (packyEl) packyEl.value = cfg.packySessionCookie || '';
-      const expiresEl = document.getElementById('cfg-packy-expires');
-      if (expiresEl) expiresEl.textContent = cfg.packySessionCookie ? '已配置' : '未配置';
+      updateClaudeBackendControls();
       updateConfigSummaries();
     } catch {
       // 加载失败也显示空白面板
@@ -358,46 +288,14 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     document.querySelectorAll('.config-ai-row').forEach(row => {
       row.addEventListener('click', () => showConfigDetail(row.dataset.ai));
     });
-    ['cfg-codex-backend', 'cfg-codex-subscription-profile', 'cfg-codex-profile-default-label', 'cfg-codex-profile-second-label', 'cfg-codex-profile-second-home', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key', 'cfg-glm-key', 'cfg-glm-url', 'cfg-glm-model', 'cfg-gpt-key', 'cfg-gpt-url', 'cfg-gpt-model', 'cfg-kimi-key', 'cfg-kimi-url', 'cfg-kimi-model', 'cfg-qwen-key', 'cfg-qwen-url', 'cfg-qwen-model', 'cfg-meridian-url', 'cfg-meridian-token'].forEach(id => {
+    ['cfg-claude-backend', 'cfg-claude-key', 'cfg-claude-url', 'cfg-claude-model', 'cfg-codex-backend', 'cfg-codex-subscription-profile', 'cfg-codex-profile-default-label', 'cfg-codex-profile-second-label', 'cfg-codex-profile-second-home', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('input', updateConfigSummaries);
-      if (el) el.addEventListener('change', updateConfigSummaries);
-    });
-
-    const testBtn = document.getElementById('cfg-meridian-test-btn');
-    if (testBtn) {
-      testBtn.addEventListener('click', async () => {
-        const url = document.getElementById('cfg-meridian-url').value.trim();
-        const token = document.getElementById('cfg-meridian-token').value.trim();
-        const resultEl = document.getElementById('cfg-meridian-test-result');
-        if (!url || !token) {
-          resultEl.textContent = '⚠ URL 和 Token 都必填';
-          resultEl.style.color = '#e0a800';
-          return;
-        }
-        testBtn.disabled = true;
-        resultEl.textContent = '测试中…';
-        resultEl.style.color = '';
-        try {
-          const r = await ipcRenderer.invoke('test-meridian-health', { url, token });
-          if (r.healthOk && r.authOk) {
-            resultEl.textContent = `✓ 成功 · 模型 ${r.model} · 延迟 ${r.latencyMs}ms`;
-            resultEl.style.color = '#3fb950';
-          } else if (r.healthOk && !r.authOk) {
-            resultEl.textContent = `✗ URL 通但 Token 失败：${r.errorMessage}`;
-            resultEl.style.color = '#f85149';
-          } else {
-            resultEl.textContent = `✗ ${r.errorMessage}`;
-            resultEl.style.color = '#f85149';
-          }
-        } catch (e) {
-          resultEl.textContent = `✗ 测试出错：${e.message || e}`;
-          resultEl.style.color = '#f85149';
-        } finally {
-          testBtn.disabled = false;
-        }
+      if (el) el.addEventListener('change', () => {
+        if (id === 'cfg-claude-backend') updateClaudeBackendControls();
+        updateConfigSummaries();
       });
-    }
+    });
     modal.addEventListener('click', (e) => { if (e.target === modal) closeConfigModal(); });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
@@ -409,6 +307,10 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
       const msg = document.getElementById('config-save-msg');
       const newConfig = {
         proxy: document.getElementById('cfg-proxy').value.trim() || undefined,
+        claudeBackend: document.getElementById('cfg-claude-backend').value,
+        claudeApiKey: document.getElementById('cfg-claude-key').value.trim() || undefined,
+        claudeApiBaseUrl: document.getElementById('cfg-claude-url').value.trim() || undefined,
+        claudeApiModel: document.getElementById('cfg-claude-model').value.trim() || undefined,
         deepseekApiKey: document.getElementById('cfg-deepseek-key').value.trim() || undefined,
         codexBackend: document.getElementById('cfg-codex-backend').value,
         codexSubscriptionProfile: (document.getElementById('cfg-codex-subscription-profile') && document.getElementById('cfg-codex-subscription-profile').value) || 'default',
@@ -416,28 +318,20 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
         codexApiKey: document.getElementById('cfg-codex-key').value.trim() || undefined,
         codexApiBaseUrl: document.getElementById('cfg-codex-url').value.trim() || undefined,
         codexApiModel: document.getElementById('cfg-codex-model').value.trim() || undefined,
-        glmApiKey: document.getElementById('cfg-glm-key').value.trim() || undefined,
-        glmBaseUrl: document.getElementById('cfg-glm-url').value.trim() || undefined,
-        glmModel: document.getElementById('cfg-glm-model').value.trim() || undefined,
-        gptApiKey: document.getElementById('cfg-gpt-key').value.trim() || undefined,
-        gptBaseUrl: document.getElementById('cfg-gpt-url').value.trim() || undefined,
-        gptModel: document.getElementById('cfg-gpt-model').value.trim() || undefined,
-        kimiApiKey: document.getElementById('cfg-kimi-key').value.trim() || undefined,
-        kimiBaseUrl: document.getElementById('cfg-kimi-url').value.trim() || undefined,
-        kimiModel: document.getElementById('cfg-kimi-model').value.trim() || undefined,
-        qwenApiKey: document.getElementById('cfg-qwen-key').value.trim() || undefined,
-        qwenBaseUrl: document.getElementById('cfg-qwen-url').value.trim() || undefined,
-        qwenModel: document.getElementById('cfg-qwen-model').value.trim() || undefined,
-        meridianUrl: document.getElementById('cfg-meridian-url') ? (document.getElementById('cfg-meridian-url').value.trim() || undefined) : undefined,
-        meridianToken: document.getElementById('cfg-meridian-token') ? (document.getElementById('cfg-meridian-token').value.trim() || undefined) : undefined,
-        packySessionCookie: (document.getElementById('cfg-packy-cookie') && document.getElementById('cfg-packy-cookie').value.trim()) || undefined,
       };
+      if (newConfig.claudeBackend === 'api' && (!newConfig.claudeApiKey || !newConfig.claudeApiBaseUrl || !newConfig.claudeApiModel)) {
+        msg.textContent = '请先完整填写同事中转的 Key、Base URL 和模型。';
+        msg.className = 'config-save-msg error';
+        msg.style.display = 'block';
+        return;
+      }
       try {
         const result = await ipcRenderer.invoke('save-hub-config', newConfig);
         if (result && result.success) {
+          providerModes.claude = newConfig.claudeBackend === 'api' ? 'api' : 'subscription';
           providerModes.codex = newConfig.codexBackend === 'api' ? 'api' : 'subscription';
           renderAccountUsage();
-          msg.textContent = '配置已保存。新创建的 Codex / GLM / DeepSeek / GPT / Kimi / Qwen 会话将立即生效。';
+          msg.textContent = '配置已保存。新创建的 Claude / Codex / DeepSeek 会话将按所选后端启动。';
           msg.className = 'config-save-msg success';
           msg.style.display = 'block';
           setTimeout(() => { msg.style.display = 'none'; }, 4000);
@@ -462,6 +356,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     close: closeConfigModal,
     init: initConfigModal,
     setCodexProfileForm,
+    updateClaudeBackendControls,
     updateSummaries: updateConfigSummaries,
     showMainView: showConfigMainView,
     showDetail: showConfigDetail,

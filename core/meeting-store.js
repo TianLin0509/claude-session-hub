@@ -36,10 +36,9 @@ function meetingFilePath(id) {
   return path.join(meetingsDir(), `${id}.json`);
 }
 
-function saveMeetingFile(id, data) {
-  ensureDir();
+function _buildMeetingPayload(id, data) {
   const now = Date.now();
-  const payload = {
+  return {
     schemaVersion: SCHEMA_VERSION,
     id,
     // ── timeline + cursors（v1 已有） ──
@@ -49,12 +48,11 @@ function saveMeetingFile(id, data) {
     slotSpecs: Array.isArray(data.slotSpecs) ? data.slotSpecs : null,
     mode: ['pilot', 'free'].includes(data.mode) ? data.mode : 'free',
     participants: Array.isArray(data.participants) ? data.participants : null,
-    serialWorkflow: data.serialWorkflow && typeof data.serialWorkflow === 'object'
-      ? data.serialWorkflow
-      : null,
     groupChat: !!data.groupChat,
     groupMode: typeof data.groupMode === 'string' ? data.groupMode : 'deliberation',
     groupRecentRawN: Number.isInteger(data.groupRecentRawN) ? data.groupRecentRawN : 5,
+    workspace: typeof data.workspace === 'string' ? data.workspace : null,
+    workspaceLabel: typeof data.workspaceLabel === 'string' ? data.workspaceLabel : null,
     // ── v2 新增：完整 meeting metadata（用于 boot 自我修复） ──
     title: typeof data.title === 'string' ? data.title : null,
     scene: typeof data.scene === 'string' ? data.scene : null,
@@ -69,13 +67,48 @@ function saveMeetingFile(id, data) {
     lastMessageTime: typeof data.lastMessageTime === 'number' ? data.lastMessageTime : null,
     covenantText: typeof data.covenantText === 'string' ? data.covenantText : '',
     immersive: !!data.immersive,
+    // 串行工作流配置（2026-06-17 道雪）：群聊可反复用，需重启恢复
+    serialWorkflow: (data.serialWorkflow && typeof data.serialWorkflow === 'object') ? data.serialWorkflow : null,
     // 时间戳
     updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : now,
     savedAt: now,
   };
-  const tmp = meetingFilePath(id) + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(payload));
-  fs.renameSync(tmp, meetingFilePath(id));
+}
+
+function _tempPath(id) {
+  return `${meetingFilePath(id)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+}
+
+function saveMeetingFile(id, data) {
+  ensureDir();
+  const payload = _buildMeetingPayload(id, data);
+  const tmp = _tempPath(id);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(payload));
+    fs.renameSync(tmp, meetingFilePath(id));
+  } finally {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+async function saveMeetingFileAsync(id, data) {
+  await fs.promises.mkdir(meetingsDir(), { recursive: true });
+  const payload = _buildMeetingPayload(id, data);
+  const tmp = _tempPath(id);
+  try {
+    await fs.promises.writeFile(tmp, JSON.stringify(payload));
+    await fs.promises.rename(tmp, meetingFilePath(id));
+  } finally {
+    try { await fs.promises.unlink(tmp); } catch {}
+  }
+}
+
+async function loadMeetingFileAsync(id) {
+  try {
+    return JSON.parse(await fs.promises.readFile(meetingFilePath(id), 'utf8'));
+  } catch {
+    return null;
+  }
 }
 
 function loadMeetingFile(id) {
@@ -92,6 +125,8 @@ function loadMeetingFile(id) {
     obj.groupChat = !!obj.groupChat;
     if (typeof obj.groupMode !== 'string') obj.groupMode = 'deliberation';
     if (!Number.isInteger(obj.groupRecentRawN)) obj.groupRecentRawN = 5;
+    if (typeof obj.workspace !== 'string') obj.workspace = null;
+    if (typeof obj.workspaceLabel !== 'string') obj.workspaceLabel = null;
     if (!Array.isArray(obj.participants)) obj.participants = null;
     if (!obj.serialWorkflow || typeof obj.serialWorkflow !== 'object') obj.serialWorkflow = null;
     if (typeof obj.updatedAt !== 'number') obj.updatedAt = obj.savedAt || 0;
@@ -143,11 +178,29 @@ function deleteMeetingFile(id) {
 // Debounced flush registry
 const _dirty = new Map();
 const _timers = new Map();
+const _writeChains = new Map();
+
+function _enqueueWrite(id, snap) {
+  const previous = _writeChains.get(id) || Promise.resolve();
+  const task = previous.then(async () => {
+    if (_isMeetingRemoved(id)) return;
+    const disk = await loadMeetingFileAsync(id) || {};
+    await saveMeetingFileAsync(id, { ...disk, ...snap });
+    if (_dirty.get(id) === snap) _dirty.delete(id);
+  });
+  const tracked = task
+    .catch(error => console.warn(`[meeting-store] async flush ${id} failed:`, error.message))
+    .finally(() => {
+      if (_writeChains.get(id) === tracked) _writeChains.delete(id);
+    });
+  _writeChains.set(id, tracked);
+  return tracked;
+}
 
 function markDirty(id, data) {
   if (!id) return;
   if (_isMeetingRemoved(id)) return;  // 防复活
-  const prev = _dirty.get(id) || loadMeetingFile(id) || {};
+  const prev = _dirty.get(id) || {};
   _dirty.set(id, { ...prev, ...(data || {}) });
   if (_timers.has(id)) clearTimeout(_timers.get(id));
   const t = setTimeout(() => {
@@ -157,15 +210,7 @@ function markDirty(id, data) {
       return;
     }
     const snap = _dirty.get(id);
-    if (snap) {
-      try {
-        saveMeetingFile(id, snap);
-        _dirty.delete(id);  // 只有成功才删
-      } catch (e) {
-        // 失败保留 dirty 等 flushAll 重试
-        console.warn(`[meeting-store] flush ${id} failed (will retry on flushAll):`, e.message);
-      }
-    }
+    if (snap) void _enqueueWrite(id, snap);
     _timers.delete(id);
   }, DEBOUNCE_MS);
   t.unref?.();
@@ -177,7 +222,10 @@ async function flushAll() {
   _timers.clear();
   for (const [id, snap] of _dirty) {
     if (_isMeetingRemoved(id)) continue;
-    try { saveMeetingFile(id, snap); } catch (e) { console.warn(`[meeting-store] flushAll ${id} failed:`, e.message); }
+    try {
+      const disk = loadMeetingFile(id) || {};
+      saveMeetingFile(id, { ...disk, ...snap });
+    } catch (e) { console.warn(`[meeting-store] flushAll ${id} failed:`, e.message); }
   }
   _dirty.clear();
 }

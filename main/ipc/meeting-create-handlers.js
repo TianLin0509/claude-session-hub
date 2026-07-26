@@ -23,6 +23,7 @@ function createMeetingSubAdder(deps) {
     sendToRenderer,
     sessionManager,
     slotIds,
+    workspaceService,
   } = deps;
 
   function addCodexMcpEntry(sessionOpts, entry) {
@@ -59,6 +60,9 @@ function createMeetingSubAdder(deps) {
       sessionOpts.noInheritCursor = true;
     }
 
+    if (!sessionOpts.cwd && meeting && meeting.workspace) {
+      sessionOpts.cwd = meeting.workspace;
+    }
     if (!sessionOpts.cwd) {
       let workspaceDir = null;
       if (isIsolatedHub()) {
@@ -79,7 +83,7 @@ function createMeetingSubAdder(deps) {
     }
 
     // 2026-06-05 联邦记忆下线：群聊只在 DeepSeek 上注入 Claude 主 MEMORY.md。
-    // Claude/Codex/Qwen/GLM/Kimi/GPT 都不再额外注入，依赖各自原生 auto-memory。
+    // Claude/Codex 依赖各自原生 auto-memory。
     if (meeting && meeting.groupChat && kind === 'deepseek' && !sessionOpts.appendSystemPromptFile) {
       try {
         const hubDataDir = getHubDataDir();
@@ -97,9 +101,7 @@ function createMeetingSubAdder(deps) {
       addCodexMcpEntry(sessionOpts, scenes.buildAiTeamMcpEntryForCodex(meetingId, kind));
     }
 
-    // 投委会场景复用投研 MCP 工具栈（stock_* + scan_*）
-    const needsResearchMcp = meeting && meeting.groupChat &&
-      (meeting.scene === 'research' || meeting.scene === 'committee');
+    const needsResearchMcp = meeting && meeting.groupChat && meeting.scene === 'research';
     if (needsResearchMcp && hookPort) {
       const hubDataDir = getHubDataDir();
       if (isClaudeFamily(kind)) {
@@ -112,10 +114,12 @@ function createMeetingSubAdder(deps) {
           ARENA_HUB_PORT: String(hookPort),
           ARENA_HOOK_TOKEN: hookToken,
           ARENA_AI_KIND: 'gemini',
+          ARENA_HUB_DATA_DIR: hubDataDir,
+          SPIRIT_REGISTRY_ROOT: process.env.SPIRIT_REGISTRY_ROOT || path.join(require('os').homedir(), 'spirit-lens-registry'),
         };
       } else if (isCodexBaseKind(kind)) {
         sessionOpts.codexBypassApprovals = true;
-        addCodexMcpEntry(sessionOpts, scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken));
+        addCodexMcpEntry(sessionOpts, scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken, hubDataDir));
       }
     } else if (needsResearchMcp && !hookPort) {
       logger.warn('[群聊] ' + meeting.scene + ' scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
@@ -168,6 +172,7 @@ function registerMeetingCreateIpc(ipcMain, deps) {
     logger = console,
     meetingManager,
     sendToRenderer,
+    workspaceService,
   } = deps;
   const addMeetingSubInternal = createMeetingSubAdder(deps);
 
@@ -177,6 +182,15 @@ function registerMeetingCreateIpc(ipcMain, deps) {
     const hasCustomTitle = typeof safe.title === 'string' && safe.title.trim().length > 0;
     safe.autoTitlePending = !hasCustomTitle;
     safe.userRenamed = hasCustomTitle;
+    if (workspaceService) {
+      const workspace = workspaceService.resolveForSession(safe.workspace, {
+        label: hasCustomTitle ? safe.title.trim() : '未命名群聊',
+        draft: !safe.workspace,
+        select: false,
+      });
+      safe.workspace = workspace.path;
+      safe.workspaceLabel = workspace.label;
+    }
     if (Array.isArray(safe.slots) && safe.slots.length > 0) {
       safe.slotSpecs = safe.slots.map(s => ({
         index: typeof s.index === 'number' ? s.index : null,
@@ -193,7 +207,7 @@ function registerMeetingCreateIpc(ipcMain, deps) {
       const errors = [];
       for (const slot of safe.slots) {
         try {
-          await addMeetingSubInternal(meeting.id, slot.kind, { model: slot.model });
+          await addMeetingSubInternal(meeting.id, slot.kind, { model: slot.model, cwd: safe.workspace });
         } catch (err) {
           errors.push({ slot, message: err && err.message || String(err) });
           logger.warn('[create-meeting] add-sub failed for slot', slot, err && err.message);

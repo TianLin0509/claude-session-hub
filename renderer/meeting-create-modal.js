@@ -14,30 +14,106 @@ const DEFAULT_SLOTS = [
   { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
   { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
 ];
-// 投委会五席预设（三面五席；席位映射见 core/committee-scene.js）
-// 2026-06-12：消息面官改 Claude，技术面官改 Codex GPT-5.5，避开 Kimi/Qwen 登录链路。
-// 2026-06-13：消息面官 + 主席统一跟随 DEFAULT_MODEL_BY_KIND.claude（用户偏好"立花道雪
-//   工作台"所有 Claude 会话默认走最新模型 = Opus 4.8 1M）。
-const COMMITTEE_SLOTS = [
-  { kind: 'deepseek', model: 'deepseek-v4-pro[1m]' },         // 🛡️ 基本面官
-  { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },     // 📡 消息面官
-  { kind: 'codex', model: 'gpt-5.5' },                         // 📈 技术面官
-  { kind: 'codex', model: 'gpt-5.5' },                         // ⚔️ 质询官
-  { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },     // ⚖️ 主席
-];
 const DEFAULT_GROUP_MEMBERS = DEFAULT_SLOTS.map(x => ({ ...x }));
-const SLOT_AVATARS = [
-  'assets/pokemon/pikachu.png',
-  'assets/pokemon/charmander.png',
-  'assets/pokemon/squirtle.png',
+const SLOT_NAMES = ['一号位', '二号位', '三号位'];
+const GROUP_TEMPLATES = [
+  {
+    id: 'general',
+    label: '通用会诊',
+    desc: '澄清、方案、风险三路并行',
+    scene: 'general',
+    placeholder: '例如：帮我拆解这个问题，给出可执行方案',
+    slots: [
+      { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
+      { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
+      { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
+    ],
+  },
+  {
+    id: 'review',
+    label: '代码/方案评审',
+    desc: '实现者、审查者、反例攻击',
+    scene: 'dev',
+    placeholder: '例如：审查这段实现的风险和遗漏',
+    slots: [
+      { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
+      { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
+      { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
+    ],
+  },
+  {
+    id: 'research',
+    label: '投研圆桌',
+    desc: '基本面、资金面、反方风控',
+    scene: 'research',
+    placeholder: '例如：分析这只股票后续走势和操作计划',
+    slots: [
+      { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
+      { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
+      { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
+    ],
+  },
+  {
+    id: 'decision',
+    label: '决策交接',
+    desc: '结论、取舍、下一步动作',
+    scene: 'general',
+    placeholder: '例如：把多方案讨论收敛成决策建议',
+    slots: [
+      { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
+      { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
+      { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
+    ],
+  },
 ];
-const SLOT_NAMES = ['皮卡丘位', '小火龙位', '杰尼龟位'];
 
 let _modalEl = null;
 let _currentMode = 'general';
 let _isGroupChat = true;
 let _groupSlots = DEFAULT_GROUP_MEMBERS.map(x => ({ ...x }));
 let _escListener = null;
+let _meetingWorkspace = null;
+let _meetingWorkspaceMode = 'scratch';
+
+function _paintWorkspace(workspace) {
+  if (workspace) _meetingWorkspace = workspace;
+  if (!_modalEl) return;
+  const path = _modalEl.querySelector('#mcm-workspace-path');
+  if (path) {
+    path.textContent = _meetingWorkspaceMode === 'existing' && _meetingWorkspace
+      ? window.WorkspaceController.compactPath(_meetingWorkspace.path, 58)
+      : '尚未选择';
+    path.title = _meetingWorkspaceMode === 'existing' && _meetingWorkspace ? _meetingWorkspace.path : '';
+  }
+  const existingRow = _modalEl.querySelector('#mcm-workspace-existing');
+  if (existingRow) existingRow.hidden = _meetingWorkspaceMode !== 'existing';
+  _modalEl.querySelectorAll('[data-mcm-workspace-mode]').forEach(button => {
+    const selected = button.getAttribute('data-mcm-workspace-mode') === _meetingWorkspaceMode;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-checked', selected ? 'true' : 'false');
+  });
+}
+
+async function _syncWorkspace() {
+  if (_meetingWorkspaceMode === 'scratch') {
+    _meetingWorkspace = await window.WorkspaceController.createScratch('未命名群聊');
+  } else if (!_meetingWorkspace || !_meetingWorkspace.path) {
+    _meetingWorkspace = await window.WorkspaceController.pickWorkspace();
+  }
+  if (!_meetingWorkspace || !_meetingWorkspace.path) throw new Error('请选择群聊 workspace');
+  _paintWorkspace(_meetingWorkspace);
+  return _meetingWorkspace;
+}
+
+async function _chooseMeetingExistingWorkspace() {
+  const workspace = await window.WorkspaceController.pickWorkspace();
+  if (workspace && workspace.path) {
+    _meetingWorkspaceMode = 'existing';
+    _meetingWorkspace = workspace;
+    _paintWorkspace(workspace);
+  }
+  return workspace;
+}
 
 function _escapeHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -55,13 +131,45 @@ function _modelOptions(kind, selected) {
   ).join('');
 }
 
+function _cloneSlots(slots) {
+  return (slots || DEFAULT_GROUP_MEMBERS).map(x => ({ ...x }));
+}
+
+function _renderTemplateButtons(activeId = 'general') {
+  return GROUP_TEMPLATES.map(tpl => `
+    <button type="button" class="mcm-template${tpl.id === activeId ? ' selected' : ''}" data-mcm-template="${_escapeHtml(tpl.id)}">
+      <span class="mcm-template-title">${_escapeHtml(tpl.label)}</span>
+      <span class="mcm-template-desc">${_escapeHtml(tpl.desc)}</span>
+    </button>
+  `).join('');
+}
+
+function _applyTemplate(templateId, opts = {}) {
+  const tpl = GROUP_TEMPLATES.find(t => t.id === templateId) || GROUP_TEMPLATES[0];
+  _currentMode = tpl.scene || 'general';
+  _groupSlots = _cloneSlots(tpl.slots);
+  _renderSlots();
+  const titleInput = _modalEl && _modalEl.querySelector('#mcm-title-input');
+  if (titleInput) {
+    if (opts.clearTitle) titleInput.value = '';
+    titleInput.placeholder = tpl.placeholder || '留空则自动编号：AI 群聊 #N';
+  }
+  const sceneRadio = _modalEl && _modalEl.querySelector(`input[name="mcm-scene"][value="${_currentMode}"]`);
+  if (sceneRadio) sceneRadio.checked = true;
+  if (_modalEl) {
+    _modalEl.querySelectorAll('[data-mcm-template]').forEach(btn => {
+      btn.classList.toggle('selected', btn.getAttribute('data-mcm-template') === tpl.id);
+    });
+  }
+}
+
 function _slotHtml(i, spec, isGroup) {
   const def = spec || DEFAULT_SLOTS[i] || DEFAULT_SLOTS[0];
   const aiOptions = Object.keys(MODELS_BY_KIND).map(k =>
     `<option value="${_escapeHtml(k)}"${k === def.kind ? ' selected' : ''}>${_escapeHtml(KIND_LABELS[k] || k)}</option>`
   ).join('');
-  const avatarSrc = isGroup ? _aiLogo(def.kind) : SLOT_AVATARS[i];
-  const avatarAlt = isGroup ? (KIND_LABELS[def.kind] || def.kind) : SLOT_NAMES[i];
+  const avatarSrc = _aiLogo(def.kind);
+  const avatarAlt = KIND_LABELS[def.kind] || def.kind;
   const label = isGroup ? `成员 ${i + 1}` : `Slot ${i + 1} · ${SLOT_NAMES[i]}`;
   const removeBtn = isGroup && i >= 1
     ? `<button type="button" class="mcm-remove-member" data-remove-member="${i}" title="移除此成员">×</button>`
@@ -139,13 +247,23 @@ function _ensureModal() {
           <input id="mcm-title-input" class="mcm-title-input" type="text" maxlength="40"
                  placeholder="留空则自动编号：AI 群聊 #N" autocomplete="off">
         </div>
+        <div class="mcm-workspace-block">
+          <span class="mcm-workspace-caption">Workspace</span>
+          <div class="mcm-workspace-choices" role="radiogroup" aria-label="选择群聊 workspace 方式">
+            <button type="button" class="mcm-workspace-choice selected" data-mcm-workspace-mode="scratch" role="radio" aria-checked="true"><strong>完全新开</strong><small>创建独立临时目录，首问后自动命名</small></button>
+            <button type="button" class="mcm-workspace-choice" data-mcm-workspace-mode="existing" role="radio" aria-checked="false"><strong>选择已有路径</strong><small>全体 AI 成员共享同一个现有项目目录</small></button>
+          </div>
+          <div class="mcm-workspace-existing" id="mcm-workspace-existing" hidden><code id="mcm-workspace-path">尚未选择</code><button type="button" class="mcm-workspace-button" id="mcm-workspace-button">选择文件夹…</button></div>
+        </div>
+        <div class="mcm-template-grid" id="mcm-template-grid">
+          ${_renderTemplateButtons('general')}
+        </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
         <div class="mcm-scene">
           场景:
           <label><input type="radio" name="mcm-scene" value="general" checked> 通用</label>
           <label><input type="radio" name="mcm-scene" value="research"> 投研</label>
-          <label><input type="radio" name="mcm-scene" value="committee"> ⚖️ 投委会</label>
           <label><input type="radio" name="mcm-scene" value="dev"> 开发</label>
         </div>
         <div class="mcm-scene-hint" id="mcm-scene-hint" style="display:none; font-size:12px; color:#888; margin-top:6px; line-height:1.6;"></div>
@@ -165,23 +283,32 @@ function _bindEvents() {
   _modalEl.querySelector('.mcm-close').addEventListener('click', closeMeetingCreateModal);
   _modalEl.querySelector('.mcm-cancel').addEventListener('click', closeMeetingCreateModal);
   _modalEl.querySelector('.mcm-create').addEventListener('click', _onCreate);
+  _modalEl.querySelector('#mcm-template-grid').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-mcm-template]');
+    if (!btn) return;
+    _applyTemplate(btn.getAttribute('data-mcm-template'));
+  });
   _modalEl.querySelector('#mcm-add-member').addEventListener('click', () => {
     _syncGroupSlotsFromDom();
     _groupSlots.push({ ...DEFAULT_GROUP_MEMBERS[_groupSlots.length % DEFAULT_GROUP_MEMBERS.length] });
     _renderSlots();
   });
-  // 选中投委会场景 → 自动装填五席预设（三面五席）
+  _modalEl.querySelectorAll('[data-mcm-workspace-mode]').forEach(button => {
+    button.addEventListener('click', () => {
+      _meetingWorkspaceMode = button.getAttribute('data-mcm-workspace-mode') === 'existing' ? 'existing' : 'scratch';
+      _paintWorkspace();
+      if (_meetingWorkspaceMode === 'existing' && !_meetingWorkspace) {
+        void _chooseMeetingExistingWorkspace().catch(err => _showError(`选择目录失败：${err && err.message ? err.message : String(err)}`));
+      }
+    });
+  });
+  _modalEl.querySelector('#mcm-workspace-button').addEventListener('click', () => {
+    void _chooseMeetingExistingWorkspace().catch(err => _showError(`选择目录失败：${err && err.message ? err.message : String(err)}`));
+  });
   _modalEl.querySelectorAll('input[name="mcm-scene"]').forEach(radio => {
     radio.addEventListener('change', () => {
       const hint = _modalEl.querySelector('#mcm-scene-hint');
-      if (radio.value === 'committee' && radio.checked) {
-        _groupSlots = COMMITTEE_SLOTS.map(x => ({ ...x }));
-        _renderSlots();
-        if (hint) {
-          hint.style.display = 'block';
-          hint.textContent = '五席已自动装填：🛡️基本面官=DeepSeek · 📡消息面官=Claude Opus 4.8 · 📈技术面官=Codex GPT-5.5 · ⚔️质询官=Codex GPT-5.5 · ⚖️主席=Claude Opus 4.8。创建后可直接输入股票中文名/代码，例如“赛力斯怎么样”“中远海控深挖一下”；多票对比会先识别并防止误跑第一只。';
-        }
-      } else if (radio.checked && hint) {
+      if (radio.checked && hint) {
         hint.style.display = 'none';
       }
     });
@@ -199,7 +326,7 @@ async function _onCreate() {
   }));
   const scene = _modalEl.querySelector('input[name="mcm-scene"]:checked').value;
   // createMeeting 的 scene 实际取自 mode（过 MEETING_MODES 白名单），scene 字段只是透传
-  const mode = (scene === 'research' || scene === 'dev' || scene === 'committee') ? scene : 'general';
+  const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
   const titleInput = _modalEl.querySelector('#mcm-title-input');
   const title = titleInput ? titleInput.value.trim() : '';
 
@@ -208,6 +335,7 @@ async function _onCreate() {
   createBtn.textContent = '创建群聊中...';
   _clearError();
   try {
+    const workspace = await _syncWorkspace();
     const meeting = await ipcRenderer.invoke('create-meeting', {
       mode,
       scene,
@@ -217,6 +345,8 @@ async function _onCreate() {
       groupMode: _isGroupChat ? 'deliberation' : null,
       groupRecentRawN: 5,
       participants: _isGroupChat ? slots.map((_, i) => i) : null,
+      workspace: workspace.path,
+      workspaceLabel: workspace.label,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
     closeMeetingCreateModal();
@@ -255,19 +385,16 @@ function openMeetingCreateModal(mode = 'general') {
   _currentMode = 'general';
   _ensureModal();
   _clearError();
-  _groupSlots = DEFAULT_GROUP_MEMBERS.map(x => ({ ...x }));
-  _renderSlots();
+  _applyTemplate('general', { clearTitle: true });
+  _meetingWorkspaceMode = 'scratch';
+  _meetingWorkspace = null;
+  _paintWorkspace();
 
   const modeLabel = _modalEl.querySelector('#mcm-mode-label');
   modeLabel.textContent = 'AI 群聊';
 
   const titleInput = _modalEl.querySelector('#mcm-title-input');
-  if (titleInput) {
-    titleInput.value = '';
-    titleInput.placeholder = '留空则自动编号：AI 群聊 #N';
-  }
-  const sceneRadio = _modalEl.querySelector(`input[name="mcm-scene"][value="${_currentMode}"]`);
-  if (sceneRadio) sceneRadio.checked = true;
+  if (titleInput) titleInput.value = '';
   const addBtn = _modalEl.querySelector('#mcm-add-member');
   if (addBtn) addBtn.style.display = 'inline-flex';
   const createBtn = _modalEl.querySelector('.mcm-create');

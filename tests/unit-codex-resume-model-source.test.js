@@ -46,12 +46,12 @@ test('codex picker resume carries explicit --model', () => {
 test('codex picker resume enables mtime fallback binding', () => {
   assert.match(
     SRC,
-    /\(kind === 'codex-resume'\s*\|\|\s*kind === 'codex-web-resume'\s*\|\|\s*opts\.codexResumePicker\s*\|\|\s*\(opts\.useResume && !opts\.codexSid\)\)/,
+    /\(kind === 'codex-resume'\s*\|\|\s*opts\.codexResumePicker\s*\|\|\s*\(opts\.useResume && !opts\.codexSid\)\)/,
     'codex resume picker variants must bind old rollout files by fresh mtime after user selects a session',
   );
 });
 
-test('codex PTY sessions default to high reasoning effort and silent full access', () => {
+test('codex PTY sessions default to xhigh reasoning effort and silent full access', () => {
   assert.match(
     SRC,
     /model_reasoning_effort="\$\{effort\}"/,
@@ -79,32 +79,33 @@ test('codex PTY sessions default to high reasoning effort and silent full access
   );
   assert.match(
     SRC,
-    /const CODEX_REASONING_EFFORT = 'high';/,
-    'codex reasoning-effort override must default to high',
+    /const CODEX_REASONING_EFFORT = 'xhigh';/,
+    'codex reasoning-effort override must default to xhigh',
   );
   const commandUses = SRC.match(/\$\{codexReasoningArg\}/g) || [];
   assert.ok(commandUses.length >= 6, 'new/resume/relaunch codex commands must include dynamic reasoning override');
 });
 
-test('group-chat Codex sessions use medium reasoning for latency', () => {
-  assert.match(
+test('group-chat Codex sessions cannot downgrade reasoning effort', () => {
+  const groupReasoningConst = 'CODEX_GROUP_CHAT_' + 'REASONING_EFFORT';
+  assert.doesNotMatch(
     SRC,
-    /const CODEX_GROUP_CHAT_REASONING_EFFORT = 'medium';/,
-    'group-chat Codex should have a lower-latency reasoning tier',
+    new RegExp(groupReasoningConst),
+    'group-chat Codex must not have a separate lower reasoning tier',
+  );
+  assert.doesNotMatch(
+    SRC,
+    /meetingId\s*\?\s*[^:]+:\s*CODEX_REASONING_EFFORT/,
+    'meeting sessions must not branch to a lower Codex reasoning effort',
   );
   assert.match(
     SRC,
-    /opts\.meetingId \? CODEX_GROUP_CHAT_REASONING_EFFORT : CODEX_REASONING_EFFORT/,
-    'fresh/resume Codex commands should use group-chat reasoning when meetingId is present',
-  );
-  assert.match(
-    SRC,
-    /meetingId \? CODEX_GROUP_CHAT_REASONING_EFFORT : CODEX_REASONING_EFFORT/,
-    'relaunch Codex commands should preserve group-chat reasoning for meeting sessions',
+    /const codexReasoningArg = buildCodexReasoningConfigArg\(CODEX_REASONING_EFFORT\);/,
+    'fresh/resume/relaunch Codex commands must all use the shared xhigh effort',
   );
 });
 
-test('codex API profile uses the same high reasoning effort default', () => {
+test('codex API profile uses the same xhigh reasoning effort default', () => {
   assert.match(
     SRC,
     /model_reasoning_effort = \$\{tomlString\(CODEX_REASONING_EFFORT\)\}/,

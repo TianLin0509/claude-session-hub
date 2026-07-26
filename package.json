@@ -1,6 +1,6 @@
 {
   "name": "ai-group-chat-hub",
-  "version": "1.6.1",
+  "version": "1.6.10",
   "description": "多模型 AI 群聊 Hub",
   "main": "main.js",
   "scripts": {
@@ -60,7 +60,8 @@
       "package.json"
     ],
     "asarUnpack": [
-      "core/claude-fast-settings.json"
+      "core/claude-fast-settings.json",
+      "core/claude-subscription-fast-settings.json"
     ],
     "extraResources": [
       {

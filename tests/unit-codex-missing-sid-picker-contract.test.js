@@ -23,8 +23,8 @@ console.log('Running codex missing sid picker contract tests...');
 test('main routes dormant codex without sid to picker resume', () => {
   assert.match(
     RESUME_IPC_SRC,
-    /const codexMissingSid = \(isCodexBaseKind\(meta\.kind\) && !meta\.codexSid\);/,
-    'resume-session must classify dormant Codex CLI records without codexSid',
+    /const codexMissingSid = \(isCodexBaseKind\(meta\.kind\) && !effectiveCodexSid\);/,
+    'resume-session must classify dormant or rejected Codex bindings without an effective sid',
   );
   assert.match(
     RESUME_IPC_SRC,
@@ -36,7 +36,7 @@ test('main routes dormant codex without sid to picker resume', () => {
 test('session-manager supports codexResumePicker without changing kind', () => {
   assert.match(
     SESSION_MANAGER_SRC,
-    /kind === 'codex-resume' \|\| kind === 'codex-web-resume' \|\| opts\.codexResumePicker/,
+    /kind === 'codex-resume' \|\| opts\.codexResumePicker/,
     'session-manager must use picker command for opts.codexResumePicker',
   );
 });

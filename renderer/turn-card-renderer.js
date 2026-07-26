@@ -132,12 +132,8 @@ function aiLogoSrc(kind) {
   // 已有 logos: claude / codex / 等。其它 kind fallback 到字母。
   // Spec 3 · W6 fix：claude-resume / gemini-resume / codex-resume / deepseek-resume / 等
   // 都共享对应 base kind 的 logo（之前 -resume 后缀漏映射 → 字母 fallback "CL"）。
-  const known = ['claude','codex','gemini','deepseek','glm','gpt','kimi','qwen'];
+  const known = ['claude','codex','gemini','deepseek','kimi'];
   let k = (kind || '').toLowerCase().replace(/-resume$/, '');
-  // Claude Web 复用 Claude logo（kind === 'claude-web' / 'claude-web-resume' → 都映射到 claude）
-  if (k === 'claude-web') k = 'claude';
-  if (k === 'codex-web') k = 'codex';
-  if (k === 'codex-app') return 'assets/ai-logos/codex.svg';
   if (known.includes(k)) return `assets/ai-logos/${k}.svg`;
   return null;
 }
@@ -152,6 +148,7 @@ function aiLetterFallback(kind) {
 function _modelCtxWindow(model) {
   if (!model) return 200000;
   const m = String(model).toLowerCase();
+  if (m.includes('k3') || m.includes('kimi')) return 1048576;
   if (m.includes('1m') || m.includes('opus-4')) return 1000000;
   if (m.includes('gemini')) return 1000000;
   if (m.includes('sonnet')) return 200000;
@@ -182,9 +179,10 @@ function _renderMetaPills(turn) {
   if (turn.usage && (turn.usage.input_tokens || turn.usage.output_tokens)) {
     pills.push(`<span class="pill pill-token">⇡${_fmtTokens(turn.usage.input_tokens||0)} ⇣${_fmtTokens(turn.usage.output_tokens||0)}</span>`);
   }
-  if (turn.usage && turn.usage.input_tokens) {
-    const win = _modelCtxWindow(turn.model);
-    const pct = Math.min(100, Math.round(turn.usage.input_tokens / win * 100));
+  if (turn.usage && (turn.usage.context_tokens || turn.usage.input_tokens)) {
+    const contextTokens = turn.usage.context_tokens || turn.usage.input_tokens;
+    const win = turn.usage.context_window || _modelCtxWindow(turn.model);
+    const pct = Math.min(100, Math.round(contextTokens / win * 100));
     pills.push(`<span class="pill pill-ctx">📊 ${pct}% ctx</span>`);
   }
   if (typeof turn.tsEnd === 'number' && typeof turn.ts === 'number' && turn.tsEnd > turn.ts) {
@@ -196,7 +194,7 @@ function _renderMetaPills(turn) {
 
 // === Spec 1 v0.9.0 · turn 卡片渲染 ===
 function renderTurnCard(turn) {
-  // turn = { id, role: 'user'|'assistant', text, ts, model?, kind?, slotPokemon?, toolCalls? }
+  // turn = { id, role: 'user'|'assistant', text, ts, model?, kind?, toolCalls? }
   const isUser = turn.role === 'user';
   const cls = isUser ? 'turn-card user' : 'turn-card';
   const who = isUser ? '你' : (turn.model || turn.kind || 'Claude');
@@ -205,16 +203,7 @@ function renderTurnCard(turn) {
   // 头像分支
   let avatarHtml;
   if (isUser) {
-    // Spec 3 · W6：用户头像用皮卡丘（与 AI 群聊 slot 体系视觉一致，复用 .av-poke 黄色背景）
-    avatarHtml = `<span class="turn-avatar av-poke"><img src="assets/pokemon/pikachu.png" alt="你"></span>`;
-  } else if (turn.slotPokemon) {
-    // AI 群聊 slot 体系
-    const safe = sanitizeAssetName(turn.slotPokemon);
-    if (safe) {
-      avatarHtml = `<span class="turn-avatar av-poke"><img src="assets/pokemon/${safe}.png" alt="${escapeHtml(turn.slotPokemon)}"></span>`;
-    } else {
-      avatarHtml = `<span class="turn-avatar av-letter">${escapeHtml(aiLetterFallback(turn.kind))}</span>`;
-    }
+    avatarHtml = `<span class="turn-avatar av-letter">你</span>`;
   } else {
     const logo = aiLogoSrc(turn.kind);
     avatarHtml = logo
@@ -253,7 +242,6 @@ function renderTurnCard(turn) {
       <div class="turn-head">
         <span class="turn-who">${escapeHtml(who)}</span>
         <span class="turn-meta">${escapeHtml(ts)}</span>
-        ${_renderMetaPills(turn)}
         <div class="turn-actions">
           <button class="ta-btn" data-action="copy" title="复制">📋</button>
           ${isUser
@@ -263,9 +251,14 @@ function renderTurnCard(turn) {
         </div>
       </div>
       ${thinkingHtml}
-      <div class="turn-body">${toolHtml}${body}</div>
+      <div class="turn-body">${body}</div>
+      ${toolHtml}
+      ${_renderMetaPills(turn)}
     </div>
   </div>`;
+  // 2026-06-28 道雪 · 深空灰气泡皮肤：气泡背景挂在 .turn-body 上，故把工具簇与 meta-pills
+  //   移到 .turn-body 之后（气泡下方）——气泡只含对话正文，工具/徽章作为附属信息独立成行，
+  //   同时让长文本折叠只作用于正文（不再连带折叠工具簇）。所有渲染路径都走整卡重渲染，无冲突。
 }
 win._renderTurnCard = renderTurnCard;
 
@@ -578,6 +571,9 @@ function turnRenderSignature(turn) {
   const raw = JSON.stringify({
     role: turn.role || '',
     text: turn.text || '',
+    ts: turn.ts || null,
+    model: turn.model || '',
+    kind: turn.kind || '',
     thinking: turn.thinking || '',
     stopReason: turn.stopReason || '',
     durationMs: turn.durationMs || null,

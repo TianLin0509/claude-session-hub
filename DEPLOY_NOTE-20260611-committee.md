@@ -55,6 +55,6 @@ dispatcher.js turnTimeoutMs、conductor 点名轮 + persona 重试。E2E 期间�
 C:\temp\hub-clean worktree 已按 junction 铁律移除；隔离实例 electron/claude 进程已清（生产 13 个未动）。
 
 ## 注意
-- 工作区还有大量其他会话的未提交改动（meridian/usage/android-app 等），本会话**未触碰**它们。
+- 工作区还有大量其他会话的未提交改动（meridian/usage 等），本会话**未触碰**它们。
 - 本会话所有 git 操作仅限：LinDangAgent 仓库的 `data/knowledge/committee/` 目录自动 commit（committee_memory.py 内建）。
 - Hub 仓库本会话**不主动 commit**（工作区太脏，等用户拍板后只挑投委会文件提交）。

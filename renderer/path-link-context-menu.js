@@ -1,7 +1,7 @@
 'use strict';
 
 // Right-click context menu for <a class="rt-file-link"> elements.
-// 4 actions: copy-abs-path / copy-file / show-in-folder / open-external.
+// 5 actions: copy-abs-path / copy-file / sync-company / show-in-folder / open-external.
 // URL links show only copy + open-external; file-only items hidden via [data-file-only].
 
 function createPathLinkContextMenuController({
@@ -17,6 +17,49 @@ function createPathLinkContextMenuController({
   requestAnimationFrameFn = requestAnimationFrame,
 }) {
   let currentTarget = null;
+  let syncToastEl = null;
+  let syncToastTimer = null;
+
+  function showSyncStatus(message, state = 'working') {
+    if (!document.body || typeof document.createElement !== 'function') return;
+    if (!syncToastEl) {
+      syncToastEl = document.createElement('div');
+      syncToastEl.id = 'path-link-sync-status';
+      syncToastEl.setAttribute('role', 'status');
+      syncToastEl.setAttribute('aria-live', 'polite');
+      Object.assign(syncToastEl.style, {
+        position: 'fixed',
+        right: '24px',
+        bottom: '24px',
+        zIndex: '12000',
+        maxWidth: '420px',
+        padding: '12px 16px',
+        borderRadius: '12px',
+        color: '#fff',
+        fontSize: '13px',
+        lineHeight: '1.55',
+        whiteSpace: 'pre-line',
+        boxShadow: '0 10px 32px rgba(0,0,0,.28)',
+        transition: 'opacity .18s ease, transform .18s ease',
+      });
+      document.body.appendChild(syncToastEl);
+    }
+    if (syncToastTimer) {
+      window.clearTimeout(syncToastTimer);
+      syncToastTimer = null;
+    }
+    syncToastEl.textContent = message;
+    syncToastEl.dataset.state = state;
+    syncToastEl.style.background = state === 'error' ? '#9f2d2d' : (state === 'success' ? '#0f766e' : '#273b37');
+    syncToastEl.style.opacity = '1';
+    syncToastEl.style.transform = 'translateY(0)';
+    if (state !== 'working') {
+      syncToastTimer = window.setTimeout(() => {
+        syncToastEl.style.opacity = '0';
+        syncToastEl.style.transform = 'translateY(8px)';
+      }, state === 'error' ? 7000 : 5000);
+    }
+  }
 
   function resolveTarget(rawPath) {
     if (!rawPath) return null;
@@ -63,8 +106,8 @@ function createPathLinkContextMenuController({
     currentTarget = null;
   }
 
-  async function runAction(action) {
-    const t = currentTarget;
+  async function runAction(action, target = currentTarget) {
+    const t = target;
     if (!t) return;
     try {
       if (action === 'copy-abs-path') {
@@ -77,6 +120,18 @@ function createPathLinkContextMenuController({
         if (t.isUrl) return;
         const r = await ipcRenderer.invoke('show-in-folder', t.absPath);
         if (r && r.error) console.warn('[path-link-ctx] show-in-folder failed:', r.error);
+      } else if (action === 'sync-company') {
+        if (t.isUrl) return;
+        const displayName = t.absPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || t.absPath;
+        showSyncStatus(`正在同步到公司…\n${displayName}`, 'working');
+        const r = await ipcRenderer.invoke('sync-path-to-company', t.absPath);
+        if (!r || r.error || r.success !== true) {
+          const message = r && r.error ? r.error : '同步失败，请稍后重试。';
+          showSyncStatus(`同步失败\n${message}`, 'error');
+          console.warn('[path-link-ctx] sync-company failed:', message);
+          return;
+        }
+        showSyncStatus(`已同步到公司收件箱\n${r.filename || displayName}`, 'success');
       } else if (action === 'open-external') {
         if (t.isUrl) {
           const r = await ipcRenderer.invoke('open-external-url', t.absPath);
@@ -87,6 +142,9 @@ function createPathLinkContextMenuController({
         }
       }
     } catch (e) {
+      if (action === 'sync-company') {
+        showSyncStatus(`同步失败\n${e && e.message ? e.message : '同步程序异常。'}`, 'error');
+      }
       console.warn('[path-link-ctx] action failed:', action, e && e.message);
     }
   }
@@ -134,16 +192,12 @@ function createPathLinkContextMenuController({
         const action = btn.dataset.action;
         const t = currentTarget;
         close();
-        if (t) {
-          currentTarget = t;
-          await runAction(action);
-          currentTarget = null;
-        }
+        if (t) await runAction(action, t);
       });
     }
   }
 
-  return { init, open, close };
+  return { init, open, close, runAction };
 }
 
 module.exports = { createPathLinkContextMenuController };

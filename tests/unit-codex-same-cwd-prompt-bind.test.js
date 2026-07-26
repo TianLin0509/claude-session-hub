@@ -104,6 +104,66 @@ async function testSameCwdBindsWhenCodexPointerPromptIsConcatenated() {
   }
 }
 
+async function testSameCwdBindsWhenTuiDropsUnicodeFormatting() {
+  const tmpRoot = path.join(os.tmpdir(), `codex-same-cwd-unicode-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+  const cwd = 'C:\\test\\shared-cwd-unicode';
+  const tap = new CodexTap({ sessionsRoot: tmpRoot, pollIntervalMs: 50 });
+  const startAt = new Date();
+  const frA = new FakeCodexRollout({ sessionsRoot: tmpRoot, cwd, sid: '019effff-0000-7000-8000-000000000005', startAt });
+  const frB = new FakeCodexRollout({ sessionsRoot: tmpRoot, cwd, sid: '019effff-0000-7000-8000-000000000006', startAt });
+  const shared = '这里是同一工作目录中的长群聊背景，需要依靠完整语义而不是时间差绑定。'.repeat(4);
+  const promptA = `${shared}\n① 结论——恢复 512 维全信道，并验证协方差辅助估计。`;
+  const promptB = `${shared}\n① 结论——分析另一个完全不同的调度问题。`;
+  const submittedA = promptA.replace(/[①—]/g, '');
+
+  try {
+    tap.registerSession('hub-A', { cwd, requirePromptMatch: true });
+    tap.registerSession('hub-B', { cwd, requirePromptMatch: true });
+    tap.notePrompt('hub-A', promptA);
+    tap.notePrompt('hub-B', promptB);
+    await frA.start();
+    await frB.start();
+    await writeUserMessage(frA, submittedA);
+
+    assert.ok(await waitFor(() => tap.getRolloutPath('hub-A') === frA.rolloutPath),
+      'hub-A should bind when Codex TUI only drops Unicode presentation characters');
+    assert.notStrictEqual(tap.getRolloutPath('hub-B'), frA.rolloutPath,
+      'canonical matching must not bind a different long prompt in the same cwd');
+  } finally {
+    tap.unregisterSession('hub-A');
+    tap.unregisterSession('hub-B');
+    await frA.close();
+    await frB.close();
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+async function testShortPromptKeepsPunctuationSignificant() {
+  const tmpRoot = path.join(os.tmpdir(), `codex-short-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+  const cwd = 'C:\\test\\short-prompt';
+  const tap = new CodexTap({ sessionsRoot: tmpRoot, pollIntervalMs: 50 });
+  const fr = new FakeCodexRollout({
+    sessionsRoot: tmpRoot,
+    cwd,
+    sid: '019effff-0000-7000-8000-000000000007',
+    startAt: new Date(),
+  });
+
+  try {
+    tap.registerSession('hub-short', { cwd, requirePromptMatch: true });
+    tap.notePrompt('hub-short', 'A+B');
+    await fr.start();
+    await writeUserMessage(fr, 'AB');
+    await sleep(250);
+    assert.strictEqual(tap.getRolloutPath('hub-short'), null,
+      'short prompts must not ignore punctuation because A+B and AB can mean different things');
+  } finally {
+    tap.unregisterSession('hub-short');
+    await fr.close();
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testTranscriptTapExposesNotePrompt() {
   const tap = new TranscriptTap();
   assert.strictEqual(typeof tap.notePrompt, 'function', 'TranscriptTap must expose notePrompt');
@@ -114,6 +174,8 @@ function testTranscriptTapExposesNotePrompt() {
     testTranscriptTapExposesNotePrompt,
     testSameCwdWaitsForPromptMatch,
     testSameCwdBindsWhenCodexPointerPromptIsConcatenated,
+    testSameCwdBindsWhenTuiDropsUnicodeFormatting,
+    testShortPromptKeepsPunctuationSignificant,
   ];
   let failed = 0;
   for (const t of tests) {

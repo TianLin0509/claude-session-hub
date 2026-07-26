@@ -12,7 +12,7 @@ const {
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-claude-locator-'));
 try {
-  assert.ok(CLAUDE_PROJECT_ROOT_DIRS.includes('.claude-packy-qwen'));
+  assert.ok(CLAUDE_PROJECT_ROOT_DIRS.includes('.claude-deepseek'));
   assert.strictEqual(claudeProjectRoots(tmp).length, CLAUDE_PROJECT_ROOT_DIRS.length);
 
   const projectDir = path.join(tmp, '.claude-deepseek', 'projects', 'proj-a');

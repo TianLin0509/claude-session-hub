@@ -34,6 +34,7 @@ function createDeps() {
   }];
   let lastPersistedSessionIds = new Set(['keep', 'removed-session']);
   let lastPersistedMeetingIds = new Set(['meet-1', 'removed-meeting']);
+  let lastPersistedMeetings = [{ id: 'meet-1', title: 'Old meeting', updatedAt: 1 }];
   const immersiveByMeeting = { 'meet-1': true };
 
   return {
@@ -41,6 +42,7 @@ function createDeps() {
     bootWasClean: true,
     getImmersiveByMeeting: () => immersiveByMeeting,
     getLastPersistedMeetingIds: () => lastPersistedMeetingIds,
+    getLastPersistedMeetings: () => lastPersistedMeetings,
     getLastPersistedSessionIds: () => lastPersistedSessionIds,
     getLastPersistedSessions: () => lastPersistedSessions,
     meetingManager: {
@@ -80,6 +82,10 @@ function createDeps() {
     setLastPersistedMeetingIds(ids) {
       calls.push(['setLastPersistedMeetingIds', [...ids]]);
       lastPersistedMeetingIds = ids;
+    },
+    setLastPersistedMeetings(meetings) {
+      calls.push(['setLastPersistedMeetings', meetings]);
+      lastPersistedMeetings = meetings;
     },
     setLastPersistedSessionIds(ids) {
       calls.push(['setLastPersistedSessionIds', [...ids]]);
@@ -177,6 +183,23 @@ test('handlePersistSessions ignores invalid session lists', () => {
 
   assert.strictEqual(handlePersistSessions(null, [], deps), false);
   assert.ok(!deps.calls.some(call => call[0] === 'save'));
+});
+
+test('identical snapshots do not fan out per-id writes or rewrite state', () => {
+  const deps = createDeps();
+  const firstSessions = [{ hubId: 'keep', title: 'Renderer', transcriptPath: null }];
+  const firstMeetings = [{ id: 'meet-1', title: 'Meeting renderer' }];
+  handlePersistSessions(firstSessions, firstMeetings, deps);
+
+  deps.calls.length = 0;
+  const secondSessions = [{ hubId: 'keep', title: 'Renderer', transcriptPath: null }];
+  const secondMeetings = [{ id: 'meet-1', title: 'Meeting renderer' }];
+  handlePersistSessions(secondSessions, secondMeetings, deps);
+
+  assert.ok(!deps.calls.some(call => call[0] === 'markSessionDirty'));
+  assert.ok(!deps.calls.some(call => call[0] === 'markMeetingDirty'));
+  assert.ok(!deps.calls.some(call => call[0] === 'save'));
+  assert.strictEqual(secondSessions[0].updatedAt, firstSessions[0].updatedAt);
 });
 
 console.log('All persistence IPC contract tests passed.');

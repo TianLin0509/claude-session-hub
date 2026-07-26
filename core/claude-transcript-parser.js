@@ -18,6 +18,7 @@
  */
 
 const fs = require('node:fs');
+const { isSyntheticUserEntry } = require('./synthetic-user-filter.js');
 
 function isToolResultEntry(entry) {
   return !!(
@@ -98,6 +99,7 @@ function _entryToTurn(entry) {
   if (entry.type === 'user') {
     const message = entry.message || {};
     if (typeof message.content === 'string') {
+      if (isSyntheticUserEntry(entry, message.content)) return null;
       return {
         id: entry.uuid,
         role: 'user',
@@ -111,10 +113,12 @@ function _entryToTurn(entry) {
         .filter(c => c && c.type === 'text' && typeof c.text === 'string')
         .map(c => c.text);
       if (textBlocks.length) {
+        const text = textBlocks.join('\n');
+        if (isSyntheticUserEntry(entry, text)) return null;
         return {
           id: entry.uuid,
           role: 'user',
-          text: textBlocks.join('\n'),
+          text,
           ts: toMs(entry.timestamp),
         };
       }
@@ -318,15 +322,14 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
   if (fromTail && typeof limit === 'number') {
     const stat = fs.statSync(jsonlPath);
     if (stat.size > TAIL_WINDOW_INITIAL_BYTES) {
-      let windowBytes = Math.min(stat.size, TAIL_WINDOW_INITIAL_BYTES);
-      while (true) {
-        const { raw, start } = readTailWindowText(jsonlPath, windowBytes);
-        const turns = parseClaudeTranscriptText(raw);
-        if (turns.length >= limit || start === 0) {
-          return applyTurnLimit(turns, limit, true);
-        }
-        windowBytes = Math.min(stat.size, windowBytes * 2);
-      }
+      // Read the small tail once.  The previous 8 -> 16 -> 32 MB expansion
+      // reparsed every earlier window before finally reading the whole file;
+      // a 46 MB transcript therefore caused ~105 MB of synchronous IO per
+      // request.  If the tail cannot satisfy the requested turn count, jump
+      // directly to one full read instead of replaying overlapping windows.
+      const { raw } = readTailWindowText(jsonlPath, TAIL_WINDOW_INITIAL_BYTES);
+      const tailTurns = parseClaudeTranscriptText(raw);
+      if (tailTurns.length >= limit) return applyTurnLimit(tailTurns, limit, true);
     }
   }
 

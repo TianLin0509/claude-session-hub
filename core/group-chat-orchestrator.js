@@ -122,11 +122,21 @@ class GroupChatOrchestrator {
         //   turn 记录时，给该消息打"已被重启打断"标记（此前问题孤悬、无任何提示）。
         const turnNums = new Set((this.state.turns || []).map(t => t && t.n));
         let touched = false;
+        let hasInterruptedTurn = false;
         for (const m of this.state.messages) {
-          if (m && m.role === 'user' && Number(m.turnNum) > 0 && !turnNums.has(Number(m.turnNum)) && !m.interruptedNote) {
-            m.interruptedNote = true;
-            touched = true;
+          if (m && m.role === 'user' && Number(m.turnNum) > 0 && !turnNums.has(Number(m.turnNum))) {
+            hasInterruptedTurn = true;
+            if (!m.interruptedNote) {
+              m.interruptedNote = true;
+              touched = true;
+            }
           }
+        }
+        // 进程重启后不存在任何活跃 watcher。旧状态若仍是 group，renderer 会永久渲染
+        // 全员“思考中”；把悬空轮明确收回 idle，同时保留用户消息和已抢救的 AI 结果。
+        if (hasInterruptedTurn && this.state.currentMode !== 'idle') {
+          this.state.currentMode = 'idle';
+          touched = true;
         }
         if (touched) this._saveState();
       }
@@ -243,6 +253,18 @@ class GroupChatOrchestrator {
     const byStatus = isExistingTurn && turn.byStatus && typeof turn.byStatus === 'object' ? turn.byStatus : {};
     const thinkSecBy = isExistingTurn && turn.thinkSecBy && typeof turn.thinkSecBy === 'object' ? turn.thinkSecBy : {};
     const tokensBy = isExistingTurn && turn.tokensBy && typeof turn.tokensBy === 'object' ? turn.tokensBy : {};
+    // 一位 AI 先完成、其他成员仍在跑时，patchTurnResult 会先把可用结果写进 messages。
+    // 完整 turn 尚未建立时从这些持久消息恢复合并基线，避免最后一个成员结算时把
+    // 先到结果（尤其手动同步救回的结果）覆盖或清空。
+    if (!isExistingTurn) {
+      for (const m of this.state.messages) {
+        if (!m || m.role !== 'assistant' || Number(m.turnNum) !== Number(turnNum) || !m.sid) continue;
+        if (m.content && String(m.content).trim()) by[m.sid] = m.content;
+        if (m.status) byStatus[m.sid] = m.status;
+        if (typeof m.thinkSec === 'number') thinkSecBy[m.sid] = m.thinkSec;
+        if (typeof m.tokens === 'number') tokensBy[m.sid] = m.tokens;
+      }
+    }
     const aiMessages = [];
 
     for (const r of results) {
@@ -259,18 +281,24 @@ class GroupChatOrchestrator {
       const _rStatus = r.status || 'completed';
       // trim 判空与渲染层口径一致（多方审查加固）：纯空白文本视为无内容，不覆盖已有答案。
       const _writeContent = !!(r.text && String(r.text).trim().length);
-      by[sid] = _writeContent ? r.text : (by[sid] || '');
+      const _prevStatus = byStatus[sid];
+      const _hasManualResult = _prevStatus === 'manual_extracted'
+        && !!(by[sid] && String(by[sid]).trim().length);
+      const _incomingIsManual = _rStatus === 'manual_extracted';
+      // 用户主动同步得到的完整文本优先于随后迟到的自动/退出信号；再次手动同步仍可更新。
+      const _acceptIncomingContent = _writeContent && (!_hasManualResult || _incomingIsManual);
+      by[sid] = _acceptIncomingContent ? r.text : (by[sid] || '');
       // 状态守卫：本轮已被手动同步（manual_extracted）且新结果没带更有效文本时，
       //   保留 manual_extracted——对齐 waitTurnComplete.onTurnPatched 的同名守卫，
       //   防止"手动救回的答案"在整轮 settle 时又被标回 errored。
-      const _prevStatus = byStatus[sid];
-      byStatus[sid] = (_prevStatus === 'manual_extracted' && !_writeContent) ? 'manual_extracted' : _rStatus;
+      byStatus[sid] = (_hasManualResult && !_incomingIsManual) ? 'manual_extracted' : _rStatus;
       // 空结果（重发失败/干净退出兜底）不把已有 thinkSec/tokens 统计清零（多方审查加固）。
       thinkSecBy[sid] = statsBySid[sid]?.thinkSec || r.thinkSec || thinkSecBy[sid] || 0;
       tokensBy[sid] = statsBySid[sid]?.tokens || (r.tokens && r.tokens.total) || tokensBy[sid] || 0;
       const messageId = `a${turnNum}-${member.memberId || sid.slice(0, 8)}`;
       const _failReason = (byStatus[sid] === 'errored' && r.reason) ? String(r.reason) : null;
-      let msg = this.state.messages.find(m => m.id === messageId && m.role === 'assistant');
+      let msg = this.state.messages.find(m => m && m.role === 'assistant'
+        && (m.id === messageId || (Number(m.turnNum) === Number(turnNum) && m.sid === sid)));
       if (msg) {
         msg.sid = sid;
         msg.memberId = member.memberId || sid;
@@ -391,42 +419,91 @@ class GroupChatOrchestrator {
     this._saveState();
   }
 
-  patchTurnResult(turnNum, sid, { text, status, thinkSec, tokens } = {}) {
+  patchTurnResult(turnNum, sid, {
+    text,
+    status,
+    thinkSec,
+    tokens,
+    memberId,
+    speaker,
+    sourcePrompt,
+    statusReason,
+  } = {}) {
     const turn = this.state.turns.find(t => t.n === turnNum);
-    if (!turn) return null;
-    turn.by = turn.by || {};
-    turn.byStatus = turn.byStatus || {};
-    turn.thinkSecBy = turn.thinkSecBy || {};
-    turn.tokensBy = turn.tokensBy || {};
-    // 2026-07-12 道雪：成功态也必须"确有文本"才写——空文本 patch 不得抹掉已有答案
-    //   （与 completeTurn 同规则，真理源 by[sid]；trim 判空与渲染层口径一致）。
-    const _writeContent = (status === 'completed' || status === 'manual_extracted') && !!(text && String(text).trim().length);
-    if (_writeContent) {
-      turn.by[sid] = text;
-    }
-    // manual_extracted 守卫与 completeTurn 对齐（多方审查加固）：没带更有效文本的
-    //   patch 不得把手动救回的状态打回。现有调用方（manual-extract handler /
-    //   onTurnPatched）本就传对状态，这里是状态机层面的不变量兜底。
-    const _prevPatchStatus = turn.byStatus[sid];
-    const _finalStatus = (_prevPatchStatus === 'manual_extracted' && !_writeContent)
-      ? 'manual_extracted'
-      : (status || 'completed');
-    turn.byStatus[sid] = _finalStatus;
-    if (typeof thinkSec === 'number') turn.thinkSecBy[sid] = thinkSec;
-    if (tokens && typeof tokens.total === 'number') turn.tokensBy[sid] = tokens.total;
-    turn.lastPatchedAt = Date.now();
+    const userMsg = this.state.messages.find(m => m && m.role === 'user' && Number(m.turnNum) === Number(turnNum));
+    // turns 只在全员结算后创建；进行中/崩溃中断轮次仍有 u{n}，允许先保存可用结果。
+    // 连用户消息都不存在才是真正的错误 turn，继续拒绝，避免跨轮误写。
+    if (!turn && !userMsg) return null;
 
-    const msg = this.state.messages.find(m => m.turnNum === turnNum && m.role === 'assistant' && m.sid === sid);
-    if (msg) {
-      if (_writeContent) msg.content = text;
-      msg.status = _finalStatus;
-      msg.patchedAt = turn.lastPatchedAt;
-      // 手动同步/补全成功即撤掉旧失败原因，避免"已修复但仍显示失败原因"。
-      if (_writeContent) delete msg.statusReason;
+    const pending = !turn;
+    const by = pending ? {} : (turn.by = turn.by || {});
+    const byStatus = pending ? {} : (turn.byStatus = turn.byStatus || {});
+    const thinkSecBy = pending ? {} : (turn.thinkSecBy = turn.thinkSecBy || {});
+    const tokensBy = pending ? {} : (turn.tokensBy = turn.tokensBy || {});
+    let msg = this.state.messages.find(m => m && Number(m.turnNum) === Number(turnNum) && m.role === 'assistant' && m.sid === sid);
+    if (pending && msg) {
+      if (msg.content && String(msg.content).trim()) by[sid] = msg.content;
+      if (msg.status) byStatus[sid] = msg.status;
+      if (typeof msg.thinkSec === 'number') thinkSecBy[sid] = msg.thinkSec;
+      if (typeof msg.tokens === 'number') tokensBy[sid] = msg.tokens;
     }
+
+    // 任意终态只要带非空文本就先保住正文；errored + partial text 也比丢结果更有价值。
+    const _writeContent = !!(text && String(text).trim().length);
+    const _prevPatchStatus = byStatus[sid];
+    const _hasManualResult = _prevPatchStatus === 'manual_extracted'
+      && !!(by[sid] && String(by[sid]).trim().length);
+    const _incomingStatus = status || 'completed';
+    const _incomingIsManual = _incomingStatus === 'manual_extracted';
+    const _acceptIncomingContent = _writeContent && (!_hasManualResult || _incomingIsManual);
+    if (_acceptIncomingContent) by[sid] = text;
+    const _finalStatus = (_hasManualResult && !_incomingIsManual)
+      ? 'manual_extracted'
+      : _incomingStatus;
+    byStatus[sid] = _finalStatus;
+    if (typeof thinkSec === 'number') thinkSecBy[sid] = thinkSec;
+    if (tokens && typeof tokens.total === 'number') tokensBy[sid] = tokens.total;
+    const patchedAt = Date.now();
+    if (turn) turn.lastPatchedAt = patchedAt;
+
+    if (!msg) {
+      const stableMemberId = memberId || sid.slice(0, 8);
+      msg = this._appendMessage({
+        id: `a${turnNum}-${stableMemberId}`,
+        turnNum,
+        role: 'assistant',
+        sid,
+        memberId: memberId || sid,
+        speaker: speaker || 'AI',
+        content: by[sid] || '',
+        status: _finalStatus,
+        ...(sourcePrompt ? { sourcePrompt } : {}),
+      });
+    } else {
+      if (_acceptIncomingContent) msg.content = text;
+      msg.status = _finalStatus;
+      if (memberId) msg.memberId = memberId;
+      if (speaker) msg.speaker = speaker;
+      if (sourcePrompt && !msg.sourcePrompt) msg.sourcePrompt = sourcePrompt;
+    }
+    msg.patchedAt = patchedAt;
+    if (typeof thinkSec === 'number') msg.thinkSec = thinkSec;
+    if (tokens && typeof tokens.total === 'number') msg.tokens = tokens.total;
+    if (_finalStatus === 'errored' && statusReason) msg.statusReason = String(statusReason);
+    else if (_acceptIncomingContent) delete msg.statusReason;
 
     this._saveState();
-    return _clone(turn);
+    if (turn) return _clone(turn);
+    return _clone({
+      n: turnNum,
+      inProgress: true,
+      userInput: userMsg.content || '',
+      by,
+      byStatus,
+      thinkSecBy,
+      tokensBy,
+      lastPatchedAt: patchedAt,
+    });
   }
 
   searchRaw(query, limit = 20) {

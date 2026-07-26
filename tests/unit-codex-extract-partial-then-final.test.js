@@ -29,7 +29,7 @@ async function testManualExtractedThenCodexFinalPatch() {
   const watcher = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-patch-1',
-    label: 'pikachu',
+    label: 'member1',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
     onTurnPatched: (ev) => patches.push(ev),
@@ -66,7 +66,7 @@ async function testCompletedThenLongerFinalPatch() {
   const watcher = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-patch-2',
-    label: 'charmander',
+    label: 'member2',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
     onTurnPatched: (ev) => patches.push(ev),
@@ -104,7 +104,7 @@ async function testSameTextDoesNotTriggerPatch() {
   const watcher = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-patch-3',
-    label: 'squirtle',
+    label: 'member3',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
     onTurnPatched: (ev) => patches.push(ev),

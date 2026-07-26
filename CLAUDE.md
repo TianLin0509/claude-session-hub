@@ -47,9 +47,10 @@ Remove-Item -Recurse -Force $wt           # PS 5.1 此条会"穿透 junction"删
    while (Test-Path "$wt\node_modules") { Start-Sleep -Seconds 1 }
    cmd /c rmdir /S /Q "$wt"   # 用 cmd 的 rmdir /S/Q,不用 PS Remove-Item -Recurse
    ```
-   或者直接用 `git worktree remove --force <path>`(git 自己处理 junction,但 PS 5.1 下也可能踩 bug,验证后再用)。
+   **严禁 `git worktree remove --force`（2026-07-12 血泪实锤）**：git 在 Windows 上同样会穿透 junction 递归删除——实测它在报 "Invalid argument" 失败前已按字母序删掉真 `node_modules` 的 @* 至 d* 共 136 个顶层包（electron 因被运行中 Hub 锁住而幸存）。唯一安全序列就是上面的 `cmd /c rmdir` 三步：先摘 junction → 轮询确认消失 → `rmdir /S /Q` 删目录 → 最后 `git worktree prune` 清理登记。
    **触发场景**：feature 分支合并完成后清理 worktree、`git worktree prune`、手工 rm worktree 目录、CI 自动化测试结束清理。
-   **症状识别**：清理后下次 Hub 启动报 `Cannot find module '<express/qrcode/electron 子依赖>'`。
+   **症状识别**：清理后下次 Hub 启动报 `Cannot find module '<dompurify/@xterm/marked 等>'`；renderer 白屏/全局脚本中断（`sessions is not defined`）。
+   **修复 SOP（不 kill 生产 Hub）**：主目录 `npm install` 会被运行中 electron 锁 EBUSY → 改走旁路：临时目录放 package.json+lock → `npm ci --ignore-scripts` → 只把主目录缺失的顶层包拷回（不覆盖已有、跳过 electron）→ 隔离实例 smoke 验证。
 
 ## 铁律：并行测试 Hub 实例（多 MCP / E2E 测试）
 

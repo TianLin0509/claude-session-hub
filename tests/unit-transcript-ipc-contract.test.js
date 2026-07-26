@@ -30,21 +30,10 @@ function createDeps(overrides = {}) {
       transcriptPath: 'C:\\claude\\session.jsonl',
       ccSessionId: 'cc-1',
     },
-    app: {
-      id: 'app',
-      kind: 'codex-app',
-    },
   }));
 
   return {
     calls,
-    codexAppRegistry: {
-      // fake registry: 默认返回 null(无 client),让 codex-app 走 extractLatestTurn fallback
-      getClient(sessionId) {
-        calls.push(['codexAppRegistry.getClient', sessionId]);
-        return null;
-      },
-    },
     defaultCodexSessionsRoot: 'C:\\default\\codex',
     defer: async () => {
       calls.push(['defer']);
@@ -64,6 +53,9 @@ function createDeps(overrides = {}) {
     isCodexCliKind(kind) {
       calls.push(['isCodexCliKind', kind]);
       return kind === 'codex' || kind === 'codex-resume';
+    },
+    isUsableCodexRolloutPath() {
+      return true;
     },
     parseClaudeTranscriptToTurns: async (transcriptPath, opts) => {
       calls.push(['parseClaudeTranscriptToTurns', transcriptPath, opts]);
@@ -90,7 +82,7 @@ function createDeps(overrides = {}) {
       },
       async extractLatestTurn(sessionId, minChars) {
         calls.push(['extractLatestTurn', sessionId, minChars]);
-        return { text: 'codex app answer' };
+        return { text: 'latest answer' };
       },
     },
     updateSessionTranscriptBinding(hubSessionId, fields) {
@@ -151,69 +143,6 @@ async function main() {
 
     assert.strictEqual(result.transcriptPath, 'C:\\codex\\sid-rollout.jsonl');
     assert.ok(deps.calls.some(call => call[0] === 'findCodexRolloutBySid' && call[1] === 'codex-sid'));
-  });
-
-  await test('Codex App returns extracted latest turn without transcript path', async () => {
-    const deps = createDeps();
-    const result = await parseSessionTranscript({ hubSessionId: 'app' }, deps);
-
-    assert.strictEqual(result.error, null);
-    assert.strictEqual(result.transcriptPath, null);
-    assert.strictEqual(result.turns[0].role, 'assistant');
-    assert.strictEqual(result.turns[0].text, 'codex app answer');
-    assert.strictEqual(result.turns[0].source, 'codex_app_server');
-  });
-
-  await test('Codex App returns full client turns[] when client is registered', async () => {
-    const recordedTurns = [
-      { id: 'u1', role: 'user', text: 'hi', ts: 100 },
-      { id: 'a1', role: 'assistant', text: 'hello', ts: 200, source: 'codex_app_server' },
-      { id: 'u2', role: 'user', text: 'more', ts: 300 },
-      { id: 'a2', role: 'assistant', text: 'sure', ts: 400, source: 'codex_app_server' },
-    ];
-    const deps = createDeps({
-      codexAppRegistry: {
-        getClient(sessionId) {
-          return sessionId === 'app' ? { getAllTurns: () => recordedTurns.slice() } : null;
-        },
-      },
-    });
-    const result = await parseSessionTranscript({ hubSessionId: 'app' }, deps);
-
-    assert.strictEqual(result.error, null);
-    assert.strictEqual(result.turns.length, 4);
-    assert.strictEqual(result.turns[0].role, 'user');
-    assert.strictEqual(result.turns[3].role, 'assistant');
-    assert.ok(!deps.calls.some(call => call[0] === 'extractLatestTurn'),
-      'should not fall back to extractLatestTurn when full turns[] is available');
-  });
-
-  await test('Codex App falls back to extractLatestTurn when client has empty turns[]', async () => {
-    const deps = createDeps({
-      codexAppRegistry: {
-        getClient() { return { getAllTurns: () => [] }; },
-      },
-    });
-    const result = await parseSessionTranscript({ hubSessionId: 'app' }, deps);
-
-    assert.strictEqual(result.turns.length, 1);
-    assert.strictEqual(result.turns[0].text, 'codex app answer');
-  });
-
-  await test('Codex App honors fromTail+limit on client turns[]', async () => {
-    const recordedTurns = Array.from({ length: 10 }, (_, i) => ({
-      id: `t${i}`, role: i % 2 === 0 ? 'user' : 'assistant', text: String(i), ts: i,
-    }));
-    const deps = createDeps({
-      codexAppRegistry: {
-        getClient() { return { getAllTurns: () => recordedTurns.slice() }; },
-      },
-    });
-    const result = await parseSessionTranscript({ hubSessionId: 'app', opts: { limit: 3, fromTail: true } }, deps);
-
-    assert.strictEqual(result.turns.length, 3);
-    assert.strictEqual(result.turns[0].id, 't7');
-    assert.strictEqual(result.turns[2].id, 't9');
   });
 
   await test('Claude transcript uses session transcriptPath before ccSession scan', async () => {

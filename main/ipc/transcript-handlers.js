@@ -1,12 +1,23 @@
 'use strict';
 
+const { isUsableCodexRolloutPath } = require('../../core/codex-transcript-parser.js');
+const { isKimiCliKind: defaultIsKimiCliKind } = require('../../core/ai-kinds.js');
+const { parseKimiWireToTurns: defaultParseKimiWireToTurns } = require('../../core/kimi-transcript-parser.js');
+
 function defaultDefer() {
   return new Promise(resolve => setImmediate(resolve));
 }
 
+async function runTranscriptParser(deps, kind, transcriptPath, parseOpts, fallbackParser) {
+  if (deps.transcriptParserService && typeof deps.transcriptParserService.parse === 'function') {
+    return deps.transcriptParserService.parse(kind, transcriptPath, parseOpts);
+  }
+  const turns = await fallbackParser(transcriptPath, parseOpts);
+  return { turns: Array.isArray(turns) ? turns : [], meta: {} };
+}
+
 async function parseSessionTranscript(args = {}, deps) {
   const {
-    codexAppRegistry,
     defaultCodexSessionsRoot,
     defer = defaultDefer,
     findCodexRolloutByCwd,
@@ -19,35 +30,49 @@ async function parseSessionTranscript(args = {}, deps) {
     transcriptTap,
     updateSessionTranscriptBinding,
   } = deps;
+  const validateCodexRolloutPath = typeof deps.isUsableCodexRolloutPath === 'function'
+    ? deps.isUsableCodexRolloutPath
+    : isUsableCodexRolloutPath;
+  const isKimiCliKind = typeof deps.isKimiCliKind === 'function' ? deps.isKimiCliKind : defaultIsKimiCliKind;
+  const parseKimiWireToTurns = typeof deps.parseKimiWireToTurns === 'function'
+    ? deps.parseKimiWireToTurns
+    : defaultParseKimiWireToTurns;
 
   await defer();
 
   const { hubSessionId, ccSessionId, transcriptPath: inPath, kind: inKind, opts } = args || {};
-  let transcriptPath = inPath || null;
+  let transcriptPath = null;
   try {
     const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
     const kind = session ? session.kind : inKind;
 
     if (isCodexCliKind(kind)) {
       const liveRolloutPath = hubSessionId ? transcriptTap.getCodexRolloutPath(hubSessionId) : null;
-      if (liveRolloutPath) {
+      const expectedCodexSid = session && session.codexSid ? session.codexSid : null;
+      if (liveRolloutPath && validateCodexRolloutPath(liveRolloutPath)) {
         transcriptPath = liveRolloutPath;
       }
-      if (!transcriptPath && session && session.transcriptPath) {
+      if (!transcriptPath && session && session.transcriptPath
+        && validateCodexRolloutPath(session.transcriptPath, expectedCodexSid)) {
         transcriptPath = session.transcriptPath;
       }
+      if (!transcriptPath && inPath && validateCodexRolloutPath(inPath, expectedCodexSid)) {
+        transcriptPath = inPath;
+      }
       if (!transcriptPath && session && session.codexSid) {
-        transcriptPath = findCodexRolloutBySid(
+        const bySid = findCodexRolloutBySid(
           session.codexSid,
           session.codexSessionsRoot || defaultCodexSessionsRoot,
         );
+        if (bySid && validateCodexRolloutPath(bySid, session.codexSid)) transcriptPath = bySid;
       }
       if (!transcriptPath && session && session.codexAllowMtimeFallback && session.cwd) {
-        transcriptPath = findCodexRolloutByCwd(
+        const byCwd = findCodexRolloutByCwd(
           session.cwd,
           session.codexSessionsRoot || defaultCodexSessionsRoot,
           { sinceMs: session.createdAt || Date.now() },
         );
+        if (byCwd && validateCodexRolloutPath(byCwd)) transcriptPath = byCwd;
       }
       if (!transcriptPath) {
         return { turns: [], transcriptPath: null, error: 'codex rollout not found' };
@@ -56,46 +81,41 @@ async function parseSessionTranscript(args = {}, deps) {
         updateSessionTranscriptBinding(hubSessionId, { transcriptPath });
       }
       const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
-      const turns = parseCodexRolloutToTurns(transcriptPath, parseOpts);
-      return { turns: Array.isArray(turns) ? turns : [], transcriptPath, error: null };
-    }
-
-    if (kind === 'codex-app') {
-      // 优先读 CodexAppServerClient 内存累积的 turns —— codex-app 协议没有磁盘
-      // rollout,卡片视图历史依赖 client 自己 append-only 累计 user/assistant turn。
-      // client 不存在(进程未起)或 turns 为空(刚初始化)时降级到 extractLatestTurn,
-      // 至少不丢"最后一段 assistant text"的旧体验。
-      const client = (hubSessionId && codexAppRegistry && typeof codexAppRegistry.getClient === 'function')
-        ? codexAppRegistry.getClient(hubSessionId) : null;
-      const allTurns = (client && typeof client.getAllTurns === 'function') ? client.getAllTurns() : [];
-      if (Array.isArray(allTurns) && allTurns.length > 0) {
-        const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
-        const turns = (parseOpts.fromTail && typeof parseOpts.limit === 'number' && parseOpts.limit < allTurns.length)
-          ? allTurns.slice(-parseOpts.limit)
-          : allTurns.slice(0, typeof parseOpts.limit === 'number' ? parseOpts.limit : allTurns.length);
-        return { turns, transcriptPath: null, error: null };
-      }
-      const extracted = hubSessionId ? await transcriptTap.extractLatestTurn(hubSessionId, 0) : null;
-      if (!extracted || !extracted.text) {
-        return { turns: [], transcriptPath: null, error: 'codex app-server transcript not materialized' };
-      }
+      const parsed = await runTranscriptParser(deps, 'codex', transcriptPath, parseOpts, parseCodexRolloutToTurns);
       return {
-        turns: [{
-          id: `codex-app-assistant-${hubSessionId || Date.now()}`,
-          role: 'assistant',
-          text: extracted.text,
-          ts: Date.now(),
-          tsEnd: Date.now(),
-          stopReason: 'turn_completed',
-          source: 'codex_app_server',
-        }],
-        transcriptPath: null,
+        turns: parsed.turns,
+        transcriptPath,
+        parseMs: parsed.meta.parseMs,
+        parseCacheHit: !!parsed.meta.cacheHit,
         error: null,
       };
     }
 
-    if (!transcriptPath && session && session.transcriptPath) {
-      transcriptPath = session.transcriptPath;
+    if (isKimiCliKind(kind)) {
+      transcriptPath = (session && session.transcriptPath) || inPath || null;
+      if (!transcriptPath && session && session.kimiSessionDir) {
+        transcriptPath = require('path').join(session.kimiSessionDir, 'agents', 'main', 'wire.jsonl');
+      }
+      if (!transcriptPath) {
+        return { turns: [], transcriptPath: null, error: 'kimi wire transcript not found' };
+      }
+      if (hubSessionId && session && session.transcriptPath !== transcriptPath) {
+        updateSessionTranscriptBinding(hubSessionId, { transcriptPath });
+      }
+      const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
+      const parsed = await runTranscriptParser(deps, 'kimi', transcriptPath, parseOpts, parseKimiWireToTurns);
+      return {
+        turns: parsed.turns,
+        transcriptPath,
+        parseMs: parsed.meta.parseMs,
+        parseCacheHit: !!parsed.meta.cacheHit,
+        error: null,
+      };
+    }
+
+    transcriptPath = session && session.transcriptPath ? session.transcriptPath : null;
+    if (!transcriptPath && inPath) {
+      transcriptPath = inPath;
     }
     if (!transcriptPath && ccSessionId) {
       transcriptPath = findTranscriptByCCSessionId(ccSessionId);
@@ -113,11 +133,12 @@ async function parseSessionTranscript(args = {}, deps) {
     }
     const parseOpts = { limit: 50, fromTail: true, ...(opts && typeof opts === 'object' ? opts : {}) };
     const parseStartedAt = Date.now();
-    const turns = await parseClaudeTranscriptToTurns(transcriptPath, parseOpts);
+    const parsed = await runTranscriptParser(deps, 'claude', transcriptPath, parseOpts, parseClaudeTranscriptToTurns);
     return {
-      turns: Array.isArray(turns) ? turns : [],
+      turns: parsed.turns,
       transcriptPath,
-      parseMs: Date.now() - parseStartedAt,
+      parseMs: typeof parsed.meta.parseMs === 'number' ? parsed.meta.parseMs : Date.now() - parseStartedAt,
+      parseCacheHit: !!parsed.meta.cacheHit,
       error: null,
     };
   } catch (err) {
@@ -142,4 +163,5 @@ function registerTranscriptIpc(ipcMain, deps) {
 module.exports = {
   parseSessionTranscript,
   registerTranscriptIpc,
+  runTranscriptParser,
 };

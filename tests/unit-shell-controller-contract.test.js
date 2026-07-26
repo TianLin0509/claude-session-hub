@@ -17,7 +17,6 @@ function makeElement() {
 test('escapeToHome hides overlays, clears active ids, restores launcher shell', () => {
   const byId = new Map([
     ['options-menu', makeElement()],
-    ['theme-picker-popup', makeElement()],
     ['resume-modal', makeElement()],
     ['search-modal', makeElement()],
     ['msg-overlay', makeElement()],

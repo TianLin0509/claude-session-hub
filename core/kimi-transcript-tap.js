@@ -4,6 +4,7 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { JsonlTail } = require('./jsonl-tail.js');
 
 function normalizePathForCompare(value) {
   if (!value || typeof value !== 'string') return '';
@@ -97,6 +98,7 @@ function extractLatestKimiTurnFromText(text) {
 class KimiTap extends EventEmitter {
   constructor(opts = {}) {
     super();
+    this._parserService = opts.parserService || null;
     this.homeDir = opts.homeDir || process.env.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code');
     this.indexPath = path.join(this.homeDir, 'session_index.jsonl');
     this.pollMs = Math.max(50, Number(opts.pollMs) || 350);
@@ -104,6 +106,7 @@ class KimiTap extends EventEmitter {
     this._bound = new Map();
     this._claimedSids = new Set();
     this._timer = null;
+    this._polling = false;
   }
 
   hasSession(hubSessionId) {
@@ -113,7 +116,6 @@ class KimiTap extends EventEmitter {
   registerSession(hubSessionId, ctx = {}) {
     if (!hubSessionId) return;
     this.unregisterSession(hubSessionId);
-    const entries = this._readIndex();
     const pending = {
       hubSessionId,
       kind: ctx.kind || 'kimi',
@@ -121,8 +123,11 @@ class KimiTap extends EventEmitter {
       registeredAt: Number(ctx.registeredAt) || Date.now(),
       kimiSid: ctx.kimiSid || null,
       allowExistingSession: !!ctx.allowExistingSession,
-      knownSids: new Set(entries.map((entry) => entry.sessionId).filter(Boolean)),
+      knownSids: new Set(),
+      initialized: false,
     };
+
+    this._pending.set(hubSessionId, pending);
 
     if (ctx.transcriptPath || ctx.sessionDir) {
       const wirePath = ctx.transcriptPath || path.join(ctx.sessionDir, 'agents', 'main', 'wire.jsonl');
@@ -133,10 +138,17 @@ class KimiTap extends EventEmitter {
         workDir: ctx.cwd || '',
       }, wirePath, true);
     } else {
-      this._pending.set(hubSessionId, pending);
-      this._scanIndex(entries);
+      void this._initializePending(pending);
     }
     this._ensureTimer();
+  }
+
+  async _initializePending(pending) {
+    const entries = await this._readIndex();
+    if (this._pending.get(pending.hubSessionId) !== pending) return;
+    pending.knownSids = new Set(entries.map(entry => entry.sessionId).filter(Boolean));
+    pending.initialized = true;
+    await this._scanIndex(entries);
   }
 
   notePrompt() {}
@@ -144,12 +156,16 @@ class KimiTap extends EventEmitter {
   unregisterSession(hubSessionId) {
     this._pending.delete(hubSessionId);
     const bound = this._bound.get(hubSessionId);
+    try { bound?.tail?.close(); } catch {}
     if (bound && bound.kimiSid) this._claimedSids.delete(bound.kimiSid);
     this._bound.delete(hubSessionId);
     if (this._pending.size === 0 && this._bound.size === 0) this._stopTimer();
   }
 
   dispose() {
+    for (const bound of this._bound.values()) {
+      try { bound.tail?.close(); } catch {}
+    }
     this._pending.clear();
     this._bound.clear();
     this._claimedSids.clear();
@@ -176,7 +192,16 @@ class KimiTap extends EventEmitter {
     const bound = this._bound.get(hubSessionId);
     if (!bound || !bound.wirePath) return null;
     try {
-      const turn = extractLatestKimiTurnFromText(fs.readFileSync(bound.wirePath, 'utf8'));
+      let turn;
+      if (this._parserService) {
+        const { turns } = await this._parserService.parse('kimi', bound.wirePath, { limit: 1, fromTail: true });
+        const latest = turns[turns.length - 1];
+        turn = latest && latest.role === 'assistant'
+          ? { text: latest.text, source: 'kimi_wire_step_end', completedAt: latest.tsEnd || latest.ts || 0 }
+          : null;
+      } else {
+        turn = extractLatestKimiTurnFromText(fs.readFileSync(bound.wirePath, 'utf8'));
+      }
       // 2026-07-20 道雪 [修#1]：时间窗下界——turn 完成时间早于本轮 prompt 5s 以上，
       //   判定为上一轮旧答案拒绝提取（与 ClaudeTap 同口径，防张冠李戴）。
       if (turn && sincePromptTs && turn.completedAt && turn.completedAt < sincePromptTs - 5000) return null;
@@ -198,14 +223,14 @@ class KimiTap extends EventEmitter {
         hubSessionId: entry.hubSessionId,
         kimiSid: entry.kimiSid,
         wirePath: entry.wirePath,
-        offset: entry.offset,
+        offset: entry.tail ? entry.tail.getStats().offset : entry.offset,
       })),
     };
   }
 
   _ensureTimer() {
     if (this._timer) return;
-    this._timer = setInterval(() => this._poll(), this.pollMs);
+    this._timer = setInterval(() => { void this._poll(); }, this.pollMs);
     this._timer.unref?.();
   }
 
@@ -215,16 +240,21 @@ class KimiTap extends EventEmitter {
     this._timer = null;
   }
 
-  _poll() {
-    try { this._scanIndex(this._readIndex()); } catch {}
-    for (const bound of this._bound.values()) {
-      try { this._readWire(bound); } catch {}
+  async _poll() {
+    if (this._polling) return;
+    this._polling = true;
+    try {
+      await this._scanIndex(await this._readIndex());
+    } catch {
+      // Discovery is best-effort; the next interval retries transient IO.
+    } finally {
+      this._polling = false;
     }
   }
 
-  _readIndex() {
+  async _readIndex() {
     let text;
-    try { text = fs.readFileSync(this.indexPath, 'utf8'); } catch { return []; }
+    try { text = await fs.promises.readFile(this.indexPath, 'utf8'); } catch { return []; }
     const bySid = new Map();
     for (const record of parseJsonl(text)) {
       if (!record || typeof record.sessionId !== 'string' || typeof record.sessionDir !== 'string') continue;
@@ -236,8 +266,9 @@ class KimiTap extends EventEmitter {
     return Array.from(bySid.values());
   }
 
-  _scanIndex(entries) {
+  async _scanIndex(entries) {
     for (const pending of Array.from(this._pending.values())) {
+      if (!pending.initialized) continue;
       let candidates = entries.filter((entry) => {
         if (!entry.sessionId || this._claimedSids.has(entry.sessionId)) return false;
         if (pending.kimiSid) return entry.sessionId === pending.kimiSid;
@@ -247,9 +278,21 @@ class KimiTap extends EventEmitter {
         candidates = candidates.filter((entry) => !pending.knownSids.has(entry.sessionId));
       }
       if (pending.allowExistingSession && !pending.kimiSid) {
-        candidates = candidates.filter((entry) => this._wireMtime(entry) >= pending.registeredAt - 2000);
+        const withMtime = await Promise.all(candidates.map(async entry => ({
+          entry,
+          mtime: await this._wireMtime(entry),
+        })));
+        candidates = withMtime
+          .filter(item => item.mtime >= pending.registeredAt - 2000)
+          .map(item => ({ ...item.entry, _wireMtime: item.mtime }));
       }
-      candidates.sort((a, b) => this._wireMtime(b) - this._wireMtime(a));
+      if (candidates.some(entry => !Number.isFinite(entry._wireMtime))) {
+        candidates = await Promise.all(candidates.map(async entry => ({
+          ...entry,
+          _wireMtime: Number.isFinite(entry._wireMtime) ? entry._wireMtime : await this._wireMtime(entry),
+        })));
+      }
+      candidates.sort((a, b) => b._wireMtime - a._wireMtime);
       const selected = candidates[0];
       if (!selected) continue;
       const startAtEnd = pending.allowExistingSession || pending.knownSids.has(selected.sessionId);
@@ -257,24 +300,20 @@ class KimiTap extends EventEmitter {
     }
   }
 
-  _wireMtime(entry) {
+  async _wireMtime(entry) {
     const wirePath = path.join(entry.sessionDir, 'agents', 'main', 'wire.jsonl');
-    try { return fs.statSync(wirePath).mtimeMs; } catch { return 0; }
+    try { return (await fs.promises.stat(wirePath)).mtimeMs; } catch { return 0; }
   }
 
   _bind(pending, nativeSession, explicitWirePath, startAtEnd) {
     const wirePath = explicitWirePath || path.join(nativeSession.sessionDir, 'agents', 'main', 'wire.jsonl');
-    let offset = 0;
-    if (startAtEnd) {
-      try { offset = fs.statSync(wirePath).size; } catch {}
-    }
     const bound = {
       hubSessionId: pending.hubSessionId,
       kind: pending.kind,
       kimiSid: nativeSession.sessionId,
       sessionDir: nativeSession.sessionDir,
       wirePath,
-      offset,
+      offset: 0,
       partial: '',
       turnText: '',
       currentPrompt: '',
@@ -283,6 +322,7 @@ class KimiTap extends EventEmitter {
       completedSteps: new Set(),
       streamingText: '',
       lastAssistantText: '',
+      tail: null,
     };
     this._pending.delete(pending.hubSessionId);
     this._bound.set(pending.hubSessionId, bound);
@@ -294,32 +334,14 @@ class KimiTap extends EventEmitter {
       sessionDir: bound.sessionDir,
       wirePath: bound.wirePath,
     });
-    this._readWire(bound);
-  }
-
-  _readWire(bound) {
-    let stat;
-    try { stat = fs.statSync(bound.wirePath); } catch { return; }
-    if (stat.size < bound.offset) {
-      bound.offset = 0;
-      bound.partial = '';
-    }
-    if (stat.size === bound.offset) return;
-    const length = stat.size - bound.offset;
-    const buffer = Buffer.alloc(length);
-    const fd = fs.openSync(bound.wirePath, 'r');
-    try { fs.readSync(fd, buffer, 0, length, bound.offset); }
-    finally { fs.closeSync(fd); }
-    bound.offset = stat.size;
-    const combined = bound.partial + buffer.toString('utf8');
-    const lines = combined.split(/\r?\n/);
-    bound.partial = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let record;
-      try { record = JSON.parse(line); } catch { continue; }
-      this._processRecord(bound, record);
-    }
+    bound.tail = new JsonlTail(bound.wirePath, record => this._processRecord(bound, record), {
+      startAtEnd: !!startAtEnd,
+      maxInitialBytes: 8 * 1024 * 1024,
+      maxReadBytes: 4 * 1024 * 1024,
+    });
+    void bound.tail.start().then(() => {
+      bound.offset = bound.tail.getStats().offset;
+    }).catch(() => {});
   }
 
   _processRecord(bound, record) {

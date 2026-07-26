@@ -58,10 +58,11 @@ function createLoopEngine(deps) {
 
   function buildConfig(loopCfg) {
     const c = LC.defaultConfig();
-    c.gate = { consecutivePass: (loopCfg && loopCfg.consecutivePass) || 1 };
-    c.polish = { enabled: !(loopCfg && loopCfg.polish === false) };
+    // v2: one clean review pass is enough; suggestions never create an implicit polish phase.
+    c.gate = { consecutivePass: 1 };
+    c.polish = { enabled: false };
     c.stop = {
-      maxRounds: (loopCfg && loopCfg.maxRounds) || 8,
+      maxRounds: Math.max(1, Math.min(10, (loopCfg && loopCfg.maxRounds) || 3)),
       deadlineTs: (loopCfg && loopCfg.deadlineTs) || null,
       noProgressRounds: (loopCfg && loopCfg.noProgressRounds) || 2,
     };
@@ -79,6 +80,8 @@ function createLoopEngine(deps) {
             consecutiveGreen: state.consecutiveGreen, suggestionPool: state.suggestionPool,
             history: state.history, _lastBlockerSig: state._lastBlockerSig, _noProgress: state._noProgress,
             deadlineTs: config.stop.deadlineTs, driver: 'main',
+            currentStep: state.currentStep || null, attempt: state.attempt || (state.round + 1),
+            lastError: state.lastError || null,
           },
         }),
       });
@@ -102,6 +105,17 @@ function createLoopEngine(deps) {
       if (persistedLoopState && persistedLoopState.status === 'running') {
         const r = LC.resumeState(persistedLoopState); state = r.state; prevMerge = r.prevMerge; goal = state.goal || (userInput || '').trim(); resuming = true;
       } else { goal = (userInput || '').trim(); state = LC.newLoopState(); state.goal = goal; }
+      // v2 migration: a legacy run that already entered polishing has passed its gate.
+      // Do not revive the old self-refilling suggestion loop after restart.
+      if (state.phase === 'polishing' && !config.polish.enabled) {
+        state.phase = 'reaching';
+        state.status = 'done';
+        state.suggestionPool = [];
+      }
+
+      const stepConfigs = Array.isArray(wf.stepConfigs) ? wf.stepConfigs : [];
+      const builderRolePrompt = (stepConfigs[0] && stepConfigs[0].prompt) || '';
+      const reviewerRolePrompt = (stepConfigs[1] && stepConfigs[1].prompt) || '';
 
       const dispatcher = getDispatcher();
       const progress = (extra) => { try { sendToRenderer('loop:progress', Object.assign({ meetingId, round: state.round, phase: state.phase, status: state.status }, extra || {})); } catch (e) {} };
@@ -113,29 +127,46 @@ function createLoopEngine(deps) {
         if (state.round > config.stop.maxRounds + 2) { state.status = 'stopped_max'; break; } // 本地兜底
 
         const taskInfo = LC.builderTaskText(state, prevMerge, config);
-        const builderPrompt = LC.PROMPTS.builder({ goal, cwd: config.cwd, firstRound: taskInfo.firstRound, phase: taskInfo.phase, taskText: taskInfo.taskText });
+        const builderPrompt = LC.PROMPTS.builder({ goal, cwd: config.cwd, firstRound: taskInfo.firstRound, phase: taskInfo.phase, taskText: taskInfo.taskText, rolePrompt: builderRolePrompt });
         await ensureMemberReady(meeting, builderId);
+        state.currentStep = 'builder'; state.attempt = state.round + 1; state.lastError = null;
+        persist(meetingId, state, config);
         progress({ stage: 'builder', round: state.round + 1 });
         let bRes;
         // 2026-07-20 道雪 [修#8]：builder 轮 10min 硬超时——此前不传 turnTimeoutMs，
         //   一个卡死的 CLI 会让 loop 轮内永久挂起（deadlineTs 只在轮间检查）。
         try { bRes = await dispatcher.dispatchGroupChatTurn(meetingId, { userInput: builderPrompt, targetMemberIds: [builderId], reuseTurnNum: null, appendUserMessage: true, dispatchMode: 'serial', turnTimeoutMs: 10 * 60 * 1000 }); }
-        catch (e) { logger.log('[loop-engine] builder turn err: ' + (e && e.message)); break; }
-        if (!bRes || bRes.status !== 'completed') { logger.log('[loop-engine] builder not completed: ' + (bRes && bRes.status)); break; }
+        catch (e) {
+          state.status = 'paused'; state.lastError = { stage: 'builder', reason: (e && e.message) || 'builder_error', at: Date.now() };
+          logger.log('[loop-engine] builder turn err: ' + state.lastError.reason); break;
+        }
+        if (!bRes || bRes.status !== 'completed') {
+          state.status = 'paused'; state.lastError = { stage: 'builder', reason: (bRes && (bRes.reason || bRes.status)) || 'builder_not_completed', at: Date.now() };
+          logger.log('[loop-engine] builder not completed: ' + state.lastError.reason); break;
+        }
         const turnNum = bRes.turnNum;
 
-        const reviewerPrompt = LC.PROMPTS.reviewer({ goal, cwd: config.cwd });
+        const reviewerPrompt = LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt });
         for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
+        state.currentStep = 'reviewer'; state.lastError = null;
+        persist(meetingId, state, config);
         progress({ stage: 'reviewer', round: state.round + 1 });
         let rRes;
         // 2026-07-20 道雪 [修#8]：reviewer 轮 5min 硬超时（评审通常快于构建）。
         try { rRes = await dispatcher.dispatchGroupChatTurn(meetingId, { userInput: reviewerPrompt, targetMemberIds: reviewerIds, reuseTurnNum: turnNum, appendUserMessage: false, dispatchMode: 'serial', turnTimeoutMs: 5 * 60 * 1000 }); }
-        catch (e) { logger.log('[loop-engine] reviewer turn err: ' + (e && e.message)); break; }
-        if (!rRes || rRes.status !== 'completed') { logger.log('[loop-engine] reviewer not completed: ' + (rRes && rRes.status)); break; }
+        catch (e) {
+          state.status = 'paused'; state.lastError = { stage: 'reviewer', reason: (e && e.message) || 'reviewer_error', at: Date.now() };
+          logger.log('[loop-engine] reviewer turn err: ' + state.lastError.reason); break;
+        }
+        if (!rRes || rRes.status !== 'completed') {
+          state.status = 'paused'; state.lastError = { stage: 'reviewer', reason: (rRes && (rRes.reason || rRes.status)) || 'reviewer_not_completed', at: Date.now() };
+          logger.log('[loop-engine] reviewer not completed: ' + state.lastError.reason); break;
+        }
 
         const reviews = reviewerIds.map((rid) => { const sid = sidOf(meeting, rid); return { from: labelOf(meeting, rid), verdict: LC.parseVerdict(textFrom(rRes.results, sid)), raw: textFrom(rRes.results, sid) }; });
         const merge = LC.mergeVerdicts(reviews); prevMerge = merge;
         LC.advanceLoopState(state, merge, config, Date.now());
+        state.currentStep = null; state.lastError = null;
         logger.log('[loop-engine] round=' + state.round + ' phase=' + state.phase + ' pass=' + merge.pass + ' status=' + state.status);
         persist(meetingId, state, config); progress({ stage: 'advanced' });
       }
@@ -145,7 +176,7 @@ function createLoopEngine(deps) {
         const html = LC.buildReportHtml(goal, state, config, { builderLabel: labelOf(meeting, builderId), reviewerLabels: reviewerIds.map((r) => labelOf(meeting, r)).join('+'), finishedAt: new Date().toLocaleString() });
         const p = writeReport(html); if (p) logger.log('[loop-engine] report → ' + p);
       } catch (e) { logger.log('[loop-engine] report err: ' + (e && e.message)); }
-      progress({ stage: 'done', status: state.status });
+      progress({ stage: state.status === 'paused' ? (state.currentStep || 'paused') : 'done', status: state.status, error: state.lastError || null });
       logger.log('[loop-engine] finished ' + meetingId + ' status=' + state.status + ' rounds=' + state.round);
       return state;
     } finally {

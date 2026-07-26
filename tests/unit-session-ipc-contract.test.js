@@ -51,11 +51,37 @@ function createFakeSessionManager() {
     getSession(sessionId) {
       calls.push(['getSession', sessionId]);
       if (sessionId === 'missing') return null;
+      if (sessionId === 'claude-source') {
+        return {
+          id: sessionId,
+          kind: 'claude-resume',
+          title: 'Claude Design',
+          cwd: 'C:\\repo',
+          ccSessionId: '11111111-1111-4111-8111-111111111111',
+          currentModel: { id: 'opus', displayName: 'Opus' },
+        };
+      }
+      if (sessionId === 'codex-source') {
+        return {
+          id: sessionId,
+          kind: 'codex-resume',
+          title: 'Codex Debug',
+          cwd: 'C:\\repo',
+          codexSid: '22222222-2222-4222-8222-222222222222',
+          codexProfile: 'work',
+          currentModel: { id: 'gpt-5.5', displayName: 'GPT-5.5' },
+        };
+      }
+      if (sessionId === 'claude-unbound') {
+        return { id: sessionId, kind: 'claude', title: 'Claude New', cwd: 'C:\\repo' };
+      }
       return { id: sessionId, kind: 'powershell', cwd: 'C:\\work', meetingId: 'm1' };
     },
     createSession(kind, opts) {
       calls.push(['createSession', kind, opts]);
-      return { id: opts.id, kind, cwd: opts.cwd, meetingId: opts.meetingId };
+      const session = { id: opts.id || `created-${kind}`, kind, cwd: opts.cwd, meetingId: opts.meetingId };
+      if (opts.title !== undefined) session.title = opts.title;
+      return session;
     },
   };
 }
@@ -78,13 +104,77 @@ test('registers expected session channels', () => {
   const sessionManager = createFakeSessionManager();
   registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
 
-  for (const channel of ['close-session', 'rename-session', 'get-sessions', 'debug:get-session-buffer', 'restart-session']) {
+  for (const channel of ['close-session', 'rename-session', 'get-sessions', 'debug:get-session-buffer', 'get-session-buffer-snapshot', 'restart-session', 'fork-session']) {
     assert.ok(ipc.handlers.has(channel), `${channel} should be registered as handle`);
   }
   assert.ok(ipc.handlers.has('create-session'), 'create-session should be registered as handle');
   for (const channel of ['terminal-input', 'terminal-resize', 'focus-session']) {
     assert.ok(ipc.listeners.has(channel), `${channel} should be registered as listener`);
   }
+});
+
+test('fork-session creates a standalone Claude branch from the native session id', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  const emitted = [];
+  const tapped = [];
+  registerSessionIpc(ipc, {
+    registerSessionForTap: (session) => tapped.push(session),
+    sessionManager,
+    sendToRenderer: (channel, payload) => emitted.push([channel, payload]),
+  });
+
+  const result = ipc.handlers.get('fork-session')(null, 'claude-source');
+
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(
+    sessionManager.calls.find(call => call[0] === 'createSession'),
+    ['createSession', 'claude', {
+      title: 'Claude Design · 分支',
+      cwd: 'C:\\repo',
+      userRenamed: true,
+      model: 'opus',
+      forkCCSessionId: '11111111-1111-4111-8111-111111111111',
+    }],
+  );
+  assert.deepStrictEqual(tapped, [result.session]);
+  assert.deepStrictEqual(emitted, [['session-created', { session: result.session }]]);
+});
+
+test('fork-session preserves Codex model and subscription profile', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
+
+  const result = ipc.handlers.get('fork-session')(null, 'codex-source');
+
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(
+    sessionManager.calls.find(call => call[0] === 'createSession'),
+    ['createSession', 'codex', {
+      title: 'Codex Debug · 分支',
+      cwd: 'C:\\repo',
+      userRenamed: true,
+      model: 'gpt-5.5',
+      codexProfile: 'work',
+      codexForkSid: '22222222-2222-4222-8222-222222222222',
+    }],
+  );
+});
+
+test('fork-session rejects unsupported or not-yet-bound sessions without spawning', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
+
+  const missing = ipc.handlers.get('fork-session')(null, 'missing');
+  const unsupported = ipc.handlers.get('fork-session')(null, 's1');
+  const unbound = ipc.handlers.get('fork-session')(null, 'claude-unbound');
+
+  assert.strictEqual(missing.error, 'session-not-found');
+  assert.strictEqual(unsupported.error, 'unsupported-kind');
+  assert.strictEqual(unbound.error, 'native-session-id-missing');
+  assert.strictEqual(sessionManager.calls.some(call => call[0] === 'createSession'), false);
 });
 
 test('create-session preserves legacy and object payloads', () => {
@@ -174,14 +264,17 @@ test('focus, input, get-sessions, debug buffer delegate unchanged', () => {
   ipc.listeners.get('focus-session')(null, { sessionId: 's1' });
   const sessions = ipc.handlers.get('get-sessions')();
   const buffer = ipc.handlers.get('debug:get-session-buffer')(null, 's1');
+  const snapshot = ipc.handlers.get('get-session-buffer-snapshot')(null, 's1');
 
   assert.strictEqual(sessions.length, 1);
   assert.strictEqual(buffer, 'buffer:s1');
+  assert.deepStrictEqual(snapshot, { text: 'buffer:s1', seq: 0 });
   assert.deepStrictEqual(sessionManager.calls, [
     ['writeToSession', 's1', 'abc'],
     ['setFocusedSession', 's1'],
     ['markRead', 's1'],
     ['getAllSessions'],
+    ['getSessionBuffer', 's1'],
     ['getSessionBuffer', 's1'],
   ]);
 });

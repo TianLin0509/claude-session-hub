@@ -10,6 +10,7 @@ const {
   mergeCodexRateLimitCandidates,
   parseCodexUsage,
   parseGeminiUsage,
+  parseKimiUsage,
   stripAnsi,
 } = require('../main/usage/agent-usage-parser.js');
 
@@ -33,6 +34,16 @@ assert.strictEqual(codex.contextPct, 12,
   'Codex context left should be converted to used percentage');
 assert.strictEqual(codex.tokensUsed, 12840,
   'Codex token summary should parse comma-separated totals');
+
+const kimi = parseKimiUsage('Kimi K3  context: 6.3% (66.1k/1.0m)  YOLO');
+assert.strictEqual(kimi.contextPct, 6.3,
+  'Kimi statusline context percentage should be preserved');
+assert.strictEqual(kimi.contextUsed, 66100,
+  'Kimi statusline used tokens should parse compact units');
+assert.strictEqual(kimi.contextMax, 1000000,
+  'Kimi statusline context window should parse compact units');
+assert.deepStrictEqual(kimi.model, { id: 'kimi-code/k3', displayName: 'Kimi K3' },
+  'Kimi K3 statusline should expose the canonical model');
 
 const codexUsageScreen = parseCodexUsage([
   'Visit https://chatgpt.com/codex/settings/usage for up-to-date information on rate limits and credits',
@@ -58,6 +69,7 @@ const jsonl = path.join(dir, 'rollout-test.jsonl');
 fs.writeFileSync(jsonl, [
   JSON.stringify({ type: 'event_msg', payload: { type: 'other' } }),
   JSON.stringify({
+    timestamp: '2026-07-10T17:16:43.051Z',
     type: 'event_msg',
     payload: {
       type: 'token_count',
@@ -72,11 +84,13 @@ fs.writeFileSync(jsonl, [
 assert.deepStrictEqual(extractCodexRateLimits(jsonl), {
   usage5h: { pct: 42, resetsAt: 123000 },
   usage7d: { pct: 12, resetsAt: 456000000 },
+  observedAt: Date.parse('2026-07-10T17:16:43.051Z'),
 }, 'Codex JSONL rate limits should be extracted from token_count tail events');
 
 const trailingJsonl = path.join(dir, 'rollout-large-trailing-lines.jsonl');
 fs.writeFileSync(trailingJsonl, [
   JSON.stringify({
+    timestamp: '2026-07-10T17:20:40.489Z',
     type: 'event_msg',
     payload: {
       type: 'token_count',
@@ -93,6 +107,7 @@ fs.writeFileSync(trailingJsonl, [
 assert.deepStrictEqual(extractCodexRateLimits(trailingJsonl, { chunkBytes: 1024, maxScanBytes: 64 * 1024 }), {
   usage5h: { pct: 28, resetsAt: 1234000 },
   usage7d: { pct: 6, resetsAt: 5678000 },
+  observedAt: Date.parse('2026-07-10T17:20:40.489Z'),
 }, 'Codex JSONL scan should find token_count before large trailing response lines');
 
 const now = 1_800_000_000_000;
@@ -110,11 +125,11 @@ assert.deepStrictEqual(mergeCodexRateLimitCandidates([
     rolloutPath: 'active.jsonl',
   },
 ], now), {
-  usage5h: { pct: 1, resetsAt: now + 4 * 3600 * 1000 },
-  usage7d: { pct: 7, resetsAt: now + 6 * 86400 * 1000 },
-  rolloutPath: 'active.jsonl',
-  observedAt: now - 10_000,
-}, 'Codex merge should prefer positive active snapshots over newer 0% snapshots');
+  usage5h: { pct: 0, resetsAt: now + 5 * 3600 * 1000 },
+  usage7d: { pct: 0, resetsAt: now + 7 * 86400 * 1000 },
+  rolloutPath: 'newer-zero.jsonl',
+  observedAt: now,
+}, 'Codex merge should accept a newer coherent 0% snapshot when reset windows changed');
 
 assert.deepStrictEqual(mergeCodexRateLimitCandidates([
   {
@@ -136,19 +151,15 @@ assert.deepStrictEqual(mergeCodexRateLimitCandidates([
   observedAt: now,
 }, 'Codex merge should prefer snapshots after the current auth refresh when present');
 
-assert.deepStrictEqual(mergeCodexRateLimitCandidates([
+assert.strictEqual(mergeCodexRateLimitCandidates([
   {
     usage5h: { pct: 94, resetsAt: now + 2 * 3600 * 1000 },
     usage7d: { pct: 95, resetsAt: now + 2 * 86400 * 1000 },
     observedAt: now - 20_000,
     rolloutPath: 'old-account.jsonl',
   },
-], now, { minObservedAt: now - 1_000 }), {
-  usage5h: { pct: 94, resetsAt: now + 2 * 3600 * 1000 },
-  usage7d: { pct: 95, resetsAt: now + 2 * 86400 * 1000 },
-  rolloutPath: 'old-account.jsonl',
-  observedAt: now - 20_000,
-}, 'Codex merge should fall back to old snapshots until a current-auth snapshot exists');
+], now, { minObservedAt: now - 1_000 }), null,
+'Codex merge must not relabel an old-account snapshot as the current auth scope');
 
 assert.deepStrictEqual(mergeCodexRateLimitCandidates([
   {

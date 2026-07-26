@@ -32,7 +32,14 @@ test('renderer persists and restores transcriptPath session meta', () => {
 test('parse-session-transcript uses session transcriptPath before ccSession scan', () => {
   const src = read('main/ipc/transcript-handlers.js');
   const mainSrc = read('main.js');
-  assert.match(src, /if\s*\(!transcriptPath\s*&&\s*session\s*&&\s*session\.transcriptPath\)/);
+  const authoritativePath = src.indexOf(
+    'transcriptPath = session && session.transcriptPath ? session.transcriptPath : null;',
+  );
+  const rendererFallback = src.indexOf('if (!transcriptPath && inPath)', authoritativePath);
+  const ccSessionFallback = src.indexOf('if (!transcriptPath && ccSessionId)', authoritativePath);
+  assert.ok(authoritativePath >= 0, 'main-process session path must be the Claude authority');
+  assert.ok(rendererFallback > authoritativePath, 'renderer path must remain a fallback');
+  assert.ok(ccSessionFallback > rendererFallback, 'ccSession scan must run after bound paths');
   assert.match(src, /updateSessionTranscriptBinding\(hubSessionId,\s*\{\s*transcriptPath\s*\}/);
   assert.match(mainSrc, /transcriptPath:\s*session\.transcriptPath\s*\|\|\s*undefined/);
 });

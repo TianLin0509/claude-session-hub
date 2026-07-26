@@ -24,19 +24,23 @@ function test(name, fn) {
 test('group chat messages render a hover copy button beside the bubble', () => {
   const idx = js.indexOf('function _renderGroupChatMessage');
   assert.ok(idx > 0, '_renderGroupChatMessage must exist');
-  const body = js.slice(idx, idx + 2600);
+  // 窗口覆盖整个 _renderGroupChatMessage 函数体（到下一个函数前），避免函数体量增长时漏断言。
+  const end = js.indexOf('\n  function ', idx + 20);
+  const body = js.slice(idx, end > idx ? end : idx + 4500);
   assert.ok(body.includes('class="mr-gc-bubble-row"'), 'message bubble must be wrapped with a side action row');
   assert.ok(body.includes('data-gc-copy-message="1"'), 'message must render a copy action button');
   assert.ok(body.includes('复制此条消息'), 'copy action must have an accessible Chinese label/title');
 });
 
 test('group chat copy button is bound to clipboard copy from bubble text', () => {
-  const idx = js.indexOf("panel.querySelectorAll('[data-gc-copy-message]')");
-  assert.ok(idx > 0, 'copy button event binding must exist');
+  const idx = js.indexOf('async function _handleGcMessageCopy');
+  assert.ok(idx > 0, 'copy button delegated handler must exist');
   const body = js.slice(idx, idx + 1600);
   assert.ok(/navigator\.clipboard\.writeText\(text\)/.test(body), 'copy handler must write the bubble text to clipboard');
   assert.ok(/querySelector\(['"]\.mr-gc-bubble['"]\)/.test(body), 'copy handler must read text from the rendered bubble');
   assert.ok(/btn\.classList\.add\(['"]copied['"]\)/.test(body), 'copy handler must show a copied state');
+  assert.ok(js.includes("panel.addEventListener('click'"), 'group chat panel must use delegated click binding');
+  assert.ok(js.includes("_closestInPanel(ev.target, '[data-gc-copy-message]', panel)"), 'delegated click handler must route copy buttons');
 });
 
 test('group chat copy button stays hidden until message hover or keyboard focus', () => {

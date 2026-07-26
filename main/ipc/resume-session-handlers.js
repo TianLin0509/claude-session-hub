@@ -1,5 +1,8 @@
 'use strict';
 
+const { isStableSessionTitle } = require('../../core/session-title-guards.js');
+const { isKimiCliKind } = require('../../core/ai-kinds.js');
+
 function registerResumeSessionIpc(ipcMain, deps) {
   const {
     defaultCodexSessionsRoot,
@@ -10,8 +13,8 @@ function registerResumeSessionIpc(ipcMain, deps) {
     getHubDataDir,
     hookToken,
     isClaudeFamily,
-    isClaudeWebKind,
     isCodexBaseKind,
+    isCodexSubagentRolloutPath = () => false,
     logger = console,
     meetingManager,
     os,
@@ -31,11 +34,11 @@ function registerResumeSessionIpc(ipcMain, deps) {
 
   ipcMain.handle('resume-session', async (_e, meta) => {
     if (!meta || !meta.hubId) return null;
-    const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume' || isClaudeWebKind(meta.kind));
-    const isGlm = (meta.kind === 'glm');
+    const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume');
     const isClaudeCliResumable = isClaudeFamily(meta.kind);
-    const isGeminiOrCodex = (meta.kind === 'gemini' || isCodexBaseKind(meta.kind));
-    const codexMissingSid = (isCodexBaseKind(meta.kind) && !meta.codexSid);
+    const isKimi = isKimiCliKind(meta.kind);
+    const isNativeResumeKind = (meta.kind === 'gemini' || isCodexBaseKind(meta.kind) || isKimi);
+    let effectiveCodexSid = isCodexBaseKind(meta.kind) ? (meta.codexSid || null) : null;
     const hookPort = getHookPort();
 
     let resumeOpts = {};
@@ -55,7 +58,7 @@ function registerResumeSessionIpc(ipcMain, deps) {
         promptFile = scenes.writePromptFile(hubDataDir, meta.meetingId, meeting.scene, covenantText, slotId);
       }
       if (promptFile) {
-        if (isClaude || isGlm) {
+        if (isClaudeCliResumable) {
           resumeOpts.appendSystemPromptFile = promptFile;
         } else if (meta.kind === 'gemini') {
           resumeOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
@@ -78,10 +81,12 @@ function registerResumeSessionIpc(ipcMain, deps) {
             ARENA_HUB_PORT: String(hookPort),
             ARENA_HOOK_TOKEN: hookToken,
             ARENA_AI_KIND: 'gemini',
+            ARENA_HUB_DATA_DIR: hubDataDir,
+            SPIRIT_REGISTRY_ROOT: process.env.SPIRIT_REGISTRY_ROOT || path.join(os.homedir(), 'spirit-lens-registry'),
           };
         } else if (isCodexBaseKind(meta.kind)) {
           resumeOpts.codexBypassApprovals = true;
-          addCodexMcpEntry(resumeOpts, scenes.buildResearchMcpEntryForCodex(meta.meetingId, hookPort, hookToken));
+          addCodexMcpEntry(resumeOpts, scenes.buildResearchMcpEntryForCodex(meta.meetingId, hookPort, hookToken, hubDataDir));
         }
       } else if (meeting && meeting.groupChat && meeting.scene === 'research' && !hookPort) {
         logger.warn('[群聊] research scene resume for meeting ' + meta.meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
@@ -89,12 +94,18 @@ function registerResumeSessionIpc(ipcMain, deps) {
     }
 
     let resumeTranscriptPath = meta.transcriptPath || null;
+    if (isCodexBaseKind(meta.kind) && resumeTranscriptPath && isCodexSubagentRolloutPath(resumeTranscriptPath)) {
+      logger.warn(`[resume-session] rejected subagent rollout binding for Hub session ${String(meta.hubId).slice(0, 8)}`);
+      resumeTranscriptPath = null;
+      effectiveCodexSid = null;
+    }
     if (!resumeTranscriptPath && isClaudeCliResumable && meta.ccSessionId) {
       try { resumeTranscriptPath = findTranscriptByCCSessionId(meta.ccSessionId); } catch {}
     }
-    if (!resumeTranscriptPath && isCodexBaseKind(meta.kind) && meta.codexSid) {
-      try { resumeTranscriptPath = findCodexRolloutBySid(meta.codexSid, meta.codexSessionsRoot || defaultCodexSessionsRoot); } catch {}
+    if (!resumeTranscriptPath && isCodexBaseKind(meta.kind) && effectiveCodexSid) {
+      try { resumeTranscriptPath = findCodexRolloutBySid(effectiveCodexSid, meta.codexSessionsRoot || defaultCodexSessionsRoot); } catch {}
     }
+    const codexMissingSid = (isCodexBaseKind(meta.kind) && !effectiveCodexSid);
 
     const session = sessionManager.createSession(meta.kind || 'claude', {
       id: meta.hubId,
@@ -105,13 +116,19 @@ function registerResumeSessionIpc(ipcMain, deps) {
       resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
       resumeTranscriptPath: resumeTranscriptPath || undefined,
       useContinue: isClaudeCliResumable && !meta.ccSessionId,
-      useResume: isGeminiOrCodex,
+      useResume: isNativeResumeKind,
       codexResumePicker: codexMissingSid,
-      codexSid: isCodexBaseKind(meta.kind) ? (meta.codexSid || null) : null,
+      codexSid: effectiveCodexSid,
       codexProfile: isCodexBaseKind(meta.kind) ? (meta.codexProfile || null) : null,
       geminiChatId: meta.kind === 'gemini' ? (meta.geminiChatId || null) : null,
       geminiProjectRoot: meta.kind === 'gemini' ? (meta.geminiProjectRoot || null) : null,
-      autoTitleGenerated: !!meta.autoTitleGenerated,
+      ...(isKimi ? {
+        kimiSid: meta.kimiSid || null,
+        kimiSessionDir: meta.kimiSessionDir || null,
+        kimiResumePicker: !meta.kimiSid,
+      } : {}),
+      userRenamed: !!meta.userRenamed,
+      autoTitleGenerated: !!meta.autoTitleGenerated || isStableSessionTitle(meta.title, meta.kind),
       lastMessageTime: meta.lastMessageTime,
       lastOutputPreview: meta.lastOutputPreview,
       ...resumeOpts,
@@ -120,7 +137,7 @@ function registerResumeSessionIpc(ipcMain, deps) {
     sendToRenderer('session-created', { session });
 
     const needsLevel3 = (
-      (isCodexBaseKind(meta.kind) && !meta.codexSid) ||
+      (isCodexBaseKind(meta.kind) && !effectiveCodexSid) ||
       (meta.kind === 'gemini' && !meta.geminiChatId)
     );
 

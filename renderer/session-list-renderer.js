@@ -109,10 +109,10 @@ function _ringHtml(ctxPct, dotCls) {
 //   行1 状态点/状态词与「运行中」分区共用这一个口径。
 // 2026-07-21 道雪 [修状态灯]：运行源 = sub.status==='running'（语义化 running）
 //   或 gcWorking（dispatcher watcher 生命周期）——任一成员任一命中即算群聊运行中。
-function _meetingAnySubRunning(meeting) {
+  function _meetingAnySubRunning(meeting, sessionMap) {
   const ids = (meeting && meeting.subSessions) || [];
   for (const id of ids) {
-    const sub = getSessions().get(id);
+      const sub = sessionMap.get(id);
     if (sub && (sub.status === 'running' || sub.gcWorking)) return true;
   }
   return false;
@@ -122,8 +122,10 @@ function _meetingAnySubRunning(meeting) {
 // Sort: pinned sessions first (by their own time), then unpinned by lastMessageTime.
 // Tree shape: meeting entries optionally expand to show their child sub-sessions.
 // Top-level regular sessions (no meetingId) sit alongside meetings in the same sort order.
-function renderSessionList() {
-  const regularSessions = Array.from(getSessions().values()).filter(s => !s.meetingId);
+  function renderSessionList() {
+    const sessionMap = getSessions();
+    const regularSessions = Array.from(sessionMap.values())
+    .filter(s => !s.meetingId && s.kind !== 'chuxin-run' && !s.hiddenFromSidebar && s.purpose !== 'chuxin-research');
 
   const meetingItems = Object.values(getMeetings()).map(m => ({
     id: m.id,
@@ -176,7 +178,7 @@ function renderSessionList() {
       const isDormantMeeting = s.status === 'dormant';
       const hasUnread = !isDormantMeeting && !isActive && (s.unreadAnsweredSize > 0);
       // 2026-07-20 道雪：群聊运行中 = 任一成员 agent 在运行（成员 running 已语义化）
-      const anySubRunning = _meetingAnySubRunning(s._meeting);
+        const anySubRunning = _meetingAnySubRunning(s._meeting, sessionMap);
       div.className = 'session-item slim meeting' + (isGroupChat ? ' gc' : '')
         + (isActive ? ' selected' : '')
         + (isExpanded ? ' expanded' : '') + (isDormantMeeting ? ' dormant' : '')
@@ -189,7 +191,7 @@ function renderSessionList() {
         ? (Array.isArray(s._meeting.participants) ? s._meeting.participants.length : memberTotal)
         : memberTotal;
       const miniJumpsHtml = miniSids.map((subId, idx) => {
-        const sub = getSessions().get(subId);
+        const sub = sessionMap.get(subId);
         const label = isGroupChat
           ? ((sub && (sub.title || sub.kind)) || `AI ${idx + 1}`)
           : (SLOT_LABELS_M[idx] || `Slot ${idx + 1}`);
@@ -265,7 +267,7 @@ function renderSessionList() {
       // Render child sub-sessions if expanded (clicking goes straight to shell view).
       if (isExpanded) {
         for (const subId of s._meeting.subSessions) {
-          const sub = getSessions().get(subId);
+          const sub = sessionMap.get(subId);
           if (!sub) continue;
           const childDiv = doc.createElement('div');
           const isChildActive = subId === getActiveSessionId();
@@ -343,7 +345,7 @@ function renderSessionList() {
   const respond = [], running = [], rest = [];
   for (const s of recent) {
     if (needsRespond(s)) respond.push(s);
-    else if (s._isMeeting ? _meetingAnySubRunning(s._meeting) : s.status === 'running') running.push(s);
+    else if (s._isMeeting ? _meetingAnySubRunning(s._meeting, sessionMap) : s.status === 'running') running.push(s);
     else rest.push(s);
   }
   function appendSecHeader(label, count, cls) {
@@ -376,7 +378,7 @@ function renderSessionList() {
   // === 侧栏底部聚合条：会话数 / 等你数 / ctx 均值 / 单会话最大 burn ===
   const stripEl = doc.getElementById('sidebar-strip');
   if (stripEl) {
-    const allSessions = Array.from(getSessions().values());
+    const allSessions = Array.from(sessionMap.values());
     const ctxVals = allSessions.map(x => x.contextPct).filter(v => typeof v === 'number');
     const ctxMean = ctxVals.length ? Math.round(ctxVals.reduce((a, b) => a + b, 0) / ctxVals.length) : null;
     let maxBurn = 0;

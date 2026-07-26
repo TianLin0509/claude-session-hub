@@ -34,6 +34,51 @@ function _sleepBusy(ms) {
   while (Date.now() < end) { /* spin */ }
 }
 
+function _sleepAsync(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function _isContentionError(error) {
+  // Windows can briefly report EACCES/EPERM/EBUSY while another process is
+  // closing or deleting the lock file. Treat those as contention.
+  return !!error && ['EEXIST', 'EACCES', 'EPERM', 'EBUSY'].includes(error.code);
+}
+
+async function acquireLockAsync(lockPath, opts = {}) {
+  const retries = opts.retries ?? DEFAULT_RETRIES;
+  const retryDelayMs = opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+  const staleMs = opts.staleMs ?? DEFAULT_STALE_MS;
+  const owner = { pid: process.pid, mtime: Date.now() };
+  let staleReaped = 0;
+  const staleReapLimit = 3;
+
+  for (let attempts = 0; attempts <= retries;) {
+    try {
+      const handle = await fs.promises.open(lockPath, 'wx');
+      try { await handle.writeFile(JSON.stringify(owner)); } catch {}
+      return handle;
+    } catch (error) {
+      if (!_isContentionError(error)) return null;
+      let didReap = false;
+      try {
+        const stat = await fs.promises.stat(lockPath);
+        if (Date.now() - stat.mtimeMs > staleMs) {
+          try { await fs.promises.unlink(lockPath); didReap = true; } catch {}
+        }
+      } catch {}
+      if (didReap) {
+        staleReaped += 1;
+        if (staleReaped > staleReapLimit) return null;
+        continue;
+      }
+      if (attempts >= retries) return null;
+      attempts += 1;
+      await _sleepAsync(retryDelayMs);
+    }
+  }
+  return null;
+}
+
 function acquireLock(lockPath, opts = {}) {
   const retries = opts.retries ?? DEFAULT_RETRIES;
   const retryDelayMs = opts.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
@@ -52,7 +97,7 @@ function acquireLock(lockPath, opts = {}) {
       try { fs.writeSync(fd, JSON.stringify(owner)); } catch { /* writing meta is best-effort */ }
       return fd;
     } catch (e) {
-      if (e.code !== 'EEXIST') {
+      if (!_isContentionError(e)) {
         // Permissions / FS error — bail to fallback path.
         return null;
       }
@@ -102,4 +147,18 @@ function releaseLock(fd, lockPath) {
   }
 }
 
-module.exports = { acquireLock, releaseLock };
+async function releaseLockAsync(handle, lockPath) {
+  if (handle) {
+    try { await handle.close(); } catch {}
+  }
+  let weStillOwnIt = false;
+  try {
+    const meta = JSON.parse(await fs.promises.readFile(lockPath, 'utf8'));
+    weStillOwnIt = !!meta && meta.pid === process.pid;
+  } catch {}
+  if (weStillOwnIt) {
+    try { await fs.promises.unlink(lockPath); } catch {}
+  }
+}
+
+module.exports = { acquireLock, acquireLockAsync, releaseLock, releaseLockAsync };

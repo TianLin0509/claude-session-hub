@@ -6,14 +6,52 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { isSyntheticUserEntry, isSyntheticUserText } = require('./synthetic-user-filter.js');
 
 const DEFAULT_CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
 const CODEX_TAIL_WINDOW_INITIAL_BYTES = 8 * 1024 * 1024;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_TARGETED_DATE_DIRS = 7;
 
 function normalizePathForCompare(p) {
   if (!p) return '';
   try { return path.resolve(p).replace(/\\/g, '/').toLowerCase(); }
   catch { return String(p).replace(/\\/g, '/').toLowerCase(); }
+}
+
+function codexDateDir(sessionsRoot, atMs) {
+  const date = new Date(atMs);
+  if (!Number.isFinite(date.getTime())) return null;
+  return path.join(
+    sessionsRoot,
+    String(date.getFullYear()),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  );
+}
+
+function codexDateDirsForRange(sessionsRoot, startMs, endMs, paddingDays = 1) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return [];
+  const start = new Date(Math.min(startMs, endMs) - paddingDays * DAY_MS);
+  const end = new Date(Math.max(startMs, endMs) + paddingDays * DAY_MS);
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+  const count = Math.round((end.getTime() - start.getTime()) / DAY_MS) + 1;
+  if (count < 1 || count > MAX_TARGETED_DATE_DIRS) return [];
+  const dirs = [];
+  for (let at = start.getTime(); at <= end.getTime(); at += DAY_MS) {
+    const dir = codexDateDir(sessionsRoot, at);
+    if (dir) dirs.push(dir);
+  }
+  return dirs;
+}
+
+function uuidV7Timestamp(uuid) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(uuid || ''))) {
+    return null;
+  }
+  const timestamp = Number.parseInt(String(uuid).replace(/-/g, '').slice(0, 12), 16);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function readFirstLineSync(filePath, maxBytes = 512 * 1024) {
@@ -43,6 +81,45 @@ function readFirstLineSync(filePath, maxBytes = 512 * 1024) {
       try { fs.closeSync(fd); } catch {}
     }
   }
+}
+
+function readCodexRolloutMeta(filePath) {
+  const first = readFirstLineSync(filePath);
+  if (!first) return null;
+  try {
+    const record = JSON.parse(first);
+    if (record?.type !== 'session_meta' || !record.payload || typeof record.payload !== 'object') return null;
+    return record.payload;
+  } catch {
+    return null;
+  }
+}
+
+function isCodexSubagentRolloutMeta(meta) {
+  if (!meta || typeof meta !== 'object') return false;
+  if (String(meta.thread_source || '').toLowerCase() === 'subagent') return true;
+  if (meta.agent_path) return true;
+  return !!(meta.source && typeof meta.source === 'object' && meta.source.subagent);
+}
+
+function isCodexTopLevelRolloutMeta(meta) {
+  return !!meta && !isCodexSubagentRolloutMeta(meta);
+}
+
+function codexRolloutMetaMatchesSid(meta, codexSid) {
+  if (!meta || !codexSid) return false;
+  const expected = String(codexSid);
+  return String(meta.id || '') === expected || String(meta.session_id || '') === expected;
+}
+
+function isUsableCodexRolloutPath(filePath, codexSid = null) {
+  const meta = readCodexRolloutMeta(filePath);
+  if (!isCodexTopLevelRolloutMeta(meta)) return false;
+  return !codexSid || codexRolloutMetaMatchesSid(meta, codexSid);
+}
+
+function isCodexSubagentRolloutPath(filePath) {
+  return isCodexSubagentRolloutMeta(readCodexRolloutMeta(filePath));
 }
 
 function toMs(timestamp) {
@@ -89,16 +166,7 @@ function _makeTurnId(prefix, obj, index) {
 }
 
 function isInjectedContextText(text) {
-  const t = String(text || '').trimStart();
-  if (!t) return false;
-  return (
-    t.startsWith('# AGENTS.md instructions for ') ||
-    t.startsWith('<permissions instructions>') ||
-    t.startsWith('<environment_context>') ||
-    t.startsWith('<skills_instructions>') ||
-    t.startsWith('# Model Set Context') ||
-    (t.includes('<INSTRUCTIONS>') && t.includes('CAT-CAFE-GOVERNANCE-START'))
-  );
+  return isSyntheticUserText(text);
 }
 
 function hasNearbyEventUserDuplicate(entries, entryIndex, text) {
@@ -198,7 +266,7 @@ function parseCodexRolloutText(raw) {
       if (eventType === 'user_message') {
         flushAssistant();
         const text = textFromPayload(payload).trim();
-        if (text) {
+        if (text && !isSyntheticUserEntry(obj, text)) {
           turns.push({
             id: _makeTurnId('codex-user', obj, index),
             role: 'user',
@@ -244,7 +312,7 @@ function parseCodexRolloutText(raw) {
 
     if (obj.type === 'response_item' && obj.payload && obj.payload.role === 'user') {
       const text = textFromPayload(obj.payload).trim();
-      if (text && !isInjectedContextText(text) && !hasNearbyEventUserDuplicate(entries, entryIndex, text)) {
+      if (text && !isSyntheticUserEntry(obj, text) && !hasNearbyEventUserDuplicate(entries, entryIndex, text)) {
         flushAssistant();
         turns.push({
           id: _makeTurnId('codex-user', obj, index),
@@ -284,12 +352,11 @@ function parseCodexRolloutToTurns(jsonlPath, opts = {}) {
     return applyTurnLimit(turns, limit, fromTail);
   }
 
-  let windowBytes = CODEX_TAIL_WINDOW_INITIAL_BYTES;
-  while (windowBytes < stat.size) {
-    const turns = parseCodexRolloutText(readCodexTailWindowText(jsonlPath, windowBytes));
-    if (turns.length >= limit) return applyTurnLimit(turns, limit, fromTail);
-    windowBytes = Math.min(stat.size, windowBytes * 2);
-  }
+  // Avoid reparsing overlapping 8 -> 16 -> 32 MB windows.  Try the bounded
+  // tail once, then fall through to exactly one full read when strict history
+  // completeness requires older turns.
+  const tailTurns = parseCodexRolloutText(readCodexTailWindowText(jsonlPath, CODEX_TAIL_WINDOW_INITIAL_BYTES));
+  if (tailTurns.length >= limit) return applyTurnLimit(tailTurns, limit, fromTail);
 
   const turns = parseCodexRolloutText(fs.readFileSync(jsonlPath, 'utf8'));
   return applyTurnLimit(turns, limit, fromTail);
@@ -299,22 +366,31 @@ function findCodexRolloutBySid(codexSid, sessionsRoot = DEFAULT_CODEX_SESSIONS_R
   if (!codexSid || !sessionsRoot) return null;
   const suffix = `-${codexSid}.jsonl`;
   let best = null;
-  const visit = (dir, depth) => {
-    if (depth > 3) return;
+  const visit = (dir, depth, maxDepth) => {
+    if (depth > maxDepth) return;
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const ent of entries) {
       const full = path.join(dir, ent.name);
       if (ent.isDirectory()) {
-        visit(full, depth + 1);
+        visit(full, depth + 1, maxDepth);
       } else if (ent.isFile() && ent.name.startsWith('rollout-') && ent.name.endsWith(suffix)) {
+        if (!isUsableCodexRolloutPath(full, codexSid)) continue;
         let mtime = 0;
         try { mtime = fs.statSync(full).mtimeMs; } catch {}
         if (!best || mtime > best.mtime) best = { path: full, mtime };
       }
     }
   };
-  visit(sessionsRoot, 0);
+  const sidTimestamp = uuidV7Timestamp(codexSid);
+  if (sidTimestamp !== null) {
+    const dateDirs = codexDateDirsForRange(sessionsRoot, sidTimestamp, sidTimestamp, 1);
+    for (const dir of dateDirs) visit(dir, 0, 0);
+    if (best) return best.path;
+  }
+  // Compatibility fallback for custom/legacy roots whose files are not stored
+  // in Codex's YYYY/MM/DD layout, or for malformed historical UUID metadata.
+  visit(sessionsRoot, 0, 3);
   return best ? best.path : null;
 }
 
@@ -325,14 +401,14 @@ function findCodexRolloutByCwd(cwd, sessionsRoot = DEFAULT_CODEX_SESSIONS_ROOT, 
   const beforeMs = Number.isFinite(opts.beforeMs) ? opts.beforeMs : 10000;
   const afterMs = Number.isFinite(opts.afterMs) ? opts.afterMs : 300000;
   let best = null;
-  const visit = (dir, depth) => {
-    if (depth > 3) return;
+  const visit = (dir, depth, maxDepth) => {
+    if (depth > maxDepth) return;
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const ent of entries) {
       const full = path.join(dir, ent.name);
       if (ent.isDirectory()) {
-        visit(full, depth + 1);
+        visit(full, depth + 1, maxDepth);
         continue;
       }
       if (!ent.isFile() || !ent.name.startsWith('rollout-') || !ent.name.endsWith('.jsonl')) continue;
@@ -340,15 +416,36 @@ function findCodexRolloutByCwd(cwd, sessionsRoot = DEFAULT_CODEX_SESSIONS_ROOT, 
       try { stat = fs.statSync(full); } catch { continue; }
       const mtime = stat.mtimeMs || 0;
       if (sinceMs !== null && (mtime < sinceMs - beforeMs || mtime > sinceMs + afterMs)) continue;
-      const first = readFirstLineSync(full);
-      if (!first) continue;
-      let meta;
-      try { meta = JSON.parse(first); } catch { continue; }
-      if (meta?.type !== 'session_meta' || normalizePathForCompare(meta.payload?.cwd || '') !== targetCwd) continue;
-      if (!best || mtime > best.mtime) best = { path: full, mtime };
+      const meta = readCodexRolloutMeta(full);
+      if (!isCodexTopLevelRolloutMeta(meta) || normalizePathForCompare(meta.cwd || '') !== targetCwd) continue;
+      const distance = sinceMs === null ? null : Math.abs(mtime - sinceMs);
+      if (!best
+        || (distance !== null && (best.distance === null || distance < best.distance))
+        || (distance !== null && distance === best.distance && mtime > best.mtime)
+        || (distance === null && mtime > best.mtime)) {
+        best = { path: full, mtime, distance };
+      }
     }
   };
-  visit(sessionsRoot, 0);
+  if (sinceMs !== null) {
+    const dateDirs = codexDateDirsForRange(
+      sessionsRoot,
+      sinceMs - beforeMs,
+      sinceMs + afterMs,
+      1,
+    );
+    let hasStructuredDateDir = false;
+    for (const dir of dateDirs) {
+      if (!fs.existsSync(dir)) continue;
+      hasStructuredDateDir = true;
+      visit(dir, 0, 0);
+    }
+    // When the standard date layout exists, every candidate in the requested
+    // spawn-time window is confined to these day directories. A full-root
+    // negative scan only blocks Electron's main thread without finding more.
+    if (hasStructuredDateDir) return best ? best.path : null;
+  }
+  visit(sessionsRoot, 0, 3);
   return best ? best.path : null;
 }
 
@@ -357,6 +454,12 @@ module.exports = {
   parseCodexRolloutToTurns,
   findCodexRolloutBySid,
   findCodexRolloutByCwd,
+  readCodexRolloutMeta,
+  isCodexSubagentRolloutMeta,
+  isCodexTopLevelRolloutMeta,
+  codexRolloutMetaMatchesSid,
+  isUsableCodexRolloutPath,
+  isCodexSubagentRolloutPath,
   textFromContent,
   isInjectedContextText,
 };

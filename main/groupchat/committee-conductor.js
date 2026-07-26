@@ -1,787 +1,253 @@
 'use strict';
-// 投委会编排状态机（三幕制）。
-//
-// 复用 dispatchGroupChatTurn 做每一幕的派发：
-//   幕一 = 一次 @三官 并行 turn（同轮并行天然互不可见）
-//   幕二 = @质询官 turn → @被点名席位 答辩 turn（delta 机制自动携带前幕发言）
-//   幕三 = @主席 turn（首次 delta 含全部历史）
-// Python 侧：幕〇备料 prep_case / 决议落盘 committee_memory（spawn，raw_decode 容忍横幅污染）。
+/**
+ * 投委会五幕编排状态机（task#3）。
+ *
+ * 叠加在现有 research 群聊之上，固定五幕：
+ *   立会(主席派活) → 建库(委员并行调研) → 点评(委员并行三面打分,两段式)
+ *   → 辩论(委员并行交锋 + 主席串行收口,迭代) → 收敛(主席换帽子总指挥)。
+ *
+ * 每幕调注入的 dispatchTurn(=dispatcher.dispatchGroupChatTurn, silent:true) 程序化驱动委员发言，
+ * 复用 Hub 现成的并行发言/超时跳过/PTY 收集；conductor 只管「幕次编排」，
+ * 抽取/双榜聚合委托 core/committee-extract.js（task#4，纯数据层）。
+ *
+ * 设计要点：
+ * - 全员幕用同一 userInput（真并行），prompt 内含**分工映射表**，委员按身份对号入座
+ *   （不改 dispatcher，不依赖逐委员定制 prompt）。
+ * - 主席幕（立会/收口/收敛）单独发，targetMemberIds=[主席]。
+ * - 战法纪律已由 orchestrator 注入 system prompt 底色（task#2），幕 prompt 只给幕次指令。
+ */
 
-const { spawn } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+const { extractReviews, mergeReviews, buildBoards, parseChair, parseLastJson, _norm6, idOf, labelOf } = require('../../core/committee-extract');
 
-const scene = require('../../core/committee-scene.js');
-const intentRouter = require('../../core/committee-intent-router.js');
+const ACTS = { CONVENE: '立会', BUILD: '建库', REVIEW: '点评', DEBATE: '辩论', CONVERGE: '收敛' };
 
-const LINDANG_DIR = process.env.LINDANG_DIR || 'C:\\LinDangAgent';
-const PYTHON_BIN = process.env.LINDANG_PYTHON || 'python';
-const PREP_TIMEOUT_MS = { quick: 5 * 60 * 1000, full: 10 * 60 * 1000 };
-const MEMORY_TIMEOUT_MS = 5 * 60 * 1000;
-const MAX_VALIDATION_RETRIES = 2;
-const SESSION_DEADLINE_MS = 40 * 60 * 1000; // 整场硬上限（防卡死铁律：全局 deadline）
-const ACT_TIMEOUT_MS = 12 * 60 * 1000;      // 单幕硬超时：卡住的席位强制 skip 按"缺席"处理
-const RETRY_TIMEOUT_MS = 4 * 60 * 1000;     // 定向重试轮更短
-const CHECKUP_OCR_TIMEOUT_MS = 60 * 1000;   // 图片识别只做入口提取，失败要快速返回可见错误
-const ROLLCALL_TIMEOUT_MS = 4 * 60 * 1000;  // 点名只预热非 Codex 关键席位；Codex 首启交给主轮长预算承接
-const ROLLCALL_ENABLED = process.env.COMMITTEE_ENABLE_ROLLCALL === '1';
-const SUSPECT_RETRY_TIMEOUT_MS = 3 * 60 * 1000; // 点名缺席席位的降级重试预算（防一个死席位吃掉全场时间）
-const CHAIR_DISPATCH_ATTEMPTS = 2;          // 主席派发失败（no_sent 等）重试次数——主席是唯一关键路径
-const ROUTER_TIMEOUT_MS = 30 * 1000;        // 立项路由只做 JSON 翻译，必须短预算失败回退
+// 委员面分工默认按 kind（claude 兼主席+基本面 / deepseek 技术面 / codex 消息面）
+const FACE_BY_KIND = {
+  deepseek: '技术面', claude: '基本面', codex: '消息面',
+  kimi: '消息面', qwen: '技术面', glm: '基本面', gemini: '消息面',
+};
+const CHAIR_PRIORITY = ['claude', 'codex', 'deepseek', 'qwen', 'kimi', 'glm', 'gemini'];
 
-function runPython(args, timeoutMs) {
-  return new Promise((resolve) => {
-    let child;
-    let settled = false;
-    const finish = (result) => { if (!settled) { settled = true; resolve(result); } };
-    try {
-      child = spawn(PYTHON_BIN, ['-X', 'utf8', ...args], {
-        cwd: LINDANG_DIR, windowsHide: true,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
-      });
-    } catch (e) {
-      return finish({ ok: false, error: 'spawn failed: ' + e.message });
-    }
-    let out = '', err = '';
-    child.stdout.on('data', d => { out += d; });
-    child.stderr.on('data', d => { err += d; if (err.length > 20000) err = err.slice(-20000); });
-    const timer = setTimeout(() => {
-      try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }); } catch {}
-      finish({ ok: false, error: `python timeout ${Math.round(timeoutMs / 1000)}s`, stderr_tail: err.slice(-500) });
-    }, timeoutMs);
-    child.on('close', () => {
-      clearTimeout(timer);
-      const start = out.indexOf('{');
-      if (start < 0) return finish({ ok: false, error: 'no JSON in python stdout', stderr_tail: err.slice(-500) });
-      try {
-        // raw_decode 等价：截取首个完整 JSON（防 xtquant 横幅污染）
-        const obj = JSON.parse(balancedJson(out.slice(start)));
-        finish(obj);
-      } catch (e) {
-        finish({ ok: false, error: 'python JSON parse: ' + e.message, stdout_head: out.slice(0, 200) });
-      }
-    });
-    child.on('error', e => { clearTimeout(timer); finish({ ok: false, error: e.message }); });
-  });
-}
+// 各幕硬超时（卡住的委员到点 skip，不阻塞整场）。建库/点评/辩论委员要调 MCP，给足。
+const TIMEOUT = { convene: 90000, build: 240000, review: 240000, debate: 200000, close: 90000, converge: 180000 };
 
-// 取首个括号配平的 JSON 对象子串（容忍尾部横幅/日志）
-function balancedJson(s) {
-  let depth = 0, inStr = false, esc = false;
-  for (let i = 0; i < s.length; i++) {
-    const c = s[i];
-    if (esc) { esc = false; continue; }
-    if (c === '\\') { if (inStr) esc = true; continue; }
-    if (c === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (c === '{') depth++;
-    else if (c === '}') { depth--; if (depth === 0) return s.slice(0, i + 1); }
+function _kind(m) { return String(m.kind || '').toLowerCase(); }
+
+function pickChair(members) {
+  for (const k of CHAIR_PRIORITY) {
+    const m = members.find(x => _kind(x) === k);
+    if (m) return m;
   }
-  return s;
+  return members[0];
 }
 
+function assignRoles(members) {
+  const chair = pickChair(members);
+  return members.map(m => ({
+    memberId: m.memberId, kind: m.kind, displayName: m.displayName || m.kind,
+    face: FACE_BY_KIND[_kind(m)] || '综合',
+    isChair: m.memberId === chair.memberId,
+  }));
+}
+
+function stocklistText(stocks) {
+  // labelOf 去重：输名字（无代码）时只显示名字，不再「长川科技 长川科技」重复。
+  return stocks.map(s => labelOf(s) || s.code || s.name || '').join('、');
+}
+function dutyTable(members) {
+  return members.map(m => `${m.displayName}→${m.face}${m.isChair ? '(兼主席)' : ''}`).join('、');
+}
+
+// ───────────────────────── 幕 prompt ─────────────────────────
+function convenePrompt(stocks, rounds, members) {
+  return [
+    `【投委会开庭 · 立会】本场标的：${stocklistText(stocks)}；辩论 ${rounds} 轮。`,
+    '你是本场主席。请：',
+    `1) 宣布分工：${dutyTable(members)}。`,
+    '2) 点出本场要重点验证的 2-3 个关键问题（题材正宗性 / 趋势阶段·主升 or 回调 / 预期差 / RS 板块强度），并指出哪只最该警惕。战法纪律已在系统底色，无需重申。',
+    '简洁定调，本幕不调工具，≤180 字。',
+  ].join('\n');
+}
+function buildPrompt(stocks, members) {
+  return [
+    `【投委会 · 建库】标的：${stocklistText(stocks)}。`,
+    `分工：${dutyTable(members)}——各调各的面、系统自动聚合三面（只管把你这面调透，不必复述别人的面）：`,
+    '· 技术面：把标的名换成 6 位代码（你认得，如沪电股份=002463），调 screener_score(代码) 拿追涨/蓄势量化分 + 形态，stock_market 看实时趋势/均线/量价，kline_similarity 对照历史。重点给 RS 板块强度 + 趋势阶段（主升 / 回调企稳）。',
+    '· 基本面：调 stock_static 看财务/估值/质押/股东，判断基本面够不够硬、业绩是否兑现。',
+    '· 消息面：调 stock_news（+必要时 stock_sentiment）找催化与预期差，催化标时间窗（已兑现 / 进行中 / 预期）；判题材正宗度（蹭概念 vs 相关营收占比）。',
+    '⚠ 当场把数据调完再发言：直接用 MCP 工具同步取数，**不要**起后台子任务 / Agent 异步调取后只回「稍候 / 数据回传中」——下一幕点评全靠你这条发言里的真实数字，发「稍候」会让队友拿到空数据、整场作废。数据量大就在工具调用里只提取能改判断的关键字段。',
+    '只报你这一面、能改变判断的关键数字+来源，≤300 字。',
+  ].join('\n');
+}
+function reviewPrompt(stocks, members) {
+  const ids = stocks.map(idOf);
+  return [
+    '【投委会 · 点评】上方「新增发言」里已有三位委员的建库调研全文——请**通读队友另外两面的调研**，结合你自己负责的面，对每只标的做**综合三面**的判断（不是只评自己那面、其余面瞎猜）。',
+    '两段式输出：先自然语言点评（每只股 2-4 句，落到数字），再在**末尾附一段 JSON**（供系统聚合双榜，不可省）：',
+    '```json',
+    '{"stocks":{"<标的标识>":{"faces":{"基本面":0-100,"技术面":0-100,"消息面":0-100},"chase":0-100,"ambush":0-100,"rs":0-100,"lean":"追涨|低吸|观望","catalyst":"催化+时间窗(已兑现/进行中/预期)","veto":false,"top_bull":["看多理由[追涨向|低吸向|通用]"],"top_bear":["看空理由"]}}}',
+    '```',
+    'faces 三面分：你负责的面给亲自调研的分，**另两面引用队友建库结论给分**（队友全文就在上方，别再标「参考估计」凭空猜）。',
+    'chase=追涨适配度、ambush=低吸适配度、rs=板块内相对强度（强者恒强，RS 高优先）；catalyst 写清催化与预期差。',
+    'veto=true 仅命中**真**否决线（趋势破位 / 题材不正宗·蹭概念 / 量价背离假强势 / 基本面证伪 / 睡不着的妖股纯情绪）；**单纯高位或过热不否决**——强者恒强，过热是强度信号，温度只用于择时不用于剔除。',
+    `⚠ JSON 里每只股的 key **必须逐字照抄**下列标的标识（系统按它对齐双榜，写成别的代码/简称会导致你这一份打分被整段丢弃）：${ids.join('、')}。`,
+  ].join('\n');
+}
+// [全量注入] 辩论幕不再喂压缩的分数摘要（旧 reviewsDigest 把 1875 字技术分析压成一行、丢光论据）——
+//   改由 buildDelta 把上一轮点评/辩论全文注入 prompt（committeeMid），委员看到队友完整分析后带依据交锋。
+//   reviews 参数保留以兼容 conductor 调用方（现已不使用）。
+function debatePrompt(stocks, reviews, round) {
+  return [
+    `【投委会 · 辩论 第${round}轮】上方「新增发言」里是各委员上一轮的完整发言（首轮即三家点评全文，含各自三面分析与打分）——通读后带依据交锋：`,
+    '质疑你不认同的打分（点名委员 + 给反例/具体数字），或补强自己的判断；被说服就改分。尽量引入一个队友没提的新信号（龙虎榜/北向/基金调研/研报评级变化/筹码集中度），别只复述已有结论。',
+    `两段式：自然语言辩论 + 末尾更新后的 JSON（同点评格式，key 仍逐字照抄标的标识 ${stocks.map(idOf).join('、')}，只含你改动的标的）。≤300 字。`,
+  ].join('\n');
+}
+function debateClosePrompt(stocks, reviews, round) {
+  return [
+    `【投委会 · 主席收口 第${round}轮】你是主席，收口本轮：`,
+    '1) 1-2 句总结本轮共识与仍存分歧。',
+    '2) 点名下一轮要重点厘清的 1 个矛盾（如某股 chase 分分歧）；若分歧已基本收敛，宣布可进入收敛幕。',
+    '本幕不调工具，≤150 字。',
+  ].join('\n');
+}
+function convergePrompt(stocks, reviews) {
+  return [
+    '【投委会 · 收敛】你是主席，现在**换帽子**：从自己的委员立场抽离，以中立总指挥身份综合全场。',
+    '三道保险：①中立综合不偏袒 ②涉及你自己（基本面）的判断按更严标准复核 ③结论须可被玻璃房/矛盾探针复核。',
+    '套笼头：只综合委员已有结论 + 轻量裁决，**不要重新大规模调研**。',
+    '产出两段式：自然语言报告 + 末尾 JSON：',
+    '```json',
+    '{"chase_buys":[{"code":"","name":"","rank":1,"reason":""}],"ambush_buys":[{"code":"","name":"","rank":1,"reason":""}],"cross_advice":"跨策略总建议(资金有限先做哪只)","conflict_rulings":[{"topic":"","ruling":"","evidence":""}],"isolated":[{"code":"","name":"","reason":"否决/隔离原因"}],"appendix":"主笔附言(一句话风险提示)"}',
+    '```',
+    '综合时落到用户偏好：①资金利用效率——给资金分配建议，闲置现金(≥20 万)提示配短期工具别空置；②主轴加分——标的若属 AI+国产算力+华为昇腾(H2 爆发预期)作正向加分；③强者恒强——RS 强的优先，温度只择时。',
+    `标的：${stocklistText(stocks)}。`,
+  ].join('\n');
+}
+
+// ───────────────────────── conductor ─────────────────────────
 function createCommitteeConductor(deps) {
-  const {
-    dispatchGroupChatTurn,
-    meetingManager,
-    sessionManager,
-    logger = console,
-    sendToRenderer = () => {},
-  } = deps;
+  const { dispatchTurn, getGroupMembers, emitProgress, log, persistHistory, appendSpeeches } = deps;
+  const _log = typeof log === 'function' ? log : () => {};
 
-  const inProgress = new Set();
-  const routeCache = new Map();
+  function emit(meetingId, type, payload) {
+    try { emitProgress && emitProgress(meetingId, { type, ...payload }); } catch (e) { _log('[committee] emit threw: ' + (e && e.message)); }
+  }
 
-  function log(...a) { try { logger.log('[committee]', ...a); } catch {} }
-  function warn(...a) { try { logger.warn('[committee]', ...a); } catch {} }
-
-  // 投委会允许重复 kind（例如消息面官/主席都可用 Claude，技术面官/质询官都可用 Codex）。
-  // 因此优先按预设 slot 顺序绑定席位；再用 kind 做旧会议兜底。
-  function resolveSeats(meeting) {
-    const subSids = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
-    const seatKeys = [...scene.ANALYST_KEYS, 'challenger', 'chair'];
-    const seats = {};
-    const used = new Set();
-    seatKeys.forEach((key, idx) => {
-      const sid = subSids[idx];
-      const def = scene.SEATS[key];
-      const s = sid ? sessionManager.getSession(sid) : null;
-      if (!def || !s || s.status === 'dormant') return;
-      if (s.kind !== def.kind) return;
-      seats[key] = { sid, memberId: `m${idx + 1}`, kind: s.kind, seat: key, def };
-      used.add(sid);
-    });
-    const byKind = {};
-    subSids.forEach((sid, idx) => {
-      if (used.has(sid)) return;
-      const s = sessionManager.getSession(sid);
-      if (!s || s.status === 'dormant') return;
-      if (!byKind[s.kind]) byKind[s.kind] = [];
-      byKind[s.kind].push({ sid, memberId: `m${idx + 1}`, kind: s.kind });
-    });
-    for (const def of Object.values(scene.SEATS)) {
-      if (seats[def.key]) continue;
-      const queue = byKind[def.kind] || [];
-      const next = queue.shift();
-      if (next) {
-        seats[def.key] = { ...next, seat: def.key, def };
-        used.add(next.sid);
-      }
+  // collect 可选 {acts, act, round, sub}：收集本幕各委员发言原文 + emit 'act-detail'
+  // （点4：前端按幕看每个 AI 的具体表现；同步进 record.acts 供「过往投委会」回看）。
+  function _detail(meetingId, collect, results) {
+    if (!collect) return;
+    const speeches = (results || []).map(r => ({ label: (r && r.label) || '?', text: (r && r.text) || '' })).filter(s => s.text.trim());
+    if (collect.acts) collect.acts.push({ act: collect.act, round: collect.round, sub: collect.sub, speeches });
+    emit(meetingId, 'act-detail', { act: collect.act, round: collect.round, sub: collect.sub, speeches });
+    // 阶段二：发言进群聊 messages（气泡卡片，按时间排列）；末轮/收敛标 outcome→回归自由聊喂回 AI（点6）。
+    if (typeof appendSpeeches === 'function') {
+      const items = (results || []).filter(r => r && (r.text || '').trim()).map(r => ({ sid: r.sid, speaker: r.label, content: r.text, prompt: r.sourcePrompt || '' }));
+      if (items.length) appendSpeeches(meetingId, items, { act: collect.act, round: collect.round, sub: collect.sub, outcome: collect.outcome });
     }
-    return seats;
   }
-
-  function routeCacheKey(meetingId, userInput) {
-    return `${meetingId || ''}\n${String(userInput || '')}`;
-  }
-
-  async function isCommitteeCommand(meetingId, userInput) {
-    const meeting = meetingManager.getMeeting(meetingId);
-    if (!meeting || meeting.scene !== 'committee') return false;
-    const route = await resolveCommitteeRoute(meetingId, userInput, { allowLlm: true });
-    return !!route && route.intent !== 'non_committee_chat';
-  }
-
-  async function dispatch(meetingId, userInput, timeoutMs = ACT_TIMEOUT_MS, extra = {}) {
-    const r = await dispatchGroupChatTurn(meetingId, { userInput, turnTimeoutMs: timeoutMs, ...extra });
-    if (!r || r.status !== 'completed') {
-      throw new Error(`dispatch failed: ${(r && (r.reason || r.status)) || 'unknown'}`);
-    }
-    return r;
-  }
-
-  function resultText(turnResult, sid) {
-    const hit = (turnResult.results || []).find(x => x.sid === sid);
-    return hit ? (hit.text || '') : '';
-  }
-
-  // 进度事件可携带结构化 data（沉浸式实时渲染用）。text 永远保留——
-  // renderer 旧的文本分类逻辑不变，data 仅作增量富渲染，向后兼容。
-  function progress(meetingId, text, data) {
-    log(text);
+  async function oneAct(meetingId, ids, prompt, timeoutMs, actLabel, collect) {
     try {
-      sendToRenderer('committee-progress', data ? { meetingId, text, data } : { meetingId, text });
-    } catch {}
-  }
-
-  // 把已校验的分析官报告抽成精简结构（供实时卡片 + transcript 持久化）。
-  function reportToCard(r) {
-    const j = (r && r.json) || null;
-    return {
-      seat: r.seat, kind: r.kind, valid: !!(r && r.valid),
-      signal: j ? j.signal : null,
-      confidence: j ? j.confidence : null,
-      core_thesis: j ? j.core_thesis : null,
-      assumptions: j ? (j.assumptions || []) : [],
-      evidence: j ? (j.evidence || []) : [],
-      extras: j ? (j.extras || {}) : {},
-      kill_switch: j ? j.kill_switch : null,
-    };
-  }
-
-  async function runLlmCommitteeRoute(meetingId, userInput, seats) {
-    if (process.env.COMMITTEE_DISABLE_LLM_ROUTER === '1') return null;
-    if (!seats || !seats.chair) return null;
-    const candidates = intentRouter.findStockCandidates(userInput);
-    const prompt = intentRouter.buildLlmRouterPrompt(userInput, candidates);
-    progress(meetingId, `立项路由：主席识别自然语言意图${candidates.length ? `（候选 ${candidates.map(c => `${c.name}${c.symbol}`).join('、')}）` : ''}...`);
-    try {
-      const routed = await dispatch(meetingId, prompt, ROUTER_TIMEOUT_MS, {
-        targetMemberIds: [seats.chair.memberId],
-        silent: true,
-      });
-      const text = resultText(routed, seats.chair.sid);
-      const json = intentRouter.parseJsonObject(text);
-      const route = intentRouter.validateLlmRoute(json, userInput);
-      if (route) {
-        route.source = 'llm';
-        return route;
-      }
-      warn('立项路由 JSON 未通过校验，回退确定性解析：', String(text || '').slice(0, 200));
+      const res = await dispatchTurn(meetingId, { userInput: prompt, targetMemberIds: ids, silent: true, turnTimeoutMs: timeoutMs });
+      if (!res || !Array.isArray(res.results)) { _log(`[committee] ${actLabel}: 无 results (status=${res && res.status})`); _detail(meetingId, collect, []); return { status: 'error', results: [] }; }
+      _log(`[committee] ${actLabel}: ${res.results.length} 回复, text长度=[${res.results.map(r => (r.text || '').length).join(',')}]`);
+      _detail(meetingId, collect, res.results);
+      return res;
     } catch (e) {
-      warn('立项路由异常，回退确定性解析：', e && e.message);
+      _log(`[committee] act ${actLabel} dispatchTurn threw: ` + (e && e.message));
+      _detail(meetingId, collect, []);
+      return { status: 'error', results: [] };
     }
-    return null;
   }
 
-  async function resolveCommitteeRoute(meetingId, userInput, opts = {}) {
-    const key = routeCacheKey(meetingId, userInput);
-    if (routeCache.has(key)) return routeCache.get(key);
+  async function run(meetingId, opts = {}) {
+    const startedAt = Date.now();
+    const stocks = (opts.stocks || []).filter(s => s && (s.code || s.name)).map(s => ({ code: _norm6(s.code || ''), name: s.name || '' }));
+    const rounds = Math.max(1, Math.min(6, Number(opts.rounds) || 4)); // rounds = 辩论轮数（立会/建库/点评/收敛是固定幕，不计入轮数）
+    if (stocks.length === 0) { emit(meetingId, 'error', { reason: '未指定标的' }); return { status: 'error', reason: 'no stocks' }; }
+    const rawMembers = getGroupMembers(meetingId) || [];
+    if (rawMembers.length === 0) { emit(meetingId, 'error', { reason: '房间无委员' }); return { status: 'error', reason: 'no members' }; }
 
-    const text = String(userInput || '').trim();
-    const checkup = scene.parseCheckupCommand(text);
-    if (checkup) {
-      const route = {
-        intent: 'portfolio_checkup',
-        mode: 'quick',
-        symbols: [],
-        needs_clarification: false,
-        checkup,
-        source: 'deterministic',
-        raw_input: text,
-      };
-      routeCache.set(key, route);
-      return route;
-    }
+    const members = assignRoles(rawMembers);
+    const chair = members.find(m => m.isChair) || members[0];
+    const allIds = members.map(m => m.memberId);
+    const chairIds = [chair.memberId];
+    const state = { stocks, rounds, members: members.map(m => ({ label: m.displayName, face: m.face, isChair: m.isChair })), reviews: [], boards: null, chair: null, acts: [] };
 
-    const meeting = meetingManager.getMeeting(meetingId);
-    const seats = meeting ? resolveSeats(meeting) : {};
-    const deterministic = intentRouter.routeDeterministic(text, { parseCheckupCommand: scene.parseCheckupCommand });
-    const candidates = intentRouter.findStockCandidates(text);
-    const singleCode = scene.parseCommitteeCommand(text);
-    const codeCount = (text.match(/\b\d{6}(?:\.(?:SZ|SH|BJ))?\b/ig) || []).length;
+    emit(meetingId, 'start', { stocks, rounds, chair: chair.displayName, members: state.members });
 
-    let route = null;
-    if (deterministic) {
-      route = deterministic;
-    }
+    // 幕1 立会（主席）
+    emit(meetingId, 'act', { act: ACTS.CONVENE });
+    await oneAct(meetingId, chairIds, convenePrompt(stocks, rounds, members), TIMEOUT.convene, ACTS.CONVENE, { acts: state.acts, act: ACTS.CONVENE });
 
-    if (!route && opts.allowLlm && !singleCode && (candidates.length || /股票|个股|A股|投委会|公司|怎么样|如何|深挖|对比|相比|比较/.test(text))) {
-      route = await runLlmCommitteeRoute(meetingId, text, seats);
-    }
+    // 幕2 建库（全员并行）
+    emit(meetingId, 'act', { act: ACTS.BUILD });
+    await oneAct(meetingId, allIds, buildPrompt(stocks, members), TIMEOUT.build, ACTS.BUILD, { acts: state.acts, act: ACTS.BUILD });
 
-    if (!route && singleCode && codeCount === 1) {
-      route = {
-        intent: 'single_stock',
-        mode: singleCode.mode,
-        symbols: [{ symbol: singleCode.symbol.replace(/\..*$/, ''), name: singleCode.symbol.replace(/\..*$/, '') }],
-        needs_clarification: false,
-        source: 'legacy',
-        raw_input: text,
-      };
-    }
+    // 幕3 点评（全员并行，两段式）
+    emit(meetingId, 'act', { act: ACTS.REVIEW });
+    const review = await oneAct(meetingId, allIds, reviewPrompt(stocks, members), TIMEOUT.review, ACTS.REVIEW, { acts: state.acts, act: ACTS.REVIEW });
+    state.reviews = extractReviews(review.results, stocks);
+    state.boards = buildBoards(state.reviews, stocks);
+    emit(meetingId, 'board', { boards: state.boards });
 
-    // 只缓存"识别成功"的正向结果。
-    // 修复（2026-06-13 审计 HIGH）：原版无条件 routeCache.set(key, route) 会把 null/失败
-    // 永久固化——用户首次识别失败后，后续补全信息或改席位也永远拿同一个失败缓存；
-    // 且 isCommitteeCommand(allowLlm:true) 写的负缓存会污染 runCommitteeSession(allowLlm:false)。
-    // 失败不写缓存：下次重新评估（确定性解析很便宜），席位补齐后立即生效。
-    if (route && route.intent) routeCache.set(key, route);
-    return route;
-  }
-
-  // 幕一发言解析 + 校验 + 定向重试。
-  // 缺席席位（paste-trapped 被 skip，CLI 从未收到案卷）→ 整卷重发；
-  // 格式错误席位 → 只发修正指令。
-  // 鲁棒性兜底：疑似不可用席位可传入 suspectKeys 后只给 1 次降级重试
-  // （更短超时），防止一个死席位的重试链吃掉全场时间——单席卡死永不拖死流程。
-  async function collectValidatedReports(meetingId, seats, turnResult, caseMarkdown, suspectKeys = new Set()) {
-    const reports = {};
-    for (const key of scene.ANALYST_KEYS) {
-      const seat = seats[key];
-      if (!seat) continue;
-      const suspect = suspectKeys.has(key);
-      const maxRetries = suspect ? 1 : MAX_VALIDATION_RETRIES;
-      const retryTimeout = suspect ? SUSPECT_RETRY_TIMEOUT_MS : RETRY_TIMEOUT_MS;
-      let text = resultText(turnResult, seat.sid);
-      let json = scene.extractJsonBlock(text);
-      let v = scene.validateAnalystReport(json, key);
-      let retries = 0;
-      while (!v.ok && retries < maxRetries) {
-        retries += 1;
-        const absent = !text || text.trim().length < 20;
-        progress(meetingId, `${seat.def.label} ${absent ? '本轮缺席（发送可能被卡）' : 'JSON 校验未过（' + v.errors.join('；') + '）'}，定向重试 #${retries}`);
-        // 重试 prompt 显式带 persona：首发被卡的席位连自己的席位纪律都没收到过
-        // （persona 在首条 delta 的 system prompt 里，已被 lastDeliveredIdx 标记消费）。
-        const persona = scene.buildCommitteePersona(seat.seat || key) || scene.buildCommitteePersona(seat.kind) || '';
-        const fixPrompt = absent
-          ? persona + '\n\n' + scene.buildAct1Prompt(`@${seat.memberId}`, caseMarkdown)
-          : [
-              `【投委会 · 幕一 · 退回重写】 @${seat.memberId}`,
-              persona,
-              `你的 JSON 校验失败：${v.errors.join('；')}。`,
-              '请按你的席位纪律（含 extras 专属字段），仅基于你自己的判断重新输出**完整的** ```json 块（不要重复案卷，不要长篇解释）。',
-            ].join('\n');
-        try {
-          const retry = await dispatch(meetingId, fixPrompt, retryTimeout);
-          text = resultText(retry, seat.sid) || text;
-          json = scene.extractJsonBlock(text) || json;
-          v = scene.validateAnalystReport(json, key);
-        } catch (e) {
-          warn(`retry dispatch failed for ${key}:`, e.message);
-          break;
-        }
+    // 幕4 辩论（委员并行交锋 + 主席串行收口，迭代）
+    const debateRounds = rounds; // 用户指定几轮 = 几轮辩论（rounds 已 clamp 到 1..6）
+    for (let r = 1; r <= debateRounds; r++) {
+      emit(meetingId, 'act', { act: ACTS.DEBATE, round: r, total: debateRounds });
+      const deb = await oneAct(meetingId, allIds, debatePrompt(stocks, state.reviews, r), TIMEOUT.debate, ACTS.DEBATE, { acts: state.acts, act: ACTS.DEBATE, round: r, sub: '交锋', outcome: (r === debateRounds) });
+      state.reviews = mergeReviews(state.reviews, extractReviews(deb.results, stocks));
+      state.boards = buildBoards(state.reviews, stocks);
+      emit(meetingId, 'board', { boards: state.boards });
+      // 主席串行收口（最后一轮跳过——紧接收敛幕会再叫主席，连续叫易致主席 PTY busy 空回）
+      if (r < debateRounds) {
+        await oneAct(meetingId, chairIds, debateClosePrompt(stocks, state.reviews, r), TIMEOUT.close, ACTS.DEBATE + '收口', { acts: state.acts, act: ACTS.DEBATE, round: r, sub: '收口' });
       }
-      reports[key] = {
-        seat: key, kind: seat.kind, memberId: seat.memberId,
-        json: v.ok ? json : null,
-        valid: v.ok, errors: v.ok ? [] : v.errors,
-        text,
-      };
-      if (!v.ok) progress(meetingId, `${seat.def.label} 两次重写仍未过校验，本场记为"缺席"（主席将在决议中声明）`);
-    }
-    return reports;
-  }
-
-  async function runCommitteeSession(meetingId, userInput) {
-    if (inProgress.has(meetingId)) return { status: 'busy', reason: '本会议已有投委会在进行', turnNum: null };
-    const route = await resolveCommitteeRoute(meetingId, userInput, { allowLlm: false });
-    if (!route || route.intent === 'non_committee_chat') {
-      return { status: 'error', reason: '未识别投委会立项意图', turnNum: null };
-    }
-    if (route.intent === 'clarify') {
-      const candidates = (route.symbols || []).map(s => `${s.name} ${s.symbol}`).join('、') || '无候选';
-      return {
-        status: 'error',
-        reason: `${route.question || '标的存在歧义，请确认。'} 候选：${candidates}`,
-        turnNum: null,
-      };
-    }
-    if (route.intent === 'compare_stocks') {
-      const pairs = (route.symbols || []).map(s => `${s.name} ${s.symbol}`).join(' vs ');
-      return {
-        status: 'error',
-        reason: `已识别为多票对比：${pairs}。当前已完成自然语言识别与防误跑保护，完整“对比投委会”编排还未接入；请先单票运行，或下一步接 compare_stocks 流程。`,
-        turnNum: null,
-        meta: { committee: { kind: 'compare_stocks', symbols: route.symbols || [], mode: route.mode } },
-      };
-    }
-    const checkup = route.checkup || scene.parseCheckupCommand(userInput);
-    if (checkup) return runCheckupSession(meetingId, checkup);
-    const cmd = route.intent === 'single_stock' && route.symbols && route.symbols[0]
-      ? { symbol: route.symbols[0].symbol, mode: route.mode || 'quick', name: route.symbols[0].name }
-      : scene.parseCommitteeCommand(userInput);
-    if (!cmd) return { status: 'error', reason: '未识别股票代码', turnNum: null };
-    const meeting = meetingManager.getMeeting(meetingId);
-    const seats = resolveSeats(meeting);
-
-    const missing = [];
-    for (const key of [...scene.ANALYST_KEYS, 'chair']) {
-      if (!seats[key]) missing.push(`${scene.SEATS[key].label}(${scene.SEATS[key].kind})`);
-    }
-    const analystCount = scene.ANALYST_KEYS.filter(k => seats[k]).length;
-    if (!seats.chair || analystCount < 2) {
-      return {
-        status: 'error', turnNum: null,
-        reason: `投委会席位不全（缺 ${missing.join('、')}）。请按预设创建：DeepSeek+Claude+Codex+Codex+Claude 五席。`,
-      };
     }
 
-    inProgress.add(meetingId);
-    const deadline = Date.now() + SESSION_DEADLINE_MS;
-    const checkDeadline = (stage) => {
-      if (Date.now() > deadline) throw new Error(`投委会整场超时（40min 硬上限）于 ${stage}`);
-    };
+    // 幕5 收敛（主席换帽子）。主席可能因前幕连续被叫致首次空回 → 空则短暂等待重试一次。
+    emit(meetingId, 'act', { act: ACTS.CONVERGE });
+    let conv = await oneAct(meetingId, chairIds, convergePrompt(stocks, state.reviews), TIMEOUT.converge, ACTS.CONVERGE, { acts: state.acts, act: ACTS.CONVERGE, outcome: true });
+    let chairText = ((conv.results || [])[0] || {}).text || '';
+    if (!chairText.trim()) {
+      _log('[committee] 收敛幕主席首次空回，3s 后重试一次');
+      await new Promise(r => setTimeout(r, 3000));
+      conv = await oneAct(meetingId, chairIds, convergePrompt(stocks, state.reviews), TIMEOUT.converge, ACTS.CONVERGE + '重试', { acts: state.acts, act: ACTS.CONVERGE, sub: '重试', outcome: true });
+      chairText = ((conv.results || [])[0] || {}).text || '';
+    }
+    state.chair = parseChair(chairText);
+    emit(meetingId, 'chair', { chair: state.chair });
 
+    // 点6 已由 _detail→appendSpeeches 实现：末轮辩论 + 收敛幕发言已标 committeeOutcome 落进 messages，
+    // 回归自由聊时 buildDelta 自动带给没看到的 AI（中间幕跳过省 token）。无需再单独收集 outcome。
+
+    // 点3a：闭庭后持久化整场 record（含五幕 speeches）→「过往投委会」历史可回看。
     try {
-      // ---- 开场点名（微型 prompt 暖关键路径席位：建立 groupChatReady + 暖 paste 通道） ----
-      // 根因（2026-06-11 E2E 实测）：①冷 CLI 收大段粘贴易卡；②迟到席位（主席/质询官）
-      // 首次被点名时 waitCliReady 因 boot 标记过期而 60s 超时 → no_sent。
-      // 点名 prompt 极小（<100 字），首粘成功率高。质询官是条件路径，未触发幕二时不应
-      // 为它消耗开场预算或制造降级记录；需要质询时再按非关键路径即时派发。
-      const rollcallKeys = [...scene.ANALYST_KEYS]
-        .filter(k => seats[k] && seats[k].kind !== 'codex');
-      const suspectKeys = new Set();
-      if (ROLLCALL_ENABLED && rollcallKeys.length) {
-        const allMentions = rollcallKeys.map(k => `@${seats[k].memberId}`).join(' ');
-        progress(meetingId, `开场点名：${allMentions}`);
-        try {
-          const roll = await dispatch(meetingId,
-            `【投委会 · 点名】 ${allMentions} 投委会即将开始，请各自只回复两个字：就位。不要调用任何工具。`,
-            ROLLCALL_TIMEOUT_MS);
-          // 点名只是预热，不作为降级依据。2026-06-12 full live matrix 证明：
-          // Claude Opus 消息面官可能点名 4min false negative，但主轮/定向轮能正常产出合格 JSON。
-          const warmupMissKeys = [];
-          for (const key of rollcallKeys) {
-            const seat = seats[key];
-            const t = resultText(roll, seat.sid);
-            if (!t || t.trim().length === 0) warmupMissKeys.push(key);
-          }
-          if (warmupMissKeys.length) {
-            progress(meetingId, `点名预热未返回：${warmupMissKeys.map(k => scene.SEATS[k].label).join('、')}（继续主轮全预算，不计降级）`);
-          }
-        } catch (e) {
-          warn('点名轮异常（不阻塞）：', e.message);
-        }
+      if (typeof persistHistory === 'function') {
+        const id = persistHistory({
+          meetingId, startedAt, endedAt: Date.now(),
+          stocks, rounds, chair: chair.displayName, members: state.members,
+          acts: state.acts, boards: state.boards, chairReport: state.chair,
+        });
+        if (id) _log(`[committee] 已存历史 ${id}（${state.acts.length} 幕）`);
       }
+    } catch (e) { _log('[committee] persistHistory threw: ' + (e && e.message)); }
 
-      // ---- 幕〇 备料（纯脚本） ----
-      progress(meetingId, `幕〇备料中：${cmd.name ? `${cmd.name} ` : ''}${cmd.symbol}（${cmd.mode === 'full' ? '全量' : '快评'}模式，约 1-4 分钟）...`);
-      const prep = await runPython(
-        ['-m', 'committee.prep_case', cmd.symbol, ...(cmd.mode === 'quick' ? ['--fast'] : [])],
-        PREP_TIMEOUT_MS[cmd.mode]);
-      if (!prep.ok) {
-        return { status: 'error', turnNum: null, reason: `幕〇备料失败：${prep.error || '未知'}` };
-      }
-      const maxRating = (prep.coverage_gate && prep.coverage_gate.max_rating) || 'S';
-      const validMemoryIds = extractMemoryIds(prep.markdown);
-      // 沉浸式实时渲染 + transcript 持久化所需的结构化态
-      let attackJson = null;
-      const defenseBySeat = {};
-      progress(meetingId, `幕〇备料完成：红旗触发 ${(prep.red_flags_summary && prep.red_flags_summary.triggered) || 0} 项，覆盖度门控最高 ${maxRating}`, {
-        stage: 'prep', symbol: prep.symbol, name: prep.name, mode: cmd.mode,
-        red_flags: prep.red_flags || [], coverage_gate: prep.coverage_gate || null,
-        objective: prep.objective || null,
-      });
-
-      // ---- 幕一 三官并行 ----
-      checkDeadline('幕一');
-      const analystKeys = scene.ANALYST_KEYS.filter(k => seats[k]);
-      let primaryAnalystKeys = analystKeys.filter(k => !suspectKeys.has(k));
-      let act1Timeout = ACT_TIMEOUT_MS;
-      if (!primaryAnalystKeys.length) {
-        primaryAnalystKeys = analystKeys;
-        act1Timeout = SUSPECT_RETRY_TIMEOUT_MS;
-      }
-      const deferredAnalystKeys = analystKeys.filter(k => !primaryAnalystKeys.includes(k));
-      const analystMentions = primaryAnalystKeys.map(k => `@${seats[k].memberId}`).join(' ');
-      if (deferredAnalystKeys.length) {
-        progress(meetingId, `幕一：${deferredAnalystKeys.map(k => scene.SEATS[k].label).join('、')} 点名未应答，先跳过主轮并走定向短预算重试`);
-      }
-      progress(meetingId, `幕一：${analystMentions} 独立研判中...`);
-      const act1 = await dispatch(meetingId, scene.buildAct1Prompt(analystMentions, prep.markdown), act1Timeout);
-      const reports = await collectValidatedReports(meetingId, seats, act1, prep.markdown, suspectKeys);
-      // 逐席发结构化研判卡——renderer 据此实时长出"看多72/一句论点"的卡片（不再只显示"研判中"）
-      for (const key of scene.ANALYST_KEYS) {
-        if (!reports[key]) continue;
-        const card = reportToCard(reports[key]);
-        progress(meetingId,
-          `${scene.SEATS[key].label} 研判完成：${card.valid ? `${card.signal || '—'} / 信心 ${card.confidence ?? '—'}` : '本场缺席（未过校验）'}`,
-          { stage: 'analyst', seat: key, label: scene.SEATS[key].label, report: card });
-      }
-
-      // ---- 幕二 条件质询 ----
-      checkDeadline('幕二');
-      const decision = scene.decideChallenge(reports, cmd.mode);
-      let challengeHeld = false;
-      // 鲁棒性兜底：整个幕二非关键路径——质询官/答辩任何失败都只记录、不终止全场
-      if (decision.challenge && seats.challenger && !suspectKeys.has('challenger')) {
-        try {
-          challengeHeld = true;
-          progress(meetingId, `幕二触发质询：${decision.reason}`);
-          const act2a = await dispatch(meetingId, scene.buildAct2ChallengePrompt(`@${seats.challenger.memberId}`));
-          const attackText = resultText(act2a, seats.challenger.sid);
-          attackJson = scene.extractJsonBlock(attackText);
-          if (!attackText || attackText.trim().length < 20) {
-            challengeHeld = false;
-            progress(meetingId, '质询官本轮缺席（超时），跳过质询直接裁决');
-          } else {
-            const targets = [...new Set(((attackJson && attackJson.targets) || [])
-              .map(t => t && t.seat).filter(k => scene.ANALYST_KEYS.includes(k) && seats[k]))];
-            const defendKeys = targets.length ? targets : scene.ANALYST_KEYS.filter(k => seats[k] && reports[k] && reports[k].valid);
-            const activeDefendKeys = defendKeys.filter(k => seats[k] && seats[k].kind !== 'codex');
-            const compressedDefendKeys = defendKeys.filter(k => seats[k] && seats[k].kind === 'codex');
-            if (compressedDefendKeys.length) {
-              progress(meetingId, `幕二答辩压缩：${compressedDefendKeys.map(k => scene.SEATS[k].label).join('、')} 已有幕一主报告，本轮不二次唤醒 Codex，主席按原报告+质询裁决`);
-            }
-            if (activeDefendKeys.length) {
-              checkDeadline('幕二答辩');
-              const mentions = activeDefendKeys.map(k => `@${seats[k].memberId}`).join(' ');
-              const act2b = await dispatch(meetingId, scene.buildAct2DefensePrompt(
-                mentions, attackJson && attackJson.summary), RETRY_TIMEOUT_MS);
-              // 答辩中允许修正 JSON
-              for (const k of activeDefendKeys) {
-                const t = resultText(act2b, seats[k].sid);
-                if (t && t.trim()) defenseBySeat[k] = t.trim().slice(0, 600);
-                const updated = scene.extractJsonBlock(t);
-                if (updated) {
-                  const v = scene.validateAnalystReport(updated, k);
-                  if (v.ok) {
-                    reports[k] = { ...reports[k], json: updated, valid: true, errors: [] };
-                    // 答辩修正了 JSON → 重发该席研判卡，实时刷新
-                    progress(meetingId, `${scene.SEATS[k].label} 答辩后修正：${updated.signal || '—'} / 信心 ${updated.confidence ?? '—'}`,
-                      { stage: 'analyst', seat: k, label: scene.SEATS[k].label, report: reportToCard(reports[k]) });
-                  }
-                }
-              }
-            }
-          }
-          if (challengeHeld) {
-            progress(meetingId, `幕二质询完成：${(attackJson && attackJson.summary) || '已质询'}`, {
-              stage: 'challenge', held: true, reason: decision.reason,
-              priced_in_risk: (attackJson && attackJson.priced_in_risk) || null,
-              attack: attackJson || null,
-              defenses: defenseBySeat,
-            });
-          }
-        } catch (e) {
-          challengeHeld = false;
-          warn('幕二异常（不阻塞，直接进裁决）：', e.message);
-          progress(meetingId, `幕二异常已跳过（${e.message}），直接进入主席裁决`);
-        }
-      } else {
-        progress(meetingId, `幕二跳过：${decision.reason}${seats.challenger ? (suspectKeys.has('challenger') ? '（质询官点名未应答）' : '') : '（且质询官席位缺席）'}`);
-      }
-
-      // ---- 幕三 主席裁决 ----
-      checkDeadline('幕三');
-      const storyLevelPure = !!(reports.fund && reports.fund.json &&
-        reports.fund.json.extras && reports.fund.json.extras.story_level === '纯故事');
-      // 机器加权基线（反 sycophancy 锚）：注入主席 prompt，偏离须说明
-      const baseline = scene.aggregateSignals(reports);
-      progress(meetingId, `机器加权基线：${baseline.direction}（净分 ${baseline.net_score}，共识 ${baseline.consensus}%）`, {
-        stage: 'baseline', baseline,
-      });
-      progress(meetingId, '幕三：主席裁决中...');
-      let verdict = null;
-      let chairText = '';
-      let v = { ok: false, errors: ['未开始'] };
-      for (let attempt = 0; attempt <= MAX_VALIDATION_RETRIES; attempt++) {
-        const prompt = attempt === 0
-          ? scene.buildAct3ChairPrompt(`@${seats.chair.memberId}`, {
-              maxRating, challengeHeld, baseline,
-              calibrationActive: /校准期进行中/.test(prep.markdown),
-            })
-          : [`【投委会 · 幕三 · 裁决退回】 @${seats.chair.memberId}`,
-             '决议 JSON 校验失败：' + v.errors.join('；') + '。请只重新输出修正后的 ```json 块。'].join('\n');
-        // 鲁棒性兜底：主席是唯一关键路径——派发失败（no_sent/busy 等瞬态）等 20s 重试一次再放弃
-        let act3 = null;
-        for (let d = 1; d <= CHAIR_DISPATCH_ATTEMPTS; d++) {
-          try { act3 = await dispatch(meetingId, prompt); break; }
-          catch (e) {
-            warn(`幕三派发失败 #${d}：`, e.message);
-            if (d === CHAIR_DISPATCH_ATTEMPTS) throw e;
-            progress(meetingId, `主席派发失败（${e.message}），20s 后重试...`);
-            await new Promise(r => setTimeout(r, 20000));
-          }
-        }
-        chairText = resultText(act3, seats.chair.sid) || chairText;
-        verdict = scene.extractJsonBlock(chairText) || verdict;
-        v = scene.validateVerdict(verdict, { maxRating, storyLevelPure, validMemoryIds });
-        if (v.ok) break;
-        progress(meetingId, `主席决议校验未过：${v.errors.join('；')}`);
-        checkDeadline('幕三重试');
-      }
-
-      // 裁决完成 → 发结构化英雄卡事件（实时呈现评级/价值投机四格，无需等落盘）
-      if (v.ok && verdict) {
-        progress(meetingId, `幕三裁决完成：${verdict.rating} 级 ${verdict.core_thesis || ''}`,
-          { stage: 'verdict', verdict });
-      }
-
-      // ---- 落盘 + 回执 ----
-      let saved = { ok: false, error: '决议未通过校验，未落盘' };
-      if (v.ok && verdict) {
-        const record = {
-          symbol: prep.symbol, name: prep.name, mode: cmd.mode,
-          rating: verdict.rating, core_thesis: verdict.core_thesis,
-          faces: verdict.faces, entry: verdict.entry, stop: verdict.stop,
-          value_speculation: verdict.value_speculation,
-          portfolio: verdict.portfolio,
-          position_cap: verdict.position_cap || null,
-          catalysts: verdict.catalysts || [],
-          disagreements: verdict.disagreements || [],
-          alt_check: verdict.alt_check,
-          assumptions: verdict.assumptions || [],
-          kill_switch_summary: verdict.kill_switch_summary || [],
-          upgrade_trigger: verdict.upgrade_trigger || null,
-          if_holding: verdict.if_holding || null,
-          if_not_holding: verdict.if_not_holding || null,
-          memory_read: verdict.memory_read || [],
-          challenge_held: challengeHeld,
-          objective: prep.objective,
-          coverage_gate: prep.coverage_gate,
-          seats: Object.fromEntries(Object.entries(reports).map(([k, r]) => [k, {
-            kind: r.kind,
-            signal: r.json ? r.json.signal : 'errored',
-            confidence: r.json ? r.json.confidence : null,
-            story_level: (r.json && r.json.extras && r.json.extras.story_level) || undefined,
-          }])),
-        };
-        const tmp = path.join(os.tmpdir(), `committee-verdict-${Date.now()}.json`);
-        fs.writeFileSync(tmp, JSON.stringify(record), 'utf-8');
-        saved = await runPython(['-m', 'committee.committee_memory', 'append-verdict', '--file', tmp], MEMORY_TIMEOUT_MS);
-        try { fs.unlinkSync(tmp); } catch {}
-        if (verdict.lesson_suggest && verdict.lesson_suggest.text && saved.ok) {
-          const ltmp = path.join(os.tmpdir(), `committee-lesson-${Date.now()}.json`);
-          fs.writeFileSync(ltmp, JSON.stringify({
-            ...verdict.lesson_suggest, src_verdicts: [saved.id],
-          }), 'utf-8');
-          await runPython(['-m', 'committee.committee_memory', 'add-lesson', '--file', ltmp], MEMORY_TIMEOUT_MS);
-          try { fs.unlinkSync(ltmp); } catch {}
-        }
-      }
-
-      // ---- 生成沉浸式单场复盘 HTML（失败不影响会议；用真实 verdict id 命名） ----
-      let replayPath = null;
-      if (saved.ok && v.ok && verdict) {
-        try {
-          const transcript = {
-            id: saved.id, symbol: prep.symbol, name: prep.name, mode: cmd.mode,
-            ts: new Date().toISOString(),
-            coverage_gate: prep.coverage_gate || null,
-            red_flags: prep.red_flags || [],
-            objective: prep.objective || null,
-            analysts: Object.fromEntries(scene.ANALYST_KEYS
-              .filter(k => reports[k]).map(k => [k, reportToCard(reports[k])])),
-            challenge: {
-              held: challengeHeld, reason: decision.reason,
-              priced_in_risk: (attackJson && attackJson.priced_in_risk) || null,
-              pairs: ((attackJson && attackJson.targets) || [])
-                .filter(t => t && t.seat)
-                .map(t => ({ seat: t.seat, q: t.attack || t.assumption || '', a: defenseBySeat[t.seat] || '' })),
-            },
-            baseline,
-            verdict,
-            seats: Object.fromEntries(Object.entries(reports).map(([k, r]) => [k, {
-              kind: r.kind, signal: r.json ? r.json.signal : null, confidence: r.json ? r.json.confidence : null,
-            }])),
-          };
-          const ttmp = path.join(os.tmpdir(), `committee-transcript-${Date.now()}.json`);
-          fs.writeFileSync(ttmp, JSON.stringify(transcript), 'utf-8');
-          const rep = await runPython(['-m', 'committee.replay_gen', 'save', '--file', ttmp], MEMORY_TIMEOUT_MS);
-          try { fs.unlinkSync(ttmp); } catch {}
-          if (rep && rep.ok) replayPath = rep.html;
-        } catch (e) { warn('replay 生成失败（不影响会议）：', e.message); }
-      }
-
-      const receipt = [
-        `📥 决议落盘：${saved.ok ? saved.id : '❌ ' + (saved.error || '失败')}`,
-        replayPath ? `🎬 沉浸式复盘：${replayPath}` : null,
-        `📊 Dashboard：C:\\LinDangAgent\\data\\knowledge\\committee\\dashboard.html`,
-        `🗂️ 案卷：${prep.case_path}`,
-        `⚔️ 质询：${challengeHeld ? '已触发（' + decision.reason + '）' : '未触发（' + decision.reason + '）'}`,
-      ].filter(Boolean).join('\n');
-      progress(meetingId, receipt, { stage: 'save', replayPath, dashboardPath: 'C:\\LinDangAgent\\data\\knowledge\\committee\\dashboard.html', casePath: prep.case_path });
-
-      return {
-        status: 'completed', turnNum: null,
-        meta: {
-          committee: {
-            symbol: prep.symbol, name: prep.name, mode: cmd.mode,
-            rating: v.ok && verdict ? verdict.rating : null,
-            verdictId: saved.ok ? saved.id : null,
-            challengeHeld,
-            verdictValid: v.ok,
-            replayPath,
-            receipt,
-          },
-        },
-      };
-    } catch (e) {
-      warn('session failed:', e.message);
-      return { status: 'error', turnNum: null, reason: `投委会中断：${e.message}` };
-    } finally {
-      inProgress.delete(meetingId);
-    }
+    emit(meetingId, 'done', { boards: state.boards, chair: state.chair, reviews: state.reviews });
+    return { status: 'completed', ...state };
   }
 
-  // ── 持仓体检会（2026-06-12）────────────────────────────────────────────────
-  // 流程：主席 Read 截图提取持仓 → 逐票快速备料（并行）→ 基本面官+技术面官
-  // 跑卖出正反双清单 → 主席逐票裁 持有/加/减/清 → 落盘 checkup 记录。
-  async function runCheckupSession(meetingId, checkup) {
-    if (inProgress.has(meetingId)) return { status: 'busy', reason: '本会议已有投委会在进行', turnNum: null };
-    const meeting = meetingManager.getMeeting(meetingId);
-    const seats = resolveSeats(meeting);
-    if (!seats.chair || !seats.fund || !seats.tech) {
-      return { status: 'error', turnNum: null, reason: '体检需要 基本面官(deepseek)+技术面官(codex)+主席(claude) 三席在场' };
-    }
-    inProgress.add(meetingId);
-    const deadline = Date.now() + SESSION_DEADLINE_MS;
-    const checkDeadline = (stage) => {
-      if (Date.now() > deadline) throw new Error(`体检整场超时（40min）于 ${stage}`);
-    };
-    try {
-      // ── 识别：截图 → 持仓 JSON（主席有 Read+视觉；纯文本命令则跳过此步） ──
-      let positions = checkup.positions || null;
-      if (checkup.imagePath) {
-        progress(meetingId, `持仓识别：主席 Read ${checkup.imagePath}`);
-        let ocr = null, v = { ok: false, errors: ['未开始'] };
-        for (let attempt = 0; attempt <= 1; attempt++) {
-          const prompt = attempt === 0
-            ? scene.buildCheckupOcrPrompt(`@${seats.chair.memberId}`, checkup.imagePath)
-            : [`【投委会 · 持仓体检 · 识别重试】 @${seats.chair.memberId}`,
-               'JSON 校验失败：' + v.errors.join('；') + '。请重新只输出修正后的 ```json 块。'].join('\n');
-          const r = await dispatch(meetingId, prompt, CHECKUP_OCR_TIMEOUT_MS, {
-            targetMemberIds: [seats.chair.memberId],
-            silent: true,
-            allowActiveExtend: false,
-          });
-          ocr = scene.extractJsonBlock(resultText(r, seats.chair.sid)) || ocr;
-          v = scene.validateCheckupOcr(ocr);
-          if (v.ok) break;
-        }
-        if (!v.ok) return { status: 'error', turnNum: null, reason: `持仓识别失败：${v.errors.join('；')}` };
-        positions = scene.normalizeCheckupPositions(ocr).positions;
-      }
-      if (!positions || !positions.length) {
-        return { status: 'error', turnNum: null, reason: '没有可体检的持仓' };
-      }
-
-      // ── 逐票快速备料（并行 spawn python，--fast） ──
-      checkDeadline('备料');
-      progress(meetingId, `逐票备料：${positions.map(p => p.symbol).join(' ')}（快评模式并行）`);
-      const preps = await Promise.all(positions.map(p =>
-        runPython(['-m', 'committee.prep_case', String(p.symbol), '--fast'], PREP_TIMEOUT_MS.quick)
-          .then(r => ({ symbol: p.symbol, prep: r }))));
-      const casesMarkdown = preps
-        .map(x => x.prep && x.prep.ok ? x.prep.markdown : `# ${x.symbol} 案卷生成失败：${(x.prep && x.prep.error) || '未知'}`)
-        .join('\n\n---\n\n');
-      const positionsBrief = positions.map(p =>
-        `- ${p.name || ''} ${p.symbol}：持仓 ${p.shares ?? '?'} 股，成本 ${p.cost ?? '?'}，现价 ${p.price ?? '?'}，盈亏 ${p.pnl_pct ?? '?'}%`).join('\n');
-
-      // ── 双官体检（并行一轮） ──
-      checkDeadline('研判');
-      const mentions = `@${seats.fund.memberId} @${seats.tech.memberId}`;
-      progress(meetingId, `体检研判：${mentions}`);
-      const act = await dispatch(meetingId, scene.buildCheckupAnalystPrompt(mentions, positionsBrief, casesMarkdown));
-      // 体检报告轻校验：拿得到 JSON 就给主席，缺席由主席声明（体检容错优先）
-      const fundJson = scene.extractJsonBlock(resultText(act, seats.fund.sid));
-      const techJson = scene.extractJsonBlock(resultText(act, seats.tech.sid));
-
-      // ── 主席裁决 ──
-      checkDeadline('裁决');
-      progress(meetingId, '体检裁决：主席逐票定动作...');
-      const expected = positions.map(p => String(p.symbol));
-      let verdict = null, v2 = { ok: false, errors: ['未开始'] };
-      for (let attempt = 0; attempt <= MAX_VALIDATION_RETRIES; attempt++) {
-        const prompt = attempt === 0
-          ? scene.buildCheckupChairPrompt(`@${seats.chair.memberId}`)
-          : [`【投委会 · 持仓体检 · 裁决退回】 @${seats.chair.memberId}`,
-             '校验失败：' + v2.errors.join('；') + '。请只重新输出修正后的 ```json 块。'].join('\n');
-        const r = await dispatch(meetingId, prompt);
-        verdict = scene.extractJsonBlock(resultText(r, seats.chair.sid)) || verdict;
-        v2 = scene.validateCheckupVerdict(verdict, expected);
-        if (v2.ok) break;
-        progress(meetingId, `体检裁决校验未过：${v2.errors.join('；')}`);
-      }
-
-      // ── 落盘（type=checkup 行，append-only；dashboard 单列体检区由 report 渲染） ──
-      let saved = { ok: false, error: '裁决未过校验，未落盘' };
-      if (v2.ok && verdict) {
-        const record = {
-          type: 'checkup',
-          ts_hint: 'committee_memory 会补 ts',
-          positions,
-          checkups: verdict.checkups,
-          portfolio_note: verdict.portfolio_note || null,
-          portfolio_risk: verdict.portfolio_risk || null,
-          seats_present: { fund: !!fundJson, tech: !!techJson },
-        };
-        const tmp = path.join(os.tmpdir(), `committee-checkup-${Date.now()}.json`);
-        fs.writeFileSync(tmp, JSON.stringify(record), 'utf-8');
-        saved = await runPython(['-m', 'committee.committee_memory', 'append-checkup', '--file', tmp], MEMORY_TIMEOUT_MS);
-        try { fs.unlinkSync(tmp); } catch {}
-      }
-      progress(meetingId, `📥 体检落盘：${saved.ok ? saved.id : '❌ ' + (saved.error || '失败')}\n📊 Dashboard：C:\\LinDangAgent\\data\\knowledge\\committee\\dashboard.html`);
-      return {
-        status: 'completed', turnNum: null,
-        meta: { committee: { kind: 'checkup', n: positions.length, verdictValid: v2.ok, checkupId: saved.ok ? saved.id : null } },
-      };
-    } catch (e) {
-      warn('checkup failed:', e.message);
-      return { status: 'error', turnNum: null, reason: `体检中断：${e.message}` };
-    } finally {
-      inProgress.delete(meetingId);
-    }
-  }
-
-  return {
-    isCommitteeCommand,
-    runCommitteeSession,
-    _resolveSeats: resolveSeats,
-    _resolveCommitteeRoute: resolveCommitteeRoute,
-  };
+  return { run };
 }
 
-// 从案卷 markdown 提取合法记忆 ID（主席 memory_read 防编造）
-function extractMemoryIds(markdown) {
-  const ids = new Set();
-  const re = /\b([VLT]-[0-9A-Za-z\-]+)\b/g;
-  let m;
-  while ((m = re.exec(markdown || '')) !== null) ids.add(m[1]);
-  return [...ids];
-}
-
-module.exports = { createCommitteeConductor, _extractMemoryIds: extractMemoryIds };
+module.exports = {
+  createCommitteeConductor,
+  ACTS,
+  // 暴露纯函数给单测（prompt/角色为本地，extract 系列 re-export 自 committee-extract）
+  _test: {
+    assignRoles, pickChair, dutyTable, stocklistText,
+    convenePrompt, buildPrompt, reviewPrompt, debatePrompt, debateClosePrompt, convergePrompt,
+    parseLastJson, extractReviews, mergeReviews, buildBoards, parseChair,
+  },
+};

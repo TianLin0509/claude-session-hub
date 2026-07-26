@@ -21,14 +21,14 @@ function sleep(ms) {
   const commandSid = 'codex-command-echo';
   ready.cleanup(commandSid);
   const commandEcho = [
-    'PS C:\\Users\\lintian> codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.5',
+    'PS C:\\Users\\lintian> codex --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-sol',
     'launching...',
     'x'.repeat(900),
   ].join('\n');
   assert.strictEqual(
     ready.isReady(commandSid, 'codex', commandEcho),
     false,
-    'Codex launch command echo containing gpt-5.5 should not mark the CLI ready'
+    'Codex launch command echo containing gpt-5.6-sol should not mark the CLI ready'
   );
   await sleep(ready.STABLE_MS + 50);
   assert.strictEqual(
@@ -42,7 +42,7 @@ function sleep(ms) {
   const tui = [
     '\x1b[2J\x1b[H',
     'Send a message...',
-    '  gpt-5.5 medium · Context 91% left · ~',
+    '  gpt-5.6-sol medium · Context 91% left · ~',
     'x'.repeat(900),
   ].join('\n');
   assert.strictEqual(
@@ -61,7 +61,7 @@ function sleep(ms) {
   ready.cleanup(bootSid);
   const booting = [
     'Booting MCP server: playwright (1s - esc to interrupt)',
-    '  gpt-5.5 high fast · Context 100% left · ~',
+    '  gpt-5.6-sol high fast · Context 100% left · ~',
     'x'.repeat(900),
   ].join('\n');
   assert.strictEqual(
@@ -75,6 +75,30 @@ function sleep(ms) {
     false,
     'stable Codex MCP booting footer should still not mark the CLI ready'
   );
+
+  const kimiLoginSid = 'kimi-login-required';
+  ready.cleanup(kimiLoginSid);
+  const kimiLogin = [
+    'Welcome to Kimi Code!',
+    'Run /login or /provider to get started.',
+    'Model:     not set, run /login or /provider',
+    'context: 0%',
+    'x'.repeat(900),
+  ].join('\n');
+  assert.strictEqual(ready.isReady(kimiLoginSid, 'kimi', kimiLogin), false,
+    'Kimi login screen must not accept room prompts');
+  await sleep(ready.STABLE_MS + 50);
+  assert.strictEqual(ready.isReady(kimiLoginSid, 'kimi', kimiLogin), false,
+    'stable Kimi login screen must remain blocked');
+
+  const kimiReadySid = 'kimi-k3-ready';
+  ready.cleanup(kimiReadySid);
+  const kimiReady = ['Kimi K3', 'context: 0%', 'x'.repeat(900)].join('\n');
+  assert.strictEqual(ready.isReady(kimiReadySid, 'kimi', kimiReady), false,
+    'first Kimi statusline hit still waits for stability');
+  await sleep(ready.STABLE_MS + 50);
+  assert.strictEqual(ready.isReady(kimiReadySid, 'kimi', kimiReady), true,
+    'stable authenticated Kimi K3 statusline should mark CLI ready');
 
   console.log('Group-chat CLI ready detector: ok');
 })().catch((err) => {

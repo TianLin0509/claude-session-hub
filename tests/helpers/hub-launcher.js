@@ -53,6 +53,9 @@ async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {} }
   if (!port) throw new Error('port required');
 
   fs.mkdirSync(dataDir, { recursive: true });
+  // main.js 会把 Electron userData 切到这个子目录；Chromium 在目录不存在时
+  // 偶发无法写 DevToolsActivePort，表现为 CDP 已监听但 renderer 永远不响应。
+  fs.mkdirSync(path.join(dataDir, 'electron-userdata'), { recursive: true });
 
   const env = {
     ...process.env,

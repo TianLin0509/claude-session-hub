@@ -10,11 +10,12 @@ function delay(ms) {
 (async () => {
   const events = [];
   const sessions = new Map([
-    ['s1', { id: 's1', kind: 'codex', title: 'Codex 1', status: 'idle' }],
+    ['s1', { id: 's1', kind: 'codex', title: 'Codex 1', status: 'idle', cwd: 'C:\\scratch-session' }],
   ]);
   const meetings = new Map([
-    ['m1', { id: 'm1', title: 'AI 群聊 #1', groupChat: true, autoTitlePending: true }],
+    ['m1', { id: 'm1', title: 'AI 群聊 #1', groupChat: true, autoTitlePending: true, workspace: 'C:\\scratch-meeting' }],
   ]);
+  const workspaceNames = [];
 
   const manager = createAutoTitleManager({
     allAiKinds: ['codex', 'gemini'],
@@ -36,6 +37,12 @@ function delay(ms) {
         return next;
       },
     },
+    workspaceService: {
+      updateSuggestedName: (cwd, title) => {
+        workspaceNames.push({ cwd, title });
+        return { path: cwd, label: title };
+      },
+    },
     sendToRenderer: (channel, payload) => events.push({ channel, payload }),
   });
 
@@ -54,6 +61,8 @@ function delay(ms) {
     'eligible session should be marked as auto titled');
   assert.strictEqual(events.some(e => e.channel === 'session-updated'), true,
     'session auto-title should notify renderer');
+  assert.strictEqual(sessions.get('s1').workspaceLabel, sessions.get('s1').title,
+    'session workspace display label should follow the first-prompt title without moving cwd');
 
   manager.maybeAutoTitleMeetingFromPrompt('m1', '讨论下一轮重构计划');
   await delay(20);
@@ -63,6 +72,10 @@ function delay(ms) {
     'meeting auto-title should clear pending flag');
   assert.strictEqual(events.some(e => e.channel === 'meeting-updated'), true,
     'meeting auto-title should notify renderer');
+  assert.strictEqual(meetings.get('m1').workspaceLabel, meetings.get('m1').title,
+    'meeting workspace display label should follow the first-prompt title');
+  assert.strictEqual(workspaceNames.length, 2,
+    'both session and meeting workspace registries should receive the generated name');
 
   console.log('Auto title manager contract: ok');
 })().catch((err) => {

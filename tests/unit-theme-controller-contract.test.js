@@ -25,17 +25,14 @@ function makeElement() {
 
 async function main() {
   assert.ok(XTERM_THEMES.default);
-  assert.ok(XTERM_THEMES.aurora);
+  assert.deepStrictEqual(Object.keys(XTERM_THEMES), ['default']);
 
   const elements = new Map([
     ['btn-options', makeElement()],
     ['options-menu', makeElement()],
-    ['options-theme', makeElement()],
-    ['theme-picker-popup', makeElement()],
     ['options-settings', makeElement()],
   ]);
   const body = makeElement();
-  const store = new Map([['claude-hub-theme', 'aurora']]);
   const terminal = { options: {} };
   let settingsOpened = 0;
   const controller = createThemeController({
@@ -44,21 +41,14 @@ async function main() {
       getElementById(id) { return elements.get(id) || null; },
       addEventListener() {},
     },
-    localStorage: {
-      getItem(key) { return store.get(key) || null; },
-      setItem(key, value) { store.set(key, value); },
-    },
     terminalCache: new Map([['s1', { terminal }]]),
     openConfigModal() { settingsOpened += 1; },
   });
 
-  assert.ok(body._classes.has('theme-aurora'));
-  assert.strictEqual(terminal.options.theme, XTERM_THEMES.aurora);
+  assert.strictEqual(terminal.options.theme, XTERM_THEMES.default);
 
-  controller.applyTheme('obsidian');
-  assert.ok(body._classes.has('theme-obsidian'));
-  assert.strictEqual(store.get('claude-hub-theme'), 'obsidian');
-  assert.strictEqual(terminal.options.theme, XTERM_THEMES.obsidian);
+  controller.applyTheme();
+  assert.strictEqual(terminal.options.theme, XTERM_THEMES.default);
 
   elements.get('options-settings')._listeners.click({ stopPropagation() {} });
   assert.strictEqual(settingsOpened, 1);

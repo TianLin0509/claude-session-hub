@@ -64,8 +64,33 @@ async function main() {
 
   const input = makeElement();
   controller.attachContenteditablePasteImage(input);
+
+  insertedText = '';
+  const invokedBeforeTextPaste = invoked.length;
+  const htmlPasteEvent = {
+    clipboardData: {
+      items: [],
+      getData(type) {
+        if (type === 'text/plain') return 'Bold copy';
+        if (type === 'text/html') return '<b>Bold copy</b>';
+        return '';
+      },
+    },
+    preventDefault() { this.prevented = true; },
+  };
+  await input._listeners.paste(htmlPasteEvent);
+  assert.strictEqual(insertedText, 'Bold copy');
+  assert.strictEqual(htmlPasteEvent.prevented, true);
+  assert.strictEqual(input.lastEvent.type, 'input');
+  assert.strictEqual(invoked.length, invokedBeforeTextPaste);
+
+  insertedText = '';
+  clipboardText = '';
   await input._listeners.paste({
-    clipboardData: { items: [{ kind: 'file', type: 'image/png' }] },
+    clipboardData: {
+      items: [{ kind: 'file', type: 'image/png' }],
+      getData() { return ''; },
+    },
     preventDefault() { this.prevented = true; },
   });
   assert.strictEqual(insertedText, 'C:\\tmp\\clip.png');

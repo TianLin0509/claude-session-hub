@@ -61,8 +61,42 @@ test('reads terminal signature and preview through injected cache', () => {
   });
 
   assert.strictEqual(monitor.getQuestionsSignature('s1'), 'explain renderer.js');
-  monitor.readTerminalPreview('s1');
+  const result = monitor.readTerminalPreview('s1');
+  assert.deepStrictEqual(result, { skipped: false, signature: 'explain renderer.js', changed: true });
   assert.strictEqual(sessions.get('s1').lastOutputPreview, 'explain renderer.js');
   assert.strictEqual(rendered, 1);
   assert.strictEqual(persisted, 1);
+});
+
+test('authoritative transcript preview skips synchronous scrollback scanning', () => {
+  let translated = 0;
+  const sessions = new Map([['s1', {
+    id: 's1',
+    status: 'idle',
+    lastOutputPreview: 'authoritative',
+    _previewFromTranscript: true,
+  }]]);
+  const terminalCache = new Map([['s1', {
+    opened: true,
+    terminal: {
+      buffer: {
+        active: {
+          length: 50000,
+          getLine: () => ({ translateToString: () => { translated++; return '> stale'; } }),
+        },
+      },
+    },
+  }]]);
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache,
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => {},
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+  });
+
+  assert.deepStrictEqual(monitor.readTerminalPreview('s1'), { skipped: true, signature: '' });
+  assert.strictEqual(translated, 0);
 });

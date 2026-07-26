@@ -459,6 +459,27 @@ function createGroupChatDispatcher(deps) {
       try { result.tokens = transcriptTap.getLastTokens(sid) || null; }
       catch { result.tokens = null; }
 
+      // 不再等最慢成员才持久化整轮：单个 AI 一结算就先把可用结果写进 messages。
+      // 这样后续成员卡住、Hub 崩溃/重启或用户立即点“同步”时，已得到的答案都不会丢。
+      if (!silent && meetingId && turnNum) {
+        try {
+          const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+          orch.patchTurnResult(turnNum, sid, {
+            text: result.text,
+            status: result.status,
+            thinkSec: result.thinkSec,
+            tokens: result.tokens,
+            memberId: opts.memberId,
+            speaker: opts.speaker || label,
+            sourcePrompt: opts.prompt,
+            statusReason: result.reason,
+          });
+        } catch (e) {
+          // 持久化失败不能反向卡死 watcher/整轮；最终 completeTurn 仍有一次落盘机会。
+          warn('[group-chat] persist settled participant failed:', e && e.message);
+        }
+      }
+
       if (typeof onPartial === 'function') {
         try { onPartial(result); } catch (e) { warn('[group-chat] onPartial error:', e.message); }
       }
@@ -759,6 +780,8 @@ function createGroupChatDispatcher(deps) {
       const settled = await Promise.allSettled(sentTargets.map(t =>
         waitTurnComplete(t.sid, t.label, {
           meetingId, mode: 'group', turnNum, kind: t.kind, prompt: t.prompt, promptSubmitSinceTs: t.promptSubmitSinceTs,
+          memberId: t.member && t.member.memberId,
+          speaker: t.label,
           disableHardTimeout: !(Number(turnTimeoutMs) > 0),
           hardTimeoutMs: Number(turnTimeoutMs) > 0 ? Number(turnTimeoutMs) : undefined,
           allowActiveExtend,

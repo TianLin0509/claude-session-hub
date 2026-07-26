@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, clipboard, nativeImage, Notification, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, Notification, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -17,6 +17,7 @@ if (process.env.CLAUDE_HUB_NO_CDP !== '1' && !_hasCdpSwitch) {
   app.commandLine.appendSwitch('remote-debugging-port', '0');
 }
 const { SessionManager, clearSessionManagerConfigCache } = require('./core/session-manager.js');
+const { WorkspaceService } = require('./core/workspace-service.js');
 const stateStore = require('./core/state-store.js');
 const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
 const hubControl = require('./core/hub-control.js');
@@ -25,49 +26,61 @@ const meetingStore = require('./core/meeting-store.js');
 const sessionStore = require('./core/session-store.js');
 const { TranscriptTap } = require('./core/transcript-tap');
 const { createUsageFilter } = require('./core/usage-filter.js');
-const transcriptTap = new TranscriptTap();
-// Resend & Auto-Recovery（2026-05-03）—— patch-listener 注册表（见 line 834 附近）会让
-//   transcriptTap 在 5 分钟 patch 窗口内挂多个 listener。3 sub × 1 watcher/sub × 多轮重叠
-//   ＞ Node 默认 10 个会触发 MaxListenersExceededWarning。提升上限到 100 安全冗余。
-try { transcriptTap.setMaxListeners(100); } catch {}
 const scenes = require('./core/group-chat-scenes.js');
 const groupchat = require('./core/group-chat-orchestrator.js');
 const cliReadyDetector = require('./core/group-chat-cli-ready-detector.js');
 const lindangBridge = require('./core/lindang-bridge.js');
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
-const packyBalance = require('./core/packy-balance.js');
 const {
   resolveCodexUsageScope,
   attachCodexUsageScope,
   filterUsageCacheForCodexScope,
 } = require('./core/codex-usage-scope.js');
-const { ALL_AI_KINDS, isClaudeFamily, isCodexCliKind, isClaudeWebKind, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
+const { ALL_AI_KINDS, isClaudeFamily, isCodexCliKind, isKimiCliKind, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 const { registerConfigIpc } = require('./main/ipc/config-handlers.js');
 const { registerPathIpc } = require('./main/ipc/path-handlers.js');
 const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
+const { registerWorkspaceIpc } = require('./main/ipc/workspace-handlers.js');
+const { shouldForwardTerminalOutput } = require('./main/terminal-output-policy.js');
+const { TerminalOutputBatcher } = require('./main/terminal-output-batcher.js');
 const { registerUsageIpc } = require('./main/ipc/usage-handlers.js');
 const { registerMeetingIpc } = require('./main/ipc/meeting-handlers.js');
 const { registerMeetingCreateIpc } = require('./main/ipc/meeting-create-handlers.js');
 const { registerMeetingTimelineIpc } = require('./main/ipc/meeting-timeline-handlers.js');
 const { registerTranscriptIpc } = require('./main/ipc/transcript-handlers.js');
-const codexAppRegistry = require('./core/codex-app-registry.js');
 const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
-const { registerPptModeIpc, killPptServer } = require('./main/ipc/ppt-mode-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
+const { registerCommitteeIpc } = require('./main/ipc/committee-handlers.js');
 const { registerResumeSessionIpc } = require('./main/ipc/resume-session-handlers.js');
 const { createGroupChatDispatcher } = require('./main/groupchat/dispatcher.js');
+const { createCommitteeConductor } = require('./main/groupchat/committee-conductor.js');
+const committeeHistory = require('./core/committee-history.js');
 const { createAutoTitleManager } = require('./main/auto-title-manager.js');
 const {
-  extractCodexRateLimits,
-  mergeCodexRateLimitCandidates,
   parseCodexUsage,
   parseGeminiUsage,
+  parseKimiUsage,
   stripAnsi,
 } = require('./main/usage/agent-usage-parser.js');
+const {
+  expireCodexUsageWindows,
+  readCodexAccountUsage,
+  shouldPreferCodexLiveUsage,
+} = require('./main/usage/codex-app-server-usage.js');
+const { readKimiAccountUsage } = require('./main/usage/kimi-account-usage.js');
+const {
+  didClaudeSnapshotAdvance,
+  selectClaudeStatuslineUsage,
+} = require('./main/usage/claude-statusline-usage.js');
+const {
+  pruneCodexCliUsage,
+  recordCodexCliUsage,
+  selectCodexCliUsageForScope,
+} = require('./main/usage/scoped-codex-cli-usage.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -75,6 +88,8 @@ function isCodexBaseKind(kind) {
 const { readLastAssistantMessage } = require('./core/read-last-assistant.js');
 const { readTranscriptTail } = require('./core/session-manager');
 const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parser.js');
+const { TranscriptParserService } = require('./core/transcript-parser-service.js');
+const { CodexJsonlUsageService } = require('./main/usage/codex-jsonl-usage-service.js');
 const {
   findTranscriptByCCSessionId,
   healPersistedCwds,
@@ -84,8 +99,15 @@ const {
   parseCodexRolloutToTurns,
   findCodexRolloutBySid,
   findCodexRolloutByCwd,
+  isUsableCodexRolloutPath,
+  isCodexSubagentRolloutPath,
 } = require('./core/codex-transcript-parser.js');
 const { registerArchiveIpc } = require('./main/ipc/archive-handlers.js');
+const transcriptParserService = new TranscriptParserService();
+const codexJsonlUsageService = new CodexJsonlUsageService();
+const transcriptTap = new TranscriptTap({ parserService: transcriptParserService });
+// Recovery can temporarily attach several listeners per group-chat seat.
+try { transcriptTap.setMaxListeners(100); } catch {}
 
 // === EPIPE 防护（隔离 Hub 启动必需）===
 // PowerShell `& exe ...` + run_in_background 启动模式下，parent 退出后
@@ -361,8 +383,24 @@ const HOOK_TOKEN = crypto.randomBytes(16).toString('hex');
 let hookPort = null;  // set after listen() succeeds
 
 let mainWindow;
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  // Sharing one state/userData directory between two production Electron
+  // processes multiplies GPU memory and makes state locks contend on the main
+  // thread.  The primary instance receives second-instance below and is
+  // focused instead of launching another Hub.
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
 const sessionManager = new SessionManager();
 const meetingManager = new MeetingRoomManager();
+const workspaceService = new WorkspaceService();
 
 // Deep-summary service singleton: instantiated from config-driven fallback chain.
 // Providers tried in order; first one with a parseable response wins.
@@ -419,6 +457,7 @@ const autoTitleManager = createAutoTitleManager({
   meetingManager,
   sendToRenderer,
   sessionManager,
+  workspaceService,
 });
 const { maybeAutoTitleMeetingFromPrompt, maybeAutoTitleSessionFromPrompt } = autoTitleManager;
 transcriptTap.on('prompt-submitted', (ev) => {
@@ -453,8 +492,12 @@ transcriptTap.on('session-bound', (ev) => {
       if (current && current.codexSessionsRoot) patch.codexSessionsRoot = current.codexSessionsRoot;
       if (current && current.codexAllowMtimeFallback) patch.codexAllowMtimeFallback = true;
       sessionManager.updateSessionMeta(ev.hubSessionId, patch);
-    } else if (ev.kind === 'codex-app' && ev.threadId) {
-      sessionManager.updateSessionMeta(ev.hubSessionId, { codexAppThreadId: ev.threadId });
+    } else if (isKimiCliKind(ev.kind) && (ev.kimiSid || ev.wirePath || ev.sessionDir)) {
+      const patch = {};
+      if (ev.kimiSid) patch.kimiSid = ev.kimiSid;
+      if (ev.sessionDir) patch.kimiSessionDir = ev.sessionDir;
+      if (ev.wirePath) patch.transcriptPath = ev.wirePath;
+      sessionManager.updateSessionMeta(ev.hubSessionId, patch);
     }
   } catch {}
   // Find the session in lastPersistedSessions and merge new fields.
@@ -469,11 +512,13 @@ transcriptTap.on('session-bound', (ev) => {
         codexSessionsRoot: sessionManager.getSession(ev.hubSessionId)?.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!sessionManager.getSession(ev.hubSessionId)?.codexAllowMtimeFallback,
       });
-    } else if (ev.kind === 'codex-app' && ev.threadId) {
+    } else if (isKimiCliKind(ev.kind) && (ev.kimiSid || ev.wirePath || ev.sessionDir)) {
       sendToRenderer('session-meta-updated', {
         hubSessionId: ev.hubSessionId,
         kind: ev.kind,
-        codexAppThreadId: ev.threadId,
+        kimiSid: ev.kimiSid,
+        kimiSessionDir: ev.sessionDir,
+        transcriptPath: ev.wirePath,
       });
     }
     return;
@@ -497,14 +542,15 @@ transcriptTap.on('session-bound', (ev) => {
     cur.codexAllowMtimeFallback = true;
     changed = true;
   }
-  if (ev.kind === 'codex-app' && ev.threadId && cur.codexAppThreadId !== ev.threadId) {
-    cur.codexAppThreadId = ev.threadId;
-    changed = true;
-  }
   if (ev.kind === 'gemini') {
     if (ev.geminiChatId && cur.geminiChatId !== ev.geminiChatId) { cur.geminiChatId = ev.geminiChatId; changed = true; }
     if (ev.geminiProjectHash && cur.geminiProjectHash !== ev.geminiProjectHash) { cur.geminiProjectHash = ev.geminiProjectHash; changed = true; }
     if (ev.geminiProjectRoot && cur.geminiProjectRoot !== ev.geminiProjectRoot) { cur.geminiProjectRoot = ev.geminiProjectRoot; changed = true; }
+  }
+  if (isKimiCliKind(ev.kind)) {
+    if (ev.kimiSid && cur.kimiSid !== ev.kimiSid) { cur.kimiSid = ev.kimiSid; changed = true; }
+    if (ev.sessionDir && cur.kimiSessionDir !== ev.sessionDir) { cur.kimiSessionDir = ev.sessionDir; changed = true; }
+    if (ev.wirePath && cur.transcriptPath !== ev.wirePath) { cur.transcriptPath = ev.wirePath; changed = true; }
   }
   if (changed) {
     cur.updatedAt = Date.now();  // 让后续 stateStore merge 用最新版本胜出
@@ -518,7 +564,7 @@ transcriptTap.on('session-bound', (ev) => {
     // 2026-05-07 道雪：sid 类字段一旦确定就立刻 sync 写 per-session JSON。
     //   不靠 200ms debounce，不靠 state.json 防抖 500ms——任何一个 race / crash
     //   都不会再让 Codex/Gemini 的 transcript 关联丢失。
-    try { sessionStore.markDirtySync(ev.hubSessionId, cur); }
+    try { void sessionStore.markDirtyImmediate(ev.hubSessionId, cur); }
     catch (e) { console.warn('[hub] sessionStore sync persist failed:', e.message); }
 
     // Spec 3 · W12：广播给 renderer 让 sessions Map 即刻同步（之前只写磁盘，
@@ -530,10 +576,11 @@ transcriptTap.on('session-bound', (ev) => {
       transcriptPath: cur.transcriptPath,
       codexSessionsRoot: cur.codexSessionsRoot,
       codexAllowMtimeFallback: !!cur.codexAllowMtimeFallback,
-      codexAppThreadId: cur.codexAppThreadId,
       geminiChatId: cur.geminiChatId,
       geminiProjectHash: cur.geminiProjectHash,
       geminiProjectRoot: cur.geminiProjectRoot,
+      kimiSid: cur.kimiSid,
+      kimiSessionDir: cur.kimiSessionDir,
     });
     console.log(`[群聊] persisted resume meta for ${ev.kind} session ${ev.hubSessionId.slice(0,8)}`);
   }
@@ -541,12 +588,17 @@ transcriptTap.on('session-bound', (ev) => {
 
 sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 
-// NOTE: Don't call app.setAppUserModelId here. Setting an AUMID without also
-// registering an icon resource for that AUMID (or matching it on the launcher
-// .lnk) decouples the running process from the launching shortcut, and Windows
-// falls back to electron.exe's default atom icon in the taskbar. With no AUMID
-// set, Windows uses the .lnk's icon for taskbar entries spawned via the .lnk
-// and BrowserWindow.icon for the title bar — both end up the octopus.
+// Pin a stable AppUserModelID before the first toast notification fires.
+// Leaving it unset (the prior approach) has a hole: the first Windows toast
+// raised from main/ipc/app-utility-handlers.js (Notification.show()) makes the
+// toast subsystem implicitly bind the process to an electron.exe-derived AUMID,
+// whose icon is electron.exe's default atom — so the taskbar icon silently
+// reverts to the Electron default hours into a session. Setting our own AUMID
+// first makes Windows fall back to the window HICON (setIcon in createWindow =
+// claude-wx.ico) instead. Must precede any window/notification. win32-only.
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.ai-group-chat-hub'); // = package.json build.appId
+}
 
 function createWindow() {
   // Load the icon as a NativeImage so we can pass it to BrowserWindow AND
@@ -599,6 +651,14 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     traceStartup('did-finish-load');
     sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
+    // Phase 2b：boot 后由 main 循环引擎扫描未完成循环并自动续跑（main 驱动 + 自动 wake 成员）。once 守卫 + 延迟(等 session 恢复) + try，绝不影响启动。
+    if (!global.__loopResumeScanned) {
+      global.__loopResumeScanned = true;
+      setTimeout(() => {
+        try { if (global.__loopEngine) global.__loopEngine.resumePending(); }
+        catch (e) { console.warn('[loop] boot resume failed:', e && e.message); }
+      }, 8000);
+    }
   });
   setTimeout(showMainWindow, 4000);
 
@@ -637,13 +697,39 @@ function sendToRenderer(channel, data) {
 }
 
 let groupChatDispatcher = null;
+const meetingTerminalActivitySentAt = new Map();
+const terminalOutputBatcher = new TerminalOutputBatcher({
+  emit: ({ sessionId, data, seq }) => {
+    if (!shouldForwardTerminalOutput(sessionManager, sessionId)) return;
+    sendToRenderer('terminal-data', { sessionId, data, seq });
+  },
+});
 
-sessionManager.onData = (sessionId, data) => {
-  sendToRenderer('terminal-data', { sessionId, data });
+sessionManager.onData = (sessionId, data, seq) => {
+  // Meeting room no longer embeds xterms. Forwarding every background member's
+  // dense TUI redraw across Electron IPC creates a large queue that the renderer
+  // immediately discards (or used to write into an invisible terminal). Keep the
+  // PTY ring buffer in main and stream only when the user explicitly opens that
+  // member as the focused shell.
+  if (!shouldForwardTerminalOutput(sessionManager, sessionId)) {
+    // Preserve the room's lightweight tab activity indicator without shipping
+    // the dense terminal payload. Two events/sec/session is enough for UX.
+    const now = Date.now();
+    if (now - (meetingTerminalActivitySentAt.get(sessionId) || 0) >= 500) {
+      meetingTerminalActivitySentAt.set(sessionId, now);
+      sendToRenderer('meeting-terminal-activity', { sessionId });
+    }
+    return;
+  }
+  terminalOutputBatcher.push(sessionId, data, seq);
 };
 
 sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
+  terminalOutputBatcher.flush(sessionId);
+  meetingTerminalActivitySentAt.delete(sessionId);
   groupChatDispatcher?.markProcessExitForSession(sessionId, exitInfo);
+  // 让投研等原生 PTY 编排者能在用户关闭窗口或 CLI 异常退出时释放跨 Hub 租约。
+  sessionManager.emit('session-exited', { sessionId, meetingId, exitInfo: exitInfo || null });
 
   try { transcriptTap.unregisterSession(sessionId); } catch {}
   // 群聊 cli-ready monotonic guard 清理（独立模块，详见 core/group-chat-cli-ready-detector.js）
@@ -666,7 +752,11 @@ function registerSessionForTap(session) {
       transcriptPath: session.transcriptPath || undefined,
       sessionsRoot: session.codexSessionsRoot || undefined,
       codexSid: session.codexSid || undefined,
+      kimiSid: session.kimiSid || undefined,
+      sessionDir: session.kimiSessionDir || undefined,
+      registeredAt: session.createdAt || Date.now(),
       allowMtimeFallback: !!session.codexAllowMtimeFallback,
+      requirePromptMatch: !!session.meetingId,
     });
   }
   catch (e) {
@@ -704,6 +794,7 @@ registerMeetingCreateIpc(ipcMain, {
   hookToken: HOOK_TOKEN,
   isClaudeFamily,
   isCodexBaseKind,
+  isCodexSubagentRolloutPath,
   isIsolatedHub,
   kindLabels: KIND_LABELS,
   meetingManager,
@@ -713,6 +804,7 @@ registerMeetingCreateIpc(ipcMain, {
   sendToRenderer,
   sessionManager,
   slotIds: SLOT_IDS,
+  workspaceService,
 });
 
 registerMeetingIpc(ipcMain, {
@@ -746,18 +838,61 @@ groupChatDispatcher = createGroupChatDispatcher({
   transcriptTap,
 });
 
-const { createCommitteeConductor } = require('./main/groupchat/committee-conductor.js');
-const committeeConductor = createCommitteeConductor({
-  dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
-  meetingManager,
-  sessionManager,
-  sendToRenderer,
-  logger: console,
-});
-
 registerGroupchatTurnIpc(ipcMain, {
   dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
-  committeeConductor,
+});
+
+// Phase 2b：main 进程循环引擎（崩溃续跑 + 成员 wake），复用 dispatcher。try 包裹，绝不影响启动。
+try {
+  global.__loopEngine = require('./main/groupchat/loop-engine.js').createLoopEngine({
+    getDispatcher: () => groupChatDispatcher,
+    meetingManager, sessionManager, sendToRenderer,
+    writeReport: (html) => {
+      try {
+        const fsx = require('fs'), pathx = require('path'), osx = require('os');
+        const dir = pathx.join(osx.homedir(), 'Desktop', 'claude-artifacts');
+        fsx.mkdirSync(dir, { recursive: true });
+        const f = pathx.join(dir, 'loop-report-' + Date.now() + '.html');
+        fsx.writeFileSync(f, html, 'utf8');
+        return f;
+      } catch (e) { return null; }
+    },
+    logger: console,
+  });
+  require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, { loopEngine: global.__loopEngine });
+} catch (e) { console.warn('[loop] engine init failed:', e && e.message); }
+
+// 投委会五幕编排（task#5）：叠加在 research 群聊之上，复用 dispatcher 的并行发言 + 委员解析。
+const committeeConductor = createCommitteeConductor({
+  dispatchTurn: groupChatDispatcher.dispatchGroupChatTurn,
+  getGroupMembers: (meetingId) => {
+    const meeting = meetingManager.getMeeting(meetingId);
+    return meeting ? groupChatDispatcher.groupMembersForMeeting(meeting) : [];
+  },
+  emitProgress: (meetingId, payload) => sendToRenderer('committee:progress', { meetingId, ...payload }),
+  log: (m) => console.log(m),
+  // 点6：闭庭后把末轮 + 主席发言喂回该 meeting 的群聊 orchestrator（写 messages 供 buildDelta 传递）。
+  // 阶段二：投委会每幕发言写进群聊 messages（带幕次 meta）→ 群聊气泡渲染 + 末轮/主席喂回 AI（点6）。
+  appendSpeeches: (meetingId, items, actMeta) => {
+    try {
+      const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+      return orch && typeof orch.appendCommitteeSpeeches === 'function' ? orch.appendCommitteeSpeeches(items, actMeta) : 0;
+    } catch (e) { console.log('[committee] appendSpeeches threw: ' + (e && e.message)); return 0; }
+  },
+  // 点3a「过往投委会」：闭庭后持久化整场 record（标的/每幕发言/双榜/主席报告）供历史回看。
+  persistHistory: (record) => { try { return committeeHistory.saveRecord(getHubDataDir(), record); } catch (e) { console.log('[committee] persistHistory threw: ' + (e && e.message)); return null; } },
+});
+registerCommitteeIpc(ipcMain, { committeeConductor, history: committeeHistory, getHubDataDir });
+
+// 初心投研（chuxin-research）服务桥 — 2026-07-23 Kimi 移植：独立功能，仅注册 IPC，不改主流程
+const chuxinBridge = require('./main/ipc/chuxin-handlers.js').registerChuxinIpc(ipcMain, {
+  getHookPort: () => hookPort,
+  getHubDataDir,
+  hookToken: HOOK_TOKEN,
+  registerSessionForTap,
+  sendToRenderer,
+  sessionManager,
+  transcriptTap,
 });
 
 registerGroupchatQueryIpc(ipcMain, {
@@ -782,16 +917,17 @@ registerCliStatusIpc(ipcMain, {
 });
 
 registerTranscriptIpc(ipcMain, {
-  codexAppRegistry,
   defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
   findCodexRolloutByCwd,
   findCodexRolloutBySid,
   findTranscriptByCCSessionId,
   isCodexCliKind,
+  isUsableCodexRolloutPath,
   parseClaudeTranscriptToTurns,
   parseCodexRolloutToTurns,
   sessionManager,
   transcriptTap,
+  transcriptParserService,
   updateSessionTranscriptBinding,
 });
 
@@ -801,9 +937,20 @@ registerTranscriptIpc(ipcMain, {
 registerArchiveIpc(ipcMain);
 
 registerSessionIpc(ipcMain, {
+  getTerminalOutputBatchStats: () => terminalOutputBatcher.snapshotStats(),
   registerSessionForTap,
   sendToRenderer,
   sessionManager,
+  workspaceService,
+});
+
+registerWorkspaceIpc(ipcMain, {
+  dialog,
+  meetingManager,
+  sendToRenderer,
+  sessionManager,
+  shell,
+  workspaceService,
 });
 
 // --- Dormant session persistence ---
@@ -825,6 +972,7 @@ let lastPersistedSessions = Array.isArray(bootState.sessions) ? bootState.sessio
 let _immersiveByMeeting = (bootState.immersiveByMeeting && typeof bootState.immersiveByMeeting === 'object')
   ? bootState.immersiveByMeeting : {};
 const bootMeetings = Array.isArray(bootState.meetings) ? bootState.meetings : [];
+let lastPersistedMeetings = bootMeetings;
 for (const m of bootMeetings) {
   meetingManager.restoreMeeting(m);
 }
@@ -848,12 +996,14 @@ registerPersistenceIpc(ipcMain, {
   bootWasClean,
   getImmersiveByMeeting: () => _immersiveByMeeting,
   getLastPersistedMeetingIds: () => _lastPersistedMeetingIds,
+  getLastPersistedMeetings: () => lastPersistedMeetings,
   getLastPersistedSessionIds: () => _lastPersistedSessionIds,
   getLastPersistedSessions: () => lastPersistedSessions,
   meetingManager,
   meetingStore,
   sessionStore,
   setLastPersistedMeetingIds: (ids) => { _lastPersistedMeetingIds = ids; },
+  setLastPersistedMeetings: (meetings) => { lastPersistedMeetings = meetings; },
   setLastPersistedSessionIds: (ids) => { _lastPersistedSessionIds = ids; },
   setLastPersistedSessions: (sessions) => { lastPersistedSessions = sessions; },
   stateStore,
@@ -868,7 +1018,6 @@ registerResumeSessionIpc(ipcMain, {
   getHubDataDir,
   hookToken: HOOK_TOKEN,
   isClaudeFamily,
-  isClaudeWebKind,
   isCodexBaseKind,
   meetingManager,
   os,
@@ -894,7 +1043,6 @@ registerAppUtilityIpc(ipcMain, {
 });
 
 registerPathIpc(ipcMain);
-registerPptModeIpc(ipcMain);
 
 // --- Hook HTTP server ---
 // Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code
@@ -906,10 +1054,6 @@ const hookServer = http.createServer((req, res) => {
   const isStatus = req.method === 'POST' && req.url === '/api/status';
   // 2026-05-16 道雪：防卡死 — 外部 HTTP 救援入口，tools/hub-escape.ps1 调
   const isEscapeHome = req.method === 'POST' && req.url === '/api/escape-home';
-  const isResearchFetchStock = req.method === 'POST' && req.url === '/api/research/fetch-stock';
-  const isResearchFetchField = req.method === 'POST' && req.url === '/api/research/fetch-field';
-  const isResearchFetchConcept = req.method === 'POST' && req.url === '/api/research/fetch-concept';
-  const isResearchFetchSector = req.method === 'POST' && req.url === '/api/research/fetch-sector';
   // Plan 2: 3 个新聚合 endpoint（走 research-mcp/query.py 而非 LinDangAgent.data_query.py）
   const isResearchStockStatic = req.method === 'POST' && req.url === '/api/research/stock-static';
   const isResearchStockMarket = req.method === 'POST' && req.url === '/api/research/stock-market';
@@ -917,8 +1061,7 @@ const hookServer = http.createServer((req, res) => {
   const isResearchStockSentiment = req.method === 'POST' && req.url === '/api/research/stock-sentiment';
   const isResearchStockScan = req.method === 'POST' && req.url === '/api/research/stock-scan';
   const isResearchKlineSimilarity = req.method === 'POST' && req.url === '/api/research/kline-similarity';
-  const isResearchFetch = isResearchFetchStock || isResearchFetchField || isResearchFetchConcept || isResearchFetchSector
-    || isResearchStockStatic || isResearchStockMarket || isResearchStockNews || isResearchStockSentiment || isResearchStockScan
+  const isResearchFetch = isResearchStockStatic || isResearchStockMarket || isResearchStockNews || isResearchStockSentiment || isResearchStockScan
     || isResearchKlineSimilarity;
   // plan 2026-05-05 阶段 0: 群聊记忆 MCP 回调（loopback）。
   if (!isHook && !isStatus && !isResearchFetch && !isEscapeHome) {
@@ -973,28 +1116,21 @@ const hookServer = http.createServer((req, res) => {
       return;
     }
     // Research mode MCP callbacks (loopback)：stock_static / stock_market / stock_news / scan_* 系列。
-    // 旧 endpoint /api/research/fetch-stock 和 /api/research/fetch-field 保留向后兼容（MCP 工具
-    // fetch_lindang_stock / fetch_lindang_field 已于 2026-06-04 完全下线，Hub 内零调用，
-    // 仅 lindang-bridge.js 的外部脚本可能仍在用，2026-09 后可彻底删除）。
     if (isResearchFetch) {
       if (parsed.token !== HOOK_TOKEN) { res.writeHead(403); res.end('{}'); return; }
-      const { meetingId, kind, symbol, name, concept, top_n, sector, op, depth, mode, scan_type, only_subject_stock,
+      const { meetingId, kind, symbol, depth, mode, scan_type, only_subject_stock,
               window: ksWindow, top_k: ksTopK, method: ksMethod, feature: ksFeature, exclude_self_recent: ksExclude } = parsed;
       const meeting = meetingId ? meetingManager.getMeeting(meetingId) : null;
-      // committee（投委会）复用整套投研 MCP 工具栈
-      if (!meeting || (meeting.scene !== 'research' && meeting.scene !== 'committee')) {
+      const chuxinResearch = chuxinBridge
+        && typeof chuxinBridge.isAuthorizedResearchScope === 'function'
+        && chuxinBridge.isAuthorizedResearchScope(meetingId);
+      if ((!meeting || meeting.scene !== 'research') && !chuxinResearch) {
         res.writeHead(400); res.end('{"error":"not research mode"}'); return;
       }
       const t0 = Date.now();
       let result;
       try {
-        if (isResearchFetchStock) {
-          result = await lindangBridge.fetchStock(symbol, name);
-        } else if (isResearchFetchField) {
-          result = await lindangBridge.fetchField(op, symbol);
-        } else if (isResearchFetchConcept) {
-          result = await lindangBridge.fetchConcept(concept, top_n || 10);
-        } else if (isResearchStockStatic) {
+        if (isResearchStockStatic) {
           result = await lindangBridge.fetchStatic(symbol, depth);
         } else if (isResearchStockMarket) {
           result = await lindangBridge.fetchMarket(symbol, depth, mode);
@@ -1010,7 +1146,7 @@ const hookServer = http.createServer((req, res) => {
             feature: ksFeature, exclude_self_recent: ksExclude,
           });
         } else {
-          result = await lindangBridge.fetchSector(sector);
+          result = { ok: false, error: 'unknown research endpoint' };
         }
       } catch (e) {
         result = { ok: false, error: 'bridge throw: ' + e.message };
@@ -1117,6 +1253,38 @@ function listenWithFallback() {
 // restart without waiting for the first statusline callback.
 const USAGE_CACHE_FILE = path.join(getHubDataDir(), 'usage-cache.json');
 const STATUSLINE_CACHE_FILE = path.join(getHubDataDir(), 'statusline-cache.json');
+let _usageCacheMemory = null;
+let _usageCacheWriteTimer = null;
+let _usageCacheWriteQueue = Promise.resolve();
+
+function scheduleUsageCacheWrite() {
+  if (_usageCacheWriteTimer) clearTimeout(_usageCacheWriteTimer);
+  _usageCacheWriteTimer = setTimeout(() => {
+    _usageCacheWriteTimer = null;
+    const snapshot = JSON.stringify(_usageCacheMemory || {});
+    _usageCacheWriteQueue = _usageCacheWriteQueue.then(async () => {
+      await fs.promises.mkdir(path.dirname(USAGE_CACHE_FILE), { recursive: true });
+      const tmp = `${USAGE_CACHE_FILE}.${process.pid}.${Date.now()}.tmp`;
+      try {
+        await fs.promises.writeFile(tmp, snapshot);
+        await fs.promises.rename(tmp, USAGE_CACHE_FILE);
+      } finally {
+        try { await fs.promises.unlink(tmp); } catch {}
+      }
+    }).catch(error => console.warn('[usage-cache] async write failed:', error && error.message));
+  }, 100);
+  _usageCacheWriteTimer.unref?.();
+}
+
+function flushUsageCacheSync() {
+  if (_usageCacheWriteTimer) {
+    clearTimeout(_usageCacheWriteTimer);
+    _usageCacheWriteTimer = null;
+  }
+  if (_usageCacheMemory === null) return;
+  fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
+  fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(_usageCacheMemory));
+}
 
 // See core/usage-filter.js for why this filter exists (rate_limits monotonic
 // within a window — stale low-pct snapshots from idle sessions must not
@@ -1133,8 +1301,8 @@ function cacheAccountUsage(data) {
       usage7d: data.usage7d || cur.usage7d || null,
       ts: data.ts || Date.now(),
     };
-    fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
-    fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(existing));
+    _usageCacheMemory = existing;
+    scheduleUsageCacheWrite();
   } catch {}
 }
 
@@ -1142,29 +1310,17 @@ function loadStatuslineCache() {
   try { return JSON.parse(fs.readFileSync(STATUSLINE_CACHE_FILE, 'utf8')); } catch { return {}; }
 }
 
-function selectClaudeStatuslineUsage(cache) {
-  const entries = Object.values(cache || {})
-    .filter(entry => entry && typeof entry === 'object' && (entry.usage5h || entry.usage7d))
-    .sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  if (entries.length === 0) return null;
-
-  const usage5Entry = entries.find(entry => entry.usage5h);
-  const usage7Entry = entries.find(entry => entry.usage7d);
-  const latestTs = Math.max(
-    usage5Entry ? usage5Entry.ts || 0 : 0,
-    usage7Entry ? usage7Entry.ts || 0 : 0,
-  );
-  return {
-    usage5h: usage5Entry ? usage5Entry.usage5h : null,
-    usage7d: usage7Entry ? usage7Entry.usage7d : null,
-    ts: latestTs || Date.now(),
-    source: 'statusline-cache',
-  };
-}
-
 function refreshClaudeAccountUsageFromStatuslineCache() {
+  const before = loadUsageCache().claude || null;
   const snapshot = selectClaudeStatuslineUsage(loadStatuslineCache());
-  if (!snapshot) return null;
+  if (!snapshot) {
+    return {
+      data: before,
+      changed: false,
+      observedAt: before && (before.observedAt || before.ts) || 0,
+      source: 'statusline-cache',
+    };
+  }
   const filtered = claudeUsageFilter.filter(snapshot.usage5h, snapshot.usage7d);
   if (filtered.anyAccepted) {
     cacheAccountUsage({
@@ -1173,7 +1329,13 @@ function refreshClaudeAccountUsageFromStatuslineCache() {
       ts: snapshot.ts,
     });
   }
-  return loadUsageCache().claude || null;
+  const data = loadUsageCache().claude || null;
+  return {
+    data,
+    changed: didClaudeSnapshotAdvance(before, { ...data, observedAt: snapshot.ts }),
+    observedAt: snapshot.ts,
+    source: snapshot.source,
+  };
 }
 
 function cacheAgentUsage(provider, tokenData, scope = null) {
@@ -1182,23 +1344,18 @@ function cacheAgentUsage(provider, tokenData, scope = null) {
     const scoped = provider === 'codex' && scope
       ? attachCodexUsageScope(tokenData, scope)
       : tokenData;
-    existing[provider] = { ...scoped, ts: Date.now() };
-    fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
-    fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(existing));
-  } catch {}
-}
-
-function cachePackyAccount(data) {
-  try {
-    const existing = loadUsageCache();
-    existing.packy = { ...data, ts: Date.now() };
-    fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
-    fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(existing));
+    const observedAt = tokenData && (tokenData.observedAt || tokenData._ts) || Date.now();
+    existing[provider] = { ...scoped, ts: observedAt };
+    _usageCacheMemory = existing;
+    scheduleUsageCacheWrite();
   } catch {}
 }
 
 function loadUsageCache() {
-  try { return JSON.parse(fs.readFileSync(USAGE_CACHE_FILE, 'utf8')); } catch { return {}; }
+  if (_usageCacheMemory !== null) return { ..._usageCacheMemory };
+  try { _usageCacheMemory = JSON.parse(fs.readFileSync(USAGE_CACHE_FILE, 'utf8')); }
+  catch { _usageCacheMemory = {}; }
+  return { ..._usageCacheMemory };
 }
 
 function currentCodexUsageScope() {
@@ -1208,40 +1365,55 @@ function currentCodexUsageScope() {
   });
 }
 
-function loadUsageCacheForCurrentConfig() {
-  return filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope());
+let _codexLiveUsage = null;
+
+async function refreshCodexAccountUsageLive() {
+  const scope = currentCodexUsageScope();
+  if (scope.backend !== 'subscription') {
+    throw new Error('Codex API 模式没有订阅配额窗口');
+  }
+  const config = getHubConfig();
+  const raw = await readCodexAccountUsage({
+    home: scope.home,
+    proxy: config.proxy,
+    cwd: os.homedir(),
+    timeoutMs: 8000,
+  });
+  const payload = { ...raw, _ts: raw.observedAt };
+  _codexLiveUsage = attachCodexUsageScope(payload, scope);
+  cacheAgentUsage('codex', payload, scope);
+  return _codexLiveUsage;
 }
 
-// PackyAPI 账户(余额 + 消耗)异步拉取 + 缓存。
-// 调用方:启动后台 timer + IPC 'refresh-packy-account'(用户设置改 cookie 时强制刷新)。
-async function fetchAndCachePackyAccount() {
-  const cfg = getHubConfig();
-  const cookie = cfg.packySessionCookie || '';
-  // sk- key 用于查"今日消耗"(独立路径,即使没 cookie 也有数据)。
-  // codex 与 gpt 共享 codex 分组 key;kimi/qwen 共享 bailian key。去重交给 fetchAggregated。
-  const tokenKeys = [cfg.codexApiKey, cfg.gptApiKey, cfg.kimiApiKey, cfg.qwenApiKey].filter(Boolean);
-  if (!cookie && tokenKeys.length === 0) {
-    cachePackyAccount({ enabled: false });
-    return { enabled: false };
-  }
-  const proxy = cfg.proxy || '';
-  const data = await packyBalance.fetchAggregated({ cookie, tokenKeys, proxy });
-  // cache 与 IPC payload 必须都带 enabled: true。漏 enabled 会让 renderer 直接覆盖
-  // packyAccountData 后 renderPackyRow 走 !data.enabled 分支显示"未接入"——
-  // 启动时从 cache 加载有 enabled,5min 自动刷新触发 IPC 后立刻翻车。
-  const payload = { ...data, enabled: true };
-  cachePackyAccount(payload);
-  for (const win of BrowserWindow.getAllWindows()) {
-    try { win.webContents.send('packy-account-updated', payload); } catch {}
-  }
+async function refreshKimiAccountUsageLive() {
+  const raw = await readKimiAccountUsage({
+    home: process.env.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code'),
+    timeoutMs: 8000,
+  });
+  const payload = { ...raw, _ts: raw.observedAt };
+  cacheAgentUsage('kimi', payload);
   return payload;
 }
 
+function loadUsageCacheForCurrentConfig() {
+  const scoped = filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope());
+  if (scoped.codex && scoped.codex.source === 'app-server') {
+    scoped.codex = expireCodexUsageWindows(scoped.codex, Date.now());
+  }
+  return scoped;
+}
+
+try {
+  const cachedCodex = loadUsageCacheForCurrentConfig().codex;
+  if (cachedCodex && cachedCodex.source === 'app-server') _codexLiveUsage = cachedCodex;
+} catch {}
+
 registerUsageIpc(ipcMain, {
   clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
-  fetchAndCachePackyAccount,
   loadUsageCacheForCurrentConfig,
   refreshClaudeAccountUsage: refreshClaudeAccountUsageFromStatuslineCache,
+  refreshCodexAccountUsage: refreshCodexAccountUsageLive,
+  refreshKimiAccountUsage: refreshKimiAccountUsageLive,
   scanAgentSessions,
 });
 
@@ -1250,20 +1422,21 @@ registerConfigIpc(ipcMain, {
   clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
   clearSessionManagerConfigCache,
   currentCodexUsageScope,
-  fetchAndCachePackyAccount,
   scanAgentSessions,
   sendToRenderer,
 });
 
-// --- Gemini/Codex ring-buffer usage scanner ---
+// --- Gemini/Codex/Kimi ring-buffer usage scanner ---
 // Periodically scans agent sessions' ring buffers for token/model patterns
 // and emits status-event so the renderer can show context/usage badges.
 const _agentLastStatus = new Map();
-const _agentQuota = { gemini: null, codex: null };
+const _agentQuota = { gemini: null };
+const _codexCliQuotaBySession = new Map();
 const CODEX_CLI_USAGE_FRESH_MS = 2 * 60 * 1000;
 
 // --- Codex JSONL-based usage scanner ---
-// Codex CLI writes authoritative rate_limits to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
+// Codex CLI writes rate-limit snapshots to ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl.
+// They are a passive fallback; manual refresh uses app-server for the selected profile.
 // Each file contains token_count events with primary (5h) and secondary (7d) windows.
 let _codexJsonlLastScan = 0;
 let _codexJsonlCached = null;
@@ -1271,42 +1444,19 @@ const _codexJsonlCachedByRoot = new Map();
 const CODEX_JSONL_THROTTLE_MS = 5_000;
 const CODEX_JSONL_CANDIDATE_LIMIT = 20;
 
-function scanCodexJsonlUsage(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT, opts = {}) {
+async function scanCodexJsonlUsage(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT, opts = {}) {
   try {
-    const now = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const datePaths = [];
-    datePaths.push(path.join(sessionsDir, String(now.getFullYear()), pad(now.getMonth() + 1), pad(now.getDate())));
-    const yesterday = new Date(now.getTime() - 86400000);
-    datePaths.push(path.join(sessionsDir, String(yesterday.getFullYear()), pad(yesterday.getMonth() + 1), pad(yesterday.getDate())));
-
-    const candidates = [];
-    for (const dir of datePaths) {
-      let files;
-      try { files = fs.readdirSync(dir).filter(f => f.startsWith('rollout-') && f.endsWith('.jsonl')); } catch { continue; }
-      const withStats = files.map(f => {
-        const fp = path.join(dir, f);
-        try { return { path: fp, mtime: fs.statSync(fp).mtimeMs }; } catch { return null; }
-      }).filter(Boolean);
-      withStats.sort((a, b) => b.mtime - a.mtime);
-      for (const file of withStats.slice(0, CODEX_JSONL_CANDIDATE_LIMIT)) {
-        const entry = extractCodexRateLimits(file.path);
-        if (entry) {
-          candidates.push({
-            ...entry,
-            rolloutPath: file.path,
-            observedAt: file.mtime,
-          });
-        }
-      }
-    }
-    return mergeCodexRateLimitCandidates(candidates, Date.now(), {
+    const result = await codexJsonlUsageService.scan(sessionsDir, {
       minObservedAt: opts.minObservedAt || 0,
+      candidateLimit: CODEX_JSONL_CANDIDATE_LIMIT,
     });
-  } catch { return null; }
+    return result.data;
+  } catch {
+    return null;
+  }
 }
 
-function scanCodexJsonlUsageThrottled(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT, opts = {}) {
+async function scanCodexJsonlUsageThrottled(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT, opts = {}) {
   const now = Date.now();
   const key = [
     path.resolve(sessionsDir || DEFAULT_CODEX_SESSIONS_ROOT).toLowerCase(),
@@ -1314,7 +1464,7 @@ function scanCodexJsonlUsageThrottled(sessionsDir = DEFAULT_CODEX_SESSIONS_ROOT,
   ].join('|');
   const cached = _codexJsonlCachedByRoot.get(key);
   if (!opts.force && cached && now - cached.ts < CODEX_JSONL_THROTTLE_MS) return cached.data;
-  const data = scanCodexJsonlUsage(sessionsDir, opts);
+  const data = await scanCodexJsonlUsage(sessionsDir, opts);
   _codexJsonlCachedByRoot.set(key, { ts: now, data });
   _codexJsonlLastScan = now;
   _codexJsonlCached = data;
@@ -1358,26 +1508,32 @@ function calcAgentUsage(kind, scopeOrRoot = null) {
   };
 }
 
-function scanAgentSessions(opts = {}) {
+async function scanAgentSessions(opts = {}) {
   const force = !!opts.force;
   const allSessions = sessionManager.getAllSessions();
   for (const s of allSessions) {
-    if (s.kind !== 'gemini' && !isCodexBaseKind(s.kind)) continue;
+    if (s.kind !== 'gemini' && !isCodexBaseKind(s.kind) && !isKimiCliKind(s.kind)) continue;
     if (s.status === 'dormant') continue;
     const buf = sessionManager.getSessionBuffer(s.id);
     if (!buf) continue;
     const plain = stripAnsi(buf);
-    const parsed = s.kind === 'gemini' ? parseGeminiUsage(plain) : parseCodexUsage(plain);
+    const parsed = s.kind === 'gemini'
+      ? parseGeminiUsage(plain)
+      : isKimiCliKind(s.kind)
+        ? parseKimiUsage(plain)
+        : parseCodexUsage(plain);
     if (isCodexBaseKind(s.kind) && (parsed.usage5h || parsed.usage7d)) {
       const usageSig = JSON.stringify({ usage5h: parsed.usage5h || null, usage7d: parsed.usage7d || null });
       const usageKey = s.id + ':codex-cli-usage';
       if (_agentLastStatus.get(usageKey) !== usageSig) {
         _agentLastStatus.set(usageKey, usageSig);
-        _agentQuota.codex = {
-          usage5h: parsed.usage5h || null,
-          usage7d: parsed.usage7d || null,
-          _ts: Date.now(),
-        };
+        recordCodexCliUsage(
+          _codexCliQuotaBySession,
+          s,
+          parsed,
+          Date.now(),
+          DEFAULT_CODEX_SESSIONS_ROOT,
+        );
       }
     }
     if (parsed.tokensUsed) {
@@ -1410,47 +1566,62 @@ function scanAgentSessions(opts = {}) {
     if (parsed.model) payload.model = parsed.model;
     sendToRenderer('status-event', payload);
   }
-  // Expire stale _agentQuota entries (no fresh CLI data for >10 min)
+  // Expire stale CLI quota entries (no fresh CLI data for >10 min).
   const now = Date.now();
-  for (const kind of ['gemini', 'codex']) {
-    if (_agentQuota[kind] && _agentQuota[kind]._ts && now - _agentQuota[kind]._ts > 10 * 60 * 1000) {
-      _agentQuota[kind] = null;
-    }
+  if (_agentQuota.gemini && _agentQuota.gemini._ts && now - _agentQuota.gemini._ts > 10 * 60 * 1000) {
+    _agentQuota.gemini = null;
   }
+  pruneCodexCliUsage(_codexCliQuotaBySession, now, 10 * 60 * 1000);
   // Build and broadcast per-provider usage.
-  // Priority: Codex JSONL (authoritative) > ring buffer quota > token estimates.
+  // Manual app-server reads are authoritative for the selected profile. Newer
+  // CLI/JSONL snapshots may supersede them only when the weekly reset boundary
+  // proves they belong to the same account/window.
   const agentData = {};
   // Codex: visible `/usage` output is the freshest user-triggered source.
   // Fall back to JSONL token_count snapshots, then local token estimates.
   const codexScope = currentCodexUsageScope();
-  const freshCodexCliUsage = _agentQuota.codex && _agentQuota.codex._ts && now - _agentQuota.codex._ts <= CODEX_CLI_USAGE_FRESH_MS
-    ? _agentQuota.codex
-    : null;
-  const codexJsonl = freshCodexCliUsage ? null : scanCodexJsonlUsageThrottled(codexScope.sessionsRoot, {
+  const freshCodexCliUsage = selectCodexCliUsageForScope(_codexCliQuotaBySession, codexScope, {
+    now,
+    maxAgeMs: CODEX_CLI_USAGE_FRESH_MS,
+    defaultSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
+  });
+  const cachedCodexCliUsage = selectCodexCliUsageForScope(_codexCliQuotaBySession, codexScope, {
+    now,
+    maxAgeMs: 10 * 60 * 1000,
+    defaultSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
+  });
+  const codexJsonl = freshCodexCliUsage ? null : await scanCodexJsonlUsageThrottled(codexScope.sessionsRoot, {
     force,
     minObservedAt: codexScope.authSinceMs || 0,
   });
   if (freshCodexCliUsage) {
-    const payload = { ...freshCodexCliUsage, source: 'cli-usage', _ts: Date.now() };
+    const payload = { ...freshCodexCliUsage, source: 'cli-usage', observedAt: freshCodexCliUsage._ts, _ts: freshCodexCliUsage._ts };
     agentData.codex = attachCodexUsageScope(payload, codexScope);
     cacheAgentUsage('codex', payload, codexScope);
   } else if (codexJsonl) {
-    const payload = { ...codexJsonl, source: 'jsonl', _ts: Date.now() };
+    const payload = { ...codexJsonl, source: 'jsonl', _ts: codexJsonl.observedAt || now };
     agentData.codex = attachCodexUsageScope(payload, codexScope);
     cacheAgentUsage('codex', payload, codexScope);
-  } else if (_agentQuota.codex) {
-    const payload = { ..._agentQuota.codex, source: 'cli', _ts: Date.now() };
+  } else if (cachedCodexCliUsage) {
+    const payload = { ...cachedCodexCliUsage, source: 'cli', observedAt: cachedCodexCliUsage._ts, _ts: cachedCodexCliUsage._ts };
     agentData.codex = attachCodexUsageScope(payload, codexScope);
     cacheAgentUsage('codex', payload, codexScope);
   } else {
     const usage = calcAgentUsage('codex', codexScope.sessionsRoot);
     if (usage) {
-      const payload = { ...usage, source: 'estimate', _ts: Date.now() };
+      const payload = { ...usage, source: 'estimate', observedAt: now, _ts: now };
       agentData.codex = attachCodexUsageScope(payload, codexScope);
       cacheAgentUsage('codex', payload, codexScope);
     } else {
       agentData.codex = attachCodexUsageScope({ usage5h: null, usage7d: null, unavailable: true }, codexScope);
     }
+  }
+  const liveForScope = _codexLiveUsage && _codexLiveUsage.scopeKey === codexScope.scopeKey
+    ? expireCodexUsageWindows(_codexLiveUsage, now)
+    : null;
+  if (shouldPreferCodexLiveUsage(liveForScope, agentData.codex, now)) {
+    agentData.codex = liveForScope;
+    cacheAgentUsage('codex', liveForScope, codexScope);
   }
   // Gemini: quota from CLI footer > token estimates
   if (_agentQuota.gemini) {
@@ -1468,12 +1639,45 @@ function scanAgentSessions(opts = {}) {
 }
 
 let _agentScanInterval = null;
+let _agentScanInFlight = null;
+let _kimiUsageRefreshInFlight = null;
+let _kimiUsageLastAttempt = 0;
+const KIMI_USAGE_REFRESH_MS = 5 * 60 * 1000;
+
+function refreshKimiUsageIfDue(force = false) {
+  const now = Date.now();
+  if (_kimiUsageRefreshInFlight) return _kimiUsageRefreshInFlight;
+  if (!force && now - _kimiUsageLastAttempt < KIMI_USAGE_REFRESH_MS) return null;
+  _kimiUsageLastAttempt = now;
+  _kimiUsageRefreshInFlight = refreshKimiAccountUsageLive()
+    .then((kimi) => {
+      sendToRenderer('agent-usage', { kimi });
+      return kimi;
+    })
+    .catch(() => null)
+    .finally(() => { _kimiUsageRefreshInFlight = null; });
+  return _kimiUsageRefreshInFlight;
+}
+
 function startAgentScanner() {
   if (_agentScanInterval) return;
-  _agentScanInterval = setInterval(scanAgentSessions, 5000);
+  const run = () => {
+    if (_agentScanInFlight) return _agentScanInFlight;
+    _agentScanInFlight = scanAgentSessions()
+      .catch(error => console.warn('[usage-scan] failed:', error && error.message))
+      .finally(() => { _agentScanInFlight = null; });
+    return _agentScanInFlight;
+  };
+  void run();
+  refreshKimiUsageIfDue(true);
+  _agentScanInterval = setInterval(() => {
+    void run();
+    refreshKimiUsageIfDue(false);
+  }, 5000);
 }
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   traceStartup('app.whenReady');
   const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();
   traceStartup('deploy hooks start');
@@ -1481,11 +1685,9 @@ app.whenReady().then(async () => {
   //   该家族 sub session 完成时 CC 不调 hook → notifyClaudeStop 永不触发 →
   //   ClaudeTap.JsonlTail 永不启动 → stop_reason 主路径 + idle 兜底全失效 →
   //   群聊卡片自动同步死，只能等 5min 硬 timeout 或用户手动点提取。
-  //   原版漏了 packy 3 家（gpt/kimi/qwen），settings.json 完全没 hook 注册，
   //   scripts/session-hub-hook.py 也不存在。与 findTranscriptByCCSessionId 的
   //   candidateRoots 列表对齐，单一真理源应在 ai-kinds.js（后续可重构）。
-  for (const dir of ['.claude', '.claude-deepseek', '.claude-glm',
-                     '.claude-packy-gpt', '.claude-packy-kimi', '.claude-packy-qwen']) {
+  for (const dir of ['.claude', '.claude-deepseek']) {
     ensureHooksDeployed(path.join(_home, dir));
   }
   traceStartup('deploy hooks done');
@@ -1508,273 +1710,6 @@ app.whenReady().then(async () => {
   }
   traceStartup(`hook listen done (${hookPort || 'none'})`);
   sendToRenderer('hook-status', { up: hookPort !== null, port: hookPort });
-
-  // === Mobile Bridge (opt-in via CLAUDE_HUB_MOBILE_ENABLED env) ===
-  // 默认关；启用需要同时设：CLAUDE_HUB_MOBILE_ENABLED=true + MOBILE_VPS_URL + MOBILE_BEARER_TOKEN
-  // 模块崩溃不影响 Hub 主进程。详见 mobile/README.md
-  // 隔离实例（CLAUDE_HUB_DATA_DIR 已设）继承 User 级 env 会全部挂上网关，
-  // 造成多 Hub 注册混乱（2026-06-11 网关同时挂 3 个本机 Hub）。
-  // 隔离实例必须额外显式设 CLAUDE_HUB_MOBILE_ISOLATED_OPTIN=true 才连。
-  const _mobileBlockedByIsolation = process.env.CLAUDE_HUB_DATA_DIR
-    && process.env.CLAUDE_HUB_MOBILE_ISOLATED_OPTIN !== 'true';
-  if (process.env.CLAUDE_HUB_MOBILE_ENABLED === 'true' && _mobileBlockedByIsolation) {
-    console.log('[mobile-bridge] skipped: isolated instance (CLAUDE_HUB_DATA_DIR set) without CLAUDE_HUB_MOBILE_ISOLATED_OPTIN');
-  }
-  if (process.env.CLAUDE_HUB_MOBILE_ENABLED === 'true' && !_mobileBlockedByIsolation) {
-    try {
-      const { startMobileBridge } = require('./mobile/hub-bridge');
-      const mobileBridge = startMobileBridge({
-        sessionManager,
-        transcriptTap,
-        meetingManager,
-        dispatchGroupChatTurn: groupChatDispatcher && groupChatDispatcher.dispatchGroupChatTurn,
-        getHubDataDir,
-        captureHubView: async ({ maxWidth, mimeType, quality } = {}) => {
-          if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents || mainWindow.webContents.isCrashed()) {
-            throw new Error('main_window_unavailable');
-          }
-          let image = await mainWindow.webContents.capturePage();
-          const original = image.getSize();
-          if (maxWidth && original.width > maxWidth) {
-            const width = Math.max(320, Math.min(Number(maxWidth) || original.width, original.width));
-            image = image.resize({ width });
-          }
-          const size = image.getSize();
-          const useJpeg = String(mimeType || '').toLowerCase().includes('jpeg') || String(mimeType || '').toLowerCase().includes('jpg');
-          const jpegQuality = Math.max(35, Math.min(92, Math.round(Number(quality) || 72)));
-          const encoded = useJpeg && typeof image.toJPEG === 'function'
-            ? image.toJPEG(jpegQuality)
-            : image.toPNG();
-          return {
-            imageBase64: encoded.toString('base64'),
-            mimeType: useJpeg ? 'image/jpeg' : 'image/png',
-            width: size.width,
-            height: size.height,
-            originalWidth: original.width,
-            originalHeight: original.height,
-            byteLength: encoded.length,
-            quality: useJpeg ? jpegQuality : null,
-            capturedAt: Date.now(),
-          };
-        },
-        sendHubViewInput: async ({ input } = {}) => {
-          if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents || mainWindow.webContents.isCrashed()) {
-            throw new Error('main_window_unavailable');
-          }
-          const kind = input && input.kind;
-          const mapHubViewPoint = () => {
-            const contentSize = mainWindow.getContentSize();
-            const targetWidth = Math.max(1, Number(contentSize[0]) || Number(input.originalWidth) || Number(input.width) || 1);
-            const targetHeight = Math.max(1, Number(contentSize[1]) || Number(input.originalHeight) || Number(input.height) || 1);
-            const srcWidth = Math.max(1, Number(input.width) || Number(input.originalWidth) || targetWidth);
-            const srcHeight = Math.max(1, Number(input.height) || Number(input.originalHeight) || targetHeight);
-            const x = Math.max(0, Math.min(targetWidth - 1, Math.round((Number(input.x) || 0) * targetWidth / srcWidth)));
-            const y = Math.max(0, Math.min(targetHeight - 1, Math.round((Number(input.y) || 0) * targetHeight / srcHeight)));
-            return { x, y, targetWidth, targetHeight, srcWidth, srcHeight };
-          };
-          const sanitizeInputModifiers = (extra = []) => {
-            const allowedModifiers = new Set(['shift', 'control', 'alt', 'meta', 'leftButtonDown', 'rightButtonDown', 'middleButtonDown']);
-            const source = Array.isArray(input.modifiers) ? input.modifiers : [];
-            const out = [];
-            for (const value of source.concat(extra)) {
-              const key = String(value || '');
-              if (allowedModifiers.has(key) && !out.includes(key)) out.push(key);
-            }
-            return out;
-          };
-          if (kind === 'text-paste') {
-            const text = String(input.text || '').slice(0, 5000);
-            if (!text) throw new Error('empty_text');
-            mainWindow.webContents.focus();
-            if (typeof mainWindow.webContents.insertText === 'function') {
-              await mainWindow.webContents.insertText(text);
-            } else {
-              const priorText = clipboard.readText();
-              clipboard.writeText(text);
-              mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
-              mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] });
-              setTimeout(() => {
-                try { clipboard.writeText(priorText || ''); } catch {}
-              }, 800);
-            }
-            return { ok: true, kind, length: text.length };
-          }
-          if (kind === 'clipboard-read') {
-            const priorText = clipboard.readText();
-            mainWindow.webContents.focus();
-            if (input.copy !== false) {
-              mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'C', modifiers: ['control'] });
-              mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'C', modifiers: ['control'] });
-              await new Promise(resolve => setTimeout(resolve, 120));
-            }
-            const text = String(clipboard.readText() || '').slice(0, 20000);
-            if (input.restore !== false) {
-              setTimeout(() => {
-                try { clipboard.writeText(priorText || ''); } catch {}
-              }, 800);
-            }
-            return { ok: true, kind, text, length: text.length };
-          }
-          if (kind === 'clipboard-write') {
-            const text = String(input.text || '').slice(0, 20000);
-            if (!text) throw new Error('empty_clipboard_text');
-            clipboard.writeText(text);
-            return { ok: true, kind, length: text.length };
-          }
-          if (kind === 'file-transfer') {
-            const nameRaw = String(input.name || 'upload.bin').slice(0, 180);
-            const safeName = nameRaw
-              .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
-              .replace(/^\.+/, '_')
-              .trim()
-              .slice(0, 120) || 'upload.bin';
-            const dataBase64 = String(input.dataBase64 || '');
-            const declaredSize = Number(input.size) || 0;
-            if (!dataBase64) throw new Error('empty_file');
-            if (declaredSize > 8 * 1024 * 1024 || dataBase64.length > 12 * 1024 * 1024) {
-              throw new Error('file_too_large');
-            }
-            const buf = Buffer.from(dataBase64, 'base64');
-            if (buf.length > 8 * 1024 * 1024) throw new Error('file_too_large');
-            const uploadDir = path.join(getHubDataDir(), 'mobile-uploads');
-            fs.mkdirSync(uploadDir, { recursive: true });
-            const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
-            const outPath = path.join(uploadDir, `${stamp}-${crypto.randomBytes(3).toString('hex')}-${safeName}`);
-            const resolvedDir = path.resolve(uploadDir);
-            const resolvedOut = path.resolve(outPath);
-            if (!resolvedOut.startsWith(resolvedDir + path.sep)) throw new Error('path_escape');
-            fs.writeFileSync(resolvedOut, buf);
-            clipboard.writeText(resolvedOut);
-            if (input.pastePath !== false) {
-              mainWindow.webContents.focus();
-              if (typeof mainWindow.webContents.insertText === 'function') {
-                await mainWindow.webContents.insertText(resolvedOut);
-              } else {
-                const priorText = clipboard.readText();
-                clipboard.writeText(resolvedOut);
-                mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
-                mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] });
-                setTimeout(() => {
-                  try { clipboard.writeText(priorText || ''); } catch {}
-                }, 800);
-              }
-            }
-            return { ok: true, kind, path: resolvedOut, name: safeName, size: buf.length, pasted: input.pastePath !== false };
-          }
-          if (kind === 'mouse-wheel') {
-            const { x, y } = mapHubViewPoint();
-            const deltaX = Math.max(-2400, Math.min(2400, Math.round(Number(input.deltaX) || 0)));
-            const deltaY = Math.max(-2400, Math.min(2400, Math.round(Number(input.deltaY) || 0)));
-            if (!deltaX && !deltaY) throw new Error('empty_wheel_delta');
-            const modifiers = sanitizeInputModifiers();
-            mainWindow.webContents.focus();
-            mainWindow.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers });
-            mainWindow.webContents.sendInputEvent({ type: 'mouseWheel', x, y, deltaX, deltaY, modifiers });
-            return { ok: true, kind, x, y, deltaX, deltaY, modifiers };
-          }
-          if (kind === 'mouse-move') {
-            const { x, y } = mapHubViewPoint();
-            const modifiers = sanitizeInputModifiers();
-            mainWindow.webContents.focus();
-            mainWindow.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers });
-            return { ok: true, kind, x, y, modifiers };
-          }
-          if (kind === 'key-press') {
-            const keyCode = String(input.keyCode || '').slice(0, 32);
-            if (!keyCode) throw new Error('empty_key_code');
-            const allowedModifiers = new Set(['shift', 'control', 'alt', 'meta']);
-            const modifiers = Array.isArray(input.modifiers)
-              ? input.modifiers.map(x => String(x).toLowerCase()).filter(x => allowedModifiers.has(x)).slice(0, 4)
-              : [];
-            mainWindow.webContents.focus();
-            mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers });
-            mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers });
-            return { ok: true, kind, keyCode, modifiers };
-          }
-          if (kind === 'mouse-drag') {
-            const { x, y } = mapHubViewPoint();
-            const button = input.button === 'right' ? 'right' : 'left';
-            const phase = String(input.phase || 'move');
-            const buttonModifier = button === 'right' ? 'rightButtonDown' : 'leftButtonDown';
-            mainWindow.webContents.focus();
-            if (phase === 'down') {
-              const modifiers = sanitizeInputModifiers();
-              mainWindow.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers });
-              mainWindow.webContents.sendInputEvent({ type: 'mouseDown', x, y, button, clickCount: 1, modifiers });
-            } else if (phase === 'move') {
-              mainWindow.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers: sanitizeInputModifiers([buttonModifier]) });
-            } else if (phase === 'up') {
-              mainWindow.webContents.sendInputEvent({ type: 'mouseUp', x, y, button, clickCount: 1, modifiers: sanitizeInputModifiers() });
-            } else {
-              throw new Error('unsupported_drag_phase');
-            }
-            return { ok: true, kind, phase, x, y, modifiers: sanitizeInputModifiers(phase === 'move' ? [buttonModifier] : []) };
-          }
-          if (kind !== 'mouse-click') throw new Error('unsupported_input_kind');
-          const { x, y } = mapHubViewPoint();
-          const button = input.button === 'right' ? 'right' : 'left';
-          const clickCount = Math.max(1, Math.min(Number(input.clickCount) || 1, 2));
-          const modifiers = sanitizeInputModifiers();
-          mainWindow.webContents.focus();
-          mainWindow.webContents.sendInputEvent({ type: 'mouseMove', x, y, modifiers });
-          mainWindow.webContents.sendInputEvent({ type: 'mouseDown', x, y, button, clickCount, modifiers });
-          mainWindow.webContents.sendInputEvent({ type: 'mouseUp', x, y, button, clickCount, modifiers });
-          return { ok: true, kind, x, y, modifiers };
-        },
-        logger: console,
-      });
-      if (mobileBridge) {
-        global.__mobileBridge = mobileBridge; // 供 renderer IPC 调用 generatePin/listDevices
-        console.log('[mobile-bridge] enabled');
-      }
-    } catch (e) {
-      console.warn('[mobile-bridge] startup failed (Hub continues normally):', e && e.message);
-    }
-  }
-
-  // === Remote Hub Client（远程模式：本 Hub 作为瘦客户端经 VPS 中继操作另一台 Hub）===
-  // 不能和执行端 mobile-bridge 同进程自动连接：两者若复用同一个 device token，
-  // remote client 会占用 /pwa 连接槽并把真正的手机/浏览器 PWA 踢下线。
-  const _remoteClientBlockedByAgent = process.env.CLAUDE_HUB_MOBILE_ENABLED === 'true' && !_mobileBlockedByIsolation;
-  if (_remoteClientBlockedByAgent) {
-    console.log('[remote-hub] skipped: this Hub is the mobile-bridge agent');
-  } else {
-    // 未配置（dataDir/remote-hub.json 无 deviceToken）时惰性闲置，零开销。
-    try {
-      const { startRemoteClient } = require('./mobile/remote-client');
-      global.__remoteClient = startRemoteClient({ getHubDataDir, sendToRenderer, logger: console });
-    } catch (e) {
-      console.warn('[remote-hub] startup failed (Hub continues normally):', e && e.message);
-    }
-  }
-
-  // === Self-Update（源码热更新：VPS 更新通道，公司便携部署免重装）===
-  try {
-    const { SelfUpdater } = require('./core/self-update.js');
-    const updater = new SelfUpdater({
-      appRoot: __dirname,
-      getRemoteConfig: () => {
-        try {
-          return JSON.parse(require('fs').readFileSync(
-            require('path').join(getHubDataDir(), 'remote-hub.json'), 'utf8'));
-        } catch { return null; }
-      },
-      logger: console,
-    });
-    ipcMain.handle('hub-update-check', async () => {
-      try { return { ok: true, ...(await updater.check()) }; }
-      catch (e) { return { ok: false, error: e.message }; }
-    });
-    ipcMain.handle('hub-update-apply', async () => {
-      try {
-        const r = await updater.apply();
-        if (r.ok) setTimeout(() => updater.relaunch(), 800);
-        return r;
-      } catch (e) { return { ok: false, error: e.message }; }
-    });
-  } catch (e) {
-    console.warn('[self-update] init failed (Hub continues normally):', e && e.message);
-  }
 
   // 2026-06-05 联邦记忆下线：claude-memory-loader 只做 readFileSync，无需预热
 
@@ -1815,19 +1750,28 @@ app.whenReady().then(async () => {
 
   traceStartup('startAgentScanner');
   startAgentScanner();
-  // PackyAPI 账户(余额 + 消耗)— 启动 1.5s 后首次拉取,之后每 5 分钟刷新一次。
-  // 延后启动避免拖慢首屏;失败静默不影响其他功能。
-  setTimeout(() => { fetchAndCachePackyAccount().catch(() => {}); }, 1500);
-  setInterval(() => { fetchAndCachePackyAccount().catch(() => {}); }, 5 * 60 * 1000);
 });
 
-app.on('before-quit', async () => {
+app.on('before-quit', () => {
+  terminalOutputBatcher.dispose({ flush: true });
+  // before-quit does not await returned promises. Start worker teardown without
+  // putting an await in front of the existing synchronous final state save.
+  void transcriptParserService.close();
+  void codexJsonlUsageService.close();
+  transcriptTap.dispose();
+  // 原生投研 PTY 的全局租约属于 Hub 进程生命周期。退出时同步释放，
+  // 让另一台/另一个 Hub 可以立即恢复同一个 native session；崩溃场景
+  // 仍由 registry 的过期租约兜底。
+  if (chuxinBridge && typeof chuxinBridge.releaseAllOwnership === 'function') {
+    chuxinBridge.releaseAllOwnership();
+  }
   // 2026-05-07 道雪：退出时保证三层都同步落盘——state.json（lock + merge）、
   //   per-meeting JSON、per-session JSON。任意一层丢了，下次 boot 的 selfHeal
   //   都能从另一层恢复。
   stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting }, { sync: true });
+  try { flushUsageCacheSync(); } catch (error) { console.warn('[usage-cache] final flush failed:', error && error.message); }
   try {
-    await meetingStore.flushAll();
+    meetingStore.flushAll();
     console.log('[群聊] meeting-store flushed on quit');
   } catch (err) {
     console.warn('[群聊] meeting-store flush failed:', err.message);
@@ -1843,8 +1787,6 @@ app.on('before-quit', async () => {
   // 不外抛，所以这里裸调即可，不再加外层 catch（避免盖住内部 warn）。
   hubControl.unlinkSelf(getHubDataDir(), process.pid);
 
-  // PPT 模式：只回收 Hub 自己 spawn 的 oneclick server（外部启动的不动）
-  killPptServer();
 });
 
 app.on('window-all-closed', () => {

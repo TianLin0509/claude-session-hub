@@ -29,7 +29,7 @@ function createBaseDeps(overrides = {}) {
     getHookPort: () => 3456,
     getHubDataDir: () => 'C:\\hub',
     hookToken: 'token',
-    isClaudeFamily: (kind) => ['claude', 'claude-resume', 'deepseek', 'glm'].includes(kind),
+    isClaudeFamily: (kind) => ['claude', 'claude-resume', 'deepseek'].includes(kind),
     isClaudeWebKind: () => false,
     isCodexBaseKind: (kind) => ['codex', 'codex-resume'].includes(kind),
     meetingManager: { getMeeting: () => null },
@@ -116,13 +116,33 @@ test('resumes Claude-family sessions with transcript lookup and renderer event',
       codexProfile: null,
       geminiChatId: null,
       geminiProjectRoot: null,
-      autoTitleGenerated: false,
+      userRenamed: false,
+      autoTitleGenerated: true,
       lastMessageTime: undefined,
       lastOutputPreview: undefined,
     }],
     ['registerSessionForTap', 's1'],
     ['sendToRenderer', 'session-created', 's1'],
   ]);
+});
+
+test('resume passes manual rename protection into live session', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps();
+  registerResumeSessionIpc(ipc, deps);
+
+  await ipc.handlers.get('resume-session')(null, {
+    hubId: 's-renamed',
+    kind: 'claude',
+    ccSessionId: 'cc-renamed',
+    cwd: 'C:\\repo',
+    title: 'Claude 1',
+    userRenamed: true,
+  });
+
+  const createCall = deps.calls.find(call => call[0] === 'createSession');
+  assert.strictEqual(createCall[2].userRenamed, true);
+  assert.strictEqual(createCall[2].autoTitleGenerated, false);
 });
 
 test('resumes Codex group research sessions with MCP entries and rollout path', async () => {
@@ -153,6 +173,26 @@ test('resumes Codex group research sessions with MCP entries and rollout path', 
   assert.deepStrictEqual(deps.calls.filter(call => call[0] === 'findCodexRolloutBySid'), [
     ['findCodexRolloutBySid', 'codex-1', 'C:\\codex\\sessions'],
   ]);
+});
+
+test('does not resume a persisted Codex subagent binding as the Hub top-level PTY', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps({
+    isCodexSubagentRolloutPath: (rolloutPath) => rolloutPath === 'C:\\codex\\subagent.jsonl',
+  });
+  registerResumeSessionIpc(ipc, deps);
+
+  const session = await ipc.handlers.get('resume-session')(null, {
+    hubId: 's-subagent',
+    kind: 'codex',
+    codexSid: 'subagent-sid',
+    transcriptPath: 'C:\\codex\\subagent.jsonl',
+    cwd: 'C:\\repo',
+  });
+
+  assert.strictEqual(session.opts.resumeTranscriptPath, undefined);
+  assert.strictEqual(session.opts.codexSid, null);
+  assert.strictEqual(session.opts.codexResumePicker, true);
 });
 
 test('resumes single-meeting Gemini with prompt file env and project root cwd', async () => {

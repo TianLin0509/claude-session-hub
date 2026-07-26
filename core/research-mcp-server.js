@@ -22,6 +22,10 @@ const AI_KIND = process.env.ARENA_AI_KIND || 'unknown';
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const screenerScore = require('./screener-score');
+const spiritRegistry = require('./spirit-registry');
+
+const HUB_DATA_DIR = process.env.ARENA_HUB_DATA_DIR || process.env.CLAUDE_HUB_DATA_DIR || '';
 
 const DEBUG = process.env.ARENA_MCP_DEBUG === '1';
 const LOG_FILE = DEBUG
@@ -78,6 +82,84 @@ function scanTool(name, description) {
 }
 
 const TOOLS = [
+  {
+    name: 'spirit_list',
+    description: '【英灵系统入口】列出中立注册表里的可用英灵、版本、规则数、支持的投资任务与系统宪法。英灵是方法论镜头，不是人格扮演；任何底座模型读取到的是同一份 manifest_hash。用户说“有哪些英灵/召唤谁/英灵系统”时先调。',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'spirit_manifest',
+    description: '【英灵规则审计】读取单个英灵的 manifest、规则卡、来源、弱点和内容哈希。需要解释“这位英灵依据什么/有哪些边界/是否原典”时调；不得把 A 股适配规则冒充历史人物原话。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spirit_id: { type: 'string', description: '版本化英灵 ID，例如 buffett.mature.v1 或 livermore.trend.v1' },
+        include_rules: { type: 'boolean', description: '是否返回完整规则；默认 true。' },
+      },
+      required: ['spirit_id'],
+    },
+  },
+  {
+    name: 'spirit_prepare',
+    description: '【召唤英灵/生成统一 Lens Packet】把投资任务、问题和已冻结证据编译为底座无关的规则包。先用 stock_static/stock_market/stock_news 等工具取证，再把原样结果放入 evidence；返回的 rendered_prompt、规则编号、UNKNOWN 缺口和哈希就是本轮唯一英灵约束。可一次加载多位英灵做冲突审视。此工具只生成分析契约，绝不执行交易。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spirit_ids: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 4,
+          items: { type: 'string' },
+          description: '英灵 ID；价值投机通常同时用 buffett.mature.v1 与 livermore.trend.v1。',
+        },
+        mandate: {
+          type: 'string',
+          enum: ['long_term_compound', 'trend_speculation', 'value_speculation'],
+          description: '长期复利/趋势投机/价值投机。默认 value_speculation。',
+        },
+        question: { type: 'string', description: '本轮要英灵审视的明确问题。' },
+        evidence: {
+          type: 'object',
+          description: '本轮冻结证据包；可包含 stock_static/market/news/sentiment 返回，不得自行补造。',
+          additionalProperties: true,
+        },
+        output_format: {
+          type: 'string',
+          enum: ['markdown', 'json'],
+          description: 'Hub 对话默认 markdown；需要落结构化结果时用 json。',
+        },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    name: 'spirit_validate',
+    description: '【英灵输出校验】在最终发言前校验结构化 JSON 是否覆盖全部已加载英灵、只引用已知 rule_id、保留人工签署要求且哈希一致。输入 spirit_prepare 返回的 packet 和候选 result；校验失败必须修正，不能静默跳过。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        packet: { type: 'object', additionalProperties: true },
+        result: { type: 'object', additionalProperties: true },
+      },
+      required: ['packet', 'result'],
+    },
+  },
+  // ─── 技术初筛量化分（本地读 kline-screener data.json，不走后端）─────
+  {
+    name: 'screener_score',
+    description: '【技术初筛量化分，判断个股「追涨/蓄势(低吸)」技术形态时优先调】读 kline-screener 最新强势股筛选快照，返回该股 追涨分(chase_score)/蓄势分(setup_score) + 模式 + 关键技术指标(龙分/相对强度分位/偏离MA20/守MA20率/量比/缩量比等) + 形态白话摘要。\n\nmode=chase=追涨型(主升进行中：强势龙、均线多头、守MA20)；mode=setup=蓄势型(大涨后回调企稳、站上MA20、缩量，赌第二波，≈低吸)——恰好对应右侧追涨/低吸两种打法。\n\n[池内 vs 池外] **池内票**(当日强势候选,~240只)给客观量化分；**池外票**返回 available=false、in_pool=false，技术形态分须由 AI 基于 stock_market 行情自行研判，**禁止脑补量化分**。投委会技术面委员建库时优先调本工具拿客观锚，再用 stock_market 补充实时形态。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'A股代码（"603823" / "603823.SH" / "SH603823"，6位代码，大小写/后缀容错）' },
+      },
+      required: ['symbol'],
+    },
+  },
   // ─── research-mcp 聚合工具（3 个）───────────────────────
   {
     name: 'stock_static',
@@ -350,6 +432,95 @@ async function handleRequest(req) {
     const name = params && params.name;
     const args = (params && params.arguments) || {};
     const baseBody = { token: HOOK_TOKEN, meetingId: MEETING_ID, kind: AI_KIND };
+
+    // ── 模型无关英灵注册表：统一规则、证据哈希与输出契约 ──────────
+    if (name === 'spirit_list') {
+      try {
+        const data = spiritRegistry.list();
+        return reply(id, { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
+      } catch (e) {
+        return reply(id, { content: [{ type: 'text', text: 'spirit_list 失败：' + (e && e.message) }], isError: true });
+      }
+    }
+
+    if (name === 'spirit_manifest') {
+      const spiritId = String(args.spirit_id || '').trim();
+      if (!spiritId) return reply(id, { content: [{ type: 'text', text: '错误：spirit_id 参数必填' }], isError: true });
+      try {
+        const data = spiritRegistry.manifest(spiritId, { includeRules: args.include_rules !== false });
+        return reply(id, { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
+      } catch (e) {
+        return reply(id, { content: [{ type: 'text', text: 'spirit_manifest 失败：' + (e && e.message) }], isError: true });
+      }
+    }
+
+    if (name === 'spirit_prepare') {
+      const question = String(args.question || '').trim();
+      if (!question) return reply(id, { content: [{ type: 'text', text: '错误：question 参数必填' }], isError: true });
+      const mandate = ['long_term_compound', 'trend_speculation', 'value_speculation'].includes(args.mandate)
+        ? args.mandate : 'value_speculation';
+      const spiritIds = Array.isArray(args.spirit_ids) && args.spirit_ids.length
+        ? args.spirit_ids.map(value => String(value || '').trim()).filter(Boolean)
+        : undefined;
+      try {
+        const packet = spiritRegistry.prepare({
+          spirit_ids: spiritIds,
+          mandate,
+          question,
+          evidence: args.evidence && typeof args.evidence === 'object' ? args.evidence : {},
+          output_format: args.output_format === 'json' ? 'json' : 'markdown',
+          host: 'ai-hub-research-groupchat',
+          base_model: AI_KIND,
+        });
+        try {
+          spiritRegistry.appendAudit({
+            hubDataDir: HUB_DATA_DIR,
+            meetingId: MEETING_ID,
+            aiKind: AI_KIND,
+            action: 'prepare',
+            packet,
+          });
+        } catch (auditError) {
+          logErr('spirit audit append failed: ' + auditError.message);
+        }
+        return reply(id, { content: [{ type: 'text', text: JSON.stringify(packet, null, 2) }] });
+      } catch (e) {
+        return reply(id, { content: [{ type: 'text', text: 'spirit_prepare 失败：' + (e && e.message) }], isError: true });
+      }
+    }
+
+    if (name === 'spirit_validate') {
+      try {
+        const validated = spiritRegistry.validate(args.packet, args.result);
+        try {
+          spiritRegistry.appendAudit({
+            hubDataDir: HUB_DATA_DIR,
+            meetingId: MEETING_ID,
+            aiKind: AI_KIND,
+            action: 'validate',
+            packet: args.packet,
+            details: { valid: true },
+          });
+        } catch (auditError) {
+          logErr('spirit validation audit append failed: ' + auditError.message);
+        }
+        return reply(id, { content: [{ type: 'text', text: JSON.stringify(validated, null, 2) }] });
+      } catch (e) {
+        return reply(id, { content: [{ type: 'text', text: 'spirit_validate 失败：' + (e && e.message) }], isError: true });
+      }
+    }
+
+    // ── screener_score：本地读 kline-screener data.json，不走后端 ──
+    if (name === 'screener_score') {
+      const symbol = String(args.symbol || '');
+      if (!symbol) return reply(id, { content: [{ type: 'text', text: '错误：symbol 参数必填' }], isError: true });
+      try {
+        const text = screenerScore.promptBlock(symbol);
+        return reply(id, { content: [{ type: 'text', text }] });
+      } catch (e) {
+        return reply(id, { content: [{ type: 'text', text: 'screener_score 失败：' + (e && e.message) }], isError: true });
+      }
+    }
 
     // ── 3 个聚合工具，调 research-mcp/query.py ────────────
     if (name === 'stock_static') {

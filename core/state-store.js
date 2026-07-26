@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getHubDataDir } = require('./data-dir');
-const { acquireLock, releaseLock } = require('./file-lock');
+const { acquireLock, acquireLockAsync, releaseLock, releaseLockAsync } = require('./file-lock');
 
 const STATE_DIR = getHubDataDir();
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
@@ -62,6 +62,20 @@ function _readDiskState() {
   }
 }
 
+async function _readDiskStateAsync() {
+  try {
+    const raw = await fs.promises.readFile(STATE_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed.version !== CURRENT_VERSION) {
+      try { await fs.promises.copyFile(STATE_FILE, STATE_FILE + '.old'); } catch {}
+      return defaultState();
+    }
+    return _normalizeState(parsed);
+  } catch {
+    return defaultState();
+  }
+}
+
 function _normalizeState(parsed) {
   if (!Array.isArray(parsed.sessions)) parsed.sessions = [];
   for (const s of parsed.sessions) {
@@ -71,6 +85,8 @@ function _normalizeState(parsed) {
     if (s.geminiChatId === undefined) s.geminiChatId = null;
     if (s.geminiProjectHash === undefined) s.geminiProjectHash = null;
     if (s.geminiProjectRoot === undefined) s.geminiProjectRoot = null;
+    if (s.kimiSid === undefined) s.kimiSid = null;
+    if (s.kimiSessionDir === undefined) s.kimiSessionDir = null;
     if (typeof s.updatedAt !== 'number') s.updatedAt = 0;  // 老条目视为最古老
   }
   if (!Array.isArray(parsed.meetings)) parsed.meetings = [];
@@ -201,12 +217,27 @@ function mergeState(diskState, memState, removed = { sessions: [], meetings: [] 
 
 function _writeMergedToDisk(state) {
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  const tmp = STATE_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, STATE_FILE);
+  const tmp = `${STATE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, STATE_FILE);
+  } finally {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+  }
 }
 
-function _saveImpl(state) {
+async function _writeMergedToDiskAsync(state) {
+  await fs.promises.mkdir(STATE_DIR, { recursive: true });
+  const tmp = `${STATE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    await fs.promises.writeFile(tmp, JSON.stringify(state, null, 2));
+    await fs.promises.rename(tmp, STATE_FILE);
+  } finally {
+    try { await fs.promises.unlink(tmp); } catch {}
+  }
+}
+
+function _stampUpdatedAt(state) {
   const now = Date.now();
   if (Array.isArray(state.sessions)) {
     for (const s of state.sessions) if (typeof s.updatedAt !== 'number') s.updatedAt = now;
@@ -214,23 +245,16 @@ function _saveImpl(state) {
   if (Array.isArray(state.meetings)) {
     for (const m of state.meetings) if (typeof m.updatedAt !== 'number') m.updatedAt = now;
   }
+}
 
-  const fd = acquireLock(LOCK_FILE, { retries: 300, retryDelayMs: 10 });
+function _saveImpl(state) {
+  _stampUpdatedAt(state);
+
+  // Reserved for boot/final shutdown and tests. It may wait longer than a
+  // normal async save, but it must never write without mutual exclusion.
+  const fd = acquireLock(LOCK_FILE, { retries: 1200, retryDelayMs: 10 });
   if (fd == null) {
-    // 2026-05-07 多方审查 fix：原版锁拿不到直接 _writeMergedToDisk(state) 全量覆盖，
-    //   绕过 mergeState/disk-reread/removed tombstone。多 Hub 同时拿不到锁时双方都
-    //   走这个 fallback 会互相覆盖。
-    // 改为：仍走读盘 + merge + 写，只不过没锁保护。即使两个 Hub 同时执行 fallback，
-    //   各自的 mergeState 仍把对方的盘上数据合并进来——比起裸覆盖，最坏情况是
-    //   "其中一方的 updatedAt 较新条目可能被覆盖"，而不是"全盘丢失"。
-    try {
-      const disk = _readDiskState();
-      const removed = _drainRemoved();
-      const merged = mergeState(disk, state, removed);
-      _writeMergedToDisk(merged);
-    } catch (e) {
-      console.warn('[hub] state save failed (no lock fallback):', e.message);
-    }
+    console.warn('[hub] state save skipped: lock unavailable; refusing unsafe no-lock write');
     return;
   }
 
@@ -246,8 +270,35 @@ function _saveImpl(state) {
   }
 }
 
+async function _saveImplAsync(state) {
+  if (!state) return;
+  _stampUpdatedAt(state);
+  const handle = await acquireLockAsync(LOCK_FILE, { retries: 1200, retryDelayMs: 10 });
+  if (!handle) {
+    console.warn('[hub] async state save skipped: lock unavailable; refusing unsafe no-lock write');
+    return;
+  }
+  try {
+    const disk = await _readDiskStateAsync();
+    const merged = mergeState(disk, state, _drainRemoved());
+    await _writeMergedToDiskAsync(merged);
+  } catch (error) {
+    console.warn('[hub] async state save failed:', error.message);
+  } finally {
+    await releaseLockAsync(handle, LOCK_FILE);
+  }
+}
+
 let saveDebounceTimer = null;
 let _pendingState = null;
+let _saveQueue = Promise.resolve();
+
+function _enqueueSave(state) {
+  _saveQueue = _saveQueue
+    .then(() => _saveImplAsync(state))
+    .catch((error) => console.warn('[hub] async state save queue failed:', error.message));
+  return _saveQueue;
+}
 
 function save(state, { sync = false } = {}) {
   _pendingState = state;
@@ -262,14 +313,26 @@ function save(state, { sync = false } = {}) {
     const s = _pendingState;
     _pendingState = null;
     saveDebounceTimer = null;
-    _saveImpl(s);
+    _enqueueSave(s);
   }, 500);
+}
+
+async function flushPending() {
+  if (saveDebounceTimer) {
+    clearTimeout(saveDebounceTimer);
+    saveDebounceTimer = null;
+    const state = _pendingState;
+    _pendingState = null;
+    if (state) _enqueueSave(state);
+  }
+  await _saveQueue;
 }
 
 module.exports = {
   load,
   loadAndSelfHeal,
   save,
+  flushPending,
   mergeState,
   markRemovedSession,
   markRemovedMeeting,

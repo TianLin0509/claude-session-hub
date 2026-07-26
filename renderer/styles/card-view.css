@@ -14,11 +14,11 @@
 }
 .msg-overlay.hidden { display: none; }
 
-/* 视图切换按钮(右上角浮) — right offset 避开 zoom (A−/A+) + close(✕) 按钮 */
-/* zoom buttons 各 30px + close 26px + gaps ≈ 130px，view-toggle right offset 取 170 留 40px buffer */
+/* 视图切换按钮(右上角浮) — right offset 避开分支、备忘、zoom (A−/A+) 与 close(✕) */
+/* header actions 约 180px，view-toggle right offset 取 220px 留出约 40px buffer */
 .view-toggle {
   position: absolute;
-  top: 8px; right: 170px;
+  top: 8px; right: 220px;
   z-index: 100;
   display: flex;
   gap: 0;
@@ -58,6 +58,7 @@
 .logo-gemini    { background-image: url('assets/ai-logos/gemini.svg'); }
 .logo-codex     { background-image: url('assets/ai-logos/codex.svg'); }
 .logo-deepseek  { background-image: url('assets/ai-logos/deepseek.svg'); }
+.logo-kimi      { background-image: url('assets/ai-logos/kimi.svg'); }
 .logo-powershell{ background-image: url('assets/ai-logos/powershell.svg'); }
 
 /* === Sidebar tree (meeting + child sub-sessions) === */
@@ -94,6 +95,25 @@
   flex-wrap: wrap;
 }
 /* 2026-05-31 道雪：群聊场景每个 mini-jump 按钮右侧贴一个 Ctx% 小标签，需要 cell 容器才能让它们成对排版 */
+.meeting-parent-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-left: 22px;
+  margin-top: 6px;
+  color: var(--text-muted, #8b949e);
+  font-size: 11px;
+}
+.meeting-parent-summary span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border: 1px solid rgba(139, 148, 158, 0.18);
+  border-radius: 999px;
+  background: rgba(139, 148, 158, 0.06);
+  white-space: nowrap;
+}
 .mini-jump-cell {
   display: inline-flex;
   align-items: center;
@@ -156,6 +176,33 @@
 @keyframes mini-st-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+/* 2026-06-28 道雪：群聊 mini-jump 用 AI 类型文字（deepseek/claude/codex…）代替圆形头像，省空间。
+   只作用于 .group（群聊）；非群聊 meeting 的圆形头像样式（上方 .mini-jump-btn）不受影响。 */
+.mini-jump-btn.group {
+  width: auto; height: auto;
+  border-radius: 5px;
+  border-width: 1px;
+  padding: 1px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.mini-jump-btn.group:hover { transform: none; background: rgba(128,128,128,0.16); }
+.mini-jump-text {
+  font-size: 11px;
+  color: var(--text-secondary, #8b949e);
+  white-space: nowrap;
+  line-height: 1;
+}
+/* 文字模式下状态点改成行内小圆点，排到文字前（绝对定位的右下角贴法只适合圆头像） */
+.mini-jump-btn.group .mini-jump-status-dot {
+  position: static;
+  order: -1;
+  width: 6px; height: 6px;
+  border: none;
+  flex: none;
 }
 
 /* Child sub-session rows under an expanded meeting. Smaller and indented
@@ -779,3 +826,115 @@
   cursor: pointer;
 }
 
+/* =========================================================================
+   2026-06-28 道雪 · 卡片视图皮肤 v1：深空灰 + 气泡 + 紧凑（合并方案 01+09+10）
+   全部 scope 在 .msg-overlay 子树，不影响 sidebar / 群聊 / PTY。
+   去紫核心：在 .msg-overlay 局部重定义 --ui-purple-* / 卡片专用变量，卡片内
+   所有 var() 引用一键改色；少量硬编码紫单独覆盖。
+   ========================================================================= */
+.msg-overlay {
+  background: #161618;
+  --ui-purple-1: #3a3a3c;
+  --ui-purple-2: #0a84ff;
+  --ui-purple-3: #5ac8fa;
+  --ui-purple-tint-bg: #2c2c2e;
+  --ui-purple-glow: rgba(10, 132, 255, 0.4);
+  --turn-bg-assistant: transparent;
+  --turn-bg-user: transparent;
+  --turn-meta-fg: #8e8e93;
+  --turn-body-fg: #e5e5ea;
+  --tool-call-name: #d6b15e;
+}
+
+/* 卡片容器：透明 + 紧凑 */
+.msg-overlay .turn-card {
+  background: transparent;
+  padding: 0;
+  margin-bottom: 11px;
+  gap: 8px;
+  align-items: flex-start;
+}
+.msg-overlay .turn-card.user {
+  flex-direction: row-reverse;
+  border-left: none;
+}
+
+/* 头像缩小 24px，去紫 */
+.msg-overlay .turn-avatar { width: 24px; height: 24px; font-size: 11px; }
+.msg-overlay .turn-avatar.av-letter {
+  background: #3a3a3c; color: #e5e5ea; font-size: 10px;
+}
+.msg-overlay .turn-card:not(.user) .turn-avatar.av-letter {
+  background: #2c2c2e; color: #7fb2ff;
+}
+
+/* 内容列：左右气泡对齐 */
+.msg-overlay .turn-content { display: flex; flex-direction: column; min-width: 0; }
+.msg-overlay .turn-card.user .turn-content { align-items: flex-end; }
+.msg-overlay .turn-card:not(.user) .turn-content { align-items: flex-start; }
+
+/* 名字 / 时间行：紧凑、去紫、去大写 */
+.msg-overlay .turn-head {
+  gap: 6px; margin: 0 3px 3px; align-items: baseline; flex-wrap: wrap;
+}
+.msg-overlay .turn-card.user .turn-head { flex-direction: row-reverse; }
+.msg-overlay .turn-who {
+  color: #d6d6da; font-size: 11px; font-weight: 600;
+  letter-spacing: 0; text-transform: none;
+}
+.msg-overlay .turn-meta { font-size: 10.5px; }
+
+/* 气泡本体（.turn-body 只含对话正文） */
+.msg-overlay .turn-body {
+  background: #2c2c2e; color: #e5e5ea;
+  padding: 7px 11px; border-radius: 13px 13px 13px 4px;
+  margin-top: 0; max-width: 86%; width: fit-content;
+  font-size: 13px; line-height: 1.5;
+}
+.msg-overlay .turn-card.user .turn-body {
+  background: #0a84ff; color: #fff; border-radius: 13px 13px 4px 13px;
+}
+.msg-overlay .turn-body.body-foldable.folded {
+  -webkit-mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
+}
+
+/* 气泡下方附属：工具簇 + 徽章 + thinking */
+.msg-overlay .turn-content > .tc-cluster,
+.msg-overlay .turn-content > .turn-meta-pills,
+.msg-overlay .turn-content > .turn-thinking {
+  align-self: flex-start; max-width: 90%;
+}
+.msg-overlay .turn-card.user .turn-content > .turn-meta-pills { align-self: flex-end; }
+.msg-overlay .turn-content > .tc-cluster { margin: 5px 0 0; }
+.msg-overlay .turn-content > .turn-meta-pills { margin: 5px 3px 0; }
+.msg-overlay .turn-content > .turn-thinking { margin: 4px 0 0; }
+
+/* 徽章降噪：统一灰描边、去四色 */
+.msg-overlay .pill,
+.msg-overlay .pill-tool,
+.msg-overlay .pill-token,
+.msg-overlay .pill-ctx,
+.msg-overlay .pill-time {
+  background: transparent; border-color: #3a3a3c; color: #8e8e93; font-size: 10px;
+}
+
+/* 残留硬编码紫 → 蓝 / 中性 */
+.msg-overlay .body-fold-toggle { background: rgba(10, 132, 255, 0.08); }
+.msg-overlay .body-fold-toggle:hover { background: rgba(10, 132, 255, 0.16); }
+.msg-overlay .code-copy {
+  background: rgba(10, 132, 255, 0.15); border-color: rgba(10, 132, 255, 0.3); color: #7fb2ff;
+}
+.msg-overlay .code-copy:hover { background: rgba(10, 132, 255, 0.3); }
+.msg-overlay .ta-btn:hover {
+  border-color: #3a3a3c; background: rgba(255, 255, 255, 0.06); color: #e5e5ea;
+}
+.msg-overlay .tc-row-preview-btn,
+.msg-overlay .tc-result-copy,
+.msg-overlay .tc-result-expand {
+  background: rgba(10, 132, 255, 0.1); border-color: rgba(10, 132, 255, 0.28); color: #7fb2ff;
+}
+.msg-overlay:hover::-webkit-scrollbar-thumb { background: rgba(142, 142, 147, 0.4); }
+
+/* header：视图切换高亮去紫换蓝 */
+.view-toggle-btn.active { background: #0a84ff; }

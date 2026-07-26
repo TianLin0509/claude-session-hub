@@ -101,6 +101,42 @@ async function testSkip() {
   console.log('  ✓ testSkip');
 }
 
+async function testSupersede() {
+  // 抢占式结算（2026-06-24）：用户在本轮没答完时就发了下一轮 → supersede() 立即结算为
+  //   'superseded'、空文本，让 dispatcher 的 Promise.allSettled 立刻 resolve。
+  const tap = mkTap();
+  const w = createTurnCompletionWatcher({
+    transcriptTap: tap, hubSessionId: 'sid-SUP', label: 'gemini-1',
+    softAlertT1Ms: 5000, softAlertT2Ms: 10000,
+  });
+  const p = w.wait();
+  setImmediate(() => w.supersede());
+  const r = await p;
+  assert.strictEqual(r.status, 'superseded');
+  assert.strictEqual(r.text, '');
+  assert.strictEqual(w.isSettled(), true);
+  console.log('  ✓ testSupersede');
+}
+
+async function testSupersededNoPatch() {
+  // 被抢占的旧轮不进 patch 窗口：CLI 后续吐的收尾 turn-complete 不该回填这条已废弃记录。
+  const patches = [];
+  const tap = mkTap();
+  const w = createTurnCompletionWatcher({
+    transcriptTap: tap, hubSessionId: 'sid-SUP2', label: 'codex-1',
+    softAlertT1Ms: 5000, softAlertT2Ms: 10000,
+    onTurnPatched: (e) => patches.push(e),
+  });
+  const p = w.wait();
+  setImmediate(() => w.supersede());
+  await p;
+  // supersede 后来一条更长的 turn-complete（白名单信号源）——不应触发 patch
+  tap.emit('turn-complete', { hubSessionId: 'sid-SUP2', text: 'late long answer that must NOT patch', signalSource: 'stop_hook' });
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(patches.length, 0, 'superseded turn must not accept post-settle patches');
+  console.log('  ✓ testSupersededNoPatch');
+}
+
 async function testSoftAlertDoesNotSettle() {
   // 关键不变式：T1/T2 触发 onSoftAlert 但 watcher 仍处于 unsettled。
   // 只有外部触发点（manualExtract/skip/turn-complete/turn-error）才能 settle。
@@ -217,6 +253,8 @@ function testThrowsWithoutTap() {
   await testManualExtract();
   await testCompleteFromTranscript();
   await testSkip();
+  await testSupersede();
+  await testSupersededNoPatch();
   await testSoftAlertDoesNotSettle();
   await testErrored();
   await testIdempotentSettle();

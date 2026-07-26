@@ -29,8 +29,10 @@ function createFakeMeetingManager(overrides = {}) {
       { kind: 'gemini', model: 'pro' },
     ],
     serialWorkflow: {
+      schemaVersion: 2,
       enabled: true,
       steps: [['m1'], ['m2', 'm3']],
+      stepConfigs: [{ name: '执行', prompt: '做事' }, { name: '评审', prompt: '验收' }],
       loop: { enabled: true },
     },
     scene: 'general',
@@ -241,6 +243,10 @@ test('remove-meeting-sub closes only a real member, reindexes dependent state, c
     { kind: 'gemini', model: 'pro' },
   ]);
   assert.deepStrictEqual(result.meeting.serialWorkflow.steps, [['m1'], ['m2']]);
+  assert.deepStrictEqual(result.meeting.serialWorkflow.stepConfigs, [
+    { name: '执行', prompt: '做事' },
+    { name: '评审', prompt: '验收' },
+  ]);
   assert.deepStrictEqual(
     meetingManager.calls.find(call => call[0] === 'updateMeeting')[2].serialWorkflow.steps,
     [['m1'], ['m2']],
@@ -258,30 +264,15 @@ test('remove-meeting-sub closes only a real member, reindexes dependent state, c
 
 test('remove-meeting-sub rejects non-members, the last member, and active turns without closing sessions', () => {
   const cases = [
-    {
-      overrides: {},
-      sessionId: 'outside',
-      mode: 'idle',
-      reason: 'not_member',
-    },
+    { overrides: {}, sessionId: 'outside', mode: 'idle', reason: 'not_member' },
     {
       overrides: { subSessions: ['s1'], participants: [0], slotSpecs: [{ kind: 'claude' }] },
       sessionId: 's1',
       mode: 'idle',
       reason: 'last_member',
     },
-    {
-      overrides: {},
-      sessionId: 's2',
-      mode: 'group',
-      reason: 'turn_in_progress',
-    },
-    {
-      overrides: {},
-      sessionId: 's2',
-      mode: 'throws',
-      reason: 'turn_state_unavailable',
-    },
+    { overrides: {}, sessionId: 's2', mode: 'group', reason: 'turn_in_progress' },
+    { overrides: {}, sessionId: 's2', mode: 'throws', reason: 'turn_state_unavailable' },
   ];
 
   for (const item of cases) {

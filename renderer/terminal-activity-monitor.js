@@ -96,20 +96,27 @@ function createTerminalActivityMonitor({
 
   function readTerminalPreview(sessionId) {
     const session = sessions.get(sessionId);
-    if (!session) return;
+    if (!session) return { skipped: true, signature: '' };
+
+    // Claude/Codex/Kimi already delivered an authoritative transcript preview.
+    // Scanning the entire xterm scrollback here cannot improve that value and
+    // used to add a synchronous O(scrollback) pass after every quiet period.
+    if (session._previewFromTranscript) return { skipped: true, signature: '' };
 
     const questions = extractUserQuestions(sessionId);
-    if (questions.length === 0) return;
+    if (questions.length === 0) return { skipped: false, signature: '' };
 
     const lastQ = questions[questions.length - 1];
     const newPreview = lastQ.length > 60 ? lastQ.substring(0, 58) + '…' : lastQ;
 
-    if (session._previewFromTranscript) return;
+    let changed = false;
     if (newPreview && newPreview !== session.lastOutputPreview) {
       session.lastOutputPreview = newPreview;
       renderSessionList();
       schedulePersist();
+      changed = true;
     }
+    return { skipped: false, signature: lastQ.slice(0, 200), changed };
   }
 
   function onTerminalOutput(sessionId, dataLen) {
@@ -156,11 +163,13 @@ function createTerminalActivityMonitor({
         }
       }
 
-      readTerminalPreview(sessionId);
+      const previewResult = readTerminalPreview(sessionId);
 
       const lastStopMs = Date.now() - (session._lastStopHookTs || 0);
-      if (session.lastOutputPreview && lastStopMs >= 5000) {
-        const sig = getQuestionsSignature(sessionId);
+      if (!previewResult.skipped && session.lastOutputPreview && lastStopMs >= 5000) {
+        // Reuse the scan performed by readTerminalPreview. The old path walked
+        // every xterm line twice on each silence callback.
+        const sig = previewResult.signature;
         const prev = session.readSignature || '';
         if (sig !== prev) {
           session.lastMessageTime = Date.now();

@@ -71,10 +71,10 @@ function createBaseDeps(overrides = {}) {
     getSlotPromptName: (slotId) => `slot:${slotId}`,
     groupchat: { cleanup: (...args) => calls.push(['cleanup', ...args]) },
     hookToken: 'token',
-    isClaudeFamily: (kind) => ['claude', 'deepseek', 'glm'].includes(kind),
+    isClaudeFamily: (kind) => ['claude', 'deepseek'].includes(kind),
     isCodexBaseKind: (kind) => ['codex', 'codex-resume'].includes(kind),
     isIsolatedHub: () => true,
-    kindLabels: { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' },
+    kindLabels: { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', deepseek: 'DeepSeek' },
     meetingManager,
     path: require('path'),
     registerSessionForTap: (session) => calls.push(['registerSessionForTap', session.id]),
@@ -165,7 +165,7 @@ test('add-meeting-sub applies Codex research MCP entries without overwriting exp
   assert.strictEqual(result.session.opts.codexBypassApprovals, true);
   assert.deepStrictEqual(result.session.opts.codexMcpEntries, [
     { aiTeamArgs: ['m1', 'codex'] },
-    { args: ['m1', 4567, 'token'] },
+    { args: ['m1', 4567, 'token', 'C:\\hub'] },
   ]);
 });
 

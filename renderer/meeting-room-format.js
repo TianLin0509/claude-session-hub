@@ -1,33 +1,27 @@
 // Shared presentation helpers for meeting-room.js.
 
 const KIND_AVATAR_SRC = {
-  claude: 'assets/pokemon/pikachu.png',
-  gemini: 'assets/pokemon/charmander.png',
-  codex: 'assets/pokemon/squirtle.png',
-  deepseek: 'assets/pokemon/pikachu.png',
-  glm: 'assets/pokemon/pikachu.png',
-  gpt: 'assets/pokemon/pikachu.png',
-  kimi: 'assets/pokemon/pikachu.png',
-  qwen: 'assets/pokemon/pikachu.png',
+  claude: 'assets/ai-logos/claude.svg',
+  gemini: 'assets/ai-logos/gemini.svg',
+  codex: 'assets/ai-logos/codex.svg',
+  deepseek: 'assets/ai-logos/deepseek.svg',
+  kimi: 'assets/ai-logos/kimi.svg',
 };
 
 const KIND_AVATAR_FALLBACK = {
-  claude: '\uD83D\uDFE1',
-  gemini: '\uD83D\uDFE0',
-  codex: '\uD83D\uDD35',
-  deepseek: '\uD83D\uDFE2',
-  glm: '\uD83D\uDFE3',
-  gpt: '\u26AA',
-  kimi: '\uD83D\uDFE4',
-  qwen: '\uD83D\uDD34',
+  claude: 'CL',
+  gemini: 'GE',
+  codex: 'CX',
+  deepseek: 'DS',
+  kimi: 'KM',
 };
 
 const SLOT_AVATARS = [
-  'assets/pokemon/pikachu.png',
-  'assets/pokemon/charmander.png',
-  'assets/pokemon/squirtle.png',
+  '',
+  '',
+  '',
 ];
-const SLOT_AVATAR_FALLBACK = ['\uD83D\uDFE1', '\uD83D\uDFE0', '\uD83D\uDD35'];
+const SLOT_AVATAR_FALLBACK = ['1', '2', '3'];
 
 function escapeHtml(str) {
   if (str == null) return '';

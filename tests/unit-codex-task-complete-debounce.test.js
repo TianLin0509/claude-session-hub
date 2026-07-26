@@ -25,11 +25,11 @@ function extractCodexOnLineBody(src) {
   return src.slice(startIdx, endIdx);
 }
 
-function testDebounceConstantIs3000() {
+function testDebounceConstantIs400() {
   const body = extractCodexOnLineBody(readSrc());
-  assert.ok(/TASK_COMPLETE_DEBOUNCE_MS\s*=\s*3000/.test(body),
-    'TASK_COMPLETE_DEBOUNCE_MS must equal 3000ms (3s, per spec)');
-  console.log('  ✓ testDebounceConstantIs3000');
+  assert.ok(/TASK_COMPLETE_DEBOUNCE_MS\s*=\s*400/.test(body),
+    'TASK_COMPLETE_DEBOUNCE_MS must equal 400ms (current card-sync contract)');
+  console.log('  ✓ testDebounceConstantIs400');
 }
 
 function testTaskStartedCancelsPendingEmit() {
@@ -110,7 +110,7 @@ function testInitialEntryHasPendingFields() {
 }
 
 console.log('Running Codex task_complete debounce tests...');
-testDebounceConstantIs3000();
+testDebounceConstantIs400();
 testTaskStartedCancelsPendingEmit();
 testTaskCompleteResetsDebounce();
 testEmitGoesThroughTimer();

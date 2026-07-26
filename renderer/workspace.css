@@ -1,0 +1,205 @@
+/* Session-bound workspace chooser. There is intentionally no sidebar-level
+   workspace state: the sidebar aggregates sessions from many directories. */
+.new-session-menu {
+  width: min(680px, 92vw);
+  max-width: min(680px, 92vw);
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+.session-create-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-create-head > div { display: flex; flex-direction: column; gap: 2px; }
+.session-create-head strong { color: var(--text-primary); font-size: 17px; }
+.session-create-head span { color: var(--text-muted); font-size: 12px; }
+.session-create-close {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+.session-create-close:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+
+.new-session-menu .menu-group-label {
+  padding: 14px 20px 7px;
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: .08em;
+}
+
+.session-kind-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  padding: 0 20px;
+}
+
+.new-session-menu .new-session-option {
+  min-width: 0;
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  gap: 8px;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
+}
+.new-session-menu .new-session-option:hover {
+  border-color: rgba(88, 166, 255, .45);
+  background: rgba(56, 139, 253, .08);
+}
+.new-session-menu .new-session-option.selected {
+  border-color: rgba(46, 160, 67, .72);
+  background: rgba(35, 134, 54, .16);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px rgba(46, 160, 67, .12);
+}
+
+.session-workspace-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  padding: 0 20px;
+}
+.session-workspace-choice {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-height: 78px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.session-workspace-choice:hover { border-color: rgba(88, 166, 255, .45); }
+.session-workspace-choice.selected {
+  border-color: rgba(46, 160, 67, .72);
+  background: rgba(35, 134, 54, .12);
+}
+.session-workspace-choice svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: #58d68d;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.session-workspace-choice span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.session-workspace-choice strong { font-size: 13px; }
+.session-workspace-choice small { color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+
+.session-existing-path {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 20px 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(88, 166, 255, .24);
+  border-radius: 7px;
+  background: rgba(56, 139, 253, .055);
+}
+.session-existing-path[hidden] { display: none; }
+.session-existing-path > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.session-existing-path span { color: var(--text-muted); font-size: 10px; }
+.session-existing-path code {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font: 11px Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-existing-path button {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid rgba(88, 166, 255, .4);
+  border-radius: 6px;
+  background: transparent;
+  color: #8bc2ff;
+  cursor: pointer;
+}
+.session-existing-path button:hover { background: rgba(56, 139, 253, .12); }
+
+.session-create-error {
+  margin: 10px 20px 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(248, 81, 73, .35);
+  border-radius: 6px;
+  background: rgba(248, 81, 73, .08);
+  color: #ffb4ae;
+  font-size: 11px;
+}
+.session-create-error[hidden] { display: none; }
+
+.session-create-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 13px 20px;
+  border-top: 1px solid var(--border);
+  background: rgba(0, 0, 0, .1);
+}
+.session-create-footer > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font: 11px Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-create-footer > div { display: flex; gap: 8px; }
+.session-create-cancel,
+.session-create-submit {
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: 12px inherit;
+}
+.session-create-cancel { border: 1px solid var(--border); background: var(--bg-tertiary); color: var(--text-secondary); }
+.session-create-submit { border: 1px solid #2ea043; background: #238636; color: #fff; font-weight: 650; }
+.session-create-submit:hover:not(:disabled) { background: #2ea043; }
+.session-create-submit:disabled { cursor: not-allowed; opacity: .45; }
+
+.new-session-option:focus-visible,
+.session-workspace-choice:focus-visible,
+.session-existing-path button:focus-visible,
+.session-create-close:focus-visible,
+.session-create-cancel:focus-visible,
+.session-create-submit:focus-visible,
+.mcm-workspace-button:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 2px;
+}
+
+@media (max-width: 620px) {
+  .session-kind-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .session-workspace-grid { grid-template-columns: 1fr; }
+  .session-create-footer { align-items: stretch; flex-direction: column; }
+  .session-create-footer > div { justify-content: flex-end; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-session-menu,
+  .new-session-option,
+  .session-workspace-choice { animation: none !important; transition: none !important; }
+}

@@ -4,13 +4,16 @@
 //
 // Model picker options used by the renderer config modal.
 //
-// `canSwitchInline(kind)`: claude CLI 接受 `/model <id>\r` 原地切换；deepseek / glm /
-// gpt / kimi / qwen 都是 claude CLI + ANTHROPIC_BASE_URL 中转，同样走该路径。codex /
+// `canSwitchInline(kind)`: claude CLI 接受 `/model <id>\r` 原地切换；deepseek
+// 是 claude CLI + ANTHROPIC_BASE_URL 中转，同样走该路径。codex /
 // gemini PTY 实测不识别 inline `/model`（spec §3.1）——必须 kill + respawn with --model，
 // 本期未实现，picker 端给明确提示而不是默默无效切换。
 
 const MODEL_OPTIONS_BY_KIND = {
   claude: [
+    { id: 'claude-opus-5[1m]',   label: 'Opus 5 (1M context)' },
+    { id: 'claude-opus-5',       label: 'Opus 5' },
+    { id: 'claude-fable-5',      label: 'Fable 5' },
     { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M context)' },
     { id: 'claude-opus-4-8',     label: 'Opus 4.8' },
     { id: 'claude-opus-4-7[1m]', label: 'Opus 4.7 (1M context)' },
@@ -27,6 +30,7 @@ const MODEL_OPTIONS_BY_KIND = {
     { id: 'gemini-2.5-flash',     label: 'Gemini 2.5 Flash' },
   ],
   codex: [
+    { id: 'gpt-5.6-sol',   label: 'GPT-5.6 Sol' },
     { id: 'gpt-5.5',       label: 'GPT-5.5' },
     { id: 'gpt-5.4',       label: 'GPT-5.4' },
     { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
@@ -35,37 +39,17 @@ const MODEL_OPTIONS_BY_KIND = {
     { id: 'deepseek-v4-pro[1m]',   label: 'DeepSeek V4 Pro (1M context)' },
     { id: 'deepseek-v4-flash[1m]', label: 'DeepSeek V4 Flash (1M context)' },
   ],
-  glm: [
-    { id: 'glm-5.1',     label: 'GLM 5.1' },
-    { id: 'glm-4.6',     label: 'GLM 4.6' },
-    { id: 'glm-4.5-air', label: 'GLM 4.5 Air' },
-  ],
-  // PackyAPI 三家：跑在 Claude CLI 上（ANTHROPIC_BASE_URL 中转），model id 由 PackyAPI 端确定。
-  // 注意：gpt kind 不含 'gpt-5.5'——PackyAPI 中转目前仅支持到 5.4 系列；'gpt-5.5' 只在 codex kind
-  // （OpenAI 官方 codex CLI 直连订阅）下可用。
-  gpt: [
-    { id: 'gpt-5.4-high', label: 'GPT-5.4 High' },
-    { id: 'gpt-5.4',      label: 'GPT-5.4' },
-  ],
   kimi: [
-    { id: 'kimi-k2.5', label: 'Kimi K2.5' },
-  ],
-  qwen: [
-    { id: 'qwen3.7-max',  label: 'Qwen 3.7 Max' },
-    { id: 'qwen3.7-plus', label: 'Qwen 3.7 Plus' },
-    { id: 'qwen3.6-plus', label: 'Qwen 3.6 Plus' },
+    { id: 'kimi-code/k3', label: 'Kimi K3' },
   ],
 };
 
 const DEFAULT_MODEL_BY_KIND = {
-  claude: 'claude-opus-4-8[1m]',
+  claude: 'claude-opus-5[1m]',
   gemini: 'gemini-3-pro-preview',
-  codex: 'gpt-5.5',
+  codex: 'gpt-5.6-sol',
   deepseek: 'deepseek-v4-pro[1m]',
-  glm: 'glm-5.1',
-  gpt: 'gpt-5.4-high',
-  kimi: 'kimi-k2.5',
-  qwen: 'qwen3.6-plus',
+  kimi: 'kimi-code/k3',
 };
 
 function normalizeDeepSeekModel(modelId) {
@@ -93,7 +77,7 @@ function modelOptionsFor(kind) {
 
 // 走 claude CLI 的 kind（含直连 + 中转）支持 inline `/model <id>\r`。
 const INLINE_SWITCH_BASE_KINDS = new Set([
-  'claude', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen',
+  'claude', 'deepseek',
 ]);
 
 function canSwitchInline(kind) {

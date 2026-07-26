@@ -3,7 +3,7 @@ const meetingStore = require('./meeting-store');
 
 // scene 白名单 (与 core/group-chat-scenes.js SCENE_REGISTRY keys 同步)
 //   2026-05-04 道雪: 'dev' 加入 (plan-dev-scenario.md MVP)
-const MEETING_MODES = ['general', 'research', 'committee', 'dev'];
+const MEETING_MODES = ['general', 'research', 'dev'];
 
 // 模式 → 房名前缀。前端 +号菜单点击两模式入口时透传 mode,createMeeting 据此生成
 // 自带语义的房名(每模式独立计数,后期允许用户重命名)。未传 mode 时默认 'general' 走
@@ -13,7 +13,6 @@ const MEETING_MODES = ['general', 'research', 'committee', 'dev'];
 const MODE_TITLE_PREFIX = {
   general: '通用',
   research: '投研',
-  committee: '投委会',
   dev: '开发',
 };
 
@@ -26,7 +25,7 @@ class MeetingRoomManager {
   constructor() {
     this.meetings = new Map();
     // 各模式独立计数,跨模式不共享
-    this._counters = { general: 0, research: 0, committee: 0, dev: 0 };
+    this._counters = { general: 0, research: 0, dev: 0 };
   }
 
   createMeeting(opts = {}) {
@@ -60,6 +59,8 @@ class MeetingRoomManager {
       groupChat: true,
       groupMode: typeof opts.groupMode === 'string' ? opts.groupMode : 'deliberation',
       groupRecentRawN: Number.isInteger(opts.groupRecentRawN) ? opts.groupRecentRawN : 5,
+      workspace: typeof opts.workspace === 'string' ? opts.workspace : null,
+      workspaceLabel: typeof opts.workspaceLabel === 'string' ? opts.workspaceLabel : null,
       // meeting-create-modal（2026-05-01）：用户在 Modal 选定的 slots 列表，
       //   形如 [{ index, kind, model }, ...]。subSessions 数组顺序与 slot index 同步，
       //   slotSpecs 保留 kind/model 是为了"再来一次"或诊断信息。
@@ -213,6 +214,8 @@ class MeetingRoomManager {
         m[key] = key === 'serialWorkflow' ? cloneSerialWorkflow(fields[key]) : fields[key];
       }
     }
+    // 串行工作流配置变更必须落盘（updateMeeting 默认不 markDirty）；传完整 meeting 快照，
+    //   避免新群聊首次 markDirty 时 prev 残缺导致 title/subSessions 被默认值覆盖。
     if ('serialWorkflow' in fields) {
       meetingStore.markDirty(meetingId, m);
     }
@@ -302,6 +305,7 @@ class MeetingRoomManager {
       mode: 'free',
       // free-mode（2026-05-04）：null=首次未初始化，空数组=用户已清空（Q11=A）
       participants: Array.isArray(meetingData.participants) ? meetingData.participants : null,
+      // 串行工作流配置（2026-06-17 道雪）：重启恢复
       serialWorkflow: cloneSerialWorkflow(meetingData.serialWorkflow),
       _timeline: [],
       _cursors: {},

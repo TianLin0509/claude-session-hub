@@ -30,9 +30,16 @@ function reindexSerialWorkflowAfterRemoval(serialWorkflow, removedIndex) {
     if (memberId === removedMemberId) return null;
     return oneBased > removedIndex + 1 ? 'm' + (oneBased - 1) : memberId;
   };
-  const steps = serialWorkflow.steps
-    .map(step => Array.isArray(step) ? step.map(remapMemberId).filter(Boolean) : [])
-    .filter(step => step.length > 0);
+  const mappedSteps = serialWorkflow.steps
+    .map((step, index) => ({
+      step: Array.isArray(step) ? step.map(remapMemberId).filter(Boolean) : [],
+      config: Array.isArray(serialWorkflow.stepConfigs) && serialWorkflow.stepConfigs[index]
+        ? serialWorkflow.stepConfigs[index]
+        : null,
+    }))
+    .filter(item => item.step.length > 0);
+  const steps = mappedSteps.map(item => item.step);
+  const stepConfigs = mappedSteps.map(item => item.config || { name: '', prompt: '' });
   const loop = serialWorkflow.loop && typeof serialWorkflow.loop === 'object'
     ? {
         ...serialWorkflow.loop,
@@ -43,6 +50,7 @@ function reindexSerialWorkflowAfterRemoval(serialWorkflow, removedIndex) {
     ...serialWorkflow,
     enabled: !!serialWorkflow.enabled && steps.length > 0,
     steps,
+    ...(Array.isArray(serialWorkflow.stepConfigs) || serialWorkflow.schemaVersion >= 2 ? { stepConfigs } : {}),
     ...(loop ? { loop } : {}),
   };
 }

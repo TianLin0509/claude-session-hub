@@ -7,15 +7,13 @@ function modelClass(id) {
   if (!id) return '';
   const s = id.toLowerCase();
   if (s.includes('opus')) return 'opus';
+  if (s.includes('fable')) return 'fable';
   if (s.includes('sonnet')) return 'sonnet';
   if (s.includes('haiku')) return 'haiku';
   if (s.includes('gemini')) return 'gemini';
   if (s.includes('codex') || s.includes('gpt-5') || s.includes('o3') || s.includes('o4-mini')) return 'codex';
   if (s.includes('deepseek')) return 'deepseek';
-  if (s.includes('glm')) return 'glm';
-  if (s.includes('gpt')) return 'gpt';
-  if (s.includes('kimi')) return 'kimi';
-  if (s.includes('qwen')) return 'qwen';
+  if (s.includes('kimi') || s === 'k3') return 'kimi';
   return '';
 }
 
@@ -27,15 +25,13 @@ function modelShort(m) {
   if (dn) return dn.replace(/\s*\(.*?\)\s*$/, '').trim();
   const id = (m.id || '').toLowerCase();
   if (id.includes('opus')) return 'Opus';
+  if (id.includes('fable')) return 'Fable';
   if (id.includes('sonnet')) return 'Sonnet';
   if (id.includes('haiku')) return 'Haiku';
   if (id.includes('gemini')) return id.replace(/^gemini-/, 'Gemini ').replace(/-/g, ' ');
   if (id.includes('codex')) return 'Codex';
   if (id.includes('deepseek')) return 'DS';
-  if (id.includes('glm')) return 'GLM';
-  if (id.includes('gpt')) return 'GP';
-  if (id.includes('kimi')) return 'KI';
-  if (id.includes('qwen')) return 'QW';
+  if (id.includes('kimi') || id === 'k3') return 'Kimi K3';
   return m.id || '';
 }
 
@@ -72,7 +68,7 @@ function createModelUiController({ document, ipcRenderer, sessions, terminalPane
   
   // ---- Model picker dropdown ----
   // Per-kind model option source of truth lives in core/model-options.js.
-  // claude / deepseek / glm / gpt / kimi / qwen \u90fd\u8dd1\u5728 claude CLI \u4e0a\uff08\u76f4\u8fde\u6216 ANTHROPIC_BASE_URL \u4e2d\u8f6c\uff09\uff0c
+  // claude / deepseek \u90fd\u8dd1\u5728 claude CLI \u4e0a\uff08\u76f4\u8fde\u6216 ANTHROPIC_BASE_URL \u4e2d\u8f6c\uff09\uff0c
   // \u8d70\u539f\u5730 `/model <id>\r` \u5207\u6362\u3002codex / gemini \u7684 PTY \u4e0d\u8bc6\u522b inline `/model`\uff08spec \u00a73.1 \u5df2\u8bba\u8bc1\uff09\uff0c
   // picker \u6539\u4e3a\u663e\u793a\u53ea\u8bfb\u6e05\u5355 + \u63d0\u793a"\u91cd\u65b0\u5efa\u7acb session"\u2014\u2014\u907f\u514d\u53d1\u9001\u65e0\u6548\u5207\u6362\u8ba9\u7528\u6237\u8bef\u4ee5\u4e3a\u5207\u4e86\u3002
   

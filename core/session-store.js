@@ -2,7 +2,7 @@
 //
 // 2026-05-07 道雪 — per-session JSON 备份。镜像 meeting-store 的设计：
 //   每个 session 独立写一份 sessions/<hubId>.json，作为 state.json 的双备份。
-//   重点保护 codexSid / geminiChatId / geminiProjectHash / geminiProjectRoot
+//   重点保护 codexSid / geminiChatId / Kimi kimiSid 等原生会话关联字段
 //   这类 transcript 关联字段——历史上反复因 state.json 全量覆盖被吞回 null，
 //   导致 Codex/Gemini 的 dormant resume 退化为 Level 2/3 fallback。
 //
@@ -42,20 +42,19 @@ function sessionFilePath(hubId) {
   return path.join(sessionsDir(), `${hubId}.json`);
 }
 
-function saveSessionFile(hubId, data) {
-  ensureDir();
+function _buildSessionPayload(hubId, data) {
   const now = Date.now();
-  const payload = {
+  return {
     schemaVersion: SCHEMA_VERSION,
     hubId,
     kind: typeof data.kind === 'string' ? data.kind : 'claude',
     title: typeof data.title === 'string' ? data.title : null,
     cwd: typeof data.cwd === 'string' ? data.cwd : null,
+    workspaceLabel: typeof data.workspaceLabel === 'string' ? data.workspaceLabel : null,
     pinned: !!data.pinned,
     ccSessionId: data.ccSessionId || null,
     transcriptPath: data.transcriptPath || null,
     codexSid: data.codexSid || null,
-    codexAppThreadId: data.codexAppThreadId || null,
     codexSessionsRoot: data.codexSessionsRoot || null,
     codexAllowMtimeFallback: !!data.codexAllowMtimeFallback,
     codexProfile: data.codexProfile || null,
@@ -63,6 +62,8 @@ function saveSessionFile(hubId, data) {
     geminiChatId: data.geminiChatId || null,
     geminiProjectHash: data.geminiProjectHash || null,
     geminiProjectRoot: data.geminiProjectRoot || null,
+    kimiSid: data.kimiSid || null,
+    kimiSessionDir: data.kimiSessionDir || null,
     currentModel: (data.currentModel && typeof data.currentModel === 'object') ? data.currentModel : null,
     meetingId: data.meetingId || null,
     lastMessageTime: typeof data.lastMessageTime === 'number' ? data.lastMessageTime : null,
@@ -71,9 +72,34 @@ function saveSessionFile(hubId, data) {
     updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : now,
     savedAt: now,
   };
-  const tmp = sessionFilePath(hubId) + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(payload));
-  fs.renameSync(tmp, sessionFilePath(hubId));
+}
+
+function _tempPath(hubId) {
+  return `${sessionFilePath(hubId)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+}
+
+function saveSessionFile(hubId, data) {
+  ensureDir();
+  const payload = _buildSessionPayload(hubId, data);
+  const tmp = _tempPath(hubId);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(payload));
+    fs.renameSync(tmp, sessionFilePath(hubId));
+  } finally {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+async function saveSessionFileAsync(hubId, data) {
+  await fs.promises.mkdir(sessionsDir(), { recursive: true });
+  const payload = _buildSessionPayload(hubId, data);
+  const tmp = _tempPath(hubId);
+  try {
+    await fs.promises.writeFile(tmp, JSON.stringify(payload));
+    await fs.promises.rename(tmp, sessionFilePath(hubId));
+  } finally {
+    try { await fs.promises.unlink(tmp); } catch {}
+  }
 }
 
 function loadSessionFile(hubId) {
@@ -121,10 +147,27 @@ function deleteSessionFile(hubId) {
 
 const _dirty = new Map();
 const _timers = new Map();
+const _writeChains = new Map();
 
 function _isRemoved(hubId) {
   const ss = _getStateStore();
   return !!(ss && typeof ss.isMarkedRemovedSession === 'function' && ss.isMarkedRemovedSession(hubId));
+}
+
+function _enqueueWrite(hubId, snap) {
+  const previous = _writeChains.get(hubId) || Promise.resolve();
+  const task = previous.then(async () => {
+    if (_isRemoved(hubId)) return;
+    await saveSessionFileAsync(hubId, snap);
+    if (_dirty.get(hubId) === snap) _dirty.delete(hubId);
+  });
+  const tracked = task
+    .catch(error => console.warn(`[session-store] async flush ${hubId} failed:`, error.message))
+    .finally(() => {
+      if (_writeChains.get(hubId) === tracked) _writeChains.delete(hubId);
+    });
+  _writeChains.set(hubId, tracked);
+  return tracked;
 }
 
 function markDirty(hubId, data) {
@@ -142,16 +185,7 @@ function markDirty(hubId, data) {
       return;
     }
     const snap = _dirty.get(hubId);
-    if (snap) {
-      try {
-        saveSessionFile(hubId, snap);
-        _dirty.delete(hubId);  // 只有写盘成功才删 dirty
-      }
-      catch (e) {
-        // 2026-05-07 多方审查 fix：写盘失败时保留 dirty，让 flushAll 仍可重试。
-        console.warn(`[session-store] flush ${hubId} failed (will retry on flushAll):`, e.message);
-      }
-    }
+    if (snap) void _enqueueWrite(hubId, snap);
     _timers.delete(hubId);
   }, DEBOUNCE_MS);
   t.unref?.();
@@ -167,6 +201,13 @@ function markDirtySync(hubId, data) {
   _dirty.delete(hubId);
   try { saveSessionFile(hubId, data); }
   catch (e) { console.warn(`[session-store] sync flush ${hubId} failed:`, e.message); }
+}
+
+function markDirtyImmediate(hubId, data) {
+  if (!hubId || _isRemoved(hubId)) return Promise.resolve();
+  if (_timers.has(hubId)) { clearTimeout(_timers.get(hubId)); _timers.delete(hubId); }
+  _dirty.set(hubId, data);
+  return _enqueueWrite(hubId, data);
 }
 
 function flushAll() {
@@ -195,6 +236,7 @@ module.exports = {
   listSessionFilesWithData,
   deleteSessionFile,
   markDirty,
+  markDirtyImmediate,
   markDirtySync,
   cancelDirty,
   flushAll,

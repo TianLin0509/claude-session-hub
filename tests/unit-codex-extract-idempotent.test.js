@@ -23,7 +23,7 @@ async function testAutoThenManualOnlyOnce() {
   const watcher = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-A',
-    label: 'pikachu',
+    label: 'member1',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
   });
@@ -57,7 +57,7 @@ async function testMultipleManualExtractsOnlyFirstWins() {
   const watcher = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-B',
-    label: 'charmander',
+    label: 'member2',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
   });
@@ -77,7 +77,7 @@ async function testCompletedThenErrorIgnored() {
   const watcher = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-C',
-    label: 'squirtle',
+    label: 'member3',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
   });

@@ -15,11 +15,12 @@ function createAutoTitleManager(deps) {
     meetingManager,
     sendToRenderer,
     sessionManager,
+    workspaceService,
   } = deps;
 
   const autoTitleInFlight = new Set();
   const autoMeetingTitleInFlight = new Set();
-  const autoTitleBaseKinds = new Set([...allAiKinds, 'claude-web', 'codex-web']);
+  const autoTitleBaseKinds = new Set(allAiKinds);
   const autoTitleLabels = Object.values(kindLabels)
     .map(escapeRegExp)
     .sort((a, b) => b.length - a.length)
@@ -135,7 +136,17 @@ function createAutoTitleManager(deps) {
           title,
           autoTitleGenerated: true,
         });
-        if (updated) sendToRenderer('session-updated', { session: updated });
+        if (updated) {
+          sendToRenderer('session-updated', { session: updated });
+          if (workspaceService && updated.cwd) {
+            const workspace = workspaceService.updateSuggestedName(updated.cwd, title);
+            if (workspace) {
+              const relabeled = sessionManager.updateSessionMeta(hubSessionId, { workspaceLabel: workspace.label });
+              if (relabeled) sendToRenderer('session-updated', { session: relabeled });
+              sendToRenderer('workspace-updated', { workspace });
+            }
+          }
+        }
       } finally {
         autoTitleInFlight.delete(hubSessionId);
       }
@@ -164,7 +175,17 @@ function createAutoTitleManager(deps) {
           autoTitleGenerated: true,
           autoTitlePending: false,
         });
-        if (updated) sendToRenderer('meeting-updated', { meeting: updated });
+        if (updated) {
+          sendToRenderer('meeting-updated', { meeting: updated });
+          if (workspaceService && updated.workspace) {
+            const workspace = workspaceService.updateSuggestedName(updated.workspace, title);
+            if (workspace) {
+              const relabeled = meetingManager.updateMeeting(meetingId, { workspaceLabel: workspace.label });
+              if (relabeled) sendToRenderer('meeting-updated', { meeting: relabeled });
+              sendToRenderer('workspace-updated', { workspace });
+            }
+          }
+        }
       } finally {
         autoMeetingTitleInFlight.delete(meetingId);
       }

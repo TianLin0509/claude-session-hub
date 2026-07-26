@@ -24,7 +24,6 @@ function createShellController({
       contextMenuEl,
       termCtxMenuEl,
       document.getElementById('options-menu'),
-      document.getElementById('theme-picker-popup'),
     ]) {
       if (el) el.style.display = 'none';
     }

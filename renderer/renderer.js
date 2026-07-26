@@ -39,6 +39,7 @@ const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.j
 const { createPastSessionModals } = require('./past-session-modals.js');
 const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
 const { createShellController } = require('./shell-controller.js');
+const { createRenderCoalescer } = require('./render-coalescer.js');
 const {
   PREVIEW_PATH_RE,
   HUB_IMG_PATH_RE,
@@ -95,6 +96,11 @@ let _deepseekAutoTitleEnabled = false;
 let _cardHistoryHydratedSid = null; // 已完成全量历史卡片加载的 sessionId
 const _turnCompleteBackfillTimers = new Map(); // sid -> Promise; in-flight guard 防止并发 backfill (2026-05-24 道雪：原 timer-debounce 改为立即 trigger)
 const terminalCache = new Map();
+// xterm + Canvas/WebGL addon is one of the renderer/GPU process's most
+// expensive objects. Keep only a small working set; evicted terminals can be
+// reconstructed from SessionManager's sequence-stamped ring-buffer snapshot.
+const MAX_TERMINAL_CACHE_SIZE = 4;
+const MAX_PENDING_TERMINAL_BYTES = 64 * 1024;
 const terminalInputController = createTerminalInputController({
   document,
   window,
@@ -109,6 +115,7 @@ const getTerminalCoords = terminalInputController.getTerminalCoords;
 const getInputLineSelection = terminalInputController.getInputLineSelection;
 const deleteInputSelection = terminalInputController.deleteInputSelection;
 const floatingInputDrafts = new Map();
+const floatingInputPresetDrafts = new Map();
 const CODEX_BOTTOM_LOCK_EPSILON = 24;
 const CODEX_SCROLL_INTENT_MS = 1500;
 const CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS = 120;
@@ -161,8 +168,10 @@ function pinTerminalViewportToBottom(cached) {
 
 function scheduleCodexBottomPin(sessionId, cached) {
   if (!shouldAutoPinCodexTerminal(sessionId, cached)) return;
+  if (cached._codexBottomPinRaf) return;
   pinTerminalViewportToBottom(cached);
-  requestAnimationFrame(() => {
+  cached._codexBottomPinRaf = requestAnimationFrame(() => {
+    cached._codexBottomPinRaf = 0;
     if (shouldAutoPinCodexTerminal(sessionId, cached)) pinTerminalViewportToBottom(cached);
   });
 }
@@ -238,6 +247,22 @@ function scheduleFitAndResizeTerminal(sessionId, cached, opts = {}) {
     cached._fitRaf = 0;
     fitAndResizeTerminal(sessionId, cached, opts);
   });
+}
+
+function refreshTerminalRendererSurface(cached) {
+  if (!cached || !cached.opened || !cached.terminal) return false;
+  const lastRow = Math.max(0, Number(cached.terminal.rows || 1) - 1);
+  try {
+    // Moving a cached xterm through display:none or into a new parent does not
+    // necessarily resize it. In that case FitAddon is a no-op and Canvas/WebGL
+    // keeps the old (or partially evicted) frame. Force a complete repaint so
+    // a restored PTY cannot come back as a black surface with scattered glyphs.
+    cached.terminal.refresh(0, lastRow);
+    cached._surfaceRefreshCount = (cached._surfaceRefreshCount || 0) + 1;
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 // --- DOM refs ---
@@ -390,7 +415,15 @@ const sessionListRenderer = createSessionListRenderer({
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
   afterRender: () => { updateFloatingBarState(); updateRespondPill(); },
 });
-const renderSessionList = sessionListRenderer.renderSessionList;
+const renderSessionListNow = sessionListRenderer.renderSessionList;
+const sidebarRenderCoalescer = createRenderCoalescer(renderSessionListNow, { delayMs: 75 });
+function renderSessionList() {
+  sidebarRenderCoalescer.cancel();
+  renderSessionListNow();
+}
+function scheduleSessionListRender() {
+  sidebarRenderCoalescer.schedule();
+}
 let activeMeetingId = null;
 let meetings = {};
 
@@ -411,8 +444,13 @@ async function selectMeeting(meetingId) {
   await savePreviewState();
   activeSessionId = null;
   activeMeetingId = meetingId;
+  // Stop background meeting PTY redraws at the main-process boundary. The room
+  // renders transcript/card state, not xterm output; an individual member shell
+  // will set focus again via selectSession when the user explicitly opens it.
+  ipcRenderer.send('focus-session', { sessionId: null });
 
   if (terminalPanelEl) terminalPanelEl.style.display = 'none';
+  if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   if (emptyStateEl) emptyStateEl.style.display = 'none';
   clearPreviewUI();
 
@@ -430,10 +468,19 @@ async function selectMeeting(meetingId) {
       //   （发消息/auto-title 必触发）又把 dormant 覆盖回来，侧栏"等你 N"与
       //   respond pill 对该会议永久失声。后端 updateMeeting 的 allowed 字段含 status。
       ipcRenderer.send('update-meeting', { meetingId: meeting.id, fields: { status: 'idle' } });
-      for (const sid of meeting.subSessions) {
-        const s = sessions.get(sid);
-        if (s && s.status === 'dormant') {
-          resumeDormantSession(sid);
+      const workflow = meeting.serialWorkflow;
+      const usesLazySerialWake = !!(
+        workflow && workflow.enabled && !workflow.loop?.enabled
+        && Array.isArray(workflow.steps) && workflow.steps.length
+      );
+      // 普通群聊保持历史行为；纯串行工作流由 runSerialWorkflow 在每一步前
+      // 只唤醒本步成员，避免“打开房间”就同时拉起所有 CLI/MCP。
+      if (!usesLazySerialWake) {
+        for (const sid of meeting.subSessions) {
+          const s = sessions.get(sid);
+          if (s && s.status === 'dormant') {
+            resumeDormantSession(sid);
+          }
         }
       }
     }
@@ -468,8 +515,44 @@ function loadGpuRenderer(cached) {
   try { cached.terminal.loadAddon(new CanvasAddon()); } catch (_) {}
 }
 
+function disposeCachedTerminal(sessionId) {
+  const cached = terminalCache.get(sessionId);
+  if (!cached) return false;
+  if (cached._ro) cached._ro.disconnect();
+  if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
+  if (cached._overflowDocHandler) document.removeEventListener('click', cached._overflowDocHandler);
+  if (cached._fitRaf) cancelAnimationFrame(cached._fitRaf);
+  if (cached._codexBottomPinRaf) cancelAnimationFrame(cached._codexBottomPinRaf);
+  if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
+  if (cached._navButtons) { try { cached._navButtons.dispose(); } catch {} cached._navButtons = null; }
+  if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
+  if (typeof _cursorDebounce !== 'undefined' && _cursorDebounce.has(sessionId)) {
+    clearTimeout(_cursorDebounce.get(sessionId));
+    _cursorDebounce.delete(sessionId);
+  }
+  try { cached.terminal.dispose(); } catch {}
+  try { cached.container.remove(); } catch {}
+  terminalCache.delete(sessionId);
+  return true;
+}
+
+function evictTerminalCacheFor(nextSessionId) {
+  while (terminalCache.size >= MAX_TERMINAL_CACHE_SIZE) {
+    const candidates = [...terminalCache.entries()]
+      .filter(([sid]) => sid !== nextSessionId && sid !== activeSessionId)
+      .sort((a, b) => (a[1]._lastUsedAt || 0) - (b[1]._lastUsedAt || 0));
+    if (!candidates.length) break;
+    disposeCachedTerminal(candidates[0][0]);
+  }
+}
+
 function getOrCreateTerminal(sessionId) {
-  if (terminalCache.has(sessionId)) return terminalCache.get(sessionId);
+  if (terminalCache.has(sessionId)) {
+    const cached = terminalCache.get(sessionId);
+    cached._lastUsedAt = Date.now();
+    return cached;
+  }
+  evictTerminalCacheFor(sessionId);
 
   const terminal = new Terminal({
     theme: XTERM_THEMES.default,
@@ -715,6 +798,12 @@ function getOrCreateTerminal(sessionId) {
   const cached = {
     terminal, fitAddon, searchAddon, container, opened: false,
     _codexFollowBottom: true,
+    _hydrated: false,
+    _hydrating: false,
+    _hydratedSeq: 0,
+    _pendingOutput: [],
+    _pendingOutputBytes: 0,
+    _lastUsedAt: Date.now(),
   };
   terminalCache.set(sessionId, cached);
   return cached;
@@ -727,10 +816,13 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (!session) return;
 
   const cached = getOrCreateTerminal(sessionId);
+  const mountTarget = opts && opts.mountTarget ? opts.mountTarget : terminalPanelEl;
+  const embedded = mountTarget !== terminalPanelEl;
 
   // Preserve spec 1/2 elements that live inside #terminal-panel (view-toggle, msg-overlay)
   // before innerHTML clear obliterates them; re-attach after.
-  preserveAndClearTerminalPanel();
+  if (embedded) mountTarget.replaceChildren();
+  else preserveAndClearTerminalPanel();
 
   const header = document.createElement('div');
   header.className = 'terminal-header';
@@ -744,8 +836,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const titleSpan = document.createElement('span');
   titleSpan.className = 'terminal-title';
   titleSpan.textContent = session.title;
-  titleSpan.title = 'Click to rename';
-  titleSpan.addEventListener('click', () => startRename(sessionId, titleSpan));
+  titleSpan.title = session.readOnly ? '只读会话' : 'Click to rename';
+  if (!session.readOnly) titleSpan.addEventListener('click', () => startRename(sessionId, titleSpan));
 
   const statusSpan = document.createElement('span');
   statusSpan.className = `terminal-status ${session.status}`;
@@ -797,7 +889,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
     e.stopPropagation();
     overflowMenu.style.display = overflowMenu.style.display === 'none' ? 'block' : 'none';
   });
-  document.addEventListener('click', () => { overflowMenu.style.display = 'none'; });
+  if (cached._overflowDocHandler) document.removeEventListener('click', cached._overflowDocHandler);
+  cached._overflowDocHandler = () => { overflowMenu.style.display = 'none'; };
+  document.addEventListener('click', cached._overflowDocHandler);
   overflowWrap.append(overflowBtn, overflowMenu);
 
   const closeBtn = document.createElement('button');
@@ -849,8 +943,8 @@ function showTerminal(sessionId, opts = { focus: true }) {
   termContainer.className = 'terminal-container';
   termContainer.addEventListener('click', () => cached.terminal.focus());
 
-  terminalPanelEl.append(header, termContainer);
-  emptyStateEl.style.display = 'none';
+  mountTarget.append(header, termContainer);
+  if (!embedded) emptyStateEl.style.display = 'none';
 
   if (!termContainer.contains(cached.container)) {
     termContainer.appendChild(cached.container);
@@ -862,6 +956,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     cached.opened = true;
     loadGpuRenderer(cached);
     setupImageHover(cached.terminal, cached.container);
+    void hydrateTerminalFromSnapshot(sessionId, cached);
   }
   setupCodexViewportScrollTracker(sessionId, cached);
 
@@ -869,6 +964,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     const dbg = window.__scrollDebug;
     if (dbg && dbg.isOn()) dbg.log('show:raf-enter', { focus: opts.focus, ...dbg.snap(cached.terminal, sessionId) });
     fitAndResizeTerminal(sessionId, cached, { force: true });
+    refreshTerminalRendererSurface(cached);
     if (dbg && dbg.isOn()) dbg.log('show:after-fit', dbg.snap(cached.terminal, sessionId));
     const isCodexSession = isCodexKind(session.kind);
     const pinOnShow = !!opts.forceScrollBottom || (!isCodexSession && !!opts.focus);
@@ -930,11 +1026,13 @@ function showTerminal(sessionId, opts = { focus: true }) {
   cached._minimap = mountMinimap(sessionId, termContainer, cached.terminal);
   cached._navButtons = mountPromptNavButtons(sessionId, termContainer, cached._minimap);
   if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
-  cached._floatingInput = mountFloatingInput(sessionId, termContainer, cached.terminal);
+  cached._floatingInput = session.readOnly
+    ? null
+    : mountFloatingInput(sessionId, termContainer, cached.terminal);
   updateFloatingBarState();
 
   // === Spec 2 · S7: 切换 session 时加载真实历史卡片 ===
-  if (currentView === 'card') {
+  if (!embedded && currentView === 'card') {
     // loadSessionHistoryToOverlay handles its own clear + Map.clear + placeholder
     // for empty/error/non-Claude cases. Don't pre-clear here.
     _cardHistoryHydratedSid = null; // 切 session 重置，等 loadSessionHistoryToOverlay 成功后再设
@@ -947,7 +1045,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
         console.warn('[showTerminal] loadSessionHistoryToOverlay failed:', err);
       });
     }
-  } else {
+  } else if (!embedded) {
     // PTY view: just clear msg-overlay (don't load cards user can't see)
     const overlay = document.getElementById('msg-overlay');
     if (overlay) {
@@ -961,6 +1059,36 @@ function showTerminal(sessionId, opts = { focus: true }) {
     _updateStreamingIndicator(sessionId);
   }
 }
+
+// 初心投研复用同一套 xterm/PTY，不创建镜像终端。研究 Session 只改变挂载位置，
+// 生命周期、输入、工具调用与 transcript 仍由 Hub 原生 SessionManager 管理。
+window.__chuxinSessionBridge = {
+  async mount(sessionId, hostEl) {
+    if (!hostEl) return { ok: false, error: 'host-missing' };
+    const session = sessions.get(sessionId);
+    if (!session) return { ok: false, error: 'session-missing' };
+    activeMeetingId = null;
+    activeSessionId = sessionId;
+    session.unreadCount = 0;
+    session.isWaiting = false;
+    ipcRenderer.send('focus-session', { sessionId });
+    hostEl.classList.add('terminal-panel', 'cx-native-terminal-mounted');
+    showTerminal(sessionId, { focus: false, forceScrollBottom: true, mountTarget: hostEl });
+    renderSessionList();
+    return { ok: true, session };
+  },
+  clear(hostEl) {
+    if (!hostEl) return;
+    hostEl.replaceChildren();
+    const empty = document.createElement('div');
+    empty.className = 'cx-terminal-empty';
+    empty.textContent = '选择已有 Session，或发起任务后在这里查看原生 CLI。';
+    hostEl.appendChild(empty);
+  },
+  list() {
+    return Array.from(sessions.values()).filter((row) => row && row.purpose === 'chuxin-research');
+  },
+};
 
 const { createTerminalMinimapFactory } = require('./terminal-minimap.js');
 const terminalMinimapFactory = createTerminalMinimapFactory({
@@ -1404,12 +1532,11 @@ function wrapPathLinksInElement(rootEl, opts = {}) {
   const targets = [];
   let node;
   while ((node = walker.nextNode())) {
-    if (collectPathCandidates(normalizeMarkdownPathBreaks(node.nodeValue), cwd).length > 0) targets.push(node);
-  }
-  for (const textNode of targets) {
-    const text = normalizeMarkdownPathBreaks(textNode.nodeValue);
+    const text = normalizeMarkdownPathBreaks(node.nodeValue);
     const candidates = collectPathCandidates(text, cwd);
-    if (!candidates.length) continue;
+    if (candidates.length > 0) targets.push({ textNode: node, text, candidates });
+  }
+  for (const { textNode, text, candidates } of targets) {
     const frag = document.createDocumentFragment();
     let last = 0;
     for (const c of candidates) {
@@ -1752,6 +1879,117 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     inputBox.textContent = floatingInputDrafts.get(sessionId);
   }
 
+  const presetApi = window.TaskPresets;
+  const presetSession = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
+    ? sessions.get(sessionId) : null;
+  // AI kind 含 -resume 变体（claude-resume / codex-resume / kimi-resume）：
+  // 恢复的旧会话恰恰最需要「续跑」预设，口径与下方休眠 session 白名单一致。
+  const presetKind = presetSession && presetSession.kind;
+  const presetEnabled = !!(
+    presetApi && Array.isArray(presetApi.PRESETS) && presetApi.PRESETS.length
+    && presetKind && (isAiKind(presetKind) || (typeof presetKind === 'string' && presetKind.endsWith('-resume')))
+  );
+  const presetToolbar = document.createElement('div');
+  presetToolbar.className = 'fi-preset-toolbar';
+  presetToolbar.hidden = !presetEnabled;
+  presetToolbar.setAttribute('aria-label', '任务预设');
+  const presetToolbarLabel = document.createElement('span');
+  presetToolbarLabel.className = 'fi-preset-label';
+  presetToolbarLabel.textContent = '任务预设';
+  presetToolbar.appendChild(presetToolbarLabel);
+
+  const presetPreview = document.createElement('div');
+  presetPreview.className = 'fi-preset-preview';
+  presetPreview.hidden = true;
+  const presetPreviewName = document.createElement('strong');
+  const presetPreviewText = document.createElement('div');
+  presetPreviewText.className = 'fi-preset-preview-text';
+  presetPreviewText.contentEditable = 'true';
+  presetPreviewText.setAttribute('role', 'textbox');
+  presetPreviewText.setAttribute('aria-label', '本次任务预设约束，可编辑');
+  const presetRemoveBtn = document.createElement('button');
+  presetRemoveBtn.type = 'button';
+  presetRemoveBtn.className = 'fi-preset-remove';
+  presetRemoveBtn.title = '取消本次任务预设';
+  presetRemoveBtn.setAttribute('aria-label', '取消本次任务预设');
+  presetRemoveBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+  presetPreview.append(presetPreviewName, presetPreviewText, presetRemoveBtn);
+
+  function clearPresetSelection() {
+    floatingInputPresetDrafts.delete(sessionId);
+    presetPreview.hidden = true;
+    presetPreviewName.textContent = '';
+    presetPreviewText.textContent = '';
+    presetToolbar.querySelectorAll('.fi-preset-chip').forEach(btn => btn.setAttribute('aria-pressed', 'false'));
+  }
+
+  function selectPreset(presetId) {
+    if (!presetEnabled) return;
+    const preset = presetApi.getPreset(presetId);
+    if (!preset) return;
+    const current = floatingInputPresetDrafts.get(sessionId);
+    if (current && current.id === presetId) {
+      clearPresetSelection();
+      inputBox.focus();
+      return;
+    }
+    floatingInputPresetDrafts.set(sessionId, { id: preset.id, constraint: preset.constraint });
+    presetPreview.hidden = false;
+    presetPreviewName.textContent = preset.name;
+    presetPreviewText.textContent = preset.constraint;
+    presetToolbar.querySelectorAll('.fi-preset-chip').forEach(btn => {
+      btn.setAttribute('aria-pressed', String(btn.dataset.presetId === preset.id));
+    });
+    inputBox.focus();
+  }
+
+  if (presetEnabled) {
+    presetApi.PRESETS.forEach(preset => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'fi-preset-chip';
+      button.dataset.presetId = preset.id;
+      button.textContent = preset.label;
+      button.title = `${preset.name} · ${preset.hint}`;
+      button.setAttribute('aria-pressed', 'false');
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectPreset(preset.id);
+      });
+      presetToolbar.appendChild(button);
+    });
+    const savedPreset = floatingInputPresetDrafts.get(sessionId);
+    if (savedPreset && presetApi.getPreset(savedPreset.id)) {
+      const preset = presetApi.getPreset(savedPreset.id);
+      presetPreview.hidden = false;
+      presetPreviewName.textContent = preset.name;
+      // 如实恢复草稿：用户清空过的约束（空串）必须原样恢复成空，
+      // 不能用 || 回退成默认文案——否则 UI 显示有约束、实际发送却是纯原文。
+      presetPreviewText.textContent = savedPreset.constraint != null ? savedPreset.constraint : preset.constraint;
+      presetToolbar.querySelectorAll('.fi-preset-chip').forEach(btn => {
+        btn.setAttribute('aria-pressed', String(btn.dataset.presetId === preset.id));
+      });
+    }
+  }
+
+  // 与主输入框同款粘贴处理（terminal-input-controller）：文本粘贴转纯文本，
+  // 避免富文本格式混入约束草稿；图片粘贴插入本地路径。
+  if (typeof attachContenteditablePasteImage === 'function') attachContenteditablePasteImage(presetPreviewText);
+
+  presetPreviewText.addEventListener('input', () => {
+    const current = floatingInputPresetDrafts.get(sessionId);
+    if (!current) return;
+    floatingInputPresetDrafts.set(sessionId, {
+      id: current.id,
+      constraint: readContenteditablePlainText(presetPreviewText),
+    });
+  });
+  presetRemoveBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    clearPresetSelection();
+    inputBox.focus();
+  });
+
   // 2026-07-19 道雪 · 方案C：ctx chip（发送前看到成本）+ 运行中红色中断钮（发 \x03=SIGINT）
   const ctxChip = document.createElement('span');
   ctxChip.className = 'fi-ctx';
@@ -1774,7 +2012,10 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   sendBtn.setAttribute('aria-label', '发送');
   sendBtn.innerHTML = '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 4l7 7h-4v9h-6v-9H5z"/></svg>';
 
-  bar.append(inputBox, ctxChip, stopBtn, sendBtn);
+  const composerRow = document.createElement('div');
+  composerRow.className = 'fi-composer-row';
+  composerRow.append(inputBox, ctxChip, stopBtn, sendBtn);
+  bar.append(presetToolbar, composerRow, presetPreview);
   bar.classList.add('visible');
 
   const panel = termContainer.closest('.terminal-panel');
@@ -1791,12 +2032,17 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const BP_END = '\x1b[201~';
 
   function sendInput() {
-    const text = readContenteditablePlainText(inputBox);
-    if (!text || !text.trim()) return;
+    const userText = readContenteditablePlainText(inputBox);
+    if (!userText || !userText.trim()) return;
+    const selectedPreset = floatingInputPresetDrafts.get(sessionId);
+    const text = selectedPreset && presetApi && typeof presetApi.composePrompt === 'function'
+      ? presetApi.composePrompt(userText, selectedPreset.id, selectedPreset.constraint)
+      : userText;
 
     // 立即清 UI + scroll + 还焦给终端，让用户立刻感知"已发送"。后续异步往 PTY 写。
     inputBox.textContent = '';
     clearFloatingInputDraft(sessionId);
+    clearPresetSelection();
     terminal.scrollToBottom();
     terminal.focus();
 
@@ -1969,7 +2215,8 @@ function updateRespondPill() {
   if (!pill) return;
   const items = [];
   for (const s of sessions.values()) {
-    if (s.meetingId || s.id === activeSessionId || s.status === 'dormant') continue;
+    if (s.meetingId || s.id === activeSessionId || s.status === 'dormant'
+        || s.hiddenFromSidebar || s.purpose === 'chuxin-research') continue;
     if (s.isWaiting) items.push({ id: s.id, meeting: false, wait: true, t: s.lastMessageTime || 0 });
     else if ((s.unreadCount || 0) > 0) items.push({ id: s.id, meeting: false, wait: false, t: s.lastMessageTime || 0 });
   }
@@ -2079,6 +2326,7 @@ function startRename(sessionId, titleSpan) {
 async function selectSession(id, opts = {}) {
   await savePreviewState();
   activeMeetingId = null;
+  if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
   clearPreviewUI();
@@ -2139,7 +2387,8 @@ async function selectSession(id, opts = {}) {
 
 // --- Dropdown menu ---
 btnNew.addEventListener('click', () => {
-  menuEl.style.display = menuEl.style.display === 'none' ? 'block' : 'none';
+  if (menuEl.style.display === 'none') window.WorkspaceController.openNewSessionModal();
+  else window.WorkspaceController.closeNewSessionModal();
 });
 
 document.addEventListener('mousedown', (e) => {
@@ -2164,13 +2413,6 @@ document.addEventListener('keydown', (e) => {
     if (el && el.style.display !== 'none') el.style.display = 'none';
   }
 });
-
-for (const btn of document.querySelectorAll('.new-session-option')) {
-  btn.addEventListener('click', async () => {
-    menuEl.style.display = 'none';
-    await ipcRenderer.invoke('create-session', btn.dataset.kind);
-  });
-}
 
 // --- Resume dropdown ---
 btnResume.addEventListener('click', (e) => {
@@ -2198,7 +2440,7 @@ for (const cta of document.querySelectorAll('.launcher-cta')) {
 for (const link of document.querySelectorAll('.launcher-link')) {
   link.addEventListener('click', () => {
     const kind = link.dataset.launcherKind;
-    if (kind) ipcRenderer.invoke('create-session', kind);
+    if (kind) window.WorkspaceController.openNewSessionModal({ kind });
   });
 }
 
@@ -2372,13 +2614,8 @@ const CODEX_PLACEHOLDER_RE = new RegExp(
   `[›> ]*${_A}I?m?prove${_A}\\s?${_A}documentation${_A}\\s?${_A}in${_A}\\s?${_A}@[^\\s]*`, 'g'
 );
 
-// Tool block folding 已废弃（2026-04-28）：之前 Claude session 的 ● tool 块下方
-// 非 tool 行被改写成 "⋯ N lines" + xterm decoration 弹窗，长会话 buffer 滚动 +
-// Codex/Gemini 路径不一致会渲染叠字错位。所有 kind 的 terminal-data 现在统一直写。
-
-ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
-  const cached = terminalCache.get(sessionId);
-  if (!cached) return;
+function writeTerminalChunk(sessionId, cached, data) {
+  if (!cached || !data) return;
   const sess = sessions.get(sessionId);
   if (sess && isCodexKind(sess.kind)) {
     const pinAfterWrite = shouldAutoPinCodexTerminal(sessionId, cached);
@@ -2386,8 +2623,7 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
     if (filtered.includes('prove documentation')) {
       filtered = filtered.replace(CODEX_PLACEHOLDER_RE, '');
     }
-    cached.terminal.write(filtered);
-    cached.terminal.write('\x1b[?25l');
+    cached.terminal.write(filtered + '\x1b[?25l');
     clearTimeout(_cursorDebounce.get(sessionId));
     _cursorDebounce.set(sessionId, setTimeout(() => {
       cached.terminal.write('\x1b[?25h');
@@ -2396,6 +2632,62 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
   } else {
     cached.terminal.write(data);
   }
+}
+
+async function hydrateTerminalFromSnapshot(sessionId, cached) {
+  if (!cached || cached._hydrated || cached._hydrating) return;
+  cached._hydrating = true;
+  let snapshot = null;
+  try {
+    snapshot = await ipcRenderer.invoke('get-session-buffer-snapshot', sessionId);
+  } catch (err) {
+    console.warn('[terminal] snapshot hydrate failed:', err && err.message);
+  }
+  if (terminalCache.get(sessionId) !== cached) return;
+  const snapshotText = snapshot && typeof snapshot === 'object'
+    ? String(snapshot.text || '')
+    : (typeof snapshot === 'string' ? snapshot : '');
+  const snapshotSeq = snapshot && Number.isFinite(Number(snapshot.seq)) ? Number(snapshot.seq) : 0;
+  if (snapshotText) writeTerminalChunk(sessionId, cached, snapshotText);
+  cached._hydratedSeq = snapshotSeq;
+  cached._hydrated = true;
+  cached._hydrating = false;
+
+  const pending = cached._pendingOutput.splice(0);
+  cached._pendingOutputBytes = 0;
+  for (const item of pending) {
+    const itemSeq = Number(item.seq);
+    if (Number.isFinite(itemSeq) && itemSeq <= snapshotSeq) continue;
+    writeTerminalChunk(sessionId, cached, item.data);
+    if (Number.isFinite(itemSeq)) cached._hydratedSeq = Math.max(cached._hydratedSeq, itemSeq);
+    onTerminalOutput(sessionId, item.data.length);
+  }
+  if (sessionId === activeSessionId) {
+    try { cached.terminal.scrollToBottom(); } catch {}
+  }
+}
+
+// Tool block folding 已废弃（2026-04-28）：之前 Claude session 的 ● tool 块下方
+// 非 tool 行被改写成 "⋯ N lines" + xterm decoration 弹窗，长会话 buffer 滚动 +
+// Codex/Gemini 路径不一致会渲染叠字错位。所有 kind 的 terminal-data 现在统一直写。
+
+ipcRenderer.on('terminal-data', (_e, { sessionId, data, seq }) => {
+  const cached = terminalCache.get(sessionId);
+  if (!cached) return;
+  if (!cached._hydrated) {
+    const item = { data: String(data || ''), seq };
+    cached._pendingOutput.push(item);
+    cached._pendingOutputBytes += item.data.length;
+    while (cached._pendingOutputBytes > MAX_PENDING_TERMINAL_BYTES && cached._pendingOutput.length > 1) {
+      const dropped = cached._pendingOutput.shift();
+      cached._pendingOutputBytes -= dropped.data.length;
+    }
+    return;
+  }
+  const numericSeq = Number(seq);
+  if (Number.isFinite(numericSeq) && numericSeq <= cached._hydratedSeq) return;
+  if (Number.isFinite(numericSeq)) cached._hydratedSeq = numericSeq;
+  writeTerminalChunk(sessionId, cached, data);
   onTerminalOutput(sessionId, data.length);
 
   // Spec 2 partial-update workaround + Spec 3 · B1+B3 优化:
@@ -2426,7 +2718,10 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
         }
         st.inProgress = true;
         st.lastReloadAt = Date.now();
-        loadSessionHistoryToOverlay(sessionId, { incremental: true })
+        loadSessionHistoryToOverlay(sessionId, {
+          incremental: true,
+          parseOpts: { limit: 1, fromTail: true },
+        })
           .catch(err => console.warn('[card auto-reload] failed:', err))
           .finally(() => { st.inProgress = false; });
       }, delay);
@@ -2442,7 +2737,10 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data }) => {
     window._cardStopFallbackBySid.set(sessionId, setTimeout(() => {
       window._cardStopFallbackBySid.delete(sessionId);
       if (sessionId === activeSessionId && currentView === 'card') {
-        loadSessionHistoryToOverlay(sessionId, { incremental: true })
+        loadSessionHistoryToOverlay(sessionId, {
+          incremental: true,
+          parseOpts: { limit: 1, fromTail: true },
+        })
           .catch(err => console.warn('[card stream-end fallback] failed:', err));
       }
     }, 1000));
@@ -2509,7 +2807,7 @@ ipcRenderer.on('status-event', (_e, payload) => {
     }
   }
   accountUsageController.recordStatusUsage(payload);
-  renderSessionList();
+  scheduleSessionListRender();
 });
 
 ipcRenderer.on('agent-usage', (_e, totals) => {
@@ -2536,7 +2834,7 @@ function renderMetricsRow(el, session) {
   if (session.cwd) {
     const a = document.createElement('span');
     a.className = 'metric-cwd';
-    a.textContent = '\uD83D\uDCC1 ' + session.cwd;
+    a.textContent = '\uD83D\uDCC1 ' + (session.workspaceLabel ? `${session.workspaceLabel} · ` : '') + session.cwd;
     a.title = 'Click to copy · ' + session.cwd;
     a.addEventListener('click', () => {
       try { clipboard.writeText(session.cwd); } catch {}
@@ -2837,6 +3135,7 @@ const keyboardShortcuts = createKeyboardShortcuts({
   toggleSidebar,
   openTerminalSearch: () => openTerminalSearch(),
   setFontSize,
+  createWorkspaceSession: (kind) => window.WorkspaceController.openNewSessionModal({ kind }),
 });
 keyboardShortcuts.init();
 // --- Context menus ---
@@ -2976,11 +3275,16 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   } else {
     sessions.set(session.id, session);
   }
-  // Sub-sessions belonging to a meeting: add to sessions Map and keep their
-  // terminal cache warm for later sidebar entry. Meeting room no longer mounts
-  // embedded xterms.
+  // 原生投研 PTY 由初心投研面板内嵌挂载；不抢占主终端，也不进入左栏。
+  if (session.purpose === 'chuxin-research') {
+    renderSessionList();
+    window.dispatchEvent(new CustomEvent('chuxin-session-created', { detail: session }));
+    return;
+  }
+  // Meeting room no longer mounts embedded xterms. Keep only the lightweight
+  // session metadata here; an xterm is created and hydrated on explicit shell
+  // selection, otherwise dozens of invisible 10k-line buffers accumulate.
   if (session.meetingId) {
-    getOrCreateTerminal(session.id);
     renderSessionList();
     return;
   }
@@ -3029,6 +3333,8 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
 // Spec 3 · W13：清理 _cardReloadState 的 session 条目，防 Map 长期累积。
 // session-closed 触发，确保即使 inProgress 异常残留也不影响新生命周期同 sessionId 的 session。
 ipcRenderer.on('session-closed', (_e, { sessionId }) => {
+  const closing = sessions.get(sessionId);
+  const wasChuxinResearch = !!(closing && closing.purpose === 'chuxin-research');
   if (window._cardLoadSeqBySid) window._cardLoadSeqBySid.delete(sessionId);
   if (window._cardStopFallbackBySid && window._cardStopFallbackBySid.has(sessionId)) {
     clearTimeout(window._cardStopFallbackBySid.get(sessionId));
@@ -3049,6 +3355,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     _codexSubmitPendingTimers.delete(sessionId);
   }
   clearFloatingInputDraft(sessionId);
+  floatingInputPresetDrafts.delete(sessionId);
   if (_cardHistoryHydratedSid === sessionId) _cardHistoryHydratedSid = null;
   if (_turnCompleteBackfillTimers.has(sessionId)) {
     try { clearTimeout(_turnCompleteBackfillTimers.get(sessionId)); } catch {}
@@ -3064,19 +3371,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   }
   sessions.delete(sessionId);
   clearTerminalActivitySession(sessionId);
-  const cached = terminalCache.get(sessionId);
-  if (cached) {
-    if (cached._ro) cached._ro.disconnect();
-    if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
-    // Minimap holds xterm.onScroll/onRender subscriptions — must dispose before
-    // terminal.dispose() so it can cleanly unhook rather than leak listeners.
-    if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
-    if (cached._navButtons) { try { cached._navButtons.dispose(); } catch {} cached._navButtons = null; }
-    if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
-    cached.terminal.dispose();
-    cached.container.remove();
-    terminalCache.delete(sessionId);
-  }
+  disposeCachedTerminal(sessionId);
   if (activeSessionId === sessionId) {
     activeSessionId = null;
     preserveAndClearTerminalPanel();
@@ -3084,11 +3379,20 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     emptyStateEl.style.display = '';
   }
   renderSessionList();
+  if (wasChuxinResearch) {
+    window.dispatchEvent(new CustomEvent('chuxin-session-closed', { detail: { sessionId } }));
+  }
 });
 
 ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!sessions.has(session.id)) return;
   const local = sessions.get(session.id);
+  if (local.purpose === 'chuxin-research' || session.purpose === 'chuxin-research') {
+    Object.assign(local, session);
+    renderSessionList();
+    window.dispatchEvent(new CustomEvent('chuxin-session-updated', { detail: local }));
+    return;
+  }
   // Merge server updates but keep local preview/status (managed by renderer)
   if (!local.userRenamed && session.title) local.title = session.title;
   if (session.ccSessionId) local.ccSessionId = session.ccSessionId;
@@ -3099,9 +3403,11 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.kimiSessionDir) local.kimiSessionDir = session.kimiSessionDir;
   if (session.userRenamed) local.userRenamed = true;
   if (session.autoTitleGenerated) local.autoTitleGenerated = true;
+  if (typeof session.workspaceLabel === 'string') local.workspaceLabel = session.workspaceLabel;
   if (typeof session.contextPct === 'number') local.contextPct = session.contextPct;
   if (typeof session.contextUsed === 'number') local.contextUsed = session.contextUsed;
   if (typeof session.contextMax === 'number') local.contextMax = session.contextMax;
+  if (session.id === activeSessionId) updateActiveMetricsRow();
   renderSessionList();
 });
 
@@ -3122,6 +3428,7 @@ function schedulePersist() {
         title: s.title,
         kind: s.kind,
         cwd: s.cwd || null,
+        workspaceLabel: s.workspaceLabel || null,
         pinned: !!s.pinned,
         ccSessionId: s.ccSessionId || null,
         transcriptPath: s.transcriptPath || null,
@@ -3146,6 +3453,12 @@ function schedulePersist() {
         geminiProjectRoot: s.geminiProjectRoot || null,
         kimiSid: s.kimiSid || null,
         kimiSessionDir: s.kimiSessionDir || null,
+        purpose: s.purpose || null,
+        researchSessionId: s.researchSessionId || null,
+        chuxinTaskId: s.chuxinTaskId || null,
+        heroIds: Array.isArray(s.heroIds) ? s.heroIds : null,
+        promptPolicyVersion: s.promptPolicyVersion || null,
+        hiddenFromSidebar: !!s.hiddenFromSidebar,
       });
     }
         //   slotSpecs/covenantText 全被剥掉 → 写残 state.json → 重启后 restoreMeeting fallback
@@ -3176,9 +3489,9 @@ window.schedulePersist = schedulePersist;
 // session-created which will replace the dormant entry.
 async function resumeDormantSession(hubId) {
   const dormant = sessions.get(hubId);
-  if (!dormant || dormant.status !== 'dormant') return;
+  if (!dormant || dormant.status !== 'dormant') return dormant || null;
   // Keep title / pinned / preview so UI stays stable through the resume.
-  await ipcRenderer.invoke('resume-session', {
+  const resumed = await ipcRenderer.invoke('resume-session', {
     hubId,
     kind: dormant.kind,
     title: dormant.title,
@@ -3208,8 +3521,24 @@ async function resumeDormantSession(hubId) {
   // 没看 → 应保留红点直到用户真正点击进入（selectSession 会清零）。原代码会
   // 让"睡前 N 条新消息"在 resume 瞬间静默丢失。
   const s = sessions.get(hubId);
+  // ipcRenderer.invoke 的响应与 session-created 推送是两条消息；响应极快时
+  // 推送未必已经更新本地 Map。先用返回值做幂等合并，防止紧邻的下一步
+  // 仍把同一 hubId 当 dormant 再启动一次 PTY。
+  if (s && resumed && s.status === 'dormant') {
+    sessions.set(hubId, {
+      ...s,
+      ...resumed,
+      status: 'idle',
+      pinned: s.pinned,
+      ccSessionId: s.ccSessionId || resumed.ccSessionId,
+      transcriptPath: s.transcriptPath || resumed.transcriptPath,
+      lastOutputPreview: s.lastOutputPreview,
+    });
+  }
   if (s) renderSessionList();
+  return resumed || null;
 }
+window.resumeDormantSession = resumeDormantSession;
 
 // --- Init ---
 (async () => {
@@ -3268,6 +3597,12 @@ async function resumeDormantSession(hubId) {
         geminiProjectRoot: meta.geminiProjectRoot || null,
         kimiSid: meta.kimiSid || null,
         kimiSessionDir: meta.kimiSessionDir || null,
+        purpose: meta.purpose || null,
+        researchSessionId: meta.researchSessionId || null,
+        chuxinTaskId: meta.chuxinTaskId || null,
+        heroIds: Array.isArray(meta.heroIds) ? meta.heroIds : null,
+        promptPolicyVersion: meta.promptPolicyVersion || null,
+        hiddenFromSidebar: !!meta.hiddenFromSidebar,
       });
     }
   }
@@ -3321,7 +3656,7 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
   if (typeof MeetingRoom !== 'undefined') {
     MeetingRoom.updateMeetingData(meeting.id, meeting);
   }
-  renderSessionList();
+  scheduleSessionListRender();
 });
 
 // 2026-05-31 道雪：群聊侧栏"等你 N" 状态机 —— 单个 AI 答完即累加（1-3），跨轮自动清零。
@@ -3339,7 +3674,7 @@ ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, s
     if (nextWorking) sub._gcWorkingLastTs = Date.now();
     if (!!sub.gcWorking !== nextWorking) {
       sub.gcWorking = nextWorking;
-      renderSessionList();
+      scheduleSessionListRender();
     }
   }
   if (status !== 'completed' && status !== 'manual_extracted') return;
@@ -3352,7 +3687,7 @@ ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, s
   }
   if (meetingId === activeMeetingId) return;  // 用户正在看，不打扰
   meeting.unreadAnswered.add(sid);
-  renderSessionList();
+  scheduleSessionListRender();
 });
 
 // 2026-05-05 道雪 修3：AI 群聊 turn-complete IPC → 触发侧栏排序刷新（最新答完的 AI 群聊靠前）。
@@ -3369,7 +3704,7 @@ ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
     const s = sessions.get(sid);
     if (s && s.gcWorking) s.gcWorking = false;
   }
-  renderSessionList();
+  scheduleSessionListRender();
 });
 
 ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
@@ -3389,14 +3724,33 @@ ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
 if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
   window.__hubE2E = {
     selectMeeting: (meetingId) => selectMeeting(meetingId),
+    selectSession: (sessionId) => selectSession(sessionId),
     getActiveMeetingId: () => activeMeetingId,
     getMeeting: (meetingId) => meetings[meetingId] || null,
+    terminalCacheStats: () => ({
+      size: terminalCache.size,
+      ids: [...terminalCache.keys()],
+      max: MAX_TERMINAL_CACHE_SIZE,
+      opened: [...terminalCache.values()].filter(item => item.opened).length,
+    }),
+    sidebarRenderCoalescerStats: () => sidebarRenderCoalescer.stats(),
     // 侧栏时间分组 E2E：注入指定 lastMessageTime 的测试会话并重渲，读分组 DOM。
     addFakeSession: (s) => {
       const id = s && s.id; if (!id) return;
       sessions.set(id, Object.assign(
         { id, kind: 'claude', title: id, status: 'idle', lastMessageTime: Date.now(), createdAt: Date.now() }, s));
       renderSessionList();
+    },
+    addFakeSessions: (items) => {
+      for (const s of Array.isArray(items) ? items : []) {
+        const id = s && s.id;
+        if (!id) continue;
+        sessions.set(id, Object.assign(
+          { id, kind: 'claude', title: id, status: 'idle', lastMessageTime: Date.now(), createdAt: Date.now() }, s));
+      }
+      const startedAt = performance.now();
+      renderSessionList();
+      return { count: sessions.size, renderMs: performance.now() - startedAt };
     },
     clearSessions: () => { sessions.clear(); renderSessionList(); },
     sidebarGroups: () => Array.prototype.map.call(

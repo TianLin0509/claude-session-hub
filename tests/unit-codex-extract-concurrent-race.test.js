@@ -17,7 +17,7 @@ async function testSameTickRaceOnlyOneWin() {
   const watcher = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-race-1',
-    label: 'pikachu',
+    label: 'member1',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
   });
@@ -44,7 +44,7 @@ async function testSameTickReverseOrder() {
   const watcher = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-race-2',
-    label: 'charmander',
+    label: 'member2',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
   });
@@ -67,7 +67,7 @@ async function testCrossMicrotaskRace() {
   const watcher = createTurnCompletionWatcher({
     transcriptTap: tap,
     hubSessionId: 'sid-race-3',
-    label: 'squirtle',
+    label: 'member3',
     softAlertT1Ms: 999_999,
     softAlertT2Ms: 999_999,
   });

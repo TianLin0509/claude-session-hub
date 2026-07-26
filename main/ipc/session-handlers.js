@@ -1,10 +1,20 @@
 'use strict';
 
+const { isCodexCliKind } = require('../../core/ai-kinds');
+
+const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isSafeNativeSessionId(value) {
+  return typeof value === 'string' && NATIVE_SESSION_ID_RE.test(value);
+}
+
 function registerSessionIpc(ipcMain, deps) {
   const {
     registerSessionForTap = () => {},
     sendToRenderer,
     sessionManager,
+    workspaceService,
+    getTerminalOutputBatchStats = () => null,
   } = deps;
 
   const lastResizeBySid = new Map();
@@ -18,15 +28,73 @@ function registerSessionIpc(ipcMain, deps) {
       opts = {};
     } else if (arg && typeof arg === 'object') {
       kind = arg.kind;
-      opts = arg.opts || {};
+      opts = { ...(arg.opts || {}) };
     } else {
       kind = 'powershell';
       opts = {};
+    }
+    const isResumePicker = typeof kind === 'string' && kind.endsWith('-resume');
+    // Native resume pickers must start in their historical/default scope when
+    // the caller has no known cwd. Creating a fresh scratch here makes the CLI
+    // picker unable to see the sessions it is supposed to resume.
+    if (workspaceService && !opts.meetingId && (!isResumePicker || opts.cwd)) {
+      const workspace = workspaceService.resolveForSession(opts.cwd, {
+        label: opts.workspaceLabel,
+        draft: !opts.cwd,
+        select: false,
+      });
+      opts.cwd = workspace.path;
     }
     const session = sessionManager.createSession(kind, opts);
     registerSessionForTap(session);
     sendToRenderer('session-created', { session });
     return session;
+  });
+
+  ipcMain.handle('fork-session', (_e, sourceSessionId) => {
+    const source = typeof sourceSessionId === 'string'
+      ? sessionManager.getSession(sourceSessionId)
+      : null;
+    if (!source) {
+      return { ok: false, error: 'session-not-found', message: '当前会话不存在或尚未启动' };
+    }
+
+    const isClaude = source.kind === 'claude' || source.kind === 'claude-resume';
+    const isCodex = isCodexCliKind(source.kind);
+    if (!isClaude && !isCodex) {
+      return { ok: false, error: 'unsupported-kind', message: '仅支持 Claude Code 和 Codex 会话创建分支' };
+    }
+
+    const nativeSessionId = isClaude ? source.ccSessionId : source.codexSid;
+    if (!isSafeNativeSessionId(nativeSessionId)) {
+      return {
+        ok: false,
+        error: 'native-session-id-missing',
+        message: '当前会话尚未绑定原生会话 ID，请等待本轮回答完成后重试',
+      };
+    }
+
+    const opts = {
+      title: `${source.title || (isClaude ? 'Claude' : 'Codex')} · 分支`,
+      cwd: source.cwd,
+      userRenamed: true,
+    };
+    if (source.currentModel && source.currentModel.id) opts.model = source.currentModel.id;
+
+    let kind;
+    if (isClaude) {
+      kind = 'claude';
+      opts.forkCCSessionId = nativeSessionId;
+    } else {
+      kind = 'codex';
+      if (source.codexProfile) opts.codexProfile = source.codexProfile;
+      opts.codexForkSid = nativeSessionId;
+    }
+
+    const session = sessionManager.createSession(kind, opts);
+    registerSessionForTap(session);
+    sendToRenderer('session-created', { session });
+    return { ok: true, session };
   });
 
   ipcMain.handle('close-session', (_e, sessionId) => {
@@ -66,9 +134,18 @@ function registerSessionIpc(ipcMain, deps) {
     return sessionManager.getSessionBuffer(sessionId);
   });
 
+  ipcMain.handle('get-session-buffer-snapshot', (_e, sessionId) => {
+    if (typeof sessionManager.getSessionBufferSnapshot === 'function') {
+      return sessionManager.getSessionBufferSnapshot(sessionId);
+    }
+    return { text: sessionManager.getSessionBuffer(sessionId) || '', seq: 0 };
+  });
+
   ipcMain.handle('debug:get-last-session-write', () => {
     return typeof sessionManager.getLastWrite === 'function' ? sessionManager.getLastWrite() : null;
   });
+
+  ipcMain.handle('debug:get-terminal-output-batch-stats', () => getTerminalOutputBatchStats());
 
   ipcMain.handle('restart-session', (_e, sessionId) => {
     const old = sessionManager.getSession(sessionId);
@@ -88,5 +165,6 @@ function registerSessionIpc(ipcMain, deps) {
 }
 
 module.exports = {
+  isSafeNativeSessionId,
   registerSessionIpc,
 };

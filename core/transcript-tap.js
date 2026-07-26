@@ -87,8 +87,9 @@ const _CLAUDE_IDLE_EMIT_MS = 15 * 1000;
 const _GEMINI_IDLE_EMIT_MS = 5000;
 
 class ClaudeTap extends EventEmitter {
-  constructor() {
+  constructor(opts = {}) {
     super();
+    this._parserService = opts.parserService || null;
     this._bound = new Map(); // hubSessionId → { transcriptPath, lastText, _streamingBuf, _tail }
   }
 
@@ -153,7 +154,9 @@ class ClaudeTap extends EventEmitter {
     if (!entry || !entry.transcriptPath) return null;
     let last = null;
     try {
-      const turns = parseClaudeTranscriptToTurns(entry.transcriptPath, { limit: 1, fromTail: true });
+      const turns = this._parserService
+        ? (await this._parserService.parse('claude', entry.transcriptPath, { limit: 1, fromTail: true })).turns
+        : parseClaudeTranscriptToTurns(entry.transcriptPath, { limit: 1, fromTail: true });
       last = turns[turns.length - 1];
     } catch { return null; }
     if (!last || last.role !== 'assistant') return null;
@@ -254,7 +257,10 @@ class ClaudeTap extends EventEmitter {
           this._scheduleIdleEmit(hubSessionId);
         }
       };
-      entry._tail = new JsonlTail(transcriptPath, onLine);
+      // notifyStop already parses the latest completed turn below.  Replaying
+      // an entire long transcript here only rebuilds historical streaming
+      // state on Electron's main thread, so watch from EOF for future turns.
+      entry._tail = new JsonlTail(transcriptPath, onLine, { startAtEnd: true });
       await entry._tail.start();
     }
 
@@ -568,6 +574,7 @@ class CodexTap extends EventEmitter {
    */
   constructor(opts = {}) {
     super();
+    this._parserService = opts.parserService || null;
     // 多 sessionsRoot：默认含 ~/.codex/sessions（订阅模式）；API 模式 sub session
     // 走 isolated CODEX_HOME（hubDataDir/codex-api-profile/sessions），registerSession
     // 时按需加入。Set 自动去重。
@@ -717,6 +724,36 @@ class CodexTap extends EventEmitter {
     const entry = this._bound.get(hubSessionId);
     if (!entry || !entry.rolloutPath) {
       return { text: '', extractMode: 'no_rollout_bound', source: null };
+    }
+    if (this._parserService) {
+      try {
+        const { turns } = await this._parserService.parse('codex', entry.rolloutPath, { fromTail: false });
+        const untilTs = Number.isFinite(Number(opts.untilTs)) && Number(opts.untilTs) > 0 ? Number(opts.untilTs) : null;
+        let effectiveSinceTs = Math.max(0, Number(sincePromptTs) || 0);
+        for (const turn of turns) {
+          const ts = Number(turn && (turn.tsEnd || turn.ts)) || 0;
+          if (turn && turn.role === 'user' && ts >= effectiveSinceTs && (untilTs === null || ts < untilTs)) {
+            effectiveSinceTs = ts;
+          }
+        }
+        const candidates = turns.filter((turn) => {
+          if (!turn || turn.role !== 'assistant') return false;
+          const ts = Number(turn.tsEnd || turn.ts) || 0;
+          if (effectiveSinceTs && ts && ts < effectiveSinceTs) return false;
+          if (untilTs !== null && (!ts || ts >= untilTs)) return false;
+          return typeof turn.text === 'string' && turn.text.trim();
+        });
+        const latest = candidates[candidates.length - 1];
+        if (!latest) return { text: '', extractMode: 'no_task_complete_yet', source: null };
+        const isFinal = latest.stopReason === 'task_complete';
+        return {
+          text: latest.text.trim(),
+          extractMode: isFinal ? 'final_answer' : 'partial_commentary',
+          source: isFinal ? 'manual_codex_rollout' : 'manual_codex_rollout_streaming',
+        };
+      } catch {
+        return { text: '', extractMode: 'no_rollout_bound', source: null };
+      }
     }
     let raw;
     try { raw = await fs.promises.readFile(entry.rolloutPath, 'utf8'); }
@@ -1095,7 +1132,7 @@ class CodexTap extends EventEmitter {
       }
     };
 
-    const tail = new JsonlTail(rolloutPath, onLine);
+    const tail = new JsonlTail(rolloutPath, onLine, { maxInitialBytes: 8 * 1024 * 1024 });
     this._bound.set(hubSessionId, {
       rolloutPath, tail, lastText: null,
       lastModel: null, lastUsage: null,    // T13
@@ -1488,7 +1525,7 @@ class GeminiTap extends EventEmitter {
           // M2.4 修复：idle timer 已在 onLine 顶部统一 schedule，此处不再重复
         }
       };
-      const tail = new JsonlTail(sessionPath, onLine);
+      const tail = new JsonlTail(sessionPath, onLine, { maxInitialBytes: 8 * 1024 * 1024 });
       boundEntry.tail = tail;
       await tail.start();
     } else {
@@ -1529,17 +1566,32 @@ class GeminiTap extends EventEmitter {
 // ---------------------------------------------------------------------------
 
 class TranscriptTap extends EventEmitter {
-  constructor() {
+  constructor(opts = {}) {
     super();
-    this._claude = new ClaudeTap();
-    this._codex = new CodexTap();
+    this._claude = new ClaudeTap({ parserService: opts.parserService });
+    this._codex = new CodexTap({ parserService: opts.parserService });
     this._gemini = new GeminiTap();
-    this._kimi = new KimiTap();
+    this._kimi = new KimiTap({ parserService: opts.parserService });
     for (const b of [this._claude, this._codex, this._gemini, this._kimi]) {
       b.on('turn-complete', (ev) => this.emit('turn-complete', ev));
       b.on('session-bound', (ev) => this.emit('session-bound', ev));
       b.on('prompt-submitted', (ev) => this.emit('prompt-submitted', ev));
     }
+  }
+
+  dispose() {
+    const ids = new Set();
+    for (const backend of [this._claude, this._codex, this._gemini, this._kimi]) {
+      for (const mapName of ['_bound', '_pending']) {
+        const map = backend && backend[mapName];
+        if (map && typeof map.keys === 'function') {
+          for (const id of map.keys()) ids.add(id);
+        }
+      }
+    }
+    for (const id of ids) this.unregisterSession(id);
+    try { this._kimi.dispose(); } catch {}
+    this.removeAllListeners();
   }
 
   hasSession(hubSessionId) {

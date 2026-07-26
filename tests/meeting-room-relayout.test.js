@@ -73,13 +73,13 @@ test('CSS 含防溢出 .mr-ft-strip min-height:0 + .mr-ft overflow:hidden', () =
   assert.match(block, /\.mr-ft\s*\{[\s\S]*?overflow:\s*hidden/);
 });
 
-test('xterm fit 调用（subTerminals 路径）', () => {
+test('xterm fit path removed from meeting-room relayout', () => {
   const start = SRC.indexOf('function _relayoutMeetingRoom');
   const end = SRC.indexOf('function _setupMeetingResizeObserver');
   assert.ok(start >= 0 && end > start);
   const body = SRC.slice(start, end);
-  assert.match(body, /\.fit\s*\(\s*\)/, '_relayoutMeetingRoom 体内调用 fit()');
-  assert.match(body, /subTerminals/, '_relayoutMeetingRoom 体内引用 subTerminals');
+  assert.doesNotMatch(body, /\.fit\s*\(\s*\)/, '_relayoutMeetingRoom should not fit removed embedded xterms');
+  assert.doesNotMatch(body, /subTerminals/, '_relayoutMeetingRoom should not reference removed embedded xterms');
 });
 
 test('抖动过滤 <4px 跳过 relayout', () => {

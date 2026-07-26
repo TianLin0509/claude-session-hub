@@ -2,14 +2,14 @@
 // core/ai-kinds.js — AI kind 单一真理源
 //
 // 背景（2026-05-02 用户血泪反馈）：
-//   项目最早只支持 claude/gemini/codex 三家，后加了 deepseek/glm（都跑在 Claude CLI 上），
+//   项目最早只支持 claude/gemini/codex 三家，后加了 deepseek（跑在 Claude CLI 上），
 //   但许多分支判断当时硬编码 ['claude', 'gemini', 'codex'] 三家，导致：
-//     - 一键提取按钮对 DS/GLM 永远失败（"按钮假的"）
-//     - DS/GLM 卡片不更新（依赖 Claude Stop hook，但分支没接通）
-//     - DS/GLM 子 session 无法自动获取标题
-//     - DS/GLM 普通发送可能卡输入框（缺 paste-detect 延迟补偿）
-//     - DS/GLM aiStats 迁移失败（_isLegacyKindKeyed 白名单不全）
-//     - BASE_RULES 系统 prompt 告诉 DS/GLM"你是 Claude/Gemini/Codex 三家之一"
+//     - 一键提取按钮对 DS 永远失败（"按钮假的"）
+//     - DS 卡片不更新（依赖 Claude Stop hook，但分支没接通）
+//     - DS 子 session 无法自动获取标题
+//     - DS 普通发送可能卡输入框（缺 paste-detect 延迟补偿）
+//     - DS aiStats 迁移失败（_isLegacyKindKeyed 白名单不全）
+//     - BASE_RULES 系统 prompt 告诉 DS"你是 Claude/Gemini/Codex 三家之一"
 //
 // 解决：把所有"AI 列表 / 家族判定 / 标志位"集中到本文件，**所有调用方必须 require 这里的常量
 //   和 helper**，禁止再写 ['claude', 'gemini', 'codex'] 字面量。
@@ -20,12 +20,13 @@
 //   新增 AI 时只需追加这个数组 + 补 KIND_LABELS。
 //   不含 'powershell' 等非 AI 类型。
 // ---------------------------------------------------------------------------
-const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen'];
-const WEB_STYLE_KINDS = ['claude-web', 'codex-web'];
-const CODEX_CLI_KINDS = ['codex', 'codex-resume', 'codex-web', 'codex-web-resume'];
-const CODEX_SESSION_KINDS = [...CODEX_CLI_KINDS, 'codex-app'];
-const CLAUDE_WEB_KINDS = ['claude-web', 'claude-web-resume'];
-const CODEX_WEB_KINDS = ['codex-web', 'codex-web-resume'];
+const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'kimi'];
+const WEB_STYLE_KINDS = [];
+const CODEX_CLI_KINDS = ['codex', 'codex-resume'];
+const CODEX_SESSION_KINDS = [...CODEX_CLI_KINDS];
+const KIMI_CLI_KINDS = ['kimi', 'kimi-resume'];
+const CLAUDE_WEB_KINDS = [];
+const CODEX_WEB_KINDS = [];
 
 // ---------------------------------------------------------------------------
 // 显示标签（UI 各处显示家族短名用）。
@@ -33,15 +34,10 @@ const CODEX_WEB_KINDS = ['codex-web', 'codex-web-resume'];
 // ---------------------------------------------------------------------------
 const KIND_LABELS = {
   claude: 'Claude',
-  'claude-web': 'Claude Web',
   gemini: 'Gemini',
   codex: 'Codex',
-  'codex-web': 'Codex Web',
   deepseek: 'DeepSeek',
-  glm: 'GLM',
-  gpt: 'GPT',
   kimi: 'Kimi',
-  qwen: 'Qwen',
 };
 
 // ---------------------------------------------------------------------------
@@ -49,23 +45,17 @@ const KIND_LABELS = {
 //   - claude         主 Claude（~/.claude）
 //   - claude-resume  resume 路径（同主）
 //   - deepseek       走 ~/.claude-deepseek 隔离配置
-//   - glm            走 ~/.claude-glm 隔离配置
-//   - gpt            走 ~/.claude-packy-gpt 隔离配置（PackyAPI 协议翻译，跑 GPT-5.5 等）
-//   - kimi           走 ~/.claude-packy-kimi 隔离配置（PackyAPI bailian 分组，跑 kimi-k2.5）
-//   - qwen           走 ~/.claude-packy-qwen 隔离配置（PackyAPI bailian 分组，跑 qwen3.6-plus）
 // 共享：transcript JSONL shape / Stop hook / OSC title 协议 / system prompt 注入参数 (--append-system-prompt)
 // ---------------------------------------------------------------------------
-// 注意：claude-web / claude-web-resume 也跑在 Claude CLI 上，只是启动时多了 --system-prompt-file。
-// 加入 CLAUDE_FAMILY 让 isClaudeFamily() 返回 true，从而走相同的 transcript / Stop hook / OSC title 路径。
-const CLAUDE_FAMILY = ['claude', 'claude-resume', 'claude-web', 'claude-web-resume', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen'];
+const CLAUDE_FAMILY = ['claude', 'claude-resume', 'deepseek', 'deepseek-resume'];
 
 // ---------------------------------------------------------------------------
 // TUI alt-screen 程序（paste-sensitive）：
 //   把紧贴到达的字符当"粘贴"事件，紧贴的 \r 不会被识别为 Enter。
-//   所有 8 家 AI CLI 都是 TUI alt-screen；powershell 等普通 shell 不是。
+//   AI CLI 都是 TUI alt-screen；powershell 等普通 shell 不是。
 //   普通模式发送 prompt 时这些 kind 需要 ≥400ms 延迟才能让 paste-detect 完成。
 // ---------------------------------------------------------------------------
-const PASTE_SENSITIVE_KINDS = ['claude', 'claude-resume', 'claude-web', 'claude-web-resume', 'gemini', 'codex', 'codex-resume', 'codex-web', 'codex-web-resume', 'deepseek', 'glm', 'gpt', 'kimi', 'qwen'];
+const PASTE_SENSITIVE_KINDS = ['claude', 'claude-resume', 'gemini', 'codex', 'codex-resume', 'deepseek', 'deepseek-resume', 'kimi', 'kimi-resume'];
 
 // ---------------------------------------------------------------------------
 // 跑在 Claude CLI 上、复用 Stop hook + transcript JSONL 的 kind。
@@ -96,6 +86,10 @@ function isCodexSessionKind(kind) {
   return CODEX_SESSION_KINDS.includes(kind);
 }
 
+function isKimiCliKind(kind) {
+  return KIMI_CLI_KINDS.includes(kind);
+}
+
 function isClaudeWebKind(kind) {
   return CLAUDE_WEB_KINDS.includes(kind);
 }
@@ -116,29 +110,27 @@ function getKindLabel(kind) {
 // 避免 LLM 对其他 AI 模型形成 stereotype 先验。
 
 // 正则字符类，用于 @<who> 等命令解析。
-// 返回类似 "claude|gemini|codex|deepseek|glm"。
+// 返回类似 "claude|gemini|codex|deepseek"。
 function kindRegexAlternation() {
   return ALL_AI_KINDS.join('|');
 }
 
 // ---------------------------------------------------------------------------
 // Phase 4 family canonical 映射（群聊记忆系统按家族存储）
-//   - 'codex' (Codex CLI) 与 'gpt' (packy-gpt 跑 GPT-5.5) 都是 OpenAI 家族 → 合并到 'gpt'
+//   - 'codex' (Codex CLI) 是 OpenAI 家族 → 归并到 'gpt'
 //   - 'claude-resume' 是 Claude resume 路径（语义同 'claude'）→ 归为 'claude'
-//   - 其他 7 个 kind 各自独立家族
-//   返回 7 个家族字符串：claude / gemini / gpt / deepseek / glm / kimi / qwen
+//   - 其他 kind 各自独立家族
+//   返回家族字符串：claude / gemini / gpt / deepseek
 // ---------------------------------------------------------------------------
-// 群聊记忆系统的 7 个家族存储 key 集合（去重 canonical 后）
-const FAMILY_KINDS = ['claude', 'gemini', 'gpt', 'deepseek', 'glm', 'kimi', 'qwen'];
+// 群聊记忆系统的家族存储 key 集合（去重 canonical 后）
+const FAMILY_KINDS = ['claude', 'gemini', 'gpt', 'deepseek', 'kimi'];
 const _FAMILY_SET = new Set(FAMILY_KINDS);
 
 function canonicalAiKind(rawKind) {
   if (rawKind === 'codex') return 'gpt';
-  if (rawKind === 'codex-web' || rawKind === 'codex-web-resume') return 'gpt';
   if (rawKind === 'claude-resume') return 'claude';
-  // claude-web 是 claude 的"风格变体"——同一 Claude CLI、同一鉴权、同一 transcript 格式，
-  // 只是启动时挂载了不同 system prompt。家族级归并到 'claude'。
-  if (rawKind === 'claude-web' || rawKind === 'claude-web-resume') return 'claude';
+  if (rawKind === 'deepseek-resume') return 'deepseek';
+  if (rawKind === 'kimi-resume') return 'kimi';
   const out = rawKind || 'unknown';
   // [Phase 4 silent-failure-hunt] 静默 fall-through 会让未来新加的 kind（如 'mistral'）
   //   生成预期外的 .md 文件，且 _runLegacyMigration 不会归档它（因为不在 FAMILY_SET）。
@@ -153,16 +145,15 @@ function canonicalAiKind(rawKind) {
 // 群聊席位（slot）单一真理源 — 2026-05-03 道雪
 //   背景：群聊允许 5 选 3 + 同 kind 多份（如 3 claude），按 kind 区分总结人/@对象
 //     不可行（dropdown 只显 1 个 Claude，sidByKind 永远返回首匹配）。改为按 slot 索引
-//     绑定 stable id（pikachu/charmander/squirtle），@解析、prompt、归档全用 slot id。
+//     绑定 stable id，@解析、prompt、归档全用 slot id。
 //   命名：内部 id 走 ASCII（让正则 \b 边界正常工作），UI 显示中英双语方便用户识别。
-//   头像图片已存在（renderer/assets/）—— 本常量只补语义/正则/显示标签，UI 不动头像逻辑。
 // ---------------------------------------------------------------------------
-const SLOT_IDS = ['pikachu', 'charmander', 'squirtle'];
+const SLOT_IDS = ['member1', 'member2', 'member3'];
 
 const SLOT_DISPLAY = {
-  pikachu:    { en: 'Pikachu',    zh: '皮卡丘', icon: '⚡' },
-  charmander: { en: 'Charmander', zh: '小火龙', icon: '🔥' },
-  squirtle:   { en: 'Squirtle',   zh: '杰尼龟', icon: '💎' },
+  member1: { en: 'Member 1', zh: '一号位', icon: '1' },
+  member2: { en: 'Member 2', zh: '二号位', icon: '2' },
+  member3: { en: 'Member 3', zh: '三号位', icon: '3' },
 };
 
 // 给 prompt 用的中文名（AI 上下文用，亲切感优先；id 仍走英文 ASCII 在别处保留）。
@@ -171,14 +162,14 @@ function getSlotPromptName(slotIdOrIndex) {
   return SLOT_DISPLAY[id]?.zh || 'AI';
 }
 
-// 给 UI 卡片显示用的双语标签（含 emoji）。
+// 给 UI 卡片显示用的双语标签。
 function getSlotDisplayLabel(slotIdOrIndex) {
   const id = typeof slotIdOrIndex === 'number' ? SLOT_IDS[slotIdOrIndex] : slotIdOrIndex;
   const d = SLOT_DISPLAY[id];
   return d ? `${d.icon} ${d.en} · ${d.zh}` : 'AI';
 }
 
-// 正则字符类，用于 @<slot> / @summary @<slot> 命令解析。返回 "pikachu|charmander|squirtle"。
+// 正则字符类，用于 @<slot> / @summary @<slot> 命令解析。返回 "member1|member2|member3"。
 function slotIdRegexAlternation() {
   return SLOT_IDS.join('|');
 }
@@ -196,6 +187,7 @@ module.exports = {
   WEB_STYLE_KINDS,
   CODEX_CLI_KINDS,
   CODEX_SESSION_KINDS,
+  KIMI_CLI_KINDS,
   CLAUDE_WEB_KINDS,
   CODEX_WEB_KINDS,
   KIND_LABELS,
@@ -207,6 +199,7 @@ module.exports = {
   isAiKind,
   isCodexCliKind,
   isCodexSessionKind,
+  isKimiCliKind,
   isClaudeWebKind,
   isCodexWebKind,
   isWebStyleKind,

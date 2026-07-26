@@ -9,6 +9,7 @@ function makeElement(id = '') {
   return {
     id,
     value: '',
+    disabled: false,
     textContent: '',
     innerHTML: '',
     className: '',
@@ -66,15 +67,13 @@ async function main() {
   const ids = [
     'config-modal', 'cfg-codex-subscription-profile',
     'cfg-codex-profile-default-label', 'cfg-codex-profile-second-label',
+    'cfg-claude-backend', 'cfg-claude-key', 'cfg-claude-url', 'cfg-claude-model',
+    'cfg-claude-subscription-card', 'cfg-claude-api-card', 'cfg-claude-route-note',
+    'cfg-summary-claude', 'cfg-status-claude',
     'cfg-codex-profile-second-home', 'cfg-codex-backend',
     'cfg-codex-key', 'cfg-codex-model', 'cfg-summary-codex',
     'cfg-status-codex', 'cfg-detail-status', 'cfg-proxy',
-    'cfg-deepseek-key', 'cfg-codex-url', 'cfg-glm-key',
-    'cfg-glm-url', 'cfg-glm-model', 'cfg-gpt-key',
-    'cfg-gpt-url', 'cfg-gpt-model', 'cfg-kimi-key',
-    'cfg-kimi-url', 'cfg-kimi-model', 'cfg-qwen-key',
-    'cfg-qwen-url', 'cfg-qwen-model', 'cfg-packy-cookie',
-    'cfg-packy-expires',
+    'cfg-deepseek-key', 'cfg-codex-url',
   ];
   const document = makeDocument(ids);
   const providerModes = { codex: 'subscription' };
@@ -83,6 +82,10 @@ async function main() {
     async invoke(channel) {
       assert.strictEqual(channel, 'get-hub-config-raw');
       return {
+        claudeBackend: 'subscription',
+        claudeApiKey: 'sk-claude',
+        claudeApiBaseUrl: 'http://3.142.133.116:8080',
+        claudeApiModel: 'claude-fable-5',
         codexBackend: 'api',
         codexSubscriptionProfile: 'second',
         codexSubscriptionProfiles: [
@@ -110,8 +113,21 @@ async function main() {
   assert.strictEqual(document._labelEl.textContent, 'Nightly');
 
   await controller.open();
+  assert.strictEqual(providerModes.claude, 'subscription');
   assert.strictEqual(providerModes.codex, 'api');
   assert.strictEqual(document.getElementById('config-modal')._classes.has('hidden'), false);
+  assert.strictEqual(document.getElementById('cfg-claude-backend').value, 'subscription');
+  assert.strictEqual(document.getElementById('cfg-claude-key').value, 'sk-claude');
+  assert.strictEqual(document.getElementById('cfg-claude-model').value, 'claude-fable-5');
+  assert.strictEqual(document.getElementById('cfg-claude-key').disabled, true);
+  assert.strictEqual(document.getElementById('cfg-summary-claude').textContent, '订阅模式 · claude-opus-5[1m]');
+  document.getElementById('cfg-claude-backend').value = 'api';
+  controller.updateClaudeBackendControls();
+  controller.updateSummaries();
+  assert.strictEqual(document.getElementById('cfg-claude-key').disabled, false);
+  assert.strictEqual(document.getElementById('cfg-claude-route-note').className, 'config-note warning');
+  assert.strictEqual(document.getElementById('cfg-summary-claude').textContent, '同事中转 · Fable 5 · 1M');
+  assert.strictEqual(document.getElementById('cfg-status-claude').textContent, '中转');
   assert.strictEqual(document.getElementById('cfg-codex-key').value, 'sk-test');
   assert.strictEqual(document.getElementById('cfg-status-codex').textContent, 'API');
   assert.strictEqual(document.getElementById('cfg-status-codex').className, 'config-ai-status api');

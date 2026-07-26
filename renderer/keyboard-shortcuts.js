@@ -11,9 +11,14 @@ function createKeyboardShortcuts({
   toggleSidebar,
   openTerminalSearch,
   setFontSize,
+  createWorkspaceSession,
 }) {
+  const createSession = kind => typeof createWorkspaceSession === 'function'
+    ? createWorkspaceSession(kind)
+    : ipcRenderer.invoke('create-session', kind);
   function getSortedVisibleSessionIds() {
     return Array.from(sessions.values())
+      .filter((session) => session && !session.hiddenFromSidebar && session.purpose !== 'chuxin-research')
       .sort((a, b) => {
         if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
         return b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt;
@@ -36,6 +41,75 @@ function createKeyboardShortcuts({
     selectSession(ids[idx]);
   }
 
+  let shortcutNoticeTimer = null;
+
+  function showShortcutNotice(message, level = 'info') {
+    if (!document || typeof document.createElement !== 'function' || !document.body) return;
+    let el = typeof document.getElementById === 'function'
+      ? document.getElementById('hub-shortcut-notice')
+      : null;
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'hub-shortcut-notice';
+      Object.assign(el.style, {
+        position: 'fixed',
+        left: '50%',
+        bottom: '28px',
+        transform: 'translateX(-50%)',
+        zIndex: '100000',
+        maxWidth: 'min(520px, 90vw)',
+        padding: '10px 15px',
+        borderRadius: '10px',
+        color: '#f5f5f7',
+        font: '13px -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif',
+        boxShadow: '0 8px 28px rgba(0,0,0,.35)',
+        pointerEvents: 'none',
+      });
+      document.body.appendChild(el);
+    }
+    el.textContent = message;
+    el.style.background = level === 'error' ? 'rgba(184, 47, 47, .96)' : 'rgba(34, 34, 38, .96)';
+    el.style.display = 'block';
+    if (shortcutNoticeTimer) clearTimeout(shortcutNoticeTimer);
+    shortcutNoticeTimer = setTimeout(() => { el.style.display = 'none'; }, 2600);
+  }
+
+  async function forkSession(sourceSessionId) {
+    if (!sourceSessionId) {
+      showShortcutNotice('请先打开一个 Claude Code 或 Codex 会话', 'error');
+      return null;
+    }
+    const source = sessions.get(sourceSessionId);
+    const supported = source && (
+      source.kind === 'claude'
+      || source.kind === 'claude-resume'
+      || source.kind === 'codex'
+      || source.kind === 'codex-resume'
+    );
+    if (!supported) {
+      showShortcutNotice('当前类型不支持分支，仅支持 Claude Code 和 Codex', 'error');
+      return null;
+    }
+
+    showShortcutNotice('正在创建独立分支会话…');
+    try {
+      const result = await ipcRenderer.invoke('fork-session', sourceSessionId);
+      if (!result || result.ok !== true) {
+        showShortcutNotice((result && result.message) || '分支创建失败', 'error');
+        return result || null;
+      }
+      showShortcutNotice(`已创建：${result.session && result.session.title ? result.session.title : '分支会话'}`);
+      return result;
+    } catch (err) {
+      showShortcutNotice(`分支创建失败：${err && err.message ? err.message : String(err)}`, 'error');
+      return null;
+    }
+  }
+
+  function forkActiveSession() {
+    return forkSession(getActiveSessionId());
+  }
+
   function handleKeydown(e) {
     if (!(e.ctrlKey || e.metaKey)) return;
 
@@ -55,7 +129,7 @@ function createKeyboardShortcuts({
 
     if (!e.shiftKey && !e.altKey && (e.key === 'n' || e.key === 'N')) {
       e.preventDefault();
-      ipcRenderer.invoke('create-session', 'claude');
+      createSession('claude');
       return;
     }
 
@@ -69,6 +143,13 @@ function createKeyboardShortcuts({
     if (!e.shiftKey && !e.altKey && (e.key === 'b' || e.key === 'B')) {
       e.preventDefault();
       toggleSidebar();
+      return;
+    }
+
+    if (e.shiftKey && !e.altKey && (e.key === 'b' || e.key === 'B' || e.code === 'KeyB')) {
+      e.preventDefault();
+      if (typeof e.stopPropagation === 'function') e.stopPropagation();
+      void forkActiveSession();
       return;
     }
 
@@ -205,11 +286,13 @@ function createKeyboardShortcuts({
 
   function _cmdkActions() {
     return [
-      { label: '新建 Claude 会话', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'claude') },
-      { label: '新建 Gemini 会话', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'gemini') },
-      { label: '新建 Codex 会话', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'codex') },
-      { label: '新建 DeepSeek 会话', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'deepseek') },
-      { label: '新建 PowerShell 终端', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'powershell') },
+      { label: '创建当前会话分支', sub: 'Ctrl+Shift+B', run: () => { void forkActiveSession(); } },
+      { label: '新建 Claude 会话', sub: 'new', run: () => createSession('claude') },
+      { label: '新建 Gemini 会话', sub: 'new', run: () => createSession('gemini') },
+      { label: '新建 Codex 会话', sub: 'new', run: () => createSession('codex') },
+      { label: '新建 Kimi Code 会话', sub: 'new', run: () => createSession('kimi') },
+      { label: '新建 DeepSeek 会话', sub: 'new', run: () => createSession('deepseek') },
+      { label: '新建 PowerShell 终端', sub: 'new', run: () => createSession('powershell') },
       { label: '切换侧栏', sub: 'cmd', run: () => toggleSidebar() },
       { label: '回到主界面', sub: 'cmd', run: () => escapeToHome() },
     ];
@@ -286,6 +369,8 @@ function createKeyboardShortcuts({
     cycleSession,
     jumpToSessionByIndex,
     handleKeydown,
+    forkSession,
+    forkActiveSession,
     openCommandPalette,
     closeCommandPalette,
   };

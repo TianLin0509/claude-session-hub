@@ -39,6 +39,23 @@ async function main() {
       },
     });
     await fr.writeRaw({
+      timestamp: '2026-05-10T09:59:59.250Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: 'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.',
+      },
+    });
+    await fr.writeRaw({
+      timestamp: '2026-05-10T09:59:59.500Z',
+      type: 'event_msg',
+      payload: {
+        type: 'user_message',
+        message: '<local-command-caveat>Caveat: generated while running local commands.</local-command-caveat>',
+      },
+    });
+    await fr.writeRaw({
       timestamp: '2026-05-10T10:00:00.000Z',
       type: 'event_msg',
       payload: { type: 'user_message', message: 'first question' },
@@ -106,6 +123,8 @@ async function main() {
     assert.deepStrictEqual(turns.map(t => t.role), ['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
     assert.strictEqual(turns[0].text, 'first question');
     assert.ok(!turns.some(t => t.text.includes('AGENTS.md instructions')), 'injected AGENTS prompt must not surface as a user turn');
+    assert.ok(!turns.some(t => t.text.includes('continued from a previous conversation')), 'compact summaries must not surface as user turns');
+    assert.ok(!turns.some(t => t.text.includes('local-command-caveat')), 'local command caveats must not surface as user turns');
     assert.strictEqual(turns[1].text, 'final answer one');
     assert.strictEqual(turns[1].stopReason, 'task_complete');
     assert.strictEqual(turns[1].durationMs, 1234);

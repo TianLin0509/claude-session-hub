@@ -7,10 +7,6 @@ const os = require('os');
 const CLAUDE_PROJECT_ROOT_DIRS = [
   '.claude',
   '.claude-deepseek',
-  '.claude-glm',
-  '.claude-packy-gpt',
-  '.claude-packy-kimi',
-  '.claude-packy-qwen',
 ];
 
 function defaultHomeDir() {

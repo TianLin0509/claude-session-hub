@@ -1,9 +1,10 @@
 'use strict';
 
+const { isDeepStrictEqual } = require('node:util');
+
 const RESUME_META_FIELDS = [
   'transcriptPath',
   'codexSid',
-  'codexAppThreadId',
   'codexSessionsRoot',
   'codexAllowMtimeFallback',
   'codexProfile',
@@ -11,13 +12,35 @@ const RESUME_META_FIELDS = [
   'geminiChatId',
   'geminiProjectHash',
   'geminiProjectRoot',
+  'kimiSid',
+  'kimiSessionDir',
   'currentModel',
   'contextPct',
   'contextUsed',
   'contextMax',
   'userRenamed',
   'autoTitleGenerated',
+  'purpose',
+  'researchSessionId',
+  'chuxinTaskId',
+  'heroIds',
+  'promptPolicyVersion',
+  'hiddenFromSidebar',
 ];
+
+function withoutVolatileTimestamps(entity) {
+  if (!entity || typeof entity !== 'object') return entity;
+  const { updatedAt: _updatedAt, savedAt: _savedAt, ...stable } = entity;
+  return stable;
+}
+
+function persistentEntityEquals(left, right) {
+  if (!left || !right) return left === right;
+  return isDeepStrictEqual(
+    withoutVolatileTimestamps(left),
+    withoutVolatileTimestamps(right),
+  );
+}
 
 function mergeResumeMetaFields(list, previousSessions) {
   const oldByHubId = new Map((previousSessions || []).map(s => [s.hubId, s]));
@@ -75,6 +98,11 @@ function buildMeetingsForState(meetingList, meetingManager) {
       covenantText: (typeof rendererMeeting.covenantText === 'string' && rendererMeeting.covenantText)
         ? rendererMeeting.covenantText
         : (authoritative.covenantText || ''),
+      // 串行工作流配置（2026-06-17 道雪）：state.json 是 boot 恢复源，必须带上；
+      //   优先 renderer 值，兜底后端权威（update-meeting 已写入 authoritative）
+      serialWorkflow: (rendererMeeting.serialWorkflow && typeof rendererMeeting.serialWorkflow === 'object')
+        ? rendererMeeting.serialWorkflow
+        : (authoritative.serialWorkflow || null),
     };
   });
 }
@@ -85,23 +113,29 @@ function handlePersistSessions(list, meetingList, deps) {
   const {
     getImmersiveByMeeting,
     getLastPersistedMeetingIds,
+    getLastPersistedMeetings = () => [],
     getLastPersistedSessionIds,
     getLastPersistedSessions,
     meetingManager,
     meetingStore,
     sessionStore,
     setLastPersistedMeetingIds,
+    setLastPersistedMeetings = () => {},
     setLastPersistedSessionIds,
     setLastPersistedSessions,
     stateStore,
   } = deps;
 
-  mergeResumeMetaFields(list, getLastPersistedSessions());
+  const previousSessions = getLastPersistedSessions();
+  const previousSessionsById = new Map(
+    (previousSessions || []).filter(Boolean).map(session => [session.hubId, session]),
+  );
+  mergeResumeMetaFields(list, previousSessions);
 
   const nowTs = Date.now();
-  for (const session of list) {
-    if (session && session.hubId) session.updatedAt = nowTs;
-  }
+  let changedSessions = 0;
+  let changedMeetings = 0;
+  let removedEntities = 0;
 
   const newSessionIds = new Set(list.map(session => session && session.hubId).filter(Boolean));
   for (const oldId of getLastPersistedSessionIds()) {
@@ -109,20 +143,33 @@ function handlePersistSessions(list, meetingList, deps) {
       stateStore.markRemovedSession(oldId);
       sessionStore.deleteSessionFile(oldId);
       sessionStore.cancelDirty(oldId);
+      removedEntities += 1;
     }
   }
   setLastPersistedSessionIds(newSessionIds);
 
   for (const session of list) {
-    if (session && session.hubId) sessionStore.markDirty(session.hubId, session);
+    if (!session || !session.hubId) continue;
+    const previous = previousSessionsById.get(session.hubId);
+    const changed = !previous
+      || typeof previous.updatedAt !== 'number'
+      || !persistentEntityEquals(session, previous);
+    if (changed) {
+      session.updatedAt = nowTs;
+      sessionStore.markDirty(session.hubId, session);
+      changedSessions += 1;
+    } else {
+      session.updatedAt = previous.updatedAt;
+    }
   }
 
   setLastPersistedSessions(list);
 
   const meetingsForState = buildMeetingsForState(meetingList, meetingManager);
-  for (const meeting of meetingsForState) {
-    if (meeting && meeting.id) meeting.updatedAt = nowTs;
-  }
+  const previousMeetings = getLastPersistedMeetings();
+  const previousMeetingsById = new Map(
+    (previousMeetings || []).filter(Boolean).map(meeting => [meeting.id, meeting]),
+  );
 
   const newMeetingIds = new Set(meetingsForState.map(meeting => meeting && meeting.id).filter(Boolean));
   for (const oldId of getLastPersistedMeetingIds()) {
@@ -130,6 +177,7 @@ function handlePersistSessions(list, meetingList, deps) {
       stateStore.markRemovedMeeting(oldId);
       meetingStore.deleteMeetingFile(oldId);
       meetingStore.cancelDirty(oldId);
+      removedEntities += 1;
     }
   }
   setLastPersistedMeetingIds(newMeetingIds);
@@ -139,17 +187,31 @@ function handlePersistSessions(list, meetingList, deps) {
     if (meeting && meeting.id) {
       const immersive = immersiveByMeeting[meeting.id];
       if (typeof immersive === 'boolean') meeting.immersive = immersive;
-      meetingStore.markDirty(meeting.id, meeting);
+      const previous = previousMeetingsById.get(meeting.id);
+      const changed = !previous
+        || typeof previous.updatedAt !== 'number'
+        || !persistentEntityEquals(meeting, previous);
+      if (changed) {
+        meeting.updatedAt = nowTs;
+        meetingStore.markDirty(meeting.id, meeting);
+        changedMeetings += 1;
+      } else {
+        meeting.updatedAt = previous.updatedAt;
+      }
     }
   }
 
-  stateStore.save({
-    version: 1,
-    cleanShutdown: false,
-    sessions: list,
-    meetings: meetingsForState,
-    immersiveByMeeting,
-  });
+  setLastPersistedMeetings(meetingsForState);
+
+  if (changedSessions > 0 || changedMeetings > 0 || removedEntities > 0) {
+    stateStore.save({
+      version: 1,
+      cleanShutdown: false,
+      sessions: list,
+      meetings: meetingsForState,
+      immersiveByMeeting,
+    });
+  }
 
   return true;
 }
@@ -170,5 +232,6 @@ module.exports = {
   buildMeetingsForState,
   handlePersistSessions,
   mergeResumeMetaFields,
+  persistentEntityEquals,
   registerPersistenceIpc,
 };

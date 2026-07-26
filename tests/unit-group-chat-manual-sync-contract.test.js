@@ -9,17 +9,20 @@ const recoverySrc = fs.readFileSync(path.join(root, 'main', 'ipc', 'groupchat-re
 const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.js'), 'utf8');
 const cssSrc = readCssWithImports(path.join(root, 'renderer', 'meeting-room.css'));
 
+// 2026-07-12 契约修正（字符串漂移，语义不变）：串行工作流引入 turnTimeoutMs 后，
+//   普通群聊的"退出 5 分钟硬超时"由 `disableHardTimeout: !(Number(turnTimeoutMs) > 0)`
+//   表达——turnTimeoutMs 未传（普通群聊）时仍为 true，不变量保持。
 assert.ok(
   dispatcherSrc.includes('const disableHardTimeout = opts.disableHardTimeout === true;') &&
   dispatcherSrc.includes('if (!disableHardTimeout) {') &&
-  dispatcherSrc.includes('disableHardTimeout: true,'),
-  'AI waits must opt out of the transitional 5-minute hard timeout',
+  dispatcherSrc.includes('disableHardTimeout: !(Number(turnTimeoutMs) > 0),'),
+  'AI waits must opt out of the transitional 5-minute hard timeout unless an explicit turn timeout is requested',
 );
 
 const groupWaitIdx = dispatcherSrc.indexOf("mode: 'group', turnNum");
 assert.ok(
-  groupWaitIdx > 0 && dispatcherSrc.slice(groupWaitIdx, groupWaitIdx + 400).includes('disableHardTimeout: true,'),
-  'group chat waits must opt out of the transitional 5-minute hard timeout',
+  groupWaitIdx > 0 && dispatcherSrc.slice(groupWaitIdx, groupWaitIdx + 400).includes('disableHardTimeout: !(Number(turnTimeoutMs) > 0),'),
+  'group chat waits must opt out of the transitional 5-minute hard timeout for normal (non-workflow) sends',
 );
 
 assert.ok(

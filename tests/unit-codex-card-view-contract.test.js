@@ -29,12 +29,12 @@ assert.ok(
 );
 assert.ok(
   /const liveRolloutPath = hubSessionId \? transcriptTap\.getCodexRolloutPath\(hubSessionId\) : null;/.test(transcriptIpcSrc)
-    && /if \(liveRolloutPath\) \{\s*transcriptPath = liveRolloutPath;\s*\}/.test(transcriptIpcSrc),
-  'parse-session-transcript must prefer the live CodexTap rollout over stale renderer transcriptPath',
+    && /if \(liveRolloutPath && validateCodexRolloutPath\(liveRolloutPath\)\) \{\s*transcriptPath = liveRolloutPath;\s*\}/.test(transcriptIpcSrc),
+  'parse-session-transcript must prefer a validated live CodexTap rollout over stale renderer transcriptPath',
 );
 assert.ok(
-  /findCodexRolloutBySid\(meta\.codexSid,\s*meta\.codexSessionsRoot\s*\|\|\s*defaultCodexSessionsRoot\)/.test(resumeIpcSrc),
-  'resume-session must recover a Codex rollout path from persisted codexSid',
+  /findCodexRolloutBySid\(effectiveCodexSid,\s*meta\.codexSessionsRoot\s*\|\|\s*defaultCodexSessionsRoot\)/.test(resumeIpcSrc),
+  'resume-session must recover a Codex rollout path from a validated persisted codexSid',
 );
 assert.ok(
   transcriptIpcSrc.includes('isCodexCliKind(kind)'),
@@ -47,6 +47,11 @@ assert.ok(
 assert.ok(
   rendererSrc.includes('isClaudeFamily(kind) || isCodexKind(kind)'),
   'renderer card history gate must preserve Claude support and add Codex variants',
+);
+assert.ok(
+  rendererSrc.includes('卡片视图当前支持 Claude 与 Codex session')
+    && !rendererSrc.includes('卡片视图当前仅支持 Claude session'),
+  'unsupported-kind placeholder must accurately describe both supported card backends',
 );
 assert.ok(
   rendererSrc.includes("scheduleCodexHistoryRetry"),
@@ -70,7 +75,7 @@ assert.ok(
   'Codex wheel-up intent must immediately disable bottom following before the next streaming write',
 );
 assert.ok(
-  rendererSrc.includes("loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom })") &&
+  rendererSrc.includes("loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom || !!opts.focus })") &&
   rendererSrc.includes("const _batchWasAtBottom = forceScrollBottom || (incremental ? _isCardOverlayAtBottom(container) : overlayScrollBeforeLoad.wasAtBottom);"),
   'Codex card overlay reload must honor explicit sidebar bottom pinning',
 );

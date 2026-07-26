@@ -4,17 +4,8 @@
 // 新入口：`python data_query.py <op> [args...]`，详见 <LINDANG_DIR>/data/AGENT_GUIDE.md
 //
 // 对外接口：
-//   fetchSnapshot(symbol)        — 主用：一键拉 gate+basic+price+indicators+flow
-//   fetchField(op, symbol, extra) — 按需取单字段（op = financial/flow/indicators/dragon-tiger/...）
-//   fetchStock(symbol, name)     — 兼容老接口，内部 = fetchSnapshot
-//   fetchConcept / fetchSector   — 已下线，返回错误（依赖 Stock_top10 已删）
-//
-// ⚠️ 历史 endpoint 兼容说明（2026-06-04）：
-//   /api/research/fetch-stock 与 /api/research/fetch-field（由 main.js 路由）以及本文件的
-//   fetchStock / fetchField 函数，原由 MCP 工具 fetch_lindang_stock / fetch_lindang_field 调用。
-//   两 MCP 工具已于 2026-06-04 完全下线（三件套 stock_static/market/news 全覆盖），
-//   Hub 内零调用。仅保留以备外部脚本兼容，2026-09 之后可彻底删除本文件相关函数 + main.js
-//   对应 endpoint 路由。
+//   fetchSnapshot(symbol)        — 一键拉 gate+basic+price+indicators+flow
+//   fetchStatic/Market/News/...  — research-mcp 聚合接口，供 Hub 投研场景调用
 
 const { spawn } = require('child_process');
 
@@ -105,35 +96,6 @@ function _runDataQuery(op, args, timeoutMs = null) {
 async function fetchSnapshot(symbol) {
   if (!symbol) return { ok: false, op: 'snapshot', error: 'symbol 必填' };
   return await _runDataQuery('snapshot', [symbol]);
-}
-
-async function fetchField(op, symbol, extra = []) {
-  if (!op) return { ok: false, op, error: 'op 必填' };
-  if (!symbol) return { ok: false, op, error: 'symbol 必填' };
-  return await _runDataQuery(op, [symbol, ...extra]);
-}
-
-// ── 兼容老接口 ────────────────────────────────────────────────────
-
-async function fetchStock(symbol, _name = '') {
-  // 旧接口语义：拉单股 33 字段。新方案 snapshot 也是一站式（gate+basic+price+indicators+flow）。
-  return await fetchSnapshot(symbol);
-}
-
-async function fetchConcept(_concept, _topN = 10) {
-  return {
-    ok: false,
-    op: 'concept',
-    error: '概念龙头查询已下线（依赖 Stock_top10 已删）。群聊请改用 stock_static / stock_market / stock_news 三件套，或 scan_sector_flow 找概念主线。',
-  };
-}
-
-async function fetchSector(_sector) {
-  return {
-    ok: false,
-    op: 'sector',
-    error: '板块概况查询已下线。如需板块成分/资金流，请改用 scan_sector_flow；单板块成分可直接 Bash 调 `python C:\\LinDangAgent\\data_query.py qmt-sector <板块名>`，但需要 QMT 客户端启动。',
-  };
 }
 
 // ─── 新增：research-mcp 聚合接口（Plan 2） ──────────────────────────
@@ -303,10 +265,6 @@ async function fetchKlineSimilarity(symbol, opts = {}) {
 
 module.exports = {
   fetchSnapshot,
-  fetchField,
-  fetchStock,
-  fetchConcept,
-  fetchSector,
   fetchStatic,
   fetchMarket,
   fetchNews,
