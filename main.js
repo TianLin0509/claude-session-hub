@@ -383,21 +383,6 @@ const HOOK_TOKEN = crypto.randomBytes(16).toString('hex');
 let hookPort = null;  // set after listen() succeeds
 
 let mainWindow;
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
-if (!hasSingleInstanceLock) {
-  // Sharing one state/userData directory between two production Electron
-  // processes multiplies GPU memory and makes state locks contend on the main
-  // thread.  The primary instance receives second-instance below and is
-  // focused instead of launching another Hub.
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-  });
-}
 const sessionManager = new SessionManager();
 const meetingManager = new MeetingRoomManager();
 const workspaceService = new WorkspaceService();
