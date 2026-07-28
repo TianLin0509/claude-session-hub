@@ -38,11 +38,9 @@ function registerSessionIpc(ipcMain, deps) {
     // the caller has no known cwd. Creating a fresh scratch here makes the CLI
     // picker unable to see the sessions it is supposed to resume.
     if (workspaceService && !opts.meetingId && (!isResumePicker || opts.cwd)) {
-      const workspace = workspaceService.resolveForSession(opts.cwd, {
-        label: opts.workspaceLabel,
-        draft: !opts.cwd,
-        select: false,
-      });
+      const workspaceMeta = { label: opts.workspaceLabel, select: false };
+      if (typeof opts.workspaceDraft === 'boolean') workspaceMeta.draft = opts.workspaceDraft;
+      const workspace = workspaceService.resolveForSession(opts.cwd, workspaceMeta);
       opts.cwd = workspace.path;
     }
     const session = sessionManager.createSession(kind, opts);
@@ -60,12 +58,20 @@ function registerSessionIpc(ipcMain, deps) {
     }
 
     const isClaude = source.kind === 'claude' || source.kind === 'claude-resume';
+    // DeepSeek 跑的就是 claude CLI，--fork-session 同样可用。
+    // Kimi 不在此列：它的 CLI 只有 --session/--continue，没有任何 fork 能力。
+    const isDeepSeek = source.kind === 'deepseek' || source.kind === 'deepseek-resume';
     const isCodex = isCodexCliKind(source.kind);
-    if (!isClaude && !isCodex) {
-      return { ok: false, error: 'unsupported-kind', message: '仅支持 Claude Code 和 Codex 会话创建分支' };
+    const isClaudeCli = isClaude || isDeepSeek;
+    if (!isClaudeCli && !isCodex) {
+      return {
+        ok: false,
+        error: 'unsupported-kind',
+        message: '仅支持 Claude Code、DeepSeek 和 Codex 会话创建分支（Kimi CLI 无 fork 能力）',
+      };
     }
 
-    const nativeSessionId = isClaude ? source.ccSessionId : source.codexSid;
+    const nativeSessionId = isClaudeCli ? source.ccSessionId : source.codexSid;
     if (!isSafeNativeSessionId(nativeSessionId)) {
       return {
         ok: false,
@@ -75,15 +81,17 @@ function registerSessionIpc(ipcMain, deps) {
     }
 
     const opts = {
-      title: `${source.title || (isClaude ? 'Claude' : 'Codex')} · 分支`,
+      title: `${source.title || (isClaudeCli ? 'Claude' : 'Codex')} · 分支`,
       cwd: source.cwd,
       userRenamed: true,
     };
     if (source.currentModel && source.currentModel.id) opts.model = source.currentModel.id;
+    // 分支必须继承 effort，否则从 low/medium 会话拉分支会被打回默认 max。
+    if (source.effort) opts.effort = source.effort;
 
     let kind;
-    if (isClaude) {
-      kind = 'claude';
+    if (isClaudeCli) {
+      kind = isDeepSeek ? 'deepseek' : 'claude';
       opts.forkCCSessionId = nativeSessionId;
     } else {
       kind = 'codex';

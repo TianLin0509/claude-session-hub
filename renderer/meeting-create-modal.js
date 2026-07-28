@@ -347,6 +347,7 @@ async function _onCreate() {
       participants: _isGroupChat ? slots.map((_, i) => i) : null,
       workspace: workspace.path,
       workspaceLabel: workspace.label,
+      workspaceDraft: !!workspace.draft,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
     closeMeetingCreateModal();

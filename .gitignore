@@ -35,3 +35,12 @@ tests/screenshots-sprint1/
 
 # Per-meeting runtime artifacts (covenant snapshots, session state)
 .arena/
+
+# Codex project_root_markers 标记
+.vibe-root
+
+# 测试与诊断产物（截图、隔离 Hub 数据目录、报告）
+output/
+artifacts/
+.playwright-cli/
+-DataDir/

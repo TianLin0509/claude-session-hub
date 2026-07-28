@@ -20,18 +20,13 @@
   const SESSION_KEY = 'chuxin.hub.research-session';
   const AGENTS = [];
 
-  // 投研工作台 tabs：英雄大厅为 Hub 原生（深度联动示范）；其余页面对接 chuxin-research
-  // 本机完整应用（同一套数据与审计，样式同源暗色），实现全功能零损耗迁入。
-  const TABS = [
-    { id: 'heroes', label: '英雄大厅', native: true },
-    { id: 'developer', label: '开发者', developer: true },
-    { id: 'technical', label: '技术筛选', hash: 'technical' },
-    { id: 'watch', label: '观察池', hash: 'watch' },
+  // 只保留初心投研原始的五项产品导航。技术/消息/线索/观察池/投委会
+  // 都属于“观察”内部来源，不再在 Hub 外壳重复铺一层路由。
+  const PRIMARY_TABS = [
+    { id: 'observe', label: '观察', hash: 'technical' },
+    { id: 'chat', label: 'AI群聊', hash: 'chat' },
     { id: 'holding', label: '持有', hash: 'holding' },
-    { id: 'chat', label: 'AI 群聊', hash: 'chat' },
-    { id: 'committee', label: '投委会', hash: 'committee' },
-    { id: 'clues', label: '线索雷达', hash: 'clues' },
-    { id: 'news', label: '消息', hash: 'news' },
+    { id: 'heroes', label: '英雄大厅', native: true },
     { id: 'insights', label: '今日感悟', hash: 'insights' },
   ];
   const WORKSPACE_RE = /^[A-Za-z0-9_-]{16,128}$/;
@@ -172,16 +167,21 @@
     state.statusEl = el('span', 'cx-status unknown');
     state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">检测中…</span>';
     state.startBtn = el('button', 'cx-btn', '启动投研后端');
+    state.startBtn.id = 'cx-start-service';
     state.startBtn.style.display = 'none';
     state.startBtn.addEventListener('click', startService);
     state.providerEl = el('span', 'cx-provider');
     header.append(title, state.statusEl, state.startBtn, state.providerEl);
+    state.startErrorEl = el('div', 'cx-start-error');
+    state.startErrorEl.style.display = 'none';
 
-    // tab 条
-    state.tabsBar = el('div', 'cx-tabs');
-    for (const t of TABS) {
-      const b = el('button', 'cx-tab' + (t.native || t.developer ? ' native' : ''), t.label);
+    // 唯一产品导航：视觉和信息层级与初心投研原应用一致。
+    state.tabsBar = el('nav', 'cx-primary-nav');
+    state.tabsBar.setAttribute('aria-label', '初心投研主要功能');
+    for (const t of PRIMARY_TABS) {
+      const b = el('button', 'cx-primary-tab', t.label);
       b.dataset.tab = t.id;
+      b.type = 'button';
       b.addEventListener('click', () => switchTab(t.id));
       state.tabsBar.append(b);
     }
@@ -191,7 +191,14 @@
     nativeView.dataset.view = 'heroes';
 
     const heroSec = el('div', 'cx-section');
-    heroSec.append(el('div', 'cx-section-title', '选择英雄（多位将各自独立取证并保留分歧）'));
+    const heroSecHead = el('div', 'cx-section-head');
+    heroSecHead.append(el('div', 'cx-section-title', '选择英雄（多位将各自独立取证并保留分歧）'));
+    state.developerButton = el('button', 'cx-review-prompt', '审查本轮 Prompt');
+    state.developerButton.id = 'cx-open-developer';
+    state.developerButton.type = 'button';
+    state.developerButton.addEventListener('click', () => switchTab('developer'));
+    heroSecHead.append(state.developerButton);
+    heroSec.append(heroSecHead);
     state.heroGrid = el('div', 'cx-heroes');
     state.heroGrid.innerHTML = '<div class="cx-ask-hint">正在加载英雄名册…</div>';
     heroSec.append(state.heroGrid);
@@ -253,8 +260,8 @@
     // iframe 视图（懒加载）
     state.frameViews = {};
     const frames = [];
-    for (const t of TABS) {
-      if (t.native || t.developer) continue;
+    for (const t of PRIMARY_TABS) {
+      if (t.native) continue;
       const wrap = el('div', 'cx-view-frame');
       wrap.dataset.view = t.id;
       wrap.style.display = 'none';
@@ -262,20 +269,27 @@
       frames.push(wrap);
     }
 
-    root.append(header, state.tabsBar, nativeView, developerView, ...frames);
-    switchTab(localStorage.getItem(TAB_KEY) || 'heroes');
+    root.append(header, state.startErrorEl, state.tabsBar, nativeView, developerView, ...frames);
+    const storedTab = localStorage.getItem(TAB_KEY) || 'heroes';
+    const migratedTab = ['technical', 'watch', 'committee', 'clues', 'news'].includes(storedTab)
+      ? 'observe' : (storedTab === 'developer' ? 'heroes' : storedTab);
+    switchTab(migratedTab);
   }
 
   function switchTab(tabId) {
-    const tab = TABS.find((t) => t.id === tabId) || TABS[0];
-    localStorage.setItem(TAB_KEY, tab.id);
+    const developerMode = tabId === 'developer';
+    const tab = developerMode
+      ? PRIMARY_TABS.find((row) => row.id === 'heroes')
+      : (PRIMARY_TABS.find((row) => row.id === tabId) || PRIMARY_TABS[0]);
+    localStorage.setItem(TAB_KEY, developerMode ? 'heroes' : tab.id);
     for (const b of state.tabsBar.children) {
       b.classList.toggle('active', b.dataset.tab === tab.id);
+      b.setAttribute('aria-current', b.dataset.tab === tab.id ? 'page' : 'false');
     }
     const nativeView = root.querySelector('.cx-view-native');
-    if (nativeView) nativeView.style.display = tab.native ? '' : 'none';
-    if (state.developerView) state.developerView.style.display = tab.developer ? '' : 'none';
-    if (tab.developer) {
+    if (nativeView) nativeView.style.display = tab.native && !developerMode ? '' : 'none';
+    if (state.developerView) state.developerView.style.display = developerMode ? '' : 'none';
+    if (developerMode) {
       renderDeveloper();
       refreshDeveloper(state.runId || localStorage.getItem(LAST_KEY));
     }
@@ -287,7 +301,7 @@
         const frame = document.createElement('iframe');
         frame.className = 'cx-frame';
         // 与原生英雄页共用同一匿名 workspace：数据与审计不再分散（chuxin 前端支持 ?workspace= 导入）
-        frame.src = WEB + '/?api=' + encodeURIComponent(API) + '&workspace=' + encodeURIComponent(workspace()) + '#' + tab.hash;
+        frame.src = WEB + '/?api=' + encodeURIComponent(API) + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub#' + tab.hash;
         frame.setAttribute('allow', 'clipboard-read; clipboard-write');
         wrap.append(frame);
       }
@@ -302,6 +316,8 @@
       if (s && s.web_base) WEB = s.web_base;
       state.online = !!s.online;
       if (state.online) {
+        state.startErrorEl.style.display = 'none';
+        state.startErrorEl.textContent = '';
         state.statusEl.className = 'cx-status online';
         state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">投研后端在线 · ' + esc(API.replace(/^https?:\/\//, '')) + '</span>';
         state.startBtn.style.display = 'none';
@@ -328,11 +344,18 @@
     try {
       const r = await ipcRenderer.invoke('chuxin:start-service');
       if (r.healthy) {
+        state.startErrorEl.style.display = 'none';
+        state.startErrorEl.textContent = '';
         toast(r.already_running ? '投研后端已在运行' : '投研后端已启动');
       } else {
-        toast('已发起启动，但健康检查未通过；请查看 chuxin-research/logs', true);
+        const detail = r.error || '健康检查未通过';
+        state.startErrorEl.style.display = '';
+        state.startErrorEl.textContent = '启动失败：' + detail + (r.logs && r.logs.launcher ? ' · 日志：' + r.logs.launcher : '');
+        toast('投研后端启动失败：' + detail, true);
       }
     } catch (e) {
+      state.startErrorEl.style.display = '';
+      state.startErrorEl.textContent = '启动失败：' + e.message;
       toast('启动失败：' + e.message, true);
     }
     state.startBtn.disabled = false;
@@ -766,9 +789,11 @@
       : '<div class="cx-dev-empty">尚无任务里程碑。Agent 的逐步执行、工具调用与等待状态直接显示在原生 PTY。</div>';
     const question = state.askBox ? state.askBox.value.trim() : '';
     const sessionRecord = state.researchSessions.find((row) => row.researchSessionId === state.selectedResearchSessionId);
-    state.developerView.innerHTML = '<div class="cx-dev-head"><div><span>DEVELOPER MODE</span><h2>本轮 Prompt 与原生 Session</h2><p>Prompt 拆解在这里；逐字符 CLI、工具调用和中间状态在英雄大厅的原生 PTY。两者属于同一轮执行。</p></div><div class="cx-dev-run"><b>' + esc(state.runId || localStorage.getItem(LAST_KEY) || '尚未运行') + '</b><span>' + state.events.length + ' MILESTONES</span></div></div>' +
+    state.developerView.innerHTML = '<div class="cx-dev-head"><div><button type="button" class="cx-dev-back" id="cx-developer-back">← 返回英雄大厅</button><span>DEVELOPER MODE</span><h2>本轮 Prompt 与原生 Session</h2><p>Prompt 拆解在这里；逐字符 CLI、工具调用和中间状态在英雄大厅的原生 PTY。两者属于同一轮执行。</p></div><div class="cx-dev-run"><b>' + esc(state.runId || localStorage.getItem(LAST_KEY) || '尚未运行') + '</b><span>' + state.events.length + ' MILESTONES</span></div></div>' +
       '<div class="cx-dev-recipe"><div><span>底座 Agent</span><b>' + esc((agent ? agent.name : 'Agent') + ' · ' + selectedModel(agent)) + '</b></div><div><span>投研 Session</span><b>' + esc(sessionRecord ? sessionRecord.researchSessionId : '新开 CLI') + '</b></div><div><span>英雄方法</span><b>' + esc(heroes.join(' / ') || '尚未选择') + '</b></div><div><span>Prompt 版本</span><b>' + esc(prompt ? (prompt.prompt_version || 'unknown') : '等待编译') + '</b></div><div class="wide"><span>用户问题</span><p>' + esc(question || '等待输入；这里会随输入实时变化。') + '</p></div><div class="wide"><span>组成原则</span><p>精简运行政策 + 英雄 5 项注意力地图 + UI 分段契约 + 用户背景 + Agent 自主取证授权；完整规则仅按需读取。</p></div></div>' +
       '<div class="cx-dev-columns"><section><header><b>Hub 生命周期</b><span>细节在原生 PTY</span></header><div class="cx-dev-scroll">' + eventHtml + '</div></section><section><header><b>最终 Agent 输入</b><span>' + (exactInput ? inputBytes.toLocaleString() + ' B · native PTY' : '等待编译') + '</span></header><div class="cx-dev-scroll">' + (exactInput ? componentHtml + '<details class="cx-dev-exact" open><summary>完整 Agent 输入</summary><pre>' + esc(exactInput) + '</pre></details>' : '<div class="cx-dev-empty">' + (previewError ? '实时预览失败：' + esc(previewError) : '输入问题后，这里会用执行时同一条后端编译路径实时展示完整文本。') + '</div>') + '</div></section></div>';
+    const back = state.developerView.querySelector('#cx-developer-back');
+    if (back) back.addEventListener('click', () => switchTab('heroes'));
   }
 
   async function refreshDeveloper(runId) {

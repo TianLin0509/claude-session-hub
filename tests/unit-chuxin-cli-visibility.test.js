@@ -147,4 +147,45 @@ test('renderer embeds one native PTY inside Chuxin and excludes it from the side
   assert.doesNotMatch(list, /appendSecHeader\('投研任务'/);
 });
 
+test('Chuxin exposes one five-item product nav and suppresses the embedded app nav', () => {
+  const root = path.join(__dirname, '..');
+  const chuxin = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
+  const styles = fs.readFileSync(path.join(root, 'renderer', 'chuxin.css'), 'utf8');
+  const frontendRoot = path.join(root, '..', 'chuxin-research', 'frontend');
+  const embeddedApp = fs.readFileSync(path.join(frontendRoot, 'app.js'), 'utf8');
+  const embeddedStyles = fs.readFileSync(path.join(frontendRoot, 'styles.css'), 'utf8');
+  const primaryBlock = chuxin.match(/const PRIMARY_TABS = \[([\s\S]*?)\n  \];/);
+
+  assert(primaryBlock, 'PRIMARY_TABS declaration is missing');
+  assert.deepStrictEqual(
+    [...primaryBlock[1].matchAll(/label: '([^']+)'/g)].map((match) => match[1]),
+    ['观察', 'AI群聊', '持有', '英雄大厅', '今日感悟'],
+  );
+  assert.match(chuxin, /cx-primary-nav/);
+  assert.match(chuxin, /cx-open-developer/);
+  assert.match(chuxin, /&embed=hub#/);
+  assert.doesNotMatch(chuxin, /className = 'cx-tabs'/);
+  assert.doesNotMatch(chuxin, /label: '开发者'/);
+  assert.match(styles, /\.cx-primary-nav/);
+  assert.doesNotMatch(styles, /\.cx-tabs\s*\{/);
+  assert.match(embeddedApp, /query\.get\("embed"\) === "hub"/);
+  assert.match(embeddedStyles, /html\.hub-embed \.topbar/);
+  assert.match(embeddedStyles, /html\.hub-embed \.mobile-nav/);
+});
+
+test('backend launcher polls readiness and exposes actionable startup errors', () => {
+  const root = path.join(__dirname, '..');
+  const handler = fs.readFileSync(path.join(root, 'main', 'ipc', 'chuxin-handlers.js'), 'utf8');
+  const renderer = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
+  const runScript = fs.readFileSync(path.join(root, '..', 'chuxin-research', 'run.ps1'), 'utf8');
+  assert.match(handler, /stdio: \['ignore', 'pipe', 'pipe'\]/);
+  assert.match(handler, /waitHealthy\(45000\)/);
+  assert.match(handler, /launcher\.log/);
+  assert.match(renderer, /cx-start-error/);
+  assert.match(renderer, /投研后端启动失败/);
+  assert.match(runScript, /StartupTimeoutSeconds = 35/);
+  assert.match(runScript, /Only publish run-state after both processes are proven healthy/);
+  assert.doesNotMatch(runScript, /Start-Sleep -Milliseconds 900/);
+});
+
 console.log('All Chuxin native PTY tests passed.');

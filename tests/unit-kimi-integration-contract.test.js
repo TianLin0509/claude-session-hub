@@ -67,7 +67,17 @@ assert.match(configModal, /Kimi Code CLI 登录/);
 
 const keyboardShortcuts = read('renderer/keyboard-shortcuts.js');
 assert.match(keyboardShortcuts, /新建 Kimi Code 会话/);
-assert.match(keyboardShortcuts, /create-session', 'kimi'/);
+// 2026-07-27：快捷键不再直接 invoke('create-session', kind)，改走 createWorkspaceSession，
+// 这样新会话会正确分配 workspace（旧路径会落到 home 目录）。断言改盯行为：
+// 面板项必须调 createSession('kimi')，且 createSession 必须优先走 workspace 感知入口。
+assert.match(keyboardShortcuts, /新建 Kimi Code 会话[\s\S]{0,80}createSession\('kimi'\)/);
+assert.match(
+  keyboardShortcuts,
+  /createSession\s*=\s*kind\s*=>[\s\S]{0,200}createWorkspaceSession\(kind\)/,
+  'kimi 快捷键必须经过 workspace 感知入口，否则新会话会落到 home 目录',
+);
+assert.match(keyboardShortcuts, /ipcRenderer\.invoke\('create-session', kind\)/,
+  'createWorkspaceSession 缺失时仍须有 IPC 兜底');
 
 const modal = read('renderer/meeting-create-modal.js');
 assert.match(modal, /Object\.entries\(MODEL_OPTIONS_BY_KIND\)/);

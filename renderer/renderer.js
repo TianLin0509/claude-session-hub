@@ -89,6 +89,10 @@ const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 // --- State ---
 const sessions = new Map();
 let activeSessionId = null;
+let systemResourceUsage = null;
+// 侧栏常驻显示当前代理（VPN）出口，方便随时确认走的通道对不对。
+// 取的是 Hub 配置里的 proxy —— 会话启动时正是用它写 HTTP_PROXY/HTTPS_PROXY。
+let hubProxyInfo = null;
 // 2026-05-24 道雪：DeepSeek 自动命名启用标志。启用时让 DeepSeek 中文标题独占 Claude family
 //   session，OSC title（"Greeting in Chinese" 这种 Claude 自带英文摘要）仅作影子记录、不落地。
 //   在启动 get-hub-config-raw 回调里根据 cfg.deepseekApiKey 设置。
@@ -216,6 +220,12 @@ function fitAndResizeTerminal(sessionId, cached, opts = {}) {
   if (!sessionId || !cached || !cached.opened || !cached.container) return false;
   const rect = cached.container.getBoundingClientRect();
   if (rect.width < 4 || rect.height < 4 || !cached.container.offsetWidth) return false;
+  // 之前只有 Codex 会话在 fit 之后回到底部（shouldAutoPinCodexTerminal 里就写死了
+  // isCodexKind），而 showTerminal 的 pinOnShow 又恰好把 Codex 排除掉 —— 两条置底路径
+  // 互补但都不覆盖"Claude 会话被 resize"。结果是：只要终端行数变过，xterm 重排后
+  // 视口可能停在旧位置，正文上方留一大片空白，而且再也不会自己回正。
+  // 这里补上与 CLI 无关的通用规则：fit 之前贴着底的终端，fit 之后必须还贴着底。
+  const wasAtBottom = isTerminalViewportAtBottom(cached);
   const pinAfterFit = shouldAutoPinCodexTerminal(sessionId, cached);
   const boxSig = [
     Math.round(rect.width),
@@ -226,6 +236,12 @@ function fitAndResizeTerminal(sessionId, cached, opts = {}) {
   if (!opts.force && cached._lastFitBoxSig === boxSig) return false;
   cached._lastFitBoxSig = boxSig;
   try { cached.fitAddon.fit(); } catch (_) { return false; }
+  // 注意：这里曾试过对 PTY resize 做防抖（拖窗口时 rAF 节流后仍是每秒 ~60 次
+  // terminal-resize，每次都让 TUI 收到 SIGWINCH 并 \x1b[2J 清屏重画）。改动已回退——
+  // Windows 上无法用合成 TUI 验证：经 .cmd 包一层的 node 子进程收不到 PTY 的
+  // SIGWINCH，process.stdout.on('resize') 从不触发，对照组和实验组读数都是 0。
+  // 未经验证就上防抖的风险是吞掉收尾那次 resize，让 CLI 永久停在错误宽度，
+  // 比现状更糟。要动这里必须先有能真正接收 SIGWINCH 的验证手段。
   const resizeSig = `${cached.terminal.cols}x${cached.terminal.rows}`;
   if (cached._lastResizeSig !== resizeSig) {
     cached._lastResizeSig = resizeSig;
@@ -237,6 +253,15 @@ function fitAndResizeTerminal(sessionId, cached, opts = {}) {
   }
   if (cached._minimap) cached._minimap.invalidate();
   if (pinAfterFit) scheduleCodexBottomPin(sessionId, cached);
+  else if (wasAtBottom) {
+    // xterm 的 reflow 在下一帧才落定，隔一帧再贴一次才稳。
+    pinTerminalViewportToBottom(cached);
+    requestAnimationFrame(() => {
+      if (cached.opened && cached.container && cached.container.offsetWidth) {
+        pinTerminalViewportToBottom(cached);
+      }
+    });
+  }
   return true;
 }
 
@@ -409,13 +434,15 @@ const sessionListRenderer = createSessionListRenderer({
   escapeHtml,
   formatTime,
   pctClass: (pct) => pctClass(pct),
-  sessionBurnRate: (session) => sessionBurnRate(session),
+  getResourceUsage: () => systemResourceUsage,
+  getProxyInfo: () => hubProxyInfo,
   selectSession: (id, opts) => selectSession(id, opts),
   selectMeeting: (id) => selectMeeting(id),
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
   afterRender: () => { updateFloatingBarState(); updateRespondPill(); },
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
+const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
 const sidebarRenderCoalescer = createRenderCoalescer(renderSessionListNow, { delayMs: 75 });
 function renderSessionList() {
   sidebarRenderCoalescer.cancel();
@@ -423,6 +450,26 @@ function renderSessionList() {
 }
 function scheduleSessionListRender() {
   sidebarRenderCoalescer.schedule();
+}
+
+async function refreshSystemResourceUsage() {
+  try {
+    const next = await ipcRenderer.invoke('get-system-resource-usage');
+    if (!next || (!Number.isFinite(next.cpuPct) && !Number.isFinite(next.memoryPct))) return;
+    systemResourceUsage = next;
+    renderSidebarStrip();
+  } catch {}
+}
+
+// 代理配置改动很少，跟着资源刷新的节奏读就够；配置弹窗保存后也会重新走这里。
+async function refreshHubProxyInfo() {
+  try {
+    const cfg = await ipcRenderer.invoke('get-hub-config-raw');
+    const next = { proxy: (cfg && cfg.proxy) || '' };
+    if (hubProxyInfo && hubProxyInfo.proxy === next.proxy) return;
+    hubProxyInfo = next;
+    renderSidebarStrip();
+  } catch {}
 }
 let activeMeetingId = null;
 let meetings = {};
@@ -1418,6 +1465,10 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
 
   onReplyCompleteFromTranscriptEvent(payload);
 
+  if (!meetingId && window.WorkspaceController) {
+    void window.WorkspaceController.maybePromptSessionArchive(hubSessionId);
+  }
+
   // 1. AI 群聊 path — meeting-room.js handles its own card rendering
   if (meetingId) return;
 
@@ -1491,7 +1542,11 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
       return;
     }
 
-    // fall through to payload-only fallback on parse error / empty
+    // transcript 还没落盘（Codex rollout 尤其常见）时的兜底卡。
+    // 它的 id 是合成的 `turn-<时间戳>`，与 transcript 里真实 turn 的 id 毫无关系——
+    // 紧接着 scheduleBackfill 重新解析、用真实 id 再挂一次，dedup 拦不住，
+    // 于是同一条回答出现两遍（用户反馈的"回答卡片重复"）。
+    // 解法与 optimistic user card 同款：打上 provisional 标记，真卡到达时顶掉它。
     const fallbackTurn = {
       id: 'turn-' + (completedAt || Date.now()),
       role: 'assistant',
@@ -1508,7 +1563,11 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
       scheduleBackfill();
       return;
     }
-    mountSessionTurnCard(hubSessionId, fallbackTurn, { kind, autoScroll: true });
+    const fallbackEl = mountSessionTurnCard(hubSessionId, fallbackTurn, { kind, autoScroll: true });
+    if (fallbackEl) {
+      fallbackEl.dataset.provisional = 'true';
+      fallbackEl.dataset.provisionalText = fallbackTurn.text || '';
+    }
     scheduleBackfill();
   } catch (err) {
     console.warn('[turn-complete-event] failed to render new turn:', err);
@@ -1595,6 +1654,14 @@ document.addEventListener('click', (e) => {
       btn.textContent = '✓';
       setTimeout(() => { btn.textContent = orig; }, 1500);
     }).catch(() => {});
+    return;
+  }
+
+  if (action === 'prompt-inspect') {
+    const sid = (typeof activeSessionId !== 'undefined' && activeSessionId) || (typeof currentSessionId !== 'undefined' && currentSessionId);
+    if (typeof window.togglePromptInspector === 'function') {
+      window.togglePromptInspector(card, sid);
+    }
     return;
   }
 
@@ -2662,8 +2729,19 @@ async function hydrateTerminalFromSnapshot(sessionId, cached) {
     if (Number.isFinite(itemSeq)) cached._hydratedSeq = Math.max(cached._hydratedSeq, itemSeq);
     onTerminalOutput(sessionId, item.data.length);
   }
+  // showTerminal 里 hydrate 是 void 调用，紧跟其后的 rAF 会在快照还没回来时就
+  // fitAndResizeTerminal —— 也就是说那次 fit 作用在一个空终端上，而真正的内容是之后
+  // 才写进来的，此后再没有任何一次 fit/pin。内容量一变（尤其带绝对定位的 TUI 帧），
+  // 布局就可能停在按空终端算出来的状态。回灌完成后补一次 fit + 置底。
   if (sessionId === activeSessionId) {
+    fitAndResizeTerminal(sessionId, cached, { force: true });
     try { cached.terminal.scrollToBottom(); } catch {}
+    requestAnimationFrame(() => {
+      if (terminalCache.get(sessionId) !== cached) return;
+      if (!cached.opened || !cached.container || !cached.container.offsetWidth) return;
+      fitAndResizeTerminal(sessionId, cached, { force: true });
+      try { cached.terminal.scrollToBottom(); } catch {}
+    });
   }
 }
 
@@ -2763,7 +2841,6 @@ const accountUsageController = createAccountUsageController({
   escapeHtml,
 });
 const renderAccountUsage = accountUsageController.render;
-const sessionBurnRate = accountUsageController.sessionBurnRate;
 function pctClass(pct) { return accountUsageController.pctClass(pct); }
 if (typeof window !== 'undefined') window.pctClass = pctClass;
 
@@ -2961,13 +3038,23 @@ function clearSessionWaitingState(sessionId) {
 
 function onReplyCompleteFromTranscriptEvent(payload) {
   const { hubSessionId, text, completedAt, meetingId, kind } = payload || {};
-  if (meetingId) return;
   if (!hubSessionId) return;
   if (!isTranscriptCliKind(kind)) return;
 
   const session = sessions.get(hubSessionId);
   if (!session) return;
   if (session.status === 'dormant') return;
+
+  // 与 onPromptSubmittedFromTranscriptEvent 的开工标记配对：群聊成员干完活要收尾，
+  // 否则状态灯会一直卡在运行中，只能等 45 分钟的 maxAge 兜底。
+  // 未读 / 通知 /「等你响应」仍由群聊自己的流水线负责，这里不碰。
+  if (meetingId) {
+    clearCodexCardWorking(hubSessionId);
+    if (session.status === 'running') session.status = 'idle';
+    if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
+    renderSessionList();
+    return;
+  }
 
   const preview = buildReplyReadyPreview(text);
   const sig = `${completedAt || ''}:${preview}`;
@@ -2997,13 +3084,25 @@ function onReplyCompleteFromTranscriptEvent(payload) {
 
 function onPromptSubmittedFromTranscriptEvent(payload) {
   const { hubSessionId, text, submittedAt, meetingId, kind } = payload || {};
-  if (meetingId) return;
   if (!hubSessionId) return;
   if (!isTranscriptCliKind(kind)) return;
 
   const session = sessions.get(hubSessionId);
   if (!session) return;
   if (session.status === 'dormant') return;
+
+  // 2026-07-28 用户反馈：群聊里直接点进 Codex 的 CLI 布置任务，Codex 明明在跑，
+  //   状态灯却一直是绿色（就绪），群聊也进不了侧栏的"运行中"分区。
+  //   根因就是这里原本第一行就 `if (meetingId) return`——群聊成员的开工信号被整条丢掉。
+  //   codex/kimi 的 running 只能由 transcript 事件驱动（byte-burst 对它们是关掉的，
+  //   见 terminal-activity-monitor.js），所以这条一早退，就再没有别的东西会标记它在跑。
+  //   claude 走 hook 路径本来就没有这层早退，这也是为什么之前只有 codex/kimi 不亮灯。
+  // 卡片/预览/未读仍然归 meeting-room.js 那条流水线管，这里只认领"会话自身在不在干活"。
+  if (meetingId) {
+    markCodexCardWorking(hubSessionId, 'rollout_user_message');
+    renderSessionList();
+    return;
+  }
 
   const preview = buildPreviewFromUserMessage(text);
   const sig = `${submittedAt || ''}:${preview}`;
@@ -3320,7 +3419,9 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
   if (ev.geminiProjectRoot) s.geminiProjectRoot = ev.geminiProjectRoot;
   if (ev.kimiSid) s.kimiSid = ev.kimiSid;
   if (ev.kimiSessionDir) s.kimiSessionDir = ev.kimiSessionDir;
-  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot || ev.kimiSid || ev.kimiSessionDir) {
+  // 归档会搬运整个 workspace：dormant 条目的 cwd 也要跟着走，否则唤醒时指向已不存在的目录。
+  if (ev.cwd) s.cwd = ev.cwd;
+  if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot || ev.kimiSid || ev.kimiSessionDir || ev.cwd) {
     schedulePersist();
   }
   if (ev.hubSessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
@@ -3474,6 +3575,8 @@ function schedulePersist() {
       userRenamed: !!m.userRenamed,
       autoTitlePending: !!m.autoTitlePending,
       autoTitleGenerated: !!m.autoTitleGenerated,
+      workspace: m.workspace || null,
+      workspaceLabel: m.workspaceLabel || null,
       participants: Array.isArray(m.participants) ? m.participants : null,
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs : null,
       covenantText: m.covenantText || '',
@@ -3616,6 +3719,10 @@ window.resumeDormantSession = resumeDormantSession;
 
   traceRendererStartup('renderSessionList start');
   renderSessionList();
+  refreshSystemResourceUsage();
+  setInterval(refreshSystemResourceUsage, 3000);
+  refreshHubProxyInfo();
+  setInterval(refreshHubProxyInfo, 15000);
   traceRendererStartup('renderSessionList done');
   ipcRenderer.send('renderer-sidebar-ready');
   traceRendererStartup('renderer-sidebar-ready sent');
@@ -3697,6 +3804,7 @@ ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
   if (!meetingId) return;
   const meeting = meetings[meetingId];
   if (!meeting) return;
+  if (window.WorkspaceController) void window.WorkspaceController.maybePromptMeetingArchive(meetingId);
   meeting.lastMessageTime = Date.now();  // 触发排序（最新答完的 AI 群聊靠前）
   // 2026-07-21 道雪 [修状态灯]：轮次收尾兜底清 gcWorking（覆盖 superseded 等
   //   不经 partial-update 终态的路径，防止状态灯卡在黄灯）。

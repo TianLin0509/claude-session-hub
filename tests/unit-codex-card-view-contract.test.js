@@ -48,10 +48,18 @@ assert.ok(
   rendererSrc.includes('isClaudeFamily(kind) || isCodexKind(kind)'),
   'renderer card history gate must preserve Claude support and add Codex variants',
 );
+// 2026-07-27：卡片视图从 Claude+Codex 扩到 Claude+Codex+Kimi。占位文案必须与
+// supportsCardHistory 的真实 gate 一致，否则用户会被告知一个不存在的限制。
 assert.ok(
-  rendererSrc.includes('卡片视图当前支持 Claude 与 Codex session')
-    && !rendererSrc.includes('卡片视图当前仅支持 Claude session'),
-  'unsupported-kind placeholder must accurately describe both supported card backends',
+  /supportsCardHistory = kind && \(isClaudeFamily\(kind\) \|\| isCodexKind\(kind\) \|\| isKimiCliKind\(kind\)\)/
+    .test(rendererSrc),
+  'card history gate must cover Claude, Codex and Kimi',
+);
+assert.ok(
+  rendererSrc.includes('卡片视图当前支持 Claude、Codex 与 Kimi session')
+    && !rendererSrc.includes('卡片视图当前仅支持 Claude session')
+    && !rendererSrc.includes('卡片视图当前支持 Claude 与 Codex session'),
+  'unsupported-kind placeholder must name exactly the three supported card backends',
 );
 assert.ok(
   rendererSrc.includes("scheduleCodexHistoryRetry"),

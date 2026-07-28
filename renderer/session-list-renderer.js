@@ -27,7 +27,8 @@ function createSessionListRenderer(options = {}) {
   const escapeHtml = options.escapeHtml;
   const formatTime = options.formatTime;
   const pctClass = options.pctClass;
-  const sessionBurnRate = options.sessionBurnRate;
+  const getResourceUsage = typeof options.getResourceUsage === 'function' ? options.getResourceUsage : () => null;
+  const getProxyInfo = typeof options.getProxyInfo === 'function' ? options.getProxyInfo : () => null;
   const selectSession = options.selectSession;
   const selectMeeting = options.selectMeeting;
   const openContextMenu = options.openContextMenu;
@@ -109,14 +110,66 @@ function _ringHtml(ctxPct, dotCls) {
 //   行1 状态点/状态词与「运行中」分区共用这一个口径。
 // 2026-07-21 道雪 [修状态灯]：运行源 = sub.status==='running'（语义化 running）
 //   或 gcWorking（dispatcher watcher 生命周期）——任一成员任一命中即算群聊运行中。
+// 2026-07-28 [以会话自身状态为准]：用户 Ctrl+C 打断某个成员后，该会话的 status 会
+//   回到 idle，但 dispatcher 的 gcWorking 要等 sweepStaleRunning 的 10 分钟兜底才清，
+//   期间成员点和群聊行都还亮着"运行中"——与实际不符。
+//   规则改为：会话自己说 idle，就以会话为准，不再被 gcWorking 覆盖。
+function _subIsRunning(sub) {
+  if (!sub) return false;
+  if (sub.status === 'running') return true;
+  if (sub.status === 'idle' || sub.status === 'dormant'
+      || sub.status === 'errored' || sub.status === 'error') return false;
+  return !!sub.gcWorking;
+}
+
   function _meetingAnySubRunning(meeting, sessionMap) {
   const ids = (meeting && meeting.subSessions) || [];
   for (const id of ids) {
       const sub = sessionMap.get(id);
-    if (sub && (sub.status === 'running' || sub.gcWorking)) return true;
+    if (_subIsRunning(sub)) return true;
   }
   return false;
 }
+
+  // 代理（VPN）出口。会话启动时 Hub 会把它写进 HTTP_PROXY/HTTPS_PROXY，
+  // 侧栏常驻显示一行，方便随时确认走的是不是预期的通道。
+  // 只显示 host:port，隐去可能带凭据的 user:pass@ 部分。
+  function _shortProxy(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return null;
+    try {
+      const u = new URL(s.includes('://') ? s : `http://${s}`);
+      return u.port ? `${u.hostname}:${u.port}` : u.hostname;
+    } catch {
+      return s.replace(/^[a-z0-9+.-]+:\/\//i, '').replace(/^[^@/]*@/, '').split('/')[0] || null;
+    }
+  }
+
+  function renderSidebarStrip(sessionMap = getSessions()) {
+    const stripEl = doc.getElementById('sidebar-strip');
+    if (!stripEl) return;
+
+    // 活跃 = 仍有实时 PTY/AI 进程的会话。休眠历史不占进程，不计入；隐藏的群聊子会话
+    // 和投研 PTY 仍会占资源，因此必须计入。
+    const activeCount = Array.from(sessionMap.values())
+      .filter(session => session && session.status !== 'dormant').length;
+    const usage = getResourceUsage() || {};
+    const cpuPct = Number.isFinite(usage.cpuPct) ? Math.round(usage.cpuPct) : null;
+    const memoryPct = Number.isFinite(usage.memoryPct) ? Math.round(usage.memoryPct) : null;
+    const metricClass = value => value != null && value >= 85 ? ' strip-resource-high' : '';
+    const proxy = typeof getProxyInfo === 'function' ? getProxyInfo() : null;
+    const proxyShort = _shortProxy(proxy && proxy.proxy);
+
+    stripEl.innerHTML =
+      `<span class="strip-active"><b>${activeCount}</b> 活跃</span>` +
+      `<span class="strip-resource${metricClass(cpuPct)}">CPU <b>${cpuPct == null ? '--' : cpuPct + '%'}</b></span>` +
+      `<span class="strip-resource${metricClass(memoryPct)}">内存 <b>${memoryPct == null ? '--' : memoryPct + '%'}</b></span>` +
+      (proxyShort
+        ? `<span class="strip-proxy" title="会话启动时注入的 HTTP_PROXY/HTTPS_PROXY：${escapeHtml(proxy.proxy)}">代理 <b>${escapeHtml(proxyShort)}</b></span>`
+        : `<span class="strip-proxy strip-proxy-off" title="未配置代理，会话直连">代理 <b>直连</b></span>`);
+    stripEl.title = '活跃：当前仍有 PTY/AI 进程的会话（含群聊子会话）；CPU/内存：整机实时占用；代理：会话实际使用的出口';
+    stripEl.style.display = 'flex';
+  }
 
 // --- Session list rendering ---
 // Sort: pinned sessions first (by their own time), then unpinned by lastMessageTime.
@@ -203,7 +256,7 @@ function _ringHtml(ctxPct, dotCls) {
         if (!sub) statusCls = 'mini-st-init';
         else if (sub.status === 'dormant') statusCls = 'mini-st-dormant';
         else if (sub.status === 'errored' || sub.status === 'error') statusCls = 'mini-st-error';
-        else if (sub.status === 'running' || sub.gcWorking) statusCls = 'mini-st-thinking';
+        else if (_subIsRunning(sub)) statusCls = 'mini-st-thinking';
         const isActiveChild = subId === getActiveSessionId();
         const ctxPct = isGroupChat && sub && typeof sub.contextPct === 'number' ? sub.contextPct : null;
         const ctxCls = ctxPct != null && typeof pctClass === 'function' ? pctClass(ctxPct) : '';
@@ -375,24 +428,7 @@ function _ringHtml(ctxPct, dotCls) {
   appendTimeGroup('mid', '3 天内', mid);
   appendTimeGroup('old', '更早', old);
 
-  // === 侧栏底部聚合条：会话数 / 等你数 / ctx 均值 / 单会话最大 burn ===
-  const stripEl = doc.getElementById('sidebar-strip');
-  if (stripEl) {
-    const allSessions = Array.from(sessionMap.values());
-    const ctxVals = allSessions.map(x => x.contextPct).filter(v => typeof v === 'number');
-    const ctxMean = ctxVals.length ? Math.round(ctxVals.reduce((a, b) => a + b, 0) / ctxVals.length) : null;
-    let maxBurn = 0;
-    for (const x of allSessions) {
-      const b = typeof sessionBurnRate === 'function' ? sessionBurnRate(x) : null;
-      if (b && typeof b.pctPerHour === 'number' && b.pctPerHour > maxBurn) maxBurn = b.pctPerHour;
-    }
-    stripEl.innerHTML =
-      `<span><b>${visible.length}</b> 会话</span>` +
-      `<span>等你 <b class="${respond.length ? 'strip-warn' : ''}">${respond.length}</b></span>` +
-      (ctxMean != null ? `<span>ctx̄ <b>${ctxMean}%</b></span>` : '') +
-      (maxBurn >= 2 ? `<span class="strip-burn" title="单会话最大 burn 速率（占 5h 配额%/小时）">🔥 <b>${maxBurn.toFixed(1)}%</b>/h</span>` : '');
-    stripEl.style.display = 'flex';
-  }
+  renderSidebarStrip(sessionMap);
 
   if (afterRender) afterRender();
 
@@ -423,7 +459,7 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 
 
-  return { renderSessionList };
+  return { renderSessionList, renderSidebarStrip };
 }
 
 module.exports = { createSessionListRenderer, partitionSessionsByAge };

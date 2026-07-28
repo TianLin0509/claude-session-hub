@@ -37,31 +37,48 @@
               <div><strong>新建会话</strong><span>选择 AI 与工作目录</span></div>
               <button type="button" class="session-create-close" id="new-session-close" aria-label="关闭新建会话">×</button>
             </div>
-            <div class="menu-group-label">AI / 终端</div>
-            <div class="session-kind-grid" role="group" aria-label="选择 AI 或终端">
-              <button class="new-session-option selected" data-kind="claude" aria-pressed="true"><span class="ai-logo logo-claude"></span>Claude Code</button>
-              <button class="new-session-option" data-kind="gemini" aria-pressed="false"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
-              <button class="new-session-option" data-kind="codex" aria-pressed="false"><span class="ai-logo logo-codex"></span>Codex CLI</button>
-              <button class="new-session-option" data-kind="deepseek" aria-pressed="false"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
-              <button class="new-session-option" data-kind="kimi" aria-pressed="false"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
-              <button class="new-session-option" data-kind="powershell" aria-pressed="false"><span class="ai-logo logo-powershell"></span>PowerShell</button>
+            <div class="session-create-body">
+              <div class="menu-group-label">AI / 终端</div>
+              <div class="session-kind-grid" role="group" aria-label="选择 AI 或终端">
+                <button class="new-session-option selected" data-kind="claude" aria-pressed="true"><span class="ai-logo logo-claude"></span>Claude Code</button>
+                <button class="new-session-option" data-kind="gemini" aria-pressed="false"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
+                <button class="new-session-option" data-kind="codex" aria-pressed="false"><span class="ai-logo logo-codex"></span>Codex CLI</button>
+                <button class="new-session-option" data-kind="deepseek" aria-pressed="false"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
+                <button class="new-session-option" data-kind="kimi" aria-pressed="false"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
+                <button class="new-session-option" data-kind="powershell" aria-pressed="false"><span class="ai-logo logo-powershell"></span>PowerShell</button>
+              </div>
+              <div class="menu-group-label" id="new-session-tuning-label">模型 / 思考强度</div>
+              <div class="session-tuning-grid" id="new-session-tuning">
+                <label class="session-tuning-field" for="new-session-model"><span>模型</span><select id="new-session-model"></select></label>
+                <label class="session-tuning-field" id="new-session-effort-field" for="new-session-effort"><span>思考强度 (--effort)</span><select id="new-session-effort">
+                  <option value="max">max · 默认，最强</option>
+                  <option value="xhigh">xhigh</option>
+                  <option value="high">high</option>
+                  <option value="medium">medium · 省额度</option>
+                  <option value="low">low · 最省</option>
+                </select></label>
+              </div>
+              <div class="menu-group-label">Workspace</div>
+              <div class="session-workspace-grid" role="radiogroup" aria-label="选择 workspace 方式">
+                <button type="button" class="session-workspace-choice selected" data-workspace-mode="scratch" role="radio" aria-checked="true">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                  <span><strong>完全新开</strong><small>创建独立临时目录，首问后自动生成显示名</small></span>
+                </button>
+                <button type="button" class="session-workspace-choice" data-workspace-mode="existing" role="radio" aria-checked="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+                  <span><strong>选择已有路径</strong><small>在现有项目或 Git 仓库中继续</small></span>
+                </button>
+              </div>
+              <div class="session-existing-path" id="new-session-existing-path" hidden>
+                <div class="session-recent-head">
+                  <span>最近工作区</span>
+                  <button type="button" id="new-session-pick-path">浏览文件夹…</button>
+                </div>
+                <div class="session-recent-list" id="new-session-recent" role="listbox" aria-label="最近使用的工作区"></div>
+                <div class="session-recent-selected"><span>已选目录</span><code id="new-session-path-value">尚未选择</code></div>
+              </div>
+              <div class="session-create-error" id="new-session-error" hidden></div>
             </div>
-            <div class="menu-group-label">Workspace</div>
-            <div class="session-workspace-grid" role="radiogroup" aria-label="选择 workspace 方式">
-              <button type="button" class="session-workspace-choice selected" data-workspace-mode="scratch" role="radio" aria-checked="true">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-                <span><strong>完全新开</strong><small>创建独立临时目录，首问后自动生成显示名</small></span>
-              </button>
-              <button type="button" class="session-workspace-choice" data-workspace-mode="existing" role="radio" aria-checked="false">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
-                <span><strong>选择已有路径</strong><small>在现有项目或 Git 仓库中继续</small></span>
-              </button>
-            </div>
-            <div class="session-existing-path" id="new-session-existing-path" hidden>
-              <div><span>已选目录</span><code id="new-session-path-value">尚未选择</code></div>
-              <button type="button" id="new-session-pick-path">选择文件夹…</button>
-            </div>
-            <div class="session-create-error" id="new-session-error" hidden></div>
             <div class="session-create-footer">
               <span id="new-session-summary">Claude Code · 新建临时 workspace</span>
               <div><button type="button" class="session-create-cancel" id="new-session-cancel">取消</button><button type="button" class="session-create-submit" id="new-session-submit">创建会话</button></div>
@@ -89,7 +106,7 @@
       </div>
       <div id="account-usage" class="account-usage" style="display:none"></div>
       <div class="session-list" id="session-list"></div>
-      <!-- 2026-07-19 道雪 · 侧栏底部全局聚合条（会话数/等你数/ctx 均值/最大 burn） -->
+      <!-- 侧栏底部实时状态：活跃 PTY/AI 会话数 + 整机 CPU/内存占用 -->
       <div class="sidebar-strip" id="sidebar-strip" style="display:none"></div>
       <div class="context-menu" id="context-menu" style="display:none">
         <button class="context-menu-item" data-action="pin">Pin to top</button>
@@ -236,6 +253,7 @@
     </div>
   </div>
   <script src="path-link.js"></script>
+  <script src="prompt-inspector.js"></script>
   <script src="task-presets.js"></script>
   <script src="workspace-controller.js"></script>
   <script src="renderer.js"></script>

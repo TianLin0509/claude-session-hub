@@ -9,9 +9,16 @@ assert.ok(
   'renderer must expose a transcript-turn completion handler for non-hook CLIs',
 );
 
+// 2026-07-27：该处理器从"只认 Codex"泛化为 isTranscriptCliKind（codex + kimi），
+// 因为 Kimi 同样是 transcript 驱动、没有 Stop hook。断言盯泛化后的真实边界。
 assert.ok(
-  /if\s*\(\s*!isCodexKind\(kind\)\s*\)\s*return/.test(rendererSrc),
-  'transcript completion handler must be scoped to Codex CLI variants',
+  /if\s*\(\s*!isTranscriptCliKind\(kind\)\s*\)\s*return/.test(rendererSrc),
+  'transcript completion handler must be scoped to transcript-backed CLI variants',
+);
+assert.ok(
+  /function isTranscriptCliKind\(kind\)\s*\{\s*return isCodexKind\(kind\) \|\| isKimiCliKind\(kind\);/
+    .test(rendererSrc),
+  'isTranscriptCliKind must cover exactly the hook-less transcript CLIs (codex + kimi)',
 );
 
 assert.ok(

@@ -166,6 +166,7 @@ test('resumes Codex group research sessions with MCP entries and rollout path', 
   assert.strictEqual(session.opts.resumeTranscriptPath, 'rollout:codex-1');
   assert.strictEqual(session.opts.useResume, true);
   assert.strictEqual(session.opts.codexBypassApprovals, true);
+  assert.strictEqual(session.opts.noInheritCursor, true, 'headless group resumes must keep ConPTY output enabled');
   assert.deepStrictEqual(session.opts.codexMcpEntries, [
     { aiTeamMeetingId: 'm1', aiTeamKind: 'codex' },
     { meetingId: 'm1', port: 3456, token: 'token' },

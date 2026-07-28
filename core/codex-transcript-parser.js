@@ -6,7 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { isSyntheticUserEntry, isSyntheticUserText } = require('./synthetic-user-filter.js');
+const { isSyntheticUserEntry, isSyntheticUserText, displayUserText } = require('./synthetic-user-filter.js');
 
 const DEFAULT_CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
 const CODEX_TAIL_WINDOW_INITIAL_BYTES = 8 * 1024 * 1024;
@@ -311,8 +311,11 @@ function parseCodexRolloutText(raw) {
     }
 
     if (obj.type === 'response_item' && obj.payload && obj.payload.role === 'user') {
-      const text = textFromPayload(obj.payload).trim();
-      if (text && !isSyntheticUserEntry(obj, text) && !hasNearbyEventUserDuplicate(entries, entryIndex, text)) {
+      const raw = textFromPayload(obj.payload).trim();
+      // 群聊里 Hub 发给成员的是一整段脚手架，用户真正打的字在 `## 用户` 段里，
+      // 只显示那一段（displayUserText 同时兜住纯系统注入）。
+      const text = raw && !isSyntheticUserEntry(obj, raw) ? displayUserText(raw) : null;
+      if (text && !hasNearbyEventUserDuplicate(entries, entryIndex, text)) {
         flushAssistant();
         turns.push({
           id: _makeTurnId('codex-user', obj, index),

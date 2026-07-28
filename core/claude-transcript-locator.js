@@ -32,6 +32,53 @@ function findTranscriptByCCSessionId(ccSessionId, homeDir = defaultHomeDir()) {
   return null;
 }
 
+// Claude CLI buckets transcripts by cwd: every non-alphanumeric char becomes '-'.
+// `claude --resume <id>` only looks inside the bucket for the *current* cwd, so a
+// workspace that moves on disk (scratch → 正式分类归档) leaves its transcript behind
+// and the resume fails with "No conversation found with session ID".
+function projectSlug(cwd) {
+  return path.resolve(String(cwd || '')).replace(/[^A-Za-z0-9]/g, '-');
+}
+
+// Copy each session's transcript into the bucket for `toCwd` so the post-archive
+// `--resume` finds it. Best-effort: the archive itself already succeeded, so a
+// failure here must degrade to "resumes without history", never abort the move.
+function migrateTranscriptsForCwdChange(opts = {}) {
+  const { toCwd, ccSessionIds = [] } = opts;
+  const homeDir = opts.homeDir || defaultHomeDir();
+  const logger = opts.logger || console;
+  const result = { copied: [], missing: [], errors: [] };
+  if (!toCwd) return result;
+  const slug = projectSlug(toCwd);
+
+  for (const ccSessionId of ccSessionIds) {
+    if (!ccSessionId) continue;
+    try {
+      const source = findTranscriptByCCSessionId(ccSessionId, homeDir);
+      if (!source) {
+        result.missing.push(ccSessionId);
+        continue;
+      }
+      // <homeDir>/<.claude|.claude-deepseek>/projects/<slug>/<sid>.jsonl —
+      // keep the copy under the same root the CLI variant reads from.
+      const projectsDir = path.dirname(path.dirname(source));
+      const targetDir = path.join(projectsDir, slug);
+      const target = path.join(targetDir, `${ccSessionId}.jsonl`);
+      if (path.resolve(source) === path.resolve(target)) {
+        result.copied.push(target);
+        continue;
+      }
+      fs.mkdirSync(targetDir, { recursive: true });
+      fs.copyFileSync(source, target);
+      result.copied.push(target);
+    } catch (error) {
+      result.errors.push(`${ccSessionId}: ${error && error.message ? error.message : String(error)}`);
+      logger.warn?.('[transcript] migrate failed:', error && error.message);
+    }
+  }
+  return result;
+}
+
 function extractCwdFromTranscript(transcriptPath) {
   try {
     const fd = fs.openSync(transcriptPath, 'r');
@@ -72,4 +119,6 @@ module.exports = {
   extractCwdFromTranscript,
   findTranscriptByCCSessionId,
   healPersistedCwds,
+  migrateTranscriptsForCwdChange,
+  projectSlug,
 };

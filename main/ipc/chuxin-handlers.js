@@ -121,12 +121,14 @@ function addCodexMcpEntry(options, entry) {
 
 async function waitHealthy(timeoutMs) {
   const deadline = Date.now() + timeoutMs;
+  let lastError = 'health endpoint not ready';
   while (Date.now() < deadline) {
     const response = await httpGetJson(`${API_BASE}/health`, 2000);
     if (response.ok && response.body && response.body.status === 'ok') return { healthy: true, body: response.body };
+    lastError = response.error || `HTTP ${response.status}`;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  return { healthy: false };
+  return { healthy: false, error: lastError };
 }
 
 function registerChuxinIpc(ipcMain, deps = {}) {
@@ -289,13 +291,64 @@ function registerChuxinIpc(ipcMain, deps = {}) {
     try {
       const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(CHUXIN_DIR, 'run.ps1')], {
         cwd: CHUXIN_DIR,
-        detached: true,
-        stdio: 'ignore',
+        detached: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       });
-      child.unref();
-      const ready = await waitHealthy(25000);
-      return { started: true, already_running: false, healthy: ready.healthy, pid: child.pid };
+      // Register lifecycle listeners before touching streams. A launcher can
+      // fail in a few milliseconds (for example, a port conflict); attaching
+      // after data listeners creates a rare missed-exit race and leaves the UI
+      // waiting for the full health timeout.
+      const exited = new Promise((resolve) => {
+        let settled = false;
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          resolve(value);
+        };
+        child.once('exit', (code, signal) => finish({ code, signal }));
+        child.once('error', (error) => finish({ code: null, signal: null, error }));
+        if (child.exitCode !== null) finish({ code: child.exitCode, signal: child.signalCode });
+      });
+      const stdout = [];
+      const stderr = [];
+      const collect = (target) => (chunk) => {
+        target.push(chunk.toString('utf8'));
+        if (target.join('').length > 12000) target.splice(0, target.length - 1);
+      };
+      child.stdout.on('data', collect(stdout));
+      child.stderr.on('data', collect(stderr));
+      const ready = await Promise.race([
+        waitHealthy(45000),
+        exited.then(async (exit) => {
+          // run.ps1 exits after its own health checks. Recheck once to avoid a
+          // harmless exit/health race; otherwise return its actual stderr.
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          const health = await httpGetJson(`${API_BASE}/health`, 2000);
+          if (health.ok && health.body && health.body.status === 'ok') return { healthy: true, body: health.body };
+          const launcherLine = [stderr.join(''), stdout.join('')]
+            .flatMap((value) => value.split(/\r?\n/))
+            .map((value) => value.trim())
+            .find(Boolean);
+          return {
+            healthy: false,
+            error: [launcherLine || (exit.error && exit.error.message), `launcher exit=${exit.code} signal=${exit.signal || ''}`]
+              .filter(Boolean).join(' · ').slice(0, 1600),
+          };
+        }),
+      ]);
+      return {
+        started: true,
+        already_running: false,
+        healthy: ready.healthy,
+        pid: child.pid,
+        error: ready.healthy ? null : (ready.error || '健康检查未通过'),
+        logs: {
+          launcher: path.join(CHUXIN_DIR, 'logs', 'launcher.log'),
+          api: path.join(CHUXIN_DIR, 'logs', 'api.stderr.log'),
+          frontend: path.join(CHUXIN_DIR, 'logs', 'frontend.stderr.log'),
+        },
+      };
     } catch (error) {
       return { started: false, already_running: false, healthy: false, error: error.message };
     }

@@ -18,10 +18,18 @@ assert.match(html, /data-workspace-mode="existing"/);
 assert.match(html, /id="new-session-submit"/);
 assert.match(controller, /openNewSessionModal/);
 assert.match(controller, /workspace:create-scratch/);
+assert.match(controller, /workspaceDraft:\s*!!workspace\.draft/);
 assert.match(controller, /workspace:pick/);
+assert.match(controller, /workspace:archive-context/);
+assert.match(controller, /workspace:archive-and-restart/);
+assert.match(controller, /id = 'workspace-archive-modal'/);
 assert.match(renderer, /WorkspaceController\.openNewSessionModal/);
+assert.match(renderer, /WorkspaceController\.maybePromptSessionArchive/);
+assert.match(renderer, /WorkspaceController\.maybePromptMeetingArchive/);
+assert.match(renderer, /workspace:\s*m\.workspace\s*\|\|\s*null/);
 assert.match(meetingModal, /data-mcm-workspace-mode="scratch"/);
 assert.match(meetingModal, /data-mcm-workspace-mode="existing"/);
+assert.match(meetingModal, /workspaceDraft:\s*!!workspace\.draft/);
 assert.match(meetingRoom, /id="mr-workspace-chip"/);
 assert.doesNotMatch(sessionList, /visible\.length\s*\+\s*researchSessions\.length/,
   'sidebar render must not reference an undefined researchSessions binding');

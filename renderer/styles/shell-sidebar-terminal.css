@@ -1392,8 +1392,12 @@
   user-select: none;
 }
 .sidebar-strip b { color: var(--text-secondary); font-weight: 700; }
-.sidebar-strip .strip-warn { color: #f0ad4e; font-weight: 700; }
-.sidebar-strip .strip-burn { color: var(--accent-orange); }
+.sidebar-strip .strip-active b { color: #79b8ff; }
+.sidebar-strip .strip-resource-high,
+.sidebar-strip .strip-resource-high b { color: var(--accent-orange); }
+/* 代理（VPN）出口：走代理时用青色，直连时降为次要色以示区别 */
+.sidebar-strip .strip-proxy b { color: #56d4c4; }
+.sidebar-strip .strip-proxy-off b { color: var(--text-muted); }
 
 /* --- 等你响应浮动条（主区右下角，任意视图可见） --- */
 .respond-pill {

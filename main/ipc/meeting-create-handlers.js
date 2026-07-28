@@ -183,11 +183,12 @@ function registerMeetingCreateIpc(ipcMain, deps) {
     safe.autoTitlePending = !hasCustomTitle;
     safe.userRenamed = hasCustomTitle;
     if (workspaceService) {
-      const workspace = workspaceService.resolveForSession(safe.workspace, {
+      const workspaceMeta = {
         label: hasCustomTitle ? safe.title.trim() : '未命名群聊',
-        draft: !safe.workspace,
         select: false,
-      });
+      };
+      if (typeof safe.workspaceDraft === 'boolean') workspaceMeta.draft = safe.workspaceDraft;
+      const workspace = workspaceService.resolveForSession(safe.workspace, workspaceMeta);
       safe.workspace = workspace.path;
       safe.workspaceLabel = workspace.label;
     }

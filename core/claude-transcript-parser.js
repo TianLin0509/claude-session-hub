@@ -18,7 +18,7 @@
  */
 
 const fs = require('node:fs');
-const { isSyntheticUserEntry } = require('./synthetic-user-filter.js');
+const { isSyntheticUserEntry, displayUserText } = require('./synthetic-user-filter.js');
 
 function isToolResultEntry(entry) {
   return !!(
@@ -98,12 +98,16 @@ function toMs(timestamp) {
 function _entryToTurn(entry) {
   if (entry.type === 'user') {
     const message = entry.message || {};
+    // displayUserText 负责两件事：滤掉纯系统注入，以及把 AI 群聊脚手架里
+    // 用户真正打的那段（`## 用户`）抽出来——卡片只显示用户自己的话。
     if (typeof message.content === 'string') {
       if (isSyntheticUserEntry(entry, message.content)) return null;
+      const text = displayUserText(message.content);
+      if (!text) return null;
       return {
         id: entry.uuid,
         role: 'user',
-        text: message.content,
+        text,
         ts: toMs(entry.timestamp),
       };
     }
@@ -113,8 +117,10 @@ function _entryToTurn(entry) {
         .filter(c => c && c.type === 'text' && typeof c.text === 'string')
         .map(c => c.text);
       if (textBlocks.length) {
-        const text = textBlocks.join('\n');
-        if (isSyntheticUserEntry(entry, text)) return null;
+        const raw = textBlocks.join('\n');
+        if (isSyntheticUserEntry(entry, raw)) return null;
+        const text = displayUserText(raw);
+        if (!text) return null;
         return {
           id: entry.uuid,
           role: 'user',

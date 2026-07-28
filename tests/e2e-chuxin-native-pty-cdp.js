@@ -192,7 +192,7 @@ async function openResearchPanel(client) {
 
     await waitEval(clientA, 'document.querySelectorAll(".cx-dialogue").length > 0 && !document.querySelector(".cx-btn.primary").disabled', 'friendly answer cards', 600000);
     const actualPrompt = await clientA.eval(`(() => {
-      document.querySelector('.cx-tab[data-tab="developer"]').click();
+      document.getElementById('cx-open-developer').click();
       return document.querySelector('.cx-dev-exact pre').textContent;
     })()`);
     assert.strictEqual(actualPrompt, previewPrompt, 'preview and executed prompt diverged');

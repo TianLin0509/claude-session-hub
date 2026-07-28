@@ -20,6 +20,7 @@ const INVOCATION_LOG = path.join(TEMP_ROOT, 'invocations.jsonl');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'workspace-selector');
 const MODAL_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `new-session-modal-${RUN_ID}.png`);
 const TERMINAL_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `session-workspace-terminal-${RUN_ID}.png`);
+const ARCHIVE_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `workspace-archive-modal-${RUN_ID}.png`);
 const GROUP_MODAL_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `group-workspace-modal-${RUN_ID}.png`);
 const GROUP_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `group-workspace-header-${RUN_ID}.png`);
 const RESULT_PATH = path.join(ARTIFACT_DIR, `workspace-selector-${RUN_ID}.json`);
@@ -83,6 +84,7 @@ function writeFixtures() {
   fs.mkdirSync(FAKE_BIN, { recursive: true });
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(CODEX_HOME, { recursive: true });
+  fs.mkdirSync(path.join(WORKSPACE_ROOT, 'Tools'), { recursive: true });
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
   const fake = path.join(FAKE_BIN, 'fake-cli.js');
   fs.writeFileSync(fake, `'use strict';
@@ -115,7 +117,7 @@ async function main() {
   const result = {
     runId: RUN_ID,
     port,
-    screenshots: { modal: MODAL_SCREENSHOT_PATH, terminal: TERMINAL_SCREENSHOT_PATH, groupModal: GROUP_MODAL_SCREENSHOT_PATH, group: GROUP_SCREENSHOT_PATH },
+    screenshots: { modal: MODAL_SCREENSHOT_PATH, terminal: TERMINAL_SCREENSHOT_PATH, archive: ARCHIVE_SCREENSHOT_PATH, groupModal: GROUP_MODAL_SCREENSHOT_PATH, group: GROUP_SCREENSHOT_PATH },
   };
   let hub = null;
   let client = null;
@@ -128,6 +130,7 @@ async function main() {
         AI_HUB_WORKSPACE_ROOT: WORKSPACE_ROOT,
         CODEX_HOME,
         HUB_CODEX_PROFILE: 'e2e',
+        HUB_WORKSPACE_E2E_ALLOW_FALLBACK_RESUME: '1',
         HUB_WORKSPACE_E2E_LOG: INVOCATION_LOG,
         [pathKey]: `${FAKE_BIN}${path.delimiter}${process.env[pathKey] || ''}`,
       },
@@ -199,6 +202,36 @@ async function main() {
     assert.ok(result.normalSession.panelTextLength > 0, 'new session panel must not be black/empty');
     await screenshot(client, TERMINAL_SCREENSHOT_PATH);
 
+    const normalScratchPath = result.normalSession.session.cwd;
+    await client.eval(`window.WorkspaceController.maybePromptSessionArchive(${JSON.stringify(normalSessionRecord.id)})`);
+    result.archiveModal = await waitFor('first-turn archive modal', () => client.eval(`(() => {
+      const modal = document.querySelector('#workspace-archive-modal');
+      if (!modal || modal.style.display === 'none') return null;
+      return {
+        categories: modal.querySelectorAll('.workspace-archive-categories button').length,
+        source: modal.querySelector('#workspace-archive-source')?.title || '',
+        submitDisabled: modal.querySelector('#workspace-archive-submit')?.disabled,
+      };
+    })()`), 15000);
+    assert.equal(result.archiveModal.categories, 1);
+    assert.equal(result.archiveModal.source, normalScratchPath);
+    assert.equal(result.archiveModal.submitDisabled, true);
+    await screenshot(client, ARCHIVE_SCREENSHOT_PATH);
+    await clickPoint(client, await pointFor(client, '.workspace-archive-categories button'));
+    await clickPoint(client, await pointFor(client, '#workspace-archive-submit'));
+    result.normalArchive = await waitFor('normal workspace archive and reconnect', () => client.eval(`(async () => {
+      const { ipcRenderer } = require('electron');
+      const session = (await ipcRenderer.invoke('get-sessions')).find(item => item.id === ${JSON.stringify(normalSessionRecord.id)});
+      const modal = document.querySelector('#workspace-archive-modal');
+      if (!session || session.cwd === ${JSON.stringify(normalScratchPath)} || (modal && modal.style.display !== 'none')) return null;
+      const buffer = await ipcRenderer.invoke('debug:get-session-buffer', session.id);
+      if (!/FAKE_CLI_READY/.test(buffer || '')) return null;
+      return { session, buffer };
+    })()`), 30000);
+    assert.match(result.normalArchive.session.cwd, /[\\/]Tools[\\/]/);
+    assert.equal(fs.existsSync(normalScratchPath), false, 'archived normal scratch directory should be removed');
+    assert.match(result.normalArchive.buffer, /FAKE_CLI_READY/, 'archived session should reconnect its CLI');
+
     await clickPoint(client, await pointFor(client, '#btn-group-chat'));
     result.groupModal = await waitFor('group workspace choices', () => client.eval(`(() => {
       const modal = document.querySelector('#meeting-create-modal');
@@ -235,6 +268,29 @@ async function main() {
     assert.ok(result.meeting.subs.every(item => item.cwd === result.meeting.meeting.workspace));
     assert.match(result.meeting.chipTitle, /_scratch/i);
     await screenshot(client, GROUP_SCREENSHOT_PATH);
+
+    const groupScratchPath = result.meeting.meeting.workspace;
+    await client.eval(`window.WorkspaceController.maybePromptMeetingArchive(${JSON.stringify(result.meeting.meeting.id)})`);
+    await waitFor('group first-turn archive modal', () => client.eval(`(() => {
+      const modal = document.querySelector('#workspace-archive-modal');
+      return modal && modal.style.display !== 'none' ? true : null;
+    })()`), 15000);
+    await clickPoint(client, await pointFor(client, '.workspace-archive-categories button'));
+    await clickPoint(client, await pointFor(client, '#workspace-archive-submit'));
+    result.groupArchive = await waitFor('group workspace archive and reconnect', () => client.eval(`(async () => {
+      const { ipcRenderer } = require('electron');
+      const meeting = (await ipcRenderer.invoke('get-meetings')).find(item => item.id === ${JSON.stringify(result.meeting.meeting.id)});
+      const sessions = await ipcRenderer.invoke('get-sessions');
+      const subs = meeting ? sessions.filter(item => item.meetingId === meeting.id) : [];
+      if (!meeting || meeting.workspace === ${JSON.stringify(groupScratchPath)} || subs.length !== 3) return null;
+      const buffers = await Promise.all(subs.map(item => ipcRenderer.invoke('debug:get-session-buffer', item.id)));
+      if (!buffers.every(value => /FAKE_CLI_READY/.test(value || ''))) return null;
+      return { meeting, subs, buffers };
+    })()`), 40000);
+    assert.match(result.groupArchive.meeting.workspace, /[\\/]Tools[\\/]/);
+    assert.ok(result.groupArchive.subs.every(item => item.cwd === result.groupArchive.meeting.workspace));
+    assert.equal(fs.existsSync(groupScratchPath), false, 'archived group scratch directory should be removed');
+    assert.deepEqual(fs.readdirSync(path.join(WORKSPACE_ROOT, '_scratch')), [], '_scratch should be empty after both confirmations');
 
     result.renderer = await client.eval(`(() => ({ errors: window.__workspaceE2eErrors || [] }))()`);
     assert.deepEqual(result.renderer.errors, [], `renderer errors: ${result.renderer.errors.join(' | ')}`);

@@ -246,7 +246,8 @@ function renderTurnCard(turn) {
           <button class="ta-btn" data-action="copy" title="复制">📋</button>
           ${isUser
             ? `<button class="ta-btn" data-action="resend" title="重发">↻</button>
-               <button class="ta-btn" data-action="edit-resend" title="编辑重发">✏</button>`
+               <button class="ta-btn" data-action="edit-resend" title="编辑重发">✏</button>
+               <button class="ta-btn" data-action="prompt-inspect" title="查看完整 Prompt（CLAUDE.md / 记忆注入体检）">🔍</button>`
             : `<button class="ta-btn" data-action="regen" title="重新生成">⏪</button>`}
         </div>
       </div>
@@ -619,6 +620,26 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
         }
       });
     }
+  }
+
+  // provisional assistant-card dedup：turn-complete 时 transcript 常常还没落盘，
+  //   renderer 会先用合成 id（turn-<时间戳>）挂一张兜底卡。随后的 backfill 用真实
+  //   id 再挂一次，两个 id 不同 → 同一条回答重复出现。真卡到达时把兜底卡撤掉。
+  //   文本用「前缀匹配」而非全等：兜底卡的文本来自 turn-complete 事件的纯文本，
+  //   真卡是结构化解析（可能多出工具调用等），两者不会逐字相同。
+  if (turn.role === 'assistant') {
+    const sidStr = String(sessionId || '');
+    const realText = (turn.text || '').trim();
+    container.querySelectorAll('.turn-card.assistant[data-provisional="true"]').forEach(prov => {
+      if (prov.dataset.sessionId !== sidStr) return;
+      if (prov.dataset.turnId === turn.id) return;   // 就是它自己，别自杀
+      const provText = (prov.dataset.provisionalText || '').trim();
+      if (!provText) { prov.remove(); return; }
+      if (!realText) return;
+      const a = provText.slice(0, 200);
+      const b = realText.slice(0, 200);
+      if (a === b || realText.startsWith(provText) || provText.startsWith(realText)) prov.remove();
+    });
   }
 
   // dedup with in-place replace：同 turnId 已在 DOM 时，不是 skip 而是替换。

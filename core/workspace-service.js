@@ -13,6 +13,11 @@ function normalizeKey(value) {
   return path.resolve(String(value || '')).replace(/[\\/]+$/, '').toLowerCase();
 }
 
+function isPathInside(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return !!relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
 function safeSlug(value, fallback = 'workspace') {
   const ascii = String(value || '')
     .normalize('NFKC')
@@ -117,6 +122,111 @@ class WorkspaceService {
     return this.path.basename(resolved) || resolved;
   }
 
+  getWorkspace(cwd) {
+    if (!cwd || typeof cwd !== 'string') return null;
+    const resolved = this.path.resolve(cwd);
+    const registry = this._readRegistry();
+    const item = registry.workspaces.find(entry => normalizeKey(entry.path) === normalizeKey(resolved));
+    return item ? { ...item } : null;
+  }
+
+  isScratchWorkspace(cwd) {
+    if (!cwd || typeof cwd !== 'string') return false;
+    const resolved = this.path.resolve(cwd);
+    return isPathInside(this.getScratchRoot(), resolved);
+  }
+
+  listArchiveCategories() {
+    this.ensureRoot();
+    const excluded = new Set(['_scratch', '_admin', 'worktrees']);
+    let entries = [];
+    try { entries = this.fs.readdirSync(this.getWorkspaceRoot(), { withFileTypes: true }); } catch {}
+    return entries
+      .filter(entry => entry && entry.isDirectory() && !excluded.has(entry.name.toLowerCase()) && !entry.name.startsWith('.'))
+      .map(entry => ({ name: entry.name, path: this.path.join(this.getWorkspaceRoot(), entry.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  }
+
+  // 用户关掉过归档框就不再追问这个 workspace（含「暂留 _scratch」和 ×/Esc）。
+  // 落盘而不是只存内存，Hub 重启后同样不再打扰。
+  dismissArchive(cwd) {
+    if (!cwd) return null;
+    const resolved = this.path.resolve(cwd);
+    const registry = this._readRegistry();
+    const item = registry.workspaces.find(entry => normalizeKey(entry.path) === normalizeKey(resolved));
+    if (!item) return null;
+    item.archiveDismissedAt = this.now();
+    this._writeRegistry(registry);
+    return { ...item };
+  }
+
+  getArchiveContext(cwd) {
+    const workspace = this.getWorkspace(cwd);
+    const required = !!(workspace && workspace.draft && !workspace.archiveDismissedAt
+      && this.isScratchWorkspace(workspace.path));
+    return {
+      required,
+      root: this.getWorkspaceRoot(),
+      workspace,
+      categories: this.listArchiveCategories(),
+    };
+  }
+
+  planArchive(cwd, opts = {}) {
+    const source = this.path.resolve(String(cwd || ''));
+    const workspace = this.getWorkspace(source);
+    if (!workspace || !workspace.draft || !this.isScratchWorkspace(source)) {
+      throw new Error('workspace is not an active scratch draft');
+    }
+
+    const parent = this.path.resolve(String(opts.parent || ''));
+    if (!this._isDirectory(parent)) throw new Error(`archive parent does not exist: ${parent}`);
+    if (normalizeKey(parent) === normalizeKey(this.getWorkspaceRoot())) {
+      throw new Error('请选择 Vibe 下的分类目录，不要把项目直接放在 Vibe 根目录');
+    }
+    if (normalizeKey(parent) === normalizeKey(this.getScratchRoot()) || isPathInside(this.getScratchRoot(), parent)) {
+      throw new Error('归档目标不能仍在 _scratch 内');
+    }
+
+    const folderName = safeSlug(opts.folderName || workspace.suggestedName || workspace.label, workspace.id || 'workspace');
+    const target = this.path.join(parent, folderName);
+    if (normalizeKey(source) === normalizeKey(target) || isPathInside(source, target)) {
+      throw new Error('archive target overlaps the scratch source');
+    }
+    if (this.path.parse(source).root.toLowerCase() !== this.path.parse(target).root.toLowerCase()) {
+      throw new Error('暂不支持跨磁盘归档，请选择与 _scratch 相同磁盘上的路径');
+    }
+    if (this.fs.existsSync(target)) throw new Error(`目标路径已存在：${target}`);
+    return { source, parent, folderName, target, workspace };
+  }
+
+  archiveDraft(cwd, opts = {}) {
+    const plan = this.planArchive(cwd, opts);
+    const registry = this._readRegistry();
+    const item = registry.workspaces.find(entry => normalizeKey(entry.path) === normalizeKey(plan.source));
+    if (!item) throw new Error('scratch workspace disappeared from registry');
+
+    this.fs.renameSync(plan.source, plan.target);
+    try {
+      item.path = plan.target;
+      item.label = String(opts.label || item.label || plan.folderName).trim().slice(0, 60) || plan.folderName;
+      item.suggestedName = plan.folderName;
+      item.draft = false;
+      item.archivedAt = this.now();
+      item.lastUsedAt = this.now();
+      if (registry.selectedPath && normalizeKey(registry.selectedPath) === normalizeKey(plan.source)) {
+        registry.selectedPath = plan.target;
+      }
+      this._writeRegistry(registry);
+    } catch (error) {
+      try { this.fs.renameSync(plan.target, plan.source); } catch (rollbackError) {
+        this.logger.error?.('[workspace] archive registry rollback failed:', rollbackError && rollbackError.message);
+      }
+      throw error;
+    }
+    return { ...item };
+  }
+
   touchWorkspace(cwd, meta = {}) {
     if (!cwd || typeof cwd !== 'string') throw new Error('workspace path is required');
     const resolved = this.path.resolve(cwd);
@@ -140,7 +250,10 @@ class WorkspaceService {
       item.path = resolved;
       item.lastUsedAt = this.now();
       if (typeof meta.label === 'string' && meta.label.trim()) item.label = meta.label.trim().slice(0, 60);
-      if (typeof meta.draft === 'boolean') item.draft = meta.draft;
+      // Only ever raise the draft flag here. Clearing it is archiveDraft()'s job —
+      // a stray `draft: false` from a reconnect used to silently kill the
+      // first-turn archive prompt and strand the workspace in _scratch.
+      if (meta.draft === true) item.draft = true;
       if (typeof meta.pinned === 'boolean') item.pinned = meta.pinned;
       if (typeof meta.gitInitialized === 'boolean') item.gitInitialized = meta.gitInitialized;
     }
@@ -149,11 +262,33 @@ class WorkspaceService {
     return { ...item };
   }
 
+  // Claude Code 会一路向上读到 <root>\CLAUDE.md，但 Codex / Kimi / Gemini 只读
+  // 自己的全局 AGENTS.md 和 cwd 自身的那一份——实测在 _scratch\inbox-* 里
+  // 问 <root>\AGENTS.md 独有的规则，Codex 答 NO-RULES（git / 非 git 都一样）。
+  // 所以把工作区边界规则复制进每个新 scratch，非 Claude 的 CLI 才能拿到。
+  seedScratchAgentsFile(cwd) {
+    const root = this.getWorkspaceRoot();
+    const source = this.path.join(root, 'AGENTS.md');
+    const target = this.path.join(cwd, 'AGENTS.md');
+    try {
+      if (!this.fs.existsSync(source) || this.fs.existsSync(target)) return false;
+      const header = `<!-- 由 AI Hub 在新建临时 workspace 时自动复制自 ${source}。\n`
+        + `     Codex / Kimi / Gemini 读不到上级目录的 AGENTS.md，只能靠这份副本。\n`
+        + `     归档到正式项目后可以删除，改用项目自己的 AGENTS.md。 -->\n\n`;
+      this.fs.writeFileSync(target, header + this.fs.readFileSync(source, 'utf8'), 'utf8');
+      return true;
+    } catch (error) {
+      this.logger.warn('[workspace] seed AGENTS.md failed:', error && error.message);
+      return false;
+    }
+  }
+
   createScratchWorkspace(meta = {}) {
     this.ensureRoot();
     const name = `inbox-${timestampSlug(new Date(this.now()))}-${this.randomId()}`;
     const cwd = this.path.join(this.getScratchRoot(), name);
     this.fs.mkdirSync(cwd, { recursive: false });
+    this.seedScratchAgentsFile(cwd);
     let gitInitialized = false;
     try { gitInitialized = !!this.initGit(cwd); } catch (err) {
       this.logger.warn('[workspace] scratch git init failed:', err && err.message);
@@ -218,12 +353,18 @@ class WorkspaceService {
     const items = registry.workspaces
       .map(entry => ({ ...entry, selected: normalizeKey(entry.path) === selectedKey }))
       .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || (b.lastUsedAt || 0) - (a.lastUsedAt || 0));
-    return { root: this.getWorkspaceRoot(), selectedPath: registry.selectedPath, items };
+    return {
+      root: this.getWorkspaceRoot(),
+      scratchRoot: this.getScratchRoot(),
+      selectedPath: registry.selectedPath,
+      items,
+    };
   }
 }
 
 module.exports = {
   WorkspaceService,
+  isPathInside,
   normalizeKey,
   safeSlug,
   timestampSlug,

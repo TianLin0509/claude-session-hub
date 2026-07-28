@@ -2,8 +2,9 @@
 
 const { isStableSessionTitle } = require('../../core/session-title-guards.js');
 const { isKimiCliKind } = require('../../core/ai-kinds.js');
+const { lookupKimiSession } = require('../../core/kimi-session-migrator.js');
 
-function registerResumeSessionIpc(ipcMain, deps) {
+function createResumeSessionHandler(deps) {
   const {
     defaultCodexSessionsRoot,
     findCodexRolloutBySid,
@@ -32,7 +33,7 @@ function registerResumeSessionIpc(ipcMain, deps) {
     resumeOpts.codexMcpEntries = [...(resumeOpts.codexMcpEntries || []), entry];
   }
 
-  ipcMain.handle('resume-session', async (_e, meta) => {
+  return async function resumeSession(meta) {
     if (!meta || !meta.hubId) return null;
     const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume');
     const isClaudeCliResumable = isClaudeFamily(meta.kind);
@@ -44,6 +45,7 @@ function registerResumeSessionIpc(ipcMain, deps) {
     let resumeOpts = {};
     if (meta.meetingId) {
       const meeting = meetingManager.getMeeting(meta.meetingId);
+      if (meeting && meeting.groupChat) resumeOpts.noInheritCursor = true;
       let promptFile = null;
       if (meeting && meeting.scene && !meeting.groupChat) {
         const hubDataDir = getHubDataDir();
@@ -107,12 +109,39 @@ function registerResumeSessionIpc(ipcMain, deps) {
     }
     const codexMissingSid = (isCodexBaseKind(meta.kind) && !effectiveCodexSid);
 
+    // Kimi 会话绑死 cwd 且 CLI 会校验。归档搬目录后，renderer 持久化的 cwd /
+    // kimiSessionDir 可能还是旧路径（休眠会话不在归档时的运行列表里），直接用会在
+    // CLI 侧 "created under a different directory" 退出、Hub 只看到一个死终端。
+    // 以 kimi 自己的 session_index.jsonl 为准对账：索引里的 workDir 存在就用它。
+    if (isKimi && meta.kimiSid) {
+      try {
+        const indexed = lookupKimiSession(meta.kimiSid);
+        if (indexed && indexed.workDir && fs.existsSync(indexed.workDir)) {
+          const staleCwd = !meta.cwd
+            || !fs.existsSync(meta.cwd)
+            || path.resolve(meta.cwd) !== path.resolve(indexed.workDir);
+          if (staleCwd) {
+            logger.log(`[resume-session] kimi cwd reconciled via session_index: ${meta.cwd || '(empty)'} -> ${indexed.workDir}`);
+            meta.cwd = indexed.workDir;
+            if (indexed.sessionDir) {
+              meta.kimiSessionDir = indexed.sessionDir;
+              meta.transcriptPath = path.join(indexed.sessionDir, 'agents', 'main', 'wire.jsonl');
+            }
+          }
+        }
+      } catch (error) {
+        logger.warn('[resume-session] kimi index reconcile failed:', error && error.message);
+      }
+    }
+
     const session = sessionManager.createSession(meta.kind || 'claude', {
       id: meta.hubId,
       title: meta.title,
       cwd: (meta.kind === 'gemini' && meta.geminiProjectRoot) ? meta.geminiProjectRoot : meta.cwd,
+      ...(meta.workspaceLabel ? { workspaceLabel: meta.workspaceLabel } : {}),
       meetingId: meta.meetingId || null,
       model: meta.model || undefined,
+      ...(meta.effort ? { effort: meta.effort } : {}),
       resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
       resumeTranscriptPath: resumeTranscriptPath || undefined,
       useContinue: isClaudeCliResumable && !meta.ccSessionId,
@@ -129,6 +158,7 @@ function registerResumeSessionIpc(ipcMain, deps) {
       } : {}),
       userRenamed: !!meta.userRenamed,
       autoTitleGenerated: !!meta.autoTitleGenerated || isStableSessionTitle(meta.title, meta.kind),
+      ...(meta.pinned ? { pinned: true } : {}),
       lastMessageTime: meta.lastMessageTime,
       lastOutputPreview: meta.lastOutputPreview,
       ...resumeOpts,
@@ -173,9 +203,18 @@ function registerResumeSessionIpc(ipcMain, deps) {
     }
 
     return session;
-  });
+  };
+}
+
+function registerResumeSessionIpc(ipcMain, deps) {
+  const resumeSession = typeof deps.resumeSession === 'function'
+    ? deps.resumeSession
+    : createResumeSessionHandler(deps);
+  ipcMain.handle('resume-session', (_event, meta) => resumeSession(meta));
+  return { resumeSession };
 }
 
 module.exports = {
+  createResumeSessionHandler,
   registerResumeSessionIpc,
 };

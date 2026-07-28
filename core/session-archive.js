@@ -13,28 +13,37 @@ const path = require('path');
 const os = require('os');
 
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+// DeepSeek 跑的是同一个 claude CLI，只是 CLAUDE_CONFIG_DIR 指向 ~/.claude-deepseek，
+// transcript 落在那边的 projects/ 下。Ctrl+Shift+F 的全局搜索原先只扫 ~/.claude，
+// DeepSeek 会话一条都搜不到——会话散到多目录之后这个盲区尤其明显。
+const { claudeProjectRoots } = require('./claude-transcript-locator.js');
 const CACHE_TTL_MS = 30 * 1000;
 
 let _cache = { at: 0, key: null, items: null };
 
 async function listAllJsonls() {
   const out = [];
-  let entries;
-  try { entries = await fs.promises.readdir(PROJECTS_DIR); } catch { return out; }
-  for (const proj of entries) {
-    const projDir = path.join(PROJECTS_DIR, proj);
-    let stat;
-    try { stat = await fs.promises.stat(projDir); } catch { continue; }
-    if (!stat.isDirectory()) continue;
-    let files;
-    try { files = await fs.promises.readdir(projDir); } catch { continue; }
-    for (const f of files) {
-      if (!f.endsWith('.jsonl')) continue;
-      const full = path.join(projDir, f);
-      try {
-        const s = await fs.promises.stat(full);
-        out.push({ path: full, mtime: s.mtimeMs, size: s.size, sessionId: f.slice(0, -6) });
-      } catch {}
+  const seen = new Set();
+  for (const projectsDir of claudeProjectRoots()) {
+    let entries;
+    try { entries = await fs.promises.readdir(projectsDir); } catch { continue; }
+    for (const proj of entries) {
+      const projDir = path.join(projectsDir, proj);
+      let stat;
+      try { stat = await fs.promises.stat(projDir); } catch { continue; }
+      if (!stat.isDirectory()) continue;
+      let files;
+      try { files = await fs.promises.readdir(projDir); } catch { continue; }
+      for (const f of files) {
+        if (!f.endsWith('.jsonl')) continue;
+        const full = path.join(projDir, f);
+        if (seen.has(full)) continue;
+        seen.add(full);
+        try {
+          const s = await fs.promises.stat(full);
+          out.push({ path: full, mtime: s.mtimeMs, size: s.size, sessionId: f.slice(0, -6) });
+        } catch {}
+      }
     }
   }
   return out;

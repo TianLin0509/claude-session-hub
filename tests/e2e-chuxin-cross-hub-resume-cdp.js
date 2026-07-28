@@ -186,7 +186,7 @@ function cleanup(root) {
     await waitEval(b, 'document.querySelector(".cx-native-terminal .floating-input-box") && document.querySelectorAll(".cx-dialogue").length === 1', 'Hub B resumed PTY and result', 90000);
     const bSession = await b.eval(`(async()=> (await require('electron').ipcRenderer.invoke('get-sessions')).find(x=>x.purpose==='chuxin-research'))()`);
     assert(bSession && bSession.codexSid === CODEX_SID && bSession.hiddenFromSidebar);
-    const promptText = await b.eval(`(() => { document.querySelector('.cx-tab[data-tab="developer"]').click(); return document.querySelector('.cx-dev-exact pre').textContent; })()`);
+    const promptText = await b.eval(`(() => { document.getElementById('cx-open-developer').click(); return document.querySelector('.cx-dev-exact pre').textContent; })()`);
     assert(promptText.includes('跨 Hub 恢复验收'));
     await screenshot(b, '03-hub-b-resumed-same-sid-and-prompt.png');
     console.log(JSON.stringify({ ok: true, researchId, runId, codexSid: CODEX_SID, sameSid: aSession.codexSid === bSession.codexSid, output: OUTPUT }, null, 2));

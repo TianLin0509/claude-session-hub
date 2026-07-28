@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const { registerAppUtilityIpc, saveClipboardImage, showNotification } = require('../main/ipc/app-utility-handlers.js');
+const { createSystemResourceSampler, registerAppUtilityIpc, saveClipboardImage, showNotification } = require('../main/ipc/app-utility-handlers.js');
 
 function createFakeIpc() {
   return {
@@ -89,6 +89,24 @@ test('registers utility channels', () => {
   assert.ok(ipc.handlers.has('is-window-focused'));
   assert.ok(ipc.handlers.has('save-clipboard-image'));
   assert.ok(ipc.handlers.has('get-hook-status'));
+  assert.ok(ipc.handlers.has('get-system-resource-usage'));
+});
+
+test('system resource sampler reports CPU delta and memory usage', () => {
+  const cpuSnapshots = [
+    [{ times: { user: 40, nice: 0, sys: 10, idle: 50, irq: 0 } }],
+    [{ times: { user: 70, nice: 0, sys: 20, idle: 110, irq: 0 } }],
+  ];
+  const fakeOs = {
+    cpus: () => cpuSnapshots.shift(),
+    totalmem: () => 1000,
+    freemem: () => 350,
+  };
+  const result = createSystemResourceSampler(fakeOs)();
+
+  assert.strictEqual(result.cpuPct, 40);
+  assert.strictEqual(result.memoryPct, 65);
+  assert.ok(Number.isFinite(result.sampledAt));
 });
 
 test('saveClipboardImage writes a timestamped png and returns its path', () => {

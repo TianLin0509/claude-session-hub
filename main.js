@@ -17,7 +17,7 @@ if (process.env.CLAUDE_HUB_NO_CDP !== '1' && !_hasCdpSwitch) {
   app.commandLine.appendSwitch('remote-debugging-port', '0');
 }
 const { SessionManager, clearSessionManagerConfigCache } = require('./core/session-manager.js');
-const { WorkspaceService } = require('./core/workspace-service.js');
+const { WorkspaceService, normalizeKey: normalizeWorkspaceKey } = require('./core/workspace-service.js');
 const stateStore = require('./core/state-store.js');
 const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
 const hubControl = require('./core/hub-control.js');
@@ -49,13 +49,14 @@ const { registerMeetingCreateIpc } = require('./main/ipc/meeting-create-handlers
 const { registerMeetingTimelineIpc } = require('./main/ipc/meeting-timeline-handlers.js');
 const { registerTranscriptIpc } = require('./main/ipc/transcript-handlers.js');
 const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
+const { registerPromptInspectIpc } = require('./main/ipc/prompt-inspect-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
 const { registerCommitteeIpc } = require('./main/ipc/committee-handlers.js');
-const { registerResumeSessionIpc } = require('./main/ipc/resume-session-handlers.js');
+const { createResumeSessionHandler, registerResumeSessionIpc } = require('./main/ipc/resume-session-handlers.js');
 const { createGroupChatDispatcher } = require('./main/groupchat/dispatcher.js');
 const { createCommitteeConductor } = require('./main/groupchat/committee-conductor.js');
 const committeeHistory = require('./core/committee-history.js');
@@ -386,6 +387,7 @@ let mainWindow;
 const sessionManager = new SessionManager();
 const meetingManager = new MeetingRoomManager();
 const workspaceService = new WorkspaceService();
+const workspaceMigrationSessionIds = new Set();
 
 // Deep-summary service singleton: instantiated from config-driven fallback chain.
 // Providers tried in order; first one with a parseable response wins.
@@ -710,9 +712,10 @@ sessionManager.onData = (sessionId, data, seq) => {
 };
 
 sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
+  const isWorkspaceMigration = workspaceMigrationSessionIds.has(sessionId);
   terminalOutputBatcher.flush(sessionId);
   meetingTerminalActivitySentAt.delete(sessionId);
-  groupChatDispatcher?.markProcessExitForSession(sessionId, exitInfo);
+  if (!isWorkspaceMigration) groupChatDispatcher?.markProcessExitForSession(sessionId, exitInfo);
   // 让投研等原生 PTY 编排者能在用户关闭窗口或 CLI 异常退出时释放跨 Hub 租约。
   sessionManager.emit('session-exited', { sessionId, meetingId, exitInfo: exitInfo || null });
 
@@ -720,7 +723,7 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
   // 群聊 cli-ready monotonic guard 清理（独立模块，详见 core/group-chat-cli-ready-detector.js）
   try { cliReadyDetector.cleanup(sessionId); } catch {}
   sendToRenderer('session-closed', { sessionId });
-  if (meetingId) {
+  if (meetingId && !isWorkspaceMigration) {
     const updated = meetingManager.removeSubSession(meetingId, sessionId);
     if (updated) sendToRenderer('meeting-updated', { meeting: updated });
   }
@@ -759,6 +762,15 @@ function updateSessionTranscriptBinding(hubSessionId, fields = {}) {
   if (Object.keys(next).length === 0) return null;
   const current = sessionManager.getSession(hubSessionId);
   if (!current) return null;
+  // 子进程劫持防护：在会话里再跑一个 `claude`（跑测试、批处理、脚本探针）时，
+  // 子进程会继承 CLAUDE_HUB_SESSION_ID，它的 Stop hook 会把本卡片重绑到子进程的
+  // transcript 上；子进程目录一旦被清理，卡片视图就 ENOENT 打不开。
+  // hook 上报的 cwd 与会话 cwd 不一致时一律不重绑（卡片仍可用 ccSessionId 回退查找）。
+  if (fields.cwd && current.cwd && normalizeWorkspaceKey(fields.cwd) !== normalizeWorkspaceKey(current.cwd)) {
+    console.warn('[hook] ignored transcript rebind from a nested CLI:',
+      `session=${String(hubSessionId).slice(0, 8)} reported=${fields.cwd} expected=${current.cwd}`);
+    return null;
+  }
   const changed = Object.keys(next).some(k => current[k] !== next[k]);
   if (!changed) return current;
   const updated = sessionManager.updateSessionMeta(hubSessionId, next);
@@ -901,6 +913,10 @@ registerCliStatusIpc(ipcMain, {
   sessionManager,
 });
 
+registerPromptInspectIpc(ipcMain, {
+  sessionManager,
+});
+
 registerTranscriptIpc(ipcMain, {
   defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
   findCodexRolloutByCwd,
@@ -929,12 +945,38 @@ registerSessionIpc(ipcMain, {
   workspaceService,
 });
 
+const resumeSession = createResumeSessionHandler({
+  defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
+  findCodexRolloutBySid,
+  findTranscriptByCCSessionId,
+  fs,
+  getHookPort: () => hookPort,
+  getHubDataDir,
+  hookToken: HOOK_TOKEN,
+  isClaudeFamily,
+  isCodexBaseKind,
+  isCodexSubagentRolloutPath,
+  meetingManager,
+  os,
+  path,
+  readTranscriptTail,
+  registerSessionForTap,
+  scenes,
+  sendToRenderer,
+  sessionManager,
+  slotIds: SLOT_IDS,
+});
+
 registerWorkspaceIpc(ipcMain, {
+  allowFallbackResume: process.env.HUB_WORKSPACE_E2E_ALLOW_FALLBACK_RESUME === '1',
   dialog,
+  getLastPersistedSessions: () => lastPersistedSessions,
   meetingManager,
   sendToRenderer,
   sessionManager,
   shell,
+  resumeSession,
+  workspaceMigrationSessionIds,
   workspaceService,
 });
 
@@ -994,26 +1036,7 @@ registerPersistenceIpc(ipcMain, {
   stateStore,
 });
 
-registerResumeSessionIpc(ipcMain, {
-  defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
-  findCodexRolloutBySid,
-  findTranscriptByCCSessionId,
-  fs,
-  getHookPort: () => hookPort,
-  getHubDataDir,
-  hookToken: HOOK_TOKEN,
-  isClaudeFamily,
-  isCodexBaseKind,
-  meetingManager,
-  os,
-  path,
-  readTranscriptTail,
-  registerSessionForTap,
-  scenes,
-  sendToRenderer,
-  sessionManager,
-  slotIds: SLOT_IDS,
-});
+registerResumeSessionIpc(ipcMain, { resumeSession });
 
 const imageDir = path.join(getHubDataDir(), 'images');
 registerAppUtilityIpc(ipcMain, {
@@ -1168,6 +1191,7 @@ const hookServer = http.createServer((req, res) => {
           updateSessionTranscriptBinding(parsed.sessionId, {
             ccSessionId: parsed.claudeSessionId,
             transcriptPath: parsed.transcriptPath,
+            cwd: parsed.cwd,
           });
         }
         if (event === 'stop' && parsed.transcriptPath) {
@@ -1662,7 +1686,10 @@ function startAgentScanner() {
 }
 
 app.whenReady().then(async () => {
-  if (!hasSingleInstanceLock) return;
+  // 这里曾有 `if (!hasSingleInstanceLock) return;`。单实例锁按
+  // tests/unit-single-instance-guard.test.js 的契约被移除（桌面版允许多开），
+  // 但守卫漏删了 —— 变量没有任何定义处，whenReady 一进来就抛 ReferenceError，
+  // 窗口和所有 IPC 注册全部不执行，Hub 起不来。2026-07-27 隔离实例复现后删除。
   traceStartup('app.whenReady');
   const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();
   traceStartup('deploy hooks start');

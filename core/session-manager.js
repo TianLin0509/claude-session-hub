@@ -8,9 +8,27 @@ const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
 const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js');
 const { normalizeDeepSeekModel, deepseekDisplayName, DEFAULT_MODEL_BY_KIND } = require('./model-options.js');
+const { ensureMemoryLink } = require('./claude-memory-link.js');
 const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filter.js');
 
-const RING_BUFFER_BYTES = 16384;
+// 终端缓存驱逐后（MAX_TERMINAL_CACHE_SIZE=4）会用这个环形缓冲的原始 PTY 字节
+// 重建 xterm。16KB 装不下 Codex/Kimi 这类 TUI 的一整帧全屏重绘（带色彩的一帧
+// 几十 KB 很常见），尾切之后 `\x1b[2J` 和大部分绘制字节被丢掉、只剩若干条
+// `\x1b[<行>;1H` 绝对定位序列 —— 重放出来就是"内容落在指定行、上方全是空行"。
+// 实测（tests/e2e-terminal-rehydrate-cdp.js）：16KB 下切回被挤出缓存的会话，
+// 400 行内容只剩 227 行（保全率 56.8%）；256KB 下 400 行和 2000 行都是 100%。
+// 取 1MB 是给带 ANSI 色彩的 TUI 输出留余量（同样内容字节数可达纯文本数倍）。
+// 代价很小：每会话一个字符串，远低于多留一个 xterm + WebGL 实例。
+const RING_BUFFER_BYTES = 1024 * 1024;
+
+// 试过两种"起点对齐"，都已放弃，记在这里免得有人再走一遍：
+//   1) 对齐到最后一次 \x1b[2J 全屏清屏 —— 实测是**倒退**。Codex/Kimi 每次重绘都清屏，
+//      最后一次清屏往往就在缓冲末尾，对齐过去等于把整个滚动回缓冲丢光。
+//   2) 剥掉开头被切剩的 CSI 参数残尾（形如 "38;5;196m"）—— 无法与正常文本可靠区分，
+//      正文以数字开头时会吃掉真实内容，风险大于收益。
+// 现在只做扩容：缓冲够大，切点就很少落在关键帧中间，也能留住更多滚动回内容。
+// Claude CLI `--effort` 的合法枚举；弹窗传入的值必须在此集合内才会被拼进命令行。
+const CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_REASONING_EFFORT = 'xhigh';
 function buildCodexReasoningConfigArg(effort = CODEX_REASONING_EFFORT) {
   return [
@@ -766,6 +784,15 @@ class SessionManager extends EventEmitter {
     }
     if (!spawnCwd) spawnCwd = process.env.USERPROFILE || process.env.HOME || '.';
 
+    // 单一入口覆盖所有会话类型（新建 / resume / 分支 / 群聊成员）：把这个 cwd 的
+    // memory 桶链到规范记忆库，否则每个 _scratch\inbox-* 都是零记忆开局。
+    // 隔离 Hub / E2E 不碰用户主目录的记忆库。
+    if (!process.env.CLAUDE_HUB_DATA_DIR) {
+      try { ensureMemoryLink(spawnCwd); } catch (error) {
+        console.warn('[memory] ensureMemoryLink failed:', error && error.message);
+      }
+    }
+
     if (isClaude) {
       const cv = getConfigValues();
       opts.model = resolveClaudeLaunchModel(cv, opts.model);
@@ -881,9 +908,12 @@ class SessionManager extends EventEmitter {
       lastMessageTime: opts.lastMessageTime || now,
       lastOutputPreview: opts.lastOutputPreview || '',
       unreadCount: 0,
+      ...(opts.pinned ? { pinned: true } : {}),
       createdAt: now,
       cwd: spawnCwd,
       ...(opts.workspaceLabel ? { workspaceLabel: String(opts.workspaceLabel) } : {}),
+      // 记录用户选定的 effort，让 resume / 归档重连能沿用同一档位而不是回落 max。
+      ...(CLAUDE_EFFORT_LEVELS.has(opts.effort) ? { effort: opts.effort } : {}),
       meetingId: opts.meetingId || null,
       ...(opts.purpose ? { purpose: String(opts.purpose) } : {}),
       ...(opts.researchSessionId ? { researchSessionId: String(opts.researchSessionId) } : {}),
@@ -964,7 +994,10 @@ class SessionManager extends EventEmitter {
       //   名为 ultracodeKeywordTrigger，但 on-disk key 实际是 workflowKeywordTriggerEnabled。
       //   --effort max 不会阻塞该触发器，因为触发器是会话内独立 toggle，与启动 flag 解耦。
       // CLAUDE_HUB_NO_EFFORT_MAX=1 可关启动期注入。
-      const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ' --effort max';
+      // opts.effort 让新建会话弹窗选定的档位生效（枚举外的值一律忽略，回落 max，
+      // 避免把非法字符串拼进 PTY 命令行）。
+      const effort = CLAUDE_EFFORT_LEVELS.has(opts.effort) ? opts.effort : 'max';
+      const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ` --effort ${effort}`;
       let cmd;
       if (opts.forkCCSessionId) {
         cmd = ` claude --resume ${opts.forkCCSessionId} --fork-session --model ${model}${effortFlag}`;
@@ -1130,6 +1163,14 @@ class SessionManager extends EventEmitter {
         if (s) s.pty.write(cmd);
       }, 3000);
       pendingTimers.push(safetyTimer);
+
+      // picker 模式下把 Filter 从 Cwd 切到 All，让所有目录的历史会话都列出来
+      if (kind === 'codex-resume' || opts.codexResumePicker) {
+        this._autoExpandResumePicker(id, ptyProcess, {
+          marker: /Resume a previous session|Filter:\s*\[?Cwd\]?/i,
+          key: '\x1b[C',   // Right
+        });
+      }
     }
 
     if (isDeepSeek) {
@@ -1137,7 +1178,12 @@ class SessionManager extends EventEmitter {
       // --permission-mode bypassPermissions 跳过信任文件夹 + 工具权限等所有弹窗，
       // 让 DeepSeek 会话和 Claude 会话一样直接启动（~/.claude-deepseek 是隔离配置，
       // 不像 ~/.claude 有历史累积的信任状态，必须靠 CLI 参数兜底）。
-      if (kind === 'deepseek-resume') {
+      if (opts.forkCCSessionId) {
+        // DeepSeek 也是 claude CLI，--fork-session 同样可用；接上之后分支功能不再是
+        // Claude/Codex 专属（Kimi CLI 没有 fork 能力，只有 --session/--continue）。
+        const model = normalizeDeepSeekModel(opts.model);
+        cmd = ` claude --resume ${opts.forkCCSessionId} --fork-session --model ${model} --permission-mode bypassPermissions`;
+      } else if (kind === 'deepseek-resume') {
         const model = normalizeDeepSeekModel(opts.model);
         cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.resumeCCSessionId) {
@@ -1220,6 +1266,17 @@ class SessionManager extends EventEmitter {
         if (s) s.pty.write(cmd);
       }, 3000);
       pendingTimers.push(safetyTimer);
+
+      // picker 模式下按 Ctrl+A 展开全部会话（默认只列当前目录）。
+      // marker 必须够窄：这两条只在 picker 的页脚/空态里出现。曾经把 `Sessions\b`
+      // 也算作命中，但那个词在正常输出里也可能出现，一旦误判就会往用户的实时会话里
+      // 打进一个 Ctrl+A（TUI 里通常是行首/全选），属于可见的干扰。
+      if (kind === 'kimi-resume' || opts.kimiResumePicker) {
+        this._autoExpandResumePicker(id, ptyProcess, {
+          marker: /Ctrl\+A\s+all|No sessions found/i,
+          key: '\x01',   // Ctrl+A
+        });
+      }
     }
 
     return { ...info };
@@ -1274,6 +1331,35 @@ class SessionManager extends EventEmitter {
   resizeSession(sessionId, cols, rows) {
     const s = this.sessions.get(sessionId);
     if (s && s.pty) s.pty.resize(Math.max(cols, 60), rows);
+  }
+
+  // 「恢复历史会话」picker 默认只列当前目录的会话。会话以前都在用户主目录下时
+  // 这没问题，改用 C:\Vibe\_scratch\* 之后就意味着 picker 里几乎什么都看不到。
+  // Codex 和 Kimi 的 picker 各自内置了"看全部"的开关，这里在 picker 画出来之后
+  // 替用户按一下，恢复"凭记忆挑会话、不用先想路径"的用法。
+  //   Codex：顶部 `Filter: [Cwd] All`，右方向键切到 All
+  //   Kimi ：底部 `Ctrl+A all`
+  // Claude CLI 没有对应开关（footer 只有 Ctrl+B 切 git 分支），只能靠 Hub 侧栏。
+  _autoExpandResumePicker(id, ptyProcess, { marker, key, timeoutMs = 20000 }) {
+    let done = false;
+    let buf = '';
+    const finish = (send) => {
+      if (done) return;
+      done = true;
+      try { watcher.dispose(); } catch {}
+      clearTimeout(timer);
+      if (!send) return;
+      const s = this.sessions.get(id);
+      if (s && s.pty) s.pty.write(key);
+    };
+    const watcher = ptyProcess.onData((d) => {
+      if (done) return;
+      buf = (buf + d).slice(-8000);
+      if (marker.test(buf)) setTimeout(() => finish(true), 350);
+    });
+    // picker 没出现（比如直接恢复了某个会话）就安静放弃，绝不乱按键
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    return () => finish(false);
   }
 
   setFocusedSession(sessionId) {

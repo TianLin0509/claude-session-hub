@@ -1,5 +1,6 @@
 const assert = require('assert');
 const { _private } = require('../core/session-manager.js');
+const { DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
 
 function test(name, fn) {
   try {
@@ -75,27 +76,37 @@ test('API mode disables Claude fast settings injection', () => {
   }), true);
 });
 
+// "隐式默认"的判定基准是 DEFAULT_MODEL_BY_KIND.claude —— 群聊创建器即使用户没碰过
+// model picker 也会把它提交上来，所以这个值等同于"没选"。原测试把它写死成
+// claude-opus-4-8[1m]，订阅默认升到 claude-opus-5[1m] 后哨兵失效、断言随之过期。
+// 这里改为引用真实默认值，默认再变也不会假失败。
 test('Claude launch model follows backend default while explicit selection wins', () => {
-  assert.strictEqual(_private.resolveClaudeLaunchModel({
+  const SUBSCRIPTION_DEFAULT = DEFAULT_MODEL_BY_KIND.claude;
+  const apiEnv = {
     CLAUDE_BACKEND: 'api',
     CLAUDE_API_KEY: 'sk-test-claude',
     CLAUDE_API_MODEL: 'claude-fable-5',
-  }), 'claude-fable-5');
-  assert.strictEqual(_private.resolveClaudeLaunchModel({
-    CLAUDE_BACKEND: 'api',
-    CLAUDE_API_KEY: 'sk-test-claude',
-    CLAUDE_API_MODEL: 'claude-fable-5',
-  }, 'claude-opus-4-8[1m]'), 'claude-fable-5');
+  };
+
+  // 没传 model → API 后端的 CLAUDE_API_MODEL 生效
+  assert.strictEqual(_private.resolveClaudeLaunchModel(apiEnv), 'claude-fable-5');
+
+  // 传的就是订阅默认值 → 视为"没真正选过"，仍由 CLAUDE_API_MODEL 接管
+  assert.strictEqual(
+    _private.resolveClaudeLaunchModel(apiEnv, SUBSCRIPTION_DEFAULT), 'claude-fable-5');
+
+  // 订阅后端 → CLAUDE_API_MODEL 不参与，回落订阅默认值
   assert.strictEqual(_private.resolveClaudeLaunchModel({
     CLAUDE_BACKEND: 'subscription',
     CLAUDE_API_KEY: 'sk-test-claude',
     CLAUDE_API_MODEL: 'claude-fable-5',
-  }), 'claude-opus-4-8[1m]');
-  assert.strictEqual(_private.resolveClaudeLaunchModel({
-    CLAUDE_BACKEND: 'api',
-    CLAUDE_API_KEY: 'sk-test-claude',
-    CLAUDE_API_MODEL: 'claude-fable-5',
-  }, 'claude-opus-4-8'), 'claude-opus-4-8');
+  }), SUBSCRIPTION_DEFAULT);
+
+  // 真正选了别的（新建会话弹窗的模型选择器就走这条）→ 显式选择必须赢
+  assert.strictEqual(
+    _private.resolveClaudeLaunchModel(apiEnv, 'claude-opus-4-8'), 'claude-opus-4-8');
+  assert.notStrictEqual(SUBSCRIPTION_DEFAULT, 'claude-opus-4-8',
+    'sanity: the explicit case must not accidentally equal the implicit sentinel');
 });
 
 console.log('Claude API env tests passed.');

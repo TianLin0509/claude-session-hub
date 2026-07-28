@@ -207,7 +207,7 @@ class MeetingRoomManager {
       'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned',
       'lastMessageTime', 'status', 'lastScene', 'scene', 'covenantText',
       'userRenamed', 'autoTitlePending', 'autoTitleGenerated',
-      'serialWorkflow',
+      'serialWorkflow', 'workspace', 'workspaceLabel',
     ];
     for (const key of allowed) {
       if (key in fields) {
@@ -216,7 +216,7 @@ class MeetingRoomManager {
     }
     // 串行工作流配置变更必须落盘（updateMeeting 默认不 markDirty）；传完整 meeting 快照，
     //   避免新群聊首次 markDirty 时 prev 残缺导致 title/subSessions 被默认值覆盖。
-    if ('serialWorkflow' in fields) {
+    if ('serialWorkflow' in fields || 'workspace' in fields || 'workspaceLabel' in fields) {
       meetingStore.markDirty(meetingId, m);
     }
     return {

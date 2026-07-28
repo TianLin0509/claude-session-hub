@@ -11,19 +11,21 @@
 }
 #chuxin-panel[hidden], #chuxin-panel[style*="none"] { display: none; }
 
-/* tab 工作台 */
-.cx-tabs {
-  display: flex; gap: 4px; padding: 8px 16px 0; flex-wrap: wrap;
-  border-bottom: 1px solid rgba(160,185,215,.14);
-  background: rgba(13,20,30,.85);
+/* 唯一产品导航：沿用初心投研原始五段式，不再套第二层技术路由 tab。 */
+.cx-primary-nav {
+  display: flex; align-items: center; justify-content: center; gap: clamp(8px, 2.2vw, 28px);
+  min-height: 64px; padding: 10px 18px; overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid rgba(96,165,250,.16); background: #020617;
 }
-.cx-tab {
-  padding: 7px 14px; border: 1px solid transparent; border-radius: 9px 9px 0 0;
-  background: transparent; color: #9dafc4; font-size: 12.5px; font-weight: 700; cursor: pointer;
+.cx-primary-nav::-webkit-scrollbar { display: none; }
+.cx-primary-tab {
+  flex: 0 0 auto; min-height: 42px; padding: 0 22px; border: 0; border-radius: 10px;
+  background: transparent; color: #66758e; font-size: 15px; font-weight: 650; cursor: pointer;
+  transition: color .18s ease, background .18s ease;
 }
-.cx-tab:hover { color: #c4d1e0; background: rgba(255,255,255,.03); }
-.cx-tab.active { color: #5fd4d0; border-color: rgba(160,185,215,.2); border-bottom-color: #0d1117; background: #0d1117; }
-.cx-tab.native.active { color: #f0c56e; }
+.cx-primary-tab:hover { color: #c5d0df; background: rgba(15,23,42,.58); }
+.cx-primary-tab:focus-visible { outline: 2px solid #5fd4d0; outline-offset: 2px; }
+.cx-primary-tab.active { color: #edf3fb; background: #0f172a; }
 .cx-view-native { flex: 1; overflow-y: auto; min-height: 0; }
 .cx-view-developer { flex: 1; overflow-y: auto; min-height: 0; padding: 18px 20px 28px; }
 .cx-view-frame { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -55,9 +57,22 @@
 .cx-btn.primary:hover { background: #5fd4d0; }
 .cx-provider { font-size: 11.5px; color: #9dafc4; margin-left: auto; }
 .cx-provider b { color: #c4d1e0; }
+.cx-start-error { margin: 0 18px 10px; padding: 9px 12px; border: 1px solid rgba(255,131,136,.42); border-radius: 9px; background: rgba(110,28,34,.2); color: #ffafb3; font: 11.5px/1.5 Consolas,"Microsoft YaHei",sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .cx-section { padding: 16px 20px 0; }
 .cx-section-title { font-size: 12px; font-weight: 800; letter-spacing: .1em; color: #9dafc4; margin-bottom: 10px; }
+.cx-section-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.cx-section-head .cx-section-title { margin-bottom: 10px; }
+.cx-review-prompt,.cx-dev-back { border: 0; background: transparent; color: #7f91a8; cursor: pointer; font-size: 12px; font-weight: 650; }
+.cx-review-prompt { margin-bottom: 10px; padding: 5px 8px; border-radius: 7px; }
+.cx-review-prompt:hover,.cx-dev-back:hover { color: #5fd4d0; background: rgba(95,212,208,.08); }
+.cx-review-prompt:focus-visible,.cx-dev-back:focus-visible { outline: 2px solid #5fd4d0; outline-offset: 2px; }
+.cx-dev-back { display: block; width: fit-content; margin: 0 0 9px -6px; padding: 4px 6px; border-radius: 6px; }
+
+@media (max-width: 720px) {
+  .cx-primary-nav { justify-content: flex-start; min-height: 58px; padding-inline: 10px; }
+  .cx-primary-tab { min-height: 40px; padding-inline: 16px; font-size: 13px; }
+}
 
 .cx-heroes { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
 .cx-hero-card {

@@ -43,10 +43,21 @@ assert.ok(
   'markCodexCardWorking must set Codex session status to running',
 );
 
+// 2026-07-27：兜底回收改成先看 _agentWorking === 'card'、再核 maxAge，且只回收
+// _runSource === 'semantic' 的 running（避免误伤 PTY 驱动的 running）。语义不变：
+// PTY 静默不得清掉语义 running，只有完成事件或 maxAge 到期才能收回。
 assert.ok(
-  /function\s+hasSemanticCardWorking/.test(rendererSrc) &&
-  /if \(!hasSemanticCardWorking\(session\)\) session\.status\s*=\s*['"]idle['"]/.test(activitySrc),
-  'Codex semantic working state must survive PTY silence until task_complete clears it',
+  /function\s+hasSemanticCardWorking/.test(rendererSrc),
+  'renderer must expose hasSemanticCardWorking',
+);
+assert.ok(
+  /session\._agentWorking === 'card' && !hasSemanticCardWorking\(session\)/.test(activitySrc),
+  'silence sweeper must gate on the card working flag plus its maxAge',
+);
+assert.ok(
+  /session\.status === 'running' && session\._runSource === 'semantic'[\s\S]{0,80}session\.status\s*=\s*['"]idle['"]/
+    .test(activitySrc),
+  'only semantic-sourced running may be reclaimed on silence; PTY-driven running must survive',
 );
 
 assert.ok(
