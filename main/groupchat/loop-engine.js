@@ -88,7 +88,7 @@ function createLoopEngine(deps) {
     } catch (e) { logger.log('[loop-engine] persist err: ' + (e && e.message)); }
   }
 
-  async function runLoop(meetingId, userInput, persistedLoopState) {
+  async function runLoop(meetingId, userInput, persistedLoopState, runOptions = {}) {
     if (running.has(meetingId)) { logger.log('[loop-engine] already running for ' + meetingId); return null; }
     running.set(meetingId, { abort: false });
     try {
@@ -135,7 +135,7 @@ function createLoopEngine(deps) {
         let bRes;
         // 2026-07-20 道雪 [修#8]：builder 轮 10min 硬超时——此前不传 turnTimeoutMs，
         //   一个卡死的 CLI 会让 loop 轮内永久挂起（deadlineTs 只在轮间检查）。
-        try { bRes = await dispatcher.dispatchGroupChatTurn(meetingId, { userInput: builderPrompt, targetMemberIds: [builderId], reuseTurnNum: null, appendUserMessage: true, dispatchMode: 'serial', turnTimeoutMs: 10 * 60 * 1000 }); }
+        try { bRes = await dispatcher.dispatchGroupChatTurn(meetingId, { userInput: builderPrompt, targetMemberIds: [builderId], reuseTurnNum: null, appendUserMessage: true, dispatchMode: 'serial', turnTimeoutMs: 10 * 60 * 1000, heroIdBySid: runOptions.heroIdBySid || {} }); }
         catch (e) {
           state.status = 'paused'; state.lastError = { stage: 'builder', reason: (e && e.message) || 'builder_error', at: Date.now() };
           logger.log('[loop-engine] builder turn err: ' + state.lastError.reason); break;
@@ -153,7 +153,7 @@ function createLoopEngine(deps) {
         progress({ stage: 'reviewer', round: state.round + 1 });
         let rRes;
         // 2026-07-20 道雪 [修#8]：reviewer 轮 5min 硬超时（评审通常快于构建）。
-        try { rRes = await dispatcher.dispatchGroupChatTurn(meetingId, { userInput: reviewerPrompt, targetMemberIds: reviewerIds, reuseTurnNum: turnNum, appendUserMessage: false, dispatchMode: 'serial', turnTimeoutMs: 5 * 60 * 1000 }); }
+        try { rRes = await dispatcher.dispatchGroupChatTurn(meetingId, { userInput: reviewerPrompt, targetMemberIds: reviewerIds, reuseTurnNum: turnNum, appendUserMessage: false, dispatchMode: 'serial', turnTimeoutMs: 5 * 60 * 1000, heroIdBySid: runOptions.heroIdBySid || {} }); }
         catch (e) {
           state.status = 'paused'; state.lastError = { stage: 'reviewer', reason: (e && e.message) || 'reviewer_error', at: Date.now() };
           logger.log('[loop-engine] reviewer turn err: ' + state.lastError.reason); break;

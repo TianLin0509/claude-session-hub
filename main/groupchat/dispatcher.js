@@ -4,6 +4,7 @@ const groupChatWatcher = require('../../core/group-chat-watcher.js');
 const { createTurnCompletionWatcher } = require('../../core/turn-completion-watcher.js');
 const pasteTrappedDetector = require('../../core/paste-trapped-detector.js');
 const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js');
+const { appendHeroPrompt, normalizeHeroAssignments } = require('../../core/hero-prompts.js');
 
 const RT_TRANSITIONAL_HARD_TIMEOUT_MS = 5 * 60 * 1000;
 const PASTE_TRAPPED_TICK_MS = 3000;
@@ -642,6 +643,7 @@ function createGroupChatDispatcher(deps) {
     userInput,
     turnTimeoutMs,
     targetMemberIds,
+    heroIdBySid,
     silent,
     allowActiveExtend,
     appendUserMessage,
@@ -656,6 +658,12 @@ function createGroupChatDispatcher(deps) {
       }
       const members = groupMembersForMeeting(meeting);
       if (members.length === 0) return { status: 'no_subs', turnNum: null };
+      // 轻量英雄只接受内置 hero id，不接收 renderer 传来的任意 Prompt 文本。
+      // 这样每家 AI 仍可独立选英雄，同时主进程保有最终 Prompt 的可信边界。
+      const normalizedHeroIdBySid = normalizeHeroAssignments(
+        heroIdBySid,
+        members.map(member => member.sid)
+      );
 
       const explicitTargetIds = Array.isArray(targetMemberIds)
         ? targetMemberIds.map(x => String(x || '').toLowerCase()).filter(Boolean)
@@ -708,15 +716,19 @@ function createGroupChatDispatcher(deps) {
         const systemPromptText = groupchat.buildSystemPromptText(member.displayName, meeting.scene, {
           kind: member.kind,
         });
+        const basePrompt = orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
+          currentUserMessageAppended: begin.didAppendUserMessage,
+        });
         return {
           sid: member.sid,
           kind: member.kind,
           label: member.displayName,
           member,
           deliveredIdx,
-          prompt: orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
-            currentUserMessageAppended: begin.didAppendUserMessage,
-          }),
+          heroId: normalizedHeroIdBySid[member.sid] || null,
+          // 英雄块每轮都追加在最终 Prompt 末尾；不能塞进 systemPromptText，后者只在
+          // 该 sid 首次进入群聊时发送，无法满足“下一轮一次性注入”。
+          prompt: appendHeroPrompt(basePrompt, normalizedHeroIdBySid[member.sid]),
         };
       });
 

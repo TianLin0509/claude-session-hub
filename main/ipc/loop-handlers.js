@@ -12,7 +12,7 @@ function registerLoopIpc(ipcMain, deps) {
     try {
       if (!args.meetingId) return { ok: false, reason: 'no_meeting_id' };
       if (loopEngine.isRunning(args.meetingId)) return { ok: false, reason: 'already_running' };
-      loopEngine.runLoop(args.meetingId, args.userInput || '', null)
+      loopEngine.runLoop(args.meetingId, args.userInput || '', null, { heroIdBySid: args.heroIdBySid || {} })
         .catch(err => logger.error('[loop:start] background run failed:', err));
       return { ok: true };
     } catch (err) { logger.error('[loop:start]', err); return { ok: false, reason: (err && err.message) || 'internal_error' }; }

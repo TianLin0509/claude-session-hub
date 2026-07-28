@@ -100,6 +100,182 @@
   background: rgba(245, 215, 110, 0.11);
 }
 
+.mr-input-preflight-chip.hero {
+  border-color: rgba(163, 113, 247, 0.46);
+  background: rgba(163, 113, 247, 0.12);
+}
+
+/* 轻量英雄 · 方案 B：紧贴输入区的下一轮一次性编队条。 */
+.mr-hero-dock {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 38px;
+  margin: 4px 12px 0;
+  padding: 4px 6px;
+  border: 1px solid rgba(163, 113, 247, 0.42);
+  border-radius: 7px;
+  background: rgba(56, 34, 80, 0.30);
+  color: var(--text-primary, #c9d1d9);
+  flex-shrink: 0;
+}
+
+.mr-hero-dock-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 138px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+
+.mr-hero-dock-icon {
+  width: 16px;
+  height: 16px;
+  color: #c9a7ff;
+  flex: 0 0 16px;
+}
+
+.mr-hero-dock-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.mr-hero-dock-heading {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mr-hero-dock-meta {
+  color: #b9a6d7;
+  font-size: 10px;
+}
+
+.mr-hero-slots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.mr-hero-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 4px 0 7px;
+  border: 1px solid rgba(139, 148, 158, 0.24);
+  border-radius: 6px;
+  background: rgba(13, 17, 23, 0.68);
+  white-space: nowrap;
+  flex: 0 0 auto;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.mr-hero-slot.assigned {
+  border-color: rgba(163, 113, 247, 0.54);
+  background: rgba(163, 113, 247, 0.10);
+}
+
+.mr-hero-slot-name {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.mr-hero-select {
+  height: 24px;
+  max-width: 112px;
+  padding: 0 22px 0 6px;
+  border: 0;
+  border-radius: 4px;
+  outline: none;
+  background: var(--bg-secondary, #161b22);
+  color: var(--text-primary, #c9d1d9);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.mr-hero-preview-btn {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(163, 113, 247, 0.48);
+  border-radius: 6px;
+  background: rgba(163, 113, 247, 0.12);
+  color: #d8bfff;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.mr-hero-preview-btn:hover:not(:disabled) {
+  border-color: rgba(201, 167, 255, 0.76);
+  background: rgba(163, 113, 247, 0.22);
+}
+
+.mr-hero-preview-btn:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+/* Prompt modal挂在 body 下，无法继承 .mr-gc-shell 的局部变量；英雄预览显式保持 Hub 深色主题。 */
+.mr-hero-prompt-modal-overlay {
+  --mr-gc-bg: #0d1117;
+  --mr-gc-surface: #161b22;
+  --mr-gc-surface-2: #1c2128;
+  --mr-gc-border: #30363d;
+  --mr-gc-text: #e6edf3;
+  --mr-gc-muted: #8b949e;
+  --mr-gc-accent: #a371f7;
+  background: rgba(1, 4, 9, 0.72);
+}
+
+.mr-hero-prompt-modal-overlay .mr-gc-prompt-modal {
+  max-width: 820px;
+}
+
+.mr-hero-prompt-modal-overlay .mr-gc-md,
+.mr-hero-prompt-modal-overlay .mr-gc-md h1,
+.mr-hero-prompt-modal-overlay .mr-gc-md h2,
+.mr-hero-prompt-modal-overlay .mr-gc-md h3 {
+  color: var(--mr-gc-text);
+}
+
+.mr-hero-select:focus-visible,
+.mr-hero-preview-btn:focus-visible {
+  outline: 2px solid rgba(201, 167, 255, 0.84);
+  outline-offset: 2px;
+}
+
+@media (max-width: 980px) {
+  .mr-hero-dock-title { min-width: auto; }
+  .mr-hero-dock-meta { display: none; }
+}
+
+@media (max-width: 680px) {
+  .mr-hero-dock { margin-inline: 8px; }
+  .mr-hero-dock-heading { display: none; }
+  .mr-hero-dock-title { padding-inline: 2px; }
+  .mr-hero-slot-name { max-width: 68px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mr-hero-slot,
+  .mr-hero-preview-btn {
+    transition: none;
+  }
+}
+
 .mr-input-battle-label {
   display: inline-flex;
   align-items: center;

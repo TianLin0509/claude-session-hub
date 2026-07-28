@@ -8,6 +8,12 @@ if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
   const { CLAUDE_MEMORY_INDEX: _CLAUDE_MEMORY_INDEX } = require('../core/claude-memory-loader.js');
+  const {
+    buildHeroPromptBlock: _buildHeroPromptBlock,
+    getHero: _getHero,
+    listHeroes: _listHeroes,
+    normalizeHeroAssignments: _normalizeHeroAssignments,
+  } = require('../core/hero-prompts.js');
   const { isPasteSensitive, kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
           SLOT_IDS, SLOT_DISPLAY, getSlotPromptName, getSlotDisplayLabel,
           slotIdRegexAlternation, slotIdToIndex, slotIndexToId } = require('../core/ai-kinds.js');
@@ -203,6 +209,7 @@ if (typeof document !== 'undefined') (function () {
     _setupScrollToBottom(panel);
     _enhanceCodeBlocks(panel);
     _setupGcSearch(panel);
+    _renderHeroDock(meeting);
     if (opts.scroll) {
       _restoreGroupChatScroll(panel, opts.scroll, opts.restoreOpts || {});
     }
@@ -1054,6 +1061,179 @@ if (typeof document !== 'undefined') (function () {
     const currentText = input ? (input.innerText || '') : '';
     const nextText = _replaceDutyHatPromptInText(currentText, prompt);
     _setMeetingInputText(meeting.id, nextText);
+  }
+
+  // 轻量英雄（方案 B）：每个投研群聊、每位 AI 的下一轮一次性选择。
+  // 只保存 hero id，不把任意 Prompt 文本从 renderer 传给主进程。
+  const _heroCatalog = _listHeroes();
+  const _heroAssignmentsByMeeting = {};
+  let _heroPromptPreviewCleanup = null;
+
+  function _isHeroDockEligible(meeting) {
+    return !!(meeting && meeting.groupChat && meeting.scene === 'research');
+  }
+
+  function _getHeroAssignments(meeting) {
+    if (!meeting || !meeting.id) return {};
+    if (!_heroAssignmentsByMeeting[meeting.id]) _heroAssignmentsByMeeting[meeting.id] = {};
+    return _heroAssignmentsByMeeting[meeting.id];
+  }
+
+  function _snapshotHeroAssignments(meeting) {
+    if (!_isHeroDockEligible(meeting)) return {};
+    const validSids = _getGcSlots(meeting).filter(Boolean).map(slot => slot.sid);
+    return _normalizeHeroAssignments(_getHeroAssignments(meeting), validSids);
+  }
+
+  function _clearHeroAssignments(meeting) {
+    if (!meeting || !meeting.id) return;
+    delete _heroAssignmentsByMeeting[meeting.id];
+    if (meeting.id === activeMeetingId) _renderHeroDock(meetingData[meeting.id] || meeting);
+  }
+
+  function _restoreHeroAssignments(meeting, snapshot) {
+    if (!meeting || !meeting.id) return;
+    const validSids = _getGcSlots(meeting).filter(Boolean).map(slot => slot.sid);
+    const restored = _normalizeHeroAssignments(snapshot, validSids);
+    if (Object.keys(restored).length) _heroAssignmentsByMeeting[meeting.id] = restored;
+    else delete _heroAssignmentsByMeeting[meeting.id];
+    if (meeting.id === activeMeetingId) _renderHeroDock(meetingData[meeting.id] || meeting);
+  }
+
+  function _heroSlotLabel(slot) {
+    if (!slot) return 'AI';
+    return slot.displayLabel || slot.label || slot.kind || `AI ${Number(slot.slotIndex || 0) + 1}`;
+  }
+
+  function _ensureHeroDock() {
+    const inputRow = document.getElementById('mr-input-row');
+    if (!inputRow || !inputRow.parentNode) return null;
+    // 固定顺序：作战面板 → 英雄编队条 → 输入框。
+    _ensureInputPreflightRow();
+    let dock = document.getElementById('mr-hero-dock');
+    if (!dock) {
+      dock = document.createElement('section');
+      dock.id = 'mr-hero-dock';
+      dock.className = 'mr-hero-dock';
+      dock.setAttribute('aria-label', '下一轮英雄');
+      inputRow.parentNode.insertBefore(dock, inputRow);
+      dock.addEventListener('change', (ev) => {
+        const select = ev.target && ev.target.closest ? ev.target.closest('[data-hero-sid]') : null;
+        if (!select || !dock.contains(select)) return;
+        const meeting = activeMeetingId ? meetingData[activeMeetingId] : null;
+        if (!_isHeroDockEligible(meeting)) return;
+        const sid = select.getAttribute('data-hero-sid') || '';
+        const heroId = select.value || '';
+        const assignments = _getHeroAssignments(meeting);
+        if (sid && _getHero(heroId)) assignments[sid] = heroId;
+        else if (sid) delete assignments[sid];
+        _renderHeroDock(meeting);
+        _updateInputPreflight(meeting);
+      });
+      dock.addEventListener('click', (ev) => {
+        const previewBtn = ev.target && ev.target.closest ? ev.target.closest('[data-hero-preview]') : null;
+        if (!previewBtn || !dock.contains(previewBtn) || previewBtn.disabled) return;
+        const meeting = activeMeetingId ? meetingData[activeMeetingId] : null;
+        if (meeting) _showHeroPromptPreview(meeting);
+      });
+    }
+    return dock;
+  }
+
+  function _renderHeroDock(meeting) {
+    const dock = _ensureHeroDock();
+    if (!dock) return;
+    if (!_isHeroDockEligible(meeting)) {
+      dock.style.display = 'none';
+      dock.innerHTML = '';
+      return;
+    }
+    const slots = _getGcSlots(meeting).filter(Boolean);
+    const assignments = _snapshotHeroAssignments(meeting);
+    const assignedCount = Object.keys(assignments).length;
+    const optionHtml = _heroCatalog.map(hero =>
+      `<option value="${escapeHtml(hero.id)}">${escapeHtml(hero.label)}</option>`
+    ).join('');
+    const slotHtml = slots.map(slot => {
+      const heroId = assignments[slot.sid] || '';
+      const selectedHero = _getHero(heroId);
+      return `
+        <label class="mr-hero-slot ${selectedHero ? 'assigned' : ''}" title="${selectedHero ? escapeHtml(selectedHero.subtitle) : '本轮不注入英雄 Prompt'}">
+          <span class="mr-hero-slot-name">${escapeHtml(_heroSlotLabel(slot))}</span>
+          <select class="mr-hero-select" data-hero-sid="${escapeHtml(slot.sid)}" aria-label="为 ${escapeHtml(_heroSlotLabel(slot))} 选择下一轮英雄">
+            <option value="">不使用英雄</option>
+            ${optionHtml}
+          </select>
+        </label>
+      `;
+    }).join('');
+    dock.style.display = '';
+    dock.innerHTML = `
+      <div class="mr-hero-dock-title" title="英雄 Prompt 仅下一轮有效，并覆盖用户画像、默认投资倾向和职责帽等业务偏好">
+        <span class="mr-hero-dock-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3.8l2.3 4.7 5.2.8-3.8 3.7.9 5.2L12 15.8 7.4 18.2l.9-5.2-3.8-3.7 5.2-.8L12 3.8z"/></svg></span>
+        <span class="mr-hero-dock-heading">下一轮英雄</span>
+        <span class="mr-hero-dock-meta">${assignedCount ? `${assignedCount} 位 · 业务偏好最高优先级` : '发送后自动清空'}</span>
+      </div>
+      <div class="mr-hero-slots">${slotHtml}</div>
+      <button type="button" class="mr-hero-preview-btn" data-hero-preview="1" ${assignedCount ? '' : 'disabled'}>查看注入</button>
+    `;
+    dock.querySelectorAll('[data-hero-sid]').forEach(select => {
+      select.value = assignments[select.getAttribute('data-hero-sid')] || '';
+    });
+  }
+
+  function _buildHeroPromptPreview(meeting) {
+    const assignments = _snapshotHeroAssignments(meeting);
+    const slotsBySid = {};
+    for (const slot of _getGcSlots(meeting).filter(Boolean)) slotsBySid[slot.sid] = slot;
+    const sections = Object.entries(assignments).map(([sid, heroId]) => {
+      const hero = _getHero(heroId);
+      const slot = slotsBySid[sid];
+      if (!hero || !slot) return '';
+      return `# ${_heroSlotLabel(slot)} → ${hero.label}\n\n${_buildHeroPromptBlock(heroId)}`;
+    }).filter(Boolean);
+    return sections.join('\n\n---\n\n');
+  }
+
+  function _showHeroPromptPreview(meeting) {
+    if (_heroPromptPreviewCleanup) _heroPromptPreviewCleanup();
+    const prompt = _buildHeroPromptPreview(meeting);
+    if (!prompt) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'mr-gc-prompt-modal-overlay mr-hero-prompt-modal-overlay';
+    overlay.innerHTML = `
+      <div class="mr-gc-prompt-modal" role="dialog" aria-modal="true" aria-labelledby="mr-hero-preview-title">
+        <div class="mr-gc-prompt-modal-head">
+          <span class="mr-gc-prompt-modal-title" id="mr-hero-preview-title">下一轮英雄 Prompt 预览</span>
+          <span class="mr-gc-prompt-modal-act">仅下一轮</span>
+          <span class="mr-gc-prompt-modal-spacer"></span>
+          <button type="button" class="mr-gc-prompt-modal-copy" title="复制 Prompt 原文">复制</button>
+          <button type="button" class="mr-gc-prompt-modal-close" title="关闭 (Esc)" aria-label="关闭">×</button>
+        </div>
+        <div class="mr-gc-prompt-modal-body"><div class="mr-gc-md">${_renderMarkdown(prompt)}</div></div>
+        <div class="mr-gc-prompt-modal-foot">按 AI 独立注入 · 业务偏好层最高优先级 · 发送后自动清空</div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const close = () => {
+      document.removeEventListener('keydown', onKeydown);
+      try { overlay.remove(); } catch {}
+      if (_heroPromptPreviewCleanup === close) _heroPromptPreviewCleanup = null;
+    };
+    const onKeydown = (ev) => { if (ev.key === 'Escape') close(); };
+    overlay.querySelector('.mr-gc-prompt-modal-close').addEventListener('click', close);
+    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
+    overlay.querySelector('.mr-gc-prompt-modal-copy').addEventListener('click', async (ev) => {
+      try {
+        await navigator.clipboard.writeText(prompt);
+        ev.currentTarget.textContent = '已复制';
+      } catch {
+        ev.currentTarget.textContent = '复制失败';
+      }
+    });
+    document.addEventListener('keydown', onKeydown);
+    _heroPromptPreviewCleanup = close;
+    overlay.querySelector('.mr-gc-prompt-modal-close').focus();
   }
 
   // T1（2026-05-04 道雪）：抽出单 slot 卡片渲染，让 partial-update IPC handler
@@ -3591,6 +3771,9 @@ if (typeof document !== 'undefined') (function () {
       const isLatest = _gcSendGen[mid] === myGen;
       if (isLatest) delete _gcActiveSids[mid];
       _discardPendingUserMessage(mid, { clientId: opts.pendingClientId });
+      if (opts.heroIdBySid && Object.keys(opts.heroIdBySid).length) {
+        _restoreHeroAssignments(meetingData[mid] || meeting, opts.heroIdBySid);
+      }
       clearOptimistic();
       const recovery = _restoreQuestionAndPreserveDraft(mid, opts.userInput);
       const recoveryText = recovery.mergedWithDraft
@@ -3602,6 +3785,7 @@ if (typeof document !== 'undefined') (function () {
     ipcRenderer.invoke('groupchat:turn', {
       meetingId: meeting.id,
       userInput: opts.userInput || '',
+      heroIdBySid: opts.heroIdBySid || {},
     }).then((result) => {
       console.log('[groupchat] turn IPC resolved:', result && result.status, 'turn=', result && result.turnNum);
       if (result && result.status === 'completed') clearOptimistic();
@@ -3672,10 +3856,10 @@ if (typeof document !== 'undefined') (function () {
     btn.setAttribute('aria-label', on ? `${workflowLabel}，${wf.steps.length} 步，点击修改` : '串行工作流设置');
   }
 
-  async function runSerialWorkflow(meeting, userInput) {
+  async function runSerialWorkflow(meeting, userInput, opts = {}) {
     const m = meetingData[meeting.id] || meeting;
     const steps = (m.serialWorkflow && Array.isArray(m.serialWorkflow.steps)) ? m.serialWorkflow.steps : [];
-    if (!steps.length) { handleMeetingSend(userInput, m); return; }
+    if (!steps.length) { handleMeetingSend(userInput, m, opts); return; }
     const workflowApi = window.WorkflowTemplates;
     const stepConfigs = workflowApi && typeof workflowApi.normalizeStepConfigs === 'function'
       ? workflowApi.normalizeStepConfigs(steps, m.serialWorkflow && m.serialWorkflow.stepConfigs)
@@ -3719,6 +3903,7 @@ if (typeof document !== 'undefined') (function () {
           reuseTurnNum: workflowTurnNum,
           appendUserMessage: !workflowTurnNum,
           dispatchMode: 'serial',
+          heroIdBySid: opts.heroIdBySid || {},
         });
         if (result && result.status === 'completed' && result.turnNum && !workflowTurnNum) workflowTurnNum = result.turnNum;
         if (!result || result.status !== 'completed') {
@@ -3738,6 +3923,9 @@ if (typeof document !== 'undefined') (function () {
     refreshGroupChatPanel(m);
     renderToolbar(m);
     if (workflowFailure) {
+      if (!workflowTurnNum && opts.heroIdBySid && Object.keys(opts.heroIdBySid).length) {
+        _restoreHeroAssignments(m, opts.heroIdBySid);
+      }
       _discardPendingUserMessage(m.id, { clientId: pendingUser && pendingUser.clientId });
       const recovery = !workflowTurnNum
         ? _restoreQuestionAndPreserveDraft(m.id, trimmed)
@@ -4498,6 +4686,8 @@ if (typeof document !== 'undefined') (function () {
       chips.push(_renderInputChip('目标', targetLabel || '全部'));
     }
     // 2026-07-20 道雪 [修#10]：空态降噪——引用 0 / 字数 0 不渲染 chip
+    const heroAssignmentCount = Object.keys(_snapshotHeroAssignments(current)).length;
+    if (heroAssignmentCount) chips.push(_renderInputChip('英雄', `${heroAssignmentCount} 位`, 'hero'));
     if (_gcQuoteChips.length) chips.push(_renderInputChip('引用', `${_gcQuoteChips.length}`, 'accent'));
     if (charCount) chips.push(_renderInputChip('字数', `${charCount}`, charCount > _LONG_INPUT_CHAR_THRESHOLD ? 'warn' : ''));
     if (_inputDraftByMeeting[current.id]) chips.push(_renderInputChip('草稿', '已保存', 'saved'));
@@ -5727,6 +5917,7 @@ if (typeof document !== 'undefined') (function () {
     }
     _ensureInputPreflightRow();
     _ensureInputTools();
+    _renderHeroDock(meeting);
     _updateInputPreflight(meeting);
     if (targetSelect) {
       if (_isPanelCapableMeeting(meeting)) {
@@ -5779,6 +5970,7 @@ if (typeof document !== 'undefined') (function () {
       const mid = activeMeetingId;
       const m = meetingData[mid];
       if (!m) return;
+      const heroIdBySid = _snapshotHeroAssignments(m);
       // free-mode（2026-05-04）：0 人勾选时拒绝发送
       // CSS readonly 对 contenteditable 无效，必须 JS 二次防御，防 race 导致按钮意外还原
       if (m.mode === 'free' && !m.groupChat) {
@@ -5812,6 +6004,7 @@ if (typeof document !== 'undefined') (function () {
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
         const pendingLoopQuestion = _rememberPendingUserMessage(m, finalText);
         const restoreLoopStartFailure = (reason) => {
+          if (Object.keys(heroIdBySid).length) _restoreHeroAssignments(m, heroIdBySid);
           _discardPendingUserMessage(m.id, { clientId: pendingLoopQuestion && pendingLoopQuestion.clientId });
           const recovery = _restoreQuestionAndPreserveDraft(m.id, finalText);
           const recoveryText = recovery.mergedWithDraft
@@ -5823,7 +6016,7 @@ if (typeof document !== 'undefined') (function () {
         // timeline 写入失败不阻断执行，但会明确记录日志；避免内部 builder prompt 冒充原问题。
         ipcRenderer.invoke('meeting-append-user-turn', { meetingId: m.id, text: finalText })
           .catch((e) => console.warn('[loop] append original goal failed:', e && e.message))
-          .then(() => ipcRenderer.invoke('loop:start', { meetingId: m.id, userInput: finalText }))
+          .then(() => ipcRenderer.invoke('loop:start', { meetingId: m.id, userInput: finalText, heroIdBySid }))
           .then((r) => {
             if (!r || !r.ok) {
               console.warn('[loop] start failed:', r && r.reason);
@@ -5835,10 +6028,13 @@ if (typeof document !== 'undefined') (function () {
           });
       } else if (m.scene && m.serialWorkflow && m.serialWorkflow.enabled &&
           Array.isArray(m.serialWorkflow.steps) && m.serialWorkflow.steps.length) {
-        runSerialWorkflow(m, finalText);
+        runSerialWorkflow(m, finalText, { heroIdBySid });
       } else {
-        handleMeetingSend(finalText, m);
+        handleMeetingSend(finalText, m, { heroIdBySid });
       }
+      // 一次性语义：点击发送后立即清空；普通群聊若主进程拒绝本轮，
+      // triggerGroupChat.restoreFailedSend 会把同一份快照恢复回来。
+      if (Object.keys(heroIdBySid).length) _clearHeroAssignments(m);
       _pushPromptHistory(m.id, userText || finalText);
       if (box) box.textContent = '';
       _clearInputDraft(m.id);
@@ -5910,7 +6106,7 @@ if (typeof document !== 'undefined') (function () {
     });
   }
 
-  async function handleMeetingSend(text, meeting) {
+  async function handleMeetingSend(text, meeting, opts = {}) {
     const current = meetingData[meeting.id] || meeting;
 
     // AI 群聊统一路由。
@@ -5922,7 +6118,11 @@ if (typeof document !== 'undefined') (function () {
       try {
         await ipcRenderer.invoke('meeting-append-user-turn', { meetingId: meeting.id, text });
       } catch (e) { console.warn('[meeting-room] append-user-turn failed:', e.message); }
-      triggerGroupChat(current, { userInput: text, pendingClientId: pendingUser && pendingUser.clientId });
+      triggerGroupChat(current, {
+        userInput: text,
+        pendingClientId: pendingUser && pendingUser.clientId,
+        heroIdBySid: opts.heroIdBySid || {},
+      });
       return;
     }
 
