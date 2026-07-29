@@ -874,3 +874,50 @@
 
 /* 2026-07-20 道雪 [修#9]：悬空用户消息的"已被重启打断"标记 */
 .mr-gc-interrupted-note { color: var(--mr-gc-muted, #8b949e); font-size: 10px; }
+
+/* ==========================================================================
+   2026-07-29 道雪 · 群聊复用子 session 的 turn 卡片
+   气泡正文不再是群聊自绘的 markdown，而是 turn-card-renderer 挂进来的真卡片
+   （.turn-card，样式来自 styles/card-view.css，全局已 import）。
+   这里只做"嵌进气泡"的适配：
+     1. 气泡本身退成透明容器（否则卡片背景 + 气泡背景 = 双层盒子）
+     2. 卡片自带的头像 / 名字 / 时间隐藏 —— 身份由群聊外壳的头像+成员名表达，
+        重复显示两次是噪音
+     3. 卡片自带的操作条隐藏 —— 全局 .ta-btn 处理器有 `card.closest('.msg-overlay')`
+        守卫，群聊里点了没反应；群聊外壳自己有 复制 / 📥prompt / ↻重新提取
+   ========================================================================== */
+.mr-gc-bubble.has-card {
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+.mr-gc-bubble.has-card::before,
+.mr-gc-bubble.has-card::after { display: none; }
+.mr-gc-card-host { display: block; }
+.mr-gc-card-host .turn-card {
+  margin-bottom: 0;
+  padding: 6px 10px;
+}
+.mr-gc-card-host .turn-avatar { display: none; }
+.mr-gc-card-host .turn-who,
+.mr-gc-card-host .turn-meta { display: none; }
+.mr-gc-card-host .turn-actions { display: none; }
+/* head 只剩 meta pills 时不该占一行空高 */
+.mr-gc-card-host .turn-head { min-height: 0; margin: 0; }
+.mr-gc-card-host .turn-content { min-width: 0; width: 100%; }
+.mr-gc-card-host .turn-body { margin-top: 0; }
+/* 挂载失败的兜底纯文本（不该出现，但出现时至少别吞内容） */
+.mr-gc-card-fallback { white-space: pre-wrap; }
+
+/* 群聊专属状态：外壳画左侧色条 —— turn-card-renderer 不认识这些调度语义，
+   把它们塞进通用卡片渲染器只会让它变复杂。 */
+.mr-gc-msg.ai[data-gc-status]  .mr-gc-msg-body { border-left: 2px solid transparent; padding-left: 6px; }
+.mr-gc-msg.ai.mr-gc-st-superseded  .mr-gc-msg-body { border-left-color: rgba(139,148,158,0.55); }
+.mr-gc-msg.ai.mr-gc-st-interrupted .mr-gc-msg-body { border-left-color: rgba(219,109,40,0.65); }
+.mr-gc-msg.ai.mr-gc-st-absent      .mr-gc-msg-body { border-left-color: rgba(139,148,158,0.35); }
+.mr-gc-msg.ai.mr-gc-st-errored     .mr-gc-msg-body { border-left-color: rgba(248,81,73,0.7); }
+.mr-gc-msg.ai.mr-gc-st-soft_alert  .mr-gc-msg-body { border-left-color: rgba(210,153,34,0.7); }
+.mr-gc-msg.ai.mr-gc-st-send_stuck  .mr-gc-msg-body { border-left-color: rgba(210,153,34,0.9); }
+.mr-gc-msg.ai.mr-gc-st-transport_lost .mr-gc-msg-body { border-left-color: rgba(248,81,73,0.5); }
+.mr-gc-msg.ai.mr-gc-st-streaming   .mr-gc-msg-body { border-left-color: rgba(63,185,80,0.55); }

@@ -203,6 +203,10 @@ if (typeof document !== 'undefined') (function () {
   function _renderGcPanelInto(panel, meeting, state, opts = {}) {
     if (!panel || !meeting || !state) return false;
     panel.innerHTML = _renderGcPanelHtml(state, meeting);
+    // 2026-07-29：_renderGcPanelHtml 只吐出卡片挂载点（登记在 _gcCardTurns），
+    //   真正的 turn 卡片在这里由 turn-card-renderer 挂进去 —— 必须早于
+    //   _applyLongAnswerCollapse / _enhanceCodeBlocks，它们要量已渲染内容的高度。
+    _hydrateGroupChatCards(panel);
     _bindGcPanelEvents(panel, meeting);
     // 2026-07-20 道雪 [修#5]：后处理四件套统一在此执行（此前只在 refreshGroupChatPanel）。
     _applyLongAnswerCollapse(panel);
@@ -645,63 +649,14 @@ if (typeof document !== 'undefined') (function () {
     }
   }, true);
 
-  // T7（2026-05-01）：preview blocks 结构化渲染 helper —
-  //   transcript-tap 现在直供 { type:'thinking'|'text'|'tool_use', ... } 块数组
-  //   thinking → 灰斜体 + 💭 前缀；tool_use → cyan chip 工具调用摘要；text → 复用 _renderMarkdown
-  //   工具块上限 8（spec §3.6 R8），超出从前面丢（保留最近）
-  function _formatToolUseBlock(block) {
-    const name = (block && block.name) || '';
-    const input = (block && block.input) || {};
-    if (/^(WebSearch|web_search)$/i.test(name)) {
-      const q = input.query || input.q || '';
-      return `🔍 搜索: "${q}"`;
-    }
-    if (/^(Read|read_file|read)$/i.test(name)) {
-      return `📄 读: ${input.path || input.file || input.file_path || ''}`;
-    }
-    if (/^(Bash|shell|exec)$/i.test(name)) {
-      const cmd = String(input.command || input.cmd || '').slice(0, 60);
-      return `⚙ 执行: ${cmd}`;
-    }
-    if (/^(Edit|Write|edit|write)$/i.test(name)) {
-      return `✏ 编辑: ${input.file_path || input.path || ''}`;
-    }
-    return `🔧 ${name}`;
-  }
-
-  function _renderPreviewBlocks(blocks, sid) {
-    if (!Array.isArray(blocks) || blocks.length === 0) return '';
-    // 工具块只保留最后 8 个，从前面丢（spec §3.6 R8 防 thinking-heavy 卡片膨胀）
-    const filtered = [];
-    let toolCount = 0;
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      const b = blocks[i];
-      if (!b || typeof b !== 'object') continue;
-      if (b.type === 'tool_use') {
-        if (toolCount >= 8) continue;
-        toolCount++;
-      }
-      filtered.unshift(b);
-    }
-    // 2026-05-03 道雪：移除字符截断（改前 thinking 400 / text 2000）。
-    //   卡片本身有 max-height + overflow-y 滚动承载长内容；截断会砍掉答案末尾
-    //   的关键信息（如评分总评），用户必须开 shell 才能看到，违反"卡片即结论"原则。
-    //   "进 shell"入口仍在卡片头部 escape btn，用户需要时可手动切换。
-    const html = [];
-    for (const block of filtered) {
-      if (block.type === 'thinking') {
-        const raw = String(block.text || '');
-        html.push(`<div class="mr-ft-think">${escapeHtml(raw)}</div>`);
-      } else if (block.type === 'tool_use') {
-        const summary = _formatToolUseBlock(block);
-        html.push(`<span class="mr-ft-tool">${escapeHtml(summary)}</span>`);
-      } else if (block.type === 'text') {
-        const raw = String(block.text || '');
-        html.push(`<div class="mr-ft-md">${_renderMarkdown(raw)}</div>`);
-      }
-    }
-    return html.join('');
-  }
+  // 2026-07-29 道雪：_formatToolUseBlock / _renderPreviewBlocks 已删除。
+  //   它们是 T7（2026-05-01）为群聊自建的一套 blocks 渲染（thinking 灰斜体 / tool_use
+  //   cyan chip / text 走 _renderMarkdown），与 renderer/turn-card-renderer.js 的
+  //   thinking <details> + 工具簇 + markdown 正文完全平行 —— 同一份 transcript-tap
+  //   数据两套渲染，长期结果是群聊这套慢慢落后（工具返回预览、代码高亮、长文折叠、
+  //   meta pills 都只有子 session 卡片有）。
+  //   现在群聊三个渲染面（聊天流气泡 / 卡片视图 / 时间线抽屉）统一走
+  //   _gcTurnFromBlocks → _gcRegisterCard → _hydrateGroupChatCards → mountSessionTurnCard。
 
   // 注：顶部 scene toggle（群聊/投研）的 _renderModeToggle/_bindModeToggle 已删除
   //   （2026-05-04 决策：scene 创建时确定，运行时不可切换）。
@@ -1240,7 +1195,7 @@ if (typeof document !== 'undefined') (function () {
   //   能复用同一份模板做局部 patch（不再 panel.innerHTML 全量替换）。
   //   依赖：函数参数（slotIndex, ctx）+ ctx 字段 { state, currentMode, partialBy, meeting,
   //         slots, lastTurn, meetingId, focused }；
-  //         IIFE 私有 helper / 全局：_avatarBySlot, _avatarFallbackBySlot, _renderPreviewBlocks,
+  //         IIFE 私有 helper / 全局：_avatarBySlot, _avatarFallbackBySlot, _gcRegisterCard,
   //         isSlotParticipatingThisTurn, _ftCtxClass, _formatThinkTime, _formatTokens, _ftHtml,
   //         _thinkStartTs, _cliReadyCache, _tabState, sessions,
   //         _KIND_LABELS, modelShort, modelClass。
@@ -1252,6 +1207,144 @@ if (typeof document !== 'undefined') (function () {
   const _GC_SETTLED_NO_ANSWER = new Set(['errored', 'absent', 'superseded', 'interrupted']);
   function _isGcSettledStatus(status) {
     return _GC_SETTLED_NO_ANSWER.has(status);
+  }
+
+  // ==========================================================================
+  // 群聊 ⇄ 子 session 卡片复用桥（2026-07-29 道雪）
+  //
+  // 用户原话："我们每个 session 都有自己的卡片视图，我为什么不能直接复用各自 session
+  // 的卡片视图，来作为 AI 群聊的视图……相当于 AI 群聊就是把 3 个 AI 各自的卡片视图卡片
+  // 搬到了群聊里。"
+  //
+  // 之前群聊维护了一整套平行渲染（_renderMarkdown 气泡 + _renderPreviewBlocks 预览块），
+  // 结果是：streaming 期只认 partial.text，而 partial.text 在"思考 + 连续工具调用"阶段
+  // 恒为空 —— 子 session 卡片里明明有 thinking 块和工具 chip，群聊却只显示「思考中…」
+  // 空壳。这不是数据没有，是群聊自己没渲染。
+  //
+  // 现在：群聊只负责"外壳"（轮次分组 / 成员归属 / 群聊专属状态），气泡正文交给
+  // renderer/turn-card-renderer.js 的 mountSessionTurnCard —— 与点进子 session 看到的
+  // 是同一个渲染器、同一张卡片结构（thinking <details> / 工具簇 / markdown 正文 /
+  // 代码高亮 / meta pills）。
+  //
+  // 隔离约定（避免与单会话面板串台）：
+  //   - skipTurnRegistry:true       不写 win._sessionTurns（renderer.js 切会话会 clear 它）
+  //   - skipStreamingIndicator:true 不碰 #msg-overlay 的 streaming spinner
+  //   - .ta-btn 全局处理器本就有 `card.closest('.msg-overlay')` 守卫，群聊卡片够不着；
+  //     卡片自带的操作条由 CSS 隐藏，群聊用外壳自己的 复制/📥prompt/↻重新提取。
+  // ==========================================================================
+
+  // 挂载点 → 待挂载 turn 的暂存表。HTML 字符串生成阶段写入，紧随其后的 hydrate 阶段读取，
+  //   两者同步相邻，不存在跨帧失效问题。
+  const _gcCardTurns = new Map();
+  // 本轮 live blocks 快照：key = `${meetingId}|${turnNum}|${sid}`。
+  //   partial-update 每次都写；等这一轮 settle 成正式 message 之后，_partialBy 会被清掉，
+  //   但用户刚看过的 thinking / 工具调用不该凭空消失 —— 正式气泡继续从这里取回。
+  //   只活在 renderer 内存里（Hub 重启后回退到纯文本卡片），不落盘、不污染 state.json。
+  const _gcLiveBlocks = new Map();
+  const _GC_LIVE_BLOCKS_MAX = 400;
+
+  function _gcBlocksKey(meetingId, turnNum, sid) {
+    return `${meetingId}|${turnNum || 0}|${sid}`;
+  }
+  function _rememberGcBlocks(meetingId, turnNum, sid, blocks) {
+    if (!meetingId || !sid || !Array.isArray(blocks) || blocks.length === 0) return;
+    if (_gcLiveBlocks.size >= _GC_LIVE_BLOCKS_MAX) {
+      // 简单 FIFO 淘汰，别让长会话把内存吃穿
+      const oldest = _gcLiveBlocks.keys().next();
+      if (!oldest.done) _gcLiveBlocks.delete(oldest.value);
+    }
+    _gcLiveBlocks.set(_gcBlocksKey(meetingId, turnNum, sid), blocks);
+  }
+  function _recallGcBlocks(meetingId, turnNum, sid) {
+    return _gcLiveBlocks.get(_gcBlocksKey(meetingId, turnNum, sid)) || null;
+  }
+
+  // transcript-tap 的 block 数组 → turn-card-renderer 认识的 turn 对象。
+  //   block 形状来自 core/transcript-tap.js（{type:'thinking'|'text'|'tool_use'}），
+  //   turn 形状对齐 core/claude-transcript-parser.js 的产出（renderTurnCard 的入参契约）。
+  // 工具调用上限：turn-card 的工具簇是可折叠 <details>，N 个工具只占 1 行摘要，
+  //   所以不再需要旧 _renderPreviewBlocks 的 8 个硬上限（那是因为它一个工具一个
+  //   inline chip、会把卡片撑爆）。这里只留一个防 DOM 膨胀的宽松上限：超长 agentic
+  //   轮（几十上百次工具调用）× 每 1.5s 心跳重渲，无上限会拖慢渲染。保留最近的。
+  const _GC_TURN_TOOL_CAP = 50;
+
+  function _gcTurnFromBlocks(opts) {
+    const { id, kind, model, text, blocks, ts, tsEnd } = opts || {};
+    const thinkingParts = [];
+    let toolCalls = [];
+    const textParts = [];
+    for (const b of (Array.isArray(blocks) ? blocks : [])) {
+      if (!b || typeof b !== 'object') continue;
+      if (b.type === 'thinking' && b.text) thinkingParts.push(String(b.text));
+      else if (b.type === 'tool_use' && b.name) toolCalls.push({ name: b.name, input: b.input || {} });
+      else if (b.type === 'text' && b.text) textParts.push(String(b.text));
+    }
+    if (toolCalls.length > _GC_TURN_TOOL_CAP) toolCalls = toolCalls.slice(-_GC_TURN_TOOL_CAP);
+    // blocks 里的 text 是权威（结构化、无 PTY 噪音）；没有 blocks 才退回 partial.text /
+    //   持久化 message.content。
+    const body = textParts.length > 0 ? textParts.join('') : String(text || '');
+    const turn = {
+      id: String(id || ''),
+      role: 'assistant',
+      text: body,
+      ts: ts || Date.now(),
+      toolCalls,
+    };
+    if (kind) turn.kind = kind;
+    if (model) turn.model = model;
+    if (thinkingParts.length > 0) turn.thinking = thinkingParts.join('\n\n---\n\n');
+    if (tsEnd) turn.tsEnd = tsEnd;
+    return turn;
+  }
+
+  // 群聊气泡里的卡片挂载点。cardKey 只是 _gcCardTurns 的取数键，不参与 DOM 语义。
+  function _gcCardHostHtml(cardKey, sid, extraCls = '') {
+    return `<div class="mr-gc-card-host${extraCls ? ' ' + extraCls : ''}"`
+      + ` data-gc-card-key="${escapeHtml(cardKey)}" data-gc-card-sid="${escapeHtml(sid || '')}"></div>`;
+  }
+
+  // 登记一张待挂载卡片，返回挂载点 HTML。turn 为空（无任何内容）时返回 '' 让调用方走占位分支。
+  function _gcRegisterCard(cardKey, sid, turn, extraCls) {
+    if (!turn || (!turn.text && !turn.thinking && !(turn.toolCalls && turn.toolCalls.length))) return '';
+    _gcCardTurns.set(cardKey, { sid, turn });
+    return _gcCardHostHtml(cardKey, sid, extraCls);
+  }
+
+  // hydrate：把登记好的 turn 真正挂进 DOM。每次 panel.innerHTML 重绘后必须调用。
+  //   root 可传整个 panel（全量重渲）或单个 article（partial-update 局部 patch）。
+  function _hydrateGroupChatCards(root) {
+    if (!root) return 0;
+    const mount = (typeof window !== 'undefined') && window._mountSessionTurnCard;
+    const hosts = root.querySelectorAll
+      ? root.querySelectorAll('.mr-gc-card-host[data-gc-card-key]')
+      : [];
+    let n = 0;
+    hosts.forEach((host) => {
+      const key = host.getAttribute('data-gc-card-key');
+      const entry = key ? _gcCardTurns.get(key) : null;
+      if (!entry) return;
+      if (typeof mount !== 'function') {
+        // turn-card-renderer 没加载（理论上不会发生：renderer.js 早于 meeting-room.js 加载）。
+        //   静默留空会让用户看到空气泡，故退回纯文本，宁可难看也不能吞内容。
+        host.textContent = entry.turn.text || '';
+        host.classList.add('mr-gc-card-fallback');
+        return;
+      }
+      try {
+        const el = mount(entry.sid, entry.turn, {
+          container: host,
+          kind: entry.turn.kind,
+          skipTurnRegistry: true,
+          skipStreamingIndicator: true,
+        });
+        if (el) n++;
+      } catch (e) {
+        console.warn('[groupchat] mountSessionTurnCard failed:', e);
+        host.textContent = entry.turn.text || '';
+        host.classList.add('mr-gc-card-fallback');
+      }
+    });
+    return n;
   }
 
   function _renderSlotCard(slotIndex, ctx) {
@@ -1366,36 +1459,43 @@ if (typeof document !== 'undefined') (function () {
     const textFromHistory = (!partial && lastTurn && lastTurn.by && lastTurn.by[sub.sid])
       ? lastTurn.by[sub.sid] : null;
 
+    // === 2026-07-29 道雪 · 卡片视图正文同样复用该成员 session 的 turn 卡片 ===
+    //   历史 blocks 快照兜底：settle 后 _partialBy 清空，但用户刚看过的 thinking /
+    //   工具调用不该消失（无回答终态除外，那些轮的语义就是"没有回答"）。
+    const blocksForCard = blocksFromPartial
+      || (_isGcSettledStatus(status) ? null : _recallGcBlocks(meetingId, state && state.currentTurn, sub.sid));
+    const cardTurn = _gcTurnFromBlocks({
+      id: `gcft-${meetingId}-${sub.sid}`,
+      kind,
+      model: modelName || undefined,
+      text: textFromPartial || textFromHistory || '',
+      blocks: blocksForCard,
+    });
+    const cardHost = _gcRegisterCard(`ft|${meetingId}|${sub.sid}`, sub.sid, cardTurn);
+
     let bottomHtml = '';
-    if (status === 'thinking') {
+    if (cardHost) {
+      // 有任何真实内容（thinking / 工具调用 / 正文）→ 挂真卡片。
+      //   这条分支同时覆盖 thinking / streaming / completed / interrupted：
+      //   旧实现里 thinking 只给一根进度条、streaming 没 text 就退回
+      //   「💭 思考中 … 详情请点击左侧子 session 查看」—— 那句话本身就是在承认
+      //   群聊显示不了子 session 能显示的东西。现在它们是同一张卡片。
+      const liveCls = (status === 'streaming' || status === 'thinking') ? ' streaming' : '';
+      const cursor = liveCls ? '<span class="mr-ft-cursor"></span>' : '';
+      bottomHtml = `<div class="mr-ft-preview mr-ft-preview-md${liveCls}">${cardHost}${cursor}</div>`;
+      if (liveCls && !_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
+    } else if (status === 'thinking') {
+      // 真的还什么都没产出（prompt 刚发出去）→ 进度条是诚实的
       if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
       bottomHtml = `<div class="mr-ft-progress"><div class="mr-ft-progress-bar slot-${slotIndex + 1}"></div></div>`;
     } else if (status === 'streaming') {
       if (!_thinkStartTs[meetingId]) _thinkStartTs[meetingId] = Date.now();
-      let inner;
-      if (blocksFromPartial) {
-        inner = _renderPreviewBlocks(blocksFromPartial, sub.sid);
-      } else if (textFromPartial) {
-        inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
-      } else {
-        const elapsedSec = _thinkStartTs[meetingId]
-          ? Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000) : 0;
-        const elapsedTxt = _formatThinkTime(elapsedSec);
-        const liveLen = (partial && typeof partial.cleanBufLen === 'number') ? partial.cleanBufLen : 0;
-        const lenTxt = liveLen > 0 ? ` · 已输出约 ${liveLen} 字` : '';
-        inner = `<div class="mr-ft-thinking-placeholder">💭 思考中 ${elapsedTxt}${lenTxt}<br><span class="mr-ft-thinking-hint">详情请点击左侧子 session 查看</span></div>`;
-      }
+      const elapsedSec = _thinkStartTs[meetingId]
+        ? Math.round((Date.now() - _thinkStartTs[meetingId]) / 1000) : 0;
+      const liveLen = (partial && typeof partial.cleanBufLen === 'number') ? partial.cleanBufLen : 0;
+      const lenTxt = liveLen > 0 ? ` · 已输出约 ${liveLen} 字` : '';
+      const inner = `<div class="mr-ft-thinking-placeholder">💭 思考中 ${_formatThinkTime(elapsedSec)}${lenTxt}</div>`;
       bottomHtml = `<div class="mr-ft-preview streaming mr-ft-preview-md">${inner}<span class="mr-ft-cursor"></span></div>`;
-    } else if (blocksFromPartial || textFromPartial || textFromHistory) {
-      let inner;
-      if (blocksFromPartial) {
-        inner = _renderPreviewBlocks(blocksFromPartial, sub.sid);
-      } else if (textFromPartial) {
-        inner = _renderPreviewBlocks([{ type: 'text', text: textFromPartial }], sub.sid);
-      } else {
-        inner = _renderPreviewBlocks([{ type: 'text', text: textFromHistory }], sub.sid);
-      }
-      bottomHtml = `<div class="mr-ft-preview mr-ft-preview-md">${inner}</div>`;
     } else {
       bottomHtml = '<div class="mr-ft-preview" style="opacity:0.5;font-style:italic">等待…</div>';
     }
@@ -2254,11 +2354,36 @@ if (typeof document !== 'undefined') (function () {
     const syncAction = (!isUser && message.sid && !message.committeeAct && !_syncSettled)
       ? `<button type="button" class="mr-gc-sync-btn" data-gc-sync-answer="${escapeHtml(message.sid)}" data-gc-sync-turn="${escapeHtml(message.turnNum || '')}" title="从该 AI 的 shell/transcript 手动同步本轮回答">同步</button>`
       : '';
+    // === 2026-07-29 道雪 · 群聊气泡正文 = 该成员 session 自己的 turn 卡片 ===
+    //   优先级：live blocks（thinking / 工具调用 / 流式正文）> 本轮 blocks 快照 > 纯文本。
+    //   关键点：partial.text 在"思考 + 连续工具调用"阶段恒为空，但 blocks 早就有内容了 ——
+    //   旧实现只看 text，于是群聊卡在「思考中…」，而点进子 session 明明什么都能看到。
+    //   无回答终态（absent/superseded/errored）不回捞历史 blocks：那些轮次的语义就是
+    //   "没有被收录的回答"，占位文案要保持权威（opts.blocks 是调用方显式给的实时数据，仍尊重）。
+    const _gcBlocks = (!isUser && message.sid)
+      ? ((Array.isArray(opts.blocks) && opts.blocks.length > 0)
+          ? opts.blocks
+          : (_isSettledStatus ? null : _recallGcBlocks(meeting && meeting.id, message.turnNum, message.sid)))
+      : null;
+    let cardHostHtml = '';
+    if (!isUser && message.sid) {
+      const cardKey = `${(meeting && meeting.id) || 'm'}|${message.id || `${message.turnNum}-${message.sid}`}`;
+      cardHostHtml = _gcRegisterCard(cardKey, message.sid, _gcTurnFromBlocks({
+        id: `gccard-${cardKey}`,
+        kind: slot && slot.kind,
+        text: contentStr,
+        blocks: _gcBlocks,
+        ts: message.createdAt || undefined,
+      }), isPending ? 'live' : '');
+    }
     // 2026-07-12 道雪：空内容的非成功态消息不再渲染成"空气泡+裸图标排"（截图血泪），
     //   按 status 给占位文案 + 失败原因，让用户知道发生了什么、下一步点哪里。
     //   settle 态即使被调用方标了 empty 也不显示"思考中"——已经结束的轮不存在"思考中"。
     let body;
-    if (opts.empty && !_isSettledStatus) {
+    if (cardHostHtml) {
+      // 有真实内容（哪怕只有 thinking / 一个工具调用）→ 一律走真卡片，不再显示空壳占位。
+      body = cardHostHtml;
+    } else if (opts.empty && !_isSettledStatus) {
       body = '<span class="mr-gc-waiting">思考中...</span>';
     } else if (!isUser && !hasContent) {
       const reasonTxt = _gcFailReasonLabel(message.statusReason);
@@ -2298,14 +2423,20 @@ if (typeof document !== 'undefined') (function () {
     //   id 来自 orchestrator（u${n} / a${turnNum}-${sid}）。无 id 时 fallback 到空串
     //   不会阻断渲染。
     const anchorId = escapeHtml(message.id || '');
+    // 2026-07-29 道雪：群聊专属状态（superseded / interrupted / absent / errored /
+    //   send_stuck / soft_alert / transport_lost）由**外壳**表达，不塞进 turn-card-renderer
+    //   ——那是通用 session 卡片渲染器，不该认识群聊调度语义。外壳画左侧状态色条 +
+    //   右上角标，卡片本体只管内容。
+    const statusCls = (!isUser && status) ? ` mr-gc-st-${escapeHtml(String(status))}` : '';
+    const cardCls = cardHostHtml ? ' has-card' : '';
     return `
-      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}" data-gc-msg-id="${anchorId}">
+      <article class="mr-gc-msg ${isUser ? 'mine' : 'ai'}${slotCls}${committeeCls}${isPending ? ' pending' : ''}${statusCls}" data-gc-msg-id="${anchorId}"${!isUser && status ? ` data-gc-status="${escapeHtml(String(status))}"` : ''}>
         ${!isUser ? _renderGroupAvatar(slot, false) : ''}
         <div class="mr-gc-msg-body">
           ${meta}
           <div class="mr-gc-bubble-row">
             ${isUser ? copyAction : ''}
-            <div class="mr-gc-bubble">${body}${isPending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
+            <div class="mr-gc-bubble${cardCls}">${body}${isPending ? '<span class="mr-ft-cursor"></span>' : ''}</div>
             ${!isUser ? copyAction + promptAction + resyncAction : ''}
           </div>
           ${anchor}
@@ -2337,7 +2468,10 @@ if (typeof document !== 'undefined') (function () {
       if (!partial && !participating) continue;
       const text = partial && partial.text ? partial.text : '';
       const status = partial && partial.status ? partial.status : (participating ? 'thinking' : 'idle');
-      const empty = !text && status !== 'errored';
+      // 2026-07-29：blocks 也算"有内容"。thinking / 工具调用先到、text 后到是常态，
+      //   只按 text 判空正是"永久思考中"空壳的根因。
+      const blocks = (partial && Array.isArray(partial.blocks)) ? partial.blocks : null;
+      const empty = !text && !(blocks && blocks.length > 0) && status !== 'errored';
       // 2026-07-12 道雪：errored/absent 等已 settle 态不再算 pending（旧逻辑显示
       //   「正在发言」+闪烁光标与失败并存）；errored 空文本交给占位文案统一解释，
       //   并带上 watcher 的失败原因。
@@ -2353,7 +2487,7 @@ if (typeof document !== 'undefined') (function () {
         content: text,
         status,
         statusReason: partial && partial.reason ? partial.reason : '',
-      }, meeting, memberBySid, { pending: status !== 'completed' && status !== 'manual_extracted' && !settledPending, empty, status }));
+      }, meeting, memberBySid, { pending: status !== 'completed' && status !== 'manual_extracted' && !settledPending, empty, status, blocks }));
     }
     return parts.join('');
   }
@@ -2687,7 +2821,9 @@ if (typeof document !== 'undefined') (function () {
     if (!slot) return false;
     const text = partial.text || '';
     const status = partial.status || 'thinking';
-    const empty = !text && status !== 'errored';
+    // 2026-07-29：与 _renderGroupChatPending 同口径 —— blocks 有内容就不算 empty。
+    const blocks = Array.isArray(partial.blocks) ? partial.blocks : null;
+    const empty = !text && !(blocks && blocks.length > 0) && status !== 'errored';
     // 2026-07-12 道雪：与 _renderGroupChatPending 同步——settle 态不算 pending，
     //   errored 占位文案由 _renderGroupChatMessage 统一渲染并带失败原因。
     //   2026-07-29 起 'interrupted' 走同一判定（用户停止本轮后不得再显示"正在发言"）。
@@ -2701,7 +2837,7 @@ if (typeof document !== 'undefined') (function () {
       content: text,
       status,
       statusReason: partial.reason || '',
-    }, meeting, memberBySid, { pending: status !== 'completed' && status !== 'manual_extracted' && !settledPending, empty, status });
+    }, meeting, memberBySid, { pending: status !== 'completed' && status !== 'manual_extracted' && !settledPending, empty, status, blocks });
     // 抓底距决定 patch 后是否跟随：bottomGap ≤ 48 视为"贴底"，patch 后 scrollTo 底
     const maxTop0 = Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight);
     const savedScrollTop = messagesEl.scrollTop;
@@ -2709,6 +2845,10 @@ if (typeof document !== 'undefined') (function () {
     // outerHTML 替换：article 内部无 listener（事件委托在 panel 层 _bindGcPanelEvents），
     //   替换不会留死引用。messagesEl 容器 + 其他兄弟 article 完全不动 → scrollTop 自然保留。
     articleEl.outerHTML = newHtml;
+    // 2026-07-29：替换出来的新 article 里只有卡片挂载点，必须立刻 hydrate，
+    //   否则局部 patch 路径（streaming 期最高频的那条）会渲染出空气泡。
+    const patchedEl = messagesEl.querySelector(`.mr-gc-msg[data-gc-msg-id="pending-${CSS.escape(sid)}"]`);
+    if (patchedEl) _hydrateGroupChatCards(patchedEl);
     if (stick) {
       requestAnimationFrame(() => {
         const after = panel.querySelector('.mr-gc-messages');
@@ -2818,6 +2958,10 @@ if (typeof document !== 'undefined') (function () {
     bubbles.forEach(b => {
       if (b.dataset.collapseChecked) return;
       b.dataset.collapseChecked = '1';
+      // 2026-07-29：正文已是真 turn 卡片时，折叠交给卡片自己的「▾ 展开全文」
+      //   （turn-card-renderer 的 postProcessLongTextFold）——与子 session 里的行为完全一致。
+      //   两套折叠叠在一起会出现"展开了还是被截断"的诡异体验。
+      if (b.querySelector('.mr-gc-card-host')) return;
       if (b.scrollHeight > COLLAPSE_PX + 48) {
         b.classList.add('mr-gc-collapsible');
         const btn = document.createElement('button');
@@ -3670,23 +3814,25 @@ if (typeof document !== 'undefined') (function () {
       document.body.appendChild(overlay);
     }
 
+    // 2026-07-29 道雪：抽屉正文同样走 turn-card-renderer —— 这是群聊第三个渲染面，
+    //   转过来之后 _renderPreviewBlocks / _formatToolUseBlock 这套平行实现就彻底没人用了。
     const renderTurnBody = (turn) => {
       if (!turn) return '<div class="mr-gc-tl-empty">该 AI 还没有可显示的历史回答。</div>';
-      // T3：_live 走 partial blocks（如有）→ markdown text → 占位
       let bodyHtml;
-      if (turn._live) {
-        if (turn._partialBlocks && turn._partialBlocks.length > 0) {
-          bodyHtml = _renderPreviewBlocks(turn._partialBlocks, sid);
-        } else if (turn.by[sid]) {
-          bodyHtml = _renderMarkdown(turn.by[sid]);
-        } else {
-          bodyHtml = '<div class="mr-gc-tl-empty" style="opacity:.6">💭 思考中…等待 AI 输出</div>';
-        }
-        // 加流式光标
-        bodyHtml += '<span class="mr-ft-cursor"></span>';
+      const tlCardKey = `tl|${meeting.id}|${sid}|${turn._live ? 'live' : turn.n}`;
+      const tlHost = _gcRegisterCard(tlCardKey, sid, _gcTurnFromBlocks({
+        id: `gctl-${tlCardKey}`,
+        kind,
+        text: (turn.by || {})[sid] || '',
+        blocks: turn._live ? turn._partialBlocks : null,
+      }));
+      if (tlHost) {
+        bodyHtml = tlHost + (turn._live ? '<span class="mr-ft-cursor"></span>' : '');
+      } else if (turn._live) {
+        bodyHtml = '<div class="mr-gc-tl-empty" style="opacity:.6">💭 思考中…等待 AI 输出</div>'
+          + '<span class="mr-ft-cursor"></span>';
       } else {
-        const text = (turn.by || {})[sid] || '';
-        bodyHtml = _renderMarkdown(text);
+        bodyHtml = '';
       }
       const userIn = (turn.userInput || '').trim();
       const userBlock = userIn
@@ -3761,6 +3907,8 @@ if (typeof document !== 'undefined') (function () {
       ? { sid, mid: meeting.id, kind } : null;
 
     const contentEl = overlay.querySelector('#mr-gc-tl-content');
+    // 首屏 tab 的正文也是挂载点（overlay.innerHTML 刚写完），这里 hydrate 出真卡片。
+    if (contentEl) _hydrateGroupChatCards(contentEl);
     overlay.querySelectorAll('.mr-gc-tl-tab').forEach(btn => {
       btn.addEventListener('click', () => {
         overlay.querySelectorAll('.mr-gc-tl-tab').forEach(b => b.classList.remove('active'));
@@ -3769,6 +3917,7 @@ if (typeof document !== 'undefined') (function () {
         const isLive = btn.getAttribute('data-tab-live') === '1';
         if (contentEl) {
           contentEl.innerHTML = renderTurnBody(turnsWithAns[idx]);
+          _hydrateGroupChatCards(contentEl);
           contentEl.scrollTop = 0;
         }
         // T3：用户切走 live tab → 解订阅；切回 live tab → 重订阅
@@ -4356,6 +4505,9 @@ if (typeof document !== 'undefined') (function () {
     // T2 short-circuit：内容完全无变化（高频心跳常见）→ 直接 return，0 DOM 操作
     if (_isPartialUnchanged(prev, next)) return;
     cached._partialBy[sid] = next;  // ← cache 写入完成（无论 active 与否都做）
+    // 2026-07-29：本轮 blocks 快照。settle 后 _partialBy 会被清空，但用户刚看过的
+    //   thinking / 工具调用不该在气泡转正的瞬间消失 —— 正式消息继续从这里取回。
+    _rememberGcBlocks(meetingId, cached.currentTurn, sid, next.blocks);
 
     // === Phase 2: DOM 更新（仅 active meeting 做）===
     if (meetingId !== activeMeetingId) return;
@@ -4418,6 +4570,9 @@ if (typeof document !== 'undefined') (function () {
     // 重新查找新节点（outerHTML 替换后旧引用已失效）
     const newSlotEl = panel.querySelector(`.mr-ft[data-ft-sid="${sid}"]`);
     if (newSlotEl) {
+      // 2026-07-29：新 slot HTML 里只有卡片挂载点，先 hydrate 出真 turn 卡片再恢复滚动，
+      //   否则量到的是空容器高度、scrollTop 恢复无效。
+      _hydrateGroupChatCards(newSlotEl);
       _bindSlotCardEvents(newSlotEl, meeting);
       // 恢复 scrollTop
       const newPreview = newSlotEl.querySelector('.mr-ft-preview');
@@ -4430,18 +4585,19 @@ if (typeof document !== 'undefined') (function () {
       if (overlay && overlay.style.display !== 'none') {
         const tlBody = overlay.querySelector('.mr-gc-tl-body');
         if (tlBody) {
-          let inner;
-          if (Array.isArray(next.blocks) && next.blocks.length > 0) {
-            inner = _renderPreviewBlocks(next.blocks, sid);
-          } else if (next.text) {
-            inner = _renderMarkdown(next.text);
-          } else {
-            inner = '<div class="mr-gc-tl-empty" style="opacity:.6">💭 思考中…等待 AI 输出</div>';
-          }
+          // 2026-07-29：抽屉实时正文同样是真 turn 卡片
+          const tlKey = `tl|${meetingId}|${sid}|live`;
+          const host = _gcRegisterCard(tlKey, sid, _gcTurnFromBlocks({
+            id: `gctl-${tlKey}`,
+            text: next.text || '',
+            blocks: Array.isArray(next.blocks) ? next.blocks : null,
+          }));
+          const inner = host || '<div class="mr-gc-tl-empty" style="opacity:.6">💭 思考中…等待 AI 输出</div>';
           // T3 滚动保留：mutate innerHTML 时记录旧 scrollTop，在父容器（.mr-gc-tl-content）层面恢复
           const tlContent = overlay.querySelector('#mr-gc-tl-content');
           const savedScroll = tlContent ? tlContent.scrollTop : 0;
           tlBody.innerHTML = inner;
+          _hydrateGroupChatCards(tlBody);
           if (tlContent && savedScroll > 0) tlContent.scrollTop = savedScroll;
         }
       }
