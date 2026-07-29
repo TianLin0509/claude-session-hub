@@ -37,6 +37,13 @@ function registerGroupchatQueryIpc(ipcMain, deps) {
   ipcMain.handle('groupchat-gemini-debug-state', async () =>
     snapshotDebug(() => transcriptTap.getGeminiDebugSnapshot())
   );
+
+  // B1（2026-07-29）：与 codex/gemini 镜像。排查"Claude 卡片恒思考中"时要能看到
+  //   tail 到底建起来没有、由哪条通道建的（register / prompt_hook / cwd_discovery /
+  //   stop_hook），以及当前累积了几个 block。
+  ipcMain.handle('groupchat-claude-debug-state', async () =>
+    snapshotDebug(() => transcriptTap.getClaudeDebugSnapshot())
+  );
 }
 
 module.exports = {

@@ -572,21 +572,13 @@ function createGroupChatDispatcher(deps) {
       };
     });
     const sentTargets = [];
-    await Promise.all(targets.map(async (t) => {
-      try {
-        const sendStartedAt = Date.now();
-        const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
-        if (sendResult && sendResult.ok) {
-          t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
-          sentTargets.push(t);
-        }
-      } catch (e) {
-        warn(`[groupchat] internal sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
-      }
-    }));
-    if (sentTargets.length === 0) return { status: 'no_sent', turnNum: null };
-    const settled = await Promise.allSettled(sentTargets.map(t =>
-      waitTurnComplete(t.sid, t.label, {
+    // 2026-07-29 道雪 [B2]：与用户轮同一个修复 —— watcher 必须在**本委员自己的提交信号**
+    //   落地时就挂上，而不是等 `Promise.all(全体 sendToPty)`。某位委员的 CLI 冷启动要
+    //   60s 时，先答完的委员的 turn-complete 会掉进「已发未监听」窗口永久丢失（这一幕
+    //   就少一个人的发言，而 transcriptTap 不会重放）。
+    const armInternalWait = (t) => {
+      if (t._waitPromise) return t._waitPromise;
+      t._waitPromise = waitTurnComplete(t.sid, t.label, {
         meetingId,
         mode: 'internal',
         turnNum: 0,
@@ -597,8 +589,25 @@ function createGroupChatDispatcher(deps) {
         hardTimeoutMs: Number(turnTimeoutMs) > 0 ? Number(turnTimeoutMs) : undefined,
         silent: true,
         allowActiveExtend: false,
-      })
-    ));
+      });
+      return t._waitPromise;
+    };
+    await Promise.all(targets.map(async (t) => {
+      const sendStartedAt = Date.now();
+      t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
+      try {
+        const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind, {
+          onSubmitted: () => armInternalWait(t),
+        });
+        if ((sendResult && sendResult.ok) || t._waitPromise) sentTargets.push(t);
+      } catch (e) {
+        warn(`[groupchat] internal sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
+        if (t._waitPromise) sentTargets.push(t);
+      }
+    }));
+    if (sentTargets.length === 0) return { status: 'no_sent', turnNum: null };
+    // 兜底挂载（sendToPty 未回调时），armInternalWait 幂等
+    const settled = await Promise.allSettled(sentTargets.map(t => armInternalWait(t)));
     const results = settled.map((s, i) => {
       // [查看本轮 prompt] 把该委员本幕实际收到的 prompt 带进 result，供 conductor→appendSpeeches 落进消息。
       const _srcPrompt = (sentTargets[i] && sentTargets[i].prompt) || '';
@@ -866,61 +875,19 @@ function createGroupChatDispatcher(deps) {
       }
 
       const sentTargets = [];
-      await Promise.all(targets.map(async (t) => {
-        try {
-          const sendStartedAt = Date.now();
-          const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
-          const ok = sendResult && sendResult.ok;
-          const sendStatus = sendResult && sendResult.sendStatus;
-          if (!silent && sendStatus === 'stuck' && !isCodexBaseKind(t.kind)) {
-            sendToRenderer('groupchat-send-stuck', { meetingId, sid: t.sid, kind: t.kind });
-          }
-          if (ok) {
-            t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
-            sentTargets.push(t);
-            if (!silent && (sendStatus !== 'stuck' || isCodexBaseKind(t.kind))) {
-              startPasteTrappedMonitor(t.sid, t.kind, meetingId);
-            }
-          }
-        } catch (e) {
-          warn(`[groupchat] turn ${turnNum} sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
-        }
-      }));
-
-      if (sentTargets.length === 0) {
-        // 2026-07-20 道雪 [修#3d 边界]：全部被勾选成员都 dormant/不可达时，仍以 absent
-        //   落轮——让用户看到"缺席"占位，而不是问题发出后整轮凭空回滚消失。
-        if (absentMembers.length > 0 && !silent) {
-          const memberBySid0 = {};
-          for (const m of members) memberBySid0[m.sid] = m;
-          const turnRecord0 = orch.completeTurn(turnNum, userInput || '', absentMembers, memberBySid0, {}, {
-            dispatchMode: dispatchMode || 'group',
-          });
-          const meta0 = (turnRecord0 && turnRecord0.meta) || { dispatchMode: 'group' };
-          sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results: absentMembers, meta: meta0, superseded: false });
-          return { status: 'completed', turnNum, results: absentMembers, meta: meta0 };
-        }
-        if (isReusedTurn) orch.clearTurnInProgress(turnNum);
-        else orch.rollbackTurn(turnNum);
-        return { status: 'no_sent', turnNum };
-      }
-
-      // 2026-07-21 道雪 [修思考中口径]：把本轮真正发出 prompt 的 sid 列表告诉 renderer——
-      //   此前 renderer 用"勾选成员"乐观猜测（triggerGroupChat 的 _gcActiveSids），
-      //   @ 点名/部分勾选时没收到提问的 AI 也显示"思考中"。
-      if (!silent) {
-        try {
-          sendToRenderer('groupchat-turn-targets', { meetingId, turnNum, sids: sentTargets.map(t => t.sid) });
-        } catch {}
-      }
-
-      // 内部编排式调用可传 turnTimeoutMs：卡住的成员到点强制 skip，
-      // 不阻塞整轮（防 paste-trapped 无限等待）。普通群聊保持无硬超时。
-      // 注意：下面的 .map 是同步的，所有 watcher 在 await 之前就已注册进 activeWatchers，
-      //   所以「send 期间被中断」可以在这里补一次结算（见 interruptedSinceStart）。
-      const settledPromise = Promise.allSettled(sentTargets.map(t =>
-        waitTurnComplete(t.sid, t.label, {
-          meetingId, mode: 'group', turnNum, kind: t.kind, prompt: t.prompt, promptSubmitSinceTs: t.promptSubmitSinceTs,
+      // 2026-07-29 道雪 [B3]：CLI 未就绪 / 发送失败的成员不再静默消失。它们进这个列表，
+      //   拿到确定态 'cli_not_ready'，气泡保留、进度分母对得上、轮记录里留痕。
+      const undeliveredTargets = [];
+      // 2026-07-29 道雪 [B2]：watcher 的挂载时机。老实现在 `await Promise.all(全部 sendToPty)`
+      //   之后才统一挂 —— 只要有一位成员的发送阶段被拖长（codex 冷启动最长 60s），
+      //   期间答完的快成员 emit 的 turn-complete 就落进「已发出但没人监听」的窗口，
+      //   而 transcriptTap 没有重放（entry.lastText 去重，重放 stop hook 也不会再 emit），
+      //   这一轮永远等不到 → 气泡永久"思考中"。现在改成**谁提交完就立刻给谁挂**。
+      const armWait = (t) => {
+        if (t._waitPromise) return t._waitPromise;
+        t._waitPromise = waitTurnComplete(t.sid, t.label, {
+          meetingId, mode: 'group', turnNum, kind: t.kind, prompt: t.prompt,
+          promptSubmitSinceTs: t.promptSubmitSinceTs,
           memberId: t.member && t.member.memberId,
           speaker: t.label,
           disableHardTimeout: !(Number(turnTimeoutMs) > 0),
@@ -945,8 +912,126 @@ function createGroupChatDispatcher(deps) {
               reason: partial.reason,
             });
           },
-        })
-      ));
+        });
+        return t._waitPromise;
+      };
+      await Promise.all(targets.map(async (t) => {
+        const sendStartedAt = Date.now();
+        // promptSubmitSinceTs 要在 onSubmitted 回调之前就绪：watcher 用它框定"本轮"的
+        //   transcript 时间窗，晚一步会让 codex 提交校验读到上一轮。
+        t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
+        try {
+          const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind, {
+            onSubmitted: () => { if (!silent) armWait(t); },
+          });
+          const ok = sendResult && sendResult.ok;
+          const sendStatus = sendResult && sendResult.sendStatus;
+          if (!silent && sendStatus === 'stuck' && !isCodexBaseKind(t.kind)) {
+            sendToRenderer('groupchat-send-stuck', { meetingId, sid: t.sid, kind: t.kind });
+          }
+          if (ok) {
+            sentTargets.push(t);
+            if (!silent && (sendStatus !== 'stuck' || isCodexBaseKind(t.kind))) {
+              startPasteTrappedMonitor(t.sid, t.kind, meetingId);
+            }
+          } else if (t._waitPromise) {
+            // 提交信号已经写出去了，只是后续校验判失败 —— 仍然要等回答，不能丢。
+            sentTargets.push(t);
+          } else {
+            // sendToPty 唯一的 falsy 返回：waitCliReady 60s 超时，prompt 一个字都没写。
+            undeliveredTargets.push({ t, reason: 'cli_not_ready' });
+          }
+        } catch (e) {
+          warn(`[groupchat] turn ${turnNum} sendToPty threw for ${t.kind}(${t.sid.slice(0,8)}):`, e && e.message);
+          if (t._waitPromise) sentTargets.push(t);
+          else undeliveredTargets.push({ t, reason: `send_failed: ${(e && e.message) || 'unknown'}` });
+        }
+      }));
+      // 兜底：sendToPty 没走 onSubmitted 回调（老实现/未来新分支/被 stub）时补挂，
+      //   绝不让"已提交但没人监听"的成员裸奔。armWait 幂等。
+      if (!silent) for (const t of sentTargets) armWait(t);
+
+      // 2026-07-29 道雪 [B3]：未发出的成员立刻拿到确定态并推给前端 —— 用户在勾选了 3 位
+      //   却只有 2 位真发出去时，第 3 位保留气泡 + 明确写「CLI 未就绪，本轮未发出」，
+      //   而不是整条气泡凭空消失（旧行为：groupchat-turn-targets 不含它 → renderer 移除）。
+      const undeliveredResults = undeliveredTargets.map(({ t, reason }) => ({
+        sid: t.sid,
+        label: t.label,
+        status: 'cli_not_ready',
+        text: '',
+        reason,
+        memberId: t.member && t.member.memberId,
+        speaker: t.label,
+        deliveredIdx: null,
+      }));
+      if (!silent && undeliveredResults.length > 0) {
+        for (const r of undeliveredResults) {
+          warn(`[groupchat] turn ${turnNum} not delivered to ${r.label}(${r.sid.slice(0, 8)}): ${r.reason}`);
+          try {
+            orch.patchTurnResult(turnNum, r.sid, {
+              text: '', status: 'cli_not_ready', memberId: r.memberId, speaker: r.speaker,
+              sourcePrompt: undeliveredTargets.find(x => x.t.sid === r.sid)?.t.prompt,
+              statusReason: r.reason,
+            });
+          } catch (e) { warn('[groupchat] persist cli_not_ready failed:', e && e.message); }
+          try {
+            sendToRenderer('groupchat-partial-update', {
+              meetingId, turnNum, mode: 'group',
+              sid: r.sid, label: r.label, status: 'cli_not_ready',
+              text: '', blocks: [], source: 'dispatcher',
+              reason: r.reason,
+            });
+          } catch {}
+        }
+      }
+
+      // 2026-07-29 道雪 [B3]：整轮"一个都没发出去"时，把未就绪的成员也一并落轮 ——
+      //   之前只处理 dormant(absent)，CLI 未就绪的成员会随整轮 rollback 一起消失。
+      const noAnswerMembers = absentMembers.concat(undeliveredResults);
+      if (sentTargets.length === 0) {
+        // 2026-07-20 道雪 [修#3d 边界]：全部被勾选成员都 dormant/不可达时，仍以 absent
+        //   落轮——让用户看到"缺席"占位，而不是问题发出后整轮凭空回滚消失。
+        if (noAnswerMembers.length > 0 && !silent) {
+          const memberBySid0 = {};
+          for (const m of members) memberBySid0[m.sid] = m;
+          try {
+            sendToRenderer('groupchat-turn-targets', { meetingId, turnNum, sids: noAnswerMembers.map(r => r.sid) });
+          } catch {}
+          const turnRecord0 = orch.completeTurn(turnNum, userInput || '', noAnswerMembers, memberBySid0, {}, {
+            dispatchMode: dispatchMode || 'group',
+          });
+          const meta0 = (turnRecord0 && turnRecord0.meta) || { dispatchMode: 'group' };
+          sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results: noAnswerMembers, meta: meta0, superseded: false });
+          return { status: 'completed', turnNum, results: noAnswerMembers, meta: meta0 };
+        }
+        if (isReusedTurn) orch.clearTurnInProgress(turnNum);
+        else orch.rollbackTurn(turnNum);
+        return { status: 'no_sent', turnNum };
+      }
+
+      // 2026-07-21 道雪 [修思考中口径]：把本轮真正发出 prompt 的 sid 列表告诉 renderer——
+      //   此前 renderer 用"勾选成员"乐观猜测（triggerGroupChat 的 _gcActiveSids），
+      //   @ 点名/部分勾选时没收到提问的 AI 也显示"思考中"。
+      // 2026-07-29 道雪 [B3]：未就绪成员的 sid 也要在名单里 —— 它们不是"没被点名"，
+      //   而是"点了名但发不出去"，必须保留气泡并显示 cli_not_ready（已随 partial-update
+      //   推过去）。否则 renderer 的 _gcActiveSids 不含它 → 整条气泡被移除 = 凭空消失，
+      //   而底部输入区还写着"目标 3/3"，UI 自相矛盾。
+      if (!silent) {
+        try {
+          sendToRenderer('groupchat-turn-targets', {
+            meetingId, turnNum,
+            sids: sentTargets.map(t => t.sid).concat(undeliveredResults.map(r => r.sid)),
+            sentSids: sentTargets.map(t => t.sid),
+            undelivered: undeliveredResults.map(r => ({ sid: r.sid, status: r.status, reason: r.reason })),
+          });
+        } catch {}
+      }
+
+      // 内部编排式调用可传 turnTimeoutMs：卡住的成员到点强制 skip，
+      // 不阻塞整轮（防 paste-trapped 无限等待）。普通群聊保持无硬超时。
+      // 注意：watcher 早在各自 sendToPty 的提交回调里就挂好了（B2 修复），
+      //   这里只是把它们的 Promise 汇总；「send 期间被中断」仍可在下面补一次结算。
+      const settledPromise = Promise.allSettled(sentTargets.map(t => armWait(t)));
 
       // send 期间被中断：watcher 刚同步注册完，立刻补一次结算，否则本轮会开始
       //   等一个已经被用户叫停的回答，卡片永久停在"思考中"。
@@ -972,7 +1057,7 @@ function createGroupChatDispatcher(deps) {
       }).map((r, i) => ({
         ...r,
         deliveredIdx: sentTargets[i] && sentTargets[i].deliveredIdx,
-      })).concat(absentMembers);
+      })).concat(noAnswerMembers);
       const memberBySid = {};
       for (const m of members) memberBySid[m.sid] = m;
       if (silent) {
@@ -981,9 +1066,25 @@ function createGroupChatDispatcher(deps) {
         try { orch.markDeliveredSilent(results); } catch (e) { warn('[group-chat] markDeliveredSilent threw:', e && e.message); }
         return { status: 'completed', turnNum: null, results, meta: { dispatchMode: 'silent' } };
       }
+      // 2026-07-29 道雪 [B3]：completeTurn 会把 results 里每个 sid 的「已读位置」推到本轮末尾。
+      //   对**一个字都没收到**的成员这是错的：下一轮 buildDelta 会从本轮之后开始，本轮的
+      //   队友发言对它永久丢失；更糟的是首次入群的成员会因此被当成"已投递过"，
+      //   下一轮 buildFirstDelta 不再带 systemPrompt（整套群聊规则），它会一脸茫然。
+      //   所以：先快照，completeTurn 之后原样还原（没有值的就删掉，保持 undefined）。
+      const undeliveredSids = undeliveredResults.map(r => r.sid);
+      const deliveredIdxSnapshot = new Map();
+      for (const sid of undeliveredSids) deliveredIdxSnapshot.set(sid, orch.state.lastDeliveredIdx[sid]);
       const turnRecord = orch.completeTurn(turnNum, userInput || '', results, memberBySid, {}, {
         dispatchMode: dispatchMode || 'group',
       });
+      if (undeliveredSids.length > 0) {
+        for (const [sid, prev] of deliveredIdxSnapshot) {
+          if (prev === undefined) delete orch.state.lastDeliveredIdx[sid];
+          else orch.state.lastDeliveredIdx[sid] = prev;
+        }
+        try { orch._saveState?.(); }
+        catch (e) { warn('[groupchat] restore lastDeliveredIdx save failed:', e && e.message); }
+      }
       const meta = turnRecord.meta || { dispatchMode: 'group' };
       // 被抢占判定：完成时若 meeting 的最新派发序号已超过自己 → 用户已发更新的轮，
       //   本轮是被 supersede 的旧轮。前端据此跳过「清 currentMode」避免抹掉新轮思考态。

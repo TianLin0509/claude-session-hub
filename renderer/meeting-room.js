@@ -1204,7 +1204,10 @@ if (typeof document !== 'undefined') (function () {
   //   气泡/卡片不得继续显示「思考中」「正在发言」。'interrupted' 是用户点「停止本轮」
   //   后的终态（可能带已生成的半截文本）。集中成一个判定，避免各处硬编码列表漏掉新状态
   //   ——历史上「永久思考中」卡死正是漏判造成的。
-  const _GC_SETTLED_NO_ANSWER = new Set(['errored', 'absent', 'superseded', 'interrupted']);
+  //   'cli_not_ready'（2026-07-29 B3）：勾选了但该成员的 CLI 60s 内没就绪，prompt 一个字
+  //   都没写进 PTY。它同样是"本轮不会有回答"的终态 —— 必须算 settle，否则气泡永远闪
+  //   「思考中」等一个根本没被问过的 AI。
+  const _GC_SETTLED_NO_ANSWER = new Set(['errored', 'absent', 'superseded', 'interrupted', 'cli_not_ready']);
   function _isGcSettledStatus(status) {
     return _GC_SETTLED_NO_ANSWER.has(status);
   }
@@ -1450,6 +1453,7 @@ if (typeof document !== 'undefined') (function () {
       errored: '错误',
       interrupted: '已中断',
       transport_lost: '连接断开',
+      cli_not_ready: '⚠ CLI 未就绪，本轮未发出',
     }[statusForLabel] || statusForLabel;
     const tabState = _tabState[sub.sid] || 'idle';
     const newBadge = tabState === 'new-output' && !isActive ? '<span class="mr-ft-new">NEW</span>' : '';
@@ -1829,6 +1833,7 @@ if (typeof document !== 'undefined') (function () {
       send_stuck: '输入卡住',
       interrupted: '已中断',
       transport_lost: '连接断开',
+      cli_not_ready: 'CLI 未就绪 · 未发出',
     }[status] || status || '待命';
   }
 
@@ -1870,7 +1875,8 @@ if (typeof document !== 'undefined') (function () {
   function _turnStatusBucket(status) {
     if (status === 'completed' || status === 'manual_extracted') return 'done';
     if (status === 'thinking' || status === 'streaming' || status === 'soft_alert' || status === 'queued') return 'running';
-    if (status === 'errored' || status === 'timeout' || status === 'send_stuck' || status === 'transport_lost') return 'warn';
+    // cli_not_ready 归 warn：勾了却没发出去，是需要用户注意的异常，不是"正常缺席"。
+    if (status === 'errored' || status === 'timeout' || status === 'send_stuck' || status === 'transport_lost' || status === 'cli_not_ready') return 'warn';
     if (status === 'off' || status === 'absent' || status === 'superseded' || status === 'interrupted') return 'muted';
     return 'idle';
   }
@@ -1904,7 +1910,8 @@ if (typeof document !== 'undefined') (function () {
     const done = expectedSlots.filter(slot => {
       const status = _slotTurnStatus(state, meeting, slot, viewingTurnN).status;
       return status === 'completed' || status === 'manual_extracted'
-        || status === 'absent' || status === 'superseded' || status === 'interrupted';
+        || status === 'absent' || status === 'superseded' || status === 'interrupted'
+        || status === 'cli_not_ready';   // 未发出也是本轮的确定结局，计入分子否则永远差一个
     }).length;
     const summary = currentMode && currentMode !== 'idle'
       ? `本轮 ${done}/${expectedSlots.length}`
@@ -2057,7 +2064,7 @@ if (typeof document !== 'undefined') (function () {
 
   // Stage 2 容错升级：当所有参与者都 settled（completed/manual_extracted/absent/errored/interrupted）
   // 即使后端 currentMode 仍为非 idle（在写持久化），UI 也允许用户继续推进，避免 100% 等待。
-  const _SETTLED_STATUSES = new Set(['completed', 'manual_extracted', 'absent', 'errored', 'interrupted', 'superseded']);
+  const _SETTLED_STATUSES = new Set(['completed', 'manual_extracted', 'absent', 'errored', 'interrupted', 'superseded', 'cli_not_ready']);
   // FIX-E（2026-05-01）：必须用"期望 sids 集合"判定，而不是 partialBy 自身的 keys。
   //   旧实现 `Object.keys(partialBy).every(...)` 在某家 watcher 还没 settle（partial 还没推送）
   //   时，partialBy 里压根没有这家的 sid → every 在剩余家都 settled 时直接为 true →
@@ -2312,6 +2319,8 @@ if (typeof document !== 'undefined') (function () {
     const r = String(reason || '').trim();
     if (!r) return '';
     if (r === 'auth_required') return '检测到登录失效横幅，可能需要 /login';
+    if (r === 'cli_not_ready') return 'CLI 60 秒内未就绪，prompt 未写入终端';
+    if (/^send_failed/i.test(r)) return '写入终端失败：' + r.replace(/^send_failed:\s*/i, '');
     if (/cli_self_exit/i.test(r)) return 'CLI 自行退出，PTY 回到宿主 shell';
     if (/pty exit/i.test(r)) return 'CLI 进程退出';
     if (/promise rejected/i.test(r)) return '内部等待异常';
@@ -2342,6 +2351,7 @@ if (typeof document !== 'undefined') (function () {
     const _isSettledStatus = _isGcSettledStatus(status);
     const isPending = !!opts.pending && !_isSettledStatus;
     const statusText = status === 'errored' ? '发送失败'
+      : status === 'cli_not_ready' ? '本轮未发出'
       : isPending ? '正在发言'
       : status === 'superseded' ? '被新提问覆盖'
       : status === 'interrupted' ? '已被你停止'
@@ -2394,6 +2404,8 @@ if (typeof document !== 'undefined') (function () {
         : status === 'superseded' ? '本轮回答被下一轮提问覆盖，未收录。'
         : status === 'interrupted' ? '你已停止本轮，该 AI 未来得及输出内容。'
         : status === 'absent' ? '本轮已跳过该 AI，无回答。'
+        // 2026-07-29 [B3]：勾了却没发出去的成员必须自己说明白，而不是整条气泡消失。
+        : status === 'cli_not_ready' ? '该成员的 CLI 在 60 秒内没有就绪，本轮的提问没有发给它（一个字都没写进终端）。点进它的子 session 看看 CLI 卡在哪一步；就绪后重新提问即可。'
         : '本轮未提取到内容。点「同步」从 transcript 重新提取。';
       body = `<div class="mr-gc-md mr-gc-empty-placeholder">${escapeHtml(ph)}</div>`;
     } else {
@@ -4929,6 +4941,14 @@ if (typeof document !== 'undefined') (function () {
         ? '未选择成员，发送前需要至少勾选 1 位'
         : `发送给 ${selectedNames.join(' / ')}${selected > selectedNames.length ? ` 等 ${selected} 位` : ''}`;
       if (dormantSlotsN > 0) panelDetail += `· ${dormantSlotsN} 位休眠不计入`;
+      // 2026-07-29 道雪 [B3]：发送前就把"勾了但 CLI 还没就绪"的成员亮出来。
+      //   后端对未就绪成员最多等 60s 就以 cli_not_ready 落轮（不再静默丢弃），
+      //   这里提前预警，让用户可以先等 CLI 起来再发，而不是发完才发现少一位。
+      const notReadySlots = awakeSlots.filter(slot => selectedSet0.has(slot.slotIndex) && !_cliReadyCache[slot.sid]);
+      if (notReadySlots.length > 0) {
+        chips.push(_renderInputChip('未就绪', `${notReadySlots.length}`, 'warn'));
+        panelDetail += ` · ${notReadySlots.map(s => s.displayLabel || s.label || s.kind).join('/')} 的 CLI 还没就绪，本轮可能发不出去`;
+      }
       if (current.serialWorkflow && current.serialWorkflow.enabled && workflowSteps > 0) {
         const workflowApi = window.WorkflowTemplates;
         const presetMeta = workflowApi && typeof workflowApi.getTemplateMeta === 'function'

@@ -79,7 +79,12 @@ test('buildFirstDelta 首次带 systemPrompt + 透传 includeCommitteeMid', () =
 // ── dispatcher 静态契约：dispatchInternalPrompt 三件套 ──
 test('dispatcher：dispatchInternalPrompt 记 deliveredIdx + 传 includeCommitteeMid + results 带出', () => {
   const d = fs.readFileSync(path.join(root, 'main', 'groupchat', 'dispatcher.js'), 'utf8');
-  const seg = d.slice(d.indexOf('async function dispatchInternalPrompt'), d.indexOf('async function dispatchInternalPrompt') + 3200);
+  // 2026-07-29：切片按**函数边界**取，不再用固定 3200 字符 —— 函数里加几行注释就会把
+  //   被断言的代码挤出窗口，制造与契约无关的假失败。
+  const _start = d.indexOf('async function dispatchInternalPrompt');
+  const _end = d.indexOf('function supersedeActiveWatchersForMeeting', _start);
+  assert.ok(_start >= 0 && _end > _start, '找不到 dispatchInternalPrompt 函数体边界');
+  const seg = d.slice(_start, _end);
   assert.ok(/const deliveredIdx = _orch\.state\.messages\.length - 1/.test(seg), '记录本幕发言前位置 deliveredIdx');
   assert.ok(/includeCommitteeMid: true/.test(seg), 'buildFirstDelta 传 includeCommitteeMid:true');
   assert.ok(/deliveredIdx: _deliveredIdx/.test(seg), 'results 带出 deliveredIdx 供 markDeliveredSilent');

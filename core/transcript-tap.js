@@ -30,6 +30,11 @@ const {
 const { JsonlTail } = require('./jsonl-tail.js');
 const { codexTextFromPayload, timestampToMs } = require('./transcript-payload-utils.js');
 const { KimiTap } = require('./kimi-transcript-tap.js');
+const {
+  extractCwdFromTranscript,
+  findTranscriptByCCSessionId,
+  listClaudeTranscriptsForCwd,
+} = require('./claude-transcript-locator.js');
 
 // ---------------------------------------------------------------------------
 // JsonlTail — 共用工具：监听 JSONL 文件增长，按行回调 JSON.parse 后的对象
@@ -77,6 +82,22 @@ const _CLAUDE_STOP_REASON_DEBOUNCE_MS = 200;
 //   15s 取舍：足够等待 transcript 异步刷盘 + fs.watch 漂移，又不至于让用户卡得明显。
 const _CLAUDE_IDLE_EMIT_MS = 15 * 1000;
 
+// B1 修复（2026-07-29 道雪）—— "全新 Claude 会话的第 1 轮拿不到 blocks"。
+//   旧链路：JsonlTail 只在 notifyStop 里创建，而 notifyStop 由 Stop hook 驱动、
+//           Stop hook 只在**本轮结束时**才响 → 首轮全程 _streamingBuf 结构性恒空
+//           → 群聊 extractStreamingText 拿不到 tap 数据 → 卡片恒显示「💭 思考中…」。
+//   新链路：不再等 Stop hook，三条早绑通道按可信度排序，先到先绑（_ensureTail 幂等）：
+//     1) registerSession 拿到 transcriptPath / ccSessionId（resume、fork、已知绑定）→ 立即建 tail；
+//     2) UserPromptSubmit hook（notifyPrompt）→ CC 自己给的权威路径，且该 hook 在
+//        assistant 任何一行落盘之前同步触发，从当前 EOF 起 tail 就能覆盖本轮全部块；
+//     3) 全新会话首轮连 ccSessionId 都还没有 → 轮询 cwd 对应的 projects/<slug> bucket，
+//        等新 jsonl 出现（对齐 KimiTap 扫 session_index、GeminiTap 扫 chats/ 的既有做法）。
+//   歧义保护：同一 cwd 下若同时冒出多个新 jsonl（例如一个群聊里两位 Claude 成员），
+//     发现期一律不猜，等通道 1/2 的权威路径 —— 绑错文件比晚绑更糟。
+const _CLAUDE_DISCOVERY_POLL_MS = 500;
+// 发现期回放整个新文件时的上限，与 Codex/Kimi tail 同口径。
+const _CLAUDE_TAIL_MAX_INITIAL_BYTES = 8 * 1024 * 1024;
+
 // 2026-05-02 Gemini 兜底：与 ClaudeTap 同套 idle-timer 思路。用户血泪反馈：
 //   "第一轮 Gemini 子 session 输出后没快速提取，手动提取后流程继续"。
 // 根因：GeminiTap.onLine 仅 L1a result_event / L1b message_update / L3 tokens.total
@@ -91,25 +112,75 @@ class ClaudeTap extends EventEmitter {
     super();
     this._parserService = opts.parserService || null;
     this._bound = new Map(); // hubSessionId → { transcriptPath, lastText, _streamingBuf, _tail }
+    // B1: 发现期用。homeDir / pollMs 只为单测可注入，生产不传走默认。
+    this._homeDir = opts.homeDir || null;
+    this._discoveryPollMs = Number(opts.discoveryPollMs) > 0
+      ? Number(opts.discoveryPollMs)
+      : _CLAUDE_DISCOVERY_POLL_MS;
+    this._claimedPaths = new Map(); // normalized transcript path → hubSessionId（一文件只归一会话）
+    this._discoveryTimer = null;
+  }
+
+  _newEntry() {
+    return {
+      transcriptPath: null,
+      lastText: null,
+      lastModel: null,    // T13: 最近一条 assistant message.model
+      lastUsage: null,    // T13: 最近一条 assistant message.usage
+      _streamingBuf: [],
+      _tail: null,
+      _idleTimer: null,
+      _stopReasonTimer: null,  // R3: stop_reason 终态防抖 timer
+      _pendingEmitText: null,
+      // B1 早绑状态
+      kind: null,
+      cwd: null,
+      ccSessionId: null,
+      registeredAt: Date.now(),
+      _tailPath: null,        // 当前 tail 监听的文件（归一化，用于幂等 + 认领）
+      _tailSource: null,      // 'register' | 'locator_cc_sid' | 'prompt_hook' | 'stop_hook' | 'cwd_discovery'
+      _tailStartedAt: null,
+      _discovering: false,
+      _preexistingPaths: null, // 注册瞬间 bucket 里已存在的 jsonl（不是本会话的）
+    };
   }
 
   registerSession(hubSessionId, ctx = {}) {
-    if (!this._bound.has(hubSessionId)) {
-      this._bound.set(hubSessionId, {
-        transcriptPath: null,
-        lastText: null,
-        lastModel: null,    // T13: 最近一条 assistant message.model
-        lastUsage: null,    // T13: 最近一条 assistant message.usage
-        _streamingBuf: [],
-        _tail: null,
-        _idleTimer: null,
-        _stopReasonTimer: null,  // R3: stop_reason 终态防抖 timer
-        _pendingEmitText: null,
-      });
-    }
+    if (!this._bound.has(hubSessionId)) this._bound.set(hubSessionId, this._newEntry());
     const entry = this._bound.get(hubSessionId);
+    if (ctx && ctx.kind) entry.kind = ctx.kind;
+    if (ctx && ctx.cwd) entry.cwd = ctx.cwd;
+    if (ctx && ctx.ccSessionId) entry.ccSessionId = ctx.ccSessionId;
+    if (ctx && Number(ctx.registeredAt) > 0) entry.registeredAt = Number(ctx.registeredAt);
     if (ctx && typeof ctx.transcriptPath === 'string' && ctx.transcriptPath) {
       entry.transcriptPath = ctx.transcriptPath;
+    }
+
+    // B1 通道 1：路径已知（resume / fork / 已持久化绑定）→ 立即建 tail，首轮就有流式。
+    //   startAtEnd:true —— 老 transcript 里全是上几轮内容，回放只会污染 _streamingBuf
+    //   并让历史 stop_reason 终态行误触发 turn-complete。
+    let known = entry.transcriptPath;
+    if (!known && entry.ccSessionId) {
+      known = this._locateByCCSessionId(entry.ccSessionId);
+      if (known) entry.transcriptPath = known;
+    }
+    if (known) {
+      void this._ensureTail(hubSessionId, known, { startAtEnd: true, source: 'register' });
+      return;
+    }
+
+    // B1 通道 3：全新会话 —— jsonl 还没被 CLI 创建。先记下 bucket 里"注册前就存在"的
+    //   文件（那些属于别的会话），之后只认新出现的那一个。
+    //   重复 registerSession（session-handlers 的重建路径会再调一次）不得重拍快照 ——
+    //   否则本会话刚创建出来的 jsonl 会被当成"注册前就有"，永远绑不上。
+    if (entry.cwd) {
+      if (!entry._preexistingPaths) {
+        entry._preexistingPaths = new Set(
+          this._listCwdTranscripts(entry).map(f => normalizePathForCompare(f.path))
+        );
+      }
+      entry._discovering = true;
+      this._ensureDiscoveryTimer();
     }
   }
 
@@ -121,6 +192,10 @@ class ClaudeTap extends EventEmitter {
     const entry = this._bound.get(hubSessionId);
     if (entry?._tail) {
       try { entry._tail.close(); } catch {}
+      entry._tail = null;
+    }
+    if (entry?._tailPath && this._claimedPaths.get(entry._tailPath) === hubSessionId) {
+      this._claimedPaths.delete(entry._tailPath);
     }
     if (entry?._idleTimer) {
       try { clearTimeout(entry._idleTimer); } catch {}
@@ -129,6 +204,189 @@ class ClaudeTap extends EventEmitter {
       try { clearTimeout(entry._stopReasonTimer); } catch {}
     }
     this._bound.delete(hubSessionId);
+    this._stopDiscoveryTimerIfIdle();
+  }
+
+  // -------------------------------------------------------------------------
+  // B1: tail 生命周期（幂等建 / 换文件重绑 / 关闭）
+  // -------------------------------------------------------------------------
+  //   同一文件重复调 → 直接返回 false，绝不建第二个 tail（双 tail = 双份 blocks）。
+  //   换文件（发现期猜的路径被 hook 的权威路径推翻）→ 关旧 tail、清掉错文件累计的
+  //   blocks，再建新 tail。opts.authoritative 表示路径来自 CC 自己（hook / ccSessionId
+  //   精确定位），可以抢占别的会话对同一文件的认领。
+  async _ensureTail(hubSessionId, transcriptPath, opts = {}) {
+    if (!hubSessionId || !transcriptPath) return false;
+    const entry = this._bound.get(hubSessionId);
+    if (!entry) return false;
+    const key = normalizePathForCompare(transcriptPath);
+    if (entry._tail && entry._tailPath === key) {
+      entry.transcriptPath = transcriptPath;
+      entry._discovering = false;
+      return false;   // 已在监听同一文件 —— 幂等，不重复建
+    }
+
+    const owner = this._claimedPaths.get(key);
+    if (owner && owner !== hubSessionId) {
+      if (!opts.authoritative) return false;  // 非权威来源不抢别人的文件
+      const victim = this._bound.get(owner);
+      if (victim && victim._tailPath === key) {
+        try { victim._tail?.close(); } catch {}
+        victim._tail = null;
+        victim._tailPath = null;
+        victim._streamingBuf = [];
+        victim._discovering = !!victim.cwd;
+        if (victim._discovering) this._ensureDiscoveryTimer();
+      }
+      this._claimedPaths.delete(key);
+    }
+
+    if (entry._tail) {
+      try { entry._tail.close(); } catch {}
+      if (entry._tailPath && this._claimedPaths.get(entry._tailPath) === hubSessionId) {
+        this._claimedPaths.delete(entry._tailPath);
+      }
+      entry._tail = null;
+      entry._streamingBuf = [];   // 之前那个文件的块不属于本会话，整体丢弃
+    }
+
+    entry.transcriptPath = transcriptPath;
+    entry._tailPath = key;
+    entry._tailSource = opts.source || 'unknown';
+    entry._tailStartedAt = Date.now();
+    entry._discovering = false;
+    entry._preexistingPaths = null;
+    this._claimedPaths.set(key, hubSessionId);
+    this._stopDiscoveryTimerIfIdle();
+
+    // startAtEnd 语义（边界 3）：
+    //   - 文件尚不存在或为空 → JsonlTail 的 stat 失败/size=0，offset 天然停在 0，
+    //     文件一旦被 CLI 创建就从第 0 字节读起，首轮一行不漏（两种取值等价）。
+    //   - 发现期绑定的是"注册之后才出现"的新文件 → startAtEnd:false 整份回放，
+    //     补上建 tail 之前那 ≤500ms 已落盘的行。
+    //   - 其余（resume / hook 给的老文件）→ startAtEnd:true，不回放历史。
+    const tail = new JsonlTail(transcriptPath, this._makeOnLine(hubSessionId, entry), {
+      startAtEnd: opts.startAtEnd !== false,
+      maxInitialBytes: _CLAUDE_TAIL_MAX_INITIAL_BYTES,
+    });
+    entry._tail = tail;
+    try { await tail.start(); } catch { /* JsonlTail 内部已吞 IO 错误，这里只兜异常 */ }
+    return true;
+  }
+
+  _locateByCCSessionId(ccSessionId) {
+    if (!ccSessionId) return null;
+    try {
+      return this._homeDir
+        ? findTranscriptByCCSessionId(ccSessionId, this._homeDir)
+        : findTranscriptByCCSessionId(ccSessionId);
+    } catch { return null; }
+  }
+
+  _listCwdTranscripts(entry) {
+    if (!entry || !entry.cwd) return [];
+    try {
+      return listClaudeTranscriptsForCwd(entry.cwd, {
+        kind: entry.kind,
+        ...(this._homeDir ? { homeDir: this._homeDir } : {}),
+      });
+    } catch { return []; }
+  }
+
+  _ensureDiscoveryTimer() {
+    if (this._discoveryTimer) return;
+    this._discoveryTimer = setInterval(() => {
+      try { this._scanForNewTranscripts(); }
+      catch (e) { console.warn('[claude-tap] discovery scan failed:', e && e.message); }
+    }, this._discoveryPollMs);
+    this._discoveryTimer.unref?.();
+  }
+
+  _stopDiscoveryTimerIfIdle() {
+    if (!this._discoveryTimer) return;
+    for (const entry of this._bound.values()) {
+      if (entry._discovering && !entry._tail) return;
+    }
+    clearInterval(this._discoveryTimer);
+    this._discoveryTimer = null;
+  }
+
+  // 边界 1：transcript 此刻不存在不是放弃的理由 —— 只要会话还注册着就一直等。
+  _scanForNewTranscripts() {
+    for (const [hubSessionId, entry] of this._bound) {
+      if (!entry._discovering || entry._tail) continue;
+
+      // 用户开了会话但迟迟不发第一句时，transcript 可能几小时都不出现。降频到 2s，
+      // 免得 Electron 主线程被无意义的 readdir 长期占用（仍然不放弃，见边界 1）。
+      entry._scanTick = (entry._scanTick || 0) + 1;
+      const stride = (Date.now() - entry.registeredAt) > 120000 ? 4 : 1;
+      if (entry._scanTick % stride !== 0) continue;
+
+      // ccSessionId 可能在发现期途中由 hook 补上 → 精确定位优先于目录启发式
+      if (entry.ccSessionId) {
+        const exact = this._locateByCCSessionId(entry.ccSessionId);
+        if (exact) {
+          // 走到这里说明注册时就带了 ccSessionId（resume/fork）但文件当时还没落地，
+          // 现在出现的很可能是带历史的老 transcript → startAtEnd:true 不回放；
+          // 文件此刻仍为空时 JsonlTail 的 offset 天然是 0，首轮照样一行不漏。
+          void this._ensureTail(hubSessionId, exact, {
+            startAtEnd: true, authoritative: true, source: 'locator_cc_sid',
+          });
+          continue;
+        }
+      }
+
+      const fresh = this._listCwdTranscripts(entry).filter((f) => {
+        const key = normalizePathForCompare(f.path);
+        if (entry._preexistingPaths && entry._preexistingPaths.has(key)) return false;
+        if (this._claimedPaths.has(key)) return false;
+        return this._transcriptCwdMatches(f.path, entry.cwd);
+      });
+      // 边界 4：多于一个候选 = 无法确定绑定到本会话 → 不猜，等权威路径。
+      if (fresh.length !== 1) continue;
+      void this._ensureTail(hubSessionId, fresh[0].path, {
+        startAtEnd: false, source: 'cwd_discovery',
+      });
+    }
+    this._stopDiscoveryTimerIfIdle();
+  }
+
+  // bucket 目录本来就是 cwd 的 slug，这层校验是为了防 slug 碰撞（不同 cwd 归一成同名
+  // 目录）。刚创建的 jsonl 首行可能还没有 cwd 字段 → 拿不到就放行，不做假阴性拒绝。
+  _transcriptCwdMatches(transcriptPath, cwd) {
+    if (!cwd) return true;
+    let recorded = null;
+    try { recorded = extractCwdFromTranscript(transcriptPath); } catch { recorded = null; }
+    if (!recorded) return true;
+    return normalizePathForCompare(recorded) === normalizePathForCompare(cwd);
+  }
+
+  // 资源收尾（边界 6）：关掉全部 tail + 发现期 timer，不留 fd / interval。
+  dispose() {
+    for (const id of Array.from(this._bound.keys())) this.unregisterSession(id);
+    this._claimedPaths.clear();
+    if (this._discoveryTimer) {
+      clearInterval(this._discoveryTimer);
+      this._discoveryTimer = null;
+    }
+  }
+
+  getDebugSnapshot() {
+    const out = [];
+    for (const [hubSessionId, entry] of this._bound) {
+      out.push({
+        hubSessionId,
+        kind: entry.kind,
+        cwd: entry.cwd,
+        ccSessionId: entry.ccSessionId,
+        transcriptPath: entry.transcriptPath,
+        hasTail: !!entry._tail,
+        tailSource: entry._tailSource,
+        tailStartedAt: entry._tailStartedAt,
+        discovering: !!entry._discovering,
+        streamingBlocks: Array.isArray(entry._streamingBuf) ? entry._streamingBuf.length : 0,
+      });
+    }
+    return { discoveryActive: !!this._discoveryTimer, sessions: out };
   }
 
   getLastAssistantText(hubSessionId) {
@@ -178,91 +436,104 @@ class ClaudeTap extends EventEmitter {
     if (e) e._streamingBuf = [];
   }
 
+  // JsonlTail 的 onLine：每条 assistant 行 → 累积 blocks 到 _streamingBuf + 判定终态。
+  // 原先内联在 notifyStop 里（导致 tail 只能由 Stop hook 创建），B1 提出来复用给
+  // registerSession / notifyPrompt / 发现期三条早绑通道。逻辑逐行保持不变。
+  _makeOnLine(hubSessionId, entry) {
+    return (obj) => {
+      if (obj?.type !== 'assistant' || !obj.message?.content) return;
+      const content = obj.message.content;
+      if (!Array.isArray(content)) return;
+      // T13（2026-06-08）：抽 message.model + message.usage 缓存到 entry，turn emit 时附给卡片视图。
+      //   transcript 每行 assistant message 都带这两个字段（CC CLI 包装 anthropic API 响应原样落盘）。
+      //   model 形如 "claude-opus-4-7" / "claude-sonnet-4-5"；usage 含 input/output/cache_read/cache_creation。
+      //   tool_use 中间行的 usage 是"到目前为止"的累积值（API 行为），所以无脑覆盖到 terminal 行
+      //   就是本轮最终值，符合卡片视图"显示本轮消耗"的语义。
+      if (typeof obj.message.model === 'string' && obj.message.model) {
+        entry.lastModel = obj.message.model;
+      }
+      if (obj.message.usage && typeof obj.message.usage === 'object') {
+        const u = obj.message.usage;
+        entry.lastUsage = {
+          input_tokens: u.input_tokens || 0,
+          output_tokens: u.output_tokens || 0,
+          cache_read_input_tokens: u.cache_read_input_tokens || 0,
+          cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+        };
+      }
+      for (const block of content) {
+        if (!block || typeof block !== 'object') continue;
+        if (block.type === 'text' && typeof block.text === 'string') {
+          entry._streamingBuf.push({ type: 'text', text: block.text });
+        } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
+          entry._streamingBuf.push({ type: 'thinking', text: block.thinking });
+        } else if (block.type === 'tool_use' && block.name) {
+          entry._streamingBuf.push({
+            type: 'tool_use',
+            name: block.name,
+            input: block.input || {},
+          });
+        }
+      }
+      // 50KB 头部截断：从尾部累计，直到超出预算就把更早的丢掉
+      let totalLen = 0;
+      for (let i = entry._streamingBuf.length - 1; i >= 0; i--) {
+        const b = entry._streamingBuf[i];
+        const blen = (b.text != null) ? String(b.text).length : JSON.stringify(b.input || {}).length;
+        totalLen += blen;
+        if (totalLen > _CLAUDE_STREAM_BUF_MAX_BYTES) {
+          entry._streamingBuf = entry._streamingBuf.slice(i + 1);
+          break;
+        }
+      }
+
+      // 2026-05-03 道雪 R3：用 Claude 自带的 message.stop_reason 语义信号判定本轮真结束。
+      //   终态值 {end_turn, max_tokens, refusal} 是 Claude 主动标的"本轮真完结"，立即（200ms 防抖）emit。
+      //   "tool_use" 表明还要等 tool_result + 后续 assistant message，不 emit。
+      //   null 表示流式中间态（未 finalize），不 emit。
+      //   90s idle timer 仅作 transcript 完全卡死的最终兜底，不再是主路径。
+      const stopReason = obj.message.stop_reason;
+      const isTerminal = stopReason === 'end_turn' || stopReason === 'max_tokens' || stopReason === 'refusal';
+      if (isTerminal) {
+        this._scheduleStopReasonEmit(hubSessionId);
+      } else {
+        // tool_use / null：取消任何 pending stop_reason emit，启动 90s 兜底 idle
+        this._cancelStopReasonEmit(hubSessionId);
+        this._scheduleIdleEmit(hubSessionId);
+      }
+    };
+  }
+
+  // B1 通道 2 —— 由 main.js 的 /api/hook/prompt（UserPromptSubmit）路由调用。
+  //   这是全新会话第 1 轮唯一能在 assistant 任何一行落盘**之前**拿到权威 transcript
+  //   路径的信号：CC 会等 hook 进程退出才继续处理 prompt，所以此刻从 EOF 起 tail
+  //   必然覆盖本轮全部块，同时不会回放上一轮历史（避免旧 stop_reason 误 emit）。
+  //   只建 tail、不 emit —— 完成判定仍归 stop_reason / Stop hook / idle 兜底。
+  async notifyPrompt(hubSessionId, transcriptPath, ccSessionId = null) {
+    if (!hubSessionId || !transcriptPath) return;
+    if (!this._bound.has(hubSessionId)) this._bound.set(hubSessionId, this._newEntry());
+    const entry = this._bound.get(hubSessionId);
+    if (ccSessionId) entry.ccSessionId = ccSessionId;
+    await this._ensureTail(hubSessionId, transcriptPath, {
+      startAtEnd: true, authoritative: true, source: 'prompt_hook',
+    });
+  }
+
   // 由 main.js 的 /api/hook/stop 路由调用。transcriptPath 是 CC 原生给的
   // ~/.claude/projects/<slug>/<ccSessionId>.jsonl。
   async notifyStop(hubSessionId, transcriptPath) {
     if (!transcriptPath || !hubSessionId) return;
-    if (!this._bound.has(hubSessionId)) {
-      this._bound.set(hubSessionId, {
-        transcriptPath: null, lastText: null,
-        lastModel: null, lastUsage: null,    // T13
-        _streamingBuf: [], _tail: null,
-        _idleTimer: null, _stopReasonTimer: null, _pendingEmitText: null,
-      });
-    }
+    if (!this._bound.has(hubSessionId)) this._bound.set(hubSessionId, this._newEntry());
     const entry = this._bound.get(hubSessionId);
     entry.transcriptPath = transcriptPath;
 
-    // 首次拿到路径 → 启动 JsonlTail，让后续轮也能流式
-    if (!entry._tail) {
-      const onLine = (obj) => {
-        if (obj?.type !== 'assistant' || !obj.message?.content) return;
-        const content = obj.message.content;
-        if (!Array.isArray(content)) return;
-        // T13（2026-06-08）：抽 message.model + message.usage 缓存到 entry，turn emit 时附给卡片视图。
-        //   transcript 每行 assistant message 都带这两个字段（CC CLI 包装 anthropic API 响应原样落盘）。
-        //   model 形如 "claude-opus-4-7" / "claude-sonnet-4-5"；usage 含 input/output/cache_read/cache_creation。
-        //   tool_use 中间行的 usage 是"到目前为止"的累积值（API 行为），所以无脑覆盖到 terminal 行
-        //   就是本轮最终值，符合卡片视图"显示本轮消耗"的语义。
-        if (typeof obj.message.model === 'string' && obj.message.model) {
-          entry.lastModel = obj.message.model;
-        }
-        if (obj.message.usage && typeof obj.message.usage === 'object') {
-          const u = obj.message.usage;
-          entry.lastUsage = {
-            input_tokens: u.input_tokens || 0,
-            output_tokens: u.output_tokens || 0,
-            cache_read_input_tokens: u.cache_read_input_tokens || 0,
-            cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
-          };
-        }
-        for (const block of content) {
-          if (!block || typeof block !== 'object') continue;
-          if (block.type === 'text' && typeof block.text === 'string') {
-            entry._streamingBuf.push({ type: 'text', text: block.text });
-          } else if (block.type === 'thinking' && typeof block.thinking === 'string') {
-            entry._streamingBuf.push({ type: 'thinking', text: block.thinking });
-          } else if (block.type === 'tool_use' && block.name) {
-            entry._streamingBuf.push({
-              type: 'tool_use',
-              name: block.name,
-              input: block.input || {},
-            });
-          }
-        }
-        // 50KB 头部截断：从尾部累计，直到超出预算就把更早的丢掉
-        let totalLen = 0;
-        for (let i = entry._streamingBuf.length - 1; i >= 0; i--) {
-          const b = entry._streamingBuf[i];
-          const blen = (b.text != null) ? String(b.text).length : JSON.stringify(b.input || {}).length;
-          totalLen += blen;
-          if (totalLen > _CLAUDE_STREAM_BUF_MAX_BYTES) {
-            entry._streamingBuf = entry._streamingBuf.slice(i + 1);
-            break;
-          }
-        }
-
-        // 2026-05-03 道雪 R3：用 Claude 自带的 message.stop_reason 语义信号判定本轮真结束。
-        //   终态值 {end_turn, max_tokens, refusal} 是 Claude 主动标的"本轮真完结"，立即（200ms 防抖）emit。
-        //   "tool_use" 表明还要等 tool_result + 后续 assistant message，不 emit。
-        //   null 表示流式中间态（未 finalize），不 emit。
-        //   90s idle timer 仅作 transcript 完全卡死的最终兜底，不再是主路径。
-        const stopReason = obj.message.stop_reason;
-        const isTerminal = stopReason === 'end_turn' || stopReason === 'max_tokens' || stopReason === 'refusal';
-        if (isTerminal) {
-          this._scheduleStopReasonEmit(hubSessionId);
-        } else {
-          // tool_use / null：取消任何 pending stop_reason emit，启动 90s 兜底 idle
-          this._cancelStopReasonEmit(hubSessionId);
-          this._scheduleIdleEmit(hubSessionId);
-        }
-      };
-      // notifyStop already parses the latest completed turn below.  Replaying
-      // an entire long transcript here only rebuilds historical streaming
-      // state on Electron's main thread, so watch from EOF for future turns.
-      entry._tail = new JsonlTail(transcriptPath, onLine, { startAtEnd: true });
-      await entry._tail.start();
-    }
+    // 首次拿到路径 → 启动 JsonlTail，让后续轮也能流式。
+    // notifyStop already parses the latest completed turn below.  Replaying
+    // an entire long transcript here only rebuilds historical streaming
+    // state on Electron's main thread, so watch from EOF for future turns.
+    await this._ensureTail(hubSessionId, transcriptPath, {
+      startAtEnd: true, authoritative: true, source: 'stop_hook',
+    });
 
     // Stop hook 触发 → 取消 idle timer + stop_reason timer，走快路径直接读 transcript 末尾立即 emit
     // 2026-05-14 道雪：用合并版读，避免群聊丢失 [1] plan 段（多 entry 合并 bug 修复）
@@ -1568,7 +1839,12 @@ class GeminiTap extends EventEmitter {
 class TranscriptTap extends EventEmitter {
   constructor(opts = {}) {
     super();
-    this._claude = new ClaudeTap({ parserService: opts.parserService });
+    this._claude = new ClaudeTap({
+      parserService: opts.parserService,
+      // 单测注入用；生产不传 → 走真实 ~/.claude 与 500ms 默认轮询
+      ...(opts.claudeHomeDir ? { homeDir: opts.claudeHomeDir } : {}),
+      ...(opts.claudeDiscoveryPollMs ? { discoveryPollMs: opts.claudeDiscoveryPollMs } : {}),
+    });
     this._codex = new CodexTap({ parserService: opts.parserService });
     this._gemini = new GeminiTap();
     this._kimi = new KimiTap({ parserService: opts.parserService });
@@ -1591,6 +1867,7 @@ class TranscriptTap extends EventEmitter {
     }
     for (const id of ids) this.unregisterSession(id);
     try { this._kimi.dispose(); } catch {}
+    try { this._claude.dispose(); } catch {}
     this.removeAllListeners();
   }
 
@@ -1716,6 +1993,18 @@ class TranscriptTap extends EventEmitter {
     catch (e) { console.warn('[transcript-tap] notifyClaudeStop failed:', e.message); }
   }
 
+  // B1（2026-07-29）：UserPromptSubmit hook 入口。Stop hook 只在本轮结束才响，
+  //   全新会话第 1 轮的 JsonlTail 必须靠这条（或注册期发现）提前建起来，
+  //   否则 _streamingBuf 结构性恒空、群聊卡片恒「思考中」。
+  async notifyClaudePrompt(hubSessionId, transcriptPath, ccSessionId = null) {
+    try { await this._claude.notifyPrompt(hubSessionId, transcriptPath, ccSessionId); }
+    catch (e) { console.warn('[transcript-tap] notifyClaudePrompt failed:', e.message); }
+  }
+
+  getClaudeDebugSnapshot() {
+    return this._claude.getDebugSnapshot();
+  }
+
   // 2026-05-04 codex equiv extract-failure debug —— TranscriptTap 转发 CodexTap 调试快照
   // 给 main.js 的 groupchat-codex-debug-state IPC handler 用，
   // renderer 可以拿到当前 _bound / _pending / _seen 状态排查为什么 manual-extract 拿不到。
@@ -1792,6 +2081,7 @@ function extractGeminiProjectHashFromDir(projectDir) {
 
 module.exports = {
   TranscriptTap,
+  ClaudeTap,          // B1（2026-07-29）：单测注入 homeDir/discoveryPollMs 直测首轮早绑
   CodexTap,           // 2026-05-04 codex equiv：单测注入 sessionsRoot 直测 4 态 extractMode
   GeminiTap,          // 2026-05-04 gemini equiv：单测注入 tmpRoot 直测 _bound 字段
   JsonlTail,

@@ -17,6 +17,17 @@ function claudeProjectRoots(homeDir = defaultHomeDir()) {
   return CLAUDE_PROJECT_ROOT_DIRS.map(dir => path.join(homeDir, dir, 'projects'));
 }
 
+// DeepSeek 跑同一个 claude CLI，但 session-manager 把 CLAUDE_CONFIG_DIR 指到
+// ~/.claude-deepseek（见 core/session-manager.js 的 sessionEnv.CLAUDE_CONFIG_DIR）。
+// 按 kind 收窄根目录，可让"同一 cwd 下 claude + deepseek 两位群聊成员"的 transcript
+// 落在互不相交的目录里，发现期不会互相当成候选。kind 不认识时退回全部根。
+function claudeProjectRootDirsForKind(kind) {
+  const normalized = String(kind || '').toLowerCase();
+  if (normalized.startsWith('deepseek')) return ['.claude-deepseek'];
+  if (normalized.startsWith('claude')) return ['.claude'];
+  return CLAUDE_PROJECT_ROOT_DIRS.slice();
+}
+
 function findTranscriptByCCSessionId(ccSessionId, homeDir = defaultHomeDir()) {
   if (!ccSessionId) return null;
   for (const projectsDir of claudeProjectRoots(homeDir)) {
@@ -38,6 +49,36 @@ function findTranscriptByCCSessionId(ccSessionId, homeDir = defaultHomeDir()) {
 // and the resume fails with "No conversation found with session ID".
 function projectSlug(cwd) {
   return path.resolve(String(cwd || '')).replace(/[^A-Za-z0-9]/g, '-');
+}
+
+// B1（2026-07-29）：全新 Claude 会话的 <ccSessionId>.jsonl 要到 CLI 真正开始写第一轮
+// 才被创建，注册时既没有 ccSessionId 也没有文件 —— 只能反过来盯 cwd 对应的 bucket 目录。
+// 返回该 cwd 在各 CLAUDE_CONFIG_DIR 下的 projects/<slug> 目录（目录可能还不存在）。
+function claudeProjectDirsForCwd(cwd, opts = {}) {
+  const homeDir = opts.homeDir || defaultHomeDir();
+  const rootDirs = opts.rootDirs || claudeProjectRootDirsForKind(opts.kind);
+  const slug = projectSlug(cwd);
+  return rootDirs.map(dir => path.join(homeDir, dir, 'projects', slug));
+}
+
+// 列出某 cwd bucket 下现存的全部 transcript jsonl（按 mtime 新→旧）。
+// 纯 stat，不解析内容；目录不存在返回空数组（新 cwd 的常态，不是错误）。
+function listClaudeTranscriptsForCwd(cwd, opts = {}) {
+  const out = [];
+  for (const dir of claudeProjectDirsForCwd(cwd, opts)) {
+    let names;
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const name of names) {
+      if (!name.endsWith('.jsonl')) continue;
+      const full = path.join(dir, name);
+      let stat;
+      try { stat = fs.statSync(full); } catch { continue; }
+      if (!stat.isFile()) continue;
+      out.push({ path: full, mtimeMs: stat.mtimeMs, birthtimeMs: stat.birthtimeMs, size: stat.size });
+    }
+  }
+  out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return out;
 }
 
 // Copy each session's transcript into the bucket for `toCwd` so the post-archive
@@ -115,8 +156,11 @@ function healPersistedCwds(sessions, opts = {}) {
 
 module.exports = {
   CLAUDE_PROJECT_ROOT_DIRS,
+  claudeProjectDirsForCwd,
+  claudeProjectRootDirsForKind,
   claudeProjectRoots,
   extractCwdFromTranscript,
+  listClaudeTranscriptsForCwd,
   findTranscriptByCCSessionId,
   healPersistedCwds,
   migrateTranscriptsForCwdChange,

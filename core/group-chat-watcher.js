@@ -138,8 +138,20 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 // **关键约束（历史 bug 重现于 2026-04-30）**：Claude/Gemini/Codex 三家都是 TUI alt-screen 程序，
 //   把紧贴到达的字符当"粘贴"事件 → 粘贴里的 '\r' 被当文本换行符而不是 Enter 提交。
 //   所以 prompt 和 '\r' **必须分两次 write**，中间留 TUI 消化窗口；不能合并 `prompt + '\r'`。
-async function sendToPty(sid, prompt, kind) {
+//
+// opts.onSubmitted（2026-07-29 道雪 · B2 修复）：**提交信号即将写进 PTY 的同一刻**回调，
+//   同步执行、不 await。调用方（dispatcher）在这里挂 turn-completion watcher ——
+//   在此之前 CLI 还没拿到问题，不可能产生本轮的 turn-complete；在此之后 sendToPty 自己
+//   还要跑 500ms~2.5s 的回显校验，而 transcriptTap 的 turn-complete 没有重放机制
+//   （entry.lastText 去重，重放 stop hook 也不会再 emit），晚挂一秒就可能永久丢一整轮。
+//   回调抛错一律吞掉：监听失败不能反过来让 prompt 发不出去。
+async function sendToPty(sid, prompt, kind, opts = {}) {
   const { sessionManager } = _deps;
+  const notifySubmitted = () => {
+    if (typeof opts.onSubmitted !== 'function') return;
+    try { opts.onSubmitted({ sid, kind }); }
+    catch (e) { console.warn(`[group-chat] onSubmitted hook threw for ${kind}(${String(sid).slice(0, 8)}):`, e && e.message); }
+  };
   const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
   const FAST_PATH_MAX_WAIT_MS = 3000;   // 上限：极大 prompt 也不无限等
   const FAST_PATH_POLL_MS = 50;
@@ -187,6 +199,7 @@ async function sendToPty(sid, prompt, kind) {
     // 500ms 给 Ink useEffect 消化 paste 块，BP_END 紧贴 \r 时 Ink 把 \r 当 paste
     //   尾巴在内部某些版本下被忽略；间隔 500ms 后 \r 是干净提交信号。
     await new Promise(r => setTimeout(r, 500));
+    notifySubmitted();   // B2：Enter 落地的同一刻挂 watcher，后面的回显校验不再是丢事件的窗口
     for (let i = 0; i < ENTER_RETRY_TRIES; i += 1) {
       sessionManager.writeToSession(sid, '\r');
       if (i < ENTER_RETRY_TRIES - 1) {
@@ -277,6 +290,7 @@ async function sendToPty(sid, prompt, kind) {
   // 决策：echo 正常 → 发 1 次 \r；零 echo → 发 3 次 \r（间隔 150ms），让 paste-end
   //   状态机被卡在 throbbing/工具调用中的 CLI 也能"看见" Enter。
   const echoSeen = lastSeen !== beforeWrite;
+  notifySubmitted();   // B2：旧主路径同样在按 Enter 之前挂 watcher
   if (isCodexCliKind(kind)) {
     await writeSubmitFallbackSignals(sessionManager, sid, kind, ENTER_RETRY_TRIES, ENTER_RETRY_GAP_MS);
   } else if (echoSeen) {

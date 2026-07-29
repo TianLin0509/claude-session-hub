@@ -921,3 +921,7 @@
 .mr-gc-msg.ai.mr-gc-st-send_stuck  .mr-gc-msg-body { border-left-color: rgba(210,153,34,0.9); }
 .mr-gc-msg.ai.mr-gc-st-transport_lost .mr-gc-msg-body { border-left-color: rgba(248,81,73,0.5); }
 .mr-gc-msg.ai.mr-gc-st-streaming   .mr-gc-msg-body { border-left-color: rgba(63,185,80,0.55); }
+/* 2026-07-29 [B3] 勾了但 CLI 没就绪 → 本轮 prompt 一个字都没发出去。
+   用告警橙提醒"这不是正常缺席，是发送失败"，气泡本体仍保留（不再凭空消失）。 */
+.mr-gc-msg.ai.mr-gc-st-cli_not_ready .mr-gc-msg-body { border-left-color: rgba(210,153,34,0.85); }
+.mr-gc-msg.ai.mr-gc-st-cli_not_ready .mr-gc-empty-placeholder { color: var(--mr-warn-text, #d29922); }

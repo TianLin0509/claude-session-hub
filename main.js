@@ -738,6 +738,9 @@ function registerSessionForTap(session) {
     transcriptTap.registerSession(session.id, session.kind, {
       cwd: session.cwd,
       transcriptPath: session.transcriptPath || undefined,
+      // B1: resume/fork 时 ccSessionId 在 spawn 那一刻就已知 → ClaudeTap 直接精确
+      //   定位 transcript 建 tail，不必等第一次 hook。
+      ccSessionId: session.ccSessionId || undefined,
       sessionsRoot: session.codexSessionsRoot || undefined,
       codexSid: session.codexSid || undefined,
       kimiSid: session.kimiSid || undefined,
@@ -1198,6 +1201,15 @@ const hookServer = http.createServer((req, res) => {
         }
         if (event === 'stop' && parsed.transcriptPath) {
           transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath).catch(() => {});
+        }
+        // B1（2026-07-29）：UserPromptSubmit 也要喂给 tap —— 但只建 JsonlTail、不 emit。
+        //   Stop hook 只在本轮结束才响，全新会话第 1 轮若等它建 tail，_streamingBuf
+        //   结构性恒空 → 群聊卡片全程「💭 思考中…」。UserPromptSubmit 在 assistant
+        //   任何一行落盘之前同步触发，是首轮唯一的权威早绑信号。
+        if (event === 'prompt' && parsed.transcriptPath) {
+          transcriptTap.notifyClaudePrompt(
+            parsed.sessionId, parsed.transcriptPath, parsed.claudeSessionId || null,
+          ).catch(() => {});
         }
         if (event === 'prompt' && latestUserMessage) {
           maybeAutoTitleSessionFromPrompt({

@@ -27,11 +27,25 @@ assert.ok(
     s => new RegExp(`const _GC_SETTLED_NO_ANSWER = new Set\\(\\[[^\\]]*${s}[^\\]]*\\]\\)`).test(rendererSrc)),
   '集中的无回答终态集合必须覆盖 errored / absent / superseded / interrupted',
 );
+// 2026-07-29 道雪 [B3]：新增 'cli_not_ready'（勾了但 CLI 没就绪、prompt 未发出）也排在
+//   isPending 之前 —— 它同样是"本轮不会有回答"的终态，不能显示「正在发言」。
 assert.ok(
   rendererSrc.includes('const _isSettledStatus = _isGcSettledStatus(status);') &&
   rendererSrc.includes('const isPending = !!opts.pending && !_isSettledStatus;') &&
-  /const statusText = status === 'errored' \? '发送失败'\s*\n\s*: isPending \? '正在发言'/.test(rendererSrc),
+  /const statusText = status === 'errored' \? '发送失败'[\s\S]{0,160}?: isPending \? '正在发言'/.test(rendererSrc),
   'statusText 判定必须 errored 优先于 pending，且 settle 态在组件内统一排除 pending',
+);
+assert.ok(
+  /const statusText = status === 'errored' \? '发送失败'\s*\n\s*: status === 'cli_not_ready' \? '本轮未发出'\s*\n\s*: isPending \? '正在发言'/.test(rendererSrc),
+  'cli_not_ready 必须排在 isPending 之前（否则未发出的成员会显示「正在发言」）',
+);
+assert.ok(
+  /const _GC_SETTLED_NO_ANSWER = new Set\(\[[^\]]*'cli_not_ready'[^\]]*\]\)/.test(rendererSrc),
+  'cli_not_ready 必须进无回答终态集合（否则气泡永远闪「思考中」等一个根本没被问过的 AI）',
+);
+assert.ok(
+  rendererSrc.includes("status === 'cli_not_ready' ? '该成员的 CLI 在 60 秒内没有就绪"),
+  'cli_not_ready 必须有解释性占位文案（不能让成员凭空消失或空白）',
 );
 
 // 2. superseded / absent 有明确状态标签，不再默默空白

@@ -31,8 +31,33 @@ const MARKERS = {
   kimi: ['context:'],
 };
 
+// BLOCKERS 条目两种写法：
+//   RegExp                      → 老语义：只要出现在 tail 窗口里就判"未就绪"
+//   { re, transient: true }     → 瞬时进度行（2026-07-29 道雪 B3 修复）
+//
+// 为什么需要 transient（真实取证，artifacts/codex-ready-verdict.json）：
+//   Codex 冷启动会打一行
+//       • Booting MCP server: ai-team (0s • esc to interrupt)
+//   这一行同时命中 /Booting MCP server/ 和 /esc to interrupt/ 两条 blocker。MCP 起完之后
+//   Codex 只重绘输入框 + 页脚，那行**留在 ring buffer 里不再被冲走**；PTY 随后彻底静默
+//   （实测 bufLen 4961 连续 230s 一个字节都不变）。于是 `buf.slice(-2000)` 窗口里永远
+//   命中 blocker → isReady 永远 false → 群聊发送阶段等满 60s 后放弃，Codex 被静默跳过。
+//
+//   实测位置证据：ready 页脚 marker 'Context ' 最后一次出现在 idx=4529，
+//   两条 blocker 最后一次出现在 idx=3117 / 3160 —— 页脚是在 blocker **之后**重绘的，
+//   说明那行早就是历史残留。所以瞬时进度行的判定必须带"之后有没有再重绘就绪页脚"，
+//   而不是无脑扫最近 2000 字符。
+//
+//   注意不能一刀切把 transient blocker 删掉：codex 真在干活时也打 `esc to interrupt`。
+//   但那种情况下秒级刷新的计时器会让 buffer 一直变长，第二道门（STABLE_MS 静默期）
+//   自然拦得住 —— 真正只能靠 blocker 拦的是"静止不动的模态框"（trust dialog / OAuth 过期
+//   横幅），那些保持老语义。
 const BLOCKERS = {
-  codex: [/Do you trust the contents of this directory/i, /Booting MCP server/i, /esc to interrupt/i],
+  codex: [
+    /Do you trust the contents of this directory/i,
+    { re: /Booting MCP server/i, transient: true },
+    { re: /esc to interrupt/i, transient: true },
+  ],
   kimi: [
     /OAuth login expired/i,
     /No active session\. Send \/login to login/i,
@@ -57,6 +82,28 @@ const _STRONG_MARKER_KINDS = new Set(['gemini']);
 const _stableState = new Map(); // sid → { lastBufLen, lastChangeTs }
 const _onceTrue = new Set();    // sid → 一旦 true 永久锁
 
+// 末次匹配下标（-1 = 未命中）。RegExp 可能带/不带 g，这里统一新建一个带 g 的副本，
+//   避免复用调用方正则的 lastIndex 状态（那是经典的隐蔽 bug 源）。
+function _lastMatchIndex(str, re) {
+  const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+  let m; let last = -1;
+  while ((m = g.exec(str)) !== null) {
+    last = m.index;
+    if (m.index === g.lastIndex) g.lastIndex += 1;   // 防零宽匹配死循环
+  }
+  return last;
+}
+
+// 就绪 marker 在整个 buffer 里最后一次出现的下标（-1 = 从未出现）。
+function _lastMarkerIndex(buf, need) {
+  let last = -1;
+  for (const m of need) {
+    const idx = buf.lastIndexOf(m);
+    if (idx > last) last = idx;
+  }
+  return last;
+}
+
 // isReady(sessionId, kind, buf) → boolean
 //   非群聊可参与 kind（powershell 等）：默认 ready
 //   _STRONG_MARKER_KINDS 含 marker → marker 命中 + buf ≥ MIN 即 ready（无静默期）
@@ -69,12 +116,21 @@ function isReady(sessionId, kind, buf) {
   if (!need) return true; // 未注册 kind（如 powershell）默认 ready
   buf = buf || '';
   const tail = buf.slice(-2000);
+  const tailOffset = buf.length - tail.length;
   const blockers = BLOCKERS[kind] || [];
-  if (blockers.some(re => re.test(tail))) {
+  const markerLastIdx = _lastMarkerIndex(buf, need);
+  for (const entry of blockers) {
+    const re = (entry && entry.re) ? entry.re : entry;
+    const isTransient = !!(entry && entry.transient);
+    const hitIdx = _lastMatchIndex(tail, re);
+    if (hitIdx < 0) continue;
+    // 瞬时进度行：就绪页脚在它之后重绘过 → 它已经是 ring buffer 里的历史残留，不再有效。
+    //   （真正还在忙时，秒级刷新的计时器会让下面的静默期门自然拦住。）
+    if (isTransient && markerLastIdx > tailOffset + hitIdx) continue;
     _stableState.delete(sessionId);
     return false;
   }
-  const markerHit = need.length > 0 && need.some(m => buf.includes(m));
+  const markerHit = need.length > 0 && markerLastIdx >= 0;
   const noMarker = need.length === 0;
   if (!(markerHit || noMarker)) return false;
   if (buf.length < MIN_BUF_LEN) return false;
