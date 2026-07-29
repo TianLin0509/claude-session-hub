@@ -159,6 +159,45 @@
     </details>`;
   }
 
+  function renderKimiGroup(d) {
+    const km = d.kimi || { entries: [] };
+    const entries = km.entries || [];
+    const total = entries.reduce((s, e) => s + e.bytes, 0);
+    const rows = entries.map(e => `
+      <div class="pi-item">
+        <div${clickAttrs(e.path, e.path)}>
+          <span class="pi-tag">${esc(SOURCE_LABEL[e.source] || e.source)}</span>
+          <span class="pi-path">${esc(e.path)}</span>
+          <span class="pi-sz">${fmtBytes(e.bytes)}</span>
+          <span class="pi-eye">👁 原文</span>
+        </div>
+      </div>`).join('') || '<div class="pi-item"><span class="pi-path">（无）</span></div>';
+
+    return `<details class="pi-grp" open>
+      <summary><span class="pi-gname">AGENTS.md 链（Kimi）</span>
+        <span class="pi-gmeta">${entries.length} 份 · ${fmtBytes(total)}</span></summary>
+      <div class="pi-gbody">
+        <div class="pi-why">Kimi 从最近的 <b>.git 根</b>向下收集到 cwd，不越过该根（嵌套 git 仓库会挡住外层）；
+          <b>没有 .git 时只读 cwd 自己那一份</b>（2026-07-29 探针 + wire.jsonl 实测）。当前 root =
+          <code>${esc(km.projectRoot || '未找到')}</code>，markers = <code>[.git]</code>（固定值，无配置项）。
+          全局记忆 = <code>~/.kimi-code/AGENTS.md</code>。<b>点任意一行看磁盘原文。</b></div>
+        ${rows}
+      </div>
+    </details>`;
+  }
+
+  function renderKimiMemoryNote() {
+    return `<details class="pi-grp">
+      <summary><span class="pi-gname">记忆</span>
+        <span class="pi-gmeta">无记忆桶机制</span></summary>
+      <div class="pi-gbody">
+        <div class="pi-why">Kimi Code 没有 Claude 式 memory 桶（官方文档无 /memory 命令，2026-07-29 核实）。
+          它的「记忆」就是 AGENTS.md 文件：全局靠 <code>~/.kimi-code/AGENTS.md</code>，项目级靠上面链里的那些。
+          想沉淀项目记忆，用 <code>/init</code> 生成或让 Kimi 直接改 AGENTS.md。</div>
+      </div>
+    </details>`;
+  }
+
   function renderMemoryGroup(d) {
     const m = d.memory;
     const [lvl, label] = MEM_STATE[m.state] || ['warn', m.state];
@@ -226,6 +265,7 @@
 
   function renderInspection(d) {
     const isCodex = d.kind === 'codex';
+    const isKimi = d.kind === 'kimi';
     return `
       <div class="pi-head">
         <span class="pi-title">这个 cwd 会注入什么</span>
@@ -236,8 +276,8 @@
       ${renderBudget(d)}
       <div class="pi-sec">
         <h5>逐项来源<span class="pi-hint">（点任意一行看磁盘原文）</span></h5>
-        ${isCodex ? renderCodexGroup(d) : renderClaudeGroup(d)}
-        ${renderMemoryGroup(d)}
+        ${isCodex ? renderCodexGroup(d) : isKimi ? renderKimiGroup(d) : renderClaudeGroup(d)}
+        ${isKimi ? renderKimiMemoryNote() : renderMemoryGroup(d)}
         ${renderCwdGroup(d)}
       </div>
       ${renderTruthLegend()}

@@ -791,6 +791,13 @@ class SessionManager extends EventEmitter {
       try { ensureMemoryLink(spawnCwd); } catch (error) {
         console.warn('[memory] ensureMemoryLink failed:', error && error.message);
       }
+      // Kimi 无 .git 时只读 cwd 自己的 AGENTS.md（2026-07-29 探针实测）——给工作区内
+      // 「无 git 且无 AGENTS.md」的目录补一份根规则副本；有 git 根的目录不插手。
+      if (isKimi && this.workspaceService) {
+        try { this.workspaceService.seedUngovernedAgentsFile(spawnCwd); } catch (error) {
+          console.warn('[kimi] seedUngovernedAgentsFile failed:', error && error.message);
+        }
+      }
     }
 
     if (isClaude) {

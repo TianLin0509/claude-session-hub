@@ -15,6 +15,14 @@
 //     - 只读 AGENTS.md，从 project root 向下收集到 cwd，**不越过 project root**
 //     - project root = 向上找到第一个含 `project_root_markers` 标记的祖先（默认 [".git"]）
 //     - cwd **不做** junction 解析
+//   Kimi Code CLI（2026-07-29 探针实测：4 组路径起真实会话，再从 wire.jsonl 的
+//   systemPrompt 里逐条核对 `<!-- From: ... -->` 注入来源）
+//     - 只读 AGENTS.md，规则与 Codex 相同：最近 .git 根向下收集到 cwd，不越过该根
+//       （嵌套 git 仓库会挡住外层：repo 套 repo 时外层根那份读不到）
+//     - **没有 .git 时退化为只读 cwd 自己那一份**，父目录 AGENTS.md 一份都不读
+//     - 全局记忆 = ~/.kimi-code/AGENTS.md，永远注入
+//     - 无 Claude 式 memory 桶（官方 slash-commands 全文核实：没有 /memory），
+//       记忆检查与桶名塌缩检查对 kimi 无意义，buildHealth 已按 kind 跳过
 //
 // 记忆桶 = ~/.claude/projects/<slug(realpath(cwd))>/memory，slug 规则见 projectSlug()。
 
@@ -25,6 +33,7 @@ const path = require('path');
 
 const CLAUDE_GLOBAL_REL = ['.claude', 'CLAUDE.md'];
 const CODEX_GLOBAL_REL = ['.codex', 'AGENTS.md'];
+const KIMI_GLOBAL_REL = ['.kimi-code', 'AGENTS.md'];
 // 中文/全角字符会被 slug 规则压成短横，长度相同的中文目录名会塌缩到同一个桶。
 const SLUG_COLLAPSE = /[^A-Za-z0-9]/g;
 
@@ -198,6 +207,40 @@ function discoverCodexChain(cwd) {
   return { literalCwd: literal, projectRoot, markers, markersConfigured: configured, entries };
 }
 
+// ---------- Kimi 侧 ----------
+// 2026-07-29 探针实测（见文件头）：规则与 Codex 相同，但 markers 固定 ['.git']
+// （kimi 没有 project_root_markers 配置），全局文件是 ~/.kimi-code/AGENTS.md。
+function discoverKimiChain(cwd) {
+  const literal = path.resolve(cwd);
+  let projectRoot = null;
+  let cur = literal;
+  for (;;) {
+    if (fs.existsSync(path.join(cur, '.git'))) {
+      projectRoot = cur;
+      break;
+    }
+    const parent = path.dirname(cur);
+    if (!parent || parent === cur) break;
+    cur = parent;
+  }
+
+  const entries = [];
+  const globalAgents = path.join(homeDir(), ...KIMI_GLOBAL_REL);
+  if (statSize(globalAgents) >= 0) {
+    entries.push({ path: globalAgents, source: 'user-global', bytes: statSize(globalAgents) });
+  }
+  // 找不到 .git 时 Kimi 只看 cwd 自己（探针实测：父目录一份都不读）
+  const dirs = projectRoot
+    ? ancestorsOutsideIn(literal).filter(d => d === projectRoot || d.startsWith(projectRoot + path.sep))
+    : [literal];
+  for (const dir of dirs) {
+    const f = path.join(dir, 'AGENTS.md');
+    const b = statSize(f);
+    if (b >= 0) entries.push({ path: f, source: 'project', bytes: b });
+  }
+  return { literalCwd: literal, projectRoot, markers: ['.git'], markersConfigured: false, entries };
+}
+
 // ---------- 记忆 ----------
 function inspectMemory(cwd, configDirName = '.claude') {
   const real = realPath(cwd);
@@ -244,7 +287,7 @@ function buildHealth(insp) {
   const push = (level, title, detail) => checks.push({ level, title, detail });
 
   const chain = insp.claude ? insp.claude.entries : [];
-  if (insp.kind === 'claude' || insp.kind === 'deepseek' || insp.kind === 'kimi') {
+  if (insp.kind === 'claude' || insp.kind === 'deepseek') {
     if (chain.length === 0) {
       push('bad', 'CLAUDE.md 一份都没读到', '这个 cwd 向上到盘符根都没有 CLAUDE.md，模型只有内置系统提示词。');
     } else {
@@ -288,6 +331,21 @@ function buildHealth(insp) {
     }
   }
 
+  if (insp.kind === 'kimi') {
+    const km = insp.kimi || { entries: [] };
+    if (!km.projectRoot) {
+      push('warn', '没找到 .git，Kimi 只读 cwd 自己的 AGENTS.md',
+        '2026-07-29 探针实测：无 git 时父目录的 AGENTS.md 一份都不读。经 Hub 启动会自动 seed 一份到 cwd；或 git init 让向上收集生效。');
+    } else {
+      push('ok', `project root = ${km.projectRoot}`, 'markers=[.git]，从这一层向下收集到 cwd（嵌套 git 仓库会挡住外层）。');
+    }
+    push(km.entries.length ? 'ok' : 'bad', `AGENTS.md ${km.entries.length} 份`,
+      km.entries.length ? `共 ${km.entries.reduce((s, e) => s + e.bytes, 0)} 字节（含全局 ~/.kimi-code/AGENTS.md）。` : '一份都没读到（连全局 ~/.kimi-code/AGENTS.md 都没有）。');
+    // Kimi 没有 Claude 式 memory 桶（官方文档无 /memory），下面的记忆桶检查
+    // 与桶名塌缩检查对 kimi 都是假警告，按 kind 跳过。
+  }
+
+  if (insp.kind !== 'kimi') {
   const mem = insp.memory;
   if (mem.state === 'LINKED' || mem.sharesCanonical) {
     push('ok', '记忆已接入规范库', `${mem.files} 条 · 索引 ${mem.indexBytes} 字节`);
@@ -304,6 +362,7 @@ function buildHealth(insp) {
     push('warn', '目录名含非 ASCII，桶名已塌缩',
       `${mem.slug} —— 同一父目录下字数相同的中文名会撞进同一个桶，会话与记忆会混。`);
   }
+  }
   return checks;
 }
 
@@ -315,15 +374,18 @@ function buildInspection(opts = {}) {
   const claude = discoverClaudeChain(cwd);
   const orphanAgents = findOrphanAgentsMd(cwd, claude.entries);
   const codex = discoverCodexChain(cwd);
+  const kimi = discoverKimiChain(cwd);
   const memory = inspectMemory(cwd, configDirName);
   const slugCollapsed = /--{2,}|-{3,}/.test(memory.slug);
 
-  const insp = { cwd, kind, claude, codex, orphanAgents, memory, slugCollapsed };
+  const insp = { cwd, kind, claude, codex, kimi, orphanAgents, memory, slugCollapsed };
   insp.health = buildHealth(insp);
 
   const ruleBytes = kind === 'codex'
     ? codex.entries.reduce((s, e) => s + e.bytes, 0)
-    : claude.entries.reduce((s, e) => s + e.bytes, 0);
+    : kind === 'kimi'
+      ? kimi.entries.reduce((s, e) => s + e.bytes, 0)
+      : claude.entries.reduce((s, e) => s + e.bytes, 0);
   insp.totals = {
     ruleBytes,
     memoryIndexBytes: memory.indexBytes,
@@ -422,6 +484,13 @@ function collectRawSources(insp) {
       bytes: e.bytes, exists: true, injected: (insp && insp.kind) === 'codex',
     });
   });
+  (((insp && insp.kimi) || {}).entries || []).forEach((e, i) => {
+    out.push({
+      id: `kimi:${i}`, group: 'kimi', kind: 'agents-md',
+      path: e.path, label: path.basename(e.path), source: e.source,
+      bytes: e.bytes, exists: true, injected: (insp && insp.kind) === 'kimi',
+    });
+  });
   const mem = (insp && insp.memory) || {};
   if (mem.indexPath) {
     const size = statSize(mem.indexPath);
@@ -514,9 +583,12 @@ function readRawFile(file, opts = {}) {
 // 顺序依据（core 头部注释里那批抓包结论）：
 //   claude 系 → ~/.claude/CLAUDE.md，然后 cwd 祖先从外到内的 CLAUDE.md / CLAUDE.local.md
 //   codex    → project root 向下到 cwd 的 AGENTS.md
+//   kimi     → ~/.kimi-code/AGENTS.md，然后最近 .git 根向下到 cwd 的 AGENTS.md（无 memory 索引段）
 //   记忆索引 MEMORY.md 确实会进 prompt，但插入位置由 CLI 决定，这里排在最后（近似）
 function buildAssembly(insp, opts = {}) {
-  const isCodex = ((insp && insp.kind) || 'claude') === 'codex';
+  const asmKind = ((insp && insp.kind) || 'claude');
+  const isCodex = asmKind === 'codex';
+  const isKimi = asmKind === 'kimi';
   const maxSeg = Math.max(1, Number(opts.maxSegmentBytes) || ASM_MAX_SEGMENT_BYTES);
   const maxTotal = Math.max(1, Number(opts.maxTotalBytes) || ASM_MAX_TOTAL_BYTES);
 
@@ -524,6 +596,10 @@ function buildAssembly(insp, opts = {}) {
   if (isCodex) {
     (((insp && insp.codex) || {}).entries || []).forEach((e, i) => picked.push({
       id: `codex:${i}`, path: e.path, label: path.basename(e.path), role: e.source, orderTruth: 'measured',
+    }));
+  } else if (isKimi) {
+    (((insp && insp.kimi) || {}).entries || []).forEach((e, i) => picked.push({
+      id: `kimi:${i}`, path: e.path, label: path.basename(e.path), role: e.source, orderTruth: 'measured',
     }));
   } else {
     (((insp && insp.claude) || {}).entries || []).forEach((e, i) => {
@@ -538,7 +614,7 @@ function buildAssembly(insp, opts = {}) {
     });
   }
   const mem = (insp && insp.memory) || {};
-  if (mem.indexPath && statSize(mem.indexPath) > 0) {
+  if (!isKimi && mem.indexPath && statSize(mem.indexPath) > 0) {
     picked.push({ id: 'memory:index', path: mem.indexPath, label: 'MEMORY.md', role: 'memory-index', orderTruth: 'approx' });
   }
 
@@ -607,7 +683,7 @@ function buildAssembly(insp, opts = {}) {
 
   const complete = segments.every(s => s.missing || (!s.textTruncated && !s.textOmitted));
   return {
-    kind: isCodex ? 'codex' : 'claude',
+    kind: isCodex ? 'codex' : isKimi ? 'kimi' : 'claude',
     cwd: (insp && insp.cwd) || null,
     segments,
     segmentCount: segments.filter(s => !s.missing).length,
@@ -626,6 +702,7 @@ module.exports = {
   expandImports,
   discoverClaudeChain,
   discoverCodexChain,
+  discoverKimiChain,
   findOrphanAgentsMd,
   readCodexRootMarkers,
   inspectMemory,

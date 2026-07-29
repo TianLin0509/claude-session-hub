@@ -387,6 +387,9 @@ let mainWindow;
 const sessionManager = new SessionManager();
 const meetingManager = new MeetingRoomManager();
 const workspaceService = new WorkspaceService();
+// SessionManager 构造不接收依赖；kimi 会话 spawn 前的 AGENTS.md seed 需要它
+// （core/session-manager.js 里 this.workspaceService.seedUngovernedAgentsFile）。
+sessionManager.workspaceService = workspaceService;
 const workspaceMigrationSessionIds = new Set();
 
 // Deep-summary service singleton: instantiated from config-driven fallback chain.

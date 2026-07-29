@@ -293,6 +293,39 @@ class WorkspaceService {
     }
   }
 
+  // Kimi / Codex 的 AGENTS.md 发现规则（2026-07-29 探针 + wire.jsonl 实测，详见
+  // core/prompt-inspect.js 头注释）：向上找到最近的 .git 才会从根向下收集；
+  // **没有 .git 时只读 cwd 自己那一份**，父目录一份都不读。
+  // 对工作区内「不在任何 git 仓库、且 cwd 还没有 AGENTS.md」的目录（典型：未 git init
+  // 的项目，如 AI\ai-hub-lite），在 spawn 前补一份与 scratch 相同的根规则副本——
+  // 否则该目录里起的 Kimi 会话只剩全局约定，工作区边界规则全丢。
+  // 有 git 根的目录不插手：根上有没有 AGENTS.md 是项目自己的事（可用 /init 生成）。
+  seedUngovernedAgentsFile(cwd) {
+    const resolved = this.path.resolve(String(cwd || ''));
+    // 只补工作区内的目录——工作区外的 cwd 不该被塞进 C:\Vibe 的规则。
+    if (!isPathInside(this.getWorkspaceRoot(), resolved)) return false;
+    const target = this.path.join(resolved, 'AGENTS.md');
+    if (this.fs.existsSync(target)) return false;
+    for (let cur = resolved;;) {
+      if (this.fs.existsSync(this.path.join(cur, '.git'))) return false;
+      const parent = this.path.dirname(cur);
+      if (!parent || parent === cur) break;
+      cur = parent;
+    }
+    const source = this.path.join(this.getWorkspaceRoot(), 'AGENTS.md');
+    try {
+      if (!this.fs.existsSync(source)) return false;
+      const header = `<!-- 由 AI Hub 在启动会话时自动复制自 ${source}。\n`
+        + `     这个目录不在任何 git 仓库内，Kimi / Codex 读不到上级目录的 AGENTS.md，只能靠这份副本。\n`
+        + `     git init 或归档到正式项目后可以删除，改用项目自己的 AGENTS.md。 -->\n\n`;
+      this.fs.writeFileSync(target, header + this.fs.readFileSync(source, 'utf8'), 'utf8');
+      return true;
+    } catch (error) {
+      this.logger.warn('[workspace] seed ungoverned AGENTS.md failed:', error && error.message);
+      return false;
+    }
+  }
+
   createScratchWorkspace(meta = {}) {
     this.ensureRoot();
     const name = `inbox-${timestampSlug(new Date(this.now()))}-${this.randomId()}`;
