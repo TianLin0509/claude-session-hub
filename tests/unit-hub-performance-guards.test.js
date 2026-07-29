@@ -7,7 +7,13 @@ const path = require('path');
 const test = require('node:test');
 
 const { SessionManager, _private } = require('../core/session-manager.js');
-const { shouldForwardTerminalOutput } = require('../main/terminal-output-policy.js');
+const {
+  shouldForwardTerminalOutput,
+  getTerminalBatchDelay,
+  isBackgroundMember,
+  LIVE_BATCH_MS,
+  BACKGROUND_BATCH_MS,
+} = require('../main/terminal-output-policy.js');
 
 test('group Claude sessions isolate inherited MCP servers', () => {
   assert.strictEqual(_private.buildGroupChatIsolationFlags(null), '');
@@ -49,11 +55,24 @@ test('terminal output policy drops background meeting redraws only', () => {
     ['member', { id: 'member', meetingId: 'meeting-1' }],
   ]);
   const manager = { focusedSessionId: null, getSession: id => sessions.get(id) || null };
+  // 2026-07-29：未聚焦成员从「完全不转发」改成「降频转发」。
+  // 旧断言把 member → false 锁成了正确行为，而那正是「PTY 滚不上去 / 渲染卡住」的根因：
+  // 未聚焦期间 xterm 一个字节都收不到，scrollback 无从累积。现在任何会话都转发，
+  // 差别只在合并延迟。
   assert.strictEqual(shouldForwardTerminalOutput(manager, 'solo'), true);
-  assert.strictEqual(shouldForwardTerminalOutput(manager, 'member'), false);
+  assert.strictEqual(shouldForwardTerminalOutput(manager, 'member'), true,
+    '未聚焦成员的输出也必须转发，只是降频');
+
+  assert.strictEqual(getTerminalBatchDelay(manager, 'solo'), LIVE_BATCH_MS, '独立会话永远实时');
+  assert.strictEqual(getTerminalBatchDelay(manager, 'member'), BACKGROUND_BATCH_MS, '未聚焦成员降频');
+  assert.strictEqual(isBackgroundMember(manager, 'member'), true);
+
   manager.focusedSessionId = 'member';
-  assert.strictEqual(shouldForwardTerminalOutput(manager, 'member'), true);
-  assert.strictEqual(shouldForwardTerminalOutput(manager, 'missing'), true);
+  assert.strictEqual(getTerminalBatchDelay(manager, 'member'), LIVE_BATCH_MS, '聚焦后恢复实时');
+  assert.strictEqual(isBackgroundMember(manager, 'member'), false);
+  assert.strictEqual(getTerminalBatchDelay(manager, 'missing'), LIVE_BATCH_MS, '未知会话按实时处理');
+  assert.ok(BACKGROUND_BATCH_MS > LIVE_BATCH_MS && BACKGROUND_BATCH_MS <= 500,
+    '后台合并窗口要明显大于实时，但不能大到让用户切过去时感觉延迟');
 });
 
 test('session ring-buffer snapshot carries the output sequence used for dedup', () => {

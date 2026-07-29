@@ -30,7 +30,12 @@ function withRoot(fn, { withAgents = true } = {}) {
     if (withAgents) {
       fs.writeFileSync(path.join(root, 'AGENTS.md'), '# 约定\n\n- 工具装到 C:\\DevTools\n', 'utf8');
     }
-    fn(new WorkspaceService({ workspaceRoot: root, initGit: () => true }), root);
+    // 注册表也要隔离，否则每跑一次就往生产 workspaces.json 塞一条临时目录。
+    fn(new WorkspaceService({
+      workspaceRoot: root,
+      getHubDataDir: () => path.join(root, 'hub-data'),
+      initGit: () => true,
+    }), root);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

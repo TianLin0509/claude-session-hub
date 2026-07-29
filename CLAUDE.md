@@ -19,7 +19,7 @@
    ```bash
    timeout 6 ./node_modules/electron/dist/electron.exe . 2>&1 | head -20
    ```
-   看到 `[hub] hook server listening on 127.0.0.1:...` 才算通过。看到 `App threw an error during load: Cannot find module 'XXX'` 就是依赖缺失，立即 `npm install` 重对齐。**smoke test 未通过之前，绝不告诉用户"已修复/已完成"。**
+   看到 `[群聊] hook server listening on 127.0.0.1:...` 才算通过（日志前缀是 `[群聊]` 不是 `[hub]`，`main.js` 里搜 `hook server listening` 可确认；照 `[hub]` 字面比对会把启动成功误判成失败）。端口被占用时会自动 fallback（3456→3460），日志里出现 `bind failed ... EADDRINUSE` 后跟着一行 listening 属正常。看到 `App threw an error during load: Cannot find module 'XXX'` 就是依赖缺失，立即 `npm install` 重对齐。**smoke test 未通过之前，绝不告诉用户"已修复/已完成"。**
 
 3. **Hub 启动报 "Cannot find module"，第一反应执行 `npm install`**（按 `package-lock.json` 补齐），不要去怀疑代码或改 main.js。只有 `npm install` 后仍报同名模块错误，才深入查。
 

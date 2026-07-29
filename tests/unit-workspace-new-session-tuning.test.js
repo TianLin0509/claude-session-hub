@@ -28,7 +28,13 @@ function test(name, fn) {
 function withService(fn) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-tuning-'));
   try {
-    fn(new WorkspaceService({ workspaceRoot: root, initGit: () => true }), root);
+    // getHubDataDir 必须一起注入：注册表落盘走的是它，只注入 workspaceRoot 的话
+    // 假 workspace 会被写进用户生产的 ~/.claude-session-hub/workspaces.json。
+    fn(new WorkspaceService({
+      workspaceRoot: root,
+      getHubDataDir: () => path.join(root, 'hub-data'),
+      initGit: () => true,
+    }), root);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

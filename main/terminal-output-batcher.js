@@ -16,7 +16,9 @@ class TerminalOutputBatcher {
     };
   }
 
-  push(sessionId, data, seq) {
+  // delayMs 可按次覆盖：聚焦会话走默认的 8ms（等同实时），未聚焦的群聊成员走
+  // 更长的合并窗口，用一个数量级的 IPC 次数换回完整的数据流（见 terminal-output-policy.js）。
+  push(sessionId, data, seq, delayMs) {
     if (!sessionId || data === undefined || data === null || data === '') return false;
     const text = typeof data === 'string' ? data : String(data);
     const bytes = Buffer.byteLength(text);
@@ -36,7 +38,8 @@ class TerminalOutputBatcher {
       return true;
     }
     if (!item.timer) {
-      item.timer = setTimeout(() => this.flush(sessionId), this.delayMs);
+      const delay = Number.isFinite(Number(delayMs)) ? Math.max(0, Number(delayMs)) : this.delayMs;
+      item.timer = setTimeout(() => this.flush(sessionId), delay);
       item.timer.unref?.();
     }
     return true;

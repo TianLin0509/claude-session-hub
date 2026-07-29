@@ -54,6 +54,11 @@ class WorkspaceService {
     this.randomId = opts.randomId || (() => crypto.randomBytes(3).toString('hex'));
     this.logger = opts.logger || console;
     this.workspaceRoot = opts.workspaceRoot || null;
+    // 注册表落盘位置必须和 workspaceRoot 一样可注入。原先只有 workspaceRoot 能注入，
+    // getRegistryPath() 却硬走 getHubDataDir() —— 单测把 workspace 建在临时目录、
+    // 却把条目写进用户的生产 ~/.claude-session-hub/workspaces.json，每跑一次脏一批
+    // （2026-07-28 实测生产库 74 条里 48 条是测试残留，selectedPath 还指向已删的临时目录）。
+    this.registryPath = opts.registryPath || null;
     this.initGit = opts.initGit || (cwd => {
       const result = childProcess.spawnSync('git', ['init', '--quiet'], {
         cwd,
@@ -77,6 +82,7 @@ class WorkspaceService {
   }
 
   getRegistryPath() {
+    if (this.registryPath) return this.path.resolve(this.registryPath);
     return this.path.join(this.getHubDataDir(), 'workspaces.json');
   }
 
@@ -93,9 +99,13 @@ class WorkspaceService {
   _readRegistry() {
     try {
       const parsed = JSON.parse(this.fs.readFileSync(this.getRegistryPath(), 'utf8'));
+      // listWorkspaces 会过滤掉目录已消失的条目，selectedPath 却没有对应兜底——
+      // 指向一个被删掉的目录时会一直原样传给 renderer。这里统一置空自愈。
+      let selectedPath = typeof parsed.selectedPath === 'string' ? parsed.selectedPath : null;
+      if (selectedPath && !this._isDirectory(selectedPath)) selectedPath = null;
       return {
         schemaVersion: REGISTRY_VERSION,
-        selectedPath: typeof parsed.selectedPath === 'string' ? parsed.selectedPath : null,
+        selectedPath,
         workspaces: Array.isArray(parsed.workspaces) ? parsed.workspaces : [],
       };
     } catch (err) {

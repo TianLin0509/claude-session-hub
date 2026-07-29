@@ -41,7 +41,7 @@ const { registerConfigIpc } = require('./main/ipc/config-handlers.js');
 const { registerPathIpc } = require('./main/ipc/path-handlers.js');
 const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
 const { registerWorkspaceIpc } = require('./main/ipc/workspace-handlers.js');
-const { shouldForwardTerminalOutput } = require('./main/terminal-output-policy.js');
+const { getTerminalBatchDelay, isBackgroundMember } = require('./main/terminal-output-policy.js');
 const { TerminalOutputBatcher } = require('./main/terminal-output-batcher.js');
 const { registerUsageIpc } = require('./main/ipc/usage-handlers.js');
 const { registerMeetingIpc } = require('./main/ipc/meeting-handlers.js');
@@ -687,28 +687,25 @@ let groupChatDispatcher = null;
 const meetingTerminalActivitySentAt = new Map();
 const terminalOutputBatcher = new TerminalOutputBatcher({
   emit: ({ sessionId, data, seq }) => {
-    if (!shouldForwardTerminalOutput(sessionManager, sessionId)) return;
     sendToRenderer('terminal-data', { sessionId, data, seq });
   },
 });
 
 sessionManager.onData = (sessionId, data, seq) => {
-  // Meeting room no longer embeds xterms. Forwarding every background member's
-  // dense TUI redraw across Electron IPC creates a large queue that the renderer
-  // immediately discards (or used to write into an invisible terminal). Keep the
-  // PTY ring buffer in main and stream only when the user explicitly opens that
-  // member as the focused shell.
-  if (!shouldForwardTerminalOutput(sessionManager, sessionId)) {
-    // Preserve the room's lightweight tab activity indicator without shipping
-    // the dense terminal payload. Two events/sec/session is enough for UX.
+  // 未聚焦的群聊成员**降频转发，不再丢弃**。旧实现直接 return，让 xterm 在未聚焦
+  // 期间收不到任何数据，切过去只能靠回灌一段截断的 ANSI 流重建画面 —— 对 alt-screen
+  // TUI 来说基本只剩最后一屏，用户表现为"滚不上去 / 渲染卡住"。
+  // 详见 main/terminal-output-policy.js 顶部。
+  const delay = getTerminalBatchDelay(sessionManager, sessionId);
+  if (isBackgroundMember(sessionManager, sessionId)) {
+    // 房间列表的轻量活动指示仍然限流，2 次/秒足够，不受输出节奏影响。
     const now = Date.now();
     if (now - (meetingTerminalActivitySentAt.get(sessionId) || 0) >= 500) {
       meetingTerminalActivitySentAt.set(sessionId, now);
       sendToRenderer('meeting-terminal-activity', { sessionId });
     }
-    return;
   }
-  terminalOutputBatcher.push(sessionId, data, seq);
+  terminalOutputBatcher.push(sessionId, data, seq, delay);
 };
 
 sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
@@ -837,6 +834,8 @@ groupChatDispatcher = createGroupChatDispatcher({
 
 registerGroupchatTurnIpc(ipcMain, {
   dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
+  interruptGroupChatTurn: groupChatDispatcher.interruptMeetingTurn,
+  stopLoop: (meetingId) => (global.__loopEngine ? global.__loopEngine.stopLoop(meetingId) : false),
 });
 
 // Phase 2b：main 进程循环引擎（崩溃续跑 + 成员 wake），复用 dispatcher。try 包裹，绝不影响启动。
