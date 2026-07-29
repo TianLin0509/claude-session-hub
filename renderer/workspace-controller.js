@@ -34,9 +34,21 @@
   let archiveParent = null;
   let archiveBusy = false;
   let archiveReturnFocus = null;
+  let archiveDoneWithWarnings = false;
   const archiveQueue = [];
   const archivePendingKeys = new Set();
   const archivePromptedKeys = new Set();
+  // 「真的被 UI 承载过」的 key。archivePromptedKeys 只表示「问过一次」，
+  // 而 P1-2 的历史损伤恰恰是：建议进了没人读的 Map，key 却被标记成问过了 ——
+  // 于是补上 UI 之后这些会话再也不会提示。两个集合分开记，判重时要求「问过」
+  // 且「确实呈现过」，把那种只标记没露面的 key 放行重试。
+  const archiveSurfacedKeys = new Set();
+  // scope:id → archive-context。存的是「可以归档」的建议，不是「必须现在处理」的任务。
+  // 由 workspace chip 读取显示轻提示；用户点了才真正打开归档框。
+  const archiveSuggestions = new Map();
+  // scope:id → 归档过程中 main 推来的降级信息（codex rollout 没搬动、transcript 缺失…）。
+  // 这些以前只写 main 进程 console，桌面图标启动的 Hub 没有终端窗口 = 用户永远看不到。
+  const archiveWarnings = new Map();
 
   function compactPath(value, max = 58) {
     const text = String(value || '');
@@ -69,6 +81,47 @@
     if (!error) return;
     error.textContent = message;
     error.hidden = !message;
+  }
+
+  const ARCHIVE_WARNING_STAGES = {
+    codex: 'Codex 会话目录',
+    transcript: '对话记录',
+    dormant: '休眠会话',
+  };
+
+  function archiveWarningKey(entry) {
+    return `${entry && entry.stage}|${entry && entry.target}|${entry && entry.message}`;
+  }
+
+  function recordArchiveWarnings(key, entries) {
+    if (!key || !Array.isArray(entries) || entries.length === 0) return;
+    const list = archiveWarnings.get(key) || [];
+    const seen = new Set(list.map(archiveWarningKey));
+    for (const entry of entries) {
+      if (!entry || seen.has(archiveWarningKey(entry))) continue;
+      seen.add(archiveWarningKey(entry));
+      list.push(entry);
+    }
+    archiveWarnings.set(key, list);
+  }
+
+  // 归档成功但有降级时的唯一呈现点。刻意复用已经在用户眼前的归档框，
+  // 而不是再造一个 toast —— 少一个用户可能错过的通道。
+  function setArchiveWarningList(entries = []) {
+    const box = archiveModalEl && archiveModalEl.querySelector('#workspace-archive-warnings');
+    if (!box) return;
+    if (!entries.length) {
+      box.innerHTML = '';
+      box.hidden = true;
+      return;
+    }
+    const items = entries.map(entry => {
+      const stage = ARCHIVE_WARNING_STAGES[entry && entry.stage] || '归档';
+      const target = entry && entry.target ? `${escapeHtml(entry.target)} · ` : '';
+      return `<li><strong>${escapeHtml(stage)}</strong>${target}${escapeHtml((entry && entry.message) || '')}</li>`;
+    }).join('');
+    box.innerHTML = `<p>归档已完成，但有 ${entries.length} 项降级需要你知道：</p><ul>${items}</ul>`;
+    box.hidden = false;
   }
 
   function archiveTargetPath() {
@@ -121,6 +174,7 @@
           <label class="workspace-archive-name" for="workspace-archive-folder-name"><span>项目文件夹名称</span><input id="workspace-archive-folder-name" type="text" maxlength="48" autocomplete="off" spellcheck="false"></label>
           <div class="workspace-archive-preview"><span>归档后路径</span><code id="workspace-archive-target"></code></div>
           <div class="workspace-archive-error" id="workspace-archive-error" role="alert" hidden></div>
+          <div class="workspace-archive-warnings" id="workspace-archive-warnings" role="status" hidden></div>
         </div>
         <footer class="workspace-archive-footer"><button type="button" class="workspace-archive-later">暂留 _scratch</button><button type="button" class="workspace-archive-submit" id="workspace-archive-submit">归档并继续</button></footer>
       </section>`;
@@ -155,7 +209,9 @@
     archiveContext = context;
     archiveParent = null;
     archiveBusy = false;
+    archiveDoneWithWarnings = false;
     archiveReturnFocus = document.activeElement;
+    setArchiveWarningList([]);
     setArchiveError(context.resumeReady === false
       ? `正在等待安全重连信息：${(context.resumeIssues || []).join('；')}`
       : '');
@@ -185,13 +241,20 @@
     // 用户点了「暂留 _scratch」等于白点。关闭 = 用户已经做过决定，本次运行不再打扰；
     // 同时落盘到 workspace 注册表，Hub 重启后也不再问同一个 workspace。
     if (archiveContext) {
-      archivePromptedKeys.add(`${archiveContext.scope}:${archiveContext.id}`);
+      const key = `${archiveContext.scope}:${archiveContext.id}`;
+      archivePromptedKeys.add(key);
+      archiveSurfacedKeys.add(key);
+      // 用户已经处理过这条建议（归档完成或明确暂留），chip 上的提示态要跟着落下，
+      // 否则下一次 header 重绘又会把琥珀边点亮，看起来像没生效。
+      archiveSuggestions.delete(key);
       if (archiveContext.source) {
         void ipcRenderer.invoke('workspace:dismiss-archive', { path: archiveContext.source })
           .catch(error => console.warn('[workspace] dismiss archive failed:', error && error.message));
       }
     }
     archiveModalEl.style.display = 'none';
+    archiveDoneWithWarnings = false;
+    setArchiveWarningList([]);
     archiveContext = null;
     archiveParent = null;
     if (archiveReturnFocus && typeof archiveReturnFocus.focus === 'function') archiveReturnFocus.focus();
@@ -201,12 +264,20 @@
   }
 
   async function submitArchive() {
+    // 归档已经跑完、只剩「知道了」等用户确认降级信息时，这个按钮就是关闭键。
+    if (archiveDoneWithWarnings) {
+      closeArchiveModal();
+      return;
+    }
     if (!archiveContext || archiveBusy) return;
     const target = archiveTargetPath();
     if (!target) return;
+    const key = `${archiveContext.scope}:${archiveContext.id}`;
     const input = archiveModalEl.querySelector('#workspace-archive-folder-name');
     archiveBusy = true;
     setArchiveError('');
+    setArchiveWarningList([]);
+    archiveWarnings.delete(key);
     paintArchiveModal();
     const submit = archiveModalEl.querySelector('#workspace-archive-submit');
     submit.textContent = '正在安全重连…';
@@ -218,33 +289,72 @@
         folderName: safeFolderName(input.value),
       });
       if (!result || !result.ok) throw new Error('归档未返回成功状态');
-      window.dispatchEvent(new CustomEvent('workspace-archive-completed', { detail: result }));
+      // 返回值里的 warnings 与归档过程中推来的事件合并——两条腿都收，避免任一
+      // 时序下漏掉降级信息。
+      recordArchiveWarnings(key, result.warnings);
+      const warnings = archiveWarnings.get(key) || [];
+      window.dispatchEvent(new CustomEvent('workspace-archive-completed', {
+        detail: { ...result, warnings },
+      }));
       archiveBusy = false;
+      if (warnings.length > 0) {
+        // 归档本身成功了，不该报错，但也绝不能像以前那样只写 main 进程 console
+        // 就当处理完了：框留在原地，把降级项摆出来，用户按「知道了」才关。
+        archiveDoneWithWarnings = true;
+        submit.textContent = '知道了';
+        submit.disabled = false;
+        setArchiveWarningList(warnings);
+        return;
+      }
       submit.textContent = '归档并继续';
       closeArchiveModal();
     } catch (error) {
       archiveBusy = false;
       submit.textContent = '重试归档';
       setArchiveError(error && error.message ? error.message : String(error));
+      // 失败路径同样要带上已经推来的降级信息：main 里 restart 失败会 throw，
+      // 那之前累积的 codex/transcript 降级过去就跟着返回值一起消失了。
+      setArchiveWarningList(archiveWarnings.get(key) || []);
       paintArchiveModal();
     }
   }
 
   async function maybePromptArchive(scope, id) {
     const key = `${scope}:${id}`;
-    if (!id || archivePromptedKeys.has(key) || archivePendingKeys.has(key)) return false;
+    if (!id || archivePendingKeys.has(key)) return false;
+    // 判重要求两条同时成立：问过 + 真的呈现过。
+    // 只满足前者的 key 是 P1-2 留下的历史损伤（建议被塞进没人读的 Map），
+    // 补上 UI 之后必须放行重试，否则那些会话永远不会再被提示。
+    if (archivePromptedKeys.has(key) && archiveSurfacedKeys.has(key)) return false;
     archivePendingKeys.add(key);
     try {
       let context = null;
+      let ready = false;
       for (let attempt = 0; attempt < 20; attempt += 1) {
         context = await ipcRenderer.invoke('workspace:archive-context', { scope, id });
         if (!context || !context.required) return false;
-        if (context.workspace && context.workspace.suggestedName && context.resumeReady !== false) break;
+        if (context.workspace && context.workspace.suggestedName && context.resumeReady !== false) {
+          ready = true;
+          break;
+        }
         await new Promise(resolve => setTimeout(resolve, 400));
       }
-      archivePromptedKeys.add(key);
-      if (archiveContext || (archiveModalEl && archiveModalEl.style.display !== 'none')) archiveQueue.push(context);
-      else openArchiveContext(context);
+      // 轮询跑满还没就绪 = 拿到的是半成品 context（点开只会看到「正在等待安全重连信息」）。
+      // 这种情况不落「已问过」标记，让下一轮 turn 结束时重新取一次，
+      // 否则一个时序不巧的会话会被永久钉死在残缺建议上。
+      if (ready) archivePromptedKeys.add(key);
+      // 2026-07-29：不再自动弹全局模态。
+      // 旧行为是首轮一结束就把归档框糊到用户脸上——既打断当前阅读，又可能弹在
+      // 用户根本没在看的那个会话上（模态是全局的，不属于任何 session）。
+      // 现在只记下建议并广播，由 workspace chip 上的一个轻提示承载，
+      // 用户点它才打开归档框。什么都不点就当没这回事，不再追问。
+      archiveSuggestions.set(key, context);
+      if (ready) archiveSurfacedKeys.add(key);
+      try {
+        window.dispatchEvent(new CustomEvent('workspace-archive-suggestion', {
+          detail: { key, scope, id, context },
+        }));
+      } catch {}
       return true;
     } catch (error) {
       console.warn('[workspace] archive reminder failed:', error && error.message);
@@ -253,6 +363,48 @@
       archivePendingKeys.delete(key);
     }
   }
+
+  // AI 群聊 header 的 workspace chip（meeting-room.js）和独立会话 header 的
+  // 📁 路径（renderer.js renderMetricsRow）共用这一个函数。
+  //
+  // P1-2 的根因就是这段逻辑只在群聊侧写过一遍：独立会话的建议被存进
+  // archiveSuggestions 之后没有任何消费点，用户永远看不到提示。抽成一个函数
+  // 是为了让「只改一边」在结构上不再可能。
+  //
+  // 行为：有建议 → 加 has-archive-hint + 换 title，点击打开归档框；
+  //       没建议 → 保持调用方原来的行为（两处都是「点击复制路径」）。
+  // 调用方每次重渲染都会重建元素，所以这里直接 addEventListener 不会重复绑定。
+  function attachArchiveHint(el, scope, id, options = {}) {
+    if (!el || !id) return false;
+    const key = `${scope}:${id}`;
+    const runFallback = () => {
+      if (typeof options.onFallback === 'function') options.onFallback();
+    };
+    if (archiveSuggestions.has(key)) {
+      el.classList.add('has-archive-hint');
+      el.title = options.hintTitle || '这个任务还在临时区 · 点击归档到正式项目目录';
+    } else {
+      el.classList.remove('has-archive-hint');
+      if (options.idleTitle) el.title = options.idleTitle;
+    }
+    el.addEventListener('click', () => {
+      const context = archiveSuggestions.get(key);
+      if (!context) {
+        runFallback();
+        return;
+      }
+      el.classList.remove('has-archive-hint');
+      openArchiveContext(context);
+    });
+    return true;
+  }
+
+  // main 在归档过程中推来的降级信息。即使随后 restart 失败 throw，
+  // 这些也已经落在 renderer 侧，不会跟着返回值一起丢。
+  ipcRenderer.on('workspace-archive-warning', (_event, entry) => {
+    if (!entry || !entry.id) return;
+    recordArchiveWarnings(`${entry.scope}:${entry.id}`, [entry]);
+  });
 
   async function createScratch(label = '未命名任务') {
     return ipcRenderer.invoke('workspace:create-scratch', { label });
@@ -560,6 +712,19 @@
     openNewSessionModal,
     maybePromptMeetingArchive: meetingId => maybePromptArchive('meeting', meetingId),
     maybePromptSessionArchive: sessionId => maybePromptArchive('session', sessionId),
+    // 归档建议：由 UI（workspace chip / 会话 header 的 📁 路径）主动查询并显示轻提示，
+    // 点了才开框。两处都走 attachArchiveHint，别再各写一套。
+    attachArchiveHint,
+    getArchiveSuggestion: (scope, id) => archiveSuggestions.get(`${scope}:${id}`) || null,
+    getArchiveWarnings: (scope, id) => (archiveWarnings.get(`${scope}:${id}`) || []).slice(),
+    hasArchiveSuggestion: (scope, id) => archiveSuggestions.has(`${scope}:${id}`),
+    openArchiveSuggestion: (scope, id) => {
+      const context = archiveSuggestions.get(`${scope}:${id}`);
+      if (!context) return false;
+      openArchiveContext(context);
+      return true;
+    },
+    dismissArchiveSuggestion: (scope, id) => archiveSuggestions.delete(`${scope}:${id}`),
     pickWorkspace,
     submitNewSession,
   };

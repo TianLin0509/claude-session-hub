@@ -1633,6 +1633,24 @@ function getTurnFromCard(cardEl) {
   return window._sessionTurns.get(cardEl.dataset.turnId);
 }
 
+// 卡片上的操作必须作用于「这张卡片所属的会话」，而不是全局激活的那个。
+//
+// 2026-07-28 串台事故：用户在群聊 A 里单独打开 Kimi 的卡片视图、对着一张历史
+// 卡片重发提问，消息却发到了群聊 B 的 Claude —— 因为 resend / regen /
+// prompt-inspect 三处都直接取全局 activeSessionId。只要用户上一次交互把焦点
+// 落在别的会话上，卡片操作就会打到错误的 CLI，而且两边界面都看不出异常。
+//
+// turn-card-renderer 早就把 sessionId 存进了 cardEl.dataset.sessionId
+// （见该文件 rerenderTurn 附近的注释），这里以它为准；只有实在拿不到才退回
+// 全局值。
+function getCardSessionId(cardEl) {
+  const own = cardEl && cardEl.dataset && cardEl.dataset.sessionId;
+  if (own) return own;
+  return (typeof activeSessionId !== 'undefined' && activeSessionId)
+    || (typeof currentSessionId !== 'undefined' && currentSessionId)
+    || null;
+}
+
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.ta-btn');
   if (!btn) return;
@@ -1658,7 +1676,7 @@ document.addEventListener('click', (e) => {
   }
 
   if (action === 'prompt-inspect') {
-    const sid = (typeof activeSessionId !== 'undefined' && activeSessionId) || (typeof currentSessionId !== 'undefined' && currentSessionId);
+    const sid = getCardSessionId(card);
     if (typeof window.togglePromptInspector === 'function') {
       window.togglePromptInspector(card, sid);
     }
@@ -1683,8 +1701,10 @@ document.addEventListener('click', (e) => {
       }
     }
     if (!promptText) return;
-    // 复用 terminal-input IPC，不新增 channel
-    const sid = (typeof activeSessionId !== 'undefined' && activeSessionId) || (typeof currentSessionId !== 'undefined' && currentSessionId);
+    // 复用 terminal-input IPC，不新增 channel。
+    // sid 必须取自这张卡片（getCardSessionId），不能用全局 activeSessionId ——
+    // 否则在 A 会话的卡片上点重发，消息会打进当时恰好激活的 B 会话。
+    const sid = getCardSessionId(card);
     if (sid && typeof ipcRenderer !== 'undefined') {
       ipcRenderer.send('terminal-input', { sessionId: sid, data: promptText + '\r' });
     }
@@ -1698,6 +1718,17 @@ document.addEventListener('click', (e) => {
     // Hub uses contenteditable div for input (not textarea):
     // - Single session: `<div class="floating-input-box" contenteditable>`
     // - Group chat: `<div id="mr-input-box" contenteditable>`
+    // 输入框是按会话挂载的（mountFloatingInput 闭包绑定 sessionId），而这里用
+    // document.querySelector 全局取第一个 —— 命中的很可能是另一个会话的框，
+    // 文本填进去、用户一回车就发去了错误的 CLI。卡片不属于当前激活会话时直接
+    // 拒绝，宁可少一次便利也不要串台（2026-07-28）。
+    const cardSid = getCardSessionId(card);
+    const liveSid = (typeof activeSessionId !== 'undefined' && activeSessionId) || null;
+    if (cardSid && liveSid && String(cardSid) !== String(liveSid)) {
+      console.warn('[edit-resend] 卡片属于会话', cardSid, '，当前激活的是', liveSid,
+        '——已跳过填入，避免把内容写进别的会话的输入框');
+      return;
+    }
     const inputEl = document.querySelector('.floating-input-box')
       || document.getElementById('mr-input-box');
     if (inputEl) {
@@ -2912,10 +2943,25 @@ function renderMetricsRow(el, session) {
     const a = document.createElement('span');
     a.className = 'metric-cwd';
     a.textContent = '\uD83D\uDCC1 ' + (session.workspaceLabel ? `${session.workspaceLabel} · ` : '') + session.cwd;
-    a.title = 'Click to copy · ' + session.cwd;
-    a.addEventListener('click', () => {
+    const copyCwd = () => {
       try { clipboard.writeText(session.cwd); } catch {}
-    });
+    };
+    const idleTitle = 'Click to copy · ' + session.cwd;
+    // 归档提示挂在 header 这条路径上，与 AI 群聊 header 的 workspace chip 同一套
+    // 实现（WorkspaceController.attachArchiveHint）：有归档建议时显示琥珀色轻标记，
+    // 点击打开归档框；没有建议就还是原来的「点击复制路径」。
+    // 之前这套只在群聊侧存在，独立会话的建议进了没人读的 Map，用户永远看不到提示。
+    const attached = !!(window.WorkspaceController
+      && typeof window.WorkspaceController.attachArchiveHint === 'function'
+      && window.WorkspaceController.attachArchiveHint(a, 'session', session.id, {
+        hintTitle: '这个任务还在临时区 · 点击归档到正式项目目录',
+        idleTitle,
+        onFallback: copyCwd,
+      }));
+    if (!attached) {
+      a.title = idleTitle;
+      a.addEventListener('click', copyCwd);
+    }
     frags.push(a);
   }
   if (typeof session.apiMs === 'number' && session.apiMs > 0) {
@@ -2941,6 +2987,16 @@ function updateActiveMetricsRow() {
   const row = terminalPanelEl.querySelector('.terminal-metrics-row');
   if (row) renderMetricsRow(row, session);
 }
+
+// 归档建议到达时立刻重画 header 上的 📁 路径，否则要等下一个 status-event
+// 才看得见提示态。和 AI 群聊那侧的监听对称（meeting-room.js 只处理 meeting scope）。
+// 只重画，不弹任何东西——是否归档由用户点 chip 决定。
+window.addEventListener('workspace-archive-suggestion', (event) => {
+  const detail = event && event.detail;
+  if (!detail || detail.scope !== 'session') return;
+  if (!activeSessionId || detail.id !== activeSessionId) return;
+  updateActiveMetricsRow();
+});
 
 // Claude Code hooks drive the session state.
 // - 'prompt' (UserPromptSubmit): fires the moment user presses Enter.

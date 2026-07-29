@@ -27,8 +27,14 @@ function test(name, fn) {
 
 function withService(fn) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-dismiss-'));
-  try { fn(new WorkspaceService({ workspaceRoot: root, initGit: () => true }), root); }
-  finally { fs.rmSync(root, { recursive: true, force: true }); }
+  // 注册表跟着一起隔离，别把临时 workspace 写进生产 workspaces.json。
+  try {
+    fn(new WorkspaceService({
+      workspaceRoot: root,
+      getHubDataDir: () => path.join(root, 'hub-data'),
+      initGit: () => true,
+    }), root);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
 console.log('Running archive dismiss stickiness tests...');
@@ -48,7 +54,12 @@ test('the decision survives a fresh service instance (Hub restart)', () => {
   withService((service, root) => {
     const scratch = service.createScratchWorkspace({ label: '未命名任务' });
     service.dismissArchive(scratch.path);
-    const reopened = new WorkspaceService({ workspaceRoot: root, initGit: () => true });
+    // 必须指向同一个隔离注册表，模拟的是「同一台机器重启 Hub」。
+    const reopened = new WorkspaceService({
+      workspaceRoot: root,
+      getHubDataDir: () => path.join(root, 'hub-data'),
+      initGit: () => true,
+    });
     assert.strictEqual(reopened.getArchiveContext(scratch.path).required, false,
       'the dismissal must be persisted, not just in renderer memory');
   });
@@ -77,14 +88,16 @@ test('other workspaces are unaffected', () => {
 });
 
 test('closing the modal marks it asked instead of clearing the mark', () => {
-  assert.match(
-    CONTROLLER_SRC,
-    /archivePromptedKeys\.add\(`\$\{archiveContext\.scope\}:\$\{archiveContext\.id\}`\)/,
-    'closing must remember that the user was already asked',
-  );
+  // 2026-07-29：closeArchiveModal 里改用 key 变量（P1-2 重构），断言跟着放宽到
+  // 「关闭时只 add 不 delete」这个真正的不变量。是否真的不再追问由
+  // unit-archive-session-chip 真跑 controller 验证。
+  const start = CONTROLLER_SRC.indexOf('function closeArchiveModal(');
+  assert.ok(start > 0, 'closeArchiveModal must exist');
+  const body = CONTROLLER_SRC.slice(start, CONTROLLER_SRC.indexOf('\n  }', start));
+  assert.match(body, /archivePromptedKeys\.add\(/, 'closing must remember that the user was already asked');
   assert.doesNotMatch(
-    CONTROLLER_SRC,
-    /archivePromptedKeys\.delete\(`\$\{archiveContext\.scope\}:\$\{archiveContext\.id\}`\)/,
+    body,
+    /archivePromptedKeys\.delete\(/,
     'the old delete is exactly what made it re-ask every turn',
   );
   assert.match(CONTROLLER_SRC, /workspace:dismiss-archive/, 'the decision must be persisted through IPC');

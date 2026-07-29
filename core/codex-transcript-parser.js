@@ -454,6 +454,9 @@ function findCodexRolloutByCwd(cwd, sessionsRoot = DEFAULT_CODEX_SESSIONS_ROOT, 
 
 module.exports = {
   DEFAULT_CODEX_SESSIONS_ROOT,
+  // codex-session-migrator 判定 alreadyCurrent 要用同一套路径比较口径，
+  // 不导出的话那边只会再写一份不一致的实现。
+  normalizePathForCompare,
   parseCodexRolloutToTurns,
   findCodexRolloutBySid,
   findCodexRolloutByCwd,

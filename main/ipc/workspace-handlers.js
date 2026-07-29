@@ -4,9 +4,17 @@ const path = require('path');
 const { normalizeKey } = require('../../core/workspace-service.js');
 const { migrateTranscriptsForCwdChange } = require('../../core/claude-transcript-locator.js');
 const { migrateKimiSession } = require('../../core/kimi-session-migrator.js');
+const { migrateCodexSession } = require('../../core/codex-session-migrator.js');
 
 // claude CLI 的 --resume 按 cwd 分桶查找 transcript，deepseek 走同一套本地存储。
-// codex 的 rollout 按日期存放、gemini 按 project root 记录，都不受目录搬迁影响。
+// 这两类需要把 transcript 复制进新 cwd 的桶。
+//
+// ⚠ 2026-07-28 修正：这里原本写着「codex 的 rollout 按日期存放…不受目录搬迁影响」，
+// 并据此把 codex 排除在整个归档迁移之外。「rollout 文件放在哪」确实不受影响，但
+// rollout 的**内容里**记着 cwd，CLI 启动时会拿它跟当前目录比对，对不上就弹
+// "Choose working directory to resume this session" 等按键 —— 群聊成员会永久卡住，
+// 而 Hub 侧显示 idle，用户只能靠肉眼发现它不说话了。文件找得到 ≠ 能无痛恢复。
+// codex 现在走 migrateCodexSession（改写 rollout 里记的 cwd），见下方归档流程。
 const CWD_BOUND_TRANSCRIPT_KINDS = new Set(['claude', 'deepseek']);
 
 function baseKind(kind) {
@@ -138,6 +146,42 @@ function registerWorkspaceIpc(ipcMain, deps) {
     return { resumed, failures };
   }
 
+  // 归档流程里所有「成功但降级」的分支都必须走这一条通道。
+  //
+  // 血泪：codex rollout 迁移失败、transcript 找不到、休眠会话搬迁失败，过去清一色
+  // 只有 console.warn。桌面图标启动的 Hub 根本没有终端窗口，那些日志等于不存在——
+  // 用户看到「归档成功」，随后那个 codex 成员 resume 时弹目录选择菜单永久卡住，
+  // 变成注释里一直说要避免的「在线但永远不说话的成员」。
+  //
+  // 通道有两条腿，缺一不可：
+  //   ① 立刻 sendToRenderer('workspace-archive-warning')：即使归档后半程 throw
+  //      （restart.failures 那条路），已经推出去的降级信息也不会跟着返回值一起丢；
+  //   ② 汇总进返回值 warnings：渲染端在归档完成时一并呈现，不依赖事件时序。
+  // 新增降级分支请调 report()，不要再写第二个「只落 console」的分支。
+  function createArchiveReporter(entity) {
+    const warnings = [];
+    return {
+      warnings,
+      report(stage, target, message) {
+        const entry = {
+          scope: entity.scope,
+          id: entity.id,
+          stage,
+          target: target == null ? '' : String(target),
+          message: message == null ? '' : String(message),
+        };
+        warnings.push(entry);
+        console.warn(`[workspace] archive degraded (${stage}):`, entry.target, entry.message);
+        try {
+          sendToRenderer('workspace-archive-warning', entry);
+        } catch (error) {
+          // 推送失败也不能吞：返回值里的 warnings 仍然带着这条。
+          console.warn('[workspace] archive warning push failed:', error && error.message);
+        }
+      },
+    };
+  }
+
   async function archiveDraftAfterExit(source, opts) {
     let lastError = null;
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -250,6 +294,10 @@ function registerWorkspaceIpc(ipcMain, deps) {
     // Kimi 迁移失败的会话 id：不再盲目重连（连上也是个死终端），汇总到失败列表。
     const kimiFailedIds = new Set();
     const kimiFailures = [];
+    // Codex 迁移失败不至于让会话变成死终端（大不了 resume 时再弹一次菜单），
+    // 所以只警告不拉黑，与 kimi 的处理级别刻意区分。
+    // 但「不拉黑」不等于「不告诉用户」：所有降级统一走 archiveReporter → UI。
+    const archiveReporter = createArchiveReporter(entity);
     try {
       ids.forEach(id => sessionManager.closeSession(id));
       await waitForSessionsClosed(ids);
@@ -278,9 +326,14 @@ function registerWorkspaceIpc(ipcMain, deps) {
           .map(snapshot => snapshot.ccSessionId)
           .filter(Boolean),
       });
-      if (migration.errors.length > 0 || migration.missing.length > 0) {
-        console.warn('[workspace] transcript migration incomplete:',
-          { errors: migration.errors, missing: migration.missing });
+      // transcript 没搬全 = 归档后 --resume 会拿到空上下文。归档本身仍然成功，
+      // 所以不 throw，但必须让用户看见（以前只有 console.warn）。
+      for (const detail of migration.errors) {
+        archiveReporter.report('transcript', '', `对话记录迁移失败：${detail}`);
+      }
+      for (const ccSessionId of migration.missing) {
+        archiveReporter.report('transcript', ccSessionId,
+          '没找到对应的 Claude 对话记录，归档后重连可能是空上下文');
       }
 
       // Kimi 会校验会话记录的 workDir 与 cwd 是否一致，不迁移就直接
@@ -307,7 +360,27 @@ function registerWorkspaceIpc(ipcMain, deps) {
           kimiFailures.push(`${snapshot.title || snapshot.id}: ${error && error.message ? error.message : String(error)}`);
         }
       };
+      // Codex 会拿 rollout 里记的 cwd 跟当前目录比对，对不上就弹交互菜单等按键。
+      // 迁移失败不阻断归档（归档已经成功了），但要汇总告知——否则用户只会看到
+      // 一个"在线但永远不说话"的成员。
+      const migrateCodexSnapshot = (snapshot) => {
+        if (baseKind(snapshot.kind) !== 'codex' || !snapshot.codexSid) return;
+        try {
+          const migration = migrateCodexSession({
+            sessionId: snapshot.codexSid,
+            toCwd: workspace.path,
+            sessionsRoot: snapshot.codexSessionsRoot || undefined,
+          });
+          if (!migration.ok) {
+            archiveReporter.report('codex', snapshot.title || snapshot.id, migration.reason);
+          }
+        } catch (error) {
+          archiveReporter.report('codex', snapshot.title || snapshot.id,
+            error && error.message ? error.message : String(error));
+        }
+      };
       for (const snapshot of snapshots) migrateKimiSnapshot(snapshot);
+      for (const snapshot of snapshots) migrateCodexSnapshot(snapshot);
 
       // 同目录下 dormant（未运行）的 Kimi 会话也要一起搬：它们的 kimi 状态仍指着
       // 已被移走的旧目录，不搬的话之后唤醒必然 "created under a different directory"。
@@ -315,10 +388,67 @@ function registerWorkspaceIpc(ipcMain, deps) {
       // resume 时还有 lookupKimiSession 对账兜底（resume-session-handlers）。
       const liveIds = new Set(ids);
       const dormantKimiMigrated = [];
+      // 同目录下休眠的 claude / codex 也必须跟着搬 —— 它们不在 snapshots 里（只收活动
+      // 会话），归档后持久化的 cwd 就指向一个已经不存在的目录。后果分别是：
+      //   claude: spawn 时 fs.accessSync 失败 → 静默回退到 USERPROFILE，会话落回
+      //           用户最想摆脱的 home 目录，且 --resume 在 home 桶里找不到 transcript；
+      //   codex : rollout 里的 cwd 仍是旧路径 → resume 弹目录选择菜单永久卡住。
+      // 两者都无声无息，UI 上看不出异常，所以必须在这里一次处理干净。
+      const dormantMigrated = [];
       for (const entry of getLastPersistedSessions() || []) {
         if (!entry || !entry.hubId || liveIds.has(entry.hubId)) continue;
-        if (baseKind(entry.kind) !== 'kimi' || !entry.kimiSid) continue;
         if (!entry.cwd || normalizeKey(entry.cwd) !== normalizeKey(entity.source)) continue;
+        const kind = baseKind(entry.kind);
+
+        if (CWD_BOUND_TRANSCRIPT_KINDS.has(kind)) {
+          try {
+            if (entry.ccSessionId) {
+              migrateTranscriptsForCwdChange({ toCwd: workspace.path, ccSessionIds: [entry.ccSessionId] });
+            }
+            entry.cwd = workspace.path;
+            dormantMigrated.push(entry.hubId);
+            sendToRenderer('session-meta-updated', {
+              hubSessionId: entry.hubId,
+              kind: entry.kind,
+              cwd: workspace.path,
+            });
+          } catch (error) {
+            // 休眠 claude/deepseek 没搬成 = 它的 cwd 还指着已经不存在的旧目录，
+            // 下次唤醒会静默回退到 USERPROFILE。同样不 throw，但必须可见。
+            archiveReporter.report('dormant', entry.title || entry.hubId,
+              `休眠会话未能跟随迁移：${error && error.message ? error.message : String(error)}`);
+          }
+          continue;
+        }
+
+        if (kind === 'codex') {
+          try {
+            if (entry.codexSid) {
+              const migration = migrateCodexSession({
+                sessionId: entry.codexSid,
+                toCwd: workspace.path,
+                sessionsRoot: entry.codexSessionsRoot || undefined,
+              });
+              if (!migration.ok) {
+                archiveReporter.report('codex', `${entry.title || entry.hubId}（休眠）`, migration.reason);
+              }
+            }
+            entry.cwd = workspace.path;
+            dormantMigrated.push(entry.hubId);
+            sendToRenderer('session-meta-updated', {
+              hubSessionId: entry.hubId,
+              kind: entry.kind,
+              codexSid: entry.codexSid || null,
+              cwd: workspace.path,
+            });
+          } catch (error) {
+            archiveReporter.report('codex', `${entry.title || entry.hubId}（休眠）`,
+              error && error.message ? error.message : String(error));
+          }
+          continue;
+        }
+
+        if (kind !== 'kimi' || !entry.kimiSid) continue;
         try {
           const migration = migrateKimiSession({ sessionId: entry.kimiSid, toCwd: workspace.path });
           if (!migration.ok) {
@@ -351,6 +481,8 @@ function registerWorkspaceIpc(ipcMain, deps) {
       );
       restart.failures.unshift(...kimiFailures);
       sendToRenderer('workspace-updated', { workspace });
+      // restart 失败仍然 throw（kimi 的标准）：这一步失败意味着终端真的没回来。
+      // 之前累积的 warnings 不会跟着丢——它们在 report() 里已经推给 renderer 了。
       if (restart.failures.length > 0) {
         throw new Error(`Workspace 已归档，但部分 CLI 重连失败：${restart.failures.join('；')}`);
       }
@@ -362,6 +494,13 @@ function registerWorkspaceIpc(ipcMain, deps) {
         workspace,
         resumedSessionIds: restart.resumed.map(session => session.id),
         dormantKimiMigrated,
+        dormantMigrated,
+        // 归档成功但有降级时，渲染端据此把归档框切成「完成 · N 项需要注意」。
+        warnings: archiveReporter.warnings,
+        // 旧字段保留兼容（历史上只被构造、没人读），内容改由统一通道派生。
+        codexWarnings: archiveReporter.warnings
+          .filter(item => item.stage === 'codex')
+          .map(item => `${item.target}: ${item.message}`),
       };
     } catch (error) {
       const closedSnapshots = snapshots.filter(snapshot =>

@@ -364,6 +364,15 @@
 .workspace-archive-name input { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-primary); color: var(--text-primary); font: 12px Consolas, monospace; }
 .workspace-archive-error { padding: 9px 10px; border: 1px solid rgba(248, 81, 73, .38); border-radius: 7px; background: rgba(248, 81, 73, .09); color: #ffb4ae; font-size: 11px; line-height: 1.5; }
 .workspace-archive-error[hidden] { display: none; }
+/* 归档成功但有降级（codex rollout 没搬动 / transcript 缺失 / 休眠会话没跟上）时的
+   呈现位。琥珀色 = 「完成了，但你需要知道」，与红色的 error 区分开。
+   以前这些只写 main 进程 console，桌面图标启动的 Hub 没有终端窗口 = 用户看不见。 */
+.workspace-archive-warnings { padding: 9px 10px; border: 1px solid rgba(210, 153, 34, .45); border-radius: 7px; background: rgba(210, 153, 34, .09); color: #e3b341; font-size: 11px; line-height: 1.55; }
+.workspace-archive-warnings[hidden] { display: none; }
+.workspace-archive-warnings p { margin: 0 0 5px; font-weight: 650; }
+.workspace-archive-warnings ul { margin: 0; padding-left: 16px; }
+.workspace-archive-warnings li { margin: 2px 0; word-break: break-all; }
+.workspace-archive-warnings li strong { margin-right: 5px; color: #d29922; font-weight: 650; }
 .workspace-archive-footer { display: flex; justify-content: flex-end; gap: 9px; padding: 14px 22px; border-top: 1px solid var(--border); background: rgba(0, 0, 0, .1); }
 .workspace-archive-later,
 .workspace-archive-submit { min-height: 34px; padding: 0 15px; border-radius: 7px; cursor: pointer; font: 12px inherit; }
