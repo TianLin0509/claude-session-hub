@@ -18,8 +18,17 @@ const cssSrc = readCssWithImports(path.join(root, 'renderer', 'meeting-room.css'
 
 // 1. errored 优先于 pending：不再出现「正在发言 + 发送失败」矛盾态。
 //    组件内统一 settle 态防御（_isSettledStatus + isPending），不依赖调用方清 flag。
+//    2026-07-29 道雪：状态列表从散落的硬编码改为集中判定 _isGcSettledStatus（新增
+//    'interrupted' 用户中断态）。契约不变——settle 态一律排除 pending；这里改为锁
+//    「必须走集中判定 + 集中判定必须覆盖四个无回答终态」，比硬编码列表更难漏。
 assert.ok(
-  rendererSrc.includes("const _isSettledStatus = status === 'errored' || status === 'absent' || status === 'superseded';") &&
+  /const _GC_SETTLED_NO_ANSWER = new Set\(\[[^\]]*'errored'[^\]]*\]\)/.test(rendererSrc) &&
+  ["'errored'", "'absent'", "'superseded'", "'interrupted'"].every(
+    s => new RegExp(`const _GC_SETTLED_NO_ANSWER = new Set\\(\\[[^\\]]*${s}[^\\]]*\\]\\)`).test(rendererSrc)),
+  '集中的无回答终态集合必须覆盖 errored / absent / superseded / interrupted',
+);
+assert.ok(
+  rendererSrc.includes('const _isSettledStatus = _isGcSettledStatus(status);') &&
   rendererSrc.includes('const isPending = !!opts.pending && !_isSettledStatus;') &&
   /const statusText = status === 'errored' \? '发送失败'\s*\n\s*: isPending \? '正在发言'/.test(rendererSrc),
   'statusText 判定必须 errored 优先于 pending，且 settle 态在组件内统一排除 pending',
@@ -65,10 +74,15 @@ assert.ok(
   'settle 态即使 empty 也不得显示"思考中"占位',
 );
 
-// 7. pending 渲染调用方：settle 态（errored/absent/superseded）不算 pending
+// 7. pending 渲染调用方：settle 态（errored/absent/superseded/interrupted）不算 pending
+//    2026-07-29 起两处都走集中判定 _isGcSettledStatus，不允许再散落硬编码列表。
 assert.ok(
-  (rendererSrc.match(/const settledPending = status === 'errored' \|\| status === 'absent' \|\| status === 'superseded';/g) || []).length >= 2,
+  (rendererSrc.match(/const settledPending = _isGcSettledStatus\(status\);/g) || []).length >= 2,
   '_renderGroupChatPending 与 _patchGroupChatPendingMessage 都必须排除 settle 态的 pending 标记',
+);
+assert.ok(
+  !/const settledPending = status === 'errored'/.test(rendererSrc),
+  'pending 判定不得回退到硬编码状态列表（漏一个状态就是永久"思考中"卡死）',
 );
 
 // 8. 失败原因链路：dispatcher partial-update 透传 reason → renderer 缓存 → 占位文案解释

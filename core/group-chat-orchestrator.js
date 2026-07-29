@@ -63,6 +63,18 @@ const COMMITTEE_DISCIPLINE = [
 // 2026-06-05 联邦记忆下线：原 MEMORY_DISCIPLINE_PROMPT 教各家 AI 写 memory 的指令段已删除。
 // 记忆维护完全交给 Claude/Codex 各自原生 auto-memory 能力，群聊 prompt 不再越俎代庖。
 
+// 产物落点：跟着 workspace 走，不再写死 home 下的公共 artifacts 目录。
+// 旧写法 `C:\Users\lintian\artifacts\` 是 workspace 重构之前的遗留，结果是
+// 三家 AI 都老老实实把报告写回用户最想摆脱的 home 目录 —— 规则层没跟上目录层
+// 的重构，AI 就会照旧规则执行（2026-07-28）。
+function artifactsInstruction(workspace) {
+  const dir = workspace && String(workspace).trim()
+    ? `${String(workspace).replace(/[\\/]+$/, '')}\\artifacts\\`
+    : '当前工作目录下的 artifacts\\';
+  return `简单问题直答；复杂分析 / 多方案 / 含表格 / 预计 > 300 字 -> HTML 三段式`
+    + `（先口头大纲 -> 写 ${dir}{msgId}-{name}.html -> 贴绝对路径+3-8 条摘要卡片）。`;
+}
+
 function buildSystemPromptText(displayName, scene, opts = {}) {
   const name = displayName || 'AI';
   const parts = [
@@ -71,7 +83,7 @@ function buildSystemPromptText(displayName, scene, opts = {}) {
     '- 独到见解 > 全面但泛泛而谈。',
     '',
     '## 输出',
-    '简单问题直答；复杂分析 / 多方案 / 含表格 / 预计 > 300 字 -> HTML 三段式（先口头大纲 -> 写 C:\\Users\\lintian\\artifacts\\{msgId}-{name}.html -> 贴绝对路径+3-8 条摘要卡片）。',
+    artifactsInstruction(opts.workspace),
   ];
   if (scene === 'research') {
     parts.push('', RESEARCH_SCENE_PROMPT, '', COMMITTEE_DISCIPLINE);

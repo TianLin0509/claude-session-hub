@@ -1245,6 +1245,15 @@ if (typeof document !== 'undefined') (function () {
   //         _thinkStartTs, _cliReadyCache, _tabState, sessions,
   //         _KIND_LABELS, modelShort, modelClass。
   // 返回：{ html, anyThinking }（anyThinking 由调用方累加，不再 mutate 闭包变量）
+  // 无回答终态（2026-07-29 道雪 · 群聊运行中可操作）：这些状态一律不再算"进行中"，
+  //   气泡/卡片不得继续显示「思考中」「正在发言」。'interrupted' 是用户点「停止本轮」
+  //   后的终态（可能带已生成的半截文本）。集中成一个判定，避免各处硬编码列表漏掉新状态
+  //   ——历史上「永久思考中」卡死正是漏判造成的。
+  const _GC_SETTLED_NO_ANSWER = new Set(['errored', 'absent', 'superseded', 'interrupted']);
+  function _isGcSettledStatus(status) {
+    return _GC_SETTLED_NO_ANSWER.has(status);
+  }
+
   function _renderSlotCard(slotIndex, ctx) {
     const { state, currentMode, partialBy, meeting, slots, lastTurn, meetingId, focused } = ctx;
     const slot = slots[slotIndex];
@@ -1271,6 +1280,10 @@ if (typeof document !== 'undefined') (function () {
       } else if (partial.status === 'superseded') {
         status = 'superseded';
         preview = '';
+      } else if (partial.status === 'interrupted') {
+        // 用户点了「停止本轮」：保留已生成的半截文本，但明确是终态、不再"思考中"。
+        status = 'interrupted';
+        preview = partial.text || '';
       } else if (partial.status === 'errored') {
         status = 'errored';
         preview = '';
@@ -1306,6 +1319,9 @@ if (typeof document !== 'undefined') (function () {
         status = 'absent';
       } else if (lastStatus === 'superseded') {
         status = 'superseded';
+      } else if (lastStatus === 'interrupted') {
+        status = 'interrupted';
+        preview = lastTurn.by[sub.sid] || '';
       } else if (lastStatus === 'manual_extracted') {
         status = 'manual_extracted';
         preview = lastTurn.by[sub.sid] || '';
@@ -1558,6 +1574,7 @@ if (typeof document !== 'undefined') (function () {
     if (statusCls === 'manual_extracted') cornerBadge = '<span class="mr-ft-corner-badge manual">手动</span>';
     else if (statusCls === 'absent') cornerBadge = '<span class="mr-ft-corner-badge absent">缺席</span>';
     else if (statusCls === 'superseded') cornerBadge = '<span class="mr-ft-corner-badge absent">已覆盖</span>';
+    else if (statusCls === 'interrupted') cornerBadge = '<span class="mr-ft-corner-badge absent">已中断</span>';
 
     // 2026-05-02 修订：逃生按钮**永久常驻**（用户血泪反馈：按钮"莫名其妙消失"
     //   再次发生）。无论卡片状态（idle/completed/thinking/error/...），两大按钮始终
@@ -1784,7 +1801,8 @@ if (typeof document !== 'undefined') (function () {
     const expectedSlots = slots.filter(slot => expectedSidSet.has(slot.sid));
     const done = expectedSlots.filter(slot => {
       const status = _slotTurnStatus(state, meeting, slot, viewingTurnN).status;
-      return status === 'completed' || status === 'manual_extracted' || status === 'absent' || status === 'superseded';
+      return status === 'completed' || status === 'manual_extracted'
+        || status === 'absent' || status === 'superseded' || status === 'interrupted';
     }).length;
     const summary = currentMode && currentMode !== 'idle'
       ? `本轮 ${done}/${expectedSlots.length}`
@@ -1963,6 +1981,41 @@ if (typeof document !== 'undefined') (function () {
     const expected = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
     if (expected.length === 0) return false;
     return !_allParticipantsSettled(st._partialBy, expected);
+  }
+
+  // 2026-07-29 道雪 [群聊运行中可操作]：本轮是否还在跑 —— 决定「⏹ 停止本轮」入口的显隐。
+  //   与 _isGroupTurnBusy 的区别：这里只看 currentMode，不要求"还有人没结算"。全员刚
+  //   settle、后端还在落盘的窗口里用户依然可能想叫停，而下发 ESC 本身是幂等的。
+  //   注意：**不用它做发送拦截**。运行中追加提问是明确支持的能力（后端抢占式结算），
+  //   这个函数只负责给出"停止"入口，绝不能再退回到"运行中禁止发送"。
+  function _isGroupTurnRunning(meeting) {
+    if (!meeting || !_isPanelCapableMeeting(meeting)) return false;
+    const st = _gcPanelState[meeting.id];
+    const mode = st && st.currentMode;
+    return !!(mode && mode !== 'idle');
+  }
+
+  // 「停止本轮」：向本轮所有在跑成员下发中断（后端 = watcher 结算 interrupted + PTY 写 ESC），
+  //   同时停掉可能在跑的串行/循环工作流。失败诚实报错，不假装已停。
+  async function _handleGcStopTurn(meeting) {
+    const m = (meeting && meetingData[meeting.id]) || meeting || meetingData[activeMeetingId];
+    if (!m || !m.id) return;
+    try {
+      const r = await ipcRenderer.invoke('groupchat:interrupt', { meetingId: m.id });
+      if (!r || r.ok === false) {
+        _showGcEscapeNotice('停止本轮失败：' + ((r && r.reason) || '未知'), 'error');
+        return;
+      }
+      const n = Array.isArray(r.stopped) ? r.stopped.length : 0;
+      const loopTail = r.loopStopped ? '，工作流已一并停止' : '';
+      _showGcEscapeNotice(n > 0
+        ? `已停止本轮：${n} 位 AI 收到中断信号${loopTail}`
+        : r.pendingDispatch
+          ? `本轮正在发送中，已登记停止；发出后立即中断${loopTail}`
+          : `本轮已经没有正在回答的 AI，状态已收回待命${loopTail}`);
+    } catch (e) {
+      _showGcEscapeNotice('停止本轮异常：' + (e && e.message ? e.message : String(e)), 'error');
+    }
   }
 
   // E3 修复 (2026-05-03)：_renderCmdBar 删除（与 toolbar 重复的 ask/debate/summary 按钮组）。
@@ -2184,11 +2237,12 @@ if (typeof document !== 'undefined') (function () {
     //   「正在发言」+失败占位文案并存（截图血泪：状态矛盾）。superseded/absent 也给明确标签。
     //   组件内统一防御：settle 态（errored/absent/superseded）一律不算 pending，
     //   不依赖调用方各自清 pending flag（多方审查加固）。
-    const _isSettledStatus = status === 'errored' || status === 'absent' || status === 'superseded';
+    const _isSettledStatus = _isGcSettledStatus(status);
     const isPending = !!opts.pending && !_isSettledStatus;
     const statusText = status === 'errored' ? '发送失败'
       : isPending ? '正在发言'
       : status === 'superseded' ? '被新提问覆盖'
+      : status === 'interrupted' ? '已被你停止'
       : status === 'absent' ? '已跳过'
       : '';
     const contentStr = String(message.content || '');
@@ -2211,6 +2265,7 @@ if (typeof document !== 'undefined') (function () {
       const ph = status === 'errored'
         ? `本轮未收到回答${reasonTxt ? `（${reasonTxt}）` : ''}。PTY 可能已正常作答——点「同步」从 transcript 重新提取，或点「原文」核对。`
         : status === 'superseded' ? '本轮回答被下一轮提问覆盖，未收录。'
+        : status === 'interrupted' ? '你已停止本轮，该 AI 未来得及输出内容。'
         : status === 'absent' ? '本轮已跳过该 AI，无回答。'
         : '本轮未提取到内容。点「同步」从 transcript 重新提取。';
       body = `<div class="mr-gc-md mr-gc-empty-placeholder">${escapeHtml(ph)}</div>`;
@@ -2266,8 +2321,7 @@ if (typeof document !== 'undefined') (function () {
     const currentTurn = Number(state && state.currentTurn) || 0;
     const persistedSids = new Set((state && Array.isArray(state.messages) ? state.messages : [])
       .filter(m => m && m.role === 'assistant' && Number(m.turnNum) === currentTurn
-        && (m.status === 'completed' || m.status === 'manual_extracted' || m.status === 'errored'
-          || m.status === 'absent' || m.status === 'superseded'))
+        && (m.status === 'completed' || m.status === 'manual_extracted' || _isGcSettledStatus(m.status)))
       .map(m => m.sid));
     const parts = [];
     for (const slot of slots) {
@@ -2287,7 +2341,9 @@ if (typeof document !== 'undefined') (function () {
       // 2026-07-12 道雪：errored/absent 等已 settle 态不再算 pending（旧逻辑显示
       //   「正在发言」+闪烁光标与失败并存）；errored 空文本交给占位文案统一解释，
       //   并带上 watcher 的失败原因。
-      const settledPending = status === 'errored' || status === 'absent' || status === 'superseded';
+      // 2026-07-29 道雪：'interrupted'（用户停止本轮）并入同一判定，防止中断后气泡
+      //   继续闪光标停在"正在发言"。
+      const settledPending = _isGcSettledStatus(status);
       parts.push(_renderGroupChatMessage({
         id: `pending-${slot.sid}`,
         role: 'assistant',
@@ -2634,7 +2690,8 @@ if (typeof document !== 'undefined') (function () {
     const empty = !text && status !== 'errored';
     // 2026-07-12 道雪：与 _renderGroupChatPending 同步——settle 态不算 pending，
     //   errored 占位文案由 _renderGroupChatMessage 统一渲染并带失败原因。
-    const settledPending = status === 'errored' || status === 'absent' || status === 'superseded';
+    //   2026-07-29 起 'interrupted' 走同一判定（用户停止本轮后不得再显示"正在发言"）。
+    const settledPending = _isGcSettledStatus(status);
     const newHtml = _renderGroupChatMessage({
       id: `pending-${sid}`,
       role: 'assistant',
@@ -3514,6 +3571,10 @@ if (typeof document !== 'undefined') (function () {
     }
     if (sendBtn) sendBtn.disabled = isTT;
     if (inputRow) inputRow.classList.toggle('mr-input-row-tt', isTT);
+    // 2026-07-29 道雪 [群聊运行中可操作]：面板每次重渲都同步一次作战面板行，
+    //   让「⏹ 停止本轮」入口跟着 currentMode 实时出现/消失（此前只有输入/勾选等
+    //   用户动作才会刷新这一行，运行状态变化时看不到入口）。
+    try { _updateInputPreflight(meeting); } catch (e) { console.warn('[groupchat] preflight sync failed:', e && e.message); }
 
     const hasThinking = panel.querySelector('.mr-gc-think-elapsed');
     if (hasThinking && !_thinkTimer) {
@@ -3875,6 +3936,8 @@ if (typeof document !== 'undefined') (function () {
     _gcTurnStartTs[m.id] = Date.now();
     let workflowTurnNum = null;
     let workflowFailure = null;
+    // 'interrupted' | 'superseded' | null —— 用户在工作流跑到一半时接管的原因。
+    let workflowTakenOver = null;
     for (let i = 0; i < steps.length; i++) {
       const targetMemberIds = (steps[i] || []).filter(Boolean);
       if (!targetMemberIds.length) continue;
@@ -3910,18 +3973,38 @@ if (typeof document !== 'undefined') (function () {
           workflowFailure = `串行工作流第 ${i + 1}/${steps.length} 步失败：${(result && result.reason) || (result && result.status) || '未知错误'}`;
           break;
         }
+        // 2026-07-29 道雪 [群聊运行中可操作]：本步被用户接管 —— 点了「停止本轮」(interrupted)
+        //   或直接追问下一题把本步抢占掉 (superseded)。语义明确定为「中断整个工作流」，
+        //   不是「排到下一步」：后续步骤的 prompt 依赖本步产出，本步已作废，继续跑只会
+        //   拿空结果编排出垃圾。用户可自行重新发起工作流。
+        if (result.interrupted || result.superseded) {
+          workflowTakenOver = result.interrupted ? 'interrupted' : 'superseded';
+          break;
+        }
       } catch (e) {
         console.error('[workflow] step failed:', e);
         workflowFailure = `串行工作流第 ${i + 1}/${steps.length} 步异常：${(e && e.message) ? e.message : e}`;
         break;
       }
     }
-    delete _gcOptimisticTurn[m.id];
-    delete _gcActiveSids[m.id];
-    const c = _gcPanelState[m.id];
-    if (c) c.currentMode = null;
-    refreshGroupChatPanel(m);
-    renderToolbar(m);
+    // 被用户接管（interrupted / superseded）时不要清乐观思考态：superseded 意味着
+    //   用户已经发了新一轮，新轮的思考态正在跑，清掉会把它抹成 idle（与 turn-complete
+    //   的 superseded 早退同一道理）。interrupted 由 turn-complete 正常收敛。
+    if (!workflowTakenOver) {
+      delete _gcOptimisticTurn[m.id];
+      delete _gcActiveSids[m.id];
+      const c = _gcPanelState[m.id];
+      if (c) c.currentMode = null;
+      refreshGroupChatPanel(m);
+      renderToolbar(m);
+    }
+    if (workflowTakenOver === 'interrupted') {
+      _discardPendingUserMessage(m.id, { clientId: pendingUser && pendingUser.clientId });
+      _showGcEscapeNotice(`串行工作流已在第 ${steps.length} 步流程中被你停止，后续步骤未执行`);
+    } else if (workflowTakenOver === 'superseded') {
+      _discardPendingUserMessage(m.id, { clientId: pendingUser && pendingUser.clientId });
+      _showGcEscapeNotice('串行工作流已被你的新提问接管，后续步骤未执行');
+    }
     if (workflowFailure) {
       if (!workflowTurnNum && opts.heroIdBySid && Object.keys(opts.heroIdBySid).length) {
         _restoreHeroAssignments(m, opts.heroIdBySid);
@@ -4166,6 +4249,28 @@ if (typeof document !== 'undefined') (function () {
     if (meetingId !== activeMeetingId) return;
     refreshGroupChatPanel(meeting);
     if (cached) renderToolbar(meeting);
+  });
+
+  // 2026-07-29 道雪 [群聊运行中可操作]：用户点「停止本轮」后主进程的确认广播。
+  //   真正的状态收敛仍由随后的 groupchat-turn-complete 完成（interrupted 结算会让
+  //   dispatcher 的 allSettled 立即 resolve）；这里只做「没有 watcher 可停」的兜底：
+  //   后端已把 orchestrator 收回 idle，前端也要同步清乐观思考态，否则卡片会一直转。
+  ipcRenderer.on('groupchat-turn-interrupted', (_event, { meetingId, stopped, pendingDispatch }) => {
+    if (!meetingId) return;
+    if (Array.isArray(stopped) && stopped.length > 0) return; // 走正常 turn-complete 收敛
+    if (pendingDispatch) return; // 有轮正卡在发送中，它自己会以 interrupted 收敛，别抢着清
+    delete _gcOptimisticTurn[meetingId];
+    delete _gcActiveSids[meetingId];
+    const cached = _gcPanelState[meetingId];
+    if (cached) {
+      cached._partialBy = null;
+      cached.currentMode = null;
+    }
+    if (meetingId !== activeMeetingId) return;
+    const meeting = meetingData[meetingId];
+    if (!_isPanelCapableMeeting(meeting)) return;
+    refreshGroupChatPanel(meeting);
+    renderToolbar(meeting);
   });
 
   // pilot redesign（2026-05-02）：timeline-append / timeline-update / _updatePilotPlaceholder 整体废弃
@@ -4691,6 +4796,12 @@ if (typeof document !== 'undefined') (function () {
     if (_gcQuoteChips.length) chips.push(_renderInputChip('引用', `${_gcQuoteChips.length}`, 'accent'));
     if (charCount) chips.push(_renderInputChip('字数', `${charCount}`, charCount > _LONG_INPUT_CHAR_THRESHOLD ? 'warn' : ''));
     if (_inputDraftByMeeting[current.id]) chips.push(_renderInputChip('草稿', '已保存', 'saved'));
+    // 2026-07-29 道雪 [群聊运行中可操作]：本轮有 AI 在跑 → 常驻一个明确的「停止本轮」入口。
+    //   等价于用户在单 session 终端里按 ESC，只是一次批量下发给本轮所有在跑成员。
+    //   输入框/发送按钮**不因此禁用**：运行中追加提问是支持的（后端抢占式结算）。
+    if (_isGroupTurnRunning(current)) {
+      chips.push(`<span class="mr-input-preflight-chip stop clickable" data-gc-stop-turn="1" title="停止本轮：向所有还在回答的 AI 下发中断（等同你在终端按 ESC）。想直接追问就继续在下面输入，不必先停。"><span>本轮</span><strong>进行中 ⏹ 停止</strong></span>`);
+    }
     // 2026-07-20 道雪 [修#8]：循环状态 chip——运行中显示轮次·阶段，点击停止
     const loopSt = _loopStateByMeeting[current.id]
       || (current.serialWorkflow && current.serialWorkflow.loopState)
@@ -4714,6 +4825,10 @@ if (typeof document !== 'undefined') (function () {
     const loopStopChip = row.querySelector('[data-loop-stop]');
     if (loopStopChip) loopStopChip.addEventListener('click', () => {
       ipcRenderer.invoke('loop:stop', { meetingId: current.id });
+    });
+    const stopTurnChip = row.querySelector('[data-gc-stop-turn]');
+    if (stopTurnChip) stopTurnChip.addEventListener('click', () => {
+      void _handleGcStopTurn(current);
     });
     const expandBtn = document.getElementById('mr-input-expand-btn');
     if (expandBtn) expandBtn.classList.toggle('attention', charCount > _LONG_INPUT_CHAR_THRESHOLD);
@@ -5230,9 +5345,23 @@ if (typeof document !== 'undefined') (function () {
 
     const focusBtn = document.getElementById('mr-btn-focus');
     const workspaceChip = document.getElementById('mr-workspace-chip');
-    if (workspaceChip) workspaceChip.addEventListener('click', () => {
-      try { if (navigator.clipboard) navigator.clipboard.writeText(meeting.workspace || ''); } catch {}
-    });
+    if (workspaceChip) {
+      // 归档提示挂在这个 chip 上，而不是自动弹全局模态（2026-07-29 用户要求）：
+      // 有待归档建议时 chip 显示一个轻标记，点击才打开归档框；没有建议时保持
+      // 原来的「点击复制路径」行为。用户不点就不打扰。
+      // 2026-07-29 P1-2：同一套交互独立会话 header 也要有，已抽到
+      // WorkspaceController.attachArchiveHint，两处共用，杜绝「只改一边」。
+      const wc = window.WorkspaceController;
+      const copyWorkspace = () => {
+        try { if (navigator.clipboard) navigator.clipboard.writeText(meeting.workspace || ''); } catch {}
+      };
+      const attached = !!(wc && typeof wc.attachArchiveHint === 'function'
+        && wc.attachArchiveHint(workspaceChip, 'meeting', meeting.id, {
+          hintTitle: '这个任务还在临时区 · 点击归档到正式项目目录',
+          onFallback: copyWorkspace,
+        }));
+      if (!attached) workspaceChip.addEventListener('click', copyWorkspace);
+    }
     if (focusBtn) focusBtn.addEventListener('click', () => setLayout(meeting.id, 'focus'));
     const parallelBtn = document.getElementById('mr-btn-view-parallel');
     const tabBtn = document.getElementById('mr-btn-view-tab');
@@ -5583,14 +5712,19 @@ if (typeof document !== 'undefined') (function () {
       avatarsRow.innerHTML = participantIndexes.map(idx => {
         const checked = partSet.has(idx);
         // 2026-07-20 道雪 [修#3a]：休眠成员灰显禁勾（后端 dispatcher 本就跳过 dormant，勾上只会"永远等它"）
+        // 2026-07-29 道雪 [群聊运行中可操作]：**运行中不再禁勾**。此前 `inProgress` 也进
+        //   disabled，只要有一位 AI 在思考，整排成员头像就全灰、用户什么都改不了——这正是
+        //   用户反馈的"UI 都是灰的"。勾选只影响**下一轮**的派发目标（后端在 dispatch 那一刻
+        //   才读 meeting.participants），改它对正在跑的这轮零副作用，没有任何禁用的理由。
         const slot0 = slotsArr[idx] || {};
         const sess0 = (typeof sessions !== 'undefined' && sessions && slot0.sid) ? sessions.get(slot0.sid) : null;
         const isDormant0 = !!(sess0 && sess0.status === 'dormant');
-        const disabledAttr = (inProgress || isDormant0) ? 'disabled' : '';
+        const disabledAttr = isDormant0 ? 'disabled' : '';
         const label = slotDisplayLabel(idx);
+        const runningHint = (inProgress && !isDormant0) ? '（本轮进行中，改选只影响下一轮）' : '';
         return `
           <label class="mr-free-avatar-chk ${isGroupChat ? 'group' : ''} ${checked ? 'checked' : ''} ${disabledAttr}${isDormant0 ? ' dormant' : ''}"
-                 data-slot-idx="${idx}" title="${escapeHtml(label)}${isDormant0 ? '（休眠中，先在侧栏唤醒）' : ''}">
+                 data-slot-idx="${idx}" title="${escapeHtml(label)}${isDormant0 ? '（休眠中，先在侧栏唤醒）' : runningHint}">
             <input type="checkbox" class="mr-free-slot-cb" data-slot-idx="${idx}" ${checked ? 'checked' : ''} ${disabledAttr} />
             <img src="${slotAvatarSrc(idx)}" alt="${escapeHtml(label)}" />
             <span class="mr-free-avatar-chk-mark">OK</span>
@@ -6234,6 +6368,16 @@ if (typeof document !== 'undefined') (function () {
   }
   ipcRenderer.on('terminal-data', (_e, { sessionId }) => _handleTerminalActivity(sessionId));
   ipcRenderer.on('meeting-terminal-activity', (_e, { sessionId }) => _handleTerminalActivity(sessionId));
+
+  // 归档建议到达时立刻把 chip 点亮，否则要等下一次 header 渲染才看得见。
+  // 只重画 header，不弹任何东西 —— 是否归档由用户点 chip 决定。
+  window.addEventListener('workspace-archive-suggestion', (event) => {
+    const detail = event && event.detail;
+    if (!detail || detail.scope !== 'meeting') return;
+    if (!activeMeetingId || detail.id !== activeMeetingId) return;
+    const meeting = meetingData[activeMeetingId];
+    if (meeting) renderHeader(meeting);
+  });
 
   ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     if (_tabState[sessionId] !== undefined) {

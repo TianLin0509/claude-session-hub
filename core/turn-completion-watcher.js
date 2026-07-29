@@ -225,6 +225,26 @@ function createTurnCompletionWatcher(opts) {
     },
 
     /**
+     * 用户中断（2026-07-29 道雪 · 群聊运行中可操作）：用户点「停止本轮」时立即结算。
+     *   与 supersede() 的差别：supersede 是"被下一问覆盖"（丢弃半截），interrupt 是
+     *   "用户主动叫停"——已经生成的半截文本有价值，调用方会把 PTY 里已流出的内容
+     *   传进来一并落盘。
+     *   不进 patch 窗口（'interrupted' 不在 PATCHABLE_STATUSES）：本轮已被用户叫停，
+     *   CLI 之后吐的收尾内容不该再回填这条记录。
+     */
+    interrupt(text = '', reason = 'user_interrupt') {
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'interrupted',
+        text: text || '',
+        reason,
+        signalSource: 'user_interrupt',
+        completedAt: Date.now(),
+      });
+    },
+
+    /**
      * P1 钩子：PTY 子进程退出时由 main.js 调用，作为 L2 完成信号。
      *   exitCode === 0 视为"自然退出但无 L1 信号"→ completed（兜底，无文本）；
      *   exitCode !== 0 / signal 视为 errored。

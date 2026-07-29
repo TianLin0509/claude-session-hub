@@ -41,7 +41,13 @@ test('buildSystemPromptText contains required markers and no banned terms', () =
   assert.ok(text.includes('可赞同、反对、追问、反问用户及其他群聊队友'), 'missing peer-interaction hint');
   assert.ok(text.includes('独到见解 > 全面但泛泛而谈'), 'missing 独到见解 rule');
   assert.ok(text.includes('简单问题直答'), 'missing simple-answer fast path');
-  assert.ok(text.includes('C:\\Users\\lintian\\artifacts\\{msgId}-{name}.html'), 'missing absolute artifact path template');
+  // 2026-07-28：产物落点跟着 workspace 走。原断言写死 C:\Users\lintian\artifacts\，
+  // 等于把「三家 AI 都把报告写回 home」这个 bug 锁成了正确行为。
+  assert.ok(text.includes('{msgId}-{name}.html'), 'missing artifact filename template');
+  assert.ok(!text.includes('C:\\Users\\lintian\\artifacts'),
+    'artifact path must not hardcode the home artifacts dir — it defeats the workspace split');
+  assert.ok(text.includes('当前工作目录下的 artifacts\\'),
+    'without an explicit workspace the prompt should fall back to a cwd-relative path');
   assert.ok(text.includes('贴绝对路径'), 'missing recap-step plain-language hint');
   assert.ok(text.includes('你是TestAI'), 'missing self name substitution');
   assert.ok(!text.includes('皮卡丘'), 'hardcoded member name 皮卡丘 leaked');
@@ -52,6 +58,17 @@ test('buildSystemPromptText contains required markers and no banned terms', () =
   assert.ok(!text.includes('## 成员'), 'member table section should not exist');
   assert.ok(!text.includes('同台'), 'stage concept leaked');
   assert.ok(!text.includes('## 投研场景'), 'research prompt should not leak into general group chat');
+});
+
+test('artifact path follows the meeting workspace when one is set', () => {
+  const ws = 'C:\\Vibe\\AI\\AI-HUB-工作区重构与机制排查';
+  const text = groupchat.buildSystemPromptText('TestAI', 'general', { workspace: ws });
+  assert.ok(text.includes(`${ws}\\artifacts\\{msgId}-{name}.html`),
+    'artifact path should be rooted at the meeting workspace');
+  assert.ok(!text.includes('C:\\Users\\lintian\\artifacts'), 'home artifacts dir leaked back in');
+  // 尾部斜杠不该造成双斜杠
+  const withSlash = groupchat.buildSystemPromptText('TestAI', 'general', { workspace: ws + '\\' });
+  assert.ok(!withSlash.includes('\\\\artifacts'), 'trailing separator must not double up');
 });
 
 test('buildSystemPromptText appends lightweight research scene prompt only for research scene', () => {

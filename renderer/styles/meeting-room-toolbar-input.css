@@ -755,3 +755,16 @@
 /* 2026-07-20 道雪 [修#8]：可点击 chip（循环状态停止钮） */
 .mr-input-preflight-chip.clickable { cursor: pointer; }
 .mr-input-preflight-chip.clickable:hover { border-color: rgba(245, 215, 110, 0.6); background: rgba(245, 215, 110, 0.16); }
+
+/* 2026-07-29 道雪 [群聊运行中可操作]：「⏹ 停止本轮」chip —— 本轮有 AI 在跑时常驻，
+   与输入框可用状态并存（运行中既能追加提问，也能一键叫停）。 */
+.mr-input-preflight-chip.stop {
+  border-color: rgba(233, 105, 105, 0.55);
+  background: rgba(233, 105, 105, 0.12);
+  color: #f0b3b3;
+}
+.mr-input-preflight-chip.stop strong { color: #ffd7d7; }
+.mr-input-preflight-chip.stop.clickable:hover {
+  border-color: rgba(233, 105, 105, 0.85);
+  background: rgba(233, 105, 105, 0.22);
+}

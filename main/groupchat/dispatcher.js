@@ -22,6 +22,12 @@ const CODEX_PROMPT_SUBMIT_WAIT_EXTEND_MS = 60 * 1000;
 const HARD_TIMEOUT_ACTIVE_GRACE_MS = 150 * 1000;
 const HARD_TIMEOUT_ACTIVE_EXTEND_MS = 180 * 1000;
 const HARD_TIMEOUT_ACTIVE_MAX_EXTRA_MS = 8 * 60 * 1000;
+// 中断键：与用户在单 session 终端里按 ESC 完全同一条路径（xterm onData → 'terminal-input'
+//   IPC → sessionManager.writeToSession）。claude / codex / gemini 三家 TUI 都用 ESC 取消
+//   当前回答；不用 Ctrl+C（codex 连按两次会直接退出 CLI，属于误伤）。
+const INTERRUPT_KEY = '\x1b';
+const INTERRUPT_KEY_REPEAT = 2;      // 部分 TUI 首个 ESC 只是收起 UI 面板，补一次更稳
+const INTERRUPT_KEY_GAP_MS = 120;
 // AUTH_FAILURE_RE 已移到 core/host-shell-detector.js 的 createAuthBannerMonitor：
 //   旧实现对整个 ring buffer 裸测，AI 回答里提到 "not logged in" 就误杀（2026-07-12）。
 const AUTH_DETECT_WINDOW_MS = 120 * 1000;
@@ -73,6 +79,15 @@ function createGroupChatDispatcher(deps) {
   // 抢占式连发（2026-06-24 道雪）：每个 meeting 的派发序号，单调递增。runGroupChatTurn
   //   完成时比对，若已有更新的轮号 → 自己是被抢占的旧轮，给前端的 turn-complete 带 superseded。
   const meetingDispatchSeq = new Map();
+  // 运行中中断（2026-07-29 道雪）：每个 meeting 的中断代际，单调递增。
+  //   用于关掉「用户在 sendToPty 还没跑完时就点了停止」的竞态窗口——此刻 activeWatchers
+  //   里还没有 watcher 可以结算，如果不记代际，这一轮会在中断之后才开始等待，卡片
+  //   永久停在"思考中"（正是 ae64983 修过的那类卡死）。
+  const meetingInterruptSeq = new Map();
+  // 每个 meeting 当前在飞的真实用户轮数量。中断时用它区分「真的没人在跑」和
+  //   「有轮正卡在 sendToPty、watcher 还没建」——后者不能提前把 orchestrator 收回
+  //   idle（那一轮马上会自己以 interrupted 收敛），否则 UI 会先闪一下待命再跳回。
+  const meetingInFlightTurns = new Map();
 
   function warn(...args) {
     if (logger && typeof logger.warn === 'function') logger.warn(...args);
@@ -618,6 +633,106 @@ function createGroupChatDispatcher(deps) {
     return count;
   }
 
+  // 运行中中断（2026-07-29 道雪）：把「用户在单 session 里按 ESC」这件事批量下发给
+  //   本轮所有在跑的成员。顺序刻意是「先结算、再发 ESC」：
+  //     ① 先 watcher.interrupt(partialText) —— 状态机立刻收敛到确定态（interrupted），
+  //        不依赖 CLI 是否回吐 stop 信号。CLI 挂了 / 不认 ESC 也不会留下永久"思考中"。
+  //     ② 再向 PTY 写 ESC —— 让 CLI 真的停下别继续烧 token。
+  //   已经流出的半截文本一并落盘（extractStreamingText），中断不等于丢内容。
+  function interruptMeetingTurn(meetingId, opts = {}) {
+    const key = String(meetingId || '');
+    const reason = opts.reason || 'user_interrupt';
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting || !meeting.groupChat) {
+      return { ok: false, reason: 'not_group_chat_meeting', stopped: [], signaled: [], turnNum: null };
+    }
+    // 代际先自增：即使此刻还没有 watcher（send 与 wait 之间），正在跑的
+    //   runGroupChatTurn 也能在开等之前看到「我已经被中断了」。
+    meetingInterruptSeq.set(key, (meetingInterruptSeq.get(key) || 0) + 1);
+
+    const sids = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
+    const stopped = [];
+    for (const sid of sids) {
+      const watcher = activeWatchers.get(sid);
+      if (!watcher || watcher.isSettled()) continue;
+      const session = sessionManager.getSession(sid);
+      const kind = (session && session.kind) || 'unknown';
+      let partialText = '';
+      try {
+        const streamed = groupChatWatcher.extractStreamingText(sid, kind);
+        if (streamed && streamed.text) partialText = String(streamed.text);
+      } catch (e) {
+        warn('[groupchat] interrupt extractStreamingText threw:', e && e.message);
+      }
+      try {
+        watcher.interrupt(partialText, reason);
+        stopped.push(sid);
+      } catch (e) {
+        warn('[groupchat] interrupt watcher threw:', e && e.message);
+      }
+    }
+
+    const signaled = signalInterruptToPty(stopped.length > 0 ? stopped : sidsStillBusy(sids));
+
+    // 有轮正卡在 sendToPty（watcher 还没建）时不要抢着收 idle：那一轮马上会在
+    //   开等之前读到中断代际并自己以 interrupted 收敛，这里插一脚只会让 UI 闪。
+    const pendingDispatch = (meetingInFlightTurns.get(key) || 0) > 0;
+    let turnNum = null;
+    try {
+      const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+      turnNum = orch.state.currentTurn || null;
+      // 兜底收敛：既没有在跑 watcher、也没有在飞的派发（Hub 重启残留 / 状态悬空）时，
+      //   仍把 orchestrator 的进行中轮收回 idle，绝不留"永久思考中"。
+      if (stopped.length === 0 && !pendingDispatch && orch.state.currentMode !== 'idle' && turnNum) {
+        orch.clearTurnInProgress(turnNum);
+      }
+    } catch (e) {
+      warn('[groupchat] interrupt orchestrator sync threw:', e && e.message);
+    }
+
+    log(`[groupchat] user interrupted meeting ${meetingId}: settled ${stopped.length} in-flight AI(s), ESC sent to ${signaled.length}, pendingDispatch=${pendingDispatch}`);
+    try {
+      sendToRenderer('groupchat-turn-interrupted', {
+        meetingId, turnNum, stopped, signaled, reason, pendingDispatch,
+      });
+    } catch (e) {
+      warn('[groupchat] interrupt sendToRenderer threw:', e && e.message);
+    }
+    return { ok: true, stopped, signaled, turnNum, pendingDispatch };
+  }
+
+  // 没有 watcher 但 PTY 可能仍在跑（send 与 wait 之间被叫停）：对本 meeting 里
+  //   groupChatReady 过的成员一律补一发 ESC，宁可多按一次也不留失控的 CLI。
+  function sidsStillBusy(sids) {
+    const out = [];
+    for (const sid of sids) {
+      try {
+        if (sessionManager.getGroupChatReady && sessionManager.getGroupChatReady(sid)) out.push(sid);
+      } catch { /* 会话已关闭 */ }
+    }
+    return out;
+  }
+
+  function signalInterruptToPty(sids) {
+    const signaled = [];
+    for (const sid of sids || []) {
+      try {
+        sessionManager.writeToSession(sid, INTERRUPT_KEY);
+        signaled.push(sid);
+        for (let i = 1; i < INTERRUPT_KEY_REPEAT; i += 1) {
+          const t = setTimeout(() => {
+            try { sessionManager.writeToSession(sid, INTERRUPT_KEY); }
+            catch (e) { warn('[groupchat] interrupt repeat write threw:', e && e.message); }
+          }, INTERRUPT_KEY_GAP_MS * i);
+          t.unref?.();
+        }
+      } catch (e) {
+        warn(`[groupchat] interrupt write to ${String(sid).slice(0, 8)} threw:`, e && e.message);
+      }
+    }
+    return signaled;
+  }
+
   async function dispatchGroupChatTurn(meetingId, args = {}) {
     const key = String(meetingId || '');
     // 真实用户发送（非 silent 内部编排）进来时，先抢占结算上一轮没答完的 AI，再排队 ——
@@ -651,11 +766,21 @@ function createGroupChatDispatcher(deps) {
     dispatchMode,
     _dispatchSeq,
   } = {}) {
-    {
+    // 在飞派发计数（2026-07-29 道雪）：给 interruptMeetingTurn 区分「真没人在跑」
+    //   和「有轮正卡在 sendToPty」。silent 内部编排不计入（不属于用户可见轮）。
+    const inFlightKey = String(meetingId || '');
+    if (!silent) meetingInFlightTurns.set(inFlightKey, (meetingInFlightTurns.get(inFlightKey) || 0) + 1);
+    try {
       const meeting = meetingManager.getMeeting(meetingId);
       if (!meeting || !meeting.groupChat) {
         return { status: 'error', reason: 'not group chat meeting', turnNum: null };
       }
+      // 运行中中断的竞态门（2026-07-29 道雪）：记下本轮开跑时的中断代际。
+      //   sendToPty 可能要跑几秒，用户在这段窗口点「停止」时 activeWatchers 里还没有
+      //   本轮 watcher，中断会落空 → 本轮随后开始等待、永远等不到 → 永久"思考中"。
+      const interruptKey = String(meetingId || '');
+      const interruptSeqAtStart = meetingInterruptSeq.get(interruptKey) || 0;
+      const interruptedSinceStart = () => (meetingInterruptSeq.get(interruptKey) || 0) !== interruptSeqAtStart;
       const members = groupMembersForMeeting(meeting);
       if (members.length === 0) return { status: 'no_subs', turnNum: null };
       // 轻量英雄只接受内置 hero id，不接收 renderer 传来的任意 Prompt 文本。
@@ -715,6 +840,8 @@ function createGroupChatDispatcher(deps) {
       const targets = targetMembers.map(member => {
         const systemPromptText = groupchat.buildSystemPromptText(member.displayName, meeting.scene, {
           kind: member.kind,
+          // 产物写进本群聊的 workspace，而不是 home 下的公共 artifacts 目录。
+          workspace: meeting.workspace || null,
         });
         const basePrompt = orch.buildFirstDelta(member.sid, userInput || '', systemPromptText, {
           currentUserMessageAppended: begin.didAppendUserMessage,
@@ -789,7 +916,9 @@ function createGroupChatDispatcher(deps) {
 
       // 内部编排式调用可传 turnTimeoutMs：卡住的成员到点强制 skip，
       // 不阻塞整轮（防 paste-trapped 无限等待）。普通群聊保持无硬超时。
-      const settled = await Promise.allSettled(sentTargets.map(t =>
+      // 注意：下面的 .map 是同步的，所有 watcher 在 await 之前就已注册进 activeWatchers，
+      //   所以「send 期间被中断」可以在这里补一次结算（见 interruptedSinceStart）。
+      const settledPromise = Promise.allSettled(sentTargets.map(t =>
         waitTurnComplete(t.sid, t.label, {
           meetingId, mode: 'group', turnNum, kind: t.kind, prompt: t.prompt, promptSubmitSinceTs: t.promptSubmitSinceTs,
           memberId: t.member && t.member.memberId,
@@ -819,6 +948,21 @@ function createGroupChatDispatcher(deps) {
         })
       ));
 
+      // send 期间被中断：watcher 刚同步注册完，立刻补一次结算，否则本轮会开始
+      //   等一个已经被用户叫停的回答，卡片永久停在"思考中"。
+      if (!silent && interruptedSinceStart()) {
+        try { interruptMeetingTurn(meetingId, { reason: 'user_interrupt_during_send' }); }
+        catch (e) { warn('[groupchat] late interrupt settle threw:', e && e.message); }
+      } else if (!silent && _dispatchSeq != null && meetingDispatchSeq.get(interruptKey) !== _dispatchSeq) {
+        // send 期间被下一问抢占（2026-07-29 道雪）：dispatchGroupChatTurn 里的抢占发生在
+        //   「本轮还在 sendToPty、activeWatchers 还是空」的窗口时会落空，新一问就要被串行
+        //   队列扣到本轮成员自然结算为止（CLI 卡死时可能是几分钟——用户感知就是"追问石沉大海"）。
+        //   watcher 刚同步注册完，这里补一次抢占，让追加的提问立刻开跑。
+        try { supersedeActiveWatchersForMeeting(meetingId); }
+        catch (e) { warn('[groupchat] late preempt supersede threw:', e && e.message); }
+      }
+      const settled = await settledPromise;
+
       const results = settled.map((s, i) => s.status === 'fulfilled' ? s.value : {
         sid: sentTargets[i].sid,
         label: sentTargets[i].label,
@@ -844,8 +988,18 @@ function createGroupChatDispatcher(deps) {
       // 被抢占判定：完成时若 meeting 的最新派发序号已超过自己 → 用户已发更新的轮，
       //   本轮是被 supersede 的旧轮。前端据此跳过「清 currentMode」避免抹掉新轮思考态。
       const wasSuperseded = _dispatchSeq != null && meetingDispatchSeq.get(String(meetingId || '')) !== _dispatchSeq;
-      sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results, meta, superseded: wasSuperseded });
-      return { status: 'completed', turnNum, results, meta };
+      // 用户中断判定：本轮任一成员被叫停即视为整轮被中断。串行工作流 / 循环引擎靠
+      //   这个返回值决定「不要继续往下一步跑」——否则下一步会拿着空结果继续编排。
+      const wasInterrupted = interruptedSinceStart()
+        || results.some(r => r && r.status === 'interrupted');
+      sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results, meta, superseded: wasSuperseded, interrupted: wasInterrupted });
+      return { status: 'completed', turnNum, results, meta, superseded: wasSuperseded, interrupted: wasInterrupted };
+    } finally {
+      if (!silent) {
+        const left = (meetingInFlightTurns.get(inFlightKey) || 1) - 1;
+        if (left > 0) meetingInFlightTurns.set(inFlightKey, left);
+        else meetingInFlightTurns.delete(inFlightKey);
+      }
     }
   }
 
@@ -864,6 +1018,7 @@ function createGroupChatDispatcher(deps) {
 
   return {
     dispatchGroupChatTurn,
+    interruptMeetingTurn,
     groupMembersForMeeting,
     getActiveWatchers: () => activeWatchers,
     getGroupChatWatcher: () => groupChatWatcher,
@@ -873,6 +1028,7 @@ function createGroupChatDispatcher(deps) {
 
 module.exports = {
   CODEX_AUTO_EXTRACT_DELAY_MS,
+  INTERRUPT_KEY,
   createGroupChatDispatcher,
   _parseGroupTargets: parseGroupTargets,
 };

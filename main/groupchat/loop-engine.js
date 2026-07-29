@@ -144,6 +144,16 @@ function createLoopEngine(deps) {
           state.status = 'paused'; state.lastError = { stage: 'builder', reason: (bRes && (bRes.reason || bRes.status)) || 'builder_not_completed', at: Date.now() };
           logger.log('[loop-engine] builder not completed: ' + state.lastError.reason); break;
         }
+        // 运行中被用户接管（2026-07-29 道雪）：用户点「停止本轮」(interrupted) 或直接
+        //   追问下一题把本步抢占掉 (superseded) —— 语义明确定为「中断整个循环」，不是
+        //   「排到下一步」：后续步骤的 prompt 依赖本步产出，本步已经作废，再往下跑只会
+        //   拿空结果编排出垃圾。用户接管后由用户自己决定要不要重启循环。
+        if (bRes.interrupted || bRes.superseded) {
+          state.status = 'stopped_user';
+          state.currentStep = null;
+          logger.log('[loop-engine] builder turn taken over by user (' + (bRes.interrupted ? 'interrupted' : 'superseded') + '), stopping loop');
+          break;
+        }
         const turnNum = bRes.turnNum;
 
         const reviewerPrompt = LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt });
@@ -161,6 +171,13 @@ function createLoopEngine(deps) {
         if (!rRes || rRes.status !== 'completed') {
           state.status = 'paused'; state.lastError = { stage: 'reviewer', reason: (rRes && (rRes.reason || rRes.status)) || 'reviewer_not_completed', at: Date.now() };
           logger.log('[loop-engine] reviewer not completed: ' + state.lastError.reason); break;
+        }
+        // 同 builder：评审步被中断/被新提问抢占 → 停整个循环，不拿空 verdict 推进 gate。
+        if (rRes.interrupted || rRes.superseded) {
+          state.status = 'stopped_user';
+          state.currentStep = null;
+          logger.log('[loop-engine] reviewer turn taken over by user (' + (rRes.interrupted ? 'interrupted' : 'superseded') + '), stopping loop');
+          break;
         }
 
         const reviews = reviewerIds.map((rid) => { const sid = sidOf(meeting, rid); return { from: labelOf(meeting, rid), verdict: LC.parseVerdict(textFrom(rRes.results, sid)), raw: textFrom(rRes.results, sid) }; });
