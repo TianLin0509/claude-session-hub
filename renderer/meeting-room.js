@@ -1234,7 +1234,8 @@ if (typeof document !== 'undefined') (function () {
   // ==========================================================================
 
   // 挂载点 → 待挂载 turn 的暂存表。HTML 字符串生成阶段写入，紧随其后的 hydrate 阶段读取，
-  //   两者同步相邻，不存在跨帧失效问题。
+  //   两者同步相邻，不存在跨帧失效问题。hydrate 会把消费掉的条目删除，所以稳态下这张表
+  //   是空的 —— 别让它变成"每条历史消息的 turn 对象"的常驻副本。
   const _gcCardTurns = new Map();
   // 本轮 live blocks 快照：key = `${meetingId}|${turnNum}|${sid}`。
   //   partial-update 每次都写；等这一轮 settle 成正式 message 之后，_partialBy 会被清掉，
@@ -1323,6 +1324,7 @@ if (typeof document !== 'undefined') (function () {
       const key = host.getAttribute('data-gc-card-key');
       const entry = key ? _gcCardTurns.get(key) : null;
       if (!entry) return;
+      _gcCardTurns.delete(key);   // 消费即释放，见 _gcCardTurns 声明处
       if (typeof mount !== 'function') {
         // turn-card-renderer 没加载（理论上不会发生：renderer.js 早于 meeting-room.js 加载）。
         //   静默留空会让用户看到空气泡，故退回纯文本，宁可难看也不能吞内容。
