@@ -78,16 +78,51 @@ test('CLAUDE.md 用 @AGENTS.md 引入后不再是孤儿', () => {
   });
 });
 
-test('@import 绝对路径被标成不生效（实测 Claude 不展开）', () => {
+// 勘误（2026-07-29）：本用例原本断言「绝对路径 import 不展开」。用本地捕获代理抓
+// Claude Code 的真实请求体实测推翻了这个假设——探针 CLAUDE.md 里写
+// `@C:/…/abs-target.md`，目标文件正文的标记 MK_ABS_EXPAND_0003 确实出现在请求体中。
+// 判定改为：目标存在即 effective，与相对/绝对无关；不存在才不生效。
+test('@import 绝对路径同样会展开，只有目标不存在才不生效', () => {
   withTree((root) => {
     const target = path.join(root, 'MEMORY.md');
     fs.writeFileSync(target, 'IDX', 'utf8');
-    const imports = PI.expandImports(`@${target}\n@sub/rel.md\n`, root);
+    fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'sub', 'rel.md'), 'REL', 'utf8');
+    const imports = PI.expandImports(`@${target}\n@sub/rel.md\n@sub/missing.md\n`, root);
+
     const abs = imports.find(i => i.absolute);
     assert.ok(abs, '绝对路径 import 应被识别');
-    assert.strictEqual(abs.effective, false, '绝对路径不生效');
-    const rel = imports.find(i => !i.absolute);
-    assert.strictEqual(rel.absolute, false);
+    assert.strictEqual(abs.exists, true);
+    assert.strictEqual(abs.effective, true, '绝对路径目标存在时会被展开');
+
+    const rel = imports.find(i => !i.absolute && i.spec === 'sub/rel.md');
+    assert.strictEqual(rel.effective, true, '相对路径目标存在时会被展开');
+
+    const dead = imports.find(i => i.spec === 'sub/missing.md');
+    assert.strictEqual(dead.exists, false);
+    assert.strictEqual(dead.effective, false, '目标不存在才不生效');
+  });
+});
+
+// 去重：链里已有的文件被 @import 再引一次，不产生第二份正文（抓包实测 Claude 按
+// 解析后路径去重）。段仍列出但标 duplicateOf、零字节、不占偏移。
+test('buildAssembly 对已注入过的路径去重，不假报重复注入', () => {
+  withTree((root) => {
+    const inner = path.join(root, 'proj');
+    fs.mkdirSync(inner, { recursive: true });
+    fs.writeFileSync(path.join(root, 'CLAUDE.md'), 'ROOT-RULES', 'utf8');
+    // 内层 CLAUDE.md 反过来 @import 外层那份——外层本来就在链上
+    fs.writeFileSync(path.join(inner, 'CLAUDE.md'), `@${path.join(root, 'CLAUDE.md')}\nINNER`, 'utf8');
+
+    const insp = PI.buildInspection({ cwd: inner, kind: 'claude' });
+    const asm = PI.buildAssembly(insp);
+    const rootKey = path.resolve(root, 'CLAUDE.md').toLowerCase();
+    const hits = asm.segments.filter(s => String(s.path || '').toLowerCase() === rootKey);
+    assert.ok(hits.length >= 2, '重复引用的段应当仍被列出，便于用户看见死配置');
+    assert.strictEqual(hits.filter(s => !s.duplicateOf).length, 1, '只有一份真正带正文');
+    const dup = hits.find(s => s.duplicateOf);
+    assert.strictEqual(dup.bytes, 0, '重复段不计字节');
+    assert.strictEqual(dup.start, dup.end, '重复段不占偏移');
   });
 });
 

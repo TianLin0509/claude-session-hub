@@ -18,6 +18,7 @@
 //
 // 记忆桶 = ~/.claude/projects/<slug(realpath(cwd))>/memory，slug 规则见 projectSlug()。
 
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -75,7 +76,13 @@ function ancestorsOutsideIn(dir) {
   return out.reverse();
 }
 
-// `@relative/path.md` 一级展开。Claude 实测只认相对路径，绝对路径原样留在 prompt 里。
+// `@path.md` 展开。2026-07-29 用本地捕获代理抓真实请求体实测（见文件头「实测口径」）：
+// 相对路径与绝对路径**都会展开**，且 Claude 按解析后路径去重——已经在链里的文件
+// 再被 @import 引一次不会产生第二份正文，那行 @ 只作为字面文本留在 prompt 里。
+//
+// 历史勘误：本函数原先写 `effective: !isAbsolute && size >= 0`（"绝对路径不展开"），
+// 并据此在体检里报 bad。抓包证明是错的——探针里 `@C:/…/abs-target.md` 的正文
+// 标记 MK_ABS_EXPAND_0003 确实出现在请求体中。误报已修。
 function expandImports(text, baseDir) {
   const imports = [];
   if (!text) return imports;
@@ -92,8 +99,8 @@ function expandImports(text, baseDir) {
       absolute: isAbsolute,
       exists: size >= 0,
       bytes: size < 0 ? 0 : size,
-      // 绝对路径不会被展开——这是实测结论，标出来让用户一眼看到问题
-      effective: !isAbsolute && size >= 0,
+      // 目标存在即会被展开，与相对/绝对无关。是否真的产生新正文另看去重（见 buildAssembly）。
+      effective: size >= 0,
     });
   }
   return imports;
@@ -244,10 +251,20 @@ function buildHealth(insp) {
       const total = chain.reduce((s, e) => s + e.bytes, 0);
       push('ok', `CLAUDE.md 链 ${chain.length} 份`, `共 ${total} 字节，从外到内注入。`);
     }
-    const badImports = chain.flatMap(e => e.imports).filter(im => im.absolute);
-    if (badImports.length) {
-      push('bad', `${badImports.length} 处 @import 用了绝对路径`,
-        `实测 Claude 的 @import 只认相对路径，绝对路径会原样留在 prompt 里不展开：${badImports[0].spec}`);
+    // 真正的问题是「引了但目标不存在」——那行 @ 会当字面文本留在 prompt 里，规则并没进去。
+    const deadImports = chain.flatMap(e => e.imports).filter(im => !im.exists);
+    if (deadImports.length) {
+      push('bad', `${deadImports.length} 处 @import 目标不存在`,
+        `这行 @ 会原样留在 prompt 里当普通文本，被引的规则根本没进去：${deadImports[0].spec}`);
+    }
+    // 引了一份已经在链上的文件 = 死配置。Claude 按解析后路径去重，不会重复注入，
+    // 但这行 @ 本身仍占几十字节，且容易让人误以为"多注入了一份"。
+    const chainKeys = new Set(chain.map(e => pathKey(e.path)));
+    const redundant = chain.flatMap(e => e.imports)
+      .filter(im => im.exists && chainKeys.has(pathKey(im.resolved)));
+    if (redundant.length) {
+      push('warn', `${redundant.length} 处 @import 是多余的`,
+        `目标已经在 CLAUDE.md 链上、会被自动注入，Claude 按路径去重不会注入第二遍。删掉这行更干净：${redundant[0].spec}`);
     }
     if (insp.orphanAgents && insp.orphanAgents.length) {
       push('warn', `${insp.orphanAgents.length} 份 AGENTS.md 读不到`,
@@ -317,6 +334,291 @@ function buildInspection(opts = {}) {
   return insp;
 }
 
+// ============================================================================
+// raw 原文层：把「面板里列出来的每个文件」变成可点开、可校验的磁盘实读原文。
+//
+// 三条诚实红线（不许越）：
+//   1. 只读磁盘，不编造。拿不到的东西（CLI 内置系统提示词、工具定义、请求瞬间
+//      现算的环境块）一律进 UNAVAILABLE_PARTS 如实标注，绝不合成一段假文本冒充。
+//   2. 内容是「磁盘实读原文」（contentTruth = 'disk-verbatim'），顺序是「按实测
+//      规则还原」——CLAUDE.md 链的外→内顺序是抓包实测确认的（orderTruth =
+//      'measured'），@import 展开位置和记忆索引插入位置只是近似（'approx'）。
+//   3. 每份原文都带 sha256 + 字节数 + mtime，用户可以自己 Get-FileHash 对一遍。
+// ============================================================================
+
+// 单次返回的正文上限。超过就分段，由调用方带 offset 续读——绝不静默截断。
+const RAW_MAX_SLICE = 262144;          // 单文件单次 256KB
+const ASM_MAX_SEGMENT_BYTES = 200000;  // 拼装预览里单段最多带回 200KB 正文
+const ASM_MAX_TOTAL_BYTES = 600000;    // 拼装预览正文总量上限，超出的段只给元信息
+const ASSEMBLY_JOIN = '\n\n';          // 段与段之间的分隔（计入总偏移，不属于任何段）
+
+// 拿不到的部分。写死在这里，UI 直接展示——宁可说「拿不到」也不编。
+const UNAVAILABLE_PARTS = [
+  { label: 'CLI 内置系统提示词', why: '由 CLI 二进制内部拼装后直接发往 API，不落磁盘，本机读不到。' },
+  { label: '工具定义（Read / Edit / Bash …）', why: '同样由 CLI 内部生成，随版本变化，Hub 无从获取。' },
+  { label: '环境信息块（工作目录、git 状态、当前日期）', why: 'CLI 在发请求那一刻现算，事后无法复现当时的值。' },
+  { label: '对话历史与运行期 system-reminder', why: '取决于会话进行到哪一步，不属于「这个 cwd 会注入什么」的范畴。' },
+];
+
+// Windows 路径比较必须 resolve + 大小写不敏感，否则 c:\x 与 C:\X 会被判成两条路径。
+function pathKey(p) {
+  const abs = path.resolve(String(p || ''));
+  return process.platform === 'win32' ? abs.toLowerCase() : abs;
+}
+
+// 按字节切片会把 UTF-8 多字节字符劈两半（分页边界出现乱码）。
+// 这里把切点回退到最近的字符起始字节：续字节的高两位固定是 10。
+function alignUtf8Boundary(buf, at) {
+  if (at <= 0) return 0;
+  if (at >= buf.length) return buf.length;
+  let i = at;
+  let back = 0;
+  while (i > 0 && back < 4 && (buf[i] & 0xC0) === 0x80) { i--; back++; }
+  return i;
+}
+
+// UTF-8 首字节 → 这个字符占几字节（用于 limit 比一个字符还短时的兜底）
+function utf8CharLen(b) {
+  if (b >= 0xF0) return 4;
+  if (b >= 0xE0) return 3;
+  if (b >= 0xC0) return 2;
+  return 1;
+}
+
+function sha256Hex(buf) {
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+// 把一次 inspection 里出现过的所有磁盘路径摊平成可点击条目。
+// 顺序 = 面板展示顺序，也是白名单的唯一来源。
+function collectRawSources(insp) {
+  const out = [];
+  const claude = (insp && insp.claude) || {};
+  (claude.entries || []).forEach((e, i) => {
+    out.push({
+      id: `claude:${i}`, group: 'claude', kind: 'claude-md',
+      path: e.path, label: path.basename(e.path), source: e.source,
+      bytes: e.bytes, exists: true, injected: true,
+    });
+    (e.imports || []).forEach((im, j) => {
+      out.push({
+        id: `import:${i}:${j}`, group: 'claude', kind: 'import',
+        path: im.resolved, label: `@${im.spec}`, source: 'import', parent: e.path,
+        bytes: im.bytes, exists: !!im.exists, injected: !!im.effective,
+      });
+    });
+  });
+  ((insp && insp.orphanAgents) || []).forEach((o, i) => {
+    out.push({
+      id: `orphan:${i}`, group: 'orphan', kind: 'agents-md',
+      path: o.path, label: path.basename(o.path), source: 'orphan',
+      bytes: o.bytes, exists: true, injected: false,
+    });
+  });
+  (((insp && insp.codex) || {}).entries || []).forEach((e, i) => {
+    out.push({
+      id: `codex:${i}`, group: 'codex', kind: 'agents-md',
+      path: e.path, label: path.basename(e.path), source: e.source,
+      bytes: e.bytes, exists: true, injected: (insp && insp.kind) === 'codex',
+    });
+  });
+  const mem = (insp && insp.memory) || {};
+  if (mem.indexPath) {
+    const size = statSize(mem.indexPath);
+    out.push({
+      id: 'memory:index', group: 'memory', kind: 'memory-index',
+      path: mem.indexPath, label: 'MEMORY.md', source: 'memory',
+      bytes: size < 0 ? 0 : size, exists: size >= 0, injected: size > 0,
+    });
+  }
+  return out;
+}
+
+// 白名单 = 这次 inspection 真实产出的那批路径。renderer 传任何别的路径都拒。
+function buildRawAllowlist(insp) {
+  const seen = new Set();
+  const list = [];
+  for (const s of collectRawSources(insp)) {
+    const key = pathKey(s.path);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push(path.resolve(s.path));
+  }
+  return list;
+}
+
+// 越权判定。返回命中的 source（含 label），没命中返回 null——调用方据此拒绝。
+function resolveAllowedSource(insp, requested) {
+  const raw = String(requested == null ? '' : requested);
+  if (!raw.trim()) return null;
+  const key = pathKey(raw);
+  for (const s of collectRawSources(insp)) {
+    if (pathKey(s.path) === key) return s;
+  }
+  return null;
+}
+
+// 单个文件的原文读取。offset/limit 支持分页；sha256 永远算的是**整份文件**，
+// 这样用户 Get-FileHash 出来的值能直接对上，不受分页影响。
+function readRawFile(file, opts = {}) {
+  const abs = path.resolve(String(file || ''));
+  let st = null;
+  try {
+    st = fs.statSync(abs);
+  } catch (error) {
+    return { ok: false, code: 'NOT_FOUND', path: abs, error: `读不到这个文件（可能刚被删除或没有权限）：${abs}` };
+  }
+  if (!st.isFile()) {
+    return { ok: false, code: 'NOT_FILE', path: abs, error: `不是普通文件，拒绝读取：${abs}` };
+  }
+  let buf = null;
+  try {
+    buf = fs.readFileSync(abs);
+  } catch (error) {
+    return { ok: false, code: 'READ_ERROR', path: abs, error: (error && error.message) || String(error) };
+  }
+
+  const total = buf.length;
+  const wantOffset = Number.isFinite(Number(opts.offset)) ? Math.trunc(Number(opts.offset)) : 0;
+  const wantLimit = Number.isFinite(Number(opts.limit)) ? Math.trunc(Number(opts.limit)) : RAW_MAX_SLICE;
+  const offset = alignUtf8Boundary(buf, Math.max(0, Math.min(total, wantOffset)));
+  // limit 非法（<=0 / NaN）一律退回上限，别把它当成「只读 1 字节」
+  const limit = wantLimit > 0 ? Math.min(RAW_MAX_SLICE, wantLimit) : RAW_MAX_SLICE;
+  let end = alignUtf8Boundary(buf, Math.min(total, offset + limit));
+  // limit 比一个字符还短时 align 会把 end 拉回 offset —— 那样调用方永远推不动分页，
+  // 这里至少吐一个完整字符。
+  if (end <= offset && offset < total) end = Math.min(total, offset + utf8CharLen(buf[offset]));
+  const slice = buf.slice(offset, end);
+  const hex = sha256Hex(buf);
+
+  return {
+    ok: true,
+    path: abs,
+    totalBytes: total,
+    sha256: hex,
+    sha256_12: hex.slice(0, 12),
+    mtimeMs: st.mtimeMs,
+    mtime: new Date(st.mtimeMs).toISOString(),
+    offset,
+    end,
+    sliceBytes: slice.length,
+    eof: end >= total,
+    text: slice.toString('utf8'),
+    contentTruth: 'disk-verbatim',
+  };
+}
+
+// 完整拼装预览：把「这个 cwd 下真正会注入的规则块」按实测顺序拼起来，
+// 并给出每段在拼装结果里的起止字节偏移，让用户能逐段对号。
+//
+// 顺序依据（core 头部注释里那批抓包结论）：
+//   claude 系 → ~/.claude/CLAUDE.md，然后 cwd 祖先从外到内的 CLAUDE.md / CLAUDE.local.md
+//   codex    → project root 向下到 cwd 的 AGENTS.md
+//   记忆索引 MEMORY.md 确实会进 prompt，但插入位置由 CLI 决定，这里排在最后（近似）
+function buildAssembly(insp, opts = {}) {
+  const isCodex = ((insp && insp.kind) || 'claude') === 'codex';
+  const maxSeg = Math.max(1, Number(opts.maxSegmentBytes) || ASM_MAX_SEGMENT_BYTES);
+  const maxTotal = Math.max(1, Number(opts.maxTotalBytes) || ASM_MAX_TOTAL_BYTES);
+
+  const picked = [];
+  if (isCodex) {
+    (((insp && insp.codex) || {}).entries || []).forEach((e, i) => picked.push({
+      id: `codex:${i}`, path: e.path, label: path.basename(e.path), role: e.source, orderTruth: 'measured',
+    }));
+  } else {
+    (((insp && insp.claude) || {}).entries || []).forEach((e, i) => {
+      picked.push({ id: `claude:${i}`, path: e.path, label: path.basename(e.path), role: e.source, orderTruth: 'measured' });
+      (e.imports || []).forEach((im, j) => {
+        if (!im.effective) return;
+        picked.push({
+          id: `import:${i}:${j}`, path: im.resolved, label: `@${im.spec}`,
+          role: 'import', parent: e.path, orderTruth: 'approx',
+        });
+      });
+    });
+  }
+  const mem = (insp && insp.memory) || {};
+  if (mem.indexPath && statSize(mem.indexPath) > 0) {
+    picked.push({ id: 'memory:index', path: mem.indexPath, label: 'MEMORY.md', role: 'memory-index', orderTruth: 'approx' });
+  }
+
+  const segments = [];
+  let cursor = 0;
+  let emitted = 0;   // 已经附带正文的字节数（控总量）
+  let appended = 0;  // 已拼进去的段数（决定要不要先补分隔符）
+  // 去重（2026-07-29 修）：discoverClaudeChain 内部对链文件去过重，但 @import 解析出来的
+  // 路径没跟链文件比过——于是「链里已有 X + 某个 CLAUDE.md 又 @import 了 X」会被拼成两段，
+  // 假报"重复注入"。抓包实测 Claude 按解析后路径去重，只注入一次。这里对齐真实行为：
+  // 重复的段仍然列出来（用户要能看见这行 @ 是死配置），但标 duplicateOf 且不占偏移、不计字节。
+  const seenPaths = new Set();
+  for (const p of picked) {
+    const key = pathKey(p.path);
+    if (seenPaths.has(key)) {
+      segments.push({
+        ...p, duplicateOf: key, missing: false, bytes: 0,
+        start: cursor, end: cursor, text: '', textBytes: 0,
+        note: '这份文件前面已经注入过，Claude 按路径去重不会再注入一遍——这行 @import 是死配置。',
+      });
+      continue;
+    }
+    let buf = null;
+    try { buf = fs.readFileSync(p.path); } catch { buf = null; }
+    if (!buf) {
+      // 列出来但读不到：如实标 missing，不占偏移
+      segments.push({ ...p, missing: true, bytes: 0, start: cursor, end: cursor, text: '', textBytes: 0 });
+      continue;
+    }
+    if (appended > 0) cursor += Buffer.byteLength(ASSEMBLY_JOIN, 'utf8');
+    const hex = sha256Hex(buf);
+    let mtime = null;
+    try { mtime = new Date(fs.statSync(p.path).mtimeMs).toISOString(); } catch { mtime = null; }
+
+    const seg = {
+      ...p,
+      missing: false,
+      bytes: buf.length,
+      start: cursor,
+      end: cursor + buf.length,
+      sha256: hex,
+      sha256_12: hex.slice(0, 12),
+      mtime,
+      contentTruth: 'disk-verbatim',
+      text: '',
+      textBytes: 0,
+      textTruncated: false,
+      textOmitted: false,
+    };
+    if (emitted >= maxTotal) {
+      // 总量已经爆了：只给元信息，让用户单点这一条看全文
+      seg.textOmitted = true;
+    } else {
+      const cap = Math.min(maxSeg, maxTotal - emitted);
+      const cut = alignUtf8Boundary(buf, Math.min(buf.length, cap));
+      seg.text = buf.slice(0, cut).toString('utf8');
+      seg.textBytes = cut;
+      seg.textTruncated = cut < buf.length;
+      emitted += cut;
+    }
+    segments.push(seg);
+    seenPaths.add(key);
+    cursor += buf.length;
+    appended += 1;
+  }
+
+  const complete = segments.every(s => s.missing || (!s.textTruncated && !s.textOmitted));
+  return {
+    kind: isCodex ? 'codex' : 'claude',
+    cwd: (insp && insp.cwd) || null,
+    segments,
+    segmentCount: segments.filter(s => !s.missing).length,
+    totalBytes: cursor,
+    joiner: ASSEMBLY_JOIN,
+    complete,          // true = 下面 segments 的 text 拼起来就是完整拼装结果
+    unavailable: UNAVAILABLE_PARTS.map(x => ({ ...x })),
+    note: '内容为磁盘实读原文；顺序按实测发现规则还原，标 approx 的段落插入位置只是近似。',
+  };
+}
+
 module.exports = {
   projectSlug,
   realPath,
@@ -329,4 +631,14 @@ module.exports = {
   inspectMemory,
   buildHealth,
   buildInspection,
+  // raw 原文层
+  RAW_MAX_SLICE,
+  UNAVAILABLE_PARTS,
+  pathKey,
+  alignUtf8Boundary,
+  collectRawSources,
+  buildRawAllowlist,
+  resolveAllowedSource,
+  readRawFile,
+  buildAssembly,
 };
