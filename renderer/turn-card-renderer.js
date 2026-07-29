@@ -590,6 +590,15 @@ function turnRenderSignature(turn) {
   return `${raw.length}:${hash >>> 0}`;
 }
 
+// 2026-07-29 道雪 · AI 群聊复用本渲染器：
+//   群聊把成员的 turn 卡片直接挂进群聊气泡里（opts.container 指向群聊挂载点），
+//   本来这个接缝就在（container 可传任意容器 + dedup 已按 sessionId 过滤），只差两个
+//   "别串台"的开关，默认 false 所以单会话面板行为一字不变：
+//     opts.skipTurnRegistry       — 不写 win._sessionTurns。群聊卡片不是单会话面板的
+//       权威 turn，写进去会被 renderer.js 切会话时的 _sessionTurns.clear() 连累，
+//       也会让 msg-overlay 的卡片操作（复制/重发/regen）误命中群聊卡。
+//     opts.skipStreamingIndicator — 不调 updateStreamingIndicator。那个 indicator 是
+//       #msg-overlay 专属的"还在生成"小 spinner，群聊有自己的状态条，不该互相触发。
 function mountSessionTurnCard(sessionId, turn, opts = {}) {
   // 1. validate inputs
   if (!turn || !turn.id || !turn.role) {
@@ -602,6 +611,10 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     console.warn('[mountSessionTurnCard] container not found (msg-overlay missing)');
     return null;
   }
+  const skipRegistry = opts.skipTurnRegistry === true;
+  const notifyIndicator = opts.skipStreamingIndicator === true
+    ? null
+    : (typeof updateStreamingIndicator === 'function' ? updateStreamingIndicator : null);
   // defensive init (spec1 also does this at line ~1545, but be paranoid)
   if (!win._sessionTurns) win._sessionTurns = new Map();
 
@@ -654,9 +667,9 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     const prevSig = _turnRenderSigs.get(turn.id) || turnRenderSignature(prevTurn);
     const nextSig = turnRenderSignature(turnForRender2);
     if (prevSig === nextSig) {
-      win._sessionTurns.set(turn.id, turnForRender2);
+      if (!skipRegistry) win._sessionTurns.set(turn.id, turnForRender2);
       _turnRenderSigs.set(turn.id, nextSig);
-      if (typeof updateStreamingIndicator === 'function') updateStreamingIndicator(sessionId);
+      if (notifyIndicator) notifyIndicator(sessionId);
       return existing;
     }
     let newCard = null;
@@ -676,7 +689,9 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     const bodyEl2 = newCard.querySelector('.turn-body');
     if (bodyEl2 && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl2, { sessionId });
     if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
-    win._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
+    if (!skipRegistry) {
+      win._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
+    }
     _turnRenderSigs.set(turn.id, nextSig);
     return newCard;
   }
@@ -737,7 +752,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
 
   // 8. register in _sessionTurns (turnId → turn) — keep spec1 Map shape
   // Use turnForRender (kind merged) so rerenderTurn won't lose kind on fold/unfold
-  win._sessionTurns.set(turn.id, turnForRender);
+  if (!skipRegistry) win._sessionTurns.set(turn.id, turnForRender);
   _turnRenderSigs.set(turn.id, turnRenderSignature(turnForRender));
 
   // 9. autoScroll — 2026-05-06 道雪 scroll-respect-user:仅当用户原本在底部时才滚
@@ -752,7 +767,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   }
 
   // Spec 3 · W16：cardCount 变化 → indicator 文案需切（"正在思考"→"还在生成更多"）
-  if (typeof updateStreamingIndicator === 'function') updateStreamingIndicator(sessionId);
+  if (notifyIndicator) notifyIndicator(sessionId);
 
   // 10. return cardEl
   return cardEl;
