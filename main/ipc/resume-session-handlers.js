@@ -2,7 +2,7 @@
 
 const { isStableSessionTitle } = require('../../core/session-title-guards.js');
 const { isKimiCliKind } = require('../../core/ai-kinds.js');
-const { lookupKimiSession } = require('../../core/kimi-session-migrator.js');
+const { lookupKimiSession: defaultLookupKimiSession } = require('../../core/kimi-session-migrator.js');
 
 function createResumeSessionHandler(deps) {
   const {
@@ -16,6 +16,7 @@ function createResumeSessionHandler(deps) {
     isClaudeFamily,
     isCodexBaseKind,
     isCodexSubagentRolloutPath = () => false,
+    lookupKimiSession = defaultLookupKimiSession,
     logger = console,
     meetingManager,
     os,
@@ -101,11 +102,20 @@ function createResumeSessionHandler(deps) {
       resumeTranscriptPath = null;
       effectiveCodexSid = null;
     }
-    if (!resumeTranscriptPath && isClaudeCliResumable && meta.ccSessionId) {
-      try { resumeTranscriptPath = findTranscriptByCCSessionId(meta.ccSessionId); } catch {}
+    // Resume metadata may point at a pre-archive path.  Provider-native ids are
+    // the authority: when discovery succeeds, prefer it even if a persisted
+    // transcriptPath is present instead of letting an old card source win.
+    if (isClaudeCliResumable && meta.ccSessionId) {
+      try {
+        const discovered = findTranscriptByCCSessionId(meta.ccSessionId);
+        if (discovered) resumeTranscriptPath = discovered;
+      } catch {}
     }
-    if (!resumeTranscriptPath && isCodexBaseKind(meta.kind) && effectiveCodexSid) {
-      try { resumeTranscriptPath = findCodexRolloutBySid(effectiveCodexSid, meta.codexSessionsRoot || defaultCodexSessionsRoot); } catch {}
+    if (isCodexBaseKind(meta.kind) && effectiveCodexSid) {
+      try {
+        const discovered = findCodexRolloutBySid(effectiveCodexSid, meta.codexSessionsRoot || defaultCodexSessionsRoot);
+        if (discovered) resumeTranscriptPath = discovered;
+      } catch {}
     }
     const codexMissingSid = (isCodexBaseKind(meta.kind) && !effectiveCodexSid);
 
@@ -123,10 +133,22 @@ function createResumeSessionHandler(deps) {
           if (staleCwd) {
             logger.log(`[resume-session] kimi cwd reconciled via session_index: ${meta.cwd || '(empty)'} -> ${indexed.workDir}`);
             meta.cwd = indexed.workDir;
-            if (indexed.sessionDir) {
-              meta.kimiSessionDir = indexed.sessionDir;
-              meta.transcriptPath = path.join(indexed.sessionDir, 'agents', 'main', 'wire.jsonl');
+          }
+          // cwd can already be correct while the persisted sessionDir/wire path
+          // is stale or absent.  Reconcile the binding independently; otherwise
+          // a resumed card view keeps reading the old file forever.
+          if (indexed.sessionDir) {
+            const indexedWire = path.join(indexed.sessionDir, 'agents', 'main', 'wire.jsonl');
+            const staleBinding = !meta.kimiSessionDir
+              || path.resolve(meta.kimiSessionDir) !== path.resolve(indexed.sessionDir)
+              || !meta.transcriptPath
+              || path.resolve(meta.transcriptPath) !== path.resolve(indexedWire);
+            if (staleBinding) {
+              logger.log(`[resume-session] kimi transcript reconciled via session_index: ${meta.transcriptPath || '(empty)'} -> ${indexedWire}`);
             }
+            meta.kimiSessionDir = indexed.sessionDir;
+            meta.transcriptPath = indexedWire;
+            resumeTranscriptPath = indexedWire;
           }
         }
       } catch (error) {
@@ -138,6 +160,7 @@ function createResumeSessionHandler(deps) {
       id: meta.hubId,
       title: meta.title,
       cwd: (meta.kind === 'gemini' && meta.geminiProjectRoot) ? meta.geminiProjectRoot : meta.cwd,
+      ...(meta.cwdFellBackFrom ? { cwdFellBackFrom: meta.cwdFellBackFrom } : {}),
       ...(meta.workspaceLabel ? { workspaceLabel: meta.workspaceLabel } : {}),
       meetingId: meta.meetingId || null,
       model: meta.model || undefined,

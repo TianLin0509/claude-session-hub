@@ -213,7 +213,7 @@ function registerWorkspaceIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('workspace:select', (_event, cwd) => {
-    const workspace = workspaceService.touchWorkspace(cwd, { select: false });
+    const workspace = workspaceService.resolveForSession(cwd, { select: false });
     sendToRenderer('workspace-updated', { workspace });
     return workspace;
   });
@@ -226,7 +226,7 @@ function registerWorkspaceIpc(ipcMain, deps) {
       buttonLabel: '使用此文件夹',
     });
     if (!result || result.canceled || !result.filePaths || !result.filePaths[0]) return null;
-    const workspace = workspaceService.touchWorkspace(result.filePaths[0], { select: false });
+    const workspace = workspaceService.resolveForSession(result.filePaths[0], { select: false });
     sendToRenderer('workspace-updated', { workspace });
     return workspace;
   });

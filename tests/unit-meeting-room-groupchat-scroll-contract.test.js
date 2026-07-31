@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'meeting-room.js'), 'utf8');
-const openMeetingMatch = SRC.match(/function openMeeting\s*\(meetingId,\s*meeting\)\s*\{[\s\S]*?function closeMeetingPanel\s*\(/);
+const openMeetingMatch = SRC.match(/function openMeeting\s*\(meetingId,\s*meeting,\s*opts\s*=\s*\{\}\)\s*\{[\s\S]*?function closeMeetingPanel\s*\(/);
 assert.ok(openMeetingMatch, 'openMeeting block must be present');
 const OPEN_MEETING_SRC = openMeetingMatch[0];
 
@@ -15,14 +15,14 @@ assert.match(
 
 assert.match(
   SRC,
-  /forceGroupChatBottom\s*=\s*!!opts\.forceGroupChatBottom\s*&&\s*!!meeting\.groupChat\s*&&\s*_getGroupViewMode\(\)\s*===\s*['"]chat['"]/,
-  'force-bottom option must be scoped to group chat chat view only'
+  /forceGroupChatBottom\s*=\s*\(forceMeetingBottom\s*\|\|\s*!!opts\.forceGroupChatBottom\)[\s\S]{0,100}!!meeting\.groupChat\s*&&\s*_getGroupViewMode\(\)\s*===\s*['"]chat['"]/,
+  'chat-stream force-bottom must accept explicit meeting navigation while remaining scoped to chat view'
 );
 
 assert.match(
   OPEN_MEETING_SRC,
-  /refreshGroupChatPanel\s*\(\s*meeting,\s*\{\s*forceGroupChatBottom:\s*true\s*\}\s*\)/,
-  'openMeeting must request bottom pinning when the meeting is opened from the sidebar'
+  /refreshGroupChatPanel\s*\(\s*meeting,\s*\{\s*forceMeetingBottom:\s*opts\.forceScrollBottom\s*===\s*true,?\s*\}\s*\)/,
+  'openMeeting must forward only an explicit sidebar bottom-pin request'
 );
 
 assert.match(

@@ -6,6 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const crypto = require('node:crypto');
 const { isSyntheticUserEntry, isSyntheticUserText, displayUserText } = require('./synthetic-user-filter.js');
 
 const DEFAULT_CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
@@ -158,11 +159,48 @@ function textFromPayload(payload) {
   );
 }
 
+function _recordId(obj) {
+  const payload = obj && obj.payload && typeof obj.payload === 'object' ? obj.payload : null;
+  const candidates = [
+    obj && obj.id,
+    payload && payload.id,
+  ];
+  for (const value of candidates) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return null;
+}
+
+function _stableRecordHash(obj) {
+  // Card rendering de-duplicates by turn.id. A tail-window parse starts line
+  // numbering at zero, so line indexes are not stable as a growing rollout's
+  // 8 MB window moves. Hash semantic record data instead; identical records
+  // now keep the same id in full, tail and later incremental parses.
+  const payload = obj && obj.payload && typeof obj.payload === 'object' ? obj.payload : null;
+  const raw = JSON.stringify([
+    obj && obj.timestamp ? String(obj.timestamp) : '',
+    obj && obj.type ? String(obj.type) : '',
+    payload && payload.type ? String(payload.type) : '',
+    payload && payload.turn_id ? String(payload.turn_id) : '',
+    payload && payload.internal_chat_message_metadata_passthrough
+      ? String(payload.internal_chat_message_metadata_passthrough.turn_id || '')
+      : '',
+    textFromPayload(payload),
+    payload ? textFromContent(payload.last_agent_message) : '',
+  ]);
+  return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
+}
+
 function _makeTurnId(prefix, obj, index) {
-  if (obj && typeof obj.id === 'string') return `${prefix}-${obj.id}`;
-  if (obj && obj.payload && typeof obj.payload.id === 'string') return `${prefix}-${obj.payload.id}`;
-  const ts = obj && obj.timestamp ? String(obj.timestamp) : String(index);
-  return `${prefix}-${ts}-${index}`;
+  // A Codex turn_id can intentionally span multiple user steering messages
+  // and multiple assistant commentary segments. It is therefore not a card
+  // id. Prefer record-level ids; otherwise use timestamp + semantic hash.
+  const recordId = _recordId(obj);
+  if (recordId) return `${prefix}-${recordId}`;
+  const ts = obj && obj.timestamp ? String(obj.timestamp) : 'no-ts';
+  const hash = obj ? _stableRecordHash(obj) : `line-${index}`;
+  return `${prefix}-${ts}-${hash}`;
 }
 
 function isInjectedContextText(text) {

@@ -144,7 +144,69 @@ function discoverClaudeChain(cwd) {
   return { realCwd: real, junctionResolved: path.resolve(real).toLowerCase() !== path.resolve(cwd).toLowerCase(), entries };
 }
 
+// Claude 的项目规则只写在 CLAUDE.md / CLAUDE.local.md 里时，Codex / Kimi 从不读取。
+// 不能只看「同目录有没有 AGENTS.md」：空壳、旧版或内容不同的 AGENTS.md 都会制造假 OK；
+// 也不能只看 provider project root 到 cwd 的区间——无 marker 时两家明确只读 cwd，且 Hub
+// seed + .vibe-root 会把等价规则搬到另一层。真正要核对的是两条**实际注入链的正文**：
+// Claude 项目链上的每份规则，是否已完整出现在 provider 实际读取的某份 AGENTS.md 中。
+function findUnmirroredClaudeRules(claudeEntries, providerEntries) {
+  // “是否送达”只看最终注入结果；同一规则若已在 provider 全局文件中，也不该再报缺失。
+  const providerRuleEntries = providerEntries || [];
+  const providerPaths = new Set(providerRuleEntries.map(e => pathKey(e.path)));
+  const providerBodies = providerRuleEntries
+    .map(e => ruleBody(e.path))
+    .filter(Boolean);
+
+  const out = [];
+  for (const entry of (claudeEntries || [])) {
+    if (entry.source === 'user-global') continue;
+    const body = ruleBody(entry.path);
+    if (!body) continue;
+
+    // seed 头会由 ruleBody 剥掉；AGENTS.md 可以在相同规则后追加 provider 专属说明，
+    // 所以「正文完整包含」也算送达，不要求两个文件必须字节级完全相等。
+    if (providerBodies.some(agentBody => ruleBlockIncluded(agentBody, body))) continue;
+
+    // CLAUDE.md 只做一件事：@ 引入 provider 已经实际读取的 AGENTS.md。此时没有遗漏。
+    const textWithoutComments = (readText(entry.path) || '').replace(/<!--[\s\S]*?-->/g, '');
+    const nonImportText = textWithoutComments.replace(/^@([^\s]+)\s*$/gm, '').trim();
+    const effectiveImports = (entry.imports || []).filter(im => im.effective);
+    if (!nonImportText && effectiveImports.length > 0
+      && effectiveImports.every(im => providerPaths.has(pathKey(im.resolved)))) continue;
+
+    out.push({ path: entry.path, bytes: entry.bytes, source: entry.source });
+  }
+  return out;
+}
+
+function ruleBlockIncluded(container, block) {
+  if (container === block) return true;
+  return (`\n${container}\n`).includes(`\n${block}\n`);
+}
+
 // AGENTS.md 存在但同目录既没有 CLAUDE.md、也没有任何 CLAUDE.md 用 @ 引它 → Claude 读不到。
+// 正文比对用：剥掉 HTML 注释块（seed 副本的自动生成头、"与 CLAUDE.md 保持一致"的说明），
+// 统一换行和行尾空白后再比较。不能删除所有空白：Markdown 的缩进、代码块和单词边界
+// 都可能有语义，`ab c` 与 `a bc` 也绝不能被误判成同一份规则。
+function ruleBody(file) {
+  const text = readText(file);
+  if (text === null) return null;
+  return text
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/[ \t]+$/g, ''))
+    .join('\n')
+    .trim();
+}
+
+// 同目录 CLAUDE.md 与 AGENTS.md 正文逐字相同 = 刻意的双写镜像（一份给 Claude、一份给
+// Codex/Kimi），Claude 读 CLAUDE.md 就已经拿到全部规则，什么都没漏。
+//
+// 2026-07-29 三方审查：原实现只比路径不比内容，把 C:\Vibe 这种镜像报成「AGENTS.md 读不到」，
+// 且建议加 `@AGENTS.md`——照做会真的展开出第二份完全相同的正文（约 1.4KB/次会话），
+// 而 :306 的 redundant 检查抓不到它（那里只查 CLAUDE.md 链）。等于一边教人制造重复、
+// 一边看不见自己造的重复。现在镜像不再算 orphan。
 function findOrphanAgentsMd(cwd, chain) {
   const real = realPath(cwd);
   const imported = new Set();
@@ -153,11 +215,22 @@ function findOrphanAgentsMd(cwd, chain) {
       if (im.effective) imported.add(im.resolved.toLowerCase());
     }
   }
+  // 链上每一份 CLAUDE.md 的正文指纹。镜像关系不一定在同目录——工作区根写一份
+  // CLAUDE.md，Hub 再把等价的 AGENTS.md seed 到子目录，此时子目录那份的规则同样
+  // 早已由上级 CLAUDE.md 送达，报 orphan 依旧是误报。
+  const chainBodies = new Set();
+  for (const e of chain) {
+    const b = ruleBody(e.path);
+    if (b) chainBodies.add(b);
+  }
+
   const orphans = [];
   for (const dir of ancestorsOutsideIn(real)) {
     const agents = path.join(dir, 'AGENTS.md');
     if (statSize(agents) < 0) continue;
     if (imported.has(agents.toLowerCase())) continue;
+    const body = ruleBody(agents);
+    if (body && chainBodies.has(body)) continue;   // 镜像，规则已由链上某份 CLAUDE.md 送达
     orphans.push({ path: agents, bytes: statSize(agents) });
   }
   return orphans;
@@ -247,7 +320,9 @@ function inspectMemory(cwd, configDirName = '.claude') {
   const slug = projectSlug(real);
   const bucket = path.join(homeDir(), configDirName, 'projects', slug);
   const memDir = path.join(bucket, 'memory');
-  const canonical = path.join(homeDir(), configDirName, 'projects', projectSlug(homeDir()), 'memory');
+  // DeepSeek 的 transcript/settings 虽在 .claude-deepseek 隔离，但 Hub 设计明确让两家
+  // memory 都共享主 Claude 规范库；不能拿 .claude-deepseek 的 home 桶当 canonical。
+  const canonical = path.join(homeDir(), '.claude', 'projects', projectSlug(homeDir()), 'memory');
 
   const out = {
     slug,
@@ -275,19 +350,23 @@ function inspectMemory(cwd, configDirName = '.claude') {
   out.indexBytes = Math.max(0, statSize(out.indexPath));
   out.sharesCanonical = realPath(memDir).toLowerCase() === realPath(canonical).toLowerCase();
 
-  if (out.isLink) out.state = 'LINKED';
+  if (out.isLink) out.state = out.sharesCanonical ? 'LINKED' : 'WRONG_LINK';
   else if (out.files === 0) out.state = 'EMPTY_REAL';
   else out.state = 'PRIVATE_REAL';
   return out;
 }
 
 // ---------- 体检 ----------
+function usesClaudeMemory(kind) {
+  return kind === 'claude' || kind === 'deepseek';
+}
+
 function buildHealth(insp) {
   const checks = [];
   const push = (level, title, detail) => checks.push({ level, title, detail });
 
   const chain = insp.claude ? insp.claude.entries : [];
-  if (insp.kind === 'claude' || insp.kind === 'deepseek') {
+  if (usesClaudeMemory(insp.kind)) {
     if (chain.length === 0) {
       push('bad', 'CLAUDE.md 一份都没读到', '这个 cwd 向上到盘符根都没有 CLAUDE.md，模型只有内置系统提示词。');
     } else {
@@ -325,6 +404,12 @@ function buildHealth(insp) {
     }
     push(cx.entries.length ? 'ok' : 'bad', `AGENTS.md ${cx.entries.length} 份`,
       cx.entries.length ? `共 ${cx.entries.reduce((s, e) => s + e.bytes, 0)} 字节。` : '一份都没读到。');
+    const codexBlind = findUnmirroredClaudeRules(insp.claude && insp.claude.entries, cx.entries);
+    if (codexBlind.length) {
+      push('bad', `${codexBlind.length} 份 Claude 规则未完整送到 Codex`,
+        `${codexBlind[0].path} 有 ${codexBlind[0].bytes} 字节，但 Codex 实际读取的 AGENTS.md 链里没有找到完整正文。`
+        + '请把需要共享的规则同步到 Codex project root 至 cwd 之间的一份 AGENTS.md。');
+    }
     if (insp.claude && insp.claude.junctionResolved) {
       push('warn', 'cwd 走的是 junction',
         `Codex 不解析 junction，记忆与会话会按字面路径 ${cx.literalCwd} 记账，而不是真实路径 ${insp.claude.realCwd}。`);
@@ -335,25 +420,38 @@ function buildHealth(insp) {
     const km = insp.kimi || { entries: [] };
     if (!km.projectRoot) {
       push('warn', '没找到 .git，Kimi 只读 cwd 自己的 AGENTS.md',
-        '2026-07-29 探针实测：无 git 时父目录的 AGENTS.md 一份都不读。经 Hub 启动会自动 seed 一份到 cwd；或 git init 让向上收集生效。');
+        '2026-07-29 探针实测：无 git 时父目录的 AGENTS.md 一份都不读。经 Hub 启动会在确实无 git 且无自有 AGENTS.md 的 cwd 托管一份哈希可刷新副本；不要为此在 C:\\Vibe 聚合根 git init。');
     } else {
       push('ok', `project root = ${km.projectRoot}`, 'markers=[.git]，从这一层向下收集到 cwd（嵌套 git 仓库会挡住外层）。');
     }
     push(km.entries.length ? 'ok' : 'bad', `AGENTS.md ${km.entries.length} 份`,
       km.entries.length ? `共 ${km.entries.reduce((s, e) => s + e.bytes, 0)} 字节（含全局 ~/.kimi-code/AGENTS.md）。` : '一份都没读到（连全局 ~/.kimi-code/AGENTS.md 都没有）。');
+    const kimiBlind = findUnmirroredClaudeRules(insp.claude && insp.claude.entries, km.entries);
+    if (kimiBlind.length) {
+      push('bad', `${kimiBlind.length} 份 Claude 规则未完整送到 Kimi`,
+        `${kimiBlind[0].path} 有 ${kimiBlind[0].bytes} 字节，但 Kimi 实际读取的 AGENTS.md 链里没有找到完整正文。`
+        + '请把需要共享的规则同步到最近 .git 根至 cwd 之间的一份 AGENTS.md；无 .git 时要放在 cwd。');
+    }
     // Kimi 没有 Claude 式 memory 桶（官方文档无 /memory），下面的记忆桶检查
     // 与桶名塌缩检查对 kimi 都是假警告，按 kind 跳过。
   }
 
-  if (insp.kind !== 'kimi') {
+  // 记忆桶是 Claude Code 独有机制（deepseek 走 Claude CLI 所以同样适用）。
+  // 2026-07-29 三方审查：原守卫写的是 `kind !== 'kimi'`，只挡住了 kimi，**codex 照跑**——
+  // 而 buildInspection 给 codex 传的 configDirName 是 '.claude'，于是 Codex 会话的面板上
+  // 显示的是 Claude 的记忆库（实测报「记忆已接入规范库 156 条」，Codex 一条都读不到）。
+  // 假 OK 比没有检查更坏，改成与上面 :290 那行同一套 kind 判据。
+  if (usesClaudeMemory(insp.kind)) {
   const mem = insp.memory;
   if (mem.state === 'LINKED' || mem.sharesCanonical) {
     push('ok', '记忆已接入规范库', `${mem.files} 条 · 索引 ${mem.indexBytes} 字节`);
+  } else if (mem.state === 'WRONG_LINK') {
+    push('bad', '记忆链接指向了别处', `当前链接：${mem.linkTarget || mem.memoryDir}；规范库：${mem.canonicalDir}。Hub 不会擅自覆盖这条链接。`);
   } else if (mem.state === 'PRIVATE_REAL') {
-    push('warn', `记忆是独立的 ${mem.files} 条`, `这个桶没链到规范库，跨项目记忆读不到。桶：${mem.slug}`);
+    push('warn', `记忆是独立的 ${mem.files} 条`, `这个桶尚未链到规范库；下次 Claude/DeepSeek spawn 会先备份并合并，再换 junction。桶：${mem.slug}`);
   } else if (mem.state === 'EMPTY_REAL') {
     push('bad', '记忆目录是空的真实目录',
-      'Hub 的链接逻辑遇到已存在目录会跳过 → 这个桶永远不会共享规范库。删掉空目录后重开会话即可修复。');
+      '正常 spawn 会自动把它改名留底并换成 junction；若重开会话后仍存在，请查看 memory link 错误日志。');
   } else {
     push('warn', '还没有记忆桶', '首次会话会新建一个空目录；若不经 Hub 启动就会变成上面那种「永久不共享」状态。');
   }
@@ -388,8 +486,8 @@ function buildInspection(opts = {}) {
       : claude.entries.reduce((s, e) => s + e.bytes, 0);
   insp.totals = {
     ruleBytes,
-    memoryIndexBytes: memory.indexBytes,
-    memoryFiles: memory.files,
+    memoryIndexBytes: usesClaudeMemory(kind) ? memory.indexBytes : 0,
+    memoryFiles: usesClaudeMemory(kind) ? memory.files : 0,
     // 粗估：混合中英按 3.2 字节/token，仅用于量级参考
     approxRuleTokens: Math.round(ruleBytes / 3.2),
   };
@@ -455,18 +553,20 @@ function sha256Hex(buf) {
 // 顺序 = 面板展示顺序，也是白名单的唯一来源。
 function collectRawSources(insp) {
   const out = [];
+  const inspectionKind = (insp && insp.kind) || 'claude';
+  const claudeMemoryApplies = usesClaudeMemory(inspectionKind);
   const claude = (insp && insp.claude) || {};
   (claude.entries || []).forEach((e, i) => {
     out.push({
       id: `claude:${i}`, group: 'claude', kind: 'claude-md',
       path: e.path, label: path.basename(e.path), source: e.source,
-      bytes: e.bytes, exists: true, injected: true,
+      bytes: e.bytes, exists: true, injected: claudeMemoryApplies,
     });
     (e.imports || []).forEach((im, j) => {
       out.push({
         id: `import:${i}:${j}`, group: 'claude', kind: 'import',
         path: im.resolved, label: `@${im.spec}`, source: 'import', parent: e.path,
-        bytes: im.bytes, exists: !!im.exists, injected: !!im.effective,
+        bytes: im.bytes, exists: !!im.exists, injected: claudeMemoryApplies && !!im.effective,
       });
     });
   });
@@ -492,7 +592,7 @@ function collectRawSources(insp) {
     });
   });
   const mem = (insp && insp.memory) || {};
-  if (mem.indexPath) {
+  if (claudeMemoryApplies && mem.indexPath) {
     const size = statSize(mem.indexPath);
     out.push({
       id: 'memory:index', group: 'memory', kind: 'memory-index',
@@ -589,6 +689,7 @@ function buildAssembly(insp, opts = {}) {
   const asmKind = ((insp && insp.kind) || 'claude');
   const isCodex = asmKind === 'codex';
   const isKimi = asmKind === 'kimi';
+  const claudeMemoryApplies = usesClaudeMemory(asmKind);
   const maxSeg = Math.max(1, Number(opts.maxSegmentBytes) || ASM_MAX_SEGMENT_BYTES);
   const maxTotal = Math.max(1, Number(opts.maxTotalBytes) || ASM_MAX_TOTAL_BYTES);
 
@@ -614,7 +715,7 @@ function buildAssembly(insp, opts = {}) {
     });
   }
   const mem = (insp && insp.memory) || {};
-  if (!isKimi && mem.indexPath && statSize(mem.indexPath) > 0) {
+  if (claudeMemoryApplies && mem.indexPath && statSize(mem.indexPath) > 0) {
     picked.push({ id: 'memory:index', path: mem.indexPath, label: 'MEMORY.md', role: 'memory-index', orderTruth: 'approx' });
   }
 
@@ -686,7 +787,7 @@ function buildAssembly(insp, opts = {}) {
     kind: isCodex ? 'codex' : isKimi ? 'kimi' : 'claude',
     cwd: (insp && insp.cwd) || null,
     segments,
-    segmentCount: segments.filter(s => !s.missing).length,
+    segmentCount: segments.filter(s => !s.missing && !s.duplicateOf).length,
     totalBytes: cursor,
     joiner: ASSEMBLY_JOIN,
     complete,          // true = 下面 segments 的 text 拼起来就是完整拼装结果
@@ -704,6 +805,7 @@ module.exports = {
   discoverCodexChain,
   discoverKimiChain,
   findOrphanAgentsMd,
+  findUnmirroredClaudeRules,
   readCodexRootMarkers,
   inspectMemory,
   buildHealth,

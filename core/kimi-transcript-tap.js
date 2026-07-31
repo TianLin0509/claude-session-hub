@@ -40,6 +40,35 @@ function isToolFinishReason(reason) {
   return normalized === 'tool_calls' || normalized === 'tool_call' || normalized === 'tool_use';
 }
 
+function isAgentToolCall(event) {
+  return !!(
+    event
+    && event.type === 'tool.call'
+    && String(event.name || '').toLowerCase() === 'agent'
+    && (event.toolCallId || event.uuid)
+  );
+}
+
+function agentToolCallId(event) {
+  if (!event) return '';
+  // Some Kimi builds omit toolCallId on tool.result and only keep parentUuid;
+  // its own result uuid is not the call id, so prefer parent before uuid there.
+  if (event.type === 'tool.result') {
+    return String(event.toolCallId || event.parentUuid || event.uuid || '');
+  }
+  return String(event.toolCallId || event.uuid || event.parentUuid || '');
+}
+
+function agentJobDescription(event) {
+  if (!event) return '';
+  return String(
+    (event.args && event.args.description)
+    || event.description
+    || (event.display && event.display.agent_name)
+    || '',
+  );
+}
+
 function parseJsonl(text) {
   const records = [];
   for (const line of String(text || '').split(/\r?\n/)) {
@@ -93,6 +122,49 @@ function extractLatestKimiTurnFromText(text) {
     }
   }
   return state.latest;
+}
+
+function extractOutstandingAgentCallsFromText(text) {
+  const outstanding = new Map();
+  for (const record of parseJsonl(text)) {
+    if (record.type !== 'context.append_loop_event' || !record.event) continue;
+    const event = record.event;
+    if (isAgentToolCall(event)) {
+      const jobId = agentToolCallId(event);
+      outstanding.set(jobId, {
+        jobId,
+        description: agentJobDescription(event),
+        changedAt: recordTimeMs(record),
+      });
+      continue;
+    }
+    if (event.type === 'tool.result') {
+      const jobId = agentToolCallId(event);
+      if (jobId) outstanding.delete(jobId);
+    }
+  }
+  return Array.from(outstanding.values());
+}
+
+async function readUtf8Tail(filePath, maxBytes = 8 * 1024 * 1024) {
+  const handle = await fs.promises.open(filePath, 'r');
+  try {
+    const stat = await handle.stat();
+    const size = Number(stat.size) || 0;
+    const start = Math.max(0, size - maxBytes);
+    const buffer = Buffer.alloc(Math.max(0, size - start));
+    if (buffer.length) await handle.read(buffer, 0, buffer.length, start);
+    let text = buffer.toString('utf8');
+    // A bounded tail can begin in the middle of a UTF-8 JSONL record. Drop that
+    // partial first line; every complete subsequent record remains authoritative.
+    if (start > 0) {
+      const firstNewline = text.indexOf('\n');
+      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+    }
+    return text;
+  } finally {
+    await handle.close();
+  }
 }
 
 class KimiTap extends EventEmitter {
@@ -320,6 +392,7 @@ class KimiTap extends EventEmitter {
       lastUserText: '',
       steps: new Map(),
       completedSteps: new Set(),
+      backgroundAgentCalls: new Set(),
       streamingText: '',
       lastAssistantText: '',
       tail: null,
@@ -339,9 +412,55 @@ class KimiTap extends EventEmitter {
       maxInitialBytes: 8 * 1024 * 1024,
       maxReadBytes: 4 * 1024 * 1024,
     });
-    void bound.tail.start().then(() => {
+    void bound.tail.start().then(async () => {
       bound.offset = bound.tail.getStats().offset;
+      // A resumed Kimi session may already be waiting on a long-running Coder
+      // Agent when Hub binds to it. JsonlTail intentionally starts at EOF in
+      // that case, so reconcile the bounded existing tail once; live records
+      // and this scan share the same Set and cannot double-emit a start event.
+      if (startAtEnd) {
+        try {
+          const text = await readUtf8Tail(bound.wirePath);
+          for (const job of extractOutstandingAgentCallsFromText(text)) {
+            this._startBackgroundAgent(bound, job.jobId, job.description, job.changedAt, 'kimi_wire_reconcile');
+          }
+        } catch {}
+      }
     }).catch(() => {});
+  }
+
+  _startBackgroundAgent(bound, jobId, description, changedAt, signalSource = 'kimi_wire_agent_call') {
+    const normalizedId = String(jobId || '');
+    if (!normalizedId || bound.backgroundAgentCalls.has(normalizedId)) return false;
+    bound.backgroundAgentCalls.add(normalizedId);
+    this.emit('background-work-changed', {
+      hubSessionId: bound.hubSessionId,
+      kind: 'kimi',
+      phase: 'started',
+      jobId: normalizedId,
+      description: String(description || ''),
+      remaining: bound.backgroundAgentCalls.size,
+      changedAt: changedAt || Date.now(),
+      transcriptPath: bound.wirePath,
+      signalSource,
+    });
+    return true;
+  }
+
+  _finishBackgroundAgent(bound, jobId, changedAt) {
+    const normalizedId = String(jobId || '');
+    if (!normalizedId || !bound.backgroundAgentCalls.delete(normalizedId)) return false;
+    this.emit('background-work-changed', {
+      hubSessionId: bound.hubSessionId,
+      kind: 'kimi',
+      phase: 'finished',
+      jobId: normalizedId,
+      remaining: bound.backgroundAgentCalls.size,
+      changedAt: changedAt || Date.now(),
+      transcriptPath: bound.wirePath,
+      signalSource: 'kimi_wire_agent_result',
+    });
+    return true;
   }
 
   _processRecord(bound, record) {
@@ -383,8 +502,20 @@ class KimiTap extends EventEmitter {
       return;
     }
     if (event.type === 'tool.call') {
+      if (isAgentToolCall(event)) {
+        this._startBackgroundAgent(
+          bound,
+          agentToolCallId(event),
+          agentJobDescription(event),
+          recordTimeMs(record),
+        );
+      }
       step.hadTool = true;
       bound.steps.set(stepKey, step);
+      return;
+    }
+    if (event.type === 'tool.result') {
+      this._finishBackgroundAgent(bound, agentToolCallId(event), recordTimeMs(record));
       return;
     }
     if (event.type !== 'step.end') return;
@@ -413,6 +544,8 @@ class KimiTap extends EventEmitter {
 
 module.exports = {
   KimiTap,
+  extractOutstandingAgentCallsFromText,
   extractLatestKimiTurnFromText,
+  isAgentToolCall,
   normalizePathForCompare,
 };

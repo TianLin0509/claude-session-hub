@@ -122,6 +122,18 @@ function _subIsRunning(sub) {
   return !!sub.gcWorking;
 }
 
+function _sessionWarningText(session) {
+  if (!session) return '';
+  const warnings = [];
+  if (session.cwdFellBackFrom) {
+    warnings.push(`原目录失效：${session.cwdFellBackFrom}；当前回落到：${session.cwd || '(unknown)'}`);
+  }
+  if (session.memoryLinkWarning) {
+    warnings.push(`记忆未接入规范库：${session.memoryLinkWarning}`);
+  }
+  return warnings.join('；');
+}
+
   function _meetingAnySubRunning(meeting, sessionMap) {
   const ids = (meeting && meeting.subSessions) || [];
   for (const id of ids) {
@@ -243,13 +255,23 @@ function _subIsRunning(sub) {
       const memberSelected = isGroupChat
         ? (Array.isArray(s._meeting.participants) ? s._meeting.participants.length : memberTotal)
         : memberTotal;
+      // 群聊子会话默认折叠，若只在普通 session 行画告警，Claude/DeepSeek 成员的
+      // memory link 错误在最常用的群聊视图里仍然不可见。父行聚合显示，mini-jump
+      // tooltip 再指出具体成员。
+      const meetingWarning = miniSids.map((subId, idx) => {
+        const sub = sessionMap.get(subId);
+        const warning = _sessionWarningText(sub);
+        if (!warning) return '';
+        return `${(sub && (sub.title || sub.kind)) || `AI ${idx + 1}`}：${warning}`;
+      }).filter(Boolean).join('；');
       const miniJumpsHtml = miniSids.map((subId, idx) => {
         const sub = sessionMap.get(subId);
         const label = isGroupChat
           ? ((sub && (sub.title || sub.kind)) || `AI ${idx + 1}`)
           : (SLOT_LABELS_M[idx] || `Slot ${idx + 1}`);
         const avatarSrc = sub && sub.kind
-          ? `assets/ai-logos/${sub.kind}.svg`
+          // *-resume 没有专属 svg，归一到基础 kind 头像（assets 只有 5+1 个基础 logo）
+          ? `assets/ai-logos/${String(sub.kind).replace(/-resume$/, '')}.svg`
           : '';
         const modelLabel = sub && sub.currentModel ? (typeof modelShort === 'function' ? modelShort(sub.currentModel) : sub.currentModel.id) : '';
         let statusCls = 'mini-st-ready';
@@ -263,7 +285,8 @@ function _subIsRunning(sub) {
         const ctxLabelHtml = ctxPct != null
           ? `<span class="mini-jump-ctx ${ctxCls}" title="Context ${ctxPct}%">${ctxPct}%</span>`
           : '';
-        const tooltip = `${label}${modelLabel ? ' · ' + modelLabel : ''}${ctxPct != null ? ' · Ctx ' + ctxPct + '%' : ''} (点击跳转)`;
+        const subWarning = _sessionWarningText(sub);
+        const tooltip = `${label}${modelLabel ? ' · ' + modelLabel : ''}${ctxPct != null ? ' · Ctx ' + ctxPct + '%' : ''}${subWarning ? ' · ⚠ ' + subWarning : ''} (点击跳转)`;
         const avatarHtml = isGroupChat
           ? `<span class="mini-jump-text">${escapeHtml(sub && sub.kind ? sub.kind : ('AI' + (idx + 1)))}</span>`
           : (avatarSrc
@@ -292,7 +315,7 @@ function _subIsRunning(sub) {
         <div class="sl-line1${canExpand ? ' with-arrow' : ''}">
           ${canExpand ? `<span class="expand-arrow" data-action="toggle-expand" title="${isExpanded ? '折叠' : '展开'}">▶</span>` : ''}
           ${_ringHtml(null, dotCls)}
-          <span class="sl-title" title="${escapeHtml(s.title)}">${s.pinned ? '<span class="sl-pin">📌</span>' : ''}${isGroupChat ? '💬' : '🎯'} ${escapeHtml(s.title)}</span>
+          <span class="sl-title" title="${escapeHtml([s.title, meetingWarning].filter(Boolean).join(' · '))}">${s.pinned ? '<span class="sl-pin">📌</span>' : ''}${meetingWarning ? `<span class="sl-pin" title="${escapeHtml(meetingWarning)}">⚠</span>` : ''}${isGroupChat ? '💬' : '🎯'} ${escapeHtml(s.title)}</span>
           ${stateHtml}
           <span class="sl-time">${formatTime(s.lastMessageTime)}</span>
         </div>
@@ -311,7 +334,7 @@ function _subIsRunning(sub) {
           e.stopPropagation();
           toggleMeetingExpand(s.id);
         } else {
-          selectMeeting(s.id);
+          selectMeeting(s.id, { forceScrollBottom: true });
         }
       });
       div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
@@ -330,9 +353,10 @@ function _subIsRunning(sub) {
           const modelLabel = sub.currentModel
             ? `<span class="child-model-badge ${modelClass(sub.currentModel.id)}" title="${escapeHtml(sub.currentModel.displayName || sub.currentModel.id)}">${escapeHtml(modelShort(sub.currentModel))}</span>`
             : '';
+          const childWarning = _sessionWarningText(sub);
           childDiv.innerHTML = `
             ${_aiLogoHtml(sub.kind)}
-            <span class="child-title">${escapeHtml(sub.title)}</span>
+            <span class="child-title" title="${escapeHtml(childWarning)}">${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}</span>
             ${modelLabel}
           `;
           // Use the existing selectSession path: it hides meeting-room-panel,
@@ -365,14 +389,16 @@ function _subIsRunning(sub) {
       + (showWaiting ? ' need-wait' : '') + (showUnread ? ' need-unread' : '') + dormantCls;
     const ctxPct = typeof s.contextPct === 'number' ? s.contextPct : null;
     const modelTxt = s.currentModel ? modelShort(s.currentModel) : '';
+    const anyWarning = _sessionWarningText(s);
     const titleTip = [s.title,
       s.currentModel ? (s.currentModel.displayName || s.currentModel.id) : '',
       ctxPct != null ? `Ctx ${ctxPct}%` : '',
+      anyWarning,
       isDormant ? '休眠中，点击唤醒' : (showWaiting ? (s.waitingText || '等你输入') : (showUnread ? (s.lastOutputPreview || '有未读新消息') : '')),
     ].filter(Boolean).join(' · ');
     div.innerHTML = `
       ${_ringHtml(ctxPct, dotCls)}
-      <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${s.unreadCount}</span>` : ''}</span>
+      <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${s.unreadCount}</span>` : ''}</span>
       <span class="sl-model">${escapeHtml(modelTxt)}</span>
       <span class="sl-time">${formatTime(s.lastMessageTime)}</span>
     `;

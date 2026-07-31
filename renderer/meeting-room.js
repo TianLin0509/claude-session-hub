@@ -7,6 +7,7 @@
 if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
+  const { extractVisibleCardText } = require('./visible-card-text.js');
   const { CLAUDE_MEMORY_INDEX: _CLAUDE_MEMORY_INDEX } = require('../core/claude-memory-loader.js');
   const {
     buildHeroPromptBlock: _buildHeroPromptBlock,
@@ -212,6 +213,9 @@ if (typeof document !== 'undefined') (function () {
     _renderHeroDock(meeting);
     if (opts.scroll) {
       _restoreGroupChatScroll(panel, opts.scroll, opts.restoreOpts || {});
+    }
+    if (opts.forceMeetingBottom) {
+      _scrollMeetingContentToBottom(panel, meeting);
     }
     return true;
   }
@@ -1563,7 +1567,7 @@ if (typeof document !== 'undefined') (function () {
     // AI 群聊卡片头像与 slot 位置绑定（不与 kind 绑定）。
     //   slot 1 永远皮卡丘，slot 2 永远小火龙，slot 3 永远杰尼龟，便于用户视觉识别
     //   "哪一格是哪家"。CSS 主题色亦按 slot 上色（见 .mr-ft.slot-N），kind 仅作 data-attribute。
-    const avatarSrc = isGroupChat ? `assets/ai-logos/${kind}.svg` : _avatarBySlot(slotIdx);
+    const avatarSrc = isGroupChat ? `assets/ai-logos/${String(kind).replace(/-resume$/, '')}.svg` : _avatarBySlot(slotIdx);
     const avatarFb = _avatarFallbackBySlot(slotIdx);
     const avatarHtml = avatarSrc
       ? `<div class="mr-ft-avatar"><img src="${avatarSrc}" alt="${kind || 'slot' + (slotIdx + 1)}" onerror="this.parentNode.textContent='${avatarFb}'; this.parentNode.style.cssText+=';display:flex;align-items:center;justify-content:center;font-size:30px;'"></div>`
@@ -2044,7 +2048,7 @@ if (typeof document !== 'undefined') (function () {
     const avatarsHtml = sids.map((sid, idx) => {
       const slot = slots[idx] || {};
       const src = meeting && meeting.groupChat && slot.kind
-        ? `assets/ai-logos/${slot.kind}.svg`
+        ? `assets/ai-logos/${String(slot.kind).replace(/-resume$/, '')}.svg`
         : _avatarBySlot(idx);
       const fb = meeting && meeting.groupChat
         ? escapeHtml((slot.displayLabel || slot.kind || `AI ${idx + 1}`).slice(0, 2))
@@ -2184,7 +2188,8 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _groupLogoSrc(kind) {
-    return `assets/ai-logos/${escapeHtml(kind || 'claude')}.svg`;
+    // *-resume 复用基础 kind 的 svg（assets 里没有 *-resume.svg）
+    return `assets/ai-logos/${escapeHtml(String(kind || 'claude').replace(/-resume$/, ''))}.svg`;
   }
 
   function _formatGroupChatTime(ts) {
@@ -2663,6 +2668,28 @@ if (typeof document !== 'undefined') (function () {
     requestAnimationFrame(apply);
   }
 
+  // 用户从左侧栏重新进入群聊时，“打开该会话”与普通 session 一样表示查看最新。
+  // 聊天流只有一个消息滚动容器；卡片视图则每家 AI 都有自己的 preview，tab 模式
+  // 还可能由外层 bottom 承担滚动，因此两层都置底。后台刷新不传此标记，仍保留阅读位置。
+  function _scrollMeetingContentToBottom(panel, meeting) {
+    if (!panel || !meeting) return;
+    const apply = () => {
+      if (meeting.groupChat && _getGroupViewMode() === 'chat') {
+        const messages = panel.querySelector('.mr-gc-messages');
+        if (messages) messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight);
+        return;
+      }
+      panel.querySelectorAll('.mr-ft-preview, .mr-ft-bottom').forEach((el) => {
+        el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      });
+    };
+    apply();
+    requestAnimationFrame(() => {
+      apply();
+      requestAnimationFrame(apply);
+    });
+  }
+
   // 2026-05-15 道雪 群聊弹顶 bug 修复：partial-update 局部 patch
   //   旧路径：partial-update 在群聊视图下走"找不到 .mr-ft → panel.innerHTML 全量重渲"
   //     兜底，每次心跳都新建 .mr-gc-messages 容器 → scrollTop 重置 0 → 用户视觉"弹顶"。
@@ -2738,13 +2765,16 @@ if (typeof document !== 'undefined') (function () {
     // 已改变，直接丢弃，避免 header 已是新模式、panel 却被旧模式重写。
     if (meeting.groupChat && expectedGroupViewMode && _getGroupViewMode() !== expectedGroupViewMode) return;
     const panel = _ensureGcPanel();
-    const forceGroupChatBottom = !!opts.forceGroupChatBottom && !!meeting.groupChat && _getGroupViewMode() === 'chat';
+    const forceMeetingBottom = opts.forceMeetingBottom === true;
+    const forceGroupChatBottom = (forceMeetingBottom || !!opts.forceGroupChatBottom)
+      && !!meeting.groupChat && _getGroupViewMode() === 'chat';
     const groupScroll = forceGroupChatBottom
       ? { scrollTop: 0, stickToBottom: true }
       : _captureGroupChatScroll(panel, meeting);
     _renderGcPanelInto(panel, meeting, state, {
       scroll: groupScroll,
       restoreOpts: { forceBottom: forceGroupChatBottom },
+      forceMeetingBottom,
     });
     // 2026-06-28 道雪：nextActions(综合共识/互相挑错/生成交接/引用焦点卡)已移到作战面板，
     //   轮次状态随每次 refresh 变化，故同步刷新作战面板，让按钮在轮次结束时即时出现/消失。
@@ -2995,7 +3025,9 @@ if (typeof document !== 'undefined') (function () {
     const f2Kind = btn.getAttribute('data-gc-kind');
     const card = btn.closest('.mr-ft');
     if (action === 'copy') {
-      const previewText = (card?.querySelector('.mr-ft-bottom')?.innerText || '').trim();
+      const previewText = extractVisibleCardText(
+        card?.querySelector('.mr-ft-preview') || card?.querySelector('.mr-ft-bottom')
+      );
       if (!previewText) {
         const oldT = btn.textContent;
         btn.textContent = '空';
@@ -3047,7 +3079,7 @@ if (typeof document !== 'undefined') (function () {
 
   async function _handleGcMessageCopy(btn) {
     const msgEl = btn.closest('.mr-gc-msg');
-    const text = (msgEl?.querySelector('.mr-gc-bubble')?.innerText || '').trim();
+    const text = extractVisibleCardText(msgEl?.querySelector('.mr-gc-bubble'));
     const oldText = btn.textContent;
     if (!text) {
       btn.textContent = '空';
@@ -5044,7 +5076,7 @@ if (typeof document !== 'undefined') (function () {
     // no-op — kept for backward compat; refs resolved lazily
   }
 
-  function openMeeting(meetingId, meeting) {
+  function openMeeting(meetingId, meeting, opts = {}) {
     // 切换前先保存上一个 meeting 的草稿（如果有）；切换到同一个 meeting 不存。
     if (activeMeetingId && activeMeetingId !== meetingId) _saveInputDraft();
     activeMeetingId = meetingId;
@@ -5080,7 +5112,9 @@ if (typeof document !== 'undefined') (function () {
     // 两模式(通用/投研)进入会议室即刷新持久化面板
     // 先做一次同步渲染（保持响应不阻塞），await 首次 poll 后再 refresh 一次（修首屏闪烁）
     if (_isPanelCapableMeeting(meeting)) {
-      refreshGroupChatPanel(meeting, { forceGroupChatBottom: true });
+      refreshGroupChatPanel(meeting, {
+        forceMeetingBottom: opts.forceScrollBottom === true,
+      });
       // 异步等首次 poll 后再 refresh 一次（poll 内部已会重渲，这里只是兜底，不阻塞 UI）
       if (firstPoll && typeof firstPoll.then === 'function') {
         firstPoll.then(() => {
@@ -5701,7 +5735,8 @@ if (typeof document !== 'undefined') (function () {
     };
     const slotAvatarSrc = (idx) => {
       const slot = slotsArr[idx] || {};
-      return `assets/ai-logos/${escapeHtml(slot.kind || 'claude')}.svg`;
+      // *-resume 复用基础 kind 的 svg；此处的 <img> 无 onerror 兜底，404 会直接破图
+      return `assets/ai-logos/${escapeHtml(String(slot.kind || 'claude').replace(/-resume$/, ''))}.svg`;
     };
 
     el.innerHTML = '';

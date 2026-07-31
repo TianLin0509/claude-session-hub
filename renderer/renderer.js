@@ -4,6 +4,14 @@ const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexK
 const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
+const { fileURLToPath } = require('url');
+const { extractVisibleCardText } = require('./visible-card-text.js');
+const { applyCardDisplaySettings } = require('./card-display-settings.js');
+const applyHubCardDisplaySettings = (config) => applyCardDisplaySettings(document, config);
+applyHubCardDisplaySettings();
+ipcRenderer.invoke('get-hub-config-raw')
+  .then(applyHubCardDisplaySettings)
+  .catch(() => {});
 // ── Bug 修复（2026-06-21 道雪）：marked 默认透传裸 HTML，AI/用户消息正文里的字面
 //    <script>/<style>/未闭合 <tag>（含数学 a<b、泛型 List<String>）会被浏览器 HTML
 //    解析器当成元素、把后续内容当作其文本吞掉，再被 DOMPurify 整段删除 → 消息正文
@@ -36,7 +44,7 @@ const { modelClass, modelShort, createModelUiController } = require('./model-ui.
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
-const { createPastSessionModals } = require('./past-session-modals.js');
+const { createPastSessionModals, collapseDormantNativeDuplicates } = require('./past-session-modals.js');
 const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
 const { createShellController } = require('./shell-controller.js');
 const { createRenderCoalescer } = require('./render-coalescer.js');
@@ -185,7 +193,11 @@ function updateCodexFollowBottomFromUserScroll(sessionId, cached) {
   if (!session || !isCodexKind(session.kind) || !cached) return;
   requestAnimationFrame(() => {
     const now = performance.now();
-    if (cached._codexProgrammaticScrollUntil && now < cached._codexProgrammaticScrollUntil) return;
+    // This helper is only scheduled from a real wheel gesture. User intent
+    // must win even if an automatic pin happened in the preceding 120 ms;
+    // otherwise a streaming Codex TUI can keep the suppression window alive
+    // and make upward scrolling feel as if it hits an invisible wall.
+    if (!cached._codexUserScrollIntentUntil || now > cached._codexUserScrollIntentUntil) return;
     cached._codexFollowBottom = isTerminalViewportAtBottom(cached);
   });
 }
@@ -209,8 +221,12 @@ function setupCodexViewportScrollTracker(sessionId, cached) {
   cached._codexTrackedViewport = vp;
   cached._codexViewportScrollHandler = () => {
     const now = performance.now();
-    if (cached._codexProgrammaticScrollUntil && now < cached._codexProgrammaticScrollUntil) return;
     if (!cached._codexUserScrollIntentUntil || now > cached._codexUserScrollIntentUntil) return;
+    // A pointer-down followed by a viewport scroll is a real scrollbar drag.
+    // Do not discard it merely because a streaming write just performed an
+    // automatic scrollToBottom. The user's resulting viewport position is the
+    // source of truth; subsequent writes stay detached until they return to
+    // the bottom or explicitly click the sidebar item again.
     cached._codexFollowBottom = isTerminalViewportAtBottom(cached);
   };
   vp.addEventListener('scroll', cached._codexViewportScrollHandler, { passive: true });
@@ -437,7 +453,7 @@ const sessionListRenderer = createSessionListRenderer({
   getResourceUsage: () => systemResourceUsage,
   getProxyInfo: () => hubProxyInfo,
   selectSession: (id, opts) => selectSession(id, opts),
-  selectMeeting: (id) => selectMeeting(id),
+  selectMeeting: (id, opts) => selectMeeting(id, opts),
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
   afterRender: () => { updateFloatingBarState(); updateRespondPill(); },
 });
@@ -487,7 +503,7 @@ function formatRelativeTime(ts) {
 }
 
 
-async function selectMeeting(meetingId) {
+async function selectMeeting(meetingId, opts = {}) {
   await savePreviewState();
   activeSessionId = null;
   activeMeetingId = meetingId;
@@ -531,7 +547,9 @@ async function selectMeeting(meetingId) {
         }
       }
     }
-    MeetingRoom.openMeeting(meetingId, meeting);
+    MeetingRoom.openMeeting(meetingId, meeting, {
+      forceScrollBottom: opts.forceScrollBottom === true,
+    });
   }
 
   renderSessionList();
@@ -1085,8 +1103,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
     _cardHistoryHydratedSid = null; // 切 session 重置，等 loadSessionHistoryToOverlay 成功后再设
     if (typeof loadSessionHistoryToOverlay === 'function') {
       // 卡片视图切换 session 时也跳到最新对话，与上方 PTY 的 pinOnShow focus 兜底对称：
-      // selectSession 给非 codex 传的 forceScrollBottom 被 isCodexKind 限定为 false，
-      // 故这里用 opts.focus（切到不同 session 时为 true）兜底，否则卡片视图会停在历史顶部。
+      // 切到不同 session 时靠 opts.focus；重复点击当前侧栏项时靠显式 forceScrollBottom。
       // view 切换（PTY↔卡片）走 applyViewMode 不经此处、不传 forceScrollBottom，保持阅读位置不受影响。
       loadSessionHistoryToOverlay(sessionId, { forceScrollBottom: !!opts.forceScrollBottom || !!opts.focus }).catch(err => {
         console.warn('[showTerminal] loadSessionHistoryToOverlay failed:', err);
@@ -1161,6 +1178,7 @@ const turnCardRenderer = createTurnCardRenderer({
   wrapPathLinksInElement: (rootEl, opts) => wrapPathLinksInElement(rootEl, opts),
   getActiveSessionId: () => activeSessionId,
   updateStreamingIndicator: (sessionId) => _updateStreamingIndicator(sessionId),
+  renderMathInElement: window.renderMathInElement,
 });
 const {
   renderTurnCard,
@@ -1415,6 +1433,14 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     } catch {
       container.scrollTop = container.scrollHeight;
     }
+    // scrollIntoView(block:end) 会把最后一张卡对齐，却不包含 overlay 的底部 padding，
+    // 显式侧栏导航仍会留下约 20px 缝隙。强制请求要贴到真正的 scrollHeight 尾端；
+    // 下一帧再钉一次，覆盖 markdown/KaTeX 在首帧完成后的轻微高度变化。
+    if (forceScrollBottom) {
+      const pinOverlayToBottom = () => { container.scrollTop = container.scrollHeight; };
+      pinOverlayToBottom();
+      requestAnimationFrame(pinOverlayToBottom);
+    }
   } else if (!incremental && !_batchWasAtBottom) {
     container.scrollTop = Math.min(
       overlayScrollBeforeLoad.top,
@@ -1433,6 +1459,10 @@ window._loadSessionHistoryToOverlay = loadSessionHistoryToOverlay;
 
 ipcRenderer.on('prompt-submitted-event', (_event, payload) => {
   onPromptSubmittedFromTranscriptEvent(payload);
+});
+
+ipcRenderer.on('background-work-event', (_event, payload) => {
+  onKimiBackgroundWorkEvent(payload);
 });
 
 // === Spec 2 v1.0.0 · S6 turn-complete-event listener ===
@@ -1661,13 +1691,10 @@ document.addEventListener('click', (e) => {
   const action = btn.dataset.action;
 
   if (action === 'copy') {
-    let md = turn.text || '';
-    if (Array.isArray(turn.toolCalls)) {
-      for (const tc of turn.toolCalls) {
-        md += `\n\n\`\`\`\n${tc.name || ''} ${tc.cmd || ''}\n${tc.stdout || ''}\n\`\`\``;
-      }
-    }
-    navigator.clipboard.writeText(md).then(() => {
+    // 复制用户实际看到的回答正文，不复制 markdown 围栏、toolCalls 原始块，
+    // 也不把 hover 出来的 Copy/Bash/展开按钮混进剪贴板。
+    const visibleText = extractVisibleCardText(card.querySelector('.turn-body'));
+    navigator.clipboard.writeText(visibleText).then(() => {
       const orig = btn.textContent;
       btn.textContent = '✓';
       setTimeout(() => { btn.textContent = orig; }, 1500);
@@ -1773,8 +1800,10 @@ let currentView = 'pty'; // 'card' | 'pty'
 const _W16_DELAYED_REMOVE_MS = 1500;
 const _w16RemoveTimers = new Map(); // sessionId → setTimeout id
 const _codexSubmitPendingTimers = new Map(); // sessionId -> setTimeout id
+const _kimiBackgroundFinishTimers = new Map(); // sessionId -> setTimeout id
 const _CODEX_CARD_SUBMIT_PENDING_MS = 15 * 1000;
 const _CODEX_CARD_WORK_MAX_MS = 45 * 60 * 1000;
+const _KIMI_BACKGROUND_FINISH_GRACE_MS = 30 * 1000;
 
 function markCodexCardWorking(sessionId, source = 'prompt') {
   const session = sessions.get(sessionId);
@@ -1821,6 +1850,63 @@ function clearCodexCardWorking(sessionId) {
   session.cardWorkingSource = null;
   session._agentWorking = null;
   session._runSource = null;
+}
+
+function hasKimiBackgroundWork(session) {
+  return !!(
+    session
+    && session._kimiBackgroundJobs instanceof Set
+    && session._kimiBackgroundJobs.size > 0
+  );
+}
+
+function clearKimiBackgroundFinishTimer(sessionId) {
+  const timer = _kimiBackgroundFinishTimers.get(sessionId);
+  if (!timer) return;
+  clearTimeout(timer);
+  _kimiBackgroundFinishTimers.delete(sessionId);
+}
+
+function onKimiBackgroundWorkEvent(payload) {
+  const { hubSessionId, phase, jobId } = payload || {};
+  if (!hubSessionId || !jobId) return;
+  const session = sessions.get(hubSessionId);
+  if (!session || !isKimiCliKind(session.kind) || session.status === 'dormant') return;
+  if (!(session._kimiBackgroundJobs instanceof Set)) session._kimiBackgroundJobs = new Set();
+
+  if (phase === 'started') {
+    clearKimiBackgroundFinishTimer(hubSessionId);
+    session._kimiBackgroundJobs.add(String(jobId));
+    markCodexCardWorking(hubSessionId, 'kimi_background_agent');
+    renderSessionList();
+    schedulePersist();
+    return;
+  }
+
+  if (phase !== 'finished') return;
+  session._kimiBackgroundJobs.delete(String(jobId));
+  if (hasKimiBackgroundWork(session)) {
+    markCodexCardWorking(hubSessionId, 'kimi_background_agent');
+    renderSessionList();
+    return;
+  }
+
+  // tool.result is normally followed by Kimi's final step.end, which clears the
+  // working state through the existing turn-complete path. If that record is
+  // missing, stop showing a stale green light after a short grace period.
+  clearKimiBackgroundFinishTimer(hubSessionId);
+  const timer = setTimeout(() => {
+    _kimiBackgroundFinishTimers.delete(hubSessionId);
+    const latest = sessions.get(hubSessionId);
+    if (!latest || hasKimiBackgroundWork(latest)) return;
+    if (latest.cardWorkingSource !== 'kimi_background_agent') return;
+    clearCodexCardWorking(hubSessionId);
+    if (latest.status === 'running') latest.status = 'idle';
+    if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
+    renderSessionList();
+    schedulePersist();
+  }, _KIMI_BACKGROUND_FINISH_GRACE_MS);
+  _kimiBackgroundFinishTimers.set(hubSessionId, timer);
 }
 
 function hasSemanticCardWorking(session) {
@@ -2334,7 +2420,7 @@ function updateRespondPill() {
   pill.onclick = () => {
     items.sort((a, b) => b.t - a.t);
     const top = items[0];
-    if (top.meeting) selectMeeting(top.id);
+    if (top.meeting) selectMeeting(top.id, { forceScrollBottom: true });
     else selectSession(top.id, { forceScrollBottom: true });
   };
 }
@@ -2435,13 +2521,16 @@ async function selectSession(id, opts = {}) {
   // Dormant session: clicking wakes it via resume-session IPC. Don't render
   // terminal now — session-created handler below will take over once PTY is up.
   if (session && session.status === 'dormant') {
-    resumeDormantSession(id);
+    resumeDormantSession(id, opts);
     return;
   }
   const switching = activeSessionId !== id;
   const cachedBeforeSelect = terminalCache.get(id);
   const requestedBottomPin = opts && opts.forceScrollBottom === true;
-  const forceScrollBottom = !!(session && isCodexKind(session.kind) && (requestedBottomPin || !cachedBeforeSelect || !cachedBeforeSelect.opened));
+  // 左侧栏的显式“跳到最新”适用于所有 CLI；Codex 仍保留首次打开自动置底，
+  // 修复卡片视图里重复点击当前 Claude/Kimi 会话时请求被 kind 过滤掉的问题。
+  const forceScrollBottom = requestedBottomPin
+    || !!(session && isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));
   const shouldFocusTerminal = switching || currentView === 'pty';
   activeSessionId = id;
   if (session) {
@@ -2565,6 +2654,8 @@ const pastSessionModals = createPastSessionModals({
   document,
   ipcRenderer,
   escapeHtml,
+  getSessions: () => sessions,
+  selectSession: (sessionId, opts) => selectSession(sessionId, opts),
 });
 const { openResumeModal, openSearchModal } = pastSessionModals;
 // Ctrl+click on a local file path in the terminal → open with OS default app.
@@ -2660,20 +2751,42 @@ const {
 // P0.6+: 暴露给 meeting-room.js 的"📖 记忆"按钮使用
 window.openPreviewPanel = openPreviewPanel;
 
+// main.js 的最后一道导航保护：若某个未接线/第三方生成的 file:// 链接试图替换 Hub
+// 主页面，main 会阻止整页导航并把本地路径送回这里，仍按统一规则打开预览面板。
+ipcRenderer.on('preview-local-file', (_event, filePath) => {
+  openPathInHub(filePath, {
+    cwd: getSessionCwd(activeSessionId),
+    requireExistsForRel: false,
+  });
+});
+
 // 2026-05-23 道雪：补全 main.js nav-guard 副作用 — 群聊/会议消息中 marked 渲染
 //   出的 <a href="http(s)://..."> 若不在 capture 阶段截走，会触发主 webContents
 //   will-navigate / setWindowOpenHandler，被 nav-guard 一律 shell.openExternal
 //   弹到系统浏览器，绕过 in-app 预览。preview-body 内由 controller 自己处理，
-//   rt-file-link 由 meeting-room.js 处理，其余 http(s) 链接统一走预览面板。
+//   rt-file-link 由 meeting-room.js 处理，其余 http(s) / 原始 file:// 链接统一走预览面板。
 document.addEventListener('click', (e) => {
   const a = e.target && e.target.closest && e.target.closest('a[href]');
   if (!a) return;
   if (a.closest('#preview-body')) return;
   if (a.classList.contains('rt-file-link')) return;
   const href = a.getAttribute('href') || '';
-  if (!/^https?:\/\//i.test(href)) return;
+  const isWebUrl = /^https?:\/\//i.test(href);
+  const isLocalFileUrl = /^file:/i.test(href);
+  if (!isWebUrl && !isLocalFileUrl) return;
   e.preventDefault();
   e.stopPropagation();
+  if (isLocalFileUrl) {
+    try {
+      openPathInHub(fileURLToPath(href), {
+        cwd: getSessionCwd(activeSessionId),
+        requireExistsForRel: false,
+      });
+    } catch (error) {
+      console.warn('[hub] invalid local file link blocked:', href, error && error.message);
+    }
+    return;
+  }
   openPreviewPanel(href);
 }, true);
 
@@ -2732,6 +2845,53 @@ function writeTerminalChunk(sessionId, cached, data) {
   }
 }
 
+function writeXtermAndWait(terminal, data) {
+  if (!terminal || !data) return Promise.resolve();
+  return new Promise((resolve) => {
+    try { terminal.write(data, resolve); } catch { resolve(); }
+  });
+}
+
+async function replayTerminalSnapshot(cached, snapshot) {
+  if (!cached || !cached.terminal || !snapshot) return;
+  const operations = Array.isArray(snapshot.operations) ? snapshot.operations : null;
+  const snapshotText = typeof snapshot === 'object'
+    ? String(snapshot.text || '')
+    : (typeof snapshot === 'string' ? snapshot : '');
+
+  if (!operations) {
+    await writeXtermAndWait(cached.terminal, snapshotText);
+    return;
+  }
+
+  // Structured snapshots preserve resize boundaries without making the main
+  // process build a headless framebuffer for every opened/resumed session.
+  // Start the serialized base at the geometry it was captured with, then apply
+  // ordered writes/resizes. The normal fit pass below restores current UI size.
+  const baseCols = Math.max(2, Number(snapshot.baseCols) || cached.terminal.cols);
+  const baseRows = Math.max(1, Number(snapshot.baseRows) || cached.terminal.rows);
+  try {
+    if (cached.terminal.cols !== baseCols || cached.terminal.rows !== baseRows) {
+      cached.terminal.resize(baseCols, baseRows);
+    }
+  } catch {}
+  await writeXtermAndWait(cached.terminal, snapshotText);
+  for (const operation of operations) {
+    if (!operation || typeof operation !== 'object') continue;
+    if (operation.type === 'resize') {
+      const cols = Math.max(2, Number(operation.cols) || cached.terminal.cols);
+      const rows = Math.max(1, Number(operation.rows) || cached.terminal.rows);
+      try {
+        if (cached.terminal.cols !== cols || cached.terminal.rows !== rows) {
+          cached.terminal.resize(cols, rows);
+        }
+      } catch {}
+    } else if (operation.type === 'write') {
+      await writeXtermAndWait(cached.terminal, String(operation.data || ''));
+    }
+  }
+}
+
 async function hydrateTerminalFromSnapshot(sessionId, cached) {
   if (!cached || cached._hydrated || cached._hydrating) return;
   cached._hydrating = true;
@@ -2742,35 +2902,47 @@ async function hydrateTerminalFromSnapshot(sessionId, cached) {
     console.warn('[terminal] snapshot hydrate failed:', err && err.message);
   }
   if (terminalCache.get(sessionId) !== cached) return;
-  const snapshotText = snapshot && typeof snapshot === 'object'
-    ? String(snapshot.text || '')
-    : (typeof snapshot === 'string' ? snapshot : '');
   const snapshotSeq = snapshot && Number.isFinite(Number(snapshot.seq)) ? Number(snapshot.seq) : 0;
-  if (snapshotText) writeTerminalChunk(sessionId, cached, snapshotText);
+  await replayTerminalSnapshot(cached, snapshot);
+  if (terminalCache.get(sessionId) !== cached) return;
   cached._hydratedSeq = snapshotSeq;
+
+  // Keep live IPC output queued until the snapshot parser has really finished,
+  // then drain until stable. Previously `_hydrated` flipped immediately after
+  // terminal.write(), while xterm was still parsing a megabyte-scale snapshot;
+  // fit/refresh ran against an empty buffer and some Canvas surfaces stayed
+  // visually blank even though later data existed.
+  while (cached._pendingOutput.length) {
+    const pending = cached._pendingOutput.splice(0);
+    cached._pendingOutputBytes = 0;
+    for (const item of pending) {
+      const itemSeq = Number(item.seq);
+      if (Number.isFinite(itemSeq) && itemSeq <= cached._hydratedSeq) continue;
+      let data = String(item.data || '');
+      const sess = sessions.get(sessionId);
+      if (sess && isCodexKind(sess.kind) && data.includes('prove documentation')) {
+        data = data.replace(CODEX_PLACEHOLDER_RE, '');
+      }
+      await writeXtermAndWait(cached.terminal, data);
+      if (Number.isFinite(itemSeq)) cached._hydratedSeq = Math.max(cached._hydratedSeq, itemSeq);
+      onTerminalOutput(sessionId, String(item.data || '').length);
+    }
+  }
   cached._hydrated = true;
   cached._hydrating = false;
-
-  const pending = cached._pendingOutput.splice(0);
-  cached._pendingOutputBytes = 0;
-  for (const item of pending) {
-    const itemSeq = Number(item.seq);
-    if (Number.isFinite(itemSeq) && itemSeq <= snapshotSeq) continue;
-    writeTerminalChunk(sessionId, cached, item.data);
-    if (Number.isFinite(itemSeq)) cached._hydratedSeq = Math.max(cached._hydratedSeq, itemSeq);
-    onTerminalOutput(sessionId, item.data.length);
-  }
   // showTerminal 里 hydrate 是 void 调用，紧跟其后的 rAF 会在快照还没回来时就
   // fitAndResizeTerminal —— 也就是说那次 fit 作用在一个空终端上，而真正的内容是之后
   // 才写进来的，此后再没有任何一次 fit/pin。内容量一变（尤其带绝对定位的 TUI 帧），
   // 布局就可能停在按空终端算出来的状态。回灌完成后补一次 fit + 置底。
   if (sessionId === activeSessionId) {
     fitAndResizeTerminal(sessionId, cached, { force: true });
+    refreshTerminalRendererSurface(cached);
     try { cached.terminal.scrollToBottom(); } catch {}
     requestAnimationFrame(() => {
       if (terminalCache.get(sessionId) !== cached) return;
       if (!cached.opened || !cached.container || !cached.container.offsetWidth) return;
       fitAndResizeTerminal(sessionId, cached, { force: true });
+      refreshTerminalRendererSurface(cached);
       try { cached.terminal.scrollToBottom(); } catch {}
     });
   }
@@ -3009,6 +3181,8 @@ ipcRenderer.on('hook-event', (_e, { event, sessionId, claudeSessionId, cwd, late
     // Persist CC session id + cwd the first time we learn them so resumes work.
     if (claudeSessionId && s.ccSessionId !== claudeSessionId) {
       s.ccSessionId = claudeSessionId;
+      const collapsed = collapseDormantNativeDuplicates(sessions);
+      if (collapsed.length) renderSessionList();
       schedulePersist();
     }
     // Only capture cwd ONCE (first hook). Updating on every hook lets a later
@@ -3100,13 +3274,21 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   const session = sessions.get(hubSessionId);
   if (!session) return;
   if (session.status === 'dormant') return;
+  const backgroundActive = isKimiCliKind(session.kind) && hasKimiBackgroundWork(session);
+  if (isKimiCliKind(session.kind) && !backgroundActive) {
+    clearKimiBackgroundFinishTimer(hubSessionId);
+  }
 
   // 与 onPromptSubmittedFromTranscriptEvent 的开工标记配对：群聊成员干完活要收尾，
   // 否则状态灯会一直卡在运行中，只能等 45 分钟的 maxAge 兜底。
   // 未读 / 通知 /「等你响应」仍由群聊自己的流水线负责，这里不碰。
   if (meetingId) {
-    clearCodexCardWorking(hubSessionId);
-    if (session.status === 'running') session.status = 'idle';
+    if (backgroundActive) {
+      markCodexCardWorking(hubSessionId, 'kimi_background_agent');
+    } else {
+      clearCodexCardWorking(hubSessionId);
+      if (session.status === 'running') session.status = 'idle';
+    }
     if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
     renderSessionList();
     return;
@@ -3118,12 +3300,22 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   session._lastTranscriptReadySig = sig;
 
   const wasWaiting = !!session.isWaiting;
-  clearCodexCardWorking(hubSessionId);
+  if (!backgroundActive) clearCodexCardWorking(hubSessionId);
   session.lastOutputPreview = preview;
-  session.status = 'idle';
-  session.isWaiting = true;
-  session.waitingReason = 'reply-ready';
-  session.waitingText = preview;
+  if (backgroundActive) {
+    session.status = 'running';
+    session.isWaiting = false;
+    session.waitingReason = null;
+    session.waitingText = null;
+    markCodexCardWorking(hubSessionId, 'kimi_background_agent');
+  } else {
+    // Keep these explicit assignments as the stable waiting-badge contract for
+    // Codex and ordinary Kimi completions.
+    session.status = 'idle';
+    session.isWaiting = true;
+    session.waitingReason = 'reply-ready';
+    session.waitingText = preview;
+  }
   session.lastMessageTime = completedAt || Date.now();
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
 
@@ -3395,7 +3587,13 @@ function escapeToHome() {
 ipcRenderer.on('escape-home', escapeToHome);
 
 const { createConfigModalController } = require('./config-modal.js');
-const configModal = createConfigModalController({ document, ipcRenderer, providerModes, renderAccountUsage });
+const configModal = createConfigModalController({
+  document,
+  ipcRenderer,
+  providerModes,
+  renderAccountUsage,
+  applyCardDisplaySettings: applyHubCardDisplaySettings,
+});
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
 
@@ -3410,12 +3608,16 @@ if (typeof MeetingRoom !== 'undefined') {
   MeetingRoom.init(sessions, getOrCreateTerminal);
 }
 
+const _pendingDormantResumes = new Map();
+
 ipcRenderer.on('session-created', async (_e, { session }) => {
   // When resuming a dormant session, the hubId matches an existing dormant
   // entry. Merge live PTY info on top of the dormant metadata so title /
   // preview / unread / pinned aren't wiped.
   const existing = sessions.get(session.id);
-  const wasDormant = existing && existing.status === 'dormant';
+  const pendingResume = _pendingDormantResumes.get(session.id) || null;
+  const wasDormant = !!pendingResume || !!(existing && existing.status === 'dormant');
+  if (pendingResume) _pendingDormantResumes.delete(session.id);
   if (wasDormant) {
     sessions.set(session.id, {
       ...existing,
@@ -3423,8 +3625,10 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
       status: 'idle',
       // preserve persisted UX state
       pinned: existing.pinned,
-      ccSessionId: existing.ccSessionId || session.ccSessionId,
-      transcriptPath: existing.transcriptPath || session.transcriptPath,
+      // Main reconciles provider-native ids/paths during resume.  Its fresh
+      // binding must replace stale dormant metadata, not the other way around.
+      ccSessionId: session.ccSessionId || existing.ccSessionId,
+      transcriptPath: session.transcriptPath || existing.transcriptPath,
       lastOutputPreview: existing.lastOutputPreview,
     });
   } else {
@@ -3454,7 +3658,9 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   renderSessionList();
   // 新建 session 默认进 PTY；dormant resume 保留用户当前视图，避免卡片视图被唤醒流程打断。
   applyViewMode(wasDormant ? currentView : 'pty');
-  showTerminal(session.id);
+  showTerminal(session.id, {
+    forceScrollBottom: !!(pendingResume && pendingResume.forceScrollBottom),
+  });
   await restorePreviewForContext(`session:${session.id}`);
 });
 
@@ -3477,9 +3683,13 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
   if (ev.kimiSessionDir) s.kimiSessionDir = ev.kimiSessionDir;
   // 归档会搬运整个 workspace：dormant 条目的 cwd 也要跟着走，否则唤醒时指向已不存在的目录。
   if (ev.cwd) s.cwd = ev.cwd;
+  const collapsed = (ev.ccSessionId || ev.codexSid || ev.kimiSid)
+    ? collapseDormantNativeDuplicates(sessions)
+    : [];
   if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot || ev.kimiSid || ev.kimiSessionDir || ev.cwd) {
     schedulePersist();
   }
+  if (collapsed.length) renderSessionList();
   if (ev.hubSessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
     loadSessionHistoryToOverlay(ev.hubSessionId).catch(err => {
       console.warn('[session-meta-updated] card reload failed:', err);
@@ -3585,6 +3795,8 @@ function schedulePersist() {
         title: s.title,
         kind: s.kind,
         cwd: s.cwd || null,
+        cwdFellBackFrom: s.cwdFellBackFrom || null,
+        memoryLinkWarning: s.memoryLinkWarning || null,
         workspaceLabel: s.workspaceLabel || null,
         pinned: !!s.pinned,
         ccSessionId: s.ccSessionId || null,
@@ -3646,36 +3858,49 @@ window.schedulePersist = schedulePersist;
 
 // Wake a dormant session: call main to spawn PTY with --resume, then wait for
 // session-created which will replace the dormant entry.
-async function resumeDormantSession(hubId) {
+async function resumeDormantSession(hubId, opts = {}) {
   const dormant = sessions.get(hubId);
   if (!dormant || dormant.status !== 'dormant') return dormant || null;
-  // Keep title / pinned / preview so UI stays stable through the resume.
-  const resumed = await ipcRenderer.invoke('resume-session', {
-    hubId,
-    kind: dormant.kind,
-    title: dormant.title,
-    cwd: dormant.cwd,
-    ccSessionId: dormant.ccSessionId,
-    transcriptPath: dormant.transcriptPath,
-    meetingId: dormant.meetingId || null,
-    lastMessageTime: dormant.lastMessageTime,
-    lastOutputPreview: dormant.lastOutputPreview,
-    // 把原 session 的 model 透传给 main.js → session-manager createSession 的 opts.model，
-    // 避免 spawn `claude --resume` 时回退到默认 opus，丢失原 session 实际使用的 model。
-    model: (dormant.currentModel && dormant.currentModel.id) || null,
-    // T10: pass resume-meta so main.js Codex/Gemini precise resume works
-    codexSid: dormant.codexSid || null,
-    codexSessionsRoot: dormant.codexSessionsRoot || null,
-    codexAllowMtimeFallback: !!dormant.codexAllowMtimeFallback,
-    codexProfile: dormant.codexProfile || null,
-    geminiChatId: dormant.geminiChatId || null,
-    geminiProjectHash: dormant.geminiProjectHash || null,
-    geminiProjectRoot: dormant.geminiProjectRoot || null,
-    kimiSid: dormant.kimiSid || null,
-    kimiSessionDir: dormant.kimiSessionDir || null,
-    userRenamed: !!dormant.userRenamed,
-    autoTitleGenerated: !!dormant.autoTitleGenerated || isStableSessionTitle(dormant.title, dormant.kind),
+  _pendingDormantResumes.set(hubId, {
+    forceScrollBottom: opts.forceScrollBottom === true,
   });
+  // Keep title / pinned / preview so UI stays stable through the resume.
+  let resumed;
+  try {
+    resumed = await ipcRenderer.invoke('resume-session', {
+      hubId,
+      kind: dormant.kind,
+      title: dormant.title,
+      cwd: dormant.cwd,
+      cwdFellBackFrom: dormant.cwdFellBackFrom || null,
+      ccSessionId: dormant.ccSessionId,
+      transcriptPath: dormant.transcriptPath,
+      meetingId: dormant.meetingId || null,
+      lastMessageTime: dormant.lastMessageTime,
+      lastOutputPreview: dormant.lastOutputPreview,
+      // 把原 session 的 model 透传给 main.js → session-manager createSession 的 opts.model，
+      // 避免 spawn `claude --resume` 时回退到默认 opus，丢失原 session 实际使用的 model。
+      model: (dormant.currentModel && dormant.currentModel.id) || null,
+      // T10: pass resume-meta so main.js Codex/Gemini precise resume works
+      codexSid: dormant.codexSid || null,
+      codexSessionsRoot: dormant.codexSessionsRoot || null,
+      codexAllowMtimeFallback: !!dormant.codexAllowMtimeFallback,
+      codexProfile: dormant.codexProfile || null,
+      geminiChatId: dormant.geminiChatId || null,
+      geminiProjectHash: dormant.geminiProjectHash || null,
+      geminiProjectRoot: dormant.geminiProjectRoot || null,
+      kimiSid: dormant.kimiSid || null,
+      kimiSessionDir: dormant.kimiSessionDir || null,
+      userRenamed: !!dormant.userRenamed,
+      autoTitleGenerated: !!dormant.autoTitleGenerated || isStableSessionTitle(dormant.title, dormant.kind),
+    });
+  } catch (error) {
+    _pendingDormantResumes.delete(hubId);
+    throw error;
+  }
+  if (resumed && resumed.cwdFellBackFrom) {
+    alert(`原工作目录已不存在：\n${resumed.cwdFellBackFrom}\n\n会话已回落到：\n${resumed.cwd}\n\n请先重定位或归档 workspace；不要在聚合根继续写文件。`);
+  }
   // v0.13 · P0 #2: 不再反向清零 dormant 累积的 unread。睡前积压的对话用户还
   // 没看 → 应保留红点直到用户真正点击进入（selectSession 会清零）。原代码会
   // 让"睡前 N 条新消息"在 resume 瞬间静默丢失。
@@ -3689,8 +3914,8 @@ async function resumeDormantSession(hubId) {
       ...resumed,
       status: 'idle',
       pinned: s.pinned,
-      ccSessionId: s.ccSessionId || resumed.ccSessionId,
-      transcriptPath: s.transcriptPath || resumed.transcriptPath,
+      ccSessionId: resumed.ccSessionId || s.ccSessionId,
+      transcriptPath: resumed.transcriptPath || s.transcriptPath,
       lastOutputPreview: s.lastOutputPreview,
     });
   }
@@ -3735,6 +3960,8 @@ window.resumeDormantSession = resumeDormantSession;
         unreadCount: meta.unreadCount || 0,
         createdAt: meta.lastMessageTime || Date.now(),
         cwd: meta.cwd || null,
+        cwdFellBackFrom: meta.cwdFellBackFrom || null,
+        memoryLinkWarning: meta.memoryLinkWarning || null,
         pinned: !!meta.pinned,
         ccSessionId: meta.ccSessionId || null,
         transcriptPath: meta.transcriptPath || null,
@@ -3771,6 +3998,12 @@ window.resumeDormantSession = resumeDormantSession;
       if (m.layout === 'split') m.layout = 'focus';
       meetings[m.id] = m;
     }
+  }
+
+  const collapsedNativeSessions = collapseDormantNativeDuplicates(sessions);
+  if (collapsedNativeSessions.length) {
+    console.info(`[resume] consolidated ${collapsedNativeSessions.length} duplicate dormant transcript shell(s)`);
+    schedulePersist();
   }
 
   traceRendererStartup('renderSessionList start');
@@ -3887,8 +4120,8 @@ ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
 
 if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
   window.__hubE2E = {
-    selectMeeting: (meetingId) => selectMeeting(meetingId),
-    selectSession: (sessionId) => selectSession(sessionId),
+    selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
+    selectSession: (sessionId, opts) => selectSession(sessionId, opts),
     getActiveMeetingId: () => activeMeetingId,
     getMeeting: (meetingId) => meetings[meetingId] || null,
     terminalCacheStats: () => ({

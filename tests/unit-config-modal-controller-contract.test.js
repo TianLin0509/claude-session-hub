@@ -74,10 +74,12 @@ async function main() {
     'cfg-codex-key', 'cfg-codex-model', 'cfg-summary-codex',
     'cfg-status-codex', 'cfg-detail-status', 'cfg-proxy',
     'cfg-deepseek-key', 'cfg-codex-url',
+    'cfg-card-font-size', 'cfg-card-font-size-value', 'cfg-card-font-family',
   ];
   const document = makeDocument(ids);
   const providerModes = { codex: 'subscription' };
   let usageRendered = 0;
+  const cardDisplayUpdates = [];
   const ipcRenderer = {
     async invoke(channel) {
       assert.strictEqual(channel, 'get-hub-config-raw');
@@ -94,6 +96,8 @@ async function main() {
         ],
         codexApiKey: 'sk-test',
         codexApiModel: 'gpt-5.5',
+        cardFontSize: 18,
+        cardFontFamily: 'serif',
       };
     },
   };
@@ -103,6 +107,7 @@ async function main() {
     ipcRenderer,
     providerModes,
     renderAccountUsage() { usageRendered += 1; },
+    applyCardDisplaySettings(config) { cardDisplayUpdates.push(config); },
   });
 
   controller.setCodexProfileForm([
@@ -131,6 +136,11 @@ async function main() {
   assert.strictEqual(document.getElementById('cfg-codex-key').value, 'sk-test');
   assert.strictEqual(document.getElementById('cfg-status-codex').textContent, 'API');
   assert.strictEqual(document.getElementById('cfg-status-codex').className, 'config-ai-status api');
+  assert.strictEqual(document.getElementById('cfg-card-font-size').value, '18');
+  assert.strictEqual(document.getElementById('cfg-card-font-size-value').textContent, '18px');
+  assert.strictEqual(document.getElementById('cfg-card-font-family').value, 'serif');
+  assert.deepStrictEqual(cardDisplayUpdates.at(-1), { cardFontSize: 18, cardFontFamily: 'serif' });
+  assert.deepStrictEqual(controller.readCardDisplayForm(), { cardFontSize: 18, cardFontFamily: 'serif' });
   assert.strictEqual(usageRendered, 0);
 
   console.log('unit-config-modal-controller-contract OK');

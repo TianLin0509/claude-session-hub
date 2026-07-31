@@ -140,6 +140,15 @@ test('三个成员都空闲时群聊不进运行中', () => {
   assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '运行中');
 });
 
+test('折叠群聊会聚合显示成员的 cwd / memory 告警', () => {
+  const { sessions, meetings } = groupChat(['idle', 'idle', 'idle']);
+  sessions.get('sid-claude').memoryLinkWarning = '错链：没有指向规范库';
+  const html = render({ sessions, meetings });
+  assert.ok(html.includes('⚠'), '群聊父行必须有可见告警图标');
+  assert.ok(html.includes('记忆未接入规范库'), '父行或成员 tooltip 必须解释记忆告警');
+  assert.ok(html.includes('AI-claude'), '聚合告警必须指出具体成员，不能只报群聊有问题');
+});
+
 test('成员被 Ctrl+C 打断（自己 idle）时，不会因为 gcWorking 残留而继续显示运行中', () => {
   // gcWorking 只有 10 分钟的兜底扫描才清，会话自己的状态更可信。
   const { sessions, meetings } = groupChat(['idle', 'idle', 'idle'], {
@@ -195,7 +204,10 @@ test('群聊自己的卡片/未读流水线仍然不被这两个处理器接管'
   // 只认领「会话在不在干活」，其余照旧交给 meeting-room.js —— 群聊分支必须 return。
   for (const name of ['onPromptSubmittedFromTranscriptEvent', 'onReplyCompleteFromTranscriptEvent']) {
     const body = bodyOf(name);
-    assert.ok(/if \(meetingId\) \{[\s\S]*?\n    return;\n  \}/.test(body),
+    // 行尾必须容忍 CRLF：git core.autocrlf=true 下工作区是 CRLF 而 blob 是 LF，
+    // 写死 \n 的多行正则会在工作区版本上失配。这里修断言本身，不强制改全仓 EOL；
+    // 其余源码断言多用 \s*\n / [\s\S]*?\n，本就能吞掉 \r，不能据此算成 17 个同类炸弹。
+    assert.ok(/if \(meetingId\) \{[\s\S]*?\r?\n    return;\r?\n  \}/.test(body),
       `${name} 的群聊分支必须 return，不能继续走未读/通知逻辑`);
     assert.ok(!/if \(meetingId\)[\s\S]{0,300}unreadCount/.test(body),
       `${name} 不该在群聊分支里动未读计数`);

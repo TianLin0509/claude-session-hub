@@ -321,6 +321,18 @@ function applyTurnLimit(turns, limit, fromTail) {
   return turns;
 }
 
+// A fixed byte tail can begin in the middle of one logical assistant turn.
+// Parsing that suffix is dangerous: Claude's consecutive assistant records are
+// merged by the first visible UUID, so the same answer receives a different id
+// (and loses its earlier text/tools) than a full parse.  The tail is safe when
+// it starts at a real user boundary, or when the incomplete leading turn is
+// outside the requested slice and will be discarded.
+function isTailTurnSliceComplete(turns, limit) {
+  if (!Array.isArray(turns) || turns.length < limit) return false;
+  if (turns.length > limit) return true;
+  return turns.length > 0 && turns[0].role === 'user';
+}
+
 function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
   const { limit, fromTail = false } = opts;
   if (typeof limit === 'number' && limit <= 0) return [];
@@ -335,7 +347,9 @@ function parseClaudeTranscriptToTurns(jsonlPath, opts = {}) {
       // directly to one full read instead of replaying overlapping windows.
       const { raw } = readTailWindowText(jsonlPath, TAIL_WINDOW_INITIAL_BYTES);
       const tailTurns = parseClaudeTranscriptText(raw);
-      if (tailTurns.length >= limit) return applyTurnLimit(tailTurns, limit, true);
+      if (isTailTurnSliceComplete(tailTurns, limit)) {
+        return applyTurnLimit(tailTurns, limit, true);
+      }
     }
   }
 

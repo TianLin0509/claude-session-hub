@@ -2,7 +2,11 @@
 
 const { isDeepStrictEqual } = require('node:util');
 
+// 注意：memoryLinkWarning **故意不在这个名单里**。这里的语义是「新会话缺该字段就继承旧值」，
+// 而 memory link 每次 spawn 都会重新检测——放进来会让警告一旦出现就永久粘住，修好了也删不掉
+// （cwdFellBackFrom 能放是因为 healPersistedCwds 里有显式 delete 清除路径，它没有）。
 const RESUME_META_FIELDS = [
+  'cwdFellBackFrom',
   'transcriptPath',
   'codexSid',
   'codexSessionsRoot',

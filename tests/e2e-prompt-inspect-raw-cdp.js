@@ -256,7 +256,8 @@ function assertPortFree(port) {
     assert.strictEqual(asm.segs[idxClaude].text, claudeMdDisk, '拼装段正文也必须与磁盘逐字一致');
     assert.ok(/字节偏移 \[\d+, \d+\)/.test(asm.segs[idxClaude].offsets), `缺少起止字节偏移：${asm.segs[idxClaude].offsets}`);
     assert.ok(asm.segs[idxClaude].offsets.includes(claudeMdSha.slice(0, 12)), '拼装段必须带 sha256 前 12 位');
-    // 偏移自洽：相邻两段 end + 2（'\n\n'）=== 下一段 start
+    // 偏移自洽：重复/读不到的证据行没有 .pi-seg-off；真正注入的相邻两段
+    // end + 2（'\n\n'）=== 下一段 start。
     const parsed = asm.segs.map(s => {
       const m = s.offsets.match(/\[(\d+), (\d+)\)/);
       return m ? { start: Number(m[1]), end: Number(m[2]) } : null;
@@ -265,7 +266,10 @@ function assertPortFree(port) {
       assert.strictEqual(parsed[i].start, parsed[i - 1].end + 2,
         `第 ${i} 段偏移与上一段对不上：${JSON.stringify(parsed[i - 1])} → ${JSON.stringify(parsed[i])}`);
     }
-    assert.strictEqual(parsed[idxClaude].end - parsed[idxClaude].start, claudeMdBytes, '偏移宽度必须等于磁盘字节数');
+    const claudeOffset = asm.segs[idxClaude].offsets.match(/\[(\d+), (\d+)\)/);
+    assert.ok(claudeOffset, '夹具 CLAUDE.md 必须有可解析偏移');
+    assert.strictEqual(Number(claudeOffset[2]) - Number(claudeOffset[1]), claudeMdBytes,
+      '偏移宽度必须等于磁盘字节数');
     assert.ok(asm.unavailable.includes('拿不到'), '拼装预览必须如实列出拿不到的部分');
     assert.ok(asm.unavailable.includes('内置系统提示词'), '必须点名 CLI 内置系统提示词拿不到');
     assert.ok(!/系统提示词[\s\S]{0,40}You are/.test(asm.unavailable), '绝不许伪造一段系统提示词正文');

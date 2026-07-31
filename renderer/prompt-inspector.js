@@ -31,6 +31,7 @@
 
   const MEM_STATE = {
     LINKED: ['ok', '已链到规范库'],
+    WRONG_LINK: ['bad', '链接指向别处'],
     PRIVATE_REAL: ['warn', '独立记忆'],
     EMPTY_REAL: ['bad', '空目录·永久不共享'],
     NOBUCKET: ['warn', '尚无记忆桶'],
@@ -198,6 +199,18 @@
     </details>`;
   }
 
+  function renderCodexMemoryNote() {
+    return `<details class="pi-grp">
+      <summary><span class="pi-gname">记忆</span>
+        <span class="pi-gmeta">不使用 Claude memory 桶</span></summary>
+      <div class="pi-gbody">
+        <div class="pi-why">Codex 不读取 <code>~/.claude/projects/*/memory</code>。
+          上面的 <code>AGENTS.md</code> 链是 Hub 当前能从磁盘确定还原的规则来源；
+          Codex CLI 内部动态拼装、但未暴露给 Hub 的记忆上下文不在这里冒充展示。</div>
+      </div>
+    </details>`;
+  }
+
   function renderMemoryGroup(d) {
     const m = d.memory;
     const [lvl, label] = MEM_STATE[m.state] || ['warn', m.state];
@@ -227,8 +240,10 @@
         </div>
         ${m.linkTarget ? `<div class="pi-item"><div class="pi-row"><span class="pi-tag ok">指向</span>
           <span class="pi-path">${esc(m.linkTarget)}</span></div></div>` : ''}
-        ${m.state === 'NOBUCKET' || m.state === 'EMPTY_REAL'
-          ? `<div class="pi-why">规范库在 <span class="pi-path">${esc(m.canonicalDir)}</span>。要共享它，先删掉这个空目录，再让 Hub 重新建 junction。</div>` : ''}
+        ${m.state === 'WRONG_LINK'
+          ? `<div class="pi-why">这条链接不会被 Hub 擅自覆盖。请先确认它是否包含独有记忆，再决定是否改回规范库 <span class="pi-path">${esc(m.canonicalDir)}</span>。</div>`
+          : (m.state === 'NOBUCKET' || m.state === 'EMPTY_REAL'
+            ? `<div class="pi-why">规范库在 <span class="pi-path">${esc(m.canonicalDir)}</span>。下次 Claude/DeepSeek 会话启动时 Hub 会自动建链；真实目录会先合并并留备份，不需要手工删除。</div>` : '')}
       </div>
     </details>`;
   }
@@ -277,7 +292,7 @@
       <div class="pi-sec">
         <h5>逐项来源<span class="pi-hint">（点任意一行看磁盘原文）</span></h5>
         ${isCodex ? renderCodexGroup(d) : isKimi ? renderKimiGroup(d) : renderClaudeGroup(d)}
-        ${isKimi ? renderKimiMemoryNote() : renderMemoryGroup(d)}
+        ${isCodex ? renderCodexMemoryNote() : isKimi ? renderKimiMemoryNote() : renderMemoryGroup(d)}
         ${renderCwdGroup(d)}
       </div>
       ${renderTruthLegend()}
@@ -440,14 +455,18 @@
       <span class="pi-verify">${esc(d.note || '')}</span>`;
 
     const index = segs.map((s, i) => `
-      <div class="pi-row pi-asm-idx${s.missing ? ' missing' : ''}">
+      <div class="pi-row pi-asm-idx${s.missing ? ' missing' : ''}${s.duplicateOf ? ' duplicate' : ''}">
         <span class="pi-tag">#${i + 1}</span>
         ${ORDER_TAG[s.orderTruth] || ''}
         <span class="pi-path">${esc(s.label)}</span>
-        <span class="pi-sz">${s.missing ? '读不到' : `[${s.start}, ${s.end}) · ${s.bytes} B`}</span>
+        <span class="pi-sz">${s.missing ? '读不到' : s.duplicateOf ? '已按路径去重' : `[${s.start}, ${s.end}) · ${s.bytes} B`}</span>
       </div>`).join('');
 
     const blocks = segs.map((s, i) => {
+      if (s.duplicateOf) {
+        return `<div class="pi-asm-seg"><div class="pi-seg-hdr warn">#${i + 1} ${esc(s.label)} · 已在前面注入，未重复计入拼装</div>
+          <div class="pi-why">${esc(s.note || 'CLI 会按解析后的文件路径去重。')}</div></div>`;
+      }
       if (s.missing) {
         return `<div class="pi-asm-seg"><div class="pi-seg-hdr bad">#${i + 1} ${esc(s.label)} · 磁盘上读不到，未计入拼装</div></div>`;
       }
@@ -476,7 +495,7 @@
       <div class="pi-asm-body">${blocks}</div>
       <div class="pi-asm-index"><h5>下面这些确实进了请求，但 Hub 拿不到 —— 不编，只标注</h5>${unavailable}</div>`;
 
-    const joined = segs.filter(s => !s.missing && !s.textOmitted).map(s => s.text).join(d.joiner || '\n\n');
+    const joined = segs.filter(s => !s.missing && !s.duplicateOf && !s.textOmitted).map(s => s.text).join(d.joiner || '\n\n');
     statusEl.textContent = d.complete
       ? `拼装完整：${d.segmentCount} 段 / ${d.totalBytes} 字节全部载入`
       : `部分段落正文超限未载入，索引与偏移仍为真实值（共 ${d.totalBytes} 字节）`;

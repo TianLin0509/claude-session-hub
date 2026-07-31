@@ -425,6 +425,13 @@
 .config-hint { color: #8b949e; font-size: 12px; margin: 0 0 16px; line-height: 1.5; }
 .config-section-label { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #c9d1d9; font-size: 13px; font-weight: 600; margin: 6px 0 8px; }
 .config-section-label span:last-child { color: #8b949e; font-size: 11px; font-weight: 400; }
+.config-reading-title { margin-top: 18px; }
+.config-reading-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.config-reading-grid .config-field { margin-bottom: 4px; }
+.config-reading-grid output { float: right; color: #9dccff; font-size: 12px; font-variant-numeric: tabular-nums; }
+.config-reading-grid input[type="range"] { padding: 7px 0; accent-color: #58a6ff; cursor: pointer; }
+.config-reading-note { margin: 4px 0 18px; color: #8b949e; font-size: 11.5px; line-height: 1.55; }
+@media (max-width: 520px) { .config-reading-grid { grid-template-columns: 1fr; gap: 2px; } }
 .config-field { margin-bottom: 14px; }
 .config-field label { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 500; color: #c9d1d9; }
 .config-label-hint { font-weight: 400; color: #8b949e; font-size: 11px; }

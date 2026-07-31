@@ -81,7 +81,7 @@ function _paintWorkspace(workspace) {
   const path = _modalEl.querySelector('#mcm-workspace-path');
   if (path) {
     path.textContent = _meetingWorkspaceMode === 'existing' && _meetingWorkspace
-      ? window.WorkspaceController.compactPath(_meetingWorkspace.path, 58)
+      ? `${window.WorkspaceController.workspaceTierLabel(_meetingWorkspace.tier)} · ${window.WorkspaceController.compactPath(_meetingWorkspace.path, 58)}`
       : '尚未选择';
     path.title = _meetingWorkspaceMode === 'existing' && _meetingWorkspace ? _meetingWorkspace.path : '';
   }
@@ -121,7 +121,8 @@ function _escapeHtml(s) {
 }
 
 function _aiLogo(kind) {
-  return `assets/ai-logos/${kind}.svg`;
+  // *-resume 复用基础 kind 的 svg（assets 里没有 *-resume.svg）
+  return `assets/ai-logos/${String(kind).replace(/-resume$/, '')}.svg`;
 }
 
 function _modelOptions(kind, selected) {
@@ -251,7 +252,7 @@ function _ensureModal() {
           <span class="mcm-workspace-caption">Workspace</span>
           <div class="mcm-workspace-choices" role="radiogroup" aria-label="选择群聊 workspace 方式">
             <button type="button" class="mcm-workspace-choice selected" data-mcm-workspace-mode="scratch" role="radio" aria-checked="true"><strong>完全新开</strong><small>创建独立临时目录，首问后自动命名</small></button>
-            <button type="button" class="mcm-workspace-choice" data-mcm-workspace-mode="existing" role="radio" aria-checked="false"><strong>选择已有路径</strong><small>全体 AI 成员共享同一个现有项目目录</small></button>
+            <button type="button" class="mcm-workspace-choice" data-mcm-workspace-mode="existing" role="radio" aria-checked="false"><strong>选择已有路径</strong><small>可选项目、领域或外部目录；组织根不可用</small></button>
           </div>
           <div class="mcm-workspace-existing" id="mcm-workspace-existing" hidden><code id="mcm-workspace-path">尚未选择</code><button type="button" class="mcm-workspace-button" id="mcm-workspace-button">选择文件夹…</button></div>
         </div>

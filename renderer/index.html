@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="committee-ui.css">
   <link rel="stylesheet" href="workflow-config-modal.css">
   <link rel="stylesheet" href="chuxin.css">
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
   <script src="../node_modules/prismjs/prism.js"></script>
   <script src="../node_modules/prismjs/components/prism-bash.min.js"></script>
@@ -20,6 +21,8 @@
   <script src="../node_modules/prismjs/components/prism-python.min.js"></script>
   <script src="../node_modules/prismjs/components/prism-typescript.min.js"></script>
   <script src="../node_modules/prismjs/components/prism-markdown.min.js"></script>
+  <script src="vendor/katex/katex.min.js"></script>
+  <script src="vendor/katex/contrib/auto-render.min.js"></script>
 </head>
 <body>
   <div class="app-container" id="app-container">
@@ -66,7 +69,7 @@
                 </button>
                 <button type="button" class="session-workspace-choice" data-workspace-mode="existing" role="radio" aria-checked="false">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
-                  <span><strong>选择已有路径</strong><small>在现有项目或 Git 仓库中继续</small></span>
+                  <span><strong>选择已有路径</strong><small>可选项目、领域或外部目录；组织根不可用</small></span>
                 </button>
               </div>
               <div class="session-existing-path" id="new-session-existing-path" hidden>
@@ -278,6 +281,26 @@
             <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
             <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
           </div>
+          <div class="config-section-label config-reading-title">
+            <span>普通会话卡片</span>
+            <span>调整后立即预览</span>
+          </div>
+          <div class="config-reading-grid">
+            <div class="config-field">
+              <label for="cfg-card-font-size">正文字号 <output id="cfg-card-font-size-value">15px</output></label>
+              <input type="range" id="cfg-card-font-size" min="13" max="22" step="1" value="15">
+            </div>
+            <div class="config-field">
+              <label for="cfg-card-font-family">字体风格</label>
+              <select id="cfg-card-font-family">
+                <option value="system">系统清晰（推荐）</option>
+                <option value="yahei">微软雅黑</option>
+                <option value="serif">中文衬线</option>
+                <option value="mono">等宽技术</option>
+              </select>
+            </div>
+          </div>
+          <p class="config-reading-note">默认已从 13px 调到 15px；代码块仍使用等宽字体。公式由本地 KaTeX 离线渲染。</p>
           <div class="config-section-label">
             <span>AI 模型</span>
             <span>点击进入详情</span>

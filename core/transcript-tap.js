@@ -1576,6 +1576,7 @@ class TranscriptTap extends EventEmitter {
       b.on('turn-complete', (ev) => this.emit('turn-complete', ev));
       b.on('session-bound', (ev) => this.emit('session-bound', ev));
       b.on('prompt-submitted', (ev) => this.emit('prompt-submitted', ev));
+      b.on('background-work-changed', (ev) => this.emit('background-work-changed', ev));
     }
   }
 

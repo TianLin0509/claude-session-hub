@@ -10,6 +10,7 @@ const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js
 const { normalizeDeepSeekModel, deepseekDisplayName, DEFAULT_MODEL_BY_KIND } = require('./model-options.js');
 const { ensureMemoryLink } = require('./claude-memory-link.js');
 const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filter.js');
+const { TerminalSnapshot } = require('./terminal-snapshot.js');
 
 // 终端缓存驱逐后（MAX_TERMINAL_CACHE_SIZE=4）会用这个环形缓冲的原始 PTY 字节
 // 重建 xterm。16KB 装不下 Codex/Kimi 这类 TUI 的一整帧全屏重绘（带色彩的一帧
@@ -26,7 +27,8 @@ const RING_BUFFER_BYTES = 1024 * 1024;
 //      最后一次清屏往往就在缓冲末尾，对齐过去等于把整个滚动回缓冲丢光。
 //   2) 剥掉开头被切剩的 CSI 参数残尾（形如 "38;5;196m"）—— 无法与正常文本可靠区分，
 //      正文以数字开头时会吃掉真实内容，风险大于收益。
-// 现在只做扩容：缓冲够大，切点就很少落在关键帧中间，也能留住更多滚动回内容。
+// 2026-07-30 根治：正常路径改由 TerminalSnapshot 在主进程持续解析完整 xterm 状态；
+// 这个 1MB 原始尾部只保留为 snapshot 初始化失败时的降级兜底，不再承担长会话恢复。
 // Claude CLI `--effort` 的合法枚举；弹窗传入的值必须在此集合内才会被拼进命令行。
 const CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_REASONING_EFFORT = 'xhigh';
@@ -778,18 +780,59 @@ class SessionManager extends EventEmitter {
     const shellArgs = isAgent ? ['-NoProfile', '-NoLogo'] : [];
     // cwd fallback order: opts.cwd (if exists) -> user home. We stat-check to
     // avoid node-pty failing if the stored cwd was later deleted/moved.
+    //
+    // 2026-07-29 三方审查：workspace 迁到 C:\Vibe 之后，唤醒一个 cwd 已失效的休眠会话会
+    // 悄悄落回 Home 起 PTY——UI 零提示、session 记录还显示旧路径，于是「规则没注入 / 记忆
+    // 是空的 / 产物写错地方」在 Home 这个聚合根上同时发生，而现场没有任何线索指向 cwd。
+    // fallback 本身要保留（否则 node-pty 直接抛错更难用），但必须留痕：日志 + 会话上标记，
+    // 让 UI 能把「这个会话已回落到 Home」显示出来。
     let spawnCwd = opts.cwd;
+    // dormant 会话若上一轮已经回落，后续 resume 的 cwd=Home 本身是有效目录，必须把
+    // 原始失败路径继续带着，否则警告会在第二次唤醒时凭空消失。
+    let cwdFellBack = opts.cwdFellBackFrom ? String(opts.cwdFellBackFrom) : null;
     if (spawnCwd) {
-      try { fs.accessSync(spawnCwd); } catch { spawnCwd = null; }
+      try {
+        if (!fs.statSync(spawnCwd).isDirectory()) throw new Error('cwd is not a directory');
+      } catch {
+        cwdFellBack = spawnCwd;
+        spawnCwd = null;
+      }
     }
-    if (!spawnCwd) spawnCwd = process.env.USERPROFILE || process.env.HOME || '.';
+    if (!spawnCwd) {
+      spawnCwd = process.env.USERPROFILE || process.env.HOME || '.';
+      if (cwdFellBack) {
+        console.warn(`[cwd] 会话 ${id} 的 cwd 已失效，回落到 ${spawnCwd}：${cwdFellBack}`);
+      }
+    }
 
-    // 单一入口覆盖所有会话类型（新建 / resume / 分支 / 群聊成员）：把这个 cwd 的
+    // Claude / DeepSeek 的所有入口（新建 / resume / 分支 / 群聊成员）都从这里把 cwd 的
     // memory 桶链到规范记忆库，否则每个 _scratch\inbox-* 都是零记忆开局。
+    // 不能让 Codex / Kimi / PowerShell 的启动顺带迁移 Claude 的记忆目录：这段逻辑现在
+    // 可能合并真实目录并换 junction，必须只由真正消费该机制的 CLI 触发。
     // 隔离 Hub / E2E 不碰用户主目录的记忆库。
+    let memoryLinkWarning = null;
     if (!process.env.CLAUDE_HUB_DATA_DIR) {
-      try { ensureMemoryLink(spawnCwd); } catch (error) {
-        console.warn('[memory] ensureMemoryLink failed:', error && error.message);
+      if (isClaude || isDeepSeek) {
+        // ensureMemoryLink **从不 throw** —— 四种保护（错链 / 非普通文件 / memory 是文件 /
+        // 锁竞争）全部收进 result.errors 返回。原先这里只写了个 catch 就把返回值丢了，
+        // 于是那些保护一条都到不了用户：会话照常起，记忆却接在错误的库上或压根没接，
+        // 现场没有任何线索。而同一轮里 cwd 回落已经有了完整的留痕链路，标准不该不一致。
+        // 走同一条通道：session 上留痕 → 持久化白名单 → resume → 侧栏/弹窗。
+        try {
+          const memResult = ensureMemoryLink(spawnCwd, {
+            projectRootDirs: [isDeepSeek ? '.claude-deepseek' : '.claude'],
+          });
+          if (memResult && memResult.errors.length) {
+            memoryLinkWarning = memResult.errors.join('；');
+            console.warn('[memory] link 未完成：', memoryLinkWarning);
+          }
+          if (memResult && (memResult.merged.length || memResult.conflicts.length)) {
+            console.log(`[memory] 回收孤岛：并入 ${memResult.merged.length} 条，冲突另存 ${memResult.conflicts.length} 条`);
+          }
+        } catch (error) {
+          memoryLinkWarning = error && error.message ? error.message : String(error);
+          console.warn('[memory] ensureMemoryLink failed:', memoryLinkWarning);
+        }
       }
       // Kimi 无 .git 时只读 cwd 自己的 AGENTS.md（2026-07-29 探针实测）——给工作区内
       // 「无 git 且无 AGENTS.md」的目录补一份根规则副本；有 git 根的目录不插手。
@@ -918,6 +961,11 @@ class SessionManager extends EventEmitter {
       ...(opts.pinned ? { pinned: true } : {}),
       createdAt: now,
       cwd: spawnCwd,
+      // 原 cwd 失效被迫回落时留痕，UI 据此提示「这个会话没跑在它原来的目录里」。
+      ...(cwdFellBack ? { cwdFellBackFrom: cwdFellBack } : {}),
+      // 必须显式携带 null：resume 时 renderer 会用 {...旧会话, ...新会话} 合并；若成功
+      // 场景省略字段，旧的 warning 会继续粘在 UI 上，即使本轮检测已经恢复正常。
+      memoryLinkWarning: memoryLinkWarning || null,
       ...(opts.workspaceLabel ? { workspaceLabel: String(opts.workspaceLabel) } : {}),
       // 记录用户选定的 effort，让 resume / 归档重连能沿用同一档位而不是回落 max。
       ...(CLAUDE_EFFORT_LEVELS.has(opts.effort) ? { effort: opts.effort } : {}),
@@ -950,15 +998,37 @@ class SessionManager extends EventEmitter {
     // groupChatReady：群聊"快路径"缓存，CLI 首次 ready 后置 true，
     //   后续 groupChatWatcher.sendToPty 跳过 8s/8s/5s 硬 sleep；活性兜底失败时重置 false。
     // groupChatLastActivity：PTY 最近一次产出输出的 ms 时间戳，用于活性兜底判断。
-    this.sessions.set(id, { info, pty: ptyProcess, pendingTimers, ringBuffer: '', groupChatReady: false, groupChatLastActivity: 0 });
+    let terminalSnapshot = null;
+    try {
+      terminalSnapshot = new TerminalSnapshot({ cols: 120, rows: 30, scrollback: 10000 });
+    } catch (error) {
+      // Dependency/init failure must not prevent the CLI from starting. The old
+      // raw ring remains available as an explicit degraded fallback.
+      console.warn('[terminal-snapshot] init failed, using raw ring fallback:', error && error.message);
+    }
+    this.sessions.set(id, {
+      info,
+      pty: ptyProcess,
+      pendingTimers,
+      ringBuffer: '',
+      terminalSnapshot,
+      lastOutputSeq: 0,
+      groupChatReady: false,
+      groupChatLastActivity: 0,
+    });
 
     ptyProcess.onData((data) => {
       const entry = this.sessions.get(id);
       if (entry) entry.groupChatLastActivity = Date.now();
       this._appendToRingBuffer(id, data);
       this._outputSeq += 1;
-      this.onData(id, data, this._outputSeq);
-      this.emit('output', { sessionId: id, seq: this._outputSeq, data });
+      const seq = this._outputSeq;
+      if (entry) {
+        entry.lastOutputSeq = seq;
+        if (entry.terminalSnapshot) entry.terminalSnapshot.write(data, seq);
+      }
+      this.onData(id, data, seq);
+      this.emit('output', { sessionId: id, seq, data });
     });
 
     ptyProcess.onExit((exitInfo) => {
@@ -970,6 +1040,7 @@ class SessionManager extends EventEmitter {
       // for the new session.
       if (!entry || entry.pty !== ptyProcess) return;
       const mid = entry.info ? entry.info.meetingId : null;
+      if (entry.terminalSnapshot) entry.terminalSnapshot.dispose();
       this.sessions.delete(id);
       // Stage 2 P1-1：把 exit code/signal 透传给 onSessionClosed，
       //   让 main.js 能把"PTY 异常退出"作为 L2 完成信号通知群聊 watcher。
@@ -1294,6 +1365,7 @@ class SessionManager extends EventEmitter {
     if (!session) return;
     for (const t of session.pendingTimers) clearTimeout(t);
     if (!session.pty) {
+      if (session.terminalSnapshot) session.terminalSnapshot.dispose();
       this.sessions.delete(sessionId);
       this.onSessionClosed(sessionId, null, { noPty: true });
       return;
@@ -1337,7 +1409,11 @@ class SessionManager extends EventEmitter {
 
   resizeSession(sessionId, cols, rows) {
     const s = this.sessions.get(sessionId);
-    if (s && s.pty) s.pty.resize(Math.max(cols, 60), rows);
+    if (s && s.pty) {
+      const safeCols = Math.max(cols, 60);
+      s.pty.resize(safeCols, rows);
+      if (s.terminalSnapshot) s.terminalSnapshot.resize(safeCols, rows);
+    }
   }
 
   // 「恢复历史会话」picker 默认只列当前目录的会话。会话以前都在用户主目录下时
@@ -1554,12 +1630,21 @@ class SessionManager extends EventEmitter {
   getSessionBufferSnapshot(sessionId) {
     const s = this.sessions.get(sessionId);
     if (!s) return null;
-    return { text: s.ringBuffer || '', seq: this._outputSeq };
+    if (s.terminalSnapshot) {
+      return s.terminalSnapshot.snapshot().then((snapshot) => (
+        snapshot || { text: s.ringBuffer || '', seq: s.lastOutputSeq || this._outputSeq }
+      )).catch((error) => {
+        console.warn('[terminal-snapshot] serialize failed, using raw ring fallback:', error && error.message);
+        return { text: s.ringBuffer || '', seq: s.lastOutputSeq || this._outputSeq };
+      });
+    }
+    return { text: s.ringBuffer || '', seq: s.lastOutputSeq || this._outputSeq };
   }
 
   dispose() {
     for (const s of this.sessions.values()) {
       for (const t of s.pendingTimers) clearTimeout(t);
+      if (s.terminalSnapshot) s.terminalSnapshot.dispose();
       if (s.pty) {
         s.pty.kill();
       }

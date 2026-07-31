@@ -1,10 +1,12 @@
 'use strict';
 
+const { normalizeCardDisplayConfig } = require('../core/card-display-config.js');
+
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 const DEFAULT_CLAUDE_SUBSCRIPTION_MODEL = 'claude-opus-5[1m]';
 const DEFAULT_CLAUDE_FABLE_MODEL = 'claude-fable-5';
 
-function createConfigModalController({ document, ipcRenderer, providerModes, renderAccountUsage }) {
+function createConfigModalController({ document, ipcRenderer, providerModes, renderAccountUsage, applyCardDisplaySettings = () => {} }) {
   if (!document) throw new Error('document is required');
   if (!ipcRenderer) throw new Error('ipcRenderer is required');
   if (!providerModes) throw new Error('providerModes is required');
@@ -47,9 +49,30 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     { id: 'second', label: '新账号', home: 'C:\\Users\\lintian\\.codex-profiles\\second' },
   ];
   let codexSubscriptionProfile = 'default';
+  let savedCardDisplay = normalizeCardDisplayConfig();
   
   function configEl(id) {
     return document.getElementById(id);
+  }
+
+  function readCardDisplayForm() {
+    return normalizeCardDisplayConfig({
+      cardFontSize: configEl('cfg-card-font-size')?.value,
+      cardFontFamily: configEl('cfg-card-font-family')?.value,
+    });
+  }
+
+  function setCardDisplayForm(config, { apply = true } = {}) {
+    const normalized = normalizeCardDisplayConfig(config);
+    if (configEl('cfg-card-font-size')) configEl('cfg-card-font-size').value = String(normalized.cardFontSize);
+    if (configEl('cfg-card-font-size-value')) configEl('cfg-card-font-size-value').textContent = `${normalized.cardFontSize}px`;
+    if (configEl('cfg-card-font-family')) configEl('cfg-card-font-family').value = normalized.cardFontFamily;
+    if (apply) applyCardDisplaySettings(normalized);
+    return normalized;
+  }
+
+  function previewCardDisplay() {
+    return setCardDisplayForm(readCardDisplayForm());
   }
   
   function normalizeCodexProfilesForUi(profiles) {
@@ -260,6 +283,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
       document.getElementById('cfg-codex-key').value = cfg.codexApiKey || '';
       document.getElementById('cfg-codex-url').value = cfg.codexApiBaseUrl || '';
       document.getElementById('cfg-codex-model').value = cfg.codexApiModel || '';
+      savedCardDisplay = setCardDisplayForm(cfg);
       updateClaudeBackendControls();
       updateConfigSummaries();
     } catch {
@@ -270,6 +294,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
   }
   
   function closeConfigModal() {
+    applyCardDisplaySettings(savedCardDisplay);
     const modal = document.getElementById('config-modal');
     if (modal) modal.classList.add('hidden');
     const msg = document.getElementById('config-save-msg');
@@ -296,6 +321,10 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
         updateConfigSummaries();
       });
     });
+    const cardSize = configEl('cfg-card-font-size');
+    const cardFamily = configEl('cfg-card-font-family');
+    if (cardSize) cardSize.addEventListener('input', previewCardDisplay);
+    if (cardFamily) cardFamily.addEventListener('change', previewCardDisplay);
     modal.addEventListener('click', (e) => { if (e.target === modal) closeConfigModal(); });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
@@ -318,6 +347,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
         codexApiKey: document.getElementById('cfg-codex-key').value.trim() || undefined,
         codexApiBaseUrl: document.getElementById('cfg-codex-url').value.trim() || undefined,
         codexApiModel: document.getElementById('cfg-codex-model').value.trim() || undefined,
+        ...readCardDisplayForm(),
       };
       if (newConfig.claudeBackend === 'api' && (!newConfig.claudeApiKey || !newConfig.claudeApiBaseUrl || !newConfig.claudeApiModel)) {
         msg.textContent = '请先完整填写同事中转的 Key、Base URL 和模型。';
@@ -331,7 +361,8 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
           providerModes.claude = newConfig.claudeBackend === 'api' ? 'api' : 'subscription';
           providerModes.codex = newConfig.codexBackend === 'api' ? 'api' : 'subscription';
           renderAccountUsage();
-          msg.textContent = '配置已保存。新创建的 Claude / Codex / DeepSeek 会话将按所选后端启动。';
+          savedCardDisplay = setCardDisplayForm(newConfig);
+          msg.textContent = '配置已保存。卡片字体已立即生效；新会话将按所选 AI 后端启动。';
           msg.className = 'config-save-msg success';
           msg.style.display = 'block';
           setTimeout(() => { msg.style.display = 'none'; }, 4000);
@@ -361,6 +392,8 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     showMainView: showConfigMainView,
     showDetail: showConfigDetail,
     readCodexProfilesFromForm,
+    readCardDisplayForm,
+    setCardDisplayForm,
   };
 }
 

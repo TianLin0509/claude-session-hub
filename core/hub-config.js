@@ -12,6 +12,12 @@ const path = require('path');
 const os = require('os');
 const { getHubDataDir } = require('./data-dir');
 const { DEFAULT_MODEL_BY_KIND } = require('./model-options.js');
+const {
+  DEFAULT_CARD_FONT_SIZE,
+  DEFAULT_CARD_FONT_FAMILY,
+  normalizeCardFontSize,
+  normalizeCardFontFamily,
+} = require('./card-display-config.js');
 
 // 默认值
 const DEFAULTS = {
@@ -28,6 +34,8 @@ const DEFAULTS = {
   codex_api_provider: 'packycode',
   ui_tool_fold_threshold: 15,
   ui_code_fold_threshold: 30,
+  ui_card_font_size: DEFAULT_CARD_FONT_SIZE,
+  ui_card_font_family: DEFAULT_CARD_FONT_FAMILY,
 };
 
 /**
@@ -119,6 +127,8 @@ function getConfig() {
     codexApiProvider: getConfigValue('codexApiProvider', 'HUB_CODEX_API_PROVIDER', 'providers.codex.provider', DEFAULTS.codex_api_provider),
     uiToolFoldThreshold: parseInt(getConfigValue('uiToolFoldThreshold', 'HUB_UI_TOOL_FOLD', 'ui.tool_fold_threshold', DEFAULTS.ui_tool_fold_threshold), 10),
     uiCodeFoldThreshold: parseInt(getConfigValue('uiCodeFoldThreshold', 'HUB_UI_CODE_FOLD', 'ui.code_fold_threshold', DEFAULTS.ui_code_fold_threshold), 10),
+    cardFontSize: normalizeCardFontSize(getConfigValue('cardFontSize', 'HUB_UI_CARD_FONT_SIZE', 'ui.card_font_size', DEFAULTS.ui_card_font_size)),
+    cardFontFamily: normalizeCardFontFamily(getConfigValue('cardFontFamily', 'HUB_UI_CARD_FONT_FAMILY', 'ui.card_font_family', DEFAULTS.ui_card_font_family)),
   };
 
   return _cachedConfig;

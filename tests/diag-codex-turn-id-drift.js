@@ -1,10 +1,8 @@
 'use strict';
-// 卡片视图里 AI 回答卡"重复出现两遍"的怀疑点：turn.id 不稳定。
-// mountSessionTurnCard 是按 turn.id 去重的，同一条内容只要两次解析拿到不同 id，
-// 就会被当成两条新卡挂两次。
-// codex 解析器的 _makeTurnId 在没有 obj.id 时回落成 `${prefix}-${ts}-${行号}`，
-// 而卡片视图会做尾部增量读取（fromTail+limit）——行号在尾读里是从切片开头重新数的，
-// 与全量读不同 → 同一条内容两次解析 id 不一样。
+// 卡片视图 turn.id 稳定性诊断：mountSessionTurnCard 按 turn.id 去重，
+// 同一条内容在全量读和 8 MB 尾读中必须得到同一个 id。
+// 2026-07-31 之前的解析器把切片内行号拼进 id，窗口移动后会重复挂卡；
+// 现在 id 来自 record id 或 timestamp + semantic hash，本脚本锁住该回归。
 //   node tests/diag-codex-turn-id-drift.js
 
 const fs = require('node:fs');
@@ -23,6 +21,9 @@ function buildRollout(turns) {
     timestamp: '2026-07-28T00:00:00.000Z', type: 'session_meta',
     payload: { session_id: 'sid-x', cwd: 'C:/tmp' },
   }));
+  // 强制超过解析器的 8 MB 优化阈值，让尾读从这一行中间切入。
+  // 没有这行时文件太小，fromTail 实际仍走全量读取，诊断无法触发旧 bug。
+  lines.push(JSON.stringify({ type: 'ignored-padding', payload: 'x'.repeat(9 * 1024 * 1024) }));
   for (let i = 1; i <= turns; i++) {
     const ts = `2026-07-28T00:${String(i).padStart(2, '0')}:00.000Z`;
     lines.push(JSON.stringify({

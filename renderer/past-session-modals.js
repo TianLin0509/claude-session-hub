@@ -14,7 +14,86 @@ function highlightMatch(text, query, escapeHtml) {
   return out.join('');
 }
 
-function createPastSessionModals({ document, ipcRenderer, escapeHtml }) {
+function normalizeTranscriptPath(value) {
+  return String(value || '').replace(/\//g, '\\').toLowerCase();
+}
+
+function findReusableClaudeSession(sessionValues, native = {}) {
+  const ccSessionId = String(native.sessionId || '').trim();
+  const transcriptPath = normalizeTranscriptPath(native.path);
+  const matches = [...(sessionValues || [])].filter((session) => {
+    if (!session || !['claude', 'claude-resume'].includes(session.kind)) return false;
+    if (ccSessionId && session.ccSessionId === ccSessionId) return true;
+    return transcriptPath
+      && normalizeTranscriptPath(session.transcriptPath) === transcriptPath;
+  });
+  matches.sort((a, b) => {
+    const aLive = a.status !== 'dormant' ? 1 : 0;
+    const bLive = b.status !== 'dormant' ? 1 : 0;
+    if (aLive !== bLive) return bLive - aLive;
+    return Number(b.lastMessageTime || b.updatedAt || 0) - Number(a.lastMessageTime || a.updatedAt || 0);
+  });
+  return matches[0] || null;
+}
+
+function nativeTranscriptSessionKey(session) {
+  if (!session || session.meetingId) return null;
+  const kind = String(session.kind || '').replace(/-resume$/, '');
+  if ((kind === 'claude' || kind === 'deepseek') && session.ccSessionId) {
+    return `${kind}:cc:${session.ccSessionId}`;
+  }
+  if (kind === 'codex' && session.codexSid) return `codex:${session.codexSid}`;
+  if (kind === 'kimi' && session.kimiSid) return `kimi:${session.kimiSid}`;
+  return null;
+}
+
+function collapseDormantNativeDuplicates(sessionMap) {
+  if (!sessionMap || typeof sessionMap.values !== 'function') return [];
+  const groups = new Map();
+  for (const session of sessionMap.values()) {
+    const key = nativeTranscriptSessionKey(session);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(session);
+  }
+
+  const removed = [];
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const live = group.filter(session => session.status !== 'dormant');
+    // Never collapse two live PTYs.  They may have been deliberately opened in
+    // parallel; only dormant shells are safe to consolidate as sidebar state.
+    if (live.length > 1) continue;
+    const ranked = [...group].sort((a, b) => {
+      const aLive = a.status !== 'dormant' ? 1 : 0;
+      const bLive = b.status !== 'dormant' ? 1 : 0;
+      if (aLive !== bLive) return bLive - aLive;
+      return Number(b.lastMessageTime || b.updatedAt || 0) - Number(a.lastMessageTime || a.updatedAt || 0);
+    });
+    const keep = ranked[0];
+    for (const duplicate of ranked.slice(1)) {
+      if (duplicate.status !== 'dormant') continue;
+      keep.pinned = !!(keep.pinned || duplicate.pinned);
+      keep.unreadCount = Math.max(Number(keep.unreadCount || 0), Number(duplicate.unreadCount || 0));
+      keep.createdAt = Math.min(
+        Number(keep.createdAt || keep.lastMessageTime || Date.now()),
+        Number(duplicate.createdAt || duplicate.lastMessageTime || Date.now()),
+      );
+      if (!keep.cwd && duplicate.cwd) keep.cwd = duplicate.cwd;
+      if (!keep.transcriptPath && duplicate.transcriptPath) keep.transcriptPath = duplicate.transcriptPath;
+      if (!keep.userRenamed && duplicate.userRenamed) {
+        keep.title = duplicate.title;
+        keep.userRenamed = true;
+        keep.autoTitleGenerated = false;
+      }
+      sessionMap.delete(duplicate.id);
+      removed.push({ removedId: duplicate.id, keptId: keep.id });
+    }
+  }
+  return removed;
+}
+
+function createPastSessionModals({ document, ipcRenderer, escapeHtml, getSessions, selectSession }) {
   const resumeModalEl = document.getElementById('resume-modal');
   const resumeListEl = document.getElementById('resume-list');
   const resumeFilterEl = document.getElementById('resume-filter');
@@ -33,6 +112,10 @@ function createPastSessionModals({ document, ipcRenderer, escapeHtml }) {
     }
     const frag = document.createDocumentFragment();
     for (const it of items) {
+      const existing = findReusableClaudeSession(
+        typeof getSessions === 'function' ? getSessions().values() : [],
+        it,
+      );
       const row = document.createElement('div');
       row.className = 'modal-row';
       const mtimeStr = it.mtime ? new Date(it.mtime).toLocaleString('zh-CN', { hour12: false }) : '';
@@ -46,11 +129,20 @@ function createPastSessionModals({ document, ipcRenderer, escapeHtml }) {
           <span class="modal-meta-time">${escapeHtml(mtimeStr)}</span>
           ${it.turnCount ? `<span class="modal-meta-chip">${it.turnCount}T</span>` : ''}
           ${modelShort ? `<span class="modal-meta-chip">${escapeHtml(modelShort)}</span>` : ''}
+          ${existing ? '<span class="modal-meta-chip">Hub 已有</span>' : ''}
           ${it.cwd ? `<span class="modal-meta-cwd" title="${escapeHtml(it.cwd)}">${escapeHtml(it.cwd)}</span>` : ''}
         </div>
       `;
       row.addEventListener('click', async () => {
         closeResumeModal();
+        const reusable = findReusableClaudeSession(
+          typeof getSessions === 'function' ? getSessions().values() : [],
+          it,
+        );
+        if (reusable && typeof selectSession === 'function') {
+          await selectSession(reusable.id, { forceScrollBottom: true });
+          return;
+        }
         await ipcRenderer.invoke('create-session', {
           kind: 'claude-resume',
           opts: { resumeCCSessionId: it.sessionId, resumeTranscriptPath: it.path || undefined, cwd: it.cwd || undefined },
@@ -97,6 +189,10 @@ function createPastSessionModals({ document, ipcRenderer, escapeHtml }) {
     }
     const frag = document.createDocumentFragment();
     for (const h of hits) {
+      const existing = findReusableClaudeSession(
+        typeof getSessions === 'function' ? getSessions().values() : [],
+        h,
+      );
       const row = document.createElement('div');
       row.className = 'modal-row';
       const when = new Date(h.mtime).toLocaleString('zh-CN', { hour12: false });
@@ -108,11 +204,20 @@ function createPastSessionModals({ document, ipcRenderer, escapeHtml }) {
           <span class="modal-meta-time">${escapeHtml(when)}</span>
           <span class="modal-meta-chip">${h.role || '?'}</span>
           <span class="modal-meta-chip">line ${h.lineNo}</span>
+          ${existing ? '<span class="modal-meta-chip">Hub 已有</span>' : ''}
         </div>
       `;
       row.title = 'Click to resume this session';
       row.addEventListener('click', async () => {
         closeSearchModal();
+        const reusable = findReusableClaudeSession(
+          typeof getSessions === 'function' ? getSessions().values() : [],
+          h,
+        );
+        if (reusable && typeof selectSession === 'function') {
+          await selectSession(reusable.id, { forceScrollBottom: true });
+          return;
+        }
         await ipcRenderer.invoke('create-session', {
           kind: 'claude-resume',
           opts: { resumeCCSessionId: h.sessionId, resumeTranscriptPath: h.path || undefined },
@@ -190,4 +295,10 @@ function createPastSessionModals({ document, ipcRenderer, escapeHtml }) {
   };
 }
 
-module.exports = { createPastSessionModals, highlightMatch };
+module.exports = {
+  createPastSessionModals,
+  highlightMatch,
+  findReusableClaudeSession,
+  nativeTranscriptSessionKey,
+  collapseDormantNativeDuplicates,
+};

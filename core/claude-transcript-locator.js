@@ -101,14 +101,33 @@ function healPersistedCwds(sessions, opts = {}) {
   let fixed = 0;
   for (const s of sessions) {
     if (!s.ccSessionId) continue;
-    const tp = findTranscriptByCCSessionId(s.ccSessionId, homeDir);
+    // 已持久化的 transcriptPath 比按 sid 找到的“第一份副本”更具体；归档会把同一
+    // jsonl 复制到新旧两个 bucket，目录枚举顺序不能当权威。
+    const tp = (s.transcriptPath && fs.existsSync(s.transcriptPath))
+      ? s.transcriptPath
+      : findTranscriptByCCSessionId(s.ccSessionId, homeDir);
     if (!tp) continue;
     const realCwd = extractCwdFromTranscript(tp);
-    if (realCwd && realCwd !== s.cwd) {
-      logger.log?.(`[群聊] heal cwd: "${s.title}" ${s.cwd} -> ${realCwd}`);
-      s.cwd = realCwd;
-      fixed++;
+    if (!realCwd) continue;
+
+    // transcript 迁移只复制 jsonl，不改写历史消息里的 cwd，所以候选值可能仍是已经
+    // 删除的旧 scratch。把 Home “自愈”回另一个失效路径只是制造一次假修复。
+    let targetIsDirectory = false;
+    try { targetIsDirectory = fs.statSync(realCwd).isDirectory(); } catch {}
+    if (!targetIsDirectory) {
+      logger.warn?.(`[群聊] skip invalid transcript cwd for "${s.title}": ${realCwd}`);
+      continue;
     }
+
+    const key = value => {
+      const resolved = path.resolve(String(value || ''));
+      return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    };
+    if (key(realCwd) === key(s.cwd)) continue;
+    logger.log?.(`[群聊] heal cwd: "${s.title}" ${s.cwd} -> ${realCwd}`);
+    s.cwd = realCwd;
+    delete s.cwdFellBackFrom;
+    fixed++;
   }
   return fixed;
 }

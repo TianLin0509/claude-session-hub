@@ -9,6 +9,9 @@ function createTurnCardRenderer(options = {}) {
     : (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
   const marked = options.marked;
   const DOMPurify = options.DOMPurify;
+  const renderMathInElement = typeof options.renderMathInElement === 'function'
+    ? options.renderMathInElement
+    : (win && typeof win.renderMathInElement === 'function' ? win.renderMathInElement : null);
   const formatAbsoluteTime = options.formatAbsoluteTime;
   const normalizeMarkdownPathBreaks = options.normalizeMarkdownPathBreaks;
   const escapeHtml = options.escapeHtml;
@@ -118,6 +121,7 @@ function rerenderTurn(turnId) {
     const bodyEl = newCard.querySelector('.turn-body');
     if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId: card.dataset.sessionId });
     card.replaceWith(newCard);
+    postProcessCardMath(newCard);
     // Spec 3 长文本折叠：必须在 DOM 内调（replaceWith 之后），否则 scrollHeight=0
     if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
   }
@@ -268,6 +272,32 @@ let _codeFoldThreshold = 30;
 const _foldedCodesState = new Map();
 const _bodyFoldState = new Map(); // turnId -> true(expanded) / false(folded)
 const _turnRenderSigs = new Map(); // turnId -> compact content signature
+
+function postProcessCardMath(cardEl) {
+  if (!cardEl || !renderMathInElement) return false;
+  const body = cardEl.querySelector('.turn-body');
+  if (!body || body.dataset.mathRendered === 'true') return false;
+  try {
+    renderMathInElement(body, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '\\[', right: '\\]', display: true },
+        { left: '\\(', right: '\\)', display: false },
+        { left: '$', right: '$', display: false },
+      ],
+      ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code', 'option'],
+      ignoredClasses: ['katex', 'katex-display'],
+      throwOnError: false,
+      strict: 'ignore',
+      trust: false,
+    });
+    body.dataset.mathRendered = 'true';
+    return true;
+  } catch (error) {
+    console.warn('[card-math] KaTeX render failed:', error && error.message);
+    return false;
+  }
+}
 
 function postProcessCardCodeBlocks(cardEl) {
   if (!cardEl) return;
@@ -479,6 +509,7 @@ function mountTurnCard(container, turn) {
   const bodyEl = cardEl.querySelector('.turn-body');
   if (bodyEl && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl, { sessionId: getActiveSessionId() });
   container.appendChild(cardEl);
+  postProcessCardMath(cardEl);
   postProcessLongTextFold(cardEl);
   return cardEl;
 }
@@ -556,6 +587,7 @@ function mountOptimisticUserCard(sessionId, text, kind) {
   const streamingTail = container.querySelector(':scope > .streaming-indicator');
   if (streamingTail) container.insertBefore(cardEl, streamingTail);
   else container.appendChild(cardEl);
+  postProcessCardMath(cardEl);
 
   // 用户主动发了一条消息 → 一定希望看到自己刚发的气泡；不走 _wasAtBottom 守卫
   try {
@@ -675,6 +707,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
     if (typeof postProcessToolResults === 'function') postProcessToolResults(newCard);
     const bodyEl2 = newCard.querySelector('.turn-body');
     if (bodyEl2 && typeof wrapPathLinksInElement === 'function') wrapPathLinksInElement(bodyEl2, { sessionId });
+    postProcessCardMath(newCard);
     if (typeof postProcessLongTextFold === 'function') postProcessLongTextFold(newCard);
     win._sessionTurns.set(turn.id, (opts.kind && !turn.kind) ? { ...turn, kind: opts.kind } : turn);
     _turnRenderSigs.set(turn.id, nextSig);
@@ -730,6 +763,7 @@ function mountSessionTurnCard(sessionId, turn, opts = {}) {
   if (bodyEl && typeof wrapPathLinksInElement === 'function') {
     wrapPathLinksInElement(bodyEl, { sessionId });
   }
+  postProcessCardMath(cardEl);
   // 7b. Spec 3 · 长文本默认折叠（必须在 DOM 插入后调，否则 scrollHeight=0）
   if (typeof postProcessLongTextFold === 'function') {
     postProcessLongTextFold(cardEl);
@@ -806,6 +840,7 @@ doc.addEventListener('click', (e) => {
     renderTurnCard,
     rerenderTurn,
     postProcessCardCodeBlocks,
+    postProcessCardMath,
     postProcessLongTextFold,
     postProcessToolResults,
     mountTurnCard,

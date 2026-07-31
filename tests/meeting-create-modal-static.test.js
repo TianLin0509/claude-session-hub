@@ -61,7 +61,10 @@ test('deleted modal presets and decorative assets stay removed', () => {
   assert.ok(!/assets\/pokemon\//.test(MODAL_JS), 'decorative slot avatars must stay removed');
   assert.ok(!fs.existsSync(path.join(ROOT, 'renderer', 'assets', 'pokemon')),
     'decorative avatar asset directory should be removed');
-  assert.match(MODAL_JS, /assets\/ai-logos\/\$\{kind\}\.svg/);
+  // 2026-07-29（Kimi）：头像 URL 统一加 -resume 归一（assets 无 *-resume.svg），
+  // 断言从"字面 ${kind}"放宽为"ai-logos 约定仍在 + resume 归一存在"。
+  assert.match(MODAL_JS, /assets\/ai-logos\//);
+  assert.match(MODAL_JS, /replace\(\/-resume\$\/, ''\)/);
 });
 
 test('group chat modal exposes task templates before member tuning', () => {

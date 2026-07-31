@@ -512,6 +512,42 @@ test('B2 tail-only: skips tool_result entries during reverse scan', () => {
   } finally { cleanup(fp); }
 });
 
+test('B2 resume safety: tail cut inside one Claude tool turn falls back to the complete logical card', () => {
+  const lines = [
+    JSON.stringify({
+      type: 'user', uuid: 'u-long', timestamp: '2026-07-31T00:00:00Z',
+      message: { content: 'do the long job' },
+    }),
+    JSON.stringify({
+      type: 'assistant', uuid: 'a-long-start', timestamp: '2026-07-31T00:00:01Z',
+      message: {
+        model: 'claude-opus-4-7', stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'tool-long', name: 'Bash', input: { payload: 'x'.repeat(9 * 1024 * 1024) } }],
+      },
+    }),
+    JSON.stringify({
+      type: 'user', uuid: 'tool-result', timestamp: '2026-07-31T00:00:02Z',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'tool-long', content: 'ok' }] },
+    }),
+    JSON.stringify({
+      type: 'assistant', uuid: 'a-long-final', timestamp: '2026-07-31T00:00:03Z',
+      message: {
+        model: 'claude-opus-4-7', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'complete answer' }],
+      },
+    }),
+  ];
+  const fp = writeTmp('B2-resume-mid-turn', lines.join('\n') + '\n');
+  try {
+    const full = parseClaudeTranscriptToTurns(fp).slice(-1);
+    const tail = parseClaudeTranscriptToTurns(fp, { limit: 1, fromTail: true });
+    assert.strictEqual(full.length, 1);
+    assert.strictEqual(tail.length, 1);
+    assert.strictEqual(tail[0].id, 'a-long-start');
+    assert.deepStrictEqual(tail, full, 'resume tail must not replace a full card with an assistant suffix');
+  } finally { cleanup(fp); }
+});
+
 // === Spec 3 · 多方审查 P0：input_tokens 不能累加（CLI 每次 call 含完整历史）===
 test('R4 P0: input_tokens takes LAST entry value, not summed (avoid O(N^2) inflation)', () => {
   // 模拟 CLI 多轮 call：input_tokens 含历史 → 后续每次都比前次多

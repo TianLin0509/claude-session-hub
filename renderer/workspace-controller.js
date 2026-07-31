@@ -14,6 +14,14 @@
     powershell: 'PowerShell',
   };
 
+  const WORKSPACE_TIER_LABELS = {
+    root: '组织根·不可用',
+    category: '领域工作区',
+    scratch: '临时工作区',
+    project: '项目工作区',
+    external: '外部工作区',
+  };
+
   // `--effort` is a Claude CLI flag only. deepseek runs through the claude CLI but
   // session-manager builds its command without the flag, so it is Claude-only here.
   const EFFORT_KINDS = new Set(['claude']);
@@ -54,6 +62,10 @@
     const text = String(value || '');
     if (text.length <= max) return text;
     return `${text.slice(0, 3)}…${text.slice(-(max - 4))}`;
+  }
+
+  function workspaceTierLabel(tier) {
+    return WORKSPACE_TIER_LABELS[tier] || '工作区';
   }
 
   function escapeHtml(value) {
@@ -463,13 +475,19 @@
     }
     listEl.innerHTML = recentItems.map(item => {
       const selected = !!existingWorkspace && existingWorkspace.path === item.path;
-      const badge = item.draft ? '<span class="session-recent-badge">临时</span>'
-        : item.pinned ? '<span class="session-recent-badge">置顶</span>' : '';
+      const disabled = item.tier === 'root';
+      const badges = [];
+      if (item.tier && item.tier !== 'project') {
+        badges.push(`<span class="session-recent-badge tier-${escapeHtml(item.tier)}">${escapeHtml(workspaceTierLabel(item.tier))}</span>`);
+      }
+      if (item.draft && item.tier !== 'scratch') badges.push('<span class="session-recent-badge">临时</span>');
+      if (item.pinned) badges.push('<span class="session-recent-badge">置顶</span>');
       return `<button type="button" class="session-recent-item${selected ? ' selected' : ''}" role="option"`
         + ` aria-selected="${selected ? 'true' : 'false'}" data-recent-path="${escapeHtml(item.path)}"`
-        + ` title="${escapeHtml(item.path)}">`
+        + ` title="${escapeHtml(disabled ? `${workspaceTierLabel(item.tier)}：${item.path}` : item.path)}"`
+        + `${disabled ? ' disabled aria-disabled="true"' : ''}>`
         + `<div><strong>${escapeHtml(item.label || path.basename(item.path))}</strong>`
-        + `<small>${escapeHtml(compactPath(item.path, 52))}</small></div>${badge}</button>`;
+        + `<small>${escapeHtml(compactPath(item.path, 52))}</small></div><span class="session-recent-badges">${badges.join('')}</span></button>`;
     }).join('');
     listEl.querySelectorAll('[data-recent-path]').forEach(button => {
       button.addEventListener('click', () => {
@@ -535,7 +553,9 @@
     const pathValue = document.getElementById('new-session-path-value');
     if (existingRow) existingRow.hidden = workspaceMode !== 'existing';
     if (pathValue) {
-      pathValue.textContent = existingWorkspace ? compactPath(existingWorkspace.path) : '尚未选择';
+      pathValue.textContent = existingWorkspace
+        ? `${workspaceTierLabel(existingWorkspace.tier)} · ${compactPath(existingWorkspace.path)}`
+        : '尚未选择';
       pathValue.title = existingWorkspace ? existingWorkspace.path : '';
     }
     const summary = document.getElementById('new-session-summary');
@@ -569,13 +589,16 @@
     const tuning = tuningTag();
     if (tuning) parts.push(tuning);
     const target = targetPathPreview();
+    if (workspaceMode === 'existing' && existingWorkspace) parts.push(workspaceTierLabel(existingWorkspace.tier));
     parts.push(target ? compactPath(target, 46) : '请选择目录');
     return parts.join(' · ');
   }
 
   function summaryTitle() {
     const target = targetPathPreview();
-    return target || '请选择目录';
+    return target
+      ? `${workspaceMode === 'existing' && existingWorkspace ? `${workspaceTierLabel(existingWorkspace.tier)}：` : ''}${target}`
+      : '请选择目录';
   }
 
   async function chooseExistingPath() {
@@ -727,6 +750,7 @@
     dismissArchiveSuggestion: (scope, id) => archiveSuggestions.delete(`${scope}:${id}`),
     pickWorkspace,
     submitNewSession,
+    workspaceTierLabel,
   };
 
   init();

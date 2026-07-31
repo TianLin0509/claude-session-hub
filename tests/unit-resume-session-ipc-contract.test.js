@@ -32,6 +32,7 @@ function createBaseDeps(overrides = {}) {
     isClaudeFamily: (kind) => ['claude', 'claude-resume', 'deepseek'].includes(kind),
     isClaudeWebKind: () => false,
     isCodexBaseKind: (kind) => ['codex', 'codex-resume'].includes(kind),
+    lookupKimiSession: () => null,
     meetingManager: { getMeeting: () => null },
     os: { homedir: () => 'C:\\Users\\tester' },
     path: require('path'),
@@ -194,6 +195,47 @@ test('does not resume a persisted Codex subagent binding as the Hub top-level PT
   assert.strictEqual(session.opts.resumeTranscriptPath, undefined);
   assert.strictEqual(session.opts.codexSid, null);
   assert.strictEqual(session.opts.codexResumePicker, true);
+});
+
+test('provider-native ids replace stale persisted transcript paths during resume', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps();
+  registerResumeSessionIpc(ipc, deps);
+
+  const claude = await ipc.handlers.get('resume-session')(null, {
+    hubId: 's-claude-stale', kind: 'claude', ccSessionId: 'cc-new',
+    transcriptPath: 'C:\\old\\claude.jsonl', cwd: 'C:\\repo',
+  });
+  assert.strictEqual(claude.opts.resumeTranscriptPath, 'transcript:cc-new');
+
+  const codex = await ipc.handlers.get('resume-session')(null, {
+    hubId: 's-codex-stale', kind: 'codex', codexSid: 'codex-new',
+    transcriptPath: 'C:\\old\\rollout.jsonl', cwd: 'C:\\repo',
+  });
+  assert.strictEqual(codex.opts.resumeTranscriptPath, 'rollout:codex-new');
+});
+
+test('Kimi resume reconciles a stale wire binding even when cwd is already correct', async () => {
+  const ipc = createFakeIpc();
+  const path = require('path');
+  const currentCwd = path.resolve('C:\\repo');
+  const indexedDir = path.resolve('C:\\kimi\\sessions\\session-new');
+  const deps = createBaseDeps({
+    fs: { existsSync: (candidate) => path.resolve(candidate) === currentCwd },
+    lookupKimiSession: () => ({ workDir: currentCwd, sessionDir: indexedDir }),
+  });
+  registerResumeSessionIpc(ipc, deps);
+
+  const session = await ipc.handlers.get('resume-session')(null, {
+    hubId: 's-kimi-stale', kind: 'kimi-resume', kimiSid: 'session-new',
+    cwd: currentCwd,
+    kimiSessionDir: path.resolve('C:\\kimi\\sessions\\session-old'),
+    transcriptPath: path.resolve('C:\\kimi\\sessions\\session-old\\agents\\main\\wire.jsonl'),
+  });
+  const indexedWire = path.join(indexedDir, 'agents', 'main', 'wire.jsonl');
+  assert.strictEqual(session.opts.cwd, currentCwd, 'already-correct cwd should stay unchanged');
+  assert.strictEqual(session.opts.kimiSessionDir, indexedDir);
+  assert.strictEqual(session.opts.resumeTranscriptPath, indexedWire);
 });
 
 test('resumes single-meeting Gemini with prompt file env and project root cwd', async () => {

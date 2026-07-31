@@ -119,3 +119,49 @@ test('原有 seedScratchAgentsFile 行为不变（scratch 照常播种）', () =
     assert.strictEqual(fs.readFileSync(path.join(scratch, 'AGENTS.md'), 'utf8'), 'EDITED');
   });
 });
+
+test('Hub 管理的副本随根规则刷新，用户改过正文后停止接管', () => {
+  withService(({ svc, root }) => {
+    const proj = path.join(root, 'AI', 'managed-copy');
+    fs.mkdirSync(proj, { recursive: true });
+    assert.strictEqual(svc.seedUngovernedAgentsFile(proj), true);
+    const target = path.join(proj, 'AGENTS.md');
+    assert.match(fs.readFileSync(target, 'utf8'), /seed-sha256:\s*[0-9a-f]{16}/);
+
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), '# ROOT RULES V2\n', 'utf8');
+    assert.strictEqual(svc.seedUngovernedAgentsFile(proj), true, 'unchanged managed copy should refresh');
+    assert.ok(fs.readFileSync(target, 'utf8').includes('# ROOT RULES V2'));
+
+    const edited = fs.readFileSync(target, 'utf8').replace('# ROOT RULES V2\n', '# ROOT RULES V2\n\n');
+    fs.writeFileSync(target, edited, 'utf8');
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), '# ROOT RULES V3\n', 'utf8');
+    assert.strictEqual(svc.seedUngovernedAgentsFile(proj), false, 'whitespace edits are meaningful in Markdown');
+    assert.strictEqual(fs.readFileSync(target, 'utf8'), edited, 'user-owned body must remain byte-for-byte intact');
+  });
+});
+
+test('无 seed 标记的项目文件即使正文像根规则，也不能被 Hub 接管', () => {
+  withService(({ svc, root }) => {
+    const proj = path.join(root, 'AI', 'project-owned-comment');
+    fs.mkdirSync(proj, { recursive: true });
+    const target = path.join(proj, 'AGENTS.md');
+    const owned = '<!-- project-owned metadata -->\n\n# ROOT RULES\n';
+    fs.writeFileSync(target, owned, 'utf8');
+    assert.strictEqual(svc.seedUngovernedAgentsFile(proj), false);
+    assert.strictEqual(fs.readFileSync(target, 'utf8'), owned);
+  });
+});
+
+test('旧版无 hash 的 Hub 副本会在正文逐字一致时安全升级', () => {
+  withService(({ svc, root }) => {
+    const proj = path.join(root, 'AI', 'legacy-seed');
+    fs.mkdirSync(proj, { recursive: true });
+    const target = path.join(proj, 'AGENTS.md');
+    const source = path.join(root, 'AGENTS.md');
+    fs.writeFileSync(target,
+      `<!-- 由 AI Hub 在启动会话时自动复制自 ${source}。\n     归档后可以删除。 -->\n\n# ROOT RULES\n`,
+      'utf8');
+    assert.strictEqual(svc.seedUngovernedAgentsFile(proj), true);
+    assert.match(fs.readFileSync(target, 'utf8'), /seed-sha256:\s*[0-9a-f]{16}/);
+  });
+});

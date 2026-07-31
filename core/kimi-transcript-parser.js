@@ -42,9 +42,44 @@ function kimiStepUsage(value) {
   return { inputTokens, outputTokens };
 }
 
+function stableKimiRecordKey(record, fallback) {
+  const candidates = [
+    record && record.turnId,
+    record && record.turn_id,
+    record && record.id,
+    record && record.uuid,
+    record && record.time,
+    record && record.timestamp,
+  ];
+  for (const value of candidates) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return String(fallback);
+}
+
+function coalesceKimiTurnCards(turns) {
+  const out = [];
+  const positions = new Map();
+  for (const turn of turns) {
+    if (turn && positions.has(turn.id)) {
+      // A single Kimi prompt can emit more than one terminal step.end (notably
+      // after a background agent reports and the parent writes its final
+      // answer).  They are one logical assistant card; the later authoritative
+      // snapshot should replace the earlier parser record in place.
+      out[positions.get(turn.id)] = turn;
+      continue;
+    }
+    if (turn) positions.set(turn.id, out.length);
+    out.push(turn);
+  }
+  return out;
+}
+
 function parseKimiWireRecords(records) {
   const turns = [];
   let turnIndex = 0;
+  let currentTurnKey = null;
   let turnText = '';
   let lastUserText = '';
   let currentAssistantTs = null;
@@ -72,6 +107,7 @@ function parseKimiWireRecords(records) {
     }
     if (record.type === 'turn.prompt') {
       turnIndex += 1;
+      currentTurnKey = stableKimiRecordKey(record, turnIndex);
       turnText = '';
       toolCalls = [];
       steps.clear();
@@ -82,7 +118,7 @@ function parseKimiWireRecords(records) {
       const text = (blocksText(record.input) || lastUserText).trim();
       if (text && (!record.origin || record.origin.kind === 'user')) {
         turns.push({
-          id: `kimi-user-${turnIndex}`,
+          id: `kimi-user-${currentTurnKey}`,
           role: 'user',
           text,
           ts: toMs(record),
@@ -93,6 +129,15 @@ function parseKimiWireRecords(records) {
     }
     if (record.type !== 'context.append_loop_event' || !record.event) continue;
     const event = record.event;
+    // Kimi's native turnId restarts after some resume flows, even though the
+    // same wire.jsonl keeps growing.  Do not overwrite the prompt-derived key
+    // or a later resumed answer can replace an older card with the same turnId.
+    // An event key is only a fallback for a tail fragment that lacks its prompt;
+    // the tail-completeness guard below will force a full read before returning
+    // such a fragment as a card.
+    if (currentTurnKey == null && event.turnId !== undefined && event.turnId !== null) {
+      currentTurnKey = stableKimiRecordKey(event, currentTurnKey || turnIndex);
+    }
     const fallbackKey = `${event.turnId || turnIndex}:${event.step || ''}`;
     if (event.type === 'step.begin') {
       steps.set(event.uuid || fallbackKey, { text: '', hadTool: false });
@@ -134,7 +179,7 @@ function parseKimiWireRecords(records) {
     const text = (ended.text || turnText).trim();
     if (!text && toolCalls.length === 0) continue;
     turns.push({
-      id: `kimi-assistant-${turnIndex}`,
+      id: `kimi-assistant-${currentTurnKey || stableKimiRecordKey(event, turnIndex)}`,
       role: 'assistant',
       text,
       ts: currentAssistantTs,
@@ -151,7 +196,7 @@ function parseKimiWireRecords(records) {
       source: 'kimi_wire',
     });
   }
-  return turns;
+  return coalesceKimiTurnCards(turns);
 }
 
 function parseKimiWireText(text) {
@@ -185,13 +230,24 @@ function applyKimiLimit(turns, opts) {
   return opts.fromTail === false ? turns.slice(0, limit) : turns.slice(turns.length - limit);
 }
 
+// Kimi wire files can also exceed the byte window within one long tool/agent
+// turn.  If the first parsed item is an assistant suffix, returning it would
+// replace the already-rendered full card with truncated text after resume.
+// Only trust a boundary-aligned tail, or a tail whose incomplete first turn is
+// guaranteed to be sliced away.
+function isKimiTailSliceComplete(turns, limit) {
+  if (!Array.isArray(turns) || turns.length < limit) return false;
+  if (turns.length > limit) return true;
+  return turns.length > 0 && turns[0].role === 'user';
+}
+
 function parseKimiWireToTurns(wirePath, opts = {}) {
   const limit = Number(opts.limit);
   if (opts.fromTail !== false && Number.isFinite(limit) && limit > 0) {
     const stat = fs.statSync(wirePath);
     if (stat.size > KIMI_TAIL_WINDOW_INITIAL_BYTES) {
       const tailTurns = parseKimiWireText(readKimiTailWindowText(wirePath, KIMI_TAIL_WINDOW_INITIAL_BYTES));
-      if (tailTurns.length >= limit) return applyKimiLimit(tailTurns, opts);
+      if (isKimiTailSliceComplete(tailTurns, limit)) return applyKimiLimit(tailTurns, opts);
     }
   }
   return applyKimiLimit(parseKimiWireText(fs.readFileSync(wirePath, 'utf8')), opts);

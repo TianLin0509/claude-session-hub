@@ -26,7 +26,10 @@ test('renderer persists and restores transcriptPath session meta', () => {
   assert.match(src, /transcriptPath:\s*s\.transcriptPath\s*\|\|\s*null/);
   assert.match(src, /transcriptPath:\s*meta\.transcriptPath\s*\|\|\s*null/);
   assert.match(src, /transcriptPath:\s*dormant\.transcriptPath/);
-  assert.match(src, /transcriptPath:\s*existing\.transcriptPath\s*\|\|\s*session\.transcriptPath/);
+  assert.match(src, /transcriptPath:\s*session\.transcriptPath\s*\|\|\s*existing\.transcriptPath/);
+  assert.match(src, /transcriptPath:\s*resumed\.transcriptPath\s*\|\|\s*s\.transcriptPath/);
+  assert.match(src, /const wasDormant = !!pendingResume \|\|/);
+  assert.match(src, /resumeDormantSession\(id, opts\)/);
 });
 
 test('parse-session-transcript uses session transcriptPath before ccSession scan', () => {

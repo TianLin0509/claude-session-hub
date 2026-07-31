@@ -1,6 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { highlightMatch } = require('../renderer/past-session-modals.js');
+const {
+  highlightMatch,
+  findReusableClaudeSession,
+  nativeTranscriptSessionKey,
+  collapseDormantNativeDuplicates,
+} = require('../renderer/past-session-modals.js');
 
 function escapeHtml(text) {
   return String(text)
@@ -18,4 +23,45 @@ test('highlightMatch escapes text and wraps case-insensitive hit', () => {
 
 test('highlightMatch returns escaped text when query is empty', () => {
   assert.strictEqual(highlightMatch('<script>', '', escapeHtml), '&lt;script&gt;');
+});
+
+test('resume picker reuses the live or newest dormant Hub shell for one Claude transcript', () => {
+  const sessions = [
+    { id: 'old', kind: 'claude', status: 'dormant', ccSessionId: 'cc-1', lastMessageTime: 10 },
+    { id: 'new', kind: 'claude-resume', status: 'dormant', ccSessionId: 'cc-1', lastMessageTime: 20 },
+    { id: 'other-kind', kind: 'codex', status: 'running', ccSessionId: 'cc-1', lastMessageTime: 30 },
+  ];
+  assert.strictEqual(findReusableClaudeSession(sessions, { sessionId: 'cc-1' }).id, 'new');
+
+  sessions.push({ id: 'live', kind: 'claude', status: 'idle', transcriptPath: 'C:/Claude/one.jsonl', lastMessageTime: 1 });
+  assert.strictEqual(
+    findReusableClaudeSession(sessions, { path: 'c:\\claude\\ONE.jsonl' }).id,
+    'live',
+    'path comparison must be Windows-case-insensitive and slash-insensitive',
+  );
+});
+
+test('native transcript identity consolidates only dormant duplicate shells and preserves UX metadata', () => {
+  const map = new Map([
+    ['old', { id: 'old', kind: 'kimi', status: 'dormant', kimiSid: 'kimi-1', title: '我的标题', userRenamed: true, pinned: true, unreadCount: 4, lastMessageTime: 10 }],
+    ['new', { id: 'new', kind: 'kimi-resume', status: 'idle', kimiSid: 'kimi-1', title: 'Kimi Resume', pinned: false, unreadCount: 1, lastMessageTime: 20 }],
+    ['meeting', { id: 'meeting', kind: 'kimi', status: 'dormant', kimiSid: 'kimi-1', meetingId: 'm1', lastMessageTime: 30 }],
+  ]);
+  assert.strictEqual(nativeTranscriptSessionKey(map.get('old')), 'kimi:kimi-1');
+  const removed = collapseDormantNativeDuplicates(map);
+  assert.deepStrictEqual(removed, [{ removedId: 'old', keptId: 'new' }]);
+  assert.strictEqual(map.has('old'), false);
+  assert.strictEqual(map.has('meeting'), true, 'meeting-scoped shells must never be collapsed');
+  assert.strictEqual(map.get('new').title, '我的标题');
+  assert.strictEqual(map.get('new').pinned, true);
+  assert.strictEqual(map.get('new').unreadCount, 4);
+});
+
+test('two live PTYs with the same native id are reported but never auto-closed', () => {
+  const map = new Map([
+    ['a', { id: 'a', kind: 'codex', status: 'idle', codexSid: 'codex-1' }],
+    ['b', { id: 'b', kind: 'codex-resume', status: 'running', codexSid: 'codex-1' }],
+  ]);
+  assert.deepStrictEqual(collapseDormantNativeDuplicates(map), []);
+  assert.strictEqual(map.size, 2);
 });

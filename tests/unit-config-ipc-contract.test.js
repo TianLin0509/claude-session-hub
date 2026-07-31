@@ -73,6 +73,8 @@ test('editable config preserves only retained editable values', () => {
     codexApiModel: 'gpt-5.5',
     uiToolFoldThreshold: 12,
     uiCodeFoldThreshold: 34,
+    cardFontSize: 18,
+    cardFontFamily: 'serif',
   });
 
   assert.strictEqual(editable.claudeApiKey, 'sk-claude');
@@ -81,6 +83,8 @@ test('editable config preserves only retained editable values', () => {
   assert.strictEqual(editable.codexApiKey, 'sk-codex');
   assert.strictEqual(editable.uiToolFoldThreshold, 12);
   assert.strictEqual(editable.uiCodeFoldThreshold, 34);
+  assert.strictEqual(editable.cardFontSize, 18);
+  assert.strictEqual(editable.cardFontFamily, 'serif');
   for (const removedField of ['packySessionCookie', 'glmApiKey', 'gptApiKey', 'kimiApiKey', 'qwenApiKey']) {
     assert.ok(!Object.prototype.hasOwnProperty.call(editable, removedField),
       `${removedField} should not be editable`);

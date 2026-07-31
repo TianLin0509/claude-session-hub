@@ -8,6 +8,10 @@ const {
   getConfigPath,
   DEFAULTS,
 } = require('../../core/hub-config.js');
+const {
+  normalizeCardFontSize,
+  normalizeCardFontFamily,
+} = require('../../core/card-display-config.js');
 
 function toMaskedConfig(config) {
   return {
@@ -45,6 +49,8 @@ function toEditableConfig(config) {
     codexApiModel: config.codexApiModel,
     uiToolFoldThreshold: Number.isFinite(config.uiToolFoldThreshold) ? config.uiToolFoldThreshold : 15,
     uiCodeFoldThreshold: Number.isFinite(config.uiCodeFoldThreshold) ? config.uiCodeFoldThreshold : 30,
+    cardFontSize: normalizeCardFontSize(config.cardFontSize),
+    cardFontFamily: normalizeCardFontFamily(config.cardFontFamily),
   };
 }
 
@@ -91,6 +97,15 @@ function buildConfigJsonUpdate(existing, newConfig) {
           provider: DEFAULTS.codex_api_provider,
         };
       })(),
+    },
+    ui: {
+      ...(existing.ui || {}),
+      card_font_size: H('cardFontSize')
+        ? normalizeCardFontSize(newConfig.cardFontSize)
+        : normalizeCardFontSize(existing.ui?.card_font_size),
+      card_font_family: H('cardFontFamily')
+        ? normalizeCardFontFamily(newConfig.cardFontFamily)
+        : normalizeCardFontFamily(existing.ui?.card_font_family),
     },
   };
 

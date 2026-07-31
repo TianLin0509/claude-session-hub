@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, Notification, shell } = require('electron');
 const path = require('path');
+const { fileURLToPath } = require('url');
 const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
@@ -470,6 +471,25 @@ transcriptTap.on('prompt-submitted', (ev) => {
   }
 });
 
+// Kimi's main wire stays quiet while an Agent/Coder sub-agent does the actual
+// work. PTY byte bursts cannot be used as a status signal for Kimi because its
+// interactive TUI redraws on ordinary typing. Forward the authoritative
+// Agent tool.call/tool.result lifecycle instead, so the sidebar stays running
+// for the whole background job rather than turning idle after the main step.
+transcriptTap.on('background-work-changed', (ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  const session = sessionManager.getSession(ev.hubSessionId);
+  try {
+    sendToRenderer('background-work-event', {
+      ...ev,
+      meetingId: session ? session.meetingId : null,
+      kind: session ? session.kind : (ev.kind || null),
+    });
+  } catch (error) {
+    console.warn('[kimi background] background-work-event broadcast failed:', error && error.message);
+  }
+});
+
 // Persist resume meta when transcript-tap binds a sub-session to its native CLI sid.
 transcriptTap.on('session-bound', (ev) => {
   if (!ev || !ev.hubSessionId) return;
@@ -652,27 +672,45 @@ function createWindow() {
   });
   setTimeout(showMainWindow, 4000);
 
-  // 主 webContents 导航防护（2026-05-17 道雪）：renderer 若误把 https 链接渲染成
-  //   <a> 或 location.href = url，会让主 webContents 整个 navigate 走，preload IPC
-  //   失效、Hub 卡死。把外部协议一律转发系统浏览器，主窗口只允许 file://。
-  //   webview 内部导航走 webview 的 webContents，不受这里影响。
-  const isInternalNavUrl = (urlStr) => {
+  // 主 webContents 导航防护（2026-05-17 道雪，2026-07-31 收紧）：renderer 若误把链接
+  //   交给浏览器默认导航，会让主 webContents 整个跳走、Hub shell 和操作按钮一起消失。
+  //   旧逻辑放行了所有 file://，所以本地 HTML 正好能绕过保护。主窗口现在只允许加载
+  //   自己的 renderer/index.html；其他本地文件重新投递给 Hub preview webview。
+  //   webview 内部导航走 guest webContents，不受这里影响。
+  const hubShellPath = path.resolve(path.join(__dirname, 'renderer', 'index.html'));
+  const isHubShellUrl = (urlStr) => {
     try {
       const u = new URL(urlStr);
-      return u.protocol === 'file:' || u.protocol === 'about:' || u.protocol === 'chrome:' || u.protocol === 'devtools:';
-    } catch { return true; }
+      return u.protocol === 'file:'
+        && path.resolve(fileURLToPath(u)).toLowerCase() === hubShellPath.toLowerCase();
+    } catch { return false; }
   };
-  const interceptNavigate = (event, urlStr) => {
-    if (isInternalNavUrl(urlStr)) return;
-    event.preventDefault();
+  const routeBlockedMainNavigation = (urlStr) => {
+    try {
+      const u = new URL(urlStr);
+      if (u.protocol === 'file:') {
+        const targetPath = fileURLToPath(u);
+        console.warn('[nav-guard] block local file from main webContents -> preview', targetPath);
+        sendToRenderer('preview-local-file', targetPath);
+        return;
+      }
+      if (u.protocol === 'about:' || u.protocol === 'chrome:' || u.protocol === 'devtools:') {
+        console.warn('[nav-guard] block internal protocol from main webContents:', urlStr);
+        return;
+      }
+    } catch {}
     console.log('[nav-guard] block main webContents navigate to', urlStr, '→ openExternal');
     shell.openExternal(urlStr).catch((e) => console.warn('[nav-guard] openExternal failed:', e && e.message));
+  };
+  const interceptNavigate = (event, urlStr) => {
+    if (isHubShellUrl(urlStr)) return;
+    event.preventDefault();
+    routeBlockedMainNavigation(urlStr);
   };
   mainWindow.webContents.on('will-navigate', interceptNavigate);
   mainWindow.webContents.on('will-redirect', interceptNavigate);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isInternalNavUrl(url)) return { action: 'allow' };
-    shell.openExternal(url).catch((e) => console.warn('[nav-guard] openExternal failed:', e && e.message));
+    routeBlockedMainNavigation(url);
     return { action: 'deny' };
   });
 
@@ -995,6 +1033,43 @@ const bootState = stateStore.loadAndSelfHeal({ sessionStore, meetingStore });
 //   bootWasCleanShutdown 是它额外暴露的"原始盘上值"，告知是否上次优雅退出。
 const bootWasClean = !!bootState.bootWasCleanShutdown;
 let lastPersistedSessions = Array.isArray(bootState.sessions) ? bootState.sessions : [];
+// 2026-07-29 三方审查（Kimi 发现）：healPersistedCwds 自 2026-05 引入以来只被 import、
+// 从未调用——药一直在手边没吃。workspace 从 ~/Workspaces 迁到 C:\Vibe 之后，state.json
+// 里存的还是旧路径，唤醒这类休眠会话会静默回落 Home（见 session-manager 的 cwdFellBack）。
+// transcript 的 jsonl 头里存着 CLI 当时真正用过的 cwd；只有该目录现在仍真实存在时
+// 才能用于自愈（归档复制不会改写 jsonl，里面也可能是已经失效的旧 scratch）。
+//
+// 注意适用范围：它靠 ccSessionId 定位 transcript，所以只覆盖 Claude / DeepSeek。
+// Codex 有 rollout 元数据、Kimi 有 session_index 各自对账，回落留痕才是它们的兜底。
+// healPersistedCwds 就地改内存对象；修正成功后用完整 boot snapshot 异步落盘，避免用户
+// 什么都不操作就退出时修复丢失。不能传历史语义不明的局部 state，这里显式带齐
+// meetings / immersiveByMeeting，和正常持久化路径保持同一数据面。
+// 只对账「可疑」的那些，不全量扫：实测 920 条会话全量对账要 873 ms，而 Hub 启动链上
+// 加一秒同步 IO 是这仓库的头号痛点，不值得。可疑 = ①cwd 已不存在（迁移遗留）
+// ②cwd 正好是 Home（回落的落点，最可能是被静默改写的）。实测这两类合计只有个位数。
+// healPersistedCwds 是就地改对象，传子集同样会改到 lastPersistedSessions 里的那批引用。
+try {
+  const homeDir = path.resolve(process.env.USERPROFILE || process.env.HOME || '.').toLowerCase();
+  const suspect = lastPersistedSessions.filter(s => {
+    if (!s || !s.ccSessionId || !s.cwd) return false;
+    if (path.resolve(s.cwd).toLowerCase() === homeDir) return true;
+    try { return !fs.statSync(s.cwd).isDirectory(); } catch { return true; }
+  });
+  const healed = suspect.length ? healPersistedCwds(suspect) : 0;
+  if (healed > 0) {
+    stateStore.save({
+      version: 1,
+      cleanShutdown: false,
+      sessions: lastPersistedSessions,
+      meetings: Array.isArray(bootState.meetings) ? bootState.meetings : [],
+      immersiveByMeeting: (bootState.immersiveByMeeting && typeof bootState.immersiveByMeeting === 'object')
+        ? bootState.immersiveByMeeting : {},
+    });
+    console.log(`[群聊] boot cwd 自愈：${suspect.length} 条可疑中修正 ${healed} 条（已排队持久化）`);
+  }
+} catch (error) {
+  console.warn('[群聊] healPersistedCwds failed:', error && error.message);
+}
 // Card optimization Task 9（2026-05-01）— 沉浸/调试模式 per-meeting 状态（持久化）
 //   key = meetingId，value = boolean（true=沉浸，false=调试）。
 //   每个 stateStore.save 调用都把这份 dict 一起写回，避免被覆盖。

@@ -22,7 +22,8 @@ function _escapeHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
-function _aiLogo(kind) { return `assets/ai-logos/${_escapeHtml(kind || 'claude')}.svg`; }
+// *-resume 复用基础 kind 的 svg（assets 里没有 *-resume.svg）
+function _aiLogo(kind) { return `assets/ai-logos/${_escapeHtml(String(kind || 'claude').replace(/-resume$/, ''))}.svg`; }
 function _memberTitle(memberId) {
   const m = (_state.members || []).find(x => x.memberId === memberId);
   return m ? (m.title || m.memberId) : memberId;

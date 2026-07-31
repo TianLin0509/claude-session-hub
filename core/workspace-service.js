@@ -146,6 +146,39 @@ class WorkspaceService {
     return isPathInside(this.getScratchRoot(), resolved);
   }
 
+  // workspace 分层（2026-07-29 第五轮，用户决策 2）。
+  //
+  // 上一轮有人主张「禁止把 C:\Vibe\AI 这类分类根当 workspace」。不采纳：跨项目的审查、
+  // 对比、领域规划本来就不属于任何单个项目，分类根正是它们该待的地方——这轮三方审查
+  // 报告就写在 C:\Vibe\AI\artifacts\，完全合理。硬门禁会把正当用途一起堵死。
+  //
+  // 真正该拦的只有**聚合根本身**（C:\Vibe）：在那里搜索会扫穿所有领域，产物会落在组织根，
+  // 根规则第一条就明写禁止。分类根的实际代价只有「搜索范围大」，那是 AI 的行为约束
+  // （根规则「禁止全盘搜索」已覆盖），不是路径本身的问题。
+  //
+  // 所以给出层级、让 UI 说清楚用户选的是什么，而不是没收选项：
+  //   root     C:\Vibe 本身          —— 唯一硬拦
+  //   category C:\Vibe\<领域>        —— 允许，UI 标注「领域工作区」
+  //   scratch  C:\Vibe\_scratch\*    —— 允许，走归档提示
+  //   project  其余                  —— 常规项目
+  //   external 工作区之外            —— 允许（Hub 自己的仓库就在外面）
+  classifyWorkspace(cwd) {
+    if (!cwd || typeof cwd !== 'string') return 'external';
+    const resolved = this.path.resolve(cwd);
+    const root = this.getWorkspaceRoot();
+    if (normalizeKey(resolved) === normalizeKey(root)) return 'root';
+    if (!isPathInside(root, resolved)) return 'external';
+    if (normalizeKey(resolved) === normalizeKey(this.getScratchRoot()) || this.isScratchWorkspace(resolved)) return 'scratch';
+    return normalizeKey(this.path.dirname(resolved)) === normalizeKey(root) ? 'category' : 'project';
+  }
+
+  // 只有聚合根本身不能当 workspace。返回 null 表示可用，否则是给用户看的理由。
+  workspaceRejectReason(cwd) {
+    if (this.classifyWorkspace(cwd) !== 'root') return null;
+    return `${this.getWorkspaceRoot()} 是组织根，不能直接当工作目录`
+      + '——在这里搜索会扫穿所有领域、产物会落在根上。请选具体项目、领域目录或新建临时任务。';
+  }
+
   listArchiveCategories() {
     this.ensureRoot();
     const excluded = new Set(['_scratch', '_admin', 'worktrees']);
@@ -269,28 +302,200 @@ class WorkspaceService {
     }
     if (meta.select !== false) registry.selectedPath = resolved;
     this._writeRegistry(registry);
-    return { ...item };
+    return { ...item, tier: this.classifyWorkspace(resolved) };
   }
 
   // Claude Code 会一路向上读到 <root>\CLAUDE.md，但 Codex / Kimi / Gemini 只读
   // 自己的全局 AGENTS.md 和 cwd 自身的那一份——实测在 _scratch\inbox-* 里
   // 问 <root>\AGENTS.md 独有的规则，Codex 答 NO-RULES（git / 非 git 都一样）。
   // 所以把工作区边界规则复制进每个新 scratch，非 Claude 的 CLI 才能拿到。
-  seedScratchAgentsFile(cwd) {
-    const root = this.getWorkspaceRoot();
-    const source = this.path.join(root, 'AGENTS.md');
+  // 副本必须跟着源刷新，不能只在缺失时写一次。
+  //
+  // 2026-07-29 三方审查：两个 seed 原本都是 `existsSync(target) → return false`，
+  // 与 main.js 的 ensureHooksDeployed() 2026-04-19 那次事故是同一个错误——「防覆盖」
+  // 被实现成「不处理」，老目录永远拿不到新规则（那次已修为内容比对，commit 5dd5dfe）。
+  // 实测当时 14 份副本恰好都还和源一致，但那只是因为源两天没改过，不是设计使然。
+  //
+  // 只比规则正文（剥掉自动生成的头注释），所以用户手工改过头注释不会触发重写；
+  // 正文一旦被人改过则视为「这份副本已被接管」，同样不动——只刷新仍是原样复制的那些。
+  // 区分「源改了，副本该刷新」和「用户接管了这份副本，不许动」——两者表象相同（正文 ≠ 源），
+  // 光比内容分不开。所以往头注释里写一枚 seed-sha256：它记的是**写入当时正文的哈希**。
+  //   现正文哈希 == 标记  → 这份还是原样复制的，源变了就刷新
+  //   现正文哈希 != 标记  → 用户改过，永不覆盖
+  // 老副本没有标记：正文与源一致时补写标记（内容不变）；不一致时先留底再升级，
+  // 避免源规则先变、旧副本永远卡死在旧版本。
+  //
+  // ── seed 副本与 Codex root 标记必须成对出现（2026-07-29 第五轮，用户决策 1）────────
+  // Kimi 无 .git 时只读 cwd 自己那份，所以必须 seed；而 Codex 从 project root 向下逐层
+  // 收集，会把沿途每一份 seed 副本都读进去——副本内容又恰好等于根规则全文，于是同一份
+  // 规则被注入 N 遍（实测 C:\Vibe\AI 4426B 里 62% 是重复；再深一层 AI\proj 变成 4 份）。
+  //
+  // 试过但不够的方案：只在工作区根/分类根放 `.vibe-root`。它把 root 从 C:\Vibe 收到
+  // C:\Vibe\AI，解决了浅层，但 AI\proj 这类更深的 seed 目录仍然读到 AI + proj 两份
+  // （Codex 2 实测证伪，沙盘复现一致）。
+  //
+  // 成立的方案：**seed 到哪，`.vibe-root` 就放到哪**。Codex root 收缩到该目录本身 →
+  // 无论多深都只读「全局 + 自己」两份，是 O(1) 而不是 O(深度)。规则一个字不丢，因为
+  // 副本就是根规则全文。Kimi 只认 `.git`，对这个标记视而不见，零影响。
+  // 边界：项目自有的 AGENTS.md 不会被 seed，也就不会拿到标记，行为完全不变。
+  _ensureCodexRootMarker(cwd) {
+    const marker = this.path.join(cwd, '.vibe-root');
+    try {
+      if (this.fs.existsSync(marker)) return false;
+      this.fs.writeFileSync(marker,
+        '# Codex project_root_markers 标记：AGENTS.md 收集从这一层开始\n'
+        + '# 由 AI Hub 随同目录的 seed 版 AGENTS.md 一起生成。没有它，Codex 会把上级每一份\n'
+        + '# seed 副本都读一遍，同一份规则重复注入。删掉 AGENTS.md 时把这个也一起删。\n',
+        { encoding: 'utf8', flag: 'wx' });
+      return true;
+    } catch (error) {
+      // existsSync 与 writeFileSync 之间可能有另一个会话先写完；这不是失败。
+      if (error && error.code === 'EEXIST') return false;
+      this.logger.warn('[workspace] write .vibe-root failed:', error && error.message);
+      return false;
+    }
+  }
+
+  // Kimi 无 .git 时只读 cwd 自己，Codex 又会被配套 .vibe-root 收口到 cwd，所以深层
+  // seed 必须是一份「从工作区根到 cwd 父目录」的完整合并规则，不能只复制根规则。
+  // 否则 parent/AGENTS.md 的项目规则会被 Hub 自己新建的边界挡掉。
+  _collectInheritedAgents(cwd, rootSource) {
+    const workspaceRoot = this.path.resolve(this.getWorkspaceRoot());
+    const resolved = this.path.resolve(cwd);
+    const dirs = [];
+    for (let cur = this.path.dirname(resolved);;) {
+      if (normalizeKey(cur) === normalizeKey(workspaceRoot) || isPathInside(workspaceRoot, cur)) dirs.push(cur);
+      if (normalizeKey(cur) === normalizeKey(workspaceRoot)) break;
+      const parent = this.path.dirname(cur);
+      if (!parent || parent === cur) break;
+      cur = parent;
+    }
+    dirs.reverse();
+
+    const pieces = [];
+    const includesBlock = (container, block) => container === block
+      || (`\n${container}\n`).includes(`\n${block}\n`);
+    for (const dir of dirs) {
+      const file = this.path.join(dir, 'AGENTS.md');
+      if (!this.fs.existsSync(file)) continue;
+      let body = this.fs.readFileSync(file, 'utf8');
+      const header = body.match(/^<!--[\s\S]*?-->\r?\n\r?\n/);
+      if (header && /由 AI Hub/.test(header[0])) body = body.slice(header[0].length);
+      const normalized = body.replace(/\r\n?/g, '\n').trim();
+      if (!normalized) continue;
+
+      // 子级项目文件有时已经完整包含根规则。保留更完整的那份，避免合并后又把根规则
+      // 重复一遍；不做模糊去重，Markdown 的顺序、缩进和空白都可能有语义。
+      if (pieces.some(piece => includesBlock(piece.normalized, normalized))) continue;
+      for (let i = pieces.length - 1; i >= 0; i -= 1) {
+        if (includesBlock(normalized, pieces[i].normalized)) pieces.splice(i, 1);
+      }
+      pieces.push({ file, body, normalized });
+    }
+
+    // 理论上 rootSource 已在 dirs 里；保底避免异常 workspaceRoot 配置生成空副本。
+    if (!pieces.length && this.fs.existsSync(rootSource)) {
+      const body = this.fs.readFileSync(rootSource, 'utf8');
+      pieces.push({ file: rootSource, body, normalized: body.replace(/\r\n?/g, '\n').trim() });
+    }
+    return {
+      // 单来源保持字节原样；多来源只在文件之间插入分隔空行，不改任一规则正文。
+      body: pieces.length === 1 ? pieces[0].body : pieces.map(piece => piece.body).join('\n\n'),
+      sources: pieces.map(piece => piece.file),
+    };
+  }
+
+  _seedAgentsFile(cwd, headerLines, source, bodyOverride = null) {
     const target = this.path.join(cwd, 'AGENTS.md');
     try {
-      if (!this.fs.existsSync(source) || this.fs.existsSync(target)) return false;
-      const header = `<!-- 由 AI Hub 在新建临时 workspace 时自动复制自 ${source}。\n`
-        + `     Codex / Kimi / Gemini 读不到上级目录的 AGENTS.md，只能靠这份副本。\n`
-        + `     归档到正式项目后可以删除，改用项目自己的 AGENTS.md。 -->\n\n`;
-      this.fs.writeFileSync(target, header + this.fs.readFileSync(source, 'utf8'), 'utf8');
-      return true;
+      if (!this.fs.existsSync(source)) return false;
+      const body = bodyOverride === null ? this.fs.readFileSync(source, 'utf8') : String(bodyOverride);
+      const bodyHash = crypto.createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 16);
+      const header = `<!-- ${headerLines}\n     seed-sha256: ${bodyHash} —— Hub 靠它判断这份副本有没有被你改过，别删这行。 -->\n\n`;
+      const next = header + body;
+
+      if (!this.fs.existsSync(target)) {
+        this.fs.writeFileSync(target, next, 'utf8');
+        this._ensureCodexRootMarker(cwd);
+        return true;
+      }
+
+      const current = this.fs.readFileSync(target, 'utf8');
+      if (current === next) {
+        // 已是最新。仍然确保标记在位——存量的 23 份副本就是走这条路补上的。
+        this._ensureCodexRootMarker(cwd);
+        return false;
+      }
+
+      const m = current.match(/^<!--[\s\S]*?-->\r?\n\r?\n/);
+      // 只能接管 Hub 自己写过的副本。项目自己的 AGENTS.md 也可能以 HTML 注释开头，
+      // 不能因为它后面的正文恰好与根规则相同，就把它误认成老 seed 并覆盖。
+      // 还要核对当前源路径：不能把另一个 Hub / 旧工作区生成的文件当成本 Hub 副本接管。
+      const managedHeader = !!(m && /由 AI Hub/.test(m[0]) && m[0].includes(`自动复制自 ${source}`));
+      const currentBody = managedHeader ? current.slice(m[0].length) : current;
+      const currentHash = crypto.createHash('sha256').update(currentBody, 'utf8').digest('hex').slice(0, 16);
+      const marked = managedHeader ? m[0].match(/seed-sha256:\s*([0-9a-f]{16})/) : null;
+
+      if (marked) {
+        // 用户改过正文 = 这份已是项目自己的规则。既不刷新，也不主动补 Codex root 标记
+        // （已有的不删——那是上一次 Hub 管理时留下的，去掉反而会让 Codex 突然多读几份）。
+        if (marked[1] !== currentHash) return false;
+        this.fs.writeFileSync(target, next, 'utf8');                        // 原样副本 + 源已变 → 刷新
+        this._ensureCodexRootMarker(cwd);
+        this.logger.log?.(`[workspace] AGENTS.md 副本随源刷新: ${target}`);
+        return true;
+      }
+
+      // 无标记的老副本。旧实现本来就是逐字复制，故这里只统一 CRLF/LF；不能把所有
+      // 空白删掉再比，Markdown 缩进和代码块有语义，用户只改排版也算接管。
+      const normalizeNewlines = value => String(value).replace(/\r\n?/g, '\n');
+      if (managedHeader) {
+        if (normalizeNewlines(currentBody) === normalizeNewlines(body)) {
+          this.fs.writeFileSync(target, next, 'utf8');                      // 内容本就一致，补标记
+          this._ensureCodexRootMarker(cwd);
+          return true;
+        }
+        // 正文与源不一致，且没有 seed 标记可用来区分「源变了」和「用户接管了」。
+        //
+        // 原先在这里保守跳过——实测直接卡死：2026-07-29 往 C:\Vibe\AGENTS.md 加了「工具自身
+        // 豁免迁移」一节后，C:\Vibe\AI\AGENTS.md 这份存量副本再也刷不动，Codex / Kimi 读到的
+        // 规则与 Claude 读到的永久不一致。「不覆盖」又一次被做成了「不处理」——正是本轮
+        // 三方共同定下的规约要禁的那个反模式（memory-link:59 / seed / ensureHooksDeployed
+        // 已经是同一个错误的第四次出现）。
+        //
+        // 所以改成「留证据再刷新」：header 明确写着由 Hub 自动复制，就按 Hub 管理处理；
+        // 万一真是用户改的，改动原样躺在旁边的 .hub-backup-* 里，一个字都没丢。
+        // 只发生一次——刷新后这份就带上 seed-sha256，之后都走上面有标记的正常路径。
+        const backupBase = `${target}.hub-backup-${timestampSlug(new Date(this.now()))}`;
+        let backup = backupBase;
+        let backupSuffix = 2;
+        try {
+          while (this.fs.existsSync(backup)) backup = `${backupBase}-${backupSuffix++}`;
+          this.fs.writeFileSync(backup, current, { encoding: 'utf8', flag: 'wx' });
+        } catch (backupError) {
+          this.logger.warn('[workspace] AGENTS.md 备份失败，放弃刷新:', backupError && backupError.message);
+          return false;
+        }
+        this.fs.writeFileSync(target, next, 'utf8');
+        this._ensureCodexRootMarker(cwd);
+        this.logger.log?.(`[workspace] 存量 AGENTS.md 副本升级并补标记，原件留底 ${this.path.basename(backup)}：${target}`);
+        return true;
+      }
+      this.logger.warn(`[workspace] AGENTS.md 不是 Hub 生成的副本，保持原样：${target}`);
+      return false;
     } catch (error) {
       this.logger.warn('[workspace] seed AGENTS.md failed:', error && error.message);
       return false;
     }
+  }
+
+  seedScratchAgentsFile(cwd) {
+    const source = this.path.join(this.getWorkspaceRoot(), 'AGENTS.md');
+    const header = `由 AI Hub 在新建临时 workspace 时自动复制自 ${source}，并随源文件自动刷新。\n`
+      + `     Codex / Kimi / Gemini 读不到上级目录的 AGENTS.md，只能靠这份副本。\n`
+      + `     改了正文即视为本项目自己的规则，Hub 不再覆盖。\n`
+      + `     归档到正式项目后可以删除，改用项目自己的 AGENTS.md。`;
+    return this._seedAgentsFile(cwd, header, source);
   }
 
   // Kimi / Codex 的 AGENTS.md 发现规则（2026-07-29 探针 + wire.jsonl 实测，详见
@@ -304,26 +509,35 @@ class WorkspaceService {
     const resolved = this.path.resolve(String(cwd || ''));
     // 只补工作区内的目录——工作区外的 cwd 不该被塞进 C:\Vibe 的规则。
     if (!isPathInside(this.getWorkspaceRoot(), resolved)) return false;
+    // Hub 创建的 scratch 会先 seed、再 git init。存量 scratch 因而天然已有 .git；
+    // 如果先走下面的 git 守卫，旧副本就永远不会补 hash / .vibe-root，也不会随源刷新。
+    if (normalizeKey(resolved) === normalizeKey(this.getScratchRoot()) || this.isScratchWorkspace(resolved)) {
+      return this.seedScratchAgentsFile(resolved);
+    }
+    const source = this.path.join(this.getWorkspaceRoot(), 'AGENTS.md');
+    const baseHeader = `由 AI Hub 在启动会话时自动复制自 ${source}，并随源文件自动刷新。\n`
+      + `     这个目录不在任何 git 仓库内，Kimi 读不到上级目录的 AGENTS.md，只能靠这份副本。\n`
+      + `     同目录的 .vibe-root 会把 Codex 收集边界收在这一层，因此 Codex 也只读这一份，不会叠加上级副本。\n`
+      + `     改了正文即视为本项目自己的规则，Hub 不再覆盖。\n`
+      + `     归档后可保留；若改用项目自己的 AGENTS.md，请连同 .vibe-root 一起按项目需要处理。`;
     const target = this.path.join(resolved, 'AGENTS.md');
-    if (this.fs.existsSync(target)) return false;
+    const seed = () => {
+      const inherited = this._collectInheritedAgents(resolved, source);
+      const sourceNote = inherited.sources.length > 1
+        ? `\n     本副本还合并了沿途项目规则：${inherited.sources.slice(1).join('；')}`
+        : '';
+      return this._seedAgentsFile(resolved, baseHeader + sourceNote, source, inherited.body);
+    };
+    // 已有文件时先让 _seedAgentsFile 判定所有权：当前 Hub 的托管副本即使后来 git init
+    // 也要继续刷新；项目自有文件 / 其他来源的副本会原样保留，且不会拿到 marker。
+    if (this.fs.existsSync(target)) return seed();
     for (let cur = resolved;;) {
       if (this.fs.existsSync(this.path.join(cur, '.git'))) return false;
       const parent = this.path.dirname(cur);
       if (!parent || parent === cur) break;
       cur = parent;
     }
-    const source = this.path.join(this.getWorkspaceRoot(), 'AGENTS.md');
-    try {
-      if (!this.fs.existsSync(source)) return false;
-      const header = `<!-- 由 AI Hub 在启动会话时自动复制自 ${source}。\n`
-        + `     这个目录不在任何 git 仓库内，Kimi / Codex 读不到上级目录的 AGENTS.md，只能靠这份副本。\n`
-        + `     git init 或归档到正式项目后可以删除，改用项目自己的 AGENTS.md。 -->\n\n`;
-      this.fs.writeFileSync(target, header + this.fs.readFileSync(source, 'utf8'), 'utf8');
-      return true;
-    } catch (error) {
-      this.logger.warn('[workspace] seed ungoverned AGENTS.md failed:', error && error.message);
-      return false;
-    }
+    return seed();
   }
 
   createScratchWorkspace(meta = {}) {
@@ -345,7 +559,12 @@ class WorkspaceService {
   }
 
   resolveForSession(cwd, meta = {}) {
-    if (typeof cwd === 'string' && cwd.trim()) return this.touchWorkspace(cwd.trim(), meta);
+    if (typeof cwd === 'string' && cwd.trim()) {
+      const resolved = this.path.resolve(cwd.trim());
+      const rejectReason = this.workspaceRejectReason(resolved);
+      if (rejectReason) throw new Error(rejectReason);
+      return this.touchWorkspace(resolved, meta);
+    }
     return this.createScratchWorkspace(meta);
   }
 
@@ -394,7 +613,8 @@ class WorkspaceService {
     if (changed) this._writeRegistry(registry);
     const selectedKey = registry.selectedPath ? normalizeKey(registry.selectedPath) : '';
     const items = registry.workspaces
-      .map(entry => ({ ...entry, selected: normalizeKey(entry.path) === selectedKey }))
+      // tier 供 UI 区分「领域工作区」和普通项目（决策 2：不禁止，但要说清楚选的是什么）。
+      .map(entry => ({ ...entry, tier: this.classifyWorkspace(entry.path), selected: normalizeKey(entry.path) === selectedKey }))
       .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || (b.lastUsedAt || 0) - (a.lastUsedAt || 0));
     return {
       root: this.getWorkspaceRoot(),

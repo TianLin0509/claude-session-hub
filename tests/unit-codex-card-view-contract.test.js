@@ -68,14 +68,15 @@ assert.ok(
 assert.ok(
   rendererSrc.includes("const cachedBeforeSelect = terminalCache.get(id);") &&
   rendererSrc.includes("const requestedBottomPin = opts && opts.forceScrollBottom === true;") &&
-  rendererSrc.includes("const forceScrollBottom = !!(session && isCodexKind(session.kind) && (requestedBottomPin || !cachedBeforeSelect || !cachedBeforeSelect.opened));") &&
+  rendererSrc.includes("const forceScrollBottom = requestedBottomPin") &&
+  rendererSrc.includes("|| !!(session && isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));") &&
   rendererSrc.includes("showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });"),
-  'Codex sidebar selection must force bottom pin when requested and on first terminal mount',
+  'all sidebar selections must honor explicit bottom pinning while Codex keeps first-mount pinning',
 );
 assert.ok(
   rendererSidebarSrc.includes("selectSession(s.id, { forceScrollBottom: true })") &&
   rendererSidebarSrc.includes("selectSession(subId, { forceScrollBottom: true })"),
-  'left sidebar clicks must request bottom pinning for Codex sessions',
+  'left sidebar clicks must request bottom pinning for ordinary sessions',
 );
 assert.ok(
   rendererSrc.includes("detachFromBottom") &&

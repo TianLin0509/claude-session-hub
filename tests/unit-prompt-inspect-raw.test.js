@@ -18,6 +18,7 @@ const path = require('node:path');
 
 const PI = require('../core/prompt-inspect.js');
 const { registerPromptInspectIpc } = require('../main/ipc/prompt-inspect-handlers.js');
+const PROMPT_INSPECTOR_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'prompt-inspector.js'), 'utf8');
 
 let failures = 0;
 function test(name, fn) {
@@ -300,6 +301,29 @@ test('拼装返回的 text 与磁盘逐字一致，complete 时可直接拼出�
   });
 });
 
+test('重复 @import 只列证据，不计段数、不占偏移，也不进入复制拼装正文', () => {
+  withTree((root) => {
+    const outer = path.join(root, 'CLAUDE.md');
+    const proj = path.join(root, 'proj');
+    fs.mkdirSync(proj, { recursive: true });
+    fs.writeFileSync(outer, '# OUTER\n', 'utf8');
+    fs.writeFileSync(path.join(proj, 'CLAUDE.md'), '# INNER\n\n@../CLAUDE.md\n', 'utf8');
+
+    const asm = PI.buildAssembly(PI.buildInspection({ cwd: proj, kind: 'claude' }));
+    const duplicate = asm.segments.find(s => s.duplicateOf);
+    const injected = asm.segments.filter(s => !s.missing && !s.duplicateOf);
+    assert.ok(duplicate, '链上已有文件再被 @import 时必须显式标 duplicateOf');
+    assert.strictEqual(duplicate.start, duplicate.end, '重复证据不占字节偏移');
+    assert.strictEqual(asm.segmentCount, injected.length, '段数只统计真正注入的段');
+    assert.strictEqual(Buffer.byteLength(injected.map(s => s.text).join(asm.joiner), 'utf8'), asm.totalBytes);
+
+    assert.match(PROMPT_INSPECTOR_SRC, /!s\.missing && !s\.duplicateOf && !s\.textOmitted/,
+      '复制拼装正文必须排除 duplicateOf，否则会凭空多一个空分隔段');
+    assert.match(PROMPT_INSPECTOR_SRC, /已按路径去重/,
+      'UI 应把 0 字节重复段解释为去重证据，不能伪装成普通注入段');
+  });
+});
+
 test('超限时只裁正文，偏移与 sha 仍是真实值并显式标注', () => {
   withTree((root) => {
     const big = path.join(root, 'CLAUDE.md');
@@ -330,6 +354,8 @@ test('Codex 会话拼的是 AGENTS.md 链，不是 CLAUDE.md', () => {
 
     const insp = PI.buildInspection({ cwd: proj, kind: 'codex' });
     const asm = PI.buildAssembly(insp);
+    assert.ok(asm.segments.every(s => s.role !== 'memory-index'),
+      'Codex 拼装绝不能附带 Claude 的 MEMORY.md');
     const scoped = asm.segments.filter(s => PI.pathKey(s.path).startsWith(PI.pathKey(root) + path.sep.toLowerCase()));
     assert.ok(scoped.length > 0, 'codex 侧应至少拼到一份 AGENTS.md');
     assert.ok(scoped.every(s => path.basename(s.path) === 'AGENTS.md'),

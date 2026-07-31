@@ -194,6 +194,12 @@
   transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
 }
 .session-recent-item:hover { border-color: rgba(88, 166, 255, .55); }
+.session-recent-item:disabled {
+  border-color: rgba(248, 81, 73, .22);
+  opacity: .58;
+  cursor: not-allowed;
+}
+.session-recent-item:disabled:hover { border-color: rgba(248, 81, 73, .22); }
 .session-recent-item.selected {
   border-color: rgba(46, 160, 67, .72);
   background: rgba(35, 134, 54, .14);
@@ -202,7 +208,11 @@
 .session-recent-item > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .session-recent-item strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .session-recent-item small { overflow: hidden; color: #929eaa; font: 10px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.session-recent-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .session-recent-badge { flex: 0 0 auto; padding: 2px 7px; border-radius: 999px; background: rgba(88, 166, 255, .16); color: #9ecbff; font-size: 9px; letter-spacing: .04em; }
+.session-recent-badge.tier-category { background: rgba(163, 113, 247, .18); color: #d2b7ff; }
+.session-recent-badge.tier-external { background: rgba(210, 153, 34, .16); color: #e3b341; }
+.session-recent-badge.tier-root { background: rgba(248, 81, 73, .16); color: #ff9b95; }
 .session-recent-selected { display: flex; flex-direction: column; gap: 2px; padding-top: 2px; border-top: 1px solid rgba(88, 166, 255, .16); }
 
 .session-create-error {
