@@ -2,9 +2,12 @@
 
 const assert = require('assert');
 const {
+  formatBranchSessionTitle,
   isGenericAutoSessionTitle,
   isStableSessionTitle,
   looksLikePathTitle,
+  migrateLegacyBranchSessionMeta,
+  normalizeLegacyBranchSessionTitle,
   shouldAcceptExternalSessionTitle,
 } = require('../core/session-title-guards.js');
 
@@ -52,6 +55,34 @@ test('external title sync only replaces generic unprotected titles', () => {
     shouldAcceptExternalSessionTitle({ title: 'Claude 1', kind: 'claude', autoTitleGenerated: true }, 'New title'),
     false,
   );
+});
+
+test('branch titles use a front-loaded marker and migrate the old suffix format', () => {
+  assert.strictEqual(formatBranchSessionTitle('无线算法策略'), '分支: 无线算法策略');
+  assert.strictEqual(formatBranchSessionTitle('分支: 无线算法策略'), '分支: 无线算法策略');
+  assert.strictEqual(normalizeLegacyBranchSessionTitle('无线算法策略 · 分支'), '分支: 无线算法策略');
+  assert.strictEqual(normalizeLegacyBranchSessionTitle('Codex CLI分支问答方法'), 'Codex CLI分支问答方法');
+  assert.deepStrictEqual(
+    migrateLegacyBranchSessionMeta({ title: 'Codex 2 · 分支', userRenamed: true }),
+    {
+      title: '分支: Codex 2',
+      userRenamed: false,
+      autoTitleGenerated: false,
+      branchAutoTitlePending: true,
+    },
+  );
+  assert.deepStrictEqual(
+    migrateLegacyBranchSessionMeta({ title: '无线算法策略 · 分支', userRenamed: true }),
+    {
+      title: '分支: 无线算法策略',
+      userRenamed: false,
+      autoTitleGenerated: true,
+      branchAutoTitlePending: false,
+    },
+  );
+  const custom = { title: 'Codex CLI分支问答方法', userRenamed: true };
+  assert.strictEqual(migrateLegacyBranchSessionMeta(custom), custom,
+    'ordinary titles that merely contain the word branch must stay untouched');
 });
 
 console.log('Session title guard tests passed.');

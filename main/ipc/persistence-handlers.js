@@ -24,6 +24,8 @@ const RESUME_META_FIELDS = [
   'contextMax',
   'userRenamed',
   'autoTitleGenerated',
+  'branchSourceSessionId',
+  'branchAutoTitlePending',
   'purpose',
   'researchSessionId',
   'chuxinTaskId',

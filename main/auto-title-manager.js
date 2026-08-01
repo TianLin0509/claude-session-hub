@@ -2,6 +2,7 @@
 
 const http = require('http');
 const https = require('https');
+const { formatBranchSessionTitle } = require('../core/session-title-guards.js');
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -112,6 +113,20 @@ function createAutoTitleManager(deps) {
     return !title || autoTitleMeetingRe.test(String(title).trim());
   }
 
+  function syncPendingBranchTitlesFromSource(sourceSessionId, sourceTitle) {
+    if (!sourceSessionId || !sourceTitle || typeof sessionManager.getAllSessions !== 'function') return;
+    for (const branch of sessionManager.getAllSessions()) {
+      if (!branch || branch.branchSourceSessionId !== sourceSessionId) continue;
+      if (!branch.branchAutoTitlePending || branch.userRenamed) continue;
+      const updatedBranch = sessionManager.updateSessionMeta(branch.id, {
+        title: formatBranchSessionTitle(sourceTitle),
+        autoTitleGenerated: true,
+        branchAutoTitlePending: false,
+      });
+      if (updatedBranch) sendToRenderer('session-updated', { session: updatedBranch });
+    }
+  }
+
   function maybeAutoTitleSessionFromPrompt(ev) {
     const { hubSessionId, text } = ev || {};
     if (!hubSessionId || !text || autoTitleInFlight.has(hubSessionId)) return;
@@ -119,27 +134,34 @@ function createAutoTitleManager(deps) {
     if (!session || session.meetingId || session.userRenamed) return;
     if (!isAutoTitleSessionKind(session.kind)) return;
     if (session.autoTitleGenerated) return;
-    if (!isGenericAutoSessionTitle(session.title)) return;
+    if (!session.branchAutoTitlePending && !isGenericAutoSessionTitle(session.title)) return;
     autoTitleInFlight.add(hubSessionId);
     setTimeout(async () => {
       try {
         const latest = sessionManager.getSession(hubSessionId);
         if (!latest || latest.userRenamed || latest.autoTitleGenerated || latest.meetingId) return;
-        if (!isAutoTitleSessionKind(latest.kind) || !isGenericAutoSessionTitle(latest.title)) return;
+        if (!isAutoTitleSessionKind(latest.kind)
+            || (!latest.branchAutoTitlePending && !isGenericAutoSessionTitle(latest.title))) return;
         let title = '';
         try { title = await generateSessionTitleFromPrompt(text); } catch (e) {
           console.warn('[auto-title] AI title failed:', e && e.message);
         }
         if (!title) title = fallbackSessionTitleFromPrompt(text, (latest.kind || '').replace(/-resume$/, ''));
         if (!title) return;
+        const wasPendingBranch = !!latest.branchAutoTitlePending;
+        const finalTitle = wasPendingBranch ? formatBranchSessionTitle(title) : title;
         const updated = sessionManager.updateSessionMeta(hubSessionId, {
-          title,
+          title: finalTitle,
           autoTitleGenerated: true,
+          ...(wasPendingBranch ? { branchAutoTitlePending: false } : {}),
         });
         if (updated) {
           sendToRenderer('session-updated', { session: updated });
-          if (workspaceService && updated.cwd) {
-            const workspace = workspaceService.updateSuggestedName(updated.cwd, title);
+          syncPendingBranchTitlesFromSource(hubSessionId, title);
+          // A branch shares the parent's cwd. Renaming that workspace from a
+          // child prompt would unexpectedly relabel the parent and siblings.
+          if (workspaceService && updated.cwd && !updated.branchSourceSessionId) {
+            const workspace = workspaceService.updateSuggestedName(updated.cwd, finalTitle);
             if (workspace) {
               const relabeled = sessionManager.updateSessionMeta(hubSessionId, { workspaceLabel: workspace.label });
               if (relabeled) sendToRenderer('session-updated', { session: relabeled });

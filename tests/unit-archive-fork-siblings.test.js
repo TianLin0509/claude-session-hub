@@ -82,10 +82,12 @@ test('fork inherits model and effort from its source', () => {
   assert.match(SESSION_IPC_SRC, /if \(source\.effort\) opts\.effort = source\.effort;/, 'effort must survive branching');
 });
 
-test('fork keeps the source title plus a branch marker and is treated as user-named', () => {
+test('fork puts the branch marker first and protects a meaningful inherited title', () => {
   // isClaude → isClaudeCli：DeepSeek 也走 claude CLI 的 fork，2026-07-27 接线后一并覆盖。
-  assert.match(SESSION_IPC_SRC, /title: `\$\{source\.title \|\| \(isClaudeCli \? 'Claude' : 'Codex'\)\} · 分支`/);
-  assert.match(SESSION_IPC_SRC, /userRenamed: true/, 'auto-title must not overwrite the branch name');
+  assert.match(SESSION_IPC_SRC, /title: formatBranchSessionTitle\(sourceTitle\)/);
+  assert.match(SESSION_IPC_SRC, /branchSourceSessionId: source\.id/);
+  assert.match(SESSION_IPC_SRC, /autoTitleGenerated: !branchAutoTitlePending/,
+    'only a meaningful parent title should lock the initial branch title');
 });
 
 if (!process.exitCode) console.log('All archive fork-sibling tests passed.');

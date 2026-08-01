@@ -59,6 +59,8 @@ const {
 const { modelOptionsFor } = require('../core/model-options.js');
 const {
   isStableSessionTitle,
+  migrateLegacyBranchSessionMeta,
+  normalizeLegacyBranchSessionTitle,
   shouldAcceptExternalSessionTitle,
 } = require('../core/session-title-guards.js');
 const RENDER_STARTUP_TRACE = process.env.HUB_STARTUP_TRACE === '1';
@@ -3770,6 +3772,10 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.kimiSessionDir) local.kimiSessionDir = session.kimiSessionDir;
   if (session.userRenamed) local.userRenamed = true;
   if (session.autoTitleGenerated) local.autoTitleGenerated = true;
+  if (session.branchSourceSessionId !== undefined) local.branchSourceSessionId = session.branchSourceSessionId;
+  if (typeof session.branchAutoTitlePending === 'boolean') {
+    local.branchAutoTitlePending = session.branchAutoTitlePending;
+  }
   if (typeof session.workspaceLabel === 'string') local.workspaceLabel = session.workspaceLabel;
   if (typeof session.contextPct === 'number') local.contextPct = session.contextPct;
   if (typeof session.contextUsed === 'number') local.contextUsed = session.contextUsed;
@@ -3811,6 +3817,8 @@ function schedulePersist() {
         contextMax: typeof s.contextMax === 'number' ? s.contextMax : null,
         userRenamed: !!s.userRenamed,
         autoTitleGenerated: !!s.autoTitleGenerated,
+        branchSourceSessionId: s.branchSourceSessionId || null,
+        branchAutoTitlePending: !!s.branchAutoTitlePending,
         // T10: include resume-meta in persist payload so main.js merge has the latest
         codexSid: s.codexSid || null,
         codexSessionsRoot: s.codexSessionsRoot || null,
@@ -3892,7 +3900,10 @@ async function resumeDormantSession(hubId, opts = {}) {
       kimiSid: dormant.kimiSid || null,
       kimiSessionDir: dormant.kimiSessionDir || null,
       userRenamed: !!dormant.userRenamed,
-      autoTitleGenerated: !!dormant.autoTitleGenerated || isStableSessionTitle(dormant.title, dormant.kind),
+      autoTitleGenerated: !dormant.branchAutoTitlePending
+        && (!!dormant.autoTitleGenerated || isStableSessionTitle(dormant.title, dormant.kind)),
+      branchSourceSessionId: dormant.branchSourceSessionId || null,
+      branchAutoTitlePending: !!dormant.branchAutoTitlePending,
     });
   } catch (error) {
     _pendingDormantResumes.delete(hubId);
@@ -3934,10 +3945,20 @@ window.resumeDormantSession = resumeDormantSession;
   ]);
   traceRendererStartup(`init ipc done existing=${existing.length} persisted=${persisted && Array.isArray(persisted.sessions) ? persisted.sessions.length : 0} meetings=${Array.isArray(dormantMeetings) ? dormantMeetings.length : 0}`);
 
-  for (const s of existing) sessions.set(s.id, s);
+  let migratedLegacyBranchTitles = 0;
+  for (const s of existing) {
+    const migrated = migrateLegacyBranchSessionMeta(s);
+    if (migrated !== s) migratedLegacyBranchTitles += 1;
+    sessions.set(migrated.id, migrated);
+  }
 
   if (persisted && Array.isArray(persisted.sessions)) {
     for (const meta of persisted.sessions) {
+      const migratedMeta = migrateLegacyBranchSessionMeta(meta);
+      if (migratedMeta !== meta) {
+        Object.assign(meta, migratedMeta);
+        migratedLegacyBranchTitles += 1;
+      }
       if (sessions.has(meta.hubId)) continue;
       // 2026-05-05 dormant 加载 fallback：state.json 里历史 dormant session 的
       // currentModel 大量为 null（main.js:2694 RESUME_META_FIELDS 字段名拼错导致
@@ -3953,7 +3974,7 @@ window.resumeDormantSession = resumeDormantSession;
       sessions.set(meta.hubId, {
         id: meta.hubId,
         kind: meta.kind || 'claude',
-        title: meta.title || 'Claude',
+        title: normalizeLegacyBranchSessionTitle(meta.title) || 'Claude',
         status: 'dormant',
         lastMessageTime: meta.lastMessageTime || Date.now(),
         lastOutputPreview: meta.lastOutputPreview || '',
@@ -3971,7 +3992,10 @@ window.resumeDormantSession = resumeDormantSession;
         contextUsed: typeof meta.contextUsed === 'number' ? meta.contextUsed : null,
         contextMax: typeof meta.contextMax === 'number' ? meta.contextMax : null,
         userRenamed: !!meta.userRenamed,
-        autoTitleGenerated: !!meta.autoTitleGenerated || isStableSessionTitle(meta.title, meta.kind),
+        autoTitleGenerated: !meta.branchAutoTitlePending
+          && (!!meta.autoTitleGenerated || isStableSessionTitle(meta.title, meta.kind)),
+        branchSourceSessionId: meta.branchSourceSessionId || null,
+        branchAutoTitlePending: !!meta.branchAutoTitlePending,
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
         codexSessionsRoot: meta.codexSessionsRoot || null,
@@ -3991,6 +4015,11 @@ window.resumeDormantSession = resumeDormantSession;
         hiddenFromSidebar: !!meta.hiddenFromSidebar,
       });
     }
+  }
+
+  if (migratedLegacyBranchTitles > 0) {
+    console.info(`[session-title] migrated ${migratedLegacyBranchTitles} legacy branch title(s)`);
+    schedulePersist();
   }
 
   if (Array.isArray(dormantMeetings)) {

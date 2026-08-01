@@ -194,10 +194,11 @@ async function main() {
     const claudeBranch = await waitFor('Claude branch session', () => client.eval(`(async () => {
       const { ipcRenderer } = require('electron');
       const all = await ipcRenderer.invoke('get-sessions');
-      return all.find(session => session.id !== ${JSON.stringify(claudeSource.id)} && session.title === 'Claude E2E Source · 分支') || null;
+      return all.find(session => session.id !== ${JSON.stringify(claudeSource.id)} && session.title === '分支: Claude E2E Source') || null;
     })()`));
     assert.notEqual(claudeBranch.id, claudeSource.id);
-    assert.equal(claudeBranch.userRenamed, true, 'Claude branch title should stay stable');
+    assert.equal(claudeBranch.autoTitleGenerated, true, 'meaningful Claude parent title should stay stable');
+    assert.equal(claudeBranch.userRenamed, undefined, 'Hub-generated branch title is not a manual rename');
     console.log('[step] wait Claude CLI invocation');
     await waitFor('Claude fork CLI invocation', () => {
       const invocation = readInvocations().find(entry => (
@@ -260,10 +261,11 @@ async function main() {
     const codexBranch = await waitFor('Codex branch session', () => client.eval(`(async () => {
       const { ipcRenderer } = require('electron');
       const all = await ipcRenderer.invoke('get-sessions');
-      return all.find(session => session.id !== ${JSON.stringify(codexSource.id)} && session.title === 'Codex E2E Source · 分支') || null;
+      return all.find(session => session.id !== ${JSON.stringify(codexSource.id)} && session.title === '分支: Codex E2E Source') || null;
     })()`));
     assert.notEqual(codexBranch.id, codexSource.id);
-    assert.equal(codexBranch.userRenamed, true, 'Codex branch title should stay stable');
+    assert.equal(codexBranch.autoTitleGenerated, true, 'meaningful Codex parent title should stay stable');
+    assert.equal(codexBranch.userRenamed, undefined, 'Hub-generated branch title is not a manual rename');
     console.log('[step] wait Codex CLI invocation');
     await waitFor('Codex fork CLI invocation', () => {
       const invocation = readInvocations().find(entry => (
@@ -285,7 +287,7 @@ async function main() {
         sidebarTitles: Array.from(document.querySelectorAll('.session-title')).map(el => el.textContent.trim())
       };
     })()`));
-    assert.equal(result.ui.title, 'Codex E2E Source · 分支');
+    assert.equal(result.ui.title, '分支: Codex E2E Source');
 
     const invocations = readInvocations();
     const claudeForkInvocation = invocations.find(entry => entry.provider === 'claude' && entry.args.includes('--fork-session'));

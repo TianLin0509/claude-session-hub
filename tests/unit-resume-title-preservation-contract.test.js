@@ -8,6 +8,7 @@ const ROOT = path.join(__dirname, '..');
 const RENDERER_SRC = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
 const SESSION_MANAGER_SRC = fs.readFileSync(path.join(ROOT, 'core', 'session-manager.js'), 'utf8');
 const RESUME_IPC_SRC = fs.readFileSync(path.join(ROOT, 'main', 'ipc', 'resume-session-handlers.js'), 'utf8');
+const PERSISTENCE_SRC = fs.readFileSync(path.join(ROOT, 'main', 'ipc', 'persistence-handlers.js'), 'utf8');
 
 function test(name, fn) {
   try {
@@ -29,17 +30,26 @@ test('renderer guards OSC and statusline title sync with shared helper', () => {
 
 test('dormant resume forwards userRenamed and locks stable titles', () => {
   assert.match(RENDERER_SRC, /userRenamed:\s*!!dormant\.userRenamed/);
-  assert.match(RENDERER_SRC, /autoTitleGenerated:\s*!!dormant\.autoTitleGenerated\s*\|\|\s*isStableSessionTitle\(dormant\.title,\s*dormant\.kind\)/);
+  assert.match(RENDERER_SRC, /autoTitleGenerated:\s*!dormant\.branchAutoTitlePending\s*&&\s*\(!!dormant\.autoTitleGenerated\s*\|\|\s*isStableSessionTitle\(dormant\.title,\s*dormant\.kind\)\)/);
 });
 
 test('dormant restore treats stable persisted titles as protected', () => {
-  assert.match(RENDERER_SRC, /autoTitleGenerated:\s*!!meta\.autoTitleGenerated\s*\|\|\s*isStableSessionTitle\(meta\.title,\s*meta\.kind\)/);
+  assert.match(RENDERER_SRC, /autoTitleGenerated:\s*!meta\.branchAutoTitlePending\s*&&\s*\(!!meta\.autoTitleGenerated\s*\|\|\s*isStableSessionTitle\(meta\.title,\s*meta\.kind\)\)/);
 });
 
 test('backend resume and session manager preserve title protection flags', () => {
   assert.match(RESUME_IPC_SRC, /userRenamed:\s*!!meta\.userRenamed/);
-  assert.match(RESUME_IPC_SRC, /autoTitleGenerated:\s*!!meta\.autoTitleGenerated\s*\|\|\s*isStableSessionTitle\(meta\.title,\s*meta\.kind\)/);
+  assert.match(RESUME_IPC_SRC, /autoTitleGenerated:\s*!meta\.branchAutoTitlePending\s*&&\s*\(!!meta\.autoTitleGenerated\s*\|\|\s*isStableSessionTitle\(meta\.title,\s*meta\.kind\)\)/);
   assert.match(SESSION_MANAGER_SRC, /\.\.\.\(opts\.userRenamed \? \{ userRenamed: true \} : \{\}\)/);
+});
+
+test('pending branch auto-title state survives persist and resume', () => {
+  assert.match(PERSISTENCE_SRC, /'branchSourceSessionId'/);
+  assert.match(PERSISTENCE_SRC, /'branchAutoTitlePending'/);
+  assert.match(RENDERER_SRC, /branchSourceSessionId:\s*s\.branchSourceSessionId \|\| null/);
+  assert.match(RENDERER_SRC, /branchAutoTitlePending:\s*!!s\.branchAutoTitlePending/);
+  assert.match(RENDERER_SRC, /branchSourceSessionId:\s*dormant\.branchSourceSessionId \|\| null/);
+  assert.match(RESUME_IPC_SRC, /branchAutoTitlePending:\s*meta\.branchAutoTitlePending/);
 });
 
 console.log('Resume title preservation contract tests passed.');

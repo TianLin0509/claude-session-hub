@@ -11,6 +11,14 @@ function delay(ms) {
   const events = [];
   const sessions = new Map([
     ['s1', { id: 's1', kind: 'codex', title: 'Codex 1', status: 'idle', cwd: 'C:\\scratch-session' }],
+    ['b1', {
+      id: 'b1', kind: 'codex', title: '分支: Codex 1', status: 'idle', cwd: 'C:\\scratch-session',
+      branchSourceSessionId: 's1', branchAutoTitlePending: true,
+    }],
+    ['b2', {
+      id: 'b2', kind: 'codex', title: '分支: Codex 9', status: 'idle', cwd: 'C:\\scratch-session',
+      branchSourceSessionId: 'missing-parent', branchAutoTitlePending: true,
+    }],
   ]);
   const meetings = new Map([
     ['m1', { id: 'm1', title: 'AI 群聊 #1', groupChat: true, autoTitlePending: true, workspace: 'C:\\scratch-meeting' }],
@@ -23,6 +31,7 @@ function delay(ms) {
     kindLabels: { codex: 'Codex', gemini: 'Gemini' },
     sessionManager: {
       getSession: (id) => sessions.get(id),
+      getAllSessions: () => Array.from(sessions.values()),
       updateSessionMeta: (id, patch) => {
         const next = { ...sessions.get(id), ...patch };
         sessions.set(id, next);
@@ -63,6 +72,18 @@ function delay(ms) {
     'session auto-title should notify renderer');
   assert.strictEqual(sessions.get('s1').workspaceLabel, sessions.get('s1').title,
     'session workspace display label should follow the first-prompt title without moving cwd');
+  assert.strictEqual(sessions.get('b1').title.startsWith('分支: '), true,
+    'a pending child branch should follow the parent auto-title with the marker first');
+  assert.strictEqual(sessions.get('b1').branchAutoTitlePending, false,
+    'parent auto-title should resolve pending child branch names');
+
+  manager.maybeAutoTitleSessionFromPrompt({ hubSessionId: 'b2', text: '检查 Codex 分支命名状态' });
+  await delay(20);
+  assert.strictEqual(sessions.get('b2').title.startsWith('分支: '), true,
+    'a branch first prompt should keep the branch marker after auto-title');
+  assert.strictEqual(sessions.get('b2').branchAutoTitlePending, false);
+  assert.strictEqual(sessions.get('b2').workspaceLabel, undefined,
+    'a child branch must not relabel the cwd shared with its parent');
 
   manager.maybeAutoTitleMeetingFromPrompt('m1', '讨论下一轮重构计划');
   await delay(20);

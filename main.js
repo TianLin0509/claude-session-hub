@@ -21,6 +21,10 @@ const { SessionManager, clearSessionManagerConfigCache } = require('./core/sessi
 const { WorkspaceService, normalizeKey: normalizeWorkspaceKey } = require('./core/workspace-service.js');
 const stateStore = require('./core/state-store.js');
 const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
+const {
+  HUB_APP_USER_MODEL_ID,
+  ensureWindowsShellIntegration,
+} = require('./core/windows-shell-integration.js');
 const hubControl = require('./core/hub-control.js');
 const { MeetingRoomManager } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
@@ -606,8 +610,8 @@ sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 // reverts to the Electron default hours into a session. Setting our own AUMID
 // first makes Windows fall back to the window HICON (setIcon in createWindow =
 // claude-wx.ico) instead. Must precede any window/notification. win32-only.
-if (process.platform === 'win32') {
-  app.setAppUserModelId('com.ai-group-chat-hub'); // = package.json build.appId
+if (process.platform === 'win32' && !isIsolatedHub()) {
+  app.setAppUserModelId(HUB_APP_USER_MODEL_ID); // = package.json build.appId
 }
 
 function createWindow() {
@@ -1768,6 +1772,23 @@ app.whenReady().then(async () => {
   // 但守卫漏删了 —— 变量没有任何定义处，whenReady 一进来就抛 ReferenceError，
   // 窗口和所有 IPC 注册全部不执行，Hub 起不来。2026-07-27 隔离实例复现后删除。
   traceStartup('app.whenReady');
+  // Source-mode Electron has no installed exe identity of its own. Keep a
+  // branded Start Menu shortcut + Jump List relaunch task bound to the Hub
+  // AUMID, or Windows can cache a bare electron.exe relaunch command. Isolated
+  // E2E Hubs must never touch this production Shell registration.
+  if (process.platform === 'win32' && !isIsolatedHub()) {
+    const shellResult = ensureWindowsShellIntegration({
+      app,
+      shell,
+      appRoot: __dirname,
+      execPath: process.execPath,
+      isPackaged: app.isPackaged,
+      iconPath: path.join(__dirname, 'claude-wx.ico'),
+    });
+    if (shellResult.legacyBackupPath) {
+      console.warn(`[windows-shell] retired broken Electron shortcut: ${shellResult.legacyBackupPath}`);
+    }
+  }
   const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();
   traceStartup('deploy hooks start');
   // 2026-05-05 道雪：所有 Claude family 隔离配置目录都必须部署 Stop hook，否则

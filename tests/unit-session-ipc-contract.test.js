@@ -72,6 +72,16 @@ function createFakeSessionManager() {
           currentModel: { id: 'gpt-5.5', displayName: 'GPT-5.5' },
         };
       }
+      if (sessionId === 'codex-generic-source') {
+        return {
+          id: sessionId,
+          kind: 'codex',
+          title: 'Codex 2',
+          cwd: 'C:\\repo',
+          codexSid: '33333333-3333-4333-8333-333333333333',
+          currentModel: { id: 'gpt-5.5', displayName: 'GPT-5.5' },
+        };
+      }
       if (sessionId === 'claude-unbound') {
         return { id: sessionId, kind: 'claude', title: 'Claude New', cwd: 'C:\\repo' };
       }
@@ -130,9 +140,11 @@ test('fork-session creates a standalone Claude branch from the native session id
   assert.deepStrictEqual(
     sessionManager.calls.find(call => call[0] === 'createSession'),
     ['createSession', 'claude', {
-      title: 'Claude Design · 分支',
+      title: '分支: Claude Design',
       cwd: 'C:\\repo',
-      userRenamed: true,
+      branchSourceSessionId: 'claude-source',
+      branchAutoTitlePending: false,
+      autoTitleGenerated: true,
       model: 'opus',
       forkCCSessionId: '11111111-1111-4111-8111-111111111111',
     }],
@@ -152,12 +164,35 @@ test('fork-session preserves Codex model and subscription profile', () => {
   assert.deepStrictEqual(
     sessionManager.calls.find(call => call[0] === 'createSession'),
     ['createSession', 'codex', {
-      title: 'Codex Debug · 分支',
+      title: '分支: Codex Debug',
       cwd: 'C:\\repo',
-      userRenamed: true,
+      branchSourceSessionId: 'codex-source',
+      branchAutoTitlePending: false,
+      autoTitleGenerated: true,
       model: 'gpt-5.5',
       codexProfile: 'work',
       codexForkSid: '22222222-2222-4222-8222-222222222222',
+    }],
+  );
+});
+
+test('fork-session keeps a generic Codex parent eligible for later auto-title', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
+
+  const result = ipc.handlers.get('fork-session')(null, 'codex-generic-source');
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(
+    sessionManager.calls.find(call => call[0] === 'createSession'),
+    ['createSession', 'codex', {
+      title: '分支: Codex 2',
+      cwd: 'C:\\repo',
+      branchSourceSessionId: 'codex-generic-source',
+      branchAutoTitlePending: true,
+      autoTitleGenerated: false,
+      model: 'gpt-5.5',
+      codexForkSid: '33333333-3333-4333-8333-333333333333',
     }],
   );
 });

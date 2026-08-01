@@ -180,7 +180,12 @@ function createResumeSessionHandler(deps) {
         kimiResumePicker: !meta.kimiSid,
       } : {}),
       userRenamed: !!meta.userRenamed,
-      autoTitleGenerated: !!meta.autoTitleGenerated || isStableSessionTitle(meta.title, meta.kind),
+      autoTitleGenerated: !meta.branchAutoTitlePending
+        && (!!meta.autoTitleGenerated || isStableSessionTitle(meta.title, meta.kind)),
+      ...(meta.branchSourceSessionId ? { branchSourceSessionId: meta.branchSourceSessionId } : {}),
+      ...(typeof meta.branchAutoTitlePending === 'boolean'
+        ? { branchAutoTitlePending: meta.branchAutoTitlePending }
+        : {}),
       ...(meta.pinned ? { pinned: true } : {}),
       lastMessageTime: meta.lastMessageTime,
       lastOutputPreview: meta.lastOutputPreview,

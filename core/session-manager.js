@@ -985,6 +985,10 @@ class SessionManager extends EventEmitter {
       ...(isCodex && (kind === 'codex-resume' || opts.codexResumePicker || (opts.useResume && !opts.codexSid)) ? { codexAllowMtimeFallback: true } : {}),
       ...(opts.userRenamed ? { userRenamed: true } : {}),
       ...(opts.autoTitleGenerated ? { autoTitleGenerated: true } : {}),
+      ...(opts.branchSourceSessionId ? { branchSourceSessionId: String(opts.branchSourceSessionId) } : {}),
+      ...(typeof opts.branchAutoTitlePending === 'boolean'
+        ? { branchAutoTitlePending: opts.branchAutoTitlePending }
+        : {}),
       // Spec 3 · W3 resume bug fix (a)：resume 启动时立即写入已知 ccSessionId，
       // 不等 Stop hook 第一次回调。否则 spawn 到第一次 Stop 之间 (~数秒) 卡片视图
       // 拿不到 ccSessionId → IPC parse-session-transcript 返 'transcript not found' → 空白。
@@ -1566,6 +1570,10 @@ class SessionManager extends EventEmitter {
       ...(typeof info.contextMax === 'number' ? { contextMax: info.contextMax } : {}),
       ...(info.userRenamed ? { userRenamed: true } : {}),
       ...(info.autoTitleGenerated ? { autoTitleGenerated: true } : {}),
+      ...(info.branchSourceSessionId ? { branchSourceSessionId: info.branchSourceSessionId } : {}),
+      ...(typeof info.branchAutoTitlePending === 'boolean'
+        ? { branchAutoTitlePending: info.branchAutoTitlePending }
+        : {}),
       ...(info.status !== undefined ? { status: info.status } : {}),
       ...(info.readOnly ? { readOnly: true } : {}),
       ...(info.provider ? { provider: info.provider } : {}),

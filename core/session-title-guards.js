@@ -10,6 +10,39 @@ function normalizeTitle(title) {
   return String(title || '').trim();
 }
 
+function stripBranchTitlePrefix(title) {
+  return normalizeTitle(title).replace(/^分支\s*[:：]\s*/u, '').trim();
+}
+
+function formatBranchSessionTitle(title, fallback = '会话') {
+  const base = stripBranchTitlePrefix(title) || normalizeTitle(fallback) || '会话';
+  return `分支: ${base}`;
+}
+
+function normalizeLegacyBranchSessionTitle(title) {
+  const clean = normalizeTitle(title);
+  if (!clean) return clean;
+  const legacy = clean.match(/^(.*?)\s*(?:·\s*分支|的分支)$/u);
+  return legacy ? formatBranchSessionTitle(legacy[1]) : clean;
+}
+
+function migrateLegacyBranchSessionMeta(session, kindLabels = KIND_LABELS) {
+  if (!session || typeof session !== 'object') return session;
+  const originalTitle = normalizeTitle(session.title);
+  const title = normalizeLegacyBranchSessionTitle(originalTitle);
+  if (!title || title === originalTitle) return session;
+  const baseTitle = stripBranchTitlePrefix(title);
+  const branchAutoTitlePending = isGenericAutoSessionTitle(baseTitle, kindLabels);
+  return {
+    ...session,
+    title,
+    // The old fork handler set this flag itself. It was never a user rename.
+    userRenamed: false,
+    autoTitleGenerated: !branchAutoTitlePending,
+    branchAutoTitlePending,
+  };
+}
+
 function resolveKindLabels(kindLabels) {
   return kindLabels && typeof kindLabels === 'object' ? kindLabels : KIND_LABELS;
 }
@@ -60,9 +93,13 @@ function shouldAcceptExternalSessionTitle(session, proposedTitle, kindLabels = K
 
 module.exports = {
   buildGenericSessionTitleRe,
+  formatBranchSessionTitle,
   isGenericAutoSessionTitle,
   isStableSessionTitle,
   looksLikePathTitle,
+  migrateLegacyBranchSessionMeta,
+  normalizeLegacyBranchSessionTitle,
   normalizeTitle,
   shouldAcceptExternalSessionTitle,
+  stripBranchTitlePrefix,
 };

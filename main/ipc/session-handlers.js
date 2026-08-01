@@ -1,6 +1,10 @@
 'use strict';
 
 const { isCodexCliKind } = require('../../core/ai-kinds');
+const {
+  formatBranchSessionTitle,
+  isGenericAutoSessionTitle,
+} = require('../../core/session-title-guards.js');
 
 const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -80,10 +84,16 @@ function registerSessionIpc(ipcMain, deps) {
       };
     }
 
+    const sourceTitle = source.title || (isClaudeCli ? 'Claude' : 'Codex');
+    const branchAutoTitlePending = isGenericAutoSessionTitle(sourceTitle);
     const opts = {
-      title: `${source.title || (isClaudeCli ? 'Claude' : 'Codex')} · 分支`,
+      title: formatBranchSessionTitle(sourceTitle),
       cwd: source.cwd,
-      userRenamed: true,
+      branchSourceSessionId: source.id,
+      branchAutoTitlePending,
+      // A meaningful parent title is already the final branch title. Generic
+      // parents (for example Codex 2) stay eligible for the next auto-title.
+      autoTitleGenerated: !branchAutoTitlePending,
     };
     if (source.currentModel && source.currentModel.id) opts.model = source.currentModel.id;
     // 分支必须继承 effort，否则从 low/medium 会话拉分支会被打回默认 max。
