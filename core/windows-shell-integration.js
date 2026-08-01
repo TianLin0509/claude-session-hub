@@ -76,6 +76,37 @@ function timestampForFile(date = new Date()) {
   return date.toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
 }
 
+function getShortcutPaths({ app, appDataPath } = {}) {
+  const programsDir = path.join(appDataPath || app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+  return {
+    programsDir,
+    shortcutPath: path.join(programsDir, HUB_SHORTCUT_NAME),
+    legacyPath: path.join(programsDir, LEGACY_ELECTRON_SHORTCUT_NAME),
+  };
+}
+
+function isWindowsShellIntegrationHealthy({
+  app,
+  shell,
+  appRoot,
+  execPath,
+  isPackaged = false,
+  iconPath,
+  appDataPath,
+  platform = process.platform,
+  fsModule = fs,
+} = {}) {
+  if (platform !== 'win32') return true;
+  const expected = buildShortcutDetails({ appRoot, execPath, isPackaged, iconPath });
+  const { shortcutPath } = getShortcutPaths({ app, appDataPath });
+  if (!fsModule.existsSync(shortcutPath)) return false;
+  try {
+    return shortcutMatches(shell.readShortcutLink(shortcutPath), expected);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Keep Windows taskbar identity and relaunch commands bound to the Hub app,
  * rather than to the source-mode electron.exe host.
@@ -107,9 +138,7 @@ function ensureWindowsShellIntegration({
   if (!result.supported) return result;
 
   const expected = buildShortcutDetails({ appRoot, execPath, isPackaged, iconPath });
-  const programsDir = path.join(appDataPath || app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
-  const shortcutPath = path.join(programsDir, HUB_SHORTCUT_NAME);
-  const legacyPath = path.join(programsDir, LEGACY_ELECTRON_SHORTCUT_NAME);
+  const { programsDir, shortcutPath, legacyPath } = getShortcutPaths({ app, appDataPath });
   result.shortcutPath = shortcutPath;
 
   try {
@@ -162,6 +191,38 @@ function ensureWindowsShellIntegration({
   return result;
 }
 
+function startWindowsShellIntegrationWatchdog({
+  intervalMs = 15 * 1000,
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval,
+  onRepair = null,
+  logger = console,
+  ...integrationOptions
+} = {}) {
+  let checking = false;
+  const audit = () => {
+    if (checking) return null;
+    checking = true;
+    try {
+      if (isWindowsShellIntegrationHealthy(integrationOptions)) return null;
+      const result = ensureWindowsShellIntegration({ ...integrationOptions, logger });
+      if (result.shortcutUpdated) {
+        logger.warn?.(`[windows-shell] 快捷方式丢失或漂移，已自动修复：${result.shortcutPath}`);
+        if (typeof onRepair === 'function') onRepair(result);
+      }
+      return result;
+    } finally {
+      checking = false;
+    }
+  };
+  const timer = setIntervalFn(audit, Math.max(1000, Number(intervalMs) || 15000));
+  timer && timer.unref?.();
+  return {
+    audit,
+    stop() { if (timer) clearIntervalFn(timer); },
+  };
+}
+
 module.exports = {
   HUB_APP_USER_MODEL_ID,
   HUB_SHORTCUT_NAME,
@@ -171,5 +232,8 @@ module.exports = {
   buildNewWindowTask,
   shortcutMatches,
   isPoisonedLegacyElectronShortcut,
+  getShortcutPaths,
+  isWindowsShellIntegrationHealthy,
   ensureWindowsShellIntegration,
+  startWindowsShellIntegrationWatchdog,
 };

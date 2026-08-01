@@ -100,3 +100,45 @@ test('authoritative transcript preview skips synchronous scrollback scanning', (
   assert.deepStrictEqual(monitor.readTerminalPreview('s1'), { skipped: true, signature: '' });
   assert.strictEqual(translated, 0);
 });
+
+test('PTY burst is a running fallback when no semantic signal is actually active', () => {
+  const session = { id: 's1', kind: 'claude', status: 'idle' };
+  const sessions = new Map([['s1', session]]);
+  let rendered = 0;
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([]),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => { rendered++; },
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => false,
+  });
+
+  monitor.onTerminalOutput('s1', 201);
+  assert.equal(session.status, 'running');
+  assert.equal(session._runSource, 'burst');
+  assert.equal(rendered, 1);
+  monitor.clearSession('s1');
+});
+
+test('active semantic signal remains authoritative over PTY burst fallback', () => {
+  const session = { id: 's1', kind: 'claude', status: 'running', _runSource: 'semantic' };
+  const sessions = new Map([['s1', session]]);
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([]),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => {},
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => true,
+  });
+
+  monitor.onTerminalOutput('s1', 1000);
+  assert.equal(session.status, 'running');
+  assert.equal(session._runSource, 'semantic');
+  monitor.clearSession('s1');
+});

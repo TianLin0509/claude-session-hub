@@ -2803,8 +2803,17 @@ const terminalActivityMonitor = createTerminalActivityMonitor({
     if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
   },
   hasSemanticCardWorking,
-  // 2026-07-20 道雪：这些 kind 的 running 由语义事件驱动，byte burst 不得标记 running
-  hasSemanticWorking: (s) => !!(s && (isClaudeFamily(s.kind) || isTranscriptCliKind(s.kind))),
+  // Only suppress PTY fallback while an authoritative semantic signal is
+  // actually active. The old predicate returned true merely because the
+  // session *kind* was Claude/Codex/Kimi. When settings.json lost the Hub
+  // UserPromptSubmit hook, Claude could work for minutes while status stayed
+  // idle because its PTY bytes were permanently ignored. User typing may now
+  // cause at most the existing 2s burst pulse; real hook/card signals still
+  // remain authoritative for the full turn.
+  hasSemanticWorking: (s) => !!(s && (
+    (isClaudeFamily(s.kind) && s._agentWorking === 'hook' && s.status === 'running')
+    || (isTranscriptCliKind(s.kind) && hasSemanticCardWorking(s))
+  )),
 });
 const {
   getQuestionsSignature,

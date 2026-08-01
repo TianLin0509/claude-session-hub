@@ -10,7 +10,10 @@ const {
   HUB_SHORTCUT_NAME,
   buildLaunchSpec,
   buildShortcutDetails,
+  getShortcutPaths,
+  isWindowsShellIntegrationHealthy,
   ensureWindowsShellIntegration,
+  startWindowsShellIntegrationWatchdog,
 } = require('../core/windows-shell-integration.js');
 
 function makeHarness() {
@@ -159,6 +162,37 @@ test('an already correct shortcut is not rewritten on every launch', () => {
     assert.equal(result.shortcutUpdated, false);
     assert.equal(h.writes.length, 0);
     assert.equal(h.tasks.length, 1, 'Jump List is refreshed even when the shortcut is already current');
+  } finally {
+    fs.rmSync(h.temp, { recursive: true, force: true });
+  }
+});
+
+test('watchdog recreates a branded shortcut that disappears after launch', () => {
+  const h = makeHarness();
+  try {
+    ensureWindowsShellIntegration({ ...h, platform: 'win32' });
+    assert.equal(isWindowsShellIntegrationHealthy({ ...h, platform: 'win32' }), true);
+
+    const { shortcutPath } = getShortcutPaths({ app: h.app });
+    fs.unlinkSync(shortcutPath);
+    h.links.delete(path.resolve(shortcutPath));
+    assert.equal(isWindowsShellIntegrationHealthy({ ...h, platform: 'win32' }), false);
+
+    let scheduled = null;
+    let stopped = false;
+    const watchdog = startWindowsShellIntegrationWatchdog({
+      ...h,
+      platform: 'win32',
+      setIntervalFn: (fn) => { scheduled = fn; return { unref() {} }; },
+      clearIntervalFn: () => { stopped = true; },
+      logger: { warn() {} },
+    });
+    assert.equal(typeof scheduled, 'function');
+    const repaired = watchdog.audit();
+    assert.equal(repaired.shortcutUpdated, true);
+    assert.equal(isWindowsShellIntegrationHealthy({ ...h, platform: 'win32' }), true);
+    watchdog.stop();
+    assert.equal(stopped, true);
   } finally {
     fs.rmSync(h.temp, { recursive: true, force: true });
   }

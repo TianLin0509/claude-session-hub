@@ -24,7 +24,12 @@ const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core
 const {
   HUB_APP_USER_MODEL_ID,
   ensureWindowsShellIntegration,
+  startWindowsShellIntegrationWatchdog,
 } = require('./core/windows-shell-integration.js');
+const {
+  ensureClaudeHookIntegration,
+  startClaudeHookIntegrationWatchdog,
+} = require('./core/claude-hook-integration.js');
 const hubControl = require('./core/hub-control.js');
 const { MeetingRoomManager } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
@@ -142,103 +147,23 @@ if (process.env.CLAUDE_HUB_DATA_DIR) {
 }
 
 // Auto-deploy hook scripts + settings.json config on first launch.
-// Idempotent — skips if already present, never overwrites user's existing hooks.
+// Idempotent — keeps Hub-owned entries current and preserves unrelated hooks.
 // claudeDirPath: target Claude config dir (e.g. ~/.claude or ~/.claude-deepseek)
 function ensureHooksDeployed(claudeDirPath) {
   const claudeDir = claudeDirPath;
-  const scriptsDir = path.join(claudeDir, 'scripts');
-
-  // 1. Copy hook scripts if missing
   const srcDir = app.isPackaged
     ? path.join(process.resourcesPath, 'scripts')
     : path.join(__dirname, 'scripts');
-
-  const scriptFiles = ['session-hub-hook.py', 'claude-hub-statusline.js', 'deepseek_repl.py'];
-  for (const file of scriptFiles) {
-    const dest = path.join(scriptsDir, file);
-    const src = path.join(srcDir, file);
-    if (!fs.existsSync(src)) continue;
-    fs.mkdirSync(scriptsDir, { recursive: true });
-    // Repo-generated scripts (not user-authored): keep deployed copy in sync
-    // with the repo. Otherwise an old deployed statusline/hook keeps running
-    // and silently ignores new logic shipped in later Hub releases.
-    let needsCopy = !fs.existsSync(dest);
-    if (!needsCopy) {
-      try { needsCopy = !fs.readFileSync(src).equals(fs.readFileSync(dest)); }
-      catch { needsCopy = true; }
-    }
-    if (needsCopy) {
-      fs.copyFileSync(src, dest);
-      console.log(`[群聊] deployed ${file} -> ${dest}`);
-    }
+  const hookResult = ensureClaudeHookIntegration({
+    claudeDir,
+    sourceScriptsDir: srcDir,
+    logger: console,
+  });
+  if (hookResult.errors.length) {
+    console.warn(`[claude-hooks] ${claudeDir}: ${hookResult.errors.join('；')}`);
   }
 
-  // 2. Merge hook config into settings.json if not present
-  const settingsPath = path.join(claudeDir, 'settings.json');
-  let settings = {};
-  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
-
-  const hookPyPath = path.join(scriptsDir, 'session-hub-hook.py').replace(/\\/g, '\\\\');
-  const statusJsPath = path.join(scriptsDir, 'claude-hub-statusline.js').replace(/\\/g, '/');
-
-  let changed = false;
-
-  // Ensure hooks object
-  if (!settings.hooks) settings.hooks = {};
-
-  // Stop hook
-  const stopCmd = `python "${hookPyPath}" stop`;
-  if (!settings.hooks.Stop) settings.hooks.Stop = [];
-  const hasStop = settings.hooks.Stop.some(entry =>
-    entry.hooks && entry.hooks.some(h => h.command && h.command.includes('session-hub-hook'))
-  );
-  if (!hasStop) {
-    settings.hooks.Stop.push({
-      matcher: '',
-      hooks: [{ type: 'command', command: stopCmd, timeout: 5 }]
-    });
-    changed = true;
-  }
-
-  // UserPromptSubmit hook
-  const promptCmd = `python "${hookPyPath}" prompt`;
-  if (!settings.hooks.UserPromptSubmit) settings.hooks.UserPromptSubmit = [];
-  const hasPrompt = settings.hooks.UserPromptSubmit.some(entry =>
-    entry.hooks && entry.hooks.some(h => h.command && h.command.includes('session-hub-hook'))
-  );
-  if (!hasPrompt) {
-    settings.hooks.UserPromptSubmit.push({
-      matcher: '',
-      hooks: [{ type: 'command', command: promptCmd, timeout: 5 }]
-    });
-    changed = true;
-  }
-
-  // Statusline
-  if (!settings.statusLine || !String(settings.statusLine.command || '').includes('claude-hub-statusline')) {
-    settings.statusLine = {
-      type: 'command',
-      command: `node "${statusJsPath}"`
-    };
-    changed = true;
-  }
-
-  // 3. Ensure bypass-permissions — so DeepSeek (and any future Claude-derivative)
-  //    sessions start without folder-trust / permission-confirmation prompts.
-  //    The main ~/.claude dir typically already has this from prior manual setup,
-  //    but ~/.claude-deepseek is a fresh isolated config that needs it seeded.
-  if (!settings.permissionMode || settings.permissionMode !== 'bypassPermissions') {
-    settings.permissionMode = 'bypassPermissions';
-    changed = true;
-  }
-
-  if (changed) {
-    fs.mkdirSync(claudeDir, { recursive: true });
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-    console.log('[群聊] settings.json updated with hook config');
-  }
-
-  // 4. Ensure .claude.json project trust — Claude Code 将"信任文件夹"状态
+  // Ensure .claude.json project trust — Claude Code 将"信任文件夹"状态
   //    存在 .claude.json 而非 settings.json。隔离配置(~/.claude-deepseek)缺少
   //    主配置(~/.claude)的历史信任记录，需要每次启动检查并修复。
   const statePath = path.join(claudeDir, '.claude.json');
@@ -387,6 +312,8 @@ const HOOK_PORT_CANDIDATES = [
 const HOOK_TOKEN = crypto.randomBytes(16).toString('hex');
 
 let hookPort = null;  // set after listen() succeeds
+let claudeHookWatchdog = null;
+let windowsShellWatchdog = null;
 
 let mainWindow;
 const sessionManager = new SessionManager();
@@ -649,6 +576,14 @@ function createWindow() {
 
   if (!winIcon.isEmpty()) {
     mainWindow.setIcon(winIcon);
+    // Windows can drop the source-mode HICON after the taskbar identity is
+    // rebuilt (shortcut repair, Explorer refresh, multi-window regrouping).
+    // Re-assert it when the window becomes visible again.
+    const reapplyWindowIcon = () => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setIcon(winIcon);
+    };
+    mainWindow.on('show', reapplyWindowIcon);
+    mainWindow.on('restore', reapplyWindowIcon);
   } else {
     console.warn('[icon] failed to load', iconPath);
   }
@@ -1777,19 +1712,40 @@ app.whenReady().then(async () => {
   // AUMID, or Windows can cache a bare electron.exe relaunch command. Isolated
   // E2E Hubs must never touch this production Shell registration.
   if (process.platform === 'win32' && !isIsolatedHub()) {
-    const shellResult = ensureWindowsShellIntegration({
+    const windowsShellOptions = {
       app,
       shell,
       appRoot: __dirname,
       execPath: process.execPath,
       isPackaged: app.isPackaged,
       iconPath: path.join(__dirname, 'claude-wx.ico'),
-    });
+    };
+    const shellResult = ensureWindowsShellIntegration(windowsShellOptions);
     if (shellResult.legacyBackupPath) {
       console.warn(`[windows-shell] retired broken Electron shortcut: ${shellResult.legacyBackupPath}`);
     }
+    // The canonical shortcut was observed disappearing hours after a successful
+    // repair, leaving an otherwise valid .ico rendered as Windows' white-page
+    // placeholder. Re-check the tiny Shell Link every 15s and repair drift.
+    windowsShellWatchdog = startWindowsShellIntegrationWatchdog({
+      ...windowsShellOptions,
+      onRepair: () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        const icon = nativeImage.createFromPath(path.join(__dirname, 'claude-wx.ico'));
+        if (!icon.isEmpty()) mainWindow.setIcon(icon);
+      },
+    });
   }
   const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  // Isolated E2E must not mutate or poll production ~/.claude settings. Real
+  // Claude integration tests provide their own config explicitly; ordinary
+  // renderer/PTY tests need no hook deployment at all.
+  const claudeDirs = isIsolatedHub()
+    ? []
+    : ['.claude', '.claude-deepseek'].map(dir => path.join(_home, dir));
+  const hookSourceScriptsDir = app.isPackaged
+    ? path.join(process.resourcesPath, 'scripts')
+    : path.join(__dirname, 'scripts');
   traceStartup('deploy hooks start');
   // 2026-05-05 道雪：所有 Claude family 隔离配置目录都必须部署 Stop hook，否则
   //   该家族 sub session 完成时 CC 不调 hook → notifyClaudeStop 永不触发 →
@@ -1797,8 +1753,17 @@ app.whenReady().then(async () => {
   //   群聊卡片自动同步死，只能等 5min 硬 timeout 或用户手动点提取。
   //   scripts/session-hub-hook.py 也不存在。与 findTranscriptByCCSessionId 的
   //   candidateRoots 列表对齐，单一真理源应在 ai-kinds.js（后续可重构）。
-  for (const dir of ['.claude', '.claude-deepseek']) {
-    ensureHooksDeployed(path.join(_home, dir));
+  for (const claudeDir of claudeDirs) ensureHooksDeployed(claudeDir);
+  // settings.json can be rewritten by Claude settings/plugin changes while the
+  // Hub keeps running. A one-time boot merge is therefore insufficient: the
+  // screenshot incident had UserPromptSubmit=[] and no Hub Stop hook five
+  // hours after launch. Periodically repair only Hub-owned entries.
+  if (claudeDirs.length) {
+    claudeHookWatchdog = startClaudeHookIntegrationWatchdog({
+      claudeDirs,
+      sourceScriptsDir: hookSourceScriptsDir,
+      logger: console,
+    });
   }
   traceStartup('deploy hooks done');
   traceStartup('codex config start');
@@ -1863,6 +1828,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
+  claudeHookWatchdog?.stop();
+  claudeHookWatchdog = null;
+  windowsShellWatchdog?.stop();
+  windowsShellWatchdog = null;
   terminalOutputBatcher.dispose({ flush: true });
   // before-quit does not await returned promises. Start worker teardown without
   // putting an await in front of the existing synchronous final state save.
