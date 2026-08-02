@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { getHubDataDir } = require('./data-dir');
 const { acquireLock, acquireLockAsync, releaseLock, releaseLockAsync } = require('./file-lock');
+const { migrateLegacyBranchSessionMeta } = require('./session-title-guards');
 
 const STATE_DIR = getHubDataDir();
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
@@ -78,7 +79,9 @@ async function _readDiskStateAsync() {
 
 function _normalizeState(parsed) {
   if (!Array.isArray(parsed.sessions)) parsed.sessions = [];
-  for (const s of parsed.sessions) {
+  parsed.sessions = parsed.sessions.map((session) => {
+    const s = migrateLegacyBranchSessionMeta(session);
+    if (!s || typeof s !== 'object') return s;
     if (s.codexSid === undefined) s.codexSid = null;
     if (s.codexProfile === undefined) s.codexProfile = null;
     if (s.codexProfileLabel === undefined) s.codexProfileLabel = null;
@@ -88,7 +91,8 @@ function _normalizeState(parsed) {
     if (s.kimiSid === undefined) s.kimiSid = null;
     if (s.kimiSessionDir === undefined) s.kimiSessionDir = null;
     if (typeof s.updatedAt !== 'number') s.updatedAt = 0;  // 老条目视为最古老
-  }
+    return s;
+  });
   if (!Array.isArray(parsed.meetings)) parsed.meetings = [];
   for (const m of parsed.meetings) {
     if (typeof m.updatedAt !== 'number') m.updatedAt = 0;
@@ -185,8 +189,12 @@ function loadAndSelfHeal({ sessionStore, meetingStore } = {}) {
 
 function mergeState(diskState, memState, removed = { sessions: [], meetings: [] }) {
   const sessByHubId = new Map();
-  for (const s of diskState.sessions || []) sessByHubId.set(s.hubId, s);
-  for (const s of memState.sessions || []) {
+  for (const raw of diskState.sessions || []) {
+    const s = migrateLegacyBranchSessionMeta(raw);
+    if (s && s.hubId) sessByHubId.set(s.hubId, s);
+  }
+  for (const raw of memState.sessions || []) {
+    const s = migrateLegacyBranchSessionMeta(raw);
     if (!s || !s.hubId) continue;
     const existing = sessByHubId.get(s.hubId);
     if (!existing || (s.updatedAt || 0) >= (existing.updatedAt || 0)) {

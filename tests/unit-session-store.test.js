@@ -102,5 +102,19 @@ const sessionStore = require('../core/session-store');
     console.log('PASS S8 codex card metadata');
   }
 
+  // S9: Legacy branch titles are canonicalized at the per-session authority.
+  // Renderer-only migration can be overwritten by a live main-process echo;
+  // the JSON itself must no longer preserve the old suffix form.
+  {
+    sessionStore.saveSessionFile('legacy-branch', {
+      kind: 'codex', title: 'Codex 2 · 分支', userRenamed: true, updatedAt: 6000,
+    });
+    const loaded = sessionStore.loadSessionFile('legacy-branch');
+    const raw = JSON.parse(fs.readFileSync(path.join(TEMP, 'sessions', 'legacy-branch.json'), 'utf8'));
+    assert.strictEqual(loaded.title, '分支: Codex 2');
+    assert.strictEqual(raw.title, '分支: Codex 2', 'disk payload must use the canonical front-loaded marker');
+    console.log('PASS S9 legacy branch title canonicalized on disk');
+  }
+
   console.log('\n[ALL session-store tests PASSED]');
 })();

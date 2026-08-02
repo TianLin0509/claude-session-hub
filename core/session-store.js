@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { getHubDataDir } = require('./data-dir');
+const { migrateLegacyBranchSessionMeta } = require('./session-title-guards');
 // 2026-05-07 多方审查 fix：markDirty 检查 stateStore.isMarkedRemovedSession 跳过
 //   已被 close-meeting / persist-sessions diff 标记 removed 的 sid，避免 renderer
 //   端因 400ms 防抖窗口"列表还含旧 sid"导致刚删的文件被复活。
@@ -43,6 +44,7 @@ function sessionFilePath(hubId) {
 }
 
 function _buildSessionPayload(hubId, data) {
+  data = migrateLegacyBranchSessionMeta(data);
   const now = Date.now();
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -111,7 +113,7 @@ function loadSessionFile(hubId) {
       return null;
     }
     if (typeof obj.updatedAt !== 'number') obj.updatedAt = obj.savedAt || 0;
-    return obj;
+    return migrateLegacyBranchSessionMeta(obj);
   } catch (e) {
     if (e.code !== 'ENOENT') console.warn(`[session-store] load ${hubId} failed:`, e.message);
     return null;

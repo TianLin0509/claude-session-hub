@@ -99,5 +99,45 @@ const meetingStore = require('../core/meeting-store');
     console.log('PASS SH5 反向 LWW — state.json 较新时保留');
   }
 
+  // SH6: 旧实例可能在升级后仍写入「Codex 2 · 分支」。boot self-heal 必须在
+  // state.json 与较新的 per-session JSON 完成 LWW 后再次交付规范标题，不能只靠
+  // renderer 临时改显示。
+  {
+    stateStore.save({
+      version: 1, cleanShutdown: false,
+      sessions: [{
+        hubId: 'legacy-branch', kind: 'codex', title: '旧标题 · 分支',
+        userRenamed: true, updatedAt: 100,
+      }],
+      meetings: [],
+      immersiveByMeeting: {},
+    }, { sync: true });
+    const legacyFile = path.join(TEMP, 'sessions', 'legacy-branch.json');
+    fs.mkdirSync(path.dirname(legacyFile), { recursive: true });
+    fs.writeFileSync(legacyFile, JSON.stringify({
+      schemaVersion: 1,
+      hubId: 'legacy-branch',
+      kind: 'codex',
+      title: 'Codex 2 · 分支',
+      userRenamed: true,
+      updatedAt: 500,
+      savedAt: 500,
+    }));
+
+    const healed = stateStore.loadAndSelfHeal({ sessionStore, meetingStore });
+    const s = healed.sessions.find(ss => ss.hubId === 'legacy-branch');
+    assert.ok(s);
+    assert.strictEqual(s.title, '分支: Codex 2', 'newer per-session legacy title must be canonicalized');
+    assert.strictEqual(s.userRenamed, false, 'old handler flag was not a real user rename');
+    assert.strictEqual(s.branchAutoTitlePending, true, 'generic Codex branch remains eligible for auto-title');
+    const persisted = JSON.parse(fs.readFileSync(path.join(TEMP, 'state.json'), 'utf8'));
+    assert.strictEqual(
+      persisted.sessions.find(ss => ss.hubId === 'legacy-branch').title,
+      '分支: Codex 2',
+      'self-heal must persist the canonical title instead of repairing only the renderer',
+    );
+    console.log('PASS SH6 legacy branch title migrated in authority state');
+  }
+
   console.log('\n[ALL boot self-heal tests PASSED]');
 })();
