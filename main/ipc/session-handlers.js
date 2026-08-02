@@ -1,10 +1,7 @@
 'use strict';
 
 const { isCodexCliKind } = require('../../core/ai-kinds');
-const {
-  formatBranchSessionTitle,
-  isGenericAutoSessionTitle,
-} = require('../../core/session-title-guards.js');
+const { buildBranchSessionTitle } = require('../../core/branch-session-titles.js');
 
 const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -17,6 +14,7 @@ function registerSessionIpc(ipcMain, deps) {
     registerSessionForTap = () => {},
     sendToRenderer,
     sessionManager,
+    meetingManager,
     workspaceService,
     getTerminalOutputBatchStats = () => null,
   } = deps;
@@ -53,7 +51,13 @@ function registerSessionIpc(ipcMain, deps) {
     return session;
   });
 
-  ipcMain.handle('fork-session', (_e, sourceSessionId) => {
+  ipcMain.handle('fork-session', (_e, request) => {
+    const sourceSessionId = request && typeof request === 'object'
+      ? request.sourceSessionId
+      : request;
+    const rendererTitle = request && typeof request === 'object'
+      ? request.sourceTitle
+      : null;
     const source = typeof sourceSessionId === 'string'
       ? sessionManager.getSession(sourceSessionId)
       : null;
@@ -84,16 +88,19 @@ function registerSessionIpc(ipcMain, deps) {
       };
     }
 
-    const sourceTitle = source.title || (isClaudeCli ? 'Claude' : 'Codex');
-    const branchAutoTitlePending = isGenericAutoSessionTitle(sourceTitle);
+    const meeting = source.meetingId && meetingManager && typeof meetingManager.getMeeting === 'function'
+      ? meetingManager.getMeeting(source.meetingId)
+      : null;
+    const resolvedTitle = buildBranchSessionTitle({ rendererTitle, source, meeting });
     const opts = {
-      title: formatBranchSessionTitle(sourceTitle),
+      title: resolvedTitle.title,
       cwd: source.cwd,
       branchSourceSessionId: source.id,
-      branchAutoTitlePending,
-      // A meaningful parent title is already the final branch title. Generic
-      // parents (for example Codex 2) stay eligible for the next auto-title.
-      autoTitleGenerated: !branchAutoTitlePending,
+      branchAutoTitlePending: resolvedTitle.branchAutoTitlePending,
+      // Prefer the exact title visible to the user. A generic group member name
+      // (for example Codex 2) inherits the owning meeting title; a truly unnamed
+      // standalone parent stays pending and is named from the branch's first prompt.
+      autoTitleGenerated: resolvedTitle.autoTitleGenerated,
     };
     if (source.currentModel && source.currentModel.id) opts.model = source.currentModel.id;
     // 分支必须继承 effort，否则从 low/medium 会话拉分支会被打回默认 max。

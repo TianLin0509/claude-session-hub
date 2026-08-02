@@ -3,6 +3,7 @@ const path = require('path');
 const { getHubDataDir } = require('./data-dir');
 const { acquireLock, acquireLockAsync, releaseLock, releaseLockAsync } = require('./file-lock');
 const { migrateLegacyBranchSessionMeta } = require('./session-title-guards');
+const { healPersistedBranchSessionTitles } = require('./branch-session-titles');
 
 const STATE_DIR = getHubDataDir();
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
@@ -169,6 +170,18 @@ function loadAndSelfHeal({ sessionStore, meetingStore } = {}) {
       } catch (e) {
         console.warn('[hub] meeting-store self-heal scan failed:', e.message);
       }
+    }
+
+    // Old fork handlers persisted only "Codex 2 · 分支" and did not retain the
+    // Hub parent id. Codex's own session_meta still carries forked_from_id, so
+    // recover the parent and use its real title (or the owning meeting title)
+    // before state.json and per-session JSON are written back.
+    const healedBranches = healPersistedBranchSessionTitles(disk, {
+      sessionStore: haveLock ? sessionStore : null,
+      logger: console,
+    });
+    if (healedBranches.length > 0) {
+      console.log(`[branch-title] healed ${healedBranches.length} persisted branch title(s)`);
     }
 
     disk.cleanShutdown = false;

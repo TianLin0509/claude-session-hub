@@ -93,7 +93,10 @@ function createKeyboardShortcuts({
 
     showShortcutNotice('正在创建独立分支会话…');
     try {
-      const result = await ipcRenderer.invoke('fork-session', sourceSessionId);
+      const result = await ipcRenderer.invoke('fork-session', {
+        sourceSessionId,
+        sourceTitle: source.title || '',
+      });
       if (!result || result.ok !== true) {
         showShortcutNotice((result && result.message) || '分支创建失败', 'error');
         return result || null;

@@ -84,10 +84,11 @@ test('fork inherits model and effort from its source', () => {
 
 test('fork puts the branch marker first and protects a meaningful inherited title', () => {
   // isClaude → isClaudeCli：DeepSeek 也走 claude CLI 的 fork，2026-07-27 接线后一并覆盖。
-  assert.match(SESSION_IPC_SRC, /title: formatBranchSessionTitle\(sourceTitle\)/);
+  assert.match(SESSION_IPC_SRC, /buildBranchSessionTitle\(\{ rendererTitle, source, meeting \}\)/);
+  assert.match(SESSION_IPC_SRC, /title: resolvedTitle\.title/);
   assert.match(SESSION_IPC_SRC, /branchSourceSessionId: source\.id/);
-  assert.match(SESSION_IPC_SRC, /autoTitleGenerated: !branchAutoTitlePending/,
-    'only a meaningful parent title should lock the initial branch title');
+  assert.match(SESSION_IPC_SRC, /autoTitleGenerated: resolvedTitle\.autoTitleGenerated/,
+    'only the visible parent or owning meeting title should lock the initial branch title');
 });
 
 if (!process.exitCode) console.log('All archive fork-sibling tests passed.');

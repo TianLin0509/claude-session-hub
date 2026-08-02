@@ -49,7 +49,7 @@ test('Ctrl+Shift+B forks the active session', () => {
     document: { addEventListener: () => {} },
     ipcRenderer: { invoke: (...args) => { calls.push(args); return Promise.resolve({ ok: true }); } },
     clipboard: { writeText: () => {} },
-    sessions: new Map([['claude-source', { id: 'claude-source', kind: 'claude' }]]),
+    sessions: new Map([['claude-source', { id: 'claude-source', kind: 'claude', title: '架构复盘' }]]),
     terminalCache: new Map(),
     getActiveSessionId: () => 'claude-source',
     getCurrentFontSize: () => 16,
@@ -64,7 +64,10 @@ test('Ctrl+Shift+B forks the active session', () => {
   shortcuts.handleKeydown(e);
   assert.strictEqual(e.defaultPrevented, true);
   assert.strictEqual(e.propagationStopped, true);
-  assert.deepStrictEqual(calls, [['fork-session', 'claude-source']]);
+  assert.deepStrictEqual(calls, [['fork-session', {
+    sourceSessionId: 'claude-source',
+    sourceTitle: '架构复盘',
+  }]]);
 });
 
 test('daily branch button can target the session shown in the header', async () => {
@@ -74,7 +77,7 @@ test('daily branch button can target the session shown in the header', async () 
     ipcRenderer: { invoke: (...args) => { calls.push(args); return Promise.resolve({ ok: true }); } },
     clipboard: { writeText: () => {} },
     sessions: new Map([
-      ['claude-button', { id: 'claude-button', kind: 'claude' }],
+      ['claude-button', { id: 'claude-button', kind: 'claude', title: '无线算法策略' }],
       ['other-active', { id: 'other-active', kind: 'codex' }],
     ]),
     terminalCache: new Map(),
@@ -88,7 +91,10 @@ test('daily branch button can target the session shown in the header', async () 
   });
 
   await shortcuts.forkSession('claude-button');
-  assert.deepStrictEqual(calls, [['fork-session', 'claude-button']]);
+  assert.deepStrictEqual(calls, [['fork-session', {
+    sourceSessionId: 'claude-button',
+    sourceTitle: '无线算法策略',
+  }]]);
 });
 
 test('terminal header exposes a one-click branch button for Claude and Codex', () => {

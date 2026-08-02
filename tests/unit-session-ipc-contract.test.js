@@ -78,7 +78,18 @@ function createFakeSessionManager() {
           kind: 'codex',
           title: 'Codex 2',
           cwd: 'C:\\repo',
+          meetingId: 'meeting-source',
           codexSid: '33333333-3333-4333-8333-333333333333',
+          currentModel: { id: 'gpt-5.5', displayName: 'GPT-5.5' },
+        };
+      }
+      if (sessionId === 'codex-untitled-source') {
+        return {
+          id: sessionId,
+          kind: 'codex',
+          title: 'Codex 3',
+          cwd: 'C:\\repo',
+          codexSid: '44444444-4444-4444-8444-444444444444',
           currentModel: { id: 'gpt-5.5', displayName: 'GPT-5.5' },
         };
       }
@@ -176,23 +187,65 @@ test('fork-session preserves Codex model and subscription profile', () => {
   );
 });
 
-test('fork-session keeps a generic Codex parent eligible for later auto-title', () => {
+test('fork-session uses the owning meeting name instead of a generic Codex member name', () => {
   const ipc = createFakeIpc();
   const sessionManager = createFakeSessionManager();
-  registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
+  const meetingManager = {
+    getMeeting: (id) => id === 'meeting-source'
+      ? { id, title: '通道重构与多阵子驱动' }
+      : null,
+  };
+  registerSessionIpc(ipc, { meetingManager, sessionManager, sendToRenderer: () => {} });
 
   const result = ipc.handlers.get('fork-session')(null, 'codex-generic-source');
   assert.strictEqual(result.ok, true);
   assert.deepStrictEqual(
     sessionManager.calls.find(call => call[0] === 'createSession'),
     ['createSession', 'codex', {
-      title: '分支: Codex 2',
+      title: '分支: 通道重构与多阵子驱动',
       cwd: 'C:\\repo',
       branchSourceSessionId: 'codex-generic-source',
+      branchAutoTitlePending: false,
+      autoTitleGenerated: true,
+      model: 'gpt-5.5',
+      codexForkSid: '33333333-3333-4333-8333-333333333333',
+    }],
+  );
+});
+
+test('fork-session trusts the current renderer title over a stale generic backend title', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
+
+  const result = ipc.handlers.get('fork-session')(null, {
+    sourceSessionId: 'codex-generic-source',
+    sourceTitle: '用户当前看到的原始会话名',
+  });
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(
+    sessionManager.calls.find(call => call[0] === 'createSession')[2].title,
+    '分支: 用户当前看到的原始会话名',
+  );
+});
+
+test('a truly unnamed standalone parent uses a pending placeholder, never Codex 3', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
+
+  const result = ipc.handlers.get('fork-session')(null, 'codex-untitled-source');
+  assert.strictEqual(result.ok, true);
+  assert.deepStrictEqual(
+    sessionManager.calls.find(call => call[0] === 'createSession'),
+    ['createSession', 'codex', {
+      title: '分支: 待命名',
+      cwd: 'C:\\repo',
+      branchSourceSessionId: 'codex-untitled-source',
       branchAutoTitlePending: true,
       autoTitleGenerated: false,
       model: 'gpt-5.5',
-      codexForkSid: '33333333-3333-4333-8333-333333333333',
+      codexForkSid: '44444444-4444-4444-8444-444444444444',
     }],
   );
 });

@@ -918,6 +918,7 @@ registerArchiveIpc(ipcMain);
 
 registerSessionIpc(ipcMain, {
   getTerminalOutputBatchStats: () => terminalOutputBatcher.snapshotStats(),
+  meetingManager,
   registerSessionForTap,
   sendToRenderer,
   sessionManager,

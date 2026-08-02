@@ -127,16 +127,69 @@ const meetingStore = require('../core/meeting-store');
     const healed = stateStore.loadAndSelfHeal({ sessionStore, meetingStore });
     const s = healed.sessions.find(ss => ss.hubId === 'legacy-branch');
     assert.ok(s);
-    assert.strictEqual(s.title, '分支: Codex 2', 'newer per-session legacy title must be canonicalized');
+    assert.strictEqual(s.title, '分支: 待命名', 'a generic provider label must not become the final branch name');
     assert.strictEqual(s.userRenamed, false, 'old handler flag was not a real user rename');
     assert.strictEqual(s.branchAutoTitlePending, true, 'generic Codex branch remains eligible for auto-title');
     const persisted = JSON.parse(fs.readFileSync(path.join(TEMP, 'state.json'), 'utf8'));
     assert.strictEqual(
       persisted.sessions.find(ss => ss.hubId === 'legacy-branch').title,
-      '分支: Codex 2',
+      '分支: 待命名',
       'self-heal must persist the canonical title instead of repairing only the renderer',
     );
     console.log('PASS SH6 legacy branch title migrated in authority state');
+  }
+
+  // SH7: Codex rollout 的 session_meta 自带 forked_from_id。即使旧 Hub 没存
+  // branchSourceSessionId，也应反查父成员；父成员只是 Codex 2 时，继承它所属的
+  // 原始群聊标题，而不是把 provider 槽位名当会话名。
+  {
+    const parentCodexSid = '55555555-5555-4555-8555-555555555555';
+    const branchCodexSid = '66666666-6666-4666-8666-666666666666';
+    const transcriptPath = path.join(TEMP, 'rollout-branch.jsonl');
+    fs.writeFileSync(transcriptPath, `${JSON.stringify({
+      type: 'session_meta',
+      payload: { id: branchCodexSid, forked_from_id: parentCodexSid },
+    })}\n`);
+    stateStore.save({
+      version: 1,
+      cleanShutdown: false,
+      sessions: [{
+        hubId: 'meeting-codex-parent',
+        kind: 'codex',
+        title: 'Codex 2',
+        codexSid: parentCodexSid,
+        meetingId: 'meeting-original',
+        updatedAt: 1000,
+      }],
+      meetings: [{
+        id: 'meeting-original',
+        title: '通道重构与多阵子驱动',
+        updatedAt: 1000,
+      }],
+      immersiveByMeeting: {},
+    }, { sync: true });
+    const branchPath = path.join(TEMP, 'sessions', 'legacy-meeting-branch.json');
+    fs.writeFileSync(branchPath, JSON.stringify({
+      schemaVersion: 1,
+      hubId: 'legacy-meeting-branch',
+      kind: 'codex',
+      title: 'Codex 2 · 分支',
+      codexSid: branchCodexSid,
+      transcriptPath,
+      updatedAt: 2000,
+      savedAt: 2000,
+    }));
+
+    const healed = stateStore.loadAndSelfHeal({ sessionStore, meetingStore });
+    const branch = healed.sessions.find(s => s.hubId === 'legacy-meeting-branch');
+    assert.ok(branch);
+    assert.strictEqual(branch.title, '分支: 通道重构与多阵子驱动');
+    assert.strictEqual(branch.branchSourceSessionId, 'meeting-codex-parent');
+    assert.strictEqual(branch.branchAutoTitlePending, false);
+    assert.strictEqual(branch.autoTitleGenerated, true);
+    const branchFile = sessionStore.loadSessionFile('legacy-meeting-branch');
+    assert.strictEqual(branchFile.title, '分支: 通道重构与多阵子驱动');
+    console.log('PASS SH7 Codex fork ancestry restores the original meeting title');
   }
 
   console.log('\n[ALL boot self-heal tests PASSED]');

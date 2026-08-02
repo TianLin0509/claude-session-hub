@@ -215,7 +215,7 @@ async function main() {
       return await ipcRenderer.invoke('create-session', {
         kind: 'codex',
         opts: {
-          title: 'Codex E2E Source',
+          title: 'Codex 2',
           cwd: ${JSON.stringify(WORK_DIR)},
           useResume: true,
           codexSid: ${JSON.stringify(CODEX_SOURCE_ID)},
@@ -229,6 +229,13 @@ async function main() {
     await waitFor('Codex source selection', () => client.eval(
       `activeSessionId === ${JSON.stringify(codexSource.id)} && sessions.has(${JSON.stringify(codexSource.id)})`,
     ));
+    // Reproduce the real bug: renderer already has the meaningful title that
+    // the user sees, while main's live session still holds the generic Codex 2.
+    await client.eval(`(() => {
+      const source = sessions.get(${JSON.stringify(codexSource.id)});
+      source.title = 'Codex E2E Visible Source';
+      renderSessionList();
+    })()`);
 
     console.log('[step] click Codex branch button');
     result.codexButton = await client.eval(`(() => {
@@ -261,7 +268,7 @@ async function main() {
     const codexBranch = await waitFor('Codex branch session', () => client.eval(`(async () => {
       const { ipcRenderer } = require('electron');
       const all = await ipcRenderer.invoke('get-sessions');
-      return all.find(session => session.id !== ${JSON.stringify(codexSource.id)} && session.title === '分支: Codex E2E Source') || null;
+      return all.find(session => session.id !== ${JSON.stringify(codexSource.id)} && session.title === '分支: Codex E2E Visible Source') || null;
     })()`));
     assert.notEqual(codexBranch.id, codexSource.id);
     assert.equal(codexBranch.autoTitleGenerated, true, 'meaningful Codex parent title should stay stable');
@@ -287,7 +294,7 @@ async function main() {
         sidebarTitles: Array.from(document.querySelectorAll('.session-title')).map(el => el.textContent.trim())
       };
     })()`));
-    assert.equal(result.ui.title, '分支: Codex E2E Source');
+    assert.equal(result.ui.title, '分支: Codex E2E Visible Source');
 
     const invocations = readInvocations();
     const claudeForkInvocation = invocations.find(entry => entry.provider === 'claude' && entry.args.includes('--fork-session'));
