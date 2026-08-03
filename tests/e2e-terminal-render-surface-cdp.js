@@ -108,12 +108,50 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
 
       const restored = terminalCache.get('surface-a');
       const after = canvasInk(restored);
+
+      // Production regression (Kimi/resume/card -> PTY): Chromium may discard
+      // Canvas pixels while the terminal is covered by card view. The xterm
+      // buffer remains complete, so returning to PTY must repaint even when
+      // FitAddon sees unchanged cols/rows and performs no render of its own.
+      applyViewMode('card');
+      await wait(120);
+      for (const canvas of restored.container.querySelectorAll('.xterm-screen canvas')) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+      }
+      const cardSurfaceLost = canvasInk(restored);
+      applyViewMode('pty');
+      await wait(350);
+      const afterCardReturn = canvasInk(restored);
+
+      // Minimize/restore and alt-tab do not necessarily change xterm geometry,
+      // so ResizeObserver may stay silent while Chromium has discarded pixels.
+      // The window-focus recovery path must restore that surface too.
+      for (const canvas of restored.container.querySelectorAll('.xterm-screen canvas')) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+      }
+      const focusSurfaceLost = canvasInk(restored);
+      window.dispatchEvent(new Event('focus'));
+      await wait(350);
+      const afterWindowFocus = canvasInk(restored);
+
       const screenRect = restored.container.querySelector('.xterm-screen').getBoundingClientRect();
       const containerRect = restored.container.getBoundingClientRect();
       return {
         before,
         cleared,
         after,
+        cardSurfaceLost,
+        afterCardReturn,
+        focusSurfaceLost,
+        afterWindowFocus,
         refreshBefore,
         refreshAfter: restored._surfaceRefreshCount || 0,
         rows: restored.terminal.rows,
@@ -130,6 +168,10 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     assert.ok(result.refreshAfter > result.refreshBefore, JSON.stringify(result));
     assert.ok(result.after.visibleSamples > 100, JSON.stringify(result));
     assert.ok(result.after.visibleSamples >= result.before.visibleSamples * 0.5, JSON.stringify(result));
+    assert.strictEqual(result.cardSurfaceLost.visibleSamples, 0, JSON.stringify(result));
+    assert.ok(result.afterCardReturn.visibleSamples > 100, JSON.stringify(result));
+    assert.strictEqual(result.focusSurfaceLost.visibleSamples, 0, JSON.stringify(result));
+    assert.ok(result.afterWindowFocus.visibleSamples > 100, JSON.stringify(result));
     assert.ok(result.screenRect.width > 500 && result.screenRect.height > 300, JSON.stringify(result));
     assert.ok(result.screenRect.width <= result.containerRect.width + 1, JSON.stringify(result));
     assert.ok(result.screenRect.height <= result.containerRect.height + 1, JSON.stringify(result));

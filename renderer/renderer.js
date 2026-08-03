@@ -308,6 +308,39 @@ function refreshTerminalRendererSurface(cached) {
   }
 }
 
+// A cached xterm can keep a complete logical buffer while Chromium discards
+// its Canvas/WebGL pixels after card view, display:none, DOM re-parenting, or a
+// resumed session being opened behind another surface. FitAddon only renders
+// when geometry changes, so an unchanged grid can remain black forever.
+// Recover on two visible animation frames: the first restores geometry and
+// paints, the second covers delayed layout/compositor attachment.
+function scheduleVisibleTerminalRecovery(sessionId, cached, opts = {}) {
+  if (!sessionId || !cached) return;
+  if (cached._surfaceRecoveryRaf) cancelAnimationFrame(cached._surfaceRecoveryRaf);
+  const recover = (secondPass = false) => {
+    cached._surfaceRecoveryRaf = 0;
+    if (terminalCache.get(sessionId) !== cached || !cached.opened || !cached.container) return;
+    if (!cached.container.isConnected) return;
+    if (!cached.container.offsetWidth || !cached.container.offsetHeight) {
+      if (!secondPass) {
+        cached._surfaceRecoveryRaf = requestAnimationFrame(() => recover(true));
+      }
+      return;
+    }
+    fitAndResizeTerminal(sessionId, cached, { force: true });
+    refreshTerminalRendererSurface(cached);
+    if (opts.pinBottom) {
+      try { cached.terminal.scrollToBottom(); } catch {}
+      const viewport = getTerminalViewport(cached);
+      if (viewport) viewport.scrollTop = viewport.scrollHeight;
+    }
+    if (!secondPass) {
+      cached._surfaceRecoveryRaf = requestAnimationFrame(() => recover(true));
+    }
+  };
+  cached._surfaceRecoveryRaf = requestAnimationFrame(() => recover(false));
+}
+
 // --- DOM refs ---
 const sessionListEl = document.getElementById('session-list');
 const terminalPanelEl = document.getElementById('terminal-panel');
@@ -589,6 +622,7 @@ function disposeCachedTerminal(sessionId) {
   if (cached._resizeHandler) window.removeEventListener('resize', cached._resizeHandler);
   if (cached._overflowDocHandler) document.removeEventListener('click', cached._overflowDocHandler);
   if (cached._fitRaf) cancelAnimationFrame(cached._fitRaf);
+  if (cached._surfaceRecoveryRaf) cancelAnimationFrame(cached._surfaceRecoveryRaf);
   if (cached._codexBottomPinRaf) cancelAnimationFrame(cached._codexBottomPinRaf);
   if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
   if (cached._navButtons) { try { cached._navButtons.dispose(); } catch {} cached._navButtons = null; }
@@ -1069,6 +1103,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
         if (dbg && dbg.isOn()) dbg.log('show:raf2-final', dbg.snap(cached.terminal, sessionId));
       });
     }
+  });
+  scheduleVisibleTerminalRecovery(sessionId, cached, {
+    pinBottom: !!opts.forceScrollBottom,
   });
 
   if (cached._ro) cached._ro.disconnect();
@@ -2019,7 +2056,9 @@ function applyViewMode(mode) {
   // 切到 PTY 时 refit xterm
   if (mode === 'pty' && typeof terminalCache !== 'undefined') {
     const cached = terminalCache.get(activeSessionId);
-    if (cached && cached.fitAddon) scheduleFitAndResizeTerminal(activeSessionId, cached, { force: true });
+    if (cached && cached.fitAddon) {
+      scheduleVisibleTerminalRecovery(activeSessionId, cached, { pinBottom: false });
+    }
   }
   // Spec 3 · W3 resume bug fix (b)：切到卡片时若历史从未全量加载过，
   // 主动 trigger load — 用 _cardHistoryHydratedSid 状态标记而非 DOM 检测，
@@ -2038,6 +2077,19 @@ function applyViewMode(mode) {
   if (activeSessionId && typeof _updateStreamingIndicator === 'function') {
     _updateStreamingIndicator(activeSessionId);
   }
+}
+
+function recoverVisibleActiveTerminalSurface() {
+  // Chromium can evict an xterm Canvas/WebGL surface while the Hub window is
+  // hidden without changing the terminal's geometry. ResizeObserver therefore
+  // has nothing to report when the window returns, even though the logical
+  // buffer is still complete. Repaint only the visible PTY; do not move the
+  // user's scroll position.
+  if (currentView !== 'pty' || activeMeetingId || !activeSessionId) return false;
+  const cached = terminalCache.get(activeSessionId);
+  if (!cached || !cached.fitAddon) return false;
+  scheduleVisibleTerminalRecovery(activeSessionId, cached, { pinBottom: false });
+  return true;
 }
 
 document.addEventListener('click', (e) => {
@@ -3259,7 +3311,13 @@ function onPromptSubmittedFromHook(sessionId) {
 // 的 seenByUser 判断加 500ms 缓冲（alt-tab 切回瞬间 document.hasFocus() 还未更新
 // 的窗口期会误判 → 错弹红点）。
 let _lastWindowFocusAt = Date.now();
-window.addEventListener('focus', () => { _lastWindowFocusAt = Date.now(); });
+window.addEventListener('focus', () => {
+  _lastWindowFocusAt = Date.now();
+  recoverVisibleActiveTerminalSurface();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') recoverVisibleActiveTerminalSurface();
+});
 
 function buildReplyReadyPreview(text, fallback = 'Codex 回复完成，等你继续') {
   const raw = String(text || '').replace(/\s+/g, ' ').trim();
