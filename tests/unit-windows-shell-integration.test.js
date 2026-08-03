@@ -8,6 +8,7 @@ const test = require('node:test');
 const {
   HUB_APP_USER_MODEL_ID,
   HUB_SHORTCUT_NAME,
+  LEGACY_DESKTOP_SHORTCUT_NAME,
   buildLaunchSpec,
   buildShortcutDetails,
   getShortcutPaths,
@@ -46,8 +47,9 @@ function makeHarness() {
   };
   const app = {
     getPath(name) {
-      assert.equal(name, 'appData');
-      return temp;
+      if (name === 'appData') return temp;
+      if (name === 'desktop') return path.join(temp, 'Desktop');
+      assert.fail(`unexpected app path: ${name}`);
     },
     setUserTasks(value) {
       tasks.push(value);
@@ -144,6 +146,110 @@ test('a foreign Electron shortcut is never moved or overwritten', () => {
     const result = ensureWindowsShellIntegration({ ...h, platform: 'win32' });
     assert.equal(result.legacyBackupPath, null);
     assert.equal(fs.existsSync(legacyPath), true);
+  } finally {
+    fs.rmSync(h.temp, { recursive: true, force: true });
+  }
+});
+
+test('a broken legacy Desktop Hub shortcut is backed up and repaired', () => {
+  const h = makeHarness();
+  try {
+    const desktopPath = path.join(h.temp, 'Desktop');
+    const shortcutPath = path.join(desktopPath, LEGACY_DESKTOP_SHORTCUT_NAME);
+    const missingRoot = path.join(h.temp, 'ai-hub-fresh');
+    fs.mkdirSync(desktopPath, { recursive: true });
+    fs.writeFileSync(shortcutPath, 'stale shortcut');
+    h.links.set(path.resolve(shortcutPath), {
+      target: path.join(missingRoot, 'electron.exe'),
+      args: `"${missingRoot}"`,
+      cwd: missingRoot,
+      icon: path.join(missingRoot, 'hub.ico'),
+      iconIndex: 0,
+    });
+
+    const result = ensureWindowsShellIntegration({
+      ...h,
+      platform: 'win32',
+      now: () => new Date('2026-08-04T00:30:00.000Z'),
+    });
+
+    assert.equal(result.desktopShortcutUpdated, true);
+    assert.ok(result.desktopBackupPath.endsWith('.hub-invalid-20260804003000.bak'));
+    assert.equal(fs.existsSync(result.desktopBackupPath), true);
+    assert.equal(fs.existsSync(shortcutPath), true);
+    assert.equal(h.links.get(path.resolve(shortcutPath)).target, path.resolve(h.execPath));
+  } finally {
+    fs.rmSync(h.temp, { recursive: true, force: true });
+  }
+});
+
+test('an unreadable legacy Desktop Hub shortcut is backed up and repaired', () => {
+  const h = makeHarness();
+  try {
+    const desktopPath = path.join(h.temp, 'Desktop');
+    const shortcutPath = path.join(desktopPath, LEGACY_DESKTOP_SHORTCUT_NAME);
+    fs.mkdirSync(desktopPath, { recursive: true });
+    fs.writeFileSync(shortcutPath, 'corrupt shortcut');
+
+    const result = ensureWindowsShellIntegration({ ...h, platform: 'win32' });
+
+    assert.equal(result.desktopShortcutUpdated, true);
+    assert.equal(fs.existsSync(result.desktopBackupPath), true);
+    assert.equal(h.links.get(path.resolve(shortcutPath)).target, path.resolve(h.execPath));
+  } finally {
+    fs.rmSync(h.temp, { recursive: true, force: true });
+  }
+});
+
+test('a current Desktop Hub launch missing its AppUserModelID is upgraded', () => {
+  const h = makeHarness();
+  try {
+    const desktopPath = path.join(h.temp, 'Desktop');
+    const shortcutPath = path.join(desktopPath, LEGACY_DESKTOP_SHORTCUT_NAME);
+    fs.mkdirSync(desktopPath, { recursive: true });
+    fs.writeFileSync(shortcutPath, 'unbranded shortcut');
+    h.links.set(path.resolve(shortcutPath), {
+      ...buildShortcutDetails(h),
+      appUserModelId: '',
+    });
+
+    const result = ensureWindowsShellIntegration({ ...h, platform: 'win32' });
+
+    assert.equal(result.desktopShortcutUpdated, true);
+    assert.equal(
+      h.links.get(path.resolve(shortcutPath)).appUserModelId,
+      HUB_APP_USER_MODEL_ID,
+    );
+  } finally {
+    fs.rmSync(h.temp, { recursive: true, force: true });
+  }
+});
+
+test('a working customized Desktop shortcut is left untouched', () => {
+  const h = makeHarness();
+  try {
+    const desktopPath = path.join(h.temp, 'Desktop');
+    const shortcutPath = path.join(desktopPath, LEGACY_DESKTOP_SHORTCUT_NAME);
+    const customRoot = path.join(h.temp, 'custom-hub');
+    const customTarget = path.join(customRoot, 'custom.exe');
+    fs.mkdirSync(customRoot, { recursive: true });
+    fs.writeFileSync(customTarget, 'custom');
+    fs.mkdirSync(desktopPath, { recursive: true });
+    fs.writeFileSync(shortcutPath, 'custom shortcut');
+    h.links.set(path.resolve(shortcutPath), {
+      target: customTarget,
+      args: '',
+      cwd: customRoot,
+      icon: customTarget,
+      iconIndex: 0,
+    });
+
+    const result = ensureWindowsShellIntegration({ ...h, platform: 'win32' });
+
+    assert.equal(result.desktopShortcutUpdated, false);
+    assert.equal(result.desktopBackupPath, null);
+    assert.equal(fs.existsSync(shortcutPath), true);
+    assert.equal(h.links.get(path.resolve(shortcutPath)).target, customTarget);
   } finally {
     fs.rmSync(h.temp, { recursive: true, force: true });
   }

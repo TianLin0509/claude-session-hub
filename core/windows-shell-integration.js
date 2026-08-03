@@ -6,6 +6,7 @@ const path = require('path');
 const HUB_APP_USER_MODEL_ID = 'com.ai-group-chat-hub';
 const HUB_SHORTCUT_NAME = 'AI 群聊 Hub.lnk';
 const LEGACY_ELECTRON_SHORTCUT_NAME = 'Electron.lnk';
+const LEGACY_DESKTOP_SHORTCUT_NAME = 'AI Group Chat Hub.lnk';
 
 function quoteWindowsArg(value) {
   const text = String(value || '');
@@ -65,6 +66,13 @@ function shortcutMatches(actual, expected) {
     && String(actual.appUserModelId || '') === String(expected.appUserModelId || '');
 }
 
+function shortcutLaunchMatches(actual, expected) {
+  if (!actual) return false;
+  return normalizeWinPath(actual.target) === normalizeWinPath(expected.target)
+    && String(actual.args || '').trim() === String(expected.args || '').trim()
+    && normalizeWinPath(actual.cwd) === normalizeWinPath(expected.cwd);
+}
+
 function isPoisonedLegacyElectronShortcut(details, expected) {
   if (!details) return false;
   return normalizeWinPath(details.target) === normalizeWinPath(expected.target)
@@ -76,13 +84,23 @@ function timestampForFile(date = new Date()) {
   return date.toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
 }
 
-function getShortcutPaths({ app, appDataPath } = {}) {
+function getShortcutPaths({ app, appDataPath, desktopPath } = {}) {
   const programsDir = path.join(appDataPath || app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+  const desktopDir = desktopPath || app.getPath('desktop');
   return {
     programsDir,
     shortcutPath: path.join(programsDir, HUB_SHORTCUT_NAME),
     legacyPath: path.join(programsDir, LEGACY_ELECTRON_SHORTCUT_NAME),
+    desktopLegacyPath: path.join(desktopDir, LEGACY_DESKTOP_SHORTCUT_NAME),
   };
+}
+
+function shortcutReferencesMissingPath(details, fsModule = fs) {
+  if (!details) return true;
+  const iconPath = String(details.icon || '').replace(/,\s*\d+$/, '');
+  return !details.target || !fsModule.existsSync(details.target)
+    || (!!details.cwd && !fsModule.existsSync(details.cwd))
+    || (!!iconPath && !fsModule.existsSync(iconPath));
 }
 
 function isWindowsShellIntegrationHealthy({
@@ -93,12 +111,13 @@ function isWindowsShellIntegrationHealthy({
   isPackaged = false,
   iconPath,
   appDataPath,
+  desktopPath,
   platform = process.platform,
   fsModule = fs,
 } = {}) {
   if (platform !== 'win32') return true;
   const expected = buildShortcutDetails({ appRoot, execPath, isPackaged, iconPath });
-  const { shortcutPath } = getShortcutPaths({ app, appDataPath });
+  const { shortcutPath } = getShortcutPaths({ app, appDataPath, desktopPath });
   if (!fsModule.existsSync(shortcutPath)) return false;
   try {
     return shortcutMatches(shell.readShortcutLink(shortcutPath), expected);
@@ -122,6 +141,7 @@ function ensureWindowsShellIntegration({
   isPackaged = false,
   iconPath,
   appDataPath,
+  desktopPath,
   platform = process.platform,
   fsModule = fs,
   now = () => new Date(),
@@ -132,14 +152,23 @@ function ensureWindowsShellIntegration({
     shortcutPath: null,
     shortcutUpdated: false,
     legacyBackupPath: null,
+    desktopShortcutPath: null,
+    desktopShortcutUpdated: false,
+    desktopBackupPath: null,
     userTasksUpdated: false,
     errors: [],
   };
   if (!result.supported) return result;
 
   const expected = buildShortcutDetails({ appRoot, execPath, isPackaged, iconPath });
-  const { programsDir, shortcutPath, legacyPath } = getShortcutPaths({ app, appDataPath });
+  const {
+    programsDir,
+    shortcutPath,
+    legacyPath,
+    desktopLegacyPath,
+  } = getShortcutPaths({ app, appDataPath, desktopPath });
   result.shortcutPath = shortcutPath;
+  result.desktopShortcutPath = desktopLegacyPath;
 
   try {
     fsModule.mkdirSync(programsDir, { recursive: true });
@@ -173,6 +202,38 @@ function ensureWindowsShellIntegration({
       }
     } catch (error) {
       result.errors.push(`错误 Electron 快捷方式退役失败：${error.message}`);
+    }
+  }
+
+  // Older development launches created an English-named Desktop shortcut.
+  // Keep a working user-customized link untouched; repair only this exact
+  // Hub-owned filename when its executable, cwd, or icon no longer exists.
+  if (fsModule.existsSync(desktopLegacyPath)) {
+    try {
+      let desktopShortcut = null;
+      try { desktopShortcut = shell.readShortcutLink(desktopLegacyPath); } catch {}
+      if (!shortcutMatches(desktopShortcut, expected)
+          && (shortcutReferencesMissingPath(desktopShortcut, fsModule)
+            || shortcutLaunchMatches(desktopShortcut, expected))) {
+        const backupPath = `${desktopLegacyPath}.hub-invalid-${timestampForFile(now())}.bak`;
+        fsModule.renameSync(desktopLegacyPath, backupPath);
+        try {
+          const ok = shell.writeShortcutLink(desktopLegacyPath, 'create', expected);
+          if (!ok) throw new Error(`writeShortcutLink returned false: ${desktopLegacyPath}`);
+          result.desktopShortcutUpdated = true;
+          result.desktopBackupPath = backupPath;
+        } catch (error) {
+          if (fsModule.existsSync(desktopLegacyPath)) {
+            fsModule.rmSync(desktopLegacyPath, { force: true });
+          }
+          if (fsModule.existsSync(backupPath)) {
+            fsModule.renameSync(backupPath, desktopLegacyPath);
+          }
+          throw error;
+        }
+      }
+    } catch (error) {
+      result.errors.push(`Desktop shortcut repair failed: ${error.message}`);
     }
   }
 
@@ -227,11 +288,14 @@ module.exports = {
   HUB_APP_USER_MODEL_ID,
   HUB_SHORTCUT_NAME,
   LEGACY_ELECTRON_SHORTCUT_NAME,
+  LEGACY_DESKTOP_SHORTCUT_NAME,
   buildLaunchSpec,
   buildShortcutDetails,
   buildNewWindowTask,
   shortcutMatches,
+  shortcutLaunchMatches,
   isPoisonedLegacyElectronShortcut,
+  shortcutReferencesMissingPath,
   getShortcutPaths,
   isWindowsShellIntegrationHealthy,
   ensureWindowsShellIntegration,
