@@ -1,8 +1,29 @@
 'use strict';
 
 const os = require('os');
-const { Terminal } = require('@xterm/headless');
-const { SerializeAddon } = require('@xterm/addon-serialize');
+
+// Keep optional snapshot dependencies out of module initialization. SessionManager
+// deliberately wraps `new TerminalSnapshot()` so a damaged node_modules can fall
+// back to its raw PTY ring buffer, but a top-level require used to throw before
+// that guard existed and crashed the entire Electron main process at startup.
+let snapshotDependencies = null;
+
+function getSnapshotDependencies() {
+  if (snapshotDependencies && snapshotDependencies.error) throw snapshotDependencies.error;
+  if (snapshotDependencies) return snapshotDependencies;
+  try {
+    const { Terminal } = require('@xterm/headless');
+    const { SerializeAddon } = require('@xterm/addon-serialize');
+    snapshotDependencies = { Terminal, SerializeAddon };
+    return snapshotDependencies;
+  } catch (cause) {
+    const error = new Error(`terminal snapshot dependencies unavailable: ${cause && cause.message}`);
+    error.code = 'TERMINAL_SNAPSHOT_DEPENDENCY_MISSING';
+    error.cause = cause;
+    snapshotDependencies = { error };
+    throw error;
+  }
+}
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 30;
@@ -92,6 +113,9 @@ function cloneCoalescedOperations(operations) {
 // fresh base, then dispose the terminal and keep only strings in memory.
 class TerminalSnapshot {
   constructor(opts = {}) {
+    const dependencies = getSnapshotDependencies();
+    this._Terminal = dependencies.Terminal;
+    this._SerializeAddon = dependencies.SerializeAddon;
     this._scrollback = clampInt(opts.scrollback, DEFAULT_SCROLLBACK, 0);
     this._cols = clampInt(opts.cols, DEFAULT_COLS, 2);
     this._rows = clampInt(opts.rows, DEFAULT_ROWS, 1);
@@ -141,8 +165,8 @@ class TerminalSnapshot {
 
     await runCompaction(async () => {
       if (this._disposed) return;
-      const terminal = new Terminal(terminalOptions(this._baseCols, this._baseRows, this._scrollback));
-      const addon = new SerializeAddon();
+      const terminal = new this._Terminal(terminalOptions(this._baseCols, this._baseRows, this._scrollback));
+      const addon = new this._SerializeAddon();
       terminal.loadAddon(addon);
       try {
         if (this._base) await writeTerminal(terminal, this._base);
