@@ -31,7 +31,8 @@ const RING_BUFFER_BYTES = 1024 * 1024;
 // 这个 1MB 原始尾部只保留为 snapshot 初始化失败时的降级兜底，不再承担长会话恢复。
 // Claude CLI `--effort` 的合法枚举；弹窗传入的值必须在此集合内才会被拼进命令行。
 const CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-const CODEX_REASONING_EFFORT = 'xhigh';
+// One default for ordinary/group Codex sessions and every new/resume/fork/relaunch path.
+const CODEX_REASONING_EFFORT = 'max';
 function buildCodexReasoningConfigArg(effort = CODEX_REASONING_EFFORT) {
   return [
     ` -c 'model_reasoning_effort="${effort}"'`,

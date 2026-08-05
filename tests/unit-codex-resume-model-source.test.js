@@ -51,7 +51,7 @@ test('codex picker resume enables mtime fallback binding', () => {
   );
 });
 
-test('codex PTY sessions default to xhigh reasoning effort and silent full access', () => {
+test('codex PTY sessions default to max reasoning effort and silent full access', () => {
   assert.match(
     SRC,
     /model_reasoning_effort="\$\{effort\}"/,
@@ -79,8 +79,8 @@ test('codex PTY sessions default to xhigh reasoning effort and silent full acces
   );
   assert.match(
     SRC,
-    /const CODEX_REASONING_EFFORT = 'xhigh';/,
-    'codex reasoning-effort override must default to xhigh',
+    /const CODEX_REASONING_EFFORT = 'max';/,
+    'codex reasoning-effort override must default to max',
   );
   const commandUses = SRC.match(/\$\{codexReasoningArg\}/g) || [];
   assert.ok(commandUses.length >= 6, 'new/resume/relaunch codex commands must include dynamic reasoning override');
@@ -101,11 +101,11 @@ test('group-chat Codex sessions cannot downgrade reasoning effort', () => {
   assert.match(
     SRC,
     /const codexReasoningArg = buildCodexReasoningConfigArg\(CODEX_REASONING_EFFORT\);/,
-    'fresh/resume/relaunch Codex commands must all use the shared xhigh effort',
+    'fresh/resume/relaunch Codex commands must all use the shared max effort',
   );
 });
 
-test('codex API profile uses the same xhigh reasoning effort default', () => {
+test('codex API profile uses the same max reasoning effort default', () => {
   assert.match(
     SRC,
     /model_reasoning_effort = \$\{tomlString\(CODEX_REASONING_EFFORT\)\}/,
