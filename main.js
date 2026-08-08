@@ -561,12 +561,37 @@ if (process.platform === 'win32' && !isIsolatedHub()) {
   app.setAppUserModelId(HUB_APP_USER_MODEL_ID); // = package.json build.appId
 }
 
+// Windows drops the window HICON whenever the taskbar identity is rebuilt, and
+// the button then falls back to electron.exe's own icon — the Electron atom.
+//
+// 2026-08-08：b4fd5d5 已经预见到这点，但只挂了 'show'/'restore'，而这两个事件
+// 对一个**始终可见**的窗口永远不会触发。实测链条：系统 08-06 14:11 启动 →
+// Hub 14:17 起来图标正常 → explorer.exe 08-07 19:56:47 崩溃重启（Application
+// Error 1000/1001 三条）→ 任务栏重建、HICON 丢失 → 08-08 17:40 截图已是原子图标，
+// 期间窗口一直开着，没有任何事件把图标补回去。
+// 所以除事件外，还要在 shell watchdog 的每一拍无条件重贴一次。setIcon 幂等，
+// NativeImage 缓存后单次开销就是一个 WM_SETICON，15 秒一次可以忽略。
+let _cachedHubWindowIcon = null;
+function getHubWindowIcon() {
+  if (_cachedHubWindowIcon && !_cachedHubWindowIcon.isEmpty()) return _cachedHubWindowIcon;
+  _cachedHubWindowIcon = nativeImage.createFromPath(path.join(__dirname, 'claude-wx.ico'));
+  return _cachedHubWindowIcon;
+}
+function reassertHubWindowIcon() {
+  if (process.platform !== 'win32') return false;
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  const icon = getHubWindowIcon();
+  if (!icon || icon.isEmpty()) return false;
+  mainWindow.setIcon(icon);
+  return true;
+}
+
 function createWindow() {
   // Load the icon as a NativeImage so we can pass it to BrowserWindow AND
   // re-apply via setIcon — on Windows the constructor `icon` alone sometimes
   // misses the taskbar; the explicit setIcon nails it.
   const iconPath = path.join(__dirname, 'claude-wx.ico');
-  const winIcon = nativeImage.createFromPath(iconPath);
+  const winIcon = getHubWindowIcon();
 
   // 标题动态读 package.json 版本号，避免硬编码漂移（card-redesign 0.2.0 起）
   const _pkgVersion = (() => {
@@ -598,12 +623,12 @@ function createWindow() {
     mainWindow.setIcon(winIcon);
     // Windows can drop the source-mode HICON after the taskbar identity is
     // rebuilt (shortcut repair, Explorer refresh, multi-window regrouping).
-    // Re-assert it when the window becomes visible again.
-    const reapplyWindowIcon = () => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setIcon(winIcon);
-    };
-    mainWindow.on('show', reapplyWindowIcon);
-    mainWindow.on('restore', reapplyWindowIcon);
+    // These two cover the "window was hidden and came back" case; the
+    // always-visible case is handled by the watchdog tick (see
+    // reassertHubWindowIcon above).
+    mainWindow.on('show', reassertHubWindowIcon);
+    mainWindow.on('restore', reassertHubWindowIcon);
+    mainWindow.on('focus', reassertHubWindowIcon);
   } else {
     console.warn('[icon] failed to load', iconPath);
   }
@@ -1790,11 +1815,10 @@ app.whenReady().then(async () => {
     // placeholder. Re-check the tiny Shell Link every 15s and repair drift.
     windowsShellWatchdog = startWindowsShellIntegrationWatchdog({
       ...windowsShellOptions,
-      onRepair: () => {
-        if (!mainWindow || mainWindow.isDestroyed()) return;
-        const icon = nativeImage.createFromPath(path.join(__dirname, 'claude-wx.ico'));
-        if (!icon.isEmpty()) mainWindow.setIcon(icon);
-      },
+      // 每一拍无条件重贴窗口图标：Explorer 重启丢 HICON 时快捷方式是好的，
+      // 健康检查不会失败，onRepair 不会触发（详见 reassertHubWindowIcon 注释）。
+      onTick: reassertHubWindowIcon,
+      onRepair: reassertHubWindowIcon,
     });
   }
   const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();

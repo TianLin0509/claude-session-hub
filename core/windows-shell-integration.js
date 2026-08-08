@@ -257,6 +257,7 @@ function startWindowsShellIntegrationWatchdog({
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
   onRepair = null,
+  onTick = null,
   logger = console,
   ...integrationOptions
 } = {}) {
@@ -265,6 +266,15 @@ function startWindowsShellIntegrationWatchdog({
     if (checking) return null;
     checking = true;
     try {
+      // onTick 每一拍都跑，与快捷方式是否漂移无关 —— 窗口 HICON 的丢失和快捷方式
+      // 的漂移是两件独立的事。Explorer 崩溃重启会重建任务栏并丢掉 HICON，但快捷
+      // 方式本身完好，健康检查会直接 return，onRepair 永远不触发。把「重贴图标」
+      // 挂在 onRepair 上就是 2026-08-08 那次图标变原子没能自愈的原因。
+      if (typeof onTick === 'function') {
+        try { onTick(); } catch (error) {
+          logger.warn?.(`[windows-shell] watchdog onTick failed: ${error && error.message}`);
+        }
+      }
       if (isWindowsShellIntegrationHealthy(integrationOptions)) return null;
       const result = ensureWindowsShellIntegration({ ...integrationOptions, logger });
       if (result.shortcutUpdated) {

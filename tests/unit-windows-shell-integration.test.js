@@ -315,3 +315,68 @@ test('non-Windows runs perform no filesystem or taskbar mutation', () => {
     fs.rmSync(h.temp, { recursive: true, force: true });
   }
 });
+
+// 2026-08-08 图标回归：Explorer 崩溃重启会重建任务栏并丢掉窗口 HICON，任务栏按钮
+// 回落到 electron.exe 自带的原子图标。但此时**快捷方式是完好的** —— 健康检查通过、
+// onRepair 永远不触发，所以把「重贴图标」挂在 onRepair 上救不回来。
+// 实测链条：系统 08-06 14:11 启动 → Hub 14:17 图标正常 → explorer.exe 08-07
+// 19:56:47 崩溃重启 → 08-08 17:40 截图已是原子图标，窗口全程可见。
+// 这条契约钉住：健康状态下每一拍也必须调用 onTick。
+test('watchdog re-asserts the window icon every tick even while the shortcut is healthy', () => {
+  const h = makeHarness();
+  try {
+    ensureWindowsShellIntegration({ ...h, platform: 'win32' });
+    assert.equal(isWindowsShellIntegrationHealthy({ ...h, platform: 'win32' }), true,
+      'precondition: shortcut is healthy, so onRepair must not fire');
+
+    let ticks = 0;
+    let repairs = 0;
+    let scheduled = null;
+    const watchdog = startWindowsShellIntegrationWatchdog({
+      ...h,
+      platform: 'win32',
+      setIntervalFn: (fn) => { scheduled = fn; return { unref() {} }; },
+      clearIntervalFn: () => {},
+      onTick: () => { ticks += 1; },
+      onRepair: () => { repairs += 1; },
+      logger: { warn() {} },
+    });
+
+    scheduled();
+    scheduled();
+    watchdog.audit();
+
+    assert.equal(ticks, 3, 'onTick 必须每一拍都跑，这是 Explorer 重启后自愈的唯一路径');
+    assert.equal(repairs, 0, '快捷方式健康时不应触发 onRepair —— 正因如此图标不能挂在它上面');
+    watchdog.stop();
+  } finally {
+    fs.rmSync(h.temp, { recursive: true, force: true });
+  }
+});
+
+test('watchdog survives an onTick that throws and still repairs the shortcut', () => {
+  const h = makeHarness();
+  try {
+    ensureWindowsShellIntegration({ ...h, platform: 'win32' });
+    const { shortcutPath } = getShortcutPaths({ app: h.app });
+    fs.unlinkSync(shortcutPath);
+    h.links.delete(path.resolve(shortcutPath));
+
+    const warnings = [];
+    const watchdog = startWindowsShellIntegrationWatchdog({
+      ...h,
+      platform: 'win32',
+      setIntervalFn: () => ({ unref() {} }),
+      clearIntervalFn: () => {},
+      onTick: () => { throw new Error('setIcon exploded'); },
+      logger: { warn: (msg) => warnings.push(String(msg)) },
+    });
+
+    const result = watchdog.audit();
+    assert.equal(result.shortcutUpdated, true, 'onTick 抛错不能吃掉快捷方式修复');
+    assert.ok(warnings.some(w => /onTick failed/.test(w)), '异常要记日志，不能静默');
+    watchdog.stop();
+  } finally {
+    fs.rmSync(h.temp, { recursive: true, force: true });
+  }
+});
