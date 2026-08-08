@@ -69,6 +69,10 @@ const { registerCommitteeIpc } = require('./main/ipc/committee-handlers.js');
 const { createResumeSessionHandler, registerResumeSessionIpc } = require('./main/ipc/resume-session-handlers.js');
 const { createGroupChatDispatcher } = require('./main/groupchat/dispatcher.js');
 const { createCommitteeConductor } = require('./main/groupchat/committee-conductor.js');
+const {
+  collectProtectedSessionIds,
+  createSessionAutoSuspendScheduler,
+} = require('./main/session-auto-suspend.js');
 const committeeHistory = require('./core/committee-history.js');
 const { createAutoTitleManager } = require('./main/auto-title-manager.js');
 const {
@@ -433,6 +437,13 @@ transcriptTap.on('session-bound', (ev) => {
       if (current && current.codexSessionsRoot) patch.codexSessionsRoot = current.codexSessionsRoot;
       if (current && current.codexAllowMtimeFallback) patch.codexAllowMtimeFallback = true;
       sessionManager.updateSessionMeta(ev.hubSessionId, patch);
+    } else if ((ev.kind === 'gemini' || ev.kind === 'gemini-resume')
+        && (ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot)) {
+      const patch = {};
+      if (ev.geminiChatId) patch.geminiChatId = ev.geminiChatId;
+      if (ev.geminiProjectHash) patch.geminiProjectHash = ev.geminiProjectHash;
+      if (ev.geminiProjectRoot) patch.geminiProjectRoot = ev.geminiProjectRoot;
+      sessionManager.updateSessionMeta(ev.hubSessionId, patch);
     } else if (isKimiCliKind(ev.kind) && (ev.kimiSid || ev.wirePath || ev.sessionDir)) {
       const patch = {};
       if (ev.kimiSid) patch.kimiSid = ev.kimiSid;
@@ -452,6 +463,15 @@ transcriptTap.on('session-bound', (ev) => {
         transcriptPath: ev.rolloutPath,
         codexSessionsRoot: sessionManager.getSession(ev.hubSessionId)?.codexSessionsRoot || null,
         codexAllowMtimeFallback: !!sessionManager.getSession(ev.hubSessionId)?.codexAllowMtimeFallback,
+      });
+    } else if ((ev.kind === 'gemini' || ev.kind === 'gemini-resume')
+        && (ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot)) {
+      sendToRenderer('session-meta-updated', {
+        hubSessionId: ev.hubSessionId,
+        kind: ev.kind,
+        geminiChatId: ev.geminiChatId,
+        geminiProjectHash: ev.geminiProjectHash,
+        geminiProjectRoot: ev.geminiProjectRoot,
       });
     } else if (isKimiCliKind(ev.kind) && (ev.kimiSid || ev.wirePath || ev.sessionDir)) {
       sendToRenderer('session-meta-updated', {
@@ -664,6 +684,7 @@ function sendToRenderer(channel, data) {
 }
 
 let groupChatDispatcher = null;
+let sessionAutoSuspendScheduler = null;
 const meetingTerminalActivitySentAt = new Map();
 const terminalOutputBatcher = new TerminalOutputBatcher({
   emit: ({ sessionId, data, seq }) => {
@@ -704,6 +725,22 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
     const updated = meetingManager.removeSubSession(meetingId, sessionId);
     if (updated) sendToRenderer('meeting-updated', { meeting: updated });
   }
+};
+
+sessionManager.onSessionSuspended = (sessionId, meetingId, session, exitInfo) => {
+  terminalOutputBatcher.flush(sessionId);
+  meetingTerminalActivitySentAt.delete(sessionId);
+  groupChatDispatcher?.markProcessExitForSession(sessionId, { ...(exitInfo || {}), suspended: true });
+  sessionManager.emit('session-exited', {
+    sessionId,
+    meetingId,
+    exitInfo: { ...(exitInfo || {}), suspended: true },
+  });
+  try { transcriptTap.unregisterSession(sessionId); } catch {}
+  try { cliReadyDetector.cleanup(sessionId); } catch {}
+  // Keep meeting membership and persisted metadata intact. The renderer turns
+  // the existing card into a dormant entry that the normal resume path wakes.
+  sendToRenderer('session-suspended', { sessionId, session });
 };
 
 // Register a freshly-spawned session with the transcript tap so the appropriate
@@ -837,6 +874,16 @@ try {
   });
   require('./main/ipc/loop-handlers.js').registerLoopIpc(ipcMain, { loopEngine: global.__loopEngine });
 } catch (e) { console.warn('[loop] engine init failed:', e && e.message); }
+
+sessionAutoSuspendScheduler = createSessionAutoSuspendScheduler({
+  sessionManager,
+  getProtectedSessionIds: () => collectProtectedSessionIds({
+    groupChatDispatcher,
+    loopEngine: global.__loopEngine,
+    meetingManager,
+  }),
+  logger: console,
+});
 
 // 投委会五幕编排（task#5）：叠加在 research 群聊之上，复用 dispatcher 的并行发言 + 委员解析。
 const committeeConductor = createCommitteeConductor({
@@ -1452,6 +1499,19 @@ registerConfigIpc(ipcMain, {
   sendToRenderer,
 });
 
+// --- 梦境系统（Dream Consolidation）+ 记忆面板 ---
+// IPC 为面板提供只读巡检数据与手动触发；调度器每天到点自动跑一轮沉淀。
+// 写入一律走 dream-consolidation 的快照+changelog 通道，可回溯可回滚。
+const { registerMemoryIpc } = require('./main/ipc/memory-handlers.js');
+registerMemoryIpc(ipcMain, { workspaceService, logger: console });
+const { startDreamScheduler } = require('./core/dream-consolidation.js');
+startDreamScheduler({
+  hubDataDir: getHubDataDir(),
+  workspaceRoot: workspaceService.getWorkspaceRoot(),
+  getHubConfig,
+  logger: console,
+});
+
 // --- Gemini/Codex/Kimi ring-buffer usage scanner ---
 // Periodically scans agent sessions' ring buffers for token/model patterns
 // and emits status-event so the renderer can show context/usage badges.
@@ -1826,9 +1886,11 @@ app.whenReady().then(async () => {
 
   traceStartup('startAgentScanner');
   startAgentScanner();
+  sessionAutoSuspendScheduler.start();
 });
 
 app.on('before-quit', () => {
+  sessionAutoSuspendScheduler?.stop();
   claudeHookWatchdog?.stop();
   claudeHookWatchdog = null;
   windowsShellWatchdog?.stop();

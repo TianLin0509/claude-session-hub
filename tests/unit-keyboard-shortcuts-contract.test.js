@@ -43,6 +43,30 @@ test('Ctrl+N creates a Claude session', () => {
   assert.deepStrictEqual(calls, [['create-session', 'claude']]);
 });
 
+test('Ctrl+W uses the shared close-as-sleep action', () => {
+  const closed = [];
+  const shortcuts = createKeyboardShortcuts({
+    document: { addEventListener: () => {} },
+    ipcRenderer: { invoke: () => { throw new Error('shared close action should be used'); } },
+    clipboard: { writeText: () => {} },
+    sessions: new Map([['busy', { id: 'busy', kind: 'codex', status: 'running' }]]),
+    terminalCache: new Map(),
+    getActiveSessionId: () => 'busy',
+    getCurrentFontSize: () => 16,
+    selectSession: () => {},
+    escapeToHome: () => {},
+    toggleSidebar: () => {},
+    openTerminalSearch: () => {},
+    setFontSize: () => {},
+    closeSession: sessionId => { closed.push(sessionId); },
+  });
+
+  const e = makeEvent({ key: 'w' });
+  shortcuts.handleKeydown(e);
+  assert.strictEqual(e.defaultPrevented, true);
+  assert.deepStrictEqual(closed, ['busy']);
+});
+
 test('Ctrl+Shift+B forks the active session', () => {
   const calls = [];
   const shortcuts = createKeyboardShortcuts({

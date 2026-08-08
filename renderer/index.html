@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="committee-ui.css">
   <link rel="stylesheet" href="workflow-config-modal.css">
   <link rel="stylesheet" href="chuxin.css">
+  <link rel="stylesheet" href="memory-panel.css">
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
   <script src="../node_modules/prismjs/prism.js"></script>
@@ -60,6 +61,12 @@
                   <option value="medium">medium · 省额度</option>
                   <option value="low">low · 最省</option>
                 </select></label>
+                <label class="session-tuning-field" id="new-session-mcp-field" for="new-session-mcp" hidden><span>MCP 加载</span><select id="new-session-mcp">
+                  <option value="lean">Lean · 默认省内存</option>
+                  <option value="browser">Browser · Playwright</option>
+                  <option value="wireless">Wireless · superwireless</option>
+                  <option value="full">Full · 全部全局 MCP</option>
+                </select></label>
               </div>
               <div class="menu-group-label">Workspace</div>
               <div class="session-workspace-grid" role="radiogroup" aria-label="选择 workspace 方式">
@@ -103,6 +110,7 @@
         <div class="options-wrapper">
           <button class="btn-options" id="btn-options" title="选项"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.66-7.66l-4.24 4.24m-7.07 7.07L4.34 19.66m13.32 0l-4.24-4.24m-7.07-7.07L4.34 4.34"/></svg></button>
           <div class="options-menu" id="options-menu" style="display:none">
+            <div class="options-item" id="options-suspend-idle" title="后台每 5 分钟巡检；连续 5 小时无输入输出则自动休眠">💤 自动休眠 · 5 小时（立即扫描）</div>
             <div class="options-item" id="options-settings">⚙️ 设置</div>
           </div>
         </div>
@@ -114,7 +122,8 @@
       <div class="context-menu" id="context-menu" style="display:none">
         <button class="context-menu-item" data-action="pin">Pin to top</button>
         <button class="context-menu-item" data-action="restart">Restart session</button>
-        <button class="context-menu-item danger" data-action="close">Close</button>
+        <button class="context-menu-item" data-action="close">关闭并休眠</button>
+        <button class="context-menu-item danger" data-action="delete">永久删除记录</button>
       </div>
       <div class="context-menu" id="terminal-context-menu" style="display:none">
         <button class="context-menu-item" data-action="preview">预览</button>

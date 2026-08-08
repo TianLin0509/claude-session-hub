@@ -1569,9 +1569,11 @@ if (typeof document !== 'undefined') (function () {
     //   "哪一格是哪家"。CSS 主题色亦按 slot 上色（见 .mr-ft.slot-N），kind 仅作 data-attribute。
     const avatarSrc = isGroupChat ? `assets/ai-logos/${String(kind).replace(/-resume$/, '')}.svg` : _avatarBySlot(slotIdx);
     const avatarFb = _avatarFallbackBySlot(slotIdx);
+    const avatarTitle = `打开 ${name || kind || `AI ${slotIdx + 1}`} 的 CLI 会话`;
+    const avatarJumpAttrs = `data-gc-open-session="${escapeHtml(sid)}" role="button" tabindex="0" title="${escapeHtml(avatarTitle)}" aria-label="${escapeHtml(avatarTitle)}"`;
     const avatarHtml = avatarSrc
-      ? `<div class="mr-ft-avatar"><img src="${avatarSrc}" alt="${kind || 'slot' + (slotIdx + 1)}" onerror="this.parentNode.textContent='${avatarFb}'; this.parentNode.style.cssText+=';display:flex;align-items:center;justify-content:center;font-size:30px;'"></div>`
-      : `<div class="mr-ft-avatar" style="display:flex;align-items:center;justify-content:center;font-size:30px;">${avatarFb}</div>`;
+      ? `<div class="mr-ft-avatar mr-session-jump" ${avatarJumpAttrs}><img src="${avatarSrc}" alt="${kind || 'slot' + (slotIdx + 1)}" onerror="this.parentNode.textContent='${avatarFb}'; this.parentNode.style.cssText+=';display:flex;align-items:center;justify-content:center;font-size:30px;'"></div>`
+      : `<div class="mr-ft-avatar mr-session-jump" ${avatarJumpAttrs} style="display:flex;align-items:center;justify-content:center;font-size:30px;">${avatarFb}</div>`;
 
     // Stage 2 容错升级：角标（绝对定位卡片右上角）—— 区分手动提取 / 缺席态
     let cornerBadge = '';
@@ -2053,9 +2055,11 @@ if (typeof document !== 'undefined') (function () {
       const fb = meeting && meeting.groupChat
         ? escapeHtml((slot.displayLabel || slot.kind || `AI ${idx + 1}`).slice(0, 2))
         : _avatarFallbackBySlot(idx);
+      const title = `打开 ${slot.displayLabel || slot.label || slot.kind || `AI ${idx + 1}`} 的 CLI 会话`;
+      const jumpAttrs = `data-gc-open-session="${escapeHtml(sid)}" role="button" tabindex="0" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"`;
       return src
-        ? `<img src="${src}" class="mr-gc-ob-avatar${meeting && meeting.groupChat ? ' group' : ''}" alt="slot${idx+1}" onerror="this.outerHTML='<span class=\\'mr-gc-ob-avatar-fb\\'>${fb}</span>'" />`
-        : `<span class="mr-gc-ob-avatar-fb">${fb}</span>`;
+        ? `<img src="${src}" class="mr-gc-ob-avatar mr-session-jump${meeting && meeting.groupChat ? ' group' : ''}" ${jumpAttrs} alt="slot${idx+1}" onerror="this.outerHTML='<span class=\\'mr-gc-ob-avatar-fb\\'>${fb}</span>'" />`
+        : `<span class="mr-gc-ob-avatar-fb mr-session-jump" ${jumpAttrs}>${fb}</span>`;
     }).join('');
 
     // D1 Phase 4: 三步引导卡片 — 群聊去掉固定辩论/总结轮次暗示。
@@ -2205,7 +2209,8 @@ if (typeof document !== 'undefined') (function () {
     if (isUser) return '<div class="mr-gc-avatar mr-gc-avatar-user">我</div>';
     if (!slot) return '<div class="mr-gc-avatar mr-gc-avatar-fallback">AI</div>';
     const label = slot.displayLabel || slot.label || slot.kind || 'AI';
-    return `<div class="mr-gc-avatar"><img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" /></div>`;
+    const title = `打开 ${label} 的 CLI 会话`;
+    return `<div class="mr-gc-avatar mr-session-jump" data-gc-open-session="${escapeHtml(slot.sid || '')}" role="button" tabindex="0" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"><img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" /></div>`;
   }
 
   // 2026-07-12 道雪：watcher settle 的失败原因 → 用户能看懂的中文标签。
@@ -2912,6 +2917,20 @@ if (typeof document !== 'undefined') (function () {
     return meeting && meeting.id ? (meetingData[meeting.id] || meeting) : meeting;
   }
 
+  function _openMeetingMemberSession(sid) {
+    if (!sid) return false;
+    if (typeof window !== 'undefined' && typeof window.openMeetingMemberSession === 'function') {
+      return window.openMeetingMemberSession(sid) !== false;
+    }
+    // Backward-compatible fallback for older renderer shells and focused tests.
+    if (typeof selectSession === 'function') {
+      void selectSession(sid, { forceScrollBottom: true });
+      return true;
+    }
+    console.warn('[meeting-avatar] session navigation is not available:', sid);
+    return false;
+  }
+
   function _handleSlotCardClick(card, ev, meeting) {
     const sid = card.getAttribute('data-ft-sid');
     if (!sid) return;
@@ -2971,13 +2990,7 @@ if (typeof document !== 'undefined') (function () {
         const r = await ipcRenderer.invoke('groupchat-skip-participant', { meetingId: meeting.id, sid });
         if (!r || !r.ok) console.warn(`[rt-escape] skip failed: ${r?.reason}`);
       } else if (action === 'enter-shell') {
-        if (typeof window !== 'undefined' && typeof window.selectSession === 'function') {
-          window.selectSession(sid);
-        } else if (typeof selectSession === 'function') {
-          selectSession(sid);
-        } else {
-          console.warn('[rt-escape] enter-shell: selectSession not available');
-        }
+        _openMeetingMemberSession(sid);
       } else if (action === 'resend-prompt') {
         const r = await ipcRenderer.invoke('groupchat-resend-prompt', { meetingId: meeting.id, sid });
         if (r && r.ok) {
@@ -3307,6 +3320,14 @@ if (typeof document !== 'undefined') (function () {
     const meeting = _currentGcPanelMeeting(panel);
     if (!meeting) return;
 
+    const sessionJump = _closestInPanel(ev.target, '[data-gc-open-session]', panel);
+    if (sessionJump) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      _openMeetingMemberSession(sessionJump.getAttribute('data-gc-open-session'));
+      return;
+    }
+
     const addMemberBtn = _closestInPanel(ev.target, '[data-gc-add-member]', panel);
     if (addMemberBtn) {
       ev.stopPropagation();
@@ -3632,6 +3653,14 @@ if (typeof document !== 'undefined') (function () {
         void _handleGcPanelClick(ev, panel).catch(err => {
           console.error('[groupchat] delegated click failed:', err);
         });
+      });
+      panel.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        const sessionJump = _closestInPanel(ev.target, '[data-gc-open-session]', panel);
+        if (!sessionJump) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        _openMeetingMemberSession(sessionJump.getAttribute('data-gc-open-session'));
       });
       panel.addEventListener('change', (ev) => {
         _handleGcPanelChange(ev, panel);
@@ -6434,6 +6463,25 @@ if (typeof document !== 'undefined') (function () {
           const groupScroll = _captureGroupChatScroll(panel, meeting);
           _renderGcPanelInto(panel, meeting, cached, { scroll: groupScroll });
         }
+      }
+    }
+  });
+
+  window.addEventListener('hub-session-suspended', (event) => {
+    const sessionId = event && event.detail && event.detail.sessionId;
+    if (!sessionId) return;
+    if (_tabState[sessionId] !== undefined) {
+      _tabState[sessionId] = 'idle';
+      updateTabIndicator(sessionId);
+    }
+    delete _cliReadyCache[sessionId];
+    if (activeMeetingId && _isPanelCapableMeeting(meetingData[activeMeetingId])) {
+      const cached = _gcPanelState[activeMeetingId];
+      if (cached) {
+        const panel = _ensureGcPanel();
+        const meeting = meetingData[activeMeetingId];
+        const groupScroll = _captureGroupChatScroll(panel, meeting);
+        _renderGcPanelInto(panel, meeting, cached, { scroll: groupScroll });
       }
     }
   });

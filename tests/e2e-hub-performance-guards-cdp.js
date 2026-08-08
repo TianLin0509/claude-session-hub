@@ -126,16 +126,34 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
       };
       await api.selectMeeting('perf-serial-meeting');
       await new Promise(resolve => setTimeout(resolve, 250));
+      const afterMeetingStats = api.terminalCacheStats();
+      const meetingPanelVisible = getComputedStyle(document.getElementById('meeting-room-panel')).display !== 'none';
+      await api.selectSession('perf-shell-7');
+      electronIpc.emit('session-suspended', {}, {
+        sessionId: 'perf-shell-7',
+        session: {
+          id: 'perf-shell-7', kind: 'codex', codexSid: 'perf-native-7',
+          title: 'Perf shell 7', status: 'dormant', lastMessageTime: now,
+        },
+      });
+      await new Promise(resolve => setTimeout(resolve, 100));
       return {
         initial,
         afterMeetingSessionEvents,
         afterShells,
-        afterMeeting: api.terminalCacheStats(),
+        afterMeeting: afterMeetingStats,
         memberStatuses: sids.map(sid => sessions.get(sid)?.status),
-        panelVisible: getComputedStyle(document.getElementById('meeting-room-panel')).display !== 'none',
+        panelVisible: meetingPanelVisible,
         renderStatsBeforeBurst,
         renderStatsAfterBurst,
         bulkSidebar,
+        suspended: {
+          exists: sessions.has('perf-shell-7'),
+          status: sessions.get('perf-shell-7')?.status,
+          cache: api.terminalCacheStats(),
+          bulkActionVisible: !!document.getElementById('options-suspend-idle'),
+          emptyStateVisible: getComputedStyle(document.getElementById('empty-state')).display !== 'none',
+        },
       };
     })()`);
 
@@ -150,6 +168,13 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     assert.ok(result.renderStatsAfterBurst.renders - result.renderStatsBeforeBurst.renders <= 3, JSON.stringify(result));
     assert.strictEqual(result.bulkSidebar.count, 900, JSON.stringify(result.bulkSidebar));
     assert.ok(result.bulkSidebar.renderMs < 250, `900-session sidebar render took ${result.bulkSidebar.renderMs}ms`);
+    assert.strictEqual(result.suspended.exists, true);
+    assert.strictEqual(result.suspended.status, 'dormant');
+    assert.strictEqual(result.suspended.cache.size, 3);
+    assert.deepStrictEqual(result.suspended.cache.ids, ['perf-shell-4', 'perf-shell-5', 'perf-shell-6']);
+    assert.strictEqual(result.suspended.bulkActionVisible, true);
+    assert.strictEqual(result.suspended.emptyStateVisible, true,
+      'session-suspended must retain the card while releasing its cached xterm');
 
     console.log(JSON.stringify({ ok: true, pid: hub.pid, port, result }, null, 2));
   } catch (err) {

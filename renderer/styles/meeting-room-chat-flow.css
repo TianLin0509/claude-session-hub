@@ -246,6 +246,21 @@
   object-fit: cover;
   display: block;
 }
+
+/* AI avatars navigate to the underlying child CLI session. */
+.mr-session-jump {
+  cursor: pointer;
+  outline: none;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease;
+}
+.mr-session-jump:hover {
+  transform: translateY(-1px);
+  border-color: rgba(88, 166, 255, 0.76);
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.18);
+}
+.mr-session-jump:focus-visible {
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.34);
+}
 .mr-gc-avatar-user {
   background: var(--mr-gc-user);
   color: #fff;

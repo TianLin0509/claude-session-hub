@@ -63,7 +63,7 @@ async function waitFor(client, expression, timeoutMs = 30000) {
 
     await waitFor(client, `(() => {
       const text = document.querySelector('#sidebar-strip')?.innerText || '';
-      return /^2\\s+活跃\\s+CPU\\s+\\d+%\\s+内存\\s+\\d+%$/.test(text.replace(/\\s+/g, ' ').trim());
+      return /^2\\s+活跃\\s+CPU\\s+\\d+%\\s+内存\\s+\\d+%\\s+代理\\s+\\S+$/.test(text.replace(/\\s+/g, ' ').trim());
     })()`);
 
     const beforeClose = await client.eval(`(() => {

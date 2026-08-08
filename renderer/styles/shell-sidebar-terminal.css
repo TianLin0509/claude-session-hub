@@ -1364,7 +1364,8 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
 }
 .sl-title .sl-pin { font-size: 9px; margin-right: 2px; }
-.sl-title .sl-un { color: #ff7b72; font-weight: 700; font-size: 10px; margin-left: 4px; }
+.sl-title .sl-un,
+.child-title .sl-un { color: #ff7b72; font-weight: 700; font-size: 10px; margin-left: 4px; }
 .session-item.slim.dormant .sl-title { color: var(--text-muted); }
 .sl-model { font-size: 9.5px; color: var(--text-secondary); font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
 .sl-ctx { font-size: 10px; font-weight: 700; font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
@@ -1485,6 +1486,7 @@
 .session-item.slim { border: none; background: transparent; box-shadow: none; }
 .session-item.slim.meeting { border-left-color: transparent; }
 .session-item.slim.dormant { background: transparent; border-left-color: transparent; box-shadow: none; }
+.session-item.slim.dormant.need-unread { background: rgba(231,76,60,.08); }
 .session-item.slim.selected { background: rgba(88,166,255,.10); border: none; box-shadow: none; }
 .session-item.slim.selected:hover { background: rgba(88,166,255,.14); }
 
@@ -1510,6 +1512,12 @@
    ========================================================================= */
 /* 群聊行1 状态词：运行中（任一成员运行） */
 .sl-state.run { color: var(--accent-green); }
+/* 群聊运行态跟成员“思考中”统一为黄色脉冲；普通 session 仍沿用绿色 running。 */
+.session-item.slim.meeting.gc .sl-ring-dot.run {
+  fill: #f5d76e;
+  animation: sl-pulse 1.5s ease-in-out infinite;
+}
+.session-item.slim.meeting.gc .sl-state.run { color: #f5d76e; }
 /* 行1 无箭头（群聊默认）vs 有箭头（老式 meeting） */
 .sl-line1 { grid-template-columns: 15px minmax(0,1fr) auto auto; }
 .sl-line1.with-arrow { grid-template-columns: auto 15px minmax(0,1fr) auto auto; }

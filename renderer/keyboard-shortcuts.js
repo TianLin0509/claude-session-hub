@@ -11,11 +11,15 @@ function createKeyboardShortcuts({
   toggleSidebar,
   openTerminalSearch,
   setFontSize,
+  closeSession,
   createWorkspaceSession,
 }) {
   const createSession = kind => typeof createWorkspaceSession === 'function'
     ? createWorkspaceSession(kind)
     : ipcRenderer.invoke('create-session', kind);
+  const closeSessionRequest = typeof closeSession === 'function'
+    ? closeSession
+    : sessionId => ipcRenderer.invoke('close-session', sessionId);
   function getSortedVisibleSessionIds() {
     return Array.from(sessions.values())
       .filter((session) => session && !session.hiddenFromSidebar && session.purpose !== 'chuxin-research')
@@ -139,7 +143,7 @@ function createKeyboardShortcuts({
     if (!e.shiftKey && !e.altKey && (e.key === 'w' || e.key === 'W')) {
       e.preventDefault();
       const activeSessionId = getActiveSessionId();
-      if (activeSessionId) ipcRenderer.invoke('close-session', activeSessionId);
+      if (activeSessionId) void closeSessionRequest(activeSessionId);
       return;
     }
 

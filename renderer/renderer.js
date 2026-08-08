@@ -7,6 +7,10 @@ const DOMPurify = require('dompurify');
 const { fileURLToPath } = require('url');
 const { extractVisibleCardText } = require('./visible-card-text.js');
 const { applyCardDisplaySettings } = require('./card-display-settings.js');
+const {
+  GC_WORKING_FRESH_MS,
+  isGroupChatMemberRunning,
+} = require('../core/groupchat-running-state.js');
 const applyHubCardDisplaySettings = (config) => applyCardDisplaySettings(document, config);
 applyHubCardDisplaySettings();
 ipcRenderer.invoke('get-hub-config-raw')
@@ -35,11 +39,16 @@ marked.use({
 const { installScrollDebug } = require('./scroll-debug.js');
 const { createMemoPanel } = require('./memo-panel.js');
 const { createTerminalSearch } = require('./terminal-search.js');
-const { createSessionContextMenuController, createTerminalContextMenuController } = require('./context-menus.js');
+const {
+  createSessionContextMenuController,
+  createTerminalContextMenuController,
+  supportsRecoverableSessionKind,
+} = require('./context-menus.js');
 const { createPathLinkContextMenuController } = require('./path-link-context-menu.js');
 const { XTERM_THEMES, createThemeController } = require('./theme-controller.js');
 const { createTerminalInputController } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
+const { createMemoryPanel } = require('./memory-panel.js');
 const { modelClass, modelShort, createModelUiController } = require('./model-ui.js');
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
@@ -647,6 +656,19 @@ function evictTerminalCacheFor(nextSessionId) {
   }
 }
 
+async function closeSessionAsSleep(sessionId) {
+  try {
+    const result = await ipcRenderer.invoke('close-session', sessionId);
+    if (!result || !result.ok) {
+      window.alert((result && result.message) || '关闭休眠失败，请稍后重试。');
+    }
+    return result || null;
+  } catch (error) {
+    window.alert(`关闭休眠失败：${error && error.message ? error.message : String(error)}`);
+    return null;
+  }
+}
+
 function getOrCreateTerminal(sessionId) {
   if (terminalCache.has(sessionId)) {
     const cached = terminalCache.get(sessionId);
@@ -997,10 +1019,11 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
   const closeBtn = document.createElement('button');
   closeBtn.className = 'btn-close-session';
-  closeBtn.title = 'Close session (Ctrl+W)';
-  closeBtn.setAttribute('aria-label', 'Close session');
+  const closeLabel = supportsRecoverableSessionKind(session) ? '关闭并休眠' : '关闭';
+  closeBtn.title = `${closeLabel}（Ctrl+W）`;
+  closeBtn.setAttribute('aria-label', closeLabel);
   closeBtn.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>';
-  closeBtn.addEventListener('click', () => ipcRenderer.invoke('close-session', sessionId));
+  closeBtn.addEventListener('click', () => { void closeSessionAsSleep(sessionId); });
 
   // Metrics (cwd + api time) live inline with the title now — single-row header.
   const metricsRow = document.createElement('div');
@@ -2422,7 +2445,7 @@ function updateFloatingBarState() {
 //   永久置位。规则：
 //   - card 系：hasSemanticCardWorking 的 45min maxAge（每次扫都真正执行）
 //   - hook 系：45min 无任何 PTY 输出判卡死（_lastOutputTs 由 onTerminalOutput/语义起点维护）
-//   - gcWorking：10min 无任何 partial-update（活着的 watcher 每 1.5s 必有 streaming）
+//   - gcWorking：8s 无任何 partial-update（活着的 watcher 每 1.5s 必有 streaming）
 function sweepStaleRunning() {
   const now = Date.now();
   let dirty = false;
@@ -2440,7 +2463,7 @@ function sweepStaleRunning() {
         dirty = true;
       }
     }
-    if (s.gcWorking && s._gcWorkingLastTs && now - s._gcWorkingLastTs > 10 * 60 * 1000) {
+    if (s.gcWorking && s._gcWorkingLastTs && now - s._gcWorkingLastTs > GC_WORKING_FRESH_MS) {
       s.gcWorking = false;
       dirty = true;
     }
@@ -2564,6 +2587,16 @@ function startRename(sessionId, titleSpan) {
 async function selectSession(id, opts = {}) {
   await savePreviewState();
   activeMeetingId = null;
+  // Hiding the meeting DOM alone leaves meeting-room.js believing the room is
+  // still active (pollers, draft state, and event guards keep running).  This
+  // matters especially for avatar -> child-session navigation, but the same
+  // lifecycle cleanup is required for every sidebar session switch.
+  if (typeof MeetingRoom !== 'undefined'
+      && typeof MeetingRoom.getActiveMeetingId === 'function'
+      && MeetingRoom.getActiveMeetingId()
+      && typeof MeetingRoom.closeMeetingPanel === 'function') {
+    MeetingRoom.closeMeetingPanel();
+  }
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
@@ -2908,6 +2941,17 @@ function writeTerminalChunk(sessionId, cached, data) {
   }
 }
 
+// Meeting-room used to switch an embedded xterm tab when an AI avatar was
+// clicked. Embedded terminals were removed in v1.6.1, so expose the current
+// architecture's equivalent: leave the meeting and open that child session in
+// the main session surface. Keep the bridge explicit instead of relying on a
+// top-level function accidentally becoming a Window property.
+window.openMeetingMemberSession = function openMeetingMemberSession(sessionId) {
+  if (!sessionId || !sessions.has(sessionId)) return false;
+  void selectSession(sessionId, { forceScrollBottom: true });
+  return true;
+};
+
 function writeXtermAndWait(terminal, data) {
   if (!terminal || !data) return Promise.resolve();
   return new Promise((resolve) => {
@@ -3107,6 +3151,17 @@ const accountUsageController = createAccountUsageController({
   escapeHtml,
 });
 const renderAccountUsage = accountUsageController.render;
+// 记忆系统面板：用量 ticker 的「记忆」按钮打开（按钮监听在面板内走文档级委托，
+// 因为 ticker 每次 render 都重建 innerHTML）。
+const memoryPanel = createMemoryPanel({
+  document,
+  ipcRenderer,
+  escapeHtml,
+  getActiveSessionInfo: () => {
+    const s = sessions.get(activeSessionId);
+    return s ? { cwd: s.cwd, kind: s.kind, title: s.title } : null;
+  },
+});
 function pctClass(pct) { return accountUsageController.pctClass(pct); }
 if (typeof window !== 'undefined') window.pctClass = pctClass;
 
@@ -3551,6 +3606,7 @@ const keyboardShortcuts = createKeyboardShortcuts({
   toggleSidebar,
   openTerminalSearch: () => openTerminalSearch(),
   setFontSize,
+  closeSession: closeSessionAsSleep,
   createWorkspaceSession: (kind) => window.WorkspaceController.openNewSessionModal({ kind }),
 });
 keyboardShortcuts.init();
@@ -3673,6 +3729,37 @@ const themeController = createThemeController({
   openConfigModal,
 });
 
+const suspendIdleItem = document.getElementById('options-suspend-idle');
+if (suspendIdleItem) {
+  suspendIdleItem.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    const optionsMenu = document.getElementById('options-menu');
+    if (optionsMenu) optionsMenu.style.display = 'none';
+    const confirmed = window.confirm(
+      '立即扫描并休眠 5 小时以上无输入输出的 AI 会话？\n\n'
+      + '后台也会每 5 分钟自动巡检；会保留会话卡片、未读标记和历史记录。'
+      + '自动巡检会保护置顶、当前、正在工作的群聊及初心投研会话；'
+      + '本次手动扫描会额外跳过全部群聊成员。',
+    );
+    if (!confirmed) return;
+    suspendIdleItem.setAttribute('aria-busy', 'true');
+    try {
+      const result = await ipcRenderer.invoke('suspend-idle-sessions', { idleMs: 5 * 60 * 60 * 1000 });
+      if (!result || !result.ok) {
+        window.alert((result && result.message) || '批量休眠失败，请稍后重试。');
+        return;
+      }
+      window.alert(result.count > 0
+        ? `已请求休眠 ${result.count} 个长期闲置会话；内存会在对应 CLI 退出后释放。`
+        : '没有符合条件的长期闲置会话。');
+    } catch (error) {
+      window.alert(`批量休眠失败：${error && error.message ? error.message : String(error)}`);
+    } finally {
+      suspendIdleItem.removeAttribute('aria-busy');
+    }
+  });
+}
+
 if (typeof MeetingRoom !== 'undefined') {
   MeetingRoom.init(sessions, getOrCreateTerminal);
 }
@@ -3694,6 +3781,9 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
       status: 'idle',
       // preserve persisted UX state
       pinned: existing.pinned,
+      unreadCount: existing.unreadCount || 0,
+      suspendedAt: null,
+      suspendReason: null,
       // Main reconciles provider-native ids/paths during resume.  Its fresh
       // binding must replace stale dormant metadata, not the other way around.
       ccSessionId: session.ccSessionId || existing.ccSessionId,
@@ -3716,6 +3806,10 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
     renderSessionList();
     return;
   }
+  // 普通会话的唤醒流程会直接把终端展示给用户，此刻才算真正“已读”。群聊成员
+  // 的后台/工作流唤醒会在上面的 meeting 分支返回，因此仍保留休眠前的未读标记。
+  const activatedSession = sessions.get(session.id);
+  if (activatedSession) activatedSession.unreadCount = 0;
   await savePreviewState();
   clearPreviewUI();
   activeSessionId = session.id;
@@ -3768,6 +3862,66 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
 
 // Spec 3 · W13：清理 _cardReloadState 的 session 条目，防 Map 长期累积。
 // session-closed 触发，确保即使 inProgress 异常残留也不影响新生命周期同 sessionId 的 session。
+ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
+  const local = sessions.get(sessionId);
+  if (!local) return;
+  if (window._cardLoadSeqBySid) window._cardLoadSeqBySid.delete(sessionId);
+  if (window._cardStopFallbackBySid && window._cardStopFallbackBySid.has(sessionId)) {
+    clearTimeout(window._cardStopFallbackBySid.get(sessionId));
+    window._cardStopFallbackBySid.delete(sessionId);
+  }
+  if (window._cardReloadState && window._cardReloadState.has(sessionId)) {
+    const state = window._cardReloadState.get(sessionId);
+    if (state && state.pendingTimer) { try { clearTimeout(state.pendingTimer); } catch {} }
+    window._cardReloadState.delete(sessionId);
+  }
+  if (window._codexHistoryRetryState && window._codexHistoryRetryState.has(sessionId)) {
+    const state = window._codexHistoryRetryState.get(sessionId);
+    if (state && state.timer) { try { clearTimeout(state.timer); } catch {} }
+    window._codexHistoryRetryState.delete(sessionId);
+  }
+  if (_codexSubmitPendingTimers.has(sessionId)) {
+    clearTimeout(_codexSubmitPendingTimers.get(sessionId));
+    _codexSubmitPendingTimers.delete(sessionId);
+  }
+  if (_turnCompleteBackfillTimers.has(sessionId)) {
+    try { clearTimeout(_turnCompleteBackfillTimers.get(sessionId)); } catch {}
+    _turnCompleteBackfillTimers.delete(sessionId);
+  }
+  if (typeof _w16RemoveTimers !== 'undefined' && _w16RemoveTimers.has(sessionId)) {
+    try { clearTimeout(_w16RemoveTimers.get(sessionId)); } catch {}
+    _w16RemoveTimers.delete(sessionId);
+  }
+  if (typeof _groupChatWorkingExpiryTimers !== 'undefined' && _groupChatWorkingExpiryTimers.has(sessionId)) {
+    try { clearTimeout(_groupChatWorkingExpiryTimers.get(sessionId)); } catch {}
+    _groupChatWorkingExpiryTimers.delete(sessionId);
+  }
+  if (_cardHistoryHydratedSid === sessionId) _cardHistoryHydratedSid = null;
+
+  const pinned = local.pinned;
+  const unreadCount = local.unreadCount;
+  Object.assign(local, session || {}, {
+    id: sessionId,
+    status: 'dormant',
+    pinned,
+    unreadCount,
+    isWaiting: false,
+    _agentWorking: false,
+    gcWorking: false,
+  });
+  clearTerminalActivitySession(sessionId);
+  disposeCachedTerminal(sessionId);
+  if (activeSessionId === sessionId) {
+    activeSessionId = null;
+    preserveAndClearTerminalPanel();
+    terminalPanelEl.appendChild(emptyStateEl);
+    emptyStateEl.style.display = '';
+  }
+  renderSessionList();
+  schedulePersist();
+  window.dispatchEvent(new CustomEvent('hub-session-suspended', { detail: { sessionId, session: local } }));
+});
+
 ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   const closing = sessions.get(sessionId);
   const wasChuxinResearch = !!(closing && closing.purpose === 'chuxin-research');
@@ -3835,6 +3989,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.transcriptPath) local.transcriptPath = session.transcriptPath;
   if (session.codexSessionsRoot) local.codexSessionsRoot = session.codexSessionsRoot;
   if (session.codexAllowMtimeFallback) local.codexAllowMtimeFallback = true;
+  if (session.mcpProfile) local.mcpProfile = session.mcpProfile;
   if (session.kimiSid) local.kimiSid = session.kimiSid;
   if (session.kimiSessionDir) local.kimiSessionDir = session.kimiSessionDir;
   if (session.userRenamed) local.userRenamed = true;
@@ -3878,6 +4033,8 @@ function schedulePersist() {
         lastMessageTime: s.lastMessageTime || Date.now(),
         lastOutputPreview: s.lastOutputPreview || '',
         unreadCount: s.unreadCount || 0,
+        suspendedAt: s.suspendedAt || null,
+        suspendReason: s.suspendReason || null,
         currentModel: s.currentModel || null,
         contextPct: typeof s.contextPct === 'number' ? s.contextPct : null,
         contextUsed: typeof s.contextUsed === 'number' ? s.contextUsed : null,
@@ -3892,6 +4049,7 @@ function schedulePersist() {
         codexAllowMtimeFallback: !!s.codexAllowMtimeFallback,
         codexProfile: s.codexProfile || null,
         codexProfileLabel: s.codexProfileLabel || null,
+        mcpProfile: s.mcpProfile || null,
         geminiChatId: s.geminiChatId || null,
         geminiProjectHash: s.geminiProjectHash || null,
         geminiProjectRoot: s.geminiProjectRoot || null,
@@ -3961,6 +4119,7 @@ async function resumeDormantSession(hubId, opts = {}) {
       codexSessionsRoot: dormant.codexSessionsRoot || null,
       codexAllowMtimeFallback: !!dormant.codexAllowMtimeFallback,
       codexProfile: dormant.codexProfile || null,
+      mcpProfile: dormant.mcpProfile || null,
       geminiChatId: dormant.geminiChatId || null,
       geminiProjectHash: dormant.geminiProjectHash || null,
       geminiProjectRoot: dormant.geminiProjectRoot || null,
@@ -3980,8 +4139,8 @@ async function resumeDormantSession(hubId, opts = {}) {
     alert(`原工作目录已不存在：\n${resumed.cwdFellBackFrom}\n\n会话已回落到：\n${resumed.cwd}\n\n请先重定位或归档 workspace；不要在聚合根继续写文件。`);
   }
   // v0.13 · P0 #2: 不再反向清零 dormant 累积的 unread。睡前积压的对话用户还
-  // 没看 → 应保留红点直到用户真正点击进入（selectSession 会清零）。原代码会
-  // 让"睡前 N 条新消息"在 resume 瞬间静默丢失。
+  // 没看 → 应保留到真正进入终端；普通会话由 session-created 展示终端时清零，
+  // 群聊成员的后台唤醒则等用户 selectSession 后再清零。
   const s = sessions.get(hubId);
   // ipcRenderer.invoke 的响应与 session-created 推送是两条消息；响应极快时
   // 推送未必已经更新本地 Map。先用返回值做幂等合并，防止紧邻的下一步
@@ -3992,6 +4151,9 @@ async function resumeDormantSession(hubId, opts = {}) {
       ...resumed,
       status: 'idle',
       pinned: s.pinned,
+      unreadCount: s.unreadCount || 0,
+      suspendedAt: null,
+      suspendReason: null,
       ccSessionId: resumed.ccSessionId || s.ccSessionId,
       transcriptPath: resumed.transcriptPath || s.transcriptPath,
       lastOutputPreview: s.lastOutputPreview,
@@ -4046,6 +4208,8 @@ window.resumeDormantSession = resumeDormantSession;
         lastMessageTime: meta.lastMessageTime || Date.now(),
         lastOutputPreview: meta.lastOutputPreview || '',
         unreadCount: meta.unreadCount || 0,
+        suspendedAt: meta.suspendedAt || null,
+        suspendReason: meta.suspendReason || null,
         createdAt: meta.lastMessageTime || Date.now(),
         cwd: meta.cwd || null,
         cwdFellBackFrom: meta.cwdFellBackFrom || null,
@@ -4069,6 +4233,7 @@ window.resumeDormantSession = resumeDormantSession;
         codexAllowMtimeFallback: !!meta.codexAllowMtimeFallback,
         codexProfile: meta.codexProfile || null,
         codexProfileLabel: meta.codexProfileLabel || null,
+        mcpProfile: meta.mcpProfile || null,
         geminiChatId: meta.geminiChatId || null,
         geminiProjectHash: meta.geminiProjectHash || null,
         geminiProjectRoot: meta.geminiProjectRoot || null,
@@ -4131,11 +4296,44 @@ window.resumeDormantSession = resumeDormantSession;
 
 // Persist on relevant changes — listen at renderer-level for mutations that
 // touch persistable fields. Debounced.
-for (const ch of ['session-created', 'session-closed', 'session-updated', 'meeting-created', 'meeting-updated', 'meeting-closed']) {
+for (const ch of ['session-created', 'session-closed', 'session-suspended', 'session-updated', 'meeting-created', 'meeting-updated', 'meeting-closed']) {
   ipcRenderer.on(ch, () => schedulePersist());
 }
 
 // --- Meeting Room IPC events ---
+const _groupChatWorkingExpiryTimers = new Map();
+
+function _setGroupChatMemberWorking(session, working, now = Date.now()) {
+  if (!session) return false;
+  const sid = String(session.id || '');
+  const oldTimer = _groupChatWorkingExpiryTimers.get(sid);
+  if (oldTimer) clearTimeout(oldTimer);
+  _groupChatWorkingExpiryTimers.delete(sid);
+
+  const wasRunning = isGroupChatMemberRunning(session, now);
+  if (!working) {
+    session.gcWorking = false;
+    session._gcWorkingLastTs = null;
+    return wasRunning !== isGroupChatMemberRunning(session, now);
+  }
+
+  session.gcWorking = true;
+  session._gcWorkingLastTs = now;
+  const heartbeatTs = now;
+  const timer = setTimeout(() => {
+    _groupChatWorkingExpiryTimers.delete(sid);
+    if (!session.gcWorking || session._gcWorkingLastTs !== heartbeatTs) return;
+    const beforeExpiry = isGroupChatMemberRunning(session, heartbeatTs);
+    session.gcWorking = false;
+    session._gcWorkingLastTs = null;
+    if (beforeExpiry !== isGroupChatMemberRunning(session, Date.now())) {
+      scheduleSessionListRender();
+    }
+  }, GC_WORKING_FRESH_MS + 50);
+  _groupChatWorkingExpiryTimers.set(sid, timer);
+  return wasRunning !== isGroupChatMemberRunning(session, now);
+}
+
 ipcRenderer.on('meeting-created', (_e, { meeting }) => {
   meetings[meeting.id] = meeting;
   // 2026-05-05 道雪：新 AI 群聊默认折叠（白名单未命中=折叠）。折叠态侧边栏已显示 3 个迷你
@@ -4151,6 +4349,24 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
   scheduleSessionListRender();
 });
 
+// 调度器在 prompt 真正发出后立刻公布本轮目标。先据此点亮目标成员，避免等到
+// 第一段 streaming 心跳才显示运行中；没被点名的成员同时清掉上一轮残留。
+ipcRenderer.on('groupchat-turn-targets', (_event, { meetingId, sids }) => {
+  if (!meetingId || !Array.isArray(sids)) return;
+  const meeting = meetings[meetingId];
+  const targetSids = new Set(sids.map(String));
+  const memberSids = new Set([
+    ...((meeting && meeting.subSessions) || []).map(String),
+    ...targetSids,
+  ]);
+  let dirty = false;
+  for (const sid of memberSids) {
+    const sub = sessions.get(sid);
+    if (sub) dirty = _setGroupChatMemberWorking(sub, targetSids.has(sid)) || dirty;
+  }
+  if (dirty) scheduleSessionListRender();
+});
+
 // 2026-05-31 道雪：群聊侧栏"等你 N" 状态机 —— 单个 AI 答完即累加（1-3），跨轮自动清零。
 //   partial-update IPC 在终态（completed/manual_extracted）触发；turnNum 与上次记录不同时清空 Set 重新计数；
 //   active meeting 不累加（用户正看着，不打扰）。selectMeeting 时 clear（在 selectMeeting 函数内）。
@@ -4163,11 +4379,7 @@ ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, s
   const sub = sessions.get(sid);
   if (sub) {
     const nextWorking = status === 'streaming' || status === 'thinking' || status === 'soft_alert';
-    if (nextWorking) sub._gcWorkingLastTs = Date.now();
-    if (!!sub.gcWorking !== nextWorking) {
-      sub.gcWorking = nextWorking;
-      scheduleSessionListRender();
-    }
+    if (_setGroupChatMemberWorking(sub, nextWorking)) scheduleSessionListRender();
   }
   if (status !== 'completed' && status !== 'manual_extracted') return;
   const meeting = meetings[meetingId];
@@ -4195,7 +4407,7 @@ ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
   //   不经 partial-update 终态的路径，防止状态灯卡在黄灯）。
   for (const sid of meeting.subSessions || []) {
     const s = sessions.get(sid);
-    if (s && s.gcWorking) s.gcWorking = false;
+    if (s) _setGroupChatMemberWorking(s, false);
   }
   scheduleSessionListRender();
 });
