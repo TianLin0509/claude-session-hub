@@ -2554,21 +2554,31 @@ function startRename(sessionId, titleSpan) {
 
   const finish = async () => {
     const trimmed = input.value.trim();
-    if (trimmed && trimmed !== session.title) {
+    const changed = !!trimmed && trimmed !== session.title;
+    if (changed) {
+      // 本地必须自己落地，不能等 session-updated 的回声：那个 handler 的守卫是
+      // `if (!local.userRenamed && session.title) local.title = session.title`，
+      // 用来挡自动改名（OSC / auto-title）覆盖用户手动改的名字。但我们上一行刚把
+      // userRenamed 置成 true，回声就被自己的守卫挡掉了 —— 改名于是只落到主进程，
+      // 侧栏和顶栏还是旧名字，看起来像「点了没反应」。
+      // 只有 dormant 分支原本歪打正着写了本地 title，所以休眠会话改名一直是好的，
+      // 活着的会话（codex / codex-resume / 分支都属此列）一直是坏的。
       session.userRenamed = true;
-      if (session.status === 'dormant') {
-        // No live PTY; just mutate locally and persist.
-        session.title = trimmed;
-        renderSessionList();
-        schedulePersist();
-      } else {
-        await ipcRenderer.invoke('rename-session', { sessionId, title: trimmed, userRenamed: true });
-        if (session.kind === 'claude' || session.kind === 'claude-resume') {
-          syncRenameToClaude(sessionId, trimmed);
-        }
-      }
+      session.title = trimmed;
+      // titleSpan 是进入改名前捕获的那个节点，下面会被放回 DOM。不同步刷新它，
+      // 顶栏就会一直显示旧标题，直到切走再切回来触发 showTerminal 重建。
+      titleSpan.textContent = trimmed;
     }
     input.replaceWith(titleSpan);
+    if (!changed) return;
+    renderSessionList();
+    schedulePersist();
+    // 休眠会话没有 PTY，也没有主进程侧的 session 对象要同步，到此为止。
+    if (session.status === 'dormant') return;
+    await ipcRenderer.invoke('rename-session', { sessionId, title: trimmed, userRenamed: true });
+    if (session.kind === 'claude' || session.kind === 'claude-resume') {
+      syncRenameToClaude(sessionId, trimmed);
+    }
   };
 
   input.addEventListener('blur', finish);
