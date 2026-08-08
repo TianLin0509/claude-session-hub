@@ -230,6 +230,7 @@ function createAccountUsageController({
       `<span class="qt-div"></span>` +
       renderSeg('Kimi', k.usage5h, k.usage7d, { ...k, lastSeen: agentUsageLastSeen.kimi }) +
       `<span class="qt-right"><span class="qt-fresh ${freshCls}" title="数据更新于 ${escapeHtml(ageTxt)}前（取三家最旧）"></span><span class="qt-age">${escapeHtml(ageTxt)}</span>` +
+      `<button class="qt-memory" data-action="open-memory" title="记忆系统：各 CLI 记忆与规则文件、梦境沉淀记录" aria-label="打开记忆系统">记忆</button>` +
       `<button class="qt-refresh${usageRefreshState.inFlight ? ' loading' : ''}" data-action="refresh-usage" title="${escapeHtml(refreshTitle)}" aria-label="刷新账户用量">${usageRefreshState.inFlight ? '刷新中' : '⟳ 刷新'}</button></span>`;
   
     el.querySelectorAll('[data-action="refresh-usage"]').forEach(refreshBtn => {

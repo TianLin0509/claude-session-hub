@@ -240,7 +240,87 @@ function ensureMemoryLink(cwd, opts = {}) {
   return result;
 }
 
+// 记忆面板「一键并入」：对指定孤岛桶执行与 spawn 时同一套 merge→留底→换链。
+// 与 ensureMemoryLink 的区别：后者按 cwd 算 slug、在会话启动时被动触发；
+// 这个按显式 (root, slug) 定位桶，供人工在面板上对存量孤岛主动收口。
+function mergeIslandBucket(root, slug, opts = {}) {
+  const homeDir = opts.homeDir || defaultHomeDir();
+  const canonical = opts.canonicalDir || canonicalMemoryDir(homeDir);
+  const logger = opts.logger || console;
+  const result = { merged: [], conflicts: [], deduplicated: [], linked: null, backup: null, error: null };
+  if (!CLAUDE_PROJECT_ROOT_DIRS.includes(root)) {
+    result.error = `invalid root: ${root}`;
+    return result;
+  }
+  if (!/^[A-Za-z0-9-]+$/.test(String(slug || ''))) {
+    result.error = `invalid slug: ${slug}`;
+    return result;
+  }
+  let canonicalExists = false;
+  try { canonicalExists = fs.statSync(canonical).isDirectory(); } catch {}
+  if (!canonicalExists) {
+    result.error = `规范库不存在：${canonical}`;
+    return result;
+  }
+  const bucket = path.join(homeDir, root, 'projects', slug);
+  const memoryPath = path.join(bucket, 'memory');
+  // 规范库自身不可并入——否则「合并进自己」后改名留底，规范库原地变成指向空处的
+  // junction（2026-08-01 E2E 实测事故；ensureMemoryLink 本来就有这个判定）。
+  if (path.resolve(memoryPath) === path.resolve(canonical)) {
+    result.error = '该桶就是规范库本身，无需也无法并入';
+    return result;
+  }
+  const lockPath = path.join(bucket, '.hub-memory-link.lock');
+  let lockFd = null;
+  try {
+    const st = fs.lstatSync(memoryPath);
+    if (st.isSymbolicLink()) {
+      result.error = '已是链接，无需并入';
+      return result;
+    }
+    if (!st.isDirectory()) {
+      result.error = '不是目录，无法并入';
+      return result;
+    }
+    lockFd = acquireLock(lockPath);
+    if (lockFd == null) {
+      result.error = '该桶正由另一个 Hub 进程处理';
+      return result;
+    }
+    const { moved, conflicts, deduplicated, created } = mergeIntoCanonical(memoryPath, canonical, slug, logger);
+    const backup = `${memoryPath}.island-backup-${Date.now()}`;
+    try {
+      fs.renameSync(memoryPath, backup);
+    } catch (renameError) {
+      rollbackCreatedFiles(created, logger);
+      throw renameError;
+    }
+    try {
+      fs.symlinkSync(canonical, memoryPath, 'junction');
+    } catch (linkError) {
+      let restored = false;
+      try { fs.renameSync(backup, memoryPath); restored = true; } catch (restoreError) {
+        logger.warn?.(`[memory] 换链失败且原目录恢复也失败，留底在 ${backup}: ${restoreError && restoreError.message}`);
+      }
+      if (restored) rollbackCreatedFiles(created, logger);
+      throw linkError;
+    }
+    result.merged = moved;
+    result.conflicts = conflicts;
+    result.deduplicated = deduplicated;
+    result.linked = memoryPath;
+    result.backup = backup;
+    logger.log?.(`[memory] 面板并入孤岛桶 ${slug}（${root}）：并入 ${moved.length}，冲突另存 ${conflicts.length}，去重 ${deduplicated.length}`);
+  } catch (error) {
+    result.error = String(error && error.message ? error.message : error);
+  } finally {
+    if (lockFd != null) releaseLock(lockFd, lockPath);
+  }
+  return result;
+}
+
 module.exports = {
   canonicalMemoryDir,
   ensureMemoryLink,
+  mergeIslandBucket,
 };

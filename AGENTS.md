@@ -41,3 +41,14 @@
 - 语法级改动至少跑对应 `node --check` 或项目已有单测。
 - UI/GUI 行为改动需要真实 Hub 实例 + CDP/Playwright 或截图证据；如果不能运行，要说明原因。
 - 最终回答必须列出实际执行过的验证命令和结果；如果只做静态检查，不能说 E2E 通过。
+
+## 梦境系统与记忆面板（2026-08-01）
+
+- 管线在 `core\dream-consolidation.js`（采集→蒸馏→落盘；写前快照 + changelog.jsonl 可回溯），只读巡检在 `core\memory-inspector.js`。
+- **规范库（home 桶）自身不是孤岛**：巡检、孤岛采集、`mergeIslandBucket` 三处都必须排除它——它是所有 junction 的目标，漏判会把规范库合并进自己或把已共享内容重复蒸馏（2026-08-01 三连坑）。
+- 增量去重：候选按内容指纹（excerpt sha256）跳过已蒸馏项，指纹只在上轮蒸馏成功后标记；`state.json` 的 processed 上限 500 条。
+- 孤岛桶可在面板「一键并入规范库」（`memory:merge-island` → `claude-memory-link.mergeIslandBucket`，机械合并非蒸馏），行为记 changelog。
+- IPC 在 `main\ipc\memory-handlers.js`；面板在 `renderer\memory-panel.js` / `memory-panel.css`，从用量 ticker「记忆」按钮打开。按钮监听必须挂 document 委托——ticker 每次 render 重建 innerHTML，挂在面板 DOM 里会在首次 open 前失效。
+- 自动沉淀只写目标文件末尾 `<!-- dream:begin/end -->` 托管区，手写正文区不得动；用户级四件套（kimi/claude/codex/gemini）与工作区根 AGENTS.md+CLAUDE.md+GEMINI.md 多写保持逐字一致，缺哪份不补建。
+- 隔离验证梦境/记忆功能必须同时设 `CLAUDE_HUB_HOME_DIR`（否则 memory 孤岛采集扫真实 home、写真实三件套）并清空 `DEEPSEEK_API_KEY`（env 优先于 config.json，父进程的 key 会漏进隔离实例）。
+- 测试：`node tests\unit-dream-consolidation.test.js`、`node tests\e2e-memory-panel-cdp.js`。

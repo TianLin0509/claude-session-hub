@@ -112,6 +112,8 @@ C:\Users\lintian\claude-session-hub\node_modules\electron\dist\electron.exe C:\t
 
 6. **pytest fixture 参考实现**：`C:\Users\lintian\.ai-team\tests\test_e2e_critical.py::_setup_hub_worktree` + `_start_hub`（commit `cacb791` 及之后）是唯一正确模板。禁止回退到老的 `npm install` + `npx electron` 写法
 
+7. **测梦境/记忆功能必须额外隔离 home 与 key**（血泪 2026-08-01）：`CLAUDE_HUB_DATA_DIR` 只隔 Hub 自身状态，`memory-handlers` / `dream-consolidation` 的 home 仍指真实用户目录——隔离实例跑 `consolidation:run-now` 会扫真实 memory 孤岛并把蒸馏结果写进真实三件套；且 `DEEPSEEK_API_KEY` env 优先级高于 config.json，父进程的 key 会漏进隔离实例触发真实 LLM 调用。测这类功能必须同时设 `CLAUDE_HUB_HOME_DIR=<临时目录>` 与 `DEEPSEEK_API_KEY=`（空），参考 `tests\e2e-memory-panel-cdp.js`
+
 ### 血泪案例
 
 - 2026-04-19 四路代码审查发现：`main.js` 的 `ensureHooksDeployed()` 原本只在目标不存在时复制脚本，导致老用户机器永远拿不到新 statusline 的 env-dir 支持，隔离链条断掉（已修为内容比对覆盖，commit `5dd5dfe`）
