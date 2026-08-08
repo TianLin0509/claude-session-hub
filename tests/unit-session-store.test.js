@@ -116,5 +116,18 @@ const sessionStore = require('../core/session-store');
     console.log('PASS S9 legacy branch title canonicalized on disk');
   }
 
+  // S10: automatic hibernation metadata and unread state survive self-heal backup.
+  {
+    sessionStore.saveSessionFile('auto-sleep', {
+      kind: 'codex', title: 'Auto sleeping', codexSid: 'native-auto',
+      unreadCount: 4, suspendedAt: 7000, suspendReason: 'idle-timeout', updatedAt: 7001,
+    });
+    const loaded = sessionStore.loadSessionFile('auto-sleep');
+    assert.strictEqual(loaded.unreadCount, 4);
+    assert.strictEqual(loaded.suspendedAt, 7000);
+    assert.strictEqual(loaded.suspendReason, 'idle-timeout');
+    console.log('PASS S10 auto-sleep metadata');
+  }
+
   console.log('\n[ALL session-store tests PASSED]');
 })();

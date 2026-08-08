@@ -75,7 +75,9 @@ function createResumeSessionHandler(deps) {
       if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
         const hubDataDir = getHubDataDir();
         if (isClaudeCliResumable) {
-          resumeOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meta.meetingId, hookPort, hookToken, meta.kind || 'claude');
+          resumeOpts.mcpConfigFile = scenes.writeResearchMcpConfig(
+            hubDataDir, meta.meetingId, hookPort, hookToken, meta.kind || 'claude', { enableChuxin: true },
+          );
         } else if (meta.kind === 'gemini') {
           resumeOpts.extraEnv = {
             ...(resumeOpts.extraEnv || {}),
@@ -85,11 +87,14 @@ function createResumeSessionHandler(deps) {
             ARENA_HOOK_TOKEN: hookToken,
             ARENA_AI_KIND: 'gemini',
             ARENA_HUB_DATA_DIR: hubDataDir,
+            ARENA_CHUXIN_ENABLED: '1',
             SPIRIT_REGISTRY_ROOT: process.env.SPIRIT_REGISTRY_ROOT || path.join(os.homedir(), 'spirit-lens-registry'),
           };
         } else if (isCodexBaseKind(meta.kind)) {
           resumeOpts.codexBypassApprovals = true;
-          addCodexMcpEntry(resumeOpts, scenes.buildResearchMcpEntryForCodex(meta.meetingId, hookPort, hookToken, hubDataDir));
+          addCodexMcpEntry(resumeOpts, scenes.buildResearchMcpEntryForCodex(
+            meta.meetingId, hookPort, hookToken, hubDataDir, { enableChuxin: true },
+          ));
         }
       } else if (meeting && meeting.groupChat && meeting.scene === 'research' && !hookPort) {
         logger.warn('[群聊] research scene resume for meeting ' + meta.meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
@@ -172,7 +177,9 @@ function createResumeSessionHandler(deps) {
       codexResumePicker: codexMissingSid,
       codexSid: effectiveCodexSid,
       codexProfile: isCodexBaseKind(meta.kind) ? (meta.codexProfile || null) : null,
+      ...(isCodexBaseKind(meta.kind) && meta.mcpProfile ? { mcpProfile: meta.mcpProfile } : {}),
       geminiChatId: meta.kind === 'gemini' ? (meta.geminiChatId || null) : null,
+      ...(meta.kind === 'gemini' && meta.geminiProjectHash ? { geminiProjectHash: meta.geminiProjectHash } : {}),
       geminiProjectRoot: meta.kind === 'gemini' ? (meta.geminiProjectRoot || null) : null,
       ...(isKimi ? {
         kimiSid: meta.kimiSid || null,

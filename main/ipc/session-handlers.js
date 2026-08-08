@@ -113,6 +113,7 @@ function registerSessionIpc(ipcMain, deps) {
     } else {
       kind = 'codex';
       if (source.codexProfile) opts.codexProfile = source.codexProfile;
+      if (source.mcpProfile) opts.mcpProfile = source.mcpProfile;
       opts.codexForkSid = nativeSessionId;
     }
 
@@ -123,8 +124,40 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   ipcMain.handle('close-session', (_e, sessionId) => {
+    if (typeof sessionId !== 'string' || !sessionId) {
+      return { ok: false, error: 'invalid-session-id', message: '缺少会话 ID' };
+    }
+    const result = sessionManager.closeSessionRecoverably(sessionId, { reason: 'user-close' });
+    if (result && result.ok) lastResizeBySid.delete(sessionId);
+    return result;
+  });
+
+  // “关闭”在用户语义上等同于可恢复休眠。真正移除卡片/历史入口必须走
+  // 明确命名的永久删除，内部 restart/workspace 迁移仍可直接调用 closeSession。
+  ipcMain.handle('delete-session', (_e, sessionId) => {
+    if (typeof sessionId !== 'string' || !sessionId) {
+      return { ok: false, error: 'invalid-session-id', message: '缺少会话 ID' };
+    }
     lastResizeBySid.delete(sessionId);
     sessionManager.closeSession(sessionId);
+    return { ok: true, sessionId, action: 'deleted' };
+  });
+
+  ipcMain.handle('suspend-session', (_e, arg) => {
+    const sessionId = arg && typeof arg === 'object' ? arg.sessionId : arg;
+    if (typeof sessionId !== 'string' || !sessionId) {
+      return { ok: false, error: 'invalid-session-id', message: '缺少会话 ID' };
+    }
+    const result = sessionManager.suspendSession(sessionId, { reason: 'user-suspend' });
+    if (result && result.ok) lastResizeBySid.delete(sessionId);
+    return result;
+  });
+
+  ipcMain.handle('suspend-idle-sessions', (_e, arg = {}) => {
+    const idleMs = arg && typeof arg === 'object' ? arg.idleMs : undefined;
+    const result = sessionManager.suspendIdleSessions({ idleMs });
+    for (const sessionId of (result && result.requested) || []) lastResizeBySid.delete(sessionId);
+    return result;
   });
 
   ipcMain.on('terminal-input', (_e, { sessionId, data }) => {
@@ -180,6 +213,10 @@ function registerSessionIpc(ipcMain, deps) {
       id: old.id,
       cwd: old.cwd,
       meetingId: old.meetingId || undefined,
+      ...(old.currentModel && old.currentModel.id ? { model: old.currentModel.id } : {}),
+      ...(old.effort ? { effort: old.effort } : {}),
+      ...(old.codexProfile ? { codexProfile: old.codexProfile } : {}),
+      ...(old.mcpProfile ? { mcpProfile: old.mcpProfile } : {}),
     });
     registerSessionForTap(fresh);
     sendToRenderer('session-created', { session: fresh });

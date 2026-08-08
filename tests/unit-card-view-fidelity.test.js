@@ -19,6 +19,7 @@ const CARD_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'turn-ca
 const LIST_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'session-list-renderer.js'), 'utf8');
 const CLAUDE_PARSER_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'claude-transcript-parser.js'), 'utf8');
 const CODEX_PARSER_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'codex-transcript-parser.js'), 'utf8');
+const RUNNING_STATE_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'groupchat-running-state.js'), 'utf8');
 
 function test(name, fn) {
   try {
@@ -112,19 +113,22 @@ test('真回答卡到达时撤掉同会话的兜底卡', () => {
     '兜底卡是纯文本、真卡是结构化解析，必须前缀匹配而非全等');
 });
 
-// ---- 3. 群聊状态以各 session 自身为准 ----
+// ---- 3. 群聊状态综合 session 与新鲜 watcher ----
 
-test('会话自己 idle 时不再被 gcWorking 覆盖成运行中', () => {
+test('idle 只压过过期 watcher，新鲜 watcher 可覆盖 PTY 的短暂空闲', () => {
   assert.match(LIST_SRC, /function _subIsRunning\(sub\)/);
-  assert.match(LIST_SRC,
-    /sub\.status === 'idle' \|\| sub\.status === 'dormant'[\s\S]{0,80}return false;/,
-    'Ctrl+C 打断后 status 回到 idle，gcWorking 要等 10 分钟兜底才清，不能让它继续亮灯');
+  assert.match(LIST_SRC, /return isGroupChatMemberRunning\(sub\)/,
+    '成员点和群聊父项必须走共享的新鲜度判定');
+  assert.match(RUNNING_STATE_SRC,
+    /hasFreshGroupChatWork\(session, now\)[\s\S]{0,120}session\.status === 'idle'/,
+    '新鲜 watcher 判定必须先于 idle，避免 AI 明明在发言却显示空闲');
+  assert.match(RUNNING_STATE_SRC,
+    /age >= 0 && age <= GC_WORKING_FRESH_MS/,
+    'watcher 必须有明确过期窗口，不能恢复成永久 gcWorking');
   assert.match(LIST_SRC, /if \(_subIsRunning\(sub\)\) statusCls = 'mini-st-thinking';/,
     '成员点必须走同一判定');
   assert.match(LIST_SRC, /if \(_subIsRunning\(sub\)\) return true;/,
     '群聊行的运行中判定也走同一函数');
-  assert.doesNotMatch(LIST_SRC, /sub\.status === 'running' \|\| sub\.gcWorking/,
-    '旧的「或 gcWorking」口径必须消失');
 });
 
 // ---- 4. 侧栏代理显示 ----

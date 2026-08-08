@@ -71,6 +71,8 @@ function _buildSessionPayload(hubId, data) {
     lastMessageTime: typeof data.lastMessageTime === 'number' ? data.lastMessageTime : null,
     lastOutputPreview: typeof data.lastOutputPreview === 'string' ? data.lastOutputPreview : '',
     unreadCount: typeof data.unreadCount === 'number' ? data.unreadCount : 0,
+    suspendedAt: typeof data.suspendedAt === 'number' ? data.suspendedAt : null,
+    suspendReason: typeof data.suspendReason === 'string' ? data.suspendReason : null,
     updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : now,
     savedAt: now,
   };

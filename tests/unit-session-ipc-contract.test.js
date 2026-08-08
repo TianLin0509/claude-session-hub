@@ -24,6 +24,18 @@ function createFakeSessionManager() {
     closeSession(sessionId) {
       calls.push(['closeSession', sessionId]);
     },
+    closeSessionRecoverably(sessionId, options) {
+      calls.push(['closeSessionRecoverably', sessionId, options]);
+      return { ok: true, sessionId, action: 'suspended' };
+    },
+    suspendSession(sessionId, options) {
+      calls.push(['suspendSession', sessionId, options]);
+      return { ok: true, sessionId };
+    },
+    suspendIdleSessions(options) {
+      calls.push(['suspendIdleSessions', options]);
+      return { ok: true, count: 2, requested: ['s1', 's2'] };
+    },
     writeToSession(sessionId, data) {
       calls.push(['writeToSession', sessionId, data]);
     },
@@ -69,6 +81,7 @@ function createFakeSessionManager() {
           cwd: 'C:\\repo',
           codexSid: '22222222-2222-4222-8222-222222222222',
           codexProfile: 'work',
+          mcpProfile: 'browser',
           currentModel: { id: 'gpt-5.5', displayName: 'GPT-5.5' },
         };
       }
@@ -125,7 +138,7 @@ test('registers expected session channels', () => {
   const sessionManager = createFakeSessionManager();
   registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
 
-  for (const channel of ['close-session', 'rename-session', 'get-sessions', 'debug:get-session-buffer', 'get-session-buffer-snapshot', 'restart-session', 'fork-session']) {
+  for (const channel of ['close-session', 'delete-session', 'suspend-session', 'suspend-idle-sessions', 'rename-session', 'get-sessions', 'debug:get-session-buffer', 'get-session-buffer-snapshot', 'restart-session', 'fork-session']) {
     assert.ok(ipc.handlers.has(channel), `${channel} should be registered as handle`);
   }
   assert.ok(ipc.handlers.has('create-session'), 'create-session should be registered as handle');
@@ -182,6 +195,7 @@ test('fork-session preserves Codex model and subscription profile', () => {
       autoTitleGenerated: true,
       model: 'gpt-5.5',
       codexProfile: 'work',
+      mcpProfile: 'browser',
       codexForkSid: '22222222-2222-4222-8222-222222222222',
     }],
   );
@@ -329,7 +343,7 @@ test('terminal-resize drops invalid and duplicate sizes', () => {
   );
 });
 
-test('close-session clears resize cache and closes session', () => {
+test('close-session clears resize cache and recoverably suspends; delete is explicit', () => {
   const ipc = createFakeIpc();
   const sessionManager = createFakeSessionManager();
   const registered = registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
@@ -337,10 +351,35 @@ test('close-session clears resize cache and closes session', () => {
   ipc.listeners.get('terminal-resize')(null, { sessionId: 's1', cols: 80, rows: 24 });
   assert.ok(registered.lastResizeBySid.has('s1'));
 
-  ipc.handlers.get('close-session')(null, 's1');
+  const closed = ipc.handlers.get('close-session')(null, 's1');
 
+  assert.strictEqual(closed.action, 'suspended');
   assert.ok(!registered.lastResizeBySid.has('s1'));
+  assert.deepStrictEqual(sessionManager.calls.at(-1), [
+    'closeSessionRecoverably', 's1', { reason: 'user-close' },
+  ]);
+
+  const deleted = ipc.handlers.get('delete-session')(null, 's1');
+  assert.strictEqual(deleted.action, 'deleted');
   assert.deepStrictEqual(sessionManager.calls.at(-1), ['closeSession', 's1']);
+});
+
+test('suspend handlers clear resize cache and delegate conservative idle policy', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  const registered = registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
+
+  ipc.listeners.get('terminal-resize')(null, { sessionId: 's1', cols: 80, rows: 24 });
+  const single = ipc.handlers.get('suspend-session')(null, 's1');
+  assert.strictEqual(single.ok, true);
+  assert.ok(!registered.lastResizeBySid.has('s1'));
+
+  const bulk = ipc.handlers.get('suspend-idle-sessions')(null, { idleMs: 12345 });
+  assert.strictEqual(bulk.count, 2);
+  assert.deepStrictEqual(sessionManager.calls.filter(call => call[0].startsWith('suspend')), [
+    ['suspendSession', 's1', { reason: 'user-suspend' }],
+    ['suspendIdleSessions', { idleMs: 12345 }],
+  ]);
 });
 
 test('focus, input, get-sessions, debug buffer delegate unchanged', () => {

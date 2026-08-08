@@ -31,6 +31,8 @@ const RING_BUFFER_BYTES = 1024 * 1024;
 // 这个 1MB 原始尾部只保留为 snapshot 初始化失败时的降级兜底，不再承担长会话恢复。
 // Claude CLI `--effort` 的合法枚举；弹窗传入的值必须在此集合内才会被拼进命令行。
 const CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+const CODEX_MCP_PROFILES = new Set(['lean', 'browser', 'wireless', 'full']);
+const DEFAULT_IDLE_SUSPEND_MS = 5 * 60 * 60 * 1000;
 // One default for ordinary/group Codex sessions and every new/resume/fork/relaunch path.
 const CODEX_REASONING_EFFORT = 'max';
 function buildCodexReasoningConfigArg(effort = CODEX_REASONING_EFFORT) {
@@ -568,7 +570,10 @@ function ensureCodexCwdTrusted(projectDir, configDir = null) {
   }
 }
 
-const CODEX_MANAGED_MCP_NAMES = ['ai-team', 'arena_research'];
+// These servers are room-scoped. Never leave a persistent copy in the user's
+// global Codex config: an ordinary Codex session must not discover room tools.
+// chuxin_knowledge is a legacy standalone registration removed during launch.
+const CODEX_MANAGED_MCP_NAMES = ['ai-team', 'arena_research', 'chuxin_knowledge'];
 
 function listCodexMcpServerNames(configDir) {
   try {
@@ -586,13 +591,98 @@ function listCodexMcpServerNames(configDir) {
   }
 }
 
-function buildCodexGroupMcpIsolationArgs(configDir, meetingId, allowedNames = CODEX_MANAGED_MCP_NAMES) {
-  if (!meetingId) return '';
-  const allowed = new Set((allowedNames || []).map(name => String(name || '').trim()).filter(Boolean));
-  return listCodexMcpServerNames(configDir)
+function normalizeCodexMcpProfile(value) {
+  const normalized = String(value || 'lean').trim().toLowerCase();
+  return CODEX_MCP_PROFILES.has(normalized) ? normalized : 'lean';
+}
+
+function isPathInside(candidate, root) {
+  if (!candidate || !root) return false;
+  const resolvedCandidate = path.resolve(String(candidate)).toLowerCase();
+  const resolvedRoot = path.resolve(String(root)).toLowerCase();
+  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(resolvedRoot + path.sep);
+}
+
+function isWirelessWorkspace(cwd) {
+  const wirelessRoot = process.env.AI_HUB_WIRELESS_ROOT || 'C:\\Vibe\\Wireless';
+  return isPathInside(cwd, wirelessRoot);
+}
+
+// Ordinary Codex sessions use a lean MCP policy by default. Heavy global
+// servers stay disabled for this launch only; the user's config.toml is not
+// rewritten. Wireless workspaces opt into superwireless automatically, while
+// browser/full profiles are explicit choices in the new-session UI.
+function buildCodexMcpIsolationArgs(configDir, options = {}) {
+  const names = listCodexMcpServerNames(configDir);
+  const allowed = new Set((options.allowedNames || [])
+    .map(name => String(name || '').trim())
+    .filter(Boolean));
+
+  if (options.meetingId) {
+    return names
+      .filter(name => !allowed.has(name))
+      .map(name => ` -c 'mcp_servers.${name}.enabled=false'`)
+      .join('');
+  }
+
+  const profile = normalizeCodexMcpProfile(options.mcpProfile);
+  if (profile === 'full') return '';
+  if (profile === 'browser') allowed.add('playwright');
+  if (profile === 'wireless' || isWirelessWorkspace(options.cwd)) allowed.add('superwireless');
+  return names
     .filter(name => !allowed.has(name))
     .map(name => ` -c 'mcp_servers.${name}.enabled=false'`)
     .join('');
+}
+
+function buildCodexGroupMcpIsolationArgs(configDir, meetingId, allowedNames = CODEX_MANAGED_MCP_NAMES) {
+  if (!meetingId) return '';
+  return buildCodexMcpIsolationArgs(configDir, { meetingId, allowedNames });
+}
+
+function getSessionResumeIdentity(info) {
+  if (!info || !info.kind) return null;
+  if (isClaudeFamily(info.kind)) return info.ccSessionId || null;
+  if (isCodexCliKind(info.kind)) return info.codexSid || null;
+  if (info.kind === 'gemini' || info.kind === 'gemini-resume') return info.geminiChatId || null;
+  if (isKimiCliKind(info.kind)) return info.kimiSid || null;
+  return null;
+}
+
+function supportsRecoverableSuspend(info) {
+  if (!info || !info.kind) return false;
+  return isClaudeFamily(info.kind)
+    || isCodexCliKind(info.kind)
+    || info.kind === 'gemini'
+    || info.kind === 'gemini-resume'
+    || isKimiCliKind(info.kind);
+}
+
+function buildCodexEphemeralMcpArgs(entries) {
+  const out = [];
+  const seen = new Set();
+  const literal = (value) => `'${String(value == null ? '' : value).replace(/'/g, "''")}'`;
+  const literalArray = (values) => `[${(Array.isArray(values) ? values : []).map(literal).join(', ')}]`;
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const name = String(entry && entry.name || '').trim();
+    if (!/^[A-Za-z0-9_-]+$/.test(name) || seen.has(name)) continue;
+    seen.add(name);
+    // Codex is launched through PowerShell's npm shim. Outer double quotes +
+    // TOML literal strings survive both parsing layers; JSON-style arrays do
+    // not and are silently interpreted as a scalar string.
+    const add = (expression) => {
+      const escaped = String(expression).replace(/`/g, '``').replace(/\$/g, '`$').replace(/"/g, '`"');
+      out.push(` -c "${escaped}"`);
+    };
+    add(`mcp_servers.${name}.command=${literal(entry.command || '')}`);
+    add(`mcp_servers.${name}.args=${literalArray(entry.args || [])}`);
+    const env = entry.env && typeof entry.env === 'object' ? entry.env : {};
+    for (const key of Object.keys(env).sort()) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+      add(`mcp_servers.${name}.env.${key}=${literal(env[key])}`);
+    }
+  }
+  return out.join('');
 }
 
 function stripCodexMcpEntries(cfg, names) {
@@ -671,6 +761,7 @@ class SessionManager extends EventEmitter {
   // Callbacks
   onData = (sessionId, data) => {};
   onSessionClosed = (sessionId) => {};
+  onSessionSuspended = (sessionId) => {};
 
   // opts: { id?, title?, cwd?, resumeCCSessionId?, forkCCSessionId?, useContinue? }
   //   id:                 reuse a previous hub session id (dormant wake)
@@ -980,7 +1071,11 @@ class SessionManager extends EventEmitter {
       currentModel,
       codexSessionsRoot,
       ...(isCodex && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
+      ...(isCodex ? { mcpProfile: normalizeCodexMcpProfile(opts.mcpProfile) } : {}),
       ...(opts.codexSid ? { codexSid: opts.codexSid } : {}),
+      ...(opts.geminiChatId ? { geminiChatId: opts.geminiChatId } : {}),
+      ...(opts.geminiProjectHash ? { geminiProjectHash: opts.geminiProjectHash } : {}),
+      ...(opts.geminiProjectRoot ? { geminiProjectRoot: opts.geminiProjectRoot } : {}),
       ...(opts.kimiSid ? { kimiSid: opts.kimiSid } : {}),
       ...(opts.kimiSessionDir ? { kimiSessionDir: opts.kimiSessionDir } : {}),
       ...(isCodex && (kind === 'codex-resume' || opts.codexResumePicker || (opts.useResume && !opts.codexSid)) ? { codexAllowMtimeFallback: true } : {}),
@@ -1014,17 +1109,28 @@ class SessionManager extends EventEmitter {
     this.sessions.set(id, {
       info,
       pty: ptyProcess,
+      codexMcpEntries: Array.isArray(opts.codexMcpEntries)
+        ? opts.codexMcpEntries.map((entry) => ({ ...entry, env: { ...(entry.env || {}) } }))
+        : [],
       pendingTimers,
       ringBuffer: '',
       terminalSnapshot,
       lastOutputSeq: 0,
       groupChatReady: false,
       groupChatLastActivity: 0,
+      startedAt: now,
+      lastInputAt: 0,
+      lastOutputAt: 0,
+      suspendRequestedAt: 0,
+      suspendReason: null,
     });
 
     ptyProcess.onData((data) => {
       const entry = this.sessions.get(id);
-      if (entry) entry.groupChatLastActivity = Date.now();
+      if (entry) {
+        entry.groupChatLastActivity = Date.now();
+        entry.lastOutputAt = entry.groupChatLastActivity;
+      }
       this._appendToRingBuffer(id, data);
       this._outputSeq += 1;
       const seq = this._outputSeq;
@@ -1037,21 +1143,7 @@ class SessionManager extends EventEmitter {
     });
 
     ptyProcess.onExit((exitInfo) => {
-      const entry = this.sessions.get(id);
-      // Guard against id reuse: if a fresh session has already taken this id
-      // (e.g., via restart-session reusing old.id), the entry's pty will be
-      // the new one, NOT this ptyProcess. In that case the new session is
-      // alive — we must not delete its Map entry or fire onSessionClosed
-      // for the new session.
-      if (!entry || entry.pty !== ptyProcess) return;
-      const mid = entry.info ? entry.info.meetingId : null;
-      if (entry.terminalSnapshot) entry.terminalSnapshot.dispose();
-      this.sessions.delete(id);
-      // Stage 2 P1-1：把 exit code/signal 透传给 onSessionClosed，
-      //   让 main.js 能把"PTY 异常退出"作为 L2 完成信号通知群聊 watcher。
-      //   exitInfo 来自 node-pty：{ exitCode: number, signal: number | undefined }
-      //   老调用方只用前两参（id, mid），无需调整；第 3 参可选。
-      this.onSessionClosed(id, mid, exitInfo || null);
+      this._handlePtyExit(id, ptyProcess, exitInfo);
     });
 
     if (kind === 'powershell') {
@@ -1179,7 +1271,9 @@ class SessionManager extends EventEmitter {
     }
 
     if (isCodex) {
-      ensureCodexMcpEntries(sessionEnv.CODEX_HOME || null, opts.codexMcpEntries, CODEX_MANAGED_MCP_NAMES);
+      // Remove legacy room MCP blocks left by older Hub versions. Current room
+      // entries are injected only into this CLI command below.
+      ensureCodexMcpEntries(sessionEnv.CODEX_HOME || null, [], CODEX_MANAGED_MCP_NAMES);
       dismissCodexUpdatePrompt(undefined, sessionEnv.CODEX_HOME || null);
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       const cv = getConfigValues();
@@ -1214,15 +1308,17 @@ class SessionManager extends EventEmitter {
       if (codexInstructionFile) {
         cmd += ` -c "model_instructions_file=${codexInstructionFile.replace(/\\/g, '\\\\')}"`;
       }
+      cmd += buildCodexEphemeralMcpArgs(opts.codexMcpEntries);
       const allowedGroupMcpNames = [
         ...CODEX_MANAGED_MCP_NAMES,
         ...(Array.isArray(opts.codexMcpEntries) ? opts.codexMcpEntries.map(entry => entry && entry.name) : []),
       ];
-      cmd += buildCodexGroupMcpIsolationArgs(
-        sessionEnv.CODEX_HOME || null,
-        opts.meetingId,
-        allowedGroupMcpNames,
-      );
+      cmd += buildCodexMcpIsolationArgs(sessionEnv.CODEX_HOME || null, {
+        meetingId: opts.meetingId,
+        cwd: spawnCwd,
+        mcpProfile: opts.mcpProfile,
+        allowedNames: allowedGroupMcpNames,
+      });
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -1365,9 +1461,37 @@ class SessionManager extends EventEmitter {
     return { ...info };
   }
 
+  _handlePtyExit(sessionId, ptyProcess, exitInfo) {
+    const entry = this.sessions.get(sessionId);
+    // Guard against id reuse: if a fresh session has already taken this id
+    // (e.g., via restart-session reusing old.id), the entry's pty will be the
+    // new one. Never delete that replacement when the old PTY exits late.
+    if (!entry || entry.pty !== ptyProcess) return false;
+    const meetingId = entry.info ? entry.info.meetingId : null;
+    const wasSuspended = !!entry.suspendRequestedAt;
+    const dormantInfo = wasSuspended
+      ? {
+        ...entry.info,
+        status: 'dormant',
+        suspendedAt: entry.suspendRequestedAt,
+        suspendReason: entry.suspendReason || 'manual',
+      }
+      : null;
+    if (entry.terminalSnapshot) entry.terminalSnapshot.dispose();
+    this.sessions.delete(sessionId);
+    if (wasSuspended) {
+      this.onSessionSuspended(sessionId, meetingId, dormantInfo, exitInfo || null);
+    } else {
+      this.onSessionClosed(sessionId, meetingId, exitInfo || null);
+    }
+    return true;
+  }
+
   closeSession(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+    // An explicit close wins over an in-flight suspend request.
+    session.suspendRequestedAt = 0;
     for (const t of session.pendingTimers) clearTimeout(t);
     if (!session.pty) {
       if (session.terminalSnapshot) session.terminalSnapshot.dispose();
@@ -1382,6 +1506,120 @@ class SessionManager extends EventEmitter {
     // Deleting early makes onExit see entry=undefined and return early, so
     // onSessionClosed never fires and the renderer never receives
     // `session-closed` — which is exactly the "X button does nothing" bug.
+  }
+
+  closeSessionRecoverably(sessionId, options = {}) {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
+    }
+    if (!supportsRecoverableSuspend(session.info)) {
+      this.closeSession(sessionId);
+      return { ok: true, sessionId, action: 'closed', recoverable: false };
+    }
+    const result = this.suspendSession(sessionId, {
+      ...options,
+      reason: options.reason || 'user-close',
+    });
+    return result && result.ok
+      ? { ...result, action: 'suspended', recoverable: true }
+      : result;
+  }
+
+  suspendSession(sessionId, options = {}) {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
+    }
+    if (session.suspendRequestedAt) {
+      return { ok: false, error: 'suspend-pending', message: '会话正在进入休眠' };
+    }
+    if (session.info && session.info.purpose === 'chuxin-research') {
+      return { ok: false, error: 'protected-session', message: '初心投研任务不能从这里休眠' };
+    }
+    if (!getSessionResumeIdentity(session.info)) {
+      return {
+        ok: false,
+        error: 'native-session-id-missing',
+        message: '尚未绑定原生会话 ID，请等待本轮完成后再休眠',
+      };
+    }
+    if (options.excludePinned && session.info && session.info.pinned) {
+      return { ok: false, error: 'pinned', message: '置顶会话不会被批量休眠' };
+    }
+    if (options.excludeMeeting && session.info && session.info.meetingId) {
+      return { ok: false, error: 'meeting-member', message: '群聊成员不会被批量休眠' };
+    }
+    if (options.excludeFocused && this.focusedSessionId === sessionId) {
+      return { ok: false, error: 'focused', message: '当前会话不会被批量休眠' };
+    }
+    const excludedSessionIds = options.excludeSessionIds;
+    const isExplicitlyExcluded = excludedSessionIds instanceof Set
+      ? excludedSessionIds.has(sessionId)
+      : Array.isArray(excludedSessionIds) && excludedSessionIds.includes(sessionId);
+    if (isExplicitlyExcluded) {
+      return { ok: false, error: 'active-task', message: '会话仍有后台任务，已跳过休眠' };
+    }
+
+    const now = Number(options.now) || Date.now();
+    const lastActivityAt = Math.max(
+      Number(session.startedAt) || 0,
+      Number(session.lastInputAt) || 0,
+      Number(session.lastOutputAt) || 0,
+    );
+    const minIdleMs = Math.max(0, Number(options.minIdleMs) || 0);
+    if (minIdleMs > 0 && now - lastActivityAt < minIdleMs) {
+      return { ok: false, error: 'recently-active', message: '会话最近仍有活动，已跳过' };
+    }
+
+    for (const timer of session.pendingTimers || []) clearTimeout(timer);
+    session.suspendRequestedAt = now;
+    session.suspendReason = typeof options.reason === 'string' && options.reason.trim()
+      ? options.reason.trim()
+      : 'manual';
+    session.info.status = 'suspending';
+    try {
+      if (!session.pty) {
+        const dormantInfo = {
+          ...session.info,
+          status: 'dormant',
+          suspendedAt: now,
+          suspendReason: session.suspendReason,
+        };
+        if (session.terminalSnapshot) session.terminalSnapshot.dispose();
+        this.sessions.delete(sessionId);
+        this.onSessionSuspended(sessionId, session.info.meetingId || null, dormantInfo, { noPty: true });
+      } else {
+        session.pty.kill();
+      }
+      return { ok: true, sessionId, lastActivityAt, reason: session.suspendReason };
+    } catch (error) {
+      session.suspendRequestedAt = 0;
+      session.suspendReason = null;
+      session.info.status = 'idle';
+      return { ok: false, error: 'kill-failed', message: error && error.message ? error.message : String(error) };
+    }
+  }
+
+  suspendIdleSessions(options = {}) {
+    const idleMs = Math.max(60 * 1000, Number(options.idleMs) || DEFAULT_IDLE_SUSPEND_MS);
+    const now = Number(options.now) || Date.now();
+    const requested = [];
+    const skipped = {};
+    for (const sessionId of [...this.sessions.keys()]) {
+      const result = this.suspendSession(sessionId, {
+        now,
+        minIdleMs: idleMs,
+        excludePinned: options.excludePinned !== false,
+        excludeMeeting: options.excludeMeeting !== false,
+        excludeFocused: options.excludeFocused !== false,
+        excludeSessionIds: options.excludeSessionIds,
+        reason: options.reason || 'bulk-idle',
+      });
+      if (result.ok) requested.push(sessionId);
+      else skipped[result.error || 'unknown'] = (skipped[result.error || 'unknown'] || 0) + 1;
+    }
+    return { ok: true, requested, count: requested.length, idleMs, skipped };
   }
 
   renameSession(sessionId, title, opts = {}) {
@@ -1404,6 +1642,7 @@ class SessionManager extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (s && s.pty) {
       this._lastWrite = { sessionId, data, target: 'pty', ts: Date.now() };
+      s.lastInputAt = this._lastWrite.ts;
       s.pty.write(data);
     }
   }
@@ -1509,8 +1748,15 @@ class SessionManager extends EventEmitter {
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
       const codexReasoningArg = buildCodexReasoningConfigArg(CODEX_REASONING_EFFORT);
+      ensureCodexMcpEntries(codexConfigDir, [], CODEX_MANAGED_MCP_NAMES);
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || DEFAULT_MODEL_BY_KIND.codex}${codexReasoningArg}`;
-      cmd += buildCodexGroupMcpIsolationArgs(codexConfigDir, meetingId);
+      cmd += buildCodexEphemeralMcpArgs(s.codexMcpEntries);
+      cmd += buildCodexMcpIsolationArgs(codexConfigDir, {
+        meetingId,
+        cwd: s.info && s.info.cwd,
+        mcpProfile: s.info && s.info.mcpProfile,
+        allowedNames: [...CODEX_MANAGED_MCP_NAMES, ...(s.codexMcpEntries || []).map((entry) => entry && entry.name)],
+      });
       cmd += '\r\n';
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
       cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
@@ -1562,6 +1808,12 @@ class SessionManager extends EventEmitter {
       ...(info.codexSid !== undefined ? { codexSid: info.codexSid } : {}),
       ...(info.codexSessionsRoot !== undefined ? { codexSessionsRoot: info.codexSessionsRoot } : {}),
       ...(info.codexAllowMtimeFallback ? { codexAllowMtimeFallback: true } : {}),
+      ...(info.codexProfile !== undefined ? { codexProfile: info.codexProfile } : {}),
+      ...(info.codexProfileLabel !== undefined ? { codexProfileLabel: info.codexProfileLabel } : {}),
+      ...(info.mcpProfile !== undefined ? { mcpProfile: info.mcpProfile } : {}),
+      ...(info.geminiChatId !== undefined ? { geminiChatId: info.geminiChatId } : {}),
+      ...(info.geminiProjectHash !== undefined ? { geminiProjectHash: info.geminiProjectHash } : {}),
+      ...(info.geminiProjectRoot !== undefined ? { geminiProjectRoot: info.geminiProjectRoot } : {}),
       ...(info.kimiSid !== undefined ? { kimiSid: info.kimiSid } : {}),
       ...(info.kimiSessionDir !== undefined ? { kimiSessionDir: info.kimiSessionDir } : {}),
       ...(info.currentModel ? { model: info.currentModel.id } : {}),
@@ -1769,6 +2021,14 @@ module.exports = {
     kimiModelArg,
     buildGroupChatIsolationFlags,
     listCodexMcpServerNames,
+    normalizeCodexMcpProfile,
+    isWirelessWorkspace,
+    buildCodexMcpIsolationArgs,
     buildCodexGroupMcpIsolationArgs,
+    buildCodexEphemeralMcpArgs,
+    stripCodexMcpEntries,
+    getSessionResumeIdentity,
+    supportsRecoverableSuspend,
+    DEFAULT_IDLE_SUSPEND_MS,
   },
 };

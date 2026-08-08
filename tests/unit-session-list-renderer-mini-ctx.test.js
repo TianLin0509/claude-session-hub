@@ -179,6 +179,25 @@ test('meeting 当前 active 时不显示 unread badge', () => {
   assert.ok(!/sl-state unread/.test(html), 'active meeting 不应显示等你状态（用户正看着，不打扰）');
 });
 
+test('自动休眠会话保留未读红点、数量和唤醒提示', () => {
+  const sessions = new Map();
+  sessions.set('sleeping', {
+    id: 'sleeping',
+    title: '休眠但有新消息',
+    kind: 'codex',
+    status: 'dormant',
+    suspendReason: 'idle-timeout',
+    unreadCount: 3,
+    lastMessageTime: Date.now(),
+  });
+  const { renderSessionList, sessionListEl } = makeRenderer({ sessions, meetings: {} });
+  renderSessionList();
+  const html = sessionListEl.children.map(c => c.innerHTML || '').join('\n');
+  assert.ok(/sl-ring-dot unread/.test(html), '休眠态有未读时应显示红色未读状态点');
+  assert.ok(/sl-un[^>]*>● 3</.test(html), '休眠态应保留未读数量');
+  assert.ok(/自动休眠/.test(html) && /点击唤醒/.test(html), 'tooltip 应说明自动休眠与唤醒动作');
+});
+
 console.log('Running unit-session-list-renderer-mini-ctx tests...');
 console.log(`\n${failed === 0 ? '✓ all passed' : '✗ ' + failed + ' failed'}`);
 process.exit(failed > 0 ? 1 : 0);

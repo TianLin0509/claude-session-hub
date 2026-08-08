@@ -40,7 +40,7 @@ function createBaseDeps(overrides = {}) {
     registerSessionForTap: (session) => calls.push(['registerSessionForTap', session.id]),
     scenes: {
       buildAiTeamMcpEntryForCodex: (meetingId, kind) => ({ aiTeamMeetingId: meetingId, aiTeamKind: kind }),
-      buildResearchMcpEntryForCodex: (meetingId, port, token) => ({ meetingId, port, token }),
+      buildResearchMcpEntryForCodex: (...args) => ({ researchArgs: args }),
       readCovenantSnapshot: () => 'snapshot covenant',
       writePromptFile: (...args) => {
         calls.push(['writePromptFile', ...args]);
@@ -160,6 +160,7 @@ test('resumes Codex group research sessions with MCP entries and rollout path', 
     kind: 'codex',
     codexSid: 'codex-1',
     codexProfile: 'work',
+    mcpProfile: 'browser',
     meetingId: 'm1',
     cwd: 'C:\\repo',
   });
@@ -167,10 +168,11 @@ test('resumes Codex group research sessions with MCP entries and rollout path', 
   assert.strictEqual(session.opts.resumeTranscriptPath, 'rollout:codex-1');
   assert.strictEqual(session.opts.useResume, true);
   assert.strictEqual(session.opts.codexBypassApprovals, true);
+  assert.strictEqual(session.opts.mcpProfile, 'browser');
   assert.strictEqual(session.opts.noInheritCursor, true, 'headless group resumes must keep ConPTY output enabled');
   assert.deepStrictEqual(session.opts.codexMcpEntries, [
     { aiTeamMeetingId: 'm1', aiTeamKind: 'codex' },
-    { meetingId: 'm1', port: 3456, token: 'token' },
+    { researchArgs: ['m1', 3456, 'token', 'C:\\hub', { enableChuxin: true }] },
   ]);
   assert.deepStrictEqual(deps.calls.filter(call => call[0] === 'findCodexRolloutBySid'), [
     ['findCodexRolloutBySid', 'codex-1', 'C:\\codex\\sessions'],

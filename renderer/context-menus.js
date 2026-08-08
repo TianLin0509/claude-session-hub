@@ -1,5 +1,11 @@
 'use strict';
 
+function supportsRecoverableSessionKind(session) {
+  if (!session || session.purpose === 'chuxin-research') return false;
+  const kind = String(session.kind || '').replace(/-resume$/, '');
+  return ['claude', 'deepseek', 'codex', 'gemini', 'kimi'].includes(kind);
+}
+
 function createSessionContextMenuController({
   document,
   window,
@@ -15,9 +21,15 @@ function createSessionContextMenuController({
   emptyStateEl,
   renderSessionList,
   schedulePersist,
+  notify,
   requestAnimationFrameFn = requestAnimationFrame,
 }) {
   let contextMenuSessionId = null;
+  const showNotice = typeof notify === 'function'
+    ? notify
+    : (message) => {
+      if (window && typeof window.alert === 'function') window.alert(message);
+    };
 
   function open(sessionId, x, y) {
     contextMenuSessionId = sessionId;
@@ -31,10 +43,22 @@ function createSessionContextMenuController({
     });
     const pinBtn = contextMenuEl.querySelector('[data-action="pin"]');
     const restartBtn = contextMenuEl.querySelector('[data-action="restart"]');
+    const closeBtn = contextMenuEl.querySelector('[data-action="close"]');
+    const deleteBtn = contextMenuEl.querySelector('[data-action="delete"]');
     if (pinBtn) pinBtn.style.display = '';
     const session = sessions.get(sessionId);
     const meeting = meetings[sessionId];
     if (restartBtn) restartBtn.style.display = session ? '' : 'none';
+    if (closeBtn) {
+      closeBtn.style.display = meeting || (session && session.status !== 'dormant') ? '' : 'none';
+      closeBtn.textContent = meeting
+        ? '永久关闭会议室'
+        : (supportsRecoverableSessionKind(session) ? '关闭并休眠' : '关闭');
+      if (closeBtn.classList && typeof closeBtn.classList.toggle === 'function') {
+        closeBtn.classList.toggle('danger', !!meeting);
+      }
+    }
+    if (deleteBtn) deleteBtn.style.display = session ? '' : 'none';
     if (pinBtn) {
       const target = session || meeting;
       pinBtn.textContent = target && target.pinned ? 'Unpin' : 'Pin to top';
@@ -93,13 +117,28 @@ function createSessionContextMenuController({
         } else if (action === 'restart') {
           await ipcRenderer.invoke('restart-session', sid);
         } else if (action === 'close') {
+          if (session.status === 'dormant') return;
+          // 用户主动关闭就是休眠：即便本轮仍在运行，也允许中断 PTY 并保留恢复入口。
+          // 自动休眠仍由主进程的 active watcher/loop 保护，不受这里影响。
+          const result = await ipcRenderer.invoke('close-session', sid);
+          if (!result || !result.ok) {
+            showNotice((result && result.message) || '关闭休眠失败，请稍后重试。');
+          }
+        } else if (action === 'delete') {
+          const confirmed = !window || typeof window.confirm !== 'function'
+            ? true
+            : window.confirm(`永久删除“${session.title || '此会话'}”？\n\n这会终止当前进程并移除 Hub 卡片，之后不能从该卡片唤醒。`);
+          if (!confirmed) return;
           if (session.status === 'dormant') {
             sessions.delete(sid);
             if (getActiveSessionId() === sid) setActiveSessionId(null);
             renderSessionList();
             schedulePersist();
           } else {
-            await ipcRenderer.invoke('close-session', sid);
+            const result = await ipcRenderer.invoke('delete-session', sid);
+            if (!result || !result.ok) {
+              showNotice((result && result.message) || '永久删除失败，请稍后重试。');
+            }
           }
         }
       });
@@ -155,4 +194,8 @@ function createTerminalContextMenuController({
   return { init, open, close };
 }
 
-module.exports = { createSessionContextMenuController, createTerminalContextMenuController };
+module.exports = {
+  createSessionContextMenuController,
+  createTerminalContextMenuController,
+  supportsRecoverableSessionKind,
+};

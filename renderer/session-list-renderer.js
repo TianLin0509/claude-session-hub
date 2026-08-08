@@ -1,5 +1,7 @@
 // 纯函数：按 lastMessageTime 年龄分桶。pinned 永远进 recent（置顶不折叠）。
 //   recent: <24h（保持现状 UI 置顶）· mid: 24-72h · old: ≥72h
+const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js');
+
 function partitionSessionsByAge(items, now) {
   const DAY = 86400000;
   const recent = [], mid = [], old = [];
@@ -110,16 +112,11 @@ function _ringHtml(ctxPct, dotCls) {
 //   行1 状态点/状态词与「运行中」分区共用这一个口径。
 // 2026-07-21 道雪 [修状态灯]：运行源 = sub.status==='running'（语义化 running）
 //   或 gcWorking（dispatcher watcher 生命周期）——任一成员任一命中即算群聊运行中。
-// 2026-07-28 [以会话自身状态为准]：用户 Ctrl+C 打断某个成员后，该会话的 status 会
-//   回到 idle，但 dispatcher 的 gcWorking 要等 sweepStaleRunning 的 10 分钟兜底才清，
-//   期间成员点和群聊行都还亮着"运行中"——与实际不符。
-//   规则改为：会话自己说 idle，就以会话为准，不再被 gcWorking 覆盖。
+// 2026-08-01 [修群聊假空闲]：AI 思考/输出的静默间隙里 PTY/hook 可能短暂 idle，
+//   不能压过 dispatcher 每 1.5 秒送来的 watcher 心跳；但过期 gcWorking 也不能让
+//   Ctrl+C 后继续亮灯。统一用“running 或 8 秒内新鲜 watcher”判断。
 function _subIsRunning(sub) {
-  if (!sub) return false;
-  if (sub.status === 'running') return true;
-  if (sub.status === 'idle' || sub.status === 'dormant'
-      || sub.status === 'errored' || sub.status === 'error') return false;
-  return !!sub.gcWorking;
+  return isGroupChatMemberRunning(sub);
 }
 
 function _sessionWarningText(session) {
@@ -348,15 +345,21 @@ function _sessionWarningText(session) {
           const childDiv = doc.createElement('div');
           const isChildActive = subId === getActiveSessionId();
           const childDormantCls = sub.status === 'dormant' ? ' dormant' : '';
-          childDiv.className = 'session-item slim child' + (isChildActive ? ' selected' : '') + childDormantCls;
+          const childUnreadCount = Math.max(0, Number(sub.unreadCount) || 0);
+          const childShowUnread = !isChildActive && childUnreadCount > 0;
+          childDiv.className = 'session-item slim child' + (isChildActive ? ' selected' : '')
+            + (childShowUnread ? ' need-unread' : '') + childDormantCls;
           childDiv.dataset.sessionId = subId;
           const modelLabel = sub.currentModel
             ? `<span class="child-model-badge ${modelClass(sub.currentModel.id)}" title="${escapeHtml(sub.currentModel.displayName || sub.currentModel.id)}">${escapeHtml(modelShort(sub.currentModel))}</span>`
             : '';
           const childWarning = _sessionWarningText(sub);
+          const childStateTip = sub.status === 'dormant'
+            ? `${sub.suspendReason === 'idle-timeout' ? '自动休眠' : '休眠中'}${childShowUnread ? `，有 ${childUnreadCount} 条未读` : ''}，点击唤醒`
+            : (childShowUnread ? `有 ${childUnreadCount} 条未读` : '');
           childDiv.innerHTML = `
             ${_aiLogoHtml(sub.kind)}
-            <span class="child-title" title="${escapeHtml(childWarning)}">${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}</span>
+            <span class="child-title" title="${escapeHtml([childWarning, childStateTip].filter(Boolean).join(' · '))}">${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}${childShowUnread ? `<span class="sl-un">● ${childUnreadCount}</span>` : ''}</span>
             ${modelLabel}
           `;
           // Use the existing selectSession path: it hides meeting-room-panel,
@@ -375,30 +378,35 @@ function _sessionWarningText(session) {
     //   burn 聚合到侧栏底部 strip，模型与 ctx 变等宽小字列。
     const isActive = s.id === getActiveSessionId();
     const div = doc.createElement('div');
+    div.dataset.sessionId = s.id;
     const isDormant = s.status === 'dormant';
     const dormantCls = isDormant ? ' dormant' : '';
     const showWaiting = !isDormant && s.isWaiting && !isActive;
-    const showUnread = !isDormant && (s.unreadCount || 0) > 0 && !isActive && !s.isWaiting;
-    // 状态点优先级：等待输入 > 未读 > 运行 > 休眠 > 空闲
+    const unreadCount = Math.max(0, Number(s.unreadCount) || 0);
+    const showUnread = unreadCount > 0 && !isActive && !showWaiting;
+    // 状态点优先级：等待输入 > 未读（含休眠态）> 运行 > 休眠 > 空闲
     let dotCls = 'idle';
-    if (isDormant) dotCls = 'dorm';
-    else if (showWaiting) dotCls = 'wait';
+    if (showWaiting) dotCls = 'wait';
     else if (showUnread) dotCls = 'unread';
+    else if (isDormant) dotCls = 'dorm';
     else if (s.status === 'running') dotCls = 'run';
     div.className = 'session-item slim' + (isActive ? ' selected' : '')
       + (showWaiting ? ' need-wait' : '') + (showUnread ? ' need-unread' : '') + dormantCls;
     const ctxPct = typeof s.contextPct === 'number' ? s.contextPct : null;
     const modelTxt = s.currentModel ? modelShort(s.currentModel) : '';
     const anyWarning = _sessionWarningText(s);
+    const dormantStateTip = isDormant
+      ? `${s.suspendReason === 'idle-timeout' ? '自动休眠' : '休眠中'}${showUnread ? `，有 ${unreadCount} 条未读` : ''}，点击唤醒`
+      : '';
     const titleTip = [s.title,
       s.currentModel ? (s.currentModel.displayName || s.currentModel.id) : '',
       ctxPct != null ? `Ctx ${ctxPct}%` : '',
       anyWarning,
-      isDormant ? '休眠中，点击唤醒' : (showWaiting ? (s.waitingText || '等你输入') : (showUnread ? (s.lastOutputPreview || '有未读新消息') : '')),
+      dormantStateTip || (showWaiting ? (s.waitingText || '等你输入') : (showUnread ? (s.lastOutputPreview || '有未读新消息') : '')),
     ].filter(Boolean).join(' · ');
     div.innerHTML = `
       ${_ringHtml(ctxPct, dotCls)}
-      <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${s.unreadCount}</span>` : ''}</span>
+      <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${unreadCount}</span>` : ''}</span>
       <span class="sl-model">${escapeHtml(modelTxt)}</span>
       <span class="sl-time">${formatTime(s.lastMessageTime)}</span>
     `;
@@ -409,7 +417,7 @@ function _sessionWarningText(session) {
 
   // === 2026-07-19 道雪 · 方案C 分区渲染：等你响应 → 运行中 → 最近 → 3天内/更早 ===
   //   分类语义（与状态来源逐项核对过）：
-  //     等你响应 = 非 active 且非 dormant 且（isWaiting 或 unreadCount>0；群聊=本轮已答 AI 数>0）
+  //     等你响应 = 非 active 且（isWaiting 或 unreadCount>0；含带未读的休眠会话；群聊=本轮已答 AI 数>0）
   //     运行中   = status === 'running'（PTY 数据突发 / 卡片语义工作中）
   //     最近     = 24h 内其余（含 active、休眠、空闲）
   const { recent, mid, old } = partitionSessionsByAge(visible, Date.now());
@@ -417,8 +425,9 @@ function _sessionWarningText(session) {
   const activeMid = getActiveMeetingId();
   const isActiveItem = (s) => s._isMeeting ? s.id === activeMid : s.id === activeSid;
   function needsRespond(s) {
-    if (isActiveItem(s) || s.status === 'dormant') return false;
+    if (isActiveItem(s)) return false;
     if (s._isMeeting) return (s.unreadAnsweredSize || 0) > 0;
+    if (s.status === 'dormant') return (s.unreadCount || 0) > 0;
     return !!s.isWaiting || (s.unreadCount || 0) > 0;
   }
   const respond = [], running = [], rest = [];
