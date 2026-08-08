@@ -144,7 +144,7 @@ test('add-meeting-sub assigns slot title, isolated workspace, and Claude MCP con
   assert.deepStrictEqual(result.meeting.participants, [0]);
   assert.deepStrictEqual(result.meeting.slotSpecs, [{ kind: 'claude', model: 'opus' }]);
   assert.deepStrictEqual(deps.calls.filter(call => call[0] === 'writeResearchMcpConfig'), [
-    ['writeResearchMcpConfig', 'C:\\hub', 'm1', 4567, 'token', 'claude'],
+    ['writeResearchMcpConfig', 'C:\\hub', 'm1', 4567, 'token', 'claude', { enableChuxin: true }],
   ]);
   assert.strictEqual(deps.calls.filter(call => call[0] === 'sendToRenderer').length, 2);
 });
@@ -165,7 +165,7 @@ test('add-meeting-sub applies Codex research MCP entries without overwriting exp
   assert.strictEqual(result.session.opts.codexBypassApprovals, true);
   assert.deepStrictEqual(result.session.opts.codexMcpEntries, [
     { aiTeamArgs: ['m1', 'codex'] },
-    { args: ['m1', 4567, 'token', 'C:\\hub'] },
+    { args: ['m1', 4567, 'token', 'C:\\hub', { enableChuxin: true }] },
   ]);
 });
 

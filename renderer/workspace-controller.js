@@ -26,6 +26,12 @@
   // session-manager builds its command without the flag, so it is Claude-only here.
   const EFFORT_KINDS = new Set(['claude']);
   const DEFAULT_EFFORT = 'max';
+  const MCP_PROFILE_LABELS = {
+    lean: 'Lean MCP',
+    browser: 'Browser MCP',
+    wireless: 'Wireless MCP',
+    full: 'Full MCP',
+  };
   const RECENT_LIMIT = 8;
 
   let menuEl = null;
@@ -35,6 +41,7 @@
   let submitting = false;
   let selectedModel = '';
   let selectedEffort = DEFAULT_EFFORT;
+  let selectedMcpProfile = 'lean';
   let recentItems = [];
   let scratchRoot = '';
   let archiveModalEl = null;
@@ -508,6 +515,8 @@
     const modelSelect = document.getElementById('new-session-model');
     const effortField = document.getElementById('new-session-effort-field');
     const effortSelect = document.getElementById('new-session-effort');
+    const mcpField = document.getElementById('new-session-mcp-field');
+    const mcpSelect = document.getElementById('new-session-mcp');
     if (!grid || !modelSelect) return;
 
     const options = modelOptionsFor(selectedKind);
@@ -529,9 +538,12 @@
     modelSelect.value = selectedModel;
 
     const showEffort = EFFORT_KINDS.has(selectedKind);
+    const showMcp = selectedKind === 'codex';
     if (effortField) effortField.hidden = !showEffort;
     if (effortSelect) effortSelect.value = selectedEffort;
-    grid.style.gridTemplateColumns = showEffort ? '' : '1fr';
+    if (mcpField) mcpField.hidden = !showMcp;
+    if (mcpSelect) mcpSelect.value = selectedMcpProfile;
+    grid.style.gridTemplateColumns = (showEffort || showMcp) ? '' : '1fr';
   }
 
   function paint() {
@@ -581,7 +593,9 @@
     if (options.length === 0) return '';
     const model = options.find(option => option.id === selectedModel);
     const modelLabel = model ? model.label : selectedModel;
-    return EFFORT_KINDS.has(selectedKind) ? `${modelLabel} · ${selectedEffort}` : modelLabel;
+    if (EFFORT_KINDS.has(selectedKind)) return `${modelLabel} · ${selectedEffort}`;
+    if (selectedKind === 'codex') return `${modelLabel} · ${MCP_PROFILE_LABELS[selectedMcpProfile] || 'Lean MCP'}`;
+    return modelLabel;
   }
 
   function summaryText() {
@@ -631,6 +645,7 @@
     submitting = false;
     selectedModel = DEFAULT_MODEL_BY_KIND[selectedKind] || '';
     selectedEffort = DEFAULT_EFFORT;
+    selectedMcpProfile = 'lean';
     setError('');
     renderRecent();
     paint();
@@ -650,6 +665,7 @@
     const opts = {};
     if (modelOptionsFor(selectedKind).length > 0 && selectedModel) opts.model = selectedModel;
     if (EFFORT_KINDS.has(selectedKind) && selectedEffort) opts.effort = selectedEffort;
+    if (selectedKind === 'codex') opts.mcpProfile = selectedMcpProfile;
     return opts;
   }
 
@@ -713,6 +729,13 @@
     if (effortSelect) {
       effortSelect.addEventListener('change', () => {
         selectedEffort = effortSelect.value;
+        paint();
+      });
+    }
+    const mcpSelect = document.getElementById('new-session-mcp');
+    if (mcpSelect) {
+      mcpSelect.addEventListener('change', () => {
+        selectedMcpProfile = MCP_PROFILE_LABELS[mcpSelect.value] ? mcpSelect.value : 'lean';
         paint();
       });
     }

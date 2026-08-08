@@ -13,6 +13,7 @@ const RESUME_META_FIELDS = [
   'codexAllowMtimeFallback',
   'codexProfile',
   'codexProfileLabel',
+  'mcpProfile',
   'geminiChatId',
   'geminiProjectHash',
   'geminiProjectRoot',

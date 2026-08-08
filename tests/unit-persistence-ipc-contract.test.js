@@ -136,11 +136,13 @@ test('mergeResumeMetaFields preserves resume metadata and user rename flag', () 
     hubId: 'keep',
     transcriptPath: 'C:\\old\\transcript.jsonl',
     currentModel: 'opus',
+    mcpProfile: 'browser',
     userRenamed: true,
   }]);
 
   assert.strictEqual(incoming[0].transcriptPath, 'C:\\old\\transcript.jsonl');
   assert.strictEqual(incoming[0].currentModel, 'opus');
+  assert.strictEqual(incoming[0].mcpProfile, 'browser');
   assert.strictEqual(incoming[0].userRenamed, true);
 });
 

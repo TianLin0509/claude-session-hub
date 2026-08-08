@@ -97,6 +97,8 @@ test('modal markup carries the recent list, model picker and effort picker', () 
     'new-session-model',
     'new-session-effort',
     'new-session-effort-field',
+    'new-session-mcp',
+    'new-session-mcp-field',
     'new-session-tuning',
     'new-session-pick-path',
   ]) {
@@ -135,6 +137,12 @@ test('only flags the selected CLI understands are sent', () => {
     /if \(EFFORT_KINDS\.has\(selectedKind\) && selectedEffort\) opts\.effort = selectedEffort/,
     'effort is only sent for Claude',
   );
+  assert.match(
+    CONTROLLER_SRC,
+    /if \(selectedKind === 'codex'\) opts\.mcpProfile = selectedMcpProfile/,
+    'Codex must receive the explicit lean/browser/wireless/full MCP profile',
+  );
+  assert.match(INDEX_SRC, /value="lean">Lean · 默认省内存/, 'Lean MCP must be the visible default');
 });
 
 test('the modal opens as flex so the body can scroll and the footer stays reachable', () => {

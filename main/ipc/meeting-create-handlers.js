@@ -105,7 +105,9 @@ function createMeetingSubAdder(deps) {
     if (needsResearchMcp && hookPort) {
       const hubDataDir = getHubDataDir();
       if (isClaudeFamily(kind)) {
-        sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, meetingId, hookPort, hookToken, kind);
+        sessionOpts.mcpConfigFile = scenes.writeResearchMcpConfig(
+          hubDataDir, meetingId, hookPort, hookToken, kind, { enableChuxin: true },
+        );
       } else if (kind === 'gemini') {
         sessionOpts.extraEnv = {
           ...(sessionOpts.extraEnv || {}),
@@ -115,11 +117,14 @@ function createMeetingSubAdder(deps) {
           ARENA_HOOK_TOKEN: hookToken,
           ARENA_AI_KIND: 'gemini',
           ARENA_HUB_DATA_DIR: hubDataDir,
+          ARENA_CHUXIN_ENABLED: '1',
           SPIRIT_REGISTRY_ROOT: process.env.SPIRIT_REGISTRY_ROOT || path.join(require('os').homedir(), 'spirit-lens-registry'),
         };
       } else if (isCodexBaseKind(kind)) {
         sessionOpts.codexBypassApprovals = true;
-        addCodexMcpEntry(sessionOpts, scenes.buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken, hubDataDir));
+        addCodexMcpEntry(sessionOpts, scenes.buildResearchMcpEntryForCodex(
+          meetingId, hookPort, hookToken, hubDataDir, { enableChuxin: true },
+        ));
       }
     } else if (needsResearchMcp && !hookPort) {
       logger.warn('[群聊] ' + meeting.scene + ' scene in meeting ' + meetingId + ' but hookPort unavailable — stock MCP tools unavailable');
