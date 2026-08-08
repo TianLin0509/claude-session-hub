@@ -1330,6 +1330,43 @@
 .qt-refresh:hover { border-color: var(--border); background: var(--bg-tertiary); color: var(--text-secondary); }
 .qt-refresh.loading { cursor: wait; opacity: .6; pointer-events: none; }
 
+/* --- 侧栏 AI 家族筛选页签（全部 / Claude / Codex / 其他） --- */
+.session-filter-tabs {
+  display: flex; align-items: center; gap: 2px;
+  padding: 5px 8px; flex: none;
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.session-filter-tab {
+  flex: 1 1 0; min-width: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  height: 24px; padding: 0 4px;
+  border: 1px solid transparent; border-radius: 5px;
+  background: transparent; color: var(--text-secondary);
+  font-family: inherit; font-size: 11px; font-weight: 500;
+  white-space: nowrap; cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.session-filter-tab:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.session-filter-tab.selected {
+  background: var(--bg-tertiary);
+  border-color: var(--border);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.session-filter-tab .sft-count {
+  background: rgba(139, 148, 158, 0.22); border-radius: 8px;
+  padding: 0 5px; font-size: 9.5px; font-weight: 600;
+  color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
+.session-filter-tab.selected .sft-count {
+  background: rgba(88, 166, 255, 0.22); color: var(--accent-blue, #58a6ff);
+}
+.session-filter-empty {
+  padding: 14px 12px; text-align: center;
+  font-size: 11px; color: var(--text-muted); line-height: 1.6;
+}
+
 /* --- 侧栏分区头（等你响应 / 运行中 / 最近） --- */
 .session-sec-header {
   display: flex; align-items: center; gap: 6px;

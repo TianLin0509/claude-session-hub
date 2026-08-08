@@ -116,6 +116,9 @@
         </div>
       </div>
       <div id="account-usage" class="account-usage" style="display:none"></div>
+      <!-- 按 AI 家族筛选侧栏列表：全部 / Claude / Codex / 其他。内容与计数由
+           session-list-renderer 每次渲染时重建。 -->
+      <div class="session-filter-tabs" id="session-filter-tabs" role="tablist" aria-label="按 AI 筛选会话"></div>
       <div class="session-list" id="session-list"></div>
       <!-- 侧栏底部实时状态：活跃 PTY/AI 会话数 + 整机 CPU/内存占用 -->
       <div class="sidebar-strip" id="sidebar-strip" style="display:none"></div>

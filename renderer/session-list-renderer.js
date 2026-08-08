@@ -15,6 +15,43 @@ function partitionSessionsByAge(items, now) {
   return { recent, mid, old };
 }
 
+// --- 侧栏 AI 家族筛选 ---
+// 家族由 kind（哪个 CLI）决定，模型只是家族内部的选择：Opus / Fable / Sonnet 都是
+// Claude CLI 起的会话，GPT 各版本都是 Codex CLI 起的。所以按 kind 分族，与用户
+// 心里的「这是 Claude 还是 Codex」完全对得上，不需要再解析 currentModel。
+// DeepSeek 虽然实际跑在 Claude CLI 上（claude + ANTHROPIC_BASE_URL 中转），但它
+// 在 UI 上是独立的一家，归「其他」。
+const SESSION_FAMILY_TABS = [
+  { key: 'all', label: '全部', hint: '所有会话与群聊' },
+  { key: 'claude', label: 'Claude', hint: 'Claude Code（Opus / Fable / Sonnet / Haiku）' },
+  { key: 'codex', label: 'Codex', hint: 'Codex CLI（GPT 各版本）' },
+  { key: 'other', label: '其他', hint: 'Gemini / DeepSeek / Kimi / PowerShell' },
+];
+const SESSION_FAMILY_KEYS = SESSION_FAMILY_TABS.map(tab => tab.key);
+
+function familyOfKind(kind) {
+  const base = String(kind || '').replace(/-resume$/, '');
+  if (base === 'claude') return 'claude';
+  if (base === 'codex') return 'codex';
+  return 'other';
+}
+
+// 返回条目所属的家族集合。群聊按成员归属，可以同时属于多个家族——混合群聊只算
+// 一个家族的话，切到另一个页签时它会凭空消失，而它确实有那边的成员在跑。
+function sessionFamilies(item, sessionMap) {
+  if (!item) return new Set();
+  if (!item._isMeeting) return new Set([familyOfKind(item.kind)]);
+  const ids = (item._meeting && item._meeting.subSessions) || [];
+  const families = new Set();
+  for (const id of ids) {
+    const sub = sessionMap && typeof sessionMap.get === 'function' ? sessionMap.get(id) : null;
+    if (sub) families.add(familyOfKind(sub.kind));
+  }
+  // 成员还没同步进 map 的新群聊不能凭空消失，落到「其他」保底可见。
+  if (families.size === 0) families.add('other');
+  return families;
+}
+
 function createSessionListRenderer(options = {}) {
   const doc = options.document || document;
   const storage = options.localStorage || localStorage;
@@ -73,6 +110,46 @@ function toggleTimeGroup(key) {
   else _expandedTimeGroups.add(key);
   _persistExpandedTimeGroups();
   renderSessionList();
+}
+// --- 家族筛选页签（全部 / Claude / Codex / 其他），落盘，重开 Hub 保持上次选择 ---
+const _familyFilter = {
+  key: (() => {
+    try {
+      const raw = storage.getItem('hubSessionFamilyFilter');
+      return SESSION_FAMILY_KEYS.includes(raw) ? raw : 'all';
+    } catch { return 'all'; }
+  })(),
+};
+let _familyTabsBound = false;
+function setFamilyFilter(key) {
+  const next = SESSION_FAMILY_KEYS.includes(key) ? key : 'all';
+  if (next === _familyFilter.key) return;
+  _familyFilter.key = next;
+  try { storage.setItem('hubSessionFamilyFilter', next); } catch {}
+  renderSessionList();
+}
+// 计数在筛选之前算，所以每个页签上的数字始终是该家族的真实总数，而不是当前
+// 视图剩下的条数——否则切走之后就再也看不到别家还有几个会话。
+function renderFamilyTabs(counts) {
+  const tabsEl = doc.getElementById('session-filter-tabs');
+  if (!tabsEl) return;
+  tabsEl.innerHTML = SESSION_FAMILY_TABS.map(tab => {
+    const selected = tab.key === _familyFilter.key;
+    const count = counts[tab.key] || 0;
+    return `<button type="button" class="session-filter-tab${selected ? ' selected' : ''}"`
+      + ` data-family="${tab.key}" role="tab" aria-selected="${selected ? 'true' : 'false'}"`
+      + ` title="${escapeHtml(tab.hint)}">${escapeHtml(tab.label)}`
+      + `<span class="sft-count">${count}</span></button>`;
+  }).join('');
+  if (!_familyTabsBound) {
+    // 委托绑定一次：innerHTML 每次重建按钮，挂在按钮上的监听会随之丢失。
+    _familyTabsBound = true;
+    tabsEl.addEventListener('click', (event) => {
+      const btn = event.target && typeof event.target.closest === 'function'
+        ? event.target.closest('[data-family]') : null;
+      if (btn) setFamilyFilter(btn.dataset.family);
+    });
+  }
 }
 function _ensureTimeGroupStyle() {
   if (doc.getElementById('hub-stg-style')) return;
@@ -216,7 +293,18 @@ function _sessionWarningText(session) {
   });
 
   // Hide any leftover legacy background PTY sessions from the removed room path.
-  const visible = sorted.filter(s => !s.title || !s.title.startsWith('[Team] '));
+  const everything = sorted.filter(s => !s.title || !s.title.startsWith('[Team] '));
+
+  const familyCounts = { all: everything.length, claude: 0, codex: 0, other: 0 };
+  for (const s of everything) {
+    for (const family of sessionFamilies(s, sessionMap)) {
+      familyCounts[family] = (familyCounts[family] || 0) + 1;
+    }
+  }
+  renderFamilyTabs(familyCounts);
+  const visible = _familyFilter.key === 'all'
+    ? everything
+    : everything.filter(s => sessionFamilies(s, sessionMap).has(_familyFilter.key));
 
   // Preserve scroll position across rebuilds — without this, any re-render
   // (every status-event, silence-timer, or session-updated) snaps the list
@@ -463,6 +551,15 @@ function _sessionWarningText(session) {
   appendTimeGroup('mid', '3 天内', mid);
   appendTimeGroup('old', '更早', old);
 
+  // 筛掉一个空视图时说清楚是筛选的结果，否则看起来像会话丢了。
+  if (!visible.length && everything.length) {
+    const hint = doc.createElement('div');
+    hint.className = 'session-filter-empty';
+    const label = (SESSION_FAMILY_TABS.find(t => t.key === _familyFilter.key) || {}).label || '';
+    hint.textContent = `没有 ${label} 会话（共 ${everything.length} 个，点「全部」查看）`;
+    sessionListEl.appendChild(hint);
+  }
+
   renderSidebarStrip(sessionMap);
 
   if (afterRender) afterRender();
@@ -494,7 +591,13 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 
 
-  return { renderSessionList, renderSidebarStrip };
+  return { renderSessionList, renderSidebarStrip, setFamilyFilter, getFamilyFilter: () => _familyFilter.key };
 }
 
-module.exports = { createSessionListRenderer, partitionSessionsByAge };
+module.exports = {
+  createSessionListRenderer,
+  partitionSessionsByAge,
+  familyOfKind,
+  sessionFamilies,
+  SESSION_FAMILY_TABS,
+};
