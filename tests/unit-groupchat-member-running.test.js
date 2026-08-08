@@ -16,6 +16,11 @@ const fs = require('fs');
 const path = require('path');
 
 const { createSessionListRenderer } = require(path.join(__dirname, '..', 'renderer', 'session-list-renderer.js'));
+const {
+  GC_WORKING_FRESH_MS,
+  hasFreshGroupChatWork,
+  isGroupChatMemberRunning,
+} = require(path.join(__dirname, '..', 'core', 'groupchat-running-state.js'));
 const RENDERER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
 
 let failed = 0;
@@ -149,14 +154,44 @@ test('折叠群聊会聚合显示成员的 cwd / memory 告警', () => {
   assert.ok(html.includes('AI-claude'), '聚合告警必须指出具体成员，不能只报群聊有问题');
 });
 
-test('成员被 Ctrl+C 打断（自己 idle）时，不会因为 gcWorking 残留而继续显示运行中', () => {
-  // gcWorking 只有 10 分钟的兜底扫描才清，会话自己的状态更可信。
+test('成员被 Ctrl+C 打断（自己 idle）时，无时间戳的旧 gcWorking 不会继续亮灯', () => {
   const { sessions, meetings } = groupChat(['idle', 'idle', 'idle'], {
     subs: { gcWorking: true },
   });
   const html = render({ sessions, meetings });
   assert.ok(!/mini-st-thinking/.test(html), '会话自己说 idle 就以会话为准');
   assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '运行中');
+});
+
+test('成员 PTY 短暂 idle 时，新鲜 watcher 心跳仍点亮成员和群聊父项', () => {
+  const { sessions, meetings } = groupChat(['idle', 'idle', 'idle']);
+  const claude = sessions.get('sid-claude');
+  claude.gcWorking = true;
+  claude._gcWorkingLastTs = Date.now();
+  const html = render({ sessions, meetings });
+  assert.strictEqual((html.match(/mini-st-thinking/g) || []).length, 1,
+    '只有正在发言的 Claude 应显示黄色脉冲');
+  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '运行中',
+    '新鲜 watcher 必须让群聊父项归入运行中');
+});
+
+test('watcher 心跳过期后即使 gcWorking 残留，idle 成员也会自动熄灯', () => {
+  const now = Date.now();
+  const stale = {
+    id: 'sid-claude', status: 'idle', gcWorking: true,
+    _gcWorkingLastTs: now - GC_WORKING_FRESH_MS - 1,
+  };
+  assert.strictEqual(hasFreshGroupChatWork(stale, now), false);
+  assert.strictEqual(isGroupChatMemberRunning(stale, now), false);
+});
+
+test('休眠或错误是硬终态，不会被延迟到达的新鲜心跳重新点亮', () => {
+  const now = Date.now();
+  for (const status of ['dormant', 'errored', 'error']) {
+    assert.strictEqual(isGroupChatMemberRunning({
+      status, gcWorking: true, _gcWorkingLastTs: now,
+    }, now), false, `${status} 不应显示运行中`);
+  }
 });
 
 test('成员状态未知（既非 idle 也非 running）时仍尊重 gcWorking', () => {
@@ -171,6 +206,20 @@ test('成员状态未知（既非 idle 也非 running）时仍尊重 gcWorking',
   const html = render({ sessions, meetings });
   assert.strictEqual(sectionOf(html, '群聊X'), '运行中',
     '会话自身没有明确状态时，群聊调度的 gcWorking 仍是有效信号');
+});
+
+test('renderer 同时监听真实目标名单、心跳和轮次完成三条状态事件', () => {
+  assert.match(RENDERER_SRC, /ipcRenderer\.on\('groupchat-turn-targets'/,
+    'prompt 发出后应立即点亮真实目标，不能等第一段文字');
+  assert.match(RENDERER_SRC,
+    /groupchat-turn-targets[\s\S]{0,1000}_setGroupChatMemberWorking\(sub, targetSids\.has\(sid\)\)/,
+    '真实目标与未点名成员必须用同一个状态收敛函数');
+  assert.match(RENDERER_SRC,
+    /groupchat-partial-update[\s\S]{0,900}_setGroupChatMemberWorking\(sub, nextWorking\)/,
+    'streaming 心跳必须续期 watcher 新鲜度');
+  assert.match(RENDERER_SRC,
+    /groupchat-turn-complete[\s\S]{0,900}_setGroupChatMemberWorking\(s, false\)/,
+    '轮次完成必须立即熄灯');
 });
 
 // ---------- B. renderer.js 事件处理器契约 ----------
