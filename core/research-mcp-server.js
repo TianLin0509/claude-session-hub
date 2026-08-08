@@ -24,6 +24,16 @@ const os = require('os');
 const path = require('path');
 const screenerScore = require('./screener-score');
 const spiritRegistry = require('./spirit-registry');
+const CHUXIN_ENABLED = process.env.ARENA_CHUXIN_ENABLED === '1';
+let chuxinKnowledge = null;
+if (CHUXIN_ENABLED) {
+  try {
+    const chuxinDir = process.env.CHUXIN_DIR || path.join(os.homedir(), 'chuxin-research');
+    chuxinKnowledge = require(path.join(chuxinDir, 'mcp', 'knowledge-core.js'));
+  } catch (error) {
+    try { process.stderr.write('[arena-research-mcp] chuxin knowledge tools unavailable: ' + error.message + '\n'); } catch {}
+  }
+}
 
 const HUB_DATA_DIR = process.env.ARENA_HUB_DATA_DIR || process.env.CLAUDE_HUB_DATA_DIR || '';
 
@@ -82,6 +92,7 @@ function scanTool(name, description) {
 }
 
 const TOOLS = [
+  ...((CHUXIN_ENABLED && chuxinKnowledge && chuxinKnowledge.TOOLS) || []),
   {
     name: 'spirit_list',
     description: '【英灵系统入口】列出中立注册表里的可用英灵、版本、规则数、支持的投资任务与系统宪法。英灵是方法论镜头，不是人格扮演；任何底座模型读取到的是同一份 manifest_hash。用户说“有哪些英灵/召唤谁/英灵系统”时先调。',
@@ -426,11 +437,19 @@ async function handleRequest(req) {
     return reply(id, { tools: STUB_MODE ? [] : TOOLS });
   }
   if (method === 'tools/call') {
+    const name = params && params.name;
+    const args = (params && params.arguments) || {};
+    if (CHUXIN_ENABLED && chuxinKnowledge && chuxinKnowledge.hasTool(name)) {
+      try {
+        const text = await chuxinKnowledge.callTool(name, args);
+        return reply(id, { content: [{ type: 'text', text }] });
+      } catch (e) {
+        return reply(id, { content: [{ type: 'text', text: '初心工具失败：' + (e && e.message) }], isError: true });
+      }
+    }
     if (STUB_MODE) {
       return replyError(id, -32601, 'stock-research server in stub mode (not in research group chat)');
     }
-    const name = params && params.name;
-    const args = (params && params.arguments) || {};
     const baseBody = { token: HOOK_TOKEN, meetingId: MEETING_ID, kind: AI_KIND };
 
     // ── 模型无关英灵注册表：统一规则、证据哈希与输出契约 ──────────

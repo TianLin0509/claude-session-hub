@@ -130,7 +130,7 @@ test('Codex, Claude and Kimi records map to precise native resume options', () =
   assert.deepStrictEqual(resumeOptions({ kind: 'kimi', nativeSession: { kimiSid: 'kimi-id', kimiSessionDir: 'dir' } }), { useResume: true, kimiSid: 'kimi-id', kimiSessionDir: 'dir' });
 });
 
-test('renderer embeds one native PTY inside Chuxin and excludes it from the sidebar', () => {
+test('legacy Chuxin research sessions stay out of the sidebar and workbench embeds no native PTY', () => {
   const root = path.join(__dirname, '..');
   const renderer = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
   const list = fs.readFileSync(path.join(root, 'renderer', 'session-list-renderer.js'), 'utf8');
@@ -140,14 +140,12 @@ test('renderer embeds one native PTY inside Chuxin and excludes it from the side
   assert.match(renderer, /purpose === 'chuxin-research'/);
   assert.match(list, /s\.purpose !== 'chuxin-research'/);
   assert.match(shortcuts, /session\.purpose !== 'chuxin-research'/);
-  assert.match(chuxin, /chuxin:run-agent-task/);
-  assert.match(chuxin, /chuxin:model-catalog/);
-  assert.match(chuxin, /cx-native-terminal/);
+  assert.doesNotMatch(chuxin, /cx-native-terminal/);
   assert.doesNotMatch(chuxin, /chuxin:attach-run-session/);
   assert.doesNotMatch(list, /appendSecHeader\('投研任务'/);
 });
 
-test('Chuxin exposes one five-item product nav and suppresses the embedded app nav', () => {
+test('Chuxin exposes one six-item data workbench nav and suppresses the embedded app nav', () => {
   const root = path.join(__dirname, '..');
   const chuxin = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
   const styles = fs.readFileSync(path.join(root, 'renderer', 'chuxin.css'), 'utf8');
@@ -159,11 +157,11 @@ test('Chuxin exposes one five-item product nav and suppresses the embedded app n
   assert(primaryBlock, 'PRIMARY_TABS declaration is missing');
   assert.deepStrictEqual(
     [...primaryBlock[1].matchAll(/label: '([^']+)'/g)].map((match) => match[1]),
-    ['观察', 'AI群聊', '持有', '英雄大厅', '今日感悟'],
+    ['今日概况', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累'],
   );
   assert.match(chuxin, /cx-primary-nav/);
-  assert.match(chuxin, /cx-open-developer/);
   assert.match(chuxin, /&embed=hub#/);
+  assert.doesNotMatch(primaryBlock[1], /AI群聊|英雄大厅|今日感悟/);
   assert.doesNotMatch(chuxin, /className = 'cx-tabs'/);
   assert.doesNotMatch(chuxin, /label: '开发者'/);
   assert.match(styles, /\.cx-primary-nav/);

@@ -115,35 +115,45 @@ function removeTempRoot() {
     }
 
     const labels = await client.eval(`[...document.querySelectorAll('.cx-primary-tab')].map((node) => node.textContent.trim())`);
-    assert.deepStrictEqual(labels, ['观察', 'AI群聊', '持有', '英雄大厅', '今日感悟']);
+    assert.deepStrictEqual(labels, ['今日概况', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累']);
     assert.strictEqual(await client.eval(`document.querySelectorAll('.cx-primary-nav').length`), 1);
     assert.strictEqual(await client.eval(`document.querySelectorAll('.cx-tabs,.cx-tab').length`), 0);
 
     const expected = {
-      observe: '#technical',
-      chat: '#chat',
+      today: '#today',
+      technical: '#technical',
+      news: '#news',
+      targets: '#watch',
       holding: '#holding',
-      insights: '#insights',
+      notes: '#notes',
     };
+    await waitEval(client, `document.querySelector('.cx-view-frame[data-view="workbench"] iframe')`, 'shared workbench iframe');
+    await client.eval(`document.querySelector('.cx-view-frame iframe').__stableMarker = 'same-frame'`);
     for (const [tab, hash] of Object.entries(expected)) {
       await client.eval(`document.querySelector('.cx-primary-tab[data-tab="${tab}"]').click()`);
-      await waitEval(client, `document.querySelector('.cx-view-frame[data-view="${tab}"] iframe')`, `${tab} iframe`);
-      const src = await client.eval(`document.querySelector('.cx-view-frame[data-view="${tab}"] iframe').src`);
+      await waitEval(client, `document.querySelector('.cx-view-frame[data-view="workbench"] iframe').src.endsWith('${hash}')`, `${tab} route`);
+      const src = await client.eval(`document.querySelector('.cx-view-frame[data-view="workbench"] iframe').src`);
       assert(src.includes('embed=hub'), `${tab} did not enter embedded mode`);
       assert(src.endsWith(hash), `${tab} routed to ${src}`);
     }
+    assert.strictEqual(await client.eval(`document.querySelectorAll('.cx-view-frame iframe').length`), 1);
+    assert.strictEqual(await client.eval(`document.querySelector('.cx-view-frame iframe').__stableMarker`), 'same-frame');
+    assert.strictEqual(
+      await client.eval(`new URL(document.querySelector('.cx-view-frame iframe').src).searchParams.get('workspace')`),
+      'hub-primary-workspace',
+    );
 
-    await client.eval(`document.querySelector('.cx-primary-tab[data-tab="observe"]').click()`);
-    await _waitMs(1500);
-    const observeScreenshot = await screenshot(client, '01-observe-single-nav.png');
-
-    // Inspect the real embedded document when Chromium exposes it as a CDP target.
-    const embeddedTarget = (await listCdpTargets(hub)).find((target) => (target.url || '').includes('embed=hub'));
+    await client.eval(`document.querySelector('.cx-primary-tab[data-tab="today"]').click()`);
+    // Wait for the real embedded dashboard, not merely for the iframe element.
+    // The previous test captured too early and could approve an empty canvas.
+    await _waitMs(500);
+    const embeddedTarget = (await listCdpTargets(hub)).find((target) => (target.url || '').includes('embed=hub') && (target.url || '').endsWith('#today'));
     let embeddedVerified = false;
     if (embeddedTarget?.webSocketDebuggerUrl) {
       embeddedClient = await connectCDP(embeddedTarget.webSocketDebuggerUrl);
       await embeddedClient.send('Runtime.enable');
       await waitEval(embeddedClient, 'document.documentElement.classList.contains("hub-embed")', 'embedded mode class');
+      await waitEval(embeddedClient, 'document.querySelector("#feed .today-stat-grid") && document.getElementById("view-title")?.textContent === "今日概况"', 'rendered today dashboard');
       const embeddedState = await embeddedClient.eval(`({
         topbar: getComputedStyle(document.querySelector('.topbar')).display,
         mobileNav: getComputedStyle(document.querySelector('.mobile-nav')).display
@@ -151,22 +161,14 @@ function removeTempRoot() {
       assert.deepStrictEqual(embeddedState, { topbar: 'none', mobileNav: 'none' });
       embeddedVerified = true;
     }
-
-    await client.eval(`document.querySelector('.cx-primary-tab[data-tab="heroes"]').click()`);
-    await waitEval(client, 'document.getElementById("cx-open-developer")', 'prompt audit entry');
-    await client.eval(`document.getElementById('cx-open-developer').click()`);
-    assert.strictEqual(await client.eval(`getComputedStyle(document.querySelector('.cx-view-developer')).display !== 'none'`), true);
-    assert.strictEqual(await client.eval(`document.querySelector('.cx-primary-tab.active').dataset.tab`), 'heroes');
-    await client.eval(`document.getElementById('cx-developer-back').click()`);
-    assert.strictEqual(await client.eval(`getComputedStyle(document.querySelector('.cx-view-native')).display !== 'none'`), true);
-    const heroesScreenshot = await screenshot(client, '02-heroes-single-nav.png');
+    const observeScreenshot = await screenshot(client, '01-observe-single-nav.png');
 
     assert.deepStrictEqual(await client.eval('window.__singleNavErrors'), []);
     console.log(JSON.stringify({
       ok: true,
       labels,
       embeddedVerified,
-      screenshots: [observeScreenshot, heroesScreenshot],
+      screenshots: [observeScreenshot],
       output: OUTPUT,
     }, null, 2));
   } finally {

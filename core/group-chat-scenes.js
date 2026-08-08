@@ -21,7 +21,7 @@ function ensureDir(dir) {
 /**
  * 写 MCP config 文件（Claude/DS/GLM 等 Claude CLI 家族用 --mcp-config 注入投研工具）。
  */
-function writeResearchMcpConfig(hubDataDir, meetingId, hookPort, hookToken, aiKind) {
+function writeResearchMcpConfig(hubDataDir, meetingId, hookPort, hookToken, aiKind, options = {}) {
   const dir = arenaPromptsDir(hubDataDir);
   ensureDir(dir);
   const filePath = path.join(dir, `${meetingId}-research-mcp.json`);
@@ -39,6 +39,7 @@ function writeResearchMcpConfig(hubDataDir, meetingId, hookPort, hookToken, aiKi
           ARENA_AI_KIND: aiKind || 'unknown',
           ARENA_HUB_DATA_DIR: hubDataDir,
           SPIRIT_REGISTRY_ROOT: spiritRegistryRoot(),
+          ...(options.enableChuxin ? { ARENA_CHUXIN_ENABLED: '1' } : {}),
         },
       },
     },
@@ -50,7 +51,7 @@ function writeResearchMcpConfig(hubDataDir, meetingId, hookPort, hookToken, aiKi
 /**
  * 给 Codex 启动命令的 MCP entry（codex toml 中 key 不能含 -）。
  */
-function buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken, hubDataDir = '') {
+function buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken, hubDataDir = '', options = {}) {
   const mcpServerPath = path.resolve(__dirname, 'research-mcp-server.js');
   return {
     name: 'arena_research',
@@ -64,6 +65,7 @@ function buildResearchMcpEntryForCodex(meetingId, hookPort, hookToken, hubDataDi
       ARENA_AI_KIND: 'codex',
       ARENA_HUB_DATA_DIR: hubDataDir || process.env.CLAUDE_HUB_DATA_DIR || '',
       SPIRIT_REGISTRY_ROOT: spiritRegistryRoot(),
+      ...(options.enableChuxin ? { ARENA_CHUXIN_ENABLED: '1' } : {}),
     },
   };
 }

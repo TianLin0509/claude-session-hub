@@ -1,8 +1,9 @@
 /* 初心投研面板（chuxin-panel）— 2026-07-23 Kimi 移植 · 独立样式，前缀 cx- 防污染 */
 #chuxin-panel {
   flex: 1;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   background: #0d1117;
   color: #e6edf3;
@@ -11,32 +12,35 @@
 }
 #chuxin-panel[hidden], #chuxin-panel[style*="none"] { display: none; }
 
-/* 唯一产品导航：沿用初心投研原始五段式，不再套第二层技术路由 tab。 */
+/* 工作台左栏：与 mock 一致，只放数据与记录，不复制 AI 产品入口。 */
 .cx-primary-nav {
-  display: flex; align-items: center; justify-content: center; gap: clamp(8px, 2.2vw, 28px);
-  min-height: 64px; padding: 10px 18px; overflow-x: auto; scrollbar-width: none;
-  border-bottom: 1px solid rgba(96,165,250,.16); background: #020617;
+  grid-column: 1; grid-row: 3;
+  display: flex; flex-direction: column; align-items: stretch; gap: 6px;
+  min-height: 0; padding: 20px 14px; overflow-y: auto; scrollbar-width: thin;
+  border-right: 1px solid rgba(96,165,250,.16); background: #020617;
 }
 .cx-primary-nav::-webkit-scrollbar { display: none; }
 .cx-primary-tab {
-  flex: 0 0 auto; min-height: 42px; padding: 0 22px; border: 0; border-radius: 10px;
-  background: transparent; color: #66758e; font-size: 15px; font-weight: 650; cursor: pointer;
+  flex: 0 0 auto; min-height: 44px; padding: 0 15px; border: 1px solid transparent; border-radius: 9px;
+  background: transparent; color: #77869f; font-size: 13px; font-weight: 650; text-align: left; cursor: pointer;
   transition: color .18s ease, background .18s ease;
 }
 .cx-primary-tab:hover { color: #c5d0df; background: rgba(15,23,42,.58); }
 .cx-primary-tab:focus-visible { outline: 2px solid #5fd4d0; outline-offset: 2px; }
-.cx-primary-tab.active { color: #edf3fb; background: #0f172a; }
+.cx-primary-tab.active { color: #edf3fb; border-color: rgba(34,197,94,.25); background: #0b1d13; box-shadow: inset 3px 0 #22c55e; }
 .cx-view-native { flex: 1; overflow-y: auto; min-height: 0; }
 .cx-view-developer { flex: 1; overflow-y: auto; min-height: 0; padding: 18px 20px 28px; }
-.cx-view-frame { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cx-view-frame { grid-column: 2; grid-row: 3; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .cx-frame { flex: 1; border: 0; width: 100%; background: #0d1117; }
 
 .cx-header {
+  grid-column: 1 / -1; grid-row: 1;
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   padding: 14px 20px; border-bottom: 1px solid rgba(160,185,215,.14);
   background: linear-gradient(135deg, rgba(18,32,44,.9), rgba(13,20,30,.9));
   position: sticky; top: 0; z-index: 5;
 }
+.cx-start-error { grid-column: 1 / -1; grid-row: 2; }
 .cx-title { font-size: 18px; font-weight: 800; letter-spacing: .02em; }
 .cx-title small { color: #9dafc4; font-size: 12px; font-weight: 500; margin-left: 8px; }
 .cx-status { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; border: 1px solid rgba(160,185,215,.2); }
@@ -228,6 +232,19 @@
 .cx-dev-component summary span { flex: 1; }.cx-dev-component summary small { color: #71869a; font-family: Consolas, monospace; }
 .cx-dev-scroll pre { margin: 0; padding: 10px; border-top: 1px solid rgba(160,185,215,.1); white-space: pre-wrap; word-break: break-word; color: #a9c0d2; font: 10.5px/1.65 Consolas, monospace; background: #071019; }
 @media (max-width: 980px) { .cx-dev-columns { grid-template-columns: 1fr; }.cx-dev-head { flex-direction: column; }.cx-dev-run { text-align: left; } }
+
+@media (max-width: 760px) {
+  #chuxin-panel { grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+  .cx-title small { display: block; margin: 3px 0 0; }
+  .cx-primary-nav {
+    grid-column: 1; grid-row: 4; z-index: 8; flex-direction: row; gap: 2px;
+    padding: 7px 8px max(7px, env(safe-area-inset-bottom)); overflow-x: auto;
+    border-right: 0; border-top: 1px solid rgba(96,165,250,.16);
+  }
+  .cx-primary-tab { min-height: 40px; padding: 0 12px; white-space: nowrap; text-align: center; font-size: 12px; }
+  .cx-primary-tab.active { box-shadow: inset 0 -3px #22c55e; }
+  .cx-view-frame { grid-column: 1; grid-row: 3; }
+}
 
 .cx-toast {
   position: fixed; right: 18px; bottom: 18px; z-index: 60; padding: 10px 16px; border-radius: 10px;

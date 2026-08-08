@@ -12,6 +12,7 @@
   let API = 'http://127.0.0.1:3004';
   let WEB = 'http://127.0.0.1:3003';
   const WS_KEY = 'chuxin.hub.workspace';
+  const PRIMARY_WORKSPACE = 'hub-primary-workspace';
   const SELECT_KEY = 'chuxin.hub.selected-heroes';
   const LAST_KEY = 'chuxin.hub.last-run';
   const TAB_KEY = 'chuxin.hub.active-tab';
@@ -20,14 +21,15 @@
   const SESSION_KEY = 'chuxin.hub.research-session';
   const AGENTS = [];
 
-  // 只保留初心投研原始的五项产品导航。技术/消息/线索/观察池/投委会
-  // 都属于“观察”内部来源，不再在 Hub 外壳重复铺一层路由。
+  // 初心投研只承担数据工作台。AI 对话、英雄和投委会都回到 Hub
+  // 原生 Session / 群聊，不再在这里复制一套 AI 产品入口。
   const PRIMARY_TABS = [
-    { id: 'observe', label: '观察', hash: 'technical' },
-    { id: 'chat', label: 'AI群聊', hash: 'chat' },
-    { id: 'holding', label: '持有', hash: 'holding' },
-    { id: 'heroes', label: '英雄大厅', native: true },
-    { id: 'insights', label: '今日感悟', hash: 'insights' },
+    { id: 'today', label: '今日概况', hash: 'today' },
+    { id: 'technical', label: '技术雷达', hash: 'technical' },
+    { id: 'news', label: '消息雷达', hash: 'news' },
+    { id: 'targets', label: '观察池', hash: 'watch' },
+    { id: 'holding', label: '持仓信息', hash: 'holding' },
+    { id: 'notes', label: '知识积累', hash: 'notes' },
   ];
   const WORKSPACE_RE = /^[A-Za-z0-9_-]{16,128}$/;
 
@@ -70,13 +72,13 @@
     ));
   }
   function workspace() {
-    let ws = localStorage.getItem(WS_KEY) || '';
-    if (!WORKSPACE_RE.test(ws)) {
-      ws = 'hub-' + Array.from(crypto.getRandomValues(new Uint8Array(12)))
-        .map((b) => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('');
-      localStorage.setItem(WS_KEY, ws);
+    // 初心是这台电脑上的个人工作台，不是多租户站点。过去的随机 ID 会随
+    // Electron profile 轮换，导致已落盘持仓看起来“消失”；固定身份后重开仍
+    // 指向同一份快照。后端只在本机配置中启用这项映射。
+    if (localStorage.getItem(WS_KEY) !== PRIMARY_WORKSPACE) {
+      localStorage.setItem(WS_KEY, PRIMARY_WORKSPACE);
     }
-    return ws;
+    return PRIMARY_WORKSPACE;
   }
   function toast(msg, isErr) {
     const t = el('div', 'cx-toast' + (isErr ? ' error' : ''), msg);
@@ -163,7 +165,7 @@
     root.innerHTML = '';
     const header = el('div', 'cx-header');
     const title = el('div', 'cx-title');
-    title.innerHTML = '初心投研<small>英雄 Skill × 底座 Agent · 数据与审计由 chuxin-research 提供</small>';
+    title.innerHTML = '初心投研<small>量化信息、持仓与长期记录工作台</small>';
     state.statusEl = el('span', 'cx-status unknown');
     state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">检测中…</span>';
     state.startBtn = el('button', 'cx-btn', '启动投研后端');
@@ -175,7 +177,7 @@
     state.startErrorEl = el('div', 'cx-start-error');
     state.startErrorEl.style.display = 'none';
 
-    // 唯一产品导航：视觉和信息层级与初心投研原应用一致。
+    // 唯一工作台导航；所有内容由同一个 chuxin-research 前端承载。
     state.tabsBar = el('nav', 'cx-primary-nav');
     state.tabsBar.setAttribute('aria-label', '初心投研主要功能');
     for (const t of PRIMARY_TABS) {
@@ -186,125 +188,42 @@
       state.tabsBar.append(b);
     }
 
-    // 原生英雄大厅视图
-    const nativeView = el('div', 'cx-view-native');
-    nativeView.dataset.view = 'heroes';
+    // 所有 Tab 必须共用一个 iframe。旧实现为六个 Tab 各建一份前端状态，
+    // 在技术雷达加入观察后，观察池 iframe 仍停留在旧快照，产生“已在观察，
+    // 但观察池为空”的矛盾。
+    state.frameView = el('div', 'cx-view-frame');
+    state.frameView.dataset.view = 'workbench';
+    state.frameView.style.display = 'flex';
+    state.frame = null;
 
-    const heroSec = el('div', 'cx-section');
-    const heroSecHead = el('div', 'cx-section-head');
-    heroSecHead.append(el('div', 'cx-section-title', '选择英雄（多位将各自独立取证并保留分歧）'));
-    state.developerButton = el('button', 'cx-review-prompt', '审查本轮 Prompt');
-    state.developerButton.id = 'cx-open-developer';
-    state.developerButton.type = 'button';
-    state.developerButton.addEventListener('click', () => switchTab('developer'));
-    heroSecHead.append(state.developerButton);
-    heroSec.append(heroSecHead);
-    state.heroGrid = el('div', 'cx-heroes');
-    state.heroGrid.innerHTML = '<div class="cx-ask-hint">正在加载英雄名册…</div>';
-    heroSec.append(state.heroGrid);
-
-    const agentSec = el('div', 'cx-section');
-    agentSec.append(el('div', 'cx-section-title', '选择底座 Agent 与模型（直接复用 Hub 原生 CLI）'));
-    state.agentGrid = el('div', 'cx-agents');
-    agentSec.append(state.agentGrid);
-
-    const sessionSec = el('div', 'cx-section cx-session-section');
-    sessionSec.append(el('div', 'cx-section-title', '投研 Session（全局共享，重启后可从原生会话继续）'));
-    const sessionRow = el('div', 'cx-session-row');
-    state.sessionSelect = el('select', 'cx-session-select');
-    state.sessionSelect.addEventListener('change', () => {
-      state.selectedResearchSessionId = state.sessionSelect.value === '__new__' ? '' : state.sessionSelect.value;
-      localStorage.setItem(SESSION_KEY, state.selectedResearchSessionId);
-      void applySelectedSession().finally(schedulePromptPreview);
-      renderAgents();
-      renderDeveloper();
-    });
-    state.sessionRefreshBtn = el('button', 'cx-btn subtle', '刷新 Session');
-    state.sessionRefreshBtn.addEventListener('click', loadResearchSessions);
-    sessionRow.append(state.sessionSelect, state.sessionRefreshBtn);
-    sessionSec.append(sessionRow, el('div', 'cx-ask-hint', '复用已有 Session 会保留上下文并锁定原 Agent/模型；选“新开 CLI”才可重新选择。'));
-
-    const askSec = el('div', 'cx-section');
-    askSec.append(el('div', 'cx-section-title', '你真正想问什么'));
-    state.askBox = el('textarea', 'cx-ask-box');
-    state.askBox.placeholder = '例：现在能否购买澜起科技（688008）？请直接给参谋意见，也明确哪些最新资料本轮没有取到。';
-    state.askBox.addEventListener('input', () => {
-      renderDeveloper();
-      schedulePromptPreview();
-    });
-    const askRow = el('div', 'cx-ask-row');
-    state.runBtn = el('button', 'cx-btn primary', '让 Agent 独立取证作答');
-    state.runBtn.addEventListener('click', runAnalysis);
-    askRow.append(state.runBtn, el('span', 'cx-ask-hint', '运行后，下方就是同一份真实 PTY；可直接看工具调用与中间过程'));
-    askSec.append(state.askBox, askRow);
-
-    const terminalSec = el('div', 'cx-section cx-terminal-section');
-    const terminalHead = el('div', 'cx-terminal-section-head');
-    terminalHead.append(el('div', 'cx-section-title', '原生 CLI'), el('span', 'cx-ask-hint', 'PTY 与友好结果来自同一轮执行'));
-    state.terminalHost = el('div', 'cx-native-terminal terminal-panel');
-    state.terminalHost.innerHTML = '<div class="cx-terminal-empty">选择已有 Session，或发起任务后在这里查看原生 CLI。</div>';
-    terminalSec.append(terminalHead, state.terminalHost);
-
-    state.liveEl = el('div', 'cx-live');
-    state.liveEl.style.display = 'none';
-
-    state.resultEl = el('div', 'cx-results');
-    nativeView.append(heroSec, agentSec, sessionSec, askSec, state.liveEl, terminalSec, state.resultEl);
-
-    const developerView = el('div', 'cx-view-developer');
-    developerView.dataset.view = 'developer';
-    developerView.style.display = 'none';
-    state.developerView = developerView;
-    renderDeveloper();
-
-    // iframe 视图（懒加载）
-    state.frameViews = {};
-    const frames = [];
-    for (const t of PRIMARY_TABS) {
-      if (t.native) continue;
-      const wrap = el('div', 'cx-view-frame');
-      wrap.dataset.view = t.id;
-      wrap.style.display = 'none';
-      state.frameViews[t.id] = wrap;
-      frames.push(wrap);
-    }
-
-    root.append(header, state.startErrorEl, state.tabsBar, nativeView, developerView, ...frames);
-    const storedTab = localStorage.getItem(TAB_KEY) || 'heroes';
-    const migratedTab = ['technical', 'watch', 'committee', 'clues', 'news'].includes(storedTab)
-      ? 'observe' : (storedTab === 'developer' ? 'heroes' : storedTab);
+    root.append(header, state.startErrorEl, state.tabsBar, state.frameView);
+    const storedTab = localStorage.getItem(TAB_KEY) || 'today';
+    const legacyMap = {
+      observe: 'today', chat: 'today', heroes: 'today', insights: 'notes', developer: 'today',
+      watch: 'targets', committee: 'today', clues: 'news',
+    };
+    const migratedTab = legacyMap[storedTab] || storedTab;
     switchTab(migratedTab);
   }
 
   function switchTab(tabId) {
-    const developerMode = tabId === 'developer';
-    const tab = developerMode
-      ? PRIMARY_TABS.find((row) => row.id === 'heroes')
-      : (PRIMARY_TABS.find((row) => row.id === tabId) || PRIMARY_TABS[0]);
-    localStorage.setItem(TAB_KEY, developerMode ? 'heroes' : tab.id);
+    const tab = PRIMARY_TABS.find((row) => row.id === tabId) || PRIMARY_TABS[0];
+    localStorage.setItem(TAB_KEY, tab.id);
     for (const b of state.tabsBar.children) {
       b.classList.toggle('active', b.dataset.tab === tab.id);
       b.setAttribute('aria-current', b.dataset.tab === tab.id ? 'page' : 'false');
     }
-    const nativeView = root.querySelector('.cx-view-native');
-    if (nativeView) nativeView.style.display = tab.native && !developerMode ? '' : 'none';
-    if (state.developerView) state.developerView.style.display = developerMode ? '' : 'none';
-    if (developerMode) {
-      renderDeveloper();
-      refreshDeveloper(state.runId || localStorage.getItem(LAST_KEY));
+    const target = WEB + '/?api=' + encodeURIComponent(API)
+      + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub#' + tab.hash;
+    if (!state.frame) {
+      state.frame = document.createElement('iframe');
+      state.frame.className = 'cx-frame';
+      state.frame.setAttribute('allow', 'clipboard-read; clipboard-write');
+      state.frameView.append(state.frame);
     }
-    for (const [id, wrap] of Object.entries(state.frameViews)) {
-      const show = id === tab.id;
-      wrap.style.display = show ? 'flex' : 'none';
-      if (show && !wrap.dataset.loaded) {
-        wrap.dataset.loaded = '1';
-        const frame = document.createElement('iframe');
-        frame.className = 'cx-frame';
-        // 与原生英雄页共用同一匿名 workspace：数据与审计不再分散（chuxin 前端支持 ?workspace= 导入）
-        frame.src = WEB + '/?api=' + encodeURIComponent(API) + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub#' + tab.hash;
-        frame.setAttribute('allow', 'clipboard-read; clipboard-write');
-        wrap.append(frame);
-      }
+    if (state.frame.dataset.hash !== tab.hash) {
+      state.frame.dataset.hash = tab.hash;
+      state.frame.src = target;
     }
   }
 
@@ -321,16 +240,11 @@
         state.statusEl.className = 'cx-status online';
         state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">投研后端在线 · ' + esc(API.replace(/^https?:\/\//, '')) + '</span>';
         state.startBtn.style.display = 'none';
-        await loadAgentCatalog();
-        await loadHeroes();
-        await loadResearchSessions();
-        await restoreRun(localStorage.getItem(LAST_KEY));
       } else {
         state.statusEl.className = 'cx-status offline';
         state.statusEl.innerHTML = '<span class="dot"></span><span class="txt">投研后端未启动</span>';
         state.startBtn.style.display = '';
-        state.providerEl.textContent = s.error || '';
-        state.heroGrid.innerHTML = '<div class="cx-ask-hint">后端离线：点击上方「启动投研后端」，或手动执行 C:\\Users\\lintian\\chuxin-research\\run.ps1</div>';
+        if (state.providerEl) state.providerEl.textContent = s.error || '';
       }
     } catch (e) {
       state.statusEl.className = 'cx-status offline';
@@ -881,7 +795,7 @@
     state.opened = visible;
     const tp = document.getElementById('terminal-panel');
     const mrp = document.getElementById('meeting-room-panel');
-    if (root) root.style.display = visible ? 'flex' : 'none';
+    if (root) root.style.display = visible ? 'grid' : 'none';
     if (visible) {
       // 打开投研：接管主区（terminal / 群聊面板由本函数隐藏；
       // 反向切换由 selectSession / selectMeeting 调 __chuxinHide，本函数不替它们恢复 tp）
