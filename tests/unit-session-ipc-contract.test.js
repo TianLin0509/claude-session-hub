@@ -322,7 +322,7 @@ test('rename-session returns updated session and emits session-updated', () => {
   assert.deepStrictEqual(emitted, [['session-updated', { session: updated }]]);
 });
 
-test('terminal-resize drops invalid and duplicate sizes', () => {
+test('terminal-resize drops invalid and duplicate sizes but permits a forced TUI redraw', () => {
   const ipc = createFakeIpc();
   const sessionManager = createFakeSessionManager();
   registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
@@ -330,6 +330,7 @@ test('terminal-resize drops invalid and duplicate sizes', () => {
 
   resize(null, { sessionId: 's1', cols: 80, rows: 24 });
   resize(null, { sessionId: 's1', cols: 80, rows: 24 });
+  resize(null, { sessionId: 's1', cols: 80, rows: 24, force: true });
   resize(null, { sessionId: 's1', cols: 100, rows: 30 });
   resize(null, { sessionId: 's1', cols: 0, rows: 30 });
   resize(null, { sessionId: 123, cols: 90, rows: 30 });
@@ -337,6 +338,7 @@ test('terminal-resize drops invalid and duplicate sizes', () => {
   assert.deepStrictEqual(
     sessionManager.calls.filter(call => call[0] === 'resizeSession'),
     [
+      ['resizeSession', 's1', 80, 24],
       ['resizeSession', 's1', 80, 24],
       ['resizeSession', 's1', 100, 30],
     ]

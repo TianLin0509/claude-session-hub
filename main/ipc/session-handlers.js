@@ -164,11 +164,14 @@ function registerSessionIpc(ipcMain, deps) {
     sessionManager.writeToSession(sessionId, data);
   });
 
-  ipcMain.on('terminal-resize', (_e, { sessionId, cols, rows }) => {
+  ipcMain.on('terminal-resize', (_e, { sessionId, cols, rows, force }) => {
     if (typeof sessionId !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') return;
     if (cols <= 0 || rows <= 0) return;
     const last = lastResizeBySid.get(sessionId);
-    if (last && last.cols === cols && last.rows === rows) return;
+    // Normal ResizeObserver chatter remains deduplicated. Snapshot hydration is
+    // the one intentional exception: a same-size ConPTY resize asks a live TUI
+    // to repaint a complete authoritative frame after historical ANSI replay.
+    if (!force && last && last.cols === cols && last.rows === rows) return;
     lastResizeBySid.set(sessionId, { cols, rows });
     sessionManager.resizeSession(sessionId, cols, rows);
   });

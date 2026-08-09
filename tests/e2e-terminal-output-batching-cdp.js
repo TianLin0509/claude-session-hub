@@ -132,7 +132,8 @@ async function waitForResult(client, expression, timeoutMs = 30000) {
     assert.ok(orderProbe.first >= 0 && orderProbe.first < orderProbe.last, JSON.stringify(orderProbe));
     assert.ok(orderProbe.last < orderProbe.done, JSON.stringify(orderProbe));
     assert.ok(rendered.cols > 20 && rendered.rows > 10, JSON.stringify(rendered));
-    assert.ok(rendered.cache.size <= rendered.cache.max, JSON.stringify(rendered.cache));
+    assert.strictEqual(rendered.cache.policy, 'session-lifecycle', JSON.stringify(rendered.cache));
+    assert.strictEqual(rendered.cache.max, null, JSON.stringify(rendered.cache));
 
     await client.eval(`require('electron').ipcRenderer.invoke('close-session', ${JSON.stringify(session.id)})`);
     console.log(JSON.stringify({ ok: true, pid: hub.pid, port, delta, rendered: { cols: rendered.cols, rows: rendered.rows, cache: rendered.cache } }, null, 2));

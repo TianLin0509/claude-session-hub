@@ -159,9 +159,11 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
 
     assert.strictEqual(result.initial.size, 0, 'isolated Hub should start without eager xterms');
     assert.strictEqual(result.afterMeetingSessionEvents.size, 0, 'meeting session-created events must not warm hidden xterms');
-    assert.strictEqual(result.afterShells.size, 4, 'xterm cache must stay bounded at four');
-    assert.deepStrictEqual(result.afterShells.ids, ['perf-shell-4', 'perf-shell-5', 'perf-shell-6', 'perf-shell-7']);
-    assert.strictEqual(result.afterMeeting.size, 4, 'opening a serial room must not create hidden xterms');
+    assert.strictEqual(result.initial.policy, 'session-lifecycle');
+    assert.strictEqual(result.initial.max, null, 'live xterms must not have an arbitrary count limit');
+    assert.strictEqual(result.afterShells.size, 8, 'every explicitly opened live session must retain its xterm');
+    assert.deepStrictEqual(result.afterShells.ids, Array.from({ length: 8 }, (_, i) => `perf-shell-${i}`));
+    assert.strictEqual(result.afterMeeting.size, 8, 'opening a serial room must not create or evict hidden xterms');
     assert.deepStrictEqual(result.memberStatuses, ['dormant', 'dormant', 'dormant']);
     assert.strictEqual(result.panelVisible, true, 'serial meeting UI should remain usable');
     assert.strictEqual(result.renderStatsAfterBurst.requests - result.renderStatsBeforeBurst.requests, 200, 'all status events should request a coalesced render');
@@ -170,8 +172,8 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     assert.ok(result.bulkSidebar.renderMs < 250, `900-session sidebar render took ${result.bulkSidebar.renderMs}ms`);
     assert.strictEqual(result.suspended.exists, true);
     assert.strictEqual(result.suspended.status, 'dormant');
-    assert.strictEqual(result.suspended.cache.size, 3);
-    assert.deepStrictEqual(result.suspended.cache.ids, ['perf-shell-4', 'perf-shell-5', 'perf-shell-6']);
+    assert.strictEqual(result.suspended.cache.size, 7);
+    assert.deepStrictEqual(result.suspended.cache.ids, Array.from({ length: 7 }, (_, i) => `perf-shell-${i}`));
     assert.strictEqual(result.suspended.bulkActionVisible, true);
     assert.strictEqual(result.suspended.emptyStateVisible, true,
       'session-suspended must retain the card while releasing its cached xterm');

@@ -1,8 +1,9 @@
 'use strict';
 // 定位 PTY 顶部大片空白的根因。
 //
-// 假设：MAX_TERMINAL_CACHE_SIZE = 4，会话超过 4 个时 xterm 实例会被驱逐；切回来时
-// 走 hydrateTerminalFromSnapshot —— 把**原始 PTY 字节**重放进一个**当前尺寸**的终端。
+// 生产缓存现在跟随 Session 生命周期，不再按数量驱逐 live xterm。这里通过隔离
+// E2E hook 显式销毁首个 xterm，再走 hydrateTerminalFromSnapshot —— 把快照重放进
+// 一个**当前尺寸**的终端。
 // TUI 的绝对定位序列（\x1b[<row>;1H）是按快照拍摄时的行数算的，尺寸一变就落在错误的
 // 行上，正文上方留白。末尾的 scrollToBottom 只能修滚动位置，修不了画错的行。
 //
@@ -21,7 +22,7 @@ const TEMP_ROOT = path.join(os.tmpdir(), `hub-rehydrate-${RUN_ID}`);
 const DATA_DIR = path.join(TEMP_ROOT, 'hub-data');
 const WORKSPACE_ROOT = path.join(TEMP_ROOT, 'workspaces');
 const FAKE_BIN = path.join(TEMP_ROOT, 'fake-bin');
-const SESSION_COUNT = 6;   // > MAX_TERMINAL_CACHE_SIZE(4)
+const SESSION_COUNT = 6;
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -92,6 +93,7 @@ async function main() {
       AI_HUB_WORKSPACE_ROOT: WORKSPACE_ROOT,
       PATH: `${FAKE_BIN};${process.env.PATH}`,
       CLAUDE_HUB_NO_EFFORT_MAX: '1',
+      CLAUDE_HUB_E2E: '1',
     },
   });
 
@@ -102,6 +104,8 @@ async function main() {
     await waitFor('sidebar', () => client.eval('!!document.getElementById("btn-new")'));
     await waitFor('WorkspaceController', () => client.eval(
       '!!(window.WorkspaceController && window.WorkspaceController.createScratch)'));
+    await waitFor('e2e terminal API', () => client.eval(
+      '!!(window.__hubE2E && window.__hubE2E.disposeTerminal)'));
 
     await client.eval(`(() => {
       const xterm = require('@xterm/xterm');
@@ -126,7 +130,7 @@ async function main() {
     await _waitMs(2500);
     steps.push(await client.eval(GEOM('1-大窗口下的原始会话')));
 
-    // 2. 再建 5 个，把第一个挤出缓存（MAX_TERMINAL_CACHE_SIZE=4）
+    // 2. 再建 5 个，确认多 Session 场景下首个 live xterm 不会被数量策略驱逐
     for (let i = 1; i < SESSION_COUNT; i++) {
       await client.eval(`(async () => {
         const ws = await window.WorkspaceController.createScratch('s${i}');
@@ -137,23 +141,18 @@ async function main() {
     }
     steps.push(await client.eval(GEOM('2-建满 6 个会话后(当前是最后一个)')));
 
-    // 3. 把窗口改小 —— 第一个会话此时已被驱逐，不会跟着 fit
+    await client.eval(`window.__hubE2E.disposeTerminal(${JSON.stringify(first.id)})`);
+
+    // 3. 把窗口改小 —— 第一个 xterm 已由测试 hook 显式销毁，不会跟着 fit
     await client.send('Emulation.setDeviceMetricsOverride',
       { width: 1400, height: 620, deviceScaleFactor: 0, mobile: false });
     await _waitMs(1800);
     steps.push(await client.eval(GEOM('3-窗口改小')));
 
     // 4. 切回第一个会话 → 走快照重建：旧尺寸的字节重放进新尺寸终端
-    await client.eval(`(() => { window.__selectSession && window.__selectSession(${JSON.stringify(first.id)}); return true; })()`)
-      .catch(() => {});
-    await client.eval(`(() => {
-      const items = Array.from(document.querySelectorAll('.session-item'));
-      const target = items[items.length - 1] || items[0];
-      if (target) target.click();
-      return !!target;
-    })()`);
+    await client.eval(`window.__hubE2E.selectSession(${JSON.stringify(first.id)}, { forceScrollBottom: true })`);
     await _waitMs(3000);
-    steps.push(await client.eval(GEOM('4-切回被驱逐的会话(快照重建)')));
+    steps.push(await client.eval(GEOM('4-切回显式销毁的会话(快照重建)')));
 
     console.log('--- 每步 ---');
     for (const s of steps) {

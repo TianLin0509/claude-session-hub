@@ -1,8 +1,8 @@
 'use strict';
-// 终端缓存驱逐后的快照重建（ef31eb2 于 2026-07-26 引入，用户反馈"最近 3 天才有"）。
+// 终端显式恢复时的快照重建（历史问题由 ef31eb2 于 2026-07-26 暴露）。
 //
-// ef31eb2 加了 MAX_TERMINAL_CACHE_SIZE=4 + hydrateTerminalFromSnapshot：会话超过 4 个后
-// 切换会丢弃 xterm，再用 SessionManager 的环形缓冲原始 PTY 字节重放重建。
+// Renderer reload/丢失后会通过 hydrateTerminalFromSnapshot，用 SessionManager 的
+// 环形缓冲原始 PTY 字节重放重建。
 // 缓冲原为 16KB 且按字节尾切 —— 装不下 Codex/Kimi 一整帧带色彩的全屏重绘，
 // 重建出来内容大面积缺失（实测视口非空行 30 → 2）。
 //
@@ -48,7 +48,7 @@ test('the ring buffer holds a full coloured TUI frame', () => {
   const value = eval(m[1]);
   // 16KB 实测保全率 56.8%（400 行只剩 227 行），256KB 起 100%，1MB 给带色输出留余量
   assert.ok(value >= 256 * 1024,
-    `an evicted terminal rebuilds from this buffer; 16KB measured only 56.8% content `
+    `a reconstructed terminal rebuilds from this buffer; 16KB measured only 56.8% content `
     + `preservation on a 400-line session; got ${value} bytes`);
 });
 

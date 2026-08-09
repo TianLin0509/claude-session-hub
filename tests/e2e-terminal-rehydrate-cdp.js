@@ -1,12 +1,12 @@
 'use strict';
-// 终端缓存驱逐后的内容保全（回归测试）。
+// 终端显式重建后的内容保全（回归测试）。
 //
-// ef31eb2 引入 MAX_TERMINAL_CACHE_SIZE + hydrateTerminalFromSnapshot：会话数超过上限后
-// 切换会丢弃 xterm，再用 SessionManager 的 16KB 环形缓冲原始字节重放重建。
-// 后果是重建出来的终端内容大面积缺失 —— 用户看到的就是"大片空白"。
+// 生产缓存现在跟随 Session 生命周期，不再按数量驱逐仍存活的 xterm。Renderer
+// reload/丢失仍需要用 SessionManager 快照恢复，因此这里通过隔离 E2E hook 显式
+// 销毁一个 xterm，再验证重建内容不会大面积缺失或出现"大片空白"。
 //
 // 用 PowerShell 会话产出确定数量的可校验行（免费、不依赖任何模型），
-// 驱逐后切回来，校验这些行还在不在。
+// 显式重建后校验这些行还在不在。
 //   node tests/e2e-terminal-rehydrate-cdp.js
 
 const assert = require('node:assert/strict');
@@ -21,7 +21,6 @@ const { gracefulQuit, launchIsolatedHub, _waitMs } = require('./helpers/hub-laun
 const ROOT = path.join(os.tmpdir(), `hub-rehydrate-${Date.now()}-${process.pid}`);
 const WS = path.join(ROOT, 'workspaces');
 const LINES = 400;
-const EXTRA_SESSIONS = 8;   // 足以越过任何合理的缓存上限
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -69,15 +68,20 @@ const COUNT_MARKS = `(() => {
 async function main() {
   fs.mkdirSync(WS, { recursive: true });
   const port = await reservePort();
-  const hub = await launchIsolatedHub({
-    dataDir: path.join(ROOT, 'hub-data'), port, label: 'rehydrate',
-    extraEnv: { AI_HUB_WORKSPACE_ROOT: WS, CLAUDE_HUB_NO_EFFORT_MAX: '1' },
+    const hub = await launchIsolatedHub({
+      dataDir: path.join(ROOT, 'hub-data'), port, label: 'rehydrate',
+      extraEnv: {
+        AI_HUB_WORKSPACE_ROOT: WS,
+        CLAUDE_HUB_NO_EFFORT_MAX: '1',
+        CLAUDE_HUB_E2E: '1',
+      },
   });
   let client = null;
   try {
     client = await waitFor('cdp', async () => { try { return await connectFirstPage(hub); } catch { return null; } });
     await waitFor('sidebar', () => client.eval('!!document.getElementById("btn-new")'));
     await waitFor('wc', () => client.eval('!!(window.WorkspaceController && window.WorkspaceController.createScratch)'));
+    await waitFor('e2e terminal API', () => client.eval('!!(window.__hubE2E && window.__hubE2E.disposeTerminal)'));
     await client.eval(`(() => {
       const xterm = require('@xterm/xterm');
       if (window.__diagTerms) return 'already';
@@ -111,40 +115,24 @@ async function main() {
     }, 120000);
     await _waitMs(3000);
     const before = await client.eval(COUNT_MARKS);
-    console.log(`驱逐前 : 可见标记 ${before.marks}/${LINES} | bufLen=${before.bufLen} | 活terminal ${before.liveTerms}`);
+    console.log(`重建前 : 可见标记 ${before.marks}/${LINES} | bufLen=${before.bufLen} | 活terminal ${before.liveTerms}`);
 
-    // 建足够多的会话把 S0 挤出终端缓存
-    for (let i = 1; i <= EXTRA_SESSIONS; i++) {
-      await client.eval(`(async () => {
-        const w = await window.WorkspaceController.createScratch('S${i}');
-        await window.WorkspaceController.createSession('powershell', { workspace: w });
-        return true;
-      })()`);
-      await _waitMs(900);
-    }
-    await _waitMs(2000);
-
-    // 切回 S0
-    await client.eval(`(() => {
-      const items = Array.from(document.querySelectorAll('.session-item'));
-      const t = items[items.length - 1];
-      if (t) t.click();
-      return items.length;
-    })()`);
+    // 生产路径不会再按数量驱逐；隔离测试显式销毁后重新选择 S0。
+    const disposed = await client.eval(`window.__hubE2E.disposeTerminal(${JSON.stringify(s0.id)})`);
+    assert.strictEqual(disposed, true, 'isolated E2E hook must dispose the selected xterm');
+    await client.eval(`window.__hubE2E.selectSession(${JSON.stringify(s0.id)}, { forceScrollBottom: true })`);
     await _waitMs(7000);
     const after = await client.eval(COUNT_MARKS);
-    console.log(`切回后 : 可见标记 ${after.marks}/${LINES} | bufLen=${after.bufLen} | 顶部空白 ${after.blankTop} | 活terminal ${after.liveTerms}`);
+    console.log(`重建后 : 可见标记 ${after.marks}/${LINES} | bufLen=${after.bufLen} | 顶部空白 ${after.blankTop} | 活terminal ${after.liveTerms}`);
 
-    const evicted = after.liveTerms > 1 + EXTRA_SESSIONS;
-    console.log(evicted ? '（发生了驱逐+快照重建）' : '（未驱逐，终端一直存活）');
     const kept = before.marks > 0 ? after.marks / before.marks : 0;
     console.log(`\n内容保全率: ${(kept * 100).toFixed(1)}%`);
 
-    assert.ok(before.marks >= LINES * 0.9, `前置条件：驱逐前应看到约 ${LINES} 条标记，实际 ${before.marks}`);
+    assert.ok(before.marks >= LINES * 0.9, `前置条件：重建前应看到约 ${LINES} 条标记，实际 ${before.marks}`);
     assert.ok(kept >= 0.9,
       `切回会话后内容大量丢失（${before.marks} → ${after.marks} 条），用户看到的就是大片空白`);
     assert.ok(after.blankTop <= 3, `切回后顶部空白 ${after.blankTop} 行`);
-    console.log('✅ 切回被挤出缓存的会话后，内容完整保留');
+    console.log('✅ 显式重建终端后，内容完整保留');
   } finally {
     if (client) await client.close().catch(() => {});
     await gracefulQuit(hub);

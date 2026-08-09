@@ -162,20 +162,23 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
       };
     })()`);
 
+    // Absolute ink counts vary with Chromium/font rasterization. The regression
+    // signal is that a deliberately blacked-out surface recovers a substantial
+    // share of the same baseline, not whether sampling lands above 100 pixels.
     assert.ok(result.before.readableLayers >= 1, JSON.stringify(result));
-    assert.ok(result.before.visibleSamples > 100, JSON.stringify(result));
+    assert.ok(result.before.visibleSamples >= 50, JSON.stringify(result));
     assert.strictEqual(result.cleared.visibleSamples, 0, JSON.stringify(result));
     assert.ok(result.refreshAfter > result.refreshBefore, JSON.stringify(result));
-    assert.ok(result.after.visibleSamples > 100, JSON.stringify(result));
     assert.ok(result.after.visibleSamples >= result.before.visibleSamples * 0.5, JSON.stringify(result));
     assert.strictEqual(result.cardSurfaceLost.visibleSamples, 0, JSON.stringify(result));
-    assert.ok(result.afterCardReturn.visibleSamples > 100, JSON.stringify(result));
+    assert.ok(result.afterCardReturn.visibleSamples >= result.before.visibleSamples * 0.5, JSON.stringify(result));
     assert.strictEqual(result.focusSurfaceLost.visibleSamples, 0, JSON.stringify(result));
-    assert.ok(result.afterWindowFocus.visibleSamples > 100, JSON.stringify(result));
+    assert.ok(result.afterWindowFocus.visibleSamples >= result.before.visibleSamples * 0.5, JSON.stringify(result));
     assert.ok(result.screenRect.width > 500 && result.screenRect.height > 300, JSON.stringify(result));
     assert.ok(result.screenRect.width <= result.containerRect.width + 1, JSON.stringify(result));
     assert.ok(result.screenRect.height <= result.containerRect.height + 1, JSON.stringify(result));
-    assert.ok(result.cache.size <= result.cache.max, JSON.stringify(result));
+    assert.strictEqual(result.cache.policy, 'session-lifecycle', JSON.stringify(result));
+    assert.strictEqual(result.cache.max, null, JSON.stringify(result));
 
     console.log(JSON.stringify({ ok: true, pid: hub.pid, port, result }, null, 2));
   } catch (err) {

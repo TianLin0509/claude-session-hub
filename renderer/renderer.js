@@ -119,10 +119,12 @@ let _deepseekAutoTitleEnabled = false;
 let _cardHistoryHydratedSid = null; // 已完成全量历史卡片加载的 sessionId
 const _turnCompleteBackfillTimers = new Map(); // sid -> Promise; in-flight guard 防止并发 backfill (2026-05-24 道雪：原 timer-debounce 改为立即 trigger)
 const terminalCache = new Map();
-// xterm + Canvas/WebGL addon is one of the renderer/GPU process's most
-// expensive objects. Keep only a small working set; evicted terminals can be
-// reconstructed from SessionManager's sequence-stamped ring-buffer snapshot.
-const MAX_TERMINAL_CACHE_SIZE = 4;
+// xterms are created lazily, then live for exactly as long as their live Hub
+// sessions. Switching sessions must not dispose a still-running CLI: doing so
+// turns ordinary navigation into a snapshot-replay path and can lose the
+// authoritative full-screen TUI frame. Dormant/closed sessions already call
+// disposeCachedTerminal, so automatic suspend remains the resource boundary.
+const TERMINAL_CACHE_POLICY = 'session-lifecycle';
 const MAX_PENDING_TERMINAL_BYTES = 64 * 1024;
 const terminalInputController = createTerminalInputController({
   document,
@@ -270,12 +272,24 @@ function fitAndResizeTerminal(sessionId, cached, opts = {}) {
   // 未经验证就上防抖的风险是吞掉收尾那次 resize，让 CLI 永久停在错误宽度，
   // 比现状更糟。要动这里必须先有能真正接收 SIGWINCH 的验证手段。
   const resizeSig = `${cached.terminal.cols}x${cached.terminal.rows}`;
-  if (cached._lastResizeSig !== resizeSig) {
+  const forcePtyResize = opts.forcePtyResize === true;
+  // A newly created xterm is empty while its main-process snapshot is being
+  // replayed. Sending PTY resizes during that window makes a full-screen CLI
+  // redraw concurrently with the old ANSI stream; the two streams can be
+  // interleaved/deduplicated into a half frame or a completely blank surface.
+  // Fit the local xterm now, but defer the live PTY resize until hydration has
+  // reached its exact sequence barrier. hydrateTerminalFromSnapshot then sends
+  // one forced final-size resize so Codex/Kimi/Claude paints a fresh frame.
+  if (cached._hydrating && !forcePtyResize) {
+    cached._deferredResizeSig = resizeSig;
+  } else if (forcePtyResize || cached._lastResizeSig !== resizeSig) {
     cached._lastResizeSig = resizeSig;
+    cached._deferredResizeSig = null;
     ipcRenderer.send('terminal-resize', {
       sessionId,
       cols: cached.terminal.cols,
       rows: cached.terminal.rows,
+      force: forcePtyResize,
     });
   }
   if (cached._minimap) cached._minimap.invalidate();
@@ -646,16 +660,6 @@ function disposeCachedTerminal(sessionId) {
   return true;
 }
 
-function evictTerminalCacheFor(nextSessionId) {
-  while (terminalCache.size >= MAX_TERMINAL_CACHE_SIZE) {
-    const candidates = [...terminalCache.entries()]
-      .filter(([sid]) => sid !== nextSessionId && sid !== activeSessionId)
-      .sort((a, b) => (a[1]._lastUsedAt || 0) - (b[1]._lastUsedAt || 0));
-    if (!candidates.length) break;
-    disposeCachedTerminal(candidates[0][0]);
-  }
-}
-
 async function closeSessionAsSleep(sessionId) {
   try {
     const result = await ipcRenderer.invoke('close-session', sessionId);
@@ -671,12 +675,8 @@ async function closeSessionAsSleep(sessionId) {
 
 function getOrCreateTerminal(sessionId) {
   if (terminalCache.has(sessionId)) {
-    const cached = terminalCache.get(sessionId);
-    cached._lastUsedAt = Date.now();
-    return cached;
+    return terminalCache.get(sessionId);
   }
-  evictTerminalCacheFor(sessionId);
-
   const terminal = new Terminal({
     theme: XTERM_THEMES.default,
     fontSize: currentFontSize,
@@ -926,7 +926,8 @@ function getOrCreateTerminal(sessionId) {
     _hydratedSeq: 0,
     _pendingOutput: [],
     _pendingOutputBytes: 0,
-    _lastUsedAt: Date.now(),
+    _deferredResizeSig: null,
+    _needsPtyRedraw: false,
   };
   terminalCache.set(sessionId, cached);
   return cached;
@@ -1087,7 +1088,9 @@ function showTerminal(sessionId, opts = { focus: true }) {
   requestAnimationFrame(() => {
     const dbg = window.__scrollDebug;
     if (dbg && dbg.isOn()) dbg.log('show:raf-enter', { focus: opts.focus, ...dbg.snap(cached.terminal, sessionId) });
-    fitAndResizeTerminal(sessionId, cached, { force: true });
+    const forcePtyResize = cached._hydrated && cached._needsPtyRedraw;
+    fitAndResizeTerminal(sessionId, cached, { force: true, forcePtyResize });
+    if (forcePtyResize) cached._needsPtyRedraw = false;
     refreshTerminalRendererSurface(cached);
     if (dbg && dbg.isOn()) dbg.log('show:after-fit', dbg.snap(cached.terminal, sessionId));
     const isCodexSession = isCodexKind(session.kind);
@@ -3047,12 +3050,18 @@ async function hydrateTerminalFromSnapshot(sessionId, cached) {
   }
   cached._hydrated = true;
   cached._hydrating = false;
+  // Snapshot replay reconstructs history, but the live CLI remains the
+  // authority for its current full-screen frame. Force one final-size redraw
+  // after the replay barrier. This also self-heals any partial ANSI frame that
+  // was captured while a long Codex session was actively painting.
+  cached._needsPtyRedraw = true;
   // showTerminal 里 hydrate 是 void 调用，紧跟其后的 rAF 会在快照还没回来时就
   // fitAndResizeTerminal —— 也就是说那次 fit 作用在一个空终端上，而真正的内容是之后
   // 才写进来的，此后再没有任何一次 fit/pin。内容量一变（尤其带绝对定位的 TUI 帧），
   // 布局就可能停在按空终端算出来的状态。回灌完成后补一次 fit + 置底。
   if (sessionId === activeSessionId) {
-    fitAndResizeTerminal(sessionId, cached, { force: true });
+    fitAndResizeTerminal(sessionId, cached, { force: true, forcePtyResize: true });
+    cached._needsPtyRedraw = false;
     refreshTerminalRendererSurface(cached);
     try { cached.terminal.scrollToBottom(); } catch {}
     requestAnimationFrame(() => {
@@ -4445,9 +4454,14 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
     terminalCacheStats: () => ({
       size: terminalCache.size,
       ids: [...terminalCache.keys()],
-      max: MAX_TERMINAL_CACHE_SIZE,
+      max: null,
+      policy: TERMINAL_CACHE_POLICY,
       opened: [...terminalCache.values()].filter(item => item.opened).length,
     }),
+    // Snapshot recovery still needs direct coverage even though production no
+    // longer evicts live sessions by count. This hook exists only in isolated
+    // CLAUDE_HUB_E2E renderers and cannot affect the production Hub.
+    disposeTerminal: (sessionId) => disposeCachedTerminal(sessionId),
     sidebarRenderCoalescerStats: () => sidebarRenderCoalescer.stats(),
     // 侧栏时间分组 E2E：注入指定 lastMessageTime 的测试会话并重渲，读分组 DOM。
     addFakeSession: (s) => {

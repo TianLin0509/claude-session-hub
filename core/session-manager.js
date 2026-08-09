@@ -12,11 +12,11 @@ const { ensureMemoryLink } = require('./claude-memory-link.js');
 const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filter.js');
 const { TerminalSnapshot } = require('./terminal-snapshot.js');
 
-// 终端缓存驱逐后（MAX_TERMINAL_CACHE_SIZE=4）会用这个环形缓冲的原始 PTY 字节
-// 重建 xterm。16KB 装不下 Codex/Kimi 这类 TUI 的一整帧全屏重绘（带色彩的一帧
-// 几十 KB 很常见），尾切之后 `\x1b[2J` 和大部分绘制字节被丢掉、只剩若干条
-// `\x1b[<行>;1H` 绝对定位序列 —— 重放出来就是"内容落在指定行、上方全是空行"。
-// 实测（tests/e2e-terminal-rehydrate-cdp.js）：16KB 下切回被挤出缓存的会话，
+// Renderer 首次懒挂载、reload 或 surface 丢失后的降级恢复会用这个环形缓冲的
+// 原始 PTY 字节重建 xterm。16KB 装不下 Codex/Kimi 这类 TUI 的一整帧全屏重绘
+// （带色彩的一帧几十 KB 很常见），尾切之后 `\x1b[2J` 和大部分绘制字节被丢掉、
+// 只剩若干条 `\x1b[<行>;1H` 绝对定位序列 —— 重放出来就是"内容落在指定行、
+// 上方全是空行"。实测（tests/e2e-terminal-rehydrate-cdp.js）：16KB 下重建时，
 // 400 行内容只剩 227 行（保全率 56.8%）；256KB 下 400 行和 2000 行都是 100%。
 // 取 1MB 是给带 ANSI 色彩的 TUI 输出留余量（同样内容字节数可达纯文本数倍）。
 // 代价很小：每会话一个字符串，远低于多留一个 xterm + WebGL 实例。

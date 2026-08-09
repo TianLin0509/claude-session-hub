@@ -1,11 +1,13 @@
 'use strict';
 
 // Real isolated Hub regression for the two 2026-07-30 user reports:
-//   1. a >1MB terminal survives xterm cache eviction without losing its old
-//      scrollback or replaying from the middle of an ANSI sequence;
+//   1. opened live sessions retain their xterms across navigation, while a
+//      forced renderer reconstruction of a >1MB terminal still preserves its
+//      scrollback and complete ANSI frame;
 //   2. Kimi remains "running" while its main wire waits on an Agent tool call.
 
 const fs = require('fs');
+const assert = require('node:assert/strict');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -154,6 +156,7 @@ async function main() {
       KIMI_CODE_BIN: path.join(FAKE_BIN, 'kimi.cmd'),
       FAKE_FIRST_CODEX_MARKER: FIRST_CODEX_MARKER,
       CLAUDE_HUB_NO_EFFORT_MAX: '1',
+      CLAUDE_HUB_E2E: '1',
     },
   });
 
@@ -175,8 +178,8 @@ async function main() {
       const value = await client.eval(terminalTextExpression(first.id));
       return value && value.text.includes('FINAL-FRAME-IS-COMPLETE') ? value : null;
     }, 60000);
-    assertContains(before.text, 'FIRST-LONG-SESSION-LINE', 'first marker before eviction');
-    assertContains(before.text, 'LAST-LONG-SESSION-LINE', 'last marker before eviction');
+    assertContains(before.text, 'FIRST-LONG-SESSION-LINE', 'first marker before navigation');
+    assertContains(before.text, 'LAST-LONG-SESSION-LINE', 'last marker before navigation');
 
     for (let i = 1; i <= 5; i++) {
       await client.eval(`(async () => {
@@ -186,16 +189,27 @@ async function main() {
       })()`);
       await _waitMs(500);
     }
-    await waitFor('first terminal eviction', () => client.eval(
-      `!terminalCache.has(${JSON.stringify(first.id)}) && terminalCache.size === 4`));
-    await client.eval(`(() => { selectSession(${JSON.stringify(first.id)}, { forceScrollBottom: true }); return true; })()`);
-    const restored = await waitFor('restored terminal snapshot', async () => {
+    const retained = await waitFor('all live terminals retained', () => client.eval(`(() => {
+      const stats = window.__hubE2E && window.__hubE2E.terminalCacheStats();
+      return stats && terminalCache.has(${JSON.stringify(first.id)}) && stats.size === 6 ? stats : null;
+    })()`));
+    assert.strictEqual(retained.policy, 'session-lifecycle');
+    assert.strictEqual(retained.max, null);
+
+    // Production no longer evicts live sessions by count. Explicitly dispose
+    // this one xterm through the isolated E2E hook so snapshot recovery remains
+    // covered for renderer reload/loss scenarios.
+    await client.eval(`window.__hubE2E.disposeTerminal(${JSON.stringify(first.id)})`);
+    await waitFor('test terminal disposal', () => client.eval(
+      `!terminalCache.has(${JSON.stringify(first.id)}) && terminalCache.size === 5`));
+    await client.eval(`window.__hubE2E.selectSession(${JSON.stringify(first.id)}, { forceScrollBottom: true })`);
+    const restored = await waitFor('explicitly reconstructed terminal snapshot', async () => {
       const value = await client.eval(terminalTextExpression(first.id));
       return value && value.text.includes('FINAL-FRAME-IS-COMPLETE') ? value : null;
     }, 60000);
-    assertContains(restored.text, 'FIRST-LONG-SESSION-LINE', 'first marker after eviction');
-    assertContains(restored.text, 'LAST-LONG-SESSION-LINE', 'last marker after eviction');
-    assertContains(restored.text, 'FINAL-FRAME-IS-COMPLETE', 'final ANSI frame after eviction');
+    assertContains(restored.text, 'FIRST-LONG-SESSION-LINE', 'first marker after explicit reconstruction');
+    assertContains(restored.text, 'LAST-LONG-SESSION-LINE', 'last marker after explicit reconstruction');
+    assertContains(restored.text, 'FINAL-FRAME-IS-COMPLETE', 'final ANSI frame after explicit reconstruction');
 
     const kimi = await client.eval(`(async () => {
       const workspace = await window.WorkspaceController.createScratch('kimi-agent');
@@ -218,6 +232,7 @@ async function main() {
       terminal: {
         beforeLines: before.bufferLength,
         restoredLines: restored.bufferLength,
+        retainedCacheSize: retained.size,
         cacheSize: restored.cacheSize,
         firstMarker: true,
         lastMarker: true,

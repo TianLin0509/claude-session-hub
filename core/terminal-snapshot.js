@@ -31,9 +31,10 @@ const DEFAULT_SCROLLBACK = 10000;
 const COMPACT_THRESHOLD_BYTES = 2 * 1024 * 1024;
 
 // Headless xterm buffers are deliberately short-lived. A populated 10k-line
-// terminal can use tens of MB; keeping one per live Hub session would defeat
-// the renderer's four-terminal cache. Serialize/compaction jobs share one
-// global lane so several noisy sessions cannot create large parsers at once.
+// terminal can use tens of MB; keeping another permanent parser per live Hub
+// session would duplicate the renderer's lifecycle-managed xterm. Serialize /
+// compaction jobs share one global lane so several noisy sessions cannot create
+// large parsers at once.
 const compactionJobs = [];
 let compactionRunning = false;
 

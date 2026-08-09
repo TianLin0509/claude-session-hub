@@ -287,13 +287,16 @@ test('automatic suspend can hibernate idle meeting members while protecting acti
   assert.strictEqual(manager.sessions.get('idle-member').suspendReason, 'idle-timeout');
 });
 
-test('renderer keeps xterms lazy, bounded and snapshot-hydrated', () => {
+test('renderer keeps xterms lazy, session-lifecycle retained and snapshot-hydrated', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   const meeting = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'meeting-room.js'), 'utf8');
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const created = renderer.slice(renderer.indexOf("ipcRenderer.on('session-created'"), renderer.indexOf("ipcRenderer.on('session-meta-updated'"));
   assert.doesNotMatch(created, /getOrCreateTerminal\(session\.id\)/);
-  assert.match(renderer, /MAX_TERMINAL_CACHE_SIZE\s*=\s*4/);
+  assert.match(renderer, /TERMINAL_CACHE_POLICY\s*=\s*'session-lifecycle'/);
+  assert.doesNotMatch(renderer, /MAX_TERMINAL_CACHE_SIZE|evictTerminalCacheFor/);
+  assert.match(renderer, /ipcRenderer\.on\('session-suspended',[\s\S]{0,5000}disposeCachedTerminal\(sessionId\)/,
+    'automatic/manual suspend must release the xterm at the session lifecycle boundary');
   assert.match(renderer, /hydrateTerminalFromSnapshot/);
   assert.match(renderer, /get-session-buffer-snapshot/);
   assert.match(renderer, /usesLazySerialWake/);
@@ -317,7 +320,11 @@ test('restored terminals force a full renderer-surface repaint', () => {
   assert.match(helper, /function scheduleVisibleTerminalRecovery/);
   assert.match(helper, /requestAnimationFrame\(\(\) => recover\(true\)\)/,
     'surface recovery needs a second visible frame for delayed layout/compositor attach');
-  assert.match(show, /fitAndResizeTerminal\(sessionId, cached, \{ force: true \}\);\s*refreshTerminalRendererSurface\(cached\);/);
+  assert.match(show, /fitAndResizeTerminal\(sessionId, cached, \{ force: true, forcePtyResize \}\);[\s\S]{0,120}refreshTerminalRendererSurface\(cached\);/);
+  assert.match(renderer, /cached\._hydrating\s*&&\s*!forcePtyResize/,
+    'snapshot replay must not race a live TUI resize/redraw');
+  assert.match(renderer, /forcePtyResize:\s*true/,
+    'hydration completion must request one authoritative live TUI redraw');
   assert.match(show, /scheduleVisibleTerminalRecovery\(sessionId, cached/,
     'reattaching a cached/resumed terminal must repaint even when geometry is unchanged');
   assert.match(view, /mode === 'pty'[\s\S]{0,320}scheduleVisibleTerminalRecovery\(activeSessionId, cached/,
