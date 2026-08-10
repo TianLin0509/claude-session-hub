@@ -48,6 +48,9 @@ test('subscription mode strips custom endpoint env and keeps configured proxy', 
     ANTHROPIC_BASE_URL: 'https://claude-gateway.example.com',
     ANTHROPIC_AUTH_TOKEN: 'sk-test-claude',
     ENABLE_CLAUDEAI_MCP_SERVERS: 'true',
+    ALL_PROXY: 'socks5://127.0.0.1:9999',
+    http_proxy: 'http://127.0.0.1:8888',
+    https_proxy: 'http://127.0.0.1:8888',
   };
 
   const mode = _private.applyClaudeSessionEnv(env, {
@@ -58,7 +61,11 @@ test('subscription mode strips custom endpoint env and keeps configured proxy', 
   assert.strictEqual(mode, 'subscription');
   assert.strictEqual(env.HTTP_PROXY, 'http://127.0.0.1:7890');
   assert.strictEqual(env.HTTPS_PROXY, 'http://127.0.0.1:7890');
+  assert.strictEqual(env.http_proxy, 'http://127.0.0.1:7890');
+  assert.strictEqual(env.https_proxy, 'http://127.0.0.1:7890');
   assert.strictEqual(env.NO_PROXY, 'localhost,127.0.0.1');
+  assert.strictEqual(env.no_proxy, 'localhost,127.0.0.1');
+  assert.ok(!Object.prototype.hasOwnProperty.call(env, 'ALL_PROXY'));
   assert.ok(!Object.prototype.hasOwnProperty.call(env, 'ANTHROPIC_BASE_URL'));
   assert.ok(!Object.prototype.hasOwnProperty.call(env, 'ANTHROPIC_AUTH_TOKEN'));
   assert.strictEqual(env.ENABLE_CLAUDEAI_MCP_SERVERS, 'true',

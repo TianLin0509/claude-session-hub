@@ -27,6 +27,7 @@ test('performance audit includes every packaged runtime source root', () => {
   const runtimePaths = report.files.filter((file) => file.scope === 'runtime').map((file) => file.path);
 
   assert.ok(runtimePaths.includes('main.js'));
+  assert.ok(runtimePaths.includes('main-bootstrap.js'));
   for (const prefix of ['core/', 'main/', 'renderer/', 'scripts/']) {
     assert.ok(runtimePaths.some((filePath) => filePath.startsWith(prefix)), `missing ${prefix}`);
   }

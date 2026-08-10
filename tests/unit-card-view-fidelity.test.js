@@ -131,13 +131,18 @@ test('idle 只压过过期 watcher，新鲜 watcher 可覆盖 PTY 的短暂空�
     '群聊行的运行中判定也走同一函数');
 });
 
-// ---- 4. 侧栏代理显示 ----
+// ---- 4. 侧栏双出口显示 ----
 
-test('侧栏常驻显示代理出口', () => {
-  assert.match(LIST_SRC, /class="strip-proxy/);
-  assert.match(LIST_SRC, /代理 <b>直连<\/b>/, '没配代理时要明确显示直连，而不是空白');
+test('侧栏常驻显示国外 VPN 与国产直连的真实出口', () => {
+  assert.match(LIST_SRC, /strip-route-foreign/);
+  assert.match(LIST_SRC, /strip-route-domestic/);
+  assert.match(LIST_SRC, /strip-route-label\">国外/);
+  assert.match(LIST_SRC, /strip-route-label\">国产/);
+  assert.match(LIST_SRC, /route\.locationLabel/);
+  assert.match(LIST_SRC, /route\.ip/);
   assert.match(LIST_SRC, /function _shortProxy/);
   assert.match(RENDERER_SRC, /async function refreshHubProxyInfo/);
+  assert.match(RENDERER_SRC, /get-network-egress-status/);
   assert.match(RENDERER_SRC, /getProxyInfo: \(\) => hubProxyInfo/);
 });
 

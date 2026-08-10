@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, Notification, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, shell } = require('electron');
 const path = require('path');
 const { fileURLToPath } = require('url');
 const fs = require('fs');
@@ -35,12 +35,17 @@ const { MeetingRoomManager } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
 const sessionStore = require('./core/session-store.js');
 const { TranscriptTap } = require('./core/transcript-tap');
+const { CompletionNotifier } = require('./core/completion-notifier.js');
 const { createUsageFilter } = require('./core/usage-filter.js');
 const scenes = require('./core/group-chat-scenes.js');
 const groupchat = require('./core/group-chat-orchestrator.js');
 const cliReadyDetector = require('./core/group-chat-cli-ready-detector.js');
 const lindangBridge = require('./core/lindang-bridge.js');
 const { getConfig: getHubConfig } = require('./core/hub-config.js');
+const {
+  createFixtureProbe: createNetworkEgressFixtureProbe,
+  createNetworkEgressMonitor,
+} = require('./core/network-egress-monitor.js');
 const {
   resolveCodexUsageScope,
   attachCodexUsageScope,
@@ -87,6 +92,7 @@ const {
   shouldPreferCodexLiveUsage,
 } = require('./main/usage/codex-app-server-usage.js');
 const { readKimiAccountUsage } = require('./main/usage/kimi-account-usage.js');
+const { readDeepSeekAccountBalance } = require('./main/usage/deepseek-account-balance.js');
 const {
   didClaudeSnapshotAdvance,
   selectClaudeStatuslineUsage,
@@ -323,6 +329,33 @@ let mainWindow;
 const sessionManager = new SessionManager();
 const meetingManager = new MeetingRoomManager();
 const workspaceService = new WorkspaceService();
+let networkEgressProbe;
+if (process.env.CLAUDE_HUB_E2E === '1' && process.env.CLAUDE_HUB_EGRESS_FIXTURE) {
+  try {
+    networkEgressProbe = createNetworkEgressFixtureProbe(
+      JSON.parse(process.env.CLAUDE_HUB_EGRESS_FIXTURE),
+    );
+  } catch (error) {
+    console.warn('[network-egress] invalid E2E fixture:', error && error.message);
+  }
+}
+const networkEgressMonitor = createNetworkEgressMonitor({
+  getProxy: () => getHubConfig().proxy,
+  statePath: path.join(getHubDataDir(), 'network-egress-state.json'),
+  ...(networkEgressProbe ? { probe: networkEgressProbe } : {}),
+  logger: console,
+});
+const serverchanApiBaseOverride = String(process.env.HUB_NOTIFY_SERVERCHAN_API_BASE || '')
+  .trim()
+  .replace(/\/+$/, '');
+const completionNotifier = new CompletionNotifier({
+  getConfig: getHubConfig,
+  endpointBuilder: serverchanApiBaseOverride
+    ? sendKey => `${serverchanApiBaseOverride}/${encodeURIComponent(sendKey)}.send`
+    : undefined,
+  getLogPath: () => path.join(getHubDataDir(), 'notification-delivery.jsonl'),
+  logger: console,
+});
 // SessionManager 构造不接收依赖；kimi 会话 spawn 前的 AGENTS.md seed 需要它
 // （core/session-manager.js 里 this.workspaceService.seedUngovernedAgentsFile）。
 sessionManager.workspaceService = workspaceService;
@@ -337,6 +370,9 @@ const workspaceMigrationSessionIds = new Set();
 transcriptTap.on('turn-complete', (ev) => {
   const { hubSessionId, text, completedAt } = ev || {};
   const session = sessionManager.getSession(hubSessionId);
+  Promise.resolve(completionNotifier.handleTurnComplete(ev || {}, session)).catch((error) => {
+    console.warn('[completion-notifier] session completion handling failed:', error && error.message);
+  });
   if (session && session.meetingId) {
     const turn = meetingManager.appendTurn(
       session.meetingId,
@@ -370,6 +406,7 @@ transcriptTap.on('turn-complete', (ev) => {
       kind: session ? session.kind : null,
       durationMs: ev ? ev.durationMs : null,
       signalSource: ev ? ev.signalSource : null,
+      turnId: ev ? ev.turnId || null : null,
     });
   } catch (e) {
     console.warn('[spec2/S3] turn-complete-event broadcast failed:', e && e.message);
@@ -388,6 +425,7 @@ const autoTitleManager = createAutoTitleManager({
 const { maybeAutoTitleMeetingFromPrompt, maybeAutoTitleSessionFromPrompt } = autoTitleManager;
 transcriptTap.on('prompt-submitted', (ev) => {
   const { hubSessionId, text, submittedAt } = ev || {};
+  completionNotifier.notePromptSubmitted(ev || {});
   if (!hubSessionId) return;
   const session = sessionManager.getSession(hubSessionId);
   maybeAutoTitleSessionFromPrompt(ev);
@@ -400,6 +438,7 @@ transcriptTap.on('prompt-submitted', (ev) => {
       meetingId: session ? session.meetingId : null,
       kind: session ? session.kind : null,
       signalSource: ev ? ev.signalSource : null,
+      turnId: ev ? ev.turnId || null : null,
     });
   } catch (e) {
     console.warn('[codex prompt] prompt-submitted-event broadcast failed:', e && e.message);
@@ -549,14 +588,10 @@ transcriptTap.on('session-bound', (ev) => {
 
 sessionManager.hookToken = HOOK_TOKEN;  // port set after listen
 
-// Pin a stable AppUserModelID before the first toast notification fires.
-// Leaving it unset (the prior approach) has a hole: the first Windows toast
-// raised from main/ipc/app-utility-handlers.js (Notification.show()) makes the
-// toast subsystem implicitly bind the process to an electron.exe-derived AUMID,
-// whose icon is electron.exe's default atom — so the taskbar icon silently
-// reverts to the Electron default hours into a session. Setting our own AUMID
-// first makes Windows fall back to the window HICON (setIcon in createWindow =
-// claude-wx.ico) instead. Must precede any window/notification. win32-only.
+// Pin a stable AppUserModelID before creating the window so Windows keeps Hub's
+// taskbar identity independent from electron.exe. Native toast notifications are
+// intentionally disabled; this identity is still required by shell shortcuts and
+// Explorer taskbar reconstruction. win32-only.
 if (process.platform === 'win32' && !isIsolatedHub()) {
   app.setAppUserModelId(HUB_APP_USER_MODEL_ID); // = package.json build.appId
 }
@@ -585,6 +620,17 @@ function reassertHubWindowIcon() {
   mainWindow.setIcon(icon);
   return true;
 }
+
+function focusPrimaryWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+  reassertHubWindowIcon();
+  return true;
+}
+
+module.exports.focusPrimaryWindow = focusPrimaryWindow;
 
 function createWindow() {
   // Load the icon as a NativeImage so we can pass it to BrowserWindow AND
@@ -769,12 +815,12 @@ sessionManager.onSessionSuspended = (sessionId, meetingId, session, exitInfo) =>
 };
 
 // Register a freshly-spawned session with the transcript tap so the appropriate
-// backend starts watching its CLI-native transcript file. No-op for kinds
-// without a backend (powershell/deepseek/glm).
+// backend starts watching its CLI-native transcript file. DeepSeek normally
+// routes to Codex; transcriptKind keeps pre-migration Claude sessions resumable.
 function registerSessionForTap(session) {
   if (!session || !session.id) return;
   try {
-    transcriptTap.registerSession(session.id, session.kind, {
+    transcriptTap.registerSession(session.id, session.transcriptKind || session.kind, {
       cwd: session.cwd,
       transcriptPath: session.transcriptPath || undefined,
       sessionsRoot: session.codexSessionsRoot || undefined,
@@ -869,6 +915,10 @@ groupChatDispatcher = createGroupChatDispatcher({
   kindLabels: KIND_LABELS,
   maybeAutoTitleMeetingFromPrompt,
   meetingManager,
+  onGroupChatComplete: (event) => completionNotifier.handleGroupChatComplete(
+    event,
+    meetingManager.getMeeting(event && event.meetingId),
+  ),
   sendToRenderer,
   sessionManager,
   transcriptTap,
@@ -988,15 +1038,6 @@ registerTranscriptIpc(ipcMain, {
 
 registerArchiveIpc(ipcMain);
 
-registerSessionIpc(ipcMain, {
-  getTerminalOutputBatchStats: () => terminalOutputBatcher.snapshotStats(),
-  meetingManager,
-  registerSessionForTap,
-  sendToRenderer,
-  sessionManager,
-  workspaceService,
-});
-
 const resumeSession = createResumeSessionHandler({
   defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
   findCodexRolloutBySid,
@@ -1017,6 +1058,16 @@ const resumeSession = createResumeSessionHandler({
   sendToRenderer,
   sessionManager,
   slotIds: SLOT_IDS,
+});
+
+registerSessionIpc(ipcMain, {
+  getTerminalOutputBatchStats: () => terminalOutputBatcher.snapshotStats(),
+  meetingManager,
+  registerSessionForTap,
+  resumeSession,
+  sendToRenderer,
+  sessionManager,
+  workspaceService,
 });
 
 registerWorkspaceIpc(ipcMain, {
@@ -1134,8 +1185,9 @@ registerAppUtilityIpc(ipcMain, {
   fs,
   getHookPort: () => hookPort,
   getMainWindow: () => mainWindow,
+  getNetworkEgressStatus: options => networkEgressMonitor.getStatus(options),
+  acknowledgeNetworkEgressChange: () => networkEgressMonitor.acknowledgeForeignChange(),
   imageDir,
-  Notification,
   path,
 });
 
@@ -1260,6 +1312,7 @@ const hookServer = http.createServer((req, res) => {
     if (parsed.sessionId && sessionManager.getSession(parsed.sessionId)) {
       if (isHook) {
         const event = req.url.slice('/api/hook/'.length); // 'stop' or 'prompt'
+        const eventAt = Date.now();
         // Prefer the UserPromptSubmit payload's `prompt` field when present —
         // it's the just-submitted text and doesn't depend on CC having flushed
         // the new transcript entry to disk. For Stop events (no `prompt` in
@@ -1290,12 +1343,13 @@ const hookServer = http.createServer((req, res) => {
           maybeAutoTitleSessionFromPrompt({
             hubSessionId: parsed.sessionId,
             text: latestUserMessage,
-            submittedAt: Date.now(),
+            submittedAt: eventAt,
             signalSource: 'hook_prompt',
           });
         }
         sendToRenderer('hook-event', {
           event,
+          eventAt,
           sessionId: parsed.sessionId,
           claudeSessionId: parsed.claudeSessionId,
           cwd: parsed.cwd,
@@ -1493,6 +1547,16 @@ async function refreshKimiAccountUsageLive() {
   return payload;
 }
 
+async function refreshDeepSeekAccountBalanceLive() {
+  const raw = await readDeepSeekAccountBalance({
+    apiKey: getHubConfig().deepseekApiKey,
+    timeoutMs: 8000,
+  });
+  const payload = { ...raw, _ts: raw.observedAt };
+  cacheAgentUsage('deepseek', payload);
+  return payload;
+}
+
 function loadUsageCacheForCurrentConfig() {
   const scoped = filterUsageCacheForCodexScope(loadUsageCache(), currentCodexUsageScope());
   if (scoped.codex && scoped.codex.source === 'app-server') {
@@ -1511,6 +1575,7 @@ registerUsageIpc(ipcMain, {
   loadUsageCacheForCurrentConfig,
   refreshClaudeAccountUsage: refreshClaudeAccountUsageFromStatuslineCache,
   refreshCodexAccountUsage: refreshCodexAccountUsageLive,
+  refreshDeepSeekAccountBalance: refreshDeepSeekAccountBalanceLive,
   refreshKimiAccountUsage: refreshKimiAccountUsageLive,
   scanAgentSessions,
 });
@@ -1522,6 +1587,7 @@ registerConfigIpc(ipcMain, {
   currentCodexUsageScope,
   scanAgentSessions,
   sendToRenderer,
+  testCompletionNotification: (payload) => completionNotifier.sendTest(payload),
 });
 
 // --- 梦境系统（Dream Consolidation）+ 记忆面板 ---
@@ -1623,17 +1689,19 @@ async function scanAgentSessions(opts = {}) {
   const force = !!opts.force;
   const allSessions = sessionManager.getAllSessions();
   for (const s of allSessions) {
-    if (s.kind !== 'gemini' && !isCodexBaseKind(s.kind) && !isKimiCliKind(s.kind)) continue;
+    const runtimeKind = s.transcriptKind || s.kind;
+    const isOpenAiCodex = s.kind === 'codex' || s.kind === 'codex-resume';
+    if (runtimeKind !== 'gemini' && !isCodexBaseKind(runtimeKind) && !isKimiCliKind(runtimeKind)) continue;
     if (s.status === 'dormant') continue;
     const buf = sessionManager.getSessionBuffer(s.id);
     if (!buf) continue;
     const plain = stripAnsi(buf);
-    const parsed = s.kind === 'gemini'
+    const parsed = runtimeKind === 'gemini'
       ? parseGeminiUsage(plain)
-      : isKimiCliKind(s.kind)
+      : isKimiCliKind(runtimeKind)
         ? parseKimiUsage(plain)
         : parseCodexUsage(plain);
-    if (isCodexBaseKind(s.kind) && (parsed.usage5h || parsed.usage7d)) {
+    if (isOpenAiCodex && (parsed.usage5h || parsed.usage7d)) {
       const usageSig = JSON.stringify({ usage5h: parsed.usage5h || null, usage7d: parsed.usage7d || null });
       const usageKey = s.id + ':codex-cli-usage';
       if (_agentLastStatus.get(usageKey) !== usageSig) {
@@ -1651,10 +1719,10 @@ async function scanAgentSessions(opts = {}) {
       const prev = _agentLastStatus.get(s.id + ':tok');
       if (prev !== parsed.tokensUsed) {
         const delta = prev ? parsed.tokensUsed - prev : parsed.tokensUsed;
-        const scopeKey = isCodexBaseKind(s.kind)
+        const scopeKey = isOpenAiCodex
           ? agentUsageScopeKey(s.codexSessionsRoot || DEFAULT_CODEX_SESSIONS_ROOT)
           : null;
-        if (delta > 0) recordAgentTokens(isCodexBaseKind(s.kind) ? 'codex' : s.kind, delta, scopeKey);
+        if (delta > 0) recordAgentTokens(isOpenAiCodex ? 'codex' : runtimeKind, delta, scopeKey);
         _agentLastStatus.set(s.id + ':tok', parsed.tokensUsed);
       }
     }
@@ -1751,9 +1819,27 @@ async function scanAgentSessions(opts = {}) {
 
 let _agentScanInterval = null;
 let _agentScanInFlight = null;
+let _deepseekBalanceRefreshInFlight = null;
+let _deepseekBalanceLastAttempt = 0;
 let _kimiUsageRefreshInFlight = null;
 let _kimiUsageLastAttempt = 0;
+const DEEPSEEK_BALANCE_REFRESH_MS = 5 * 60 * 1000;
 const KIMI_USAGE_REFRESH_MS = 5 * 60 * 1000;
+
+function refreshDeepSeekBalanceIfDue(force = false) {
+  const now = Date.now();
+  if (_deepseekBalanceRefreshInFlight) return _deepseekBalanceRefreshInFlight;
+  if (!force && now - _deepseekBalanceLastAttempt < DEEPSEEK_BALANCE_REFRESH_MS) return null;
+  _deepseekBalanceLastAttempt = now;
+  _deepseekBalanceRefreshInFlight = refreshDeepSeekAccountBalanceLive()
+    .then((deepseek) => {
+      sendToRenderer('agent-usage', { deepseek });
+      return deepseek;
+    })
+    .catch(() => null)
+    .finally(() => { _deepseekBalanceRefreshInFlight = null; });
+  return _deepseekBalanceRefreshInFlight;
+}
 
 function refreshKimiUsageIfDue(force = false) {
   const now = Date.now();
@@ -1780,18 +1866,16 @@ function startAgentScanner() {
     return _agentScanInFlight;
   };
   void run();
+  refreshDeepSeekBalanceIfDue(true);
   refreshKimiUsageIfDue(true);
   _agentScanInterval = setInterval(() => {
     void run();
+    refreshDeepSeekBalanceIfDue(false);
     refreshKimiUsageIfDue(false);
   }, 5000);
 }
 
 app.whenReady().then(async () => {
-  // 这里曾有 `if (!hasSingleInstanceLock) return;`。单实例锁按
-  // tests/unit-single-instance-guard.test.js 的契约被移除（桌面版允许多开），
-  // 但守卫漏删了 —— 变量没有任何定义处，whenReady 一进来就抛 ReferenceError，
-  // 窗口和所有 IPC 注册全部不执行，Hub 起不来。2026-07-27 隔离实例复现后删除。
   traceStartup('app.whenReady');
   // Source-mode Electron has no installed exe identity of its own. Keep a
   // branded Start Menu shortcut + Jump List relaunch task bound to the Hub
@@ -1914,6 +1998,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', () => {
+  completionNotifier.dispose();
   sessionAutoSuspendScheduler?.stop();
   claudeHookWatchdog?.stop();
   claudeHookWatchdog = null;

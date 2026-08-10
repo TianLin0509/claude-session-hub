@@ -16,8 +16,8 @@ function createAccountUsageController({
   if (typeof escapeHtml !== 'function') throw new Error('escapeHtml is required');
 
   const accountUsage = { usage5h: null, usage7d: null };
-  const agentUsage = { gemini: null, codex: null, kimi: null };
-  const agentUsageLastSeen = { gemini: 0, codex: 0, kimi: 0 };
+  const agentUsage = { gemini: null, codex: null, kimi: null, deepseek: null };
+  const agentUsageLastSeen = { gemini: 0, codex: 0, kimi: 0, deepseek: 0 };
   let _claudeUsageLastSeen = 0;
   const usageRefreshState = { inFlight: false, error: null, lastManualAt: 0, providerResults: null };
   let _refreshStatusTimer = null;
@@ -104,6 +104,10 @@ function createAccountUsageController({
       agentUsage.kimi = totals.kimi;
       agentUsageLastSeen.kimi = (totals.kimi && (totals.kimi.observedAt || totals.kimi._ts)) || nowFn();
     }
+    if (Object.prototype.hasOwnProperty.call(totals || {}, 'deepseek')) {
+      agentUsage.deepseek = totals.deepseek;
+      agentUsageLastSeen.deepseek = (totals.deepseek && (totals.deepseek.observedAt || totals.deepseek._ts)) || nowFn();
+    }
     render();
   }
 
@@ -120,6 +124,8 @@ function createAccountUsageController({
     if (cached.codex) agentUsageLastSeen.codex = cached.codex.observedAt || cached.codex.ts || agentUsageLastSeen.codex;
     if (cached.kimi) agentUsage.kimi = cached.kimi;
     if (cached.kimi) agentUsageLastSeen.kimi = cached.kimi.observedAt || cached.kimi.ts || agentUsageLastSeen.kimi;
+    if (cached.deepseek) agentUsage.deepseek = cached.deepseek;
+    if (cached.deepseek) agentUsageLastSeen.deepseek = cached.deepseek.observedAt || cached.deepseek.ts || agentUsageLastSeen.deepseek;
     render();
   }
 
@@ -213,7 +219,7 @@ function createAccountUsageController({
     const k = agentUsage.kimi || {};
     const refreshTitle = usageRefreshState.error
       ? `刷新账户用量 · 上次失败: ${usageRefreshState.error}`
-      : '刷新 Claude、Codex 与 Kimi 账户用量';
+      : '刷新 Claude、Codex、Kimi 用量与 DeepSeek 余额';
     // freshness 取三家最旧（保守）：任一数据过期则整灯变橙。
     const lastSeens = [_claudeUsageLastSeen, agentUsageLastSeen.codex, agentUsageLastSeen.kimi].filter(Boolean);
     const oldest = lastSeens.length ? Math.min(...lastSeens) : 0;
@@ -250,8 +256,28 @@ function createAccountUsageController({
     return 'ok';
   }
 
+  function getSnapshot() {
+    return {
+      claude: {
+        usage5h: accountUsage.usage5h,
+        usage7d: accountUsage.usage7d,
+        lastSeen: _claudeUsageLastSeen,
+      },
+      codex: agentUsage.codex ? { ...agentUsage.codex, lastSeen: agentUsageLastSeen.codex } : null,
+      gemini: agentUsage.gemini ? { ...agentUsage.gemini, lastSeen: agentUsageLastSeen.gemini } : null,
+      kimi: agentUsage.kimi ? { ...agentUsage.kimi, lastSeen: agentUsageLastSeen.kimi } : null,
+      deepseek: agentUsage.deepseek ? { ...agentUsage.deepseek, lastSeen: agentUsageLastSeen.deepseek } : null,
+      refresh: {
+        inFlight: usageRefreshState.inFlight,
+        error: usageRefreshState.error,
+        lastManualAt: usageRefreshState.lastManualAt,
+      },
+    };
+  }
+
   return {
     render,
+    getSnapshot,
     sessionBurnRate,
     pctClass,
     recordSessionContextSample,

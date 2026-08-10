@@ -2,6 +2,9 @@
 
 const assert = require('assert');
 const {
+  canonicalAiKind,
+  getKindLabel,
+  isClaudeFamily,
   isCodexCliKind,
   isCodexSessionKind,
   isKimiCliKind,
@@ -12,10 +15,16 @@ const {
 
 assert.strictEqual(isCodexCliKind('codex'), true);
 assert.strictEqual(isCodexCliKind('codex-resume'), true);
+assert.strictEqual(isCodexCliKind('deepseek'), true);
+assert.strictEqual(isCodexCliKind('deepseek-resume'), true);
 assert.strictEqual(isCodexCliKind('codex-web'), false);
 assert.strictEqual(isCodexCliKind('codex-web-resume'), false);
 assert.strictEqual(isCodexCliKind('codex-app'), false);
 assert.strictEqual(isCodexCliKind('claude'), false);
+assert.strictEqual(isClaudeFamily('deepseek'), false);
+assert.strictEqual(isClaudeFamily('deepseek-legacy'), true);
+assert.strictEqual(canonicalAiKind('deepseek-legacy-resume'), 'deepseek');
+assert.strictEqual(getKindLabel('deepseek-legacy'), 'DeepSeek');
 
 assert.strictEqual(isCodexSessionKind('codex-app'), false);
 assert.strictEqual(isCodexSessionKind('codex-web-resume'), false);

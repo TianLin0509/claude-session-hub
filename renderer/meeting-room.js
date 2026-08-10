@@ -5524,9 +5524,8 @@ if (typeof document !== 'undefined') (function () {
     menu.style.top = rect.bottom + 4 + 'px';
     menu.style.left = rect.left + 'px';
 
-    // 用 ALL_AI_KINDS 单一真理源动态生成菜单项 — Claude/Gemini/Codex 用 "<Brand> CLI" 后缀，
-    // 其他 Claude 家族（DeepSeek/GLM/GPT/Kimi/Qwen）用纯 brand 名（都跑在 Claude CLI 上）。
-    const _CLI_SUFFIX = { claude: 'Claude Code', gemini: 'Gemini CLI', codex: 'Codex CLI', kimi: 'Kimi Code' };
+    // 用 ALL_AI_KINDS 单一真理源动态生成菜单项，并把实际 runtime 直接告诉用户。
+    const _CLI_SUFFIX = { claude: 'Claude Code', gemini: 'Gemini CLI', codex: 'Codex CLI', deepseek: 'DeepSeek · Codex', kimi: 'Kimi Code' };
     const kinds = ALL_AI_KINDS.map(k => ({
       kind: k,
       label: _CLI_SUFFIX[k] || getKindLabel(k),

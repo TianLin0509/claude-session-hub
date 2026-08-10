@@ -26,7 +26,7 @@ assert.ok(
 );
 
 assert.ok(
-  recoverySrc.includes('groupChatWatcher.extractStreamingText(sid, kind)') &&
+  recoverySrc.includes('groupChatWatcher.extractStreamingText(sid, runtimeKind)') &&
   recoverySrc.includes("extractMode: 'pty_buffer_fallback'"),
   'manual extract must fall back to the visible PTY buffer when transcript extraction is not ready',
 );

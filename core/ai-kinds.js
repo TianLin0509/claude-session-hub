@@ -2,7 +2,7 @@
 // core/ai-kinds.js — AI kind 单一真理源
 //
 // 背景（2026-05-02 用户血泪反馈）：
-//   项目最早只支持 claude/gemini/codex 三家，后加了 deepseek（跑在 Claude CLI 上），
+//   项目最早只支持 claude/gemini/codex 三家，后加了 deepseek（最初跑在 Claude CLI 上），
 //   但许多分支判断当时硬编码 ['claude', 'gemini', 'codex'] 三家，导致：
 //     - 一键提取按钮对 DS 永远失败（"按钮假的"）
 //     - DS 卡片不更新（依赖 Claude Stop hook，但分支没接通）
@@ -22,7 +22,10 @@
 // ---------------------------------------------------------------------------
 const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'kimi'];
 const WEB_STYLE_KINDS = [];
-const CODEX_CLI_KINDS = ['codex', 'codex-resume'];
+// DeepSeek V4 Flash 自 2026-07-31 起原生支持 Responses API，并由官方适配
+// Codex 0.144.0+。新 DeepSeek 会话因此也属于 Codex CLI runtime；老会话恢复时
+// 仍可用下面的 deepseek-legacy 内部 kind 回到 Claude transcript。
+const CODEX_CLI_KINDS = ['codex', 'codex-resume', 'deepseek', 'deepseek-resume'];
 const CODEX_SESSION_KINDS = [...CODEX_CLI_KINDS];
 const KIMI_CLI_KINDS = ['kimi', 'kimi-resume'];
 const CLAUDE_WEB_KINDS = [];
@@ -44,10 +47,11 @@ const KIND_LABELS = {
 // Claude 家族（共享 Claude Code CLI 引擎）：
 //   - claude         主 Claude（~/.claude）
 //   - claude-resume  resume 路径（同主）
-//   - deepseek       走 ~/.claude-deepseek 隔离配置
+//   - deepseek-legacy / deepseek-legacy-resume
+//                    仅用于恢复 2026-08-09 以前的 DeepSeek Claude transcript
 // 共享：transcript JSONL shape / Stop hook / OSC title 协议 / system prompt 注入参数 (--append-system-prompt)
 // ---------------------------------------------------------------------------
-const CLAUDE_FAMILY = ['claude', 'claude-resume', 'deepseek', 'deepseek-resume'];
+const CLAUDE_FAMILY = ['claude', 'claude-resume', 'deepseek-legacy', 'deepseek-legacy-resume'];
 
 // ---------------------------------------------------------------------------
 // TUI alt-screen 程序（paste-sensitive）：
@@ -103,6 +107,7 @@ function isWebStyleKind(kind) {
 }
 
 function getKindLabel(kind) {
+  if (kind === 'deepseek-legacy' || kind === 'deepseek-legacy-resume') return KIND_LABELS.deepseek;
   return KIND_LABELS[kind] || kind || 'AI';
 }
 
@@ -129,7 +134,7 @@ const _FAMILY_SET = new Set(FAMILY_KINDS);
 function canonicalAiKind(rawKind) {
   if (rawKind === 'codex') return 'gpt';
   if (rawKind === 'claude-resume') return 'claude';
-  if (rawKind === 'deepseek-resume') return 'deepseek';
+  if (rawKind === 'deepseek-resume' || rawKind === 'deepseek-legacy' || rawKind === 'deepseek-legacy-resume') return 'deepseek';
   if (rawKind === 'kimi-resume') return 'kimi';
   const out = rawKind || 'unknown';
   // [Phase 4 silent-failure-hunt] 静默 fall-through 会让未来新加的 kind（如 'mistral'）

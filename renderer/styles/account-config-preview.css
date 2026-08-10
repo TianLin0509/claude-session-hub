@@ -431,6 +431,27 @@
 .config-reading-grid output { float: right; color: #9dccff; font-size: 12px; font-variant-numeric: tabular-nums; }
 .config-reading-grid input[type="range"] { padding: 7px 0; accent-color: #58a6ff; cursor: pointer; }
 .config-reading-note { margin: 4px 0 18px; color: #8b949e; font-size: 11.5px; line-height: 1.55; }
+.config-notification-title { margin-top: 18px; }
+.config-notification-card { margin-bottom: 18px; padding: 12px; border: 1px solid #343b46; border-radius: 8px; background: #171c23; }
+.config-toggle-row { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 13px; color: #e6e6e6; cursor: pointer; }
+.config-toggle-row input { width: auto; margin: 3px 0 0; accent-color: #3fb950; }
+.config-toggle-row span { display: grid; gap: 3px; }
+.config-toggle-row strong { font-size: 13px; font-weight: 650; }
+.config-toggle-row small { color: #8b949e; font-size: 11.5px; line-height: 1.45; }
+.config-secret-row { display: flex; align-items: stretch; gap: 8px; }
+.config-secret-row input { min-width: 0; flex: 1; }
+.config-test-btn { flex: 0 0 auto; padding: 0 12px; border: 1px solid rgba(88,166,255,0.42); border-radius: 6px; background: rgba(88,166,255,0.12); color: #9dccff; font-size: 12px; font-weight: 600; cursor: pointer; }
+.config-test-btn:hover { background: rgba(88,166,255,0.20); color: #d6e9ff; }
+.config-test-btn:disabled { opacity: 0.55; cursor: wait; }
+.config-check-grid { display: grid; gap: 8px; margin: 8px 0 10px; }
+.config-check-grid label { display: flex; align-items: center; gap: 7px; color: #b8c0ca; font-size: 12px; cursor: pointer; }
+.config-check-grid input { margin: 0; accent-color: #58a6ff; }
+.config-notification-status { min-height: 0; margin: 8px 0 10px; padding: 7px 9px; border-radius: 6px; font-size: 12px; line-height: 1.4; }
+.config-notification-status:empty { display: none; }
+.config-notification-status.working { background: rgba(88,166,255,0.10); color: #9dccff; }
+.config-notification-status.success { background: rgba(63,185,80,0.12); color: #72d887; }
+.config-notification-status.error { background: rgba(248,81,73,0.12); color: #ff938d; }
+.config-notification-card .config-reading-note { margin-bottom: 0; }
 @media (max-width: 520px) { .config-reading-grid { grid-template-columns: 1fr; gap: 2px; } }
 .config-field { margin-bottom: 14px; }
 .config-field label { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 500; color: #c9d1d9; }

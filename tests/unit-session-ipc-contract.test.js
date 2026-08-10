@@ -109,6 +109,19 @@ function createFakeSessionManager() {
       if (sessionId === 'claude-unbound') {
         return { id: sessionId, kind: 'claude', title: 'Claude New', cwd: 'C:\\repo' };
       }
+      if (sessionId === 'codex-unbound') {
+        return { id: sessionId, kind: 'codex', title: 'Codex New', cwd: 'C:\\repo' };
+      }
+      if (sessionId === 'chuxin-source') {
+        return {
+          id: sessionId,
+          kind: 'codex',
+          title: '初心投研任务',
+          cwd: 'C:\\repo',
+          purpose: 'chuxin-research',
+          codexSid: '55555555-5555-4555-8555-555555555555',
+        };
+      }
       return { id: sessionId, kind: 'powershell', cwd: 'C:\\work', meetingId: 'm1' };
     },
     createSession(kind, opts) {
@@ -129,6 +142,18 @@ function test(name, fn) {
     console.error(err.stack || err.message);
     process.exitCode = 1;
   }
+}
+
+const asyncTests = [];
+function testAsync(name, fn) {
+  const pending = Promise.resolve().then(fn).then(() => {
+    console.log(`  OK ${name}`);
+  }).catch((err) => {
+    console.error(`  FAIL ${name}`);
+    console.error(err.stack || err.message);
+    process.exitCode = 1;
+  });
+  asyncTests.push(pending);
 }
 
 console.log('Running session IPC contract tests...');
@@ -408,7 +433,7 @@ test('focus, input, get-sessions, debug buffer delegate unchanged', () => {
   ]);
 });
 
-test('restart-session closes, recreates, registers tap, and emits session-created', () => {
+test('restart-session recreates a non-resumable PowerShell terminal', () => {
   const ipc = createFakeIpc();
   const sessionManager = createFakeSessionManager();
   const emitted = [];
@@ -423,7 +448,9 @@ test('restart-session closes, recreates, registers tap, and emits session-create
   const missing = ipc.handlers.get('restart-session')(null, 'missing');
 
   assert.deepStrictEqual(fresh, { id: 's1', kind: 'powershell', cwd: 'C:\\work', meetingId: 'm1' });
-  assert.strictEqual(missing, null);
+  assert.deepStrictEqual(missing, {
+    ok: false, error: 'session-not-found', message: '会话不存在或已经休眠',
+  });
   assert.deepStrictEqual(
     sessionManager.calls.filter(call => ['getSession', 'closeSession', 'createSession'].includes(call[0])),
     [
@@ -437,4 +464,88 @@ test('restart-session closes, recreates, registers tap, and emits session-create
   assert.deepStrictEqual(emitted, [['session-created', { session: fresh }]]);
 });
 
-console.log('All session IPC contract tests passed.');
+testAsync('restart-session resumes the exact Codex thread and preserves provider metadata', async () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  const resumed = [];
+  registerSessionIpc(ipc, {
+    sessionManager,
+    sendToRenderer: () => {},
+    resumeSession: async (meta) => {
+      resumed.push(meta);
+      return { id: meta.hubId, kind: meta.kind, codexSid: meta.codexSid };
+    },
+  });
+
+  const fresh = await ipc.handlers.get('restart-session')(null, 'codex-source');
+  assert.deepStrictEqual(fresh, {
+    id: 'codex-source', kind: 'codex-resume', codexSid: '22222222-2222-4222-8222-222222222222',
+  });
+  assert.strictEqual(resumed.length, 1);
+  assert.deepStrictEqual({
+    hubId: resumed[0].hubId,
+    kind: resumed[0].kind,
+    codexSid: resumed[0].codexSid,
+    model: resumed[0].model,
+    codexProfile: resumed[0].codexProfile,
+    mcpProfile: resumed[0].mcpProfile,
+  }, {
+    hubId: 'codex-source',
+    kind: 'codex-resume',
+    codexSid: '22222222-2222-4222-8222-222222222222',
+    model: 'gpt-5.5',
+    codexProfile: 'work',
+    mcpProfile: 'browser',
+  });
+  assert.deepStrictEqual(
+    sessionManager.calls.filter(call => ['getSession', 'closeSession', 'createSession'].includes(call[0])),
+    [['getSession', 'codex-source'], ['closeSession', 'codex-source']],
+    'Restart must delegate to native resume instead of creating a fresh Codex session',
+  );
+});
+
+testAsync('restart-session refuses an unbound Codex session without killing it', async () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  let resumed = false;
+  registerSessionIpc(ipc, {
+    sessionManager,
+    sendToRenderer: () => {},
+    resumeSession: async () => { resumed = true; },
+  });
+
+  const result = await ipc.handlers.get('restart-session')(null, 'codex-unbound');
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error, 'native-session-id-missing');
+  assert.strictEqual(resumed, false);
+  assert.deepStrictEqual(
+    sessionManager.calls.filter(call => call[0] === 'closeSession'),
+    [],
+    'an unbound session must stay alive instead of silently becoming a new thread',
+  );
+});
+
+testAsync('restart-session preserves the protected Chuxin research session', async () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  let resumed = false;
+  registerSessionIpc(ipc, {
+    sessionManager,
+    sendToRenderer: () => {},
+    resumeSession: async () => { resumed = true; },
+  });
+
+  const result = await ipc.handlers.get('restart-session')(null, 'chuxin-source');
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.error, 'protected-session');
+  assert.strictEqual(resumed, false);
+  assert.deepStrictEqual(
+    sessionManager.calls.filter(call => call[0] === 'closeSession'),
+    [],
+    'a protected Chuxin research session must never be closed by Restart',
+  );
+});
+
+Promise.all(asyncTests).then(() => {
+  console.log('All session IPC contract tests passed.');
+});

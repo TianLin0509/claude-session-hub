@@ -129,5 +129,23 @@ const sessionStore = require('../core/session-store');
     console.log('PASS S10 auto-sleep metadata');
   }
 
+  // S11: provider/session behavior survives recovery from the per-id authority.
+  {
+    sessionStore.saveSessionFile('resume-policy', {
+      kind: 'codex', title: 'Policy', codexSid: 'native-policy',
+      codexProfile: 'work', mcpProfile: 'browser', effort: 'high',
+      userRenamed: true, branchSourceSessionId: 'parent', contextPct: 37,
+      updatedAt: 8000,
+    });
+    const loaded = sessionStore.loadSessionFile('resume-policy');
+    assert.strictEqual(loaded.codexProfile, 'work');
+    assert.strictEqual(loaded.mcpProfile, 'browser');
+    assert.strictEqual(loaded.effort, 'high');
+    assert.strictEqual(loaded.userRenamed, true);
+    assert.strictEqual(loaded.branchSourceSessionId, 'parent');
+    assert.strictEqual(loaded.contextPct, 37);
+    console.log('PASS S11 resume policy metadata');
+  }
+
   console.log('\n[ALL session-store tests PASSED]');
 })();

@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const { createSystemResourceSampler, registerAppUtilityIpc, saveClipboardImage, showNotification } = require('../main/ipc/app-utility-handlers.js');
+const { createSystemResourceSampler, registerAppUtilityIpc, saveClipboardImage } = require('../main/ipc/app-utility-handlers.js');
 
 function createFakeIpc() {
   return {
@@ -28,21 +28,6 @@ function createDeps(overrides = {}) {
     focus() { calls.push(['focus']); },
   };
 
-  class FakeNotification {
-    static isSupported() { calls.push(['isSupported']); return true; }
-    constructor(opts) {
-      calls.push(['notification', opts]);
-      this.handlers = {};
-    }
-    on(event, fn) {
-      calls.push(['notificationOn', event]);
-      this.handlers[event] = fn;
-    }
-    show() {
-      calls.push(['notificationShow']);
-    }
-  }
-
   return {
     calls,
     clipboard: {
@@ -57,9 +42,10 @@ function createDeps(overrides = {}) {
     },
     getHookPort: () => 3456,
     getMainWindow: () => mainWindow,
+    getNetworkEgressStatus: async () => ({ checkedAt: 1, foreign: { ok: true }, domestic: { ok: true } }),
+    acknowledgeNetworkEgressChange: async () => ({ ok: true }),
     imageDir: 'C:\\hub\\images',
     logger: { warn: (msg) => calls.push(['warn', msg]) },
-    Notification: FakeNotification,
     path: {
       join(...parts) { return parts.join('\\'); },
     },
@@ -85,11 +71,13 @@ test('registers utility channels', () => {
   const deps = createDeps();
   registerAppUtilityIpc(ipc, deps);
 
-  assert.ok(ipc.listeners.has('show-notification'));
+  assert.ok(!ipc.listeners.has('show-notification'), 'native toast IPC must stay disabled');
   assert.ok(ipc.handlers.has('is-window-focused'));
   assert.ok(ipc.handlers.has('save-clipboard-image'));
   assert.ok(ipc.handlers.has('get-hook-status'));
   assert.ok(ipc.handlers.has('get-system-resource-usage'));
+  assert.ok(ipc.handlers.has('get-network-egress-status'));
+  assert.ok(ipc.handlers.has('acknowledge-network-egress-change'));
 });
 
 test('system resource sampler reports CPU delta and memory usage', () => {
@@ -130,16 +118,6 @@ test('saveClipboardImage returns null for empty image', () => {
 
   assert.strictEqual(saveClipboardImage(deps), null);
   assert.ok(!deps.calls.some(call => call[0] === 'writeFileSync'));
-});
-
-test('showNotification wires click to main window focus', () => {
-  const deps = createDeps();
-  const shown = showNotification({ title: 'T', body: 'B' }, deps);
-  const notificationCall = deps.calls.find(call => call[0] === 'notification');
-
-  assert.strictEqual(shown, true);
-  assert.deepStrictEqual(notificationCall[1], { title: 'T', body: 'B', silent: false });
-  assert.ok(deps.calls.some(call => call[0] === 'notificationShow'));
 });
 
 test('registered handlers report focus and hook status', () => {

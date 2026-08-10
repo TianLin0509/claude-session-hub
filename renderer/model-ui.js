@@ -68,8 +68,8 @@ function createModelUiController({ document, ipcRenderer, sessions, terminalPane
   
   // ---- Model picker dropdown ----
   // Per-kind model option source of truth lives in core/model-options.js.
-  // claude / deepseek \u90fd\u8dd1\u5728 claude CLI \u4e0a\uff08\u76f4\u8fde\u6216 ANTHROPIC_BASE_URL \u4e2d\u8f6c\uff09\uff0c
-  // \u8d70\u539f\u5730 `/model <id>\r` \u5207\u6362\u3002codex / gemini \u7684 PTY \u4e0d\u8bc6\u522b inline `/model`\uff08spec \u00a73.1 \u5df2\u8bba\u8bc1\uff09\uff0c
+  // Claude supports inline `/model <id>\r`. DeepSeek now runs through Codex
+  // Responses API, so DeepSeek / Codex / Gemini all use the read-only picker.
   // picker \u6539\u4e3a\u663e\u793a\u53ea\u8bfb\u6e05\u5355 + \u63d0\u793a"\u91cd\u65b0\u5efa\u7acb session"\u2014\u2014\u907f\u514d\u53d1\u9001\u65e0\u6548\u5207\u6362\u8ba9\u7528\u6237\u8bef\u4ee5\u4e3a\u5207\u4e86\u3002
   
   

@@ -141,8 +141,8 @@ test('非群聊 meeting 即便 sub.contextPct 存在也不渲染 mini-jump-ctx',
   assert.ok(!/mini-jump-ctx/.test(html), '非群聊 meeting 不应渲染 mini-jump-ctx（slot 头像是 Pokemon，Ctx 语义对应不上）');
 });
 
-// ---------------- 用例 4：unreadAnsweredSize > 0 时 badge 显示"⏸ 等你 N" ----------------
-test('meeting.unreadAnswered 有 N 个 sid 时侧栏显示 "⏸ 等你 N"', () => {
+// ---------------- 用例 4：unreadAnsweredSize > 0 时 badge 显示"已答 N" ----------------
+test('meeting.unreadAnswered 有 N 个 sid 时侧栏显示 "已答 N"', () => {
   const sessions = new Map();
   sessions.set('sid-a', { id: 'sid-a', title: 'AI-A', kind: 'gemini', status: 'idle' });
   sessions.set('sid-b', { id: 'sid-b', title: 'AI-B', kind: 'codex', status: 'idle' });
@@ -158,7 +158,7 @@ test('meeting.unreadAnswered 有 N 个 sid 时侧栏显示 "⏸ 等你 N"', () =
   const { renderSessionList, sessionListEl } = makeRenderer({ sessions, meetings, activeMeetingId: null });
   renderSessionList();
   const html = sessionListEl.children.map(c => c.innerHTML || '').join('\n');
-  assert.ok(/sl-state unread[^>]*>等你 2</.test(html), 'sl-state 必须显示"等你 2"反映本轮已答 AI 数（方案C 两行卡）');
+  assert.ok(/sl-state unread[^>]*>已答 2</.test(html), 'sl-state 必须显示"已答 2"，不能把普通完成误报成等你输入');
 });
 
 // ---------------- 用例 5：active 时不显示 badge（即便 unreadAnswered 非空） ----------------

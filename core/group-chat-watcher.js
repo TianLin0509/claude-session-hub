@@ -20,8 +20,7 @@ const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
 // xterm bracketed paste mode markers（标准协议，claude code TUI 完整识别）。
 //   marker 之间的内容被 CLI 视作"一次粘贴"整体处理，无需 paste-detect timing 探测，
 //   BP_END 之后的 \r 直接作为提交信号被识别。
-//   2026-05-05 实测：claude family（claude/deepseek 都跑在 claude CLI 上）
-//   全部识别；codex/gemini 协议层不识别 → 仍走旧主路径。
+//   Claude family 与当前 Codex 都支持；DeepSeek 迁移到 Codex 后也走 Codex 分支。
 const BP_START = '\x1b[200~';
 const BP_END = '\x1b[201~';
 
@@ -29,6 +28,12 @@ let _deps = null;
 
 function init(deps) {
   _deps = deps;
+}
+
+function resolveRuntimeKind(sessionManager, sid, fallbackKind) {
+  if (!sessionManager || typeof sessionManager.getSession !== 'function') return fallbackKind;
+  const session = sessionManager.getSession(sid);
+  return (session && session.transcriptKind) || fallbackKind;
 }
 
 function writeCodexPromptFile(sessionManager, sid, text) {
@@ -140,6 +145,7 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 //   所以 prompt 和 '\r' **必须分两次 write**，中间留 TUI 消化窗口；不能合并 `prompt + '\r'`。
 async function sendToPty(sid, prompt, kind) {
   const { sessionManager } = _deps;
+  kind = resolveRuntimeKind(sessionManager, sid, kind);
   const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
   const FAST_PATH_MAX_WAIT_MS = 3000;   // 上限：极大 prompt 也不无限等
   const FAST_PATH_POLL_MS = 50;
@@ -392,6 +398,7 @@ async function _autoRecoverSend({ sid, kind, prompt, echoSeen, timing }) {
 // 返回 { ok, mode, reason? }，mode ∈ 'enter_only' | 'rewrite_full'。
 async function resendCurrentPrompt({ sid, kind, prompt, promptHeader, timing }) {
   const { sessionManager } = _deps;
+  kind = resolveRuntimeKind(sessionManager, sid, kind);
   if (!prompt) return { ok: false, reason: 'no_prompt' };
   const buf = sessionManager.getSessionBuffer(sid) || '';
   // 仅取最近 ~1024 字符（约一屏 PTY 输出，覆盖 CLI 输入框；

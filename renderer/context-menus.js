@@ -1,9 +1,9 @@
 'use strict';
 
+const { supportsRecoverableSession } = require('../core/session-capabilities.js');
+
 function supportsRecoverableSessionKind(session) {
-  if (!session || session.purpose === 'chuxin-research') return false;
-  const kind = String(session.kind || '').replace(/-resume$/, '');
-  return ['claude', 'deepseek', 'codex', 'gemini', 'kimi'].includes(kind);
+  return !!(session && session.purpose !== 'chuxin-research' && supportsRecoverableSession(session));
 }
 
 function createSessionContextMenuController({
@@ -22,6 +22,7 @@ function createSessionContextMenuController({
   renderSessionList,
   schedulePersist,
   notify,
+  wakeDormantSession,
   requestAnimationFrameFn = requestAnimationFrame,
 }) {
   let contextMenuSessionId = null;
@@ -48,7 +49,15 @@ function createSessionContextMenuController({
     if (pinBtn) pinBtn.style.display = '';
     const session = sessions.get(sessionId);
     const meeting = meetings[sessionId];
-    if (restartBtn) restartBtn.style.display = session ? '' : 'none';
+    if (restartBtn) {
+      const restartAllowed = !!(session && session.purpose !== 'chuxin-research');
+      restartBtn.style.display = restartAllowed ? '' : 'none';
+      if (restartAllowed) {
+        restartBtn.textContent = session.status === 'dormant'
+          ? '唤醒会话'
+          : (supportsRecoverableSessionKind(session) ? '重启并继续当前会话' : '重启终端');
+      }
+    }
     if (closeBtn) {
       closeBtn.style.display = meeting || (session && session.status !== 'dormant') ? '' : 'none';
       closeBtn.textContent = meeting
@@ -115,7 +124,27 @@ function createSessionContextMenuController({
           renderSessionList();
           schedulePersist();
         } else if (action === 'restart') {
-          await ipcRenderer.invoke('restart-session', sid);
+          if (session.status === 'dormant') {
+            if (typeof wakeDormantSession !== 'function') {
+              showNotice('休眠会话唤醒服务尚未就绪');
+              return;
+            }
+            try {
+              const resumed = await wakeDormantSession(sid);
+              if (!resumed) showNotice('会话唤醒失败，请稍后重试。');
+            } catch (error) {
+              showNotice(`会话唤醒失败：${error && error.message ? error.message : String(error)}`);
+            }
+            return;
+          }
+          try {
+            const result = await ipcRenderer.invoke('restart-session', sid);
+            if (result && result.ok === false) {
+              showNotice(result.message || '会话重启失败，请稍后重试。');
+            }
+          } catch (error) {
+            showNotice(`会话重启失败：${error && error.message ? error.message : String(error)}`);
+          }
         } else if (action === 'close') {
           if (session.status === 'dormant') return;
           // 用户主动关闭就是休眠：即便本轮仍在运行，也允许中断 PTY 并保留恢复入口。

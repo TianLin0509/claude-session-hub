@@ -1,7 +1,14 @@
 'use strict';
 
-const { isCodexCliKind } = require('../../core/ai-kinds');
 const { buildBranchSessionTitle } = require('../../core/branch-session-titles.js');
+const {
+  buildSessionResumeMeta,
+  nativeSessionIdentity,
+  runtimeKindForSession,
+  sessionProviderFamily,
+  supportsForkSession,
+  supportsRecoverableSession,
+} = require('../../core/session-capabilities.js');
 
 const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -16,6 +23,7 @@ function registerSessionIpc(ipcMain, deps) {
     sessionManager,
     meetingManager,
     workspaceService,
+    resumeSession,
     getTerminalOutputBatchStats = () => null,
   } = deps;
 
@@ -65,13 +73,10 @@ function registerSessionIpc(ipcMain, deps) {
       return { ok: false, error: 'session-not-found', message: '当前会话不存在或尚未启动' };
     }
 
-    const isClaude = source.kind === 'claude' || source.kind === 'claude-resume';
-    // DeepSeek 跑的就是 claude CLI，--fork-session 同样可用。
-    // Kimi 不在此列：它的 CLI 只有 --session/--continue，没有任何 fork 能力。
     const isDeepSeek = source.kind === 'deepseek' || source.kind === 'deepseek-resume';
-    const isCodex = isCodexCliKind(source.kind);
-    const isClaudeCli = isClaude || isDeepSeek;
-    if (!isClaudeCli && !isCodex) {
+    const runtimeKind = runtimeKindForSession(source);
+    const providerFamily = sessionProviderFamily(source);
+    if (!supportsForkSession(source)) {
       return {
         ok: false,
         error: 'unsupported-kind',
@@ -79,7 +84,8 @@ function registerSessionIpc(ipcMain, deps) {
       };
     }
 
-    const nativeSessionId = isClaudeCli ? source.ccSessionId : source.codexSid;
+    const identity = nativeSessionIdentity(source);
+    const nativeSessionId = identity && identity.value;
     if (!isSafeNativeSessionId(nativeSessionId)) {
       return {
         ok: false,
@@ -107,11 +113,12 @@ function registerSessionIpc(ipcMain, deps) {
     if (source.effort) opts.effort = source.effort;
 
     let kind;
-    if (isClaudeCli) {
+    if (providerFamily === 'claude') {
       kind = isDeepSeek ? 'deepseek' : 'claude';
       opts.forkCCSessionId = nativeSessionId;
+      if (runtimeKind.startsWith('deepseek-legacy')) opts.deepseekLegacyClaude = true;
     } else {
-      kind = 'codex';
+      kind = isDeepSeek ? 'deepseek' : 'codex';
       if (source.codexProfile) opts.codexProfile = source.codexProfile;
       if (source.mcpProfile) opts.mcpProfile = source.mcpProfile;
       opts.codexForkSid = nativeSessionId;
@@ -210,12 +217,50 @@ function registerSessionIpc(ipcMain, deps) {
 
   ipcMain.handle('restart-session', (_e, sessionId) => {
     const old = sessionManager.getSession(sessionId);
-    if (!old) return null;
+    if (!old) {
+      return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
+    }
+    if (old.purpose === 'chuxin-research') {
+      return { ok: false, error: 'protected-session', message: '初心投研任务不能从这里重启' };
+    }
+
+    if (supportsRecoverableSession(old)) {
+      const identity = nativeSessionIdentity(old);
+      if (!identity) {
+        return {
+          ok: false,
+          error: 'native-session-id-missing',
+          message: '当前会话尚未绑定原生会话 ID，不能安全重启；请等待本轮回答完成后重试',
+        };
+      }
+      if (typeof resumeSession !== 'function') {
+        return { ok: false, error: 'resume-handler-unavailable', message: '会话恢复服务尚未就绪' };
+      }
+
+      const resumeMeta = buildSessionResumeMeta(old);
+      lastResizeBySid.delete(sessionId);
+      sessionManager.closeSession(sessionId);
+      return Promise.resolve(resumeSession(resumeMeta)).then((fresh) => (
+        fresh || { ok: false, error: 'resume-failed', message: '原生会话恢复失败' }
+      )).catch((error) => ({
+        ok: false,
+        error: 'resume-failed',
+        message: `会话重启失败：${error && error.message ? error.message : String(error)}`,
+      }));
+    }
+
+    // PowerShell has no provider-native thread.  Restarting it intentionally
+    // creates a fresh shell while retaining the Hub card's UX metadata.
     sessionManager.closeSession(sessionId);
     const fresh = sessionManager.createSession(old.kind, {
       id: old.id,
+      ...(old.title ? { title: old.title } : {}),
       cwd: old.cwd,
       meetingId: old.meetingId || undefined,
+      ...(old.workspaceLabel ? { workspaceLabel: old.workspaceLabel } : {}),
+      ...(old.pinned ? { pinned: true } : {}),
+      ...(typeof old.lastMessageTime === 'number' ? { lastMessageTime: old.lastMessageTime } : {}),
+      ...(typeof old.lastOutputPreview === 'string' ? { lastOutputPreview: old.lastOutputPreview } : {}),
       ...(old.currentModel && old.currentModel.id ? { model: old.currentModel.id } : {}),
       ...(old.effort ? { effort: old.effort } : {}),
       ...(old.codexProfile ? { codexProfile: old.codexProfile } : {}),

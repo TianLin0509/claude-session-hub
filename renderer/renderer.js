@@ -1,6 +1,7 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
 const fs = require('fs');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
+const { buildSessionResumeMeta, supportsForkSession } = require('../core/session-capabilities.js');
 const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
@@ -56,7 +57,15 @@ const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.j
 const { createPastSessionModals, collapseDormantNativeDuplicates } = require('./past-session-modals.js');
 const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
 const { createShellController } = require('./shell-controller.js');
+const { createHomeWorkbench } = require('./home-workbench.js');
 const { createRenderCoalescer } = require('./render-coalescer.js');
+const {
+  applyPromptSubmitted,
+  applyReplyCompleted,
+  clearSessionAttention,
+  sessionHasCompletedUnread,
+  sessionNeedsUserInput,
+} = require('../core/session-attention-state.js');
 const {
   PREVIEW_PATH_RE,
   HUB_IMG_PATH_RE,
@@ -109,8 +118,9 @@ const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 const sessions = new Map();
 let activeSessionId = null;
 let systemResourceUsage = null;
-// 侧栏常驻显示当前代理（VPN）出口，方便随时确认走的通道对不对。
-// 取的是 Hub 配置里的 proxy —— 会话启动时正是用它写 HTTP_PROXY/HTTPS_PROXY。
+let homeWorkbench = null;
+// 侧栏常驻显示海外代理 + 国产直连的真实公网出口。
+// proxy 仍保留配置值，egress 由 main 进程强制分别经代理/直连探测。
 let hubProxyInfo = null;
 // 2026-05-24 道雪：DeepSeek 自动命名启用标志。启用时让 DeepSeek 中文标题独占 Claude family
 //   session，OSC title（"Greeting in Chinese" 这种 Claude 自带英文摘要）仅作影子记录、不落地。
@@ -147,6 +157,14 @@ const CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS = 120;
 
 function isTranscriptCliKind(kind) {
   return isCodexKind(kind) || isKimiCliKind(kind);
+}
+
+function isLegacyDeepSeekSession(session) {
+  return !!(session && session.kind === 'deepseek' && session.ccSessionId && !session.codexSid);
+}
+
+function isClaudeRuntimeSession(session) {
+  return !!(session && (isClaudeFamily(session.kind) || isLegacyDeepSeekSession(session)));
 }
 
 function readContenteditablePlainText(el) {
@@ -371,12 +389,14 @@ const emptyStateEl = document.getElementById('empty-state');
 
 // Spec 2 preserve helper — both showTerminal AND session-closed handler clear
 // terminalPanelEl.innerHTML, which would obliterate spec 1/2 elements (view-toggle,
-// msg-overlay) declared statically in index.html. Without preserve they vanish forever
+// notification toggle, msg-overlay) declared statically in index.html. Without preserve they vanish forever
 // after the first session close → no card view + no view toggle button.
 function preserveAndClearTerminalPanel() {
   const preserved = [
     document.getElementById('msg-overlay'),
-    document.querySelector('.view-toggle')
+    document.querySelector('.view-toggle'),
+    document.getElementById('completion-notification-toggle'),
+    document.getElementById('recent-turn-copy'),
   ].filter(Boolean);
   terminalPanelEl.innerHTML = '';
   preserved.forEach(el => terminalPanelEl.appendChild(el));
@@ -388,6 +408,7 @@ const btnResume = document.getElementById('btn-resume');
 const resumeMenuEl = document.getElementById('resume-picker-menu');
 const resumeWrapperEl = document.getElementById('resume-picker-wrapper');
 const btnGroupChat = document.getElementById('btn-group-chat');
+const btnHome = document.getElementById('btn-home');
 const contextMenuEl = document.getElementById('context-menu');
 const termCtxMenuEl = document.getElementById('terminal-context-menu');
 const appContainerEl = document.getElementById('app-container');
@@ -510,6 +531,19 @@ const sessionListRenderer = createSessionListRenderer({
   pctClass: (pct) => pctClass(pct),
   getResourceUsage: () => systemResourceUsage,
   getProxyInfo: () => hubProxyInfo,
+  acknowledgeNetworkChange: async () => {
+    try {
+      const result = await ipcRenderer.invoke('acknowledge-network-egress-change');
+      if (result && result.status) {
+        hubProxyInfo = { ...(hubProxyInfo || {}), egress: result.status };
+        renderSidebarStrip();
+        if (homeWorkbench) homeWorkbench.render();
+      }
+      return result;
+    } catch {
+      return { ok: false };
+    }
+  },
   selectSession: (id, opts) => selectSession(id, opts),
   selectMeeting: (id, opts) => selectMeeting(id, opts),
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
@@ -517,10 +551,14 @@ const sessionListRenderer = createSessionListRenderer({
 });
 const renderSessionListNow = sessionListRenderer.renderSessionList;
 const renderSidebarStrip = sessionListRenderer.renderSidebarStrip;
-const sidebarRenderCoalescer = createRenderCoalescer(renderSessionListNow, { delayMs: 75 });
+function renderSessionSurfacesNow() {
+  renderSessionListNow();
+  if (homeWorkbench) homeWorkbench.render();
+}
+const sidebarRenderCoalescer = createRenderCoalescer(renderSessionSurfacesNow, { delayMs: 75 });
 function renderSessionList() {
   sidebarRenderCoalescer.cancel();
-  renderSessionListNow();
+  renderSessionSurfacesNow();
 }
 function scheduleSessionListRender() {
   sidebarRenderCoalescer.schedule();
@@ -532,17 +570,44 @@ async function refreshSystemResourceUsage() {
     if (!next || (!Number.isFinite(next.cpuPct) && !Number.isFinite(next.memoryPct))) return;
     systemResourceUsage = next;
     renderSidebarStrip();
+    if (homeWorkbench) homeWorkbench.render();
   } catch {}
 }
 
-// 代理配置改动很少，跟着资源刷新的节奏读就够；配置弹窗保存后也会重新走这里。
-async function refreshHubProxyInfo() {
+// 配置与真实出口一起刷新。main 进程对外网探测有缓存，renderer
+// 可以频繁读 IPC 而不会频繁请求地理服务。
+async function refreshHubProxyInfo(options = {}) {
   try {
-    const cfg = await ipcRenderer.invoke('get-hub-config-raw');
-    const next = { proxy: (cfg && cfg.proxy) || '' };
-    if (hubProxyInfo && hubProxyInfo.proxy === next.proxy) return;
+    const [configResult, egressResult] = await Promise.allSettled([
+      ipcRenderer.invoke('get-hub-config-raw'),
+      ipcRenderer.invoke('get-network-egress-status', { force: options.force === true }),
+    ]);
+    const cfg = configResult.status === 'fulfilled' ? configResult.value : null;
+    const egress = egressResult.status === 'fulfilled' ? egressResult.value : null;
+    const next = {
+      proxy: (cfg && cfg.proxy) || (hubProxyInfo && hubProxyInfo.proxy) || (egress && egress.proxyEndpoint) || '',
+      notificationEnabled: cfg
+        ? !!cfg.notificationEnabled
+        : !!(hubProxyInfo && hubProxyInfo.notificationEnabled),
+      serverchanSendKeySet: cfg
+        ? !!(cfg.serverchanSendKeySet || String(cfg.serverchanSendKey || '').trim())
+        : !!(hubProxyInfo && hubProxyInfo.serverchanSendKeySet),
+      deepseekApiKeySet: cfg
+        ? !!String(cfg.deepseekApiKey || '').trim()
+        : !!(hubProxyInfo && hubProxyInfo.deepseekApiKeySet),
+      egress: egress || (hubProxyInfo && hubProxyInfo.egress) || null,
+    };
+    if (hubProxyInfo
+        && hubProxyInfo.proxy === next.proxy
+        && hubProxyInfo.notificationEnabled === next.notificationEnabled
+        && hubProxyInfo.serverchanSendKeySet === next.serverchanSendKeySet
+        && hubProxyInfo.deepseekApiKeySet === next.deepseekApiKeySet
+        && Number(hubProxyInfo.egress && hubProxyInfo.egress.checkedAt) === Number(next.egress && next.egress.checkedAt)
+        && String(hubProxyInfo.egress && hubProxyInfo.egress.alert && hubProxyInfo.egress.alert.type || '')
+          === String(next.egress && next.egress.alert && next.egress.alert.type || '')) return;
     hubProxyInfo = next;
     renderSidebarStrip();
+    if (homeWorkbench) homeWorkbench.render();
   } catch {}
 }
 let activeMeetingId = null;
@@ -564,6 +629,8 @@ function formatRelativeTime(ts) {
 async function selectMeeting(meetingId, opts = {}) {
   await savePreviewState();
   activeSessionId = null;
+  suspendInactiveTerminalRenderers(null);
+  if (typeof recentTurnCopyController !== 'undefined') recentTurnCopyController.setVisible(false);
   activeMeetingId = meetingId;
   // Stop background meeting PTY redraws at the main-process boundary. The room
   // renders transcript/card state, not xterm output; an individual member shell
@@ -571,6 +638,7 @@ async function selectMeeting(meetingId, opts = {}) {
   ipcRenderer.send('focus-session', { sessionId: null });
 
   if (terminalPanelEl) terminalPanelEl.style.display = 'none';
+  if (terminalPanelEl) terminalPanelEl.classList.remove('home-active');
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
   if (emptyStateEl) emptyStateEl.style.display = 'none';
   clearPreviewUI();
@@ -619,23 +687,75 @@ async function selectMeeting(meetingId, opts = {}) {
 // is faster but on some GPU/driver combos it leaves cursor ghosting artifacts
 // in Claude Code's TUI redraw, so it's opt-in only.
 // Override via localStorage: setItem('hub.renderer', 'canvas' | 'webgl' | 'dom')
+function _loadCanvasRenderer(cached) {
+  try {
+    const canvas = new CanvasAddon();
+    cached.terminal.loadAddon(canvas);
+    cached._rendererAddon = canvas;
+    cached._rendererMode = 'canvas';
+    cached._gpuLoaded = true;
+    return true;
+  } catch (_) {
+    cached._rendererAddon = null;
+    cached._rendererMode = null;
+    cached._gpuLoaded = false;
+    return false;
+  }
+}
+
 function loadGpuRenderer(cached) {
   if (cached._gpuLoaded) return;
-  cached._gpuLoaded = true;
   const pref = localStorage.getItem('hub.renderer') || 'canvas';
-  if (pref === 'dom') return;
+  if (pref === 'dom') {
+    cached._rendererAddon = null;
+    cached._rendererMode = 'dom';
+    cached._gpuLoaded = true;
+    return;
+  }
   if (pref === 'webgl') {
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
-        webgl.dispose();
-        try { cached.terminal.loadAddon(new CanvasAddon()); } catch (_) {}
+        if (cached._rendererAddon !== webgl) return;
+        try { webgl.dispose(); } catch {}
+        cached._rendererAddon = null;
+        cached._rendererMode = null;
+        cached._gpuLoaded = false;
+        // Only recreate a surface for the visible terminal. Hidden xterms keep
+        // parsing into their buffers without holding compositor resources.
+        if (cached.container && cached.container.style.display !== 'none') {
+          _loadCanvasRenderer(cached);
+        }
       });
       cached.terminal.loadAddon(webgl);
+      cached._rendererAddon = webgl;
+      cached._rendererMode = 'webgl';
+      cached._gpuLoaded = true;
       return;
     } catch (_) { /* fall through to canvas */ }
   }
-  try { cached.terminal.loadAddon(new CanvasAddon()); } catch (_) {}
+  _loadCanvasRenderer(cached);
+}
+
+function unloadGpuRenderer(cached) {
+  if (!cached) return false;
+  const addon = cached._rendererAddon;
+  if (addon) {
+    try { addon.dispose(); } catch {}
+  }
+  const changed = !!addon || !!cached._gpuLoaded;
+  cached._rendererAddon = null;
+  cached._rendererMode = null;
+  cached._gpuLoaded = false;
+  return changed;
+}
+
+function suspendInactiveTerminalRenderers(activeId) {
+  for (const [sessionId, cached] of terminalCache) {
+    if (activeId && sessionId === activeId) continue;
+    if (cached && cached.container) cached.container.style.display = 'none';
+    unloadGpuRenderer(cached);
+  }
 }
 
 function disposeCachedTerminal(sessionId) {
@@ -654,6 +774,7 @@ function disposeCachedTerminal(sessionId) {
     clearTimeout(_cursorDebounce.get(sessionId));
     _cursorDebounce.delete(sessionId);
   }
+  unloadGpuRenderer(cached);
   try { cached.terminal.dispose(); } catch {}
   try { cached.container.remove(); } catch {}
   terminalCache.delete(sessionId);
@@ -716,11 +837,10 @@ function getOrCreateTerminal(sessionId) {
   // xterm fires onTitleChange for it. We capture that as the session title
   // unless the user already renamed in Hub (userRenamed wins). Only for Claude
   // kinds — PowerShell emits title sequences on every prompt, which we don't want.
-  // 2026-05-02 修复：DeepSeek 也跑在 Claude CLI 上、emit 同样的 OSC title
-  //   序列，但旧版本 isClaudeKind 只含 'claude'/'claude-resume' 把这两家排除 →
-  //   DS 子 session 永远叫 'Claude' 不能自动获标题。改用 isClaudeFamily helper。
+  // Migration-only DeepSeek sessions still run on Claude CLI. New DeepSeek
+  // sessions use Codex and are titled by Hub's transcript-based auto-title path.
   const session = sessions.get(sessionId);
-  const isClaudeKind = session && isClaudeFamily(session.kind);
+  const isClaudeKind = isClaudeRuntimeSession(session);
   if (isClaudeKind) {
     terminal.onTitleChange((newTitle) => {
       const s = sessions.get(sessionId);
@@ -737,7 +857,7 @@ function getOrCreateTerminal(sessionId) {
       //   isGenericAutoSessionTitle 检查失败、DeepSeek 中文结果被丢弃 → 用户全英文。
       //   解决：DeepSeek 启用时 OSC 仅记影子字段不动 s.title；让 DeepSeek 独占主标题。
       //   DeepSeek API 失败时 auto-title-manager 自己有 fallbackSessionTitleFromPrompt 兜底（中文）。
-      if (_deepseekAutoTitleEnabled) {
+      if (_deepseekAutoTitleEnabled && s.kind === 'deepseek') {
         s.claudeAutoTitle = clean;
         return;
       }
@@ -934,7 +1054,7 @@ function getOrCreateTerminal(sessionId) {
 }
 
 function showTerminal(sessionId, opts = { focus: true }) {
-  for (const [, c] of terminalCache) c.container.style.display = 'none';
+  suspendInactiveTerminalRenderers(sessionId);
 
   const session = sessions.get(sessionId);
   if (!session) return;
@@ -942,6 +1062,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const cached = getOrCreateTerminal(sessionId);
   const mountTarget = opts && opts.mountTarget ? opts.mountTarget : terminalPanelEl;
   const embedded = mountTarget !== terminalPanelEl;
+  if (!embedded) terminalPanelEl.classList.remove('home-active');
 
   // Preserve spec 1/2 elements that live inside #terminal-panel (view-toggle, msg-overlay)
   // before innerHTML clear obliterates them; re-attach after.
@@ -1035,9 +1156,7 @@ function showTerminal(sessionId, opts = { focus: true }) {
   const headerActions = document.createElement('div');
   headerActions.className = 'terminal-header-actions';
 
-  const canForkSession = session.kind === 'claude'
-    || session.kind === 'claude-resume'
-    || isCodexKind(session.kind);
+  const canForkSession = supportsForkSession(session);
   let forkBtn = null;
   if (canForkSession) {
     forkBtn = document.createElement('button');
@@ -1079,10 +1198,10 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (!cached.opened) {
     cached.terminal.open(cached.container);
     cached.opened = true;
-    loadGpuRenderer(cached);
     setupImageHover(cached.terminal, cached.container);
     void hydrateTerminalFromSnapshot(sessionId, cached);
   }
+  loadGpuRenderer(cached);
   setupCodexViewportScrollTracker(sessionId, cached);
 
   requestAnimationFrame(() => {
@@ -1198,8 +1317,7 @@ window.__chuxinSessionBridge = {
     if (!session) return { ok: false, error: 'session-missing' };
     activeMeetingId = null;
     activeSessionId = sessionId;
-    session.unreadCount = 0;
-    session.isWaiting = false;
+    clearSessionAttention(session, { clearUnread: true });
     ipcRenderer.send('focus-session', { sessionId });
     hostEl.classList.add('terminal-panel', 'cx-native-terminal-mounted');
     showTerminal(sessionId, { focus: false, forceScrollBottom: true, mountTarget: hostEl });
@@ -1253,6 +1371,17 @@ const {
   mountSessionTurnCard,
   isCardOverlayAtBottom: _isCardOverlayAtBottom,
 } = turnCardRenderer;
+const { createRecentTurnCopyController } = require('./recent-turn-copy.js');
+const recentTurnCopyController = createRecentTurnCopyController({
+  document,
+  window,
+  navigator,
+  storage: localStorage,
+  getActiveSessionId: () => activeSessionId,
+  getTurnById: (turnId) => window._sessionTurns && window._sessionTurns.get(turnId),
+  extractVisibleCardText,
+});
+recentTurnCopyController.init();
 function scheduleCodexHistoryRetry(sessionId, attempt = 0, opts = {}) {
   if (!sessionId || attempt >= 6) return;
   if (!window._codexHistoryRetryState) window._codexHistoryRetryState = new Map();
@@ -1877,11 +2006,13 @@ function markCodexCardWorking(sessionId, source = 'prompt') {
     clearTimeout(_codexSubmitPendingTimers.get(sessionId));
     _codexSubmitPendingTimers.delete(sessionId);
   }
+  if (source === 'floating_input') {
+    applyPromptSubmitted(session, { submittedAt: Date.now() });
+  } else {
+    clearSessionAttention(session);
+  }
   session.cardWorkingSince = Date.now();
   session.cardWorkingSource = source;
-  session.isWaiting = false;
-  session.waitingReason = null;
-  session.waitingText = null;
   session.status = 'running';
   session._agentWorking = 'card';
   session._runSource = 'semantic';
@@ -1898,7 +2029,7 @@ function markCodexCardWorking(sessionId, source = 'prompt') {
       latest._runSource = null;
       latest.status = 'idle';
       if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
-      renderSessionList();
+      scheduleSessionListRender();
     }, _CODEX_CARD_SUBMIT_PENDING_MS);
     _codexSubmitPendingTimers.set(sessionId, timer);
   }
@@ -1943,7 +2074,7 @@ function onKimiBackgroundWorkEvent(payload) {
     clearKimiBackgroundFinishTimer(hubSessionId);
     session._kimiBackgroundJobs.add(String(jobId));
     markCodexCardWorking(hubSessionId, 'kimi_background_agent');
-    renderSessionList();
+    scheduleSessionListRender();
     schedulePersist();
     return;
   }
@@ -1952,7 +2083,7 @@ function onKimiBackgroundWorkEvent(payload) {
   session._kimiBackgroundJobs.delete(String(jobId));
   if (hasKimiBackgroundWork(session)) {
     markCodexCardWorking(hubSessionId, 'kimi_background_agent');
-    renderSessionList();
+    scheduleSessionListRender();
     return;
   }
 
@@ -1968,7 +2099,7 @@ function onKimiBackgroundWorkEvent(payload) {
     clearCodexCardWorking(hubSessionId);
     if (latest.status === 'running') latest.status = 'idle';
     if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
-    renderSessionList();
+    scheduleSessionListRender();
     schedulePersist();
   }, _KIMI_BACKGROUND_FINISH_GRACE_MS);
   _kimiBackgroundFinishTimers.set(hubSessionId, timer);
@@ -1976,7 +2107,7 @@ function onKimiBackgroundWorkEvent(payload) {
 
 function hasSemanticCardWorking(session) {
   if (!session) return false;
-  if (!isTranscriptCliKind(session.kind) || session.isWaiting || !session.cardWorkingSince) return false;
+  if (!isTranscriptCliKind(session.kind) || sessionNeedsUserInput(session) || !session.cardWorkingSince) return false;
   const maxAge = session.cardWorkingSource === 'floating_input'
     ? _CODEX_CARD_SUBMIT_PENDING_MS
     : _CODEX_CARD_WORK_MAX_MS;
@@ -2075,6 +2206,7 @@ function applyViewMode(mode) {
   currentView = mode;
   const overlay = document.getElementById('msg-overlay');
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
+  recentTurnCopyController.setVisible(mode === 'card' && !!activeSessionId);
   document.querySelectorAll('.view-toggle-btn').forEach(b => {
     if (!b.dataset.view) return;
     b.classList.toggle('active', b.dataset.view === mode);
@@ -2328,7 +2460,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       }
     }
 
-    if (kind && isClaudeFamily(kind)) {
+    if (isClaudeRuntimeSession(session)) {
       ipcRenderer.send('terminal-input', { sessionId, data: BP_START + text + BP_END });
       // belt-and-suspenders（2026-05-11 用户反馈：BP+500ms+1×\r 仍偶发"消息进输入框但没提交"）：
       //   BP_END 后 Ink paste-detect 仍有 debounce 窗口，紧贴的 \r 被并入 paste 内容吞掉。
@@ -2471,7 +2603,7 @@ function sweepStaleRunning() {
       dirty = true;
     }
   }
-  if (dirty) renderSessionList();
+  if (dirty) scheduleSessionListRender();
 }
 setInterval(sweepStaleRunning, 60 * 1000);
 function updateRespondPill() {
@@ -2481,8 +2613,8 @@ function updateRespondPill() {
   for (const s of sessions.values()) {
     if (s.meetingId || s.id === activeSessionId || s.status === 'dormant'
         || s.hiddenFromSidebar || s.purpose === 'chuxin-research') continue;
-    if (s.isWaiting) items.push({ id: s.id, meeting: false, wait: true, t: s.lastMessageTime || 0 });
-    else if ((s.unreadCount || 0) > 0) items.push({ id: s.id, meeting: false, wait: false, t: s.lastMessageTime || 0 });
+    if (sessionNeedsUserInput(s)) items.push({ id: s.id, meeting: false, wait: true, t: s.lastMessageTime || 0 });
+    else if (sessionHasCompletedUnread(s)) items.push({ id: s.id, meeting: false, wait: false, t: s.lastMessageTime || 0 });
   }
   for (const m of Object.values(meetings || {})) {
     if (m.id === activeMeetingId || m.status === 'dormant') continue;
@@ -2492,8 +2624,14 @@ function updateRespondPill() {
   if (!items.length) { pill.style.display = 'none'; return; }
   const waitN = items.filter(i => i.wait).length;
   const unreadN = items.length - waitN;
-  let txt = `⏸ <b>${items.length}</b> 个会话等你响应`;
-  if (waitN && unreadN) txt += `（<span class="rp-unread">${unreadN} 未读</span>）`;
+  let txt = '';
+  if (waitN && unreadN) {
+    txt = `⏸ <b>${items.length}</b> 个待处理（${waitN} 等你输入 · <span class="rp-unread">${unreadN} 完成未读</span>）`;
+  } else if (waitN) {
+    txt = `⏸ <b>${waitN}</b> 个会话等你响应`;
+  } else {
+    txt = `✓ <b>${unreadN}</b> 个会话已完成未读`;
+  }
   txt += ' · 点击跳转 →';
   pill.innerHTML = txt;
   pill.style.display = 'flex';
@@ -2633,12 +2771,8 @@ async function selectSession(id, opts = {}) {
     || !!(session && isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));
   const shouldFocusTerminal = switching || currentView === 'pty';
   activeSessionId = id;
-  if (session) {
-    session.unreadCount = 0;
-    session.isWaiting = false;
-    session.waitingReason = null;
-    session.waitingText = null;
-  }
+  recentTurnCopyController.setVisible(currentView === 'card' && !!activeSessionId);
+  if (session) clearSessionAttention(session, { clearUnread: true });
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
   showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });
@@ -2732,6 +2866,9 @@ for (const link of document.querySelectorAll('.launcher-link')) {
 }
 
 // --- Meeting buttons ---
+if (btnHome) {
+  btnHome.addEventListener('click', () => escapeToHome());
+}
 if (btnGroupChat) {
   btnGroupChat.addEventListener('click', async () => {
     if (typeof window.openMeetingCreateModal === 'function') {
@@ -2895,7 +3032,10 @@ const terminalActivityMonitor = createTerminalActivityMonitor({
   sessions,
   terminalCache,
   getActiveSessionId: () => activeSessionId,
-  renderSessionList,
+  // PTY output can update preview/running/idle several times in one burst.
+  // Route those state changes through the same coalescer as semantic events so
+  // a classification change never rebuilds the sidebar for every chunk.
+  renderSessionList: scheduleSessionListRender,
   schedulePersist,
   updateStreamingIndicator: (sessionId) => {
     if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
@@ -2909,7 +3049,7 @@ const terminalActivityMonitor = createTerminalActivityMonitor({
   // cause at most the existing 2s burst pulse; real hook/card signals still
   // remain authoritative for the full turn.
   hasSemanticWorking: (s) => !!(s && (
-    (isClaudeFamily(s.kind) && s._agentWorking === 'hook' && s.status === 'running')
+    (isClaudeRuntimeSession(s) && s._agentWorking === 'hook' && s.status === 'running')
     || (isTranscriptCliKind(s.kind) && hasSemanticCardWorking(s))
   )),
 });
@@ -3170,6 +3310,30 @@ const accountUsageController = createAccountUsageController({
   escapeHtml,
 });
 const renderAccountUsage = accountUsageController.render;
+homeWorkbench = createHomeWorkbench({
+  document,
+  sessions,
+  getSessions: () => sessions,
+  getMeetings: () => meetings,
+  getResourceUsage: () => systemResourceUsage,
+  getHubConfig: () => hubProxyInfo,
+  getUsageSnapshot: () => accountUsageController.getSnapshot(),
+  getTerminalCacheSize: () => terminalCache.size,
+  selectSession: (sessionId, opts) => selectSession(sessionId, opts),
+  selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
+  escapeHtml,
+  onRefresh: async () => {
+    const results = await Promise.allSettled([
+      refreshSystemResourceUsage(),
+      refreshHubProxyInfo(),
+      accountUsageController.refreshUsageNow(),
+    ]);
+    if (results.every((result) => result.status === 'rejected')) {
+      throw new Error('全局状态刷新失败');
+    }
+  },
+});
+homeWorkbench.render();
 // 记忆系统面板：用量 ticker 的「记忆」按钮打开（按钮监听在面板内走文档级委托，
 // 因为 ticker 每次 render 都重建 innerHTML）。
 const memoryPanel = createMemoryPanel({
@@ -3229,6 +3393,7 @@ ipcRenderer.on('status-event', (_e, payload) => {
 
 ipcRenderer.on('agent-usage', (_e, totals) => {
   accountUsageController.recordAgentUsage(totals);
+  if (homeWorkbench) homeWorkbench.render();
 });
 
 // Compact "3m20s" / "1h5m" — used for api duration in the header metrics row.
@@ -3312,14 +3477,14 @@ window.addEventListener('workspace-archive-suggestion', (event) => {
 //   Immediately flag the session as running — faster & more precise than
 //   the 200-byte PTY heuristic.
 // - 'stop' (Stop): fires when the agent loop finishes. Triggers unread/time bump.
-ipcRenderer.on('hook-event', (_e, { event, sessionId, claudeSessionId, cwd, latestUserMessage }) => {
+ipcRenderer.on('hook-event', (_e, { event, eventAt, sessionId, claudeSessionId, cwd, latestUserMessage }) => {
   const s = sessions.get(sessionId);
   if (s) {
     // Persist CC session id + cwd the first time we learn them so resumes work.
     if (claudeSessionId && s.ccSessionId !== claudeSessionId) {
       s.ccSessionId = claudeSessionId;
       const collapsed = collapseDormantNativeDuplicates(sessions);
-      if (collapsed.length) renderSessionList();
+      if (collapsed.length) scheduleSessionListRender();
       schedulePersist();
     }
     // Only capture cwd ONCE (first hook). Updating on every hook lets a later
@@ -3344,13 +3509,13 @@ ipcRenderer.on('hook-event', (_e, { event, sessionId, claudeSessionId, cwd, late
         // stale timestamp. Keep text and time in lockstep — a preview change
         // IS a message event regardless of event type.
         s.lastMessageTime = Date.now();
-        renderSessionList();
+        scheduleSessionListRender();
         schedulePersist();
       }
     }
   }
   if (event === 'stop') {
-    onReplyCompleteFromHook(sessionId);
+    onReplyCompleteFromHook(sessionId, eventAt);
     // Flush any queued /rename now that Claude is idle. Small delay so the
     // prompt fully re-renders before we inject the command.
     const s = sessions.get(sessionId);
@@ -3365,20 +3530,19 @@ ipcRenderer.on('hook-event', (_e, { event, sessionId, claudeSessionId, cwd, late
     const cached = terminalCache.get(sessionId);
     if (cached && cached._minimap) cached._minimap.invalidate();
   }
-  else if (event === 'prompt') onPromptSubmittedFromHook(sessionId);
+  else if (event === 'prompt') onPromptSubmittedFromHook(sessionId, eventAt);
 });
 
-function onPromptSubmittedFromHook(sessionId) {
+function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  const transition = applyPromptSubmitted(session, { submittedAt });
+  if (!transition.applied) return;
   // 2026-07-20 道雪：hook prompt = claude 语义工作开始（与 stop hook 配对收尾）
   session._agentWorking = 'hook';
   session._runSource = 'semantic';
-  session._lastOutputTs = Date.now();
-  if (session.status !== 'running') {
-    session.status = 'running';
-    renderSessionList();
-  }
+  session._lastOutputTs = transition.at;
+  scheduleSessionListRender();
 }
 
 // v0.13 · P0 #1: 跟踪窗口最近一次获得 focus 的时间，用于 onReplyCompleteFromHook
@@ -3399,18 +3563,15 @@ function buildReplyReadyPreview(text, fallback = 'Codex 回复完成，等你继
   return raw.length > 120 ? raw.slice(0, 118) + '…' : raw;
 }
 
-function clearSessionWaitingState(sessionId) {
+function clearSessionWaitingState(sessionId, options = {}) {
   const session = sessions.get(sessionId);
-  if (!session || !session.isWaiting) return;
-  session.isWaiting = false;
-  session.waitingReason = null;
-  session.waitingText = null;
-  renderSessionList();
+  if (!session || !clearSessionAttention(session, options)) return;
+  scheduleSessionListRender();
   schedulePersist();
 }
 
 function onReplyCompleteFromTranscriptEvent(payload) {
-  const { hubSessionId, text, completedAt, meetingId, kind } = payload || {};
+  const { hubSessionId, text, completedAt, meetingId, kind, turnId } = payload || {};
   if (!hubSessionId) return;
   if (!isTranscriptCliKind(kind)) return;
 
@@ -3422,65 +3583,57 @@ function onReplyCompleteFromTranscriptEvent(payload) {
     clearKimiBackgroundFinishTimer(hubSessionId);
   }
 
+  const preview = buildReplyReadyPreview(text);
+  const sig = `${turnId || ''}:${completedAt || ''}:${preview}`;
+  if (session._lastTranscriptReadySig === sig) return;
+  const isActive = hubSessionId === activeSessionId;
+  const focusOk = document.hasFocus() || (Date.now() - _lastWindowFocusAt < 500);
+  const seenByUser = isActive && focusOk;
+  const transition = applyReplyCompleted(session, {
+    completedAt,
+    turnId,
+    text: preview,
+    seenByUser: !!meetingId || backgroundActive || seenByUser,
+    incrementUnread: !meetingId && !backgroundActive,
+    keepRunning: backgroundActive,
+  });
+  if (!transition.applied) return;
+  session._lastTranscriptReadySig = sig;
+  session.lastMessageTime = transition.at;
+
   // 与 onPromptSubmittedFromTranscriptEvent 的开工标记配对：群聊成员干完活要收尾，
-  // 否则状态灯会一直卡在运行中，只能等 45 分钟的 maxAge 兜底。
-  // 未读 / 通知 /「等你响应」仍由群聊自己的流水线负责，这里不碰。
+  // 否则状态灯会一直卡在运行中，只能等 45 分钟的 maxAge 兜底。群聊的未读仍由
+  // meeting-room 管理；这里只用同一有序 reducer 防旧 completion 覆盖新 prompt。
   if (meetingId) {
-    if (backgroundActive) {
-      markCodexCardWorking(hubSessionId, 'kimi_background_agent');
-    } else {
-      clearCodexCardWorking(hubSessionId);
-      if (session.status === 'running') session.status = 'idle';
-    }
+    if (backgroundActive) markCodexCardWorking(hubSessionId, 'kimi_background_agent');
+    else clearCodexCardWorking(hubSessionId);
     if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
-    renderSessionList();
+    scheduleSessionListRender();
     return;
   }
 
-  const preview = buildReplyReadyPreview(text);
-  const sig = `${completedAt || ''}:${preview}`;
-  if (session._lastTranscriptReadySig === sig) return;
-  session._lastTranscriptReadySig = sig;
-
-  const wasWaiting = !!session.isWaiting;
   if (!backgroundActive) clearCodexCardWorking(hubSessionId);
   session.lastOutputPreview = preview;
   if (backgroundActive) {
     session.status = 'running';
-    session.isWaiting = false;
-    session.waitingReason = null;
-    session.waitingText = null;
     markCodexCardWorking(hubSessionId, 'kimi_background_agent');
-  } else {
-    // Keep these explicit assignments as the stable waiting-badge contract for
-    // Codex and ordinary Kimi completions.
-    session.status = 'idle';
-    session.isWaiting = true;
-    session.waitingReason = 'reply-ready';
-    session.waitingText = preview;
   }
-  session.lastMessageTime = completedAt || Date.now();
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
-
-  const isActive = hubSessionId === activeSessionId;
-  const focusOk = document.hasFocus() || (Date.now() - _lastWindowFocusAt < 500);
-  const seenByUser = isActive && focusOk;
-  if (!seenByUser) {
-    session.unreadCount = (session.unreadCount || 0) + 1;
-  }
-  if (!isActive || !wasWaiting) maybeNotify(session);
-  renderSessionList();
+  scheduleSessionListRender();
   schedulePersist();
 }
 
 function onPromptSubmittedFromTranscriptEvent(payload) {
-  const { hubSessionId, text, submittedAt, meetingId, kind } = payload || {};
+  const { hubSessionId, text, submittedAt, meetingId, kind, turnId } = payload || {};
   if (!hubSessionId) return;
   if (!isTranscriptCliKind(kind)) return;
 
   const session = sessions.get(hubSessionId);
   if (!session) return;
   if (session.status === 'dormant') return;
+
+  const transition = applyPromptSubmitted(session, { submittedAt, turnId });
+  if (!transition.applied) return;
 
   // 2026-07-28 用户反馈：群聊里直接点进 Codex 的 CLI 布置任务，Codex 明明在跑，
   //   状态灯却一直是绿色（就绪），群聊也进不了侧栏的"运行中"分区。
@@ -3491,12 +3644,12 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
   // 卡片/预览/未读仍然归 meeting-room.js 那条流水线管，这里只认领"会话自身在不在干活"。
   if (meetingId) {
     markCodexCardWorking(hubSessionId, 'rollout_user_message');
-    renderSessionList();
+    scheduleSessionListRender();
     return;
   }
 
   const preview = buildPreviewFromUserMessage(text);
-  const sig = `${submittedAt || ''}:${preview}`;
+  const sig = `${turnId || ''}:${submittedAt || ''}:${preview}`;
   if (preview && session._lastTranscriptPromptSig === sig) return;
   session._lastTranscriptPromptSig = sig;
 
@@ -3505,9 +3658,9 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
     session._previewFromTranscript = true;
   }
   markCodexCardWorking(hubSessionId, 'rollout_user_message');
-  session.lastMessageTime = submittedAt || Date.now();
+  session.lastMessageTime = transition.at;
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
-  renderSessionList();
+  scheduleSessionListRender();
   schedulePersist();
 }
 
@@ -3545,7 +3698,7 @@ function renderHookStatus() {
   }
 }
 
-function onReplyCompleteFromHook(sessionId) {
+function onReplyCompleteFromHook(sessionId, completedAt = Date.now()) {
   const session = sessions.get(sessionId);
   if (!session) return;
   if (session.status === 'dormant') return;
@@ -3554,13 +3707,6 @@ function onReplyCompleteFromHook(sessionId) {
   // 抖动场景下偶尔会发两次 Stop，无去重导致 unread 计数加倍。
   const now = Date.now();
   if (session._lastStopHookTs && now - session._lastStopHookTs < 500) return;
-  session._lastStopHookTs = now;
-
-  // 2026-07-20 道雪：stop hook = claude 语义工作结束，与 prompt hook 配对。
-  //   此前 idle-down 只靠 2s 静默计时器，语义化后必须在这里显式收尾。
-  session._agentWorking = null;
-  session._runSource = null;
-  if (session.status === 'running') session.status = 'idle';
 
   // Fallback preview from xterm buffer — only matters when hook didn't supply
   // a transcript-sourced preview (very rare). Primary preview is written by
@@ -3568,12 +3714,7 @@ function onReplyCompleteFromHook(sessionId) {
   readTerminalPreview(sessionId);
 
   // "Claude is waiting for your input" — classify the tail of the AI's output.
-  const wasWaiting = !!session.isWaiting;
   const w = isWaitingForUser(extractTailLines(sessionId, 40));
-  session.isWaiting = w.waiting;
-  session.waitingReason = w.waiting ? w.reason : null;
-  session.waitingText = w.waiting ? String(w.text || '').slice(0, 200) : null;
-  const newlyWaiting = w.waiting && !wasWaiting;
 
   // Stop hook IS the "AI finished replying" signal — fires once per Q&A turn.
   // Bump unread when the user hasn't actually seen the message: either this
@@ -3581,34 +3722,31 @@ function onReplyCompleteFromHook(sessionId) {
   // tabbed away). The old check `sessionId !== activeSessionId` alone missed
   // the "focus lost, active-session reply lands, user returns with no badge"
   // case — matches the intermittent "有时候不提示" report.
-  session.lastMessageTime = Date.now();
   const isActive = sessionId === activeSessionId;
   // v0.13 · P0 #1: alt-tab 切回 Hub 的 0~500ms 窗口里 hasFocus() 仍是 false，
   // 但用户明明已经在看 → 不应弹红点。用 _lastWindowFocusAt 时间戳补缓冲。
   const focusOk = document.hasFocus() || (Date.now() - _lastWindowFocusAt < 500);
   const seenByUser = isActive && focusOk;
-  if (!seenByUser) {
-    session.unreadCount = (session.unreadCount || 0) + 1;
-  }
-  // maybeNotify has its own focus guard (it returns early when focused) so
-  // calling it unconditionally is safe — it handles system-notification policy.
-  if (!isActive || newlyWaiting) maybeNotify(session);
-  renderSessionList();
-  schedulePersist();
-}
+  const preview = buildReplyReadyPreview(
+    w.text || session.lastOutputPreview,
+    'Claude 回复完成，等你继续',
+  );
+  const transition = applyReplyCompleted(session, {
+    completedAt,
+    text: preview,
+    seenByUser,
+    needsUserInput: !!w.waiting,
+    reason: w.reason,
+  });
+  if (!transition.applied) return;
+  session._lastStopHookTs = now;
 
-// --- System notification (fire when window is in background) ---
-async function maybeNotify(session) {
-  try {
-    if (!session || session.status === 'dormant') return;
-    const focused = await ipcRenderer.invoke('is-window-focused');
-    if (focused) return;
-    const isW = !!session.isWaiting;
-    ipcRenderer.send('show-notification', {
-      title: session.title + (isW ? ' — 等你回复' : ' — reply ready'),
-      body: (isW && session.waitingText) ? session.waitingText : (session.lastOutputPreview || ''),
-    });
-  } catch {}
+  // 2026-07-20 道雪：stop hook = claude 语义工作结束，与 prompt hook 配对。
+  session._agentWorking = null;
+  session._runSource = null;
+  session.lastMessageTime = transition.at;
+  scheduleSessionListRender();
+  schedulePersist();
 }
 
 // --- Keyboard shortcuts ---
@@ -3643,8 +3781,9 @@ const sessionContextMenu = createSessionContextMenuController({
   setActiveMeetingId: (value) => { activeMeetingId = value; },
   closeMeetingPanel: () => { if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel(); },
   emptyStateEl,
-  renderSessionList,
+  renderSessionList: scheduleSessionListRender,
   schedulePersist,
+  wakeDormantSession: (sessionId) => resumeDormantSession(sessionId, { forceScrollBottom: true }),
 });
 sessionContextMenu.init();
 const openContextMenu = sessionContextMenu.open;
@@ -3722,9 +3861,12 @@ const shellController = createShellController({
   preserveAndClearTerminalPanel,
   applyViewMode,
   renderSessionList,
+  suspendTerminalRenderer: (cached) => unloadGpuRenderer(cached),
 });
 function escapeToHome() {
+  if (window.__chuxinHide) window.__chuxinHide();
   shellController.escapeToHome();
+  if (homeWorkbench) homeWorkbench.render({ force: true });
 }
 // 2026-05-16 道雪：外部 HTTP 救援入口 — main.js POST /api/escape-home 通过这个 IPC 触发
 // （右下角可见的 🏠 按钮已于 2026-06-28 移除，仅保留此救援后门 + Ctrl+Alt+Home 快捷键）
@@ -3740,6 +3882,17 @@ const configModal = createConfigModalController({
 });
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
+
+const { createCompletionNotificationToggle } = require('./completion-notification-toggle.js');
+const completionNotificationToggle = createCompletionNotificationToggle({
+  document,
+  ipcRenderer,
+  openNotificationSettings: configModal.openNotificationSetup,
+});
+completionNotificationToggle.init();
+ipcRenderer.on('completion-notification-config-changed', () => {
+  void refreshHubProxyInfo();
+});
 
 const themeController = createThemeController({
   document,
@@ -3814,7 +3967,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   }
   // 原生投研 PTY 由初心投研面板内嵌挂载；不抢占主终端，也不进入左栏。
   if (session.purpose === 'chuxin-research') {
-    renderSessionList();
+    scheduleSessionListRender();
     window.dispatchEvent(new CustomEvent('chuxin-session-created', { detail: session }));
     return;
   }
@@ -3822,13 +3975,13 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // session metadata here; an xterm is created and hydrated on explicit shell
   // selection, otherwise dozens of invisible 10k-line buffers accumulate.
   if (session.meetingId) {
-    renderSessionList();
+    scheduleSessionListRender();
     return;
   }
   // 普通会话的唤醒流程会直接把终端展示给用户，此刻才算真正“已读”。群聊成员
   // 的后台/工作流唤醒会在上面的 meeting 分支返回，因此仍保留休眠前的未读标记。
   const activatedSession = sessions.get(session.id);
-  if (activatedSession) activatedSession.unreadCount = 0;
+  if (activatedSession) clearSessionAttention(activatedSession, { clearUnread: true });
   await savePreviewState();
   clearPreviewUI();
   activeSessionId = session.id;
@@ -3865,13 +4018,13 @@ ipcRenderer.on('session-meta-updated', (_e, ev) => {
   if (ev.kimiSessionDir) s.kimiSessionDir = ev.kimiSessionDir;
   // 归档会搬运整个 workspace：dormant 条目的 cwd 也要跟着走，否则唤醒时指向已不存在的目录。
   if (ev.cwd) s.cwd = ev.cwd;
-  const collapsed = (ev.ccSessionId || ev.codexSid || ev.kimiSid)
+  const collapsed = (ev.ccSessionId || ev.codexSid || ev.geminiChatId || ev.kimiSid)
     ? collapseDormantNativeDuplicates(sessions)
     : [];
   if (ev.ccSessionId || ev.transcriptPath || ev.codexSid || ev.codexSessionsRoot || ev.codexAllowMtimeFallback || ev.geminiChatId || ev.geminiProjectHash || ev.geminiProjectRoot || ev.kimiSid || ev.kimiSessionDir || ev.cwd) {
     schedulePersist();
   }
-  if (collapsed.length) renderSessionList();
+  if (collapsed.length) scheduleSessionListRender();
   if (ev.hubSessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
     loadSessionHistoryToOverlay(ev.hubSessionId).catch(err => {
       console.warn('[session-meta-updated] card reload failed:', err);
@@ -3924,7 +4077,6 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
     status: 'dormant',
     pinned,
     unreadCount,
-    isWaiting: false,
     _agentWorking: false,
     gcWorking: false,
   });
@@ -3932,9 +4084,11 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
   disposeCachedTerminal(sessionId);
   if (activeSessionId === sessionId) {
     activeSessionId = null;
+    recentTurnCopyController.setVisible(false);
     preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
     emptyStateEl.style.display = '';
+    terminalPanelEl.classList.add('home-active');
   }
   renderSessionList();
   schedulePersist();
@@ -3983,9 +4137,11 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   disposeCachedTerminal(sessionId);
   if (activeSessionId === sessionId) {
     activeSessionId = null;
+    recentTurnCopyController.setVisible(false);
     preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
     emptyStateEl.style.display = '';
+    terminalPanelEl.classList.add('home-active');
   }
   renderSessionList();
   if (wasChuxinResearch) {
@@ -3998,7 +4154,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   const local = sessions.get(session.id);
   if (local.purpose === 'chuxin-research' || session.purpose === 'chuxin-research') {
     Object.assign(local, session);
-    renderSessionList();
+    scheduleSessionListRender();
     window.dispatchEvent(new CustomEvent('chuxin-session-updated', { detail: local }));
     return;
   }
@@ -4011,6 +4167,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.mcpProfile) local.mcpProfile = session.mcpProfile;
   if (session.kimiSid) local.kimiSid = session.kimiSid;
   if (session.kimiSessionDir) local.kimiSessionDir = session.kimiSessionDir;
+  if (session.effort) local.effort = session.effort;
   if (session.userRenamed) local.userRenamed = true;
   if (session.autoTitleGenerated) local.autoTitleGenerated = true;
   if (session.branchSourceSessionId !== undefined) local.branchSourceSessionId = session.branchSourceSessionId;
@@ -4022,13 +4179,13 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (typeof session.contextUsed === 'number') local.contextUsed = session.contextUsed;
   if (typeof session.contextMax === 'number') local.contextMax = session.contextMax;
   if (session.id === activeSessionId) updateActiveMetricsRow();
-  renderSessionList();
+  scheduleSessionListRender();
 });
 
 // --- Session persistence (dormant restore) ---
-// Only Claude sessions persist across app restarts. PowerShell sessions are
-// ephemeral by nature. Dormant sessions are rendered with status='dormant'
-// and no PTY; clicking them spawns `claude --resume <ccSessionId>`.
+// Provider-native AI sessions persist across app restarts; PowerShell remains
+// ephemeral. Dormant cards have no PTY and wake through the shared exact-resume
+// contract (`ccSessionId`, `codexSid`, `geminiChatId` or `kimiSid`).
 let persistDebounceTimer = null;
 function schedulePersist() {
   if (persistDebounceTimer) clearTimeout(persistDebounceTimer);
@@ -4052,9 +4209,16 @@ function schedulePersist() {
         lastMessageTime: s.lastMessageTime || Date.now(),
         lastOutputPreview: s.lastOutputPreview || '',
         unreadCount: s.unreadCount || 0,
+        attentionState: s.attentionState || null,
+        needsUserInput: !!s.needsUserInput,
+        replyReady: !!s.replyReady,
+        waitingReason: s.waitingReason || null,
+        waitingText: s.waitingText || null,
+        replyReadyText: s.replyReadyText || null,
         suspendedAt: s.suspendedAt || null,
         suspendReason: s.suspendReason || null,
         currentModel: s.currentModel || null,
+        effort: s.effort || null,
         contextPct: typeof s.contextPct === 'number' ? s.contextPct : null,
         contextUsed: typeof s.contextUsed === 'number' ? s.contextUsed : null,
         contextMax: typeof s.contextMax === 'number' ? s.contextMax : null,
@@ -4119,37 +4283,10 @@ async function resumeDormantSession(hubId, opts = {}) {
   // Keep title / pinned / preview so UI stays stable through the resume.
   let resumed;
   try {
-    resumed = await ipcRenderer.invoke('resume-session', {
-      hubId,
-      kind: dormant.kind,
-      title: dormant.title,
-      cwd: dormant.cwd,
-      cwdFellBackFrom: dormant.cwdFellBackFrom || null,
-      ccSessionId: dormant.ccSessionId,
-      transcriptPath: dormant.transcriptPath,
-      meetingId: dormant.meetingId || null,
-      lastMessageTime: dormant.lastMessageTime,
-      lastOutputPreview: dormant.lastOutputPreview,
-      // 把原 session 的 model 透传给 main.js → session-manager createSession 的 opts.model，
-      // 避免 spawn `claude --resume` 时回退到默认 opus，丢失原 session 实际使用的 model。
-      model: (dormant.currentModel && dormant.currentModel.id) || null,
-      // T10: pass resume-meta so main.js Codex/Gemini precise resume works
-      codexSid: dormant.codexSid || null,
-      codexSessionsRoot: dormant.codexSessionsRoot || null,
-      codexAllowMtimeFallback: !!dormant.codexAllowMtimeFallback,
-      codexProfile: dormant.codexProfile || null,
-      mcpProfile: dormant.mcpProfile || null,
-      geminiChatId: dormant.geminiChatId || null,
-      geminiProjectHash: dormant.geminiProjectHash || null,
-      geminiProjectRoot: dormant.geminiProjectRoot || null,
-      kimiSid: dormant.kimiSid || null,
-      kimiSessionDir: dormant.kimiSessionDir || null,
-      userRenamed: !!dormant.userRenamed,
-      autoTitleGenerated: !dormant.branchAutoTitlePending
-        && (!!dormant.autoTitleGenerated || isStableSessionTitle(dormant.title, dormant.kind)),
-      branchSourceSessionId: dormant.branchSourceSessionId || null,
-      branchAutoTitlePending: !!dormant.branchAutoTitlePending,
-    });
+    // Dormant wake, workspace archive and right-click Restart share one exact
+    // provider-native metadata contract.  This prevents Codex-only fields such
+    // as profile / MCP policy / rollout root from disappearing on one path.
+    resumed = await ipcRenderer.invoke('resume-session', buildSessionResumeMeta(dormant));
   } catch (error) {
     _pendingDormantResumes.delete(hubId);
     throw error;
@@ -4233,11 +4370,13 @@ window.resumeDormantSession = resumeDormantSession;
         cwd: meta.cwd || null,
         cwdFellBackFrom: meta.cwdFellBackFrom || null,
         memoryLinkWarning: meta.memoryLinkWarning || null,
+        workspaceLabel: meta.workspaceLabel || null,
         pinned: !!meta.pinned,
         ccSessionId: meta.ccSessionId || null,
         transcriptPath: meta.transcriptPath || null,
         meetingId: meta.meetingId || null,
         currentModel: resolvedModel,
+        effort: meta.effort || null,
         contextPct: typeof meta.contextPct === 'number' ? meta.contextPct : null,
         contextUsed: typeof meta.contextUsed === 'number' ? meta.contextUsed : null,
         contextMax: typeof meta.contextMax === 'number' ? meta.contextMax : null,
@@ -4308,6 +4447,7 @@ window.resumeDormantSession = resumeDormantSession;
 
   ipcRenderer.invoke('get-usage-cache').then((cached) => {
     accountUsageController.applyUsageCache(cached);
+    if (homeWorkbench) homeWorkbench.render();
     traceRendererStartup('usage cache loaded');
   }).catch(() => { renderAccountUsage(); });
   applyViewMode('pty');
@@ -4441,6 +4581,7 @@ ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
     activeMeetingId = null;
     if (typeof MeetingRoom !== 'undefined') MeetingRoom.closeMeetingPanel();
     if (emptyStateEl) emptyStateEl.style.display = '';
+    if (terminalPanelEl) terminalPanelEl.classList.add('home-active');
   }
   renderSessionList();
 });
@@ -4457,12 +4598,32 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
       max: null,
       policy: TERMINAL_CACHE_POLICY,
       opened: [...terminalCache.values()].filter(item => item.opened).length,
+      rendererSurfaces: [...terminalCache.values()].filter(item => !!item._rendererAddon).length,
+      rendererModes: [...terminalCache.values()].reduce((acc, item) => {
+        const mode = item._rendererMode || 'suspended';
+        acc[mode] = (acc[mode] || 0) + 1;
+        return acc;
+      }, {}),
     }),
     // Snapshot recovery still needs direct coverage even though production no
     // longer evicts live sessions by count. This hook exists only in isolated
     // CLAUDE_HUB_E2E renderers and cannot affect the production Hub.
     disposeTerminal: (sessionId) => disposeCachedTerminal(sessionId),
+    terminalBufferText: (sessionId, maxLines = 120) => {
+      const cached = terminalCache.get(sessionId);
+      if (!cached || !cached.terminal || !cached.terminal.buffer) return '';
+      const buffer = cached.terminal.buffer.active;
+      const end = Math.min(buffer.length, buffer.baseY + buffer.cursorY + 1);
+      const start = Math.max(0, end - Math.max(1, Number(maxLines) || 120));
+      const lines = [];
+      for (let index = start; index < end; index += 1) {
+        const line = buffer.getLine(index);
+        if (line) lines.push(line.translateToString(true));
+      }
+      return lines.join('\n');
+    },
     sidebarRenderCoalescerStats: () => sidebarRenderCoalescer.stats(),
+    sidebarRenderStats: () => sessionListRenderer.getRenderStats(),
     // 侧栏时间分组 E2E：注入指定 lastMessageTime 的测试会话并重渲，读分组 DOM。
     addFakeSession: (s) => {
       const id = s && s.id; if (!id) return;

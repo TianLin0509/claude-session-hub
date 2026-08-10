@@ -108,7 +108,7 @@ function sectionOf(html, needle) {
   const lines = html.split('\n');
   let current = null;
   for (const line of lines) {
-    const m = line.match(/<span>(⚠ 等你响应|运行中|最近)<\/span>/);
+    const m = line.match(/<span>(⚠ 等你响应|运行中|✓ 已完成未读|最近)<\/span>/);
     if (m) { current = m[1]; continue; }
     if (line.includes(needle)) return current;
   }
@@ -245,8 +245,8 @@ test('收工事件配对收尾，群聊成员不会一直卡在运行中', () =>
   const body = bodyOf('onReplyCompleteFromTranscriptEvent');
   assert.ok(/if \(meetingId\) \{[\s\S]{0,260}clearCodexCardWorking\(/.test(body),
     '群聊分支必须清掉 cardWorking');
-  assert.ok(/if \(meetingId\) \{[\s\S]{0,260}status = 'idle'/.test(body),
-    '必须把 status 收回 idle，否则只能等 45 分钟 maxAge 兜底');
+  assert.ok(/applyReplyCompleted\(session,[\s\S]{0,360}keepRunning: backgroundActive/.test(body),
+    '必须通过有序 reducer 把 status 收回 idle，且后台 Agent 活跃时保持 running');
 });
 
 test('群聊自己的卡片/未读流水线仍然不被这两个处理器接管', () => {

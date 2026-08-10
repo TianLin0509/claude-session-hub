@@ -41,6 +41,118 @@
   color: white;
 }
 
+/* 微信完成通知总开关：紧邻卡片/PTY 左侧，用户显式决定是否推送。 */
+.completion-notification-toggle {
+  position: absolute;
+  top: 8px;
+  right: 312px;
+  z-index: 100;
+  min-height: 25px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease, opacity 140ms ease;
+}
+.completion-notification-toggle svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.completion-notification-toggle:hover {
+  color: var(--text-primary);
+  border-color: rgba(139, 148, 158, .58);
+}
+.completion-notification-toggle.enabled {
+  color: #71dc8b;
+  border-color: rgba(63, 185, 80, .5);
+  background: rgba(35, 134, 54, .16);
+}
+.completion-notification-toggle.enabled .notification-off-slash { display: none; }
+.completion-notification-toggle.unconfigured {
+  color: #e8b95f;
+  border-color: rgba(210, 153, 34, .42);
+  background: rgba(210, 153, 34, .10);
+}
+.completion-notification-toggle.busy {
+  opacity: .58;
+  cursor: wait;
+}
+.completion-notification-toggle:focus-visible {
+  outline: 2px solid rgba(88, 166, 255, .7);
+  outline-offset: 2px;
+}
+
+/* 卡片视图：按完整问答轮次复制纯文本，放在通知开关左侧。 */
+.recent-turn-copy {
+  position: absolute;
+  top: 8px;
+  right: 414px;
+  z-index: 100;
+  min-height: 25px;
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+}
+.recent-turn-copy[hidden] { display: none !important; }
+.recent-turn-copy-label {
+  display: inline-flex;
+  align-items: center;
+  padding-left: 8px;
+}
+.recent-turn-copy select,
+.recent-turn-copy button {
+  min-height: 23px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.recent-turn-copy select {
+  padding: 0 3px;
+  cursor: pointer;
+  outline: none;
+}
+.recent-turn-copy select option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+.recent-turn-copy button {
+  padding: 0 8px;
+  border-left: 1px solid var(--border);
+  cursor: pointer;
+  font-weight: 600;
+}
+.recent-turn-copy button:hover,
+.recent-turn-copy select:hover { color: var(--text-primary); }
+.recent-turn-copy button.copied { color: #71dc8b; background: rgba(35, 134, 54, .14); }
+.recent-turn-copy button.copy-empty { color: #e8b95f; }
+.recent-turn-copy button.copy-error { color: #ff7b72; }
+.recent-turn-copy select:focus-visible,
+.recent-turn-copy button:focus-visible {
+  outline: 2px solid rgba(88, 166, 255, .7);
+  outline-offset: -2px;
+}
+
 /* AI logo 通用样式（Toolbar dropdown 用） */
 .ai-logo {
   display: inline-block;

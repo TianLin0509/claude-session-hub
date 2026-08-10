@@ -37,7 +37,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     },
     deepseek: {
       title: 'DeepSeek 设置',
-      hint: 'DeepSeek 当前通过 API 接入，新建 DeepSeek 会话生效。',
+      hint: 'DeepSeek V4 Flash 通过 Responses API 接入 Codex CLI，新建会话生效。',
       status: 'API',
       statusClass: 'api',
     },
@@ -73,6 +73,85 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
 
   function previewCardDisplay() {
     return setCardDisplayForm(readCardDisplayForm());
+  }
+
+  function readNotificationForm() {
+    return {
+      notificationEnabled: !!configEl('cfg-notification-enabled')?.checked,
+      notificationIncludePreview: !!configEl('cfg-notification-include-preview')?.checked,
+      notificationNotifyGroupChats: configEl('cfg-notification-group-chats')
+        ? !!configEl('cfg-notification-group-chats').checked
+        : true,
+      serverchanSendKey: configEl('cfg-serverchan-sendkey')?.value.trim() || '',
+    };
+  }
+
+  function setNotificationForm(config = {}) {
+    if (configEl('cfg-notification-enabled')) {
+      configEl('cfg-notification-enabled').checked = !!config.notificationEnabled;
+    }
+    if (configEl('cfg-notification-include-preview')) {
+      configEl('cfg-notification-include-preview').checked = !!config.notificationIncludePreview;
+    }
+    if (configEl('cfg-notification-group-chats')) {
+      configEl('cfg-notification-group-chats').checked = config.notificationNotifyGroupChats !== false;
+    }
+    if (configEl('cfg-serverchan-sendkey')) {
+      configEl('cfg-serverchan-sendkey').value = config.serverchanSendKey || '';
+    }
+    return readNotificationForm();
+  }
+
+  function setNotificationTestStatus(message, state = '') {
+    const status = configEl('config-notification-status');
+    if (!status) return;
+    status.textContent = message || '';
+    status.className = `config-notification-status${state ? ` ${state}` : ''}`;
+  }
+
+  function notificationErrorMessage(result) {
+    const errorCode = result && result.errorCode;
+    if (errorCode === 'invalid_sendkey' || result?.status === 'configuration_missing') {
+      return '请先粘贴有效的 Server酱 SendKey。';
+    }
+    if (errorCode === 'provider_rejected') return 'Server酱拒绝了请求，请检查 SendKey 或账号推送额度。';
+    if (errorCode === 'timeout') return '连接 Server酱超时，请检查网络后重试。';
+    if (errorCode === 'network_error') return '无法连接 Server酱，请检查网络或防火墙。';
+    if (errorCode === 'http_error') {
+      return `Server酱接口返回 HTTP ${result.statusCode || '错误'}，请稍后重试。`;
+    }
+    return '测试发送失败，请检查 SendKey 与网络后重试。';
+  }
+
+  async function testCompletionNotification() {
+    const button = configEl('config-notification-test');
+    const sendKey = configEl('cfg-serverchan-sendkey')?.value.trim() || '';
+    if (!sendKey) {
+      setNotificationTestStatus('请先粘贴 Server酱 SendKey。', 'error');
+      return { ok: false, status: 'configuration_missing' };
+    }
+    if (button) {
+      button.disabled = true;
+      button.textContent = '发送中…';
+    }
+    setNotificationTestStatus('正在通过 Server酱发送测试通知…', 'working');
+    try {
+      const result = await ipcRenderer.invoke('test-completion-notification', { sendKey });
+      if (result && result.ok) {
+        setNotificationTestStatus('测试通知已由 Server酱接收，请查看微信。', 'success');
+      } else {
+        setNotificationTestStatus(notificationErrorMessage(result), 'error');
+      }
+      return result;
+    } catch {
+      setNotificationTestStatus('测试发送失败，主进程通知服务暂不可用。', 'error');
+      return { ok: false, status: 'failed' };
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = '发送测试';
+      }
+    }
   }
   
   function normalizeCodexProfilesForUi(profiles) {
@@ -202,7 +281,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     );
   
     const deepseekSummary = configEl('cfg-summary-deepseek');
-    if (deepseekSummary) deepseekSummary.textContent = deepseekKey ? 'API · deepseek-v4-pro[1m]' : 'API · 未配置 Key';
+    if (deepseekSummary) deepseekSummary.textContent = deepseekKey ? 'Codex API · deepseek-v4-flash' : 'Codex API · 未配置 Key';
     setConfigStatus(configEl('cfg-status-deepseek'), deepseekKey ? 'API' : '缺 Key', deepseekKey ? 'api' : 'missing');
 
     const claudeSummary = configEl('cfg-summary-claude');
@@ -259,7 +338,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     updateConfigSummaries();
   }
   
-  async function openConfigModal() {
+  async function openConfigModal(options = {}) {
     let modal = document.getElementById('config-modal');
     if (!modal && document.readyState === 'loading') {
       await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
@@ -284,6 +363,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
       document.getElementById('cfg-codex-url').value = cfg.codexApiBaseUrl || '';
       document.getElementById('cfg-codex-model').value = cfg.codexApiModel || '';
       savedCardDisplay = setCardDisplayForm(cfg);
+      setNotificationForm(cfg);
       updateClaudeBackendControls();
       updateConfigSummaries();
     } catch {
@@ -291,6 +371,18 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     }
     showConfigMainView();
     modal.classList.remove('hidden');
+    if (options && options.notificationSetup === true) {
+      setNotificationTestStatus('先填写 SendKey 并发送测试；确认微信收到后再开启通知。', 'working');
+      const card = configEl('config-notification-card');
+      try { card?.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch {}
+      setTimeout(() => {
+        try { configEl('cfg-serverchan-sendkey')?.focus(); } catch {}
+      }, 0);
+    }
+  }
+
+  function openNotificationSetup() {
+    return openConfigModal({ notificationSetup: true });
   }
   
   function closeConfigModal() {
@@ -299,6 +391,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     if (modal) modal.classList.add('hidden');
     const msg = document.getElementById('config-save-msg');
     if (msg) { msg.style.display = 'none'; msg.textContent = ''; }
+    setNotificationTestStatus('');
   }
   
   // 配置面板事件（DOM ready 后绑定）
@@ -325,6 +418,8 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     const cardFamily = configEl('cfg-card-font-family');
     if (cardSize) cardSize.addEventListener('input', previewCardDisplay);
     if (cardFamily) cardFamily.addEventListener('change', previewCardDisplay);
+    const notificationTest = configEl('config-notification-test');
+    if (notificationTest) notificationTest.addEventListener('click', testCompletionNotification);
     modal.addEventListener('click', (e) => { if (e.target === modal) closeConfigModal(); });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !modal.classList.contains('hidden')) {
@@ -348,9 +443,16 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
         codexApiBaseUrl: document.getElementById('cfg-codex-url').value.trim() || undefined,
         codexApiModel: document.getElementById('cfg-codex-model').value.trim() || undefined,
         ...readCardDisplayForm(),
+        ...readNotificationForm(),
       };
       if (newConfig.claudeBackend === 'api' && (!newConfig.claudeApiKey || !newConfig.claudeApiBaseUrl || !newConfig.claudeApiModel)) {
         msg.textContent = '请先完整填写同事中转的 Key、Base URL 和模型。';
+        msg.className = 'config-save-msg error';
+        msg.style.display = 'block';
+        return;
+      }
+      if (newConfig.notificationEnabled && !newConfig.serverchanSendKey) {
+        msg.textContent = '启用微信通知前，请先填写 Server酱 SendKey。';
         msg.className = 'config-save-msg error';
         msg.style.display = 'block';
         return;
@@ -362,7 +464,9 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
           providerModes.codex = newConfig.codexBackend === 'api' ? 'api' : 'subscription';
           renderAccountUsage();
           savedCardDisplay = setCardDisplayForm(newConfig);
-          msg.textContent = '配置已保存。卡片字体已立即生效；新会话将按所选 AI 后端启动。';
+          msg.textContent = newConfig.notificationEnabled
+            ? '配置已保存。顶栏“通知开”时，每次回答完成都会推送。'
+            : '配置已保存。卡片字体已立即生效；新会话将按所选 AI 后端启动。';
           msg.className = 'config-save-msg success';
           msg.style.display = 'block';
           setTimeout(() => { msg.style.display = 'none'; }, 4000);
@@ -384,6 +488,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
 
   return {
     open: openConfigModal,
+    openNotificationSetup,
     close: closeConfigModal,
     init: initConfigModal,
     setCodexProfileForm,
@@ -394,6 +499,9 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     readCodexProfilesFromForm,
     readCardDisplayForm,
     setCardDisplayForm,
+    readNotificationForm,
+    setNotificationForm,
+    testCompletionNotification,
   };
 }
 

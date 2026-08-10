@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="committee-ui.css">
   <link rel="stylesheet" href="workflow-config-modal.css">
   <link rel="stylesheet" href="chuxin.css">
+  <link rel="stylesheet" href="styles/home-workbench.css">
   <link rel="stylesheet" href="memory-panel.css">
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
@@ -80,6 +81,10 @@
                 </button>
               </div>
               <div class="session-existing-path" id="new-session-existing-path" hidden>
+                <div class="session-recommended" id="new-session-recommended-section" hidden>
+                  <span class="session-path-section-label">推荐常用路径</span>
+                  <div class="session-recommended-list" id="new-session-recommended" role="listbox" aria-label="推荐常用工作区"></div>
+                </div>
                 <div class="session-recent-head">
                   <span>最近工作区</span>
                   <button type="button" id="new-session-pick-path">浏览文件夹…</button>
@@ -96,7 +101,7 @@
           </div>
         </div>
         <button class="btn-group-chat" id="btn-group-chat" title="创建 AI 群聊"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10"/><path d="M7 12h6"/><path d="M6 18l-3 3V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6Z"/></svg><span class="btn-label">群聊</span></button>
-        <button class="btn-group-chat" id="btn-chuxin" title="初心投研 · 英雄 Agent 参谋"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg><span class="btn-label">投研</span></button>
+        <button class="btn-group-chat btn-home" id="btn-home" title="主页 · HUB 工作台"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v10h13V10"/><path d="M9.5 20v-6h5v6"/></svg><span class="btn-label">主页</span></button>
         <div class="resume-picker-wrapper" id="resume-picker-wrapper">
           <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg></button>
           <div class="resume-picker-menu" id="resume-picker-menu" style="display:none">
@@ -124,7 +129,7 @@
       <div class="sidebar-strip" id="sidebar-strip" style="display:none"></div>
       <div class="context-menu" id="context-menu" style="display:none">
         <button class="context-menu-item" data-action="pin">Pin to top</button>
-        <button class="context-menu-item" data-action="restart">Restart session</button>
+        <button class="context-menu-item" data-action="restart">重启并继续当前会话</button>
         <button class="context-menu-item" data-action="close">关闭并休眠</button>
         <button class="context-menu-item danger" data-action="delete">永久删除记录</button>
       </div>
@@ -142,30 +147,122 @@
       </div>
     </div>
     <button class="btn-expand-sidebar" id="btn-expand-sidebar" title="切换侧栏 (Ctrl+B)">❯</button>
-    <div class="terminal-panel" id="terminal-panel">
-      <div class="empty-state" id="empty-state">
-        <div class="launcher launcher-poster">
-          <div class="launcher-title">召集你的 AI 群聊</div>
-          <div class="launcher-subtitle">多位 AI 成员,你来配:Claude / Gemini / Codex / DeepSeek / Kimi K3。保留核心碰撞,减少低频入口。</div>
-          <button class="launcher-cta" data-launcher-action="group">💬 开始 AI 群聊</button>
-          <div class="launcher-secondary">
-            <span>想 1 v 1?</span>
-            <a class="launcher-link" data-launcher-kind="claude">Claude</a><span class="launcher-sep">·</span>
-            <a class="launcher-link" data-launcher-kind="gemini">Gemini</a><span class="launcher-sep">·</span>
-            <a class="launcher-link" data-launcher-kind="codex">Codex</a><span class="launcher-sep">·</span>
-            <a class="launcher-link" data-launcher-kind="kimi">Kimi K3</a><span class="launcher-sep">·</span>
-            <a class="launcher-link" data-launcher-kind="claude-resume">↻ 恢复历史</a>
+    <div class="terminal-panel home-active" id="terminal-panel">
+      <div class="empty-state home-workbench" id="empty-state">
+        <main class="home-workbench-shell" aria-labelledby="home-workbench-title">
+          <header class="home-workbench-head">
+            <div>
+              <div class="home-title-row">
+                <h1 class="home-workbench-title" id="home-workbench-title">HUB 工作台</h1>
+                <span class="home-title-pill">主页</span>
+              </div>
+              <p class="home-workbench-subtitle">集中查看当前 HUB 的 Agent 流转，以及模型用量与同步健康，再决定进入哪个 Session。</p>
+            </div>
+            <div class="home-head-actions">
+              <div class="home-health" role="status" aria-live="polite">
+                <i class="home-status-dot ok" id="home-health-dot"></i>
+                <span id="home-health-label">当前 HUB 状态正常</span>
+                <span class="home-last-sync" id="home-last-sync">正在同步</span>
+              </div>
+              <div class="home-notification-slot" id="home-notification-slot" aria-label="微信完成通知开关"></div>
+              <button class="home-refresh" id="home-refresh" type="button" title="刷新 Session、配额与系统状态">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0 1 4"/><path d="M20 4v7h-7"/></svg>
+                <span>刷新</span>
+              </button>
+            </div>
+          </header>
+
+          <div class="home-pulse-body">
+            <section class="home-metrics" aria-label="当前 HUB Session 概览">
+              <div class="home-metric active">
+                <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM9 1v3m6-3v3M9 20v3m6-3v3M1 9h3m-3 6h3m16-6h3m-3 6h3"/></svg></span>
+                <div><div class="home-metric-value" id="home-metric-active">0</div><div class="home-metric-label">活跃 Session</div></div>
+              </div>
+              <div class="home-metric waiting">
+                <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg></span>
+                <div><div class="home-metric-value" id="home-metric-waiting">0</div><div class="home-metric-label">需要你处理</div></div>
+              </div>
+              <div class="home-metric unread">
+                <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/><circle cx="12" cy="12" r="10"/></svg></span>
+                <div><div class="home-metric-value" id="home-metric-unread">0</div><div class="home-metric-label">完成未读</div></div>
+              </div>
+              <div class="home-metric dormant">
+                <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z"/></svg></span>
+                <div><div class="home-metric-value" id="home-metric-dormant">0</div><div class="home-metric-label">可恢复休眠</div></div>
+              </div>
+            </section>
+
+            <div class="home-pulse-grid">
+              <section class="home-section-card home-flow-board" aria-labelledby="home-flow-title">
+                <div class="home-section-head">
+                  <div class="home-section-title" id="home-flow-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h4l2-7 4 14 2-7h4"/></svg>Session 流水线</div>
+                  <span class="home-section-meta">状态自动跨列 · 最近活动优先</span>
+                </div>
+                <div class="home-flow-columns">
+                  <section class="home-flow-column" aria-labelledby="home-waiting-title">
+                    <div class="home-flow-column-head"><div class="home-lane-title" id="home-waiting-title"><i class="home-lane-dot waiting"></i>等你输入</div><span class="home-lane-count" id="home-waiting-count">0</span></div>
+                    <div class="home-lane-list" id="home-lane-waiting"></div>
+                  </section>
+                  <section class="home-flow-column" aria-labelledby="home-running-title">
+                    <div class="home-flow-column-head"><div class="home-lane-title" id="home-running-title"><i class="home-lane-dot running"></i>运行中</div><span class="home-lane-count" id="home-running-count">0</span></div>
+                    <div class="home-lane-list" id="home-lane-running"></div>
+                  </section>
+                  <section class="home-flow-column" aria-labelledby="home-delivered-title">
+                    <div class="home-flow-column-head"><div class="home-lane-title" id="home-delivered-title"><i class="home-lane-dot delivered"></i>最近完成</div><span class="home-lane-count" id="home-delivered-count">0</span></div>
+                    <div class="home-lane-list" id="home-lane-delivered"></div>
+                  </section>
+                </div>
+              </section>
+
+              <aside class="home-pulse-side" aria-label="当前 HUB 状态与固定入口">
+                <button class="home-research-entry" id="btn-chuxin" type="button" title="打开初心投研工作台">
+                  <span class="home-research-main">
+                    <span class="home-research-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg></span>
+                    <span class="home-research-copy"><strong>初心投研</strong><span>固定入口 · 英雄 Agent 参谋</span></span>
+                  </span>
+                  <svg class="home-research-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+                </button>
+
+                <section class="home-section-card" aria-labelledby="home-provider-title">
+                  <div class="home-section-head"><div class="home-section-title" id="home-provider-title">模型与配额</div><span class="home-section-meta">5h 滚动窗口</span></div>
+                  <div class="home-provider-health" id="home-provider-health"></div>
+                </section>
+
+                <section class="home-section-card" aria-labelledby="home-sync-title">
+                  <div class="home-section-head"><div class="home-section-title" id="home-sync-title">同步健康</div><span class="home-section-meta">本机实时</span></div>
+                  <div class="home-sync-grid">
+                    <div class="home-sync-cell"><strong>微信通知</strong><span class="home-sync-value" id="home-sync-notification">同步中</span></div>
+                    <div class="home-sync-cell"><strong>代理出口</strong><span class="home-sync-value" id="home-sync-proxy">同步中</span></div>
+                    <div class="home-sync-cell"><strong>PTY 保留</strong><span class="home-sync-value" id="home-sync-terminals">同步中</span></div>
+                    <div class="home-sync-cell"><strong>系统负载</strong><span class="home-sync-value" id="home-sync-resources">同步中</span></div>
+                  </div>
+                </section>
+              </aside>
+            </div>
           </div>
-          <div class="launcher-kbd-row">
-            <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
-            <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
-            <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
-            <span class="launcher-version">v1.6.10</span>
-          </div>
-        </div>
+        </main>
       </div>
       <!-- Spec 1 v0.9.0: 消息层(卡片视图) -->
       <div id="msg-overlay" class="msg-overlay"></div>
+      <button class="completion-notification-toggle unconfigured" id="completion-notification-toggle"
+              type="button" aria-pressed="false" data-state="unconfigured"
+              title="未配置 Server酱 SendKey，点击进入设置">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/>
+          <path d="M10 21h4"/>
+          <path class="notification-off-slash" d="M4 4l16 16"/>
+        </svg>
+        <span id="completion-notification-toggle-label">通知未配</span>
+      </button>
+      <div class="recent-turn-copy" id="recent-turn-copy" hidden>
+        <span class="recent-turn-copy-label">近</span>
+        <select id="recent-turn-copy-count" aria-label="复制最近对话轮数">
+          <option value="1">1 轮</option>
+          <option value="2">2 轮</option>
+          <option value="3">3 轮</option>
+        </select>
+        <button type="button" id="recent-turn-copy-button">复制对话</button>
+      </div>
       <!-- 视图切换按钮 -->
       <div class="view-toggle">
         <button class="view-toggle-btn active" data-view="card" title="卡片视图(默认)">卡片</button>
@@ -293,6 +390,29 @@
             <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
             <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
           </div>
+          <div class="config-section-label config-notification-title">
+            <span>回答完成通知</span>
+            <span>Server酱 · 微信</span>
+          </div>
+          <div class="config-notification-card" id="config-notification-card">
+            <label class="config-toggle-row" for="cfg-notification-enabled">
+              <input type="checkbox" id="cfg-notification-enabled">
+              <span><strong>微信通知总开关</strong><small>开启后每次回答完成都会推送；关闭后完全不推送。顶栏可随时切换。</small></span>
+            </label>
+            <div class="config-field">
+              <label for="cfg-serverchan-sendkey">Server酱 SendKey <span class="config-label-hint">（本机保存，不写入日志）</span></label>
+              <div class="config-secret-row">
+                <input type="password" id="cfg-serverchan-sendkey" placeholder="SCT..." spellcheck="false" autocomplete="off">
+                <button type="button" class="config-test-btn" id="config-notification-test">发送测试</button>
+              </div>
+            </div>
+            <div class="config-check-grid">
+              <label for="cfg-notification-group-chats"><input type="checkbox" id="cfg-notification-group-chats" checked> 群聊整轮完成后推送一条</label>
+              <label for="cfg-notification-include-preview"><input type="checkbox" id="cfg-notification-include-preview"> 附带回复预览（默认关闭，保护隐私）</label>
+            </div>
+            <p class="config-notification-status" id="config-notification-status" aria-live="polite"></p>
+            <p class="config-reading-note">首次使用：在 Server酱官网用微信扫码关注服务号，复制 SendKey 到这里。测试通知可在保存前直接发送。</p>
+          </div>
           <div class="config-section-label config-reading-title">
             <span>普通会话卡片</span>
             <span>调整后立即预览</span>
@@ -354,7 +474,7 @@
               <span class="config-ai-mark deepseek">DS</span>
               <span class="config-ai-copy">
                 <strong>DeepSeek</strong>
-                <small id="cfg-summary-deepseek">API · deepseek-v4-pro</small>
+                <small id="cfg-summary-deepseek">Codex API · deepseek-v4-flash</small>
               </span>
               <span class="config-ai-status api" id="cfg-status-deepseek">API</span>
             </button>
@@ -457,7 +577,7 @@
           <div class="config-ai-detail" id="cfg-detail-deepseek">
             <div class="config-mode-card selected">
               <strong>API 模式</strong>
-              <span>DeepSeek 当前通过 Anthropic 兼容 API 接入，使用隔离 Claude 配置目录。</span>
+              <span>DeepSeek V4 Flash 通过原生 Responses API 接入 Codex CLI，使用 Hub 隔离的 CODEX_HOME，不改你的全局 Codex 配置。</span>
             </div>
             <div class="config-field">
               <label>DeepSeek API Key</label>

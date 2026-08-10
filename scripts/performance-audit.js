@@ -82,7 +82,8 @@ function normalizeRelative(root, filePath) {
 }
 
 function classifyScope(relativePath) {
-  if (relativePath === 'main.js' || /^(?:core|main|renderer|scripts)\//.test(relativePath)) return 'runtime';
+  if (relativePath === 'main.js' || relativePath === 'main-bootstrap.js'
+      || /^(?:core|main|renderer|scripts)\//.test(relativePath)) return 'runtime';
   if (/^tests\//.test(relativePath) || relativePath === 'test-e2e.js') return 'test';
   if (/^tools\//.test(relativePath)) return 'tool';
   return 'operational';

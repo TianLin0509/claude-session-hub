@@ -39,10 +39,12 @@ function findReusableClaudeSession(sessionValues, native = {}) {
 function nativeTranscriptSessionKey(session) {
   if (!session || session.meetingId) return null;
   const kind = String(session.kind || '').replace(/-resume$/, '');
+  if (kind === 'deepseek' && session.codexSid) return `deepseek:codex:${session.codexSid}`;
   if ((kind === 'claude' || kind === 'deepseek') && session.ccSessionId) {
     return `${kind}:cc:${session.ccSessionId}`;
   }
   if (kind === 'codex' && session.codexSid) return `codex:${session.codexSid}`;
+  if (kind === 'gemini' && session.geminiChatId) return `gemini:${session.geminiChatId}`;
   if (kind === 'kimi' && session.kimiSid) return `kimi:${session.kimiSid}`;
   return null;
 }

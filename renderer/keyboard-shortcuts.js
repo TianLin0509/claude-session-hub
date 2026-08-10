@@ -1,3 +1,5 @@
+const { supportsForkSession } = require('../core/session-capabilities.js');
+
 function createKeyboardShortcuts({
   document,
   ipcRenderer,
@@ -80,18 +82,12 @@ function createKeyboardShortcuts({
 
   async function forkSession(sourceSessionId) {
     if (!sourceSessionId) {
-      showShortcutNotice('请先打开一个 Claude Code 或 Codex 会话', 'error');
+      showShortcutNotice('请先打开一个 Claude Code、Codex 或 DeepSeek 会话', 'error');
       return null;
     }
     const source = sessions.get(sourceSessionId);
-    const supported = source && (
-      source.kind === 'claude'
-      || source.kind === 'claude-resume'
-      || source.kind === 'codex'
-      || source.kind === 'codex-resume'
-    );
-    if (!supported) {
-      showShortcutNotice('当前类型不支持分支，仅支持 Claude Code 和 Codex', 'error');
+    if (!supportsForkSession(source)) {
+      showShortcutNotice('当前类型不支持分支，仅支持 Claude Code、Codex 和 DeepSeek', 'error');
       return null;
     }
 

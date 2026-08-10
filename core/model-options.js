@@ -4,9 +4,8 @@
 //
 // Model picker options used by the renderer config modal.
 //
-// `canSwitchInline(kind)`: claude CLI 接受 `/model <id>\r` 原地切换；deepseek
-// 是 claude CLI + ANTHROPIC_BASE_URL 中转，同样走该路径。codex /
-// gemini PTY 实测不识别 inline `/model`（spec §3.1）——必须 kill + respawn with --model，
+// `canSwitchInline(kind)`: claude CLI 接受 `/model <id>\r` 原地切换；codex /
+// deepseek / gemini PTY 实测不识别 inline `/model`（spec §3.1）——必须 kill + respawn with --model，
 // 本期未实现，picker 端给明确提示而不是默默无效切换。
 
 const MODEL_OPTIONS_BY_KIND = {
@@ -36,8 +35,7 @@ const MODEL_OPTIONS_BY_KIND = {
     { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
   ],
   deepseek: [
-    { id: 'deepseek-v4-pro[1m]',   label: 'DeepSeek V4 Pro (1M context)' },
-    { id: 'deepseek-v4-flash[1m]', label: 'DeepSeek V4 Flash (1M context)' },
+    { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash · Codex (1M)' },
   ],
   kimi: [
     { id: 'kimi-code/k3', label: 'Kimi K3' },
@@ -48,23 +46,40 @@ const DEFAULT_MODEL_BY_KIND = {
   claude: 'claude-opus-5[1m]',
   gemini: 'gemini-3-pro-preview',
   codex: 'gpt-5.6-sol',
-  deepseek: 'deepseek-v4-pro[1m]',
+  deepseek: 'deepseek-v4-flash',
   kimi: 'kimi-code/k3',
 };
 
+// Migration-only default. It is deliberately separate from the new-session
+// default above: an old V4 Pro Claude transcript must not be silently resumed
+// on Flash merely because new DeepSeek sessions now use Codex Responses.
+const LEGACY_DEEPSEEK_CLAUDE_DEFAULT_MODEL = 'deepseek-v4-pro[1m]';
+
 function normalizeDeepSeekModel(modelId) {
-  const raw = String(modelId || DEFAULT_MODEL_BY_KIND.deepseek).trim();
-  if (!raw) return DEFAULT_MODEL_BY_KIND.deepseek;
+  const raw = String(modelId || '').trim().replace(/\[1m\]$/i, '');
+  // V4 Pro 暂未开放 Responses API；旧会话保存的 Pro / legacy model 在切到
+  // Codex runtime 后统一落到官方当前唯一支持的 V4 Flash。
+  return raw === 'deepseek-v4-flash' ? raw : DEFAULT_MODEL_BY_KIND.deepseek;
+}
+
+function normalizeLegacyDeepSeekClaudeModel(modelId) {
+  const raw = String(modelId || LEGACY_DEEPSEEK_CLAUDE_DEFAULT_MODEL).trim();
+  if (!raw) return LEGACY_DEEPSEEK_CLAUDE_DEFAULT_MODEL;
   if (/^deepseek-/i.test(raw) && !/\[1m\]$/i.test(raw)) return `${raw}[1m]`;
   return raw;
 }
 
+function legacyDeepSeekClaudeDisplayName(modelId) {
+  const normalized = normalizeLegacyDeepSeekClaudeModel(modelId);
+  const base = normalized.replace(/\[1m\]$/i, '');
+  if (base === 'deepseek-v4-pro') return 'DS V4 Pro 1M · Legacy Claude';
+  if (base === 'deepseek-v4-flash') return 'DS V4 Flash 1M · Legacy Claude';
+  return normalized;
+}
+
 function deepseekDisplayName(modelId) {
   const normalized = normalizeDeepSeekModel(modelId);
-  const isOneM = /\[1m\]$/i.test(normalized);
-  const base = normalized.replace(/\[1m\]$/i, '');
-  if (base === 'deepseek-v4-pro') return isOneM ? 'DS V4 Pro 1M' : 'DS V4 Pro';
-  if (base === 'deepseek-v4-flash') return isOneM ? 'DS V4 Flash 1M' : 'DS V4 Flash';
+  if (normalized === 'deepseek-v4-flash') return 'DS V4 Flash · Codex 1M';
   return normalized;
 }
 
@@ -75,9 +90,9 @@ function modelOptionsFor(kind) {
   return MODEL_OPTIONS_BY_KIND[base] || [];
 }
 
-// 走 claude CLI 的 kind（含直连 + 中转）支持 inline `/model <id>\r`。
+// 只有 Claude CLI 支持 inline `/model <id>\r`；DeepSeek 已迁移到 Codex。
 const INLINE_SWITCH_BASE_KINDS = new Set([
-  'claude', 'deepseek',
+  'claude',
 ]);
 
 function canSwitchInline(kind) {
@@ -87,10 +102,13 @@ function canSwitchInline(kind) {
 }
 
 module.exports = {
+  LEGACY_DEEPSEEK_CLAUDE_DEFAULT_MODEL,
   MODEL_OPTIONS_BY_KIND,
   DEFAULT_MODEL_BY_KIND,
   modelOptionsFor,
   canSwitchInline,
   normalizeDeepSeekModel,
+  normalizeLegacyDeepSeekClaudeModel,
+  legacyDeepSeekClaudeDisplayName,
   deepseekDisplayName,
 };

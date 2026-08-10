@@ -103,7 +103,7 @@ assert.ok(/createAuthBannerMonitor/.test(dispatcherSrc) &&
   'dispatcher should settle unauthenticated CLI turns via the tightened auth banner monitor, not a raw full-buffer regex');
 
 assert.ok(/PASTE_TRAPPED_CODEX_ENTER_RETRIES\s*=\s*3/.test(dispatcherSrc) &&
-  /writeSubmitSignal\(sessionManager,\s*sid,\s*kind,\s*monitor\.enterRetries\)/.test(dispatcherSrc),
+  /writeSubmitSignal\(sessionManager,\s*sid,\s*runtimeKind,\s*monitor\.enterRetries\)/.test(dispatcherSrc),
   'Codex paste-trapped recovery should rotate submit signals instead of repeating CR only');
 
 assert.ok(/writeSubmitFallbackSignals/.test(groupWatcherSrc) &&

@@ -30,6 +30,23 @@ function codexTextFromPayload(payload) {
   );
 }
 
+function codexTurnIdFromPayload(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const nested = payload.internal_chat_message_metadata_passthrough;
+  const candidates = [
+    payload.turn_id,
+    payload.turnId,
+    nested && nested.turn_id,
+    nested && nested.turnId,
+  ];
+  for (const value of candidates) {
+    if (value == null) continue;
+    const normalized = String(value).trim();
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 function timestampToMs(timestamp) {
   if (!timestamp) return null;
   const ms = new Date(timestamp).getTime();
@@ -39,5 +56,6 @@ function timestampToMs(timestamp) {
 module.exports = {
   codexTextFromContent,
   codexTextFromPayload,
+  codexTurnIdFromPayload,
   timestampToMs,
 };

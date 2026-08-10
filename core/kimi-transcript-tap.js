@@ -389,6 +389,7 @@ class KimiTap extends EventEmitter {
       partial: '',
       turnText: '',
       currentPrompt: '',
+      currentTurnId: null,
       lastUserText: '',
       steps: new Map(),
       completedSteps: new Set(),
@@ -473,12 +474,14 @@ class KimiTap extends EventEmitter {
       bound.steps.clear();
       bound.completedSteps.clear();
       bound.streamingText = '';
+      bound.currentTurnId = record.turnId || record.turn_id || null;
       bound.currentPrompt = inputText(record.input) || bound.lastUserText || '';
       if (bound.currentPrompt && (!record.origin || record.origin.kind === 'user')) {
         this.emit('prompt-submitted', {
           hubSessionId: bound.hubSessionId,
           text: bound.currentPrompt,
           submittedAt: recordTimeMs(record),
+          turnId: bound.currentTurnId,
           transcriptPath: bound.wirePath,
           signalSource: 'kimi_wire_turn_prompt',
         });
@@ -489,6 +492,7 @@ class KimiTap extends EventEmitter {
     const event = record.event;
     const fallbackStepKey = `${event.turnId || ''}:${event.step || ''}`;
     if (event.type === 'step.begin') {
+      if (event.turnId != null) bound.currentTurnId = String(event.turnId);
       bound.steps.set(event.uuid || fallbackStepKey, { text: '', hadTool: false });
       bound.streamingText = '';
       return;
@@ -537,6 +541,7 @@ class KimiTap extends EventEmitter {
       text,
       source: 'kimi_wire_step_end',
       completedAt: recordTimeMs(record),
+      turnId: event.turnId != null ? String(event.turnId) : bound.currentTurnId,
       transcriptPath: bound.wirePath,
     });
   }

@@ -28,7 +28,7 @@ const {
   readCodexRolloutMeta,
 } = require('./codex-transcript-parser.js');
 const { JsonlTail } = require('./jsonl-tail.js');
-const { codexTextFromPayload, timestampToMs } = require('./transcript-payload-utils.js');
+const { codexTextFromPayload, codexTurnIdFromPayload, timestampToMs } = require('./transcript-payload-utils.js');
 const { KimiTap } = require('./kimi-transcript-tap.js');
 
 // ---------------------------------------------------------------------------
@@ -1057,6 +1057,7 @@ class CodexTap extends EventEmitter {
       const entry = this._bound.get(hubSessionId);
       if (!entry) return;
       const eventType = obj.payload.type;
+      const eventTurnId = codexTurnIdFromPayload(obj.payload);
 
       // T13: token_count 事件含 last_token_usage（本轮）+ total_token_usage（累计）
       //   Codex 一个 turn 内可能写多次 token_count（每个 task 完成都写），last_token_usage 是
@@ -1088,6 +1089,7 @@ class CodexTap extends EventEmitter {
               text,
               transcriptPath: entry.rolloutPath,
               submittedAt: timestampToMs(obj.timestamp) || Date.now(),
+              turnId: eventTurnId || entry._currentTurnId || null,
               signalSource: 'user_message',
             });
           }
@@ -1095,11 +1097,14 @@ class CodexTap extends EventEmitter {
       }
 
       // 新 task 开始 → 取消 pending emit（视为"还在进行"，丢弃上一次的 pendingText）
-      if (eventType === 'task_started' && entry._pendingEmitTimer) {
-        clearTimeout(entry._pendingEmitTimer);
+      if (eventType === 'task_started') {
+        if (eventTurnId) entry._currentTurnId = eventTurnId;
+        if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
         entry._pendingEmitTimer = null;
         entry._pendingText = null;
         entry._pendingDurationMs = null;
+        entry._pendingCompletedAt = null;
+        entry._pendingTurnId = null;
       }
 
       if (eventType === 'task_complete' && typeof obj.payload.last_agent_message === 'string') {
@@ -1109,20 +1114,27 @@ class CodexTap extends EventEmitter {
         if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
         entry._pendingText = text;
         entry._pendingDurationMs = obj.payload.duration_ms;
+        entry._pendingCompletedAt = timestampToMs(obj.timestamp) || Date.now();
+        entry._pendingTurnId = eventTurnId || entry._currentTurnId || null;
         entry._pendingEmitTimer = setTimeout(() => {
           entry._pendingEmitTimer = null;
           const finalText = entry._pendingText;
           const finalDuration = entry._pendingDurationMs;
+          const finalCompletedAt = entry._pendingCompletedAt;
+          const finalTurnId = entry._pendingTurnId;
           entry._pendingText = null;
           entry._pendingDurationMs = null;
+          entry._pendingCompletedAt = null;
+          entry._pendingTurnId = null;
           if (!finalText) return;
           entry.lastText = finalText;
           this.emit('turn-complete', {
             hubSessionId,
             text: finalText,
             transcriptPath: entry.rolloutPath,
-            completedAt: Date.now(),
+            completedAt: finalCompletedAt || Date.now(),
             durationMs: finalDuration,
+            turnId: finalTurnId,
             signalSource: 'task_complete',
             // T13: 附带 model + usage 给卡片视图显示真实模型名 + token chip
             modelId: entry.lastModel || null,
@@ -1137,6 +1149,7 @@ class CodexTap extends EventEmitter {
       rolloutPath, tail, lastText: null,
       lastModel: null, lastUsage: null,    // T13
       _pendingEmitTimer: null, _pendingText: null, _pendingDurationMs: null,
+      _pendingCompletedAt: null, _pendingTurnId: null, _currentTurnId: null,
       _lastPromptSig: null,
     });
     await tail.start();
@@ -1616,7 +1629,10 @@ class TranscriptTap extends EventEmitter {
 
   notePrompt(hubSessionId, kind, prompt) {
     if (!hubSessionId || !kind || typeof prompt !== 'string') return;
-    const backend = this._backendFor(kind);
+    // A migrated legacy DeepSeek session is publicly still kind=deepseek, but it
+    // is registered on ClaudeTap. Prefer the backend that already owns the sid.
+    const backend = [this._claude, this._codex, this._gemini, this._kimi]
+      .find(candidate => candidate.hasSession(hubSessionId)) || this._backendFor(kind);
     if (!backend || typeof backend.notePrompt !== 'function') return;
     try { backend.notePrompt(hubSessionId, prompt); }
     catch (e) { console.warn(`[transcript-tap] notePrompt(${kind}) failed:`, e.message); }
@@ -1666,8 +1682,8 @@ class TranscriptTap extends EventEmitter {
   }
 
   // 2026-05-02 Bug 修复：统一手动提取入口，按 backend 路由。
-  //   Claude/DeepSeek     → ClaudeTap.extractLatestTurn（读 transcript 末 last assistant）
-  //   Codex               → CodexTap.extractLatestTurn（读 rollout 末 task_complete）
+  //   Claude / legacy DeepSeek → ClaudeTap（读 transcript 末 last assistant）
+  //   Codex / current DeepSeek → CodexTap（读 rollout 末 task_complete）
   //   Gemini              → GeminiTap.extractLatestGeminiTurn（既有实现，过滤 sincePromptTs）
   //   旧 IPC handler 只调 extractLatestGeminiTurn，对 Claude/DeepSeek/Codex 永远返回 null
   //   → 用户报告"提取按钮假的"。统一入口后所有 backend 都能真正工作。
@@ -1743,10 +1759,8 @@ class TranscriptTap extends EventEmitter {
   }
 
   _backendFor(kind) {
-    // DeepSeek 跑在 Claude Code CLI 上（CLAUDE_CONFIG_DIR 隔离），transcript
-    // JSONL 与 Claude 同 shape（spike 验证：tests/_spike-deepseek-stop-hook-result.md），
-    // 直接复用 ClaudeTap 即让 AI 群聊 timeline + streaming preview 自动接入。CLAUDE_FAMILY 是单一
-    // 真理源，含 claude/claude-resume/deepseek，未来加新 Claude 衍生家族自动覆盖。
+    // Current DeepSeek is part of CODEX_CLI_KINDS. Only the internal
+    // deepseek-legacy kind remains in CLAUDE_FAMILY for old transcript recovery.
     if (isClaudeFamily(kind)) {
       return this._claude;
     }

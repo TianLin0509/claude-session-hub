@@ -76,31 +76,8 @@ function saveClipboardImage(deps) {
   }
 }
 
-function showNotification({ title, body }, deps) {
-  const {
-    getMainWindow,
-    Notification,
-  } = deps;
-
-  if (!Notification.isSupported()) return false;
-  const notification = new Notification({ title: title || 'AI 群聊', body: body || '', silent: false });
-  notification.on('click', () => {
-    const mainWindow = getMainWindow();
-    if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
-  notification.show();
-  return true;
-}
-
 function registerAppUtilityIpc(ipcMain, deps) {
   const sampleSystemResourceUsage = createSystemResourceSampler(deps.os || systemOs);
-
-  ipcMain.on('show-notification', (_e, payload = {}) => {
-    showNotification(payload, deps);
-  });
 
   ipcMain.handle('is-window-focused', () => {
     const mainWindow = deps.getMainWindow();
@@ -117,11 +94,29 @@ function registerAppUtilityIpc(ipcMain, deps) {
   }));
 
   ipcMain.handle('get-system-resource-usage', () => sampleSystemResourceUsage());
+
+  ipcMain.handle('get-network-egress-status', (_event, options = {}) => {
+    if (typeof deps.getNetworkEgressStatus !== 'function') {
+      return {
+        checkedAt: Date.now(),
+        foreign: { ok: false, route: 'proxy', errorCode: 'monitor_unavailable', error: '出口监测未启用' },
+        domestic: { ok: false, route: 'direct', errorCode: 'monitor_unavailable', error: '出口监测未启用' },
+        alert: { type: 'monitor_unavailable', severity: 'critical', title: '出口监测未启用' },
+      };
+    }
+    return deps.getNetworkEgressStatus({ force: options && options.force === true });
+  });
+
+  ipcMain.handle('acknowledge-network-egress-change', () => {
+    if (typeof deps.acknowledgeNetworkEgressChange !== 'function') {
+      return { ok: false, error: 'monitor_unavailable' };
+    }
+    return deps.acknowledgeNetworkEgressChange();
+  });
 }
 
 module.exports = {
   createSystemResourceSampler,
   registerAppUtilityIpc,
   saveClipboardImage,
-  showNotification,
 };

@@ -37,8 +37,9 @@ assert.ok(
   'resume-session must recover a Codex rollout path from a validated persisted codexSid',
 );
 assert.ok(
-  transcriptIpcSrc.includes('isCodexCliKind(kind)'),
-  'parse-session-transcript must branch for Codex CLI variants',
+  transcriptIpcSrc.includes('isCodexCliKind(runtimeKind)')
+    && transcriptIpcSrc.includes("isLegacyDeepSeek ? 'deepseek-legacy' : kind"),
+  'parse-session-transcript must branch by runtime while preserving legacy DeepSeek Claude transcripts',
 );
 assert.ok(
   rendererSrc.includes('isCodexSessionKind: isCodexKind'),

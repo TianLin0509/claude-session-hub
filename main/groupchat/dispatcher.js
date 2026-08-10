@@ -65,6 +65,7 @@ function createGroupChatDispatcher(deps) {
     logger = console,
     maybeAutoTitleMeetingFromPrompt,
     meetingManager,
+    onGroupChatComplete,
     sendToRenderer,
     sessionManager,
     transcriptTap,
@@ -95,6 +96,13 @@ function createGroupChatDispatcher(deps) {
 
   function log(...args) {
     if (logger && typeof logger.log === 'function') logger.log(...args);
+  }
+
+  function notifyGroupChatComplete(event, meeting) {
+    if (typeof onGroupChatComplete !== 'function') return;
+    Promise.resolve(onGroupChatComplete(event, meeting)).catch(error => {
+      warn('[group-chat] completion notification failed:', error && error.message);
+    });
   }
 
   function registerPatchListener(sid, watcher) {
@@ -131,6 +139,11 @@ function createGroupChatDispatcher(deps) {
     return line ? line.slice(0, 160) : '';
   }
 
+  function runtimeKindForSession(sid, fallbackKind) {
+    const session = sessionManager.getSession(sid);
+    return (session && session.transcriptKind) || fallbackKind;
+  }
+
   function hasBoundCodexTranscript(session) {
     return !!(session && (session.transcriptPath || session.codexSid));
   }
@@ -138,6 +151,7 @@ function createGroupChatDispatcher(deps) {
   function startPasteTrappedMonitor(sid, kind, meetingId) {
     if (pasteTrappedMonitors.has(sid)) return;
     pasteTrappedDetector.start(sid, Date.now());
+    const runtimeKind = runtimeKindForSession(sid, kind);
     const startedAt = Date.now();
     const monitor = { intervalId: null, enterRetries: 0 };
     const intervalId = setInterval(() => {
@@ -150,11 +164,11 @@ function createGroupChatDispatcher(deps) {
         const activity = sessionManager.getGroupChatLastActivity(sid);
         const r = pasteTrappedDetector.tick(sid, buf, activity);
         if (r === 'stuck') {
-          if (isCodexBaseKind(kind) && monitor.enterRetries < PASTE_TRAPPED_CODEX_ENTER_RETRIES) {
+          if (isCodexBaseKind(runtimeKind) && monitor.enterRetries < PASTE_TRAPPED_CODEX_ENTER_RETRIES) {
             monitor.enterRetries += 1;
             warn(`[paste-trapped] codex(${sid.slice(0,8)}) paste marker stable; sending retry Enter #${monitor.enterRetries}`);
             try {
-              groupChatWatcher._private.writeSubmitSignal(sessionManager, sid, kind, monitor.enterRetries);
+              groupChatWatcher._private.writeSubmitSignal(sessionManager, sid, runtimeKind, monitor.enterRetries);
               const meeting = meetingManager.getMeeting(meetingId);
               if (meeting && meeting.groupChat) {
                 const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
@@ -198,7 +212,7 @@ function createGroupChatDispatcher(deps) {
     const allowActiveExtend = opts.allowActiveExtend !== false;
     const startTs = Date.now();
     const waitSession = sessionManager.getSession(sid);
-    const waitKind = opts.kind || waitSession?.kind || 'unknown';
+    const waitKind = waitSession?.transcriptKind || opts.kind || waitSession?.kind || 'unknown';
     const promptSubmitSinceTs = Math.max(0, Number(opts.promptSubmitSinceTs) || (startTs - 1000));
     let codexPromptSubmitted = false;
     let codexPromptSubmittedAt = 0;
@@ -241,7 +255,7 @@ function createGroupChatDispatcher(deps) {
       streamTimer = setInterval(() => {
         if (watcher.isSettled()) { clearInterval(streamTimer); streamTimer = null; return; }
         const session = sessionManager.getSession(sid);
-        const kind = session?.kind || 'unknown';
+        const kind = session?.transcriptKind || session?.kind || 'unknown';
         const result = groupChatWatcher.extractStreamingText(sid, kind);
         const hasContent = result.text.length > 10 || result.blocks.length > 0;
         const buf = sessionManager.getSessionBuffer(sid) || '';
@@ -766,6 +780,7 @@ function createGroupChatDispatcher(deps) {
     dispatchMode,
     _dispatchSeq,
   } = {}) {
+    const turnStartedAt = Date.now();
     // 在飞派发计数（2026-07-29 道雪）：给 interruptMeetingTurn 区分「真没人在跑」
     //   和「有轮正卡在 sendToPty」。silent 内部编排不计入（不属于用户可见轮）。
     const inFlightKey = String(meetingId || '');
@@ -872,13 +887,14 @@ function createGroupChatDispatcher(deps) {
           const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
           const ok = sendResult && sendResult.ok;
           const sendStatus = sendResult && sendResult.sendStatus;
-          if (!silent && sendStatus === 'stuck' && !isCodexBaseKind(t.kind)) {
+          const runtimeKind = runtimeKindForSession(t.sid, t.kind);
+          if (!silent && sendStatus === 'stuck' && !isCodexBaseKind(runtimeKind)) {
             sendToRenderer('groupchat-send-stuck', { meetingId, sid: t.sid, kind: t.kind });
           }
           if (ok) {
             t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
             sentTargets.push(t);
-            if (!silent && (sendStatus !== 'stuck' || isCodexBaseKind(t.kind))) {
+            if (!silent && (sendStatus !== 'stuck' || isCodexBaseKind(runtimeKind))) {
               startPasteTrappedMonitor(t.sid, t.kind, meetingId);
             }
           }
@@ -898,6 +914,15 @@ function createGroupChatDispatcher(deps) {
           });
           const meta0 = (turnRecord0 && turnRecord0.meta) || { dispatchMode: 'group' };
           sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results: absentMembers, meta: meta0, superseded: false });
+          notifyGroupChatComplete({
+            meetingId,
+            turnNum,
+            results: absentMembers,
+            meta: meta0,
+            durationMs: Date.now() - turnStartedAt,
+            superseded: false,
+            interrupted: false,
+          }, meeting);
           return { status: 'completed', turnNum, results: absentMembers, meta: meta0 };
         }
         if (isReusedTurn) orch.clearTurnInProgress(turnNum);
@@ -993,6 +1018,15 @@ function createGroupChatDispatcher(deps) {
       const wasInterrupted = interruptedSinceStart()
         || results.some(r => r && r.status === 'interrupted');
       sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results, meta, superseded: wasSuperseded, interrupted: wasInterrupted });
+      notifyGroupChatComplete({
+        meetingId,
+        turnNum,
+        results,
+        meta,
+        durationMs: Date.now() - turnStartedAt,
+        superseded: wasSuperseded,
+        interrupted: wasInterrupted,
+      }, meeting);
       return { status: 'completed', turnNum, results, meta, superseded: wasSuperseded, interrupted: wasInterrupted };
     } finally {
       if (!silent) {

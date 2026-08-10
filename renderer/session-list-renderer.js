@@ -1,6 +1,10 @@
 // 纯函数：按 lastMessageTime 年龄分桶。pinned 永远进 recent（置顶不折叠）。
 //   recent: <24h（保持现状 UI 置顶）· mid: 24-72h · old: ≥72h
 const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js');
+const {
+  sessionHasCompletedUnread,
+  sessionNeedsUserInput,
+} = require('../core/session-attention-state.js');
 
 function partitionSessionsByAge(items, now) {
   const DAY = 86400000;
@@ -19,8 +23,7 @@ function partitionSessionsByAge(items, now) {
 // 家族由 kind（哪个 CLI）决定，模型只是家族内部的选择：Opus / Fable / Sonnet 都是
 // Claude CLI 起的会话，GPT 各版本都是 Codex CLI 起的。所以按 kind 分族，与用户
 // 心里的「这是 Claude 还是 Codex」完全对得上，不需要再解析 currentModel。
-// DeepSeek 虽然实际跑在 Claude CLI 上（claude + ANTHROPIC_BASE_URL 中转），但它
-// 在 UI 上是独立的一家，归「其他」。
+// DeepSeek 现在由 Codex CLI + Responses API 启动，但品牌仍是独立的一家，归「其他」。
 const SESSION_FAMILY_TABS = [
   { key: 'all', label: '全部', hint: '所有会话与群聊' },
   { key: 'claude', label: 'Claude', hint: 'Claude Code（Opus / Fable / Sonnet / Haiku）' },
@@ -68,11 +71,20 @@ function createSessionListRenderer(options = {}) {
   const pctClass = options.pctClass;
   const getResourceUsage = typeof options.getResourceUsage === 'function' ? options.getResourceUsage : () => null;
   const getProxyInfo = typeof options.getProxyInfo === 'function' ? options.getProxyInfo : () => null;
+  const acknowledgeNetworkChange = typeof options.acknowledgeNetworkChange === 'function'
+    ? options.acknowledgeNetworkChange
+    : null;
   const selectSession = options.selectSession;
   const selectMeeting = options.selectMeeting;
   const openContextMenu = options.openContextMenu;
   // 2026-07-19 方案C：列表渲染完成后的回调（renderer 用来刷新 ctx chip/中断钮/等你响应浮动条）
   const afterRender = typeof options.afterRender === 'function' ? options.afterRender : null;
+  const renderStats = { renders: 0, slowRenders: 0, lastMs: 0, maxMs: 0 };
+  const nowMs = typeof options.nowMs === 'function'
+    ? options.nowMs
+    : () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now());
 
 // --- Sidebar tree state: which meeting entries are expanded to show their sub-sessions ---
 // Persists across reloads. Default = collapsed (白名单未命中即折叠)；用户点 ▶ 后才进
@@ -217,8 +229,7 @@ function _sessionWarningText(session) {
   return false;
 }
 
-  // 代理（VPN）出口。会话启动时 Hub 会把它写进 HTTP_PROXY/HTTPS_PROXY，
-  // 侧栏常驻显示一行，方便随时确认走的是不是预期的通道。
+  // 代理配置只用于 tooltip；可见文案必须是 main 进程实测的公网 IP + 城市。
   // 只显示 host:port，隐去可能带凭据的 user:pass@ 部分。
   function _shortProxy(raw) {
     const s = String(raw || '').trim();
@@ -245,16 +256,54 @@ function _sessionWarningText(session) {
     const metricClass = value => value != null && value >= 85 ? ' strip-resource-high' : '';
     const proxy = typeof getProxyInfo === 'function' ? getProxyInfo() : null;
     const proxyShort = _shortProxy(proxy && proxy.proxy);
+    const egress = proxy && proxy.egress;
+    const foreign = egress && egress.foreign;
+    const domestic = egress && egress.domestic;
+    const alert = egress && egress.alert;
+
+    const routeValue = (route, loadingText) => {
+      if (!egress) return loadingText;
+      if (!route || !route.ok) return escapeHtml(route && route.error || '检测失败');
+      return `${escapeHtml(route.locationLabel || '未知地区')} <i>·</i> ${escapeHtml(route.ip || '--')}`;
+    };
+    const foreignAlertClass = alert ? ` strip-route-${alert.severity === 'critical' ? 'critical' : 'warning'}` : '';
+    const domesticAlertClass = egress && (!domestic || !domestic.ok) ? ' strip-route-warning' : '';
+    const foreignBadge = alert
+      ? `<span class="strip-route-badge">${alert.severity === 'critical' ? '⛔ VPN' : '⚠ 变更'}</span>`
+      : '';
+    const ackAttr = alert && alert.acknowledgeable ? ' data-egress-ack="true"' : '';
+    const foreignTitle = [
+      'Claude / Codex 订阅、Gemini：强制经 VPN 代理',
+      proxyShort ? `本地代理：${proxyShort}` : '本地代理：未配置',
+      foreign && foreign.ok ? `实测公网 IPv4：${foreign.ip} (${foreign.locationLabel || '未知地区'})` : `状态：${foreign && foreign.error || '检测中'}`,
+      alert ? `${alert.title || '节点异常'}：${alert.message || ''}` : '',
+      alert && alert.acknowledgeable ? '点击此行确认当前节点' : '',
+    ].filter(Boolean).join('\n');
+    const domesticTitle = [
+      'Kimi / DeepSeek：清空 HTTP(S)_PROXY 后直连',
+      domestic && domestic.ok ? `实测公网 IPv4：${domestic.ip} (${domestic.locationLabel || '未知地区'})` : `状态：${domestic && domestic.error || '检测中'}`,
+    ].join('\n');
 
     stripEl.innerHTML =
-      `<span class="strip-active"><b>${activeCount}</b> 活跃</span>` +
-      `<span class="strip-resource${metricClass(cpuPct)}">CPU <b>${cpuPct == null ? '--' : cpuPct + '%'}</b></span>` +
-      `<span class="strip-resource${metricClass(memoryPct)}">内存 <b>${memoryPct == null ? '--' : memoryPct + '%'}</b></span>` +
-      (proxyShort
-        ? `<span class="strip-proxy" title="会话启动时注入的 HTTP_PROXY/HTTPS_PROXY：${escapeHtml(proxy.proxy)}">代理 <b>${escapeHtml(proxyShort)}</b></span>`
-        : `<span class="strip-proxy strip-proxy-off" title="未配置代理，会话直连">代理 <b>直连</b></span>`);
-    stripEl.title = '活跃：当前仍有 PTY/AI 进程的会话（含群聊子会话）；CPU/内存：整机实时占用；代理：会话实际使用的出口';
+      `<div class="strip-route-row strip-route-foreign${foreignAlertClass}" title="${escapeHtml(foreignTitle)}"${ackAttr}>` +
+        `<span class="strip-route-main strip-proxy"><b class="strip-route-label">国外</b><span class="strip-route-value">${routeValue(foreign, '检测中…')}</span></span>` +
+        (foreignBadge || `<span class="strip-compact-metric strip-active"><b>${activeCount}</b> 活跃</span>`) +
+      '</div>' +
+      `<div class="strip-route-row strip-route-domestic${domesticAlertClass}" title="${escapeHtml(domesticTitle)}">` +
+        `<span class="strip-route-main"><b class="strip-route-label">国产</b><span class="strip-route-value">${routeValue(domestic, '检测中…')}</span></span>` +
+        `<span class="strip-compact-metric strip-resource${metricClass(cpuPct)}${metricClass(memoryPct)}">CPU <b>${cpuPct == null ? '--' : cpuPct + '%'}</b> · M <b>${memoryPct == null ? '--' : memoryPct + '%'}</b></span>` +
+      '</div>';
+    stripEl.title = '';
     stripEl.style.display = 'flex';
+
+    const acknowledgeRow = stripEl.querySelector('[data-egress-ack="true"]');
+    if (acknowledgeRow && acknowledgeNetworkChange) {
+      acknowledgeRow.addEventListener('click', async () => {
+        if (acknowledgeRow.classList.contains('acknowledging')) return;
+        acknowledgeRow.classList.add('acknowledging');
+        try { await acknowledgeNetworkChange(); } finally { acknowledgeRow.classList.remove('acknowledging'); }
+      });
+    }
   }
 
 // --- Session list rendering ---
@@ -262,6 +311,7 @@ function _sessionWarningText(session) {
 // Tree shape: meeting entries optionally expand to show their child sub-sessions.
 // Top-level regular sessions (no meetingId) sit alongside meetings in the same sort order.
   function renderSessionList() {
+    const renderStartedAt = nowMs();
     const sessionMap = getSessions();
     const regularSessions = Array.from(sessionMap.values())
     .filter(s => !s.meetingId && s.kind !== 'chuxin-run' && !s.hiddenFromSidebar && s.purpose !== 'chuxin-research');
@@ -278,7 +328,7 @@ function _sessionWarningText(session) {
     // 2026-05-05 道雪 修3：AI 群聊 item 接入 unread 机制 —— 全员答完且非 active 时累加，
     //   selectMeeting 时清零。替代旧 Web Notification + title 闪烁，统一走 Hub 侧栏哲学。
     // 2026-05-31 道雪：unread 语义改为"本轮已答 AI 数（Set<sid>.size）" — 任一 AI 答完 +1，
-    //   显示"等你 N"（1-3）；turnNum 变 / selectMeeting 时清零（详见 renderer.js partial-update handler）。
+    //   显示"已答 N"（1-3）；turnNum 变 / selectMeeting 时清零（详见 renderer.js partial-update handler）。
     unreadAnsweredSize: m.unreadAnswered instanceof Set ? m.unreadAnswered.size : 0,
     pinned: m.pinned,
     _isMeeting: true,
@@ -310,7 +360,15 @@ function _sessionWarningText(session) {
   // (every status-event, silence-timer, or session-updated) snaps the list
   // back to the top, which feels like the sidebar is "fighting" the user.
   const savedScrollTop = sessionListEl.scrollTop;
-  sessionListEl.innerHTML = '';
+  // Build the entire status reclassification off-DOM, then commit once. A
+  // running -> needs-input transition used to clear and repopulate the live
+  // sidebar one node at a time, forcing repeated style/layout work and making
+  // the window look frozen exactly when categories jumped.
+  const fragment = typeof doc.createDocumentFragment === 'function'
+    ? doc.createDocumentFragment()
+    : null;
+  const renderTarget = fragment || sessionListEl;
+  if (!fragment) sessionListEl.innerHTML = '';
   _ensureTimeGroupStyle();
 
   // 单条渲染（会话/会议），供「置顶 recent + 时间组」复用。
@@ -392,7 +450,7 @@ function _sessionWarningText(session) {
       const stateHtml = isDormantMeeting
         ? '<span class="sl-state dorm" title="休眠中，点击唤醒">休眠</span>'
         : (hasUnread
-          ? `<span class="sl-state unread" title="本轮已 ${s.unreadAnsweredSize} 个 AI 答完">等你 ${s.unreadAnsweredSize}</span>`
+          ? `<span class="sl-state unread" title="本轮已有 ${s.unreadAnsweredSize} 个 AI 答完，尚未查看">已答 ${s.unreadAnsweredSize}</span>`
           : (anySubRunning
             ? '<span class="sl-state run">运行中</span>'
             : '<span></span>'));
@@ -423,7 +481,7 @@ function _sessionWarningText(session) {
         }
       });
       div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
-      sessionListEl.appendChild(div);
+      renderTarget.appendChild(div);
 
       // Render child sub-sessions if expanded (clicking goes straight to shell view).
       if (isExpanded) {
@@ -455,7 +513,7 @@ function _sessionWarningText(session) {
           // This is exactly the "single-viewer strict switch" the spec calls for.
           childDiv.addEventListener('click', () => selectSession(subId, { forceScrollBottom: true }));
           childDiv.addEventListener('contextmenu', (ev) => { ev.preventDefault(); openContextMenu(subId, ev.clientX, ev.clientY); });
-          sessionListEl.appendChild(childDiv);
+          renderTarget.appendChild(childDiv);
         }
       }
       return;
@@ -469,9 +527,9 @@ function _sessionWarningText(session) {
     div.dataset.sessionId = s.id;
     const isDormant = s.status === 'dormant';
     const dormantCls = isDormant ? ' dormant' : '';
-    const showWaiting = !isDormant && s.isWaiting && !isActive;
+    const showWaiting = sessionNeedsUserInput(s) && !isActive;
     const unreadCount = Math.max(0, Number(s.unreadCount) || 0);
-    const showUnread = unreadCount > 0 && !isActive && !showWaiting;
+    const showUnread = sessionHasCompletedUnread(s) && !isActive && !showWaiting;
     // 状态点优先级：等待输入 > 未读（含休眠态）> 运行 > 休眠 > 空闲
     let dotCls = 'idle';
     if (showWaiting) dotCls = 'wait';
@@ -490,7 +548,9 @@ function _sessionWarningText(session) {
       s.currentModel ? (s.currentModel.displayName || s.currentModel.id) : '',
       ctxPct != null ? `Ctx ${ctxPct}%` : '',
       anyWarning,
-      dormantStateTip || (showWaiting ? (s.waitingText || '等你输入') : (showUnread ? (s.lastOutputPreview || '有未读新消息') : '')),
+      dormantStateTip || (showWaiting
+        ? (s.waitingText || '等你输入')
+        : (showUnread ? (s.replyReadyText || s.lastOutputPreview || '有完成结果尚未查看') : '')),
     ].filter(Boolean).join(' · ');
     div.innerHTML = `
       ${_ringHtml(ctxPct, dotCls)}
@@ -500,13 +560,14 @@ function _sessionWarningText(session) {
     `;
     div.addEventListener('click', () => selectSession(s.id, { forceScrollBottom: true }));
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
-    sessionListEl.appendChild(div);
+    renderTarget.appendChild(div);
   }
 
-  // === 2026-07-19 道雪 · 方案C 分区渲染：等你响应 → 运行中 → 最近 → 3天内/更早 ===
+  // 分区语义严格拆开：真正需要输入 → 运行中 → 普通完成未读 → 最近。
   //   分类语义（与状态来源逐项核对过）：
-  //     等你响应 = 非 active 且（isWaiting 或 unreadCount>0；含带未读的休眠会话；群聊=本轮已答 AI 数>0）
+  //     等你响应 = 非 active 且 CLI 明确在等待用户输入
   //     运行中   = status === 'running'（PTY 数据突发 / 卡片语义工作中）
+  //     完成未读 = 普通回答完成、群聊成员答完或历史 unreadCount>0
   //     最近     = 24h 内其余（含 active、休眠、空闲）
   const { recent, mid, old } = partitionSessionsByAge(visible, Date.now());
   const activeSid = getActiveSessionId();
@@ -514,26 +575,32 @@ function _sessionWarningText(session) {
   const isActiveItem = (s) => s._isMeeting ? s.id === activeMid : s.id === activeSid;
   function needsRespond(s) {
     if (isActiveItem(s)) return false;
-    if (s._isMeeting) return (s.unreadAnsweredSize || 0) > 0;
-    if (s.status === 'dormant') return (s.unreadCount || 0) > 0;
-    return !!s.isWaiting || (s.unreadCount || 0) > 0;
+    if (s._isMeeting) return false;
+    return sessionNeedsUserInput(s);
   }
-  const respond = [], running = [], rest = [];
+  function isCompletedUnread(s) {
+    if (isActiveItem(s)) return false;
+    if (s._isMeeting) return (s.unreadAnsweredSize || 0) > 0;
+    return sessionHasCompletedUnread(s);
+  }
+  const respond = [], running = [], completed = [], rest = [];
   for (const s of recent) {
     if (needsRespond(s)) respond.push(s);
     else if (s._isMeeting ? _meetingAnySubRunning(s._meeting, sessionMap) : s.status === 'running') running.push(s);
+    else if (isCompletedUnread(s)) completed.push(s);
     else rest.push(s);
   }
   function appendSecHeader(label, count, cls) {
     const h = doc.createElement('div');
     h.className = 'session-sec-header' + (cls ? ' ' + cls : '');
     h.innerHTML = `<span>${escapeHtml(label)}</span><span class="sec-count">${count}</span>`;
-    sessionListEl.appendChild(h);
+    renderTarget.appendChild(h);
   }
   if (respond.length) { appendSecHeader('⚠ 等你响应', respond.length, 'sec-respond'); for (const s of respond) appendItem(s); }
   if (running.length) { appendSecHeader('运行中', running.length); for (const s of running) appendItem(s); }
+  if (completed.length) { appendSecHeader('✓ 已完成未读', completed.length, 'sec-completed'); for (const s of completed) appendItem(s); }
   if (rest.length) {
-    if (respond.length || running.length) appendSecHeader('最近', rest.length);
+    if (respond.length || running.length || completed.length) appendSecHeader('最近', rest.length);
     for (const s of rest) appendItem(s);
   }
   function appendTimeGroup(key, label, items) {
@@ -545,7 +612,7 @@ function _sessionWarningText(session) {
     header.dataset.timeGroup = key;
     header.innerHTML = `<span class="stg-arrow">▶</span><span class="stg-label">${escapeHtml(label)}</span><span class="stg-count">${items.length}</span>`;
     header.addEventListener('click', () => toggleTimeGroup(key));
-    sessionListEl.appendChild(header);
+    renderTarget.appendChild(header);
     if (expanded) for (const s of items) appendItem(s);
   }
   appendTimeGroup('mid', '3 天内', mid);
@@ -557,7 +624,15 @@ function _sessionWarningText(session) {
     hint.className = 'session-filter-empty';
     const label = (SESSION_FAMILY_TABS.find(t => t.key === _familyFilter.key) || {}).label || '';
     hint.textContent = `没有 ${label} 会话（共 ${everything.length} 个，点「全部」查看）`;
-    sessionListEl.appendChild(hint);
+    renderTarget.appendChild(hint);
+  }
+
+  if (fragment) {
+    if (typeof sessionListEl.replaceChildren === 'function') sessionListEl.replaceChildren(fragment);
+    else {
+      sessionListEl.innerHTML = '';
+      sessionListEl.appendChild(fragment);
+    }
   }
 
   renderSidebarStrip(sessionMap);
@@ -565,6 +640,11 @@ function _sessionWarningText(session) {
   if (afterRender) afterRender();
 
   sessionListEl.scrollTop = savedScrollTop;
+  const elapsed = Math.max(0, nowMs() - renderStartedAt);
+  renderStats.renders += 1;
+  renderStats.lastMs = elapsed;
+  renderStats.maxMs = Math.max(renderStats.maxMs, elapsed);
+  if (elapsed >= 50) renderStats.slowRenders += 1;
 }
 
 // --- Session card hover light-tracking + click ripple (event delegation) ---
@@ -591,7 +671,13 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 
 
-  return { renderSessionList, renderSidebarStrip, setFamilyFilter, getFamilyFilter: () => _familyFilter.key };
+  return {
+    renderSessionList,
+    renderSidebarStrip,
+    setFamilyFilter,
+    getFamilyFilter: () => _familyFilter.key,
+    getRenderStats: () => ({ ...renderStats }),
+  };
 }
 
 module.exports = {

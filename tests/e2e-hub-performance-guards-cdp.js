@@ -73,6 +73,48 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
       }
       await new Promise(resolve => setTimeout(resolve, 200));
       const renderStatsAfterBurst = api.sidebarRenderCoalescerStats();
+      api.addFakeSession({
+        id: 'perf-state-burst', kind: 'codex', title: 'State burst', status: 'idle',
+        createdAt: now, lastMessageTime: now,
+      });
+      const semanticStatsBefore = api.sidebarRenderCoalescerStats();
+      for (let i = 0; i < 100; i++) {
+        const eventAt = now + 10_000 + (i * 2);
+        electronIpc.emit('prompt-submitted-event', {}, {
+          hubSessionId: 'perf-state-burst', kind: 'codex', text: 'prompt ' + i,
+          submittedAt: eventAt, turnId: 'turn-' + i,
+        });
+        electronIpc.emit('turn-complete-event', {}, {
+          hubSessionId: 'perf-state-burst', kind: 'codex', text: 'done ' + i,
+          completedAt: eventAt + 1, turnId: 'turn-' + i,
+        });
+      }
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const semanticStatsAfter = api.sidebarRenderCoalescerStats();
+      const completedState = { ...sessions.get('perf-state-burst') };
+      const sectionForSession = (sessionId) => {
+        let current = '';
+        for (const node of document.querySelectorAll('#session-list > *')) {
+          if (node.classList.contains('session-sec-header')) {
+            current = (node.querySelector('span') || node).textContent.trim();
+          } else if (node.dataset && node.dataset.sessionId === sessionId) {
+            return current;
+          }
+        }
+        return '';
+      };
+      const completedSection = sectionForSession('perf-state-burst');
+      electronIpc.emit('prompt-submitted-event', {}, {
+        hubSessionId: 'perf-state-burst', kind: 'codex', text: 'new live turn',
+        submittedAt: now + 20_000, turnId: 'turn-live',
+      });
+      electronIpc.emit('turn-complete-event', {}, {
+        hubSessionId: 'perf-state-burst', kind: 'codex', text: 'stale old result',
+        completedAt: now + 19_000, turnId: 'turn-old',
+      });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const staleProtectedState = { ...sessions.get('perf-state-burst') };
+      const staleProtectedSection = sectionForSession('perf-state-burst');
       for (let i = 0; i < 20; i++) {
         electronIpc.emit('session-created', {}, { session: {
           id: 'perf-member-created-' + i,
@@ -99,6 +141,17 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
         await new Promise(resolve => setTimeout(resolve, 45));
       }
       const afterShells = api.terminalCacheStats();
+      electronIpc.emit('terminal-data', {}, {
+        sessionId: 'perf-shell-0',
+        data: '\\r\\nHIDDEN_XTERM_BUFFER_SURVIVES\\r\\n',
+        seq: 9001,
+      });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const hiddenBufferHasMarker = api.terminalBufferText('perf-shell-0').includes('HIDDEN_XTERM_BUFFER_SURVIVES');
+      await api.selectSession('perf-shell-0');
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const afterRestore = api.terminalCacheStats();
+      const restoredBufferHasMarker = api.terminalBufferText('perf-shell-0').includes('HIDDEN_XTERM_BUFFER_SURVIVES');
 
       const sids = ['perf-dormant-1', 'perf-dormant-2', 'perf-dormant-3'];
       sids.forEach((sid, i) => api.addFakeSession({
@@ -146,7 +199,27 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
         panelVisible: meetingPanelVisible,
         renderStatsBeforeBurst,
         renderStatsAfterBurst,
+        semanticStatsBefore,
+        semanticStatsAfter,
+        completedState: {
+          status: completedState.status,
+          attentionState: completedState.attentionState,
+          isWaiting: completedState.isWaiting,
+          unreadCount: completedState.unreadCount,
+        },
+        staleProtectedState: {
+          status: staleProtectedState.status,
+          attentionState: staleProtectedState.attentionState,
+          isWaiting: staleProtectedState.isWaiting,
+          unreadCount: staleProtectedState.unreadCount,
+        },
+        completedSection,
+        staleProtectedSection,
+        sidebarRenderStats: api.sidebarRenderStats(),
         bulkSidebar,
+        hiddenBufferHasMarker,
+        restoredBufferHasMarker,
+        afterRestore,
         suspended: {
           exists: sessions.has('perf-shell-7'),
           status: sessions.get('perf-shell-7')?.status,
@@ -163,13 +236,32 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     assert.strictEqual(result.initial.max, null, 'live xterms must not have an arbitrary count limit');
     assert.strictEqual(result.afterShells.size, 8, 'every explicitly opened live session must retain its xterm');
     assert.deepStrictEqual(result.afterShells.ids, Array.from({ length: 8 }, (_, i) => `perf-shell-${i}`));
+    assert.strictEqual(result.afterShells.rendererSurfaces, 1, 'only the visible xterm may retain a Canvas/WebGL surface');
+    assert.strictEqual(result.hiddenBufferHasMarker, true, 'hidden xterm must keep parsing live PTY output');
+    assert.strictEqual(result.restoredBufferHasMarker, true, 'reloading the renderer surface must preserve xterm history');
+    assert.strictEqual(result.afterRestore.size, 8, 'restoring a surface must not recreate or evict the xterm');
+    assert.strictEqual(result.afterRestore.rendererSurfaces, 1, 'restored visible xterm should own the sole renderer surface');
     assert.strictEqual(result.afterMeeting.size, 8, 'opening a serial room must not create or evict hidden xterms');
+    assert.strictEqual(result.afterMeeting.rendererSurfaces, 0, 'meeting/home views should release every hidden terminal surface');
     assert.deepStrictEqual(result.memberStatuses, ['dormant', 'dormant', 'dormant']);
     assert.strictEqual(result.panelVisible, true, 'serial meeting UI should remain usable');
     assert.strictEqual(result.renderStatsAfterBurst.requests - result.renderStatsBeforeBurst.requests, 200, 'all status events should request a coalesced render');
     assert.ok(result.renderStatsAfterBurst.renders - result.renderStatsBeforeBurst.renders <= 3, JSON.stringify(result));
+    assert.strictEqual(result.semanticStatsAfter.requests - result.semanticStatsBefore.requests, 200,
+      'every semantic transition should request a coalesced sidebar render');
+    assert.ok(result.semanticStatsAfter.renders - result.semanticStatsBefore.renders <= 3,
+      JSON.stringify({ before: result.semanticStatsBefore, after: result.semanticStatsAfter }));
+    assert.deepStrictEqual(result.completedState, {
+      status: 'idle', attentionState: 'reply-ready', isWaiting: false, unreadCount: 1,
+    });
+    assert.deepStrictEqual(result.staleProtectedState, {
+      status: 'running', attentionState: 'none', isWaiting: false, unreadCount: 0,
+    });
+    assert.strictEqual(result.completedSection, '✓ 已完成未读');
+    assert.strictEqual(result.staleProtectedSection, '运行中');
     assert.strictEqual(result.bulkSidebar.count, 900, JSON.stringify(result.bulkSidebar));
     assert.ok(result.bulkSidebar.renderMs < 250, `900-session sidebar render took ${result.bulkSidebar.renderMs}ms`);
+    assert.ok(result.sidebarRenderStats.maxMs < 250, JSON.stringify(result.sidebarRenderStats));
     assert.strictEqual(result.suspended.exists, true);
     assert.strictEqual(result.suspended.status, 'dormant');
     assert.strictEqual(result.suspended.cache.size, 7);

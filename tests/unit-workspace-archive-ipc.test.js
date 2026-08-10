@@ -32,9 +32,12 @@ const { registerWorkspaceIpc } = require('../main/ipc/workspace-handlers.js');
         id: 's1', kind: 'codex', title: 'Hub 归档流程', cwd: scratch.path,
         codexSid: '11111111-1111-4111-8111-111111111111',
         currentModel: { id: 'gpt-5.4' }, autoTitleGenerated: true,
+        codexProfile: 'work', mcpProfile: 'browser', pinned: true,
+        branchSourceSessionId: 'parent-1', branchAutoTitlePending: false,
       }],
     ]);
     const events = [];
+    const resumeMetas = [];
     const migrationIds = new Set();
     const sessionManager = {
       getSession: id => sessions.get(id),
@@ -52,6 +55,7 @@ const { registerWorkspaceIpc } = require('../main/ipc/workspace-handlers.js');
       dialog: { showOpenDialog: async () => ({ canceled: true }) },
       meetingManager,
       resumeSession: async meta => {
+        resumeMetas.push(meta);
         const resumed = { id: meta.hubId, kind: meta.kind, title: meta.title, cwd: meta.cwd, workspaceLabel: meta.workspaceLabel };
         sessions.set(resumed.id, resumed);
         return resumed;
@@ -76,6 +80,21 @@ const { registerWorkspaceIpc } = require('../main/ipc/workspace-handlers.js');
     assert.equal(fs.existsSync(scratch.path), false);
     assert.equal(fs.readFileSync(path.join(result.workspace.path, 'work.txt'), 'utf8'), 'preserve me');
     assert.equal(sessions.get('s1').cwd, result.workspace.path);
+    assert.deepEqual({
+      codexSid: resumeMetas[0].codexSid,
+      model: resumeMetas[0].model,
+      codexProfile: resumeMetas[0].codexProfile,
+      mcpProfile: resumeMetas[0].mcpProfile,
+      pinned: resumeMetas[0].pinned,
+      branchSourceSessionId: resumeMetas[0].branchSourceSessionId,
+    }, {
+      codexSid: '11111111-1111-4111-8111-111111111111',
+      model: 'gpt-5.4',
+      codexProfile: 'work',
+      mcpProfile: 'browser',
+      pinned: true,
+      branchSourceSessionId: 'parent-1',
+    }, 'archive restart must preserve the same Codex metadata as dormant wake and Restart');
     assert.equal(migrationIds.size, 0);
     assert.equal(events.some(event => event.channel === 'workspace-updated'), true);
 

@@ -65,3 +65,14 @@ test('two live PTYs with the same native id are reported but never auto-closed',
   assert.deepStrictEqual(collapseDormantNativeDuplicates(map), []);
   assert.strictEqual(map.size, 2);
 });
+
+test('Gemini dormant shells use their native chat id for duplicate collapse', () => {
+  const map = new Map([
+    ['old-g', { id: 'old-g', kind: 'gemini-resume', geminiChatId: 'gemini-1', status: 'dormant', lastMessageTime: 1 }],
+    ['new-g', { id: 'new-g', kind: 'gemini', geminiChatId: 'gemini-1', status: 'dormant', lastMessageTime: 2 }],
+  ]);
+  assert.strictEqual(nativeTranscriptSessionKey(map.get('old-g')), 'gemini:gemini-1');
+  assert.deepStrictEqual(collapseDormantNativeDuplicates(map), [
+    { removedId: 'old-g', keptId: 'new-g' },
+  ]);
+});

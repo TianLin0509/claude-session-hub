@@ -177,6 +177,34 @@
 }
 .session-recent-head button:hover { background: rgba(56, 139, 253, .12); }
 
+.session-recommended { display: flex; flex-direction: column; gap: 6px; }
+.session-recommended[hidden] { display: none; }
+.session-path-section-label { color: #aeb9c5 !important; font-size: 10px !important; letter-spacing: .04em; }
+.session-recommended-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.session-recommended-item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 10px;
+  border: 1px solid rgba(163, 113, 247, .28);
+  border-radius: 7px;
+  background: linear-gradient(145deg, rgba(163, 113, 247, .12), rgba(56, 139, 253, .055));
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+.session-recommended-item:hover { border-color: rgba(163, 113, 247, .7); transform: translateY(-1px); }
+.session-recommended-item.selected {
+  border-color: rgba(46, 160, 67, .78);
+  background: rgba(35, 134, 54, .15);
+  box-shadow: inset 0 0 0 1px rgba(46, 160, 67, .1);
+}
+.session-recommended-item strong { overflow: hidden; color: var(--text-primary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.session-recommended-item span { overflow: hidden; color: #b7a5e8; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.session-recommended-item small { overflow: hidden; color: #8793a0; font: 9px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+
 .session-recent-list { display: grid; gap: 5px; max-height: 190px; overflow-y: auto; }
 .session-recent-empty { color: var(--text-muted); font-size: 11px; padding: 6px 2px; }
 .session-recent-item {
@@ -270,6 +298,7 @@
 .session-workspace-choice:focus-visible,
 .session-existing-path button:focus-visible,
 .session-recent-item:focus-visible,
+.session-recommended-item:focus-visible,
 .session-tuning-field select:focus-visible,
 .session-create-close:focus-visible,
 .session-create-cancel:focus-visible,
@@ -283,6 +312,7 @@
   .session-kind-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .session-workspace-grid,
   .session-tuning-grid { grid-template-columns: 1fr; }
+  .session-recommended-list { grid-template-columns: 1fr; }
   .session-create-footer { align-items: stretch; flex-direction: column; }
   .session-create-footer > div { justify-content: flex-end; }
 }

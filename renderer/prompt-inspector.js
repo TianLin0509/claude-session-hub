@@ -279,7 +279,7 @@
   }
 
   function renderInspection(d) {
-    const isCodex = d.kind === 'codex';
+    const isCodex = d.kind === 'codex' || d.kind === 'deepseek';
     const isKimi = d.kind === 'kimi';
     return `
       <div class="pi-head">

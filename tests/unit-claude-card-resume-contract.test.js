@@ -25,7 +25,8 @@ test('renderer persists and restores transcriptPath session meta', () => {
   const src = read('renderer/renderer.js');
   assert.match(src, /transcriptPath:\s*s\.transcriptPath\s*\|\|\s*null/);
   assert.match(src, /transcriptPath:\s*meta\.transcriptPath\s*\|\|\s*null/);
-  assert.match(src, /transcriptPath:\s*dormant\.transcriptPath/);
+  assert.match(src, /buildSessionResumeMeta\(dormant\)/,
+    'dormant wake should use the shared provider-native resume metadata contract');
   assert.match(src, /transcriptPath:\s*session\.transcriptPath\s*\|\|\s*existing\.transcriptPath/);
   assert.match(src, /transcriptPath:\s*resumed\.transcriptPath\s*\|\|\s*s\.transcriptPath/);
   assert.match(src, /const wasDormant = !!pendingResume \|\|/);

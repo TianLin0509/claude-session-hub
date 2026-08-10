@@ -46,9 +46,27 @@ test('codex picker resume carries explicit --model', () => {
 test('codex picker resume enables mtime fallback binding', () => {
   assert.match(
     SRC,
-    /\(kind === 'codex-resume'\s*\|\|\s*opts\.codexResumePicker\s*\|\|\s*\(opts\.useResume && !opts\.codexSid\)\)/,
+    /\(kind\.endsWith\('-resume'\)\s*\|\|\s*opts\.codexResumePicker\s*\|\|\s*\(opts\.useResume && !opts\.codexSid\)\)/,
     'codex resume picker variants must bind old rollout files by fresh mtime after user selects a session',
   );
+});
+
+test('a precise native id wins over the *-resume picker kind', () => {
+  const codexExact = SRC.indexOf('} else if (opts.useResume && opts.codexSid) {');
+  const codexPicker = SRC.indexOf("} else if (kind.endsWith('-resume') || opts.codexResumePicker) {");
+  assert.ok(codexExact >= 0 && codexPicker > codexExact,
+    'codex-resume with a bound codexSid must run `codex resume <sid>`, not reopen the picker');
+
+  const legacyStart = SRC.lastIndexOf('if (isDeepSeekLegacy) {');
+  const legacyExact = SRC.indexOf('} else if (opts.resumeCCSessionId) {', legacyStart);
+  const legacyPicker = SRC.indexOf("} else if (kind === 'deepseek-resume') {", legacyExact);
+  assert.ok(legacyExact >= 0 && legacyPicker > legacyExact,
+    'legacy DeepSeek resume must prefer its exact Claude session id over the picker');
+
+  const geminiExact = SRC.indexOf('if (opts.useResume && opts.geminiChatId && opts.geminiChatId.length > 8) {');
+  const geminiFallback = SRC.indexOf("} else if (kind === 'gemini-resume' || opts.useResume) {", geminiExact);
+  assert.ok(geminiExact >= 0 && geminiFallback > geminiExact,
+    'gemini-resume with a full native id must prefer the exact session over latest');
 });
 
 test('codex PTY sessions default to max reasoning effort and silent full access', () => {

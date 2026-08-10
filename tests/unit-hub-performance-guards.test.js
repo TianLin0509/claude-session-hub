@@ -299,10 +299,32 @@ test('renderer keeps xterms lazy, session-lifecycle retained and snapshot-hydrat
     'automatic/manual suspend must release the xterm at the session lifecycle boundary');
   assert.match(renderer, /hydrateTerminalFromSnapshot/);
   assert.match(renderer, /get-session-buffer-snapshot/);
+  assert.match(renderer, /function unloadGpuRenderer\(cached\)/);
+  assert.match(renderer, /suspendInactiveTerminalRenderers\(sessionId\)/,
+    'session switching should release only hidden renderer surfaces');
+  const unloadStart = renderer.indexOf('function unloadGpuRenderer');
+  const unloadEnd = renderer.indexOf('function suspendInactiveTerminalRenderers', unloadStart);
+  assert.doesNotMatch(renderer.slice(unloadStart, unloadEnd), /terminal\.dispose\(/,
+    'surface suspension must never dispose the live xterm/buffer');
   assert.match(renderer, /usesLazySerialWake/);
   assert.match(meeting, /await _ensureWorkflowMembersReady\(m, targetMemberIds\)/);
   assert.match(main, /meeting-terminal-activity/);
   assert.match(main, />= 500/);
+});
+
+test('sidebar status transitions are coalesced and committed atomically', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  const sidebar = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'session-list-renderer.js'), 'utf8');
+  const home = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'home-workbench.js'), 'utf8');
+  assert.match(sidebar, /createDocumentFragment/);
+  assert.match(sidebar, /sessionListEl\.replaceChildren\(fragment\)/,
+    'a category jump should produce one live DOM commit');
+  assert.match(renderer, /function onReplyCompleteFromTranscriptEvent[\s\S]{0,2200}scheduleSessionListRender\(\)/);
+  assert.match(renderer, /function onPromptSubmittedFromTranscriptEvent[\s\S]{0,1500}scheduleSessionListRender\(\)/);
+  assert.match(renderer, /createTerminalActivityMonitor\(\{[\s\S]*?renderSessionList:\s*scheduleSessionListRender,/,
+    'PTY-driven status transitions must use the sidebar coalescer too');
+  assert.match(home, /if \(!options\.force && !isVisible\(\)\) return state\.snapshot/,
+    'hidden home workbench must not rebuild alongside every sidebar state event');
 });
 
 test('restored terminals force a full renderer-surface repaint', () => {

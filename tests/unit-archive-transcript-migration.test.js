@@ -88,16 +88,20 @@ test('re-archiving to the same path is a no-op rather than a self-copy error', (
   }
 });
 
-test('migration runs before resumeAll and only for cwd-bound CLI kinds', () => {
+test('migration runs before resumeAll and routes DeepSeek by its persisted native id', () => {
   const migrateAt = HANDLER_SRC.indexOf('migrateTranscriptsForCwdChange({');
   const resumeAt = HANDLER_SRC.indexOf('const restart = await resumeAll(');
   assert.ok(migrateAt > 0, 'archive flow must migrate transcripts');
   assert.ok(resumeAt > migrateAt, 'migration must happen before the CLIs are resumed');
   assert.match(
     HANDLER_SRC,
-    /CWD_BOUND_TRANSCRIPT_KINDS = new Set\(\['claude', 'deepseek'\]\)/,
-    'codex rollouts and gemini project roots are not cwd-bucketed and must be left alone',
+    /kind === 'deepseek' && !!session\.ccSessionId && !session\.codexSid/,
+    'pre-migration DeepSeek sessions must remain bound to their Claude transcript',
   );
+  assert.match(HANDLER_SRC, /kind === 'deepseek' && !isLegacyClaudeTranscriptSession\(session\)/,
+    'new DeepSeek sessions must migrate their Codex rollout cwd');
+  assert.match(HANDLER_SRC, /\.filter\(isLegacyClaudeTranscriptSession\)/);
+  assert.match(HANDLER_SRC, /if \(!isCodexTranscriptSession\(snapshot\) \|\| !snapshot\.codexSid\) return;/);
   assert.match(HANDLER_SRC, /toCwd: workspace\.path/, 'migration target must be the archived path');
 });
 

@@ -47,6 +47,20 @@ test('listWorkspaces exposes scratchRoot so the footer can preview the landing p
     const listing = service.listWorkspaces();
     assert.strictEqual(listing.scratchRoot, path.join(root, '_scratch'));
     assert.strictEqual(listing.root, path.resolve(root));
+    assert.deepStrictEqual(listing.recommended, [], 'recommendations only include real category directories');
+  });
+});
+
+test('existing AI, Wireless, and Stock category roots are recommended ahead of history', () => {
+  withService((service, root) => {
+    for (const directory of ['AI', 'Wireless', 'Stock']) fs.mkdirSync(path.join(root, directory), { recursive: true });
+    const listing = service.listWorkspaces();
+    assert.deepStrictEqual(listing.recommended.map(item => item.label), ['AI', 'Wireless', '投研']);
+    assert.deepStrictEqual(listing.recommended.map(item => item.path), [
+      path.join(root, 'AI'),
+      path.join(root, 'Wireless'),
+      path.join(root, 'Stock'),
+    ]);
   });
 });
 
@@ -94,6 +108,8 @@ test('Claude command uses the validated opts.effort and falls back to max', () =
 test('modal markup carries the recent list, model picker and effort picker', () => {
   for (const id of [
     'new-session-recent',
+    'new-session-recommended',
+    'new-session-recommended-section',
     'new-session-model',
     'new-session-effort',
     'new-session-effort-field',
@@ -118,6 +134,8 @@ test('recent workspaces are primary; the OS folder dialog is only the fallback',
   );
   assert.match(CONTROLLER_SRC, /workspace:list/, 'recent list must come from workspace:list');
   assert.match(CONTROLLER_SRC, /data-recent-path/, 'recent entries must be clickable');
+  assert.match(CONTROLLER_SRC, /data-recommended-path/, 'recommended category roots must be clickable');
+  assert.match(CONTROLLER_SRC, /listing && listing\.recommended/, 'recommended roots must come from workspace:list');
   assert.match(
     CONTROLLER_SRC,
     /if \(pick\) pick\.addEventListener\('click', \(\) => void chooseExistingPath\(\)\)/,

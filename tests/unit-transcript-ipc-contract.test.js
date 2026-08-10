@@ -30,6 +30,21 @@ function createDeps(overrides = {}) {
       transcriptPath: 'C:\\claude\\session.jsonl',
       ccSessionId: 'cc-1',
     },
+    deepseekCurrent: {
+      id: 'deepseekCurrent',
+      kind: 'deepseek',
+      transcriptPath: null,
+      codexSid: 'deepseek-codex-sid',
+      codexSessionsRoot: 'C:\\deepseek-codex\\sessions',
+      cwd: 'C:\\repo',
+    },
+    deepseekLegacy: {
+      id: 'deepseekLegacy',
+      kind: 'deepseek',
+      transcriptKind: 'deepseek-legacy',
+      transcriptPath: 'C:\\claude-deepseek\\legacy.jsonl',
+      ccSessionId: 'deepseek-cc-sid',
+    },
   }));
 
   return {
@@ -52,7 +67,7 @@ function createDeps(overrides = {}) {
     },
     isCodexCliKind(kind) {
       calls.push(['isCodexCliKind', kind]);
-      return kind === 'codex' || kind === 'codex-resume';
+      return ['codex', 'codex-resume', 'deepseek', 'deepseek-resume'].includes(kind);
     },
     isUsableCodexRolloutPath() {
       return true;
@@ -154,6 +169,32 @@ async function main() {
     assert.ok(!deps.calls.some(call => call[0] === 'findTranscriptByCCSessionId'));
     assert.ok(deps.calls.some(call => call[0] === 'parseClaudeTranscriptToTurns'));
     assert.strictEqual(typeof result.parseMs, 'number');
+  });
+
+  await test('DeepSeek parser follows the native id across the Codex migration', async () => {
+    const currentDeps = createDeps();
+    const current = await parseSessionTranscript({ hubSessionId: 'deepseekCurrent' }, currentDeps);
+    assert.strictEqual(current.error, null);
+    assert.strictEqual(current.transcriptPath, 'C:\\codex\\sid-rollout.jsonl');
+    assert.ok(currentDeps.calls.some(call => call[0] === 'findCodexRolloutBySid'
+      && call[1] === 'deepseek-codex-sid'
+      && call[2] === 'C:\\deepseek-codex\\sessions'));
+    assert.ok(currentDeps.calls.some(call => call[0] === 'parseCodexRolloutToTurns'));
+
+    const legacyDeps = createDeps();
+    const legacy = await parseSessionTranscript({ hubSessionId: 'deepseekLegacy' }, legacyDeps);
+    assert.strictEqual(legacy.error, null);
+    assert.strictEqual(legacy.transcriptPath, 'C:\\claude-deepseek\\legacy.jsonl');
+    assert.ok(legacyDeps.calls.some(call => call[0] === 'parseClaudeTranscriptToTurns'));
+    assert.ok(!legacyDeps.calls.some(call => call[0] === 'parseCodexRolloutToTurns'));
+
+    const dormantDeps = createDeps();
+    const dormantLegacy = await parseSessionTranscript({
+      kind: 'deepseek',
+      ccSessionId: 'dormant-deepseek-cc',
+    }, dormantDeps);
+    assert.strictEqual(dormantLegacy.transcriptPath, 'C:\\claude\\dormant-deepseek-cc.jsonl');
+    assert.ok(dormantDeps.calls.some(call => call[0] === 'parseClaudeTranscriptToTurns'));
   });
 
   await test('missing and parser error results preserve prior contract', async () => {

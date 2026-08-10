@@ -1,13 +1,13 @@
 'use strict';
-// Stage 2 P2-1 单测：Codex task_complete 3s debounce。
+// Stage 2 P2-1 单测：Codex task_complete 400ms debounce。
 //
 // 不变式：
-//   1. 单次 task_complete → 3s 后真 emit turn-complete
-//   2. 多次连续 task_complete（中间无 task_started）→ 最后一次 text 为准，3s 静默后才 emit
-//   3. task_complete 后 3s 内出现新 task_started → cancel pending，不 emit
+//   1. 单次 task_complete → 400ms 后真 emit turn-complete
+//   2. 多次连续 task_complete（中间无 task_started）→ 最后一次 text 为准，400ms 静默后才 emit
+//   3. task_complete 后 400ms 内出现新 task_started → cancel pending，不 emit
 //   4. task_started 之后再来 task_complete → 新一轮 debounce，emit 用新 text
 //
-// 用 fake timers 加速测试（不真等 3s）。直接读 transcript-tap.js 源码静态确认契约。
+// 直接读 transcript-tap.js 源码静态确认契约。
 
 const assert = require('assert');
 const fs = require('fs');
@@ -41,6 +41,8 @@ function testTaskStartedCancelsPendingEmit() {
     'must clearTimeout pending emit timer');
   assert.ok(/entry\._pendingText\s*=\s*null/.test(body),
     'must clear pendingText on task_started');
+  assert.ok(/entry\._pendingTurnId\s*=\s*null/.test(body),
+    'must clear the pending turn identity on task_started');
   console.log('  ✓ testTaskStartedCancelsPendingEmit');
 }
 
@@ -71,6 +73,10 @@ function testEmitGoesThroughTimer() {
   // 且 emit payload 含 signalSource: 'task_complete'
   assert.ok(/signalSource:\s*['"]task_complete['"]/.test(body.slice(emitIdx, emitIdx + 400)),
     'emit payload must include signalSource: "task_complete"');
+  assert.ok(/turnId:\s*finalTurnId/.test(body.slice(emitIdx, emitIdx + 500)),
+    'emit payload must preserve the authoritative Codex turn id');
+  assert.ok(/completedAt:\s*finalCompletedAt\s*\|\|\s*Date\.now\(\)/.test(body.slice(emitIdx, emitIdx + 500)),
+    'debounce delivery must preserve the transcript event time');
   console.log('  ✓ testEmitGoesThroughTimer');
 }
 
@@ -106,6 +112,9 @@ function testInitialEntryHasPendingFields() {
     'codex _bound entry must init _pendingEmitTimer: null');
   assert.ok(/_pendingText:\s*null/.test(codexBind),
     'codex _bound entry must init _pendingText: null');
+  assert.ok(/_pendingCompletedAt:\s*null/.test(codexBind));
+  assert.ok(/_pendingTurnId:\s*null/.test(codexBind));
+  assert.ok(/_currentTurnId:\s*null/.test(codexBind));
   console.log('  ✓ testInitialEntryHasPendingFields');
 }
 

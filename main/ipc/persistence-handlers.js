@@ -20,6 +20,7 @@ const RESUME_META_FIELDS = [
   'kimiSid',
   'kimiSessionDir',
   'currentModel',
+  'effort',
   'contextPct',
   'contextUsed',
   'contextMax',

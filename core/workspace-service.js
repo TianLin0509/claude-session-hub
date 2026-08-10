@@ -8,6 +8,11 @@ const path = require('path');
 const { getHubDataDir, isIsolatedHub } = require('./data-dir.js');
 
 const REGISTRY_VERSION = 1;
+const DEFAULT_RECOMMENDED_CATEGORIES = [
+  { id: 'ai', directory: 'AI', label: 'AI', description: 'Agent / 应用开发' },
+  { id: 'wireless', directory: 'Wireless', label: 'Wireless', description: '无线通信研究' },
+  { id: 'research', directory: 'Stock', label: '投研', description: '股票与策略研究' },
+];
 
 function normalizeKey(value) {
   return path.resolve(String(value || '')).replace(/[\\/]+$/, '').toLowerCase();
@@ -188,6 +193,26 @@ class WorkspaceService {
       .filter(entry => entry && entry.isDirectory() && !excluded.has(entry.name.toLowerCase()) && !entry.name.startsWith('.'))
       .map(entry => ({ name: entry.name, path: this.path.join(this.getWorkspaceRoot(), entry.name) }))
       .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  }
+
+  listRecommendedWorkspaces() {
+    const root = this.getWorkspaceRoot();
+    return DEFAULT_RECOMMENDED_CATEGORIES
+      .map(item => {
+        const cwd = this.path.join(root, item.directory);
+        if (!this._isDirectory(cwd)) return null;
+        return {
+          id: `recommended-${item.id}`,
+          path: cwd,
+          label: item.label,
+          description: item.description,
+          tier: this.classifyWorkspace(cwd),
+          recommended: true,
+          draft: false,
+          pinned: false,
+        };
+      })
+      .filter(Boolean);
   }
 
   // 用户关掉过归档框就不再追问这个 workspace（含「暂留 _scratch」和 ×/Esc）。
@@ -620,6 +645,7 @@ class WorkspaceService {
       root: this.getWorkspaceRoot(),
       scratchRoot: this.getScratchRoot(),
       selectedPath: registry.selectedPath,
+      recommended: this.listRecommendedWorkspaces(),
       items,
     };
   }
@@ -627,6 +653,7 @@ class WorkspaceService {
 
 module.exports = {
   WorkspaceService,
+  DEFAULT_RECOMMENDED_CATEGORIES,
   isPathInside,
   normalizeKey,
   safeSlug,

@@ -11,6 +11,7 @@ function createMeetingSubAdder(deps) {
     getSlotPromptName,
     groupchat,
     hookToken,
+    ensureDeepSeekInstructionFile = ensureClaudeMemoryFile,
     isClaudeFamily,
     isCodexBaseKind,
     isIsolatedHub,
@@ -82,14 +83,14 @@ function createMeetingSubAdder(deps) {
       }
     }
 
-    // 2026-06-05 联邦记忆下线：群聊只在 DeepSeek 上注入 Claude 主 MEMORY.md。
-    // Claude/Codex 依赖各自原生 auto-memory。
-    if (meeting && meeting.groupChat && kind === 'deepseek' && !sessionOpts.appendSystemPromptFile) {
+    // DeepSeek 已迁移到 Codex runtime；原来通过 Claude
+    // --append-system-prompt-file 注入的主 MEMORY.md 改走 Codex instruction file。
+    if (meeting && meeting.groupChat && kind === 'deepseek' && !sessionOpts.codexInstructionFile) {
       try {
         const hubDataDir = getHubDataDir();
-        const injectPath = ensureClaudeMemoryFile(hubDataDir);
+        const injectPath = ensureDeepSeekInstructionFile(hubDataDir);
         if (injectPath) {
-          sessionOpts.appendSystemPromptFile = injectPath;
+          sessionOpts.codexInstructionFile = injectPath;
         }
       } catch (err) {
         logger.warn(`[meeting-sub] claude-memory injection failed for ${meetingId}: ${err.message}`);

@@ -5,12 +5,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-test('main process preserves the desktop multi-instance startup contract', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
-  assert.doesNotMatch(source, /app\.requestSingleInstanceLock\(\)/,
-    'desktop Hub must not reject a second production instance');
-  assert.doesNotMatch(source, /app\.on\('second-instance'/,
-    'desktop Hub must not redirect a second launch back to the first window');
+test('bootstrap grants one owner per Electron userData/data directory', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main-bootstrap.js'), 'utf8');
+  assert.match(source, /app\.requestSingleInstanceLock\(/,
+    'bootstrap must acquire ownership before loading the Hub runtime');
+  assert.match(source, /if \(!hasPrimaryDataDirLock\)[\s\S]{0,220}app\.quit\(\)/,
+    'a losing same-data-dir process must quit without loading runtime state');
+  assert.match(source, /app\.on\('second-instance'/,
+    'the primary Hub must focus its existing window for a second launch');
+  assert.ok(source.indexOf('requestSingleInstanceLock') < source.indexOf("require('./main.js')"),
+    'ownership must be decided before main.js can repair state or create PTYs');
 });
 
 // 2026-07-27：上面的契约生效时删掉了 `const hasSingleInstanceLock = ...`，
@@ -24,7 +28,7 @@ function stripComments(source) {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 }
 
-test('whenReady does not read a single-instance flag that no longer exists', () => {
+test('main runtime does not read an undeclared single-instance flag', () => {
   const code = stripComments(fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8'));
   const reads = code.match(/\bhasSingleInstanceLock\b/g) || [];
   const defines = code.match(/(?:const|let|var)\s+hasSingleInstanceLock\b/g) || [];

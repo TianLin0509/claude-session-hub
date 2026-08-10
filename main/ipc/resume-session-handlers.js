@@ -36,11 +36,14 @@ function createResumeSessionHandler(deps) {
 
   return async function resumeSession(meta) {
     if (!meta || !meta.hubId) return null;
-    const isClaude = (meta.kind === 'claude' || meta.kind === 'claude-resume');
-    const isClaudeCliResumable = isClaudeFamily(meta.kind);
+    const isGemini = meta.kind === 'gemini' || meta.kind === 'gemini-resume';
+    const isDeepSeek = meta.kind === 'deepseek' || meta.kind === 'deepseek-resume';
+    const isLegacyDeepSeek = isDeepSeek && !!meta.ccSessionId && !meta.codexSid;
+    const isClaudeCliResumable = isClaudeFamily(meta.kind) || isLegacyDeepSeek;
+    const isCodexRuntime = isCodexBaseKind(meta.kind) && !isLegacyDeepSeek;
     const isKimi = isKimiCliKind(meta.kind);
-    const isNativeResumeKind = (meta.kind === 'gemini' || isCodexBaseKind(meta.kind) || isKimi);
-    let effectiveCodexSid = isCodexBaseKind(meta.kind) ? (meta.codexSid || null) : null;
+    const isNativeResumeKind = (isGemini || isCodexRuntime || isKimi);
+    let effectiveCodexSid = isCodexRuntime ? (meta.codexSid || null) : null;
     const hookPort = getHookPort();
 
     let resumeOpts = {};
@@ -63,13 +66,13 @@ function createResumeSessionHandler(deps) {
       if (promptFile) {
         if (isClaudeCliResumable) {
           resumeOpts.appendSystemPromptFile = promptFile;
-        } else if (meta.kind === 'gemini') {
+        } else if (isGemini) {
           resumeOpts.extraEnv = { GEMINI_SYSTEM_MD: promptFile };
-        } else if (isCodexBaseKind(meta.kind)) {
+        } else if (isCodexRuntime) {
           resumeOpts.codexInstructionFile = promptFile;
         }
       }
-      if (meeting && meeting.groupChat && isCodexBaseKind(meta.kind) && scenes.buildAiTeamMcpEntryForCodex) {
+      if (meeting && meeting.groupChat && isCodexRuntime && scenes.buildAiTeamMcpEntryForCodex) {
         addCodexMcpEntry(resumeOpts, scenes.buildAiTeamMcpEntryForCodex(meta.meetingId, meta.kind || 'codex'));
       }
       if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
@@ -78,7 +81,7 @@ function createResumeSessionHandler(deps) {
           resumeOpts.mcpConfigFile = scenes.writeResearchMcpConfig(
             hubDataDir, meta.meetingId, hookPort, hookToken, meta.kind || 'claude', { enableChuxin: true },
           );
-        } else if (meta.kind === 'gemini') {
+        } else if (isGemini) {
           resumeOpts.extraEnv = {
             ...(resumeOpts.extraEnv || {}),
             ELECTRON_RUN_AS_NODE: '1',
@@ -90,7 +93,7 @@ function createResumeSessionHandler(deps) {
             ARENA_CHUXIN_ENABLED: '1',
             SPIRIT_REGISTRY_ROOT: process.env.SPIRIT_REGISTRY_ROOT || path.join(os.homedir(), 'spirit-lens-registry'),
           };
-        } else if (isCodexBaseKind(meta.kind)) {
+        } else if (isCodexRuntime) {
           resumeOpts.codexBypassApprovals = true;
           addCodexMcpEntry(resumeOpts, scenes.buildResearchMcpEntryForCodex(
             meta.meetingId, hookPort, hookToken, hubDataDir, { enableChuxin: true },
@@ -102,7 +105,7 @@ function createResumeSessionHandler(deps) {
     }
 
     let resumeTranscriptPath = meta.transcriptPath || null;
-    if (isCodexBaseKind(meta.kind) && resumeTranscriptPath && isCodexSubagentRolloutPath(resumeTranscriptPath)) {
+    if (isCodexRuntime && resumeTranscriptPath && isCodexSubagentRolloutPath(resumeTranscriptPath)) {
       logger.warn(`[resume-session] rejected subagent rollout binding for Hub session ${String(meta.hubId).slice(0, 8)}`);
       resumeTranscriptPath = null;
       effectiveCodexSid = null;
@@ -116,13 +119,13 @@ function createResumeSessionHandler(deps) {
         if (discovered) resumeTranscriptPath = discovered;
       } catch {}
     }
-    if (isCodexBaseKind(meta.kind) && effectiveCodexSid) {
+    if (isCodexRuntime && effectiveCodexSid) {
       try {
         const discovered = findCodexRolloutBySid(effectiveCodexSid, meta.codexSessionsRoot || defaultCodexSessionsRoot);
         if (discovered) resumeTranscriptPath = discovered;
       } catch {}
     }
-    const codexMissingSid = (isCodexBaseKind(meta.kind) && !effectiveCodexSid);
+    const codexMissingSid = (isCodexRuntime && !effectiveCodexSid);
 
     // Kimi 会话绑死 cwd 且 CLI 会校验。归档搬目录后，renderer 持久化的 cwd /
     // kimiSessionDir 可能还是旧路径（休眠会话不在归档时的运行列表里），直接用会在
@@ -164,23 +167,24 @@ function createResumeSessionHandler(deps) {
     const session = sessionManager.createSession(meta.kind || 'claude', {
       id: meta.hubId,
       title: meta.title,
-      cwd: (meta.kind === 'gemini' && meta.geminiProjectRoot) ? meta.geminiProjectRoot : meta.cwd,
+      cwd: (isGemini && meta.geminiProjectRoot) ? meta.geminiProjectRoot : meta.cwd,
       ...(meta.cwdFellBackFrom ? { cwdFellBackFrom: meta.cwdFellBackFrom } : {}),
       ...(meta.workspaceLabel ? { workspaceLabel: meta.workspaceLabel } : {}),
       meetingId: meta.meetingId || null,
       model: meta.model || undefined,
       ...(meta.effort ? { effort: meta.effort } : {}),
+      ...(isLegacyDeepSeek ? { deepseekLegacyClaude: true } : {}),
       resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
       resumeTranscriptPath: resumeTranscriptPath || undefined,
       useContinue: isClaudeCliResumable && !meta.ccSessionId,
       useResume: isNativeResumeKind,
       codexResumePicker: codexMissingSid,
       codexSid: effectiveCodexSid,
-      codexProfile: isCodexBaseKind(meta.kind) ? (meta.codexProfile || null) : null,
-      ...(isCodexBaseKind(meta.kind) && meta.mcpProfile ? { mcpProfile: meta.mcpProfile } : {}),
-      geminiChatId: meta.kind === 'gemini' ? (meta.geminiChatId || null) : null,
-      ...(meta.kind === 'gemini' && meta.geminiProjectHash ? { geminiProjectHash: meta.geminiProjectHash } : {}),
-      geminiProjectRoot: meta.kind === 'gemini' ? (meta.geminiProjectRoot || null) : null,
+      codexProfile: isCodexRuntime ? (meta.codexProfile || null) : null,
+      ...(isCodexRuntime && meta.mcpProfile ? { mcpProfile: meta.mcpProfile } : {}),
+      geminiChatId: isGemini ? (meta.geminiChatId || null) : null,
+      ...(isGemini && meta.geminiProjectHash ? { geminiProjectHash: meta.geminiProjectHash } : {}),
+      geminiProjectRoot: isGemini ? (meta.geminiProjectRoot || null) : null,
       ...(isKimi ? {
         kimiSid: meta.kimiSid || null,
         kimiSessionDir: meta.kimiSessionDir || null,
@@ -196,19 +200,28 @@ function createResumeSessionHandler(deps) {
       ...(meta.pinned ? { pinned: true } : {}),
       lastMessageTime: meta.lastMessageTime,
       lastOutputPreview: meta.lastOutputPreview,
+      ...(typeof meta.contextPct === 'number' ? { contextPct: meta.contextPct } : {}),
+      ...(typeof meta.contextUsed === 'number' ? { contextUsed: meta.contextUsed } : {}),
+      ...(typeof meta.contextMax === 'number' ? { contextMax: meta.contextMax } : {}),
+      ...(meta.purpose ? { purpose: meta.purpose } : {}),
+      ...(meta.researchSessionId ? { researchSessionId: meta.researchSessionId } : {}),
+      ...(meta.chuxinTaskId ? { chuxinTaskId: meta.chuxinTaskId } : {}),
+      ...(Array.isArray(meta.heroIds) ? { heroIds: meta.heroIds } : {}),
+      ...(meta.promptPolicyVersion ? { promptPolicyVersion: meta.promptPolicyVersion } : {}),
+      ...(meta.hiddenFromSidebar ? { hiddenFromSidebar: true } : {}),
       ...resumeOpts,
     });
     registerSessionForTap(session);
     sendToRenderer('session-created', { session });
 
     const needsLevel3 = (
-      (isCodexBaseKind(meta.kind) && !effectiveCodexSid) ||
-      (meta.kind === 'gemini' && !meta.geminiChatId)
+      (isCodexRuntime && !effectiveCodexSid) ||
+      (isGemini && !meta.geminiChatId)
     );
 
     if (needsLevel3) {
       let sourcePath = null;
-      if (meta.kind === 'gemini' && meta.geminiProjectHash && meta.geminiChatId) {
+      if (isGemini && meta.geminiProjectHash && meta.geminiChatId) {
         try {
           const dir = path.join(os.homedir(), '.gemini', 'tmp', meta.geminiProjectHash, 'chats');
           const f = fs.readdirSync(dir).find(n => n.includes(meta.geminiChatId));

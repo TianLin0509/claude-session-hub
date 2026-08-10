@@ -6,6 +6,7 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const RENDERER_SRC = fs.readFileSync(path.join(ROOT, 'renderer', 'renderer.js'), 'utf8');
+const SESSION_CAPABILITIES_SRC = fs.readFileSync(path.join(ROOT, 'core', 'session-capabilities.js'), 'utf8');
 const SESSION_MANAGER_SRC = fs.readFileSync(path.join(ROOT, 'core', 'session-manager.js'), 'utf8');
 const RESUME_IPC_SRC = fs.readFileSync(path.join(ROOT, 'main', 'ipc', 'resume-session-handlers.js'), 'utf8');
 const PERSISTENCE_SRC = fs.readFileSync(path.join(ROOT, 'main', 'ipc', 'persistence-handlers.js'), 'utf8');
@@ -29,8 +30,9 @@ test('renderer guards OSC and statusline title sync with shared helper', () => {
 });
 
 test('dormant resume forwards userRenamed and locks stable titles', () => {
-  assert.match(RENDERER_SRC, /userRenamed:\s*!!dormant\.userRenamed/);
-  assert.match(RENDERER_SRC, /autoTitleGenerated:\s*!dormant\.branchAutoTitlePending\s*&&\s*\(!!dormant\.autoTitleGenerated\s*\|\|\s*isStableSessionTitle\(dormant\.title,\s*dormant\.kind\)\)/);
+  assert.match(RENDERER_SRC, /buildSessionResumeMeta\(dormant\)/);
+  assert.match(SESSION_CAPABILITIES_SRC, /userRenamed:\s*!!session\.userRenamed/);
+  assert.match(SESSION_CAPABILITIES_SRC, /autoTitleGenerated:\s*!session\.branchAutoTitlePending\s*\n?\s*&&\s*\(!!session\.autoTitleGenerated\s*\|\|\s*isStableSessionTitle\(session\.title,\s*session\.kind\)\)/);
 });
 
 test('dormant restore treats stable persisted titles as protected', () => {
@@ -48,7 +50,7 @@ test('pending branch auto-title state survives persist and resume', () => {
   assert.match(PERSISTENCE_SRC, /'branchAutoTitlePending'/);
   assert.match(RENDERER_SRC, /branchSourceSessionId:\s*s\.branchSourceSessionId \|\| null/);
   assert.match(RENDERER_SRC, /branchAutoTitlePending:\s*!!s\.branchAutoTitlePending/);
-  assert.match(RENDERER_SRC, /branchSourceSessionId:\s*dormant\.branchSourceSessionId \|\| null/);
+  assert.match(SESSION_CAPABILITIES_SRC, /branchSourceSessionId:\s*session\.branchSourceSessionId \|\| null/);
   assert.match(RESUME_IPC_SRC, /branchAutoTitlePending:\s*meta\.branchAutoTitlePending/);
 });
 

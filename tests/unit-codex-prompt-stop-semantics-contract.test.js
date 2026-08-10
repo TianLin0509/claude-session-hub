@@ -68,8 +68,12 @@ assert.ok(
 );
 
 assert.ok(
-  /function\s+onReplyCompleteFromTranscriptEvent\s*\([\s\S]{0,900}session\.status\s*=\s*['"]idle['"]/.test(rendererSrc),
-  'Codex task_complete event must mark the session idle',
+  /function\s+onReplyCompleteFromTranscriptEvent\s*\([\s\S]{0,1400}applyReplyCompleted\(session/.test(rendererSrc),
+  'Codex task_complete must pass through the ordered session-state reducer',
+);
+assert.ok(
+  rendererSrc.includes('sessionNeedsUserInput') && rendererSrc.includes('sessionHasCompletedUnread'),
+  'ordinary completed-unread and real needs-input states must remain distinct',
 );
 
 console.log('codex prompt/stop semantics contract ok');

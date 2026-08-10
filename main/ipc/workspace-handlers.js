@@ -5,9 +5,10 @@ const { normalizeKey } = require('../../core/workspace-service.js');
 const { migrateTranscriptsForCwdChange } = require('../../core/claude-transcript-locator.js');
 const { migrateKimiSession } = require('../../core/kimi-session-migrator.js');
 const { migrateCodexSession } = require('../../core/codex-session-migrator.js');
+const { buildSessionResumeMeta } = require('../../core/session-capabilities.js');
 
-// claude CLI 的 --resume 按 cwd 分桶查找 transcript，deepseek 走同一套本地存储。
-// 这两类需要把 transcript 复制进新 cwd 的桶。
+// Claude CLI 的 --resume 按 cwd 分桶查找 transcript。DeepSeek 仅有迁移前、
+// 携带 ccSessionId 的旧会话走这套；当前 DeepSeek 与 Codex 一样改写 rollout cwd。
 //
 // ⚠ 2026-07-28 修正：这里原本写着「codex 的 rollout 按日期存放…不受目录搬迁影响」，
 // 并据此把 codex 排除在整个归档迁移之外。「rollout 文件放在哪」确实不受影响，但
@@ -15,10 +16,18 @@ const { migrateCodexSession } = require('../../core/codex-session-migrator.js');
 // "Choose working directory to resume this session" 等按键 —— 群聊成员会永久卡住，
 // 而 Hub 侧显示 idle，用户只能靠肉眼发现它不说话了。文件找得到 ≠ 能无痛恢复。
 // codex 现在走 migrateCodexSession（改写 rollout 里记的 cwd），见下方归档流程。
-const CWD_BOUND_TRANSCRIPT_KINDS = new Set(['claude', 'deepseek']);
-
 function baseKind(kind) {
   return String(kind || '').replace(/-resume$/, '');
+}
+
+function isLegacyClaudeTranscriptSession(session) {
+  const kind = baseKind(session && session.kind);
+  return kind === 'claude' || (kind === 'deepseek' && !!session.ccSessionId && !session.codexSid);
+}
+
+function isCodexTranscriptSession(session) {
+  const kind = baseKind(session && session.kind);
+  return kind === 'codex' || (kind === 'deepseek' && !isLegacyClaudeTranscriptSession(session));
 }
 
 function registerWorkspaceIpc(ipcMain, deps) {
@@ -63,43 +72,19 @@ function registerWorkspaceIpc(ipcMain, deps) {
   }
 
   function toResumeMeta(session, cwd, workspaceLabel) {
-    const model = session.currentModel && typeof session.currentModel === 'object'
-      ? session.currentModel.id
-      : session.currentModel;
     const isGemini = typeof session.kind === 'string' && session.kind.replace(/-resume$/, '') === 'gemini';
-    return {
-      hubId: session.id,
-      kind: session.kind,
-      title: session.title,
+    return buildSessionResumeMeta(session, {
       cwd,
       workspaceLabel,
-      ccSessionId: session.ccSessionId || null,
-      transcriptPath: session.transcriptPath || null,
-      meetingId: session.meetingId || null,
-      lastMessageTime: session.lastMessageTime,
-      lastOutputPreview: session.lastOutputPreview,
-      model: model || null,
-      effort: session.effort || null,
-      codexSid: session.codexSid || null,
-      codexSessionsRoot: session.codexSessionsRoot || null,
-      codexAllowMtimeFallback: !!session.codexAllowMtimeFallback,
-      codexProfile: session.codexProfile || null,
-      geminiChatId: session.geminiChatId || null,
-      geminiProjectHash: session.geminiProjectHash || null,
       geminiProjectRoot: isGemini ? cwd : (session.geminiProjectRoot || null),
-      kimiSid: session.kimiSid || null,
-      kimiSessionDir: session.kimiSessionDir || null,
-      userRenamed: !!session.userRenamed,
-      autoTitleGenerated: !!session.autoTitleGenerated,
-      pinned: !!session.pinned,
-    };
+    });
   }
 
   function preciseResumeIssue(session) {
     if (allowFallbackResume) return null;
     const kind = String(session && session.kind || '').replace(/-resume$/, '');
-    if (kind === 'claude' || kind === 'deepseek') return session.ccSessionId ? null : `${session.title || kind} 尚未绑定 Claude session ID`;
-    if (kind === 'codex') return session.codexSid ? null : `${session.title || kind} 尚未绑定 Codex session ID`;
+    if (isLegacyClaudeTranscriptSession(session)) return session.ccSessionId ? null : `${session.title || kind} 尚未绑定 Claude session ID`;
+    if (isCodexTranscriptSession(session)) return session.codexSid ? null : `${session.title || kind} 尚未绑定 Codex session ID`;
     if (kind === 'gemini') return session.geminiChatId ? null : `${session.title || kind} 尚未绑定 Gemini chat ID`;
     if (kind === 'kimi') return session.kimiSid ? null : `${session.title || kind} 尚未绑定 Kimi session ID`;
     return `${session && session.title || kind || '当前终端'} 不支持保留上下文迁移`;
@@ -322,7 +307,7 @@ function registerWorkspaceIpc(ipcMain, deps) {
       const migration = migrateTranscriptsForCwdChange({
         toCwd: workspace.path,
         ccSessionIds: snapshots
-          .filter(snapshot => CWD_BOUND_TRANSCRIPT_KINDS.has(baseKind(snapshot.kind)))
+          .filter(isLegacyClaudeTranscriptSession)
           .map(snapshot => snapshot.ccSessionId)
           .filter(Boolean),
       });
@@ -364,7 +349,7 @@ function registerWorkspaceIpc(ipcMain, deps) {
       // 迁移失败不阻断归档（归档已经成功了），但要汇总告知——否则用户只会看到
       // 一个"在线但永远不说话"的成员。
       const migrateCodexSnapshot = (snapshot) => {
-        if (baseKind(snapshot.kind) !== 'codex' || !snapshot.codexSid) return;
+        if (!isCodexTranscriptSession(snapshot) || !snapshot.codexSid) return;
         try {
           const migration = migrateCodexSession({
             sessionId: snapshot.codexSid,
@@ -400,7 +385,7 @@ function registerWorkspaceIpc(ipcMain, deps) {
         if (!entry.cwd || normalizeKey(entry.cwd) !== normalizeKey(entity.source)) continue;
         const kind = baseKind(entry.kind);
 
-        if (CWD_BOUND_TRANSCRIPT_KINDS.has(kind)) {
+        if (isLegacyClaudeTranscriptSession(entry)) {
           try {
             if (entry.ccSessionId) {
               migrateTranscriptsForCwdChange({ toCwd: workspace.path, ccSessionIds: [entry.ccSessionId] });
@@ -421,7 +406,7 @@ function registerWorkspaceIpc(ipcMain, deps) {
           continue;
         }
 
-        if (kind === 'codex') {
+        if (isCodexTranscriptSession(entry)) {
           try {
             if (entry.codexSid) {
               const migration = migrateCodexSession({

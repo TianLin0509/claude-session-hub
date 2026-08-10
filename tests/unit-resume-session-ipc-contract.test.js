@@ -29,9 +29,9 @@ function createBaseDeps(overrides = {}) {
     getHookPort: () => 3456,
     getHubDataDir: () => 'C:\\hub',
     hookToken: 'token',
-    isClaudeFamily: (kind) => ['claude', 'claude-resume', 'deepseek'].includes(kind),
+    isClaudeFamily: (kind) => ['claude', 'claude-resume'].includes(kind),
     isClaudeWebKind: () => false,
-    isCodexBaseKind: (kind) => ['codex', 'codex-resume'].includes(kind),
+    isCodexBaseKind: (kind) => ['codex', 'codex-resume', 'deepseek', 'deepseek-resume'].includes(kind),
     lookupKimiSession: () => null,
     meetingManager: { getMeeting: () => null },
     os: { homedir: () => 'C:\\Users\\tester' },
@@ -179,6 +179,28 @@ test('resumes Codex group research sessions with MCP entries and rollout path', 
   ]);
 });
 
+test('new and pre-migration DeepSeek sessions resume on their own runtime', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps();
+  registerResumeSessionIpc(ipc, deps);
+
+  const current = await ipc.handlers.get('resume-session')(null, {
+    hubId: 'ds-current', kind: 'deepseek', codexSid: 'ds-codex-1', cwd: 'C:\\repo',
+  });
+  assert.strictEqual(current.opts.useResume, true);
+  assert.strictEqual(current.opts.codexSid, 'ds-codex-1');
+  assert.strictEqual(current.opts.resumeCCSessionId, undefined);
+  assert.strictEqual(current.opts.resumeTranscriptPath, 'rollout:ds-codex-1');
+
+  const legacy = await ipc.handlers.get('resume-session')(null, {
+    hubId: 'ds-legacy', kind: 'deepseek', ccSessionId: 'ds-cc-1', model: 'deepseek-v4-pro[1m]', cwd: 'C:\\repo',
+  });
+  assert.strictEqual(legacy.opts.deepseekLegacyClaude, true);
+  assert.strictEqual(legacy.opts.resumeCCSessionId, 'ds-cc-1');
+  assert.strictEqual(legacy.opts.codexSid, null);
+  assert.strictEqual(legacy.opts.resumeTranscriptPath, 'transcript:ds-cc-1');
+});
+
 test('does not resume a persisted Codex subagent binding as the Hub top-level PTY', async () => {
   const ipc = createFakeIpc();
   const deps = createBaseDeps({
@@ -269,4 +291,22 @@ test('resumes single-meeting Gemini with prompt file env and project root cwd', 
   assert.deepStrictEqual(deps.calls.filter(call => call[0] === 'writePromptFile'), [
     ['writePromptFile', 'C:\\hub', 'm2', 'general', 'meeting covenant', 'slot-b'],
   ]);
+});
+
+test('gemini-resume keeps its exact native id instead of degrading to latest', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps();
+  registerResumeSessionIpc(ipc, deps);
+
+  const session = await ipc.handlers.get('resume-session')(null, {
+    hubId: 'g-exact',
+    kind: 'gemini-resume',
+    geminiChatId: '3eab55d9-8019-4485-a47e-07f93e288be5',
+    geminiProjectRoot: 'C:\\project',
+    cwd: 'C:\\project',
+  });
+
+  assert.strictEqual(session.opts.useResume, true);
+  assert.strictEqual(session.opts.geminiChatId, '3eab55d9-8019-4485-a47e-07f93e288be5');
+  assert.strictEqual(session.opts.geminiProjectRoot, 'C:\\project');
 });

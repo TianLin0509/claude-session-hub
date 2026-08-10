@@ -43,6 +43,7 @@
   let selectedEffort = DEFAULT_EFFORT;
   let selectedMcpProfile = 'lean';
   let recentItems = [];
+  let recommendedItems = [];
   let scratchRoot = '';
   let archiveModalEl = null;
   let archiveContext = null;
@@ -69,6 +70,11 @@
     const text = String(value || '');
     if (text.length <= max) return text;
     return `${text.slice(0, 3)}…${text.slice(-(max - 4))}`;
+  }
+
+  function workspacePathKey(value) {
+    try { return path.resolve(String(value || '')).toLowerCase(); }
+    catch { return String(value || '').toLowerCase(); }
   }
 
   function workspaceTierLabel(tier) {
@@ -463,24 +469,62 @@
     try {
       const listing = await ipcRenderer.invoke('workspace:list');
       scratchRoot = (listing && listing.scratchRoot) || scratchRoot;
+      recommendedItems = ((listing && listing.recommended) || [])
+        .filter(item => item && item.path);
       recentItems = ((listing && listing.items) || [])
         .filter(item => item && item.path && !item.legacy)
         .slice(0, RECENT_LIMIT);
     } catch (error) {
+      recommendedItems = [];
       recentItems = [];
       console.warn('[workspace] recent list failed:', error && error.message);
     }
+    renderRecommendations();
     renderRecent();
+  }
+
+  function renderRecommendations() {
+    const section = document.getElementById('new-session-recommended-section');
+    const listEl = document.getElementById('new-session-recommended');
+    if (!section || !listEl) return;
+    section.hidden = recommendedItems.length === 0;
+    if (recommendedItems.length === 0) {
+      listEl.innerHTML = '';
+      return;
+    }
+    listEl.innerHTML = recommendedItems.map(item => {
+      const selected = !!existingWorkspace
+        && workspacePathKey(existingWorkspace.path) === workspacePathKey(item.path);
+      return `<button type="button" class="session-recommended-item${selected ? ' selected' : ''}" role="option"`
+        + ` aria-selected="${selected ? 'true' : 'false'}" data-recommended-path="${escapeHtml(item.path)}" title="${escapeHtml(item.path)}">`
+        + `<strong>${escapeHtml(item.label || path.basename(item.path))}</strong>`
+        + `<span>${escapeHtml(item.description || workspaceTierLabel(item.tier))}</span>`
+        + `<small>${escapeHtml(compactPath(item.path, 30))}</small></button>`;
+    }).join('');
+    listEl.querySelectorAll('[data-recommended-path]').forEach(button => {
+      button.addEventListener('click', () => {
+        const target = recommendedItems.find(item => workspacePathKey(item.path) === workspacePathKey(button.dataset.recommendedPath));
+        if (!target) return;
+        existingWorkspace = target;
+        workspaceMode = 'existing';
+        setError('');
+        renderRecommendations();
+        renderRecent();
+        paint();
+      });
+    });
   }
 
   function renderRecent() {
     const listEl = document.getElementById('new-session-recent');
     if (!listEl) return;
-    if (recentItems.length === 0) {
+    const recommendedKeys = new Set(recommendedItems.map(item => workspacePathKey(item.path)));
+    const visibleRecentItems = recentItems.filter(item => !recommendedKeys.has(workspacePathKey(item.path)));
+    if (visibleRecentItems.length === 0) {
       listEl.innerHTML = '<div class="session-recent-empty">暂无最近工作区，用右上角「浏览文件夹…」选择。</div>';
       return;
     }
-    listEl.innerHTML = recentItems.map(item => {
+    listEl.innerHTML = visibleRecentItems.map(item => {
       const selected = !!existingWorkspace && existingWorkspace.path === item.path;
       const disabled = item.tier === 'root';
       const badges = [];
@@ -498,11 +542,12 @@
     }).join('');
     listEl.querySelectorAll('[data-recent-path]').forEach(button => {
       button.addEventListener('click', () => {
-        const target = recentItems.find(item => item.path === button.dataset.recentPath);
+        const target = visibleRecentItems.find(item => item.path === button.dataset.recentPath);
         if (!target) return;
         existingWorkspace = target;
         workspaceMode = 'existing';
         setError('');
+        renderRecommendations();
         renderRecent();
         paint();
       });
@@ -528,7 +573,7 @@
     if (!options.some(option => option.id === selectedModel)) {
       selectedModel = DEFAULT_MODEL_BY_KIND[selectedKind] || options[0].id;
     }
-    const wanted = options.map(option => `${option.id} ${option.label}`).join('|');
+    const wanted = options.map(option => `${option.id}\u0000${option.label}`).join('|');
     if (modelSelect.dataset.builtFor !== wanted) {
       modelSelect.innerHTML = options
         .map(option => `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label)}</option>`)
@@ -647,6 +692,7 @@
     selectedEffort = DEFAULT_EFFORT;
     selectedMcpProfile = 'lean';
     setError('');
+    renderRecommendations();
     renderRecent();
     paint();
     // 必须是 flex：.new-session-menu 用 column flex 把 head/footer 固定、中段滚动。

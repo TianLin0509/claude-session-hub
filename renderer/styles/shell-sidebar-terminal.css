@@ -1367,7 +1367,7 @@
   font-size: 11px; color: var(--text-muted); line-height: 1.6;
 }
 
-/* --- 侧栏分区头（等你响应 / 运行中 / 最近） --- */
+/* --- 侧栏分区头（等你响应 / 运行中 / 已完成未读 / 最近） --- */
 .session-sec-header {
   display: flex; align-items: center; gap: 6px;
   padding: 7px 10px 3px;
@@ -1380,6 +1380,8 @@
 }
 .session-sec-header.sec-respond { color: #f0ad4e; }
 .session-sec-header.sec-respond .sec-count { background: rgba(231,76,60,.22); color: #ff7b72; }
+.session-sec-header.sec-completed { color: #58a6ff; }
+.session-sec-header.sec-completed .sec-count { background: rgba(88,166,255,.18); color: #79c0ff; }
 
 /* --- 普通 session：单行密排 --- */
 .session-item.slim {
@@ -1411,9 +1413,9 @@
 .sl-ctx.danger { color: var(--accent-red); }
 .sl-ctx.dim { color: var(--text-muted); font-weight: 500; }
 .sl-time { font-size: 9.5px; color: var(--text-muted); font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
-/* 等你响应行底色：等待输入=琥珀，未读=红（替代旧 badge pill） */
+/* 注意态行底色：等待输入=琥珀，完成未读=蓝（不再把普通完成画成告警红） */
 .session-item.slim.need-wait { background: rgba(210,153,34,.09); }
-.session-item.slim.need-unread { background: rgba(231,76,60,.08); }
+.session-item.slim.need-unread { background: rgba(88,166,255,.08); }
 .session-item.slim.need-wait:hover,
 .session-item.slim.need-unread:hover { background: var(--bg-tertiary); }
 
@@ -1441,21 +1443,55 @@
 /* --- 侧栏底部聚合条 --- */
 .sidebar-strip {
   flex: none;
-  display: flex; align-items: center; gap: 10px;
-  padding: 6px 12px;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 6px 8px;
   border-top: 1px solid var(--border);
   font-size: 10px; color: var(--text-muted);
   font-family: ui-monospace, Consolas, monospace;
   white-space: nowrap; overflow: hidden;
   user-select: none;
 }
-.sidebar-strip b { color: var(--text-secondary); font-weight: 700; }
+.strip-route-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center; gap: 7px; min-width: 0;
+  min-height: 18px; padding: 1px 4px; border-radius: 4px;
+  border: 1px solid transparent;
+}
+.strip-route-main { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.strip-route-label {
+  flex: none; min-width: 24px; font-size: 9.5px; letter-spacing: .04em;
+  color: var(--text-secondary); font-weight: 800;
+}
+.strip-route-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-secondary); }
+.strip-route-value i { color: var(--text-muted); font-style: normal; }
+.strip-route-foreign .strip-route-value { color: #56d4c4; }
+.strip-route-domestic .strip-route-value { color: #79b8ff; }
+.strip-compact-metric { flex: none; color: var(--text-muted); font-size: 9px; }
+.strip-compact-metric b { color: var(--text-secondary); font-weight: 700; }
 .sidebar-strip .strip-active b { color: #79b8ff; }
 .sidebar-strip .strip-resource-high,
 .sidebar-strip .strip-resource-high b { color: var(--accent-orange); }
-/* 代理（VPN）出口：走代理时用青色，直连时降为次要色以示区别 */
-.sidebar-strip .strip-proxy b { color: #56d4c4; }
-.sidebar-strip .strip-proxy-off b { color: var(--text-muted); }
+.strip-route-badge {
+  flex: none; padding: 0 4px; border-radius: 3px;
+  font-size: 8.5px; font-weight: 800;
+}
+.strip-route-warning {
+  color: #f0ad4e; border-color: rgba(240,173,78,.45); background: rgba(210,153,34,.10);
+}
+.strip-route-warning .strip-route-badge { color: #ffd580; background: rgba(210,153,34,.22); }
+.strip-route-critical {
+  color: #ff7b72; border-color: rgba(248,81,73,.62); background: rgba(248,81,73,.13);
+  animation: strip-route-alert-pulse 1.6s ease-in-out infinite;
+}
+.strip-route-critical .strip-route-value { color: #ff9b94; }
+.strip-route-critical .strip-route-badge { color: #ffd2cf; background: rgba(248,81,73,.26); }
+.strip-route-row[data-egress-ack="true"] { cursor: pointer; }
+.strip-route-row[data-egress-ack="true"]:hover { border-color: rgba(240,173,78,.75); background: rgba(210,153,34,.17); }
+.strip-route-row.acknowledging { opacity: .62; pointer-events: none; }
+@keyframes strip-route-alert-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(248,81,73,0); }
+  50% { box-shadow: 0 0 7px rgba(248,81,73,.38); }
+}
 
 /* --- 等你响应浮动条（主区右下角，任意视图可见） --- */
 .respond-pill {
@@ -1471,7 +1507,7 @@
 }
 .respond-pill:hover { transform: translateY(-1px); border-color: #f0ad4e; }
 .respond-pill b { font-weight: 800; }
-.respond-pill .rp-unread { color: #ff7b72; }
+.respond-pill .rp-unread { color: #79c0ff; }
 
 /* --- 浮动输入栏：ctx chip + 中断钮 --- */
 .fi-ctx {
@@ -1523,7 +1559,7 @@
 .session-item.slim { border: none; background: transparent; box-shadow: none; }
 .session-item.slim.meeting { border-left-color: transparent; }
 .session-item.slim.dormant { background: transparent; border-left-color: transparent; box-shadow: none; }
-.session-item.slim.dormant.need-unread { background: rgba(231,76,60,.08); }
+.session-item.slim.dormant.need-unread { background: rgba(88,166,255,.08); }
 .session-item.slim.selected { background: rgba(88,166,255,.10); border: none; box-shadow: none; }
 .session-item.slim.selected:hover { background: rgba(88,166,255,.14); }
 

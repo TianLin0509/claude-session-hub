@@ -51,6 +51,20 @@ registerUsageIpc(ipcMain, {
     cacheState = { ...cacheState, kimi: live };
     return live;
   },
+  async refreshDeepSeekAccountBalance() {
+    calls.push(['refreshDeepSeekAccountBalance']);
+    const live = {
+      available: true,
+      currency: 'CNY',
+      totalBalance: 39.47,
+      toppedUpBalance: 39.47,
+      grantedBalance: 0,
+      observedAt: 7890,
+      source: 'deepseek-balance-api',
+    };
+    cacheState = { ...cacheState, deepseek: live };
+    return live;
+  },
   scanAgentSessions(opts) {
     calls.push(['scanAgentSessions', opts]);
     return { codex: { usage5h: { pct: 29 }, usage7d: { pct: 7 }, source: 'jsonl' } };
@@ -89,12 +103,21 @@ assert.ok(!handlers.has('refresh-packy-account'));
     source: 'kimi-api',
     observedAt: 6789,
   });
+  assert.deepStrictEqual(refreshed.providerResults.deepseek, {
+    ok: true,
+    changed: true,
+    mode: 'live',
+    source: 'deepseek-balance-api',
+    observedAt: 7890,
+  });
+  assert.strictEqual(refreshed.agentData.deepseek.totalBalance, 39.47);
   assert.ok(!Object.prototype.hasOwnProperty.call(refreshed, 'packyAccount'));
   assert.ok(typeof refreshed.refreshedAt === 'number');
   assert.deepStrictEqual(calls.filter(c => c[0] === 'clearCodexJsonlCache'), []);
   assert.deepStrictEqual(calls.filter(c => c[0] === 'refreshClaudeAccountUsage'), [['refreshClaudeAccountUsage']]);
   assert.deepStrictEqual(calls.filter(c => c[0] === 'refreshCodexAccountUsage'), [['refreshCodexAccountUsage']]);
   assert.deepStrictEqual(calls.filter(c => c[0] === 'refreshKimiAccountUsage'), [['refreshKimiAccountUsage']]);
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'refreshDeepSeekAccountBalance'), [['refreshDeepSeekAccountBalance']]);
   assert.deepStrictEqual(calls.filter(c => c[0] === 'scanAgentSessions'), []);
 
   const fallbackHandlers = new Map();

@@ -217,11 +217,11 @@ test('session-manager links memory only for Claude-family consumers and skips is
   // ensureMemoryLink 的返回值要被接住）。锁死行内写法会让每次正当重构都撞一次，
   // 所以改成结构性断言：只验证两层守卫的嵌套顺序，不管里面怎么写。
   const guardAt = SESSION_MANAGER_SRC.search(/if \(!process\.env\.CLAUDE_HUB_DATA_DIR\) \{/);
-  const familyAt = SESSION_MANAGER_SRC.indexOf('if (isClaude || isDeepSeek) {', guardAt);
+  const familyAt = SESSION_MANAGER_SRC.indexOf('if (isClaude || isDeepSeekLegacy) {', guardAt);
   const linkAt = SESSION_MANAGER_SRC.indexOf('ensureMemoryLink(spawnCwd,', familyAt);
   assert.ok(
     guardAt > 0 && familyAt > guardAt && linkAt > familyAt,
-    'only Claude / DeepSeek may mutate their memory buckets, never Codex / Kimi / PowerShell or isolated E2E',
+    'only Claude / migration-only DeepSeek may mutate Claude memory buckets, never Codex-backed DeepSeek / Kimi / PowerShell or isolated E2E',
   );
   // 2026-07-29：fallback 从单行 `if (!spawnCwd) spawnCwd = ...` 改成多行块（要给回落
   // 留痕 cwdFellBack），原来的字面量匹配失配。断言的意图没变——link 必须在 cwd 定下来

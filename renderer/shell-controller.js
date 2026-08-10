@@ -16,6 +16,7 @@ function createShellController({
   preserveAndClearTerminalPanel,
   applyViewMode,
   renderSessionList,
+  suspendTerminalRenderer,
 }) {
   function hideEscapeOverlayTargets() {
     for (const el of [
@@ -43,6 +44,7 @@ function createShellController({
   function restoreLauncherShell() {
     for (const [, cached] of terminalCache) {
       if (cached && cached.container) cached.container.style.display = 'none';
+      if (typeof suspendTerminalRenderer === 'function') suspendTerminalRenderer(cached);
     }
 
     preserveAndClearTerminalPanel();
@@ -50,6 +52,7 @@ function createShellController({
       emptyStateEl.style.display = '';
       terminalPanelEl.insertBefore(emptyStateEl, terminalPanelEl.firstChild);
     }
+    terminalPanelEl.classList.add('home-active');
 
     const overlay = document.getElementById('msg-overlay');
     if (overlay) {

@@ -191,7 +191,7 @@ test('Codex / Kimi 的 raw、汇总和拼装都不能夹带 Claude MEMORY.md', (
       fs.mkdirSync(memoryDir, { recursive: true });
       fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), 'CLAUDE SECRET MEMORY\n', 'utf8');
 
-      for (const kind of ['codex', 'kimi']) {
+      for (const kind of ['codex', 'deepseek', 'kimi']) {
         const insp = PI.buildInspection({ cwd: proj, kind });
         assert.strictEqual(insp.totals.memoryIndexBytes, 0, `${kind} totals must exclude Claude memory`);
         assert.strictEqual(insp.totals.memoryFiles, 0, `${kind} totals must exclude Claude memory`);
@@ -205,6 +205,8 @@ test('Codex / Kimi 的 raw、汇总和拼装都不能夹带 Claude MEMORY.md', (
       assert.ok(PI.collectRawSources(claude).some(source => source.group === 'memory'));
       assert.ok(PI.buildAssembly(claude).segments.some(segment => segment.role === 'memory-index'));
 
+      // The legacy inspector remains available to diagnose old Claude-backed
+      // DeepSeek buckets, but current DeepSeek buildInspection follows Codex rules.
       const deepseekMemory = PI.inspectMemory(proj, '.claude-deepseek');
       assert.strictEqual(deepseekMemory.canonicalDir,
         path.join(root, '.claude', 'projects', path.resolve(root).replace(/[^A-Za-z0-9]/g, '-'), 'memory'),

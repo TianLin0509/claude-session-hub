@@ -8,12 +8,28 @@ function hasUsageData(value) {
     .some(window => window && typeof window.pct === 'number' && Number.isFinite(window.pct));
 }
 
+function hasDeepSeekBalanceData(value) {
+  return !!(value && Number.isFinite(Number(value.totalBalance)) && value.currency);
+}
+
+function deepSeekBalanceChanged(before, after) {
+  const signature = (value) => JSON.stringify({
+    available: value && value.available !== false,
+    currency: value && value.currency || null,
+    totalBalance: value && Number(value.totalBalance),
+    toppedUpBalance: value && Number(value.toppedUpBalance),
+    grantedBalance: value && Number(value.grantedBalance),
+  });
+  return signature(before) !== signature(after);
+}
+
 function registerUsageIpc(ipcMain, deps) {
   const {
     clearCodexJsonlCache,
     loadUsageCacheForCurrentConfig,
     refreshClaudeAccountUsage,
     refreshCodexAccountUsage,
+    refreshDeepSeekAccountBalance,
     refreshKimiAccountUsage,
     scanAgentSessions,
   } = deps;
@@ -135,6 +151,36 @@ function registerUsageIpc(ipcMain, deps) {
       };
     }
 
+    try {
+      if (typeof refreshDeepSeekAccountBalance !== 'function') {
+        throw new Error('DeepSeek 余额刷新不可用');
+      }
+      const liveDeepSeek = await refreshDeepSeekAccountBalance();
+      if (!hasDeepSeekBalanceData(liveDeepSeek)) {
+        throw new Error('DeepSeek 余额接口未返回有效余额');
+      }
+      agentData.deepseek = liveDeepSeek;
+      providerResults.deepseek = {
+        ok: true,
+        changed: deepSeekBalanceChanged(before.deepseek, liveDeepSeek),
+        mode: 'live',
+        source: liveDeepSeek.source || 'deepseek-balance-api',
+        observedAt: liveDeepSeek.observedAt || liveDeepSeek._ts || Date.now(),
+      };
+    } catch (err) {
+      const fallbackDeepSeek = before.deepseek || null;
+      if (fallbackDeepSeek) agentData.deepseek = fallbackDeepSeek;
+      providerResults.deepseek = {
+        ok: hasDeepSeekBalanceData(fallbackDeepSeek),
+        changed: false,
+        mode: 'fallback',
+        source: fallbackDeepSeek && fallbackDeepSeek.source || 'deepseek-balance-api',
+        observedAt: fallbackDeepSeek && (fallbackDeepSeek.observedAt || fallbackDeepSeek._ts || fallbackDeepSeek.ts) || 0,
+        degraded: true,
+        error: errorText(err, 'DeepSeek 余额刷新失败'),
+      };
+    }
+
     const finalCache = loadUsageCacheForCurrentConfig() || {};
     const finalClaude = finalCache.claude || refreshedClaudeData || before.claude || null;
     const initialClaudeResult = providerResults.claude;
@@ -161,6 +207,8 @@ function registerUsageIpc(ipcMain, deps) {
 }
 
 module.exports = {
+  deepSeekBalanceChanged,
+  hasDeepSeekBalanceData,
   hasUsageData,
   registerUsageIpc,
 };

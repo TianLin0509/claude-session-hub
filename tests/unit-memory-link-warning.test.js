@@ -27,8 +27,8 @@ check('调用侧接住返回值而不是丢弃', () => {
   assert.match(sessionManager, /const memResult = ensureMemoryLink\(spawnCwd,\s*\{/,
     'ensureMemoryLink 的返回值必须被接住——它不 throw，丢了就等于没有错误处理');
   assert.match(sessionManager, /memResult\.errors\.length/, '必须检查 errors');
-  assert.match(sessionManager, /projectRootDirs:\s*\[isDeepSeek \? '\.claude-deepseek' : '\.claude'\]/,
-    'Claude / DeepSeek 只应维护各自的 bucket，不能跨 provider 制造空壳或误报警');
+  assert.match(sessionManager, /projectRootDirs:\s*\[isDeepSeekLegacy \? '\.claude-deepseek' : '\.claude'\]/,
+    '只有迁移前的 DeepSeek-Claude 会话维护旧 bucket；Codex-backed DeepSeek 不应制造 Claude memory 目录');
 });
 
 check('错误落到 session 上供 UI 读取', () => {

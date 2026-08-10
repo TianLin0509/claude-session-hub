@@ -358,7 +358,11 @@ function inspectMemory(cwd, configDirName = '.claude') {
 
 // ---------- 体检 ----------
 function usesClaudeMemory(kind) {
-  return kind === 'claude' || kind === 'deepseek';
+  return kind === 'claude';
+}
+
+function usesCodexRules(kind) {
+  return kind === 'codex' || kind === 'deepseek';
 }
 
 function buildHealth(insp) {
@@ -394,7 +398,7 @@ function buildHealth(insp) {
     }
   }
 
-  if (insp.kind === 'codex') {
+  if (usesCodexRules(insp.kind)) {
     const cx = insp.codex || { entries: [] };
     if (!cx.projectRoot) {
       push('warn', '没找到 project root 标记',
@@ -436,7 +440,7 @@ function buildHealth(insp) {
     // 与桶名塌缩检查对 kimi 都是假警告，按 kind 跳过。
   }
 
-  // 记忆桶是 Claude Code 独有机制（deepseek 走 Claude CLI 所以同样适用）。
+  // 记忆桶是 Claude Code 独有机制；DeepSeek 已迁移到 Codex runtime。
   // 2026-07-29 三方审查：原守卫写的是 `kind !== 'kimi'`，只挡住了 kimi，**codex 照跑**——
   // 而 buildInspection 给 codex 传的 configDirName 是 '.claude'，于是 Codex 会话的面板上
   // 显示的是 Claude 的记忆库（实测报「记忆已接入规范库 156 条」，Codex 一条都读不到）。
@@ -467,7 +471,7 @@ function buildHealth(insp) {
 function buildInspection(opts = {}) {
   const cwd = opts.cwd || homeDir();
   const kind = (opts.kind || 'claude').toLowerCase();
-  const configDirName = kind === 'deepseek' ? '.claude-deepseek' : '.claude';
+  const configDirName = '.claude';
 
   const claude = discoverClaudeChain(cwd);
   const orphanAgents = findOrphanAgentsMd(cwd, claude.entries);
@@ -479,7 +483,7 @@ function buildInspection(opts = {}) {
   const insp = { cwd, kind, claude, codex, kimi, orphanAgents, memory, slugCollapsed };
   insp.health = buildHealth(insp);
 
-  const ruleBytes = kind === 'codex'
+  const ruleBytes = usesCodexRules(kind)
     ? codex.entries.reduce((s, e) => s + e.bytes, 0)
     : kind === 'kimi'
       ? kimi.entries.reduce((s, e) => s + e.bytes, 0)
@@ -687,7 +691,7 @@ function readRawFile(file, opts = {}) {
 //   记忆索引 MEMORY.md 确实会进 prompt，但插入位置由 CLI 决定，这里排在最后（近似）
 function buildAssembly(insp, opts = {}) {
   const asmKind = ((insp && insp.kind) || 'claude');
-  const isCodex = asmKind === 'codex';
+  const isCodex = usesCodexRules(asmKind);
   const isKimi = asmKind === 'kimi';
   const claudeMemoryApplies = usesClaudeMemory(asmKind);
   const maxSeg = Math.max(1, Number(opts.maxSegmentBytes) || ASM_MAX_SEGMENT_BYTES);
@@ -784,7 +788,7 @@ function buildAssembly(insp, opts = {}) {
 
   const complete = segments.every(s => s.missing || (!s.textTruncated && !s.textOmitted));
   return {
-    kind: isCodex ? 'codex' : isKimi ? 'kimi' : 'claude',
+    kind: isCodex ? asmKind : isKimi ? 'kimi' : 'claude',
     cwd: (insp && insp.cwd) || null,
     segments,
     segmentCount: segments.filter(s => !s.missing && !s.duplicateOf).length,

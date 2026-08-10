@@ -71,8 +71,8 @@ function createBaseDeps(overrides = {}) {
     getSlotPromptName: (slotId) => `slot:${slotId}`,
     groupchat: { cleanup: (...args) => calls.push(['cleanup', ...args]) },
     hookToken: 'token',
-    isClaudeFamily: (kind) => ['claude', 'deepseek'].includes(kind),
-    isCodexBaseKind: (kind) => ['codex', 'codex-resume'].includes(kind),
+    isClaudeFamily: (kind) => ['claude', 'claude-resume'].includes(kind),
+    isCodexBaseKind: (kind) => ['codex', 'codex-resume', 'deepseek', 'deepseek-resume'].includes(kind),
     isIsolatedHub: () => true,
     kindLabels: { claude: 'Claude', codex: 'Codex', gemini: 'Gemini', deepseek: 'DeepSeek' },
     meetingManager,
@@ -184,6 +184,27 @@ test('add-meeting-sub applies Codex ai-team MCP entry for non-research group cha
   assert.strictEqual(result.session.opts.codexBypassApprovals, undefined);
   assert.deepStrictEqual(result.session.opts.codexMcpEntries, [
     { aiTeamArgs: ['m2', 'codex'] },
+  ]);
+});
+
+test('DeepSeek group members use Codex instructions and MCP entries', async () => {
+  const addSub = createMeetingSubAdder(createBaseDeps({
+    ensureDeepSeekInstructionFile: () => 'C:\\hub\\deepseek-memory.md',
+    meetingManager: (() => {
+      const manager = createFakeMeetingManager();
+      manager.setMeeting({ id: 'm-ds', groupChat: true, scene: 'research', subSessions: [] });
+      return manager;
+    })(),
+  }));
+
+  const result = await addSub('m-ds', 'deepseek', {});
+
+  assert.strictEqual(result.session.opts.codexInstructionFile, 'C:\\hub\\deepseek-memory.md');
+  assert.strictEqual(result.session.opts.mcpConfigFile, undefined);
+  assert.strictEqual(result.session.opts.codexBypassApprovals, true);
+  assert.deepStrictEqual(result.session.opts.codexMcpEntries, [
+    { aiTeamArgs: ['m-ds', 'deepseek'] },
+    { args: ['m-ds', 4567, 'token', 'C:\\hub', { enableChuxin: true }] },
   ]);
 });
 

@@ -20,6 +20,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
 
     const session = sessionManager.getSession(sid);
     const kind = session?.kind || 'unknown';
+    const runtimeKind = session?.transcriptKind || kind;
 
     // 2026-07-12 道雪：轮次窗口改由 orchestrator 状态推导，不再信 renderer 的
     //   _gcTurnStartTs（那是"当前轮"的开始时间，对旧轮重提取完全错位；Hub 重启后是 0）。
@@ -66,7 +67,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
 
     // 非 Codex 后端只能读"最新回答"，对旧轮重提取会拿到最新轮内容 → 张冠李戴。
     //   诚实拒绝，提示用户用「原文」核对旧轮，而不是静默写错数据。
-    if (!isLatestTurn && !isCodexCliKind(kind)) {
+    if (!isLatestTurn && !isCodexCliKind(runtimeKind)) {
       return {
         ok: false,
         reason: 'old_turn_resync_unsupported',
@@ -84,7 +85,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       // PTY/streaming 兜底只对"最新轮"有意义：旧轮内容早已不在流式缓冲里。
       if (isLatestTurn) {
         try {
-          const fromPty = groupChatWatcher.extractStreamingText(sid, kind);
+          const fromPty = groupChatWatcher.extractStreamingText(sid, runtimeKind);
           if (fromPty && fromPty.text && fromPty.text.trim().length > 0) {
             extracted = {
               text: fromPty.text,
@@ -216,7 +217,7 @@ function registerGroupchatRecoveryIpc(ipcMain, deps) {
       return { ok: false, reason: 'no_user_input' };
     }
     const session = sessionManager.getSession(sid);
-    const kind = session ? session.kind : 'unknown';
+    const kind = session ? (session.transcriptKind || session.kind) : 'unknown';
     try {
       return await groupChatWatcher.resendCurrentPrompt({
         sid,

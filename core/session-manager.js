@@ -7,7 +7,21 @@ const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
 const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js');
-const { normalizeDeepSeekModel, deepseekDisplayName, DEFAULT_MODEL_BY_KIND } = require('./model-options.js');
+const {
+  nativeSessionIdentity,
+  supportsRecoverableSession,
+} = require('./session-capabilities.js');
+const {
+  normalizeDeepSeekModel,
+  deepseekDisplayName,
+  normalizeLegacyDeepSeekClaudeModel,
+  legacyDeepSeekClaudeDisplayName,
+  DEFAULT_MODEL_BY_KIND,
+} = require('./model-options.js');
+const {
+  DEEPSEEK_CODEX_MODEL,
+  ensureDeepSeekCodexProfile,
+} = require('./deepseek-codex-profile.js');
 const { ensureMemoryLink } = require('./claude-memory-link.js');
 const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filter.js');
 const { TerminalSnapshot } = require('./terminal-snapshot.js');
@@ -99,6 +113,25 @@ function clearProxyEnv(env) {
   delete env.no_proxy;
 }
 
+/**
+ * 海外订阅 CLI 的唯一代理出口。先清掉 Hub 父进程可能继承的
+ * ALL_PROXY / 小写 proxy 变量，再同时写入大小写 HTTP(S)_PROXY。
+ * 否则不同 CLI / HTTP 库的变量优先级不同，界面看着是 7890，
+ * 实际仍可能拾取父进程的另一个代理。
+ */
+function applyProxyEnv(env, proxy) {
+  clearProxyEnv(env);
+  const value = String(proxy || '').trim();
+  if (!value) return false;
+  env.HTTP_PROXY = value;
+  env.HTTPS_PROXY = value;
+  env.http_proxy = value;
+  env.https_proxy = value;
+  env.NO_PROXY = 'localhost,127.0.0.1';
+  env.no_proxy = 'localhost,127.0.0.1';
+  return true;
+}
+
 function quotePowerShellLiteral(value) {
   return `'${String(value == null ? '' : value).replace(/'/g, "''")}'`;
 }
@@ -179,9 +212,7 @@ function applyClaudeSessionEnv(sessionEnv, cv) {
   delete sessionEnv.ANTHROPIC_API_KEY;
   delete sessionEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
   delete sessionEnv.ANTHROPIC_MODEL;
-  sessionEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
-  sessionEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
-  sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+  applyProxyEnv(sessionEnv, cv.CLAUDE_PROXY);
   return 'subscription';
 }
 
@@ -641,21 +672,12 @@ function buildCodexGroupMcpIsolationArgs(configDir, meetingId, allowedNames = CO
 }
 
 function getSessionResumeIdentity(info) {
-  if (!info || !info.kind) return null;
-  if (isClaudeFamily(info.kind)) return info.ccSessionId || null;
-  if (isCodexCliKind(info.kind)) return info.codexSid || null;
-  if (info.kind === 'gemini' || info.kind === 'gemini-resume') return info.geminiChatId || null;
-  if (isKimiCliKind(info.kind)) return info.kimiSid || null;
-  return null;
+  const identity = nativeSessionIdentity(info);
+  return identity ? identity.value : null;
 }
 
 function supportsRecoverableSuspend(info) {
-  if (!info || !info.kind) return false;
-  return isClaudeFamily(info.kind)
-    || isCodexCliKind(info.kind)
-    || info.kind === 'gemini'
-    || info.kind === 'gemini-resume'
-    || isKimiCliKind(info.kind);
+  return supportsRecoverableSession(info);
 }
 
 function buildCodexEphemeralMcpArgs(entries) {
@@ -779,10 +801,15 @@ class SessionManager extends EventEmitter {
     const id = opts.id || uuid();
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
-    const isCodex = isCodexCliKind(kind);
     const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';
+    // New DeepSeek sessions use Codex. Persisted pre-migration sessions carry a
+    // Claude ccSessionId and opt into this compatibility runtime so their history
+    // remains resumable instead of being silently discarded.
+    const isDeepSeekLegacy = isDeepSeek && !!opts.deepseekLegacyClaude;
+    const isCodex = kind === 'codex' || kind === 'codex-resume';
+    const isCodexRuntime = isCodex || (isDeepSeek && !isDeepSeekLegacy);
     const isKimi = isKimiCliKind(kind);
-    const isAgent = isClaude || isGemini || isCodex || isDeepSeek || isKimi;
+    const isAgent = isClaude || isGemini || isCodexRuntime || isDeepSeekLegacy || isKimi;
     let title;
     if (opts.title) title = opts.title;
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
@@ -812,6 +839,18 @@ class SessionManager extends EventEmitter {
       if (process.env.CLAUDE_HUB_DATA_DIR) {
         sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
       }
+    } else if (isDeepSeekLegacy) {
+      const cv = getConfigValues();
+      clearProxyEnv(sessionEnv);
+      sessionEnv.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
+      sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.DEEPSEEK_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_KEY;
+      delete sessionEnv.ANTHROPIC_API_BASE_URL;
+      sessionEnv.CLAUDE_CONFIG_DIR = path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), '.claude-deepseek');
+      sessionEnv.CLAUDE_HUB_SESSION_ID = id;
+      if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
+      if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
+      if (process.env.CLAUDE_HUB_DATA_DIR) sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
     } else if (isGemini || isCodex) {
       const cv = getConfigValues();
       if (isCodex && isCodexApiBackend(cv)) {
@@ -835,29 +874,19 @@ class SessionManager extends EventEmitter {
           }
         }
         // Gemini 走 google.com / Codex 订阅走 openai.com，需走代理过 GFW
-        sessionEnv.HTTP_PROXY = cv.CLAUDE_PROXY;
-        sessionEnv.HTTPS_PROXY = cv.CLAUDE_PROXY;
-        sessionEnv.NO_PROXY = 'localhost,127.0.0.1';
+        applyProxyEnv(sessionEnv, cv.CLAUDE_PROXY);
       }
     } else if (isDeepSeek) {
       const cv = getConfigValues();
-      // DeepSeek API 国内直连，不走代理
+      // V4 Flash 的 Responses API 国内直连。Key 只走 env_key，不落进
+      // config.toml / auth.json；CODEX_HOME 在拿到真实 cwd 后再生成。
       clearProxyEnv(sessionEnv);
-      // 让 Claude Code CLI 连接 DeepSeek 的 Anthropic 兼容端点
-      sessionEnv.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic';
-      sessionEnv.ANTHROPIC_AUTH_TOKEN = cv.DEEPSEEK_API_KEY;
-      // 清除可能继承的 Anthropic 认证，防止冲突
+      sessionEnv.DEEPSEEK_API_KEY = cv.DEEPSEEK_API_KEY;
       delete sessionEnv.ANTHROPIC_API_KEY;
       delete sessionEnv.ANTHROPIC_API_BASE_URL;
-      // 隔离 transcript/settings/history，防止与 Claude 会话互相污染
-      sessionEnv.CLAUDE_CONFIG_DIR = path.join(process.env.USERPROFILE || process.env.HOME || os.homedir(), '.claude-deepseek');
-      // Hub hook 集成
-      sessionEnv.CLAUDE_HUB_SESSION_ID = id;
-      if (this.hookPort) sessionEnv.CLAUDE_HUB_PORT = String(this.hookPort);
-      if (this.hookToken) sessionEnv.CLAUDE_HUB_TOKEN = this.hookToken;
-      if (process.env.CLAUDE_HUB_DATA_DIR) {
-        sessionEnv.CLAUDE_HUB_DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR;
-      }
+      delete sessionEnv.ANTHROPIC_BASE_URL;
+      delete sessionEnv.ANTHROPIC_AUTH_TOKEN;
+      delete sessionEnv.CLAUDE_CONFIG_DIR;
     } else if (isKimi) {
       // Kimi Code 会员登录与会话目录由官方 CLI 管理；国内端点默认直连，
       // 避免继承 Hub 的 Gemini/Codex 海外代理后让长流式请求被中途切断。
@@ -897,14 +926,14 @@ class SessionManager extends EventEmitter {
       }
     }
 
-    // Claude / DeepSeek 的所有入口（新建 / resume / 分支 / 群聊成员）都从这里把 cwd 的
+    // Claude 与旧 DeepSeek-Claude 的入口从这里把 cwd 的
     // memory 桶链到规范记忆库，否则每个 _scratch\inbox-* 都是零记忆开局。
     // 不能让 Codex / Kimi / PowerShell 的启动顺带迁移 Claude 的记忆目录：这段逻辑现在
     // 可能合并真实目录并换 junction，必须只由真正消费该机制的 CLI 触发。
     // 隔离 Hub / E2E 不碰用户主目录的记忆库。
     let memoryLinkWarning = null;
     if (!process.env.CLAUDE_HUB_DATA_DIR) {
-      if (isClaude || isDeepSeek) {
+      if (isClaude || isDeepSeekLegacy) {
         // ensureMemoryLink **从不 throw** —— 四种保护（错链 / 非普通文件 / memory 是文件 /
         // 锁竞争）全部收进 result.errors 返回。原先这里只写了个 catch 就把返回值丢了，
         // 于是那些保护一条都到不了用户：会话照常起，记忆却接在错误的库上或压根没接，
@@ -912,7 +941,7 @@ class SessionManager extends EventEmitter {
         // 走同一条通道：session 上留痕 → 持久化白名单 → resume → 侧栏/弹窗。
         try {
           const memResult = ensureMemoryLink(spawnCwd, {
-            projectRootDirs: [isDeepSeek ? '.claude-deepseek' : '.claude'],
+            projectRootDirs: [isDeepSeekLegacy ? '.claude-deepseek' : '.claude'],
           });
           if (memResult && memResult.errors.length) {
             memoryLinkWarning = memResult.errors.join('；');
@@ -941,7 +970,12 @@ class SessionManager extends EventEmitter {
     }
 
     let codexSessionsRoot = null;
-    if (isCodex) {
+    if (isDeepSeek && !isDeepSeekLegacy) {
+      const profile = ensureDeepSeekCodexProfile(spawnCwd);
+      sessionEnv.CODEX_HOME = profile.codexHome;
+      codexSessionsRoot = path.join(profile.codexHome, 'sessions');
+      codexProfile = { id: 'deepseek-api', label: 'DeepSeek API · Codex' };
+    } else if (isCodex) {
       const cv = getConfigValues();
       if (isCodexApiBackend(cv)) {
         sessionEnv.CODEX_HOME = ensureCodexApiProfile(cv, spawnCwd);
@@ -975,7 +1009,7 @@ class SessionManager extends EventEmitter {
       }
     }
 
-    if (isDeepSeek) {
+    if (isDeepSeekLegacy) {
       ensureClaudeBypassAndTrust(sessionEnv.CLAUDE_CONFIG_DIR, spawnCwd);
     }
 
@@ -992,7 +1026,7 @@ class SessionManager extends EventEmitter {
       // the default stays true for backward compatibility.
       // Codex's TUI does dense cursor-addressed redraws; inheriting the host
       // cursor makes Windows ConPTY more prone to transient cursor ghosts.
-      conptyInheritCursor: (isCodex || isKimi) ? false : !opts.noInheritCursor,
+      conptyInheritCursor: (isCodexRuntime || isKimi) ? false : !opts.noInheritCursor,
     });
 
     // Claude 共享 ~/.claude.json（当前会话也在用的活跃文件，spawn 时写它有 race 风险），
@@ -1034,8 +1068,15 @@ class SessionManager extends EventEmitter {
       const cmid = opts.model || resolveDefaultCodexModel(cv);
       currentModel = { id: cmid, displayName: cmid.toUpperCase() };
     } else if (isDeepSeek) {
-      const mid = normalizeDeepSeekModel(opts.model);
-      currentModel = { id: mid, displayName: deepseekDisplayName(mid) };
+      const mid = isDeepSeekLegacy
+        ? normalizeLegacyDeepSeekClaudeModel(opts.model)
+        : normalizeDeepSeekModel(opts.model);
+      currentModel = {
+        id: mid,
+        displayName: isDeepSeekLegacy
+          ? legacyDeepSeekClaudeDisplayName(mid)
+          : deepseekDisplayName(mid),
+      };
     } else if (isKimi) {
       const mid = opts.model || DEFAULT_MODEL_BY_KIND.kimi;
       currentModel = { id: mid, displayName: mid === 'kimi-code/k3' || mid === 'k3' ? 'Kimi K3' : mid };
@@ -1069,16 +1110,22 @@ class SessionManager extends EventEmitter {
       ...(opts.promptPolicyVersion ? { promptPolicyVersion: String(opts.promptPolicyVersion) } : {}),
       ...(opts.hiddenFromSidebar ? { hiddenFromSidebar: true } : {}),
       currentModel,
+      ...(typeof opts.contextPct === 'number' ? { contextPct: opts.contextPct } : {}),
+      ...(typeof opts.contextUsed === 'number' ? { contextUsed: opts.contextUsed } : {}),
+      ...(typeof opts.contextMax === 'number' ? { contextMax: opts.contextMax } : {}),
       codexSessionsRoot,
-      ...(isCodex && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
-      ...(isCodex ? { mcpProfile: normalizeCodexMcpProfile(opts.mcpProfile) } : {}),
+      // registerSessionForTap uses this internal routing hint while the public
+      // kind remains "deepseek" for branding and family identity.
+      ...(isDeepSeekLegacy ? { transcriptKind: kind === 'deepseek-resume' ? 'deepseek-legacy-resume' : 'deepseek-legacy' } : {}),
+      ...(isCodexRuntime && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
+      ...(isCodexRuntime ? { mcpProfile: normalizeCodexMcpProfile(opts.mcpProfile) } : {}),
       ...(opts.codexSid ? { codexSid: opts.codexSid } : {}),
       ...(opts.geminiChatId ? { geminiChatId: opts.geminiChatId } : {}),
       ...(opts.geminiProjectHash ? { geminiProjectHash: opts.geminiProjectHash } : {}),
       ...(opts.geminiProjectRoot ? { geminiProjectRoot: opts.geminiProjectRoot } : {}),
       ...(opts.kimiSid ? { kimiSid: opts.kimiSid } : {}),
       ...(opts.kimiSessionDir ? { kimiSessionDir: opts.kimiSessionDir } : {}),
-      ...(isCodex && (kind === 'codex-resume' || opts.codexResumePicker || (opts.useResume && !opts.codexSid)) ? { codexAllowMtimeFallback: true } : {}),
+      ...(isCodexRuntime && (kind.endsWith('-resume') || opts.codexResumePicker || (opts.useResume && !opts.codexSid)) ? { codexAllowMtimeFallback: true } : {}),
       ...(opts.userRenamed ? { userRenamed: true } : {}),
       ...(opts.autoTitleGenerated ? { autoTitleGenerated: true } : {}),
       ...(opts.branchSourceSessionId ? { branchSourceSessionId: String(opts.branchSourceSessionId) } : {}),
@@ -1234,16 +1281,13 @@ class SessionManager extends EventEmitter {
     if (isGemini) {
       let cmd = ' gemini --approval-mode yolo';
       cmd += ` --model ${opts.model || 'gemini-3-pro-preview'}`;
-      if (kind === 'gemini-resume') {
+      if (opts.useResume && opts.geminiChatId && opts.geminiChatId.length > 8) {
+        // Level 1: precise resume by full UUID.  The native id wins even when
+        // the persisted public kind is gemini-resume.
+        cmd += ` --resume ${opts.geminiChatId}`;
+      } else if (kind === 'gemini-resume' || opts.useResume) {
+        // Level 2: 8charId (old state.json format) or no chatId → fall back to latest
         cmd += ' --resume latest';
-      } else if (opts.useResume) {
-        if (opts.geminiChatId && opts.geminiChatId.length > 8) {
-          // Level 1: precise resume by full UUID (e.g. "3eab55d9-8019-4485-a47e-07f93e288be5")
-          cmd += ` --resume ${opts.geminiChatId}`;
-        } else {
-          // Level 2: 8charId (old state.json format) or no chatId → fall back to latest
-          cmd += ' --resume latest';
-        }
       }
       cmd += '\r\n';
       let sent = false;
@@ -1270,25 +1314,26 @@ class SessionManager extends EventEmitter {
       pendingTimers.push(safetyTimer);
     }
 
-    if (isCodex) {
+    if (isCodexRuntime) {
       // Remove legacy room MCP blocks left by older Hub versions. Current room
       // entries are injected only into this CLI command below.
       ensureCodexMcpEntries(sessionEnv.CODEX_HOME || null, [], CODEX_MANAGED_MCP_NAMES);
       dismissCodexUpdatePrompt(undefined, sessionEnv.CODEX_HOME || null);
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       const cv = getConfigValues();
-      const codexModel = opts.model || resolveDefaultCodexModel(cv);
+      const codexModel = isDeepSeek ? DEEPSEEK_CODEX_MODEL : (opts.model || resolveDefaultCodexModel(cv));
       const codexReasoningArg = buildCodexReasoningConfigArg(CODEX_REASONING_EFFORT);
       const codexInstructionFile = opts.codexInstructionFile || null;
       let cmd;
       if (opts.codexForkSid) {
         cmd = ` codex fork ${opts.codexForkSid} --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
-      } else if (kind === 'codex-resume' || opts.codexResumePicker) {
-        // codex resume 无参 = picker by default
-        cmd = ` codex resume --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
       } else if (opts.useResume && opts.codexSid) {
         // Level 1: precise resume by sid
         cmd = ` codex resume ${opts.codexSid} --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
+      } else if (kind.endsWith('-resume') || opts.codexResumePicker) {
+        // Native id is unknown: show the picker.  Exact ids must win even when
+        // the persisted public kind is "codex-resume" or "deepseek-resume".
+        cmd = ` codex resume --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
       } else if (opts.useResume) {
         // Level 2 degradation: no sid recorded → use --last
         cmd = ` codex resume --last --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
@@ -1344,7 +1389,7 @@ class SessionManager extends EventEmitter {
       pendingTimers.push(safetyTimer);
 
       // picker 模式下把 Filter 从 Cwd 切到 All，让所有目录的历史会话都列出来
-      if (kind === 'codex-resume' || opts.codexResumePicker) {
+      if (kind.endsWith('-resume') || opts.codexResumePicker) {
         this._autoExpandResumePicker(id, ptyProcess, {
           marker: /Resume a previous session|Filter:\s*\[?Cwd\]?/i,
           key: '\x1b[C',   // Right
@@ -1352,27 +1397,26 @@ class SessionManager extends EventEmitter {
       }
     }
 
-    if (isDeepSeek) {
+    if (isDeepSeekLegacy) {
       let cmd;
-      // --permission-mode bypassPermissions 跳过信任文件夹 + 工具权限等所有弹窗，
-      // 让 DeepSeek 会话和 Claude 会话一样直接启动（~/.claude-deepseek 是隔离配置，
-      // 不像 ~/.claude 有历史累积的信任状态，必须靠 CLI 参数兜底）。
+      // 仅用于恢复迁移前的 Claude transcript。新 DeepSeek 会话已经在上面的
+      // isCodexRuntime 分支通过 Responses API 启动。
       if (opts.forkCCSessionId) {
         // DeepSeek 也是 claude CLI，--fork-session 同样可用；接上之后分支功能不再是
         // Claude/Codex 专属（Kimi CLI 没有 fork 能力，只有 --session/--continue）。
-        const model = normalizeDeepSeekModel(opts.model);
+        const model = normalizeLegacyDeepSeekClaudeModel(opts.model);
         cmd = ` claude --resume ${opts.forkCCSessionId} --fork-session --model ${model} --permission-mode bypassPermissions`;
-      } else if (kind === 'deepseek-resume') {
-        const model = normalizeDeepSeekModel(opts.model);
-        cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.resumeCCSessionId) {
-        const model = normalizeDeepSeekModel(opts.model);
+        const model = normalizeLegacyDeepSeekClaudeModel(opts.model);
         cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
+      } else if (kind === 'deepseek-resume') {
+        const model = normalizeLegacyDeepSeekClaudeModel(opts.model);
+        cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
       } else if (opts.useContinue) {
-        const model = normalizeDeepSeekModel(opts.model);
+        const model = normalizeLegacyDeepSeekClaudeModel(opts.model);
         cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
       } else {
-        cmd = ` claude --model ${normalizeDeepSeekModel(opts.model)} --permission-mode bypassPermissions`;
+        cmd = ` claude --model ${normalizeLegacyDeepSeekClaudeModel(opts.model)} --permission-mode bypassPermissions`;
       }
       // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
       if (opts.mcpConfigFile) {
@@ -1738,11 +1782,12 @@ class SessionManager extends EventEmitter {
     // 群聊成员：复用 buildGroupChatIsolationFlags 输出 (v2 后仅 --settings,不含
     //   --disable-slash-commands;详见该函数注释)。
     // 用 isClaudeFamily 同时覆盖主 kind 与 *-resume 形态。
-    const baseKind = (typeof kind === 'string') ? kind.replace(/-resume$/, '') : kind;
+    const runtimeKind = (s.info && s.info.transcriptKind) || kind;
+    const baseKind = (typeof runtimeKind === 'string') ? runtimeKind.replace(/-resume$/, '') : runtimeKind;
     const isClaudeCli = isClaudeFamily(baseKind);
     const isolation = isClaudeCli ? buildGroupChatIsolationFlags(meetingId) : '';
     let cmd;
-    if (isCodexCliKind(kind)) {
+    if (isCodexCliKind(runtimeKind)) {
       // relaunch：API 模式时 codex 用 isolated CODEX_HOME，从 info.codexSessionsRoot 反推
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
@@ -1774,7 +1819,7 @@ class SessionManager extends EventEmitter {
       }
       cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${fastFlag}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
-      cmd = ` claude --model ${normalizeDeepSeekModel(modelId)} --permission-mode bypassPermissions${isolation}\r\n`;
+      cmd = ` claude --model ${normalizeLegacyDeepSeekClaudeModel(modelId)} --permission-mode bypassPermissions${isolation}\r\n`;
     } else if (isKimiCliKind(kind)) {
       cmd = `${kimiCommandPrefix(process.env)} --yolo${kimiModelArg(modelId || DEFAULT_MODEL_BY_KIND.kimi, process.env)}\r\n`;
     } else {
@@ -1818,6 +1863,7 @@ class SessionManager extends EventEmitter {
       ...(info.kimiSessionDir !== undefined ? { kimiSessionDir: info.kimiSessionDir } : {}),
       ...(info.currentModel ? { model: info.currentModel.id } : {}),
       ...(info.currentModel ? { currentModel: info.currentModel } : {}),
+      ...(info.effort ? { effort: info.effort } : {}),
       ...(typeof info.contextPct === 'number' ? { contextPct: info.contextPct } : {}),
       ...(typeof info.contextUsed === 'number' ? { contextUsed: info.contextUsed } : {}),
       ...(typeof info.contextMax === 'number' ? { contextMax: info.contextMax } : {}),
@@ -1930,12 +1976,11 @@ class SessionManager extends EventEmitter {
 
 // Read tail N turns from a CLI transcript file and format into a prompt-injectable
 // context block. Returns null if file unavailable or no usable turns.
-//   kind:    'claude' | 'claude-resume' | 'deepseek' | 'codex' | 'gemini'
+//   kind:    'claude' | 'deepseek-legacy' | 'deepseek' | 'codex' | 'gemini'
 //   sourcePath: kind-specific transcript file path
 //
-// 2026-05-02 修复：deepseek 跑在 Claude CLI 上，transcript JSONL shape 与 Claude
-//   完全一致，原本应复用 'claude' 分支但代码里完全没分支 → resume 时 AI 群聊历史上下文
-//   注入失败。下面把 Claude 家族判定改为 isClaudeFamily helper（已在文件顶部 require）。
+// DeepSeek now uses the Codex rollout shape. Only the internal deepseek-legacy
+// runtime retains Claude's JSONL shape for pre-migration transcript recovery.
 async function readTranscriptTail(kind, sourcePath, n = 10) {
   if (!sourcePath) return null;
   // T13 fix: refuse oversized transcripts (>5MB) to avoid main-process memory spike
@@ -1968,7 +2013,7 @@ async function readTranscriptTail(kind, sourcePath, n = 10) {
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
       if (isClaudeFamily(kind)) {
-        // Claude 家族（claude/claude-resume/deepseek）共享同一 JSONL shape
+        // Claude and migration-only deepseek-legacy share one JSONL shape.
         if (obj.type === 'user' && obj.message?.content) {
           const userText = typeof obj.message.content === 'string' ? obj.message.content : textFromContent(obj.message.content);
           if (!isSyntheticUserEntry(obj, userText)) out.push(`USER: ${userText}`);
@@ -1977,7 +2022,7 @@ async function readTranscriptTail(kind, sourcePath, n = 10) {
           const txt = obj.message.content.filter(c => c.type === 'text').map(c => c.text).join('');
           if (txt) out.push(`ASSISTANT: ${txt}`);
         }
-      } else if (kind === 'codex') {
+      } else if (isCodexCliKind(kind)) {
         if (obj.type === 'event_msg' && obj.payload?.type === 'task_complete' && obj.payload?.last_agent_message) {
           out.push(`ASSISTANT: ${obj.payload.last_agent_message}`);
         } else if (obj.type === 'response_item' && obj.payload?.role === 'user' && obj.payload?.content) {
@@ -2010,6 +2055,7 @@ module.exports = {
   _private: {
     ensureCodexCwdTrusted,
     clearProxyEnv,
+    applyProxyEnv,
     isClaudeApiBackend,
     shouldUseClaudeFastSettings,
     applyClaudeSessionEnv,

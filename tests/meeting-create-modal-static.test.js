@@ -20,6 +20,7 @@ const {
   MODEL_OPTIONS_BY_KIND,
   DEFAULT_MODEL_BY_KIND,
   normalizeDeepSeekModel,
+  normalizeLegacyDeepSeekClaudeModel,
 } = require('../core/model-options.js');
 
 test('modal model lists cover the five core AI kinds including Kimi K3', () => {
@@ -37,23 +38,27 @@ test('modal model lists cover the five core AI kinds including Kimi K3', () => {
   assert.match(modelIds, /claude-opus-4-8\[1m\]/);
   assert.match(modelIds, /gemini-2.5-flash/);
   assert.match(modelIds, /gpt-5.6-sol/);
-  assert.match(modelIds, /deepseek-v4-pro\[1m\]/);
+  assert.match(modelIds, /deepseek-v4-flash/);
+  assert.doesNotMatch(modelIds, /deepseek-v4-pro/,
+    'V4 Pro is not currently exposed by the official Codex Responses integration');
   assert.match(modelIds, /kimi-code\/k3/);
 });
 
 test('default group slots use Claude, Codex, and DeepSeek strongest defaults', () => {
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.claude, 'claude-opus-5[1m]');
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.codex, 'gpt-5.6-sol');
-  assert.strictEqual(DEFAULT_MODEL_BY_KIND.deepseek, 'deepseek-v4-pro[1m]');
+  assert.strictEqual(DEFAULT_MODEL_BY_KIND.deepseek, 'deepseek-v4-flash');
   assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.claude\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.codex\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.deepseek\s*\}/);
 });
 
-test('DeepSeek model defaults and legacy ids normalize to 1M', () => {
-  assert.strictEqual(normalizeDeepSeekModel(), 'deepseek-v4-pro[1m]');
-  assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-pro'), 'deepseek-v4-pro[1m]');
-  assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-pro[1m]'), 'deepseek-v4-pro[1m]');
+test('new DeepSeek sessions normalize to Codex Flash while old Claude sessions keep Pro', () => {
+  assert.strictEqual(normalizeDeepSeekModel(), 'deepseek-v4-flash');
+  assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-pro'), 'deepseek-v4-flash');
+  assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-flash[1m]'), 'deepseek-v4-flash');
+  assert.strictEqual(normalizeLegacyDeepSeekClaudeModel(), 'deepseek-v4-pro[1m]');
+  assert.strictEqual(normalizeLegacyDeepSeekClaudeModel('deepseek-v4-pro'), 'deepseek-v4-pro[1m]');
 });
 
 test('deleted modal presets and decorative assets stay removed', () => {

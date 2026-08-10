@@ -45,8 +45,17 @@ async function parseSessionTranscript(args = {}, deps) {
   try {
     const session = hubSessionId ? sessionManager.getSession(hubSessionId) : null;
     const kind = session ? session.kind : inKind;
+    // Public kind stays `deepseek` across the migration. A persisted Claude id
+    // without a Codex id is the unambiguous marker for a pre-migration session;
+    // it must keep using the Claude parser even when the live session is absent.
+    const effectiveCcSessionId = (session && session.ccSessionId) || ccSessionId || null;
+    const isLegacyDeepSeek = /^deepseek(?:-resume)?$/.test(String(kind || ''))
+      && !!effectiveCcSessionId
+      && !(session && session.codexSid);
+    const runtimeKind = (session && session.transcriptKind)
+      || (isLegacyDeepSeek ? 'deepseek-legacy' : kind);
 
-    if (isCodexCliKind(kind)) {
+    if (isCodexCliKind(runtimeKind)) {
       const liveRolloutPath = hubSessionId ? transcriptTap.getCodexRolloutPath(hubSessionId) : null;
       const expectedCodexSid = session && session.codexSid ? session.codexSid : null;
       if (liveRolloutPath && validateCodexRolloutPath(liveRolloutPath)) {
@@ -91,7 +100,7 @@ async function parseSessionTranscript(args = {}, deps) {
       };
     }
 
-    if (isKimiCliKind(kind)) {
+    if (isKimiCliKind(runtimeKind)) {
       transcriptPath = (session && session.transcriptPath) || inPath || null;
       if (!transcriptPath && session && session.kimiSessionDir) {
         transcriptPath = require('path').join(session.kimiSessionDir, 'agents', 'main', 'wire.jsonl');

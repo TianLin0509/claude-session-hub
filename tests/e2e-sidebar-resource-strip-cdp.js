@@ -10,6 +10,10 @@ const { connectFirstPage } = require('./helpers/cdp-client');
 
 const HUB_ROOT = path.resolve(__dirname, '..');
 const SCREENSHOT_PATH = path.join(HUB_ROOT, 'output', 'playwright', 'sidebar-resource-strip-e2e.png');
+const EGRESS_FIXTURE = JSON.stringify({
+  foreign: { ok: true, ip: '38.246.239.122', countryCode: 'US', country: 'United States', countryZh: '美国', city: 'Los Angeles', cityZh: '洛杉矶', region: 'California', locationLabel: '美国·洛杉矶' },
+  domestic: { ok: true, ip: '180.158.74.254', countryCode: 'CN', country: 'China', countryZh: '中国', city: 'Shanghai', cityZh: '上海', region: 'Shanghai', locationLabel: '中国·上海' },
+});
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -45,7 +49,7 @@ async function waitFor(client, expression, timeoutMs = 30000) {
       dataDir,
       port,
       label: 'sidebar-resource-strip',
-      extraEnv: { CLAUDE_HUB_E2E: '1' },
+      extraEnv: { CLAUDE_HUB_E2E: '1', CLAUDE_HUB_EGRESS_FIXTURE: EGRESS_FIXTURE },
     });
     client = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/i.test(target.url));
     await client.send('Page.enable');
@@ -62,24 +66,28 @@ async function waitFor(client, expression, timeoutMs = 30000) {
     }
 
     await waitFor(client, `(() => {
-      const text = document.querySelector('#sidebar-strip')?.innerText || '';
-      return /^2\\s+活跃\\s+CPU\\s+\\d+%\\s+内存\\s+\\d+%\\s+代理\\s+\\S+$/.test(text.replace(/\\s+/g, ' ').trim());
+      const el = document.querySelector('#sidebar-strip');
+      return el?.querySelectorAll('.strip-route-row').length === 2
+        && /2\\s+活跃/.test(el.querySelector('.strip-active')?.innerText || '')
+        && /CPU\\s+\\d+%.*M\\s+\\d+%/.test(el.querySelector('.strip-resource')?.innerText || '');
     })()`);
 
     const beforeClose = await client.eval(`(() => {
       const el = document.querySelector('#sidebar-strip');
       return {
         text: el.innerText.replace(/\\s+/g, ' ').trim(),
-        title: el.title,
+        foreignTitle: el.querySelector('.strip-route-foreign')?.title || '',
+        domesticTitle: el.querySelector('.strip-route-domestic')?.title || '',
         display: getComputedStyle(el).display,
       };
     })()`);
     assert.ok(!/等你|ctx|🔥|%\/h/.test(beforeClose.text), beforeClose.text);
-    assert.match(beforeClose.title, /整机实时占用/);
+    assert.match(beforeClose.foreignTitle, /实测公网 IPv4/);
+    assert.match(beforeClose.domesticTitle, /实测公网 IPv4/);
     assert.strictEqual(beforeClose.display, 'flex');
 
     await client.eval(`require('electron').ipcRenderer.invoke('close-session', ${JSON.stringify(sessionIds.pop())})`);
-    await waitFor(client, `/^1\\s+活跃/.test((document.querySelector('#sidebar-strip')?.innerText || '').replace(/\\s+/g, ' ').trim())`);
+    await waitFor(client, `/1\\s+活跃/.test(document.querySelector('#sidebar-strip .strip-active')?.innerText || '')`);
 
     const afterClose = await client.eval(`(() => {
       const el = document.querySelector('#sidebar-strip');

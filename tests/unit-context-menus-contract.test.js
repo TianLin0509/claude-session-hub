@@ -40,7 +40,9 @@ async function main() {
   };
   contextMenuEl.querySelectorAll = () => [pinBtn, closeBtn, restartBtn, deleteBtn];
 
-  const sessions = new Map([['s1', { id: 's1', pinned: false, status: 'dormant' }]]);
+  const sessions = new Map([['s1', {
+    id: 's1', kind: 'codex', codexSid: 'native-1', pinned: false, status: 'dormant',
+  }]]);
   const meetings = {};
   let activeSessionId = 's1';
   let rendered = 0;
@@ -48,6 +50,7 @@ async function main() {
   const invoked = [];
   const sent = [];
   const notices = [];
+  const wakes = [];
   const sessionMenu = createSessionContextMenuController({
     document: { addEventListener() {} },
     window: { innerWidth: 800, innerHeight: 600, confirm: () => true },
@@ -55,7 +58,13 @@ async function main() {
     sessions,
     meetings,
     ipcRenderer: {
-      invoke(channel, sid) { invoked.push({ channel, sid }); return Promise.resolve({ ok: true }); },
+      invoke(channel, sid) {
+        invoked.push({ channel, sid });
+        if (channel === 'restart-session') {
+          return Promise.resolve({ ok: false, message: '尚未绑定原生会话 ID' });
+        }
+        return Promise.resolve({ ok: true });
+      },
       send(channel, payload) { sent.push({ channel, payload }); },
     },
     getActiveSessionId: () => activeSessionId,
@@ -67,6 +76,7 @@ async function main() {
     renderSessionList: () => { rendered += 1; },
     schedulePersist: () => { persisted += 1; },
     notify: message => { notices.push(message); },
+    wakeDormantSession: async (sid) => { wakes.push(sid); return { id: sid }; },
     requestAnimationFrameFn: (fn) => fn(),
   });
   sessionMenu.init();
@@ -74,11 +84,17 @@ async function main() {
   assert.strictEqual(contextMenuEl.style.display, 'block');
   assert.strictEqual(pinBtn.textContent, 'Pin to top');
   assert.strictEqual(closeBtn.style.display, 'none', 'dormant sessions cannot be closed twice');
+  assert.strictEqual(restartBtn.textContent, '唤醒会话');
   assert.strictEqual(deleteBtn.style.display, '', 'dormant cards retain an explicit permanent-delete action');
   pinBtn._listeners.click();
   assert.strictEqual(sessions.get('s1').pinned, true);
   assert.strictEqual(rendered, 1);
   assert.strictEqual(persisted, 1);
+
+  sessionMenu.open('s1', 10, 20);
+  await restartBtn._listeners.click();
+  assert.deepStrictEqual(wakes, ['s1']);
+  assert.deepStrictEqual(invoked, [], 'dormant Restart must wake through resume-session instead of calling live restart');
 
   sessionMenu.open('s1', 10, 20);
   await deleteBtn._listeners.click();
@@ -92,13 +108,27 @@ async function main() {
   sessionMenu.open('s2', 10, 20);
   assert.strictEqual(closeBtn.style.display, '');
   assert.strictEqual(closeBtn.textContent, '关闭并休眠');
+  assert.strictEqual(restartBtn.textContent, '重启并继续当前会话');
+  await restartBtn._listeners.click();
+  assert.deepStrictEqual(invoked.at(-1), { channel: 'restart-session', sid: 's2' });
+  assert.deepStrictEqual(notices, ['尚未绑定原生会话 ID']);
+
+  sessionMenu.open('s2', 10, 20);
   await closeBtn._listeners.click();
   assert.deepStrictEqual(invoked.at(-1), { channel: 'close-session', sid: 's2' });
-  assert.deepStrictEqual(notices, [], 'running state must not block an explicit user close');
+  assert.deepStrictEqual(notices, ['尚未绑定原生会话 ID'], 'running state must not block an explicit user close');
 
   sessionMenu.open('s2', 10, 20);
   await deleteBtn._listeners.click();
   assert.deepStrictEqual(invoked.at(-1), { channel: 'delete-session', sid: 's2' });
+
+  sessions.set('protected', {
+    id: 'protected', title: '初心投研任务', kind: 'codex',
+    codexSid: 'native-protected', status: 'running', purpose: 'chuxin-research',
+  });
+  sessionMenu.open('protected', 10, 20);
+  assert.strictEqual(restartBtn.style.display, 'none',
+    'protected Chuxin research sessions must not advertise an operation the backend rejects');
 
   const previewBtn = makeElement();
   previewBtn.dataset.action = 'preview';

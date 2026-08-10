@@ -121,12 +121,34 @@ test('daily branch button can target the session shown in the header', async () 
   }]]);
 });
 
-test('terminal header exposes a one-click branch button for Claude and Codex', () => {
+test('terminal header exposes a one-click branch button through the shared provider capability', () => {
   const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   assert.match(rendererSource, /forkBtn\.className = 'btn-zoom btn-fork-session'/);
   assert.match(rendererSource, /forkBtn\.textContent = '分支'/);
   assert.match(rendererSource, /forkBtn\.addEventListener\('click', \(\) => \{\s*void keyboardShortcuts\.forkSession\(sessionId\);\s*\}\)/);
-  assert.match(rendererSource, /session\.kind === 'claude'[\s\S]*session\.kind === 'claude-resume'[\s\S]*isCodexKind\(session\.kind\)/);
+  assert.match(rendererSource, /const canForkSession = supportsForkSession\(session\)/);
+});
+
+test('DeepSeek on the Codex runtime reaches the same fork IPC as Codex', async () => {
+  const calls = [];
+  const shortcuts = createKeyboardShortcuts({
+    document: { addEventListener: () => {} },
+    ipcRenderer: { invoke: (...args) => { calls.push(args); return Promise.resolve({ ok: true }); } },
+    clipboard: { writeText: () => {} },
+    sessions: new Map([['deepseek-source', {
+      id: 'deepseek-source', kind: 'deepseek', codexSid: 'native-ds', title: 'DeepSeek 复盘',
+    }]]),
+    terminalCache: new Map(),
+    getActiveSessionId: () => 'deepseek-source',
+    getCurrentFontSize: () => 16,
+    selectSession: () => {}, escapeToHome: () => {}, toggleSidebar: () => {},
+    openTerminalSearch: () => {}, setFontSize: () => {},
+  });
+
+  await shortcuts.forkSession('deepseek-source');
+  assert.deepStrictEqual(calls, [['fork-session', {
+    sourceSessionId: 'deepseek-source', sourceTitle: 'DeepSeek 复盘',
+  }]]);
 });
 
 test('session cycling follows sidebar sort order', () => {

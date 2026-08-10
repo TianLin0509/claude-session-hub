@@ -2,7 +2,7 @@
   "name": "ai-group-chat-hub",
   "version": "1.6.10",
   "description": "多模型 AI 群聊 Hub",
-  "main": "main.js",
+  "main": "main-bootstrap.js",
   "scripts": {
     "start": "electron .",
     "test": "node test-e2e.js",
@@ -52,6 +52,7 @@
       "createDesktopShortcut": true
     },
     "files": [
+      "main-bootstrap.js",
       "main.js",
       "main/**/*",
       "core/**/*",
