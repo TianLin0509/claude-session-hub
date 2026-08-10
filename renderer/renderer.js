@@ -1,5 +1,6 @@
 const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
 const fs = require('fs');
+const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
 const { buildSessionResumeMeta, supportsForkSession } = require('../core/session-capabilities.js');
 const { formatAbsoluteTime } = require('./format-time.js');
@@ -578,12 +579,16 @@ async function refreshSystemResourceUsage() {
 // 可以频繁读 IPC 而不会频繁请求地理服务。
 async function refreshHubProxyInfo(options = {}) {
   try {
-    const [configResult, egressResult] = await Promise.allSettled([
+    const [configResult, egressResult, notificationHealthResult] = await Promise.allSettled([
       ipcRenderer.invoke('get-hub-config-raw'),
       ipcRenderer.invoke('get-network-egress-status', { force: options.force === true }),
+      ipcRenderer.invoke('get-completion-notification-health'),
     ]);
     const cfg = configResult.status === 'fulfilled' ? configResult.value : null;
     const egress = egressResult.status === 'fulfilled' ? egressResult.value : null;
+    const notificationHealth = notificationHealthResult.status === 'fulfilled'
+      ? notificationHealthResult.value
+      : null;
     const next = {
       proxy: (cfg && cfg.proxy) || (hubProxyInfo && hubProxyInfo.proxy) || (egress && egress.proxyEndpoint) || '',
       notificationEnabled: cfg
@@ -596,6 +601,7 @@ async function refreshHubProxyInfo(options = {}) {
         ? !!String(cfg.deepseekApiKey || '').trim()
         : !!(hubProxyInfo && hubProxyInfo.deepseekApiKeySet),
       egress: egress || (hubProxyInfo && hubProxyInfo.egress) || null,
+      notificationHealth: notificationHealth || (hubProxyInfo && hubProxyInfo.notificationHealth) || null,
     };
     if (hubProxyInfo
         && hubProxyInfo.proxy === next.proxy
@@ -604,7 +610,11 @@ async function refreshHubProxyInfo(options = {}) {
         && hubProxyInfo.deepseekApiKeySet === next.deepseekApiKeySet
         && Number(hubProxyInfo.egress && hubProxyInfo.egress.checkedAt) === Number(next.egress && next.egress.checkedAt)
         && String(hubProxyInfo.egress && hubProxyInfo.egress.alert && hubProxyInfo.egress.alert.type || '')
-          === String(next.egress && next.egress.alert && next.egress.alert.type || '')) return;
+          === String(next.egress && next.egress.alert && next.egress.alert.type || '')
+        && Number(hubProxyInfo.notificationHealth && hubProxyInfo.notificationHealth.lastDelivery && hubProxyInfo.notificationHealth.lastDelivery.timestamp)
+          === Number(next.notificationHealth && next.notificationHealth.lastDelivery && next.notificationHealth.lastDelivery.timestamp)
+        && String(hubProxyInfo.notificationHealth && hubProxyInfo.notificationHealth.lastDelivery && hubProxyInfo.notificationHealth.lastDelivery.status || '')
+          === String(next.notificationHealth && next.notificationHealth.lastDelivery && next.notificationHealth.lastDelivery.status || '')) return;
     hubProxyInfo = next;
     renderSidebarStrip();
     if (homeWorkbench) homeWorkbench.render();
@@ -1371,7 +1381,7 @@ const {
   mountSessionTurnCard,
   isCardOverlayAtBottom: _isCardOverlayAtBottom,
 } = turnCardRenderer;
-const { createRecentTurnCopyController } = require('./recent-turn-copy.js');
+const { createRecentTurnCopyController, formatRecentConversation } = require('./recent-turn-copy.js');
 const recentTurnCopyController = createRecentTurnCopyController({
   document,
   window,
@@ -1382,6 +1392,64 @@ const recentTurnCopyController = createRecentTurnCopyController({
   extractVisibleCardText,
 });
 recentTurnCopyController.init();
+
+async function copyRecentTurnsForSession(sessionId, count = 3) {
+  const session = sessions.get(sessionId);
+  if (!session) return { text: '', copiedRounds: 0, availableRounds: 0, requestedRounds: count };
+  const result = await ipcRenderer.invoke('parse-session-transcript', {
+    hubSessionId: sessionId,
+    ccSessionId: session.ccSessionId || null,
+    transcriptPath: session.transcriptPath || null,
+    kind: session.kind || null,
+    opts: { limit: 30, fromTail: true },
+  });
+  const entries = result && Array.isArray(result.turns)
+    ? result.turns.map(turn => ({
+      role: turn.role,
+      text: turn.text,
+      kind: turn.kind || session.kind,
+      model: turn.model,
+    }))
+    : [];
+  const formatted = formatRecentConversation(entries, count);
+  if (!formatted.text) return formatted;
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    await navigator.clipboard.writeText(formatted.text);
+  } else {
+    clipboard.writeText(formatted.text);
+  }
+  return formatted;
+}
+
+function recordSessionArtifacts(session, text, timestamp = Date.now()) {
+  if (!session || !text) return false;
+  const existing = Array.isArray(session.recentArtifacts) ? session.recentArtifacts.slice(-8) : [];
+  const additions = [];
+  const normalized = normalizeMarkdownPathBreaks(String(text).slice(-120_000));
+  const pathCandidates = collectPathCandidates(normalized, session.cwd || null, { includeDirectories: false }).slice(-24);
+  for (const candidate of pathCandidates) {
+    if (!candidate || candidate.isUrl || !candidate.openPath) continue;
+    try {
+      if (!fs.statSync(candidate.openPath).isFile()) continue;
+    } catch {
+      continue;
+    }
+    additions.push({ path: candidate.openPath, timestamp: Number(timestamp) || Date.now() });
+  }
+  if (!additions.length) return false;
+  const byPath = new Map();
+  for (const artifact of existing.concat(additions)) {
+    if (!artifact || !artifact.path) continue;
+    let key;
+    try { key = path.resolve(artifact.path).toLowerCase(); }
+    catch { key = String(artifact.path).toLowerCase(); }
+    byPath.set(key, artifact);
+  }
+  session.recentArtifacts = Array.from(byPath.values())
+    .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0))
+    .slice(-8);
+  return true;
+}
 function scheduleCodexHistoryRetry(sessionId, attempt = 0, opts = {}) {
   if (!sessionId || attempt >= 6) return;
   if (!window._codexHistoryRetryState) window._codexHistoryRetryState = new Map();
@@ -2012,6 +2080,7 @@ function markCodexCardWorking(sessionId, source = 'prompt') {
     clearSessionAttention(session);
   }
   session.cardWorkingSince = Date.now();
+  if (!session.runStartedAt) session.runStartedAt = session.cardWorkingSince;
   session.cardWorkingSource = source;
   session.status = 'running';
   session._agentWorking = 'card';
@@ -2027,6 +2096,7 @@ function markCodexCardWorking(sessionId, source = 'prompt') {
       latest.cardWorkingSource = null;
       latest._agentWorking = null;
       latest._runSource = null;
+      latest.runStartedAt = null;
       latest.status = 'idle';
       if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
       scheduleSessionListRender();
@@ -2609,6 +2679,13 @@ setInterval(sweepStaleRunning, 60 * 1000);
 function updateRespondPill() {
   const pill = document.getElementById('respond-pill');
   if (!pill) return;
+  // The home workbench already owns a full "等你输入 / 完成未读" surface.
+  // Keeping the floating pill there duplicates the same signal and can cover
+  // the model trend card at shorter window heights.
+  if (terminalPanelEl && terminalPanelEl.classList.contains('home-active')) {
+    pill.style.display = 'none';
+    return;
+  }
   const items = [];
   for (const s of sessions.values()) {
     if (s.meetingId || s.id === activeSessionId || s.status === 'dormant'
@@ -3319,8 +3396,13 @@ homeWorkbench = createHomeWorkbench({
   getHubConfig: () => hubProxyInfo,
   getUsageSnapshot: () => accountUsageController.getSnapshot(),
   getTerminalCacheSize: () => terminalCache.size,
+  loadWorkspaces: () => ipcRenderer.invoke('workspace:list'),
   selectSession: (sessionId, opts) => selectSession(sessionId, opts),
   selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
+  onCopyRecentTurns: (sessionId, count) => copyRecentTurnsForSession(sessionId, count),
+  onForkSession: (sessionId) => keyboardShortcuts.forkSession(sessionId),
+  onOpenArtifact: (artifactPath) => openPathInHub(artifactPath, { requireExistsForRel: false }),
+  onLaunchWorkspace: (workspace) => window.WorkspaceController.openNewSessionModal({ kind: 'claude', workspace }),
   escapeHtml,
   onRefresh: async () => {
     const results = await Promise.allSettled([
@@ -3600,6 +3682,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   if (!transition.applied) return;
   session._lastTranscriptReadySig = sig;
   session.lastMessageTime = transition.at;
+  recordSessionArtifacts(session, text || preview, transition.at);
 
   // 与 onPromptSubmittedFromTranscriptEvent 的开工标记配对：群聊成员干完活要收尾，
   // 否则状态灯会一直卡在运行中，只能等 45 分钟的 maxAge 兜底。群聊的未读仍由
@@ -3609,6 +3692,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
     else clearCodexCardWorking(hubSessionId);
     if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
     scheduleSessionListRender();
+    schedulePersist();
     return;
   }
 
@@ -3740,6 +3824,7 @@ function onReplyCompleteFromHook(sessionId, completedAt = Date.now()) {
   });
   if (!transition.applied) return;
   session._lastStopHookTs = now;
+  recordSessionArtifacts(session, w.text || session.lastOutputPreview || preview, transition.at);
 
   // 2026-07-20 道雪：stop hook = claude 语义工作结束，与 prompt hook 配对。
   session._agentWorking = null;
@@ -4215,6 +4300,11 @@ function schedulePersist() {
         waitingReason: s.waitingReason || null,
         waitingText: s.waitingText || null,
         replyReadyText: s.replyReadyText || null,
+        runStartedAt: typeof s.runStartedAt === 'number' ? s.runStartedAt : null,
+        lastCompletedAt: typeof s.lastCompletedAt === 'number' ? s.lastCompletedAt : null,
+        lastRunStartedAt: typeof s.lastRunStartedAt === 'number' ? s.lastRunStartedAt : null,
+        lastRunDurationMs: typeof s.lastRunDurationMs === 'number' ? s.lastRunDurationMs : null,
+        recentArtifacts: Array.isArray(s.recentArtifacts) ? s.recentArtifacts.slice(-8) : null,
         suspendedAt: s.suspendedAt || null,
         suspendReason: s.suspendReason || null,
         currentModel: s.currentModel || null,
@@ -4380,6 +4470,11 @@ window.resumeDormantSession = resumeDormantSession;
         contextPct: typeof meta.contextPct === 'number' ? meta.contextPct : null,
         contextUsed: typeof meta.contextUsed === 'number' ? meta.contextUsed : null,
         contextMax: typeof meta.contextMax === 'number' ? meta.contextMax : null,
+        runStartedAt: null,
+        lastCompletedAt: typeof meta.lastCompletedAt === 'number' ? meta.lastCompletedAt : null,
+        lastRunStartedAt: typeof meta.lastRunStartedAt === 'number' ? meta.lastRunStartedAt : null,
+        lastRunDurationMs: typeof meta.lastRunDurationMs === 'number' ? meta.lastRunDurationMs : null,
+        recentArtifacts: Array.isArray(meta.recentArtifacts) ? meta.recentArtifacts.slice(-8) : [],
         userRenamed: !!meta.userRenamed,
         autoTitleGenerated: !meta.branchAutoTitlePending
           && (!!meta.autoTitleGenerated || isStableSessionTitle(meta.title, meta.kind)),

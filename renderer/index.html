@@ -156,7 +156,7 @@
                 <h1 class="home-workbench-title" id="home-workbench-title">HUB 工作台</h1>
                 <span class="home-title-pill">主页</span>
               </div>
-              <p class="home-workbench-subtitle">集中查看当前 HUB 的 Agent 流转，以及模型用量与同步健康，再决定进入哪个 Session。</p>
+              <p class="home-workbench-subtitle">先看异常、进度与产物，再决定进入哪个 Session；常用项目和四家模型用量也集中在这里。</p>
             </div>
             <div class="home-head-actions">
               <div class="home-health" role="status" aria-live="polite">
@@ -193,26 +193,54 @@
             </section>
 
             <div class="home-pulse-grid">
-              <section class="home-section-card home-flow-board" aria-labelledby="home-flow-title">
-                <div class="home-section-head">
-                  <div class="home-section-title" id="home-flow-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h4l2-7 4 14 2-7h4"/></svg>Session 流水线</div>
-                  <span class="home-section-meta">状态自动跨列 · 最近活动优先</span>
+              <div class="home-pulse-main">
+                <section class="home-section-card home-flow-board" aria-labelledby="home-flow-title">
+                  <div class="home-section-head">
+                    <div class="home-section-title" id="home-flow-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h4l2-7 4 14 2-7h4"/></svg>Session 流水线</div>
+                    <span class="home-section-meta">运行超过 10 分钟会显示累计耗时</span>
+                  </div>
+                  <div class="home-flow-columns">
+                    <section class="home-flow-column" aria-labelledby="home-waiting-title">
+                      <div class="home-flow-column-head"><div class="home-lane-title" id="home-waiting-title"><i class="home-lane-dot waiting"></i>等你输入</div><span class="home-lane-count" id="home-waiting-count">0</span></div>
+                      <div class="home-lane-list" id="home-lane-waiting"></div>
+                    </section>
+                    <section class="home-flow-column" aria-labelledby="home-running-title">
+                      <div class="home-flow-column-head"><div class="home-lane-title" id="home-running-title"><i class="home-lane-dot running"></i>运行中</div><span class="home-lane-count" id="home-running-count">0</span></div>
+                      <div class="home-lane-list" id="home-lane-running"></div>
+                    </section>
+                    <section class="home-flow-column" aria-labelledby="home-delivered-title">
+                      <div class="home-flow-column-head"><div class="home-lane-title" id="home-delivered-title"><i class="home-lane-dot delivered"></i>最近完成</div><span class="home-lane-count" id="home-delivered-count">0</span></div>
+                      <div class="home-lane-list" id="home-lane-delivered"></div>
+                    </section>
+                  </div>
+                </section>
+
+                <div class="home-operations-grid">
+                  <section class="home-section-card" aria-labelledby="home-exception-title">
+                    <div class="home-section-head">
+                      <div class="home-section-title" id="home-exception-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.8 19h18.4z"/><path d="M12 9v4m0 3h.01"/></svg>异常收件箱</div>
+                      <span class="home-lane-count" id="home-exception-count">0</span>
+                    </div>
+                    <div class="home-insight-list" id="home-exception-list" aria-live="polite"></div>
+                  </section>
+
+                  <section class="home-section-card" aria-labelledby="home-context-title">
+                    <div class="home-section-head">
+                      <div class="home-section-title" id="home-context-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>上下文风险</div>
+                      <span class="home-lane-count" id="home-context-count">0</span>
+                    </div>
+                    <div class="home-insight-list" id="home-context-risk"></div>
+                  </section>
                 </div>
-                <div class="home-flow-columns">
-                  <section class="home-flow-column" aria-labelledby="home-waiting-title">
-                    <div class="home-flow-column-head"><div class="home-lane-title" id="home-waiting-title"><i class="home-lane-dot waiting"></i>等你输入</div><span class="home-lane-count" id="home-waiting-count">0</span></div>
-                    <div class="home-lane-list" id="home-lane-waiting"></div>
-                  </section>
-                  <section class="home-flow-column" aria-labelledby="home-running-title">
-                    <div class="home-flow-column-head"><div class="home-lane-title" id="home-running-title"><i class="home-lane-dot running"></i>运行中</div><span class="home-lane-count" id="home-running-count">0</span></div>
-                    <div class="home-lane-list" id="home-lane-running"></div>
-                  </section>
-                  <section class="home-flow-column" aria-labelledby="home-delivered-title">
-                    <div class="home-flow-column-head"><div class="home-lane-title" id="home-delivered-title"><i class="home-lane-dot delivered"></i>最近完成</div><span class="home-lane-count" id="home-delivered-count">0</span></div>
-                    <div class="home-lane-list" id="home-lane-delivered"></div>
-                  </section>
-                </div>
-              </section>
+
+                <section class="home-section-card" aria-labelledby="home-artifact-title">
+                  <div class="home-section-head">
+                    <div class="home-section-title" id="home-artifact-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5M8 13h8m-8 4h6"/></svg>最近产物</div>
+                    <span class="home-section-meta"><span id="home-artifact-count">0</span> 个可直接打开</span>
+                  </div>
+                  <div class="home-artifact-list" id="home-artifact-list"></div>
+                </section>
+              </div>
 
               <aside class="home-pulse-side" aria-label="当前 HUB 状态与固定入口">
                 <button class="home-research-entry" id="btn-chuxin" type="button" title="打开初心投研工作台">
@@ -223,9 +251,25 @@
                   <svg class="home-research-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
                 </button>
 
+                <section class="home-section-card" aria-labelledby="home-workspace-title">
+                  <div class="home-section-head"><div class="home-section-title" id="home-workspace-title">常用项目启动区</div><span class="home-section-meta">默认 Claude · 可再切模型</span></div>
+                  <div class="home-workspace-launch" id="home-workspace-launch"></div>
+                </section>
+
                 <section class="home-section-card" aria-labelledby="home-provider-title">
-                  <div class="home-section-head"><div class="home-section-title" id="home-provider-title">模型与配额</div><span class="home-section-meta">5h 滚动窗口</span></div>
+                  <div class="home-section-head"><div class="home-section-title" id="home-provider-title">四模型用量</div><span class="home-section-meta">5h · 7d · 配额刷新</span></div>
                   <div class="home-provider-health" id="home-provider-health"></div>
+                </section>
+
+                <section class="home-section-card" aria-labelledby="home-night-title">
+                  <div class="home-section-head"><div class="home-section-title" id="home-night-title">夜间任务摘要</div><span class="home-section-meta" id="home-night-window">昨晚 20:00 至现在</span></div>
+                  <div class="home-night-metrics">
+                    <div><strong id="home-night-completed">0</strong><span>完成</span></div>
+                    <div><strong id="home-night-failed">0</strong><span>失败</span></div>
+                    <div><strong id="home-night-waiting">0</strong><span>待处理</span></div>
+                    <div><strong id="home-night-duration">—</strong><span>累计耗时</span></div>
+                  </div>
+                  <div class="home-night-list" id="home-night-list"></div>
                 </section>
 
                 <section class="home-section-card" aria-labelledby="home-sync-title">

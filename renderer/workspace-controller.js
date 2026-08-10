@@ -685,8 +685,11 @@
   function openNewSessionModal(options = {}) {
     if (!menuEl) return;
     selectedKind = KIND_LABELS[options.kind] ? options.kind : 'claude';
-    workspaceMode = 'scratch';
-    existingWorkspace = null;
+    const requestedWorkspace = options.workspace && typeof options.workspace.path === 'string'
+      ? { ...options.workspace }
+      : null;
+    workspaceMode = requestedWorkspace ? 'existing' : 'scratch';
+    existingWorkspace = requestedWorkspace;
     submitting = false;
     selectedModel = DEFAULT_MODEL_BY_KIND[selectedKind] || '';
     selectedEffort = DEFAULT_EFFORT;

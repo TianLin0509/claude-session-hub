@@ -4,7 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { buildHomeSnapshot } = require('../renderer/home-workbench.js');
+const {
+  LONG_TASK_MS,
+  buildHomeSnapshot,
+} = require('../renderer/home-workbench.js');
 
 test('HUB workbench groups top-level sessions and meetings into actionable lanes', () => {
   const now = Date.UTC(2026, 7, 10, 10, 0, 0);
@@ -63,6 +66,7 @@ test('home navigation replaces the old top research shortcut and keeps research 
   const root = path.resolve(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');
   const renderer = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
+  const workbench = fs.readFileSync(path.join(root, 'renderer', 'home-workbench.js'), 'utf8');
   const css = fs.readFileSync(path.join(root, 'renderer', 'styles', 'home-workbench.css'), 'utf8');
 
   const homeIndex = html.indexOf('id="btn-home"');
@@ -76,6 +80,70 @@ test('home navigation replaces the old top research shortcut and keeps research 
   assert.match(html, /id="home-notification-slot"/);
   assert.match(renderer, /btnHome\.addEventListener\('click', \(\) => escapeToHome\(\)\)/);
   assert.match(renderer, /homeWorkbench = createHomeWorkbench\(/);
+  assert.match(html, /四模型用量/);
+  assert.doesNotMatch(html, /趋势快照|本机采样/);
+  assert.doesNotMatch(workbench, /usage-trend-store|home-trend-spark|趋势积累/);
+  assert.match(workbench, /usageWindowMarkup\('5h'/);
+  assert.match(workbench, /usageWindowMarkup\('7d'/);
+  assert.match(css, /\.home-usage-windows/);
   assert.match(css, /\.home-pulse-grid/);
   assert.ok(!html.includes('\uFFFD'), 'index.html must remain valid UTF-8');
+});
+
+test('workbench derives P0/P1 operational insights without transcript scans', () => {
+  const now = new Date('2026-08-10T07:00:00').getTime();
+  const artifactPath = 'C:\\Vibe\\AI\\report.html';
+  const sessions = new Map([
+    ['long', {
+      id: 'long', kind: 'codex', title: '长任务', status: 'running',
+      runStartedAt: now - 22 * 60_000,
+      lastMessageTime: now - 8 * 60_000,
+      contextPct: 93,
+    }],
+    ['done', {
+      id: 'done', kind: 'claude', title: '夜间报告', status: 'idle', unreadCount: 1,
+      lastMessageTime: now - 2 * 60 * 60_000,
+      lastCompletedAt: now - 2 * 60 * 60_000,
+      lastRunDurationMs: 18 * 60_000,
+      recentArtifacts: [{ path: artifactPath, timestamp: now - 2 * 60 * 60_000 }],
+    }],
+    ['failed', {
+      id: 'failed', kind: 'kimi', title: '夜间失败任务', status: 'error', unreadCount: 0,
+      lastMessageTime: now - 60 * 60_000,
+      lastCompletedAt: now - 60 * 60_000,
+      lastRunDurationMs: 7 * 60_000,
+    }],
+    ['slept', {
+      id: 'slept', kind: 'claude', title: '已自动休眠的夜间任务', status: 'dormant', unreadCount: 0,
+      lastMessageTime: now - 3 * 60 * 60_000,
+      lastCompletedAt: now - 3 * 60 * 60_000,
+      lastRunDurationMs: 11 * 60_000,
+      recentArtifacts: [{ path: 'C:\\Vibe\\AI\\sleep-report.md', timestamp: now - 3 * 60 * 60_000 }],
+    }],
+  ]);
+
+  const snapshot = buildHomeSnapshot({
+    sessions,
+    now,
+    pathExists: value => value === artifactPath || value.endsWith('sleep-report.md'),
+    hubConfig: {
+      egress: {
+        checkedAt: now,
+        alert: { type: 'vpn_unavailable', severity: 'critical', title: 'VPN 不可用', message: '海外出口失败' },
+      },
+    },
+  });
+
+  assert.equal(snapshot.lanes.running[0].longRunning, true);
+  assert.ok(snapshot.lanes.running[0].elapsedMs >= LONG_TASK_MS);
+  assert.deepStrictEqual(snapshot.contextRisk.map(item => item.id), ['long']);
+  assert.equal(snapshot.contextRisk[0].supportsFork, true);
+  assert.equal(snapshot.artifacts[0].path, artifactPath);
+  assert.equal(snapshot.night.completed, 2);
+  assert.equal(snapshot.night.failed, 1);
+  assert.equal(snapshot.night.totalDurationMs, 29 * 60_000);
+  assert.ok(snapshot.artifacts.some(item => item.name === 'sleep-report.md'));
+  assert.ok(snapshot.exceptions.some(item => item.id === 'session-stalled:long'));
+  assert.ok(snapshot.exceptions.some(item => item.id === 'session-context:long'));
+  assert.equal(snapshot.exceptions[0].id, 'system-egress:vpn_unavailable', 'critical system exception should sort first');
 });

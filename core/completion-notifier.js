@@ -17,6 +17,44 @@ const DEFAULT_RETRY_DELAYS_MS = Object.freeze([2_000, 10_000, 60_000]);
 const DEDUPE_WINDOW_MS = 30_000;
 const RECENT_EVENT_TTL_MS = 30 * 60_000;
 const MAX_RECENT_EVENTS = 500;
+const AUDIT_TAIL_BYTES = 64 * 1024;
+
+function readLastDeliveryAudit(logPath) {
+  if (!logPath) return null;
+  let fd = null;
+  try {
+    const stat = fs.statSync(logPath);
+    if (!stat.isFile() || stat.size <= 0) return null;
+    const length = Math.min(AUDIT_TAIL_BYTES, stat.size);
+    const buffer = Buffer.alloc(length);
+    fd = fs.openSync(logPath, 'r');
+    fs.readSync(fd, buffer, 0, length, stat.size - length);
+    const lines = buffer.toString('utf8').split(/\r?\n/).filter(Boolean).reverse();
+    for (const line of lines) {
+      let record;
+      try { record = JSON.parse(line); } catch { continue; }
+      if (!record || (record.status !== 'sent' && record.status !== 'failed')) continue;
+      const timestamp = Date.parse(record.ts);
+      if (!Number.isFinite(timestamp)) continue;
+      return {
+        status: record.status,
+        timestamp,
+        attempt: Number(record.attempt) || 1,
+        errorCode: record.errorCode || null,
+        transient: record.transient === true,
+        statusCode: Number.isFinite(Number(record.statusCode)) ? Number(record.statusCode) : null,
+        providerCode: record.providerCode == null ? null : String(record.providerCode),
+      };
+    }
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+  return null;
+}
 
 function clampInteger(value, fallback, min, max) {
   const parsed = Number.parseInt(value, 10);
@@ -211,6 +249,7 @@ class CompletionNotifier {
     this.promptSubmittedAt = new Map();
     this.recentEvents = new Map();
     this.retryTimers = new Set();
+    this.lastDelivery = readLastDeliveryAudit(this.getLogPath());
   }
 
   notePromptSubmitted(event = {}) {
@@ -404,6 +443,13 @@ class CompletionNotifier {
         statusCode: result.statusCode,
         providerCode: result.providerCode,
       });
+      this.lastDelivery = {
+        status: 'sent',
+        timestamp: this.now(),
+        attempt,
+        statusCode: result.statusCode,
+        providerCode: result.providerCode,
+      };
       return { ok: true, status: 'sent', attempt };
     } catch (error) {
       const safeError = error instanceof NotificationDeliveryError
@@ -420,6 +466,15 @@ class CompletionNotifier {
         statusCode: safeError.statusCode,
         providerCode: safeError.providerCode,
       });
+      this.lastDelivery = {
+        status: 'failed',
+        timestamp: this.now(),
+        attempt,
+        errorCode: safeError.code,
+        transient: safeError.transient,
+        statusCode: safeError.statusCode,
+        providerCode: safeError.providerCode,
+      };
       return {
         ok: false,
         status: 'failed',
@@ -461,6 +516,13 @@ class CompletionNotifier {
     this.promptSubmittedAt.clear();
     this.recentEvents.clear();
   }
+
+  getHealth() {
+    return {
+      lastDelivery: this.lastDelivery ? { ...this.lastDelivery } : null,
+      retrying: this.retryTimers.size > 0,
+    };
+  }
 }
 
 module.exports = {
@@ -470,5 +532,6 @@ module.exports = {
   isUsableSendKey,
   maskSecret,
   normalizeNotificationConfig,
+  readLastDeliveryAudit,
   sendServerChan,
 };

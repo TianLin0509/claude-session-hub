@@ -129,20 +129,26 @@ test('registers dormant and persist channels', () => {
   });
 });
 
-test('mergeResumeMetaFields preserves resume metadata and user rename flag', () => {
-  const incoming = [{ hubId: 'keep', title: 'Renderer', transcriptPath: null, userRenamed: false }];
+test('mergeResumeMetaFields preserves durable workbench metadata but not a stale running clock', () => {
+  const incoming = [{ hubId: 'keep', title: 'Renderer', transcriptPath: null, runStartedAt: null, userRenamed: false }];
 
   mergeResumeMetaFields(incoming, [{
     hubId: 'keep',
     transcriptPath: 'C:\\old\\transcript.jsonl',
     currentModel: 'opus',
     mcpProfile: 'browser',
+    runStartedAt: 123,
+    lastCompletedAt: 456,
+    recentArtifacts: [{ path: 'C:\\report.html', timestamp: 456 }],
     userRenamed: true,
   }]);
 
   assert.strictEqual(incoming[0].transcriptPath, 'C:\\old\\transcript.jsonl');
   assert.strictEqual(incoming[0].currentModel, 'opus');
   assert.strictEqual(incoming[0].mcpProfile, 'browser');
+  assert.strictEqual(incoming[0].runStartedAt, null);
+  assert.strictEqual(incoming[0].lastCompletedAt, 456);
+  assert.deepStrictEqual(incoming[0].recentArtifacts, [{ path: 'C:\\report.html', timestamp: 456 }]);
   assert.strictEqual(incoming[0].userRenamed, true);
 });
 

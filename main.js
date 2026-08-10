@@ -1585,6 +1585,7 @@ registerConfigIpc(ipcMain, {
   clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
   clearSessionManagerConfigCache,
   currentCodexUsageScope,
+  getCompletionNotificationHealth: () => completionNotifier.getHealth(),
   scanAgentSessions,
   sendToRenderer,
   testCompletionNotification: (payload) => completionNotifier.sendTest(payload),

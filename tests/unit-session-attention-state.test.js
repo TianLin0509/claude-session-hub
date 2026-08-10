@@ -95,3 +95,26 @@ test('legacy reply-ready waiting flag migrates without becoming needs-input', ()
   assert.equal(attentionStateOf(session), ATTENTION_NONE);
   assert.equal(session.unreadCount, 0);
 });
+
+test('ordered attention reducer records workbench run duration without stale resets', () => {
+  const session = { status: 'idle', unreadCount: 0 };
+  const startedAt = 1_800_000_000_000;
+  applyPromptSubmitted(session, { submittedAt: startedAt, turnId: 'turn-duration' });
+  assert.equal(session.runStartedAt, startedAt);
+
+  // The authoritative transcript event enriches the optimistic prompt but must
+  // not move the visible start time forward.
+  applyPromptSubmitted(session, { submittedAt: startedAt + 100, turnId: 'turn-duration' });
+  assert.equal(session.runStartedAt, startedAt);
+
+  applyReplyCompleted(session, {
+    completedAt: startedAt + 60_000,
+    turnId: 'turn-duration',
+    text: '完成',
+    seenByUser: false,
+  });
+  assert.equal(session.lastCompletedAt, startedAt + 60_000);
+  assert.equal(session.lastRunStartedAt, startedAt);
+  assert.equal(session.lastRunDurationMs, 60_000);
+  assert.equal(session.runStartedAt, null);
+});

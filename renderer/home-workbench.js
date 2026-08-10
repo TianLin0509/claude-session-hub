@@ -1,13 +1,24 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js');
+const { supportsForkSession } = require('../core/session-capabilities.js');
 const {
   sessionHasCompletedUnread,
   sessionNeedsUserInput,
 } = require('../core/session-attention-state.js');
+const { collectPathCandidates } = require('./path-candidates.js');
 
 const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const LONG_TASK_MS = 10 * 60 * 1000;
+const STALLED_TASK_MS = 15 * 60 * 1000;
+const STALE_OUTPUT_MS = 5 * 60 * 1000;
+const CONTEXT_WARNING_PCT = 70;
+const CONTEXT_CRITICAL_PCT = 90;
 const MAX_LANE_ITEMS = 5;
+const MAX_INSIGHT_ITEMS = 6;
+const MAX_ARTIFACT_ITEMS = 6;
 
 const PROVIDER_LABELS = {
   claude: 'CLAUDE',
@@ -19,8 +30,14 @@ const PROVIDER_LABELS = {
   group: '群聊',
 };
 
+function finiteNumber(value) {
+  if (value == null || value === '' || typeof value === 'boolean') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function baseKind(kind) {
-  const value = String(kind || '').replace(/-resume$/i, '').toLowerCase();
+  const value = String(kind || '').replace(/-(?:resume|api)$/i, '').toLowerCase();
   return Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, value) ? value : 'group';
 }
 
@@ -35,34 +52,61 @@ function itemTime(item) {
   return Number(item.lastMessageTime || item.updatedAt || item.createdAt || 0);
 }
 
-function makeSessionItem(session) {
+function runStartedAtOf(session) {
+  return finiteNumber(session && (session.runStartedAt || session.cardWorkingSince)) || 0;
+}
+
+function makeSessionItem(session, now = Date.now()) {
   const unreadCount = Math.max(0, Number(session.unreadCount || 0));
   const kind = baseKind(session.kind);
+  const running = session.status === 'running' || isGroupChatMemberRunning(session);
+  const runStartedAt = running ? runStartedAtOf(session) : 0;
+  const lastActivityAt = Math.max(itemTime(session), finiteNumber(session._lastOutputTs) || 0);
+  const elapsedMs = running && runStartedAt > 0 ? Math.max(0, now - runStartedAt) : null;
+  const contextPct = finiteNumber(session.contextPct);
   return {
-    id: String(session.id || ''),
+    id: String(session.id || session.hubId || ''),
     type: 'session',
     title: String(session.title || PROVIDER_LABELS[kind] || 'Session'),
     kind,
     providerLabel: PROVIDER_LABELS[kind] || 'AI',
     preview: String(session.waitingText || session.replyReadyText || session.lastOutputPreview || session.workspaceLabel || session.cwd || ''),
+    cwd: typeof session.cwd === 'string' ? session.cwd : '',
     lastMessageTime: itemTime(session),
+    lastActivityAt,
+    lastCompletedAt: finiteNumber(session.lastCompletedAt) || 0,
+    lastRunDurationMs: finiteNumber(session.lastRunDurationMs),
+    runStartedAt,
+    elapsedMs,
+    longRunning: elapsedMs != null && elapsedMs >= LONG_TASK_MS,
     status: session.status || 'idle',
-    running: session.status === 'running' || isGroupChatMemberRunning(session),
+    errorText: String(session.lastError || session.error || session.spawnError || ''),
+    running,
     waiting: sessionNeedsUserInput(session),
     completedUnread: sessionHasCompletedUnread(session),
     unreadCount,
+    contextPct,
+    supportsFork: supportsForkSession(session),
     dormant: session.status === 'dormant',
   };
 }
 
-function makeMeetingItem(meeting, sessionMap) {
+function makeMeetingItem(meeting, sessionMap, now = Date.now()) {
   const childIds = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
-  const running = meeting.status === 'running' || childIds.some((id) => {
-    const child = sessionMap.get(id);
-    return child && child.status !== 'dormant' && isGroupChatMemberRunning(child);
-  });
+  const activeChildren = childIds
+    .map(id => sessionMap.get(id))
+    .filter(child => child && child.status !== 'dormant');
+  const running = meeting.status === 'running'
+    || activeChildren.some(child => isGroupChatMemberRunning(child));
   const answered = numberFromUnreadAnswered(meeting.unreadAnswered);
   const unreadCount = Math.max(answered, Number(meeting.unreadCount || 0));
+  const runStarts = activeChildren
+    .filter(child => isGroupChatMemberRunning(child))
+    .map(runStartedAtOf)
+    .filter(Boolean);
+  const runStartedAt = finiteNumber(meeting.runStartedAt)
+    || (runStarts.length ? Math.min(...runStarts) : 0);
+  const elapsedMs = running && runStartedAt > 0 ? Math.max(0, now - runStartedAt) : null;
   return {
     id: String(meeting.id || ''),
     type: 'meeting',
@@ -71,13 +115,286 @@ function makeMeetingItem(meeting, sessionMap) {
     providerLabel: '群聊',
     preview: String(meeting.lastOutputPreview || `${childIds.length} 位 AI 成员`),
     lastMessageTime: itemTime(meeting),
+    lastActivityAt: Math.max(itemTime(meeting), ...activeChildren.map(itemTime), 0),
+    lastCompletedAt: finiteNumber(meeting.lastCompletedAt) || 0,
+    lastRunDurationMs: finiteNumber(meeting.lastRunDurationMs),
+    runStartedAt,
+    elapsedMs,
+    longRunning: elapsedMs != null && elapsedMs >= LONG_TASK_MS,
     status: meeting.status || 'idle',
+    errorText: String(meeting.lastError || meeting.error || ''),
     running,
     waiting: false,
     completedUnread: unreadCount > 0,
     unreadCount,
+    contextPct: null,
+    supportsFork: false,
     dormant: meeting.status === 'dormant',
   };
+}
+
+function buildNightWindow(now = Date.now()) {
+  const current = new Date(now);
+  const hour = current.getHours();
+  const start = new Date(current);
+  const end = new Date(current);
+  let label;
+
+  if (hour >= 20) {
+    start.setHours(20, 0, 0, 0);
+    label = '今晚 20:00 至现在';
+  } else {
+    start.setDate(start.getDate() - 1);
+    start.setHours(20, 0, 0, 0);
+    if (hour < 8) {
+      label = '昨晚 20:00 至现在';
+    } else {
+      end.setHours(8, 0, 0, 0);
+      label = '昨晚 20:00 至今早 08:00';
+    }
+  }
+
+  return {
+    start: start.getTime(),
+    end: hour >= 20 || hour < 8 ? now : end.getTime(),
+    label,
+  };
+}
+
+function buildNightSummary(items, now = Date.now()) {
+  const window = buildNightWindow(now);
+  const inWindow = timestamp => timestamp >= window.start && timestamp <= window.end;
+  const failedStatus = item => /^(?:error|failed|crashed|exited)$/i.test(item.status);
+  const completedItems = items
+    // A completed session may already have been auto-suspended by morning.
+    // Dormancy is a resource state, not evidence that its overnight result
+    // should disappear from the digest.
+    .filter(item => !item.running && !item.waiting && !failedStatus(item))
+    .map(item => ({
+      ...item,
+      completionAt: item.lastCompletedAt || (item.completedUnread ? item.lastMessageTime : 0),
+    }))
+    .filter(item => item.completionAt > 0 && inWindow(item.completionAt))
+    .sort((a, b) => b.completionAt - a.completionAt);
+  const failedItems = items.filter(item => failedStatus(item) && inWindow(item.lastMessageTime));
+  const waitingItems = items.filter(item => item.waiting && inWindow(item.lastMessageTime));
+  return {
+    ...window,
+    completed: completedItems.length,
+    failed: failedItems.length,
+    waiting: waitingItems.length,
+    totalDurationMs: completedItems.reduce((total, item) => total + Math.max(0, item.lastRunDurationMs || 0), 0),
+    items: completedItems.slice(0, 4),
+  };
+}
+
+function deriveRecentArtifacts(sessionMap, options = {}) {
+  const now = finiteNumber(options.now) || Date.now();
+  const pathExists = typeof options.pathExists === 'function' ? options.pathExists : () => true;
+  const candidates = [];
+  const sessions = Array.from(sessionMap.values())
+    // Keep recent outputs visible after automatic session suspension.
+    .filter(session => session && session.purpose !== 'chuxin-research')
+    .sort((a, b) => itemTime(b) - itemTime(a))
+    .slice(0, 30);
+
+  for (const session of sessions) {
+    const sessionId = String(session.id || session.hubId || '');
+    const kind = baseKind(session.kind);
+    const stored = Array.isArray(session.recentArtifacts) ? session.recentArtifacts : [];
+    for (const artifact of stored.slice(-8)) {
+      if (!artifact || typeof artifact.path !== 'string') continue;
+      candidates.push({
+        path: artifact.path,
+        timestamp: finiteNumber(artifact.timestamp || artifact.ts) || itemTime(session) || now,
+        sessionId,
+        sessionTitle: String(session.title || PROVIDER_LABELS[kind] || 'Session'),
+        kind,
+      });
+    }
+
+    // Backward-compatible seed for sessions created before recentArtifacts was
+    // persisted. Only inspect short sidebar previews; never scan transcripts.
+    const preview = String(session.replyReadyText || session.lastOutputPreview || '');
+    for (const match of collectPathCandidates(preview, session.cwd || null, { includeDirectories: false })) {
+      if (match.isUrl) continue;
+      candidates.push({
+        path: match.openPath,
+        timestamp: finiteNumber(session.lastCompletedAt) || itemTime(session) || now,
+        sessionId,
+        sessionTitle: String(session.title || PROVIDER_LABELS[kind] || 'Session'),
+        kind,
+      });
+    }
+  }
+
+  const seen = new Set();
+  return candidates
+    .sort((a, b) => b.timestamp - a.timestamp)
+    // File existence checks are synchronous in the renderer. Probe only the
+    // newest bounded set so a stale network path cannot make Home sluggish.
+    .slice(0, 24)
+    .filter(artifact => {
+      if (!artifact.path || !path.extname(artifact.path)) return false;
+      let key;
+      try { key = path.resolve(artifact.path).toLowerCase(); } catch { key = artifact.path.toLowerCase(); }
+      if (seen.has(key) || !pathExists(artifact.path)) return false;
+      seen.add(key);
+      artifact.name = path.basename(artifact.path);
+      return true;
+    })
+    .slice(0, MAX_ARTIFACT_ITEMS);
+}
+
+function buildExceptions(items, options = {}) {
+  const now = finiteNumber(options.now) || Date.now();
+  const resourceUsage = options.resourceUsage || {};
+  const hubConfig = options.hubConfig || {};
+  const usageSnapshot = options.usageSnapshot || {};
+  const refreshError = String(options.refreshError || '');
+  const exceptions = [];
+  const seen = new Set();
+  const add = (entry) => {
+    if (!entry || !entry.id || seen.has(entry.id)) return;
+    seen.add(entry.id);
+    exceptions.push(entry);
+  };
+
+  for (const item of items) {
+    if (item.dormant) continue;
+    if (/^(?:error|failed|crashed|exited)$/i.test(item.status) || item.errorText) {
+      add({
+        id: `session-error:${item.id}`,
+        severity: 'critical',
+        title: `${item.title} 执行异常`,
+        detail: item.errorText || `状态：${item.status}`,
+        type: item.type,
+        targetId: item.id,
+        timestamp: item.lastMessageTime,
+      });
+      continue;
+    }
+    if (item.running && item.elapsedMs >= STALLED_TASK_MS
+        && now - item.lastActivityAt >= STALE_OUTPUT_MS) {
+      add({
+        id: `session-stalled:${item.id}`,
+        severity: 'warning',
+        title: `${item.title} 可能卡住`,
+        detail: `已运行 ${formatDurationShort(item.elapsedMs)}，${formatDurationShort(now - item.lastActivityAt)}没有新输出`,
+        type: item.type,
+        targetId: item.id,
+        timestamp: item.lastActivityAt,
+      });
+    }
+    if (item.contextPct != null && item.contextPct >= CONTEXT_CRITICAL_PCT) {
+      add({
+        id: `session-context:${item.id}`,
+        severity: 'warning',
+        title: `${item.title} 上下文临界`,
+        detail: `已使用 ${Math.round(item.contextPct)}%，建议复制近 3 轮后开分支`,
+        type: item.type,
+        targetId: item.id,
+        timestamp: item.lastMessageTime,
+      });
+    }
+  }
+
+  const egressAlert = hubConfig.egress && hubConfig.egress.alert;
+  if (egressAlert) {
+    add({
+      id: `system-egress:${egressAlert.type || 'alert'}`,
+      severity: egressAlert.severity === 'critical' ? 'critical' : 'warning',
+      title: egressAlert.title || '网络出口异常',
+      detail: egressAlert.message || '请检查当前代理出口',
+      type: 'system',
+      action: 'refresh',
+      timestamp: finiteNumber(hubConfig.egress.checkedAt) || now,
+    });
+  }
+
+  const cpu = finiteNumber(resourceUsage.cpuPct);
+  const memory = finiteNumber(resourceUsage.memoryPct);
+  if ((cpu != null && cpu >= 90) || (memory != null && memory >= 90)) {
+    add({
+      id: 'system-resource-pressure',
+      severity: 'warning',
+      title: '本机负载过高',
+      detail: `CPU ${cpu == null ? '--' : `${Math.round(cpu)}%`} · 内存 ${memory == null ? '--' : `${Math.round(memory)}%`}`,
+      type: 'system',
+      action: 'refresh',
+      timestamp: now,
+    });
+  }
+
+  for (const provider of ['claude', 'codex', 'kimi']) {
+    const pct = finiteNumber(usageSnapshot[provider] && usageSnapshot[provider].usage5h && usageSnapshot[provider].usage5h.pct);
+    if (pct != null && pct >= 95) {
+      add({
+        id: `quota:${provider}`,
+        severity: 'warning',
+        title: `${PROVIDER_LABELS[provider]} 5h 配额接近耗尽`,
+        detail: `当前已使用 ${Math.round(pct)}%`,
+        type: 'system',
+        action: 'refresh',
+        timestamp: now,
+      });
+    }
+  }
+
+  const deepseek = usageSnapshot.deepseek;
+  const deepseekBalance = finiteNumber(deepseek && deepseek.totalBalance);
+  if (hubConfig.deepseekApiKeySet === true && deepseek && deepseek.available === false) {
+    add({
+      id: 'quota:deepseek-unavailable',
+      severity: 'critical',
+      title: 'DEEPSEEK API 余额不可用',
+      detail: '官方余额接口返回账号不可用',
+      type: 'system',
+      action: 'refresh',
+      timestamp: finiteNumber(deepseek.observedAt) || now,
+    });
+  } else if (deepseekBalance != null && deepseekBalance < 10) {
+    add({
+      id: 'quota:deepseek-low',
+      severity: 'warning',
+      title: 'DEEPSEEK 余额偏低',
+      detail: `当前余额 ¥${deepseekBalance.toFixed(2)}`,
+      type: 'system',
+      action: 'refresh',
+      timestamp: finiteNumber(deepseek.observedAt) || now,
+    });
+  }
+
+  const lastDelivery = hubConfig.notificationHealth && hubConfig.notificationHealth.lastDelivery;
+  const deliveryAt = finiteNumber(lastDelivery && lastDelivery.timestamp);
+  if (lastDelivery && lastDelivery.status === 'failed' && deliveryAt && now - deliveryAt <= RECENT_WINDOW_MS) {
+    add({
+      id: 'notification:last-failed',
+      severity: 'warning',
+      title: '微信通知最近发送失败',
+      detail: `错误：${lastDelivery.errorCode || 'unknown_error'} · 可点击刷新后重试任务`,
+      type: 'system',
+      action: 'refresh',
+      timestamp: deliveryAt,
+    });
+  }
+
+  if (refreshError) {
+    add({
+      id: 'system:refresh-failed',
+      severity: 'warning',
+      title: '工作台部分状态刷新失败',
+      detail: refreshError,
+      type: 'system',
+      action: 'refresh',
+      timestamp: now,
+    });
+  }
+
+  const severityRank = { critical: 0, warning: 1, info: 2 };
+  return exceptions
+    .sort((a, b) => (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9) || b.timestamp - a.timestamp)
+    .slice(0, MAX_INSIGHT_ITEMS);
 }
 
 function buildHomeSnapshot(options = {}) {
@@ -86,25 +403,29 @@ function buildHomeSnapshot(options = {}) {
   const now = Number(options.now || Date.now());
 
   const regularItems = Array.from(sessionMap.values())
-    .filter((session) => session
+    .filter(session => session
       && !session.meetingId
       && !session.hiddenFromSidebar
       && session.kind !== 'chuxin-run'
       && session.purpose !== 'chuxin-research')
-    .map(makeSessionItem);
+    .map(session => makeSessionItem(session, now));
   const meetingItems = Object.values(meetings)
     .filter(Boolean)
-    .map((meeting) => makeMeetingItem(meeting, sessionMap));
+    .map(meeting => makeMeetingItem(meeting, sessionMap, now));
   const items = regularItems.concat(meetingItems)
-    .filter((item) => item.id)
+    .filter(item => item.id)
     .sort((a, b) => b.lastMessageTime - a.lastMessageTime);
 
-  const waiting = items.filter((item) => item.waiting && !item.dormant);
-  const running = items.filter((item) => item.running && !item.waiting && !item.dormant);
+  const waiting = items.filter(item => item.waiting && !item.dormant);
+  const running = items.filter(item => item.running && !item.waiting && !item.dormant);
   const delivered = items.filter((item) => {
     if (item.waiting || item.running || item.dormant) return false;
     return item.completedUnread || (item.lastMessageTime > 0 && now - item.lastMessageTime <= RECENT_WINDOW_MS);
   });
+  const contextRisk = regularItems
+    .filter(item => !item.dormant && item.contextPct != null && item.contextPct >= CONTEXT_WARNING_PCT)
+    .sort((a, b) => b.contextPct - a.contextPct || b.lastMessageTime - a.lastMessageTime)
+    .slice(0, MAX_INSIGHT_ITEMS);
 
   const allSessions = Array.from(sessionMap.values()).filter(Boolean);
   const providerActive = { claude: 0, codex: 0, gemini: 0, deepseek: 0, kimi: 0, powershell: 0 };
@@ -114,22 +435,44 @@ function buildHomeSnapshot(options = {}) {
     if (Object.prototype.hasOwnProperty.call(providerActive, kind)) providerActive[kind] += 1;
   }
 
+  const exceptions = buildExceptions(items, {
+    now,
+    resourceUsage: options.resourceUsage,
+    hubConfig: options.hubConfig,
+    usageSnapshot: options.usageSnapshot,
+    refreshError: options.refreshError,
+  });
+  const artifacts = deriveRecentArtifacts(sessionMap, {
+    now,
+    pathExists: options.pathExists,
+  });
+  const night = buildNightSummary(items, now);
+
   return {
     generatedAt: now,
     items,
-    lanes: {
-      waiting,
-      running,
-      delivered,
-    },
+    lanes: { waiting, running, delivered },
+    contextRisk,
+    exceptions,
+    artifacts,
+    night,
     metrics: {
-      active: allSessions.filter((session) => session.status !== 'dormant').length,
+      active: allSessions.filter(session => session.status !== 'dormant').length,
       waiting: waiting.length,
-      unread: items.filter((item) => item.unreadCount > 0).length,
-      dormant: items.filter((item) => item.dormant).length,
+      unread: items.filter(item => item.unreadCount > 0).length,
+      dormant: items.filter(item => item.dormant).length,
     },
     providerActive,
   };
+}
+
+function formatDurationShort(ms) {
+  const totalMinutes = Math.max(0, Math.round((Number(ms) || 0) / 60_000));
+  if (totalMinutes < 1) return '不到 1 分钟';
+  if (totalMinutes < 60) return `${totalMinutes} 分钟`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours} 小时${minutes ? ` ${minutes} 分钟` : ''}`;
 }
 
 function createHomeWorkbench(options = {}) {
@@ -140,23 +483,32 @@ function createHomeWorkbench(options = {}) {
   const getHubConfig = typeof options.getHubConfig === 'function' ? options.getHubConfig : () => null;
   const getUsageSnapshot = typeof options.getUsageSnapshot === 'function' ? options.getUsageSnapshot : () => null;
   const getTerminalCacheSize = typeof options.getTerminalCacheSize === 'function' ? options.getTerminalCacheSize : () => 0;
+  const loadWorkspaces = typeof options.loadWorkspaces === 'function' ? options.loadWorkspaces : async () => null;
   const selectSession = typeof options.selectSession === 'function' ? options.selectSession : () => {};
   const selectMeeting = typeof options.selectMeeting === 'function' ? options.selectMeeting : () => {};
+  const onCopyRecentTurns = typeof options.onCopyRecentTurns === 'function' ? options.onCopyRecentTurns : async () => null;
+  const onForkSession = typeof options.onForkSession === 'function' ? options.onForkSession : async () => null;
+  const onOpenArtifact = typeof options.onOpenArtifact === 'function' ? options.onOpenArtifact : async () => null;
+  const onLaunchWorkspace = typeof options.onLaunchWorkspace === 'function' ? options.onLaunchWorkspace : () => null;
   const onRefresh = typeof options.onRefresh === 'function' ? options.onRefresh : async () => {};
   const escapeHtml = typeof options.escapeHtml === 'function'
     ? options.escapeHtml
-    : (value) => String(value || '').replace(/[&<>"']/g, (char) => ({
+    : value => String(value || '').replace(/[&<>"']/g, char => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
     })[char]);
   const nowFn = typeof options.nowFn === 'function' ? options.nowFn : Date.now;
   const setIntervalFn = typeof options.setIntervalFn === 'function' ? options.setIntervalFn : setInterval;
-
+  const pathExists = typeof options.pathExists === 'function' ? options.pathExists : filePath => {
+    try { return fs.statSync(filePath).isFile(); } catch { return false; }
+  };
   const root = doc.getElementById('empty-state');
   const state = {
     refreshing: false,
     lastRefreshAt: nowFn(),
     refreshError: '',
     snapshot: null,
+    workspaceListing: null,
+    workspaceItems: [],
   };
 
   function el(id) {
@@ -212,11 +564,14 @@ function createHomeWorkbench(options = {}) {
       const progress = lane === 'running'
         ? '<span class="home-flow-progress" aria-hidden="true"><i></i></span>'
         : '';
-      return `<button type="button" class="home-flow-item ${lane}" data-home-type="${item.type}" data-home-id="${escapeHtml(item.id)}" aria-label="打开 ${escapeHtml(item.title)}">`
+      const time = lane === 'running' && item.elapsedMs != null
+        ? `${item.longRunning ? '长任务 · ' : ''}已运行 ${formatDurationShort(item.elapsedMs)}`
+        : relativeTime(item.lastMessageTime);
+      return `<button type="button" class="home-flow-item ${lane}${item.longRunning ? ' long-running' : ''}" data-home-type="${item.type}" data-home-id="${escapeHtml(item.id)}" aria-label="打开 ${escapeHtml(item.title)}">`
         + `<span class="home-flow-title-row"><strong>${escapeHtml(shortText(item.title, 52))}</strong>${unread}</span>`
         + `<span class="home-flow-desc">${escapeHtml(defaultPreview(item, lane))}</span>`
         + progress
-        + `<span class="home-flow-meta"><span class="home-provider ${item.kind}">${escapeHtml(item.providerLabel)}</span><span>${escapeHtml(relativeTime(item.lastMessageTime))}</span></span>`
+        + `<span class="home-flow-meta"><span class="home-provider ${item.kind}">${escapeHtml(item.providerLabel)}</span><span class="${item.longRunning ? 'long' : ''}">${escapeHtml(time)}</span></span>`
         + '</button>';
     }).join('');
     const overflow = items.length > visible.length
@@ -233,21 +588,36 @@ function createHomeWorkbench(options = {}) {
     if (mins < 60) return `${mins}m 后重置`;
     const hours = Math.floor(mins / 60);
     if (hours < 24) return `${hours}h${mins % 60 ? ` ${mins % 60}m` : ''} 后重置`;
-    return `${Math.floor(hours / 24)}d ${hours % 24}h 后重置`;
+    return `${Math.floor(hours / 24)}d${hours % 24 ? ` ${hours % 24}h` : ''} 后重置`;
+  }
+
+  function usageUpdatedLabel(usage) {
+    const observedAt = finiteNumber(usage && (usage.observedAt || usage.lastSeen || usage._ts));
+    return observedAt ? `更新于 ${relativeTime(observedAt)}` : '尚未刷新';
+  }
+
+  function usageWindowMarkup(label, usageWindow) {
+    const pctValue = finiteNumber(usageWindow && usageWindow.pct);
+    const pct = pctValue == null ? null : Math.round(pctValue);
+    const width = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+    const level = pct == null ? 'unknown' : pct >= 85 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
+    const resetText = usageWindow ? formatResetIn(usageWindow.resetsAt) : '';
+    const refreshText = resetText ? resetText.replace(/后重置$/, '后刷新') : '刷新时间未知';
+    const resetAt = usageWindow && usageWindow.resetsAt ? new Date(usageWindow.resetsAt) : null;
+    const resetTitle = resetAt && Number.isFinite(resetAt.getTime())
+      ? `配额刷新时间：${resetAt.toLocaleString('zh-CN')}`
+      : '配额刷新时间未知';
+    return `<div class="home-usage-window ${level}" title="${escapeHtml(resetTitle)}">`
+      + `<div class="home-usage-window-head"><span>${escapeHtml(label)}</span><strong>${pct == null ? '—' : `${pct}%`}</strong></div>`
+      + `<div class="home-quota-track"><span class="${level}" style="width:${width}%"></span></div>`
+      + `<small class="home-usage-reset">${escapeHtml(refreshText)}</small></div>`;
   }
 
   function providerUsageRow(name, kind, usage, activeCount) {
-    const window5h = usage && usage.usage5h;
-    const pct = window5h && Number.isFinite(window5h.pct) ? Math.round(window5h.pct) : null;
-    const reset = window5h ? formatResetIn(window5h.resetsAt) : '';
-    const status = pct == null
-      ? `${activeCount || 0} 活跃 · 待刷新`
-      : `5h ${pct}%${reset ? ` · ${reset}` : ''}`;
-    const width = pct == null ? 0 : Math.max(0, Math.min(100, pct));
-    const level = pct == null ? 'unknown' : pct >= 85 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
+    const updated = usageUpdatedLabel(usage);
     return `<div class="home-provider-row">`
-      + `<div class="home-provider-line"><span><i class="home-provider-dot ${kind}"></i><strong>${escapeHtml(name)}</strong></span><em>${escapeHtml(status)}</em></div>`
-      + `<div class="home-quota-track"><span class="${level}" style="width:${width}%"></span></div>`
+      + `<div class="home-provider-line"><span><i class="home-provider-dot ${kind}"></i><strong>${escapeHtml(name)}</strong></span><em data-usage-updated="true">${activeCount || 0} 活跃 · ${escapeHtml(updated)}</em></div>`
+      + `<div class="home-usage-windows">${usageWindowMarkup('5h', usage && usage.usage5h)}${usageWindowMarkup('7d', usage && usage.usage7d)}</div>`
       + '</div>';
   }
 
@@ -259,12 +629,13 @@ function createHomeWorkbench(options = {}) {
   }
 
   function providerBalanceRow(name, kind, balance, activeCount, configured) {
+    const updated = usageUpdatedLabel(balance);
     const hasBalance = balance && Number.isFinite(Number(balance.totalBalance));
     if (!hasBalance) {
       const status = configured ? `${activeCount || 0} 活跃 · 待刷新` : '未配置 API Key';
       return `<div class="home-provider-row balance">`
         + `<div class="home-provider-line"><span><i class="home-provider-dot ${kind}"></i><strong>${escapeHtml(name)}</strong></span><em>${escapeHtml(status)}</em></div>`
-        + '<div class="home-provider-detail dim">官方余额接口 · 每 5 分钟刷新</div>'
+        + `<div class="home-provider-refresh"><span>官方余额接口 · 每 5 分钟轮询</span><span data-usage-updated="true">${escapeHtml(updated)}</span></div>`
         + '</div>';
     }
     const currency = balance.currency || 'CNY';
@@ -276,14 +647,14 @@ function createHomeWorkbench(options = {}) {
     const level = !available || totalNumber < 10 ? 'danger' : totalNumber < 30 ? 'warn' : 'ok';
     return `<div class="home-provider-row balance">`
       + `<div class="home-provider-line"><span><i class="home-provider-dot ${kind}"></i><strong>${escapeHtml(name)}</strong></span><em class="${level}">余额 ${escapeHtml(total)} · ${available ? '可用' : '不可用'}</em></div>`
-      + `<div class="home-provider-detail">充值 ${escapeHtml(toppedUp)} · 赠金 ${escapeHtml(granted)} · 5 分钟刷新</div>`
+      + `<div class="home-provider-detail">充值 ${escapeHtml(toppedUp)} · 赠金 ${escapeHtml(granted)}</div>`
+      + `<div class="home-provider-refresh"><span>官方余额接口 · 每 5 分钟轮询</span><span data-usage-updated="true">${escapeHtml(updated)}</span></div>`
       + '</div>';
   }
 
-  function renderProviderHealth(snapshot) {
+  function renderProviderHealth(snapshot, usage) {
     const target = el('home-provider-health');
     if (!target) return;
-    const usage = getUsageSnapshot() || {};
     const config = getHubConfig() || {};
     target.innerHTML = [
       providerUsageRow('Claude', 'claude', usage.claude, snapshot.providerActive.claude),
@@ -291,6 +662,112 @@ function createHomeWorkbench(options = {}) {
       providerUsageRow('Kimi', 'kimi', usage.kimi, snapshot.providerActive.kimi),
       providerBalanceRow('DeepSeek API', 'deepseek', usage.deepseek, snapshot.providerActive.deepseek, config.deepseekApiKeySet === true),
     ].join('');
+  }
+
+  function renderExceptions(snapshot) {
+    const target = el('home-exception-list');
+    if (!target) return;
+    setText('home-exception-count', snapshot.exceptions.length);
+    if (!snapshot.exceptions.length) {
+      target.innerHTML = '<div class="home-operational-empty ok">没有失败、卡住或系统告警</div>';
+      return;
+    }
+    target.innerHTML = snapshot.exceptions.map((item) => {
+      const targetAttrs = item.targetId
+        ? ` data-home-type="${escapeHtml(item.type)}" data-home-id="${escapeHtml(item.targetId)}"`
+        : '';
+      const action = item.action === 'refresh'
+        ? '<button type="button" class="home-mini-action" data-home-action="refresh">刷新</button>'
+        : '';
+      return `<div class="home-insight-row exception ${escapeHtml(item.severity)}">`
+        + `<button type="button" class="home-insight-open"${targetAttrs}${item.targetId ? '' : ' tabindex="-1"'}>`
+        + `<span class="home-severity-dot ${escapeHtml(item.severity)}" aria-hidden="true"></span>`
+        + `<span><strong>${escapeHtml(shortText(item.title, 58))}</strong><small>${escapeHtml(shortText(item.detail, 88))}</small></span></button>${action}</div>`;
+    }).join('');
+  }
+
+  function renderContextRisk(snapshot) {
+    const target = el('home-context-risk');
+    if (!target) return;
+    setText('home-context-count', snapshot.contextRisk.length);
+    if (!snapshot.contextRisk.length) {
+      target.innerHTML = '<div class="home-operational-empty ok">暂无超过 70% 的上下文</div>';
+      return;
+    }
+    target.innerHTML = snapshot.contextRisk.map((item) => {
+      const pct = Math.round(item.contextPct);
+      const level = pct >= CONTEXT_CRITICAL_PCT ? 'danger' : 'warn';
+      const fork = item.supportsFork
+        ? `<button type="button" class="home-mini-action" data-home-action="fork-session" data-session-id="${escapeHtml(item.id)}">开分支</button>`
+        : '';
+      return `<div class="home-insight-row context ${level}">`
+        + `<button type="button" class="home-insight-open" data-home-type="session" data-home-id="${escapeHtml(item.id)}">`
+        + `<span class="home-context-ring ${level}" style="--context-pct:${Math.max(0, Math.min(100, pct))}">${pct}%</span>`
+        + `<span><strong>${escapeHtml(shortText(item.title, 52))}</strong><small>${escapeHtml(item.providerLabel)} · ${relativeTime(item.lastMessageTime)}</small></span></button>`
+        + `<span class="home-inline-actions"><button type="button" class="home-mini-action" data-home-action="copy-turns" data-session-id="${escapeHtml(item.id)}">复制 3 轮</button>${fork}</span></div>`;
+    }).join('');
+  }
+
+  function renderArtifacts(snapshot) {
+    const target = el('home-artifact-list');
+    if (!target) return;
+    setText('home-artifact-count', snapshot.artifacts.length);
+    if (!snapshot.artifacts.length) {
+      target.innerHTML = '<div class="home-operational-empty">Agent 回复里出现的本机文件会自动汇总到这里</div>';
+      return;
+    }
+    target.innerHTML = snapshot.artifacts.map((artifact) => `<button type="button" class="home-artifact-item" data-home-action="open-artifact" data-artifact-path="${escapeHtml(artifact.path)}" title="${escapeHtml(artifact.path)}">`
+      + '<span class="home-artifact-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5"/></svg></span>'
+      + `<span><strong>${escapeHtml(shortText(artifact.name, 42))}</strong><small>${escapeHtml(shortText(artifact.sessionTitle, 42))} · ${relativeTime(artifact.timestamp)}</small><em>${escapeHtml(shortText(artifact.path, 74))}</em></span>`
+      + '<svg class="home-artifact-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>').join('');
+  }
+
+  function renderNightSummary(snapshot) {
+    setText('home-night-window', snapshot.night.label);
+    setText('home-night-completed', snapshot.night.completed);
+    setText('home-night-failed', snapshot.night.failed);
+    setText('home-night-waiting', snapshot.night.waiting);
+    setText('home-night-duration', snapshot.night.totalDurationMs > 0 ? formatDurationShort(snapshot.night.totalDurationMs) : '—');
+    const target = el('home-night-list');
+    if (!target) return;
+    if (!snapshot.night.items.length) {
+      target.innerHTML = '<div class="home-operational-empty">这个夜间窗口暂无完成任务</div>';
+      return;
+    }
+    target.innerHTML = snapshot.night.items.map(item => `<button type="button" class="home-night-item" data-home-type="${item.type}" data-home-id="${escapeHtml(item.id)}">`
+      + `<span class="home-provider ${item.kind}">${escapeHtml(item.providerLabel)}</span><strong>${escapeHtml(shortText(item.title, 42))}</strong><small>${relativeTime(item.lastCompletedAt || item.lastMessageTime)}</small></button>`).join('');
+  }
+
+  function workspaceKey(value) {
+    return String(value || '').replace(/[\\/]+$/, '').toLowerCase();
+  }
+
+  function renderQuickLaunch() {
+    const target = el('home-workspace-launch');
+    if (!target) return;
+    const listing = state.workspaceListing || {};
+    const recommended = Array.isArray(listing.recommended) ? listing.recommended : [];
+    const recent = Array.isArray(listing.items) ? listing.items : [];
+    const seen = new Set();
+    state.workspaceItems = recommended.concat(recent)
+      .filter(item => {
+        if (!item || !item.path || item.legacy || item.tier === 'root') return false;
+        const key = workspaceKey(item.path);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, 6);
+    if (!state.workspaceItems.length) {
+      target.innerHTML = '<div class="home-operational-empty">刷新后显示 AI、Wireless、投研与最近项目</div>';
+      return;
+    }
+    target.innerHTML = state.workspaceItems.map((item, index) => {
+      const initial = String(item.label || path.basename(item.path) || 'P').trim().slice(0, 1).toUpperCase();
+      const tag = item.recommended ? '常用' : item.pinned ? '置顶' : '最近';
+      return `<button type="button" class="home-workspace-item" data-home-action="launch-workspace" data-workspace-index="${index}" title="在 ${escapeHtml(item.path)} 新建 Claude 会话">`
+        + `<span class="home-workspace-initial">${escapeHtml(initial)}</span><span><strong>${escapeHtml(item.label || path.basename(item.path))}</strong><small>${escapeHtml(shortText(item.path, 52))}</small></span><em>${tag}</em></button>`;
+    }).join('');
   }
 
   function shortProxy(raw) {
@@ -331,20 +808,21 @@ function createHomeWorkbench(options = {}) {
     const healthLabel = el('home-health-label');
     const healthDot = el('home-health-dot');
     const pressureHigh = resourceLevel === 'warn';
+    const hasExceptions = snapshot.exceptions.length > 0;
     if (healthLabel) {
       healthLabel.textContent = state.refreshError
         ? '部分状态刷新失败'
-        : pressureHigh
-          ? '系统负载偏高'
-          : '当前 HUB 状态正常';
+        : hasExceptions
+          ? `${snapshot.exceptions.length} 项需要关注`
+          : pressureHigh
+            ? '系统负载偏高'
+            : '当前 HUB 状态正常';
     }
-    if (healthDot) healthDot.className = `home-status-dot ${state.refreshError || pressureHigh ? 'warn' : 'ok'}`;
+    if (healthDot) healthDot.className = `home-status-dot ${state.refreshError || hasExceptions || pressureHigh ? 'warn' : 'ok'}`;
   }
 
   function isVisible() {
-    return !!(root
-      && root.isConnected !== false
-      && (!root.style || root.style.display !== 'none'));
+    return !!(root && root.isConnected !== false && (!root.style || root.style.display !== 'none'));
   }
 
   function render(options = {}) {
@@ -352,14 +830,19 @@ function createHomeWorkbench(options = {}) {
     if (!options.force && !isVisible()) return state.snapshot;
     const notificationSlot = el('home-notification-slot');
     const notificationToggle = el('completion-notification-toggle');
-    if (isVisible()
-        && notificationSlot && notificationToggle && notificationToggle.parentElement !== notificationSlot) {
+    if (isVisible() && notificationSlot && notificationToggle && notificationToggle.parentElement !== notificationSlot) {
       notificationSlot.appendChild(notificationToggle);
     }
+    const usage = getUsageSnapshot() || {};
     const snapshot = buildHomeSnapshot({
       sessions: getSessions(),
       meetings: getMeetings(),
       now: nowFn(),
+      resourceUsage: getResourceUsage(),
+      hubConfig: getHubConfig(),
+      usageSnapshot: usage,
+      refreshError: state.refreshError,
+      pathExists,
     });
     state.snapshot = snapshot;
 
@@ -383,10 +866,26 @@ function createHomeWorkbench(options = {}) {
     renderLane('home-lane-waiting', snapshot.lanes.waiting, 'waiting');
     renderLane('home-lane-running', snapshot.lanes.running, 'running');
     renderLane('home-lane-delivered', snapshot.lanes.delivered, 'delivered');
-    renderProviderHealth(snapshot);
+    renderExceptions(snapshot);
+    renderContextRisk(snapshot);
+    renderArtifacts(snapshot);
+    renderQuickLaunch();
+    renderProviderHealth(snapshot, usage);
+    renderNightSummary(snapshot);
     renderSyncHealth(snapshot);
     root.dataset.homeReady = 'true';
     return snapshot;
+  }
+
+  async function loadWorkspaceListing() {
+    try {
+      state.workspaceListing = await loadWorkspaces();
+      if (isVisible()) render();
+      return state.workspaceListing;
+    } catch (error) {
+      state.workspaceListing = null;
+      return null;
+    }
   }
 
   async function refresh() {
@@ -395,7 +894,7 @@ function createHomeWorkbench(options = {}) {
     state.refreshError = '';
     render();
     try {
-      await onRefresh();
+      await Promise.all([onRefresh(), loadWorkspaceListing()]);
       state.lastRefreshAt = nowFn();
       return true;
     } catch (error) {
@@ -416,14 +915,53 @@ function createHomeWorkbench(options = {}) {
     return true;
   }
 
+  async function runAction(button) {
+    const action = button && button.dataset && button.dataset.homeAction;
+    if (!action) return false;
+    const original = button.textContent;
+    try {
+      if (action === 'refresh') {
+        await refresh();
+      } else if (action === 'copy-turns') {
+        button.disabled = true;
+        const result = await onCopyRecentTurns(button.dataset.sessionId, 3);
+        button.textContent = result && result.copiedRounds ? `已复制 ${result.copiedRounds} 轮` : '暂无完整轮次';
+      } else if (action === 'fork-session') {
+        button.disabled = true;
+        await onForkSession(button.dataset.sessionId);
+        button.textContent = '已发起';
+      } else if (action === 'open-artifact') {
+        await onOpenArtifact(button.dataset.artifactPath);
+      } else if (action === 'launch-workspace') {
+        const item = state.workspaceItems[Number(button.dataset.workspaceIndex)];
+        if (item) onLaunchWorkspace(item);
+      }
+    } catch {
+      button.textContent = '操作失败';
+    } finally {
+      if (action === 'copy-turns' || action === 'fork-session') {
+        setTimeout(() => {
+          if (!button.isConnected) return;
+          button.disabled = false;
+          button.textContent = original;
+        }, 1800);
+      }
+    }
+    return true;
+  }
+
   if (root) {
     root.addEventListener('click', (event) => {
-      const refreshButton = event.target && event.target.closest ? event.target.closest('#home-refresh') : null;
-      if (refreshButton) {
-        void refresh();
+      const actionButton = event.target && event.target.closest ? event.target.closest('[data-home-action]') : null;
+      if (actionButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        void runAction(actionButton);
         return;
       }
-      activateFlowItem(event.target);
+      if (activateFlowItem(event.target)) return;
+      const refreshButton = event.target && event.target.closest ? event.target.closest('#home-refresh') : null;
+      if (refreshButton) void refresh();
     });
     root.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -431,6 +969,7 @@ function createHomeWorkbench(options = {}) {
     });
   }
 
+  void loadWorkspaceListing();
   setIntervalFn(() => {
     if (isVisible()) render();
   }, 30_000);
@@ -444,9 +983,16 @@ function createHomeWorkbench(options = {}) {
 }
 
 module.exports = {
+  CONTEXT_CRITICAL_PCT,
+  CONTEXT_WARNING_PCT,
+  LONG_TASK_MS,
   MAX_LANE_ITEMS,
   RECENT_WINDOW_MS,
   baseKind,
   buildHomeSnapshot,
+  buildNightSummary,
+  buildNightWindow,
   createHomeWorkbench,
+  deriveRecentArtifacts,
+  formatDurationShort,
 };

@@ -11,6 +11,7 @@ function makeEl() {
     classList: { add() {}, remove() {}, toggle() {} },
     addEventListener() {},
     appendChild(child) { this.children.push(child); },
+    querySelector() { return null; },
     getBoundingClientRect() { return { left: 0, top: 0, width: 0, height: 0 }; },
     set innerHTML(value) { this._html = value; this.children = []; },
     get innerHTML() { return this._html || ''; },
@@ -60,11 +61,11 @@ const renderer = createSessionListRenderer({
 renderer.renderSidebarStrip();
 assert.match(stripEl.innerHTML, /<b>4<\/b> 活跃/);
 assert.match(stripEl.innerHTML, /CPU <b>23%<\/b>/);
-assert.match(stripEl.innerHTML, /内存 <b>68%<\/b>/);
+assert.match(stripEl.innerHTML, /· M <b>68%<\/b>/);
 assert.ok(!stripEl.innerHTML.includes('等你'));
 assert.ok(!stripEl.innerHTML.includes('ctx'));
 assert.ok(!stripEl.innerHTML.includes('%/h'));
-assert.match(stripEl.title, /整机实时占用/);
+assert.strictEqual(stripEl.title, '');
 
 resourceUsage = { cpuPct: 91, memoryPct: 86 };
 renderer.renderSidebarStrip();

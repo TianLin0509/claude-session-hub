@@ -206,6 +206,7 @@ function registerConfigIpc(ipcMain, deps) {
     clearCodexJsonlCache,
     clearSessionManagerConfigCache,
     currentCodexUsageScope,
+    getCompletionNotificationHealth,
     scanAgentSessions,
     sendToRenderer,
     testCompletionNotification,
@@ -214,6 +215,12 @@ function registerConfigIpc(ipcMain, deps) {
   ipcMain.handle('get-hub-config', () => toMaskedConfig(getConfig()));
 
   ipcMain.handle('get-hub-config-raw', () => toEditableConfig(getConfig()));
+
+  ipcMain.handle('get-completion-notification-health', () => (
+    typeof getCompletionNotificationHealth === 'function'
+      ? getCompletionNotificationHealth()
+      : { lastDelivery: null, retrying: false }
+  ));
 
   ipcMain.handle('test-completion-notification', async (_event, payload = {}) => {
     if (typeof testCompletionNotification !== 'function') {

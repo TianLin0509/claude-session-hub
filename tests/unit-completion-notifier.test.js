@@ -10,6 +10,7 @@ const {
   isUsableSendKey,
   maskSecret,
   normalizeNotificationConfig,
+  readLastDeliveryAudit,
 } = require('../core/completion-notifier.js');
 
 function response(status, body) {
@@ -134,6 +135,11 @@ async function run() {
     assert.ok(audit.includes('"status":"sent"'));
     assert.ok(!audit.includes('SCT_PRIVATE_123456'), 'audit log must not contain SendKey');
     assert.ok(!audit.includes('TOP SECRET ANSWER'), 'audit log must not contain reply content');
+    assert.strictEqual(notifier.getHealth().lastDelivery.status, 'sent');
+    assert.strictEqual(readLastDeliveryAudit(auditPath).status, 'sent');
+    const restartedNotifier = new CompletionNotifier({ getLogPath: () => auditPath });
+    assert.strictEqual(restartedNotifier.getHealth().lastDelivery.status, 'sent', 'notification health should survive Hub restart');
+    restartedNotifier.dispose();
     notifier.dispose();
 
     let switchCalls = 0;

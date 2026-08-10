@@ -100,6 +100,7 @@ function clearSessionAttention(session, { clearUnread = false } = {}) {
 
 function applyPromptSubmitted(session, event = {}) {
   if (!session || typeof session !== 'object') return { applied: false, reason: 'missing-session' };
+  const wasRunning = session.status === 'running';
   const clock = _clockFor(session);
   const at = normalizeEventTime(event.submittedAt, Date.now());
   const turnId = normalizeTurnId(event.turnId);
@@ -122,6 +123,13 @@ function applyPromptSubmitted(session, event = {}) {
   clock.lastPromptAt = Math.max(clock.lastPromptAt, at);
   if (turnId) clock.activeTurnId = turnId;
   clock.version += 1;
+  // Operational timing belongs to the same ordered reducer as attention.
+  // This prevents an older transcript event from resetting the timer of a
+  // newer turn and gives the workbench a stable start time across renders.
+  const previousRunStartedAt = Number(session.runStartedAt) || 0;
+  if (!previousRunStartedAt || !wasRunning || clock.lastCompletionAt >= previousRunStartedAt) {
+    session.runStartedAt = at;
+  }
   // Submitting the next prompt acknowledges the previous completed reply.
   clearSessionAttention(session, { clearUnread: true });
   if (session.status !== 'dormant') session.status = 'running';
@@ -153,6 +161,14 @@ function applyReplyCompleted(session, event = {}) {
   clock.lastCompletionKey = completionKey;
   clock.lastCompletedTurnId = turnId || clock.activeTurnId || null;
   clock.version += 1;
+
+  const runStartedAt = Number(session.runStartedAt) || Number(clock.lastPromptAt) || 0;
+  session.lastCompletedAt = at;
+  if (runStartedAt > 0 && at >= runStartedAt) {
+    session.lastRunStartedAt = runStartedAt;
+    session.lastRunDurationMs = at - runStartedAt;
+  }
+  if (!event.keepRunning) session.runStartedAt = null;
 
   if (session.status !== 'dormant') session.status = event.keepRunning ? 'running' : 'idle';
   if (event.needsUserInput) {
