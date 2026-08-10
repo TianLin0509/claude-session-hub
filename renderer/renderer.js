@@ -155,6 +155,8 @@ const floatingInputPresetDrafts = new Map();
 const CODEX_BOTTOM_LOCK_EPSILON = 24;
 const CODEX_SCROLL_INTENT_MS = 1500;
 const CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS = 120;
+const AI_PTY_FALLBACK_ARM_MS = 45 * 60 * 1000;
+const AI_PTY_FALLBACK_COOLDOWN_MS = 5 * 1000;
 
 function isTranscriptCliKind(kind) {
   return isCodexKind(kind) || isKimiCliKind(kind);
@@ -166,6 +168,58 @@ function isLegacyDeepSeekSession(session) {
 
 function isClaudeRuntimeSession(session) {
   return !!(session && (isClaudeFamily(session.kind) || isLegacyDeepSeekSession(session)));
+}
+
+function isAiRuntimeSession(session) {
+  return !!(session && (
+    isAiKind(session.kind)
+    || isPasteSensitive(session.kind)
+    || isClaudeRuntimeSession(session)
+  ));
+}
+
+// PTY bytes are a last-resort running signal for AI CLIs. Arm that fallback
+// only when Hub has evidence that the user really submitted a prompt; idle TUI
+// animations and layout repaints otherwise cannot move a session to 运行中.
+function armPtyBurstFallback(sessionId, submittedAt = Date.now()) {
+  const session = sessions.get(sessionId);
+  if (!isAiRuntimeSession(session)) return;
+  const at = Number(submittedAt) || Date.now();
+  session._ptyFallbackArmedUntil = at + AI_PTY_FALLBACK_ARM_MS;
+  session._ptyBurstCooldownUntil = 0;
+}
+
+function disarmPtyBurstFallback(sessionOrId, settledAt = Date.now()) {
+  const session = typeof sessionOrId === 'string' ? sessions.get(sessionOrId) : sessionOrId;
+  if (!isAiRuntimeSession(session)) return;
+  // Delayed transcript/hook delivery may carry an older completion timestamp;
+  // cooldown starts when Hub actually observes the transition, not in the past.
+  const at = Math.max(Number(settledAt) || 0, Date.now());
+  session._ptyFallbackArmedUntil = 0;
+  session._ptyBurstCooldownUntil = at + AI_PTY_FALLBACK_COOLDOWN_MS;
+}
+
+function canUsePtyBurstFallback(session, now = Date.now()) {
+  if (!isAiRuntimeSession(session)) return true;
+  const at = Number(now) || Date.now();
+  return at >= (Number(session._ptyBurstCooldownUntil) || 0)
+    && at <= (Number(session._ptyFallbackArmedUntil) || 0);
+}
+
+function trackPtyPromptInput(sessionId, data) {
+  const session = sessions.get(sessionId);
+  if (!isAiRuntimeSession(session)) return;
+  const chunk = String(data || '');
+  const printable = chunk
+    .replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|O.)/g, '')
+    .replace(/[\x00-\x1f\x7f]/g, '');
+  if (printable.trim()) session._ptyDraftInputSeen = true;
+  // Newlines inside a bracketed/multiline paste are draft content, not the
+  // user's submit key. xterm emits the actual Enter key as its own CR/LF chunk.
+  if (/^(?:\r|\n|\r\n)$/.test(chunk)) {
+    if (session._ptyDraftInputSeen) armPtyBurstFallback(sessionId);
+    session._ptyDraftInputSeen = false;
+  }
 }
 
 function readContenteditablePlainText(el) {
@@ -304,6 +358,10 @@ function fitAndResizeTerminal(sessionId, cached, opts = {}) {
   } else if (forcePtyResize || cached._lastResizeSig !== resizeSig) {
     cached._lastResizeSig = resizeSig;
     cached._deferredResizeSig = null;
+    // Full-screen CLIs repaint after SIGWINCH. Mark renderer-originated resize
+    // output so the activity monitor does not mistake that repaint for a new
+    // AI turn (for example when a multiline floating draft changes height).
+    cached._lastPtyResizeAt = Date.now();
     ipcRenderer.send('terminal-resize', {
       sessionId,
       cols: cached.terminal.cols,
@@ -838,6 +896,7 @@ function getOrCreateTerminal(sessionId) {
 
   terminal.onData((data) => {
     if (data) clearSessionWaitingState(sessionId);
+    trackPtyPromptInput(sessionId, data);
     ipcRenderer.send('terminal-input', { sessionId, data });
   });
   terminal.onBinary((data) => { ipcRenderer.send('terminal-input', { sessionId, data }); });
@@ -1556,13 +1615,27 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     return { mounted: 0, error: null };
   }
 
+  // Full hydration and streaming incremental refreshes are independent lanes.
+  // A terminal-data refresh can start while the initial full-history parse is
+  // still running. If both lanes share one generation, the cheap limit:1
+  // refresh invalidates the authoritative full result and leaves the overlay
+  // stuck at "loading" with only the newest assistant card. Keep newest-wins
+  // semantics within each lane while preserving the session/view ownership
+  // guards shared by both.
+  const loadLane = incremental ? 'incremental' : 'full';
   const loadSeq = Date.now() + ':' + Math.random().toString(36).slice(2);
   if (!window._cardLoadSeqBySid) window._cardLoadSeqBySid = new Map();
-  window._cardLoadSeqBySid.set(sessionId, loadSeq);
+  const previousLoadSeqs = window._cardLoadSeqBySid.get(sessionId);
+  const loadSeqs = previousLoadSeqs && typeof previousLoadSeqs === 'object'
+    ? { ...previousLoadSeqs }
+    : {};
+  loadSeqs[loadLane] = loadSeq;
+  window._cardLoadSeqBySid.set(sessionId, loadSeqs);
   const isStaleLoad = () => (
     sessionId !== activeSessionId
     || currentView !== 'card'
-    || window._cardLoadSeqBySid.get(sessionId) !== loadSeq
+    || !window._cardLoadSeqBySid.get(sessionId)
+    || window._cardLoadSeqBySid.get(sessionId)[loadLane] !== loadSeq
   );
   if (!incremental) {
     showPlaceholder('正在加载历史卡片…');
@@ -1606,6 +1679,17 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
 
   const turns = (result && Array.isArray(result.turns)) ? result.turns : [];
   const ipcError = (result && result.error) ? result.error : null;
+  // A streaming incremental result can land while this full parse is in
+  // flight. Those cards are newer than the full snapshot and must survive the
+  // authoritative history rebuild even when that snapshot does not contain
+  // them yet.
+  const concurrentFullCards = !incremental
+    ? Array.from(container.querySelectorAll(':scope > .turn-card'))
+    : [];
+  const removeLoadingPlaceholder = () => {
+    const placeholder = container.querySelector(':scope > .msg-overlay-placeholder');
+    if (placeholder) placeholder.remove();
+  };
 
   // 6a. error AND no turns → friendly placeholder (don't silent fail)
   if (turns.length === 0 && ipcError) {
@@ -1628,11 +1712,13 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     } else {
       txt = '加载历史失败：' + ipcError;
     }
-    if (!incremental) {
+    if (!incremental && concurrentFullCards.length === 0) {
       showPlaceholder(
         txt + ' — '
         + '<a href="#" data-action="switch-to-pty">切到 PTY 视图查看终端</a>'
       );
+    } else if (!incremental) {
+      removeLoadingPlaceholder();
     }
     return { mounted: 0, error: ipcError };
   }
@@ -1645,17 +1731,21 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       window._codexHistoryRetryState.delete(sessionId);
     }
     if (!incremental) {
-      showPlaceholder(
-        '新会话，发首条消息试试看 — '
-        + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
-      );
+      if (concurrentFullCards.length === 0) {
+        showPlaceholder(
+          '新会话，发首条消息试试看 — '
+          + '<a href="#" data-action="switch-to-pty">切到 PTY 视图</a>'
+        );
+      } else {
+        removeLoadingPlaceholder();
+      }
     }
     // 空 session 也算 hydrated:已经确认"历史为空",后续 turn-complete 走增量
     // 挂卡 + 250ms 补全 reload 即可,不必再触发全量。否则首条消息发出后,
     // mountOptimisticUserCard 把 placeholder 隐藏,turn-complete 又看到 hydrated=null
     // 反而触发全量 reload → 闪烁。
     if (!incremental) _cardHistoryHydratedSid = sessionId;
-    return { mounted: 0, error: null };
+    return { mounted: concurrentFullCards.length, error: null };
   }
 
   // 6c. mount each turn; pass kind through opts so renderTurnCard picks it up.
@@ -1667,8 +1757,12 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
   // Use a default kind 'claude' if session lookup failed but main.js still
   // returned turns — they came from a Claude transcript by definition.
   const mountKind = kind || 'claude';
+  const fullTurnIds = !incremental ? new Set(turns.map(turn => turn && turn.id).filter(Boolean)) : null;
+  const concurrentExtraCards = !incremental
+    ? concurrentFullCards.filter(card => !fullTurnIds.has(card.dataset.turnId))
+    : [];
   if (!incremental) {
-    container.innerHTML = '';
+    removeLoadingPlaceholder();
   }
   // 2026-05-06 道雪 scroll-respect-user (Codex 多方审查发现):
   //   incremental=true 路径(streaming partial-update throttle)反复触发本函数,
@@ -1685,6 +1779,34 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
       mounted++;
       lastCardEl = cardEl;
     }
+  }
+
+  if (!incremental) {
+    // Mounting dedups existing concurrent cards but may leave them ahead of old
+    // history. Reorder the authoritative full snapshot first, then append only
+    // genuinely newer concurrent cards. Cards removed by optimistic/provisional
+    // dedup are intentionally skipped here.
+    const streamingTail = container.querySelector(':scope > .streaming-indicator');
+    const placeBeforeStreamingTail = (card) => {
+      if (!card || card.parentNode !== container) return;
+      if (streamingTail && streamingTail.parentNode === container) {
+        container.insertBefore(card, streamingTail);
+      } else {
+        container.appendChild(card);
+      }
+    };
+    for (const turn of turns) {
+      if (!turn || !turn.id) continue;
+      placeBeforeStreamingTail(container.querySelector(
+        `:scope > .turn-card[data-turn-id="${CSS.escape(turn.id)}"]`
+      ));
+    }
+    let lastConcurrentCard = null;
+    for (const card of concurrentExtraCards) {
+      placeBeforeStreamingTail(card);
+      if (card.parentNode === container) lastConcurrentCard = card;
+    }
+    if (lastConcurrentCard) lastCardEl = lastConcurrentCard;
   }
 
   // Single bottom-scroll AFTER loop (don't autoScroll per mount — N reflows = jitter)
@@ -1995,6 +2117,7 @@ document.addEventListener('click', (e) => {
     // 否则在 A 会话的卡片上点重发，消息会打进当时恰好激活的 B 会话。
     const sid = getCardSessionId(card);
     if (sid && typeof ipcRenderer !== 'undefined') {
+      armPtyBurstFallback(sid);
       ipcRenderer.send('terminal-input', { sessionId: sid, data: promptText + '\r' });
     }
     const orig = btn.textContent;
@@ -2098,6 +2221,7 @@ function markCodexCardWorking(sessionId, source = 'prompt') {
       latest._runSource = null;
       latest.runStartedAt = null;
       latest.status = 'idle';
+      disarmPtyBurstFallback(latest);
       if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
       scheduleSessionListRender();
     }, _CODEX_CARD_SUBMIT_PENDING_MS);
@@ -2116,6 +2240,7 @@ function clearCodexCardWorking(sessionId) {
   session.cardWorkingSource = null;
   session._agentWorking = null;
   session._runSource = null;
+  disarmPtyBurstFallback(session);
 }
 
 function hasKimiBackgroundWork(session) {
@@ -2516,6 +2641,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       ? sessions.get(sessionId) : null;
     const kind = session && session.kind ? session.kind : null;
     clearSessionWaitingState(sessionId);
+    armPtyBurstFallback(sessionId);
     if (isTranscriptCliKind(kind)) markCodexCardWorking(sessionId, 'floating_input');
 
     // optimistic user-card：卡片视图下立即弹气泡，不等 transcript 写盘 + 250ms throttle reload。
@@ -2624,10 +2750,21 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
 // 2026-07-19 道雪 · 方案C：刷新浮动输入栏的 ctx chip 与中断钮（跟随 active session 状态）。
 //   调用时机：mountFloatingInput 后 + 每次 renderSessionList（status 事件驱动）。
 function updateFloatingBarState() {
-  const bar = document.querySelector('.terminal-panel .floating-input-bar');
-  if (!bar || !activeSessionId) return;
+  if (!activeSessionId) return;
   const s = sessions.get(activeSessionId);
   if (!s) return;
+
+  // The header used to be a one-time snapshot from showTerminal(), while the
+  // sidebar and composer followed live state. Keep all three surfaces aligned.
+  const status = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
+  if (status) {
+    const running = s.status === 'running';
+    status.className = `terminal-status ${running ? 'running' : 'idle'}`;
+    status.textContent = running ? '\u25cf running' : '\u25cb idle';
+  }
+
+  const bar = document.querySelector('.terminal-panel .floating-input-bar');
+  if (!bar) return;
   const chip = bar.querySelector('.fi-ctx');
   if (chip) {
     if (typeof s.contextPct === 'number') {
@@ -2640,7 +2777,16 @@ function updateFloatingBarState() {
     }
   }
   const stop = bar.querySelector('.floating-input-stop');
-  if (stop) stop.classList.toggle('visible', s.status === 'running');
+  if (stop) {
+    const aiSession = isAiRuntimeSession(s);
+    const authoritativeAiWork = s._runSource === 'semantic'
+      || s._agentWorking === 'hook'
+      || s._agentWorking === 'card'
+      || s.gcWorking === true;
+    // PTY byte bursts remain a useful status fallback, but are not strong
+    // enough evidence to expose a destructive Ctrl+C button for an AI session.
+    stop.classList.toggle('visible', s.status === 'running' && (!aiSession || authoritativeAiWork));
+  }
 }
 
 // 2026-07-21 道雪 [修进行中误判]：周期性兜底回收"卡死的进行中"。
@@ -3122,13 +3268,14 @@ const terminalActivityMonitor = createTerminalActivityMonitor({
   // actually active. The old predicate returned true merely because the
   // session *kind* was Claude/Codex/Kimi. When settings.json lost the Hub
   // UserPromptSubmit hook, Claude could work for minutes while status stayed
-  // idle because its PTY bytes were permanently ignored. User typing may now
-  // cause at most the existing 2s burst pulse; real hook/card signals still
-  // remain authoritative for the full turn.
+  // idle because its PTY bytes were permanently ignored. The fallback below
+  // remains available, but only after an explicit local prompt arms it.
   hasSemanticWorking: (s) => !!(s && (
     (isClaudeRuntimeSession(s) && s._agentWorking === 'hook' && s.status === 'running')
     || (isTranscriptCliKind(s.kind) && hasSemanticCardWorking(s))
   )),
+  canUsePtyBurstFallback,
+  onPtyBurstSettled: (session, settledAt) => disarmPtyBurstFallback(session, settledAt),
 });
 const {
   getQuestionsSignature,
@@ -3620,6 +3767,7 @@ function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
   if (!session) return;
   const transition = applyPromptSubmitted(session, { submittedAt });
   if (!transition.applied) return;
+  armPtyBurstFallback(sessionId, transition.at);
   // 2026-07-20 道雪：hook prompt = claude 语义工作开始（与 stop hook 配对收尾）
   session._agentWorking = 'hook';
   session._runSource = 'semantic';
@@ -3718,6 +3866,7 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
 
   const transition = applyPromptSubmitted(session, { submittedAt, turnId });
   if (!transition.applied) return;
+  armPtyBurstFallback(hubSessionId, transition.at);
 
   // 2026-07-28 用户反馈：群聊里直接点进 Codex 的 CLI 布置任务，Codex 明明在跑，
   //   状态灯却一直是绿色（就绪），群聊也进不了侧栏的"运行中"分区。
@@ -3829,6 +3978,7 @@ function onReplyCompleteFromHook(sessionId, completedAt = Date.now()) {
   // 2026-07-20 道雪：stop hook = claude 语义工作结束，与 prompt hook 配对。
   session._agentWorking = null;
   session._runSource = null;
+  disarmPtyBurstFallback(session, transition.at);
   session.lastMessageTime = transition.at;
   scheduleSessionListRender();
   schedulePersist();

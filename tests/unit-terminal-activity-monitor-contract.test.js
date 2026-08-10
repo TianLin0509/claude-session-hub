@@ -4,13 +4,14 @@ const {
   parseQuestionsFromLines,
   isWaitingForUser,
   createTerminalActivityMonitor,
+  UI_RESIZE_REDRAW_SUPPRESS_MS,
 } = require('../renderer/terminal-activity-monitor.js');
 
 function makeLine(text) {
   return { translateToString: () => text };
 }
 
-function makeTerminalCache(lines) {
+function makeTerminalCache(lines, extra = {}) {
   return new Map([['s1', {
     opened: true,
     terminal: {
@@ -21,6 +22,7 @@ function makeTerminalCache(lines) {
         },
       },
     },
+    ...extra,
   }]]);
 }
 
@@ -120,6 +122,101 @@ test('PTY burst is a running fallback when no semantic signal is actually active
   assert.equal(session.status, 'running');
   assert.equal(session._runSource, 'burst');
   assert.equal(rendered, 1);
+  monitor.clearSession('s1');
+});
+
+test('renderer resize redraw does not create a running pulse', () => {
+  const session = { id: 's1', kind: 'codex', status: 'idle' };
+  const sessions = new Map([['s1', session]]);
+  let rendered = 0;
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([], { _lastPtyResizeAt: Date.now() }),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => { rendered++; },
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => false,
+  });
+
+  monitor.onTerminalOutput('s1', 1000);
+  assert.equal(session.status, 'idle');
+  assert.equal(session._runSource, undefined);
+  assert.equal(session._lastOutputTs, undefined);
+  assert.equal(rendered, 0);
+  monitor.clearSession('s1');
+});
+
+test('PTY fallback resumes after the renderer resize redraw window', () => {
+  const session = { id: 's1', kind: 'codex', status: 'idle' };
+  const sessions = new Map([['s1', session]]);
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([], {
+      _lastPtyResizeAt: Date.now() - UI_RESIZE_REDRAW_SUPPRESS_MS - 1,
+    }),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => {},
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => false,
+  });
+
+  monitor.onTerminalOutput('s1', 201);
+  assert.equal(session.status, 'running');
+  assert.equal(session._runSource, 'burst');
+  monitor.clearSession('s1');
+});
+
+test('unarmed AI TUI animation cannot move a recent session to running', () => {
+  const session = { id: 's1', kind: 'codex', status: 'idle' };
+  const sessions = new Map([['s1', session]]);
+  let rendered = 0;
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([]),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => { rendered++; },
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => false,
+    canUsePtyBurstFallback: () => false,
+  });
+
+  for (let i = 0; i < 8; i += 1) monitor.onTerminalOutput('s1', 500);
+  assert.equal(session.status, 'idle');
+  assert.equal(session._runSource, undefined);
+  assert.equal(session._lastOutputTs, undefined);
+  assert.equal(rendered, 0);
+  monitor.clearSession('s1');
+});
+
+test('expired AI PTY fallback immediately clears an existing burst state', () => {
+  const session = { id: 's1', kind: 'codex', status: 'running', _runSource: 'burst' };
+  const sessions = new Map([['s1', session]]);
+  let rendered = 0;
+  let settled = 0;
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([]),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => { rendered++; },
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => false,
+    canUsePtyBurstFallback: () => false,
+    onPtyBurstSettled: () => { settled++; },
+  });
+
+  monitor.onTerminalOutput('s1', 500);
+  assert.equal(session.status, 'idle');
+  assert.equal(session._runSource, null);
+  assert.equal(rendered, 1);
+  assert.equal(settled, 1);
   monitor.clearSession('s1');
 });
 

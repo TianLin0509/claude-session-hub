@@ -2,6 +2,11 @@ const PROMPT_LINE_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+(.+?)(?:\s*[│╯�
 const PROMPT_PREFIX_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+/;
 const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 const SILENCE_MS = 2000;
+// A renderer-side fit sends SIGWINCH to the CLI, and full-screen TUIs answer by
+// repainting hundreds or thousands of bytes. That repaint is layout work, not
+// agent activity. Keep the window shorter than the normal burst silence timer
+// so genuine PTY fallback remains available when hooks/transcript signals fail.
+const UI_RESIZE_REDRAW_SUPPRESS_MS = 1200;
 
 function parseQuestionsFromLines(lines) {
   const questions = [];
@@ -57,6 +62,8 @@ function createTerminalActivityMonitor({
   updateStreamingIndicator,
   hasSemanticCardWorking,
   hasSemanticWorking,
+  canUsePtyBurstFallback,
+  onPtyBurstSettled,
 }) {
   const silenceTimers = new Map();
   const dataCounters = new Map();
@@ -123,9 +130,42 @@ function createTerminalActivityMonitor({
     const session = sessions.get(sessionId);
     if (!session) return;
 
+    const now = Date.now();
+    const cached = terminalCache.get(sessionId);
+    const lastRendererResizeAt = Number(cached && cached._lastPtyResizeAt) || 0;
+    const semanticCovered = typeof hasSemanticWorking === 'function' && hasSemanticWorking(session);
+    if (!semanticCovered
+        && lastRendererResizeAt > 0
+        && now >= lastRendererResizeAt
+        && now - lastRendererResizeAt <= UI_RESIZE_REDRAW_SUPPRESS_MS) {
+      return;
+    }
+
+    // AI TUIs can animate an idle footer indefinitely (observed Codex sessions
+    // emitted repaint bytes roughly every 500ms hours after their last turn).
+    // Raw PTY output is therefore only a fallback after a real local prompt
+    // submission explicitly arms it. Shell sessions keep their old behaviour.
+    const burstEligible = typeof canUsePtyBurstFallback !== 'function'
+      || canUsePtyBurstFallback(session, now);
+    if (!semanticCovered && !burstEligible) {
+      dataCounters.delete(sessionId);
+      if (silenceTimers.has(sessionId)) {
+        clearTimeout(silenceTimers.get(sessionId));
+        silenceTimers.delete(sessionId);
+      }
+      if (session.status === 'running' && session._runSource === 'burst') {
+        session.status = 'idle';
+        session._runSource = null;
+        if (typeof onPtyBurstSettled === 'function') onPtyBurstSettled(session, now);
+        renderSessionList();
+        updateStreamingIndicator(sessionId);
+      }
+      return;
+    }
+
     // 2026-07-21 道雪 [修进行中误判]：记录最近输出时间，供周期性兜底回收
     //   判断"语义 running 但 45min 无任何输出 = 卡死"。
-    session._lastOutputTs = Date.now();
+    session._lastOutputTs = now;
 
     dataCounters.set(sessionId, (dataCounters.get(sessionId) || 0) + dataLen);
 
@@ -133,7 +173,6 @@ function createTerminalActivityMonitor({
     //   （powershell / gemini / deepseek 等）。claude(hook prompt/stop) 与
     //   codex/kimi(transcript/cardWorking) 的 running 由语义事件驱动——否则
     //   用户在 TUI 输入框打字时的整屏重绘 >200B 会被误判为"agent 运行中"。
-    const semanticCovered = typeof hasSemanticWorking === 'function' && hasSemanticWorking(session);
     if (!semanticCovered && dataCounters.get(sessionId) > 200 && session.status !== 'running') {
       session.status = 'running';
       session._runSource = 'burst';
@@ -150,6 +189,7 @@ function createTerminalActivityMonitor({
       if (session.status === 'running' && session._runSource === 'burst') {
         session.status = 'idle';
         session._runSource = null;
+        if (typeof onPtyBurstSettled === 'function') onPtyBurstSettled(session, Date.now());
         updateStreamingIndicator(sessionId);
       }
       // transcript 系(codex/kimi)语义 running 的兜底回收：
@@ -207,6 +247,7 @@ module.exports = {
   PROMPT_LINE_RE,
   PROMPT_PREFIX_RE,
   AI_MARKERS_RE,
+  UI_RESIZE_REDRAW_SUPPRESS_MS,
   parseQuestionsFromLines,
   isWaitingForUser,
   createTerminalActivityMonitor,

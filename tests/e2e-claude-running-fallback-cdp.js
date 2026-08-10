@@ -54,6 +54,7 @@ async function availablePort(preferred) {
         cwd: 'C:\\\\Vibe\\\\_scratch\\\\running-fallback',
       };
       sessions.set(id, session);
+      armPtyBurstFallback(id);
       onTerminalOutput(id, 201);
       renderSessionList();
       const row = Array.from(document.querySelectorAll('.session-item.slim'))

@@ -203,12 +203,174 @@ async function main() {
     assert.equal(result.turnCompleteRace.hasOld, false);
     assert.equal(result.turnCompleteRace.hasNew, true);
 
+    result.sameSessionHydrationRace = await client.eval(`(async () => {
+      const { ipcRenderer } = require('electron');
+      const originalInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+      const overlay = document.getElementById('msg-overlay');
+      const sid = 'same-sid-hydration-race';
+      let resolveFull;
+      let resolveIncremental;
+      ipcRenderer.invoke = (channel, args) => {
+        if (channel === 'parse-session-transcript' && args && args.hubSessionId === sid) {
+          if (args.opts && args.opts.limit === 1) {
+            return new Promise(resolve => { resolveIncremental = resolve; });
+          }
+          return new Promise(resolve => { resolveFull = resolve; });
+        }
+        return originalInvoke(channel, args);
+      };
+      try {
+        sessions.set(sid, {
+          id: sid, kind: 'codex', title: 'Same-session hydration race',
+          cwd: ${JSON.stringify(TEMP_ROOT)}, transcriptPath: 'race-rollout.jsonl', status: 'running'
+        });
+        currentView = 'card';
+        activeSessionId = sid;
+        _cardHistoryHydratedSid = null;
+
+        const fullPending = window._loadSessionHistoryToOverlay(sid);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const duringFull = overlay.innerText;
+        const incrementalPending = window._loadSessionHistoryToOverlay(sid, {
+          incremental: true,
+          parseOpts: { limit: 1, fromTail: true },
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        resolveFull({
+          turns: [
+            { id: 'same-old-user', role: 'user', text: 'SAME OLD USER', ts: 1 },
+            { id: 'same-old-answer', role: 'assistant', text: 'SAME OLD ANSWER', ts: 2 },
+            { id: 'same-latest-user', role: 'user', text: 'SAME LATEST USER', ts: 3 },
+            { id: 'same-latest-answer', role: 'assistant', text: 'SAME LATEST ANSWER', ts: 4 },
+          ],
+          transcriptPath: 'race-rollout.jsonl',
+          error: null,
+        });
+        const fullResult = await fullPending;
+        const afterFull = overlay.innerText;
+
+        resolveIncremental({
+          turns: [{ id: 'same-latest-answer', role: 'assistant', text: 'SAME LATEST ANSWER', ts: 4 }],
+          transcriptPath: 'race-rollout.jsonl',
+          error: null,
+        });
+        const incrementalResult = await incrementalPending;
+        const finalText = overlay.innerText;
+        return {
+          duringFull,
+          afterFull,
+          fullResult,
+          incrementalResult,
+          finalText,
+          placeholder: overlay.querySelector('.msg-overlay-placeholder')?.innerText || null,
+          cardCount: overlay.querySelectorAll('.turn-card').length,
+          hydratedSid: _cardHistoryHydratedSid,
+        };
+      } finally {
+        ipcRenderer.invoke = originalInvoke;
+      }
+    })()`);
+    assert.match(result.sameSessionHydrationRace.duringFull, /正在加载历史卡片/);
+    assert.equal(result.sameSessionHydrationRace.fullResult.error, null);
+    assert.equal(result.sameSessionHydrationRace.fullResult.mounted, 4);
+    assert.equal(result.sameSessionHydrationRace.incrementalResult.error, null);
+    assert.equal(result.sameSessionHydrationRace.placeholder, null);
+    assert.equal(result.sameSessionHydrationRace.cardCount, 4);
+    assert.match(result.sameSessionHydrationRace.finalText, /SAME OLD USER/);
+    assert.match(result.sameSessionHydrationRace.finalText, /SAME OLD ANSWER/);
+    assert.match(result.sameSessionHydrationRace.finalText, /SAME LATEST USER/);
+    assert.match(result.sameSessionHydrationRace.finalText, /SAME LATEST ANSWER/);
+    assert.equal(result.sameSessionHydrationRace.hydratedSid, 'same-sid-hydration-race');
+
+    result.sameSessionReverseRace = await client.eval(`(async () => {
+      const { ipcRenderer } = require('electron');
+      const originalInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+      const overlay = document.getElementById('msg-overlay');
+      const sid = 'same-sid-reverse-race';
+      let resolveFull;
+      let resolveIncremental;
+      ipcRenderer.invoke = (channel, args) => {
+        if (channel === 'parse-session-transcript' && args && args.hubSessionId === sid) {
+          if (args.opts && args.opts.limit === 1) {
+            return new Promise(resolve => { resolveIncremental = resolve; });
+          }
+          return new Promise(resolve => { resolveFull = resolve; });
+        }
+        return originalInvoke(channel, args);
+      };
+      try {
+        sessions.set(sid, {
+          id: sid, kind: 'codex', title: 'Same-session reverse race',
+          cwd: ${JSON.stringify(TEMP_ROOT)}, transcriptPath: 'reverse-race-rollout.jsonl', status: 'running'
+        });
+        currentView = 'card';
+        activeSessionId = sid;
+        _cardHistoryHydratedSid = null;
+
+        const fullPending = window._loadSessionHistoryToOverlay(sid);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const incrementalPending = window._loadSessionHistoryToOverlay(sid, {
+          incremental: true,
+          parseOpts: { limit: 1, fromTail: true },
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        resolveIncremental({
+          turns: [{ id: 'reverse-latest', role: 'assistant', text: 'REVERSE LATEST ANSWER', ts: 3 }],
+          transcriptPath: 'reverse-race-rollout.jsonl',
+          error: null,
+        });
+        const incrementalResult = await incrementalPending;
+        const afterIncremental = overlay.innerText;
+
+        // The older full snapshot deliberately does not include reverse-latest.
+        resolveFull({
+          turns: [
+            { id: 'reverse-old-user', role: 'user', text: 'REVERSE OLD USER', ts: 1 },
+            { id: 'reverse-old-answer', role: 'assistant', text: 'REVERSE OLD ANSWER', ts: 2 },
+          ],
+          transcriptPath: 'reverse-race-rollout.jsonl',
+          error: null,
+        });
+        const fullResult = await fullPending;
+        return {
+          incrementalResult,
+          fullResult,
+          afterIncremental,
+          finalText: overlay.innerText,
+          ids: Array.from(overlay.querySelectorAll(':scope > .turn-card')).map(card => card.dataset.turnId),
+          placeholder: overlay.querySelector('.msg-overlay-placeholder')?.innerText || null,
+          cardCount: overlay.querySelectorAll(':scope > .turn-card').length,
+          mapHasLatest: window._sessionTurns.has('reverse-latest'),
+          hydratedSid: _cardHistoryHydratedSid,
+        };
+      } finally {
+        ipcRenderer.invoke = originalInvoke;
+      }
+    })()`);
+    assert.equal(result.sameSessionReverseRace.incrementalResult.mounted, 1);
+    assert.match(result.sameSessionReverseRace.afterIncremental, /REVERSE LATEST ANSWER/);
+    assert.equal(result.sameSessionReverseRace.fullResult.mounted, 2);
+    assert.equal(result.sameSessionReverseRace.placeholder, null);
+    assert.equal(result.sameSessionReverseRace.cardCount, 3);
+    assert.deepEqual(result.sameSessionReverseRace.ids, [
+      'reverse-old-user', 'reverse-old-answer', 'reverse-latest',
+    ]);
+    assert.match(result.sameSessionReverseRace.finalText, /REVERSE OLD USER/);
+    assert.match(result.sameSessionReverseRace.finalText, /REVERSE OLD ANSWER/);
+    assert.match(result.sameSessionReverseRace.finalText, /REVERSE LATEST ANSWER/);
+    assert.equal(result.sameSessionReverseRace.mapHasLatest, true);
+    assert.equal(result.sameSessionReverseRace.hydratedSid, 'same-sid-reverse-race');
+
     await client.eval(`(async () => {
       const overlay = document.getElementById('msg-overlay');
       for (const sid of [
         'e2e-subagent',
         'race-old', 'race-new',
         'race-complete-old', 'race-complete-new',
+        'same-sid-hydration-race',
+        'same-sid-reverse-race',
       ]) sessions.delete(sid);
       currentView = 'card';
       activeSessionId = 'e2e-top-level';

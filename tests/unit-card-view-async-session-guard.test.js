@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
 
-test('every card history load is generation-scoped and rejects a result after session/view switch', () => {
+test('full and incremental card loads use separate generations while rejecting session/view switches', () => {
   const start = rendererSource.indexOf('async function loadSessionHistoryToOverlay');
   const end = rendererSource.indexOf("ipcRenderer.on('prompt-submitted-event'", start);
   assert.ok(start >= 0 && end > start, 'loadSessionHistoryToOverlay block not found');
@@ -15,18 +15,33 @@ test('every card history load is generation-scoped and rejects a result after se
 
   assert.match(
     block,
-    /window\._cardLoadSeqBySid\.set\(sessionId, loadSeq\);/,
-    'incremental loads also need a generation token',
-  );
-  assert.doesNotMatch(
-    block,
-    /if\s*\(!incremental\)\s*window\._cardLoadSeqBySid\.set/,
-    'generation token must not be limited to full loads',
+    /const loadLane = incremental \? 'incremental' : 'full';/,
+    'full hydration and incremental refreshes need independent generation lanes',
   );
   assert.match(
     block,
-    /sessionId\s*!==\s*activeSessionId[\s\S]{0,180}currentView\s*!==\s*['"]card['"][\s\S]{0,180}_cardLoadSeqBySid\.get\(sessionId\)\s*!==\s*loadSeq/,
-    'stale guard must check active session, active view, and latest generation',
+    /loadSeqs\[loadLane\] = loadSeq;[\s\S]{0,120}_cardLoadSeqBySid\.set\(sessionId, loadSeqs\);/,
+    'the newest request must replace only its own lane generation',
+  );
+  assert.match(
+    block,
+    /sessionId\s*!==\s*activeSessionId[\s\S]{0,180}currentView\s*!==\s*['"]card['"][\s\S]{0,260}_cardLoadSeqBySid\.get\(sessionId\)\[loadLane\]\s*!==\s*loadSeq/,
+    'stale guard must check active session, active view, and latest generation in the same lane',
+  );
+  assert.doesNotMatch(
+    block,
+    /_cardLoadSeqBySid\.get\(sessionId\)\s*!==\s*loadSeq/,
+    'an incremental request must not invalidate an in-flight full-history request',
+  );
+  assert.match(
+    block,
+    /const concurrentFullCards = !incremental[\s\S]{0,220}:scope > \.turn-card/,
+    'full hydration must retain cards that arrived while its transcript parse was in flight',
+  );
+  assert.match(
+    block,
+    /for \(const card of concurrentExtraCards\) \{[\s\S]{0,120}placeBeforeStreamingTail\(card\);/,
+    'newer concurrent cards must be placed after the authoritative full-history order',
   );
 });
 
@@ -69,12 +84,12 @@ test('incremental card refresh keeps existing cards when parsing is temporarily 
   );
   assert.match(
     block,
-    /if \(turns\.length === 0 && ipcError\) \{[\s\S]*?if \(!incremental\) \{\s*showPlaceholder\(\s*txt/,
+    /if \(turns\.length === 0 && ipcError\) \{[\s\S]*?if \(!incremental && concurrentFullCards\.length === 0\) \{\s*showPlaceholder\(\s*txt/,
     'incremental parser errors must preserve already-rendered cards',
   );
   assert.match(
     block,
-    /if \(turns\.length === 0\) \{[\s\S]*?if \(!incremental\) \{\s*showPlaceholder\(\s*'新会话/,
+    /if \(turns\.length === 0\) \{[\s\S]*?if \(!incremental\) \{\s*if \(concurrentFullCards\.length === 0\) \{\s*showPlaceholder\(\s*'新会话/,
     'an empty incremental snapshot must not erase existing cards',
   );
 });
