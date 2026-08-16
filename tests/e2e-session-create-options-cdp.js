@@ -47,6 +47,9 @@ async function availablePort(preferred) {
     const tuning = await client.eval(`(async () => {
       const wc = window.WorkspaceController;
       wc.openNewSessionModal();
+      // renderer 启动早期 IPC 偶尔超过固定 120ms；显式等模型目录，避免把 fallback
+      // 误判成 gpt-5.6-sol 不支持 ultra 的产品回归。
+      await wc.loadCodexTuningCatalog();
       await new Promise(r => setTimeout(r, 120));
       const read = () => {
         const opts = id => Array.from(document.getElementById(id).options).map(o => o.value);
@@ -138,6 +141,7 @@ async function availablePort(preferred) {
     assert.equal(tuning.powershell.fastVisible, false);
     assert.equal(tuning.powershell.effortVisible, false);
     assert.equal(tuning.powershell.mcpVisible, false);
+    assert.equal(tuning.powershell.codexTierVisible, false);
 
     // 切走再切回来要记住上一次的选择（老行为是每次都重置回默认，反复调很烦）
     assert.equal(tuning.backToClaude.fastChecked, false, '切走再切回来应记住用户关过 fast');

@@ -144,6 +144,26 @@ test('modal sends create-meeting IPC with slots payload', () => {
   assert.match(MODAL_JS, /model:/);
 });
 
+test('every group member exposes the same provider-specific tuning as new Session', () => {
+  for (const selector of [
+    'mcm-effort-select',
+    'mcm-mcp-select',
+    'mcm-fast-checkbox',
+    'mcm-codex-tier-select',
+  ]) {
+    assert.ok(MODAL_JS.includes(selector), `member tuning control missing: ${selector}`);
+  }
+  assert.match(MODAL_JS, /WorkspaceController\.resolveSessionTuning/,
+    'group modal must reuse new-session dynamic tuning definitions');
+  assert.match(MODAL_JS, /WorkspaceController\.buildSessionTuningOpts/,
+    'group modal must reuse new-session provider-specific payload rules');
+  assert.match(MODAL_JS, /WorkspaceController\.loadCodexTuningCatalog/,
+    'Codex effort and Fast options must come from its model catalog');
+  assert.match(MODAL_JS, /群聊通信所需 MCP 始终保留/);
+  assert.match(MODAL_CSS, /\.mcm-member-caption\s*\{/);
+  assert.match(MODAL_CSS, /\.mcm-tuning-field\s*\{/);
+});
+
 test('modal supports flexible group chat creation', () => {
   assert.match(MODAL_JS, /mode\s*===\s*['"]group['"]/);
   assert.match(MODAL_JS, /DEFAULT_GROUP_MEMBERS/);

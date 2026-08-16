@@ -113,6 +113,63 @@
     options.push(['flex', 'Flex · 更慢更省']);
     return options;
   }
+
+  // 新建 Session 与群聊成员共用这一份纯计算结果。群聊不能复制一套静态枚举：
+  // Codex 的 effort / fast 支持会随模型目录变化，复制后迟早与单会话弹窗漂移。
+  function resolveSessionTuning(kind, modelId, selection = {}) {
+    const modelOptions = modelOptionsFor(kind);
+    const model = modelOptions.some(option => option.id === modelId)
+      ? modelId
+      : ((DEFAULT_MODEL_BY_KIND[kind] && modelOptions.some(option => option.id === DEFAULT_MODEL_BY_KIND[kind]))
+        ? DEFAULT_MODEL_BY_KIND[kind]
+        : (modelOptions[0] ? modelOptions[0].id : ''));
+    const effortOptions = EFFORT_KINDS.has(kind) ? effortOptionsFor(kind, model) : [];
+    const fallbackEffort = effortOptions.some(([value]) => value === DEFAULT_EFFORT)
+      ? DEFAULT_EFFORT
+      : (effortOptions[0] ? effortOptions[0][0] : DEFAULT_EFFORT);
+    const effort = effortOptions.some(([value]) => value === selection.effort)
+      ? selection.effort
+      : fallbackEffort;
+    const mcpOptions = MCP_KINDS.has(kind) ? mcpOptionsFor(kind) : [];
+    const mcpProfile = mcpOptions.some(([value]) => value === selection.mcpProfile)
+      ? selection.mcpProfile
+      : defaultMcpFor(kind);
+    const codexTierOptions = CODEX_TIER_KINDS.has(kind) ? codexTierOptionsFor(model) : [];
+    const codexSpeedTier = codexTierOptions.some(([value]) => value === selection.codexSpeedTier)
+      ? selection.codexSpeedTier
+      : 'inherit';
+
+    return {
+      model,
+      modelOptions,
+      showEffort: EFFORT_KINDS.has(kind),
+      effort,
+      effortOptions,
+      showMcp: MCP_KINDS.has(kind),
+      mcpProfile,
+      mcpOptions,
+      showFast: FAST_KINDS.has(kind),
+      fastMode: typeof selection.fastMode === 'boolean' ? selection.fastMode : true,
+      showCodexTier: CODEX_TIER_KINDS.has(kind),
+      codexSpeedTier,
+      codexTierOptions,
+    };
+  }
+
+  function buildSessionTuningOpts(kind, modelId, selection = {}) {
+    const tuning = resolveSessionTuning(kind, modelId, selection);
+    const opts = {};
+    if (tuning.modelOptions.length > 0 && tuning.model) opts.model = tuning.model;
+    if (tuning.showEffort && tuning.effort) opts.effort = tuning.effort;
+    if (tuning.showMcp) opts.mcpProfile = tuning.mcpProfile;
+    // 与单会话保持一致：默认开不写字段，只有用户显式关掉才覆盖。
+    if (tuning.showFast && tuning.fastMode === false) opts.fastMode = false;
+    // inherit = 不覆盖 ~/.codex/config.toml。
+    if (tuning.showCodexTier && tuning.codexSpeedTier !== 'inherit') {
+      opts.codexSpeedTier = tuning.codexSpeedTier;
+    }
+    return opts;
+  }
   const RECENT_LIMIT = 8;
 
   let menuEl = null;
@@ -657,7 +714,12 @@
       // 顺手把三个 field 也归位，免得 hidden 属性停在上一个 kind 的状态。
       const staleNote = document.getElementById('new-session-tuning-note');
       if (staleNote) { staleNote.hidden = true; staleNote.textContent = ''; }
-      for (const id of ['new-session-effort-field', 'new-session-mcp-field', 'new-session-fast-field']) {
+      for (const id of [
+        'new-session-effort-field',
+        'new-session-mcp-field',
+        'new-session-fast-field',
+        'new-session-codex-tier-field',
+      ]) {
         const field = document.getElementById(id);
         if (field) field.hidden = true;
       }
@@ -908,17 +970,12 @@
   // list, effort/mcpProfile for the kinds whose CLI has the corresponding dial.
   // 省略等于沿用 session-manager 的默认值，所以只在"确实有这一档"时才传。
   function tuningOpts() {
-    const opts = {};
-    if (modelOptionsFor(selectedKind).length > 0 && selectedModel) opts.model = selectedModel;
-    if (EFFORT_KINDS.has(selectedKind) && selectedEffort) opts.effort = selectedEffort;
-    if (MCP_KINDS.has(selectedKind)) opts.mcpProfile = selectedMcpProfile;
-    // 只在用户显式关掉时才传：不传 = 保持"默认开"，与改动前一字不差。
-    if (FAST_KINDS.has(selectedKind) && selectedFastMode === false) opts.fastMode = false;
-    // 同理，inherit = 不覆盖 ~/.codex/config.toml，等于改动前的行为，不传。
-    if (CODEX_TIER_KINDS.has(selectedKind) && selectedCodexTier && selectedCodexTier !== 'inherit') {
-      opts.codexSpeedTier = selectedCodexTier;
-    }
-    return opts;
+    return buildSessionTuningOpts(selectedKind, selectedModel, {
+      effort: selectedEffort,
+      mcpProfile: selectedMcpProfile,
+      fastMode: selectedFastMode,
+      codexSpeedTier: selectedCodexTier,
+    });
   }
 
   async function submitNewSession() {
@@ -935,6 +992,10 @@
     const submit = document.getElementById('new-session-submit');
     if (submit) submit.textContent = '创建中…';
     try {
+      // 与群聊成员同一条准确性门：提交前等真实 Codex 模型目录并重新归一化，
+      // 避免快速点击把 fallback 中该模型不支持的 effort 送进 PTY。
+      await loadCodexTuningCatalog();
+      paintTuning();
       if (workspaceMode === 'scratch') workspace = await createScratch('未命名任务');
       const session = await createSession(selectedKind, { workspace, opts: tuningOpts() });
       closeNewSessionModal();
@@ -1044,6 +1105,10 @@
     // 弹窗当前会送给 create-session 的 opts。暴露出来让 E2E 能断言"到底传了什么"，
     // 而不是靠截图猜 —— fast/思考强度/MCP 的默认值一旦漂移就是静默降级。
     tuningOpts,
+    // 群聊成员配置必须与新建 Session 共用动态 Codex 模型目录和默认值。
+    resolveSessionTuning,
+    buildSessionTuningOpts,
+    loadCodexTuningCatalog,
     workspaceTierLabel,
   };
 

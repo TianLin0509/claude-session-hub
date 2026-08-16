@@ -181,28 +181,28 @@ test('only flags the selected CLI understands are sent', () => {
   assert.match(CONTROLLER_SRC, /const FAST_KINDS = new Set\(\['claude'\]\)/, 'fastMode checkbox is Claude-only');
   assert.match(
     CONTROLLER_SRC,
-    /if \(CODEX_TIER_KINDS\.has\(selectedKind\) && selectedCodexTier && selectedCodexTier !== 'inherit'\)/,
+    /if \(tuning\.showCodexTier && tuning\.codexSpeedTier !== 'inherit'\)/,
     'Codex 的 service_tier 只在用户显式选了非 inherit 时才传',
   );
   assert.match(
     CONTROLLER_SRC,
-    /if \(modelOptionsFor\(selectedKind\)\.length > 0 && selectedModel\) opts\.model = selectedModel/,
+    /if \(tuning\.modelOptions\.length > 0 && tuning\.model\) opts\.model = tuning\.model/,
     'model is only sent for kinds that have a model list',
   );
   assert.match(
     CONTROLLER_SRC,
-    /if \(EFFORT_KINDS\.has\(selectedKind\) && selectedEffort\) opts\.effort = selectedEffort/,
+    /if \(tuning\.showEffort && tuning\.effort\) opts\.effort = tuning\.effort/,
     'effort is only sent for kinds that understand it',
   );
   assert.match(
     CONTROLLER_SRC,
-    /if \(MCP_KINDS\.has\(selectedKind\)\) opts\.mcpProfile = selectedMcpProfile/,
+    /if \(tuning\.showMcp\) opts\.mcpProfile = tuning\.mcpProfile/,
     'Claude and Codex both receive an explicit lean/browser/wireless/full MCP profile',
   );
   // 只在显式关掉时才传 fastMode，不传 = 沿用 session-manager 的"默认开"。
   assert.match(
     CONTROLLER_SRC,
-    /if \(FAST_KINDS\.has\(selectedKind\) && selectedFastMode === false\) opts\.fastMode = false/,
+    /if \(tuning\.showFast && tuning\.fastMode === false\) opts\.fastMode = false/,
     'fastMode must only be sent when the user explicitly turns it off',
   );
   // 默认档位不能漂：Codex 保持历史的 lean，Claude 必须是 full（= 全量继承 = 改动前行为）。
@@ -211,6 +211,10 @@ test('only flags the selected CLI understands are sent', () => {
     /const DEFAULT_MCP_BY_KIND = \{ claude: 'full', codex: 'lean', deepseek: 'lean' \}/,
     'Claude 默认 full，不能静默改成 lean 让会话少工具',
   );
+  assert.match(CONTROLLER_SRC, /function resolveSessionTuning\(kind, modelId, selection = \{\}\)/,
+    '新建 Session 与群聊成员必须共用一份动态调优定义');
+  assert.match(CONTROLLER_SRC, /function buildSessionTuningOpts\(kind, modelId, selection = \{\}\)/,
+    'provider-specific 参数过滤必须可供两个创建入口复用');
 });
 
 test('the modal opens as flex so the body can scroll and the footer stays reachable', () => {

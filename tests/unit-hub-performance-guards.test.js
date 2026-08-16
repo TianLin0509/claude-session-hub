@@ -15,11 +15,53 @@ const {
   BACKGROUND_BATCH_MS,
 } = require('../main/terminal-output-policy.js');
 
-test('group Claude sessions isolate inherited MCP servers', () => {
+test('group Claude plugin isolation no longer overrides the member MCP profile', () => {
   assert.strictEqual(_private.buildGroupChatIsolationFlags(null), '');
   const flags = _private.buildGroupChatIsolationFlags('meeting-1');
-  assert.match(flags, /--strict-mcp-config/);
   assert.match(flags, /--settings/);
+  assert.doesNotMatch(flags, /--strict-mcp-config/);
+});
+
+test('group Claude MCP profiles keep mandatory room config while filtering optional globals', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-claude-group-mcp-'));
+  const homeDir = path.join(root, 'home');
+  const hubDataDir = path.join(root, 'hub');
+  const roomConfig = path.join(root, 'room-mcp.json');
+  try {
+    fs.mkdirSync(homeDir, { recursive: true });
+    fs.writeFileSync(path.join(homeDir, '.claude.json'), JSON.stringify({
+      mcpServers: {
+        playwright: { command: 'npx' },
+        misc: { command: 'node' },
+      },
+    }), 'utf8');
+    fs.writeFileSync(roomConfig, JSON.stringify({
+      mcpServers: { arena_research: { command: 'node' } },
+    }), 'utf8');
+
+    const lean = _private.buildClaudeMeetingMcpArgs({
+      mcpConfigFile: roomConfig, mcpProfile: 'lean', homeDir, hubDataDir, cwd: root,
+    });
+    assert.match(lean.args, /--strict-mcp-config/);
+    assert.ok(lean.configPaths.includes(roomConfig), 'mandatory room MCP config must survive Lean');
+    assert.equal(lean.configPaths.length, 2, 'Lean also supplies its filtered global config');
+
+    const browser = _private.buildClaudeMeetingMcpArgs({
+      mcpConfigFile: roomConfig, mcpProfile: 'browser', homeDir, hubDataDir, cwd: root,
+    });
+    assert.match(browser.args, /--strict-mcp-config/);
+    assert.deepStrictEqual(browser.keptServers, ['playwright']);
+    assert.ok(browser.configPaths.includes(roomConfig), 'mandatory room MCP config must survive Browser');
+
+    const full = _private.buildClaudeMeetingMcpArgs({
+      mcpConfigFile: roomConfig, mcpProfile: 'full', homeDir, hubDataDir, cwd: root,
+    });
+    assert.match(full.args, /--mcp-config/);
+    assert.doesNotMatch(full.args, /--strict-mcp-config/);
+    assert.deepStrictEqual(full.configPaths, [roomConfig]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('group Codex sessions disable unmanaged MCP servers and preserve explicit room MCP', () => {
@@ -43,6 +85,13 @@ test('group Codex sessions disable unmanaged MCP servers and preserve explicit r
     assert.match(args, /mcp_servers\.playwright\.enabled=false/);
     assert.doesNotMatch(args, /ai-team\.enabled=false/);
     assert.doesNotMatch(args, /arena_research\.enabled=false/);
+    const browser = _private.buildCodexMcpIsolationArgs(dir, {
+      meetingId: 'meeting-1', mcpProfile: 'browser', allowedNames: ['ai-team', 'arena_research'],
+    });
+    assert.doesNotMatch(browser, /playwright\.enabled=false/, 'Browser profile must survive group isolation');
+    assert.strictEqual(_private.buildCodexMcpIsolationArgs(dir, {
+      meetingId: 'meeting-1', mcpProfile: 'full', allowedNames: ['ai-team', 'arena_research'],
+    }), '');
     assert.strictEqual(_private.buildCodexGroupMcpIsolationArgs(dir, null), '');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

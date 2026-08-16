@@ -383,12 +383,60 @@ function buildGroupChatIsolationFlags(meetingId) {
   const settingsPath = ensureGroupChatSettings(getHubDataDir());
   // settings 路径含反斜杠 — Claude CLI 在 PowerShell 下接受双反斜杠转义
   const escaped = settingsPath.replace(/\\/g, '\\\\');
-  // v3 (2026-07-22): 群聊成员必须隔离用户级 MCP。一个三人群聊若继承
-  // Playwright 等 MCP，会为每个 CLI 重复拉起 node/chrome 子进程；串行工作流
-  // 明明一次只使用一人，却在打开房间时先付出全部常驻成本。
-  // --strict-mcp-config 仍允许 --mcp-config 显式注入的 research MCP。
-  //   旧版 `--disable-slash-commands` 已删,避免误杀 /model /compact 等用户基本操作。
-  return ` --settings "${escaped}" --strict-mcp-config`;
+  // 这里只隔离群聊里的 skill / plugin。MCP 是否 strict 现在由每位成员自己的
+  // mcpProfile 决定，不能再在这里无条件覆盖用户在创建弹窗里的选择。
+  return ` --settings "${escaped}"`;
+}
+
+function buildClaudeMeetingMcpArgs({
+  mcpConfigFile,
+  mcpProfile,
+  cwd,
+  hubDataDir,
+  homeDir,
+  fsModule,
+} = {}) {
+  const profile = normalizeClaudeMcpProfile(mcpProfile);
+  const mandatoryFiles = typeof mcpConfigFile === 'string' && mcpConfigFile
+    ? [mcpConfigFile]
+    : [];
+  const quoteConfig = value => `"${String(value).replace(/\\/g, '\\\\')}"`;
+
+  // Full = 继承全部用户 MCP。research/群聊通信配置仍以额外 config 合并进去，
+  // 但不加 strict，否则所谓 Full 实际会把全局 MCP 全部挡掉。
+  if (profile === 'full') {
+    return {
+      args: mandatoryFiles.length ? ` --mcp-config ${mandatoryFiles.map(quoteConfig).join(' ')}` : '',
+      profile,
+      keptServers: [],
+      configPaths: mandatoryFiles,
+    };
+  }
+
+  const profilePlan = buildClaudeMcpProfileArgs({
+    mcpProfile: profile,
+    cwd,
+    hubDataDir,
+    homeDir,
+    ...(fsModule ? { fsModule } : {}),
+  });
+  // 生成过滤配置失败时沿用 buildClaudeMcpProfileArgs 的 fail-open 语义：宁可 Full，
+  // 也不能只剩群聊 MCP 却静默丢掉用户工具。
+  if (!profilePlan.configPath) {
+    return {
+      args: mandatoryFiles.length ? ` --mcp-config ${mandatoryFiles.map(quoteConfig).join(' ')}` : '',
+      profile: 'full',
+      keptServers: [],
+      configPaths: mandatoryFiles,
+    };
+  }
+  const configPaths = [...mandatoryFiles, profilePlan.configPath];
+  return {
+    args: ` --mcp-config ${configPaths.map(quoteConfig).join(' ')} --strict-mcp-config`,
+    profile,
+    keptServers: profilePlan.keptServers,
+    configPaths,
+  };
 }
 
 // dismissCodexUpdatePrompt — 阻止 codex CLI 启动时弹 "Update available! X -> Y" 提示。
@@ -680,13 +728,6 @@ function buildCodexMcpIsolationArgs(configDir, options = {}) {
   const allowed = new Set((options.allowedNames || [])
     .map(name => String(name || '').trim())
     .filter(Boolean));
-
-  if (options.meetingId) {
-    return names
-      .filter(name => !allowed.has(name))
-      .map(name => ` -c 'mcp_servers.${name}.enabled=false'`)
-      .join('');
-  }
 
   const profile = normalizeCodexMcpProfile(options.mcpProfile);
   if (profile === 'full') return '';
@@ -1164,6 +1205,10 @@ class SessionManager extends EventEmitter {
       // lean 默认各走各的。落到 info 是为了 resume/fork/relaunch 能沿用。
       ...(isClaudeFamily(kind) && !isDeepSeekLegacy
         ? { mcpProfile: normalizeClaudeMcpProfile(opts.mcpProfile) } : {}),
+      // 迁移前的 DeepSeek 仍跑 Claude CLI。旧群聊没有 profile 字段时按历史的
+      // strict/空全局 MCP 语义回落 Lean；恢复与原地 relaunch 都据此重建。
+      ...(isDeepSeekLegacy
+        ? { mcpProfile: normalizeClaudeMcpProfile(opts.mcpProfile || 'lean') } : {}),
       // fast 只对 Claude 家族有意义；显式关掉才落盘，避免给老会话凭空加字段。
       ...(opts.fastMode === false ? { fastMode: false } : {}),
       // 记录经过 runtime 白名单归一化的 effort，让 resume / fork / relaunch
@@ -1211,6 +1256,8 @@ class SessionManager extends EventEmitter {
       codexMcpEntries: Array.isArray(opts.codexMcpEntries)
         ? opts.codexMcpEntries.map((entry) => ({ ...entry, env: { ...(entry.env || {}) } }))
         : [],
+      // Claude 群聊的 research / 通信 MCP 在 CLI 原地 relaunch 时也要继续存在。
+      claudeMcpConfigFile: typeof opts.mcpConfigFile === 'string' ? opts.mcpConfigFile : null,
       pendingTimers,
       ringBuffer: '',
       terminalSnapshot,
@@ -1350,13 +1397,23 @@ class SessionManager extends EventEmitter {
       if (opts.appendSystemPromptFile) {
         cmd += ` --append-system-prompt-file "${opts.appendSystemPromptFile.replace(/\\/g, '\\\\')}"`;
       }
+      // 群聊按成员选择 MCP 档位，同时把 research/通信 MCP 合并进同一个
+      // --mcp-config 列表；它们是房间能力，不能被 Lean/Browser/Wireless 过滤掉。
+      if (opts.meetingId) {
+        const mcpPlan = buildClaudeMeetingMcpArgs({
+          mcpConfigFile: opts.mcpConfigFile,
+          mcpProfile: opts.mcpProfile,
+          cwd: spawnCwd,
+          hubDataDir: getHubDataDir(),
+        });
+        cmd += mcpPlan.args;
+        console.log(`[claude-mcp] ${kind} 群聊档位=${mcpPlan.profile} 保留=${mcpPlan.keptServers.join(',') || '(无额外全局 MCP)'}`);
       // Append MCP config file if provided (TeamSessionManager injects MCP server config)
-      if (opts.mcpConfigFile) {
+      } else if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
-      } else if (!opts.meetingId) {
+      } else {
         // 单人会话的 MCP 加载档位（对标 Codex 的 lean/browser/wireless/full）。
         // 默认 full = 全量继承 = 改动前的行为；选了别的档才生成过滤后的 config。
-        // 群聊成员不走这条：它们已经有自己的 --mcp-config + --strict-mcp-config。
         const mcpPlan = buildClaudeMcpProfileArgs({
           mcpProfile: opts.mcpProfile,
           cwd: spawnCwd,
@@ -1452,15 +1509,10 @@ class SessionManager extends EventEmitter {
       const codexModel = isDeepSeek ? DEEPSEEK_CODEX_MODEL : (opts.model || resolveDefaultCodexModel(cv));
       // Codex 的 model_reasoning_effort 是推理深度；fast 则由下面独立的
       // service_tier 控制，两者都不能和 Claude fastMode 混为一谈。
-      // 非法值一律回落 max —— 默认档与改动前完全一致，不会静默降精度。
-      // 群聊成员例外：整个房间的产出质量要可比，成员之间不能各调各的档位，
-      // 一律钉死共享的 max（unit-codex-resume-model-source 里有源码级守卫）。
-      const codexReasoningArg = buildCodexReasoningConfigArg(
-        opts.meetingId ? CODEX_REASONING_EFFORT : normalizeCodexEffort(opts.effort)
-      )
+      // 非法值一律回落 max；群聊与普通 Session 一样尊重逐成员的 effort / service_tier。
+      const codexReasoningArg = buildCodexReasoningConfigArg(normalizeCodexEffort(opts.effort))
         // Codex 真正对标 Claude fast 的开关：service_tier（priority 通道，1.5× 速度）。
-        // 群聊成员同样不给单独调 —— 与 effort 一个口径。
-        + (opts.meetingId ? '' : buildCodexSpeedTierArg(opts.codexSpeedTier));
+        + buildCodexSpeedTierArg(opts.codexSpeedTier);
       const codexInstructionFile = opts.codexInstructionFile || null;
       let cmd;
       if (opts.codexForkSid) {
@@ -1556,8 +1608,18 @@ class SessionManager extends EventEmitter {
       } else {
         cmd = ` claude --model ${normalizeLegacyDeepSeekClaudeModel(opts.model)} --permission-mode bypassPermissions`;
       }
+      // 迁移前的 DeepSeek 群聊同样按成员档位合并投研 MCP；无历史字段时 Lean
+      // 保持原先 strict 隔离行为，避免恢复老会话后突然拉起全部全局 MCP。
+      if (opts.meetingId) {
+        const mcpPlan = buildClaudeMeetingMcpArgs({
+          mcpConfigFile: opts.mcpConfigFile,
+          mcpProfile: opts.mcpProfile || 'lean',
+          cwd: spawnCwd,
+          hubDataDir: getHubDataDir(),
+        });
+        cmd += mcpPlan.args;
       // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
-      if (opts.mcpConfigFile) {
+      } else if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
       }
       // P0.4 STEP 1 补齐：5 家 Claude-family 都拼 --append-system-prompt-file
@@ -1931,12 +1993,9 @@ class SessionManager extends EventEmitter {
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
-      // relaunch 要沿用会话自己选过的档位，否则重拉一次就悄悄回到 max。
-      // 群聊成员同样钉死 max（与 createSession 分支同一条口径）。
-      const codexReasoningArg = buildCodexReasoningConfigArg(
-        meetingId ? CODEX_REASONING_EFFORT : normalizeCodexEffort(s.info && s.info.effort)
-      )
-        + (meetingId ? '' : buildCodexSpeedTierArg(s.info && s.info.codexSpeedTier));
+      // relaunch 要沿用会话自己选过的档位；群聊成员也不例外。
+      const codexReasoningArg = buildCodexReasoningConfigArg(normalizeCodexEffort(s.info && s.info.effort))
+        + buildCodexSpeedTierArg(s.info && s.info.codexSpeedTier);
       ensureCodexMcpEntries(codexConfigDir, [], CODEX_MANAGED_MCP_NAMES);
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || DEFAULT_MODEL_BY_KIND.codex}${codexReasoningArg}`;
       cmd += buildCodexEphemeralMcpArgs(s.codexMcpEntries);
@@ -1965,17 +2024,30 @@ class SessionManager extends EventEmitter {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         fastFlag = ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
-      // 单人 Claude 的 MCP 档位也要跟着 relaunch；群聊已有自己的严格
-      // mcpConfig，不在这里叠第二份。
-      const mcpPlan = meetingId ? null : buildClaudeMcpProfileArgs({
-        mcpProfile: s.info && s.info.mcpProfile,
-        cwd: s.info && s.info.cwd,
-        hubDataDir: getHubDataDir(),
-      });
+      // 单人和群聊都沿用自己的 MCP 档位；群聊额外恢复 research/通信 config。
+      const mcpPlan = meetingId
+        ? buildClaudeMeetingMcpArgs({
+          mcpConfigFile: s.claudeMcpConfigFile,
+          mcpProfile: s.info && s.info.mcpProfile,
+          cwd: s.info && s.info.cwd,
+          hubDataDir: getHubDataDir(),
+        })
+        : buildClaudeMcpProfileArgs({
+          mcpProfile: s.info && s.info.mcpProfile,
+          cwd: s.info && s.info.cwd,
+          hubDataDir: getHubDataDir(),
+        });
       const mcpFlag = mcpPlan && mcpPlan.args ? mcpPlan.args : '';
       cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${fastFlag}${mcpFlag}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
-      cmd = ` claude --model ${normalizeLegacyDeepSeekClaudeModel(modelId)} --permission-mode bypassPermissions${isolation}\r\n`;
+      const mcpPlan = meetingId ? buildClaudeMeetingMcpArgs({
+        mcpConfigFile: s.claudeMcpConfigFile,
+        mcpProfile: (s.info && s.info.mcpProfile) || 'lean',
+        cwd: s.info && s.info.cwd,
+        hubDataDir: getHubDataDir(),
+      }) : null;
+      const mcpFlag = mcpPlan && mcpPlan.args ? mcpPlan.args : '';
+      cmd = ` claude --model ${normalizeLegacyDeepSeekClaudeModel(modelId)} --permission-mode bypassPermissions${mcpFlag}${isolation}\r\n`;
     } else if (isKimiCliKind(kind)) {
       cmd = `${kimiCommandPrefix(process.env)} --yolo${kimiModelArg(modelId || DEFAULT_MODEL_BY_KIND.kimi, process.env)}\r\n`;
     } else {
@@ -2230,6 +2302,7 @@ module.exports = {
     isKimiModelConfigured,
     kimiModelArg,
     buildGroupChatIsolationFlags,
+    buildClaudeMeetingMcpArgs,
     listCodexMcpServerNames,
     normalizeCodexMcpProfile,
     normalizeCodexEffort,

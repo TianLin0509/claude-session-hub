@@ -74,12 +74,20 @@ function testGroupChatFieldsPersist() {
     groupChat: true,
     groupMode: 'deliberation',
     groupRecentRawN: 5,
+    slotSpecs: [
+      { index: 0, kind: 'claude', model: 'opus', effort: 'high', mcpProfile: 'lean', fastMode: false },
+      { index: 1, kind: 'codex', model: 'gpt', effort: 'low', mcpProfile: 'browser', codexSpeedTier: 'fast' },
+    ],
   });
   const re = store.loadMeetingFile('m-group');
   assert.strictEqual(re.groupChat, true, 'groupChat preserved');
   assert.strictEqual(re.groupMode, 'deliberation', 'groupMode preserved');
   assert.strictEqual(re.groupRecentRawN, 5, 'groupRecentRawN preserved');
   assert.deepStrictEqual(re.participants, [0, 2, 4], 'arbitrary group participants preserved');
+  assert.deepStrictEqual(re.slotSpecs, [
+    { index: 0, kind: 'claude', model: 'opus', effort: 'high', mcpProfile: 'lean', fastMode: false },
+    { index: 1, kind: 'codex', model: 'gpt', effort: 'low', mcpProfile: 'browser', codexSpeedTier: 'fast' },
+  ], 'per-member launch tuning preserved');
 }
 
 function testMarkDirtyMergesPartialUpdates() {

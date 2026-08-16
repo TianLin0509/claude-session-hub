@@ -104,31 +104,22 @@ test('codex PTY sessions default to max reasoning effort and silent full access'
   assert.ok(commandUses.length >= 6, 'new/resume/relaunch codex commands must include dynamic reasoning override');
 });
 
-test('group-chat Codex sessions cannot downgrade reasoning effort', () => {
-  const groupReasoningConst = 'CODEX_GROUP_CHAT_' + 'REASONING_EFFORT';
+test('group-chat Codex sessions honor each member reasoning effort and speed tier', () => {
   assert.doesNotMatch(
     SRC,
-    new RegExp(groupReasoningConst),
-    'group-chat Codex must not have a separate lower reasoning tier',
+    /(?:opts\.)?meetingId\s*\?\s*CODEX_REASONING_EFFORT\s*:\s*normalizeCodexEffort/,
+    'meeting sessions must not override a member-selected effort with shared max',
   );
-  assert.doesNotMatch(
-    SRC,
-    /meetingId\s*\?\s*[^:]+:\s*CODEX_REASONING_EFFORT/,
-    'meeting sessions must not branch to a lower Codex reasoning effort',
-  );
-  // 单人 Codex 会话现在可以在新建弹窗里分别选思考强度与 service_tier。
-  // 但群聊成员必须继续钉死共享的 max ——
-  // 一个房间里成员各调各的档位，产出就没法互相比较了。
-  const pins = SRC.match(/buildCodexReasoningConfigArg\(\s*\n?\s*(?:opts\.)?meetingId \? CODEX_REASONING_EFFORT : normalizeCodexEffort\(/g) || [];
+  const configurableEffortUses = SRC.match(/buildCodexReasoningConfigArg\(normalizeCodexEffort\(/g) || [];
   assert.equal(
-    pins.length,
+    configurableEffortUses.length,
     2,
-    'createSession 与 relaunch 两条 Codex 命令都必须在 meetingId 存在时钉死 max effort',
+    'createSession 与 relaunch 两条 Codex 命令都必须沿用成员自己的 effort',
   );
   assert.doesNotMatch(
     SRC,
-    /normalizeCodexEffort\([^)]*\)\s*:\s*CODEX_REASONING_EFFORT/,
-    '三目不能写反：群聊拿到的必须是 CODEX_REASONING_EFFORT，不是用户选的档位',
+    /(?:opts\.)?meetingId\s*\?\s*''\s*:\s*buildCodexSpeedTierArg/,
+    '群聊成员的 service_tier 不能再被 meetingId 分支吞掉',
   );
 });
 

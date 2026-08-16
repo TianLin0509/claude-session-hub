@@ -127,14 +127,33 @@ function _aiLogo(kind) {
 }
 
 function _modelOptions(kind, selected) {
-  const opts = MODELS_BY_KIND[kind] || [];
-  return opts.map((m, i) =>
-    `<option value="${_escapeHtml(m)}"${m === selected || (!selected && i === 0) ? ' selected' : ''}>${_escapeHtml(m)}</option>`
+  const opts = MODEL_OPTIONS_BY_KIND[kind] || [];
+  return opts.map((option, i) =>
+    `<option value="${_escapeHtml(option.id)}"${option.id === selected || (!selected && i === 0) ? ' selected' : ''}>${_escapeHtml(option.label || option.id)}</option>`
   ).join('');
 }
 
+function _selectOptions(entries, selected) {
+  return (entries || []).map(([value, label]) =>
+    `<option value="${_escapeHtml(value)}"${value === selected ? ' selected' : ''}>${_escapeHtml(label)}</option>`
+  ).join('');
+}
+
+function _normalizeSlotSpec(spec = {}) {
+  const kind = MODELS_BY_KIND[spec.kind] ? spec.kind : 'claude';
+  const tuning = window.WorkspaceController.resolveSessionTuning(kind, spec.model, spec);
+  return {
+    kind,
+    model: tuning.model,
+    effort: tuning.effort,
+    mcpProfile: tuning.mcpProfile,
+    fastMode: tuning.fastMode,
+    codexSpeedTier: tuning.codexSpeedTier,
+  };
+}
+
 function _cloneSlots(slots) {
-  return (slots || DEFAULT_GROUP_MEMBERS).map(x => ({ ...x }));
+  return (slots || DEFAULT_GROUP_MEMBERS).map(x => _normalizeSlotSpec(x));
 }
 
 function _renderTemplateButtons(activeId = 'general') {
@@ -166,7 +185,8 @@ function _applyTemplate(templateId, opts = {}) {
 }
 
 function _slotHtml(i, spec, isGroup) {
-  const def = spec || DEFAULT_SLOTS[i] || DEFAULT_SLOTS[0];
+  const def = _normalizeSlotSpec(spec || DEFAULT_SLOTS[i] || DEFAULT_SLOTS[0]);
+  const tuning = window.WorkspaceController.resolveSessionTuning(def.kind, def.model, def);
   const aiOptions = Object.keys(MODELS_BY_KIND).map(k =>
     `<option value="${_escapeHtml(k)}"${k === def.kind ? ' selected' : ''}>${_escapeHtml(KIND_LABELS[k] || k)}</option>`
   ).join('');
@@ -176,34 +196,69 @@ function _slotHtml(i, spec, isGroup) {
   const removeBtn = isGroup && i >= 1
     ? `<button type="button" class="mcm-remove-member" data-remove-member="${i}" title="移除此成员">×</button>`
     : '';
+  const effortField = tuning.showEffort ? `
+      <label class="mcm-tuning-field">思考强度
+        <select class="mcm-effort-select">${_selectOptions(tuning.effortOptions, tuning.effort)}</select>
+      </label>` : '';
+  const mcpField = tuning.showMcp ? `
+      <label class="mcm-tuning-field">MCP 加载
+        <select class="mcm-mcp-select">${_selectOptions(tuning.mcpOptions, tuning.mcpProfile)}</select>
+      </label>` : '';
+  const fastField = tuning.showFast ? `
+      <label class="mcm-tuning-field mcm-fast-field">
+        <span>快速模式</span>
+        <span class="mcm-check"><input class="mcm-fast-checkbox" type="checkbox"${tuning.fastMode ? ' checked' : ''}> 启用 Claude Fast</span>
+      </label>` : '';
+  const codexTierField = tuning.showCodexTier ? `
+      <label class="mcm-tuning-field">速度通道
+        <select class="mcm-codex-tier-select">${_selectOptions(tuning.codexTierOptions, tuning.codexSpeedTier)}</select>
+      </label>` : '';
   return `
-    <div class="mcm-slot${isGroup ? ' mcm-group-member' : ''}" data-slot="${i}">
+    <div class="mcm-slot${isGroup ? ' mcm-group-member' : ''}" data-slot="${i}" data-kind="${_escapeHtml(def.kind)}">
       ${removeBtn}
-      <img class="mcm-avatar" src="${_escapeHtml(avatarSrc)}" alt="${_escapeHtml(avatarAlt)}">
-      <div class="mcm-slot-label">${_escapeHtml(label)}</div>
-      <label>AI: <select class="mcm-ai-select">${aiOptions}</select></label>
-      <label>Model: <select class="mcm-model-select">${_modelOptions(def.kind, def.model)}</select></label>
+      <div class="mcm-slot-head">
+        <img class="mcm-avatar" src="${_escapeHtml(avatarSrc)}" alt="${_escapeHtml(avatarAlt)}">
+        <div><div class="mcm-slot-label">${_escapeHtml(label)}</div><strong>${_escapeHtml(avatarAlt)}</strong></div>
+      </div>
+      <div class="mcm-slot-fields">
+        <label>AI <select class="mcm-ai-select">${aiOptions}</select></label>
+        <label>模型 <select class="mcm-model-select">${_modelOptions(def.kind, def.model)}</select></label>
+        ${effortField}
+        ${mcpField}
+        ${fastField}
+        ${codexTierField}
+      </div>
     </div>
   `;
 }
 
-function _syncGroupSlotsFromDom() {
-  if (!_modalEl || !_isGroupChat) return;
-  _groupSlots = Array.from(_modalEl.querySelectorAll('.mcm-slot')).map(el => ({
-    kind: el.querySelector('.mcm-ai-select').value,
-    model: el.querySelector('.mcm-model-select').value,
-  }));
+function _readSlotSpec(el, i, { strict = true } = {}) {
+  const aiSelect = el && el.querySelector('.mcm-ai-select');
+  const modelSelect = el && el.querySelector('.mcm-model-select');
+  if (!aiSelect || !aiSelect.value) {
+    if (strict) throw new Error(`成员 ${i + 1} 未选择 AI`);
+    return _groupSlots[i] ? _normalizeSlotSpec(_groupSlots[i]) : null;
+  }
+  const spec = {
+    kind: aiSelect.value,
+    model: modelSelect ? modelSelect.value : '',
+  };
+  const effort = el.querySelector('.mcm-effort-select');
+  const mcp = el.querySelector('.mcm-mcp-select');
+  const fast = el.querySelector('.mcm-fast-checkbox');
+  const codexTier = el.querySelector('.mcm-codex-tier-select');
+  if (effort) spec.effort = effort.value;
+  if (mcp) spec.mcpProfile = mcp.value;
+  if (fast) spec.fastMode = !!fast.checked;
+  if (codexTier) spec.codexSpeedTier = codexTier.value;
+  return _normalizeSlotSpec(spec);
 }
 
-function _refreshModelOptions(slotEl) {
-  const kind = slotEl.querySelector('.mcm-ai-select').value;
-  const modelSel = slotEl.querySelector('.mcm-model-select');
-  modelSel.innerHTML = _modelOptions(kind);
-  const img = slotEl.querySelector('.mcm-avatar');
-  if (_isGroupChat && img) {
-    img.src = _aiLogo(kind);
-    img.alt = KIND_LABELS[kind] || kind;
-  }
+function _syncGroupSlotsFromDom({ strict = false } = {}) {
+  if (!_modalEl || !_isGroupChat) return;
+  _groupSlots = Array.from(_modalEl.querySelectorAll('.mcm-slot'))
+    .map((el, i) => _readSlotSpec(el, i, { strict }))
+    .filter(Boolean);
 }
 
 function _renderSlots() {
@@ -214,10 +269,18 @@ function _renderSlots() {
   wrap.innerHTML = specs.map((spec, i) => _slotHtml(i, spec, _isGroupChat)).join('');
   wrap.querySelectorAll('.mcm-slot').forEach(slotEl => {
     slotEl.querySelector('.mcm-ai-select').addEventListener('change', () => {
-      _refreshModelOptions(slotEl);
-      _syncGroupSlotsFromDom();
+      const i = Number(slotEl.getAttribute('data-slot'));
+      const kind = slotEl.querySelector('.mcm-ai-select').value;
+      _groupSlots[i] = _normalizeSlotSpec({ kind, model: DEFAULT_MODEL_BY_KIND[kind] });
+      _renderSlots();
     });
-    slotEl.querySelector('.mcm-model-select').addEventListener('change', _syncGroupSlotsFromDom);
+    slotEl.querySelector('.mcm-model-select').addEventListener('change', () => {
+      _syncGroupSlotsFromDom();
+      // Codex 的 effort / Fast 选项跟模型目录走，切模型后要重新生成这一张卡。
+      _renderSlots();
+    });
+    slotEl.querySelectorAll('.mcm-effort-select, .mcm-mcp-select, .mcm-fast-checkbox, .mcm-codex-tier-select')
+      .forEach(control => control.addEventListener('change', () => _syncGroupSlotsFromDom()));
   });
   wrap.querySelectorAll('[data-remove-member]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -260,6 +323,10 @@ function _ensureModal() {
         <div class="mcm-template-grid" id="mcm-template-grid">
           ${_renderTemplateButtons('general')}
         </div>
+        <div class="mcm-member-caption">
+          <strong>成员配置</strong>
+          <span>每位成员独立选择模型、思考强度、速度与 MCP；群聊通信所需 MCP 始终保留。</span>
+        </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
         <div class="mcm-scene">
@@ -295,7 +362,7 @@ function _bindEvents() {
   });
   _modalEl.querySelector('#mcm-add-member').addEventListener('click', () => {
     _syncGroupSlotsFromDom();
-    _groupSlots.push({ ...DEFAULT_GROUP_MEMBERS[_groupSlots.length % DEFAULT_GROUP_MEMBERS.length] });
+    _groupSlots.push(_normalizeSlotSpec(DEFAULT_GROUP_MEMBERS[_groupSlots.length % DEFAULT_GROUP_MEMBERS.length]));
     _renderSlots();
   });
   _modalEl.querySelectorAll('[data-mcm-workspace-mode]').forEach(button => {
@@ -333,16 +400,19 @@ async function _onCreate() {
   createBtn.textContent = '正在准备 workspace...';
   _clearError();
   try {
+    // 即使用户在模型目录异步返回前立刻点创建，也要先用真实目录重新归一化。
+    // 否则 gpt-5.5 可能把 fallback 里的 max 带进 CLI（该模型真实只支持到 xhigh）。
+    await window.WorkspaceController.loadCodexTuningCatalog();
+    _syncGroupSlotsFromDom({ strict: true });
+    _renderSlots();
     // 读取 DOM 也必须在 try 内。历史状态或第三方样式脚本一旦留下残缺 slot / 未选
     // scene，旧代码会在 invoke 之前同步 throw，界面上就像按钮完全没反应。
     const slots = Array.from(_modalEl.querySelectorAll('.mcm-slot')).map((el, i) => {
-      const aiSelect = el.querySelector('.mcm-ai-select');
-      const modelSelect = el.querySelector('.mcm-model-select');
-      if (!aiSelect || !aiSelect.value) throw new Error(`成员 ${i + 1} 未选择 AI`);
+      const spec = _readSlotSpec(el, i, { strict: true });
       return {
         index: i,
-        kind: aiSelect.value,
-        model: modelSelect ? modelSelect.value : '',
+        kind: spec.kind,
+        ...window.WorkspaceController.buildSessionTuningOpts(spec.kind, spec.model, spec),
       };
     });
     if (!slots.length) throw new Error('请至少保留一个群聊成员');
@@ -425,6 +495,13 @@ function openMeetingCreateModal(mode = 'general') {
   createBtn.removeAttribute('aria-busy');
   createBtn.textContent = '创建群聊';
   _modalEl.style.display = 'flex';
+  // 单会话与群聊共用 codex-cli 的模型目录。目录异步返回后保留用户已选值重绘，
+  // 让 gpt-5.6 的 ultra / Fast 与旧模型的较短枚举始终准确。
+  void window.WorkspaceController.loadCodexTuningCatalog().then(() => {
+    if (!_modalEl || _modalEl.style.display === 'none') return;
+    _syncGroupSlotsFromDom();
+    _renderSlots();
+  });
   if (_escListener) document.removeEventListener('keydown', _escListener);
   _escListener = (e) => {
     if (e.key === 'Escape' && _modalEl.style.display !== 'none') closeMeetingCreateModal();

@@ -2,6 +2,47 @@
 
 const { ensureClaudeMemoryFile } = require('../../core/claude-memory-loader.js');
 
+const CLAUDE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+const CODEX_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const MCP_PROFILES = new Set(['full', 'lean', 'browser', 'wireless']);
+const CODEX_SPEED_TIERS = new Set(['fast', 'flex']);
+
+// Renderer 传来的 slot 会进入 PTY 命令构造。这里只放行与新建 Session 相同的
+// provider-specific 字段，既不丢用户选择，也不把整份 renderer 对象盲传给 main。
+function sanitizeMeetingSlot(slot = {}, fallbackIndex = null) {
+  const kind = typeof slot.kind === 'string' ? slot.kind.trim() : '';
+  const safe = {
+    index: typeof slot.index === 'number' ? slot.index : fallbackIndex,
+    kind,
+  };
+  if (typeof slot.model === 'string' && slot.model.trim()) safe.model = slot.model.trim();
+
+  const effort = typeof slot.effort === 'string' ? slot.effort.trim().toLowerCase() : '';
+  if (kind === 'claude' && CLAUDE_EFFORTS.has(effort)) safe.effort = effort;
+  if ((kind === 'codex' || kind === 'deepseek') && CODEX_EFFORTS.has(effort)) safe.effort = effort;
+
+  const mcpProfile = typeof slot.mcpProfile === 'string' ? slot.mcpProfile.trim().toLowerCase() : '';
+  if ((kind === 'claude' || kind === 'codex' || kind === 'deepseek') && MCP_PROFILES.has(mcpProfile)) {
+    safe.mcpProfile = mcpProfile;
+  }
+  // 与普通新建 Session 一样，仅显式关闭时传 false；省略表示沿用默认开启。
+  if (kind === 'claude' && slot.fastMode === false) safe.fastMode = false;
+
+  const codexSpeedTier = typeof slot.codexSpeedTier === 'string'
+    ? slot.codexSpeedTier.trim().toLowerCase()
+    : '';
+  if ((kind === 'codex' || kind === 'deepseek') && CODEX_SPEED_TIERS.has(codexSpeedTier)) {
+    safe.codexSpeedTier = codexSpeedTier;
+  }
+  return safe;
+}
+
+function sessionOptionsForMeetingSlot(slot, cwd) {
+  const safe = sanitizeMeetingSlot(slot);
+  const { index: _index, kind: _kind, ...sessionOpts } = safe;
+  return { ...sessionOpts, cwd };
+}
+
 function createMeetingSubAdder(deps) {
   const {
     fs,
@@ -155,10 +196,15 @@ function createMeetingSubAdder(deps) {
         const currentModel = session.currentModel && typeof session.currentModel === 'object'
           ? session.currentModel.id
           : session.currentModel;
-        slotSpecs[addedIndex] = {
+        slotSpecs[addedIndex] = sanitizeMeetingSlot({
           kind,
           model: opts.model || currentModel || null,
-        };
+          effort: opts.effort,
+          mcpProfile: opts.mcpProfile,
+          fastMode: opts.fastMode,
+          codexSpeedTier: opts.codexSpeedTier,
+        });
+        delete slotSpecs[addedIndex].index;
         meetingManager.setSlotSpecs(meetingId, slotSpecs);
       }
     }
@@ -199,11 +245,8 @@ function registerMeetingCreateIpc(ipcMain, deps) {
       safe.workspaceLabel = workspace.label;
     }
     if (Array.isArray(safe.slots) && safe.slots.length > 0) {
-      safe.slotSpecs = safe.slots.map(s => ({
-        index: typeof s.index === 'number' ? s.index : null,
-        kind: s.kind,
-        model: s.model || null,
-      }));
+      safe.slots = safe.slots.map((slot, index) => sanitizeMeetingSlot(slot, index));
+      safe.slotSpecs = safe.slots.map(slot => ({ ...slot }));
       if (safe.groupChat && !Array.isArray(safe.participants)) {
         safe.participants = safe.slots.map((_, i) => i);
       }
@@ -214,7 +257,11 @@ function registerMeetingCreateIpc(ipcMain, deps) {
       const errors = [];
       for (const slot of safe.slots) {
         try {
-          await addMeetingSubInternal(meeting.id, slot.kind, { model: slot.model, cwd: safe.workspace });
+          await addMeetingSubInternal(
+            meeting.id,
+            slot.kind,
+            sessionOptionsForMeetingSlot(slot, safe.workspace),
+          );
         } catch (err) {
           errors.push({ slot, message: err && err.message || String(err) });
           logger.warn('[create-meeting] add-sub failed for slot', slot, err && err.message);
@@ -253,4 +300,6 @@ function registerMeetingCreateIpc(ipcMain, deps) {
 module.exports = {
   createMeetingSubAdder,
   registerMeetingCreateIpc,
+  sanitizeMeetingSlot,
+  sessionOptionsForMeetingSlot,
 };

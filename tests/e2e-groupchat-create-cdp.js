@@ -91,7 +91,19 @@ setInterval(() => {}, 1000);
   for (const provider of ['claude', 'codex', 'gemini', 'kimi']) {
     fs.writeFileSync(path.join(FAKE_BIN, `${provider}.cmd`), `@echo off\r\n"${process.execPath}" "${fake}" ${provider} %*\r\n`, 'utf8');
   }
-  fs.writeFileSync(path.join(CODEX_HOME, 'config.toml'), 'approval_policy = "never"\n', 'utf8');
+  fs.writeFileSync(path.join(CODEX_HOME, 'config.toml'), [
+    'approval_policy = "never"',
+    '',
+    '[mcp_servers.playwright]',
+    'command = "npx"',
+    '',
+    '[mcp_servers.superran]',
+    'command = "python"',
+    '',
+    '[mcp_servers.misc]',
+    'command = "node"',
+    '',
+  ].join('\n'), 'utf8');
   fs.writeFileSync(path.join(DATA_DIR, 'config.json'), JSON.stringify({
     providers: {
       claude: { backend: 'subscription' },
@@ -202,6 +214,62 @@ async function main() {
     assert.equal(recoveredError.createInvokes, 0);
 
     await client.eval(`window.openMeetingCreateModal('group')`);
+    await waitFor('member tuning controls', () => client.eval(`(() => {
+      const slots = document.querySelectorAll('#meeting-create-modal .mcm-slot');
+      return slots.length === 3
+        && slots[0].querySelector('.mcm-fast-checkbox')
+        && slots[1].querySelector('.mcm-codex-tier-select')
+        && slots[2].querySelector('.mcm-codex-tier-select');
+    })()`), 8000);
+    const configuredMembers = await client.eval(`(() => {
+      const setValue = (el, value) => {
+        if (!el || !Array.from(el.options || []).some(option => option.value === value)) {
+          throw new Error('missing option ' + value + ' for ' + (el && el.className));
+        }
+        el.value = value;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const slots = Array.from(document.querySelectorAll('#meeting-create-modal .mcm-slot'));
+      setValue(slots[0].querySelector('.mcm-effort-select'), 'high');
+      setValue(slots[0].querySelector('.mcm-mcp-select'), 'lean');
+      const fast = slots[0].querySelector('.mcm-fast-checkbox');
+      fast.checked = false;
+      fast.dispatchEvent(new Event('change', { bubbles: true }));
+
+      setValue(slots[1].querySelector('.mcm-effort-select'), 'low');
+      setValue(slots[1].querySelector('.mcm-mcp-select'), 'browser');
+      setValue(slots[1].querySelector('.mcm-codex-tier-select'), 'fast');
+
+      setValue(slots[2].querySelector('.mcm-effort-select'), 'medium');
+      setValue(slots[2].querySelector('.mcm-mcp-select'), 'wireless');
+      setValue(slots[2].querySelector('.mcm-codex-tier-select'), 'flex');
+      const research = document.querySelector('#meeting-create-modal input[name="mcm-scene"][value="research"]');
+      research.checked = true;
+      research.dispatchEvent(new Event('change', { bubbles: true }));
+
+      return slots.map(slot => ({
+        kind: slot.querySelector('.mcm-ai-select').value,
+        model: slot.querySelector('.mcm-model-select').value,
+        effort: slot.querySelector('.mcm-effort-select')?.value || null,
+        mcpProfile: slot.querySelector('.mcm-mcp-select')?.value || null,
+        fastMode: slot.querySelector('.mcm-fast-checkbox')?.checked ?? null,
+        codexSpeedTier: slot.querySelector('.mcm-codex-tier-select')?.value || null,
+      }));
+    })()`);
+    assert.deepEqual(configuredMembers.map(member => ({
+      kind: member.kind,
+      effort: member.effort,
+      mcpProfile: member.mcpProfile,
+      fastMode: member.fastMode,
+      codexSpeedTier: member.codexSpeedTier,
+    })), [
+      { kind: 'claude', effort: 'high', mcpProfile: 'lean', fastMode: false, codexSpeedTier: null },
+      { kind: 'codex', effort: 'low', mcpProfile: 'browser', fastMode: null, codexSpeedTier: 'fast' },
+      { kind: 'deepseek', effort: 'medium', mcpProfile: 'wireless', fastMode: null, codexSpeedTier: 'flex' },
+    ]);
+
+    const configuredShot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    fs.writeFileSync(MODAL_SCREENSHOT_PATH, Buffer.from(configuredShot.data, 'base64'));
     const createPoint = await pointFor(client, '.mcm-create');
     await clickPoint(client, createPoint);
 
@@ -214,6 +282,9 @@ async function main() {
       return {
         meetingCount: meetings.length,
         meeting: meetings[meetings.length - 1] || null,
+        sessions: meetings.length
+          ? (await ipcRenderer.invoke('get-sessions')).filter(session => session.meetingId === meetings[meetings.length - 1].id)
+          : [],
         modalDisplay: modal && modal.style.display,
         createDisabled: !!modal?.querySelector('.mcm-create')?.disabled,
         createText: modal?.querySelector('.mcm-create')?.textContent || '',
@@ -231,6 +302,63 @@ async function main() {
     console.log(JSON.stringify({ ok: result.meetingCount > 0 && result.modalDisplay === 'none', recoveredError, createPoint, result, screenshots: { modal: MODAL_SCREENSHOT_PATH, created: SCREENSHOT_PATH }, logs }, null, 2));
     assert.ok(result.meetingCount > 0, `group chat was not created: ${result.error || 'no visible error'}`);
     assert.equal(result.meeting.subSessions.length, 3);
+    assert.equal(result.meeting.scene, 'research');
+    assert.deepEqual(result.meeting.slotSpecs, [
+      {
+        index: 0, kind: 'claude', model: configuredMembers[0].model,
+        effort: 'high', mcpProfile: 'lean', fastMode: false,
+      },
+      {
+        index: 1, kind: 'codex', model: configuredMembers[1].model,
+        effort: 'low', mcpProfile: 'browser', codexSpeedTier: 'fast',
+      },
+      {
+        index: 2, kind: 'deepseek', model: configuredMembers[2].model,
+        effort: 'medium', mcpProfile: 'wireless', codexSpeedTier: 'flex',
+      },
+    ]);
+    const sessionsByKind = Object.fromEntries(result.sessions.map(session => [session.kind, session]));
+    assert.equal(sessionsByKind.claude.effort, 'high');
+    assert.equal(sessionsByKind.claude.mcpProfile, 'lean');
+    assert.equal(sessionsByKind.claude.fastMode, false);
+    assert.equal(sessionsByKind.codex.effort, 'low');
+    assert.equal(sessionsByKind.codex.mcpProfile, 'browser');
+    assert.equal(sessionsByKind.codex.codexSpeedTier, 'fast');
+    assert.equal(sessionsByKind.deepseek.effort, 'medium');
+    assert.equal(sessionsByKind.deepseek.mcpProfile, 'wireless');
+    assert.equal(sessionsByKind.deepseek.codexSpeedTier, 'flex');
+
+    const invocations = await waitFor('three tuned CLI invocations', () => {
+      if (!fs.existsSync(INVOCATION_LOG)) return null;
+      const rows = fs.readFileSync(INVOCATION_LOG, 'utf8').trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+      return rows.length >= 3 ? rows : null;
+    }, 12000);
+    const claudeInvocation = invocations.find(row => row.provider === 'claude');
+    const codexInvocations = invocations.filter(row => row.provider === 'codex');
+    const codexInvocation = codexInvocations.find(row => row.args.includes(configuredMembers[1].model));
+    const deepseekInvocation = codexInvocations.find(row => row.args.includes(configuredMembers[2].model));
+    const argsText = row => (row && row.args || []).join(' ');
+    assert.match(argsText(claudeInvocation), /--effort high/);
+    assert.match(argsText(claudeInvocation), /--strict-mcp-config/);
+    assert.match(argsText(claudeInvocation), /research-mcp\.json/,
+      'Lean must retain the mandatory research MCP config');
+    assert.match(argsText(claudeInvocation), /claude-mcp-lean-none\.json/,
+      'Lean must add its filtered global MCP config beside the room config');
+    assert.doesNotMatch(argsText(claudeInvocation), /claude-subscription-fast-settings/,
+      'Claude Fast off must reach the actual group member command');
+    assert.match(argsText(codexInvocation), /model_reasoning_effort=.*low/);
+    assert.match(argsText(codexInvocation), /service_tier=.*fast/);
+    assert.match(argsText(codexInvocation), /mcp_servers\.superran\.enabled=false/);
+    assert.match(argsText(codexInvocation), /mcp_servers\.misc\.enabled=false/);
+    assert.doesNotMatch(argsText(codexInvocation), /mcp_servers\.playwright\.enabled=false/);
+    assert.match(argsText(codexInvocation), /mcp_servers\.arena_research\.command/,
+      'Browser profile must retain the mandatory Codex research MCP');
+    assert.match(argsText(deepseekInvocation), /model_reasoning_effort=.*medium/);
+    assert.match(argsText(deepseekInvocation), /service_tier=.*flex/);
+    // DeepSeek 的 Codex API profile 是隔离生成的，本用例没有给它预装全局 MCP；
+    // 仍需确认逐成员档位已持久化，且房间必需的 ai-team MCP 没被 Wireless 过滤掉。
+    assert.match(argsText(deepseekInvocation), /mcp_servers\.ai-team\.command/);
+    assert.match(argsText(deepseekInvocation), /mcp_servers\.arena_research\.command/);
     assert.equal(result.modalDisplay, 'none', 'modal should close after successful creation');
     assert.deepEqual(result.rendererErrors, []);
   } finally {

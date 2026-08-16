@@ -218,3 +218,43 @@ test('Claude CLI 原地 relaunch 沿用 effort、MCP 档位和关闭 fast 的选
     fs.rmSync(isolatedDataDir, { recursive: true, force: true });
   }
 });
+
+test('迁移前 DeepSeek 群聊 relaunch 保持 Lean 并保留房间 MCP', () => {
+  const isolatedDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-deepseek-legacy-relaunch-'));
+  const roomConfig = path.join(isolatedDataDir, 'legacy-room-mcp.json');
+  const oldDataDir = process.env.CLAUDE_HUB_DATA_DIR;
+  const manager = new SessionManager();
+  let command = '';
+  try {
+    process.env.CLAUDE_HUB_DATA_DIR = isolatedDataDir;
+    fs.writeFileSync(roomConfig, JSON.stringify({
+      mcpServers: { arena_research: { command: 'node' } },
+    }), 'utf8');
+    manager.sessions.set('legacy-deepseek', {
+      info: {
+        id: 'legacy-deepseek',
+        kind: 'deepseek',
+        transcriptKind: 'deepseek-legacy',
+        meetingId: 'meeting-1',
+        cwd: 'C:\\work',
+        currentModel: { id: 'deepseek-v4-pro[1m]' },
+        mcpProfile: 'lean',
+      },
+      claudeMcpConfigFile: roomConfig,
+      pty: { write(value) { command += value; }, kill() {} },
+      pendingTimers: new Set(),
+    });
+
+    assert.equal(manager.relaunchCli('legacy-deepseek'), true);
+    assert.match(command, /claude --model deepseek-v4-pro\[1m\]/);
+    assert.match(command, /legacy-room-mcp\.json/);
+    assert.match(command, /claude-mcp-lean-none\.json/);
+    assert.match(command, /--strict-mcp-config/);
+    assert.match(command, /group-chat-claude-settings\.json/);
+  } finally {
+    manager.dispose();
+    if (oldDataDir === undefined) delete process.env.CLAUDE_HUB_DATA_DIR;
+    else process.env.CLAUDE_HUB_DATA_DIR = oldDataDir;
+    fs.rmSync(isolatedDataDir, { recursive: true, force: true });
+  }
+});

@@ -4,6 +4,7 @@ const assert = require('assert');
 const {
   createMeetingSubAdder,
   registerMeetingCreateIpc,
+  sanitizeMeetingSlot,
 } = require('../main/ipc/meeting-create-handlers.js');
 
 function createFakeIpc() {
@@ -120,6 +121,38 @@ test('registers create-meeting and add-meeting-sub', () => {
   assert.ok(ipc.handlers.has('add-meeting-sub'));
 });
 
+test('slot tuning sanitizer only allows fields understood by that provider', () => {
+  assert.deepStrictEqual(sanitizeMeetingSlot({
+    index: 2,
+    kind: 'claude',
+    model: ' opus ',
+    effort: 'HIGH',
+    mcpProfile: 'Browser',
+    fastMode: false,
+    codexSpeedTier: 'fast',
+  }), {
+    index: 2,
+    kind: 'claude',
+    model: 'opus',
+    effort: 'high',
+    mcpProfile: 'browser',
+    fastMode: false,
+  });
+  assert.deepStrictEqual(sanitizeMeetingSlot({
+    kind: 'codex',
+    effort: 'ultra',
+    mcpProfile: 'wireless',
+    codexSpeedTier: 'flex',
+    fastMode: false,
+  }, 1), {
+    index: 1,
+    kind: 'codex',
+    effort: 'ultra',
+    mcpProfile: 'wireless',
+    codexSpeedTier: 'flex',
+  });
+});
+
 test('add-meeting-sub assigns slot title, isolated workspace, and Claude MCP config', async () => {
   const ipc = createFakeIpc();
   const deps = createBaseDeps();
@@ -217,16 +250,73 @@ test('create-meeting with slots emits final meeting once and persists slot specs
     title: 'Room',
     scene: 'research',
     slots: [
-      { index: 0, kind: 'claude', model: 'opus' },
-      { index: 1, kind: 'codex', model: 'gpt-5.5' },
+      {
+        index: 0,
+        kind: 'claude',
+        model: 'opus',
+        effort: 'high',
+        mcpProfile: 'browser',
+        fastMode: false,
+        // provider-mismatched fields must not leak into Claude's PTY options.
+        codexSpeedTier: 'fast',
+      },
+      {
+        index: 1,
+        kind: 'codex',
+        model: 'gpt-5.5',
+        effort: 'xhigh',
+        mcpProfile: 'wireless',
+        codexSpeedTier: 'flex',
+        fastMode: false,
+      },
     ],
   });
 
   assert.deepStrictEqual(meeting.subSessions, ['claude-sid-1', 'codex-sid-2']);
   assert.deepStrictEqual(meeting.slotSpecs, [
-    { index: 0, kind: 'claude', model: 'opus' },
-    { index: 1, kind: 'codex', model: 'gpt-5.5' },
+    {
+      index: 0,
+      kind: 'claude',
+      model: 'opus',
+      effort: 'high',
+      mcpProfile: 'browser',
+      fastMode: false,
+    },
+    {
+      index: 1,
+      kind: 'codex',
+      model: 'gpt-5.5',
+      effort: 'xhigh',
+      mcpProfile: 'wireless',
+      codexSpeedTier: 'flex',
+    },
   ]);
+  const creates = deps.calls.filter(call => call[0] === 'createSession');
+  assert.deepStrictEqual(
+    creates.map(call => ({ kind: call[1], opts: call[2] })),
+    [
+      {
+        kind: 'claude',
+        opts: {
+          model: 'opus', effort: 'high', mcpProfile: 'browser', fastMode: false,
+          cwd: 'C:\\isolated\\m1', meetingId: meeting.id, title: 'Claude 1', noInheritCursor: true,
+          mcpConfigFile: 'C:\\hub\\mcp.json',
+        },
+      },
+      {
+        kind: 'codex',
+        opts: {
+          model: 'gpt-5.5', effort: 'xhigh', mcpProfile: 'wireless', codexSpeedTier: 'flex',
+          cwd: 'C:\\isolated\\m1', meetingId: meeting.id, title: 'Codex 2', noInheritCursor: true,
+          codexBypassApprovals: true,
+          codexMcpEntries: [
+            { aiTeamArgs: [meeting.id, 'codex'] },
+            { args: [meeting.id, 4567, 'token', 'C:\\hub', { enableChuxin: true }] },
+          ],
+        },
+      },
+    ],
+  );
   assert.deepStrictEqual(
     deps.calls.filter(call => call[0] === 'sendToRenderer').map(call => call[1]),
     ['session-created', 'meeting-updated', 'session-created', 'meeting-updated', 'meeting-created']
