@@ -8,7 +8,9 @@ const fs = require('fs');
 const { app, shell } = require('electron');
 const {
   HUB_APP_USER_MODEL_ID,
+  buildShortcutDetails,
   ensureWindowsShellIntegration,
+  shortcutMatches,
 } = require('../core/windows-shell-integration.js');
 const {
   ensureBrandedHubExe,
@@ -36,14 +38,17 @@ app.whenReady().then(() => {
   const brandingOptions = { execPath: process.execPath, icoPath: iconPath, productVersion };
   const brandingBefore = inspectBrandedHubExe(brandingOptions);
   const branding = ensureBrandedHubExe({ ...brandingOptions, productName: 'AI 群聊 Hub' });
-  const result = ensureWindowsShellIntegration({
+  const launchExePath = resolveHubLaunchExePath(brandingOptions);
+  const shellOptions = {
     app,
     shell,
     appRoot,
-    execPath: resolveHubLaunchExePath(brandingOptions),
+    execPath: launchExePath,
     isPackaged: false,
     iconPath,
-  });
+  };
+  const result = ensureWindowsShellIntegration(shellOptions);
+  const expectedShortcut = buildShortcutDetails(shellOptions);
   result.branding = {
     stateBefore: brandingBefore.reason,
     rebuilt: branding.changed,
@@ -51,10 +56,22 @@ app.whenReady().then(() => {
     error: branding.error || null,
   };
   result.shortcutExistsBeforeExit = !!(result.shortcutPath && fs.existsSync(result.shortcutPath));
+  try {
+    result.shortcutDetailsAfterRepair = shell.readShortcutLink(result.shortcutPath);
+    result.shortcutHealthyAfterRepair = shortcutMatches(result.shortcutDetailsAfterRepair, expectedShortcut);
+  } catch (error) {
+    result.shortcutHealthyAfterRepair = false;
+    result.shortcutReadError = error.message;
+  }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   setTimeout(() => {
+    let healthyAfter1s = false;
+    try {
+      healthyAfter1s = shortcutMatches(shell.readShortcutLink(result.shortcutPath), expectedShortcut);
+    } catch {}
     process.stdout.write(`shortcutExistsAfter1s=${!!(result.shortcutPath && fs.existsSync(result.shortcutPath))}\n`);
-    app.exit(0);
+    process.stdout.write(`shortcutHealthyAfter1s=${healthyAfter1s}\n`);
+    app.exit(healthyAfter1s ? 0 : 2);
   }, 1000);
 }).catch((error) => {
   process.stderr.write(`${error.stack || error.message}\n`);

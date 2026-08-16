@@ -74,6 +74,7 @@ let _groupSlots = DEFAULT_GROUP_MEMBERS.map(x => ({ ...x }));
 let _escListener = null;
 let _meetingWorkspace = null;
 let _meetingWorkspaceMode = 'scratch';
+let _creating = false;
 
 function _paintWorkspace(workspace) {
   if (workspace) _meetingWorkspace = workspace;
@@ -271,7 +272,7 @@ function _ensureModal() {
       </div>
       <div class="mcm-footer">
         <button class="mcm-cancel">取消</button>
-        <button class="mcm-create mcm-primary">创建群聊</button>
+        <button type="button" class="mcm-create mcm-primary">创建群聊</button>
       </div>
     </div>
   `;
@@ -283,7 +284,10 @@ function _ensureModal() {
 function _bindEvents() {
   _modalEl.querySelector('.mcm-close').addEventListener('click', closeMeetingCreateModal);
   _modalEl.querySelector('.mcm-cancel').addEventListener('click', closeMeetingCreateModal);
-  _modalEl.querySelector('.mcm-create').addEventListener('click', _onCreate);
+  _modalEl.querySelector('.mcm-create').addEventListener('click', (event) => {
+    event.preventDefault();
+    void _onCreate();
+  });
   _modalEl.querySelector('#mcm-template-grid').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-mcm-template]');
     if (!btn) return;
@@ -320,23 +324,37 @@ function _bindEvents() {
 }
 
 async function _onCreate() {
-  const slots = Array.from(_modalEl.querySelectorAll('.mcm-slot')).map((el, i) => ({
-    index: i,
-    kind: el.querySelector('.mcm-ai-select').value,
-    model: el.querySelector('.mcm-model-select').value,
-  }));
-  const scene = _modalEl.querySelector('input[name="mcm-scene"]:checked').value;
-  // createMeeting 的 scene 实际取自 mode（过 MEETING_MODES 白名单），scene 字段只是透传
-  const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
-  const titleInput = _modalEl.querySelector('#mcm-title-input');
-  const title = titleInput ? titleInput.value.trim() : '';
-
-  const createBtn = _modalEl.querySelector('.mcm-create');
+  if (_creating) return;
+  const createBtn = _modalEl && _modalEl.querySelector('.mcm-create');
+  if (!createBtn) return;
+  _creating = true;
   createBtn.disabled = true;
-  createBtn.textContent = '创建群聊中...';
+  createBtn.setAttribute('aria-busy', 'true');
+  createBtn.textContent = '正在准备 workspace...';
   _clearError();
   try {
+    // 读取 DOM 也必须在 try 内。历史状态或第三方样式脚本一旦留下残缺 slot / 未选
+    // scene，旧代码会在 invoke 之前同步 throw，界面上就像按钮完全没反应。
+    const slots = Array.from(_modalEl.querySelectorAll('.mcm-slot')).map((el, i) => {
+      const aiSelect = el.querySelector('.mcm-ai-select');
+      const modelSelect = el.querySelector('.mcm-model-select');
+      if (!aiSelect || !aiSelect.value) throw new Error(`成员 ${i + 1} 未选择 AI`);
+      return {
+        index: i,
+        kind: aiSelect.value,
+        model: modelSelect ? modelSelect.value : '',
+      };
+    });
+    if (!slots.length) throw new Error('请至少保留一个群聊成员');
+    const sceneInput = _modalEl.querySelector('input[name="mcm-scene"]:checked');
+    const scene = sceneInput ? sceneInput.value : 'general';
+    // createMeeting 的 scene 实际取自 mode（过 MEETING_MODES 白名单），scene 字段只是透传
+    const mode = (scene === 'research' || scene === 'dev') ? scene : 'general';
+    const titleInput = _modalEl.querySelector('#mcm-title-input');
+    const title = titleInput ? titleInput.value.trim() : '';
+
     const workspace = await _syncWorkspace();
+    createBtn.textContent = '正在创建成员会话...';
     const meeting = await ipcRenderer.invoke('create-meeting', {
       mode,
       scene,
@@ -357,7 +375,9 @@ async function _onCreate() {
   } catch (e) {
     console.error('[meeting-create-modal] create failed:', e);
     _showError((e && e.message) ? e.message : String(e));
+    _creating = false;
     createBtn.disabled = false;
+    createBtn.removeAttribute('aria-busy');
     createBtn.textContent = '创建群聊';
   }
 }
@@ -400,7 +420,9 @@ function openMeetingCreateModal(mode = 'general') {
   const addBtn = _modalEl.querySelector('#mcm-add-member');
   if (addBtn) addBtn.style.display = 'inline-flex';
   const createBtn = _modalEl.querySelector('.mcm-create');
+  _creating = false;
   createBtn.disabled = false;
+  createBtn.removeAttribute('aria-busy');
   createBtn.textContent = '创建群聊';
   _modalEl.style.display = 'flex';
   if (_escListener) document.removeEventListener('keydown', _escListener);
@@ -420,4 +442,12 @@ function closeMeetingCreateModal() {
 
 window.openMeetingCreateModal = openMeetingCreateModal;
 window.closeMeetingCreateModal = closeMeetingCreateModal;
+
+// 这个入口不能依赖 4k+ 行 renderer.js 跑到尾部才接线。只要 renderer 启动阶段有
+// 任意一个无关模块异常，按钮虽然已经可见，却会永远没有 click listener。群聊创建
+// 是独立能力，由自己的模块在加载时直接接管，且脚本在 renderer.js 之前加载。
+const groupChatButton = document.getElementById('btn-group-chat');
+if (groupChatButton) {
+  groupChatButton.addEventListener('click', () => openMeetingCreateModal('group'));
+}
 })();

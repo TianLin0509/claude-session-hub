@@ -103,6 +103,35 @@ test('production integration creates a branded shortcut and a working new-window
   }
 });
 
+test('Jump List registration cannot leave the canonical shortcut without the Hub app-root argument', () => {
+  const h = makeHarness();
+  try {
+    const { shortcutPath } = getShortcutPaths({ app: h.app });
+    h.app.setUserTasks = (value) => {
+      h.tasks.push(value);
+      // Mirrors the source-mode Windows/Electron behavior observed in production:
+      // task registration normalizes the AUMID shortcut back to a bare exe launch.
+      h.links.set(path.resolve(shortcutPath), {
+        ...buildShortcutDetails(h),
+        args: '',
+        cwd: path.dirname(h.execPath),
+      });
+      return true;
+    };
+
+    const result = ensureWindowsShellIntegration({ ...h, platform: 'win32' });
+    const repaired = h.links.get(path.resolve(shortcutPath));
+
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.shortcutUpdated, true);
+    assert.equal(h.writes.length, 2, 'canonical shortcut must be restored after setUserTasks drift');
+    assert.equal(repaired.args, `"${path.resolve(h.appRoot)}"`);
+    assert.equal(repaired.cwd, path.resolve(h.appRoot));
+  } finally {
+    fs.rmSync(h.temp, { recursive: true, force: true });
+  }
+});
+
 test('only the exact Hub-owned bare Electron shortcut is retired with a backup', () => {
   const h = makeHarness();
   try {
@@ -314,6 +343,13 @@ test('non-Windows runs perform no filesystem or taskbar mutation', () => {
   } finally {
     fs.rmSync(h.temp, { recursive: true, force: true });
   }
+});
+
+test('legacy icon script delegates to canonical shell repair and never recreates claudeWX.lnk', () => {
+  const script = fs.readFileSync(path.join(__dirname, '..', 'create-shortcut.ps1'), 'utf8');
+  assert.match(script, /repair-windows-shell-integration\.js/);
+  assert.doesNotMatch(script, /CreateShortcut\(/);
+  assert.doesNotMatch(script, /claudeWX\.lnk/);
 });
 
 // 2026-08-08 图标回归：Explorer 崩溃重启会重建任务栏并丢掉窗口 HICON，任务栏按钮

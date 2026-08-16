@@ -48,7 +48,7 @@ async function _waitForCDP(port, timeoutMs = 30000) {
   return null;
 }
 
-async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {} } = {}) {
+async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {}, executablePath = ELECTRON_EXE } = {}) {
   if (!dataDir) throw new Error('dataDir required');
   if (!port) throw new Error('port required');
 
@@ -65,7 +65,7 @@ async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {} }
 
   const args = [HUB_ROOT, `--remote-debugging-port=${port}`];
   // 关键：spawn 立即拿 PID，detached:false 让 child 跟随 parent 退出
-  const child = spawn(ELECTRON_EXE, args, {
+  const child = spawn(executablePath, args, {
     env,
     cwd: HUB_ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -111,6 +111,7 @@ async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {} }
     port,
     label,
     dataDir,
+    executablePath,
     cdpUrl: ver.webSocketDebuggerUrl,
     cdpHttpBase: `http://127.0.0.1:${port}`,
     child,

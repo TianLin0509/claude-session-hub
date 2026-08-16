@@ -556,7 +556,6 @@ const wrapperEl = document.getElementById('new-session-wrapper');
 const btnResume = document.getElementById('btn-resume');
 const resumeMenuEl = document.getElementById('resume-picker-menu');
 const resumeWrapperEl = document.getElementById('resume-picker-wrapper');
-const btnGroupChat = document.getElementById('btn-group-chat');
 const btnHome = document.getElementById('btn-home');
 const contextMenuEl = document.getElementById('context-menu');
 const termCtxMenuEl = document.getElementById('terminal-context-menu');
@@ -3318,14 +3317,6 @@ for (const link of document.querySelectorAll('.launcher-link')) {
 if (btnHome) {
   btnHome.addEventListener('click', () => escapeToHome());
 }
-if (btnGroupChat) {
-  btnGroupChat.addEventListener('click', async () => {
-    if (typeof window.openMeetingCreateModal === 'function') {
-      window.openMeetingCreateModal('group');
-    }
-  });
-}
-
 // --- Create Meeting ---
 function createMeetingByMode(mode) {
   if (typeof window.openMeetingCreateModal === 'function') {

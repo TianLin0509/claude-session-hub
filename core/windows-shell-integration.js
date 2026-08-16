@@ -317,6 +317,26 @@ function ensureWindowsShellIntegration({
     result.errors.push(`Windows Jump List 更新失败：${error.message}`);
   }
 
+  // Electron/Windows 会在 setUserTasks() 时重新登记当前 AUMID 的应用快捷方式。
+  // 对 source-mode app，这一步可能把刚写好的 app-root 参数抹掉，并把 cwd 改成
+  // exe 目录。实际结果就是任务栏右键“新建窗口”只启动 AIGroupChatHub.exe，
+  // 没有传 Hub 根目录，Electron 于是打开原始空壳。Jump List 必须先登记，随后
+  // 再复核一次 Shell Link；不能只相信 writeShortcutLink() 的返回值。
+  try {
+    let current = null;
+    if (fsModule.existsSync(shortcutPath)) {
+      try { current = shell.readShortcutLink(shortcutPath); } catch {}
+    }
+    if (!shortcutMatches(current, expected)) {
+      const operation = fsModule.existsSync(shortcutPath) ? 'replace' : 'create';
+      const ok = shell.writeShortcutLink(shortcutPath, operation, expected);
+      if (!ok) throw new Error(`writeShortcutLink returned false: ${shortcutPath}`);
+      result.shortcutUpdated = true;
+    }
+  } catch (error) {
+    result.errors.push(`Jump List 登记后快捷方式复核失败：${error.message}`);
+  }
+
   if (result.errors.length) logger.warn('[windows-shell]', result.errors.join('；'));
   return result;
 }

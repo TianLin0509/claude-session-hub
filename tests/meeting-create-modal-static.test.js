@@ -102,6 +102,13 @@ test('modal js is IIFE-wrapped', () => {
 test('index.html includes meeting-create-modal css and js', () => {
   assert.match(HTML, /meeting-create-modal\.css/);
   assert.match(HTML, /<script\s+src="meeting-create-modal\.js"/);
+  assert.ok(
+    HTML.indexOf('<script src="meeting-create-modal.js"></script>')
+      < HTML.indexOf('<script src="renderer.js"></script>'),
+    'group-chat launcher must bind before the large renderer bootstrap can fail',
+  );
+  assert.match(MODAL_JS, /getElementById\(['"]btn-group-chat['"]\)/);
+  assert.match(MODAL_JS, /groupChatButton\.addEventListener\(['"]click['"]/);
 });
 
 test('new session menu has one Codex CLI option using settings default profile', () => {

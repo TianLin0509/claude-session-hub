@@ -229,6 +229,9 @@ function ensureCodexContextConfig() {
 // without ARENA_* env (user's standalone gemini, or non-research group chat),
 // the server enters STUB mode and exposes no tools.
 function ensureGeminiMcpInstalled() {
+  // Isolated GUI/E2E instances must never rewrite the user's real ~/.gemini.
+  // Their fake Gemini process does not need the persistent arena registration.
+  if (isIsolatedHub()) return;
   const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
   const geminiDir = path.join(home, '.gemini');
   if (!fs.existsSync(geminiDir)) return;

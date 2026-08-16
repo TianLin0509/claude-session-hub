@@ -149,18 +149,20 @@ if ($IconOnly) {
     return
 }
 
-# Refresh the desktop shortcut (target/arguments unchanged; icon resource in
-# the .ico is keyed by path, so replacing the file is enough for new apps —
-# but the existing .lnk already points here, so this is mostly for first run).
-$lnkPath = "$env:USERPROFILE\Desktop\claudeWX.lnk"
-$shell = New-Object -ComObject WScript.Shell
-$s = $shell.CreateShortcut($lnkPath)
-$s.TargetPath        = Join-Path $PSScriptRoot "node_modules\electron\dist\electron.exe"
-$s.Arguments         = "`"$PSScriptRoot`""
-$s.WorkingDirectory  = $PSScriptRoot
-$s.IconLocation      = "$icoPath,0"
-$s.WindowStyle       = 7
-$s.Description       = "Claude Session Hub"
-$s.Save()
-
-Write-Host "Shortcut refreshed: $lnkPath"
+# Shortcut identity/arguments must be written through Electron's Shell Link API,
+# because WScript.Shell cannot preserve AppUserModelID. The old code recreated
+# a legacy Desktop launcher and stripped the canonical identity, so duplicates
+# kept returning. Delegate to the single canonical repair path instead.
+$electronExe = Join-Path $PSScriptRoot "node_modules\electron\dist\electron.exe"
+$repairScript = Join-Path $PSScriptRoot "scripts\repair-windows-shell-integration.js"
+if (-not (Test-Path -LiteralPath $electronExe)) {
+    throw "Electron executable not found: $electronExe"
+}
+if (-not (Test-Path -LiteralPath $repairScript)) {
+    throw "Shell repair script not found: $repairScript"
+}
+& $electronExe $repairScript
+if ($LASTEXITCODE -ne 0) {
+    throw "Windows shell integration repair failed with exit code $LASTEXITCODE"
+}
+Write-Host "Canonical AI Hub shortcut and Jump List refreshed"
