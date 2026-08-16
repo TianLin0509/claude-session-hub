@@ -24,7 +24,7 @@ const meetingStore = require('../core/meeting-store');
       title: '通用 #1', scene: 'general', createdAt: 1234567890,
       subSessions: ['sub1', 'sub2'], layout: 'focus', focusedSub: 'sub1',
       syncContext: false, sendTarget: 'all', pinned: true,
-      lastScene: 'free_discussion', lastMessageTime: 999,
+      lastScene: 'free_discussion', lastMessageTime: 999, lastCompletedAt: 888,
       covenantText: '约定文本', immersive: false, updatedAt: 5000,
     });
     const loaded = meetingStore.loadMeetingFile('m1');
@@ -36,6 +36,7 @@ const meetingStore = require('../core/meeting-store');
     assert.deepStrictEqual(loaded.subSessions, ['sub1', 'sub2']);
     assert.strictEqual(loaded.covenantText, '约定文本');
     assert.strictEqual(loaded.pinned, true);
+    assert.strictEqual(loaded.lastCompletedAt, 888);
     assert.strictEqual(loaded._timeline.length, 1);
     assert.strictEqual(loaded.updatedAt, 5000);
     console.log('PASS V1 v2 round-trip 完整字段');

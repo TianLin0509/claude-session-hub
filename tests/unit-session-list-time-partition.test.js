@@ -1,6 +1,10 @@
 'use strict';
 const assert = require('assert');
-const { partitionSessionsByAge } = require('../renderer/session-list-renderer.js');
+const {
+  compareLatestReplyDesc,
+  latestReplyTime,
+  partitionSessionsByAge,
+} = require('../renderer/session-list-renderer.js');
 
 const now = 1000000000000;
 const DAY = 86400000;
@@ -52,6 +56,29 @@ test('无 lastMessageTime 回退 createdAt，再回退 now', () => {
     [{ id: 'c', createdAt: now - 26 * HOUR }, { id: 'n' }], now);
   assert.ok(recent.map(x => x.id).includes('n'));
   assert.ok(mid.map(x => x.id).includes('c'));
+});
+
+test('有回答完成时间时，排序与分桶不再受提问时间影响', () => {
+  const items = [
+    {
+      id: 'answered-recently',
+      lastMessageTime: now - 50 * HOUR,
+      lastCompletedAt: now - 1 * HOUR,
+    },
+    {
+      id: 'prompted-recently-but-answer-old',
+      lastMessageTime: now - 1 * HOUR,
+      lastCompletedAt: now - 50 * HOUR,
+    },
+  ];
+  const { recent, mid } = partitionSessionsByAge(items, now);
+  assert.deepStrictEqual(recent.map(x => x.id), ['answered-recently']);
+  assert.deepStrictEqual(mid.map(x => x.id), ['prompted-recently-but-answer-old']);
+  assert.strictEqual(latestReplyTime(items[0]), now - HOUR);
+  assert.deepStrictEqual(items.slice().sort(compareLatestReplyDesc).map(x => x.id), [
+    'answered-recently',
+    'prompted-recently-but-answer-old',
+  ]);
 });
 
 test('空/缺省输入安全', () => {

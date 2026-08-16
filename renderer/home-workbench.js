@@ -792,8 +792,7 @@ function createHomeWorkbench(options = {}) {
     const config = getHubConfig() || {};
     const resources = getResourceUsage() || {};
     const configured = config.serverchanSendKeySet === true;
-    const enabled = config.notificationEnabled === true;
-    setSyncValue('home-sync-notification', !configured ? '未配置' : enabled ? '开启' : '已配置 · 关闭', configured && enabled ? 'ok' : 'warn');
+    setSyncValue('home-sync-notification', configured ? '已配置 · 按会话开启' : '未配置', configured ? 'ok' : 'warn');
     setSyncValue('home-sync-proxy', shortProxy(config.proxy), config.proxy ? 'ok' : 'dim');
 
     const terminalCount = Math.max(0, Number(getTerminalCacheSize() || 0));
@@ -853,6 +852,18 @@ function createHomeWorkbench(options = {}) {
     setText('home-waiting-count', snapshot.lanes.waiting.length);
     setText('home-running-count', snapshot.lanes.running.length);
     setText('home-delivered-count', snapshot.lanes.delivered.length);
+    const flowColumns = el('home-flow-columns');
+    if (flowColumns) {
+      const waitingEmpty = snapshot.lanes.waiting.length === 0;
+      const runningEmpty = snapshot.lanes.running.length === 0;
+      const deliveredEmpty = snapshot.lanes.delivered.length === 0;
+      flowColumns.classList.toggle('waiting-empty', waitingEmpty);
+      flowColumns.classList.toggle('running-empty', runningEmpty);
+      flowColumns.classList.toggle('delivered-empty', deliveredEmpty);
+      flowColumns.classList.toggle('all-empty', waitingEmpty && runningEmpty && deliveredEmpty);
+      const board = flowColumns.closest('.home-flow-board');
+      if (board) board.classList.toggle('flow-all-empty', waitingEmpty && runningEmpty && deliveredEmpty);
+    }
     setText('home-last-sync', `更新于 ${new Date(state.lastRefreshAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`);
 
     const refreshButton = el('home-refresh');

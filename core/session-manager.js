@@ -25,9 +25,21 @@ const {
 const { ensureMemoryLink } = require('./claude-memory-link.js');
 const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filter.js');
 const { TerminalSnapshot } = require('./terminal-snapshot.js');
+const { CodexXtermScrollbackRewriter } = require('./codex-xterm-scrollback-rewriter.js');
+const { compareLatestReplyDesc } = require('./session-recency.js');
+const {
+  DEFAULT_CLAUDE_MCP_PROFILE,
+  WIRELESS_MCP_NAMES,
+  buildClaudeMcpProfileArgs,
+  normalizeClaudeMcpProfile,
+} = require('./claude-mcp-profile.js');
+const {
+  buildCodexSpeedTierArg,
+  normalizeCodexSpeedTier,
+} = require('./codex-speed-tier.js');
 
 // Renderer 首次懒挂载、reload 或 surface 丢失后的降级恢复会用这个环形缓冲的
-// 原始 PTY 字节重建 xterm。16KB 装不下 Codex/Kimi 这类 TUI 的一整帧全屏重绘
+// 终端数据重建 xterm。16KB 装不下 Codex/Kimi 这类 TUI 的一整帧全屏重绘
 // （带色彩的一帧几十 KB 很常见），尾切之后 `\x1b[2J` 和大部分绘制字节被丢掉、
 // 只剩若干条 `\x1b[<行>;1H` 绝对定位序列 —— 重放出来就是"内容落在指定行、
 // 上方全是空行"。实测（tests/e2e-terminal-rehydrate-cdp.js）：16KB 下重建时，
@@ -35,6 +47,10 @@ const { TerminalSnapshot } = require('./terminal-snapshot.js');
 // 取 1MB 是给带 ANSI 色彩的 TUI 输出留余量（同样内容字节数可达纯文本数倍）。
 // 代价很小：每会话一个字符串，远低于多留一个 xterm + WebGL 实例。
 const RING_BUFFER_BYTES = 1024 * 1024;
+// A synchronized ConPTY repaint normally completes in the same burst. If a
+// malformed/truncated frame does not, fail open quickly so preservation logic
+// can never make the CLI appear frozen.
+const TERMINAL_REWRITER_FLUSH_MS = 50;
 
 // 试过两种"起点对齐"，都已放弃，记在这里免得有人再走一遍：
 //   1) 对齐到最后一次 \x1b[2J 全屏清屏 —— 实测是**倒退**。Codex/Kimi 每次重绘都清屏，
@@ -49,6 +65,17 @@ const CODEX_MCP_PROFILES = new Set(['lean', 'browser', 'wireless', 'full']);
 const DEFAULT_IDLE_SUSPEND_MS = 5 * 60 * 60 * 1000;
 // One default for ordinary/group Codex sessions and every new/resume/fork/relaunch path.
 const CODEX_REASONING_EFFORT = 'max';
+// Codex 的思考深度档位。2026-08-16 查 ~/.codex/models_cache.json 实测：
+// gpt-5.6-sol/terra 支持 low/medium/high/xhigh/max/ultra，5.5/5.4 只到 xhigh。
+// （早先以为 xhigh 是 Claude --effort 专属、Codex 会报错 —— 错的，每个模型都支持；
+//   而且还有比 max 更高的 ultra："最大推理 + 自动任务分派"。）
+// 这里是"语法层"白名单，真正按模型过滤在 core/codex-model-catalog.js，
+// UI 也据此动态出选项；这一层只保证不会把乱字符串拼进命令行。
+const CODEX_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+function normalizeCodexEffort(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return CODEX_EFFORT_LEVELS.has(normalized) ? normalized : CODEX_REASONING_EFFORT;
+}
 function buildCodexReasoningConfigArg(effort = CODEX_REASONING_EFFORT) {
   return [
     ` -c 'model_reasoning_effort="${effort}"'`,
@@ -174,7 +201,12 @@ function isClaudeApiBackend(cv) {
   return cv.CLAUDE_BACKEND === 'api' && !!cv.CLAUDE_API_KEY;
 }
 
-function shouldUseClaudeFastSettings(cv) {
+// fast 默认开（保持历史行为），但新建会话弹窗可以显式关掉。
+// 关的理由是真实存在的：2026-06-11 实测 fastMode 交互式会话不落盘 transcript jsonl，
+// transcript-tap 拿不到 turn 文本 → 卡片视图收不到回复。以前只能靠全局环境变量
+// CLAUDE_HUB_NO_FAST=1 一刀切，现在可以按会话选。
+function shouldUseClaudeFastSettings(cv, opts = {}) {
+  if (opts && opts.fastMode === false) return false;
   return process.env.CLAUDE_HUB_NO_FAST !== '1' && !isClaudeApiBackend(cv || getConfigValues());
 }
 
@@ -659,7 +691,11 @@ function buildCodexMcpIsolationArgs(configDir, options = {}) {
   const profile = normalizeCodexMcpProfile(options.mcpProfile);
   if (profile === 'full') return '';
   if (profile === 'browser') allowed.add('playwright');
-  if (profile === 'wireless' || isWirelessWorkspace(options.cwd)) allowed.add('superwireless');
+  if (profile === 'wireless' || isWirelessWorkspace(options.cwd)) {
+    // 只写 superwireless 是个空转 bug：用户 ~/.codex/config.toml 里这个 server
+    // 实际叫 superran，于是 wireless 档把唯一想留的那个也禁掉了。两个名字都放行。
+    WIRELESS_MCP_NAMES.forEach(name => allowed.add(name));
+  }
   return names
     .filter(name => !allowed.has(name))
     .map(name => ` -c 'mcp_servers.${name}.enabled=false'`)
@@ -1100,9 +1136,10 @@ class SessionManager extends EventEmitter {
       // 场景省略字段，旧的 warning 会继续粘在 UI 上，即使本轮检测已经恢复正常。
       memoryLinkWarning: memoryLinkWarning || null,
       ...(opts.workspaceLabel ? { workspaceLabel: String(opts.workspaceLabel) } : {}),
-      // 记录用户选定的 effort，让 resume / 归档重连能沿用同一档位而不是回落 max。
-      ...(CLAUDE_EFFORT_LEVELS.has(opts.effort) ? { effort: opts.effort } : {}),
       meetingId: opts.meetingId || null,
+      // Delivery is opt-in per conversation. Never inherit the former global
+      // switch into a newly-created session.
+      completionNotificationEnabled: opts.completionNotificationEnabled === true,
       ...(opts.purpose ? { purpose: String(opts.purpose) } : {}),
       ...(opts.researchSessionId ? { researchSessionId: String(opts.researchSessionId) } : {}),
       ...(opts.chuxinTaskId ? { chuxinTaskId: String(opts.chuxinTaskId) } : {}),
@@ -1119,6 +1156,21 @@ class SessionManager extends EventEmitter {
       ...(isDeepSeekLegacy ? { transcriptKind: kind === 'deepseek-resume' ? 'deepseek-legacy-resume' : 'deepseek-legacy' } : {}),
       ...(isCodexRuntime && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
       ...(isCodexRuntime ? { mcpProfile: normalizeCodexMcpProfile(opts.mcpProfile) } : {}),
+      // Codex 的 service_tier 档（inherit/fast/flex）。inherit 是"不覆盖"，
+      // 只在用户显式选了别的档时才落盘，避免给老会话凭空加字段。
+      ...(isCodexRuntime && normalizeCodexSpeedTier(opts.codexSpeedTier) !== 'inherit'
+        ? { codexSpeedTier: normalizeCodexSpeedTier(opts.codexSpeedTier) } : {}),
+      // Claude 家族的 MCP 档位默认 full（全量继承，与改动前一致），与 Codex 的
+      // lean 默认各走各的。落到 info 是为了 resume/fork/relaunch 能沿用。
+      ...(isClaudeFamily(kind) && !isDeepSeekLegacy
+        ? { mcpProfile: normalizeClaudeMcpProfile(opts.mcpProfile) } : {}),
+      // fast 只对 Claude 家族有意义；显式关掉才落盘，避免给老会话凭空加字段。
+      ...(opts.fastMode === false ? { fastMode: false } : {}),
+      // 记录经过 runtime 白名单归一化的 effort，让 resume / fork / relaunch
+      // 沿用同一档位。不要直接存 opts.effort：否则非法 IPC 值虽然首次启动会
+      // 回落，却会污染元数据并在后续恢复时再次扩散。
+      ...(isClaude && CLAUDE_EFFORT_LEVELS.has(opts.effort) ? { effort: opts.effort } : {}),
+      ...(isCodexRuntime && opts.effort ? { effort: normalizeCodexEffort(opts.effort) } : {}),
       ...(opts.codexSid ? { codexSid: opts.codexSid } : {}),
       ...(opts.geminiChatId ? { geminiChatId: opts.geminiChatId } : {}),
       ...(opts.geminiProjectHash ? { geminiProjectHash: opts.geminiProjectHash } : {}),
@@ -1150,8 +1202,8 @@ class SessionManager extends EventEmitter {
       terminalSnapshot = new TerminalSnapshot({ cols: 120, rows: 30, scrollback: 10000 });
     } catch (error) {
       // Dependency/init failure must not prevent the CLI from starting. The old
-      // raw ring remains available as an explicit degraded fallback.
-      console.warn('[terminal-snapshot] init failed, using raw ring fallback:', error && error.message);
+      // The terminal ring remains available as an explicit degraded fallback.
+      console.warn('[terminal-snapshot] init failed, using terminal ring fallback:', error && error.message);
     }
     this.sessions.set(id, {
       info,
@@ -1162,6 +1214,20 @@ class SessionManager extends EventEmitter {
       pendingTimers,
       ringBuffer: '',
       terminalSnapshot,
+      // Codex's inline TUI uses partial-region scrolls that xterm.js drops
+      // instead of committing to scrollback. Transform once at the shared PTY
+      // boundary so the renderer, terminal-ring fallback, and TerminalSnapshot all see
+      // the same lossless terminal stream. Legacy DeepSeek runs Claude and is
+      // deliberately excluded; new DeepSeek uses the Codex runtime.
+      terminalOutputRewriter: isCodexRuntime ? new CodexXtermScrollbackRewriter({
+        cols: 120,
+        rows: 30,
+        // On Windows, ConPTY consumes Codex's original region-scroll command
+        // before node-pty sees it and emits a synchronized home-based repaint.
+        // The rewriter handles that serialized form as well as raw VT streams.
+        conptySerialized: process.platform === 'win32',
+      }) : null,
+      terminalOutputFlushTimer: null,
       lastOutputSeq: 0,
       groupChatReady: false,
       groupChatLastActivity: 0,
@@ -1172,24 +1238,72 @@ class SessionManager extends EventEmitter {
       suspendReason: null,
     });
 
-    ptyProcess.onData((data) => {
-      const entry = this.sessions.get(id);
-      if (entry) {
-        entry.groupChatLastActivity = Date.now();
-        entry.lastOutputAt = entry.groupChatLastActivity;
-      }
-      this._appendToRingBuffer(id, data);
+    const deliverTerminalData = (terminalData) => {
+      if (!terminalData) return;
+      const current = this.sessions.get(id);
+      if (!current || current.pty !== ptyProcess) return;
+      this._appendToRingBuffer(id, terminalData);
       this._outputSeq += 1;
       const seq = this._outputSeq;
-      if (entry) {
-        entry.lastOutputSeq = seq;
-        if (entry.terminalSnapshot) entry.terminalSnapshot.write(data, seq);
+      current.lastOutputSeq = seq;
+      if (current.terminalSnapshot) current.terminalSnapshot.write(terminalData, seq);
+      this.onData(id, terminalData, seq);
+      this.emit('output', { sessionId: id, seq, data: terminalData });
+    };
+
+    const scheduleTerminalOutputFlush = (entry) => {
+      if (!entry || !entry.terminalOutputRewriter || !entry.terminalOutputRewriter.hasPending()) return;
+      entry.terminalOutputFlushTimer = setTimeout(() => {
+        const current = this.sessions.get(id);
+        if (!current || current.pty !== ptyProcess || !current.terminalOutputRewriter) return;
+        current.terminalOutputFlushTimer = null;
+        try {
+          deliverTerminalData(current.terminalOutputRewriter.flush());
+        } catch (error) {
+          // Timed fail-open is best-effort; never let preservation affect PTY
+          // liveness even if a future rewriter implementation regresses.
+          console.warn('[codex-scrollback] pending output flush failed:', error && error.message);
+        }
+      }, TERMINAL_REWRITER_FLUSH_MS);
+    };
+
+    ptyProcess.onData((data) => {
+      const entry = this.sessions.get(id);
+      // Match the exit-path id-reuse guard: late bytes from an old PTY must
+      // never mutate the replacement session's rewriter or terminal state.
+      if (!entry || entry.pty !== ptyProcess) return;
+      entry.groupChatLastActivity = Date.now();
+      entry.lastOutputAt = entry.groupChatLastActivity;
+      if (entry.terminalOutputFlushTimer) {
+        clearTimeout(entry.terminalOutputFlushTimer);
+        entry.terminalOutputFlushTimer = null;
       }
-      this.onData(id, data, seq);
-      this.emit('output', { sessionId: id, seq, data });
+      let terminalData = data;
+      if (entry.terminalOutputRewriter) {
+        try {
+          terminalData = entry.terminalOutputRewriter.write(data);
+        } catch (error) {
+          // Display preservation must never be allowed to interrupt the PTY.
+          console.warn('[codex-scrollback] rewrite failed, passing raw output:', error && error.message);
+          let pending = '';
+          try { pending = entry.terminalOutputRewriter.flush(); } catch {}
+          entry.terminalOutputRewriter = null;
+          terminalData = pending + data;
+        }
+      }
+      deliverTerminalData(terminalData);
+      scheduleTerminalOutputFlush(entry);
     });
 
     ptyProcess.onExit((exitInfo) => {
+      const entry = this.sessions.get(id);
+      if (entry && entry.pty === ptyProcess && entry.terminalOutputFlushTimer) {
+        clearTimeout(entry.terminalOutputFlushTimer);
+        entry.terminalOutputFlushTimer = null;
+      }
+      if (entry && entry.pty === ptyProcess && entry.terminalOutputRewriter) {
+        try { deliverTerminalData(entry.terminalOutputRewriter.flush()); } catch {}
+      }
       this._handlePtyExit(id, ptyProcess, exitInfo);
     });
 
@@ -1239,6 +1353,19 @@ class SessionManager extends EventEmitter {
       // Append MCP config file if provided (TeamSessionManager injects MCP server config)
       if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
+      } else if (!opts.meetingId) {
+        // 单人会话的 MCP 加载档位（对标 Codex 的 lean/browser/wireless/full）。
+        // 默认 full = 全量继承 = 改动前的行为；选了别的档才生成过滤后的 config。
+        // 群聊成员不走这条：它们已经有自己的 --mcp-config + --strict-mcp-config。
+        const mcpPlan = buildClaudeMcpProfileArgs({
+          mcpProfile: opts.mcpProfile,
+          cwd: spawnCwd,
+          hubDataDir: getHubDataDir(),
+        });
+        if (mcpPlan.args) {
+          cmd += mcpPlan.args;
+          console.log(`[claude-mcp] ${kind} 档位=${mcpPlan.profile} 保留=${mcpPlan.keptServers.join(',') || '(无)'}`);
+        }
       }
       // 群聊成员：禁 skill + plugin（保留 auto-memory / CLAUDE.md / OAuth）
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
@@ -1247,9 +1374,10 @@ class SessionManager extends EventEmitter {
       // 用 settings 文件而非 inline JSON，规避 PS 5.1 向 native exe 传内嵌双引号的 quoting bug。
       // 2026-06-11：实测 fastMode 交互式会话不落盘 transcript jsonl（/exit 后仍空），
       //   导致 transcript-tap 拿不到 turn 文本 → 卡片同步收不到回复。
-      //   CLAUDE_HUB_NO_FAST=1 可全局禁用 fast 注入。
+      //   CLAUDE_HUB_NO_FAST=1 可全局禁用 fast 注入；
+      //   新建会话弹窗的「快速模式」开关则是按会话关（opts.fastMode === false）。
       const cv = getConfigValues();
-      if (shouldUseClaudeFastSettings(cv)) {
+      if (shouldUseClaudeFastSettings(cv, opts)) {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         cmd += ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
@@ -1322,7 +1450,17 @@ class SessionManager extends EventEmitter {
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       const cv = getConfigValues();
       const codexModel = isDeepSeek ? DEEPSEEK_CODEX_MODEL : (opts.model || resolveDefaultCodexModel(cv));
-      const codexReasoningArg = buildCodexReasoningConfigArg(CODEX_REASONING_EFFORT);
+      // Codex 的 model_reasoning_effort 是推理深度；fast 则由下面独立的
+      // service_tier 控制，两者都不能和 Claude fastMode 混为一谈。
+      // 非法值一律回落 max —— 默认档与改动前完全一致，不会静默降精度。
+      // 群聊成员例外：整个房间的产出质量要可比，成员之间不能各调各的档位，
+      // 一律钉死共享的 max（unit-codex-resume-model-source 里有源码级守卫）。
+      const codexReasoningArg = buildCodexReasoningConfigArg(
+        opts.meetingId ? CODEX_REASONING_EFFORT : normalizeCodexEffort(opts.effort)
+      )
+        // Codex 真正对标 Claude fast 的开关：service_tier（priority 通道，1.5× 速度）。
+        // 群聊成员同样不给单独调 —— 与 effort 一个口径。
+        + (opts.meetingId ? '' : buildCodexSpeedTierArg(opts.codexSpeedTier));
       const codexInstructionFile = opts.codexInstructionFile || null;
       let cmd;
       if (opts.codexForkSid) {
@@ -1701,6 +1839,7 @@ class SessionManager extends EventEmitter {
       const safeCols = Math.max(cols, 60);
       s.pty.resize(safeCols, rows);
       if (s.terminalSnapshot) s.terminalSnapshot.resize(safeCols, rows);
+      if (s.terminalOutputRewriter) s.terminalOutputRewriter.resize(safeCols, rows);
     }
   }
 
@@ -1792,7 +1931,12 @@ class SessionManager extends EventEmitter {
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
-      const codexReasoningArg = buildCodexReasoningConfigArg(CODEX_REASONING_EFFORT);
+      // relaunch 要沿用会话自己选过的档位，否则重拉一次就悄悄回到 max。
+      // 群聊成员同样钉死 max（与 createSession 分支同一条口径）。
+      const codexReasoningArg = buildCodexReasoningConfigArg(
+        meetingId ? CODEX_REASONING_EFFORT : normalizeCodexEffort(s.info && s.info.effort)
+      )
+        + (meetingId ? '' : buildCodexSpeedTierArg(s.info && s.info.codexSpeedTier));
       ensureCodexMcpEntries(codexConfigDir, [], CODEX_MANAGED_MCP_NAMES);
       cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || DEFAULT_MODEL_BY_KIND.codex}${codexReasoningArg}`;
       cmd += buildCodexEphemeralMcpArgs(s.codexMcpEntries);
@@ -1806,18 +1950,30 @@ class SessionManager extends EventEmitter {
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
       cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
     } else if (kind === 'claude' || kind === 'claude-resume') {
-      // 默认 --effort max（CLAUDE_HUB_NO_EFFORT_MAX=1 可关）；
+      // 默认 --effort max（CLAUDE_HUB_NO_EFFORT_MAX=1 可关），但会话显式
+      // 选过档位时必须沿用，不能在 CLI 原地重拉后静默回到 max。
       // 默认 model 跟随 DEFAULT_MODEL_BY_KIND.claude（当前 Opus 4.8 1M）。
       // 默认叠 fast 模式 settings（CLAUDE_HUB_NO_FAST=1 可关）—— 与 createSession
       //   spawn block 对齐，防止 relaunch 后丢 fast 状态。
-      const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ' --effort max';
+      //   会话自己关过 fast（info.fastMode === false）时也要沿用，否则 relaunch
+      //   会把用户显式关掉的开关又打开。
+      const effort = CLAUDE_EFFORT_LEVELS.has(s.info && s.info.effort) ? s.info.effort : 'max';
+      const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ` --effort ${effort}`;
       let fastFlag = '';
       const cv = getConfigValues();
-      if (shouldUseClaudeFastSettings(cv)) {
+      if (shouldUseClaudeFastSettings(cv, { fastMode: s.info && s.info.fastMode })) {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         fastFlag = ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
-      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${fastFlag}${isolation}\r\n`;
+      // 单人 Claude 的 MCP 档位也要跟着 relaunch；群聊已有自己的严格
+      // mcpConfig，不在这里叠第二份。
+      const mcpPlan = meetingId ? null : buildClaudeMcpProfileArgs({
+        mcpProfile: s.info && s.info.mcpProfile,
+        cwd: s.info && s.info.cwd,
+        hubDataDir: getHubDataDir(),
+      });
+      const mcpFlag = mcpPlan && mcpPlan.args ? mcpPlan.args : '';
+      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${fastFlag}${mcpFlag}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
       cmd = ` claude --model ${normalizeLegacyDeepSeekClaudeModel(modelId)} --permission-mode bypassPermissions${isolation}\r\n`;
     } else if (isKimiCliKind(kind)) {
@@ -1834,7 +1990,7 @@ class SessionManager extends EventEmitter {
   getAllSessions() {
     return Array.from(this.sessions.values())
       .map(s => ({ ...s.info }))
-      .sort((a, b) => b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt);
+      .sort(compareLatestReplyDesc);
   }
 
   // Returns the public shape used by renderer IPC and 'session-updated' events.
@@ -1846,6 +2002,7 @@ class SessionManager extends EventEmitter {
       cwd: info.cwd,
       unreadCount: info.unreadCount,
       lastMessageTime: info.lastMessageTime,
+      ...(typeof info.lastCompletedAt === 'number' ? { lastCompletedAt: info.lastCompletedAt } : {}),
       lastOutputPreview: info.lastOutputPreview,
       ...(info.pinned !== undefined ? { pinned: info.pinned } : {}),
       ...(info.ccSessionId !== undefined ? { ccSessionId: info.ccSessionId } : {}),
@@ -1856,6 +2013,9 @@ class SessionManager extends EventEmitter {
       ...(info.codexProfile !== undefined ? { codexProfile: info.codexProfile } : {}),
       ...(info.codexProfileLabel !== undefined ? { codexProfileLabel: info.codexProfileLabel } : {}),
       ...(info.mcpProfile !== undefined ? { mcpProfile: info.mcpProfile } : {}),
+      ...(info.fastMode !== undefined ? { fastMode: info.fastMode } : {}),
+      ...(info.effort !== undefined ? { effort: info.effort } : {}),
+      ...(info.codexSpeedTier !== undefined ? { codexSpeedTier: info.codexSpeedTier } : {}),
       ...(info.geminiChatId !== undefined ? { geminiChatId: info.geminiChatId } : {}),
       ...(info.geminiProjectHash !== undefined ? { geminiProjectHash: info.geminiProjectHash } : {}),
       ...(info.geminiProjectRoot !== undefined ? { geminiProjectRoot: info.geminiProjectRoot } : {}),
@@ -1883,6 +2043,7 @@ class SessionManager extends EventEmitter {
       ...(Array.isArray(info.heroIds) ? { heroIds: info.heroIds } : {}),
       ...(info.promptPolicyVersion ? { promptPolicyVersion: info.promptPolicyVersion } : {}),
       ...(info.hiddenFromSidebar ? { hiddenFromSidebar: true } : {}),
+      completionNotificationEnabled: info.completionNotificationEnabled === true,
     };
   }
 
@@ -1890,10 +2051,12 @@ class SessionManager extends EventEmitter {
   listSessions() {
     return Array.from(this.sessions.values())
       .map(s => this._toPublic(s.info))
-      .sort((a, b) => b.lastMessageTime - a.lastMessageTime);
+      .sort(compareLatestReplyDesc);
   }
 
-  // Appends data to the session's ring buffer, capping at RING_BUFFER_BYTES (tail-slice).
+  // Appends terminal-facing PTY data to the session's ring buffer, capping at
+  // RING_BUFFER_BYTES (tail-slice). Codex data has already passed through the
+  // xterm scrollback-safety rewrite; other runtimes remain byte-for-byte.
   // After truncation, trims any lone low-surrogate left at the start of the buffer
   // that could result from cutting a UTF-16 surrogate pair at the boundary.
   // Extracted as a named method so tests can drive it without spawning a real PTY.
@@ -1941,7 +2104,7 @@ class SessionManager extends EventEmitter {
       return s.terminalSnapshot.snapshot().then((snapshot) => (
         snapshot || { text: s.ringBuffer || '', seq: s.lastOutputSeq || this._outputSeq }
       )).catch((error) => {
-        console.warn('[terminal-snapshot] serialize failed, using raw ring fallback:', error && error.message);
+        console.warn('[terminal-snapshot] serialize failed, using terminal ring fallback:', error && error.message);
         return { text: s.ringBuffer || '', seq: s.lastOutputSeq || this._outputSeq };
       });
     }
@@ -1951,6 +2114,7 @@ class SessionManager extends EventEmitter {
   dispose() {
     for (const s of this.sessions.values()) {
       for (const t of s.pendingTimers) clearTimeout(t);
+      if (s.terminalOutputFlushTimer) clearTimeout(s.terminalOutputFlushTimer);
       if (s.terminalSnapshot) s.terminalSnapshot.dispose();
       if (s.pty) {
         s.pty.kill();
@@ -2068,6 +2232,11 @@ module.exports = {
     buildGroupChatIsolationFlags,
     listCodexMcpServerNames,
     normalizeCodexMcpProfile,
+    normalizeCodexEffort,
+    normalizeCodexSpeedTier,
+    buildCodexSpeedTierArg,
+    normalizeClaudeMcpProfile,
+    buildClaudeMcpProfileArgs,
     isWirelessWorkspace,
     buildCodexMcpIsolationArgs,
     buildCodexGroupMcpIsolationArgs,

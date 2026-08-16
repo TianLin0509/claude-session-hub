@@ -65,6 +65,7 @@ function _buildMeetingPayload(id, data) {
     pinned: !!data.pinned,
     lastScene: typeof data.lastScene === 'string' ? data.lastScene : null,
     lastMessageTime: typeof data.lastMessageTime === 'number' ? data.lastMessageTime : null,
+    lastCompletedAt: typeof data.lastCompletedAt === 'number' ? data.lastCompletedAt : null,
     covenantText: typeof data.covenantText === 'string' ? data.covenantText : '',
     immersive: !!data.immersive,
     // 串行工作流配置（2026-06-17 道雪）：群聊可反复用，需重启恢复

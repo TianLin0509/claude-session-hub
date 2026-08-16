@@ -67,10 +67,10 @@ assert(
   'preview text is HTML-escaped via escapeHtml(previewRaw)',
 );
 
-// 8. thinking goes through marked + DOMPurify (same pipeline as main body)
+// 8. thinking goes through the shared marked + DOMPurify + local-path guard pipeline
 assert(
-  /marked\.parse\((?:normalizeMarkdownPathBreaks\()?turn\.thinking/.test(src) &&
-    /DOMPurify\.sanitize\(thinkingRaw/.test(src),
+  /const thinkingBody = renderMarkdownPreservingLocalPaths\(turn\.thinking\)/.test(src) &&
+    /function renderMarkdownPreservingLocalPaths[\s\S]*?marked\.parse\(guard\.text[\s\S]*?DOMPurify\.sanitize\(rawHtml/.test(src),
   'thinking content is marked-parsed and DOMPurify-sanitized',
 );
 

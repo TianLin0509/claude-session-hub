@@ -28,11 +28,17 @@ if (-not $isAdmin) {
 # Resolve Hub root from this script's location (scripts/ → ..)
 $HubDir      = Split-Path -Parent $PSScriptRoot
 $ElectronExe = Join-Path $HubDir 'node_modules\electron\dist\electron.exe'
+# 桌面快捷方式现在指向品牌化副本 AIGroupChatHub.exe（任务栏图标根治，见
+# core/hub-exe-branding.js）。对防火墙来说那是一个全新的程序路径，不一起放行
+# 就会在下次启动时弹一次"是否允许…"。副本不存在时静默跳过。
+$BrandedExe  = Join-Path $HubDir 'node_modules\electron\dist\AIGroupChatHub.exe'
 
 if (-not (Test-Path $ElectronExe)) {
   Write-Error "electron.exe not found at $ElectronExe - run npm install first."
   exit 1
 }
+$HubExes = @($ElectronExe)
+if (Test-Path $BrandedExe) { $HubExes += $BrandedExe } else { Write-Host "  (AIGroupChatHub.exe not built yet - skipping)" }
 
 Write-Host "=== 1. Remove stale electron.exe + pytest-path firewall rules ==="
 Get-NetFirewallRule -DisplayName 'electron.exe' -ErrorAction SilentlyContinue |
@@ -47,19 +53,23 @@ if ($pytestApps) {
 }
 
 Write-Host "=== 2. Create permanent allow rules (Any direction/profile/protocol) ==="
-New-NetFirewallRule `
-  -DisplayName 'Electron - Claude Hub (Inbound)' `
-  -Direction Inbound -Action Allow -Program $ElectronExe `
-  -Profile Any -Protocol Any -Enabled True | Out-Null
-New-NetFirewallRule `
-  -DisplayName 'Electron - Claude Hub (Outbound)' `
-  -Direction Outbound -Action Allow -Program $ElectronExe `
-  -Profile Any -Protocol Any -Enabled True | Out-Null
+foreach ($exe in $HubExes) {
+  $tag = [System.IO.Path]::GetFileNameWithoutExtension($exe)
+  New-NetFirewallRule `
+    -DisplayName "Electron - Claude Hub ($tag Inbound)" `
+    -Direction Inbound -Action Allow -Program $exe `
+    -Profile Any -Protocol Any -Enabled True | Out-Null
+  New-NetFirewallRule `
+    -DisplayName "Electron - Claude Hub ($tag Outbound)" `
+    -Direction Outbound -Action Allow -Program $exe `
+    -Profile Any -Protocol Any -Enabled True | Out-Null
+  Write-Host "  allowed $exe"
+}
 
 Write-Host "=== 3. Add Windows Defender exclusions (if Defender is active) ==="
 try {
   Add-MpPreference -ExclusionPath $HubDir -ErrorAction Stop
-  Add-MpPreference -ExclusionProcess $ElectronExe -ErrorAction Stop
+  foreach ($exe in $HubExes) { Add-MpPreference -ExclusionProcess $exe -ErrorAction Stop }
   Write-Host "  Defender exclusions added"
 } catch {
   Write-Host "  Defender unavailable (service stopped or managed by 3rd-party AV) - skipping"

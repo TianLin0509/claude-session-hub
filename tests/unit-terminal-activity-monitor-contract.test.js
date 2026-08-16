@@ -6,6 +6,7 @@ const {
   createTerminalActivityMonitor,
   UI_RESIZE_REDRAW_SUPPRESS_MS,
 } = require('../renderer/terminal-activity-monitor.js');
+const { classifyTerminalRuntime } = require('../core/terminal-runtime-state.js');
 
 function makeLine(text) {
   return { translateToString: () => text };
@@ -237,5 +238,73 @@ test('active semantic signal remains authoritative over PTY burst fallback', () 
   monitor.onTerminalOutput('s1', 1000);
   assert.equal(session.status, 'running');
   assert.equal(session._runSource, 'semantic');
+  monitor.clearSession('s1');
+});
+
+test('provider runtime observation reads only the logical live screen and can settle a missed completion', () => {
+  const session = { id: 's1', kind: 'codex', status: 'running', _runSource: 'semantic' };
+  const sessions = new Map([['s1', session]]);
+  const lines = [
+    '• Working (99s • esc to interrupt)', // historical scrollback: must be ignored
+    '• PTY_STATE_DONE',
+    '› Improve documentation in @filename',
+    '  gpt-5.6-sol max fast · Context 95% left · ~\\repo',
+  ];
+  const terminalCache = makeTerminalCache(lines);
+  const cached = terminalCache.get('s1');
+  cached.terminal.rows = 3;
+  cached.terminal.buffer.active.baseY = 1;
+  let observed = null;
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache,
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => {},
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => true,
+    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind, liveLines),
+    onRuntimeState: (item, runtime) => {
+      observed = runtime;
+      if (runtime.state === 'idle') item.status = 'idle';
+    },
+  });
+
+  assert.deepStrictEqual(monitor.extractLiveScreenLines('s1'), lines.slice(1));
+  const result = monitor.observeRuntimeState('s1');
+  assert.equal(result.state, 'idle');
+  assert.equal(observed.reason, 'codex-input-ready');
+  assert.equal(session.status, 'idle');
+  monitor.clearSession('s1');
+});
+
+test('an input-ready frame can defer burst settlement until the provider running phase was observed', async () => {
+  const session = { id: 's1', kind: 'codex', status: 'idle' };
+  const sessions = new Map([['s1', session]]);
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([
+      '› Improve documentation in @filename',
+      'gpt-5.6-sol max fast · Context 100% left · C:\\repo',
+    ]),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => {},
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => false,
+    canUsePtyBurstFallback: () => true,
+    canObserveRuntimeState: () => true,
+    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind, liveLines),
+    onRuntimeState: () => false,
+    runtimeProbeMs: 5,
+    silenceMs: 20,
+  });
+
+  monitor.onTerminalOutput('s1', 201);
+  await new Promise(resolve => setTimeout(resolve, 45));
+  assert.equal(session.status, 'running');
+  assert.equal(session._runSource, 'burst');
   monitor.clearSession('s1');
 });

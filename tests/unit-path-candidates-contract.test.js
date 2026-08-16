@@ -8,7 +8,9 @@ const {
   HUB_IMG_PATH_RE,
   collectPathCandidates,
   _cleanPathCandidate,
+  _repairLocalPathCandidate,
   _normalizeLocalPathForOpen,
+  classifyLocalPathHref,
 } = require('../renderer/path-candidates.js');
 
 test('collects URL and strips trailing punctuation', () => {
@@ -28,6 +30,68 @@ test('collects absolute Windows preview path without filesystem validation', () 
   assert.strictEqual(found.length, 1);
   assert.strictEqual(found[0].openPath, 'C:\\Users\\lintian\\report.html');
   assert.strictEqual(PREVIEW_PATH_RE.test(found[0].openPath), true);
+});
+
+test('repairs common Codex Windows path separator mistakes without changing display offsets', () => {
+  const variants = [
+    ['C:\\\\Vibe\\\\_scratch\\\\report.md', 'C:\\Vibe\\_scratch\\report.md'],
+    ['C:/Vibe/_scratch/report.md', 'C:\\Vibe\\_scratch\\report.md'],
+    ['C:Users\\lintian\\report.md', 'C:\\Users\\lintian\\report.md'],
+    ['/C:/Vibe/_scratch/report.md', 'C:\\Vibe\\_scratch\\report.md'],
+  ];
+  for (const [raw, expected] of variants) {
+    const text = `open ${raw} now`;
+    const found = collectPathCandidates(text);
+    assert.strictEqual(found.length, 1, raw);
+    assert.strictEqual(found[0].openPath, expected, raw);
+    assert.strictEqual(text.slice(found[0].start, found[0].end + 1), raw, raw);
+  }
+});
+
+test('collects Windows paths containing spaces and keeps the final compound extension', () => {
+  const text = 'open C:\\Vibe\\My Report\\report.test.js, then continue';
+  const found = collectPathCandidates(text);
+  assert.strictEqual(found.length, 1);
+  assert.strictEqual(found[0].openPath, 'C:\\Vibe\\My Report\\report.test.js');
+});
+
+test('repairs and recognizes an existing directory with doubled separators', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-path-dir-'));
+  const target = path.join(root, '_scratch');
+  fs.mkdirSync(target);
+  const raw = target.replace(/\\/g, '\\\\');
+  const found = collectPathCandidates(`folder ${raw}`);
+  assert.ok(found.some((item) => item.openPath === target));
+});
+
+test('classifies Markdown local hrefs but leaves web URLs alone', () => {
+  assert.deepStrictEqual(
+    classifyLocalPathHref('C:%5CVibe%5C_scratch%5Creport.md'),
+    {
+      displayPath: 'C:\\Vibe\\_scratch\\report.md',
+      openPath: 'C:\\Vibe\\_scratch\\report.md',
+    },
+  );
+  assert.deepStrictEqual(
+    classifyLocalPathHref('docs/report.md', 'C:\\work'),
+    {
+      displayPath: 'docs/report.md',
+      openPath: 'C:\\work\\docs\\report.md',
+    },
+  );
+  assert.deepStrictEqual(
+    classifyLocalPathHref('file:///C:/Vibe/My%20Report/report.md'),
+    {
+      displayPath: 'file:///C:/Vibe/My Report/report.md',
+      openPath: 'C:\\Vibe\\My Report\\report.md',
+    },
+  );
+  assert.strictEqual(classifyLocalPathHref('https://example.com/report.md', 'C:\\work'), null);
+});
+
+test('repairs only path-like drive-relative text', () => {
+  assert.strictEqual(_repairLocalPathCandidate('C:Users\\me\\a.md'), 'C:\\Users\\me\\a.md');
+  assert.strictEqual(_repairLocalPathCandidate('C: note.md'), 'C: note.md');
 });
 
 test('resolves existing relative paths against cwd only', () => {

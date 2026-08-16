@@ -50,6 +50,27 @@ test('registers absolute file links with xterm coordinates', async () => {
   assert.deepStrictEqual(opened, [['C:\\Users\\me\\report.html', { cwd: null, requireExistsForRel: false }]]);
 });
 
+test('repairs doubled Windows separators while preserving xterm hit coordinates', async () => {
+  const opened = [];
+  const rawPath = 'C:\\\\Vibe\\\\_scratch\\\\report.md';
+  const terminal = makeTerminal([makeLine(`Open ${rawPath}`)]);
+  const register = createTerminalLinkRegistrar({
+    getCwd: () => null,
+    openPathInHub: async (...args) => { opened.push(args); },
+  });
+  register(terminal, 's1');
+
+  const links = provide(terminal.getProvider(), 1);
+  assert.strictEqual(links.length, 1);
+  assert.strictEqual(links[0].text, 'C:\\Vibe\\_scratch\\report.md');
+  assert.deepStrictEqual(links[0].range, {
+    start: { x: 6, y: 1 },
+    end: { x: 5 + rawPath.length, y: 1 },
+  });
+  await links[0].activate();
+  assert.strictEqual(opened[0][0], 'C:\\Vibe\\_scratch\\report.md');
+});
+
 test('resolves relative paths against session cwd', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-terminal-links-'));
   fs.mkdirSync(path.join(cwd, 'docs'));

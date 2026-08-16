@@ -21,11 +21,16 @@ const { SessionManager, clearSessionManagerConfigCache } = require('./core/sessi
 const { WorkspaceService, normalizeKey: normalizeWorkspaceKey } = require('./core/workspace-service.js');
 const stateStore = require('./core/state-store.js');
 const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
+const { spawn } = require('child_process');
 const {
   HUB_APP_USER_MODEL_ID,
   ensureWindowsShellIntegration,
   startWindowsShellIntegrationWatchdog,
 } = require('./core/windows-shell-integration.js');
+const {
+  describeBrandingHealth,
+  resolveHubLaunchExePath,
+} = require('./core/hub-exe-branding.js');
 const {
   ensureClaudeHookIntegration,
   startClaudeHookIntegrationWatchdog,
@@ -36,6 +41,7 @@ const meetingStore = require('./core/meeting-store.js');
 const sessionStore = require('./core/session-store.js');
 const { TranscriptTap } = require('./core/transcript-tap');
 const { CompletionNotifier } = require('./core/completion-notifier.js');
+const { normalizeEventTime } = require('./core/session-attention-state.js');
 const { createUsageFilter } = require('./core/usage-filter.js');
 const scenes = require('./core/group-chat-scenes.js');
 const groupchat = require('./core/group-chat-orchestrator.js');
@@ -369,7 +375,18 @@ const workspaceMigrationSessionIds = new Set();
 // meeting's timeline (if the sub-session belongs to a meeting).
 transcriptTap.on('turn-complete', (ev) => {
   const { hubSessionId, text, completedAt } = ev || {};
-  const session = sessionManager.getSession(hubSessionId);
+  const completionAt = normalizeEventTime(completedAt, Date.now());
+  let session = sessionManager.getSession(hubSessionId);
+  // Persist reply recency in main as well as renderer. This closes the gap where
+  // a renderer reload/suspend between transcript completion and its IPC handler
+  // left a dormant card anchored to the prompt time.
+  if (session && completionAt >= (Number(session.lastCompletedAt) || 0)) {
+    const updated = sessionManager.updateSessionMeta(hubSessionId, { lastCompletedAt: completionAt });
+    if (updated) {
+      session = updated;
+      sessionStore.markDirty(hubSessionId, updated);
+    }
+  }
   Promise.resolve(completionNotifier.handleTurnComplete(ev || {}, session)).catch((error) => {
     console.warn('[completion-notifier] session completion handling failed:', error && error.message);
   });
@@ -378,7 +395,7 @@ transcriptTap.on('turn-complete', (ev) => {
       session.meetingId,
       hubSessionId,
       text,
-      completedAt != null ? completedAt : Date.now(),
+      completionAt,
     );
     if (turn) {
       sendToRenderer('meeting-timeline-updated', { meetingId: session.meetingId, turn });
@@ -401,7 +418,7 @@ transcriptTap.on('turn-complete', (ev) => {
       ccSessionId: session ? session.ccSessionId : null,
       transcriptPath,
       text,
-      completedAt: completedAt != null ? completedAt : Date.now(),
+      completedAt: completionAt,
       meetingId: session ? session.meetingId : null,
       kind: session ? session.kind : null,
       durationMs: ev ? ev.durationMs : null,
@@ -423,6 +440,45 @@ const autoTitleManager = createAutoTitleManager({
   workspaceService,
 });
 const { maybeAutoTitleMeetingFromPrompt, maybeAutoTitleSessionFromPrompt } = autoTitleManager;
+// Codex /goal auto-continuations can begin without a user_message event. Keep
+// this lifecycle signal separate from prompt-submitted so it cannot trigger
+// auto-title or notification prompt bookkeeping with synthetic text.
+transcriptTap.on('turn-started', (ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  const session = sessionManager.getSession(ev.hubSessionId);
+  try {
+    sendToRenderer('turn-started-event', {
+      hubSessionId: ev.hubSessionId,
+      transcriptPath: ev.transcriptPath || (session ? session.transcriptPath : null),
+      startedAt: ev.startedAt != null ? ev.startedAt : Date.now(),
+      meetingId: session ? session.meetingId : null,
+      kind: session ? session.kind : null,
+      signalSource: ev.signalSource || 'task_started',
+      turnId: ev.turnId || null,
+    });
+  } catch (error) {
+    console.warn('[codex task] turn-started-event broadcast failed:', error && error.message);
+  }
+});
+
+transcriptTap.on('turn-aborted', (ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  const session = sessionManager.getSession(ev.hubSessionId);
+  try {
+    sendToRenderer('turn-aborted-event', {
+      hubSessionId: ev.hubSessionId,
+      transcriptPath: ev.transcriptPath || (session ? session.transcriptPath : null),
+      abortedAt: ev.abortedAt != null ? ev.abortedAt : Date.now(),
+      meetingId: session ? session.meetingId : null,
+      kind: session ? session.kind : null,
+      signalSource: ev.signalSource || 'turn_aborted',
+      turnId: ev.turnId || null,
+    });
+  } catch (error) {
+    console.warn('[codex task] turn-aborted-event broadcast failed:', error && error.message);
+  }
+});
+
 transcriptTap.on('prompt-submitted', (ev) => {
   const { hubSessionId, text, submittedAt } = ev || {};
   completionNotifier.notePromptSubmitted(ev || {});
@@ -1586,8 +1642,10 @@ registerConfigIpc(ipcMain, {
   clearSessionManagerConfigCache,
   currentCodexUsageScope,
   getCompletionNotificationHealth: () => completionNotifier.getHealth(),
+  meetingManager,
   scanAgentSessions,
   sendToRenderer,
+  sessionManager,
   testCompletionNotification: (payload) => completionNotifier.sendTest(payload),
 });
 
@@ -1883,28 +1941,76 @@ app.whenReady().then(async () => {
   // AUMID, or Windows can cache a bare electron.exe relaunch command. Isolated
   // E2E Hubs must never touch this production Shell registration.
   if (process.platform === 'win32' && !isIsolatedHub()) {
-    const windowsShellOptions = {
-      app,
-      shell,
-      appRoot: __dirname,
+    const hubIconPath = path.join(__dirname, 'claude-wx.ico');
+    const hubProductVersion = (() => {
+      try { return require('./package.json').version || ''; } catch { return ''; }
+    })();
+    const brandingOptions = {
       execPath: process.execPath,
-      isPackaged: app.isPackaged,
-      iconPath: path.join(__dirname, 'claude-wx.ico'),
+      icoPath: hubIconPath,
+      productVersion: hubProductVersion,
     };
-    const shellResult = ensureWindowsShellIntegration(windowsShellOptions);
-    if (shellResult.legacyBackupPath) {
-      console.warn(`[windows-shell] retired broken Electron shortcut: ${shellResult.legacyBackupPath}`);
+
+    const startShellIntegration = (execPath) => {
+      const windowsShellOptions = {
+        app,
+        shell,
+        appRoot: __dirname,
+        execPath,
+        isPackaged: app.isPackaged,
+        iconPath: hubIconPath,
+      };
+      const shellResult = ensureWindowsShellIntegration(windowsShellOptions);
+      if (shellResult.legacyBackupPath) {
+        console.warn(`[windows-shell] retired broken Electron shortcut: ${shellResult.legacyBackupPath}`);
+      }
+      if (windowsShellWatchdog) windowsShellWatchdog.stop();
+      // The canonical shortcut was observed disappearing hours after a successful
+      // repair, leaving an otherwise valid .ico rendered as Windows' white-page
+      // placeholder. Re-check the tiny Shell Link every 15s and repair drift.
+      windowsShellWatchdog = startWindowsShellIntegrationWatchdog({
+        ...windowsShellOptions,
+        // 每一拍无条件重贴窗口图标：Explorer 重启丢 HICON 时快捷方式是好的，
+        // 健康检查不会失败，onRepair 不会触发（详见 reassertHubWindowIcon 注释）。
+        onTick: reassertHubWindowIcon,
+        onRepair: reassertHubWindowIcon,
+      });
+      return windowsShellOptions.execPath;
+    };
+
+    // 快捷方式先指向当前可用的启动器：品牌化副本在就用它，不在就回落 electron.exe。
+    let hubLaunchExePath = startShellIntegration(resolveHubLaunchExePath(brandingOptions));
+
+    // 品牌化副本缺失或过期时后台重建。electron.exe 220MB+，读+改资源+写一整遍
+    // 要好几秒，绝不能在主进程同步跑；用 ELECTRON_RUN_AS_NODE 起子进程。
+    // 只新增/替换 AIGroupChatHub.exe，永不触碰 electron.exe（node_modules 完整性铁律）。
+    const brandingState = describeBrandingHealth(brandingOptions);
+    if (!brandingState.healthy && brandingState.expected) {
+      console.log(`[hub-brand] ${brandingState.message}，后台重建中`);
+      const child = spawn(process.execPath, [path.join(__dirname, 'scripts', 'brand-hub-exe.js')], {
+        cwd: __dirname,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      let childLog = '';
+      child.stdout.on('data', d => { childLog += d.toString(); });
+      child.stderr.on('data', d => { childLog += d.toString(); });
+      child.on('error', err => console.warn(`[hub-brand] spawn 失败：${err.message}`));
+      child.on('exit', (code) => {
+        if (code !== 0) {
+          console.warn(`[hub-brand] 重建失败 (exit ${code})，快捷方式继续用 electron.exe\n${childLog.trim()}`);
+          return;
+        }
+        const rebuiltExePath = resolveHubLaunchExePath(brandingOptions);
+        if (rebuiltExePath === hubLaunchExePath) return;
+        // 重建成功：把快捷方式和 Jump List 重指到品牌化 exe。下次从桌面启动，
+        // 窗口类图标就是橙色 logo，Explorer 再怎么重建任务栏都摸不到 Electron 原子。
+        hubLaunchExePath = startShellIntegration(rebuiltExePath);
+        console.log(`[hub-brand] 已重建并重指快捷方式：${rebuiltExePath}`);
+      });
+      child.unref();
     }
-    // The canonical shortcut was observed disappearing hours after a successful
-    // repair, leaving an otherwise valid .ico rendered as Windows' white-page
-    // placeholder. Re-check the tiny Shell Link every 15s and repair drift.
-    windowsShellWatchdog = startWindowsShellIntegrationWatchdog({
-      ...windowsShellOptions,
-      // 每一拍无条件重贴窗口图标：Explorer 重启丢 HICON 时快捷方式是好的，
-      // 健康检查不会失败，onRepair 不会触发（详见 reassertHubWindowIcon 注释）。
-      onTick: reassertHubWindowIcon,
-      onRepair: reassertHubWindowIcon,
-    });
   }
   const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();
   // Isolated E2E must not mutate or poll production ~/.claude settings. Real

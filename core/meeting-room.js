@@ -51,6 +51,7 @@ class MeetingRoomManager {
       sendTarget: 'all',
       createdAt: Date.now(),
       lastMessageTime: Date.now(),
+      lastCompletedAt: null,
       pinned: false,
       status: 'idle',
       lastScene: 'free_discussion',
@@ -59,6 +60,7 @@ class MeetingRoomManager {
       groupChat: true,
       groupMode: typeof opts.groupMode === 'string' ? opts.groupMode : 'deliberation',
       groupRecentRawN: Number.isInteger(opts.groupRecentRawN) ? opts.groupRecentRawN : 5,
+      completionNotificationEnabled: opts.completionNotificationEnabled === true,
       workspace: typeof opts.workspace === 'string' ? opts.workspace : null,
       workspaceLabel: typeof opts.workspaceLabel === 'string' ? opts.workspaceLabel : null,
       // meeting-create-modal（2026-05-01）：用户在 Modal 选定的 slots 列表，
@@ -205,9 +207,10 @@ class MeetingRoomManager {
     }
     const allowed = [
       'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned',
-      'lastMessageTime', 'status', 'lastScene', 'scene', 'covenantText',
+      'lastMessageTime', 'lastCompletedAt', 'status', 'lastScene', 'scene', 'covenantText',
       'userRenamed', 'autoTitlePending', 'autoTitleGenerated',
       'serialWorkflow', 'workspace', 'workspaceLabel',
+      'completionNotificationEnabled',
     ];
     for (const key of allowed) {
       if (key in fields) {
@@ -216,7 +219,9 @@ class MeetingRoomManager {
     }
     // 串行工作流配置变更必须落盘（updateMeeting 默认不 markDirty）；传完整 meeting 快照，
     //   避免新群聊首次 markDirty 时 prev 残缺导致 title/subSessions 被默认值覆盖。
-    if ('serialWorkflow' in fields || 'workspace' in fields || 'workspaceLabel' in fields) {
+    if ('serialWorkflow' in fields || 'workspace' in fields || 'workspaceLabel' in fields
+        || 'lastMessageTime' in fields || 'lastCompletedAt' in fields
+        || 'completionNotificationEnabled' in fields) {
       meetingStore.markDirty(meetingId, m);
     }
     return {
@@ -289,6 +294,9 @@ class MeetingRoomManager {
       sendTarget: meetingData.sendTarget || 'all',
       createdAt: meetingData.createdAt || Date.now(),
       lastMessageTime: meetingData.lastMessageTime || Date.now(),
+      lastCompletedAt: typeof meetingData.lastCompletedAt === 'number'
+        ? meetingData.lastCompletedAt
+        : null,
       pinned: !!meetingData.pinned,
       status: 'dormant',
       lastScene: meetingData.lastScene || 'free_discussion',
@@ -297,6 +305,7 @@ class MeetingRoomManager {
       groupChat: true,
       groupMode: meetingData.groupMode || 'deliberation',
       groupRecentRawN: Number.isInteger(meetingData.groupRecentRawN) ? meetingData.groupRecentRawN : 5,
+      completionNotificationEnabled: meetingData.completionNotificationEnabled === true,
       // meeting-create-modal（2026-05-01）：从 state.json 还原 slot 规格；
       //   老 meeting 没有此字段时为 null，渲染逻辑会按 subSessions 顺序兜底分配 slot。
       slotSpecs: Array.isArray(meetingData.slotSpecs) ? meetingData.slotSpecs.slice() : null,
@@ -371,7 +380,14 @@ class MeetingRoomManager {
     const turn = { idx: m._nextIdx++, sid, text: safeText, ts: resolvedTs };
     m._timeline.push(turn);
     m.lastMessageTime = resolvedTs;
-    meetingStore.markDirty(meetingId, { _timeline: m._timeline, _cursors: m._cursors, _nextIdx: m._nextIdx });
+    m.lastCompletedAt = Math.max(Number(m.lastCompletedAt) || 0, resolvedTs);
+    meetingStore.markDirty(meetingId, {
+      _timeline: m._timeline,
+      _cursors: m._cursors,
+      _nextIdx: m._nextIdx,
+      lastMessageTime: m.lastMessageTime,
+      lastCompletedAt: m.lastCompletedAt,
+    });
     return { ...turn };
   }
 

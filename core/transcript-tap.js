@@ -1053,6 +1053,40 @@ class CodexTap extends EventEmitter {
         }
         return;
       }
+      // Codex 0.147 writes aborts as event_msg(payload.type=turn_aborted).
+      // Older/fixture rollouts may use a top-level turn_aborted record, so keep
+      // both shapes. Missing the event_msg form leaves the Hub stuck running
+      // after Esc even though the TUI has already returned to its prompt.
+      const isTurnAborted = obj?.type === 'turn_aborted'
+        || (obj?.type === 'event_msg' && obj?.payload?.type === 'turn_aborted');
+      if (isTurnAborted && obj.payload) {
+        const entry2 = this._bound.get(hubSessionId);
+        if (!entry2) return;
+        if (entry2._pendingEmitTimer) clearTimeout(entry2._pendingEmitTimer);
+        entry2._pendingEmitTimer = null;
+        entry2._pendingText = null;
+        entry2._pendingDurationMs = null;
+        entry2._pendingCompletedAt = null;
+        entry2._pendingTurnId = null;
+        const turnId = codexTurnIdFromPayload(obj.payload) || entry2._currentTurnId || null;
+        const rawCompletedAt = Number(obj.payload.completed_at);
+        const payloadCompletedAt = Number.isFinite(rawCompletedAt) && rawCompletedAt > 0
+          ? (rawCompletedAt < 100_000_000_000 ? rawCompletedAt * 1000 : rawCompletedAt)
+          : null;
+        const abortedAt = timestampToMs(obj.timestamp) || payloadCompletedAt || Date.now();
+        const abortSig = `${turnId || ''}:${abortedAt}`;
+        if (entry2._lastAbortSig !== abortSig) {
+          entry2._lastAbortSig = abortSig;
+          this.emit('turn-aborted', {
+            hubSessionId,
+            transcriptPath: entry2.rolloutPath,
+            abortedAt,
+            turnId,
+            signalSource: 'turn_aborted',
+          });
+        }
+        return;
+      }
       if (obj?.type !== 'event_msg' || !obj.payload) return;
       const entry = this._bound.get(hubSessionId);
       if (!entry) return;
@@ -1105,6 +1139,25 @@ class CodexTap extends EventEmitter {
         entry._pendingDurationMs = null;
         entry._pendingCompletedAt = null;
         entry._pendingTurnId = null;
+
+        // Codex goal continuation / automatic follow-up turns can start with
+        // task_started directly and have no ordinary user_message record. The
+        // sidebar previously stayed idle for the whole turn even while Codex
+        // visibly showed "Working / Pursuing goal". task_started is an
+        // authoritative lifecycle signal (unlike PTY repaint bytes), so expose
+        // it separately without pretending that a new user prompt was sent.
+        const startedAt = timestampToMs(obj.timestamp) || Date.now();
+        const startSig = `${eventTurnId || ''}:${startedAt}`;
+        if (entry._lastStartSig !== startSig) {
+          entry._lastStartSig = startSig;
+          this.emit('turn-started', {
+            hubSessionId,
+            transcriptPath: entry.rolloutPath,
+            startedAt,
+            turnId: eventTurnId || entry._currentTurnId || null,
+            signalSource: 'task_started',
+          });
+        }
       }
 
       if (eventType === 'task_complete' && typeof obj.payload.last_agent_message === 'string') {
@@ -1150,7 +1203,7 @@ class CodexTap extends EventEmitter {
       lastModel: null, lastUsage: null,    // T13
       _pendingEmitTimer: null, _pendingText: null, _pendingDurationMs: null,
       _pendingCompletedAt: null, _pendingTurnId: null, _currentTurnId: null,
-      _lastPromptSig: null,
+      _lastPromptSig: null, _lastStartSig: null, _lastAbortSig: null,
     });
     await tail.start();
     return true;

@@ -913,7 +913,7 @@ function createGroupChatDispatcher(deps) {
             dispatchMode: dispatchMode || 'group',
           });
           const meta0 = (turnRecord0 && turnRecord0.meta) || { dispatchMode: 'group' };
-          sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results: absentMembers, meta: meta0, superseded: false });
+          sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results: absentMembers, meta: meta0, superseded: false, completedAt: Date.now() });
           notifyGroupChatComplete({
             meetingId,
             turnNum,
@@ -1017,7 +1017,7 @@ function createGroupChatDispatcher(deps) {
       //   这个返回值决定「不要继续往下一步跑」——否则下一步会拿着空结果继续编排。
       const wasInterrupted = interruptedSinceStart()
         || results.some(r => r && r.status === 'interrupted');
-      sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results, meta, superseded: wasSuperseded, interrupted: wasInterrupted });
+      sendToRenderer('groupchat-turn-complete', { meetingId, turnNum, mode: 'group', results, meta, superseded: wasSuperseded, interrupted: wasInterrupted, completedAt: Date.now() });
       notifyGroupChatComplete({
         meetingId,
         turnNum,

@@ -84,6 +84,58 @@ function timestampForFile(date = new Date()) {
   return date.toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
 }
 
+/**
+ * 把桌面上"明确是 Hub 启动器"的快捷方式改指到新的 exe。
+ *
+ * 判定收得很紧：args 必须正好是 Hub 的 appRoot，且 target 是同一个 electron dist
+ * 目录下的可执行文件。满足这两条就不可能是别的程序 —— 只是同一个 Hub 的另一个
+ * 启动入口（claudeWX.lnk / AI 群聊 Hub.lnk 这些用户手建的）。文件名、备注、
+ * 图标全部保留，只换 target/cwd。
+ *
+ * 存在的理由：窗口类图标取自"创建窗口的那个 exe"的资源。只要还有一个入口指着
+ * 原装 electron.exe，从它启动的 Hub 任务栏图标就还会退回 Electron 原子。
+ */
+function repointHubDesktopShortcuts({
+  shell,
+  desktopDir,
+  appRoot,
+  fromExecDir,
+  toExecPath,
+  fsModule = fs,
+  logger = console,
+} = {}) {
+  const repointed = [];
+  if (!desktopDir || !toExecPath || !fsModule.existsSync(desktopDir)) return repointed;
+  const wantArgs = quoteWindowsArg(path.resolve(appRoot)).trim();
+  const targetDir = normalizeWinPath(fromExecDir);
+  const nextTarget = path.resolve(toExecPath);
+  if (normalizeWinPath(nextTarget) === '') return repointed;
+
+  let names = [];
+  try { names = fsModule.readdirSync(desktopDir); } catch { return repointed; }
+  for (const name of names) {
+    if (!name.toLowerCase().endsWith('.lnk')) continue;
+    const linkPath = path.join(desktopDir, name);
+    let details = null;
+    try { details = shell.readShortcutLink(linkPath); } catch { continue; }
+    if (!details) continue;
+    if (normalizeWinPath(details.target) === normalizeWinPath(nextTarget)) continue;
+    if (normalizeWinPath(path.dirname(String(details.target || '.'))) !== targetDir) continue;
+    if (String(details.args || '').trim() !== wantArgs) continue;
+    try {
+      const ok = shell.writeShortcutLink(linkPath, 'update', {
+        ...details,
+        target: nextTarget,
+        cwd: path.resolve(appRoot),
+      });
+      if (ok) repointed.push(linkPath);
+    } catch (error) {
+      logger.warn?.(`[windows-shell] 桌面快捷方式重指失败 ${name}：${error.message}`);
+    }
+  }
+  return repointed;
+}
+
 function getShortcutPaths({ app, appDataPath, desktopPath } = {}) {
   const programsDir = path.join(appDataPath || app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
   const desktopDir = desktopPath || app.getPath('desktop');
@@ -156,6 +208,7 @@ function ensureWindowsShellIntegration({
     desktopShortcutUpdated: false,
     desktopBackupPath: null,
     userTasksUpdated: false,
+    repointedDesktopShortcuts: [],
     errors: [],
   };
   if (!result.supported) return result;
@@ -237,6 +290,22 @@ function ensureWindowsShellIntegration({
     }
   }
 
+  // 桌面上其它指向同一个 Hub 的启动器（claudeWX.lnk 等）也要跟着换 exe，
+  // 否则用户从它启动时窗口类图标又会退回 Electron 原子。
+  try {
+    result.repointedDesktopShortcuts = repointHubDesktopShortcuts({
+      shell,
+      desktopDir: desktopPath || app.getPath('desktop'),
+      appRoot,
+      fromExecDir: path.dirname(path.resolve(execPath)),
+      toExecPath: expected.target,
+      fsModule,
+      logger,
+    });
+  } catch (error) {
+    result.errors.push(`桌面 Hub 快捷方式重指失败：${error.message}`);
+  }
+
   try {
     result.userTasksUpdated = app.setUserTasks([
       buildNewWindowTask({ appRoot, execPath, isPackaged, iconPath }),
@@ -309,5 +378,6 @@ module.exports = {
   getShortcutPaths,
   isWindowsShellIntegrationHealthy,
   ensureWindowsShellIntegration,
+  repointHubDesktopShortcuts,
   startWindowsShellIntegrationWatchdog,
 };

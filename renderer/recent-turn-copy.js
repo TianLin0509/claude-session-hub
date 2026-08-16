@@ -1,10 +1,16 @@
 'use strict';
 
-const ALLOWED_ROUND_COUNTS = new Set([1, 2, 3]);
+// 轮数上限原来写死成 {1,2,3}，超出一律回落 1 —— 想复制整段对话只能点三次再手动拼。
+// 现在上限跟着"当前卡片里能凑出的完整轮数"走，这里的常量只是防呆天花板
+// （卡片视图本身也只从 transcript 尾部拉 50 条 turn，见 transcript-handlers 的 limit:50，
+//  所以实际可选上限 = 已挂载卡片的轮数，不是会话史上的总轮数）。
+const MAX_COPY_ROUND_COUNT = 200;
 
-function normalizeRoundCount(value) {
+function normalizeRoundCount(value, max = MAX_COPY_ROUND_COUNT) {
   const count = Number.parseInt(value, 10);
-  return ALLOWED_ROUND_COUNTS.has(count) ? count : 1;
+  const ceiling = Math.max(1, Number.isFinite(Number(max)) ? Math.floor(Number(max)) : MAX_COPY_ROUND_COUNT);
+  if (!Number.isFinite(count) || count < 1) return 1;
+  return Math.min(count, ceiling);
 }
 
 function normalizeCopiedText(value) {
@@ -66,8 +72,9 @@ function collectCompleteConversationRounds(entries) {
 }
 
 function formatRecentConversation(entries, requestedCount) {
-  const count = normalizeRoundCount(requestedCount);
   const rounds = collectCompleteConversationRounds(entries);
+  // 请求超过实际轮数时按实际轮数处理，而不是回落到 1 —— "复制全部"应该真的给全部。
+  const count = normalizeRoundCount(requestedCount, Math.max(1, rounds.length));
   const selected = rounds.slice(-count);
   const text = selected.map((round, index) => {
     const blocks = [
@@ -108,7 +115,14 @@ function createRecentTurnCopyController(options = {}) {
   let root = null;
   let countSelect = null;
   let copyButton = null;
+  let totalLabel = null;
   let resetTimer = null;
+  let renderedMax = 0;
+  let cardObserver = null;
+  // 用户"想要几轮"必须独立于下拉框当前的值。卡片是异步挂载的，工具条初始化时
+  // 往往一轮都还没有，此时若直接把选中值夹到 1 并写回，用户存的偏好（比如 8 轮）
+  // 就被永久抹掉了 —— 等卡片到齐再点复制，只会复制 1 轮且毫无提示。
+  let desiredCount = 1;
 
   function collectVisibleEntries() {
     const overlay = doc && doc.getElementById('msg-overlay');
@@ -131,13 +145,52 @@ function createRecentTurnCopyController(options = {}) {
       .filter(Boolean);
   }
 
+  function availableRoundCount() {
+    return collectCompleteConversationRounds(collectVisibleEntries()).length;
+  }
+
   function selectedCount() {
-    return normalizeRoundCount(countSelect && countSelect.value);
+    return normalizeRoundCount(countSelect && countSelect.value, Math.max(1, renderedMax || MAX_COPY_ROUND_COUNT));
+  }
+
+  /**
+   * 按当前卡片里真实存在的轮数重建下拉项。
+   *
+   * 时机上不跟卡片渲染管线耦合：setVisible(true) 时刷一次，用户点开下拉之前
+   * （focus / mousedown）再刷一次。卡片是异步挂载的，只挂 setVisible 会让刚开
+   * 会话时上限停在 0/1；而 focus 那一刻的数字必然是最新的。
+   */
+  function refreshRoundOptions() {
+    if (!countSelect) return 0;
+    const total = availableRoundCount();
+    const max = Math.max(1, Math.min(total, MAX_COPY_ROUND_COUNT));
+
+    if (renderedMax !== max) {
+      const options = [];
+      for (let n = 1; n <= max; n += 1) {
+        // 最后一项标出"全部"，省得用户为了确认有没有漏而去数。
+        options.push(`<option value="${n}">${n} 轮${n === max && max > 1 ? ' · 全部' : ''}</option>`);
+      }
+      countSelect.innerHTML = options.join('');
+      renderedMax = max;
+    }
+    // 显示值 = min(想要的, 现在最多能给的)。desiredCount 本身不动，
+    // 所以对话变长之后会自动回到用户原本要的轮数。
+    countSelect.value = String(Math.min(desiredCount, max));
+
+    if (totalLabel) {
+      totalLabel.textContent = total > 0 ? `/ 共 ${total} 轮` : '/ 暂无完整轮次';
+      totalLabel.hidden = false;
+    }
+    if (countSelect) countSelect.disabled = total === 0;
+    return total;
   }
 
   function refreshAccessibleLabel() {
     if (!copyButton) return;
-    copyButton.title = `按“我 / AI”角色复制最近 ${selectedCount()} 个完整问答轮次（纯文本）`;
+    const total = renderedMax;
+    copyButton.title = `按“我 / AI”角色复制最近 ${selectedCount()} 个完整问答轮次（纯文本）`
+      + (total ? `；当前最多可复制 ${total} 轮` : '');
   }
 
   function restoreButton() {
@@ -156,6 +209,12 @@ function createRecentTurnCopyController(options = {}) {
   }
 
   async function copyRecent() {
+    // 点按钮的一刻再刷一次上限：这中间可能又来了新回合。
+    // 但用户如果刚刚手动改过下拉框（还没触发 change / 或程序化赋值），
+    // 以下拉框当前值为准，别被刷新覆盖回 desiredCount。
+    const shown = normalizeRoundCount(countSelect && countSelect.value, MAX_COPY_ROUND_COUNT);
+    if (shown !== Math.min(desiredCount, Math.max(1, renderedMax))) desiredCount = shown;
+    refreshRoundOptions();
     const result = formatRecentConversation(collectVisibleEntries(), selectedCount());
     if (!result.text) {
       showFeedback('暂无完整轮次', 'copy-empty');
@@ -176,8 +235,14 @@ function createRecentTurnCopyController(options = {}) {
 
   function onCountChanged() {
     const count = selectedCount();
+    desiredCount = count;
     if (countSelect) countSelect.value = String(count);
     try { if (storage) storage.setItem(storageKey, String(count)); } catch {}
+    refreshAccessibleLabel();
+  }
+
+  function onSelectOpened() {
+    refreshRoundOptions();
     refreshAccessibleLabel();
   }
 
@@ -186,40 +251,65 @@ function createRecentTurnCopyController(options = {}) {
     root = doc.getElementById('recent-turn-copy');
     countSelect = doc.getElementById('recent-turn-copy-count');
     copyButton = doc.getElementById('recent-turn-copy-button');
+    totalLabel = doc.getElementById('recent-turn-copy-total');
     if (!root || !countSelect || !copyButton) return false;
     copyButton.dataset.defaultLabel = copyButton.textContent || '复制对话';
-    try {
-      const saved = normalizeRoundCount(storage && storage.getItem(storageKey));
-      countSelect.value = String(saved);
-    } catch {
-      countSelect.value = '1';
-    }
+    // 记住的偏好只写进 desiredCount，不直接写下拉框 —— 此刻卡片多半还没挂载，
+    // 写进去会被立刻夹到 1 并覆盖掉。
+    try { desiredCount = normalizeRoundCount(storage && storage.getItem(storageKey), MAX_COPY_ROUND_COUNT); } catch {}
     countSelect.addEventListener('change', onCountChanged);
+    countSelect.addEventListener('focus', onSelectOpened);
+    countSelect.addEventListener('mousedown', onSelectOpened);
     copyButton.addEventListener('click', copyRecent);
+    // 卡片是异步、分批挂载的。盯着 #msg-overlay 的子节点变化重建选项，
+    // 比在渲染管线里到处插调用点可靠，也不会和卡片渲染耦合。
+    const overlay = doc.getElementById('msg-overlay');
+    const ObserverCtor = (win && win.MutationObserver) || (typeof MutationObserver === 'function' ? MutationObserver : null);
+    if (overlay && ObserverCtor) {
+      cardObserver = new ObserverCtor(() => {
+        if (root && root.hidden) return;
+        refreshRoundOptions();
+        refreshAccessibleLabel();
+      });
+      cardObserver.observe(overlay, { childList: true });
+    }
+    refreshRoundOptions();
     refreshAccessibleLabel();
     return true;
   }
 
   function setVisible(visible) {
     if (root) root.hidden = !visible;
+    if (visible) {
+      refreshRoundOptions();
+      refreshAccessibleLabel();
+    }
   }
 
   function destroy() {
     if (resetTimer) clearTimeout(resetTimer);
-    if (countSelect) countSelect.removeEventListener('change', onCountChanged);
+    if (cardObserver) { cardObserver.disconnect(); cardObserver = null; }
+    if (countSelect) {
+      countSelect.removeEventListener('change', onCountChanged);
+      countSelect.removeEventListener('focus', onSelectOpened);
+      countSelect.removeEventListener('mousedown', onSelectOpened);
+    }
     if (copyButton) copyButton.removeEventListener('click', copyRecent);
   }
 
   return {
+    availableRoundCount,
     collectVisibleEntries,
     copyRecent,
     destroy,
     init,
+    refreshRoundOptions,
     setVisible,
   };
 }
 
 module.exports = {
+  MAX_COPY_ROUND_COUNT,
   assistantSender,
   collectCompleteConversationRounds,
   createRecentTurnCopyController,

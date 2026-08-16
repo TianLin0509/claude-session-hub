@@ -147,6 +147,21 @@ async function main() {
       for (let i = 0; i < 30 && !window.__recentCopiedText; i += 1) await wait(50);
       const one = window.__recentCopiedText;
 
+      // 轮数上限不再是写死的 3：这 9 张卡是 4 个完整轮次，下拉里就该有 4 项，
+      // 最后一项标「全部」，旁边显示「/ 共 4 轮」。
+      const optionValues = Array.from(select.options).map(o => o.value);
+      const lastOptionText = select.options[select.options.length - 1].textContent;
+      const totalText = (document.getElementById('recent-turn-copy-total') || {}).textContent || '';
+
+      window.__recentCopiedText = '';
+      select.value = String(optionValues[optionValues.length - 1]);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      button.click();
+      for (let i = 0; i < 30 && !window.__recentCopiedText; i += 1) await wait(50);
+      await wait(50);
+      const all = window.__recentCopiedText;
+      const allButtonText = button.textContent;
+
       applyViewMode('pty');
       const hiddenInPty = toolbar.hidden || getComputedStyle(toolbar).display === 'none';
       applyViewMode('card');
@@ -166,6 +181,11 @@ async function main() {
         },
         three,
         one,
+        optionValues,
+        lastOptionText,
+        totalText,
+        all,
+        allButtonText,
       };
     })()`);
 
@@ -183,6 +203,17 @@ async function main() {
     assert.doesNotMatch(result.copy.three, /```|📋|复制对话|展开/);
     assert.match(result.copy.one, /轮次复制问题 4[\s\S]*第四轮可见回答/);
     assert.doesNotMatch(result.copy.one, /轮次复制问题 [123]|第五轮/);
+
+    // 任意轮数：9 张卡 = 4 个完整轮次，下拉必须给到 4 项（老实现写死到 3）。
+    assert.deepEqual(result.copy.optionValues, ['1', '2', '3', '4'],
+      `轮数上限应等于当前完整轮数，实际 ${JSON.stringify(result.copy.optionValues)}`);
+    assert.match(result.copy.lastOptionText, /4 轮 · 全部/, '最后一项要标出"全部"');
+    assert.match(result.copy.totalText, /共 4 轮/, 'UI 上要显示当前最多能复制多少轮');
+    assert.match(result.copy.allButtonText, /已复制 4 轮/);
+    assert.equal((result.copy.all.match(/===== 第 \d+ 轮 =====/g) || []).length, 4);
+    // 第 1 轮以前拿不到（上限 3），现在必须在里面；结尾没回答的第五轮仍不算。
+    assert.match(result.copy.all, /轮次复制问题 1[\s\S]*轮次复制回答 1/);
+    assert.doesNotMatch(result.copy.all, /尚未回答的第五轮问题/);
 
     await screenshot(client, SCREENSHOT_PATH);
     result.screenshot = SCREENSHOT_PATH;

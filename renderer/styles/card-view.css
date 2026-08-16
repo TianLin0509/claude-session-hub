@@ -1,8 +1,24 @@
 /* === Spec 1 v0.9.0 · 消息层 === */
 .msg-overlay {
   position: absolute;
-  /* 留出顶部 43px 给 .terminal-header（含 zoom A−/A+ + close ✕ 按钮）+ 底部 60px 给输入框 */
-  top: 43px; left: 0; right: 0; bottom: 60px;
+  /* 顶部让开 .terminal-header，底部让开 .floating-input-bar。
+   *
+   * 这两个高度以前写死成 43px / 60px。43 是 header 当时的高度，60 是输入栏"一行"
+   * 时的高度——但输入栏是 flex column（task-presets.css 改的），任务预设 chips 24px
+   * + 预设预览 48px + 输入框最高 120px，实际能长到 220px。写死 60px 的后果是：
+   * 卡片层（position:absolute + z-index:50 + 不透明底色）从输入栏顶部一路盖下来，
+   * 只在最底下留 60px。扣掉两层 padding-bottom 各 8px 后文本区只剩 44px，
+   * 除以 line-height 19.5px 正好 2.25 行 —— 就是"卡片视图下输入框只能显示两行"。
+   * 而且盖住的部分连点都点不到（overlay 没有 pointer-events:none），预设 chips 是死区。
+   * PTY 视图没事，只是因为那时 overlay 整个 display:none。
+   *
+   * 现在改由 renderer.js 的 ResizeObserver 把实测高度写进这两个变量
+   * （syncTerminalPanelChromeMetrics）。变量缺失时回落到原来的常量，
+   * 保证任何一步失败都不会比改之前更糟。 */
+  top: var(--term-header-h, 43px);
+  left: 0;
+  right: 0;
+  bottom: var(--fi-bar-h, 60px);
   overflow-y: auto;
   background: var(--bg-primary);
   padding: 12px 16px;
@@ -41,7 +57,7 @@
   color: white;
 }
 
-/* 微信完成通知总开关：紧邻卡片/PTY 左侧，用户显式决定是否推送。 */
+/* 当前会话微信完成通知：入口位置不变，状态随当前 session / meeting 切换。 */
 .completion-notification-toggle {
   position: absolute;
   top: 8px;
@@ -86,6 +102,10 @@
   color: #e8b95f;
   border-color: rgba(210, 153, 34, .42);
   background: rgba(210, 153, 34, .10);
+}
+.completion-notification-toggle.unavailable {
+  color: var(--text-muted);
+  opacity: .78;
 }
 .completion-notification-toggle.busy {
   opacity: .58;
@@ -136,6 +156,17 @@
   background: var(--bg-secondary);
   color: var(--text-primary);
 }
+.recent-turn-copy select:disabled { cursor: default; opacity: .55; }
+/* 「/ 共 N 轮」：把可选上限直接摆出来，不用点开下拉去数。 */
+.recent-turn-copy-total {
+  display: inline-flex;
+  align-items: center;
+  padding-right: 6px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.recent-turn-copy-total:empty { display: none; }
 .recent-turn-copy button {
   padding: 0 8px;
   border-left: 1px solid var(--border);

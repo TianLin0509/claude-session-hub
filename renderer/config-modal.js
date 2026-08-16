@@ -6,7 +6,14 @@ const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 const DEFAULT_CLAUDE_SUBSCRIPTION_MODEL = 'claude-opus-5[1m]';
 const DEFAULT_CLAUDE_FABLE_MODEL = 'claude-fable-5';
 
-function createConfigModalController({ document, ipcRenderer, providerModes, renderAccountUsage, applyCardDisplaySettings = () => {} }) {
+function createConfigModalController({
+  document,
+  ipcRenderer,
+  providerModes,
+  renderAccountUsage,
+  applyCardDisplaySettings = () => {},
+  getNotificationTarget = () => null,
+}) {
   if (!document) throw new Error('document is required');
   if (!ipcRenderer) throw new Error('ipcRenderer is required');
   if (!providerModes) throw new Error('providerModes is required');
@@ -77,7 +84,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
 
   function readNotificationForm() {
     return {
-      notificationEnabled: !!configEl('cfg-notification-enabled')?.checked,
+      notificationTargetEnabled: !!configEl('cfg-notification-enabled')?.checked,
       notificationIncludePreview: !!configEl('cfg-notification-include-preview')?.checked,
       notificationNotifyGroupChats: configEl('cfg-notification-group-chats')
         ? !!configEl('cfg-notification-group-chats').checked
@@ -87,8 +94,20 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
   }
 
   function setNotificationForm(config = {}) {
+    const target = getNotificationTarget();
     if (configEl('cfg-notification-enabled')) {
-      configEl('cfg-notification-enabled').checked = !!config.notificationEnabled;
+      configEl('cfg-notification-enabled').checked = !!(target && target.completionNotificationEnabled);
+      configEl('cfg-notification-enabled').disabled = !target;
+    }
+    if (configEl('cfg-notification-target-title')) {
+      configEl('cfg-notification-target-title').textContent = target
+        ? `当前${target.type === 'meeting' ? '群聊' : '会话'}微信通知`
+        : '当前会话微信通知';
+    }
+    if (configEl('cfg-notification-target-hint')) {
+      configEl('cfg-notification-target-hint').textContent = target
+        ? `仅控制“${String(target.title || '当前会话').slice(0, 36)}”；其他会话不受影响。`
+        : '请先打开一个会话；新会话默认关闭，之后可在顶栏手动开启。';
     }
     if (configEl('cfg-notification-include-preview')) {
       configEl('cfg-notification-include-preview').checked = !!config.notificationIncludePreview;
@@ -372,7 +391,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     showConfigMainView();
     modal.classList.remove('hidden');
     if (options && options.notificationSetup === true) {
-      setNotificationTestStatus('先填写 SendKey 并发送测试；确认微信收到后再开启通知。', 'working');
+      setNotificationTestStatus('先填写 SendKey 并发送测试；进入重要会话后，再为该会话单独开启通知。', 'working');
       const card = configEl('config-notification-card');
       try { card?.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch {}
       setTimeout(() => {
@@ -429,6 +448,8 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
   
     document.getElementById('config-save').addEventListener('click', async () => {
       const msg = document.getElementById('config-save-msg');
+      const notificationForm = readNotificationForm();
+      const notificationTarget = getNotificationTarget();
       const newConfig = {
         proxy: document.getElementById('cfg-proxy').value.trim() || undefined,
         claudeBackend: document.getElementById('cfg-claude-backend').value,
@@ -443,7 +464,9 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
         codexApiBaseUrl: document.getElementById('cfg-codex-url').value.trim() || undefined,
         codexApiModel: document.getElementById('cfg-codex-model').value.trim() || undefined,
         ...readCardDisplayForm(),
-        ...readNotificationForm(),
+        notificationIncludePreview: notificationForm.notificationIncludePreview,
+        notificationNotifyGroupChats: notificationForm.notificationNotifyGroupChats,
+        serverchanSendKey: notificationForm.serverchanSendKey,
       };
       if (newConfig.claudeBackend === 'api' && (!newConfig.claudeApiKey || !newConfig.claudeApiBaseUrl || !newConfig.claudeApiModel)) {
         msg.textContent = '请先完整填写同事中转的 Key、Base URL 和模型。';
@@ -451,7 +474,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
         msg.style.display = 'block';
         return;
       }
-      if (newConfig.notificationEnabled && !newConfig.serverchanSendKey) {
+      if (notificationForm.notificationTargetEnabled && !newConfig.serverchanSendKey) {
         msg.textContent = '启用微信通知前，请先填写 Server酱 SendKey。';
         msg.className = 'config-save-msg error';
         msg.style.display = 'block';
@@ -460,13 +483,26 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
       try {
         const result = await ipcRenderer.invoke('save-hub-config', newConfig);
         if (result && result.success) {
+          if (notificationTarget) {
+            const targetResult = await ipcRenderer.invoke('set-completion-notification-enabled', {
+              enabled: notificationForm.notificationTargetEnabled,
+              ...(notificationTarget.type === 'meeting'
+                ? { meetingId: notificationTarget.id }
+                : { sessionId: notificationTarget.id }),
+            });
+            if (!targetResult || !targetResult.ok) {
+              throw new Error('会话通知状态保存失败');
+            }
+          }
           providerModes.claude = newConfig.claudeBackend === 'api' ? 'api' : 'subscription';
           providerModes.codex = newConfig.codexBackend === 'api' ? 'api' : 'subscription';
           renderAccountUsage();
           savedCardDisplay = setCardDisplayForm(newConfig);
-          msg.textContent = newConfig.notificationEnabled
-            ? '配置已保存。顶栏“通知开”时，每次回答完成都会推送。'
-            : '配置已保存。卡片字体已立即生效；新会话将按所选 AI 后端启动。';
+          msg.textContent = notificationTarget
+            ? (notificationForm.notificationTargetEnabled
+              ? `配置已保存。“${notificationTarget.title || '当前会话'}”回答完成后会推送。`
+              : `配置已保存。“${notificationTarget.title || '当前会话'}”通知已关闭，其他会话状态不变。`)
+            : '连接配置已保存。打开需要关注的会话后，可在顶栏单独开启通知。';
           msg.className = 'config-save-msg success';
           msg.style.display = 'block';
           setTimeout(() => { msg.style.display = 'none'; }, 4000);

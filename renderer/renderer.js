@@ -55,6 +55,7 @@ const { modelClass, modelShort, createModelUiController } = require('./model-ui.
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
+const { classifyTerminalRuntime } = require('../core/terminal-runtime-state.js');
 const { createPastSessionModals, collapseDormantNativeDuplicates } = require('./past-session-modals.js');
 const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
 const { createShellController } = require('./shell-controller.js');
@@ -63,7 +64,10 @@ const { createRenderCoalescer } = require('./render-coalescer.js');
 const {
   applyPromptSubmitted,
   applyReplyCompleted,
+  applyTurnAborted,
   clearSessionAttention,
+  markSessionNeedsUserInput,
+  normalizeEventTime,
   sessionHasCompletedUnread,
   sessionNeedsUserInput,
 } = require('../core/session-attention-state.js');
@@ -71,6 +75,7 @@ const {
   PREVIEW_PATH_RE,
   HUB_IMG_PATH_RE,
   collectPathCandidates,
+  classifyLocalPathHref,
   _cleanPathCandidate,
   _normalizeLocalPathForOpen,
   _isDirectoryPath,
@@ -118,6 +123,7 @@ const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 // --- State ---
 const sessions = new Map();
 let activeSessionId = null;
+let completionNotificationToggle = null;
 let systemResourceUsage = null;
 let homeWorkbench = null;
 // 侧栏常驻显示海外代理 + 国产直连的真实公网出口。
@@ -157,6 +163,7 @@ const CODEX_SCROLL_INTENT_MS = 1500;
 const CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS = 120;
 const AI_PTY_FALLBACK_ARM_MS = 45 * 60 * 1000;
 const AI_PTY_FALLBACK_COOLDOWN_MS = 5 * 1000;
+const PTY_RUNTIME_SUBMIT_PENDING_MS = 15 * 1000;
 
 function isTranscriptCliKind(kind) {
   return isCodexKind(kind) || isKimiCliKind(kind);
@@ -185,8 +192,22 @@ function armPtyBurstFallback(sessionId, submittedAt = Date.now()) {
   const session = sessions.get(sessionId);
   if (!isAiRuntimeSession(session)) return;
   const at = Number(submittedAt) || Date.now();
+  session._ptyFallbackArmedAt = at;
   session._ptyFallbackArmedUntil = at + AI_PTY_FALLBACK_ARM_MS;
   session._ptyBurstCooldownUntil = 0;
+  session._ptyRuntimeSawRunning = false;
+  session._ptyRuntimeState = null;
+  session._ptyRuntimeReason = null;
+  session._ptyRuntimeEvidence = null;
+  if (session._ptyRuntimePendingTimer) clearTimeout(session._ptyRuntimePendingTimer);
+  session._ptyRuntimePendingTimer = setTimeout(() => {
+    session._ptyRuntimePendingTimer = null;
+    const latest = sessions.get(sessionId);
+    if (!latest || latest !== session || latest.status !== 'running' || latest._ptyRuntimeSawRunning) return;
+    if (typeof terminalActivityMonitor !== 'undefined') {
+      terminalActivityMonitor.observeRuntimeState(sessionId, Date.now());
+    }
+  }, PTY_RUNTIME_SUBMIT_PENDING_MS);
 }
 
 function disarmPtyBurstFallback(sessionOrId, settledAt = Date.now()) {
@@ -195,8 +216,19 @@ function disarmPtyBurstFallback(sessionOrId, settledAt = Date.now()) {
   // Delayed transcript/hook delivery may carry an older completion timestamp;
   // cooldown starts when Hub actually observes the transition, not in the past.
   const at = Math.max(Number(settledAt) || 0, Date.now());
+  if (session._ptyRuntimePendingTimer) {
+    clearTimeout(session._ptyRuntimePendingTimer);
+    session._ptyRuntimePendingTimer = null;
+  }
   session._ptyFallbackArmedUntil = 0;
+  session._ptyFallbackArmedAt = 0;
   session._ptyBurstCooldownUntil = at + AI_PTY_FALLBACK_COOLDOWN_MS;
+  session._ptyRuntimeSawRunning = false;
+  if (session._ptyRuntimeState === 'running') {
+    session._ptyRuntimeState = null;
+    session._ptyRuntimeReason = null;
+    session._ptyRuntimeEvidence = null;
+  }
 }
 
 function canUsePtyBurstFallback(session, now = Date.now()) {
@@ -225,6 +257,64 @@ function trackPtyPromptInput(sessionId, data) {
 function readContenteditablePlainText(el) {
   if (!el) return '';
   return typeof el.innerText === 'string' ? el.innerText : (el.textContent || '');
+}
+
+// contenteditable 的撤销栈只认 execCommand / 用户输入这类"编辑动作"。
+// 以前发送后直接 `inputBox.textContent = ''`，那是纯 DOM 赋值，浏览器不记账，
+// 撤销栈当场清空 —— 按 Ctrl+Z 什么也回不来。误发 / 发完想改的时候只能重打一遍。
+// 走 selectAll + insertText/delete 就能让原生 Ctrl+Z / Ctrl+Y 正常工作，
+// 不用自己维护一套 undo 栈（自己写的那套还得处理 IME、粘贴、拼写纠正）。
+function replaceContenteditableText(el, text) {
+  if (!el) return;
+  const next = String(text == null ? '' : text);
+  let applied = false;
+  try {
+    el.focus();
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    applied = next
+      ? document.execCommand('insertText', false, next)
+      : document.execCommand('delete');
+  } catch {
+    applied = false;
+  }
+  // 兜底比撤销栈重要得多：清空失败会让下一次回车把同一条消息再发一遍。
+  const after = readContenteditablePlainText(el);
+  const wrong = next === '' ? after !== '' : after.trim() !== next.trim();
+  if (!applied || wrong) el.textContent = next;
+}
+
+function placeCaretAtContenteditableEnd(el) {
+  if (!el) return;
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  } catch {}
+}
+
+// ↑ 是"召回上一条"还是"在多行里上移一行"，取决于光标是不是已经在最开头。
+function isCaretAtContenteditableStart(el) {
+  if (!el) return true;
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return true;
+  const caret = selection.getRangeAt(0);
+  if (!selection.isCollapsed) return false;
+  if (!el.contains(caret.startContainer)) return false;
+  try {
+    const before = document.createRange();
+    before.selectNodeContents(el);
+    before.setEnd(caret.startContainer, caret.startOffset);
+    return before.toString().length === 0;
+  } catch {
+    return false;
+  }
 }
 
 function saveFloatingInputDraft(sessionId, inputBox) {
@@ -649,9 +739,6 @@ async function refreshHubProxyInfo(options = {}) {
       : null;
     const next = {
       proxy: (cfg && cfg.proxy) || (hubProxyInfo && hubProxyInfo.proxy) || (egress && egress.proxyEndpoint) || '',
-      notificationEnabled: cfg
-        ? !!cfg.notificationEnabled
-        : !!(hubProxyInfo && hubProxyInfo.notificationEnabled),
       serverchanSendKeySet: cfg
         ? !!(cfg.serverchanSendKeySet || String(cfg.serverchanSendKey || '').trim())
         : !!(hubProxyInfo && hubProxyInfo.serverchanSendKeySet),
@@ -663,7 +750,6 @@ async function refreshHubProxyInfo(options = {}) {
     };
     if (hubProxyInfo
         && hubProxyInfo.proxy === next.proxy
-        && hubProxyInfo.notificationEnabled === next.notificationEnabled
         && hubProxyInfo.serverchanSendKeySet === next.serverchanSendKeySet
         && hubProxyInfo.deepseekApiKeySet === next.deepseekApiKeySet
         && Number(hubProxyInfo.egress && hubProxyInfo.egress.checkedAt) === Number(next.egress && next.egress.checkedAt)
@@ -700,6 +786,7 @@ async function selectMeeting(meetingId, opts = {}) {
   suspendInactiveTerminalRenderers(null);
   if (typeof recentTurnCopyController !== 'undefined') recentTurnCopyController.setVisible(false);
   activeMeetingId = meetingId;
+  if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
   // Stop background meeting PTY redraws at the main-process boundary. The room
   // renders transcript/card state, not xterm output; an individual member shell
   // will set focus again via selectSession when the user explicitly opens it.
@@ -1845,6 +1932,31 @@ ipcRenderer.on('prompt-submitted-event', (_event, payload) => {
   onPromptSubmittedFromTranscriptEvent(payload);
 });
 
+ipcRenderer.on('turn-started-event', (_event, payload) => {
+  // Reuse the ordered prompt/completion reducer, but keep the transport event
+  // distinct: task_started may represent an automatic /goal continuation and
+  // therefore has no user-authored preview text.
+  onPromptSubmittedFromTranscriptEvent({
+    ...(payload || {}),
+    text: '',
+    submittedAt: payload && payload.startedAt,
+  });
+});
+
+ipcRenderer.on('turn-aborted-event', (_event, payload) => {
+  const { hubSessionId, abortedAt, turnId, kind } = payload || {};
+  if (!hubSessionId || !isTranscriptCliKind(kind)) return;
+  const session = sessions.get(hubSessionId);
+  if (!session || session.status === 'dormant') return;
+  const transition = applyTurnAborted(session, { abortedAt, turnId });
+  if (!transition.applied) return;
+  clearCodexCardWorking(hubSessionId);
+  session.status = 'idle';
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
+  scheduleSessionListRender();
+  schedulePersist();
+});
+
 ipcRenderer.on('background-work-event', (_event, payload) => {
   onKimiBackgroundWorkEvent(payload);
 });
@@ -1991,6 +2103,22 @@ ipcRenderer.on('turn-complete-event', async (_event, payload) => {
 function wrapPathLinksInElement(rootEl, opts = {}) {
   if (!rootEl) return;
   const cwd = opts.cwd || getSessionCwd(opts.sessionId || activeSessionId) || null;
+  // marked 已经生成的 <a> 过去会被下面的 TreeWalker 故意跳过，因此
+  // [报告](C:\path\report.md) 只剩“报告”文字，且点击绕过 Hub。本地 href
+  // 先升级成统一 rt-file-link；网页 URL 仍保持标准 Markdown 链接语义。
+  for (const a of rootEl.querySelectorAll('a[href]:not(.rt-file-link)')) {
+    const local = classifyLocalPathHref(a.getAttribute('href') || '', cwd);
+    if (!local) continue;
+    a.classList.add('rt-file-link');
+    a.setAttribute('data-path', local.openPath);
+    a.setAttribute('href', '#');
+    a.title = local.openPath === local.displayPath
+      ? local.openPath
+      : `打开 ${local.openPath}（CLI 原文：${local.displayPath}）`;
+    // 本地路径不能像网页 URL 那样只显示描述文字，否则卡片会丢失 CLI 中
+    // 真正的路径信息。显示原始 destination，data-path 则使用纠错后的路径。
+    a.textContent = local.displayPath;
+  }
   const SKIP_TAGS = new Set(['A', 'SCRIPT', 'STYLE']);
   const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -2458,9 +2586,49 @@ document.addEventListener('click', (e) => {
   if (typeof applyViewMode === 'function') applyViewMode('pty');
 });
 
+// 卡片层要按 header / 输入栏的**实测**高度让位，不能写死常量。
+// 详见 styles/card-view.css 里 .msg-overlay 的注释。
+function observeTerminalPanelChrome(panel, bar) {
+  if (!panel) return null;
+  const header = panel.querySelector('.terminal-header');
+  const apply = () => {
+    // offsetHeight 含 border，正是 overlay 需要让开的实际占位。
+    // 输入栏 display:none（只读会话）时自然是 0，overlay 就能铺到底。
+    panel.style.setProperty('--term-header-h', `${header ? header.offsetHeight : 0}px`);
+    panel.style.setProperty('--fi-bar-h', `${bar ? bar.offsetHeight : 0}px`);
+  };
+  apply();
+  if (typeof ResizeObserver !== 'function') return { disconnect() {} };
+  const observer = new ResizeObserver(apply);
+  if (header) observer.observe(header);
+  if (bar) observer.observe(bar);
+  return observer;
+}
+
 function mountFloatingInput(sessionId, termContainer, terminal) {
   const bar = document.createElement('div');
   bar.className = 'floating-input-bar';
+
+  // ↑/↓ 召回发过的消息。模块缺席（脚本没加载）时整块功能静默关闭，
+  // 输入框其余行为一字不变 —— 历史是增强，不该成为新的单点故障。
+  const historyApi = (typeof window !== 'undefined' && window.FloatingInputHistory) || null;
+  const inputHistory = historyApi
+    ? historyApi.createFloatingInputHistory({ storage: window.localStorage })
+    : null;
+  const historyCursor = inputHistory
+    ? inputHistory.createCursor(sessionId)
+    : { isBrowsing: () => false, older: () => null, newer: () => null, reset() {}, invalidate() {} };
+  let applyingHistory = false;
+  function applyHistoryText(text) {
+    applyingHistory = true;
+    try {
+      replaceContenteditableText(inputBox, text);
+      placeCaretAtContenteditableEnd(inputBox);
+      saveFloatingInputDraft(sessionId, inputBox);
+    } finally {
+      applyingHistory = false;
+    }
+  }
 
   const inputBox = document.createElement('div');
   inputBox.className = 'floating-input-box';
@@ -2613,6 +2781,12 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   if (panel) panel.appendChild(bar);
   else termContainer.appendChild(bar);
 
+  // 卡片层（.msg-overlay）是 absolute + z-index:50 + 不透明底色，靠 top/bottom 给
+  // header 和输入栏让位。这两个值以前写死 43px/60px，而输入栏随任务预设 chips、
+  // 预设预览、输入框增高能长到 220px —— 超出 60px 的部分就被卡片层盖住且点不到，
+  // 用户看到的就是"卡片视图下输入框只剩两行"。这里把实测高度写回 CSS 变量。
+  const chromeObserver = observeTerminalPanelChrome(panel, bar);
+
   // paste-sensitive TUI（claude/gemini/codex 等 9 家 AI CLI）会把紧贴到达的字符
   //   当成 paste 事件 — 紧贴的 \r 被当作 paste 内容吞掉，消息卡在输入框不提交
   //   （2026-05-10 用户反馈：按 Enter 后内容进了 shell 输入框但不发送）。
@@ -2631,7 +2805,13 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       : userText;
 
     // 立即清 UI + scroll + 还焦给终端，让用户立刻感知"已发送"。后续异步往 PTY 写。
-    inputBox.textContent = '';
+    // 清空必须走 replaceContenteditableText（execCommand）：直接赋 textContent 会
+    // 清掉原生撤销栈，误发之后 Ctrl+Z 拿不回原文。
+    if (inputHistory) {
+      inputHistory.push(sessionId, userText);
+      historyCursor.reset();
+    }
+    replaceContenteditableText(inputBox, '');
     clearFloatingInputDraft(sessionId);
     clearPresetSelection();
     terminal.scrollToBottom();
@@ -2679,19 +2859,52 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   inputBox.addEventListener('keydown', (e) => {
     // IME composition (中/日/韩) 中, 回车是给候选词用的, 不是给应用层。
     // 不放行就会出现:中文按回车选词被当作"发送"+清空输入框,数字纯 ASCII 不受影响。
+    // ↑/↓ 同理：候选词翻页也用方向键，抢过来会让中文输入没法选词。
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendInput();
       return;
     }
+    if (inputHistory) {
+      const hasModifier = e.ctrlKey || e.metaKey || e.altKey || e.shiftKey;
+      const ctx = {
+        key: e.key,
+        hasModifier,
+        isBrowsing: historyCursor.isBrowsing(),
+        isEmpty: !readContenteditablePlainText(inputBox).trim(),
+        caretAtStart: isCaretAtContenteditableStart(inputBox),
+      };
+      const hit = historyApi.shouldRecallOlder(ctx)
+        ? historyCursor.older(readContenteditablePlainText(inputBox))
+        : (historyApi.shouldRecallNewer(ctx) ? historyCursor.newer() : null);
+      // hit 为 null（已经翻到底）时什么都不做，让 ↑/↓ 保持原生行为，别把草稿吃掉。
+      if (hit) {
+        e.preventDefault();
+        applyHistoryText(hit.text);
+        return;
+      }
+    }
     if (e.key === 'Escape') {
       e.preventDefault();
+      // 浏览历史时 Esc 先退出浏览态并还原草稿，第二下才把焦点交回终端。
+      if (inputHistory && historyCursor.isBrowsing()) {
+        let restored = historyCursor.newer();
+        while (restored && !restored.restoredDraft) restored = historyCursor.newer();
+        if (restored) applyHistoryText(restored.text);
+        historyCursor.reset();
+        return;
+      }
       terminal.focus();
     }
   });
 
   inputBox.addEventListener('input', () => {
+    // 用户自己动手改了内容就退出浏览态：下一次 ↑ 从最新一条重新开始，
+    // 而不是接着上次的下标往上翻（那样会跳过刚改出来的这条）。
+    // 历史召回本身也是 execCommand，同样会触发 input —— 用 applyingHistory 挡掉，
+    // 否则连按两下 ↑ 只会在第一条上原地打转。
+    if (inputHistory && !applyingHistory && historyCursor.isBrowsing()) historyCursor.reset();
     saveFloatingInputDraft(sessionId, inputBox);
   });
 
@@ -2742,6 +2955,9 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   return {
     dispose() {
       saveFloatingInputDraft(sessionId, inputBox);
+      if (chromeObserver) chromeObserver.disconnect();
+      // 输入栏拆掉后变量必须归零，否则卡片层会一直给一条不存在的栏留空白。
+      if (panel) panel.style.setProperty('--fi-bar-h', '0px');
       if (bar.parentNode) bar.parentNode.removeChild(bar);
     },
   };
@@ -2780,6 +2996,7 @@ function updateFloatingBarState() {
   if (stop) {
     const aiSession = isAiRuntimeSession(s);
     const authoritativeAiWork = s._runSource === 'semantic'
+      || s._runSource === 'pty-semantic'
       || s._agentWorking === 'hook'
       || s._agentWorking === 'card'
       || s.gcWorking === true;
@@ -2801,13 +3018,18 @@ function sweepStaleRunning() {
   const now = Date.now();
   let dirty = false;
   for (const s of sessions.values()) {
-    if (s.status === 'running' && s._runSource === 'semantic') {
+    if (s.status === 'running' && (s._runSource === 'semantic' || s._runSource === 'pty-semantic')) {
       if (s._agentWorking === 'card' && !hasSemanticCardWorking(s)) {
         s.status = 'idle';
         s._runSource = null;
         s._agentWorking = null;
         dirty = true;
       } else if (s._agentWorking === 'hook' && s._lastOutputTs && now - s._lastOutputTs > 45 * 60 * 1000) {
+        s.status = 'idle';
+        s._runSource = null;
+        s._agentWorking = null;
+        dirty = true;
+      } else if (s._agentWorking === 'pty' && s._lastOutputTs && now - s._lastOutputTs > 45 * 60 * 1000) {
         s.status = 'idle';
         s._runSource = null;
         s._agentWorking = null;
@@ -2994,6 +3216,7 @@ async function selectSession(id, opts = {}) {
     || !!(session && isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));
   const shouldFocusTerminal = switching || currentView === 'pty';
   activeSessionId = id;
+  if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
   recentTurnCopyController.setVisible(currentView === 'card' && !!activeSessionId);
   if (session) clearSessionAttention(session, { clearUnread: true });
   ipcRenderer.send('focus-session', { sessionId: id });
@@ -3251,6 +3474,101 @@ document.addEventListener('click', (e) => {
 }, true);
 
 // --- Terminal buffer reading and activity monitor ---
+function classifySessionRuntimeFrame(session, lines) {
+  if (isClaudeRuntimeSession(session)) return classifyTerminalRuntime('claude', lines);
+  if (session && isCodexKind(session.kind)) return classifyTerminalRuntime('codex', lines);
+  return { state: 'unknown', confidence: 'none', reason: 'unsupported-runtime', evidence: '' };
+}
+
+function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
+  if (!session || !runtime || session.status === 'dormant') return false;
+  if (!isClaudeRuntimeSession(session) && !isCodexKind(session.kind)) return false;
+
+  const at = Number(observedAt) || Date.now();
+  const wasRunning = session.status === 'running';
+  const fallbackArmed = canUsePtyBurstFallback(session, at);
+  let changed = false;
+
+  if (runtime.state === 'running') {
+    // Do not let an idle TUI animation start a task from nothing. A local Enter
+    // arms the PTY fallback, while hook/rollout lifecycle events set running
+    // independently. The screen classifier upgrades either weak path once it
+    // sees an actual provider running marker.
+    if (!wasRunning && !fallbackArmed) return false;
+    session._ptyRuntimeSawRunning = true;
+    if (session._ptyRuntimePendingTimer) {
+      clearTimeout(session._ptyRuntimePendingTimer);
+      session._ptyRuntimePendingTimer = null;
+    }
+    session._ptyRuntimeState = runtime.state;
+    session._ptyRuntimeReason = runtime.reason || null;
+    session._ptyRuntimeEvidence = runtime.evidence || null;
+    session._ptyRuntimeObservedAt = at;
+    if (!wasRunning) {
+      session.status = 'running';
+      changed = true;
+    }
+    if (!session.runStartedAt) {
+      session.runStartedAt = at;
+      changed = true;
+    }
+    if (!session._runSource || session._runSource === 'burst') {
+      session._runSource = 'pty-semantic';
+      changed = true;
+    }
+    if (!session._agentWorking) {
+      session._agentWorking = 'pty';
+      changed = true;
+    }
+    session._lastOutputTs = at;
+  } else if (runtime.state === 'idle' || runtime.state === 'waiting') {
+    // An input-ready frame is the missing-completion escape hatch. It does not
+    // fabricate transcript text or unread counts; a delayed authoritative Stop
+    // hook/task_complete can still enrich the card afterwards.
+    if (!wasRunning) return false;
+    const runStartedAt = Number(session.runStartedAt) || Number(session._ptyFallbackArmedAt) || 0;
+    if (runtime.state === 'idle'
+        && !session._ptyRuntimeSawRunning
+        && (!runStartedAt || at - runStartedAt < PTY_RUNTIME_SUBMIT_PENDING_MS)) {
+      return false;
+    }
+    if (runStartedAt > 0 && at >= runStartedAt) {
+      session.lastRunStartedAt = runStartedAt;
+      session.lastRunDurationMs = at - runStartedAt;
+    }
+    session.runStartedAt = null;
+    session.status = 'idle';
+    if (runtime.state === 'waiting') {
+      // A live confirmation overlay is stronger than transcript silence: the
+      // provider has stopped generating and is explicitly blocked on the user.
+      // Keep this lightweight so a delayed authoritative Stop/task_complete can
+      // still record the completed turn and unread notification exactly once.
+      markSessionNeedsUserInput(session, {
+        reason: runtime.reason || 'pty-interactive-confirmation',
+        text: runtime.evidence || null,
+      });
+    }
+    if (isCodexKind(session.kind)) {
+      clearCodexCardWorking(session.id);
+    } else {
+      session._agentWorking = null;
+      session._runSource = null;
+      disarmPtyBurstFallback(session, at);
+    }
+    changed = true;
+  }
+
+  if (!changed) return false;
+  session._ptyRuntimeState = runtime.state;
+  session._ptyRuntimeReason = runtime.reason || null;
+  session._ptyRuntimeEvidence = runtime.evidence || null;
+  session._ptyRuntimeObservedAt = at;
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(session.id);
+  scheduleSessionListRender();
+  schedulePersist();
+  return true;
+}
+
 const terminalActivityMonitor = createTerminalActivityMonitor({
   sessions,
   terminalCache,
@@ -3273,9 +3591,13 @@ const terminalActivityMonitor = createTerminalActivityMonitor({
   hasSemanticWorking: (s) => !!(s && (
     (isClaudeRuntimeSession(s) && s._agentWorking === 'hook' && s.status === 'running')
     || (isTranscriptCliKind(s.kind) && hasSemanticCardWorking(s))
+    || (s._runSource === 'pty-semantic' && s._agentWorking === 'pty' && s.status === 'running')
   )),
   canUsePtyBurstFallback,
   onPtyBurstSettled: (session, settledAt) => disarmPtyBurstFallback(session, settledAt),
+  classifyRuntimeState: classifySessionRuntimeFrame,
+  onRuntimeState: applyPtyRuntimeObservation,
+  canObserveRuntimeState: (session) => isClaudeRuntimeSession(session) || !!(session && isCodexKind(session.kind)),
 });
 const {
   getQuestionsSignature,
@@ -3856,7 +4178,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
 }
 
 function onPromptSubmittedFromTranscriptEvent(payload) {
-  const { hubSessionId, text, submittedAt, meetingId, kind, turnId } = payload || {};
+  const { hubSessionId, text, submittedAt, meetingId, kind, turnId, signalSource } = payload || {};
   if (!hubSessionId) return;
   if (!isTranscriptCliKind(kind)) return;
 
@@ -3875,8 +4197,12 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
   //   见 terminal-activity-monitor.js），所以这条一早退，就再没有别的东西会标记它在跑。
   //   claude 走 hook 路径本来就没有这层早退，这也是为什么之前只有 codex/kimi 不亮灯。
   // 卡片/预览/未读仍然归 meeting-room.js 那条流水线管，这里只认领"会话自身在不在干活"。
+  const workingSource = signalSource === 'task_started'
+    ? 'rollout_task_started'
+    : 'rollout_user_message';
+
   if (meetingId) {
-    markCodexCardWorking(hubSessionId, 'rollout_user_message');
+    markCodexCardWorking(hubSessionId, workingSource);
     scheduleSessionListRender();
     return;
   }
@@ -3890,7 +4216,7 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
     session.lastOutputPreview = preview;
     session._previewFromTranscript = true;
   }
-  markCodexCardWorking(hubSessionId, 'rollout_user_message');
+  markCodexCardWorking(hubSessionId, workingSource);
   session.lastMessageTime = transition.at;
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
   scheduleSessionListRender();
@@ -4101,6 +4427,7 @@ const shellController = createShellController({
 function escapeToHome() {
   if (window.__chuxinHide) window.__chuxinHide();
   shellController.escapeToHome();
+  if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
   if (homeWorkbench) homeWorkbench.render({ force: true });
 }
 // 2026-05-16 道雪：外部 HTTP 救援入口 — main.js POST /api/escape-home 通过这个 IPC 触发
@@ -4108,20 +4435,33 @@ function escapeToHome() {
 ipcRenderer.on('escape-home', escapeToHome);
 
 const { createConfigModalController } = require('./config-modal.js');
+function getActiveCompletionNotificationTarget() {
+  if (activeSessionId) {
+    const session = sessions.get(activeSessionId);
+    return session ? { type: 'session', ...session } : null;
+  }
+  if (activeMeetingId) {
+    const meeting = meetings[activeMeetingId];
+    return meeting ? { type: 'meeting', ...meeting } : null;
+  }
+  return null;
+}
 const configModal = createConfigModalController({
   document,
   ipcRenderer,
   providerModes,
   renderAccountUsage,
   applyCardDisplaySettings: applyHubCardDisplaySettings,
+  getNotificationTarget: getActiveCompletionNotificationTarget,
 });
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
 
 const { createCompletionNotificationToggle } = require('./completion-notification-toggle.js');
-const completionNotificationToggle = createCompletionNotificationToggle({
+completionNotificationToggle = createCompletionNotificationToggle({
   document,
   ipcRenderer,
+  getNotificationTarget: getActiveCompletionNotificationTarget,
   openNotificationSettings: configModal.openNotificationSetup,
 });
 completionNotificationToggle.init();
@@ -4221,6 +4561,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   clearPreviewUI();
   activeSessionId = session.id;
   activeMeetingId = null;
+  completionNotificationToggle.refreshTarget();
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
   if (terminalPanelEl) terminalPanelEl.style.display = '';
@@ -4319,6 +4660,7 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
   disposeCachedTerminal(sessionId);
   if (activeSessionId === sessionId) {
     activeSessionId = null;
+    completionNotificationToggle.refreshTarget();
     recentTurnCopyController.setVisible(false);
     preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
@@ -4372,6 +4714,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   disposeCachedTerminal(sessionId);
   if (activeSessionId === sessionId) {
     activeSessionId = null;
+    completionNotificationToggle.refreshTarget();
     recentTurnCopyController.setVisible(false);
     preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
@@ -4413,7 +4756,15 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (typeof session.contextPct === 'number') local.contextPct = session.contextPct;
   if (typeof session.contextUsed === 'number') local.contextUsed = session.contextUsed;
   if (typeof session.contextMax === 'number') local.contextMax = session.contextMax;
+  if (typeof session.lastCompletedAt === 'number'
+      && session.lastCompletedAt >= (Number(local.lastCompletedAt) || 0)) {
+    local.lastCompletedAt = session.lastCompletedAt;
+  }
+  if (typeof session.completionNotificationEnabled === 'boolean') {
+    local.completionNotificationEnabled = session.completionNotificationEnabled;
+  }
   if (session.id === activeSessionId) updateActiveMetricsRow();
+  if (session.id === activeSessionId) completionNotificationToggle.refreshTarget();
   scheduleSessionListRender();
 });
 
@@ -4484,6 +4835,7 @@ function schedulePersist() {
         heroIds: Array.isArray(s.heroIds) ? s.heroIds : null,
         promptPolicyVersion: s.promptPolicyVersion || null,
         hiddenFromSidebar: !!s.hiddenFromSidebar,
+        completionNotificationEnabled: s.completionNotificationEnabled === true,
       });
     }
         //   slotSpecs/covenantText 全被剥掉 → 写残 state.json → 重启后 restoreMeeting fallback
@@ -4494,6 +4846,7 @@ function schedulePersist() {
       id: m.id, type: 'meeting', title: m.title, subSessions: m.subSessions,
       layout: m.layout, focusedSub: m.focusedSub, syncContext: m.syncContext,
       sendTarget: m.sendTarget, createdAt: m.createdAt, lastMessageTime: m.lastMessageTime,
+      lastCompletedAt: typeof m.lastCompletedAt === 'number' ? m.lastCompletedAt : null,
       pinned: m.pinned || false, lastScene: m.lastScene || null,
       scene: m.scene, mode: m.mode,
       userRenamed: !!m.userRenamed,
@@ -4505,6 +4858,7 @@ function schedulePersist() {
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs : null,
       covenantText: m.covenantText || '',
       serialWorkflow: (m.serialWorkflow && typeof m.serialWorkflow === 'object') ? m.serialWorkflow : null,
+      completionNotificationEnabled: m.completionNotificationEnabled === true,
     }));
     ipcRenderer.send('persist-sessions', list, meetingList);
   }, 400);
@@ -4648,6 +5002,7 @@ window.resumeDormantSession = resumeDormantSession;
         heroIds: Array.isArray(meta.heroIds) ? meta.heroIds : null,
         promptPolicyVersion: meta.promptPolicyVersion || null,
         hiddenFromSidebar: !!meta.hiddenFromSidebar,
+        completionNotificationEnabled: meta.completionNotificationEnabled === true,
       });
     }
   }
@@ -4747,6 +5102,7 @@ ipcRenderer.on('meeting-created', (_e, { meeting }) => {
 
 ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
   meetings[meeting.id] = meeting;
+  if (meeting.id === activeMeetingId) completionNotificationToggle.refreshTarget();
   if (typeof MeetingRoom !== 'undefined') {
     MeetingRoom.updateMeetingData(meeting.id, meeting);
   }
@@ -4801,12 +5157,18 @@ ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, s
 // 2026-05-05 道雪 修3：AI 群聊 turn-complete IPC → 触发侧栏排序刷新（最新答完的 AI 群聊靠前）。
 //   2026-05-31 道雪：旧版在这里 unreadCount++ 作"轮粒度未读"，已被 partial-update 聚合的"本轮已答 AI 数"取代。
 //   同 IPC 在 meeting-room.js 里也有监听器（cache 同步 + DOM 重渲），与本监听器职责正交。
-ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
+ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId, completedAt }) => {
   if (!meetingId) return;
   const meeting = meetings[meetingId];
   if (!meeting) return;
   if (window.WorkspaceController) void window.WorkspaceController.maybePromptMeetingArchive(meetingId);
-  meeting.lastMessageTime = Date.now();  // 触发排序（最新答完的 AI 群聊靠前）
+  const answerAt = normalizeEventTime(completedAt, Date.now());
+  meeting.lastCompletedAt = Math.max(Number(meeting.lastCompletedAt) || 0, answerAt);
+  meeting.lastMessageTime = meeting.lastCompletedAt;
+  ipcRenderer.send('update-meeting', {
+    meetingId,
+    fields: { lastMessageTime: meeting.lastMessageTime, lastCompletedAt: meeting.lastCompletedAt },
+  });
   // 2026-07-21 道雪 [修状态灯]：轮次收尾兜底清 gcWorking（覆盖 superseded 等
   //   不经 partial-update 终态的路径，防止状态灯卡在黄灯）。
   for (const sid of meeting.subSessions || []) {
@@ -4814,6 +5176,7 @@ ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId }) => {
     if (s) _setGroupChatMemberWorking(s, false);
   }
   scheduleSessionListRender();
+  schedulePersist();
 });
 
 ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
@@ -4866,6 +5229,20 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
         if (line) lines.push(line.translateToString(true));
       }
       return lines.join('\n');
+    },
+    terminalLiveScreenText: (sessionId) => terminalActivityMonitor.extractLiveScreenLines(sessionId).join('\n'),
+    applyTerminalRuntimeFrame: (sessionId, lines, observedAt = Date.now()) => {
+      const session = sessions.get(sessionId);
+      if (!session) return null;
+      const runtime = classifySessionRuntimeFrame(session, Array.isArray(lines) ? lines : []);
+      const changed = applyPtyRuntimeObservation(session, runtime, observedAt);
+      return {
+        changed,
+        runtime,
+        status: session.status,
+        runSource: session._runSource || null,
+        agentWorking: session._agentWorking || null,
+      };
     },
     sidebarRenderCoalescerStats: () => sidebarRenderCoalescer.stats(),
     sidebarRenderStats: () => sessionListRenderer.getRenderStats(),

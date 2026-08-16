@@ -54,12 +54,27 @@ function buildGenericSessionTitleRe(kindLabels = KIND_LABELS) {
     .sort((a, b) => b.length - a.length)
     .join('|');
   if (!labels) return /^$/;
-  return new RegExp(`^(?:${labels})(?: Resume)? \\d+$`, 'i');
+  // Claude Code may briefly publish the bare provider label (for example
+  // `claude`) before its real conversation title. A bare label is still a
+  // placeholder, just like `Claude 1` / `Claude Resume 2`.
+  return new RegExp(`^(?:${labels})(?:(?: Resume)? \\d+)?$`, 'i');
+}
+
+function isClaudeCodePlaceholderTitle(title) {
+  const clean = normalizeTitle(title);
+  if (!clean) return false;
+  // Claude Code 2.1.x publishes transient activity titles such as
+  // `Claude Code`, `◐ Claude Code`, and braille/dingbat spinner variants.
+  // Match a short symbol-only prefix instead of enumerating glyphs so a new
+  // spinner cannot become authoritative and block Hub/DeepSeek auto-title.
+  return /^[^\p{L}\p{N}]{0,8}Claude Code$/iu.test(clean);
 }
 
 function isGenericAutoSessionTitle(title, kindLabels = KIND_LABELS) {
   const clean = normalizeTitle(title);
-  return !clean || buildGenericSessionTitleRe(kindLabels).test(clean);
+  return !clean
+    || isClaudeCodePlaceholderTitle(clean)
+    || buildGenericSessionTitleRe(kindLabels).test(clean);
 }
 
 function looksLikePathTitle(title) {
@@ -79,21 +94,24 @@ function looksLikePathTitle(title) {
 function isStableSessionTitle(title, kindLabels = KIND_LABELS) {
   const clean = normalizeTitle(title);
   if (!clean) return false;
-  if (/^Claude Code$/i.test(clean)) return false;
+  if (isClaudeCodePlaceholderTitle(clean)) return false;
   return !looksLikePathTitle(clean) && !isGenericAutoSessionTitle(clean, kindLabels);
 }
 
 function shouldAcceptExternalSessionTitle(session, proposedTitle, kindLabels = KIND_LABELS) {
   if (!session || session.userRenamed || session.autoTitleGenerated || session.meetingId) return false;
   const clean = normalizeTitle(proposedTitle);
-  if (!clean || /^Claude Code$/i.test(clean)) return false;
-  if (looksLikePathTitle(clean)) return false;
+  // Never let a provider placeholder become authoritative. Otherwise the
+  // first OSC title `claude` locks the card and blocks the meaningful title
+  // that the CLI emits a moment later.
+  if (!isStableSessionTitle(clean, kindLabels)) return false;
   return isGenericAutoSessionTitle(session.title, kindLabels);
 }
 
 module.exports = {
   buildGenericSessionTitleRe,
   formatBranchSessionTitle,
+  isClaudeCodePlaceholderTitle,
   isGenericAutoSessionTitle,
   isStableSessionTitle,
   looksLikePathTitle,

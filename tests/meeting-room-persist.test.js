@@ -17,6 +17,7 @@ const { loadMeetingFile, flushAll } = require('../core/meeting-store');
 (async () => {
   const mgr = new MeetingRoomManager();
   const m = mgr.createMeeting();
+  assert.strictEqual(m.completionNotificationEnabled, false, 'new meeting notification defaults off');
   assert.strictEqual(m.autoTitlePending, true, 'blank meeting title should allow auto title');
   assert.strictEqual(m.userRenamed, false, 'blank meeting title is not user renamed');
   const named = mgr.createMeeting({ title: '用户自定义房间' });
@@ -34,11 +35,14 @@ const { loadMeetingFile, flushAll } = require('../core/meeting-store');
   assert.strictEqual(persisted._timeline[0].text, 'hello world');
   assert.strictEqual(persisted._timeline[1].text, 'reply');
   assert.strictEqual(persisted._nextIdx, 2);
+  assert.strictEqual(persisted.lastCompletedAt, 2000, 'latest AI reply time persisted');
+  assert.strictEqual(persisted.lastMessageTime, 2000, 'legacy activity time stays in sync on completion');
   console.log('PASS T2.1 mutation triggers persist');
 
   // T2.2: loadTimelineLazy populates in-memory
   const mgr2 = new MeetingRoomManager();
-  mgr2.restoreMeeting({ id: m.id, title: 'recover', subSessions: ['sid-A'], layout: 'focus' });
+  mgr2.restoreMeeting({ id: m.id, title: 'recover', subSessions: ['sid-A'], layout: 'focus', lastCompletedAt: 2000 });
+  assert.strictEqual(mgr2.getMeeting(m.id).lastCompletedAt, 2000, 'restore keeps latest reply time');
   const before = mgr2.getTimeline(m.id);
   assert.strictEqual(before.length, 0, 'restoreMeeting starts empty');
   mgr2.loadTimelineLazy(m.id);

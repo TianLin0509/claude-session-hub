@@ -8,8 +8,10 @@ const {
   ATTENTION_REPLY_READY,
   applyPromptSubmitted,
   applyReplyCompleted,
+  applyTurnAborted,
   attentionStateOf,
   clearSessionAttention,
+  markSessionNeedsUserInput,
   sessionHasCompletedUnread,
   sessionNeedsUserInput,
 } = require('../core/session-attention-state.js');
@@ -44,6 +46,18 @@ test('real CLI question remains needs-input even while visible', () => {
   assert.equal(session.isWaiting, true);
   assert.equal(session.unreadCount, 0);
   assert.equal(sessionNeedsUserInput(session), true);
+});
+
+test('PTY confirmation fallback marks needs-input without fabricating an unread completion', () => {
+  const session = { status: 'idle', unreadCount: 0 };
+  assert.equal(markSessionNeedsUserInput(session, {
+    reason: 'interactive-confirmation',
+    text: 'Enter to confirm · Esc to cancel',
+  }), true);
+  assert.equal(attentionStateOf(session), ATTENTION_NEEDS_INPUT);
+  assert.equal(session.isWaiting, true);
+  assert.equal(session.waitingReason, 'interactive-confirmation');
+  assert.equal(session.unreadCount, 0);
 });
 
 test('new prompt clears attention and stale completion cannot override it', () => {
@@ -81,6 +95,27 @@ test('turn mismatch rejects a delayed completion even with a later delivery time
   assert.equal(session.status, 'running');
 });
 
+test('matching Codex abort clears running without creating a completed unread reply', () => {
+  const session = { status: 'idle', unreadCount: 0 };
+  applyPromptSubmitted(session, { submittedAt: 1000, turnId: 'turn-abort' });
+  const result = applyTurnAborted(session, { abortedAt: 2000, turnId: 'turn-abort' });
+  assert.equal(result.applied, true);
+  assert.equal(session.status, 'idle');
+  assert.equal(session.runStartedAt, null);
+  assert.equal(attentionStateOf(session), ATTENTION_NONE);
+  assert.equal(session.unreadCount, 0);
+});
+
+test('stale Codex abort cannot stop a newer active turn', () => {
+  const session = { status: 'idle', unreadCount: 0 };
+  applyPromptSubmitted(session, { submittedAt: 1000, turnId: 'turn-old' });
+  applyPromptSubmitted(session, { submittedAt: 2000, turnId: 'turn-new' });
+  const result = applyTurnAborted(session, { abortedAt: 2500, turnId: 'turn-old' });
+  assert.equal(result.applied, false);
+  assert.equal(result.reason, 'stale-abort-turn');
+  assert.equal(session.status, 'running');
+});
+
 test('legacy reply-ready waiting flag migrates without becoming needs-input', () => {
   const session = {
     isWaiting: true,
@@ -114,6 +149,7 @@ test('ordered attention reducer records workbench run duration without stale res
     seenByUser: false,
   });
   assert.equal(session.lastCompletedAt, startedAt + 60_000);
+  assert.equal(session.lastMessageTime, startedAt + 60_000);
   assert.equal(session.lastRunStartedAt, startedAt);
   assert.equal(session.lastRunDurationMs, 60_000);
   assert.equal(session.runStartedAt, null);

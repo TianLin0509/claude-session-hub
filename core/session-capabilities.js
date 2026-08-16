@@ -90,6 +90,7 @@ function buildSessionResumeMeta(session, overrides = {}) {
     ccSessionId: session.ccSessionId || null,
     transcriptPath: session.transcriptPath || null,
     meetingId: session.meetingId || null,
+    completionNotificationEnabled: session.completionNotificationEnabled === true,
     lastMessageTime: session.lastMessageTime,
     lastOutputPreview: session.lastOutputPreview || '',
     model: sessionModelId(session),

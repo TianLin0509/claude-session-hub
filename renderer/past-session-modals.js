@@ -1,3 +1,5 @@
+const { latestReplyTime } = require('../core/session-recency.js');
+
 function highlightMatch(text, query, escapeHtml) {
   if (!query) return escapeHtml(text);
   const ql = query.toLowerCase();
@@ -31,7 +33,7 @@ function findReusableClaudeSession(sessionValues, native = {}) {
     const aLive = a.status !== 'dormant' ? 1 : 0;
     const bLive = b.status !== 'dormant' ? 1 : 0;
     if (aLive !== bLive) return bLive - aLive;
-    return Number(b.lastMessageTime || b.updatedAt || 0) - Number(a.lastMessageTime || a.updatedAt || 0);
+    return latestReplyTime(b, b.updatedAt) - latestReplyTime(a, a.updatedAt);
   });
   return matches[0] || null;
 }
@@ -70,7 +72,7 @@ function collapseDormantNativeDuplicates(sessionMap) {
       const aLive = a.status !== 'dormant' ? 1 : 0;
       const bLive = b.status !== 'dormant' ? 1 : 0;
       if (aLive !== bLive) return bLive - aLive;
-      return Number(b.lastMessageTime || b.updatedAt || 0) - Number(a.lastMessageTime || a.updatedAt || 0);
+      return latestReplyTime(b, b.updatedAt) - latestReplyTime(a, a.updatedAt);
     });
     const keep = ranked[0];
     for (const duplicate of ranked.slice(1)) {

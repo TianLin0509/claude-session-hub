@@ -1,3 +1,8 @@
+# -IconOnly: 只重新生成 claude-wx.ico，不动桌面快捷方式。
+# Hub 现在会把快捷方式指向品牌化后的 AIGroupChatHub.exe（见 core/hub-exe-branding.js），
+# 这里再无条件改回 electron.exe 会把它打回原形。
+param([switch]$IconOnly)
+
 Add-Type -AssemblyName System.Drawing
 
 # Render the logo natively at every target size using vector graphics —
@@ -91,10 +96,14 @@ function New-LogoBitmap {
     return $bmp
 }
 
-# Full multi-size ICO: 16/24/32/48/64/96/128/256 for standard DPI + 512 PNG
-# entry for HiDPI displays (Explorer + Win11 tile previews). Windows picks
-# the closest match per display context.
-$sizes = @(16, 24, 32, 48, 64, 96, 128, 256, 512)
+# Full multi-size ICO: 16/24/32/48/64/96/128/256.
+#
+# 256 是 ICO 格式的硬上限：目录项的 width/height 各只有 1 字节，0 按规范表示 256,
+# 没有任何编码能表达 512。以前这里多写了一个 512 的 PNG，它和真正的 256 项一样被
+# 写成 declared=0x0 —— 同一个 .ico 里出现两个都自称 256x256 的条目，其中一个还在
+# 撒谎。Windows 的 LookupIconIdFromDirectoryEx 只能二选一，图标缓存重建时按哪一条
+# 解码是不确定的。别再加回 512。
+$sizes = @(16, 24, 32, 48, 64, 96, 128, 256)
 $entries = @()
 foreach ($sz in $sizes) {
     $bmp = New-LogoBitmap -Size $sz
@@ -134,6 +143,11 @@ $bw.Flush()
 $fs.Close()
 
 Write-Host "Icon written: $icoPath ($($entries.Count) sizes: $($sizes -join '/'))"
+
+if ($IconOnly) {
+    Write-Host "IconOnly: skipped desktop shortcut refresh"
+    return
+}
 
 # Refresh the desktop shortcut (target/arguments unchanged; icon resource in
 # the .ico is keyed by path, so replacing the file is enough for new apps —

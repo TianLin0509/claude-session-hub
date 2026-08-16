@@ -31,8 +31,11 @@ for (const id of [
 }
 assert.ok(/ipcRenderer\.invoke\('test-completion-notification',\s*\{\s*sendKey\s*\}\)/.test(modalSource),
   'test button should call the dedicated main-process IPC without requiring a save');
-assert.ok(/\.\.\.readNotificationForm\(\)/.test(modalSource),
-  'settings save payload should include notification fields');
+assert.ok(/notificationTargetEnabled/.test(modalSource)
+  && /set-completion-notification-enabled/.test(modalSource),
+  'settings should save the current conversation toggle separately from connection config');
+assert.ok(!html.includes('微信通知总开关'),
+  'the obsolete global-switch wording must not remain in the settings UI');
 assert.ok(!html.includes('cfg-notification-mode') && !html.includes('cfg-notification-idle-seconds'),
   'automatic focus/idle filtering controls should be removed');
 assert.ok(/set-completion-notification-enabled/.test(toggleSource),
@@ -91,7 +94,6 @@ const preserved = buildConfigJsonUpdate(existing, {});
 assert.deepStrictEqual(preserved.notifications, existing.notifications,
   'an unrelated partial save must not rewrite notification config');
 const updated = buildConfigJsonUpdate(existing, {
-  notificationEnabled: true,
   notificationIncludePreview: true,
   notificationNotifyGroupChats: false,
   serverchanSendKey: 'SCT_NEW_654321',
@@ -100,7 +102,8 @@ assert.strictEqual(updated.unrelated.keep, true);
 assert.deepStrictEqual(updated.providers.codex, existing.providers.codex,
   'the dedicated notification update must preserve every Codex provider field');
 assert.strictEqual(updated.notifications.custom, 'preserve-me');
-assert.strictEqual(updated.notifications.enabled, true);
+assert.strictEqual(updated.notifications.enabled, false,
+  'connection settings must preserve but never implicitly enable the legacy global flag');
 assert.strictEqual(updated.notifications.include_preview, true);
 assert.strictEqual(updated.notifications.notify_group_chats, false);
 assert.strictEqual(updated.notifications.serverchan.custom, 'keep');

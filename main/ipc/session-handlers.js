@@ -111,6 +111,11 @@ function registerSessionIpc(ipcMain, deps) {
     if (source.currentModel && source.currentModel.id) opts.model = source.currentModel.id;
     // 分支必须继承 effort，否则从 low/medium 会话拉分支会被打回默认 max。
     if (source.effort) opts.effort = source.effort;
+    // 同理：MCP 档位和 fast 开关也要跟着分支走，否则从 Lean/关 fast 的会话
+    // 拉出来的分支会被悄悄拉回 Full / 开 fast。
+    if (source.mcpProfile) opts.mcpProfile = source.mcpProfile;
+    if (source.fastMode === false) opts.fastMode = false;
+    if (source.codexSpeedTier) opts.codexSpeedTier = source.codexSpeedTier;
 
     let kind;
     if (providerFamily === 'claude') {
@@ -120,7 +125,6 @@ function registerSessionIpc(ipcMain, deps) {
     } else {
       kind = isDeepSeek ? 'deepseek' : 'codex';
       if (source.codexProfile) opts.codexProfile = source.codexProfile;
-      if (source.mcpProfile) opts.mcpProfile = source.mcpProfile;
       opts.codexForkSid = nativeSessionId;
     }
 
@@ -265,6 +269,9 @@ function registerSessionIpc(ipcMain, deps) {
       ...(old.effort ? { effort: old.effort } : {}),
       ...(old.codexProfile ? { codexProfile: old.codexProfile } : {}),
       ...(old.mcpProfile ? { mcpProfile: old.mcpProfile } : {}),
+      ...(old.fastMode === false ? { fastMode: false } : {}),
+      ...(old.codexSpeedTier ? { codexSpeedTier: old.codexSpeedTier } : {}),
+      completionNotificationEnabled: old.completionNotificationEnabled === true,
     });
     registerSessionForTap(fresh);
     sendToRenderer('session-created', { session: fresh });

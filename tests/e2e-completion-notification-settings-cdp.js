@@ -151,14 +151,13 @@ async function main() {
         await new Promise(resolve => setTimeout(resolve, 50));
       }
       const testStatus = status.textContent;
-      document.getElementById('cfg-notification-enabled').checked = true;
       document.getElementById('config-save').click();
       await new Promise(resolve => setTimeout(resolve, 300));
       const saveMessage = document.getElementById('config-save-msg').textContent;
       document.getElementById('config-close').click();
       const toggle = document.getElementById('completion-notification-toggle');
       const stateDeadline = Date.now() + 3000;
-      while (toggle.dataset.state !== 'enabled' && Date.now() < stateDeadline) {
+      while (toggle.dataset.state !== 'unavailable' && Date.now() < stateDeadline) {
         await new Promise(resolve => setTimeout(resolve, 30));
       }
       const saved = await ipcRenderer.invoke('get-hub-config-raw');
@@ -167,29 +166,33 @@ async function main() {
         saveMessage,
         state: toggle.dataset.state,
         label: document.getElementById('completion-notification-toggle-label').textContent,
-        enabled: saved.notificationEnabled,
+        legacyEnabled: saved.notificationEnabled,
         keyMatches: saved.serverchanSendKey === ${JSON.stringify(SEND_KEY)},
+        checkboxDisabled: document.getElementById('cfg-notification-enabled').disabled,
       };
     })()`);
     assert.match(result.configure.testStatus, /Server酱接收/);
-    assert.match(result.configure.saveMessage, /每次回答完成都会推送/);
-    assert.equal(result.configure.state, 'enabled');
-    assert.equal(result.configure.label, '通知开');
-    assert.equal(result.configure.enabled, true);
+    assert.match(result.configure.saveMessage, /打开需要关注的会话/);
+    assert.equal(result.configure.state, 'unavailable');
+    assert.equal(result.configure.label, '会话通知');
+    assert.equal(result.configure.legacyEnabled, false);
     assert.equal(result.configure.keyMatches, true);
+    assert.equal(result.configure.checkboxDisabled, true);
 
     result.sessionPlacement = await client.eval(`(async () => {
-      window.__hubE2E.addFakeSession({
-        id: 'notification-layout-session',
-        kind: 'claude',
-        title: '通知布局验证',
-        status: 'idle',
-        lastMessageTime: Date.now(),
+      await ipcRenderer.invoke('create-session', {
+        kind: 'powershell',
+        opts: {
+          id: 'notification-layout-session',
+          title: '通知布局验证',
+        },
       });
-      await new Promise(resolve => setTimeout(resolve, 80));
-      document.querySelector('[data-session-id="notification-layout-session"]')?.click();
-      await new Promise(resolve => setTimeout(resolve, 160));
+      await new Promise(resolve => setTimeout(resolve, 300));
       const button = document.getElementById('completion-notification-toggle');
+      const stateDeadline = Date.now() + 3000;
+      while (button.dataset.state !== 'disabled' && Date.now() < stateDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
       const viewEl = document.querySelector('.view-toggle');
       const view = viewEl.getBoundingClientRect();
       const toggle = button.getBoundingClientRect();
@@ -198,6 +201,9 @@ async function main() {
         viewDisplay: getComputedStyle(viewEl).display,
         gapToViewToggle: Math.round(view.left - toggle.right),
         topDelta: Math.round(Math.abs(view.top - toggle.top)),
+        state: button.dataset.state,
+        enabled: (await ipcRenderer.invoke('get-sessions'))
+          .find(session => session.id === 'notification-layout-session')?.completionNotificationEnabled,
       };
     })()`);
     assert.equal(result.sessionPlacement.parentId, 'terminal-panel');
@@ -205,7 +211,61 @@ async function main() {
     assert.ok(result.sessionPlacement.gapToViewToggle >= 6 && result.sessionPlacement.gapToViewToggle <= 14,
       `notification toggle should sit directly left of view toggle in a Session, gap=${result.sessionPlacement.gapToViewToggle}`);
     assert.ok(result.sessionPlacement.topDelta <= 2);
+    assert.equal(result.sessionPlacement.state, 'disabled');
+    assert.equal(result.sessionPlacement.enabled, false, 'a newly-created session must default to notifications off');
+    await captureTopControls(client, OFF_SCREENSHOT);
+
+    result.on = await client.eval(`(async () => {
+      document.getElementById('completion-notification-toggle').click();
+      const toggle = document.getElementById('completion-notification-toggle');
+      const deadline = Date.now() + 3000;
+      while (toggle.dataset.state !== 'enabled' && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      const saved = (await ipcRenderer.invoke('get-sessions'))
+        .find(session => session.id === 'notification-layout-session');
+      return {
+        state: toggle.dataset.state,
+        label: document.getElementById('completion-notification-toggle-label').textContent,
+        ariaPressed: toggle.getAttribute('aria-pressed'),
+        enabled: saved && saved.completionNotificationEnabled,
+      };
+    })()`);
+    assert.deepStrictEqual(result.on, {
+      state: 'enabled',
+      label: '通知开',
+      ariaPressed: 'true',
+      enabled: true,
+    });
     await captureTopControls(client, ON_SCREENSHOT);
+
+    result.independent = await client.eval(`(async () => {
+      await ipcRenderer.invoke('create-session', {
+        kind: 'powershell',
+        opts: { id: 'notification-layout-session-2', title: '第二个会话' },
+      });
+      const toggle = document.getElementById('completion-notification-toggle');
+      let deadline = Date.now() + 3000;
+      while (toggle.dataset.state !== 'disabled' && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      const secondState = toggle.dataset.state;
+      const sessions = await ipcRenderer.invoke('get-sessions');
+      const firstEnabled = sessions.find(session => session.id === 'notification-layout-session')?.completionNotificationEnabled;
+      const secondEnabled = sessions.find(session => session.id === 'notification-layout-session-2')?.completionNotificationEnabled;
+      document.querySelector('[data-session-id="notification-layout-session"]')?.click();
+      deadline = Date.now() + 3000;
+      while (toggle.dataset.state !== 'enabled' && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      return { secondState, firstEnabled, secondEnabled, firstStateAfterReturn: toggle.dataset.state };
+    })()`);
+    assert.deepStrictEqual(result.independent, {
+      secondState: 'disabled',
+      firstEnabled: true,
+      secondEnabled: false,
+      firstStateAfterReturn: 'enabled',
+    });
 
     result.off = await client.eval(`(async () => {
       document.getElementById('completion-notification-toggle').click();
@@ -214,12 +274,13 @@ async function main() {
       while (toggle.dataset.state !== 'disabled' && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 30));
       }
-      const saved = await ipcRenderer.invoke('get-hub-config-raw');
+      const saved = (await ipcRenderer.invoke('get-sessions'))
+        .find(session => session.id === 'notification-layout-session');
       return {
         state: toggle.dataset.state,
         label: document.getElementById('completion-notification-toggle-label').textContent,
         ariaPressed: toggle.getAttribute('aria-pressed'),
-        enabled: saved.notificationEnabled,
+        enabled: saved && saved.completionNotificationEnabled,
       };
     })()`);
     assert.deepStrictEqual(result.off, {
@@ -237,35 +298,36 @@ async function main() {
       while (toggle.dataset.state !== 'enabled' && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 30));
       }
-      const saved = await ipcRenderer.invoke('get-hub-config-raw');
-      return {
-        state: toggle.dataset.state,
-        label: document.getElementById('completion-notification-toggle-label').textContent,
-        ariaPressed: toggle.getAttribute('aria-pressed'),
-        enabled: saved.notificationEnabled,
-      };
+      await new Promise(resolve => setTimeout(resolve, 650));
+      return { state: toggle.dataset.state };
     })()`);
-    assert.deepStrictEqual(result.onAgain, {
-      state: 'enabled',
-      label: '通知开',
-      ariaPressed: 'true',
-      enabled: true,
-    });
+    assert.deepStrictEqual(result.onAgain, { state: 'enabled' });
 
     await client.eval('location.reload()');
     await _waitMs(1200);
     result.afterReload = await client.eval(`(async () => {
       const toggle = document.getElementById('completion-notification-toggle');
+      const listDeadline = Date.now() + 3000;
+      while (!document.querySelector('[data-session-id="notification-layout-session"]') && Date.now() < listDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      const homeState = toggle.dataset.state;
+      document.querySelector('[data-session-id="notification-layout-session"]')?.click();
       const deadline = Date.now() + 3000;
       while (toggle.dataset.state !== 'enabled' && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 30));
       }
       return {
+        homeState,
         state: toggle.dataset.state,
         label: document.getElementById('completion-notification-toggle-label').textContent,
       };
     })()`);
-    assert.deepStrictEqual(result.afterReload, { state: 'enabled', label: '通知开' });
+    assert.deepStrictEqual(result.afterReload, {
+      homeState: 'unavailable',
+      state: 'enabled',
+      label: '通知开',
+    });
 
     assert.equal(mock.requests.length, 1, 'only the explicit test button should hit ServerChan');
     assert.equal(mock.requests[0].method, 'POST');
@@ -274,7 +336,8 @@ async function main() {
     assert.equal(posted.get('title'), 'AI Hub · 通知测试成功');
 
     const storedConfig = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'config.json'), 'utf8'));
-    assert.equal(storedConfig.notifications.enabled, true);
+    assert.equal(storedConfig.notifications.enabled, false,
+      'legacy global switch must stay off; per-session state is stored on the session');
     assert.equal(storedConfig.notifications.serverchan.send_key, SEND_KEY);
     for (const legacyField of ['mode', 'idle_seconds', 'min_duration_seconds']) {
       assert.ok(!Object.prototype.hasOwnProperty.call(storedConfig.notifications, legacyField));

@@ -2,6 +2,7 @@ const PROMPT_LINE_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+(.+?)(?:\s*[│╯�
 const PROMPT_PREFIX_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+/;
 const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 const SILENCE_MS = 2000;
+const RUNTIME_PROBE_MS = 300;
 // A renderer-side fit sends SIGWINCH to the CLI, and full-screen TUIs answer by
 // repainting hundreds or thousands of bytes. That repaint is layout work, not
 // agent activity. Keep the window shorter than the normal burst silence timer
@@ -64,9 +65,15 @@ function createTerminalActivityMonitor({
   hasSemanticWorking,
   canUsePtyBurstFallback,
   onPtyBurstSettled,
+  classifyRuntimeState,
+  onRuntimeState,
+  canObserveRuntimeState,
+  silenceMs = SILENCE_MS,
+  runtimeProbeMs = RUNTIME_PROBE_MS,
 }) {
   const silenceTimers = new Map();
   const dataCounters = new Map();
+  const runtimeProbeTimers = new Map();
 
   function extractUserQuestions(sessionId) {
     const cached = terminalCache.get(sessionId);
@@ -94,6 +101,56 @@ function createTerminalActivityMonitor({
       out.push(line.translateToString(true));
     }
     return out;
+  }
+
+  // Read the CLI's current logical screen, not the user's scroll viewport and
+  // not arbitrary historical scrollback. Runtime markers such as Codex's
+  // "esc to interrupt" and Claude's animated status row are only trustworthy
+  // when they are still present in this live frame.
+  function extractLiveScreenLines(sessionId) {
+    const cached = terminalCache.get(sessionId);
+    if (!cached || !cached.opened) return [];
+    const terminal = cached.terminal;
+    const buf = terminal && terminal.buffer && terminal.buffer.active;
+    if (!buf) return [];
+    const rows = Math.max(1, Number(terminal.rows) || Math.min(60, Number(buf.length) || 1));
+    const baseY = Number(buf.baseY);
+    const start = Number.isFinite(baseY)
+      ? Math.max(0, baseY)
+      : Math.max(0, (Number(buf.length) || 0) - rows);
+    const end = Math.min(Number(buf.length) || 0, start + rows);
+    const out = [];
+    for (let i = start; i < end; i++) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      out.push(line.translateToString(true));
+    }
+    return out;
+  }
+
+  function observeRuntimeState(sessionId, observedAt = Date.now()) {
+    const session = sessions.get(sessionId);
+    if (!session || typeof classifyRuntimeState !== 'function') return null;
+    let result = null;
+    try {
+      result = classifyRuntimeState(session, extractLiveScreenLines(sessionId));
+    } catch (_) {
+      return null;
+    }
+    if (!result || result.state === 'unknown') return result;
+    let applied = null;
+    if (typeof onRuntimeState === 'function') {
+      try { applied = onRuntimeState(session, result, observedAt) === true; } catch (_) {}
+    }
+    return { ...result, applied };
+  }
+
+  function scheduleRuntimeProbe(sessionId) {
+    if (runtimeProbeTimers.has(sessionId)) return;
+    runtimeProbeTimers.set(sessionId, setTimeout(() => {
+      runtimeProbeTimers.delete(sessionId);
+      observeRuntimeState(sessionId, Date.now());
+    }, Math.max(0, Number(runtimeProbeMs) || RUNTIME_PROBE_MS)));
   }
 
   function getQuestionsSignature(sessionId) {
@@ -180,13 +237,31 @@ function createTerminalActivityMonitor({
       updateStreamingIndicator(sessionId);
     }
 
+    const runtimeProbeEligible = typeof classifyRuntimeState === 'function'
+      && (typeof canObserveRuntimeState !== 'function' || canObserveRuntimeState(session));
+    if (runtimeProbeEligible && (semanticCovered || burstEligible || session.status === 'running')) {
+      scheduleRuntimeProbe(sessionId);
+    }
+
     if (silenceTimers.has(sessionId)) clearTimeout(silenceTimers.get(sessionId));
     silenceTimers.set(sessionId, setTimeout(() => {
       silenceTimers.delete(sessionId);
       dataCounters.delete(sessionId);
 
+      // Provider UI markers are stronger than raw silence. A long-running tool
+      // may leave a stable "esc to interrupt"/animated status frame for more
+      // than two seconds; do not turn that session idle merely because no new
+      // bytes arrived. Conversely, a returned input box can close a stale
+      // semantic running state when a hook/transcript completion was missed.
+      const runtimeObservation = observeRuntimeState(sessionId, Date.now());
+      const runtimeSaysRunning = runtimeObservation && runtimeObservation.state === 'running';
+      const runtimeDefersIdle = runtimeObservation
+        && runtimeObservation.state === 'idle'
+        && runtimeObservation.applied === false;
+
       // burst 来源的 running：静默即退场（语义来源的 running 由各自完成事件收尾）。
-      if (session.status === 'running' && session._runSource === 'burst') {
+      if (!runtimeSaysRunning && !runtimeDefersIdle
+          && session.status === 'running' && session._runSource === 'burst') {
         session.status = 'idle';
         session._runSource = null;
         if (typeof onPtyBurstSettled === 'function') onPtyBurstSettled(session, Date.now());
@@ -194,7 +269,7 @@ function createTerminalActivityMonitor({
       }
       // transcript 系(codex/kimi)语义 running 的兜底回收：
       //   完成事件丢失时，hasSemanticCardWorking 的 maxAge 到期 → 收回 running。
-      if (session._agentWorking === 'card' && !hasSemanticCardWorking(session)) {
+      if (!runtimeSaysRunning && session._agentWorking === 'card' && !hasSemanticCardWorking(session)) {
         session._agentWorking = null;
         if (session.status === 'running' && session._runSource === 'semantic') {
           session.status = 'idle';
@@ -221,7 +296,7 @@ function createTerminalActivityMonitor({
       }
 
       renderSessionList();
-    }, SILENCE_MS));
+    }, Math.max(0, Number(silenceMs) || SILENCE_MS)));
   }
 
   function clearSession(sessionId) {
@@ -229,14 +304,20 @@ function createTerminalActivityMonitor({
       clearTimeout(silenceTimers.get(sessionId));
       silenceTimers.delete(sessionId);
     }
+    if (runtimeProbeTimers.has(sessionId)) {
+      clearTimeout(runtimeProbeTimers.get(sessionId));
+      runtimeProbeTimers.delete(sessionId);
+    }
     dataCounters.delete(sessionId);
   }
 
   return {
     extractUserQuestions,
     extractTailLines,
+    extractLiveScreenLines,
     getQuestionsSignature,
     readTerminalPreview,
+    observeRuntimeState,
     onTerminalOutput,
     isWaitingForUser,
     clearSession,
@@ -248,6 +329,7 @@ module.exports = {
   PROMPT_PREFIX_RE,
   AI_MARKERS_RE,
   UI_RESIZE_REDRAW_SUPPRESS_MS,
+  RUNTIME_PROBE_MS,
   parseQuestionsFromLines,
   isWaitingForUser,
   createTerminalActivityMonitor,

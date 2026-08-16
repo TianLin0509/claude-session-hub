@@ -191,6 +191,27 @@ function registerWorkspaceIpc(ipcMain, deps) {
 
   ipcMain.handle('workspace:list', () => workspaceService.listWorkspaces(activePaths()));
 
+  // 新建会话弹窗要按**当前选中的模型**给出思考强度档位：Codex 的档位是按模型
+  // 下发的（gpt-5.6-sol 有 ultra，5.5 只到 xhigh），写死一份必然给某些模型多出
+  // 或少掉档位。数据来自 codex-cli 自己缓存的 ~/.codex/models_cache.json。
+  // 顺带回一个用户全局配的 service_tier，好让"跟随全局"那一档显示成"（当前：fast）"。
+  ipcMain.handle('codex:tuning-catalog', () => {
+    try {
+      const { buildCodexTuningSnapshot } = require('../../core/codex-model-catalog.js');
+      const { readCodexConfiguredServiceTier } = require('../../core/codex-speed-tier.js');
+      const { MODEL_OPTIONS_BY_KIND } = require('../../core/model-options.js');
+      const slugs = (MODEL_OPTIONS_BY_KIND.codex || []).map(option => option.id);
+      return {
+        ok: true,
+        ...buildCodexTuningSnapshot(slugs),
+        configuredServiceTier: readCodexConfiguredServiceTier(),
+      };
+    } catch (error) {
+      // 目录读不到不该让弹窗打不开 —— renderer 侧有静态兜底档位。
+      return { ok: false, error: error && error.message ? error.message : String(error) };
+    }
+  });
+
   ipcMain.handle('workspace:create-scratch', (_event, opts = {}) => {
     const workspace = workspaceService.createScratchWorkspace({ ...opts, select: false });
     sendToRenderer('workspace-updated', { workspace });

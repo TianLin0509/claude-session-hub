@@ -90,6 +90,42 @@ test('reports unavailable or bypassed VPN as critical alerts', async () => {
   assert.equal(sameIp.alert.severity, 'critical');
 });
 
+test('one transient VPN probe failure keeps the recent healthy route and retries quickly', async () => {
+  let now = 1_800_000_000_000;
+  let foreign = route('38.246.239.122', 'US', 'United States', 'Los Angeles', 'California');
+  const domestic = route('180.158.74.254', 'CN', 'China', 'Shanghai', 'Shanghai');
+  const monitor = createNetworkEgressMonitor({
+    getProxy: () => 'http://127.0.0.1:7890',
+    now: () => now,
+    cacheMs: 60_000,
+    failureCacheMs: 5_000,
+    probe: async ({ route: routeType }) => routeType === 'proxy' ? foreign : domestic,
+  });
+
+  const healthy = await monitor.getStatus({ force: true });
+  assert.equal(healthy.alert, null);
+
+  now += 60_000;
+  foreign = { ok: false, errorCode: 'probe_timeout', error: 'VPN 出口不可用' };
+  const transient = await monitor.getStatus({ force: true });
+  assert.equal(transient.alert.type, 'vpn_probe_retrying');
+  assert.equal(transient.alert.severity, 'warning');
+  assert.equal(transient.foreign.ok, true);
+  assert.equal(transient.foreign.stale, true);
+  assert.equal(transient.foreign.ip, healthy.foreign.ip);
+
+  now += 6_000;
+  const confirmed = await monitor.getStatus();
+  assert.equal(confirmed.alert.type, 'vpn_unavailable');
+  assert.equal(confirmed.foreign.ok, false);
+
+  now += 6_000;
+  foreign = route('38.246.239.122', 'US', 'United States', 'Los Angeles', 'California');
+  const recovered = await monitor.getStatus();
+  assert.equal(recovered.alert, null);
+  assert.equal(recovered.consecutiveForeignFailures, 0);
+});
+
 test('curl probe forces IPv4 and chooses explicit proxy versus explicit direct route', async () => {
   const calls = [];
   const execFile = (_file, args, _options, callback) => {
@@ -110,6 +146,8 @@ test('curl probe forces IPv4 and chooses explicit proxy versus explicit direct r
   await probe({ route: 'proxy', proxy: 'http://127.0.0.1:7890' });
   await probe({ route: 'direct', proxy: '' });
   assert.ok(calls[0].includes('--ipv4'));
+  assert.ok(Number(calls[0][calls[0].indexOf('--connect-timeout') + 1]) >= 8,
+    'proxy CONNECT needs enough time for a healthy cold Mihomo tunnel');
   assert.equal(calls[0][calls[0].indexOf('--proxy') + 1], 'http://127.0.0.1:7890');
   assert.equal(calls[1][calls[1].indexOf('--noproxy') + 1], '*');
 });

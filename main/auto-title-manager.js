@@ -2,11 +2,10 @@
 
 const http = require('http');
 const https = require('https');
-const { formatBranchSessionTitle } = require('../core/session-title-guards.js');
-
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+const {
+  formatBranchSessionTitle,
+  isGenericAutoSessionTitle: isGenericAutoSessionTitleForKinds,
+} = require('../core/session-title-guards.js');
 
 function createAutoTitleManager(deps) {
   const {
@@ -22,11 +21,6 @@ function createAutoTitleManager(deps) {
   const autoTitleInFlight = new Set();
   const autoMeetingTitleInFlight = new Set();
   const autoTitleBaseKinds = new Set(allAiKinds);
-  const autoTitleLabels = Object.values(kindLabels)
-    .map(escapeRegExp)
-    .sort((a, b) => b.length - a.length)
-    .join('|');
-  const autoTitleSessionRe = new RegExp(`^(?:${autoTitleLabels})(?: Resume)? \\d+$`, 'i');
   const autoTitleMeetingRe = /^(?:通用|投研|开发|AI 群聊) #\d+$/;
 
   function fallbackSessionTitleFromPrompt(text, kind) {
@@ -106,7 +100,7 @@ function createAutoTitleManager(deps) {
   }
 
   function isGenericAutoSessionTitle(title) {
-    return !title || autoTitleSessionRe.test(String(title).trim());
+    return isGenericAutoSessionTitleForKinds(title, kindLabels);
   }
 
   function isGenericAutoMeetingTitle(title) {

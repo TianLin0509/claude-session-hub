@@ -3,6 +3,7 @@
 const assert = require('assert');
 const {
   formatBranchSessionTitle,
+  isClaudeCodePlaceholderTitle,
   isGenericAutoSessionTitle,
   isStableSessionTitle,
   looksLikePathTitle,
@@ -25,10 +26,22 @@ function test(name, fn) {
 console.log('Running session title guard tests...');
 
 test('default provider titles are generic', () => {
+  assert.strictEqual(isGenericAutoSessionTitle('claude'), true);
   assert.strictEqual(isGenericAutoSessionTitle('Claude 1'), true);
   assert.strictEqual(isGenericAutoSessionTitle('DeepSeek Resume 3'), true);
+  assert.strictEqual(isGenericAutoSessionTitle('\u25D0 Claude Code'), true);
   assert.strictEqual(isStableSessionTitle('Claude 1', 'claude'), false);
   assert.strictEqual(isGenericAutoSessionTitle('repo 架构梳理'), false);
+});
+
+test('Claude Code activity titles stay placeholders across spinner glyph changes', () => {
+  for (const title of ['Claude Code', '\u25D0 Claude Code', '\u2802 Claude Code', '✳ Claude Code', '🔄 Claude Code']) {
+    assert.strictEqual(isClaudeCodePlaceholderTitle(title), true, `${title} should be a placeholder`);
+    assert.strictEqual(isGenericAutoSessionTitle(title), true, `${title} should remain auto-title eligible`);
+    assert.strictEqual(isStableSessionTitle(title), false, `${title} must not become authoritative`);
+  }
+  assert.strictEqual(isClaudeCodePlaceholderTitle('排查 Claude Code'), false);
+  assert.strictEqual(isStableSessionTitle('排查 Claude Code'), true);
 });
 
 test('local path titles are rejected as unstable', () => {
@@ -39,6 +52,23 @@ test('local path titles are rejected as unstable', () => {
 });
 
 test('external title sync only replaces generic unprotected titles', () => {
+  assert.strictEqual(
+    shouldAcceptExternalSessionTitle({ title: 'Claude 1', kind: 'claude' }, 'claude'),
+    false,
+  );
+  assert.strictEqual(
+    shouldAcceptExternalSessionTitle({ title: 'Claude 1', kind: 'claude' }, '\u25D0 Claude Code'),
+    false,
+  );
+  assert.strictEqual(
+    shouldAcceptExternalSessionTitle({ title: '\u25D0 Claude Code', kind: 'claude' }, '深度审核PPT项目更新'),
+    true,
+    'an affected session should recover when Claude later publishes its real title',
+  );
+  assert.strictEqual(
+    shouldAcceptExternalSessionTitle({ title: 'claude', kind: 'claude' }, 'Algorithm optimization'),
+    true,
+  );
   assert.strictEqual(
     shouldAcceptExternalSessionTitle({ title: 'Claude 1', kind: 'claude' }, 'Greeting in Chinese'),
     true,

@@ -1,3 +1,8 @@
+const {
+  guardMarkdownLocalPaths,
+  restoreMarkdownLocalPaths,
+} = require('./markdown-local-path-guard.js');
+
 function createTurnCardRenderer(options = {}) {
   const doc = options.document || document;
   const win = options.window || window;
@@ -18,6 +23,13 @@ function createTurnCardRenderer(options = {}) {
   const wrapPathLinksInElement = options.wrapPathLinksInElement;
   const getActiveSessionId = typeof options.getActiveSessionId === 'function' ? options.getActiveSessionId : () => null;
   const updateStreamingIndicator = typeof options.updateStreamingIndicator === 'function' ? options.updateStreamingIndicator : null;
+
+  function renderMarkdownPreservingLocalPaths(text) {
+    const guard = guardMarkdownLocalPaths(normalizeMarkdownPathBreaks(text));
+    const rawHtml = marked.parse(guard.text, { breaks: true, gfm: true });
+    const sanitized = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target', 'data-lang'] });
+    return restoreMarkdownLocalPaths(sanitized, guard);
+  }
 
 // === Spec 1 v0.9.0 · 工具调用块 ===
 // _sessionTurns: turnId -> turn object map. Initialized here so rerenderTurn
@@ -215,8 +227,7 @@ function renderTurnCard(turn) {
       : `<span class="turn-avatar av-letter">${escapeHtml(aiLetterFallback(turn.kind))}</span>`;
   }
 
-  const rawHtml = marked.parse(normalizeMarkdownPathBreaks(turn.text), { breaks: true, gfm: true });
-  const body = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target', 'data-lang'] });
+  const body = renderMarkdownPreservingLocalPaths(turn.text);
   // Spec 3 方案 E：工具簇折叠（之前每 tool 单独大块 → 信息密度极低）
   const toolHtml = renderToolCluster(turn.id || '', turn.toolCalls);
 
@@ -226,8 +237,7 @@ function renderTurnCard(turn) {
   // Only attached for assistant role with non-empty string; user turns never carry thinking.
   let thinkingHtml = '';
   if (!isUser && typeof turn.thinking === 'string' && turn.thinking.length > 0) {
-    const thinkingRaw = marked.parse(normalizeMarkdownPathBreaks(turn.thinking), { breaks: true, gfm: true });
-    const thinkingBody = DOMPurify.sanitize(thinkingRaw, { ADD_ATTR: ['target', 'data-lang'] });
+    const thinkingBody = renderMarkdownPreservingLocalPaths(turn.thinking);
     // Long thinking (>5KB): summary shows first-200-char preview (HTML-escaped, newlines→space)
     let summaryLabel = '💭 思考过程';
     if (turn.thinking.length > 5120) {

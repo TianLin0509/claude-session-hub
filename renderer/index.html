@@ -52,23 +52,23 @@
                 <button class="new-session-option" data-kind="kimi" aria-pressed="false"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
                 <button class="new-session-option" data-kind="powershell" aria-pressed="false"><span class="ai-logo logo-powershell"></span>PowerShell</button>
               </div>
-              <div class="menu-group-label" id="new-session-tuning-label">模型 / 思考强度</div>
+              <div class="menu-group-label" id="new-session-tuning-label">模型 / 速度 / MCP</div>
               <div class="session-tuning-grid" id="new-session-tuning">
                 <label class="session-tuning-field" for="new-session-model"><span>模型</span><select id="new-session-model"></select></label>
-                <label class="session-tuning-field" id="new-session-effort-field" for="new-session-effort"><span>思考强度 (--effort)</span><select id="new-session-effort">
-                  <option value="max">max · 默认，最强</option>
-                  <option value="xhigh">xhigh</option>
-                  <option value="high">high</option>
-                  <option value="medium">medium · 省额度</option>
-                  <option value="low">low · 最省</option>
-                </select></label>
-                <label class="session-tuning-field" id="new-session-mcp-field" for="new-session-mcp" hidden><span>MCP 加载</span><select id="new-session-mcp">
-                  <option value="lean">Lean · 默认省内存</option>
-                  <option value="browser">Browser · Playwright</option>
-                  <option value="wireless">Wireless · superwireless</option>
-                  <option value="full">Full · 全部全局 MCP</option>
-                </select></label>
+                <!-- 思考强度与 MCP 的选项按 kind 动态填充（workspace-controller.js 的
+                     EFFORT_OPTIONS / MCP_OPTIONS）：Claude 用 --effort，Codex 用
+                     model_reasoning_effort，两边合法枚举不一样，写死会拼出 CLI 不认的值。 -->
+                <label class="session-tuning-field" id="new-session-effort-field" for="new-session-effort"><span id="new-session-effort-label">思考强度</span><select id="new-session-effort"></select></label>
+                <label class="session-tuning-field" id="new-session-mcp-field" for="new-session-mcp" hidden><span>MCP 加载</span><select id="new-session-mcp"></select></label>
+                <div class="session-tuning-field session-tuning-toggle" id="new-session-fast-field" hidden>
+                  <span>快速模式</span>
+                  <label class="session-tuning-check" for="new-session-fast"><input type="checkbox" id="new-session-fast" checked><span id="new-session-fast-hint">fast · 默认开</span></label>
+                </div>
+                <!-- Codex 的 fast 是 service_tier（priority 通道，1.5× 速度），
+                     和 Claude 的 fastMode 是两套机制，所以单独一个 field。 -->
+                <label class="session-tuning-field" id="new-session-codex-tier-field" for="new-session-codex-tier" hidden><span>速度通道 (service_tier)</span><select id="new-session-codex-tier"></select></label>
               </div>
+              <div class="session-tuning-note" id="new-session-tuning-note" hidden></div>
               <div class="menu-group-label">Workspace</div>
               <div class="session-workspace-grid" role="radiogroup" aria-label="选择 workspace 方式">
                 <button type="button" class="session-workspace-choice selected" data-workspace-mode="scratch" role="radio" aria-checked="true">
@@ -199,16 +199,16 @@
                     <div class="home-section-title" id="home-flow-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h4l2-7 4 14 2-7h4"/></svg>Session 流水线</div>
                     <span class="home-section-meta">运行超过 10 分钟会显示累计耗时</span>
                   </div>
-                  <div class="home-flow-columns">
-                    <section class="home-flow-column" aria-labelledby="home-waiting-title">
+                  <div class="home-flow-columns" id="home-flow-columns">
+                    <section class="home-flow-column home-flow-column-waiting" aria-labelledby="home-waiting-title">
                       <div class="home-flow-column-head"><div class="home-lane-title" id="home-waiting-title"><i class="home-lane-dot waiting"></i>等你输入</div><span class="home-lane-count" id="home-waiting-count">0</span></div>
                       <div class="home-lane-list" id="home-lane-waiting"></div>
                     </section>
-                    <section class="home-flow-column" aria-labelledby="home-running-title">
+                    <section class="home-flow-column home-flow-column-running" aria-labelledby="home-running-title">
                       <div class="home-flow-column-head"><div class="home-lane-title" id="home-running-title"><i class="home-lane-dot running"></i>运行中</div><span class="home-lane-count" id="home-running-count">0</span></div>
                       <div class="home-lane-list" id="home-lane-running"></div>
                     </section>
-                    <section class="home-flow-column" aria-labelledby="home-delivered-title">
+                    <section class="home-flow-column home-flow-column-delivered" aria-labelledby="home-delivered-title">
                       <div class="home-flow-column-head"><div class="home-lane-title" id="home-delivered-title"><i class="home-lane-dot delivered"></i>最近完成</div><span class="home-lane-count" id="home-delivered-count">0</span></div>
                       <div class="home-lane-list" id="home-lane-delivered"></div>
                     </section>
@@ -300,11 +300,13 @@
       </button>
       <div class="recent-turn-copy" id="recent-turn-copy" hidden>
         <span class="recent-turn-copy-label">近</span>
+        <!-- 选项由 recent-turn-copy.js 的 refreshRoundOptions() 按"当前卡片里真实
+             存在的完整轮数"重建（原来写死 1/2/3，想复制整段只能点三次再手动拼）。
+             这里留一个 1 轮做首帧兜底，脚本没跑起来时也不是个空下拉。 -->
         <select id="recent-turn-copy-count" aria-label="复制最近对话轮数">
           <option value="1">1 轮</option>
-          <option value="2">2 轮</option>
-          <option value="3">3 轮</option>
         </select>
+        <span class="recent-turn-copy-total" id="recent-turn-copy-total"></span>
         <button type="button" id="recent-turn-copy-button">复制对话</button>
       </div>
       <!-- 视图切换按钮 -->
@@ -411,6 +413,7 @@
   <script src="path-link.js"></script>
   <script src="prompt-inspector.js"></script>
   <script src="task-presets.js"></script>
+  <script src="floating-input-history.js"></script>
   <script src="workspace-controller.js"></script>
   <script src="renderer.js"></script>
   <script src="loop-workflow.js"></script>
@@ -441,7 +444,7 @@
           <div class="config-notification-card" id="config-notification-card">
             <label class="config-toggle-row" for="cfg-notification-enabled">
               <input type="checkbox" id="cfg-notification-enabled">
-              <span><strong>微信通知总开关</strong><small>开启后每次回答完成都会推送；关闭后完全不推送。顶栏可随时切换。</small></span>
+              <span><strong id="cfg-notification-target-title">当前会话微信通知</strong><small id="cfg-notification-target-hint">每个会话独立设置；新会话默认关闭，顶栏可随时切换。</small></span>
             </label>
             <div class="config-field">
               <label for="cfg-serverchan-sendkey">Server酱 SendKey <span class="config-label-hint">（本机保存，不写入日志）</span></label>
@@ -451,7 +454,7 @@
               </div>
             </div>
             <div class="config-check-grid">
-              <label for="cfg-notification-group-chats"><input type="checkbox" id="cfg-notification-group-chats" checked> 群聊整轮完成后推送一条</label>
+              <label for="cfg-notification-group-chats"><input type="checkbox" id="cfg-notification-group-chats" checked> 当前会话为群聊时，整轮完成后推送一条</label>
               <label for="cfg-notification-include-preview"><input type="checkbox" id="cfg-notification-include-preview"> 附带回复预览（默认关闭，保护隐私）</label>
             </div>
             <p class="config-notification-status" id="config-notification-status" aria-live="polite"></p>

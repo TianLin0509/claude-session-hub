@@ -118,8 +118,10 @@
 .session-workspace-choice strong { font-size: 13px; }
 .session-workspace-choice small { color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 
-/* Model + effort. Effort is Claude-only (the other CLIs take no --effort flag),
-   so its field is hidden rather than disabled for non-Claude kinds. */
+/* 模型 / 思考强度 / MCP 档位 / fast 开关。
+   每一档只对"CLI 真有这个旋钮"的 kind 显示——没有的直接 hidden，
+   而不是 disabled：灰着一个永远点不了的控件只会让人以为是 bug。
+   Claude 有 fast 模式，Codex 没有（它的速度旋钮就是思考强度）。 */
 .session-tuning-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -143,6 +145,37 @@
   font: 12px inherit;
 }
 .session-tuning-field select:hover { border-color: rgba(88, 166, 255, .45); }
+
+/* fast 开关：和相邻的 select 视觉高度对齐，否则一行里一半是下拉框一半是裸复选框。 */
+.session-tuning-toggle .session-tuning-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  box-sizing: border-box;
+  min-height: 33px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: 12px inherit;
+}
+.session-tuning-toggle .session-tuning-check:hover { border-color: rgba(88, 166, 255, .45); }
+.session-tuning-toggle input[type="checkbox"] { margin: 0; cursor: pointer; accent-color: var(--accent-blue, #58a6ff); }
+
+/* 档位的真实代价写在这里（fast 不落 transcript、Full MCP 起七个常驻进程…）。
+   放在 grid 下方整行，跟着当前选择变化，不用点开文档才知道自己选了什么。 */
+.session-tuning-note {
+  margin: 8px 20px 0;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: rgba(187, 128, 9, .1);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.session-tuning-note[hidden] { display: none; }
 
 /* Recent workspaces come first; the system folder dialog is the fallback. */
 .session-existing-path {

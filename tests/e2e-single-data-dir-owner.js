@@ -1,15 +1,15 @@
 'use strict';
 
+// Historical filename retained for existing scripts. The product contract is
+// now deliberately multi-owner: each Hub owns its own hook/CDP/control record,
+// while state-store serializes and merges writes to the shared data directory.
+
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-launcher.js');
-
-const HUB_ROOT = path.resolve(__dirname, '..');
-const ELECTRON_EXE = path.join(HUB_ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
 
 function canListen(port) {
   return new Promise((resolve) => {
@@ -29,41 +29,6 @@ async function availablePorts(preferred, count) {
   return ports;
 }
 
-function spawnSecond(dataDir, port) {
-  const child = spawn(ELECTRON_EXE, [HUB_ROOT, `--remote-debugging-port=${port}`], {
-    cwd: HUB_ROOT,
-    env: {
-      ...process.env,
-      CLAUDE_HUB_DATA_DIR: dataDir,
-      CLAUDE_HUB_E2E: '1',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
-  let output = '';
-  child.stdout.on('data', chunk => { output += chunk.toString(); });
-  child.stderr.on('data', chunk => { output += chunk.toString(); });
-  return { child, output: () => output };
-}
-
-async function waitForExit(child, timeoutMs = 10_000) {
-  if (child.exitCode != null) return child.exitCode;
-  return await new Promise((resolve) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve(null);
-    }, timeoutMs);
-    child.once('exit', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(code);
-    });
-  });
-}
-
 (async () => {
   const stamp = `${process.pid}-${Date.now()}`;
   const dataDir = path.join(os.tmpdir(), `claude-session-hub-owner-e2e-${stamp}`);
@@ -81,31 +46,37 @@ async function waitForExit(child, timeoutMs = 10_000) {
       extraEnv: { CLAUDE_HUB_E2E: '1' },
     });
 
-    secondary = spawnSecond(dataDir, secondaryPort);
-    const secondaryExitCode = await waitForExit(secondary.child);
-    if (secondaryExitCode == null) {
-      secondary.child.kill('SIGTERM');
-      throw new Error(`secondary Hub did not yield ownership\n${secondary.output()}`);
-    }
+    secondary = await launchIsolatedHub({
+      dataDir,
+      port: secondaryPort,
+      label: 'same-data-dir-secondary',
+      extraEnv: { CLAUDE_HUB_E2E: '1' },
+    });
     await _waitMs(500);
 
-    assert.equal(secondaryExitCode, 0, `secondary should exit cleanly\n${secondary.output()}`);
-    assert.equal(primary.isAlive(), true, 'primary owner must remain alive');
-    assert.equal(await canListen(secondaryPort), true, 'secondary must not leave a CDP/browser process behind');
+    assert.equal(primary.isAlive(), true, 'primary Hub must remain alive');
+    assert.equal(secondary.isAlive(), true, 'secondary Hub sharing the data directory must remain alive');
+    assert.equal(await canListen(primaryPort), false, 'primary CDP must remain bound');
+    assert.equal(await canListen(secondaryPort), false, 'secondary CDP must remain bound');
 
     const controlDir = path.join(dataDir, 'control');
     const controlFiles = fs.existsSync(controlDir)
       ? fs.readdirSync(controlDir).filter(name => name.endsWith('.json'))
       : [];
-    assert.equal(controlFiles.length, 1, `only the owner may create control metadata: ${controlFiles.join(', ')}`);
-    assert.ok(controlFiles[0].startsWith(String(primary.pid)), 'control metadata must belong to the primary PID');
+    assert.equal(controlFiles.length, 2, `both Hub processes need per-PID control metadata: ${controlFiles.join(', ')}`);
+    assert.ok(controlFiles.some(name => name.startsWith(String(primary.pid))), 'control metadata must include the primary PID');
+    assert.ok(controlFiles.some(name => name.startsWith(String(secondary.pid))), 'control metadata must include the secondary PID');
+    const controls = controlFiles.map(name => JSON.parse(fs.readFileSync(path.join(controlDir, name), 'utf8')));
+    assert.equal(new Set(controls.map(item => item.hookPort)).size, 2,
+      'each Hub must own a distinct hook port');
 
     console.log(JSON.stringify({
       ok: true,
       dataDir,
       primaryPid: primary.pid,
-      secondaryPid: secondary.child.pid,
-      secondaryExitCode,
+      secondaryPid: secondary.pid,
+      primaryAlive: primary.isAlive(),
+      secondaryAlive: secondary.isAlive(),
       controlFiles,
     }, null, 2));
   } catch (error) {
@@ -113,9 +84,7 @@ async function waitForExit(child, timeoutMs = 10_000) {
     if (primary) console.error(primary.log().slice(-50).join('\n'));
     process.exitCode = 1;
   } finally {
-    if (secondary && secondary.child.exitCode == null) {
-      try { secondary.child.kill('SIGTERM'); } catch {}
-    }
+    if (secondary) await gracefulQuit(secondary);
     if (primary) await gracefulQuit(primary);
     const resolved = path.resolve(dataDir);
     if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)

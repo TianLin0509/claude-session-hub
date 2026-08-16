@@ -116,10 +116,19 @@ test('group-chat Codex sessions cannot downgrade reasoning effort', () => {
     /meetingId\s*\?\s*[^:]+:\s*CODEX_REASONING_EFFORT/,
     'meeting sessions must not branch to a lower Codex reasoning effort',
   );
-  assert.match(
+  // 单人 Codex 会话现在可以在新建弹窗里分别选思考强度与 service_tier。
+  // 但群聊成员必须继续钉死共享的 max ——
+  // 一个房间里成员各调各的档位，产出就没法互相比较了。
+  const pins = SRC.match(/buildCodexReasoningConfigArg\(\s*\n?\s*(?:opts\.)?meetingId \? CODEX_REASONING_EFFORT : normalizeCodexEffort\(/g) || [];
+  assert.equal(
+    pins.length,
+    2,
+    'createSession 与 relaunch 两条 Codex 命令都必须在 meetingId 存在时钉死 max effort',
+  );
+  assert.doesNotMatch(
     SRC,
-    /const codexReasoningArg = buildCodexReasoningConfigArg\(CODEX_REASONING_EFFORT\);/,
-    'fresh/resume/relaunch Codex commands must all use the shared max effort',
+    /normalizeCodexEffort\([^)]*\)\s*:\s*CODEX_REASONING_EFFORT/,
+    '三目不能写反：群聊拿到的必须是 CODEX_REASONING_EFFORT，不是用户选的档位',
   );
 });
 

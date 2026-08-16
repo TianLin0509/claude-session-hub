@@ -301,7 +301,6 @@ class CompletionNotifier {
   }
 
   _baseEligibility(config) {
-    if (!config.enabled) return { ok: false, status: 'disabled' };
     if (!isUsableSendKey(config.serverchanSendKey)) {
       return { ok: false, status: 'configuration_missing' };
     }
@@ -317,6 +316,10 @@ class CompletionNotifier {
     if (session.meetingId) {
       this._durationFor(event);
       return { ok: false, status: 'meeting_member' };
+    }
+    if (session.completionNotificationEnabled !== true) {
+      this._durationFor(event);
+      return { ok: false, status: 'session_disabled' };
     }
 
     const completedAt = Number(event.completedAt) || this.now();
@@ -354,6 +357,9 @@ class CompletionNotifier {
     if (!event.meetingId || !meeting) return { ok: false, status: 'missing_meeting' };
     if (event.superseded) return { ok: false, status: 'superseded' };
     if (event.interrupted) return { ok: false, status: 'interrupted' };
+    if (meeting.completionNotificationEnabled !== true) {
+      return { ok: false, status: 'meeting_disabled' };
+    }
 
     const eventId = this._groupEventId(event);
     if (!this._claimEvent(eventId)) return { ok: false, status: 'duplicate' };
@@ -414,7 +420,7 @@ class CompletionNotifier {
       eventId: `test:${hashValue(`${now}|${crypto.randomBytes(8).toString('hex')}`)}`,
       sendKey,
       title: 'AI Hub · 通知测试成功',
-      desp: `Server酱通知链路已打通。\n\n**测试时间**：${formatCompletedAt(now)}\n\n顶栏“通知开”时，AI 回答完成后会推送；“通知关”时不会推送。`,
+      desp: `Server酱通知链路已打通。\n\n**测试时间**：${formatCompletedAt(now)}\n\n顶栏开关只控制当前会话；新会话默认关闭，需要时请手动开启。`,
     }, { allowRetry: false });
   }
 

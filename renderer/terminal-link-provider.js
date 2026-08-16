@@ -1,11 +1,7 @@
 const {
-  ABS_PATH_RE,
-  REL_PATH_RE,
-  URL_RE,
   PREVIEW_PATH_RE,
   collectPathCandidates,
   _cleanPathCandidate,
-  _resolveRelPathIfExists,
 } = require('./path-candidates.js');
 
 function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu }) {
@@ -95,49 +91,10 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu }) {
           linePrefixSkips.push(prefixSkip);
         }
 
-        const candidates = [];
-        URL_RE.lastIndex = 0;
-        let m;
-        while ((m = URL_RE.exec(text))) {
-          const trimmed = m[0].replace(/[.,;:!?)\]]+$/, '');
-          if (trimmed.length < 'http://x'.length) continue;
-          candidates.push({
-            start: m.index,
-            end: m.index + trimmed.length - 1,
-            openPath: trimmed,
-            isUrl: true,
-          });
-        }
-
-        ABS_PATH_RE.lastIndex = 0;
-        while ((m = ABS_PATH_RE.exec(text))) {
-          candidates.push({
-            start: m.index,
-            end: m.index + m[0].length - 1,
-            openPath: m[0],
-          });
-        }
-
         const cwd = typeof getCwd === 'function' ? getCwd(sessionId) : null;
-        if (cwd) {
-          REL_PATH_RE.lastIndex = 0;
-          while ((m = REL_PATH_RE.exec(text))) {
-            const start = m.index;
-            const end = start + m[0].length - 1;
-            const overlapsExisting = candidates.some(c =>
-              !(end < c.start || start > c.end));
-            if (overlapsExisting) continue;
-            const absPath = _resolveRelPathIfExists(cwd, m[0]);
-            if (!absPath) continue;
-            candidates.push({ start, end, openPath: absPath });
-          }
-        }
-
-        for (const extra of collectPathCandidates(text, cwd)) {
-          const overlapsExisting = candidates.some(c =>
-            !(extra.end < c.start || extra.start > c.end));
-          if (!overlapsExisting) candidates.push(extra);
-        }
+        // CLI 与卡片共用同一解析器，避免双反斜杠/空格/drive-relative
+        // 只在某一视图被修复、另一视图继续失效。
+        const candidates = collectPathCandidates(text, cwd);
 
         const links = [];
         for (const c of candidates) {

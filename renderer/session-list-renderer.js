@@ -1,6 +1,7 @@
-// 纯函数：按 lastMessageTime 年龄分桶。pinned 永远进 recent（置顶不折叠）。
+// 纯函数：按最新 AI 回答时间年龄分桶。pinned 永远进 recent（置顶不折叠）。
 //   recent: <24h（保持现状 UI 置顶）· mid: 24-72h · old: ≥72h
 const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js');
+const { compareLatestReplyDesc, latestReplyTime } = require('../core/session-recency.js');
 const {
   sessionHasCompletedUnread,
   sessionNeedsUserInput,
@@ -10,7 +11,7 @@ function partitionSessionsByAge(items, now) {
   const DAY = 86400000;
   const recent = [], mid = [], old = [];
   for (const s of items || []) {
-    const t = s.lastMessageTime || s.createdAt || now;
+    const t = latestReplyTime(s, now);
     const age = now - t;
     if (s.pinned || age < DAY) recent.push(s);
     else if (age < 3 * DAY) mid.push(s);
@@ -269,7 +270,7 @@ function _sessionWarningText(session) {
     const foreignAlertClass = alert ? ` strip-route-${alert.severity === 'critical' ? 'critical' : 'warning'}` : '';
     const domesticAlertClass = egress && (!domestic || !domestic.ok) ? ' strip-route-warning' : '';
     const foreignBadge = alert
-      ? `<span class="strip-route-badge">${alert.severity === 'critical' ? '⛔ VPN' : '⚠ 变更'}</span>`
+      ? `<span class="strip-route-badge">${alert.severity === 'critical' ? '⛔ VPN' : (alert.type === 'vpn_probe_retrying' ? '↻ 复核' : '⚠ 变更')}</span>`
       : '';
     const ackAttr = alert && alert.acknowledgeable ? ' data-egress-ack="true"' : '';
     const foreignTitle = [
@@ -307,7 +308,7 @@ function _sessionWarningText(session) {
   }
 
 // --- Session list rendering ---
-// Sort: pinned sessions first (by their own time), then unpinned by lastMessageTime.
+// Sort: pinned sessions first, then ordinary/group sessions by latest AI reply.
 // Tree shape: meeting entries optionally expand to show their child sub-sessions.
 // Top-level regular sessions (no meetingId) sit alongside meetings in the same sort order.
   function renderSessionList() {
@@ -320,6 +321,7 @@ function _sessionWarningText(session) {
     id: m.id,
     title: m.title,
     lastMessageTime: m.lastMessageTime,
+    lastCompletedAt: m.lastCompletedAt,
     createdAt: m.createdAt,
     lastOutputPreview: m.groupChat
       ? `AI 群聊 · ${(m.participants || m.subSessions || []).length}/${(m.subSessions || []).length} 已选`
@@ -339,7 +341,7 @@ function _sessionWarningText(session) {
 
   const sorted = all.sort((a, b) => {
     if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
-    return b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt;
+    return compareLatestReplyDesc(a, b);
   });
 
   // Hide any leftover legacy background PTY sessions from the removed room path.
@@ -460,7 +462,7 @@ function _sessionWarningText(session) {
           ${_ringHtml(null, dotCls)}
           <span class="sl-title" title="${escapeHtml([s.title, meetingWarning].filter(Boolean).join(' · '))}">${s.pinned ? '<span class="sl-pin">📌</span>' : ''}${meetingWarning ? `<span class="sl-pin" title="${escapeHtml(meetingWarning)}">⚠</span>` : ''}${isGroupChat ? '💬' : '🎯'} ${escapeHtml(s.title)}</span>
           ${stateHtml}
-          <span class="sl-time">${formatTime(s.lastMessageTime)}</span>
+          <span class="sl-time">${formatTime(latestReplyTime(s))}</span>
         </div>
         <div class="session-mini-jumps">${miniJumpsHtml}<span class="sl-members-hint">${memberSelected}/${memberTotal} 已选</span></div>
       `;
@@ -556,7 +558,7 @@ function _sessionWarningText(session) {
       ${_ringHtml(ctxPct, dotCls)}
       <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${unreadCount}</span>` : ''}</span>
       <span class="sl-model">${escapeHtml(modelTxt)}</span>
-      <span class="sl-time">${formatTime(s.lastMessageTime)}</span>
+      <span class="sl-time">${formatTime(latestReplyTime(s))}</span>
     `;
     div.addEventListener('click', () => selectSession(s.id, { forceScrollBottom: true }));
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
@@ -682,7 +684,9 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 module.exports = {
   createSessionListRenderer,
+  compareLatestReplyDesc,
   partitionSessionsByAge,
+  latestReplyTime,
   familyOfKind,
   sessionFamilies,
   SESSION_FAMILY_TABS,

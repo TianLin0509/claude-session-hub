@@ -62,6 +62,11 @@ function _buildSessionPayload(hubId, data) {
     codexProfile: data.codexProfile || null,
     codexProfileLabel: data.codexProfileLabel || null,
     mcpProfile: data.mcpProfile || null,
+    // 只有显式关掉 fast 才落 false；老会话没有这个字段 → null → 走"默认开"。
+    // 用 `=== false` 而不是 !!data.fastMode，否则每条老记录都会变成"关"。
+    fastMode: data.fastMode === false ? false : null,
+    // Codex service_tier 档：'inherit' 等于没选，不落盘（null）。
+    codexSpeedTier: (data.codexSpeedTier && data.codexSpeedTier !== 'inherit') ? data.codexSpeedTier : null,
     geminiChatId: data.geminiChatId || null,
     geminiProjectHash: data.geminiProjectHash || null,
     geminiProjectRoot: data.geminiProjectRoot || null,

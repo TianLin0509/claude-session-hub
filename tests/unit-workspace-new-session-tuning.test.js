@@ -100,12 +100,13 @@ test('Claude command uses the validated opts.effort and falls back to max', () =
   );
   assert.match(
     SESSION_MANAGER_SRC,
-    /\.\.\.\(CLAUDE_EFFORT_LEVELS\.has\(opts\.effort\) \? \{ effort: opts\.effort \} : \{\}\)/,
-    'effort must be persisted on the session so resume/archive-restart keeps the level',
+    /\.\.\.\(isClaude && CLAUDE_EFFORT_LEVELS\.has\(opts\.effort\) \? \{ effort: opts\.effort \} : \{\}\)/,
+    'only a validated Claude effort may be persisted for resume/archive-restart',
   );
 });
 
 test('modal markup carries the recent list, model picker and effort picker', () => {
+  assert.equal(Buffer.from(CONTROLLER_SRC, 'utf8').includes(0), false, 'workspace controller source must not contain raw NUL bytes');
   for (const id of [
     'new-session-recent',
     'new-session-recommended',
@@ -121,9 +122,32 @@ test('modal markup carries the recent list, model picker and effort picker', () 
     assert.ok(INDEX_SRC.includes(`id="${id}"`), `index.html must define #${id}`);
   }
   assert.ok(INDEX_SRC.includes('class="session-create-body"'), 'body must be a separate scroll container');
-  for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) {
-    assert.ok(INDEX_SRC.includes(`value="${level}"`), `effort select must offer ${level}`);
+  // fast 开关（Claude 专属）与档位提示条也是这套弹窗的固定构件。
+  for (const id of ['new-session-fast', 'new-session-fast-field', 'new-session-tuning-note']) {
+    assert.ok(INDEX_SRC.includes(`id="${id}"`), `index.html must define #${id}`);
   }
+  assert.ok(INDEX_SRC.includes('id="new-session-fast" checked'), 'fast 默认必须是勾上的');
+  // 思考强度/MCP 的选项改成动态填充了：Claude 是固定枚举，Codex 按**模型**来
+  // （gpt-5.6-sol 到 ultra，gpt-5.5 只到 xhigh，见 core/codex-model-catalog.js）。
+  // 写死一份必然给某些模型多出或少掉档位，所以这里校验 JS 侧的来源而不是 HTML。
+  for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) {
+    assert.ok(new RegExp(`\\['${level}'`).test(CONTROLLER_SRC), `Claude effort 选项必须提供 ${level}`);
+  }
+  assert.match(
+    CONTROLLER_SRC,
+    /function effortOptionsFor\(kind, modelId\)/,
+    'Codex 的档位必须跟着选中的模型走，不能只看 kind',
+  );
+  assert.match(
+    CONTROLLER_SRC,
+    /codexTuningCatalog/,
+    '档位来源必须是 codex-cli 自己的模型目录，不是 Hub 里写死的表',
+  );
+  assert.match(
+    CONTROLLER_SRC,
+    /const CODEX_TIER_KINDS = new Set\(\['codex', 'deepseek'\]\)/,
+    'Codex 的 fast 是 service_tier，必须有自己的控件',
+  );
 });
 
 test('recent workspaces are primary; the OS folder dialog is only the fallback', () => {
@@ -144,7 +168,22 @@ test('recent workspaces are primary; the OS folder dialog is only the fallback',
 });
 
 test('only flags the selected CLI understands are sent', () => {
-  assert.match(CONTROLLER_SRC, /const EFFORT_KINDS = new Set\(\['claude'\]\)/, 'effort is Claude-only');
+  // 思考强度：Claude 走 --effort，Codex/DeepSeek 走 -c model_reasoning_effort。
+  // 三家都有这个旋钮，但 Gemini / Kimi / PowerShell 没有，不能乱传。
+  assert.match(
+    CONTROLLER_SRC,
+    /const EFFORT_KINDS = new Set\(\['claude', 'codex', 'deepseek'\]\)/,
+    'effort applies to the three kinds whose CLI has a reasoning dial',
+  );
+  // fastMode（--settings）是 Claude Code 独有的机制，所以那个复选框只给 Claude。
+  // 但 Codex **也有** fast —— 是 service_tier（priority 通道，1.5× 速度），
+  // 走 CODEX_TIER_KINDS 那个独立控件。两者别混成一个开关。
+  assert.match(CONTROLLER_SRC, /const FAST_KINDS = new Set\(\['claude'\]\)/, 'fastMode checkbox is Claude-only');
+  assert.match(
+    CONTROLLER_SRC,
+    /if \(CODEX_TIER_KINDS\.has\(selectedKind\) && selectedCodexTier && selectedCodexTier !== 'inherit'\)/,
+    'Codex 的 service_tier 只在用户显式选了非 inherit 时才传',
+  );
   assert.match(
     CONTROLLER_SRC,
     /if \(modelOptionsFor\(selectedKind\)\.length > 0 && selectedModel\) opts\.model = selectedModel/,
@@ -153,14 +192,25 @@ test('only flags the selected CLI understands are sent', () => {
   assert.match(
     CONTROLLER_SRC,
     /if \(EFFORT_KINDS\.has\(selectedKind\) && selectedEffort\) opts\.effort = selectedEffort/,
-    'effort is only sent for Claude',
+    'effort is only sent for kinds that understand it',
   );
   assert.match(
     CONTROLLER_SRC,
-    /if \(selectedKind === 'codex'\) opts\.mcpProfile = selectedMcpProfile/,
-    'Codex must receive the explicit lean/browser/wireless/full MCP profile',
+    /if \(MCP_KINDS\.has\(selectedKind\)\) opts\.mcpProfile = selectedMcpProfile/,
+    'Claude and Codex both receive an explicit lean/browser/wireless/full MCP profile',
   );
-  assert.match(INDEX_SRC, /value="lean">Lean · 默认省内存/, 'Lean MCP must be the visible default');
+  // 只在显式关掉时才传 fastMode，不传 = 沿用 session-manager 的"默认开"。
+  assert.match(
+    CONTROLLER_SRC,
+    /if \(FAST_KINDS\.has\(selectedKind\) && selectedFastMode === false\) opts\.fastMode = false/,
+    'fastMode must only be sent when the user explicitly turns it off',
+  );
+  // 默认档位不能漂：Codex 保持历史的 lean，Claude 必须是 full（= 全量继承 = 改动前行为）。
+  assert.match(
+    CONTROLLER_SRC,
+    /const DEFAULT_MCP_BY_KIND = \{ claude: 'full', codex: 'lean', deepseek: 'lean' \}/,
+    'Claude 默认 full，不能静默改成 lean 让会话少工具',
+  );
 });
 
 test('the modal opens as flex so the body can scroll and the footer stays reachable', () => {

@@ -52,6 +52,7 @@ const resumeMeta = buildSessionResumeMeta({
   pinned: true, userRenamed: true, branchSourceSessionId: 'parent',
   branchAutoTitlePending: false, contextPct: 42, effort: 'high',
   workspaceLabel: 'AI', lastMessageTime: 123, lastOutputPreview: 'done',
+  completionNotificationEnabled: true,
 });
 assert.deepEqual({
   hubId: resumeMeta.hubId,
@@ -68,6 +69,7 @@ assert.deepEqual({
   contextPct: resumeMeta.contextPct,
   effort: resumeMeta.effort,
   workspaceLabel: resumeMeta.workspaceLabel,
+  completionNotificationEnabled: resumeMeta.completionNotificationEnabled,
 }, {
   hubId: 'hub-1',
   kind: 'codex-resume',
@@ -83,6 +85,7 @@ assert.deepEqual({
   contextPct: 42,
   effort: 'high',
   workspaceLabel: 'AI',
+  completionNotificationEnabled: true,
 });
 
 const pendingBranchMeta = buildSessionResumeMeta({

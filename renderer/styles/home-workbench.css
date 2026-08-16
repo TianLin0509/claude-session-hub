@@ -196,7 +196,13 @@
 .home-section-meta { overflow: hidden; color: var(--home-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
 .home-flow-board { min-height: 330px; display: flex; flex-direction: column; }
-.home-flow-columns { min-height: 0; display: grid; flex: 1; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.home-flow-board.flow-all-empty { min-height: 138px; }
+.home-flow-columns {
+  min-height: 0;
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(170px, 0.76fr) minmax(220px, 1fr) minmax(260px, 1.2fr);
+}
 .home-flow-column { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 10px; border-right: 1px solid var(--home-border); }
 .home-flow-column:last-child { border-right: 0; }
 .home-flow-column-head { min-height: 22px; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
@@ -257,6 +263,84 @@
 .home-flow-progress i { width: 42%; height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg, rgba(88, 166, 255, 0.25), var(--accent-blue), rgba(88, 166, 255, 0.25)); animation: home-progress 1.7s ease-in-out infinite; }
 .home-lane-empty { min-height: 96px; display: grid; place-items: center; padding: 14px; border: 1px dashed var(--home-border); border-radius: 8px; color: var(--text-muted); font-size: 11px; line-height: 1.55; text-align: center; }
 .home-lane-more { padding: 2px 4px 7px; color: var(--text-muted); font-size: 10px; text-align: center; }
+
+/* Empty low-frequency lanes report status without reserving a full-height
+   column. In the common "nothing waiting" case, the waiting lane becomes a
+   compact strip and the operational lanes receive the useful canvas. */
+.home-flow-columns.waiting-empty:not(.running-empty) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.home-flow-columns.waiting-empty:not(.running-empty) .home-flow-column-waiting {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+.home-flow-columns.waiting-empty:not(.running-empty) .home-flow-column-running { grid-column: 1; grid-row: 2; }
+.home-flow-columns.waiting-empty:not(.running-empty) .home-flow-column-delivered { grid-column: 2; grid-row: 2; }
+
+.home-flow-columns.waiting-empty.running-empty {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.home-flow-columns.waiting-empty.running-empty .home-flow-column-waiting { grid-column: 1; grid-row: 1; }
+.home-flow-columns.waiting-empty.running-empty .home-flow-column-running { grid-column: 2; grid-row: 1; }
+.home-flow-columns.waiting-empty.running-empty .home-flow-column-delivered {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  border-right: 0;
+}
+.home-flow-columns.waiting-empty.running-empty:not(.delivered-empty) .home-flow-column-delivered .home-lane-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 8px;
+}
+.home-flow-columns.waiting-empty.running-empty:not(.delivered-empty) .home-flow-column-delivered .home-flow-item {
+  height: 100%;
+  margin: 0;
+}
+
+.home-flow-columns.waiting-empty .home-flow-column-waiting,
+.home-flow-columns.waiting-empty.running-empty .home-flow-column-running,
+.home-flow-columns.all-empty .home-flow-column-delivered {
+  min-height: 43px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--home-border);
+}
+.home-flow-columns.waiting-empty .home-flow-column-waiting .home-flow-column-head,
+.home-flow-columns.waiting-empty.running-empty .home-flow-column-running .home-flow-column-head,
+.home-flow-columns.all-empty .home-flow-column-delivered .home-flow-column-head { margin: 0; }
+.home-flow-columns.waiting-empty .home-flow-column-waiting .home-lane-list,
+.home-flow-columns.waiting-empty.running-empty .home-flow-column-running .home-lane-list,
+.home-flow-columns.all-empty .home-flow-column-delivered .home-lane-list {
+  justify-self: end;
+  overflow: visible;
+}
+.home-flow-columns.waiting-empty .home-flow-column-waiting .home-lane-empty,
+.home-flow-columns.waiting-empty.running-empty .home-flow-column-running .home-lane-empty,
+.home-flow-columns.all-empty .home-flow-column-delivered .home-lane-empty {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--home-muted);
+  background: transparent;
+  text-align: right;
+}
+.home-flow-columns.waiting-empty:not(.running-empty) .home-flow-column-waiting { border-right: 0; }
+.home-flow-columns.waiting-empty.running-empty .home-flow-column-running { border-right: 0; }
+
+.home-flow-columns.all-empty {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: auto;
+  align-content: start;
+}
+.home-flow-columns.all-empty .home-flow-column-waiting { grid-column: 1; grid-row: 1; }
+.home-flow-columns.all-empty .home-flow-column-running { grid-column: 2; grid-row: 1; }
+.home-flow-columns.all-empty .home-flow-column-delivered { grid-column: 3; grid-row: 1; border-bottom: 0; }
 
 .home-operations-grid {
   min-width: 0;
@@ -514,6 +598,16 @@
   .home-pulse-body { min-height: auto; padding: 10px; }
   .home-metrics { grid-template-columns: 1fr 1fr; }
   .home-flow-columns { grid-template-columns: 1fr; }
+  .home-flow-columns.waiting-empty,
+  .home-flow-columns.waiting-empty.running-empty,
+  .home-flow-columns.all-empty { grid-template-columns: 1fr; grid-template-rows: auto; }
+  .home-flow-columns.waiting-empty .home-flow-column-waiting,
+  .home-flow-columns.waiting-empty .home-flow-column-running,
+  .home-flow-columns.waiting-empty .home-flow-column-delivered,
+  .home-flow-columns.all-empty .home-flow-column-waiting,
+  .home-flow-columns.all-empty .home-flow-column-running,
+  .home-flow-columns.all-empty .home-flow-column-delivered { grid-column: 1; grid-row: auto; }
+  .home-flow-columns.waiting-empty.running-empty:not(.delivered-empty) .home-flow-column-delivered .home-lane-list { display: block; }
   .home-flow-column { border-right: 0; border-bottom: 1px solid var(--home-border); }
   .home-flow-column:last-child { border-bottom: 0; }
   .home-lane-list { max-height: 320px; }

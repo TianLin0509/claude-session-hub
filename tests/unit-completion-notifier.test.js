@@ -59,7 +59,7 @@ async function run() {
     const calls = [];
     const config = {
       notifications: {
-        enabled: true,
+        enabled: false,
         serverchanSendKey: 'SCT_PRIVATE_123456',
         includePreview: false,
         notifyGroupChats: true,
@@ -86,6 +86,7 @@ async function run() {
     }, {
       title: '研究任务',
       kind: 'codex',
+      completionNotificationEnabled: true,
     });
     assert.strictEqual(sent.ok, true);
     assert.strictEqual(calls.length, 1);
@@ -102,6 +103,7 @@ async function run() {
     }, {
       title: '研究任务',
       kind: 'codex',
+      completionNotificationEnabled: true,
     });
     assert.strictEqual(duplicate.status, 'duplicate');
     assert.strictEqual(calls.length, 1);
@@ -116,7 +118,7 @@ async function run() {
     });
     assert.strictEqual(memberResult.status, 'meeting_member');
 
-    const groupResult = await notifier.handleGroupChatComplete({
+    const groupEvent = {
       meetingId: 'meeting-1',
       turnNum: 7,
       durationMs: 42_000,
@@ -125,7 +127,13 @@ async function run() {
         { label: 'Gemini', status: 'errored', text: '' },
         { label: 'Kimi', status: 'absent', text: '' },
       ],
-    }, { title: '产品圆桌' });
+    };
+    const groupDisabled = await notifier.handleGroupChatComplete(groupEvent, { title: '产品圆桌' });
+    assert.strictEqual(groupDisabled.status, 'meeting_disabled');
+    assert.strictEqual(calls.length, 1);
+    const groupResult = await notifier.handleGroupChatComplete(groupEvent, {
+      title: '产品圆桌', completionNotificationEnabled: true,
+    });
     assert.strictEqual(groupResult.ok, true);
     assert.strictEqual(calls.length, 2, 'group chat should produce one aggregate delivery');
     const groupForm = new URLSearchParams(calls[1].options.body);
@@ -144,6 +152,7 @@ async function run() {
 
     let switchCalls = 0;
     const switchConfig = { notifications: {
+      // Legacy global state is deliberately ignored; the session owns opt-in.
       enabled: false,
       serverchanSendKey: 'SCT_SWITCH_123456',
       // These legacy values must not silently filter an explicitly enabled switch.
@@ -157,20 +166,19 @@ async function run() {
       retryDelaysMs: [],
     });
     const switchedOff = await switchNotifier.handleTurnComplete({ hubSessionId: 'switch-off', text: 'done' }, {
-      title: '总开关关闭', kind: 'claude',
+      title: '会话默认关闭', kind: 'claude',
     });
-    assert.strictEqual(switchedOff.status, 'disabled');
+    assert.strictEqual(switchedOff.status, 'session_disabled');
     assert.strictEqual(switchCalls, 0);
-    switchConfig.notifications.enabled = true;
     const switchedOn = await switchNotifier.handleTurnComplete({
       hubSessionId: 'switch-on',
       text: 'done',
       durationMs: 1,
     }, {
-      title: '总开关开启', kind: 'claude',
+      title: '会话开关开启', kind: 'claude', completionNotificationEnabled: true,
     });
     assert.strictEqual(switchedOn.ok, true);
-    assert.strictEqual(switchCalls, 1, 'explicit ON must send even while the old auto-filter fields are present');
+    assert.strictEqual(switchCalls, 1, 'session opt-in must send even when the legacy global switch is off');
     switchNotifier.dispose();
 
     let retryCalls = 0;
@@ -188,7 +196,7 @@ async function run() {
       retryDelaysMs: [5],
     });
     const retryScheduled = await retryNotifier.handleTurnComplete({ hubSessionId: 'retry', text: 'done' }, {
-      title: '重试任务', kind: 'codex',
+      title: '重试任务', kind: 'codex', completionNotificationEnabled: true,
     });
     assert.strictEqual(retryScheduled.retryScheduled, true);
     await wait(30);

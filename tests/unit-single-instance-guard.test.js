@@ -5,16 +5,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-test('bootstrap grants one owner per Electron userData/data directory', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'main-bootstrap.js'), 'utf8');
-  assert.match(source, /app\.requestSingleInstanceLock\(/,
-    'bootstrap must acquire ownership before loading the Hub runtime');
-  assert.match(source, /if \(!hasPrimaryDataDirLock\)[\s\S]{0,220}app\.quit\(\)/,
-    'a losing same-data-dir process must quit without loading runtime state');
-  assert.match(source, /app\.on\('second-instance'/,
-    'the primary Hub must focus its existing window for a second launch');
-  assert.ok(source.indexOf('requestSingleInstanceLock') < source.indexOf("require('./main.js')"),
-    'ownership must be decided before main.js can repair state or create PTYs');
+test('bootstrap preserves desktop multi-instance startup', () => {
+  const bootstrap = fs.readFileSync(path.join(__dirname, '..', 'main-bootstrap.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const runtime = `${stripComments(bootstrap)}\n${stripComments(main)}`;
+  assert.doesNotMatch(runtime, /app\.requestSingleInstanceLock\(/,
+    'desktop Hub must not reject a second process sharing the normal data directory');
+  assert.doesNotMatch(runtime, /app\.on\('second-instance'/,
+    'a second desktop launch must create another Hub instead of focusing the first');
+  assert.ok(bootstrap.indexOf("app.setPath('userData'") < bootstrap.indexOf("require('./main.js')"),
+    'isolated Hub userData must still be selected before main.js loads');
 });
 
 // 2026-07-27：上面的契约生效时删掉了 `const hasSingleInstanceLock = ...`，

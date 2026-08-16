@@ -1,4 +1,5 @@
 const { supportsForkSession } = require('../core/session-capabilities.js');
+const { compareLatestReplyDesc } = require('../core/session-recency.js');
 
 function createKeyboardShortcuts({
   document,
@@ -27,7 +28,7 @@ function createKeyboardShortcuts({
       .filter((session) => session && !session.hiddenFromSidebar && session.purpose !== 'chuxin-research')
       .sort((a, b) => {
         if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
-        return b.lastMessageTime - a.lastMessageTime || b.createdAt - a.createdAt;
+        return compareLatestReplyDesc(a, b);
       })
       .map(s => s.id);
   }

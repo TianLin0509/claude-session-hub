@@ -29,6 +29,7 @@ function createDeps() {
     codexSid: 'sid-old',
     currentModel: 'opus',
     userRenamed: true,
+    completionNotificationEnabled: true,
   }, {
     hubId: 'removed-session',
   }];
@@ -63,6 +64,8 @@ function createDeps() {
           userRenamed: true,
           autoTitlePending: false,
           autoTitleGenerated: true,
+          completionNotificationEnabled: true,
+          lastCompletedAt: 789,
           participants: [0, 2],
           slotSpecs: [{ kind: 'codex' }],
           covenantText: 'authoritative covenant',
@@ -141,6 +144,7 @@ test('mergeResumeMetaFields preserves durable workbench metadata but not a stale
     lastCompletedAt: 456,
     recentArtifacts: [{ path: 'C:\\report.html', timestamp: 456 }],
     userRenamed: true,
+    completionNotificationEnabled: true,
   }]);
 
   assert.strictEqual(incoming[0].transcriptPath, 'C:\\old\\transcript.jsonl');
@@ -150,6 +154,12 @@ test('mergeResumeMetaFields preserves durable workbench metadata but not a stale
   assert.strictEqual(incoming[0].lastCompletedAt, 456);
   assert.deepStrictEqual(incoming[0].recentArtifacts, [{ path: 'C:\\report.html', timestamp: 456 }]);
   assert.strictEqual(incoming[0].userRenamed, true);
+  assert.strictEqual(incoming[0].completionNotificationEnabled, true);
+
+  const explicitlyDisabled = [{ hubId: 'keep', completionNotificationEnabled: false }];
+  mergeResumeMetaFields(explicitlyDisabled, [{ hubId: 'keep', completionNotificationEnabled: true }]);
+  assert.strictEqual(explicitlyDisabled[0].completionNotificationEnabled, false,
+    'an explicit per-session off state must not be resurrected from an older snapshot');
 });
 
 test('buildMeetingsForState fills missing meeting fields from manager', () => {
@@ -162,6 +172,8 @@ test('buildMeetingsForState fills missing meeting fields from manager', () => {
   assert.strictEqual(meetings[0].groupChat, true);
   assert.deepStrictEqual(meetings[0].participants, [0, 2]);
   assert.strictEqual(meetings[0].covenantText, 'authoritative covenant');
+  assert.strictEqual(meetings[0].completionNotificationEnabled, true);
+  assert.strictEqual(meetings[0].lastCompletedAt, 789);
 });
 
 test('handlePersistSessions performs removed diff, per-id writes, immersive merge, and state save', () => {

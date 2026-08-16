@@ -456,7 +456,9 @@ test('restart-session recreates a non-resumable PowerShell terminal', () => {
     [
       ['getSession', 's1'],
       ['closeSession', 's1'],
-      ['createSession', 'powershell', { id: 's1', cwd: 'C:\\work', meetingId: 'm1' }],
+      ['createSession', 'powershell', {
+        id: 's1', cwd: 'C:\\work', meetingId: 'm1', completionNotificationEnabled: false,
+      }],
       ['getSession', 'missing'],
     ]
   );

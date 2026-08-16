@@ -14,6 +14,8 @@ const RESUME_META_FIELDS = [
   'codexProfile',
   'codexProfileLabel',
   'mcpProfile',
+  'fastMode',
+  'codexSpeedTier',
   'geminiChatId',
   'geminiProjectHash',
   'geminiProjectRoot',
@@ -38,6 +40,7 @@ const RESUME_META_FIELDS = [
   'heroIds',
   'promptPolicyVersion',
   'hiddenFromSidebar',
+  'completionNotificationEnabled',
 ];
 
 function withoutVolatileTimestamps(entity) {
@@ -101,6 +104,12 @@ function buildMeetingsForState(meetingList, meetingManager) {
       autoTitleGenerated: typeof rendererMeeting.autoTitleGenerated === 'boolean'
         ? rendererMeeting.autoTitleGenerated
         : !!authoritative.autoTitleGenerated,
+      completionNotificationEnabled: typeof rendererMeeting.completionNotificationEnabled === 'boolean'
+        ? rendererMeeting.completionNotificationEnabled
+        : !!authoritative.completionNotificationEnabled,
+      lastCompletedAt: typeof rendererMeeting.lastCompletedAt === 'number'
+        ? rendererMeeting.lastCompletedAt
+        : (typeof authoritative.lastCompletedAt === 'number' ? authoritative.lastCompletedAt : null),
       participants: Array.isArray(rendererMeeting.participants)
         ? rendererMeeting.participants
         : (Array.isArray(authoritative.participants) ? authoritative.participants : null),

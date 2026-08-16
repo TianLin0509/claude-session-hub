@@ -6,7 +6,10 @@ const net = require('net');
 const path = require('path');
 
 const DEFAULT_CACHE_MS = 60 * 1000;
+const DEFAULT_FAILURE_CACHE_MS = 5 * 1000;
 const DEFAULT_TIMEOUT_MS = 12 * 1000;
+const DEFAULT_TRANSIENT_FAILURE_GRACE_MS = 2 * 60 * 1000;
+const DEFAULT_FAILURE_CONFIRMATIONS = 2;
 const DEFAULT_ENDPOINTS = [
   { name: 'geojs', url: 'https://get.geojs.io/v1/ip/geo.json' },
   { name: 'ipwhois', url: 'https://ipwho.is/' },
@@ -169,7 +172,10 @@ function createCurlGeoProbe(options = {}) {
         '--location',
         '--fail',
         '--ipv4',
-        '--connect-timeout', String(Math.max(2, Math.floor(timeoutMs / 3000))),
+        // A local Mihomo/Clash CONNECT can legitimately take 5-6 seconds while
+        // establishing a cold upstream tunnel. The old 4-second cutoff killed
+        // healthy requests before they completed and produced false VPN alarms.
+        '--connect-timeout', String(Math.max(4, Math.min(8, Math.ceil(timeoutMs / 1500)))),
         '--max-time', String(Math.max(3, Math.ceil(timeoutMs / 1000))),
         '--header', 'Accept: application/json',
         '--user-agent', 'AI-Hub-Network-Monitor/1.0',
@@ -326,11 +332,23 @@ function createNetworkEgressMonitor(options = {}) {
   const getProxy = typeof options.getProxy === 'function' ? options.getProxy : () => '';
   const now = typeof options.now === 'function' ? options.now : () => Date.now();
   const cacheMs = options.cacheMs == null ? DEFAULT_CACHE_MS : Math.max(0, Number(options.cacheMs) || 0);
+  const failureCacheMs = options.failureCacheMs == null
+    ? DEFAULT_FAILURE_CACHE_MS
+    : Math.max(0, Number(options.failureCacheMs) || 0);
+  const transientFailureGraceMs = options.transientFailureGraceMs == null
+    ? DEFAULT_TRANSIENT_FAILURE_GRACE_MS
+    : Math.max(0, Number(options.transientFailureGraceMs) || 0);
+  const failureConfirmations = options.failureConfirmations == null
+    ? DEFAULT_FAILURE_CONFIRMATIONS
+    : Math.max(1, Number(options.failureConfirmations) || 1);
   const statePath = options.statePath || null;
   const probe = options.probe || createCurlGeoProbe(options);
   let baseline = loadBaseline(fsApi, statePath);
   let cached = null;
   let inFlight = null;
+  let lastHealthyForeign = null;
+  let lastProxyEndpoint = null;
+  let consecutiveForeignFailures = 0;
 
   function setBaseline(foreign, proxyEndpoint) {
     baseline = {
@@ -346,16 +364,51 @@ function createNetworkEgressMonitor(options = {}) {
     const checkedAt = now();
     const rawProxy = String(getProxy() || '').trim();
     const proxyEndpoint = safeProxyEndpoint(rawProxy);
+    if (proxyEndpoint !== lastProxyEndpoint) {
+      lastProxyEndpoint = proxyEndpoint;
+      lastHealthyForeign = null;
+      consecutiveForeignFailures = 0;
+    }
     const [foreignResult, domesticResult] = await Promise.all([
       rawProxy
         ? Promise.resolve(probe({ route: 'proxy', proxy: rawProxy }))
         : Promise.resolve({ ok: false, errorCode: 'proxy_not_configured', error: '未配置 VPN 代理' }),
       Promise.resolve(probe({ route: 'direct', proxy: '' })),
     ]);
-    const foreign = normalizeRouteResult(foreignResult, 'proxy', checkedAt);
+    let foreign = normalizeRouteResult(foreignResult, 'proxy', checkedAt);
     const domestic = normalizeRouteResult(domesticResult, 'direct', checkedAt);
 
-    let alert = buildAlert(foreign, domestic, proxyEndpoint, baseline);
+    let transientProbeAlert = null;
+    if (foreign.ok) {
+      consecutiveForeignFailures = 0;
+      lastHealthyForeign = { proxyEndpoint, checkedAt, route: { ...foreign } };
+    } else {
+      consecutiveForeignFailures += 1;
+      const recentHealthy = lastHealthyForeign
+        && lastHealthyForeign.proxyEndpoint === proxyEndpoint
+        && checkedAt - lastHealthyForeign.checkedAt <= transientFailureGraceMs;
+      if (recentHealthy && consecutiveForeignFailures < failureConfirmations) {
+        const failedProbe = foreign;
+        foreign = {
+          ...lastHealthyForeign.route,
+          route: 'proxy',
+          checkedAt,
+          stale: true,
+          lastSuccessfulAt: lastHealthyForeign.checkedAt,
+          probeErrorCode: failedProbe.errorCode,
+          probeError: failedProbe.error,
+        };
+        transientProbeAlert = {
+          type: 'vpn_probe_retrying',
+          severity: 'warning',
+          title: 'VPN 出口正在复核',
+          message: '本次探测失败，暂保留最近成功结果并将在下一轮自动复核',
+          acknowledgeable: false,
+        };
+      }
+    }
+
+    let alert = transientProbeAlert || buildAlert(foreign, domestic, proxyEndpoint, baseline);
     if (!baseline && foreign.ok && (!alert || alert.type === 'vpn_changed')) {
       setBaseline(foreign, proxyEndpoint);
       alert = buildAlert(foreign, domestic, proxyEndpoint, baseline);
@@ -367,6 +420,7 @@ function createNetworkEgressMonitor(options = {}) {
       foreign,
       domestic,
       alert,
+      consecutiveForeignFailures,
       baseline: baseline ? {
         proxyEndpoint: baseline.proxyEndpoint,
         route: baseline.route,
@@ -377,7 +431,10 @@ function createNetworkEgressMonitor(options = {}) {
   }
 
   async function getStatus({ force = false } = {}) {
-    if (!force && cached && now() - cached.checkedAt < cacheMs) return cached;
+    const shortRetry = cached && cached.alert
+      && (cached.alert.type === 'vpn_unavailable' || cached.alert.type === 'vpn_probe_retrying');
+    const ttl = shortRetry ? failureCacheMs : cacheMs;
+    if (!force && cached && now() - cached.checkedAt < ttl) return cached;
     if (inFlight) return inFlight;
     inFlight = sample().finally(() => { inFlight = null; });
     return inFlight;
@@ -409,6 +466,8 @@ function createNetworkEgressMonitor(options = {}) {
 }
 
 module.exports = {
+  DEFAULT_FAILURE_CACHE_MS,
+  DEFAULT_TRANSIENT_FAILURE_GRACE_MS,
   DEFAULT_ENDPOINTS,
   buildAlert,
   cityNameZh,

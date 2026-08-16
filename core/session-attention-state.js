@@ -98,6 +98,17 @@ function clearSessionAttention(session, { clearUnread = false } = {}) {
   return changed;
 }
 
+function markSessionNeedsUserInput(session, { reason = null, text = null } = {}) {
+  if (!session || typeof session !== 'object') return false;
+  const previousState = attentionStateOf(session);
+  const previousReason = session.waitingReason || null;
+  const previousText = session.waitingText || null;
+  _applyAttentionState(session, ATTENTION_NEEDS_INPUT, { reason, text });
+  return previousState !== ATTENTION_NEEDS_INPUT
+    || previousReason !== session.waitingReason
+    || previousText !== session.waitingText;
+}
+
 function applyPromptSubmitted(session, event = {}) {
   if (!session || typeof session !== 'object') return { applied: false, reason: 'missing-session' };
   const wasRunning = session.status === 'running';
@@ -136,6 +147,30 @@ function applyPromptSubmitted(session, event = {}) {
   return { applied: true, at, turnId, version: clock.version };
 }
 
+function applyTurnAborted(session, event = {}) {
+  if (!session || typeof session !== 'object') return { applied: false, reason: 'missing-session' };
+  const clock = _clockFor(session);
+  const at = normalizeEventTime(event.abortedAt, Date.now());
+  const turnId = normalizeTurnId(event.turnId);
+
+  if (clock.lastPromptAt > 0 && at < clock.lastPromptAt) {
+    return { applied: false, reason: 'stale-abort-time', at, turnId };
+  }
+  if (turnId && clock.activeTurnId && turnId !== clock.activeTurnId) {
+    return { applied: false, reason: 'stale-abort-turn', at, turnId };
+  }
+  if (clock.lastCompletionAt > 0 && at < clock.lastCompletionAt) {
+    return { applied: false, reason: 'completed-before-abort', at, turnId };
+  }
+
+  clock.activeTurnId = null;
+  clock.version += 1;
+  session.runStartedAt = null;
+  if (session.status !== 'dormant') session.status = 'idle';
+  clearSessionAttention(session);
+  return { applied: true, at, turnId, version: clock.version };
+}
+
 function applyReplyCompleted(session, event = {}) {
   if (!session || typeof session !== 'object') return { applied: false, reason: 'missing-session' };
   const clock = _clockFor(session);
@@ -164,6 +199,7 @@ function applyReplyCompleted(session, event = {}) {
 
   const runStartedAt = Number(session.runStartedAt) || Number(clock.lastPromptAt) || 0;
   session.lastCompletedAt = at;
+  session.lastMessageTime = at;
   if (runStartedAt > 0 && at >= runStartedAt) {
     session.lastRunStartedAt = runStartedAt;
     session.lastRunDurationMs = at - runStartedAt;
@@ -203,8 +239,10 @@ module.exports = {
   ATTENTION_REPLY_READY,
   applyPromptSubmitted,
   applyReplyCompleted,
+  applyTurnAborted,
   attentionStateOf,
   clearSessionAttention,
+  markSessionNeedsUserInput,
   normalizeEventTime,
   sessionHasCompletedUnread,
   sessionNeedsUserInput,

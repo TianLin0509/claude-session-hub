@@ -52,6 +52,42 @@ Remove-Item -Recurse -Force $wt           # PS 5.1 此条会"穿透 junction"删
    **症状识别**：清理后下次 Hub 启动报 `Cannot find module '<dompurify/@xterm/marked 等>'`；renderer 白屏/全局脚本中断（`sessions is not defined`）。
    **修复 SOP（不 kill 生产 Hub）**：主目录 `npm install` 会被运行中 electron 锁 EBUSY → 改走旁路：临时目录放 package.json+lock → `npm ci --ignore-scripts` → 只把主目录缺失的顶层包拷回（不覆盖已有、跳过 electron）→ 隔离实例 smoke 验证。
 
+## 铁律：任务栏图标变 Electron 原子，别再在窗口图标那一层修
+
+**Windows 取任务栏图标的顺序是三层**：① `WM_GETICON`（`win.setIcon()` 只写这一层）→ ② 窗口类图标 `GCLP_HICONSM/HICON` → ③ 进程 exe 的图标资源。第 ① 层用 `SendMessageTimeout + SMTO_ABORTIFHUNG`，主进程一忙就超时；Explorer 崩溃重建任务栏时尤其容易踩到，然后 Windows 落到 ②/③ 并把结果缓存住。
+
+**②③ 两层来自宿主 exe 的资源**。源码模式跑的是原装 `electron.exe`，里面就是 Electron 原子 —— 2026-08-15 实测：运行中的 Hub 窗口 `WM_GETICON` 是橙色 logo，`GCLP_HICON` 是原子。b4fd5d5（挂 show/restore）和 2f7425d（挂 watchdog onTick）都只在第 ① 层反复重贴，所以图标每隔一阵就变回去。
+
+**根治**：`core/hub-exe-branding.js` 把 `electron.exe` 复制成同目录的 `AIGroupChatHub.exe`，用 `resedit`（纯 JS，electron-builder 的传递依赖）换掉图标资源和版本信息，快捷方式全部改指副本。**永不改写 `electron.exe` 本体** —— 本仓库的历史事故都是 node_modules 被写坏，副本坏了删掉即可，下次启动自动重建。
+
+规则：
+1. 再遇到"图标变原子"，先量三层再动手：`Get-ClassLongPtr(hwnd, -14)` 导出成 PNG 看一眼，别默认是窗口图标丢了。
+2. `npm install` / `npm ci` 换过 Electron 会把整个 `node_modules/electron/dist` 重建，副本随之消失，桌面快捷方式会指向不存在的文件。修复一条命令：
+   ```powershell
+   .\node_modules\electron\dist\electron.exe .\scripts\repair-windows-shell-integration.js
+   ```
+   它会补副本 + 重指所有快捷方式。救急入口是桌面 `救Hub.lnk` 和 `start.bat`（都直调 electron.exe，不依赖副本）。
+3. `.ico` 里**不能有 512 的条目**：ICO 目录项的宽高各只有 1 字节，0 表示 256，没法表达 512。老 `create-shortcut.ps1` 写过一个 512，和真 256 项一样标成 `0x0`，同一文件里两个都自称 256×256。用 `-IconOnly` 只重生成图标、不动快捷方式。
+4. `package.json` 的 `build.win.signAndEditExecutable` 不要再设 `false` —— 它会连 rcedit 一起跳过，打包出来的 exe 同样是原子图标（公司发布版 v1.4.0 就是这么来的）。它跟 VS Build Tools 无关，native rebuild 由 `npmRebuild:false` 管。
+
+## 铁律：CLI 能力必须实测，且新功能要平等覆盖所有 CLI
+
+**每加一个"给 Claude 的选项"，同一轮就要回答"codex / gemini / kimi 的对应能力是什么"。** codex 是日常主力，只做 Claude 等于半个功能。
+
+**断言某个 CLI「没有某能力」之前必须实测**，来源按可信度排序：
+
+1. **CLI 自己缓存的能力清单**。codex 是 `~/.codex/models_cache.json`，每个模型带 `supported_reasoning_levels` / `additional_speed_tiers` / `service_tiers`。
+2. **不发 API 请求的子命令探枚举松紧**。`codex doctor --summary -c <k>=<v>` 的退出码：`approval_policy="banana"` → 1（严格枚举），`service_tier="banana"` → 0（**不校验**）。不校验的键 Hub 必须自己把关，别把乱值拼进命令行。
+3. 二进制字符串表兜底（`codex.exe` 里搜 `service_tier` 附近）。
+4. **用户自己的配置文件就是权威证据** —— 先读 `~/.codex/config.toml` 再下结论。
+
+**血泪案例（2026-08-15/16）**：给新建会话加 fast 开关时，凭记忆断言"Codex 没有 fast 模式"，只给 Claude 做了开关。实测后发现 Codex 的 fast 就是 `service_tier`（模型目录写着 `{id:"priority", name:"Fast", description:"1.5x speed, increased usage"}`），**用户 config.toml 里早就全局写着 `service_tier = "fast"`**。同一轮还错误断言"xhigh 是 Claude `--effort` 专属、Codex 用了会报错"，实测每个 Codex 模型都支持 xhigh，5.6-sol/terra 还有比 max 更高的 `ultra`。
+
+由此定下的两条实现口径：
+
+- **Codex 思考强度按模型取**（`core/codex-model-catalog.js`）：gpt-5.6-sol 到 ultra，gpt-5.5 只到 xhigh。写死一份必然给某些模型多出或少掉档位。
+- **`service_tier` 只提供实测有效值**（`core/codex-speed-tier.js`）：`inherit`(不覆盖) / `fast` / `flex`。**没有"关闭"这一档** —— 二进制里只匹配 `fast|flex|priority`，模型目录的 `default_service_tier` 是 null，即"不 fast"的表示是**键不存在**；而 `-c` 只能覆盖不能删键（TOML 没有 null）。想长期关掉改全局 config.toml，那才是 Codex 给的机制。别为了凑一个"关"字去猜字面量。
+
 ## 铁律：并行测试 Hub 实例（多 MCP / E2E 测试）
 
 **Hub 原生支持 `CLAUDE_HUB_DATA_DIR` env var 实现运行时状态隔离。所有并行测试必须走这条路径，不得 copy 整个 node_modules 或忽略状态隔离——历史上那种做法已经造成 35+ 条防火墙规则污染 + 数 GB 磁盘垃圾 + 测试互相干扰。**

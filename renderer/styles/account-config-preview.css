@@ -1013,6 +1013,12 @@
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+  /* 卡片层是 position:absolute + z-index:50，非定位元素永远画在它下面（DOM 顺序
+   * 救不了）。--fi-bar-h 已经让 overlay 的 bottom 停在输入栏顶部，正常情况下不重叠；
+   * 这一条是保险：ResizeObserver 首帧还没跑、或变量被别的样式覆盖时，
+   * 输入栏仍然压在卡片层之上，不会出现"看得见但点不到"。 */
+  position: relative;
+  z-index: 60;
 }
 .floating-input-bar.visible {
   display: flex;

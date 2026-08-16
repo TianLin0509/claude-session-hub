@@ -104,8 +104,8 @@ function buildNotificationJsonUpdate(existingNotifications, newConfig, hasOwn) {
       send_key: candidate.serverchanSendKey || undefined,
     },
   };
-  // 旧版曾按窗口焦点/系统空闲/任务耗时自动过滤。显式总开关上线后清理这些
-  // 遗留字段，避免 config.json 继续暗示它们仍会影响推送。
+  // 旧版曾按窗口焦点/系统空闲/任务耗时自动过滤。连接设置变更时清理这些
+  // 遗留字段；是否推送已经由 session / meeting 自己的开关决定。
   delete updated.mode;
   delete updated.idle_seconds;
   delete updated.min_duration_seconds;
@@ -209,6 +209,8 @@ function registerConfigIpc(ipcMain, deps) {
     getCompletionNotificationHealth,
     scanAgentSessions,
     sendToRenderer,
+    sessionManager,
+    meetingManager,
     testCompletionNotification,
   } = deps;
 
@@ -237,27 +239,39 @@ function registerConfigIpc(ipcMain, deps) {
 
   ipcMain.handle('set-completion-notification-enabled', (_event, payload = {}) => {
     const enabled = payload.enabled === true;
-    const before = completionNotificationState();
-    if (enabled && !before.configured) {
-      return { ok: false, status: 'configuration_missing', ...before };
+    const connection = completionNotificationState();
+    if (enabled && !connection.configured) {
+      return { ok: false, status: 'configuration_missing', enabled: false, configured: false };
     }
 
-    const configPath = getConfigPath();
-    let existing = {};
-    try {
-      existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    } catch (error) {
-      if (!error || error.code !== 'ENOENT') {
-        console.error('[config] notification toggle: 读取现有配置失败，已中止切换:', error && error.message);
-        return { ok: false, status: 'config_read_failed', ...before };
+    const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+    const meetingId = typeof payload.meetingId === 'string' ? payload.meetingId : '';
+    if (!sessionId && !meetingId) {
+      return { ok: false, status: 'missing_target', enabled: false, configured: connection.configured };
+    }
+
+    let updated = null;
+    let state = null;
+    if (sessionId) {
+      updated = sessionManager && sessionManager.updateSessionMeta(sessionId, {
+        completionNotificationEnabled: enabled,
+      });
+      if (!updated) {
+        return { ok: false, status: 'target_not_found', enabled: false, configured: connection.configured };
       }
+      sendToRenderer('session-updated', { session: updated });
+      state = { enabled, configured: connection.configured, targetType: 'session', targetId: sessionId };
+    } else {
+      updated = meetingManager && meetingManager.updateMeeting(meetingId, {
+        completionNotificationEnabled: enabled,
+      });
+      if (!updated) {
+        return { ok: false, status: 'target_not_found', enabled: false, configured: connection.configured };
+      }
+      sendToRenderer('meeting-updated', { meeting: updated });
+      state = { enabled, configured: connection.configured, targetType: 'meeting', targetId: meetingId };
     }
-
-    const merged = buildConfigJsonUpdate(existing, { notificationEnabled: enabled });
-    saveConfig(merged);
-    clearSessionManagerConfigCache();
-    const state = completionNotificationState();
-    sendToRenderer('completion-notification-config-changed', state);
+    sendToRenderer('completion-notification-target-changed', state);
     return { ok: true, status: 'saved', ...state };
   });
 

@@ -22,16 +22,97 @@
     external: '外部工作区',
   };
 
-  // `--effort` is a Claude CLI flag only. deepseek runs through the claude CLI but
-  // session-manager builds its command without the flag, so it is Claude-only here.
-  const EFFORT_KINDS = new Set(['claude']);
+  // 三个 kind 有"速度/质量"档位可调：Claude 走 CLI 的 --effort，
+  // Codex 与新版 DeepSeek（同一条 codex runtime）走 -c model_reasoning_effort。
+  // 两边的合法枚举不一样：Claude 是固定表，Codex 按模型目录取值（部分模型有 ultra）。
+  const EFFORT_KINDS = new Set(['claude', 'codex', 'deepseek']);
+  const MCP_KINDS = new Set(['claude', 'codex', 'deepseek']);
+  // 这个开关只表示 Claude Code 的 fastMode；Codex 的 fast 是另一套
+  // service_tier 机制，由下面独立的速度通道控件承载。
+  const FAST_KINDS = new Set(['claude']);
+  // Codex 也有 fast —— 是 service_tier（priority 通道，1.5× 速度、用量更高），
+  // 跟 Claude 的 fastMode 完全两套机制，所以两个 kind 走两个不同控件。
+  const CODEX_TIER_KINDS = new Set(['codex', 'deepseek']);
   const DEFAULT_EFFORT = 'max';
+  const CLAUDE_EFFORT_OPTIONS = [
+    ['max', 'max · 默认，最强'],
+    ['xhigh', 'xhigh'],
+    ['high', 'high'],
+    ['medium', 'medium · 省额度'],
+    ['low', 'low · 最省'],
+  ];
+  // Codex 的档位按模型下发（gpt-5.6-sol 有 ultra，5.5 只到 xhigh），
+  // 开弹窗时向 main 要一次真实目录；拿不到就用这份保守兜底。
+  const CODEX_EFFORT_FALLBACK = ['low', 'medium', 'high', 'xhigh', 'max'];
+  const CODEX_EFFORT_HINTS = {
+    low: '最快，推理最浅',
+    medium: '速度与深度平衡',
+    high: '更深的推理',
+    xhigh: '超高推理深度',
+    max: '最大推理深度',
+    ultra: '最大推理 + 自动任务分派',
+  };
+  let codexTuningCatalog = null;
+  // Claude 默认 full = 继承全部全局 MCP = 改动前的行为，别静默改成 lean；
+  // Codex 历史上就默认 lean，保持不动。
+  const MCP_OPTIONS = {
+    claude: [
+      ['full', 'Full · 默认，继承全部全局 MCP'],
+      ['lean', 'Lean · 省内存，一个都不加载'],
+      ['browser', 'Browser · 只留 Playwright / Chrome'],
+      ['wireless', 'Wireless · 只留 superran'],
+    ],
+    codex: [
+      ['lean', 'Lean · 默认省内存'],
+      ['browser', 'Browser · 只留 Playwright'],
+      ['wireless', 'Wireless · 只留 superran'],
+      ['full', 'Full · 全部全局 MCP'],
+    ],
+  };
+  const DEFAULT_MCP_BY_KIND = { claude: 'full', codex: 'lean', deepseek: 'lean' };
+  const EFFORT_LABEL_BY_KIND = {
+    claude: '思考强度 (--effort)',
+    codex: '思考强度 (reasoning effort)',
+    deepseek: '思考强度 (reasoning effort)',
+  };
+  // 用户按 kind 调过的档位记在这里，切回来时不必重选。
+  const tuningMemory = new Map();
   const MCP_PROFILE_LABELS = {
     lean: 'Lean MCP',
     browser: 'Browser MCP',
     wireless: 'Wireless MCP',
     full: 'Full MCP',
   };
+
+  function effortFamily(kind) { return kind === 'claude' ? 'claude' : 'codex'; }
+  function mcpOptionsFor(kind) { return MCP_OPTIONS[effortFamily(kind)] || []; }
+  function defaultMcpFor(kind) { return DEFAULT_MCP_BY_KIND[kind] || 'lean'; }
+
+  function codexModelTuning(modelId) {
+    const entry = codexTuningCatalog && codexTuningCatalog.byModel && codexTuningCatalog.byModel[modelId];
+    if (entry && Array.isArray(entry.efforts) && entry.efforts.length) return entry;
+    return { efforts: CODEX_EFFORT_FALLBACK, supportsFast: true, fromCache: false };
+  }
+
+  // Claude 的档位是固定枚举；Codex 的按当前选中的模型来 —— 给 5.5 显示 ultra
+  // 会拼出它不认识的值，给 5.6-sol 藏掉 ultra 又是白白少一档。
+  function effortOptionsFor(kind, modelId) {
+    if (kind === 'claude') return CLAUDE_EFFORT_OPTIONS;
+    if (!CODEX_TIER_KINDS.has(kind)) return [];
+    return codexModelTuning(modelId).efforts
+      .slice()
+      .reverse()
+      .map(level => [level, CODEX_EFFORT_HINTS[level] ? `${level} · ${CODEX_EFFORT_HINTS[level]}` : level]);
+  }
+
+  function codexTierOptionsFor(modelId) {
+    const configured = (codexTuningCatalog && codexTuningCatalog.configuredServiceTier) || '';
+    const inheritLabel = configured ? `跟随全局配置（当前：${configured}）` : '跟随全局配置';
+    const options = [['inherit', inheritLabel]];
+    if (codexModelTuning(modelId).supportsFast) options.push(['fast', 'Fast · priority 通道，1.5× 速度']);
+    options.push(['flex', 'Flex · 更慢更省']);
+    return options;
+  }
   const RECENT_LIMIT = 8;
 
   let menuEl = null;
@@ -42,6 +123,8 @@
   let selectedModel = '';
   let selectedEffort = DEFAULT_EFFORT;
   let selectedMcpProfile = 'lean';
+  let selectedFastMode = true;
+  let selectedCodexTier = 'inherit';
   let recentItems = [];
   let recommendedItems = [];
   let scratchRoot = '';
@@ -568,7 +651,18 @@
     const hasModels = options.length > 0;
     if (label) label.hidden = !hasModels;
     grid.hidden = !hasModels;
-    if (!hasModels) return;
+    if (!hasModels) {
+      // PowerShell 之类没有模型的 kind 整块 grid 隐藏。但提示条在 grid 外面，
+      // 早退不管它就会把上一个 kind 的文案（"Codex 没有 fast 模式…"）留在屏幕上。
+      // 顺手把三个 field 也归位，免得 hidden 属性停在上一个 kind 的状态。
+      const staleNote = document.getElementById('new-session-tuning-note');
+      if (staleNote) { staleNote.hidden = true; staleNote.textContent = ''; }
+      for (const id of ['new-session-effort-field', 'new-session-mcp-field', 'new-session-fast-field']) {
+        const field = document.getElementById(id);
+        if (field) field.hidden = true;
+      }
+      return;
+    }
 
     if (!options.some(option => option.id === selectedModel)) {
       selectedModel = DEFAULT_MODEL_BY_KIND[selectedKind] || options[0].id;
@@ -582,13 +676,84 @@
     }
     modelSelect.value = selectedModel;
 
+    const effortLabel = document.getElementById('new-session-effort-label');
+    const fastField = document.getElementById('new-session-fast-field');
+    const fastCheckbox = document.getElementById('new-session-fast');
+    const note = document.getElementById('new-session-tuning-note');
+
+    const codexTierField = document.getElementById('new-session-codex-tier-field');
+    const codexTierSelect = document.getElementById('new-session-codex-tier');
+
     const showEffort = EFFORT_KINDS.has(selectedKind);
-    const showMcp = selectedKind === 'codex';
+    const showMcp = MCP_KINDS.has(selectedKind);
+    const showFast = FAST_KINDS.has(selectedKind);
+    const showCodexTier = CODEX_TIER_KINDS.has(selectedKind);
+
     if (effortField) effortField.hidden = !showEffort;
-    if (effortSelect) effortSelect.value = selectedEffort;
+    if (showEffort) {
+      if (effortLabel) effortLabel.textContent = EFFORT_LABEL_BY_KIND[selectedKind] || '思考强度';
+      const effortOptions = effortOptionsFor(selectedKind, selectedModel);
+      fillSelect(effortSelect, effortOptions);
+      // 切 kind / 切模型之后旧档位可能不在新枚举里（gpt-5.6-sol 的 ultra → 5.5 没有），
+      // 回落而不是把非法值送进命令行。回落到该模型支持的最高档，不硬套 max。
+      if (!effortOptions.some(([value]) => value === selectedEffort)) {
+        selectedEffort = effortOptions.some(([value]) => value === DEFAULT_EFFORT)
+          ? DEFAULT_EFFORT
+          : (effortOptions[0] ? effortOptions[0][0] : DEFAULT_EFFORT);
+      }
+      if (effortSelect) effortSelect.value = selectedEffort;
+    }
+
+    if (codexTierField) codexTierField.hidden = !showCodexTier;
+    if (showCodexTier) {
+      const tierOptions = codexTierOptionsFor(selectedModel);
+      fillSelect(codexTierSelect, tierOptions);
+      if (!tierOptions.some(([value]) => value === selectedCodexTier)) selectedCodexTier = 'inherit';
+      if (codexTierSelect) codexTierSelect.value = selectedCodexTier;
+    }
+
     if (mcpField) mcpField.hidden = !showMcp;
-    if (mcpSelect) mcpSelect.value = selectedMcpProfile;
-    grid.style.gridTemplateColumns = (showEffort || showMcp) ? '' : '1fr';
+    if (showMcp) {
+      fillSelect(mcpSelect, mcpOptionsFor(selectedKind));
+      if (!mcpOptionsFor(selectedKind).some(([value]) => value === selectedMcpProfile)) {
+        selectedMcpProfile = defaultMcpFor(selectedKind);
+      }
+      if (mcpSelect) mcpSelect.value = selectedMcpProfile;
+    }
+
+    if (fastField) fastField.hidden = !showFast;
+    if (fastCheckbox) fastCheckbox.checked = selectedFastMode;
+
+    if (note) {
+      const lines = [];
+      // fast 有真实代价，别只写"更快"就完事：2026-06-11 实测 fastMode 交互式会话
+      // 不落盘 transcript jsonl，卡片视图因此收不到回复。用户有权在勾之前知道。
+      if (showFast && selectedFastMode) lines.push('fast 更快出字，但交互式会话可能不落 transcript，卡片视图收不到回复时可关掉它。');
+      if (showCodexTier && selectedCodexTier === 'inherit') {
+        // Codex 的 fast 在配置层不可"按会话关闭"（`-c` 只能覆盖不能删键），
+        // 所以这一档如实说明它跟随全局，不假装能关。
+        lines.push('Codex 的 fast 是 service_tier；「跟随全局配置」不覆盖 ~/.codex/config.toml，要长期关掉请改那里。');
+      }
+      if (showCodexTier && !codexModelTuning(selectedModel).fromCache) {
+        lines.push('未读到 codex 模型目录（~/.codex/models_cache.json），思考强度用的是保守兜底档位。');
+      }
+      if (showMcp && selectedMcpProfile !== 'full') lines.push('非 Full 档只在本次启动生效，不会改写你的全局 MCP 配置。');
+      if (selectedKind === 'claude' && selectedMcpProfile === 'full') lines.push('Claude 默认 Full：七个全局 MCP 各起一个常驻进程，开多个会话时可换 Lean 省内存。');
+      note.hidden = lines.length === 0;
+      note.textContent = lines.join(' ');
+    }
+
+    grid.style.gridTemplateColumns = (showEffort || showMcp || showFast || showCodexTier) ? '' : '1fr';
+  }
+
+  function fillSelect(selectEl, entries) {
+    if (!selectEl) return;
+    const signature = entries.map(([value, label]) => `${value}\u0000${label}`).join('|');
+    if (selectEl.dataset.builtFor === signature) return;
+    selectEl.innerHTML = entries
+      .map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`)
+      .join('');
+    selectEl.dataset.builtFor = signature;
   }
 
   function paint() {
@@ -692,8 +857,7 @@
     existingWorkspace = requestedWorkspace;
     submitting = false;
     selectedModel = DEFAULT_MODEL_BY_KIND[selectedKind] || '';
-    selectedEffort = DEFAULT_EFFORT;
-    selectedMcpProfile = 'lean';
+    applyTuningMemory(selectedKind);
     setError('');
     renderRecommendations();
     renderRecent();
@@ -706,15 +870,54 @@
     const selected = menuEl.querySelector(`.new-session-option[data-kind="${selectedKind}"]`);
     if (selected) selected.focus();
     void loadRecent().then(paint);
+    // Codex 档位目录：拿到后重绘一次，把兜底档位换成该模型的真实档位。
+    void loadCodexTuningCatalog().then(paint);
+  }
+
+  // 记住每个 kind 上次调过的档位：在 Claude / Codex 之间来回切时不用重选。
+  // 键按 kind 存而不是全局一份 —— 两家的合法枚举和默认值都不一样。
+  function rememberTuning(kind) {
+    tuningMemory.set(kind, {
+      effort: selectedEffort,
+      mcpProfile: selectedMcpProfile,
+      fastMode: selectedFastMode,
+      codexSpeedTier: selectedCodexTier,
+    });
+  }
+
+  function applyTuningMemory(kind) {
+    const saved = tuningMemory.get(kind);
+    selectedEffort = (saved && saved.effort) || DEFAULT_EFFORT;
+    selectedMcpProfile = (saved && saved.mcpProfile) || defaultMcpFor(kind);
+    selectedFastMode = saved && typeof saved.fastMode === 'boolean' ? saved.fastMode : true;
+    selectedCodexTier = (saved && saved.codexSpeedTier) || 'inherit';
+  }
+
+  // Codex 的档位目录来自 codex-cli 自己的缓存，开弹窗时拉一次就够。
+  // 失败静默：renderer 侧有静态兜底，不能让弹窗打不开。
+  async function loadCodexTuningCatalog() {
+    if (codexTuningCatalog) return codexTuningCatalog;
+    try {
+      const result = await ipcRenderer.invoke('codex:tuning-catalog');
+      if (result && result.ok) codexTuningCatalog = result;
+    } catch {}
+    return codexTuningCatalog;
   }
 
   // Only send what the selected CLI understands: model for kinds with a model
-  // list, effort for Claude. Omitting them keeps session-manager's defaults.
+  // list, effort/mcpProfile for the kinds whose CLI has the corresponding dial.
+  // 省略等于沿用 session-manager 的默认值，所以只在"确实有这一档"时才传。
   function tuningOpts() {
     const opts = {};
     if (modelOptionsFor(selectedKind).length > 0 && selectedModel) opts.model = selectedModel;
     if (EFFORT_KINDS.has(selectedKind) && selectedEffort) opts.effort = selectedEffort;
-    if (selectedKind === 'codex') opts.mcpProfile = selectedMcpProfile;
+    if (MCP_KINDS.has(selectedKind)) opts.mcpProfile = selectedMcpProfile;
+    // 只在用户显式关掉时才传：不传 = 保持"默认开"，与改动前一字不差。
+    if (FAST_KINDS.has(selectedKind) && selectedFastMode === false) opts.fastMode = false;
+    // 同理，inherit = 不覆盖 ~/.codex/config.toml，等于改动前的行为，不传。
+    if (CODEX_TIER_KINDS.has(selectedKind) && selectedCodexTier && selectedCodexTier !== 'inherit') {
+      opts.codexSpeedTier = selectedCodexTier;
+    }
     return opts;
   }
 
@@ -752,7 +955,9 @@
 
     menuEl.querySelectorAll('.new-session-option').forEach(button => {
       button.addEventListener('click', () => {
+        rememberTuning(selectedKind);
         selectedKind = button.dataset.kind || 'claude';
+        applyTuningMemory(selectedKind);
         setError('');
         paint();
       });
@@ -784,7 +989,21 @@
     const mcpSelect = document.getElementById('new-session-mcp');
     if (mcpSelect) {
       mcpSelect.addEventListener('change', () => {
-        selectedMcpProfile = MCP_PROFILE_LABELS[mcpSelect.value] ? mcpSelect.value : 'lean';
+        selectedMcpProfile = MCP_PROFILE_LABELS[mcpSelect.value] ? mcpSelect.value : defaultMcpFor(selectedKind);
+        paint();
+      });
+    }
+    const fastCheckbox = document.getElementById('new-session-fast');
+    if (fastCheckbox) {
+      fastCheckbox.addEventListener('change', () => {
+        selectedFastMode = !!fastCheckbox.checked;
+        paint();
+      });
+    }
+    const codexTierSelect = document.getElementById('new-session-codex-tier');
+    if (codexTierSelect) {
+      codexTierSelect.addEventListener('change', () => {
+        selectedCodexTier = codexTierSelect.value || 'inherit';
         paint();
       });
     }
@@ -822,6 +1041,9 @@
     dismissArchiveSuggestion: (scope, id) => archiveSuggestions.delete(`${scope}:${id}`),
     pickWorkspace,
     submitNewSession,
+    // 弹窗当前会送给 create-session 的 opts。暴露出来让 E2E 能断言"到底传了什么"，
+    // 而不是靠截图猜 —— fast/思考强度/MCP 的默认值一旦漂移就是静默降级。
+    tuningOpts,
     workspaceTierLabel,
   };
 

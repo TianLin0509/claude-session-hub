@@ -8,6 +8,10 @@ if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
   const { extractVisibleCardText } = require('./visible-card-text.js');
+  const {
+    guardMarkdownLocalPaths,
+    restoreMarkdownLocalPaths,
+  } = require('./markdown-local-path-guard.js');
   const { CLAUDE_MEMORY_INDEX: _CLAUDE_MEMORY_INDEX } = require('../core/claude-memory-loader.js');
   const {
     buildHeroPromptBlock: _buildHeroPromptBlock,
@@ -551,38 +555,16 @@ if (typeof document !== 'undefined') (function () {
     });
   }
 
-  // Windows 绝对路径在 markdown 里会被 marked 的 escape 规则吃掉反斜杠
-  // （如 `C:\Users\lintian\.arena` 中 `\.` 被吞成 `.`，导致 data-path 错位、
-  // 下游 shell.openPath / Set-Clipboard 全部找不到文件）。
-  // 解决：marked 解析前用私用区 placeholder 包住路径，解析完原样还原。
-  const _PATH_GUARD_RE = /[A-Za-z]:[\\/](?:[^\s'"`<>|*?\r\n]+)/g;
-  function _guardWindowsPaths(text) {
-    const map = new Map();
-    let n = 0;
-    const guarded = String(text).replace(_PATH_GUARD_RE, (m) => {
-      const key = 'PG' + (n++) + '';
-      map.set(key, m);
-      return key;
-    });
-    return { guarded, map };
-  }
-  function _unguardWindowsPaths(html, map) {
-    if (!map || map.size === 0) return html;
-    let out = html;
-    for (const [key, val] of map) {
-      out = out.split(key).join(val);
-    }
-    return out;
-  }
-
   function _renderMarkdownUncached(text) {
     try {
       if (!_markedCache) _markedCache = require('marked').marked;
       if (!_domPurifyCache) _domPurifyCache = require('dompurify');
-      const { guarded, map: pathMap } = _guardWindowsPaths(_normalizeMarkdownPathBreaks(text));
-      let html = _markedCache.parse(guarded, { breaks: true, gfm: true });
-      html = _unguardWindowsPaths(html, pathMap);
-      const sanitized = _domPurifyCache.sanitize(html, { ADD_ATTR: ['data-path', 'class'] });
+      const pathGuard = guardMarkdownLocalPaths(_normalizeMarkdownPathBreaks(text));
+      const html = _markedCache.parse(pathGuard.text, { breaks: true, gfm: true });
+      const sanitized = restoreMarkdownLocalPaths(
+        _domPurifyCache.sanitize(html, { ADD_ATTR: ['data-path', 'class'] }),
+        pathGuard,
+      );
       // 后处理：扫文件路径包 <a class="rt-file-link"> 让用户点开预览（卡片优化 2026-05-03）。
       //   注意必须在 sanitize 之后做，因为我们新增的 <a> 元素文本来自 sanitize 后的 textContent
       //   （已 escape），data-path 也是从同一字符串复制，无注入风险。
