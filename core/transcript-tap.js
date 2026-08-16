@@ -24,6 +24,7 @@ const os = require('os');
 const readline = require('readline');
 const { parseClaudeTranscriptToTurns } = require('./claude-transcript-parser');
 const {
+  codexRolloutMetaMatchesSid,
   isCodexTopLevelRolloutMeta,
   readCodexRolloutMeta,
 } = require('./codex-transcript-parser.js');
@@ -610,17 +611,32 @@ class CodexTap extends EventEmitter {
     });
     this._ensureWatcher();
     if (transcriptPath) {
-      this._bindRolloutToHubSession(hubSessionId, transcriptPath).then((bound) => {
-        if (!bound) return;
-        this._pending.delete(hubSessionId);
-        this._seen.add(transcriptPath);
-      }).catch((e) => {
-        console.warn('[codex-tap] bind by transcriptPath failed:', e.message);
-      });
+      // A persisted rollout path is only a fast path. It can go stale after a
+      // profile switch/archive, or (in old Hub state) point at a subagent file.
+      // Never let that prevent the provider-native SID from repairing the bind.
+      (async () => {
+        let bound = false;
+        try {
+          bound = await this._bindRolloutToHubSession(hubSessionId, transcriptPath, codexSid || null);
+        } catch (e) {
+          console.warn('[codex-tap] bind by transcriptPath failed:', e.message);
+        }
+        if (bound) {
+          this._pending.delete(hubSessionId);
+          this._seen.add(transcriptPath);
+          return;
+        }
+        if (!codexSid) return;
+        try {
+          await this._bindByCodexSid(hubSessionId, codexSid, sessionsRoot || null);
+        } catch (e) {
+          console.warn('[codex-tap] fallback bind by codexSid failed:', e.message);
+        }
+      })();
       return;
     }
     if (codexSid) {
-      this._bindByCodexSid(hubSessionId, codexSid).catch((e) => {
+      this._bindByCodexSid(hubSessionId, codexSid, sessionsRoot || null).catch((e) => {
         console.warn('[codex-tap] bind by codexSid failed:', e.message);
       });
     }
@@ -878,20 +894,25 @@ class CodexTap extends EventEmitter {
     }
   }
 
-  async _bindByCodexSid(hubSessionId, codexSid) {
+  async _bindByCodexSid(hubSessionId, codexSid, preferredSessionsRoot = null) {
     if (!hubSessionId || !codexSid || this._bound.has(hubSessionId)) return false;
-    const rolloutPath = await this._findRolloutByCodexSid(codexSid);
+    const rolloutPath = await this._findRolloutByCodexSid(codexSid, preferredSessionsRoot);
     if (!rolloutPath) return false;
-    const bound = await this._bindRolloutToHubSession(hubSessionId, rolloutPath);
+    const bound = await this._bindRolloutToHubSession(hubSessionId, rolloutPath, codexSid);
     if (!bound) return false;
     this._pending.delete(hubSessionId);
     this._seen.add(rolloutPath);
     return true;
   }
 
-  async _findRolloutByCodexSid(codexSid) {
+  async _findRolloutByCodexSid(codexSid, preferredSessionsRoot = null) {
     const suffix = `-${codexSid}.jsonl`;
-    const roots = Array.from(this._sessionsRoots);
+    // A SID can be copied between subscription profiles. When registration
+    // names a profile-specific root, searching any other account is an
+    // identity violation rather than a useful fallback.
+    const roots = preferredSessionsRoot
+      ? [preferredSessionsRoot]
+      : Array.from(this._sessionsRoots);
     let best = null;
     const visit = async (dir, depth) => {
       if (depth > 3 || best) return;
@@ -1017,12 +1038,17 @@ class CodexTap extends EventEmitter {
     await this._bindRolloutToHubSession(best.hubSessionId, rolloutPath);
   }
 
-  async _bindRolloutToHubSession(hubSessionId, rolloutPath) {
+  async _bindRolloutToHubSession(hubSessionId, rolloutPath, expectedCodexSid = null) {
     const existing = this._bound.get(hubSessionId);
     if (existing) return existing.rolloutPath === rolloutPath;
     const meta = readCodexRolloutMeta(rolloutPath);
     if (!isCodexTopLevelRolloutMeta(meta)) {
       this._seen.add(rolloutPath);
+      return false;
+    }
+    // The SID is the resume authority. A valid top-level rollout belonging to
+    // another session must not overwrite this Hub session's identity.
+    if (expectedCodexSid && !codexRolloutMetaMatchesSid(meta, expectedCodexSid)) {
       return false;
     }
     // Emit session-bound so main.js can persist codexSid for future resume.

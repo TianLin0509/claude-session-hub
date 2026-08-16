@@ -222,6 +222,87 @@ test('does not resume a persisted Codex subagent binding as the Hub top-level PT
   assert.strictEqual(session.opts.codexResumePicker, true);
 });
 
+test('repairs a persisted Codex subagent binding to its top-level parent session', async () => {
+  const ipc = createFakeIpc();
+  const parentSid = '019f49ff-cd9c-7a82-a730-0231f092a2e8';
+  const deps = createBaseDeps({
+    isCodexSubagentRolloutPath: (rolloutPath) => rolloutPath === 'C:\\codex\\subagent.jsonl',
+    readCodexRolloutMeta: () => ({
+      id: '019f516d-1111-7111-8111-111111111111',
+      thread_source: 'subagent',
+      parent_thread_id: parentSid,
+    }),
+  });
+  registerResumeSessionIpc(ipc, deps);
+
+  const session = await ipc.handlers.get('resume-session')(null, {
+    hubId: 's-subagent-parent',
+    kind: 'codex',
+    codexSid: '019f516d-1111-7111-8111-111111111111',
+    transcriptPath: 'C:\\codex\\subagent.jsonl',
+    cwd: 'C:\\repo',
+  });
+
+  assert.strictEqual(session.opts.codexSid, parentSid);
+  assert.strictEqual(session.opts.codexResumePicker, false);
+  assert.strictEqual(session.opts.resumeTranscriptPath, `rollout:${parentSid}`);
+});
+
+test('uses the persisted Codex profile root when an old session has no stored rollout root', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps({
+    resolveCodexSessionsRoot: (meta) => meta.codexProfile === 'second'
+      ? 'C:\\codex-second\\sessions'
+      : 'C:\\codex\\sessions',
+  });
+  registerResumeSessionIpc(ipc, deps);
+
+  await ipc.handlers.get('resume-session')(null, {
+    hubId: 's-profile-root', kind: 'codex', codexSid: 'codex-second-1',
+    codexProfile: 'second', cwd: 'C:\\repo',
+  });
+
+  assert.deepStrictEqual(deps.calls.filter(call => call[0] === 'findCodexRolloutBySid'), [
+    ['findCodexRolloutBySid', 'codex-second-1', 'C:\\codex-second\\sessions'],
+  ]);
+});
+
+test('publishes the authoritative session after transcript registration repairs metadata', async () => {
+  const ipc = createFakeIpc();
+  let authoritative = null;
+  let published = null;
+  const deps = createBaseDeps({
+    sessionManager: {
+      createSession(kind, opts) {
+        return { id: opts.id, kind, codexSid: opts.codexSid, transcriptPath: opts.resumeTranscriptPath };
+      },
+      getSession: () => authoritative,
+      writeToSession() {},
+    },
+    registerSessionForTap(session) {
+      authoritative = {
+        ...session,
+        codexSid: 'codex-repaired',
+        transcriptPath: 'C:\\codex\\sessions\\repaired.jsonl',
+        codexSessionsRoot: 'C:\\codex\\sessions',
+      };
+    },
+    sendToRenderer(_channel, payload) {
+      published = payload.session;
+    },
+  });
+  registerResumeSessionIpc(ipc, deps);
+
+  const result = await ipc.handlers.get('resume-session')(null, {
+    hubId: 's-authoritative', kind: 'codex', codexSid: 'codex-old', cwd: 'C:\\repo',
+  });
+
+  assert.strictEqual(result, authoritative);
+  assert.strictEqual(published, authoritative);
+  assert.strictEqual(published.codexSid, 'codex-repaired');
+  assert.strictEqual(published.transcriptPath, 'C:\\codex\\sessions\\repaired.jsonl');
+});
+
 test('provider-native ids replace stale persisted transcript paths during resume', async () => {
   const ipc = createFakeIpc();
   const deps = createBaseDeps();

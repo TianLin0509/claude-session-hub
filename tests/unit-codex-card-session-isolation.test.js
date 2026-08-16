@@ -226,7 +226,7 @@ test('cwd fallback chooses the top-level rollout closest to the requested spawn 
   assert.equal(findCodexRolloutByCwd(cwd, root, { sinceMs: spawnAt }), ownedPath);
 });
 
-test('transcript IPC ignores a renderer-supplied rollout that disagrees with the authoritative codexSid', async (t) => {
+test('transcript IPC ignores live and renderer rollout paths that disagree with the authoritative codexSid', async (t) => {
   const root = makeTmpRoot('ipc');
   const cwd = path.join(root, 'workspace');
   fs.mkdirSync(cwd, { recursive: true });
@@ -273,7 +273,7 @@ test('transcript IPC ignores a renderer-supplied rollout that disagrees with the
     parseClaudeTranscriptToTurns: async () => [],
     parseCodexRolloutToTurns,
     sessionManager: { getSession: () => session },
-    transcriptTap: { getCodexRolloutPath: () => null },
+    transcriptTap: { getCodexRolloutPath: () => wrongPath },
     updateSessionTranscriptBinding: (_hubId, patch) => patches.push(patch),
   });
 

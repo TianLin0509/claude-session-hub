@@ -3204,7 +3204,10 @@ async function selectSession(id, opts = {}) {
   // Dormant session: clicking wakes it via resume-session IPC. Don't render
   // terminal now — session-created handler below will take over once PTY is up.
   if (session && session.status === 'dormant') {
-    resumeDormantSession(id, opts);
+    void resumeDormantSession(id, opts).catch((error) => {
+      console.warn('[resume-session] dormant wake failed:', error);
+      alert(`会话恢复失败：${error && error.message ? error.message : String(error)}`);
+    });
     return;
   }
   const switching = activeSessionId !== id;
@@ -4740,8 +4743,11 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (!local.userRenamed && session.title) local.title = session.title;
   if (session.ccSessionId) local.ccSessionId = session.ccSessionId;
   if (session.transcriptPath) local.transcriptPath = session.transcriptPath;
+  if (session.codexSid) local.codexSid = session.codexSid;
   if (session.codexSessionsRoot) local.codexSessionsRoot = session.codexSessionsRoot;
   if (session.codexAllowMtimeFallback) local.codexAllowMtimeFallback = true;
+  if (session.codexProfile) local.codexProfile = session.codexProfile;
+  if (session.codexProfileLabel) local.codexProfileLabel = session.codexProfileLabel;
   if (session.mcpProfile) local.mcpProfile = session.mcpProfile;
   if (session.kimiSid) local.kimiSid = session.kimiSid;
   if (session.kimiSessionDir) local.kimiSessionDir = session.kimiSessionDir;
@@ -4869,20 +4875,30 @@ window.schedulePersist = schedulePersist;
 // Wake a dormant session: call main to spawn PTY with --resume, then wait for
 // session-created which will replace the dormant entry.
 async function resumeDormantSession(hubId, opts = {}) {
+  const existingPending = _pendingDormantResumes.get(hubId);
+  if (existingPending) {
+    if (opts.forceScrollBottom === true) existingPending.forceScrollBottom = true;
+    return existingPending.promise || null;
+  }
   const dormant = sessions.get(hubId);
   if (!dormant || dormant.status !== 'dormant') return dormant || null;
-  _pendingDormantResumes.set(hubId, {
+  const pendingResume = {
     forceScrollBottom: opts.forceScrollBottom === true,
-  });
+    promise: null,
+  };
+  _pendingDormantResumes.set(hubId, pendingResume);
   // Keep title / pinned / preview so UI stays stable through the resume.
   let resumed;
   try {
     // Dormant wake, workspace archive and right-click Restart share one exact
     // provider-native metadata contract.  This prevents Codex-only fields such
     // as profile / MCP policy / rollout root from disappearing on one path.
-    resumed = await ipcRenderer.invoke('resume-session', buildSessionResumeMeta(dormant));
+    pendingResume.promise = ipcRenderer.invoke('resume-session', buildSessionResumeMeta(dormant));
+    resumed = await pendingResume.promise;
   } catch (error) {
-    _pendingDormantResumes.delete(hubId);
+    if (_pendingDormantResumes.get(hubId) === pendingResume) {
+      _pendingDormantResumes.delete(hubId);
+    }
     throw error;
   }
   if (resumed && resumed.cwdFellBackFrom) {

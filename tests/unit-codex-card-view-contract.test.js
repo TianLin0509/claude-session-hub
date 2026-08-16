@@ -29,12 +29,12 @@ assert.ok(
 );
 assert.ok(
   /const liveRolloutPath = hubSessionId \? transcriptTap\.getCodexRolloutPath\(hubSessionId\) : null;/.test(transcriptIpcSrc)
-    && /if \(liveRolloutPath && validateCodexRolloutPath\(liveRolloutPath\)\) \{\s*transcriptPath = liveRolloutPath;\s*\}/.test(transcriptIpcSrc),
-  'parse-session-transcript must prefer a validated live CodexTap rollout over stale renderer transcriptPath',
+    && /if \(liveRolloutPath && validateCodexRolloutPath\(liveRolloutPath, expectedCodexSid\)\) \{\s*transcriptPath = liveRolloutPath;\s*\}/.test(transcriptIpcSrc),
+  'parse-session-transcript must prefer a SID-validated live CodexTap rollout over stale renderer transcriptPath',
 );
 assert.ok(
-  /findCodexRolloutBySid\(effectiveCodexSid,\s*meta\.codexSessionsRoot\s*\|\|\s*defaultCodexSessionsRoot\)/.test(resumeIpcSrc),
-  'resume-session must recover a Codex rollout path from a validated persisted codexSid',
+  /findCodexRolloutBySid\(effectiveCodexSid,\s*effectiveCodexSessionsRoot\)/.test(resumeIpcSrc),
+  'resume-session must recover a Codex rollout path from codexSid inside the resolved profile root',
 );
 assert.ok(
   transcriptIpcSrc.includes('isCodexCliKind(runtimeKind)')

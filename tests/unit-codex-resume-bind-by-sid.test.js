@@ -46,6 +46,73 @@ async function testResumeBindsExistingRolloutByCodexSid() {
   }
 }
 
+async function testResumeFallsBackToSidWhenPersistedPathIsStale() {
+  const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'codex-resume-stale-path-'));
+  const cwd = path.join(os.tmpdir(), 'codex-resume-stale-path-project');
+  const codexSid = '019e9999-dddd-7eee-8fff-123456789abc';
+  const fr = new FakeCodexRollout({
+    sessionsRoot: tmpRoot,
+    cwd,
+    sid: codexSid,
+    startAt: new Date(Date.now() - 60 * 60 * 1000),
+  });
+  await fr.start();
+  await fr.writeTaskComplete('sid repaired answer', 100, { at: new Date() });
+  await fr.close();
+
+  const tap = new CodexTap({ sessionsRoot: tmpRoot, pollIntervalMs: 50 });
+  const hubSid = 'hub-resume-codex-stale-path';
+  try {
+    tap.registerSession(hubSid, {
+      cwd,
+      codexSid,
+      transcriptPath: path.join(tmpRoot, 'missing-rollout.jsonl'),
+    });
+    const bound = await waitFor(() => {
+      const snap = tap.getDebugSnapshot();
+      return snap.bound.find((b) => b.hubSessionId === hubSid);
+    });
+    assert.ok(bound, 'a stale persisted path must fall back to the exact codexSid');
+    assert.strictEqual(bound.rolloutPath, fr.rolloutPath);
+  } finally {
+    tap.unregisterSession(hubSid);
+    await fr.cleanup();
+  }
+}
+
+async function testResumeSidLookupStaysInsideRequestedProfileRoot() {
+  const tmpBase = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'codex-resume-profile-root-'));
+  const mainRoot = path.join(tmpBase, 'main', 'sessions');
+  const secondRoot = path.join(tmpBase, 'second', 'sessions');
+  const cwd = path.join(tmpBase, 'workspace');
+  const codexSid = '019e9999-eeee-7fff-8aaa-123456789abc';
+  const startAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const mainRollout = new FakeCodexRollout({ sessionsRoot: mainRoot, cwd, sid: codexSid, startAt });
+  const secondRollout = new FakeCodexRollout({ sessionsRoot: secondRoot, cwd, sid: codexSid, startAt });
+  await mainRollout.start();
+  await mainRollout.writeTaskComplete('wrong profile answer');
+  await mainRollout.close();
+  await secondRollout.start();
+  await secondRollout.writeTaskComplete('second profile answer');
+  await secondRollout.close();
+
+  const tap = new CodexTap({ sessionsRoot: mainRoot, pollIntervalMs: 50 });
+  const hubSid = 'hub-resume-codex-second-profile';
+  try {
+    tap.registerSession(hubSid, { cwd, codexSid, sessionsRoot: secondRoot });
+    const bound = await waitFor(() => {
+      const snap = tap.getDebugSnapshot();
+      return snap.bound.find((b) => b.hubSessionId === hubSid);
+    });
+    assert.ok(bound, 'profile-scoped SID lookup should bind');
+    assert.strictEqual(bound.rolloutPath, secondRollout.rolloutPath,
+      'the same SID in the default profile must not win over the requested profile root');
+  } finally {
+    tap.unregisterSession(hubSid);
+    await fs.promises.rm(tmpBase, { recursive: true, force: true });
+  }
+}
+
 async function testResumeBindsOldRolloutByFreshMtimeWhenSidMissing() {
   const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'codex-resume-mtime-'));
   const cwd = path.join(os.tmpdir(), 'codex-resume-project-mtime');
@@ -103,6 +170,8 @@ async function testFreshSessionDoesNotBindOldRolloutByFreshMtime() {
 (async () => {
   console.log('Running Codex resume bind-by-sid test...');
   await testResumeBindsExistingRolloutByCodexSid();
+  await testResumeFallsBackToSidWhenPersistedPathIsStale();
+  await testResumeSidLookupStaysInsideRequestedProfileRoot();
   await testResumeBindsOldRolloutByFreshMtimeWhenSidMissing();
   await testFreshSessionDoesNotBindOldRolloutByFreshMtime();
   console.log('  OK');

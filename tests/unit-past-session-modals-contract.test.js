@@ -66,6 +66,46 @@ test('two live PTYs with the same native id are reported but never auto-closed',
   assert.strictEqual(map.size, 2);
 });
 
+test('Codex native identity is profile-scoped so copied rollout SIDs are not merged', () => {
+  const map = new Map([
+    ['main', {
+      id: 'main', kind: 'codex', status: 'dormant', codexSid: 'codex-shared',
+      codexProfile: 'default', lastMessageTime: 10,
+    }],
+    ['second', {
+      id: 'second', kind: 'codex-resume', status: 'dormant', codexSid: 'codex-shared',
+      codexProfile: 'second', lastMessageTime: 20,
+    }],
+  ]);
+  assert.notStrictEqual(
+    nativeTranscriptSessionKey(map.get('main')),
+    nativeTranscriptSessionKey(map.get('second')),
+  );
+  assert.deepStrictEqual(collapseDormantNativeDuplicates(map), []);
+  assert.strictEqual(map.size, 2);
+});
+
+test('same-profile Codex duplicate collapse preserves resume metadata', () => {
+  const map = new Map([
+    ['older', {
+      id: 'older', kind: 'codex', status: 'dormant', codexSid: 'codex-1',
+      codexProfile: 'second', codexSessionsRoot: 'C:\\codex-second\\sessions',
+      transcriptPath: 'C:\\codex-second\\sessions\\rollout.jsonl', mcpProfile: 'full',
+      lastMessageTime: 10,
+    }],
+    ['newer', {
+      id: 'newer', kind: 'codex-resume', status: 'dormant', codexSid: 'codex-1',
+      codexProfile: 'second', lastMessageTime: 20,
+    }],
+  ]);
+  assert.deepStrictEqual(collapseDormantNativeDuplicates(map), [
+    { removedId: 'older', keptId: 'newer' },
+  ]);
+  assert.strictEqual(map.get('newer').codexSessionsRoot, 'C:\\codex-second\\sessions');
+  assert.strictEqual(map.get('newer').transcriptPath, 'C:\\codex-second\\sessions\\rollout.jsonl');
+  assert.strictEqual(map.get('newer').mcpProfile, 'full');
+});
+
 test('Gemini dormant shells use their native chat id for duplicate collapse', () => {
   const map = new Map([
     ['old-g', { id: 'old-g', kind: 'gemini-resume', geminiChatId: 'gemini-1', status: 'dormant', lastMessageTime: 1 }],

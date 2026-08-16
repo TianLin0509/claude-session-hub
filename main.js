@@ -128,6 +128,7 @@ const {
   findCodexRolloutByCwd,
   isUsableCodexRolloutPath,
   isCodexSubagentRolloutPath,
+  readCodexRolloutMeta,
 } = require('./core/codex-transcript-parser.js');
 const { registerArchiveIpc } = require('./main/ipc/archive-handlers.js');
 const transcriptParserService = new TranscriptParserService();
@@ -1108,8 +1109,23 @@ const resumeSession = createResumeSessionHandler({
   meetingManager,
   os,
   path,
+  readCodexRolloutMeta,
   readTranscriptTail,
   registerSessionForTap,
+  resolveCodexSessionsRoot: (meta = {}) => {
+    // Meeting Codex deliberately shares the ordinary ~/.codex history. A
+    // standalone resume follows its persisted subscription profile instead of
+    // accidentally looking only in the currently selected account.
+    if (meta.meetingId) return DEFAULT_CODEX_SESSIONS_ROOT;
+    const config = getHubConfig();
+    return resolveCodexUsageScope({
+      ...config,
+      ...(meta.codexProfile ? { codexSubscriptionProfile: meta.codexProfile } : {}),
+    }, {
+      hubDataDir: getHubDataDir(),
+      homeDir: os.homedir(),
+    }).sessionsRoot;
+  },
   scenes,
   sendToRenderer,
   sessionManager,

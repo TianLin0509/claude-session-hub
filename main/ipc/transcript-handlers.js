@@ -58,7 +58,7 @@ async function parseSessionTranscript(args = {}, deps) {
     if (isCodexCliKind(runtimeKind)) {
       const liveRolloutPath = hubSessionId ? transcriptTap.getCodexRolloutPath(hubSessionId) : null;
       const expectedCodexSid = session && session.codexSid ? session.codexSid : null;
-      if (liveRolloutPath && validateCodexRolloutPath(liveRolloutPath)) {
+      if (liveRolloutPath && validateCodexRolloutPath(liveRolloutPath, expectedCodexSid)) {
         transcriptPath = liveRolloutPath;
       }
       if (!transcriptPath && session && session.transcriptPath

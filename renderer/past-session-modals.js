@@ -20,6 +20,15 @@ function normalizeTranscriptPath(value) {
   return String(value || '').replace(/\//g, '\\').toLowerCase();
 }
 
+function codexSessionScopeKey(session) {
+  const profile = String(session && session.codexProfile || '').trim().toLowerCase();
+  if (profile) return `profile:${profile}`;
+  const sessionsRoot = normalizeTranscriptPath(session && session.codexSessionsRoot);
+  if (sessionsRoot) return `root:${sessionsRoot}`;
+  // Pre-profile Hub state always used the default ~/.codex account.
+  return 'profile:default';
+}
+
 function findReusableClaudeSession(sessionValues, native = {}) {
   const ccSessionId = String(native.sessionId || '').trim();
   const transcriptPath = normalizeTranscriptPath(native.path);
@@ -41,11 +50,15 @@ function findReusableClaudeSession(sessionValues, native = {}) {
 function nativeTranscriptSessionKey(session) {
   if (!session || session.meetingId) return null;
   const kind = String(session.kind || '').replace(/-resume$/, '');
-  if (kind === 'deepseek' && session.codexSid) return `deepseek:codex:${session.codexSid}`;
+  if (kind === 'deepseek' && session.codexSid) {
+    return `deepseek:codex:${codexSessionScopeKey(session)}:${session.codexSid}`;
+  }
   if ((kind === 'claude' || kind === 'deepseek') && session.ccSessionId) {
     return `${kind}:cc:${session.ccSessionId}`;
   }
-  if (kind === 'codex' && session.codexSid) return `codex:${session.codexSid}`;
+  if (kind === 'codex' && session.codexSid) {
+    return `codex:${codexSessionScopeKey(session)}:${session.codexSid}`;
+  }
   if (kind === 'gemini' && session.geminiChatId) return `gemini:${session.geminiChatId}`;
   if (kind === 'kimi' && session.kimiSid) return `kimi:${session.kimiSid}`;
   return null;
@@ -85,6 +98,15 @@ function collapseDormantNativeDuplicates(sessionMap) {
       );
       if (!keep.cwd && duplicate.cwd) keep.cwd = duplicate.cwd;
       if (!keep.transcriptPath && duplicate.transcriptPath) keep.transcriptPath = duplicate.transcriptPath;
+      for (const field of [
+        'codexSessionsRoot',
+        'codexProfile',
+        'codexProfileLabel',
+        'mcpProfile',
+        'codexSpeedTier',
+      ]) {
+        if (keep[field] == null && duplicate[field] != null) keep[field] = duplicate[field];
+      }
       if (!keep.userRenamed && duplicate.userRenamed) {
         keep.title = duplicate.title;
         keep.userRenamed = true;

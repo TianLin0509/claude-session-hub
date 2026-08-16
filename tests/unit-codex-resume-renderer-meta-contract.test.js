@@ -27,4 +27,12 @@ test('session-meta-updated overwrites stale codexSid', () => {
   );
 });
 
+test('session-updated and dormant wake keep Codex resume identity synchronized', () => {
+  assert.match(RENDERER_SRC, /if \(session\.codexSid\) local\.codexSid = session\.codexSid;/);
+  assert.match(RENDERER_SRC, /if \(session\.codexProfile\) local\.codexProfile = session\.codexProfile;/);
+  assert.match(RENDERER_SRC, /const existingPending = _pendingDormantResumes\.get\(hubId\);/);
+  assert.match(RENDERER_SRC, /return existingPending\.promise \|\| null;/);
+  assert.match(RENDERER_SRC, /pendingResume\.promise = ipcRenderer\.invoke\('resume-session'/);
+});
+
 console.log('All passed.');

@@ -21,8 +21,10 @@ function createResumeSessionHandler(deps) {
     meetingManager,
     os,
     path,
+    readCodexRolloutMeta = () => null,
     readTranscriptTail,
     registerSessionForTap,
+    resolveCodexSessionsRoot = null,
     scenes,
     sendToRenderer,
     sessionManager,
@@ -44,6 +46,17 @@ function createResumeSessionHandler(deps) {
     const isKimi = isKimiCliKind(meta.kind);
     const isNativeResumeKind = (isGemini || isCodexRuntime || isKimi);
     let effectiveCodexSid = isCodexRuntime ? (meta.codexSid || null) : null;
+    let effectiveCodexSessionsRoot = isCodexRuntime ? (meta.codexSessionsRoot || null) : null;
+    if (isCodexRuntime && !effectiveCodexSessionsRoot && typeof resolveCodexSessionsRoot === 'function') {
+      try {
+        effectiveCodexSessionsRoot = resolveCodexSessionsRoot(meta) || null;
+      } catch (error) {
+        logger.warn('[resume-session] failed to resolve Codex profile sessions root:', error && error.message);
+      }
+    }
+    if (isCodexRuntime && !effectiveCodexSessionsRoot) {
+      effectiveCodexSessionsRoot = defaultCodexSessionsRoot;
+    }
     const hookPort = getHookPort();
 
     let resumeOpts = {};
@@ -106,9 +119,28 @@ function createResumeSessionHandler(deps) {
 
     let resumeTranscriptPath = meta.transcriptPath || null;
     if (isCodexRuntime && resumeTranscriptPath && isCodexSubagentRolloutPath(resumeTranscriptPath)) {
-      logger.warn(`[resume-session] rejected subagent rollout binding for Hub session ${String(meta.hubId).slice(0, 8)}`);
+      // Older Hub builds could persist the active Codex subagent rollout as if
+      // it were the top-level PTY session. Recover the parent native SID when
+      // the rollout records it; otherwise keep the old safe picker fallback.
+      let parentCodexSid = null;
+      let subagentCodexSid = null;
+      try {
+        const rolloutMeta = readCodexRolloutMeta(resumeTranscriptPath);
+        subagentCodexSid = rolloutMeta && (rolloutMeta.id || rolloutMeta.session_id) || null;
+        parentCodexSid = rolloutMeta && (
+          rolloutMeta.parent_thread_id
+          || rolloutMeta.source?.subagent?.thread_spawn?.parent_thread_id
+          || rolloutMeta.source?.subagent?.parent_thread_id
+        ) || null;
+      } catch {}
       resumeTranscriptPath = null;
-      effectiveCodexSid = null;
+      if (parentCodexSid) {
+        effectiveCodexSid = parentCodexSid;
+        logger.warn(`[resume-session] repaired subagent binding to parent Codex session ${String(parentCodexSid).slice(0, 8)}`);
+      } else if (!effectiveCodexSid || !subagentCodexSid || effectiveCodexSid === subagentCodexSid) {
+        effectiveCodexSid = null;
+        logger.warn(`[resume-session] rejected subagent rollout binding for Hub session ${String(meta.hubId).slice(0, 8)}`);
+      }
     }
     // Resume metadata may point at a pre-archive path.  Provider-native ids are
     // the authority: when discovery succeeds, prefer it even if a persisted
@@ -121,7 +153,7 @@ function createResumeSessionHandler(deps) {
     }
     if (isCodexRuntime && effectiveCodexSid) {
       try {
-        const discovered = findCodexRolloutBySid(effectiveCodexSid, meta.codexSessionsRoot || defaultCodexSessionsRoot);
+        const discovered = findCodexRolloutBySid(effectiveCodexSid, effectiveCodexSessionsRoot);
         if (discovered) resumeTranscriptPath = discovered;
       } catch {}
     }
@@ -164,7 +196,7 @@ function createResumeSessionHandler(deps) {
       }
     }
 
-    const session = sessionManager.createSession(meta.kind || 'claude', {
+    const createdSession = sessionManager.createSession(meta.kind || 'claude', {
       id: meta.hubId,
       title: meta.title,
       cwd: (isGemini && meta.geminiProjectRoot) ? meta.geminiProjectRoot : meta.cwd,
@@ -217,7 +249,12 @@ function createResumeSessionHandler(deps) {
       ...(meta.hiddenFromSidebar ? { hiddenFromSidebar: true } : {}),
       ...resumeOpts,
     });
-    registerSessionForTap(session);
+    registerSessionForTap(createdSession);
+    // CodexTap can synchronously discover and publish a persisted rollout
+    // while registerSessionForTap is still on the stack. Always send/return the
+    // authoritative SessionManager copy so that freshly repaired SID/path/root
+    // metadata is not overwritten by the stale createSession return value.
+    const session = sessionManager.getSession(createdSession.id) || createdSession;
     sendToRenderer('session-created', { session });
 
     const needsLevel3 = (
