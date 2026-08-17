@@ -53,9 +53,62 @@ function timestampToMs(timestamp) {
   return Number.isFinite(ms) ? ms : null;
 }
 
+function numericTimestampToMs(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return numeric < 100_000_000_000 ? numeric * 1000 : numeric;
+}
+
+/**
+ * Normalize the authoritative Codex user-submit records across CLI versions.
+ *
+ * Codex <= 0.144 wrote:
+ *   event_msg(payload.type = "user_message")
+ *
+ * Codex 0.147 writes:
+ *   event_msg(payload.type = "item_completed", item.type = "UserMessage")
+ *
+ * Do not treat every response_item(role = "user") as a submission: the
+ * rollout also stores injected AGENTS/environment context with that role.
+ */
+function codexUserMessageEventFromRecord(record) {
+  if (!record || record.type !== 'event_msg' || !record.payload) return null;
+  const payload = record.payload;
+  let messagePayload = null;
+  let signalSource = null;
+
+  if (payload.type === 'user_message') {
+    messagePayload = payload;
+    signalSource = 'user_message';
+  } else if (payload.type === 'item_completed' && payload.item) {
+    const itemType = String(payload.item.type || '').replace(/[_-]/g, '').toLowerCase();
+    if (itemType !== 'usermessage') return null;
+    messagePayload = payload.item;
+    signalSource = 'item_completed_user_message';
+  } else {
+    return null;
+  }
+
+  const text = codexTextFromPayload(messagePayload).trim();
+  if (!text) return null;
+  const submittedAt = timestampToMs(record.timestamp)
+    || numericTimestampToMs(payload.completed_at_ms)
+    || numericTimestampToMs(payload.started_at_ms)
+    || numericTimestampToMs(payload.completed_at)
+    || numericTimestampToMs(payload.started_at);
+
+  return {
+    text,
+    submittedAt,
+    turnId: codexTurnIdFromPayload(payload) || codexTurnIdFromPayload(messagePayload),
+    signalSource,
+  };
+}
+
 module.exports = {
   codexTextFromContent,
   codexTextFromPayload,
   codexTurnIdFromPayload,
+  codexUserMessageEventFromRecord,
   timestampToMs,
 };

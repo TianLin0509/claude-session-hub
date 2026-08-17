@@ -29,7 +29,11 @@ const {
   readCodexRolloutMeta,
 } = require('./codex-transcript-parser.js');
 const { JsonlTail } = require('./jsonl-tail.js');
-const { codexTextFromPayload, codexTurnIdFromPayload, timestampToMs } = require('./transcript-payload-utils.js');
+const {
+  codexTurnIdFromPayload,
+  codexUserMessageEventFromRecord,
+  timestampToMs,
+} = require('./transcript-payload-utils.js');
 const { KimiTap } = require('./kimi-transcript-tap.js');
 
 // ---------------------------------------------------------------------------
@@ -406,14 +410,14 @@ async function readCodexUserMessageEvents(rolloutPath) {
     if (!trimmed) continue;
     let obj;
     try { obj = JSON.parse(trimmed); } catch { continue; }
-    if (obj?.type !== 'event_msg' || obj.payload?.type !== 'user_message') continue;
-    const text = codexTextFromPayload(obj.payload).trim();
-    if (text) {
-      out.push({
-        text,
-        submittedAt: timestampToMs(obj.timestamp) || 0,
-      });
-    }
+    const event = codexUserMessageEventFromRecord(obj);
+    if (!event) continue;
+    out.push({
+      text: event.text,
+      submittedAt: event.submittedAt || 0,
+      turnId: event.turnId || null,
+      signalSource: event.signalSource,
+    });
   }
   return out;
 }
@@ -783,8 +787,9 @@ class CodexTap extends EventEmitter {
       if (!trimmed) continue;
       let obj;
       try { obj = JSON.parse(trimmed); } catch { continue; }
-      if (obj?.type !== 'event_msg' || obj.payload?.type !== 'user_message') continue;
-      const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+      const userEvent = codexUserMessageEventFromRecord(obj);
+      if (!userEvent) continue;
+      const ts = userEvent.submittedAt || NaN;
       // 窗口内的最后一条 user_message 才能推进下界；窗口外（下一轮）的不算
       if (Number.isFinite(ts) && ts >= effectiveSinceTs && !beyondWindow(ts)) {
         effectiveSinceTs = ts;
@@ -1138,21 +1143,24 @@ class CodexTap extends EventEmitter {
         }
       }
 
-      if (eventType === 'user_message') {
-        const text = codexTextFromPayload(obj.payload).trim();
-        if (text) {
-          const sig = `${obj.timestamp || ''}:${text}`;
-          if (entry._lastPromptSig !== sig) {
-            entry._lastPromptSig = sig;
-            this.emit('prompt-submitted', {
-              hubSessionId,
-              text,
-              transcriptPath: entry.rolloutPath,
-              submittedAt: timestampToMs(obj.timestamp) || Date.now(),
-              turnId: eventTurnId || entry._currentTurnId || null,
-              signalSource: 'user_message',
-            });
-          }
+      const userEvent = codexUserMessageEventFromRecord(obj);
+      if (userEvent) {
+        const turnId = userEvent.turnId || eventTurnId || entry._currentTurnId || null;
+        // Prefer turn identity so a transitional CLI that writes both the old
+        // and new user-message records cannot double-submit the same prompt.
+        const sig = turnId
+          ? `${turnId}:${userEvent.text}`
+          : `${userEvent.submittedAt || obj.timestamp || ''}:${userEvent.text}`;
+        if (entry._lastPromptSig !== sig) {
+          entry._lastPromptSig = sig;
+          this.emit('prompt-submitted', {
+            hubSessionId,
+            text: userEvent.text,
+            transcriptPath: entry.rolloutPath,
+            submittedAt: userEvent.submittedAt || Date.now(),
+            turnId,
+            signalSource: userEvent.signalSource,
+          });
         }
       }
 

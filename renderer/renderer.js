@@ -4760,8 +4760,17 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (typeof session.completionNotificationEnabled === 'boolean') {
     local.completionNotificationEnabled = session.completionNotificationEnabled;
   }
-  if (session.id === activeSessionId) updateActiveMetricsRow();
-  if (session.id === activeSessionId) completionNotificationToggle.refreshTarget();
+  if (session.id === activeSessionId) {
+    // Auto-title and external rename updates already refresh the sidebar, but
+    // the active terminal header used to keep the placeholder (for example
+    // "Codex 1") until the user switched away and back. Keep both views on the
+    // same authoritative session title without disturbing an in-progress
+    // inline rename (the span is absent while its input is mounted).
+    const activeTitle = terminalPanelEl.querySelector('.terminal-title');
+    if (activeTitle && activeTitle.textContent !== local.title) activeTitle.textContent = local.title;
+    updateActiveMetricsRow();
+    completionNotificationToggle.refreshTarget();
+  }
   scheduleSessionListRender();
 });
 

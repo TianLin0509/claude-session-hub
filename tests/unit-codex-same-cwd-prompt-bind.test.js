@@ -27,6 +27,26 @@ async function writeUserMessage(fr, message) {
   });
 }
 
+async function writeCodex0147UserMessage(fr, message, turnId = 'turn-0147') {
+  const at = new Date();
+  await fr.writeRaw({
+    timestamp: at.toISOString(),
+    type: 'event_msg',
+    payload: {
+      type: 'item_completed',
+      thread_id: 'thread-0147',
+      turn_id: turnId,
+      item: {
+        type: 'UserMessage',
+        id: `user-${turnId}`,
+        content: [{ type: 'text', text: message, text_elements: [] }],
+      },
+      started_at_ms: at.getTime() - 5,
+      completed_at_ms: at.getTime(),
+    },
+  });
+}
+
 async function testSameCwdWaitsForPromptMatch() {
   const tmpRoot = path.join(os.tmpdir(), `codex-same-cwd-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
   const cwd = 'C:\\test\\shared-cwd';
@@ -138,6 +158,66 @@ async function testSameCwdBindsWhenTuiDropsUnicodeFormatting() {
   }
 }
 
+async function testCodex0147ItemCompletedBindsAndEmitsPrompt() {
+  const tmpRoot = path.join(os.tmpdir(), `codex-0147-bind-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+  const cwd = 'C:\\test\\codex-0147-shared';
+  const tap = new CodexTap({ sessionsRoot: tmpRoot, pollIntervalMs: 50 });
+  const startAt = new Date();
+  const frA = new FakeCodexRollout({
+    sessionsRoot: tmpRoot,
+    cwd,
+    sid: '019effff-0000-7000-8000-000000000147',
+    startAt,
+    cliVersion: '0.147.0',
+  });
+  const frB = new FakeCodexRollout({
+    sessionsRoot: tmpRoot,
+    cwd,
+    sid: '019effff-0000-7000-8000-000000000148',
+    startAt,
+    cliVersion: '0.147.0',
+  });
+  const promptEvents = [];
+  tap.on('prompt-submitted', event => promptEvents.push(event));
+
+  try {
+    tap.registerSession('hub-0147-A', { cwd, requirePromptMatch: true });
+    tap.registerSession('hub-0147-B', { cwd, requirePromptMatch: true });
+    tap.notePrompt('hub-0147-A', '修复 Codex 自动命名');
+    tap.notePrompt('hub-0147-B', '另一个同目录任务');
+    await frA.start();
+    await frB.start();
+    await writeCodex0147UserMessage(frA, '修复 Codex 自动命名');
+
+    assert.ok(await waitFor(() => tap.getRolloutPath('hub-0147-A') === frA.rolloutPath),
+      'Codex 0.147 UserMessage item should satisfy prompt matching and bind the correct rollout');
+    assert.ok(await waitFor(() => promptEvents.length === 1),
+      'Codex 0.147 UserMessage item should emit the prompt event used by auto-title');
+    assert.strictEqual(tap.getRolloutPath('hub-0147-B'), null,
+      'the other same-cwd Hub session must not steal the rollout');
+    assert.deepStrictEqual(
+      {
+        hubSessionId: promptEvents[0].hubSessionId,
+        text: promptEvents[0].text,
+        turnId: promptEvents[0].turnId,
+        signalSource: promptEvents[0].signalSource,
+      },
+      {
+        hubSessionId: 'hub-0147-A',
+        text: '修复 Codex 自动命名',
+        turnId: 'turn-0147',
+        signalSource: 'item_completed_user_message',
+      },
+    );
+  } finally {
+    tap.unregisterSession('hub-0147-A');
+    tap.unregisterSession('hub-0147-B');
+    await frA.close();
+    await frB.close();
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 async function testShortPromptKeepsPunctuationSignificant() {
   const tmpRoot = path.join(os.tmpdir(), `codex-short-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
   const cwd = 'C:\\test\\short-prompt';
@@ -175,6 +255,7 @@ function testTranscriptTapExposesNotePrompt() {
     testSameCwdWaitsForPromptMatch,
     testSameCwdBindsWhenCodexPointerPromptIsConcatenated,
     testSameCwdBindsWhenTuiDropsUnicodeFormatting,
+    testCodex0147ItemCompletedBindsAndEmitsPrompt,
     testShortPromptKeepsPunctuationSignificant,
   ];
   let failed = 0;

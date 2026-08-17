@@ -9,8 +9,8 @@ const rendererSrc = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 
 const activitySrc = fs.readFileSync(path.join(root, 'renderer', 'terminal-activity-monitor.js'), 'utf8');
 
 assert.ok(
-  /eventType\s*===\s*['"]user_message['"][\s\S]{0,500}this\.emit\(['"]prompt-submitted['"]/.test(tapSrc),
-  'CodexTap must emit prompt-submitted from rollout user_message events',
+  /codexUserMessageEventFromRecord\(obj\)[\s\S]{0,900}this\.emit\(['"]prompt-submitted['"]/.test(tapSrc),
+  'CodexTap must emit prompt-submitted from normalized legacy and Codex 0.147 user-message events',
 );
 
 assert.ok(
