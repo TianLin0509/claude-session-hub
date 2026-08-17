@@ -197,7 +197,7 @@ test('only flags the selected CLI understands are sent', () => {
   assert.match(
     CONTROLLER_SRC,
     /if \(tuning\.showMcp\) opts\.mcpProfile = tuning\.mcpProfile/,
-    'Claude and Codex both receive an explicit lean/browser/wireless/full MCP profile',
+    'Claude and Codex both receive an explicit MCP profile, including Codex none',
   );
   // 只在显式关掉时才传 fastMode，不传 = 沿用 session-manager 的"默认开"。
   assert.match(
@@ -205,11 +205,21 @@ test('only flags the selected CLI understands are sent', () => {
     /if \(tuning\.showFast && tuning\.fastMode === false\) opts\.fastMode = false/,
     'fastMode must only be sent when the user explicitly turns it off',
   );
-  // 默认档位不能漂：Codex 保持历史的 lean，Claude 必须是 full（= 全量继承 = 改动前行为）。
+  // 默认档位不能漂：Codex 按用户要求 None，Claude 保持 full。
   assert.match(
     CONTROLLER_SRC,
-    /const DEFAULT_MCP_BY_KIND = \{ claude: 'full', codex: 'lean', deepseek: 'lean' \}/,
-    'Claude 默认 full，不能静默改成 lean 让会话少工具',
+    /const DEFAULT_MCP_BY_KIND = \{ claude: 'full', codex: 'none', deepseek: 'lean' \}/,
+    'Codex 默认必须是 None，且不能影响 Claude / DeepSeek 的历史默认',
+  );
+  assert.match(
+    CONTROLLER_SRC,
+    /const DEFAULT_CODEX_SPEED_BY_KIND = \{ codex: 'standard', deepseek: 'inherit' \}/,
+    'Codex 默认必须显式 Standard，不能继承全局 Fast',
+  );
+  assert.match(
+    CONTROLLER_SRC,
+    /if \(typeof tuning\.contextMax === 'number'\) opts\.contextMax = tuning\.contextMax/,
+    'Sol 的 1M context 必须真正进入创建参数',
   );
   assert.match(CONTROLLER_SRC, /function resolveSessionTuning\(kind, modelId, selection = \{\}\)/,
     '新建 Session 与群聊成员必须共用一份动态调优定义');

@@ -29,7 +29,7 @@ const MODEL_OPTIONS_BY_KIND = {
     { id: 'gemini-2.5-flash',     label: 'Gemini 2.5 Flash' },
   ],
   codex: [
-    { id: 'gpt-5.6-sol',   label: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-sol',   label: 'GPT-5.6 Sol · 1M 请求' },
     { id: 'gpt-5.5',       label: 'GPT-5.5' },
     { id: 'gpt-5.4',       label: 'GPT-5.4' },
     { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },

@@ -157,6 +157,24 @@ test('Codex 的 wireless 档不再把 superran 一起禁掉（原来只放行 su
   } finally { fs.rmSync(codexHome, { recursive: true, force: true }); }
 });
 
+test('Codex None 即使在 Wireless workspace 也禁用全部全局 MCP', () => {
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-codex-none-'));
+  try {
+    fs.writeFileSync(
+      path.join(codexHome, 'config.toml'),
+      '[mcp_servers.playwright]\ncommand = "npx"\n\n[mcp_servers.superran]\ncommand = "python"\n',
+      'utf8'
+    );
+    const args = _private.buildCodexMcpIsolationArgs(codexHome, {
+      mcpProfile: 'none',
+      cwd: 'C:\\Vibe\\Wireless\\demo',
+      allowedNames: ['playwright', 'superran', 'ai-team'],
+    });
+    assert.match(args, /mcp_servers\.playwright\.enabled=false/);
+    assert.match(args, /mcp_servers\.superran\.enabled=false/);
+  } finally { fs.rmSync(codexHome, { recursive: true, force: true }); }
+});
+
 test('Codex 思考强度收下全部实测合法档位，乱值回落 max', () => {
   const { normalizeCodexEffort } = _private;
   assert.equal(normalizeCodexEffort('low'), 'low');

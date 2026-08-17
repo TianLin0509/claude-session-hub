@@ -93,6 +93,10 @@ setInterval(() => {}, 1000);
   }
   fs.writeFileSync(path.join(CODEX_HOME, 'config.toml'), [
     'approval_policy = "never"',
+    'service_tier = "fast"',
+    '',
+    '[features]',
+    'fast_mode = true',
     '',
     '[mcp_servers.playwright]',
     'command = "npx"',
@@ -236,9 +240,8 @@ async function main() {
       fast.checked = false;
       fast.dispatchEvent(new Event('change', { bubbles: true }));
 
-      setValue(slots[1].querySelector('.mcm-effort-select'), 'low');
-      setValue(slots[1].querySelector('.mcm-mcp-select'), 'browser');
-      setValue(slots[1].querySelector('.mcm-codex-tier-select'), 'fast');
+      // Codex 成员故意保持所有默认值：本 E2E 直接验证 Sol-Max / 1M /
+      // None / Standard 从真实群聊 UI 一路进入 PTY 启动参数。
 
       setValue(slots[2].querySelector('.mcm-effort-select'), 'medium');
       setValue(slots[2].querySelector('.mcm-mcp-select'), 'wireless');
@@ -264,7 +267,7 @@ async function main() {
       codexSpeedTier: member.codexSpeedTier,
     })), [
       { kind: 'claude', effort: 'high', mcpProfile: 'lean', fastMode: false, codexSpeedTier: null },
-      { kind: 'codex', effort: 'low', mcpProfile: 'browser', fastMode: null, codexSpeedTier: 'fast' },
+      { kind: 'codex', effort: 'max', mcpProfile: 'none', fastMode: null, codexSpeedTier: 'standard' },
       { kind: 'deepseek', effort: 'medium', mcpProfile: 'wireless', fastMode: null, codexSpeedTier: 'flex' },
     ]);
 
@@ -310,7 +313,7 @@ async function main() {
       },
       {
         index: 1, kind: 'codex', model: configuredMembers[1].model,
-        effort: 'low', mcpProfile: 'browser', codexSpeedTier: 'fast',
+        effort: 'max', mcpProfile: 'none', codexSpeedTier: 'standard', contextMax: 1_000_000,
       },
       {
         index: 2, kind: 'deepseek', model: configuredMembers[2].model,
@@ -321,9 +324,10 @@ async function main() {
     assert.equal(sessionsByKind.claude.effort, 'high');
     assert.equal(sessionsByKind.claude.mcpProfile, 'lean');
     assert.equal(sessionsByKind.claude.fastMode, false);
-    assert.equal(sessionsByKind.codex.effort, 'low');
-    assert.equal(sessionsByKind.codex.mcpProfile, 'browser');
-    assert.equal(sessionsByKind.codex.codexSpeedTier, 'fast');
+    assert.equal(sessionsByKind.codex.effort, 'max');
+    assert.equal(sessionsByKind.codex.mcpProfile, 'none');
+    assert.equal(sessionsByKind.codex.codexSpeedTier, 'standard');
+    assert.equal(sessionsByKind.codex.contextMax, 1_000_000);
     assert.equal(sessionsByKind.deepseek.effort, 'medium');
     assert.equal(sessionsByKind.deepseek.mcpProfile, 'wireless');
     assert.equal(sessionsByKind.deepseek.codexSpeedTier, 'flex');
@@ -346,13 +350,16 @@ async function main() {
       'Lean must add its filtered global MCP config beside the room config');
     assert.doesNotMatch(argsText(claudeInvocation), /claude-subscription-fast-settings/,
       'Claude Fast off must reach the actual group member command');
-    assert.match(argsText(codexInvocation), /model_reasoning_effort=.*low/);
-    assert.match(argsText(codexInvocation), /service_tier=.*fast/);
+    assert.match(argsText(codexInvocation), /model_reasoning_effort=.*max/);
+    assert.match(argsText(codexInvocation), /model_context_window=1000000/);
+    assert.match(argsText(codexInvocation), /features\.fast_mode=false/);
+    assert.doesNotMatch(argsText(codexInvocation), /service_tier=.*fast/);
+    assert.match(argsText(codexInvocation), /service_tier=.*default/);
     assert.match(argsText(codexInvocation), /mcp_servers\.superran\.enabled=false/);
     assert.match(argsText(codexInvocation), /mcp_servers\.misc\.enabled=false/);
-    assert.doesNotMatch(argsText(codexInvocation), /mcp_servers\.playwright\.enabled=false/);
-    assert.match(argsText(codexInvocation), /mcp_servers\.arena_research\.command/,
-      'Browser profile must retain the mandatory Codex research MCP');
+    assert.match(argsText(codexInvocation), /mcp_servers\.playwright\.enabled=false/);
+    assert.doesNotMatch(argsText(codexInvocation), /mcp_servers\.ai-team\.command/);
+    assert.doesNotMatch(argsText(codexInvocation), /mcp_servers\.arena_research\.command/);
     assert.match(argsText(deepseekInvocation), /model_reasoning_effort=.*medium/);
     assert.match(argsText(deepseekInvocation), /service_tier=.*flex/);
     // DeepSeek 的 Codex API profile 是隔离生成的，本用例没有给它预装全局 MCP；

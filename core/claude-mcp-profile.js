@@ -3,8 +3,8 @@
 /**
  * Claude CLI 的 MCP 加载档位 —— 对标 Codex 那套 `mcp_servers.X.enabled=false`。
  *
- * 背景：Codex 早就有 lean/browser/wireless/full 四档（session-manager.js 的
- * buildCodexMcpIsolationArgs），普通 Codex 会话默认 lean，只放行必要的。
+ * 背景：Codex 有 none/lean/browser/wireless/full 五档（session-manager.js 的
+ * buildCodexMcpIsolationArgs），普通 Codex 会话现在默认 none。
  * Claude 这边一直是**全量继承** —— 每开一个 Claude 会话，~/.claude.json 里
  * 那七个 MCP server（playwright / gemini-cli / codex-cli / deepseek / qwen /
  * glm / superran）全部拉起来，每个都是一个常驻子进程。开三四个会话就很可观。
@@ -14,8 +14,8 @@
  * 按档位过滤后原样写进一个临时 config，再让 CLI 只读它。用户的 ~/.claude.json
  * 一个字节都不动。
  *
- * **默认必须是 full**（= 改动前的行为）。Codex 默认 lean 是它自己的历史选择；
- * 把 Claude 也悄悄改成 lean 会让一堆依赖 MCP 的会话突然少工具，属于静默降级。
+ * **Claude 默认必须是 full**（= 改动前的行为）。Codex 的 None 是独立用户偏好；
+ * 不能顺带改变 Claude，否则会让依赖 MCP 的会话突然少工具，属于静默降级。
  */
 
 const fs = require('fs');

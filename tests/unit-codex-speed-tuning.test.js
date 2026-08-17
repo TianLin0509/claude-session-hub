@@ -1,7 +1,8 @@
 'use strict';
 
-// Codex 的两个速度旋钮 —— service_tier（对标 Claude fast）与 model_reasoning_effort。
-// 这些常量是 2026-08-16 从 codex-cli 0.144.0 实测出来的，不是凭印象写的：
+// Codex 的两个速度旋钮 —— Fast/service_tier 与 model_reasoning_effort。
+// 模型档位来自本地模型目录；Standard/Fast 的会话覆盖遵循 Codex CLI 0.147
+// 的 features.fast_mode 官方配置语义。
 //   * ~/.codex/models_cache.json 给出每个模型的 supported_reasoning_levels
 //     （gpt-5.6-sol 到 ultra，gpt-5.5 只到 xhigh）与 additional_speed_tiers=["fast"]；
 //     service_tiers=[{id:"priority", name:"Fast", description:"1.5x speed, increased usage"}]
@@ -29,6 +30,13 @@ const {
   describeCodexModelTuning,
   isEffortSupported,
 } = require('../core/codex-model-catalog.js');
+const {
+  HUB_CODEX_CONTEXT_WINDOW,
+  buildCodexContextWindowArg,
+  defaultCodexContextWindow,
+  normalizeCodexContextWindow,
+  resolveCodexContextWindow,
+} = require('../core/codex-context-window.js');
 const { _private } = require('../core/session-manager.js');
 
 function makeCodexHome({ configToml = '', modelsCache = null } = {}) {
@@ -67,28 +75,47 @@ const CATALOG = {
   ],
 };
 
-test('service_tier 只认实测有效的值，inherit 表示完全不覆盖', () => {
+test('速度档位默认 Standard，inherit 仍表示完全不覆盖', () => {
   assert.equal(normalizeCodexSpeedTier(undefined), DEFAULT_CODEX_SPEED_TIER);
-  assert.equal(DEFAULT_CODEX_SPEED_TIER, 'inherit');
+  assert.equal(DEFAULT_CODEX_SPEED_TIER, 'standard');
+  assert.equal(normalizeCodexSpeedTier('STANDARD'), 'standard');
   assert.equal(normalizeCodexSpeedTier('FAST'), 'fast');
   assert.equal(normalizeCodexSpeedTier('flex'), 'flex');
-  // priority 是模型目录里的 tier id，配置里写的是 fast；不在白名单就当没选，
-  // 宁可不覆盖也不要拼一个可能被 API 拒绝的值进命令行。
-  assert.equal(normalizeCodexSpeedTier('priority'), 'inherit');
-  assert.equal(normalizeCodexSpeedTier('banana'), 'inherit');
+  assert.equal(normalizeCodexSpeedTier('priority'), 'standard');
+  assert.equal(normalizeCodexSpeedTier('banana'), 'standard');
 });
 
-test('inherit 不产生任何 flag —— 等于改动前的行为', () => {
+test('Standard 显式关闭 Fast，inherit 才完全不干预', () => {
   assert.equal(buildCodexSpeedTierArg('inherit'), '');
-  assert.equal(buildCodexSpeedTierArg(undefined), '');
-  assert.equal(buildCodexSpeedTierArg('banana'), '');
+  assert.equal(buildCodexSpeedTierArg(undefined), ` -c 'features.fast_mode=false' -c 'service_tier="default"'`);
+  assert.equal(buildCodexSpeedTierArg('banana'), ` -c 'features.fast_mode=false' -c 'service_tier="default"'`);
 });
 
-test('fast / flex 拼出与其它 -c 同款引号风格的片段', () => {
+test('fast / flex 同时覆盖 feature 与 service tier，避免继承冲突', () => {
   // 整条命令是写进 PowerShell PTY 的，外层单引号 + TOML 内层双引号是本仓库
   // 其它 5 个 -c 已经验证过的写法，别改成别的引号组合。
-  assert.equal(buildCodexSpeedTierArg('fast'), ` -c 'service_tier="fast"'`);
-  assert.equal(buildCodexSpeedTierArg('flex'), ` -c 'service_tier="flex"'`);
+  assert.equal(buildCodexSpeedTierArg('fast'), ` -c 'features.fast_mode=true' -c 'service_tier="fast"'`);
+  assert.equal(buildCodexSpeedTierArg('flex'), ` -c 'features.fast_mode=false' -c 'service_tier="flex"'`);
+});
+
+test('Sol 默认显式使用 1M context，其它模型不虚构窗口', () => {
+  assert.equal(HUB_CODEX_CONTEXT_WINDOW, 1_000_000);
+  assert.equal(defaultCodexContextWindow('gpt-5.6-sol'), 1_000_000);
+  assert.equal(defaultCodexContextWindow('gpt-5.5'), null);
+  assert.equal(resolveCodexContextWindow('gpt-5.6-sol', null), 1_000_000);
+  assert.equal(resolveCodexContextWindow('gpt-5.6-sol', 272_000), 272_000);
+  assert.equal(normalizeCodexContextWindow(1_050_000), 1_050_000);
+  assert.equal(normalizeCodexContextWindow(1_050_001), null);
+  assert.equal(buildCodexContextWindowArg(1_000_000), ` -c 'model_context_window=1000000'`);
+  assert.equal(buildCodexContextWindowArg('not-a-number'), '');
+});
+
+test('session-manager 的 Codex 默认与 DeepSeek 默认彼此隔离', () => {
+  assert.equal(_private.resolveCodexMcpProfile('codex', undefined), 'none');
+  assert.equal(_private.resolveCodexMcpProfile('codex-resume', undefined), 'none');
+  assert.equal(_private.resolveCodexMcpProfile('deepseek', undefined), 'lean');
+  assert.equal(_private.resolveCodexSpeedTier('codex', undefined), 'standard');
+  assert.equal(_private.resolveCodexSpeedTier('deepseek', undefined), 'inherit');
 });
 
 test('读用户全局 service_tier 只认顶层键，不会把 profile 里的当成全局', () => {

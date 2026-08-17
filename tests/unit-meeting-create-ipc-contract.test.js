@@ -151,6 +151,22 @@ test('slot tuning sanitizer only allows fields understood by that provider', () 
     mcpProfile: 'wireless',
     codexSpeedTier: 'flex',
   });
+  assert.deepStrictEqual(sanitizeMeetingSlot({
+    kind: 'codex',
+    model: 'gpt-5.6-sol',
+    effort: 'max',
+    mcpProfile: 'none',
+    codexSpeedTier: 'standard',
+    contextMax: 1_000_000,
+  }, 3), {
+    index: 3,
+    kind: 'codex',
+    model: 'gpt-5.6-sol',
+    effort: 'max',
+    mcpProfile: 'none',
+    codexSpeedTier: 'standard',
+    contextMax: 1_000_000,
+  });
 });
 
 test('add-meeting-sub assigns slot title, isolated workspace, and Claude MCP config', async () => {
@@ -218,6 +234,28 @@ test('add-meeting-sub applies Codex ai-team MCP entry for non-research group cha
   assert.deepStrictEqual(result.session.opts.codexMcpEntries, [
     { aiTeamArgs: ['m2', 'codex'] },
   ]);
+});
+
+test('Codex None profile suppresses both group communication and research MCP entries', async () => {
+  const addSub = createMeetingSubAdder(createBaseDeps({
+    meetingManager: (() => {
+      const manager = createFakeMeetingManager();
+      manager.setMeeting({ id: 'm-none', groupChat: true, scene: 'research', subSessions: [] });
+      return manager;
+    })(),
+  }));
+
+  const result = await addSub('m-none', 'codex', {
+    model: 'gpt-5.6-sol',
+    effort: 'max',
+    mcpProfile: 'none',
+    codexSpeedTier: 'standard',
+    contextMax: 1_000_000,
+  });
+
+  assert.equal(result.session.opts.codexMcpEntries, undefined);
+  assert.equal(result.session.opts.codexBypassApprovals, undefined);
+  assert.equal(result.session.opts.contextMax, 1_000_000);
 });
 
 test('DeepSeek group members use Codex instructions and MCP entries', async () => {

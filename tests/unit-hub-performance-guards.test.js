@@ -98,7 +98,9 @@ test('group Codex sessions disable unmanaged MCP servers and preserve explicit r
   }
 });
 
-test('ordinary Codex sessions default to Lean MCP with workspace/profile opt-ins', () => {
+test('ordinary Codex defaults to None while explicit Lean keeps workspace/profile opt-ins', () => {
+  assert.strictEqual(_private.resolveCodexMcpProfile('codex'), 'none');
+  assert.strictEqual(_private.resolveCodexMcpProfile('codex-resume'), 'none');
   assert.strictEqual(_private.normalizeCodexMcpProfile(), 'lean');
   assert.strictEqual(_private.normalizeCodexMcpProfile('unknown'), 'lean');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-codex-lean-'));
@@ -122,6 +124,14 @@ test('ordinary Codex sessions default to Lean MCP with workspace/profile opt-ins
     assert.match(lean, /playwright\.enabled=false/);
     assert.match(lean, /superwireless\.enabled=false/);
     assert.match(lean, /misc\.enabled=false/);
+
+    const none = _private.buildCodexMcpIsolationArgs(dir, {
+      cwd: path.join(wirelessRoot, 'experiment'), mcpProfile: 'none',
+      allowedNames: ['playwright', 'superwireless'],
+    });
+    assert.match(none, /playwright\.enabled=false/);
+    assert.match(none, /superwireless\.enabled=false/);
+    assert.match(none, /misc\.enabled=false/);
 
     const wireless = _private.buildCodexMcpIsolationArgs(dir, {
       cwd: path.join(wirelessRoot, 'experiment'), mcpProfile: 'lean',

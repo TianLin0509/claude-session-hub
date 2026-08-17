@@ -85,7 +85,8 @@ function createResumeSessionHandler(deps) {
           resumeOpts.codexInstructionFile = promptFile;
         }
       }
-      if (meeting && meeting.groupChat && isCodexRuntime && scenes.buildAiTeamMcpEntryForCodex) {
+      const codexMcpEnabled = meta.mcpProfile !== 'none';
+      if (meeting && meeting.groupChat && isCodexRuntime && codexMcpEnabled && scenes.buildAiTeamMcpEntryForCodex) {
         addCodexMcpEntry(resumeOpts, scenes.buildAiTeamMcpEntryForCodex(meta.meetingId, meta.kind || 'codex'));
       }
       if (meeting && meeting.groupChat && meeting.scene === 'research' && hookPort) {
@@ -106,7 +107,7 @@ function createResumeSessionHandler(deps) {
             ARENA_CHUXIN_ENABLED: '1',
             SPIRIT_REGISTRY_ROOT: process.env.SPIRIT_REGISTRY_ROOT || path.join(os.homedir(), 'spirit-lens-registry'),
           };
-        } else if (isCodexRuntime) {
+        } else if (isCodexRuntime && codexMcpEnabled) {
           resumeOpts.codexBypassApprovals = true;
           addCodexMcpEntry(resumeOpts, scenes.buildResearchMcpEntryForCodex(
             meta.meetingId, hookPort, hookToken, hubDataDir, { enableChuxin: true },

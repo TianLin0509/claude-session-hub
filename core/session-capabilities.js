@@ -101,6 +101,8 @@ function buildSessionResumeMeta(session, overrides = {}) {
     codexProfile: session.codexProfile || null,
     codexProfileLabel: session.codexProfileLabel || null,
     mcpProfile: session.mcpProfile || null,
+    codexSpeedTier: session.codexSpeedTier || null,
+    fastMode: session.fastMode === false ? false : null,
     geminiChatId: session.geminiChatId || null,
     geminiProjectHash: session.geminiProjectHash || null,
     geminiProjectRoot: session.geminiProjectRoot || null,

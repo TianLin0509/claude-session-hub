@@ -30,11 +30,84 @@ async function availablePort(preferred) {
 (async () => {
   const stamp = `${process.pid}-${Date.now()}`;
   const dataDir = path.join(os.tmpdir(), `claude-session-hub-create-options-${stamp}`);
+  const workspaceRoot = path.join(dataDir, 'workspaces');
+  const fakeBin = path.join(dataDir, 'fake-bin');
+  const codexHome = path.join(dataDir, 'codex-home');
+  const invocationLog = path.join(dataDir, 'codex-invocations.jsonl');
   const port = await availablePort(Number(process.env.HUB_CREATE_OPTIONS_E2E_PORT || 19781));
   let hub = null;
   let client = null;
   try {
-    hub = await launchIsolatedHub({ dataDir, port, label: 'create-options' });
+    for (const directory of [dataDir, workspaceRoot, fakeBin, codexHome]) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+    const fakeCodex = path.join(fakeBin, 'fake-codex.js');
+    fs.writeFileSync(fakeCodex, `'use strict';
+const fs = require('node:fs');
+fs.appendFileSync(process.env.HUB_CREATE_OPTIONS_LOG, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2) }) + '\\n');
+process.stdout.write('FAKE_CODEX_READY\\r\\n');
+setInterval(() => {}, 1000);
+`, 'utf8');
+    fs.writeFileSync(
+      path.join(fakeBin, 'codex.cmd'),
+      `@echo off\r\n"${process.execPath}" "${fakeCodex}" %*\r\n`,
+      'utf8',
+    );
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), [
+      'approval_policy = "never"',
+      'service_tier = "fast"',
+      '',
+      '[features]',
+      'fast_mode = true',
+      '',
+      '[mcp_servers.playwright]',
+      'command = "npx"',
+      '',
+      '[mcp_servers.superran]',
+      'command = "python"',
+      '',
+      '[mcp_servers.misc]',
+      'command = "node"',
+      '',
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(codexHome, 'models_cache.json'), JSON.stringify({
+      models: [
+        {
+          slug: 'gpt-5.6-sol',
+          default_reasoning_level: 'low',
+          supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(effort => ({ effort })),
+          additional_speed_tiers: ['fast'],
+        },
+        {
+          slug: 'gpt-5.5',
+          default_reasoning_level: 'medium',
+          supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh'].map(effort => ({ effort })),
+          additional_speed_tiers: ['fast'],
+        },
+      ],
+    }), 'utf8');
+    fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
+      providers: {
+        codex: {
+          backend: 'subscription',
+          subscription_profile: 'e2e',
+          subscription_profiles: [{ id: 'e2e', label: 'E2E', home: codexHome }],
+        },
+      },
+    }, null, 2), 'utf8');
+    const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === 'path') || 'Path';
+    hub = await launchIsolatedHub({
+      dataDir,
+      port,
+      label: 'create-options',
+      extraEnv: {
+        AI_HUB_WORKSPACE_ROOT: workspaceRoot,
+        CODEX_HOME: codexHome,
+        HUB_CODEX_PROFILE: 'e2e',
+        HUB_CREATE_OPTIONS_LOG: invocationLog,
+        [pathKey]: `${fakeBin}${path.delimiter}${process.env[pathKey] || ''}`,
+      },
+    });
     client = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/.test(target.url || ''));
 
     const readyDeadline = Date.now() + 25000;
@@ -91,6 +164,12 @@ async function availablePort(preferred) {
       modelSelect.value = 'gpt-5.6-sol';
       modelSelect.dispatchEvent(new Event('change'));
       await new Promise(r => setTimeout(r, 120));
+      // 上面的 5.5 兼容性探针会把 max 合法回落成 xhigh；恢复 Sol 后把测试状态
+      // 也恢复到默认 max，避免后续“默认 payload”被刻意的模型切换污染。
+      const effortSelect = document.getElementById('new-session-effort');
+      effortSelect.value = 'max';
+      effortSelect.dispatchEvent(new Event('change'));
+      await new Promise(r => setTimeout(r, 60));
 
       document.querySelector('.new-session-option[data-kind="powershell"]').click();
       await new Promise(r => setTimeout(r, 120));
@@ -118,15 +197,17 @@ async function availablePort(preferred) {
     // service_tier 速度通道 —— 这正是"创建 codex 会话时没有 fast 选项"的修复。
     assert.equal(tuning.codex.fastVisible, false, 'Claude 的 fastMode 复选框不适用于 Codex');
     assert.equal(tuning.codex.codexTierVisible, true, 'Codex 必须有自己的 fast（service_tier）选项');
-    assert.equal(tuning.codex.codexTierValue, 'inherit', '默认跟随全局 = 改动前的行为');
-    assert.deepEqual(tuning.codex.codexTierOptions, ['inherit', 'fast', 'flex']);
+    assert.equal(tuning.codex.codexTierValue, 'standard', '默认必须显式关闭全局 Fast');
+    assert.deepEqual(tuning.codex.codexTierOptions, ['standard', 'inherit', 'fast', 'flex']);
     // 思考强度按模型来，档位来自 codex-cli 自己的 models_cache.json。
     assert.equal(tuning.codex.model, 'gpt-5.6-sol');
     assert.equal(tuning.codex.effortOptions.includes('xhigh'), true, 'xhigh 不是 Claude 专属，Codex 每个模型都支持');
     assert.equal(tuning.codex.effortOptions.includes('ultra'), true, 'gpt-5.6-sol 支持比 max 更高的 ultra');
     assert.equal(tuning.codex.effortValue, 'max', 'Codex 默认仍是 max，不静默降精度');
-    assert.equal(tuning.codex.mcpValue, 'lean', 'Codex 保持历史默认 lean');
-    assert.match(tuning.codex.note, /service_tier/);
+    assert.equal(tuning.codex.mcpValue, 'none', 'Codex 默认不能加载任何 MCP');
+    assert.deepEqual(tuning.codex.mcpOptions, ['none', 'lean', 'browser', 'wireless', 'full']);
+    assert.match(tuning.codex.note, /Standard/);
+    assert.match(tuning.codex.note, /群聊通信/);
     // 换成只到 xhigh 的模型，ultra 必须消失，否则会拼出 CLI 不认识的档位。
     assert.equal(tuning.codexOldModel.model, 'gpt-5.5');
     assert.equal(tuning.codexOldModel.effortOptions.includes('ultra'), false, 'gpt-5.5 不支持 ultra');
@@ -150,7 +231,51 @@ async function availablePort(preferred) {
     // fast 勾着时提示要讲清代价
     assert.match(tuning.claude.note, /transcript/);
 
-    // ---- 2. tuningOpts 真正送出去的字段 ----
+    // ---- 2. 真实创建普通 Codex Session：从 GUI 一路量到 PTY argv ----
+    const ordinaryCreatePayload = await client.eval(`(() => {
+      const wc = window.WorkspaceController;
+      wc.openNewSessionModal({ kind: 'codex' });
+      const payload = wc.tuningOpts();
+      document.getElementById('new-session-submit').click();
+      return payload;
+    })()`);
+    assert.deepEqual(ordinaryCreatePayload, {
+      model: 'gpt-5.6-sol',
+      effort: 'max',
+      mcpProfile: 'none',
+      codexSpeedTier: 'standard',
+      contextMax: 1_000_000,
+    });
+    let ordinarySession = null;
+    const ordinaryDeadline = Date.now() + 30000;
+    while (Date.now() < ordinaryDeadline) {
+      ordinarySession = await client.eval(`(async () => {
+        const sessions = await require('electron').ipcRenderer.invoke('get-sessions');
+        return sessions.find(session => !session.meetingId && session.kind === 'codex') || null;
+      })()`, { awaitPromise: true });
+      if (ordinarySession && fs.existsSync(invocationLog)) break;
+      await _waitMs(150);
+    }
+    assert.ok(ordinarySession, '普通 Codex Session 应由真实创建按钮生成');
+    assert.equal(ordinarySession.currentModel.id, 'gpt-5.6-sol');
+    assert.equal(ordinarySession.effort, 'max');
+    assert.equal(ordinarySession.mcpProfile, 'none');
+    assert.equal(ordinarySession.codexSpeedTier, 'standard');
+    assert.equal(ordinarySession.contextMax, 1_000_000);
+    const ordinaryInvocation = fs.readFileSync(invocationLog, 'utf8')
+      .trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))[0];
+    const ordinaryArgs = ordinaryInvocation.args.join(' ');
+    assert.match(ordinaryArgs, /--model gpt-5\.6-sol/);
+    assert.match(ordinaryArgs, /model_reasoning_effort=.*max/);
+    assert.match(ordinaryArgs, /model_context_window=1000000/);
+    assert.match(ordinaryArgs, /features\.fast_mode=false/);
+    assert.doesNotMatch(ordinaryArgs, /service_tier=.*fast/);
+    assert.match(ordinaryArgs, /service_tier=.*default/);
+    for (const name of ['playwright', 'superran', 'misc']) {
+      assert.match(ordinaryArgs, new RegExp(`mcp_servers\\.${name}\\.enabled=false`));
+    }
+
+    // ---- 3. tuningOpts 真正送出去的字段 ----
     const payloads = await client.eval(`(async () => {
       const wc = window.WorkspaceController;
       const grab = async (kind, mutate) => {
@@ -175,6 +300,7 @@ async function availablePort(preferred) {
           const m = document.getElementById('new-session-mcp');
           m.value = 'lean'; m.dispatchEvent(new Event('change'));
         }),
+        codexDefault: await grab('codex'),
         codexLowEffort: await grab('codex', () => {
           const e = document.getElementById('new-session-effort');
           e.value = 'low'; e.dispatchEvent(new Event('change'));
@@ -195,12 +321,20 @@ async function availablePort(preferred) {
     assert.equal(payloads.claudeDefault.mcpProfile, 'full');
     assert.equal(payloads.claudeFastOff.fastMode, false);
     assert.equal(payloads.claudeLean.mcpProfile, 'lean');
+    assert.deepEqual(payloads.codexDefault, {
+      model: 'gpt-5.6-sol',
+      effort: 'max',
+      mcpProfile: 'none',
+      codexSpeedTier: 'standard',
+      contextMax: 1_000_000,
+    });
     assert.equal(payloads.codexLowEffort.effort, 'low');
+    assert.equal(payloads.codexLowEffort.contextMax, 1_000_000);
     assert.equal(payloads.codexFastTier.codexSpeedTier, 'fast', 'Codex 的 fast 要真的送到 create-session');
     // inherit = 不覆盖 ~/.codex/config.toml，等于改动前行为，所以不传这个字段。
     assert.equal('codexSpeedTier' in payloads.codexInheritTier, false);
 
-    // ---- 3. 卡片视图不再遮挡底部输入框 ----
+    // ---- 4. 卡片视图不再遮挡底部输入框 ----
     const layout = await client.eval(`(() => {
       const panel = document.createElement('div');
       panel.className = 'terminal-panel';
@@ -282,7 +416,7 @@ async function availablePort(preferred) {
     // 输入框能长到 max-height 而不是被压到两行（13px × 1.5 = 19.5px/行）
     assert.ok(layout.boxVisibleHeight >= 100, `输入框可见高度 ${layout.boxVisibleHeight}px，应接近 max-height 120px`);
 
-    // ---- 4. 撤销栈 + ↑ 历史 ----
+    // ---- 5. 撤销栈 + ↑ 历史 ----
     const editing = await client.eval(`(() => {
       const box = document.createElement('div');
       box.className = 'floating-input-box';

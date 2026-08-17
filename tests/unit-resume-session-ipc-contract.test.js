@@ -180,6 +180,34 @@ test('resumes Codex group research sessions with MCP entries and rollout path', 
   ]);
 });
 
+test('resumed Codex None session preserves 1M/Standard and does not restore room MCP', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps({
+    meetingManager: {
+      getMeeting: () => ({ id: 'm-none', groupChat: true, scene: 'research' }),
+    },
+  });
+  registerResumeSessionIpc(ipc, deps);
+
+  const session = await ipc.handlers.get('resume-session')(null, {
+    hubId: 's-none',
+    kind: 'codex',
+    codexSid: 'codex-none',
+    currentModel: { id: 'gpt-5.6-sol' },
+    mcpProfile: 'none',
+    codexSpeedTier: 'standard',
+    contextMax: 1_000_000,
+    meetingId: 'm-none',
+    cwd: 'C:\\repo',
+  });
+
+  assert.equal(session.opts.mcpProfile, 'none');
+  assert.equal(session.opts.codexSpeedTier, 'standard');
+  assert.equal(session.opts.contextMax, 1_000_000);
+  assert.equal(session.opts.codexMcpEntries, undefined);
+  assert.equal(session.opts.codexBypassApprovals, undefined);
+});
+
 test('new and pre-migration DeepSeek sessions resume on their own runtime', async () => {
   const ipc = createFakeIpc();
   const deps = createBaseDeps();

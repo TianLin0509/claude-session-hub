@@ -116,6 +116,7 @@ function registerSessionIpc(ipcMain, deps) {
     if (source.mcpProfile) opts.mcpProfile = source.mcpProfile;
     if (source.fastMode === false) opts.fastMode = false;
     if (source.codexSpeedTier) opts.codexSpeedTier = source.codexSpeedTier;
+    if (typeof source.contextMax === 'number') opts.contextMax = source.contextMax;
 
     let kind;
     if (providerFamily === 'claude') {
@@ -271,6 +272,7 @@ function registerSessionIpc(ipcMain, deps) {
       ...(old.mcpProfile ? { mcpProfile: old.mcpProfile } : {}),
       ...(old.fastMode === false ? { fastMode: false } : {}),
       ...(old.codexSpeedTier ? { codexSpeedTier: old.codexSpeedTier } : {}),
+      ...(typeof old.contextMax === 'number' ? { contextMax: old.contextMax } : {}),
       completionNotificationEnabled: old.completionNotificationEnabled === true,
     });
     registerSessionForTap(fresh);

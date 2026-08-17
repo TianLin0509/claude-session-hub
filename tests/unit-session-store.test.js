@@ -92,6 +92,11 @@ const sessionStore = require('../core/session-store');
       codexSid: '019e2772-1ba9-7440-afef-3f767ad02765',
       codexSessionsRoot,
       codexAllowMtimeFallback: true,
+      currentModel: { id: 'gpt-5.6-sol' },
+      effort: 'max',
+      mcpProfile: 'none',
+      codexSpeedTier: 'inherit',
+      contextMax: 1_000_000,
       updatedAt: 5000,
     });
     const loaded = sessionStore.loadSessionFile('h5');
@@ -99,6 +104,10 @@ const sessionStore = require('../core/session-store');
     assert.strictEqual(loaded.transcriptPath, transcriptPath);
     assert.strictEqual(loaded.codexSessionsRoot, codexSessionsRoot);
     assert.strictEqual(loaded.codexAllowMtimeFallback, true);
+    assert.strictEqual(loaded.effort, 'max');
+    assert.strictEqual(loaded.mcpProfile, 'none');
+    assert.strictEqual(loaded.codexSpeedTier, 'inherit', 'explicit inherit must survive resume persistence');
+    assert.strictEqual(loaded.contextMax, 1_000_000);
     console.log('PASS S8 codex card metadata');
   }
 

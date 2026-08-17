@@ -82,6 +82,8 @@ function createFakeSessionManager() {
           codexSid: '22222222-2222-4222-8222-222222222222',
           codexProfile: 'work',
           mcpProfile: 'browser',
+          codexSpeedTier: 'standard',
+          contextMax: 272000,
           currentModel: { id: 'gpt-5.5', displayName: 'GPT-5.5' },
         };
       }
@@ -221,6 +223,8 @@ test('fork-session preserves Codex model and subscription profile', () => {
       model: 'gpt-5.5',
       codexProfile: 'work',
       mcpProfile: 'browser',
+      codexSpeedTier: 'standard',
+      contextMax: 272000,
       codexForkSid: '22222222-2222-4222-8222-222222222222',
     }],
   );
@@ -491,6 +495,8 @@ testAsync('restart-session resumes the exact Codex thread and preserves provider
     model: resumed[0].model,
     codexProfile: resumed[0].codexProfile,
     mcpProfile: resumed[0].mcpProfile,
+    codexSpeedTier: resumed[0].codexSpeedTier,
+    contextMax: resumed[0].contextMax,
   }, {
     hubId: 'codex-source',
     kind: 'codex-resume',
@@ -498,6 +504,8 @@ testAsync('restart-session resumes the exact Codex thread and preserves provider
     model: 'gpt-5.5',
     codexProfile: 'work',
     mcpProfile: 'browser',
+    codexSpeedTier: 'standard',
+    contextMax: 272000,
   });
   assert.deepStrictEqual(
     sessionManager.calls.filter(call => ['getSession', 'closeSession', 'createSession'].includes(call[0])),

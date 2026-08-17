@@ -1,11 +1,13 @@
 'use strict';
 
 const { ensureClaudeMemoryFile } = require('../../core/claude-memory-loader.js');
+const { normalizeCodexContextWindow } = require('../../core/codex-context-window.js');
 
 const CLAUDE_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const CODEX_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
-const MCP_PROFILES = new Set(['full', 'lean', 'browser', 'wireless']);
-const CODEX_SPEED_TIERS = new Set(['fast', 'flex']);
+const CLAUDE_MCP_PROFILES = new Set(['full', 'lean', 'browser', 'wireless']);
+const CODEX_MCP_PROFILES = new Set(['none', 'full', 'lean', 'browser', 'wireless']);
+const CODEX_SPEED_TIERS = new Set(['standard', 'inherit', 'fast', 'flex']);
 
 // Renderer 传来的 slot 会进入 PTY 命令构造。这里只放行与新建 Session 相同的
 // provider-specific 字段，既不丢用户选择，也不把整份 renderer 对象盲传给 main。
@@ -22,7 +24,10 @@ function sanitizeMeetingSlot(slot = {}, fallbackIndex = null) {
   if ((kind === 'codex' || kind === 'deepseek') && CODEX_EFFORTS.has(effort)) safe.effort = effort;
 
   const mcpProfile = typeof slot.mcpProfile === 'string' ? slot.mcpProfile.trim().toLowerCase() : '';
-  if ((kind === 'claude' || kind === 'codex' || kind === 'deepseek') && MCP_PROFILES.has(mcpProfile)) {
+  if (kind === 'claude' && CLAUDE_MCP_PROFILES.has(mcpProfile)) {
+    safe.mcpProfile = mcpProfile;
+  }
+  if ((kind === 'codex' || kind === 'deepseek') && CODEX_MCP_PROFILES.has(mcpProfile)) {
     safe.mcpProfile = mcpProfile;
   }
   // 与普通新建 Session 一样，仅显式关闭时传 false；省略表示沿用默认开启。
@@ -33,6 +38,10 @@ function sanitizeMeetingSlot(slot = {}, fallbackIndex = null) {
     : '';
   if ((kind === 'codex' || kind === 'deepseek') && CODEX_SPEED_TIERS.has(codexSpeedTier)) {
     safe.codexSpeedTier = codexSpeedTier;
+  }
+  if (kind === 'codex') {
+    const contextMax = normalizeCodexContextWindow(slot.contextMax);
+    if (contextMax) safe.contextMax = contextMax;
   }
   return safe;
 }
@@ -139,7 +148,8 @@ function createMeetingSubAdder(deps) {
     }
 
     const hookPort = getHookPort();
-    if (meeting && meeting.groupChat && isCodexBaseKind(kind) && scenes.buildAiTeamMcpEntryForCodex) {
+    const codexMcpEnabled = sessionOpts.mcpProfile !== 'none';
+    if (meeting && meeting.groupChat && isCodexBaseKind(kind) && codexMcpEnabled && scenes.buildAiTeamMcpEntryForCodex) {
       addCodexMcpEntry(sessionOpts, scenes.buildAiTeamMcpEntryForCodex(meetingId, kind));
     }
 
@@ -162,7 +172,7 @@ function createMeetingSubAdder(deps) {
           ARENA_CHUXIN_ENABLED: '1',
           SPIRIT_REGISTRY_ROOT: process.env.SPIRIT_REGISTRY_ROOT || path.join(require('os').homedir(), 'spirit-lens-registry'),
         };
-      } else if (isCodexBaseKind(kind)) {
+      } else if (isCodexBaseKind(kind) && codexMcpEnabled) {
         sessionOpts.codexBypassApprovals = true;
         addCodexMcpEntry(sessionOpts, scenes.buildResearchMcpEntryForCodex(
           meetingId, hookPort, hookToken, hubDataDir, { enableChuxin: true },
@@ -203,6 +213,7 @@ function createMeetingSubAdder(deps) {
           mcpProfile: opts.mcpProfile,
           fastMode: opts.fastMode,
           codexSpeedTier: opts.codexSpeedTier,
+          contextMax: opts.contextMax,
         });
         delete slotSpecs[addedIndex].index;
         meetingManager.setSlotSpecs(meetingId, slotSpecs);

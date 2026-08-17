@@ -34,9 +34,15 @@ const {
   normalizeClaudeMcpProfile,
 } = require('./claude-mcp-profile.js');
 const {
+  CODEX_SPEED_TIERS,
   buildCodexSpeedTierArg,
   normalizeCodexSpeedTier,
 } = require('./codex-speed-tier.js');
+const {
+  buildCodexContextWindowArg,
+  normalizeCodexContextWindow,
+  resolveCodexContextWindow,
+} = require('./codex-context-window.js');
 
 // Renderer 首次懒挂载、reload 或 surface 丢失后的降级恢复会用这个环形缓冲的
 // 终端数据重建 xterm。16KB 装不下 Codex/Kimi 这类 TUI 的一整帧全屏重绘
@@ -61,7 +67,7 @@ const TERMINAL_REWRITER_FLUSH_MS = 50;
 // 这个 1MB 原始尾部只保留为 snapshot 初始化失败时的降级兜底，不再承担长会话恢复。
 // Claude CLI `--effort` 的合法枚举；弹窗传入的值必须在此集合内才会被拼进命令行。
 const CLAUDE_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-const CODEX_MCP_PROFILES = new Set(['lean', 'browser', 'wireless', 'full']);
+const CODEX_MCP_PROFILES = new Set(['none', 'lean', 'browser', 'wireless', 'full']);
 const DEFAULT_IDLE_SUSPEND_MS = 5 * 60 * 60 * 1000;
 // One default for ordinary/group Codex sessions and every new/resume/fork/relaunch path.
 const CODEX_REASONING_EFFORT = 'max';
@@ -707,6 +713,20 @@ function normalizeCodexMcpProfile(value) {
   return CODEX_MCP_PROFILES.has(normalized) ? normalized : 'lean';
 }
 
+function resolveCodexMcpProfile(kind, value) {
+  const fallback = String(kind || '').replace(/-resume$/, '') === 'deepseek' ? 'lean' : 'none';
+  if (value === undefined || value === null || value === '') return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  return CODEX_MCP_PROFILES.has(normalized) ? normalized : fallback;
+}
+
+function resolveCodexSpeedTier(kind, value) {
+  const fallback = String(kind || '').replace(/-resume$/, '') === 'deepseek' ? 'inherit' : 'standard';
+  if (value === undefined || value === null || value === '') return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  return CODEX_SPEED_TIERS.has(normalized) ? normalized : fallback;
+}
+
 function isPathInside(candidate, root) {
   if (!candidate || !root) return false;
   const resolvedCandidate = path.resolve(String(candidate)).toLowerCase();
@@ -719,10 +739,8 @@ function isWirelessWorkspace(cwd) {
   return isPathInside(cwd, wirelessRoot);
 }
 
-// Ordinary Codex sessions use a lean MCP policy by default. Heavy global
-// servers stay disabled for this launch only; the user's config.toml is not
-// rewritten. Wireless workspaces opt into superwireless automatically, while
-// browser/full profiles are explicit choices in the new-session UI.
+// None disables every configured server, including workspace and room-scoped
+// entries. Other profiles retain the existing selective behavior.
 function buildCodexMcpIsolationArgs(configDir, options = {}) {
   const names = listCodexMcpServerNames(configDir);
   const allowed = new Set((options.allowedNames || [])
@@ -731,8 +749,9 @@ function buildCodexMcpIsolationArgs(configDir, options = {}) {
 
   const profile = normalizeCodexMcpProfile(options.mcpProfile);
   if (profile === 'full') return '';
+  if (profile === 'none') allowed.clear();
   if (profile === 'browser') allowed.add('playwright');
-  if (profile === 'wireless' || isWirelessWorkspace(options.cwd)) {
+  if (profile !== 'none' && (profile === 'wireless' || isWirelessWorkspace(options.cwd))) {
     // 只写 superwireless 是个空转 bug：用户 ~/.codex/config.toml 里这个 server
     // 实际叫 superran，于是 wireless 档把唯一想留的那个也禁掉了。两个名字都放行。
     WIRELESS_MCP_NAMES.forEach(name => allowed.add(name));
@@ -1159,6 +1178,17 @@ class SessionManager extends EventEmitter {
       currentModel = { id: mid, displayName: mid === 'kimi-code/k3' || mid === 'k3' ? 'Kimi K3' : mid };
     }
 
+    const effectiveCodexMcpProfile = isCodexRuntime
+      ? resolveCodexMcpProfile(kind, opts.mcpProfile)
+      : null;
+    const effectiveCodexSpeedTier = isCodexRuntime
+      ? resolveCodexSpeedTier(kind, opts.codexSpeedTier)
+      : null;
+    const normalizedContextMax = normalizeCodexContextWindow(opts.contextMax);
+    const effectiveContextMax = isCodexRuntime
+      ? (normalizedContextMax || resolveCodexContextWindow(currentModel && currentModel.id, null))
+      : (typeof opts.contextMax === 'number' ? opts.contextMax : null);
+
     const now = Date.now();
     const info = {
       id,
@@ -1190,19 +1220,18 @@ class SessionManager extends EventEmitter {
       currentModel,
       ...(typeof opts.contextPct === 'number' ? { contextPct: opts.contextPct } : {}),
       ...(typeof opts.contextUsed === 'number' ? { contextUsed: opts.contextUsed } : {}),
-      ...(typeof opts.contextMax === 'number' ? { contextMax: opts.contextMax } : {}),
+      ...(typeof effectiveContextMax === 'number' ? { contextMax: effectiveContextMax } : {}),
       codexSessionsRoot,
       // registerSessionForTap uses this internal routing hint while the public
       // kind remains "deepseek" for branding and family identity.
       ...(isDeepSeekLegacy ? { transcriptKind: kind === 'deepseek-resume' ? 'deepseek-legacy-resume' : 'deepseek-legacy' } : {}),
       ...(isCodexRuntime && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
-      ...(isCodexRuntime ? { mcpProfile: normalizeCodexMcpProfile(opts.mcpProfile) } : {}),
-      // Codex 的 service_tier 档（inherit/fast/flex）。inherit 是"不覆盖"，
-      // 只在用户显式选了别的档时才落盘，避免给老会话凭空加字段。
-      ...(isCodexRuntime && normalizeCodexSpeedTier(opts.codexSpeedTier) !== 'inherit'
-        ? { codexSpeedTier: normalizeCodexSpeedTier(opts.codexSpeedTier) } : {}),
+      ...(isCodexRuntime ? { mcpProfile: effectiveCodexMcpProfile } : {}),
+      // 速度通道必须连同 inherit 一起落盘，否则显式选择"跟随全局"的会话在
+      // resume/relaunch 后会被 Codex 新默认 Standard 覆盖。
+      ...(isCodexRuntime ? { codexSpeedTier: effectiveCodexSpeedTier } : {}),
       // Claude 家族的 MCP 档位默认 full（全量继承，与改动前一致），与 Codex 的
-      // lean 默认各走各的。落到 info 是为了 resume/fork/relaunch 能沿用。
+      // none 默认各走各的。落到 info 是为了 resume/fork/relaunch 能沿用。
       ...(isClaudeFamily(kind) && !isDeepSeekLegacy
         ? { mcpProfile: normalizeClaudeMcpProfile(opts.mcpProfile) } : {}),
       // 迁移前的 DeepSeek 仍跑 Claude CLI。旧群聊没有 profile 字段时按历史的
@@ -1253,7 +1282,7 @@ class SessionManager extends EventEmitter {
     this.sessions.set(id, {
       info,
       pty: ptyProcess,
-      codexMcpEntries: Array.isArray(opts.codexMcpEntries)
+      codexMcpEntries: effectiveCodexMcpProfile !== 'none' && Array.isArray(opts.codexMcpEntries)
         ? opts.codexMcpEntries.map((entry) => ({ ...entry, env: { ...(entry.env || {}) } }))
         : [],
       // Claude 群聊的 research / 通信 MCP 在 CLI 原地 relaunch 时也要继续存在。
@@ -1511,8 +1540,8 @@ class SessionManager extends EventEmitter {
       // service_tier 控制，两者都不能和 Claude fastMode 混为一谈。
       // 非法值一律回落 max；群聊与普通 Session 一样尊重逐成员的 effort / service_tier。
       const codexReasoningArg = buildCodexReasoningConfigArg(normalizeCodexEffort(opts.effort))
-        // Codex 真正对标 Claude fast 的开关：service_tier（priority 通道，1.5× 速度）。
-        + buildCodexSpeedTierArg(opts.codexSpeedTier);
+        + buildCodexSpeedTierArg(effectiveCodexSpeedTier)
+        + buildCodexContextWindowArg(effectiveContextMax);
       const codexInstructionFile = opts.codexInstructionFile || null;
       let cmd;
       if (opts.codexForkSid) {
@@ -1543,15 +1572,16 @@ class SessionManager extends EventEmitter {
       if (codexInstructionFile) {
         cmd += ` -c "model_instructions_file=${codexInstructionFile.replace(/\\/g, '\\\\')}"`;
       }
-      cmd += buildCodexEphemeralMcpArgs(opts.codexMcpEntries);
+      const effectiveCodexMcpEntries = effectiveCodexMcpProfile === 'none' ? [] : opts.codexMcpEntries;
+      cmd += buildCodexEphemeralMcpArgs(effectiveCodexMcpEntries);
       const allowedGroupMcpNames = [
-        ...CODEX_MANAGED_MCP_NAMES,
-        ...(Array.isArray(opts.codexMcpEntries) ? opts.codexMcpEntries.map(entry => entry && entry.name) : []),
+        ...(effectiveCodexMcpProfile === 'none' ? [] : CODEX_MANAGED_MCP_NAMES),
+        ...(Array.isArray(effectiveCodexMcpEntries) ? effectiveCodexMcpEntries.map(entry => entry && entry.name) : []),
       ];
       cmd += buildCodexMcpIsolationArgs(sessionEnv.CODEX_HOME || null, {
         meetingId: opts.meetingId,
         cwd: spawnCwd,
-        mcpProfile: opts.mcpProfile,
+        mcpProfile: effectiveCodexMcpProfile,
         allowedNames: allowedGroupMcpNames,
       });
       cmd += '\r\n';
@@ -1994,16 +2024,22 @@ class SessionManager extends EventEmitter {
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
       // relaunch 要沿用会话自己选过的档位；群聊成员也不例外。
+      const codexRelaunchModel = modelId || DEFAULT_MODEL_BY_KIND.codex;
       const codexReasoningArg = buildCodexReasoningConfigArg(normalizeCodexEffort(s.info && s.info.effort))
-        + buildCodexSpeedTierArg(s.info && s.info.codexSpeedTier);
+        + buildCodexSpeedTierArg(resolveCodexSpeedTier(runtimeKind, s.info && s.info.codexSpeedTier))
+        + buildCodexContextWindowArg(resolveCodexContextWindow(codexRelaunchModel, s.info && s.info.contextMax));
       ensureCodexMcpEntries(codexConfigDir, [], CODEX_MANAGED_MCP_NAMES);
-      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || DEFAULT_MODEL_BY_KIND.codex}${codexReasoningArg}`;
-      cmd += buildCodexEphemeralMcpArgs(s.codexMcpEntries);
+      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexRelaunchModel}${codexReasoningArg}`;
+      const relaunchMcpProfile = resolveCodexMcpProfile(runtimeKind, s.info && s.info.mcpProfile);
+      const relaunchMcpEntries = relaunchMcpProfile === 'none' ? [] : s.codexMcpEntries;
+      cmd += buildCodexEphemeralMcpArgs(relaunchMcpEntries);
       cmd += buildCodexMcpIsolationArgs(codexConfigDir, {
         meetingId,
         cwd: s.info && s.info.cwd,
-        mcpProfile: s.info && s.info.mcpProfile,
-        allowedNames: [...CODEX_MANAGED_MCP_NAMES, ...(s.codexMcpEntries || []).map((entry) => entry && entry.name)],
+        mcpProfile: relaunchMcpProfile,
+        allowedNames: relaunchMcpProfile === 'none'
+          ? []
+          : [...CODEX_MANAGED_MCP_NAMES, ...(relaunchMcpEntries || []).map((entry) => entry && entry.name)],
       });
       cmd += '\r\n';
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
@@ -2305,9 +2341,12 @@ module.exports = {
     buildClaudeMeetingMcpArgs,
     listCodexMcpServerNames,
     normalizeCodexMcpProfile,
+    resolveCodexMcpProfile,
     normalizeCodexEffort,
     normalizeCodexSpeedTier,
+    resolveCodexSpeedTier,
     buildCodexSpeedTierArg,
+    buildCodexContextWindowArg,
     normalizeClaudeMcpProfile,
     buildClaudeMcpProfileArgs,
     isWirelessWorkspace,

@@ -149,6 +149,7 @@ function _normalizeSlotSpec(spec = {}) {
     mcpProfile: tuning.mcpProfile,
     fastMode: tuning.fastMode,
     codexSpeedTier: tuning.codexSpeedTier,
+    contextMax: tuning.contextMax,
   };
 }
 
@@ -325,7 +326,7 @@ function _ensureModal() {
         </div>
         <div class="mcm-member-caption">
           <strong>成员配置</strong>
-          <span>每位成员独立选择模型、思考强度、速度与 MCP；群聊通信所需 MCP 始终保留。</span>
+          <span>每位成员独立选择模型、思考强度、速度与 MCP；Codex 选 None 时不会注入群聊或投研 MCP，1M 为启动请求并受 CLI 模型目录上限约束。</span>
         </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>

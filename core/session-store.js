@@ -66,7 +66,9 @@ function _buildSessionPayload(hubId, data) {
     // 用 `=== false` 而不是 !!data.fastMode，否则每条老记录都会变成"关"。
     fastMode: data.fastMode === false ? false : null,
     // Codex service_tier 档：'inherit' 等于没选，不落盘（null）。
-    codexSpeedTier: (data.codexSpeedTier && data.codexSpeedTier !== 'inherit') ? data.codexSpeedTier : null,
+    // inherit is an explicit choice. Dropping it would make a resumed Codex
+    // session fall back to Hub's Standard default and silently change speed.
+    codexSpeedTier: data.codexSpeedTier || null,
     geminiChatId: data.geminiChatId || null,
     geminiProjectHash: data.geminiProjectHash || null,
     geminiProjectRoot: data.geminiProjectRoot || null,

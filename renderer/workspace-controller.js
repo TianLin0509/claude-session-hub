@@ -4,6 +4,7 @@
   const { ipcRenderer } = require('electron');
   const path = require('path');
   const { modelOptionsFor, DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
+  const { defaultCodexContextWindow } = require('../core/codex-context-window.js');
 
   const KIND_LABELS = {
     claude: 'Claude Code',
@@ -53,8 +54,8 @@
     ultra: '最大推理 + 自动任务分派',
   };
   let codexTuningCatalog = null;
-  // Claude 默认 full = 继承全部全局 MCP = 改动前的行为，别静默改成 lean；
-  // Codex 历史上就默认 lean，保持不动。
+  // Claude 默认 full = 继承全部全局 MCP = 改动前的行为；Codex 默认 none，
+  // 保证普通 Session 与群聊成员都不会被 workspace/房间 MCP 隐式加回去。
   const MCP_OPTIONS = {
     claude: [
       ['full', 'Full · 默认，继承全部全局 MCP'],
@@ -63,13 +64,15 @@
       ['wireless', 'Wireless · 只留 superran'],
     ],
     codex: [
-      ['lean', 'Lean · 默认省内存'],
+      ['none', 'None · 默认，不加载任何 MCP'],
+      ['lean', 'Lean · 仅保留 workspace / 群聊 MCP'],
       ['browser', 'Browser · 只留 Playwright'],
       ['wireless', 'Wireless · 只留 superran'],
       ['full', 'Full · 全部全局 MCP'],
     ],
   };
-  const DEFAULT_MCP_BY_KIND = { claude: 'full', codex: 'lean', deepseek: 'lean' };
+  const DEFAULT_MCP_BY_KIND = { claude: 'full', codex: 'none', deepseek: 'lean' };
+  const DEFAULT_CODEX_SPEED_BY_KIND = { codex: 'standard', deepseek: 'inherit' };
   const EFFORT_LABEL_BY_KIND = {
     claude: '思考强度 (--effort)',
     codex: '思考强度 (reasoning effort)',
@@ -78,6 +81,7 @@
   // 用户按 kind 调过的档位记在这里，切回来时不必重选。
   const tuningMemory = new Map();
   const MCP_PROFILE_LABELS = {
+    none: 'No MCP',
     lean: 'Lean MCP',
     browser: 'Browser MCP',
     wireless: 'Wireless MCP',
@@ -87,6 +91,7 @@
   function effortFamily(kind) { return kind === 'claude' ? 'claude' : 'codex'; }
   function mcpOptionsFor(kind) { return MCP_OPTIONS[effortFamily(kind)] || []; }
   function defaultMcpFor(kind) { return DEFAULT_MCP_BY_KIND[kind] || 'lean'; }
+  function defaultCodexSpeedFor(kind) { return DEFAULT_CODEX_SPEED_BY_KIND[kind] || 'inherit'; }
 
   function codexModelTuning(modelId) {
     const entry = codexTuningCatalog && codexTuningCatalog.byModel && codexTuningCatalog.byModel[modelId];
@@ -108,7 +113,10 @@
   function codexTierOptionsFor(modelId) {
     const configured = (codexTuningCatalog && codexTuningCatalog.configuredServiceTier) || '';
     const inheritLabel = configured ? `跟随全局配置（当前：${configured}）` : '跟随全局配置';
-    const options = [['inherit', inheritLabel]];
+    const options = [
+      ['standard', 'Standard · 默认，显式关闭 Fast'],
+      ['inherit', inheritLabel],
+    ];
     if (codexModelTuning(modelId).supportsFast) options.push(['fast', 'Fast · priority 通道，1.5× 速度']);
     options.push(['flex', 'Flex · 更慢更省']);
     return options;
@@ -137,7 +145,8 @@
     const codexTierOptions = CODEX_TIER_KINDS.has(kind) ? codexTierOptionsFor(model) : [];
     const codexSpeedTier = codexTierOptions.some(([value]) => value === selection.codexSpeedTier)
       ? selection.codexSpeedTier
-      : 'inherit';
+      : defaultCodexSpeedFor(kind);
+    const contextMax = kind === 'codex' ? defaultCodexContextWindow(model) : null;
 
     return {
       model,
@@ -153,6 +162,7 @@
       showCodexTier: CODEX_TIER_KINDS.has(kind),
       codexSpeedTier,
       codexTierOptions,
+      contextMax,
     };
   }
 
@@ -168,6 +178,7 @@
     if (tuning.showCodexTier && tuning.codexSpeedTier !== 'inherit') {
       opts.codexSpeedTier = tuning.codexSpeedTier;
     }
+    if (typeof tuning.contextMax === 'number') opts.contextMax = tuning.contextMax;
     return opts;
   }
   const RECENT_LIMIT = 8;
@@ -770,7 +781,7 @@
     if (showCodexTier) {
       const tierOptions = codexTierOptionsFor(selectedModel);
       fillSelect(codexTierSelect, tierOptions);
-      if (!tierOptions.some(([value]) => value === selectedCodexTier)) selectedCodexTier = 'inherit';
+      if (!tierOptions.some(([value]) => value === selectedCodexTier)) selectedCodexTier = defaultCodexSpeedFor(selectedKind);
       if (codexTierSelect) codexTierSelect.value = selectedCodexTier;
     }
 
@@ -792,14 +803,17 @@
       // 不落盘 transcript jsonl，卡片视图因此收不到回复。用户有权在勾之前知道。
       if (showFast && selectedFastMode) lines.push('fast 更快出字，但交互式会话可能不落 transcript，卡片视图收不到回复时可关掉它。');
       if (showCodexTier && selectedCodexTier === 'inherit') {
-        // Codex 的 fast 在配置层不可"按会话关闭"（`-c` 只能覆盖不能删键），
-        // 所以这一档如实说明它跟随全局，不假装能关。
-        lines.push('Codex 的 fast 是 service_tier；「跟随全局配置」不覆盖 ~/.codex/config.toml，要长期关掉请改那里。');
+        lines.push('「跟随全局配置」不覆盖 ~/.codex/config.toml；若全局开启 Fast，本会话也会 Fast。');
       }
+      if (showCodexTier && selectedCodexTier === 'standard') lines.push('Standard 会在本次启动显式关闭 Codex Fast，不改写全局配置。');
       if (showCodexTier && !codexModelTuning(selectedModel).fromCache) {
         lines.push('未读到 codex 模型目录（~/.codex/models_cache.json），思考强度用的是保守兜底档位。');
       }
       if (showMcp && selectedMcpProfile !== 'full') lines.push('非 Full 档只在本次启动生效，不会改写你的全局 MCP 配置。');
+      if (selectedKind === 'codex' && selectedMcpProfile === 'none') lines.push('None 会同时阻止 workspace、群聊通信与投研 MCP 注入。');
+      if (selectedKind === 'codex' && defaultCodexContextWindow(selectedModel)) {
+        lines.push('1M 是会话启动请求；实际可用窗口仍受当前 Codex 模型目录上限约束。');
+      }
       if (selectedKind === 'claude' && selectedMcpProfile === 'full') lines.push('Claude 默认 Full：七个全局 MCP 各起一个常驻进程，开多个会话时可换 Lean 省内存。');
       note.hidden = lines.length === 0;
       note.textContent = lines.join(' ');
@@ -865,8 +879,10 @@
     if (options.length === 0) return '';
     const model = options.find(option => option.id === selectedModel);
     const modelLabel = model ? model.label : selectedModel;
+    if (selectedKind === 'codex') {
+      return `${modelLabel} · ${selectedEffort} · ${MCP_PROFILE_LABELS[selectedMcpProfile] || 'No MCP'} · ${selectedCodexTier}`;
+    }
     if (EFFORT_KINDS.has(selectedKind)) return `${modelLabel} · ${selectedEffort}`;
-    if (selectedKind === 'codex') return `${modelLabel} · ${MCP_PROFILE_LABELS[selectedMcpProfile] || 'Lean MCP'}`;
     return modelLabel;
   }
 
@@ -952,7 +968,7 @@
     selectedEffort = (saved && saved.effort) || DEFAULT_EFFORT;
     selectedMcpProfile = (saved && saved.mcpProfile) || defaultMcpFor(kind);
     selectedFastMode = saved && typeof saved.fastMode === 'boolean' ? saved.fastMode : true;
-    selectedCodexTier = (saved && saved.codexSpeedTier) || 'inherit';
+    selectedCodexTier = (saved && saved.codexSpeedTier) || defaultCodexSpeedFor(kind);
   }
 
   // Codex 的档位目录来自 codex-cli 自己的缓存，开弹窗时拉一次就够。
