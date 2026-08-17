@@ -103,14 +103,20 @@ test('production integration creates a branded shortcut and a working new-window
   }
 });
 
-test('Jump List registration cannot leave the canonical shortcut without the Hub app-root argument', () => {
+// 2026-08-17 实测定论：抹掉 app-root 参数的不是 setUserTasks 本身，而是 Explorer
+// 发现登记快捷方式被外部改写后做的**异步**归一化 —— Jump List 提交比 setUserTasks
+// 返回晚几秒，提交时把快捷方式和任务项一起打回裸版（args 清空、cwd=exe 目录），
+// 任务栏“新建 AI 群聊 Hub”因此打开 Electron 空壳。反过来，登记快捷方式保持
+// Windows 归一化裸版时，任务项参数完整保留。所以裸版必须被当作健康终态接受，
+// 任何“补回参数”的冲动都会重新触发归一化，形成永远修不好的循环。
+test('Windows-normalized bare shortcut is accepted as the healthy terminal state', () => {
   const h = makeHarness();
   try {
     const { shortcutPath } = getShortcutPaths({ app: h.app });
     h.app.setUserTasks = (value) => {
       h.tasks.push(value);
-      // Mirrors the source-mode Windows/Electron behavior observed in production:
-      // task registration normalizes the AUMID shortcut back to a bare exe launch.
+      // Mirrors production: Explorer normalizes the registered shortcut to a
+      // bare exe launch during the deferred Jump List commit.
       h.links.set(path.resolve(shortcutPath), {
         ...buildShortcutDetails(h),
         args: '',
@@ -120,13 +126,67 @@ test('Jump List registration cannot leave the canonical shortcut without the Hub
     };
 
     const result = ensureWindowsShellIntegration({ ...h, platform: 'win32' });
-    const repaired = h.links.get(path.resolve(shortcutPath));
 
     assert.equal(result.errors.length, 0);
-    assert.equal(result.shortcutUpdated, true);
-    assert.equal(h.writes.length, 2, 'canonical shortcut must be restored after setUserTasks drift');
-    assert.equal(repaired.args, `"${path.resolve(h.appRoot)}"`);
-    assert.equal(repaired.cwd, path.resolve(h.appRoot));
+    assert.equal(h.writes.length, 1, 'only the initial create; the normalized bare state must not be rewritten');
+    assert.equal(result.shortcutWindowsNormalized, true);
+    assert.equal(isWindowsShellIntegrationHealthy({ ...h, platform: 'win32' }), true,
+      'normalized bare shortcut is healthy — repairing it re-triggers the arg-stripping normalization');
+    assert.equal(h.tasks.length, 1, 'Jump List tasks are still refreshed with full arguments');
+    assert.equal(h.tasks[0][0].arguments, `"${path.resolve(h.appRoot)}"`);
+  } finally {
+    fs.rmSync(h.temp, { recursive: true, force: true });
+  }
+});
+
+test('an already normalized shortcut is left untouched on every launch', () => {
+  const h = makeHarness();
+  try {
+    const programs = path.join(h.temp, 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+    const shortcutPath = path.join(programs, HUB_SHORTCUT_NAME);
+    fs.mkdirSync(programs, { recursive: true });
+    fs.writeFileSync(shortcutPath, 'shortcut');
+    h.links.set(path.resolve(shortcutPath), {
+      ...buildShortcutDetails(h),
+      args: '',
+      cwd: path.dirname(h.execPath),
+    });
+
+    const result = ensureWindowsShellIntegration({ ...h, platform: 'win32' });
+
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.shortcutUpdated, false);
+    assert.equal(h.writes.length, 0, 'rewriting the normalized shortcut would re-trigger Explorer arg-stripping');
+    assert.equal(result.shortcutWindowsNormalized, true);
+    assert.equal(h.tasks.length, 1);
+  } finally {
+    fs.rmSync(h.temp, { recursive: true, force: true });
+  }
+});
+
+test('genuine shortcut drift is still repaired even when args happen to be empty', () => {
+  const h = makeHarness();
+  try {
+    const programs = path.join(h.temp, 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+    const shortcutPath = path.join(programs, HUB_SHORTCUT_NAME);
+    const staleExe = path.join(h.temp, 'stale', 'electron.exe');
+    fs.mkdirSync(path.dirname(staleExe), { recursive: true });
+    fs.writeFileSync(staleExe, 'stale');
+    fs.mkdirSync(programs, { recursive: true });
+    fs.writeFileSync(shortcutPath, 'shortcut');
+    h.links.set(path.resolve(shortcutPath), {
+      ...buildShortcutDetails(h),
+      target: staleExe,
+      args: '',
+      cwd: path.dirname(staleExe),
+    });
+
+    const result = ensureWindowsShellIntegration({ ...h, platform: 'win32' });
+
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.shortcutUpdated, true, 'wrong target is real drift and must be repaired');
+    assert.equal(result.shortcutWindowsNormalized, false);
+    assert.equal(h.links.get(path.resolve(shortcutPath)).target, path.resolve(h.execPath));
   } finally {
     fs.rmSync(h.temp, { recursive: true, force: true });
   }

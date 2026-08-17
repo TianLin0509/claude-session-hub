@@ -80,6 +80,27 @@ function isPoisonedLegacyElectronShortcut(details, expected) {
     && !String(details.args || '').trim();
 }
 
+// Windows 对"已登记 AUMID 的快捷方式"有所有权主张：Jump List 提交是异步的，
+// 提交时 Explorer 若发现登记快捷方式被外部改写（例如这里写入 app-root 参数），
+// 会把快捷方式和 Jump List 任务项一起归一化成它的裸登记版本 —— target=exe、
+// args 清空、cwd 改成 exe 目录。实测（2026-08-17，Electron 41 / Win11）：
+//   - 重写登记快捷方式后 setUserTasks → 数秒后快捷方式与任务项双双丢参数，
+//     任务栏"新建 AI 群聊 Hub"打开 Electron 空壳；
+//   - 不动登记快捷方式、只 setUserTasks → 任务项参数完整保留。
+// 所以归一化裸版不算漂移，绝不能"修复"它 —— 每修一次，下一次提交就再被抹一次，
+// 形成永远修不好的循环。只有 target/icon/AUMID 真错了或文件缺失才重写。
+function isWindowsNormalizedShortcut(actual, expected) {
+  if (!actual) return false;
+  return normalizeWinPath(actual.target) === normalizeWinPath(expected.target)
+    && !String(actual.args || '').trim()
+    && normalizeWinPath(actual.cwd) === normalizeWinPath(path.dirname(expected.target))
+    && String(actual.appUserModelId || '') === String(expected.appUserModelId || '');
+}
+
+function shortcutHealthy(actual, expected) {
+  return shortcutMatches(actual, expected) || isWindowsNormalizedShortcut(actual, expected);
+}
+
 function timestampForFile(date = new Date()) {
   return date.toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
 }
@@ -172,7 +193,7 @@ function isWindowsShellIntegrationHealthy({
   const { shortcutPath } = getShortcutPaths({ app, appDataPath, desktopPath });
   if (!fsModule.existsSync(shortcutPath)) return false;
   try {
-    return shortcutMatches(shell.readShortcutLink(shortcutPath), expected);
+    return shortcutHealthy(shell.readShortcutLink(shortcutPath), expected);
   } catch {
     return false;
   }
@@ -203,6 +224,7 @@ function ensureWindowsShellIntegration({
     supported: platform === 'win32',
     shortcutPath: null,
     shortcutUpdated: false,
+    shortcutWindowsNormalized: false,
     legacyBackupPath: null,
     desktopShortcutPath: null,
     desktopShortcutUpdated: false,
@@ -229,7 +251,11 @@ function ensureWindowsShellIntegration({
     if (fsModule.existsSync(shortcutPath)) {
       try { current = shell.readShortcutLink(shortcutPath); } catch {}
     }
-    if (!shortcutMatches(current, expected)) {
+    if (isWindowsNormalizedShortcut(current, expected)) {
+      // Windows 已把登记快捷方式归一化成裸版。保持现状：重写它会触发 Explorer
+      // 在下一次 Jump List 提交时把任务项参数一并抹掉（见 isWindowsNormalizedShortcut）。
+      result.shortcutWindowsNormalized = true;
+    } else if (!shortcutMatches(current, expected)) {
       // Electron follows native Shell Link semantics: `replace` requires an
       // existing file, while `create` fails if one is already present.
       const operation = fsModule.existsSync(shortcutPath) ? 'replace' : 'create';
@@ -317,18 +343,22 @@ function ensureWindowsShellIntegration({
     result.errors.push(`Windows Jump List 更新失败：${error.message}`);
   }
 
-  // Electron/Windows 会在 setUserTasks() 时重新登记当前 AUMID 的应用快捷方式。
-  // 对 source-mode app，这一步可能把刚写好的 app-root 参数抹掉，并把 cwd 改成
-  // exe 目录。实际结果就是任务栏右键“新建窗口”只启动 AIGroupChatHub.exe，
-  // 没有传 Hub 根目录，Electron 于是打开原始空壳。Jump List 必须先登记，随后
-  // 再复核一次 Shell Link；不能只相信 writeShortcutLink() 的返回值。
+  // 复核登记快捷方式，但只修"真正的漂移"（文件缺失 / target / icon / AUMID 错误）。
+  // 注意：抹掉参数的元凶不是 setUserTasks 本身，而是 Explorer 发现登记快捷方式被
+  // 外部改写后做的异步归一化（见 isWindowsNormalizedShortcut 的实测记录）。因此
+  // 这里绝不能把归一化裸版再改回带参数版——那只会让下一次 Jump List 提交再把
+  // 任务项参数抹掉，"新建 AI 群聊 Hub"反复退回 Electron 空壳。文件缺失时才补建，
+  // 且本次提交已完成，补建不会影响刚登记的 Jump List。
   try {
     let current = null;
-    if (fsModule.existsSync(shortcutPath)) {
+    const exists = fsModule.existsSync(shortcutPath);
+    if (exists) {
       try { current = shell.readShortcutLink(shortcutPath); } catch {}
     }
-    if (!shortcutMatches(current, expected)) {
-      const operation = fsModule.existsSync(shortcutPath) ? 'replace' : 'create';
+    if (isWindowsNormalizedShortcut(current, expected)) {
+      result.shortcutWindowsNormalized = true;
+    } else if (!shortcutMatches(current, expected)) {
+      const operation = exists ? 'replace' : 'create';
       const ok = shell.writeShortcutLink(shortcutPath, operation, expected);
       if (!ok) throw new Error(`writeShortcutLink returned false: ${shortcutPath}`);
       result.shortcutUpdated = true;
@@ -394,6 +424,8 @@ module.exports = {
   shortcutMatches,
   shortcutLaunchMatches,
   isPoisonedLegacyElectronShortcut,
+  isWindowsNormalizedShortcut,
+  shortcutHealthy,
   shortcutReferencesMissingPath,
   getShortcutPaths,
   isWindowsShellIntegrationHealthy,

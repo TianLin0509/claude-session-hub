@@ -11,6 +11,7 @@ const {
   buildShortcutDetails,
   ensureWindowsShellIntegration,
   shortcutMatches,
+  isWindowsNormalizedShortcut,
 } = require('../core/windows-shell-integration.js');
 const {
   ensureBrandedHubExe,
@@ -56,9 +57,12 @@ app.whenReady().then(() => {
     error: branding.error || null,
   };
   result.shortcutExistsBeforeExit = !!(result.shortcutPath && fs.existsSync(result.shortcutPath));
+  // 归一化裸版（Windows 抹掉参数）也是健康终态，见 isWindowsNormalizedShortcut 的实测说明。
+  const healthy = (details) => shortcutMatches(details, expectedShortcut)
+    || isWindowsNormalizedShortcut(details, expectedShortcut);
   try {
     result.shortcutDetailsAfterRepair = shell.readShortcutLink(result.shortcutPath);
-    result.shortcutHealthyAfterRepair = shortcutMatches(result.shortcutDetailsAfterRepair, expectedShortcut);
+    result.shortcutHealthyAfterRepair = healthy(result.shortcutDetailsAfterRepair);
   } catch (error) {
     result.shortcutHealthyAfterRepair = false;
     result.shortcutReadError = error.message;
@@ -67,7 +71,7 @@ app.whenReady().then(() => {
   setTimeout(() => {
     let healthyAfter1s = false;
     try {
-      healthyAfter1s = shortcutMatches(shell.readShortcutLink(result.shortcutPath), expectedShortcut);
+      healthyAfter1s = healthy(shell.readShortcutLink(result.shortcutPath));
     } catch {}
     process.stdout.write(`shortcutExistsAfter1s=${!!(result.shortcutPath && fs.existsSync(result.shortcutPath))}\n`);
     process.stdout.write(`shortcutHealthyAfter1s=${healthyAfter1s}\n`);
