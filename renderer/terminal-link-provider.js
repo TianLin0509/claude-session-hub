@@ -77,7 +77,7 @@ function _trimWideWrapPadding(line, nextLine, text, cols) {
   return text;
 }
 
-function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu }) {
+function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu, onError }) {
   const activeLinkGroups = new Map();
 
   function registerLinkInGroup(fullPath, link) {
@@ -106,6 +106,123 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu }) {
     // Those are valid URL/path continuation characters; rejecting them before
     // the shared candidate parser sees the joined token splits valid links.
     const LINK_BOUNDARY_RE = /[^\r\n\s'"`<>|]/;
+    let provider = null;
+    let hoveredLink = null;
+    let pressedLink = null;
+    let attachedElement = null;
+    let renderDisposable = null;
+    let providerRegistration = null;
+    let disposed = false;
+    const ownedLinks = new Set();
+    const activationStats = {
+      activations: 0,
+      fallbackActivations: 0,
+      hovers: 0,
+      leaves: 0,
+      failures: 0,
+    };
+
+    const releasePressedLink = (pressed = pressedLink) => {
+      if (pressed && pressed.manuallyResolved) pressed.link.dispose?.();
+      if (pressed === pressedLink) pressedLink = null;
+    };
+    const resolveLinkAtEvent = (event) => {
+      try {
+        const mouseService = terminal._core?._mouseService || terminal._core?._linkifier?._mouseService;
+        const element = terminal.element;
+        if (!provider || !mouseService || !element) return null;
+        const coords = mouseService.getCoords(event, element, terminal.cols, terminal.rows);
+        if (!coords) return null;
+        const position = {
+          x: coords[0],
+          y: coords[1] + (Number(terminal.buffer.active.viewportY) || 0),
+        };
+        let selected = null;
+        provider.provideLinks(position.y, (links) => {
+          for (const link of links || []) {
+            const start = link.range.start.y * terminal.cols + link.range.start.x;
+            const end = link.range.end.y * terminal.cols + link.range.end.x;
+            const point = position.y * terminal.cols + position.x;
+            if (!selected && start <= point && point <= end) selected = link;
+            else link.dispose?.();
+          }
+        });
+        return selected;
+      } catch (error) {
+        console.debug('[terminal-link] pointer revalidation skipped:', error && error.message);
+        return null;
+      }
+    };
+    const capturePressedLink = (event) => {
+      if (event.button !== 0) return;
+      const revalidated = resolveLinkAtEvent(event);
+      const link = revalidated || (hoveredLink && !hoveredLink._disposed ? hoveredLink : null);
+      if (!link) return;
+      pressedLink = {
+        link,
+        activationCount: activationStats.activations,
+        manuallyResolved: !!revalidated,
+        x: Number(event.clientX) || 0,
+        y: Number(event.clientY) || 0,
+      };
+    };
+    const onPointerDown = (event) => {
+      releasePressedLink();
+      capturePressedLink(event);
+    };
+    const onMouseDown = (event) => {
+      // A preceding PointerEvent already froze the link before focus redraw.
+      if (pressedLink) return;
+      releasePressedLink();
+      capturePressedLink(event);
+    };
+    const onClick = (event) => {
+      const pressed = pressedLink;
+      pressedLink = null;
+      if (!pressed || event.button !== 0) return;
+      if (Math.abs((Number(event.clientX) || 0) - pressed.x) > 5
+          || Math.abs((Number(event.clientY) || 0) - pressed.y) > 5) {
+        releasePressedLink(pressed);
+        return;
+      }
+      const eventSnapshot = {
+        button: 0,
+        clientX: Number(event.clientX) || 0,
+        clientY: Number(event.clientY) || 0,
+        ctrlKey: !!event.ctrlKey,
+        altKey: !!event.altKey,
+        metaKey: !!event.metaKey,
+        shiftKey: !!event.shiftKey,
+      };
+      // xterm 5.5 requires the exact same current-link wrapper on mousedown and
+      // mouseup. Revalidate the real buffer cell on pointerdown, let xterm run
+      // first, then fall back only when no activation occurred anywhere.
+      setTimeout(() => {
+        if (disposed || pressed.link._disposed || activationStats.activations !== pressed.activationCount) {
+          releasePressedLink(pressed);
+          return;
+        }
+        activationStats.fallbackActivations += 1;
+        void Promise.resolve(pressed.link.activate(eventSnapshot)).finally(() => releasePressedLink(pressed));
+      }, 0);
+    };
+    const attachElement = () => {
+      const element = terminal.element;
+      if (disposed || !element || attachedElement === element) return false;
+      if (attachedElement) {
+        attachedElement.removeEventListener('pointerdown', onPointerDown, true);
+        attachedElement.removeEventListener('mousedown', onMouseDown, true);
+        attachedElement.removeEventListener('click', onClick);
+      }
+      attachedElement = element;
+      // pointerdown fires before focus can redraw the cursor and emit
+      // link.leave. Keep mousedown as a compatibility fallback for runtimes
+      // without PointerEvent support.
+      attachedElement.addEventListener('pointerdown', onPointerDown, true);
+      attachedElement.addEventListener('mousedown', onMouseDown, true);
+      attachedElement.addEventListener('click', onClick);
+      return true;
+    };
     const isHeuristicCont = (prevLine, currentLine) => {
       if (!prevLine || !currentLine) return false;
       const cols = terminal.cols;
@@ -141,7 +258,7 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu }) {
       return nearRightEdge;
     };
 
-    const provider = {
+    provider = {
       provideLinks(lineNumber, callback) {
         const buf = terminal.buffer.active;
         const line = buf.getLine(lineNumber - 1);
@@ -222,25 +339,84 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu }) {
               },
               text: fullPath,
               decorations: { pointerCursor: true, underline: true },
-              activate: async (event) => {
+            };
+            linkObj._activationSeq = 0;
+            linkObj._disposed = false;
+            linkObj.activate = async (event) => {
+              linkObj._activationSeq += 1;
+              activationStats.activations += 1;
+              try {
                 if (event && event.button === 2 && typeof onContextMenu === 'function') {
                   onContextMenu(fullPath, event.clientX, event.clientY);
                   return;
                 }
-                return openPathInHub(fullPath, { cwd, requireExistsForRel: false });
-              },
-              hover: () => setGroupUnderline(fullPath, true),
-              leave: () => setGroupUnderline(fullPath, true),
+                const result = await openPathInHub(fullPath, { cwd, requireExistsForRel: false });
+                if (result && result.ok === false) throw new Error(result.error || 'path open failed');
+                return result;
+              } catch (error) {
+                activationStats.failures += 1;
+                console.warn('[terminal-link] activation failed:', fullPath, error);
+                if (typeof onError === 'function') {
+                  onError(`路径打开失败：${String(error && error.message || error)}`);
+                }
+                return { ok: false, error: String(error && error.message || error) };
+              }
             };
-            linkObj.dispose = () => unregisterLinkFromGroup(fullPath, linkObj);
+            linkObj.hover = () => {
+              hoveredLink = linkObj;
+              activationStats.hovers += 1;
+              setGroupUnderline(fullPath, true);
+            };
+            linkObj.leave = () => {
+              if (hoveredLink === linkObj) hoveredLink = null;
+              activationStats.leaves += 1;
+              setGroupUnderline(fullPath, true);
+            };
+            linkObj.dispose = () => {
+              if (linkObj._disposed) return;
+              linkObj._disposed = true;
+              if (hoveredLink === linkObj) hoveredLink = null;
+              // A manually revalidated pointerdown link is provider-owned and
+              // remains live until click; an xterm-disposed hover link is never
+              // eligible for fallback because _disposed is checked above.
+              unregisterLinkFromGroup(fullPath, linkObj);
+              ownedLinks.delete(linkObj);
+            };
             registerLinkInGroup(fullPath, linkObj);
+            ownedLinks.add(linkObj);
             links.push(linkObj);
           }
         }
         callback(links.length > 0 ? links : undefined);
       },
     };
-    terminal.registerLinkProvider(provider);
+    provider.attachElement = attachElement;
+    provider.getActivationStats = () => ({ ...activationStats });
+    provider.dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      renderDisposable?.dispose?.();
+      providerRegistration?.dispose?.();
+      for (const link of [...ownedLinks]) link.dispose?.();
+      ownedLinks.clear();
+      if (attachedElement) {
+        attachedElement.removeEventListener('pointerdown', onPointerDown, true);
+        attachedElement.removeEventListener('mousedown', onMouseDown, true);
+        attachedElement.removeEventListener('click', onClick);
+      }
+      hoveredLink = null;
+      releasePressedLink();
+      attachedElement = null;
+    };
+    providerRegistration = terminal.registerLinkProvider(provider);
+    if (!attachElement() && typeof terminal.onRender === 'function') {
+      renderDisposable = terminal.onRender(() => {
+        if (attachElement()) {
+          renderDisposable?.dispose?.();
+          renderDisposable = null;
+        }
+      });
+    }
     return provider;
   }
 

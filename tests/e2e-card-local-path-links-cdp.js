@@ -13,6 +13,7 @@ const ROOT = path.resolve(__dirname, '..');
 const RUN_ID = `${Date.now()}-${process.pid}`;
 const TEMP_ROOT = path.join(os.tmpdir(), `hub-card-local-path-${RUN_ID}`);
 const DATA_DIR = path.join(TEMP_ROOT, 'hub-data');
+const HOME_DIR = path.join(TEMP_ROOT, 'home');
 const FIXTURE_PATH = path.join(TEMP_ROOT, '_scratch', 'My Report', 'report.md');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'card-local-path-links');
 const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `card-local-path-links-${RUN_ID}.png`);
@@ -63,6 +64,7 @@ async function capture(client, target) {
 async function main() {
   fs.mkdirSync(path.dirname(FIXTURE_PATH), { recursive: true });
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(HOME_DIR, { recursive: true });
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
   fs.writeFileSync(FIXTURE_PATH, '# Local path E2E\n\nWindows path preview works.\n', 'utf8');
 
@@ -75,7 +77,15 @@ async function main() {
   const result = { runId: RUN_ID, port, fixturePath: FIXTURE_PATH, screenshot: SCREENSHOT_PATH };
 
   try {
-    hub = await launchIsolatedHub({ dataDir: DATA_DIR, port, label: 'card-local-path-links' });
+    hub = await launchIsolatedHub({
+      dataDir: DATA_DIR,
+      port,
+      label: 'card-local-path-links',
+      extraEnv: {
+        CLAUDE_HUB_HOME_DIR: HOME_DIR,
+        DEEPSEEK_API_KEY: '',
+      },
+    });
     client = await connectFirstPage(hub, (target) => target.type === 'page' && /renderer[\\/]index\.html/i.test(target.url || ''));
     await client.send('Page.enable');
     await client.send('Emulation.setDeviceMetricsOverride', {
@@ -183,6 +193,11 @@ async function main() {
   } finally {
     if (client) await client.close().catch(() => {});
     if (hub) await gracefulQuit(hub);
+    const resolved = path.resolve(TEMP_ROOT);
+    if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
+        && path.basename(resolved).startsWith('hub-card-local-path-')) {
+      fs.rmSync(resolved, { recursive: true, force: true });
+    }
   }
 }
 

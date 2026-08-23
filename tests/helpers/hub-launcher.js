@@ -7,6 +7,9 @@
 //   - 严禁 Get-Process electron / 时间窗口 PID 推断
 //   - 严禁 Start-Process（不继承 env）；用 child_process.spawn 直接传 env
 //   - 隔离数据目录：CLAUDE_HUB_DATA_DIR 必须设
+//   - 隔离规范库：CLAUDE_HUB_HOME_DIR 默认落到 dataDir 下，且默认清空
+//     DEEPSEEK_API_KEY，防止梦境任务扫描/改写真实 home；需要真实 Key 的专项
+//     用例必须通过 extraEnv 显式覆盖。
 //
 // 用法：
 //   const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
@@ -16,11 +19,51 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const http = require('http');
 
 const HUB_ROOT = path.resolve(__dirname, '..', '..');
 const ELECTRON_EXE = path.join(HUB_ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
+
+function _isPathInside(parent, candidate) {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
+  allowExternalState = false,
+} = {}) {
+  const resolvedDataDir = path.resolve(dataDir);
+  const testRoot = path.dirname(resolvedDataDir);
+  const requestedDataDir = extraEnv.CLAUDE_HUB_DATA_DIR;
+  const requestedHomeDir = extraEnv.CLAUDE_HUB_HOME_DIR;
+  const requestedKey = extraEnv.DEEPSEEK_API_KEY;
+  if (!allowExternalState) {
+    const tempRoot = path.resolve(os.tmpdir());
+    if (resolvedDataDir === tempRoot || !_isPathInside(tempRoot, resolvedDataDir)) {
+      throw new Error('isolated Hub requires dataDir inside a dedicated OS temp subdirectory');
+    }
+    if (requestedDataDir && path.resolve(requestedDataDir) !== resolvedDataDir) {
+      throw new Error('isolated Hub forbids overriding CLAUDE_HUB_DATA_DIR');
+    }
+    if (requestedHomeDir && !_isPathInside(testRoot, requestedHomeDir)) {
+      throw new Error('isolated Hub requires CLAUDE_HUB_HOME_DIR inside the test root');
+    }
+    if (requestedKey) throw new Error('isolated Hub forbids a non-empty DEEPSEEK_API_KEY');
+  }
+  const safeExtraEnv = { ...extraEnv };
+  delete safeExtraEnv.CLAUDE_HUB_DATA_DIR;
+  delete safeExtraEnv.CLAUDE_HUB_HOME_DIR;
+  delete safeExtraEnv.DEEPSEEK_API_KEY;
+  return {
+    ...baseEnv,
+    ...safeExtraEnv,
+    CLAUDE_HUB_DATA_DIR: allowExternalState && requestedDataDir ? requestedDataDir : resolvedDataDir,
+    CLAUDE_HUB_HOME_DIR: requestedHomeDir || path.join(resolvedDataDir, 'isolated-home'),
+    DEEPSEEK_API_KEY: allowExternalState && requestedKey ? requestedKey : '',
+  };
+}
 
 function _waitMs(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -48,20 +91,24 @@ async function _waitForCDP(port, timeoutMs = 30000) {
   return null;
 }
 
-async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {}, executablePath = ELECTRON_EXE } = {}) {
+async function launchIsolatedHub({
+  dataDir,
+  port,
+  label = 'hub',
+  extraEnv = {},
+  executablePath = ELECTRON_EXE,
+  allowExternalState = false,
+} = {}) {
   if (!dataDir) throw new Error('dataDir required');
   if (!port) throw new Error('port required');
 
-  fs.mkdirSync(dataDir, { recursive: true });
+  const env = buildIsolatedHubEnv(dataDir, extraEnv, process.env, { allowExternalState });
+  fs.mkdirSync(env.CLAUDE_HUB_DATA_DIR, { recursive: true });
+  const isolatedHomeDir = env.CLAUDE_HUB_HOME_DIR;
+  fs.mkdirSync(isolatedHomeDir, { recursive: true });
   // main-bootstrap.js 会把 Electron userData 切到这个子目录；Chromium 在目录不存在时
   // 偶发无法写 DevToolsActivePort，表现为 CDP 已监听但 renderer 永远不响应。
-  fs.mkdirSync(path.join(dataDir, 'electron-userdata'), { recursive: true });
-
-  const env = {
-    ...process.env,
-    CLAUDE_HUB_DATA_DIR: dataDir,
-    ...extraEnv,
-  };
+  fs.mkdirSync(path.join(env.CLAUDE_HUB_DATA_DIR, 'electron-userdata'), { recursive: true });
 
   const args = [HUB_ROOT, `--remote-debugging-port=${port}`];
   // 关键：spawn 立即拿 PID，detached:false 让 child 跟随 parent 退出
@@ -166,6 +213,7 @@ async function listCdpTargets(hub) {
 }
 
 module.exports = {
+  buildIsolatedHubEnv,
   launchIsolatedHub,
   gracefulQuit,
   listCdpTargets,
