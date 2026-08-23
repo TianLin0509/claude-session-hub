@@ -133,6 +133,25 @@ test('sync IPC validates the path and delegates to company-drop', async () => {
   assert.equal((await handler(null, 'relative.txt')).code, 'invalid_path');
 });
 
+test('preview path search IPC validates payload and delegates to the local searcher', async () => {
+  const handlers = new Map();
+  const calls = [];
+  registerPathIpc({
+    handle(channel, handler) { handlers.set(channel, handler); },
+  }, {
+    async searchPreviewPaths(payload) {
+      calls.push(payload);
+      return { results: [{ path: 'C:\\demo.md' }], source: 'workspace' };
+    },
+  });
+  const handler = handlers.get('preview:search-paths');
+  assert.equal(typeof handler, 'function');
+  const result = await handler(null, { query: 'demo', cwd: 'C:\\work', limit: 8 });
+  assert.equal(result.results[0].path, 'C:\\demo.md');
+  assert.deepEqual(calls, [{ query: 'demo', cwd: 'C:\\work', limit: 8 }]);
+  assert.equal((await handler(null, null)).source, 'invalid');
+});
+
 test('runtime resolver honors explicit existing paths', () => {
   const pythonPath = 'C:\\tools\\python.exe';
   const clientPath = 'C:\\tools\\company_drop.py';

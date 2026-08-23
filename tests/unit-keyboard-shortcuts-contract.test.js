@@ -67,6 +67,43 @@ test('Ctrl+W uses the shared close-as-sleep action', () => {
   assert.deepStrictEqual(closed, ['busy']);
 });
 
+test('Ctrl+O is global in PTY/editable controls but does not reset quick-open itself', () => {
+  let opened = 0;
+  const shortcuts = createKeyboardShortcuts({
+    document: { addEventListener: () => {} },
+    ipcRenderer: { invoke: () => {} },
+    clipboard: { writeText: () => {} },
+    sessions: new Map(),
+    terminalCache: new Map(),
+    getActiveSessionId: () => null,
+    getCurrentFontSize: () => 16,
+    selectSession: () => {},
+    escapeToHome: () => {},
+    toggleSidebar: () => {},
+    openTerminalSearch: () => {},
+    openPreviewQuickOpen: () => { opened += 1; },
+    setFontSize: () => {},
+  });
+
+  const bodyEvent = makeEvent({ key: 'o', target: { tagName: 'DIV' } });
+  shortcuts.handleKeydown(bodyEvent);
+  assert.strictEqual(bodyEvent.defaultPrevented, true);
+  assert.strictEqual(opened, 1);
+
+  const inputEvent = makeEvent({ key: 'o', target: { tagName: 'TEXTAREA' } });
+  shortcuts.handleKeydown(inputEvent);
+  assert.strictEqual(inputEvent.defaultPrevented, true);
+  assert.strictEqual(opened, 2, 'xterm/floating input focus must not make the advertised shortcut a dead key');
+
+  const quickInputEvent = makeEvent({
+    key: 'o',
+    target: { tagName: 'INPUT', id: 'preview-quick-open-input' },
+  });
+  shortcuts.handleKeydown(quickInputEvent);
+  assert.strictEqual(quickInputEvent.defaultPrevented, false);
+  assert.strictEqual(opened, 2);
+});
+
 test('Ctrl+Shift+B forks the active session', () => {
   const calls = [];
   const shortcuts = createKeyboardShortcuts({

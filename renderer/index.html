@@ -126,6 +126,11 @@
         <span>昨日之我</span>
         <kbd>Ctrl Shift F</kbd>
       </button>
+      <button type="button" class="global-search-launcher preview-path-launcher" id="btn-preview-path" title="输入路径或模糊搜索文件 (Ctrl+O)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H11l2 2h4.5A2.5 2.5 0 0 1 20 9.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><circle cx="15.5" cy="13.5" r="2.5"/><path d="m17.4 15.4 2.1 2.1"/></svg>
+        <span>路径预览</span>
+        <kbd>Ctrl O</kbd>
+      </button>
       <!-- 按 AI 家族筛选侧栏列表：全部 / Claude / Codex / 其他。内容与计数由
            session-list-renderer 每次渲染时重建。 -->
       <div class="session-filter-tabs" id="session-filter-tabs" role="tablist" aria-label="按 AI 筛选会话"></div>
@@ -360,11 +365,20 @@
            两种模式预览统一在右侧。挪之前群聊模式预览跑在左边，与普通 session 不一致。 -->
     <div class="preview-splitter" id="preview-splitter" style="display:none"></div>
     <div class="preview-panel" id="preview-panel" style="display:none">
+      <div class="preview-tabs-row">
+        <div class="preview-tabs" id="preview-tabs" role="tablist" aria-label="预览文件" aria-orientation="horizontal"></div>
+        <button class="preview-new-tab" id="preview-new-tab" type="button" title="输入路径或搜索文件 (Ctrl+O)" aria-label="打开新的预览">＋</button>
+      </div>
       <div class="preview-header">
         <span class="preview-file-badge" id="preview-file-badge">--</span>
         <span class="preview-title" id="preview-title">Preview</span>
         <span class="preview-file-meta" id="preview-file-meta"></span>
         <div class="preview-header-actions">
+          <button class="preview-action-btn preview-action-text" id="preview-open-path" title="输入路径或模糊搜索 (Ctrl+O)">⌕ <span>路径</span></button>
+          <button class="preview-action-btn preview-action-text" id="preview-copy-content" title="复制全文">⧉ <span>全文</span></button>
+          <button class="preview-action-btn preview-action-text" id="preview-copy-path" title="复制路径或 URL">⛓ <span>路径</span></button>
+          <button class="preview-action-btn" id="preview-show-in-folder" title="在资源管理器中定位">▣</button>
+          <span class="preview-action-separator"></span>
           <button class="preview-action-btn" id="preview-zoom-out" title="缩小 (Ctrl+-)">A−</button>
           <span class="preview-zoom-label" id="preview-zoom-label">100%</span>
           <button class="preview-action-btn" id="preview-zoom-in" title="放大 (Ctrl++)">A+</button>
@@ -375,7 +389,23 @@
           <button class="preview-action-btn" id="preview-close" title="关闭预览 (Esc)">✕</button>
         </div>
       </div>
-      <div class="preview-body" id="preview-body"></div>
+      <div class="preview-body" id="preview-body" role="tabpanel" aria-label="预览内容"></div>
+    </div>
+    <div class="preview-quick-open" id="preview-quick-open" style="display:none" role="presentation">
+      <section class="preview-quick-open-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-quick-open-title">
+        <div class="preview-quick-open-heading">
+          <div><strong id="preview-quick-open-title">打开预览</strong><span>精确路径优先，也可模糊输入文件名</span></div>
+          <button type="button" id="preview-quick-open-close" aria-label="关闭">×</button>
+        </div>
+        <label class="preview-quick-open-input-wrap" for="preview-quick-open-input">
+          <span>⌕</span>
+          <input id="preview-quick-open-input" type="text" autocomplete="off" spellcheck="false" placeholder="绝对路径、相对路径或文件名…" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="preview-quick-open-results">
+          <kbd>Esc</kbd>
+        </label>
+        <div class="preview-quick-open-status" id="preview-quick-open-status" role="status" aria-live="polite">当前会话最近预览</div>
+        <div class="preview-quick-open-results" id="preview-quick-open-results" role="listbox" aria-label="路径搜索结果"></div>
+        <div class="preview-quick-open-foot"><span>↑↓ 选择 · Enter 打开</span><span>本地索引，不上传文件内容</span></div>
+      </section>
     </div>
     <!-- memo-panel 在最右,与 preview-panel 互不影响（display:none 不占位） -->
     <div class="memo-panel" id="memo-panel" style="display:none">
