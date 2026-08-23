@@ -15,6 +15,7 @@ async function main() {
   const cwd = path.join(os.tmpdir(), 'codex-card-project');
   const sid = '019eaaaa-bbbb-7ccc-8ddd-123456789abc';
   const fr = new FakeCodexRollout({ sessionsRoot: tmpRoot, cwd, sid });
+  let fr147 = null;
   try {
     await fr.start();
     await fr.writeRaw({
@@ -165,7 +166,92 @@ async function main() {
       ['tail window question', 'tail window answer'],
       'large rollout parsing should use the tail window and still render the latest cards',
     );
+
+    const goalObjective = '验证 /goal 自动命名与卡片中间输出';
+    fr147 = new FakeCodexRollout({
+      sessionsRoot: tmpRoot,
+      cwd: `${cwd}-0147`,
+      sid: '019effff-0147-7000-8000-000000000147',
+      startAt: new Date('2026-08-20T03:46:00.000Z'),
+      cliVersion: '0.147.0',
+    });
+    await fr147.start();
+    await fr147.writeRaw({
+      timestamp: '2026-08-20T03:46:01.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'thread_goal_updated',
+        threadId: fr147.sid,
+        goal: { threadId: fr147.sid, objective: goalObjective, status: 'active' },
+      },
+    });
+    await fr147.writeRaw({
+      timestamp: '2026-08-20T03:46:01.100Z',
+      type: 'event_msg',
+      payload: { type: 'task_started', turn_id: 'turn-goal-0147' },
+    });
+    await fr147.writeRaw({
+      timestamp: '2026-08-20T03:46:01.200Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: `<codex_internal_context source="goal">\n<objective>${goalObjective}</objective>\n</codex_internal_context>`,
+        }],
+      },
+    });
+    for (const [offset, message] of [[300, '第一条中间进度'], [400, '第二条中间进度']]) {
+      await fr147.writeRaw({
+        timestamp: new Date(Date.parse('2026-08-20T03:46:01.000Z') + offset).toISOString(),
+        type: 'event_msg',
+        payload: {
+          type: 'item_completed',
+          turn_id: 'turn-goal-0147',
+          item: {
+            type: 'AgentMessage',
+            id: `commentary-${offset}`,
+            content: [{ type: 'text', text: message }],
+            phase: 'commentary',
+          },
+          started_at_ms: Date.parse('2026-08-20T03:46:01.000Z') + offset - 50,
+          completed_at_ms: Date.parse('2026-08-20T03:46:01.000Z') + offset,
+        },
+      });
+    }
+
+    const partial147 = parseCodexRolloutToTurns(fr147.rolloutPath);
+    assert.deepStrictEqual(partial147.map(t => t.role), ['user', 'assistant']);
+    assert.equal(partial147[0].text, goalObjective, 'goal card must show the objective, not the injected wrapper');
+    assert.equal(partial147[1].text, '第一条中间进度\n\n第二条中间进度');
+    assert.equal(partial147[1].stopReason, 'partial_commentary');
+    assert.ok(!partial147.some(t => t.text.includes('codex_internal_context')),
+      'injected /goal execution wrapper must stay hidden');
+
+    await fr147.writeRaw({
+      timestamp: '2026-08-20T03:46:02.000Z',
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        turn_id: 'turn-goal-0147',
+        item: {
+          type: 'AgentMessage',
+          id: 'final-goal-0147',
+          content: [{ type: 'text', text: '0.147 最终回答' }],
+          phase: 'final_answer',
+        },
+        started_at_ms: Date.parse('2026-08-20T03:46:01.500Z'),
+        completed_at_ms: Date.parse('2026-08-20T03:46:02.000Z'),
+      },
+    });
+    await fr147.close();
+    const final147 = parseCodexRolloutToTurns(fr147.rolloutPath);
+    assert.deepStrictEqual(final147.map(t => t.text), [goalObjective, '0.147 最终回答']);
+    assert.equal(final147[1].stopReason, 'task_complete');
+    assert.equal(final147[1].durationMs, 500);
   } finally {
+    if (fr147) await fr147.cleanup().catch(() => {});
     await fr.cleanup().catch(() => {});
     await fs.promises.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
   }

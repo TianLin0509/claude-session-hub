@@ -9,9 +9,31 @@ function toEpochMs(value) {
   return value < 1e12 ? value * 1000 : value;
 }
 
+function codexUsageKeyForWindow(window, fallbackKey) {
+  const durationMins = Number(window && window.windowDurationMins);
+  if (!Number.isFinite(durationMins) || durationMins <= 0) return fallbackKey;
+  // App-server no longer guarantees primary=5h and secondary=7d. Current Pro
+  // accounts can return a single primary window whose duration is 10080 min
+  // (weekly). Classify by the authoritative duration, not field position.
+  return Math.abs(durationMins - 300) <= Math.abs(durationMins - 10080)
+    ? 'usage5h'
+    : 'usage7d';
+}
+
+function codexUsageLabelForWindow(window, fallbackLabel) {
+  const mins = Number(window && window.windowDurationMins);
+  if (!Number.isFinite(mins) || mins <= 0) return fallbackLabel;
+  if (mins % 10080 === 0) return `${mins / 10080 * 7}d`;
+  if (mins % 1440 === 0) return `${mins / 1440}d`;
+  if (mins % 60 === 0) return `${mins / 60}h`;
+  return `${mins}m`;
+}
+
 function normalizeCodexRateLimitsResponse(response, observedAt = Date.now()) {
-  const rateLimits = response && (response.rateLimits
-    || (response.rateLimitsByLimitId && response.rateLimitsByLimitId.codex));
+  const rateLimits = response && (
+    (response.rateLimitsByLimitId && response.rateLimitsByLimitId.codex)
+    || response.rateLimits
+  );
   if (!rateLimits || typeof rateLimits !== 'object') {
     throw new Error('Codex app-server 未返回账户配额');
   }
@@ -23,16 +45,14 @@ function normalizeCodexRateLimitsResponse(response, observedAt = Date.now()) {
     observedAt,
     source: 'app-server',
   };
-  if (rateLimits.primary && typeof rateLimits.primary.usedPercent === 'number') {
-    result.usage5h = {
-      pct: Math.round(rateLimits.primary.usedPercent),
-      resetsAt: toEpochMs(rateLimits.primary.resetsAt),
-    };
-  }
-  if (rateLimits.secondary && typeof rateLimits.secondary.usedPercent === 'number') {
-    result.usage7d = {
-      pct: Math.round(rateLimits.secondary.usedPercent),
-      resetsAt: toEpochMs(rateLimits.secondary.resetsAt),
+  for (const [name, fallbackKey] of [['primary', 'usage5h'], ['secondary', 'usage7d']]) {
+    const window = rateLimits[name];
+    if (!window || typeof window.usedPercent !== 'number') continue;
+    const key = codexUsageKeyForWindow(window, fallbackKey);
+    result[key] = {
+      pct: Math.round(window.usedPercent),
+      resetsAt: toEpochMs(window.resetsAt),
+      label: codexUsageLabelForWindow(window, key === 'usage5h' ? '5h' : '7d'),
     };
   }
   if (!result.usage5h && !result.usage7d) {
@@ -265,6 +285,8 @@ function readCodexAccountUsage(opts = {}) {
 
 module.exports = {
   expireCodexUsageWindows,
+  codexUsageKeyForWindow,
+  codexUsageLabelForWindow,
   normalizeCodexRateLimitsResponse,
   readCodexAccountUsage,
   resolveCodexAppServerCommand,

@@ -7,6 +7,10 @@ const { getHubDataDir } = require('./data-dir.js');
 const modelCatalog = require('./deepseek-codex-model-catalog.json');
 
 const DEEPSEEK_CODEX_MODEL = 'deepseek-v4-flash';
+const DEEPSEEK_CODEX_MODELS = Object.freeze([
+  'deepseek-v4-pro',
+  'deepseek-v4-flash',
+]);
 const DEEPSEEK_CODEX_BASE_URL = 'https://api.deepseek.com/';
 const DEEPSEEK_CODEX_MIN_VERSION = '0.144.0';
 
@@ -22,6 +26,32 @@ function getDeepSeekCodexHome(dataDir = getHubDataDir()) {
   return path.join(dataDir, 'deepseek-codex-profile');
 }
 
+function buildDeepSeekCodexCatalog() {
+  const sourceModels = Array.isArray(modelCatalog.models) ? modelCatalog.models : [];
+  const bySlug = new Map(sourceModels.filter(Boolean).map(model => [model.slug, model]));
+  const flashTemplate = bySlug.get(DEEPSEEK_CODEX_MODEL);
+  if (!flashTemplate) throw new Error(`DeepSeek Codex catalog missing ${DEEPSEEK_CODEX_MODEL}`);
+
+  const models = DEEPSEEK_CODEX_MODELS.map((slug) => {
+    const existing = bySlug.get(slug);
+    if (existing) return existing;
+    if (slug === 'deepseek-v4-pro') {
+      // DeepSeek V4 Pro and Flash expose the same Responses/Codex capability
+      // surface and 1M context. Keep one vetted Codex template, overriding only
+      // model identity, user-facing description, and picker priority.
+      return {
+        ...flashTemplate,
+        slug,
+        display_name: 'DeepSeek-V4-Pro',
+        description: 'DeepSeek V4 Pro frontier reasoning and agentic coding model.',
+        priority: Math.max(2, Number(flashTemplate.priority) || 0),
+      };
+    }
+    throw new Error(`DeepSeek Codex catalog cannot derive ${slug}`);
+  });
+  return { ...modelCatalog, models };
+}
+
 function ensureDeepSeekCodexProfile(projectDir, opts = {}) {
   const codexHome = path.resolve(opts.codexHome || getDeepSeekCodexHome(opts.dataDir));
   const projectKey = path.resolve(projectDir || os.homedir());
@@ -29,12 +59,11 @@ function ensureDeepSeekCodexProfile(projectDir, opts = {}) {
   const configPath = path.join(codexHome, 'config.toml');
   const trustedProjectsPath = path.join(codexHome, 'trusted-projects.json');
 
-  const flash = Array.isArray(modelCatalog.models)
-    ? modelCatalog.models.find(item => item && item.slug === DEEPSEEK_CODEX_MODEL)
-    : null;
-  if (!flash) throw new Error(`DeepSeek Codex catalog missing ${DEEPSEEK_CODEX_MODEL}`);
-  if (flash.minimal_client_version !== DEEPSEEK_CODEX_MIN_VERSION) {
-    throw new Error(`DeepSeek Codex catalog requires unexpected client ${flash.minimal_client_version || '(missing)'}`);
+  const effectiveCatalog = buildDeepSeekCodexCatalog();
+  for (const model of effectiveCatalog.models) {
+    if (model.minimal_client_version !== DEEPSEEK_CODEX_MIN_VERSION) {
+      throw new Error(`DeepSeek Codex catalog requires unexpected client ${model.minimal_client_version || '(missing)'}`);
+    }
   }
 
   fs.mkdirSync(codexHome, { recursive: true });
@@ -47,7 +76,7 @@ function ensureDeepSeekCodexProfile(projectDir, opts = {}) {
   trustedByKey.set(projectKey.toLowerCase(), projectKey);
   trustedProjects = [...trustedByKey.values()].sort((a, b) => a.localeCompare(b));
 
-  fs.writeFileSync(catalogPath, `${JSON.stringify(modelCatalog, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(catalogPath, `${JSON.stringify(effectiveCatalog, null, 2)}\n`, 'utf8');
   fs.writeFileSync(trustedProjectsPath, `${JSON.stringify(trustedProjects, null, 2)}\n`, 'utf8');
   const configLines = [
     'disable_response_storage = true',
@@ -87,6 +116,8 @@ module.exports = {
   DEEPSEEK_CODEX_BASE_URL,
   DEEPSEEK_CODEX_MIN_VERSION,
   DEEPSEEK_CODEX_MODEL,
+  DEEPSEEK_CODEX_MODELS,
+  buildDeepSeekCodexCatalog,
   ensureDeepSeekCodexProfile,
   getDeepSeekCodexHome,
 };

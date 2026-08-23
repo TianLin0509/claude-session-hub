@@ -2,6 +2,10 @@ const {
   guardMarkdownLocalPaths,
   restoreMarkdownLocalPaths,
 } = require('./markdown-local-path-guard.js');
+const {
+  guardMarkdownMath,
+  restoreMarkdownMath,
+} = require('./markdown-math-guard.js');
 
 function createTurnCardRenderer(options = {}) {
   const doc = options.document || document;
@@ -25,10 +29,12 @@ function createTurnCardRenderer(options = {}) {
   const updateStreamingIndicator = typeof options.updateStreamingIndicator === 'function' ? options.updateStreamingIndicator : null;
 
   function renderMarkdownPreservingLocalPaths(text) {
-    const guard = guardMarkdownLocalPaths(normalizeMarkdownPathBreaks(text));
+    const mathGuard = guardMarkdownMath(normalizeMarkdownPathBreaks(text));
+    const guard = guardMarkdownLocalPaths(mathGuard.text);
     const rawHtml = marked.parse(guard.text, { breaks: true, gfm: true });
     const sanitized = DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target', 'data-lang'] });
-    return restoreMarkdownLocalPaths(sanitized, guard);
+    const withPaths = restoreMarkdownLocalPaths(sanitized, guard);
+    return restoreMarkdownMath(withPaths, mathGuard);
   }
 
 // === Spec 1 v0.9.0 · 工具调用块 ===

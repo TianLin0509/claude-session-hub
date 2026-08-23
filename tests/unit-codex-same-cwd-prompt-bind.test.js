@@ -47,6 +47,18 @@ async function writeCodex0147UserMessage(fr, message, turnId = 'turn-0147') {
   });
 }
 
+async function writeCodex0147Goal(fr, objective) {
+  await fr.writeRaw({
+    timestamp: new Date().toISOString(),
+    type: 'event_msg',
+    payload: {
+      type: 'thread_goal_updated',
+      threadId: fr.sid,
+      goal: { threadId: fr.sid, objective, status: 'active' },
+    },
+  });
+}
+
 async function testSameCwdWaitsForPromptMatch() {
   const tmpRoot = path.join(os.tmpdir(), `codex-same-cwd-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
   const cwd = 'C:\\test\\shared-cwd';
@@ -218,6 +230,67 @@ async function testCodex0147ItemCompletedBindsAndEmitsPrompt() {
   }
 }
 
+async function testCodex0147GoalBindsAndEmitsObjectivePrompt() {
+  const tmpRoot = path.join(os.tmpdir(), `codex-0147-goal-bind-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+  const cwd = 'C:\\test\\codex-0147-goal-shared';
+  const tap = new CodexTap({ sessionsRoot: tmpRoot, pollIntervalMs: 50 });
+  const startAt = new Date();
+  const objective = '修复目标模式自动命名';
+  const frA = new FakeCodexRollout({
+    sessionsRoot: tmpRoot,
+    cwd,
+    sid: '019effff-0000-7000-8000-000000000149',
+    startAt,
+    cliVersion: '0.147.0',
+  });
+  const frB = new FakeCodexRollout({
+    sessionsRoot: tmpRoot,
+    cwd,
+    sid: '019effff-0000-7000-8000-000000000150',
+    startAt,
+    cliVersion: '0.147.0',
+  });
+  const promptEvents = [];
+  tap.on('prompt-submitted', event => promptEvents.push(event));
+
+  try {
+    tap.registerSession('hub-goal-A', { cwd, requirePromptMatch: true });
+    tap.registerSession('hub-goal-B', { cwd, requirePromptMatch: true });
+    tap.notePrompt('hub-goal-A', `/goal ${objective}`);
+    tap.notePrompt('hub-goal-B', '/goal 另一个同目录目标');
+    await frA.start();
+    await frB.start();
+    await writeCodex0147Goal(frA, objective);
+
+    assert.ok(await waitFor(() => tap.getRolloutPath('hub-goal-A') === frA.rolloutPath),
+      'thread_goal_updated objective should match the submitted /goal command');
+    assert.ok(await waitFor(() => promptEvents.length === 1),
+      'goal objective should emit the prompt event used by auto-title');
+    assert.strictEqual(tap.getRolloutPath('hub-goal-B'), null,
+      'another same-cwd /goal session must not steal the rollout');
+    assert.deepStrictEqual(
+      {
+        hubSessionId: promptEvents[0].hubSessionId,
+        text: promptEvents[0].text,
+        turnId: promptEvents[0].turnId,
+        signalSource: promptEvents[0].signalSource,
+      },
+      {
+        hubSessionId: 'hub-goal-A',
+        text: objective,
+        turnId: null,
+        signalSource: 'thread_goal_updated',
+      },
+    );
+  } finally {
+    tap.unregisterSession('hub-goal-A');
+    tap.unregisterSession('hub-goal-B');
+    await frA.close();
+    await frB.close();
+    await fs.promises.rm(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 async function testShortPromptKeepsPunctuationSignificant() {
   const tmpRoot = path.join(os.tmpdir(), `codex-short-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
   const cwd = 'C:\\test\\short-prompt';
@@ -256,6 +329,7 @@ function testTranscriptTapExposesNotePrompt() {
     testSameCwdBindsWhenCodexPointerPromptIsConcatenated,
     testSameCwdBindsWhenTuiDropsUnicodeFormatting,
     testCodex0147ItemCompletedBindsAndEmitsPrompt,
+    testCodex0147GoalBindsAndEmitsObjectivePrompt,
     testShortPromptKeepsPunctuationSignificant,
   ];
   let failed = 0;

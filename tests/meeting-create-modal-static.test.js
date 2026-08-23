@@ -39,8 +39,7 @@ test('modal model lists cover the five core AI kinds including Kimi K3', () => {
   assert.match(modelIds, /gemini-2.5-flash/);
   assert.match(modelIds, /gpt-5.6-sol/);
   assert.match(modelIds, /deepseek-v4-flash/);
-  assert.doesNotMatch(modelIds, /deepseek-v4-pro/,
-    'V4 Pro is not currently exposed by the official Codex Responses integration');
+  assert.match(modelIds, /deepseek-v4-pro/);
   assert.match(modelIds, /kimi-code\/k3/);
 });
 
@@ -53,10 +52,11 @@ test('default group slots use Claude, Codex, and DeepSeek strongest defaults', (
   assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.deepseek\s*\}/);
 });
 
-test('new DeepSeek sessions normalize to Codex Flash while old Claude sessions keep Pro', () => {
+test('new DeepSeek sessions accept Codex Pro and Flash while old Claude sessions keep 1M aliases', () => {
   assert.strictEqual(normalizeDeepSeekModel(), 'deepseek-v4-flash');
-  assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-pro'), 'deepseek-v4-flash');
+  assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-pro'), 'deepseek-v4-pro');
   assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-flash[1m]'), 'deepseek-v4-flash');
+  assert.strictEqual(normalizeDeepSeekModel('unknown-deepseek-model'), 'deepseek-v4-flash');
   assert.strictEqual(normalizeLegacyDeepSeekClaudeModel(), 'deepseek-v4-pro[1m]');
   assert.strictEqual(normalizeLegacyDeepSeekClaudeModel('deepseek-v4-pro'), 'deepseek-v4-pro[1m]');
 });

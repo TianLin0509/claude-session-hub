@@ -21,8 +21,11 @@ const PROMPT_LOG = path.join(TEMP_ROOT, 'prompt.json');
 const ARTIFACT_DIR = path.join(REPO_ROOT, 'output', 'playwright', 'codex-0147-auto-title');
 const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `auto-title-${RUN_ID}.png`);
 const RESULT_PATH = path.join(ARTIFACT_DIR, `result-${RUN_ID}.json`);
-const PROMPT = '验证Codex自动命名';
-const EXPECTED_TITLE = `Codex · ${PROMPT}`;
+const GOAL_OBJECTIVE = '验证Codex目标命名';
+const PROMPT = `/goal ${GOAL_OBJECTIVE}`;
+const COMMENTARY = 'Codex 0.147 中间进度已进入卡片';
+const FINAL_ANSWER = 'Codex 0.147 最终回答已进入卡片';
+const EXPECTED_TITLE = `Codex · ${GOAL_OBJECTIVE}`;
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -146,7 +149,17 @@ process.stdin.on('data', chunk => {
   submitted = true;
   const at = new Date();
   const atMs = at.getTime();
+  const objective = text.replace(/^\\/goal(?:\\s+|$)/i, '').trim();
   fs.writeFileSync(process.env.HUB_CODEX_AUTO_TITLE_PROMPT_LOG, JSON.stringify({ text, args }), 'utf8');
+  append({
+    timestamp: at.toISOString(),
+    type: 'event_msg',
+    payload: {
+      type: 'thread_goal_updated',
+      threadId: sid,
+      goal: { threadId: sid, objective, status: 'active', updatedAt: Math.floor(atMs / 1000) },
+    },
+  });
   append({
     timestamp: at.toISOString(),
     type: 'event_msg',
@@ -157,41 +170,53 @@ process.stdin.on('data', chunk => {
     type: 'response_item',
     payload: {
       type: 'message',
-      id: 'response-user-0147',
+      id: 'response-goal-wrapper-0147',
       role: 'user',
-      content: [{ type: 'input_text', text }],
+      content: [{ type: 'input_text', text: '<codex_internal_context source="goal">\\n<objective>' + objective + '</objective>\\n</codex_internal_context>' }],
     },
   });
-  append({
-    timestamp: at.toISOString(),
-    type: 'event_msg',
-    payload: {
-      type: 'item_completed',
-      thread_id: sid,
-      turn_id: turnId,
-      item: {
-        type: 'UserMessage',
-        id: 'user-message-0147',
-        content: [{ type: 'text', text, text_elements: [] }],
+  setTimeout(() => {
+    const commentaryAt = new Date();
+    append({
+      timestamp: commentaryAt.toISOString(),
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: sid,
+        turn_id: turnId,
+        item: {
+          type: 'AgentMessage',
+          id: 'commentary-message-0147',
+          content: [{ type: 'text', text: ${JSON.stringify(COMMENTARY)} }],
+          phase: 'commentary',
+        },
+        started_at_ms: commentaryAt.getTime() - 25,
+        completed_at_ms: commentaryAt.getTime(),
       },
-      started_at_ms: atMs - 5,
-      completed_at_ms: atMs,
-    },
-  });
+    });
+    process.stdout.write('AUTO-TITLE-E2E-COMMENTARY\\r\\n');
+  }, 250);
   setTimeout(() => {
     const completedAt = new Date();
     append({
       timestamp: completedAt.toISOString(),
       type: 'event_msg',
       payload: {
-        type: 'task_complete',
+        type: 'item_completed',
+        thread_id: sid,
         turn_id: turnId,
-        last_agent_message: '自动命名端到端验证完成',
-        duration_ms: completedAt.getTime() - atMs,
+        item: {
+          type: 'AgentMessage',
+          id: 'final-message-0147',
+          content: [{ type: 'text', text: ${JSON.stringify(FINAL_ANSWER)} }],
+          phase: 'final_answer',
+        },
+        started_at_ms: atMs + 250,
+        completed_at_ms: completedAt.getTime(),
       },
     });
     process.stdout.write('AUTO-TITLE-E2E-COMPLETE\\r\\n');
-  }, 250);
+  }, 10000);
 });
 process.stdout.write('FAKE-CODEX-0147-READY\\r\\n');
 setInterval(() => {}, 1 << 30);
@@ -331,6 +356,55 @@ async function main() {
       throw error;
     }
 
+    await client.eval(`(() => {
+      const cardButton = document.querySelector('.view-toggle-btn[data-view="card"]');
+      if (!cardButton) throw new Error('card view toggle missing');
+      cardButton.click();
+      return true;
+    })()`);
+    await waitFor('card view activation', () => client.eval(`currentView === 'card'`));
+    result.intermediateLoad = await client.eval(`window._loadSessionHistoryToOverlay(${JSON.stringify(result.created.id)}, {
+      forceScrollBottom: true
+    })`);
+    try {
+      result.intermediateCard = await waitFor('Codex 0.147 commentary card', () => client.eval(`(() => {
+        const cards = [...document.querySelectorAll('#msg-overlay .turn-card')];
+        const assistantText = cards
+          .filter(card => !card.classList.contains('user'))
+          .map(card => card.querySelector('.turn-body')?.textContent || '')
+          .join('\\n');
+        const userText = cards
+          .filter(card => card.classList.contains('user'))
+          .map(card => card.querySelector('.turn-body')?.textContent || '')
+          .join('\\n');
+        if (!assistantText.includes(${JSON.stringify(COMMENTARY)})) return null;
+        if (!userText.includes(${JSON.stringify(GOAL_OBJECTIVE)})) return null;
+        if (userText.includes('codex_internal_context')) return null;
+        return { assistantText, userText, cardCount: cards.length };
+      })()`), 7000);
+    } catch (error) {
+      const diagnostics = await client.eval(`(async () => {
+        const session = sessions.get(${JSON.stringify(result.created.id)}) || null;
+        const parsed = await require('electron').ipcRenderer.invoke('parse-session-transcript', {
+          hubSessionId: ${JSON.stringify(result.created.id)},
+          opts: { limit: 10, fromTail: true }
+        });
+        return {
+          currentView,
+          activeSessionId,
+          session,
+          parsed: {
+            error: parsed.error,
+            transcriptPath: parsed.transcriptPath,
+            turns: (parsed.turns || []).map(turn => ({ role: turn.role, text: turn.text, stopReason: turn.stopReason }))
+          },
+          overlayHtml: document.getElementById('msg-overlay')?.innerHTML || ''
+        };
+      })()`);
+      error.message += `\ncommentaryDiagnostics=${JSON.stringify(diagnostics)}`;
+      throw error;
+    }
+
     result.promptLog = await waitFor('fake Codex prompt log', () => {
       if (!fs.existsSync(PROMPT_LOG)) return null;
       return JSON.parse(fs.readFileSync(PROMPT_LOG, 'utf8'));
@@ -357,6 +431,16 @@ async function main() {
         status: session.status,
         headerStatus: document.querySelector('.terminal-status')?.textContent?.trim() || '',
       };
+    })()`));
+
+    result.finalCard = await waitFor('Codex 0.147 final-answer card', () => client.eval(`(() => {
+      const cards = [...document.querySelectorAll('#msg-overlay .turn-card')];
+      const assistantText = cards
+        .filter(card => !card.classList.contains('user'))
+        .map(card => card.querySelector('.turn-body')?.textContent || '')
+        .join('\\n');
+      if (!assistantText.includes(${JSON.stringify(FINAL_ANSWER)})) return null;
+      return { assistantText, cardCount: cards.length };
     })()`));
 
     const screenshot = await client.send('Page.captureScreenshot', {

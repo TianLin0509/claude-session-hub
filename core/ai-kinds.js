@@ -22,8 +22,8 @@
 // ---------------------------------------------------------------------------
 const ALL_AI_KINDS = ['claude', 'gemini', 'codex', 'deepseek', 'kimi'];
 const WEB_STYLE_KINDS = [];
-// DeepSeek V4 Flash 自 2026-07-31 起原生支持 Responses API，并由官方适配
-// Codex 0.144.0+。新 DeepSeek 会话因此也属于 Codex CLI runtime；老会话恢复时
+// DeepSeek V4 Pro / Flash 原生支持 Responses API，并适配 Codex 0.144.0+。
+// 新 DeepSeek 会话因此也属于 Codex CLI runtime；老会话恢复时
 // 仍可用下面的 deepseek-legacy 内部 kind 回到 Claude transcript。
 const CODEX_CLI_KINDS = ['codex', 'codex-resume', 'deepseek', 'deepseek-resume'];
 const CODEX_SESSION_KINDS = [...CODEX_CLI_KINDS];

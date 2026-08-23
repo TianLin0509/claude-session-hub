@@ -39,6 +39,10 @@ function isSyntheticUserText(text) {
     t.startsWith('<skills_instructions>') ||
     t.startsWith('<plugins_instructions>') ||
     t.startsWith('<collaboration_mode>') ||
+    // Codex /goal is persisted twice in 0.147: a clean
+    // thread_goal_updated.goal.objective plus this injected execution wrapper.
+    // The parser renders the former and must hide the latter.
+    t.startsWith('<codex_internal_context') ||
     t.startsWith('# Model Set Context') ||
     (t.includes('<INSTRUCTIONS>') && t.includes('CAT-CAFE-GOVERNANCE-START'))
   );

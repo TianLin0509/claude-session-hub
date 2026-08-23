@@ -59,14 +59,21 @@ function numericTimestampToMs(value) {
   return numeric < 100_000_000_000 ? numeric * 1000 : numeric;
 }
 
+function normalizeCodexItemType(value) {
+  return String(value || '').replace(/[_-]/g, '').toLowerCase();
+}
+
 /**
  * Normalize the authoritative Codex user-submit records across CLI versions.
  *
  * Codex <= 0.144 wrote:
  *   event_msg(payload.type = "user_message")
  *
- * Codex 0.147 writes:
+ * Codex 0.147 ordinary prompts write:
  *   event_msg(payload.type = "item_completed", item.type = "UserMessage")
+ *
+ * Codex 0.147 /goal prompts instead write:
+ *   event_msg(payload.type = "thread_goal_updated", goal.objective = "...")
  *
  * Do not treat every response_item(role = "user") as a submission: the
  * rollout also stores injected AGENTS/environment context with that role.
@@ -81,10 +88,20 @@ function codexUserMessageEventFromRecord(record) {
     messagePayload = payload;
     signalSource = 'user_message';
   } else if (payload.type === 'item_completed' && payload.item) {
-    const itemType = String(payload.item.type || '').replace(/[_-]/g, '').toLowerCase();
+    const itemType = normalizeCodexItemType(payload.item.type);
     if (itemType !== 'usermessage') return null;
     messagePayload = payload.item;
     signalSource = 'item_completed_user_message';
+  } else if (payload.type === 'thread_goal_updated' && payload.goal) {
+    const status = payload.goal && typeof payload.goal === 'object'
+      ? String(payload.goal.status || '').trim().toLowerCase()
+      : '';
+    if (status && status !== 'active') return null;
+    const objective = payload.goal && typeof payload.goal === 'object'
+      ? payload.goal.objective
+      : payload.goal;
+    messagePayload = { message: objective };
+    signalSource = 'thread_goal_updated';
   } else {
     return null;
   }
@@ -105,10 +122,65 @@ function codexUserMessageEventFromRecord(record) {
   };
 }
 
+/**
+ * Normalize Codex assistant-message records across the legacy and 0.147
+ * rollout schemas. The new schema marks the terminal answer with
+ * item.phase="final_answer"; commentary items are user-visible progress.
+ */
+function codexAgentMessageEventFromRecord(record) {
+  if (!record || record.type !== 'event_msg' || !record.payload) return null;
+  const payload = record.payload;
+  let messagePayload = null;
+  let phase = '';
+  let signalSource = null;
+  let durationMs = null;
+
+  if (payload.type === 'agent_message') {
+    messagePayload = payload;
+    phase = 'commentary';
+    signalSource = 'agent_message';
+  } else if (payload.type === 'task_complete') {
+    messagePayload = { message: payload.last_agent_message };
+    phase = 'final_answer';
+    signalSource = 'task_complete';
+    if (Number.isFinite(Number(payload.duration_ms))) durationMs = Number(payload.duration_ms);
+  } else if (payload.type === 'item_completed' && payload.item
+      && normalizeCodexItemType(payload.item.type) === 'agentmessage') {
+    messagePayload = payload.item;
+    phase = String(payload.item.phase || '').trim().toLowerCase();
+    signalSource = `item_completed_agent_message${phase ? `_${phase}` : ''}`;
+    const startedAt = numericTimestampToMs(payload.started_at_ms)
+      || numericTimestampToMs(payload.started_at);
+    const completedAt = numericTimestampToMs(payload.completed_at_ms)
+      || numericTimestampToMs(payload.completed_at)
+      || timestampToMs(record.timestamp);
+    if (startedAt && completedAt && completedAt >= startedAt) durationMs = completedAt - startedAt;
+  } else {
+    return null;
+  }
+
+  const text = codexTextFromPayload(messagePayload).trim();
+  if (!text) return null;
+  const completedAt = timestampToMs(record.timestamp)
+    || numericTimestampToMs(payload.completed_at_ms)
+    || numericTimestampToMs(payload.completed_at);
+
+  return {
+    text,
+    phase,
+    completed: phase === 'final_answer',
+    completedAt,
+    durationMs,
+    turnId: codexTurnIdFromPayload(payload) || codexTurnIdFromPayload(messagePayload),
+    signalSource,
+  };
+}
+
 module.exports = {
   codexTextFromContent,
   codexTextFromPayload,
   codexTurnIdFromPayload,
   codexUserMessageEventFromRecord,
+  codexAgentMessageEventFromRecord,
   timestampToMs,
 };

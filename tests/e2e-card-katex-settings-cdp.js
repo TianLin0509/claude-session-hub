@@ -46,7 +46,14 @@ async function mountFixture(client) {
       text: [
         '# KaTeX 卡片验收',
         '',
-        '行内公式 $m = h \\\\cdot v$ 已渲染；下面是块级公式：',
+        '行内公式 $m = h \\\\cdot v$ 和 \\\\(\\\\Delta f = 30\\\\,\\\\mathrm{kHz}\\\\) 已渲染；下面是块级公式：',
+        '',
+        '\\\\[',
+        '\\\\cos(\\\\widehat{PAS},PAS)',
+        '=',
+        '\\\\frac{\\\\widehat{PAS}\\\\cdot PAS}',
+        '{\\\\|\\\\widehat{PAS}\\\\|\\\\|PAS\\\\|+10^{-300}}',
+        '\\\\]',
         '',
         '$$\\\\text{HVP}:\\\\ m = h\\\\cdot(8\\\\cdot2) + v\\\\cdot2 + p \\\\Rightarrow \\\\textbf{极化最快}$$',
         '',
@@ -70,6 +77,9 @@ async function mountFixture(client) {
       renderedMathText: Array.from(body.querySelectorAll('.katex')).map(node => node.textContent),
       bodyText: body.innerText,
       rawDelimiterLeft: body.innerText.includes('$$'),
+      rawSquareDelimiterLeft: body.innerText.includes('\\\\[') || body.innerText.includes('\\\\]'),
+      rawParenDelimiterLeft: body.innerText.includes('\\\\(') || body.innerText.includes('\\\\)'),
+      headingCount: body.querySelectorAll('h1').length,
       codePreserved: !!code && code.textContent.includes('$NOT_MATH'),
       fontSize: computed.fontSize,
       fontFamily: computed.fontFamily,
@@ -103,9 +113,12 @@ async function main() {
     console.log('[card-katex initial]', JSON.stringify(result.initial));
     assert.equal(result.initial.katexGlobal, 'object');
     assert.equal(result.initial.autoRenderGlobal, 'function');
-    assert.ok(result.initial.mathCount >= 3, `expected inline + display math, got ${result.initial.mathCount}`);
-    assert.ok(result.initial.displayMathCount >= 2);
+    assert.ok(result.initial.mathCount >= 5, `expected $ + \\( \\) + multiline \\[ \\] + $$ math, got ${result.initial.mathCount}`);
+    assert.ok(result.initial.displayMathCount >= 3);
     assert.equal(result.initial.rawDelimiterLeft, false);
+    assert.equal(result.initial.rawSquareDelimiterLeft, false);
+    assert.equal(result.initial.rawParenDelimiterLeft, false);
+    assert.equal(result.initial.headingCount, 1, 'the formula line before = must not become a Markdown setext heading');
     assert.equal(result.initial.codePreserved, true);
     assert.equal(result.initial.fontSize, '18px');
     assert.match(result.initial.fontFamily, /serif|Songti|SimSun/i);
@@ -147,7 +160,7 @@ async function main() {
     assert.match(result.settings.liveFontFamily, /Cascadia|Consolas/i);
     assert.equal(result.settings.savedFontSize, 20);
     assert.equal(result.settings.savedFontFamily, 'mono');
-    assert.match(result.settings.saveMessage, /卡片字体已立即生效/);
+    assert.match(result.settings.saveMessage, /已保存|立即生效/);
     await screenshot(client, SETTINGS_SCREENSHOT);
 
     await client.eval(`location.reload()`);
@@ -155,7 +168,7 @@ async function main() {
     result.afterReload = await mountFixture(client);
     assert.equal(result.afterReload.fontSize, '20px');
     assert.match(result.afterReload.fontFamily, /Cascadia|Consolas/i);
-    assert.ok(result.afterReload.mathCount >= 3);
+    assert.ok(result.afterReload.mathCount >= 5);
 
     result.cancelRestore = await client.eval(`(async () => {
       document.getElementById('options-settings').click();

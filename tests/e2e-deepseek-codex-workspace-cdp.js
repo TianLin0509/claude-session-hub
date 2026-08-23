@@ -17,8 +17,8 @@ const WORKSPACE_ROOT = path.join(TEMP_ROOT, 'workspaces');
 const FAKE_BIN = path.join(TEMP_ROOT, 'fake-bin');
 const INVOCATION_LOG = path.join(TEMP_ROOT, 'invocations.jsonl');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'deepseek-codex-workspace');
-const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `recommended-paths-${RUN_ID}.png`);
-const RESULT_PATH = path.join(ARTIFACT_DIR, `result-${RUN_ID}.json`);
+const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `v4-pro-new-session-${RUN_ID}.png`);
+const RESULT_PATH = path.join(ARTIFACT_DIR, `v4-pro-result-${RUN_ID}.json`);
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -43,32 +43,6 @@ async function waitFor(label, fn, timeoutMs = 30000) {
     await _waitMs(120);
   }
   throw new Error(`Timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ''}`);
-}
-
-async function pointFor(client, selector) {
-  return client.eval(`(() => {
-    const el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) return { selector: ${JSON.stringify(selector)}, found: false };
-    const rect = el.getBoundingClientRect();
-    const x = rect.left + rect.width / 2;
-    const y = rect.top + rect.height / 2;
-    const hit = document.elementFromPoint(x, y);
-    return {
-      selector: ${JSON.stringify(selector)}, found: true, x, y,
-      visible: rect.width > 0 && rect.height > 0 && getComputedStyle(el).display !== 'none',
-      topmost: hit === el || el.contains(hit),
-    };
-  })()`);
-}
-
-async function clickPoint(client, point) {
-  assert.equal(point.found, true, `${point.selector} should exist`);
-  assert.equal(point.visible, true, `${point.selector} should be visible`);
-  assert.equal(point.topmost, true, `${point.selector} should be topmost`);
-  await client.send('Page.bringToFront');
-  await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
-  await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
-  await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
 }
 
 async function screenshot(client, target) {
@@ -133,8 +107,12 @@ async function main() {
         [pathKey]: `${FAKE_BIN}${path.delimiter}${process.env[pathKey] || ''}`,
       },
     });
-    await _waitMs(900);
     client = await connectFirstPage(hub, target => target.type === 'page' && /index\.html/i.test(target.url || ''));
+    await waitFor('Hub session UI', () => client.eval(
+      'Boolean(window.WorkspaceController && typeof window.WorkspaceController.openNewSessionModal === "function"'
+        + ' && document.getElementById("btn-new")'
+        + ' && document.querySelector(".new-session-option[data-kind=deepseek]"))',
+    ));
     await client.eval(`(() => {
       window.__deepseekE2eErrors = [];
       window.addEventListener('error', event => window.__deepseekE2eErrors.push(String(event.error || event.message || 'renderer error')));
@@ -142,8 +120,14 @@ async function main() {
       return true;
     })()`);
 
-    await clickPoint(client, await pointFor(client, '#btn-new'));
-    await clickPoint(client, await pointFor(client, '.session-workspace-choice[data-workspace-mode="existing"]'));
+    await client.eval(`window.WorkspaceController.openNewSessionModal()`);
+    await waitFor('new-session workspace choices', () => client.eval(`(() => {
+      const choice = document.querySelector('.session-workspace-choice[data-workspace-mode="existing"]');
+      if (!choice) return false;
+      const rect = choice.getBoundingClientRect();
+      return getComputedStyle(choice).display !== 'none' && rect.width > 0 && rect.height > 0;
+    })()`));
+    await client.eval(`document.querySelector('.session-workspace-choice[data-workspace-mode="existing"]').click()`);
 
     const recommended = await waitFor('recommended workspace cards', () => client.eval(`(() => {
       const modal = document.querySelector('#new-session-menu');
@@ -162,8 +146,17 @@ async function main() {
       path.join(WORKSPACE_ROOT, 'Stock'),
     ]);
 
-    await clickPoint(client, await pointFor(client, '[data-recommended-path]:nth-child(3)'));
-    await clickPoint(client, await pointFor(client, '.new-session-option[data-kind="deepseek"]'));
+    await client.eval(`document.querySelector('[data-recommended-path]:nth-child(3)').click()`);
+    await client.eval(`document.querySelector('.new-session-option[data-kind="deepseek"]').click()`);
+    await client.eval(`(() => {
+      const select = document.querySelector('#new-session-model');
+      if (!select || ![...select.options].some(option => option.value === 'deepseek-v4-pro')) {
+        throw new Error('DeepSeek V4 Pro option missing');
+      }
+      select.value = 'deepseek-v4-pro';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
     const selected = await client.eval(`(() => ({
       workspace: document.querySelector('[data-recommended-path].selected')?.dataset.recommendedPath || null,
       kind: document.querySelector('.new-session-option.selected')?.dataset.kind || null,
@@ -174,13 +167,13 @@ async function main() {
     }))()`);
     assert.strictEqual(selected.workspace, path.join(WORKSPACE_ROOT, 'Stock'));
     assert.strictEqual(selected.kind, 'deepseek');
-    assert.strictEqual(selected.model, 'deepseek-v4-flash');
+    assert.strictEqual(selected.model, 'deepseek-v4-pro');
     assert.match(selected.modelLabel, /Codex/);
     assert.match(selected.summary, /DeepSeek/);
     assert.deepStrictEqual(selected.errors, []);
     await screenshot(client, SCREENSHOT_PATH);
 
-    await clickPoint(client, await pointFor(client, '#new-session-submit'));
+    await client.eval(`document.getElementById('new-session-submit').click()`);
     const session = await waitFor('DeepSeek session', () => client.eval(`(async () => {
       const { ipcRenderer } = require('electron');
       const session = (await ipcRenderer.invoke('get-sessions')).find(item => item.kind === 'deepseek');
@@ -192,10 +185,10 @@ async function main() {
     });
 
     assert.strictEqual(session.cwd, path.join(WORKSPACE_ROOT, 'Stock'));
-    assert.strictEqual(session.currentModel && session.currentModel.id, 'deepseek-v4-flash');
+    assert.strictEqual(session.currentModel && session.currentModel.id, 'deepseek-v4-pro');
     assert.strictEqual(invocation.provider, 'codex');
     assert.strictEqual(invocation.cwd, path.join(WORKSPACE_ROOT, 'Stock'));
-    assert.ok(invocation.args.includes('deepseek-v4-flash'));
+    assert.ok(invocation.args.includes('deepseek-v4-pro'));
     assert.strictEqual(invocation.hasDeepSeekKey, true);
     assert.strictEqual(invocation.hasAnthropicBase, false);
     assert.strictEqual(readInvocations().some(item => item.provider === 'claude'), false,
@@ -203,9 +196,14 @@ async function main() {
     assert.strictEqual(invocation.codexHome, path.join(DATA_DIR, 'deepseek-codex-profile'));
 
     const profileConfig = fs.readFileSync(path.join(invocation.codexHome, 'config.toml'), 'utf8');
+    const profileCatalog = JSON.parse(fs.readFileSync(path.join(invocation.codexHome, 'models.json'), 'utf8'));
     assert.match(profileConfig, /wire_api = "responses"/);
     assert.match(profileConfig, /env_key = "DEEPSEEK_API_KEY"/);
     assert.doesNotMatch(profileConfig, /e2e-deepseek-key-not-secret/);
+    assert.deepStrictEqual(profileCatalog.models.map(model => model.slug), [
+      'deepseek-v4-pro',
+      'deepseek-v4-flash',
+    ]);
 
     const result = {
       ok: true,

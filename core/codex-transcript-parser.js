@@ -8,6 +8,10 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { isSyntheticUserEntry, isSyntheticUserText, displayUserText } = require('./synthetic-user-filter.js');
+const {
+  codexAgentMessageEventFromRecord,
+  codexUserMessageEventFromRecord,
+} = require('./transcript-payload-utils.js');
 
 const DEFAULT_CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
 const CODEX_TAIL_WINDOW_INITIAL_BYTES = 8 * 1024 * 1024;
@@ -164,6 +168,7 @@ function _recordId(obj) {
   const candidates = [
     obj && obj.id,
     payload && payload.id,
+    payload && payload.item && payload.item.id,
   ];
   for (const value of candidates) {
     if (typeof value === 'string' && value.trim()) return value.trim();
@@ -182,6 +187,8 @@ function _stableRecordHash(obj) {
     obj && obj.timestamp ? String(obj.timestamp) : '',
     obj && obj.type ? String(obj.type) : '',
     payload && payload.type ? String(payload.type) : '',
+    payload && payload.item && payload.item.type ? String(payload.item.type) : '',
+    payload && payload.item && payload.item.phase ? String(payload.item.phase) : '',
     payload && payload.turn_id ? String(payload.turn_id) : '',
     payload && payload.internal_chat_message_metadata_passthrough
       ? String(payload.internal_chat_message_metadata_passthrough.turn_id || '')
@@ -213,10 +220,9 @@ function hasNearbyEventUserDuplicate(entries, entryIndex, text) {
   const maxLookahead = Math.min(entries.length, entryIndex + 6);
   for (let i = entryIndex + 1; i < maxLookahead; i++) {
     const obj = entries[i] && entries[i].obj;
-    if (!obj || obj.type !== 'event_msg') continue;
-    const payload = obj.payload || {};
-    if (payload.type !== 'user_message') continue;
-    if (normalizeUserDuplicateText(textFromPayload(payload)) === normalized) return true;
+    const userEvent = codexUserMessageEventFromRecord(obj);
+    if (!userEvent) continue;
+    if (normalizeUserDuplicateText(userEvent.text) === normalized) return true;
   }
   return false;
 }
@@ -301,15 +307,17 @@ function parseCodexRolloutText(raw) {
     if (obj.type === 'event_msg') {
       const payload = obj.payload || {};
       const eventType = payload.type;
-      if (eventType === 'user_message') {
+      const userEvent = codexUserMessageEventFromRecord(obj);
+      if (userEvent) {
         flushAssistant();
-        const text = textFromPayload(payload).trim();
-        if (text && !isSyntheticUserEntry(obj, text)) {
+        const raw = userEvent.text.trim();
+        const text = raw && !isSyntheticUserEntry(obj, raw) ? displayUserText(raw) : null;
+        if (text) {
           turns.push({
             id: _makeTurnId('codex-user', obj, index),
             role: 'user',
             text,
-            ts: toMs(obj.timestamp),
+            ts: userEvent.submittedAt || toMs(obj.timestamp),
           });
         }
         return;
@@ -323,27 +331,15 @@ function parseCodexRolloutText(raw) {
         pending.ts = pending.ts || toMs(obj.timestamp);
         return;
       }
-      if (eventType === 'agent_message') {
-        const text = textFromPayload(payload).trim();
-        if (!text) return;
+      const agentEvent = codexAgentMessageEventFromRecord(obj);
+      if (agentEvent) {
         const pending = ensurePendingAssistant();
         pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
         pending.ts = pending.ts || toMs(obj.timestamp);
-        pending.tsEnd = toMs(obj.timestamp);
-        pending.agentMessages.push(text);
-        return;
-      }
-      if (eventType === 'task_complete') {
-        const text = textFromContent(payload.last_agent_message).trim();
-        // 空 last_agent_message 但已有 agentMessages 时，不要丢轮；
-        // 让 flushAssistant 走 agentMessages 拼接 fallback
-        if (!text && (!pendingAssistant || !pendingAssistant.agentMessages.length)) return;
-        const pending = ensurePendingAssistant();
-        pending.id = pending.id || _makeTurnId('codex-assistant', obj, index);
-        pending.ts = pending.ts || toMs(obj.timestamp);
-        pending.tsEnd = toMs(obj.timestamp);
-        if (text) pending.finalText = text;
-        pending.durationMs = typeof payload.duration_ms === 'number' ? payload.duration_ms : null;
+        pending.tsEnd = agentEvent.completedAt || toMs(obj.timestamp);
+        if (agentEvent.completed) pending.finalText = agentEvent.text;
+        else pending.agentMessages.push(agentEvent.text);
+        if (Number.isFinite(agentEvent.durationMs)) pending.durationMs = agentEvent.durationMs;
         return;
       }
     }

@@ -10,7 +10,7 @@ const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-laun
 const { connectFirstPage } = require('./helpers/cdp-client.js');
 
 const HUB_ROOT = path.resolve(__dirname, '..');
-const ARTIFACT_PATH = path.join(HUB_ROOT, 'artifacts', 'usage-refresh-e2e-20260711.png');
+const ARTIFACT_PATH = path.join(HUB_ROOT, 'output', 'playwright', 'usage-refresh', 'usage-refresh-e2e.png');
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -104,8 +104,20 @@ input.on('line', line => {
       result: {
         rateLimits: {
           limitId: 'codex',
-          primary: { usedPercent: 7, resetsAt: ${primaryResetSec} },
-          secondary: { usedPercent: 1, resetsAt: ${weeklyResetSec} }
+          primary: { usedPercent: 7, windowDurationMins: 10080, resetsAt: ${weeklyResetSec} },
+          secondary: null
+        },
+        rateLimitsByLimitId: {
+          codex: {
+            limitId: 'codex',
+            primary: { usedPercent: 7, windowDurationMins: 10080, resetsAt: ${weeklyResetSec} },
+            secondary: null
+          },
+          codex_bengalfox: {
+            limitId: 'codex_bengalfox',
+            primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: ${primaryResetSec} },
+            secondary: { usedPercent: 0, windowDurationMins: 10080, resetsAt: ${weeklyResetSec} }
+          }
         }
       }
     }) + '\\n');
@@ -148,30 +160,45 @@ async function run() {
     cdp = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/i.test(target.url));
     await cdp.send('Page.enable');
     await cdp.send('Runtime.enable');
-    await waitFor(cdp, `document.querySelectorAll('#account-usage .acc-usage-row').length === 2`);
+    await waitFor(cdp, `document.querySelectorAll('#quota-ticker .qt-seg').length >= 3`);
+    await waitFor(cdp, `(() => {
+      const codex = [...document.querySelectorAll('#quota-ticker .qt-seg')]
+        .find(seg => seg.dataset.provider === 'codex');
+      const values = codex ? [...codex.querySelectorAll('.qt-win b')].map(el => el.textContent) : [];
+      return codex && codex.title.includes('app-server') && values[0] === '—' && values[1] === '7%';
+    })()`, 25000);
 
     const before = await cdp.eval(`(() => {
-      const rows = [...document.querySelectorAll('#account-usage .acc-usage-row')];
-      return rows.map(row => ({
-        text: row.innerText,
-        title: row.title,
-        values: [...row.querySelectorAll('.acc-bar-pct')].map(el => el.textContent),
+      return [...document.querySelectorAll('#quota-ticker .qt-seg')].map(seg => ({
+        provider: seg.dataset.provider || '',
+        name: seg.querySelector('.qt-name')?.textContent || '',
+        text: seg.innerText,
+        title: seg.title,
+        values: [...seg.querySelectorAll('.qt-win b')].map(el => el.textContent),
       }));
     })()`);
-    assert.deepStrictEqual(before[1].values, ['100%', '28%'],
-      'the controlled stale JSONL/cache fixture must be visible before refresh');
+    const beforeCodex = before.find(row => row.provider === 'codex');
+    assert.deepStrictEqual(beforeCodex.values, ['—', '7%'],
+      'startup app-server refresh must replace the controlled stale 100/28 cache');
+    assert.ok(beforeCodex.title.includes('app-server'));
+    const beforeManualObservedAt = await cdp.eval(`accountUsageController.getSnapshot().codex.observedAt`);
 
     const clicked = await cdp.eval(`(() => {
       const buttons = document.querySelectorAll('[data-action="refresh-usage"]');
-      if (buttons.length < 2) return false;
-      buttons[1].click();
+      if (buttons.length < 1) return false;
+      buttons[0].click();
       return true;
     })()`);
     assert.strictEqual(clicked, true, 'Codex refresh button should be clickable');
 
     await waitFor(cdp, `(() => {
-      const rows = document.querySelectorAll('#account-usage .acc-usage-row');
-      return rows[1] && rows[1].querySelector('.acc-refresh-status')?.textContent === '实时';
+      const codex = [...document.querySelectorAll('#quota-ticker .qt-seg')]
+        .find(seg => seg.dataset.provider === 'codex');
+      const values = codex ? [...codex.querySelectorAll('.qt-win b')].map(el => el.textContent) : [];
+      const snapshot = accountUsageController.getSnapshot();
+      return codex && codex.title.includes('app-server') && values[0] === '—' && values[1] === '7%'
+        && snapshot.refresh.lastManualAt > 0
+        && snapshot.codex.observedAt >= ${beforeManualObservedAt};
     })()`, 25000);
 
     // Let the 5-second background JSONL scanner run once. A stale/incompatible
@@ -179,30 +206,29 @@ async function run() {
     await _waitMs(6000);
 
     const after = await cdp.eval(`(() => {
-      const rows = [...document.querySelectorAll('#account-usage .acc-usage-row')];
-      const summarize = row => ({
-        text: row.innerText,
-        title: row.title,
-        status: row.querySelector('.acc-refresh-status')?.textContent || '',
-        widths: [...row.querySelectorAll('.acc-bar-fill')].map(el => el.style.width),
-        values: [...row.querySelectorAll('.acc-bar-pct')].map(el => el.textContent),
-      });
-      return rows.map(summarize);
+      const segments = [...document.querySelectorAll('#quota-ticker .qt-seg')].map(seg => ({
+        provider: seg.dataset.provider || '',
+        name: seg.querySelector('.qt-name')?.textContent || '',
+        text: seg.innerText,
+        title: seg.title,
+        values: [...seg.querySelectorAll('.qt-win b')].map(el => el.textContent),
+      }));
+      return { segments, snapshot: accountUsageController.getSnapshot() };
     })()`);
 
-    assert.strictEqual(after[0].status, '无新快照', 'Claude must report that manual refresh only re-read the same statusline snapshot');
-    assert.ok(after[0].values.includes('101%'), 'Claude raw over-limit percentage should remain visible');
-    assert.ok(after[0].widths.every(width => Number.parseFloat(width) <= 100), 'Usage bars must not overflow 100% width');
-    assert.strictEqual(after[1].status, '实时', 'Codex must report a live app-server refresh');
-    assert.ok(after[1].title.includes('app-server'), 'Codex row must expose the live source');
-    assert.deepStrictEqual(after[1].values, ['7%', '1%'],
-      'controlled app-server values must replace 100/28 and survive the background JSONL scan');
+    const afterClaude = after.segments.find(row => row.provider === 'claude');
+    const afterCodex = after.segments.find(row => row.provider === 'codex');
+    assert.ok(afterClaude.values.includes('101%'), 'Claude raw over-limit percentage should remain visible');
+    assert.ok(afterCodex.title.includes('app-server'), 'Codex segment must expose the live source');
+    assert.deepStrictEqual(afterCodex.values, ['—', '7%'],
+      'weekly-only app-server values must be labeled 7d and survive the background JSONL scan');
+    assert.strictEqual(after.snapshot.codex.source, 'app-server');
 
     await cdp.send('Page.bringToFront');
     await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
     await _waitMs(500);
     const clip = await cdp.eval(`(() => {
-      const rect = document.querySelector('#account-usage').getBoundingClientRect();
+      const rect = document.querySelector('#quota-ticker').getBoundingClientRect();
       return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     })()`);
     const shot = await cdp.send('Page.captureScreenshot', {

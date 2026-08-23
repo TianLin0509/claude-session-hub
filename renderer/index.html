@@ -288,6 +288,13 @@
       </div>
       <!-- Spec 1 v0.9.0: 消息层(卡片视图) -->
       <div id="msg-overlay" class="msg-overlay"></div>
+      <nav id="card-question-nav" class="card-question-nav" aria-label="问题导航" hidden>
+        <div class="card-question-nav-track"></div>
+        <div class="card-question-nav-tooltip" role="tooltip" hidden>
+          <span class="card-question-nav-tooltip-index"></span>
+          <span class="card-question-nav-tooltip-summary"></span>
+        </div>
+      </nav>
       <button class="completion-notification-toggle unconfigured" id="completion-notification-toggle"
               type="button" aria-pressed="false" data-state="unconfigured"
               title="未配置 Server酱 SendKey，点击进入设置">
@@ -521,7 +528,7 @@
               <span class="config-ai-mark deepseek">DS</span>
               <span class="config-ai-copy">
                 <strong>DeepSeek</strong>
-                <small id="cfg-summary-deepseek">Codex API · deepseek-v4-flash</small>
+                <small id="cfg-summary-deepseek">Codex API · V4 Pro / Flash</small>
               </span>
               <span class="config-ai-status api" id="cfg-status-deepseek">API</span>
             </button>
@@ -624,7 +631,7 @@
           <div class="config-ai-detail" id="cfg-detail-deepseek">
             <div class="config-mode-card selected">
               <strong>API 模式</strong>
-              <span>DeepSeek V4 Flash 通过原生 Responses API 接入 Codex CLI，使用 Hub 隔离的 CODEX_HOME，不改你的全局 Codex 配置。</span>
+              <span>DeepSeek V4 Pro / Flash 通过原生 Responses API 接入 Codex CLI，使用 Hub 隔离的 CODEX_HOME，不改你的全局 Codex 配置。</span>
             </div>
             <div class="config-field">
               <label>DeepSeek API Key</label>

@@ -6,12 +6,12 @@
 //
 // 路径（已在 2026-04-25 实测确认）：
 //   Claude:  ~/.claude/projects/<slug>/<sid>.jsonl        每行 {type:"assistant|user|tool_*"}
-//   Codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl 末行 task_complete.last_agent_message
+//   Codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl assistant/final item events
 //   Gemini:  ~/.gemini/tmp/<dir>/chats/session-*.jsonl    行 type:"gemini" 带 tokens 字段
 //
 // 完成信号：
 //   Claude:  Stop hook 触发（main.js /api/hook/stop 路由调 notifyClaudeStop）
-//   Codex:   rollout JSONL 末尾出现 task_complete 事件
+//   Codex:   legacy task_complete or 0.147 AgentMessage(final_answer)
 //   Gemini:  JSONL 新增 type:"gemini" 行且 tokens.total != null（非流式中间态）
 //
 // Fallback：若任一 Tap 未捕获（hook 未触发 / 文件路径漂移 / CLI 版本不兼容），
@@ -30,6 +30,7 @@ const {
 } = require('./codex-transcript-parser.js');
 const { JsonlTail } = require('./jsonl-tail.js');
 const {
+  codexAgentMessageEventFromRecord,
   codexTurnIdFromPayload,
   codexUserMessageEventFromRecord,
   timestampToMs,
@@ -447,6 +448,17 @@ function codexPromptMatchesExpected(userMessage, expectedPrompt) {
   const expected = normalizePromptForCompare(expectedPrompt);
   if (!msg || !expected) return false;
   if (msg === expected) return true;
+  // Codex 0.147 records `/goal objective` as thread_goal_updated with only the
+  // objective text. Treat that authoritative record as the same submitted
+  // prompt so same-cwd sessions still bind to the correct rollout.
+  const goalMatch = expected.match(/^\/goal(?:\s+)([\s\S]+)$/i);
+  if (goalMatch) {
+    const goalExpected = normalizePromptForCompare(goalMatch[1]);
+    if (msg === goalExpected) return true;
+    const goalCanonical = canonicalizeLongPromptForTuiCompare(goalExpected);
+    if (goalCanonical.length >= 80
+        && canonicalizeLongPromptForTuiCompare(msg) === goalCanonical) return true;
+  }
   if (expected.includes('A UTF-8 group-chat prompt has been saved to this file:')) {
     return msg.includes(expected);
   }
@@ -796,7 +808,8 @@ class CodexTap extends EventEmitter {
       }
     }
 
-    // 优先：从尾向前扫 task_complete.last_agent_message（带 since/until 窗口过滤）
+    // 优先：从尾向前扫 legacy task_complete 或 Codex 0.147
+    // AgentMessage(final_answer)（带 since/until 窗口过滤）
     // 二轮加固（多方审查）：窗口模式（untilTs 有值 = 精确旧轮重提取）下，时间戳缺失/
     //   非法的事件一律不信任——NaN 会同时穿过 since 和 until 过滤，把别轮答案带进窗口。
     //   无窗口（最新轮/兼容旧调用）保持宽松原行为。
@@ -805,35 +818,33 @@ class CodexTap extends EventEmitter {
       if (!line) continue;
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
-      if (obj?.type !== 'event_msg' || obj.payload?.type !== 'task_complete') continue;
-      const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+      const agentEvent = codexAgentMessageEventFromRecord(obj);
+      if (!agentEvent || !agentEvent.completed) continue;
+      const ts = agentEvent.completedAt || (obj.timestamp ? Date.parse(obj.timestamp) : NaN);
       if (untilTs !== null && !Number.isFinite(ts)) continue;
       if (effectiveSinceTs && Number.isFinite(ts) && ts < effectiveSinceTs) continue;
       if (beyondWindow(ts)) continue;
-      const text = obj.payload.last_agent_message;
-      if (typeof text !== 'string' || !text.trim()) continue;
       return {
-        text: text.trim(),
+        text: agentEvent.text,
         extractMode: 'final_answer',
         source: 'manual_codex_rollout',
       };
     }
 
-    // 降级：streaming 中（无 task_complete）→ 拼窗口内所有 agent_message
+    // 降级：streaming 中（无 final answer）→ 拼窗口内所有 commentary
     const collected = [];
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       let obj;
       try { obj = JSON.parse(trimmed); } catch { continue; }
-      if (obj?.type !== 'event_msg' || obj.payload?.type !== 'agent_message') continue;
-      const ts = obj.timestamp ? Date.parse(obj.timestamp) : NaN;
+      const agentEvent = codexAgentMessageEventFromRecord(obj);
+      if (!agentEvent || agentEvent.completed) continue;
+      const ts = agentEvent.completedAt || (obj.timestamp ? Date.parse(obj.timestamp) : NaN);
       if (untilTs !== null && !Number.isFinite(ts)) continue;
       if (effectiveSinceTs && Number.isFinite(ts) && ts < effectiveSinceTs) continue;
       if (beyondWindow(ts)) continue;
-      const msg = obj.payload.message;
-      if (typeof msg !== 'string' || !msg.trim()) continue;
-      collected.push(msg.trim());
+      collected.push(agentEvent.text);
     }
     if (collected.length === 0) {
       return { text: '', extractMode: 'no_task_complete_yet', source: null };
@@ -1099,6 +1110,7 @@ class CodexTap extends EventEmitter {
         entry2._pendingDurationMs = null;
         entry2._pendingCompletedAt = null;
         entry2._pendingTurnId = null;
+        entry2._pendingSignalSource = null;
         const turnId = codexTurnIdFromPayload(obj.payload) || entry2._currentTurnId || null;
         const rawCompletedAt = Number(obj.payload.completed_at);
         const payloadCompletedAt = Number.isFinite(rawCompletedAt) && rawCompletedAt > 0
@@ -1173,6 +1185,7 @@ class CodexTap extends EventEmitter {
         entry._pendingDurationMs = null;
         entry._pendingCompletedAt = null;
         entry._pendingTurnId = null;
+        entry._pendingSignalSource = null;
 
         // Codex goal continuation / automatic follow-up turns can start with
         // task_started directly and have no ordinary user_message record. The
@@ -1194,25 +1207,29 @@ class CodexTap extends EventEmitter {
         }
       }
 
-      if (eventType === 'task_complete' && typeof obj.payload.last_agent_message === 'string') {
-        const text = obj.payload.last_agent_message.trim();
-        if (!text) return;
-        // 重置 debounce timer：每次新 task_complete 都重新计时（最后一次 task_complete 的 text 为准）
+      const completedAgent = codexAgentMessageEventFromRecord(obj);
+      if (completedAgent && completedAgent.completed) {
+        const text = completedAgent.text;
+        // Legacy task_complete and 0.147 final_answer share one debounce path.
+        // If several terminal records arrive, the last authoritative text wins.
         if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
         entry._pendingText = text;
-        entry._pendingDurationMs = obj.payload.duration_ms;
-        entry._pendingCompletedAt = timestampToMs(obj.timestamp) || Date.now();
-        entry._pendingTurnId = eventTurnId || entry._currentTurnId || null;
+        entry._pendingDurationMs = completedAgent.durationMs;
+        entry._pendingCompletedAt = completedAgent.completedAt || Date.now();
+        entry._pendingTurnId = completedAgent.turnId || eventTurnId || entry._currentTurnId || null;
+        entry._pendingSignalSource = completedAgent.signalSource;
         entry._pendingEmitTimer = setTimeout(() => {
           entry._pendingEmitTimer = null;
           const finalText = entry._pendingText;
           const finalDuration = entry._pendingDurationMs;
           const finalCompletedAt = entry._pendingCompletedAt;
           const finalTurnId = entry._pendingTurnId;
+          const finalSignalSource = entry._pendingSignalSource;
           entry._pendingText = null;
           entry._pendingDurationMs = null;
           entry._pendingCompletedAt = null;
           entry._pendingTurnId = null;
+          entry._pendingSignalSource = null;
           if (!finalText) return;
           entry.lastText = finalText;
           this.emit('turn-complete', {
@@ -1222,7 +1239,7 @@ class CodexTap extends EventEmitter {
             completedAt: finalCompletedAt || Date.now(),
             durationMs: finalDuration,
             turnId: finalTurnId,
-            signalSource: 'task_complete',
+            signalSource: finalSignalSource || 'task_complete',
             // T13: 附带 model + usage 给卡片视图显示真实模型名 + token chip
             modelId: entry.lastModel || null,
             usage: entry.lastUsage || null,
@@ -1237,6 +1254,7 @@ class CodexTap extends EventEmitter {
       lastModel: null, lastUsage: null,    // T13
       _pendingEmitTimer: null, _pendingText: null, _pendingDurationMs: null,
       _pendingCompletedAt: null, _pendingTurnId: null, _currentTurnId: null,
+      _pendingSignalSource: null,
       _lastPromptSig: null, _lastStartSig: null, _lastAbortSig: null,
     });
     await tail.start();

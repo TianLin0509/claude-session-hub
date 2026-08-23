@@ -1,6 +1,8 @@
 'use strict';
 
 const os = require('os');
+const path = require('node:path');
+const { fork } = require('node:child_process');
 
 // Keep optional snapshot dependencies out of module initialization. SessionManager
 // deliberately wraps `new TerminalSnapshot()` so a damaged node_modules can fall
@@ -29,6 +31,12 @@ const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 30;
 const DEFAULT_SCROLLBACK = 10000;
 const COMPACT_THRESHOLD_BYTES = 2 * 1024 * 1024;
+const TERMINAL_REPLAY_CHUNK_CHARS = 64 * 1024;
+const COMPACTOR_PROCESS_TIMEOUT_MS = 30 * 1000;
+
+function yieldToEventLoop() {
+  return new Promise(resolve => setImmediate(resolve));
+}
 
 // Headless xterm buffers are deliberately short-lived. A populated 10k-line
 // terminal can use tens of MB; keeping another permanent parser per live Hub
@@ -45,6 +53,11 @@ async function drainCompactions() {
     while (compactionJobs.length) {
       const job = compactionJobs.shift();
       try { job.resolve(await job.operation()); } catch (error) { job.reject(error); }
+      // Several noisy PTYs can cross the 2 MB compaction threshold together.
+      // Yield between jobs so Electron's main thread can keep pumping window,
+      // IPC and input messages instead of chaining every xterm replay through
+      // the microtask queue and being marked "Not Responding" by Windows.
+      if (compactionJobs.length) await yieldToEventLoop();
     }
   } finally {
     compactionRunning = false;
@@ -63,8 +76,20 @@ function clampInt(value, fallback, min) {
   return Number.isFinite(n) ? Math.max(min, Math.floor(n)) : fallback;
 }
 
-function writeTerminal(terminal, text) {
-  return new Promise((resolve) => terminal.write(text, resolve));
+async function writeTerminal(terminal, text) {
+  const source = String(text || '');
+  for (let start = 0; start < source.length;) {
+    let end = Math.min(source.length, start + TERMINAL_REPLAY_CHUNK_CHARS);
+    // Do not split a UTF-16 surrogate pair. xterm's ANSI parser is streaming
+    // and safely carries partial escape sequences across write calls.
+    if (end < source.length) {
+      const last = source.charCodeAt(end - 1);
+      if (last >= 0xD800 && last <= 0xDBFF) end += 1;
+    }
+    await new Promise(resolve => terminal.write(source.slice(start, end), resolve));
+    start = end;
+    if (start < source.length) await yieldToEventLoop();
+  }
 }
 
 function terminalOptions(cols, rows, scrollback) {
@@ -80,6 +105,73 @@ function terminalOptions(cols, rows, scrollback) {
       },
     } : {}),
   };
+}
+
+function compactOutOfProcess(payload) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const child = fork(path.join(__dirname, 'terminal-snapshot-compactor-process.js'), [], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      execPath: process.execPath,
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      serialization: 'advanced',
+    });
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try { if (child.connected) child.disconnect(); } catch {}
+      try { if (!child.killed) child.kill(); } catch {}
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const timeout = setTimeout(() => {
+      finish(new Error(`terminal snapshot compactor timed out after ${COMPACTOR_PROCESS_TIMEOUT_MS}ms`));
+    }, COMPACTOR_PROCESS_TIMEOUT_MS);
+    timeout.unref?.();
+    child.once('message', (message) => {
+      if (!message || message.ok !== true) {
+        finish(new Error(message && message.error ? message.error : 'terminal snapshot compactor failed'));
+        return;
+      }
+      finish(null, String(message.base || ''));
+    });
+    child.once('error', error => { finish(error); });
+    child.once('exit', (code) => {
+      if (!settled) finish(new Error(`terminal snapshot compactor exited before replying (code ${code})`));
+    });
+    child.send(payload, (error) => { if (error) finish(error); });
+  });
+}
+
+async function compactInProcess(payload, dependencies) {
+  const terminal = new dependencies.Terminal(terminalOptions(
+    payload.baseCols,
+    payload.baseRows,
+    payload.scrollback,
+  ));
+  const addon = new dependencies.SerializeAddon();
+  terminal.loadAddon(addon);
+  try {
+    if (payload.base) await writeTerminal(terminal, payload.base);
+    for (const operation of payload.operations) {
+      if (operation.type === 'resize') {
+        if (terminal.cols !== operation.cols || terminal.rows !== operation.rows) {
+          terminal.resize(operation.cols, operation.rows);
+        }
+      } else if (operation.type === 'write') {
+        await writeTerminal(terminal, operation.data);
+      }
+    }
+    return Buffer.from(
+      addon.serialize({ scrollback: payload.scrollback }),
+      'utf8',
+    ).toString('utf8');
+  } finally {
+    try { addon.dispose(); } catch {}
+    try { terminal.dispose(); } catch {}
+  }
 }
 
 function cloneCoalescedOperations(operations) {
@@ -166,40 +258,35 @@ class TerminalSnapshot {
 
     await runCompaction(async () => {
       if (this._disposed) return;
-      const terminal = new this._Terminal(terminalOptions(this._baseCols, this._baseRows, this._scrollback));
-      const addon = new this._SerializeAddon();
-      terminal.loadAddon(addon);
+      const payload = {
+        base: this._base,
+        baseCols: this._baseCols,
+        baseRows: this._baseRows,
+        scrollback: this._scrollback,
+        operations,
+      };
+      let nextBase;
       try {
-        if (this._base) await writeTerminal(terminal, this._base);
-        for (const operation of operations) {
-          if (operation.type === 'resize') {
-            if (terminal.cols !== operation.cols || terminal.rows !== operation.rows) {
-              terminal.resize(operation.cols, operation.rows);
-            }
-          } else if (operation.type === 'write') {
-            await writeTerminal(terminal, operation.data);
-          }
-        }
-        if (this._disposed) return;
-        // SerializeAddon returns a large cons-string assembled from many tiny
-        // fragments. Keeping that rope retained hundreds of MB of intermediate
-        // strings across sessions even after xterm.dispose(). Round-trip through
-        // Buffer once so the long-lived snapshot is one flat UTF-8 string.
-        this._base = Buffer.from(
-          addon.serialize({ scrollback: this._scrollback }),
-          'utf8',
-        ).toString('utf8');
-        this._tail = [];
-        this._tailBytes = 0;
-        this._baseCols = this._cols;
-        this._baseRows = this._rows;
-      } finally {
-        // xterm does not guarantee that Terminal.dispose() releases addon-owned
-        // serialization state immediately. Disposing both avoids retaining the
-        // large scrollback cell graph after compaction.
-        try { addon.dispose(); } catch {}
-        try { terminal.dispose(); } catch {}
+        // Headless xterm can transiently allocate ~100 MB for a 10k-line
+        // framebuffer. Run it in a short-lived Node child process: CPU parsing
+        // cannot block Electron's window message pump, and process exit returns
+        // the cell buffers instead of retaining them once per live Hub session.
+        nextBase = await compactOutOfProcess(payload);
+      } catch (compactorError) {
+        // Packaged/runtime helper failures must not destroy terminal recovery.
+        // Keep a complete in-process fallback, but make the degradation visible.
+        console.warn('[terminal-snapshot] compactor process failed, using responsive in-process fallback:', compactorError && compactorError.message);
+        nextBase = await compactInProcess(payload, {
+          Terminal: this._Terminal,
+          SerializeAddon: this._SerializeAddon,
+        });
       }
+      if (this._disposed) return;
+      this._base = nextBase;
+      this._tail = [];
+      this._tailBytes = 0;
+      this._baseCols = this._cols;
+      this._baseRows = this._rows;
     });
   }
 
@@ -288,4 +375,11 @@ module.exports = {
   COMPACT_THRESHOLD_BYTES,
   DEFAULT_SCROLLBACK,
   TerminalSnapshot,
+  _private: {
+    TERMINAL_REPLAY_CHUNK_CHARS,
+    compactInProcess,
+    compactOutOfProcess,
+    writeTerminal,
+    yieldToEventLoop,
+  },
 };

@@ -104,6 +104,14 @@ test('resolves existing relative paths against cwd only', () => {
   assert.ok(!relative.includes('docs\\missing.md'));
 });
 
+test('treats a full-width Chinese colon as a relative-path boundary', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-path-cjk-label-'));
+  fs.mkdirSync(path.join(cwd, 'docs'));
+  fs.writeFileSync(path.join(cwd, 'docs', 'note.md'), '# note');
+  const found = collectPathCandidates('相对路径：docs\\note.md', cwd);
+  assert.ok(found.some(item => item.openPath === path.join(cwd, 'docs', 'note.md')));
+});
+
 test('normalizes relative open path with existence requirement', () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-path-normalize-'));
   fs.writeFileSync(path.join(cwd, 'ok.txt'), 'ok');

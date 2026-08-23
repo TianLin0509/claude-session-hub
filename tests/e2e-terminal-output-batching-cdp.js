@@ -135,8 +135,67 @@ async function waitForResult(client, expression, timeoutMs = 30000) {
     assert.strictEqual(rendered.cache.policy, 'session-lifecycle', JSON.stringify(rendered.cache));
     assert.strictEqual(rendered.cache.max, null, JSON.stringify(rendered.cache));
 
+    // Cross the 2 MB TerminalSnapshot compaction threshold inside a real
+    // isolated Electron main process. The helper process must preserve the stream while
+    // both main IPC and renderer timers remain responsive.
+    const heavyCommand = "$snapshotPayload=((1..11000 | ForEach-Object { 'x' * 190 }) -join [Environment]::NewLine); [Console]::Write($snapshotPayload); [Console]::WriteLine('SNAP_HEAVY_END_PTY_SNAPSHOT_DONE')\r";
+    await client.eval(`(() => {
+      require('electron').ipcRenderer.send('terminal-input', {
+        sessionId: ${JSON.stringify(session.id)},
+        data: ${JSON.stringify(heavyCommand)}
+      });
+      return true;
+    })()`);
+    const deadline = Date.now() + 45000;
+    const delays = [];
+    let done = false;
+    let polls = 0;
+    while (!done && Date.now() < deadline) {
+      const pingStartedAt = Date.now();
+      await client.eval(`require('electron').ipcRenderer.invoke('is-window-focused')`);
+      delays.push(Date.now() - pingStartedAt);
+      if ((polls++ % 5) === 0) {
+        done = await client.eval(`(async () => {
+          const ring = String(await require('electron').ipcRenderer.invoke(
+            'debug:get-session-buffer', ${JSON.stringify(session.id)}
+          ) || '');
+          return ring.includes('SNAP_HEAVY_END_PTY_SNAPSHOT_DONE');
+        })()`);
+      }
+      await _waitMs(20);
+    }
+    const snapshotStartedAt = Date.now();
+    const snapshotResult = await client.eval(`(async () => {
+      const snapshot = await require('electron').ipcRenderer.invoke(
+        'get-session-buffer-snapshot', ${JSON.stringify(session.id)}
+      );
+      const operationText = (snapshot && Array.isArray(snapshot.operations) ? snapshot.operations : [])
+        .filter(operation => operation && operation.type === 'write')
+        .map(operation => String(operation.data || ''))
+        .join('');
+      const snapshotText = String(snapshot && snapshot.text || '') + operationText;
+      return {
+        snapshotSource: snapshot && snapshot.source,
+        snapshotHasFinalMarker: snapshotText.includes('PTY_SNAPSHOT_DONE'),
+        snapshotChars: snapshotText.length,
+      };
+    })()`);
+    const heavy = {
+      done,
+      pingCount: delays.length,
+      maxDelayMs: Math.max(0, ...delays),
+      snapshotMs: Date.now() - snapshotStartedAt,
+      ...snapshotResult,
+    };
+    assert.equal(heavy.done, true, JSON.stringify(heavy));
+    assert.ok(heavy.pingCount >= 3, JSON.stringify(heavy));
+    assert.ok(heavy.maxDelayMs < 250, `heavy PTY stream stalled Hub for ${heavy.maxDelayMs}ms`);
+    assert.equal(heavy.snapshotHasFinalMarker, true, JSON.stringify(heavy));
+    assert.doesNotMatch(hub.log().join('\n'), /compactor process failed/,
+      'isolated Electron must run the snapshot compactor process without fallback');
+
     await client.eval(`require('electron').ipcRenderer.invoke('close-session', ${JSON.stringify(session.id)})`);
-    console.log(JSON.stringify({ ok: true, pid: hub.pid, port, delta, rendered: { cols: rendered.cols, rows: rendered.rows, cache: rendered.cache } }, null, 2));
+    console.log(JSON.stringify({ ok: true, pid: hub.pid, port, delta, heavy, rendered: { cols: rendered.cols, rows: rendered.rows, cache: rendered.cache } }, null, 2));
   } catch (err) {
     console.error(err.stack || err.message);
     if (hub) console.error(hub.log().slice(-50).join('\n'));

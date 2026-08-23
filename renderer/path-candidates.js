@@ -9,9 +9,12 @@ const ABS_PATH_RE = /(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/])(?:[^\\
 // Windows drive 路径；匹配范围仍以“文件扩展名”收口，避免把整段普通句子吞掉。
 const WINDOWS_FILE_PATH_RE = /(?<![A-Za-z0-9])(?:[\\/]?[A-Za-z]:(?:[\\/]+|(?=[^\\/\s'"`<>|]+[\\/])))(?:[^\\/:*?"<>|'`\r\n]+[\\/]+)*[^\\/:*?"<>|'`\r\n]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
 const WINDOWS_PATH_TOKEN_RE = /(?<![A-Za-z0-9])(?:[\\/]?[A-Za-z]:(?:[\\/]+|(?=[^\\/\s'"`<>|]+[\\/])))(?:[^\\/:*?"<>|'`\s()[\],;!]+[\\/]+)*[^\\/:*?"<>|'`\s()[\],;!]+[\\/]?/g;
-const REL_PATH_RE = /(?:\.{1,2}[\\/])?(?:[^\\/:*?"<>|\r\n\s]+[\\/])+[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
+// Full-width colon is a frequent Chinese prose separator ("路径：docs/a.md"),
+// not part of the relative path. Excluding it prevents the regex from greedily
+// starting at the label and resolving a nonexistent "路径：docs/..." token.
+const REL_PATH_RE = /(?:\.{1,2}[\\/])?(?:[^\\/:*?"<>|\r\n\s：]+[\\/])+[^\\/:*?"<>|\r\n\s：]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9])/g;
 const ABS_DIR_RE = /(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/])(?:[^\\/:*?"<>|\r\n]+[\\/])+[^\\/:*?"<>|\r\n]+[\\/]?/g;
-const REL_DIR_RE = /(?:\.{1,2}[\\/])?(?:[^\\/:*?"<>|\r\n]+[\\/]){1,}[^\\/:*?"<>|\r\n]+[\\/]?/g;
+const REL_DIR_RE = /(?:\.{1,2}[\\/])?(?:[^\\/:*?"<>|\r\n：]+[\\/]){1,}[^\\/:*?"<>|\r\n：]+[\\/]?/g;
 const REL_BARE_RE = /(?<![\w.-])[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![\w.-])|(?<![\w.-])[^\\/:*?"<>|\r\n\s.]{2,}(?![\w.-])/g;
 const URL_RE = /\bhttps?:\/\/[\w\-.~]+(?::\d+)?(?:[\/?#][^\s<>"'`\\]*)?/g;
 const PREVIEW_PATH_RE = /\.(?:html?|md|markdown|png|jpe?g|gif|webp|bmp|svg|pdf|csv|tsv|json|jsonl|js|ts|jsx|tsx|mjs|cjs|py|go|rs|java|c|cpp|h|hpp|cs|txt|log|ya?ml|toml|ini|cfg|conf|sh|bat|ps1|xml|sql|r|rb|php|swift|kt|lua|zig|asm|css|scss|less)$/i;

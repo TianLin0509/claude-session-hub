@@ -129,23 +129,17 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       `(() => {
         const state = window.__floatingRunningE2E;
         const cached = terminalCache.get(state.id);
-        return Number(cached && cached._lastPtyResizeAt) > ${before.resizeAt}
-          && state.sends.some(item => item.channel === 'terminal-resize');
+        const input = document.querySelector('.floating-input-box');
+        const bar = document.querySelector('.floating-input-bar');
+        return input.getBoundingClientRect().height > ${before.inputHeight}
+          && bar.getBoundingClientRect().height === ${before.barHeight}
+          && cached.terminal.rows === ${before.rows}
+          && Number(cached._lastPtyResizeAt) === ${before.resizeAt}
+          && !state.sends.some(item => item.channel === 'terminal-resize');
       })()`,
-      'draft-driven terminal resize'
+      'multiline composer growth without PTY resize'
     );
 
-    // Simulate the full-screen TUI repaint produced by that renderer resize.
-    await client.eval(`(() => {
-      const state = window.__floatingRunningE2E;
-      const cached = terminalCache.get(state.id);
-      ipcRenderer.emit('terminal-data', {}, {
-        sessionId: state.id,
-        data: '\\u001b[2J\\u001b[H' + 'R'.repeat(320),
-        seq: cached._hydratedSeq + 1,
-      });
-      return true;
-    })()`);
     await _waitMs(180);
 
     const suppressed = await client.eval(`(() => {
@@ -171,9 +165,9 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
     })()`);
 
     assert.ok(suppressed.inputHeight > before.inputHeight, 'multiline draft should grow the composer');
-    assert.ok(suppressed.barHeight > before.barHeight, 'multiline draft should grow the floating bar');
-    assert.ok(suppressed.rows < before.rows, 'multiline draft should resize terminal rows');
-    assert.ok(suppressed.resizeCount >= 1, 'draft layout change should send terminal-resize');
+    assert.equal(suppressed.barHeight, before.barHeight, 'multiline draft must keep the bar flex footprint stable');
+    assert.equal(suppressed.rows, before.rows, 'multiline draft must not resize terminal rows');
+    assert.equal(suppressed.resizeCount, 0, 'draft layout change must not send terminal-resize');
     assert.equal(suppressed.inputSendCount, 0, 'unsent draft must not send terminal input');
     assert.match(suppressed.draft, /第 10 行/);
     assert.deepEqual(
@@ -200,7 +194,17 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       });
       return true;
     })()`);
-    await _waitMs(180);
+    await waitFor(
+      client,
+      `(() => {
+        const state = window.__floatingRunningE2E;
+        const session = sessions.get(state.id);
+        return session.status === 'running'
+          && session._runSource === 'burst'
+          && document.querySelector('.terminal-header .terminal-status')?.textContent.trim() === '● running';
+      })()`,
+      'burst state and header render'
+    );
 
     const fallback = await client.eval(`(() => {
       const state = window.__floatingRunningE2E;
@@ -221,7 +225,19 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
 
     // Burst fallback is one-shot: after its normal quiet transition it enters
     // cooldown and an idle TUI repaint cannot move the row back to 运行中.
-    await _waitMs(2100);
+    await waitFor(
+      client,
+      `(() => {
+        const state = window.__floatingRunningE2E;
+        const session = sessions.get(state.id);
+        return session.status === 'idle'
+          && !session._runSource
+          && Number(session._ptyFallbackArmedUntil || 0) === 0
+          && Number(session._ptyBurstCooldownUntil || 0) > Date.now()
+          && document.querySelector('.terminal-header .terminal-status')?.textContent.trim() === '○ idle';
+      })()`,
+      'burst quiet transition and cooldown'
+    );
     await client.eval(`(() => {
       const state = window.__floatingRunningE2E;
       const cached = terminalCache.get(state.id);
@@ -232,7 +248,19 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       });
       return true;
     })()`);
-    await _waitMs(180);
+    await waitFor(
+      client,
+      `(() => {
+        const state = window.__floatingRunningE2E;
+        const session = sessions.get(state.id);
+        return session.status === 'idle'
+          && !session._runSource
+          && Number(session._ptyFallbackArmedUntil || 0) === 0
+          && Number(session._ptyBurstCooldownUntil || 0) > Date.now()
+          && document.querySelector('.terminal-header .terminal-status')?.textContent.trim() === '○ idle';
+      })()`,
+      'idle repaint suppressed during cooldown'
+    );
     const cooled = await client.eval(`(() => {
       const state = window.__floatingRunningE2E;
       const session = sessions.get(state.id);
@@ -256,21 +284,15 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
 
     // A semantic Codex/card signal is high-confidence work and should still
     // expose the interrupt control.
-    await client.eval(`(() => {
+    const semantic = await client.eval(`(() => {
       const state = window.__floatingRunningE2E;
-      const session = sessions.get(state.id);
-      session.status = 'running';
-      session._runSource = 'semantic';
-      session._agentWorking = 'card';
-      session.cardWorkingSince = Date.now();
-      scheduleSessionListRender();
-      return true;
+      markCodexCardWorking(state.id, 'task_started');
+      updateFloatingBarState();
+      return {
+        stopVisible: document.querySelector('.floating-input-stop').classList.contains('visible'),
+        headerText: document.querySelector('.terminal-header .terminal-status').textContent.trim(),
+      };
     })()`);
-    await _waitMs(180);
-    const semantic = await client.eval(`(() => ({
-      stopVisible: document.querySelector('.floating-input-stop').classList.contains('visible'),
-      headerText: document.querySelector('.terminal-header .terminal-status').textContent.trim(),
-    }))()`);
     assert.deepEqual(semantic, { stopVisible: true, headerText: '● running' });
 
     console.log(JSON.stringify({ ok: true, pid: hub.pid, port, before, suppressed, fallback, cooled, semantic }, null, 2));

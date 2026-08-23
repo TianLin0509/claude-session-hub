@@ -48,9 +48,11 @@ function testTaskStartedCancelsPendingEmit() {
 
 function testTaskCompleteResetsDebounce() {
   const body = extractCodexOnLineBody(readSrc());
-  // 在 task_complete 分支前必须先 clearTimeout 旧 pending（实现连续 task_complete 用最后一次）
-  assert.ok(/eventType\s*===\s*['"]task_complete['"]/.test(body),
-    'must check eventType === "task_complete"');
+  // Legacy task_complete 与 0.147 final_answer 必须先归一化，再共用同一防抖出口。
+  assert.ok(/codexAgentMessageEventFromRecord\(obj\)/.test(body),
+    'must normalize legacy task_complete and Codex 0.147 final_answer records');
+  assert.ok(/completedAgent\s*&&\s*completedAgent\.completed/.test(body),
+    'only terminal agent-message records may schedule completion');
   // 分支内必须重置 _pendingEmitTimer
   assert.ok(/if\s*\(entry\._pendingEmitTimer\)\s*clearTimeout\(entry\._pendingEmitTimer\)/.test(body),
     'task_complete branch must clear previous pending timer (enables "last task_complete wins")');
@@ -70,9 +72,9 @@ function testEmitGoesThroughTimer() {
   const before = body.slice(0, emitIdx);
   const setTimeoutIdx = before.lastIndexOf('setTimeout');
   assert.ok(setTimeoutIdx > 0, 'emit must be wrapped in setTimeout (debounce)');
-  // 且 emit payload 含 signalSource: 'task_complete'
-  assert.ok(/signalSource:\s*['"]task_complete['"]/.test(body.slice(emitIdx, emitIdx + 400)),
-    'emit payload must include signalSource: "task_complete"');
+  // 且 emit payload保留归一化来源，旧格式仍回落 task_complete。
+  assert.ok(/signalSource:\s*finalSignalSource\s*\|\|\s*['"]task_complete['"]/.test(body.slice(emitIdx, emitIdx + 500)),
+    'emit payload must preserve the normalized completion signal source');
   assert.ok(/turnId:\s*finalTurnId/.test(body.slice(emitIdx, emitIdx + 500)),
     'emit payload must preserve the authoritative Codex turn id');
   assert.ok(/completedAt:\s*finalCompletedAt\s*\|\|\s*Date\.now\(\)/.test(body.slice(emitIdx, emitIdx + 500)),
@@ -114,6 +116,7 @@ function testInitialEntryHasPendingFields() {
     'codex _bound entry must init _pendingText: null');
   assert.ok(/_pendingCompletedAt:\s*null/.test(codexBind));
   assert.ok(/_pendingTurnId:\s*null/.test(codexBind));
+  assert.ok(/_pendingSignalSource:\s*null/.test(codexBind));
   assert.ok(/_currentTurnId:\s*null/.test(codexBind));
   console.log('  ✓ testInitialEntryHasPendingFields');
 }

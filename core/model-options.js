@@ -35,6 +35,7 @@ const MODEL_OPTIONS_BY_KIND = {
     { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
   ],
   deepseek: [
+    { id: 'deepseek-v4-pro',   label: 'DeepSeek V4 Pro · Codex (1M)' },
     { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash · Codex (1M)' },
   ],
   kimi: [
@@ -57,9 +58,11 @@ const LEGACY_DEEPSEEK_CLAUDE_DEFAULT_MODEL = 'deepseek-v4-pro[1m]';
 
 function normalizeDeepSeekModel(modelId) {
   const raw = String(modelId || '').trim().replace(/\[1m\]$/i, '');
-  // V4 Pro 暂未开放 Responses API；旧会话保存的 Pro / legacy model 在切到
-  // Codex runtime 后统一落到官方当前唯一支持的 V4 Flash。
-  return raw === 'deepseek-v4-flash' ? raw : DEFAULT_MODEL_BY_KIND.deepseek;
+  // DeepSeek 的 Responses API 当前同时支持 V4 Pro / Flash。只接受 Hub
+  // catalog 已公开的两个 id；旧别名和未知值仍安全回落到默认 Flash。
+  return MODEL_OPTIONS_BY_KIND.deepseek.some(option => option.id === raw)
+    ? raw
+    : DEFAULT_MODEL_BY_KIND.deepseek;
 }
 
 function normalizeLegacyDeepSeekClaudeModel(modelId) {
@@ -79,6 +82,7 @@ function legacyDeepSeekClaudeDisplayName(modelId) {
 
 function deepseekDisplayName(modelId) {
   const normalized = normalizeDeepSeekModel(modelId);
+  if (normalized === 'deepseek-v4-pro') return 'DS V4 Pro · Codex 1M';
   if (normalized === 'deepseek-v4-flash') return 'DS V4 Flash · Codex 1M';
   return normalized;
 }

@@ -168,6 +168,10 @@ function createAccountUsageController({
     return Promise.resolve(ipcRenderer.invoke('refresh-usage-now'))
       .then((result) => {
         usageRefreshState.providerResults = result && result.providerResults || null;
+        const codexResult = usageRefreshState.providerResults && usageRefreshState.providerResults.codex;
+        if (codexResult && (!codexResult.ok || codexResult.degraded)) {
+          usageRefreshState.error = `Codex: ${codexResult.error || '实时接口不可用，已降级到本地快照'}`;
+        }
         usageRefreshState.lastManualAt = (result && result.refreshedAt) || nowFn();
         if (_refreshStatusTimer !== null) clearTimeoutFn(_refreshStatusTimer);
         _refreshStatusTimer = setTimeoutFn(() => {
@@ -190,7 +194,8 @@ function createAccountUsageController({
   
   function render() {
     // 2026-07-19 道雪 · 方案C：用量面板从侧栏迁移为顶部全局 ticker。
-    // 铁律：每个窗口都显示「用量% + 重置时间」（5h 重置是用户最高频关注点，不可省略）。
+    // 每个官方返回的窗口都显示「用量% + 重置时间」。某些 Codex Pro
+    // 账户当前只返回 7d bucket；5h 保留占位但不能拿 7d 数据冒充。
     const el = document.getElementById('quota-ticker');
     if (!el) return;
     el.style.display = 'flex';
@@ -208,11 +213,13 @@ function createAccountUsageController({
 
     const renderSeg = (name, u5h, u7d, meta = {}) => {
       const title = meta.profileLabel ? `${name} · ${meta.profileLabel}` : name;
+      const visibleName = meta.profileLabel ? `${name}·${meta.profileLabel}` : name;
       const age = formatAge(meta.lastSeen || 0);
       const source = meta.source ? ` · ${meta.source}` : '';
       const accountLabel = meta.accountEmail || '';
-      const tip = `${title} · 数据更新于 ${age}前${source}${accountLabel ? ` · ${accountLabel}` : ''}`;
-      return `<span class="qt-seg" title="${escapeHtml(tip)}"><span class="qt-name">${escapeHtml(name)}</span>${renderWindow('5h', u5h)}${renderWindow('7d', u7d)}</span>`;
+      const refreshError = meta.refreshError ? ` · 刷新异常: ${meta.refreshError}` : '';
+      const tip = `${title} · 数据更新于 ${age}前${source}${accountLabel ? ` · ${accountLabel}` : ''}${refreshError}`;
+      return `<span class="qt-seg" data-provider="${escapeHtml(name.toLowerCase())}" title="${escapeHtml(tip)}"><span class="qt-name">${escapeHtml(visibleName)}</span>${renderWindow('5h', u5h)}${renderWindow('7d', u7d)}</span>`;
     };
 
     const c = agentUsage.codex || {};
@@ -232,7 +239,12 @@ function createAccountUsageController({
         source: 'statusline',
       }) +
       `<span class="qt-div"></span>` +
-      renderSeg('Codex', c.usage5h, c.usage7d, { ...c, lastSeen: agentUsageLastSeen.codex }) +
+      renderSeg('Codex', c.usage5h, c.usage7d, {
+        ...c,
+        lastSeen: agentUsageLastSeen.codex,
+        refreshError: usageRefreshState.providerResults && usageRefreshState.providerResults.codex
+          && usageRefreshState.providerResults.codex.error,
+      }) +
       `<span class="qt-div"></span>` +
       renderSeg('Kimi', k.usage5h, k.usage7d, { ...k, lastSeen: agentUsageLastSeen.kimi }) +
       `<span class="qt-right"><span class="qt-fresh ${freshCls}" title="数据更新于 ${escapeHtml(ageTxt)}前（取三家最旧）"></span><span class="qt-age">${escapeHtml(ageTxt)}</span>` +

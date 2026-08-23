@@ -38,7 +38,7 @@ async function main() {
               kimi: { usage5h: { pct: 67, label: '5h' }, usage7d: { pct: 13, label: '周' }, observedAt: now, ts: now, source: 'kimi-api' },
             },
             agentData: {
-              codex: { usage5h: { pct: 66 }, usage7d: { pct: 32 }, observedAt: now, _ts: now, source: 'app-server' },
+              codex: { usage5h: { pct: 66 }, usage7d: { pct: 32 }, observedAt: now, _ts: now, source: 'app-server', profileLabel: 'Main', accountEmail: 'current@example.com' },
               kimi: { usage5h: { pct: 67, label: '5h' }, usage7d: { pct: 13, label: '周' }, observedAt: now, _ts: now, source: 'kimi-api' },
             },
             providerResults: {
@@ -74,6 +74,8 @@ async function main() {
   assert.strictEqual(accountEl.style.display, 'flex');
   assert.ok(accountEl.innerHTML.includes('Claude'));
   assert.ok(accountEl.innerHTML.includes('Codex'));
+  assert.ok(accountEl.innerHTML.includes('Codex·Main'), 'selected Codex profile must be visible, not tooltip-only');
+  assert.ok(accountEl.innerHTML.includes('data-provider="codex"'));
   assert.ok(accountEl.innerHTML.includes('Kimi'));
   assert.ok(accountEl.innerHTML.includes('101%'));
   assert.ok(!accountEl.innerHTML.includes('acc-bar-track'), 'compact usage UI must not render decorative bars');

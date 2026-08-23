@@ -29,6 +29,128 @@
   color: var(--turn-body-fg);
 }
 .msg-overlay.hidden { display: none; }
+.msg-overlay.question-nav-visible { padding-right: 46px; }
+
+/* Card question navigator: a compact, fixed rail that mirrors the user-turn
+   jump affordance in ChatGPT without competing with the card scrollbar. */
+.card-question-nav {
+  position: absolute;
+  top: calc(var(--term-header-h, 43px) + 10px);
+  right: 10px;
+  bottom: calc(var(--fi-bar-h, 60px) + 10px);
+  width: 26px;
+  z-index: 65;
+  pointer-events: none;
+}
+.card-question-nav[hidden] { display: none; }
+.card-question-nav-track {
+  position: relative;
+  width: 26px;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 2px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  pointer-events: auto;
+  overscroll-behavior: contain;
+}
+.card-question-nav-track::-webkit-scrollbar { width: 0; height: 0; }
+.card-question-nav::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 13px;
+  width: 1px;
+  transform: translateX(-50%);
+  background: rgba(142, 142, 147, 0.24);
+  pointer-events: none;
+}
+.card-question-nav-item {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(142, 142, 147, 0.38);
+  border-radius: 999px;
+  background: #2c2c2e;
+  color: #c7c7cc;
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+.card-question-nav-item:hover {
+  color: #fff;
+  border-color: rgba(90, 200, 250, 0.72);
+  background: #3a3a3c;
+}
+.card-question-nav-item.active {
+  color: #fff;
+  border-color: #5ac8fa;
+  background: #0a84ff;
+  box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.2);
+}
+.card-question-nav-item:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+.card-question-nav-tooltip {
+  position: absolute;
+  right: 34px;
+  width: min(280px, calc(100vw - 390px));
+  min-width: 180px;
+  box-sizing: border-box;
+  transform: translateY(-50%);
+  padding: 8px 10px;
+  border: 1px solid rgba(142, 142, 147, 0.36);
+  border-radius: 9px;
+  background: rgba(44, 44, 46, 0.98);
+  color: #e5e5ea;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+  font-size: 11px;
+  line-height: 1.45;
+  pointer-events: none;
+}
+.card-question-nav-tooltip[hidden] { display: none; }
+.card-question-nav-tooltip-index {
+  display: block;
+  margin-bottom: 2px;
+  color: #5ac8fa;
+  font-size: 10px;
+  font-weight: 700;
+}
+.card-question-nav-tooltip-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.msg-overlay .turn-card.question-jump-highlight .turn-body {
+  box-shadow: 0 0 0 2px rgba(90, 200, 250, 0.8), 0 0 0 6px rgba(10, 132, 255, 0.14);
+  transition: box-shadow 180ms ease;
+}
+@media (max-width: 900px) {
+  .msg-overlay.question-nav-visible { padding-right: 40px; }
+  .card-question-nav { right: 6px; }
+  .card-question-nav-tooltip { width: min(220px, calc(100vw - 90px)); min-width: 150px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card-question-nav-item,
+  .msg-overlay .turn-card.question-jump-highlight .turn-body { transition: none; }
+}
 
 /* 视图切换按钮(右上角浮) — right offset 避开分支、备忘、zoom (A−/A+) 与 close(✕) */
 /* header actions 约 180px，view-toggle right offset 取 220px 留出约 40px buffer */

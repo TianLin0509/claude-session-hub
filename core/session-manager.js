@@ -19,7 +19,6 @@ const {
   DEFAULT_MODEL_BY_KIND,
 } = require('./model-options.js');
 const {
-  DEEPSEEK_CODEX_MODEL,
   ensureDeepSeekCodexProfile,
 } = require('./deepseek-codex-profile.js');
 const { ensureMemoryLink } = require('./claude-memory-link.js');
@@ -974,7 +973,7 @@ class SessionManager extends EventEmitter {
       }
     } else if (isDeepSeek) {
       const cv = getConfigValues();
-      // V4 Flash 的 Responses API 国内直连。Key 只走 env_key，不落进
+      // V4 Pro / Flash 的 Responses API 国内直连。Key 只走 env_key，不落进
       // config.toml / auth.json；CODEX_HOME 在拿到真实 cwd 后再生成。
       clearProxyEnv(sessionEnv);
       sessionEnv.DEEPSEEK_API_KEY = cv.DEEPSEEK_API_KEY;
@@ -1535,7 +1534,9 @@ class SessionManager extends EventEmitter {
       dismissCodexUpdatePrompt(undefined, sessionEnv.CODEX_HOME || null);
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       const cv = getConfigValues();
-      const codexModel = isDeepSeek ? DEEPSEEK_CODEX_MODEL : (opts.model || resolveDefaultCodexModel(cv));
+      const codexModel = isDeepSeek
+        ? normalizeDeepSeekModel(opts.model)
+        : (opts.model || resolveDefaultCodexModel(cv));
       // Codex 的 model_reasoning_effort 是推理深度；fast 则由下面独立的
       // service_tier 控制，两者都不能和 Claude fastMode 混为一谈。
       // 非法值一律回落 max；群聊与普通 Session 一样尊重逐成员的 effort / service_tier。

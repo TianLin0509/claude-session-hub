@@ -543,6 +543,7 @@ const emptyStateEl = document.getElementById('empty-state');
 function preserveAndClearTerminalPanel() {
   const preserved = [
     document.getElementById('msg-overlay'),
+    document.getElementById('card-question-nav'),
     document.querySelector('.view-toggle'),
     document.getElementById('completion-notification-toggle'),
     document.getElementById('recent-turn-copy'),
@@ -977,7 +978,7 @@ function getOrCreateTerminal(sessionId) {
   terminal.loadAddon(new Unicode11Addon());
   terminal.loadAddon(searchAddon);
   terminal.loadAddon(new WebLinksAddon((e, uri) => { openPreviewPanel(uri); }));
-  registerLocalPathLinks(terminal, sessionId);
+  const localPathLinkProvider = registerLocalPathLinks(terminal, sessionId);
   terminal.unicode.activeVersion = '11';
 
   terminal.onData((data) => {
@@ -1201,6 +1202,7 @@ function getOrCreateTerminal(sessionId) {
     _hydratedSeq: 0,
     _pendingOutput: [],
     _pendingOutputBytes: 0,
+    _localPathLinkProvider: localPathLinkProvider,
     _deferredResizeSig: null,
     _needsPtyRedraw: false,
   };
@@ -2297,6 +2299,19 @@ document.addEventListener('click', (e) => {
 // === Spec 1 v0.9.0 · 视图切换 ===
 // 默认 PTY（卡片视图作为可选第二视图，不破坏 PTY 主流程）— 2026-05-04 用户反馈
 let currentView = 'pty'; // 'card' | 'pty'
+const { createCardQuestionNavigator } = require('./card-question-navigator.js');
+const cardQuestionNavigator = createCardQuestionNavigator({
+  document,
+  window,
+  overlay: document.getElementById('msg-overlay'),
+  root: document.getElementById('card-question-nav'),
+  getCurrentView: () => currentView,
+  getActiveSessionId: () => activeSessionId,
+  getTurnById: (turnId) => window._sessionTurns && window._sessionTurns.get(turnId),
+  requestAnimationFrame: callback => requestAnimationFrame(callback),
+  cancelAnimationFrame: handle => cancelAnimationFrame(handle),
+});
+cardQuestionNavigator.init();
 
 // === Spec 3 · W15+W16: streaming indicator ===
 // session.status === 'running' 表示 PTY 最近有数据（>200 byte burst within silence window）。
@@ -2528,6 +2543,7 @@ function applyViewMode(mode) {
   currentView = mode;
   const overlay = document.getElementById('msg-overlay');
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
+  cardQuestionNavigator.refresh();
   recentTurnCopyController.setVisible(mode === 'card' && !!activeSessionId);
   document.querySelectorAll('.view-toggle-btn').forEach(b => {
     if (!b.dataset.view) return;
@@ -2587,6 +2603,30 @@ document.addEventListener('click', (e) => {
 
 // 卡片层要按 header / 输入栏的**实测**高度让位，不能写死常量。
 // 详见 styles/card-view.css 里 .msg-overlay 的注释。
+function measureFloatingBarVisualHeight(bar) {
+  if (!bar) return 0;
+  const barRect = bar.getBoundingClientRect();
+  let top = barRect.top;
+  let bottom = barRect.bottom;
+  for (const child of bar.children) {
+    if (getComputedStyle(child).display === 'none') continue;
+    const rect = child.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    top = Math.min(top, rect.top);
+    bottom = Math.max(bottom, rect.bottom);
+  }
+  return Math.ceil(Math.max(0, bottom - top));
+}
+
+function lockFloatingInputBarGeometry(bar) {
+  if (!bar) return 0;
+  const height = Math.ceil(bar.getBoundingClientRect().height || bar.offsetHeight || 0);
+  if (height <= 0) return 0;
+  bar.style.setProperty('--fi-layout-h', `${height}px`);
+  bar.classList.add('geometry-locked');
+  return height;
+}
+
 function observeTerminalPanelChrome(panel, bar) {
   if (!panel) return null;
   const header = panel.querySelector('.terminal-header');
@@ -2594,13 +2634,16 @@ function observeTerminalPanelChrome(panel, bar) {
     // offsetHeight 含 border，正是 overlay 需要让开的实际占位。
     // 输入栏 display:none（只读会话）时自然是 0，overlay 就能铺到底。
     panel.style.setProperty('--term-header-h', `${header ? header.offsetHeight : 0}px`);
-    panel.style.setProperty('--fi-bar-h', `${bar ? bar.offsetHeight : 0}px`);
+    panel.style.setProperty('--fi-bar-h', `${measureFloatingBarVisualHeight(bar)}px`);
   };
   apply();
   if (typeof ResizeObserver !== 'function') return { disconnect() {} };
   const observer = new ResizeObserver(apply);
   if (header) observer.observe(header);
-  if (bar) observer.observe(bar);
+  if (bar) {
+    observer.observe(bar);
+    for (const child of bar.children) observer.observe(child);
+  }
   return observer;
 }
 
@@ -2773,12 +2816,21 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   const composerRow = document.createElement('div');
   composerRow.className = 'fi-composer-row';
   composerRow.append(inputBox, ctxChip, stopBtn, sendBtn);
-  bar.append(presetToolbar, composerRow, presetPreview);
+  const contentStack = document.createElement('div');
+  contentStack.className = 'fi-content-stack';
+  contentStack.append(presetToolbar, composerRow, presetPreview);
+  bar.append(contentStack);
   bar.classList.add('visible');
 
   const panel = termContainer.closest('.terminal-panel');
   if (panel) panel.appendChild(bar);
   else termContainer.appendChild(bar);
+
+  // The external composer is not part of the CLI terminal. Lock its flex
+  // footprint at the collapsed height, then let multiline/preset content grow
+  // upward as a visual overlay. Otherwise every draft line changes xterm rows,
+  // sends ConPTY resize, and makes full-screen CLIs clear/repaint from row 1.
+  lockFloatingInputBarGeometry(bar);
 
   // 卡片层（.msg-overlay）是 absolute + z-index:50 + 不透明底色，靠 top/bottom 给
   // header 和输入栏让位。这两个值以前写死 43px/60px，而输入栏随任务预设 chips、
@@ -3347,7 +3399,7 @@ async function openPathInHub(filePath, opts = {}) {
   const raw = _cleanPathCandidate(filePath);
   if (!raw) return;
   if (/^https?:\/\//i.test(raw)) {
-    openPreviewPanel(raw);
+    await openPreviewPanel(raw);
     return;
   }
   const fullPath = _normalizeLocalPathForOpen(raw, cwd, opts.requireExistsForRel !== false);
@@ -3358,7 +3410,7 @@ async function openPathInHub(filePath, opts = {}) {
     return;
   }
   if (PREVIEW_PATH_RE.test(fullPath)) {
-    openPreviewPanel(fullPath);
+    await openPreviewPanel(fullPath);
     return;
   }
   const err = await ipcRenderer.invoke('open-path', fullPath);
@@ -3645,11 +3697,25 @@ window.openMeetingMemberSession = function openMeetingMemberSession(sessionId) {
   return true;
 };
 
-function writeXtermAndWait(terminal, data) {
-  if (!terminal || !data) return Promise.resolve();
-  return new Promise((resolve) => {
-    try { terminal.write(data, resolve); } catch { resolve(); }
-  });
+const XTERM_REPLAY_CHUNK_CHARS = 64 * 1024;
+
+async function writeXtermAndWait(terminal, data) {
+  if (!terminal || !data) return;
+  const source = String(data);
+  for (let start = 0; start < source.length;) {
+    let end = Math.min(source.length, start + XTERM_REPLAY_CHUNK_CHARS);
+    if (end < source.length) {
+      const last = source.charCodeAt(end - 1);
+      if (last >= 0xD800 && last <= 0xDBFF) end += 1;
+    }
+    await new Promise((resolve) => {
+      try { terminal.write(source.slice(start, end), resolve); } catch { resolve(); }
+    });
+    start = end;
+    // Snapshot hydration is recovery work, not a reason to block input/paint.
+    // Yield between chunks while preserving the exact byte/order stream.
+    if (start < source.length) await new Promise(resolve => setTimeout(resolve, 0));
+  }
 }
 
 async function replayTerminalSnapshot(cached, snapshot) {
@@ -5211,6 +5277,12 @@ ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
 });
 
 if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
+  const provideTerminalLinksForE2E = (sessionId, lineNumber) => new Promise((resolve) => {
+    const cached = terminalCache.get(sessionId);
+    const provider = cached && cached._localPathLinkProvider;
+    if (!provider || typeof provider.provideLinks !== 'function') { resolve([]); return; }
+    provider.provideLinks(lineNumber, links => resolve(Array.isArray(links) ? links : []));
+  });
   window.__hubE2E = {
     selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
     selectSession: (sessionId, opts) => selectSession(sessionId, opts),
@@ -5246,7 +5318,151 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
       }
       return lines.join('\n');
     },
+    terminalFindLine: (sessionId, needle) => {
+      const cached = terminalCache.get(sessionId);
+      if (!cached || !cached.terminal) return 0;
+      const buffer = cached.terminal.buffer.active;
+      for (let index = 0; index < buffer.length; index += 1) {
+        const text = buffer.getLine(index)?.translateToString(true) || '';
+        if (text.includes(String(needle || ''))) return index + 1;
+      }
+      return 0;
+    },
+    terminalFindLastLine: (sessionId, needle) => {
+      const cached = terminalCache.get(sessionId);
+      if (!cached || !cached.terminal) return 0;
+      const buffer = cached.terminal.buffer.active;
+      for (let index = buffer.length - 1; index >= 0; index -= 1) {
+        const text = buffer.getLine(index)?.translateToString(true) || '';
+        if (text.includes(String(needle || ''))) return index + 1;
+      }
+      return 0;
+    },
+    terminalLinks: async (sessionId, lineNumber) => {
+      const links = await provideTerminalLinksForE2E(sessionId, lineNumber);
+      return links.map(link => ({ text: link.text, range: link.range }));
+    },
+    activateTerminalLink: async (sessionId, lineNumber, linkIndex = 0) => {
+      const links = await provideTerminalLinksForE2E(sessionId, lineNumber);
+      const link = links[linkIndex];
+      if (!link) return null;
+      await link.activate({ button: 0, clientX: 0, clientY: 0 });
+      return { text: link.text, range: link.range };
+    },
+    terminalLinkGeometry: async (sessionId, lineNumber, linkIndex = 0) => {
+      const cached = terminalCache.get(sessionId);
+      if (!cached || !cached.terminal) return null;
+      const links = await provideTerminalLinksForE2E(sessionId, lineNumber);
+      const link = links[linkIndex];
+      const screen = cached.container.querySelector('.xterm-screen');
+      const dimensions = cached.terminal._core?._renderService?.dimensions?.css?.cell;
+      if (!link || !screen || !dimensions) return null;
+      const rect = screen.getBoundingClientRect();
+      const buffer = cached.terminal.buffer.active;
+      let viewportY = buffer.viewportY;
+      let row = link.range.start.y - 1 - viewportY;
+      if (row < 0 || row >= cached.terminal.rows) {
+        try { cached.terminal.scrollToLine(link.range.start.y - 1); } catch {}
+        viewportY = buffer.viewportY;
+        row = link.range.start.y - 1 - viewportY;
+      }
+      return {
+        text: link.text,
+        range: link.range,
+        viewportY,
+        row,
+        x: rect.left + (((link.range.start.x + link.range.end.x) / 2) - 0.5) * dimensions.width,
+        y: rect.top + (row + 0.5) * dimensions.height,
+      };
+    },
     terminalLiveScreenText: (sessionId) => terminalActivityMonitor.extractLiveScreenLines(sessionId).join('\n'),
+    cardQuestionNavigator: {
+      refresh: () => cardQuestionNavigator.refresh(),
+      state: () => cardQuestionNavigator.getState(),
+      scrollTo: index => cardQuestionNavigator.scrollToQuestion(index),
+      mountFixture: ({ sessionId = 'card-question-nav-e2e', start = 1, count = 6, clear = true } = {}) => {
+        if (clear) {
+          sessions.set(sessionId, {
+            id: sessionId,
+            kind: 'codex',
+            title: '问题导航 E2E',
+            status: 'idle',
+            createdAt: Date.now(),
+            lastMessageTime: Date.now(),
+          });
+          activeMeetingId = null;
+          activeSessionId = sessionId;
+          currentView = 'card';
+          _cardHistoryHydratedSid = sessionId;
+          terminalPanelEl.style.display = '';
+          terminalPanelEl.classList.remove('home-active');
+          emptyStateEl.style.display = 'none';
+          const overlay = document.getElementById('msg-overlay');
+          overlay.innerHTML = '';
+          overlay.classList.remove('hidden');
+          window._sessionTurns.clear();
+        }
+        const answerParagraph = '这是用于拉开卡片距离的回答段落，保持真实 Markdown 卡片的高度和滚动行为。';
+        for (let offset = 0; offset < count; offset += 1) {
+          const index = start + offset;
+          window._mountSessionTurnCard(sessionId, {
+            id: `question-${index}`,
+            role: 'user',
+            kind: 'codex',
+            text: index === 7
+              ? '问题 7：这是实时追加的新问题，导航轨应自动出现新节点。'
+              : `问题 ${index}：请分析第 ${index} 个方案的收益、风险与下一步。`,
+            ts: Date.now() + offset * 2,
+          }, { kind: 'codex' });
+          window._mountSessionTurnCard(sessionId, {
+            id: `answer-${index}`,
+            role: 'assistant',
+            kind: 'codex',
+            text: `### 回答 ${index}\n\n${Array(7).fill(answerParagraph).join('\n\n')}`,
+            ts: Date.now() + offset * 2 + 1,
+          }, { kind: 'codex' });
+        }
+        const overlay = document.getElementById('msg-overlay');
+        if (clear) overlay.scrollTop = 0;
+        const navStartedAt = performance.now();
+        const state = cardQuestionNavigator.refresh();
+        return {
+          sid: sessionId,
+          state,
+          navRefreshMs: performance.now() - navStartedAt,
+          scrollHeight: overlay.scrollHeight,
+          clientHeight: overlay.clientHeight,
+        };
+      },
+      setViewMode: mode => applyViewMode(mode),
+      preservePanel: () => preserveAndClearTerminalPanel(),
+    },
+    probeTerminalReplayResponsiveness: async () => {
+      const terminal = new Terminal({ cols: 200, rows: 40, scrollback: 10000, allowProposedApi: true });
+      const line = `REPLAY-LINE ${'x'.repeat(186)}\r\n`;
+      const text = `\x1b[2J\x1b[H${line.repeat(12000)}`;
+      const delays = [];
+      let expected = performance.now() + 10;
+      const timer = setInterval(() => {
+        const now = performance.now();
+        delays.push(Math.max(0, now - expected));
+        expected = now + 10;
+      }, 10);
+      const startedAt = performance.now();
+      try {
+        await replayTerminalSnapshot({ terminal }, { text, operations: null });
+        await new Promise(resolve => setTimeout(resolve, 40));
+        return {
+          bytes: text.length,
+          elapsedMs: performance.now() - startedAt,
+          heartbeatCount: delays.length,
+          maxHeartbeatDelayMs: Math.max(0, ...delays),
+        };
+      } finally {
+        clearInterval(timer);
+        try { terminal.dispose(); } catch {}
+      }
+    },
     applyTerminalRuntimeFrame: (sessionId, lines, observedAt = Date.now()) => {
       const session = sessions.get(sessionId);
       if (!session) return null;

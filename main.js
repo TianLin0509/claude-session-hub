@@ -31,6 +31,7 @@ const {
   describeBrandingHealth,
   resolveHubLaunchExePath,
 } = require('./core/hub-exe-branding.js');
+const { isPackagedHubRuntime } = require('./core/electron-runtime-mode.js');
 const {
   ensureClaudeHookIntegration,
   startClaudeHookIntegrationWatchdog,
@@ -108,6 +109,13 @@ const {
   recordCodexCliUsage,
   selectCodexCliUsageForScope,
 } = require('./main/usage/scoped-codex-cli-usage.js');
+const {
+  mergeCodexEntry,
+  mergeUsageCacheSnapshots,
+  readUsageCacheFile,
+  writeMergedUsageCacheFile,
+  writeMergedUsageCacheFileSync,
+} = require('./main/usage/usage-cache-merge.js');
 
 function isCodexBaseKind(kind) {
   return isCodexCliKind(kind);
@@ -134,6 +142,15 @@ const { registerArchiveIpc } = require('./main/ipc/archive-handlers.js');
 const transcriptParserService = new TranscriptParserService();
 const codexJsonlUsageService = new CodexJsonlUsageService();
 const transcriptTap = new TranscriptTap({ parserService: transcriptParserService });
+// AIGroupChatHub.exe is a branded copy of Electron's default-app host. Electron
+// 41 reports app.isPackaged=true solely because the exe was renamed, while
+// process.defaultApp remains true and argv still contains this source tree.
+// Using app.isPackaged directly strips the app-root from Jump List launches and
+// also points hook deployment at the wrong resources directory.
+const HUB_IS_PACKAGED = isPackagedHubRuntime({
+  appIsPackaged: app.isPackaged,
+  defaultApp: process.defaultApp,
+});
 // Recovery can temporarily attach several listeners per group-chat seat.
 try { transcriptTap.setMaxListeners(100); } catch {}
 
@@ -168,7 +185,7 @@ if (process.env.CLAUDE_HUB_DATA_DIR) {
 // claudeDirPath: target Claude config dir (e.g. ~/.claude or ~/.claude-deepseek)
 function ensureHooksDeployed(claudeDirPath) {
   const claudeDir = claudeDirPath;
-  const srcDir = app.isPackaged
+  const srcDir = HUB_IS_PACKAGED
     ? path.join(process.resourcesPath, 'scripts')
     : path.join(__dirname, 'scripts');
   const hookResult = ensureClaudeHookIntegration({
@@ -1488,16 +1505,12 @@ function scheduleUsageCacheWrite() {
   if (_usageCacheWriteTimer) clearTimeout(_usageCacheWriteTimer);
   _usageCacheWriteTimer = setTimeout(() => {
     _usageCacheWriteTimer = null;
-    const snapshot = JSON.stringify(_usageCacheMemory || {});
+    const snapshot = JSON.parse(JSON.stringify(_usageCacheMemory || {}));
     _usageCacheWriteQueue = _usageCacheWriteQueue.then(async () => {
-      await fs.promises.mkdir(path.dirname(USAGE_CACHE_FILE), { recursive: true });
-      const tmp = `${USAGE_CACHE_FILE}.${process.pid}.${Date.now()}.tmp`;
-      try {
-        await fs.promises.writeFile(tmp, snapshot);
-        await fs.promises.rename(tmp, USAGE_CACHE_FILE);
-      } finally {
-        try { await fs.promises.unlink(tmp); } catch {}
-      }
+      const merged = await writeMergedUsageCacheFile(USAGE_CACHE_FILE, snapshot);
+      // Keep newer in-process updates that arrived while this write waited on
+      // another Hub's lock; the next scheduled write will persist them.
+      _usageCacheMemory = mergeUsageCacheSnapshots(merged, _usageCacheMemory || {}, Date.now());
     }).catch(error => console.warn('[usage-cache] async write failed:', error && error.message));
   }, 100);
   _usageCacheWriteTimer.unref?.();
@@ -1509,8 +1522,7 @@ function flushUsageCacheSync() {
     _usageCacheWriteTimer = null;
   }
   if (_usageCacheMemory === null) return;
-  fs.mkdirSync(path.dirname(USAGE_CACHE_FILE), { recursive: true });
-  fs.writeFileSync(USAGE_CACHE_FILE, JSON.stringify(_usageCacheMemory));
+  _usageCacheMemory = writeMergedUsageCacheFileSync(USAGE_CACHE_FILE, _usageCacheMemory);
 }
 
 // See core/usage-filter.js for why this filter exists (rate_limits monotonic
@@ -1578,10 +1590,15 @@ function cacheAgentUsage(provider, tokenData, scope = null) {
   } catch {}
 }
 
+function readUsageCacheDisk() {
+  return readUsageCacheFile(USAGE_CACHE_FILE);
+}
+
 function loadUsageCache() {
-  if (_usageCacheMemory !== null) return { ..._usageCacheMemory };
-  try { _usageCacheMemory = JSON.parse(fs.readFileSync(USAGE_CACHE_FILE, 'utf8')); }
-  catch { _usageCacheMemory = {}; }
+  const disk = readUsageCacheDisk();
+  _usageCacheMemory = _usageCacheMemory === null
+    ? disk
+    : mergeUsageCacheSnapshots(disk, _usageCacheMemory, Date.now());
   return { ..._usageCacheMemory };
 }
 
@@ -1649,7 +1666,7 @@ registerUsageIpc(ipcMain, {
   clearCodexJsonlCache: () => _codexJsonlCachedByRoot.clear(),
   loadUsageCacheForCurrentConfig,
   refreshClaudeAccountUsage: refreshClaudeAccountUsageFromStatuslineCache,
-  refreshCodexAccountUsage: refreshCodexAccountUsageLive,
+  refreshCodexAccountUsage: () => refreshCodexUsageIfDue(true),
   refreshDeepSeekAccountBalance: refreshDeepSeekAccountBalanceLive,
   refreshKimiAccountUsage: refreshKimiAccountUsageLive,
   scanAgentSessions,
@@ -1873,9 +1890,14 @@ async function scanAgentSessions(opts = {}) {
       agentData.codex = attachCodexUsageScope({ usage5h: null, usage7d: null, unavailable: true }, codexScope);
     }
   }
-  const liveForScope = _codexLiveUsage && _codexLiveUsage.scopeKey === codexScope.scopeKey
+  const inMemoryLiveForScope = _codexLiveUsage && _codexLiveUsage.scopeKey === codexScope.scopeKey
     ? expireCodexUsageWindows(_codexLiveUsage, now)
     : null;
+  const diskForScope = loadUsageCacheForCurrentConfig().codex;
+  const cachedLiveForScope = diskForScope && diskForScope.source === 'app-server'
+    ? expireCodexUsageWindows(diskForScope, now)
+    : null;
+  const liveForScope = mergeCodexEntry(cachedLiveForScope, inMemoryLiveForScope, now);
   if (shouldPreferCodexLiveUsage(liveForScope, agentData.codex, now)) {
     agentData.codex = liveForScope;
     cacheAgentUsage('codex', liveForScope, codexScope);
@@ -1901,8 +1923,25 @@ let _deepseekBalanceRefreshInFlight = null;
 let _deepseekBalanceLastAttempt = 0;
 let _kimiUsageRefreshInFlight = null;
 let _kimiUsageLastAttempt = 0;
+let _codexUsageRefreshInFlight = null;
+let _codexUsageLastAttempt = 0;
 const DEEPSEEK_BALANCE_REFRESH_MS = 5 * 60 * 1000;
 const KIMI_USAGE_REFRESH_MS = 5 * 60 * 1000;
+const CODEX_USAGE_REFRESH_MS = 5 * 60 * 1000;
+
+function refreshCodexUsageIfDue(force = false) {
+  const now = Date.now();
+  if (_codexUsageRefreshInFlight) return _codexUsageRefreshInFlight;
+  if (!force && now - _codexUsageLastAttempt < CODEX_USAGE_REFRESH_MS) return null;
+  _codexUsageLastAttempt = now;
+  _codexUsageRefreshInFlight = refreshCodexAccountUsageLive()
+    .then((codex) => {
+      sendToRenderer('agent-usage', { codex });
+      return codex;
+    })
+    .finally(() => { _codexUsageRefreshInFlight = null; });
+  return _codexUsageRefreshInFlight;
+}
 
 function refreshDeepSeekBalanceIfDue(force = false) {
   const now = Date.now();
@@ -1944,10 +1983,13 @@ function startAgentScanner() {
     return _agentScanInFlight;
   };
   void run();
+  void refreshCodexUsageIfDue(true).catch(() => null);
   refreshDeepSeekBalanceIfDue(true);
   refreshKimiUsageIfDue(true);
   _agentScanInterval = setInterval(() => {
     void run();
+    const codexRefresh = refreshCodexUsageIfDue(false);
+    if (codexRefresh) void codexRefresh.catch(() => null);
     refreshDeepSeekBalanceIfDue(false);
     refreshKimiUsageIfDue(false);
   }, 5000);
@@ -1976,7 +2018,7 @@ app.whenReady().then(async () => {
         shell,
         appRoot: __dirname,
         execPath,
-        isPackaged: app.isPackaged,
+        isPackaged: HUB_IS_PACKAGED,
         iconPath: hubIconPath,
       };
       const shellResult = ensureWindowsShellIntegration(windowsShellOptions);
@@ -2038,7 +2080,7 @@ app.whenReady().then(async () => {
   const claudeDirs = isIsolatedHub()
     ? []
     : ['.claude', '.claude-deepseek'].map(dir => path.join(_home, dir));
-  const hookSourceScriptsDir = app.isPackaged
+  const hookSourceScriptsDir = HUB_IS_PACKAGED
     ? path.join(process.resourcesPath, 'scripts')
     : path.join(__dirname, 'scripts');
   traceStartup('deploy hooks start');

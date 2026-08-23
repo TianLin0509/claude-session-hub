@@ -9,6 +9,7 @@ const {
   DEEPSEEK_CODEX_BASE_URL,
   DEEPSEEK_CODEX_MIN_VERSION,
   DEEPSEEK_CODEX_MODEL,
+  DEEPSEEK_CODEX_MODELS,
   ensureDeepSeekCodexProfile,
 } = require('../core/deepseek-codex-profile.js');
 
@@ -27,7 +28,7 @@ function test(name, fn) {
 
 console.log('Running DeepSeek Codex profile tests...');
 
-test('isolated profile uses Responses API, an env key, and the official Flash catalog', () => {
+test('isolated profile uses Responses API, an env key, and the Pro/Flash catalog', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ds-codex-'));
   try {
     const project = path.join(root, 'AI', 'demo');
@@ -38,6 +39,7 @@ test('isolated profile uses Responses API, an env key, and the official Flash ca
 
     assert.strictEqual(profile.model, 'deepseek-v4-flash');
     assert.strictEqual(DEEPSEEK_CODEX_MODEL, 'deepseek-v4-flash');
+    assert.deepStrictEqual(DEEPSEEK_CODEX_MODELS, ['deepseek-v4-pro', 'deepseek-v4-flash']);
     assert.strictEqual(DEEPSEEK_CODEX_BASE_URL, 'https://api.deepseek.com/');
     assert.strictEqual(DEEPSEEK_CODEX_MIN_VERSION, '0.144.0');
     assert.match(config, /model_provider = "deepseek"/);
@@ -47,9 +49,13 @@ test('isolated profile uses Responses API, an env key, and the official Flash ca
     assert.match(config, /model_catalog_json = /);
     assert.doesNotMatch(config, /experimental_bearer_token|sk-[A-Za-z0-9]/,
       'the API key must never be written into the profile');
-    assert.deepStrictEqual(catalog.models.map(model => model.slug), ['deepseek-v4-flash']);
-    assert.strictEqual(catalog.models[0].minimal_client_version, '0.144.0');
-    assert.strictEqual(catalog.models[0].context_window, 1048576);
+    assert.deepStrictEqual(catalog.models.map(model => model.slug), ['deepseek-v4-pro', 'deepseek-v4-flash']);
+    for (const model of catalog.models) {
+      assert.strictEqual(model.minimal_client_version, '0.144.0');
+      assert.strictEqual(model.context_window, 1048576);
+      assert.strictEqual(model.supported_in_api, true);
+    }
+    assert.strictEqual(catalog.models[0].display_name, 'DeepSeek-V4-Pro');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -79,11 +85,11 @@ test('trusted cwd entries accumulate instead of replacing another live session',
   }
 });
 
-test('session launch exports only the DeepSeek key and runs codex with Flash', () => {
+test('session launch exports only the DeepSeek key and preserves the selected DeepSeek model', () => {
   assert.match(SESSION_MANAGER_SRC, /sessionEnv\.DEEPSEEK_API_KEY = cv\.DEEPSEEK_API_KEY/);
   assert.match(SESSION_MANAGER_SRC, /delete sessionEnv\.ANTHROPIC_BASE_URL/);
   assert.match(SESSION_MANAGER_SRC, /sessionEnv\.CODEX_HOME = profile\.codexHome/);
-  assert.match(SESSION_MANAGER_SRC, /const codexModel = isDeepSeek \? DEEPSEEK_CODEX_MODEL/);
+  assert.match(SESSION_MANAGER_SRC, /const codexModel = isDeepSeek[\s\S]{0,120}normalizeDeepSeekModel\(opts\.model\)/);
   assert.match(SESSION_MANAGER_SRC, /if \(isCodexRuntime\) \{/);
   assert.match(SESSION_MANAGER_SRC, /cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model \$\{codexModel\}/);
   assert.match(SESSION_MANAGER_SRC, /if \(isDeepSeekLegacy\) \{/,

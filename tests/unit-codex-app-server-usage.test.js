@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const { EventEmitter } = require('events');
 const { PassThrough, Writable } = require('stream');
 
@@ -10,6 +12,12 @@ const {
   readCodexAccountUsage,
   shouldPreferCodexLiveUsage,
 } = require('../main/usage/codex-app-server-usage.js');
+const MAIN_SRC = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+
+assert.match(MAIN_SRC, /refreshCodexAccountUsage:\s*\(\) => refreshCodexUsageIfDue\(true\)/,
+  'manual refresh must share the authoritative app-server in-flight path');
+assert.match(MAIN_SRC, /refreshCodexUsageIfDue\(true\)[\s\S]{0,300}setInterval[\s\S]{0,300}refreshCodexUsageIfDue\(false\)/,
+  'Codex account usage must refresh at startup and periodically, not only from JSONL');
 
 const normalized = normalizeCodexRateLimitsResponse({
   rateLimits: {
@@ -20,12 +28,48 @@ const normalized = normalizeCodexRateLimitsResponse({
 }, 123456);
 
 assert.deepStrictEqual(normalized, {
-  usage5h: { pct: 7, resetsAt: 1783721120000 },
-  usage7d: { pct: 1, resetsAt: 1784307920000 },
+  usage5h: { pct: 7, resetsAt: 1783721120000, label: '5h' },
+  usage7d: { pct: 1, resetsAt: 1784307920000, label: '7d' },
   limitId: 'codex',
   observedAt: 123456,
   source: 'app-server',
 });
+
+const currentProShape = normalizeCodexRateLimitsResponse({
+  rateLimits: {
+    limitId: 'codex',
+    primary: { usedPercent: 7, windowDurationMins: 10080, resetsAt: 1787969947 },
+    secondary: null,
+  },
+}, 456789);
+assert.deepStrictEqual(currentProShape, {
+  usage5h: null,
+  usage7d: { pct: 7, resetsAt: 1787969947000, label: '7d' },
+  limitId: 'codex',
+  observedAt: 456789,
+  source: 'app-server',
+}, 'a weekly primary bucket must be labeled 7d, not 5h');
+
+const multiBucket = normalizeCodexRateLimitsResponse({
+  rateLimits: {
+    limitId: 'legacy-default',
+    primary: { usedPercent: 99, windowDurationMins: 300, resetsAt: 1000 },
+  },
+  rateLimitsByLimitId: {
+    codex: {
+      limitId: 'codex',
+      primary: { usedPercent: 8, windowDurationMins: 300, resetsAt: 2000 },
+      secondary: { usedPercent: 12, windowDurationMins: 10080, resetsAt: 3000 },
+    },
+  },
+}, 567890);
+assert.deepStrictEqual(multiBucket, {
+  usage5h: { pct: 8, resetsAt: 2000000, label: '5h' },
+  usage7d: { pct: 12, resetsAt: 3000000, label: '7d' },
+  limitId: 'codex',
+  observedAt: 567890,
+  source: 'app-server',
+}, 'the named codex bucket must beat the backward-compatible single-bucket view');
 
 const expired = expireCodexUsageWindows({
   usage5h: { pct: 90, resetsAt: 9_000 },
@@ -113,8 +157,8 @@ function createFakeProcess(onRequest) {
   assert.strictEqual(spawnCall.options.env.HTTP_PROXY, 'http://127.0.0.1:7890');
   assert.deepStrictEqual(requests.map(r => r.method), ['initialize', 'account/rateLimits/read']);
   assert.deepStrictEqual(result, {
-    usage5h: { pct: 12, resetsAt: 2000000 },
-    usage7d: { pct: 3, resetsAt: 3000000 },
+    usage5h: { pct: 12, resetsAt: 2000000, label: '5h' },
+    usage7d: { pct: 3, resetsAt: 3000000, label: '7d' },
     limitId: 'codex',
     observedAt: 789000,
     source: 'app-server',

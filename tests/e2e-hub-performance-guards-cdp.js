@@ -56,6 +56,7 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     const result = await client.eval(`(async () => {
       const api = window.__hubE2E;
       const initial = api.terminalCacheStats();
+      const replayProbe = await api.probeTerminalReplayResponsiveness();
       const now = Date.now();
       const electronIpc = require('electron').ipcRenderer;
       const bulkSidebar = api.addFakeSessions(Array.from({ length: 900 }, (_, i) => ({
@@ -192,6 +193,7 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
       await new Promise(resolve => setTimeout(resolve, 100));
       return {
         initial,
+        replayProbe,
         afterMeetingSessionEvents,
         afterShells,
         afterMeeting: afterMeetingStats,
@@ -231,6 +233,10 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     })()`);
 
     assert.strictEqual(result.initial.size, 0, 'isolated Hub should start without eager xterms');
+    assert.ok(result.replayProbe.bytes > 2 * 1024 * 1024, JSON.stringify(result.replayProbe));
+    assert.ok(result.replayProbe.heartbeatCount >= 3, JSON.stringify(result.replayProbe));
+    assert.ok(result.replayProbe.maxHeartbeatDelayMs < 100,
+      `large terminal replay blocked renderer for ${result.replayProbe.maxHeartbeatDelayMs}ms`);
     assert.strictEqual(result.afterMeetingSessionEvents.size, 0, 'meeting session-created events must not warm hidden xterms');
     assert.strictEqual(result.initial.policy, 'session-lifecycle');
     assert.strictEqual(result.initial.max, null, 'live xterms must not have an arbitrary count limit');
