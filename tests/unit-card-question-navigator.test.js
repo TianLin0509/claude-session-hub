@@ -26,12 +26,19 @@ const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'renderer', 'styles', 'card-view.css'), 'utf8');
+const navigator = fs.readFileSync(path.join(root, 'renderer', 'card-question-navigator.js'), 'utf8');
 assert.match(html, /id="card-question-nav"[^>]*aria-label="问题导航"/);
 assert.match(renderer, /document\.getElementById\('card-question-nav'\)[\s\S]*?preserved\.forEach/,
   'terminal panel rebuilds must preserve the navigator node');
 assert.match(renderer, /cardQuestionNavigator\.refresh\(\)[\s\S]*?recentTurnCopyController/,
   'view switches must synchronously hide/show the navigator');
 assert.match(css, /\.card-question-nav-item:focus-visible/);
+assert.match(css, /\.card-question-nav-dot/);
+assert.match(css, /\.card-question-nav\.dense/);
 assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
+assert.doesNotMatch(navigator, /label\.textContent\s*=\s*['"]你['"]/,
+  'question markers must not render the same hard-coded Chinese avatar');
+assert.match(navigator, /label\.textContent\s*=\s*`Q\$\{index \+ 1\}`/);
+assert.match(navigator, /`问题 \$\{entry\.index \+ 1\} \/ \$\{entries\.length\}`/);
 
 console.log('unit-card-question-navigator OK');
