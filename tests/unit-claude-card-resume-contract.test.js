@@ -11,13 +11,20 @@ function read(rel) {
 
 test('resume picker passes transcriptPath into created Claude resume session', () => {
   const src = read('renderer/past-session-modals.js');
+  const rendererSrc = read('renderer/renderer.js');
   assert.match(
     src,
     /resumeCCSessionId:\s*it\.sessionId,\s*resumeTranscriptPath:\s*it\.path/,
   );
   assert.match(
-    src,
-    /resumeCCSessionId:\s*h\.sessionId,\s*resumeTranscriptPath:\s*h\.path/,
+    rendererSrc,
+    /resumeTranscriptPath:\s*hit\.transcriptPath\s*\|\|\s*undefined/,
+    'global search resume must keep the exact indexed transcript path',
+  );
+  assert.match(
+    rendererSrc,
+    /opts\.resumeCCSessionId\s*=\s*hit\.nativeSessionId/,
+    'global search must resume the exact Claude native session id',
   );
 });
 

@@ -169,6 +169,26 @@ class MeetingRoomManager {
     }));
   }
 
+  // Search indexing needs meeting metadata but must not clone every timeline
+  // onto Electron's main thread for each query. The worker reads authoritative
+  // timeline files itself; this compact snapshot only overlays live titles,
+  // workspace labels and member identities.
+  getSearchMetadata() {
+    return Array.from(this.meetings.values()).map(m => ({
+      id: m.id,
+      title: m.title,
+      scene: m.scene,
+      workspace: m.workspace || null,
+      workspaceLabel: m.workspaceLabel || null,
+      subSessions: Array.isArray(m.subSessions) ? m.subSessions.slice() : [],
+      slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs.slice() : null,
+      groupChat: !!m.groupChat,
+      lastMessageTime: typeof m.lastMessageTime === 'number' ? m.lastMessageTime : null,
+      lastCompletedAt: typeof m.lastCompletedAt === 'number' ? m.lastCompletedAt : null,
+      updatedAt: typeof m.updatedAt === 'number' ? m.updatedAt : null,
+    }));
+  }
+
   addSubSession(meetingId, sessionId) {
     const m = this.meetings.get(meetingId);
     if (!m) return null;

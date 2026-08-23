@@ -1,0 +1,817 @@
+'use strict';
+
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { StringDecoder } = require('node:string_decoder');
+const { parseClaudeTranscriptToTurns } = require('./claude-transcript-parser.js');
+const {
+  parseCodexRolloutText,
+  readCodexRolloutMeta,
+  isCodexTopLevelRolloutMeta,
+} = require('./codex-transcript-parser.js');
+const {
+  codexAgentMessageEventFromRecord,
+  codexTextFromPayload,
+  codexUserMessageEventFromRecord,
+} = require('./transcript-payload-utils.js');
+const { displayUserText, isSyntheticUserEntry } = require('./synthetic-user-filter.js');
+
+function normalizePath(value) {
+  if (!value) return '';
+  try { return path.resolve(String(value)).replace(/\\/g, '/').toLocaleLowerCase(); }
+  catch { return String(value).replace(/\\/g, '/').toLocaleLowerCase(); }
+}
+
+function shortHash(value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 12);
+}
+
+function stableJsonHash(value) {
+  return shortHash(JSON.stringify(value || null));
+}
+
+function statSignature(stat) {
+  return `${Number(stat && stat.size) || 0}:${Math.round(Number(stat && stat.mtimeMs) || 0)}`;
+}
+
+function hubIdOf(session) {
+  return String(session && (session.hubId || session.id) || '').trim();
+}
+
+function baseKind(kind) {
+  return String(kind || '').replace(/-resume$/, '');
+}
+
+function providerForHubSession(session) {
+  if (!session || session.meetingId) return session && session.meetingId ? 'meeting' : 'unknown';
+  const kind = baseKind(session.kind);
+  if (kind === 'deepseek' || kind === 'deepseek-legacy') return 'deepseek';
+  if (kind === 'codex') return 'codex';
+  if (kind === 'claude') return 'claude';
+  return 'unknown';
+}
+
+function providerForClaudeRoot(root) {
+  return /(?:^|[\\/])\.claude-deepseek(?:[\\/]|$)/i.test(String(root || '')) ? 'deepseek' : 'claude';
+}
+
+function providerLabel(provider) {
+  if (provider === 'claude') return 'Claude';
+  if (provider === 'codex') return 'Codex';
+  if (provider === 'deepseek') return 'DeepSeek';
+  if (provider === 'meeting') return '群聊';
+  return 'AI';
+}
+
+function sessionUpdatedAt(session) {
+  return Number(session && (
+    session.lastCompletedAt || session.lastMessageTime || session.updatedAt || session.createdAt
+  )) || 0;
+}
+
+function preferredHubSession(candidates = []) {
+  return [...candidates].filter(Boolean).sort((a, b) => {
+    const aLive = a.status && a.status !== 'dormant' ? 1 : 0;
+    const bLive = b.status && b.status !== 'dormant' ? 1 : 0;
+    if (aLive !== bLive) return bLive - aLive;
+    const aStandalone = a.meetingId ? 0 : 1;
+    const bStandalone = b.meetingId ? 0 : 1;
+    if (aStandalone !== bStandalone) return bStandalone - aStandalone;
+    return sessionUpdatedAt(b) - sessionUpdatedAt(a);
+  })[0] || null;
+}
+
+function dedupeHubSessions(snapshot = {}) {
+  const byId = new Map();
+  for (const raw of (Array.isArray(snapshot.sessions) ? snapshot.sessions : [])) {
+    const id = hubIdOf(raw);
+    if (!id) continue;
+    const existing = byId.get(id);
+    if (!existing || sessionUpdatedAt(raw) >= sessionUpdatedAt(existing)) byId.set(id, { ...existing, ...raw, hubId: id });
+  }
+  return [...byId.values()];
+}
+
+function createMetadataMaps(snapshot = {}) {
+  const sessions = dedupeHubSessions(snapshot);
+  const byTranscriptPath = new Map();
+  const byClaudeNative = new Map();
+  const byCodexRootNative = new Map();
+  const byCodexNative = new Map();
+  for (const session of sessions) {
+    const provider = providerForHubSession(session);
+    const transcriptPath = normalizePath(session.transcriptPath);
+    if (transcriptPath) {
+      const list = byTranscriptPath.get(transcriptPath) || [];
+      list.push(session);
+      byTranscriptPath.set(transcriptPath, list);
+    }
+    if ((provider === 'claude' || provider === 'deepseek') && session.ccSessionId) {
+      const key = `${provider}:${session.ccSessionId}`;
+      const list = byClaudeNative.get(key) || [];
+      list.push(session);
+      byClaudeNative.set(key, list);
+    }
+    if ((provider === 'codex' || provider === 'deepseek') && session.codexSid) {
+      const rootKey = normalizePath(session.codexSessionsRoot || '');
+      if (rootKey) {
+        const key = `${rootKey}:${session.codexSid}`;
+        const list = byCodexRootNative.get(key) || [];
+        list.push(session);
+        byCodexRootNative.set(key, list);
+      }
+      const list = byCodexNative.get(String(session.codexSid)) || [];
+      list.push(session);
+      byCodexNative.set(String(session.codexSid), list);
+    }
+  }
+  const meetings = new Map();
+  for (const meeting of (Array.isArray(snapshot.meetings) ? snapshot.meetings : [])) {
+    if (meeting && meeting.id) meetings.set(String(meeting.id), meeting);
+  }
+  return { sessions, byTranscriptPath, byClaudeNative, byCodexRootNative, byCodexNative, meetings };
+}
+
+function matchClaudeHubSession(filePath, sid, provider, maps) {
+  const byPath = preferredHubSession(maps.byTranscriptPath.get(normalizePath(filePath)) || []);
+  if (byPath) return byPath;
+  return preferredHubSession(maps.byClaudeNative.get(`${provider}:${sid}`) || []);
+}
+
+function matchCodexHubSession(filePath, sid, root, maps) {
+  const byPath = preferredHubSession(maps.byTranscriptPath.get(normalizePath(filePath)) || []);
+  if (byPath) return byPath;
+  const byRoot = preferredHubSession(maps.byCodexRootNative.get(`${normalizePath(root)}:${sid}`) || []);
+  if (byRoot) return byRoot;
+  const anyRoot = maps.byCodexNative.get(String(sid)) || [];
+  const rootless = anyRoot.filter(session => !normalizePath(session.codexSessionsRoot));
+  if (rootless.length) return preferredHubSession(rootless);
+  const distinctRoots = new Set(anyRoot.map(session => normalizePath(session.codexSessionsRoot)).filter(Boolean));
+  // Copied SIDs across subscription profiles are different Hub identities.
+  // If this rollout's root does not match any persisted scope and more than one
+  // scope owns the SID, guessing would make “open result” resume the wrong account.
+  return distinctRoots.size <= 1 ? preferredHubSession(anyRoot) : null;
+}
+
+function metadataSignature(meta) {
+  if (!meta) return 'none';
+  return stableJsonHash({
+    hubId: hubIdOf(meta), title: meta.title || null, cwd: meta.cwd || null,
+    transcriptPath: meta.transcriptPath || null,
+    workspaceLabel: meta.workspaceLabel || null, kind: meta.kind || null,
+    workspace: meta.workspace || null,
+    subSessions: Array.isArray(meta.subSessions) ? meta.subSessions : null,
+    slotSpecs: Array.isArray(meta.slotSpecs) ? meta.slotSpecs : null,
+    groupChat: meta.groupChat === true,
+    meetingId: meta.meetingId || null, currentModel: meta.currentModel || meta.model || null,
+    codexSessionsRoot: meta.codexSessionsRoot || null, codexProfile: meta.codexProfile || null,
+    lastMessageTime: meta.lastMessageTime || null, lastCompletedAt: meta.lastCompletedAt || null,
+  });
+}
+
+function pickDuplicateDescriptor(descriptors) {
+  return [...descriptors].sort((a, b) => {
+    const aExact = a.hubSession && normalizePath(a.hubSession.transcriptPath) === normalizePath(a.filePath) ? 1 : 0;
+    const bExact = b.hubSession && normalizePath(b.hubSession.transcriptPath) === normalizePath(b.filePath) ? 1 : 0;
+    if (aExact !== bExact) return bExact - aExact;
+    return b.mtime - a.mtime;
+  })[0];
+}
+
+function recordDiscoveryError(diagnostics, label, error) {
+  if (!error || error.code === 'ENOENT') return;
+  diagnostics.push(`${label}: ${error.message || error}`);
+}
+
+function listClaudeDescriptors(roots, maps, diagnostics = []) {
+  const groups = new Map();
+  for (const root of roots || []) {
+    const provider = providerForClaudeRoot(root);
+    let projectDirs;
+    try { projectDirs = fs.readdirSync(root, { withFileTypes: true }); }
+    catch (error) { recordDiscoveryError(diagnostics, `Claude root ${root}`, error); continue; }
+    for (const projectDir of projectDirs) {
+      if (!projectDir.isDirectory()) continue;
+      const directory = path.join(root, projectDir.name);
+      let files;
+      try { files = fs.readdirSync(directory, { withFileTypes: true }); }
+      catch (error) { recordDiscoveryError(diagnostics, `Claude project ${directory}`, error); continue; }
+      for (const entry of files) {
+        if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+        const filePath = path.join(directory, entry.name);
+        let stat;
+        try { stat = fs.statSync(filePath); }
+        catch (error) { recordDiscoveryError(diagnostics, `Claude transcript ${filePath}`, error); continue; }
+        const sid = entry.name.slice(0, -6);
+        const hubSession = matchClaudeHubSession(filePath, sid, provider, maps);
+        const descriptor = {
+          type: 'claude', key: `claude:${provider}:${sid}`,
+          filePath, root, provider, nativeSessionId: sid, hubSession,
+          fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
+        };
+        descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}`;
+        const list = groups.get(descriptor.key) || [];
+        list.push(descriptor);
+        groups.set(descriptor.key, list);
+      }
+    }
+  }
+  return [...groups.values()].map(pickDuplicateDescriptor);
+}
+
+function walkCodexRollouts(root, diagnostics = []) {
+  const out = [];
+  const visit = (directory, depth) => {
+    if (depth > 3) return;
+    let entries;
+    try { entries = fs.readdirSync(directory, { withFileTypes: true }); }
+    catch (error) { recordDiscoveryError(diagnostics, `Codex directory ${directory}`, error); return; }
+    for (const entry of entries) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(full, depth + 1);
+      else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) out.push(full);
+    }
+  };
+  visit(root, 0);
+  return out;
+}
+
+function listCodexDescriptors(roots, maps, diagnostics = []) {
+  const groups = new Map();
+  for (const root of roots || []) {
+    for (const filePath of walkCodexRollouts(root, diagnostics)) {
+      let stat;
+      try { stat = fs.statSync(filePath); }
+      catch (error) { recordDiscoveryError(diagnostics, `Codex rollout ${filePath}`, error); continue; }
+      // Codex can leave a zero-byte rollout placeholder after an interrupted
+      // startup. It contains no searchable record and is not an index error.
+      if (!stat.size) continue;
+      const meta = readCodexRolloutMeta(filePath);
+      if (!meta) {
+        diagnostics.push(`Codex rollout metadata unreadable: ${filePath}`);
+        continue;
+      }
+      if (!isCodexTopLevelRolloutMeta(meta)) continue;
+      const sid = String(meta.id || meta.session_id || '').trim();
+      if (!sid) continue;
+      const hubSession = matchCodexHubSession(filePath, sid, root, maps);
+      const provider = providerForHubSession(hubSession) === 'deepseek' ? 'deepseek' : 'codex';
+      const scope = shortHash(normalizePath(root));
+      const descriptor = {
+        type: 'codex', key: `codex:${scope}:${sid}`,
+        filePath, root, provider, nativeSessionId: sid, hubSession, codexMeta: meta,
+        fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
+      };
+      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}`;
+      const list = groups.get(descriptor.key) || [];
+      list.push(descriptor);
+      groups.set(descriptor.key, list);
+    }
+  }
+  return [...groups.values()].map(pickDuplicateDescriptor);
+}
+
+function listMeetingDescriptors(meetingDir, maps, diagnostics = []) {
+  let entries;
+  try { entries = fs.readdirSync(meetingDir, { withFileTypes: true }); }
+  catch (error) { recordDiscoveryError(diagnostics, `Meeting directory ${meetingDir}`, error); return []; }
+  const out = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const filePath = path.join(meetingDir, entry.name);
+    const meetingId = entry.name.slice(0, -5);
+    let stat;
+    try { stat = fs.statSync(filePath); }
+    catch (error) { recordDiscoveryError(diagnostics, `Meeting transcript ${filePath}`, error); continue; }
+    const meeting = maps.meetings.get(meetingId) || null;
+    const memberSignature = stableJsonHash((meeting && meeting.subSessions || []).map((hubId) => {
+      const session = maps.sessions.find(row => hubIdOf(row) === String(hubId));
+      return session ? [hubIdOf(session), session.title || null, session.kind || null] : [String(hubId), null, null];
+    }));
+    const descriptor = {
+      type: 'meeting', key: `meeting:${meetingId}`, filePath, meetingId, meeting,
+      fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
+    };
+    descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(meeting)}:${memberSignature}`;
+    out.push(descriptor);
+  }
+  return out;
+}
+
+function addExplicitTranscriptDescriptors(descriptors, maps, diagnostics = []) {
+  const knownPaths = new Set(descriptors.map(item => normalizePath(item.filePath)));
+  for (const session of maps.sessions) {
+    const filePath = session.transcriptPath;
+    const provider = providerForHubSession(session);
+    if (!filePath || !['claude', 'codex', 'deepseek'].includes(provider)) continue;
+    const normalized = normalizePath(filePath);
+    if (!normalized || knownPaths.has(normalized)) continue;
+    let stat;
+    try { stat = fs.statSync(filePath); }
+    catch (error) { recordDiscoveryError(diagnostics, `Bound transcript ${filePath}`, error); continue; }
+    if (!stat.isFile()) continue;
+    const nativeSessionId = session.ccSessionId || session.codexSid || path.basename(filePath, '.jsonl');
+    const type = session.codexSid ? 'codex' : 'claude';
+    const codexMeta = type === 'codex' ? readCodexRolloutMeta(filePath) : null;
+    if (type === 'codex' && !isCodexTopLevelRolloutMeta(codexMeta)) continue;
+    const root = type === 'codex' ? (session.codexSessionsRoot || path.dirname(filePath)) : path.dirname(path.dirname(filePath));
+    const key = type === 'codex'
+      ? `codex:${shortHash(normalizePath(root))}:${nativeSessionId}`
+      : `claude:${provider}:${nativeSessionId}`;
+    const descriptor = {
+      type, key, filePath, root, provider, nativeSessionId, hubSession: session,
+      fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
+      ...(type === 'codex' ? { codexMeta } : {}),
+    };
+    descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalized)}:${metadataSignature(session)}`;
+    descriptors.push(descriptor);
+    knownPaths.add(normalized);
+  }
+}
+
+function collectSourceDescriptors(options = {}, snapshot = {}) {
+  const maps = createMetadataMaps(snapshot);
+  const diagnostics = [];
+  const descriptors = [
+    ...listClaudeDescriptors(options.claudeRoots || [], maps, diagnostics),
+    ...listCodexDescriptors(options.codexRoots || [], maps, diagnostics),
+    ...listMeetingDescriptors(options.meetingDir, maps, diagnostics),
+  ];
+  addExplicitTranscriptDescriptors(descriptors, maps, diagnostics);
+  const deduped = new Map();
+  for (const descriptor of descriptors) {
+    const existing = deduped.get(descriptor.key);
+    if (!existing) deduped.set(descriptor.key, descriptor);
+    else deduped.set(descriptor.key, pickDuplicateDescriptor([existing, descriptor]));
+  }
+  return { descriptors: [...deduped.values()], maps, diagnostics };
+}
+
+function deriveTitle(firstUserText, fallback) {
+  const cleaned = String(firstUserText || '')
+    .replace(/^\s*\/goal(?:\s+|$)/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned) return cleaned.slice(0, 100);
+  return String(fallback || '未命名会话').trim() || '未命名会话';
+}
+
+function resolveModel(hubSession, turns) {
+  if (hubSession && hubSession.currentModel && typeof hubSession.currentModel === 'object') {
+    if (hubSession.currentModel.id) return hubSession.currentModel.id;
+  }
+  if (hubSession && typeof hubSession.model === 'string') return hubSession.model;
+  const latest = [...(turns || [])].reverse().find(turn => turn && turn.model);
+  return latest ? latest.model : null;
+}
+
+function projectLabelFor(meta, cwd) {
+  if (meta && meta.workspaceLabel) return String(meta.workspaceLabel);
+  if (!cwd) return null;
+  const normalized = String(cwd).replace(/[\\/]+$/, '');
+  return path.basename(normalized) || normalized;
+}
+
+function sessionRecordFromDescriptor(descriptor, turns, extra = {}) {
+  const hub = descriptor.hubSession || null;
+  const cwd = (hub && hub.cwd) || extra.cwd || null;
+  const firstUser = (turns || []).find(turn => turn && turn.role === 'user' && turn.text);
+  const title = (hub && hub.title) || deriveTitle(firstUser && firstUser.text, extra.slug || providerLabel(descriptor.provider));
+  const newestTurnAt = (turns || []).reduce((max, turn) => Math.max(max, Number(turn && (turn.tsEnd || turn.ts)) || 0), 0);
+  return {
+    key: descriptor.key,
+    provider: descriptor.provider,
+    nativeFamily: descriptor.type,
+    kind: (hub && hub.kind) || (descriptor.provider === 'deepseek' ? 'deepseek-resume' : `${descriptor.type}-resume`),
+    title,
+    cwd,
+    projectLabel: projectLabelFor(hub, cwd),
+    model: resolveModel(hub, turns),
+    // File mtime is only a fallback. Workspace archive/migration can copy an
+    // old transcript today; treating that copy time as conversation time makes
+    // “最近 7 天” return years-old answers.
+    updatedAt: Math.max(newestTurnAt, sessionUpdatedAt(hub)) || descriptor.mtime || 0,
+    hubSessionId: hubIdOf(hub) || null,
+    nativeSessionId: descriptor.nativeSessionId || null,
+    meetingId: hub && hub.meetingId || null,
+    transcriptPath: descriptor.filePath || null,
+    codexSessionsRoot: descriptor.type === 'codex' ? (hub && hub.codexSessionsRoot || descriptor.root || null) : null,
+    codexProfile: hub && hub.codexProfile || null,
+    turnCount: (turns || []).length,
+  };
+}
+
+function toolText(toolCall) {
+  if (!toolCall) return '';
+  const parts = [];
+  if (toolCall.name) parts.push(String(toolCall.name));
+  if (toolCall.input != null) {
+    try { parts.push(typeof toolCall.input === 'string' ? toolCall.input : JSON.stringify(toolCall.input)); }
+    catch { parts.push(String(toolCall.input)); }
+  }
+  return parts.join('\n').trim();
+}
+
+function docsFromTurns(turns, title, provider) {
+  const docs = [{ id: 'title', eventId: 'title', scope: 'title', role: 'title', text: title, ordinal: -1, timestamp: 0 }];
+  (turns || []).forEach((turn, ordinal) => {
+    if (!turn || !turn.text) return;
+    const eventId = String(turn.id || `${turn.role || 'turn'}-${ordinal}`);
+    docs.push({
+      id: eventId, eventId,
+      scope: turn.role === 'user' ? 'user' : 'assistant',
+      role: turn.role === 'user' ? 'user' : 'assistant',
+      speaker: turn.role === 'user' ? '我' : providerLabel(provider),
+      text: String(turn.text),
+      ordinal,
+      timestamp: Number(turn.tsEnd || turn.ts) || 0,
+    });
+    if (Array.isArray(turn.toolCalls)) {
+      turn.toolCalls.forEach((call, toolIndex) => {
+        const text = toolText(call);
+        if (!text) return;
+        docs.push({
+          id: `${eventId}:tool:${toolIndex}`,
+          eventId: `${eventId}:tool:${toolIndex}`,
+          scope: 'tool', role: 'tool', speaker: providerLabel(provider),
+          text, ordinal: ordinal + (toolIndex + 1) / 100,
+          timestamp: Number(turn.tsEnd || turn.ts) || 0,
+        });
+      });
+    }
+  });
+  return docs;
+}
+
+function codexToolDocFromRecord(record, ordinal) {
+  const payload = record && record.payload && typeof record.payload === 'object' ? record.payload : null;
+  const item = payload && payload.item && typeof payload.item === 'object' ? payload.item : payload;
+  const type = String(item && item.type || payload && payload.type || '').toLocaleLowerCase();
+  if (!/(tool|function|command|mcp|file|patch)/.test(type)) return null;
+  const parts = [];
+  for (const key of ['name', 'command', 'cmd', 'path', 'file_path', 'cwd', 'arguments', 'input']) {
+    const value = item && item[key];
+    if (value == null) continue;
+    try { parts.push(typeof value === 'string' ? value : JSON.stringify(value)); }
+    catch { parts.push(String(value)); }
+  }
+  const text = parts.join('\n').trim();
+  if (!text) return null;
+  const eventId = `codex-tool-${record.timestamp || ordinal}-${shortHash(text)}`;
+  return {
+    id: eventId, eventId, scope: 'tool', role: 'tool', speaker: 'Codex',
+    text, ordinal,
+    timestamp: record.timestamp ? new Date(record.timestamp).getTime() : 0,
+  };
+}
+
+function codexCommentaryDocFromRecord(record, ordinal) {
+  const event = codexAgentMessageEventFromRecord(record);
+  if (!event || event.completed || !event.text) return null;
+  const eventId = `codex-commentary-${record.timestamp || ordinal}-${shortHash(event.text)}`;
+  return {
+    id: eventId, eventId, scope: 'assistant', role: 'assistant', speaker: 'Codex · 中间输出',
+    text: event.text, ordinal,
+    timestamp: event.completedAt || (record.timestamp ? new Date(record.timestamp).getTime() : 0),
+  };
+}
+
+function extractCodexToolDocs(filePath, startOrdinal = 0, rawOverride = null) {
+  let raw = rawOverride;
+  if (raw == null) {
+    raw = fs.readFileSync(filePath, 'utf8');
+  }
+  const docs = [];
+  let ordinal = startOrdinal;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let record;
+    try { record = JSON.parse(line); } catch { continue; }
+    const doc = codexToolDocFromRecord(record, ordinal += 0.001);
+    if (doc) docs.push(doc);
+    const commentary = codexCommentaryDocFromRecord(record, ordinal += 0.001);
+    if (commentary) docs.push(commentary);
+  }
+  return docs;
+}
+
+function streamJsonlRecordsSync(filePath, onRecord, chunkBytes = 1024 * 1024) {
+  const fd = fs.openSync(filePath, 'r');
+  const decoder = new StringDecoder('utf8');
+  const buffer = Buffer.allocUnsafe(chunkBytes);
+  let carry = '';
+  let lineIndex = 0;
+  try {
+    while (true) {
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead <= 0) break;
+      const text = carry + decoder.write(buffer.subarray(0, bytesRead));
+      const lines = text.split('\n');
+      carry = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed) {
+          let record = null;
+          try { record = JSON.parse(trimmed); } catch {}
+          if (record) onRecord(record, lineIndex);
+        }
+        lineIndex += 1;
+      }
+    }
+    carry += decoder.end();
+    if (carry.trim()) {
+      let record = null;
+      try { record = JSON.parse(carry.trim()); } catch {}
+      if (record) onRecord(record, lineIndex);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function streamingRecordId(prefix, record, lineIndex) {
+  const payload = record && record.payload && typeof record.payload === 'object' ? record.payload : null;
+  const explicit = record && record.id
+    || payload && payload.id
+    || payload && payload.item && payload.item.id
+    || payload && payload.turn_id;
+  return `${prefix}-${explicit || `${record && record.timestamp || 'no-ts'}-${lineIndex}`}`;
+}
+
+function parseCodexRolloutStreaming(filePath) {
+  const turns = [];
+  const toolDocs = [];
+  let pendingAssistant = null;
+  let pendingUserFallback = null;
+
+  const flushAssistant = () => {
+    if (!pendingAssistant) return;
+    const text = String(pendingAssistant.finalText || pendingAssistant.parts.join('\n\n') || '').trim();
+    if (text) turns.push({
+      id: pendingAssistant.id,
+      role: 'assistant',
+      text,
+      ts: pendingAssistant.ts,
+      tsEnd: pendingAssistant.tsEnd || pendingAssistant.ts,
+      stopReason: pendingAssistant.finalText ? 'task_complete' : 'partial_commentary',
+    });
+    pendingAssistant = null;
+  };
+  const flushUserFallback = () => {
+    if (!pendingUserFallback) return;
+    flushAssistant();
+    turns.push(pendingUserFallback.turn);
+    pendingUserFallback = null;
+  };
+  const ensureAssistant = (record, lineIndex) => {
+    if (!pendingAssistant) pendingAssistant = {
+      id: streamingRecordId('codex-assistant-stream', record, lineIndex),
+      ts: record && record.timestamp ? new Date(record.timestamp).getTime() : null,
+      tsEnd: null,
+      parts: [],
+      finalText: '',
+    };
+    return pendingAssistant;
+  };
+
+  streamJsonlRecordsSync(filePath, (record, lineIndex) => {
+    const toolDoc = codexToolDocFromRecord(record, lineIndex + 0.5);
+    if (toolDoc) toolDocs.push(toolDoc);
+    const commentaryDoc = codexCommentaryDocFromRecord(record, lineIndex + 0.501);
+    if (commentaryDoc) toolDocs.push(commentaryDoc);
+
+    if (pendingUserFallback && lineIndex - pendingUserFallback.lineIndex > 6) flushUserFallback();
+    const userEvent = codexUserMessageEventFromRecord(record);
+    if (userEvent) {
+      const raw = userEvent.text.trim();
+      const text = raw && !isSyntheticUserEntry(record, raw) ? displayUserText(raw) : null;
+      if (!text) return;
+      const normalized = text.replace(/\s+/g, ' ').trim();
+      if (pendingUserFallback && pendingUserFallback.normalized === normalized) pendingUserFallback = null;
+      else flushUserFallback();
+      flushAssistant();
+      turns.push({
+        id: streamingRecordId('codex-user-stream', record, lineIndex),
+        role: 'user', text,
+        ts: userEvent.submittedAt || (record.timestamp ? new Date(record.timestamp).getTime() : null),
+      });
+      return;
+    }
+
+    if (record.type === 'response_item' && record.payload && record.payload.role === 'user') {
+      const raw = codexTextFromPayload(record.payload).trim();
+      const text = raw && !isSyntheticUserEntry(record, raw) ? displayUserText(raw) : null;
+      if (text) {
+        if (pendingUserFallback) flushUserFallback();
+        pendingUserFallback = {
+          lineIndex,
+          normalized: text.replace(/\s+/g, ' ').trim(),
+          turn: {
+            id: streamingRecordId('codex-user-stream', record, lineIndex),
+            role: 'user', text,
+            ts: record.timestamp ? new Date(record.timestamp).getTime() : null,
+          },
+        };
+      }
+      return;
+    }
+
+    const payloadType = record && record.payload && record.payload.type;
+    if (payloadType === 'task_started') {
+      flushUserFallback();
+      ensureAssistant(record, lineIndex);
+      return;
+    }
+    const agentEvent = codexAgentMessageEventFromRecord(record);
+    if (!agentEvent) return;
+    flushUserFallback();
+    const pending = ensureAssistant(record, lineIndex);
+    pending.tsEnd = agentEvent.completedAt || (record.timestamp ? new Date(record.timestamp).getTime() : pending.ts);
+    if (agentEvent.completed) {
+      pending.finalText = agentEvent.text;
+      flushAssistant();
+    } else {
+      pending.parts.push(agentEvent.text);
+    }
+  });
+  flushUserFallback();
+  flushAssistant();
+  return { turns, toolDocs };
+}
+
+function parseClaudeDescriptor(descriptor) {
+  const turns = parseClaudeTranscriptToTurns(descriptor.filePath, {});
+  const session = sessionRecordFromDescriptor(descriptor, turns);
+  const docs = docsFromTurns(turns, session.title, descriptor.provider);
+  if (docs[0]) docs[0].timestamp = session.updatedAt;
+  return { key: descriptor.key, signature: descriptor.signature, session, docs, searchable: !session.meetingId };
+}
+
+function parseCodexDescriptor(descriptor) {
+  // Search needs both dialogue turns and tool/file records. Read a changed
+  // rollout once, then feed the same bytes into both extractors; the previous
+  // implementation doubled disk IO for every growing Codex session refresh.
+  let raw = null;
+  let turns;
+  let streamingToolDocs = null;
+  try {
+    raw = fs.readFileSync(descriptor.filePath, 'utf8');
+    turns = parseCodexRolloutText(raw);
+  } catch (error) {
+    if (error && (error.code === 'ERR_STRING_TOO_LONG' || /string longer than/i.test(error.message))) {
+      const streamed = parseCodexRolloutStreaming(descriptor.filePath);
+      turns = streamed.turns;
+      streamingToolDocs = streamed.toolDocs;
+    } else {
+      throw error;
+    }
+  }
+  const meta = descriptor.codexMeta || readCodexRolloutMeta(descriptor.filePath) || {};
+  const session = sessionRecordFromDescriptor(descriptor, turns, { cwd: meta.cwd, slug: meta.slug });
+  const docs = docsFromTurns(turns, session.title, descriptor.provider);
+  const supplemental = streamingToolDocs || extractCodexToolDocs(descriptor.filePath, turns.length, raw);
+  docs.push(...supplemental.map(doc => doc.role === 'assistant'
+    ? { ...doc, speaker: `${providerLabel(descriptor.provider)} · 中间输出` }
+    : doc));
+  if (docs[0]) docs[0].timestamp = session.updatedAt;
+  return { key: descriptor.key, signature: descriptor.signature, session, docs, searchable: !session.meetingId };
+}
+
+function meetingSpeakerMap(data, maps) {
+  const out = new Map();
+  for (const sid of (Array.isArray(data.subSessions) ? data.subSessions : [])) {
+    const session = maps.sessions.find(row => hubIdOf(row) === String(sid));
+    if (!session) continue;
+    out.set(String(sid), session.title || providerLabel(providerForHubSession(session)));
+  }
+  return out;
+}
+
+function parseMeetingDescriptor(descriptor, maps) {
+  const raw = JSON.parse(fs.readFileSync(descriptor.filePath, 'utf8'));
+  const meta = { ...raw, ...(descriptor.meeting || {}) };
+  const timeline = Array.isArray(raw._timeline) ? raw._timeline : [];
+  const title = String(meta.title || '未命名群聊');
+  const speakers = meetingSpeakerMap(meta, maps);
+  const updatedAt = Math.max(
+    Number(meta.lastCompletedAt || meta.lastMessageTime || meta.updatedAt || descriptor.mtime) || 0,
+    timeline.reduce((max, turn) => Math.max(max, Number(turn && turn.ts) || 0), 0),
+  );
+  const session = {
+    key: descriptor.key,
+    provider: 'meeting', nativeFamily: 'meeting', kind: 'meeting', title,
+    cwd: meta.workspace || null,
+    projectLabel: meta.workspaceLabel || projectLabelFor(null, meta.workspace),
+    model: null, updatedAt,
+    hubSessionId: null, nativeSessionId: null,
+    meetingId: descriptor.meetingId,
+    transcriptPath: descriptor.filePath,
+    codexSessionsRoot: null, codexProfile: null,
+    turnCount: timeline.length,
+  };
+  const docs = [{ id: 'title', eventId: 'title', scope: 'title', role: 'title', text: title, ordinal: -1, timestamp: updatedAt }];
+  for (const turn of timeline) {
+    if (!turn || !turn.text) continue;
+    const role = turn.sid === 'user' ? 'user' : 'assistant';
+    const eventId = `meeting-${descriptor.meetingId}-${turn.idx}`;
+    docs.push({
+      id: eventId, eventId,
+      scope: role, role,
+      speaker: role === 'user' ? '我' : (speakers.get(String(turn.sid)) || 'AI 成员'),
+      text: String(turn.text),
+      ordinal: Number.isFinite(Number(turn.idx)) ? Number(turn.idx) : docs.length,
+      timestamp: Number(turn.ts) || 0,
+    });
+  }
+  return { key: descriptor.key, signature: descriptor.signature, session, docs, searchable: true };
+}
+
+function parseSourceDescriptor(descriptor, maps) {
+  if (descriptor.type === 'claude') return parseClaudeDescriptor(descriptor);
+  if (descriptor.type === 'codex') return parseCodexDescriptor(descriptor);
+  if (descriptor.type === 'meeting') return parseMeetingDescriptor(descriptor, maps);
+  throw new Error(`Unsupported search source type: ${descriptor.type}`);
+}
+
+function titleOnlySources(maps, representedHubIds, representedMeetingIds) {
+  const out = [];
+  for (const session of maps.sessions) {
+    const hubId = hubIdOf(session);
+    const provider = providerForHubSession(session);
+    if (!hubId || representedHubIds.has(hubId) || session.meetingId) continue;
+    if (!['claude', 'codex', 'deepseek'].includes(provider)) continue;
+    const title = String(session.title || providerLabel(provider));
+    const updatedAt = sessionUpdatedAt(session);
+    const docs = [{ id: 'title', eventId: 'title', scope: 'title', role: 'title', text: title, ordinal: -1, timestamp: updatedAt }];
+    if (session.lastOutputPreview) {
+      docs.push({
+        id: 'last-output-preview', eventId: 'last-output-preview',
+        scope: 'assistant', role: 'assistant', speaker: providerLabel(provider),
+        text: String(session.lastOutputPreview), ordinal: 0, timestamp: updatedAt,
+      });
+    }
+    out.push({
+      key: `hub:${hubId}`,
+      signature: `meta:${metadataSignature(session)}`,
+      searchable: true,
+      session: {
+        key: `hub:${hubId}`, provider,
+        nativeFamily: session.ccSessionId ? 'claude' : session.codexSid ? 'codex' : provider,
+        kind: session.kind || provider,
+        title, cwd: session.cwd || null,
+        projectLabel: projectLabelFor(session, session.cwd),
+        model: resolveModel(session, []), updatedAt,
+        hubSessionId: hubId,
+        nativeSessionId: session.ccSessionId || session.codexSid || null,
+        meetingId: null,
+        transcriptPath: session.transcriptPath || null,
+        codexSessionsRoot: session.codexSessionsRoot || null,
+        codexProfile: session.codexProfile || null,
+        turnCount: docs.length - 1,
+      },
+      docs,
+    });
+  }
+  for (const [meetingId, meeting] of maps.meetings) {
+    if (representedMeetingIds.has(meetingId)) continue;
+    const title = String(meeting.title || '未命名群聊');
+    const updatedAt = sessionUpdatedAt(meeting);
+    out.push({
+      key: `meeting:${meetingId}`,
+      signature: `meeting-meta:${metadataSignature(meeting)}`,
+      searchable: true,
+      session: {
+        key: `meeting:${meetingId}`, provider: 'meeting', nativeFamily: 'meeting', kind: 'meeting', title,
+        cwd: meeting.workspace || null,
+        projectLabel: meeting.workspaceLabel || projectLabelFor(null, meeting.workspace),
+        model: null, updatedAt,
+        hubSessionId: null, nativeSessionId: null, meetingId,
+        transcriptPath: null, codexSessionsRoot: null, codexProfile: null, turnCount: 0,
+      },
+      docs: [{ id: 'title', eventId: 'title', scope: 'title', role: 'title', text: title, ordinal: -1, timestamp: updatedAt }],
+    });
+  }
+  return out;
+}
+
+module.exports = {
+  addExplicitTranscriptDescriptors,
+  collectSourceDescriptors,
+  createMetadataMaps,
+  dedupeHubSessions,
+  deriveTitle,
+  docsFromTurns,
+  metadataSignature,
+  matchCodexHubSession,
+  normalizePath,
+  parseSourceDescriptor,
+  parseCodexRolloutStreaming,
+  preferredHubSession,
+  recordDiscoveryError,
+  providerForHubSession,
+  providerForClaudeRoot,
+  providerLabel,
+  statSignature,
+  titleOnlySources,
+};

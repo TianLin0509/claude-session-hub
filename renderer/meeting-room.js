@@ -6495,6 +6495,27 @@ if (typeof document !== 'undefined') (function () {
 
   // --- Expose global ---
 
+  function focusSearchHit(hit = {}) {
+    const panel = document.getElementById('mr-gc-panel');
+    if (!panel || panel.style.display === 'none') return false;
+    const normalize = value => String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+    const fullNeedle = normalize(hit.text);
+    const needle = fullNeedle.length > 90 ? fullNeedle.slice(0, 90) : fullNeedle;
+    if (!needle) return false;
+    const messages = [...panel.querySelectorAll('.mr-gc-msg')];
+    const target = messages.find(message => normalize(message.textContent).includes(needle))
+      || messages.find(message => {
+        const words = needle.split(/\s+/).filter(word => word.length >= 2).slice(0, 4);
+        const hay = normalize(message.textContent);
+        return words.length > 0 && words.every(word => hay.includes(word));
+      });
+    if (!target) return false;
+    target.classList.add('global-search-focus');
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setTimeout(() => { if (target.isConnected) target.classList.remove('global-search-focus'); }, 1500);
+    return true;
+  }
+
   const meetingRoomApi = {
     init,
     openMeeting,
@@ -6502,6 +6523,7 @@ if (typeof document !== 'undefined') (function () {
     getActiveMeetingId,
     getMeetingData,
     refreshSessionMetrics,
+    focusSearchHit,
     updateMeetingData,
   };
   if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {

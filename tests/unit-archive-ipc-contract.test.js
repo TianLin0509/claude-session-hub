@@ -69,6 +69,42 @@ test('search-past-sessions delegates query and limit', async () => {
   assert.deepStrictEqual(result, { hits: [{ sessionId: 'b' }], truncated: true });
 });
 
+test('unified search IPC passes the live snapshot and exposes preview/status/refresh', async () => {
+  const ipc = createFakeIpc();
+  const calls = [];
+  const snapshot = { sessions: [{ hubId: 'hub-1' }], meetings: [{ id: 'meeting-1' }] };
+  registerArchiveIpc(ipc, {
+    sessionArchive: { async listRecent() { return []; }, async searchAcross() { throw new Error('legacy path must not run'); } },
+    searchService: {
+      async search(request, receivedSnapshot) {
+        calls.push(['search', request, receivedSnapshot]);
+        return { results: [{ sessionKey: 'codex:1' }], totalSessions: 1 };
+      },
+      async preview(request) { calls.push(['preview', request]); return { session: { key: request.sessionKey } }; },
+      async status() { calls.push(['status']); return { phase: 'ready', ready: true }; },
+      async refresh(receivedSnapshot, opts) { calls.push(['refresh', receivedSnapshot, opts]); return { phase: 'ready' }; },
+    },
+    getSearchSnapshot: () => snapshot,
+    logger: { warn() {} },
+  });
+
+  const search = await ipc.handlers.get('search-past-sessions')(null, { query: '公式', providers: ['codex'] });
+  const preview = await ipc.handlers.get('get-session-search-preview')(null, { sessionKey: 'codex:1', eventId: 'a1' });
+  const status = await ipc.handlers.get('get-session-search-status')();
+  const refresh = await ipc.handlers.get('refresh-session-search')(null, { force: true });
+
+  assert.equal(search.totalSessions, 1);
+  assert.equal(preview.session.key, 'codex:1');
+  assert.equal(status.ready, true);
+  assert.equal(refresh.phase, 'ready');
+  assert.deepStrictEqual(calls, [
+    ['search', { query: '公式', providers: ['codex'] }, snapshot],
+    ['preview', { sessionKey: 'codex:1', eventId: 'a1' }],
+    ['status'],
+    ['refresh', snapshot, { force: true }],
+  ]);
+});
+
 test('archive handlers preserve fallback values on errors', async () => {
   const ipc = createFakeIpc();
   const warnings = [];

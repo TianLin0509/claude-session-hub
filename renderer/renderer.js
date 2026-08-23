@@ -3379,12 +3379,158 @@ function createMeetingByMode(mode) {
 }
 
 // --- Resume/search past session modals ---
+function normalizeSearchHitPath(value) {
+  if (!value) return '';
+  try { return path.resolve(String(value)).replace(/\\/g, '/').toLowerCase(); }
+  catch { return String(value).replace(/\\/g, '/').toLowerCase(); }
+}
+
+function findExistingSessionForSearchHit(hit) {
+  if (!hit) return null;
+  if (hit.hubSessionId && sessions.has(hit.hubSessionId)) return sessions.get(hit.hubSessionId);
+  if (!hit.nativeSessionId) return null;
+  const matches = [];
+  for (const session of sessions.values()) {
+    if (!session || session.meetingId) continue;
+    if (hit.nativeFamily === 'claude' && session.ccSessionId === hit.nativeSessionId) matches.push(session);
+    if (hit.nativeFamily === 'codex' && session.codexSid === hit.nativeSessionId) {
+      const hitRoot = normalizeSearchHitPath(hit.codexSessionsRoot);
+      const sessionRoot = normalizeSearchHitPath(session.codexSessionsRoot);
+      if (!hitRoot || !sessionRoot || hitRoot === sessionRoot) matches.push(session);
+    }
+  }
+  matches.sort((a, b) => {
+    const aLive = a.status !== 'dormant' ? 1 : 0;
+    const bLive = b.status !== 'dormant' ? 1 : 0;
+    if (aLive !== bLive) return bLive - aLive;
+    const bAt = Number(b.lastCompletedAt || b.lastMessageTime || b.updatedAt || 0);
+    const aAt = Number(a.lastCompletedAt || a.lastMessageTime || a.updatedAt || 0);
+    return bAt - aAt;
+  });
+  return matches[0] || null;
+}
+
+async function waitForRendererSession(sessionId, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const session = sessions.get(sessionId);
+    if (session) return session;
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  return sessions.get(sessionId) || null;
+}
+
+function focusOrdinarySearchHit(hit, preview) {
+  const overlay = document.getElementById('msg-overlay');
+  if (!overlay) return false;
+  const eventId = hit && hit.bestMatch && hit.bestMatch.eventId;
+  let card = null;
+  if (eventId && eventId !== 'title') {
+    try { card = overlay.querySelector(`.turn-card[data-turn-id="${CSS.escape(String(eventId))}"]`); }
+    catch {}
+  }
+  if (card) {
+    card.classList.add('global-search-focus');
+    card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setTimeout(() => { if (card.isConnected) card.classList.remove('global-search-focus'); }, 1500);
+    return true;
+  }
+
+  const match = preview && Array.isArray(preview.context)
+    ? (preview.context.find(item => item && item.isMatch) || preview.context[0])
+    : null;
+  const text = match && match.text || hit && hit.bestMatch && hit.bestMatch.text || '';
+  if (!text) return false;
+  const existing = overlay.querySelector('.global-search-history-focus');
+  if (existing) existing.remove();
+  const notice = document.createElement('section');
+  notice.className = 'global-search-history-focus';
+  const title = document.createElement('strong');
+  title.textContent = eventId === 'title'
+    ? '昨日之我 · 命中会话标题'
+    : '昨日之我 · 命中较早历史（当前卡片窗口之外）';
+  const body = document.createElement('p');
+  body.textContent = text;
+  notice.append(title, body);
+  overlay.prepend(notice);
+  notice.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  return true;
+}
+
+async function createSessionFromSearchHit(hit) {
+  if (!hit || !hit.nativeSessionId) return null;
+  const opts = {
+    title: hit.title || undefined,
+    cwd: hit.cwd || undefined,
+    resumeTranscriptPath: hit.transcriptPath || undefined,
+    autoTitleGenerated: !!hit.title,
+  };
+  let kind;
+  if (hit.nativeFamily === 'claude') {
+    kind = hit.provider === 'deepseek' ? 'deepseek-resume' : 'claude-resume';
+    opts.resumeCCSessionId = hit.nativeSessionId;
+    if (hit.provider === 'deepseek') opts.deepseekLegacyClaude = true;
+  } else if (hit.nativeFamily === 'codex') {
+    kind = hit.provider === 'deepseek' ? 'deepseek-resume' : 'codex-resume';
+    opts.useResume = true;
+    opts.codexSid = hit.nativeSessionId;
+    if (hit.codexSessionsRoot) opts.codexSessionsRoot = hit.codexSessionsRoot;
+    if (hit.codexProfile) opts.codexProfile = hit.codexProfile;
+  } else {
+    return null;
+  }
+  return ipcRenderer.invoke('create-session', { kind, opts });
+}
+
+async function openGlobalSearchHit(hit, opts = {}) {
+  if (!hit) return null;
+  if (hit.provider === 'meeting' || hit.meetingId) {
+    const meetingId = hit.meetingId;
+    if (!meetingId || !meetings[meetingId]) throw new Error('群聊记录已不存在');
+    await selectMeeting(meetingId, { forceScrollBottom: false });
+    if (opts.focus && typeof MeetingRoom !== 'undefined' && typeof MeetingRoom.focusSearchHit === 'function') {
+      const target = opts.preview && Array.isArray(opts.preview.context)
+        ? (opts.preview.context.find(item => item && item.isMatch) || opts.preview.context[0])
+        : null;
+      requestAnimationFrame(() => MeetingRoom.focusSearchHit({
+        eventId: hit.bestMatch && hit.bestMatch.eventId,
+        text: target && target.text || hit.bestMatch && hit.bestMatch.text || '',
+      }));
+    }
+    return { type: 'meeting', id: meetingId };
+  }
+
+  let target = findExistingSessionForSearchHit(hit);
+  if (target && target.status === 'dormant') {
+    await resumeDormantSession(target.id, { forceScrollBottom: false });
+    target = sessions.get(target.id) || target;
+  }
+  if (!target) {
+    const created = await createSessionFromSearchHit(hit);
+    if (!created || !created.id) throw new Error('无法恢复这个原生会话');
+    target = await waitForRendererSession(created.id) || created;
+  }
+  if (!target || !target.id) throw new Error('会话记录已不存在');
+  await selectSession(target.id, { forceScrollBottom: !opts.focus });
+
+  if (opts.focus) {
+    applyViewMode('card');
+    const loaded = await loadSessionHistoryToOverlay(target.id, { forceScrollBottom: false });
+    if (loaded && loaded.mounted > 0) _cardHistoryHydratedSid = target.id;
+    focusOrdinarySearchHit(hit, opts.preview);
+  }
+  return { type: 'session', id: target.id };
+}
+
 const pastSessionModals = createPastSessionModals({
   document,
+  window,
   ipcRenderer,
+  clipboard,
   escapeHtml,
   getSessions: () => sessions,
   selectSession: (sessionId, opts) => selectSession(sessionId, opts),
+  openSearchHit: (hit, opts) => openGlobalSearchHit(hit, opts),
 });
 const { openResumeModal, openSearchModal } = pastSessionModals;
 // Ctrl+click on a local file path in the terminal → open with OS default app.
@@ -5283,7 +5429,12 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
     if (!provider || typeof provider.provideLinks !== 'function') { resolve([]); return; }
     provider.provideLinks(lineNumber, links => resolve(Array.isArray(links) ? links : []));
   });
+  // Feature modules register their own isolated E2E bridges before this late
+  // renderer block. Merge instead of replacing the namespace, otherwise a
+  // perfectly working module (for example global session search) disappears
+  // only in tests and makes the real UI impossible to drive end-to-end.
   window.__hubE2E = {
+    ...(window.__hubE2E || {}),
     selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
     selectSession: (sessionId, opts) => selectSession(sessionId, opts),
     getActiveMeetingId: () => activeMeetingId,

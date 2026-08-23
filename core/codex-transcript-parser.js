@@ -492,6 +492,7 @@ module.exports = {
   // 不导出的话那边只会再写一份不一致的实现。
   normalizePathForCompare,
   parseCodexRolloutToTurns,
+  parseCodexRolloutText,
   findCodexRolloutBySid,
   findCodexRolloutByCwd,
   readCodexRolloutMeta,

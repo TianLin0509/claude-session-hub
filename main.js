@@ -126,6 +126,7 @@ const { parseClaudeTranscriptToTurns } = require('./core/claude-transcript-parse
 const { TranscriptParserService } = require('./core/transcript-parser-service.js');
 const { CodexJsonlUsageService } = require('./main/usage/codex-jsonl-usage-service.js');
 const {
+  claudeProjectRoots,
   findTranscriptByCCSessionId,
   healPersistedCwds,
 } = require('./core/claude-transcript-locator.js');
@@ -139,8 +140,23 @@ const {
   readCodexRolloutMeta,
 } = require('./core/codex-transcript-parser.js');
 const { registerArchiveIpc } = require('./main/ipc/archive-handlers.js');
+const { SessionSearchService } = require('./core/session-search-service.js');
 const transcriptParserService = new TranscriptParserService();
 const codexJsonlUsageService = new CodexJsonlUsageService();
+function sessionSearchRoots(envName, defaults) {
+  if (process.env.HUB_SESSION_SEARCH_DISABLE_NATIVE === '1') return [];
+  const configured = String(process.env[envName] || '').trim();
+  return configured
+    ? configured.split(path.delimiter).map(value => value.trim()).filter(Boolean)
+    : defaults;
+}
+const sessionSearchService = new SessionSearchService({
+  cachePath: path.join(getHubDataDir(), 'cache', 'session-search-v2.json'),
+  claudeRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CLAUDE_ROOTS', claudeProjectRoots()),
+  codexRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CODEX_ROOTS', [DEFAULT_CODEX_SESSIONS_ROOT]),
+  meetingDir: path.join(getHubDataDir(), 'meetings'),
+  refreshTtlMs: Number(process.env.HUB_SESSION_SEARCH_REFRESH_TTL_MS) || 10_000,
+});
 const transcriptTap = new TranscriptTap({ parserService: transcriptParserService });
 // AIGroupChatHub.exe is a branded copy of Electron's default-app host. Electron
 // 41 reports app.isPackaged=true solely because the exe was renamed, while
@@ -1113,8 +1129,6 @@ registerTranscriptIpc(ipcMain, {
 // build-injection IPC 历史用于 blackboard 用户输入合成注入子会话(meeting-blackboard.js)。
 // Module C 后 blackboard 已删除,该 handler 不再被任何前端代码调用,清理。
 
-registerArchiveIpc(ipcMain);
-
 const resumeSession = createResumeSessionHandler({
   defaultCodexSessionsRoot: DEFAULT_CODEX_SESSIONS_ROOT,
   findCodexRolloutBySid,
@@ -1240,6 +1254,38 @@ registerMeetingTimelineIpc(ipcMain, {
   meetingManager,
   sendToRenderer,
 });
+
+function buildSessionSearchSnapshot() {
+  const sessionsById = new Map();
+  for (const session of lastPersistedSessions || []) {
+    const id = session && (session.hubId || session.id);
+    if (id) sessionsById.set(String(id), { ...session, hubId: String(id), status: 'dormant' });
+  }
+  for (const session of sessionManager.getAllSessions()) {
+    const id = session && (session.hubId || session.id);
+    if (id) sessionsById.set(String(id), { ...sessionsById.get(String(id)), ...session, hubId: String(id) });
+  }
+  return {
+    sessions: [...sessionsById.values()],
+    meetings: typeof meetingManager.getSearchMetadata === 'function'
+      ? meetingManager.getSearchMetadata()
+      : [],
+  };
+}
+
+registerArchiveIpc(ipcMain, {
+  searchService: sessionSearchService,
+  getSearchSnapshot: buildSessionSearchSnapshot,
+});
+// Let the renderer and hook server finish their latency-sensitive boot path
+// before the worker starts walking transcript directories. Querying search
+// earlier still starts the same worker on demand and reports visible progress.
+const sessionSearchPrewarmTimer = setTimeout(() => {
+  sessionSearchService.prewarm(buildSessionSearchSnapshot()).catch(error => {
+    console.warn('[session-search] background prewarm failed:', error && error.message);
+  });
+}, 1200);
+sessionSearchPrewarmTimer.unref?.();
 
 // 2026-05-07：loadAndSelfHeal 内部已经写过一次 cleanShutdown=false 的快照，
 //   这里不再重复写。原本的"flip flag immediately on boot"语义由 selfHeal 承担。
@@ -2173,9 +2219,11 @@ app.on('before-quit', () => {
   windowsShellWatchdog?.stop();
   windowsShellWatchdog = null;
   terminalOutputBatcher.dispose({ flush: true });
+  clearTimeout(sessionSearchPrewarmTimer);
   // before-quit does not await returned promises. Start worker teardown without
   // putting an await in front of the existing synchronous final state save.
   void transcriptParserService.close();
+  void sessionSearchService.close();
   void codexJsonlUsageService.close();
   transcriptTap.dispose();
   // 原生投研 PTY 的全局租约属于 Hub 进程生命周期。退出时同步释放，

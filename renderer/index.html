@@ -121,6 +121,11 @@
         </div>
       </div>
       <div id="account-usage" class="account-usage" style="display:none"></div>
+      <button type="button" class="global-search-launcher" id="btn-global-search" title="昨日之我 · 全局搜索 (Ctrl+Shift+F)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.4-3.4"/></svg>
+        <span>昨日之我</span>
+        <kbd>Ctrl Shift F</kbd>
+      </button>
       <!-- 按 AI 家族筛选侧栏列表：全部 / Claude / Codex / 其他。内容与计数由
            session-list-renderer 每次渲染时重建。 -->
       <div class="session-filter-tabs" id="session-filter-tabs" role="tablist" aria-label="按 AI 筛选会话"></div>
@@ -396,17 +401,73 @@
         </div>
       </div>
     </div>
-    <div class="modal-overlay" id="search-modal" style="display:none">
-      <div class="modal">
-        <div class="modal-header">
-          <span class="modal-title">昨日之我 · search past sessions</span>
-          <input type="text" id="search-query" class="modal-filter" placeholder="Type to search all past Claude transcripts…">
-          <button class="modal-close" id="search-modal-close" title="Close (Esc)">✕</button>
+    <div class="session-search-overlay" id="search-modal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="session-search-title">
+      <section class="session-search-dialog">
+        <header class="session-search-header">
+          <div class="session-search-heading">
+            <div>
+              <h2 id="session-search-title">昨日之我 · 全局会话搜索</h2>
+              <button type="button" class="session-search-index-status" id="session-search-index-status" title="点击刷新本地索引">
+                <span class="session-search-status-dot"></span>
+                <span id="session-search-status-text">正在读取本地索引…</span>
+              </button>
+            </div>
+            <button type="button" class="session-search-close" id="search-modal-close" title="关闭 (Esc)" aria-label="关闭全局会话搜索">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+          <label class="session-search-box" for="search-query">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.4-3.4"/></svg>
+            <input type="search" id="search-query" placeholder="搜索标题、我的提问、AI 回答、命令或文件…" autocomplete="off" spellcheck="false">
+            <span class="session-search-key">Esc</span>
+          </label>
+          <div class="session-search-filter-row">
+            <div class="session-search-provider-filters" id="session-search-provider-filters" role="group" aria-label="按来源筛选">
+              <button type="button" class="session-search-chip active" data-provider="all" aria-pressed="true"><span class="provider-dot provider-all"></span><span>全部</span><b>0</b></button>
+              <button type="button" class="session-search-chip" data-provider="claude" aria-pressed="false"><span class="provider-dot provider-claude"></span><span>Claude</span><b>0</b></button>
+              <button type="button" class="session-search-chip" data-provider="codex" aria-pressed="false"><span class="provider-dot provider-codex"></span><span>Codex</span><b>0</b></button>
+              <button type="button" class="session-search-chip" data-provider="meeting" aria-pressed="false"><span class="provider-dot provider-meeting"></span><span>群聊</span><b>0</b></button>
+              <button type="button" class="session-search-chip" data-provider="deepseek" aria-pressed="false" hidden><span class="provider-dot provider-deepseek"></span><span>DeepSeek</span><b>0</b></button>
+            </div>
+            <div class="session-search-selects">
+              <label><span>时间</span><select id="session-search-time"><option value="all">不限</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="365d">最近一年</option></select></label>
+              <label><span>项目</span><select id="session-search-project"><option value="">全部</option></select></label>
+              <label><span>排序</span><select id="session-search-sort"><option value="relevance">相关度</option><option value="recent">最近更新</option></select></label>
+            </div>
+          </div>
+          <div class="session-search-scope-tabs" id="session-search-scope-tabs" role="tablist" aria-label="搜索范围">
+            <button type="button" class="active" data-scope="all" role="tab" aria-selected="true">全部内容</button>
+            <button type="button" data-scope="title" role="tab" aria-selected="false">标题</button>
+            <button type="button" data-scope="user" role="tab" aria-selected="false">我的提问</button>
+            <button type="button" data-scope="assistant" role="tab" aria-selected="false">AI 回答</button>
+            <button type="button" data-scope="tool" role="tab" aria-selected="false">工具 / 文件</button>
+          </div>
+        </header>
+        <div class="session-search-content">
+          <section class="session-search-results-pane" id="session-search-results-pane" aria-label="搜索结果">
+            <div class="session-search-result-summary" id="session-search-result-summary"><span>输入至少 2 个字符开始搜索</span><span></span></div>
+            <div class="session-search-results" id="search-results" role="listbox" aria-label="匹配的会话">
+              <div class="session-search-empty">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 3a7 7 0 0 0-4.8 12.1L5 19l3.9-2.2A7 7 0 1 0 12 3Z"/><path d="M9 10h6M9 13h4"/></svg>
+                <strong>找回以前解决过的问题</strong>
+                <span>可搜索 Claude、Codex、DeepSeek 和 AI 群聊；所有内容仅在本机索引。</span>
+              </div>
+            </div>
+          </section>
+          <section class="session-search-preview-pane" id="session-search-preview" aria-label="命中上下文">
+            <div class="session-search-preview-empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H6.5A2.5 2.5 0 0 0 4 21.5Z"/><path d="M4 5.5v16M8 7h8M8 11h6"/></svg>
+              <strong>选择左侧结果查看完整上下文</strong>
+              <span>预览不会启动 CLI，也不会修改原会话。</span>
+            </div>
+          </section>
         </div>
-        <div class="modal-body" id="search-results">
-          <div class="modal-empty">Type ≥ 2 chars to search.</div>
-        </div>
-      </div>
+        <footer class="session-search-footer">
+          <span><kbd>↑</kbd><kbd>↓</kbd> 选择　<kbd>Enter</kbd> 预览　<kbd>Ctrl Enter</kbd> 打开会话</span>
+          <span>本地索引 · 不上传会话内容</span>
+        </footer>
+        <div class="session-search-live" id="session-search-live" aria-live="polite" aria-atomic="true"></div>
+      </section>
     </div>
     <div class="terminal-search" id="terminal-search" style="display:none">
       <input type="text" id="terminal-search-input" placeholder="Find in terminal…">
