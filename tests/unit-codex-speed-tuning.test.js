@@ -57,6 +57,9 @@ const CATALOG = {
       ],
       additional_speed_tiers: ['fast'],
       service_tiers: [{ id: 'priority', name: 'Fast', description: '1.5x speed, increased usage' }],
+      context_window: 272_000,
+      max_context_window: 872_000,
+      effective_context_window_percent: 95,
     },
     {
       slug: 'gpt-5.5',
@@ -75,20 +78,21 @@ const CATALOG = {
   ],
 };
 
-test('速度档位默认 Standard，inherit 仍表示完全不覆盖', () => {
+test('速度档位默认 Fast，inherit 仍表示完全不覆盖', () => {
   assert.equal(normalizeCodexSpeedTier(undefined), DEFAULT_CODEX_SPEED_TIER);
-  assert.equal(DEFAULT_CODEX_SPEED_TIER, 'standard');
+  assert.equal(DEFAULT_CODEX_SPEED_TIER, 'fast');
   assert.equal(normalizeCodexSpeedTier('STANDARD'), 'standard');
   assert.equal(normalizeCodexSpeedTier('FAST'), 'fast');
   assert.equal(normalizeCodexSpeedTier('flex'), 'flex');
-  assert.equal(normalizeCodexSpeedTier('priority'), 'standard');
-  assert.equal(normalizeCodexSpeedTier('banana'), 'standard');
+  assert.equal(normalizeCodexSpeedTier('priority'), 'fast');
+  assert.equal(normalizeCodexSpeedTier('banana'), 'fast');
 });
 
-test('Standard 显式关闭 Fast，inherit 才完全不干预', () => {
+test('Fast 是默认启动覆盖，Standard 显式关闭，inherit 才完全不干预', () => {
   assert.equal(buildCodexSpeedTierArg('inherit'), '');
-  assert.equal(buildCodexSpeedTierArg(undefined), ` -c 'features.fast_mode=false' -c 'service_tier="default"'`);
-  assert.equal(buildCodexSpeedTierArg('banana'), ` -c 'features.fast_mode=false' -c 'service_tier="default"'`);
+  assert.equal(buildCodexSpeedTierArg(undefined), ` -c 'features.fast_mode=true' -c 'service_tier="fast"'`);
+  assert.equal(buildCodexSpeedTierArg('banana'), ` -c 'features.fast_mode=true' -c 'service_tier="fast"'`);
+  assert.equal(buildCodexSpeedTierArg('standard'), ` -c 'features.fast_mode=false' -c 'service_tier="default"'`);
 });
 
 test('fast / flex 同时覆盖 feature 与 service tier，避免继承冲突', () => {
@@ -114,7 +118,7 @@ test('session-manager 的 Codex 默认与 DeepSeek 默认彼此隔离', () => {
   assert.equal(_private.resolveCodexMcpProfile('codex', undefined), 'none');
   assert.equal(_private.resolveCodexMcpProfile('codex-resume', undefined), 'none');
   assert.equal(_private.resolveCodexMcpProfile('deepseek', undefined), 'lean');
-  assert.equal(_private.resolveCodexSpeedTier('codex', undefined), 'standard');
+  assert.equal(_private.resolveCodexSpeedTier('codex', undefined), 'fast');
   assert.equal(_private.resolveCodexSpeedTier('deepseek', undefined), 'inherit');
 });
 
@@ -143,6 +147,10 @@ test('思考强度档位按模型来，不是一份写死的表', () => {
     const sol = describeCodexModelTuning('gpt-5.6-sol', { configDir: h.home });
     assert.deepEqual(sol.efforts, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
     assert.equal(sol.supportsFast, true);
+    assert.equal(sol.contextWindow, 272_000);
+    assert.equal(sol.maxContextWindow, 872_000);
+    assert.equal(sol.effectiveContextWindowPercent, 95);
+    assert.equal(sol.estimatedMaxEffectiveContextWindow, 828_400);
     assert.equal(sol.fromCache, true);
 
     const g55 = describeCodexModelTuning('gpt-5.5', { configDir: h.home });

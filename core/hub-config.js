@@ -14,6 +14,7 @@ const { getHubDataDir } = require('./data-dir');
 const { DEFAULT_MODEL_BY_KIND } = require('./model-options.js');
 const { normalizeConsolidationConfig } = require('./dream-consolidation.js');
 const { normalizeNotificationConfig } = require('./completion-notifier.js');
+const { normalizeOperationsConfig } = require('./operations-config.js');
 const {
   DEFAULT_CARD_FONT_SIZE,
   DEFAULT_CARD_FONT_FAMILY,
@@ -135,6 +136,8 @@ function getConfig() {
     notifications: normalizeNotificationConfig(rawConfig.notifications),
     // 梦境系统（dream-consolidation）配置段，config.json 的 consolidation 键。
     consolidation: normalizeConsolidationConfig(rawConfig.consolidation),
+    // 工作台运维：服务器健康检查和安全恢复 worktree 根目录。
+    operations: normalizeOperationsConfig(rawConfig.operations),
   };
 
   return _cachedConfig;

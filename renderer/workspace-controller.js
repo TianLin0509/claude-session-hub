@@ -72,7 +72,7 @@
     ],
   };
   const DEFAULT_MCP_BY_KIND = { claude: 'full', codex: 'none', deepseek: 'lean' };
-  const DEFAULT_CODEX_SPEED_BY_KIND = { codex: 'standard', deepseek: 'inherit' };
+  const DEFAULT_CODEX_SPEED_BY_KIND = { codex: 'fast', deepseek: 'inherit' };
   const EFFORT_LABEL_BY_KIND = {
     claude: '思考强度 (--effort)',
     codex: '思考强度 (reasoning effort)',
@@ -91,12 +91,23 @@
   function effortFamily(kind) { return kind === 'claude' ? 'claude' : 'codex'; }
   function mcpOptionsFor(kind) { return MCP_OPTIONS[effortFamily(kind)] || []; }
   function defaultMcpFor(kind) { return DEFAULT_MCP_BY_KIND[kind] || 'lean'; }
-  function defaultCodexSpeedFor(kind) { return DEFAULT_CODEX_SPEED_BY_KIND[kind] || 'inherit'; }
+  function defaultCodexSpeedFor(kind, modelId) {
+    const configuredDefault = DEFAULT_CODEX_SPEED_BY_KIND[kind] || 'inherit';
+    // Fast 只能作为支持该通道的 Codex 模型默认值；模型目录明确说不支持时，
+    // 回到 Standard，不能为了统一默认而送一个模型不提供的档位。
+    if (configuredDefault === 'fast' && modelId && !codexModelTuning(modelId).supportsFast) return 'standard';
+    return configuredDefault;
+  }
 
   function codexModelTuning(modelId) {
     const entry = codexTuningCatalog && codexTuningCatalog.byModel && codexTuningCatalog.byModel[modelId];
     if (entry && Array.isArray(entry.efforts) && entry.efforts.length) return entry;
     return { efforts: CODEX_EFFORT_FALLBACK, supportsFast: true, fromCache: false };
+  }
+
+  function formatTokenCount(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed).toLocaleString('en-US') : null;
   }
 
   // Claude 的档位是固定枚举；Codex 的按当前选中的模型来 —— 给 5.5 显示 ultra
@@ -114,10 +125,10 @@
     const configured = (codexTuningCatalog && codexTuningCatalog.configuredServiceTier) || '';
     const inheritLabel = configured ? `跟随全局配置（当前：${configured}）` : '跟随全局配置';
     const options = [
-      ['standard', 'Standard · 默认，显式关闭 Fast'],
+      ['standard', 'Standard · 显式关闭 Fast'],
       ['inherit', inheritLabel],
     ];
-    if (codexModelTuning(modelId).supportsFast) options.push(['fast', 'Fast · priority 通道，1.5× 速度']);
+    if (codexModelTuning(modelId).supportsFast) options.push(['fast', 'Fast · 默认，priority 通道，1.5× 速度']);
     options.push(['flex', 'Flex · 更慢更省']);
     return options;
   }
@@ -145,7 +156,7 @@
     const codexTierOptions = CODEX_TIER_KINDS.has(kind) ? codexTierOptionsFor(model) : [];
     const codexSpeedTier = codexTierOptions.some(([value]) => value === selection.codexSpeedTier)
       ? selection.codexSpeedTier
-      : defaultCodexSpeedFor(kind);
+      : defaultCodexSpeedFor(kind, model);
     const contextMax = kind === 'codex' ? defaultCodexContextWindow(model) : null;
 
     return {
@@ -781,7 +792,7 @@
     if (showCodexTier) {
       const tierOptions = codexTierOptionsFor(selectedModel);
       fillSelect(codexTierSelect, tierOptions);
-      if (!tierOptions.some(([value]) => value === selectedCodexTier)) selectedCodexTier = defaultCodexSpeedFor(selectedKind);
+      if (!tierOptions.some(([value]) => value === selectedCodexTier)) selectedCodexTier = defaultCodexSpeedFor(selectedKind, selectedModel);
       if (codexTierSelect) codexTierSelect.value = selectedCodexTier;
     }
 
@@ -806,13 +817,24 @@
         lines.push('「跟随全局配置」不覆盖 ~/.codex/config.toml；若全局开启 Fast，本会话也会 Fast。');
       }
       if (showCodexTier && selectedCodexTier === 'standard') lines.push('Standard 会在本次启动显式关闭 Codex Fast，不改写全局配置。');
+      if (showCodexTier && selectedCodexTier === 'fast') lines.push('Fast 会在本次启动使用 priority 通道，不改写全局配置。');
       if (showCodexTier && !codexModelTuning(selectedModel).fromCache) {
         lines.push('未读到 codex 模型目录（~/.codex/models_cache.json），思考强度用的是保守兜底档位。');
       }
       if (showMcp && selectedMcpProfile !== 'full') lines.push('非 Full 档只在本次启动生效，不会改写你的全局 MCP 配置。');
       if (selectedKind === 'codex' && selectedMcpProfile === 'none') lines.push('None 会同时阻止 workspace、群聊通信与投研 MCP 注入。');
       if (selectedKind === 'codex' && defaultCodexContextWindow(selectedModel)) {
-        lines.push('1M 是会话启动请求；实际可用窗口仍受当前 Codex 模型目录上限约束。');
+        const tuning = codexModelTuning(selectedModel);
+        const catalogMax = formatTokenCount(tuning.maxContextWindow);
+        const estimatedEffective = formatTokenCount(tuning.estimatedMaxEffectiveContextWindow);
+        if (catalogMax && estimatedEffective) {
+          const percent = Number(tuning.effectiveContextWindowPercent);
+          lines.push(`Hub 会请求 1,000,000 tokens；当前模型目录最多接受 ${catalogMax}`
+            + `${Number.isFinite(percent) ? `，按 ${percent}% 有效系数预计运行时为 ${estimatedEffective}` : ''}`
+            + '。启动后以 Codex 的实时回报为准。');
+        } else {
+          lines.push('1M 是会话启动请求；实际可用窗口仍受当前 Codex 模型目录上限约束，启动后以实时回报为准。');
+        }
       }
       if (selectedKind === 'claude' && selectedMcpProfile === 'full') lines.push('Claude 默认 Full：七个全局 MCP 各起一个常驻进程，开多个会话时可换 Lean 省内存。');
       note.hidden = lines.length === 0;

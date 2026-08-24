@@ -119,6 +119,10 @@ function buildSessionResumeMeta(session, overrides = {}) {
     contextPct: typeof session.contextPct === 'number' ? session.contextPct : null,
     contextUsed: typeof session.contextUsed === 'number' ? session.contextUsed : null,
     contextMax: typeof session.contextMax === 'number' ? session.contextMax : null,
+    contextEffectiveMax: typeof session.contextEffectiveMax === 'number' ? session.contextEffectiveMax : null,
+    contextEffectiveObservedAt: typeof session.contextEffectiveObservedAt === 'number'
+      ? session.contextEffectiveObservedAt
+      : null,
     purpose: session.purpose || null,
     researchSessionId: session.researchSessionId || null,
     chuxinTaskId: session.chuxinTaskId || null,

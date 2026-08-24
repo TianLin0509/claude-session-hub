@@ -26,6 +26,8 @@ const RESUME_META_FIELDS = [
   'contextPct',
   'contextUsed',
   'contextMax',
+  'contextEffectiveMax',
+  'contextEffectiveObservedAt',
   'lastCompletedAt',
   'lastRunStartedAt',
   'lastRunDurationMs',

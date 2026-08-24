@@ -197,6 +197,8 @@ test('resumed Codex None session preserves 1M/Standard and does not restore room
     mcpProfile: 'none',
     codexSpeedTier: 'standard',
     contextMax: 1_000_000,
+    contextEffectiveMax: 828_400,
+    contextEffectiveObservedAt: 1_787_500_000_000,
     meetingId: 'm-none',
     cwd: 'C:\\repo',
   });
@@ -204,6 +206,8 @@ test('resumed Codex None session preserves 1M/Standard and does not restore room
   assert.equal(session.opts.mcpProfile, 'none');
   assert.equal(session.opts.codexSpeedTier, 'standard');
   assert.equal(session.opts.contextMax, 1_000_000);
+  assert.equal(session.opts.contextEffectiveMax, 828_400);
+  assert.equal(session.opts.contextEffectiveObservedAt, 1_787_500_000_000);
   assert.equal(session.opts.codexMcpEntries, undefined);
   assert.equal(session.opts.codexBypassApprovals, undefined);
 });

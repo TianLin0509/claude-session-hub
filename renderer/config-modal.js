@@ -121,6 +121,27 @@ function createConfigModalController({
     return readNotificationForm();
   }
 
+  function readOperationsForm() {
+    return {
+      aliyunMonitorEnabled: !!configEl('cfg-aliyun-enabled')?.checked,
+      aliyunMonitorLabel: configEl('cfg-aliyun-label')?.value.trim() || '阿里云服务器',
+      aliyunHealthUrl: configEl('cfg-aliyun-health-url')?.value.trim() || '',
+      aliyunMetricsUrl: configEl('cfg-aliyun-metrics-url')?.value.trim() || '',
+      aliyunBearerToken: configEl('cfg-aliyun-token')?.value.trim() || '',
+      operationsRestoreRoot: configEl('cfg-operations-restore-root')?.value.trim() || '',
+    };
+  }
+
+  function setOperationsForm(config = {}) {
+    if (configEl('cfg-aliyun-enabled')) configEl('cfg-aliyun-enabled').checked = config.aliyunMonitorEnabled === true;
+    if (configEl('cfg-aliyun-label')) configEl('cfg-aliyun-label').value = config.aliyunMonitorLabel || '阿里云服务器';
+    if (configEl('cfg-aliyun-health-url')) configEl('cfg-aliyun-health-url').value = config.aliyunHealthUrl || '';
+    if (configEl('cfg-aliyun-metrics-url')) configEl('cfg-aliyun-metrics-url').value = config.aliyunMetricsUrl || '';
+    if (configEl('cfg-aliyun-token')) configEl('cfg-aliyun-token').value = config.aliyunBearerToken || '';
+    if (configEl('cfg-operations-restore-root')) configEl('cfg-operations-restore-root').value = config.operationsRestoreRoot || '';
+    return readOperationsForm();
+  }
+
   function setNotificationTestStatus(message, state = '') {
     const status = configEl('config-notification-status');
     if (!status) return;
@@ -383,6 +404,7 @@ function createConfigModalController({
       document.getElementById('cfg-codex-model').value = cfg.codexApiModel || '';
       savedCardDisplay = setCardDisplayForm(cfg);
       setNotificationForm(cfg);
+      setOperationsForm(cfg);
       updateClaudeBackendControls();
       updateConfigSummaries();
     } catch {
@@ -398,10 +420,21 @@ function createConfigModalController({
         try { configEl('cfg-serverchan-sendkey')?.focus(); } catch {}
       }, 0);
     }
+    if (options && options.operationsSetup === true) {
+      const card = configEl('cfg-aliyun-enabled')?.closest('.config-operations-card');
+      try { card?.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch {}
+      setTimeout(() => {
+        try { configEl('cfg-aliyun-health-url')?.focus(); } catch {}
+      }, 0);
+    }
   }
 
   function openNotificationSetup() {
     return openConfigModal({ notificationSetup: true });
+  }
+
+  function openOperationsSetup() {
+    return openConfigModal({ operationsSetup: true });
   }
   
   function closeConfigModal() {
@@ -449,6 +482,7 @@ function createConfigModalController({
     document.getElementById('config-save').addEventListener('click', async () => {
       const msg = document.getElementById('config-save-msg');
       const notificationForm = readNotificationForm();
+      const operationsForm = readOperationsForm();
       const notificationTarget = getNotificationTarget();
       const newConfig = {
         proxy: document.getElementById('cfg-proxy').value.trim() || undefined,
@@ -467,6 +501,7 @@ function createConfigModalController({
         notificationIncludePreview: notificationForm.notificationIncludePreview,
         notificationNotifyGroupChats: notificationForm.notificationNotifyGroupChats,
         serverchanSendKey: notificationForm.serverchanSendKey,
+        ...operationsForm,
       };
       if (newConfig.claudeBackend === 'api' && (!newConfig.claudeApiKey || !newConfig.claudeApiBaseUrl || !newConfig.claudeApiModel)) {
         msg.textContent = '请先完整填写同事中转的 Key、Base URL 和模型。';
@@ -476,6 +511,12 @@ function createConfigModalController({
       }
       if (notificationForm.notificationTargetEnabled && !newConfig.serverchanSendKey) {
         msg.textContent = '启用微信通知前，请先填写 Server酱 SendKey。';
+        msg.className = 'config-save-msg error';
+        msg.style.display = 'block';
+        return;
+      }
+      if (operationsForm.aliyunMonitorEnabled && !/^https?:\/\//i.test(operationsForm.aliyunHealthUrl)) {
+        msg.textContent = '启用服务器监控前，请填写有效的 HTTP(S) 健康检查 URL。';
         msg.className = 'config-save-msg error';
         msg.style.display = 'block';
         return;
@@ -498,6 +539,7 @@ function createConfigModalController({
           providerModes.codex = newConfig.codexBackend === 'api' ? 'api' : 'subscription';
           renderAccountUsage();
           savedCardDisplay = setCardDisplayForm(newConfig);
+          try { document.dispatchEvent(new CustomEvent('hub-config-saved', { detail: newConfig })); } catch {}
           msg.textContent = notificationTarget
             ? (notificationForm.notificationTargetEnabled
               ? `配置已保存。“${notificationTarget.title || '当前会话'}”回答完成后会推送。`
@@ -525,6 +567,7 @@ function createConfigModalController({
   return {
     open: openConfigModal,
     openNotificationSetup,
+    openOperationsSetup,
     close: closeConfigModal,
     init: initConfigModal,
     setCodexProfileForm,
@@ -537,6 +580,8 @@ function createConfigModalController({
     setCardDisplayForm,
     readNotificationForm,
     setNotificationForm,
+    readOperationsForm,
+    setOperationsForm,
     testCompletionNotification,
   };
 }

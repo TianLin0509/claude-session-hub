@@ -60,6 +60,7 @@ const { createPastSessionModals, collapseDormantNativeDuplicates } = require('./
 const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
 const { createShellController } = require('./shell-controller.js');
 const { createHomeWorkbench } = require('./home-workbench.js');
+const { createWorkbenchOperationsController } = require('./workbench-operations-controller.js');
 const { createRenderCoalescer } = require('./render-coalescer.js');
 const {
   applyPromptSubmitted,
@@ -126,6 +127,7 @@ let activeSessionId = null;
 let completionNotificationToggle = null;
 let systemResourceUsage = null;
 let homeWorkbench = null;
+let workbenchOperations = null;
 // 侧栏常驻显示海外代理 + 国产直连的真实公网出口。
 // proxy 仍保留配置值，egress 由 main 进程强制分别经代理/直连探测。
 let hubProxyInfo = null;
@@ -713,9 +715,9 @@ function scheduleSessionListRender() {
   sidebarRenderCoalescer.schedule();
 }
 
-async function refreshSystemResourceUsage() {
+async function refreshSystemResourceUsage(force = false) {
   try {
-    const next = await ipcRenderer.invoke('get-system-resource-usage');
+    const next = await ipcRenderer.invoke('get-system-resource-usage', { force: force === true });
     if (!next || (!Number.isFinite(next.cpuPct) && !Number.isFinite(next.memoryPct))) return;
     systemResourceUsage = next;
     renderSidebarStrip();
@@ -3038,7 +3040,13 @@ function updateFloatingBarState() {
       chip.style.display = '';
       chip.textContent = `ctx ${s.contextPct}%`;
       chip.className = 'fi-ctx ' + pctClass(s.contextPct);
-      chip.title = `当前会话上下文占用 ${s.contextPct}%`;
+      const effective = typeof s.contextEffectiveMax === 'number'
+        ? `，运行时有效窗口 ${s.contextEffectiveMax.toLocaleString()} tokens`
+        : '';
+      const requested = typeof s.contextMax === 'number'
+        ? `，Hub 启动请求 ${s.contextMax.toLocaleString()} tokens`
+        : '';
+      chip.title = `当前会话上下文占用 ${s.contextPct}%${effective}${requested}`;
     } else {
       chip.style.display = 'none';
     }
@@ -4062,6 +4070,39 @@ const accountUsageController = createAccountUsageController({
   escapeHtml,
 });
 const renderAccountUsage = accountUsageController.render;
+function getWorkbenchWorkspaceHints() {
+  const hints = [];
+  const recent = Array.from(sessions.values())
+    .filter(session => session && session.cwd && session.purpose !== 'chuxin-research')
+    .sort((a, b) => Number(b.lastMessageTime || b.updatedAt || 0) - Number(a.lastMessageTime || a.updatedAt || 0))
+    .slice(0, 24);
+  for (const session of recent) {
+    const base = {
+      sessionId: session.id || session.hubId,
+      title: session.title || '',
+      kind: session.kind || '',
+      lastMessageTime: Number(session.lastMessageTime || session.updatedAt || session.createdAt || 0),
+    };
+    hints.push({ ...base, cwd: session.cwd });
+    // Group chats often run from a broad home directory. Persisted artifacts
+    // give us a precise, bounded path back to the actual project without any
+    // recursive search of C:\Users\lintian or C:\Vibe.
+    const artifacts = Array.isArray(session.recentArtifacts) ? session.recentArtifacts.slice(-3) : [];
+    for (const artifact of artifacts) {
+      if (!artifact || typeof artifact.path !== 'string' || !path.isAbsolute(artifact.path)) continue;
+      hints.push({ ...base, cwd: path.dirname(artifact.path), lastMessageTime: Number(artifact.timestamp || base.lastMessageTime) });
+    }
+  }
+  return hints;
+}
+workbenchOperations = createWorkbenchOperationsController({
+  document,
+  ipcRenderer,
+  getWorkspaceHints: getWorkbenchWorkspaceHints,
+  escapeHtml,
+  onOpenPath: targetPath => openPathInHub(targetPath, { requireExistsForRel: false }),
+  onOpenSession: sessionId => selectSession(sessionId, { forceScrollBottom: true }),
+});
 homeWorkbench = createHomeWorkbench({
   document,
   sessions,
@@ -4070,18 +4111,22 @@ homeWorkbench = createHomeWorkbench({
   getResourceUsage: () => systemResourceUsage,
   getHubConfig: () => hubProxyInfo,
   getUsageSnapshot: () => accountUsageController.getSnapshot(),
+  getOperationsSnapshot: () => workbenchOperations.getSnapshot(),
   getTerminalCacheSize: () => terminalCache.size,
   loadWorkspaces: () => ipcRenderer.invoke('workspace:list'),
+  loadOperations: force => workbenchOperations.refresh(force === true),
   selectSession: (sessionId, opts) => selectSession(sessionId, opts),
   selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
   onCopyRecentTurns: (sessionId, count) => copyRecentTurnsForSession(sessionId, count),
   onForkSession: (sessionId) => keyboardShortcuts.forkSession(sessionId),
   onOpenArtifact: (artifactPath) => openPathInHub(artifactPath, { requireExistsForRel: false }),
   onLaunchWorkspace: (workspace) => window.WorkspaceController.openNewSessionModal({ kind: 'claude', workspace }),
+  onOpenReview: repoId => workbenchOperations.open(repoId),
+  onOpenServerSettings: () => configModal.openOperationsSetup(),
   escapeHtml,
   onRefresh: async () => {
     const results = await Promise.allSettled([
-      refreshSystemResourceUsage(),
+      refreshSystemResourceUsage(true),
       refreshHubProxyInfo(),
       accountUsageController.refreshUsageNow(),
     ]);
@@ -4111,6 +4156,12 @@ ipcRenderer.on('status-event', (_e, payload) => {
     if (Object.prototype.hasOwnProperty.call(payload, 'contextPct')) session.contextPct = payload.contextPct;
     if (Object.prototype.hasOwnProperty.call(payload, 'contextUsed')) session.contextUsed = payload.contextUsed;
     if (Object.prototype.hasOwnProperty.call(payload, 'contextMax')) session.contextMax = payload.contextMax;
+    if (Object.prototype.hasOwnProperty.call(payload, 'contextEffectiveMax')) {
+      session.contextEffectiveMax = payload.contextEffectiveMax;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'contextEffectiveObservedAt')) {
+      session.contextEffectiveObservedAt = payload.contextEffectiveObservedAt;
+    }
     if (typeof payload.contextUsed === 'number') {
       accountUsageController.recordSessionContextSample(session, payload.contextUsed);
     }
@@ -4164,6 +4215,20 @@ function formatDuration(ms) {
   return `${h}h${m % 60 ? (m % 60) + 'm' : ''}`;
 }
 
+function formatContextWindowTokens(value) {
+  const tokens = Number(value);
+  if (!Number.isFinite(tokens) || tokens <= 0) return '';
+  if (tokens >= 1_000_000) {
+    const millions = tokens / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}M`;
+  }
+  if (tokens >= 1_000) {
+    const thousands = tokens / 1_000;
+    return `${Number.isInteger(thousands) ? thousands : thousands.toFixed(1).replace(/\.0$/, '')}K`;
+  }
+  return String(Math.round(tokens));
+}
+
 // Render the per-session metrics row (cwd · api time · lines diff). Called on
 // session switch + every status-event for the active session.
 function renderMetricsRow(el, session) {
@@ -4194,6 +4259,23 @@ function renderMetricsRow(el, session) {
       a.addEventListener('click', copyCwd);
     }
     frags.push(a);
+  }
+  const contextRequested = typeof session.contextMax === 'number' ? session.contextMax : null;
+  const contextEffective = typeof session.contextEffectiveMax === 'number' ? session.contextEffectiveMax : null;
+  const isCodexContext = /^codex(?:-resume)?$/.test(String(session.kind || '')) || contextEffective !== null;
+  if (isCodexContext && (contextRequested !== null || contextEffective !== null)) {
+    const context = document.createElement('span');
+    context.className = 'metric-context-window';
+    if (contextEffective !== null) {
+      context.textContent = `ctx ${formatContextWindowTokens(contextEffective)}`;
+      context.title = `Codex 运行时有效窗口：${contextEffective.toLocaleString()} tokens`
+        + (contextRequested !== null ? `；Hub 启动请求：${contextRequested.toLocaleString()} tokens` : '')
+        + '。实际值来自 token_count.model_context_window，不会覆盖下次启动请求。';
+    } else {
+      context.textContent = `ctx 请求 ${formatContextWindowTokens(contextRequested)}`;
+      context.title = `Hub 已请求 ${contextRequested.toLocaleString()} tokens；尚未收到 Codex 运行时有效窗口回报。`;
+    }
+    frags.push(context);
   }
   if (typeof session.apiMs === 'number' && session.apiMs > 0) {
     const s = document.createElement('span');
@@ -4662,6 +4744,12 @@ const configModal = createConfigModalController({
 });
 const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
+document.addEventListener('hub-config-saved', () => {
+  void refreshHubProxyInfo({ force: true });
+  void workbenchOperations.refresh(true).then(() => {
+    if (homeWorkbench) homeWorkbench.render();
+  });
+});
 
 const { createCompletionNotificationToggle } = require('./completion-notification-toggle.js');
 completionNotificationToggle = createCompletionNotificationToggle({
@@ -4952,6 +5040,8 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.codexProfile) local.codexProfile = session.codexProfile;
   if (session.codexProfileLabel) local.codexProfileLabel = session.codexProfileLabel;
   if (session.mcpProfile) local.mcpProfile = session.mcpProfile;
+  if (typeof session.fastMode === 'boolean') local.fastMode = session.fastMode;
+  if (session.codexSpeedTier) local.codexSpeedTier = session.codexSpeedTier;
   if (session.kimiSid) local.kimiSid = session.kimiSid;
   if (session.kimiSessionDir) local.kimiSessionDir = session.kimiSessionDir;
   if (session.effort) local.effort = session.effort;
@@ -4965,6 +5055,17 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (typeof session.contextPct === 'number') local.contextPct = session.contextPct;
   if (typeof session.contextUsed === 'number') local.contextUsed = session.contextUsed;
   if (typeof session.contextMax === 'number') local.contextMax = session.contextMax;
+  let persistRuntimeContext = false;
+  if (typeof session.contextEffectiveMax === 'number'
+      && local.contextEffectiveMax !== session.contextEffectiveMax) {
+    local.contextEffectiveMax = session.contextEffectiveMax;
+    persistRuntimeContext = true;
+  }
+  if (typeof session.contextEffectiveObservedAt === 'number'
+      && local.contextEffectiveObservedAt !== session.contextEffectiveObservedAt) {
+    local.contextEffectiveObservedAt = session.contextEffectiveObservedAt;
+    persistRuntimeContext = true;
+  }
   if (typeof session.lastCompletedAt === 'number'
       && session.lastCompletedAt >= (Number(local.lastCompletedAt) || 0)) {
     local.lastCompletedAt = session.lastCompletedAt;
@@ -4983,6 +5084,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     updateActiveMetricsRow();
     completionNotificationToggle.refreshTarget();
   }
+  if (persistRuntimeContext) schedulePersist();
   scheduleSessionListRender();
 });
 
@@ -5031,6 +5133,10 @@ function schedulePersist() {
         contextPct: typeof s.contextPct === 'number' ? s.contextPct : null,
         contextUsed: typeof s.contextUsed === 'number' ? s.contextUsed : null,
         contextMax: typeof s.contextMax === 'number' ? s.contextMax : null,
+        contextEffectiveMax: typeof s.contextEffectiveMax === 'number' ? s.contextEffectiveMax : null,
+        contextEffectiveObservedAt: typeof s.contextEffectiveObservedAt === 'number'
+          ? s.contextEffectiveObservedAt
+          : null,
         userRenamed: !!s.userRenamed,
         autoTitleGenerated: !!s.autoTitleGenerated,
         branchSourceSessionId: s.branchSourceSessionId || null,
@@ -5042,6 +5148,8 @@ function schedulePersist() {
         codexProfile: s.codexProfile || null,
         codexProfileLabel: s.codexProfileLabel || null,
         mcpProfile: s.mcpProfile || null,
+        fastMode: typeof s.fastMode === 'boolean' ? s.fastMode : null,
+        codexSpeedTier: s.codexSpeedTier || null,
         geminiChatId: s.geminiChatId || null,
         geminiProjectHash: s.geminiProjectHash || null,
         geminiProjectRoot: s.geminiProjectRoot || null,
@@ -5202,6 +5310,10 @@ window.resumeDormantSession = resumeDormantSession;
         contextPct: typeof meta.contextPct === 'number' ? meta.contextPct : null,
         contextUsed: typeof meta.contextUsed === 'number' ? meta.contextUsed : null,
         contextMax: typeof meta.contextMax === 'number' ? meta.contextMax : null,
+        contextEffectiveMax: typeof meta.contextEffectiveMax === 'number' ? meta.contextEffectiveMax : null,
+        contextEffectiveObservedAt: typeof meta.contextEffectiveObservedAt === 'number'
+          ? meta.contextEffectiveObservedAt
+          : null,
         runStartedAt: null,
         lastCompletedAt: typeof meta.lastCompletedAt === 'number' ? meta.lastCompletedAt : null,
         lastRunStartedAt: typeof meta.lastRunStartedAt === 'number' ? meta.lastRunStartedAt : null,
@@ -5219,6 +5331,8 @@ window.resumeDormantSession = resumeDormantSession;
         codexProfile: meta.codexProfile || null,
         codexProfileLabel: meta.codexProfileLabel || null,
         mcpProfile: meta.mcpProfile || null,
+        fastMode: typeof meta.fastMode === 'boolean' ? meta.fastMode : null,
+        codexSpeedTier: meta.codexSpeedTier || null,
         geminiChatId: meta.geminiChatId || null,
         geminiProjectHash: meta.geminiProjectHash || null,
         geminiProjectRoot: meta.geminiProjectRoot || null,

@@ -85,8 +85,9 @@ async function capture(client, filePath) {
       return {
         codex,
         claude,
-        runningCount: document.getElementById('home-running-count').textContent,
-        runningText: document.getElementById('home-lane-running').textContent.replace(/\\s+/g, ' ').trim(),
+        activeCount: document.getElementById('home-metric-active').textContent,
+        runningSidebarText: document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim(),
+        pipelineAbsent: !document.getElementById('home-flow-columns'),
       };
     })()`);
 
@@ -95,9 +96,10 @@ async function capture(client, filePath) {
     assert.equal(running.codex.runSource, 'pty-semantic');
     assert.equal(running.claude.runtime.state, 'running');
     assert.equal(running.claude.status, 'running');
-    assert.equal(running.runningCount, '2');
-    assert.match(running.runningText, /Codex PTY fallback/);
-    assert.match(running.runningText, /Claude hook fallback/);
+    assert.equal(running.activeCount, '2');
+    assert.equal(running.pipelineAbsent, true);
+    assert.match(running.runningSidebarText, /Codex PTY fallback/);
+    assert.match(running.runningSidebarText, /Claude hook fallback/);
     await capture(client, SCREENSHOT);
 
     const settled = await client.eval(`(async () => {
@@ -119,10 +121,11 @@ async function capture(client, filePath) {
         claude,
         runningSections: Array.from(document.querySelectorAll('#session-list .session-sec-header'))
           .filter(row => row.textContent.includes('运行中')).length,
-        homeRunningCount: document.getElementById('home-running-count').textContent,
+        homeWaitingCount: document.getElementById('home-metric-waiting').textContent,
+        homePipelineAbsent: !document.getElementById('home-flow-columns'),
         claudeAttention: sessions.get('pty-claude').attentionState,
         claudeWaiting: sessions.get('pty-claude').isWaiting,
-        waitingText: document.getElementById('home-lane-waiting').textContent.replace(/\s+/g, ' ').trim(),
+        sidebarText: document.getElementById('session-list').textContent.replace(/\s+/g, ' ').trim(),
       };
     })()`);
 
@@ -131,10 +134,11 @@ async function capture(client, filePath) {
     assert.equal(settled.claude.runtime.state, 'waiting');
     assert.equal(settled.claude.status, 'idle');
     assert.equal(settled.runningSections, 0);
-    assert.equal(settled.homeRunningCount, '0');
+    assert.equal(settled.homeWaitingCount, '1');
+    assert.equal(settled.homePipelineAbsent, true);
     assert.equal(settled.claudeAttention, 'needs-input');
     assert.equal(settled.claudeWaiting, true);
-    assert.match(settled.waitingText, /Claude hook fallback/);
+    assert.match(settled.sidebarText, /Claude hook fallback/);
 
     console.log(JSON.stringify({
       ok: true,

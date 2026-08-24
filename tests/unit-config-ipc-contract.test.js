@@ -41,6 +41,15 @@ test('masked config exposes only retained public fields and masks secrets', () =
     codexApiKey: 'sk-codex-5555',
     codexApiBaseUrl: 'https://codex.test',
     codexApiModel: 'gpt-5.5',
+    operations: {
+      aliyunMonitor: {
+        enabled: true,
+        label: '生产 ECS',
+        healthUrl: 'https://ops.example.com/health',
+        metricsUrl: 'https://ops.example.com/metrics',
+        bearerToken: 'server-token-7890',
+      },
+    },
   });
 
   assert.strictEqual(masked.claudeApiKey, '***9999');
@@ -51,6 +60,10 @@ test('masked config exposes only retained public fields and masks secrets', () =
   assert.strictEqual(masked.codexApiKey, '***5555');
   assert.strictEqual(masked.codexApiKeySet, true);
   assert.strictEqual(masked.codexSubscriptionProfiles.length, 1);
+  assert.strictEqual(masked.aliyunMonitorEnabled, true);
+  assert.strictEqual(masked.aliyunHealthUrl, 'https://ops.example.com/health');
+  assert.strictEqual(masked.aliyunBearerToken, '***7890');
+  assert.strictEqual(masked.aliyunBearerTokenSet, true);
   for (const removedField of ['packySessionCookie', 'glmApiKey', 'kimiApiKey', 'qwenApiKey']) {
     assert.ok(!Object.prototype.hasOwnProperty.call(masked, removedField),
       `${removedField} should not be exposed`);
@@ -75,6 +88,15 @@ test('editable config preserves only retained editable values', () => {
     uiCodeFoldThreshold: 34,
     cardFontSize: 18,
     cardFontFamily: 'serif',
+    operations: {
+      aliyunMonitor: {
+        enabled: true,
+        label: '生产 ECS',
+        healthUrl: 'https://ops.example.com/health',
+        bearerToken: 'server-token',
+      },
+      restoreRoot: 'C:\\Vibe\\Worktrees',
+    },
   });
 
   assert.strictEqual(editable.claudeApiKey, 'sk-claude');
@@ -85,6 +107,9 @@ test('editable config preserves only retained editable values', () => {
   assert.strictEqual(editable.uiCodeFoldThreshold, 34);
   assert.strictEqual(editable.cardFontSize, 18);
   assert.strictEqual(editable.cardFontFamily, 'serif');
+  assert.strictEqual(editable.aliyunMonitorLabel, '生产 ECS');
+  assert.strictEqual(editable.aliyunBearerToken, 'server-token');
+  assert.strictEqual(editable.operationsRestoreRoot, 'C:\\Vibe\\Worktrees');
   for (const removedField of ['packySessionCookie', 'glmApiKey', 'gptApiKey', 'kimiApiKey', 'qwenApiKey']) {
     assert.ok(!Object.prototype.hasOwnProperty.call(editable, removedField),
       `${removedField} should not be editable`);
@@ -105,6 +130,14 @@ test('save payload updates retained fields without deleting unrelated provider d
       meridian: { url: 'https://meridian.old', token: 'old-token', enabled: true },
     },
     custom: true,
+    operations: {
+      aliyun_monitor: {
+        enabled: true,
+        label: '旧 ECS',
+        health_url: 'https://old.example.com/health',
+        bearer_token: 'keep-token',
+      },
+    },
   };
   const merged = buildConfigJsonUpdate(existing, {
     proxy: '',
@@ -134,6 +167,35 @@ test('save payload updates retained fields without deleting unrelated provider d
     assert.deepStrictEqual(merged.providers[preservedProvider], existing.providers[preservedProvider],
       `${preservedProvider} provider should survive an unrelated settings save`);
   }
+  assert.strictEqual(merged.operations.aliyun_monitor.bearer_token, 'keep-token');
+});
+
+test('operations-only save updates server monitor without erasing provider credentials', () => {
+  const existing = {
+    providers: { deepseek: { api_key: 'keep-deepseek' } },
+    operations: {
+      aliyun_monitor: { enabled: false, bearer_token: 'old-token' },
+    },
+  };
+  const merged = buildConfigJsonUpdate(existing, {
+    aliyunMonitorEnabled: true,
+    aliyunMonitorLabel: '阿里云 ECS',
+    aliyunHealthUrl: 'https://ops.example.com/health',
+    aliyunMetricsUrl: 'https://ops.example.com/metrics',
+    aliyunBearerToken: 'new-token',
+    operationsRestoreRoot: 'D:\\AIHubWorktrees',
+  });
+  assert.strictEqual(merged.providers.deepseek.api_key, 'keep-deepseek');
+  assert.deepStrictEqual(merged.operations, {
+    aliyun_monitor: {
+      enabled: true,
+      label: '阿里云 ECS',
+      health_url: 'https://ops.example.com/health',
+      metrics_url: 'https://ops.example.com/metrics',
+      bearer_token: 'new-token',
+    },
+    restore_root: 'D:\\AIHubWorktrees',
+  });
 });
 
 test('subscription selection preserves the ready-to-switch Fable gateway credentials', () => {

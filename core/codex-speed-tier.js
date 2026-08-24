@@ -13,7 +13,7 @@ const path = require('path');
 
 // standard / inherit 是 Hub 侧语义；fast / flex 会落到 Codex service_tier。
 const CODEX_SPEED_TIERS = new Set(['standard', 'inherit', 'fast', 'flex']);
-const DEFAULT_CODEX_SPEED_TIER = 'standard';
+const DEFAULT_CODEX_SPEED_TIER = 'fast';
 
 function normalizeCodexSpeedTier(value) {
   const normalized = String(value || DEFAULT_CODEX_SPEED_TIER).trim().toLowerCase();

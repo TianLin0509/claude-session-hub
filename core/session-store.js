@@ -79,6 +79,10 @@ function _buildSessionPayload(hubId, data) {
     contextPct: typeof data.contextPct === 'number' ? data.contextPct : null,
     contextUsed: typeof data.contextUsed === 'number' ? data.contextUsed : null,
     contextMax: typeof data.contextMax === 'number' ? data.contextMax : null,
+    contextEffectiveMax: typeof data.contextEffectiveMax === 'number' ? data.contextEffectiveMax : null,
+    contextEffectiveObservedAt: typeof data.contextEffectiveObservedAt === 'number'
+      ? data.contextEffectiveObservedAt
+      : null,
     userRenamed: !!data.userRenamed,
     autoTitleGenerated: !!data.autoTitleGenerated,
     branchSourceSessionId: data.branchSourceSessionId || null,
