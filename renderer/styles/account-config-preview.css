@@ -802,8 +802,8 @@
 }
 
 .preview-tab-close {
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
   flex: none;
@@ -822,7 +822,8 @@
   background: rgba(127, 127, 127, .18);
 }
 
-.preview-new-tab {
+.preview-new-tab,
+.preview-tab-tool {
   width: 34px;
   flex: none;
   border: 0;
@@ -833,9 +834,61 @@
   font-size: 18px;
 }
 
-.preview-new-tab:hover {
+.preview-new-tab:hover,
+.preview-tab-tool:hover:not(:disabled) {
   color: var(--text-primary);
   background: rgba(93, 142, 215, .1);
+}
+
+.preview-tab-tool {
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+}
+
+.preview-tab-tool:disabled {
+  opacity: .32;
+  cursor: default;
+}
+
+.preview-tab-tool:focus-visible,
+.preview-new-tab:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+}
+
+.preview-tab-shell.temporary .preview-tab-title {
+  font-style: italic;
+}
+
+.preview-tab-preview-badge {
+  flex: none;
+  margin-left: 6px;
+  padding: 1px 4px;
+  border: 1px solid rgba(104, 167, 255, .28);
+  border-radius: 999px;
+  color: #8fc2ff;
+  font-size: 8px;
+  font-style: normal;
+  line-height: 1.2;
+}
+
+.preview-tab-pin {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border: 0;
+  border-radius: 4px;
+  color: #8fc2ff;
+  background: transparent;
+  cursor: pointer;
+}
+
+.preview-tab-pin:hover {
+  color: #fff;
+  background: rgba(93, 142, 215, .16);
 }
 
 .preview-header {
@@ -1117,13 +1170,224 @@
   background: #ffd166;
 }
 
+.preview-content-row {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+}
+
 .preview-body {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--bg-primary);
+}
+
+.preview-outline {
+  width: 220px;
+  min-width: 180px;
+  max-width: 42%;
+  min-height: 0;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-primary));
+  z-index: 4;
+}
+
+.preview-outline[hidden] {
+  display: none;
+}
+
+.preview-outline-head {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-outline-head strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-outline-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.preview-outline-actions button {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+
+.preview-outline-actions button:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border);
+  background: rgba(127, 127, 127, .1);
+}
+
+.preview-outline-actions button:disabled {
+  opacity: .32;
+  cursor: default;
+}
+
+.preview-outline-actions button[data-flash="success"] {
+  color: var(--accent-green);
+  border-color: rgba(63, 185, 80, .5);
+}
+
+.preview-outline-actions button:focus-visible,
+.preview-outline-item:focus-visible,
+.preview-goto-line input:focus-visible,
+.preview-goto-line button:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.preview-goto-line {
+  display: grid;
+  grid-template-columns: auto minmax(48px, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--preview-muted);
+  font-size: 10px;
+}
+
+.preview-goto-line[hidden] {
+  display: none;
+}
+
+.preview-goto-line input {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  font: 10px "Cascadia Code", Consolas, monospace;
+}
+
+.preview-goto-line button {
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.preview-outline-list {
+  min-height: 0;
+  flex: 1;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.preview-outline-list li {
+  margin: 0;
+  padding: 0;
+}
+
+.preview-outline-item {
+  width: 100%;
+  min-height: 28px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px calc(7px + var(--outline-depth, 0) * 12px);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--preview-muted);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.preview-outline-item-level {
+  color: #8fc2ff;
+  font: 8px "Cascadia Code", Consolas, monospace;
+  letter-spacing: -.02em;
+}
+
+.preview-outline-item:hover {
+  color: var(--text-primary);
+  background: rgba(93, 142, 215, .08);
+}
+
+.preview-outline-item.active {
+  border-color: rgba(104, 167, 255, .28);
+  color: var(--text-primary);
+  background: rgba(93, 142, 215, .12);
+}
+
+.preview-outline-item-text {
+  overflow: hidden;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-outline-item-line {
+  color: #8b98a8;
+  font: 8.5px "Cascadia Code", Consolas, monospace;
+}
+
+.preview-outline-empty {
+  padding: 18px 12px;
+  color: var(--preview-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.preview-outline-empty[hidden] {
+  display: none;
+}
+
+.preview-heading-target {
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px rgba(93, 142, 215, .65), 0 0 0 6px rgba(93, 142, 215, .12);
+}
+
+@container (max-width: 480px) {
+  .preview-outline {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: min(260px, calc(100% - 16px));
+    max-width: none;
+    box-shadow: 12px 0 32px rgba(0, 0, 0, .45);
+  }
 }
 
 .preview-body webview {
@@ -1527,12 +1791,23 @@
   tab-size: 4;
 }
 
+.preview-code-line {
+  min-height: 1.6em;
+  display: block;
+  padding-right: 16px;
+}
+
+.preview-code-line.preview-line-target {
+  background: rgba(93, 142, 215, .13);
+  box-shadow: inset 3px 0 0 var(--accent-blue);
+}
+
 .preview-line-num {
   display: inline-block;
   width: 48px;
   text-align: right;
   padding-right: 16px;
-  color: #4a5568;
+  color: #8b98a8;
   user-select: none;
 }
 

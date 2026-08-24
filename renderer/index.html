@@ -367,6 +367,7 @@
     <div class="preview-panel" id="preview-panel" style="display:none">
       <div class="preview-tabs-row">
         <div class="preview-tabs" id="preview-tabs" role="tablist" aria-label="预览文件" aria-orientation="horizontal"></div>
+        <button class="preview-tab-tool" id="preview-outline-toggle" type="button" title="文档大纲 / 行号跳转 (Ctrl+Shift+O)" aria-label="打开文档大纲或行号跳转" aria-controls="preview-outline" aria-expanded="false" disabled><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg></button>
         <button class="preview-new-tab" id="preview-new-tab" type="button" title="输入路径或搜索文件 (Ctrl+O)" aria-label="打开新的预览">＋</button>
       </div>
       <div class="preview-header">
@@ -400,7 +401,25 @@
         <button type="button" id="preview-find-next" title="下一个匹配 (Enter)" aria-label="下一个匹配">↓</button>
         <button type="button" id="preview-find-close" title="关闭查找 (Esc)" aria-label="关闭查找">×</button>
       </div>
-      <div class="preview-body" id="preview-body" role="tabpanel" aria-label="预览内容"></div>
+      <div class="preview-content-row" id="preview-content-row">
+        <nav class="preview-outline" id="preview-outline" aria-label="文档大纲与行号跳转" hidden>
+          <div class="preview-outline-head">
+            <strong id="preview-outline-title">文档大纲</strong>
+            <div class="preview-outline-actions">
+              <button type="button" id="preview-outline-copy" title="复制当前标题或行号引用" aria-label="复制当前标题或行号引用" disabled><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg></button>
+              <button type="button" id="preview-outline-close" title="关闭大纲" aria-label="关闭文档大纲"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+            </div>
+          </div>
+          <form class="preview-goto-line" id="preview-goto-line-form" hidden>
+            <label for="preview-goto-line-input">转到行</label>
+            <input id="preview-goto-line-input" type="number" inputmode="numeric" min="1" step="1" autocomplete="off" required>
+            <button type="submit">前往</button>
+          </form>
+          <ol class="preview-outline-list" id="preview-outline-list" aria-label="Markdown 标题"></ol>
+          <div class="preview-outline-empty" id="preview-outline-empty" hidden>此文档没有可用标题</div>
+        </nav>
+        <div class="preview-body" id="preview-body" role="tabpanel" aria-label="预览内容"></div>
+      </div>
     </div>
     <div class="preview-quick-open" id="preview-quick-open" style="display:none" role="presentation">
       <section class="preview-quick-open-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-quick-open-title">
@@ -410,12 +429,12 @@
         </div>
         <label class="preview-quick-open-input-wrap" for="preview-quick-open-input">
           <span aria-hidden="true">⌕</span>
-          <input id="preview-quick-open-input" type="text" autocomplete="off" spellcheck="false" placeholder="绝对路径、相对路径或文件名…" role="combobox" aria-label="输入路径或搜索文件" aria-autocomplete="list" aria-expanded="false" aria-controls="preview-quick-open-results">
+          <input id="preview-quick-open-input" type="text" autocomplete="off" spellcheck="false" placeholder="绝对路径、相对路径或文件名…" role="combobox" aria-label="输入路径或搜索文件" aria-describedby="preview-quick-open-mode-hint" aria-autocomplete="list" aria-expanded="false" aria-controls="preview-quick-open-results">
           <kbd aria-hidden="true">Esc</kbd>
         </label>
         <div class="preview-quick-open-status" id="preview-quick-open-status" role="status" aria-live="polite">当前会话最近预览</div>
         <div class="preview-quick-open-results" id="preview-quick-open-results" role="listbox" aria-label="路径搜索结果"></div>
-        <div class="preview-quick-open-foot"><span>↑↓ 选择 · Enter 打开</span><span>本地索引，不上传文件内容</span></div>
+        <div class="preview-quick-open-foot"><span id="preview-quick-open-mode-hint">↑↓ 选择 · Enter 临时预览 · Tab 上 Ctrl+Enter 固定</span><span>本地索引，不上传文件内容</span></div>
       </section>
     </div>
     <!-- memo-panel 在最右,与 preview-panel 互不影响（display:none 不占位） -->

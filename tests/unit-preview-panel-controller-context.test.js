@@ -230,6 +230,35 @@ async function testMultipleTabsReuseAndClose() {
   assert.strictEqual(state.tabs[0].path, 'C:\\tmp\\b.md');
 }
 
+async function testTemporaryTabReuseAndPinning() {
+  const document = makeDocument();
+  const controller = makeController(document, () => 'temporary-tabs');
+  await controller.openPreviewPanel('C:\\tmp\\preview-a.md', { preview: true });
+  let state = controller.getPreviewState('session:temporary-tabs');
+  const temporaryId = state.tabs[0].id;
+  assert.strictEqual(state.tabs.length, 1);
+  assert.strictEqual(state.tabs[0].pinned, false);
+
+  await controller.openPreviewPanel('C:\\tmp\\preview-b.md', { preview: true });
+  state = controller.getPreviewState('session:temporary-tabs');
+  assert.strictEqual(state.tabs.length, 1, 'a second preview must reuse the single temporary tab');
+  assert.strictEqual(state.tabs[0].id, temporaryId);
+  assert.strictEqual(state.tabs[0].path, 'C:\\tmp\\preview-b.md');
+  assert.strictEqual(state.tabs[0].pinned, false);
+
+  assert.strictEqual(controller.pinPreviewTab(temporaryId), true);
+  state = controller.getPreviewState('session:temporary-tabs');
+  assert.strictEqual(state.tabs[0].pinned, true);
+
+  await controller.openPreviewPanel('C:\\tmp\\preview-c.md', { preview: true });
+  state = controller.getPreviewState('session:temporary-tabs');
+  assert.strictEqual(state.tabs.length, 2, 'pinning frees a new temporary preview slot');
+  assert.strictEqual(state.tabs.find(tab => tab.path.endsWith('preview-c.md')).pinned, false);
+  await controller.openPreviewPanel('C:\\tmp\\preview-c.md', { pinned: true });
+  state = controller.getPreviewState('session:temporary-tabs');
+  assert.strictEqual(state.tabs.find(tab => tab.path.endsWith('preview-c.md')).pinned, true);
+}
+
 async function testContextRestoresTabSetsIndependently() {
   let activeSessionId = 's1';
   const document = makeDocument();
@@ -383,6 +412,7 @@ async function main() {
   await testSessionScopedBodyPreview();
   await testWebviewScrollRestore();
   await testMultipleTabsReuseAndClose();
+  await testTemporaryTabReuseAndPinning();
   await testContextRestoresTabSetsIndependently();
   await testCopyActionsUseRawTextAndPath();
   await testSlowReadCannotOverwriteNewerTab();

@@ -981,7 +981,7 @@ function getOrCreateTerminal(sessionId) {
   terminal.loadAddon(fitAddon);
   terminal.loadAddon(new Unicode11Addon());
   terminal.loadAddon(searchAddon);
-  terminal.loadAddon(new WebLinksAddon((e, uri) => { openPreviewPanel(uri); }));
+  terminal.loadAddon(new WebLinksAddon((e, uri) => { openPreviewPanel(uri, { preview: true }); }));
   const localPathLinkProvider = registerLocalPathLinks(terminal, sessionId);
   terminal.unicode.activeVersion = '11';
 
@@ -3553,10 +3553,14 @@ async function openPathInHub(filePath, opts = {}) {
     return { ok: false, path: target || null, error: error.message };
   };
   const cwd = opts.cwd || null;
+  const previewOptions = {
+    pinned: opts.pinned === true,
+    preview: opts.pinned === true ? false : opts.preview !== false,
+  };
   const raw = _cleanPathCandidate(filePath);
   if (!raw) return fail('路径为空或无法识别', null);
   if (/^https?:\/\//i.test(raw)) {
-    await openPreviewPanel(raw);
+    await openPreviewPanel(raw, previewOptions);
     return { ok: true, path: raw, type: 'preview' };
   }
   const fullPath = _normalizeLocalPathForOpen(raw, cwd, opts.requireExistsForRel !== false);
@@ -3569,7 +3573,7 @@ async function openPathInHub(filePath, opts = {}) {
     return { ok: true, path: fullPath, type: 'external' };
   }
   if (PREVIEW_PATH_RE.test(fullPath)) {
-    await openPreviewPanel(fullPath);
+    await openPreviewPanel(fullPath, previewOptions);
     return { ok: true, path: fullPath, type: 'preview' };
   }
   let err;
@@ -3653,10 +3657,11 @@ const previewPanel = createPreviewPanelController({
   getActiveSessionId: () => activeSessionId,
   getActiveMeetingId: () => activeMeetingId,
   getActiveCwd: getActivePreviewCwd,
-  openPath: (filePath) => openPathInHub(filePath, {
+  openPath: (filePath, openOptions = {}) => openPathInHub(filePath, {
     cwd: getActivePreviewCwd(),
     requireExistsForRel: false,
     throwOnError: true,
+    ...openOptions,
   }),
   refitActiveTerminal: refitActiveTerminalFromPreview,
 });
@@ -3710,7 +3715,7 @@ document.addEventListener('click', (e) => {
     }
     return;
   }
-  openPreviewPanel(href);
+  openPreviewPanel(href, { preview: true });
 }, true);
 
 // --- Terminal buffer reading and activity monitor ---
