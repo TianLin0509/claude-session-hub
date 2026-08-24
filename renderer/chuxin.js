@@ -25,6 +25,7 @@
   // 原生 Session / 群聊，不再在这里复制一套 AI 产品入口。
   const PRIMARY_TABS = [
     { id: 'today', label: '今日概况', hash: 'today' },
+    { id: 'market', label: '实时行情', hash: 'market' },
     { id: 'technical', label: '技术雷达', hash: 'technical' },
     { id: 'news', label: '消息雷达', hash: 'news' },
     { id: 'targets', label: '观察池', hash: 'watch' },
@@ -188,7 +189,7 @@
       state.tabsBar.append(b);
     }
 
-    // 所有 Tab 必须共用一个 iframe。旧实现为六个 Tab 各建一份前端状态，
+    // 所有 Tab 必须共用一个 iframe。旧实现为每个 Tab 各建一份前端状态，
     // 在技术雷达加入观察后，观察池 iframe 仍停留在旧快照，产生“已在观察，
     // 但观察池为空”的矛盾。
     state.frameView = el('div', 'cx-view-frame');
