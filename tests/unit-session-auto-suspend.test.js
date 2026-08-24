@@ -23,7 +23,8 @@ test('main process starts the scheduler and stops it before quit', () => {
   const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   assert.match(mainSource, /createSessionAutoSuspendScheduler\s*\(/);
   assert.match(mainSource, /sessionAutoSuspendScheduler\.start\(\)/);
-  assert.match(mainSource, /app\.on\('before-quit',[\s\S]*sessionAutoSuspendScheduler\?\.stop\(\)/);
+  assert.match(mainSource, /function runFinalShutdownCleanup\(\)[\s\S]*sessionAutoSuspendScheduler\?\.stop\(\)/);
+  assert.match(mainSource, /app\.on\('before-quit',[\s\S]*runFinalShutdownCleanup\(\)/);
 });
 
 test('active group-chat watchers and running loop members are protected', () => {

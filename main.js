@@ -2211,7 +2211,22 @@ app.whenReady().then(async () => {
   sessionAutoSuspendScheduler.start();
 });
 
-app.on('before-quit', () => {
+let shutdownDrainState = 'idle';
+let shutdownDrainPromise = null;
+let finalShutdownCleanupDone = false;
+let hookServerClosedForShutdown = false;
+
+function closeHookServerForShutdown() {
+  if (hookServerClosedForShutdown) return;
+  hookServerClosedForShutdown = true;
+  try { hookServer.close(); } catch (error) {
+    console.warn('[shutdown] hook server close failed:', error && error.message);
+  }
+}
+
+function runFinalShutdownCleanup() {
+  if (finalShutdownCleanupDone) return;
+  finalShutdownCleanupDone = true;
   completionNotifier.dispose();
   sessionAutoSuspendScheduler?.stop();
   claudeHookWatchdog?.stop();
@@ -2254,10 +2269,46 @@ app.on('before-quit', () => {
   // 不外抛，所以这里裸调即可，不再加外层 catch（避免盖住内部 warn）。
   hubControl.unlinkSelf(getHubDataDir(), process.pid);
 
+}
+
+function beginGracefulHubShutdown(reason) {
+  if (shutdownDrainPromise) return shutdownDrainPromise;
+
+  shutdownDrainState = 'draining';
+  closeHookServerForShutdown();
+  console.log(`[shutdown] draining PTYs before Electron teardown (${reason})`);
+  shutdownDrainPromise = sessionManager.disposeGracefully({ logger: console, warnAfterMs: 5000 })
+    .then((result) => {
+      if (!result || result.safeToQuit !== true) {
+        shutdownDrainState = 'blocked';
+        console.error('[shutdown] PTY drain did not reach a safe state; refusing Electron teardown');
+        return result;
+      }
+      shutdownDrainState = 'drained';
+      console.log(`[shutdown] PTY drain complete: ${result.drainedPtyCount} session(s), ${result.durationMs}ms`);
+      // Re-enter app.quit only after every node-pty onExit callback completed
+      // while the Node environment was still alive.
+      app.quit();
+      return result;
+    })
+    .catch((error) => {
+      shutdownDrainState = 'blocked';
+      console.error('[shutdown] PTY drain failed; refusing unsafe Electron teardown:', error && error.stack || error);
+      return { safeToQuit: false, error: error && error.message ? error.message : String(error) };
+    });
+  return shutdownDrainPromise;
+}
+
+app.on('before-quit', (event) => {
+  if (shutdownDrainState === 'drained' || shutdownDrainState === 'finalizing') {
+    shutdownDrainState = 'finalizing';
+    runFinalShutdownCleanup();
+    return;
+  }
+  event.preventDefault();
+  void beginGracefulHubShutdown('before-quit');
 });
 
 app.on('window-all-closed', () => {
-  hookServer.close();
-  sessionManager.dispose();
-  app.quit();
+  void beginGracefulHubShutdown('window-all-closed');
 });

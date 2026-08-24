@@ -89,7 +89,12 @@ async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {}, 
 
   let exited = false;
   let exitCode = null;
-  child.on('exit', (code) => { exited = true; exitCode = code; });
+  let exitSignal = null;
+  child.on('exit', (code, signal) => {
+    exited = true;
+    exitCode = code;
+    exitSignal = signal;
+  });
 
   // 等 CDP ready (最长 30s)
   const ver = await _waitForCDP(port, 30000);
@@ -118,14 +123,37 @@ async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {}, 
     log: () => logLines.slice(),
     isAlive: () => !exited,
     exitCode: () => exitCode,
+    exitSignal: () => exitSignal,
   };
+}
+
+function hubHasExited(hub) {
+  return !!hub && (
+    (typeof hub.isAlive === 'function' && !hub.isAlive())
+    || (hub.child && hub.child.exitCode != null)
+    || (hub.child && hub.child.signalCode != null)
+  );
+}
+
+function requireCleanHubExit(hub, { forced = false } = {}) {
+  const code = typeof hub.exitCode === 'function' ? hub.exitCode() : hub.child && hub.child.exitCode;
+  const signal = typeof hub.exitSignal === 'function' ? hub.exitSignal() : hub.child && hub.child.signalCode;
+  if (!forced && code === 0 && !signal) return { code, signal: null, forced: false };
+
+  const details = `code=${code == null ? 'null' : code}, signal=${signal || 'none'}, forced=${forced}`;
+  const error = new Error(`[${hub.label || 'hub'}] Hub did not exit cleanly (${details})`);
+  error.exitCode = code;
+  error.signal = signal || null;
+  error.forced = forced;
+  error.logTail = typeof hub.log === 'function' ? hub.log().slice(-40).join('\n') : '';
+  throw error;
 }
 
 // 通过 CDP 优雅关闭 — 不依赖 process.kill，避免 PID 误杀。
 //   先尝试 Browser.close（Chromium/Electron 全关）；timeoutMs 内没退出再 SIGTERM。
-async function gracefulQuit(hub, { timeoutMs = 8000 } = {}) {
+async function gracefulQuit(hub, { timeoutMs = 15000 } = {}) {
   if (!hub) return;
-  if (hub.child && hub.child.exitCode != null) return;  // 已退出
+  if (hubHasExited(hub)) return requireCleanHubExit(hub);  // 已退出
   // CDP Browser.close
   try {
     const targets = await _httpGetJson(`${hub.cdpHttpBase}/json/list`);
@@ -145,19 +173,25 @@ async function gracefulQuit(hub, { timeoutMs = 8000 } = {}) {
   // 等待自然退出
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (hub.child.exitCode != null) return;
+    if (hubHasExited(hub)) return requireCleanHubExit(hub);
     await _waitMs(200);
   }
 
   // 兜底：仅 kill 自己的 PID
-  if (hub.child.exitCode == null) {
+  let forced = false;
+  if (!hubHasExited(hub)) {
+    forced = true;
     try { hub.child.kill('SIGTERM'); } catch {}
     await _waitMs(2000);
-    if (hub.child.exitCode == null) {
+    if (!hubHasExited(hub)) {
       try { hub.child.kill('SIGKILL'); } catch {}
       await _waitMs(1000);
     }
   }
+  if (!hubHasExited(hub)) {
+    throw new Error(`[${hub.label || 'hub'}] isolated Hub did not exit after targeted termination`);
+  }
+  return requireCleanHubExit(hub, { forced });
 }
 
 // 列出 CDP 上所有 page targets（用于挑选 main window 来 attach）
@@ -170,4 +204,8 @@ module.exports = {
   gracefulQuit,
   listCdpTargets,
   _waitMs,  // 给 e2e 用
+  _private: {
+    hubHasExited,
+    requireCleanHubExit,
+  },
 };

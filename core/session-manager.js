@@ -866,6 +866,9 @@ class SessionManager extends EventEmitter {
   psCounter = 0;
   _outputSeq = 0;
   _lastWrite = null;
+  _isShuttingDown = false;
+  _shutdownDrainPromise = null;
+  _shutdownExitWaiters = new Map();
 
   // Injected by main: the chosen hook HTTP port + per-launch auth token.
   hookPort = null;
@@ -893,6 +896,9 @@ class SessionManager extends EventEmitter {
   //   geminiChatId:       Gemini 8charId from chats/session-*.json (T8 new, used for index lookup)
   //   geminiProjectRoot:  required for Gemini resume (T8 new, used as cwd for correct project scoping)
   createSession(kind = 'powershell', opts = {}) {
+    if (this._isShuttingDown) {
+      throw new Error('Hub is shutting down; refusing to create a new PTY');
+    }
     const id = opts.id || uuid();
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
@@ -1737,6 +1743,12 @@ class SessionManager extends EventEmitter {
   }
 
   _handlePtyExit(sessionId, ptyProcess, exitInfo) {
+    const shutdownWaiter = this._shutdownExitWaiters.get(sessionId);
+    const isShutdownExit = !!(shutdownWaiter && shutdownWaiter.pty === ptyProcess);
+    if (isShutdownExit) {
+      this._shutdownExitWaiters.delete(sessionId);
+      shutdownWaiter.resolve(exitInfo || null);
+    }
     const entry = this.sessions.get(sessionId);
     // Guard against id reuse: if a fresh session has already taken this id
     // (e.g., via restart-session reusing old.id), the entry's pty will be the
@@ -1754,6 +1766,11 @@ class SessionManager extends EventEmitter {
       : null;
     if (entry.terminalSnapshot) entry.terminalSnapshot.dispose();
     this.sessions.delete(sessionId);
+    // App shutdown is process cleanup, not a user request to delete or suspend
+    // a logical session. Preserve meeting membership and persisted cards; the
+    // final shutdown flush writes the same logical state that existed before
+    // PTY drainage began.
+    if (isShutdownExit) return true;
     if (wasSuspended) {
       this.onSessionSuspended(sessionId, meetingId, dormantInfo, exitInfo || null);
     } else {
@@ -2230,6 +2247,83 @@ class SessionManager extends EventEmitter {
       }
     }
     this.sessions.clear();
+  }
+
+  // Electron must not tear down Node while node-pty still has a
+  // ThreadSafeFunction exit callback in flight. On Windows that race aborts the
+  // process with 0xc0000409 / FAST_FAIL_FATAL_APP_EXIT. Register every waiter
+  // before killing any PTY, then keep the JS environment alive until the
+  // existing onExit path has completed for all of them.
+  disposeGracefully(options = {}) {
+    if (this._shutdownDrainPromise) return this._shutdownDrainPromise;
+
+    this._isShuttingDown = true;
+    const logger = options.logger || console;
+    const configuredWarnAfterMs = Number(options.warnAfterMs);
+    const warnAfterMs = Number.isFinite(configuredWarnAfterMs)
+      ? Math.max(0, configuredWarnAfterMs)
+      : 5000;
+    const startedAt = Date.now();
+    const entries = [...this.sessions.entries()];
+
+    this._shutdownDrainPromise = (async () => {
+      const waits = [];
+      const killErrors = [];
+
+      // Set up all waiters first. A native exit callback cannot run JS until
+      // this synchronous setup yields, so no PTY can escape between snapshot
+      // and waiter registration.
+      for (const [sessionId, session] of entries) {
+        for (const timer of session.pendingTimers || []) clearTimeout(timer);
+        if (session.terminalOutputFlushTimer) {
+          clearTimeout(session.terminalOutputFlushTimer);
+          session.terminalOutputFlushTimer = null;
+        }
+        if (!session.pty) {
+          if (session.terminalSnapshot) session.terminalSnapshot.dispose();
+          this.sessions.delete(sessionId);
+          continue;
+        }
+        waits.push(new Promise((resolve) => {
+          this._shutdownExitWaiters.set(sessionId, { pty: session.pty, resolve });
+        }));
+      }
+
+      for (const [sessionId, session] of entries) {
+        if (!session.pty) continue;
+        try {
+          session.pty.kill();
+        } catch (error) {
+          // Do not pretend this PTY is drained. Its already-registered onExit
+          // waiter remains authoritative and prevents unsafe teardown.
+          killErrors.push({ sessionId, message: error && error.message ? error.message : String(error) });
+          logger.warn('[shutdown] PTY kill failed; waiting for native exit callback:', sessionId, error && error.message);
+        }
+      }
+
+      let warningTimer = null;
+      if (waits.length > 0 && warnAfterMs > 0) {
+        warningTimer = setTimeout(() => {
+          const pendingIds = [...this._shutdownExitWaiters.keys()];
+          logger.warn(`[shutdown] still draining ${pendingIds.length} PTY session(s): ${pendingIds.join(', ')}`);
+        }, warnAfterMs);
+        if (typeof warningTimer.unref === 'function') warningTimer.unref();
+      }
+
+      await Promise.all(waits);
+      if (warningTimer) clearTimeout(warningTimer);
+      this._shutdownExitWaiters.clear();
+      this.sessions.clear();
+
+      return {
+        safeToQuit: true,
+        drainedPtyCount: waits.length,
+        killErrors,
+        durationMs: Date.now() - startedAt,
+      };
+    })();
+
+    return this._shutdownDrainPromise;
   }
 
   static geminiDisplayName(id) {
