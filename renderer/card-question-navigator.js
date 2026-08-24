@@ -108,6 +108,7 @@ function createCardQuestionNavigator(options = {}) {
     entries.forEach((entry, index) => {
       const active = index === activeIndex;
       entry.button.classList.toggle('active', active);
+      entry.button.tabIndex = active ? 0 : -1;
       if (active) entry.button.setAttribute('aria-current', 'true');
       else entry.button.removeAttribute('aria-current');
     });
@@ -144,6 +145,7 @@ function createCardQuestionNavigator(options = {}) {
     entries.forEach((item, itemIndex) => {
       const active = itemIndex === index;
       item.button.classList.toggle('active', active);
+      item.button.tabIndex = active ? 0 : -1;
       if (active) item.button.setAttribute('aria-current', 'true');
       else item.button.removeAttribute('aria-current');
     });
@@ -198,6 +200,7 @@ function createCardQuestionNavigator(options = {}) {
       const button = doc.createElement('button');
       button.type = 'button';
       button.className = 'card-question-nav-item';
+      button.tabIndex = -1;
       button.dataset.questionIndex = String(index);
       button.setAttribute('aria-label', `跳转到问题 ${index + 1}：${summary}`);
       button.title = `问题 ${index + 1}：${summary}`;

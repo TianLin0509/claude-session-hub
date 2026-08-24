@@ -41,4 +41,7 @@ assert.doesNotMatch(navigator, /label\.textContent\s*=\s*['"]你['"]/,
 assert.match(navigator, /label\.textContent\s*=\s*`Q\$\{index \+ 1\}`/);
 assert.match(navigator, /`问题 \$\{entry\.index \+ 1\} \/ \$\{entries\.length\}`/);
 
+assert.match(navigator, /button\.tabIndex\s*=\s*-1/);
+assert.match(navigator, /button\.tabIndex\s*=\s*active \? 0 : -1/);
+
 console.log('unit-card-question-navigator OK');

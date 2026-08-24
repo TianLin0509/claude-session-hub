@@ -3634,11 +3634,19 @@ function refitActiveTerminalFromPreview() {
   });
 }
 
+const previewClipboard = process.env.CLAUDE_HUB_E2E === '1'
+    && process.env.CLAUDE_HUB_E2E_FAKE_CLIPBOARD === '1'
+  ? {
+      writeText(value) {
+        window.__hubE2EPreviewClipboardText = String(value);
+      },
+    }
+  : clipboard;
 const previewPanel = createPreviewPanelController({
   document,
   ipcRenderer,
   shell,
-  clipboard,
+  clipboard: previewClipboard,
   fs,
   marked,
   DOMPurify,
@@ -5579,6 +5587,11 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
       return provider && typeof provider.getActivationStats === 'function'
         ? provider.getActivationStats()
         : null;
+    },
+    previewWorkbench: {
+      state: key => previewPanel.getPreviewState(key),
+      watchStats: () => previewPanel.getFileWatchStats(),
+      findState: () => previewPanel.getPreviewFindState(),
     },
     terminalLiveScreenText: (sessionId) => terminalActivityMonitor.extractLiveScreenLines(sessionId).join('\n'),
     cardQuestionNavigator: {

@@ -18,9 +18,12 @@ const FIXTURE_DIR = path.join(TEMP_ROOT, 'workspace');
 const FIRST_PATH = path.join(FIXTURE_DIR, 'first-report.md');
 const SECOND_PATH = path.join(FIXTURE_DIR, 'second-notes.md');
 const THIRD_PATH = path.join(FIXTURE_DIR, 'third-checklist.md');
+const HTML_PATH = path.join(FIXTURE_DIR, 'find-page.html');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'preview-workbench');
 const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `preview-workbench-${RUN_ID}.png`);
 const QUICK_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `preview-quick-open-${RUN_ID}.png`);
+const FILE_CHANGE_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `preview-file-changed-${RUN_ID}.png`);
+const FIND_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `preview-find-${RUN_ID}.png`);
 const RESULT_PATH = path.join(ARTIFACT_DIR, `result-${RUN_ID}.json`);
 
 function canListen(port) {
@@ -41,13 +44,19 @@ async function availablePort(preferred) {
 
 async function waitFor(client, expression, timeoutMs = 12000) {
   const deadline = Date.now() + timeoutMs;
+  let lastError = null;
   while (Date.now() < deadline) {
     try {
       if (await client.eval(expression)) return;
-    } catch (_) {}
+    } catch (error) {
+      lastError = error;
+      if (/WebSocket|not open|closed|ECONN|socket/i.test(String(error && error.message || error))) {
+        throw new Error(`CDP connection lost while waiting for ${expression}: ${error.message}`);
+      }
+    }
     await _waitMs(80);
   }
-  throw new Error(`timeout waiting for: ${expression}`);
+  throw new Error(`timeout waiting for: ${expression}${lastError ? `; last error: ${lastError.message}` : ''}`);
 }
 
 async function capture(client, target) {
@@ -83,6 +92,7 @@ async function main() {
   fs.writeFileSync(FIRST_PATH, '# First report\n\nCOPY_FULL_TEXT_MARKER\n', 'utf8');
   fs.writeFileSync(SECOND_PATH, '# Second notes\n\nTab switching keeps state.\n', 'utf8');
   fs.writeFileSync(THIRD_PATH, '# Third checklist\n\nOpened through quick path.\n', 'utf8');
+  fs.writeFileSync(HTML_PATH, '<!doctype html><meta charset="utf-8"><h1>Webview find</h1><p>WEBVIEW_FIND_MARKER first</p><p>WEBVIEW_FIND_MARKER second</p>', 'utf8');
 
   const port = await availablePort(Number(process.env.HUB_PREVIEW_E2E_PORT || 19871));
   const result = {
@@ -91,20 +101,25 @@ async function main() {
     fixtureDir: FIXTURE_DIR,
     screenshot: SCREENSHOT_PATH,
     quickOpenScreenshot: QUICK_SCREENSHOT_PATH,
+    fileChangeScreenshot: FILE_CHANGE_SCREENSHOT_PATH,
+    findScreenshot: FIND_SCREENSHOT_PATH,
     resultPath: RESULT_PATH,
   };
   let hub = null;
   let client = null;
+  let testBodyPassed = false;
 
   try {
     hub = await launchIsolatedHub({
       dataDir: DATA_DIR,
       port,
       label: 'preview-workbench',
+      windowMode: 'hidden',
       extraEnv: {
         CLAUDE_HUB_HOME_DIR: HOME_DIR,
         DEEPSEEK_API_KEY: '',
         CLAUDE_HUB_E2E: '1',
+        CLAUDE_HUB_E2E_FAKE_CLIPBOARD: '1',
       },
     });
     client = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/i.test(target.url || ''));
@@ -139,16 +154,35 @@ async function main() {
     await waitFor(client, `document.getElementById('preview-title')?.title === ${JSON.stringify(FIRST_PATH)}`);
 
     const copied = await client.eval(`(async () => {
-      const { clipboard } = require('electron');
+      window.__hubE2EPreviewClipboardText = '';
       document.getElementById('preview-copy-content').click();
-      await new Promise(resolve => setTimeout(resolve, 80));
-      const content = clipboard.readText();
+      const deadline = Date.now() + 2000;
+      while (!String(window.__hubE2EPreviewClipboardText || '').includes('COPY_FULL_TEXT_MARKER') && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      const content = String(window.__hubE2EPreviewClipboardText || '');
       document.getElementById('preview-copy-path').click();
-      await new Promise(resolve => setTimeout(resolve, 30));
-      return { content, path:clipboard.readText() };
+      const pathDeadline = Date.now() + 2000;
+      while (window.__hubE2EPreviewClipboardText !== ${JSON.stringify(FIRST_PATH)} && Date.now() < pathDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      return {
+        content,
+        path:String(window.__hubE2EPreviewClipboardText || ''),
+        contentAnnouncement:document.getElementById('preview-copy-content').getAttribute('aria-label'),
+        pathAnnouncement:document.getElementById('preview-copy-path').getAttribute('aria-label'),
+      };
     })()`);
     assert.match(copied.content, /COPY_FULL_TEXT_MARKER/);
     assert.equal(copied.path, FIRST_PATH);
+    assert.equal(copied.contentAnnouncement, '全文已复制');
+    assert.equal(copied.pathAnnouncement, '路径已复制');
+    await waitFor(client, `document.getElementById('preview-action-status').textContent === '路径已复制'`);
+    result.copyLiveAnnouncement = '路径已复制';
+    await waitFor(client, `!!document.querySelector('#preview-copy-content span')
+      && !!document.querySelector('#preview-copy-path span')
+      && document.getElementById('preview-copy-content').getAttribute('aria-label') === '复制全文'
+      && document.getElementById('preview-copy-path').getAttribute('aria-label') === '复制路径或 URL'`);
 
     await client.eval(`document.getElementById('preview-new-tab').click()`);
     await waitFor(client, `document.getElementById('preview-quick-open').style.display === 'flex'`);
@@ -165,11 +199,14 @@ async function main() {
 
     await client.eval(`(() => {
       const active = document.querySelector('#preview-tabs .preview-tab.active');
-      active.closest('.preview-tab-shell').querySelector('.preview-tab-close').click();
+      active.focus();
+      active.dispatchEvent(new KeyboardEvent('keydown', { key:'Delete', bubbles:true, cancelable:true }));
       return true;
     })()`);
     await waitFor(client, `document.querySelectorAll('#preview-tabs .preview-tab').length === 2
-      && document.getElementById('preview-title')?.title !== ${JSON.stringify(THIRD_PATH)}`);
+      && document.getElementById('preview-title')?.title !== ${JSON.stringify(THIRD_PATH)}
+      && document.activeElement === document.querySelector('#preview-tabs .preview-tab.active')`);
+    result.deleteTabFocusRestored = true;
 
     result.final = await client.eval(`(() => ({
       panelDisplay:document.getElementById('preview-panel').style.display,
@@ -180,21 +217,70 @@ async function main() {
       quickPathButton:document.getElementById('btn-preview-path').innerText.trim(),
       panelWidth:document.getElementById('preview-panel').getBoundingClientRect().width,
       copyActionLabelDisplay:getComputedStyle(document.querySelector('#preview-open-path span')).display,
+      copyPrimaryLabelDisplay:getComputedStyle(document.querySelector('#preview-copy-content span')).display,
+      headerActionsClientWidth:document.querySelector('.preview-header-actions').clientWidth,
+      headerActionsScrollWidth:document.querySelector('.preview-header-actions').scrollWidth,
       tabCloseTag:document.querySelector('#preview-tabs .preview-tab-close').tagName,
       tabControls:document.querySelector('#preview-tabs .preview-tab.active').getAttribute('aria-controls'),
       panelRole:document.getElementById('preview-body').getAttribute('role'),
       panelLabelledBy:document.getElementById('preview-body').getAttribute('aria-labelledby'),
       activeTabNodeId:document.querySelector('#preview-tabs .preview-tab.active').id,
+      findButtonTitle:document.getElementById('preview-find-toggle').title,
     }))()`);
     assert.equal(result.final.panelDisplay, 'flex');
     assert.equal(result.final.tabCount, 2);
     assert.match(result.final.quickPathButton, /路径预览/);
     assert.ok(result.final.panelWidth < 820, JSON.stringify(result.final));
     assert.equal(result.final.copyActionLabelDisplay, 'none', 'panel container query must compact the narrow toolbar');
+    assert.notEqual(result.final.copyPrimaryLabelDisplay, 'none', 'copy text remains discoverable at common split width');
+    assert.ok(result.final.headerActionsScrollWidth <= result.final.headerActionsClientWidth + 1, JSON.stringify(result.final));
     assert.equal(result.final.tabCloseTag, 'BUTTON');
     assert.equal(result.final.tabControls, 'preview-body');
     assert.equal(result.final.panelRole, 'tabpanel');
     assert.equal(result.final.panelLabelledBy, result.final.activeTabNodeId);
+    assert.match(result.final.findButtonTitle, /Ctrl\+F/);
+    result.splitterKeyboard = await client.eval(`(() => {
+      const splitter = document.getElementById('preview-splitter');
+      const panel = document.getElementById('preview-panel');
+      const beforeValue = Number(splitter.getAttribute('aria-valuenow'));
+      const beforeWidth = panel.getBoundingClientRect().width;
+      splitter.focus();
+      splitter.dispatchEvent(new KeyboardEvent('keydown', { key:'ArrowLeft', bubbles:true, cancelable:true }));
+      const afterValue = Number(splitter.getAttribute('aria-valuenow'));
+      const afterWidth = panel.getBoundingClientRect().width;
+      const valueText = splitter.getAttribute('aria-valuetext');
+      splitter.dispatchEvent(new KeyboardEvent('keydown', { key:'ArrowRight', bubbles:true, cancelable:true }));
+      return { beforeValue, afterValue, beforeWidth, afterWidth, valueText, role:splitter.getAttribute('role') };
+    })()`);
+    assert.equal(result.splitterKeyboard.role, 'separator');
+    assert.equal(result.splitterKeyboard.afterValue, result.splitterKeyboard.beforeValue - 5);
+    assert.ok(result.splitterKeyboard.afterWidth > result.splitterKeyboard.beforeWidth);
+    assert.match(result.splitterKeyboard.valueText, /左侧 .*预览/);
+    result.layoutToggleA11y = await client.eval(`(() => {
+      const button = document.getElementById('preview-toggle-layout');
+      const svgBefore = !!button.querySelector('svg');
+      button.click();
+      const fullscreen = {
+        pressed:button.getAttribute('aria-pressed'),
+        label:button.getAttribute('aria-label'),
+        svg:!!button.querySelector('svg'),
+      };
+      button.click();
+      return {
+        svgBefore,
+        fullscreen,
+        restoredPressed:button.getAttribute('aria-pressed'),
+        restoredLabel:button.getAttribute('aria-label'),
+      };
+    })()`);
+    assert.deepEqual(result.layoutToggleA11y, {
+      svgBefore:true,
+      fullscreen:{ pressed:'true', label:'全屏预览', svg:true },
+      restoredPressed:'false',
+      restoredLabel:'全屏预览',
+    });
+    result.watchStatsWithTabs = await client.eval(`window.__hubE2E.previewWorkbench.watchStats()`);
+    assert.deepEqual(result.watchStatsWithTabs, { directories:1, files:2, listeners:2, degradedDirectories:0, cleanupFailures:0 });
 
     result.tabKeyboard = await client.eval(`(async () => {
       const active = document.querySelector('#preview-tabs .preview-tab.active');
@@ -217,6 +303,242 @@ async function main() {
     assert.equal(result.tabKeyboard.rightPath, SECOND_PATH);
     assert.ok(result.tabKeyboard.rightFocused);
 
+    fs.writeFileSync(SECOND_PATH, '# Second notes updated\n\nFILE_WATCH_UPDATED_MARKER one\n\nFILE_WATCH_UPDATED_MARKER two\n\nFILE_WATCH_UPDATED_MARKER three\n\nCross **inline** phrase\n', 'utf8');
+    await waitFor(client, `!document.getElementById('preview-change-badge').hidden
+      && document.querySelector('#preview-tabs .preview-tab-shell.active').classList.contains('stale')`);
+    result.fileWatchBeforeReload = await client.eval(`(() => ({
+      badge:document.getElementById('preview-change-badge').textContent,
+      badgeRole:document.getElementById('preview-change-badge').getAttribute('role'),
+      badgeLive:document.getElementById('preview-change-badge').getAttribute('aria-live'),
+      badgeLabel:document.getElementById('preview-change-badge').getAttribute('aria-label'),
+      reloadAttention:document.getElementById('preview-reload').classList.contains('attention'),
+      oldContentStillVisible:document.getElementById('preview-body').innerText.includes('Tab switching keeps state'),
+      newContentAlreadyVisible:document.getElementById('preview-body').innerText.includes('FILE_WATCH_UPDATED_MARKER'),
+    }))()`);
+    assert.deepEqual(result.fileWatchBeforeReload, {
+      badge:'已更新',
+      badgeRole:'status',
+      badgeLive:'polite',
+      badgeLabel:'文件已更新，点击重新加载',
+      reloadAttention:true,
+      oldContentStillVisible:true,
+      newContentAlreadyVisible:false,
+    });
+    await capture(client, FILE_CHANGE_SCREENSHOT_PATH);
+    await client.eval(`document.getElementById('preview-reload').click()`);
+    await waitFor(client, `document.getElementById('preview-body').innerText.includes('FILE_WATCH_UPDATED_MARKER')
+      && document.getElementById('preview-change-badge').hidden`);
+    result.fileWatchAfterReload = await client.eval(`(() => ({
+      badgeHidden:document.getElementById('preview-change-badge').hidden,
+      reloadAttention:document.getElementById('preview-reload').classList.contains('attention'),
+      updatedContent:document.getElementById('preview-body').innerText.includes('FILE_WATCH_UPDATED_MARKER'),
+    }))()`);
+    assert.deepEqual(result.fileWatchAfterReload, {
+      badgeHidden:true,
+      reloadAttention:false,
+      updatedContent:true,
+    });
+
+    await client.send('Input.dispatchKeyEvent', {
+      type:'keyDown', key:'f', code:'KeyF', modifiers:2, windowsVirtualKeyCode:70,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type:'keyUp', key:'f', code:'KeyF', modifiers:2, windowsVirtualKeyCode:70,
+    });
+    await waitFor(client, `!document.getElementById('preview-find-bar').hidden
+      && document.activeElement?.id === 'preview-find-input'`);
+    result.findToggleA11y = await client.eval(`(() => {
+      const toggle = document.getElementById('preview-find-toggle');
+      return {
+        controls:toggle.getAttribute('aria-controls'),
+        expanded:toggle.getAttribute('aria-expanded'),
+      };
+    })()`);
+    assert.deepEqual(result.findToggleA11y, { controls:'preview-find-bar', expanded:'true' });
+    await client.eval(`(() => {
+      const input = document.getElementById('preview-find-input');
+      input.value = 'FILE_WATCH_UPDATED_MARKER';
+      input.dispatchEvent(new Event('input', { bubbles:true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', bubbles:true, cancelable:true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', bubbles:true, cancelable:true }));
+    })()`);
+    await waitFor(client, `document.getElementById('preview-find-count').textContent === '2 / 3'`);
+    result.domFindDebounceRace = true;
+    result.domFind = await client.eval(`(() => ({
+      count:document.getElementById('preview-find-count').textContent,
+      allHighlights:CSS.highlights.get('preview-find-all')?.size || 0,
+      currentHighlights:CSS.highlights.get('preview-find-current')?.size || 0,
+      terminalSearchVisible:!!document.querySelector('.xterm-search-bar:not(.hidden)'),
+    }))()`);
+    assert.deepEqual(result.domFind, {
+      count:'2 / 3',
+      allHighlights:2,
+      currentHighlights:1,
+      terminalSearchVisible:false,
+    });
+    await capture(client, FIND_SCREENSHOT_PATH);
+    await client.eval(`document.getElementById('preview-find-input').dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', bubbles:true, cancelable:true }))`);
+    await waitFor(client, `document.getElementById('preview-find-count').textContent === '3 / 3'`);
+    await client.eval(`(() => {
+      const input = document.getElementById('preview-find-input');
+      input.value = 'Cross inline phrase';
+      input.dispatchEvent(new Event('input', { bubbles:true }));
+    })()`);
+    await waitFor(client, `document.getElementById('preview-find-count').textContent === '1 / 1'`);
+    result.crossNodeFind = await client.eval(`(() => {
+      const highlight = CSS.highlights.get('preview-find-current');
+      const range = highlight ? Array.from(highlight)[0] : null;
+      return { count:document.getElementById('preview-find-count').textContent, text:range?.toString() || '' };
+    })()`);
+    assert.deepEqual(result.crossNodeFind, { count:'1 / 1', text:'Cross inline phrase' });
+    await client.send('Input.dispatchKeyEvent', { type:'keyDown', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 });
+    await client.send('Input.dispatchKeyEvent', { type:'keyUp', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 });
+    await waitFor(client, `document.getElementById('preview-find-bar').hidden
+      && document.getElementById('preview-panel').style.display === 'flex'`);
+    assert.equal(await client.eval(`document.getElementById('preview-find-toggle').getAttribute('aria-expanded')`), 'false');
+
+    await client.eval(`window.openPreviewPanel(${JSON.stringify(HTML_PATH)})`);
+    await waitFor(client, `document.getElementById('preview-title').title === ${JSON.stringify(HTML_PATH)}
+      && !!document.querySelector('#preview-body webview')
+      && document.querySelector('#preview-body webview').isLoading() === false`);
+    result.webviewGuestProbe = await client.eval(`(async () => {
+      const webview = document.querySelector('#preview-body webview');
+      const text = await webview.executeJavaScript('document.body.innerText');
+      return { markerCount:(String(text).match(/WEBVIEW_FIND_MARKER/g) || []).length };
+    })()`);
+    assert.deepEqual(result.webviewGuestProbe, { markerCount:2 });
+    await client.eval(`(async () => {
+      const webview = document.querySelector('#preview-body webview');
+      webview.focus();
+      await webview.executeJavaScript('document.body.tabIndex = -1; document.body.focus(); true;');
+    })()`);
+    await client.send('Input.dispatchKeyEvent', {
+      type:'keyDown', key:'f', code:'KeyF', modifiers:2, windowsVirtualKeyCode:70,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type:'keyUp', key:'f', code:'KeyF', modifiers:2, windowsVirtualKeyCode:70,
+    });
+    await waitFor(client, `document.activeElement?.id === 'preview-find-input'`);
+    result.webviewGuestShortcut = true;
+    await client.eval(`(() => {
+      const input = document.getElementById('preview-find-input');
+      input.value = 'WEBVIEW_FIND_MARKER';
+      input.dispatchEvent(new Event('input', { bubbles:true }));
+    })()`);
+    await waitFor(client, `document.getElementById('preview-find-count').textContent === '1 / 2'`);
+    await client.eval(`document.getElementById('preview-find-input').dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', bubbles:true, cancelable:true }))`);
+    await waitFor(client, `document.getElementById('preview-find-count').textContent === '2 / 2'`);
+    result.webviewFind = await client.eval(`(() => ({
+      count:document.getElementById('preview-find-count').textContent,
+      webviewVisible:!!document.querySelector('#preview-body webview'),
+      scope:document.getElementById('preview-find-input').getAttribute('aria-description'),
+    }))()`);
+    assert.deepEqual(result.webviewFind, {
+      count:'2 / 2',
+      webviewVisible:true,
+      scope:'查找当前页面主文档；不包含内嵌 iframe',
+    });
+    await client.eval(`(() => {
+      const input = document.getElementById('preview-find-input');
+      for (let index = 0; index < 3; index += 1) {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', bubbles:true, cancelable:true }));
+      }
+    })()`);
+    await waitFor(client, `document.getElementById('preview-find-count').textContent === '1 / 2'`);
+    result.webviewRapidFind = { count:'1 / 2', queuedSteps:3 };
+    await client.send('Input.dispatchKeyEvent', { type:'keyDown', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 });
+    await client.send('Input.dispatchKeyEvent', { type:'keyUp', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 });
+    await waitFor(client, `document.getElementById('preview-find-bar').hidden`);
+    await client.eval(`(() => {
+      const webview = document.querySelector('#preview-body webview');
+      webview.dispatchEvent(new CustomEvent('render-process-gone', { detail:{ reason:'crashed' } }));
+    })()`);
+    await waitFor(client, `document.getElementById('preview-body').innerText.includes('预览进程异常退出')
+      && document.getElementById('preview-change-badge').textContent === '读取异常'`);
+    result.webviewCrashState = await client.eval(`(() => ({
+      badge:document.getElementById('preview-change-badge').textContent,
+      body:document.getElementById('preview-body').innerText,
+    }))()`);
+    assert.equal(result.webviewCrashState.badge, '读取异常');
+    assert.match(result.webviewCrashState.body, /预览进程异常退出/);
+    await client.eval(`document.getElementById('preview-reload').click()`);
+    await waitFor(client, `!!document.querySelector('#preview-body webview')
+      && document.querySelector('#preview-body webview').isLoading() === false
+      && document.getElementById('preview-change-badge').hidden`);
+    await client.eval(`(() => {
+      const active = document.querySelector('#preview-tabs .preview-tab.active');
+      active.closest('.preview-tab-shell').querySelector('.preview-tab-close').click();
+    })()`);
+    await waitFor(client, `document.querySelectorAll('#preview-tabs .preview-tab').length === 2
+      && document.getElementById('preview-title').title === ${JSON.stringify(SECOND_PATH)}`);
+
+    fs.unlinkSync(FIRST_PATH);
+    await waitFor(client, `Array.from(document.querySelectorAll('#preview-tabs .preview-tab-shell'))
+      .some(shell => shell.querySelector('.preview-tab')?.title === ${JSON.stringify(FIRST_PATH)}
+        && shell.classList.contains('missing'))`);
+    result.missingFileState = await client.eval(`(() => {
+      const tab = Array.from(document.querySelectorAll('#preview-tabs .preview-tab'))
+        .find(item => item.title === ${JSON.stringify(FIRST_PATH)});
+      return {
+        missing:tab.closest('.preview-tab-shell').classList.contains('missing'),
+        aria:tab.getAttribute('aria-label'),
+        activePath:document.getElementById('preview-title').title,
+      };
+    })()`);
+    assert.equal(result.missingFileState.missing, true);
+    assert.match(result.missingFileState.aria, /文件已移除/);
+    assert.equal(result.missingFileState.activePath, SECOND_PATH);
+    fs.writeFileSync(FIRST_PATH, '# First report restored\n\nCOPY_FULL_TEXT_MARKER\n', 'utf8');
+    await waitFor(client, `Array.from(document.querySelectorAll('#preview-tabs .preview-tab-shell'))
+      .some(shell => shell.querySelector('.preview-tab')?.title === ${JSON.stringify(FIRST_PATH)}
+        && shell.classList.contains('stale') && !shell.classList.contains('missing'))`);
+
+    await client.eval(`(() => {
+      const panel = document.getElementById('preview-panel');
+      window.__previewE2EPriorFlex = panel.style.flex;
+      panel.style.flex = '0 0 220px';
+      document.getElementById('preview-find-toggle').click();
+    })()`);
+    await waitFor(client, `!document.getElementById('preview-find-bar').hidden
+      && document.getElementById('preview-panel').getBoundingClientRect().width <= 222`);
+    result.narrowFind = await client.eval(`(() => {
+      const panel = document.getElementById('preview-panel');
+      const bar = document.getElementById('preview-find-bar');
+      const input = document.getElementById('preview-find-input').getBoundingClientRect();
+      const count = document.getElementById('preview-find-count').getBoundingClientRect();
+      const actions = document.querySelector('.preview-header-actions');
+      const panelRect = panel.getBoundingClientRect();
+      const closeRect = document.getElementById('preview-close').getBoundingClientRect();
+      const actionRows = new Set(Array.from(actions.querySelectorAll('button'))
+        .filter(button => getComputedStyle(button).display !== 'none')
+        .map(button => Math.round(button.getBoundingClientRect().top)));
+      return {
+        panelWidth:panel.getBoundingClientRect().width,
+        barClientWidth:bar.clientWidth,
+        barScrollWidth:bar.scrollWidth,
+        inputTop:input.top,
+        controlsTop:count.top,
+        headerActionsClientWidth:actions.clientWidth,
+        headerActionsScrollWidth:actions.scrollWidth,
+        actionRows:actionRows.size,
+        closeInsidePanel:closeRect.left >= panelRect.left && closeRect.right <= panelRect.right + 1,
+        bodyScrollWidth:document.body.scrollWidth,
+        viewportWidth:innerWidth,
+      };
+    })()`);
+    assert.ok(result.narrowFind.panelWidth <= 222, JSON.stringify(result.narrowFind));
+    assert.ok(result.narrowFind.barScrollWidth <= result.narrowFind.barClientWidth + 1, JSON.stringify(result.narrowFind));
+    assert.ok(result.narrowFind.controlsTop > result.narrowFind.inputTop, JSON.stringify(result.narrowFind));
+    assert.ok(result.narrowFind.headerActionsScrollWidth <= result.narrowFind.headerActionsClientWidth + 1, JSON.stringify(result.narrowFind));
+    assert.ok(result.narrowFind.actionRows >= 2, JSON.stringify(result.narrowFind));
+    assert.equal(result.narrowFind.closeInsidePanel, true);
+    assert.equal(result.narrowFind.bodyScrollWidth, result.narrowFind.viewportWidth);
+    await client.eval(`(() => {
+      document.getElementById('preview-find-close').click();
+      document.getElementById('preview-panel').style.flex = window.__previewE2EPriorFlex || '';
+    })()`);
+    await waitFor(client, `document.getElementById('preview-find-bar').hidden`);
+
     await client.eval(`(() => {
       const button = document.getElementById('preview-new-tab');
       button.focus();
@@ -228,18 +550,24 @@ async function main() {
       const input = document.getElementById('preview-quick-open-input');
       return {
         role:input.getAttribute('role'),
+        name:input.getAttribute('aria-label'),
         controls:input.getAttribute('aria-controls'),
         expanded:input.getAttribute('aria-expanded'),
         activeDescendant:input.getAttribute('aria-activedescendant'),
         statusLive:document.getElementById('preview-quick-open-status').getAttribute('aria-live'),
+        optionLabel:document.getElementById(input.getAttribute('aria-activedescendant')).getAttribute('aria-label'),
+        optionIconHidden:document.querySelector('.preview-quick-open-item-icon').getAttribute('aria-hidden'),
       };
     })()`);
     assert.deepEqual(result.quickOpenA11y, {
       role:'combobox',
+      name:'输入路径或搜索文件',
       controls:'preview-quick-open-results',
       expanded:'true',
       activeDescendant:'preview-quick-open-option-0',
       statusLive:'polite',
+      optionLabel:'second-notes.md，' + SECOND_PATH + '，最近',
+      optionIconHidden:'true',
     });
     await capture(client, QUICK_SCREENSHOT_PATH);
     await client.eval(`document.getElementById('preview-quick-open-close').click()`);
@@ -254,28 +582,51 @@ async function main() {
       return {
         ok:openResult && openResult.ok,
         noticeText:notice?.textContent || '',
+        noticeRole:notice?.getAttribute('role') || '',
+        noticeLive:notice?.getAttribute('aria-live') || '',
         noticePosition:notice ? getComputedStyle(notice).position : '',
         noticeZ:notice ? Number(getComputedStyle(notice).zIndex) : 0,
       };
     })()`);
     assert.equal(result.visibleOpenError.ok, false);
     assert.match(result.visibleOpenError.noticeText, /文件打开失败/);
+    assert.equal(result.visibleOpenError.noticeRole, 'alert');
+    assert.equal(result.visibleOpenError.noticeLive, 'assertive');
     assert.equal(result.visibleOpenError.noticePosition, 'fixed');
     assert.ok(result.visibleOpenError.noticeZ >= 14000, JSON.stringify(result.visibleOpenError));
-    result.success = true;
-    fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
-    console.log(JSON.stringify(result, null, 2));
+    await client.eval(`document.getElementById('preview-close').click()`);
+    await waitFor(client, `window.__hubE2E.previewWorkbench.watchStats().files === 0`);
+    result.resourceRelease = await client.eval(`(() => ({
+      watch:window.__hubE2E.previewWorkbench.watchStats(),
+      find:window.__hubE2E.previewWorkbench.findState(),
+      panel:document.getElementById('preview-panel').style.display,
+    }))()`);
+    assert.deepEqual(result.resourceRelease.watch, { directories:0, files:0, listeners:0, degradedDirectories:0, cleanupFailures:0 });
+    assert.equal(result.resourceRelease.find.query, '');
+    assert.equal(result.resourceRelease.find.matches, 0);
+    assert.equal(result.resourceRelease.panel, 'none');
+    testBodyPassed = true;
   } catch (error) {
     if (hub) console.error('[isolated hub log]\n' + hub.log().slice(-100).join('\n'));
     throw error;
   } finally {
-    if (client) await client.close().catch(() => {});
-    if (hub) await gracefulQuit(hub);
-    const resolved = path.resolve(TEMP_ROOT);
-    if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
-        && path.basename(resolved).startsWith('hub-preview-workbench-')) {
-      fs.rmSync(resolved, { recursive: true, force: true });
+    try {
+      if (client) await client.close().catch(error => {
+        console.warn('[preview-e2e] CDP client close failed:', error && error.message);
+      });
+      if (hub) result.teardown = await gracefulQuit(hub);
+    } finally {
+      const resolved = path.resolve(TEMP_ROOT);
+      if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
+          && path.basename(resolved).startsWith('hub-preview-workbench-')) {
+        fs.rmSync(resolved, { recursive: true, force: true });
+      }
     }
+  }
+  if (testBodyPassed) {
+    result.success = true;
+    fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
+    console.log(JSON.stringify(result, null, 2));
   }
 }
 

@@ -5,7 +5,12 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const path = require('node:path');
 
-const { buildIsolatedHubEnv } = require('./helpers/hub-launcher.js');
+const {
+  buildIsolatedHubEnv,
+  gracefulQuit,
+  scrubParentControlEnv,
+  _verifyCdpPortOwner,
+} = require('./helpers/hub-launcher.js');
 
 test('isolated Hub defaults cannot inherit the real home or DeepSeek key', () => {
   const dataDir = path.join(os.tmpdir(), 'hub-launcher-unit', 'hub-e2e-data');
@@ -42,4 +47,58 @@ test('ordinary E2E cannot override safety-critical isolation variables', () => {
   }, {}), /forbids overriding CLAUDE_HUB_DATA_DIR/);
   assert.throws(() => buildIsolatedHubEnv('C:\\Users\\real-user\\.claude-session-hub', {}, {}),
     /requires dataDir inside a dedicated OS temp subdirectory/);
+});
+
+test('hidden E2E window mode is explicit and forces E2E isolation', () => {
+  const dataDir = path.join(os.tmpdir(), 'hub-launcher-unit', 'hidden-window');
+  const env = buildIsolatedHubEnv(dataDir, {
+    CLAUDE_HUB_E2E_WINDOW_MODE: 'visible',
+  }, {}, { windowMode: 'hidden' });
+  assert.equal(env.CLAUDE_HUB_E2E, '1');
+  assert.equal(env.CLAUDE_HUB_E2E_WINDOW_MODE, 'hidden');
+  assert.throws(() => buildIsolatedHubEnv(dataDir, {}, {}, { windowMode: 'minimized' }),
+    /windowMode must be visible or hidden/);
+});
+
+test('isolated Hub strips parent CLI and Hub routing variables', () => {
+  const clean = scrubParentControlEnv({
+    KEEP_ME: 'yes',
+    CLAUDECODE: '1',
+    CLAUDE_CODE_ENTRYPOINT: 'parent',
+    CLAUDE_HUB_PORT: '3456',
+    CLAUDE_HUB_TOKEN: 'secret',
+    CLAUDE_HUB_SESSION_ID: 'parent-session',
+    ARENA_HUB_PORT: '9999',
+    AI_TEAM_HUB_CALLBACK_URL: 'http://parent',
+    CODEX_THREAD_ID: 'parent-thread',
+  });
+  assert.deepEqual(clean, { KEEP_ME: 'yes' });
+
+  const dataDir = path.join(os.tmpdir(), 'hub-launcher-unit', 'clean-parent-env');
+  const env = buildIsolatedHubEnv(dataDir, {
+    CLAUDE_HUB_PORT: 'fixture-port',
+  }, {
+    CLAUDE_HUB_PORT: 'parent-port',
+    CLAUDE_CODE_ENTRYPOINT: 'parent',
+  });
+  assert.equal(env.CLAUDE_HUB_PORT, 'fixture-port', 'explicit fixture routing remains available');
+  assert.equal(env.CLAUDE_CODE_ENTRYPOINT, undefined);
+});
+
+test('CDP ownership verification binds the listener to the spawned PID', async () => {
+  assert.equal(await _verifyCdpPortOwner(19871, 4242, async () => ({ stdout: '111,4242' })), true);
+  assert.equal(await _verifyCdpPortOwner(19871, 4242, async () => ({ stdout: '111,222' })), false);
+});
+
+test('gracefulQuit rejects an already-crashed child instead of reporting success', async () => {
+  const hub = {
+    label: 'crashed-fixture',
+    child: { exitCode: 7, signalCode: null },
+    isAlive: () => false,
+    exitCode: () => 7,
+    exitSignal: () => null,
+    spawnError: () => null,
+    log: () => ['fatal fixture'],
+  };
+  await assert.rejects(() => gracefulQuit(hub), /exited before teardown: code=7/);
 });

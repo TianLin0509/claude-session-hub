@@ -47,6 +47,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
   const port = await availablePort(Number(process.env.HUB_CARD_QUESTION_NAV_E2E_PORT || 19641));
   let hub = null;
   let client = null;
+  let testBodyPassed = false;
   const result = { runId: RUN_ID, port };
   try {
     fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
@@ -56,6 +57,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       dataDir,
       port,
       label: 'card-question-navigator',
+      windowMode: 'hidden',
       extraEnv: {
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_HOME_DIR: homeDir,
@@ -98,6 +100,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       return {
         state: window.__hubE2E.cardQuestionNavigator.state(),
         markerTexts: buttons.map(button => button.textContent.trim()),
+        tabStops:buttons.filter(button => button.tabIndex === 0).map(button => Number(button.dataset.questionIndex)),
         dotCount: root.querySelectorAll('.card-question-nav-dot').length,
         labels: buttons.map(button => button.getAttribute('aria-label')),
         tooltipHidden: root.querySelector('.card-question-nav-tooltip').hidden,
@@ -106,6 +109,8 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       };
     })()`);
     assert.deepEqual(result.initial.markerTexts, ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6']);
+    assert.equal(result.initial.tabStops.length, 1);
+    assert.equal(result.initial.tabStops[0], result.initial.state.activeIndex);
     assert.equal(result.initial.dotCount, 6);
     assert.equal(result.initial.tooltipHidden, false);
     assert.match(result.initial.tooltipText, /问题 3 \/ 6[\s\S]*第 3 个方案/);
@@ -137,10 +142,14 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       return {
         state: window.__hubE2E.cardQuestionNavigator.state(),
         focusedIndex: Number(document.activeElement.dataset.questionIndex),
+        tabStops:[...document.querySelectorAll('#card-question-nav .card-question-nav-item')]
+          .filter(item => item.tabIndex === 0)
+          .map(item => Number(item.dataset.questionIndex)),
       };
     })()`);
     assert.equal(result.keyboard.state.activeIndex, 4);
     assert.equal(result.keyboard.focusedIndex, 4);
+    assert.deepEqual(result.keyboard.tabStops, [4]);
 
     result.bottom = await client.eval(`(() => {
       const overlay = document.getElementById('msg-overlay');
@@ -237,6 +246,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       activeLabelOpacity: getComputedStyle(document.querySelector('#card-question-nav .card-question-nav-item.active .card-question-nav-label')).opacity,
       inactiveLabelOpacity: getComputedStyle(document.querySelector('#card-question-nav .card-question-nav-item:not(.active) .card-question-nav-label')).opacity,
       tooltipText: document.querySelector('#card-question-nav .card-question-nav-tooltip').textContent.trim(),
+      tooltipWidth:tooltipRect.width,
       minMarkerWidth:Math.min(...markerRects.map(rect => rect.width)),
       minMarkerHeight:Math.min(...markerRects.map(rect => rect.height)),
       tooltipTop:tooltipRect.top,
@@ -252,6 +262,7 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
     assert.equal(result.responsive.activeLabelOpacity, '1');
     assert.equal(result.responsive.inactiveLabelOpacity, '0');
     assert.match(result.responsive.tooltipText, /问题 12 \/ 24/);
+    assert.ok(result.responsive.tooltipWidth <= 181, JSON.stringify(result.responsive));
     assert.ok(result.responsive.minMarkerWidth >= 24, JSON.stringify(result.responsive));
     assert.ok(result.responsive.minMarkerHeight >= 24, JSON.stringify(result.responsive));
     assert.ok(result.responsive.tooltipTop >= 0 && result.responsive.tooltipBottom <= 1600, JSON.stringify(result.responsive));
@@ -308,20 +319,26 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
     assert.equal(result.singleQuestion.state.visible, false, 'one question should not create navigation clutter');
     result.screenshot = SCREENSHOT_PATH;
     result.responsiveScreenshot = RESPONSIVE_SCREENSHOT_PATH;
-    result.success = true;
-    fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
-    console.log(JSON.stringify({ ok: true, resultPath: RESULT_PATH, ...result }, null, 2));
+    testBodyPassed = true;
   } catch (error) {
     console.error(error.stack || error.message);
     if (hub) console.error(hub.log().slice(-60).join('\n'));
     process.exitCode = 1;
   } finally {
-    if (client) { try { await client.close(); } catch {} }
-    if (hub) await gracefulQuit(hub);
-    const resolved = path.resolve(tempRoot);
-    if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
-        && path.basename(resolved).startsWith('hub-card-question-nav-')) {
-      fs.rmSync(resolved, { recursive: true, force: true });
+    try {
+      if (client) { try { await client.close(); } catch (error) { console.warn('[question-nav-e2e] CDP close failed:', error.message); } }
+      if (hub) result.teardown = await gracefulQuit(hub);
+    } finally {
+      const resolved = path.resolve(tempRoot);
+      if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
+          && path.basename(resolved).startsWith('hub-card-question-nav-')) {
+        fs.rmSync(resolved, { recursive: true, force: true });
+      }
     }
+  }
+  if (testBodyPassed) {
+    result.success = true;
+    fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
+    console.log(JSON.stringify({ ok: true, resultPath: RESULT_PATH, ...result }, null, 2));
   }
 })();

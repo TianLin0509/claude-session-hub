@@ -195,6 +195,14 @@ function traceStartup(msg) {
 if (process.env.CLAUDE_HUB_DATA_DIR) {
   app.setPath('userData', path.join(process.env.CLAUDE_HUB_DATA_DIR, 'electron-userdata'));
 }
+const HIDDEN_E2E_WINDOW_REQUESTED = process.env.CLAUDE_HUB_E2E === '1'
+  && process.env.CLAUDE_HUB_E2E_WINDOW_MODE === 'hidden';
+const HIDDEN_E2E_DATA_DIR_SAFE = isIsolatedHub()
+  && path.resolve(getHubDataDir()).toLowerCase()
+    !== path.resolve(path.join(os.homedir(), '.claude-session-hub')).toLowerCase();
+if (HIDDEN_E2E_WINDOW_REQUESTED && !HIDDEN_E2E_DATA_DIR_SAFE) {
+  throw new Error('hidden E2E window mode requires a non-production CLAUDE_HUB_DATA_DIR');
+}
 
 // Auto-deploy hook scripts + settings.json config on first launch.
 // Idempotent — keeps Hub-owned entries current and preserves unrelated hooks.
@@ -714,8 +722,16 @@ function reassertHubWindowIcon() {
   return true;
 }
 
+function keepIsolatedE2EWindowHidden() {
+  return HIDDEN_E2E_WINDOW_REQUESTED && HIDDEN_E2E_DATA_DIR_SAFE;
+}
+
 function focusPrimaryWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
+  // A hidden isolated E2E still exercises the real BrowserWindow/webContents,
+  // but must never flash a Hub look-alike onto the user's production desktop.
+  // Requiring both flags keeps normal and production launches unchanged.
+  if (keepIsolatedE2EWindowHidden()) return true;
   if (mainWindow.isMinimized()) mainWindow.restore();
   if (!mainWindow.isVisible()) mainWindow.show();
   mainWindow.focus();
@@ -776,6 +792,10 @@ function createWindow() {
   const showMainWindow = () => {
     if (hasShown || !mainWindow || mainWindow.isDestroyed()) return;
     hasShown = true;
+    if (keepIsolatedE2EWindowHidden()) {
+      traceStartup('main window kept hidden for isolated E2E');
+      return;
+    }
     mainWindow.maximize();
     mainWindow.show();
   };

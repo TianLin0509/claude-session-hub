@@ -2,6 +2,8 @@
 
 const path = require('path');
 const { fileURLToPath, pathToFileURL } = require('url');
+const { createPreviewFileWatchManager } = require('./preview-file-watch.js');
+const { createPreviewFindController } = require('./preview-find.js');
 
 const IMAGE_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
 const WEB_EXTENSIONS = new Set(['.html', '.htm']);
@@ -61,6 +63,16 @@ function createPreviewPanelController({
   const quickOpenResultsEl = document.getElementById('preview-quick-open-results');
   const quickOpenStatusEl = document.getElementById('preview-quick-open-status');
   const contextPreviewStates = new Map();
+  const fileWatchManager = createPreviewFileWatchManager({
+    fs,
+    onError: (error, target) => {
+      console.debug('[preview-watch] unavailable:', target, error && error.message);
+    },
+  });
+  const previewFind = createPreviewFindController({
+    document,
+    previewBody: previewBodyEl,
+  });
 
   let currentContextKey = null;
   let previewSourcePanel = null;
@@ -110,16 +122,116 @@ function createPreviewPanelController({
     return state.tabs.find(tab => tab.id === state.activeTabId) || null;
   }
 
+  function disposeTab(tab) {
+    if (!tab) return;
+    tab._disposed = true;
+    try { tab._watchSubscription?.dispose?.(); } catch (_) {}
+    tab._watchSubscription = null;
+  }
+
+  function disposeContextState(state) {
+    if (!state) return;
+    for (const tab of state.tabs || []) disposeTab(tab);
+  }
+
+  function updateTabChangeUI(tab = getActiveTab()) {
+    const badge = document.getElementById('preview-change-badge');
+    const reload = document.getElementById('preview-reload');
+    const errorState = !!(tab && (tab.watchError || tab.loadError));
+    const changed = !!(tab && (tab.stale || tab.missing || errorState));
+    const stateName = !tab ? '' : tab.missing ? 'missing' : errorState ? 'error' : 'stale';
+    if (badge) {
+      badge.hidden = !changed;
+      badge.dataset.state = stateName;
+      badge.textContent = !tab ? '' : tab.missing ? '已移除' : tab.loadError ? '读取异常' : tab.watchError ? '监听异常' : '已更新';
+      badge.title = !changed ? '' : tab.missing
+        ? '文件已移除，等待重新加载'
+        : tab.loadError
+          ? `文件读取异常：${tab.loadError}`
+          : tab.watchError
+            ? `文件监听异常，正在重试：${tab.watchError}`
+            : '文件已更新，点击重新加载';
+      if (changed) badge.setAttribute('aria-label', badge.title);
+      else badge.removeAttribute('aria-label');
+    }
+    if (reload) {
+      reload.disabled = !tab;
+      reload.classList.toggle('attention', changed);
+    }
+  }
+
+  function handleWatchedFileChange(tab, change) {
+    if (!tab || tab._disposed) return;
+    if (change && Object.prototype.hasOwnProperty.call(change, 'watchError')) {
+      tab.watchError = change.watchError || null;
+      const currentState = getContextState();
+      if (currentState && currentState.tabs.includes(tab)) {
+        renderTabs();
+        if (currentState.activeTabId === tab.id) updateTabChangeUI(tab);
+      }
+      return;
+    }
+    tab.changeVersion = (Number(tab.changeVersion) || 0) + 1;
+    tab.stale = true;
+    tab.missing = change && change.exists === false;
+    tab.loadError = change && change.exists === null ? (change.error || change.errorCode || '文件无法读取') : null;
+    tab.change = change || null;
+    const state = getContextState();
+    if (state && state.tabs.includes(tab)) {
+      renderTabs();
+      if (state.activeTabId === tab.id) updateTabChangeUI(tab);
+    }
+  }
+
+  function ensureTabWatch(tab) {
+    if (!tab || tab._watchSubscription || /^https?:\/\//i.test(tab.path) || !path.isAbsolute(tab.path)) return;
+    tab._watchSubscription = fileWatchManager.subscribe(tab.path, change => handleWatchedFileChange(tab, change));
+  }
+
+  function prepareTabForLoad(tab) {
+    if (!tab) return false;
+    if (/^https?:\/\//i.test(tab.path)) {
+      tab.missing = false;
+      tab.loadError = null;
+      return true;
+    }
+    try {
+      fs.statSync(tab.path);
+      tab.missing = false;
+      tab.loadError = null;
+      return true;
+    } catch (error) {
+      const code = String(error && error.code || 'unknown');
+      const missing = code === 'ENOENT' || code === 'ENOTDIR';
+      tab.stale = true;
+      tab.missing = missing;
+      tab.loadError = missing ? null : String(error && error.message || error);
+      return false;
+    }
+  }
+
+  function updateSplitterA11y(ratio = previewSplitRatio) {
+    if (!previewSplitterEl) return;
+    const leftPercent = Math.round(Math.max(0.1, Math.min(0.9, Number(ratio) || 0.5)) * 100);
+    previewSplitterEl.setAttribute('aria-valuenow', String(leftPercent));
+    previewSplitterEl.setAttribute(
+      'aria-valuetext',
+      '左侧 ' + leftPercent + '%，预览 ' + (100 - leftPercent) + '%',
+    );
+  }
+
   function applySplitWidths(ratio) {
     const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
     if (!ratio) {
       if (src) src.style.flex = '';
       previewPanelEl.style.flex = '';
+      updateSplitterA11y();
       return;
     }
     const r = Math.max(0.1, Math.min(0.9, ratio));
     if (src) src.style.flex = String(r);
     previewPanelEl.style.flex = String(1 - r);
+    updateSplitterA11y(r);
   }
 
   function resetPreviewLayoutEffects() {
@@ -222,6 +334,7 @@ function createPreviewPanelController({
 
   function clearPreviewUI() {
     closeQuickOpen({ restoreFocus: false });
+    previewFind.close({ restoreFocus: false, keepQuery: false });
     clearPreviewNotice();
     previewRenderToken += 1;
     navigationToken += 1;
@@ -276,12 +389,84 @@ function createPreviewPanelController({
     setTimeout(apply, 300);
   }
 
-  function makeWebview(src, scroll, token) {
+  function settleAsyncTabLoad(tab, changeVersion, token, error = null) {
+    if (!tab || tab._disposed) return;
+    const state = getContextState();
+    if (token !== previewRenderToken || !state || state.activeTabId !== tab.id || !state.tabs.includes(tab)) return;
+    if (error) {
+      tab.stale = true;
+      tab.loadError = String(error);
+    } else if (!tab.missing && (Number(tab.changeVersion) || 0) === changeVersion) {
+      tab.stale = false;
+      tab.change = null;
+      tab.loadError = null;
+    }
+    if (state.tabs.includes(tab)) {
+      renderTabs();
+      if (state.activeTabId === tab.id) {
+        updateTabChangeUI(tab);
+        if (error && token === previewRenderToken) showPreviewError(error, token);
+      }
+    }
+  }
+
+  function makeWebview(src, scroll, token, { onLoad, onError } = {}) {
     const webview = document.createElement('webview');
-    webview.src = src;
+    webview.preload = pathToFileURL(path.join(__dirname, 'preview-webview-preload.js')).href;
     webview.style.cssText = 'width:100%;height:100%;border:none;';
     setPreviewBodyLayout('stretch', 'stretch');
+    const isCurrentWebview = () => (
+      token === previewRenderToken
+      && webview.isConnected
+      && previewBodyEl.querySelector('webview') === webview
+    );
+    webview.addEventListener('ipc-message', (event) => {
+      if (!isCurrentWebview()) return;
+      if (event.channel !== 'preview-shortcut') return;
+      const action = event.args && event.args[0];
+      if (action === 'find') previewFind.open();
+      else if (action === 'open-path') openQuickOpen();
+      else if (action === 'find-next' && previewFind.isOpen()) previewFind.next(Number(event.args && event.args[1]) < 0 ? -1 : 1);
+      else if (action === 'escape' && previewFind.isOpen()) previewFind.close();
+    });
+    try {
+      webview.addEventListener('dom-ready', () => {
+        if (isCurrentWebview()) previewFind.refresh();
+      }, { once: true });
+    } catch (_) {}
+    try {
+      webview.addEventListener('did-finish-load', () => {
+        if (!isCurrentWebview()) return;
+        previewFind.refresh();
+        onLoad?.();
+      }, { once: true });
+    } catch (_) {}
+    try {
+      webview.addEventListener('did-fail-load', (event) => {
+        if (!isCurrentWebview()) return;
+        if (event && (event.isMainFrame === false || Number(event.errorCode) === -3)) return;
+        onError?.(event && (event.errorDescription || `加载错误 ${event.errorCode}`) || 'webview 加载失败');
+      });
+    } catch (_) {}
+    const reportGuestFailure = (event, fallback) => {
+      if (!isCurrentWebview()) return;
+      const details = event && (event.details || event.detail || event);
+      const reason = details && (details.reason || details.exitCode);
+      onError?.(reason ? fallback + '：' + reason : fallback);
+    };
+    try {
+      webview.addEventListener('render-process-gone', event => {
+        reportGuestFailure(event, '预览进程异常退出');
+      });
+    } catch (_) {}
+    try {
+      webview.addEventListener('destroyed', event => {
+        reportGuestFailure(event, '预览进程已销毁');
+      });
+    } catch (_) {}
     previewBodyEl.appendChild(webview);
+    previewFind.attachWebview(webview);
+    webview.src = src;
     try { webview.setZoomFactor(previewZoomLevel); } catch (_) {}
     restoreWebviewScroll(webview, scroll, token);
     return webview;
@@ -312,6 +497,9 @@ function createPreviewPanelController({
     notice.id = 'preview-notice';
     notice.className = 'preview-notice';
     notice.dataset.level = level;
+    notice.setAttribute('role', level === 'error' ? 'alert' : 'status');
+    notice.setAttribute('aria-live', level === 'error' ? 'assertive' : 'polite');
+    notice.setAttribute('aria-atomic', 'true');
     notice.textContent = String(message || '操作失败');
     document.body.appendChild(notice);
     previewNoticeTimer = setTimeout(() => {
@@ -369,22 +557,33 @@ function createPreviewPanelController({
     const copyPath = document.getElementById('preview-copy-path');
     const showInFolder = document.getElementById('preview-show-in-folder');
     const openExternal = document.getElementById('preview-open-external');
+    const findButton = document.getElementById('preview-find-toggle');
     if (copyContent) copyContent.disabled = !currentPreviewPath || NON_COPYABLE_EXTENSIONS.has(ext);
     if (copyPath) copyPath.disabled = !currentPreviewPath;
     if (showInFolder) showInFolder.disabled = !currentPreviewPath || isUrl;
     if (openExternal) openExternal.disabled = !currentPreviewPath;
+    if (findButton) findButton.disabled = !currentPreviewPath;
+    updateTabChangeUI(currentPreviewPath ? getActiveTab() : null);
   }
 
   function renderTabs() {
     if (!previewTabsEl) return;
+    const focusedElement = document.activeElement;
+    const restoreTabFocus = !!(focusedElement && previewTabsEl.contains?.(focusedElement));
+    const focusedTabId = restoreTabFocus
+      ? (focusedElement.closest?.('[data-tab-id]')?.dataset?.tabId
+        || focusedElement.closest?.('[data-close-tab-id]')?.dataset?.closeTabId
+        || null)
+      : null;
     previewTabsEl.innerHTML = '';
     previewBodyEl.removeAttribute('aria-labelledby');
     const state = getContextState();
     if (!state) return;
     for (const tab of state.tabs) {
       const active = tab.id === state.activeTabId;
+      const hasError = !!(tab.watchError || tab.loadError);
       const shell = document.createElement('div');
-      shell.className = `preview-tab-shell${active ? ' active' : ''}`;
+      shell.className = `preview-tab-shell${active ? ' active' : ''}${tab.stale ? ' stale' : ''}${tab.missing ? ' missing' : ''}${hasError ? ' watch-error' : ''}`;
       const tabButton = document.createElement('button');
       tabButton.type = 'button';
       tabButton.className = `preview-tab${tab.id === state.activeTabId ? ' active' : ''}`;
@@ -394,12 +593,19 @@ function createPreviewPanelController({
       tabButton.setAttribute('role', 'tab');
       tabButton.setAttribute('aria-selected', active ? 'true' : 'false');
       tabButton.setAttribute('aria-controls', 'preview-body');
+      tabButton.setAttribute('aria-label', `${tab.title}${tab.missing ? '，文件已移除' : tab.loadError ? '，文件读取异常' : tab.watchError ? '，文件监听异常' : tab.stale ? '，文件已更新' : ''}`);
       tabButton.tabIndex = active ? 0 : -1;
       if (active) previewBodyEl.setAttribute('aria-labelledby', tabButton.id);
 
       const title = document.createElement('span');
       title.className = 'preview-tab-title';
       title.textContent = tab.title;
+      if (tab.stale || tab.missing || hasError) {
+        const stateMarker = document.createElement('span');
+        stateMarker.className = 'preview-tab-state';
+        stateMarker.setAttribute('aria-hidden', 'true');
+        tabButton.appendChild(stateMarker);
+      }
       const close = document.createElement('button');
       close.type = 'button';
       close.className = 'preview-tab-close';
@@ -411,6 +617,12 @@ function createPreviewPanelController({
       tabButton.appendChild(title);
       shell.append(tabButton, close);
       previewTabsEl.appendChild(shell);
+    }
+    if (restoreTabFocus) {
+      const nextFocusId = state.tabs.some(tab => tab.id === focusedTabId)
+        ? focusedTabId
+        : state.activeTabId;
+      if (nextFocusId) focusPreviewTab(nextFocusId);
     }
   }
 
@@ -452,8 +664,9 @@ function createPreviewPanelController({
     applySplitWidths(isSplit ? previewSplitRatio : null);
     const layoutButton = document.getElementById('preview-toggle-layout');
     if (layoutButton) {
-      layoutButton.textContent = previewIsFullscreen ? '◫' : '□';
       layoutButton.title = previewIsFullscreen ? '并列预览' : '全屏预览';
+      layoutButton.setAttribute('aria-label', '全屏预览');
+      layoutButton.setAttribute('aria-pressed', String(previewIsFullscreen));
     }
     renderTabs();
     if (isSplit) refitActiveTerminal();
@@ -492,6 +705,7 @@ function createPreviewPanelController({
   }
 
   async function renderActiveTab(tab, options = {}) {
+    previewFind.clearForRender();
     const token = ++previewRenderToken;
     currentPreviewPath = tab.path;
     updateFileMetadata(tab.path);
@@ -503,68 +717,80 @@ function createPreviewPanelController({
     const isUrl = /^https?:\/\//i.test(tab.path);
     const ext = previewExtension(tab.path);
     const scroll = options.scroll || tab.scroll;
+    const loadChangeVersion = Number(tab.changeVersion) || 0;
+    const asyncLoadOptions = {
+      onLoad: () => settleAsyncTabLoad(tab, loadChangeVersion, token),
+      onError: error => settleAsyncTabLoad(tab, loadChangeVersion, token, error),
+    };
     const isStillCurrent = () => {
       const state = getContextState();
       return token === previewRenderToken && state && state.activeTabId === tab.id;
     };
+    const failRender = (message) => {
+      tab.loadError = String(message || '预览加载失败');
+      showPreviewError(tab.loadError, token);
+      return false;
+    };
 
     if (isUrl) {
       tab.kind = 'web';
-      makeWebview(tab.path, scroll, token);
-      return;
+      makeWebview(tab.path, scroll, token, asyncLoadOptions);
+      return null;
     }
     if (WEB_EXTENSIONS.has(ext)) {
       tab.kind = 'web';
-      makeWebview(pathToFileURL(tab.path).href, scroll, token);
-      return;
+      makeWebview(pathToFileURL(tab.path).href, scroll, token, asyncLoadOptions);
+      return null;
     }
     if (MARKDOWN_EXTENSIONS.has(ext)) {
       tab.kind = 'text';
       const result = await readPreviewFile(tab.path);
-      if (!isStillCurrent()) return;
-      if (result.error) { showPreviewError(result.error, token); return; }
+      if (!isStillCurrent()) return false;
+      if (result.error) return failRender(result.error);
       let html;
       try { html = DOMPurify.sanitize(marked.parse(result.content)); }
-      catch (error) { showPreviewError(`Markdown 渲染失败：${String(error && error.message || error)}`, token); return; }
+      catch (error) { return failRender(`Markdown 渲染失败：${String(error && error.message || error)}`); }
       setPreviewBodyLayout('flex-start', 'flex-start');
       const markdown = document.createElement('div');
       markdown.className = 'preview-markdown';
       markdown.innerHTML = html;
       previewBodyEl.appendChild(markdown);
       restoreBodyScroll(scroll, token, tab.id);
-      return;
+      return true;
     }
     if (IMAGE_EXTENSIONS.has(ext)) {
       tab.kind = 'image';
       setPreviewBodyLayout('center', 'center');
       const image = document.createElement('img');
-      image.src = pathToFileURL(tab.path).href;
       image.className = 'preview-image';
       image.alt = tab.title;
+      image.addEventListener('load', asyncLoadOptions.onLoad, { once: true });
+      image.addEventListener('error', () => asyncLoadOptions.onError('图片加载失败'), { once: true });
       previewBodyEl.appendChild(image);
+      image.src = pathToFileURL(tab.path).href;
       restoreBodyScroll(scroll, token, tab.id);
-      return;
+      return null;
     }
     if (ext === '.pdf') {
       tab.kind = 'pdf';
-      makeWebview(pathToFileURL(tab.path).href, scroll, token);
-      return;
+      makeWebview(pathToFileURL(tab.path).href, scroll, token, asyncLoadOptions);
+      return null;
     }
     if (TABLE_EXTENSIONS.has(ext)) {
       tab.kind = 'text';
       const result = await readPreviewFile(tab.path);
-      if (!isStillCurrent()) return;
-      if (result.error) { showPreviewError(result.error, token); return; }
+      if (!isStillCurrent()) return false;
+      if (result.error) return failRender(result.error);
       setPreviewBodyLayout('flex-start', 'flex-start');
       renderCsv(result.content, ext === '.tsv' ? '\t' : ',');
       restoreBodyScroll(scroll, token, tab.id);
-      return;
+      return true;
     }
 
     tab.kind = 'text';
     const result = await readPreviewFile(tab.path);
-    if (!isStillCurrent()) return;
-    if (result.error) { showPreviewError(result.error, token); return; }
+    if (!isStillCurrent()) return false;
+    if (result.error) return failRender(result.error);
     let content = result.content;
     if (ext === '.json' || ext === '.jsonl') {
       try { content = JSON.stringify(JSON.parse(content), null, 2); } catch (_) {}
@@ -591,6 +817,21 @@ function createPreviewPanelController({
     });
     previewBodyEl.appendChild(code);
     restoreBodyScroll(scroll, token, tab.id);
+    return true;
+  }
+
+  async function renderActiveTabAndRefreshFind(tab, options = {}) {
+    const changeVersion = Number(tab.changeVersion) || 0;
+    const success = await renderActiveTab(tab, options);
+    if (success && !tab.missing && (Number(tab.changeVersion) || 0) === changeVersion) {
+      tab.stale = false;
+      tab.change = null;
+      tab.loadError = null;
+    }
+    renderTabs();
+    if (getActiveTab() === tab) updateTabChangeUI(tab);
+    previewFind.refresh();
+    return success;
   }
 
   async function openPreviewPanel(filePath, options = {}) {
@@ -616,6 +857,12 @@ function createPreviewPanelController({
         scroll: null,
         kind: null,
         openedAt: Date.now(),
+        stale: false,
+        missing: false,
+        changeVersion: 0,
+        loadError: null,
+        watchError: null,
+        _disposed: false,
       };
       state.tabs.push(tab);
     } else {
@@ -623,9 +870,11 @@ function createPreviewPanelController({
     }
     if (options.scroll) tab.scroll = options.scroll;
     if (options.zoomLevel) tab.zoomLevel = options.zoomLevel;
+    ensureTabWatch(tab);
+    prepareTabForLoad(tab);
     state.activeTabId = tab.id;
     showPanelFrame(state);
-    await renderActiveTab(tab, {
+    await renderActiveTabAndRefreshFind(tab, {
       preserveZoom: true,
       zoomLevel: tab.zoomLevel,
       scroll: tab.scroll,
@@ -642,8 +891,9 @@ function createPreviewPanelController({
     await captureActiveTabState(state);
     if (operation !== navigationToken) return;
     state.activeTabId = target.id;
+    prepareTabForLoad(target);
     renderTabs();
-    await renderActiveTab(target, { preserveZoom: true, zoomLevel: target.zoomLevel, scroll: target.scroll });
+    await renderActiveTabAndRefreshFind(target, { preserveZoom: true, zoomLevel: target.zoomLevel, scroll: target.scroll });
   }
 
   async function closePreviewTab(tabId) {
@@ -655,9 +905,12 @@ function createPreviewPanelController({
     const operation = ++navigationToken;
     if (wasActive) await captureActiveTabState(state);
     if (operation !== navigationToken) return;
-    state.tabs.splice(index, 1);
+    const [removed] = state.tabs.splice(index, 1);
+    disposeTab(removed);
     if (state.tabs.length === 0) {
       closePreviewPanel();
+      const launcher = document.getElementById('btn-preview-path');
+      if (launcher && typeof launcher.focus === 'function') launcher.focus();
       return;
     }
     if (!wasActive) {
@@ -666,8 +919,9 @@ function createPreviewPanelController({
     }
     const next = state.tabs[Math.min(index, state.tabs.length - 1)];
     state.activeTabId = next.id;
+    prepareTabForLoad(next);
     renderTabs();
-    await renderActiveTab(next, { preserveZoom: true, zoomLevel: next.zoomLevel, scroll: next.scroll });
+    await renderActiveTabAndRefreshFind(next, { preserveZoom: true, zoomLevel: next.zoomLevel, scroll: next.scroll });
   }
 
   async function restorePreviewForContext(key) {
@@ -680,17 +934,23 @@ function createPreviewPanelController({
       tab = state.tabs[state.tabs.length - 1];
       state.activeTabId = tab.id;
     }
+    ensureTabWatch(tab);
+    prepareTabForLoad(tab);
     showPanelFrame(state);
     if (operation !== navigationToken) return;
-    await renderActiveTab(tab, { preserveZoom: true, zoomLevel: tab.zoomLevel, scroll: tab.scroll });
+    await renderActiveTabAndRefreshFind(tab, { preserveZoom: true, zoomLevel: tab.zoomLevel, scroll: tab.scroll });
   }
 
   function closePreviewPanel() {
     clearPreviewNotice();
+    previewFind.close({ restoreFocus: false, keepQuery: false });
     navigationToken += 1;
     previewRenderToken += 1;
     const key = currentContextKey || getActiveContextKey();
-    if (key) contextPreviewStates.delete(key);
+    if (key) {
+      disposeContextState(contextPreviewStates.get(key));
+      contextPreviewStates.delete(key);
+    }
     previewPanelEl.style.display = 'none';
     previewPanelEl.classList.remove('preview-split');
     previewSplitterEl.style.display = 'none';
@@ -708,6 +968,7 @@ function createPreviewPanelController({
 
   function dropPreviewContext(key) {
     if (!key) return false;
+    disposeContextState(contextPreviewStates.get(key));
     const existed = contextPreviewStates.delete(key);
     if (currentContextKey === key) closePreviewPanel();
     return existed;
@@ -720,14 +981,22 @@ function createPreviewPanelController({
     state.isFullscreen = previewIsFullscreen;
     const button = document.getElementById('preview-toggle-layout');
     if (previewIsFullscreen) {
-      if (button) { button.textContent = '◫'; button.title = '并列预览'; }
+      if (button) {
+        button.title = '并列预览';
+        button.setAttribute('aria-label', '全屏预览');
+        button.setAttribute('aria-pressed', 'true');
+      }
       previewPanelEl.classList.remove('preview-split');
       previewSplitterEl.style.display = 'none';
       applySplitWidths(null);
       const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
       if (src) src.style.display = 'none';
     } else {
-      if (button) { button.textContent = '□'; button.title = '全屏预览'; }
+      if (button) {
+        button.title = '全屏预览';
+        button.setAttribute('aria-label', '全屏预览');
+        button.setAttribute('aria-pressed', 'false');
+      }
       previewPanelEl.classList.add('preview-split');
       previewSplitterEl.style.display = '';
       applySplitWidths(previewSplitRatio);
@@ -737,16 +1006,60 @@ function createPreviewPanelController({
     refitActiveTerminal();
   }
 
+  async function reloadActivePreview() {
+    const state = getContextState();
+    const tab = getActiveTab(state);
+    if (!state || !tab) return false;
+    const operation = ++navigationToken;
+    await captureActiveTabState(state);
+    if (operation !== navigationToken || state.activeTabId !== tab.id) return false;
+    prepareTabForLoad(tab);
+    renderTabs();
+    updateTabChangeUI(tab);
+    const success = await renderActiveTabAndRefreshFind(tab, {
+      preserveZoom: true,
+      zoomLevel: tab.zoomLevel,
+      scroll: tab.scroll,
+    });
+    // Text formats settle synchronously. webview/image/PDF return null once a
+    // real load has started and report completion through their load/error
+    // callbacks, so this public boolean means "reload accepted", not "bytes
+    // finished rendering".
+    return success !== false && !tab.missing;
+  }
+
   function flashButton(button, message, status = 'success') {
     if (!button) return;
-    const originalHtml = button.innerHTML;
-    const originalTitle = button.title;
+    if (!button._previewFlashSnapshot) {
+      button._previewFlashSnapshot = {
+        html: button.innerHTML,
+        title: button.title,
+        ariaLabel: button.getAttribute('aria-label'),
+        ariaLive: button.getAttribute('aria-live'),
+      };
+    }
+    if (button._previewFlashTimer) clearTimeout(button._previewFlashTimer);
+    const snapshot = button._previewFlashSnapshot;
     button.textContent = message;
+    button.title = message;
+    button.setAttribute('aria-label', message);
+    button.setAttribute('aria-live', status === 'error' ? 'assertive' : 'polite');
     button.dataset.flash = status;
-    setTimeout(() => {
-      button.innerHTML = originalHtml;
-      button.title = originalTitle;
+    const liveStatus = document.getElementById('preview-action-status');
+    if (liveStatus) {
+      liveStatus.textContent = '';
+      requestAnimationFrame(() => { liveStatus.textContent = String(message); });
+    }
+    button._previewFlashTimer = setTimeout(() => {
+      button.innerHTML = snapshot.html;
+      button.title = snapshot.title;
+      if (snapshot.ariaLabel == null) button.removeAttribute('aria-label');
+      else button.setAttribute('aria-label', snapshot.ariaLabel);
+      if (snapshot.ariaLive == null) button.removeAttribute('aria-live');
+      else button.setAttribute('aria-live', snapshot.ariaLive);
       delete button.dataset.flash;
+      delete button._previewFlashSnapshot;
+      delete button._previewFlashTimer;
     }, 1200);
   }
 
@@ -760,7 +1073,7 @@ function createPreviewPanelController({
     if (!currentPreviewPath) return;
     try {
       writeClipboard(currentPreviewPath);
-      flashButton(button, '已复制');
+      flashButton(button, '路径已复制');
     } catch (error) {
       console.warn('[preview] copy path failed:', error);
       flashButton(button, '失败', 'error');
@@ -776,7 +1089,7 @@ function createPreviewPanelController({
     const snapshot = { tabId: tab.id, path: currentPreviewPath, renderToken: previewRenderToken };
     const ext = previewExtension(snapshot.path);
     if (NON_COPYABLE_EXTENSIONS.has(ext)) {
-      flashButton(button, '不可复制', 'error');
+      flashButton(button, '此类型不可复制', 'error');
       return;
     }
     try {
@@ -812,7 +1125,7 @@ function createPreviewPanelController({
         throw new Error('预览已切换，已取消复制');
       }
       writeClipboard(content || '');
-      flashButton(button, '已复制');
+      flashButton(button, '全文已复制');
     } catch (error) {
       console.warn('[preview] copy content failed:', error);
       flashButton(button, '复制失败', 'error');
@@ -829,7 +1142,7 @@ function createPreviewPanelController({
         flashButton(button, '失败', 'error');
         showPreviewNotice(`定位失败：${result.error}`, 'error');
       }
-      else flashButton(button, '已定位');
+      else flashButton(button, '已在资源管理器定位');
     } catch (error) {
       console.warn('[preview] show in folder failed:', error);
       flashButton(button, '失败', 'error');
@@ -930,6 +1243,7 @@ function createPreviewPanelController({
       const icon = document.createElement('span');
       icon.className = 'preview-quick-open-item-icon';
       icon.textContent = item.isDirectory ? '▰' : '▤';
+      icon.setAttribute('aria-hidden', 'true');
       const main = document.createElement('span');
       main.className = 'preview-quick-open-item-main';
       const name = document.createElement('span');
@@ -942,6 +1256,11 @@ function createPreviewPanelController({
       const source = document.createElement('span');
       source.className = 'preview-quick-open-item-source';
       source.textContent = item.source === 'exact' ? '精确' : item.source === 'recent' ? '最近' : '本地';
+      row.setAttribute(
+        'aria-label',
+        (item.name || previewTitle(item.path)) + '，'
+          + (item.relativePath || item.path) + '，' + source.textContent,
+      );
       row.append(icon, main, source);
       quickOpenResultsEl.appendChild(row);
     });
@@ -1125,6 +1444,20 @@ function createPreviewPanelController({
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
     });
+    previewSplitterEl.addEventListener('keydown', (event) => {
+      let nextRatio = null;
+      if (event.key === 'ArrowLeft') nextRatio = previewSplitRatio - 0.05;
+      else if (event.key === 'ArrowRight') nextRatio = previewSplitRatio + 0.05;
+      else if (event.key === 'Home') nextRatio = 0.1;
+      else if (event.key === 'End') nextRatio = 0.9;
+      if (nextRatio === null) return;
+      event.preventDefault();
+      previewSplitRatio = Math.max(0.1, Math.min(0.9, nextRatio));
+      const state = getContextState();
+      if (state) state.splitRatio = previewSplitRatio;
+      applySplitWidths(previewSplitRatio);
+      refitActiveTerminal();
+    });
     document.addEventListener('mousemove', (event) => {
       if (!dragging || rafId) return;
       rafId = requestAnimationFrame(() => {
@@ -1205,7 +1538,12 @@ function createPreviewPanelController({
   addClickListener('preview-copy-content', () => { void runAsyncAction(copyPreviewContent, '复制全文失败'); });
   addClickListener('preview-copy-path', () => { void runAsyncAction(copyPreviewPath, '复制路径失败'); });
   addClickListener('preview-show-in-folder', () => { void runAsyncAction(showPreviewInFolder, '资源管理器定位失败'); });
+  addClickListener('preview-reload', () => { void runAsyncAction(reloadActivePreview, '重新加载失败'); });
   addClickListener('preview-open-path', openQuickOpen);
+  addClickListener('preview-find-toggle', () => {
+    if (previewFind.isOpen()) previewFind.close();
+    else previewFind.open();
+  });
   addClickListener('preview-new-tab', openQuickOpen);
   addClickListener('btn-preview-path', openQuickOpen);
   addClickListener('preview-quick-open-close', closeQuickOpen);
@@ -1258,6 +1596,27 @@ function createPreviewPanelController({
         closeQuickOpen();
         return;
       }
+      return;
+    }
+    const previewVisible = previewPanelEl.style.display === 'flex';
+    if (previewVisible && (event.ctrlKey || event.metaKey) && !event.shiftKey
+        && (event.key === 'f' || event.key === 'F')) {
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+      previewFind.open();
+      return;
+    }
+    if (previewVisible && event.key === 'F3' && previewFind.isOpen()) {
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+      previewFind.next(event.shiftKey ? -1 : 1);
+      return;
+    }
+    if (event.key === 'Escape' && previewFind.isOpen()) {
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+      previewFind.close();
+      return;
     }
     if (event.key !== 'Escape') return;
     if (previewPanelEl.style.display === 'flex') {
@@ -1283,11 +1642,16 @@ function createPreviewPanelController({
     switchPreviewTab,
     closePreviewTab,
     dropPreviewContext,
+    reloadActivePreview,
+    openPreviewFind: () => previewFind.open(),
+    closePreviewFind: options => previewFind.close(options),
     openQuickOpen,
     closeQuickOpen,
     copyPreviewContent,
     copyPreviewPath,
     showPreviewNotice,
+    getFileWatchStats: () => fileWatchManager.getStats(),
+    getPreviewFindState: () => previewFind.getState(),
     getPreviewState(key = currentContextKey || getActiveContextKey()) {
       const state = getContextState(key);
       if (!state) return null;
@@ -1295,7 +1659,21 @@ function createPreviewPanelController({
         activeTabId: state.activeTabId,
         isFullscreen: state.isFullscreen,
         splitRatio: state.splitRatio,
-        tabs: state.tabs.map(tab => ({ ...tab, scroll: tab.scroll ? { ...tab.scroll } : null })),
+        tabs: state.tabs.map(tab => ({
+          id: tab.id,
+          path: tab.path,
+          title: tab.title,
+          zoomLevel: tab.zoomLevel,
+          scroll: tab.scroll ? { ...tab.scroll } : null,
+          kind: tab.kind,
+          openedAt: tab.openedAt,
+          stale: !!tab.stale,
+          missing: !!tab.missing,
+          changeVersion: Number(tab.changeVersion) || 0,
+          loadError: tab.loadError || null,
+          watchError: tab.watchError || null,
+          change: tab.change ? { ...tab.change } : null,
+        })),
       };
     },
   };

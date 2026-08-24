@@ -202,6 +202,14 @@
   .card-question-nav { right: 4px; }
   .card-question-nav-tooltip { right: 36px; width: min(240px, calc(100vw - 78px)); min-width: 150px; }
 }
+@media (max-width: 600px) {
+  .card-question-nav-tooltip {
+    width: min(180px, calc(100vw - 78px));
+    min-width: 130px;
+    padding: 8px 9px;
+    font-size: 10px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .card-question-nav-item,
   .card-question-nav-dot,

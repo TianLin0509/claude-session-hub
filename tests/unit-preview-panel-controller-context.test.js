@@ -46,6 +46,7 @@ class FakeElement {
   }
   append(...items) { items.forEach(item => this.appendChild(item)); }
   setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null; }
   removeAttribute(name) { delete this.attributes[name]; }
   remove() {
     if (!this.parentNode) return;
@@ -65,8 +66,10 @@ class FakeElement {
     return [];
   }
   getBoundingClientRect() { return { left: 0, width: 500 }; }
+  get isConnected() { return this.parentNode !== null; }
   set innerHTML(value) {
     this._innerHTML = value;
+    this.children.forEach(child => { child.parentNode = null; });
     this.children = [];
   }
   get innerHTML() { return this._innerHTML; }
@@ -141,7 +144,10 @@ function makeController(document, getActiveSessionId, options = {}) {
     },
     shell: { openExternal() {} },
     clipboard: options.clipboard || { writeText() {} },
-    fs: { statSync() { throw new Error('not needed'); } },
+    fs: {
+      statSync() { return { size: 32, mtimeMs: 1, ctimeMs: 1, birthtimeMs: 1, dev: 1, ino: 1 }; },
+      watch() { return { on() { return this; }, unref() {}, close() {} }; },
+    },
     marked: { parse: (text) => `<p>${text}</p>` },
     DOMPurify: { sanitize: (html) => html },
     getActiveSessionId,
@@ -354,6 +360,25 @@ async function testDroppingClosedContextRemovesItsTabs() {
   assert.strictEqual(document.getElementById('preview-panel').style.display, 'none');
 }
 
+async function testLateWebviewLoadCannotClearNewerFailure() {
+  const document = makeDocument();
+  const controller = makeController(document, () => 'webview-race');
+  await controller.openPreviewPanel('C:\\tmp\\page.html');
+  const oldWebview = document.getElementById('preview-body').querySelector('webview');
+  assert.strictEqual(await controller.reloadActivePreview(), true, 'async reload reports accepted');
+  const currentWebview = document.getElementById('preview-body').querySelector('webview');
+  assert.notStrictEqual(currentWebview, oldWebview);
+  currentWebview.listeners['did-fail-load']({
+    isMainFrame: true,
+    errorCode: -2,
+    errorDescription: 'current load failed',
+  });
+  oldWebview.listeners['did-finish-load']();
+  const state = controller.getPreviewState('session:webview-race');
+  const active = state.tabs.find(tab => tab.id === state.activeTabId);
+  assert.match(active.loadError, /current load failed/);
+}
+
 async function main() {
   await testSessionScopedBodyPreview();
   await testWebviewScrollRestore();
@@ -364,6 +389,7 @@ async function main() {
   await testQuickOpenSearchIsCancelledOnContextSwitch();
   await testCopyIsCancelledWhenActiveTabChanges();
   await testDroppingClosedContextRemovesItsTabs();
+  await testLateWebviewLoadCannotClearNewerFailure();
   console.log('unit-preview-panel-controller-context OK');
 }
 

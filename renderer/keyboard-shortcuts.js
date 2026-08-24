@@ -133,6 +133,10 @@ function createKeyboardShortcuts({
       return;
     }
 
+    const insidePreviewInputLayer = !!(target && typeof target.closest === 'function'
+      && target.closest('#preview-quick-open, #preview-find-bar'));
+    if (insidePreviewInputLayer) return;
+
     // #3 命令面板：兑现启动页宣传的 Ctrl+K（原为死键）。再次按下切换关闭。
     if (!e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();

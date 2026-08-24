@@ -104,6 +104,25 @@ test('Ctrl+O is global in PTY/editable controls but does not reset quick-open it
   assert.strictEqual(opened, 2);
 });
 
+test('preview quick/find inputs suppress unrelated Hub shortcuts', () => {
+  const calls = [];
+  const shortcuts = createKeyboardShortcuts({
+    document: { addEventListener: () => {} },
+    ipcRenderer: { invoke: (...args) => calls.push(args) },
+    clipboard: { writeText: () => {} },
+    sessions: new Map([['active', { id: 'active', kind: 'codex' }]]),
+    terminalCache: new Map(),
+    getActiveSessionId: () => 'active',
+    getCurrentFontSize: () => 16,
+    selectSession: () => {}, escapeToHome: () => {}, toggleSidebar: () => calls.push(['sidebar']),
+    openTerminalSearch: () => calls.push(['terminal-search']), setFontSize: () => {},
+    closeSession: id => calls.push(['close', id]),
+  });
+  const layer = { tagName: 'INPUT', closest: selector => selector.includes('#preview-quick-open') ? {} : null };
+  for (const key of ['f', 'w', 'n', 'b']) shortcuts.handleKeydown(makeEvent({ key, target: layer }));
+  assert.deepStrictEqual(calls, []);
+});
+
 test('Ctrl+Shift+B forks the active session', () => {
   const calls = [];
   const shortcuts = createKeyboardShortcuts({
