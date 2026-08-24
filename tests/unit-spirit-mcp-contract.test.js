@@ -5,9 +5,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { createFakeSpiritRegistry } = require('./helpers/fake-spirit-registry.js');
 
 const ROOT = path.resolve(__dirname, '..');
-const REGISTRY_ROOT = path.resolve(ROOT, '..', 'spirit-lens-registry');
 const MCP_SERVER = path.join(ROOT, 'core', 'research-mcp-server.js');
 
 function callMcp(requests, hubDataDir) {
@@ -18,6 +18,7 @@ function callMcp(requests, hubDataDir) {
     encoding: 'utf8',
     windowsHide: true,
     maxBuffer: 20 * 1024 * 1024,
+    timeout: 20_000,
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
@@ -30,11 +31,14 @@ function callMcp(requests, hubDataDir) {
       PYTHONUTF8: '1',
     },
   });
+  assert.ifError(result.error);
   assert.strictEqual(result.status, 0, result.stderr || result.stdout);
   return result.stdout.trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
 }
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-spirit-mcp-'));
+process.on('exit', () => { try { fs.rmSync(temp, { recursive: true, force: true }); } catch {} });
+const REGISTRY_ROOT = createFakeSpiritRegistry(path.join(temp, 'registry'));
 const responses = callMcp([
   { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
   { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
@@ -73,5 +77,16 @@ assert.ok(fs.existsSync(auditPath), 'spirit_prepare must append an audit row');
 const audit = JSON.parse(fs.readFileSync(auditPath, 'utf8').trim());
 assert.strictEqual(audit.prompt_hash, packet.prompt_hash);
 assert.strictEqual(audit.ai_kind, 'codex');
+
+const invalidAuditRoot = path.join(temp, 'audit-root-is-a-file');
+fs.writeFileSync(invalidAuditRoot, 'not a directory', 'utf8');
+const failedAudit = callMcp([{
+  jsonrpc: '2.0', id: 4, method: 'tools/call', params: {
+    name: 'spirit_prepare',
+    arguments: { question: '审计必须落盘', evidence: {} },
+  },
+}], invalidAuditRoot).find(value => value.id === 4).result;
+assert.strictEqual(failedAudit.isError, true);
+assert.match(failedAudit.content[0].text, /审计落盘失败/);
 
 console.log('  OK research MCP exposes and executes provider-orthogonal spirit tools');

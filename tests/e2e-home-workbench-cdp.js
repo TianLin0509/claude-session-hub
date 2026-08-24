@@ -114,6 +114,7 @@ async function main() {
       dataDir: DATA_DIR,
       port: CDP_PORT,
       label: 'hub-workbench',
+      windowMode: 'hidden',
       extraEnv: {
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_HOME_DIR: HOME_DIR,
@@ -259,6 +260,8 @@ async function main() {
       artifact.click();
       await new Promise(resolve => setTimeout(resolve, 120));
       const artifactPreviewVisible = getComputedStyle(document.getElementById('preview-panel')).display !== 'none';
+      const artifactPreviewFullscreen = document.getElementById('preview-toggle-layout').getAttribute('aria-pressed') === 'true'
+        && getComputedStyle(document.getElementById('terminal-panel')).display === 'none';
       document.getElementById('preview-close').click();
 
       const workspace = document.querySelector('#home-workspace-launch .home-workspace-item');
@@ -289,6 +292,7 @@ async function main() {
       ipcRenderer.invoke = originalInvoke;
       return {
         artifactPreviewVisible,
+        artifactPreviewFullscreen,
         expectedWorkspace,
         newSessionMenuVisible,
         newSessionSummary,
@@ -297,6 +301,7 @@ async function main() {
       };
     })()`);
     assert.equal(result.actions.artifactPreviewVisible, true);
+    assert.equal(result.actions.artifactPreviewFullscreen, true);
     assert.equal(result.actions.newSessionMenuVisible, true);
     assert.match(result.actions.newSessionSummary, /Claude Code/);
     assert.equal(result.actions.copiedHasRoles, true);
@@ -391,6 +396,106 @@ async function main() {
     await capture(client, REVIEW_SCREENSHOT);
     await client.eval(`document.getElementById('ops-close').click()`);
 
+    await client.eval(`(async () => {
+      await window.openPreviewPanel(${JSON.stringify(SAMPLE_ARTIFACT)});
+      document.getElementById('home-open-review').click();
+      const modal = document.getElementById('operations-review-modal');
+      const deadline = Date.now() + 5000;
+      while (modal.classList.contains('hidden') && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    })()`);
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'o', code: 'KeyO', windowsVirtualKeyCode: 79, modifiers: 2,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'o', code: 'KeyO', windowsVirtualKeyCode: 79, modifiers: 2,
+    });
+    await _waitMs(100);
+    result.modalShortcutIsolation = await client.eval(`(() => ({
+      operationsOpen: !document.getElementById('operations-review-modal').classList.contains('hidden'),
+      previewVisible: getComputedStyle(document.getElementById('preview-panel')).display === 'flex',
+      quickOpenVisible: getComputedStyle(document.getElementById('preview-quick-open')).display === 'flex',
+    }))()`);
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
+    });
+    await _waitMs(100);
+    result.modalEscapeIsolation = await client.eval(`(() => ({
+      operationsClosed: document.getElementById('operations-review-modal').classList.contains('hidden'),
+      previewStillVisible: getComputedStyle(document.getElementById('preview-panel')).display === 'flex',
+      quickOpenVisible: getComputedStyle(document.getElementById('preview-quick-open')).display === 'flex',
+    }))()`);
+    assert.deepStrictEqual(result.modalShortcutIsolation, {
+      operationsOpen: true, previewVisible: true, quickOpenVisible: false,
+    });
+    assert.deepStrictEqual(result.modalEscapeIsolation, {
+      operationsClosed: true, previewStillVisible: true, quickOpenVisible: false,
+    });
+    await client.eval(`document.getElementById('preview-close').click()`);
+
+    result.searchModalIsolation = await client.eval(`(async () => {
+      await window.openPreviewPanel(${JSON.stringify(SAMPLE_ARTIFACT)});
+      document.getElementById('btn-global-search').click();
+      const search = document.getElementById('search-modal');
+      const deadline = Date.now() + 5000;
+      while (search.style.display !== 'flex' && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      return {
+        searchOpen: search.style.display === 'flex',
+        previewVisible: getComputedStyle(document.getElementById('preview-panel')).display === 'flex',
+      };
+    })()`);
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'w', code: 'KeyW', windowsVirtualKeyCode: 87, modifiers: 2,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'w', code: 'KeyW', windowsVirtualKeyCode: 87, modifiers: 2,
+    });
+    await _waitMs(80);
+    result.searchShortcutIsolation = await client.eval(`(() => ({
+      searchStillOpen: document.getElementById('search-modal').style.display === 'flex',
+      previewStillVisible: getComputedStyle(document.getElementById('preview-panel')).display === 'flex',
+    }))()`);
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27,
+    });
+    await _waitMs(80);
+    result.searchEscapeIsolation = await client.eval(`(() => ({
+      searchClosed: document.getElementById('search-modal').style.display !== 'flex',
+      previewStillVisible: getComputedStyle(document.getElementById('preview-panel')).display === 'flex',
+    }))()`);
+    assert.deepStrictEqual(result.searchModalIsolation, { searchOpen: true, previewVisible: true });
+    assert.deepStrictEqual(result.searchShortcutIsolation, { searchStillOpen: true, previewStillVisible: true });
+    assert.deepStrictEqual(result.searchEscapeIsolation, { searchClosed: true, previewStillVisible: true });
+    await client.eval(`document.getElementById('preview-close').click()`);
+
+    result.commandPaletteToggle = [];
+    for (let index = 0; index < 3; index += 1) {
+      await client.send('Input.dispatchKeyEvent', {
+        type: 'keyDown', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2,
+      });
+      await client.send('Input.dispatchKeyEvent', {
+        type: 'keyUp', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2,
+      });
+      await _waitMs(60);
+      result.commandPaletteToggle.push(await client.eval(`getComputedStyle(document.getElementById('hub-cmdk-overlay')).display === 'flex'`));
+    }
+    assert.deepStrictEqual(result.commandPaletteToggle, [true, false, true]);
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2,
+    });
+
     result.navigation = await client.eval(`(async () => {
       const sidebarTarget = Array.from(document.querySelectorAll('#session-list .session-item'))
         .find(item => item.textContent.includes('Codex 提交范围确认'));
@@ -402,6 +507,13 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 100));
       const homeVisibleAfterSession = document.getElementById('empty-state').isConnected
         && document.getElementById('empty-state').style.display !== 'none';
+      document.getElementById('home-open-review').click();
+      const reviewDeadline = Date.now() + 5000;
+      while (document.getElementById('operations-review-modal').classList.contains('hidden') && Date.now() < reviewDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      const reviewReopenedAfterSession = !document.getElementById('operations-review-modal').classList.contains('hidden');
+      document.getElementById('ops-close').click();
       document.getElementById('btn-chuxin').click();
       await new Promise(resolve => setTimeout(resolve, 120));
       const chuxinVisible = getComputedStyle(document.getElementById('chuxin-panel')).display === 'grid';
@@ -410,6 +522,7 @@ async function main() {
       return {
         sessionOpened,
         homeVisibleAfterSession,
+        reviewReopenedAfterSession,
         chuxinVisible,
         homeVisibleAfterResearch: getComputedStyle(document.getElementById('empty-state')).display !== 'none',
         chuxinHiddenAfterHome: getComputedStyle(document.getElementById('chuxin-panel')).display === 'none',
@@ -418,6 +531,7 @@ async function main() {
     })()`);
     assert.equal(result.navigation.sessionOpened, true);
     assert.equal(result.navigation.homeVisibleAfterSession, true);
+    assert.equal(result.navigation.reviewReopenedAfterSession, true);
     assert.equal(result.navigation.chuxinVisible, true);
     assert.equal(result.navigation.homeVisibleAfterResearch, true);
     assert.equal(result.navigation.chuxinHiddenAfterHome, true);

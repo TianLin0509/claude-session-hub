@@ -549,6 +549,7 @@ function preserveAndClearTerminalPanel() {
     document.querySelector('.view-toggle'),
     document.getElementById('completion-notification-toggle'),
     document.getElementById('recent-turn-copy'),
+    document.getElementById('operations-review-modal'),
   ].filter(Boolean);
   terminalPanelEl.innerHTML = '';
   preserved.forEach(el => terminalPanelEl.appendChild(el));
@@ -927,6 +928,10 @@ function disposeCachedTerminal(sessionId) {
   if (cached._minimap) { try { cached._minimap.dispose(); } catch {} cached._minimap = null; }
   if (cached._navButtons) { try { cached._navButtons.dispose(); } catch {} cached._navButtons = null; }
   if (cached._floatingInput) { try { cached._floatingInput.dispose(); } catch {} cached._floatingInput = null; }
+  if (cached._localPathLinkProvider) {
+    try { cached._localPathLinkProvider.dispose(); } catch {}
+    cached._localPathLinkProvider = null;
+  }
   if (typeof _cursorDebounce !== 'undefined' && _cursorDebounce.has(sessionId)) {
     clearTimeout(_cursorDebounce.get(sessionId));
     _cursorDebounce.delete(sessionId);
@@ -979,7 +984,7 @@ function getOrCreateTerminal(sessionId) {
   terminal.loadAddon(fitAddon);
   terminal.loadAddon(new Unicode11Addon());
   terminal.loadAddon(searchAddon);
-  terminal.loadAddon(new WebLinksAddon((e, uri) => { openPreviewPanel(uri); }));
+  terminal.loadAddon(new WebLinksAddon((e, uri) => { openPreviewPanel(uri, { preview: true }); }));
   const localPathLinkProvider = registerLocalPathLinks(terminal, sessionId);
   terminal.unicode.activeVersion = '11';
 
@@ -3549,26 +3554,43 @@ const { openResumeModal, openSearchModal } = pastSessionModals;
 // previewable extensions, otherwise to main via open-path → shell.openPath().
 //
 async function openPathInHub(filePath, opts = {}) {
+  const fail = (message, target, detail) => {
+    const error = new Error(detail ? `${message}：${detail}` : message);
+    console.warn('[hub] path open failed:', target || filePath, '->', error.message);
+    if (typeof showPreviewNotice === 'function') showPreviewNotice(error.message, 'error');
+    if (opts.throwOnError) throw error;
+    return { ok: false, path: target || null, error: error.message };
+  };
   const cwd = opts.cwd || null;
+  const previewOptions = {
+    pinned: opts.pinned === true,
+    preview: opts.pinned === true ? false : opts.preview !== false,
+    fullscreen: opts.fullscreen === true,
+  };
   const raw = _cleanPathCandidate(filePath);
-  if (!raw) return;
+  if (!raw) return fail('路径为空或无法识别', null);
   if (/^https?:\/\//i.test(raw)) {
-    await openPreviewPanel(raw);
-    return;
+    await openPreviewPanel(raw, previewOptions);
+    return { ok: true, path: raw, type: 'preview' };
   }
   const fullPath = _normalizeLocalPathForOpen(raw, cwd, opts.requireExistsForRel !== false);
-  if (!fullPath) return;
+  if (!fullPath) return fail('路径不存在或无法解析', raw);
   if (_isDirectoryPath(fullPath)) {
-    const err = await ipcRenderer.invoke('open-path', fullPath);
-    if (err) console.warn('[hub] open folder failed:', fullPath, '->', err);
-    return;
+    let err;
+    try { err = await ipcRenderer.invoke('open-path', fullPath); }
+    catch (error) { return fail('文件夹打开失败', fullPath, String(error && error.message || error)); }
+    if (err) return fail('文件夹打开失败', fullPath, err);
+    return { ok: true, path: fullPath, type: 'external' };
   }
   if (PREVIEW_PATH_RE.test(fullPath)) {
-    await openPreviewPanel(fullPath);
-    return;
+    await openPreviewPanel(fullPath, previewOptions);
+    return { ok: true, path: fullPath, type: 'preview' };
   }
-  const err = await ipcRenderer.invoke('open-path', fullPath);
-  if (err) console.warn('[hub] open-path failed:', fullPath, '->', err);
+  let err;
+  try { err = await ipcRenderer.invoke('open-path', fullPath); }
+  catch (error) { return fail('文件打开失败', fullPath, String(error && error.message || error)); }
+  if (err) return fail('文件打开失败', fullPath, err);
+  return { ok: true, path: fullPath, type: 'external' };
 }
 window.openPathInHub = openPathInHub;
 
@@ -3578,9 +3600,21 @@ function getSessionCwd(sessionId) {
   try { return (sessions.get(sessionId) || {}).cwd || null; } catch { return null; }
 }
 
+function getActivePreviewCwd() {
+  if (activeSessionId) return getSessionCwd(activeSessionId);
+  const meeting = activeMeetingId ? meetings[activeMeetingId] : null;
+  const subSessions = meeting && Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
+  for (const sessionId of subSessions) {
+    const cwd = getSessionCwd(sessionId);
+    if (cwd) return cwd;
+  }
+  return null;
+}
+
 const registerLocalPathLinks = createTerminalLinkRegistrar({
   getCwd: getSessionCwd,
-  openPathInHub,
+  openPathInHub: (target, opts) => openPathInHub(target, { ...opts, throwOnError: true }),
+  onError: message => showPreviewNotice(message, 'error'),
   onContextMenu: (rawPath, x, y) => {
     // pathLinkContextMenu is initialized later in this file; callback body
     // runs only when user right-clicks, by then it's been assigned.
@@ -3614,25 +3648,46 @@ function refitActiveTerminalFromPreview() {
   });
 }
 
+const previewClipboard = process.env.CLAUDE_HUB_E2E === '1'
+    && process.env.CLAUDE_HUB_E2E_FAKE_CLIPBOARD === '1'
+  ? {
+      writeText(value) {
+        window.__hubE2EPreviewClipboardText = String(value);
+      },
+    }
+  : clipboard;
 const previewPanel = createPreviewPanelController({
   document,
   ipcRenderer,
   shell,
+  clipboard: previewClipboard,
   fs,
   marked,
   DOMPurify,
   getActiveSessionId: () => activeSessionId,
   getActiveMeetingId: () => activeMeetingId,
+  getActiveCwd: getActivePreviewCwd,
+  openPath: (filePath, openOptions = {}) => openPathInHub(filePath, {
+    cwd: getActivePreviewCwd(),
+    requireExistsForRel: false,
+    throwOnError: true,
+    ...openOptions,
+  }),
   refitActiveTerminal: refitActiveTerminalFromPreview,
 });
 const {
   openPreviewPanel,
+  closePreviewPanel,
   savePreviewState,
   clearPreviewUI,
   restorePreviewForContext,
+  openQuickOpen: openPreviewQuickOpen,
+  dropPreviewContext,
+  showPreviewNotice,
 } = previewPanel;
 // P0.6+: 暴露给 meeting-room.js 的"📖 记忆"按钮使用
 window.openPreviewPanel = openPreviewPanel;
+window.openPreviewQuickOpen = openPreviewQuickOpen;
 
 // main.js 的最后一道导航保护：若某个未接线/第三方生成的 file:// 链接试图替换 Hub
 // 主页面，main 会阻止整页导航并把本地路径送回这里，仍按统一规则打开预览面板。
@@ -3670,7 +3725,7 @@ document.addEventListener('click', (e) => {
     }
     return;
   }
-  openPreviewPanel(href);
+  openPreviewPanel(href, { preview: true });
 }, true);
 
 // --- Terminal buffer reading and activity monitor ---
@@ -4119,7 +4174,7 @@ homeWorkbench = createHomeWorkbench({
   selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
   onCopyRecentTurns: (sessionId, count) => copyRecentTurnsForSession(sessionId, count),
   onForkSession: (sessionId) => keyboardShortcuts.forkSession(sessionId),
-  onOpenArtifact: (artifactPath) => openPathInHub(artifactPath, { requireExistsForRel: false }),
+  onOpenArtifact: (artifactPath) => openPathInHub(artifactPath, { requireExistsForRel: false, fullscreen: true }),
   onLaunchWorkspace: (workspace) => window.WorkspaceController.openNewSessionModal({ kind: 'claude', workspace }),
   onOpenReview: repoId => workbenchOperations.open(repoId),
   onOpenServerSettings: () => configModal.openOperationsSetup(),
@@ -4611,6 +4666,7 @@ const keyboardShortcuts = createKeyboardShortcuts({
   escapeToHome,
   toggleSidebar,
   openTerminalSearch: () => openTerminalSearch(),
+  openPreviewQuickOpen: () => openPreviewQuickOpen(),
   setFontSize,
   closeSession: closeSessionAsSleep,
   createWorkspaceSession: (kind) => window.WorkspaceController.openNewSessionModal({ kind }),
@@ -4642,7 +4698,12 @@ const terminalContextMenu = createTerminalContextMenuController({
   document,
   window,
   termCtxMenuEl,
-  openPreviewPanel: (target) => openPreviewPanel(target),
+  openPreviewPanel: (target) => openPathInHub(target, {
+    cwd: getSessionCwd(activeSessionId),
+    requireExistsForRel: false,
+  }).catch((error) => {
+    showPreviewNotice(`预览失败：${String(error && error.message || error)}`, 'error');
+  }),
 });
 terminalContextMenu.init();
 const openTerminalContextMenu = terminalContextMenu.open;
@@ -4967,6 +5028,7 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
 });
 
 ipcRenderer.on('session-closed', (_e, { sessionId }) => {
+  dropPreviewContext(`session:${sessionId}`);
   const closing = sessions.get(sessionId);
   const wasChuxinResearch = !!(closing && closing.purpose === 'chuxin-research');
   if (window._cardLoadSeqBySid) window._cardLoadSeqBySid.delete(sessionId);
@@ -5369,6 +5431,11 @@ window.resumeDormantSession = resumeDormantSession;
 
   traceRendererStartup('renderSessionList start');
   renderSessionList();
+  void workbenchOperations.refresh(true).then(() => {
+    if (homeWorkbench) homeWorkbench.render();
+  }).catch((error) => {
+    console.warn('[workbench-operations] initial hydrated refresh failed:', error && error.message);
+  });
   refreshSystemResourceUsage();
   setInterval(refreshSystemResourceUsage, 3000);
   refreshHubProxyInfo();
@@ -5522,6 +5589,7 @@ ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId, completedAt }) =
 });
 
 ipcRenderer.on('meeting-closed', (_e, { meetingId }) => {
+  dropPreviewContext(`meeting:${meetingId}`);
   delete meetings[meetingId];
   if (_expandedMeetings.has(meetingId)) {
     _expandedMeetings.delete(meetingId);
@@ -5640,10 +5708,22 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
         y: rect.top + (row + 0.5) * dimensions.height,
       };
     },
+    terminalLinkActivationStats: (sessionId) => {
+      const provider = terminalCache.get(sessionId)?._localPathLinkProvider;
+      return provider && typeof provider.getActivationStats === 'function'
+        ? provider.getActivationStats()
+        : null;
+    },
+    previewWorkbench: {
+      state: key => previewPanel.getPreviewState(key),
+      watchStats: () => previewPanel.getFileWatchStats(),
+      findState: () => previewPanel.getPreviewFindState(),
+    },
     terminalLiveScreenText: (sessionId) => terminalActivityMonitor.extractLiveScreenLines(sessionId).join('\n'),
     cardQuestionNavigator: {
       refresh: () => cardQuestionNavigator.refresh(),
       state: () => cardQuestionNavigator.getState(),
+      update: () => cardQuestionNavigator.updateActive(),
       scrollTo: index => cardQuestionNavigator.scrollToQuestion(index),
       mountFixture: ({ sessionId = 'card-question-nav-e2e', start = 1, count = 6, clear = true } = {}) => {
         if (clear) {

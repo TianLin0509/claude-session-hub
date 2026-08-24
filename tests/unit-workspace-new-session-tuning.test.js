@@ -242,6 +242,8 @@ test('renderer persists and restores per-session speed and MCP tuning', () => {
   assert.match(RENDERER_SRC, /codexSpeedTier: meta\.codexSpeedTier \|\| null/);
   assert.match(RENDERER_SRC, /contextEffectiveMax: typeof s\.contextEffectiveMax === 'number'/);
   assert.match(RENDERER_SRC, /contextEffectiveMax: typeof meta\.contextEffectiveMax === 'number'/);
+  assert.doesNotMatch(RENDERER_SRC, /defaultCodexSpeedFor\(kind\)(?!\s*\{)/,
+    'all default speed decisions must include the selected model capability');
   assert.match(RENDERER_SRC, /Codex 运行时有效窗口/);
 });
 

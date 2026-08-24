@@ -43,6 +43,7 @@ async function availablePorts(preferred, count) {
       dataDir,
       port: primaryPort,
       label: 'same-data-dir-primary',
+      windowMode: 'hidden',
       extraEnv: { CLAUDE_HUB_E2E: '1' },
     });
 
@@ -50,6 +51,7 @@ async function availablePorts(preferred, count) {
       dataDir,
       port: secondaryPort,
       label: 'same-data-dir-secondary',
+      windowMode: 'hidden',
       extraEnv: { CLAUDE_HUB_E2E: '1' },
     });
     await _waitMs(500);
@@ -84,12 +86,18 @@ async function availablePorts(preferred, count) {
     if (primary) console.error(primary.log().slice(-50).join('\n'));
     process.exitCode = 1;
   } finally {
-    if (secondary) await gracefulQuit(secondary);
-    if (primary) await gracefulQuit(primary);
+    const teardownResults = await Promise.allSettled([
+      secondary ? gracefulQuit(secondary) : Promise.resolve(null),
+      primary ? gracefulQuit(primary) : Promise.resolve(null),
+    ]);
     const resolved = path.resolve(dataDir);
     if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
         && path.basename(resolved).startsWith('claude-session-hub-owner-e2e-')) {
       fs.rmSync(resolved, { recursive: true, force: true });
+    }
+    const failures = teardownResults.filter(result => result.status === 'rejected');
+    if (failures.length) {
+      throw new AggregateError(failures.map(result => result.reason), 'same-data-dir Hub teardown failed');
     }
   }
 })();

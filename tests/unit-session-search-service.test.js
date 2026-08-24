@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { EventEmitter } = require('node:events');
+const zlib = require('node:zlib');
 const { SessionSearchService } = require('../core/session-search-service.js');
 
 function writeClaudeTranscript(filePath) {
@@ -121,6 +122,8 @@ test('search worker receives a hard V8 heap limit and bounded index inputs', asy
     maxSources: 50,
     maxIndexedChars: 4 * 1024 * 1024,
     maxCacheCompressedBytes: 8 * 1024 * 1024,
+    maxCacheShardOutputBytes: 2 * 1024 * 1024,
+    maxSourceReadBytes: 3 * 1024 * 1024,
   });
   try {
     service._ensureWorker();
@@ -128,6 +131,61 @@ test('search worker receives a hard V8 heap limit and bounded index inputs', asy
     assert.equal(workerOptions.workerData.maxSources, 50);
     assert.equal(workerOptions.workerData.maxIndexedChars, 4 * 1024 * 1024);
     assert.equal(workerOptions.workerData.maxCacheCompressedBytes, 8 * 1024 * 1024);
+    assert.equal(workerOptions.workerData.maxCacheShardOutputBytes, 2 * 1024 * 1024);
+    assert.equal(workerOptions.workerData.maxSourceReadBytes, 3 * 1024 * 1024);
+  } finally {
+    await service.close();
+  }
+});
+
+test('non-zero worker exit rejects every pending request instead of hanging', async () => {
+  class ExitingWorker extends EventEmitter {
+    unref() {}
+    postMessage() {}
+    terminate() { return Promise.resolve(0); }
+  }
+  const service = new SessionSearchService({ Worker: ExitingWorker });
+  const pending = service.search({ query: 'pending' }, {});
+  const worker = service._worker;
+  worker.emit('exit', 137);
+  await assert.rejects(pending, /exited with code 137/);
+  assert.equal(service.getStats().pending, 0);
+  assert.equal(service.getStats().failures, 1);
+  await service.close();
+});
+
+test('oversized decompressed cache shards are rejected without crashing the worker', { timeout: 20_000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-session-search-cache-bomb-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cachePath = path.join(root, 'session-search-cache.json');
+  const shardDir = `${cachePath}.sources`;
+  fs.mkdirSync(shardDir, { recursive: true });
+  const shardName = 'oversized.json.gz';
+  const inflated = JSON.stringify({
+    source: { key: 'oversized', signature: 'fixture', provider: 'claude' },
+    docs: [{ id: 'doc', text: 'x'.repeat(3 * 1024 * 1024) }],
+  });
+  const compressed = zlib.gzipSync(Buffer.from(inflated));
+  fs.writeFileSync(path.join(shardDir, shardName), compressed);
+  fs.writeFileSync(cachePath, JSON.stringify({
+    version: 2,
+    savedAt: Date.now(),
+    compressedBytes: compressed.length,
+    entries: [{ key: 'oversized', signature: 'fixture', files: [shardName] }],
+  }), 'utf8');
+
+  const service = new SessionSearchService({
+    cachePath,
+    maxCacheShardOutputBytes: 1024 * 1024,
+    maxIndexedChars: 1024 * 1024,
+  });
+  try {
+    service._ensureWorker();
+    const status = await service.status();
+    assert.equal(status.ready, true);
+    assert.equal(status.phase, 'ready_with_errors');
+    assert.match(status.lastError || status.sourceErrors.join(' '), /output length|larger than/i);
+    assert.equal(status.index.documents, 0);
   } finally {
     await service.close();
   }

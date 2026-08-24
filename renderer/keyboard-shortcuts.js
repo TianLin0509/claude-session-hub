@@ -1,5 +1,6 @@
 const { supportsForkSession } = require('../core/session-capabilities.js');
 const { compareLatestReplyDesc } = require('../core/session-recency.js');
+const { isBlockingModalOpen, isElementOpen } = require('./modal-layer-guard.js');
 
 function createKeyboardShortcuts({
   document,
@@ -13,6 +14,7 @@ function createKeyboardShortcuts({
   escapeToHome,
   toggleSidebar,
   openTerminalSearch,
+  openPreviewQuickOpen,
   setFontSize,
   closeSession,
   createWorkspaceSession,
@@ -116,6 +118,35 @@ function createKeyboardShortcuts({
 
   function handleKeydown(e) {
     if (!(e.ctrlKey || e.metaKey)) return;
+    const commandPaletteOpen = document && typeof document.getElementById === 'function'
+      ? document.getElementById('hub-cmdk-overlay')
+      : null;
+    if (commandPaletteOpen && isElementOpen(commandPaletteOpen)
+        && (e.key === 'k' || e.key === 'K') && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      closeCommandPalette();
+      return;
+    }
+    if (isBlockingModalOpen(document, { exceptIds: ['preview-quick-open'] })) return;
+
+    const target = e.target;
+    const insideQuickOpen = !!(target && (
+      target.id === 'preview-quick-open-input'
+      || (typeof target.closest === 'function' && target.closest('#preview-quick-open'))
+    ));
+
+    // Ctrl+O 是 Hub 级“打开路径”命令，在 xterm helper textarea 和浮动输入框
+    // 聚焦时也必须可用；仅 quick-open 自己的输入框保留原按键，避免重置查询。
+    if (!e.shiftKey && !e.altKey && (e.key === 'o' || e.key === 'O')) {
+      if (insideQuickOpen || typeof openPreviewQuickOpen !== 'function') return;
+      e.preventDefault();
+      openPreviewQuickOpen();
+      return;
+    }
+
+    const insidePreviewInputLayer = !!(target && typeof target.closest === 'function'
+      && target.closest('#preview-quick-open, #preview-find-bar'));
+    if (insidePreviewInputLayer) return;
 
     // #3 命令面板：兑现启动页宣传的 Ctrl+K（原为死键）。再次按下切换关闭。
     if (!e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
@@ -289,7 +320,10 @@ function createKeyboardShortcuts({
   }
 
   function _cmdkActions() {
-    return [
+    const actions = [
+      ...(typeof openPreviewQuickOpen === 'function'
+        ? [{ label: '预览文件或路径', sub: 'Ctrl+O', run: () => openPreviewQuickOpen() }]
+        : []),
       { label: '创建当前会话分支', sub: 'Ctrl+Shift+B', run: () => { void forkActiveSession(); } },
       { label: '新建 Claude 会话', sub: 'new', run: () => createSession('claude') },
       { label: '新建 Gemini 会话', sub: 'new', run: () => createSession('gemini') },
@@ -300,6 +334,7 @@ function createKeyboardShortcuts({
       { label: '切换侧栏', sub: 'cmd', run: () => toggleSidebar() },
       { label: '回到主界面', sub: 'cmd', run: () => escapeToHome() },
     ];
+    return actions;
   }
 
   function _cmdkFuzzy(q, text) {

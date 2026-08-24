@@ -197,6 +197,7 @@ async function waitSearchState(client, predicate, label) {
       dataDir: DATA_DIR,
       port,
       label: 'global-session-search',
+      windowMode: 'hidden',
       extraEnv: {
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_HOME_DIR: FAKE_HOME,
@@ -224,6 +225,8 @@ async function waitSearchState(client, predicate, label) {
       console.error = (...args) => { record(args.map(String).join(' ')); originalError(...args); };
     })()`);
     await waitFor('global search UI bridge', () => client.eval(`!!(window.__hubE2E && window.__hubE2E.globalSessionSearch)`));
+    result.explicitRefresh = await client.eval(`require('electron').ipcRenderer.invoke('refresh-session-search', { force: true })`);
+    assert.equal(result.explicitRefresh.ready, true, JSON.stringify(result.explicitRefresh));
     result.indexStatus = await waitFor('search index ready', async () => {
       const status = await client.eval(`require('electron').ipcRenderer.invoke('get-session-search-status')`);
       return status && status.ready && status.index && status.index.sessions >= 3 ? status : null;

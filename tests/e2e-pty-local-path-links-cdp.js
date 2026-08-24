@@ -12,6 +12,7 @@ const ROOT = path.resolve(__dirname, '..');
 const RUN_ID = `${Date.now()}-${process.pid}`;
 const TEMP_ROOT = path.join(os.tmpdir(), `hub-pty-local-path-${RUN_ID}`);
 const DATA_DIR = path.join(TEMP_ROOT, 'hub-data');
+const HOME_DIR = path.join(TEMP_ROOT, 'home');
 const WORK_DIR = path.join(TEMP_ROOT, '工作区');
 const ABS_FILE = path.join(WORK_DIR, '中文目录', '带 空格的报告.md');
 const REL_FILE = path.join(WORK_DIR, 'docs', 'note.md');
@@ -67,6 +68,7 @@ function terminalCellWidth(text) {
   fs.mkdirSync(path.dirname(ABS_FILE), { recursive: true });
   fs.mkdirSync(path.dirname(REL_FILE), { recursive: true });
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(HOME_DIR, { recursive: true });
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
   fs.writeFileSync(ABS_FILE, '# PTY absolute path preview\n', 'utf8');
   fs.writeFileSync(REL_FILE, '# PTY relative path preview\n', 'utf8');
@@ -87,7 +89,11 @@ function terminalCellWidth(text) {
       dataDir: DATA_DIR,
       port,
       label: 'pty-local-path-links',
-      extraEnv: { CLAUDE_HUB_E2E: '1' },
+      extraEnv: {
+        CLAUDE_HUB_E2E: '1',
+        CLAUDE_HUB_HOME_DIR: HOME_DIR,
+        DEEPSEEK_API_KEY: '',
+      },
     });
     await _waitMs(1400);
     client = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/.test(target.url || ''));
@@ -184,13 +190,39 @@ function terminalCellWidth(text) {
       ${JSON.stringify(session.id)}, ${lineNumbers.absolute}, ${absoluteIndex}
     )`);
     assert.ok(result.geometry && result.geometry.row >= 0, JSON.stringify(result.geometry));
+    await client.eval(`(() => {
+      window.__ptyPhysicalEvents = [];
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        document.addEventListener(type, event => {
+          window.__ptyPhysicalEvents.push({
+            type,
+            x:event.clientX,
+            y:event.clientY,
+            button:event.button,
+            ctrlKey:event.ctrlKey,
+            target:event.target && event.target.className || event.target && event.target.tagName || '',
+          });
+        }, { capture:true, once:true });
+      }
+    })()`);
     await client.send('Input.dispatchMouseEvent', {
       type: 'mouseMoved',
       x: result.geometry.x,
       y: result.geometry.y,
       modifiers: 2,
     });
-    await _waitMs(180);
+    await _waitMs(500);
+    result.hitTest = await client.eval(`(() => {
+      const target = document.elementFromPoint(${Number(result.geometry.x)}, ${Number(result.geometry.y)});
+      const screen = document.querySelector('.xterm-screen');
+      const xterm = document.querySelector('.xterm');
+      return {
+        tag:target && target.tagName || '',
+        className:target && target.className || '',
+        screenCursor:screen ? getComputedStyle(screen).cursor : '',
+        xtermCursor:xterm ? getComputedStyle(xterm).cursor : '',
+      };
+    })()`);
     await capture(client, TERMINAL_SCREENSHOT);
     await client.send('Input.dispatchMouseEvent', {
       type: 'mousePressed',
@@ -210,12 +242,20 @@ function terminalCellWidth(text) {
       clickCount: 1,
       modifiers: 2,
     });
-    await waitFor(
-      client,
-      `document.getElementById('preview-panel')?.style.display === 'flex'
-        && document.getElementById('preview-title')?.title === ${JSON.stringify(ABS_FILE)}`,
-      'physical PTY link click opens preview',
+    await _waitMs(1200);
+    result.physicalEvents = await client.eval(`window.__ptyPhysicalEvents || []`);
+    result.activationStats = await client.eval(
+      `window.__hubE2E.terminalLinkActivationStats(${JSON.stringify(session.id)})`
     );
+    const physicalOpened = await client.eval(`document.getElementById('preview-panel')?.style.display === 'flex'
+      && document.getElementById('preview-title')?.title === ${JSON.stringify(ABS_FILE)}`);
+    assert.equal(physicalOpened, true, JSON.stringify({
+      geometry: result.geometry,
+      hitTest: result.hitTest,
+      events: result.physicalEvents,
+      activationStats: result.activationStats,
+    }));
+    assert.equal(result.activationStats.activations, 1, JSON.stringify(result.activationStats));
     result.physicalClick = await client.eval(`(() => ({
       display: document.getElementById('preview-panel').style.display,
       title: document.getElementById('preview-title').textContent,
@@ -245,6 +285,31 @@ function terminalCellWidth(text) {
       'relative PTY link opens against session cwd',
     );
     assert.equal(result.relativeActivation.text, REL_FILE);
+
+    await client.eval(`(() => {
+      document.getElementById('preview-close').click();
+      const textarea = document.querySelector('.xterm-helper-textarea');
+      textarea.focus();
+      return document.activeElement === textarea;
+    })()`);
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'o', code: 'KeyO', modifiers: 2, windowsVirtualKeyCode: 79,
+    });
+    await client.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'o', code: 'KeyO', modifiers: 2, windowsVirtualKeyCode: 79,
+    });
+    await waitFor(
+      client,
+      `document.getElementById('preview-quick-open').style.display === 'flex'
+        && document.activeElement?.id === 'preview-quick-open-input'`,
+      'Ctrl+O opens quick path from the focused xterm textarea',
+    );
+    result.ctrlOFromPty = await client.eval(`(() => ({
+      overlay:document.getElementById('preview-quick-open').style.display,
+      focused:document.activeElement?.id || '',
+    }))()`);
+    assert.deepEqual(result.ctrlOFromPty, { overlay:'flex', focused:'preview-quick-open-input' });
+    await client.eval(`document.getElementById('preview-quick-open-close').click()`);
 
     result.terminalScreenshot = TERMINAL_SCREENSHOT;
     result.previewScreenshot = PREVIEW_SCREENSHOT;

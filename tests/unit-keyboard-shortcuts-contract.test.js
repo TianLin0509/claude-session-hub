@@ -67,6 +67,122 @@ test('Ctrl+W uses the shared close-as-sleep action', () => {
   assert.deepStrictEqual(closed, ['busy']);
 });
 
+test('Ctrl+O is global in PTY/editable controls but does not reset quick-open itself', () => {
+  let opened = 0;
+  const shortcuts = createKeyboardShortcuts({
+    document: { addEventListener: () => {} },
+    ipcRenderer: { invoke: () => {} },
+    clipboard: { writeText: () => {} },
+    sessions: new Map(),
+    terminalCache: new Map(),
+    getActiveSessionId: () => null,
+    getCurrentFontSize: () => 16,
+    selectSession: () => {},
+    escapeToHome: () => {},
+    toggleSidebar: () => {},
+    openTerminalSearch: () => {},
+    openPreviewQuickOpen: () => { opened += 1; },
+    setFontSize: () => {},
+  });
+
+  const bodyEvent = makeEvent({ key: 'o', target: { tagName: 'DIV' } });
+  shortcuts.handleKeydown(bodyEvent);
+  assert.strictEqual(bodyEvent.defaultPrevented, true);
+  assert.strictEqual(opened, 1);
+
+  const inputEvent = makeEvent({ key: 'o', target: { tagName: 'TEXTAREA' } });
+  shortcuts.handleKeydown(inputEvent);
+  assert.strictEqual(inputEvent.defaultPrevented, true);
+  assert.strictEqual(opened, 2, 'xterm/floating input focus must not make the advertised shortcut a dead key');
+
+  const quickInputEvent = makeEvent({
+    key: 'o',
+    target: { tagName: 'INPUT', id: 'preview-quick-open-input' },
+  });
+  shortcuts.handleKeydown(quickInputEvent);
+  assert.strictEqual(quickInputEvent.defaultPrevented, false);
+  assert.strictEqual(opened, 2);
+});
+
+test('preview quick/find inputs suppress unrelated Hub shortcuts', () => {
+  const calls = [];
+  const shortcuts = createKeyboardShortcuts({
+    document: { addEventListener: () => {} },
+    ipcRenderer: { invoke: (...args) => calls.push(args) },
+    clipboard: { writeText: () => {} },
+    sessions: new Map([['active', { id: 'active', kind: 'codex' }]]),
+    terminalCache: new Map(),
+    getActiveSessionId: () => 'active',
+    getCurrentFontSize: () => 16,
+    selectSession: () => {}, escapeToHome: () => {}, toggleSidebar: () => calls.push(['sidebar']),
+    openTerminalSearch: () => calls.push(['terminal-search']), setFontSize: () => {},
+    closeSession: id => calls.push(['close', id]),
+  });
+  const layer = { tagName: 'INPUT', closest: selector => selector.includes('#preview-quick-open') ? {} : null };
+  for (const key of ['f', 'w', 'n', 'b']) shortcuts.handleKeydown(makeEvent({ key, target: layer }));
+  assert.deepStrictEqual(calls, []);
+});
+
+test('operations review modal suppresses background Hub shortcuts', () => {
+  const calls = [];
+  const operationsModal = { classList: { contains: () => false } };
+  const shortcuts = createKeyboardShortcuts({
+    document: {
+      addEventListener: () => {},
+      getElementById: id => id === 'operations-review-modal' ? operationsModal : null,
+    },
+    ipcRenderer: { invoke: (...args) => calls.push(args) },
+    clipboard: { writeText: () => {} },
+    sessions: new Map([['active', { id: 'active', kind: 'codex' }]]),
+    terminalCache: new Map(),
+    getActiveSessionId: () => 'active',
+    getCurrentFontSize: () => 16,
+    selectSession: () => calls.push(['select']),
+    escapeToHome: () => calls.push(['home']),
+    toggleSidebar: () => calls.push(['sidebar']),
+    openTerminalSearch: () => calls.push(['terminal-search']),
+    openPreviewQuickOpen: () => calls.push(['quick-open']),
+    setFontSize: () => calls.push(['font']),
+    closeSession: () => calls.push(['close']),
+  });
+  for (const key of ['o', 'k', 'n', 'w', 'b', 'f']) {
+    const event = makeEvent({ key, target: { tagName: 'BUTTON' } });
+    shortcuts.handleKeydown(event);
+    assert.equal(event.defaultPrevented, false);
+  }
+  assert.deepStrictEqual(calls, []);
+});
+
+test('global search modal suppresses background Hub shortcuts', () => {
+  const calls = [];
+  const searchModal = { hidden: false, style: { display: 'flex' }, classList: { contains: () => false } };
+  const shortcuts = createKeyboardShortcuts({
+    document: {
+      addEventListener: () => {},
+      getElementById: id => id === 'search-modal' ? searchModal : null,
+    },
+    ipcRenderer: { invoke: (...args) => calls.push(args) },
+    clipboard: { writeText: () => {} },
+    sessions: new Map([['active', { id: 'active', kind: 'codex' }]]),
+    terminalCache: new Map(),
+    getActiveSessionId: () => 'active',
+    getCurrentFontSize: () => 16,
+    selectSession: () => calls.push(['select']),
+    escapeToHome: () => calls.push(['home']),
+    toggleSidebar: () => calls.push(['sidebar']),
+    openTerminalSearch: () => calls.push(['terminal-search']),
+    openPreviewQuickOpen: () => calls.push(['quick-open']),
+    setFontSize: () => calls.push(['font']),
+    closeSession: () => calls.push(['close']),
+  });
+  for (const key of ['o', 'k', 'n', 'w', 'b', 'f']) {
+    const event = makeEvent({ key, target: { tagName: 'INPUT' } });
+    shortcuts.handleKeydown(event);
+    assert.equal(event.defaultPrevented, false);
+  }
+  assert.deepStrictEqual(calls, []);
+});
+
 test('Ctrl+Shift+B forks the active session', () => {
   const calls = [];
   const shortcuts = createKeyboardShortcuts({

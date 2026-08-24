@@ -33,6 +33,7 @@ async function capture(client, filePath) {
       dataDir: DATA_DIR,
       port: CDP_PORT,
       label: 'terminal-runtime-state',
+      windowMode: 'hidden',
       extraEnv: {
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_HOME_DIR: path.join(DATA_DIR, 'fake-home'),

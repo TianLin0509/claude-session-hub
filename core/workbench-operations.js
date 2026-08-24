@@ -9,6 +9,7 @@ const path = require('path');
 const { execFile: execFileCallback } = require('child_process');
 const { promisify } = require('util');
 const { normalizeOperationsConfig } = require('./operations-config.js');
+const { acquireLockAsync, releaseLockAsync } = require('./file-lock.js');
 
 const execFileAsync = promisify(execFileCallback);
 const MAX_WORKSPACES = 10;
@@ -16,6 +17,7 @@ const MAX_FILES_PER_REPO = 300;
 const MAX_RECENT_FILES = 24;
 const MAX_DIFF_BYTES = 6 * 1024 * 1024;
 const OVERVIEW_CACHE_MS = 8_000;
+const EMPTY_TREE_HASH = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 function hashText(value, length = 16) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, length);
@@ -190,7 +192,13 @@ function requestBody(urlValue, options = {}, redirects = 0) {
     }, response => {
       if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location && redirects < 2) {
         response.resume();
-        const redirected = new URL(response.headers.location, parsed);
+        let redirected;
+        try {
+          redirected = new URL(response.headers.location, parsed);
+        } catch {
+          reject(new Error('invalid_redirect'));
+          return;
+        }
         // Never leak a configured bearer token to a different redirect origin.
         resolve(requestBody(redirected.toString(), {
           ...options,
@@ -353,6 +361,11 @@ function synthesizeUntrackedDiff(text) {
   return [hunk];
 }
 
+function hunkEvidenceHash(hunk) {
+  if (!hunk) return null;
+  return hashText(`${hunk.header}\n${(hunk.lines || []).map(line => line.text).join('\n')}`, 32);
+}
+
 function sanitizeSessionHints(hints, repoRoot) {
   return sanitizeWorkspaceHints(hints)
     .filter(hint => isPathInside(repoRoot, hint.cwd) || isPathInside(hint.cwd, repoRoot))
@@ -374,6 +387,7 @@ function createWorkbenchOperationsService(options = {}) {
   const logger = options.logger || console;
   const cache = { key: '', at: 0, value: null, pending: null };
   const checkpointLocks = new Map();
+  const reviewLocks = new Map();
 
   async function runGit(repoRoot, args, extra = {}) {
     const result = await execFile('git', args, {
@@ -508,9 +522,10 @@ function createWorkbenchOperationsService(options = {}) {
     const hints = sanitizeWorkspaceHints(payload.workspaces);
     const key = hashText(JSON.stringify(hints.map(item => [item.cwd, item.lastMessageTime])));
     if (payload.force !== true && cache.value && cache.key === key && now() - cache.at < OVERVIEW_CACHE_MS) return cache.value;
-    if (cache.pending && cache.key === key) return cache.pending;
+    if (cache.pending && cache.pending.key === key) return cache.pending.promise;
     cache.key = key;
-    cache.pending = (async () => {
+    const scanRequest = { key, promise: null };
+    scanRequest.promise = (async () => {
       const rootPairs = await mapLimit(hints, 3, async hint => ({ hint, root: await resolveRepoRoot(hint.cwd) }));
       const grouped = new Map();
       for (const pair of rootPairs) {
@@ -550,11 +565,16 @@ function createWorkbenchOperationsService(options = {}) {
           scanErrors: scanErrors.length,
         },
       };
-      cache.value = value;
-      cache.at = now();
+      if (cache.pending === scanRequest && cache.key === key) {
+        cache.value = value;
+        cache.at = now();
+      }
       return value;
-    })().finally(() => { cache.pending = null; });
-    return cache.pending;
+    })().finally(() => {
+      if (cache.pending === scanRequest) cache.pending = null;
+    });
+    cache.pending = scanRequest;
+    return scanRequest.promise;
   }
 
   async function requireRepo(repoRoot) {
@@ -571,6 +591,19 @@ function createWorkbenchOperationsService(options = {}) {
 
   function reviewFilePath(repoRoot) {
     return path.join(dataDir, 'provenance', 'reviews', `${hashText(normalizePathKey(repoRoot), 24)}.json`);
+  }
+
+  async function withReviewFileLock(repoRoot, worker) {
+    const target = reviewFilePath(repoRoot);
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    const lockPath = `${target}.lock`;
+    const lock = await acquireLockAsync(lockPath, { retries: 100, retryDelayMs: 10 });
+    if (!lock) throw new Error('review_state_busy');
+    try {
+      return await worker();
+    } finally {
+      await releaseLockAsync(lock, lockPath);
+    }
   }
 
   async function readReviewState(repoRoot) {
@@ -643,38 +676,81 @@ function createWorkbenchOperationsService(options = {}) {
 
   async function setReviewDecision(payload = {}) {
     const repoRoot = await requireRepo(payload.repoRoot);
-    const relativePath = path.relative(repoRoot, resolveRepoFile(repoRoot, payload.filePath)).replace(/\\/g, '/');
-    const decision = String(payload.decision || 'pending');
-    if (!['accepted', 'rejected', 'pending'].includes(decision)) throw new Error('invalid_review_decision');
-    const hunkId = String(payload.hunkId || 'file').replace(/[^a-z0-9_-]/gi, '').slice(0, 64) || 'file';
-    let currentHunkIds = null;
-    if (hunkId !== 'file') {
+    const lockKey = normalizePathKey(repoRoot);
+    const previous = reviewLocks.get(lockKey) || Promise.resolve();
+    const pending = previous.catch(() => {}).then(async () => {
+      const relativePath = path.relative(repoRoot, resolveRepoFile(repoRoot, payload.filePath)).replace(/\\/g, '/');
+      const decision = String(payload.decision || 'pending');
+      if (!['accepted', 'rejected', 'pending'].includes(decision)) throw new Error('invalid_review_decision');
+      const hunkId = String(payload.hunkId || 'file').replace(/[^a-z0-9_-]/gi, '').slice(0, 64) || 'file';
+      const blobBefore = await worktreeBlobId(repoRoot, relativePath);
       const current = await diff({ repoRoot, filePath: relativePath });
-      if (!current.hunks.some(hunk => hunk.id === hunkId)) throw new Error('stale_hunk');
-      currentHunkIds = new Set(current.hunks.map(hunk => hunk.id));
-    }
-    const state = await readReviewState(repoRoot);
-    state.version = 1;
-    state.repoRoot = repoRoot;
-    state.updatedAt = now();
-    state.decisions = state.decisions || {};
-    if (currentHunkIds) {
-      const prefix = `${relativePath}:`;
-      for (const existingKey of Object.keys(state.decisions)) {
-        if (!existingKey.startsWith(prefix)) continue;
-        const existingHunkId = existingKey.slice(prefix.length);
-        if (existingHunkId !== 'file' && !currentHunkIds.has(existingHunkId)) delete state.decisions[existingKey];
+      const selectedHunk = hunkId === 'file' ? null : current.hunks.find(hunk => hunk.id === hunkId);
+      if (hunkId !== 'file' && !selectedHunk) throw new Error('stale_hunk');
+      if (typeof options.onReviewDiffCaptured === 'function') {
+        await options.onReviewDiffCaptured({ repoRoot, relativePath, hunkId, current });
       }
+      const blobId = await worktreeBlobId(repoRoot, relativePath);
+      if (blobBefore !== blobId) throw new Error('stale_hunk');
+      const currentHunkIds = new Set(current.hunks.map(hunk => hunk.id));
+      return withReviewFileLock(repoRoot, async () => {
+        const state = await readReviewState(repoRoot);
+        state.version = 1;
+        state.repoRoot = repoRoot;
+        state.updatedAt = now();
+        state.decisions = state.decisions || {};
+        const prefix = `${relativePath}:`;
+        for (const existingKey of Object.keys(state.decisions)) {
+          if (!existingKey.startsWith(prefix)) continue;
+          const existingHunkId = existingKey.slice(prefix.length);
+          if (existingHunkId !== 'file' && !currentHunkIds.has(existingHunkId)) delete state.decisions[existingKey];
+        }
+        const key = `${relativePath}:${hunkId}`;
+        if (decision === 'pending' && !String(payload.comment || '').trim()) delete state.decisions[key];
+        else state.decisions[key] = {
+          decision,
+          comment: String(payload.comment || '').trim().slice(0, 4_000),
+          updatedAt: now(),
+          diffHash: current.diffHash,
+          blobId,
+          hunkHash: selectedHunk ? hunkEvidenceHash(selectedHunk) : null,
+          binary: current.binary === true,
+        };
+        await writeReviewState(repoRoot, state);
+        return { ok: true, filePath: relativePath, hunkId, review: state.decisions[key] || null };
+      });
+    });
+    reviewLocks.set(lockKey, pending);
+    try {
+      return await pending;
+    } finally {
+      if (reviewLocks.get(lockKey) === pending) reviewLocks.delete(lockKey);
     }
-    const key = `${relativePath}:${hunkId}`;
-    if (decision === 'pending' && !String(payload.comment || '').trim()) delete state.decisions[key];
-    else state.decisions[key] = {
-      decision,
-      comment: String(payload.comment || '').trim().slice(0, 4_000),
-      updatedAt: now(),
-    };
-    await writeReviewState(repoRoot, state);
-    return { ok: true, filePath: relativePath, hunkId, review: state.decisions[key] || null };
+  }
+
+  async function worktreeBlobId(repoRoot, relativePath) {
+    const absolutePath = resolveRepoFile(repoRoot, relativePath);
+    try {
+      await fs.promises.lstat(absolutePath);
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return 'missing';
+      throw error;
+    }
+    return (await runGit(repoRoot, ['hash-object', `--path=${relativePath}`, '--', relativePath], {
+      timeout: 20_000,
+      maxBuffer: 256 * 1024,
+    })).trim();
+  }
+
+  async function checkpointBlobId(repoRoot, commit, relativePath) {
+    try {
+      return (await runGit(repoRoot, ['rev-parse', `${commit}:${relativePath}`], {
+        timeout: 20_000,
+        maxBuffer: 256 * 1024,
+      })).trim();
+    } catch {
+      return 'missing';
+    }
   }
 
   async function createCheckpoint(payload = {}) {
@@ -687,7 +763,6 @@ function createWorkbenchOperationsService(options = {}) {
       const temporaryDir = path.join(provenanceDir, 'tmp');
       await fs.promises.mkdir(checkpointDir, { recursive: true });
       await fs.promises.mkdir(temporaryDir, { recursive: true });
-      const reviewState = await readReviewState(repoRoot);
       const indexPath = path.join(temporaryDir, `${id}.index`);
       const env = {
         ...process.env,
@@ -709,18 +784,51 @@ function createWorkbenchOperationsService(options = {}) {
         if (baseHead) commitArgs.push('-p', baseHead);
         commitArgs.push('-m', label);
         const commit = (await runGit(repoRoot, commitArgs, { env, timeout: 30_000 })).trim();
+        if (typeof options.onCheckpointTreeCaptured === 'function') {
+          await options.onCheckpointTreeCaptured({ repoRoot, tree, commit, id });
+        }
         const ref = `refs/ai-hub/checkpoints/${id}`;
         await runGit(repoRoot, ['update-ref', ref, commit], { timeout: 20_000 });
         createdRef = ref;
         const branch = (await runGit(repoRoot, ['branch', '--show-current']).catch(() => '')).trim();
         const statusRaw = await runGit(repoRoot, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+        const reviewDecisions = await withReviewFileLock(repoRoot, async () => {
+          const reviewState = await readReviewState(repoRoot);
+          const valid = {};
+          const blobs = new Map();
+          const capturedHunks = new Map();
+          for (const [key, review] of Object.entries(reviewState.decisions || {}).slice(0, 2_000)) {
+            const separator = key.lastIndexOf(':');
+            if (separator <= 0 || !review || !review.blobId) continue;
+            const relativePath = key.slice(0, separator);
+            let blobId = blobs.get(relativePath);
+            if (!blobId) {
+              blobId = await checkpointBlobId(repoRoot, commit, relativePath);
+              blobs.set(relativePath, blobId);
+            }
+            if (blobId !== review.blobId) continue;
+            const hunkId = key.slice(separator + 1);
+            if (hunkId !== 'file' && review.binary !== true) {
+              let hashes = capturedHunks.get(relativePath);
+              if (!hashes) {
+                const raw = await runGit(repoRoot, ['diff', '--no-ext-diff', '--unified=3', baseHead || EMPTY_TREE_HASH, commit, '--', relativePath])
+                  .catch(() => '');
+                hashes = new Set(parseUnifiedDiff(raw, 'checkpoint').map(hunkEvidenceHash).filter(Boolean));
+                capturedHunks.set(relativePath, hashes);
+              }
+              if (!review.hunkHash || !hashes.has(review.hunkHash)) continue;
+            }
+            valid[key] = review;
+          }
+          return valid;
+        });
         const manifest = {
           version: 1, id, createdAt: now(), label,
           repoRoot, repoName: path.basename(repoRoot), branch: branch || '(detached)',
           baseHead, tree, commit, ref,
           files: parsePorcelainZ(statusRaw),
           sessions: sanitizeSessionHints(payload.sessions, repoRoot),
-          reviewDecisions: reviewState.decisions || {},
+          reviewDecisions,
           evidence: { tests: 'not_recorded' },
         };
         const manifestPath = path.join(checkpointDir, `${id}.json`);

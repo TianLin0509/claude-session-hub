@@ -21,5 +21,7 @@ test('window-all-closed uses the graceful coordinator, not immediate PTY teardow
 
 test('SessionManager resolves shutdown waiters from the existing PTY exit path', () => {
   assert.match(managerSource, /_handlePtyExit\([\s\S]*_shutdownExitWaiters\.get\(sessionId\)[\s\S]*shutdownWaiter\.resolve/);
-  assert.match(managerSource, /disposeGracefully\(options = \{\}\)[\s\S]*await Promise\.all\(waits\)/);
+  assert.match(managerSource, /disposeGracefully\(options = \{\}\)[\s\S]*Promise\.race\([\s\S]*drainTimeoutMs/);
+  assert.match(managerSource, /safeToQuit: false[\s\S]*pendingSessionIds[\s\S]*pty_drain_timeout/);
+  assert.doesNotMatch(managerSource, /PTY drain timed out[\s\S]{0,300}_shutdownExitWaiters\.clear\(\)/);
 });

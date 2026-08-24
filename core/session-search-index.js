@@ -4,6 +4,10 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 const MAX_QUERY_LENGTH = 512;
 const PREVIEW_TEXT_LIMIT = 12_000;
+const MAX_DOCUMENT_TEXT_CHARS = 64 * 1024;
+const MAX_KEYS_PER_DOCUMENT = 20_000;
+const MAX_UNIQUE_INDEX_KEYS = 500_000;
+const MAX_POSTING_ENTRIES = 1_000_000;
 
 const SCOPE_WEIGHTS = Object.freeze({
   title: 18,
@@ -129,6 +133,35 @@ function trimPreviewText(text, terms) {
   };
 }
 
+function boundDocumentText(value, maxChars = MAX_DOCUMENT_TEXT_CHARS) {
+  const text = String(value || '');
+  if (text.length <= maxChars) return { text, truncated: false };
+  const head = Math.floor(maxChars / 2);
+  const tail = maxChars - head;
+  return { text: `${text.slice(0, head)}\n…[索引文本已截断]…\n${text.slice(-tail)}`, truncated: true };
+}
+
+function selectedIndexKeysForText(value) {
+  const text = String(value || '');
+  const boundaryKeys = new Set([
+    ...indexKeysForText(text.slice(0, 4_096)),
+    ...indexKeysForText(text.slice(-4_096)),
+  ]);
+  const priority = [...boundaryKeys].slice(0, MAX_KEYS_PER_DOCUMENT);
+  if (priority.length >= MAX_KEYS_PER_DOCUMENT) return priority;
+  const allKeys = indexKeysForText(text);
+  if (allKeys.length <= MAX_KEYS_PER_DOCUMENT) return allKeys;
+  const selected = new Set(priority);
+  const remaining = MAX_KEYS_PER_DOCUMENT - selected.size;
+  const head = Math.floor(remaining / 2);
+  for (const key of allKeys.slice(0, head)) selected.add(key);
+  for (const key of allKeys.slice(-remaining)) {
+    if (selected.size >= MAX_KEYS_PER_DOCUMENT) break;
+    selected.add(key);
+  }
+  return [...selected];
+}
+
 class SessionSearchIndex {
   constructor(sources = []) {
     this.replaceSources(sources);
@@ -145,6 +178,8 @@ class SessionSearchIndex {
     this.documentIndicesBySource = new Map();
     this.providerSessionCounts = new Map();
     this.inactiveDocumentCount = 0;
+    this.postingEntryCount = 0;
+    this.guardedDocumentCount = 0;
 
     for (const source of this.sources) {
       this._addSource(source);
@@ -162,16 +197,20 @@ class SessionSearchIndex {
     const sourceIndices = [];
     for (const rawDoc of (Array.isArray(source.docs) ? source.docs : [])) {
       if (!rawDoc || !rawDoc.text || !SCOPE_WEIGHTS[rawDoc.scope]) continue;
-      const normalizedText = normalizeSearchText(rawDoc.text);
+      const boundedText = boundDocumentText(rawDoc.text);
+      const normalizedText = normalizeSearchText(boundedText.text);
       if (!normalizedText) continue;
       const index = this.documents.length;
       const doc = {
         ...rawDoc,
+        text: boundedText.text,
+        truncated: rawDoc.truncated === true || boundedText.truncated,
         active: true,
         sourceKey: source.key,
         sessionKey: session.key,
         provider: session.provider || 'unknown',
         normalizedText,
+        indexGuarded: boundedText.truncated,
         timestamp: safeTimestamp(rawDoc.timestamp, safeTimestamp(session.updatedAt)),
         ordinal: Number.isInteger(rawDoc.ordinal) ? rawDoc.ordinal : index,
       };
@@ -180,9 +219,17 @@ class SessionSearchIndex {
       this.documentIndicesBySession.get(session.key).push(index);
       const eventMapKey = `${session.key}\0${String(doc.eventId || doc.id || '')}`;
       if (!this.documentIndexByEvent.has(eventMapKey)) this.documentIndexByEvent.set(eventMapKey, index);
-      for (const key of indexKeysForText(doc.text)) {
-        if (!this.postings.has(key)) this.postings.set(key, []);
+      if (boundedText.truncated) this.guardedDocumentCount += 1;
+      let documentPostingEntries = 0;
+      for (const key of selectedIndexKeysForText(doc.text)) {
+        if (documentPostingEntries >= MAX_KEYS_PER_DOCUMENT || this.postingEntryCount >= MAX_POSTING_ENTRIES) break;
+        if (!this.postings.has(key)) {
+          if (this.postings.size >= MAX_UNIQUE_INDEX_KEYS) continue;
+          this.postings.set(key, []);
+        }
         this.postings.get(key).push(index);
+        documentPostingEntries += 1;
+        this.postingEntryCount += 1;
       }
     }
     this.documentIndicesBySource.set(source.key, sourceIndices);
@@ -198,6 +245,17 @@ class SessionSearchIndex {
     for (const index of (this.documentIndicesBySource.get(sourceKey) || [])) {
       const doc = this.documents[index];
       if (!doc || doc.active === false) continue;
+      for (const key of selectedIndexKeysForText(doc.text)) {
+        const posting = this.postings.get(key);
+        if (!posting) continue;
+        const position = posting.indexOf(index);
+        if (position >= 0) {
+          posting.splice(position, 1);
+          this.postingEntryCount = Math.max(0, this.postingEntryCount - 1);
+        }
+        if (posting.length === 0) this.postings.delete(key);
+      }
+      if (doc.indexGuarded) this.guardedDocumentCount = Math.max(0, this.guardedDocumentCount - 1);
       doc.active = false;
       this.inactiveDocumentCount += 1;
       const eventMapKey = `${sessionKey}\0${String(doc.eventId || doc.id || '')}`;
@@ -234,7 +292,7 @@ class SessionSearchIndex {
     this._sortSessionDocuments(changed.map(source => source.session && source.session.key).filter(Boolean));
     this.sources = [...this._sourceByKey.values()];
 
-    const compactThreshold = Math.max(5_000, Math.floor(this.documents.length * 0.15));
+    const compactThreshold = Math.max(256, Math.floor(this.documents.length * 0.15));
     if (this.inactiveDocumentCount > compactThreshold) {
       const activeSources = this.sources.slice();
       this.replaceSources(activeSources);
@@ -250,6 +308,8 @@ class SessionSearchIndex {
       inactiveDocuments: this.inactiveDocumentCount,
       terms: this.postings.size,
       providers: Object.fromEntries(this.providerSessionCounts),
+      postingEntries: this.postingEntryCount,
+      guardedDocuments: this.guardedDocumentCount,
     };
   }
 
@@ -484,6 +544,12 @@ class SessionSearchIndex {
 }
 
 module.exports = {
+  MAX_DOCUMENT_TEXT_CHARS,
+  MAX_KEYS_PER_DOCUMENT,
+  MAX_POSTING_ENTRIES,
+  MAX_UNIQUE_INDEX_KEYS,
+  boundDocumentText,
+  selectedIndexKeysForText,
   SessionSearchIndex,
   SCOPE_WEIGHTS,
   MAX_QUERY_LENGTH,

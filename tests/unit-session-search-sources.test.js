@@ -12,8 +12,38 @@ const {
   matchCodexHubSession,
   parseCodexRolloutStreaming,
   parseSourceDescriptor,
+  readBoundedJsonlTailText,
   titleOnlySources,
 } = require('../core/session-search-sources.js');
+
+test('bounded JSONL reads discard a partial head record and preserve recent tail records', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-search-bounded-source-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const filePath = path.join(root, 'large.jsonl');
+  fs.writeFileSync(filePath, `${JSON.stringify({ marker: 'HEAD_ONLY', text: 'x'.repeat(700_000) })}\n${JSON.stringify({ marker: 'TAIL_ONLY' })}\n`, 'utf8');
+  const result = readBoundedJsonlTailText(filePath, 256 * 1024);
+  assert.equal(result.truncated, true);
+  assert.doesNotMatch(result.raw, /HEAD_ONLY/);
+  assert.match(result.raw, /TAIL_ONLY/);
+});
+
+test('bounded JSONL reads decode only bytes actually returned by a short read', () => {
+  const safeBytes = Buffer.from('partial-record\n{"marker":"SAFE_SHORT_READ"}\n', 'utf8');
+  let reads = 0;
+  const fsRef = {
+    statSync: () => ({ size: 700_000 }),
+    openSync: () => 1,
+    readSync: (_fd, target, offset) => {
+      if (reads++ > 0) return 0;
+      safeBytes.copy(target, offset);
+      return safeBytes.length;
+    },
+    closeSync() {},
+  };
+  const result = readBoundedJsonlTailText('fixture.jsonl', 256 * 1024, fsRef);
+  assert.equal(result.raw, '{"marker":"SAFE_SHORT_READ"}\n');
+  assert.doesNotMatch(result.raw, /\uFFFD/);
+});
 
 test('Codex native SID matching never guesses across multiple profile roots', () => {
   const sid = 'shared-native-sid';

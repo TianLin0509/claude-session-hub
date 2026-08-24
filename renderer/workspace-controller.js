@@ -990,7 +990,7 @@
     selectedEffort = (saved && saved.effort) || DEFAULT_EFFORT;
     selectedMcpProfile = (saved && saved.mcpProfile) || defaultMcpFor(kind);
     selectedFastMode = saved && typeof saved.fastMode === 'boolean' ? saved.fastMode : true;
-    selectedCodexTier = (saved && saved.codexSpeedTier) || defaultCodexSpeedFor(kind);
+    selectedCodexTier = (saved && saved.codexSpeedTier) || defaultCodexSpeedFor(kind, selectedModel);
   }
 
   // Codex 的档位目录来自 codex-cli 自己的缓存，开弹窗时拉一次就够。

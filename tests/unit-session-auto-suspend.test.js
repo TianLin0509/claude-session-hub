@@ -24,7 +24,7 @@ test('main process starts the scheduler and stops it before quit', () => {
   assert.match(mainSource, /createSessionAutoSuspendScheduler\s*\(/);
   assert.match(mainSource, /sessionAutoSuspendScheduler\.start\(\)/);
   assert.match(mainSource, /function runFinalShutdownCleanup\(\)[\s\S]*sessionAutoSuspendScheduler\?\.stop\(\)/);
-  assert.match(mainSource, /app\.on\('before-quit',[\s\S]*runFinalShutdownCleanup\(\)/);
+  assert.match(mainSource, /beginGracefulHubShutdown\(reason\)[\s\S]*await runFinalShutdownCleanup\(\)[\s\S]*app\.quit\(\)/);
 });
 
 test('active group-chat watchers and running loop members are protected', () => {

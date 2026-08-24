@@ -132,6 +132,7 @@ async function main() {
       port,
       label: 'groupchat-create-click',
       executablePath: BRANDED_HUB_EXE,
+      windowMode: 'hidden',
       extraEnv: {
         AI_HUB_WORKSPACE_ROOT: WORKSPACE_ROOT,
         CODEX_HOME,

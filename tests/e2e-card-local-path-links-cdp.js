@@ -13,6 +13,7 @@ const ROOT = path.resolve(__dirname, '..');
 const RUN_ID = `${Date.now()}-${process.pid}`;
 const TEMP_ROOT = path.join(os.tmpdir(), `hub-card-local-path-${RUN_ID}`);
 const DATA_DIR = path.join(TEMP_ROOT, 'hub-data');
+const HOME_DIR = path.join(TEMP_ROOT, 'home');
 const FIXTURE_PATH = path.join(TEMP_ROOT, '_scratch', 'My Report', 'report.md');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'card-local-path-links');
 const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `card-local-path-links-${RUN_ID}.png`);
@@ -36,6 +37,7 @@ async function availablePort(preferred) {
 
 async function waitForRenderer(client, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
+  let lastError = null;
   while (Date.now() < deadline) {
     try {
       const ready = await client.eval(`Boolean(
@@ -45,10 +47,15 @@ async function waitForRenderer(client, timeoutMs = 15000) {
         && window.openPathInHub
       )`);
       if (ready) return;
-    } catch {}
+    } catch (error) {
+      lastError = error;
+      if (/WebSocket|not open|closed|ECONN|socket/i.test(String(error && error.message || error))) {
+        throw new Error(`CDP connection lost while waiting for card renderers: ${error.message}`);
+      }
+    }
     await _waitMs(120);
   }
-  throw new Error('Hub card renderers did not become ready');
+  throw new Error(`Hub card renderers did not become ready${lastError ? `; last error: ${lastError.message}` : ''}`);
 }
 
 async function capture(client, target) {
@@ -63,6 +70,7 @@ async function capture(client, target) {
 async function main() {
   fs.mkdirSync(path.dirname(FIXTURE_PATH), { recursive: true });
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(HOME_DIR, { recursive: true });
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
   fs.writeFileSync(FIXTURE_PATH, '# Local path E2E\n\nWindows path preview works.\n', 'utf8');
 
@@ -72,10 +80,20 @@ async function main() {
   const fileUrl = ('file:///' + forwardPath).replace(/ /g, '%20');
   let hub = null;
   let client = null;
+  let testBodyPassed = false;
   const result = { runId: RUN_ID, port, fixturePath: FIXTURE_PATH, screenshot: SCREENSHOT_PATH };
 
   try {
-    hub = await launchIsolatedHub({ dataDir: DATA_DIR, port, label: 'card-local-path-links' });
+    hub = await launchIsolatedHub({
+      dataDir: DATA_DIR,
+      port,
+      label: 'card-local-path-links',
+      windowMode: 'hidden',
+      extraEnv: {
+        CLAUDE_HUB_HOME_DIR: HOME_DIR,
+        DEEPSEEK_API_KEY: '',
+      },
+    });
     client = await connectFirstPage(hub, (target) => target.type === 'page' && /renderer[\\/]index\.html/i.test(target.url || ''));
     await client.send('Page.enable');
     await client.send('Emulation.setDeviceMetricsOverride', {
@@ -164,25 +182,41 @@ async function main() {
         const panel = document.getElementById('preview-panel');
         const title = document.getElementById('preview-title');
         if (panel?.style.display === 'flex' && title?.title) {
-          return { display:panel.style.display, title:title.textContent, path:title.title };
+          const state = window.__hubE2E.previewWorkbench.state();
+          const active = state.tabs.find(tab => tab.id === state.activeTabId);
+          return { display:panel.style.display, title:title.textContent, path:title.title, pinned:active?.pinned };
         }
         await new Promise(resolve => setTimeout(resolve, 50));
       }
-      return { display:'', title:'', path:'' };
+      return { display:'', title:'', path:'', pinned:null };
     })()`);
     assert.equal(result.click.display, 'flex');
     assert.equal(result.click.path, FIXTURE_PATH);
     assert.equal(result.click.title, path.basename(FIXTURE_PATH));
+    assert.equal(result.click.pinned, false, 'a single path click must use the reusable temporary tab');
 
-    result.success = true;
-    fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
-    console.log(JSON.stringify(result, null, 2));
+    testBodyPassed = true;
   } catch (error) {
     if (hub) console.error('[isolated hub log]\n' + hub.log().slice(-80).join('\n'));
     throw error;
   } finally {
-    if (client) await client.close().catch(() => {});
-    if (hub) await gracefulQuit(hub);
+    try {
+      if (client) await client.close().catch(error => {
+        console.warn('[card-local-path-e2e] CDP close failed:', error && error.message);
+      });
+      if (hub) result.teardown = await gracefulQuit(hub);
+    } finally {
+      const resolved = path.resolve(TEMP_ROOT);
+      if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
+          && path.basename(resolved).startsWith('hub-card-local-path-')) {
+        fs.rmSync(resolved, { recursive: true, force: true });
+      }
+    }
+  }
+  if (testBodyPassed) {
+    result.success = true;
+    fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
+    console.log(JSON.stringify(result, null, 2));
   }
 }
 

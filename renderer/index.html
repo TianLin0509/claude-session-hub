@@ -126,6 +126,11 @@
         <span>昨日之我</span>
         <kbd>Ctrl Shift F</kbd>
       </button>
+      <button type="button" class="global-search-launcher preview-path-launcher" id="btn-preview-path" title="输入路径或模糊搜索文件 (Ctrl+O)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H11l2 2h4.5A2.5 2.5 0 0 1 20 9.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><circle cx="15.5" cy="13.5" r="2.5"/><path d="m17.4 15.4 2.1 2.1"/></svg>
+        <span>路径预览</span>
+        <kbd>Ctrl O</kbd>
+      </button>
       <!-- 按 AI 家族筛选侧栏列表：全部 / Claude / Codex / 其他。内容与计数由
            session-list-renderer 每次渲染时重建。 -->
       <div class="session-filter-tabs" id="session-filter-tabs" role="tablist" aria-label="按 AI 筛选会话"></div>
@@ -391,24 +396,79 @@
            meeting-room-panel 之后。flex 排版下，普通 session 时 mr-panel 隐藏 →
            排成 [terminal | preview]，群聊时 terminal 隐藏 → 排成 [meeting-room | preview]，
            两种模式预览统一在右侧。挪之前群聊模式预览跑在左边，与普通 session 不一致。 -->
-    <div class="preview-splitter" id="preview-splitter" style="display:none"></div>
+    <div class="preview-splitter" id="preview-splitter" style="display:none" role="separator" aria-label="调整预览分栏" aria-orientation="vertical" aria-valuemin="10" aria-valuemax="90" aria-valuenow="50" aria-valuetext="左侧 50%，预览 50%" tabindex="0"></div>
     <div class="preview-panel" id="preview-panel" style="display:none">
+      <div class="preview-tabs-row">
+        <div class="preview-tabs" id="preview-tabs" role="tablist" aria-label="预览文件" aria-orientation="horizontal"></div>
+        <button class="preview-tab-tool" id="preview-outline-toggle" type="button" title="文档大纲 / 行号跳转 (Ctrl+Shift+O)" aria-label="打开文档大纲或行号跳转" aria-controls="preview-outline" aria-expanded="false" disabled><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg></button>
+        <button class="preview-new-tab" id="preview-new-tab" type="button" title="输入路径或搜索文件 (Ctrl+O)" aria-label="打开新的预览">＋</button>
+      </div>
       <div class="preview-header">
         <span class="preview-file-badge" id="preview-file-badge">--</span>
         <span class="preview-title" id="preview-title">Preview</span>
         <span class="preview-file-meta" id="preview-file-meta"></span>
+        <span class="preview-change-badge" id="preview-change-badge" role="status" aria-live="polite" aria-atomic="true" hidden></span>
         <div class="preview-header-actions">
+          <button class="preview-action-btn preview-action-text" id="preview-open-path" title="输入路径或模糊搜索 (Ctrl+O)" aria-label="输入路径或模糊搜索"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><circle cx="15" cy="13" r="2.5"/><path d="m16.8 14.8 2.2 2.2"/></svg><span>路径</span></button>
+          <button class="preview-action-btn" id="preview-find-toggle" title="在预览中查找 (Ctrl+F)" aria-label="在预览中查找" aria-controls="preview-find-bar" aria-expanded="false"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
+          <button class="preview-action-btn preview-action-text" id="preview-copy-content" title="复制全文" aria-label="复制全文"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M7 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/></svg><span>全文</span></button>
+          <button class="preview-action-btn preview-action-text" id="preview-copy-path" title="复制路径或 URL" aria-label="复制路径或 URL"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m10.6 13.4 2.8-2.8"/><path d="m7.8 16.2-1.4 1.4a3 3 0 0 1-4.2-4.2l3.5-3.5a3 3 0 0 1 4.2 0"/><path d="m16.2 7.8 1.4-1.4a3 3 0 0 1 4.2 4.2l-3.5 3.5a3 3 0 0 1-4.2 0"/></svg><span>路径</span></button>
+          <button class="preview-action-btn" id="preview-show-in-folder" title="在资源管理器中定位" aria-label="在资源管理器中定位"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="m14 12 4 3-4 3"/></svg></button>
+          <button class="preview-action-btn" id="preview-reload" title="重新加载预览" aria-label="重新加载预览"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg></button>
+          <span class="preview-action-separator"></span>
           <button class="preview-action-btn" id="preview-zoom-out" title="缩小 (Ctrl+-)">A−</button>
           <span class="preview-zoom-label" id="preview-zoom-label">100%</span>
           <button class="preview-action-btn" id="preview-zoom-in" title="放大 (Ctrl++)">A+</button>
           <button class="preview-action-btn" id="preview-zoom-reset" title="重置缩放">1:1</button>
           <span class="preview-action-separator"></span>
-          <button class="preview-action-btn" id="preview-open-external" title="在外部打开">↗</button>
-          <button class="preview-action-btn" id="preview-toggle-layout" title="全屏预览">□</button>
-          <button class="preview-action-btn" id="preview-close" title="关闭预览 (Esc)">✕</button>
+          <button class="preview-action-btn" id="preview-open-external" title="在外部打开" aria-label="在外部打开"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="m20 4-9 9"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/></svg></button>
+          <button class="preview-action-btn" id="preview-toggle-layout" title="全屏预览" aria-label="全屏预览" aria-pressed="false"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
+          <button class="preview-action-btn" id="preview-close" title="关闭预览 (Esc)" aria-label="关闭预览"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
         </div>
+        <span class="preview-action-status" id="preview-action-status" role="status" aria-live="polite" aria-atomic="true"></span>
       </div>
-      <div class="preview-body" id="preview-body"></div>
+      <div class="preview-find-bar" id="preview-find-bar" role="search" aria-label="在预览中查找" hidden>
+        <input id="preview-find-input" type="text" autocomplete="off" spellcheck="false" aria-label="查找文本" placeholder="在预览中查找…">
+        <span class="preview-find-count" id="preview-find-count" role="status" aria-live="polite">0 / 0</span>
+        <button type="button" id="preview-find-previous" title="上一个匹配 (Shift+Enter)" aria-label="上一个匹配">↑</button>
+        <button type="button" id="preview-find-next" title="下一个匹配 (Enter)" aria-label="下一个匹配">↓</button>
+        <button type="button" id="preview-find-close" title="关闭查找 (Esc)" aria-label="关闭查找">×</button>
+      </div>
+      <div class="preview-content-row" id="preview-content-row">
+        <nav class="preview-outline" id="preview-outline" aria-label="文档大纲与行号跳转" hidden>
+          <div class="preview-outline-head">
+            <strong id="preview-outline-title">文档大纲</strong>
+            <div class="preview-outline-actions">
+              <button type="button" id="preview-outline-copy" title="复制当前标题或行号引用" aria-label="复制当前标题或行号引用" disabled><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg></button>
+              <button type="button" id="preview-outline-close" title="关闭大纲" aria-label="关闭文档大纲"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+            </div>
+          </div>
+          <form class="preview-goto-line" id="preview-goto-line-form" hidden>
+            <label for="preview-goto-line-input">转到行</label>
+            <input id="preview-goto-line-input" type="number" inputmode="numeric" min="1" step="1" autocomplete="off" required>
+            <button type="submit">前往</button>
+          </form>
+          <ol class="preview-outline-list" id="preview-outline-list" aria-label="Markdown 标题"></ol>
+          <div class="preview-outline-empty" id="preview-outline-empty" hidden>此文档没有可用标题</div>
+        </nav>
+        <div class="preview-body" id="preview-body" role="tabpanel" aria-label="预览内容"></div>
+      </div>
+    </div>
+    <div class="preview-quick-open" id="preview-quick-open" style="display:none" role="presentation">
+      <section class="preview-quick-open-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-quick-open-title">
+        <div class="preview-quick-open-heading">
+          <div><strong id="preview-quick-open-title">打开预览</strong><span>精确路径优先，也可模糊输入文件名</span></div>
+          <button type="button" id="preview-quick-open-close" aria-label="关闭">×</button>
+        </div>
+        <label class="preview-quick-open-input-wrap" for="preview-quick-open-input">
+          <span aria-hidden="true">⌕</span>
+          <input id="preview-quick-open-input" type="text" autocomplete="off" spellcheck="false" placeholder="绝对路径、相对路径或文件名…" role="combobox" aria-label="输入路径或搜索文件" aria-describedby="preview-quick-open-mode-hint" aria-autocomplete="list" aria-expanded="false" aria-controls="preview-quick-open-results">
+          <kbd aria-hidden="true">Esc</kbd>
+        </label>
+        <div class="preview-quick-open-status" id="preview-quick-open-status" role="status" aria-live="polite">当前会话最近预览</div>
+        <div class="preview-quick-open-results" id="preview-quick-open-results" role="listbox" aria-label="路径搜索结果"></div>
+        <div class="preview-quick-open-foot"><span id="preview-quick-open-mode-hint">↑↓ 选择 · Enter 临时预览 · Tab 上 Ctrl+Enter 固定</span><span>本地索引，不上传文件内容</span></div>
+      </section>
     </div>
     <!-- memo-panel 在最右,与 preview-panel 互不影响（display:none 不占位） -->
     <div class="memo-panel" id="memo-panel" style="display:none">

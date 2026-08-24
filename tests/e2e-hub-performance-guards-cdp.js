@@ -44,6 +44,7 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
       dataDir,
       port,
       label: 'hub-performance-guards',
+      windowMode: 'hidden',
       extraEnv: { CLAUDE_HUB_E2E: '1' },
     });
     client = await connectFirstPage(hub, t => t.type === 'page' && /renderer[\\/]index\.html/.test(t.url || ''));

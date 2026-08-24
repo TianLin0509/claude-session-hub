@@ -62,13 +62,17 @@ function createCardQuestionNavigator(options = {}) {
 
   function showTooltip(entry, button) {
     if (!tooltip || !entry || !button || !root) return;
-    if (tooltipIndex) tooltipIndex.textContent = `问题 ${entry.index + 1}`;
+    if (tooltipIndex) tooltipIndex.textContent = `问题 ${entry.index + 1} / ${entries.length}`;
     if (tooltipSummary) tooltipSummary.textContent = entry.summary;
     const rootRect = root.getBoundingClientRect();
     const buttonRect = button.getBoundingClientRect();
     const desired = buttonRect.top - rootRect.top + buttonRect.height / 2;
-    tooltip.style.top = `${Math.max(10, Math.min(rootRect.height - 10, desired))}px`;
     tooltip.hidden = false;
+    const tooltipHeight = tooltip.getBoundingClientRect().height || 0;
+    const half = tooltipHeight / 2;
+    const minCenter = Math.max(10, half + 4);
+    const maxCenter = Math.max(minCenter, rootRect.height - half - 4);
+    tooltip.style.top = `${Math.max(minCenter, Math.min(maxCenter, desired))}px`;
   }
 
   function setVisible(visible) {
@@ -104,6 +108,7 @@ function createCardQuestionNavigator(options = {}) {
     entries.forEach((entry, index) => {
       const active = index === activeIndex;
       entry.button.classList.toggle('active', active);
+      entry.button.tabIndex = active ? 0 : -1;
       if (active) entry.button.setAttribute('aria-current', 'true');
       else entry.button.removeAttribute('aria-current');
     });
@@ -140,6 +145,7 @@ function createCardQuestionNavigator(options = {}) {
     entries.forEach((item, itemIndex) => {
       const active = itemIndex === index;
       item.button.classList.toggle('active', active);
+      item.button.tabIndex = active ? 0 : -1;
       if (active) item.button.setAttribute('aria-current', 'true');
       else item.button.removeAttribute('aria-current');
     });
@@ -181,6 +187,8 @@ function createCardQuestionNavigator(options = {}) {
     track.replaceChildren();
     entries = [];
     activeIndex = -1;
+    root.classList.toggle('dense', cards.length > 12);
+    root.classList.toggle('very-dense', cards.length > 28);
     if (cards.length < 2) {
       setVisible(false);
       return { count: cards.length, activeIndex, visible: false };
@@ -192,13 +200,17 @@ function createCardQuestionNavigator(options = {}) {
       const button = doc.createElement('button');
       button.type = 'button';
       button.className = 'card-question-nav-item';
+      button.tabIndex = -1;
       button.dataset.questionIndex = String(index);
       button.setAttribute('aria-label', `跳转到问题 ${index + 1}：${summary}`);
       button.title = `问题 ${index + 1}：${summary}`;
+      const dot = doc.createElement('span');
+      dot.className = 'card-question-nav-dot';
+      dot.setAttribute('aria-hidden', 'true');
       const label = doc.createElement('span');
       label.className = 'card-question-nav-label';
-      label.textContent = '你';
-      button.appendChild(label);
+      label.textContent = `Q${index + 1}`;
+      button.append(dot, label);
       const entry = { index, card, button, summary };
       button.addEventListener('click', () => scrollToQuestion(index));
       button.addEventListener('keydown', event => markerKeydown(event, index));

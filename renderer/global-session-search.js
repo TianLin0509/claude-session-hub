@@ -1,5 +1,7 @@
 'use strict';
 
+const { isBlockingModalOpen } = require('./modal-layer-guard.js');
+
 const PROVIDER_META = Object.freeze({
   claude: { label: 'Claude', className: 'provider-claude' },
   codex: { label: 'Codex', className: 'provider-codex' },
@@ -605,7 +607,8 @@ function createGlobalSessionSearch(options) {
     if (searchTimer) { clearTimeoutFn(searchTimer); searchTimer = null; }
     if (statusTimer) { clearTimeoutFn(statusTimer); statusTimer = null; }
     if (restoreFocus && returnFocusElement && returnFocusElement.isConnected) {
-      window.requestAnimationFrame(() => returnFocusElement.focus());
+      const focusTarget = returnFocusElement;
+      window.requestAnimationFrame(() => focusTarget.focus());
     }
     returnFocusElement = null;
   }
@@ -646,12 +649,15 @@ function createGlobalSessionSearch(options) {
   overlay.addEventListener('mousedown', event => { if (event.target === overlay) close(); });
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && String(event.key).toLowerCase() === 'f') {
+      if (isBlockingModalOpen(document, { exceptIds: ['search-modal'] })) return;
       event.preventDefault();
+      event.stopImmediatePropagation?.();
       open();
       return;
     }
     if (event.key === 'Escape' && isOpen()) {
       event.preventDefault();
+      event.stopImmediatePropagation?.();
       close();
       return;
     }

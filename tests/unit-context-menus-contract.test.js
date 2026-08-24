@@ -1,4 +1,5 @@
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 
 const {
@@ -147,6 +148,10 @@ async function main() {
   previewBtn._listeners.click();
   assert.strictEqual(previewTarget, 'C:\\tmp\\a.md');
   assert.strictEqual(termCtxMenuEl.style.display, 'none');
+
+  const rendererSource = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
+  assert.match(rendererSource, /createTerminalContextMenuController\([\s\S]*?openPathInHub\(target, \{[\s\S]*?cwd: getSessionCwd\(activeSessionId\)/,
+    'terminal selection preview must resolve relative paths through the active session cwd');
 
   console.log('unit-context-menus-contract OK');
 }

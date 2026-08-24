@@ -7,6 +7,9 @@
 //   - 严禁 Get-Process electron / 时间窗口 PID 推断
 //   - 严禁 Start-Process（不继承 env）；用 child_process.spawn 直接传 env
 //   - 隔离数据目录：CLAUDE_HUB_DATA_DIR 必须设
+//   - 隔离规范库：CLAUDE_HUB_HOME_DIR 默认落到 dataDir 下，且默认清空
+//     DEEPSEEK_API_KEY，防止梦境任务扫描/改写真实 home；需要真实 Key 的专项
+//     用例必须通过 extraEnv 显式覆盖。
 //
 // 用法：
 //   const { launchIsolatedHub, gracefulQuit } = require('./helpers/hub-launcher');
@@ -14,13 +17,86 @@
 //   // ...do CDP work via hub.cdpUrl...
 //   await gracefulQuit(hub);
 
-const { spawn } = require('child_process');
+const { execFile: execFileCallback, spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const http = require('http');
+const { promisify } = require('util');
+
+const execFileAsync = promisify(execFileCallback);
 
 const HUB_ROOT = path.resolve(__dirname, '..', '..');
 const ELECTRON_EXE = path.join(HUB_ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
+const PARENT_CONTROL_ENV_KEYS = new Set([
+  'CLAUDECODE',
+  'CLAUDE_HUB_PORT',
+  'CLAUDE_HUB_TOKEN',
+  'CLAUDE_HUB_SESSION_ID',
+  'AI_TEAM_HUB_CALLBACK_URL',
+  'CODEX_THREAD_ID',
+  'CODEX_SESSION_ID',
+]);
+
+function scrubParentControlEnv(baseEnv = {}) {
+  const clean = { ...baseEnv };
+  for (const key of Object.keys(clean)) {
+    if (PARENT_CONTROL_ENV_KEYS.has(key)
+        || key.startsWith('CLAUDE_CODE_')
+        || key.startsWith('ARENA_HUB_')) {
+      delete clean[key];
+    }
+  }
+  return clean;
+}
+
+function _isPathInside(parent, candidate) {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
+  allowExternalState = false,
+  windowMode = 'visible',
+} = {}) {
+  if (windowMode !== 'visible' && windowMode !== 'hidden') {
+    throw new Error('isolated Hub windowMode must be visible or hidden');
+  }
+  const resolvedDataDir = path.resolve(dataDir);
+  const testRoot = path.dirname(resolvedDataDir);
+  const requestedDataDir = extraEnv.CLAUDE_HUB_DATA_DIR;
+  const requestedHomeDir = extraEnv.CLAUDE_HUB_HOME_DIR;
+  const requestedKey = extraEnv.DEEPSEEK_API_KEY;
+  if (!allowExternalState) {
+    const tempRoot = path.resolve(os.tmpdir());
+    if (resolvedDataDir === tempRoot || !_isPathInside(tempRoot, resolvedDataDir)) {
+      throw new Error('isolated Hub requires dataDir inside a dedicated OS temp subdirectory');
+    }
+    if (requestedDataDir && path.resolve(requestedDataDir) !== resolvedDataDir) {
+      throw new Error('isolated Hub forbids overriding CLAUDE_HUB_DATA_DIR');
+    }
+    if (requestedHomeDir && !_isPathInside(testRoot, requestedHomeDir)) {
+      throw new Error('isolated Hub requires CLAUDE_HUB_HOME_DIR inside the test root');
+    }
+    if (requestedKey) throw new Error('isolated Hub forbids a non-empty DEEPSEEK_API_KEY');
+  }
+  const cleanBaseEnv = scrubParentControlEnv(baseEnv);
+  const safeExtraEnv = { ...extraEnv };
+  delete safeExtraEnv.CLAUDE_HUB_DATA_DIR;
+  delete safeExtraEnv.CLAUDE_HUB_HOME_DIR;
+  delete safeExtraEnv.DEEPSEEK_API_KEY;
+  delete safeExtraEnv.CLAUDE_HUB_E2E_WINDOW_MODE;
+  const env = {
+    ...cleanBaseEnv,
+    ...safeExtraEnv,
+    CLAUDE_HUB_DATA_DIR: allowExternalState && requestedDataDir ? requestedDataDir : resolvedDataDir,
+    CLAUDE_HUB_HOME_DIR: requestedHomeDir || path.join(resolvedDataDir, 'isolated-home'),
+    DEEPSEEK_API_KEY: allowExternalState && requestedKey ? requestedKey : '',
+    CLAUDE_HUB_E2E_WINDOW_MODE: windowMode,
+  };
+  if (windowMode === 'hidden') env.CLAUDE_HUB_E2E = '1';
+  return env;
+}
 
 function _waitMs(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -48,20 +124,95 @@ async function _waitForCDP(port, timeoutMs = 30000) {
   return null;
 }
 
-async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {}, executablePath = ELECTRON_EXE } = {}) {
+function _httpCloseTarget(url, timeoutMs = 1500) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { timeout: timeoutMs }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode >= 200 && res.statusCode < 300));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('CDP close request timed out')));
+  });
+}
+
+async function _verifyCdpPortOwner(port, expectedPid, execFile = execFileAsync) {
+  const numericPort = Number(port);
+  const numericPid = Number(expectedPid);
+  if (!Number.isInteger(numericPort) || numericPort <= 0
+      || !Number.isInteger(numericPid) || numericPid <= 0) return false;
+  if (process.platform !== 'win32') return false;
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    `$owners = @(Get-NetTCPConnection -State Listen -LocalPort ${numericPort} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess)`,
+    "[Console]::Out.Write(($owners -join ','))",
+  ].join('; ');
+  try {
+    const result = await execFile('powershell.exe', [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ], { windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024 });
+    const owners = String(result && result.stdout || '')
+      .split(',')
+      .map(value => Number(value.trim()))
+      .filter(Number.isInteger);
+    return owners.includes(numericPid);
+  } catch {
+    return false;
+  }
+}
+
+async function _terminateSpawnedChild(child, { termWaitMs = 2000, killWaitMs = 1200 } = {}) {
+  if (!child || child.exitCode != null || child.signalCode != null) {
+    return { exited: true, forced: false };
+  }
+  let termSent = false;
+  try { termSent = child.kill('SIGTERM') === true; } catch {}
+  const termDeadline = Date.now() + termWaitMs;
+  while (Date.now() < termDeadline && child.exitCode == null && child.signalCode == null) {
+    await _waitMs(100);
+  }
+  if (child.exitCode != null || child.signalCode != null) {
+    return { exited: true, forced: true, termSent };
+  }
+  let killSent = false;
+  try { killSent = child.kill('SIGKILL') === true; } catch {}
+  const killDeadline = Date.now() + killWaitMs;
+  while (Date.now() < killDeadline && child.exitCode == null && child.signalCode == null) {
+    await _waitMs(100);
+  }
+  return {
+    exited: child.exitCode != null || child.signalCode != null,
+    forced: true,
+    termSent,
+    killSent,
+  };
+}
+
+async function launchIsolatedHub({
+  dataDir,
+  port,
+  label = 'hub',
+  extraEnv = {},
+  executablePath = ELECTRON_EXE,
+  allowExternalState = false,
+  windowMode = 'visible',
+} = {}) {
   if (!dataDir) throw new Error('dataDir required');
   if (!port) throw new Error('port required');
 
-  fs.mkdirSync(dataDir, { recursive: true });
+  const env = buildIsolatedHubEnv(dataDir, extraEnv, process.env, {
+    allowExternalState,
+    windowMode,
+  });
+  fs.mkdirSync(env.CLAUDE_HUB_DATA_DIR, { recursive: true });
+  const isolatedHomeDir = env.CLAUDE_HUB_HOME_DIR;
+  fs.mkdirSync(isolatedHomeDir, { recursive: true });
   // main-bootstrap.js 会把 Electron userData 切到这个子目录；Chromium 在目录不存在时
   // 偶发无法写 DevToolsActivePort，表现为 CDP 已监听但 renderer 永远不响应。
-  fs.mkdirSync(path.join(dataDir, 'electron-userdata'), { recursive: true });
-
-  const env = {
-    ...process.env,
-    CLAUDE_HUB_DATA_DIR: dataDir,
-    ...extraEnv,
-  };
+  fs.mkdirSync(path.join(env.CLAUDE_HUB_DATA_DIR, 'electron-userdata'), { recursive: true });
 
   const args = [HUB_ROOT, `--remote-debugging-port=${port}`];
   // 关键：spawn 立即拿 PID，detached:false 让 child 跟随 parent 退出
@@ -72,16 +223,19 @@ async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {}, 
     windowsHide: true,
   });
 
+  let spawnError = null;
+  child.on('error', (error) => { spawnError = error; });
+
   const pid = child.pid;
   if (!pid) throw new Error(`[${label}] spawn failed, no PID`);
 
   const logLines = [];
-  child.stdout.on('data', d => {
+  child.stdout?.on('data', d => {
     const s = d.toString();
     logLines.push(...s.split(/\r?\n/).filter(Boolean));
     if (logLines.length > 500) logLines.splice(0, logLines.length - 500);
   });
-  child.stderr.on('data', d => {
+  child.stderr?.on('data', d => {
     const s = d.toString();
     logLines.push(...s.split(/\r?\n/).filter(Boolean));
     if (logLines.length > 500) logLines.splice(0, logLines.length - 500);
@@ -93,21 +247,31 @@ async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {}, 
   child.on('exit', (code, signal) => {
     exited = true;
     exitCode = code;
-    exitSignal = signal;
+    exitSignal = signal || null;
   });
 
   // 等 CDP ready (最长 30s)
   const ver = await _waitForCDP(port, 30000);
-  if (exited) {
-    const err = new Error(`[${label}] hub exited before CDP ready (code=${exitCode})`);
+  if (spawnError || exited) {
+    const termination = exited ? null : await _terminateSpawnedChild(child);
+    const err = new Error(`[${label}] hub exited before CDP ready (code=${exitCode}, signal=${exitSignal || 'none'}): ${spawnError ? spawnError.message : 'early exit'}`);
     err.logTail = logLines.slice(-30).join('\n');
+    if (termination) err.termination = termination;
     throw err;
   }
   if (!ver) {
-    // CDP 没 ready；force kill ONLY this PID
-    try { process.kill(pid); } catch {}
+    const termination = await _terminateSpawnedChild(child);
     const err = new Error(`[${label}] CDP not ready within 30s`);
     err.logTail = logLines.slice(-30).join('\n');
+    err.termination = termination;
+    throw err;
+  }
+  const identityVerified = await _verifyCdpPortOwner(port, pid);
+  if (!identityVerified) {
+    const termination = await _terminateSpawnedChild(child);
+    const err = new Error(`[${label}] CDP port ${port} is not owned by spawned PID ${pid}; refusing to attach`);
+    err.logTail = logLines.slice(-30).join('\n');
+    err.termination = termination;
     throw err;
   }
 
@@ -117,6 +281,7 @@ async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {}, 
     label,
     dataDir,
     executablePath,
+    windowMode,
     cdpUrl: ver.webSocketDebuggerUrl,
     cdpHttpBase: `http://127.0.0.1:${port}`,
     child,
@@ -124,6 +289,8 @@ async function launchIsolatedHub({ dataDir, port, label = 'hub', extraEnv = {}, 
     isAlive: () => !exited,
     exitCode: () => exitCode,
     exitSignal: () => exitSignal,
+    spawnError: () => spawnError,
+    identityVerified,
   };
 }
 
@@ -149,60 +316,88 @@ function requireCleanHubExit(hub, { forced = false } = {}) {
   throw error;
 }
 
-// 通过 CDP 优雅关闭 — 不依赖 process.kill，避免 PID 误杀。
-//   先尝试 Browser.close（Chromium/Electron 全关）；timeoutMs 内没退出再 SIGTERM。
-async function gracefulQuit(hub, { timeoutMs = 15000 } = {}) {
-  if (!hub) return;
-  if (hubHasExited(hub)) return requireCleanHubExit(hub);  // 已退出
-  // CDP Browser.close
+function _assertCleanHubExit(hub, context) {
+  const spawnError = hub.spawnError && hub.spawnError();
+  const exitCode = hub.exitCode ? hub.exitCode() : hub.child && hub.child.exitCode;
+  const exitSignal = hub.exitSignal ? hub.exitSignal() : hub.child && hub.child.signalCode;
+  if (spawnError || exitCode !== 0 || exitSignal) {
+    const detail = spawnError ? spawnError.message : `code=${exitCode}, signal=${exitSignal || 'none'}`;
+    const error = new Error(`[${hub.label || 'hub'}] ${context}: ${detail}`);
+    error.logTail = hub.log ? hub.log().slice(-30).join('\n') : '';
+    throw error;
+  }
+  return { exitCode, exitSignal: exitSignal || null, forced: false };
+}
+
+// 通过已验证属于本次 spawn PID 的 CDP 页面优雅关闭。任何强制终止、非零
+// 退出或身份丢失都作为测试失败上抛，不能把 crash/残留伪装成 PASS。
+async function gracefulQuit(hub, { timeoutMs = 8000, allowAlreadyExited = false } = {}) {
+  if (!hub) return { exitCode: null, exitSignal: null, forced: false };
+  if (!hub.isAlive || !hub.isAlive()) {
+    const cleanExit = _assertCleanHubExit(hub, 'exited before teardown');
+    if (allowAlreadyExited) return cleanExit;
+    const error = new Error(`[${hub.label || 'hub'}] exited before teardown was requested`);
+    error.exit = cleanExit;
+    throw error;
+  }
+  if (!hub.identityVerified || !await _verifyCdpPortOwner(hub.port, hub.pid)) {
+    const termination = await _terminateSpawnedChild(hub.child);
+    const error = new Error(`[${hub.label || 'hub'}] CDP identity changed; refused to close an unverified target`);
+    error.termination = termination;
+    throw error;
+  }
+
+  let closeError = null;
   try {
     const targets = await _httpGetJson(`${hub.cdpHttpBase}/json/list`);
-    if (Array.isArray(targets) && targets.length > 0) {
-      // 走 page target 的 webSocket 发 Browser.close —— 但 ws 协议得用 ws lib，
-      // 这里复用 puppeteer-core 的可能在没装的环境失败。简单做法：直接用 PUT API
-      //   POST /json/close/<id> — 适用于 page，能让 page 关掉。
-      //   主进程会因为 window-all-closed 触发 app.quit() → before-quit → 持久化 flush
-      for (const t of targets) {
-        if (t.type === 'page' || t.type === 'browser') {
-          await _httpGetJson(`${hub.cdpHttpBase}/json/close/${t.id}`).catch(() => null);
-        }
-      }
-    }
-  } catch { /* ignore */ }
+    if (!Array.isArray(targets)) throw new Error('CDP target list unavailable');
+    const page = targets.find(target => target.type === 'page' && /renderer[\\/]index\.html/i.test(target.url || ''))
+      || targets.find(target => target.type === 'page');
+    if (!page) throw new Error('Hub page target unavailable');
+    const closed = await _httpCloseTarget(`${hub.cdpHttpBase}/json/close/${encodeURIComponent(page.id)}`);
+    if (!closed) throw new Error('CDP close endpoint rejected the Hub page');
+  } catch (error) {
+    closeError = error;
+  }
 
-  // 等待自然退出
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (hubHasExited(hub)) return requireCleanHubExit(hub);
+    if (!hub.isAlive()) {
+      const cleanExit = _assertCleanHubExit(hub, 'unclean exit during teardown');
+      if (closeError) {
+        const error = new Error('CDP close failed before clean Hub exit: ' + closeError.message);
+        error.exit = cleanExit;
+        throw error;
+      }
+      return cleanExit;
+    }
     await _waitMs(200);
   }
 
-  // 兜底：仅 kill 自己的 PID
-  let forced = false;
-  if (!hubHasExited(hub)) {
-    forced = true;
-    try { hub.child.kill('SIGTERM'); } catch {}
-    await _waitMs(2000);
-    if (!hubHasExited(hub)) {
-      try { hub.child.kill('SIGKILL'); } catch {}
-      await _waitMs(1000);
-    }
-  }
-  if (!hubHasExited(hub)) {
-    throw new Error(`[${hub.label || 'hub'}] isolated Hub did not exit after targeted termination`);
-  }
-  return requireCleanHubExit(hub, { forced });
+  const termination = await _terminateSpawnedChild(hub.child);
+  const error = new Error(`[${hub.label || 'hub'}] graceful teardown timed out${closeError ? `: ${closeError.message}` : ''}`);
+  error.termination = termination;
+  error.logTail = hub.log ? hub.log().slice(-30).join('\n') : '';
+  throw error;
 }
 
 // 列出 CDP 上所有 page targets（用于挑选 main window 来 attach）
 async function listCdpTargets(hub) {
+  if (!hub || !hub.identityVerified || !hub.isAlive()
+      || !await _verifyCdpPortOwner(hub.port, hub.pid)) {
+    throw new Error('refusing to list CDP targets for an unverified Hub instance');
+  }
   return await _httpGetJson(`${hub.cdpHttpBase}/json/list`) || [];
 }
 
 module.exports = {
+  buildIsolatedHubEnv,
+  scrubParentControlEnv,
   launchIsolatedHub,
   gracefulQuit,
   listCdpTargets,
+  _terminateSpawnedChild,
+  _verifyCdpPortOwner,
   _waitMs,  // 给 e2e 用
   _private: {
     hubHasExited,

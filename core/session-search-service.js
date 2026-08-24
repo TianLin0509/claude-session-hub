@@ -15,6 +15,8 @@ class SessionSearchService {
       meetingDir: options.meetingDir || null,
       refreshTtlMs: Number(options.refreshTtlMs) || 10_000,
       maxCacheCompressedBytes: Math.max(1024 * 1024, Number(options.maxCacheCompressedBytes) || 32 * 1024 * 1024),
+      maxCacheShardOutputBytes: Math.max(1024 * 1024, Number(options.maxCacheShardOutputBytes) || 32 * 1024 * 1024),
+      maxSourceReadBytes: Math.max(256 * 1024, Number(options.maxSourceReadBytes) || 4 * 1024 * 1024),
       maxSources: Math.max(10, Number(options.maxSources) || 200),
       maxIndexedChars: Math.max(1024 * 1024, Number(options.maxIndexedChars) || 16 * 1024 * 1024),
     };
@@ -42,8 +44,11 @@ class SessionSearchService {
     worker.on('error', error => this._handleFailure(error, worker));
     worker.on('exit', (code) => {
       if (this._worker !== worker) return;
+      if (!this._closed && code !== 0) {
+        this._handleFailure(new Error(`Session search worker exited with code ${code}`), worker);
+        return;
+      }
       this._worker = null;
-      if (!this._closed && code !== 0) this._handleFailure(new Error(`Session search worker exited with code ${code}`), worker);
     });
     this._worker = worker;
     this._stats.workerRestarts += 1;

@@ -19,6 +19,7 @@ function createWorkbenchOperationsController(options = {}) {
     snapshot: null,
     refreshing: false,
     refreshPromise: null,
+    forceRefreshPromise: null,
     activeRepoId: '',
     activeFilePath: '',
     view: 'review',
@@ -55,6 +56,7 @@ function createWorkbenchOperationsController(options = {}) {
       stale_hunk: '代码块已变化，请重新打开后再审阅',
       review_state_corrupt: '本地审阅账本损坏，已停止写入以防覆盖；请先备份并修复账本',
       review_state_unreadable: '本地审阅账本暂时无法读取，已停止写入',
+      review_state_busy: '另一个 Hub 正在更新审阅账本，请稍后重试',
       checkpoint_missing: 'Checkpoint 记录已不存在，请刷新列表',
       checkpoint_corrupt: 'Checkpoint 记录损坏，已停止恢复以防创建错误工作区',
       checkpoint_unreadable: 'Checkpoint 记录暂时无法读取，请稍后重试',
@@ -304,7 +306,15 @@ function createWorkbenchOperationsController(options = {}) {
   }
 
   function refresh(force = false) {
-    if (state.refreshPromise) return state.refreshPromise;
+    if (state.refreshPromise) {
+      if (!force) return state.refreshPromise;
+      if (!state.forceRefreshPromise) {
+        state.forceRefreshPromise = state.refreshPromise
+          .then(() => refresh(true))
+          .finally(() => { state.forceRefreshPromise = null; });
+      }
+      return state.forceRefreshPromise;
+    }
     state.refreshing = true;
     setLive('正在扫描最近工作区…');
     state.refreshPromise = (async () => {
@@ -341,13 +351,13 @@ function createWorkbenchOperationsController(options = {}) {
     if (!root) return;
     state.lastFocus = doc.activeElement;
     root.classList.remove('hidden');
+    setTimeout(() => el('ops-close')?.focus(), 0);
     if (!state.snapshot) await refresh(true);
     if (repoId && state.snapshot && state.snapshot.repos.some(repo => repo.id === repoId)) await selectRepo(repoId);
     else {
       renderNavigation();
       await loadCurrentView();
     }
-    setTimeout(() => el('ops-close')?.focus(), 0);
   }
 
   function close() {
@@ -466,13 +476,23 @@ function createWorkbenchOperationsController(options = {}) {
     el('ops-create-checkpoint')?.addEventListener('click', () => runSafely(createCheckpoint()));
     doc.addEventListener('keydown', event => {
       if (root.classList.contains('hidden')) return;
-      if (event.key === 'Escape') { event.preventDefault(); close(); return; }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopImmediatePropagation?.();
+        close();
+        return;
+      }
       if (event.key !== 'Tab') return;
       const focusable = [...root.querySelectorAll('button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex="0"]')]
         .filter(node => node.offsetParent !== null);
       if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
+      if (!root.contains?.(doc.activeElement)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
       if (event.shiftKey && doc.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && doc.activeElement === last) { event.preventDefault(); first.focus(); }
     });

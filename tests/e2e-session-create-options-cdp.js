@@ -115,6 +115,7 @@ setInterval(() => {}, 1000);
       dataDir,
       port,
       label: 'create-options',
+      windowMode: 'hidden',
       extraEnv: {
         AI_HUB_WORKSPACE_ROOT: workspaceRoot,
         CODEX_HOME: codexHome,

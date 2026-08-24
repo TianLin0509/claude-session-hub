@@ -67,6 +67,7 @@ async function waitFor(client, expression, label, timeoutMs = 30000) {
       dataDir: DATA_DIR,
       port,
       label: 'graceful-pty-shutdown',
+      windowMode: 'hidden',
       extraEnv: {
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_HOME_DIR: HOME_DIR,
@@ -115,17 +116,18 @@ async function waitFor(client, expression, label, timeoutMs = 30000) {
     await client.close();
     client = null;
     const shutdownStartedAt = Date.now();
-    result.exit = await gracefulQuit(hub);
+    const shutdownHub = hub;
+    result.exit = await gracefulQuit(shutdownHub);
+    result.shutdownLog = shutdownHub.log().filter(line => /\[shutdown\]|flush failed|cleanup/i.test(line)).slice(-40);
+    hub = null;
     result.shutdownDurationMs = Date.now() - shutdownStartedAt;
     const persistedState = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     result.cleanShutdown = persistedState.cleanShutdown === true;
     result.persistedSessionPresent = Array.isArray(persistedState.sessions)
       && persistedState.sessions.some(item => item && (item.hubId || item.id) === session.id);
-    assert.equal(result.cleanShutdown, true, 'final state must record a clean shutdown');
+    assert.equal(result.cleanShutdown, true, `final state must record a clean shutdown: ${result.shutdownLog.join(' | ')}`);
     assert.equal(result.persistedSessionPresent, true, 'PTY drainage must not delete the logical session');
     result.success = true;
-    hub = null;
-
     fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
     console.log(JSON.stringify(result, null, 2));
   } finally {

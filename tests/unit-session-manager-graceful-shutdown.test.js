@@ -88,3 +88,66 @@ test('graceful shutdown refuses new PTYs once draining starts', async () => {
     /Hub is shutting down/,
   );
 });
+
+test('missing native onExit reaches a retryable timeout instead of hanging forever', async () => {
+  const manager = new SessionManager();
+  const fixture = attachFakePty(manager, 'stuck-pty');
+  let logicalCloseEvents = 0;
+  manager.onSessionClosed = () => { logicalCloseEvents += 1; };
+  let logicalSuspendEvents = 0;
+  manager.onSessionSuspended = () => { logicalSuspendEvents += 1; };
+  const first = manager.disposeGracefully({
+    warnAfterMs: 0,
+    drainTimeoutMs: 30,
+    logger: { warn() {}, error() {} },
+  });
+  const result = await first;
+  assert.equal(result.safeToQuit, false);
+  assert.equal(result.error, 'pty_drain_timeout');
+  assert.deepStrictEqual(result.pendingSessionIds, ['stuck-pty']);
+  assert.equal(manager._isShuttingDown, false);
+  fixture.pty.emitExit();
+  assert.equal(logicalCloseEvents, 0, 'late shutdown-induced exit must not become a user close');
+  assert.equal(logicalSuspendEvents, 1, 'late shutdown-induced exit becomes a retryable dormant session');
+  assert.equal(manager.sessions.size, 0);
+
+  const retryManager = new SessionManager();
+  const retryFixture = attachFakePty(retryManager, 'retry-pty');
+  const timedOut = retryManager.disposeGracefully({
+    warnAfterMs: 0,
+    drainTimeoutMs: 30,
+    logger: { warn() {}, error() {} },
+  });
+  await timedOut;
+  const retry = retryManager.disposeGracefully({
+    warnAfterMs: 0,
+    drainTimeoutMs: 30,
+    logger: { warn() {}, error() {} },
+  });
+  assert.notStrictEqual(retry, timedOut);
+  retryFixture.pty.emitExit();
+  assert.equal((await retry).safeToQuit, true);
+});
+
+test('partial drain timeout turns completed PTYs dormant and keeps the stuck PTY tracked', async () => {
+  const manager = new SessionManager();
+  const completed = attachFakePty(manager, 'completed-pty');
+  attachFakePty(manager, 'stuck-pty');
+  const suspended = [];
+  let closed = 0;
+  manager.onSessionSuspended = (sessionId, _meetingId, session) => suspended.push({ sessionId, session });
+  manager.onSessionClosed = () => { closed += 1; };
+  const drain = manager.disposeGracefully({
+    warnAfterMs: 0,
+    drainTimeoutMs: 30,
+    logger: { warn() {}, error() {} },
+  });
+  completed.pty.emitExit();
+  const result = await drain;
+  assert.equal(result.safeToQuit, false);
+  assert.deepStrictEqual(result.pendingSessionIds, ['stuck-pty']);
+  assert.equal(closed, 0);
+  assert.deepStrictEqual(suspended.map(item => item.sessionId), ['completed-pty']);
+  assert.equal(suspended[0].session.status, 'dormant');
+  assert.equal(manager.sessions.has('stuck-pty'), true);
+});

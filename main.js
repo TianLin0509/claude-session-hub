@@ -202,6 +202,14 @@ function traceStartup(msg) {
 if (process.env.CLAUDE_HUB_DATA_DIR) {
   app.setPath('userData', path.join(process.env.CLAUDE_HUB_DATA_DIR, 'electron-userdata'));
 }
+const HIDDEN_E2E_WINDOW_REQUESTED = process.env.CLAUDE_HUB_E2E === '1'
+  && process.env.CLAUDE_HUB_E2E_WINDOW_MODE === 'hidden';
+const HIDDEN_E2E_DATA_DIR_SAFE = isIsolatedHub()
+  && path.resolve(getHubDataDir()).toLowerCase()
+    !== path.resolve(path.join(os.homedir(), '.claude-session-hub')).toLowerCase();
+if (HIDDEN_E2E_WINDOW_REQUESTED && !HIDDEN_E2E_DATA_DIR_SAFE) {
+  throw new Error('hidden E2E window mode requires a non-production CLAUDE_HUB_DATA_DIR');
+}
 
 // Auto-deploy hook scripts + settings.json config on first launch.
 // Idempotent — keeps Hub-owned entries current and preserves unrelated hooks.
@@ -761,8 +769,16 @@ function reassertHubWindowIcon() {
   return true;
 }
 
+function keepIsolatedE2EWindowHidden() {
+  return HIDDEN_E2E_WINDOW_REQUESTED && HIDDEN_E2E_DATA_DIR_SAFE;
+}
+
 function focusPrimaryWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
+  // A hidden isolated E2E still exercises the real BrowserWindow/webContents,
+  // but must never flash a Hub look-alike onto the user's production desktop.
+  // Requiring both flags keeps normal and production launches unchanged.
+  if (keepIsolatedE2EWindowHidden()) return true;
   if (mainWindow.isMinimized()) mainWindow.restore();
   if (!mainWindow.isVisible()) mainWindow.show();
   mainWindow.focus();
@@ -823,6 +839,10 @@ function createWindow() {
   const showMainWindow = () => {
     if (hasShown || !mainWindow || mainWindow.isDestroyed()) return;
     hasShown = true;
+    if (keepIsolatedE2EWindowHidden()) {
+      traceStartup('main window kept hidden for isolated E2E');
+      return;
+    }
     mainWindow.maximize();
     mainWindow.show();
   };
@@ -885,6 +905,11 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.on('close', (event) => {
+    if (shutdownDrainState === 'drained' || shutdownDrainState === 'finalizing') return;
+    event.preventDefault();
+    void beginGracefulHubShutdown('window-close-requested');
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
@@ -2296,76 +2321,120 @@ function closeHookServerForShutdown() {
   }
 }
 
-function runFinalShutdownCleanup() {
-  if (finalShutdownCleanupDone) return;
+async function runFinalShutdownCleanup() {
+  if (finalShutdownCleanupDone) return { clean: true, errors: [] };
   finalShutdownCleanupDone = true;
-  completionNotifier.dispose();
-  sessionAutoSuspendScheduler?.stop();
-  claudeHookWatchdog?.stop();
+  const errors = [];
+  const capture = (label, action) => {
+    try { action(); }
+    catch (error) { errors.push({ label, message: error && error.message ? error.message : String(error) }); }
+  };
+  capture('completion-notifier', () => completionNotifier.dispose());
+  capture('session-auto-suspend', () => sessionAutoSuspendScheduler?.stop());
+  capture('claude-hook-watchdog', () => claudeHookWatchdog?.stop());
   claudeHookWatchdog = null;
-  windowsShellWatchdog?.stop();
+  capture('windows-shell-watchdog', () => windowsShellWatchdog?.stop());
   windowsShellWatchdog = null;
-  terminalOutputBatcher.dispose({ flush: true });
+  capture('terminal-output-batcher', () => terminalOutputBatcher.dispose({ flush: true }));
   clearTimeout(sessionSearchPrewarmTimer);
-  // before-quit does not await returned promises. Start worker teardown without
-  // putting an await in front of the existing synchronous final state save.
-  void transcriptParserService.close();
-  void sessionSearchService.close();
-  void codexJsonlUsageService.close();
-  transcriptTap.dispose();
+  const workerResults = await Promise.allSettled([
+    transcriptParserService.close(),
+    sessionSearchService.close(),
+    codexJsonlUsageService.close(),
+  ]);
+  workerResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      errors.push({
+        label: ['transcript-parser', 'session-search', 'codex-usage'][index],
+        message: result.reason && result.reason.message ? result.reason.message : String(result.reason),
+      });
+    }
+  });
+  capture('transcript-tap', () => transcriptTap.dispose());
   // 原生投研 PTY 的全局租约属于 Hub 进程生命周期。退出时同步释放，
   // 让另一台/另一个 Hub 可以立即恢复同一个 native session；崩溃场景
   // 仍由 registry 的过期租约兜底。
   if (chuxinBridge && typeof chuxinBridge.releaseAllOwnership === 'function') {
-    chuxinBridge.releaseAllOwnership();
+    capture('chuxin-ownership', () => chuxinBridge.releaseAllOwnership());
   }
   // 2026-05-07 道雪：退出时保证三层都同步落盘——state.json（lock + merge）、
   //   per-meeting JSON、per-session JSON。任意一层丢了，下次 boot 的 selfHeal
   //   都能从另一层恢复。
-  stateStore.save({ version: 1, cleanShutdown: true, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting }, { sync: true });
-  try { flushUsageCacheSync(); } catch (error) { console.warn('[usage-cache] final flush failed:', error && error.message); }
+  capture('usage-cache', () => flushUsageCacheSync());
   try {
     meetingStore.flushAll();
     console.log('[群聊] meeting-store flushed on quit');
   } catch (err) {
+    errors.push({ label: 'meeting-store', message: err && err.message ? err.message : String(err) });
     console.warn('[群聊] meeting-store flush failed:', err.message);
   }
   try {
     sessionStore.flushAll();
     console.log('[hub] session-store flushed on quit');
   } catch (err) {
+    errors.push({ label: 'session-store', message: err && err.message ? err.message : String(err) });
     console.warn('[hub] session-store flush failed:', err.message);
+  }
+
+  const clean = errors.length === 0;
+  try {
+    stateStore.save({ version: 1, cleanShutdown: clean, sessions: lastPersistedSessions, meetings: meetingManager.getAllMeetings(), immersiveByMeeting: _immersiveByMeeting }, { sync: true });
+  } catch (error) {
+    errors.push({ label: 'state-store', message: error && error.message ? error.message : String(error) });
   }
 
   // 2026-05-16 道雪：清理自己的控制文件。unlinkSelf 内部已 try/catch + warn 非 ENOENT 错误，
   // 不外抛，所以这里裸调即可，不再加外层 catch（避免盖住内部 warn）。
-  hubControl.unlinkSelf(getHubDataDir(), process.pid);
+  capture('hub-control', () => hubControl.unlinkSelf(getHubDataDir(), process.pid));
+  if (errors.length) console.error('[shutdown] cleanup completed with errors:', errors);
+  return { clean: errors.length === 0, errors };
+}
 
+function restoreWindowAfterFailedShutdown() {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow();
+      return;
+    }
+    if (process.env.CLAUDE_HUB_E2E_WINDOW_MODE !== 'hidden') {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  } catch (error) {
+    console.error('[shutdown] failed to preserve a retryable Hub window:', error && error.message);
+  }
 }
 
 function beginGracefulHubShutdown(reason) {
   if (shutdownDrainPromise) return shutdownDrainPromise;
 
   shutdownDrainState = 'draining';
-  closeHookServerForShutdown();
   console.log(`[shutdown] draining PTYs before Electron teardown (${reason})`);
-  shutdownDrainPromise = sessionManager.disposeGracefully({ logger: console, warnAfterMs: 5000 })
-    .then((result) => {
+  shutdownDrainPromise = sessionManager.disposeGracefully({ logger: console, warnAfterMs: 5000, drainTimeoutMs: 15_000 })
+    .then(async (result) => {
       if (!result || result.safeToQuit !== true) {
-        shutdownDrainState = 'blocked';
-        console.error('[shutdown] PTY drain did not reach a safe state; refusing Electron teardown');
+        shutdownDrainState = 'idle';
+        shutdownDrainPromise = null;
+        console.error('[shutdown] PTY drain did not reach a safe state; close was cancelled and may be retried', result);
+        restoreWindowAfterFailedShutdown();
         return result;
       }
+      closeHookServerForShutdown();
+      const cleanup = await runFinalShutdownCleanup();
+      process.__hubShutdownCleanupClean = cleanup.clean === true;
       shutdownDrainState = 'drained';
       console.log(`[shutdown] PTY drain complete: ${result.drainedPtyCount} session(s), ${result.durationMs}ms`);
+      if (!cleanup.clean) console.error('[shutdown] exiting with cleanShutdown=false because cleanup reported errors');
       // Re-enter app.quit only after every node-pty onExit callback completed
       // while the Node environment was still alive.
       app.quit();
-      return result;
+      return { ...result, cleanup };
     })
     .catch((error) => {
-      shutdownDrainState = 'blocked';
+      shutdownDrainState = 'idle';
+      shutdownDrainPromise = null;
       console.error('[shutdown] PTY drain failed; refusing unsafe Electron teardown:', error && error.stack || error);
+      restoreWindowAfterFailedShutdown();
       return { safeToQuit: false, error: error && error.message ? error.message : String(error) };
     });
   return shutdownDrainPromise;
@@ -2374,7 +2443,6 @@ function beginGracefulHubShutdown(reason) {
 app.on('before-quit', (event) => {
   if (shutdownDrainState === 'drained' || shutdownDrainState === 'finalizing') {
     shutdownDrainState = 'finalizing';
-    runFinalShutdownCleanup();
     return;
   }
   event.preventDefault();

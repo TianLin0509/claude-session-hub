@@ -22,7 +22,11 @@ function pythonCandidates(env = process.env) {
   ].filter(Boolean))];
 }
 
-function runCli(command, { args = [], payload, env = process.env, root } = {}) {
+function runCli(command, {
+  args = [], payload, env = process.env, root,
+  timeoutMs = 15_000,
+  spawnSyncImpl = spawnSync,
+} = {}) {
   const effectiveRoot = path.resolve(root || registryRoot(env));
   const cliPath = path.join(effectiveRoot, 'cli', 'spirit.py');
   if (!fs.existsSync(cliPath)) {
@@ -31,7 +35,7 @@ function runCli(command, { args = [], payload, env = process.env, root } = {}) {
   const cliArgs = [cliPath, '--registry', effectiveRoot, command, ...args];
   let lastError = null;
   for (const python of pythonCandidates(env)) {
-    const result = spawnSync(python, cliArgs, {
+    const result = spawnSyncImpl(python, cliArgs, {
       cwd: effectiveRoot,
       input: payload === undefined ? undefined : JSON.stringify(payload),
       encoding: 'utf8',
@@ -39,12 +43,17 @@ function runCli(command, { args = [], payload, env = process.env, root } = {}) {
       windowsHide: true,
       maxBuffer: MAX_BUFFER,
       shell: false,
+      timeout: Math.max(1_000, Number(timeoutMs) || 15_000),
     });
     if (result.error && result.error.code === 'ENOENT') {
       lastError = result.error;
       continue;
     }
+    if (result.error && result.error.code === 'ETIMEDOUT') {
+      throw new Error(`英灵 CLI 超时（${Math.max(1_000, Number(timeoutMs) || 15_000)}ms）`);
+    }
     if (result.error) throw result.error;
+    if (result.signal) throw new Error(`英灵 CLI 被信号终止：${result.signal}`);
     if (result.status !== 0) {
       throw new Error((result.stderr || result.stdout || `英灵 CLI 退出码 ${result.status}`).trim());
     }

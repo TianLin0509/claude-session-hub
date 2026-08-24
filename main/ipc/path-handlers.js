@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { shell } = require('electron');
+const { searchPreviewPaths } = require('../../core/preview-path-search.js');
 
 const COMPANY_DROP_TIMEOUT_MS = 15 * 60 * 1000;
 const COMPANY_DROP_MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -144,6 +145,7 @@ function runCompanyDrop(filePath, {
 
 function registerPathIpc(ipcMain, deps = {}) {
   const syncRunner = deps.runCompanyDrop || runCompanyDrop;
+  const previewPathSearcher = deps.searchPreviewPaths || searchPreviewPaths;
   const companyDropInFlight = new Set();
   ipcMain.handle('open-path', async (_e, filePath) => {
     if (typeof filePath !== 'string' || !filePath.trim()) return 'empty path';
@@ -165,6 +167,27 @@ function registerPathIpc(ipcMain, deps = {}) {
       return { content };
     } catch (e) {
       return { error: String(e && e.message || e) };
+    }
+  });
+
+  ipcMain.handle('preview:search-paths', async (_e, payload) => {
+    if (!payload || typeof payload !== 'object') {
+      return { results: [], source: 'invalid', truncated: false, indexedCount: 0 };
+    }
+    try {
+      return await previewPathSearcher({
+        query: typeof payload.query === 'string' ? payload.query : '',
+        cwd: typeof payload.cwd === 'string' ? payload.cwd : null,
+        limit: payload.limit,
+      });
+    } catch (error) {
+      return {
+        results: [],
+        source: 'error',
+        truncated: false,
+        indexedCount: 0,
+        error: String(error && error.message || error),
+      };
     }
   });
 

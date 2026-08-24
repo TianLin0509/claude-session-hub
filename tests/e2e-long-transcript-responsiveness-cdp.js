@@ -23,14 +23,37 @@ async function availablePort(start) {
 }
 
 async function main() {
-  const transcriptPath = 'C:\\Users\\lintian\\.claude\\projects\\C--Users-lintian\\99fff499-2b9e-4476-b721-e9231044168a.jsonl';
-  assert.ok(fs.statSync(transcriptPath).size > 40 * 1024 * 1024, 'real stress transcript must remain over 40MB');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-long-transcript-e2e-'));
+  const transcriptPath = path.join(root, 'synthetic-claude-transcript.jsonl');
+  const fd = fs.openSync(transcriptPath, 'w');
+  try {
+    const answerPadding = 'x'.repeat(112 * 1024);
+    for (let index = 0; index < 380; index += 1) {
+      const timestamp = new Date(Date.UTC(2026, 7, 20, 10, 0, index % 60)).toISOString();
+      fs.writeSync(fd, `${JSON.stringify({
+        type: 'user', uuid: `synthetic-user-${index}`, timestamp,
+        message: { content: `Synthetic stress question ${index}` },
+      })}\n`);
+      fs.writeSync(fd, `${JSON.stringify({
+        type: 'assistant', uuid: `synthetic-assistant-${index}`, timestamp,
+        message: { model: 'claude-sonnet', stop_reason: 'end_turn', content: [{ type: 'text', text: `Synthetic answer ${index} ${answerPadding}` }] },
+      })}\n`);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  assert.ok(fs.statSync(transcriptPath).size > 40 * 1024 * 1024, 'synthetic stress transcript must remain over 40MB');
   const port = await availablePort(19531);
   let hub;
   let client;
   try {
-    hub = await launchIsolatedHub({ dataDir: path.join(root, 'data'), port, label: 'long-transcript-e2e', extraEnv: { CLAUDE_HUB_E2E: '1' } });
+    hub = await launchIsolatedHub({
+      dataDir: path.join(root, 'data'),
+      port,
+      label: 'long-transcript-e2e',
+      windowMode: 'hidden',
+      extraEnv: { CLAUDE_HUB_E2E: '1' },
+    });
     client = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/.test(target.url || ''));
     await client.send('Runtime.enable');
     await _waitMs(500);

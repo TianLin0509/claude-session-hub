@@ -23,6 +23,8 @@ const options = {
   meetingDir: workerData && workerData.meetingDir,
   refreshTtlMs: Number(workerData && workerData.refreshTtlMs) || 10_000,
   maxCacheCompressedBytes: Math.max(1024 * 1024, Number(workerData && workerData.maxCacheCompressedBytes) || 32 * 1024 * 1024),
+  maxCacheShardOutputBytes: Math.max(1024 * 1024, Number(workerData && workerData.maxCacheShardOutputBytes) || 32 * 1024 * 1024),
+  maxSourceReadBytes: Math.max(256 * 1024, Number(workerData && workerData.maxSourceReadBytes) || 4 * 1024 * 1024),
   maxSources: Math.max(10, Number(workerData && workerData.maxSources) || 200),
   maxIndexedChars: Math.max(1024 * 1024, Number(workerData && workerData.maxIndexedChars) || 16 * 1024 * 1024),
 };
@@ -88,21 +90,36 @@ function loadCache() {
     const loaded = new Map();
     const errors = [];
     const shardDir = cacheShardDir();
-    for (const entry of parsed.entries) {
+    let indexedTextChars = 0;
+    let cacheTruncated = false;
+    entryLoop: for (const entry of parsed.entries.slice(0, options.maxSources)) {
       if (!entry || !entry.key || !Array.isArray(entry.files) || !entry.files.length) continue;
       let sourceMeta = null;
       const docs = [];
       try {
         for (const file of entry.files) {
           const compressed = fs.readFileSync(path.join(shardDir, file));
-          const part = JSON.parse(zlib.gunzipSync(compressed).toString('utf8'));
+          const inflated = zlib.gunzipSync(compressed, { maxOutputLength: options.maxCacheShardOutputBytes });
+          const part = JSON.parse(inflated.toString('utf8'));
           if (!sourceMeta && part && part.source) sourceMeta = part.source;
-          if (part && Array.isArray(part.docs)) docs.push(...part.docs);
+          if (part && Array.isArray(part.docs)) {
+            const limited = limitSourceToBudget({ docs: part.docs }, options.maxIndexedChars - indexedTextChars);
+            docs.push(...limited.source.docs);
+            indexedTextChars += limited.chars;
+            if (limited.truncated || indexedTextChars >= options.maxIndexedChars) {
+              cacheTruncated = true;
+              break;
+            }
+          }
         }
         if (sourceMeta) loaded.set(entry.key, { ...sourceMeta, docs });
       } catch (error) {
         errors.push(`${entry.key}: ${error.message}`);
       }
+      if (indexedTextChars >= options.maxIndexedChars) break entryLoop;
+    }
+    if (parsed.entries.length > options.maxSources || cacheTruncated) {
+      errors.push(`索引缓存已按 ${options.maxSources} sources / ${Math.round(options.maxIndexedChars / 1024 / 1024)}MB 文本预算截断`);
     }
     cacheManifest = parsed;
     sourceByKey = loaded;
@@ -117,6 +134,7 @@ function loadCache() {
       sourceErrors: errors.slice(0, 8),
       staleSources: errors.length,
       cacheShards: parsed.entries.reduce((sum, entry) => sum + (entry.files && entry.files.length || 0), 0),
+      indexedTextChars,
     });
   } catch (error) {
     emitStatus({ phase: 'idle', ready: false, lastError: `索引缓存读取失败：${error.message}` });
@@ -289,7 +307,7 @@ async function refresh(snapshot = {}, { force = false } = {}) {
         reusedSources += 1;
       } else {
         try {
-          const source = parseSourceDescriptor(descriptor, maps);
+          const source = parseSourceDescriptor(descriptor, maps, { maxReadBytes: options.maxSourceReadBytes });
           const limited = limitSourceToBudget(source, options.maxIndexedChars - indexedTextChars);
           if (limited.source.docs.length) nextSources.set(descriptor.key, limited.source);
           indexedTextChars += limited.chars;
@@ -298,7 +316,11 @@ async function refresh(snapshot = {}, { force = false } = {}) {
           staleSources += 1;
           sourceErrors.push(`${descriptor.filePath || descriptor.key}: ${error.message}`);
           if (existing) {
-            nextSources.set(descriptor.key, { ...existing, stale: true, lastError: error.message });
+            const limited = limitSourceToBudget(existing, options.maxIndexedChars - indexedTextChars);
+            if (limited.source.docs.length) {
+              nextSources.set(descriptor.key, { ...limited.source, stale: true, lastError: error.message });
+              indexedTextChars += limited.chars;
+            }
           }
         }
       }
@@ -324,7 +346,11 @@ async function refresh(snapshot = {}, { force = false } = {}) {
       if (source && source.session && source.session.meetingId) representedMeetingIds.add(String(source.session.meetingId));
     }
     for (const source of titleOnlySources(maps, representedHubIds, representedMeetingIds)) {
-      nextSources.set(source.key, source);
+      if (nextSources.size >= options.maxSources || indexedTextChars >= options.maxIndexedChars) break;
+      const limited = limitSourceToBudget(source, options.maxIndexedChars - indexedTextChars);
+      if (!limited.source.docs.length) continue;
+      nextSources.set(source.key, limited.source);
+      indexedTextChars += limited.chars;
     }
 
     const changedSources = [...nextSources.values()].filter(source => {

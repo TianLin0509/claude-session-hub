@@ -873,6 +873,7 @@ class SessionManager extends EventEmitter {
   _isShuttingDown = false;
   _shutdownDrainPromise = null;
   _shutdownExitWaiters = new Map();
+  _shutdownDrainedSessions = new Map();
 
   // Injected by main: the chosen hook HTTP port + per-launch auth token.
   hookPort = null;
@@ -1754,15 +1755,17 @@ class SessionManager extends EventEmitter {
   _handlePtyExit(sessionId, ptyProcess, exitInfo) {
     const shutdownWaiter = this._shutdownExitWaiters.get(sessionId);
     const isShutdownExit = !!(shutdownWaiter && shutdownWaiter.pty === ptyProcess);
-    if (isShutdownExit) {
-      this._shutdownExitWaiters.delete(sessionId);
-      shutdownWaiter.resolve(exitInfo || null);
-    }
     const entry = this.sessions.get(sessionId);
     // Guard against id reuse: if a fresh session has already taken this id
     // (e.g., via restart-session reusing old.id), the entry's pty will be the
     // new one. Never delete that replacement when the old PTY exits late.
-    if (!entry || entry.pty !== ptyProcess) return false;
+    if (!entry || entry.pty !== ptyProcess) {
+      if (isShutdownExit) {
+        this._shutdownExitWaiters.delete(sessionId);
+        shutdownWaiter.resolve(exitInfo || null);
+      }
+      return false;
+    }
     const meetingId = entry.info ? entry.info.meetingId : null;
     const wasSuspended = !!entry.suspendRequestedAt;
     const dormantInfo = wasSuspended
@@ -1779,7 +1782,26 @@ class SessionManager extends EventEmitter {
     // a logical session. Preserve meeting membership and persisted cards; the
     // final shutdown flush writes the same logical state that existed before
     // PTY drainage began.
-    if (isShutdownExit) return true;
+    if (isShutdownExit) {
+      this._shutdownExitWaiters.delete(sessionId);
+      shutdownWaiter.resolve(exitInfo || null);
+      const shutdownDormantInfo = {
+        ...entry.info,
+        status: 'dormant',
+        suspendedAt: Date.now(),
+        suspendReason: 'shutdown-cancelled',
+      };
+      if (shutdownWaiter.timedOut) {
+        this.onSessionSuspended(sessionId, meetingId, shutdownDormantInfo, exitInfo || null);
+      } else {
+        this._shutdownDrainedSessions.set(sessionId, {
+          meetingId,
+          session: shutdownDormantInfo,
+          exitInfo: exitInfo || null,
+        });
+      }
+      return true;
+    }
     if (wasSuspended) {
       this.onSessionSuspended(sessionId, meetingId, dormantInfo, exitInfo || null);
     } else {
@@ -2390,6 +2412,10 @@ class SessionManager extends EventEmitter {
     const warnAfterMs = Number.isFinite(configuredWarnAfterMs)
       ? Math.max(0, configuredWarnAfterMs)
       : 5000;
+    const configuredDrainTimeoutMs = Number(options.drainTimeoutMs);
+    const drainTimeoutMs = Number.isFinite(configuredDrainTimeoutMs)
+      ? Math.max(100, configuredDrainTimeoutMs)
+      : 15_000;
     const startedAt = Date.now();
     const entries = [...this.sessions.entries()];
 
@@ -2409,6 +2435,16 @@ class SessionManager extends EventEmitter {
         if (!session.pty) {
           if (session.terminalSnapshot) session.terminalSnapshot.dispose();
           this.sessions.delete(sessionId);
+          this._shutdownDrainedSessions.set(sessionId, {
+            meetingId: session.info && session.info.meetingId || null,
+            session: {
+              ...session.info,
+              status: 'dormant',
+              suspendedAt: Date.now(),
+              suspendReason: 'shutdown-cancelled',
+            },
+            exitInfo: { noPty: true },
+          });
           continue;
         }
         waits.push(new Promise((resolve) => {
@@ -2437,9 +2473,45 @@ class SessionManager extends EventEmitter {
         if (typeof warningTimer.unref === 'function') warningTimer.unref();
       }
 
-      await Promise.all(waits);
+      let timeoutTimer = null;
+      const drained = waits.length === 0
+        ? true
+        : await Promise.race([
+          Promise.all(waits).then(() => true),
+          new Promise(resolve => {
+            timeoutTimer = setTimeout(() => resolve(false), drainTimeoutMs);
+          }),
+        ]);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
       if (warningTimer) clearTimeout(warningTimer);
+      if (!drained) {
+        const pendingSessionIds = [...this._shutdownExitWaiters.keys()];
+        for (const sessionId of pendingSessionIds) {
+          const waiter = this._shutdownExitWaiters.get(sessionId);
+          if (waiter) waiter.timedOut = true;
+        }
+        for (const [sessionId, drainedSession] of this._shutdownDrainedSessions) {
+          this.onSessionSuspended(
+            sessionId,
+            drainedSession.meetingId,
+            drainedSession.session,
+            drainedSession.exitInfo,
+          );
+        }
+        this._shutdownDrainedSessions.clear();
+        logger.error?.(`[shutdown] PTY drain timed out after ${drainTimeoutMs}ms: ${pendingSessionIds.join(', ')}`);
+        this._isShuttingDown = false;
+        return {
+          safeToQuit: false,
+          drainedPtyCount: waits.length - pendingSessionIds.length,
+          pendingSessionIds,
+          killErrors,
+          durationMs: Date.now() - startedAt,
+          error: 'pty_drain_timeout',
+        };
+      }
       this._shutdownExitWaiters.clear();
+      this._shutdownDrainedSessions.clear();
       this.sessions.clear();
 
       return {
@@ -2450,7 +2522,13 @@ class SessionManager extends EventEmitter {
       };
     })();
 
-    return this._shutdownDrainPromise;
+    const activeDrain = this._shutdownDrainPromise;
+    void activeDrain.then((result) => {
+      if (result && result.safeToQuit === false && this._shutdownDrainPromise === activeDrain) {
+        this._shutdownDrainPromise = null;
+      }
+    });
+    return activeDrain;
   }
 
   static geminiDisplayName(id) {

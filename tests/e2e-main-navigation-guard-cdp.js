@@ -89,7 +89,7 @@ async function main() {
   const result = { runId: RUN_ID, port, htmlPath: HTML_PATH, screenshot: SCREENSHOT_PATH };
 
   try {
-    hub = await launchIsolatedHub({ dataDir: DATA_DIR, port, label: 'main-navigation-guard' });
+    hub = await launchIsolatedHub({ dataDir: DATA_DIR, port, label: 'main-navigation-guard', windowMode: 'hidden' });
     client = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/i.test(target.url || ''));
     await client.send('Page.enable');
     await client.send('Emulation.setDeviceMetricsOverride', {

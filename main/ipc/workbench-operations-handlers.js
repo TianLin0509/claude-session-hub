@@ -5,7 +5,7 @@ function publicError(error) {
   const known = new Set([
     'invalid_repo_root', 'invalid_file_path', 'invalid_review_decision', 'stale_hunk',
     'invalid_checkpoint_id', 'unsafe_restore_destination', 'restore_destination_exists',
-    'review_state_corrupt', 'review_state_unreadable',
+    'review_state_corrupt', 'review_state_unreadable', 'review_state_busy',
     'checkpoint_missing', 'checkpoint_corrupt', 'checkpoint_unreadable',
   ]);
   return known.has(code) ? code : 'operation_failed';

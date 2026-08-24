@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
-const { parseClaudeTranscriptToTurns } = require('./claude-transcript-parser.js');
+const { parseClaudeTranscriptText } = require('./claude-transcript-parser.js');
 const {
   parseCodexRolloutText,
   readCodexRolloutMeta,
@@ -21,6 +21,31 @@ function normalizePath(value) {
   if (!value) return '';
   try { return path.resolve(String(value)).replace(/\\/g, '/').toLocaleLowerCase(); }
   catch { return String(value).replace(/\\/g, '/').toLocaleLowerCase(); }
+}
+
+const DEFAULT_SEARCH_SOURCE_READ_BYTES = 4 * 1024 * 1024;
+
+function readBoundedJsonlTailText(filePath, maxBytes = DEFAULT_SEARCH_SOURCE_READ_BYTES, fsRef = fs) {
+  const stat = fsRef.statSync(filePath);
+  const limit = Math.max(256 * 1024, Number(maxBytes) || DEFAULT_SEARCH_SOURCE_READ_BYTES);
+  if (stat.size <= limit) return { raw: fsRef.readFileSync(filePath, 'utf8'), truncated: false };
+  const length = Math.min(stat.size, limit);
+  const buffer = Buffer.allocUnsafe(length);
+  const fd = fsRef.openSync(filePath, 'r');
+  let bytesRead = 0;
+  try {
+    while (bytesRead < length) {
+      const count = fsRef.readSync(fd, buffer, bytesRead, length - bytesRead, stat.size - length + bytesRead);
+      if (count <= 0) break;
+      bytesRead += count;
+    }
+  } finally {
+    fsRef.closeSync(fd);
+  }
+  let raw = buffer.subarray(0, bytesRead).toString('utf8');
+  const firstNewline = raw.indexOf('\n');
+  raw = firstNewline >= 0 ? raw.slice(firstNewline + 1) : '';
+  return { raw, truncated: true };
 }
 
 function shortHash(value) {
@@ -640,15 +665,19 @@ function parseCodexRolloutStreaming(filePath) {
   return { turns, toolDocs };
 }
 
-function parseClaudeDescriptor(descriptor) {
-  const turns = parseClaudeTranscriptToTurns(descriptor.filePath, {});
+function parseClaudeDescriptor(descriptor, options = {}) {
+  const bounded = readBoundedJsonlTailText(descriptor.filePath, options.maxReadBytes);
+  const turns = parseClaudeTranscriptText(bounded.raw);
   const session = sessionRecordFromDescriptor(descriptor, turns);
   const docs = docsFromTurns(turns, session.title, descriptor.provider);
   if (docs[0]) docs[0].timestamp = session.updatedAt;
-  return { key: descriptor.key, signature: descriptor.signature, session, docs, searchable: !session.meetingId };
+  return {
+    key: descriptor.key, signature: descriptor.signature, session, docs,
+    searchable: !session.meetingId, truncatedByReadGuard: bounded.truncated,
+  };
 }
 
-function parseCodexDescriptor(descriptor) {
+function parseCodexDescriptor(descriptor, options = {}) {
   // Search needs both dialogue turns and tool/file records. Read a changed
   // rollout once, then feed the same bytes into both extractors; the previous
   // implementation doubled disk IO for every growing Codex session refresh.
@@ -656,7 +685,7 @@ function parseCodexDescriptor(descriptor) {
   let turns;
   let streamingToolDocs = null;
   try {
-    raw = fs.readFileSync(descriptor.filePath, 'utf8');
+    raw = readBoundedJsonlTailText(descriptor.filePath, options.maxReadBytes).raw;
     turns = parseCodexRolloutText(raw);
   } catch (error) {
     if (error && (error.code === 'ERR_STRING_TOO_LONG' || /string longer than/i.test(error.message))) {
@@ -675,7 +704,11 @@ function parseCodexDescriptor(descriptor) {
     ? { ...doc, speaker: `${providerLabel(descriptor.provider)} · 中间输出` }
     : doc));
   if (docs[0]) docs[0].timestamp = session.updatedAt;
-  return { key: descriptor.key, signature: descriptor.signature, session, docs, searchable: !session.meetingId };
+  return {
+    key: descriptor.key, signature: descriptor.signature, session, docs,
+    searchable: !session.meetingId,
+    truncatedByReadGuard: fs.statSync(descriptor.filePath).size > Math.max(256 * 1024, Number(options.maxReadBytes) || DEFAULT_SEARCH_SOURCE_READ_BYTES),
+  };
 }
 
 function meetingSpeakerMap(data, maps) {
@@ -688,7 +721,9 @@ function meetingSpeakerMap(data, maps) {
   return out;
 }
 
-function parseMeetingDescriptor(descriptor, maps) {
+function parseMeetingDescriptor(descriptor, maps, options = {}) {
+  const maxReadBytes = Math.max(256 * 1024, Number(options.maxReadBytes) || DEFAULT_SEARCH_SOURCE_READ_BYTES);
+  if (fs.statSync(descriptor.filePath).size > maxReadBytes) throw new Error('source_read_limit');
   const raw = JSON.parse(fs.readFileSync(descriptor.filePath, 'utf8'));
   const meta = { ...raw, ...(descriptor.meeting || {}) };
   const timeline = Array.isArray(raw._timeline) ? raw._timeline : [];
@@ -727,10 +762,10 @@ function parseMeetingDescriptor(descriptor, maps) {
   return { key: descriptor.key, signature: descriptor.signature, session, docs, searchable: true };
 }
 
-function parseSourceDescriptor(descriptor, maps) {
-  if (descriptor.type === 'claude') return parseClaudeDescriptor(descriptor);
-  if (descriptor.type === 'codex') return parseCodexDescriptor(descriptor);
-  if (descriptor.type === 'meeting') return parseMeetingDescriptor(descriptor, maps);
+function parseSourceDescriptor(descriptor, maps, options = {}) {
+  if (descriptor.type === 'claude') return parseClaudeDescriptor(descriptor, options);
+  if (descriptor.type === 'codex') return parseCodexDescriptor(descriptor, options);
+  if (descriptor.type === 'meeting') return parseMeetingDescriptor(descriptor, maps, options);
   throw new Error(`Unsupported search source type: ${descriptor.type}`);
 }
 
@@ -812,6 +847,7 @@ module.exports = {
   providerForHubSession,
   providerForClaudeRoot,
   providerLabel,
+  readBoundedJsonlTailText,
   statSignature,
   titleOnlySources,
 };

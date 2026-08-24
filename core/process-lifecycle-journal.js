@@ -206,12 +206,12 @@ function installProcessLifecycleJournal(options = {}) {
   on(app, 'window-all-closed', () => record('window-all-closed', {}, 'window-all-closed'));
   on(app, 'before-quit', () => record('app-before-quit', {}, 'before-quit'));
   on(app, 'will-quit', () => {
-    state.cleanExit = true;
-    record('app-will-quit', {}, 'will-quit');
+    state.cleanExit = processRef.__hubShutdownCleanupClean !== false;
+    record('app-will-quit', {}, state.cleanExit ? 'will-quit' : 'will-quit-degraded');
   });
   on(app, 'quit', (_event, exitCode) => {
-    state.cleanExit = true;
-    record('app-quit', { exitCode: Number(exitCode) || 0 }, 'quit');
+    state.cleanExit = state.cleanExit && processRef.__hubShutdownCleanupClean !== false;
+    record('app-quit', { exitCode: Number(exitCode) || 0 }, state.cleanExit ? 'quit' : 'quit-degraded');
     if (heartbeatTimer) {
       try { clearIntervalFn(heartbeatTimer); } catch {}
       heartbeatTimer = null;

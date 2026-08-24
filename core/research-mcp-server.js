@@ -492,15 +492,17 @@ async function handleRequest(req) {
           base_model: AI_KIND,
         });
         try {
-          spiritRegistry.appendAudit({
+          const auditPath = spiritRegistry.appendAudit({
             hubDataDir: HUB_DATA_DIR,
             meetingId: MEETING_ID,
             aiKind: AI_KIND,
             action: 'prepare',
             packet,
           });
+          if (!auditPath) throw new Error('审计路径不可用');
         } catch (auditError) {
           logErr('spirit audit append failed: ' + auditError.message);
+          return reply(id, { content: [{ type: 'text', text: 'spirit_prepare 审计落盘失败：' + auditError.message }], isError: true });
         }
         return reply(id, { content: [{ type: 'text', text: JSON.stringify(packet, null, 2) }] });
       } catch (e) {
@@ -512,7 +514,7 @@ async function handleRequest(req) {
       try {
         const validated = spiritRegistry.validate(args.packet, args.result);
         try {
-          spiritRegistry.appendAudit({
+          const auditPath = spiritRegistry.appendAudit({
             hubDataDir: HUB_DATA_DIR,
             meetingId: MEETING_ID,
             aiKind: AI_KIND,
@@ -520,8 +522,10 @@ async function handleRequest(req) {
             packet: args.packet,
             details: { valid: true },
           });
+          if (!auditPath) throw new Error('审计路径不可用');
         } catch (auditError) {
           logErr('spirit validation audit append failed: ' + auditError.message);
+          return reply(id, { content: [{ type: 'text', text: 'spirit_validate 审计落盘失败：' + auditError.message }], isError: true });
         }
         return reply(id, { content: [{ type: 'text', text: JSON.stringify(validated, null, 2) }] });
       } catch (e) {

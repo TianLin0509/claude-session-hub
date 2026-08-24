@@ -3,6 +3,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
+  MAX_KEYS_PER_DOCUMENT,
+  MAX_POSTING_ENTRIES,
   SessionSearchIndex,
   indexKeysForTerm,
   normalizeSearchText,
@@ -140,4 +142,46 @@ test('indexed query remains fast across 20k message documents', { timeout: 10_00
   const elapsed = performance.now() - started;
   assert.equal(result.totalSessions, 1);
   assert.ok(elapsed < 250, `20k-doc query took ${elapsed.toFixed(1)}ms`);
+});
+
+test('high-entropy documents keep head and tail searchability within posting budgets', () => {
+  let seed = 0x12345678;
+  let noise = '';
+  for (let index = 0; index < 180_000; index += 1) {
+    seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+    noise += String.fromCharCode(33 + ((seed >>> 0) % 90));
+  }
+  const index = new SessionSearchIndex([source('guard:1', 'claude', 'Memory guard', [{
+    id: 'guard-doc', eventId: 'guard-doc', scope: 'assistant', role: 'assistant',
+    text: `HEAD_MEMORY_GUARD_MARKER ${noise} TAIL_MEMORY_GUARD_MARKER`, ordinal: 0, timestamp: 1,
+  }])]);
+  const stats = index.getStats();
+  assert.equal(stats.guardedDocuments, 1);
+  assert.ok(stats.postingEntries <= MAX_KEYS_PER_DOCUMENT);
+  assert.ok(stats.postingEntries <= MAX_POSTING_ENTRIES);
+  assert.equal(index.search({ query: 'HEAD_MEMORY_GUARD_MARKER' }).totalSessions, 1);
+  assert.equal(index.search({ query: 'TAIL_MEMORY_GUARD_MARKER' }).totalSessions, 1);
+});
+
+test('repeated high-entropy source replacement reclaims posting capacity', () => {
+  const makeNoise = iteration => {
+    let seed = 0x9e3779b9 ^ iteration;
+    let text = '';
+    for (let index = 0; index < 90_000; index += 1) {
+      seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+      text += String.fromCharCode(33 + ((seed >>> 0) % 90));
+    }
+    return text;
+  };
+  const makeSource = iteration => source('replace:entropy', 'codex', 'Entropy replacement', [{
+    id: `doc-${iteration}`, eventId: `doc-${iteration}`, scope: 'assistant', role: 'assistant',
+    text: `${makeNoise(iteration)} REPLACEMENT_MARKER_${iteration}`, ordinal: 0, timestamp: iteration + 1,
+  }]);
+  const index = new SessionSearchIndex([makeSource(0)]);
+  for (let iteration = 1; iteration <= 60; iteration += 1) index.updateSources([makeSource(iteration)], []);
+  const stats = index.getStats();
+  assert.ok(stats.postingEntries <= MAX_KEYS_PER_DOCUMENT);
+  assert.ok(stats.postingEntries <= MAX_POSTING_ENTRIES);
+  assert.equal(index.search({ query: 'REPLACEMENT_MARKER_60' }).totalSessions, 1);
+  assert.equal(index.search({ query: 'REPLACEMENT_MARKER_0' }).totalSessions, 0);
 });

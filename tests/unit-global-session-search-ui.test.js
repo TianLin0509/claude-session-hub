@@ -11,6 +11,7 @@ const {
 } = require('../renderer/global-session-search.js');
 
 const ROOT = path.resolve(__dirname, '..');
+const SEARCH_SOURCE = fs.readFileSync(path.join(ROOT, 'renderer', 'global-session-search.js'), 'utf8');
 
 class FakeNode {
   constructor(tagName = null, text = '') {
@@ -38,6 +39,10 @@ test('query helpers normalize full-width text and user-facing relative time', ()
   assert.deepEqual(normalizeTerms('  ＡI  Hub '), ['ai', 'hub']);
   assert.equal(formatSearchTime(1_000, 1_000), '刚刚');
   assert.equal(formatSearchTime(1_000, 61_000), '1 分钟前');
+});
+
+test('search close captures the focus target before clearing shared state', () => {
+  assert.match(SEARCH_SOURCE, /const focusTarget = returnFocusElement;[\s\S]*requestAnimationFrame\(\(\) => focusTarget\.focus\(\)\)/);
 });
 
 test('renderer contract exposes A-layout filters, local-index status and keyboard entry', () => {

@@ -54,6 +54,32 @@ test('remote status distinguishes unconfigured, online and metrics errors', asyn
   assert.equal(online.storage.usagePct, 50);
 });
 
+test('overview preserves the injected remote request while tracking a scan request', async t => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ops-request-shadow-'));
+  const repo = path.join(tempRoot, 'repo');
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, ['init']);
+  git(repo, ['config', 'user.name', 'Hub Test']);
+  git(repo, ['config', 'user.email', 'hub@example.invalid']);
+  fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 1;\n', 'utf8');
+  git(repo, ['add', '.']);
+  git(repo, ['commit', '-m', 'initial']);
+  fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 2;\n', 'utf8');
+  let requestCalls = 0;
+  const service = createWorkbenchOperationsService({
+    dataDir: path.join(tempRoot, 'hub-data'),
+    getConfig: () => ({ operations: { aliyunMonitor: { enabled: true, healthUrl: 'https://ops.example/health' } } }),
+    request: async () => {
+      requestCalls += 1;
+      return { statusCode: 200, latencyMs: 7, body: { status: 'ok' } };
+    },
+  });
+  const overview = await service.overview({ workspaces: [{ cwd: repo }], force: true });
+  assert.equal(requestCalls, 1);
+  assert.equal(overview.remote.online, true);
+});
+
 test('cross-origin health redirects never receive the configured bearer token', async t => {
   let receivedAuthorization = null;
   const target = http.createServer((request, response) => {
@@ -78,6 +104,20 @@ test('cross-origin health redirects never receive the configured bearer token', 
   });
   assert.equal(result.statusCode, 200);
   assert.equal(receivedAuthorization, null);
+});
+
+test('malformed health redirects reject through the request promise', async t => {
+  const server = http.createServer((_request, response) => {
+    response.statusCode = 302;
+    response.setHeader('location', 'http://[');
+    response.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); });
+  await assert.rejects(
+    requestBody(`http://127.0.0.1:${server.address().port}/health`),
+    /invalid_redirect/,
+  );
 });
 
 test('overview, review decisions and checkpoints use an isolated Git index', { timeout: 30_000 }, async t => {
@@ -167,4 +207,166 @@ test('overview, review decisions and checkpoints use an isolated Git index', { t
     /review_state_corrupt/,
     'a corrupt review ledger must stop writes instead of being silently overwritten',
   );
+});
+
+test('out-of-order overview scans cannot poison a newer workspace cache key', { timeout: 30_000 }, async t => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ops-cache-race-'));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+
+  function createDirtyRepo(name) {
+    const repo = path.join(tempRoot, name);
+    fs.mkdirSync(repo, { recursive: true });
+    git(repo, ['init']);
+    git(repo, ['config', 'user.name', 'Hub Test']);
+    git(repo, ['config', 'user.email', 'hub@example.invalid']);
+    fs.writeFileSync(path.join(repo, 'app.js'), `module.exports = '${name}-v1';\n`, 'utf8');
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'initial']);
+    fs.writeFileSync(path.join(repo, 'app.js'), `module.exports = '${name}-v2';\n`, 'utf8');
+    return repo;
+  }
+
+  const slowRepo = createDirtyRepo('slow-repo');
+  const fastRepo = createDirtyRepo('fast-repo');
+  const slowKey = path.resolve(slowRepo).toLowerCase();
+  const service = createWorkbenchOperationsService({
+    dataDir: path.join(tempRoot, 'hub-data'),
+    execFile: async (command, args, options) => {
+      if (path.resolve(options.cwd).toLowerCase() === slowKey) {
+        await new Promise(resolve => setTimeout(resolve, 35));
+      }
+      return execFileAsync(command, args, options);
+    },
+  });
+
+  const slowScan = service.overview({ workspaces: [{ cwd: slowRepo }], force: true });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  const fastResult = await service.overview({ workspaces: [{ cwd: fastRepo }], force: true });
+  await slowScan;
+  const cachedFastResult = await service.overview({ workspaces: [{ cwd: fastRepo }] });
+
+  assert.equal(path.resolve(fastResult.repos[0].root), path.resolve(fastRepo));
+  assert.equal(path.resolve(cachedFastResult.repos[0].root), path.resolve(fastRepo));
+});
+
+test('concurrent review decisions remain additive instead of last-writer-wins', { timeout: 30_000 }, async t => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ops-review-race-'));
+  const repo = path.join(tempRoot, 'repo');
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, ['init']);
+  git(repo, ['config', 'user.name', 'Hub Test']);
+  git(repo, ['config', 'user.email', 'hub@example.invalid']);
+  const files = Array.from({ length: 12 }, (_, index) => `file-${index}.js`);
+  for (const file of files) fs.writeFileSync(path.join(repo, file), 'module.exports = 1;\n', 'utf8');
+  git(repo, ['add', '.']);
+  git(repo, ['commit', '-m', 'initial']);
+  for (const file of files) fs.writeFileSync(path.join(repo, file), 'module.exports = 2;\n', 'utf8');
+
+  const dataDir = path.join(tempRoot, 'hub-data');
+  const services = [
+    createWorkbenchOperationsService({ dataDir }),
+    createWorkbenchOperationsService({ dataDir }),
+  ];
+  const details = await Promise.all(files.map(filePath => services[0].diff({ repoRoot: repo, filePath })));
+  await Promise.all(details.map((detail, index) => services[index % services.length].setReviewDecision({
+    repoRoot: repo,
+    filePath: files[index],
+    hunkId: detail.hunks[0].id,
+    decision: 'accepted',
+    comment: `review-${index}`,
+  })));
+  const reviewed = await Promise.all(files.map(filePath => services[0].diff({ repoRoot: repo, filePath })));
+  assert.deepStrictEqual(
+    reviewed.map(detail => detail.hunks[0].review && detail.hunks[0].review.comment),
+    files.map((_file, index) => `review-${index}`),
+  );
+});
+
+test('checkpoint omits review decisions whose diff changed after approval', { timeout: 30_000 }, async t => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ops-stale-review-'));
+  const repo = path.join(tempRoot, 'repo');
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, ['init']);
+  git(repo, ['config', 'user.name', 'Hub Test']);
+  git(repo, ['config', 'user.email', 'hub@example.invalid']);
+  fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 1;\n', 'utf8');
+  git(repo, ['add', '.']);
+  git(repo, ['commit', '-m', 'initial']);
+  fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 2;\n', 'utf8');
+  const service = createWorkbenchOperationsService({ dataDir: path.join(tempRoot, 'hub-data') });
+  const detail = await service.diff({ repoRoot: repo, filePath: 'app.js' });
+  await service.setReviewDecision({
+    repoRoot: repo,
+    filePath: 'app.js',
+    hunkId: detail.hunks[0].id,
+    decision: 'accepted',
+    comment: 'approved v2',
+  });
+  fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 3;\n', 'utf8');
+  const checkpoint = await service.createCheckpoint({ repoRoot: repo, label: 'v3 checkpoint' });
+  assert.deepStrictEqual(checkpoint.checkpoint.reviewDecisions, {});
+});
+
+test('checkpoint validates reviews against the captured commit, not a later worktree edit', { timeout: 30_000 }, async t => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ops-checkpoint-toctou-'));
+  const repo = path.join(tempRoot, 'repo');
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, ['init']);
+  git(repo, ['config', 'user.name', 'Hub Test']);
+  git(repo, ['config', 'user.email', 'hub@example.invalid']);
+  fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 1;\n', 'utf8');
+  git(repo, ['add', '.']);
+  git(repo, ['commit', '-m', 'initial']);
+  fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 2;\n', 'utf8');
+  let service;
+  service = createWorkbenchOperationsService({
+    dataDir: path.join(tempRoot, 'hub-data'),
+    onCheckpointTreeCaptured: async () => {
+      fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 3;\n', 'utf8');
+      const later = await service.diff({ repoRoot: repo, filePath: 'app.js' });
+      await service.setReviewDecision({
+        repoRoot: repo,
+        filePath: 'app.js',
+        hunkId: later.hunks[0].id,
+        decision: 'accepted',
+        comment: 'approved only after tree capture',
+      });
+    },
+  });
+  const checkpoint = await service.createCheckpoint({ repoRoot: repo, label: 'captured v2' });
+  assert.match(git(repo, ['show', `${checkpoint.checkpoint.commit}:app.js`]), /2/);
+  assert.deepStrictEqual(checkpoint.checkpoint.reviewDecisions, {});
+});
+
+test('review rejects a file changed between hunk read and blob capture', { timeout: 30_000 }, async t => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ops-review-toctou-'));
+  const repo = path.join(tempRoot, 'repo');
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, ['init']);
+  git(repo, ['config', 'user.name', 'Hub Test']);
+  git(repo, ['config', 'user.email', 'hub@example.invalid']);
+  fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 1;\n', 'utf8');
+  git(repo, ['add', '.']);
+  git(repo, ['commit', '-m', 'initial']);
+  fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 2;\n', 'utf8');
+  let mutated = false;
+  const service = createWorkbenchOperationsService({
+    dataDir: path.join(tempRoot, 'hub-data'),
+    onReviewDiffCaptured: async () => {
+      if (mutated) return;
+      mutated = true;
+      fs.writeFileSync(path.join(repo, 'app.js'), 'module.exports = 3;\n', 'utf8');
+    },
+  });
+  const detail = await service.diff({ repoRoot: repo, filePath: 'app.js' });
+  await assert.rejects(service.setReviewDecision({
+    repoRoot: repo,
+    filePath: 'app.js',
+    hunkId: detail.hunks[0].id,
+    decision: 'accepted',
+  }), /stale_hunk/);
 });

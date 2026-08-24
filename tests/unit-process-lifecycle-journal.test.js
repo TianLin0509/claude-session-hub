@@ -149,6 +149,30 @@ test('unexpected exit leaves a non-clean heartbeat and explicit exit code', (t) 
   assert.equal(heartbeat.phase, 'process-exit-unexpected');
 });
 
+test('cleanup failure keeps lifecycle exit explicitly non-clean', t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-lifecycle-degraded-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const app = fakeApp();
+  const processRef = fakeProcess(5432);
+  processRef.__hubShutdownCleanupClean = false;
+  const journal = installProcessLifecycleJournal({
+    app,
+    BrowserWindow: { getAllWindows: () => [] },
+    processRef,
+    dataDir,
+    setIntervalFn: () => ({ unref() {} }),
+    clearIntervalFn() {},
+  });
+  t.after(() => journal.dispose({ recordEvent: false }));
+  app.emit('will-quit', {});
+  app.emit('quit', {}, 0);
+  processRef.emit('exit', 0);
+  const events = readEvents(journal.paths.journalPath);
+  assert.equal(events.find(item => item.event === 'app-will-quit').cleanExit, false);
+  assert.equal(events.find(item => item.event === 'app-quit').phase, 'quit-degraded');
+  assert.equal(events.find(item => item.event === 'process-exit').cleanExit, false);
+});
+
 test('diagnostic write failures never escape into the Hub process', () => {
   const app = fakeApp();
   const processRef = fakeProcess(777);

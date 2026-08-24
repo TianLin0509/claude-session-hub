@@ -519,7 +519,7 @@
 /* Review cockpit: modal is a sibling of #empty-state, so it uses explicit tokens. */
 .ops-modal { position: fixed; inset: 0; z-index: 2600; display: grid; place-items: center; padding: 22px; background: rgba(4, 7, 11, 0.78); backdrop-filter: blur(8px); }
 .ops-modal.hidden { display: none; }
-.ops-shell { width: min(1540px, calc(100vw - 44px)); height: min(900px, calc(100vh - 44px)); min-width: 0; min-height: 520px; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid #344150; border-radius: 13px; color: #dce5ee; background: #0d1319; box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55); }
+.ops-shell { width: min(1540px, calc(100vw - 44px)); height: min(900px, calc(100vh - 44px)); min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid #344150; border-radius: 13px; color: #dce5ee; background: #0d1319; box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55); }
 .ops-head { min-height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 13px 17px; border-bottom: 1px solid #26323e; background: #121a22; }
 .ops-head h2 { margin: 2px 0 0; color: #f0f6fc; font-size: 20px; }
 .ops-head p { margin: 4px 0 0; color: #788896; font-size: 11px; }
@@ -663,6 +663,13 @@
   .ops-body { grid-template-columns: 220px minmax(380px, 1fr) 285px; }
 }
 
+@media (max-width: 930px) {
+  .ops-modal { padding: 8px; }
+  .ops-shell { width: calc(100vw - 16px); height: calc(100vh - 16px); }
+  .ops-body { grid-template-columns: 190px minmax(0, 1fr); }
+  .ops-proof { display: none; }
+}
+
 @media (max-width: 760px) {
   .home-workbench-head { align-items: flex-start; flex-direction: column; gap: 10px; padding: 14px; }
   .home-head-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; justify-content: stretch; }
@@ -674,10 +681,6 @@
   .home-artifact-list { grid-template-columns: 1fr; }
   .home-section-meta { display: none; }
   .home-review-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .ops-modal { padding: 8px; }
-  .ops-shell { width: calc(100vw - 16px); height: calc(100vh - 16px); }
-  .ops-body { grid-template-columns: 190px minmax(0, 1fr); }
-  .ops-proof { display: none; }
 }
 
 @media (max-width: 460px) {

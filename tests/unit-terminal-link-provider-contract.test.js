@@ -35,12 +35,27 @@ function makeLine(text, isWrapped = false) {
   };
 }
 
-function makeTerminal(lines, cols = 80) {
+function makeEventElement() {
+  const listeners = new Map();
+  return {
+    addEventListener(type, handler) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(handler);
+    },
+    removeEventListener(type, handler) { listeners.get(type)?.delete(handler); },
+    dispatch(type, event) {
+      for (const handler of listeners.get(type) || []) handler({ type, ...event });
+    },
+  };
+}
+
+function makeTerminal(lines, cols = 80, element = null) {
   let provider = null;
   return {
     cols,
-    buffer: { active: { getLine: (idx) => lines[idx] || null } },
-    registerLinkProvider(next) { provider = next; },
+    element,
+    buffer: { active: { viewportY: 0, getLine: (idx) => lines[idx] || null } },
+    registerLinkProvider(next) { provider = next; return { dispose() {} }; },
     getProvider() { return provider; },
   };
 }
@@ -187,4 +202,105 @@ test('removes ConPTY wide-glyph wrap padding without deleting real path spaces',
   const links = provide(terminal.getProvider(), 1);
   assert.strictEqual(links.length, 1);
   assert.strictEqual(links[0].text, 'C:\\Vibe\\工作区\\My Report\\报告.md');
+});
+
+test('real click fallback activates a hovered link once when xterm skips mouseup activation', async () => {
+  const opened = [];
+  const element = makeEventElement();
+  const terminal = makeTerminal([makeLine('Open C:\\Users\\me\\report.md')], 80, element);
+  const register = createTerminalLinkRegistrar({
+    getCwd: () => null,
+    openPathInHub: async (...args) => { opened.push(args); },
+  });
+  const provider = register(terminal, 'fallback');
+  const link = provide(provider, 1)[0];
+  link.hover();
+  element.dispatch('pointerdown', { button: 0, clientX: 10, clientY: 20 });
+  element.dispatch('click', { button: 0, clientX: 10, clientY: 20, ctrlKey: true });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.strictEqual(opened.length, 1);
+  assert.deepStrictEqual(provider.getActivationStats(), {
+    activations: 1,
+    fallbackActivations: 1,
+    hovers: 1,
+    leaves: 0,
+    failures: 0,
+  });
+});
+
+test('real click fallback does not double-open after xterm already activated on mouseup', async () => {
+  const opened = [];
+  const element = makeEventElement();
+  const terminal = makeTerminal([makeLine('Open C:\\Users\\me\\report.md')], 80, element);
+  const register = createTerminalLinkRegistrar({
+    getCwd: () => null,
+    openPathInHub: async (...args) => { opened.push(args); },
+  });
+  const provider = register(terminal, 'native');
+  const link = provide(provider, 1)[0];
+  link.hover();
+  element.dispatch('pointerdown', { button: 0, clientX: 10, clientY: 20 });
+  await link.activate({ button: 0, clientX: 10, clientY: 20 });
+  element.dispatch('click', { button: 0, clientX: 10, clientY: 20 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.strictEqual(opened.length, 1);
+  assert.strictEqual(provider.getActivationStats().fallbackActivations, 0);
+});
+
+test('abandoned link press cannot leak into a later non-link click', async () => {
+  const opened = [];
+  const element = makeEventElement();
+  const terminal = makeTerminal([makeLine('Open C:\\Users\\me\\report.md')], 80, element);
+  const register = createTerminalLinkRegistrar({
+    getCwd: () => null,
+    openPathInHub: async (...args) => { opened.push(args); },
+  });
+  const provider = register(terminal, 'stale');
+  const link = provide(provider, 1)[0];
+  link.hover();
+  element.dispatch('pointerdown', { button: 0, clientX: 10, clientY: 20 });
+  link.leave();
+  // A later press outside every link must clear the abandoned link press.
+  element.dispatch('pointerdown', { button: 0, clientX: 40, clientY: 50 });
+  element.dispatch('click', { button: 0, clientX: 40, clientY: 50 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.strictEqual(opened.length, 0);
+  assert.strictEqual(provider.getActivationStats().fallbackActivations, 0);
+});
+
+test('terminal link open failure is surfaced through the visible error callback', async () => {
+  const errors = [];
+  const terminal = makeTerminal([makeLine('Open C:\\Users\\me\\broken.bin')]);
+  const register = createTerminalLinkRegistrar({
+    getCwd: () => null,
+    openPathInHub: async () => ({ ok: false, error: 'association missing' }),
+    onError: message => errors.push(message),
+  });
+  const provider = register(terminal, 'failure');
+  const link = provide(provider, 1)[0];
+  const result = await link.activate({ button: 0 });
+  assert.equal(result.ok, false);
+  assert.match(errors[0], /路径打开失败.*association missing/);
+  assert.equal(provider.getActivationStats().failures, 1);
+});
+
+test('pointerdown revalidates the current terminal cell after xterm disposes hover state', async () => {
+  const opened = [];
+  const element = makeEventElement();
+  const terminal = makeTerminal([makeLine('Open C:\\Users\\me\\report.md')], 80, element);
+  terminal._core = { _mouseService: { getCoords: () => [6, 1] } };
+  const register = createTerminalLinkRegistrar({
+    getCwd: () => null,
+    openPathInHub: async (...args) => { opened.push(args); },
+  });
+  const provider = register(terminal, 'render-leave');
+  const link = provide(provider, 1)[0];
+  link.hover();
+  link.leave();
+  link.dispose();
+  element.dispatch('pointerdown', { button: 0, clientX: 10, clientY: 20 });
+  element.dispatch('click', { button: 0, clientX: 10, clientY: 20 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.strictEqual(opened.length, 1);
+  assert.strictEqual(provider.getActivationStats().fallbackActivations, 1);
 });
