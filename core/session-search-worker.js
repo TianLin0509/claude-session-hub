@@ -22,6 +22,9 @@ const options = {
   codexRoots: Array.isArray(workerData && workerData.codexRoots) ? workerData.codexRoots : [],
   meetingDir: workerData && workerData.meetingDir,
   refreshTtlMs: Number(workerData && workerData.refreshTtlMs) || 10_000,
+  maxCacheCompressedBytes: Math.max(1024 * 1024, Number(workerData && workerData.maxCacheCompressedBytes) || 32 * 1024 * 1024),
+  maxSources: Math.max(10, Number(workerData && workerData.maxSources) || 200),
+  maxIndexedChars: Math.max(1024 * 1024, Number(workerData && workerData.maxIndexedChars) || 16 * 1024 * 1024),
 };
 
 let sourceByKey = new Map();
@@ -74,6 +77,14 @@ function loadCache() {
   try {
     const parsed = JSON.parse(fs.readFileSync(options.cachePath, 'utf8'));
     if (!parsed || parsed.version !== CACHE_VERSION || !Array.isArray(parsed.entries)) return;
+    if (Number(parsed.compressedBytes) > options.maxCacheCompressedBytes) {
+      emitStatus({
+        phase: 'cache_rejected', ready: false, refreshing: false,
+        lastError: `索引缓存过大，已拒绝加载：${Math.round(Number(parsed.compressedBytes) / 1024 / 1024)}MB`,
+        cacheRejected: true,
+      });
+      return;
+    }
     const loaded = new Map();
     const errors = [];
     const shardDir = cacheShardDir();
@@ -110,6 +121,27 @@ function loadCache() {
   } catch (error) {
     emitStatus({ phase: 'idle', ready: false, lastError: `索引缓存读取失败：${error.message}` });
   }
+}
+
+function limitSourceToBudget(source, remainingChars) {
+  const docs = [];
+  let chars = 0;
+  let truncated = false;
+  for (const doc of (source && source.docs || [])) {
+    const remaining = remainingChars - chars;
+    if (remaining <= 0) { truncated = true; break; }
+    const text = String(doc && doc.text || '');
+    if (!text) continue;
+    const clipped = text.length > remaining ? text.slice(0, remaining) : text;
+    if (clipped.length < text.length) truncated = true;
+    docs.push({ ...doc, text: clipped });
+    chars += clipped.length;
+  }
+  return {
+    source: { ...source, docs, truncatedByMemoryGuard: truncated },
+    chars,
+    truncated,
+  };
 }
 
 function splitSourceForCache(source) {
@@ -231,24 +263,36 @@ async function refresh(snapshot = {}, { force = false } = {}) {
   refreshPromise = (async () => {
     emitStatus({ phase: 'discovering', refreshing: true, lastError: null, sourceErrors: [], parsedSources: 0, reusedSources: 0, staleSources: 0 });
     const collected = collectSourceDescriptors(dynamicOptions(snapshot), snapshot);
-    const { descriptors, maps, diagnostics = [] } = collected;
+    const maps = collected.maps;
+    const diagnostics = [...(collected.diagnostics || [])];
+    const allDescriptors = [...(collected.descriptors || [])]
+      .sort((left, right) => Number(right && right.mtime || 0) - Number(left && left.mtime || 0));
+    const descriptors = allDescriptors.slice(0, options.maxSources);
+    if (allDescriptors.length > descriptors.length) {
+      diagnostics.push(`索引 source 已限制为最近 ${options.maxSources}/${allDescriptors.length} 个`);
+    }
     const nextSources = new Map();
     let parsedSources = 0;
     let reusedSources = 0;
     let staleSources = diagnostics.length;
     const sourceErrors = diagnostics.slice();
     let completed = 0;
+    let indexedTextChars = 0;
     emitStatus({ totalSources: descriptors.length, indexedSources: 0 });
 
     for (const descriptor of descriptors) {
       const existing = sourceByKey.get(descriptor.key);
       if (!force && existing && !existing.stale && existing.signature === descriptor.signature) {
-        nextSources.set(descriptor.key, existing);
+        const limited = limitSourceToBudget(existing, options.maxIndexedChars - indexedTextChars);
+        if (limited.source.docs.length) nextSources.set(descriptor.key, limited.source);
+        indexedTextChars += limited.chars;
         reusedSources += 1;
       } else {
         try {
           const source = parseSourceDescriptor(descriptor, maps);
-          nextSources.set(descriptor.key, source);
+          const limited = limitSourceToBudget(source, options.maxIndexedChars - indexedTextChars);
+          if (limited.source.docs.length) nextSources.set(descriptor.key, limited.source);
+          indexedTextChars += limited.chars;
           parsedSources += 1;
         } catch (error) {
           staleSources += 1;
@@ -259,6 +303,10 @@ async function refresh(snapshot = {}, { force = false } = {}) {
         }
       }
       completed += 1;
+      if (indexedTextChars >= options.maxIndexedChars) {
+        diagnostics.push(`索引文本已达到 ${Math.round(options.maxIndexedChars / 1024 / 1024)}MB 上限`);
+        break;
+      }
       if (completed % 8 === 0 || completed === descriptors.length) {
         emitStatus({
           phase: 'indexing', totalSources: descriptors.length, indexedSources: completed,
@@ -322,6 +370,9 @@ async function refresh(snapshot = {}, { force = false } = {}) {
       lastError: status.lastError || sourceErrors[0] || null,
       sourceErrors: sourceErrors.slice(0, 8),
       index: index.getStats(),
+      indexedTextChars,
+      sourceLimit: options.maxSources,
+      textLimitChars: options.maxIndexedChars,
     });
     return status;
   })().catch((error) => {

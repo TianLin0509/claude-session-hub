@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { EventEmitter } = require('node:events');
 const { SessionSearchService } = require('../core/session-search-service.js');
 
 function writeClaudeTranscript(filePath) {
@@ -86,5 +87,48 @@ test('worker service builds, queries, previews and reloads its persistent local 
     assert.equal(cachedResult.status.ready, true);
   } finally {
     await cached.close();
+  }
+});
+
+test('startup prewarm is deferred by default and does not allocate a worker', async () => {
+  let workerCount = 0;
+  class CountingWorker extends EventEmitter {
+    constructor() { super(); workerCount += 1; }
+    unref() {}
+    terminate() { return Promise.resolve(0); }
+  }
+  const service = new SessionSearchService({ Worker: CountingWorker });
+  try {
+    const status = await service.prewarm({ sessions: [], meetings: [] });
+    assert.equal(status.phase, 'deferred');
+    assert.equal(status.ready, false);
+    assert.equal(workerCount, 0);
+  } finally {
+    await service.close();
+  }
+});
+
+test('search worker receives a hard V8 heap limit and bounded index inputs', async () => {
+  let workerOptions = null;
+  class CapturingWorker extends EventEmitter {
+    constructor(_workerPath, options) { super(); workerOptions = options; }
+    unref() {}
+    terminate() { return Promise.resolve(0); }
+  }
+  const service = new SessionSearchService({
+    Worker: CapturingWorker,
+    workerMemoryLimitMb: 256,
+    maxSources: 50,
+    maxIndexedChars: 4 * 1024 * 1024,
+    maxCacheCompressedBytes: 8 * 1024 * 1024,
+  });
+  try {
+    service._ensureWorker();
+    assert.equal(workerOptions.resourceLimits.maxOldGenerationSizeMb, 256);
+    assert.equal(workerOptions.workerData.maxSources, 50);
+    assert.equal(workerOptions.workerData.maxIndexedChars, 4 * 1024 * 1024);
+    assert.equal(workerOptions.workerData.maxCacheCompressedBytes, 8 * 1024 * 1024);
+  } finally {
+    await service.close();
   }
 });

@@ -7,12 +7,20 @@ class SessionSearchService {
   constructor(options = {}) {
     this._Worker = options.Worker || Worker;
     this._workerPath = options.workerPath || path.join(__dirname, 'session-search-worker.js');
+    this._prewarmEnabled = options.prewarmEnabled === true;
     this._workerData = {
       cachePath: options.cachePath || null,
       claudeRoots: Array.isArray(options.claudeRoots) ? options.claudeRoots : [],
       codexRoots: Array.isArray(options.codexRoots) ? options.codexRoots : [],
       meetingDir: options.meetingDir || null,
       refreshTtlMs: Number(options.refreshTtlMs) || 10_000,
+      maxCacheCompressedBytes: Math.max(1024 * 1024, Number(options.maxCacheCompressedBytes) || 32 * 1024 * 1024),
+      maxSources: Math.max(10, Number(options.maxSources) || 200),
+      maxIndexedChars: Math.max(1024 * 1024, Number(options.maxIndexedChars) || 16 * 1024 * 1024),
+    };
+    this._workerResourceLimits = {
+      maxOldGenerationSizeMb: Math.max(128, Number(options.workerMemoryLimitMb) || 384),
+      maxYoungGenerationSizeMb: 64,
     };
     this._worker = null;
     this._nextId = 0;
@@ -25,7 +33,10 @@ class SessionSearchService {
   _ensureWorker() {
     if (this._closed) throw new Error('Session search service is closed');
     if (this._worker) return this._worker;
-    const worker = new this._Worker(this._workerPath, { workerData: this._workerData });
+    const worker = new this._Worker(this._workerPath, {
+      workerData: this._workerData,
+      resourceLimits: this._workerResourceLimits,
+    });
     worker.unref?.();
     worker.on('message', message => this._handleMessage(message));
     worker.on('error', error => this._handleFailure(error, worker));
@@ -98,6 +109,16 @@ class SessionSearchService {
   }
 
   prewarm(snapshot = {}) {
+    if (!this._prewarmEnabled) {
+      this._status = {
+        ...this._status,
+        phase: 'deferred',
+        ready: false,
+        refreshing: false,
+        lastError: null,
+      };
+      return Promise.resolve({ ...this._status });
+    }
     return this.refresh(snapshot, { force: false });
   }
 
