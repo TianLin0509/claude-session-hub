@@ -12,6 +12,8 @@ const { launchIsolatedHub, gracefulQuit, listCdpTargets, _waitMs } = require('./
 const { connectCDP, connectFirstPage } = require('./helpers/cdp-client');
 
 const HUB_ROOT = path.resolve(__dirname, '..');
+const API_BASE = process.env.CHUXIN_E2E_API_BASE || 'http://127.0.0.1:3004';
+const WEB_BASE = process.env.CHUXIN_E2E_WEB_BASE || 'http://127.0.0.1:3003';
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
 const OUTPUT = path.join(HUB_ROOT, 'output', 'playwright', `chuxin-single-nav-${STAMP}`);
 const TEMP_ROOT = path.join(os.tmpdir(), `chuxin-single-nav-e2e-${process.pid}-${STAMP}`);
@@ -70,7 +72,7 @@ function removeTempRoot() {
 }
 
 (async () => {
-  assert((await getJson('http://127.0.0.1:3004/health'))?.status === 'ok', 'research API 3004 is not healthy');
+  assert((await getJson(`${API_BASE}/health`))?.status === 'ok', `research API is not healthy: ${API_BASE}`);
   fs.mkdirSync(OUTPUT, { recursive: true });
   const port = await freePort();
   let hub = null;
@@ -83,8 +85,8 @@ function removeTempRoot() {
       label: 'chuxin-single-nav',
       extraEnv: {
         CLAUDE_HUB_E2E: '1',
-        CHUXIN_API_BASE: 'http://127.0.0.1:3004',
-        CHUXIN_WEB_BASE: 'http://127.0.0.1:3003',
+        CHUXIN_API_BASE: API_BASE,
+        CHUXIN_WEB_BASE: WEB_BASE,
       },
     });
     client = await connectFirstPage(hub, (target) => target.type === 'page' && /renderer[\\/]index\.html/.test(target.url || ''));
@@ -115,12 +117,13 @@ function removeTempRoot() {
     }
 
     const labels = await client.eval(`[...document.querySelectorAll('.cx-primary-tab')].map((node) => node.textContent.trim())`);
-    assert.deepStrictEqual(labels, ['今日概况', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累']);
+    assert.deepStrictEqual(labels, ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累']);
     assert.strictEqual(await client.eval(`document.querySelectorAll('.cx-primary-nav').length`), 1);
     assert.strictEqual(await client.eval(`document.querySelectorAll('.cx-tabs,.cx-tab').length`), 0);
 
     const expected = {
       today: '#today',
+      market: '#market',
       technical: '#technical',
       news: '#news',
       targets: '#watch',
@@ -143,6 +146,21 @@ function removeTempRoot() {
       'hub-primary-workspace',
     );
 
+    await client.eval(`document.querySelector('.cx-primary-tab[data-tab="market"]').click()`);
+    await waitEval(client, `document.querySelector('.cx-view-frame iframe').src.endsWith('#market')`, 'market route');
+    await _waitMs(500);
+    const marketTarget = (await listCdpTargets(hub)).find((target) => (target.url || '').includes('embed=hub') && (target.url || '').endsWith('#market'));
+    assert(marketTarget?.webSocketDebuggerUrl, 'embedded live market target is missing');
+    const marketClient = await connectCDP(marketTarget.webSocketDebuggerUrl);
+    try {
+      await marketClient.send('Runtime.enable');
+      await waitEval(marketClient, 'document.getElementById("view-title")?.textContent === "实时行情"', 'live market title');
+      await waitEval(marketClient, 'document.querySelector(".market-quote-hero") && document.querySelector("#market-intraday-canvas svg") && document.querySelector("#market-daily-canvas svg")', 'live market charts', 45000);
+    } finally {
+      await marketClient.close();
+    }
+    const marketScreenshot = await screenshot(client, '01-live-market-single-nav.png');
+
     await client.eval(`document.querySelector('.cx-primary-tab[data-tab="today"]').click()`);
     // Wait for the real embedded dashboard, not merely for the iframe element.
     // The previous test captured too early and could approve an empty canvas.
@@ -161,14 +179,14 @@ function removeTempRoot() {
       assert.deepStrictEqual(embeddedState, { topbar: 'none', mobileNav: 'none' });
       embeddedVerified = true;
     }
-    const observeScreenshot = await screenshot(client, '01-observe-single-nav.png');
+    const observeScreenshot = await screenshot(client, '02-observe-single-nav.png');
 
     assert.deepStrictEqual(await client.eval('window.__singleNavErrors'), []);
     console.log(JSON.stringify({
       ok: true,
       labels,
       embeddedVerified,
-      screenshots: [observeScreenshot],
+      screenshots: [marketScreenshot, observeScreenshot],
       output: OUTPUT,
     }, null, 2));
   } finally {
