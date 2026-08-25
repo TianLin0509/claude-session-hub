@@ -332,7 +332,7 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
 //     ✅ 兜得住: superpowers 全家 (plan/brainstorming/TDD/debugging/SDD/post-refactor-verify/
 //        simplify/review/security-review)、code-review/security-guidance/codex/
 //        feature-dev/skill-creator/claude-md-management 等 23 个 plugin。
-//     ❌ 兜不住: 用户自定义 skill (位于 ~/.claude/skills/),如 cli-caller / init / loop /
+//     ❌ 兜不住: 用户自定义 skill (位于 ~/.claude/skills/),如 init / loop /
 //        schedule / design-review。它们不属于任何 plugin,settings 完全无法禁用。
 //   这部分必须靠 BASE_RULES (core/group-chat-scenes.js) 软约束兜底,详见该文件
 //   "AI 禁止主动调用" 段。
