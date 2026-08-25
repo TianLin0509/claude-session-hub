@@ -224,10 +224,12 @@ async function waitSearchState(client, predicate, label) {
       console.error = (...args) => { record(args.map(String).join(' ')); originalError(...args); };
     })()`);
     await waitFor('global search UI bridge', () => client.eval(`!!(window.__hubE2E && window.__hubE2E.globalSessionSearch)`));
-    result.indexStatus = await waitFor('search index ready', async () => {
-      const status = await client.eval(`require('electron').ipcRenderer.invoke('get-session-search-status')`);
-      return status && status.ready && status.index && status.index.sessions >= 3 ? status : null;
-    }, 45_000);
+    // Production intentionally defers the search child until the feature is
+    // used. Trigger the same explicit refresh path instead of assuming startup
+    // prewarm has allocated an indexer.
+    result.indexStatus = await client.eval(`require('electron').ipcRenderer.invoke('refresh-session-search', { force: false })`);
+    assert.equal(result.indexStatus.ready, true, JSON.stringify(result.indexStatus));
+    assert.ok(result.indexStatus.index.sessions >= 3, JSON.stringify(result.indexStatus));
     assert.ok(result.indexStatus.index.documents >= 9, JSON.stringify(result.indexStatus));
     result.directAnswerQuery = await client.eval(`require('electron').ipcRenderer.invoke('search-past-sessions', {
       query: 'CLAUDE_ANSWER_MARKER', providers: ['claude'], scopes: ['assistant'], limit: 50
@@ -359,8 +361,11 @@ async function waitSearchState(client, predicate, label) {
       return !state.modalOpen && state.terminalIds.includes('hub-claude-search') && state.matchMounted ? state : null;
     }, 20_000);
 
-    result.cacheExists = fs.existsSync(path.join(DATA_DIR, 'cache', 'session-search-v2.json'));
+    const databasePath = path.join(DATA_DIR, 'cache', 'session-search-v3.sqlite');
+    result.cacheExists = fs.existsSync(databasePath);
+    result.databaseBytes = result.cacheExists ? fs.statSync(databasePath).size : 0;
     assert.equal(result.cacheExists, true);
+    assert.ok(result.databaseBytes > 0);
     result.consoleErrors = await client.send('Runtime.evaluate', {
       expression: 'window.__GLOBAL_SEARCH_CONSOLE_ERRORS || []', returnByValue: true,
     }).then(response => response.result.value || []);
