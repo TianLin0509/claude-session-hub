@@ -159,7 +159,7 @@ test('every group member exposes the same provider-specific tuning as new Sessio
     'group modal must reuse new-session provider-specific payload rules');
   assert.match(MODAL_JS, /WorkspaceController\.loadCodexTuningCatalog/,
     'Codex effort and Fast options must come from its model catalog');
-  assert.match(MODAL_JS, /群聊通信所需 MCP 始终保留/);
+  assert.match(MODAL_JS, /Codex 选 None 时不会注入群聊或投研 MCP/);
   assert.match(MODAL_CSS, /\.mcm-member-caption\s*\{/);
   assert.match(MODAL_CSS, /\.mcm-tuning-field\s*\{/);
 });

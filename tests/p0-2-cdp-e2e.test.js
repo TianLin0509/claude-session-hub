@@ -1,4 +1,11 @@
 'use strict';
+const { test: nodeTest } = require('node:test');
+
+if (process.env.HUB_EXTERNAL_CDP_E2E !== '1') {
+  nodeTest('P0.2 external CDP attachment', {
+    skip: 'set HUB_EXTERNAL_CDP_E2E=1 only after launching an explicitly isolated Hub on port 9229',
+  }, () => {});
+} else {
 // P0/P0.2 真实 CDP E2E 测试 —— attach isolated Hub Electron renderer
 //   1. CDP HTTP /json 拿 webSocketDebuggerUrl
 //   2. ws attach renderer，Runtime.evaluate 探测真实 window/API
@@ -135,3 +142,4 @@ function cdpClient(wsUrl) {
   console.error(e.stack);
   process.exit(1);
 });
+}

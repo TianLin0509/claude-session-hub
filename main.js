@@ -158,6 +158,9 @@ function sessionSearchRoots(envName, defaults) {
     : defaults;
 }
 const sessionSearchService = new SessionSearchService({
+  // Keep the production default off until the high-memory incident is fully
+  // explained. Isolated E2E/diagnostic runs may opt in explicitly.
+  enabled: process.env.HUB_SESSION_SEARCH_ENABLE === '1',
   cachePath: path.join(getHubDataDir(), 'cache', 'session-search-v2.json'),
   claudeRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CLAUDE_ROOTS', claudeProjectRoots()),
   codexRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CODEX_ROOTS', [DEFAULT_CODEX_SESSIONS_ROOT]),

@@ -1,4 +1,11 @@
 'use strict';
+const { test: nodeTest } = require('node:test');
+
+if (process.env.HUB_EXTERNAL_CDP_E2E !== '1') {
+  nodeTest('P0.4 external MCP/CDP attachment', {
+    skip: 'set HUB_EXTERNAL_CDP_E2E=1 only after launching an explicitly isolated Hub on port 9230',
+  }, () => {});
+} else {
 // P0.4 全自动 E2E：替立花跑，不让他动手
 // 1. CDP attach isolated Hub (port 9230)
 // 2. IPC invoke create-meeting 带 Claude + DeepSeek + Codex 三个 sub
@@ -105,3 +112,4 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   cdp.close();
   console.log('\n=== E2E (CDP 部分) done ===');
 })().catch(e => { console.error('FAIL:', e.message, e.stack); process.exit(1); });
+}

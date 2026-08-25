@@ -38,7 +38,7 @@ test('worker service builds, queries, previews and reloads its persistent local 
   }], meetings: [] };
 
   const service = new SessionSearchService({
-    claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 5,
+    enabled: true, claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 5,
   });
   t.after(async () => {
     await service.close().catch(() => {});
@@ -80,7 +80,7 @@ test('worker service builds, queries, previews and reloads its persistent local 
 
   await service.close();
   const cached = new SessionSearchService({
-    claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 60_000,
+    enabled: true, claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 60_000,
   });
   try {
     const cachedResult = await cached.search({ query: 'EADDRINUSE' }, snapshot);
@@ -98,7 +98,7 @@ test('startup prewarm is deferred by default and does not allocate a worker', as
     unref() {}
     terminate() { return Promise.resolve(0); }
   }
-  const service = new SessionSearchService({ Worker: CountingWorker });
+  const service = new SessionSearchService({ enabled: true, Worker: CountingWorker });
   try {
     const status = await service.prewarm({ sessions: [], meetings: [] });
     assert.equal(status.phase, 'deferred');
@@ -117,6 +117,7 @@ test('search worker receives a hard V8 heap limit and bounded index inputs', asy
     terminate() { return Promise.resolve(0); }
   }
   const service = new SessionSearchService({
+    enabled: true,
     Worker: CapturingWorker,
     workerMemoryLimitMb: 256,
     maxSources: 50,
@@ -144,7 +145,7 @@ test('non-zero worker exit rejects every pending request instead of hanging', as
     postMessage() {}
     terminate() { return Promise.resolve(0); }
   }
-  const service = new SessionSearchService({ Worker: ExitingWorker });
+  const service = new SessionSearchService({ enabled: true, Worker: ExitingWorker });
   const pending = service.search({ query: 'pending' }, {});
   const worker = service._worker;
   worker.emit('exit', 137);
@@ -175,6 +176,7 @@ test('oversized decompressed cache shards are rejected without crashing the work
   }), 'utf8');
 
   const service = new SessionSearchService({
+    enabled: true,
     cachePath,
     maxCacheShardOutputBytes: 1024 * 1024,
     maxIndexedChars: 1024 * 1024,
@@ -186,6 +188,28 @@ test('oversized decompressed cache shards are rejected without crashing the work
     assert.equal(status.phase, 'ready_with_errors');
     assert.match(status.lastError || status.sourceErrors.join(' '), /output length|larger than/i);
     assert.equal(status.index.documents, 0);
+  } finally {
+    await service.close();
+  }
+});
+
+test('production default disables full-text search without creating a worker', async () => {
+  let workerCount = 0;
+  class CountingWorker extends EventEmitter {
+    constructor() { super(); workerCount += 1; }
+    unref() {}
+    terminate() { return Promise.resolve(0); }
+  }
+  const service = new SessionSearchService({ Worker: CountingWorker });
+  try {
+    const result = await service.search({ query: '昨日之我' }, { sessions: [], meetings: [] });
+    assert.equal(workerCount, 0);
+    assert.equal(result.totalSessions, 0);
+    assert.equal(result.status.phase, 'disabled_memory_safety');
+    assert.match(result.error, /内存安全/);
+    const refreshed = await service.refresh({}, { force: true });
+    assert.equal(refreshed.phase, 'disabled_memory_safety');
+    assert.equal(workerCount, 0);
   } finally {
     await service.close();
   }

@@ -204,6 +204,7 @@ async function waitSearchState(client, predicate, label) {
         DEEPSEEK_API_KEY: '',
         USERPROFILE: FAKE_HOME,
         HOME: FAKE_HOME,
+        HUB_SESSION_SEARCH_ENABLE: '1',
         HUB_SESSION_SEARCH_CLAUDE_ROOTS: CLAUDE_ROOT,
         HUB_SESSION_SEARCH_CODEX_ROOTS: CODEX_ROOT,
         HUB_SESSION_SEARCH_REFRESH_TTL_MS: '500',
