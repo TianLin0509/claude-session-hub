@@ -76,9 +76,9 @@ async function run() {
     const menuState = await cdp.eval(`(() => {
       document.getElementById('btn-new').click();
       const option = document.querySelector('.new-session-option[data-kind="kimi"]');
-      const resume = document.querySelector('.resume-option[data-kind="kimi-resume"]');
+      const resume = document.querySelector('[data-resume-kind="kimi-resume"]');
       return {
-        menuVisible: document.getElementById('new-session-menu').style.display === 'block',
+        menuVisible: document.getElementById('new-session-menu').style.display === 'flex',
         optionText: option && option.textContent.trim(),
         resumeText: resume && resume.textContent.trim(),
       };
@@ -98,7 +98,10 @@ async function run() {
       return sessions.some(s => s.kind === 'kimi' && s.kimiSid && s.transcriptPath);
     })()`);
 
-    await cdp.eval(`document.getElementById('btn-group-chat').click()`);
+    await cdp.eval(`(() => {
+      window.LaunchCenter.open('group');
+      document.getElementById('launch-center-configure-group').click();
+    })()`);
     await waitFor(cdp, `document.getElementById('meeting-create-modal') && document.getElementById('meeting-create-modal').style.display === 'flex'`);
     const modalState = await cdp.eval(`(() => {
       let slots = [...document.querySelectorAll('#meeting-create-modal .mcm-slot')];

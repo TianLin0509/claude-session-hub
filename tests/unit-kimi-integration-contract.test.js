@@ -56,7 +56,7 @@ try {
 
 const html = read('renderer/index.html');
 assert.match(html, /data-kind="kimi"/);
-assert.match(html, /data-kind="kimi-resume"/);
+assert.match(html, /data-resume-kind="kimi-resume"/);
 assert.match(html, /Kimi Code · K3/);
 assert.match(html, /data-ai="kimi"/);
 assert.match(html, /id="cfg-detail-kimi"/);

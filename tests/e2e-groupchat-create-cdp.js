@@ -143,8 +143,8 @@ async function main() {
     });
     client = await connectFirstPage(hub, target => target.type === 'page' && /index\.html/i.test(target.url || ''));
     await client.send('Runtime.enable');
-    await waitFor('standalone group-chat launcher', () => client.eval(
-      `!!(document.querySelector('#btn-group-chat') && window.WorkspaceController && window.openMeetingCreateModal)`
+    await waitFor('unified launch center', () => client.eval(
+      `!!(document.querySelector('#btn-new') && window.LaunchCenter && window.WorkspaceController && window.openMeetingCreateModal)`
     ));
     assert.equal(await client.eval(`require('node:path').basename(process.execPath)`), 'AIGroupChatHub.exe');
     await client.eval(`(() => {
@@ -168,7 +168,11 @@ async function main() {
       return true;
     })()`);
 
-    await clickPoint(client, await pointFor(client, '#btn-group-chat'));
+    await clickPoint(client, await pointFor(client, '#btn-new'));
+    await waitFor('launch center open', () => client.eval(`document.querySelector('#new-session-menu')?.style.display === 'flex'`), 8000);
+    await clickPoint(client, await pointFor(client, '[data-launch-intent="group"]'));
+    await waitFor('group intent panel', () => client.eval(`!document.querySelector('#launch-center-group-panel')?.hidden`), 4000);
+    await clickPoint(client, await pointFor(client, '#launch-center-configure-group'));
     try {
       await waitFor('meeting modal', () => client.eval(`document.querySelector('#meeting-create-modal')?.style.display === 'flex'`), 8000);
     } catch (error) {

@@ -945,6 +945,7 @@
   function closeNewSessionModal() {
     if (menuEl) menuEl.style.display = 'none';
     setError('');
+    window.dispatchEvent(new CustomEvent('launch-center:closed'));
   }
 
   function openNewSessionModal(options = {}) {
@@ -967,6 +968,10 @@
     // 于是 .session-create-body 拿不到 flex 高度，overflow-y 不生效，
     // max-height + overflow:hidden 直接把「创建会话」按钮裁掉。
     menuEl.style.display = 'flex';
+    // Direct callers (workspace cards, launch links, E2E helpers) still open
+    // this controller without going through the unified launcher. Always reset
+    // the shell to the session intent before focusing the selected provider.
+    window.dispatchEvent(new CustomEvent('launch-center:session-opened'));
     const selected = menuEl.querySelector(`.new-session-option[data-kind="${selectedKind}"]`);
     if (selected) selected.focus();
     void loadRecent().then(paint);

@@ -62,6 +62,7 @@ const { createShellController } = require('./shell-controller.js');
 const { createHomeWorkbench } = require('./home-workbench.js');
 const { createWorkbenchOperationsController } = require('./workbench-operations-controller.js');
 const { createRenderCoalescer } = require('./render-coalescer.js');
+const { createLaunchCenterController } = require('./launch-center-controller.js');
 const {
   applyPromptSubmitted,
   applyReplyCompleted,
@@ -557,10 +558,8 @@ function preserveAndClearTerminalPanel() {
 const btnNew = document.getElementById('btn-new');
 const menuEl = document.getElementById('new-session-menu');
 const wrapperEl = document.getElementById('new-session-wrapper');
-const btnResume = document.getElementById('btn-resume');
-const resumeMenuEl = document.getElementById('resume-picker-menu');
-const resumeWrapperEl = document.getElementById('resume-picker-wrapper');
 const btnHome = document.getElementById('btn-home');
+const btnResearch = document.getElementById('btn-research');
 const contextMenuEl = document.getElementById('context-menu');
 const termCtxMenuEl = document.getElementById('terminal-context-menu');
 const appContainerEl = document.getElementById('app-container');
@@ -798,6 +797,7 @@ async function selectMeeting(meetingId, opts = {}) {
   if (terminalPanelEl) terminalPanelEl.style.display = 'none';
   if (terminalPanelEl) terminalPanelEl.classList.remove('home-active');
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
+  setShellNavActive(null);
   if (emptyStateEl) emptyStateEl.style.display = 'none';
   clearPreviewUI();
 
@@ -3258,6 +3258,7 @@ async function selectSession(id, opts = {}) {
     MeetingRoom.closeMeetingPanel();
   }
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
+  setShellNavActive(null);
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
   clearPreviewUI();
@@ -3319,47 +3320,44 @@ async function selectSession(id, opts = {}) {
   await restorePreviewForContext(`session:${id}`);
 }
 
-// --- Dropdown menu ---
-btnNew.addEventListener('click', () => {
-  if (menuEl.style.display === 'none') window.WorkspaceController.openNewSessionModal();
-  else window.WorkspaceController.closeNewSessionModal();
+function setShellNavActive(value) {
+  for (const [button, key] of [[btnHome, 'home'], [btnResearch, 'research']]) {
+    if (!button) continue;
+    const active = value === key;
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
+}
+
+const launchCenter = createLaunchCenterController({
+  document,
+  openSessionModal: options => window.WorkspaceController.openNewSessionModal(options),
+  closeSessionModal: () => window.WorkspaceController.closeNewSessionModal(),
+  openGroupModal: options => createMeetingByMode('group', options),
+  resumeSession: kind => ipcRenderer.invoke('create-session', kind),
 });
+window.LaunchCenter = launchCenter;
+
+// --- Unified launch center ---
+btnNew.addEventListener('click', () => launchCenter.toggle());
 
 document.addEventListener('mousedown', (e) => {
-  if (!wrapperEl.contains(e.target)) menuEl.style.display = 'none';
-  if (resumeWrapperEl && !resumeWrapperEl.contains(e.target)) resumeMenuEl.style.display = 'none';
+  if (!wrapperEl.contains(e.target) && menuEl.style.display !== 'none') launchCenter.close();
 });
 
 // v1.5.1：弹窗升级为居中 modal 后，遮罩(::before)铺满 viewport，
 // 点击遮罩区会落到弹窗元素本身（e.target === menuEl）→ 关闭。
 // 点击内部 option/按钮 → e.target 是子元素，不关闭。
 menuEl.addEventListener('mousedown', (e) => {
-  if (e.target === menuEl) menuEl.style.display = 'none';
-});
-resumeMenuEl.addEventListener('mousedown', (e) => {
-  if (e.target === resumeMenuEl) resumeMenuEl.style.display = 'none';
+  if (e.target === menuEl) launchCenter.close();
 });
 
 // ESC 关闭任意打开的侧栏 modal
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  for (const el of [menuEl, resumeMenuEl]) {
-    if (el && el.style.display !== 'none') el.style.display = 'none';
-  }
+  if (menuEl && menuEl.style.display !== 'none') launchCenter.close();
 });
-
-// --- Resume dropdown ---
-btnResume.addEventListener('click', (e) => {
-  e.stopPropagation();
-  resumeMenuEl.style.display = resumeMenuEl.style.display === 'none' ? 'block' : 'none';
-});
-
-for (const btn of document.querySelectorAll('.resume-option')) {
-  btn.addEventListener('click', async () => {
-    resumeMenuEl.style.display = 'none';
-    await ipcRenderer.invoke('create-session', btn.dataset.kind);
-  });
-}
 
 // --- Launcher (启动面板 v0.8.3 · 三精灵海报) ---
 // 主 CTA 召集 AI 群聊;底部超链接 1v1 单聊(走 create-session)。
@@ -3374,7 +3372,7 @@ for (const cta of document.querySelectorAll('.launcher-cta')) {
 for (const link of document.querySelectorAll('.launcher-link')) {
   link.addEventListener('click', () => {
     const kind = link.dataset.launcherKind;
-    if (kind) window.WorkspaceController.openNewSessionModal({ kind });
+    if (kind) launchCenter.open('session', { kind });
   });
 }
 
@@ -3383,9 +3381,9 @@ if (btnHome) {
   btnHome.addEventListener('click', () => escapeToHome());
 }
 // --- Create Meeting ---
-function createMeetingByMode(mode) {
+function createMeetingByMode(mode, options = {}) {
   if (typeof window.openMeetingCreateModal === 'function') {
-    window.openMeetingCreateModal('group');
+    window.openMeetingCreateModal('group', options);
   } else {
     console.error('[createMeetingByMode] meeting-create-modal not loaded');
   }
@@ -4175,7 +4173,7 @@ homeWorkbench = createHomeWorkbench({
   onCopyRecentTurns: (sessionId, count) => copyRecentTurnsForSession(sessionId, count),
   onForkSession: (sessionId) => keyboardShortcuts.forkSession(sessionId),
   onOpenArtifact: (artifactPath) => openPathInHub(artifactPath, { requireExistsForRel: false, fullscreen: true }),
-  onLaunchWorkspace: (workspace) => window.WorkspaceController.openNewSessionModal({ kind: 'claude', workspace }),
+  onLaunchWorkspace: (workspace) => launchCenter.open('session', { kind: 'claude', workspace }),
   onOpenReview: repoId => workbenchOperations.open(repoId),
   onOpenServerSettings: () => configModal.openOperationsSetup(),
   escapeHtml,
@@ -4669,7 +4667,7 @@ const keyboardShortcuts = createKeyboardShortcuts({
   openPreviewQuickOpen: () => openPreviewQuickOpen(),
   setFontSize,
   closeSession: closeSessionAsSleep,
-  createWorkspaceSession: (kind) => window.WorkspaceController.openNewSessionModal({ kind }),
+  createWorkspaceSession: (kind) => launchCenter.open('session', { kind }),
 });
 keyboardShortcuts.init();
 // --- Context menus ---
@@ -4756,7 +4754,7 @@ btnExpandEl.addEventListener('click', toggleSidebar);
 const shellController = createShellController({
   document,
   menuEl,
-  resumeMenuEl,
+  resumeMenuEl: null,
   contextMenuEl,
   termCtxMenuEl,
   terminalCache,
@@ -4776,6 +4774,7 @@ const shellController = createShellController({
 function escapeToHome() {
   if (window.__chuxinHide) window.__chuxinHide();
   shellController.escapeToHome();
+  setShellNavActive('home');
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
   if (homeWorkbench) homeWorkbench.render({ force: true });
 }

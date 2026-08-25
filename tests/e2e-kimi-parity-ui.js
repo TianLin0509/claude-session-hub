@@ -190,7 +190,10 @@ async function run() {
     assert.ok(/^Ctx\s+[\d.]+%$/.test(cardState.sidebarContext));
     await screenshot(cdp, CARD_SHOT, '.terminal-panel');
 
-    await cdp.eval(`document.getElementById('btn-group-chat').click()`);
+    await cdp.eval(`(() => {
+      window.LaunchCenter.open('group');
+      document.getElementById('launch-center-configure-group').click();
+    })()`);
     await waitFor(cdp, `document.getElementById('meeting-create-modal')?.style.display === 'flex'`);
     await cdp.eval(`(() => {
       let slots = [...document.querySelectorAll('#meeting-create-modal .mcm-slot')];

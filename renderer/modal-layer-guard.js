@@ -6,7 +6,6 @@ const LEGACY_MODAL_IDS = Object.freeze([
   'config-modal',
   'resume-modal',
   'new-session-menu',
-  'resume-picker-menu',
   'hub-cmdk-overlay',
   'meeting-create-modal',
   'workflow-config-modal',
@@ -20,7 +19,6 @@ const MODAL_SELECTOR = [
   '.modal-overlay',
   '.config-modal-overlay',
   '.new-session-menu',
-  '.resume-picker-menu',
   '.hub-cmdk-overlay',
   '[class*="modal-overlay"]',
 ].join(',');

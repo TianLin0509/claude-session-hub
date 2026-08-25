@@ -796,7 +796,18 @@
     state.opened = visible;
     const tp = document.getElementById('terminal-panel');
     const mrp = document.getElementById('meeting-room-panel');
+    const homeButton = document.getElementById('btn-home');
+    const researchButton = document.getElementById('btn-research');
     if (root) root.style.display = visible ? 'grid' : 'none';
+    if (researchButton) {
+      researchButton.classList.toggle('active', visible);
+      if (visible) researchButton.setAttribute('aria-current', 'page');
+      else researchButton.removeAttribute('aria-current');
+    }
+    if (visible && homeButton) {
+      homeButton.classList.remove('active');
+      homeButton.removeAttribute('aria-current');
+    }
     if (visible) {
       // 打开投研：接管主区（terminal / 群聊面板由本函数隐藏；
       // 反向切换由 selectSession / selectMeeting 调 __chuxinHide，本函数不替它们恢复 tp）
@@ -807,14 +818,16 @@
   }
 
   function bindEntry() {
-    const btn = document.getElementById('btn-chuxin');
-    if (btn) btn.addEventListener('click', () => setPanelVisible(true));
+    document.querySelectorAll('#btn-chuxin, [data-chuxin-entry]').forEach(button => {
+      button.addEventListener('click', () => setPanelVisible(true));
+    });
   }
 
   // 供 renderer.js 在 selectSession / 进入群聊时调用，确保面板被隐藏
   window.__chuxinHide = function () {
     if (state.opened) setPanelVisible(false);
   };
+  window.__chuxinShow = function () { setPanelVisible(true); };
 
   function init() {
     buildSkeleton();

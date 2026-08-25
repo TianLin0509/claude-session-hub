@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="workflow-config-modal.css">
   <link rel="stylesheet" href="chuxin.css">
   <link rel="stylesheet" href="styles/home-workbench.css">
+  <link rel="stylesheet" href="launch-center.css">
   <link rel="stylesheet" href="memory-panel.css">
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="../node_modules/prismjs/themes/prism-tomorrow.css">
@@ -36,82 +37,90 @@
     <div class="session-sidebar" id="session-sidebar">
       <div class="sidebar-header">
         <div class="new-session-wrapper" id="new-session-wrapper">
-          <button class="btn-new-session" id="btn-new" title="新建会话 (Ctrl+N)"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span class="btn-label">新建</span><svg class="btn-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
-          <div class="new-session-menu" id="new-session-menu" style="display:none">
+          <button type="button" class="btn-new-session" id="btn-new" title="打开启动中心 (Ctrl+N)" aria-haspopup="dialog" aria-controls="new-session-menu" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="btn-label">新建</span></button>
+          <div class="new-session-menu" id="new-session-menu" role="dialog" aria-modal="true" aria-labelledby="launch-center-title" style="display:none">
             <div class="session-create-head">
-              <div><strong>新建会话</strong><span>选择 AI 与工作目录</span></div>
-              <button type="button" class="session-create-close" id="new-session-close" aria-label="关闭新建会话">×</button>
+              <div><strong id="launch-center-title">启动中心</strong><span id="launch-center-subtitle">选择 AI、模型与工作目录</span></div>
+              <button type="button" class="session-create-close" id="new-session-close" aria-label="关闭启动中心"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
             </div>
-            <div class="session-create-body">
-              <div class="menu-group-label">AI / 终端</div>
-              <div class="session-kind-grid" role="group" aria-label="选择 AI 或终端">
-                <button class="new-session-option selected" data-kind="claude" aria-pressed="true"><span class="ai-logo logo-claude"></span>Claude Code</button>
-                <button class="new-session-option" data-kind="gemini" aria-pressed="false"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
-                <button class="new-session-option" data-kind="codex" aria-pressed="false"><span class="ai-logo logo-codex"></span>Codex CLI</button>
-                <button class="new-session-option" data-kind="deepseek" aria-pressed="false"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
-                <button class="new-session-option" data-kind="kimi" aria-pressed="false"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
-                <button class="new-session-option" data-kind="powershell" aria-pressed="false"><span class="ai-logo logo-powershell"></span>PowerShell</button>
+            <div class="launch-center-layout">
+              <div class="launch-center-intents" role="tablist" aria-label="启动方式" aria-orientation="vertical">
+                <button type="button" class="launch-center-intent active" id="launch-intent-session" data-launch-intent="session" role="tab" aria-selected="true" aria-controls="launch-center-session-panel"><span class="launch-center-intent-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></span><span><strong>新建会话</strong><small>AI、模型与工作目录</small></span></button>
+                <button type="button" class="launch-center-intent" id="launch-intent-group" data-launch-intent="group" role="tab" aria-selected="false" aria-controls="launch-center-group-panel" tabindex="-1"><span class="launch-center-intent-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm8-1a2.5 2.5 0 1 0 0-5M3 19c0-3 2.2-5 5-5s5 2 5 5m1-5c3 0 5 1.7 5 4.5"/></svg></span><span><strong>AI 群聊</strong><small>模板、成员与协作模式</small></span></button>
+                <button type="button" class="launch-center-intent" id="launch-intent-resume" data-launch-intent="resume" role="tab" aria-selected="false" aria-controls="launch-center-resume-panel" tabindex="-1"><span class="launch-center-intent-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2"/></svg></span><span><strong>恢复会话</strong><small>Hub 与原生 CLI 历史</small></span></button>
+                <div class="launch-center-shortcuts">Ctrl+N 打开启动中心<br>↑↓ 切换 · Enter 确认 · Esc 关闭</div>
               </div>
-              <div class="menu-group-label" id="new-session-tuning-label">模型 / 速度 / MCP</div>
-              <div class="session-tuning-grid" id="new-session-tuning">
-                <label class="session-tuning-field" for="new-session-model"><span>模型</span><select id="new-session-model"></select></label>
-                <!-- 思考强度与 MCP 的选项按 kind 动态填充（workspace-controller.js 的
-                     EFFORT_OPTIONS / MCP_OPTIONS）：Claude 用 --effort，Codex 用
-                     model_reasoning_effort，两边合法枚举不一样，写死会拼出 CLI 不认的值。 -->
-                <label class="session-tuning-field" id="new-session-effort-field" for="new-session-effort"><span id="new-session-effort-label">思考强度</span><select id="new-session-effort"></select></label>
-                <label class="session-tuning-field" id="new-session-mcp-field" for="new-session-mcp" hidden><span>MCP 加载</span><select id="new-session-mcp"></select></label>
-                <div class="session-tuning-field session-tuning-toggle" id="new-session-fast-field" hidden>
-                  <span>快速模式</span>
-                  <label class="session-tuning-check" for="new-session-fast"><input type="checkbox" id="new-session-fast" checked><span id="new-session-fast-hint">fast · 默认开</span></label>
-                </div>
-                <!-- Codex 的 fast 是 service_tier（priority 通道，1.5× 速度），
-                     和 Claude 的 fastMode 是两套机制，所以单独一个 field。 -->
-                <label class="session-tuning-field" id="new-session-codex-tier-field" for="new-session-codex-tier" hidden><span>速度通道 (service_tier)</span><select id="new-session-codex-tier"></select></label>
+              <div class="launch-center-pages">
+                <section class="launch-center-panel" id="launch-center-session-panel" data-launch-panel="session" role="tabpanel" aria-labelledby="launch-intent-session">
+                  <div class="session-create-body">
+                    <div class="menu-group-label">AI / 终端</div>
+                    <div class="session-kind-grid" role="group" aria-label="选择 AI 或终端">
+                      <button class="new-session-option selected" data-kind="claude" aria-pressed="true"><span class="ai-logo logo-claude"></span>Claude Code</button>
+                      <button class="new-session-option" data-kind="gemini" aria-pressed="false"><span class="ai-logo logo-gemini"></span>Gemini CLI</button>
+                      <button class="new-session-option" data-kind="codex" aria-pressed="false"><span class="ai-logo logo-codex"></span>Codex CLI</button>
+                      <button class="new-session-option" data-kind="deepseek" aria-pressed="false"><span class="ai-logo logo-deepseek"></span>DeepSeek</button>
+                      <button class="new-session-option" data-kind="kimi" aria-pressed="false"><span class="ai-logo logo-kimi"></span>Kimi Code · K3</button>
+                      <button class="new-session-option" data-kind="powershell" aria-pressed="false"><span class="ai-logo logo-powershell"></span>PowerShell</button>
+                    </div>
+                    <div class="menu-group-label" id="new-session-tuning-label">模型 / 速度 / MCP</div>
+                    <div class="session-tuning-grid" id="new-session-tuning">
+                      <label class="session-tuning-field" for="new-session-model"><span>模型</span><select id="new-session-model"></select></label>
+                      <label class="session-tuning-field" id="new-session-effort-field" for="new-session-effort"><span id="new-session-effort-label">思考强度</span><select id="new-session-effort"></select></label>
+                      <label class="session-tuning-field" id="new-session-mcp-field" for="new-session-mcp" hidden><span>MCP 加载</span><select id="new-session-mcp"></select></label>
+                      <div class="session-tuning-field session-tuning-toggle" id="new-session-fast-field" hidden><span>快速模式</span><label class="session-tuning-check" for="new-session-fast"><input type="checkbox" id="new-session-fast" checked><span id="new-session-fast-hint">fast · 默认开</span></label></div>
+                      <label class="session-tuning-field" id="new-session-codex-tier-field" for="new-session-codex-tier" hidden><span>速度通道 (service_tier)</span><select id="new-session-codex-tier"></select></label>
+                    </div>
+                    <div class="session-tuning-note" id="new-session-tuning-note" hidden></div>
+                    <div class="menu-group-label">Workspace</div>
+                    <div class="session-workspace-grid" role="radiogroup" aria-label="选择 workspace 方式">
+                      <button type="button" class="session-workspace-choice selected" data-workspace-mode="scratch" role="radio" aria-checked="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span><strong>完全新开</strong><small>创建独立临时目录，首问后自动生成显示名</small></span></button>
+                      <button type="button" class="session-workspace-choice" data-workspace-mode="existing" role="radio" aria-checked="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg><span><strong>选择已有路径</strong><small>可选项目、领域或外部目录；组织根不可用</small></span></button>
+                    </div>
+                    <div class="session-existing-path" id="new-session-existing-path" hidden>
+                      <div class="session-recommended" id="new-session-recommended-section" hidden><span class="session-path-section-label">推荐常用路径</span><div class="session-recommended-list" id="new-session-recommended" role="listbox" aria-label="推荐常用工作区"></div></div>
+                      <div class="session-recent-head"><span>最近工作区</span><button type="button" id="new-session-pick-path">浏览文件夹…</button></div>
+                      <div class="session-recent-list" id="new-session-recent" role="listbox" aria-label="最近使用的工作区"></div>
+                      <div class="session-recent-selected"><span>已选目录</span><code id="new-session-path-value">尚未选择</code></div>
+                    </div>
+                    <div class="session-create-error" id="new-session-error" hidden></div>
+                  </div>
+                  <div class="session-create-footer"><span id="new-session-summary">Claude Code · 新建临时 workspace</span><div><button type="button" class="session-create-cancel" id="new-session-cancel">取消</button><button type="button" class="session-create-submit" id="new-session-submit">创建会话</button></div></div>
+                </section>
+                <section class="launch-center-panel" id="launch-center-group-panel" data-launch-panel="group" role="tabpanel" aria-labelledby="launch-intent-group" hidden>
+                  <div class="launch-center-panel-head"><strong>创建 AI 群聊</strong><span>先选协作模板，再进入成员配置</span></div>
+                  <div class="launch-center-panel-body">
+                    <div class="launch-center-eyebrow">任务模板</div>
+                    <div class="launch-center-template-grid">
+                      <button type="button" class="launch-center-template selected" data-launch-group-template="general" aria-pressed="true"><strong>通用会诊</strong><small>澄清、方案、风险三路并行</small></button>
+                      <button type="button" class="launch-center-template" data-launch-group-template="review" aria-pressed="false"><strong>代码 / 方案评审</strong><small>实现者、审查者、反例攻击</small></button>
+                      <button type="button" class="launch-center-template" data-launch-group-template="research" aria-pressed="false"><strong>投研圆桌</strong><small>基本面、资金面、反方风控</small></button>
+                      <button type="button" class="launch-center-template" data-launch-group-template="decision" aria-pressed="false"><strong>决策交接</strong><small>结论、取舍、下一步动作</small></button>
+                    </div>
+                    <div class="launch-center-group-note">下一步会沿用现有群聊配置器：每位成员仍可独立选择模型、思考强度、速度和 MCP，不改变已有创建与恢复契约。</div>
+                  </div>
+                  <div class="launch-center-panel-footer"><span>默认 3 位成员 · 新建临时 workspace</span><button type="button" class="launch-center-primary" id="launch-center-configure-group">配置成员</button></div>
+                </section>
+                <section class="launch-center-panel" id="launch-center-resume-panel" data-launch-panel="resume" role="tabpanel" aria-labelledby="launch-intent-resume" hidden>
+                  <div class="launch-center-panel-head"><strong>恢复历史会话</strong><span>选择提供方后打开其原生恢复流程</span></div>
+                  <div class="launch-center-panel-body">
+                    <div class="launch-center-resume-list">
+                      <button type="button" class="launch-center-resume-option" data-resume-kind="claude-resume"><span class="ai-logo logo-claude"></span><span class="launch-center-resume-copy"><strong>Claude</strong><small>从 Claude Code 历史中选择</small></span><span class="hint">PTY picker</span></button>
+                      <button type="button" class="launch-center-resume-option" data-resume-kind="codex-resume"><span class="ai-logo logo-codex"></span><span class="launch-center-resume-copy"><strong>Codex</strong><small>从 Codex rollout 中精确恢复</small></span><span class="hint">PTY picker</span></button>
+                      <button type="button" class="launch-center-resume-option" data-resume-kind="gemini-resume"><span class="ai-logo logo-gemini"></span><span class="launch-center-resume-copy"><strong>Gemini</strong><small>继续最近一次原生会话</small></span><span class="hint">最近一次</span></button>
+                      <button type="button" class="launch-center-resume-option" data-resume-kind="deepseek-resume"><span class="ai-logo logo-deepseek"></span><span class="launch-center-resume-copy"><strong>DeepSeek</strong><small>恢复兼容 Claude CLI 的历史</small></span><span class="hint">PTY picker</span></button>
+                      <button type="button" class="launch-center-resume-option" data-resume-kind="kimi-resume"><span class="ai-logo logo-kimi"></span><span class="launch-center-resume-copy"><strong>Kimi</strong><small>恢复 Kimi Code 历史会话</small></span><span class="hint">PTY picker</span></button>
+                    </div>
+                    <div class="launch-center-resume-note">Hub 内已休眠的会话仍可直接从左侧列表唤醒；这里负责提供方原生历史，不会创建重复入口。</div>
+                    <div class="launch-center-error" id="launch-center-error" role="alert" hidden></div>
+                  </div>
+                  <div class="launch-center-panel-footer"><span>所有恢复都保留原模型、cwd 与 provider 元数据</span><button type="button" class="launch-center-secondary" id="launch-center-resume-cancel">取消</button></div>
+                </section>
               </div>
-              <div class="session-tuning-note" id="new-session-tuning-note" hidden></div>
-              <div class="menu-group-label">Workspace</div>
-              <div class="session-workspace-grid" role="radiogroup" aria-label="选择 workspace 方式">
-                <button type="button" class="session-workspace-choice selected" data-workspace-mode="scratch" role="radio" aria-checked="true">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-                  <span><strong>完全新开</strong><small>创建独立临时目录，首问后自动生成显示名</small></span>
-                </button>
-                <button type="button" class="session-workspace-choice" data-workspace-mode="existing" role="radio" aria-checked="false">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
-                  <span><strong>选择已有路径</strong><small>可选项目、领域或外部目录；组织根不可用</small></span>
-                </button>
-              </div>
-              <div class="session-existing-path" id="new-session-existing-path" hidden>
-                <div class="session-recommended" id="new-session-recommended-section" hidden>
-                  <span class="session-path-section-label">推荐常用路径</span>
-                  <div class="session-recommended-list" id="new-session-recommended" role="listbox" aria-label="推荐常用工作区"></div>
-                </div>
-                <div class="session-recent-head">
-                  <span>最近工作区</span>
-                  <button type="button" id="new-session-pick-path">浏览文件夹…</button>
-                </div>
-                <div class="session-recent-list" id="new-session-recent" role="listbox" aria-label="最近使用的工作区"></div>
-                <div class="session-recent-selected"><span>已选目录</span><code id="new-session-path-value">尚未选择</code></div>
-              </div>
-              <div class="session-create-error" id="new-session-error" hidden></div>
-            </div>
-            <div class="session-create-footer">
-              <span id="new-session-summary">Claude Code · 新建临时 workspace</span>
-              <div><button type="button" class="session-create-cancel" id="new-session-cancel">取消</button><button type="button" class="session-create-submit" id="new-session-submit">创建会话</button></div>
             </div>
           </div>
         </div>
-        <button class="btn-group-chat" id="btn-group-chat" title="创建 AI 群聊"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10"/><path d="M7 12h6"/><path d="M6 18l-3 3V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6Z"/></svg><span class="btn-label">群聊</span></button>
-        <button class="btn-group-chat btn-home" id="btn-home" title="主页 · HUB 工作台"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v10h13V10"/><path d="M9.5 20v-6h5v6"/></svg><span class="btn-label">主页</span></button>
-        <div class="resume-picker-wrapper" id="resume-picker-wrapper">
-          <button class="btn-resume-picker" id="btn-resume" title="恢复历史会话"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><polyline points="3 3 3 8 8 8"/></svg></button>
-          <div class="resume-picker-menu" id="resume-picker-menu" style="display:none">
-            <button class="resume-option" data-kind="claude-resume"><span class="ai-logo logo-claude"></span>Claude<span class="hint">PTY picker</span></button>
-            <button class="resume-option" data-kind="gemini-resume"><span class="ai-logo logo-gemini"></span>Gemini<span class="hint">最近一次</span></button>
-            <button class="resume-option" data-kind="codex-resume"><span class="ai-logo logo-codex"></span>Codex<span class="hint">PTY picker</span></button>
-            <button class="resume-option" data-kind="deepseek-resume"><span class="ai-logo logo-deepseek"></span>DeepSeek<span class="hint">PTY picker</span></button>
-            <button class="resume-option" data-kind="kimi-resume"><span class="ai-logo logo-kimi"></span>Kimi<span class="hint">PTY picker</span></button>
-          </div>
-        </div>
+        <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v10h13V10"/><path d="M9.5 20v-6h5v6"/></svg><span class="btn-label">主页</span></button>
+        <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5m0 14h16"/><path d="m7 15 4-4 3 2 5-6"/></svg><span class="btn-label">投研</span></button>
         <div class="options-wrapper">
           <button class="btn-options" id="btn-options" title="选项"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.66-7.66l-4.24 4.24m-7.07 7.07L4.34 19.66m13.32 0l-4.24-4.24m-7.07-7.07L4.34 4.34"/></svg></button>
           <div class="options-menu" id="options-menu" style="display:none">

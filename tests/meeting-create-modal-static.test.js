@@ -79,7 +79,7 @@ test('group chat modal exposes task templates before member tuning', () => {
   }
   assert.match(MODAL_JS, /data-mcm-template/);
   assert.match(MODAL_JS, /function\s+_applyTemplate/);
-  assert.match(MODAL_JS, /_applyTemplate\(['"]general['"],\s*\{\s*clearTitle:\s*true\s*\}\)/);
+  assert.match(MODAL_JS, /_applyTemplate\(requestedTemplate,\s*\{\s*clearTitle:\s*true\s*\}\)/);
   assert.match(MODAL_CSS, /\.mcm-template-grid\s*\{/);
   assert.match(MODAL_CSS, /\.mcm-template\.selected\s*\{/);
 });
@@ -99,7 +99,7 @@ test('modal js is IIFE-wrapped', () => {
     'ipcRenderer must be inside IIFE to avoid collision with renderer.js');
 });
 
-test('index.html includes meeting-create-modal css and js', () => {
+test('index.html includes meeting-create-modal css and js behind the unified launcher', () => {
   assert.match(HTML, /meeting-create-modal\.css/);
   assert.match(HTML, /<script\s+src="meeting-create-modal\.js"/);
   assert.ok(
@@ -107,8 +107,10 @@ test('index.html includes meeting-create-modal css and js', () => {
       < HTML.indexOf('<script src="renderer.js"></script>'),
     'group-chat launcher must bind before the large renderer bootstrap can fail',
   );
-  assert.match(MODAL_JS, /getElementById\(['"]btn-group-chat['"]\)/);
-  assert.match(MODAL_JS, /groupChatButton\.addEventListener\(['"]click['"]/);
+  assert.ok(!/getElementById\(['"]btn-group-chat['"]\)/.test(MODAL_JS),
+    'group modal must be opened by the unified launch center instead of a second header button');
+  assert.match(HTML, /data-launch-intent="group"/);
+  assert.match(RENDERER_JS, /createLaunchCenterController/);
 });
 
 test('new session menu has one Codex CLI option using settings default profile', () => {
@@ -171,8 +173,9 @@ test('modal supports flexible group chat creation', () => {
   assert.match(MODAL_JS, /groupChat:\s*_isGroupChat/);
   assert.match(MODAL_JS, /groupMode:\s*_isGroupChat\s*\?\s*['"]deliberation['"]/);
   assert.match(MODAL_JS, /participants:\s*_isGroupChat\s*\?\s*slots\.map/);
-  assert.match(HTML, /id="btn-group-chat"/);
-  assert.match(RENDERER_JS, /openMeetingCreateModal\(['"]group['"]\)/);
+  assert.ok(!/id="btn-group-chat"/.test(HTML), 'legacy standalone group-chat header button must stay removed');
+  assert.match(HTML, /id="btn-new"[\s\S]*?id="btn-home"[\s\S]*?id="btn-research"/);
+  assert.match(RENDERER_JS, /openMeetingCreateModal\(['"]group['"],\s*options\)/);
 });
 
 console.log('All passed.');

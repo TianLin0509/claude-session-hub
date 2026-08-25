@@ -204,6 +204,16 @@ async function main() {
 
     const normalScratchPath = result.normalSession.session.cwd;
     await client.eval(`window.WorkspaceController.maybePromptSessionArchive(${JSON.stringify(normalSessionRecord.id)})`);
+    result.archiveHint = await waitFor('first-turn archive chip hint', () => client.eval(`(() => {
+      const chip = document.querySelector('.terminal-metrics-row .metric-cwd');
+      const modal = document.querySelector('#workspace-archive-modal');
+      return chip && chip.classList.contains('has-archive-hint') ? {
+        title: chip.title,
+        modalHidden: !modal || modal.style.display === 'none',
+      } : null;
+    })()`), 15000);
+    assert.equal(result.archiveHint.modalHidden, true, 'archive suggestion must not interrupt with an automatic modal');
+    await clickPoint(client, await pointFor(client, '.terminal-metrics-row .metric-cwd.has-archive-hint'));
     result.archiveModal = await waitFor('first-turn archive modal', () => client.eval(`(() => {
       const modal = document.querySelector('#workspace-archive-modal');
       if (!modal || modal.style.display === 'none') return null;
@@ -232,7 +242,10 @@ async function main() {
     assert.equal(fs.existsSync(normalScratchPath), false, 'archived normal scratch directory should be removed');
     assert.match(result.normalArchive.buffer, /FAKE_CLI_READY/, 'archived session should reconnect its CLI');
 
-    await clickPoint(client, await pointFor(client, '#btn-group-chat'));
+    await clickPoint(client, await pointFor(client, '#btn-new'));
+    await waitFor('launch center group intent', () => client.eval(`document.getElementById('new-session-menu')?.style.display === 'flex'`));
+    await clickPoint(client, await pointFor(client, '[data-launch-intent="group"]'));
+    await clickPoint(client, await pointFor(client, '#launch-center-configure-group'));
     result.groupModal = await waitFor('group workspace choices', () => client.eval(`(() => {
       const modal = document.querySelector('#meeting-create-modal');
       if (!modal || modal.style.display === 'none') return null;
@@ -271,6 +284,16 @@ async function main() {
 
     const groupScratchPath = result.meeting.meeting.workspace;
     await client.eval(`window.WorkspaceController.maybePromptMeetingArchive(${JSON.stringify(result.meeting.meeting.id)})`);
+    result.groupArchiveHint = await waitFor('group first-turn archive chip hint', () => client.eval(`(() => {
+      const chip = document.querySelector('#mr-workspace-chip');
+      const modal = document.querySelector('#workspace-archive-modal');
+      return chip && chip.classList.contains('has-archive-hint') ? {
+        title: chip.title,
+        modalHidden: !modal || modal.style.display === 'none',
+      } : null;
+    })()`), 15000);
+    assert.equal(result.groupArchiveHint.modalHidden, true, 'group archive suggestion must remain non-blocking');
+    await clickPoint(client, await pointFor(client, '#mr-workspace-chip.has-archive-hint'));
     await waitFor('group first-turn archive modal', () => client.eval(`(() => {
       const modal = document.querySelector('#workspace-archive-modal');
       return modal && modal.style.display !== 'none' ? true : null;

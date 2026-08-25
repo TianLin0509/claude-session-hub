@@ -469,16 +469,19 @@ function _clearError() {
   if (bar) bar.remove();
 }
 
-function openMeetingCreateModal(mode = 'general') {
+function openMeetingCreateModal(mode = 'general', options = {}) {
   if (mode === 'group') {
     _isGroupChat = true;
   } else {
     _isGroupChat = true;
   }
+  const requestedTemplate = GROUP_TEMPLATES.some(template => template.id === options.templateId)
+    ? options.templateId
+    : 'general';
   _currentMode = 'general';
   _ensureModal();
   _clearError();
-  _applyTemplate('general', { clearTitle: true });
+  _applyTemplate(requestedTemplate, { clearTitle: true });
   _meetingWorkspaceMode = 'scratch';
   _meetingWorkspace = null;
   _paintWorkspace();
@@ -520,12 +523,4 @@ function closeMeetingCreateModal() {
 
 window.openMeetingCreateModal = openMeetingCreateModal;
 window.closeMeetingCreateModal = closeMeetingCreateModal;
-
-// 这个入口不能依赖 4k+ 行 renderer.js 跑到尾部才接线。只要 renderer 启动阶段有
-// 任意一个无关模块异常，按钮虽然已经可见，却会永远没有 click listener。群聊创建
-// 是独立能力，由自己的模块在加载时直接接管，且脚本在 renderer.js 之前加载。
-const groupChatButton = document.getElementById('btn-group-chat');
-if (groupChatButton) {
-  groupChatButton.addEventListener('click', () => openMeetingCreateModal('group'));
-}
 })();

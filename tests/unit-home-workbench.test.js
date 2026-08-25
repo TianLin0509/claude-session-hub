@@ -62,20 +62,26 @@ test('HUB workbench groups top-level sessions and meetings into actionable lanes
   assert.strictEqual(snapshot.providerActive.kimi, 1);
 });
 
-test('home navigation replaces the old top research shortcut and keeps research inside home', () => {
+test('shell keeps one launcher plus Home and Research navigation while retaining the home research card', () => {
   const root = path.resolve(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');
   const renderer = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
   const workbench = fs.readFileSync(path.join(root, 'renderer', 'home-workbench.js'), 'utf8');
   const css = fs.readFileSync(path.join(root, 'renderer', 'styles', 'home-workbench.css'), 'utf8');
 
+  const launchIndex = html.indexOf('id="btn-new"');
   const homeIndex = html.indexOf('id="btn-home"');
+  const topResearchIndex = html.indexOf('id="btn-research"');
   const workbenchIndex = html.indexOf('id="empty-state"');
   const researchIndex = html.indexOf('id="btn-chuxin"');
+  assert.ok(launchIndex >= 0, 'single top launcher should exist');
   assert.ok(homeIndex >= 0, 'top home button should exist');
-  assert.ok(workbenchIndex > homeIndex, 'workbench should live in the main panel');
+  assert.ok(launchIndex < homeIndex && homeIndex < topResearchIndex,
+    'top navigation order should be launcher, Home, Research');
+  assert.ok(workbenchIndex > topResearchIndex, 'workbench should live in the main panel');
   assert.ok(researchIndex > workbenchIndex, 'research entry should live inside the home workbench');
   assert.match(html, /id="btn-home"[^>]*>[\s\S]*?<span class="btn-label">主页<\/span>/);
+  assert.match(html, /id="btn-research"[^>]*>[\s\S]*?<span class="btn-label">投研<\/span>/);
   assert.match(html, /id="btn-chuxin"[\s\S]*?<strong>初心投研<\/strong>/);
   assert.match(html, /id="home-notification-slot"/);
   assert.match(renderer, /btnHome\.addEventListener\('click', \(\) => escapeToHome\(\)\)/);
