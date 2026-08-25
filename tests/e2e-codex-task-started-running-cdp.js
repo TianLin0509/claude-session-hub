@@ -92,15 +92,11 @@ async function capture(client, filePath) {
 
       escapeToHome();
       await new Promise(resolve => setTimeout(resolve, 180));
-      const flow = document.getElementById('home-flow-columns');
-      const waitingBox = document.querySelector('.home-flow-column-waiting').getBoundingClientRect();
-      const runningCard = document.querySelector('#home-lane-running .home-flow-item');
       const home = {
-        runningCount: document.getElementById('home-running-count').textContent,
-        runningText: document.getElementById('home-lane-running').textContent.replace(/\\s+/g, ' ').trim(),
-        waitingCompact: flow.classList.contains('waiting-empty') && waitingBox.height < 70,
-        columns: getComputedStyle(flow).gridTemplateColumns,
-        hasRunningCard: !!runningCard,
+        activeCount: document.getElementById('home-metric-active').textContent,
+        pipelineAbsent: !document.getElementById('home-flow-columns') && !document.body.textContent.includes('Session 流水线'),
+        sidebarStillRunning: !!Array.from(document.querySelectorAll('#session-list .session-item'))
+          .find(row => row.textContent.includes('Goal 自动续跑') && row.querySelector('.sl-ring-dot.run')),
       };
 
       return { sidebar, home };
@@ -112,11 +108,9 @@ async function capture(client, filePath) {
       hasRunDot: true,
       section: '运行中1',
     });
-    assert.equal(result.home.runningCount, '1');
-    assert.match(result.home.runningText, /Goal 自动续跑/);
-    assert.equal(result.home.waitingCompact, true);
-    assert.equal(result.home.hasRunningCard, true);
-    assert.match(result.home.columns, /px .*px/);
+    assert.equal(result.home.activeCount, '1');
+    assert.equal(result.home.pipelineAbsent, true);
+    assert.equal(result.home.sidebarStillRunning, true);
     await capture(client, SCREENSHOT);
 
     result.abort = await client.eval(`(async () => {
@@ -160,27 +154,16 @@ async function capture(client, filePath) {
       escapeToHome();
       await new Promise(resolve => setTimeout(resolve, 180));
 
-      const flow = document.getElementById('home-flow-columns');
-      const waiting = document.querySelector('.home-flow-column-waiting').getBoundingClientRect();
-      const running = document.querySelector('.home-flow-column-running').getBoundingClientRect();
-      const delivered = document.querySelector('.home-flow-column-delivered').getBoundingClientRect();
-      const deliveredList = document.getElementById('home-lane-delivered');
       return {
-        classes: flow.className,
-        waitingHeight: waiting.height,
-        runningHeight: running.height,
-        deliveredWidthRatio: delivered.width / flow.getBoundingClientRect().width,
-        deliveredCards: deliveredList.querySelectorAll('.home-flow-item').length,
-        deliveredColumns: getComputedStyle(deliveredList).gridTemplateColumns,
+        activeCount: document.getElementById('home-metric-active').textContent,
+        pipelineAbsent: !document.getElementById('home-flow-columns'),
+        completedSidebarRows: Array.from(document.querySelectorAll('#session-list .session-item'))
+          .filter(row => row.textContent.includes('最近完成任务')).length,
       };
     })()`);
-    assert.match(result.compact.classes, /waiting-empty/);
-    assert.match(result.compact.classes, /running-empty/);
-    assert.ok(result.compact.waitingHeight < 70);
-    assert.ok(result.compact.runningHeight < 70);
-    assert.ok(result.compact.deliveredWidthRatio > 0.98);
-    assert.equal(result.compact.deliveredCards, 4);
-    assert.match(result.compact.deliveredColumns, /px .*px/);
+    assert.equal(result.compact.activeCount, '4');
+    assert.equal(result.compact.pipelineAbsent, true);
+    assert.equal(result.compact.completedSidebarRows, 4);
     await capture(client, COMPACT_SCREENSHOT);
 
     console.log(JSON.stringify({

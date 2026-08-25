@@ -21,6 +21,11 @@ const { SessionManager, clearSessionManagerConfigCache } = require('./core/sessi
 const { WorkspaceService, normalizeKey: normalizeWorkspaceKey } = require('./core/workspace-service.js');
 const stateStore = require('./core/state-store.js');
 const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
+const {
+  appendManagedLaunchAudit,
+  inspectManagedLaunchAudit,
+  managedLaunchAuditPath,
+} = require('./core/managed-launch-audit.js');
 const { spawn } = require('child_process');
 const {
   HUB_APP_USER_MODEL_ID,
@@ -74,6 +79,7 @@ const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 const { registerPromptInspectIpc } = require('./main/ipc/prompt-inspect-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
+const { registerWorkbenchOperationsIpc } = require('./main/ipc/workbench-operations-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
@@ -87,6 +93,7 @@ const {
 } = require('./main/session-auto-suspend.js');
 const committeeHistory = require('./core/committee-history.js');
 const { createAutoTitleManager } = require('./main/auto-title-manager.js');
+const { createWorkbenchOperationsService } = require('./core/workbench-operations.js');
 const {
   parseCodexUsage,
   parseGeminiUsage,
@@ -370,6 +377,9 @@ let windowsShellWatchdog = null;
 
 let mainWindow;
 const sessionManager = new SessionManager();
+sessionManager.on('managed-launch', (record) => {
+  appendManagedLaunchAudit(record, { logger: console });
+});
 const meetingManager = new MeetingRoomManager();
 const workspaceService = new WorkspaceService();
 let networkEgressProbe;
@@ -554,6 +564,43 @@ transcriptTap.on('background-work-changed', (ev) => {
     });
   } catch (error) {
     console.warn('[kimi background] background-work-event broadcast failed:', error && error.message);
+  }
+});
+
+// `contextMax` is the user's launch request. Codex can clamp it to the current
+// model catalog and then applies its effective-window percentage. The actual
+// runtime value arrives in token_count.model_context_window; persist it under a
+// separate key so a later resume never turns the clamp into the next request.
+transcriptTap.on('context-window-observed', (ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  const contextEffectiveMax = Number(ev.contextEffectiveMax);
+  if (!Number.isInteger(contextEffectiveMax) || contextEffectiveMax <= 0) return;
+  const observedAtValue = Number(ev.observedAt);
+  const contextEffectiveObservedAt = Number.isFinite(observedAtValue) && observedAtValue > 0
+    ? observedAtValue
+    : Date.now();
+  try {
+    const current = sessionManager.getSession(ev.hubSessionId);
+    if (!current) return;
+    if (current.contextEffectiveMax === contextEffectiveMax
+        && Number(current.contextEffectiveObservedAt) >= contextEffectiveObservedAt) return;
+    const updated = sessionManager.updateSessionMeta(ev.hubSessionId, {
+      contextEffectiveMax,
+      contextEffectiveObservedAt,
+    });
+    if (!updated) return;
+    void sessionStore.markDirtyImmediate(ev.hubSessionId, updated).catch((error) => {
+      console.warn('[codex-context] per-session persist failed:', error && error.message);
+    });
+    const persisted = lastPersistedSessions.find(item => item && item.hubId === ev.hubSessionId);
+    if (persisted) {
+      persisted.contextEffectiveMax = contextEffectiveMax;
+      persisted.contextEffectiveObservedAt = contextEffectiveObservedAt;
+      persisted.updatedAt = Date.now();
+    }
+    sendToRenderer('session-updated', { session: updated });
+  } catch (error) {
+    console.warn('[codex-context] observation handling failed:', error && error.message);
   }
 });
 
@@ -1176,6 +1223,22 @@ registerSessionIpc(ipcMain, {
   workspaceService,
 });
 
+ipcMain.handle('debug:get-managed-launch-audit', (_event, request = {}) => {
+  const sessionId = request && typeof request.sessionId === 'string' ? request.sessionId : null;
+  const limit = request && Number.isInteger(Number(request.limit)) ? Number(request.limit) : 100;
+  const persisted = inspectManagedLaunchAudit({ sessionId, limit });
+  return {
+    auditPath: managedLaunchAuditPath(),
+    auditHealth: {
+      exists: persisted.exists,
+      malformedLines: persisted.malformedLines,
+      readError: persisted.readError,
+    },
+    live: sessionManager.getManagedLaunchAudit(sessionId),
+    persisted: persisted.records,
+  };
+});
+
 registerWorkspaceIpc(ipcMain, {
   allowFallbackResume: process.env.HUB_WORKSPACE_E2E_ALLOW_FALLBACK_RESUME === '1',
   dialog,
@@ -1327,6 +1390,15 @@ registerAppUtilityIpc(ipcMain, {
   acknowledgeNetworkEgressChange: () => networkEgressMonitor.acknowledgeForeignChange(),
   imageDir,
   path,
+});
+
+const workbenchOperationsService = createWorkbenchOperationsService({
+  dataDir: getHubDataDir(),
+  getConfig: getHubConfig,
+});
+registerWorkbenchOperationsIpc(ipcMain, {
+  service: workbenchOperationsService,
+  logger: console,
 });
 
 registerPathIpc(ipcMain);

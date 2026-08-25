@@ -97,6 +97,8 @@ const sessionStore = require('../core/session-store');
       mcpProfile: 'none',
       codexSpeedTier: 'inherit',
       contextMax: 1_000_000,
+      contextEffectiveMax: 828_400,
+      contextEffectiveObservedAt: 5_123,
       updatedAt: 5000,
     });
     const loaded = sessionStore.loadSessionFile('h5');
@@ -108,6 +110,8 @@ const sessionStore = require('../core/session-store');
     assert.strictEqual(loaded.mcpProfile, 'none');
     assert.strictEqual(loaded.codexSpeedTier, 'inherit', 'explicit inherit must survive resume persistence');
     assert.strictEqual(loaded.contextMax, 1_000_000);
+    assert.strictEqual(loaded.contextEffectiveMax, 828_400);
+    assert.strictEqual(loaded.contextEffectiveObservedAt, 5_123);
     console.log('PASS S8 codex card metadata');
   }
 

@@ -17,9 +17,14 @@ const {
   maskSecret,
   normalizeNotificationConfig,
 } = require('../../core/completion-notifier.js');
+const {
+  normalizeOperationsConfig,
+  serializeOperationsConfig,
+} = require('../../core/operations-config.js');
 
 function toMaskedConfig(config) {
   const notifications = normalizeNotificationConfig(config.notifications || {});
+  const operations = normalizeOperationsConfig(config.operations || {});
   return {
     proxy: config.proxy,
     claudeBackend: config.claudeBackend,
@@ -41,11 +46,18 @@ function toMaskedConfig(config) {
     notificationNotifyGroupChats: notifications.notifyGroupChats,
     serverchanSendKey: maskSecret(notifications.serverchanSendKey),
     serverchanSendKeySet: isUsableSendKey(notifications.serverchanSendKey),
+    aliyunMonitorEnabled: operations.aliyunMonitor.enabled,
+    aliyunMonitorLabel: operations.aliyunMonitor.label,
+    aliyunHealthUrl: operations.aliyunMonitor.healthUrl,
+    aliyunMetricsUrl: operations.aliyunMonitor.metricsUrl,
+    aliyunBearerToken: maskSecret(operations.aliyunMonitor.bearerToken),
+    aliyunBearerTokenSet: !!operations.aliyunMonitor.bearerToken,
   };
 }
 
 function toEditableConfig(config) {
   const notifications = normalizeNotificationConfig(config.notifications || {});
+  const operations = normalizeOperationsConfig(config.operations || {});
   return {
     proxy: config.proxy,
     claudeBackend: config.claudeBackend,
@@ -67,6 +79,12 @@ function toEditableConfig(config) {
     notificationIncludePreview: notifications.includePreview,
     notificationNotifyGroupChats: notifications.notifyGroupChats,
     serverchanSendKey: notifications.serverchanSendKey,
+    aliyunMonitorEnabled: operations.aliyunMonitor.enabled,
+    aliyunMonitorLabel: operations.aliyunMonitor.label,
+    aliyunHealthUrl: operations.aliyunMonitor.healthUrl,
+    aliyunMetricsUrl: operations.aliyunMonitor.metricsUrl,
+    aliyunBearerToken: operations.aliyunMonitor.bearerToken,
+    operationsRestoreRoot: operations.restoreRoot,
   };
 }
 
@@ -75,6 +93,15 @@ const NOTIFICATION_UPDATE_FIELDS = [
   'notificationIncludePreview',
   'notificationNotifyGroupChats',
   'serverchanSendKey',
+];
+
+const OPERATIONS_UPDATE_FIELDS = [
+  'aliyunMonitorEnabled',
+  'aliyunMonitorLabel',
+  'aliyunHealthUrl',
+  'aliyunMetricsUrl',
+  'aliyunBearerToken',
+  'operationsRestoreRoot',
 ];
 
 function buildNotificationJsonUpdate(existingNotifications, newConfig, hasOwn) {
@@ -129,6 +156,7 @@ function buildConfigJsonUpdate(existing, newConfig) {
   //   全量提交所有 key 都在 → 行为与旧版完全一致(零回归)；部分提交其余字段原样保留。
   const H = (k) => Object.prototype.hasOwnProperty.call(newConfig, k);
   const hasNotificationUpdate = NOTIFICATION_UPDATE_FIELDS.some(H);
+  const hasOperationsUpdate = OPERATIONS_UPDATE_FIELDS.some(H);
   const merged = {
     ...existing,
     proxy: { http: H('proxy') ? (newConfig.proxy || DEFAULTS.proxy) : (existing.proxy?.http || DEFAULTS.proxy) },
@@ -189,6 +217,18 @@ function buildConfigJsonUpdate(existing, newConfig) {
     },
     ...(hasNotificationUpdate ? {
       notifications: buildNotificationJsonUpdate(existing.notifications, newConfig, H),
+    } : {}),
+    ...(hasOperationsUpdate ? {
+      operations: serializeOperationsConfig(existing.operations, {
+        aliyunMonitor: {
+          ...(H('aliyunMonitorEnabled') ? { enabled: newConfig.aliyunMonitorEnabled === true } : {}),
+          ...(H('aliyunMonitorLabel') ? { label: newConfig.aliyunMonitorLabel } : {}),
+          ...(H('aliyunHealthUrl') ? { healthUrl: newConfig.aliyunHealthUrl } : {}),
+          ...(H('aliyunMetricsUrl') ? { metricsUrl: newConfig.aliyunMetricsUrl } : {}),
+          ...(H('aliyunBearerToken') ? { bearerToken: newConfig.aliyunBearerToken } : {}),
+        },
+        ...(H('operationsRestoreRoot') ? { restoreRoot: newConfig.operationsRestoreRoot } : {}),
+      }),
     } : {}),
   };
 

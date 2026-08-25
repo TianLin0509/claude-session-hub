@@ -1143,6 +1143,18 @@ class CodexTap extends EventEmitter {
       //   也是最贴近"本轮回复"的语义）。多 task 时各自的 token 看不到，但首屏体验已经足够。
       if (eventType === 'token_count' && obj.payload.info) {
         const info = obj.payload.info;
+        const contextEffectiveMax = Number(info.model_context_window);
+        if (Number.isInteger(contextEffectiveMax) && contextEffectiveMax > 0
+            && entry.lastContextEffectiveMax !== contextEffectiveMax) {
+          entry.lastContextEffectiveMax = contextEffectiveMax;
+          this.emit('context-window-observed', {
+            hubSessionId,
+            transcriptPath: entry.rolloutPath,
+            contextEffectiveMax,
+            observedAt: timestampToMs(obj.timestamp) || Date.now(),
+            signalSource: 'token_count.model_context_window',
+          });
+        }
         const lastU = info.last_token_usage;
         if (lastU && typeof lastU === 'object') {
           entry.lastUsage = {
@@ -1251,7 +1263,7 @@ class CodexTap extends EventEmitter {
     const tail = new JsonlTail(rolloutPath, onLine, { maxInitialBytes: 8 * 1024 * 1024 });
     this._bound.set(hubSessionId, {
       rolloutPath, tail, lastText: null,
-      lastModel: null, lastUsage: null,    // T13
+      lastModel: null, lastUsage: null, lastContextEffectiveMax: null,    // T13 + runtime context observation
       _pendingEmitTimer: null, _pendingText: null, _pendingDurationMs: null,
       _pendingCompletedAt: null, _pendingTurnId: null, _currentTurnId: null,
       _pendingSignalSource: null,
@@ -1692,9 +1704,12 @@ class TranscriptTap extends EventEmitter {
     this._kimi = new KimiTap({ parserService: opts.parserService });
     for (const b of [this._claude, this._codex, this._gemini, this._kimi]) {
       b.on('turn-complete', (ev) => this.emit('turn-complete', ev));
+      b.on('turn-started', (ev) => this.emit('turn-started', ev));
+      b.on('turn-aborted', (ev) => this.emit('turn-aborted', ev));
       b.on('session-bound', (ev) => this.emit('session-bound', ev));
       b.on('prompt-submitted', (ev) => this.emit('prompt-submitted', ev));
       b.on('background-work-changed', (ev) => this.emit('background-work-changed', ev));
+      b.on('context-window-observed', (ev) => this.emit('context-window-observed', ev));
     }
   }
 

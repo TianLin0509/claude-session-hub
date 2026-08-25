@@ -161,7 +161,7 @@
                 <h1 class="home-workbench-title" id="home-workbench-title">HUB 工作台</h1>
                 <span class="home-title-pill">主页</span>
               </div>
-              <p class="home-workbench-subtitle">先看异常、进度与产物，再决定进入哪个 Session；常用项目和四家模型用量也集中在这里。</p>
+              <p class="home-workbench-subtitle">先看需要审阅的代码、最近文件和机器状态，再进入具体 Session；重复的会话流水线已交回左侧栏。</p>
             </div>
             <div class="home-head-actions">
               <div class="home-health" role="status" aria-live="polite">
@@ -199,25 +199,18 @@
 
             <div class="home-pulse-grid">
               <div class="home-pulse-main">
-                <section class="home-section-card home-flow-board" aria-labelledby="home-flow-title">
+                <section class="home-section-card home-review-inbox" aria-labelledby="home-review-title">
                   <div class="home-section-head">
-                    <div class="home-section-title" id="home-flow-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h4l2-7 4 14 2-7h4"/></svg>Session 流水线</div>
-                    <span class="home-section-meta">运行超过 10 分钟会显示累计耗时</span>
+                    <div class="home-section-title" id="home-review-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="m8 12 2.5 2.5L16 9M8 7h8M8 17h5"/></svg>改动审阅收件箱</div>
+                    <button class="home-section-action" id="home-open-review" type="button" data-home-action="open-review">打开审阅驾驶舱</button>
                   </div>
-                  <div class="home-flow-columns" id="home-flow-columns">
-                    <section class="home-flow-column home-flow-column-waiting" aria-labelledby="home-waiting-title">
-                      <div class="home-flow-column-head"><div class="home-lane-title" id="home-waiting-title"><i class="home-lane-dot waiting"></i>等你输入</div><span class="home-lane-count" id="home-waiting-count">0</span></div>
-                      <div class="home-lane-list" id="home-lane-waiting"></div>
-                    </section>
-                    <section class="home-flow-column home-flow-column-running" aria-labelledby="home-running-title">
-                      <div class="home-flow-column-head"><div class="home-lane-title" id="home-running-title"><i class="home-lane-dot running"></i>运行中</div><span class="home-lane-count" id="home-running-count">0</span></div>
-                      <div class="home-lane-list" id="home-lane-running"></div>
-                    </section>
-                    <section class="home-flow-column home-flow-column-delivered" aria-labelledby="home-delivered-title">
-                      <div class="home-flow-column-head"><div class="home-lane-title" id="home-delivered-title"><i class="home-lane-dot delivered"></i>最近完成</div><span class="home-lane-count" id="home-delivered-count">0</span></div>
-                      <div class="home-lane-list" id="home-lane-delivered"></div>
-                    </section>
+                  <div class="home-review-summary" id="home-review-summary" aria-live="polite">
+                    <div><strong id="home-review-repos">0</strong><span>变更工作区</span></div>
+                    <div class="danger"><strong id="home-review-high">0</strong><span>高风险</span></div>
+                    <div class="warn"><strong id="home-review-medium">0</strong><span>需确认</span></div>
+                    <div><strong id="home-review-files">0</strong><span>最近文件</span></div>
                   </div>
+                  <div class="home-review-list" id="home-review-list"></div>
                 </section>
 
                 <div class="home-operations-grid">
@@ -240,8 +233,8 @@
 
                 <section class="home-section-card" aria-labelledby="home-artifact-title">
                   <div class="home-section-head">
-                    <div class="home-section-title" id="home-artifact-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5M8 13h8m-8 4h6"/></svg>最近产物</div>
-                    <span class="home-section-meta"><span id="home-artifact-count">0</span> 个可直接打开</span>
+                    <div class="home-section-title" id="home-artifact-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5M8 13h8m-8 4h6"/></svg>最近文件</div>
+                    <span class="home-section-meta"><span id="home-artifact-count">0</span> 个 Git 变更或 Agent 产物</span>
                   </div>
                   <div class="home-artifact-list" id="home-artifact-list"></div>
                 </section>
@@ -255,6 +248,26 @@
                   </span>
                   <svg class="home-research-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
                 </button>
+
+                <section class="home-section-card home-system-card" aria-labelledby="home-system-title">
+                  <div class="home-section-head"><div class="home-section-title" id="home-system-title">本机与服务器</div><button class="home-section-action subtle" type="button" data-home-action="open-server-settings">配置</button></div>
+                  <div class="home-system-grid" aria-label="本机资源使用情况">
+                    <div class="home-system-cell"><span>CPU</span><strong id="home-system-cpu">--</strong><i><b id="home-system-cpu-bar"></b></i></div>
+                    <div class="home-system-cell"><span>GPU</span><strong id="home-system-gpu">--</strong><i><b id="home-system-gpu-bar"></b></i></div>
+                    <div class="home-system-cell"><span>内存</span><strong id="home-system-memory">--</strong><i><b id="home-system-memory-bar"></b></i></div>
+                    <div class="home-system-cell"><span>磁盘</span><strong id="home-system-disk">--</strong><i><b id="home-system-disk-bar"></b></i></div>
+                  </div>
+                  <div class="home-server-status" id="home-server-status">
+                    <div class="home-server-head"><span><i class="home-status-dot dim" id="home-server-dot"></i><strong id="home-server-label">阿里云服务器</strong></span><em id="home-server-latency">未配置</em></div>
+                    <div class="home-server-storage"><span><b id="home-server-storage-label">存储信息等待配置</b><em id="home-server-storage-value">--</em></span><i><b id="home-server-storage-bar"></b></i></div>
+                    <div class="home-server-metrics" id="home-server-metrics">远端指标等待配置</div>
+                  </div>
+                  <div class="home-link-health">
+                    <span>通知 <b id="home-sync-notification">同步中</b></span>
+                    <span>出口 <b id="home-sync-proxy">同步中</b></span>
+                    <span>PTY <b id="home-sync-terminals">同步中</b></span>
+                  </div>
+                </section>
 
                 <section class="home-section-card" aria-labelledby="home-workspace-title">
                   <div class="home-section-head"><div class="home-section-title" id="home-workspace-title">常用项目启动区</div><span class="home-section-meta">默认 Claude · 可再切模型</span></div>
@@ -277,19 +290,39 @@
                   <div class="home-night-list" id="home-night-list"></div>
                 </section>
 
-                <section class="home-section-card" aria-labelledby="home-sync-title">
-                  <div class="home-section-head"><div class="home-section-title" id="home-sync-title">同步健康</div><span class="home-section-meta">本机实时</span></div>
-                  <div class="home-sync-grid">
-                    <div class="home-sync-cell"><strong>微信通知</strong><span class="home-sync-value" id="home-sync-notification">同步中</span></div>
-                    <div class="home-sync-cell"><strong>代理出口</strong><span class="home-sync-value" id="home-sync-proxy">同步中</span></div>
-                    <div class="home-sync-cell"><strong>PTY 保留</strong><span class="home-sync-value" id="home-sync-terminals">同步中</span></div>
-                    <div class="home-sync-cell"><strong>系统负载</strong><span class="home-sync-value" id="home-sync-resources">同步中</span></div>
-                  </div>
-                </section>
               </aside>
             </div>
           </div>
         </main>
+      </div>
+      <div class="ops-modal hidden" id="operations-review-modal" role="dialog" aria-modal="true" aria-labelledby="ops-modal-title">
+        <section class="ops-shell">
+          <header class="ops-head">
+            <div><span class="ops-eyebrow">REVIEW + PROVENANCE</span><h2 id="ops-modal-title">改动审阅驾驶舱</h2><p id="ops-modal-subtitle">自动发现最近工作区；审阅结论与 Git 改动分离保存。</p></div>
+            <div class="ops-head-actions"><button type="button" class="ops-button" id="ops-create-checkpoint">创建安全 Checkpoint</button><button type="button" class="ops-icon-button" id="ops-close" aria-label="关闭审阅驾驶舱">×</button></div>
+          </header>
+          <nav class="ops-tabs" aria-label="审阅与溯源视图">
+            <button type="button" class="active" data-ops-view="review" aria-selected="true">风险审阅</button>
+            <button type="button" data-ops-view="timeline" aria-selected="false">因果时间线</button>
+            <button type="button" data-ops-view="checkpoints" aria-selected="false">Checkpoint 回放</button>
+          </nav>
+          <div class="ops-body">
+            <aside class="ops-navigation">
+              <div class="ops-pane-title"><span>工作区</span><b id="ops-repo-count">0</b></div>
+              <div class="ops-repo-list" id="ops-repo-list"></div>
+              <div class="ops-pane-title files"><span>风险文件</span><b id="ops-file-count">0</b></div>
+              <div class="ops-file-list" id="ops-file-list"></div>
+            </aside>
+            <main class="ops-center">
+              <header class="ops-center-head"><div><h3 id="ops-center-title">选择一个变更工作区</h3><p id="ops-center-meta">不会自动 stage 或丢弃任何代码</p></div><span class="ops-trust missing" id="ops-center-trust">等待选择</span></header>
+              <div class="ops-center-content" id="ops-center-content"></div>
+            </main>
+            <aside class="ops-proof" id="ops-proof-panel">
+              <div class="ops-empty"><strong>风险、证据与“为什么这行”</strong><span>选择文件和代码行后，这里显示可验证事实、推断与缺失证据。</span></div>
+            </aside>
+          </div>
+          <footer class="ops-foot"><span>接受 / 拒绝仅记录审阅结论，不改 Git index</span><span id="ops-live" role="status" aria-live="polite">本地证据账本</span></footer>
+        </section>
       </div>
       <!-- Spec 1 v0.9.0: 消息层(卡片视图) -->
       <div id="msg-overlay" class="msg-overlay"></div>
@@ -504,6 +537,26 @@
           <div class="config-field">
             <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
             <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
+          </div>
+          <div class="config-section-label config-operations-title">
+            <span>工作台服务器状态</span>
+            <span>阿里云 / 自建健康端点</span>
+          </div>
+          <div class="config-operations-card">
+            <label class="config-toggle-row" for="cfg-aliyun-enabled">
+              <input type="checkbox" id="cfg-aliyun-enabled">
+              <span><strong>在工作台监控服务器</strong><small>主进程按需读取健康端点；未配置时不会自动探测任何公网地址。</small></span>
+            </label>
+            <div class="config-reading-grid">
+              <div class="config-field"><label for="cfg-aliyun-label">显示名称</label><input type="text" id="cfg-aliyun-label" placeholder="阿里云服务器" maxlength="48"></div>
+              <div class="config-field"><label for="cfg-aliyun-health-url">健康检查 URL</label><input type="url" id="cfg-aliyun-health-url" placeholder="https://server.example.com/health" spellcheck="false"></div>
+            </div>
+            <div class="config-reading-grid">
+              <div class="config-field"><label for="cfg-aliyun-metrics-url">指标 URL <span class="config-label-hint">（可选）</span></label><input type="url" id="cfg-aliyun-metrics-url" placeholder="https://server.example.com/metrics" spellcheck="false"></div>
+              <div class="config-field"><label for="cfg-aliyun-token">Bearer Token <span class="config-label-hint">（可选，本机保存）</span></label><input type="password" id="cfg-aliyun-token" autocomplete="off" spellcheck="false"></div>
+            </div>
+            <div class="config-field"><label for="cfg-operations-restore-root">Checkpoint 恢复目录 <span class="config-label-hint">（可选）</span></label><input type="text" id="cfg-operations-restore-root" placeholder="C:\Vibe\Worktrees" spellcheck="false"></div>
+            <p class="config-reading-note">指标 JSON 可返回 <code>storage.totalBytes</code> / <code>usedBytes</code> / <code>usagePct</code>；保存后回到工作台刷新即可验证。</p>
           </div>
           <div class="config-section-label config-notification-title">
             <span>回答完成通知</span>

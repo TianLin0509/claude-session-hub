@@ -12,6 +12,7 @@ const { WorkspaceService } = require('../core/workspace-service.js');
 
 const SESSION_MANAGER_SRC = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-manager.js'), 'utf8');
 const CONTROLLER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'workspace-controller.js'), 'utf8');
+const RENDERER_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
 const INDEX_SRC = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
 
 function test(name, fn) {
@@ -213,18 +214,35 @@ test('only flags the selected CLI understands are sent', () => {
   );
   assert.match(
     CONTROLLER_SRC,
-    /const DEFAULT_CODEX_SPEED_BY_KIND = \{ codex: 'standard', deepseek: 'inherit' \}/,
-    'Codex 默认必须显式 Standard，不能继承全局 Fast',
+    /const DEFAULT_CODEX_SPEED_BY_KIND = \{ codex: 'fast', deepseek: 'inherit' \}/,
+    'Codex 默认必须显式 Fast，且不能改变 DeepSeek 的继承语义',
   );
   assert.match(
     CONTROLLER_SRC,
     /if \(typeof tuning\.contextMax === 'number'\) opts\.contextMax = tuning\.contextMax/,
     'Sol 的 1M context 必须真正进入创建参数',
   );
+  assert.match(
+    CONTROLLER_SRC,
+    /estimatedMaxEffectiveContextWindow/,
+    '创建界面必须把模型目录的预计有效窗口说清楚，不能把 1M 请求冒充已生效',
+  );
   assert.match(CONTROLLER_SRC, /function resolveSessionTuning\(kind, modelId, selection = \{\}\)/,
     '新建 Session 与群聊成员必须共用一份动态调优定义');
   assert.match(CONTROLLER_SRC, /function buildSessionTuningOpts\(kind, modelId, selection = \{\}\)/,
     'provider-specific 参数过滤必须可供两个创建入口复用');
+});
+
+test('renderer persists and restores per-session speed and MCP tuning', () => {
+  assert.match(RENDERER_SRC, /if \(typeof session\.fastMode === 'boolean'\) local\.fastMode = session\.fastMode/);
+  assert.match(RENDERER_SRC, /if \(session\.codexSpeedTier\) local\.codexSpeedTier = session\.codexSpeedTier/);
+  assert.match(RENDERER_SRC, /fastMode: typeof s\.fastMode === 'boolean' \? s\.fastMode : null/);
+  assert.match(RENDERER_SRC, /codexSpeedTier: s\.codexSpeedTier \|\| null/);
+  assert.match(RENDERER_SRC, /fastMode: typeof meta\.fastMode === 'boolean' \? meta\.fastMode : null/);
+  assert.match(RENDERER_SRC, /codexSpeedTier: meta\.codexSpeedTier \|\| null/);
+  assert.match(RENDERER_SRC, /contextEffectiveMax: typeof s\.contextEffectiveMax === 'number'/);
+  assert.match(RENDERER_SRC, /contextEffectiveMax: typeof meta\.contextEffectiveMax === 'number'/);
+  assert.match(RENDERER_SRC, /Codex 运行时有效窗口/);
 });
 
 test('the modal opens as flex so the body can scroll and the footer stays reachable', () => {

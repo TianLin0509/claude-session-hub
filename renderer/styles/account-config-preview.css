@@ -433,6 +433,10 @@
 .config-reading-note { margin: 4px 0 18px; color: #8b949e; font-size: 11.5px; line-height: 1.55; }
 .config-notification-title { margin-top: 18px; }
 .config-notification-card { margin-bottom: 18px; padding: 12px; border: 1px solid #343b46; border-radius: 8px; background: #171c23; }
+.config-operations-title { margin-top: 18px; }
+.config-operations-card { margin-bottom: 18px; padding: 12px; border: 1px solid rgba(88,166,255,0.22); border-radius: 8px; background: linear-gradient(135deg, rgba(88,166,255,0.06), #171c23 55%); }
+.config-operations-card .config-reading-note { margin-bottom: 0; }
+.config-operations-card code { color: #9dccff; font: 10.5px/1.4 Consolas, monospace; }
 .config-toggle-row { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 13px; color: #e6e6e6; cursor: pointer; }
 .config-toggle-row input { width: auto; margin: 3px 0 0; accent-color: #3fb950; }
 .config-toggle-row span { display: grid; gap: 3px; }

@@ -44,7 +44,19 @@ async function availablePort(preferred) {
     const fakeCodex = path.join(fakeBin, 'fake-codex.js');
     fs.writeFileSync(fakeCodex, `'use strict';
 const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
 fs.appendFileSync(process.env.HUB_CREATE_OPTIONS_LOG, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2) }) + '\\n');
+const now = new Date();
+const sid = crypto.randomUUID();
+const sessionsDir = path.join(process.env.CODEX_HOME, 'sessions', String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0'));
+fs.mkdirSync(sessionsDir, { recursive: true });
+const rolloutPath = path.join(sessionsDir, 'rollout-' + now.toISOString().replace(/[:.]/g, '-') + '-' + sid + '.jsonl');
+const lines = [
+  { timestamp: now.toISOString(), type: 'session_meta', payload: { id: sid, timestamp: now.toISOString(), cwd: process.cwd() } },
+  { timestamp: now.toISOString(), type: 'event_msg', payload: { type: 'token_count', info: { model_context_window: 828400, last_token_usage: { input_tokens: 1, output_tokens: 1 } } } },
+];
+fs.writeFileSync(rolloutPath, lines.map(line => JSON.stringify(line)).join('\\n') + '\\n', 'utf8');
 process.stdout.write('FAKE_CODEX_READY\\r\\n');
 setInterval(() => {}, 1000);
 `, 'utf8');
@@ -77,6 +89,9 @@ setInterval(() => {}, 1000);
           default_reasoning_level: 'low',
           supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(effort => ({ effort })),
           additional_speed_tiers: ['fast'],
+          context_window: 272000,
+          max_context_window: 872000,
+          effective_context_window_percent: 95,
         },
         {
           slug: 'gpt-5.5',
@@ -197,7 +212,7 @@ setInterval(() => {}, 1000);
     // service_tier 速度通道 —— 这正是"创建 codex 会话时没有 fast 选项"的修复。
     assert.equal(tuning.codex.fastVisible, false, 'Claude 的 fastMode 复选框不适用于 Codex');
     assert.equal(tuning.codex.codexTierVisible, true, 'Codex 必须有自己的 fast（service_tier）选项');
-    assert.equal(tuning.codex.codexTierValue, 'standard', '默认必须显式关闭全局 Fast');
+    assert.equal(tuning.codex.codexTierValue, 'fast', 'Codex 默认必须显式使用 Fast');
     assert.deepEqual(tuning.codex.codexTierOptions, ['standard', 'inherit', 'fast', 'flex']);
     // 思考强度按模型来，档位来自 codex-cli 自己的 models_cache.json。
     assert.equal(tuning.codex.model, 'gpt-5.6-sol');
@@ -206,8 +221,10 @@ setInterval(() => {}, 1000);
     assert.equal(tuning.codex.effortValue, 'max', 'Codex 默认仍是 max，不静默降精度');
     assert.equal(tuning.codex.mcpValue, 'none', 'Codex 默认不能加载任何 MCP');
     assert.deepEqual(tuning.codex.mcpOptions, ['none', 'lean', 'browser', 'wireless', 'full']);
-    assert.match(tuning.codex.note, /Standard/);
+    assert.match(tuning.codex.note, /Fast/);
     assert.match(tuning.codex.note, /群聊通信/);
+    assert.match(tuning.codex.note, /872,000/);
+    assert.match(tuning.codex.note, /828,400/);
     // 换成只到 xhigh 的模型，ultra 必须消失，否则会拼出 CLI 不认识的档位。
     assert.equal(tuning.codexOldModel.model, 'gpt-5.5');
     assert.equal(tuning.codexOldModel.effortOptions.includes('ultra'), false, 'gpt-5.5 不支持 ultra');
@@ -243,7 +260,7 @@ setInterval(() => {}, 1000);
       model: 'gpt-5.6-sol',
       effort: 'max',
       mcpProfile: 'none',
-      codexSpeedTier: 'standard',
+      codexSpeedTier: 'fast',
       contextMax: 1_000_000,
     });
     let ordinarySession = null;
@@ -253,27 +270,51 @@ setInterval(() => {}, 1000);
         const sessions = await require('electron').ipcRenderer.invoke('get-sessions');
         return sessions.find(session => !session.meetingId && session.kind === 'codex') || null;
       })()`, { awaitPromise: true });
-      if (ordinarySession && fs.existsSync(invocationLog)) break;
+      if (ordinarySession && ordinarySession.contextEffectiveMax === 828_400 && fs.existsSync(invocationLog)) break;
       await _waitMs(150);
     }
     assert.ok(ordinarySession, '普通 Codex Session 应由真实创建按钮生成');
     assert.equal(ordinarySession.currentModel.id, 'gpt-5.6-sol');
     assert.equal(ordinarySession.effort, 'max');
     assert.equal(ordinarySession.mcpProfile, 'none');
-    assert.equal(ordinarySession.codexSpeedTier, 'standard');
+    assert.equal(ordinarySession.codexSpeedTier, 'fast');
     assert.equal(ordinarySession.contextMax, 1_000_000);
+    assert.equal(ordinarySession.contextEffectiveMax, 828_400);
+    assert.equal(typeof ordinarySession.contextEffectiveObservedAt, 'number');
     const ordinaryInvocation = fs.readFileSync(invocationLog, 'utf8')
       .trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))[0];
     const ordinaryArgs = ordinaryInvocation.args.join(' ');
     assert.match(ordinaryArgs, /--model gpt-5\.6-sol/);
     assert.match(ordinaryArgs, /model_reasoning_effort=.*max/);
     assert.match(ordinaryArgs, /model_context_window=1000000/);
-    assert.match(ordinaryArgs, /features\.fast_mode=false/);
-    assert.doesNotMatch(ordinaryArgs, /service_tier=.*fast/);
-    assert.match(ordinaryArgs, /service_tier=.*default/);
+    assert.match(ordinaryArgs, /features\.fast_mode=true/);
+    assert.match(ordinaryArgs, /service_tier=.*fast/);
+    assert.doesNotMatch(ordinaryArgs, /service_tier=.*default/);
     for (const name of ['playwright', 'superran', 'misc']) {
       assert.match(ordinaryArgs, new RegExp(`mcp_servers\\.${name}\\.enabled=false`));
     }
+    const launchAudit = await client.eval(`require('electron').ipcRenderer.invoke('debug:get-managed-launch-audit', {
+      sessionId: ${JSON.stringify(ordinarySession.id)}, limit: 10,
+    })`, { awaitPromise: true });
+    assert.equal(launchAudit.auditHealth.exists, true);
+    assert.equal(launchAudit.auditHealth.malformedLines, 0);
+    assert.equal(launchAudit.auditHealth.readError, null);
+    assert.ok(launchAudit.persisted.length >= 1, '受管启动必须留下可跨重启取证的脱敏记录');
+    const audited = launchAudit.persisted.at(-1);
+    assert.match(audited.trigger, /^create-(?:pty-ready|safety-timeout)$/);
+    assert.equal(audited.contextRequested, 1_000_000);
+    assert.equal(audited.mcpProfile, 'none');
+    assert.equal(audited.mcpDisabled, true);
+    assert.match(audited.commandSha256, /^[0-9a-f]{64}$/);
+    assert.equal(Object.prototype.hasOwnProperty.call(audited, 'command'), false);
+    const contextUi = await client.eval(`(() => {
+      const el = document.querySelector('.metric-context-window');
+      return el ? { text: el.textContent, title: el.title } : null;
+    })()`);
+    assert.ok(contextUi, '活动 Codex 顶栏必须显示运行时有效窗口');
+    assert.match(contextUi.text, /828\.4K/);
+    assert.match(contextUi.title, /运行时有效窗口：828,400/);
+    assert.match(contextUi.title, /启动请求：1,000,000/);
 
     // ---- 3. tuningOpts 真正送出去的字段 ----
     const payloads = await client.eval(`(async () => {
@@ -325,7 +366,7 @@ setInterval(() => {}, 1000);
       model: 'gpt-5.6-sol',
       effort: 'max',
       mcpProfile: 'none',
-      codexSpeedTier: 'standard',
+      codexSpeedTier: 'fast',
       contextMax: 1_000_000,
     });
     assert.equal(payloads.codexLowEffort.effort, 'low');

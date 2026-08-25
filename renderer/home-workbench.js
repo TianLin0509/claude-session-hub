@@ -1,6 +1,5 @@
 'use strict';
 
-const fs = require('fs');
 const path = require('path');
 const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js');
 const { supportsForkSession } = require('../core/session-capabilities.js');
@@ -16,7 +15,6 @@ const STALLED_TASK_MS = 15 * 60 * 1000;
 const STALE_OUTPUT_MS = 5 * 60 * 1000;
 const CONTEXT_WARNING_PCT = 70;
 const CONTEXT_CRITICAL_PCT = 90;
-const MAX_LANE_ITEMS = 5;
 const MAX_INSIGHT_ITEMS = 6;
 const MAX_ARTIFACT_ITEMS = 6;
 
@@ -231,8 +229,9 @@ function deriveRecentArtifacts(sessionMap, options = {}) {
   const seen = new Set();
   return candidates
     .sort((a, b) => b.timestamp - a.timestamp)
-    // File existence checks are synchronous in the renderer. Probe only the
-    // newest bounded set so a stale network path cannot make Home sluggish.
+    // Runtime defers existence validation to the asynchronous open action.
+    // Tests may inject pathExists, but Home never statSyncs a stale network
+    // path during render (a previous source of visible UI stalls).
     .slice(0, 24)
     .filter(artifact => {
       if (!artifact.path || !path.extname(artifact.path)) return false;
@@ -482,14 +481,18 @@ function createHomeWorkbench(options = {}) {
   const getResourceUsage = typeof options.getResourceUsage === 'function' ? options.getResourceUsage : () => null;
   const getHubConfig = typeof options.getHubConfig === 'function' ? options.getHubConfig : () => null;
   const getUsageSnapshot = typeof options.getUsageSnapshot === 'function' ? options.getUsageSnapshot : () => null;
+  const getOperationsSnapshot = typeof options.getOperationsSnapshot === 'function' ? options.getOperationsSnapshot : () => null;
   const getTerminalCacheSize = typeof options.getTerminalCacheSize === 'function' ? options.getTerminalCacheSize : () => 0;
   const loadWorkspaces = typeof options.loadWorkspaces === 'function' ? options.loadWorkspaces : async () => null;
+  const loadOperations = typeof options.loadOperations === 'function' ? options.loadOperations : async () => null;
   const selectSession = typeof options.selectSession === 'function' ? options.selectSession : () => {};
   const selectMeeting = typeof options.selectMeeting === 'function' ? options.selectMeeting : () => {};
   const onCopyRecentTurns = typeof options.onCopyRecentTurns === 'function' ? options.onCopyRecentTurns : async () => null;
   const onForkSession = typeof options.onForkSession === 'function' ? options.onForkSession : async () => null;
   const onOpenArtifact = typeof options.onOpenArtifact === 'function' ? options.onOpenArtifact : async () => null;
   const onLaunchWorkspace = typeof options.onLaunchWorkspace === 'function' ? options.onLaunchWorkspace : () => null;
+  const onOpenReview = typeof options.onOpenReview === 'function' ? options.onOpenReview : () => null;
+  const onOpenServerSettings = typeof options.onOpenServerSettings === 'function' ? options.onOpenServerSettings : () => null;
   const onRefresh = typeof options.onRefresh === 'function' ? options.onRefresh : async () => {};
   const escapeHtml = typeof options.escapeHtml === 'function'
     ? options.escapeHtml
@@ -498,9 +501,7 @@ function createHomeWorkbench(options = {}) {
     })[char]);
   const nowFn = typeof options.nowFn === 'function' ? options.nowFn : Date.now;
   const setIntervalFn = typeof options.setIntervalFn === 'function' ? options.setIntervalFn : setInterval;
-  const pathExists = typeof options.pathExists === 'function' ? options.pathExists : filePath => {
-    try { return fs.statSync(filePath).isFile(); } catch { return false; }
-  };
+  const pathExists = typeof options.pathExists === 'function' ? options.pathExists : () => true;
   const root = doc.getElementById('empty-state');
   const state = {
     refreshing: false,
@@ -509,6 +510,7 @@ function createHomeWorkbench(options = {}) {
     snapshot: null,
     workspaceListing: null,
     workspaceItems: [],
+    htmlCache: new Map(),
   };
 
   function el(id) {
@@ -518,6 +520,14 @@ function createHomeWorkbench(options = {}) {
   function setText(id, value) {
     const target = el(id);
     if (target) target.textContent = String(value == null ? '' : value);
+  }
+
+  function setHtml(id, html) {
+    const target = el(id);
+    if (!target || state.htmlCache.get(id) === html) return target;
+    target.innerHTML = html;
+    state.htmlCache.set(id, html);
+    return target;
   }
 
   function relativeTime(timestamp, now = nowFn()) {
@@ -533,51 +543,6 @@ function createHomeWorkbench(options = {}) {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
     if (!text) return '';
     return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
-  }
-
-  function defaultPreview(item, lane) {
-    if (item.preview) return shortText(item.preview);
-    if (lane === 'waiting') return 'Agent 正在等待你的确认或输入';
-    if (lane === 'running') return 'Agent 正在执行当前任务';
-    if (item.unreadCount > 0) return '有新的完成结果尚未查看';
-    return '最近完成或活动过的 Session';
-  }
-
-  function renderLane(id, items, lane) {
-    const target = el(id);
-    if (!target) return;
-    if (!items.length) {
-      const copy = lane === 'waiting'
-        ? '目前没有需要你响应的任务'
-        : lane === 'running'
-          ? '目前没有正在运行的任务'
-          : '最近 24 小时暂无完成记录';
-      target.innerHTML = `<div class="home-lane-empty"><span>${escapeHtml(copy)}</span></div>`;
-      return;
-    }
-
-    const visible = items.slice(0, MAX_LANE_ITEMS);
-    const cards = visible.map((item) => {
-      const unread = item.unreadCount > 0
-        ? `<span class="home-flow-unread">${item.unreadCount > 99 ? '99+' : item.unreadCount}</span>`
-        : '';
-      const progress = lane === 'running'
-        ? '<span class="home-flow-progress" aria-hidden="true"><i></i></span>'
-        : '';
-      const time = lane === 'running' && item.elapsedMs != null
-        ? `${item.longRunning ? '长任务 · ' : ''}已运行 ${formatDurationShort(item.elapsedMs)}`
-        : relativeTime(item.lastMessageTime);
-      return `<button type="button" class="home-flow-item ${lane}${item.longRunning ? ' long-running' : ''}" data-home-type="${item.type}" data-home-id="${escapeHtml(item.id)}" aria-label="打开 ${escapeHtml(item.title)}">`
-        + `<span class="home-flow-title-row"><strong>${escapeHtml(shortText(item.title, 52))}</strong>${unread}</span>`
-        + `<span class="home-flow-desc">${escapeHtml(defaultPreview(item, lane))}</span>`
-        + progress
-        + `<span class="home-flow-meta"><span class="home-provider ${item.kind}">${escapeHtml(item.providerLabel)}</span><span class="${item.longRunning ? 'long' : ''}">${escapeHtml(time)}</span></span>`
-        + '</button>';
-    }).join('');
-    const overflow = items.length > visible.length
-      ? `<div class="home-lane-more">还有 ${items.length - visible.length} 项，可在左侧列表查看</div>`
-      : '';
-    target.innerHTML = cards + overflow;
   }
 
   function formatResetIn(resetsAt) {
@@ -656,12 +621,12 @@ function createHomeWorkbench(options = {}) {
     const target = el('home-provider-health');
     if (!target) return;
     const config = getHubConfig() || {};
-    target.innerHTML = [
+    setHtml('home-provider-health', [
       providerUsageRow('Claude', 'claude', usage.claude, snapshot.providerActive.claude),
       providerUsageRow('Codex', 'codex', usage.codex, snapshot.providerActive.codex),
       providerUsageRow('Kimi', 'kimi', usage.kimi, snapshot.providerActive.kimi),
       providerBalanceRow('DeepSeek API', 'deepseek', usage.deepseek, snapshot.providerActive.deepseek, config.deepseekApiKeySet === true),
-    ].join('');
+    ].join(''));
   }
 
   function renderExceptions(snapshot) {
@@ -669,10 +634,10 @@ function createHomeWorkbench(options = {}) {
     if (!target) return;
     setText('home-exception-count', snapshot.exceptions.length);
     if (!snapshot.exceptions.length) {
-      target.innerHTML = '<div class="home-operational-empty ok">没有失败、卡住或系统告警</div>';
+      setHtml('home-exception-list', '<div class="home-operational-empty ok">没有失败、卡住或系统告警</div>');
       return;
     }
-    target.innerHTML = snapshot.exceptions.map((item) => {
+    setHtml('home-exception-list', snapshot.exceptions.map((item) => {
       const targetAttrs = item.targetId
         ? ` data-home-type="${escapeHtml(item.type)}" data-home-id="${escapeHtml(item.targetId)}"`
         : '';
@@ -683,7 +648,7 @@ function createHomeWorkbench(options = {}) {
         + `<button type="button" class="home-insight-open"${targetAttrs}${item.targetId ? '' : ' tabindex="-1"'}>`
         + `<span class="home-severity-dot ${escapeHtml(item.severity)}" aria-hidden="true"></span>`
         + `<span><strong>${escapeHtml(shortText(item.title, 58))}</strong><small>${escapeHtml(shortText(item.detail, 88))}</small></span></button>${action}</div>`;
-    }).join('');
+    }).join(''));
   }
 
   function renderContextRisk(snapshot) {
@@ -691,10 +656,10 @@ function createHomeWorkbench(options = {}) {
     if (!target) return;
     setText('home-context-count', snapshot.contextRisk.length);
     if (!snapshot.contextRisk.length) {
-      target.innerHTML = '<div class="home-operational-empty ok">暂无超过 70% 的上下文</div>';
+      setHtml('home-context-risk', '<div class="home-operational-empty ok">暂无超过 70% 的上下文</div>');
       return;
     }
-    target.innerHTML = snapshot.contextRisk.map((item) => {
+    setHtml('home-context-risk', snapshot.contextRisk.map((item) => {
       const pct = Math.round(item.contextPct);
       const level = pct >= CONTEXT_CRITICAL_PCT ? 'danger' : 'warn';
       const fork = item.supportsFork
@@ -705,21 +670,69 @@ function createHomeWorkbench(options = {}) {
         + `<span class="home-context-ring ${level}" style="--context-pct:${Math.max(0, Math.min(100, pct))}">${pct}%</span>`
         + `<span><strong>${escapeHtml(shortText(item.title, 52))}</strong><small>${escapeHtml(item.providerLabel)} · ${relativeTime(item.lastMessageTime)}</small></span></button>`
         + `<span class="home-inline-actions"><button type="button" class="home-mini-action" data-home-action="copy-turns" data-session-id="${escapeHtml(item.id)}">复制 3 轮</button>${fork}</span></div>`;
-    }).join('');
+    }).join(''));
   }
 
   function renderArtifacts(snapshot) {
     const target = el('home-artifact-list');
     if (!target) return;
-    setText('home-artifact-count', snapshot.artifacts.length);
-    if (!snapshot.artifacts.length) {
-      target.innerHTML = '<div class="home-operational-empty">Agent 回复里出现的本机文件会自动汇总到这里</div>';
+    const operations = getOperationsSnapshot() || {};
+    const gitFiles = Array.isArray(operations.recentFiles) ? operations.recentFiles.map(file => ({
+      path: file.absolutePath || path.join(file.repoRoot || '', file.path || ''),
+      name: path.basename(file.path || file.absolutePath || ''),
+      timestamp: file.modifiedAt || operations.checkedAt || nowFn(),
+      sessionTitle: `${file.repoName || 'Git'} · ${file.status || '变更'}`,
+      source: 'git',
+      risk: file.risk || 'low',
+    })) : [];
+    const seen = new Set();
+    const files = snapshot.artifacts.map(artifact => ({ ...artifact, source: 'artifact' })).concat(gitFiles)
+      .filter(file => {
+        const key = String(file.path || '').toLowerCase();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0))
+      .slice(0, 10);
+    setText('home-artifact-count', files.length);
+    if (!files.length) {
+      setHtml('home-artifact-list', '<div class="home-operational-empty">最近 Session 的 Git 变更与 Agent 产物会自动汇总到这里</div>');
       return;
     }
-    target.innerHTML = snapshot.artifacts.map((artifact) => `<button type="button" class="home-artifact-item" data-home-action="open-artifact" data-artifact-path="${escapeHtml(artifact.path)}" title="${escapeHtml(artifact.path)}">`
+    setHtml('home-artifact-list', files.map((artifact) => `<button type="button" class="home-artifact-item" data-home-action="open-artifact" data-artifact-path="${escapeHtml(artifact.path)}" title="${escapeHtml(artifact.path)}">`
       + '<span class="home-artifact-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5"/></svg></span>'
-      + `<span><strong>${escapeHtml(shortText(artifact.name, 42))}</strong><small>${escapeHtml(shortText(artifact.sessionTitle, 42))} · ${relativeTime(artifact.timestamp)}</small><em>${escapeHtml(shortText(artifact.path, 74))}</em></span>`
-      + '<svg class="home-artifact-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>').join('');
+      + `<span><strong>${escapeHtml(shortText(artifact.name, 42))}<i class="home-file-source ${escapeHtml(artifact.source)}">${artifact.source === 'git' ? 'Git 变更' : 'Agent 产物'}</i></strong><small>${escapeHtml(shortText(artifact.sessionTitle, 42))} · ${relativeTime(artifact.timestamp)}</small><em>${escapeHtml(shortText(artifact.path, 74))}</em></span>`
+      + '<svg class="home-artifact-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>').join(''));
+  }
+
+  function renderReviewInbox() {
+    const operations = getOperationsSnapshot() || {};
+    const summary = operations.summary || {};
+    const repos = Array.isArray(operations.repos) ? operations.repos : [];
+    const scanErrors = Array.isArray(operations.scanErrors) ? operations.scanErrors : [];
+    setText('home-review-repos', summary.repos || 0);
+    setText('home-review-high', summary.highRisk || 0);
+    setText('home-review-medium', summary.mediumRisk || 0);
+    setText('home-review-files', summary.files || 0);
+    const target = el('home-review-list');
+    if (!target) return;
+    if (!operations.checkedAt) {
+      setHtml('home-review-list', '<div class="home-operational-empty">正在检查最近 Session 所在的 Git 工作区…</div>');
+      return;
+    }
+    if (!repos.length && !scanErrors.length) {
+      setHtml('home-review-list', '<div class="home-operational-empty ok">最近工作区没有未提交改动</div>');
+      return;
+    }
+    const repoMarkup = repos.slice(0, 4).map(repo => {
+      const keyFiles = repo.files.slice(0, 3).map(file => path.basename(file.path)).join(' · ');
+      const evidence = repo.testFiles > 0 ? `含 ${repo.testFiles} 个测试文件，执行结果未知` : '未发现测试文件证据';
+      const fileCount = Number(repo.totalFileCount || repo.files.length);
+      return `<article class="home-review-item ${escapeHtml(repo.risk)}"><div><span class="home-review-risk ${escapeHtml(repo.risk)}">${repo.risk === 'high' ? '高风险' : repo.risk === 'medium' ? '需确认' : '低风险'}</span><strong>${escapeHtml(repo.name)}</strong><small>${escapeHtml(repo.branch)} · ${fileCount} 文件${repo.truncated ? '（先显示 300）' : ''} · +${repo.additions} / −${repo.deletions}</small><p>${escapeHtml(shortText(keyFiles, 76))}</p><em>${escapeHtml(evidence)}</em></div><button type="button" data-home-action="open-review" data-repo-id="${escapeHtml(repo.id)}">${repo.risk === 'high' ? '深度审阅' : '查看 Diff'}</button></article>`;
+    }).join('');
+    const errorMarkup = scanErrors.slice(0, 2).map(item => `<article class="home-review-item high scan-error"><div><span class="home-review-risk high">扫描失败</span><strong>${escapeHtml(item.name || 'Git 工作区')}</strong><small>${item.error === 'git_scan_timeout' ? 'Git 命令超时' : 'Git 状态读取失败'}</small><p>该工作区没有被误判为“干净”，请刷新或在终端检查 Git 状态。</p></div><button type="button" data-home-action="refresh">重试</button></article>`).join('');
+    setHtml('home-review-list', repoMarkup + errorMarkup);
   }
 
   function renderNightSummary(snapshot) {
@@ -731,11 +744,11 @@ function createHomeWorkbench(options = {}) {
     const target = el('home-night-list');
     if (!target) return;
     if (!snapshot.night.items.length) {
-      target.innerHTML = '<div class="home-operational-empty">这个夜间窗口暂无完成任务</div>';
+      setHtml('home-night-list', '<div class="home-operational-empty">这个夜间窗口暂无完成任务</div>');
       return;
     }
-    target.innerHTML = snapshot.night.items.map(item => `<button type="button" class="home-night-item" data-home-type="${item.type}" data-home-id="${escapeHtml(item.id)}">`
-      + `<span class="home-provider ${item.kind}">${escapeHtml(item.providerLabel)}</span><strong>${escapeHtml(shortText(item.title, 42))}</strong><small>${relativeTime(item.lastCompletedAt || item.lastMessageTime)}</small></button>`).join('');
+    setHtml('home-night-list', snapshot.night.items.map(item => `<button type="button" class="home-night-item" data-home-type="${item.type}" data-home-id="${escapeHtml(item.id)}">`
+      + `<span class="home-provider ${item.kind}">${escapeHtml(item.providerLabel)}</span><strong>${escapeHtml(shortText(item.title, 42))}</strong><small>${relativeTime(item.lastCompletedAt || item.lastMessageTime)}</small></button>`).join(''));
   }
 
   function workspaceKey(value) {
@@ -759,15 +772,15 @@ function createHomeWorkbench(options = {}) {
       })
       .slice(0, 6);
     if (!state.workspaceItems.length) {
-      target.innerHTML = '<div class="home-operational-empty">刷新后显示 AI、Wireless、投研与最近项目</div>';
+      setHtml('home-workspace-launch', '<div class="home-operational-empty">刷新后显示 AI、Wireless、投研与最近项目</div>');
       return;
     }
-    target.innerHTML = state.workspaceItems.map((item, index) => {
+    setHtml('home-workspace-launch', state.workspaceItems.map((item, index) => {
       const initial = String(item.label || path.basename(item.path) || 'P').trim().slice(0, 1).toUpperCase();
       const tag = item.recommended ? '常用' : item.pinned ? '置顶' : '最近';
       return `<button type="button" class="home-workspace-item" data-home-action="launch-workspace" data-workspace-index="${index}" title="在 ${escapeHtml(item.path)} 新建 Claude 会话">`
         + `<span class="home-workspace-initial">${escapeHtml(initial)}</span><span><strong>${escapeHtml(item.label || path.basename(item.path))}</strong><small>${escapeHtml(shortText(item.path, 52))}</small></span><em>${tag}</em></button>`;
-    }).join('');
+    }).join(''));
   }
 
   function shortProxy(raw) {
@@ -788,6 +801,87 @@ function createHomeWorkbench(options = {}) {
     target.className = `home-sync-value ${level}`;
   }
 
+  function setResourceMetric(name, value) {
+    const number = value != null && value !== '' && Number.isFinite(Number(value))
+      ? Math.max(0, Math.min(100, Math.round(Number(value))))
+      : null;
+    setText(`home-system-${name}`, number == null ? '--' : `${number}%`);
+    const bar = el(`home-system-${name}-bar`);
+    if (bar) {
+      bar.style.width = `${number == null ? 0 : number}%`;
+      bar.className = number != null && number >= 90 ? 'danger' : number != null && number >= 75 ? 'warn' : '';
+    }
+    return number;
+  }
+
+  function formatBytes(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < 0) return '—';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let current = number;
+    let index = 0;
+    while (current >= 1024 && index < units.length - 1) { current /= 1024; index += 1; }
+    return `${current >= 10 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`;
+  }
+
+  function renderSystemAndServer() {
+    const resources = getResourceUsage() || {};
+    const operations = getOperationsSnapshot() || {};
+    const cpu = setResourceMetric('cpu', resources.cpuPct);
+    const memory = setResourceMetric('memory', resources.memoryPct);
+    const gpu = setResourceMetric('gpu', resources.gpu && resources.gpu.usagePct);
+    const disk = setResourceMetric('disk', resources.disk && resources.disk.usagePct);
+    const gpuCell = el('home-system-gpu')?.closest('.home-system-cell');
+    if (gpuCell) {
+      const gpuInfo = resources.gpu;
+      gpuCell.title = gpuInfo
+        ? `${gpuInfo.name || 'GPU'} · 显存 ${formatBytes(gpuInfo.memoryUsedBytes)} / ${formatBytes(gpuInfo.memoryTotalBytes)}${gpuInfo.temperatureC != null ? ` · ${gpuInfo.temperatureC}°C` : ''}`
+        : '未检测到可读取利用率的 GPU';
+    }
+    const systemCard = el('home-system-title')?.closest('.home-system-card');
+    if (systemCard) systemCard.classList.toggle('pressure', [cpu, memory, gpu, disk].some(value => value != null && value >= 90));
+
+    const remote = operations.remote || {};
+    const serverBar = el('home-server-storage-bar');
+    setText('home-server-label', remote.label || '阿里云服务器');
+    const dot = el('home-server-dot');
+    const server = el('home-server-status');
+    if (!remote.configured) {
+      setText('home-server-latency', '未配置');
+      setText('home-server-storage-label', '保存健康检查 URL 后显示在线与存储');
+      setText('home-server-storage-value', '--');
+      setText('home-server-metrics', '远端指标等待配置');
+      if (serverBar) { serverBar.style.width = '0%'; serverBar.className = ''; }
+      if (dot) dot.className = 'home-status-dot dim';
+      if (server) server.className = 'home-server-status unconfigured';
+    } else if (!remote.online) {
+      setText('home-server-latency', '离线');
+      setText('home-server-storage-label', `连接失败 · ${shortText(remote.error || 'unreachable', 42)}`);
+      setText('home-server-storage-value', '--');
+      setText('home-server-metrics', `最后检查 ${new Date(remote.checkedAt || nowFn()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
+      if (serverBar) { serverBar.style.width = '0%'; serverBar.className = ''; }
+      if (dot) dot.className = 'home-status-dot danger';
+      if (server) server.className = 'home-server-status offline';
+    } else {
+      setText('home-server-latency', `在线 · ${Math.round(remote.latencyMs || 0)}ms`);
+      if (dot) dot.className = 'home-status-dot ok';
+      if (server) server.className = 'home-server-status online';
+      const storage = remote.storage;
+      setText('home-server-storage-label', storage ? `${storage.mount || '/'} 存储` : '在线 · 指标端点未返回存储');
+      setText('home-server-storage-value', storage && storage.usagePct != null
+        ? `${storage.usagePct}% · ${formatBytes(storage.usedBytes)} / ${formatBytes(storage.totalBytes)}`
+        : '--');
+      const remoteCpu = remote.cpuPct != null && Number.isFinite(Number(remote.cpuPct)) ? `${Math.round(Number(remote.cpuPct))}%` : '--';
+      const remoteMemory = remote.memoryPct != null && Number.isFinite(Number(remote.memoryPct)) ? `${Math.round(Number(remote.memoryPct))}%` : '--';
+      setText('home-server-metrics', `远端 CPU ${remoteCpu} · 内存 ${remoteMemory}`);
+      if (serverBar) {
+        const pct = storage && Number.isFinite(Number(storage.usagePct)) ? Number(storage.usagePct) : 0;
+        serverBar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+        serverBar.className = pct >= 90 ? 'danger' : pct >= 75 ? 'warn' : '';
+      }
+    }
+  }
+
   function renderSyncHealth(snapshot) {
     const config = getHubConfig() || {};
     const resources = getResourceUsage() || {};
@@ -800,24 +894,29 @@ function createHomeWorkbench(options = {}) {
 
     const cpu = Number.isFinite(resources.cpuPct) ? Math.round(resources.cpuPct) : null;
     const memory = Number.isFinite(resources.memoryPct) ? Math.round(resources.memoryPct) : null;
-    const resourceText = cpu == null && memory == null ? '同步中' : `CPU ${cpu == null ? '--' : `${cpu}%`} · 内存 ${memory == null ? '--' : `${memory}%`}`;
     const resourceLevel = (cpu != null && cpu >= 85) || (memory != null && memory >= 85) ? 'warn' : 'ok';
-    setSyncValue('home-sync-resources', resourceText, resourceLevel);
 
     const healthLabel = el('home-health-label');
     const healthDot = el('home-health-dot');
+    const remote = getOperationsSnapshot() && getOperationsSnapshot().remote;
+    const operationsScanErrors = Number(getOperationsSnapshot() && getOperationsSnapshot().summary && getOperationsSnapshot().summary.scanErrors || 0);
     const pressureHigh = resourceLevel === 'warn';
+    const serverOffline = remote && remote.configured && !remote.online;
     const hasExceptions = snapshot.exceptions.length > 0;
     if (healthLabel) {
       healthLabel.textContent = state.refreshError
         ? '部分状态刷新失败'
         : hasExceptions
           ? `${snapshot.exceptions.length} 项需要关注`
+          : operationsScanErrors > 0
+            ? `${operationsScanErrors} 个 Git 工作区扫描失败`
+          : serverOffline
+            ? `${remote.label || '服务器'}离线`
           : pressureHigh
             ? '系统负载偏高'
             : '当前 HUB 状态正常';
     }
-    if (healthDot) healthDot.className = `home-status-dot ${state.refreshError || hasExceptions || pressureHigh ? 'warn' : 'ok'}`;
+    if (healthDot) healthDot.className = `home-status-dot ${state.refreshError || hasExceptions || operationsScanErrors || pressureHigh || serverOffline ? 'warn' : 'ok'}`;
   }
 
   function isVisible() {
@@ -849,21 +948,6 @@ function createHomeWorkbench(options = {}) {
     setText('home-metric-waiting', snapshot.metrics.waiting);
     setText('home-metric-unread', snapshot.metrics.unread);
     setText('home-metric-dormant', snapshot.metrics.dormant);
-    setText('home-waiting-count', snapshot.lanes.waiting.length);
-    setText('home-running-count', snapshot.lanes.running.length);
-    setText('home-delivered-count', snapshot.lanes.delivered.length);
-    const flowColumns = el('home-flow-columns');
-    if (flowColumns) {
-      const waitingEmpty = snapshot.lanes.waiting.length === 0;
-      const runningEmpty = snapshot.lanes.running.length === 0;
-      const deliveredEmpty = snapshot.lanes.delivered.length === 0;
-      flowColumns.classList.toggle('waiting-empty', waitingEmpty);
-      flowColumns.classList.toggle('running-empty', runningEmpty);
-      flowColumns.classList.toggle('delivered-empty', deliveredEmpty);
-      flowColumns.classList.toggle('all-empty', waitingEmpty && runningEmpty && deliveredEmpty);
-      const board = flowColumns.closest('.home-flow-board');
-      if (board) board.classList.toggle('flow-all-empty', waitingEmpty && runningEmpty && deliveredEmpty);
-    }
     setText('home-last-sync', `更新于 ${new Date(state.lastRefreshAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`);
 
     const refreshButton = el('home-refresh');
@@ -874,15 +958,14 @@ function createHomeWorkbench(options = {}) {
       if (label) label.textContent = state.refreshing ? '刷新中' : '刷新';
     }
 
-    renderLane('home-lane-waiting', snapshot.lanes.waiting, 'waiting');
-    renderLane('home-lane-running', snapshot.lanes.running, 'running');
-    renderLane('home-lane-delivered', snapshot.lanes.delivered, 'delivered');
+    renderReviewInbox();
     renderExceptions(snapshot);
     renderContextRisk(snapshot);
     renderArtifacts(snapshot);
     renderQuickLaunch();
     renderProviderHealth(snapshot, usage);
     renderNightSummary(snapshot);
+    renderSystemAndServer();
     renderSyncHealth(snapshot);
     root.dataset.homeReady = 'true';
     return snapshot;
@@ -905,7 +988,7 @@ function createHomeWorkbench(options = {}) {
     state.refreshError = '';
     render();
     try {
-      await Promise.all([onRefresh(), loadWorkspaceListing()]);
+      await Promise.all([onRefresh(), loadWorkspaceListing(), loadOperations(true)]);
       state.lastRefreshAt = nowFn();
       return true;
     } catch (error) {
@@ -946,6 +1029,10 @@ function createHomeWorkbench(options = {}) {
       } else if (action === 'launch-workspace') {
         const item = state.workspaceItems[Number(button.dataset.workspaceIndex)];
         if (item) onLaunchWorkspace(item);
+      } else if (action === 'open-review') {
+        await onOpenReview(button.dataset.repoId || '');
+      } else if (action === 'open-server-settings') {
+        await onOpenServerSettings();
       }
     } catch {
       button.textContent = '操作失败';
@@ -981,8 +1068,11 @@ function createHomeWorkbench(options = {}) {
   }
 
   void loadWorkspaceListing();
+  void loadOperations(false).then(() => { if (isVisible()) render(); }).catch(() => {});
   setIntervalFn(() => {
-    if (isVisible()) render();
+    if (isVisible()) {
+      void loadOperations(false).then(() => render()).catch(() => render());
+    }
   }, 30_000);
 
   return {
@@ -997,7 +1087,6 @@ module.exports = {
   CONTEXT_CRITICAL_PCT,
   CONTEXT_WARNING_PCT,
   LONG_TASK_MS,
-  MAX_LANE_ITEMS,
   RECENT_WINDOW_MS,
   baseKind,
   buildHomeSnapshot,

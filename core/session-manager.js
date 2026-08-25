@@ -2,6 +2,7 @@ const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const crypto = require('crypto');
 const { v4: uuid } = require('uuid');
 const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
@@ -26,6 +27,7 @@ const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filt
 const { TerminalSnapshot } = require('./terminal-snapshot.js');
 const { CodexXtermScrollbackRewriter } = require('./codex-xterm-scrollback-rewriter.js');
 const { compareLatestReplyDesc } = require('./session-recency.js');
+const { detectHostShellTakeover } = require('./host-shell-detector.js');
 const {
   DEFAULT_CLAUDE_MCP_PROFILE,
   WIRELESS_MCP_NAMES,
@@ -77,6 +79,7 @@ const CODEX_REASONING_EFFORT = 'max';
 // 这里是"语法层"白名单，真正按模型过滤在 core/codex-model-catalog.js，
 // UI 也据此动态出选项；这一层只保证不会把乱字符串拼进命令行。
 const CODEX_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const BARE_CODEX_COMMAND_RE = /^codex(?:\.cmd|\.exe)?$/i;
 function normalizeCodexEffort(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return CODEX_EFFORT_LEVELS.has(normalized) ? normalized : CODEX_REASONING_EFFORT;
@@ -720,7 +723,7 @@ function resolveCodexMcpProfile(kind, value) {
 }
 
 function resolveCodexSpeedTier(kind, value) {
-  const fallback = String(kind || '').replace(/-resume$/, '') === 'deepseek' ? 'inherit' : 'standard';
+  const fallback = String(kind || '').replace(/-resume$/, '') === 'deepseek' ? 'inherit' : 'fast';
   if (value === undefined || value === null || value === '') return fallback;
   const normalized = String(value).trim().toLowerCase();
   return CODEX_SPEED_TIERS.has(normalized) ? normalized : fallback;
@@ -866,6 +869,7 @@ class SessionManager extends EventEmitter {
   psCounter = 0;
   _outputSeq = 0;
   _lastWrite = null;
+  _managedLaunchAudit = [];
   _isShuttingDown = false;
   _shutdownDrainPromise = null;
   _shutdownExitWaiters = new Map();
@@ -1226,6 +1230,13 @@ class SessionManager extends EventEmitter {
       ...(typeof opts.contextPct === 'number' ? { contextPct: opts.contextPct } : {}),
       ...(typeof opts.contextUsed === 'number' ? { contextUsed: opts.contextUsed } : {}),
       ...(typeof effectiveContextMax === 'number' ? { contextMax: effectiveContextMax } : {}),
+      // contextMax is the launch request and must remain stable for
+      // resume/fork/relaunch. Codex reports the clamped effective value later
+      // through token_count; keep that observation in a separate field.
+      ...(typeof opts.contextEffectiveMax === 'number' ? { contextEffectiveMax: opts.contextEffectiveMax } : {}),
+      ...(typeof opts.contextEffectiveObservedAt === 'number'
+        ? { contextEffectiveObservedAt: opts.contextEffectiveObservedAt }
+        : {}),
       codexSessionsRoot,
       // registerSessionForTap uses this internal routing hint while the public
       // kind remains "deepseek" for branding and family identity.
@@ -1233,7 +1244,7 @@ class SessionManager extends EventEmitter {
       ...(isCodexRuntime && codexProfile ? { codexProfile: codexProfile.id, codexProfileLabel: codexProfile.label } : {}),
       ...(isCodexRuntime ? { mcpProfile: effectiveCodexMcpProfile } : {}),
       // 速度通道必须连同 inherit 一起落盘，否则显式选择"跟随全局"的会话在
-      // resume/relaunch 后会被 Codex 新默认 Standard 覆盖。
+      // resume/relaunch 后会被 Codex 新默认 Fast 覆盖。
       ...(isCodexRuntime ? { codexSpeedTier: effectiveCodexSpeedTier } : {}),
       // Claude 家族的 MCP 档位默认 full（全量继承，与改动前一致），与 Codex 的
       // none 默认各走各的。落到 info 是为了 resume/fork/relaunch 能沿用。
@@ -1601,8 +1612,7 @@ class SessionManager extends EventEmitter {
           if (sent) return;
           sent = true;
           watcher.dispose();
-          const s = this.sessions.get(id);
-          if (s) s.pty.write(cmd);
+          this._writeManagedCodexLaunch(id, cmd, 'create-pty-ready');
         }, 200);
       });
       const safetyTimer = setTimeout(() => {
@@ -1610,8 +1620,7 @@ class SessionManager extends EventEmitter {
         sent = true;
         watcher.dispose();
         if (debounceTimer) clearTimeout(debounceTimer);
-        const s = this.sessions.get(id);
-        if (s) s.pty.write(cmd);
+        this._writeManagedCodexLaunch(id, cmd, 'create-safety-timeout');
       }, 3000);
       pendingTimers.push(safetyTimer);
 
@@ -1930,11 +1939,122 @@ class SessionManager extends EventEmitter {
     return { ...session.info };
   }
 
+  // Record proof that Hub actually wrote a managed Codex command. Never retain
+  // the command itself: ephemeral MCP arguments can contain paths or env values.
+  // A SHA-256 plus the normalized policy fields is enough to distinguish a Hub
+  // launch from a later bare `codex` while keeping the audit safe to persist.
+  _recordManagedCodexLaunch(sessionId, command, trigger) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.info) return null;
+    const runtimeKind = session.info.transcriptKind || session.info.kind;
+    if (!isCodexCliKind(runtimeKind)) return null;
+    const now = Date.now();
+    const info = session.info;
+    const record = {
+      schemaVersion: 1,
+      ts: new Date(now).toISOString(),
+      epochMs: now,
+      sessionId,
+      kind: info.kind,
+      runtimeKind,
+      trigger: String(trigger || 'managed-launch'),
+      model: info.currentModel && info.currentModel.id ? info.currentModel.id : null,
+      effort: info.effort || CODEX_REASONING_EFFORT,
+      speedTier: info.codexSpeedTier || resolveCodexSpeedTier(runtimeKind, null),
+      contextRequested: typeof info.contextMax === 'number' ? info.contextMax : null,
+      mcpProfile: info.mcpProfile || resolveCodexMcpProfile(runtimeKind, null),
+      mcpDisabled: (info.mcpProfile || resolveCodexMcpProfile(runtimeKind, null)) === 'none',
+      commandSha256: crypto.createHash('sha256').update(String(command || ''), 'utf8').digest('hex'),
+    };
+    this._managedLaunchAudit.push(record);
+    if (this._managedLaunchAudit.length > 100) this._managedLaunchAudit.splice(0, this._managedLaunchAudit.length - 100);
+    this.emit('managed-launch', { ...record });
+    return record;
+  }
+
+  _writeManagedCodexLaunch(sessionId, command, trigger) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.pty) return false;
+    session.pty.write(command);
+    this._recordManagedCodexLaunch(sessionId, command, trigger);
+    return true;
+  }
+
+  getManagedLaunchAudit(sessionId = null) {
+    return this._managedLaunchAudit
+      .filter(record => !sessionId || record.sessionId === sessionId)
+      .map(record => ({ ...record }));
+  }
+
+  // A managed Codex card owns more than a PowerShell process: its model,
+  // reasoning, speed tier, context request and MCP isolation all live on the
+  // Hub-built launch command. If Codex exits and the PTY falls back to the host
+  // shell, typing a bare `codex` used to silently discard that entire contract.
+  // Track only the current host-shell line and replace that exact command with
+  // relaunchCli(); normal shell commands and all input inside the Codex TUI pass
+  // through untouched.
+  _interceptBareCodexHostLaunch(sessionId, s, data) {
+    const runtimeKind = (s.info && s.info.transcriptKind) || (s.info && s.info.kind);
+    if (!isCodexCliKind(runtimeKind)) return false;
+
+    const chunk = String(data || '').replace(/\x1b\[(?:200|201)~/g, '');
+    if (!chunk) return false;
+
+    let line = s.hostShellInputLine;
+    if (typeof line !== 'string') {
+      if (!detectHostShellTakeover(s.ringBuffer)) return false;
+      line = '';
+    }
+
+    for (let i = 0; i < chunk.length; i += 1) {
+      const ch = chunk[i];
+      if (ch === '\x03' || ch === '\x15') { // Ctrl+C / Ctrl+U
+        line = '';
+        continue;
+      }
+      if (ch === '\x08' || ch === '\x7f') {
+        line = line.slice(0, -1);
+        continue;
+      }
+      if (ch === '\x1b') {
+        s.hostShellInputLine = null;
+        return false;
+      }
+      if (ch === '\r' || ch === '\n') {
+        const trailing = chunk.slice(i + 1).replace(/[\r\n]/g, '');
+        const isBareCodex = BARE_CODEX_COMMAND_RE.test(line.trim()) && trailing.length === 0;
+        s.hostShellInputLine = null;
+        if (!isBareCodex) return false;
+
+        // Earlier character-by-character input may already be echoed at the
+        // prompt. Clear it before sending the full managed launch command.
+        s.pty.write('\x15');
+        const relaunched = this.relaunchCli(sessionId, { trigger: 'bare-codex-guard' });
+        if (relaunched) {
+          this._lastWrite = {
+            sessionId,
+            data: '<managed-codex-relaunch>',
+            target: 'managed-relaunch',
+            ts: Date.now(),
+          };
+          return true;
+        }
+        return false;
+      }
+      if (ch >= ' ') line += ch;
+    }
+
+    s.hostShellInputLine = line;
+    return false;
+  }
+
   writeToSession(sessionId, data) {
     const s = this.sessions.get(sessionId);
     if (s && s.pty) {
-      this._lastWrite = { sessionId, data, target: 'pty', ts: Date.now() };
-      s.lastInputAt = this._lastWrite.ts;
+      const inputAt = Date.now();
+      s.lastInputAt = inputAt;
+      if (this._interceptBareCodexHostLaunch(sessionId, s, data)) return;
+      this._lastWrite = { sessionId, data, target: 'pty', ts: inputAt };
       s.pty.write(data);
     }
   }
@@ -2022,7 +2142,7 @@ class SessionManager extends EventEmitter {
   //   往 PTY 写启动命令重新拉起 CLI；不带 resume，启动新 session（context 干净）。
   //   命令前导空格抑制 shell 历史记录，避免污染。
   // 返回 true 已写命令，false 找不到 session 或 kind 不支持。
-  relaunchCli(sessionId) {
+  relaunchCli(sessionId, options = {}) {
     const s = this.sessions.get(sessionId);
     if (!s || !s.pty) return false;
     const kind = s.info && s.info.kind;
@@ -2108,6 +2228,9 @@ class SessionManager extends EventEmitter {
       return false;
     }
     s.pty.write(cmd);
+    if (isCodexCliKind(runtimeKind)) {
+      this._recordManagedCodexLaunch(sessionId, cmd, options.trigger || 'relaunch');
+    }
     // 重置 group-chat 快路径缓存：CLI 是新启动，必须重新走冷启动流程
     s.groupChatReady = false;
     return true;
@@ -2153,6 +2276,10 @@ class SessionManager extends EventEmitter {
       ...(typeof info.contextPct === 'number' ? { contextPct: info.contextPct } : {}),
       ...(typeof info.contextUsed === 'number' ? { contextUsed: info.contextUsed } : {}),
       ...(typeof info.contextMax === 'number' ? { contextMax: info.contextMax } : {}),
+      ...(typeof info.contextEffectiveMax === 'number' ? { contextEffectiveMax: info.contextEffectiveMax } : {}),
+      ...(typeof info.contextEffectiveObservedAt === 'number'
+        ? { contextEffectiveObservedAt: info.contextEffectiveObservedAt }
+        : {}),
       ...(info.userRenamed ? { userRenamed: true } : {}),
       ...(info.autoTitleGenerated ? { autoTitleGenerated: true } : {}),
       ...(info.branchSourceSessionId ? { branchSourceSessionId: info.branchSourceSessionId } : {}),

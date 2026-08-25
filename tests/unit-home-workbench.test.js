@@ -81,6 +81,14 @@ test('home navigation replaces the old top research shortcut and keeps research 
   assert.match(renderer, /btnHome\.addEventListener\('click', \(\) => escapeToHome\(\)\)/);
   assert.match(renderer, /homeWorkbench = createHomeWorkbench\(/);
   assert.match(html, /四模型用量/);
+  assert.match(html, /改动审阅收件箱/);
+  assert.match(html, /id="operations-review-modal"/);
+  assert.match(html, /本机与服务器/);
+  assert.match(html, /id="cfg-aliyun-health-url"/);
+  assert.doesNotMatch(html, /Session 流水线/);
+  assert.doesNotMatch(workbench, /renderLane|home-lane-running|home-flow-item/);
+  assert.doesNotMatch(workbench, /\b(?:fs\.)?(?:statSync|readFileSync)\s*\(/, 'home render must not block on filesystem I/O');
+  assert.match(workbench, /function setHtml\(id, html\)/, 'frequent resource ticks should reuse unchanged list DOM');
   assert.doesNotMatch(html, /趋势快照|本机采样/);
   assert.doesNotMatch(workbench, /usage-trend-store|home-trend-spark|趋势积累/);
   assert.match(workbench, /usageWindowMarkup\('5h'/);

@@ -63,8 +63,21 @@ function findModel(models, slug) {
   return models.find(m => String(m && m.slug || '').toLowerCase() === wanted) || null;
 }
 
+function positiveInteger(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function effectiveWindowPercent(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 100 ? parsed : null;
+}
+
 /**
- * @returns {{ efforts: string[], defaultEffort: string, supportsFast: boolean, fromCache: boolean }}
+ * @returns {{ efforts: string[], defaultEffort: string, supportsFast: boolean,
+ *   contextWindow: number|null, maxContextWindow: number|null,
+ *   effectiveContextWindowPercent: number|null, estimatedMaxEffectiveContextWindow: number|null,
+ *   fromCache: boolean }}
  */
 function describeCodexModelTuning(slug, { configDir, fsModule = fs, models = null } = {}) {
   const catalog = Array.isArray(models) ? models : readModelsCache(configDir, fsModule);
@@ -76,6 +89,10 @@ function describeCodexModelTuning(slug, { configDir, fsModule = fs, models = nul
       // 缓存缺失时不敢断言这个模型没有 fast 通道；按"有"处理，
       // 让开关照常出现（传下去最多是个无效覆盖，比藏起功能好）。
       supportsFast: true,
+      contextWindow: null,
+      maxContextWindow: null,
+      effectiveContextWindowPercent: null,
+      estimatedMaxEffectiveContextWindow: null,
       fromCache: false,
     };
   }
@@ -84,10 +101,20 @@ function describeCodexModelTuning(slug, { configDir, fsModule = fs, models = nul
     .filter(Boolean);
   const speedTiers = (Array.isArray(model.additional_speed_tiers) ? model.additional_speed_tiers : [])
     .map(item => String(item || '').trim().toLowerCase());
+  const contextWindow = positiveInteger(model.context_window);
+  const maxContextWindow = positiveInteger(model.max_context_window) || contextWindow;
+  const effectiveContextWindowPercent = effectiveWindowPercent(model.effective_context_window_percent);
+  const estimatedMaxEffectiveContextWindow = maxContextWindow && effectiveContextWindowPercent
+    ? Math.floor(maxContextWindow * effectiveContextWindowPercent / 100)
+    : maxContextWindow;
   return {
     efforts: efforts.length ? efforts : [...FALLBACK_REASONING_EFFORTS],
     defaultEffort: String(model.default_reasoning_level || FALLBACK_DEFAULT_EFFORT).toLowerCase(),
     supportsFast: speedTiers.includes('fast'),
+    contextWindow,
+    maxContextWindow,
+    effectiveContextWindowPercent,
+    estimatedMaxEffectiveContextWindow,
     fromCache: true,
   };
 }

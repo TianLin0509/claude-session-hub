@@ -1,6 +1,7 @@
 'use strict';
 
 const systemOs = require('os');
+const { createSystemTelemetry } = require('../../core/system-telemetry.js');
 
 function readCpuTotals(osApi) {
   const cpus = osApi.cpus();
@@ -78,6 +79,7 @@ function saveClipboardImage(deps) {
 
 function registerAppUtilityIpc(ipcMain, deps) {
   const sampleSystemResourceUsage = createSystemResourceSampler(deps.os || systemOs);
+  const systemTelemetry = deps.systemTelemetry || createSystemTelemetry();
 
   ipcMain.handle('is-window-focused', () => {
     const mainWindow = deps.getMainWindow();
@@ -93,7 +95,15 @@ function registerAppUtilityIpc(ipcMain, deps) {
     port: deps.getHookPort(),
   }));
 
-  ipcMain.handle('get-system-resource-usage', () => sampleSystemResourceUsage());
+  ipcMain.handle('get-system-resource-usage', async (_event, options = {}) => {
+    const coreUsage = sampleSystemResourceUsage();
+    try {
+      const extended = await systemTelemetry.sample({ force: options && options.force === true });
+      return { ...coreUsage, ...extended };
+    } catch {
+      return coreUsage;
+    }
+  });
 
   ipcMain.handle('get-network-egress-status', (_event, options = {}) => {
     if (typeof deps.getNetworkEgressStatus !== 'function') {

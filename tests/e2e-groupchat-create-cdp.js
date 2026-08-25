@@ -241,7 +241,7 @@ async function main() {
       fast.dispatchEvent(new Event('change', { bubbles: true }));
 
       // Codex 成员故意保持所有默认值：本 E2E 直接验证 Sol-Max / 1M /
-      // None / Standard 从真实群聊 UI 一路进入 PTY 启动参数。
+      // None / Fast 从真实群聊 UI 一路进入 PTY 启动参数。
 
       setValue(slots[2].querySelector('.mcm-effort-select'), 'medium');
       setValue(slots[2].querySelector('.mcm-mcp-select'), 'wireless');
@@ -267,7 +267,7 @@ async function main() {
       codexSpeedTier: member.codexSpeedTier,
     })), [
       { kind: 'claude', effort: 'high', mcpProfile: 'lean', fastMode: false, codexSpeedTier: null },
-      { kind: 'codex', effort: 'max', mcpProfile: 'none', fastMode: null, codexSpeedTier: 'standard' },
+      { kind: 'codex', effort: 'max', mcpProfile: 'none', fastMode: null, codexSpeedTier: 'fast' },
       { kind: 'deepseek', effort: 'medium', mcpProfile: 'wireless', fastMode: null, codexSpeedTier: 'flex' },
     ]);
 
@@ -313,7 +313,7 @@ async function main() {
       },
       {
         index: 1, kind: 'codex', model: configuredMembers[1].model,
-        effort: 'max', mcpProfile: 'none', codexSpeedTier: 'standard', contextMax: 1_000_000,
+        effort: 'max', mcpProfile: 'none', codexSpeedTier: 'fast', contextMax: 1_000_000,
       },
       {
         index: 2, kind: 'deepseek', model: configuredMembers[2].model,
@@ -326,7 +326,7 @@ async function main() {
     assert.equal(sessionsByKind.claude.fastMode, false);
     assert.equal(sessionsByKind.codex.effort, 'max');
     assert.equal(sessionsByKind.codex.mcpProfile, 'none');
-    assert.equal(sessionsByKind.codex.codexSpeedTier, 'standard');
+    assert.equal(sessionsByKind.codex.codexSpeedTier, 'fast');
     assert.equal(sessionsByKind.codex.contextMax, 1_000_000);
     assert.equal(sessionsByKind.deepseek.effort, 'medium');
     assert.equal(sessionsByKind.deepseek.mcpProfile, 'wireless');
@@ -352,9 +352,9 @@ async function main() {
       'Claude Fast off must reach the actual group member command');
     assert.match(argsText(codexInvocation), /model_reasoning_effort=.*max/);
     assert.match(argsText(codexInvocation), /model_context_window=1000000/);
-    assert.match(argsText(codexInvocation), /features\.fast_mode=false/);
-    assert.doesNotMatch(argsText(codexInvocation), /service_tier=.*fast/);
-    assert.match(argsText(codexInvocation), /service_tier=.*default/);
+    assert.match(argsText(codexInvocation), /features\.fast_mode=true/);
+    assert.match(argsText(codexInvocation), /service_tier=.*fast/);
+    assert.doesNotMatch(argsText(codexInvocation), /service_tier=.*default/);
     assert.match(argsText(codexInvocation), /mcp_servers\.superran\.enabled=false/);
     assert.match(argsText(codexInvocation), /mcp_servers\.misc\.enabled=false/);
     assert.match(argsText(codexInvocation), /mcp_servers\.playwright\.enabled=false/);

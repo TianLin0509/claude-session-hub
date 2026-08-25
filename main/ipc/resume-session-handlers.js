@@ -242,6 +242,12 @@ function createResumeSessionHandler(deps) {
       ...(typeof meta.contextPct === 'number' ? { contextPct: meta.contextPct } : {}),
       ...(typeof meta.contextUsed === 'number' ? { contextUsed: meta.contextUsed } : {}),
       ...(typeof meta.contextMax === 'number' ? { contextMax: meta.contextMax } : {}),
+      ...(typeof meta.contextEffectiveMax === 'number'
+        ? { contextEffectiveMax: meta.contextEffectiveMax }
+        : {}),
+      ...(typeof meta.contextEffectiveObservedAt === 'number'
+        ? { contextEffectiveObservedAt: meta.contextEffectiveObservedAt }
+        : {}),
       ...(meta.purpose ? { purpose: meta.purpose } : {}),
       ...(meta.researchSessionId ? { researchSessionId: meta.researchSessionId } : {}),
       ...(meta.chuxinTaskId ? { chuxinTaskId: meta.chuxinTaskId } : {}),
