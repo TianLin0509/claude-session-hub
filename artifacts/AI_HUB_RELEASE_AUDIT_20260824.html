@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>AI HUB 近期改动总审计 · 2026-08-24</title>
+  <title>AI HUB 近期改动总审计 · 2026-08-25</title>
   <style>
     :root{color-scheme:dark;--bg:#070b10;--panel:#101720;--panel2:#151e29;--line:#273442;--text:#e7eef6;--muted:#8da0b2;--blue:#58a6ff;--green:#58d27d;--amber:#e3b341;--red:#ff7b72;--purple:#bc8cff}
     *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 75% -10%,#18304c 0,transparent 32%),var(--bg);color:var(--text);font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;line-height:1.55}
@@ -20,20 +20,20 @@
 <body>
 <main class="wrap">
   <header class="hero">
-    <div class="eyebrow">AI HUB · RELEASE AUDIT · 2026-08-24</div>
+    <div class="eyebrow">AI HUB · RELEASE AUDIT · 2026-08-25</div>
     <h1>近期改动总审计与压力测试</h1>
-    <p>结论先说：独立审计分支的 P0/P1 代码门已经通过，近期运营工作台、预览、搜索、问题轨、会话状态与退出链完成了真实整合；但生产现场仍有一个必须继续追踪的高内存实例，因此本报告不宣称“绝对无 Bug”，也不建议在未做 heap 取证前自动重启或热替换生产 Hub。</p>
+    <p>结论先说：独立审计分支的 P0/P1 代码门已经通过，近期运营工作台、预览、搜索、问题轨、会话状态与退出链完成了真实整合；8 月 25 日又合入并行 session 的内存止血提交，全文搜索 Worker 在生产环境默认关闭、只允许隔离诊断显式开启。生产现场仍需继续追踪高内存实例，因此本报告不宣称“绝对无 Bug”，也不建议在未做 heap 取证前自动重启或热替换生产 Hub。</p>
     <div class="badges">
-      <span class="badge good">代码门：PASS</span><span class="badge good">三路独立复审：P0/P1 = 0</span><span class="badge good">生产 Hub：未关闭/未重启</span><span class="badge warn">生产内存：仍需专项取证</span><span class="badge">提交：f81e74e</span>
+      <span class="badge good">代码门：PASS</span><span class="badge good">三路独立复审：P0/P1 = 0</span><span class="badge good">生产 Hub：未关闭/未重启</span><span class="badge warn">生产内存：仍需专项取证</span><span class="badge">代码整合：69f093e</span>
     </div>
   </header>
 
   <div class="metrics">
-    <div class="metric good"><strong>606</strong><span>单元测试总数；604 pass / 0 fail / 2 skip</span></div>
+    <div class="metric good"><strong>621</strong><span>全仓测试总数；617 pass / 0 fail / 4 skip</span></div>
     <div class="metric good"><strong>9/9</strong><span>最终版本正常 PTY shutdown 压力轮次</span></div>
-    <div class="metric good"><strong>0.4ms</strong><span>全局搜索 24 次查询 p95（最新提交）</span></div>
+    <div class="metric good"><strong>0.4ms</strong><span>隔离显式启用搜索后，24 次查询 p95</span></div>
     <div class="metric good"><strong>23.5ms</strong><span>900 Session 压测下最大侧栏 render</span></div>
-    <div class="metric warn"><strong>2.96GB</strong><span>生产 PID 62748 最后一次 main heap 采样</span></div>
+    <div class="metric warn"><strong>2.14GB</strong><span>生产主进程 PID 62860 private memory 只读采样</span></div>
   </div>
 
   <section>
@@ -42,7 +42,7 @@
       <article class="card"><span class="tag">OPERATIONS</span><h3>HUB 运营工作台</h3><p>主页聚合待响应、运行中、未读、休眠、上下文风险、最近产物、系统资源、阿里云健康与 Git 改动收件箱。</p></article>
       <article class="card"><span class="tag">REVIEW + PROVENANCE</span><h3>改动审阅驾驶舱</h3><p>风险分级、逐 hunk 接受/拒绝、评论账本、行级 Git 事实、Session 推断线索、独立 index Checkpoint 与新 worktree 恢复。</p></article>
       <article class="card"><span class="tag">PREVIEW WORKBENCH</span><h3>多 Tab 预览工作台</h3><p>临时/固定 Tab、路径模糊搜索、全文/路径/定位复制、查找、文件变更 watcher、Markdown 大纲、源行号与锚点引用。</p></article>
-      <article class="card"><span class="tag">GLOBAL SEARCH</span><h3>“昨日之我”全局搜索</h3><p>Claude/Codex/群聊统一索引，provider/scope/project/time 筛选，命中上下文预览、精确定位、按需建索引与持久缓存。</p></article>
+      <article class="card"><span class="tag">GLOBAL SEARCH</span><h3>“昨日之我”全局搜索</h3><p>Claude/Codex/群聊统一索引，provider/scope/project/time 筛选，命中上下文预览、精确定位、按需建索引与持久缓存。完整能力保留，但生产默认不启动 Worker；隔离诊断通过 <code>HUB_SESSION_SEARCH_ENABLE=1</code> 显式启用。</p></article>
       <article class="card"><span class="tag">SESSION RUNTIME</span><h3>状态、上下文与受管启动</h3><p>Codex task_started/abort 生命周期、PTY 语义兜底、请求窗口与实际有效窗口分离、Fast 默认、裸 codex 重启参数防丢与审计哈希。</p></article>
       <article class="card"><span class="tag">RELIABILITY</span><h3>退出与生命周期证据</h3><p>PTY drain 后再退出、15 秒可重试 deadline、部分 drain 转 dormant、worker await、真实 cleanShutdown 与 per-PID lifecycle journal。</p></article>
       <article class="card"><span class="tag">QUESTION RAIL</span><h3>问题跳转轨道</h3><p>替换中文“你”堆叠，改为 Q1/Q2…节点、激活标签、tooltip、roving tabindex、密集问题滚动与窄窗口定位。</p></article>
@@ -58,7 +58,7 @@
       <article class="card fixed"><h3>跨 Hub 审阅账本丢决定</h3><p>单进程锁不足以保护两个 Hub。加入跨进程文件锁、blob+hunk 绑定、review 前后 blob 校验与 captured commit diff 复核。</p></article>
       <article class="card fixed"><h3>Checkpoint 证据 TOCTOU</h3><p>旧实现把实时工作树决定包装成已捕获 tree 的证据。现在仅保留同时匹配 checkpoint blob 与 hunk 内容哈希的审阅。</p></article>
       <article class="card fixed"><h3>健康检查畸形重定向导致未捕获异常</h3><p>Location URL 解析移入受控 reject；跨 origin redirect 不携带 bearer token。</p></article>
-      <article class="card fixed"><h3>搜索缓存解压与高熵索引爆内存</h3><p>增加 shard 解压上限、4MB/source、64K/doc、key/posting 总预算、短读保护、tombstone 回收和 60 次高熵替换测试。</p></article>
+      <article class="card fixed"><h3>搜索缓存解压与高熵索引爆内存</h3><p>增加 shard 解压上限、4MB/source、64K/doc、key/posting 总预算、短读保护、tombstone 回收和 60 次高熵替换测试；在根因完成取证前，生产默认关闭 Worker。</p></article>
       <article class="card fixed"><h3>Search worker 退出后 IPC 永久 pending</h3><p>修正 exit/failure 顺序，非零退出立即 reject 全部 pending，并允许后续按需重建 worker。</p></article>
       <article class="card fixed"><h3>PTY no-onExit 导致永久无法退出</h3><p>新增 15 秒 deadline；窗口先拦截 close，失败保留/重建窗口；部分完成与迟到 exit 转 dormant，不误删 Session/群聊成员。</p></article>
       <article class="card fixed"><h3>cleanShutdown 假阳性</h3><p>等待 worker，汇总 usage/meeting/session flush 后最后写 clean flag；lifecycle journal 同步继承 cleanup 结果。</p></article>
@@ -74,17 +74,17 @@
     <table>
       <thead><tr><th>门禁</th><th>结果</th><th>关键证据</th></tr></thead>
       <tbody>
-        <tr><td>静态检查</td><td class="pass">PASS</td><td>94 个近期 JS 文件 <code>node --check</code>；HTML 284 个 ID 无重复；无 merge marker；<code>git diff --check</code> 通过。</td></tr>
-        <tr><td>全量单测</td><td class="pass">PASS</td><td>262 个 test files；606 tests = 604 pass / 0 fail / 2 intentional skip。</td></tr>
-        <tr><td>Home + Operations</td><td class="pass">PASS</td><td>提交后 runId <code>1787596414818-30280</code>；Checkpoint/restore、服务器指标、modal stack、Cmd+K reopen、Session 往返、760px 均通过。</td></tr>
-        <tr><td>Preview Workbench</td><td class="pass">PASS</td><td>runId <code>1787596127364-62036</code>；多 Tab、临时复用、大纲、行跳转、watch/find 归零，exitCode=0、forced=false。</td></tr>
-        <tr><td>Global Search</td><td class="pass">PASS</td><td>提交后 runId <code>1787596437030-9096</code>；3 provider/10 docs、XSS 惰性文本、375/760px、24 查询 p95≈0.4ms。</td></tr>
+        <tr><td>静态检查</td><td class="pass">PASS</td><td>82 个本次差异 JS 文件 <code>node --check</code>；HTML ID 无重复；无 merge marker；<code>git diff --check</code> 通过。</td></tr>
+        <tr><td>全仓测试</td><td class="pass">PASS</td><td>276 个 <code>*.test.js</code> 文件；621 tests = 617 pass / 0 fail / 4 intentional skip。两个旧固定端口 CDP 脚本改为仅在显式外部 E2E 门禁下运行，避免误连生产 Hub。</td></tr>
+        <tr><td>Home + Operations</td><td class="pass">PASS</td><td>最终整合 runId <code>1787644666744-31208</code>；Checkpoint/restore、服务器指标、modal stack、Cmd+K reopen、Session 往返、760px 均通过。</td></tr>
+        <tr><td>Preview Workbench</td><td class="pass">PASS</td><td>最终整合 runId <code>1787644697686-64732</code>；多 Tab、临时复用、大纲、行跳转、watch/find 归零，exitCode=0、forced=false。</td></tr>
+        <tr><td>Global Search</td><td class="pass">PASS</td><td>隔离显式启用 runId <code>1787644443198-12268</code>；3 provider/10 docs、XSS 惰性文本、375/760px、24 查询 p95≈0.4ms；生产默认关闭 Worker 的单测同时通过。</td></tr>
         <tr><td>Question Rail</td><td class="pass">PASS</td><td>runId <code>1787593499860-60172</code>；7/24/超密问题、增量问题、卡片/PTY 切换与 tooltip 边界通过。</td></tr>
         <tr><td>路径与主导航</td><td class="pass">PASS</td><td>Card local path <code>1787593924538-16304</code>；main navigation guard <code>1787593933464-54164</code>。</td></tr>
         <tr><td>会话/群聊链</td><td class="pass">PASS</td><td>task_started、terminal runtime、Session 创建参数、Groupchat 创建均隐藏隔离执行并通过。</td></tr>
         <tr><td>性能压力</td><td class="pass">PASS</td><td>900 Session render≈8.8ms，最大≈23.5ms；200 状态+200 语义事件各合并为≤3 次 render；8 个 live xterm 仅 1 个 renderer surface。</td></tr>
         <tr><td>40MB transcript</td><td class="pass">PASS</td><td>临时合成 JSONL，不读取生产会话；50 turns，约 63ms，main IPC 最大约 3ms，二次 cache≈7.7ms。</td></tr>
-        <tr><td>Graceful shutdown</td><td class="pass">PASS</td><td>最终代码正常路径累计 9/9；提交后 runId <code>1787596453666-23756</code>，exit 0、forced=false、clean=true、Session 保留。</td></tr>
+        <tr><td>Graceful shutdown</td><td class="pass">PASS</td><td>正常路径累计 9/9；最终整合 runId <code>1787644726345-65568</code>，exit 0、forced=false、clean=true、Session 保留。</td></tr>
         <tr><td>多实例</td><td class="pass">PASS</td><td>同 dataDir 两个隐藏 Hub 同时存活、不同 hook/control PID；teardown 使用 allSettled，无测试 PID 残留。</td></tr>
         <tr><td>独立复审</td><td class="pass">PASS</td><td>正确性、隔离/静默失败、UX 三路最终均无 P0/P1；主审完成第四路提交边界检查。</td></tr>
       </tbody>
@@ -94,10 +94,10 @@
   <section class="risk">
     <h2>四、生产现场：代码门通过，但仍有一个开放风险</h2>
     <div class="risk-grid">
-      <div class="callout"><strong>PID 62748 持续高 heap</strong><p>最后只读采样：Responding=True，private≈3562MB，main heap≈2956MB；20 秒斜率并非单调增长，但 GC 后仍维持约 2.8GB。PID 62860 同期 heap 仅约 17MB。该差异无法由 2.5MB state.json 或 1MB/session ring buffer单独解释。</p></div>
+      <div class="callout"><strong>生产主进程内存仍偏高</strong><p>8 月 25 日仅通过操作系统只读采样：PID 62860 Responding=True，private≈2139MB、working set≈510MB。8 月 24 日更深一层的旧实例采样曾观察到 main heap≈2956MB；本轮没有连接生产 CDP，因此不把当前 private memory 等同于 JS heap。该风险尚未关闭。</p></div>
       <div class="callout"><strong>历史突然停止仍缺最终根因</strong><p>生产 PID 61444 与 7412 的 lifecycle heartbeat 曾突然停止，journal 没来得及写 process-exit；Windows Application/WER 同时段也没有匹配事件。证据可以排除普通 JS exception，但暂时不能区分 native fail-fast、OOM 或外部终止。</p></div>
     </div>
-    <p class="lead">建议下一步：保持生产 Hub 不动，在用户明确允许后，对高内存实例做一次只读 heap/diagnostic 取证，或用相同数据规模在隔离 Hub 复现；不要为了验证本提交直接重启生产进程。当前运行实例仍加载生产工作树 <code>094b21d</code> 及其本地内容，不会自动获得本审计分支代码。</p>
+    <p class="lead">建议下一步：保持生产 Hub 不动，在用户明确允许后，对高内存实例做一次只读 heap/diagnostic 取证，或用相同数据规模在隔离 Hub 复现；不要为了验证本提交直接重启生产进程。当前生产进程启动于 8 月 24 日 10:23，本轮从未重启或 CDP 控制，不会自动获得隔离分支代码。</p>
   </section>
 
   <section>
@@ -116,8 +116,8 @@
     <div class="shots">
       <figure class="shot"><img src="../output/playwright/home-workbench/hub-workbench-desktop.png" alt="AI HUB 工作台桌面宽屏"><figcaption>主页：改动审阅、异常/上下文、最近文件、本机/服务器与工作区入口。</figcaption></figure>
       <figure class="shot"><img src="../output/playwright/home-workbench/hub-workbench-review-cockpit.png" alt="改动审阅驾驶舱"><figcaption>审阅驾驶舱：workspace/file/diff/provenance 三栏与安全 Checkpoint。</figcaption></figure>
-      <figure class="shot"><img src="../output/playwright/preview-workbench/preview-outline-1787596127364-62036.png" alt="Markdown 大纲预览"><figcaption>Preview：H1/H2/H3 层级、源行号、锚点与分栏内容。</figcaption></figure>
-      <figure class="shot"><img src="../output/playwright/global-session-search/global-session-search-1787596437030-9096.png" alt="全局会话搜索"><figcaption>昨日之我：本地索引、provider/scope 筛选与命中上下文。</figcaption></figure>
+      <figure class="shot"><img src="../output/playwright/preview-workbench/preview-outline-1787644697686-64732.png" alt="Markdown 大纲预览"><figcaption>Preview：H1/H2/H3 层级、源行号、锚点与分栏内容。</figcaption></figure>
+      <figure class="shot"><img src="../output/playwright/global-session-search/global-session-search-1787644443198-12268.png" alt="全局会话搜索"><figcaption>昨日之我：隔离显式启用后的本地索引、provider/scope 筛选与命中上下文。</figcaption></figure>
     </div>
   </section>
 
@@ -128,13 +128,15 @@
       <div class="event"><time>b26ae28</time><p>通过临时 Git index 无扰动冻结生产工作区 43 个改动文件；生产 index/HEAD 未变化。</p></div>
       <div class="event"><time>daefcb8</time><p>GitHub master 预览/问题轨特性 tip，合入审计分支。</p></div>
       <div class="event"><time>f81e74e</time><p>最终合并与 P0/P1 修复提交：<code>merge: audit and harden recent AI Hub workbench changes</code>。</p></div>
+      <div class="event"><time>17a828d</time><p>并行 session 的生产止血提交：默认停用高内存风险全文搜索 Worker。</p></div>
+      <div class="event"><time>69f093e</time><p>安全整合：保留生产默认关闭，同时保留全部索引硬化与隔离显式启用验证路径。</p></div>
     </div>
     <div class="paths">
       <div class="path">审计 worktree：C:\Vibe\Worktrees\hub\release-audit-20260824</div>
       <div class="path">Home E2E：C:\Vibe\Worktrees\hub\release-audit-20260824\output\playwright\home-workbench\hub-workbench-e2e-result.json</div>
-      <div class="path">Preview E2E：C:\Vibe\Worktrees\hub\release-audit-20260824\output\playwright\preview-workbench\result-1787596127364-62036.json</div>
-      <div class="path">Global Search E2E：C:\Vibe\Worktrees\hub\release-audit-20260824\output\playwright\global-session-search\global-session-search-1787596437030-9096.json</div>
-      <div class="path">最新 Shutdown E2E：C:\Vibe\Worktrees\hub\release-audit-20260824\output\playwright\graceful-pty-shutdown\result-1787596453666-23756.json</div>
+      <div class="path">Preview E2E：C:\Vibe\Worktrees\hub\release-audit-20260824\output\playwright\preview-workbench\result-1787644697686-64732.json</div>
+      <div class="path">Global Search E2E：C:\Vibe\Worktrees\hub\release-audit-20260824\output\playwright\global-session-search\global-session-search-1787644443198-12268.json</div>
+      <div class="path">最新 Shutdown E2E：C:\Vibe\Worktrees\hub\release-audit-20260824\output\playwright\graceful-pty-shutdown\result-1787644726345-65568.json</div>
     </div>
   </section>
 
