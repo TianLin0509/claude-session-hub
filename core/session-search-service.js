@@ -7,6 +7,7 @@ class SessionSearchService {
   constructor(options = {}) {
     this._Worker = options.Worker || Worker;
     this._workerPath = options.workerPath || path.join(__dirname, 'session-search-worker.js');
+    this._enabled = options.enabled === true;
     this._prewarmEnabled = options.prewarmEnabled === true;
     this._workerData = {
       cachePath: options.cachePath || null,
@@ -26,11 +27,18 @@ class SessionSearchService {
     this._nextId = 0;
     this._pending = new Map();
     this._closed = false;
-    this._status = { phase: 'idle', ready: false, refreshing: false, index: { sessions: 0, documents: 0, terms: 0, providers: {} } };
+    this._status = {
+      phase: this._enabled ? 'idle' : 'disabled_memory_safety',
+      ready: false,
+      refreshing: false,
+      lastError: this._enabled ? null : '全文搜索因内存安全问题暂时停用',
+      index: { sessions: 0, documents: 0, terms: 0, providers: {} },
+    };
     this._stats = { submitted: 0, completed: 0, workerRestarts: 0, failures: 0 };
   }
 
   _ensureWorker() {
+    if (!this._enabled) throw new Error('全文搜索因内存安全问题暂时停用');
     if (this._closed) throw new Error('Session search service is closed');
     if (this._worker) return this._worker;
     const worker = new this._Worker(this._workerPath, {
@@ -78,6 +86,20 @@ class SessionSearchService {
   }
 
   _request(type, payload = {}) {
+    if (!this._enabled) {
+      if (type === 'search') {
+        return Promise.resolve({
+          results: [], totalSessions: 0, totalMatches: 0, truncated: false,
+          facets: { providers: {}, scopes: {}, projects: [] },
+          queryMs: 0,
+          index: { ...this._status.index },
+          error: this._status.lastError,
+          status: { ...this._status },
+        });
+      }
+      if (type === 'preview') return Promise.resolve(null);
+      return Promise.resolve({ ...this._status });
+    }
     const id = ++this._nextId;
     return new Promise((resolve, reject) => {
       this._pending.set(id, { type, resolve, reject });
@@ -109,6 +131,7 @@ class SessionSearchService {
   }
 
   prewarm(snapshot = {}) {
+    if (!this._enabled) return Promise.resolve({ ...this._status });
     if (!this._prewarmEnabled) {
       this._status = {
         ...this._status,

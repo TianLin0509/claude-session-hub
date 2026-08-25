@@ -37,7 +37,7 @@ test('worker service builds, queries, previews and reloads its persistent local 
   }], meetings: [] };
 
   const service = new SessionSearchService({
-    claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 5,
+    enabled: true, claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 5,
   });
   t.after(async () => {
     await service.close().catch(() => {});
@@ -79,7 +79,7 @@ test('worker service builds, queries, previews and reloads its persistent local 
 
   await service.close();
   const cached = new SessionSearchService({
-    claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 60_000,
+    enabled: true, claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 60_000,
   });
   try {
     const cachedResult = await cached.search({ query: 'EADDRINUSE' }, snapshot);
@@ -97,7 +97,7 @@ test('startup prewarm is deferred by default and does not allocate a worker', as
     unref() {}
     terminate() { return Promise.resolve(0); }
   }
-  const service = new SessionSearchService({ Worker: CountingWorker });
+  const service = new SessionSearchService({ enabled: true, Worker: CountingWorker });
   try {
     const status = await service.prewarm({ sessions: [], meetings: [] });
     assert.equal(status.phase, 'deferred');
@@ -116,6 +116,7 @@ test('search worker receives a hard V8 heap limit and bounded index inputs', asy
     terminate() { return Promise.resolve(0); }
   }
   const service = new SessionSearchService({
+    enabled: true,
     Worker: CapturingWorker,
     workerMemoryLimitMb: 256,
     maxSources: 50,
@@ -128,6 +129,28 @@ test('search worker receives a hard V8 heap limit and bounded index inputs', asy
     assert.equal(workerOptions.workerData.maxSources, 50);
     assert.equal(workerOptions.workerData.maxIndexedChars, 4 * 1024 * 1024);
     assert.equal(workerOptions.workerData.maxCacheCompressedBytes, 8 * 1024 * 1024);
+  } finally {
+    await service.close();
+  }
+});
+
+test('production default disables full-text search without creating a worker', async () => {
+  let workerCount = 0;
+  class CountingWorker extends EventEmitter {
+    constructor() { super(); workerCount += 1; }
+    unref() {}
+    terminate() { return Promise.resolve(0); }
+  }
+  const service = new SessionSearchService({ Worker: CountingWorker });
+  try {
+    const result = await service.search({ query: '昨日之我' }, { sessions: [], meetings: [] });
+    assert.equal(workerCount, 0);
+    assert.equal(result.totalSessions, 0);
+    assert.equal(result.status.phase, 'disabled_memory_safety');
+    assert.match(result.error, /内存安全/);
+    const refreshed = await service.refresh({}, { force: true });
+    assert.equal(refreshed.phase, 'disabled_memory_safety');
+    assert.equal(workerCount, 0);
   } finally {
     await service.close();
   }
