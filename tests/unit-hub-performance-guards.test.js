@@ -417,8 +417,15 @@ test('restored terminals force a full renderer-surface repaint', () => {
 
 test('streaming card refresh requests only the newest turn', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
-  const matches = src.match(/parseOpts:\s*\{\s*limit:\s*1,\s*fromTail:\s*true\s*\}/g) || [];
-  assert.ok(matches.length >= 2, 'streaming and silence-fallback reloads must avoid full 50-turn parses');
+  const start = src.indexOf('function requestCardIncrementalRefresh');
+  const end = src.indexOf('function noteCardTerminalOutput', start);
+  const block = src.slice(start, end);
+  assert.match(block, /parseOpts:\s*\{\s*limit:\s*1,\s*fromTail:\s*true\s*\}/,
+    'the shared streaming/settle refresh path must avoid full 50-turn parses');
+  assert.match(src, /CARD_STREAM_SETTLE_RETRY_MS\s*=\s*\[1000,\s*2500,\s*6000\]/,
+    'late writeback recovery must stay finite rather than polling forever');
+  assert.match(block, /requestCardIncrementalRefresh\(sessionId/,
+    'settle retries must reuse the same bounded refresh path');
 });
 
 test('meeting room CLI-ready polling cannot overlap slow IPC probes', () => {

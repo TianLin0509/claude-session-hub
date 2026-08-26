@@ -94,14 +94,45 @@ test('incremental card refresh keeps existing cards when parsing is temporarily 
   );
 });
 
-test('closing a session clears card load generations and stream-end fallback timers', () => {
+test('active card refresh is provider-aware without requiring renderer transcript metadata', () => {
+  const start = rendererSource.indexOf('const CARD_STREAM_REFRESH_MIN_INTERVAL_MS');
+  const end = rendererSource.indexOf('// Status updates from our custom statusline script.', start);
+  assert.ok(start >= 0 && end > start, 'card live-refresh scheduler block not found');
+  const block = rendererSource.slice(start, end);
+
+  assert.match(
+    block,
+    /isClaudeFamily\(session\.kind\)[\s\S]{0,100}isCodexKind\(session\.kind\)[\s\S]{0,100}isKimiCliKind\(session\.kind\)/,
+    'Claude, Codex/DeepSeek and Kimi must share the same active-card refresh gate',
+  );
+  assert.doesNotMatch(
+    block,
+    /!sessForReload\.transcriptPath[\s\S]{0,80}!sessForReload\.ccSessionId/,
+    'a newly bound Codex/Kimi session must not be skipped just because renderer metadata has not arrived yet',
+  );
+  assert.match(
+    block,
+    /CARD_STREAM_SETTLE_RETRY_MS\s*=\s*\[1000,\s*2500,\s*6000\]/,
+    'late transcript writeback needs finite settle retries instead of permanent polling',
+  );
+  assert.match(
+    block,
+    /parseOpts:\s*\{\s*limit:\s*1,\s*fromTail:\s*true\s*\}/,
+    'each live refresh must stay bounded to the transcript tail',
+  );
+});
+
+test('closing a session clears card load generations and all live-refresh timers', () => {
   const start = rendererSource.indexOf("ipcRenderer.on('session-closed'");
   const end = rendererSource.indexOf('\n});', start);
   assert.ok(start >= 0 && end > start, 'session-closed handler not found');
   const block = rendererSource.slice(start, end);
   assert.match(block, /window\._cardLoadSeqBySid\.delete\(sessionId\)/);
-  assert.match(block, /clearTimeout\(window\._cardStopFallbackBySid\.get\(sessionId\)\)/);
-  assert.match(block, /window\._cardStopFallbackBySid\.delete\(sessionId\)/);
+  assert.match(block, /clearCardLiveRefreshState\(sessionId\)/);
+  assert.match(
+    rendererSource,
+    /function clearCardLiveRefreshState\(sessionId\)[\s\S]{0,120}clearCardSettleRefresh\(sessionId\)/,
+  );
 });
 
 test('turn render signature changes when visible model, kind, or timestamp metadata changes', () => {

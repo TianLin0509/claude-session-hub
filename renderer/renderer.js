@@ -4300,6 +4300,7 @@ async function hydrateTerminalFromSnapshot(sessionId, cached) {
       await writeXtermAndWait(cached.terminal, data);
       if (Number.isFinite(itemSeq)) cached._hydratedSeq = Math.max(cached._hydratedSeq, itemSeq);
       onTerminalOutput(sessionId, String(item.data || '').length);
+      noteCardTerminalOutput(sessionId);
     }
   }
   cached._hydrated = true;
@@ -4332,6 +4333,137 @@ async function hydrateTerminalFromSnapshot(sessionId, cached) {
 // 非 tool 行被改写成 "⋯ N lines" + xterm decoration 弹窗，长会话 buffer 滚动 +
 // Codex/Gemini 路径不一致会渲染叠字错位。所有 kind 的 terminal-data 现在统一直写。
 
+const CARD_STREAM_REFRESH_MIN_INTERVAL_MS = 1200;
+const CARD_STREAM_SETTLE_RETRY_MS = [1000, 2500, 6000];
+
+function cardSessionSupportsLiveRefresh(session) {
+  if (!session) return false;
+  return isClaudeFamily(session.kind) || isCodexKind(session.kind) || isKimiCliKind(session.kind);
+}
+
+function clearCardSettleRefresh(sessionId) {
+  if (!window._cardStopFallbackBySid) return;
+  const state = window._cardStopFallbackBySid.get(sessionId);
+  if (state && state.timer) {
+    try { clearTimeout(state.timer); } catch {}
+  } else if (state) {
+    // Compatibility with the previous single-timeout map shape.
+    try { clearTimeout(state); } catch {}
+  }
+  window._cardStopFallbackBySid.delete(sessionId);
+}
+
+function clearCardLiveRefreshState(sessionId) {
+  clearCardSettleRefresh(sessionId);
+  if (!window._cardReloadState || !window._cardReloadState.has(sessionId)) return;
+  const state = window._cardReloadState.get(sessionId);
+  if (state && state.pendingTimer) {
+    try { clearTimeout(state.pendingTimer); } catch {}
+  }
+  window._cardReloadState.delete(sessionId);
+}
+
+function requestCardIncrementalRefresh(sessionId, options = {}) {
+  if (sessionId !== activeSessionId || currentView !== 'card'
+      || typeof loadSessionHistoryToOverlay !== 'function') return false;
+  const session = sessions.get(sessionId);
+  if (!cardSessionSupportsLiveRefresh(session)) return false;
+
+  if (!window._cardReloadState) window._cardReloadState = new Map();
+  let state = window._cardReloadState.get(sessionId);
+  if (!state) {
+    state = {
+      lastReloadAt: 0,
+      pendingTimer: null,
+      inProgress: false,
+      queued: false,
+      lastReason: null,
+    };
+    window._cardReloadState.set(sessionId, state);
+  }
+  state.lastReason = options.reason || 'terminal-output';
+
+  if (state.inProgress) {
+    state.queued = true;
+    return true;
+  }
+  if (state.pendingTimer) {
+    if (!options.force) return true;
+    try { clearTimeout(state.pendingTimer); } catch {}
+    state.pendingTimer = null;
+  }
+
+  const sinceLast = Date.now() - state.lastReloadAt;
+  const delay = options.force
+    ? 0
+    : Math.max(200, CARD_STREAM_REFRESH_MIN_INTERVAL_MS - sinceLast);
+  state.pendingTimer = setTimeout(() => {
+    state.pendingTimer = null;
+    if (sessionId !== activeSessionId || currentView !== 'card') return;
+    if (!cardSessionSupportsLiveRefresh(sessions.get(sessionId))) return;
+    if (state.inProgress) {
+      state.queued = true;
+      return;
+    }
+    state.inProgress = true;
+    state.lastReloadAt = Date.now();
+    loadSessionHistoryToOverlay(sessionId, {
+      incremental: true,
+      parseOpts: { limit: 1, fromTail: true },
+    })
+      .catch(error => console.warn('[card live-refresh:' + state.lastReason + '] failed:', error))
+      .finally(() => {
+        state.inProgress = false;
+        if (!state.queued) return;
+        state.queued = false;
+        requestCardIncrementalRefresh(sessionId, {
+          force: true,
+          reason: 'queued-after-inflight',
+        });
+      });
+  }, delay);
+  return true;
+}
+
+function scheduleCardSettleRefresh(sessionId) {
+  clearCardSettleRefresh(sessionId);
+  if (sessionId !== activeSessionId || currentView !== 'card'
+      || !cardSessionSupportsLiveRefresh(sessions.get(sessionId))) return false;
+  if (!window._cardStopFallbackBySid) window._cardStopFallbackBySid = new Map();
+
+  const state = { index: 0, timer: null };
+  const scheduleNext = () => {
+    const index = state.index;
+    const previousDelay = index > 0 ? CARD_STREAM_SETTLE_RETRY_MS[index - 1] : 0;
+    const delay = CARD_STREAM_SETTLE_RETRY_MS[index] - previousDelay;
+    state.timer = setTimeout(() => {
+      if (window._cardStopFallbackBySid.get(sessionId) !== state) return;
+      if (!requestCardIncrementalRefresh(sessionId, {
+        force: true,
+        reason: 'stream-settle-' + CARD_STREAM_SETTLE_RETRY_MS[index] + 'ms',
+      })) {
+        window._cardStopFallbackBySid.delete(sessionId);
+        return;
+      }
+      state.index += 1;
+      if (state.index >= CARD_STREAM_SETTLE_RETRY_MS.length) {
+        window._cardStopFallbackBySid.delete(sessionId);
+        return;
+      }
+      scheduleNext();
+    }, delay);
+  };
+  window._cardStopFallbackBySid.set(sessionId, state);
+  scheduleNext();
+  return true;
+}
+
+function noteCardTerminalOutput(sessionId) {
+  if (!requestCardIncrementalRefresh(sessionId, { reason: 'terminal-output' })) return false;
+  scheduleCardSettleRefresh(sessionId);
+  return true;
+}
+
 ipcRenderer.on('terminal-data', (_e, { sessionId, data, seq }) => {
   const cached = terminalCache.get(sessionId);
   if (!cached) return;
@@ -4350,62 +4482,11 @@ ipcRenderer.on('terminal-data', (_e, { sessionId, data, seq }) => {
   if (Number.isFinite(numericSeq)) cached._hydratedSeq = numericSeq;
   writeTerminalChunk(sessionId, cached, data);
   onTerminalOutput(sessionId, data.length);
-
-  // Spec 2 partial-update workaround + Spec 3 · B1+B3 优化:
-  // transcriptTap.emit('turn-complete') only fires on stop_reason ∈ {end_turn, max_tokens, refusal} —
-  // assistant turns with stop_reason='tool_use' wait for the next message; card view lags PTY.
-  // Throttle (leading edge) reload card while PTY streams. Not debounce — debounce
-  // resets timer on every PTY chunk, so during streaming it never fires until full silence.
-  // Spec 3 · B1：传 incremental:true → mount dedup 自动跳过已存在 turn id，无需全清重建
-  // P1：大 transcript 下 250ms 会造成 UI 卡顿，改为约 1.2s + stream-end final reload。
-  if (sessionId === activeSessionId && currentView === 'card' && typeof loadSessionHistoryToOverlay === 'function') {
-    if (!window._cardReloadState) window._cardReloadState = new Map();
-    let st = window._cardReloadState.get(sessionId);
-    const sessForReload = sessions.get(sessionId);
-    if (!sessForReload || (!sessForReload.transcriptPath && !sessForReload.ccSessionId)) return;
-    if (!st) { st = { lastReloadAt: 0, pendingTimer: null, inProgress: false }; window._cardReloadState.set(sessionId, st); }
-    if (!st.pendingTimer && !st.inProgress) {
-      const sinceLast = Date.now() - st.lastReloadAt;
-      const delay = Math.max(200, 1200 - sinceLast);
-      st.pendingTimer = setTimeout(() => {
-        st.pendingTimer = null;
-        // Spec 3 · W2 throttle race fix：timer 创建时 sessionId === activeSessionId，
-        // 但 timer fire 时 user 可能已切到别的 session。incremental:true 会跳过 clear，
-        // 直接 append 旧 session 的 turns 到当前 overlay → 跨 session 数据污染。
-        // 这里再次比对，不一致就静默跳过（旧 session 的数据要等用户切回才有意义）。
-        if (sessionId !== activeSessionId || currentView !== 'card') {
-          st.inProgress = false;
-          return;
-        }
-        st.inProgress = true;
-        st.lastReloadAt = Date.now();
-        loadSessionHistoryToOverlay(sessionId, {
-          incremental: true,
-          parseOpts: { limit: 1, fromTail: true },
-        })
-          .catch(err => console.warn('[card auto-reload] failed:', err))
-          .finally(() => { st.inProgress = false; });
-      }, delay);
-    }
-
-    // P0 stream-end fallback (2026-05-10)：250ms throttle 是 leading-edge，PTY 字节静默后
-    //   只能再 fire 一次。但 Claude CLI 在 token 流完后才把 end_turn entry append 到 JSONL
-    //   （writeback 偶发滞后），最后一次 reload 拿到的可能还是 tool_use 中间态 → 卡片定格。
-    //   再叠一层"PTY 静默 800ms 后强制 final reload"，覆盖此 race。stop_hook 走 turn-complete-event
-    //   是另一条更快的路径，这里只做兜底。
-    if (!window._cardStopFallbackBySid) window._cardStopFallbackBySid = new Map();
-    clearTimeout(window._cardStopFallbackBySid.get(sessionId));
-    window._cardStopFallbackBySid.set(sessionId, setTimeout(() => {
-      window._cardStopFallbackBySid.delete(sessionId);
-      if (sessionId === activeSessionId && currentView === 'card') {
-        loadSessionHistoryToOverlay(sessionId, {
-          incremental: true,
-          parseOpts: { limit: 1, fromTail: true },
-        })
-          .catch(err => console.warn('[card stream-end fallback] failed:', err));
-      }
-    }, 1000));
-  }
+  // PTY output is only a wake-up signal. The refresh parses the bounded
+  // transcript tail off the renderer thread, so card mode stays live without
+  // duplicating ANSI/TUI text. One leading refresh plus three finite settle
+  // retries cover late transcript writeback without permanent polling.
+  noteCardTerminalOutput(sessionId);
 });
 
 // Status updates from our custom statusline script.
@@ -5534,15 +5615,7 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
   const local = sessions.get(sessionId);
   if (!local) return;
   if (window._cardLoadSeqBySid) window._cardLoadSeqBySid.delete(sessionId);
-  if (window._cardStopFallbackBySid && window._cardStopFallbackBySid.has(sessionId)) {
-    clearTimeout(window._cardStopFallbackBySid.get(sessionId));
-    window._cardStopFallbackBySid.delete(sessionId);
-  }
-  if (window._cardReloadState && window._cardReloadState.has(sessionId)) {
-    const state = window._cardReloadState.get(sessionId);
-    if (state && state.pendingTimer) { try { clearTimeout(state.pendingTimer); } catch {} }
-    window._cardReloadState.delete(sessionId);
-  }
+  clearCardLiveRefreshState(sessionId);
   if (window._codexHistoryRetryState && window._codexHistoryRetryState.has(sessionId)) {
     const state = window._codexHistoryRetryState.get(sessionId);
     if (state && state.timer) { try { clearTimeout(state.timer); } catch {} }
@@ -5604,15 +5677,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   const closing = sessions.get(sessionId);
   const wasChuxinResearch = !!(closing && closing.purpose === 'chuxin-research');
   if (window._cardLoadSeqBySid) window._cardLoadSeqBySid.delete(sessionId);
-  if (window._cardStopFallbackBySid && window._cardStopFallbackBySid.has(sessionId)) {
-    clearTimeout(window._cardStopFallbackBySid.get(sessionId));
-    window._cardStopFallbackBySid.delete(sessionId);
-  }
-  if (window._cardReloadState && window._cardReloadState.has(sessionId)) {
-    const st = window._cardReloadState.get(sessionId);
-    if (st && st.pendingTimer) { try { clearTimeout(st.pendingTimer); } catch {} }
-    window._cardReloadState.delete(sessionId);
-  }
+  clearCardLiveRefreshState(sessionId);
   if (window._codexHistoryRetryState && window._codexHistoryRetryState.has(sessionId)) {
     const st = window._codexHistoryRetryState.get(sessionId);
     if (st && st.timer) { try { clearTimeout(st.timer); } catch {} }
@@ -6324,6 +6389,27 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
       state: key => previewPanel.getPreviewState(key),
       watchStats: () => previewPanel.getFileWatchStats(),
       findState: () => previewPanel.getPreviewFindState(),
+    },
+    cardLiveRefresh: {
+      noteOutput: sessionId => noteCardTerminalOutput(sessionId),
+      dispose: sessionId => clearCardLiveRefreshState(sessionId),
+      state: sessionId => {
+        const reload = window._cardReloadState && window._cardReloadState.get(sessionId);
+        const settle = window._cardStopFallbackBySid && window._cardStopFallbackBySid.get(sessionId);
+        return {
+          reload: reload ? {
+            lastReloadAt: reload.lastReloadAt || 0,
+            pending: !!reload.pendingTimer,
+            inProgress: !!reload.inProgress,
+            queued: !!reload.queued,
+            lastReason: reload.lastReason || null,
+          } : null,
+          settle: settle ? {
+            index: Number(settle.index) || 0,
+            pending: !!settle.timer,
+          } : null,
+        };
+      },
     },
     terminalLiveScreenText: (sessionId) => terminalActivityMonitor.extractLiveScreenLines(sessionId).join('\n'),
     cardQuestionNavigator: {

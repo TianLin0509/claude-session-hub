@@ -80,7 +80,16 @@ async function main() {
   let client = null;
   const result = { runId: RUN_ID, port: PORT, topLevelPath, subagentPath };
   try {
-    hub = await launchIsolatedHub({ dataDir: DATA_DIR, port: PORT, label: 'card-session-isolation' });
+    hub = await launchIsolatedHub({
+      dataDir: DATA_DIR,
+      port: PORT,
+      label: 'card-session-isolation',
+      extraEnv: {
+        CLAUDE_HUB_E2E: '1',
+        CLAUDE_HUB_HOME_DIR: path.join(TEMP_ROOT, 'home'),
+        DEEPSEEK_API_KEY: '',
+      },
+    });
     await _waitMs(1200);
     client = await connectFirstPage(hub, target => target.type === 'page' && /index\.html/i.test(target.url || ''));
 
@@ -202,6 +211,78 @@ async function main() {
     })()`);
     assert.equal(result.turnCompleteRace.hasOld, false);
     assert.equal(result.turnCompleteRace.hasNew, true);
+
+    result.unboundLiveRefresh = await client.eval(`(async () => {
+      const { ipcRenderer } = require('electron');
+      const originalInvoke = ipcRenderer.invoke.bind(ipcRenderer);
+      const overlay = document.getElementById('msg-overlay');
+      const sid = 'unbound-live-refresh';
+      let parseCalls = 0;
+      ipcRenderer.invoke = (channel, args) => {
+        if (channel === 'parse-session-transcript' && args && args.hubSessionId === sid) {
+          parseCalls += 1;
+          if (parseCalls < 3) {
+            return Promise.resolve({ turns: [], transcriptPath: null, error: 'transcript not found yet' });
+          }
+          return Promise.resolve({
+            turns: [{
+              id: 'unbound-live-answer',
+              role: 'assistant',
+              text: 'UNBOUND LIVE REFRESH APPEARED',
+              ts: Date.now(),
+              kind: 'codex',
+            }],
+            transcriptPath: null,
+            error: null,
+          });
+        }
+        return originalInvoke(channel, args);
+      };
+      try {
+        sessions.set(sid, {
+          id: sid,
+          kind: 'codex',
+          title: 'Unbound live refresh',
+          cwd: 'C:/tmp',
+          status: 'running',
+          // Deliberately omit transcriptPath / ccSessionId / codexSid. Main's
+          // transcript router may already know more than this renderer snapshot.
+        });
+        currentView = 'card';
+        activeSessionId = sid;
+        _cardHistoryHydratedSid = sid;
+        overlay.innerHTML = '';
+        window._sessionTurns.clear();
+        let scheduledCount = 0;
+        for (let index = 0; index < 1000; index += 1) {
+          if (window.__hubE2E.cardLiveRefresh.noteOutput(sid)) scheduledCount += 1;
+        }
+        const deadline = Date.now() + 5000;
+        while (!overlay.innerText.includes('UNBOUND LIVE REFRESH APPEARED') && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 40));
+        }
+        const state = window.__hubE2E.cardLiveRefresh.state(sid);
+        window.__hubE2E.cardLiveRefresh.dispose(sid);
+        const disposedState = window.__hubE2E.cardLiveRefresh.state(sid);
+        return {
+          scheduledCount,
+          parseCalls,
+          appeared: overlay.innerText.includes('UNBOUND LIVE REFRESH APPEARED'),
+          state,
+          disposedState,
+        };
+      } finally {
+        window.__hubE2E.cardLiveRefresh.dispose(sid);
+        sessions.delete(sid);
+        ipcRenderer.invoke = originalInvoke;
+      }
+    })()`);
+    assert.equal(result.unboundLiveRefresh.scheduledCount, 1000);
+    assert.equal(result.unboundLiveRefresh.parseCalls, 3, JSON.stringify(result.unboundLiveRefresh));
+    assert.equal(result.unboundLiveRefresh.appeared, true);
+    assert.equal(result.unboundLiveRefresh.state.reload.lastReason, 'stream-settle-2500ms');
+    assert.equal(result.unboundLiveRefresh.state.settle.pending, true);
+    assert.deepEqual(result.unboundLiveRefresh.disposedState, { reload: null, settle: null });
 
     result.sameSessionHydrationRace = await client.eval(`(async () => {
       const { ipcRenderer } = require('electron');
@@ -369,6 +450,7 @@ async function main() {
         'e2e-subagent',
         'race-old', 'race-new',
         'race-complete-old', 'race-complete-new',
+        'unbound-live-refresh',
         'same-sid-hydration-race',
         'same-sid-reverse-race',
       ]) sessions.delete(sid);
