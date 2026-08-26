@@ -427,6 +427,40 @@ function sessionRecordFromDescriptor(descriptor, turns, extra = {}) {
   };
 }
 
+function titleOnlySourceFromDescriptor(descriptor, options = {}) {
+  let session;
+  if (descriptor.type === 'meeting') {
+    const meeting = descriptor.meeting || {};
+    const title = String(meeting.title || '未命名群聊');
+    const updatedAt = sessionUpdatedAt(meeting) || Number(descriptor.mtime) || 0;
+    session = {
+      key: descriptor.key,
+      provider: 'meeting', nativeFamily: 'meeting', kind: 'meeting', title,
+      cwd: meeting.workspace || null,
+      projectLabel: meeting.workspaceLabel || projectLabelFor(null, meeting.workspace),
+      model: null, updatedAt,
+      hubSessionId: null, nativeSessionId: null,
+      meetingId: descriptor.meetingId || null,
+      transcriptPath: descriptor.filePath || null,
+      codexSessionsRoot: null, codexProfile: null, turnCount: 0,
+    };
+  } else {
+    const meta = descriptor.codexMeta || {};
+    session = sessionRecordFromDescriptor(descriptor, [], { cwd: meta.cwd, slug: meta.slug });
+  }
+  return {
+    key: descriptor.key,
+    signature: String(options.signature || descriptor.signature || ''),
+    stale: options.stale === true,
+    searchable: descriptor.type === 'meeting' || !session.meetingId,
+    session,
+    docs: [{
+      id: 'title', eventId: 'title', scope: 'title', role: 'title',
+      text: session.title, ordinal: -1, timestamp: session.updatedAt,
+    }],
+  };
+}
+
 function toolText(toolCall) {
   if (!toolCall) return '';
   const parts = [];
@@ -849,5 +883,6 @@ module.exports = {
   providerLabel,
   readBoundedJsonlTailText,
   statSignature,
+  titleOnlySourceFromDescriptor,
   titleOnlySources,
 };

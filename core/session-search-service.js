@@ -1,118 +1,164 @@
 'use strict';
 
 const path = require('node:path');
-const { Worker } = require('node:worker_threads');
+const { fork } = require('node:child_process');
+const {
+  DEFAULT_MAX_CANDIDATE_SESSIONS,
+  DEFAULT_MAX_DOC_CHARS,
+  DEFAULT_MAX_FILE_BYTES,
+  DEFAULT_MAX_QUERY_DOCS,
+  DEFAULT_MAX_SOURCE_CHARS,
+  DEFAULT_MAX_SOURCES,
+  sqlitePathForLegacyCache,
+} = require('./session-search-config.js');
 
 class SessionSearchService {
   constructor(options = {}) {
-    this._Worker = options.Worker || Worker;
-    this._workerPath = options.workerPath || path.join(__dirname, 'session-search-worker.js');
-    this._enabled = options.enabled === true;
+    this._fork = options.fork || fork;
+    this._childPath = options.childPath || path.join(__dirname, 'session-search-child.js');
     this._prewarmEnabled = options.prewarmEnabled === true;
-    this._workerData = {
+    this._childData = {
       cachePath: options.cachePath || null,
+      databasePath: options.databasePath || sqlitePathForLegacyCache(options.cachePath),
       claudeRoots: Array.isArray(options.claudeRoots) ? options.claudeRoots : [],
       codexRoots: Array.isArray(options.codexRoots) ? options.codexRoots : [],
       meetingDir: options.meetingDir || null,
       refreshTtlMs: Number(options.refreshTtlMs) || 10_000,
-      maxCacheCompressedBytes: Math.max(1024 * 1024, Number(options.maxCacheCompressedBytes) || 32 * 1024 * 1024),
-      maxCacheShardOutputBytes: Math.max(1024 * 1024, Number(options.maxCacheShardOutputBytes) || 32 * 1024 * 1024),
-      maxSourceReadBytes: Math.max(256 * 1024, Number(options.maxSourceReadBytes) || 4 * 1024 * 1024),
-      maxSources: Math.max(10, Number(options.maxSources) || 200),
-      maxIndexedChars: Math.max(1024 * 1024, Number(options.maxIndexedChars) || 16 * 1024 * 1024),
+      maxSources: Math.max(20, Number(options.maxSources) || DEFAULT_MAX_SOURCES),
+      maxFileBytes: Math.max(1024 * 1024, Number(options.maxFileBytes) || DEFAULT_MAX_FILE_BYTES),
+      maxSourceChars: Math.max(64 * 1024, Number(options.maxSourceChars) || DEFAULT_MAX_SOURCE_CHARS),
+      maxDocChars: Math.max(8 * 1024, Number(options.maxDocChars) || DEFAULT_MAX_DOC_CHARS),
+      maxCandidateSessions: Math.max(50, Number(options.maxCandidateSessions) || DEFAULT_MAX_CANDIDATE_SESSIONS),
+      maxQueryDocs: Math.max(1000, Number(options.maxQueryDocs) || DEFAULT_MAX_QUERY_DOCS),
     };
-    this._workerResourceLimits = {
-      maxOldGenerationSizeMb: Math.max(128, Number(options.workerMemoryLimitMb) || 384),
-      maxYoungGenerationSizeMb: 64,
-    };
-    this._worker = null;
+    this._childMemoryLimitMb = Math.max(256, Number(options.childMemoryLimitMb) || 768);
+    this._requestTimeoutMs = Math.max(50, Number(options.requestTimeoutMs) || 180_000);
+    this._child = null;
+    this._stderrTail = [];
     this._nextId = 0;
     this._pending = new Map();
     this._closed = false;
     this._status = {
-      phase: this._enabled ? 'idle' : 'disabled_memory_safety',
-      ready: false,
-      refreshing: false,
-      lastError: this._enabled ? null : '全文搜索因内存安全问题暂时停用',
-      index: { sessions: 0, documents: 0, terms: 0, providers: {} },
+      phase: 'idle', ready: false, refreshing: false,
+      index: { sessions: 0, documents: 0, terms: 0, providers: {}, storage: 'sqlite-child-process' },
     };
     this._stats = { submitted: 0, completed: 0, workerRestarts: 0, failures: 0 };
   }
 
-  _ensureWorker() {
-    if (!this._enabled) throw new Error('全文搜索因内存安全问题暂时停用');
+  _armRequestTimeout(id, pending) {
+    clearTimeout(pending.timer);
+    pending.timer = setTimeout(() => {
+      if (this._pending.get(id) !== pending) return;
+      const error = new Error(`Session search child did not respond for ${this._requestTimeoutMs}ms (${pending.type})`);
+      this._handleFailure(error, this._child);
+    }, this._requestTimeoutMs);
+    pending.timer.unref?.();
+  }
+
+  _touchPendingRequests() {
+    for (const [id, pending] of this._pending) this._armRequestTimeout(id, pending);
+  }
+
+  _ensureChild() {
     if (this._closed) throw new Error('Session search service is closed');
-    if (this._worker) return this._worker;
-    const worker = new this._Worker(this._workerPath, {
-      workerData: this._workerData,
-      resourceLimits: this._workerResourceLimits,
+    if (this._child) return this._child;
+    this._stderrTail = [];
+    const child = this._fork(this._childPath, [], {
+      // Do not set cwd to __dirname: in packaged builds it points inside
+      // app.asar, which is not a real Windows working directory.
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_NO_WARNINGS: '1' },
+      execArgv: [`--max-old-space-size=${this._childMemoryLimitMb}`],
+      windowsHide: true,
+      serialization: 'advanced',
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     });
-    worker.unref?.();
-    worker.on('message', message => this._handleMessage(message));
-    worker.on('error', error => this._handleFailure(error, worker));
-    worker.on('exit', (code) => {
-      if (this._worker !== worker) return;
-      if (!this._closed && code !== 0) {
-        this._handleFailure(new Error(`Session search worker exited with code ${code}`), worker);
-        return;
-      }
-      this._worker = null;
+    child.on('message', message => this._handleMessage(message));
+    child.on('error', error => this._handleFailure(error, child));
+    child.on('exit', (code, signal) => {
+      if (this._child !== child) return;
+      const detail = this._stderrTail.slice(-8).join('\n');
+      const error = new Error(`Session search child exited (code=${code}, signal=${signal || 'none'})${detail ? `\n${detail}` : ''}`);
+      this._handleFailure(error, child);
     });
-    this._worker = worker;
+    if (child.stderr) {
+      child.stderr.on('data', data => {
+        this._stderrTail.push(...String(data || '').split(/\r?\n/).filter(Boolean));
+        if (this._stderrTail.length > 80) this._stderrTail.splice(0, this._stderrTail.length - 80);
+      });
+    }
+    this._child = child;
     this._stats.workerRestarts += 1;
-    return worker;
+    try {
+      child.send({ type: 'init', options: this._childData }, error => {
+        if (error) this._handleFailure(error, child);
+      });
+    } catch (error) {
+      this._handleFailure(error, child);
+      throw error;
+    }
+    return child;
   }
 
   _handleMessage(message) {
     if (message && message.type === 'status') {
       this._status = { ...this._status, ...(message.status || {}) };
+      this._touchPendingRequests();
+      return;
+    }
+    if (message && message.type === 'fatal') {
+      this._status = { ...this._status, refreshing: false, lastError: message.error || '搜索子进程异常退出' };
       return;
     }
     const pending = message && this._pending.get(message.id);
     if (!pending) return;
     this._pending.delete(message.id);
+    clearTimeout(pending.timer);
     if (message.error) {
       pending.reject(new Error(message.error));
       return;
     }
     this._stats.completed += 1;
-    if (pending.type === 'status' && message.result) this._status = { ...this._status, ...message.result };
+    if (message.result && (pending.type === 'status' || pending.type === 'refresh')) {
+      this._status = { ...this._status, ...message.result };
+    } else if (pending.type === 'search' && message.result && message.result.status) {
+      this._status = { ...this._status, ...message.result.status };
+    }
     pending.resolve(message.result);
   }
 
-  _handleFailure(error, worker) {
-    if (worker && this._worker !== worker) return;
-    if (this._worker) this._worker.removeAllListeners();
-    this._worker = null;
+  _handleFailure(error, child) {
+    if (child && this._child !== child) return;
+    const failedChild = this._child;
+    if (failedChild) {
+      failedChild.removeAllListeners();
+      try { if (failedChild.connected) failedChild.kill(); } catch {}
+    }
+    this._child = null;
     this._stats.failures += 1;
-    this._status = { ...this._status, refreshing: false, lastError: error.message };
-    for (const pending of this._pending.values()) pending.reject(error);
+    this._status = { ...this._status, ready: false, refreshing: false, phase: 'child_error', lastError: error.message };
+    for (const pending of this._pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
     this._pending.clear();
   }
 
   _request(type, payload = {}) {
-    if (!this._enabled) {
-      if (type === 'search') {
-        return Promise.resolve({
-          results: [], totalSessions: 0, totalMatches: 0, truncated: false,
-          facets: { providers: {}, scopes: {}, projects: [] },
-          queryMs: 0,
-          index: { ...this._status.index },
-          error: this._status.lastError,
-          status: { ...this._status },
-        });
-      }
-      if (type === 'preview') return Promise.resolve(null);
-      return Promise.resolve({ ...this._status });
-    }
     const id = ++this._nextId;
     return new Promise((resolve, reject) => {
-      this._pending.set(id, { type, resolve, reject });
+      const pending = { type, resolve, reject, timer: null };
+      this._pending.set(id, pending);
+      this._armRequestTimeout(id, pending);
       try {
-        this._ensureWorker().postMessage({ id, type, ...payload });
+        const child = this._ensureChild();
+        child.send({ id, type, ...payload }, error => {
+          if (!error) return;
+          this._handleFailure(error, child);
+        });
         this._stats.submitted += 1;
       } catch (error) {
         this._pending.delete(id);
+        clearTimeout(pending.timer);
         reject(error);
       }
     });
@@ -131,38 +177,54 @@ class SessionSearchService {
   }
 
   status() {
-    if (!this._worker) return Promise.resolve({ ...this._status });
+    if (!this._child) return Promise.resolve({ ...this._status });
     return this._request('status');
   }
 
   prewarm(snapshot = {}) {
-    if (!this._enabled) return Promise.resolve({ ...this._status });
     if (!this._prewarmEnabled) {
-      this._status = {
-        ...this._status,
-        phase: 'deferred',
-        ready: false,
-        refreshing: false,
-        lastError: null,
-      };
+      this._status = { ...this._status, phase: 'deferred', ready: false, refreshing: false, lastError: null };
       return Promise.resolve({ ...this._status });
     }
     return this.refresh(snapshot, { force: false });
   }
 
   getStats() {
-    return { ...this._stats, pending: this._pending.size, status: { ...this._status } };
+    return {
+      ...this._stats,
+      childRestarts: this._stats.workerRestarts,
+      pending: this._pending.size,
+      status: { ...this._status },
+    };
   }
 
   async close() {
     if (this._closed) return;
     this._closed = true;
     const error = new Error('Session search service closed');
-    for (const pending of this._pending.values()) pending.reject(error);
+    for (const pending of this._pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
     this._pending.clear();
-    const worker = this._worker;
-    this._worker = null;
-    if (worker) await worker.terminate();
+    const child = this._child;
+    this._child = null;
+    if (!child) return;
+    await new Promise(resolve => {
+      let settled = false;
+      const finish = () => { if (settled) return; settled = true; clearTimeout(timer); resolve(); };
+      const terminate = () => {
+        try { child.kill(); } catch {}
+        finish();
+      };
+      const timer = setTimeout(() => {
+        terminate();
+      }, 2000);
+      timer.unref?.();
+      child.once('exit', finish);
+      try { child.send({ type: 'close' }, error => { if (error) terminate(); }); }
+      catch { terminate(); }
+    });
   }
 }
 

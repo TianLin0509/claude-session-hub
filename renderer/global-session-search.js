@@ -152,7 +152,7 @@ function createGlobalSessionSearch(options) {
     }
     if (status && status.ready) {
       const suffix = status.phase === 'ready_with_errors' && status.staleSources
-        ? ` · ${status.staleSources} 个来源暂用旧索引`
+        ? ` · ${status.staleSources} 个来源仅保留旧索引或标题`
         : '';
       return `本地索引已更新 · ${Number(stats.sessions) || 0} 个 session · ${Number(stats.documents) || 0} 条记录${suffix}`;
     }

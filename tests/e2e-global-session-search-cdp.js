@@ -204,7 +204,6 @@ async function waitSearchState(client, predicate, label) {
         DEEPSEEK_API_KEY: '',
         USERPROFILE: FAKE_HOME,
         HOME: FAKE_HOME,
-        HUB_SESSION_SEARCH_ENABLE: '1',
         HUB_SESSION_SEARCH_CLAUDE_ROOTS: CLAUDE_ROOT,
         HUB_SESSION_SEARCH_CODEX_ROOTS: CODEX_ROOT,
         HUB_SESSION_SEARCH_REFRESH_TTL_MS: '500',
@@ -363,8 +362,11 @@ async function waitSearchState(client, predicate, label) {
       return !state.modalOpen && state.terminalIds.includes('hub-claude-search') && state.matchMounted ? state : null;
     }, 20_000);
 
-    result.cacheExists = fs.existsSync(path.join(DATA_DIR, 'cache', 'session-search-v2.json'));
+    const databasePath = path.join(DATA_DIR, 'cache', 'session-search-v3.sqlite');
+    result.cacheExists = fs.existsSync(databasePath);
+    result.databaseBytes = result.cacheExists ? fs.statSync(databasePath).size : 0;
     assert.equal(result.cacheExists, true);
+    assert.ok(result.databaseBytes > 0);
     result.consoleErrors = await client.send('Runtime.evaluate', {
       expression: 'window.__GLOBAL_SEARCH_CONSOLE_ERRORS || []', returnByValue: true,
     }).then(response => response.result.value || []);

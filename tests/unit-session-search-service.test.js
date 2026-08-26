@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { EventEmitter } = require('node:events');
-const zlib = require('node:zlib');
+const { sqlitePathForLegacyCache } = require('../core/session-search-config.js');
 const { SessionSearchService } = require('../core/session-search-service.js');
 
 function writeClaudeTranscript(filePath) {
@@ -24,11 +24,56 @@ function writeClaudeTranscript(filePath) {
   fs.writeFileSync(filePath, rows.map(row => JSON.stringify(row)).join('\n') + '\n', 'utf8');
 }
 
-test('worker service builds, queries, previews and reloads its persistent local cache', { timeout: 20_000 }, async (t) => {
+class FakeChild extends EventEmitter {
+  constructor({ autoRespond = false } = {}) {
+    super();
+    this.autoRespond = autoRespond;
+    this.connected = true;
+    this.stderr = new EventEmitter();
+    this.sent = [];
+  }
+
+  send(message, callback) {
+    this.sent.push(message);
+    if (typeof callback === 'function') setImmediate(() => callback(null));
+    if (message && message.type === 'close') {
+      setImmediate(() => {
+        this.connected = false;
+        this.emit('exit', 0, null);
+      });
+      return true;
+    }
+    if (this.autoRespond && message && message.id) {
+      const result = message.type === 'search'
+        ? {
+          results: [], totalSessions: 0, totalMatches: 0, truncated: false,
+          facets: { providers: {}, scopes: {}, projects: [] }, queryMs: 1,
+        }
+        : {};
+      setImmediate(() => this.emit('message', { id: message.id, result }));
+    }
+    return true;
+  }
+
+  kill() {
+    this.connected = false;
+    setImmediate(() => this.emit('exit', 0, null));
+    return true;
+  }
+}
+
+test('parent service stays free of SQLite engine/native-module imports', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-search-service.js'), 'utf8');
+  assert.doesNotMatch(source, /session-search-engine|node:sqlite/);
+  assert.match(source, /session-search-config/);
+});
+
+test('child-process service builds, queries, previews and reopens its persistent SQLite index', { timeout: 30_000 }, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-session-search-service-'));
   const claudeRoot = path.join(root, '.claude', 'projects');
   const transcriptPath = path.join(claudeRoot, 'C--worker-repo', 'worker-session.jsonl');
   const cachePath = path.join(root, 'hub-data', 'cache', 'session-search-v2.json');
+  const databasePath = sqlitePathForLegacyCache(cachePath);
   const meetingDir = path.join(root, 'hub-data', 'meetings');
   fs.mkdirSync(meetingDir, { recursive: true });
   writeClaudeTranscript(transcriptPath);
@@ -38,7 +83,7 @@ test('worker service builds, queries, previews and reloads its persistent local 
   }], meetings: [] };
 
   const service = new SessionSearchService({
-    enabled: true, claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 5,
+    claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 5,
   });
   t.after(async () => {
     await service.close().catch(() => {});
@@ -47,12 +92,10 @@ test('worker service builds, queries, previews and reloads its persistent local 
   const refreshed = await service.refresh(snapshot, { force: true });
   assert.equal(refreshed.ready, true);
   assert.ok(refreshed.index.documents >= 3);
-  assert.equal(fs.existsSync(cachePath), true);
-  const manifest = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-  assert.equal(manifest.version, 2);
-  assert.ok(manifest.entries.length >= 1);
-  assert.equal(fs.existsSync(`${cachePath}.sources`), true);
-  assert.ok(fs.readdirSync(`${cachePath}.sources`).some(file => file.endsWith('.json.gz')));
+  assert.equal(refreshed.index.storage, 'sqlite-fts5');
+  assert.equal(fs.existsSync(databasePath), true);
+  assert.equal(fs.existsSync(cachePath), false);
+  assert.equal(fs.existsSync(`${cachePath}.sources`), false);
 
   const title = await service.search({ query: 'Worker 自定义', scopes: ['title'] }, snapshot);
   assert.equal(title.totalSessions, 1);
@@ -72,144 +115,141 @@ test('worker service builds, queries, previews and reloads its persistent local 
     type: 'assistant', uuid: 'worker-a2', timestamp: '2026-08-20T10:00:03Z',
     message: { model: 'claude-sonnet', stop_reason: 'end_turn', content: [{ type: 'text', text: 'INCREMENTAL_REFRESH_MARKER 已进入索引' }] },
   })}\n`, 'utf8');
-  await new Promise(resolve => setTimeout(resolve, 10));
+  await new Promise(resolve => setTimeout(resolve, 20));
   const incremental = await service.refresh(snapshot, { force: false });
-  assert.equal(incremental.incrementalUpdate, true);
+  assert.equal(incremental.ready, true);
+  assert.equal(incremental.parsedSources, 1);
   const incrementalResult = await service.search({ query: 'INCREMENTAL_REFRESH_MARKER' }, snapshot);
   assert.equal(incrementalResult.totalSessions, 1);
 
   await service.close();
   const cached = new SessionSearchService({
-    enabled: true, claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 60_000,
+    claudeRoots: [claudeRoot], codexRoots: [], meetingDir, cachePath, refreshTtlMs: 60_000,
   });
   try {
     const cachedResult = await cached.search({ query: 'EADDRINUSE' }, snapshot);
     assert.equal(cachedResult.totalSessions, 1);
     assert.equal(cachedResult.status.ready, true);
+    assert.equal(cached.getStats().status.ready, true);
   } finally {
     await cached.close();
   }
 });
 
-test('startup prewarm is deferred by default and does not allocate a worker', async () => {
-  let workerCount = 0;
-  class CountingWorker extends EventEmitter {
-    constructor() { super(); workerCount += 1; }
-    unref() {}
-    terminate() { return Promise.resolve(0); }
-  }
-  const service = new SessionSearchService({ enabled: true, Worker: CountingWorker });
+test('startup prewarm is deferred by default and does not allocate a child process', async () => {
+  let childCount = 0;
+  const service = new SessionSearchService({
+    cachePath: path.join(os.tmpdir(), 'unused-search-v2.json'),
+    fork: () => { childCount += 1; return new FakeChild(); },
+  });
   try {
     const status = await service.prewarm({ sessions: [], meetings: [] });
     assert.equal(status.phase, 'deferred');
     assert.equal(status.ready, false);
-    assert.equal(workerCount, 0);
+    assert.equal(childCount, 0);
   } finally {
     await service.close();
   }
 });
 
-test('search worker receives a hard V8 heap limit and bounded index inputs', async () => {
-  let workerOptions = null;
-  class CapturingWorker extends EventEmitter {
-    constructor(_workerPath, options) { super(); workerOptions = options; }
-    unref() {}
-    terminate() { return Promise.resolve(0); }
-  }
+test('search child receives an isolated V8 heap and bounded indexing inputs', async () => {
+  let childPath = null;
+  let childOptions = null;
+  const child = new FakeChild();
   const service = new SessionSearchService({
-    enabled: true,
-    Worker: CapturingWorker,
-    workerMemoryLimitMb: 256,
+    cachePath: path.join(os.tmpdir(), 'captured-search-v2.json'),
+    fork: (modulePath, _args, options) => {
+      childPath = modulePath;
+      childOptions = options;
+      return child;
+    },
+    childMemoryLimitMb: 256,
     maxSources: 50,
-    maxIndexedChars: 4 * 1024 * 1024,
-    maxCacheCompressedBytes: 8 * 1024 * 1024,
-    maxCacheShardOutputBytes: 2 * 1024 * 1024,
-    maxSourceReadBytes: 3 * 1024 * 1024,
+    maxFileBytes: 4 * 1024 * 1024,
+    maxSourceChars: 2 * 1024 * 1024,
+    maxDocChars: 64 * 1024,
   });
   try {
-    service._ensureWorker();
-    assert.equal(workerOptions.resourceLimits.maxOldGenerationSizeMb, 256);
-    assert.equal(workerOptions.workerData.maxSources, 50);
-    assert.equal(workerOptions.workerData.maxIndexedChars, 4 * 1024 * 1024);
-    assert.equal(workerOptions.workerData.maxCacheCompressedBytes, 8 * 1024 * 1024);
-    assert.equal(workerOptions.workerData.maxCacheShardOutputBytes, 2 * 1024 * 1024);
-    assert.equal(workerOptions.workerData.maxSourceReadBytes, 3 * 1024 * 1024);
+    service._ensureChild();
+    assert.match(childPath, /session-search-child\.js$/);
+    assert.equal(childOptions.cwd, undefined);
+    assert.deepStrictEqual(childOptions.execArgv, ['--max-old-space-size=256']);
+    assert.equal(childOptions.env.ELECTRON_RUN_AS_NODE, '1');
+    assert.equal(childOptions.serialization, 'advanced');
+    assert.deepStrictEqual(childOptions.stdio, ['ignore', 'ignore', 'pipe', 'ipc']);
+    const init = child.sent.find(message => message.type === 'init');
+    assert.equal(init.options.maxSources, 50);
+    assert.equal(init.options.maxFileBytes, 4 * 1024 * 1024);
+    assert.equal(init.options.maxSourceChars, 2 * 1024 * 1024);
+    assert.equal(init.options.maxDocChars, 64 * 1024);
+    assert.equal(init.options.maxCandidateSessions, 1200);
+    assert.equal(init.options.maxQueryDocs, 20_000);
   } finally {
     await service.close();
   }
 });
 
-test('non-zero worker exit rejects every pending request instead of hanging', async () => {
-  class ExitingWorker extends EventEmitter {
-    unref() {}
-    postMessage() {}
-    terminate() { return Promise.resolve(0); }
-  }
-  const service = new SessionSearchService({ enabled: true, Worker: ExitingWorker });
-  const pending = service.search({ query: 'pending' }, {});
-  const worker = service._worker;
-  worker.emit('exit', 137);
-  await assert.rejects(pending, /exited with code 137/);
-  assert.equal(service.getStats().pending, 0);
-  assert.equal(service.getStats().failures, 1);
-  await service.close();
-});
-
-test('oversized decompressed cache shards are rejected without crashing the worker', { timeout: 20_000 }, async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-session-search-cache-bomb-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const cachePath = path.join(root, 'session-search-cache.json');
-  const shardDir = `${cachePath}.sources`;
-  fs.mkdirSync(shardDir, { recursive: true });
-  const shardName = 'oversized.json.gz';
-  const inflated = JSON.stringify({
-    source: { key: 'oversized', signature: 'fixture', provider: 'claude' },
-    docs: [{ id: 'doc', text: 'x'.repeat(3 * 1024 * 1024) }],
-  });
-  const compressed = zlib.gzipSync(Buffer.from(inflated));
-  fs.writeFileSync(path.join(shardDir, shardName), compressed);
-  fs.writeFileSync(cachePath, JSON.stringify({
-    version: 2,
-    savedAt: Date.now(),
-    compressedBytes: compressed.length,
-    entries: [{ key: 'oversized', signature: 'fixture', files: [shardName] }],
-  }), 'utf8');
-
+test('child crash rejects only the search request and the service restarts on the next query', async () => {
+  const children = [];
   const service = new SessionSearchService({
-    enabled: true,
-    cachePath,
-    maxCacheShardOutputBytes: 1024 * 1024,
-    maxIndexedChars: 1024 * 1024,
+    cachePath: path.join(os.tmpdir(), 'crash-isolation-search-v2.json'),
+    fork: () => {
+      const child = new FakeChild({ autoRespond: children.length > 0 });
+      children.push(child);
+      return child;
+    },
   });
   try {
-    service._ensureWorker();
-    const status = await service.status();
-    assert.equal(status.ready, true);
-    assert.equal(status.phase, 'ready_with_errors');
-    assert.match(status.lastError || status.sourceErrors.join(' '), /output length|larger than/i);
-    assert.equal(status.index.documents, 0);
+    const firstSearch = service.search({ query: '昨日之我' }, { sessions: [], meetings: [] });
+    assert.equal(children.length, 1);
+    children[0].stderr.emit('data', Buffer.from('heap limit reached\n'));
+    children[0].emit('exit', 134, null);
+    await assert.rejects(firstSearch, /heap limit reached/);
+    assert.equal(service.getStats().failures, 1);
+
+    const recovered = await service.search({ query: '昨日之我' }, { sessions: [], meetings: [] });
+    assert.equal(children.length, 2);
+    assert.equal(recovered.totalSessions, 0);
+    assert.equal(service.getStats().workerRestarts, 2);
   } finally {
     await service.close();
   }
 });
 
-test('production default disables full-text search without creating a worker', async () => {
-  let workerCount = 0;
-  class CountingWorker extends EventEmitter {
-    constructor() { super(); workerCount += 1; }
-    unref() {}
-    terminate() { return Promise.resolve(0); }
-  }
-  const service = new SessionSearchService({ Worker: CountingWorker });
+test('a real OS child exit is contained by the parent process', { timeout: 10_000 }, async () => {
+  const parentPid = process.pid;
+  const service = new SessionSearchService({
+    cachePath: path.join(os.tmpdir(), 'real-child-exit-search-v2.json'),
+    childPath: path.join(__dirname, 'fixtures', 'session-search-exit-child.js'),
+  });
   try {
-    const result = await service.search({ query: '昨日之我' }, { sessions: [], meetings: [] });
-    assert.equal(workerCount, 0);
-    assert.equal(result.totalSessions, 0);
-    assert.equal(result.status.phase, 'disabled_memory_safety');
-    assert.match(result.error, /内存安全/);
-    const refreshed = await service.refresh({}, { force: true });
-    assert.equal(refreshed.phase, 'disabled_memory_safety');
-    assert.equal(workerCount, 0);
+    await assert.rejects(
+      service.search({ query: '隔离退出' }, { sessions: [], meetings: [] }),
+      /intentional isolated search child exit/,
+    );
+    assert.equal(process.pid, parentPid);
+    assert.equal(service.getStats().failures, 1);
+    assert.equal(service.getStats().status.ready, false);
+  } finally {
+    await service.close();
+  }
+});
+
+test('an unresponsive child is terminated after an inactivity timeout', async () => {
+  const child = new FakeChild();
+  const service = new SessionSearchService({
+    cachePath: path.join(os.tmpdir(), 'hung-child-search-v2.json'),
+    requestTimeoutMs: 50,
+    fork: () => child,
+  });
+  try {
+    await assert.rejects(
+      service.search({ query: '无响应' }, { sessions: [], meetings: [] }),
+      /did not respond for 50ms/,
+    );
+    assert.equal(service.getStats().failures, 1);
+    assert.equal(service.getStats().pending, 0);
+    assert.equal(child.connected, false);
   } finally {
     await service.close();
   }
