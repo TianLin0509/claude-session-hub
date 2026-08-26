@@ -137,6 +137,7 @@ async function run() {
     await cdp.eval(`(() => {
       document.getElementById('btn-new').click();
       document.querySelector('.new-session-option[data-kind="kimi"]').click();
+      document.getElementById('new-session-submit').click();
       return true;
     })()`);
     await waitFor(cdp, `(async () => {
@@ -190,11 +191,8 @@ async function run() {
     assert.ok(/^Ctx\s+[\d.]+%$/.test(cardState.sidebarContext));
     await screenshot(cdp, CARD_SHOT, '.terminal-panel');
 
-    await cdp.eval(`(() => {
-      window.LaunchCenter.open('group');
-      document.getElementById('launch-center-configure-group').click();
-    })()`);
-    await waitFor(cdp, `document.getElementById('meeting-create-modal')?.style.display === 'flex'`);
+    await cdp.eval(`window.LaunchCenter.open('group')`);
+    await waitFor(cdp, `document.querySelector('#launch-center-group-host #meeting-create-modal.mcm-embedded')?.style.display === 'flex'`);
     await cdp.eval(`(() => {
       let slots = [...document.querySelectorAll('#meeting-create-modal .mcm-slot')];
       for (const slot of slots.slice(0, 2)) {

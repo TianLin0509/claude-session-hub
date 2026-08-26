@@ -37,7 +37,7 @@
     <div class="session-sidebar" id="session-sidebar">
       <div class="sidebar-header">
         <div class="new-session-wrapper" id="new-session-wrapper">
-          <button type="button" class="btn-new-session" id="btn-new" title="打开启动中心 (Ctrl+N)" aria-haspopup="dialog" aria-controls="new-session-menu" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="btn-label">新建</span></button>
+          <button type="button" class="btn-new-session" id="btn-new" title="打开启动中心 (Ctrl+N)" aria-haspopup="dialog" aria-controls="new-session-menu" aria-expanded="false"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="btn-label">启动</span></button>
           <div class="new-session-menu" id="new-session-menu" role="dialog" aria-modal="true" aria-labelledby="launch-center-title" style="display:none">
             <div class="session-create-head">
               <div><strong id="launch-center-title">启动中心</strong><span id="launch-center-subtitle">选择 AI、模型与工作目录</span></div>
@@ -87,18 +87,9 @@
                   <div class="session-create-footer"><span id="new-session-summary">Claude Code · 新建临时 workspace</span><div><button type="button" class="session-create-cancel" id="new-session-cancel">取消</button><button type="button" class="session-create-submit" id="new-session-submit">创建会话</button></div></div>
                 </section>
                 <section class="launch-center-panel" id="launch-center-group-panel" data-launch-panel="group" role="tabpanel" aria-labelledby="launch-intent-group" hidden>
-                  <div class="launch-center-panel-head"><strong>创建 AI 群聊</strong><span>先选协作模板，再进入成员配置</span></div>
-                  <div class="launch-center-panel-body">
-                    <div class="launch-center-eyebrow">任务模板</div>
-                    <div class="launch-center-template-grid">
-                      <button type="button" class="launch-center-template selected" data-launch-group-template="general" aria-pressed="true"><strong>通用会诊</strong><small>澄清、方案、风险三路并行</small></button>
-                      <button type="button" class="launch-center-template" data-launch-group-template="review" aria-pressed="false"><strong>代码 / 方案评审</strong><small>实现者、审查者、反例攻击</small></button>
-                      <button type="button" class="launch-center-template" data-launch-group-template="research" aria-pressed="false"><strong>投研圆桌</strong><small>基本面、资金面、反方风控</small></button>
-                      <button type="button" class="launch-center-template" data-launch-group-template="decision" aria-pressed="false"><strong>决策交接</strong><small>结论、取舍、下一步动作</small></button>
-                    </div>
-                    <div class="launch-center-group-note">下一步会沿用现有群聊配置器：每位成员仍可独立选择模型、思考强度、速度和 MCP，不改变已有创建与恢复契约。</div>
-                  </div>
-                  <div class="launch-center-panel-footer"><span>默认 3 位成员 · 新建临时 workspace</span><button type="button" class="launch-center-primary" id="launch-center-configure-group">配置成员</button></div>
+                  <div class="launch-center-panel-head"><strong id="launch-center-group-title">创建 AI 群聊</strong><span>模板、成员、模型与 Workspace 在本页一次完成</span></div>
+                  <div class="launch-center-group-host" id="launch-center-group-host"></div>
+                  <div class="launch-center-error" id="launch-center-group-error" role="alert" hidden></div>
                 </section>
                 <section class="launch-center-panel" id="launch-center-resume-panel" data-launch-panel="resume" role="tabpanel" aria-labelledby="launch-intent-resume" hidden>
                   <div class="launch-center-panel-head"><strong>恢复历史会话</strong><span>选择提供方后打开其原生恢复流程</span></div>

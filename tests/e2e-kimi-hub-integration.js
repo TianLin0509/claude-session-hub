@@ -88,7 +88,10 @@ async function run() {
     assert.ok(menuState.resumeText.includes('Kimi'));
     await screenshot(cdp, MENU_SHOT);
 
-    await cdp.eval(`document.querySelector('.new-session-option[data-kind="kimi"]').click()`);
+    await cdp.eval(`(() => {
+      document.querySelector('.new-session-option[data-kind="kimi"]').click();
+      document.getElementById('new-session-submit').click();
+    })()`);
     await waitFor(cdp, `(async () => {
       const sessions = await require('electron').ipcRenderer.invoke('get-sessions');
       return sessions.some(s => s.kind === 'kimi' && s.currentModel && s.currentModel.id === 'kimi-code/k3');
@@ -98,11 +101,8 @@ async function run() {
       return sessions.some(s => s.kind === 'kimi' && s.kimiSid && s.transcriptPath);
     })()`);
 
-    await cdp.eval(`(() => {
-      window.LaunchCenter.open('group');
-      document.getElementById('launch-center-configure-group').click();
-    })()`);
-    await waitFor(cdp, `document.getElementById('meeting-create-modal') && document.getElementById('meeting-create-modal').style.display === 'flex'`);
+    await cdp.eval(`window.LaunchCenter.open('group')`);
+    await waitFor(cdp, `document.querySelector('#launch-center-group-host #meeting-create-modal.mcm-embedded')?.style.display === 'flex'`);
     const modalState = await cdp.eval(`(() => {
       let slots = [...document.querySelectorAll('#meeting-create-modal .mcm-slot')];
       for (const slot of slots.slice(0, 2)) {

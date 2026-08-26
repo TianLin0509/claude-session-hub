@@ -75,6 +75,7 @@ let _escListener = null;
 let _meetingWorkspace = null;
 let _meetingWorkspaceMode = 'scratch';
 let _creating = false;
+let _presentation = { embedded: false, onCreated: null };
 
 function _paintWorkspace(workspace) {
   if (workspace) _meetingWorkspace = workspace;
@@ -387,7 +388,7 @@ function _bindEvents() {
     });
   });
   _modalEl.addEventListener('click', (e) => {
-    if (e.target === _modalEl) closeMeetingCreateModal();
+    if (!_presentation.embedded && e.target === _modalEl) closeMeetingCreateModal();
   });
 }
 
@@ -440,7 +441,11 @@ async function _onCreate() {
       workspaceDraft: !!workspace.draft,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
+    const onCreated = _presentation.onCreated;
     closeMeetingCreateModal();
+    if (typeof onCreated === 'function') {
+      try { onCreated(meeting); } catch (error) { console.error('[meeting-create] onCreated failed', error); }
+    }
     if (typeof selectMeeting === 'function') selectMeeting(meeting.id);
     else if (typeof window.selectMeeting === 'function') window.selectMeeting(meeting.id);
   } catch (e) {
@@ -480,6 +485,21 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
     : 'general';
   _currentMode = 'general';
   _ensureModal();
+  const embeddedHost = options.embedded === true && options.host && typeof options.host.appendChild === 'function'
+    ? options.host
+    : null;
+  if (embeddedHost) embeddedHost.appendChild(_modalEl);
+  else if (_modalEl.parentElement !== document.body) document.body.appendChild(_modalEl);
+  _modalEl.classList.toggle('mcm-embedded', !!embeddedHost);
+  const dialogEl = _modalEl.querySelector('.mcm-dialog');
+  if (dialogEl) {
+    dialogEl.setAttribute('role', embeddedHost ? 'group' : 'dialog');
+    dialogEl.setAttribute('aria-labelledby', embeddedHost ? 'launch-center-group-title' : 'mcm-title-text');
+  }
+  _presentation = {
+    embedded: !!embeddedHost,
+    onCreated: typeof options.onCreated === 'function' ? options.onCreated : null,
+  };
   _clearError();
   _applyTemplate(requestedTemplate, { clearTitle: true });
   _meetingWorkspaceMode = 'scratch';
@@ -507,10 +527,13 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
     _renderSlots();
   });
   if (_escListener) document.removeEventListener('keydown', _escListener);
-  _escListener = (e) => {
-    if (e.key === 'Escape' && _modalEl.style.display !== 'none') closeMeetingCreateModal();
-  };
-  document.addEventListener('keydown', _escListener);
+  _escListener = null;
+  if (!_presentation.embedded) {
+    _escListener = (e) => {
+      if (e.key === 'Escape' && _modalEl.style.display !== 'none') closeMeetingCreateModal();
+    };
+    document.addEventListener('keydown', _escListener);
+  }
 }
 
 function closeMeetingCreateModal() {
@@ -519,6 +542,7 @@ function closeMeetingCreateModal() {
     document.removeEventListener('keydown', _escListener);
     _escListener = null;
   }
+  _presentation = { embedded: false, onCreated: null };
 }
 
 window.openMeetingCreateModal = openMeetingCreateModal;

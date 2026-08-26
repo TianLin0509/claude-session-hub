@@ -66,18 +66,18 @@ function fixture() {
   const subtitle = new FakeElement();
   const error = new FakeElement();
   error.hidden = true;
-  const configure = new FakeElement();
+  const groupError = new FakeElement();
+  groupError.hidden = true;
   const resumeCancel = new FakeElement();
   const intents = LAUNCH_INTENTS.map(launchIntent => new FakeElement({ launchIntent }));
   const panels = LAUNCH_INTENTS.map(launchPanel => new FakeElement({ launchPanel }));
-  const templates = ['general', 'research'].map(launchGroupTemplate => new FakeElement({ launchGroupTemplate }));
   const resumes = [new FakeElement({ resumeKind: 'codex-resume' })];
   const elements = {
     'new-session-menu': menu,
     'btn-new': trigger,
     'launch-center-subtitle': subtitle,
     'launch-center-error': error,
-    'launch-center-configure-group': configure,
+    'launch-center-group-error': groupError,
     'launch-center-resume-cancel': resumeCancel,
   };
   const view = new FakeWindow();
@@ -88,12 +88,11 @@ function fixture() {
     querySelectorAll(selector) {
       if (selector === '[data-launch-intent]') return intents;
       if (selector === '[data-launch-panel]') return panels;
-      if (selector === '[data-launch-group-template]') return templates;
       if (selector === '[data-resume-kind]') return resumes;
       return [];
     },
   };
-  return { document, view, menu, trigger, subtitle, error, configure, resumeCancel, intents, panels, templates, resumes };
+  return { document, view, menu, trigger, subtitle, error, groupError, resumeCancel, intents, panels, resumes };
 }
 
 test('launch intents normalize to the three supported routes', () => {
@@ -102,14 +101,15 @@ test('launch intents normalize to the three supported routes', () => {
   assert.equal(normalizeLaunchIntent('unknown'), 'session');
 });
 
-test('controller routes intents, group templates, resume and focus restoration', async () => {
+test('controller embeds group configuration once per open cycle and preserves resume/focus behavior', async () => {
   const ui = fixture();
-  const calls = { open: [], close: 0, group: [], resume: [] };
+  const calls = { open: [], close: 0, prepareGroup: 0, closeGroup: 0, resume: [] };
   const controller = createLaunchCenterController({
     document: ui.document,
     openSessionModal: options => { calls.open.push(options); ui.menu.style.display = 'flex'; },
     closeSessionModal: () => { calls.close += 1; ui.menu.style.display = 'none'; },
-    openGroupModal: options => calls.group.push(options),
+    prepareGroupPanel: () => { calls.prepareGroup += 1; },
+    closeGroupPanel: () => { calls.closeGroup += 1; },
     resumeSession: async kind => calls.resume.push(kind),
   });
 
@@ -118,13 +118,15 @@ test('controller routes intents, group templates, resume and focus restoration',
   assert.equal(ui.panels.find(panel => panel.dataset.launchPanel === 'group').hidden, false);
   assert.equal(ui.panels.find(panel => panel.dataset.launchPanel === 'session').hidden, true);
   assert.equal(ui.trigger.getAttribute('aria-expanded'), 'true');
+  assert.equal(calls.prepareGroup, 1);
 
-  await ui.templates[1].emit('click');
-  assert.equal(controller.getSelectedGroupTemplate(), 'research');
-  assert.equal(ui.templates[1].getAttribute('aria-pressed'), 'true');
-  await ui.configure.emit('click');
-  assert.deepEqual(calls.group, [{ templateId: 'research' }]);
-  assert.equal(ui.menu.style.display, 'none');
+  controller.selectIntent('session', { focus: false });
+  controller.selectIntent('group', { focus: false });
+  assert.equal(calls.prepareGroup, 1, 'switching within one open cycle must preserve member edits');
+  ui.menu.style.display = 'none';
+  ui.view.emit('launch-center:closed');
+  assert.equal(calls.closeGroup, 1);
+  assert.equal(ui.trigger.getAttribute('aria-expanded'), 'false');
 
   controller.open('resume');
   await ui.resumes[0].emit('click');
@@ -135,7 +137,7 @@ test('controller routes intents, group templates, resume and focus restoration',
   controller.close();
   assert.equal(ui.trigger.getAttribute('aria-expanded'), 'false');
   assert.ok(ui.trigger.focusCount >= 1);
-  assert.ok(calls.close >= 3);
+  assert.equal(calls.close, 2);
 });
 
 test('workspace direct-open event resets a stale intent to session', () => {
@@ -144,7 +146,8 @@ test('workspace direct-open event resets a stale intent to session', () => {
     document: ui.document,
     openSessionModal() {},
     closeSessionModal() {},
-    openGroupModal() {},
+    prepareGroupPanel() {},
+    closeGroupPanel() {},
     resumeSession() {},
   });
   controller.selectIntent('resume', { focus: false });

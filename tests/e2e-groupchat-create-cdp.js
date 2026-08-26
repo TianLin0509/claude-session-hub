@@ -172,9 +172,11 @@ async function main() {
     await waitFor('launch center open', () => client.eval(`document.querySelector('#new-session-menu')?.style.display === 'flex'`), 8000);
     await clickPoint(client, await pointFor(client, '[data-launch-intent="group"]'));
     await waitFor('group intent panel', () => client.eval(`!document.querySelector('#launch-center-group-panel')?.hidden`), 4000);
-    await clickPoint(client, await pointFor(client, '#launch-center-configure-group'));
     try {
-      await waitFor('meeting modal', () => client.eval(`document.querySelector('#meeting-create-modal')?.style.display === 'flex'`), 8000);
+      await waitFor('embedded group form', () => client.eval(`(() => {
+        const modal = document.querySelector('#launch-center-group-host #meeting-create-modal.mcm-embedded');
+        return modal?.style.display === 'flex' && modal.querySelectorAll('.mcm-slot').length === 3;
+      })()`), 8000);
     } catch (error) {
       const diagnostics = await client.eval(`(async () => {
         const modal = document.querySelector('#meeting-create-modal');
@@ -222,9 +224,12 @@ async function main() {
     assert.equal(recoveredError.ariaBusy, null);
     assert.equal(recoveredError.createInvokes, 0);
 
-    await client.eval(`window.openMeetingCreateModal('group')`);
+    await client.eval(`(() => {
+      window.LaunchCenter.close();
+      window.LaunchCenter.open('group');
+    })()`);
     await waitFor('member tuning controls', () => client.eval(`(() => {
-      const slots = document.querySelectorAll('#meeting-create-modal .mcm-slot');
+      const slots = document.querySelectorAll('#launch-center-group-host #meeting-create-modal.mcm-embedded .mcm-slot');
       return slots.length === 3
         && slots[0].querySelector('.mcm-fast-checkbox')
         && slots[1].querySelector('.mcm-codex-tier-select')

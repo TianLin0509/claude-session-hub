@@ -18,6 +18,8 @@ const WORKSPACE_ROOT = path.join(TEMP_ROOT, 'workspaces');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'launch-center');
 const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `launch-center-${RUN_ID}.png`);
 const GROUP_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `launch-center-group-${RUN_ID}.png`);
+const GROUP_COMPACT_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `launch-center-group-760-${RUN_ID}.png`);
+const GROUP_MOBILE_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `launch-center-group-375-${RUN_ID}.png`);
 const RESUME_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `launch-center-resume-${RUN_ID}.png`);
 const RESULT_PATH = path.join(ARTIFACT_DIR, `result-${RUN_ID}.json`);
 
@@ -99,7 +101,13 @@ async function main() {
   const result = {
     runId: RUN_ID,
     port,
-    screenshots: { session: SCREENSHOT_PATH, group: GROUP_SCREENSHOT_PATH, resume: RESUME_SCREENSHOT_PATH },
+    screenshots: {
+      session: SCREENSHOT_PATH,
+      group: GROUP_SCREENSHOT_PATH,
+      groupCompact: GROUP_COMPACT_SCREENSHOT_PATH,
+      groupMobile: GROUP_MOBILE_SCREENSHOT_PATH,
+      resume: RESUME_SCREENSHOT_PATH,
+    },
   };
 
   try {
@@ -136,7 +144,7 @@ async function main() {
       primaryCount: document.querySelectorAll('.sidebar-header .btn-new-session').length,
     }))()`);
     assert.deepEqual(result.header, {
-      newLabel: '新建', homeLabel: '主页', researchLabel: '投研',
+      newLabel: '启动', homeLabel: '主页', researchLabel: '投研',
       legacyGroup: false, legacyResume: false, primaryCount: 1,
     });
 
@@ -168,31 +176,25 @@ async function main() {
     assert.deepEqual(result.modalIsolation, { launchCenterVisible: true, quickOpenVisible: false, searchVisible: false });
 
     await clickPoint(client, '[data-launch-intent="group"]');
-    await clickPoint(client, '[data-launch-group-template="review"]');
+    await waitFor('embedded group configuration', () => client.eval(`document.querySelector('#launch-center-group-host .mcm-embedded .mcm-slots')?.children.length === 3`));
+    await clickPoint(client, '[data-mcm-template="review"]');
     result.groupIntent = await client.eval(`(() => ({
       intent: window.LaunchCenter.getActiveIntent(),
-      template: window.LaunchCenter.getSelectedGroupTemplate(),
       panelVisible: !document.getElementById('launch-center-group-panel').hidden,
       sessionHidden: document.getElementById('launch-center-session-panel').hidden,
+      embedded: document.getElementById('meeting-create-modal')?.classList.contains('mcm-embedded'),
+      embeddedRole: document.querySelector('#meeting-create-modal .mcm-dialog')?.getAttribute('role'),
+      members: document.querySelectorAll('#launch-center-group-host .mcm-slot').length,
+      reviewSelected: document.querySelector('[data-mcm-template="review"]')?.classList.contains('selected'),
+      devScene: document.querySelector('input[name="mcm-scene"][value="dev"]')?.checked,
+      launchCenterVisible: getComputedStyle(document.getElementById('new-session-menu')).display === 'flex',
     }))()`);
-    assert.deepEqual(result.groupIntent, { intent: 'group', template: 'review', panelVisible: true, sessionHidden: true });
+    assert.deepEqual(result.groupIntent, {
+      intent: 'group', panelVisible: true, sessionHidden: true,
+      embedded: true, embeddedRole: 'group', members: 3, reviewSelected: true, devScene: true, launchCenterVisible: true,
+    });
+    await client.eval(`document.getElementById('mcm-title-input').value = '保留这份成员配置'`);
     await screenshot(client, GROUP_SCREENSHOT_PATH);
-    await clickPoint(client, '#launch-center-configure-group');
-    result.groupModal = await waitFor('group configurator', () => client.eval(`(() => {
-      const modal = document.getElementById('meeting-create-modal');
-      if (!modal || modal.style.display !== 'flex') return null;
-      return {
-        reviewSelected: document.querySelector('[data-mcm-template="review"]')?.classList.contains('selected'),
-        devScene: document.querySelector('input[name="mcm-scene"][value="dev"]')?.checked,
-        launchCenterClosed: document.getElementById('new-session-menu').style.display === 'none',
-      };
-    })()`));
-    assert.equal(result.groupModal.reviewSelected, true);
-    assert.equal(result.groupModal.devScene, true);
-    assert.equal(result.groupModal.launchCenterClosed, true);
-    await clickPoint(client, '#meeting-create-modal .mcm-close');
-
-    await clickPoint(client, '#btn-new');
     await clickPoint(client, '[data-launch-intent="resume"]');
     result.resume = await client.eval(`(() => ({
       intent: window.LaunchCenter.getActiveIntent(),
@@ -205,6 +207,15 @@ async function main() {
     assert.deepEqual(result.resume.kinds, ['claude-resume', 'codex-resume', 'gemini-resume', 'deepseek-resume', 'kimi-resume']);
     assert.equal(result.resume.panelVisible, true);
     await screenshot(client, RESUME_SCREENSHOT_PATH);
+
+    await clickPoint(client, '[data-launch-intent="group"]');
+    result.groupPreserved = await client.eval(`(() => ({
+      title: document.getElementById('mcm-title-input')?.value,
+      members: document.querySelectorAll('#launch-center-group-host .mcm-slot').length,
+      reviewSelected: document.querySelector('[data-mcm-template="review"]')?.classList.contains('selected'),
+    }))()`);
+    assert.deepEqual(result.groupPreserved, { title: '保留这份成员配置', members: 3, reviewSelected: true });
+    await clickPoint(client, '[data-launch-intent="resume"]');
 
     await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
     await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape' });
@@ -244,33 +255,57 @@ async function main() {
 
     await setViewport(client, 760, 900);
     await clickPoint(client, '#btn-new');
+    await clickPoint(client, '[data-launch-intent="group"]');
+    await waitFor('compact embedded group form', () => client.eval(`document.querySelector('#launch-center-group-host .mcm-embedded .mcm-slots')?.children.length === 3`));
     result.compact = await client.eval(`(() => {
       const modal = document.getElementById('new-session-menu').getBoundingClientRect();
       const layout = getComputedStyle(document.querySelector('.launch-center-layout'));
+      const slots = document.querySelector('#launch-center-group-host .mcm-slots');
+      const body = document.querySelector('#launch-center-group-host .mcm-body');
+      const create = document.querySelector('#launch-center-group-host .mcm-create').getBoundingClientRect();
       return {
         viewport: innerWidth,
         left: modal.left, right: modal.right, width: modal.width,
         columns: layout.gridTemplateColumns,
+        memberColumns: getComputedStyle(slots).gridTemplateColumns.split(' ').filter(Boolean).length,
+        formScrollWidth: body.scrollWidth,
+        formClientWidth: body.clientWidth,
+        createVisible: create.width > 0 && create.height > 0 && create.left >= 0 && create.right <= innerWidth,
         bodyScrollWidth: document.body.scrollWidth,
       };
     })()`);
     assert.ok(result.compact.left >= 0 && result.compact.right <= 760, JSON.stringify(result.compact));
     assert.equal(result.compact.bodyScrollWidth, 760);
+    assert.equal(result.compact.memberColumns, 2);
+    assert.ok(result.compact.formScrollWidth <= result.compact.formClientWidth + 1, JSON.stringify(result.compact));
+    assert.equal(result.compact.createVisible, true);
+    await screenshot(client, GROUP_COMPACT_SCREENSHOT_PATH);
 
     await setViewport(client, 375, 820);
     result.mobile = await client.eval(`(() => {
       const modal = document.getElementById('new-session-menu').getBoundingClientRect();
+      const slots = document.querySelector('#launch-center-group-host .mcm-slots');
+      const body = document.querySelector('#launch-center-group-host .mcm-body');
+      const create = document.querySelector('#launch-center-group-host .mcm-create').getBoundingClientRect();
       return {
         viewport: innerWidth, left: modal.left, right: modal.right, width: modal.width,
         bodyScrollWidth: document.body.scrollWidth,
+        memberColumns: getComputedStyle(slots).gridTemplateColumns.split(' ').filter(Boolean).length,
+        formScrollWidth: body.scrollWidth,
+        formClientWidth: body.clientWidth,
+        createVisible: create.width > 0 && create.height > 0 && create.left >= 0 && create.right <= innerWidth,
         homeLabelDisplay: getComputedStyle(document.querySelector('#btn-home .btn-label')).display,
         researchLabelDisplay: getComputedStyle(document.querySelector('#btn-research .btn-label')).display,
       };
     })()`);
     assert.ok(result.mobile.left >= 0 && result.mobile.right <= 375, JSON.stringify(result.mobile));
     assert.equal(result.mobile.bodyScrollWidth, 375);
+    assert.equal(result.mobile.memberColumns, 1);
+    assert.ok(result.mobile.formScrollWidth <= result.mobile.formClientWidth + 1, JSON.stringify(result.mobile));
+    assert.equal(result.mobile.createVisible, true);
     assert.equal(result.mobile.homeLabelDisplay, 'none');
     assert.equal(result.mobile.researchLabelDisplay, 'none');
+    await screenshot(client, GROUP_MOBILE_SCREENSHOT_PATH);
 
     await setViewport(client, 1500, 960);
     await client.eval(`window.LaunchCenter.selectIntent('session', { focus: false })`);

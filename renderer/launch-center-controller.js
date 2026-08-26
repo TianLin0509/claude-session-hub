@@ -3,7 +3,7 @@
 const LAUNCH_INTENTS = Object.freeze(['session', 'group', 'resume']);
 const INTENT_COPY = Object.freeze({
   session: '选择 AI、模型与工作目录',
-  group: '选择协作模板，再配置群聊成员',
+  group: '直接配置模板、成员与工作目录',
   resume: '按提供方恢复原生历史会话',
 });
 
@@ -15,7 +15,8 @@ function createLaunchCenterController({
   document,
   openSessionModal,
   closeSessionModal,
-  openGroupModal,
+  prepareGroupPanel,
+  closeGroupPanel,
   resumeSession,
 }) {
   if (!document) throw new Error('launch center requires document');
@@ -23,14 +24,13 @@ function createLaunchCenterController({
   const triggerEl = document.getElementById('btn-new');
   const subtitleEl = document.getElementById('launch-center-subtitle');
   const errorEl = document.getElementById('launch-center-error');
-  const configureGroupButton = document.getElementById('launch-center-configure-group');
+  const groupErrorEl = document.getElementById('launch-center-group-error');
   const resumeCancelButton = document.getElementById('launch-center-resume-cancel');
   const intentButtons = [...document.querySelectorAll('[data-launch-intent]')];
   const panels = [...document.querySelectorAll('[data-launch-panel]')];
-  const templateButtons = [...document.querySelectorAll('[data-launch-group-template]')];
   const resumeButtons = [...document.querySelectorAll('[data-resume-kind]')];
   let activeIntent = 'session';
-  let selectedGroupTemplate = 'general';
+  let groupPrepared = false;
   let returnFocus = null;
 
   function setOpenState(open) {
@@ -41,15 +41,24 @@ function createLaunchCenterController({
     }
   }
 
-  function setError(message = '') {
-    if (!errorEl) return;
-    errorEl.textContent = message;
-    errorEl.hidden = !message;
+  function clearErrors() {
+    for (const element of [errorEl, groupErrorEl]) {
+      if (!element) continue;
+      element.textContent = '';
+      element.hidden = true;
+    }
+  }
+
+  function setError(message = '', intent = activeIntent) {
+    const target = intent === 'group' ? groupErrorEl : errorEl;
+    if (!target) return;
+    target.textContent = message;
+    target.hidden = !message;
   }
 
   function selectIntent(value, { focus = true } = {}) {
     activeIntent = normalizeLaunchIntent(value);
-    setError('');
+    clearErrors();
     for (const button of intentButtons) {
       const selected = button.dataset.launchIntent === activeIntent;
       button.classList.toggle('active', selected);
@@ -60,6 +69,14 @@ function createLaunchCenterController({
       panel.hidden = panel.dataset.launchPanel !== activeIntent;
     }
     if (subtitleEl) subtitleEl.textContent = INTENT_COPY[activeIntent];
+    if (activeIntent === 'group' && !groupPrepared && typeof prepareGroupPanel === 'function') {
+      try {
+        prepareGroupPanel();
+        groupPrepared = true;
+      } catch (error) {
+        setError(`群聊配置加载失败：${error && error.message ? error.message : String(error)}`, 'group');
+      }
+    }
     if (focus) {
       const selectedButton = intentButtons.find(button => button.dataset.launchIntent === activeIntent);
       if (selectedButton) selectedButton.focus({ preventScroll: true });
@@ -68,10 +85,13 @@ function createLaunchCenterController({
   }
 
   function open(intent = 'session', options = {}) {
-    if (!menuEl || menuEl.style.display === 'none') {
+    const wasClosed = !menuEl || menuEl.style.display === 'none';
+    if (wasClosed) {
       const active = document.activeElement;
       const activeInside = menuEl && active && typeof menuEl.contains === 'function' && menuEl.contains(active);
       returnFocus = activeInside ? triggerEl : active;
+      if (groupPrepared && typeof closeGroupPanel === 'function') closeGroupPanel();
+      groupPrepared = false;
     }
     if (typeof openSessionModal === 'function') openSessionModal(options);
     setOpenState(true);
@@ -79,7 +99,9 @@ function createLaunchCenterController({
   }
 
   function close() {
-    setError('');
+    clearErrors();
+    if (groupPrepared && typeof closeGroupPanel === 'function') closeGroupPanel();
+    groupPrepared = false;
     if (typeof closeSessionModal === 'function') closeSessionModal();
     else if (menuEl) menuEl.style.display = 'none';
     setOpenState(false);
@@ -104,24 +126,6 @@ function createLaunchCenterController({
     });
   }
 
-  for (const button of templateButtons) {
-    button.addEventListener('click', () => {
-      selectedGroupTemplate = button.dataset.launchGroupTemplate || 'general';
-      for (const candidate of templateButtons) {
-        const selected = candidate === button;
-        candidate.classList.toggle('selected', selected);
-        candidate.setAttribute('aria-pressed', selected ? 'true' : 'false');
-      }
-    });
-  }
-
-  if (configureGroupButton) {
-    configureGroupButton.addEventListener('click', () => {
-      close();
-      if (typeof openGroupModal === 'function') openGroupModal({ templateId: selectedGroupTemplate });
-    });
-  }
-
   if (resumeCancelButton) resumeCancelButton.addEventListener('click', close);
 
   for (const button of resumeButtons) {
@@ -130,7 +134,7 @@ function createLaunchCenterController({
       if (!kind || typeof resumeSession !== 'function') return;
       button.disabled = true;
       button.setAttribute('aria-busy', 'true');
-      setError('');
+      clearErrors();
       try {
         close();
         await resumeSession(kind);
@@ -150,7 +154,12 @@ function createLaunchCenterController({
       setOpenState(true);
       selectIntent('session', { focus: false });
     });
-    view.addEventListener('launch-center:closed', () => setOpenState(false));
+    view.addEventListener('launch-center:closed', () => {
+      if (groupPrepared && typeof closeGroupPanel === 'function') closeGroupPanel();
+      groupPrepared = false;
+      clearErrors();
+      setOpenState(false);
+    });
   }
 
   if (menuEl) {
@@ -181,7 +190,6 @@ function createLaunchCenterController({
   return {
     close,
     getActiveIntent: () => activeIntent,
-    getSelectedGroupTemplate: () => selectedGroupTemplate,
     open,
     selectIntent,
     toggle,

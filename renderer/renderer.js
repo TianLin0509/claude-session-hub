@@ -3334,7 +3334,18 @@ const launchCenter = createLaunchCenterController({
   document,
   openSessionModal: options => window.WorkspaceController.openNewSessionModal(options),
   closeSessionModal: () => window.WorkspaceController.closeNewSessionModal(),
-  openGroupModal: options => createMeetingByMode('group', options),
+  prepareGroupPanel: () => {
+    const host = document.getElementById('launch-center-group-host');
+    if (!host) throw new Error('launch-center-group-host missing');
+    createMeetingByMode('group', {
+      embedded: true,
+      host,
+      onCreated: () => launchCenter.close(),
+    });
+  },
+  closeGroupPanel: () => {
+    if (typeof window.closeMeetingCreateModal === 'function') window.closeMeetingCreateModal();
+  },
   resumeSession: kind => ipcRenderer.invoke('create-session', kind),
 });
 window.LaunchCenter = launchCenter;

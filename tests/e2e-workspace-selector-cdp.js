@@ -245,9 +245,8 @@ async function main() {
     await clickPoint(client, await pointFor(client, '#btn-new'));
     await waitFor('launch center group intent', () => client.eval(`document.getElementById('new-session-menu')?.style.display === 'flex'`));
     await clickPoint(client, await pointFor(client, '[data-launch-intent="group"]'));
-    await clickPoint(client, await pointFor(client, '#launch-center-configure-group'));
     result.groupModal = await waitFor('group workspace choices', () => client.eval(`(() => {
-      const modal = document.querySelector('#meeting-create-modal');
+      const modal = document.querySelector('#launch-center-group-host #meeting-create-modal.mcm-embedded');
       if (!modal || modal.style.display === 'none') return null;
       return {
         workspaceChoices: modal.querySelectorAll('.mcm-workspace-choice').length,

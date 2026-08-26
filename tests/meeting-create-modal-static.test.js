@@ -175,7 +175,12 @@ test('modal supports flexible group chat creation', () => {
   assert.match(MODAL_JS, /participants:\s*_isGroupChat\s*\?\s*slots\.map/);
   assert.ok(!/id="btn-group-chat"/.test(HTML), 'legacy standalone group-chat header button must stay removed');
   assert.match(HTML, /id="btn-new"[\s\S]*?id="btn-home"[\s\S]*?id="btn-research"/);
+  assert.match(HTML, /id="btn-new"[^>]*>[\s\S]*?<span class="btn-label">启动<\/span>/);
+  assert.match(HTML, /id="launch-center-group-host"/);
+  assert.doesNotMatch(HTML, /id="launch-center-configure-group"/);
   assert.match(RENDERER_JS, /openMeetingCreateModal\(['"]group['"],\s*options\)/);
+  assert.match(RENDERER_JS, /embedded:\s*true/);
+  assert.match(MODAL_JS, /classList\.toggle\(['"]mcm-embedded['"]/);
 });
 
 console.log('All passed.');
