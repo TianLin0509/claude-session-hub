@@ -117,7 +117,7 @@ function removeTempRoot() {
     }
 
     const labels = await client.eval(`[...document.querySelectorAll('.cx-primary-tab')].map((node) => node.textContent.trim())`);
-    assert.deepStrictEqual(labels, ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累']);
+    assert.deepStrictEqual(labels, ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累', 'Agent 联赛']);
     assert.strictEqual(await client.eval(`document.querySelectorAll('.cx-primary-nav').length`), 1);
     assert.strictEqual(await client.eval(`document.querySelectorAll('.cx-tabs,.cx-tab').length`), 0);
 
@@ -146,6 +146,10 @@ function removeTempRoot() {
       'hub-primary-workspace',
     );
 
+    await client.eval(`document.querySelector('.cx-primary-tab[data-tab="league"]').click()`);
+    await waitEval(client, `getComputedStyle(document.querySelector('.cx-view-league')).display !== 'none'`, 'native Agent League view');
+    assert.strictEqual(await client.eval(`getComputedStyle(document.querySelector('.cx-view-frame')).display`), 'none');
+
     await client.eval(`document.querySelector('.cx-primary-tab[data-tab="market"]').click()`);
     await waitEval(client, `document.querySelector('.cx-view-frame iframe').src.endsWith('#market')`, 'market route');
     await _waitMs(500);
@@ -155,7 +159,30 @@ function removeTempRoot() {
     try {
       await marketClient.send('Runtime.enable');
       await waitEval(marketClient, 'document.getElementById("view-title")?.textContent === "实时行情"', 'live market title');
-      await waitEval(marketClient, 'document.querySelector(".market-quote-hero") && document.querySelector("#market-intraday-canvas svg") && document.querySelector("#market-daily-canvas svg")', 'live market charts', 45000);
+      try {
+        await waitEval(marketClient, 'document.querySelector(".market-quote-hero") && document.querySelector("#market-intraday-canvas svg") && document.querySelector("#market-daily-canvas svg")', 'live market charts', 45000);
+      } catch (error) {
+        const diagnostic = await marketClient.eval(`({
+          href: location.href,
+          hidden: document.hidden,
+          title: document.getElementById('view-title')?.textContent || '',
+          hero: Boolean(document.querySelector('.market-quote-hero')),
+          intraday: Boolean(document.querySelector('#market-intraday-canvas svg')),
+          daily: Boolean(document.querySelector('#market-daily-canvas svg')),
+          body: document.body.innerText.slice(0, 1600)
+        })`);
+        const frameDiagnostic = await client.eval(`({
+          frameDisplay: getComputedStyle(document.querySelector('.cx-view-frame')).display,
+          leagueDisplay: getComputedStyle(document.querySelector('.cx-view-league')).display,
+          frameSrc: document.querySelector('.cx-view-frame iframe')?.src || ''
+        })`);
+        try {
+          const capture = await marketClient.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+          fs.writeFileSync(path.join(OUTPUT, '00-live-market-timeout.png'), Buffer.from(capture.data, 'base64'));
+        } catch {}
+        error.message += `\nmarket=${JSON.stringify(diagnostic)}\nframe=${JSON.stringify(frameDiagnostic)}`;
+        throw error;
+      }
     } finally {
       await marketClient.close();
     }

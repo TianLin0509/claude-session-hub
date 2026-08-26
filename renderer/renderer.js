@@ -1475,6 +1475,17 @@ function showTerminal(sessionId, opts = { focus: true }) {
 // 初心投研复用同一套 xterm/PTY，不创建镜像终端。研究 Session 只改变挂载位置，
 // 生命周期、输入、工具调用与 transcript 仍由 Hub 原生 SessionManager 管理。
 window.__chuxinSessionBridge = {
+  async open(sessionId, view = 'card') {
+    let session = sessions.get(sessionId);
+    if (!session) return { ok: false, error: 'session-missing' };
+    if (session.status === 'dormant') {
+      await resumeDormantSession(sessionId, { forceScrollBottom: true });
+      session = sessions.get(sessionId) || session;
+    }
+    await selectSession(sessionId, { forceScrollBottom: true });
+    if (view === 'card' || view === 'pty') applyViewMode(view);
+    return { ok: true, session: sessions.get(sessionId) || session, view };
+  },
   async mount(sessionId, hostEl) {
     if (!hostEl) return { ok: false, error: 'host-missing' };
     const session = sessions.get(sessionId);
@@ -1497,7 +1508,10 @@ window.__chuxinSessionBridge = {
     hostEl.appendChild(empty);
   },
   list() {
-    return Array.from(sessions.values()).filter((row) => row && row.purpose === 'chuxin-research');
+    return Array.from(sessions.values()).filter((row) => row && ['chuxin-research', 'agent-league'].includes(row.purpose));
+  },
+  get(sessionId) {
+    return sessions.get(sessionId) || null;
   },
 };
 

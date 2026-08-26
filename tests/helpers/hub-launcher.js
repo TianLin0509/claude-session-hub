@@ -66,6 +66,7 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
   const testRoot = path.dirname(resolvedDataDir);
   const requestedDataDir = extraEnv.CLAUDE_HUB_DATA_DIR;
   const requestedHomeDir = extraEnv.CLAUDE_HUB_HOME_DIR;
+  const requestedAgentLeagueDir = extraEnv.CHUXIN_AGENT_LEAGUE_DIR;
   const requestedKey = extraEnv.DEEPSEEK_API_KEY;
   if (!allowExternalState) {
     const tempRoot = path.resolve(os.tmpdir());
@@ -78,6 +79,9 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
     if (requestedHomeDir && !_isPathInside(testRoot, requestedHomeDir)) {
       throw new Error('isolated Hub requires CLAUDE_HUB_HOME_DIR inside the test root');
     }
+    if (requestedAgentLeagueDir && !_isPathInside(testRoot, requestedAgentLeagueDir)) {
+      throw new Error('isolated Hub requires CHUXIN_AGENT_LEAGUE_DIR inside the test root');
+    }
     if (requestedKey) throw new Error('isolated Hub forbids a non-empty DEEPSEEK_API_KEY');
   }
   const cleanBaseEnv = scrubParentControlEnv(baseEnv);
@@ -85,12 +89,14 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
   delete safeExtraEnv.CLAUDE_HUB_DATA_DIR;
   delete safeExtraEnv.CLAUDE_HUB_HOME_DIR;
   delete safeExtraEnv.DEEPSEEK_API_KEY;
+  delete safeExtraEnv.CHUXIN_AGENT_LEAGUE_DIR;
   delete safeExtraEnv.CLAUDE_HUB_E2E_WINDOW_MODE;
   const env = {
     ...cleanBaseEnv,
     ...safeExtraEnv,
     CLAUDE_HUB_DATA_DIR: allowExternalState && requestedDataDir ? requestedDataDir : resolvedDataDir,
     CLAUDE_HUB_HOME_DIR: requestedHomeDir || path.join(resolvedDataDir, 'isolated-home'),
+    CHUXIN_AGENT_LEAGUE_DIR: requestedAgentLeagueDir || path.join(resolvedDataDir, 'agent-league'),
     DEEPSEEK_API_KEY: allowExternalState && requestedKey ? requestedKey : '',
     CLAUDE_HUB_E2E_WINDOW_MODE: windowMode,
   };

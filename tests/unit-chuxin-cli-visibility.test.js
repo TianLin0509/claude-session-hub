@@ -145,7 +145,7 @@ test('legacy Chuxin research sessions stay out of the sidebar and workbench embe
   assert.doesNotMatch(list, /appendSecHeader\('投研任务'/);
 });
 
-test('Chuxin exposes one seven-item data workbench nav and suppresses the embedded app nav', () => {
+test('Chuxin exposes one eight-item workbench nav including the native Agent League tab', () => {
   const root = path.join(__dirname, '..');
   const chuxin = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
   const styles = fs.readFileSync(path.join(root, 'renderer', 'chuxin.css'), 'utf8');
@@ -157,9 +157,10 @@ test('Chuxin exposes one seven-item data workbench nav and suppresses the embedd
   assert(primaryBlock, 'PRIMARY_TABS declaration is missing');
   assert.deepStrictEqual(
     [...primaryBlock[1].matchAll(/label: '([^']+)'/g)].map((match) => match[1]),
-    ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累'],
+    ['今日概况', '实时行情', '技术雷达', '消息雷达', '观察池', '持仓信息', '知识积累', 'Agent 联赛'],
   );
   assert.match(primaryBlock[1], /id: 'market', label: '实时行情', hash: 'market'/);
+  assert.match(primaryBlock[1], /id: 'league', label: 'Agent 联赛', native: true/);
   assert.match(chuxin, /cx-primary-nav/);
   assert.match(chuxin, /&embed=hub#/);
   assert.doesNotMatch(primaryBlock[1], /AI群聊|英雄大厅|今日感悟/);
