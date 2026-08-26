@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const os = require('node:os');
 const { fork } = require('node:child_process');
 const {
   DEFAULT_MAX_CANDIDATE_SESSIONS,
@@ -72,6 +73,12 @@ class SessionSearchService {
       serialization: 'advanced',
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     });
+    const backgroundPriority = os.constants && os.constants.priority
+      ? os.constants.priority.PRIORITY_BELOW_NORMAL
+      : null;
+    if (Number.isInteger(child.pid) && Number.isInteger(backgroundPriority)) {
+      try { os.setPriority(child.pid, backgroundPriority); } catch {}
+    }
     child.on('message', message => this._handleMessage(message));
     child.on('error', error => this._handleFailure(error, child));
     child.on('exit', (code, signal) => {

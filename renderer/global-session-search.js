@@ -77,6 +77,31 @@ function providerMeta(provider) {
   return PROVIDER_META[provider] || { label: provider || 'AI', className: 'provider-all' };
 }
 
+function indexProgressModel(status = {}) {
+  const visible = status.refreshing === true;
+  const done = Math.max(0, Number(status.indexedSources) || 0);
+  const total = Math.max(0, Number(status.totalSources) || 0);
+  const determinate = visible && total > 0;
+  const percent = determinate ? Math.max(0, Math.min(100, Math.round(done / total * 100))) : null;
+  const phaseLabel = {
+    discovering: '正在发现会话',
+    migrating_legacy_cache: '正在迁移旧索引',
+    indexing: '正在解析会话',
+  }[status.phase] || '正在建立本地索引';
+  return {
+    visible,
+    determinate,
+    done,
+    total,
+    percent,
+    percentText: determinate ? `${percent}%` : '准备中',
+    detail: determinate
+      ? `${phaseLabel} · ${done}/${total} 个来源 · 可继续使用 AI Hub`
+      : `${phaseLabel} · 可继续使用 AI Hub`,
+    valueText: determinate ? `${phaseLabel}，已完成 ${done}/${total}，${percent}%` : phaseLabel,
+  };
+}
+
 function createStaticEmpty(document, { title, detail, className = '', busy = false } = {}) {
   const empty = document.createElement('div');
   empty.className = `session-search-empty ${className || ''}${busy ? ' busy' : ''}`.trim();
@@ -121,6 +146,11 @@ function createGlobalSessionSearch(options) {
   const sortSelect = document.getElementById('session-search-sort');
   const statusButton = document.getElementById('session-search-index-status');
   const statusText = document.getElementById('session-search-status-text');
+  const progressRoot = document.getElementById('session-search-progress');
+  const progressTrack = document.getElementById('session-search-progress-track');
+  const progressFill = document.getElementById('session-search-progress-fill');
+  const progressPercent = document.getElementById('session-search-progress-percent');
+  const progressDetail = document.getElementById('session-search-progress-detail');
   const liveRegion = document.getElementById('session-search-live');
 
   let activeProvider = 'all';
@@ -161,14 +191,28 @@ function createGlobalSessionSearch(options) {
 
   function renderStatus(status) {
     if (!statusButton || !statusText) return;
+    const progress = indexProgressModel(status);
     statusButton.classList.remove('ready', 'busy', 'error');
     if (status && status.ready && !status.refreshing) statusButton.classList.add('ready');
     else if (status && status.lastError && !status.ready) statusButton.classList.add('error');
     else statusButton.classList.add('busy');
     statusText.textContent = statusDescription(status);
-    statusButton.title = status && status.lastError
-      ? `${status.lastError}\n点击重新建立本地索引`
-      : '点击重新建立本地索引';
+    statusButton.disabled = progress.visible;
+    statusButton.title = progress.visible
+      ? '正在后台建立索引，无需重复点击'
+      : (status && status.lastError
+        ? `${status.lastError}\n点击重新建立本地索引`
+        : '点击重新建立本地索引');
+    if (progressRoot && progressTrack && progressFill && progressPercent && progressDetail) {
+      progressRoot.hidden = !progress.visible;
+      progressTrack.classList.toggle('indeterminate', progress.visible && !progress.determinate);
+      progressFill.style.width = progress.determinate ? `${progress.percent}%` : '34%';
+      progressPercent.textContent = progress.percentText;
+      progressDetail.textContent = progress.detail;
+      progressTrack.setAttribute('aria-valuetext', progress.valueText);
+      if (progress.determinate) progressTrack.setAttribute('aria-valuenow', String(progress.percent));
+      else progressTrack.removeAttribute('aria-valuenow');
+    }
   }
 
   async function refreshStatus({ repeat = true } = {}) {
@@ -684,6 +728,7 @@ function createGlobalSessionSearch(options) {
       open,
       close,
       search: () => performSearch({ immediate: true }),
+      renderStatus,
       state: () => ({
         open: isOpen(),
         query: queryInput.value,
@@ -707,5 +752,6 @@ module.exports = {
   appendHighlightedText,
   createGlobalSessionSearch,
   formatSearchTime,
+  indexProgressModel,
   normalizeTerms,
 };

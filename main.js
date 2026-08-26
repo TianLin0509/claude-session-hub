@@ -37,6 +37,7 @@ const {
   resolveHubLaunchExePath,
 } = require('./core/hub-exe-branding.js');
 const { isPackagedHubRuntime } = require('./core/electron-runtime-mode.js');
+const { acquireLockAsync, releaseLockAsync } = require('./core/file-lock.js');
 const {
   ensureClaudeHookIntegration,
   startClaudeHookIntegrationWatchdog,
@@ -163,6 +164,11 @@ const sessionSearchService = new SessionSearchService({
   codexRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CODEX_ROOTS', [DEFAULT_CODEX_SESSIONS_ROOT]),
   meetingDir: path.join(getHubDataDir(), 'meetings'),
   refreshTtlMs: Number(process.env.HUB_SESSION_SEARCH_REFRESH_TTL_MS) || 10_000,
+  // Production warms the persistent index after the latency-sensitive boot
+  // path. Isolated Hubs stay opt-in so an unrelated E2E can never scan the
+  // user's real native transcript roots merely because it launched the app.
+  prewarmEnabled: process.env.HUB_SESSION_SEARCH_PREWARM === '1'
+    || (process.env.HUB_SESSION_SEARCH_PREWARM !== '0' && !isIsolatedHub()),
 });
 const transcriptTap = new TranscriptTap({ parserService: transcriptParserService });
 // AIGroupChatHub.exe is a branded copy of Electron's default-app host. Electron
@@ -1382,11 +1388,27 @@ registerArchiveIpc(ipcMain, {
 // Let the renderer and hook server finish their latency-sensitive boot path
 // before the worker starts walking transcript directories. Querying search
 // earlier still starts the same worker on demand and reports visible progress.
+const sessionSearchPrewarmDelayMs = Math.max(
+  250,
+  Number(process.env.HUB_SESSION_SEARCH_PREWARM_DELAY_MS) || 5_000,
+);
 const sessionSearchPrewarmTimer = setTimeout(() => {
-  sessionSearchService.prewarm(buildSessionSearchSnapshot()).catch(error => {
-    console.warn('[session-search] background prewarm failed:', error && error.message);
+  void (async () => {
+    const lockPath = path.join(getHubDataDir(), 'cache', 'session-search-prewarm.lock');
+    try { fs.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch {}
+    const lock = await acquireLockAsync(lockPath, { retries: 0, staleMs: 30 * 60 * 1000 });
+    if (!lock) return;
+    try {
+      await sessionSearchService.prewarm(buildSessionSearchSnapshot());
+    } catch (error) {
+      console.warn('[session-search] background prewarm failed:', error && error.message);
+    } finally {
+      await releaseLockAsync(lock, lockPath);
+    }
+  })().catch(error => {
+    console.warn('[session-search] background prewarm lock failed:', error && error.message);
   });
-}, 1200);
+}, sessionSearchPrewarmDelayMs);
 sessionSearchPrewarmTimer.unref?.();
 
 // 2026-05-07：loadAndSelfHeal 内部已经写过一次 cleanShutdown=false 的快照，

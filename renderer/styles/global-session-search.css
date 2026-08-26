@@ -84,6 +84,7 @@
   gap: 16px;
   margin-bottom: 10px;
 }
+.session-search-heading > div:first-child { min-width: 0; flex: 1; }
 .session-search-heading h2 { margin: 0; color: var(--text-primary); font-size: 14px; line-height: 1.35; }
 .session-search-index-status {
   max-width: 580px;
@@ -101,12 +102,65 @@
   text-align: left;
 }
 .session-search-index-status:hover { color: var(--text-secondary); }
+.session-search-index-status:disabled { cursor: default; opacity: .9; }
 .session-search-index-status:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 3px; border-radius: 3px; }
 .session-search-status-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; color: #8b949e; background: currentColor; }
 .session-search-index-status.ready .session-search-status-dot { color: var(--accent-green); box-shadow: 0 0 8px rgba(63,185,80,.55); }
 .session-search-index-status.busy .session-search-status-dot { color: #d29922; animation: session-search-pulse 1.15s ease-in-out infinite; }
 .session-search-index-status.error .session-search-status-dot { color: var(--accent-red); }
 @keyframes session-search-pulse { 50% { opacity: .35; transform: scale(.75); } }
+
+.session-search-progress[hidden] { display: none; }
+.session-search-progress {
+  width: min(560px, 58vw);
+  margin-top: 7px;
+}
+.session-search-progress-track {
+  position: relative;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(139, 148, 158, .16);
+  box-shadow: inset 0 0 0 1px rgba(139, 148, 158, .08);
+}
+.session-search-progress-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #d29922, #f2cc60);
+  box-shadow: 0 0 9px rgba(210, 153, 34, .28);
+  transition: width 180ms ease;
+}
+.session-search-progress-track.indeterminate .session-search-progress-fill {
+  animation: session-search-progress-indeterminate 1.25s ease-in-out infinite;
+}
+.session-search-progress-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.3;
+}
+.session-search-progress-meta strong {
+  flex: none;
+  min-width: 28px;
+  color: #e6b84c;
+  font: 600 9px/1.3 "Cascadia Code", Consolas, monospace;
+}
+.session-search-progress-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@keyframes session-search-progress-indeterminate {
+  0% { transform: translateX(-115%); }
+  55% { transform: translateX(115%); }
+  100% { transform: translateX(220%); }
+}
 
 .session-search-close {
   width: 29px;
@@ -398,6 +452,7 @@
   .session-search-heading { margin-bottom: 7px; }
   .session-search-heading h2 { font-size: 12px; }
   .session-search-index-status { max-width: 270px; }
+  .session-search-progress { width: min(100%, 360px); }
   .session-search-box { height: 42px; }
   .session-search-box input { font-size: 13px; }
   .session-search-provider-filters { flex-wrap: nowrap; width: 100%; overflow-x: auto; padding-bottom: 2px; }
@@ -418,6 +473,7 @@
 @media (prefers-reduced-motion: reduce) {
   .session-search-dialog,
   .session-search-status-dot,
+  .session-search-progress-fill,
   .turn-card.global-search-focus,
   .mr-gc-msg.global-search-focus { animation: none !important; }
 }

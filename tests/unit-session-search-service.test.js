@@ -152,6 +152,39 @@ test('startup prewarm is deferred by default and does not allocate a child proce
   }
 });
 
+test('explicit startup prewarm launches the isolated child and submits a refresh', async () => {
+  const child = new FakeChild({ autoRespond: true });
+  const service = new SessionSearchService({
+    cachePath: path.join(os.tmpdir(), 'enabled-prewarm-search-v2.json'),
+    prewarmEnabled: true,
+    fork: () => child,
+  });
+  try {
+    await service.prewarm({ sessions: [], meetings: [] });
+    assert.equal(child.sent.some(message => message.type === 'init'), true);
+    assert.equal(child.sent.some(message => message.type === 'refresh'), true);
+    assert.equal(service.getStats().submitted, 1);
+  } finally {
+    await service.close();
+  }
+});
+
+test('search child is lowered to background priority when the platform supports it', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-search-service.js'), 'utf8');
+  assert.match(source, /PRIORITY_BELOW_NORMAL/);
+  assert.match(source, /os\.setPriority\(child\.pid, backgroundPriority\)/);
+});
+
+test('production main enables delayed prewarm while isolated Hubs remain opt-in', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(source, /prewarmEnabled:[\s\S]{0,180}HUB_SESSION_SEARCH_PREWARM[\s\S]{0,180}!isIsolatedHub\(\)/);
+  assert.match(source, /HUB_SESSION_SEARCH_PREWARM_DELAY_MS[\s\S]{0,100}5_000/);
+  assert.match(source, /sessionSearchService\.prewarm\(buildSessionSearchSnapshot\(\)\)/);
+  assert.match(source, /session-search-prewarm\.lock/);
+  assert.match(source, /acquireLockAsync\(lockPath, \{ retries: 0, staleMs: 30 \* 60 \* 1000 \}\)/);
+  assert.match(source, /releaseLockAsync\(lock, lockPath\)/);
+});
+
 test('search child receives an isolated V8 heap and bounded indexing inputs', async () => {
   let childPath = null;
   let childOptions = null;

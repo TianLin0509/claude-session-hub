@@ -508,6 +508,16 @@
                 <span class="session-search-status-dot"></span>
                 <span id="session-search-status-text">正在读取本地索引…</span>
               </button>
+              <div class="session-search-progress" id="session-search-progress" hidden>
+                <div class="session-search-progress-track" id="session-search-progress-track"
+                     role="progressbar" aria-label="本地会话索引进度" aria-valuemin="0" aria-valuemax="100">
+                  <span class="session-search-progress-fill" id="session-search-progress-fill"></span>
+                </div>
+                <div class="session-search-progress-meta">
+                  <strong id="session-search-progress-percent">准备中</strong>
+                  <span id="session-search-progress-detail">后台建立索引，可继续使用 AI Hub</span>
+                </div>
+              </div>
             </div>
             <button type="button" class="session-search-close" id="search-modal-close" title="关闭 (Esc)" aria-label="关闭全局会话搜索">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>

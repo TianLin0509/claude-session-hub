@@ -7,6 +7,7 @@ const test = require('node:test');
 const {
   appendHighlightedText,
   formatSearchTime,
+  indexProgressModel,
   normalizeTerms,
 } = require('../renderer/global-session-search.js');
 
@@ -41,6 +42,23 @@ test('query helpers normalize full-width text and user-facing relative time', ()
   assert.equal(formatSearchTime(1_000, 61_000), '1 分钟前');
 });
 
+test('index progress model distinguishes determinate, discovery and completed states', () => {
+  assert.deepEqual(indexProgressModel({
+    phase: 'indexing', refreshing: true, indexedSources: 1032, totalSources: 2181,
+  }), {
+    visible: true,
+    determinate: true,
+    done: 1032,
+    total: 2181,
+    percent: 47,
+    percentText: '47%',
+    detail: '正在解析会话 · 1032/2181 个来源 · 可继续使用 AI Hub',
+    valueText: '正在解析会话，已完成 1032/2181，47%',
+  });
+  assert.equal(indexProgressModel({ phase: 'discovering', refreshing: true }).determinate, false);
+  assert.equal(indexProgressModel({ phase: 'ready', ready: true, refreshing: false }).visible, false);
+});
+
 test('search close captures the focus target before clearing shared state', () => {
   assert.match(SEARCH_SOURCE, /const focusTarget = returnFocusElement;[\s\S]*requestAnimationFrame\(\(\) => focusTarget\.focus\(\)\)/);
 });
@@ -52,6 +70,7 @@ test('renderer contract exposes A-layout filters, local-index status and keyboar
   for (const id of [
     'btn-global-search', 'search-query', 'session-search-provider-filters',
     'session-search-scope-tabs', 'session-search-results-pane', 'session-search-preview',
+    'session-search-progress', 'session-search-progress-track', 'session-search-progress-fill',
   ]) assert.match(html, new RegExp(`id="${id}"`));
   for (const provider of ['claude', 'codex', 'meeting', 'deepseek']) {
     assert.match(html, new RegExp(`data-provider="${provider}"`));
@@ -64,5 +83,7 @@ test('renderer contract exposes A-layout filters, local-index status and keyboar
   assert.match(js, /event\.shiftKey/);
   assert.match(css, /grid-template-columns:\s*43% 57%/);
   assert.match(css, /session-search-chip\[hidden\]\s*\{\s*display:\s*none/);
+  assert.match(css, /session-search-progress-track/);
+  assert.match(css, /session-search-progress-indeterminate/);
   assert.doesNotMatch(html, /Type to search all past Claude transcripts/);
 });

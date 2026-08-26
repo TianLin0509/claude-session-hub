@@ -20,6 +20,7 @@ const FAKE_BIN = path.join(TEMP_ROOT, 'fake-bin');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'global-session-search');
 const SCREENSHOT = path.join(ARTIFACT_DIR, `global-session-search-${RUN_ID}.png`);
 const RESPONSIVE_SCREENSHOT = path.join(ARTIFACT_DIR, `global-session-search-responsive-${RUN_ID}.png`);
+const PROGRESS_SCREENSHOT = path.join(ARTIFACT_DIR, `global-session-search-progress-${RUN_ID}.png`);
 const RESULT_PATH = path.join(ARTIFACT_DIR, `global-session-search-${RUN_ID}.json`);
 const COMMON = 'GLOBAL_FIND_COMMON';
 
@@ -207,6 +208,8 @@ async function waitSearchState(client, predicate, label) {
         HUB_SESSION_SEARCH_CLAUDE_ROOTS: CLAUDE_ROOT,
         HUB_SESSION_SEARCH_CODEX_ROOTS: CODEX_ROOT,
         HUB_SESSION_SEARCH_REFRESH_TTL_MS: '500',
+        HUB_SESSION_SEARCH_PREWARM: '1',
+        HUB_SESSION_SEARCH_PREWARM_DELAY_MS: '250',
         CLAUDE_HUB_NO_EFFORT_MAX: '1',
         [pathKey]: `${FAKE_BIN}${path.delimiter}${process.env[pathKey] || ''}`,
       },
@@ -225,6 +228,11 @@ async function waitSearchState(client, predicate, label) {
       console.error = (...args) => { record(args.map(String).join(' ')); originalError(...args); };
     })()`);
     await waitFor('global search UI bridge', () => client.eval(`!!(window.__hubE2E && window.__hubE2E.globalSessionSearch)`));
+    result.startupPrewarm = await waitFor('startup search prewarm', async () => {
+      const status = await client.eval(`require('electron').ipcRenderer.invoke('get-session-search-status')`);
+      return status && status.ready && status.index && status.index.sessions >= 3 ? status : null;
+    }, 45_000);
+    assert.equal(result.startupPrewarm.ready, true, JSON.stringify(result.startupPrewarm));
     result.explicitRefresh = await client.eval(`require('electron').ipcRenderer.invoke('refresh-session-search', { force: true })`);
     assert.equal(result.explicitRefresh.ready, true, JSON.stringify(result.explicitRefresh));
     result.indexStatus = await waitFor('search index ready', async () => {
@@ -239,6 +247,40 @@ async function waitSearchState(client, predicate, label) {
 
     await client.eval(`document.getElementById('btn-global-search').click()`);
     await waitFor('search dialog visible', () => client.eval(`document.getElementById('search-modal').style.display === 'flex'`));
+    result.progress = await client.eval(`(() => {
+      window.__hubE2E.globalSessionSearch.renderStatus({
+        phase:'indexing', ready:false, refreshing:true,
+        indexedSources:1032, totalSources:2181,
+        index:{ sessions:900, documents:12000, providers:{} }
+      });
+      const root = document.getElementById('session-search-progress');
+      const track = document.getElementById('session-search-progress-track');
+      const fill = document.getElementById('session-search-progress-fill');
+      return {
+        hidden:root.hidden,
+        role:track.getAttribute('role'),
+        now:track.getAttribute('aria-valuenow'),
+        valueText:track.getAttribute('aria-valuetext'),
+        width:fill.style.width,
+        percent:document.getElementById('session-search-progress-percent').textContent,
+        detail:document.getElementById('session-search-progress-detail').textContent,
+        refreshDisabled:document.getElementById('session-search-index-status').disabled,
+      };
+    })()`);
+    assert.deepEqual(result.progress, {
+      hidden:false,
+      role:'progressbar',
+      now:'47',
+      valueText:'正在解析会话，已完成 1032/2181，47%',
+      width:'47%',
+      percent:'47%',
+      detail:'正在解析会话 · 1032/2181 个来源 · 可继续使用 AI Hub',
+      refreshDisabled:true,
+    });
+    const progressShot = await client.send('Page.captureScreenshot', { format:'png', fromSurface:true });
+    fs.writeFileSync(PROGRESS_SCREENSHOT, Buffer.from(progressShot.data, 'base64'));
+    result.progressScreenshot = PROGRESS_SCREENSHOT;
+    await client.eval(`window.__hubE2E.globalSessionSearch.renderStatus(${JSON.stringify(result.indexStatus)})`);
     await setSearch(client, COMMON);
     result.all = await waitSearchState(client, state => state.query === COMMON && state.resultCount === 3, 'three provider results');
     result.providerLabels = await client.eval(`[...document.querySelectorAll('.session-search-result-provider')].map(node => node.textContent.trim())`);
@@ -323,14 +365,28 @@ async function waitSearchState(client, predicate, label) {
 
     await client.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 1, mobile: false });
     await _waitMs(120);
-    result.mobile = await client.eval(`({
-      width: innerWidth,
-      bodyScrollWidth: document.body.scrollWidth,
-      dialogWidth: document.querySelector('.session-search-dialog').getBoundingClientRect().width,
-      contentColumns: getComputedStyle(document.querySelector('.session-search-content')).gridTemplateColumns,
-    })`);
+    result.mobile = await client.eval(`(() => {
+      window.__hubE2E.globalSessionSearch.renderStatus({
+        phase:'indexing', ready:false, refreshing:true,
+        indexedSources:1032, totalSources:2181,
+        index:{ sessions:900, documents:12000, providers:{} }
+      });
+      const dialog = document.querySelector('.session-search-dialog').getBoundingClientRect();
+      const progress = document.getElementById('session-search-progress').getBoundingClientRect();
+      return {
+        width:innerWidth,
+        bodyScrollWidth:document.body.scrollWidth,
+        dialogWidth:dialog.width,
+        contentColumns:getComputedStyle(document.querySelector('.session-search-content')).gridTemplateColumns,
+        progressInside:progress.left >= dialog.left && progress.right <= dialog.right + 1,
+        progressWidth:progress.width,
+      };
+    })()`);
     assert.equal(result.mobile.bodyScrollWidth, result.mobile.width);
     assert.ok(result.mobile.dialogWidth <= result.mobile.width);
+    assert.equal(result.mobile.progressInside, true);
+    assert.ok(result.mobile.progressWidth > 0 && result.mobile.progressWidth <= result.mobile.dialogWidth);
+    await client.eval(`window.__hubE2E.globalSessionSearch.renderStatus(${JSON.stringify(result.indexStatus)})`);
 
     await clickFilter(client, '#session-search-provider-filters [data-provider="meeting"]');
     await setSearch(client, COMMON);
