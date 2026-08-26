@@ -561,6 +561,14 @@ function scheduleVisibleTerminalRecovery(sessionId, cached, opts = {}) {
 const sessionListEl = document.getElementById('session-list');
 const terminalPanelEl = document.getElementById('terminal-panel');
 const emptyStateEl = document.getElementById('empty-state');
+const operationsReviewModalEl = document.getElementById('operations-review-modal');
+
+// The review cockpit is a viewport-level modal, not terminal content. Keep it
+// outside #terminal-panel so fullscreen previews can hide the source surface
+// without also hiding the modal or letting its shortcuts fall through.
+if (operationsReviewModalEl && operationsReviewModalEl.parentElement === terminalPanelEl) {
+  document.body.appendChild(operationsReviewModalEl);
+}
 
 // Spec 2 preserve helper — both showTerminal AND session-closed handler clear
 // terminalPanelEl.innerHTML, which would obliterate spec 1/2 elements (view-toggle,
@@ -573,7 +581,6 @@ function preserveAndClearTerminalPanel() {
     document.querySelector('.view-toggle'),
     document.getElementById('completion-notification-toggle'),
     document.getElementById('recent-turn-copy'),
-    document.getElementById('operations-review-modal'),
   ].filter(Boolean);
   terminalPanelEl.innerHTML = '';
   preserved.forEach(el => terminalPanelEl.appendChild(el));
@@ -3787,8 +3794,8 @@ async function openPathInHub(filePath, opts = {}) {
   const previewOptions = {
     pinned: opts.pinned === true,
     preview: opts.pinned === true ? false : opts.preview !== false,
-    fullscreen: opts.fullscreen === true,
   };
+  if (typeof opts.fullscreen === 'boolean') previewOptions.fullscreen = opts.fullscreen;
   const raw = _cleanPathCandidate(filePath);
   if (!raw) return fail('路径为空或无法识别', null);
   if (/^https?:\/\//i.test(raw)) {

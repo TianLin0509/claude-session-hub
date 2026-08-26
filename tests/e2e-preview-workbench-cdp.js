@@ -25,6 +25,7 @@ const TEMP_B_PATH = path.join(FIXTURE_DIR, 'temporary-b.json');
 const HTML_PATH = path.join(FIXTURE_DIR, 'find-page.html');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'preview-workbench');
 const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `preview-workbench-${RUN_ID}.png`);
+const FULLSCREEN_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `preview-default-fullscreen-${RUN_ID}.png`);
 const QUICK_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `preview-quick-open-${RUN_ID}.png`);
 const FILE_CHANGE_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `preview-file-changed-${RUN_ID}.png`);
 const FIND_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `preview-find-${RUN_ID}.png`);
@@ -109,6 +110,7 @@ async function main() {
     port,
     fixtureDir: FIXTURE_DIR,
     screenshot: SCREENSHOT_PATH,
+    fullscreenScreenshot: FULLSCREEN_SCREENSHOT_PATH,
     quickOpenScreenshot: QUICK_SCREENSHOT_PATH,
     fileChangeScreenshot: FILE_CHANGE_SCREENSHOT_PATH,
     findScreenshot: FIND_SCREENSHOT_PATH,
@@ -150,6 +152,48 @@ async function main() {
     })()`);
     assert.equal(shortcut, 'flex', 'Ctrl+O must open quick path while the preview panel is closed');
     await openThroughQuickPath(client, FIRST_PATH);
+    result.defaultLayout = await client.eval(`(() => {
+      const panel = document.getElementById('preview-panel');
+      const split = document.getElementById('preview-layout-split');
+      const full = document.getElementById('preview-layout-full');
+      const panelRect = panel.getBoundingClientRect();
+      const switchRect = document.querySelector('.preview-layout-switch').getBoundingClientRect();
+      return {
+        isFullscreen:window.__hubE2E.previewWorkbench.state().isFullscreen,
+        splitPressed:split.getAttribute('aria-pressed'),
+        fullPressed:full.getAttribute('aria-pressed'),
+        splitText:split.textContent.trim(),
+        fullText:full.textContent.trim(),
+        sourceDisplay:getComputedStyle(document.getElementById('terminal-panel')).display,
+        splitterDisplay:getComputedStyle(document.getElementById('preview-splitter')).display,
+        panelWidth:panelRect.width,
+        switchInsidePanel:switchRect.left >= panelRect.left && switchRect.right <= panelRect.right,
+      };
+    })()`);
+    assert.deepEqual({
+      isFullscreen:result.defaultLayout.isFullscreen,
+      splitPressed:result.defaultLayout.splitPressed,
+      fullPressed:result.defaultLayout.fullPressed,
+      splitText:result.defaultLayout.splitText,
+      fullText:result.defaultLayout.fullText,
+      sourceDisplay:result.defaultLayout.sourceDisplay,
+      splitterDisplay:result.defaultLayout.splitterDisplay,
+      switchInsidePanel:result.defaultLayout.switchInsidePanel,
+    }, {
+      isFullscreen:true,
+      splitPressed:'false',
+      fullPressed:'true',
+      splitText:'半窗',
+      fullText:'全屏',
+      sourceDisplay:'none',
+      splitterDisplay:'none',
+      switchInsidePanel:true,
+    });
+    assert.ok(result.defaultLayout.panelWidth > 1000, JSON.stringify(result.defaultLayout));
+    await capture(client, FULLSCREEN_SCREENSHOT_PATH);
+    await client.eval(`document.getElementById('preview-layout-split').click()`);
+    await waitFor(client, `window.__hubE2E.previewWorkbench.state().isFullscreen === false
+      && getComputedStyle(document.getElementById('preview-splitter')).display !== 'none'`);
     result.temporaryInitial = await client.eval(`(() => {
       const state = window.__hubE2E.previewWorkbench.state();
       const shell = document.querySelector('#preview-tabs .preview-tab-shell.active');
@@ -295,27 +339,33 @@ async function main() {
     assert.ok(result.splitterKeyboard.afterWidth > result.splitterKeyboard.beforeWidth);
     assert.match(result.splitterKeyboard.valueText, /左侧 .*预览/);
     result.layoutToggleA11y = await client.eval(`(() => {
-      const button = document.getElementById('preview-toggle-layout');
-      const svgBefore = !!button.querySelector('svg');
-      button.click();
+      const split = document.getElementById('preview-layout-split');
+      const full = document.getElementById('preview-layout-full');
+      const labelsBefore = [split.textContent.trim(), full.textContent.trim()];
+      full.click();
       const fullscreen = {
-        pressed:button.getAttribute('aria-pressed'),
-        label:button.getAttribute('aria-label'),
-        svg:!!button.querySelector('svg'),
+        splitPressed:split.getAttribute('aria-pressed'),
+        fullPressed:full.getAttribute('aria-pressed'),
+        sourceDisplay:getComputedStyle(document.getElementById('terminal-panel')).display,
+        splitterDisplay:getComputedStyle(document.getElementById('preview-splitter')).display,
       };
-      button.click();
+      split.click();
       return {
-        svgBefore,
+        labelsBefore,
+        splitSvg:!!split.querySelector('svg'),
+        fullSvg:!!full.querySelector('svg'),
         fullscreen,
-        restoredPressed:button.getAttribute('aria-pressed'),
-        restoredLabel:button.getAttribute('aria-label'),
+        restoredSplitPressed:split.getAttribute('aria-pressed'),
+        restoredFullPressed:full.getAttribute('aria-pressed'),
       };
     })()`);
     assert.deepEqual(result.layoutToggleA11y, {
-      svgBefore:true,
-      fullscreen:{ pressed:'true', label:'切换为并列预览', svg:true },
-      restoredPressed:'false',
-      restoredLabel:'全屏预览',
+      labelsBefore:['半窗', '全屏'],
+      splitSvg:true,
+      fullSvg:true,
+      fullscreen:{ splitPressed:'false', fullPressed:'true', sourceDisplay:'none', splitterDisplay:'none' },
+      restoredSplitPressed:'true',
+      restoredFullPressed:'false',
     });
     result.watchStatsWithTabs = await client.eval(`window.__hubE2E.previewWorkbench.watchStats()`);
     assert.deepEqual(result.watchStatsWithTabs, { directories:1, files:2, listeners:2, degradedDirectories:0, cleanupFailures:0 });
@@ -734,6 +784,9 @@ async function main() {
       const actions = document.querySelector('.preview-header-actions');
       const panelRect = panel.getBoundingClientRect();
       const closeRect = document.getElementById('preview-close').getBoundingClientRect();
+      const layoutRect = document.querySelector('.preview-layout-switch').getBoundingClientRect();
+      const splitLayout = document.getElementById('preview-layout-split');
+      const fullLayout = document.getElementById('preview-layout-full');
       const actionRows = new Set(Array.from(actions.querySelectorAll('button'))
         .filter(button => getComputedStyle(button).display !== 'none')
         .map(button => Math.round(button.getBoundingClientRect().top)));
@@ -747,6 +800,9 @@ async function main() {
         headerActionsScrollWidth:actions.scrollWidth,
         actionRows:actionRows.size,
         closeInsidePanel:closeRect.left >= panelRect.left && closeRect.right <= panelRect.right + 1,
+        layoutInsidePanel:layoutRect.left >= panelRect.left && layoutRect.right <= panelRect.right + 1,
+        layoutLabels:[splitLayout.textContent.trim(), fullLayout.textContent.trim()],
+        layoutButtonWidths:[splitLayout.getBoundingClientRect().width, fullLayout.getBoundingClientRect().width],
         bodyScrollWidth:document.body.scrollWidth,
         viewportWidth:innerWidth,
       };
@@ -757,6 +813,9 @@ async function main() {
     assert.ok(result.narrowFind.headerActionsScrollWidth <= result.narrowFind.headerActionsClientWidth + 1, JSON.stringify(result.narrowFind));
     assert.ok(result.narrowFind.actionRows >= 2, JSON.stringify(result.narrowFind));
     assert.equal(result.narrowFind.closeInsidePanel, true);
+    assert.equal(result.narrowFind.layoutInsidePanel, true);
+    assert.deepEqual(result.narrowFind.layoutLabels, ['半窗', '全屏']);
+    assert.ok(result.narrowFind.layoutButtonWidths.every(width => width >= 48), JSON.stringify(result.narrowFind));
     assert.equal(result.narrowFind.bodyScrollWidth, result.narrowFind.viewportWidth);
     await client.eval(`document.getElementById('preview-find-close').click()`);
     await waitFor(client, `document.getElementById('preview-find-bar').hidden`);

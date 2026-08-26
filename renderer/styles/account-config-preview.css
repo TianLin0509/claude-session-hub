@@ -739,6 +739,58 @@
   scrollbar-width: thin;
 }
 
+.preview-layout-switch {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 5px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-primary) 72%, var(--bg-secondary));
+}
+
+.preview-layout-option {
+  height: 25px;
+  min-width: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--preview-muted);
+  background: transparent;
+  cursor: pointer;
+  font: 600 10px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  transition: color 150ms, background 150ms, box-shadow 150ms;
+}
+
+.preview-layout-option svg {
+  display: block;
+  flex: none;
+}
+
+.preview-layout-option:hover {
+  color: var(--text-primary);
+  background: rgba(93, 142, 215, .08);
+}
+
+.preview-layout-option.active,
+.preview-layout-option[aria-pressed="true"] {
+  color: #d9eaff;
+  background: rgba(93, 142, 215, .2);
+  box-shadow: inset 0 0 0 1px rgba(104, 167, 255, .3);
+}
+
+.preview-layout-option:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
 .preview-tab-shell {
   min-width: 118px;
   max-width: 220px;

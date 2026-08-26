@@ -64,6 +64,8 @@ function createPreviewPanelController({
   const previewSplitterEl = document.getElementById('preview-splitter');
   const previewZoomLabelEl = document.getElementById('preview-zoom-label');
   const previewTabsEl = document.getElementById('preview-tabs');
+  const previewLayoutSplitEl = document.getElementById('preview-layout-split');
+  const previewLayoutFullEl = document.getElementById('preview-layout-full');
   const quickOpenEl = document.getElementById('preview-quick-open');
   const quickOpenInputEl = document.getElementById('preview-quick-open-input');
   const quickOpenResultsEl = document.getElementById('preview-quick-open-results');
@@ -93,7 +95,7 @@ function createPreviewPanelController({
   let currentContextKey = null;
   let previewSourcePanel = null;
   let currentPreviewPath = null;
-  let previewIsFullscreen = false;
+  let previewIsFullscreen = true;
   let previewSplitRatio = 0.5;
   let previewZoomLevel = 1.0;
   let previewRenderToken = 0;
@@ -124,7 +126,7 @@ function createPreviewPanelController({
     return {
       tabs: [],
       activeTabId: null,
-      isFullscreen: false,
+      isFullscreen: true,
       splitRatio: 0.5,
       outlineOpen: false,
     };
@@ -400,13 +402,14 @@ function createPreviewPanelController({
     previewPanelEl.style.display = 'none';
     previewPanelEl.classList.remove('preview-split');
     previewSplitterEl.style.display = 'none';
-    previewIsFullscreen = false;
+    previewIsFullscreen = true;
     previewSplitRatio = 0.5;
     previewBodyEl.innerHTML = '';
     if (previewTabsEl) previewTabsEl.innerHTML = '';
     resetPreviewLayoutEffects();
     resetPreviewZoom({ persist: false });
     resetPreviewHeader();
+    syncPreviewLayoutControls();
     previewSourcePanel = null;
     currentContextKey = null;
   }
@@ -1057,29 +1060,51 @@ function createPreviewPanelController({
     }
   }
 
-  function showPanelFrame(state) {
-    previewIsFullscreen = !!state.isFullscreen;
-    previewSplitRatio = Number(state.splitRatio) || 0.5;
+  function syncPreviewLayoutControls(isFullscreen = previewIsFullscreen) {
+    const fullscreen = !!isFullscreen;
+    if (previewLayoutSplitEl) {
+      previewLayoutSplitEl.classList.toggle('active', !fullscreen);
+      previewLayoutSplitEl.setAttribute('aria-pressed', String(!fullscreen));
+    }
+    if (previewLayoutFullEl) {
+      previewLayoutFullEl.classList.toggle('active', fullscreen);
+      previewLayoutFullEl.setAttribute('aria-pressed', String(fullscreen));
+    }
+  }
+
+  function applyPreviewLayout(isFullscreen, { persist = true, refit = true } = {}) {
+    const state = getContextState();
+    previewIsFullscreen = !!isFullscreen;
+    if (persist && state) state.isFullscreen = previewIsFullscreen;
     ensureSourcePanel();
-    const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
-    if (src) src.style.display = previewIsFullscreen
-      ? 'none'
-      : (previewSourcePanel === 'terminal-panel' ? '' : 'flex');
-    const emptyEl = document.getElementById('empty-state');
-    if (emptyEl) emptyEl.style.display = 'none';
-    previewPanelEl.style.display = 'flex';
     const isSplit = !previewIsFullscreen;
     previewPanelEl.classList.toggle('preview-split', isSplit);
     previewSplitterEl.style.display = isSplit ? '' : 'none';
     applySplitWidths(isSplit ? previewSplitRatio : null);
-    const layoutButton = document.getElementById('preview-toggle-layout');
-    if (layoutButton) {
-      layoutButton.title = previewIsFullscreen ? '并列预览' : '全屏预览';
-      layoutButton.setAttribute('aria-label', previewIsFullscreen ? '切换为并列预览' : '全屏预览');
-      layoutButton.setAttribute('aria-pressed', String(previewIsFullscreen));
-    }
+    const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
+    if (src) src.style.display = previewIsFullscreen
+      ? 'none'
+      : (previewSourcePanel === 'terminal-panel' ? '' : 'flex');
+    syncPreviewLayoutControls(previewIsFullscreen);
+    if (refit) refitActiveTerminal();
+    return true;
+  }
+
+  function setPreviewLayout(isFullscreen) {
+    if (!getContextState()) return false;
+    return applyPreviewLayout(!!isFullscreen);
+  }
+
+  function showPanelFrame(state) {
+    previewIsFullscreen = !!state.isFullscreen;
+    previewSplitRatio = Number(state.splitRatio) || 0.5;
+    ensureSourcePanel();
+    const emptyEl = document.getElementById('empty-state');
+    if (emptyEl) emptyEl.style.display = 'none';
+    previewPanelEl.style.display = 'flex';
+    applyPreviewLayout(previewIsFullscreen, { persist: false, refit: false });
     renderTabs();
-    if (isSplit) refitActiveTerminal();
+    if (!previewIsFullscreen) refitActiveTerminal();
   }
 
   function renderCsv(content, separator) {
@@ -1275,7 +1300,7 @@ function createPreviewPanelController({
 
     currentContextKey = key;
     const state = getContextState(key, true);
-    if (options.fullscreen === true) state.isFullscreen = true;
+    if (typeof options.fullscreen === 'boolean') state.isFullscreen = options.fullscreen;
     const openAsPreview = options.preview === true && options.pinned !== true;
     let tab = state.tabs.find(candidate => previewPathKey(candidate.path) === previewPathKey(target));
     if (!tab) {
@@ -1385,8 +1410,9 @@ function createPreviewPanelController({
     restoreSourcePanelVisibility();
     resetPreviewZoom({ persist: false });
     resetPreviewHeader();
-    previewIsFullscreen = false;
+    previewIsFullscreen = true;
     previewSplitRatio = 0.5;
+    syncPreviewLayoutControls();
     currentContextKey = null;
     refitActiveTerminal();
   }
@@ -1397,38 +1423,6 @@ function createPreviewPanelController({
     const existed = contextPreviewStates.delete(key);
     if (currentContextKey === key) closePreviewPanel();
     return existed;
-  }
-
-  function togglePreviewLayout() {
-    const state = getContextState();
-    if (!state) return;
-    previewIsFullscreen = !previewIsFullscreen;
-    state.isFullscreen = previewIsFullscreen;
-    const button = document.getElementById('preview-toggle-layout');
-    if (previewIsFullscreen) {
-      if (button) {
-        button.title = '并列预览';
-        button.setAttribute('aria-label', '切换为并列预览');
-        button.setAttribute('aria-pressed', 'true');
-      }
-      previewPanelEl.classList.remove('preview-split');
-      previewSplitterEl.style.display = 'none';
-      applySplitWidths(null);
-      const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
-      if (src) src.style.display = 'none';
-    } else {
-      if (button) {
-        button.title = '全屏预览';
-        button.setAttribute('aria-label', '全屏预览');
-        button.setAttribute('aria-pressed', 'false');
-      }
-      previewPanelEl.classList.add('preview-split');
-      previewSplitterEl.style.display = '';
-      applySplitWidths(previewSplitRatio);
-      const src = previewSourcePanel ? document.getElementById(previewSourcePanel) : null;
-      if (src) src.style.display = previewSourcePanel === 'terminal-panel' ? '' : 'flex';
-    }
-    refitActiveTerminal();
   }
 
   async function reloadActivePreview() {
@@ -2015,7 +2009,8 @@ function createPreviewPanelController({
     });
   }
   addClickListener('preview-close', closePreviewPanel);
-  addClickListener('preview-toggle-layout', togglePreviewLayout);
+  addClickListener('preview-layout-split', () => setPreviewLayout(false));
+  addClickListener('preview-layout-full', () => setPreviewLayout(true));
   addClickListener('preview-open-external', () => { void runAsyncAction(openPreviewExternal, '外部打开失败'); });
   addClickListener('preview-copy-content', () => { void runAsyncAction(copyPreviewContent, '复制全文失败'); });
   addClickListener('preview-copy-path', () => { void runAsyncAction(copyPreviewPath, '复制路径失败'); });
@@ -2180,6 +2175,7 @@ function createPreviewPanelController({
     closePreviewTab,
     pinPreviewTab,
     dropPreviewContext,
+    setPreviewLayout,
     reloadActivePreview,
     openPreviewFind: () => previewFind.open(),
     closePreviewFind: options => previewFind.close(options),

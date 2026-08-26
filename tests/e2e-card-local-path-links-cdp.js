@@ -184,7 +184,15 @@ async function main() {
         if (panel?.style.display === 'flex' && title?.title) {
           const state = window.__hubE2E.previewWorkbench.state();
           const active = state.tabs.find(tab => tab.id === state.activeTabId);
-          return { display:panel.style.display, title:title.textContent, path:title.title, pinned:active?.pinned };
+          return {
+            display:panel.style.display,
+            title:title.textContent,
+            path:title.title,
+            pinned:active?.pinned,
+            isFullscreen:state.isFullscreen,
+            fullPressed:document.getElementById('preview-layout-full')?.getAttribute('aria-pressed'),
+            sourceDisplay:getComputedStyle(document.getElementById('terminal-panel')).display,
+          };
         }
         await new Promise(resolve => setTimeout(resolve, 50));
       }
@@ -194,6 +202,9 @@ async function main() {
     assert.equal(result.click.path, FIXTURE_PATH);
     assert.equal(result.click.title, path.basename(FIXTURE_PATH));
     assert.equal(result.click.pinned, false, 'a single path click must use the reusable temporary tab');
+    assert.equal(result.click.isFullscreen, true);
+    assert.equal(result.click.fullPressed, 'true');
+    assert.equal(result.click.sourceDisplay, 'none');
 
     testBodyPassed = true;
   } catch (error) {

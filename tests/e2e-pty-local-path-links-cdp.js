@@ -260,11 +260,17 @@ function terminalCellWidth(text) {
       display: document.getElementById('preview-panel').style.display,
       title: document.getElementById('preview-title').textContent,
       path: document.getElementById('preview-title').title,
+      isFullscreen: window.__hubE2E.previewWorkbench.state().isFullscreen,
+      fullPressed: document.getElementById('preview-layout-full').getAttribute('aria-pressed'),
+      sourceDisplay: getComputedStyle(document.getElementById('terminal-panel')).display,
     }))()`);
     assert.deepEqual(result.physicalClick, {
       display: 'flex',
       title: path.basename(ABS_FILE),
       path: ABS_FILE,
+      isFullscreen: true,
+      fullPressed: 'true',
+      sourceDisplay: 'none',
     });
     await capture(client, PREVIEW_SCREENSHOT);
 

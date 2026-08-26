@@ -99,7 +99,8 @@ function makeDocument() {
     'preview-file-meta',
     'preview-tabs',
     'preview-new-tab',
-    'preview-toggle-layout',
+    'preview-layout-split',
+    'preview-layout-full',
     'preview-close',
     'preview-open-external',
     'preview-open-path',
@@ -168,6 +169,14 @@ async function testSessionScopedBodyPreview() {
 
   await controller.openPreviewPanel('C:\\tmp\\a.md');
   assert.strictEqual(panel.style.display, 'flex');
+  assert.strictEqual(terminal.style.display, 'none');
+  assert.strictEqual(controller.getPreviewState('session:s1').isFullscreen, true);
+  assert.strictEqual(document.getElementById('preview-layout-full').getAttribute('aria-pressed'), 'true');
+  assert.strictEqual(document.getElementById('preview-layout-split').getAttribute('aria-pressed'), 'false');
+
+  document.getElementById('preview-layout-split').listeners.click();
+  assert.strictEqual(controller.getPreviewState('session:s1').isFullscreen, false);
+  assert.strictEqual(terminal.style.display, '');
   assert.strictEqual(terminal.style.flex, '0.5');
 
   body.scrollTop = 321;
@@ -184,6 +193,16 @@ async function testSessionScopedBodyPreview() {
   await controller.restorePreviewForContext('session:s1');
   assert.strictEqual(panel.style.display, 'flex');
   assert.strictEqual(body.scrollTop, 321);
+}
+
+async function testExplicitSplitOverride() {
+  const document = makeDocument();
+  const controller = makeController(document, () => 'explicit-split');
+  await controller.openPreviewPanel('C:\\tmp\\split.md', { fullscreen: false });
+  const state = controller.getPreviewState('session:explicit-split');
+  assert.strictEqual(state.isFullscreen, false);
+  assert.strictEqual(document.getElementById('preview-layout-split').getAttribute('aria-pressed'), 'true');
+  assert.strictEqual(document.getElementById('preview-layout-full').getAttribute('aria-pressed'), 'false');
 }
 
 async function testWebviewScrollRestore() {
@@ -410,6 +429,7 @@ async function testLateWebviewLoadCannotClearNewerFailure() {
 
 async function main() {
   await testSessionScopedBodyPreview();
+  await testExplicitSplitOverride();
   await testWebviewScrollRestore();
   await testMultipleTabsReuseAndClose();
   await testTemporaryTabReuseAndPinning();

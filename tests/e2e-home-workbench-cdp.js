@@ -260,7 +260,7 @@ async function main() {
       artifact.click();
       await new Promise(resolve => setTimeout(resolve, 120));
       const artifactPreviewVisible = getComputedStyle(document.getElementById('preview-panel')).display !== 'none';
-      const artifactPreviewFullscreen = document.getElementById('preview-toggle-layout').getAttribute('aria-pressed') === 'true'
+      const artifactPreviewFullscreen = document.getElementById('preview-layout-full').getAttribute('aria-pressed') === 'true'
         && getComputedStyle(document.getElementById('terminal-panel')).display === 'none';
       document.getElementById('preview-close').click();
 
