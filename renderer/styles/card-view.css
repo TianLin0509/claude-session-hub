@@ -244,6 +244,28 @@
   color: white;
 }
 
+/* Narrow main panels need a dedicated control row. The old absolute offsets
+   pushed “复制对话” outside the terminal panel and covered the title/status row. */
+@media (max-width: 900px) {
+  .terminal-panel.card-view-active .terminal-header { padding-top: 42px; }
+  .terminal-panel.card-view-active .recent-turn-copy {
+    left: 16px;
+    right: auto;
+    max-width: 150px;
+    height: 25px;
+    min-height: 25px;
+  }
+  .terminal-panel.card-view-active .recent-turn-copy-total { display: none; }
+  .terminal-panel.card-view-active .recent-turn-copy-label,
+  .terminal-panel.card-view-active .recent-turn-copy select,
+  .terminal-panel.card-view-active .recent-turn-copy button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .terminal-panel.card-view-active .completion-notification-toggle { right: 108px; }
+  .terminal-panel.card-view-active .view-toggle { right: 16px; }
+}
+
 /* 当前会话微信完成通知：入口位置不变，状态随当前 session / meeting 切换。 */
 .completion-notification-toggle {
   position: absolute;
@@ -932,28 +954,29 @@
 .tc-result.is-json .token.punctuation { color: #8b949e; }
 .tc-result.is-json .token.operator { color: #d2a8ff; }
 
-/* === Spec 3 · W15 v2 (2026-05-10): streaming indicator
-   旧版是 turn-card 之间的大 banner（"Claude 还在生成更多回复…" + 3 dot 跳动），
-   实测视觉打扰偏多。新版改成紧凑 spinner，由 JS 优先 append 到最后一个
-   assistant turn-card 的 turn-head 末尾，hover 看具体文案；cardCount=0 时
-   fallback 到 overlay 顶部仍紧凑显示。
+/* === Spec 3 · W15 v3: streaming indicator
+   小圆圈但只靠 hover 才能知道含义，用户在卡片视图无法确认 agent 是否仍在工作。
+   保留紧凑布局，同时常驻“工作中”文字；顶部 header 胶囊负责显示精确持续时长。
 */
 .streaming-indicator {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 0;
+  padding: 2px 7px;
   margin: 0 0 0 6px;
-  background: transparent;
-  border: none;
-  border-left: none;
-  color: var(--ui-purple-2);
+  border: 1px solid rgba(63, 185, 80, .34);
+  border-radius: 999px;
+  background: rgba(35, 134, 54, .11);
+  color: #71dc8b;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1;
   vertical-align: middle;
 }
 .streaming-indicator .spinner-icon {
-  width: 13px;
-  height: 13px;
-  border: 2px solid currentColor;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid currentColor;
   border-top-color: transparent;
   border-radius: 50%;
   display: inline-block;
@@ -962,21 +985,21 @@
   flex-shrink: 0;
 }
 @keyframes streaming-spin { to { transform: rotate(360deg); } }
+.streaming-indicator::after {
+  content: attr(data-label);
+  color: currentColor;
+  white-space: nowrap;
+}
 /* cardCount=0 fallback：indicator 直接挂 overlay 时给点视觉余量（原 banner 极简化） */
 .msg-overlay > .streaming-indicator {
   display: flex;
   margin: 12px 0 4px 8px;
-  padding: 4px 0;
-  font-size: 12px;
-  font-style: italic;
-  opacity: 0.75;
+  width: fit-content;
+  padding: 5px 9px;
+  font-size: 11px;
 }
-.msg-overlay > .streaming-indicator::after {
-  content: attr(data-label);
-  color: currentColor;
-  font-size: 12px;
-  font-style: italic;
-  margin-left: 6px;
+@media (prefers-reduced-motion: reduce) {
+  .streaming-indicator .spinner-icon { animation: none; }
 }
 /* === Spec 3 · 长 markdown 文本默认折叠 === */
 .turn-body.body-foldable.folded {

@@ -55,6 +55,7 @@ const { modelClass, modelShort, createModelUiController } = require('./model-ui.
 const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
+const { deriveSessionRuntimeStatus } = require('./session-runtime-status.js');
 const { classifyTerminalRuntime } = require('../core/terminal-runtime-state.js');
 const { createPastSessionModals, collapseDormantNativeDuplicates } = require('./past-session-modals.js');
 const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
@@ -1249,8 +1250,11 @@ function showTerminal(sessionId, opts = { focus: true }) {
   if (!session.readOnly) titleSpan.addEventListener('click', () => startRename(sessionId, titleSpan));
 
   const statusSpan = document.createElement('span');
-  statusSpan.className = `terminal-status ${session.status}`;
-  statusSpan.textContent = session.status === 'running' ? '\u25cf running' : '\u25cb idle';
+  statusSpan.className = 'terminal-status';
+  statusSpan.setAttribute('role', 'status');
+  statusSpan.setAttribute('aria-live', 'polite');
+  statusSpan.setAttribute('aria-atomic', 'false');
+  paintTerminalRuntimeStatus(statusSpan, session);
 
   titleSection.append(titleSpan, statusSpan);
 
@@ -2306,6 +2310,7 @@ document.addEventListener('click', (e) => {
 // === Spec 1 v0.9.0 · 视图切换 ===
 // 默认 PTY（卡片视图作为可选第二视图，不破坏 PTY 主流程）— 2026-05-04 用户反馈
 let currentView = 'pty'; // 'card' | 'pty'
+let _terminalRuntimeStatusTicker = null;
 const { createCardQuestionNavigator } = require('./card-question-navigator.js');
 const cardQuestionNavigator = createCardQuestionNavigator({
   document,
@@ -2515,7 +2520,7 @@ function _updateStreamingIndicator(sessionId) {
       // 已有 indicator 但目标 parent 变了（新 turn-card 渲染出来）→ 迁移过去
       targetParent.appendChild(indicator);
     }
-    // 文案放 title 属性 hover 显示（不占视觉空间）
+    // 卡片内常驻短文案；完整上下文仍放 title，header 胶囊显示精确持续时长。
     const cardCount = overlay.querySelectorAll('.turn-card[data-turn-id]').length;
     const label = cardWorkingLabel(sess);
     const pendingSubmit = sess && sess.cardWorkingSource === 'floating_input';
@@ -2523,7 +2528,9 @@ function _updateStreamingIndicator(sessionId) {
       ? `${label} 正在接收输入…`
       : (cardCount === 0 ? `${label} 正在工作…` : `${label} 仍在工作，可能还会更新卡片`);
     indicator.setAttribute('aria-label', indicator.title);
-    indicator.dataset.label = cardCount === 0 ? indicator.title : '';
+    indicator.dataset.label = cardCount === 0
+      ? (pendingSubmit ? `${label} 接收任务中` : `${label} 工作中`)
+      : (pendingSubmit ? '接收任务中' : '工作中');
   } else if (!isRunning && indicator) {
     // 延迟 1.5s 移除（防 silence gap 闪烁）
     const timer = setTimeout(() => {
@@ -2548,6 +2555,7 @@ function _updateStreamingIndicator(sessionId) {
 
 function applyViewMode(mode) {
   currentView = mode;
+  if (terminalPanelEl) terminalPanelEl.classList.toggle('card-view-active', mode === 'card');
   const overlay = document.getElementById('msg-overlay');
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
   cardQuestionNavigator.refresh();
@@ -2580,6 +2588,7 @@ function applyViewMode(mode) {
   if (activeSessionId && typeof _updateStreamingIndicator === 'function') {
     _updateStreamingIndicator(activeSessionId);
   }
+  updateFloatingBarState();
 }
 
 function recoverVisibleActiveTerminalSurface() {
@@ -3021,21 +3030,90 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   };
 }
 
+function paintTerminalRuntimeStatus(element, session, now = Date.now()) {
+  if (!element || !session) return null;
+  const runtime = deriveSessionRuntimeStatus(session, {
+    now,
+    isRunning: isSessionCardWorking(session),
+  });
+
+  let dot = element.querySelector('.terminal-status-dot');
+  let label = element.querySelector('.terminal-status-label');
+  let meta = element.querySelector('.terminal-status-meta');
+  if (!dot || !label || !meta) {
+    element.replaceChildren();
+    dot = document.createElement('span');
+    dot.className = 'terminal-status-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    label = document.createElement('span');
+    label.className = 'terminal-status-label';
+    meta = document.createElement('span');
+    meta.className = 'terminal-status-meta';
+    meta.setAttribute('aria-hidden', 'true');
+    element.append(dot, label, meta);
+  }
+
+  const nextClassName = `terminal-status ${runtime.state}`;
+  if (element.className !== nextClassName) element.className = nextClassName;
+  if (element.dataset.runtimeState !== runtime.state) element.dataset.runtimeState = runtime.state;
+  if (element.dataset.provider !== runtime.provider) element.dataset.provider = runtime.provider;
+  if (element.title !== runtime.title) element.title = runtime.title;
+  if (element.getAttribute('aria-label') !== runtime.ariaLabel) {
+    element.setAttribute('aria-label', runtime.ariaLabel);
+  }
+  if (label.textContent !== runtime.label) label.textContent = runtime.label;
+  if (meta.textContent !== runtime.meta) meta.textContent = runtime.meta;
+  meta.hidden = !runtime.meta;
+  return runtime;
+}
+
+function stopTerminalRuntimeStatusTicker() {
+  if (!_terminalRuntimeStatusTicker) return;
+  clearInterval(_terminalRuntimeStatusTicker);
+  _terminalRuntimeStatusTicker = null;
+}
+
+function syncTerminalRuntimeStatusTicker(session) {
+  const statusElement = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
+  const shouldTick = currentView === 'card' && !!session && !!statusElement;
+  if (!shouldTick) {
+    stopTerminalRuntimeStatusTicker();
+    return;
+  }
+  if (_terminalRuntimeStatusTicker) return;
+  _terminalRuntimeStatusTicker = setInterval(() => {
+    if (currentView !== 'card' || !activeSessionId) {
+      stopTerminalRuntimeStatusTicker();
+      return;
+    }
+    const active = sessions.get(activeSessionId);
+    const target = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
+    if (!active || !target) {
+      stopTerminalRuntimeStatusTicker();
+      return;
+    }
+    paintTerminalRuntimeStatus(target, active, Date.now());
+  }, 1000);
+}
+
 // 2026-07-19 道雪 · 方案C：刷新浮动输入栏的 ctx chip 与中断钮（跟随 active session 状态）。
 //   调用时机：mountFloatingInput 后 + 每次 renderSessionList（status 事件驱动）。
 function updateFloatingBarState() {
-  if (!activeSessionId) return;
+  if (!activeSessionId) {
+    syncTerminalRuntimeStatusTicker(null);
+    return;
+  }
   const s = sessions.get(activeSessionId);
-  if (!s) return;
+  if (!s) {
+    syncTerminalRuntimeStatusTicker(null);
+    return;
+  }
 
   // The header used to be a one-time snapshot from showTerminal(), while the
   // sidebar and composer followed live state. Keep all three surfaces aligned.
   const status = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
-  if (status) {
-    const running = s.status === 'running';
-    status.className = `terminal-status ${running ? 'running' : 'idle'}`;
-    status.textContent = running ? '\u25cf running' : '\u25cb idle';
-  }
+  if (status) paintTerminalRuntimeStatus(status, s);
+  syncTerminalRuntimeStatusTicker(s);
 
   const bar = document.querySelector('.terminal-panel .floating-input-bar');
   if (!bar) return;

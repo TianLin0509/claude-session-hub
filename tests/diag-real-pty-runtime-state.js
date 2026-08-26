@@ -2,7 +2,8 @@
 
 // Manual, credential-backed diagnostic for the real Claude/Codex TUI path.
 // It launches an isolated Hub/data directory and closes only that instance.
-// Usage: node tests/diag-real-pty-runtime-state.js
+// Usage (Codex by default): node tests/diag-real-pty-runtime-state.js
+// Full provider probe: $env:HUB_DIAG_PROVIDERS='claude,codex'; node tests/diag-real-pty-runtime-state.js
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -68,18 +69,38 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     return true;
   })()`);
 
-  const running = await waitFor(`${kind} running`, () => client.eval(`(() => {
-    const session = sessions.get(${JSON.stringify(id)});
-    if (!session || session.status !== 'running') return null;
-    if (session._ptyRuntimeState !== 'running' && session._runSource !== 'semantic') return null;
-    return {
-      status: session.status,
-      source: session._runSource || null,
-      agent: session._agentWorking || null,
-      ptyState: session._ptyRuntimeState || null,
-      ptyReason: session._ptyRuntimeReason || null,
-    };
-  })()`), 45000);
+  let running;
+  try {
+    running = await waitFor(`${kind} running`, () => client.eval(`(() => {
+      const session = sessions.get(${JSON.stringify(id)});
+      if (!session || session.status !== 'running') return null;
+      if (session._ptyRuntimeState !== 'running' && session._runSource !== 'semantic') return null;
+      const status = document.querySelector('.terminal-header .terminal-status');
+      return {
+        status: session.status,
+        source: session._runSource || null,
+        agent: session._agentWorking || null,
+        ptyState: session._ptyRuntimeState || null,
+        ptyReason: session._ptyRuntimeReason || null,
+        cardState: status?.dataset.runtimeState || null,
+        cardLabel: status?.querySelector('.terminal-status-label')?.textContent || '',
+      };
+    })()`), 45000);
+  } catch (error) {
+    const diagnostic = await client.eval(`(() => {
+      const session = sessions.get(${JSON.stringify(id)});
+      return {
+        session: session ? {
+          status: session.status,
+          source: session._runSource || null,
+          ptyState: session._ptyRuntimeState || null,
+          ptyReason: session._ptyRuntimeReason || null,
+        } : null,
+        screen: window.__hubE2E.terminalLiveScreenText(${JSON.stringify(id)}),
+      };
+    })()`);
+    throw new Error(`${error.message}\n${JSON.stringify(diagnostic, null, 2)}`);
+  }
 
   const done = await waitFor(`${kind} completed`, () => client.eval(`(() => {
     const id = ${JSON.stringify(id)};
@@ -89,7 +110,11 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     const markerOccurrences = screen.split(marker).length - 1;
     const responseMarkerSeen = markerOccurrences >= 2;
     const blockedOnInput = session && session._ptyRuntimeState === 'waiting';
+    const cardStatus = document.querySelector('.terminal-header .terminal-status');
+    const cardState = cardStatus?.dataset.runtimeState || null;
+    const cardLabel = cardStatus?.querySelector('.terminal-status-label')?.textContent || '';
     if (!session || session.status !== 'idle' || (!responseMarkerSeen && !blockedOnInput)) return null;
+    if (responseMarkerSeen && (cardState !== 'complete' || cardLabel !== '已完成')) return null;
     return {
       status: session.status,
       source: session._runSource || null,
@@ -103,13 +128,21 @@ async function runSession(client, { kind, prompt, marker, opts }) {
       markerOccurrences,
       responseMarkerSeen,
       blockedOnInput,
+      cardState,
+      cardLabel,
       screen,
     };
   })()`), 120000);
 
   assert.equal(before.status, 'idle');
   assert.equal(running.status, 'running');
+  assert.equal(running.cardState, 'running');
+  assert.equal(running.cardLabel, '工作中');
   assert.equal(done.status, 'idle');
+  if (done.responseMarkerSeen) {
+    assert.equal(done.cardState, 'complete');
+    assert.equal(done.cardLabel, '已完成');
+  }
   return { id, before, running, done };
 }
 
@@ -135,35 +168,46 @@ async function main() {
     );
     await waitFor('workspace controller', () => client.eval('!!(window.WorkspaceController && window.__hubE2E)'));
 
-    const claude = await runSession(client, {
-      kind: 'claude',
-      prompt: 'Run PowerShell Start-Sleep -Seconds 4, then reply with exactly CLAUDE_PTY_RUNTIME_DONE.',
-      marker: 'CLAUDE_PTY_RUNTIME_DONE',
-      opts: {
-        model: process.env.HUB_DIAG_CLAUDE_MODEL || 'claude-fable-5',
-        effort: 'low',
-        mcpProfile: 'lean',
-        fastMode: false,
-      },
-    });
-    const codex = await runSession(client, {
-      kind: 'codex',
-      prompt: 'Run PowerShell Start-Sleep -Seconds 3, then reply with exactly CODEX_PTY_RUNTIME_DONE.',
-      marker: 'CODEX_PTY_RUNTIME_DONE',
-      opts: {
-        model: process.env.HUB_DIAG_CODEX_MODEL || 'gpt-5.6-sol',
-        effort: 'low',
-        mcpProfile: 'lean',
-        codexSpeedTier: 'inherit',
-      },
-    });
+    const requestedProviders = new Set(
+      String(process.env.HUB_DIAG_PROVIDERS || 'codex')
+        .split(',')
+        .map(value => value.trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const results = {};
+    if (requestedProviders.has('claude')) {
+      results.claude = await runSession(client, {
+        kind: 'claude',
+        prompt: 'Run PowerShell Start-Sleep -Seconds 4, then reply with exactly CLAUDE_PTY_RUNTIME_DONE.',
+        marker: 'CLAUDE_PTY_RUNTIME_DONE',
+        opts: {
+          model: process.env.HUB_DIAG_CLAUDE_MODEL || 'claude-fable-5',
+          effort: 'low',
+          mcpProfile: 'lean',
+          fastMode: false,
+        },
+      });
+    }
+    if (requestedProviders.has('codex')) {
+      results.codex = await runSession(client, {
+        kind: 'codex',
+        prompt: 'Run PowerShell Start-Sleep -Seconds 3, then reply with exactly CODEX_PTY_RUNTIME_DONE.',
+        marker: 'CODEX_PTY_RUNTIME_DONE',
+        opts: {
+          model: process.env.HUB_DIAG_CODEX_MODEL || 'gpt-5.6-sol',
+          effort: 'low',
+          mcpProfile: 'lean',
+          codexSpeedTier: 'inherit',
+        },
+      });
+    }
 
-    const ok = claude.done.responseMarkerSeen && codex.done.responseMarkerSeen;
-    const blockedProviders = [
-      claude.done.blockedOnInput && !claude.done.responseMarkerSeen ? 'claude' : null,
-      codex.done.blockedOnInput && !codex.done.responseMarkerSeen ? 'codex' : null,
-    ].filter(Boolean);
-    console.log(JSON.stringify({ ok, blockedProviders, port, hubPid: hub.pid, claude, codex }, null, 2));
+    const entries = Object.entries(results);
+    const ok = entries.length > 0 && entries.every(([, value]) => value.done.responseMarkerSeen);
+    const blockedProviders = entries
+      .filter(([, value]) => value.done.blockedOnInput && !value.done.responseMarkerSeen)
+      .map(([provider]) => provider);
+    console.log(JSON.stringify({ ok, blockedProviders, port, hubPid: hub.pid, providers: [...requestedProviders], ...results }, null, 2));
   } finally {
     if (client) {
       try { client.ws.close(); } catch {}

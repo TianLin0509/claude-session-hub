@@ -160,7 +160,8 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
         status: session.status,
         source: session._runSource || null,
         stopVisible: stop.classList.contains('visible'),
-        headerText: header.textContent.trim(),
+        headerState: header.dataset.runtimeState,
+        headerLabel: header.querySelector('.terminal-status-label')?.textContent || '',
       };
     })()`);
 
@@ -175,9 +176,10 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
         status: suppressed.status,
         source: suppressed.source,
         stopVisible: suppressed.stopVisible,
-        headerText: suppressed.headerText,
+        headerState: suppressed.headerState,
+        headerLabel: suppressed.headerLabel,
       },
-      { status: 'idle', source: null, stopVisible: false, headerText: '○ idle' }
+      { status: 'idle', source: null, stopVisible: false, headerState: 'idle', headerLabel: '已就绪' }
     );
 
     // Outside the narrow resize window, retain the existing PTY fallback. It
@@ -199,9 +201,11 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       `(() => {
         const state = window.__floatingRunningE2E;
         const session = sessions.get(state.id);
+        const header = document.querySelector('.terminal-header .terminal-status');
         return session.status === 'running'
           && session._runSource === 'burst'
-          && document.querySelector('.terminal-header .terminal-status')?.textContent.trim() === '● running';
+          && header?.dataset.runtimeState === 'running'
+          && header.querySelector('.terminal-status-label')?.textContent === '工作中';
       })()`,
       'burst state and header render'
     );
@@ -213,14 +217,16 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
         status: session.status,
         source: session._runSource || null,
         stopVisible: document.querySelector('.floating-input-stop').classList.contains('visible'),
-        headerText: document.querySelector('.terminal-header .terminal-status').textContent.trim(),
+        headerState: document.querySelector('.terminal-header .terminal-status').dataset.runtimeState,
+        headerLabel: document.querySelector('.terminal-header .terminal-status-label').textContent,
       };
     })()`);
     assert.deepEqual(fallback, {
       status: 'running',
       source: 'burst',
       stopVisible: false,
-      headerText: '● running',
+      headerState: 'running',
+      headerLabel: '工作中',
     });
 
     // Burst fallback is one-shot: after its normal quiet transition it enters
@@ -230,11 +236,13 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       `(() => {
         const state = window.__floatingRunningE2E;
         const session = sessions.get(state.id);
+        const header = document.querySelector('.terminal-header .terminal-status');
         return session.status === 'idle'
           && !session._runSource
           && Number(session._ptyFallbackArmedUntil || 0) === 0
           && Number(session._ptyBurstCooldownUntil || 0) > Date.now()
-          && document.querySelector('.terminal-header .terminal-status')?.textContent.trim() === '○ idle';
+          && header?.dataset.runtimeState === 'idle'
+          && header.querySelector('.terminal-status-label')?.textContent === '已就绪';
       })()`,
       'burst quiet transition and cooldown'
     );
@@ -253,11 +261,13 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       `(() => {
         const state = window.__floatingRunningE2E;
         const session = sessions.get(state.id);
+        const header = document.querySelector('.terminal-header .terminal-status');
         return session.status === 'idle'
           && !session._runSource
           && Number(session._ptyFallbackArmedUntil || 0) === 0
           && Number(session._ptyBurstCooldownUntil || 0) > Date.now()
-          && document.querySelector('.terminal-header .terminal-status')?.textContent.trim() === '○ idle';
+          && header?.dataset.runtimeState === 'idle'
+          && header.querySelector('.terminal-status-label')?.textContent === '已就绪';
       })()`,
       'idle repaint suppressed during cooldown'
     );
@@ -270,7 +280,8 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
         armedUntil: Number(session._ptyFallbackArmedUntil) || 0,
         cooldownActive: Number(session._ptyBurstCooldownUntil) > Date.now(),
         stopVisible: document.querySelector('.floating-input-stop').classList.contains('visible'),
-        headerText: document.querySelector('.terminal-header .terminal-status').textContent.trim(),
+        headerState: document.querySelector('.terminal-header .terminal-status').dataset.runtimeState,
+        headerLabel: document.querySelector('.terminal-header .terminal-status-label').textContent,
       };
     })()`);
     assert.deepEqual(cooled, {
@@ -279,7 +290,8 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       armedUntil: 0,
       cooldownActive: true,
       stopVisible: false,
-      headerText: '○ idle',
+      headerState: 'idle',
+      headerLabel: '已就绪',
     });
 
     // A semantic Codex/card signal is high-confidence work and should still
@@ -290,10 +302,11 @@ async function waitFor(client, expression, label, timeoutMs = 20000) {
       updateFloatingBarState();
       return {
         stopVisible: document.querySelector('.floating-input-stop').classList.contains('visible'),
-        headerText: document.querySelector('.terminal-header .terminal-status').textContent.trim(),
+        headerState: document.querySelector('.terminal-header .terminal-status').dataset.runtimeState,
+        headerLabel: document.querySelector('.terminal-header .terminal-status-label').textContent,
       };
     })()`);
-    assert.deepEqual(semantic, { stopVisible: true, headerText: '● running' });
+    assert.deepEqual(semantic, { stopVisible: true, headerState: 'running', headerLabel: '工作中' });
 
     console.log(JSON.stringify({ ok: true, pid: hub.pid, port, before, suppressed, fallback, cooled, semantic }, null, 2));
   } catch (error) {
