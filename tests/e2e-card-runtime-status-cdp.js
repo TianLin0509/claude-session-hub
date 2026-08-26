@@ -14,12 +14,14 @@ const RUN_ID = `${Date.now()}-${process.pid}`;
 const TEMP_ROOT = path.join(os.tmpdir(), `hub-card-runtime-status-${RUN_ID}`);
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'card-runtime-status');
 const RUNNING_SHOT = path.join(ARTIFACT_DIR, `running-${RUN_ID}.png`);
+const NEW_PROMPT_SHOT = path.join(ARTIFACT_DIR, `new-prompt-working-${RUN_ID}.png`);
 const WAITING_SHOT = path.join(ARTIFACT_DIR, `waiting-${RUN_ID}.png`);
 const COMPLETE_SHOT = path.join(ARTIFACT_DIR, `complete-${RUN_ID}.png`);
 const COMPACT_SHOT = path.join(ARTIFACT_DIR, `compact-${RUN_ID}.png`);
 const CLAUDE_RUNNING_SHOT = path.join(ARTIFACT_DIR, `claude-running-${RUN_ID}.png`);
 const CLAUDE_WAITING_SHOT = path.join(ARTIFACT_DIR, `claude-waiting-${RUN_ID}.png`);
 const CLAUDE_FAILED_SHOT = path.join(ARTIFACT_DIR, `claude-failed-${RUN_ID}.png`);
+const SIDEBAR_STATES_SHOT = path.join(ARTIFACT_DIR, `sidebar-states-${RUN_ID}.png`);
 const RESULT_PATH = path.join(ARTIFACT_DIR, `result-${RUN_ID}.json`);
 
 function reservePort() {
@@ -85,6 +87,9 @@ async function readStatus(client) {
       ariaLabel: root?.getAttribute('aria-label') || '',
       inlineLabel: inline?.dataset.label || '',
       inlineVisible: !!inline && inline.getBoundingClientRect().width > 0,
+      inlineParentRole: inline?.closest('.turn-card')?.classList.contains('user') ? 'user'
+        : (inline?.closest('.turn-card') ? 'assistant' : 'overlay'),
+      inlineParentTurnId: inline?.closest('.turn-card')?.dataset.turnId || null,
       cardMode: document.getElementById('terminal-panel')?.classList.contains('card-view-active') || false,
       headerClientWidth: titleRow?.clientWidth || 0,
       headerScrollWidth: titleRow?.scrollWidth || 0,
@@ -127,6 +132,7 @@ async function main() {
     port,
     screenshots: {
       running: RUNNING_SHOT,
+      newPromptWorking: NEW_PROMPT_SHOT,
       waiting: WAITING_SHOT,
       complete: COMPLETE_SHOT,
       compact: COMPACT_SHOT,
@@ -232,6 +238,17 @@ async function main() {
       const state = await readStatus(client);
       return state.state === 'running' && state.meta !== firstElapsed ? state.meta : null;
     }, 4000);
+
+    await client.eval(`(() => {
+      mountOptimisticUserCard('card-runtime-status-e2e', '这是已经开始的下一条问题', 'codex');
+      _updateStreamingIndicator('card-runtime-status-e2e');
+    })()`);
+    result.newPromptPlacement = await waitFor('working status follows newest user prompt', async () => {
+      const state = await readStatus(client);
+      return state.inlineVisible && state.inlineParentRole === 'user' ? state : null;
+    });
+    assert.match(result.newPromptPlacement.inlineParentTurnId || '', /^pending-user-/);
+    await screenshot(client, NEW_PROMPT_SHOT);
 
     await client.eval(`(() => {
       const session = sessions.get('card-runtime-status-e2e');
@@ -501,6 +518,62 @@ async function main() {
       return state.state === 'completed' && state.sidebarState === 'completed' ? state : null;
     });
     assert.equal(result.geminiCompleted.sidebarSource, 'gemini-turn-complete');
+
+    await client.eval(`(() => {
+      const now = Date.now();
+      sessions.set('disconnect-runtime-e2e', {
+        id: 'disconnect-runtime-e2e', kind: 'codex', title: '网络断连标识验证', status: 'running',
+        createdAt: now, lastMessageTime: now, unreadCount: 0,
+        currentModel: { id: 'gpt-5.6-sol', displayName: 'GPT-5.6-SOL' },
+        runStartedAt: now - 5000,
+      });
+      sessions.set('dormant-contrast-e2e', {
+        id: 'dormant-contrast-e2e', kind: 'claude', title: '高可读休眠会话', status: 'dormant',
+        createdAt: now, lastMessageTime: now - 1000, unreadCount: 0,
+        currentModel: { id: 'claude-opus-5', displayName: 'Claude Opus 5' },
+      });
+      ipcRenderer.emit('terminal-data', {}, {
+        sessionId: 'disconnect-runtime-e2e',
+        data: '\\x1b[31m■ stream disconnected before completion: ECONNRESET\\x1b[0m\\r\\n',
+        seq: 1,
+      });
+      renderSessionList();
+    })()`);
+    result.sidebarStates = await waitFor('disconnect and dormant sidebar states', async () => client.eval(`(() => {
+      const disconnected = document.querySelector('[data-session-id="disconnect-runtime-e2e"]');
+      const dormant = document.querySelector('[data-session-id="dormant-contrast-e2e"]');
+      if (!disconnected || !dormant) return null;
+      const dormantTitle = dormant.querySelector('.sl-title');
+      const dormantTime = dormant.querySelector('.sl-time');
+      return {
+        disconnectedClass: disconnected.classList.contains('disconnected'),
+        disconnectedState: disconnected.dataset.runtimeState,
+        disconnectedTime: disconnected.querySelector('.sl-time')?.textContent || '',
+        dormantClass: dormant.classList.contains('dormant'),
+        dormantTime: dormantTime?.textContent || '',
+        dormantTitleColor: dormantTitle ? getComputedStyle(dormantTitle).color : '',
+        dormantBackground: getComputedStyle(dormant).backgroundColor,
+      };
+    })()`));
+    assert.equal(result.sidebarStates.disconnectedClass, true);
+    assert.equal(result.sidebarStates.disconnectedState, 'failed');
+    assert.match(result.sidebarStates.disconnectedTime, /^断连 · /);
+    assert.equal(result.sidebarStates.dormantClass, true);
+    assert.match(result.sidebarStates.dormantTime, /^休眠 · /);
+    assert.equal(result.sidebarStates.dormantTitleColor, 'rgb(199, 208, 220)');
+    assert.notEqual(result.sidebarStates.dormantBackground, 'rgba(0, 0, 0, 0)');
+    await screenshot(client, SIDEBAR_STATES_SHOT);
+    result.screenshots.sidebarStates = SIDEBAR_STATES_SHOT;
+
+    await client.eval(`ipcRenderer.emit('prompt-submitted-event', {}, {
+      hubSessionId: 'disconnect-runtime-e2e', kind: 'codex', text: '重新尝试',
+      submittedAt: Date.now(), turnId: 'disconnect-retry', signalSource: 'user_message'
+    })`);
+    result.disconnectCleared = await waitFor('new prompt clears disconnect marker', async () => client.eval(`(() => {
+      const session = sessions.get('disconnect-runtime-e2e');
+      const item = document.querySelector('[data-session-id="disconnect-runtime-e2e"]');
+      return session && !session.connectionIssue && item && !item.classList.contains('disconnected');
+    })()`));
 
     result.rendererErrors = await client.eval('window.__cardRuntimeErrors || []');
     assert.deepEqual(result.rendererErrors, []);

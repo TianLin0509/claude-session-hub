@@ -43,6 +43,18 @@ function sessionFilePath(hubId) {
   return path.join(sessionsDir(), `${hubId}.json`);
 }
 
+function _sanitizeConnectionIssue(value) {
+  if (!value || typeof value !== 'object' || value.type !== 'stream-disconnected') return null;
+  const message = typeof value.message === 'string' ? value.message.trim().slice(0, 500) : '';
+  if (!message) return null;
+  return {
+    type: 'stream-disconnected',
+    message,
+    signature: typeof value.signature === 'string' ? value.signature.slice(0, 500) : message.toLowerCase(),
+    observedAt: typeof value.observedAt === 'number' ? value.observedAt : null,
+  };
+}
+
 function _buildSessionPayload(hubId, data) {
   data = migrateLegacyBranchSessionMeta(data);
   const now = Date.now();
@@ -86,6 +98,9 @@ function _buildSessionPayload(hubId, data) {
     userRenamed: !!data.userRenamed,
     autoTitleGenerated: !!data.autoTitleGenerated,
     branchSourceSessionId: data.branchSourceSessionId || null,
+    branchIndex: Number.isInteger(Number(data.branchIndex)) && Number(data.branchIndex) > 0
+      ? Number(data.branchIndex)
+      : null,
     branchAutoTitlePending: !!data.branchAutoTitlePending,
     purpose: data.purpose || null,
     researchSessionId: data.researchSessionId || null,
@@ -110,6 +125,7 @@ function _buildSessionPayload(hubId, data) {
     recentArtifacts: Array.isArray(data.recentArtifacts) ? data.recentArtifacts.slice(-8) : null,
     suspendedAt: typeof data.suspendedAt === 'number' ? data.suspendedAt : null,
     suspendReason: typeof data.suspendReason === 'string' ? data.suspendReason : null,
+    connectionIssue: _sanitizeConnectionIssue(data.connectionIssue),
     updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : now,
     savedAt: now,
   };

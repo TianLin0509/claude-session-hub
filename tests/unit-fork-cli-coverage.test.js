@@ -79,7 +79,7 @@ test('Kimi is rejected with the real reason, not a generic refusal', () => {
 });
 
 test('fork still inherits model and effort for every supported kind', () => {
-  assert.match(IPC_SRC, /if \(source\.currentModel && source\.currentModel\.id\) opts\.model = source\.currentModel\.id;/);
+  assert.match(IPC_SRC, /const sourceModel = sessionModelId\(source\);\s*if \(sourceModel\) opts\.model = sourceModel;/);
   assert.match(IPC_SRC, /if \(source\.effort\) opts\.effort = source\.effort;/);
 });
 

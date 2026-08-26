@@ -35,6 +35,7 @@ const RESUME_META_FIELDS = [
   'userRenamed',
   'autoTitleGenerated',
   'branchSourceSessionId',
+  'branchIndex',
   'branchAutoTitlePending',
   'purpose',
   'researchSessionId',

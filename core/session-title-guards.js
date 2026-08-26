@@ -11,12 +11,22 @@ function normalizeTitle(title) {
 }
 
 function stripBranchTitlePrefix(title) {
-  return normalizeTitle(title).replace(/^分支\s*[:：]\s*/u, '').trim();
+  return normalizeTitle(title).replace(/^分支\s*\d*\s*[:：]\s*/u, '').trim();
 }
 
-function formatBranchSessionTitle(title, fallback = '会话') {
+function parseBranchSessionIndex(title) {
+  const match = normalizeTitle(title).match(/^分支\s*(\d+)\s*[:：]/u);
+  if (!match) return null;
+  const index = Number(match[1]);
+  return Number.isInteger(index) && index > 0 ? index : null;
+}
+
+function formatBranchSessionTitle(title, fallback = '会话', branchIndex = null) {
   const base = stripBranchTitlePrefix(title) || normalizeTitle(fallback) || '会话';
-  return `分支: ${base}`;
+  const index = Number(branchIndex);
+  return Number.isInteger(index) && index > 0
+    ? `分支${index}: ${base}`
+    : `分支: ${base}`;
 }
 
 function normalizeLegacyBranchSessionTitle(title) {
@@ -118,6 +128,7 @@ module.exports = {
   migrateLegacyBranchSessionMeta,
   normalizeLegacyBranchSessionTitle,
   normalizeTitle,
+  parseBranchSessionIndex,
   shouldAcceptExternalSessionTitle,
   stripBranchTitlePrefix,
 };

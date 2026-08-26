@@ -212,7 +212,7 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu, onE
       if (attachedElement) {
         attachedElement.removeEventListener('pointerdown', onPointerDown, true);
         attachedElement.removeEventListener('mousedown', onMouseDown, true);
-        attachedElement.removeEventListener('click', onClick);
+        attachedElement.removeEventListener('click', onClick, true);
       }
       attachedElement = element;
       // pointerdown fires before focus can redraw the cursor and emit
@@ -220,7 +220,10 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu, onE
       // without PointerEvent support.
       attachedElement.addEventListener('pointerdown', onPointerDown, true);
       attachedElement.addEventListener('mousedown', onMouseDown, true);
-      attachedElement.addEventListener('click', onClick);
+      // Capture is intentional. xterm's own Web/OSC link handlers can stop a
+      // bubbling click after focus redraw. Freezing the Hub link first makes a
+      // normal single click as reliable as the card-view path handler.
+      attachedElement.addEventListener('click', onClick, true);
       return true;
     };
     const isHeuristicCont = (prevLine, currentLine) => {
@@ -402,7 +405,7 @@ function createTerminalLinkRegistrar({ getCwd, openPathInHub, onContextMenu, onE
       if (attachedElement) {
         attachedElement.removeEventListener('pointerdown', onPointerDown, true);
         attachedElement.removeEventListener('mousedown', onMouseDown, true);
-        attachedElement.removeEventListener('click', onClick);
+        attachedElement.removeEventListener('click', onClick, true);
       }
       hoveredLink = null;
       releasePressedLink();

@@ -3,6 +3,7 @@
 const { isStableSessionTitle } = require('../../core/session-title-guards.js');
 const { isKimiCliKind } = require('../../core/ai-kinds.js');
 const { lookupKimiSession: defaultLookupKimiSession } = require('../../core/kimi-session-migrator.js');
+const { sessionModelId } = require('../../core/session-capabilities.js');
 
 function createResumeSessionHandler(deps) {
   const {
@@ -197,6 +198,7 @@ function createResumeSessionHandler(deps) {
       }
     }
 
+    const safeResumeModel = sessionModelId(meta);
     const createdSession = sessionManager.createSession(meta.kind || 'claude', {
       id: meta.hubId,
       title: meta.title,
@@ -205,7 +207,7 @@ function createResumeSessionHandler(deps) {
       ...(meta.workspaceLabel ? { workspaceLabel: meta.workspaceLabel } : {}),
       meetingId: meta.meetingId || null,
       completionNotificationEnabled: meta.completionNotificationEnabled === true,
-      model: meta.model || undefined,
+      model: safeResumeModel || undefined,
       ...(meta.effort ? { effort: meta.effort } : {}),
       ...(isLegacyDeepSeek ? { deepseekLegacyClaude: true } : {}),
       resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
@@ -233,6 +235,9 @@ function createResumeSessionHandler(deps) {
       autoTitleGenerated: !meta.branchAutoTitlePending
         && (!!meta.autoTitleGenerated || isStableSessionTitle(meta.title, meta.kind)),
       ...(meta.branchSourceSessionId ? { branchSourceSessionId: meta.branchSourceSessionId } : {}),
+      ...(Number.isInteger(Number(meta.branchIndex)) && Number(meta.branchIndex) > 0
+        ? { branchIndex: Number(meta.branchIndex) }
+        : {}),
       ...(typeof meta.branchAutoTitlePending === 'boolean'
         ? { branchAutoTitlePending: meta.branchAutoTitlePending }
         : {}),

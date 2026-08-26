@@ -142,6 +142,28 @@ const sessionStore = require('../core/session-store');
     console.log('PASS S10 auto-sleep metadata');
   }
 
+  // S10b: a network stream disconnect remains visible after Hub restart.
+  {
+    sessionStore.saveSessionFile('stream-disconnect', {
+      kind: 'codex', title: 'Disconnected', codexSid: 'native-disconnect',
+      connectionIssue: {
+        type: 'stream-disconnected',
+        message: 'stream disconnected before completion: ECONNRESET',
+        signature: 'stream disconnected before completion: econnreset',
+        observedAt: 7100,
+      },
+      updatedAt: 7101,
+    });
+    const loaded = sessionStore.loadSessionFile('stream-disconnect');
+    assert.deepStrictEqual(loaded.connectionIssue, {
+      type: 'stream-disconnected',
+      message: 'stream disconnected before completion: ECONNRESET',
+      signature: 'stream disconnected before completion: econnreset',
+      observedAt: 7100,
+    });
+    console.log('PASS S10b stream disconnect metadata');
+  }
+
   // S11: provider/session behavior survives recovery from the per-id authority.
   {
     sessionStore.saveSessionFile('resume-policy', {

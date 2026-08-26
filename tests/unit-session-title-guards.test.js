@@ -9,6 +9,7 @@ const {
   looksLikePathTitle,
   migrateLegacyBranchSessionMeta,
   normalizeLegacyBranchSessionTitle,
+  parseBranchSessionIndex,
   shouldAcceptExternalSessionTitle,
 } = require('../core/session-title-guards.js');
 
@@ -89,6 +90,9 @@ test('external title sync only replaces generic unprotected titles', () => {
 
 test('branch titles use a front-loaded marker and migrate the old suffix format', () => {
   assert.strictEqual(formatBranchSessionTitle('无线算法策略'), '分支: 无线算法策略');
+  assert.strictEqual(formatBranchSessionTitle('无线算法策略', '会话', 2), '分支2: 无线算法策略');
+  assert.strictEqual(formatBranchSessionTitle('分支1: 无线算法策略', '会话', 3), '分支3: 无线算法策略');
+  assert.strictEqual(parseBranchSessionIndex('分支12：无线算法策略'), 12);
   assert.strictEqual(formatBranchSessionTitle('分支: 无线算法策略'), '分支: 无线算法策略');
   assert.strictEqual(normalizeLegacyBranchSessionTitle('无线算法策略 · 分支'), '分支: 无线算法策略');
   assert.strictEqual(normalizeLegacyBranchSessionTitle('Codex CLI分支问答方法'), 'Codex CLI分支问答方法');

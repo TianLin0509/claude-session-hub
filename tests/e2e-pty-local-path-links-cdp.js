@@ -209,7 +209,7 @@ function terminalCellWidth(text) {
       type: 'mouseMoved',
       x: result.geometry.x,
       y: result.geometry.y,
-      modifiers: 2,
+      modifiers: 0,
     });
     await _waitMs(500);
     result.hitTest = await client.eval(`(() => {
@@ -231,7 +231,7 @@ function terminalCellWidth(text) {
       button: 'left',
       buttons: 1,
       clickCount: 1,
-      modifiers: 2,
+      modifiers: 0,
     });
     await client.send('Input.dispatchMouseEvent', {
       type: 'mouseReleased',
@@ -240,7 +240,7 @@ function terminalCellWidth(text) {
       button: 'left',
       buttons: 0,
       clickCount: 1,
-      modifiers: 2,
+      modifiers: 0,
     });
     await _waitMs(1200);
     result.physicalEvents = await client.eval(`window.__ptyPhysicalEvents || []`);
@@ -291,6 +291,41 @@ function terminalCellWidth(text) {
       'relative PTY link opens against session cwd',
     );
     assert.equal(result.relativeActivation.text, REL_FILE);
+
+    await client.eval(`document.getElementById('preview-close').click()`);
+    await _waitMs(250);
+    const urlLineAfterRefit = await client.eval(
+      `window.__hubE2E.terminalFindLastLine(${JSON.stringify(session.id)}, 'URL_MARKER')`
+    );
+    const urlLinksAfterRefit = await readLinks(urlLineAfterRefit);
+    const urlIndexAfterRefit = urlLinksAfterRefit.findIndex(link => link.text === LONG_URL);
+    assert.ok(urlIndexAfterRefit >= 0, JSON.stringify(urlLinksAfterRefit));
+    result.urlGeometry = await client.eval(`window.__hubE2E.terminalLinkGeometry(
+      ${JSON.stringify(session.id)}, ${urlLineAfterRefit}, ${urlIndexAfterRefit}
+    )`);
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: result.urlGeometry.x, y: result.urlGeometry.y, modifiers: 0,
+    });
+    await _waitMs(250);
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: result.urlGeometry.x, y: result.urlGeometry.y,
+      button: 'left', buttons: 1, clickCount: 1, modifiers: 0,
+    });
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: result.urlGeometry.x, y: result.urlGeometry.y,
+      button: 'left', buttons: 0, clickCount: 1, modifiers: 0,
+    });
+    await waitFor(
+      client,
+      `document.getElementById('preview-panel')?.style.display === 'flex'
+        && document.getElementById('preview-title')?.title === ${JSON.stringify(LONG_URL)}`,
+      'plain-click HTTP URL opens in Hub preview',
+    );
+    result.urlPlainClick = await client.eval(`(() => ({
+      path: document.getElementById('preview-title')?.title || '',
+      display: document.getElementById('preview-panel')?.style.display || '',
+    }))()`);
+    assert.deepEqual(result.urlPlainClick, { path: LONG_URL, display: 'flex' });
 
     await client.eval(`(() => {
       document.getElementById('preview-close').click();

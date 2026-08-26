@@ -6,6 +6,11 @@ const {
   isKimiCliKind,
 } = require('./ai-kinds.js');
 const { isStableSessionTitle } = require('./session-title-guards.js');
+const {
+  DEFAULT_MODEL_BY_KIND,
+  isCodexConversationModelId,
+  normalizeDeepSeekModel,
+} = require('./model-options.js');
 
 function baseKind(kind) {
   return String(kind || '').replace(/-resume$/, '');
@@ -65,11 +70,23 @@ function supportsForkSession(session) {
 
 function sessionModelId(session) {
   if (!session) return null;
+  let candidate = null;
   if (session.currentModel && typeof session.currentModel === 'object') {
-    return session.currentModel.id || null;
+    candidate = session.currentModel.id || null;
+  } else if (session.model && typeof session.model === 'object') {
+    candidate = session.model.id || null;
+  } else if (typeof session.model === 'string') {
+    candidate = session.model;
   }
-  if (session.model && typeof session.model === 'object') return session.model.id || null;
-  return typeof session.model === 'string' ? session.model : null;
+  if (!candidate) return null;
+  const kind = baseKind(session.kind);
+  if (kind === 'codex' && !isCodexConversationModelId(candidate)) {
+    return DEFAULT_MODEL_BY_KIND.codex;
+  }
+  if (kind === 'deepseek' && sessionProviderFamily(session) === 'codex') {
+    return normalizeDeepSeekModel(candidate);
+  }
+  return candidate;
 }
 
 // One authority for every operation that stops a PTY and recreates it against
@@ -115,6 +132,9 @@ function buildSessionResumeMeta(session, overrides = {}) {
     autoTitleGenerated: !session.branchAutoTitlePending
       && (!!session.autoTitleGenerated || isStableSessionTitle(session.title, session.kind)),
     branchSourceSessionId: session.branchSourceSessionId || null,
+    branchIndex: Number.isInteger(Number(session.branchIndex)) && Number(session.branchIndex) > 0
+      ? Number(session.branchIndex)
+      : null,
     branchAutoTitlePending: !!session.branchAutoTitlePending,
     contextPct: typeof session.contextPct === 'number' ? session.contextPct : null,
     contextUsed: typeof session.contextUsed === 'number' ? session.contextUsed : null,

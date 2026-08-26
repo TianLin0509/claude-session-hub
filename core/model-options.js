@@ -51,6 +51,22 @@ const DEFAULT_MODEL_BY_KIND = {
   kimi: 'kimi-code/k3',
 };
 
+// PTY output can contain tool/backend model names such as gpt-image-gen2.
+// Those are not valid conversation models for `codex resume/fork --model` and
+// must never replace the model selected for the Hub session.
+const CODEX_NON_CONVERSATION_MODEL_RE = /(?:^|[-_.])(?:image(?:gen)?|audio|tts|whisper|embedding|moderation|realtime)(?:$|[-_.])/i;
+
+function isCodexConversationModelId(modelId) {
+  const raw = String(modelId || '').trim();
+  if (!/^(?:gpt-[\w.-]+|o\d[\w.-]*)$/i.test(raw)) return false;
+  return !CODEX_NON_CONVERSATION_MODEL_RE.test(raw);
+}
+
+function normalizeCodexSessionModel(modelId) {
+  const raw = String(modelId || '').trim();
+  return isCodexConversationModelId(raw) ? raw : DEFAULT_MODEL_BY_KIND.codex;
+}
+
 // Migration-only default. It is deliberately separate from the new-session
 // default above: an old V4 Pro Claude transcript must not be silently resumed
 // on Flash merely because new DeepSeek sessions now use Codex Responses.
@@ -109,7 +125,10 @@ module.exports = {
   LEGACY_DEEPSEEK_CLAUDE_DEFAULT_MODEL,
   MODEL_OPTIONS_BY_KIND,
   DEFAULT_MODEL_BY_KIND,
+  CODEX_NON_CONVERSATION_MODEL_RE,
   modelOptionsFor,
+  isCodexConversationModelId,
+  normalizeCodexSessionModel,
   canSwitchInline,
   normalizeDeepSeekModel,
   normalizeLegacyDeepSeekClaudeModel,

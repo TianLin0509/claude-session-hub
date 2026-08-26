@@ -1,10 +1,11 @@
 'use strict';
 
-const { buildBranchSessionTitle } = require('../../core/branch-session-titles.js');
+const { buildBranchSessionTitle, nextBranchIndex } = require('../../core/branch-session-titles.js');
 const {
   buildSessionResumeMeta,
   nativeSessionIdentity,
   runtimeKindForSession,
+  sessionModelId,
   sessionProviderFamily,
   supportsForkSession,
   supportsRecoverableSession,
@@ -25,6 +26,7 @@ function registerSessionIpc(ipcMain, deps) {
     workspaceService,
     resumeSession,
     getTerminalOutputBatchStats = () => null,
+    getPersistedSessions = () => [],
   } = deps;
 
   const lastResizeBySid = new Map();
@@ -97,18 +99,26 @@ function registerSessionIpc(ipcMain, deps) {
     const meeting = source.meetingId && meetingManager && typeof meetingManager.getMeeting === 'function'
       ? meetingManager.getMeeting(source.meetingId)
       : null;
-    const resolvedTitle = buildBranchSessionTitle({ rendererTitle, source, meeting });
+    const persistedSessions = getPersistedSessions();
+    const siblingPool = [
+      ...(typeof sessionManager.getAllSessions === 'function' ? sessionManager.getAllSessions() : []),
+      ...(Array.isArray(persistedSessions) ? persistedSessions : []),
+    ];
+    const branchIndex = nextBranchIndex(source.id, siblingPool);
+    const resolvedTitle = buildBranchSessionTitle({ rendererTitle, source, meeting, branchIndex });
     const opts = {
       title: resolvedTitle.title,
       cwd: source.cwd,
       branchSourceSessionId: source.id,
+      branchIndex,
       branchAutoTitlePending: resolvedTitle.branchAutoTitlePending,
       // Prefer the exact title visible to the user. A generic group member name
       // (for example Codex 2) inherits the owning meeting title; a truly unnamed
       // standalone parent stays pending and is named from the branch's first prompt.
       autoTitleGenerated: resolvedTitle.autoTitleGenerated,
     };
-    if (source.currentModel && source.currentModel.id) opts.model = source.currentModel.id;
+    const sourceModel = sessionModelId(source);
+    if (sourceModel) opts.model = sourceModel;
     // 分支必须继承 effort，否则从 low/medium 会话拉分支会被打回默认 max。
     if (source.effort) opts.effort = source.effort;
     // 同理：MCP 档位和 fast 开关也要跟着分支走，否则从 Lean/关 fast 的会话
@@ -266,7 +276,7 @@ function registerSessionIpc(ipcMain, deps) {
       ...(old.pinned ? { pinned: true } : {}),
       ...(typeof old.lastMessageTime === 'number' ? { lastMessageTime: old.lastMessageTime } : {}),
       ...(typeof old.lastOutputPreview === 'string' ? { lastOutputPreview: old.lastOutputPreview } : {}),
-      ...(old.currentModel && old.currentModel.id ? { model: old.currentModel.id } : {}),
+      ...(sessionModelId(old) ? { model: sessionModelId(old) } : {}),
       ...(old.effort ? { effort: old.effort } : {}),
       ...(old.codexProfile ? { codexProfile: old.codexProfile } : {}),
       ...(old.mcpProfile ? { mcpProfile: old.mcpProfile } : {}),

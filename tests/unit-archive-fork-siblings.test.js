@@ -78,15 +78,17 @@ test('the group-chat completeness guard stays scoped to meetings', () => {
 });
 
 test('fork inherits model and effort from its source', () => {
-  assert.match(SESSION_IPC_SRC, /if \(source\.currentModel && source\.currentModel\.id\) opts\.model = source\.currentModel\.id;/);
+  assert.match(SESSION_IPC_SRC, /const sourceModel = sessionModelId\(source\);\s*if \(sourceModel\) opts\.model = sourceModel;/,
+    'model inheritance must pass through the conversation-model safety guard');
   assert.match(SESSION_IPC_SRC, /if \(source\.effort\) opts\.effort = source\.effort;/, 'effort must survive branching');
 });
 
 test('fork puts the branch marker first and protects a meaningful inherited title', () => {
   // isClaude → isClaudeCli：DeepSeek 也走 claude CLI 的 fork，2026-07-27 接线后一并覆盖。
-  assert.match(SESSION_IPC_SRC, /buildBranchSessionTitle\(\{ rendererTitle, source, meeting \}\)/);
+  assert.match(SESSION_IPC_SRC, /buildBranchSessionTitle\(\{ rendererTitle, source, meeting, branchIndex \}\)/);
   assert.match(SESSION_IPC_SRC, /title: resolvedTitle\.title/);
   assert.match(SESSION_IPC_SRC, /branchSourceSessionId: source\.id/);
+  assert.match(SESSION_IPC_SRC, /branchIndex,/);
   assert.match(SESSION_IPC_SRC, /autoTitleGenerated: resolvedTitle\.autoTitleGenerated/,
     'only the visible parent or owning meeting title should lock the initial branch title');
 });

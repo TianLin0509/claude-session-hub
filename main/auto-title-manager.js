@@ -113,7 +113,7 @@ function createAutoTitleManager(deps) {
       if (!branch || branch.branchSourceSessionId !== sourceSessionId) continue;
       if (!branch.branchAutoTitlePending || branch.userRenamed) continue;
       const updatedBranch = sessionManager.updateSessionMeta(branch.id, {
-        title: formatBranchSessionTitle(sourceTitle),
+        title: formatBranchSessionTitle(sourceTitle, '会话', branch.branchIndex),
         autoTitleGenerated: true,
         branchAutoTitlePending: false,
       });
@@ -143,7 +143,9 @@ function createAutoTitleManager(deps) {
         if (!title) title = fallbackSessionTitleFromPrompt(text, (latest.kind || '').replace(/-resume$/, ''));
         if (!title) return;
         const wasPendingBranch = !!latest.branchAutoTitlePending;
-        const finalTitle = wasPendingBranch ? formatBranchSessionTitle(title) : title;
+        const finalTitle = wasPendingBranch
+          ? formatBranchSessionTitle(title, '会话', latest.branchIndex)
+          : title;
         const updated = sessionManager.updateSessionMeta(hubSessionId, {
           title: finalTitle,
           autoTitleGenerated: true,

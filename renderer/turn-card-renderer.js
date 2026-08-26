@@ -604,6 +604,7 @@ function mountOptimisticUserCard(sessionId, text, kind) {
   if (streamingTail) container.insertBefore(cardEl, streamingTail);
   else container.appendChild(cardEl);
   postProcessCardMath(cardEl);
+  if (updateStreamingIndicator) updateStreamingIndicator(sessionId);
 
   // 用户主动发了一条消息 → 一定希望看到自己刚发的气泡；不走 _wasAtBottom 守卫
   try {

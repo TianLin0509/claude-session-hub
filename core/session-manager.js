@@ -14,6 +14,7 @@ const {
 } = require('./session-capabilities.js');
 const {
   normalizeDeepSeekModel,
+  normalizeCodexSessionModel,
   deepseekDisplayName,
   normalizeLegacyDeepSeekClaudeModel,
   legacyDeepSeekClaudeDisplayName,
@@ -1171,7 +1172,7 @@ class SessionManager extends EventEmitter {
       // opts.model（modal/picker 用户选择）必须最高优先级；只有未传时才落到 backend 默认 / DEFAULT_MODEL_BY_KIND.codex。
       // 旧写法 `isCodexApiBackend ? cv.CODEX_API_MODEL : (opts.model || ...)` 在 packy api 模式下
       // 强制覆盖用户选择，AI 群聊选 5.4/5.3 实际跑出来都是 5.5。
-      const cmid = opts.model || resolveDefaultCodexModel(cv);
+      const cmid = normalizeCodexSessionModel(opts.model || resolveDefaultCodexModel(cv));
       currentModel = { id: cmid, displayName: cmid.toUpperCase() };
     } else if (isDeepSeek) {
       const mid = isDeepSeekLegacy
@@ -1205,6 +1206,7 @@ class SessionManager extends EventEmitter {
       kind,
       title,
       status: 'idle',
+      connectionIssue: null,
       lastMessageTime: opts.lastMessageTime || now,
       lastOutputPreview: opts.lastOutputPreview || '',
       unreadCount: 0,
@@ -1272,6 +1274,9 @@ class SessionManager extends EventEmitter {
       ...(opts.userRenamed ? { userRenamed: true } : {}),
       ...(opts.autoTitleGenerated ? { autoTitleGenerated: true } : {}),
       ...(opts.branchSourceSessionId ? { branchSourceSessionId: String(opts.branchSourceSessionId) } : {}),
+      ...(Number.isInteger(Number(opts.branchIndex)) && Number(opts.branchIndex) > 0
+        ? { branchIndex: Number(opts.branchIndex) }
+        : {}),
       ...(typeof opts.branchAutoTitlePending === 'boolean'
         ? { branchAutoTitlePending: opts.branchAutoTitlePending }
         : {}),
@@ -1554,7 +1559,7 @@ class SessionManager extends EventEmitter {
       const cv = getConfigValues();
       const codexModel = isDeepSeek
         ? normalizeDeepSeekModel(opts.model)
-        : (opts.model || resolveDefaultCodexModel(cv));
+        : normalizeCodexSessionModel(opts.model || resolveDefaultCodexModel(cv));
       // Codex 的 model_reasoning_effort 是推理深度；fast 则由下面独立的
       // service_tier 控制，两者都不能和 Claude fastMode 混为一谈。
       // 非法值一律回落 max；群聊与普通 Session 一样尊重逐成员的 effort / service_tier。
@@ -2305,10 +2310,14 @@ class SessionManager extends EventEmitter {
       ...(info.userRenamed ? { userRenamed: true } : {}),
       ...(info.autoTitleGenerated ? { autoTitleGenerated: true } : {}),
       ...(info.branchSourceSessionId ? { branchSourceSessionId: info.branchSourceSessionId } : {}),
+      ...(Number.isInteger(Number(info.branchIndex)) && Number(info.branchIndex) > 0
+        ? { branchIndex: Number(info.branchIndex) }
+        : {}),
       ...(typeof info.branchAutoTitlePending === 'boolean'
         ? { branchAutoTitlePending: info.branchAutoTitlePending }
         : {}),
       ...(info.status !== undefined ? { status: info.status } : {}),
+      connectionIssue: info.connectionIssue || null,
       ...(info.readOnly ? { readOnly: true } : {}),
       ...(info.provider ? { provider: info.provider } : {}),
       ...(info.nativeSession ? { nativeSession: info.nativeSession } : {}),

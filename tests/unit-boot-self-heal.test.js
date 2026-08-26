@@ -183,12 +183,13 @@ const meetingStore = require('../core/meeting-store');
     const healed = stateStore.loadAndSelfHeal({ sessionStore, meetingStore });
     const branch = healed.sessions.find(s => s.hubId === 'legacy-meeting-branch');
     assert.ok(branch);
-    assert.strictEqual(branch.title, '分支: 通道重构与多阵子驱动');
+    assert.strictEqual(branch.title, '分支1: 通道重构与多阵子驱动');
+    assert.strictEqual(branch.branchIndex, 1);
     assert.strictEqual(branch.branchSourceSessionId, 'meeting-codex-parent');
     assert.strictEqual(branch.branchAutoTitlePending, false);
     assert.strictEqual(branch.autoTitleGenerated, true);
     const branchFile = sessionStore.loadSessionFile('legacy-meeting-branch');
-    assert.strictEqual(branchFile.title, '分支: 通道重构与多阵子驱动');
+    assert.strictEqual(branchFile.title, '分支1: 通道重构与多阵子驱动');
     console.log('PASS SH7 Codex fork ancestry restores the original meeting title');
   }
 

@@ -8,6 +8,7 @@ const test = require('node:test');
 const {
   buildBranchSessionTitle,
   healPersistedBranchSessionTitles,
+  nextBranchIndex,
   readCodexForkedFromId,
 } = require('../core/branch-session-titles.js');
 
@@ -21,6 +22,19 @@ test('the title currently visible in renderer wins over stale backend metadata',
     branchAutoTitlePending: false,
     autoTitleGenerated: true,
   });
+});
+
+test('branch siblings receive stable sequential indices', () => {
+  assert.equal(nextBranchIndex('parent', [
+    { hubId: 'b1', branchSourceSessionId: 'parent', branchIndex: 1, title: '分支1: A' },
+    { hubId: 'b2', branchSourceSessionId: 'parent', title: '分支2：B' },
+    { hubId: 'other', branchSourceSessionId: 'elsewhere', branchIndex: 9 },
+  ]), 3);
+  assert.equal(buildBranchSessionTitle({
+    rendererTitle: '用户看到的父会话名',
+    source: { title: 'Codex 2' },
+    branchIndex: 3,
+  }).title, '分支3: 用户看到的父会话名');
 });
 
 test('a generic group member inherits the original meeting title', () => {
@@ -69,11 +83,12 @@ test('Codex fork ancestry heals a legacy branch to its original meeting name', (
       sessionStore: { saveSessionFile: (id, data) => writes.push([id, { ...data }]) },
     });
     assert.equal(changed.length, 1);
-    assert.equal(state.sessions[1].title, '分支: 原始群聊会话');
+    assert.equal(state.sessions[1].title, '分支1: 原始群聊会话');
+    assert.equal(state.sessions[1].branchIndex, 1);
     assert.equal(state.sessions[1].userRenamed, false, 'legacy generated flag must not protect Codex 2');
     assert.equal(state.sessions[1].branchSourceSessionId, 'parent');
     assert.equal(state.sessions[1].updatedAt, 1234);
-    assert.equal(writes[0][1].title, '分支: 原始群聊会话');
+    assert.equal(writes.at(-1)[1].title, '分支1: 原始群聊会话');
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }

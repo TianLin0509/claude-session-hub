@@ -108,6 +108,16 @@ function createFakeSessionManager() {
           currentModel: { id: 'gpt-5.5', displayName: 'GPT-5.5' },
         };
       }
+      if (sessionId === 'codex-image-polluted') {
+        return {
+          id: sessionId,
+          kind: 'codex',
+          title: '模型污染回归',
+          cwd: 'C:\\repo',
+          codexSid: '66666666-6666-4666-8666-666666666666',
+          currentModel: { id: 'gpt-image-gen2', displayName: 'gpt-image-gen2' },
+        };
+      }
       if (sessionId === 'claude-unbound') {
         return { id: sessionId, kind: 'claude', title: 'Claude New', cwd: 'C:\\repo' };
       }
@@ -191,9 +201,10 @@ test('fork-session creates a standalone Claude branch from the native session id
   assert.deepStrictEqual(
     sessionManager.calls.find(call => call[0] === 'createSession'),
     ['createSession', 'claude', {
-      title: '分支: Claude Design',
+      title: '分支1: Claude Design',
       cwd: 'C:\\repo',
       branchSourceSessionId: 'claude-source',
+      branchIndex: 1,
       branchAutoTitlePending: false,
       autoTitleGenerated: true,
       model: 'opus',
@@ -215,9 +226,10 @@ test('fork-session preserves Codex model and subscription profile', () => {
   assert.deepStrictEqual(
     sessionManager.calls.find(call => call[0] === 'createSession'),
     ['createSession', 'codex', {
-      title: '分支: Codex Debug',
+      title: '分支1: Codex Debug',
       cwd: 'C:\\repo',
       branchSourceSessionId: 'codex-source',
+      branchIndex: 1,
       branchAutoTitlePending: false,
       autoTitleGenerated: true,
       model: 'gpt-5.5',
@@ -228,6 +240,37 @@ test('fork-session preserves Codex model and subscription profile', () => {
       codexForkSid: '22222222-2222-4222-8222-222222222222',
     }],
   );
+});
+
+test('fork-session increments sibling numbering across persisted branches', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  registerSessionIpc(ipc, {
+    getPersistedSessions: () => [{
+      hubId: 'old-branch',
+      branchSourceSessionId: 'codex-source',
+      branchIndex: 1,
+      title: '分支1: Codex Debug',
+    }],
+    sessionManager,
+    sendToRenderer: () => {},
+  });
+  const result = ipc.handlers.get('fork-session')(null, 'codex-source');
+  assert.strictEqual(result.ok, true);
+  const opts = sessionManager.calls.find(call => call[0] === 'createSession')[2];
+  assert.strictEqual(opts.title, '分支2: Codex Debug');
+  assert.strictEqual(opts.branchIndex, 2);
+});
+
+test('fork-session rejects a tool-only image model inherited from polluted PTY text', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
+  const result = ipc.handlers.get('fork-session')(null, 'codex-image-polluted');
+  assert.strictEqual(result.ok, true);
+  const opts = sessionManager.calls.find(call => call[0] === 'createSession')[2];
+  assert.strictEqual(opts.model, 'gpt-5.6-sol');
+  assert.notStrictEqual(opts.model, 'gpt-image-gen2');
 });
 
 test('fork-session uses the owning meeting name instead of a generic Codex member name', () => {
@@ -245,9 +288,10 @@ test('fork-session uses the owning meeting name instead of a generic Codex membe
   assert.deepStrictEqual(
     sessionManager.calls.find(call => call[0] === 'createSession'),
     ['createSession', 'codex', {
-      title: '分支: 通道重构与多阵子驱动',
+      title: '分支1: 通道重构与多阵子驱动',
       cwd: 'C:\\repo',
       branchSourceSessionId: 'codex-generic-source',
+      branchIndex: 1,
       branchAutoTitlePending: false,
       autoTitleGenerated: true,
       model: 'gpt-5.5',
@@ -268,7 +312,7 @@ test('fork-session trusts the current renderer title over a stale generic backen
   assert.strictEqual(result.ok, true);
   assert.strictEqual(
     sessionManager.calls.find(call => call[0] === 'createSession')[2].title,
-    '分支: 用户当前看到的原始会话名',
+    '分支1: 用户当前看到的原始会话名',
   );
 });
 
@@ -282,9 +326,10 @@ test('a truly unnamed standalone parent uses a pending placeholder, never Codex 
   assert.deepStrictEqual(
     sessionManager.calls.find(call => call[0] === 'createSession'),
     ['createSession', 'codex', {
-      title: '分支: 待命名',
+      title: '分支1: 待命名',
       cwd: 'C:\\repo',
       branchSourceSessionId: 'codex-untitled-source',
+      branchIndex: 1,
       branchAutoTitlePending: true,
       autoTitleGenerated: false,
       model: 'gpt-5.5',

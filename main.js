@@ -1259,6 +1259,7 @@ const resumeSession = createResumeSessionHandler({
 });
 
 registerSessionIpc(ipcMain, {
+  getPersistedSessions: () => lastPersistedSessions,
   getTerminalOutputBatchStats: () => terminalOutputBatcher.snapshotStats(),
   meetingManager,
   registerSessionForTap,

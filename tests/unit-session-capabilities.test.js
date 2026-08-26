@@ -5,6 +5,7 @@ const {
   buildSessionResumeMeta,
   nativeSessionIdentity,
   runtimeKindForSession,
+  sessionModelId,
   sessionProviderFamily,
   supportsForkSession,
   supportsRecoverableSession,
@@ -43,6 +44,8 @@ assert.equal(supportsRecoverableSession({ kind: 'powershell' }), false);
 assert.equal(supportsRecoverableSession({ kind: 'codex', purpose: 'chuxin-research' }), true,
   'provider capability stays resumable; user-facing lifecycle policy protects Chuxin separately');
 assert.equal(supportsForkSession({ kind: 'codex', purpose: 'chuxin-research' }), false);
+assert.equal(sessionModelId({ kind: 'codex', currentModel: { id: 'gpt-image-gen2' } }), 'gpt-5.6-sol');
+assert.equal(sessionModelId({ kind: 'codex', currentModel: { id: 'gpt-5.6-terra' } }), 'gpt-5.6-terra');
 
 const resumeMeta = buildSessionResumeMeta({
   id: 'hub-1', kind: 'codex-resume', title: 'Codex Thread', cwd: 'C:\\repo',
@@ -50,7 +53,7 @@ const resumeMeta = buildSessionResumeMeta({
   codexProfile: 'work', codexProfileLabel: 'Work', mcpProfile: 'browser',
   currentModel: { id: 'gpt-5.5', displayName: 'GPT-5.5' },
   pinned: true, userRenamed: true, branchSourceSessionId: 'parent',
-  branchAutoTitlePending: false, contextPct: 42, effort: 'high',
+  branchAutoTitlePending: false, branchIndex: 2, contextPct: 42, effort: 'high',
   workspaceLabel: 'AI', lastMessageTime: 123, lastOutputPreview: 'done',
   completionNotificationEnabled: true,
 });
@@ -66,6 +69,7 @@ assert.deepEqual({
   branchSourceSessionId: resumeMeta.branchSourceSessionId,
   autoTitleGenerated: resumeMeta.autoTitleGenerated,
   branchAutoTitlePending: resumeMeta.branchAutoTitlePending,
+  branchIndex: resumeMeta.branchIndex,
   contextPct: resumeMeta.contextPct,
   effort: resumeMeta.effort,
   workspaceLabel: resumeMeta.workspaceLabel,
@@ -82,6 +86,7 @@ assert.deepEqual({
   branchSourceSessionId: 'parent',
   autoTitleGenerated: true,
   branchAutoTitlePending: false,
+  branchIndex: 2,
   contextPct: 42,
   effort: 'high',
   workspaceLabel: 'AI',

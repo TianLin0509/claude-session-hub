@@ -5,6 +5,7 @@ const { compareLatestReplyDesc, latestReplyTime } = require('../core/session-rec
 const {
   sessionHasCompletedUnread,
 } = require('../core/session-attention-state.js');
+const { hasStreamDisconnectIssue } = require('../core/stream-disconnect.js');
 const {
   RUNTIME_STARTING,
   RUNTIME_RUNNING,
@@ -228,7 +229,8 @@ function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
     waiting: truths.some(item => item.truth.state === RUNTIME_WAITING),
     running: meeting && !meeting.groupChat && meeting.status === 'running'
       || truths.some(item => isGroupChatMemberRunning(item.session, now)),
-    failed: truths.some(item => item.truth.state === RUNTIME_FAILED),
+    disconnected: truths.some(item => hasStreamDisconnectIssue(item.session)),
+    failed: truths.some(item => item.truth.state === RUNTIME_FAILED || hasStreamDisconnectIssue(item.session)),
     truths,
   };
 }
@@ -242,12 +244,16 @@ function _sessionWarningText(session) {
   if (session.memoryLinkWarning) {
     warnings.push(`记忆未接入规范库：${session.memoryLinkWarning}`);
   }
+  if (hasStreamDisconnectIssue(session)) {
+    warnings.push(`网络断连：${String(session.connectionIssue.message || '连接已中断')}`);
+  }
   return warnings.join('；');
 }
 
   function _meetingAnySubRunning(meeting, sessionMap) {
-  return _meetingRuntimeAggregate(meeting, sessionMap).running;
-}
+    const aggregate = _meetingRuntimeAggregate(meeting, sessionMap);
+    return aggregate.running && !aggregate.disconnected;
+  }
 
   // 代理配置只用于 tooltip；可见文案必须是 main 进程实测的公网 IP + 城市。
   // 只显示 host:port，隐去可能带凭据的 user:pass@ 部分。
@@ -411,6 +417,7 @@ function _sessionWarningText(session) {
       const anySubRunning = meetingRuntime.running;
       const anySubWaiting = meetingRuntime.waiting;
       const anySubFailed = meetingRuntime.failed;
+      const anySubDisconnected = meetingRuntime.disconnected;
       div.className = 'session-item slim meeting' + (isGroupChat ? ' gc' : '')
         + (isActive ? ' selected' : '')
         + (isExpanded ? ' expanded' : '') + (isDormantMeeting ? ' dormant' : '')
@@ -445,7 +452,7 @@ function _sessionWarningText(session) {
         let statusCls = 'mini-st-ready';
         if (!sub) statusCls = 'mini-st-init';
         else if (subRuntime.state === RUNTIME_DORMANT) statusCls = 'mini-st-dormant';
-        else if (subRuntime.state === RUNTIME_FAILED) statusCls = 'mini-st-error';
+        else if (hasStreamDisconnectIssue(sub) || subRuntime.state === RUNTIME_FAILED) statusCls = 'mini-st-error';
         else if (subRuntime.state === RUNTIME_WAITING) statusCls = 'mini-st-waiting';
         else if (_subIsRunning(sub)) statusCls = 'mini-st-thinking';
         else if (subRuntime.state === RUNTIME_UNKNOWN) statusCls = 'mini-st-unknown';
@@ -474,20 +481,19 @@ function _sessionWarningText(session) {
       let dotCls = 'idle';
       if (isDormantMeeting) dotCls = 'dorm';
       else if (anySubWaiting) dotCls = 'wait';
+      else if (anySubDisconnected) dotCls = 'error';
       else if (anySubRunning) dotCls = 'run';
       else if (anySubFailed) dotCls = 'error';
       else if (hasUnread) dotCls = 'unread';
-      const stateHtml = isDormantMeeting
-        ? '<span class="sl-state dorm" title="休眠中，点击唤醒">休眠</span>'
-        : (anySubWaiting
-          ? '<span class="sl-state wait">等你</span>'
-          : (anySubRunning
-            ? '<span class="sl-state run">运行中</span>'
-            : (anySubFailed
-              ? '<span class="sl-state error">异常</span>'
-              : (hasUnread
-                ? `<span class="sl-state unread" title="本轮已有 ${s.unreadAnsweredSize} 个 AI 答完，尚未查看">已答 ${s.unreadAnsweredSize}</span>`
-                : '<span></span>'))));
+      let stateHtml = '<span></span>';
+      if (isDormantMeeting) stateHtml = '<span class="sl-state dorm" title="休眠中，点击唤醒">休眠</span>';
+      else if (anySubWaiting) stateHtml = '<span class="sl-state wait">等你</span>';
+      else if (anySubDisconnected) stateHtml = '<span class="sl-state error">断连</span>';
+      else if (anySubRunning) stateHtml = '<span class="sl-state run">运行中</span>';
+      else if (anySubFailed) stateHtml = '<span class="sl-state error">异常</span>';
+      else if (hasUnread) {
+        stateHtml = `<span class="sl-state unread" title="本轮已有 ${s.unreadAnsweredSize} 个 AI 答完，尚未查看">已答 ${s.unreadAnsweredSize}</span>`;
+      }
       div.innerHTML = `
         <div class="sl-line1${canExpand ? ' with-arrow' : ''}">
           ${canExpand ? `<span class="expand-arrow" data-action="toggle-expand" title="${isExpanded ? '折叠' : '展开'}">▶</span>` : ''}
@@ -526,10 +532,12 @@ function _sessionWarningText(session) {
           const isChildActive = subId === getActiveSessionId();
           const childRuntime = getSessionRuntimeTruth(sub);
           const childDormantCls = childRuntime.state === RUNTIME_DORMANT ? ' dormant' : '';
+          const childDisconnected = hasStreamDisconnectIssue(sub);
           const childUnreadCount = Math.max(0, Number(sub.unreadCount) || 0);
           const childShowUnread = !isChildActive && childUnreadCount > 0;
           childDiv.className = 'session-item slim child' + (isChildActive ? ' selected' : '')
-            + (childShowUnread ? ' need-unread' : '') + childDormantCls;
+            + (childShowUnread ? ' need-unread' : '') + childDormantCls
+            + (childDisconnected ? ' disconnected' : '');
           childDiv.dataset.sessionId = subId;
           childDiv.dataset.runtimeState = childRuntime.state;
           const modelLabel = sub.currentModel
@@ -541,7 +549,7 @@ function _sessionWarningText(session) {
             : [runtimeTruthSummary(childRuntime), childShowUnread ? `有 ${childUnreadCount} 条未读` : ''].filter(Boolean).join(' · ');
           childDiv.innerHTML = `
             ${_aiLogoHtml(sub.kind)}
-            <span class="child-title" title="${escapeHtml([childWarning, childStateTip].filter(Boolean).join(' · '))}">${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}${childShowUnread ? `<span class="sl-un">● ${childUnreadCount}</span>` : ''}</span>
+            <span class="child-title" title="${escapeHtml([childWarning, childStateTip].filter(Boolean).join(' · '))}">${childDisconnected ? '<span class="sl-disconnect-label">断连</span>' : ''}${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}${childShowUnread ? `<span class="sl-un">● ${childUnreadCount}</span>` : ''}</span>
             ${modelLabel}
           `;
           // Use the existing selectSession path: it hides meeting-room-panel,
@@ -566,13 +574,15 @@ function _sessionWarningText(session) {
     div.dataset.runtimeSource = runtimeTruth.source || '';
     div.dataset.runtimeConfidence = runtimeTruth.confidence || '';
     const isDormant = runtimeTruth.state === RUNTIME_DORMANT;
+    const isDisconnected = hasStreamDisconnectIssue(s);
     const dormantCls = isDormant ? ' dormant' : '';
     const showWaiting = runtimeTruth.state === RUNTIME_WAITING;
     const unreadCount = Math.max(0, Number(s.unreadCount) || 0);
     const showUnread = sessionHasCompletedUnread(s) && !isActive && !showWaiting;
-    // 状态点优先级：等待输入 > 未读（含休眠态）> 运行 > 休眠 > 空闲
+    // 状态点优先级：等待输入 > 网络断连 > 未读 > 运行 > 休眠 > 空闲
     let dotCls = 'idle';
     if (showWaiting) dotCls = 'wait';
+    else if (isDisconnected) dotCls = 'error';
     else if (showUnread) dotCls = 'unread';
     else if (isDormant) dotCls = 'dorm';
     else if (runtimeTruth.state === RUNTIME_FAILED) dotCls = 'error';
@@ -580,7 +590,8 @@ function _sessionWarningText(session) {
     else if (runtimeTruth.state === RUNTIME_RUNNING) dotCls = 'run';
     else if (runtimeTruth.state === RUNTIME_UNKNOWN) dotCls = 'unknown';
     div.className = 'session-item slim' + (isActive ? ' selected' : '')
-      + (showWaiting ? ' need-wait' : '') + (showUnread ? ' need-unread' : '') + dormantCls;
+      + (showWaiting ? ' need-wait' : '') + (showUnread ? ' need-unread' : '') + dormantCls
+      + (isDisconnected ? ' disconnected' : '');
     const ctxPct = typeof s.contextPct === 'number' ? s.contextPct : null;
     const modelTxt = s.currentModel ? modelShort(s.currentModel) : '';
     const anyWarning = _sessionWarningText(s);
@@ -591,6 +602,7 @@ function _sessionWarningText(session) {
       s.currentModel ? (s.currentModel.displayName || s.currentModel.id) : '',
       ctxPct != null ? `Ctx ${ctxPct}%` : '',
       anyWarning,
+      isDisconnected ? '网络断连，点击进入后可重试' : '',
       runtimeTruthSummary(runtimeTruth),
       dormantStateTip || (showWaiting
         ? (s.waitingText || '等你输入')
@@ -601,7 +613,7 @@ function _sessionWarningText(session) {
       ${_ringHtml(ctxPct, dotCls)}
       <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${unreadCount}</span>` : ''}</span>
       <span class="sl-model">${escapeHtml(modelTxt)}</span>
-      <span class="sl-time">${formatTime(latestReplyTime(s))}</span>
+      <span class="sl-time${isDisconnected ? ' disconnected-time' : (isDormant ? ' dormant-time' : '')}">${isDisconnected ? '断连 · ' : (isDormant ? '休眠 · ' : '')}${formatTime(latestReplyTime(s))}</span>
     `;
     div.addEventListener('click', () => selectSession(s.id, { forceScrollBottom: true }));
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
@@ -634,7 +646,7 @@ function _sessionWarningText(session) {
     else if (s._isMeeting ? _meetingAnySubRunning(s._meeting, sessionMap) : sessionRuntimeIsActive(s)) running.push(s);
     else if (s._isMeeting
       ? _meetingRuntimeAggregate(s._meeting, sessionMap).failed
-      : getSessionRuntimeTruth(s).state === RUNTIME_FAILED) failed.push(s);
+      : (getSessionRuntimeTruth(s).state === RUNTIME_FAILED || hasStreamDisconnectIssue(s))) failed.push(s);
     else if (isCompletedUnread(s)) completed.push(s);
     else rest.push(s);
   }

@@ -35,6 +35,20 @@ assert.strictEqual(codex.contextPct, 12,
 assert.strictEqual(codex.tokensUsed, 12840,
   'Codex token summary should parse comma-separated totals');
 
+const codexContaminated = parseCodexUsage([
+  'Tool output: selected backend gpt-image-gen2 for image generation',
+  'The answer also mentions gpt-5.4 as a comparison.',
+  'gpt-5.6-sol max fast · Context 87% left · C:\\repo',
+].join('\n'));
+assert.deepStrictEqual(codexContaminated.model, { id: 'gpt-5.6-sol', displayName: 'gpt-5.6-sol' },
+  'tool-only image models in PTY history must not replace the Codex status-footer model');
+
+const codexToolOnly = parseCodexUsage('Tool result: model = gpt-image-gen2');
+assert.strictEqual(codexToolOnly.model, undefined,
+  'arbitrary gpt-* text without a provider-owned status surface is not session metadata');
+assert.strictEqual(parseCodexUsage('Model: gpt-5.4\nassistant-authored comparison').model, undefined,
+  'a Model: line outside the real Codex usage surface must not poison session metadata');
+
 const kimi = parseKimiUsage('Kimi K3  context: 6.3% (66.1k/1.0m)  YOLO');
 assert.strictEqual(kimi.contextPct, 6.3,
   'Kimi statusline context percentage should be preserved');

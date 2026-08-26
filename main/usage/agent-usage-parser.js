@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const { SessionManager } = require('../../core/session-manager.js');
+const { isCodexConversationModelId } = require('../../core/model-options.js');
 
 const DEFAULT_RATE_LIMIT_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_RATE_LIMIT_SCAN_BYTES = 8 * 1024 * 1024;
@@ -58,9 +59,29 @@ function parseCodexUsage(plain) {
   const cliUsage = parseCodexCliUsageLimits(plain);
   if (cliUsage.usage5h) result.usage5h = cliUsage.usage5h;
   if (cliUsage.usage7d) result.usage7d = cliUsage.usage7d;
-  const modelMatch = plain.match(/\b(gpt-[\w.-]+|o\d-[\w.-]+)\b/i);
+  const modelCandidates = [];
+  const collectModelCandidates = (pattern, source = plain, offset = 0) => {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+      const id = match[1];
+      if (isCodexConversationModelId(id)) modelCandidates.push({ id, index: offset + match.index });
+    }
+  };
+  // Only trust provider-owned status surfaces. Arbitrary answer/tool text in
+  // the scrollback is not model metadata and previously poisoned branches.
+  const usageHeader = plain.toLowerCase().lastIndexOf('https://chatgpt.com/codex/settings/usage');
+  if (usageHeader >= 0) {
+    collectModelCandidates(
+      /(?:^|\n)\s*Model:\s*(gpt-[\w.-]+|o\d[\w.-]*)\b/gim,
+      plain.slice(usageHeader, usageHeader + 1200),
+      usageHeader,
+    );
+  }
+  collectModelCandidates(/(?:^|\n)[^\n]*?\b(gpt-[\w.-]+|o\d[\w.-]*)\b[^\n]{0,160}\bContext\s+\d+%\s+(?:left|remaining)\b/gim);
+  const modelMatch = modelCandidates.sort((a, b) => b.index - a.index)[0] || null;
   if (modelMatch) {
-    const id = modelMatch[1];
+    const id = modelMatch.id;
     result.model = { id, displayName: id };
   }
   const tokenMatch = plain.match(/Token usage:\s*total=([\d,]+)/i);

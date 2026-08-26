@@ -2,7 +2,7 @@ const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electr
 const fs = require('fs');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
-const { buildSessionResumeMeta, supportsForkSession } = require('../core/session-capabilities.js');
+const { buildSessionResumeMeta, sessionModelId, supportsForkSession } = require('../core/session-capabilities.js');
 const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
@@ -57,6 +57,9 @@ const { createPreviewPanelController } = require('./preview-panel-controller.js'
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
 const { deriveSessionRuntimeStatus } = require('./session-runtime-status.js');
 const { classifyTerminalRuntime } = require('../core/terminal-runtime-state.js');
+const {
+  appendStreamDisconnectChunk,
+} = require('../core/stream-disconnect.js');
 const { createPastSessionModals, collapseDormantNativeDuplicates } = require('./past-session-modals.js');
 const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
 const { createShellController } = require('./shell-controller.js');
@@ -103,7 +106,7 @@ const {
   _normalizeLocalPathForOpen,
   _isDirectoryPath,
 } = require('./path-candidates.js');
-const { modelOptionsFor } = require('../core/model-options.js');
+const { isCodexConversationModelId, modelOptionsFor } = require('../core/model-options.js');
 const {
   isStableSessionTitle,
   migrateLegacyBranchSessionMeta,
@@ -125,7 +128,6 @@ installScrollDebug(window, __dirname);
 const { FitAddon } = require('@xterm/addon-fit');
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
 const { SearchAddon } = require('@xterm/addon-search');
-const { WebLinksAddon } = require('@xterm/addon-web-links');
 const { WebglAddon } = require('@xterm/addon-webgl');
 const { CanvasAddon } = require('@xterm/addon-canvas');
 
@@ -1014,7 +1016,9 @@ function getOrCreateTerminal(sessionId) {
   terminal.loadAddon(fitAddon);
   terminal.loadAddon(new Unicode11Addon());
   terminal.loadAddon(searchAddon);
-  terminal.loadAddon(new WebLinksAddon((e, uri) => { openPreviewPanel(uri, { preview: true }); }));
+  // HTTP(S), file:// and local paths deliberately share one Hub link provider.
+  // A separate xterm URL provider used to race this provider and made PTY clicks
+  // behave differently from identical links in card view.
   const localPathLinkProvider = registerLocalPathLinks(terminal, sessionId);
   terminal.unicode.activeVersion = '11';
 
@@ -1979,6 +1983,7 @@ async function loadSessionHistoryToOverlay(sessionId, opts = {}) {
     _cardHistoryHydratedSid = sessionId;
   }
 
+  _updateStreamingIndicator(sessionId);
   return { mounted, error: null };
 }
 window._loadSessionHistoryToOverlay = loadSessionHistoryToOverlay;
@@ -2579,12 +2584,16 @@ function _updateStreamingIndicator(sessionId) {
     _w16RemoveTimers.delete(sessionId);
   }
   if (isRunning && currentView === 'card') {
-    // W15 v2 (2026-05-10): 优先把 spinner 挂到最后一个 assistant turn-card 的
-    // turn-head 末尾（视觉不打扰），cardCount=0 时 fallback 到 overlay 顶部。
-    const allAssistantCards = overlay.querySelectorAll('.turn-card[data-turn-id]:not(.user)');
-    const lastAssistantCard = allAssistantCards[allAssistantCards.length - 1];
-    const lastAssistantHead = lastAssistantCard ? lastAssistantCard.querySelector('.turn-head') : null;
-    const targetParent = lastAssistantHead || overlay;
+    // The status belongs to the active turn, not necessarily the previous
+    // assistant reply. Once the optimistic/current user card exists, migrate
+    // the chip to that card so a new question never looks like the old answer
+    // is still generating.
+    const allTurnCards = overlay.querySelectorAll(
+      `.turn-card[data-turn-id][data-session-id="${CSS.escape(sidStr)}"]`,
+    );
+    const latestTurnCard = allTurnCards[allTurnCards.length - 1];
+    const latestTurnHead = latestTurnCard ? latestTurnCard.querySelector('.turn-head') : null;
+    const targetParent = latestTurnHead || overlay;
 
     if (!indicator) {
       // 2026-05-06 道雪 scroll-respect-user:append 前记录是否在底部,仅满足条件才滚
@@ -3789,12 +3798,10 @@ const pastSessionModals = createPastSessionModals({
   openSearchHit: (hit, opts) => openGlobalSearchHit(hit, opts),
 });
 const { openResumeModal, openSearchModal } = pastSessionModals;
-// Ctrl+click on a local file path in the terminal → open with OS default app.
-// xterm's WebLinksAddon only handles URLs, so we register a separate link
-// provider. Scans each line for ABS_PATH_RE (high confidence, no validation)
-// and REL_PATH_RE (validated against session.cwd via fs.existsSync to avoid
-// false positives on prose mentions). Click routes to openPreviewPanel for
-// previewable extensions, otherwise to main via open-path → shell.openPath().
+// One ordinary click opens HTTP(S), file:// and local paths through the same
+// Hub provider used by card view. Relative paths are resolved against the
+// owning session cwd; previewable targets stay inside Hub and other files or
+// directories route to the OS shell.
 //
 async function openPathInHub(filePath, opts = {}) {
   const fail = (message, target, detail) => {
@@ -3976,6 +3983,67 @@ function classifySessionRuntimeFrame(session, lines) {
   if (isClaudeRuntimeSession(session)) return classifyTerminalRuntime('claude', lines);
   if (session && isCodexKind(session.kind)) return classifyTerminalRuntime('codex', lines);
   return { state: 'unknown', confidence: 'none', reason: 'unsupported-runtime', evidence: '' };
+}
+
+function clearSessionConnectionIssue(sessionOrId, options = {}) {
+  const session = typeof sessionOrId === 'string' ? sessions.get(sessionOrId) : sessionOrId;
+  if (!session || !session.connectionIssue) return false;
+  const issueMessage = String(session.connectionIssue.message || '');
+  session.connectionIssue = null;
+  session._streamDisconnectTail = '';
+  if (issueMessage && session.lastError === issueMessage) session.lastError = null;
+  if (options.render !== false) {
+    scheduleSessionListRender();
+    schedulePersist();
+  }
+  return true;
+}
+
+function noteStreamDisconnect(sessionId, data) {
+  const session = sessions.get(sessionId);
+  if (!isAiRuntimeSession(session) || session.status === 'dormant') return false;
+  const tracked = appendStreamDisconnectChunk(session._streamDisconnectTail, data);
+  session._streamDisconnectTail = tracked.tail;
+  const issue = tracked.issue;
+  if (!issue) return false;
+  const previous = session.connectionIssue;
+  if (previous && previous.signature === issue.signature) return false;
+
+  const observedAt = Date.now();
+  session.connectionIssue = {
+    type: issue.type,
+    message: issue.message,
+    signature: issue.signature,
+    observedAt,
+  };
+  session.lastError = issue.message;
+  clearSessionAttention(session);
+  const runStartedAt = Number(session.runStartedAt) || 0;
+  if (runStartedAt > 0 && observedAt >= runStartedAt) {
+    session.lastRunStartedAt = runStartedAt;
+    session.lastRunDurationMs = observedAt - runStartedAt;
+  }
+  session.runStartedAt = null;
+  if (isCodexKind(session.kind)) clearCodexCardWorking(sessionId);
+  else {
+    session._agentWorking = null;
+    session._runSource = null;
+    disarmPtyBurstFallback(session, observedAt);
+  }
+  observeSessionRuntime(session, {
+    state: RUNTIME_FAILED,
+    source: 'pty-stream-disconnected',
+    confidence: CONFIDENCE_STRONG,
+    observedAt,
+    startedAt: runStartedAt,
+    completedAt: observedAt,
+    reason: 'network-stream-disconnected',
+    evidence: issue.message,
+  });
+  _updateStreamingIndicator(sessionId);
+  scheduleSessionListRender();
+  schedulePersist();
+  return true;
 }
 
 function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
@@ -4479,6 +4547,7 @@ function noteCardTerminalOutput(sessionId) {
 }
 
 ipcRenderer.on('terminal-data', (_e, { sessionId, data, seq }) => {
+  noteStreamDisconnect(sessionId, data);
   const cached = terminalCache.get(sessionId);
   if (!cached) return;
   if (!cached._hydrated) {
@@ -4623,8 +4692,16 @@ ipcRenderer.on('status-event', (_e, payload) => {
     if (typeof payload.linesAdded === 'number') session.linesAdded = payload.linesAdded;
     if (typeof payload.linesRemoved === 'number') session.linesRemoved = payload.linesRemoved;
     if (payload.model && payload.model.id) {
-      session.currentModel = payload.model;
-      if (payload.sessionId === activeSessionId) updateActiveModelBadge();
+      const baseKind = String(session.kind || '').replace(/-resume$/i, '').toLowerCase();
+      const allowed = baseKind === 'codex'
+        ? isCodexConversationModelId(payload.model.id)
+        : baseKind === 'deepseek'
+          ? /^deepseek-v4-(?:pro|flash)$/i.test(String(payload.model.id))
+          : true;
+      if (allowed) {
+        session.currentModel = payload.model;
+        if (payload.sessionId === activeSessionId) updateActiveModelBadge();
+      }
     }
     // Claude → Hub title sync: only overlay if user hasn't explicitly renamed in Hub.
     // The /rename we inject comes back via this same field — the guard below prevents loops.
@@ -4861,6 +4938,7 @@ function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
   if (!session) return;
   const transition = applyPromptSubmitted(session, { submittedAt });
   if (!transition.applied) return;
+  clearSessionConnectionIssue(session, { render: false });
   armPtyBurstFallback(sessionId, transition.at);
   // 2026-07-20 道雪：hook prompt = claude 语义工作开始（与 stop hook 配对收尾）
   session._agentWorking = 'hook';
@@ -4932,6 +5010,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
     keepRunning: backgroundActive,
   });
   if (!transition.applied) return;
+  clearSessionConnectionIssue(session, { render: false });
   session._lastTranscriptReadySig = sig;
   session.lastMessageTime = transition.at;
   recordSessionArtifacts(session, text || preview, transition.at);
@@ -4986,6 +5065,7 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
 
   const transition = applyPromptSubmitted(session, { submittedAt, turnId });
   if (!transition.applied) return;
+  clearSessionConnectionIssue(session, { render: false });
   armPtyBurstFallback(hubSessionId, transition.at);
   session.lastError = null;
 
@@ -5130,6 +5210,7 @@ function onReplyCompleteFromHook(sessionId, completedAt = Date.now(), options = 
     keepRunning: keepRuntimeActive,
   });
   if (!transition.applied) return null;
+  clearSessionConnectionIssue(session, { render: false });
   session._lastStopHookTs = now;
   session._claudeBackgroundTasks = backgroundTasks;
   session._claudeSessionCrons = Array.isArray(options.sessionCrons) ? options.sessionCrons.slice(0, 20) : [];
@@ -5762,6 +5843,9 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (session.userRenamed) local.userRenamed = true;
   if (session.autoTitleGenerated) local.autoTitleGenerated = true;
   if (session.branchSourceSessionId !== undefined) local.branchSourceSessionId = session.branchSourceSessionId;
+  if (Number.isInteger(Number(session.branchIndex)) && Number(session.branchIndex) > 0) {
+    local.branchIndex = Number(session.branchIndex);
+  }
   if (typeof session.branchAutoTitlePending === 'boolean') {
     local.branchAutoTitlePending = session.branchAutoTitlePending;
   }
@@ -5842,6 +5926,9 @@ function schedulePersist() {
         recentArtifacts: Array.isArray(s.recentArtifacts) ? s.recentArtifacts.slice(-8) : null,
         suspendedAt: s.suspendedAt || null,
         suspendReason: s.suspendReason || null,
+        connectionIssue: s.connectionIssue && typeof s.connectionIssue === 'object'
+          ? { ...s.connectionIssue }
+          : null,
         currentModel: s.currentModel || null,
         effort: s.effort || null,
         contextPct: typeof s.contextPct === 'number' ? s.contextPct : null,
@@ -5854,6 +5941,9 @@ function schedulePersist() {
         userRenamed: !!s.userRenamed,
         autoTitleGenerated: !!s.autoTitleGenerated,
         branchSourceSessionId: s.branchSourceSessionId || null,
+        branchIndex: Number.isInteger(Number(s.branchIndex)) && Number(s.branchIndex) > 0
+          ? Number(s.branchIndex)
+          : null,
         branchAutoTitlePending: !!s.branchAutoTitlePending,
         // T10: include resume-meta in persist payload so main.js merge has the latest
         codexSid: s.codexSid || null,
@@ -5975,6 +6065,7 @@ window.resumeDormantSession = resumeDormantSession;
   traceRendererStartup(`init ipc done existing=${existing.length} persisted=${persisted && Array.isArray(persisted.sessions) ? persisted.sessions.length : 0} meetings=${Array.isArray(dormantMeetings) ? dormantMeetings.length : 0}`);
 
   let migratedLegacyBranchTitles = 0;
+  let healedUnsafeSessionModels = 0;
   for (const s of existing) {
     const migrated = migrateLegacyBranchSessionMeta(s);
     if (migrated !== s) migratedLegacyBranchTitles += 1;
@@ -5994,6 +6085,13 @@ window.resumeDormantSession = resumeDormantSession;
       // 一旦写入 null 就永久污染，已在同次提交修）。这里给老污染数据按 kind 推断
       // 一个合理默认（model-options.js 清单首项），避免唤醒时 spawn 用最离谱的默认。
       let resolvedModel = meta.currentModel || null;
+      const safePersistedModel = sessionModelId(meta);
+      if (safePersistedModel && (!resolvedModel || resolvedModel.id !== safePersistedModel)) {
+        const option = modelOptionsFor(meta.kind || 'claude').find(item => item.id === safePersistedModel);
+        resolvedModel = { id: safePersistedModel, displayName: option ? option.label : safePersistedModel };
+        meta.currentModel = resolvedModel;
+        healedUnsafeSessionModels += 1;
+      }
       if (!resolvedModel || !resolvedModel.id) {
         const opts = modelOptionsFor(meta.kind || 'claude');
         if (opts.length > 0) {
@@ -6010,6 +6108,9 @@ window.resumeDormantSession = resumeDormantSession;
         unreadCount: meta.unreadCount || 0,
         suspendedAt: meta.suspendedAt || null,
         suspendReason: meta.suspendReason || null,
+        connectionIssue: meta.connectionIssue && typeof meta.connectionIssue === 'object'
+          ? { ...meta.connectionIssue }
+          : null,
         createdAt: meta.lastMessageTime || Date.now(),
         cwd: meta.cwd || null,
         cwdFellBackFrom: meta.cwdFellBackFrom || null,
@@ -6037,6 +6138,9 @@ window.resumeDormantSession = resumeDormantSession;
         autoTitleGenerated: !meta.branchAutoTitlePending
           && (!!meta.autoTitleGenerated || isStableSessionTitle(meta.title, meta.kind)),
         branchSourceSessionId: meta.branchSourceSessionId || null,
+        branchIndex: Number.isInteger(Number(meta.branchIndex)) && Number(meta.branchIndex) > 0
+          ? Number(meta.branchIndex)
+          : null,
         branchAutoTitlePending: !!meta.branchAutoTitlePending,
         // T10: preserve resume-meta for precise resume (codex/gemini)
         codexSid: meta.codexSid || null,
@@ -6063,8 +6167,13 @@ window.resumeDormantSession = resumeDormantSession;
     }
   }
 
-  if (migratedLegacyBranchTitles > 0) {
-    console.info(`[session-title] migrated ${migratedLegacyBranchTitles} legacy branch title(s)`);
+  if (migratedLegacyBranchTitles > 0 || healedUnsafeSessionModels > 0) {
+    if (migratedLegacyBranchTitles > 0) {
+      console.info(`[session-title] migrated ${migratedLegacyBranchTitles} legacy branch title(s)`);
+    }
+    if (healedUnsafeSessionModels > 0) {
+      console.info(`[session-model] healed ${healedUnsafeSessionModels} unsafe persisted model value(s)`);
+    }
     schedulePersist();
   }
 

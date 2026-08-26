@@ -17,6 +17,7 @@ const ABS_DIR_RE = /(?:[A-Za-z]:[\\/]|\\\\[^\\/:*?"<>|\r\n\s]+\\|~[\\/])(?:[^\\/
 const REL_DIR_RE = /(?:\.{1,2}[\\/])?(?:[^\\/:*?"<>|\r\n：]+[\\/]){1,}[^\\/:*?"<>|\r\n：]+[\\/]?/g;
 const REL_BARE_RE = /(?<![\w.-])[^\\/:*?"<>|\r\n\s]+\.[A-Za-z0-9]{1,8}(?![\w.-])|(?<![\w.-])[^\\/:*?"<>|\r\n\s.]{2,}(?![\w.-])/g;
 const URL_RE = /\bhttps?:\/\/[\w\-.~]+(?::\d+)?(?:[\/?#][^\s<>"'`\\]*)?/g;
+const FILE_URL_RE = /\bfile:\/\/[^\s<>"'`]+/gi;
 const PREVIEW_PATH_RE = /\.(?:html?|md|markdown|png|jpe?g|gif|webp|bmp|svg|pdf|csv|tsv|json|jsonl|js|ts|jsx|tsx|mjs|cjs|py|go|rs|java|c|cpp|h|hpp|cs|txt|log|ya?ml|toml|ini|cfg|conf|sh|bat|ps1|xml|sql|r|rb|php|swift|kt|lua|zig|asm|css|scss|less)$/i;
 const HUB_IMG_PATH_RE = /(?:[A-Za-z]:)?[\\/][^\s]*[\\/]\.claude-session-hub[\\/]images[\\/][^\s]+?\.(?:png|jpe?g|gif|webp|bmp)/gi;
 
@@ -161,6 +162,16 @@ function collectPathCandidates(text, cwd = null, opts = {}) {
   const candidates = [];
   text = String(text || '');
   let m;
+  FILE_URL_RE.lastIndex = 0;
+  while ((m = FILE_URL_RE.exec(text))) {
+    const trimmed = m[0].replace(/[.,;:!?)\]]+$/, '');
+    try {
+      const openPath = _repairLocalPathCandidate(fileURLToPath(trimmed));
+      if (openPath) _addCandidate(candidates, m.index, m.index + trimmed.length - 1, openPath);
+    } catch {
+      // A malformed file URL is not upgraded into a clickable local path.
+    }
+  }
   URL_RE.lastIndex = 0;
   while ((m = URL_RE.exec(text))) {
     const trimmed = m[0].replace(/[.,;:!?)\]]+$/, '');
@@ -248,6 +259,7 @@ module.exports = {
   REL_DIR_RE,
   REL_BARE_RE,
   URL_RE,
+  FILE_URL_RE,
   PREVIEW_PATH_RE,
   HUB_IMG_PATH_RE,
   collectPathCandidates,

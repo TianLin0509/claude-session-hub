@@ -24,6 +24,14 @@ test('collects URL and strips trailing punctuation', () => {
   });
 });
 
+test('collects file URLs as the same local path used by card preview', () => {
+  const raw = 'file:///C:/Vibe/My%20Report/report.md';
+  const found = collectPathCandidates(`Open ${raw} now`);
+  assert.strictEqual(found.length, 1);
+  assert.strictEqual(found[0].openPath, 'C:\\Vibe\\My Report\\report.md');
+  assert.strictEqual(found[0].isUrl, false);
+});
+
 test('collects absolute Windows preview path without filesystem validation', () => {
   const text = 'HTML: C:\\Users\\lintian\\report.html.';
   const found = collectPathCandidates(text);
