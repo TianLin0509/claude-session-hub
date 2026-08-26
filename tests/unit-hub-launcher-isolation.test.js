@@ -21,6 +21,7 @@ test('isolated Hub defaults cannot inherit the real home or DeepSeek key', () =>
   });
   assert.equal(env.CLAUDE_HUB_DATA_DIR, dataDir);
   assert.equal(env.CLAUDE_HUB_HOME_DIR, path.join(dataDir, 'isolated-home'));
+  assert.equal(env.CHUXIN_AGENT_LEAGUE_DIR, path.join(dataDir, 'agent-league'));
   assert.equal(env.DEEPSEEK_API_KEY, '');
   assert.equal(env.KEEP_ME, 'yes');
 });
@@ -28,9 +29,11 @@ test('isolated Hub defaults cannot inherit the real home or DeepSeek key', () =>
 test('specialized E2E can explicitly override isolated defaults', () => {
   const env = buildIsolatedHubEnv('C:\\temp\\hub-e2e-data', {
     CLAUDE_HUB_HOME_DIR: 'C:\\temp\\custom-home',
+    CHUXIN_AGENT_LEAGUE_DIR: 'C:\\temp\\custom-league',
     DEEPSEEK_API_KEY: 'fixture-key',
   }, {}, { allowExternalState: true });
   assert.equal(env.CLAUDE_HUB_HOME_DIR, 'C:\\temp\\custom-home');
+  assert.equal(env.CHUXIN_AGENT_LEAGUE_DIR, 'C:\\temp\\custom-league');
   assert.equal(env.DEEPSEEK_API_KEY, 'fixture-key');
 });
 
@@ -45,6 +48,9 @@ test('ordinary E2E cannot override safety-critical isolation variables', () => {
   assert.throws(() => buildIsolatedHubEnv(dataDir, {
     CLAUDE_HUB_DATA_DIR: 'C:\\Users\\real-data',
   }, {}), /forbids overriding CLAUDE_HUB_DATA_DIR/);
+  assert.throws(() => buildIsolatedHubEnv(dataDir, {
+    CHUXIN_AGENT_LEAGUE_DIR: 'C:\\Users\\real-user\\league',
+  }, {}), /requires CHUXIN_AGENT_LEAGUE_DIR inside the test root/);
   assert.throws(() => buildIsolatedHubEnv('C:\\Users\\real-user\\.claude-session-hub', {}, {}),
     /requires dataDir inside a dedicated OS temp subdirectory/);
 });

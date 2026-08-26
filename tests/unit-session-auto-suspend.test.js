@@ -33,6 +33,7 @@ test('active group-chat watchers and running loop members are protected', () => 
     ['finished', { isSettled: () => true }],
   ]);
   const protectedIds = collectProtectedSessionIds({
+    agentLeagueBridge: { getProtectedSessionIds: () => new Set(['league-running']) },
     groupChatDispatcher: { getActiveWatchers: () => activeWatchers },
     loopEngine: { isRunning: meetingId => meetingId === 'looping' },
     meetingManager: {
@@ -43,7 +44,7 @@ test('active group-chat watchers and running loop members are protected', () => 
     },
   });
 
-  assert.deepEqual([...protectedIds].sort(), ['builder', 'reviewer', 'watching']);
+  assert.deepEqual([...protectedIds].sort(), ['builder', 'league-running', 'reviewer', 'watching']);
 });
 
 test('scheduler includes idle meeting members but excludes protected work', () => {

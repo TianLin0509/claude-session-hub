@@ -8,6 +8,7 @@
  */
 (function () {
   const { ipcRenderer } = require('electron');
+  const { createAgentLeaguePanel } = require('./agent-league.js');
 
   let API = 'http://127.0.0.1:3004';
   let WEB = 'http://127.0.0.1:3003';
@@ -31,6 +32,7 @@
     { id: 'targets', label: '观察池', hash: 'watch' },
     { id: 'holding', label: '持仓信息', hash: 'holding' },
     { id: 'notes', label: '知识积累', hash: 'notes' },
+    { id: 'league', label: 'Agent 联赛', native: true },
   ];
   const WORKSPACE_RE = /^[A-Za-z0-9_-]{16,128}$/;
 
@@ -58,6 +60,8 @@
     previewTimer: null,
     previewSeq: 0,
     developerTimer: null,
+    leagueController: null,
+    nativeTabActive: false,
   };
 
   // ---------- 小工具 ----------
@@ -197,7 +201,15 @@
     state.frameView.style.display = 'flex';
     state.frame = null;
 
-    root.append(header, state.startErrorEl, state.tabsBar, state.frameView);
+    // Agent 联赛是 Hub 原生视图：排行榜、Markdown 账本与普通 Session
+    // 需要直接走 Electron IPC，不能塞进 chuxin-research iframe 再复制一套会话 UI。
+    state.leagueView = el('div', 'cx-view-league');
+    state.leagueView.dataset.view = 'agent-league';
+    state.leagueView.style.display = 'none';
+    state.leagueController = createAgentLeaguePanel({ document, ipcRenderer, toast });
+    state.leagueController.mount(state.leagueView);
+
+    root.append(header, state.startErrorEl, state.tabsBar, state.frameView, state.leagueView);
     const storedTab = localStorage.getItem(TAB_KEY) || 'today';
     const legacyMap = {
       observe: 'today', chat: 'today', heroes: 'today', insights: 'notes', developer: 'today',
@@ -209,11 +221,23 @@
 
   function switchTab(tabId) {
     const tab = PRIMARY_TABS.find((row) => row.id === tabId) || PRIMARY_TABS[0];
+    root.classList.toggle('cx-agent-league-active', tab.id === 'league');
     localStorage.setItem(TAB_KEY, tab.id);
     for (const b of state.tabsBar.children) {
       b.classList.toggle('active', b.dataset.tab === tab.id);
       b.setAttribute('aria-current', b.dataset.tab === tab.id ? 'page' : 'false');
     }
+    if (tab.native && tab.id === 'league') {
+      state.nativeTabActive = true;
+      state.frameView.style.display = 'none';
+      state.leagueView.style.display = 'block';
+      state.leagueController.show().catch((error) => toast('Agent 联赛加载失败：' + error.message, true));
+      return;
+    }
+    const returningFromNative = state.nativeTabActive;
+    state.nativeTabActive = false;
+    state.leagueView.style.display = 'none';
+    state.frameView.style.display = 'flex';
     const target = WEB + '/?api=' + encodeURIComponent(API)
       + '&workspace=' + encodeURIComponent(workspace()) + '&embed=hub#' + tab.hash;
     if (!state.frame) {
@@ -222,10 +246,17 @@
       state.frame.setAttribute('allow', 'clipboard-read; clipboard-write');
       state.frameView.append(state.frame);
     }
-    if (state.frame.dataset.hash !== tab.hash) {
-      state.frame.dataset.hash = tab.hash;
-      state.frame.src = target;
-    }
+    const navigate = () => {
+      if (state.frame.dataset.hash !== tab.hash || state.frame.src !== target) {
+        state.frame.dataset.hash = tab.hash;
+        state.frame.src = target;
+      }
+    };
+    // Chromium may keep an OOP iframe document.hidden=true when navigation is
+    // started in the same task that unhides its parent. Chuxin live charts
+    // intentionally pause while hidden, so let layout visibility settle first.
+    if (returningFromNative) setTimeout(navigate, 50);
+    else navigate();
   }
 
   // ---------- 状态检测 / 启动 ----------

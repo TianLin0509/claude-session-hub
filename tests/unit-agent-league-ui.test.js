@@ -1,0 +1,44 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+
+const root = path.join(__dirname, '..');
+
+test('Agent League is a native Chuxin tab, not another iframe product', () => {
+  const chuxin = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
+  const index = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');
+  assert.match(chuxin, /require\('\.\/agent-league\.js'\)/);
+  assert.match(chuxin, /id: 'league', label: 'Agent 联赛', native: true/);
+  assert.match(chuxin, /createAgentLeaguePanel/);
+  assert.match(chuxin, /state\.frameView\.style\.display = 'none'/);
+  assert.match(chuxin, /returningFromNative/);
+  assert.match(chuxin, /setTimeout\(navigate, 50\)/);
+  assert.match(index, /agent-league\.css/);
+});
+
+test('leaderboard keeps eight compact rows and opens real Session card or PTY views', () => {
+  const ui = fs.readFileSync(path.join(root, 'renderer', 'agent-league.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'renderer', 'agent-league.css'), 'utf8');
+  const renderer = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
+  assert.match(ui, /agent-league:list/);
+  assert.match(ui, /agent-league:create/);
+  assert.match(ui, /agent-league:run-day/);
+  assert.match(ui, /bridge\.open\(agent\.session\.hubSessionId, view\)/);
+  assert.match(ui, /data-action="open-card"/);
+  assert.match(ui, /data-action="open-pty"/);
+  assert.match(css, /\.cxl-ranking\{max-height:464px/);
+  assert.match(css, /\.cxl-row\{[^}]*min-height:58px/);
+  assert.match(renderer, /__chuxinSessionBridge = \{[\s\S]*async open\(sessionId, view = 'card'\)/);
+  assert.match(renderer, /\['chuxin-research', 'agent-league'\]\.includes\(row\.purpose\)/);
+});
+
+test('Agent League sessions remain ordinary visible sidebar sessions', () => {
+  const handler = fs.readFileSync(path.join(root, 'main', 'ipc', 'agent-league-handlers.js'), 'utf8');
+  const list = fs.readFileSync(path.join(root, 'renderer', 'session-list-renderer.js'), 'utf8');
+  assert.match(handler, /purpose: 'agent-league'/);
+  assert.match(handler, /hiddenFromSidebar: false/);
+  assert.doesNotMatch(list, /purpose\s*!==\s*['"]agent-league/);
+});

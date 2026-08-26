@@ -4,7 +4,7 @@ const AUTO_SUSPEND_IDLE_MS = 5 * 60 * 60 * 1000;
 const AUTO_SUSPEND_CHECK_MS = 5 * 60 * 1000;
 const AUTO_SUSPEND_REASON = 'idle-timeout';
 
-function collectProtectedSessionIds({ groupChatDispatcher, loopEngine, meetingManager } = {}) {
+function collectProtectedSessionIds({ agentLeagueBridge, groupChatDispatcher, loopEngine, meetingManager } = {}) {
   const protectedIds = new Set();
 
   try {
@@ -30,6 +30,18 @@ function collectProtectedSessionIds({ groupChatDispatcher, loopEngine, meetingMa
       if (!meeting || !meeting.id || !loopEngine || typeof loopEngine.isRunning !== 'function') continue;
       if (!loopEngine.isRunning(meeting.id)) continue;
       for (const sessionId of meeting.subSessions || []) {
+        if (sessionId) protectedIds.add(String(sessionId));
+      }
+    }
+  } catch {}
+
+  try {
+    const leagueIds = agentLeagueBridge
+      && typeof agentLeagueBridge.getProtectedSessionIds === 'function'
+      ? agentLeagueBridge.getProtectedSessionIds()
+      : null;
+    if (leagueIds && typeof leagueIds[Symbol.iterator] === 'function') {
+      for (const sessionId of leagueIds) {
         if (sessionId) protectedIds.add(String(sessionId));
       }
     }

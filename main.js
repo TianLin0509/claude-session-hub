@@ -921,6 +921,7 @@ function sendToRenderer(channel, data) {
 
 let groupChatDispatcher = null;
 let sessionAutoSuspendScheduler = null;
+let agentLeagueBridge = null;
 const meetingTerminalActivitySentAt = new Map();
 const terminalOutputBatcher = new TerminalOutputBatcher({
   emit: ({ sessionId, data, seq }) => {
@@ -1118,6 +1119,7 @@ try {
 sessionAutoSuspendScheduler = createSessionAutoSuspendScheduler({
   sessionManager,
   getProtectedSessionIds: () => collectProtectedSessionIds({
+    agentLeagueBridge,
     groupChatDispatcher,
     loopEngine: global.__loopEngine,
     meetingManager,
@@ -1149,6 +1151,18 @@ registerCommitteeIpc(ipcMain, { committeeConductor, history: committeeHistory, g
 
 // 初心投研（chuxin-research）服务桥 — 2026-07-23 Kimi 移植：独立功能，仅注册 IPC，不改主流程
 const chuxinBridge = require('./main/ipc/chuxin-handlers.js').registerChuxinIpc(ipcMain, {
+  getHookPort: () => hookPort,
+  getHubDataDir,
+  hookToken: HOOK_TOKEN,
+  registerSessionForTap,
+  sendToRenderer,
+  sessionManager,
+  transcriptTap,
+});
+
+// 初心 Agent 投资联赛：每个参赛者绑定一个可见的普通 Hub Session，
+// 账户/交易/进化状态全部落在各自 Markdown 文件夹中。
+agentLeagueBridge = require('./main/ipc/agent-league-handlers.js').registerAgentLeagueIpc(ipcMain, {
   getHookPort: () => hookPort,
   getHubDataDir,
   hookToken: HOOK_TOKEN,
@@ -1510,7 +1524,10 @@ const hookServer = http.createServer((req, res) => {
       const chuxinResearch = chuxinBridge
         && typeof chuxinBridge.isAuthorizedResearchScope === 'function'
         && chuxinBridge.isAuthorizedResearchScope(meetingId);
-      if ((!meeting || meeting.scene !== 'research') && !chuxinResearch) {
+      const agentLeagueResearch = agentLeagueBridge
+        && typeof agentLeagueBridge.isAuthorizedResearchScope === 'function'
+        && agentLeagueBridge.isAuthorizedResearchScope(meetingId);
+      if ((!meeting || meeting.scene !== 'research') && !chuxinResearch && !agentLeagueResearch) {
         res.writeHead(400); res.end('{"error":"not research mode"}'); return;
       }
       const t0 = Date.now();
@@ -2367,6 +2384,9 @@ async function runFinalShutdownCleanup() {
   // 仍由 registry 的过期租约兜底。
   if (chuxinBridge && typeof chuxinBridge.releaseAllOwnership === 'function') {
     capture('chuxin-ownership', () => chuxinBridge.releaseAllOwnership());
+  }
+  if (agentLeagueBridge && typeof agentLeagueBridge.stopScheduler === 'function') {
+    capture('agent-league-scheduler', () => agentLeagueBridge.stopScheduler());
   }
   // 2026-05-07 道雪：退出时保证三层都同步落盘——state.json（lock + merge）、
   //   per-meeting JSON、per-session JSON。任意一层丢了，下次 boot 的 selfHeal
