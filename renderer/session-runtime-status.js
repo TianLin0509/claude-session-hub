@@ -1,17 +1,19 @@
 'use strict';
 
 const {
-  ATTENTION_NEEDS_INPUT,
-  ATTENTION_REPLY_READY,
-  attentionStateOf,
-} = require('../core/session-attention-state.js');
-
-const RUNTIME_STATUS_RUNNING = 'running';
-const RUNTIME_STATUS_WAITING = 'waiting';
-const RUNTIME_STATUS_COMPLETE = 'complete';
-const RUNTIME_STATUS_IDLE = 'idle';
-const RUNTIME_STATUS_DORMANT = 'dormant';
-const RUNTIME_STATUS_ERROR = 'error';
+  RUNTIME_STARTING,
+  RUNTIME_RUNNING,
+  RUNTIME_WAITING,
+  RUNTIME_COMPLETED,
+  RUNTIME_IDLE,
+  RUNTIME_FAILED,
+  RUNTIME_DORMANT,
+  RUNTIME_UNKNOWN,
+  getSessionRuntimeTruth,
+  runtimeConfidenceLabel,
+  runtimeLabel,
+  runtimeSourceLabel,
+} = require('../core/session-runtime-truth.js');
 
 function providerLabel(session) {
   const kind = String(session && session.kind || '').replace(/-resume$/i, '').toLowerCase();
@@ -43,7 +45,7 @@ function formatCompletionAge(completedAt, now = Date.now()) {
   return `${Math.floor(ageMs / (24 * 60 * 60_000))} 天前`;
 }
 
-function runningStartedAt(session) {
+function legacyRunningStartedAt(session) {
   for (const value of [
     session && session.runStartedAt,
     session && session.cardWorkingSince,
@@ -59,45 +61,41 @@ function runningStartedAt(session) {
 function deriveSessionRuntimeStatus(session, options = {}) {
   const now = Number(options.now) || Date.now();
   const provider = providerLabel(session);
-  const status = String(session && session.status || 'idle').toLowerCase();
-  const attention = attentionStateOf(session);
-  const isRunning = typeof options.isRunning === 'boolean'
-    ? options.isRunning
-    : status === 'running';
-  const lastCompletedAt = Number(session && session.lastCompletedAt) || 0;
-  const latestPromptAt = Number(session && session._attentionClock && session._attentionClock.lastPromptAt) || 0;
-  const completionIsLatest = lastCompletedAt > 0 && (!latestPromptAt || lastCompletedAt >= latestPromptAt);
-
-  let state = RUNTIME_STATUS_IDLE;
-  let label = '已就绪';
+  let truth = getSessionRuntimeTruth(session, { now });
+  if (options.isRunning === true && [RUNTIME_IDLE, RUNTIME_COMPLETED, RUNTIME_UNKNOWN].includes(truth.state)) {
+    truth = {
+      ...truth,
+      state: RUNTIME_RUNNING,
+      source: session && (session.cardWorkingSource || session._runSource) || 'legacy-card-working',
+      startedAt: legacyRunningStartedAt(session) || now,
+      evidence: session && session._ptyRuntimeEvidence || truth.evidence || null,
+    };
+  }
+  const state = truth.state;
+  const label = runtimeLabel(state);
   let meta = '';
   let detail = '';
 
-  if (status === 'dormant') {
-    state = RUNTIME_STATUS_DORMANT;
-    label = '休眠中';
+  if (state === RUNTIME_DORMANT) {
     detail = '点击会话可恢复原生 CLI';
-  } else if (status === 'errored' || status === 'error') {
-    state = RUNTIME_STATUS_ERROR;
-    label = '运行异常';
-    detail = String(session && (session.lastError || session.error) || '').trim();
-  } else if (attention === ATTENTION_NEEDS_INPUT) {
-    state = RUNTIME_STATUS_WAITING;
-    label = '等待输入';
+  } else if (state === RUNTIME_FAILED) {
+    detail = String(truth.evidence || session && (session.lastError || session.error) || '').trim();
+  } else if (state === RUNTIME_WAITING) {
     meta = '需要操作';
-    detail = String(session && session.waitingText || '').trim();
-  } else if (isRunning) {
-    state = RUNTIME_STATUS_RUNNING;
-    label = '工作中';
-    const startedAt = runningStartedAt(session);
+    detail = String(truth.evidence || session && session.waitingText || '').trim();
+  } else if (state === RUNTIME_STARTING || state === RUNTIME_RUNNING) {
+    const startedAt = Number(truth.startedAt) || legacyRunningStartedAt(session);
     if (startedAt > 0 && now >= startedAt) meta = formatRuntimeDuration(now - startedAt);
-    detail = String(session && session._ptyRuntimeEvidence || '').trim();
-  } else if (attention === ATTENTION_REPLY_READY || completionIsLatest) {
-    state = RUNTIME_STATUS_COMPLETE;
-    label = '已完成';
-    meta = formatCompletionAge(lastCompletedAt, now);
+    detail = String(truth.evidence || session && session._ptyRuntimeEvidence || '').trim();
+  } else if (state === RUNTIME_COMPLETED) {
+    const completedAt = Number(truth.completedAt) || Number(session && session.lastCompletedAt) || 0;
+    meta = formatCompletionAge(completedAt, now);
     const durationMs = Number(session && session.lastRunDurationMs) || 0;
     detail = durationMs > 0 ? `本轮用时 ${formatRuntimeDuration(durationMs)}` : '';
+  } else if (state === RUNTIME_UNKNOWN) {
+    detail = truth.reason === 'observation-expired'
+      ? '最近的运行信号已过期，等待新的语义事件或 PTY 证据'
+      : String(truth.evidence || '').trim();
   }
 
   const visibleText = meta ? `${label} · ${meta}` : label;
@@ -105,6 +103,12 @@ function deriveSessionRuntimeStatus(session, options = {}) {
   const titleParts = [ariaLabel];
   if (meta) titleParts.push(meta);
   if (detail) titleParts.push(detail);
+  if (truth.source) {
+    titleParts.push(`判断依据：${runtimeSourceLabel(truth.source)} · ${runtimeConfidenceLabel(truth.confidence)}`);
+  }
+  if (Array.isArray(truth.corroborations) && truth.corroborations.length) {
+    titleParts.push(`交叉验证：${truth.corroborations.map(item => runtimeSourceLabel(item.source)).join('、')}`);
+  }
 
   return {
     state,
@@ -112,6 +116,9 @@ function deriveSessionRuntimeStatus(session, options = {}) {
     meta,
     detail,
     provider,
+    source: truth.source,
+    confidence: truth.confidence,
+    observedAt: truth.observedAt,
     visibleText,
     ariaLabel,
     title: titleParts.join('\n'),
@@ -119,12 +126,14 @@ function deriveSessionRuntimeStatus(session, options = {}) {
 }
 
 module.exports = {
-  RUNTIME_STATUS_RUNNING,
-  RUNTIME_STATUS_WAITING,
-  RUNTIME_STATUS_COMPLETE,
-  RUNTIME_STATUS_IDLE,
-  RUNTIME_STATUS_DORMANT,
-  RUNTIME_STATUS_ERROR,
+  RUNTIME_STATUS_STARTING: RUNTIME_STARTING,
+  RUNTIME_STATUS_RUNNING: RUNTIME_RUNNING,
+  RUNTIME_STATUS_WAITING: RUNTIME_WAITING,
+  RUNTIME_STATUS_COMPLETED: RUNTIME_COMPLETED,
+  RUNTIME_STATUS_IDLE: RUNTIME_IDLE,
+  RUNTIME_STATUS_FAILED: RUNTIME_FAILED,
+  RUNTIME_STATUS_DORMANT: RUNTIME_DORMANT,
+  RUNTIME_STATUS_UNKNOWN: RUNTIME_UNKNOWN,
   deriveSessionRuntimeStatus,
   formatCompletionAge,
   formatRuntimeDuration,

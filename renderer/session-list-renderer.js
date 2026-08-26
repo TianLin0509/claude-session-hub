@@ -4,8 +4,18 @@ const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js
 const { compareLatestReplyDesc, latestReplyTime } = require('../core/session-recency.js');
 const {
   sessionHasCompletedUnread,
-  sessionNeedsUserInput,
 } = require('../core/session-attention-state.js');
+const {
+  RUNTIME_STARTING,
+  RUNTIME_RUNNING,
+  RUNTIME_WAITING,
+  RUNTIME_FAILED,
+  RUNTIME_DORMANT,
+  RUNTIME_UNKNOWN,
+  getSessionRuntimeTruth,
+  runtimeTruthSummary,
+  sessionRuntimeIsActive,
+} = require('../core/session-runtime-truth.js');
 
 function partitionSessionsByAge(items, now) {
   const DAY = 86400000;
@@ -209,6 +219,20 @@ function _subIsRunning(sub) {
   return isGroupChatMemberRunning(sub);
 }
 
+function _meetingRuntimeAggregate(meeting, sessionMap, now = Date.now()) {
+  const truths = ((meeting && meeting.subSessions) || [])
+    .map(id => sessionMap.get(id))
+    .filter(Boolean)
+    .map(session => ({ session, truth: getSessionRuntimeTruth(session, { now }) }));
+  return {
+    waiting: truths.some(item => item.truth.state === RUNTIME_WAITING),
+    running: meeting && !meeting.groupChat && meeting.status === 'running'
+      || truths.some(item => isGroupChatMemberRunning(item.session, now)),
+    failed: truths.some(item => item.truth.state === RUNTIME_FAILED),
+    truths,
+  };
+}
+
 function _sessionWarningText(session) {
   if (!session) return '';
   const warnings = [];
@@ -222,12 +246,7 @@ function _sessionWarningText(session) {
 }
 
   function _meetingAnySubRunning(meeting, sessionMap) {
-  const ids = (meeting && meeting.subSessions) || [];
-  for (const id of ids) {
-      const sub = sessionMap.get(id);
-    if (_subIsRunning(sub)) return true;
-  }
-  return false;
+  return _meetingRuntimeAggregate(meeting, sessionMap).running;
 }
 
   // 代理配置只用于 tooltip；可见文案必须是 main 进程实测的公网 IP + 城市。
@@ -388,7 +407,10 @@ function _sessionWarningText(session) {
       const isDormantMeeting = s.status === 'dormant';
       const hasUnread = !isDormantMeeting && !isActive && (s.unreadAnsweredSize > 0);
       // 2026-07-20 道雪：群聊运行中 = 任一成员 agent 在运行（成员 running 已语义化）
-        const anySubRunning = _meetingAnySubRunning(s._meeting, sessionMap);
+      const meetingRuntime = _meetingRuntimeAggregate(s._meeting, sessionMap);
+      const anySubRunning = meetingRuntime.running;
+      const anySubWaiting = meetingRuntime.waiting;
+      const anySubFailed = meetingRuntime.failed;
       div.className = 'session-item slim meeting' + (isGroupChat ? ' gc' : '')
         + (isActive ? ' selected' : '')
         + (isExpanded ? ' expanded' : '') + (isDormantMeeting ? ' dormant' : '')
@@ -419,11 +441,14 @@ function _sessionWarningText(session) {
           ? `assets/ai-logos/${String(sub.kind).replace(/-resume$/, '')}.svg`
           : '';
         const modelLabel = sub && sub.currentModel ? (typeof modelShort === 'function' ? modelShort(sub.currentModel) : sub.currentModel.id) : '';
+        const subRuntime = sub ? getSessionRuntimeTruth(sub) : null;
         let statusCls = 'mini-st-ready';
         if (!sub) statusCls = 'mini-st-init';
-        else if (sub.status === 'dormant') statusCls = 'mini-st-dormant';
-        else if (sub.status === 'errored' || sub.status === 'error') statusCls = 'mini-st-error';
+        else if (subRuntime.state === RUNTIME_DORMANT) statusCls = 'mini-st-dormant';
+        else if (subRuntime.state === RUNTIME_FAILED) statusCls = 'mini-st-error';
+        else if (subRuntime.state === RUNTIME_WAITING) statusCls = 'mini-st-waiting';
         else if (_subIsRunning(sub)) statusCls = 'mini-st-thinking';
+        else if (subRuntime.state === RUNTIME_UNKNOWN) statusCls = 'mini-st-unknown';
         const isActiveChild = subId === getActiveSessionId();
         const ctxPct = isGroupChat && sub && typeof sub.contextPct === 'number' ? sub.contextPct : null;
         const ctxCls = ctxPct != null && typeof pctClass === 'function' ? pctClass(ctxPct) : '';
@@ -431,7 +456,8 @@ function _sessionWarningText(session) {
           ? `<span class="mini-jump-ctx ${ctxCls}" title="Context ${ctxPct}%">${ctxPct}%</span>`
           : '';
         const subWarning = _sessionWarningText(sub);
-        const tooltip = `${label}${modelLabel ? ' · ' + modelLabel : ''}${ctxPct != null ? ' · Ctx ' + ctxPct + '%' : ''}${subWarning ? ' · ⚠ ' + subWarning : ''} (点击跳转)`;
+        const runtimeTip = subRuntime ? runtimeTruthSummary(subRuntime) : '尚未初始化';
+        const tooltip = `${label}${modelLabel ? ' · ' + modelLabel : ''}${ctxPct != null ? ' · Ctx ' + ctxPct + '%' : ''} · ${runtimeTip}${subWarning ? ' · ⚠ ' + subWarning : ''} (点击跳转)`;
         const avatarHtml = isGroupChat
           ? `<span class="mini-jump-text">${escapeHtml(sub && sub.kind ? sub.kind : ('AI' + (idx + 1)))}</span>`
           : (avatarSrc
@@ -444,18 +470,24 @@ function _sessionWarningText(session) {
           </button>${ctxLabelHtml}
         </span>`;
       }).join('');
-      // 状态点优先级：未读 > 运行(任一成员) > 休眠 > 空闲
+      // 状态点优先级与普通 session 一致：等待 > 运行 > 异常 > 未读 > 休眠 > 空闲。
       let dotCls = 'idle';
       if (isDormantMeeting) dotCls = 'dorm';
-      else if (hasUnread) dotCls = 'unread';
+      else if (anySubWaiting) dotCls = 'wait';
       else if (anySubRunning) dotCls = 'run';
+      else if (anySubFailed) dotCls = 'error';
+      else if (hasUnread) dotCls = 'unread';
       const stateHtml = isDormantMeeting
         ? '<span class="sl-state dorm" title="休眠中，点击唤醒">休眠</span>'
-        : (hasUnread
-          ? `<span class="sl-state unread" title="本轮已有 ${s.unreadAnsweredSize} 个 AI 答完，尚未查看">已答 ${s.unreadAnsweredSize}</span>`
+        : (anySubWaiting
+          ? '<span class="sl-state wait">等你</span>'
           : (anySubRunning
             ? '<span class="sl-state run">运行中</span>'
-            : '<span></span>'));
+            : (anySubFailed
+              ? '<span class="sl-state error">异常</span>'
+              : (hasUnread
+                ? `<span class="sl-state unread" title="本轮已有 ${s.unreadAnsweredSize} 个 AI 答完，尚未查看">已答 ${s.unreadAnsweredSize}</span>`
+                : '<span></span>'))));
       div.innerHTML = `
         <div class="sl-line1${canExpand ? ' with-arrow' : ''}">
           ${canExpand ? `<span class="expand-arrow" data-action="toggle-expand" title="${isExpanded ? '折叠' : '展开'}">▶</span>` : ''}
@@ -492,19 +524,21 @@ function _sessionWarningText(session) {
           if (!sub) continue;
           const childDiv = doc.createElement('div');
           const isChildActive = subId === getActiveSessionId();
-          const childDormantCls = sub.status === 'dormant' ? ' dormant' : '';
+          const childRuntime = getSessionRuntimeTruth(sub);
+          const childDormantCls = childRuntime.state === RUNTIME_DORMANT ? ' dormant' : '';
           const childUnreadCount = Math.max(0, Number(sub.unreadCount) || 0);
           const childShowUnread = !isChildActive && childUnreadCount > 0;
           childDiv.className = 'session-item slim child' + (isChildActive ? ' selected' : '')
             + (childShowUnread ? ' need-unread' : '') + childDormantCls;
           childDiv.dataset.sessionId = subId;
+          childDiv.dataset.runtimeState = childRuntime.state;
           const modelLabel = sub.currentModel
             ? `<span class="child-model-badge ${modelClass(sub.currentModel.id)}" title="${escapeHtml(sub.currentModel.displayName || sub.currentModel.id)}">${escapeHtml(modelShort(sub.currentModel))}</span>`
             : '';
           const childWarning = _sessionWarningText(sub);
-          const childStateTip = sub.status === 'dormant'
+          const childStateTip = childRuntime.state === RUNTIME_DORMANT
             ? `${sub.suspendReason === 'idle-timeout' ? '自动休眠' : '休眠中'}${childShowUnread ? `，有 ${childUnreadCount} 条未读` : ''}，点击唤醒`
-            : (childShowUnread ? `有 ${childUnreadCount} 条未读` : '');
+            : [runtimeTruthSummary(childRuntime), childShowUnread ? `有 ${childUnreadCount} 条未读` : ''].filter(Boolean).join(' · ');
           childDiv.innerHTML = `
             ${_aiLogoHtml(sub.kind)}
             <span class="child-title" title="${escapeHtml([childWarning, childStateTip].filter(Boolean).join(' · '))}">${childWarning ? '<span class="sl-pin">⚠</span>' : ''}${escapeHtml(sub.title)}${childShowUnread ? `<span class="sl-un">● ${childUnreadCount}</span>` : ''}</span>
@@ -525,11 +559,15 @@ function _sessionWarningText(session) {
     //   badge pill（等你/模型/Ctx/burn）全部移除：等待与未读改行底色+状态点，
     //   burn 聚合到侧栏底部 strip，模型与 ctx 变等宽小字列。
     const isActive = s.id === getActiveSessionId();
+    const runtimeTruth = getSessionRuntimeTruth(s, { now: Date.now() });
     const div = doc.createElement('div');
     div.dataset.sessionId = s.id;
-    const isDormant = s.status === 'dormant';
+    div.dataset.runtimeState = runtimeTruth.state;
+    div.dataset.runtimeSource = runtimeTruth.source || '';
+    div.dataset.runtimeConfidence = runtimeTruth.confidence || '';
+    const isDormant = runtimeTruth.state === RUNTIME_DORMANT;
     const dormantCls = isDormant ? ' dormant' : '';
-    const showWaiting = sessionNeedsUserInput(s) && !isActive;
+    const showWaiting = runtimeTruth.state === RUNTIME_WAITING;
     const unreadCount = Math.max(0, Number(s.unreadCount) || 0);
     const showUnread = sessionHasCompletedUnread(s) && !isActive && !showWaiting;
     // 状态点优先级：等待输入 > 未读（含休眠态）> 运行 > 休眠 > 空闲
@@ -537,7 +575,10 @@ function _sessionWarningText(session) {
     if (showWaiting) dotCls = 'wait';
     else if (showUnread) dotCls = 'unread';
     else if (isDormant) dotCls = 'dorm';
-    else if (s.status === 'running') dotCls = 'run';
+    else if (runtimeTruth.state === RUNTIME_FAILED) dotCls = 'error';
+    else if (runtimeTruth.state === RUNTIME_STARTING) dotCls = 'start';
+    else if (runtimeTruth.state === RUNTIME_RUNNING) dotCls = 'run';
+    else if (runtimeTruth.state === RUNTIME_UNKNOWN) dotCls = 'unknown';
     div.className = 'session-item slim' + (isActive ? ' selected' : '')
       + (showWaiting ? ' need-wait' : '') + (showUnread ? ' need-unread' : '') + dormantCls;
     const ctxPct = typeof s.contextPct === 'number' ? s.contextPct : null;
@@ -550,10 +591,12 @@ function _sessionWarningText(session) {
       s.currentModel ? (s.currentModel.displayName || s.currentModel.id) : '',
       ctxPct != null ? `Ctx ${ctxPct}%` : '',
       anyWarning,
+      runtimeTruthSummary(runtimeTruth),
       dormantStateTip || (showWaiting
         ? (s.waitingText || '等你输入')
         : (showUnread ? (s.replyReadyText || s.lastOutputPreview || '有完成结果尚未查看') : '')),
     ].filter(Boolean).join(' · ');
+    div.title = runtimeTruthSummary(runtimeTruth);
     div.innerHTML = `
       ${_ringHtml(ctxPct, dotCls)}
       <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${unreadCount}</span>` : ''}</span>
@@ -568,7 +611,7 @@ function _sessionWarningText(session) {
   // 分区语义严格拆开：真正需要输入 → 运行中 → 普通完成未读 → 最近。
   //   分类语义（与状态来源逐项核对过）：
   //     等你响应 = 非 active 且 CLI 明确在等待用户输入
-  //     运行中   = status === 'running'（PTY 数据突发 / 卡片语义工作中）
+  //     运行中   = RuntimeTruth starting/running（原生事件 + PTY 强校验 + 兜底）
   //     完成未读 = 普通回答完成、群聊成员答完或历史 unreadCount>0
   //     最近     = 24h 内其余（含 active、休眠、空闲）
   const { recent, mid, old } = partitionSessionsByAge(visible, Date.now());
@@ -577,18 +620,21 @@ function _sessionWarningText(session) {
   const isActiveItem = (s) => s._isMeeting ? s.id === activeMid : s.id === activeSid;
   function needsRespond(s) {
     if (isActiveItem(s)) return false;
-    if (s._isMeeting) return false;
-    return sessionNeedsUserInput(s);
+    if (s._isMeeting) return _meetingRuntimeAggregate(s._meeting, sessionMap).waiting;
+    return getSessionRuntimeTruth(s).state === RUNTIME_WAITING;
   }
   function isCompletedUnread(s) {
     if (isActiveItem(s)) return false;
     if (s._isMeeting) return (s.unreadAnsweredSize || 0) > 0;
     return sessionHasCompletedUnread(s);
   }
-  const respond = [], running = [], completed = [], rest = [];
+  const respond = [], running = [], failed = [], completed = [], rest = [];
   for (const s of recent) {
     if (needsRespond(s)) respond.push(s);
-    else if (s._isMeeting ? _meetingAnySubRunning(s._meeting, sessionMap) : s.status === 'running') running.push(s);
+    else if (s._isMeeting ? _meetingAnySubRunning(s._meeting, sessionMap) : sessionRuntimeIsActive(s)) running.push(s);
+    else if (s._isMeeting
+      ? _meetingRuntimeAggregate(s._meeting, sessionMap).failed
+      : getSessionRuntimeTruth(s).state === RUNTIME_FAILED) failed.push(s);
     else if (isCompletedUnread(s)) completed.push(s);
     else rest.push(s);
   }
@@ -600,6 +646,7 @@ function _sessionWarningText(session) {
   }
   if (respond.length) { appendSecHeader('⚠ 等你响应', respond.length, 'sec-respond'); for (const s of respond) appendItem(s); }
   if (running.length) { appendSecHeader('运行中', running.length); for (const s of running) appendItem(s); }
+  if (failed.length) { appendSecHeader('⚠ 运行异常', failed.length, 'sec-respond'); for (const s of failed) appendItem(s); }
   if (completed.length) { appendSecHeader('✓ 已完成未读', completed.length, 'sec-completed'); for (const s of completed) appendItem(s); }
   if (rest.length) {
     if (respond.length || running.length || completed.length) appendSecHeader('最近', rest.length);

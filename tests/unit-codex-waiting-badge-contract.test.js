@@ -15,16 +15,16 @@ assert.ok(
   'renderer must expose a transcript-turn completion handler for non-hook CLIs',
 );
 
-// 2026-07-27：该处理器从"只认 Codex"泛化为 isTranscriptCliKind（codex + kimi），
-// 因为 Kimi 同样是 transcript 驱动、没有 Stop hook。断言盯泛化后的真实边界。
+// TranscriptTap also emits lifecycle for Gemini; all hook-less transcript CLIs
+// must share RuntimeTruth instead of falling back to raw PTY silence.
 assert.ok(
   /if\s*\(\s*!isTranscriptCliKind\(kind\)\s*\)\s*return/.test(rendererSrc),
   'transcript completion handler must be scoped to transcript-backed CLI variants',
 );
 assert.ok(
-  /function isTranscriptCliKind\(kind\)\s*\{\s*return isCodexKind\(kind\) \|\| isKimiCliKind\(kind\);/
+  /function isTranscriptCliKind\(kind\)[\s\S]{0,220}isCodexKind\(kind\)[\s\S]{0,80}isKimiCliKind\(kind\)[\s\S]{0,80}base === 'gemini'/
     .test(rendererSrc),
-  'isTranscriptCliKind must cover exactly the hook-less transcript CLIs (codex + kimi)',
+  'isTranscriptCliKind must cover Codex, Kimi and Gemini',
 );
 
 // 普通完成和真正的 CLI 提问必须分开：完成未读进入 reply-ready，不能伪装成

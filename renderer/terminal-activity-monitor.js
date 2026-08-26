@@ -63,8 +63,11 @@ function createTerminalActivityMonitor({
   updateStreamingIndicator,
   hasSemanticCardWorking,
   hasSemanticWorking,
+  needsPtyBurstUpgrade,
   canUsePtyBurstFallback,
+  onPtyBurstStarted,
   onPtyBurstSettled,
+  onSemanticWorkExpired,
   classifyRuntimeState,
   onRuntimeState,
   canObserveRuntimeState,
@@ -212,8 +215,8 @@ function createTerminalActivityMonitor({
       }
       if (session.status === 'running' && session._runSource === 'burst') {
         session.status = 'idle';
-        session._runSource = null;
         if (typeof onPtyBurstSettled === 'function') onPtyBurstSettled(session, now);
+        session._runSource = null;
         renderSessionList();
         updateStreamingIndicator(sessionId);
       }
@@ -230,8 +233,12 @@ function createTerminalActivityMonitor({
     //   （powershell / gemini / deepseek 等）。claude(hook prompt/stop) 与
     //   codex/kimi(transcript/cardWorking) 的 running 由语义事件驱动——否则
     //   用户在 TUI 输入框打字时的整屏重绘 >200B 会被误判为"agent 运行中"。
-    if (!semanticCovered && dataCounters.get(sessionId) > 200 && session.status !== 'running') {
+    const burstUpgradeNeeded = typeof needsPtyBurstUpgrade === 'function'
+      && needsPtyBurstUpgrade(session);
+    if (!semanticCovered && dataCounters.get(sessionId) > 200
+        && (session.status !== 'running' || burstUpgradeNeeded)) {
       session.status = 'running';
+      if (typeof onPtyBurstStarted === 'function') onPtyBurstStarted(session, now);
       session._runSource = 'burst';
       renderSessionList();
       updateStreamingIndicator(sessionId);
@@ -263,8 +270,8 @@ function createTerminalActivityMonitor({
       if (!runtimeSaysRunning && !runtimeDefersIdle
           && session.status === 'running' && session._runSource === 'burst') {
         session.status = 'idle';
-        session._runSource = null;
         if (typeof onPtyBurstSettled === 'function') onPtyBurstSettled(session, Date.now());
+        session._runSource = null;
         updateStreamingIndicator(sessionId);
       }
       // transcript 系(codex/kimi)语义 running 的兜底回收：
@@ -272,7 +279,8 @@ function createTerminalActivityMonitor({
       if (!runtimeSaysRunning && session._agentWorking === 'card' && !hasSemanticCardWorking(session)) {
         session._agentWorking = null;
         if (session.status === 'running' && session._runSource === 'semantic') {
-          session.status = 'idle';
+          if (typeof onSemanticWorkExpired === 'function') onSemanticWorkExpired(session, Date.now());
+          else session.status = 'idle';
           session._runSource = null;
           updateStreamingIndicator(sessionId);
         }

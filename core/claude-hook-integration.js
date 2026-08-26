@@ -10,10 +10,11 @@ const MANAGED_SCRIPT_FILES = [
 ];
 const MANAGED_HOOK_MARKER = 'session-hub-hook';
 
-function hasManagedHook(settings, eventName) {
+function hasManagedHook(settings, eventName, expectedMatcher = null) {
   const entries = settings && settings.hooks && settings.hooks[eventName];
   return Array.isArray(entries) && entries.some(entry =>
-    Array.isArray(entry && entry.hooks)
+    (expectedMatcher == null || String(entry && entry.matcher || '') === String(expectedMatcher))
+    && Array.isArray(entry && entry.hooks)
     && entry.hooks.some(hook => String(hook && hook.command || '').includes(MANAGED_HOOK_MARKER))
   );
 }
@@ -50,16 +51,20 @@ function ensureManagedSettings(claudeDir, { fsModule = fs, logger = console } = 
   const hookPyPath = path.join(scriptsDir, 'session-hub-hook.py').replace(/\\/g, '\\\\');
   const managed = [
     ['Stop', `python "${hookPyPath}" stop`],
+    ['StopFailure', `python "${hookPyPath}" stop-failure`],
     ['UserPromptSubmit', `python "${hookPyPath}" prompt`],
+    ['PermissionRequest', `python "${hookPyPath}" permission-request`],
+    ['Notification', `python "${hookPyPath}" notification`,
+      'permission_prompt|agent_needs_input|agent_completed|quota_auto_resume_fired|quota_auto_resume_stale|quota_auto_resume_disabled|elicitation_dialog|elicitation_url_dialog'],
   ];
-  for (const [eventName, command] of managed) {
+  for (const [eventName, command, matcher = ''] of managed) {
     if (!Array.isArray(settings.hooks[eventName])) {
       settings.hooks[eventName] = [];
       changed = true;
     }
-    if (!hasManagedHook(settings, eventName)) {
+    if (!hasManagedHook(settings, eventName, matcher)) {
       settings.hooks[eventName].push({
-        matcher: '',
+        matcher,
         hooks: [{ type: 'command', command, timeout: 5 }],
       });
       changed = true;

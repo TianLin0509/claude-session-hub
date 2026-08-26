@@ -62,6 +62,28 @@ test('HUB workbench groups top-level sessions and meetings into actionable lanes
   assert.strictEqual(snapshot.providerActive.kimi, 1);
 });
 
+test('meeting lanes aggregate child RuntimeTruth waiting and failure states', () => {
+  const now = Date.UTC(2026, 7, 10, 10, 0, 0);
+  const sessions = new Map([
+    ['waiting-child', {
+      id: 'waiting-child', kind: 'claude', title: '等待权限', status: 'idle',
+      attentionState: 'needs-input', waitingText: 'Allow PowerShell?', meetingId: 'waiting-meeting',
+      lastMessageTime: now,
+    }],
+    ['failed-child', {
+      id: 'failed-child', kind: 'codex', title: '执行失败', status: 'error',
+      lastError: 'rate limited', meetingId: 'failed-meeting', lastMessageTime: now,
+    }],
+  ]);
+  const meetings = {
+    'waiting-meeting': { id: 'waiting-meeting', title: '等待群聊', status: 'idle', subSessions: ['waiting-child'], lastMessageTime: now },
+    'failed-meeting': { id: 'failed-meeting', title: '失败群聊', status: 'idle', subSessions: ['failed-child'], lastMessageTime: now },
+  };
+  const snapshot = buildHomeSnapshot({ sessions, meetings, now });
+  assert.deepStrictEqual(snapshot.lanes.waiting.map(item => item.id), ['waiting-meeting']);
+  assert.ok(snapshot.exceptions.some(item => item.targetId === 'failed-meeting' && /rate limited/.test(item.detail)));
+});
+
 test('shell keeps one launcher plus Home and Research navigation while retaining the home research card', () => {
   const root = path.resolve(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');

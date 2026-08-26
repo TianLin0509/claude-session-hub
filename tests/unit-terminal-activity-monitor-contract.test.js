@@ -308,3 +308,36 @@ test('an input-ready frame can defer burst settlement until the provider running
   assert.equal(session._runSource, 'burst');
   monitor.clearSession('s1');
 });
+
+test('a PTY chunk storm coalesces live-screen classification probes', async () => {
+  const session = { id: 's1', kind: 'codex', status: 'idle' };
+  const sessions = new Map([['s1', session]]);
+  let classifyCount = 0;
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([
+      '• Working (3s • esc to interrupt)',
+      '› Improve documentation in @filename',
+      'gpt-5.6-sol max fast · Context 100% left · C:\\repo',
+    ]),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => {},
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => false,
+    canUsePtyBurstFallback: () => true,
+    canObserveRuntimeState: () => true,
+    classifyRuntimeState: (item, liveLines) => {
+      classifyCount += 1;
+      return classifyTerminalRuntime(item.kind, liveLines);
+    },
+    onRuntimeState: () => true,
+    runtimeProbeMs: 5,
+    silenceMs: 100,
+  });
+  for (let index = 0; index < 1000; index += 1) monitor.onTerminalOutput('s1', 1);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(classifyCount, 1, '1000 PTY chunks should schedule one current-screen probe');
+  monitor.clearSession('s1');
+});

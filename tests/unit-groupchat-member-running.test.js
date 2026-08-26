@@ -108,7 +108,7 @@ function sectionOf(html, needle) {
   const lines = html.split('\n');
   let current = null;
   for (const line of lines) {
-    const m = line.match(/<span>(⚠ 等你响应|运行中|✓ 已完成未读|最近)<\/span>/);
+    const m = line.match(/<span>(⚠ 等你响应|运行中|⚠ 运行异常|✓ 已完成未读|最近)<\/span>/);
     if (m) { current = m[1]; continue; }
     if (line.includes(needle)) return current;
   }
@@ -143,6 +143,34 @@ test('三个成员都空闲时群聊不进运行中', () => {
   const html = render({ sessions, meetings });
   assert.ok(!/mini-st-thinking/.test(html), '没人在跑就不该有运行中状态点');
   assert.notStrictEqual(sectionOf(html, '英雄大厅轻量化实现'), '运行中');
+});
+
+test('群聊父项优先显示等待和运行，不会被部分完成未读覆盖', () => {
+  const waitingCase = groupChat(['idle', 'idle', 'idle'], {
+    meeting: { unreadAnswered: new Set(['sid-codex']) },
+  });
+  waitingCase.sessions.get('sid-claude').attentionState = 'needs-input';
+  waitingCase.sessions.get('sid-claude').waitingText = 'Allow PowerShell?';
+  const waitingHtml = render(waitingCase);
+  assert.strictEqual(sectionOf(waitingHtml, '英雄大厅轻量化实现'), '⚠ 等你响应');
+  assert.match(waitingHtml, /sl-state wait[^>]*>等你/);
+
+  const runningCase = groupChat(['running', 'idle', 'idle'], {
+    meeting: { unreadAnswered: new Set(['sid-codex']) },
+  });
+  const runningHtml = render(runningCase);
+  assert.strictEqual(sectionOf(runningHtml, '英雄大厅轻量化实现'), '运行中');
+  assert.match(runningHtml, /sl-state run[^>]*>运行中/);
+  assert.doesNotMatch(runningHtml, /sl-state unread[^>]*>已答/);
+});
+
+test('群聊成员失败会聚合到父项异常分区', () => {
+  const fixture = groupChat(['idle', 'error', 'idle']);
+  fixture.sessions.get('sid-codex').lastError = 'rate limited';
+  const html = render(fixture);
+  assert.strictEqual(sectionOf(html, '英雄大厅轻量化实现'), '⚠ 运行异常');
+  assert.match(html, /mini-st-error/);
+  assert.match(html, /sl-state error[^>]*>异常/);
 });
 
 test('折叠群聊会聚合显示成员的 cwd / memory 告警', () => {
@@ -212,13 +240,13 @@ test('renderer 同时监听真实目标名单、心跳和轮次完成三条状�
   assert.match(RENDERER_SRC, /ipcRenderer\.on\('groupchat-turn-targets'/,
     'prompt 发出后应立即点亮真实目标，不能等第一段文字');
   assert.match(RENDERER_SRC,
-    /groupchat-turn-targets[\s\S]{0,1000}_setGroupChatMemberWorking\(sub, targetSids\.has\(sid\)\)/,
+    /groupchat-turn-targets[\s\S]{0,1200}_setGroupChatMemberWorking\(sub, targetSids\.has\(sid\),/,
     '真实目标与未点名成员必须用同一个状态收敛函数');
   assert.match(RENDERER_SRC,
-    /groupchat-partial-update[\s\S]{0,900}_setGroupChatMemberWorking\(sub, nextWorking\)/,
+    /groupchat-partial-update[\s\S]{0,1000}_setGroupChatMemberWorking\(sub, nextWorking,/,
     'streaming 心跳必须续期 watcher 新鲜度');
   assert.match(RENDERER_SRC,
-    /groupchat-turn-complete[\s\S]{0,900}_setGroupChatMemberWorking\(s, false\)/,
+    /groupchat-turn-complete[\s\S]{0,1100}_setGroupChatMemberWorking\(s, false,/,
     '轮次完成必须立即熄灯');
 });
 
@@ -243,8 +271,8 @@ test('开工事件不再把群聊成员整条早退掉', () => {
 
 test('收工事件配对收尾，群聊成员不会一直卡在运行中', () => {
   const body = bodyOf('onReplyCompleteFromTranscriptEvent');
-  assert.ok(/if \(meetingId\) \{[\s\S]{0,260}clearCodexCardWorking\(/.test(body),
-    '群聊分支必须清掉 cardWorking');
+  assert.ok(/clearCodexCardWorking\(hubSessionId\)[\s\S]{0,900}if \(meetingId\) \{/.test(body),
+    '群聊分支 return 前必须已统一清掉 cardWorking');
   assert.ok(/applyReplyCompleted\(session,[\s\S]{0,360}keepRunning: backgroundActive/.test(body),
     '必须通过有序 reducer 把 status 收回 idle，且后台 Agent 活跃时保持 running');
 });

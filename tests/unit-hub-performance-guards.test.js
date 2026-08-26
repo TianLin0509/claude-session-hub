@@ -378,8 +378,11 @@ test('sidebar status transitions are coalesced and committed atomically', () => 
   assert.match(sidebar, /createDocumentFragment/);
   assert.match(sidebar, /sessionListEl\.replaceChildren\(fragment\)/,
     'a category jump should produce one live DOM commit');
-  assert.match(renderer, /function onReplyCompleteFromTranscriptEvent[\s\S]{0,2200}scheduleSessionListRender\(\)/);
-  assert.match(renderer, /function onPromptSubmittedFromTranscriptEvent[\s\S]{0,1500}scheduleSessionListRender\(\)/);
+  const completeStart = renderer.indexOf('function onReplyCompleteFromTranscriptEvent');
+  const completeEnd = renderer.indexOf('\nfunction onPromptSubmittedFromTranscriptEvent', completeStart);
+  const promptEnd = renderer.indexOf('\n// Hook-server health indicator', completeEnd);
+  assert.match(renderer.slice(completeStart, completeEnd), /scheduleSessionListRender\(\)/);
+  assert.match(renderer.slice(completeEnd, promptEnd), /scheduleSessionListRender\(\)/);
   assert.match(renderer, /createTerminalActivityMonitor\(\{[\s\S]*?renderSessionList:\s*scheduleSessionListRender,/,
     'PTY-driven status transitions must use the sidebar coalescer too');
   assert.match(home, /if \(!options\.force && !isVisible\(\)\) return state\.snapshot/,

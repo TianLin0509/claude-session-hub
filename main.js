@@ -1430,7 +1430,9 @@ registerPathIpc(ipcMain);
 
 // --- Hook HTTP server ---
 // Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code
-// fires Stop / UserPromptSubmit hooks. Forwards to renderer as IPC events.
+// fires lifecycle hooks. Forwards compact observations to the renderer's
+// RuntimeTruth reducer; the hook request never blocks on transcript parsing
+// except for the final Stop preview fallback.
 const hookServer = http.createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
 
@@ -1546,7 +1548,7 @@ const hookServer = http.createServer((req, res) => {
     }
     if (parsed.sessionId && sessionManager.getSession(parsed.sessionId)) {
       if (isHook) {
-        const event = req.url.slice('/api/hook/'.length); // 'stop' or 'prompt'
+        const event = req.url.slice('/api/hook/'.length);
         const eventAt = Date.now();
         // Prefer the UserPromptSubmit payload's `prompt` field when present —
         // it's the just-submitted text and doesn't depend on CC having flushed
@@ -1556,7 +1558,7 @@ const hookServer = http.createServer((req, res) => {
         let latestUserMessage = null;
         if (typeof parsed.prompt === 'string' && parsed.prompt.trim()) {
           latestUserMessage = parsed.prompt;
-        } else if (parsed.transcriptPath) {
+        } else if (event === 'stop' && parsed.transcriptPath) {
           latestUserMessage = await readLastUserMessage(parsed.transcriptPath);
         }
         // Feed the Claude transcript tap so the Hub timeline (research/general)
@@ -1589,6 +1591,15 @@ const hookServer = http.createServer((req, res) => {
           claudeSessionId: parsed.claudeSessionId,
           cwd: parsed.cwd,
           latestUserMessage,
+          backgroundTasks: Array.isArray(parsed.backgroundTasks) ? parsed.backgroundTasks : [],
+          sessionCrons: Array.isArray(parsed.sessionCrons) ? parsed.sessionCrons : [],
+          error: parsed.error || null,
+          errorDetails: parsed.errorDetails || null,
+          lastAssistantMessage: parsed.lastAssistantMessage || null,
+          notificationType: parsed.notificationType || null,
+          message: parsed.message || null,
+          title: parsed.title || null,
+          toolName: parsed.toolName || null,
         });
       } else {
         const filtered = claudeUsageFilter.filter(parsed.usage5h, parsed.usage7d);

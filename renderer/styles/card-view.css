@@ -522,9 +522,11 @@
 }
 .mini-jump-status-dot.mini-st-ready    { background: #56d364; }
 .mini-jump-status-dot.mini-st-thinking { background: #f5d76e; animation: mini-st-pulse 1.5s ease-in-out infinite; }
+.mini-jump-status-dot.mini-st-waiting { background: #d29922; }
 .mini-jump-status-dot.mini-st-init     { background: #6e7681; }
 .mini-jump-status-dot.mini-st-dormant  { background: #8b949e; border-radius: 2px; }
 .mini-jump-status-dot.mini-st-error    { background: #f87171; }
+.mini-jump-status-dot.mini-st-unknown  { background: transparent; border: 1px solid #aab2bd; }
 @keyframes mini-st-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }

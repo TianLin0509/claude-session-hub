@@ -7,6 +7,12 @@ const {
   sessionHasCompletedUnread,
   sessionNeedsUserInput,
 } = require('../core/session-attention-state.js');
+const {
+  RUNTIME_FAILED,
+  RUNTIME_DORMANT,
+  getSessionRuntimeTruth,
+  sessionRuntimeIsActive,
+} = require('../core/session-runtime-truth.js');
 const { collectPathCandidates } = require('./path-candidates.js');
 
 const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -50,15 +56,17 @@ function itemTime(item) {
   return Number(item.lastMessageTime || item.updatedAt || item.createdAt || 0);
 }
 
-function runStartedAtOf(session) {
-  return finiteNumber(session && (session.runStartedAt || session.cardWorkingSince)) || 0;
+function runStartedAtOf(session, now = Date.now()) {
+  const runtime = getSessionRuntimeTruth(session, { now });
+  return finiteNumber(runtime.startedAt || session && (session.runStartedAt || session.cardWorkingSince)) || 0;
 }
 
 function makeSessionItem(session, now = Date.now()) {
   const unreadCount = Math.max(0, Number(session.unreadCount || 0));
   const kind = baseKind(session.kind);
-  const running = session.status === 'running' || isGroupChatMemberRunning(session);
-  const runStartedAt = running ? runStartedAtOf(session) : 0;
+  const runtime = getSessionRuntimeTruth(session, { now });
+  const running = sessionRuntimeIsActive(session, { now }) || isGroupChatMemberRunning(session, now);
+  const runStartedAt = running ? runStartedAtOf(session, now) : 0;
   const lastActivityAt = Math.max(itemTime(session), finiteNumber(session._lastOutputTs) || 0);
   const elapsedMs = running && runStartedAt > 0 ? Math.max(0, now - runStartedAt) : null;
   const contextPct = finiteNumber(session.contextPct);
@@ -77,15 +85,19 @@ function makeSessionItem(session, now = Date.now()) {
     runStartedAt,
     elapsedMs,
     longRunning: elapsedMs != null && elapsedMs >= LONG_TASK_MS,
-    status: session.status || 'idle',
-    errorText: String(session.lastError || session.error || session.spawnError || ''),
+    status: runtime.state,
+    runtimeSource: runtime.source || '',
+    runtimeConfidence: runtime.confidence || '',
+    errorText: String(runtime.state === RUNTIME_FAILED && runtime.evidence
+      ? runtime.evidence
+      : session.lastError || session.error || session.spawnError || ''),
     running,
-    waiting: sessionNeedsUserInput(session),
+    waiting: runtime.state === 'waiting' || sessionNeedsUserInput(session),
     completedUnread: sessionHasCompletedUnread(session),
     unreadCount,
     contextPct,
     supportsFork: supportsForkSession(session),
-    dormant: session.status === 'dormant',
+    dormant: runtime.state === RUNTIME_DORMANT,
   };
 }
 
@@ -93,8 +105,11 @@ function makeMeetingItem(meeting, sessionMap, now = Date.now()) {
   const childIds = Array.isArray(meeting.subSessions) ? meeting.subSessions : [];
   const activeChildren = childIds
     .map(id => sessionMap.get(id))
-    .filter(child => child && child.status !== 'dormant');
-  const running = meeting.status === 'running'
+    .filter(child => child && getSessionRuntimeTruth(child, { now }).state !== RUNTIME_DORMANT);
+  const childTruths = activeChildren.map(child => ({ child, truth: getSessionRuntimeTruth(child, { now }) }));
+  const waiting = childTruths.some(item => item.truth.state === 'waiting');
+  const failedChild = childTruths.find(item => item.truth.state === RUNTIME_FAILED) || null;
+  const running = (!meeting.groupChat && meeting.status === 'running')
     || activeChildren.some(child => isGroupChatMemberRunning(child));
   const answered = numberFromUnreadAnswered(meeting.unreadAnswered);
   const unreadCount = Math.max(answered, Number(meeting.unreadCount || 0));
@@ -119,10 +134,11 @@ function makeMeetingItem(meeting, sessionMap, now = Date.now()) {
     runStartedAt,
     elapsedMs,
     longRunning: elapsedMs != null && elapsedMs >= LONG_TASK_MS,
-    status: meeting.status || 'idle',
-    errorText: String(meeting.lastError || meeting.error || ''),
+    status: waiting ? 'waiting' : running ? 'running' : failedChild ? RUNTIME_FAILED : (meeting.status || 'idle'),
+    errorText: String(failedChild && failedChild.truth.evidence
+      || meeting.lastError || meeting.error || ''),
     running,
-    waiting: false,
+    waiting,
     completedUnread: unreadCount > 0,
     unreadCount,
     contextPct: null,
@@ -429,7 +445,7 @@ function buildHomeSnapshot(options = {}) {
   const allSessions = Array.from(sessionMap.values()).filter(Boolean);
   const providerActive = { claude: 0, codex: 0, gemini: 0, deepseek: 0, kimi: 0, powershell: 0 };
   for (const session of allSessions) {
-    if (session.status === 'dormant') continue;
+    if (getSessionRuntimeTruth(session, { now }).state === RUNTIME_DORMANT) continue;
     const kind = baseKind(session.kind);
     if (Object.prototype.hasOwnProperty.call(providerActive, kind)) providerActive[kind] += 1;
   }

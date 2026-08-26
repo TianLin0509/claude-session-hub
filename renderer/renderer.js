@@ -75,6 +75,26 @@ const {
   sessionNeedsUserInput,
 } = require('../core/session-attention-state.js');
 const {
+  RUNTIME_STARTING,
+  RUNTIME_RUNNING,
+  RUNTIME_WAITING,
+  RUNTIME_COMPLETED,
+  RUNTIME_IDLE,
+  RUNTIME_FAILED,
+  RUNTIME_DORMANT,
+  RUNTIME_UNKNOWN,
+  CONFIDENCE_AUTHORITATIVE,
+  CONFIDENCE_STRONG,
+  CONFIDENCE_SEMANTIC,
+  CONFIDENCE_FALLBACK,
+  CONFIDENCE_INFERRED,
+  CONFIDENCE_NONE,
+  applySessionRuntimeObservation,
+  getSessionRuntimeTruth,
+  runtimeTruthSummary,
+  sessionRuntimeIsActive,
+} = require('../core/session-runtime-truth.js');
+const {
   PREVIEW_PATH_RE,
   HUB_IMG_PATH_RE,
   collectPathCandidates,
@@ -125,6 +145,7 @@ const PROMPT_PREFIX_RE = /^[\s│╭─╮╰╯]*[❯›>]\s+/;
 const AI_MARKERS_RE = /[⏺●◉◐◑◒◓◔◕]/;
 // --- State ---
 const sessions = new Map();
+const _runtimeTruthExpiryTimers = new Map();
 let activeSessionId = null;
 let completionNotificationToggle = null;
 let systemResourceUsage = null;
@@ -170,7 +191,8 @@ const AI_PTY_FALLBACK_COOLDOWN_MS = 5 * 1000;
 const PTY_RUNTIME_SUBMIT_PENDING_MS = 15 * 1000;
 
 function isTranscriptCliKind(kind) {
-  return isCodexKind(kind) || isKimiCliKind(kind);
+  const base = String(kind || '').replace(/-resume$/i, '').toLowerCase();
+  return isCodexKind(kind) || isKimiCliKind(kind) || base === 'gemini';
 }
 
 function isLegacyDeepSeekSession(session) {
@@ -1963,7 +1985,14 @@ ipcRenderer.on('turn-aborted-event', (_event, payload) => {
   const transition = applyTurnAborted(session, { abortedAt, turnId });
   if (!transition.applied) return;
   clearCodexCardWorking(hubSessionId);
-  session.status = 'idle';
+  observeSessionRuntime(session, {
+    state: RUNTIME_IDLE,
+    source: 'codex-turn-aborted',
+    confidence: CONFIDENCE_AUTHORITATIVE,
+    observedAt: transition.at,
+    turnId,
+    reason: 'turn-aborted',
+  });
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
   scheduleSessionListRender();
   schedulePersist();
@@ -2326,9 +2355,8 @@ const cardQuestionNavigator = createCardQuestionNavigator({
 cardQuestionNavigator.init();
 
 // === Spec 3 · W15+W16: streaming indicator ===
-// session.status === 'running' 表示 PTY 最近有数据（>200 byte burst within silence window）。
-// 卡片视图下 active session 跑 running 时在 overlay 末尾显示三个跳动的紫色点 + 文案，
-// 让用户瞬间感知"agent 还在干活"，不必盯 PTY 视图。
+// RuntimeTruth 的 starting/running 同时驱动 header、侧栏与卡片内提示；原始 PTY
+// 字节突发只是最低置信度兜底，不能再单独定义“agent 还在干活”。
 //
 // W16 改进：
 // (1) 防 flash 延迟移除：assistant 一轮完成（end_turn）→ 短暂 silence → status=idle，
@@ -2344,7 +2372,7 @@ const _CODEX_CARD_SUBMIT_PENDING_MS = 15 * 1000;
 const _CODEX_CARD_WORK_MAX_MS = 45 * 60 * 1000;
 const _KIMI_BACKGROUND_FINISH_GRACE_MS = 30 * 1000;
 
-function markCodexCardWorking(sessionId, source = 'prompt') {
+function markCodexCardWorking(sessionId, source = 'prompt', runtimeOptions = {}) {
   const session = sessions.get(sessionId);
   if (!session || !isTranscriptCliKind(session.kind) || session.status === 'dormant') return;
   if (_codexSubmitPendingTimers.has(sessionId)) {
@@ -2356,13 +2384,34 @@ function markCodexCardWorking(sessionId, source = 'prompt') {
   } else {
     clearSessionAttention(session);
   }
-  session.cardWorkingSince = Date.now();
+  const observedAt = Number(runtimeOptions.observedAt) || Date.now();
+  const confirmedRunning = source === 'task_started'
+    || source === 'rollout_task_started'
+    || source === 'kimi_background_agent';
+  const runtimeState = confirmedRunning ? RUNTIME_RUNNING : RUNTIME_STARTING;
+  const confidence = source === 'task_started' || source === 'rollout_task_started'
+    ? CONFIDENCE_AUTHORITATIVE
+    : CONFIDENCE_SEMANTIC;
+  session.cardWorkingSince = observedAt;
   if (!session.runStartedAt) session.runStartedAt = session.cardWorkingSince;
   session.cardWorkingSource = source;
-  session.status = 'running';
   session._agentWorking = 'card';
   session._runSource = 'semantic';
-  session._lastOutputTs = Date.now();
+  session._lastOutputTs = observedAt;
+  const provider = isKimiCliKind(session.kind)
+    ? 'kimi'
+    : String(session.kind || '').replace(/-resume$/i, '').toLowerCase() === 'gemini'
+      ? 'gemini'
+      : 'codex';
+  observeSessionRuntime(session, {
+    state: runtimeState,
+    source: `${provider}-${source}`,
+    confidence,
+    observedAt,
+    startedAt: Number(runtimeOptions.startedAt) || session.runStartedAt || observedAt,
+    turnId: runtimeOptions.turnId || null,
+    evidence: runtimeOptions.evidence || null,
+  });
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
   if (source === 'floating_input') {
     const timer = setTimeout(() => {
@@ -2374,7 +2423,13 @@ function markCodexCardWorking(sessionId, source = 'prompt') {
       latest._agentWorking = null;
       latest._runSource = null;
       latest.runStartedAt = null;
-      latest.status = 'idle';
+      observeSessionRuntime(latest, {
+        state: RUNTIME_UNKNOWN,
+        source: 'codex-submit-timeout',
+        confidence: CONFIDENCE_INFERRED,
+        observedAt: Date.now(),
+        reason: 'no-task-started-or-pty-running-evidence',
+      });
       disarmPtyBurstFallback(latest);
       if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
       scheduleSessionListRender();
@@ -2422,7 +2477,7 @@ function onKimiBackgroundWorkEvent(payload) {
   if (phase === 'started') {
     clearKimiBackgroundFinishTimer(hubSessionId);
     session._kimiBackgroundJobs.add(String(jobId));
-    markCodexCardWorking(hubSessionId, 'kimi_background_agent');
+    markCodexCardWorking(hubSessionId, 'kimi_background_agent', { observedAt: Date.now() });
     scheduleSessionListRender();
     schedulePersist();
     return;
@@ -2431,7 +2486,7 @@ function onKimiBackgroundWorkEvent(payload) {
   if (phase !== 'finished') return;
   session._kimiBackgroundJobs.delete(String(jobId));
   if (hasKimiBackgroundWork(session)) {
-    markCodexCardWorking(hubSessionId, 'kimi_background_agent');
+    markCodexCardWorking(hubSessionId, 'kimi_background_agent', { observedAt: Date.now() });
     scheduleSessionListRender();
     return;
   }
@@ -2446,7 +2501,13 @@ function onKimiBackgroundWorkEvent(payload) {
     if (!latest || hasKimiBackgroundWork(latest)) return;
     if (latest.cardWorkingSource !== 'kimi_background_agent') return;
     clearCodexCardWorking(hubSessionId);
-    if (latest.status === 'running') latest.status = 'idle';
+    observeSessionRuntime(latest, {
+      state: RUNTIME_UNKNOWN,
+      source: 'kimi-background-finished-no-turn-complete',
+      confidence: CONFIDENCE_INFERRED,
+      observedAt: Date.now(),
+      reason: 'background-finished-without-authoritative-turn-complete',
+    });
     if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
     scheduleSessionListRender();
     schedulePersist();
@@ -2470,7 +2531,7 @@ function hasSemanticCardWorking(session) {
 
 function isSessionCardWorking(session) {
   if (!session) return false;
-  return session.status === 'running' || hasSemanticCardWorking(session);
+  return sessionRuntimeIsActive(session);
 }
 
 function cardWorkingLabel(session) {
@@ -2524,14 +2585,21 @@ function _updateStreamingIndicator(sessionId) {
     const cardCount = overlay.querySelectorAll('.turn-card[data-turn-id]').length;
     const label = cardWorkingLabel(sess);
     const pendingSubmit = sess && sess.cardWorkingSource === 'floating_input';
-    indicator.title = pendingSubmit
+    const runtimeTruth = getSessionRuntimeTruth(sess);
+    const starting = runtimeTruth.state === RUNTIME_STARTING;
+    indicator.title = pendingSubmit || starting
       ? `${label} 正在接收输入…`
       : (cardCount === 0 ? `${label} 正在工作…` : `${label} 仍在工作，可能还会更新卡片`);
     indicator.setAttribute('aria-label', indicator.title);
     indicator.dataset.label = cardCount === 0
-      ? (pendingSubmit ? `${label} 接收任务中` : `${label} 工作中`)
-      : (pendingSubmit ? '接收任务中' : '工作中');
+      ? (pendingSubmit || starting ? `${label} 启动中` : `${label} 工作中`)
+      : (pendingSubmit || starting ? '启动中' : '工作中');
   } else if (!isRunning && indicator) {
+    const runtimeTruth = getSessionRuntimeTruth(sess);
+    if ([RUNTIME_WAITING, RUNTIME_COMPLETED, RUNTIME_FAILED, RUNTIME_DORMANT].includes(runtimeTruth.state)) {
+      indicator.remove();
+      return;
+    }
     // 延迟 1.5s 移除（防 silence gap 闪烁）
     const timer = setTimeout(() => {
       _w16RemoveTimers.delete(sessionId);
@@ -2589,6 +2657,47 @@ function applyViewMode(mode) {
     _updateStreamingIndicator(activeSessionId);
   }
   updateFloatingBarState();
+}
+
+function clearRuntimeTruthExpiryTimer(sessionId) {
+  const timer = _runtimeTruthExpiryTimers.get(sessionId);
+  if (!timer) return;
+  clearTimeout(timer);
+  _runtimeTruthExpiryTimers.delete(sessionId);
+}
+
+function observeSessionRuntime(sessionOrId, observation, options = {}) {
+  const session = typeof sessionOrId === 'string' ? sessions.get(sessionOrId) : sessionOrId;
+  if (!session) return { applied: false, reason: 'missing-session' };
+  const result = applySessionRuntimeObservation(session, observation, options);
+  if (!result.applied) return result;
+  clearRuntimeTruthExpiryTimer(session.id);
+  if (!result.truth || !result.truth.expiresAt) return result;
+  const sequence = result.truth.sequence;
+  const delay = Math.max(0, result.truth.expiresAt - Date.now() + 5);
+  const timer = setTimeout(() => {
+    _runtimeTruthExpiryTimers.delete(session.id);
+    const latest = sessions.get(session.id);
+    if (!latest || latest !== session || !latest.runtimeTruth || latest.runtimeTruth.sequence !== sequence) return;
+    if (Date.now() < Number(latest.runtimeTruth.expiresAt || 0)) return;
+    const expiredSource = latest.runtimeTruth.source || 'runtime-observation';
+    latest._agentWorking = null;
+    latest._runSource = null;
+    latest.cardWorkingSince = null;
+    latest.cardWorkingSource = null;
+    latest.runStartedAt = null;
+    applySessionRuntimeObservation(latest, {
+      state: RUNTIME_UNKNOWN,
+      source: `expired:${expiredSource}`,
+      confidence: CONFIDENCE_NONE,
+      observedAt: Date.now(),
+      reason: 'observation-expired',
+    });
+    if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(latest.id);
+    scheduleSessionListRender();
+  }, delay);
+  _runtimeTruthExpiryTimers.set(session.id, timer);
+  return result;
 }
 
 function recoverVisibleActiveTerminalSurface() {
@@ -3137,14 +3246,13 @@ function updateFloatingBarState() {
   const stop = bar.querySelector('.floating-input-stop');
   if (stop) {
     const aiSession = isAiRuntimeSession(s);
-    const authoritativeAiWork = s._runSource === 'semantic'
-      || s._runSource === 'pty-semantic'
-      || s._agentWorking === 'hook'
-      || s._agentWorking === 'card'
-      || s.gcWorking === true;
+    const runtimeTruth = getSessionRuntimeTruth(s);
+    const activeRuntime = runtimeTruth.state === RUNTIME_STARTING || runtimeTruth.state === RUNTIME_RUNNING;
+    const authoritativeAiWork = [CONFIDENCE_AUTHORITATIVE, CONFIDENCE_STRONG, CONFIDENCE_SEMANTIC]
+      .includes(runtimeTruth.confidence);
     // PTY byte bursts remain a useful status fallback, but are not strong
     // enough evidence to expose a destructive Ctrl+C button for an AI session.
-    stop.classList.toggle('visible', s.status === 'running' && (!aiSession || authoritativeAiWork));
+    stop.classList.toggle('visible', activeRuntime && (!aiSession || authoritativeAiWork));
   }
 }
 
@@ -3162,19 +3270,46 @@ function sweepStaleRunning() {
   for (const s of sessions.values()) {
     if (s.status === 'running' && (s._runSource === 'semantic' || s._runSource === 'pty-semantic')) {
       if (s._agentWorking === 'card' && !hasSemanticCardWorking(s)) {
-        s.status = 'idle';
-        s._runSource = null;
-        s._agentWorking = null;
+        const truth = getSessionRuntimeTruth(s, { now });
+        const freshStrongPty = truth.state === RUNTIME_RUNNING
+          && truth.confidence === CONFIDENCE_STRONG
+          && now - Number(truth.observedAt || 0) <= 10 * 1000;
+        if (freshStrongPty) {
+          s._runSource = 'pty-semantic';
+          s._agentWorking = 'pty';
+        } else {
+          s._runSource = null;
+          s._agentWorking = null;
+          observeSessionRuntime(s, {
+            state: RUNTIME_UNKNOWN,
+            source: 'stale-card-runtime',
+            confidence: CONFIDENCE_INFERRED,
+            observedAt: now,
+            reason: 'missing-turn-complete',
+          });
+        }
         dirty = true;
       } else if (s._agentWorking === 'hook' && s._lastOutputTs && now - s._lastOutputTs > 45 * 60 * 1000) {
-        s.status = 'idle';
         s._runSource = null;
         s._agentWorking = null;
+        observeSessionRuntime(s, {
+          state: RUNTIME_UNKNOWN,
+          source: 'stale-claude-hook-runtime',
+          confidence: CONFIDENCE_INFERRED,
+          observedAt: now,
+          reason: 'missing-stop-or-pty-evidence',
+        });
         dirty = true;
       } else if (s._agentWorking === 'pty' && s._lastOutputTs && now - s._lastOutputTs > 45 * 60 * 1000) {
-        s.status = 'idle';
         s._runSource = null;
         s._agentWorking = null;
+        observeSessionRuntime(s, {
+          state: RUNTIME_UNKNOWN,
+          source: 'stale-pty-runtime',
+          confidence: CONFIDENCE_INFERRED,
+          observedAt: now,
+          reason: 'no-current-runtime-evidence',
+        });
         dirty = true;
       }
     }
@@ -3827,7 +3962,7 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
   if (!isClaudeRuntimeSession(session) && !isCodexKind(session.kind)) return false;
 
   const at = Number(observedAt) || Date.now();
-  const wasRunning = session.status === 'running';
+  const wasRunning = sessionRuntimeIsActive(session, { now: at }) || session.status === 'running';
   const fallbackArmed = canUsePtyBurstFallback(session, at);
   let changed = false;
 
@@ -3846,10 +3981,6 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
     session._ptyRuntimeReason = runtime.reason || null;
     session._ptyRuntimeEvidence = runtime.evidence || null;
     session._ptyRuntimeObservedAt = at;
-    if (!wasRunning) {
-      session.status = 'running';
-      changed = true;
-    }
     if (!session.runStartedAt) {
       session.runStartedAt = at;
       changed = true;
@@ -3862,12 +3993,27 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
       session._agentWorking = 'pty';
       changed = true;
     }
+    if (sessionNeedsUserInput(session)) clearSessionAttention(session);
     session._lastOutputTs = at;
+    const transition = observeSessionRuntime(session, {
+      state: RUNTIME_RUNNING,
+      source: `pty-${runtime.reason || 'active-frame'}`,
+      confidence: CONFIDENCE_STRONG,
+      observedAt: at,
+      startedAt: session.runStartedAt || at,
+      evidence: runtime.evidence || null,
+    });
+    if (transition.applied) changed = true;
   } else if (runtime.state === 'idle' || runtime.state === 'waiting') {
     // An input-ready frame is the missing-completion escape hatch. It does not
     // fabricate transcript text or unread counts; a delayed authoritative Stop
     // hook/task_complete can still enrich the card afterwards.
     if (!wasRunning) return false;
+    if (runtime.state === 'idle'
+        && Array.isArray(session._claudeBackgroundTasks)
+        && session._claudeBackgroundTasks.length > 0) {
+      return false;
+    }
     const runStartedAt = Number(session.runStartedAt) || Number(session._ptyFallbackArmedAt) || 0;
     if (runtime.state === 'idle'
         && !session._ptyRuntimeSawRunning
@@ -3879,7 +4025,6 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
       session.lastRunDurationMs = at - runStartedAt;
     }
     session.runStartedAt = null;
-    session.status = 'idle';
     if (runtime.state === 'waiting') {
       // A live confirmation overlay is stronger than transcript silence: the
       // provider has stopped generating and is explicitly blocked on the user.
@@ -3889,6 +4034,8 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
         reason: runtime.reason || 'pty-interactive-confirmation',
         text: runtime.evidence || null,
       });
+    } else if (sessionNeedsUserInput(session)) {
+      clearSessionAttention(session);
     }
     if (isCodexKind(session.kind)) {
       clearCodexCardWorking(session.id);
@@ -3897,7 +4044,17 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
       session._runSource = null;
       disarmPtyBurstFallback(session, at);
     }
-    changed = true;
+    const transition = observeSessionRuntime(session, {
+      state: runtime.state === 'waiting' ? RUNTIME_WAITING : RUNTIME_COMPLETED,
+      source: `pty-${runtime.reason || runtime.state}`,
+      confidence: CONFIDENCE_STRONG,
+      observedAt: at,
+      startedAt: runStartedAt,
+      completedAt: runtime.state === 'idle' ? at : 0,
+      reason: runtime.reason || null,
+      evidence: runtime.evidence || null,
+    });
+    if (transition.applied) changed = true;
   }
 
   if (!changed) return false;
@@ -3930,13 +4087,61 @@ const terminalActivityMonitor = createTerminalActivityMonitor({
   // UserPromptSubmit hook, Claude could work for minutes while status stayed
   // idle because its PTY bytes were permanently ignored. The fallback below
   // remains available, but only after an explicit local prompt arms it.
-  hasSemanticWorking: (s) => !!(s && (
-    (isClaudeRuntimeSession(s) && s._agentWorking === 'hook' && s.status === 'running')
-    || (isTranscriptCliKind(s.kind) && hasSemanticCardWorking(s))
-    || (s._runSource === 'pty-semantic' && s._agentWorking === 'pty' && s.status === 'running')
-  )),
+  hasSemanticWorking: (s) => {
+    if (!s) return false;
+    const truth = getSessionRuntimeTruth(s);
+    if (truth.state !== RUNTIME_RUNNING) return false;
+    return (isClaudeRuntimeSession(s) && s._agentWorking === 'hook')
+      || (isTranscriptCliKind(s.kind) && hasSemanticCardWorking(s))
+      || (s._runSource === 'pty-semantic' && s._agentWorking === 'pty');
+  },
+  needsPtyBurstUpgrade: (s) => {
+    const state = getSessionRuntimeTruth(s).state;
+    return state === RUNTIME_STARTING || state === RUNTIME_UNKNOWN;
+  },
   canUsePtyBurstFallback,
-  onPtyBurstSettled: (session, settledAt) => disarmPtyBurstFallback(session, settledAt),
+  onPtyBurstStarted: (session, observedAt) => {
+    const previousTruth = getSessionRuntimeTruth(session, { now: observedAt });
+    const semanticUpgrade = isTranscriptCliKind(session.kind)
+      && (previousTruth.state === RUNTIME_STARTING || previousTruth.state === RUNTIME_UNKNOWN);
+    const provider = String(session.kind || 'terminal').replace(/-resume$/i, '').toLowerCase();
+    observeSessionRuntime(session, {
+      state: RUNTIME_RUNNING,
+      source: semanticUpgrade ? `${provider}-pty-output-after-submit` : 'pty-byte-burst',
+      confidence: semanticUpgrade ? CONFIDENCE_SEMANTIC : CONFIDENCE_FALLBACK,
+      observedAt,
+      startedAt: session.runStartedAt || session._ptyFallbackArmedAt || observedAt,
+      expiresAt: semanticUpgrade ? observedAt + _CODEX_CARD_WORK_MAX_MS : 0,
+      evidence: `${session.kind || 'terminal'} PTY output burst`,
+    });
+  },
+  onPtyBurstSettled: (session, settledAt) => {
+    disarmPtyBurstFallback(session, settledAt);
+    const currentTruth = getSessionRuntimeTruth(session, { now: settledAt });
+    if (String(currentTruth.source || '').endsWith('-pty-output-after-submit')) {
+      // Silence is not completion for transcript-backed agents. Keep the
+      // semantic turn alive until task_complete/Stop, a strong input-ready
+      // frame, or the long missing-completion expiry.
+      session.status = 'running';
+      return;
+    }
+    observeSessionRuntime(session, {
+      state: RUNTIME_IDLE,
+      source: 'pty-byte-quiet',
+      confidence: CONFIDENCE_FALLBACK,
+      observedAt: settledAt,
+      reason: 'burst-silence-window',
+    });
+  },
+  onSemanticWorkExpired: (session, observedAt) => {
+    observeSessionRuntime(session, {
+      state: RUNTIME_UNKNOWN,
+      source: 'semantic-work-expired',
+      confidence: CONFIDENCE_INFERRED,
+      observedAt,
+      reason: 'missing-authoritative-completion',
+    });
+  },
   classifyRuntimeState: classifySessionRuntimeFrame,
   onRuntimeState: applyPtyRuntimeObservation,
   canObserveRuntimeState: (session) => isClaudeRuntimeSession(session) || !!(session && isCodexKind(session.kind)),
@@ -4458,7 +4663,24 @@ window.addEventListener('workspace-archive-suggestion', (event) => {
 //   Immediately flag the session as running — faster & more precise than
 //   the 200-byte PTY heuristic.
 // - 'stop' (Stop): fires when the agent loop finishes. Triggers unread/time bump.
-ipcRenderer.on('hook-event', (_e, { event, eventAt, sessionId, claudeSessionId, cwd, latestUserMessage }) => {
+ipcRenderer.on('hook-event', (_e, payload = {}) => {
+  const {
+    event,
+    eventAt,
+    sessionId,
+    claudeSessionId,
+    cwd,
+    latestUserMessage,
+    backgroundTasks,
+    sessionCrons,
+    error,
+    errorDetails,
+    lastAssistantMessage,
+    notificationType,
+    message,
+    title,
+    toolName,
+  } = payload;
   const s = sessions.get(sessionId);
   if (s) {
     // Persist CC session id + cwd the first time we learn them so resumes work.
@@ -4496,11 +4718,15 @@ ipcRenderer.on('hook-event', (_e, { event, eventAt, sessionId, claudeSessionId, 
     }
   }
   if (event === 'stop') {
-    onReplyCompleteFromHook(sessionId, eventAt);
+    const outcome = onReplyCompleteFromHook(sessionId, eventAt, {
+      backgroundTasks,
+      sessionCrons,
+      lastAssistantMessage,
+    });
     // Flush any queued /rename now that Claude is idle. Small delay so the
     // prompt fully re-renders before we inject the command.
     const s = sessions.get(sessionId);
-    if (s && s._pendingRename) {
+    if (outcome && outcome.completed && s && s._pendingRename) {
       const pending = s._pendingRename;
       s._pendingRename = null;
       setTimeout(() => {
@@ -4512,6 +4738,20 @@ ipcRenderer.on('hook-event', (_e, { event, eventAt, sessionId, claudeSessionId, 
     if (cached && cached._minimap) cached._minimap.invalidate();
   }
   else if (event === 'prompt') onPromptSubmittedFromHook(sessionId, eventAt);
+  else if (event === 'stop-failure') onClaudeStopFailure(sessionId, eventAt, {
+    error,
+    errorDetails,
+    lastAssistantMessage,
+  });
+  else if (event === 'permission-request') onClaudeNeedsInput(sessionId, eventAt, {
+    reason: 'claude-permission-request',
+    text: toolName ? `等待授权：${toolName}` : 'Claude Code 等待权限确认',
+  });
+  else if (event === 'notification') onClaudeNotification(sessionId, eventAt, {
+    notificationType,
+    message,
+    title,
+  });
 });
 
 function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
@@ -4524,6 +4764,16 @@ function onPromptSubmittedFromHook(sessionId, submittedAt = Date.now()) {
   session._agentWorking = 'hook';
   session._runSource = 'semantic';
   session._lastOutputTs = transition.at;
+  session.lastError = null;
+  session._claudeBackgroundTasks = [];
+  observeSessionRuntime(session, {
+    state: RUNTIME_STARTING,
+    source: 'claude-user-prompt-submit',
+    confidence: CONFIDENCE_SEMANTIC,
+    observedAt: transition.at,
+    startedAt: transition.at,
+  });
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
   scheduleSessionListRender();
 }
 
@@ -4565,7 +4815,7 @@ function onReplyCompleteFromTranscriptEvent(payload) {
     clearKimiBackgroundFinishTimer(hubSessionId);
   }
 
-  const preview = buildReplyReadyPreview(text);
+  const preview = buildReplyReadyPreview(text, `${cardWorkingLabel(session)} 回复完成，等你继续`);
   const sig = `${turnId || ''}:${completedAt || ''}:${preview}`;
   if (session._lastTranscriptReadySig === sig) return;
   const isActive = hubSessionId === activeSessionId;
@@ -4583,25 +4833,41 @@ function onReplyCompleteFromTranscriptEvent(payload) {
   session._lastTranscriptReadySig = sig;
   session.lastMessageTime = transition.at;
   recordSessionArtifacts(session, text || preview, transition.at);
+  if (backgroundActive) {
+    markCodexCardWorking(hubSessionId, 'kimi_background_agent', {
+      observedAt: transition.at,
+      startedAt: session.runStartedAt || transition.at,
+      turnId,
+    });
+  } else {
+    clearCodexCardWorking(hubSessionId);
+    observeSessionRuntime(session, {
+      state: RUNTIME_COMPLETED,
+      source: `${isKimiCliKind(session.kind)
+        ? 'kimi'
+        : String(session.kind || '').replace(/-resume$/i, '').toLowerCase() === 'gemini'
+          ? 'gemini'
+          : 'codex'}-turn-complete`,
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt: transition.at,
+      completedAt: transition.at,
+      startedAt: session.lastRunStartedAt || 0,
+      turnId,
+      evidence: preview,
+    });
+  }
 
   // 与 onPromptSubmittedFromTranscriptEvent 的开工标记配对：群聊成员干完活要收尾，
   // 否则状态灯会一直卡在运行中，只能等 45 分钟的 maxAge 兜底。群聊的未读仍由
   // meeting-room 管理；这里只用同一有序 reducer 防旧 completion 覆盖新 prompt。
   if (meetingId) {
-    if (backgroundActive) markCodexCardWorking(hubSessionId, 'kimi_background_agent');
-    else clearCodexCardWorking(hubSessionId);
     if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
     scheduleSessionListRender();
     schedulePersist();
     return;
   }
 
-  if (!backgroundActive) clearCodexCardWorking(hubSessionId);
   session.lastOutputPreview = preview;
-  if (backgroundActive) {
-    session.status = 'running';
-    markCodexCardWorking(hubSessionId, 'kimi_background_agent');
-  }
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
   scheduleSessionListRender();
   schedulePersist();
@@ -4619,6 +4885,7 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
   const transition = applyPromptSubmitted(session, { submittedAt, turnId });
   if (!transition.applied) return;
   armPtyBurstFallback(hubSessionId, transition.at);
+  session.lastError = null;
 
   // 2026-07-28 用户反馈：群聊里直接点进 Codex 的 CLI 布置任务，Codex 明明在跑，
   //   状态灯却一直是绿色（就绪），群聊也进不了侧栏的"运行中"分区。
@@ -4632,7 +4899,11 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
     : 'rollout_user_message';
 
   if (meetingId) {
-    markCodexCardWorking(hubSessionId, workingSource);
+    markCodexCardWorking(hubSessionId, workingSource, {
+      observedAt: transition.at,
+      startedAt: transition.at,
+      turnId,
+    });
     scheduleSessionListRender();
     return;
   }
@@ -4646,7 +4917,12 @@ function onPromptSubmittedFromTranscriptEvent(payload) {
     session.lastOutputPreview = preview;
     session._previewFromTranscript = true;
   }
-  markCodexCardWorking(hubSessionId, workingSource);
+  markCodexCardWorking(hubSessionId, workingSource, {
+    observedAt: transition.at,
+    startedAt: transition.at,
+    turnId,
+    evidence: preview || null,
+  });
   session.lastMessageTime = transition.at;
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
   scheduleSessionListRender();
@@ -4687,15 +4963,23 @@ function renderHookStatus() {
   }
 }
 
-function onReplyCompleteFromHook(sessionId, completedAt = Date.now()) {
+function activeClaudeBackgroundTasks(tasks) {
+  if (!Array.isArray(tasks)) return [];
+  return tasks.filter((task) => {
+    const status = String(task && task.status || '').toLowerCase();
+    return task && !['completed', 'complete', 'done', 'failed', 'error', 'cancelled', 'canceled', 'stopped'].includes(status);
+  });
+}
+
+function onReplyCompleteFromHook(sessionId, completedAt = Date.now(), options = {}) {
   const session = sessions.get(sessionId);
-  if (!session) return;
-  if (session.status === 'dormant') return;
+  if (!session) return null;
+  if (session.status === 'dormant') return null;
 
   // v0.13 · P1 #5: Stop hook 500ms 去重窗口。CC 在 agent 子任务 / streaming
   // 抖动场景下偶尔会发两次 Stop，无去重导致 unread 计数加倍。
   const now = Date.now();
-  if (session._lastStopHookTs && now - session._lastStopHookTs < 500) return;
+  if (session._lastStopHookTs && now - session._lastStopHookTs < 500) return null;
 
   // Fallback preview from xterm buffer — only matters when hook didn't supply
   // a transcript-sourced preview (very rare). Primary preview is written by
@@ -4717,27 +5001,204 @@ function onReplyCompleteFromHook(sessionId, completedAt = Date.now()) {
   const focusOk = document.hasFocus() || (Date.now() - _lastWindowFocusAt < 500);
   const seenByUser = isActive && focusOk;
   const preview = buildReplyReadyPreview(
-    w.text || session.lastOutputPreview,
+    options.lastAssistantMessage || w.text || session.lastOutputPreview,
     'Claude 回复完成，等你继续',
   );
+  const backgroundTasks = activeClaudeBackgroundTasks(options.backgroundTasks);
+  const needsInput = !!w.waiting;
+  const backgroundActive = backgroundTasks.length > 0 && !needsInput;
+  let liveRuntime = null;
+  try {
+    liveRuntime = terminalActivityMonitor
+      ? classifySessionRuntimeFrame(session, terminalActivityMonitor.extractLiveScreenLines(sessionId))
+      : null;
+  } catch {}
+  // Stop fires while Claude is still executing Stop hooks. If the current PTY
+  // frame says “running stop hooks…”, that live strong evidence must beat the
+  // foreground-response completion until the input-ready frame appears.
+  const stopHooksActive = !needsInput && !backgroundActive
+    && liveRuntime && liveRuntime.state === 'running';
+  const keepRuntimeActive = backgroundActive || stopHooksActive;
   const transition = applyReplyCompleted(session, {
     completedAt,
     text: preview,
     seenByUser,
-    needsUserInput: !!w.waiting,
+    needsUserInput: needsInput,
     reason: w.reason,
+    keepRunning: keepRuntimeActive,
   });
-  if (!transition.applied) return;
+  if (!transition.applied) return null;
   session._lastStopHookTs = now;
-  recordSessionArtifacts(session, w.text || session.lastOutputPreview || preview, transition.at);
+  session._claudeBackgroundTasks = backgroundTasks;
+  session._claudeSessionCrons = Array.isArray(options.sessionCrons) ? options.sessionCrons.slice(0, 20) : [];
+  recordSessionArtifacts(session, options.lastAssistantMessage || w.text || session.lastOutputPreview || preview, transition.at);
 
-  // 2026-07-20 道雪：stop hook = claude 语义工作结束，与 prompt hook 配对。
-  session._agentWorking = null;
-  session._runSource = null;
-  disarmPtyBurstFallback(session, transition.at);
+  if (needsInput) {
+    session._agentWorking = null;
+    session._runSource = null;
+    disarmPtyBurstFallback(session, transition.at);
+    observeSessionRuntime(session, {
+      state: RUNTIME_WAITING,
+      source: 'claude-stop-needs-input',
+      confidence: CONFIDENCE_STRONG,
+      observedAt: transition.at,
+      startedAt: session.lastRunStartedAt || 0,
+      reason: w.reason || 'question',
+      evidence: w.text || preview,
+    });
+  } else if (backgroundActive) {
+    session._agentWorking = 'hook';
+    session._runSource = 'semantic';
+    observeSessionRuntime(session, {
+      state: RUNTIME_RUNNING,
+      source: 'claude-background-tasks',
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt: transition.at,
+      startedAt: session.runStartedAt || session.lastRunStartedAt || transition.at,
+      evidence: backgroundTasks.map(task => task.description || task.type || task.id).filter(Boolean).join('；'),
+    });
+  } else if (stopHooksActive) {
+    session._agentWorking = 'pty';
+    session._runSource = 'pty-semantic';
+    observeSessionRuntime(session, {
+      state: RUNTIME_RUNNING,
+      source: `pty-${liveRuntime.reason || 'claude-stop-hooks'}`,
+      confidence: CONFIDENCE_STRONG,
+      observedAt: transition.at,
+      startedAt: session.runStartedAt || session.lastRunStartedAt || transition.at,
+      evidence: liveRuntime.evidence || 'Claude Code is still running Stop hooks',
+    });
+  } else {
+    // Official Stop is the authoritative end of the foreground turn.
+    session._agentWorking = null;
+    session._runSource = null;
+    disarmPtyBurstFallback(session, transition.at);
+    observeSessionRuntime(session, {
+      state: RUNTIME_COMPLETED,
+      source: 'claude-stop',
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt: transition.at,
+      completedAt: transition.at,
+      startedAt: session.lastRunStartedAt || 0,
+      evidence: preview,
+    });
+  }
   session.lastMessageTime = transition.at;
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
   scheduleSessionListRender();
   schedulePersist();
+  return {
+    completed: !needsInput && !backgroundActive && !stopHooksActive,
+    waiting: needsInput,
+    backgroundActive,
+    stopHooksActive,
+  };
+}
+
+function onClaudeNeedsInput(sessionId, observedAt = Date.now(), options = {}) {
+  const session = sessions.get(sessionId);
+  if (!session || session.status === 'dormant') return false;
+  markSessionNeedsUserInput(session, {
+    reason: options.reason || 'claude-needs-input',
+    text: options.text || null,
+  });
+  session._agentWorking = null;
+  session._runSource = null;
+  const transition = observeSessionRuntime(session, {
+    state: RUNTIME_WAITING,
+    source: options.reason || 'claude-needs-input',
+    confidence: CONFIDENCE_AUTHORITATIVE,
+    observedAt,
+    startedAt: session.runStartedAt || 0,
+    reason: options.reason || null,
+    evidence: options.text || null,
+  });
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
+  scheduleSessionListRender();
+  schedulePersist();
+  return transition.applied;
+}
+
+function onClaudeStopFailure(sessionId, observedAt = Date.now(), options = {}) {
+  const session = sessions.get(sessionId);
+  if (!session || session.status === 'dormant') return false;
+  const at = Number(observedAt) || Date.now();
+  const runStartedAt = Number(session.runStartedAt) || 0;
+  if (runStartedAt > 0 && at >= runStartedAt) {
+    session.lastRunStartedAt = runStartedAt;
+    session.lastRunDurationMs = at - runStartedAt;
+  }
+  session.runStartedAt = null;
+  session._agentWorking = null;
+  session._runSource = null;
+  session._claudeBackgroundTasks = [];
+  clearSessionAttention(session);
+  disarmPtyBurstFallback(session, at);
+  const detail = String(options.errorDetails || options.lastAssistantMessage || options.error || 'Claude Code turn failed');
+  session.lastError = detail.slice(0, 1000);
+  session.lastMessageTime = at;
+  const transition = observeSessionRuntime(session, {
+    state: RUNTIME_FAILED,
+    source: 'claude-stop-failure',
+    confidence: CONFIDENCE_AUTHORITATIVE,
+    observedAt: at,
+    startedAt: runStartedAt,
+    completedAt: at,
+    reason: options.error || 'unknown',
+    evidence: detail,
+  });
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(sessionId);
+  scheduleSessionListRender();
+  schedulePersist();
+  return transition.applied;
+}
+
+function onClaudeNotification(sessionId, observedAt = Date.now(), options = {}) {
+  const type = String(options.notificationType || '');
+  const text = [options.title, options.message].filter(Boolean).join('：') || type;
+  if (['permission_prompt', 'agent_needs_input', 'elicitation_dialog', 'elicitation_url_dialog', 'quota_auto_resume_stale'].includes(type)) {
+    return onClaudeNeedsInput(sessionId, observedAt, {
+      reason: `claude-notification-${type}`,
+      text,
+    });
+  }
+  const session = sessions.get(sessionId);
+  if (!session || session.status === 'dormant') return false;
+  if (type === 'agent_completed' && Array.isArray(session._claudeBackgroundTasks)
+      && session._claudeBackgroundTasks.length > 0) {
+    session._claudeBackgroundTasks = [];
+    return !!onReplyCompleteFromHook(sessionId, observedAt, {
+      backgroundTasks: [],
+      lastAssistantMessage: options.message || 'Claude 后台任务已完成',
+    });
+  }
+  if (type === 'quota_auto_resume_fired') {
+    clearSessionAttention(session);
+    session._agentWorking = 'hook';
+    session._runSource = 'semantic';
+    const transition = observeSessionRuntime(session, {
+      state: RUNTIME_STARTING,
+      source: 'claude-quota-auto-resume',
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt,
+      startedAt: observedAt,
+      evidence: text,
+    });
+    scheduleSessionListRender();
+    return transition.applied;
+  }
+  if (type === 'quota_auto_resume_disabled') {
+    const transition = observeSessionRuntime(session, {
+      state: RUNTIME_IDLE,
+      source: 'claude-quota-auto-resume-disabled',
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt,
+      evidence: text,
+    });
+    scheduleSessionListRender();
+    return transition.applied;
+  }
+  return false;
 }
 
 // --- Keyboard shortcuts ---
@@ -4983,6 +5444,15 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   } else {
     sessions.set(session.id, session);
   }
+  const createdRuntimeSession = sessions.get(session.id);
+  if (createdRuntimeSession) {
+    observeSessionRuntime(createdRuntimeSession, {
+      state: RUNTIME_IDLE,
+      source: wasDormant ? 'session-resumed' : 'session-created',
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt: Date.now(),
+    });
+  }
   // 原生投研 PTY 由初心投研面板内嵌挂载；不抢占主终端，也不进入左栏。
   if (session.purpose === 'chuxin-research') {
     scheduleSessionListRender();
@@ -5099,6 +5569,13 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
     _agentWorking: false,
     gcWorking: false,
   });
+  observeSessionRuntime(local, {
+    state: RUNTIME_DORMANT,
+    source: 'session-suspended',
+    confidence: CONFIDENCE_AUTHORITATIVE,
+    observedAt: Date.now(),
+  }, { mirrorLegacy: false });
+  clearRuntimeTruthExpiryTimer(sessionId);
   clearTerminalActivitySession(sessionId);
   disposeCachedTerminal(sessionId);
   if (activeSessionId === sessionId) {
@@ -5154,6 +5631,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     _w16RemoveTimers.delete(sessionId);
   }
   sessions.delete(sessionId);
+  clearRuntimeTruthExpiryTimer(sessionId);
   clearTerminalActivitySession(sessionId);
   disposeCachedTerminal(sessionId);
   if (activeSessionId === sessionId) {
@@ -5559,7 +6037,7 @@ for (const ch of ['session-created', 'session-closed', 'session-suspended', 'ses
 // --- Meeting Room IPC events ---
 const _groupChatWorkingExpiryTimers = new Map();
 
-function _setGroupChatMemberWorking(session, working, now = Date.now()) {
+function _setGroupChatMemberWorking(session, working, now = Date.now(), runtimeOptions = {}) {
   if (!session) return false;
   const sid = String(session.id || '');
   const oldTimer = _groupChatWorkingExpiryTimers.get(sid);
@@ -5570,11 +6048,34 @@ function _setGroupChatMemberWorking(session, working, now = Date.now()) {
   if (!working) {
     session.gcWorking = false;
     session._gcWorkingLastTs = null;
+    const truth = getSessionRuntimeTruth(session, { now });
+    if (String(truth.source || '').startsWith('groupchat-')) {
+      observeSessionRuntime(session, {
+        state: RUNTIME_COMPLETED,
+        source: 'groupchat-watcher-complete',
+        confidence: CONFIDENCE_STRONG,
+        observedAt: now,
+        completedAt: now,
+        startedAt: truth.startedAt || 0,
+        turnId: truth.turnId || runtimeOptions.turnId || null,
+      });
+    }
     return wasRunning !== isGroupChatMemberRunning(session, now);
   }
 
   session.gcWorking = true;
   session._gcWorkingLastTs = now;
+  const currentTruth = getSessionRuntimeTruth(session, { now });
+  const currentActive = currentTruth.state === RUNTIME_STARTING || currentTruth.state === RUNTIME_RUNNING;
+  observeSessionRuntime(session, {
+    state: RUNTIME_RUNNING,
+    source: 'groupchat-watcher-heartbeat',
+    confidence: CONFIDENCE_SEMANTIC,
+    observedAt: now,
+    startedAt: currentActive ? (currentTruth.startedAt || session.runStartedAt || now) : now,
+    expiresAt: now + GC_WORKING_FRESH_MS + 50,
+    turnId: runtimeOptions.turnId || null,
+  });
   const heartbeatTs = now;
   const timer = setTimeout(() => {
     _groupChatWorkingExpiryTimers.delete(sid);
@@ -5582,6 +6083,16 @@ function _setGroupChatMemberWorking(session, working, now = Date.now()) {
     const beforeExpiry = isGroupChatMemberRunning(session, heartbeatTs);
     session.gcWorking = false;
     session._gcWorkingLastTs = null;
+    const truth = getSessionRuntimeTruth(session, { now: Date.now() });
+    if (String(truth.source || '').startsWith('groupchat-')) {
+      observeSessionRuntime(session, {
+        state: RUNTIME_UNKNOWN,
+        source: 'groupchat-watcher-expired',
+        confidence: CONFIDENCE_INFERRED,
+        observedAt: Date.now(),
+        reason: 'missing-groupchat-terminal-event',
+      });
+    }
     if (beforeExpiry !== isGroupChatMemberRunning(session, Date.now())) {
       scheduleSessionListRender();
     }
@@ -5608,7 +6119,7 @@ ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
 
 // 调度器在 prompt 真正发出后立刻公布本轮目标。先据此点亮目标成员，避免等到
 // 第一段 streaming 心跳才显示运行中；没被点名的成员同时清掉上一轮残留。
-ipcRenderer.on('groupchat-turn-targets', (_event, { meetingId, sids }) => {
+ipcRenderer.on('groupchat-turn-targets', (_event, { meetingId, turnNum, sids }) => {
   if (!meetingId || !Array.isArray(sids)) return;
   const meeting = meetings[meetingId];
   const targetSids = new Set(sids.map(String));
@@ -5619,7 +6130,7 @@ ipcRenderer.on('groupchat-turn-targets', (_event, { meetingId, sids }) => {
   let dirty = false;
   for (const sid of memberSids) {
     const sub = sessions.get(sid);
-    if (sub) dirty = _setGroupChatMemberWorking(sub, targetSids.has(sid)) || dirty;
+    if (sub) dirty = _setGroupChatMemberWorking(sub, targetSids.has(sid), Date.now(), { turnId: turnNum != null ? String(turnNum) : null }) || dirty;
   }
   if (dirty) scheduleSessionListRender();
 });
@@ -5636,7 +6147,7 @@ ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, s
   const sub = sessions.get(sid);
   if (sub) {
     const nextWorking = status === 'streaming' || status === 'thinking' || status === 'soft_alert';
-    if (_setGroupChatMemberWorking(sub, nextWorking)) scheduleSessionListRender();
+    if (_setGroupChatMemberWorking(sub, nextWorking, Date.now(), { turnId: turnNum != null ? String(turnNum) : null })) scheduleSessionListRender();
   }
   if (status !== 'completed' && status !== 'manual_extracted') return;
   const meeting = meetings[meetingId];
@@ -5654,7 +6165,7 @@ ipcRenderer.on('groupchat-partial-update', (_event, { meetingId, turnNum, sid, s
 // 2026-05-05 道雪 修3：AI 群聊 turn-complete IPC → 触发侧栏排序刷新（最新答完的 AI 群聊靠前）。
 //   2026-05-31 道雪：旧版在这里 unreadCount++ 作"轮粒度未读"，已被 partial-update 聚合的"本轮已答 AI 数"取代。
 //   同 IPC 在 meeting-room.js 里也有监听器（cache 同步 + DOM 重渲），与本监听器职责正交。
-ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId, completedAt }) => {
+ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId, turnNum, completedAt }) => {
   if (!meetingId) return;
   const meeting = meetings[meetingId];
   if (!meeting) return;
@@ -5670,7 +6181,7 @@ ipcRenderer.on('groupchat-turn-complete', (_event, { meetingId, completedAt }) =
   //   不经 partial-update 终态的路径，防止状态灯卡在黄灯）。
   for (const sid of meeting.subSessions || []) {
     const s = sessions.get(sid);
-    if (s) _setGroupChatMemberWorking(s, false);
+    if (s) _setGroupChatMemberWorking(s, false, answerAt, { turnId: turnNum != null ? String(turnNum) : null });
   }
   scheduleSessionListRender();
   schedulePersist();

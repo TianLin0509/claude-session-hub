@@ -806,6 +806,16 @@
   box-shadow: 0 0 0 3px rgba(86, 211, 100, .12), 0 0 9px rgba(86, 211, 100, .48);
   animation: terminal-runtime-pulse 1.8s ease-in-out infinite;
 }
+.terminal-status.starting {
+  border-color: rgba(88, 166, 255, .38);
+  background: rgba(56, 139, 253, .10);
+  color: #79b8ff;
+}
+.terminal-status.starting .terminal-status-dot {
+  border-color: #79b8ff;
+  background: #79b8ff;
+  animation: terminal-runtime-pulse 1.8s ease-in-out infinite;
+}
 
 .terminal-status.idle {
   color: var(--text-muted);
@@ -819,25 +829,29 @@
   border-color: #e8b95f;
   background: #e8b95f;
 }
-.terminal-status.complete {
+.terminal-status.completed {
   border-color: rgba(88, 166, 255, .38);
   background: rgba(56, 139, 253, .11);
   color: #75b6ff;
 }
-.terminal-status.complete .terminal-status-dot {
+.terminal-status.completed .terminal-status-dot {
   border-color: #75b6ff;
   background: #75b6ff;
 }
-.terminal-status.error {
+.terminal-status.failed {
   border-color: rgba(248, 81, 73, .42);
   background: rgba(248, 81, 73, .11);
   color: #ff8b84;
 }
-.terminal-status.error .terminal-status-dot {
+.terminal-status.failed .terminal-status-dot {
   border-color: #ff8b84;
   background: #ff8b84;
 }
 .terminal-status.dormant { opacity: .72; }
+.terminal-status.unknown {
+  border-style: dashed;
+  color: #aab2bd;
+}
 
 @keyframes terminal-runtime-pulse {
   0%, 100% { transform: scale(.92); opacity: .72; }
@@ -868,7 +882,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .terminal-status,
-  .terminal-status.running .terminal-status-dot { animation: none; transition: none; }
+  .terminal-status.running .terminal-status-dot,
+  .terminal-status.starting .terminal-status-dot { animation: none; transition: none; }
 }
 
 .terminal-cwd {
@@ -1445,6 +1460,7 @@
 .sl-state { font-size: 9.5px; font-weight: 700; white-space: nowrap; }
 .sl-state.wait { color: var(--accent-orange, #d29922); }
 .sl-state.unread { color: #ff7b72; }
+.sl-state.error { color: #f87171; }
 .sl-state.dorm { color: var(--text-muted); font-weight: 500; }
 .session-item.slim .session-mini-jumps {
   flex-wrap: nowrap; overflow: hidden;
@@ -1591,7 +1607,10 @@
 .sl-ring-arc.danger { stroke: var(--accent-red); }
 .sl-ring-dot.wait { fill: var(--accent-orange, #d29922); }
 .sl-ring-dot.unread { fill: var(--accent-red); }
+.sl-ring-dot.start { fill: #79b8ff; }
 .sl-ring-dot.run { fill: var(--accent-green); }
+.sl-ring-dot.error { fill: #f87171; }
+.sl-ring-dot.unknown { fill: transparent; stroke: #aab2bd; stroke-width: 1.4; }
 .sl-ring-dot.dorm { fill: #6b7280; }
 .sl-ring-dot.idle { fill: #666d78; }
 

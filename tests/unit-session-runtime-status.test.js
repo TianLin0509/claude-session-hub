@@ -60,7 +60,7 @@ test('completed and untouched idle sessions are distinguishable without color al
     lastCompletedAt: now - 30_000,
     lastRunDurationMs: 72_000,
   }, { now });
-  assert.equal(completed.state, 'complete');
+  assert.equal(completed.state, 'completed');
   assert.equal(completed.visibleText, '已完成 · 刚刚');
   assert.match(completed.title, /本轮用时 01:12/);
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Session Hub hook notifier. Called by Claude Code Stop/UserPromptSubmit hooks.
+"""Claude Session Hub lifecycle notifier.
 
 Reads CC's JSON payload from stdin to extract:
   - session_id       -> Hub saves as ccSessionId for future `--resume`
@@ -11,6 +11,9 @@ Reads CC's JSON payload from stdin to extract:
                         text. Preferred over transcript read for the
                         prompt event because the new entry may not yet
                         be flushed to disk when this hook fires.
+  - lifecycle fields -> Stop background tasks, StopFailure errors,
+                        PermissionRequest tool name, and Notification type.
+                        Payloads are bounded before crossing loopback HTTP.
 """
 import os, sys, json, urllib.request
 
@@ -28,6 +31,15 @@ transcript_path = None
 prompt = None
 tool_name = None
 tool_input = None
+hook_event_name = None
+background_tasks = []
+session_crons = []
+error_type = None
+error_details = None
+last_assistant_message = None
+notification_type = None
+notification_message = None
+notification_title = None
 try:
     # Read raw bytes and decode as UTF-8 explicitly. On Chinese Windows
     # sys.stdin defaults to cp936, which mangles UTF-8 Chinese characters
@@ -42,6 +54,15 @@ try:
         prompt = payload.get('prompt')
         tool_name = payload.get('tool_name')
         tool_input = payload.get('tool_input')
+        hook_event_name = payload.get('hook_event_name')
+        background_tasks = payload.get('background_tasks') or []
+        session_crons = payload.get('session_crons') or []
+        error_type = payload.get('error')
+        error_details = payload.get('error_details')
+        last_assistant_message = payload.get('last_assistant_message')
+        notification_type = payload.get('notification_type')
+        notification_message = payload.get('message')
+        notification_title = payload.get('title')
 except Exception:
     pass
 
@@ -59,6 +80,43 @@ try:
             body['transcriptPath'] = transcript_path
         if prompt:
             body['prompt'] = prompt
+        if hook_event_name:
+            body['hookEventName'] = str(hook_event_name)[:80]
+        if isinstance(background_tasks, list):
+            body['backgroundTasks'] = [
+                {
+                    'id': str(item.get('id', ''))[:120],
+                    'type': str(item.get('type', ''))[:80],
+                    'status': str(item.get('status', ''))[:80],
+                    'description': str(item.get('description', ''))[:160],
+                }
+                for item in background_tasks[:8]
+                if isinstance(item, dict)
+            ]
+        if isinstance(session_crons, list):
+            body['sessionCrons'] = [
+                {
+                    'id': str(item.get('id', ''))[:120],
+                    'schedule': str(item.get('schedule', ''))[:120],
+                    'recurring': bool(item.get('recurring', False)),
+                }
+                for item in session_crons[:8]
+                if isinstance(item, dict)
+            ]
+        if error_type:
+            body['error'] = str(error_type)[:160]
+        if error_details:
+            body['errorDetails'] = str(error_details)[:1000]
+        if last_assistant_message:
+            body['lastAssistantMessage'] = str(last_assistant_message)[:1200]
+        if notification_type:
+            body['notificationType'] = str(notification_type)[:160]
+        if notification_message:
+            body['message'] = str(notification_message)[:1000]
+        if notification_title:
+            body['title'] = str(notification_title)[:300]
+        if tool_name:
+            body['toolName'] = str(tool_name)[:160]
     data = json.dumps(body).encode()
     req = urllib.request.Request(url, data, {'Content-Type': 'application/json'})
     urllib.request.urlopen(req, timeout=3).read()

@@ -39,8 +39,8 @@ assert.ok(
   'Codex prompt event must mark the session running and update sidebar preview from user text',
 );
 assert.ok(
-  /function\s+markCodexCardWorking\s*\([\s\S]{0,800}session\.status\s*=\s*['"]running['"]/.test(rendererSrc),
-  'markCodexCardWorking must set Codex session status to running',
+  /function\s+markCodexCardWorking\s*\([\s\S]{0,1800}observeSessionRuntime\(session,[\s\S]{0,120}state:\s*runtimeState/.test(rendererSrc),
+  'markCodexCardWorking must publish starting/running through RuntimeTruth',
 );
 
 // 2026-07-27：兜底回收改成先看 _agentWorking === 'card'、再核 maxAge，且只回收
@@ -51,13 +51,12 @@ assert.ok(
   'renderer must expose hasSemanticCardWorking',
 );
 assert.ok(
-  /session\._agentWorking === 'card' && !hasSemanticCardWorking\(session\)/.test(activitySrc),
+  /session\._agentWorking === 'card' && !hasSemanticCardWorking\(session\)[\s\S]{0,220}onSemanticWorkExpired/.test(activitySrc),
   'silence sweeper must gate on the card working flag plus its maxAge',
 );
 assert.ok(
-  /session\.status === 'running' && session\._runSource === 'semantic'[\s\S]{0,80}session\.status\s*=\s*['"]idle['"]/
-    .test(activitySrc),
-  'only semantic-sourced running may be reclaimed on silence; PTY-driven running must survive',
+  rendererSrc.includes("source: 'semantic-work-expired'") && rendererSrc.includes('state: RUNTIME_UNKNOWN'),
+  'missing completion must degrade to unknown rather than fabricating idle',
 );
 
 assert.ok(

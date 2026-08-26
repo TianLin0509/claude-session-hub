@@ -45,8 +45,11 @@ test('repairs missing Hub hooks without deleting unrelated user hooks', () => {
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     assert.equal(settings.customKey.keep, true);
     assert.equal(settings.hooks.Stop[0].hooks[0].command, 'python user-guard.py');
-    assert.equal(hasManagedHook(settings, 'Stop'), true);
-    assert.equal(hasManagedHook(settings, 'UserPromptSubmit'), true);
+    for (const eventName of ['Stop', 'StopFailure', 'UserPromptSubmit', 'PermissionRequest', 'Notification']) {
+      assert.equal(hasManagedHook(settings, eventName), true, `${eventName} hook should be installed`);
+    }
+    assert.match(settings.hooks.Notification[0].matcher, /agent_needs_input/);
+    assert.match(settings.hooks.Notification[0].matcher, /agent_completed/);
 
     const second = ensureClaudeHookIntegration(h);
     assert.equal(second.settingsUpdated, false);
@@ -79,6 +82,7 @@ test('watchdog repairs hooks removed after startup', () => {
     const settingsPath = path.join(h.claudeDir, 'settings.json');
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     settings.hooks.UserPromptSubmit = [];
+    settings.hooks.Notification[0].matcher = 'idle_prompt';
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
 
     let scheduled = null;
@@ -95,6 +99,8 @@ test('watchdog repairs hooks removed after startup', () => {
     assert.equal(results[0].settingsUpdated, true);
     const repaired = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     assert.equal(hasManagedHook(repaired, 'UserPromptSubmit'), true);
+    assert.equal(hasManagedHook(repaired, 'Notification',
+      'permission_prompt|agent_needs_input|agent_completed|quota_auto_resume_fired|quota_auto_resume_stale|quota_auto_resume_disabled|elicitation_dialog|elicitation_url_dialog'), true);
     watchdog.stop();
     assert.equal(stopped, true);
   } finally {

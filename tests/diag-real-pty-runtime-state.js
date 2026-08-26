@@ -65,7 +65,10 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     const cached = terminalCache.get(id);
     if (!cached) throw new Error('terminal missing');
     cached.terminal.input(${JSON.stringify(prompt)}, true);
-    setTimeout(() => cached.terminal.input('\\r', true), 450);
+    // xterm.input reliably types into both TUIs, but Claude 2.1.241 can leave a
+    // synthetic Enter in the renderer input path unsubmitted. Send the final
+    // carriage return through the same IPC used by Hub's floating composer.
+    setTimeout(() => ipcRenderer.send('terminal-input', { sessionId: id, data: '\\r' }), 700);
     return true;
   })()`);
 
@@ -74,8 +77,12 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     running = await waitFor(`${kind} running`, () => client.eval(`(() => {
       const session = sessions.get(${JSON.stringify(id)});
       if (!session || session.status !== 'running') return null;
-      if (session._ptyRuntimeState !== 'running' && session._runSource !== 'semantic') return null;
+      // This diagnostic deliberately requires the live PTY classifier, not
+      // merely the provider lifecycle event, so both evidence channels are proven.
+      if (session._ptyRuntimeState !== 'running') return null;
       const status = document.querySelector('.terminal-header .terminal-status');
+      const sidebar = document.querySelector('.session-item[data-session-id="' + CSS.escape(String(session.id)) + '"]');
+      if (status?.dataset.runtimeState !== 'running' || sidebar?.dataset.runtimeState !== 'running') return null;
       return {
         status: session.status,
         source: session._runSource || null,
@@ -84,6 +91,10 @@ async function runSession(client, { kind, prompt, marker, opts }) {
         ptyReason: session._ptyRuntimeReason || null,
         cardState: status?.dataset.runtimeState || null,
         cardLabel: status?.querySelector('.terminal-status-label')?.textContent || '',
+        sidebarState: sidebar?.dataset.runtimeState || null,
+        sidebarSource: sidebar?.dataset.runtimeSource || null,
+        runtimeSource: session.runtimeTruth?.source || null,
+        corroborations: (session.runtimeTruth?.corroborations || []).map(item => item.source),
       };
     })()`), 45000);
   } catch (error) {
@@ -113,8 +124,9 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     const cardStatus = document.querySelector('.terminal-header .terminal-status');
     const cardState = cardStatus?.dataset.runtimeState || null;
     const cardLabel = cardStatus?.querySelector('.terminal-status-label')?.textContent || '';
+    const sidebar = document.querySelector('.session-item[data-session-id="' + CSS.escape(String(id)) + '"]');
     if (!session || session.status !== 'idle' || (!responseMarkerSeen && !blockedOnInput)) return null;
-    if (responseMarkerSeen && (cardState !== 'complete' || cardLabel !== '已完成')) return null;
+    if (responseMarkerSeen && (cardState !== 'completed' || cardLabel !== '已完成')) return null;
     return {
       status: session.status,
       source: session._runSource || null,
@@ -130,6 +142,10 @@ async function runSession(client, { kind, prompt, marker, opts }) {
       blockedOnInput,
       cardState,
       cardLabel,
+      sidebarState: sidebar?.dataset.runtimeState || null,
+      sidebarSource: sidebar?.dataset.runtimeSource || null,
+      runtimeSource: session.runtimeTruth?.source || null,
+      corroborations: (session.runtimeTruth?.corroborations || []).map(item => item.source),
       screen,
     };
   })()`), 120000);
@@ -138,10 +154,17 @@ async function runSession(client, { kind, prompt, marker, opts }) {
   assert.equal(running.status, 'running');
   assert.equal(running.cardState, 'running');
   assert.equal(running.cardLabel, '工作中');
+  assert.equal(running.sidebarState, 'running');
+  if (kind === 'codex') {
+    const sources = [running.runtimeSource, ...running.corroborations].filter(Boolean).join(' ');
+    assert.match(sources, /task_started/);
+    assert.match(sources, /pty-codex-interrupt-footer/);
+  }
   assert.equal(done.status, 'idle');
   if (done.responseMarkerSeen) {
-    assert.equal(done.cardState, 'complete');
+    assert.equal(done.cardState, 'completed');
     assert.equal(done.cardLabel, '已完成');
+    assert.equal(done.sidebarState, 'completed');
   }
   return { id, before, running, done };
 }
@@ -181,7 +204,7 @@ async function main() {
         prompt: 'Run PowerShell Start-Sleep -Seconds 4, then reply with exactly CLAUDE_PTY_RUNTIME_DONE.',
         marker: 'CLAUDE_PTY_RUNTIME_DONE',
         opts: {
-          model: process.env.HUB_DIAG_CLAUDE_MODEL || 'claude-fable-5',
+          model: process.env.HUB_DIAG_CLAUDE_MODEL || 'claude-opus-5',
           effort: 'low',
           mcpProfile: 'lean',
           fastMode: false,
@@ -191,7 +214,7 @@ async function main() {
     if (requestedProviders.has('codex')) {
       results.codex = await runSession(client, {
         kind: 'codex',
-        prompt: 'Run PowerShell Start-Sleep -Seconds 3, then reply with exactly CODEX_PTY_RUNTIME_DONE.',
+        prompt: 'Run PowerShell Start-Sleep -Seconds 5, then reply with exactly CODEX_PTY_RUNTIME_DONE.',
         marker: 'CODEX_PTY_RUNTIME_DONE',
         opts: {
           model: process.env.HUB_DIAG_CODEX_MODEL || 'gpt-5.6-sol',

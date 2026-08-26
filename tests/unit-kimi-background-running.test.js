@@ -97,7 +97,7 @@ expect(
   'renderer must subscribe to background work events',
 );
 expect(
-  /function onKimiBackgroundWorkEvent\(payload\)[\s\S]{0,1400}markCodexCardWorking\(hubSessionId, 'kimi_background_agent'\)/,
+  /function onKimiBackgroundWorkEvent\(payload\)[\s\S]{0,2400}markCodexCardWorking\(hubSessionId, 'kimi_background_agent'/,
   rendererSource,
   'an Agent start must mark the Kimi session as running',
 );
@@ -107,9 +107,9 @@ expect(
   'ordinary completion must not clear a still-running Kimi Agent',
 );
 expect(
-  /cardWorkingSource !== 'kimi_background_agent'[\s\S]{0,220}status === 'running'[\s\S]{0,80}status = 'idle'/,
+  /cardWorkingSource !== 'kimi_background_agent'[\s\S]{0,600}state: RUNTIME_UNKNOWN[\s\S]{0,200}kimi-background-finished-no-turn-complete/,
   rendererSource,
-  'a missing final Kimi record must have a bounded idle fallback after Agent result',
+  'a missing final Kimi record must degrade to bounded unknown rather than false idle',
 );
 
 console.log('unit-kimi-background-running: PASS');
