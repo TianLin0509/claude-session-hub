@@ -1,6 +1,6 @@
 'use strict';
 
-const fs = require('fs');
+const { readCodexRolloutMeta } = require('./codex-transcript-parser.js');
 const {
   formatBranchSessionTitle,
   isGenericAutoSessionTitle,
@@ -11,7 +11,6 @@ const {
 } = require('./session-title-guards');
 
 const CODEX_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MAX_CODEX_META_LINE_BYTES = 1024 * 1024;
 
 function meaningfulSourceTitle(value) {
   const clean = stripBranchTitlePrefix(normalizeTitle(value));
@@ -64,51 +63,9 @@ function buildBranchSessionTitle({ rendererTitle, source, meeting, branchIndex }
   };
 }
 
-function readFirstLine(filePath, maxBytes = MAX_CODEX_META_LINE_BYTES) {
-  if (!filePath || typeof filePath !== 'string') return '';
-  let fd;
-  try {
-    fd = fs.openSync(filePath, 'r');
-    const parts = [];
-    let total = 0;
-    let position = 0;
-    while (total < maxBytes) {
-      const size = Math.min(64 * 1024, maxBytes - total);
-      const chunk = Buffer.allocUnsafe(size);
-      const read = fs.readSync(fd, chunk, 0, size, position);
-      if (read <= 0) break;
-      position += read;
-      const used = chunk.subarray(0, read);
-      const newline = used.indexOf(0x0a);
-      if (newline >= 0) {
-        parts.push(used.subarray(0, newline));
-        return Buffer.concat(parts).toString('utf8').trim();
-      }
-      parts.push(used);
-      total += read;
-    }
-    return Buffer.concat(parts).toString('utf8').trim();
-  } catch {
-    return '';
-  } finally {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd); } catch {}
-    }
-  }
-}
-
 function readCodexForkedFromId(transcriptPath) {
-  const line = readFirstLine(transcriptPath);
-  if (!line) return null;
-  try {
-    const event = JSON.parse(line);
-    const parentId = event && event.type === 'session_meta'
-      ? event.payload && event.payload.forked_from_id
-      : null;
-    return CODEX_SESSION_ID_RE.test(String(parentId || '')) ? String(parentId) : null;
-  } catch {
-    return null;
-  }
+  const parentId = readCodexRolloutMeta(transcriptPath)?.forked_from_id || null;
+  return CODEX_SESSION_ID_RE.test(String(parentId || '')) ? String(parentId) : null;
 }
 
 function needsBranchTitleRecovery(session) {

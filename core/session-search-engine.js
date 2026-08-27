@@ -19,21 +19,38 @@ const {
   sqlitePathForLegacyCache,
 } = require('./session-search-config.js');
 
-// Transcript adapters materialize one source at a time. Real Codex rollouts can
-// exceed hundreds of MB, so files above this bound reuse the prior disk index
-// (or a title-only row) instead of risking even the isolated child heap.
+// Non-Codex adapters still materialize source text and retain conservative
+// bounds. Codex uses a byte-filtered semantic stream, so its raw rollout size
+// is not a proxy for memory use and must never trigger title-only degradation.
 
 function clipSource(source, options = {}) {
   const maxSourceChars = Math.max(64 * 1024, Number(options.maxSourceChars) || DEFAULT_MAX_SOURCE_CHARS);
   const maxDocChars = Math.max(8 * 1024, Number(options.maxDocChars) || DEFAULT_MAX_DOC_CHARS);
+  const preserveAll = options.preserveAll === true;
   const docs = [];
   let chars = 0;
   let truncated = false;
   for (const doc of (source && source.docs || [])) {
-    const remaining = maxSourceChars - chars;
-    if (remaining <= 0) { truncated = true; break; }
     const raw = String(doc && doc.text || '');
     if (!raw) continue;
+    if (preserveAll) {
+      const chunks = Math.max(1, Math.ceil(raw.length / maxDocChars));
+      for (let chunkIndex = 0; chunkIndex < chunks; chunkIndex += 1) {
+        const text = raw.slice(chunkIndex * maxDocChars, (chunkIndex + 1) * maxDocChars);
+        const suffix = chunks > 1 ? `:chunk:${chunkIndex}` : '';
+        docs.push({
+          ...doc,
+          id: `${doc.id || doc.eventId || 'doc'}${suffix}`,
+          eventId: `${doc.eventId || doc.id || 'doc'}${suffix}`,
+          text,
+          ordinal: Number(doc.ordinal || 0) + chunkIndex / (chunks + 1),
+        });
+        chars += text.length;
+      }
+      continue;
+    }
+    const remaining = maxSourceChars - chars;
+    if (remaining <= 0) { truncated = true; break; }
     const limit = Math.min(maxDocChars, remaining);
     const text = raw.length > limit ? raw.slice(0, limit) : raw;
     if (text.length < raw.length) truncated = true;
@@ -237,21 +254,25 @@ class SessionSearchEngine {
 
       for (const descriptor of descriptors) {
         const previous = sourceStates.get(descriptor.key) || null;
-        if (!force && previous && previous.signature === descriptor.signature) {
+        if (!force && previous && previous.signature === descriptor.signature
+            && !(descriptor.type === 'codex' && previous.stale)) {
           activeKeys.add(descriptor.key);
           reusedSources += 1;
           if (previous.stale) staleSources += 1;
         } else {
           try {
             const stat = fs.statSync(descriptor.filePath);
-            if (stat.size > this.options.maxFileBytes) {
+            if (descriptor.type !== 'codex' && stat.size > this.options.maxFileBytes) {
               diagnostics.push(`${descriptor.filePath}: 文件过大，保留标题但跳过全文`);
               staleSources += 1;
               if (previous) this.index.markSourceStale(descriptor.key, descriptor.signature);
               else this.index.replaceSource(titleOnlySourceFromDescriptor(descriptor, { stale: true }));
               activeKeys.add(descriptor.key);
             } else {
-              const limited = clipSource(parseSourceDescriptor(descriptor, collected.maps), this.options);
+              const limited = clipSource(parseSourceDescriptor(descriptor, collected.maps), {
+                ...this.options,
+                preserveAll: descriptor.type === 'codex',
+              });
               this.index.replaceSource(limited.source);
               activeKeys.add(descriptor.key);
               parsedSources += 1;

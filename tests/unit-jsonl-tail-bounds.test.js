@@ -67,3 +67,18 @@ test('large drains are chunked and yield between chunks', async (t) => {
   assert.ok(stats.yieldCount > 0, JSON.stringify(stats));
   assert.equal(eventLoopTicked, true);
 });
+
+test('byte scanner preserves UTF-8 characters split across read chunks', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-tail-utf8-'));
+  const filePath = path.join(dir, 'session.jsonl');
+  const expected = '跨分块中文🙂完整保留';
+  fs.writeFileSync(filePath, `${JSON.stringify({ id: 'utf8', text: expected })}\n`, 'utf8');
+  const seen = [];
+  const tail = new JsonlTail(filePath, record => seen.push(record.text), { maxReadBytes: 7 });
+  t.after(() => {
+    tail.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  await tail.start();
+  assert.deepEqual(seen, [expected]);
+});

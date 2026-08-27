@@ -86,6 +86,7 @@ function writeCodexFixture() {
   const rows = [
     { timestamp: '2026-08-21T10:00:00Z', type: 'session_meta', payload: { id: sid, timestamp: '2026-08-21T10:00:00Z', cwd: WORKSPACE, source: 'cli', originator: 'codex_cli_rs' } },
     { timestamp: '2026-08-21T10:00:01Z', type: 'event_msg', payload: { type: 'user_message', message: `${COMMON} Codex 用户提问：路径 URL 为什么识别错？` } },
+    { timestamp: '2026-08-21T10:00:01.500Z', type: 'response_item', payload: { type: 'custom_tool_call_output', output: `data:image/png;base64,GLOBAL_SEARCH_BINARY_GARBAGE${'X'.repeat(9 * 1024 * 1024)}` } },
     { timestamp: '2026-08-21T10:00:02Z', type: 'event_msg', payload: { type: 'task_started' } },
     { timestamp: '2026-08-21T10:00:03Z', type: 'event_msg', payload: { type: 'task_complete', last_agent_message: `${COMMON} CODEX_ANSWER_MARKER：统一 openPathInHub 路径入口。`, duration_ms: 1000 } },
     { timestamp: '2026-08-21T10:00:04Z', type: 'response_item', payload: { item: { type: 'command_execution', command: 'node tests/path-link.test.js', cwd: WORKSPACE } } },
@@ -244,6 +245,10 @@ async function waitSearchState(client, predicate, label) {
       query: 'CLAUDE_ANSWER_MARKER', providers: ['claude'], scopes: ['assistant'], limit: 50
     })`);
     assert.equal(result.directAnswerQuery.totalSessions, 1, JSON.stringify(result.directAnswerQuery));
+    result.binaryGarbageQuery = await client.eval(`require('electron').ipcRenderer.invoke('search-past-sessions', {
+      query: 'GLOBAL_SEARCH_BINARY_GARBAGE', providers: ['codex'], limit: 50
+    })`);
+    assert.equal(result.binaryGarbageQuery.totalSessions, 0, JSON.stringify(result.binaryGarbageQuery));
 
     await client.eval(`document.getElementById('btn-global-search').click()`);
     await waitFor('search dialog visible', () => client.eval(`document.getElementById('search-modal').style.display === 'flex'`));

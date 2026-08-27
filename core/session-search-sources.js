@@ -3,19 +3,16 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { StringDecoder } = require('node:string_decoder');
 const { parseClaudeTranscriptText } = require('./claude-transcript-parser.js');
 const {
-  parseCodexRolloutText,
+  parseCodexRolloutEntries,
   readCodexRolloutMeta,
   isCodexTopLevelRolloutMeta,
 } = require('./codex-transcript-parser.js');
+const { streamCodexJsonlRecordsSync } = require('./codex-rollout-reader.js');
 const {
   codexAgentMessageEventFromRecord,
-  codexTextFromPayload,
-  codexUserMessageEventFromRecord,
 } = require('./transcript-payload-utils.js');
-const { displayUserText, isSyntheticUserEntry } = require('./synthetic-user-filter.js');
 
 function normalizePath(value) {
   if (!value) return '';
@@ -24,6 +21,7 @@ function normalizePath(value) {
 }
 
 const DEFAULT_SEARCH_SOURCE_READ_BYTES = 4 * 1024 * 1024;
+const CODEX_SEARCH_PROJECTION_VERSION = 2;
 
 function readBoundedJsonlTailText(filePath, maxBytes = DEFAULT_SEARCH_SOURCE_READ_BYTES, fsRef = fs) {
   const stat = fsRef.statSync(filePath);
@@ -288,7 +286,7 @@ function listCodexDescriptors(roots, maps, diagnostics = []) {
         filePath, root, provider, nativeSessionId: sid, hubSession, codexMeta: meta,
         fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
       };
-      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}`;
+      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}:semantic-v${CODEX_SEARCH_PROJECTION_VERSION}`;
       const list = groups.get(descriptor.key) || [];
       list.push(descriptor);
       groups.set(descriptor.key, list);
@@ -349,7 +347,7 @@ function addExplicitTranscriptDescriptors(descriptors, maps, diagnostics = []) {
       fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
       ...(type === 'codex' ? { codexMeta } : {}),
     };
-    descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalized)}:${metadataSignature(session)}`;
+    descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalized)}:${metadataSignature(session)}${type === 'codex' ? `:semantic-v${CODEX_SEARCH_PROJECTION_VERSION}` : ''}`;
     descriptors.push(descriptor);
     knownPaths.add(normalized);
   }
@@ -461,12 +459,19 @@ function titleOnlySourceFromDescriptor(descriptor, options = {}) {
   };
 }
 
+function omitInlineBinary(value) {
+  return String(value || '').replace(
+    /(data:[^;,\s]+;base64,)[A-Za-z0-9+/_=-]{1024,}/gi,
+    (_match, prefix) => `${prefix}[binary payload omitted]`,
+  );
+}
+
 function toolText(toolCall) {
   if (!toolCall) return '';
   const parts = [];
   if (toolCall.name) parts.push(String(toolCall.name));
   if (toolCall.input != null) {
-    try { parts.push(typeof toolCall.input === 'string' ? toolCall.input : JSON.stringify(toolCall.input)); }
+    try { parts.push(omitInlineBinary(typeof toolCall.input === 'string' ? toolCall.input : JSON.stringify(toolCall.input))); }
     catch { parts.push(String(toolCall.input)); }
   }
   return parts.join('\n').trim();
@@ -512,7 +517,7 @@ function codexToolDocFromRecord(record, ordinal) {
   for (const key of ['name', 'command', 'cmd', 'path', 'file_path', 'cwd', 'arguments', 'input']) {
     const value = item && item[key];
     if (value == null) continue;
-    try { parts.push(typeof value === 'string' ? value : JSON.stringify(value)); }
+    try { parts.push(omitInlineBinary(typeof value === 'string' ? value : JSON.stringify(value))); }
     catch { parts.push(String(value)); }
   }
   const text = parts.join('\n').trim();
@@ -536,167 +541,24 @@ function codexCommentaryDocFromRecord(record, ordinal) {
   };
 }
 
-function extractCodexToolDocs(filePath, startOrdinal = 0, rawOverride = null) {
-  let raw = rawOverride;
-  if (raw == null) {
-    raw = fs.readFileSync(filePath, 'utf8');
-  }
-  const docs = [];
-  let ordinal = startOrdinal;
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let record;
-    try { record = JSON.parse(line); } catch { continue; }
-    const doc = codexToolDocFromRecord(record, ordinal += 0.001);
-    if (doc) docs.push(doc);
-    const commentary = codexCommentaryDocFromRecord(record, ordinal += 0.001);
-    if (commentary) docs.push(commentary);
-  }
-  return docs;
-}
-
 function streamJsonlRecordsSync(filePath, onRecord, chunkBytes = 1024 * 1024) {
-  const fd = fs.openSync(filePath, 'r');
-  const decoder = new StringDecoder('utf8');
-  const buffer = Buffer.allocUnsafe(chunkBytes);
-  let carry = '';
-  let lineIndex = 0;
-  try {
-    while (true) {
-      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
-      if (bytesRead <= 0) break;
-      const text = carry + decoder.write(buffer.subarray(0, bytesRead));
-      const lines = text.split('\n');
-      carry = lines.pop() || '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed) {
-          let record = null;
-          try { record = JSON.parse(trimmed); } catch {}
-          if (record) onRecord(record, lineIndex);
-        }
-        lineIndex += 1;
-      }
-    }
-    carry += decoder.end();
-    if (carry.trim()) {
-      let record = null;
-      try { record = JSON.parse(carry.trim()); } catch {}
-      if (record) onRecord(record, lineIndex);
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-function streamingRecordId(prefix, record, lineIndex) {
-  const payload = record && record.payload && typeof record.payload === 'object' ? record.payload : null;
-  const explicit = record && record.id
-    || payload && payload.id
-    || payload && payload.item && payload.item.id
-    || payload && payload.turn_id;
-  return `${prefix}-${explicit || `${record && record.timestamp || 'no-ts'}-${lineIndex}`}`;
+  return streamCodexJsonlRecordsSync(filePath, onRecord, {
+    profile: 'search',
+    chunkBytes,
+  });
 }
 
 function parseCodexRolloutStreaming(filePath) {
-  const turns = [];
+  const entries = [];
   const toolDocs = [];
-  let pendingAssistant = null;
-  let pendingUserFallback = null;
-
-  const flushAssistant = () => {
-    if (!pendingAssistant) return;
-    const text = String(pendingAssistant.finalText || pendingAssistant.parts.join('\n\n') || '').trim();
-    if (text) turns.push({
-      id: pendingAssistant.id,
-      role: 'assistant',
-      text,
-      ts: pendingAssistant.ts,
-      tsEnd: pendingAssistant.tsEnd || pendingAssistant.ts,
-      stopReason: pendingAssistant.finalText ? 'task_complete' : 'partial_commentary',
-    });
-    pendingAssistant = null;
-  };
-  const flushUserFallback = () => {
-    if (!pendingUserFallback) return;
-    flushAssistant();
-    turns.push(pendingUserFallback.turn);
-    pendingUserFallback = null;
-  };
-  const ensureAssistant = (record, lineIndex) => {
-    if (!pendingAssistant) pendingAssistant = {
-      id: streamingRecordId('codex-assistant-stream', record, lineIndex),
-      ts: record && record.timestamp ? new Date(record.timestamp).getTime() : null,
-      tsEnd: null,
-      parts: [],
-      finalText: '',
-    };
-    return pendingAssistant;
-  };
-
   streamJsonlRecordsSync(filePath, (record, lineIndex) => {
+    entries.push({ obj: record, index: lineIndex });
     const toolDoc = codexToolDocFromRecord(record, lineIndex + 0.5);
     if (toolDoc) toolDocs.push(toolDoc);
     const commentaryDoc = codexCommentaryDocFromRecord(record, lineIndex + 0.501);
     if (commentaryDoc) toolDocs.push(commentaryDoc);
-
-    if (pendingUserFallback && lineIndex - pendingUserFallback.lineIndex > 6) flushUserFallback();
-    const userEvent = codexUserMessageEventFromRecord(record);
-    if (userEvent) {
-      const raw = userEvent.text.trim();
-      const text = raw && !isSyntheticUserEntry(record, raw) ? displayUserText(raw) : null;
-      if (!text) return;
-      const normalized = text.replace(/\s+/g, ' ').trim();
-      if (pendingUserFallback && pendingUserFallback.normalized === normalized) pendingUserFallback = null;
-      else flushUserFallback();
-      flushAssistant();
-      turns.push({
-        id: streamingRecordId('codex-user-stream', record, lineIndex),
-        role: 'user', text,
-        ts: userEvent.submittedAt || (record.timestamp ? new Date(record.timestamp).getTime() : null),
-      });
-      return;
-    }
-
-    if (record.type === 'response_item' && record.payload && record.payload.role === 'user') {
-      const raw = codexTextFromPayload(record.payload).trim();
-      const text = raw && !isSyntheticUserEntry(record, raw) ? displayUserText(raw) : null;
-      if (text) {
-        if (pendingUserFallback) flushUserFallback();
-        pendingUserFallback = {
-          lineIndex,
-          normalized: text.replace(/\s+/g, ' ').trim(),
-          turn: {
-            id: streamingRecordId('codex-user-stream', record, lineIndex),
-            role: 'user', text,
-            ts: record.timestamp ? new Date(record.timestamp).getTime() : null,
-          },
-        };
-      }
-      return;
-    }
-
-    const payloadType = record && record.payload && record.payload.type;
-    if (payloadType === 'task_started') {
-      flushUserFallback();
-      ensureAssistant(record, lineIndex);
-      return;
-    }
-    const agentEvent = codexAgentMessageEventFromRecord(record);
-    if (!agentEvent) return;
-    flushUserFallback();
-    const pending = ensureAssistant(record, lineIndex);
-    pending.tsEnd = agentEvent.completedAt || (record.timestamp ? new Date(record.timestamp).getTime() : pending.ts);
-    if (agentEvent.completed) {
-      pending.finalText = agentEvent.text;
-      flushAssistant();
-    } else {
-      pending.parts.push(agentEvent.text);
-    }
   });
-  flushUserFallback();
-  flushAssistant();
-  return { turns, toolDocs };
+  return { turns: parseCodexRolloutEntries(entries), toolDocs };
 }
 
 function parseClaudeDescriptor(descriptor, options = {}) {
@@ -712,28 +574,17 @@ function parseClaudeDescriptor(descriptor, options = {}) {
 }
 
 function parseCodexDescriptor(descriptor, options = {}) {
-  // Search needs both dialogue turns and tool/file records. Read a changed
-  // rollout once, then feed the same bytes into both extractors; the previous
-  // implementation doubled disk IO for every growing Codex session refresh.
-  let raw = null;
-  let turns;
-  let streamingToolDocs = null;
-  try {
-    raw = readBoundedJsonlTailText(descriptor.filePath, options.maxReadBytes).raw;
-    turns = parseCodexRolloutText(raw);
-  } catch (error) {
-    if (error && (error.code === 'ERR_STRING_TOO_LONG' || /string longer than/i.test(error.message))) {
-      const streamed = parseCodexRolloutStreaming(descriptor.filePath);
-      turns = streamed.turns;
-      streamingToolDocs = streamed.toolDocs;
-    } else {
-      throw error;
-    }
-  }
+  // Codex rollouts can be hundreds of MiB because image and tool output rows
+  // embed Base64. Scan the full file once, but retain only dialogue and tool
+  // call metadata from the JSON envelope. This preserves complete search
+  // history without decoding binary transport rows or imposing a tail-only
+  // feature downgrade.
+  const streamed = parseCodexRolloutStreaming(descriptor.filePath);
+  const turns = streamed.turns;
   const meta = descriptor.codexMeta || readCodexRolloutMeta(descriptor.filePath) || {};
   const session = sessionRecordFromDescriptor(descriptor, turns, { cwd: meta.cwd, slug: meta.slug });
   const docs = docsFromTurns(turns, session.title, descriptor.provider);
-  const supplemental = streamingToolDocs || extractCodexToolDocs(descriptor.filePath, turns.length, raw);
+  const supplemental = streamed.toolDocs;
   docs.push(...supplemental.map(doc => doc.role === 'assistant'
     ? { ...doc, speaker: `${providerLabel(descriptor.provider)} · 中间输出` }
     : doc));
@@ -741,7 +592,7 @@ function parseCodexDescriptor(descriptor, options = {}) {
   return {
     key: descriptor.key, signature: descriptor.signature, session, docs,
     searchable: !session.meetingId,
-    truncatedByReadGuard: fs.statSync(descriptor.filePath).size > Math.max(256 * 1024, Number(options.maxReadBytes) || DEFAULT_SEARCH_SOURCE_READ_BYTES),
+    truncatedByReadGuard: false,
   };
 }
 

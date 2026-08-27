@@ -8,6 +8,7 @@ const test = require('node:test');
 const zlib = require('node:zlib');
 const { SessionSearchEngine, clipSource } = require('../core/session-search-engine.js');
 const { collectSourceDescriptors } = require('../core/session-search-sources.js');
+const { FakeCodexRollout } = require('./helpers/fake-codex-rollout.js');
 
 test('storage clipping marks the source stale so the limitation survives restart', () => {
   const limited = clipSource({
@@ -55,6 +56,73 @@ test('oversized transcripts keep a searchable title and persist the visible stal
   assert.equal(reopened.ready, true);
   assert.equal(reopened.phase, 'ready_with_errors');
   assert.equal(reopened.staleSources, 1);
+});
+
+test('oversized Codex rollouts index complete semantic history while skipping binary output rows', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-search-engine-large-codex-'));
+  const codexRoot = path.join(root, '.codex', 'sessions');
+  const databasePath = path.join(root, 'cache', 'search.sqlite');
+  const meetingDir = path.join(root, 'meetings');
+  fs.mkdirSync(meetingDir, { recursive: true });
+  const sid = '11111111-2222-7333-8444-555555555555';
+  const rollout = new FakeCodexRollout({ sessionsRoot: codexRoot, cwd: 'C:\\large-codex', sid });
+  let engine = null;
+  t.after(async () => {
+    if (engine) engine.close();
+    await rollout.cleanup().catch(() => {});
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  await rollout.start();
+  await rollout.writeRaw({
+    timestamp: '2026-08-27T04:00:00.000Z',
+    type: 'event_msg',
+    payload: { type: 'user_message', message: 'CODEX_EARLY_SEMANTIC_MARKER' },
+  });
+  await rollout.writeRaw({
+    timestamp: '2026-08-27T04:00:00.100Z',
+    type: 'response_item',
+    payload: {
+      type: 'custom_tool_call_output',
+      output: `data:image/png;base64,CODEX_BINARY_OUTPUT_MARKER${'Z'.repeat(2 * 1024 * 1024)}`,
+    },
+  });
+  await rollout.writeRaw({
+    timestamp: '2026-08-27T04:00:00.200Z',
+    type: 'response_item',
+    payload: { item: { type: 'command_execution', command: 'node CODEX_TOOL_METADATA_MARKER.js', cwd: 'C:\\large-codex' } },
+  });
+  await rollout.writeRaw({
+    timestamp: '2026-08-27T04:00:01.000Z',
+    type: 'event_msg',
+    payload: {
+      type: 'task_complete',
+      last_agent_message: `${'meaningful '.repeat(20_000)}CODEX_LATE_SEMANTIC_MARKER`,
+    },
+  });
+  await rollout.close();
+
+  const snapshot = { sessions: [{
+    hubId: 'hub-large-codex', kind: 'codex', title: 'Large Codex semantic index',
+    codexSid: sid, codexSessionsRoot: codexRoot, transcriptPath: rollout.rolloutPath,
+    cwd: 'C:\\large-codex',
+  }], meetings: [] };
+  engine = new SessionSearchEngine({
+    databasePath,
+    claudeRoots: [],
+    codexRoots: [codexRoot],
+    meetingDir,
+    maxFileBytes: 1024 * 1024,
+    maxSourceChars: 64 * 1024,
+    maxDocChars: 16 * 1024,
+  });
+  const refreshed = await engine.refresh(snapshot, { force: true });
+  assert.equal(refreshed.phase, 'ready', JSON.stringify(refreshed));
+  assert.equal(refreshed.staleSources, 0);
+  assert.equal((await engine.search({ query: 'CODEX_EARLY_SEMANTIC_MARKER' })).totalSessions, 1);
+  assert.equal((await engine.search({ query: 'CODEX_LATE_SEMANTIC_MARKER' })).totalSessions, 1);
+  assert.equal((await engine.search({ query: 'CODEX_TOOL_METADATA_MARKER' })).totalSessions, 1);
+  assert.equal((await engine.search({ query: 'CODEX_BINARY_OUTPUT_MARKER' })).totalSessions, 0);
 });
 
 test('a parse failure preserves the last good disk index and recovers on the next rebuild', async (t) => {

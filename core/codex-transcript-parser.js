@@ -7,6 +7,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const {
+  codexLineFilter,
+  streamCodexJsonlRecordsSync,
+} = require('./codex-rollout-reader.js');
 const { isSyntheticUserEntry, isSyntheticUserText, displayUserText } = require('./synthetic-user-filter.js');
 const {
   codexAgentMessageEventFromRecord,
@@ -14,9 +18,10 @@ const {
 } = require('./transcript-payload-utils.js');
 
 const DEFAULT_CODEX_SESSIONS_ROOT = path.join(os.homedir(), '.codex', 'sessions');
-const CODEX_TAIL_WINDOW_INITIAL_BYTES = 8 * 1024 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_TARGETED_DATE_DIRS = 7;
+const MAX_SEMANTIC_CACHE_ENTRIES = 8;
+const semanticCache = new Map();
 
 function normalizePathForCompare(p) {
   if (!p) return '';
@@ -77,6 +82,14 @@ function readFirstLineSync(filePath, maxBytes = 512 * 1024) {
       }
       chunks.push(Buffer.from(slice));
       total += n;
+      // All metadata fields consumed by Hub are serialized before this large,
+      // redundant prompt body. Stop reading as soon as its key is present;
+      // projectCodexRolloutMetaFromPrefix does not require the JSON row to be
+      // complete.
+      const prefix = Buffer.concat(chunks, total);
+      if (prefix.indexOf(Buffer.from('"base_instructions"')) >= 0) {
+        return prefix.toString('utf8').replace(/\r$/, '');
+      }
     }
     return Buffer.concat(chunks).toString('utf8').replace(/\r$/, '');
   } catch {
@@ -88,14 +101,86 @@ function readFirstLineSync(filePath, maxBytes = 512 * 1024) {
   }
 }
 
+function extractJsonFieldValue(text, field, startAt = 0) {
+  const escaped = String(field).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`"${escaped}"\\s*:`).exec(String(text || '').slice(startAt));
+  if (!match) return undefined;
+  let index = startAt + match.index + match[0].length;
+  const source = String(text || '');
+  while (index < source.length && /\s/.test(source[index])) index += 1;
+  if (index >= source.length) return undefined;
+  const first = source[index];
+  let end = index;
+  if (first === '"') {
+    end += 1;
+    let escapedChar = false;
+    while (end < source.length) {
+      const char = source[end];
+      if (escapedChar) escapedChar = false;
+      else if (char === '\\') escapedChar = true;
+      else if (char === '"') { end += 1; break; }
+      end += 1;
+    }
+  } else if (first === '{' || first === '[') {
+    const close = first === '{' ? '}' : ']';
+    let depth = 0;
+    let inString = false;
+    let escapedChar = false;
+    while (end < source.length) {
+      const char = source[end];
+      if (inString) {
+        if (escapedChar) escapedChar = false;
+        else if (char === '\\') escapedChar = true;
+        else if (char === '"') inString = false;
+      } else if (char === '"') inString = true;
+      else if (char === first) depth += 1;
+      else if (char === close && --depth === 0) { end += 1; break; }
+      end += 1;
+    }
+  } else {
+    while (end < source.length && source[end] !== ',' && source[end] !== '}') end += 1;
+  }
+  if (end <= index || end > source.length) return undefined;
+  try { return JSON.parse(source.slice(index, end)); } catch { return undefined; }
+}
+
+function projectCodexRolloutMetaFromPrefix(firstLinePrefix) {
+  const recordType = extractJsonFieldValue(firstLinePrefix, 'type');
+  if (recordType !== 'session_meta') return null;
+  const payloadMarker = /"payload"\s*:\s*\{/.exec(firstLinePrefix);
+  if (!payloadMarker) return null;
+  const payloadAt = payloadMarker.index + payloadMarker[0].length;
+  const baseInstructionsAt = firstLinePrefix.indexOf('"base_instructions"', payloadAt);
+  const header = firstLinePrefix.slice(
+    payloadAt,
+    baseInstructionsAt >= 0 ? baseInstructionsAt : firstLinePrefix.length,
+  );
+  const meta = {};
+  for (const field of [
+    'session_id', 'id', 'forked_from_id', 'timestamp', 'cwd', 'originator',
+    'cli_version', 'source', 'thread_source', 'model_provider', 'agent_path',
+    'slug', 'parent_thread_id',
+  ]) {
+    const value = extractJsonFieldValue(header, field);
+    if (value !== undefined) meta[field] = value;
+  }
+  return (meta.id || meta.session_id || meta.cwd) ? meta : null;
+}
+
 function readCodexRolloutMeta(filePath) {
   const first = readFirstLineSync(filePath);
   if (!first) return null;
+  const projected = projectCodexRolloutMetaFromPrefix(first);
+  if (projected) return projected;
   try {
     const record = JSON.parse(first);
     if (record?.type !== 'session_meta' || !record.payload || typeof record.payload !== 'object') return null;
     return record.payload;
   } catch {
+    // A session_meta row may contain megabytes of base_instructions. The
+    // identity/cwd/source fields are written before that payload, so project
+    // only those fields from the bounded prefix instead of reading the line to
+    // completion or rejecting an otherwise valid session.
     return null;
   }
 }
@@ -234,39 +319,7 @@ function normalizeUserDuplicateText(text) {
     .trim();
 }
 
-function readCodexTailWindowText(jsonlPath, maxBytes) {
-  let stat;
-  try { stat = fs.statSync(jsonlPath); } catch { return ''; }
-  const size = stat.size || 0;
-  if (size <= maxBytes) return fs.readFileSync(jsonlPath, 'utf8');
-
-  const start = Math.max(0, size - maxBytes);
-  const fd = fs.openSync(jsonlPath, 'r');
-  try {
-    const buf = Buffer.alloc(size - start);
-    fs.readSync(fd, buf, 0, buf.length, start);
-    let text = buf.toString('utf8');
-    if (start > 0) {
-      const nl = text.indexOf('\n');
-      text = nl >= 0 ? text.slice(nl + 1) : '';
-    }
-    return text;
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-function parseCodexRolloutText(raw) {
-  const lines = raw.split(/\r?\n/);
-  const entries = [];
-  lines.forEach((line, index) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    try {
-      const obj = JSON.parse(trimmed);
-      if (obj && typeof obj === 'object') entries.push({ obj, index });
-    } catch {}
-  });
+function parseCodexRolloutEntries(entries) {
   const turns = [];
   let pendingAssistant = null;
 
@@ -365,6 +418,20 @@ function parseCodexRolloutText(raw) {
   return turns;
 }
 
+function parseCodexRolloutText(raw) {
+  const lines = raw.split(/\r?\n/);
+  const entries = [];
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    if (!trimmed || codexLineFilter(trimmed, { final: true }, 'turns') !== true) return;
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj && typeof obj === 'object') entries.push({ obj, index });
+    } catch {}
+  });
+  return parseCodexRolloutEntries(entries);
+}
+
 function applyTurnLimit(turns, limit, fromTail) {
   if (typeof limit === 'number' && limit < turns.length) {
     return fromTail ? turns.slice(turns.length - limit) : turns.slice(0, limit);
@@ -372,31 +439,111 @@ function applyTurnLimit(turns, limit, fromTail) {
   return turns;
 }
 
+function fileIdentity(stat) {
+  return `${Number(stat && stat.dev) || 0}:${Number(stat && stat.ino) || 0}:${Math.round(Number(stat && stat.birthtimeMs) || 0)}`;
+}
+
+function touchSemanticCache(jsonlPath, value) {
+  semanticCache.delete(jsonlPath);
+  semanticCache.set(jsonlPath, value);
+  while (semanticCache.size > MAX_SEMANTIC_CACHE_ENTRIES) {
+    semanticCache.delete(semanticCache.keys().next().value);
+  }
+}
+
+function scanSemanticEntries(jsonlPath, opts = {}) {
+  const entries = [];
+  const stats = streamCodexJsonlRecordsSync(jsonlPath, (obj, index) => {
+    entries.push({ obj, index });
+  }, {
+    profile: 'turns',
+    startOffset: opts.startOffset || 0,
+    startLineIndex: opts.startLineIndex || 0,
+  });
+  return { entries, stats };
+}
+
+function loadSemanticTranscript(jsonlPath) {
+  const stat = fs.statSync(jsonlPath);
+  const identity = fileIdentity(stat);
+  const previous = semanticCache.get(jsonlPath);
+  if (previous
+      && previous.identity === identity
+      && previous.fileSize === stat.size
+      && previous.mtimeMs === stat.mtimeMs) {
+    touchSemanticCache(jsonlPath, previous);
+    return previous;
+  }
+
+  let next;
+  const appendOnlyGrowth = previous
+    && previous.identity === identity
+    && stat.size > previous.fileSize
+    && previous.safeOffset <= previous.fileSize;
+  if (appendOnlyGrowth) {
+    const delta = scanSemanticEntries(jsonlPath, {
+      startOffset: previous.safeOffset,
+      startLineIndex: previous.nextLineIndex,
+    });
+    const entries = previous.entries.concat(delta.entries);
+    next = {
+      identity,
+      fileSize: delta.stats.endOffset,
+      mtimeMs: stat.mtimeMs,
+      safeOffset: delta.stats.safeOffset,
+      nextLineIndex: delta.stats.nextLineIndex,
+      entries,
+      turns: parseCodexRolloutEntries(entries),
+      scanMode: 'incremental',
+      scanStats: delta.stats,
+      fullScans: previous.fullScans,
+      incrementalScans: previous.incrementalScans + 1,
+    };
+  } else {
+    const full = scanSemanticEntries(jsonlPath);
+    next = {
+      identity,
+      fileSize: full.stats.endOffset,
+      mtimeMs: stat.mtimeMs,
+      safeOffset: full.stats.safeOffset,
+      nextLineIndex: full.stats.nextLineIndex,
+      entries: full.entries,
+      turns: parseCodexRolloutEntries(full.entries),
+      scanMode: 'full',
+      scanStats: full.stats,
+      fullScans: (previous ? previous.fullScans : 0) + 1,
+      incrementalScans: previous ? previous.incrementalScans : 0,
+    };
+  }
+  touchSemanticCache(jsonlPath, next);
+  return next;
+}
+
 function parseCodexRolloutToTurns(jsonlPath, opts = {}) {
   const { limit, fromTail = false } = opts;
   if (typeof limit === 'number' && limit <= 0) return [];
+  return applyTurnLimit(loadSemanticTranscript(jsonlPath).turns, limit, fromTail);
+}
 
-  const shouldTailRead = fromTail && typeof limit === 'number';
-  if (!shouldTailRead) {
-    const turns = parseCodexRolloutText(fs.readFileSync(jsonlPath, 'utf8'));
-    return applyTurnLimit(turns, limit, fromTail);
-  }
+function clearCodexSemanticCache(jsonlPath = null) {
+  if (jsonlPath) semanticCache.delete(jsonlPath);
+  else semanticCache.clear();
+}
 
-  let stat;
-  try { stat = fs.statSync(jsonlPath); } catch { stat = null; }
-  if (!stat || stat.size <= CODEX_TAIL_WINDOW_INITIAL_BYTES) {
-    const turns = parseCodexRolloutText(fs.readFileSync(jsonlPath, 'utf8'));
-    return applyTurnLimit(turns, limit, fromTail);
-  }
-
-  // Avoid reparsing overlapping 8 -> 16 -> 32 MB windows.  Try the bounded
-  // tail once, then fall through to exactly one full read when strict history
-  // completeness requires older turns.
-  const tailTurns = parseCodexRolloutText(readCodexTailWindowText(jsonlPath, CODEX_TAIL_WINDOW_INITIAL_BYTES));
-  if (tailTurns.length >= limit) return applyTurnLimit(tailTurns, limit, fromTail);
-
-  const turns = parseCodexRolloutText(fs.readFileSync(jsonlPath, 'utf8'));
-  return applyTurnLimit(turns, limit, fromTail);
+function getCodexSemanticCacheStats(jsonlPath) {
+  const entry = semanticCache.get(jsonlPath);
+  if (!entry) return null;
+  return {
+    fileSize: entry.fileSize,
+    safeOffset: entry.safeOffset,
+    nextLineIndex: entry.nextLineIndex,
+    semanticRecords: entry.entries.length,
+    turns: entry.turns.length,
+    scanMode: entry.scanMode,
+    scanStats: { ...entry.scanStats },
+    fullScans: entry.fullScans,
+    incrementalScans: entry.incrementalScans,
+  };
 }
 
 function findCodexRolloutBySid(codexSid, sessionsRoot = DEFAULT_CODEX_SESSIONS_ROOT) {
@@ -493,6 +640,9 @@ module.exports = {
   normalizePathForCompare,
   parseCodexRolloutToTurns,
   parseCodexRolloutText,
+  parseCodexRolloutEntries,
+  clearCodexSemanticCache,
+  getCodexSemanticCacheStats,
   findCodexRolloutBySid,
   findCodexRolloutByCwd,
   readCodexRolloutMeta,

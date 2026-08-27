@@ -45,6 +45,13 @@ async function main() {
         },
       }),
       JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call_output',
+          output: `data:image/png;base64,${'X'.repeat(6 * 1024 * 1024)}`,
+        },
+      }),
+      JSON.stringify({
         type: 'event_msg',
         payload: { type: 'task_complete', last_agent_message: 'real codex answer' },
       }),

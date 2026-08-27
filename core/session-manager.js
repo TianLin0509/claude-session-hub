@@ -2562,8 +2562,28 @@ class SessionManager extends EventEmitter {
 //
 // DeepSeek now uses the Codex rollout shape. Only the internal deepseek-legacy
 // runtime retains Claude's JSONL shape for pre-migration transcript recovery.
-async function readTranscriptTail(kind, sourcePath, n = 10) {
+async function readTranscriptTail(kind, sourcePath, n = 10, opts = {}) {
   if (!sourcePath) return null;
+  // Prompt injection has a real transport/context budget. Keep that explicit,
+  // but never use raw rollout size as a reason to drop Codex history.
+  const MAX_INJECT = 50 * 1024;
+  if (isCodexCliKind(kind)) {
+    try {
+      const parsed = opts.parserService && typeof opts.parserService.parse === 'function'
+        ? await opts.parserService.parse('codex', sourcePath, { limit: n, fromTail: true })
+        : { turns: require('./codex-transcript-parser.js').parseCodexRolloutToTurns(
+          sourcePath,
+          { limit: n, fromTail: true },
+        ) };
+      const joined = (parsed.turns || []).map(turn => (
+        turn.role === 'user' ? `USER: ${turn.text}` : `ASSISTANT: ${turn.text}`
+      )).join('\n\n');
+      return joined.length > MAX_INJECT ? joined.slice(0, MAX_INJECT) + '\n[CONTEXT TRUNCATED]' : joined;
+    } catch (e) {
+      console.warn(`[hub] readTranscriptTail(${kind}) failed:`, e.message);
+      return null;
+    }
+  }
   // T13 fix: refuse oversized transcripts (>5MB) to avoid main-process memory spike
   // (readFileSync + split allocates ~2x file size in RAM).
   try {
@@ -2573,8 +2593,6 @@ async function readTranscriptTail(kind, sourcePath, n = 10) {
       return null;
     }
   } catch { return null; }
-  // T13 fix: cap injected context at 50KB so an oversized join doesn't overflow PTY buffer.
-  const MAX_INJECT = 50 * 1024;
   try {
     if (kind === 'gemini' && sourcePath.endsWith('.json') && !sourcePath.endsWith('.jsonl')) {
       // Gemini old format: single JSON file

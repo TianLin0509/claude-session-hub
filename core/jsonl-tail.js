@@ -1,15 +1,18 @@
 'use strict';
 
 const fs = require('fs');
-const { StringDecoder } = require('string_decoder');
+const { JsonlByteScanner } = require('./jsonl-byte-scanner.js');
 
 class JsonlTail {
   constructor(filepath, onLine, opts = {}) {
     this._filepath = filepath;
     this._onLine = onLine;
     this._offset = 0;
-    this._buf = '';
-    this._decoder = new StringDecoder('utf8');
+    this._lineFilter = typeof opts.lineFilter === 'function' ? opts.lineFilter : null;
+    this._maxPrefixBytes = Number.isFinite(opts.maxPrefixBytes) && opts.maxPrefixBytes > 0
+      ? Math.floor(opts.maxPrefixBytes)
+      : 64 * 1024;
+    this._scanner = null;
     this._watcher = null;
     this._pollTimer = null;
     this._closed = false;
@@ -29,6 +32,7 @@ class JsonlTail {
   async start() {
     if (this._closed) return;
     try { await this._prepareInitialOffset(); } catch {}
+    this._resetScanner();
     try { await this._drain(); } catch {}
 
     try {
@@ -44,6 +48,19 @@ class JsonlTail {
       this._drain().catch(() => {});
     }, 500);
     this._pollTimer.unref?.();
+  }
+
+  _resetScanner() {
+    this._scanner = new JsonlByteScanner((obj) => {
+      try { this._onLine(obj); } catch (error) {
+        console.warn('[jsonl-tail] onLine callback failed; record dropped:', error && error.message, '| file:', this._filepath);
+      }
+    }, {
+      lineFilter: this._lineFilter,
+      maxPrefixBytes: this._maxPrefixBytes,
+      startOffset: this._offset,
+      discardLeadingPartialLine: this._discardLeadingPartialLine,
+    });
   }
 
   async _prepareInitialOffset() {
@@ -76,9 +93,8 @@ class JsonlTail {
         this._offset = this._maxInitialBytes && stat.size > this._maxInitialBytes
           ? stat.size - this._maxInitialBytes
           : 0;
-        this._buf = '';
-        this._decoder = new StringDecoder('utf8');
         this._discardLeadingPartialLine = this._offset > 0;
+        this._resetScanner();
       }
       if (stat.size <= this._offset) return;
       const fh = await fs.promises.open(this._filepath, 'r');
@@ -90,27 +106,7 @@ class JsonlTail {
           if (bytesRead <= 0) break;
           this._offset += bytesRead;
           this._maxObservedReadBytes = Math.max(this._maxObservedReadBytes, bytesRead);
-          let decoded = this._decoder.write(bytesRead === buf.length ? buf : buf.subarray(0, bytesRead));
-          if (this._discardLeadingPartialLine) {
-            const newline = decoded.indexOf('\n');
-            if (newline < 0) decoded = '';
-            else {
-              decoded = decoded.slice(newline + 1);
-              this._discardLeadingPartialLine = false;
-            }
-          }
-          this._buf += decoded;
-          const lines = this._buf.split('\n');
-          this._buf = lines.pop() || '';
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            let obj;
-            try { obj = JSON.parse(trimmed); } catch { continue; }
-            try { this._onLine(obj); } catch (error) {
-              console.warn('[jsonl-tail] onLine callback failed; record dropped:', error && error.message, '| file:', this._filepath);
-            }
-          }
+          this._scanner.push(bytesRead === buf.length ? buf : buf.subarray(0, bytesRead));
           if (this._offset < stat.size) {
             this._yieldCount += 1;
             await new Promise(resolve => setImmediate(resolve));
@@ -132,7 +128,7 @@ class JsonlTail {
     try { clearInterval(this._pollTimer); } catch {}
     this._watcher = null;
     this._pollTimer = null;
-    this._decoder.end();
+    this._scanner = null;
   }
 
   getStats() {
@@ -141,6 +137,7 @@ class JsonlTail {
       maxReadBytes: this._maxReadBytes,
       maxObservedReadBytes: this._maxObservedReadBytes,
       yieldCount: this._yieldCount,
+      ...(this._scanner ? this._scanner.getStats() : {}),
     };
   }
 }

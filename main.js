@@ -1236,7 +1236,9 @@ const resumeSession = createResumeSessionHandler({
   os,
   path,
   readCodexRolloutMeta,
-  readTranscriptTail,
+  readTranscriptTail: (kind, sourcePath, n) => readTranscriptTail(kind, sourcePath, n, {
+    parserService: transcriptParserService,
+  }),
   registerSessionForTap,
   resolveCodexSessionsRoot: (meta = {}) => {
     // Meeting Codex deliberately shares the ordinary ~/.codex history. A

@@ -21,13 +21,17 @@ const { isClaudeFamily, isCodexCliKind, isKimiCliKind } = require('./ai-kinds.js
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const readline = require('readline');
 const { parseClaudeTranscriptToTurns } = require('./claude-transcript-parser');
 const {
   codexRolloutMetaMatchesSid,
   isCodexTopLevelRolloutMeta,
+  parseCodexRolloutToTurns,
   readCodexRolloutMeta,
 } = require('./codex-transcript-parser.js');
+const {
+  createCodexLineFilter,
+  streamCodexJsonlRecordsSync,
+} = require('./codex-rollout-reader.js');
 const { JsonlTail } = require('./jsonl-tail.js');
 const {
   codexAgentMessageEventFromRecord,
@@ -43,8 +47,8 @@ const { KimiTap } = require('./kimi-transcript-tap.js');
 // 设计：
 // - fs.watch 监听文件事件（Windows ConPTY 偶发丢事件，降级 500ms 轮询 mtime）
 // - 维护 offset，每次增长从 offset 读到尾，按 \n 切行
-// - StringDecoder 处理 UTF-8 跨 chunk 边界
-// - onLine 回调的异常静默吞掉（单行坏不影响整体）
+// - JsonlByteScanner 保留跨 chunk 的原始字节，完整行才做 UTF-8/JSON 解码
+// - onLine 回调异常会记录并丢弃该行，单行失败不影响后续 tail
 
 // ---------------------------------------------------------------------------
 // ClaudeTap — Stop hook 驱动，直接读 transcript JSONL 尾部找 last assistant
@@ -378,53 +382,24 @@ class ClaudeTap extends EventEmitter {
   }
 }
 
-// Read just the first line of a file (no size limit). Used for session_meta
-// headers which can exceed typical buffer sizes (Codex embeds a multi-KB
-// base_instructions.text as JSON escaped string in line 1).
-function readFirstLine(filepath) {
-  return new Promise((resolve, reject) => {
-    let stream;
-    try { stream = fs.createReadStream(filepath, { encoding: 'utf8' }); }
-    catch (e) { return reject(e); }
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    let done = false;
-    rl.on('line', (line) => {
-      if (done) return;
-      done = true;
-      rl.close();
-      stream.destroy();
-      resolve(line);
-    });
-    rl.on('close', () => { if (!done) resolve(''); });
-    rl.on('error', (e) => { if (!done) { done = true; reject(e); } });
-    stream.on('error', (e) => { if (!done) { done = true; reject(e); } });
-  });
-}
-
 async function readCodexUserMessageEvents(rolloutPath) {
-  let raw;
-  try { raw = await fs.promises.readFile(rolloutPath, 'utf8'); }
-  catch { return []; }
   const out = [];
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let obj;
-    try { obj = JSON.parse(trimmed); } catch { continue; }
-    const event = codexUserMessageEventFromRecord(obj);
-    if (!event) continue;
-    out.push({
-      text: event.text,
-      submittedAt: event.submittedAt || 0,
-      turnId: event.turnId || null,
-      signalSource: event.signalSource,
-    });
+  try {
+    streamCodexJsonlRecordsSync(rolloutPath, (obj) => {
+      const event = codexUserMessageEventFromRecord(obj);
+      if (!event) return;
+      out.push({
+        text: event.text,
+        submittedAt: event.submittedAt || 0,
+        turnId: event.turnId || null,
+        signalSource: event.signalSource,
+      });
+    }, { profile: 'user' });
+  } catch (error) {
+    console.warn('[codex-tap] safe user-message scan failed:', error && error.message, '| file:', rolloutPath);
+    return [];
   }
   return out;
-}
-
-async function readCodexUserMessages(rolloutPath) {
-  return (await readCodexUserMessageEvents(rolloutPath)).map(ev => ev.text);
 }
 
 function normalizePromptForCompare(text) {
@@ -695,11 +670,28 @@ class CodexTap extends EventEmitter {
     return this._bound.get(hubSessionId)?.rolloutPath || null;
   }
 
+  async _readUserMessageEvents(rolloutPath) {
+    if (this._parserService) {
+      try {
+        const { turns } = await this._parserService.parse('codex', rolloutPath, { fromTail: false });
+        return (turns || []).filter(turn => turn && turn.role === 'user').map(turn => ({
+          text: turn.text,
+          submittedAt: Number(turn.ts) || 0,
+          turnId: null,
+          signalSource: 'semantic_transcript_parser',
+        }));
+      } catch (error) {
+        console.warn('[codex-tap] parser worker user-message scan failed; using local semantic scan:', error && error.message);
+      }
+    }
+    return readCodexUserMessageEvents(rolloutPath);
+  }
+
   async hasUserMessageSince(hubSessionId, sincePromptTs = 0) {
     const rolloutPath = this.getRolloutPath(hubSessionId);
     if (!rolloutPath) return false;
     const threshold = Math.max(0, Number(sincePromptTs) || 0);
-    const events = await readCodexUserMessageEvents(rolloutPath);
+    const events = await this._readUserMessageEvents(rolloutPath);
     return events.some(ev => (Number(ev.submittedAt) || 0) >= threshold);
   }
 
@@ -757,102 +749,39 @@ class CodexTap extends EventEmitter {
     if (!entry || !entry.rolloutPath) {
       return { text: '', extractMode: 'no_rollout_bound', source: null };
     }
-    if (this._parserService) {
-      try {
-        const { turns } = await this._parserService.parse('codex', entry.rolloutPath, { fromTail: false });
-        const untilTs = Number.isFinite(Number(opts.untilTs)) && Number(opts.untilTs) > 0 ? Number(opts.untilTs) : null;
-        let effectiveSinceTs = Math.max(0, Number(sincePromptTs) || 0);
-        for (const turn of turns) {
-          const ts = Number(turn && (turn.tsEnd || turn.ts)) || 0;
-          if (turn && turn.role === 'user' && ts >= effectiveSinceTs && (untilTs === null || ts < untilTs)) {
-            effectiveSinceTs = ts;
-          }
-        }
-        const candidates = turns.filter((turn) => {
-          if (!turn || turn.role !== 'assistant') return false;
-          const ts = Number(turn.tsEnd || turn.ts) || 0;
-          if (effectiveSinceTs && ts && ts < effectiveSinceTs) return false;
-          if (untilTs !== null && (!ts || ts >= untilTs)) return false;
-          return typeof turn.text === 'string' && turn.text.trim();
-        });
-        const latest = candidates[candidates.length - 1];
-        if (!latest) return { text: '', extractMode: 'no_task_complete_yet', source: null };
-        const isFinal = latest.stopReason === 'task_complete';
-        return {
-          text: latest.text.trim(),
-          extractMode: isFinal ? 'final_answer' : 'partial_commentary',
-          source: isFinal ? 'manual_codex_rollout' : 'manual_codex_rollout_streaming',
-        };
-      } catch {
-        return { text: '', extractMode: 'no_rollout_bound', source: null };
+    let turns;
+    try {
+      if (this._parserService) {
+        ({ turns } = await this._parserService.parse('codex', entry.rolloutPath, { fromTail: false }));
+      } else {
+        turns = parseCodexRolloutToTurns(entry.rolloutPath, { fromTail: false });
       }
+    } catch (error) {
+      console.warn('[codex-tap] extractLatestTurn semantic parse failed:', error && error.message, '| file:', entry.rolloutPath);
+      return { text: '', extractMode: 'no_rollout_bound', source: null };
     }
-    let raw;
-    try { raw = await fs.promises.readFile(entry.rolloutPath, 'utf8'); }
-    catch { return { text: '', extractMode: 'no_rollout_bound', source: null }; }
     const untilTs = Number.isFinite(Number(opts.untilTs)) && Number(opts.untilTs) > 0 ? Number(opts.untilTs) : null;
-    const beyondWindow = (ts) => untilTs !== null && Number.isFinite(ts) && ts >= untilTs;
-    const lines = raw.split('\n');
     let effectiveSinceTs = Math.max(0, Number(sincePromptTs) || 0);
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let obj;
-      try { obj = JSON.parse(trimmed); } catch { continue; }
-      const userEvent = codexUserMessageEventFromRecord(obj);
-      if (!userEvent) continue;
-      const ts = userEvent.submittedAt || NaN;
-      // 窗口内的最后一条 user_message 才能推进下界；窗口外（下一轮）的不算
-      if (Number.isFinite(ts) && ts >= effectiveSinceTs && !beyondWindow(ts)) {
+    for (const turn of turns || []) {
+      const ts = Number(turn && (turn.tsEnd || turn.ts)) || 0;
+      if (turn && turn.role === 'user' && ts >= effectiveSinceTs && (untilTs === null || ts < untilTs)) {
         effectiveSinceTs = ts;
       }
     }
-
-    // 优先：从尾向前扫 legacy task_complete 或 Codex 0.147
-    // AgentMessage(final_answer)（带 since/until 窗口过滤）
-    // 二轮加固（多方审查）：窗口模式（untilTs 有值 = 精确旧轮重提取）下，时间戳缺失/
-    //   非法的事件一律不信任——NaN 会同时穿过 since 和 until 过滤，把别轮答案带进窗口。
-    //   无窗口（最新轮/兼容旧调用）保持宽松原行为。
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      let obj;
-      try { obj = JSON.parse(line); } catch { continue; }
-      const agentEvent = codexAgentMessageEventFromRecord(obj);
-      if (!agentEvent || !agentEvent.completed) continue;
-      const ts = agentEvent.completedAt || (obj.timestamp ? Date.parse(obj.timestamp) : NaN);
-      if (untilTs !== null && !Number.isFinite(ts)) continue;
-      if (effectiveSinceTs && Number.isFinite(ts) && ts < effectiveSinceTs) continue;
-      if (beyondWindow(ts)) continue;
-      return {
-        text: agentEvent.text,
-        extractMode: 'final_answer',
-        source: 'manual_codex_rollout',
-      };
-    }
-
-    // 降级：streaming 中（无 final answer）→ 拼窗口内所有 commentary
-    const collected = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let obj;
-      try { obj = JSON.parse(trimmed); } catch { continue; }
-      const agentEvent = codexAgentMessageEventFromRecord(obj);
-      if (!agentEvent || agentEvent.completed) continue;
-      const ts = agentEvent.completedAt || (obj.timestamp ? Date.parse(obj.timestamp) : NaN);
-      if (untilTs !== null && !Number.isFinite(ts)) continue;
-      if (effectiveSinceTs && Number.isFinite(ts) && ts < effectiveSinceTs) continue;
-      if (beyondWindow(ts)) continue;
-      collected.push(agentEvent.text);
-    }
-    if (collected.length === 0) {
-      return { text: '', extractMode: 'no_task_complete_yet', source: null };
-    }
+    const candidates = (turns || []).filter((turn) => {
+      if (!turn || turn.role !== 'assistant') return false;
+      const ts = Number(turn.tsEnd || turn.ts) || 0;
+      if (effectiveSinceTs && ts && ts < effectiveSinceTs) return false;
+      if (untilTs !== null && (!ts || ts >= untilTs)) return false;
+      return typeof turn.text === 'string' && turn.text.trim();
+    });
+    const latest = candidates[candidates.length - 1];
+    if (!latest) return { text: '', extractMode: 'no_task_complete_yet', source: null };
+    const isFinal = latest.stopReason === 'task_complete';
     return {
-      text: collected.join('\n\n'),
-      extractMode: 'partial_commentary',
-      source: 'manual_codex_rollout_streaming',
+      text: latest.text.trim(),
+      extractMode: isFinal ? 'final_answer' : 'partial_commentary',
+      source: isFinal ? 'manual_codex_rollout' : 'manual_codex_rollout_streaming',
     };
   }
 
@@ -954,18 +883,10 @@ class CodexTap extends EventEmitter {
   }
 
   async _tryBind(rolloutPath) {
-    // Codex rollout first line (session_meta) can exceed 20KB due to a huge
-    // base_instructions.text field — read via readline to get a full line
-    // without truncation.
-    let meta;
-    try {
-      const firstLine = await readFirstLine(rolloutPath);
-      if (!firstLine) return;  // file still flushing; retry next scan
-      let obj;
-      try { obj = JSON.parse(firstLine); } catch { return; }
-      if (obj?.type !== 'session_meta' || !obj.payload) return;
-      meta = obj.payload;
-    } catch { return; }
+    // readCodexRolloutMeta reads only a bounded first-line prefix. A malformed
+    // file can therefore never turn binding into an unbounded string load.
+    const meta = readCodexRolloutMeta(rolloutPath);
+    if (!meta) return; // file still flushing; retry next scan
 
     // Hub sessions own top-level Codex TUI threads. Codex subagents write
     // sibling rollout files in the same cwd and often within the same second;
@@ -1010,7 +931,8 @@ class CodexTap extends EventEmitter {
       if (entry.requirePromptMatch) {
         if (!entry.expectedPrompt) continue;
         if (normalizedUserMessages === null) {
-          normalizedUserMessages = (await readCodexUserMessages(rolloutPath)).map(normalizePromptForCompare);
+          normalizedUserMessages = (await this._readUserMessageEvents(rolloutPath))
+            .map(ev => normalizePromptForCompare(ev.text));
         }
         if (!normalizedUserMessages.some(msg => codexPromptMatchesExpected(msg, entry.expectedPrompt))) continue;
       }
@@ -1023,7 +945,7 @@ class CodexTap extends EventEmitter {
       const promptCandidates = candidates.filter(c => c.entry.expectedPrompt);
       if (promptCandidates.length === 0) return;
       const userMessages = normalizedUserMessages
-        || (await readCodexUserMessages(rolloutPath)).map(normalizePromptForCompare);
+        || (await this._readUserMessageEvents(rolloutPath)).map(ev => normalizePromptForCompare(ev.text));
       if (userMessages.length === 0) return;
       const matched = promptCandidates.filter(c =>
         userMessages.some(msg => codexPromptMatchesExpected(msg, c.entry.expectedPrompt))
@@ -1260,7 +1182,10 @@ class CodexTap extends EventEmitter {
       }
     };
 
-    const tail = new JsonlTail(rolloutPath, onLine, { maxInitialBytes: 8 * 1024 * 1024 });
+    const tail = new JsonlTail(rolloutPath, onLine, {
+      maxInitialBytes: 8 * 1024 * 1024,
+      lineFilter: createCodexLineFilter('live'),
+    });
     this._bound.set(hubSessionId, {
       rolloutPath, tail, lastText: null,
       lastModel: null, lastUsage: null, lastContextEffectiveMax: null,    // T13 + runtime context observation
