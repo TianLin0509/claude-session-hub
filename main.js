@@ -95,6 +95,7 @@ const {
 } = require('./main/session-auto-suspend.js');
 const committeeHistory = require('./core/committee-history.js');
 const { createAutoTitleManager } = require('./main/auto-title-manager.js');
+const { createNightGuardService } = require('./main/night-guard-service.js');
 const {
   parseCodexUsage,
   parseGeminiUsage,
@@ -423,6 +424,7 @@ const completionNotifier = new CompletionNotifier({
   getLogPath: () => path.join(getHubDataDir(), 'notification-delivery.jsonl'),
   logger: console,
 });
+let nightGuardController = null;
 // SessionManager 构造不接收依赖；kimi 会话 spawn 前的 AGENTS.md seed 需要它
 // （core/session-manager.js 里 this.workspaceService.seedUngovernedAgentsFile）。
 sessionManager.workspaceService = workspaceService;
@@ -437,6 +439,7 @@ const workspaceMigrationSessionIds = new Set();
 transcriptTap.on('turn-complete', (ev) => {
   const { hubSessionId, text, completedAt } = ev || {};
   const completionAt = normalizeEventTime(completedAt, Date.now());
+  nightGuardController?.handleTurnComplete({ ...(ev || {}), completedAt: completionAt });
   let session = sessionManager.getSession(hubSessionId);
   // Persist reply recency in main as well as renderer. This closes the gap where
   // a renderer reload/suspend between transcript completion and its IPC handler
@@ -506,6 +509,7 @@ const { maybeAutoTitleMeetingFromPrompt, maybeAutoTitleSessionFromPrompt } = aut
 // auto-title or notification prompt bookkeeping with synthetic text.
 transcriptTap.on('turn-started', (ev) => {
   if (!ev || !ev.hubSessionId) return;
+  nightGuardController?.handleTurnStarted(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
     sendToRenderer('turn-started-event', {
@@ -524,6 +528,7 @@ transcriptTap.on('turn-started', (ev) => {
 
 transcriptTap.on('turn-aborted', (ev) => {
   if (!ev || !ev.hubSessionId) return;
+  nightGuardController?.handleTurnAborted(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
     sendToRenderer('turn-aborted-event', {
@@ -544,6 +549,7 @@ transcriptTap.on('prompt-submitted', (ev) => {
   const { hubSessionId, text, submittedAt } = ev || {};
   completionNotifier.notePromptSubmitted(ev || {});
   if (!hubSessionId) return;
+  nightGuardController?.handlePromptSubmitted(ev);
   const session = sessionManager.getSession(hubSessionId);
   maybeAutoTitleSessionFromPrompt(ev);
   try {
@@ -559,6 +565,21 @@ transcriptTap.on('prompt-submitted', (ev) => {
     });
   } catch (e) {
     console.warn('[codex prompt] prompt-submitted-event broadcast failed:', e && e.message);
+  }
+});
+
+transcriptTap.on('turn-failed', (ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  nightGuardController?.handleTurnFailed(ev);
+});
+
+transcriptTap.on('goal-updated', (ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  nightGuardController?.handleGoalUpdated(ev);
+  try {
+    sendToRenderer('goal-updated-event', ev);
+  } catch (error) {
+    console.warn('[night-guard] goal status broadcast failed:', error && error.message);
   }
 });
 
@@ -936,6 +957,7 @@ const terminalOutputBatcher = new TerminalOutputBatcher({
 });
 
 sessionManager.onData = (sessionId, data, seq) => {
+  nightGuardController?.handlePtyData(sessionId, data);
   // 未聚焦的群聊成员**降频转发，不再丢弃**。旧实现直接 return，让 xterm 在未聚焦
   // 期间收不到任何数据，切过去只能靠回灌一段截断的 ANSI 流重建画面 —— 对 alt-screen
   // TUI 来说基本只剩最后一屏，用户表现为"滚不上去 / 渲染卡住"。
@@ -1267,6 +1289,7 @@ registerSessionIpc(ipcMain, {
   sendToRenderer,
   sessionManager,
   workspaceService,
+  onTerminalInput: (sessionId, data) => nightGuardController?.handleUserInput(sessionId, data),
 });
 
 ipcMain.handle('debug:get-managed-launch-audit', (_event, request = {}) => {
@@ -1311,6 +1334,21 @@ const bootState = stateStore.loadAndSelfHeal({ sessionStore, meetingStore });
 //   bootWasCleanShutdown 是它额外暴露的"原始盘上值"，告知是否上次优雅退出。
 const bootWasClean = !!bootState.bootWasCleanShutdown;
 let lastPersistedSessions = Array.isArray(bootState.sessions) ? bootState.sessions : [];
+nightGuardController = createNightGuardService({
+  env: process.env,
+  getConfig: getHubConfig,
+  getDataDir: getHubDataDir,
+  getPersistedSessions: () => lastPersistedSessions,
+  ipcMain,
+  logger: console,
+  resumeSession,
+  sendToRenderer,
+  sessionManager,
+  sessionStore,
+}).controller;
+for (const persistedSession of lastPersistedSessions) {
+  nightGuardController?.hydrateSession(persistedSession);
+}
 // 2026-07-29 三方审查（Kimi 发现）：healPersistedCwds 自 2026-05 引入以来只被 import、
 // 从未调用——药一直在手边没吃。workspace 从 ~/Workspaces 迁到 C:\Vibe 之后，state.json
 // 里存的还是旧路径，唤醒这类休眠会话会静默回落 Home（见 session-manager 的 cwdFellBack）。
@@ -2382,6 +2420,7 @@ async function runFinalShutdownCleanup() {
     catch (error) { errors.push({ label, message: error && error.message ? error.message : String(error) }); }
   };
   capture('completion-notifier', () => completionNotifier.dispose());
+  capture('night-guard', () => nightGuardController?.dispose());
   capture('session-auto-suspend', () => sessionAutoSuspendScheduler?.stop());
   capture('claude-hook-watchdog', () => claudeHookWatchdog?.stop());
   claudeHookWatchdog = null;

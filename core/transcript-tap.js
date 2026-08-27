@@ -31,6 +31,8 @@ const {
 const { JsonlTail } = require('./jsonl-tail.js');
 const {
   codexAgentMessageEventFromRecord,
+  codexGoalEventFromRecord,
+  codexTaskFailureEventFromRecord,
   codexTurnIdFromPayload,
   codexUserMessageEventFromRecord,
   timestampToMs,
@@ -1136,6 +1138,32 @@ class CodexTap extends EventEmitter {
       const eventType = obj.payload.type;
       const eventTurnId = codexTurnIdFromPayload(obj.payload);
 
+      const goalEvent = codexGoalEventFromRecord(obj);
+      if (goalEvent) {
+        const goalSig = `${goalEvent.status}:${goalEvent.objective}:${goalEvent.observedAt || ''}`;
+        if (entry._lastGoalSig !== goalSig) {
+          entry._lastGoalSig = goalSig;
+          this.emit('goal-updated', {
+            hubSessionId,
+            transcriptPath: entry.rolloutPath,
+            ...goalEvent,
+          });
+        }
+      }
+
+      const failureEvent = codexTaskFailureEventFromRecord(obj);
+      if (failureEvent) {
+        const failureSig = `${failureEvent.turnId || ''}:${failureEvent.failedAt || ''}:${failureEvent.message}`;
+        if (entry._lastFailureSig !== failureSig) {
+          entry._lastFailureSig = failureSig;
+          this.emit('turn-failed', {
+            hubSessionId,
+            transcriptPath: entry.rolloutPath,
+            ...failureEvent,
+          });
+        }
+      }
+
       // T13: token_count 事件含 last_token_usage（本轮）+ total_token_usage（累计）
       //   Codex 一个 turn 内可能写多次 token_count（每个 task 完成都写），last_token_usage 是
       //   最近一次 task 的 token，不是整 turn 累加；total_token_usage 是 session 起算的累计。
@@ -1268,6 +1296,7 @@ class CodexTap extends EventEmitter {
       _pendingCompletedAt: null, _pendingTurnId: null, _currentTurnId: null,
       _pendingSignalSource: null,
       _lastPromptSig: null, _lastStartSig: null, _lastAbortSig: null,
+      _lastGoalSig: null, _lastFailureSig: null,
     });
     await tail.start();
     return true;
@@ -1706,6 +1735,8 @@ class TranscriptTap extends EventEmitter {
       b.on('turn-complete', (ev) => this.emit('turn-complete', ev));
       b.on('turn-started', (ev) => this.emit('turn-started', ev));
       b.on('turn-aborted', (ev) => this.emit('turn-aborted', ev));
+      b.on('turn-failed', (ev) => this.emit('turn-failed', ev));
+      b.on('goal-updated', (ev) => this.emit('goal-updated', ev));
       b.on('session-bound', (ev) => this.emit('session-bound', ev));
       b.on('prompt-submitted', (ev) => this.emit('prompt-submitted', ev));
       b.on('background-work-changed', (ev) => this.emit('background-work-changed', ev));

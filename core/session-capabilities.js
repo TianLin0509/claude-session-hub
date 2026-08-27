@@ -149,6 +149,7 @@ function buildSessionResumeMeta(session, overrides = {}) {
     heroIds: Array.isArray(session.heroIds) ? session.heroIds.slice() : null,
     promptPolicyVersion: session.promptPolicyVersion || null,
     hiddenFromSidebar: !!session.hiddenFromSidebar,
+    ...(session.nightGuard ? { nightGuard: session.nightGuard } : {}),
   };
   return { ...meta, ...(overrides || {}) };
 }

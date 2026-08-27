@@ -29,6 +29,7 @@ const { TerminalSnapshot } = require('./terminal-snapshot.js');
 const { CodexXtermScrollbackRewriter } = require('./codex-xterm-scrollback-rewriter.js');
 const { compareLatestReplyDesc } = require('./session-recency.js');
 const { detectHostShellTakeover } = require('./host-shell-detector.js');
+const { sanitizeNightGuardState } = require('./night-guard-state.js');
 const {
   DEFAULT_CLAUDE_MCP_PROFILE,
   WIRELESS_MCP_NAMES,
@@ -1199,6 +1200,7 @@ class SessionManager extends EventEmitter {
     const effectiveContextMax = isCodexRuntime
       ? (normalizedContextMax || resolveCodexContextWindow(currentModel && currentModel.id, null))
       : (typeof opts.contextMax === 'number' ? opts.contextMax : null);
+    const initialNightGuard = sanitizeNightGuardState(opts.nightGuard);
 
     const now = Date.now();
     const info = {
@@ -1223,6 +1225,7 @@ class SessionManager extends EventEmitter {
       // Delivery is opt-in per conversation. Never inherit the former global
       // switch into a newly-created session.
       completionNotificationEnabled: opts.completionNotificationEnabled === true,
+      ...(initialNightGuard ? { nightGuard: initialNightGuard } : {}),
       ...(opts.purpose ? { purpose: String(opts.purpose) } : {}),
       ...(opts.researchSessionId ? { researchSessionId: String(opts.researchSessionId) } : {}),
       ...(opts.chuxinTaskId ? { chuxinTaskId: String(opts.chuxinTaskId) } : {}),
@@ -1608,6 +1611,10 @@ class SessionManager extends EventEmitter {
         mcpProfile: effectiveCodexMcpProfile,
         allowedNames: allowedGroupMcpNames,
       });
+      if (opts.useResume && opts.codexSid && typeof opts.codexInitialPrompt === 'string'
+          && opts.codexInitialPrompt.trim()) {
+        cmd += ` ${quotePowerShellLiteral(opts.codexInitialPrompt.trim())}`;
+      }
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -2194,7 +2201,12 @@ class SessionManager extends EventEmitter {
         + buildCodexSpeedTierArg(resolveCodexSpeedTier(runtimeKind, s.info && s.info.codexSpeedTier))
         + buildCodexContextWindowArg(resolveCodexContextWindow(codexRelaunchModel, s.info && s.info.contextMax));
       ensureCodexMcpEntries(codexConfigDir, [], CODEX_MANAGED_MCP_NAMES);
-      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexRelaunchModel}${codexReasoningArg}`;
+      const resumeSid = options.resume === true && s.info && s.info.codexSid
+        ? String(s.info.codexSid).trim()
+        : '';
+      cmd = resumeSid
+        ? ` codex resume ${quotePowerShellLiteral(resumeSid)} --dangerously-bypass-approvals-and-sandbox --model ${codexRelaunchModel}${codexReasoningArg}`
+        : ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexRelaunchModel}${codexReasoningArg}`;
       const relaunchMcpProfile = resolveCodexMcpProfile(runtimeKind, s.info && s.info.mcpProfile);
       const relaunchMcpEntries = relaunchMcpProfile === 'none' ? [] : s.codexMcpEntries;
       cmd += buildCodexEphemeralMcpArgs(relaunchMcpEntries);
@@ -2206,6 +2218,9 @@ class SessionManager extends EventEmitter {
           ? []
           : [...CODEX_MANAGED_MCP_NAMES, ...(relaunchMcpEntries || []).map((entry) => entry && entry.name)],
       });
+      if (resumeSid && typeof options.prompt === 'string' && options.prompt.trim()) {
+        cmd += ` ${quotePowerShellLiteral(options.prompt.trim())}`;
+      }
       cmd += '\r\n';
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
       cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
@@ -2318,6 +2333,9 @@ class SessionManager extends EventEmitter {
         : {}),
       ...(info.status !== undefined ? { status: info.status } : {}),
       connectionIssue: info.connectionIssue || null,
+      ...(sanitizeNightGuardState(info.nightGuard)
+        ? { nightGuard: sanitizeNightGuardState(info.nightGuard) }
+        : {}),
       ...(info.readOnly ? { readOnly: true } : {}),
       ...(info.provider ? { provider: info.provider } : {}),
       ...(info.nativeSession ? { nativeSession: info.nativeSession } : {}),

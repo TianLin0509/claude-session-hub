@@ -247,6 +247,9 @@ function _sessionWarningText(session) {
   if (hasStreamDisconnectIssue(session)) {
     warnings.push(`网络断连：${String(session.connectionIssue.message || '连接已中断')}`);
   }
+  if (session.nightGuard && (session.nightGuard.enabled || session.nightGuard.status === 'blocked')) {
+    warnings.push(`夜间保护：${String(session.nightGuard.message || session.nightGuard.status || '已开启')}`);
+  }
   return warnings.join('；');
 }
 

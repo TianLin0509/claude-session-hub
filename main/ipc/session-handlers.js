@@ -27,6 +27,7 @@ function registerSessionIpc(ipcMain, deps) {
     resumeSession,
     getTerminalOutputBatchStats = () => null,
     getPersistedSessions = () => [],
+    onTerminalInput = null,
   } = deps;
 
   const lastResizeBySid = new Map();
@@ -183,6 +184,7 @@ function registerSessionIpc(ipcMain, deps) {
   });
 
   ipcMain.on('terminal-input', (_e, { sessionId, data }) => {
+    if (typeof onTerminalInput === 'function') onTerminalInput(sessionId, data);
     sessionManager.writeToSession(sessionId, data);
   });
 

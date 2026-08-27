@@ -44,6 +44,7 @@ const RESUME_META_FIELDS = [
   'promptPolicyVersion',
   'hiddenFromSidebar',
   'completionNotificationEnabled',
+  'nightGuard',
 ];
 
 function withoutVolatileTimestamps(entity) {

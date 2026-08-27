@@ -207,6 +207,7 @@ function createResumeSessionHandler(deps) {
       ...(meta.workspaceLabel ? { workspaceLabel: meta.workspaceLabel } : {}),
       meetingId: meta.meetingId || null,
       completionNotificationEnabled: meta.completionNotificationEnabled === true,
+      ...(meta.nightGuard ? { nightGuard: meta.nightGuard } : {}),
       model: safeResumeModel || undefined,
       ...(meta.effort ? { effort: meta.effort } : {}),
       ...(isLegacyDeepSeek ? { deepseekLegacyClaude: true } : {}),
@@ -216,6 +217,10 @@ function createResumeSessionHandler(deps) {
       useResume: isNativeResumeKind,
       codexResumePicker: codexMissingSid,
       codexSid: effectiveCodexSid,
+      ...(isCodexRuntime && typeof meta.nightGuardRecoveryPrompt === 'string'
+        && meta.nightGuardRecoveryPrompt.trim()
+        ? { codexInitialPrompt: meta.nightGuardRecoveryPrompt }
+        : {}),
       codexProfile: isCodexRuntime ? (meta.codexProfile || null) : null,
       // MCP 档位现在 Claude 家族也有（core/claude-mcp-profile.js），不能再只给
       // codex runtime 继承 —— 否则 resume 出来的 Claude 会话会从用户选的 Lean

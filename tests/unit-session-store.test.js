@@ -182,5 +182,29 @@ const sessionStore = require('../core/session-store');
     console.log('PASS S11 resume policy metadata');
   }
 
+  // S12: night guard protection and rate-limit history survive Hub restart.
+  {
+    sessionStore.saveSessionFile('night-guard', {
+      kind: 'codex', title: 'Overnight', codexSid: 'native-night',
+      nightGuard: {
+        enabled: true,
+        mode: 'goal',
+        status: 'waiting-network',
+        armedAt: 9000,
+        activeTurnId: 'turn-night',
+        recoveryAttempts: [9100],
+        healthyRounds: 2,
+        message: '等待网络',
+      },
+      updatedAt: 9200,
+    });
+    const loaded = sessionStore.loadSessionFile('night-guard');
+    assert.strictEqual(loaded.nightGuard.enabled, true);
+    assert.strictEqual(loaded.nightGuard.mode, 'goal');
+    assert.strictEqual(loaded.nightGuard.status, 'waiting-network');
+    assert.deepStrictEqual(loaded.nightGuard.recoveryAttempts, [9100]);
+    console.log('PASS S12 night guard metadata');
+  }
+
   console.log('\n[ALL session-store tests PASSED]');
 })();

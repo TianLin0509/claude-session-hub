@@ -329,7 +329,7 @@
 .recent-turn-copy {
   position: absolute;
   top: 8px;
-  right: 414px;
+  right: 510px;
   z-index: 100;
   min-height: 25px;
   display: inline-flex;

@@ -150,6 +150,7 @@ const sessions = new Map();
 const _runtimeTruthExpiryTimers = new Map();
 let activeSessionId = null;
 let completionNotificationToggle = null;
+let nightGuardToggle = null;
 let systemResourceUsage = null;
 let homeWorkbench = null;
 // 侧栏常驻显示海外代理 + 国产直连的真实公网出口。
@@ -580,6 +581,7 @@ function preserveAndClearTerminalPanel() {
     document.getElementById('msg-overlay'),
     document.getElementById('card-question-nav'),
     document.querySelector('.view-toggle'),
+    document.getElementById('night-guard-toggle'),
     document.getElementById('completion-notification-toggle'),
     document.getElementById('recent-turn-copy'),
   ].filter(Boolean);
@@ -820,6 +822,7 @@ async function selectMeeting(meetingId, opts = {}) {
   if (typeof recentTurnCopyController !== 'undefined') recentTurnCopyController.setVisible(false);
   activeMeetingId = meetingId;
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
+  if (nightGuardToggle) nightGuardToggle.refreshTarget();
   // Stop background meeting PTY redraws at the main-process boundary. The room
   // renders transcript/card state, not xterm output; an individual member shell
   // will set focus again via selectSession when the user explicitly opens it.
@@ -3528,6 +3531,7 @@ async function selectSession(id, opts = {}) {
   const shouldFocusTerminal = switching || currentView === 'pty';
   activeSessionId = id;
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
+  if (nightGuardToggle) nightGuardToggle.refreshTarget();
   recentTurnCopyController.setVisible(currentView === 'card' && !!activeSessionId);
   if (session) clearSessionAttention(session, { clearUnread: true });
   ipcRenderer.send('focus-session', { sessionId: id });
@@ -5520,6 +5524,7 @@ function escapeToHome() {
   shellController.escapeToHome();
   setShellNavActive('home');
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
+  if (nightGuardToggle) nightGuardToggle.refreshTarget();
   if (homeWorkbench) homeWorkbench.render({ force: true });
 }
 // 2026-05-16 道雪：外部 HTTP 救援入口 — main.js POST /api/escape-home 通过这个 IPC 触发
@@ -5537,6 +5542,11 @@ function getActiveCompletionNotificationTarget() {
     return meeting ? { type: 'meeting', ...meeting } : null;
   }
   return null;
+}
+function getActiveNightGuardTarget() {
+  if (!activeSessionId) return null;
+  const session = sessions.get(activeSessionId);
+  return session && isCodexKind(session.kind) ? session : null;
 }
 const configModal = createConfigModalController({
   document,
@@ -5561,6 +5571,13 @@ completionNotificationToggle = createCompletionNotificationToggle({
   openNotificationSettings: configModal.openNotificationSetup,
 });
 completionNotificationToggle.init();
+const { createNightGuardToggle } = require('./night-guard-toggle.js');
+nightGuardToggle = createNightGuardToggle({
+  document,
+  ipcRenderer,
+  getTarget: getActiveNightGuardTarget,
+});
+nightGuardToggle.init();
 ipcRenderer.on('completion-notification-config-changed', () => {
   void refreshHubProxyInfo();
 });
@@ -5667,6 +5684,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   activeSessionId = session.id;
   activeMeetingId = null;
   completionNotificationToggle.refreshTarget();
+  nightGuardToggle.refreshTarget();
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
   if (terminalPanelEl) terminalPanelEl.style.display = '';
@@ -5765,6 +5783,7 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
   if (activeSessionId === sessionId) {
     activeSessionId = null;
     completionNotificationToggle.refreshTarget();
+    nightGuardToggle.refreshTarget();
     recentTurnCopyController.setVisible(false);
     preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
@@ -5813,6 +5832,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
   if (activeSessionId === sessionId) {
     activeSessionId = null;
     completionNotificationToggle.refreshTarget();
+    nightGuardToggle.refreshTarget();
     recentTurnCopyController.setVisible(false);
     preserveAndClearTerminalPanel();
     terminalPanelEl.appendChild(emptyStateEl);
@@ -5880,6 +5900,9 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
   if (typeof session.completionNotificationEnabled === 'boolean') {
     local.completionNotificationEnabled = session.completionNotificationEnabled;
   }
+  if (session.nightGuard && typeof session.nightGuard === 'object') {
+    local.nightGuard = { ...session.nightGuard };
+  }
   if (session.id === activeSessionId) {
     // Auto-title and external rename updates already refresh the sidebar, but
     // the active terminal header used to keep the placeholder (for example
@@ -5890,6 +5913,7 @@ ipcRenderer.on('session-updated', (_e, { session }) => {
     if (activeTitle && activeTitle.textContent !== local.title) activeTitle.textContent = local.title;
     updateActiveMetricsRow();
     completionNotificationToggle.refreshTarget();
+    nightGuardToggle.refreshTarget();
   }
   if (persistRuntimeContext) schedulePersist();
   scheduleSessionListRender();
@@ -5937,6 +5961,9 @@ function schedulePersist() {
         suspendReason: s.suspendReason || null,
         connectionIssue: s.connectionIssue && typeof s.connectionIssue === 'object'
           ? { ...s.connectionIssue }
+          : null,
+        nightGuard: s.nightGuard && typeof s.nightGuard === 'object'
+          ? { ...s.nightGuard }
           : null,
         currentModel: s.currentModel || null,
         effort: s.effort || null,
@@ -6119,6 +6146,9 @@ window.resumeDormantSession = resumeDormantSession;
         suspendReason: meta.suspendReason || null,
         connectionIssue: meta.connectionIssue && typeof meta.connectionIssue === 'object'
           ? { ...meta.connectionIssue }
+          : null,
+        nightGuard: meta.nightGuard && typeof meta.nightGuard === 'object'
+          ? { ...meta.nightGuard }
           : null,
         createdAt: meta.lastMessageTime || Date.now(),
         cwd: meta.cwd || null,
@@ -6311,6 +6341,7 @@ ipcRenderer.on('meeting-created', (_e, { meeting }) => {
 ipcRenderer.on('meeting-updated', (_e, { meeting }) => {
   meetings[meeting.id] = meeting;
   if (meeting.id === activeMeetingId) completionNotificationToggle.refreshTarget();
+  if (meeting.id === activeMeetingId) nightGuardToggle.refreshTarget();
   if (typeof MeetingRoom !== 'undefined') {
     MeetingRoom.updateMeetingData(meeting.id, meeting);
   }

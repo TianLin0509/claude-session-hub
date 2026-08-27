@@ -122,6 +122,50 @@ function codexUserMessageEventFromRecord(record) {
   };
 }
 
+function codexGoalEventFromRecord(record) {
+  if (!record || record.type !== 'event_msg' || !record.payload
+      || record.payload.type !== 'thread_goal_updated' || !record.payload.goal) return null;
+  const payload = record.payload;
+  const goal = payload.goal;
+  const objective = codexTextFromContent(
+    goal && typeof goal === 'object' ? goal.objective : goal,
+  ).trim();
+  const status = goal && typeof goal === 'object'
+    ? String(goal.status || '').trim().toLowerCase()
+    : '';
+  if (!objective && !status) return null;
+  return {
+    objective,
+    status: status || 'active',
+    observedAt: timestampToMs(record.timestamp)
+      || numericTimestampToMs(payload.completed_at_ms)
+      || numericTimestampToMs(payload.started_at_ms)
+      || numericTimestampToMs(payload.completed_at)
+      || numericTimestampToMs(payload.started_at),
+    turnId: codexTurnIdFromPayload(payload),
+    signalSource: 'thread_goal_updated',
+  };
+}
+
+function codexTaskFailureEventFromRecord(record) {
+  if (!record || record.type !== 'event_msg' || !record.payload
+      || record.payload.type !== 'task_complete' || !record.payload.error) return null;
+  const payload = record.payload;
+  const error = payload.error;
+  const message = codexTextFromPayload(error).trim()
+    || String(error && error.message || '').trim();
+  if (!message) return null;
+  return {
+    message,
+    errorCode: String(error.codex_error_info || error.code || '').trim() || null,
+    failedAt: timestampToMs(record.timestamp)
+      || numericTimestampToMs(payload.completed_at_ms)
+      || numericTimestampToMs(payload.completed_at),
+    turnId: codexTurnIdFromPayload(payload),
+    signalSource: 'task_complete_error',
+  };
+}
+
 /**
  * Normalize Codex assistant-message records across the legacy and 0.147
  * rollout schemas. The new schema marks the terminal answer with
@@ -177,10 +221,12 @@ function codexAgentMessageEventFromRecord(record) {
 }
 
 module.exports = {
+  codexAgentMessageEventFromRecord,
+  codexGoalEventFromRecord,
+  codexTaskFailureEventFromRecord,
   codexTextFromContent,
   codexTextFromPayload,
   codexTurnIdFromPayload,
   codexUserMessageEventFromRecord,
-  codexAgentMessageEventFromRecord,
   timestampToMs,
 };

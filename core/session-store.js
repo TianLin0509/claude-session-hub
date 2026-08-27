@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { getHubDataDir } = require('./data-dir');
 const { migrateLegacyBranchSessionMeta } = require('./session-title-guards');
+const { sanitizeNightGuardState } = require('./night-guard-state.js');
 // 2026-05-07 多方审查 fix：markDirty 检查 stateStore.isMarkedRemovedSession 跳过
 //   已被 close-meeting / persist-sessions diff 标记 removed 的 sid，避免 renderer
 //   端因 400ms 防抖窗口"列表还含旧 sid"导致刚删的文件被复活。
@@ -58,6 +59,7 @@ function _sanitizeConnectionIssue(value) {
 function _buildSessionPayload(hubId, data) {
   data = migrateLegacyBranchSessionMeta(data);
   const now = Date.now();
+  const nightGuard = sanitizeNightGuardState(data.nightGuard);
   return {
     schemaVersion: SCHEMA_VERSION,
     hubId,
@@ -126,6 +128,7 @@ function _buildSessionPayload(hubId, data) {
     suspendedAt: typeof data.suspendedAt === 'number' ? data.suspendedAt : null,
     suspendReason: typeof data.suspendReason === 'string' ? data.suspendReason : null,
     connectionIssue: _sanitizeConnectionIssue(data.connectionIssue),
+    ...(nightGuard ? { nightGuard } : {}),
     updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : now,
     savedAt: now,
   };
