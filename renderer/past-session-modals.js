@@ -1,4 +1,4 @@
-const { latestReplyTime } = require('../core/session-recency.js');
+const { latestActivityTime } = require('../core/session-recency.js');
 const { createGlobalSessionSearch } = require('./global-session-search.js');
 
 function highlightMatch(text, query, escapeHtml) {
@@ -43,7 +43,7 @@ function findReusableClaudeSession(sessionValues, native = {}) {
     const aLive = a.status !== 'dormant' ? 1 : 0;
     const bLive = b.status !== 'dormant' ? 1 : 0;
     if (aLive !== bLive) return bLive - aLive;
-    return latestReplyTime(b, b.updatedAt) - latestReplyTime(a, a.updatedAt);
+    return latestActivityTime(b, b.updatedAt) - latestActivityTime(a, a.updatedAt);
   });
   return matches[0] || null;
 }
@@ -86,7 +86,7 @@ function collapseDormantNativeDuplicates(sessionMap) {
       const aLive = a.status !== 'dormant' ? 1 : 0;
       const bLive = b.status !== 'dormant' ? 1 : 0;
       if (aLive !== bLive) return bLive - aLive;
-      return latestReplyTime(b, b.updatedAt) - latestReplyTime(a, a.updatedAt);
+      return latestActivityTime(b, b.updatedAt) - latestActivityTime(a, a.updatedAt);
     });
     const keep = ranked[0];
     for (const duplicate of ranked.slice(1)) {

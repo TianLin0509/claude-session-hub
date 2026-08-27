@@ -1,13 +1,14 @@
 'use strict';
 const assert = require('assert');
 const {
-  compareLatestReplyDesc,
-  latestReplyTime,
+  compareLatestActivityDesc,
+  latestActivityTime,
   partitionSessionsByAge,
 } = require('../renderer/session-list-renderer.js');
 
 const now = 1000000000000;
 const DAY = 86400000;
+const MINUTE = 60_000;
 const HOUR = 3600000;
 
 function test(name, fn) {
@@ -58,27 +59,45 @@ test('无 lastMessageTime 回退 createdAt，再回退 now', () => {
   assert.ok(mid.map(x => x.id).includes('c'));
 });
 
-test('有回答完成时间时，排序与分桶不再受提问时间影响', () => {
+// 2026-08-27 反转口径：此处原本锁的是「只提问不算，必须回答完成才上浮」。
+// 实测那条规则让**正在进行中**的会话按上一轮完成时间排——刚说完话的会话沉到下面，
+// 跨过 24 小时还会掉进「3 天内」。现在改成取所有来往时刻的最大值。
+test('刚说过话的会话必须浮到最上面，即使这一轮还没答完', () => {
   const items = [
     {
-      id: 'answered-recently',
-      lastMessageTime: now - 50 * HOUR,
-      lastCompletedAt: now - 1 * HOUR,
+      id: 'answered-long-ago-but-talking-now',
+      lastCompletedAt: now - 50 * HOUR,   // 上一轮回答是两天前
+      lastMessageTime: now - 12 * MINUTE, // 但 12 分钟前刚说过话
+      runStartedAt: now - 12 * MINUTE,    // 而且这一轮正在跑
     },
-    {
-      id: 'prompted-recently-but-answer-old',
-      lastMessageTime: now - 1 * HOUR,
-      lastCompletedAt: now - 50 * HOUR,
-    },
+    { id: 'answered-recently', lastCompletedAt: now - 1 * HOUR },
+    { id: 'idle-two-days', lastCompletedAt: now - 50 * HOUR },
   ];
   const { recent, mid } = partitionSessionsByAge(items, now);
-  assert.deepStrictEqual(recent.map(x => x.id), ['answered-recently']);
-  assert.deepStrictEqual(mid.map(x => x.id), ['prompted-recently-but-answer-old']);
-  assert.strictEqual(latestReplyTime(items[0]), now - HOUR);
-  assert.deepStrictEqual(items.slice().sort(compareLatestReplyDesc).map(x => x.id), [
+  assert.deepStrictEqual(recent.map(x => x.id).sort(),
+    ['answered-long-ago-but-talking-now', 'answered-recently']);
+  assert.deepStrictEqual(mid.map(x => x.id), ['idle-two-days']);
+  assert.strictEqual(latestActivityTime(items[0]), now - 12 * MINUTE);
+  assert.deepStrictEqual(items.slice().sort(compareLatestActivityDesc).map(x => x.id), [
+    'answered-long-ago-but-talking-now',
     'answered-recently',
-    'prompted-recently-but-answer-old',
+    'idle-two-days',
   ]);
+});
+
+// 只打开、不说话的会话不该被顶上来：选中会话不写任何时间字段，
+// runStartedAt 只在提交提问时写（core/session-attention-state.js）。
+test('只打开不说话不会让老会话上浮', () => {
+  const opened = { id: 'opened-only', lastCompletedAt: now - 50 * HOUR };
+  const { recent, mid } = partitionSessionsByAge([opened], now);
+  assert.deepStrictEqual(recent.map(x => x.id), []);
+  assert.deepStrictEqual(mid.map(x => x.id), ['opened-only']);
+});
+
+// 终端刷屏不算来往：原始输出时间戳有意不参与，否则任何在刷日志的会话都会一直霸榜。
+test('终端原始输出时间戳不参与最近程度', () => {
+  const noisy = { id: 'noisy', lastCompletedAt: now - 50 * HOUR, _lastOutputTs: now, lastOutputTs: now };
+  assert.strictEqual(latestActivityTime(noisy), now - 50 * HOUR);
 });
 
 test('空/缺省输入安全', () => {

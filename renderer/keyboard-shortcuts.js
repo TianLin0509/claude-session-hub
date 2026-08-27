@@ -1,5 +1,5 @@
 const { supportsForkSession } = require('../core/session-capabilities.js');
-const { compareLatestReplyDesc } = require('../core/session-recency.js');
+const { compareLatestActivityDesc } = require('../core/session-recency.js');
 const { isBlockingModalOpen, isElementOpen } = require('./modal-layer-guard.js');
 
 function createKeyboardShortcuts({
@@ -30,7 +30,7 @@ function createKeyboardShortcuts({
       .filter((session) => session && !session.hiddenFromSidebar && session.purpose !== 'chuxin-research')
       .sort((a, b) => {
         if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
-        return compareLatestReplyDesc(a, b);
+        return compareLatestActivityDesc(a, b);
       })
       .map(s => s.id);
   }

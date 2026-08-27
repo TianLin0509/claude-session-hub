@@ -1,7 +1,7 @@
 // 纯函数：按最新 AI 回答时间年龄分桶。pinned 永远进 recent（置顶不折叠）。
 //   recent: <24h（保持现状 UI 置顶）· mid: 24-72h · old: ≥72h
 const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js');
-const { compareLatestReplyDesc, latestReplyTime } = require('../core/session-recency.js');
+const { compareLatestActivityDesc, latestActivityTime } = require('../core/session-recency.js');
 const {
   sessionHasCompletedUnread,
 } = require('../core/session-attention-state.js');
@@ -22,7 +22,7 @@ function partitionSessionsByAge(items, now) {
   const DAY = 86400000;
   const recent = [], mid = [], old = [];
   for (const s of items || []) {
-    const t = latestReplyTime(s, now);
+    const t = latestActivityTime(s, now);
     const age = now - t;
     if (s.pinned || age < DAY) recent.push(s);
     else if (age < 3 * DAY) mid.push(s);
@@ -366,7 +366,7 @@ function _sessionWarningText(session) {
 
   const sorted = all.sort((a, b) => {
     if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
-    return compareLatestReplyDesc(a, b);
+    return compareLatestActivityDesc(a, b);
   });
 
   // Hide any leftover legacy background PTY sessions from the removed room path.
@@ -500,7 +500,7 @@ function _sessionWarningText(session) {
           ${_ringHtml(null, dotCls)}
           <span class="sl-title" title="${escapeHtml([s.title, meetingWarning].filter(Boolean).join(' · '))}">${s.pinned ? '<span class="sl-pin">📌</span>' : ''}${meetingWarning ? `<span class="sl-pin" title="${escapeHtml(meetingWarning)}">⚠</span>` : ''}${isGroupChat ? '💬' : '🎯'} ${escapeHtml(s.title)}</span>
           ${stateHtml}
-          <span class="sl-time">${formatTime(latestReplyTime(s))}</span>
+          <span class="sl-time">${formatTime(latestActivityTime(s))}</span>
         </div>
         <div class="session-mini-jumps">${miniJumpsHtml}<span class="sl-members-hint">${memberSelected}/${memberTotal} 已选</span></div>
       `;
@@ -613,7 +613,7 @@ function _sessionWarningText(session) {
       ${_ringHtml(ctxPct, dotCls)}
       <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${unreadCount}</span>` : ''}</span>
       <span class="sl-model">${escapeHtml(modelTxt)}</span>
-      <span class="sl-time${isDisconnected ? ' disconnected-time' : (isDormant ? ' dormant-time' : '')}">${isDisconnected ? '断连 · ' : (isDormant ? '休眠 · ' : '')}${formatTime(latestReplyTime(s))}</span>
+      <span class="sl-time${isDisconnected ? ' disconnected-time' : (isDormant ? ' dormant-time' : '')}">${isDisconnected ? '断连 · ' : (isDormant ? '休眠 · ' : '')}${formatTime(latestActivityTime(s))}</span>
     `;
     div.addEventListener('click', () => selectSession(s.id, { forceScrollBottom: true }));
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
@@ -743,9 +743,9 @@ sessionListEl.addEventListener('mousedown', (e) => {
 
 module.exports = {
   createSessionListRenderer,
-  compareLatestReplyDesc,
+  compareLatestActivityDesc,
   partitionSessionsByAge,
-  latestReplyTime,
+  latestActivityTime,
   familyOfKind,
   sessionFamilies,
   SESSION_FAMILY_TABS,
