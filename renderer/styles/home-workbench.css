@@ -614,3 +614,121 @@
 .home-metric[data-home-jump] { cursor: default; }
 
 /* 2026-08-27：改动审阅驾驶舱整体删除，.ops-* 一族样式随之移除。 */
+
+/* ── 全机残留卡片（2026-08-27） ──────────────────────────────────
+   平时只有一行「未发现残留」；有东西时按「证据有多硬」分组展开。
+   配色全部走既有 token，跟随明暗主题，不硬编码颜色。 */
+.home-reclaim-card .home-section-head { border-bottom: 1px solid var(--home-border); }
+.home-reclaim-summary { padding: 12px 14px 0; }
+.reclaim-status { font-size: 13.5px; font-weight: 600; letter-spacing: -0.01em; }
+.reclaim-status.ok { color: var(--accent-green); }
+.reclaim-status.warn { color: var(--accent-orange); }
+.reclaim-status.bad { color: var(--accent-red); }
+.reclaim-status.idle,
+.reclaim-status.scanning { color: var(--home-muted); font-weight: 400; line-height: 1.6; }
+.reclaim-meta { margin-top: 4px; font-size: 11.5px; color: var(--home-muted); }
+
+.home-reclaim-groups { padding: 0 14px; }
+.reclaim-group { margin-top: 14px; }
+.reclaim-group.muted { opacity: 0.78; }
+.reclaim-group-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+}
+.reclaim-group-title { font-size: 12.5px; font-weight: 700; color: var(--fg-strong); }
+.reclaim-group-title i {
+  display: inline-block; margin-right: 6px; font-style: normal;
+  color: var(--link-hover); font-weight: 700;
+}
+.reclaim-group-stat { font-size: 11.5px; color: var(--home-muted); white-space: nowrap; }
+.reclaim-group-hint {
+  margin: 3px 0 8px; font-size: 11.5px; line-height: 1.55; color: var(--home-muted);
+}
+
+.reclaim-item {
+  border: 1px solid var(--home-border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--home-surface-raised);
+  margin-bottom: 6px;
+}
+.reclaim-item.expanded { border-color: var(--home-border-strong); }
+.reclaim-item-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; font-size: 12px; flex-wrap: wrap;
+}
+.reclaim-item-head input[type="checkbox"] { flex: none; margin: 0; cursor: pointer; }
+.reclaim-nopick { flex: none; width: 13px; }
+.reclaim-item-label { flex: 1 1 190px; min-width: 0; color: var(--text-primary); }
+.reclaim-item-label b { font-weight: 600; color: var(--link-hover); margin-left: 5px; }
+.reclaim-item-stat { flex: none; font-variant-numeric: tabular-nums; color: var(--fg-strong); }
+.reclaim-item-age { flex: none; font-size: 11px; color: var(--home-muted); }
+.reclaim-tag {
+  flex: none; font-style: normal; font-size: 10.5px; padding: 1px 6px;
+  border-radius: var(--radius-pill); white-space: nowrap;
+}
+.reclaim-tag.ok { background: rgba(var(--rgb-success), 0.14); color: var(--accent-green); }
+.reclaim-tag.busy { background: rgba(var(--rgb-orange), 0.14); color: var(--accent-orange); }
+.reclaim-tag.unsure { background: rgba(var(--rgb-overlay), 0.09); color: var(--home-muted); }
+.reclaim-tag.hub { background: rgba(var(--rgb-info), 0.14); color: var(--link-hover); margin-left: 5px; }
+.reclaim-detail-btn {
+  flex: none; border: 1px solid var(--home-border); background: transparent;
+  color: var(--home-muted); border-radius: var(--radius-pill);
+  font-size: 11px; padding: 2px 9px; cursor: pointer;
+}
+.reclaim-detail-btn:hover { color: var(--link-hover); border-color: rgba(var(--rgb-info), 0.3); }
+
+.reclaim-evidence {
+  padding: 2px 10px 10px 31px; border-top: 1px solid var(--home-border);
+  margin-top: 2px; padding-top: 9px;
+}
+.reclaim-evidence-lose { font-size: 12px; line-height: 1.6; color: var(--text-primary); }
+.reclaim-evidence-lose b { display: block; font-size: 11.5px; color: var(--home-muted); font-weight: 600; }
+.reclaim-evidence-list { margin: 8px 0 0; padding: 0; list-style: none; }
+.reclaim-evidence-list li { font-size: 11.5px; line-height: 1.75; color: var(--home-muted); }
+.reclaim-evidence-list li.ok { color: var(--accent-green); }
+.reclaim-evidence-list li.unsure { color: var(--accent-orange); }
+.reclaim-evidence-cmd {
+  margin-top: 8px; padding: 6px 8px; border-radius: var(--radius-sm, 6px);
+  background: rgba(var(--rgb-overlay), 0.07); color: var(--home-muted);
+  font-family: "SF Mono", Consolas, monospace; font-size: 10.5px;
+  line-height: 1.5; word-break: break-all;
+}
+
+.reclaim-consumer {
+  display: flex; align-items: center; gap: 10px; padding: 5px 10px;
+  font-size: 12px; border-bottom: 1px solid var(--home-border);
+}
+.reclaim-consumer:last-child { border-bottom: none; }
+.reclaim-consumer-name { flex: 1 1 auto; min-width: 0; color: var(--text-primary); }
+.reclaim-consumer-count,
+.reclaim-consumer-bytes,
+.reclaim-consumer-priv {
+  flex: none; font-variant-numeric: tabular-nums; font-size: 11.5px; color: var(--home-muted);
+}
+.reclaim-consumer-bytes { color: var(--fg-strong); }
+
+.home-reclaim-guard { padding: 12px 14px 14px; }
+.reclaim-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.reclaim-primary {
+  border: 1px solid rgba(var(--rgb-info), 0.32); background: rgba(var(--rgb-info), 0.1);
+  color: var(--link-hover); border-radius: var(--radius-pill);
+  font-size: 12px; font-weight: 600; padding: 5px 14px; cursor: pointer;
+}
+.reclaim-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+.reclaim-secondary, .reclaim-open-btn {
+  border: 1px solid var(--home-border); background: transparent; color: var(--home-muted);
+  border-radius: var(--radius-pill); font-size: 11.5px; padding: 4px 11px; cursor: pointer;
+}
+.reclaim-secondary:hover, .reclaim-open-btn:hover { color: var(--link-hover); }
+.reclaim-actions-note { flex: 1 1 100%; font-size: 11px; color: var(--home-muted); line-height: 1.5; }
+.reclaim-saved {
+  margin-bottom: 10px; font-size: 11.5px; line-height: 1.7; color: var(--home-muted);
+}
+.reclaim-saved code {
+  font-family: "SF Mono", Consolas, monospace; font-size: 11px;
+  color: var(--fg-strong); word-break: break-all;
+}
+.reclaim-guard-box { font-size: 11.5px; color: var(--home-muted); }
+.reclaim-guard-box summary { cursor: pointer; padding: 4px 0; }
+.reclaim-guard-list { margin: 6px 0 0; padding-left: 20px; }
+.reclaim-guard-list li { line-height: 1.7; }
+.reclaim-guard-note { margin: 8px 0 0; line-height: 1.65; }

@@ -82,6 +82,8 @@ const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 const { registerPromptInspectIpc } = require('./main/ipc/prompt-inspect-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
+const { registerProcessReclaimIpc } = require('./main/ipc/process-reclaim-handlers.js');
+const { registerAutoSuspendIpc } = require('./main/ipc/auto-suspend-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
@@ -1133,6 +1135,13 @@ sessionAutoSuspendScheduler = createSessionAutoSuspendScheduler({
   logger: console,
 });
 
+// 自动休眠预演。参数与后台巡检完全一致（复用 scheduler 内部的 sweepOptions），
+// 所以「预演说会休眠」和「实际会休眠」不会漂移。
+registerAutoSuspendIpc(ipcMain, {
+  getScheduler: () => sessionAutoSuspendScheduler,
+  logger: console,
+});
+
 // 投委会五幕编排（task#5）：叠加在 research 群聊之上，复用 dispatcher 的并行发言 + 委员解析。
 const committeeConductor = createCommitteeConductor({
   dispatchTurn: groupChatDispatcher.dispatchGroupChatTurn,
@@ -1454,6 +1463,15 @@ registerAppUtilityIpc(ipcMain, {
   acknowledgeNetworkEgressChange: () => networkEgressMonitor.acknowledgeForeignChange(),
   imageDir,
   path,
+});
+
+// 全机残留回收。多个 Hub 实例共用同一个数据目录，所以任何一个实例打开这张卡片
+// 看到的都是「整台电脑」的情况，而不只是自己名下那点进程。
+// v1 只读：出清单 + 生成可审阅的预演脚本，Hub 自己不杀任何进程。
+registerProcessReclaimIpc(ipcMain, {
+  getSessionManager: () => sessionManager,
+  getDataDir: () => getHubDataDir(),
+  logger: console,
 });
 
 // 驾驶舱 UI 删了，但这个服务还留着：工作台「最近文件」卡的 Git 变更来自它的 overview。

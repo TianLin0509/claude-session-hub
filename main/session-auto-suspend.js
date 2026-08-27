@@ -67,9 +67,10 @@ function createSessionAutoSuspendScheduler(options = {}) {
   const clearIntervalFn = options.clearIntervalFn || clearInterval;
   let timer = null;
 
-  function sweep() {
-    const protectedIds = getProtectedSessionIds() || new Set();
-    const result = sessionManager.suspendIdleSessions({
+  // sweep 和 preview 必须用同一份参数，否则「预演说会休眠」和「实际会休眠」
+  // 会各说各话。这里集中一处产出，两边都从它取。
+  function sweepOptions() {
+    return {
       idleMs,
       now: now(),
       excludePinned: true,
@@ -77,7 +78,22 @@ function createSessionAutoSuspendScheduler(options = {}) {
       // 闲置群聊成员也应释放 PTY；真正运行中的 watcher / loop 成员由
       // excludeSessionIds 单独保护，避免把“属于群聊”和“仍在工作”混为一谈。
       excludeMeeting: false,
-      excludeSessionIds: protectedIds,
+      excludeSessionIds: getProtectedSessionIds() || new Set(),
+    };
+  }
+
+  // 只报结论、不动任何 PTY。用来回答「我这些会话到底会不会自动休眠、
+  // 不会的话是卡在哪一关、还差多久」——在此之前这些信息全被丢掉了。
+  function preview() {
+    if (typeof sessionManager.previewIdleSuspend !== 'function') {
+      return { ok: false, error: 'preview-unsupported' };
+    }
+    return sessionManager.previewIdleSuspend(sweepOptions());
+  }
+
+  function sweep() {
+    const result = sessionManager.suspendIdleSessions({
+      ...sweepOptions(),
       reason: AUTO_SUSPEND_REASON,
     });
     if (result && result.count > 0 && logger && typeof logger.log === 'function') {
@@ -113,6 +129,7 @@ function createSessionAutoSuspendScheduler(options = {}) {
     start,
     stop,
     sweep,
+    preview,
     isStarted: () => !!timer,
   };
 }

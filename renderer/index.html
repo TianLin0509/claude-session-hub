@@ -262,6 +262,17 @@
                     <span>PTY <b id="home-sync-terminals">同步中</b></span>
                   </div>
                 </section>
+                <!-- 2026-08-27：全机残留。多实例共用数据目录，所以任意一个 Hub 打开
+                     这张卡看到的都是整台电脑的情况。v1 只读：出清单 + 预演脚本，不杀进程。 -->
+                <section data-home-card="reclaim" class="home-section-card home-reclaim-card" aria-labelledby="home-reclaim-title">
+                  <div class="home-section-head">
+                    <div class="home-section-title" id="home-reclaim-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 11v5M14 11v5"/></svg>全机残留</div>
+                    <button class="home-section-action subtle" type="button" data-reclaim-action="scan">扫描</button>
+                  </div>
+                  <div class="home-reclaim-summary" id="home-reclaim-summary"></div>
+                  <div class="home-reclaim-groups" id="home-reclaim-groups"></div>
+                  <div class="home-reclaim-guard" id="home-reclaim-guard"></div>
+                </section>
                 <section data-home-card="provider" class="home-section-card" aria-labelledby="home-provider-title">
                   <div class="home-section-head"><div class="home-section-title" id="home-provider-title">四模型用量</div><span class="home-section-meta">5h · 7d · 配额刷新</span></div>
                   <div class="home-provider-health" id="home-provider-health"></div>

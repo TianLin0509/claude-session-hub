@@ -49,6 +49,7 @@ const {
 const { createPathLinkContextMenuController } = require('./path-link-context-menu.js');
 const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
 const { createHomeCardLayout } = require('./home-card-layout.js');
+const { createProcessReclaimCard } = require('./process-reclaim-card.js');
 const { createTerminalInputController } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
 const { createMemoryPanel } = require('./memory-panel.js');
@@ -4665,6 +4666,15 @@ homeWorkbench = createHomeWorkbench({
 homeWorkbench.render();
 // 卡片布局要在首轮渲染之后接管：那时 #home-card-stack 里的卡才齐。
 homeCardLayout = createHomeCardLayout({ document, localStorage });
+// 全机残留卡片。扫一次要 3 秒（一次 CIM 全量枚举 + 一次 CPU 基线采样），
+// 所以只在用户点「扫描」时才跑，绝不挂到那条 3 秒资源心跳上。
+const processReclaimCard = createProcessReclaimCard({
+  document,
+  ipcRenderer,
+  escapeHtml,
+  onRendered: () => { if (homeCardLayout) homeCardLayout.syncEmpty(); },
+  openPath: filePath => ipcRenderer.invoke('show-in-folder', filePath),
+});
 // 记忆系统面板：用量 ticker 的「记忆」按钮打开（按钮监听在面板内走文档级委托，
 // 因为 ticker 每次 render 都重建 innerHTML）。
 const memoryPanel = createMemoryPanel({
@@ -5578,13 +5588,70 @@ if (suspendIdleItem) {
     event.stopPropagation();
     const optionsMenu = document.getElementById('options-menu');
     if (optionsMenu) optionsMenu.style.display = 'none';
-    const confirmed = window.confirm(
-      '立即扫描并休眠 5 小时以上无输入输出的 AI 会话？\n\n'
-      + '后台也会每 5 分钟自动巡检；会保留会话卡片、未读标记和历史记录。'
-      + '自动巡检会保护置顶、当前、正在工作的群聊及初心投研会话；'
-      + '本次手动扫描会额外跳过全部群聊成员。',
-    );
-    if (!confirmed) return;
+    // 先预演再确认。以前这里只弹一句「已请求休眠 N 个」，skipped 的原因被直接
+    // 丢掉，所以没人看得出自己的会话到底会不会被休眠、卡在哪一关——
+    // 「某某 CLI 好像没有自动休眠」的错觉就是这么产生的。
+    suspendIdleItem.setAttribute('aria-busy', 'true');
+    let preview = null;
+    try {
+      preview = await ipcRenderer.invoke('preview-auto-suspend');
+    } catch { preview = null; }
+    suspendIdleItem.removeAttribute('aria-busy');
+
+    const hours = ms => `${(Number(ms) / 3600000).toFixed(1)} 小时`;
+    const lines = [];
+    if (preview && preview.ok) {
+      lines.push(`后台自动巡检：每 ${Math.round(preview.checkIntervalMs / 60000)} 分钟一次，`
+        + `闲置满 ${hours(preview.idleMs)} 休眠${preview.schedulerRunning ? '（运行中）' : '（未启动）'}`);
+      lines.push('');
+
+      const kinds = Object.entries(preview.byKind || {}).sort((a, b) => b[1].total - a[1].total);
+      if (kinds.length > 0) {
+        lines.push(`当前 ${preview.total} 个活跃会话，按 CLI 分：`);
+        for (const [kind, stat] of kinds) {
+          lines.push(`  ${kind} ${stat.total} 个 · ${stat.eligible} 个已够钟`);
+        }
+        lines.push('');
+      }
+
+      const eligible = (preview.items || []).filter(item => item.eligible);
+      if (eligible.length > 0) {
+        lines.push(`会被休眠的 ${eligible.length} 个：`);
+        for (const item of eligible.slice(0, 8)) {
+          lines.push(`  · ${String(item.kind || '?').replace(/-resume$/, '')} · `
+            + `${(item.title || '未命名').slice(0, 20)}（已闲置 ${hours(item.idleMs)}）`);
+        }
+        if (eligible.length > 8) lines.push(`  … 另有 ${eligible.length - 8} 个`);
+        lines.push('');
+      }
+
+      const blocked = (preview.items || []).filter(item => !item.eligible);
+      if (blocked.length > 0) {
+        lines.push(`不会被休眠的 ${blocked.length} 个，原因：`);
+        const grouped = new Map();
+        for (const item of blocked) {
+          const key = item.message || item.reason || '未知';
+          if (!grouped.has(key)) grouped.set(key, []);
+          grouped.get(key).push(item);
+        }
+        for (const [message, group] of [...grouped.entries()].sort((a, b) => b[1].length - a[1].length)) {
+          const soonest = group
+            .filter(item => item.remainingMs > 0)
+            .sort((a, b) => a.remainingMs - b.remainingMs)[0];
+          lines.push(`  · ${message} × ${group.length}`
+            + (soonest ? `（最近的还差 ${hours(soonest.remainingMs)}）` : ''));
+        }
+        lines.push('');
+      }
+    } else {
+      lines.push('（预演不可用，直接执行）', '');
+    }
+
+    lines.push('现在立即执行一次手动巡检吗？');
+    lines.push('手动这次会额外跳过全部群聊成员；会话卡片、未读标记和历史都会保留。');
+
+    if (!window.confirm(lines.join('\n'))) return;
+
     suspendIdleItem.setAttribute('aria-busy', 'true');
     try {
       const result = await ipcRenderer.invoke('suspend-idle-sessions', { idleMs: 5 * 60 * 60 * 1000 });
@@ -5592,9 +5659,14 @@ if (suspendIdleItem) {
         window.alert((result && result.message) || '批量休眠失败，请稍后重试。');
         return;
       }
-      window.alert(result.count > 0
+      const skipped = Object.entries(result.skipped || {});
+      const detail = skipped.length > 0
+        ? `\n\n跳过 ${skipped.reduce((sum, [, n]) => sum + n, 0)} 个：\n`
+          + skipped.sort((a, b) => b[1] - a[1]).map(([reason, n]) => `  · ${reason} × ${n}`).join('\n')
+        : '';
+      window.alert((result.count > 0
         ? `已请求休眠 ${result.count} 个长期闲置会话；内存会在对应 CLI 退出后释放。`
-        : '没有符合条件的长期闲置会话。');
+        : '没有符合条件的长期闲置会话。') + detail);
     } catch (error) {
       window.alert(`批量休眠失败：${error && error.message ? error.message : String(error)}`);
     } finally {

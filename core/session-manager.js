@@ -1854,7 +1854,12 @@ class SessionManager extends EventEmitter {
       : result;
   }
 
-  suspendSession(sessionId, options = {}) {
+  // 休眠闸门的唯一判定处。suspendSession（真执行）和 previewIdleSuspend（预演）
+  // 都走这里，保证「预演说会休眠」和「实际会休眠」永远是同一套判据——
+  // 两边各写一份迟早会漂移，那样预演就失去意义了。
+  //
+  // 返回 { ok:false, error, message } 表示不休眠；{ ok:true, ... } 表示可以。
+  _evaluateSuspendEligibility(sessionId, options = {}) {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return { ok: false, error: 'session-not-found', message: '会话不存在或已经休眠' };
@@ -1896,9 +1901,81 @@ class SessionManager extends EventEmitter {
       Number(session.lastOutputAt) || 0,
     );
     const minIdleMs = Math.max(0, Number(options.minIdleMs) || 0);
-    if (minIdleMs > 0 && now - lastActivityAt < minIdleMs) {
-      return { ok: false, error: 'recently-active', message: '会话最近仍有活动，已跳过' };
+    const idleMs = Math.max(0, now - lastActivityAt);
+    if (minIdleMs > 0 && idleMs < minIdleMs) {
+      return {
+        ok: false,
+        error: 'recently-active',
+        message: '会话最近仍有活动，已跳过',
+        lastActivityAt,
+        idleMs,
+        // 还差多久够钟。界面上把「为什么没休眠」说清楚，全靠这个数。
+        remainingMs: minIdleMs - idleMs,
+      };
     }
+
+    return { ok: true, session, now, lastActivityAt, idleMs, remainingMs: 0 };
+  }
+
+  // 预演：按自动巡检那套参数逐个会话跑一遍闸门，只报结论不动任何 PTY。
+  // 这是为了回答「我的 claude 会话到底会不会自动休眠、不会的话卡在哪一关」——
+  // 在此之前 suspendIdleSessions 只回一个 skipped 计数，看不出是哪个会话、差多久。
+  previewIdleSuspend(options = {}) {
+    const idleMs = Math.max(60 * 1000, Number(options.idleMs) || DEFAULT_IDLE_SUSPEND_MS);
+    const now = Number(options.now) || Date.now();
+    const items = [];
+    for (const sessionId of [...this.sessions.keys()]) {
+      const session = this.sessions.get(sessionId);
+      if (!session) continue;
+      const verdict = this._evaluateSuspendEligibility(sessionId, {
+        now,
+        minIdleMs: idleMs,
+        excludePinned: options.excludePinned !== false,
+        excludeMeeting: options.excludeMeeting === true,
+        excludeFocused: options.excludeFocused !== false,
+        excludeSessionIds: options.excludeSessionIds,
+      });
+      const info = session.info || {};
+      items.push({
+        sessionId,
+        kind: info.kind || '',
+        title: info.title || '',
+        eligible: verdict.ok === true,
+        reason: verdict.ok ? null : (verdict.error || 'unknown'),
+        message: verdict.ok ? null : (verdict.message || ''),
+        idleMs: Number(verdict.idleMs) || 0,
+        remainingMs: Number(verdict.remainingMs) || 0,
+        lastActivityAt: Number(verdict.lastActivityAt) || 0,
+      });
+    }
+    items.sort((a, b) => (b.eligible - a.eligible) || (b.idleMs - a.idleMs));
+
+    const byReason = {};
+    const byKind = {};
+    for (const item of items) {
+      const base = String(item.kind || '?').replace(/-resume$/, '');
+      byKind[base] = byKind[base] || { total: 0, eligible: 0 };
+      byKind[base].total += 1;
+      if (item.eligible) byKind[base].eligible += 1;
+      else byReason[item.reason] = (byReason[item.reason] || 0) + 1;
+    }
+    return {
+      ok: true,
+      idleMs,
+      now,
+      total: items.length,
+      eligibleCount: items.filter(item => item.eligible).length,
+      byReason,
+      byKind,
+      items,
+    };
+  }
+
+  suspendSession(sessionId, options = {}) {
+    const verdict = this._evaluateSuspendEligibility(sessionId, options);
+    if (!verdict.ok) return { ok: false, error: verdict.error, message: verdict.message };
+
+    const { session, now, lastActivityAt } = verdict;
 
     for (const timer of session.pendingTimers || []) clearTimeout(timer);
     session.suspendRequestedAt = now;
@@ -2336,6 +2413,21 @@ class SessionManager extends EventEmitter {
     return Array.from(this.sessions.values())
       .map(s => this._toPublic(s.info))
       .sort(compareLatestReplyDesc);
+  }
+
+  // 每个活跃会话 pty 顶层进程的 PID。全机残留回收（core/process-reclaim.js）
+  // 靠它把「正在用的会话外壳」和「会话结束后没退干净的空壳」区分开——两者在
+  // 系统里长得一模一样（都是 powershell.exe -NoProfile -NoLogo，见 :1008），
+  // 光看进程信息无法分辨，只有 Hub 自己知道哪些还在用。
+  //
+  // node-pty 一直暴露着 ptyProcess.pid（ConPTY 下是 _innerPid），此前从未被读取过。
+  listLivePtyPids() {
+    const pids = [];
+    for (const s of this.sessions.values()) {
+      const pid = Number(s && s.pty && s.pty.pid);
+      if (Number.isFinite(pid) && pid > 0) pids.push(pid);
+    }
+    return pids;
   }
 
   // Appends terminal-facing PTY data to the session's ring buffer, capping at
