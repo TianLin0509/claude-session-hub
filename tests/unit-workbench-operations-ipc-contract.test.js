@@ -24,18 +24,14 @@ test('workbench operations IPC exposes the complete read/review/checkpoint contr
     service[method] = async payload => { calls.push([method, payload]); return { method }; };
   }
   registerWorkbenchOperationsIpc(ipc, { service, logger: { warn() {} } });
+  // 2026-08-27：改动审阅驾驶舱 UI 删除后，只剩 overview 还在用（工作台「最近文件」
+  // 的 Git 变更、以及阿里云远端指标都从它拿）。其余六条是驾驶舱专用，IPC 面已撤。
   assert.deepStrictEqual([...ipc.handlers.keys()], [
     'workbench:get-overview',
-    'workbench:get-diff',
-    'workbench:set-review-decision',
-    'workbench:create-checkpoint',
-    'workbench:restore-checkpoint',
-    'workbench:get-line-provenance',
-    'workbench:get-timeline',
   ]);
-  const result = await ipc.handlers.get('workbench:get-diff')(null, { repoRoot: 'C:\\repo' });
-  assert.deepStrictEqual(result, { method: 'diff' });
-  assert.deepStrictEqual(calls, [['diff', { repoRoot: 'C:\\repo' }]]);
+  const result = await ipc.handlers.get('workbench:get-overview')(null, { repoRoot: 'C:\\repo' });
+  assert.deepStrictEqual(result, { method: 'overview' });
+  assert.deepStrictEqual(calls, [['overview', { repoRoot: 'C:\\repo' }]]);
 });
 
 test('workbench operations IPC returns a bounded public error instead of leaking internals', async () => {

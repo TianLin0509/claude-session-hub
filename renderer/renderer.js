@@ -47,7 +47,8 @@ const {
   supportsRecoverableSessionKind,
 } = require('./context-menus.js');
 const { createPathLinkContextMenuController } = require('./path-link-context-menu.js');
-const { XTERM_THEMES, createThemeController } = require('./theme-controller.js');
+const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
+const { createHomeCardLayout } = require('./home-card-layout.js');
 const { createTerminalInputController } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
 const { createMemoryPanel } = require('./memory-panel.js');
@@ -64,7 +65,6 @@ const { createPastSessionModals, collapseDormantNativeDuplicates } = require('./
 const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
 const { createShellController } = require('./shell-controller.js');
 const { createHomeWorkbench } = require('./home-workbench.js');
-const { createWorkbenchOperationsController } = require('./workbench-operations-controller.js');
 const { createRenderCoalescer } = require('./render-coalescer.js');
 const { createLaunchCenterController } = require('./launch-center-controller.js');
 const {
@@ -152,7 +152,6 @@ let activeSessionId = null;
 let completionNotificationToggle = null;
 let systemResourceUsage = null;
 let homeWorkbench = null;
-let workbenchOperations = null;
 // 侧栏常驻显示海外代理 + 国产直连的真实公网出口。
 // proxy 仍保留配置值，egress 由 main 进程强制分别经代理/直连探测。
 let hubProxyInfo = null;
@@ -993,7 +992,8 @@ function getOrCreateTerminal(sessionId) {
     return terminalCache.get(sessionId);
   }
   const terminal = new Terminal({
-    theme: XTERM_THEMES.default,
+    // 主题从 DOM 上现读，避免和 themeController 的构造顺序耦合。
+    theme: resolveXtermTheme(document.documentElement.getAttribute('data-theme')),
     fontSize: currentFontSize,
     fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
     cursorBlink: true,
@@ -4613,14 +4613,21 @@ function getWorkbenchWorkspaceHints() {
   }
   return hints;
 }
-workbenchOperations = createWorkbenchOperationsController({
-  document,
-  ipcRenderer,
-  getWorkspaceHints: getWorkbenchWorkspaceHints,
-  escapeHtml,
-  onOpenPath: targetPath => openPathInHub(targetPath, { requireExistsForRel: false }),
-  onOpenSession: sessionId => selectSession(sessionId, { forceScrollBottom: true }),
-});
+let homeCardLayout = null;
+// 驾驶舱 UI 已删；「最近文件」要的 Git 变更改成直接问主进程要一次 overview，
+// 不再有常驻控制器，也不再每 30 秒扫一遍（那是撤掉收件箱后剩下的纯浪费）。
+let operationsOverview = null;
+async function refreshOperationsOverview() {
+  try {
+    const result = await ipcRenderer.invoke('workbench:get-overview', {});
+    operationsOverview = result && result.ok === false ? null : result;
+  } catch (error) {
+    console.warn('[workbench-operations] overview 拉取失败:', error && error.message);
+    operationsOverview = null;
+  }
+  return operationsOverview;
+}
+
 homeWorkbench = createHomeWorkbench({
   document,
   sessions,
@@ -4629,17 +4636,19 @@ homeWorkbench = createHomeWorkbench({
   getResourceUsage: () => systemResourceUsage,
   getHubConfig: () => hubProxyInfo,
   getUsageSnapshot: () => accountUsageController.getSnapshot(),
-  getOperationsSnapshot: () => workbenchOperations.getSnapshot(),
   getTerminalCacheSize: () => terminalCache.size,
   loadWorkspaces: () => ipcRenderer.invoke('workspace:list'),
-  loadOperations: force => workbenchOperations.refresh(force === true),
   selectSession: (sessionId, opts) => selectSession(sessionId, opts),
   selectMeeting: (meetingId, opts) => selectMeeting(meetingId, opts),
+  getOperationsSnapshot: () => operationsOverview,
+  loadOperations: () => refreshOperationsOverview(),
+  onOpenSearch: (query) => openSearchModal({ query }),
+  // 每轮渲染完让卡片布局重新判空：内容为空的卡自动收成一行。
+  onRendered: () => { if (homeCardLayout) homeCardLayout.syncEmpty(); },
   onCopyRecentTurns: (sessionId, count) => copyRecentTurnsForSession(sessionId, count),
   onForkSession: (sessionId) => keyboardShortcuts.forkSession(sessionId),
   onOpenArtifact: (artifactPath) => openPathInHub(artifactPath, { requireExistsForRel: false, fullscreen: true }),
   onLaunchWorkspace: (workspace) => launchCenter.open('session', { kind: 'claude', workspace }),
-  onOpenReview: repoId => workbenchOperations.open(repoId),
   onOpenServerSettings: () => configModal.openOperationsSetup(),
   escapeHtml,
   onRefresh: async () => {
@@ -4654,6 +4663,8 @@ homeWorkbench = createHomeWorkbench({
   },
 });
 homeWorkbench.render();
+// 卡片布局要在首轮渲染之后接管：那时 #home-card-stack 里的卡才齐。
+homeCardLayout = createHomeCardLayout({ document, localStorage });
 // 记忆系统面板：用量 ticker 的「记忆」按钮打开（按钮监听在面板内走文档级委托，
 // 因为 ticker 每次 render 都重建 innerHTML）。
 const memoryPanel = createMemoryPanel({
@@ -5539,9 +5550,7 @@ const openConfigModal = configModal.open;
 const setCodexProfileForm = configModal.setCodexProfileForm;
 document.addEventListener('hub-config-saved', () => {
   void refreshHubProxyInfo({ force: true });
-  void workbenchOperations.refresh(true).then(() => {
-    if (homeWorkbench) homeWorkbench.render();
-  });
+  if (homeWorkbench) homeWorkbench.render();
 });
 
 const { createCompletionNotificationToggle } = require('./completion-notification-toggle.js');
@@ -6192,11 +6201,7 @@ window.resumeDormantSession = resumeDormantSession;
 
   traceRendererStartup('renderSessionList start');
   renderSessionList();
-  void workbenchOperations.refresh(true).then(() => {
-    if (homeWorkbench) homeWorkbench.render();
-  }).catch((error) => {
-    console.warn('[workbench-operations] initial hydrated refresh failed:', error && error.message);
-  });
+  if (homeWorkbench) homeWorkbench.render();
   refreshSystemResourceUsage();
   setInterval(refreshSystemResourceUsage, 3000);
   refreshHubProxyInfo();

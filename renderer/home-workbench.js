@@ -3,6 +3,7 @@
 const path = require('path');
 const { isGroupChatMemberRunning } = require('../core/groupchat-running-state.js');
 const { supportsForkSession } = require('../core/session-capabilities.js');
+const { readRecent: readSearchRecent } = require('../core/search-recent.js');
 const {
   sessionHasCompletedUnread,
   sessionNeedsUserInput,
@@ -463,11 +464,23 @@ function buildHomeSnapshot(options = {}) {
   });
   const night = buildNightSummary(items, now);
 
+  // 「今天该续哪个」：休眠会话有 674 个，给一个数字等于没给。这里挑真正值得
+  // 回去的——有未读回复的排最前，其次是最近还动过的；只留 4 条。
+  const resumeCandidates = items
+    .filter(item => item.dormant && item.lastMessageTime > 0)
+    .map(item => ({
+      ...item,
+      resumeScore: (item.unreadCount > 0 ? 1e15 : 0) + item.lastMessageTime,
+    }))
+    .sort((a, b) => b.resumeScore - a.resumeScore)
+    .slice(0, 4);
+
   return {
     generatedAt: now,
     items,
     lanes: { waiting, running, delivered },
     contextRisk,
+    resumeCandidates,
     exceptions,
     artifacts,
     night,
@@ -497,19 +510,24 @@ function createHomeWorkbench(options = {}) {
   const getResourceUsage = typeof options.getResourceUsage === 'function' ? options.getResourceUsage : () => null;
   const getHubConfig = typeof options.getHubConfig === 'function' ? options.getHubConfig : () => null;
   const getUsageSnapshot = typeof options.getUsageSnapshot === 'function' ? options.getUsageSnapshot : () => null;
-  const getOperationsSnapshot = typeof options.getOperationsSnapshot === 'function' ? options.getOperationsSnapshot : () => null;
   const getTerminalCacheSize = typeof options.getTerminalCacheSize === 'function' ? options.getTerminalCacheSize : () => 0;
   const loadWorkspaces = typeof options.loadWorkspaces === 'function' ? options.loadWorkspaces : async () => null;
-  const loadOperations = typeof options.loadOperations === 'function' ? options.loadOperations : async () => null;
   const selectSession = typeof options.selectSession === 'function' ? options.selectSession : () => {};
   const selectMeeting = typeof options.selectMeeting === 'function' ? options.selectMeeting : () => {};
   const onCopyRecentTurns = typeof options.onCopyRecentTurns === 'function' ? options.onCopyRecentTurns : async () => null;
   const onForkSession = typeof options.onForkSession === 'function' ? options.onForkSession : async () => null;
   const onOpenArtifact = typeof options.onOpenArtifact === 'function' ? options.onOpenArtifact : async () => null;
   const onLaunchWorkspace = typeof options.onLaunchWorkspace === 'function' ? options.onLaunchWorkspace : () => null;
-  const onOpenReview = typeof options.onOpenReview === 'function' ? options.onOpenReview : () => null;
   const onOpenServerSettings = typeof options.onOpenServerSettings === 'function' ? options.onOpenServerSettings : () => null;
+  const getOperationsSnapshot = typeof options.getOperationsSnapshot === 'function' ? options.getOperationsSnapshot : () => null;
+  const loadOperations = typeof options.loadOperations === 'function' ? options.loadOperations : async () => null;
   const onRefresh = typeof options.onRefresh === 'function' ? options.onRefresh : async () => {};
+  // 渲染完一轮后回调：卡片布局用它把空卡收成一行（见 home-card-layout.js）。
+  const onRendered = typeof options.onRendered === 'function' ? options.onRendered : null;
+  const onOpenSearch = typeof options.onOpenSearch === 'function' ? options.onOpenSearch : () => {};
+  const getLocalStorage = typeof options.getLocalStorage === 'function'
+    ? options.getLocalStorage
+    : () => (typeof localStorage === 'undefined' ? null : localStorage);
   const escapeHtml = typeof options.escapeHtml === 'function'
     ? options.escapeHtml
     : value => String(value || '').replace(/[&<>"']/g, char => ({
@@ -645,48 +663,46 @@ function createHomeWorkbench(options = {}) {
     ].join(''));
   }
 
-  function renderExceptions(snapshot) {
-    const target = el('home-exception-list');
-    if (!target) return;
-    setText('home-exception-count', snapshot.exceptions.length);
-    if (!snapshot.exceptions.length) {
-      setHtml('home-exception-list', '<div class="home-operational-empty ok">没有失败、卡住或系统告警</div>');
+  // 2026-08-27：上下文风险原来是主区一整张卡，长期为空。现在只留指标条上的一个数字。
+  function renderContextRisk(snapshot) {
+    setText('home-metric-context', snapshot.contextRisk.length);
+  }
+
+  function renderResumeCandidates(snapshot) {
+    const list = snapshot.resumeCandidates || [];
+    if (!list.length) {
+      setHtml('home-resume-list', '');
+      setText('home-resume-meta', '没有值得回去的休眠会话');
       return;
     }
-    setHtml('home-exception-list', snapshot.exceptions.map((item) => {
-      const targetAttrs = item.targetId
-        ? ` data-home-type="${escapeHtml(item.type)}" data-home-id="${escapeHtml(item.targetId)}"`
-        : '';
-      const action = item.action === 'refresh'
-        ? '<button type="button" class="home-mini-action" data-home-action="refresh">刷新</button>'
-        : '';
-      return `<div class="home-insight-row exception ${escapeHtml(item.severity)}">`
-        + `<button type="button" class="home-insight-open"${targetAttrs}${item.targetId ? '' : ' tabindex="-1"'}>`
-        + `<span class="home-severity-dot ${escapeHtml(item.severity)}" aria-hidden="true"></span>`
-        + `<span><strong>${escapeHtml(shortText(item.title, 58))}</strong><small>${escapeHtml(shortText(item.detail, 88))}</small></span></button>${action}</div>`;
+    setText('home-resume-meta', `休眠 ${snapshot.metrics.dormant} 个 · 挑了 ${list.length} 个`);
+    setHtml('home-resume-list', list.map((item) => {
+      const badge = item.unreadCount > 0
+        ? `<span class="home-resume-badge unread">${item.unreadCount} 条未读</span>`
+        : '<span class="home-resume-badge">可恢复</span>';
+      const meta = [item.model || baseKind(item.kind), relativeTime(item.lastMessageTime)]
+        .filter(Boolean).map(escapeHtml).join(' · ');
+      return `<button type="button" class="home-resume-item" data-home-type="${escapeHtml(item.type || 'session')}"`
+        + ` data-home-id="${escapeHtml(item.id)}">`
+        + `<span class="home-resume-copy"><strong>${escapeHtml(shortText(item.title || '未命名会话', 46))}</strong>`
+        + `<small>${meta}</small></span>${badge}</button>`;
     }).join(''));
   }
 
-  function renderContextRisk(snapshot) {
-    const target = el('home-context-risk');
-    if (!target) return;
-    setText('home-context-count', snapshot.contextRisk.length);
-    if (!snapshot.contextRisk.length) {
-      setHtml('home-context-risk', '<div class="home-operational-empty ok">暂无超过 70% 的上下文</div>');
+  function renderSearchRecent() {
+    let recent = [];
+    try { recent = readSearchRecent(getLocalStorage()); } catch { recent = []; }
+    if (!recent.length) {
+      setHtml('home-search-recent', '');
       return;
     }
-    setHtml('home-context-risk', snapshot.contextRisk.map((item) => {
-      const pct = Math.round(item.contextPct);
-      const level = pct >= CONTEXT_CRITICAL_PCT ? 'danger' : 'warn';
-      const fork = item.supportsFork
-        ? `<button type="button" class="home-mini-action" data-home-action="fork-session" data-session-id="${escapeHtml(item.id)}">开分支</button>`
-        : '';
-      return `<div class="home-insight-row context ${level}">`
-        + `<button type="button" class="home-insight-open" data-home-type="session" data-home-id="${escapeHtml(item.id)}">`
-        + `<span class="home-context-ring ${level}" style="--context-pct:${Math.max(0, Math.min(100, pct))}">${pct}%</span>`
-        + `<span><strong>${escapeHtml(shortText(item.title, 52))}</strong><small>${escapeHtml(item.providerLabel)} · ${relativeTime(item.lastMessageTime)}</small></span></button>`
-        + `<span class="home-inline-actions"><button type="button" class="home-mini-action" data-home-action="copy-turns" data-session-id="${escapeHtml(item.id)}">复制 3 轮</button>${fork}</span></div>`;
-    }).join(''));
+    setHtml('home-search-recent', recent.map((entry) => (
+      `<button type="button" class="home-search-chip" data-home-action="run-search"`
+      + ` data-home-query="${escapeHtml(entry.query)}"`
+      + ` title="${escapeHtml(`${entry.sessions} 个 session · ${entry.matches} 处命中 · 用过 ${entry.uses} 次`)}">`
+      + `<span>${escapeHtml(shortText(entry.query, 24))}</span>`
+      + `<em>${entry.sessions}</em></button>`
+    )).join(''));
   }
 
   function renderArtifacts(snapshot) {
@@ -720,51 +736,6 @@ function createHomeWorkbench(options = {}) {
       + '<span class="home-artifact-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5"/></svg></span>'
       + `<span><strong>${escapeHtml(shortText(artifact.name, 42))}<i class="home-file-source ${escapeHtml(artifact.source)}">${artifact.source === 'git' ? 'Git 变更' : 'Agent 产物'}</i></strong><small>${escapeHtml(shortText(artifact.sessionTitle, 42))} · ${relativeTime(artifact.timestamp)}</small><em>${escapeHtml(shortText(artifact.path, 74))}</em></span>`
       + '<svg class="home-artifact-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>').join(''));
-  }
-
-  function renderReviewInbox() {
-    const operations = getOperationsSnapshot() || {};
-    const summary = operations.summary || {};
-    const repos = Array.isArray(operations.repos) ? operations.repos : [];
-    const scanErrors = Array.isArray(operations.scanErrors) ? operations.scanErrors : [];
-    setText('home-review-repos', summary.repos || 0);
-    setText('home-review-high', summary.highRisk || 0);
-    setText('home-review-medium', summary.mediumRisk || 0);
-    setText('home-review-files', summary.files || 0);
-    const target = el('home-review-list');
-    if (!target) return;
-    if (!operations.checkedAt) {
-      setHtml('home-review-list', '<div class="home-operational-empty">正在检查最近 Session 所在的 Git 工作区…</div>');
-      return;
-    }
-    if (!repos.length && !scanErrors.length) {
-      setHtml('home-review-list', '<div class="home-operational-empty ok">最近工作区没有未提交改动</div>');
-      return;
-    }
-    const repoMarkup = repos.slice(0, 4).map(repo => {
-      const keyFiles = repo.files.slice(0, 3).map(file => path.basename(file.path)).join(' · ');
-      const evidence = repo.testFiles > 0 ? `含 ${repo.testFiles} 个测试文件，执行结果未知` : '未发现测试文件证据';
-      const fileCount = Number(repo.totalFileCount || repo.files.length);
-      return `<article class="home-review-item ${escapeHtml(repo.risk)}"><div><span class="home-review-risk ${escapeHtml(repo.risk)}">${repo.risk === 'high' ? '高风险' : repo.risk === 'medium' ? '需确认' : '低风险'}</span><strong>${escapeHtml(repo.name)}</strong><small>${escapeHtml(repo.branch)} · ${fileCount} 文件${repo.truncated ? '（先显示 300）' : ''} · +${repo.additions} / −${repo.deletions}</small><p>${escapeHtml(shortText(keyFiles, 76))}</p><em>${escapeHtml(evidence)}</em></div><button type="button" data-home-action="open-review" data-repo-id="${escapeHtml(repo.id)}">${repo.risk === 'high' ? '深度审阅' : '查看 Diff'}</button></article>`;
-    }).join('');
-    const errorMarkup = scanErrors.slice(0, 2).map(item => `<article class="home-review-item high scan-error"><div><span class="home-review-risk high">扫描失败</span><strong>${escapeHtml(item.name || 'Git 工作区')}</strong><small>${item.error === 'git_scan_timeout' ? 'Git 命令超时' : 'Git 状态读取失败'}</small><p>该工作区没有被误判为“干净”，请刷新或在终端检查 Git 状态。</p></div><button type="button" data-home-action="refresh">重试</button></article>`).join('');
-    setHtml('home-review-list', repoMarkup + errorMarkup);
-  }
-
-  function renderNightSummary(snapshot) {
-    setText('home-night-window', snapshot.night.label);
-    setText('home-night-completed', snapshot.night.completed);
-    setText('home-night-failed', snapshot.night.failed);
-    setText('home-night-waiting', snapshot.night.waiting);
-    setText('home-night-duration', snapshot.night.totalDurationMs > 0 ? formatDurationShort(snapshot.night.totalDurationMs) : '—');
-    const target = el('home-night-list');
-    if (!target) return;
-    if (!snapshot.night.items.length) {
-      setHtml('home-night-list', '<div class="home-operational-empty">这个夜间窗口暂无完成任务</div>');
-      return;
-    }
-    setHtml('home-night-list', snapshot.night.items.map(item => `<button type="button" class="home-night-item" data-home-type="${item.type}" data-home-id="${escapeHtml(item.id)}">`
-      + `<span class="home-provider ${item.kind}">${escapeHtml(item.providerLabel)}</span><strong>${escapeHtml(shortText(item.title, 42))}</strong><small>${relativeTime(item.lastCompletedAt || item.lastMessageTime)}</small></button>`).join(''));
   }
 
   function workspaceKey(value) {
@@ -974,15 +945,20 @@ function createHomeWorkbench(options = {}) {
       if (label) label.textContent = state.refreshing ? '刷新中' : '刷新';
     }
 
-    renderReviewInbox();
-    renderExceptions(snapshot);
+    // 2026-08-27 取舍：改动审阅收件箱、异常收件箱、夜间任务摘要三块已从工作台撤下。
+    // buildExceptions / buildNightSummary 仍在跑并留在 snapshot 里（单测依赖，
+    // 也留给以后别处复用），只是不再占工作台的版面。
     renderContextRisk(snapshot);
+    renderResumeCandidates(snapshot);
     renderArtifacts(snapshot);
+    renderSearchRecent();
     renderQuickLaunch();
     renderProviderHealth(snapshot, usage);
-    renderNightSummary(snapshot);
     renderSystemAndServer();
     renderSyncHealth(snapshot);
+    if (typeof onRendered === 'function') {
+      try { onRendered(snapshot); } catch { /* 布局回调不该拖垮渲染 */ }
+    }
     root.dataset.homeReady = 'true';
     return snapshot;
   }
@@ -1004,7 +980,7 @@ function createHomeWorkbench(options = {}) {
     state.refreshError = '';
     render();
     try {
-      await Promise.all([onRefresh(), loadWorkspaceListing(), loadOperations(true)]);
+      await Promise.all([onRefresh(), loadWorkspaceListing(), loadOperations()]);
       state.lastRefreshAt = nowFn();
       return true;
     } catch (error) {
@@ -1045,10 +1021,12 @@ function createHomeWorkbench(options = {}) {
       } else if (action === 'launch-workspace') {
         const item = state.workspaceItems[Number(button.dataset.workspaceIndex)];
         if (item) onLaunchWorkspace(item);
-      } else if (action === 'open-review') {
-        await onOpenReview(button.dataset.repoId || '');
       } else if (action === 'open-server-settings') {
         await onOpenServerSettings();
+      } else if (action === 'open-search') {
+        onOpenSearch('');
+      } else if (action === 'run-search') {
+        onOpenSearch(button.dataset.homeQuery || '');
       }
     } catch {
       button.textContent = '操作失败';
@@ -1084,12 +1062,13 @@ function createHomeWorkbench(options = {}) {
   }
 
   void loadWorkspaceListing();
-  void loadOperations(false).then(() => { if (isVisible()) render(); }).catch(() => {});
-  setIntervalFn(() => {
-    if (isVisible()) {
-      void loadOperations(false).then(() => render()).catch(() => render());
-    }
-  }, 30_000);
+  // 「最近文件」要 Git 变更，所以启动时拉一次 overview。撤掉的是**定时**扫描
+  // （每 30 秒对每个工作区跑一遍 Git，实测上万文件），不是这份数据本身。
+  void loadOperations().then(() => { if (isVisible()) render(); }).catch(() => {});
+  // 2026-08-27：改动审阅收件箱从工作台撤下后，这里原本每 30 秒跑一次
+  // loadOperations（对每个工作区做 Git 扫描，实测一次上万文件）喂给一张已经不存在的卡。
+  // 现在只在有人真的要看审阅驾驶舱时才拉，定时器只保留轻量的 render（刷新相对时间）。
+  setIntervalFn(() => { if (isVisible()) render(); }, 30_000);
 
   return {
     render,

@@ -70,20 +70,26 @@ async function main() {
     claude: { usage5h: { pct: 101 }, usage7d: { pct: 8 }, ts: now - 300000 },
     codex: { usage5h: { pct: 65 }, usage7d: { pct: 31 }, observedAt: now - 300000, ts: now, profileLabel: 'Main', accountEmail: 'current@example.com' },
     kimi: { usage5h: { pct: 67, label: '5h', resetsAt: now + 30 * 60000 }, usage7d: { pct: 13, label: '周', resetsAt: now + 6 * 86400000 }, observedAt: now - 60000, source: 'kimi-api' },
+    deepseek: { totalBalance: 60.6, toppedUpBalance: 60.6, grantedBalance: 0, currency: 'CNY', available: true, observedAt: now - 60000 },
   });
   assert.strictEqual(accountEl.style.display, 'flex');
   assert.ok(accountEl.innerHTML.includes('Claude'));
   assert.ok(accountEl.innerHTML.includes('Codex'));
   assert.ok(accountEl.innerHTML.includes('Codex·Main'), 'selected Codex profile must be visible, not tooltip-only');
   assert.ok(accountEl.innerHTML.includes('data-provider="codex"'));
-  assert.ok(accountEl.innerHTML.includes('Kimi'));
+  // 2026-08-27 取舍：顶栏只留 Claude 用量 / Codex 用量 / DeepSeek 余额三段。
+  // Kimi 仍在采数据（工作台的「四模型用量」卡里看得到），但不再占顶栏那一行。
+  assert.ok(!accountEl.innerHTML.includes('Kimi'), 'Kimi 段应已从顶栏撤下');
+  assert.ok(accountEl.innerHTML.includes('DeepSeek'), '顶栏应显示 DeepSeek');
+  assert.ok(accountEl.innerHTML.includes('¥60.60'), '顶栏应显示 DeepSeek 余额金额');
+  assert.strictEqual((accountEl.innerHTML.match(/class="qt-seg/g) || []).length, 3, '顶栏应只有三段');
   assert.ok(accountEl.innerHTML.includes('101%'));
   assert.ok(!accountEl.innerHTML.includes('acc-bar-track'), 'compact usage UI must not render decorative bars');
   assert.ok(!accountEl.innerHTML.includes('acc-ai-logo'), 'compact usage UI must be text-first without provider logos');
   assert.strictEqual((accountEl.innerHTML.match(/data-action="refresh-usage"/g) || []).length, 1,
     'all providers should share one compact refresh action');
-  assert.ok(accountEl.innerHTML.includes('↻30m'), 'ticker 必须显示每个窗口的重置时间（5h 重置是硬需求）');
-  assert.ok(accountEl.innerHTML.includes('↻6d'), 'ticker 必须同时显示 7d/周 窗口的重置时间');
+  // 重置时间未知时不再占位显示「↻—」，但有值就必须显示出来
+  assert.ok(!accountEl.innerHTML.includes('↻—'), '未知重置时间不该再占一个位置');
   assert.ok(accountEl.innerHTML.includes('5m'), 'Codex freshness must use observedAt instead of cache write time');
   assert.ok(!accountEl.innerHTML.includes('acc-packy-row'));
   assert.ok(accountEl.innerHTML.includes('data-action="refresh-usage"'));
@@ -95,7 +101,6 @@ async function main() {
   await controller.refreshUsageNow();
   assert.ok(invokeCalls.includes('refresh-usage-now'));
   assert.ok(accountEl.innerHTML.includes('66%'));
-  assert.ok(accountEl.innerHTML.includes('67%'));
   assert.ok(accountEl.innerHTML.includes('qt-refresh'), 'ticker 必须保留单一刷新入口');
   assert.ok(refreshStatusTimer && refreshStatusTimer.delay >= 60000,
     'manual refresh status must schedule its own expiry render');

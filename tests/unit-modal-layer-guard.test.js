@@ -31,7 +31,7 @@ test('legacy and aria modals share one visibility decision', () => {
 
 test('detached or hidden modal nodes never block shortcuts', () => {
   const detached = element('config-modal', { connected: false });
-  const hidden = element('operations-review-modal', { hiddenClass: true });
+  const hidden = element('memory-panel', { hiddenClass: true });
   const documentRef = {
     getElementById: id => id === detached.id ? detached : id === hidden.id ? hidden : null,
     querySelectorAll: () => [],

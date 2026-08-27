@@ -208,7 +208,10 @@ function createAccountUsageController({
       const pct = usage && typeof usage.pct === 'number' ? Math.round(usage.pct) : null;
       const cls = pct == null ? 'dim' : pctCls(pct);
       const resetTitle = resetTxt ? `距离 ${label} 配额刷新还有 ${resetTxt}` : `${label} 重置时间未知`;
-      return `<span class="qt-win"><i>${escapeHtml(label)}</i><b class="${cls}">${pct == null ? '—' : `${pct}%`}</b><em title="${escapeHtml(resetTitle)}">↻${escapeHtml(resetTxt || '—')}</em></span>`;
+      // 重置时间未知时不再占位显示「↻—」：一行里少一半噪声。
+      const reset = resetTxt ? `<em title="${escapeHtml(resetTitle)}">↻${escapeHtml(resetTxt)}</em>` : '';
+      return `<span class="qt-win ${cls}" title="${escapeHtml(resetTitle)}"><i>${escapeHtml(label)}</i>`
+        + `<b>${pct == null ? '—' : `${pct}%`}</b>${reset}</span>`;
     };
 
     const renderSeg = (name, u5h, u7d, meta = {}) => {
@@ -222,13 +225,35 @@ function createAccountUsageController({
       return `<span class="qt-seg" data-provider="${escapeHtml(name.toLowerCase())}" title="${escapeHtml(tip)}"><span class="qt-name">${escapeHtml(visibleName)}</span>${renderWindow('5h', u5h)}${renderWindow('7d', u7d)}</span>`;
     };
 
+    // 2026-08-27：ticker 只留三样——Claude 用量、Codex 用量、DeepSeek 余额。
+    // Kimi 段撤掉（数据仍在采，工作台的「四模型用量」里看得到），顶栏是每天都要瞄的
+    // 一行，塞四家反而没有一样看得清。
+    const renderBalance = (name, balance, meta = {}) => {
+      const has = balance && Number.isFinite(Number(balance.totalBalance));
+      const age = formatAge(meta.lastSeen || 0);
+      if (!has) {
+        return `<span class="qt-seg qt-balance" data-provider="deepseek" title="${escapeHtml(name)} 余额未获取 · 数据更新于 ${escapeHtml(age)}前">`
+          + `<span class="qt-name">${escapeHtml(name)}</span><span class="qt-win dim"><b>—</b></span></span>`;
+      }
+      const total = Number(balance.totalBalance);
+      const currency = String(balance.currency || 'CNY').toUpperCase();
+      const symbol = currency === 'CNY' ? '¥' : `${currency} `;
+      const available = balance.available !== false;
+      const cls = !available || total < 10 ? 'danger' : total < 30 ? 'warn' : 'ok';
+      const tip = `${name} 余额 ${symbol}${total.toFixed(2)}`
+        + `${available ? '' : ' · 当前不可用'} · 数据更新于 ${age}前`;
+      return `<span class="qt-seg qt-balance" data-provider="deepseek" title="${escapeHtml(tip)}">`
+        + `<span class="qt-name">${escapeHtml(name)}</span>`
+        + `<span class="qt-win ${cls}"><i>余额</i><b>${escapeHtml(symbol + total.toFixed(2))}</b></span></span>`;
+    };
+
     const c = agentUsage.codex || {};
-    const k = agentUsage.kimi || {};
+    const d = agentUsage.deepseek || {};
     const refreshTitle = usageRefreshState.error
       ? `刷新账户用量 · 上次失败: ${usageRefreshState.error}`
-      : '刷新 Claude、Codex、Kimi 用量与 DeepSeek 余额';
-    // freshness 取三家最旧（保守）：任一数据过期则整灯变橙。
-    const lastSeens = [_claudeUsageLastSeen, agentUsageLastSeen.codex, agentUsageLastSeen.kimi].filter(Boolean);
+      : '刷新 Claude、Codex 用量与 DeepSeek 余额';
+    // freshness 取顶栏在显示的三家里最旧的（保守）：任一过期则整灯变橙。
+    const lastSeens = [_claudeUsageLastSeen, agentUsageLastSeen.codex, agentUsageLastSeen.deepseek].filter(Boolean);
     const oldest = lastSeens.length ? Math.min(...lastSeens) : 0;
     const freshCls = usageFreshnessClass(oldest);
     const ageTxt = lastSeens.length ? formatAge(oldest) : '未刷新';
@@ -246,7 +271,7 @@ function createAccountUsageController({
           && usageRefreshState.providerResults.codex.error,
       }) +
       `<span class="qt-div"></span>` +
-      renderSeg('Kimi', k.usage5h, k.usage7d, { ...k, lastSeen: agentUsageLastSeen.kimi }) +
+      renderBalance('DeepSeek', d.balance || d, { lastSeen: agentUsageLastSeen.deepseek }) +
       `<span class="qt-right"><span class="qt-fresh ${freshCls}" title="数据更新于 ${escapeHtml(ageTxt)}前（取三家最旧）"></span><span class="qt-age">${escapeHtml(ageTxt)}</span>` +
       `<button class="qt-memory" data-action="open-memory" title="记忆系统：各 CLI 记忆与规则文件、梦境沉淀记录" aria-label="打开记忆系统">记忆</button>` +
       `<button class="qt-refresh${usageRefreshState.inFlight ? ' loading' : ''}" data-action="refresh-usage" title="${escapeHtml(refreshTitle)}" aria-label="刷新账户用量">${usageRefreshState.inFlight ? '刷新中' : '⟳ 刷新'}</button></span>`;

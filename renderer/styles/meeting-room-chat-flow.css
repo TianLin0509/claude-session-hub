@@ -1,16 +1,16 @@
 /* AI group chat: WeChat-like message flow */
 .mr-gc-shell {
-  --mr-gc-bg: var(--bg-primary, #0d1117);
-  --mr-gc-surface: var(--bg-secondary, #161b22);
-  --mr-gc-surface-2: var(--bg-tertiary, #1c2128);
-  --mr-gc-border: var(--border, #30363d);
-  --mr-gc-text: var(--text-primary, #f0f6fc);
-  --mr-gc-muted: var(--text-secondary, #8b949e);
-  --mr-gc-muted-2: var(--text-muted, #484f58);
-  --mr-gc-accent: var(--accent-blue, #58a6ff);
+  --mr-gc-bg: var(--bg-primary, var(--surface-canvas));
+  --mr-gc-surface: var(--bg-secondary, var(--surface-raised));
+  --mr-gc-surface-2: var(--bg-tertiary, var(--surface-overlay));
+  --mr-gc-border: var(--border, var(--border-mid));
+  --mr-gc-text: var(--text-primary, var(--fg-strong));
+  --mr-gc-muted: var(--text-secondary, var(--fg-muted));
+  --mr-gc-muted-2: var(--text-muted, var(--border-strong));
+  --mr-gc-accent: var(--accent-blue, var(--link));
   --mr-gc-user: var(--accent-green, #238636);
-  --mr-gc-ai-bubble: var(--bg-secondary, #161b22);
-  --mr-gc-panel-shadow: rgba(0, 0, 0, 0.22);
+  --mr-gc-ai-bubble: var(--bg-secondary, var(--surface-raised));
+  --mr-gc-panel-shadow: rgba(var(--rgb-scrim), 0.22);
   display: grid;
   grid-template-columns: minmax(0, 1fr) 248px;
   min-height: 0;
@@ -63,22 +63,22 @@
   border: 1px solid var(--mr-gc-border);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-text);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 5px 10px;
   font-size: 12px;
   cursor: pointer;
 }
 .mr-gc-card-link:hover {
-  border-color: rgba(88, 166, 255, 0.46);
+  border-color: rgba(var(--rgb-info), 0.46);
   color: var(--mr-gc-text);
-  background: rgba(88, 166, 255, 0.10);
+  background: rgba(var(--rgb-info), 0.10);
 }
 .mr-gc-dayline {
   align-self: center;
   margin: 14px 16px 6px;
   padding: 4px 10px;
-  border-radius: 5px;
-  background: rgba(139, 148, 158, 0.16);
+  border-radius: var(--radius-sm);
+  background: rgba(var(--rgb-neutral), 0.16);
   color: var(--mr-gc-muted);
   font-size: 11px;
 }
@@ -133,7 +133,7 @@
   flex: 0 0 24px;
   margin-top: 5px;
   border: 1px solid var(--mr-gc-border);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-muted);
   cursor: pointer;
@@ -154,28 +154,28 @@
   transform: translateY(0);
 }
 .mr-gc-copy-btn:hover {
-  background: rgba(88, 166, 255, 0.10);
-  border-color: rgba(88, 166, 255, 0.46);
+  background: rgba(var(--rgb-info), 0.10);
+  border-color: rgba(var(--rgb-info), 0.46);
   color: var(--mr-gc-text);
 }
 .mr-gc-copy-btn.copied {
   background: #16a34a;
   border-color: #16a34a;
-  color: #fff;
+  color: var(--fg-inverse);
   opacity: 1;
 }
 .mr-gc-sync-btn {
   border: 1px solid var(--mr-gc-border);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-muted);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   padding: 1px 6px;
   font-size: 11px;
   line-height: 17px;
   cursor: pointer;
 }
 .mr-gc-sync-btn:hover {
-  border-color: rgba(88, 166, 255, 0.46);
+  border-color: rgba(var(--rgb-info), 0.46);
   color: var(--mr-gc-text);
 }
 .mr-gc-sync-btn:disabled {
@@ -184,8 +184,8 @@
 }
 .mr-gc-sync-btn.ok {
   border-color: #16a34a;
-  background: rgba(63, 185, 80, 0.18);
-  color: #7ee787;
+  background: rgba(var(--rgb-success), 0.18);
+  color: var(--mark-green);
 }
 /* 2026-06-28 道雪：AI 气泡 hover「重新提取」(↻) —— 提取错时手动重新同步本轮回答。
    位于气泡操作区（复制/prompt 旁），默认隐藏、hover 浮现，与复制按钮同节奏。
@@ -196,7 +196,7 @@
   flex: 0 0 auto;
   padding: 0 7px;
   border: 1px solid var(--mr-gc-border);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-muted);
   cursor: pointer;
@@ -215,22 +215,22 @@
   transform: translateY(0);
 }
 .mr-gc-resync-btn:hover {
-  background: rgba(88, 166, 255, 0.10);
-  border-color: rgba(88, 166, 255, 0.46);
+  background: rgba(var(--rgb-info), 0.10);
+  border-color: rgba(var(--rgb-info), 0.46);
   color: var(--mr-gc-text);
 }
 .mr-gc-resync-btn:disabled { cursor: default; opacity: 0.72; }
 .mr-gc-resync-btn.ok {
-  background: rgba(63, 185, 80, 0.18);
+  background: rgba(var(--rgb-success), 0.18);
   border-color: #16a34a;
-  color: #7ee787;
+  color: var(--mark-green);
   opacity: 1;
 }
 .mr-gc-avatar {
   width: 36px;
   height: 36px;
   flex: 0 0 36px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--mr-gc-surface-2);
   border: 1px solid var(--mr-gc-border);
@@ -255,22 +255,22 @@
 }
 .mr-session-jump:hover {
   transform: translateY(-1px);
-  border-color: rgba(88, 166, 255, 0.76);
-  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.18);
+  border-color: rgba(var(--rgb-info), 0.76);
+  box-shadow: 0 0 0 2px rgba(var(--rgb-info), 0.18);
 }
 .mr-session-jump:focus-visible {
-  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.34);
+  box-shadow: 0 0 0 3px rgba(var(--rgb-info), 0.34);
 }
 .mr-gc-avatar-user {
   background: var(--mr-gc-user);
-  color: #fff;
-  border-color: rgba(63, 185, 80, 0.46);
+  color: var(--fg-strong);
+  border-color: rgba(var(--rgb-success), 0.46);
 }
 .mr-gc-bubble {
   position: relative;
   max-width: 100%;
   padding: 7px 10px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: var(--mr-gc-ai-bubble);
   color: var(--mr-gc-text);
   border: 1px solid var(--mr-gc-border);
@@ -288,7 +288,7 @@
   position: absolute;
   left: 0; right: 0; bottom: 0;
   height: 60px;
-  background: linear-gradient(to bottom, rgba(0,0,0,0), var(--mr-gc-ai-bubble));
+  background: linear-gradient(to bottom, rgba(var(--rgb-scrim), 0), var(--mr-gc-ai-bubble));
   pointer-events: none;
 }
 .mr-gc-bubble.mr-gc-expanded { max-height: none; }
@@ -298,13 +298,13 @@
   margin: 4px auto 2px;
   padding: 2px 14px;
   font-size: 11.5px;
-  color: var(--accent, #58a6ff);
+  color: var(--accent, var(--link));
   background: transparent;
-  border: 1px solid var(--mr-gc-border, rgba(139,148,158,0.32));
-  border-radius: 12px;
+  border: 1px solid var(--mr-gc-border, rgba(var(--rgb-neutral), 0.32));
+  border-radius: var(--radius-lg);
   cursor: pointer;
 }
-.mr-gc-expand-btn:hover { background: rgba(88,166,255,0.12); border-color: rgba(88,166,255,0.5); }
+.mr-gc-expand-btn:hover { background: rgba(var(--rgb-info), 0.12); border-color: rgba(var(--rgb-info), 0.5); }
 /* 2026-06-28 道雪 [改进2]：回到最新悬浮按钮 */
 .mr-gc-thread { position: relative; }
 .mr-gc-scroll-bottom {
@@ -313,11 +313,11 @@
   z-index: 5;
   padding: 5px 13px;
   font-size: 12px;
-  color: #fff;
-  background: var(--accent, #58a6ff);
+  color: var(--fg-inverse);
+  background: var(--accent, var(--link));
   border: none;
-  border-radius: 16px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.32);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 2px 8px rgba(var(--rgb-shadow), 0.32);
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
@@ -326,41 +326,41 @@
 .mr-gc-scroll-bottom.visible { opacity: 0.95; pointer-events: auto; }
 .mr-gc-scroll-bottom:hover { opacity: 1; }
 /* 2026-06-28 道雪 [改进3]：回答字数标签 */
-.mr-gc-wordcount { color: var(--mr-gc-muted, #8b949e); font-size: 10.5px; opacity: 0.85; }
+.mr-gc-wordcount { color: var(--mr-gc-muted, var(--fg-muted)); font-size: 10.5px; opacity: 0.85; }
 /* 2026-06-28 道雪 [改进5]：AI 名字品牌色（快速辨认发言者） */
 .mr-gc-name { font-weight: 600; }
-.ai-name-claude   { color: #d97757; }
-.ai-name-deepseek { color: #4d6bfe; }
-.ai-name-codex    { color: #10a37f; }
-.ai-name-gpt      { color: #10a37f; }
+.ai-name-claude   { color: var(--mark-red); }
+.ai-name-deepseek { color: var(--mark-indigo); }
+.ai-name-codex    { color: var(--mark-teal); }
+.ai-name-gpt      { color: var(--mark-teal); }
 .ai-name-gemini   { color: #4285f4; }
-.ai-name-kimi     { color: #e6b800; }
-.ai-name-qwen     { color: #a15cff; }
+.ai-name-kimi     { color: var(--mark-amber); }
+.ai-name-qwen     { color: var(--brand); }
 .ai-name-glm      { color: #3859ff; }
 /* 2026-06-28 道雪 [改进R2-1]：代码块一键复制按钮 */
 .mr-gc-md pre { position: relative; }
 .mr-gc-code-copy {
   position: absolute; top: 6px; right: 6px;
   padding: 1px 9px; font-size: 10.5px;
-  color: var(--mr-gc-muted, #8b949e);
-  background: rgba(128,128,128,0.2);
-  border: 1px solid var(--mr-gc-border, rgba(139,148,158,0.3));
-  border-radius: 5px; cursor: pointer;
+  color: var(--mr-gc-muted, var(--fg-muted));
+  background: rgba(var(--rgb-neutral), 0.2);
+  border: 1px solid var(--mr-gc-border, rgba(var(--rgb-neutral), 0.3));
+  border-radius: var(--radius-sm); cursor: pointer;
   opacity: 0; transition: opacity .15s;
 }
 .mr-gc-md pre:hover .mr-gc-code-copy { opacity: 0.9; }
-.mr-gc-code-copy:hover { opacity: 1; background: rgba(88,166,255,0.22); color: #fff; }
+.mr-gc-code-copy:hover { opacity: 1; background: rgba(var(--rgb-info), 0.22); color: var(--fg-strong); }
 /* 2026-06-28 道雪 [改进R2-4]：消息 hover 聚焦高亮（悬停整条微高亮，聚焦阅读） */
-.mr-gc-msg { border-radius: 9px; transition: background .15s; }
-.mr-gc-msg:hover { background: rgba(128,128,128,0.06); }
+.mr-gc-msg { border-radius: var(--radius-md); transition: background .15s; }
+.mr-gc-msg:hover { background: rgba(var(--rgb-neutral), 0.06); }
 /* 2026-06-28 道雪 [改进R2-3]：折叠/展开全部悬浮按钮（在"回到最新"上方） */
 .mr-gc-collapse-all {
   position: absolute; right: 16px; bottom: 52px;
   z-index: 5; padding: 5px 12px; font-size: 12px;
-  color: var(--mr-gc-text, #c9d1d9);
-  background: var(--mr-gc-surface-2, #21262d);
-  border: 1px solid var(--mr-gc-border, rgba(139,148,158,0.3));
-  border-radius: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  color: var(--mr-gc-text, var(--fg-default));
+  background: var(--mr-gc-surface-2, var(--border-subtle));
+  border: 1px solid var(--mr-gc-border, rgba(var(--rgb-neutral), 0.3));
+  border-radius: var(--radius-xl); box-shadow: 0 2px 8px rgba(var(--rgb-shadow), 0.3);
   cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .2s;
 }
 .mr-gc-collapse-all.visible { opacity: 0.92; pointer-events: auto; }
@@ -369,30 +369,30 @@
 .mr-gc-turn-sep {
   display: flex; align-items: center; gap: 10px;
   margin: 16px 6px 8px;
-  color: var(--mr-gc-muted, #8b949e);
+  color: var(--mr-gc-muted, var(--fg-muted));
   font-size: 11px; font-weight: 600; letter-spacing: .03em;
 }
 .mr-gc-turn-sep::before, .mr-gc-turn-sep::after {
   content: ""; flex: 1; height: 1px;
-  background: var(--mr-gc-border, rgba(139,148,158,0.25));
+  background: var(--mr-gc-border, rgba(var(--rgb-neutral), 0.25));
 }
 /* 2026-06-28 道雪 [改进R2-5]：群聊内搜索框 + 过滤淡化 */
 .mr-gc-search-row { display: flex; align-items: center; gap: 8px; padding: 4px 14px 2px; }
 .mr-gc-search {
   flex: 1; max-width: 320px; height: 26px; padding: 0 10px; font-size: 12px;
-  color: var(--mr-gc-text, #c9d1d9);
+  color: var(--mr-gc-text, var(--fg-default));
   background: var(--mr-gc-surface-2, rgba(128,128,128,0.08));
-  border: 1px solid var(--mr-gc-border, rgba(139,148,158,0.25));
-  border-radius: 13px; outline: none;
+  border: 1px solid var(--mr-gc-border, rgba(var(--rgb-neutral), 0.25));
+  border-radius: var(--radius-lg); outline: none;
 }
-.mr-gc-search:focus { border-color: var(--accent, #58a6ff); }
-.mr-gc-search-count { font-size: 11px; color: var(--mr-gc-muted, #8b949e); white-space: nowrap; }
+.mr-gc-search:focus { border-color: var(--accent, var(--link)); }
+.mr-gc-search-count { font-size: 11px; color: var(--mr-gc-muted, var(--fg-muted)); white-space: nowrap; }
 .mr-gc-msg.mr-gc-search-dim { opacity: 0.25; }
 
 /* [查看本轮 prompt] 气泡 hover 按钮（复用 copy-btn 视觉）+ 弹窗 */
 .mr-gc-prompt-btn {
   width: 24px; height: 24px; flex: 0 0 24px; margin-top: 5px;
-  border: 1px solid var(--mr-gc-border); border-radius: 5px;
+  border: 1px solid var(--mr-gc-border); border-radius: var(--radius-sm);
   background: var(--mr-gc-surface-2); color: var(--mr-gc-muted);
   cursor: pointer; display: grid; place-items: center;
   font-family: inherit; font-size: 12px; line-height: 1;
@@ -401,36 +401,36 @@
 }
 .mr-gc-msg:hover .mr-gc-prompt-btn,
 .mr-gc-msg:focus-within .mr-gc-prompt-btn { opacity: 1; pointer-events: auto; transform: translateY(0); }
-.mr-gc-prompt-btn:hover { background: rgba(88,166,255,0.10); border-color: rgba(88,166,255,0.46); color: var(--mr-gc-text); }
+.mr-gc-prompt-btn:hover { background: rgba(var(--rgb-info), 0.10); border-color: rgba(var(--rgb-info), 0.46); color: var(--mr-gc-text); }
 
 .mr-gc-prompt-modal-overlay {
   position: fixed; inset: 0; z-index: 9999;
-  background: rgba(0,0,0,0.5);
+  background: rgba(var(--rgb-scrim), 0.5);
   display: flex; align-items: center; justify-content: center;
   padding: 5vh 4vw; animation: mrGcPromptFade .12s ease;
 }
 @keyframes mrGcPromptFade { from { opacity: 0; } to { opacity: 1; } }
 .mr-gc-prompt-modal {
   background: var(--mr-gc-surface, #fff); color: var(--mr-gc-text, #1d1d1f);
-  border: 1px solid var(--mr-gc-border); border-radius: 12px;
+  border: 1px solid var(--mr-gc-border); border-radius: var(--radius-lg);
   max-width: 760px; width: 100%; max-height: 90vh;
   display: flex; flex-direction: column; overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+  box-shadow: var(--shadow-lg);
 }
 .mr-gc-prompt-modal-head {
   display: flex; align-items: center; gap: 8px;
   padding: 13px 18px; border-bottom: 1px solid var(--mr-gc-border);
 }
 .mr-gc-prompt-modal-title { font-weight: 700; font-size: 14px; color: var(--mr-gc-text); }
-.mr-gc-prompt-modal-act { font-size: 11px; font-weight: 700; color: #fff; background: var(--mr-gc-accent, #0a84ff); padding: 1px 8px; border-radius: 10px; white-space: nowrap; }
+.mr-gc-prompt-modal-act { font-size: 11px; font-weight: 700; color: var(--fg-strong); background: var(--mr-gc-accent, #0a84ff); padding: 1px 8px; border-radius: var(--radius-md); white-space: nowrap; }
 .mr-gc-prompt-modal-spacer { flex: 1; }
 .mr-gc-prompt-modal-copy, .mr-gc-prompt-modal-close {
   border: 1px solid var(--mr-gc-border); background: var(--mr-gc-surface-2);
-  color: var(--mr-gc-muted); border-radius: 6px; cursor: pointer;
+  color: var(--mr-gc-muted); border-radius: var(--radius-sm); cursor: pointer;
   font-family: inherit; font-size: 12px; padding: 4px 10px; line-height: 1;
 }
 .mr-gc-prompt-modal-close { padding: 4px 9px; }
-.mr-gc-prompt-modal-copy:hover, .mr-gc-prompt-modal-close:hover { color: var(--mr-gc-text); border-color: rgba(88,166,255,0.46); }
+.mr-gc-prompt-modal-copy:hover, .mr-gc-prompt-modal-close:hover { color: var(--mr-gc-text); border-color: rgba(var(--rgb-info), 0.46); }
 .mr-gc-prompt-modal-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
 .mr-gc-prompt-empty { color: var(--mr-gc-muted); font-size: 13px; padding: 22px 6px; text-align: center; line-height: 1.6; }
 .mr-gc-prompt-modal-foot {
@@ -453,8 +453,8 @@
 }
 .mr-gc-msg.mine .mr-gc-bubble {
   background: var(--mr-gc-user);
-  color: #fff;
-  border-color: rgba(63, 185, 80, 0.48);
+  color: var(--fg-strong);
+  border-color: rgba(var(--rgb-success), 0.48);
 }
 .mr-gc-msg.mine .mr-gc-bubble::after {
   right: -6px;
@@ -480,15 +480,15 @@
   overflow-wrap: anywhere;
 }
 .mr-gc-md a:hover {
-  color: #79c0ff;
-  background: rgba(88, 166, 255, 0.12);
+  color: var(--link-hover);
+  background: rgba(var(--rgb-info), 0.12);
 }
 .mr-gc-md code {
   padding: 1px 5px;
   border: 1px solid var(--mr-gc-border);
-  border-radius: 4px;
-  background: rgba(110, 118, 129, 0.18);
-  color: #d2a8ff;
+  border-radius: var(--radius-xs);
+  background: rgba(var(--rgb-neutral), 0.18);
+  color: var(--brand-text);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 0.92em;
 }
@@ -499,10 +499,10 @@
   padding: 10px 12px;
   border: 1px solid var(--mr-gc-border);
   border-left: 4px solid #6e7781;
-  border-radius: 6px;
-  background: #0b1118;
+  border-radius: var(--radius-sm);
+  background: var(--surface-canvas);
   color: var(--mr-gc-text);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  box-shadow: inset 0 1px 0 rgba(var(--rgb-overlay), 0.04);
 }
 .mr-gc-md pre code {
   padding: 0;
@@ -516,7 +516,7 @@
   margin-top: 4px;
   padding: 2px 6px;
   border: 1px solid var(--mr-gc-border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-muted);
   font-size: 10px;
@@ -527,9 +527,9 @@
   white-space: nowrap;
 }
 .mr-gc-anchor:hover {
-  background: rgba(88, 166, 255, 0.12);
-  border-color: rgba(88, 166, 255, 0.46);
-  color: #79c0ff;
+  background: rgba(var(--rgb-info), 0.12);
+  border-color: rgba(var(--rgb-info), 0.46);
+  color: var(--link-hover);
 }
 .mr-gc-waiting {
   color: var(--mr-gc-muted);
@@ -573,7 +573,7 @@
   min-width: 42px;
   padding: 0 8px;
   border: 1px solid var(--mr-gc-border);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-muted);
   font-size: 11px;
@@ -585,7 +585,7 @@
 }
 .mr-gc-side-add:hover,
 .mr-gc-side-collapse:hover {
-  background: rgba(88, 166, 255, 0.10);
+  background: rgba(var(--rgb-info), 0.10);
   color: var(--mr-gc-text);
 }
 .mr-gc-members {
@@ -608,34 +608,34 @@
   gap: 9px;
   padding: 7px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--mr-gc-text);
   text-align: left;
   cursor: pointer;
 }
 .mr-gc-member:hover {
-  background: rgba(88, 166, 255, 0.10);
+  background: rgba(var(--rgb-info), 0.10);
 }
 .mr-gc-member.selected {
-  background: rgba(63, 185, 80, 0.12);
-  border-color: rgba(63, 185, 80, 0.32);
+  background: rgba(var(--rgb-success), 0.12);
+  border-color: rgba(var(--rgb-success), 0.32);
 }
 .mr-gc-member-remove {
   flex: 0 0 auto;
   width: 42px;
   padding: 0 5px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--mr-gc-muted);
   font-size: 10px;
   cursor: pointer;
 }
 .mr-gc-member-remove:hover:not(:disabled) {
-  border-color: rgba(248, 81, 73, 0.42);
-  background: rgba(248, 81, 73, 0.12);
-  color: #ff7b72;
+  border-color: rgba(var(--rgb-danger), 0.42);
+  background: rgba(var(--rgb-danger), 0.12);
+  color: var(--mark-red);
 }
 .mr-gc-member-remove:disabled {
   opacity: 0.28;
@@ -649,7 +649,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   overflow: hidden;
   pointer-events: none;
@@ -658,7 +658,7 @@
 .mr-gc-member-logo img {
   width: 30px;
   height: 30px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   object-fit: contain;
   display: block;
 }
@@ -693,7 +693,7 @@
 .mr-gc-member-ctx {
   min-width: 48px;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-muted);
   font-size: 10px;
@@ -701,12 +701,12 @@
   text-align: center;
 }
 .mr-gc-member-ctx.warn {
-  background: rgba(240, 136, 62, 0.14);
-  color: #f0883e;
+  background: rgba(var(--rgb-orange), 0.14);
+  color: var(--status-warning);
 }
 .mr-gc-member-ctx.high {
-  background: rgba(231, 76, 60, 0.14);
-  color: #ff7b72;
+  background: rgba(var(--rgb-danger), 0.14);
+  color: var(--mark-red);
 }
 .mr-gc-member-ctx.unknown {
   color: var(--mr-gc-muted-2);
@@ -715,7 +715,7 @@
   min-width: 38px;
   padding: 2px 7px;
   border: 1px solid var(--mr-gc-border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-muted);
   font-size: 10px;
@@ -724,9 +724,9 @@
   cursor: pointer;
 }
 .mr-gc-member-check.on {
-  background: rgba(63, 185, 80, 0.18);
-  border-color: rgba(63, 185, 80, 0.40);
-  color: #7ee787;
+  background: rgba(var(--rgb-success), 0.18);
+  border-color: rgba(var(--rgb-success), 0.40);
+  color: var(--mark-green);
 }
 .mr-duty-hats {
   display: flex;
@@ -745,7 +745,7 @@
 }
 .mr-duty-hats-count {
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-muted);
   font-size: 10px;
@@ -763,12 +763,12 @@
   gap: 8px;
   padding: 7px;
   border: 1px solid var(--mr-gc-border);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: var(--mr-gc-bg);
 }
 .mr-duty-hat-row.assigned {
-  background: rgba(88, 166, 255, 0.10);
-  border-color: rgba(88, 166, 255, 0.32);
+  background: rgba(var(--rgb-info), 0.10);
+  border-color: rgba(var(--rgb-info), 0.32);
 }
 .mr-duty-hat-label {
   min-width: 0;
@@ -794,7 +794,7 @@
   height: 28px;
   padding: 0 6px;
   border: 1px solid var(--mr-gc-border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-text);
   font: inherit;
@@ -802,8 +802,8 @@
   outline: none;
 }
 .mr-duty-hat-select:focus {
-  border-color: rgba(88, 166, 255, 0.62);
-  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.14);
+  border-color: rgba(var(--rgb-info), 0.62);
+  box-shadow: 0 0 0 2px rgba(var(--rgb-info), 0.14);
 }
 .mr-duty-hat-actions {
   display: grid;
@@ -813,7 +813,7 @@
 .mr-duty-hat-action {
   height: 28px;
   border: 1px solid var(--mr-gc-border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--mr-gc-surface-2);
   color: var(--mr-gc-muted);
   font-size: 11px;
@@ -821,9 +821,9 @@
   cursor: pointer;
 }
 .mr-duty-hat-action.primary {
-  border-color: rgba(88, 166, 255, 0.46);
+  border-color: rgba(var(--rgb-info), 0.46);
   background: #1f6feb;
-  color: #fff;
+  color: var(--fg-inverse);
 }
 .mr-duty-hat-action:hover:not(:disabled) {
   filter: brightness(0.98);
@@ -840,7 +840,7 @@
 .mr-gc-ledger {
   margin-top: auto;
   padding: 10px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: var(--mr-gc-bg);
   border: 1px solid var(--mr-gc-border);
   color: var(--mr-gc-muted);
@@ -856,9 +856,9 @@
   max-width: 440px;
   margin: 80px auto 0;
   padding: 18px;
-  border-radius: 8px;
-  background: rgba(22, 27, 34, 0.72);
-  border: 1px dashed rgba(139, 148, 158, 0.36);
+  border-radius: var(--radius-md);
+  background: rgba(var(--rgb-canvas), 0.72);
+  border: 1px dashed rgba(var(--rgb-neutral), 0.36);
   text-align: center;
 }
 .mr-gc-empty-title {
@@ -888,4 +888,4 @@
    (AI 群聊界面不再 mount xterm，shell 沉到子 session 主区 view)。 */
 
 /* 2026-07-20 道雪 [修#9]：悬空用户消息的"已被重启打断"标记 */
-.mr-gc-interrupted-note { color: var(--mr-gc-muted, #8b949e); font-size: 10px; }
+.mr-gc-interrupted-note { color: var(--mr-gc-muted, var(--fg-muted)); font-size: 10px; }

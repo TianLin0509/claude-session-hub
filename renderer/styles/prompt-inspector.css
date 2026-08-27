@@ -35,7 +35,7 @@
 /* 体检 */
 .pi-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; }
 .pi-chk {
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 6px 9px;
   border-left: 3px solid var(--text-muted);
   background: var(--bg-tertiary);
@@ -50,7 +50,7 @@
 .pi-chk span { display: block; color: var(--text-secondary); font-size: 11.3px; word-break: break-all; }
 
 /* 分组 */
-.pi-grp { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; background: var(--bg-tertiary); }
+.pi-grp { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 6px; background: var(--bg-tertiary); }
 .pi-grp > summary {
   list-style: none;
   cursor: pointer;
@@ -72,7 +72,7 @@
   color: var(--text-secondary);
   font-size: 11.5px;
   background: var(--bg-secondary);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   padding: 6px 9px;
   margin: 8px 0;
 }
@@ -84,7 +84,7 @@
 .pi-tag {
   font-size: 10.2px;
   padding: 1px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--bg-secondary);
   color: var(--text-secondary);
   white-space: nowrap;
@@ -102,11 +102,11 @@
 .pi-sz { margin-left: auto; color: var(--text-muted); font-size: 11px; white-space: nowrap; }
 
 /* 占比条 */
-.pi-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; border: 1px solid var(--border); }
+.pi-bar { display: flex; height: 10px; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border); }
 .pi-bar i { display: block; height: 100%; }
 .pi-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; color: var(--text-secondary); font-size: 11.2px; }
 .pi-legend span { display: flex; align-items: center; gap: 4px; }
-.pi-sq { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.pi-sq { width: 8px; height: 8px; border-radius: var(--radius-xs); display: inline-block; }
 
 .pi-err { padding: 12px 13px; color: var(--accent-red); font-size: 12.5px; }
 .pi-loading { padding: 12px 13px; color: var(--text-secondary); font-size: 12.5px; }
@@ -115,7 +115,7 @@
 /* ===== raw 原文查看（2026-07-29） ===== */
 
 /* 可点击行：必须一眼看出来能点，否则这个功能等于不存在 */
-.pi-clickable { cursor: pointer; border-radius: 5px; padding: 2px 5px; margin: -2px -5px; transition: background 0.12s; }
+.pi-clickable { cursor: pointer; border-radius: var(--radius-sm); padding: 2px 5px; margin: -2px -5px; transition: background 0.12s; }
 .pi-clickable:hover, .pi-clickable:focus-visible {
   background: var(--session-selected);
   outline: none;
@@ -130,7 +130,7 @@
 .pi-btn {
   font-size: 11.4px;
   padding: 3px 9px;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--bg-tertiary);
   color: var(--text-primary);
@@ -144,7 +144,7 @@
 /* 三档诚实标注 */
 .pi-truth { display: grid; gap: 6px; }
 .pi-truth-item {
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 6px 9px;
   border-left: 3px solid var(--text-muted);
   background: var(--bg-tertiary);
@@ -164,7 +164,7 @@
   position: fixed;
   inset: 0;
   z-index: 4000;
-  background: rgba(1, 4, 9, 0.72);
+  background: rgba(var(--rgb-scrim), 0.72);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -177,8 +177,8 @@
   flex-direction: column;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
   color: var(--text-primary);
   font-size: 12.5px;
@@ -198,7 +198,7 @@
   border: 1px solid var(--border);
   background: var(--bg-tertiary);
   color: var(--text-secondary);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   padding: 2px 8px;
   font-size: 12px;
@@ -233,7 +233,7 @@
   color: var(--text-primary);
   background: var(--bg-primary, var(--bg-tertiary));
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 9px 11px;
 }
 
@@ -269,11 +269,11 @@
   padding: 5px 9px;
   border: 1px solid var(--border);
   border-bottom: none;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   background: var(--bg-tertiary);
   font-size: 11.4px;
 }
-.pi-seg-hdr.bad { border-radius: 6px; border-bottom: 1px solid var(--border); color: var(--accent-red); }
+.pi-seg-hdr.bad { border-radius: var(--radius-sm); border-bottom: 1px solid var(--border); color: var(--accent-red); }
 .pi-seg-off { color: var(--accent-blue); font-family: 'SF Mono', Consolas, monospace; font-size: 10.8px; }
 .pi-seg-path { color: var(--text-muted); font-size: 10.8px; word-break: break-all; }
-.pi-asm-seg .pi-raw { border-radius: 0 0 6px 6px; }
+.pi-asm-seg .pi-raw { border-radius: 0 0 var(--radius-sm) var(--radius-sm); }

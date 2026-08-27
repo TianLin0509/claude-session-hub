@@ -4,7 +4,7 @@
 .mcm-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(var(--rgb-scrim), 0.55);
   z-index: 9999;
   display: flex;
   align-items: center;
@@ -15,13 +15,13 @@
   width: 980px;
   max-width: 94vw;
   max-height: 90vh;
-  background: var(--bg-card, #161b22);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 10px;
+  background: var(--bg-card, var(--surface-raised));
+  border: 1px solid var(--border, var(--border-mid));
+  border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
-  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.5);
-  color: var(--text, #e6edf3);
+  box-shadow: var(--shadow-lg);
+  color: var(--text, var(--fg-strong));
   font-size: 13px;
 }
 
@@ -29,7 +29,7 @@
   display: flex;
   align-items: center;
   padding: 14px 18px;
-  border-bottom: 1px solid var(--border-soft, #21262d);
+  border-bottom: 1px solid var(--border-soft, var(--border-subtle));
 }
 .mcm-title {
   font-size: 16px;
@@ -39,13 +39,13 @@
 .mcm-close {
   background: none;
   border: none;
-  color: var(--text-dim, #8b949e);
+  color: var(--text-dim, var(--fg-muted));
   font-size: 22px;
   cursor: pointer;
   padding: 0 6px;
   line-height: 1;
 }
-.mcm-close:hover { color: var(--text, #e6edf3); }
+.mcm-close:hover { color: var(--text, var(--fg-strong)); }
 
 .mcm-body {
   padding: 18px;
@@ -62,15 +62,15 @@
 }
 .mcm-name-label {
   font-size: 13px;
-  color: var(--text-dim, #8b949e);
+  color: var(--text-dim, var(--fg-muted));
   flex-shrink: 0;
 }
 .mcm-title-input {
   flex: 1;
-  background: var(--bg-input, #0d1117);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 6px;
-  color: var(--text, #e6edf3);
+  background: var(--bg-input, var(--surface-canvas));
+  border: 1px solid var(--border, var(--border-mid));
+  border-radius: var(--radius-sm);
+  color: var(--text, var(--fg-strong));
   font-size: 13px;
   padding: 6px 10px;
   outline: none;
@@ -79,7 +79,7 @@
   border-color: var(--accent, #4493f8);
 }
 .mcm-title-input::placeholder {
-  color: var(--text-dim, #8b949e);
+  color: var(--text-dim, var(--fg-muted));
   opacity: 0.6;
 }
 
@@ -97,23 +97,23 @@
   align-items: flex-start;
   gap: 4px;
   padding: 10px 11px;
-  border: 1px solid var(--border, #30363d);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.025);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--border, var(--border-mid));
+  border-radius: var(--radius-md);
+  background: rgba(var(--rgb-overlay), 0.025);
+  color: var(--text, var(--fg-strong));
   cursor: pointer;
   font-family: inherit;
   text-align: left;
 }
 
 .mcm-template:hover {
-  border-color: rgba(88, 166, 255, 0.48);
-  background: rgba(88, 166, 255, 0.08);
+  border-color: rgba(var(--rgb-info), 0.48);
+  background: rgba(var(--rgb-info), 0.08);
 }
 
 .mcm-template.selected {
-  border-color: rgba(88, 166, 255, 0.72);
-  background: rgba(88, 166, 255, 0.13);
+  border-color: rgba(var(--rgb-info), 0.72);
+  background: rgba(var(--rgb-info), 0.13);
 }
 
 .mcm-template-title {
@@ -123,7 +123,7 @@
 }
 
 .mcm-template-desc {
-  color: var(--text-dim, #8b949e);
+  color: var(--text-dim, var(--fg-muted));
   font-size: 11.5px;
   line-height: 1.35;
 }
@@ -142,13 +142,13 @@
   margin: 2px 0 9px;
 }
 .mcm-member-caption strong { font-size: 13px; }
-.mcm-member-caption span { color: var(--text-dim, #8b949e); font-size: 11px; }
+.mcm-member-caption span { color: var(--text-dim, var(--fg-muted)); font-size: 11px; }
 
 .mcm-slot {
   position: relative;
   background: var(--bg-card-2, #1c232c);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 8px;
+  border: 1px solid var(--border, var(--border-mid));
+  border-radius: var(--radius-md);
   padding: 14px;
   display: flex;
   flex-direction: column;
@@ -164,7 +164,7 @@
 .mcm-slot-head strong {
   display: block;
   margin-top: 4px;
-  color: var(--text, #e6edf3);
+  color: var(--text, var(--fg-strong));
   font-size: 13px;
 }
 .mcm-slot-fields {
@@ -185,32 +185,32 @@
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  border: 1px solid var(--border, #30363d);
-  background: var(--bg, #0d1117);
-  color: var(--text-dim, #8b949e);
+  border: 1px solid var(--border, var(--border-mid));
+  background: var(--bg, var(--surface-canvas));
+  color: var(--text-dim, var(--fg-muted));
   cursor: pointer;
   font-size: 18px;
   line-height: 1;
 }
 .mcm-remove-member:hover {
-  color: var(--text, #e6edf3);
-  border-color: var(--accent, #58a6ff);
+  color: var(--text, var(--fg-strong));
+  border-color: var(--accent, var(--link));
 }
 .mcm-add-member {
   align-items: center;
   justify-content: center;
   margin: -4px 0 16px;
   padding: 8px 12px;
-  border-radius: 6px;
-  border: 1px dashed var(--border, #30363d);
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border, var(--border-mid));
   background: transparent;
-  color: var(--text, #e6edf3);
+  color: var(--text, var(--fg-strong));
   cursor: pointer;
   font-family: inherit;
 }
 .mcm-add-member:hover {
-  border-color: var(--accent, #58a6ff);
-  background: rgba(88, 166, 255, 0.08);
+  border-color: var(--accent, var(--link));
+  background: rgba(var(--rgb-info), 0.08);
 }
 .mcm-avatar {
   width: 44px;
@@ -220,7 +220,7 @@
 }
 .mcm-slot-label {
   font-size: 11.5px;
-  color: var(--text-dim, #8b949e);
+  color: var(--text-dim, var(--fg-muted));
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -229,14 +229,14 @@
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: var(--text-dim, #8b949e);
+  color: var(--text-dim, var(--fg-muted));
   width: 100%;
 }
 .mcm-slot select {
-  background: var(--bg, #0d1117);
-  color: var(--text, #e6edf3);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 4px;
+  background: var(--bg, var(--surface-canvas));
+  color: var(--text, var(--fg-strong));
+  border: 1px solid var(--border, var(--border-mid));
+  border-radius: var(--radius-xs);
   padding: 6px 8px;
   font-size: 13px;
   width: 100%;
@@ -244,42 +244,42 @@
 }
 .mcm-slot select:focus-visible,
 .mcm-fast-checkbox:focus-visible {
-  outline: 2px solid var(--accent, #58a6ff);
+  outline: 2px solid var(--accent, var(--link));
   outline-offset: 1px;
 }
 .mcm-tuning-field {
   padding-top: 8px;
-  border-top: 1px solid var(--border-soft, #21262d);
+  border-top: 1px solid var(--border-soft, var(--border-subtle));
 }
 .mcm-check {
   display: flex;
   align-items: center;
   gap: 6px;
   min-height: 30px;
-  color: var(--text, #e6edf3);
+  color: var(--text, var(--fg-strong));
   font-size: 12px;
 }
 .mcm-fast-checkbox {
   width: 15px;
   height: 15px;
   margin: 0;
-  accent-color: var(--accent, #58a6ff);
+  accent-color: var(--accent, var(--link));
 }
 
 .mcm-scene {
   font-size: 13px;
-  color: var(--text, #e6edf3);
+  color: var(--text, var(--fg-strong));
   display: flex;
   gap: 16px;
   align-items: center;
   padding-top: 8px;
-  border-top: 1px solid var(--border-soft, #21262d);
+  border-top: 1px solid var(--border-soft, var(--border-subtle));
 }
 
 .mcm-workspace-block { display: flex; flex-direction: column; gap: 7px; }
 
 .mcm-workspace-caption {
-  color: #59d395;
+  color: var(--mark-green);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -293,32 +293,32 @@
   gap: 3px;
   min-height: 63px;
   padding: 10px 11px;
-  border: 1px solid var(--border-soft, #30363d);
-  border-radius: 7px;
-  background: var(--bg-2, #161b22);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--border-soft, var(--border-mid));
+  border-radius: var(--radius-sm);
+  background: var(--bg-2, var(--surface-raised));
+  color: var(--text, var(--fg-strong));
   text-align: left;
   cursor: pointer;
 }
-.mcm-workspace-choice:hover { border-color: rgba(88, 166, 255, .45); }
+.mcm-workspace-choice:hover { border-color: rgba(var(--rgb-info), .45); }
 .mcm-workspace-choice.selected { border-color: rgba(89, 211, 149, .55); background: rgba(89, 211, 149, .08); }
 .mcm-workspace-choice strong { font-size: 12px; }
-.mcm-workspace-choice small { color: var(--text-dim, #8b949e); font-size: 10px; line-height: 1.4; }
+.mcm-workspace-choice small { color: var(--text-dim, var(--fg-muted)); font-size: 10px; line-height: 1.4; }
 
 .mcm-workspace-existing {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  border: 1px solid rgba(88, 166, 255, .22);
-  border-radius: 7px;
+  border: 1px solid rgba(var(--rgb-info), .22);
+  border-radius: var(--radius-sm);
   background: rgba(56, 139, 253, .05);
 }
 .mcm-workspace-existing[hidden] { display: none; }
 .mcm-workspace-existing code {
   flex: 1;
   overflow: hidden;
-  color: var(--text-dim, #8b949e);
+  color: var(--text-dim, var(--fg-muted));
   font: 10px Consolas, "SFMono-Regular", monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -328,16 +328,16 @@
   flex: 0 0 auto;
   padding: 6px 10px;
   border: 1px solid rgba(89, 211, 149, 0.35);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: #8ce9b8;
+  color: var(--mark-teal);
   cursor: pointer;
   font: 12px inherit;
 }
 
 .mcm-workspace-button:hover { background: rgba(89, 211, 149, 0.11); }
 .mcm-workspace-choice:focus-visible,
-.mcm-workspace-button:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+.mcm-workspace-button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 .mcm-scene label {
   display: flex;
   align-items: center;
@@ -351,15 +351,15 @@
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--border-soft, #30363d);
-  color: var(--text-muted, #8b949e);
+  background: var(--border-soft, var(--border-mid));
+  color: var(--text-muted, var(--fg-muted));
   font-size: 10px;
   cursor: help;
   user-select: none;
 }
 .mcm-scene-hint:hover {
-  background: var(--accent, #58a6ff);
-  color: #fff;
+  background: var(--accent, var(--link));
+  color: var(--fg-inverse);
 }
 
 .mcm-footer {
@@ -367,25 +367,25 @@
   gap: 8px;
   justify-content: flex-end;
   padding: 14px 18px;
-  border-top: 1px solid var(--border-soft, #21262d);
+  border-top: 1px solid var(--border-soft, var(--border-subtle));
 }
 .mcm-footer button {
   padding: 8px 18px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font-size: 13px;
   cursor: pointer;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border, var(--border-mid));
   font-family: inherit;
 }
 .mcm-cancel {
   background: var(--bg-card-2, #1c232c);
-  color: var(--text, #e6edf3);
+  color: var(--text, var(--fg-strong));
 }
-.mcm-cancel:hover { background: var(--border, #30363d); }
+.mcm-cancel:hover { background: var(--border, var(--border-mid)); }
 .mcm-primary {
-  background: var(--accent, #58a6ff);
+  background: var(--accent, var(--link));
   color: #000;
-  border-color: var(--accent, #58a6ff);
+  border-color: var(--accent, var(--link));
   font-weight: 600;
 }
 .mcm-primary:hover { filter: brightness(1.1); }
@@ -400,9 +400,9 @@
   margin: 0 16px 12px;
   padding: 8px 12px;
   background: rgba(192, 57, 43, 0.12);
-  color: #f39c8b;
+  color: var(--mark-red);
   border-left: 3px solid #c0392b;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font-size: 13px;
   white-space: pre-line;
   line-height: 1.5;

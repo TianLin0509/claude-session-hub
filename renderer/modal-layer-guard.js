@@ -1,7 +1,6 @@
 'use strict';
 
 const LEGACY_MODAL_IDS = Object.freeze([
-  'operations-review-modal',
   'search-modal',
   'config-modal',
   'resume-modal',

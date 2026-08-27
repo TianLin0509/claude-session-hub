@@ -123,35 +123,8 @@ test('preview quick/find inputs suppress unrelated Hub shortcuts', () => {
   assert.deepStrictEqual(calls, []);
 });
 
-test('operations review modal suppresses background Hub shortcuts', () => {
-  const calls = [];
-  const operationsModal = { classList: { contains: () => false } };
-  const shortcuts = createKeyboardShortcuts({
-    document: {
-      addEventListener: () => {},
-      getElementById: id => id === 'operations-review-modal' ? operationsModal : null,
-    },
-    ipcRenderer: { invoke: (...args) => calls.push(args) },
-    clipboard: { writeText: () => {} },
-    sessions: new Map([['active', { id: 'active', kind: 'codex' }]]),
-    terminalCache: new Map(),
-    getActiveSessionId: () => 'active',
-    getCurrentFontSize: () => 16,
-    selectSession: () => calls.push(['select']),
-    escapeToHome: () => calls.push(['home']),
-    toggleSidebar: () => calls.push(['sidebar']),
-    openTerminalSearch: () => calls.push(['terminal-search']),
-    openPreviewQuickOpen: () => calls.push(['quick-open']),
-    setFontSize: () => calls.push(['font']),
-    closeSession: () => calls.push(['close']),
-  });
-  for (const key of ['o', 'k', 'n', 'w', 'b', 'f']) {
-    const event = makeEvent({ key, target: { tagName: 'BUTTON' } });
-    shortcuts.handleKeydown(event);
-    assert.equal(event.defaultPrevented, false);
-  }
-  assert.deepStrictEqual(calls, []);
-});
+// 2026-08-27：改动审阅驾驶舱已整体删除，原来那条「驾驶舱打开时压制后台快捷键」
+// 的用例随之移除；其余弹窗的压制由 unit-modal-layer-guard 覆盖。
 
 test('global search modal suppresses background Hub shortcuts', () => {
   const calls = [];

@@ -26,13 +26,11 @@ function registerWorkbenchOperationsIpc(ipcMain, deps = {}) {
     });
   }
 
+  // 2026-08-27：改动审阅驾驶舱 UI 已删除，只有 overview 还在用——工作台的
+  // 「最近文件」卡靠它拿 Git 变更（Agent 产物那半来自 session 快照）。
+  // diff / 审阅决定 / checkpoint / 溯源 / 时间线都是驾驶舱专用，一并撤掉 IPC 面。
+  // core/workbench-operations.js 里的实现保留（有独立单测覆盖），将来要重做驾驶舱不用从零写。
   handle('workbench:get-overview', 'overview');
-  handle('workbench:get-diff', 'diff');
-  handle('workbench:set-review-decision', 'setReviewDecision');
-  handle('workbench:create-checkpoint', 'createCheckpoint');
-  handle('workbench:restore-checkpoint', 'restoreCheckpoint');
-  handle('workbench:get-line-provenance', 'lineProvenance');
-  handle('workbench:get-timeline', 'timeline');
 }
 
 module.exports = {

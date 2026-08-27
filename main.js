@@ -66,6 +66,8 @@ const {
 } = require('./core/codex-usage-scope.js');
 const { ALL_AI_KINDS, isClaudeFamily, isCodexCliKind, isKimiCliKind, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
 const { registerConfigIpc } = require('./main/ipc/config-handlers.js');
+const { registerWorkbenchOperationsIpc } = require('./main/ipc/workbench-operations-handlers.js');
+const { createWorkbenchOperationsService } = require('./core/workbench-operations.js');
 const { registerPathIpc } = require('./main/ipc/path-handlers.js');
 const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
 const { registerWorkspaceIpc } = require('./main/ipc/workspace-handlers.js');
@@ -80,7 +82,6 @@ const { registerCliStatusIpc } = require('./main/ipc/cli-status-handlers.js');
 const { registerPromptInspectIpc } = require('./main/ipc/prompt-inspect-handlers.js');
 const { registerPersistenceIpc } = require('./main/ipc/persistence-handlers.js');
 const { registerAppUtilityIpc } = require('./main/ipc/app-utility-handlers.js');
-const { registerWorkbenchOperationsIpc } = require('./main/ipc/workbench-operations-handlers.js');
 const { registerGroupchatQueryIpc } = require('./main/ipc/groupchat-query-handlers.js');
 const { registerGroupchatRecoveryIpc } = require('./main/ipc/groupchat-recovery-handlers.js');
 const { registerGroupchatTurnIpc } = require('./main/ipc/groupchat-turn-handlers.js');
@@ -94,7 +95,6 @@ const {
 } = require('./main/session-auto-suspend.js');
 const committeeHistory = require('./core/committee-history.js');
 const { createAutoTitleManager } = require('./main/auto-title-manager.js');
-const { createWorkbenchOperationsService } = require('./core/workbench-operations.js');
 const {
   parseCodexUsage,
   parseGeminiUsage,
@@ -1454,6 +1454,7 @@ registerAppUtilityIpc(ipcMain, {
   path,
 });
 
+// 驾驶舱 UI 删了，但这个服务还留着：工作台「最近文件」卡的 Git 变更来自它的 overview。
 const workbenchOperationsService = createWorkbenchOperationsService({
   dataDir: getHubDataDir(),
   getConfig: getHubConfig,

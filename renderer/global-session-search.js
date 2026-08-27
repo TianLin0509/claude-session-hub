@@ -1,5 +1,6 @@
 'use strict';
 
+const { recordSearch } = require('../core/search-recent.js');
 const { isBlockingModalOpen } = require('./modal-layer-guard.js');
 
 const PROVIDER_META = Object.freeze({
@@ -388,6 +389,15 @@ function createGlobalSessionSearch(options) {
     updateFacets(response);
     const totalSessions = Number(response && response.totalSessions) || 0;
     const totalMatches = Number(response && response.totalMatches) || 0;
+    // 2026-08-27：把跑出结果的查询留痕，工作台的「常用搜索 · 最近命中」要用。
+    // 零命中的不记（见 core/search-recent.js）；记录失败绝不能影响搜索本身。
+    try {
+      recordSearch(window.localStorage, {
+        query: queryInput.value,
+        sessions: totalSessions,
+        matches: totalMatches,
+      });
+    } catch { /* 留痕是附加功能 */ }
     summaryRoot.firstElementChild.textContent = totalSessions
       ? `找到 ${totalSessions} 个 session · ${totalMatches} 处命中`
       : '没有匹配的会话';
@@ -628,8 +638,11 @@ function createGlobalSessionSearch(options) {
     }
   }
 
-  function open() {
+  // 2026-08-27：允许带查询词打开——工作台的「常用搜索」点一下要直接搜，
+  // 不能只把面板弹出来让人重敲一遍。
+  function open({ query } = {}) {
     if (!overlay) return;
+    if (typeof query === 'string' && query.trim()) queryInput.value = query.trim();
     returnFocusElement = document.activeElement && typeof document.activeElement.focus === 'function'
       ? document.activeElement
       : launchButton;

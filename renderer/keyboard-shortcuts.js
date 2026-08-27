@@ -266,20 +266,17 @@ function createKeyboardShortcuts({
   function _cmdkEnsureStyle() {
     if (document.getElementById('hub-cmdk-style')) return;
     const css = [
-      '.hub-cmdk-overlay{position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,.45);}',
-      '.hub-cmdk-overlay.light{background:rgba(0,0,0,.22);}',
-      '.hub-cmdk-panel{width:min(560px,92vw);max-height:64vh;display:flex;flex-direction:column;border-radius:12px;overflow:hidden;background:#2c2c2e;border:1px solid #38383a;box-shadow:0 16px 48px rgba(0,0,0,.5);font-family:-apple-system,"PingFang SC",system-ui,sans-serif;}',
-      '.hub-cmdk-overlay.light .hub-cmdk-panel{background:#fff;border-color:#d2d2d7;box-shadow:0 16px 48px rgba(0,0,0,.18);}',
-      '.hub-cmdk-input{border:0;outline:0;padding:15px 18px;font-size:15px;background:transparent;color:#f5f5f7;border-bottom:1px solid #38383a;}',
-      '.hub-cmdk-overlay.light .hub-cmdk-input{color:#1d1d1f;border-bottom-color:#d2d2d7;}',
+      // 2026-08-26：原来是一套写死的深色 Apple 调色板，外加一组 .light 变体——
+      // 但 .light 从来没有任何代码加过，是死分支。改成直接吃 Hub 的主题 token，
+      // 命令面板就自动跟着 data-theme 走，不用再维护第二套色。
+      '.hub-cmdk-overlay{position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(var(--rgb-scrim),.45);}',
+      '.hub-cmdk-panel{width:min(560px,92vw);max-height:64vh;display:flex;flex-direction:column;border-radius:var(--radius-lg);overflow:hidden;background:var(--surface-overlay);border:1px solid var(--border-mid);box-shadow:var(--shadow-lg);font-family:var(--font-sans);}',
+      '.hub-cmdk-input{border:0;outline:0;padding:15px 18px;font-size:15px;background:transparent;color:var(--fg-strong);border-bottom:1px solid var(--border-mid);}',
       '.hub-cmdk-list{overflow-y:auto;padding:6px;}',
-      '.hub-cmdk-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;cursor:pointer;color:#f5f5f7;font-size:13.5px;}',
-      '.hub-cmdk-overlay.light .hub-cmdk-item{color:#1d1d1f;}',
-      '.hub-cmdk-item .sub{margin-left:auto;font-size:11.5px;color:#aeaeb2;}',
-      '.hub-cmdk-overlay.light .hub-cmdk-item .sub{color:#6e6e73;}',
-      '.hub-cmdk-item.sel{background:rgba(10,132,255,.22);}',
-      '.hub-cmdk-overlay.light .hub-cmdk-item.sel{background:rgba(0,113,227,.12);}',
-      '.hub-cmdk-empty{padding:18px;text-align:center;color:#aeaeb2;font-size:13px;}',
+      '.hub-cmdk-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--radius-md);cursor:pointer;color:var(--fg-strong);font-size:13.5px;}',
+      '.hub-cmdk-item .sub{margin-left:auto;font-size:11.5px;color:var(--fg-muted);}',
+      '.hub-cmdk-item.sel{background:rgba(var(--rgb-info),.22);}',
+      '.hub-cmdk-empty{padding:18px;text-align:center;color:var(--fg-muted);font-size:13px;}',
     ].join('\n');
     const st = document.createElement('style');
     st.id = 'hub-cmdk-style';

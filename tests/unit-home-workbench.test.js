@@ -109,8 +109,28 @@ test('shell keeps one launcher plus Home and Research navigation while retaining
   assert.match(renderer, /btnHome\.addEventListener\('click', \(\) => escapeToHome\(\)\)/);
   assert.match(renderer, /homeWorkbench = createHomeWorkbench\(/);
   assert.match(html, /四模型用量/);
-  assert.match(html, /改动审阅收件箱/);
-  assert.match(html, /id="operations-review-modal"/);
+  // 2026-08-27 取舍：改动审阅收件箱 / 异常收件箱 / 夜间任务摘要三块已从工作台撤下，
+  // 上下文风险从整张卡收成指标条上的一个数字，副标题去掉。
+  assert.doesNotMatch(html, /改动审阅收件箱|异常收件箱|夜间任务摘要/);
+  assert.doesNotMatch(html, /home-workbench-subtitle/);
+  assert.match(html, /id="home-metric-context"[^>]*>[\s\S]*?上下文吃紧/);
+  assert.match(html, /今天该续哪个/);
+  assert.match(html, /常用搜索/);
+  // 工作台是单栏卡片流；每张卡带 data-home-card，折叠/排序由 home-card-layout.js 接管
+  assert.match(html, /id="home-card-stack"/);
+  for (const card of ['resume', 'workspace', 'artifacts', 'search', 'system', 'provider']) {
+    assert.match(html, new RegExp(`data-home-card="${card}"`), `${card} 卡应在工作台卡片流里`);
+  }
+  // 侧栏「路径预览」按钮撤掉，功能仍在 Ctrl+O
+  assert.doesNotMatch(html, /id="btn-preview-path"/);
+  // 2026-08-27：改动审阅驾驶舱整体删除（弹窗、控制器、IPC、服务、样式全撤）
+  assert.doesNotMatch(html, /operations-review-modal|ops-center|ops-tabs/);
+  assert.doesNotMatch(html, /data-home-action="open-review"/);
+  assert.doesNotMatch(renderer, /workbenchOperations|workbench-operations-controller/);
+  assert.doesNotMatch(css, /\.ops-modal|\.ops-center/);
+  // 撤掉收件箱后就不该再为它做定时 Git 扫描
+  assert.doesNotMatch(workbench, /loadOperations\(false\)/,
+    '工作台不再显示审阅数据，不应再定时触发 Git 扫描');
   assert.match(html, /本机与服务器/);
   assert.match(html, /id="cfg-aliyun-health-url"/);
   assert.doesNotMatch(html, /Session 流水线/);
@@ -122,7 +142,7 @@ test('shell keeps one launcher plus Home and Research navigation while retaining
   assert.match(workbench, /usageWindowMarkup\('5h'/);
   assert.match(workbench, /usageWindowMarkup\('7d'/);
   assert.match(css, /\.home-usage-windows/);
-  assert.match(css, /\.home-pulse-grid/);
+  assert.match(css, /\.home-card-stack/);
   assert.ok(!html.includes('\uFFFD'), 'index.html must remain valid UTF-8');
 });
 

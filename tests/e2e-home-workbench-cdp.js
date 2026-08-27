@@ -154,8 +154,9 @@ async function main() {
         { id:'home-sleep', kind:'gemini', title:'历史资料整理', status:'dormant', lastMessageTime:now - 2 * 86400_000 }
       ]);
       document.getElementById('home-refresh').click();
-      const operationsDeadline = Date.now() + 12000;
-      while (document.getElementById('home-review-files').textContent !== '2' && Date.now() < operationsDeadline) {
+      // 2026-08-27：改动审阅收件箱已从工作台撤下，改等首轮渲染完成标记。
+      const readyDeadline = Date.now() + 12000;
+      while (document.getElementById('empty-state').dataset.homeReady !== 'true' && Date.now() < readyDeadline) {
         await new Promise(resolve => setTimeout(resolve, 60));
       }
       const research = document.getElementById('btn-chuxin').getBoundingClientRect();
@@ -167,12 +168,20 @@ async function main() {
           waiting: document.getElementById('home-metric-waiting').textContent,
           unread: document.getElementById('home-metric-unread').textContent,
           dormant: document.getElementById('home-metric-dormant').textContent,
+          context: document.getElementById('home-metric-context').textContent,
         },
-        review: {
-          repos: document.getElementById('home-review-repos').textContent,
-          files: document.getElementById('home-review-files').textContent,
-          cards: document.querySelectorAll('#home-review-list .home-review-item').length,
-          text: document.getElementById('home-review-list').textContent.replace(/\\s+/g, ' ').trim(),
+        // 工作台改成单栏卡片流：顺序、折叠把手、以及被撤掉的三块都在这里锁住
+        cards: {
+          order: Array.from(document.querySelectorAll('[data-home-card]')).map(c => c.getAttribute('data-home-card')),
+          handles: document.querySelectorAll('.home-card-handle').length,
+          collapses: document.querySelectorAll('.home-card-collapse').length,
+          singleColumn: !!document.getElementById('home-card-stack') && !document.querySelector('.home-pulse-grid'),
+          removed: !document.getElementById('home-review-list')
+            && !document.getElementById('home-exception-list')
+            && !document.getElementById('home-night-list')
+            && !document.getElementById('home-context-risk'),
+          subtitleGone: !document.querySelector('.home-workbench-subtitle'),
+          pathPreviewGone: !document.getElementById('btn-preview-path'),
         },
         researchVisible: research.width > 0 && research.height > 0,
         notificationInHeader: document.getElementById('completion-notification-toggle').parentElement.id === 'home-notification-slot',
@@ -182,11 +191,8 @@ async function main() {
         providerRows: Array.from(document.querySelectorAll('#home-provider-health .home-provider-row')).map(row => row.textContent.replace(/\\s+/g, ' ').trim()),
         deepseekBalance: Array.from(document.querySelectorAll('.home-provider-row')).find(row => row.textContent.includes('DeepSeek API'))?.textContent.replace(/\\s+/g, ' ').trim() || '',
         operational: {
-          exceptions: document.querySelectorAll('#home-exception-list .home-insight-row').length,
-          contextRisks: document.querySelectorAll('#home-context-risk .home-insight-row').length,
           artifacts: document.querySelectorAll('#home-artifact-list .home-artifact-item').length,
           workspaces: document.querySelectorAll('#home-workspace-launch .home-workspace-item').length,
-          nightCompleted: document.getElementById('home-night-completed').textContent,
           usageWindows: document.querySelectorAll('#home-provider-health .home-usage-window').length,
           usageRefreshTimes: document.querySelectorAll('#home-provider-health .home-usage-reset').length,
           updatedLabels: document.querySelectorAll('#home-provider-health [data-usage-updated="true"]').length,
@@ -205,8 +211,12 @@ async function main() {
         },
         fontSizes: {
           title: parseFloat(getComputedStyle(document.getElementById('home-workbench-title')).fontSize),
-          section: parseFloat(getComputedStyle(document.getElementById('home-review-title')).fontSize),
-          review: parseFloat(getComputedStyle(document.querySelector('.home-review-item strong')).fontSize),
+          section: parseFloat(getComputedStyle(document.getElementById('home-workspace-title')).fontSize),
+        },
+        ticker: {
+          text: (document.getElementById('quota-ticker') || {}).textContent || '',
+          segments: document.querySelectorAll('#quota-ticker .qt-seg').length,
+          kimiGone: !((document.getElementById('quota-ticker') || {}).textContent || '').includes('Kimi'),
         },
         replacementChars: (document.body.innerText.match(/\uFFFD/g) || []).length,
       };
@@ -214,11 +224,17 @@ async function main() {
 
     assert.equal(result.desktop.title, 'HUB 工作台');
     assert.equal(result.desktop.topButton, '主页');
-    assert.deepStrictEqual(result.desktop.metrics, { active: '3', waiting: '1', unread: '2', dormant: '1' });
-    assert.deepStrictEqual(result.desktop.review.repos, '1');
-    assert.deepStrictEqual(result.desktop.review.files, '2');
-    assert.equal(result.desktop.review.cards, 1);
-    assert.match(result.desktop.review.text, /review-repo/);
+    assert.deepStrictEqual(result.desktop.metrics,
+      { active: '3', waiting: '1', unread: '2', dormant: '1', context: '1' });
+    // 2026-08-27 取舍后的工作台形状
+    assert.deepStrictEqual(result.desktop.cards.order,
+      ['resume', 'workspace', 'artifacts', 'search', 'system', 'provider']);
+    assert.equal(result.desktop.cards.handles, 6, '每张卡都要有拖动把手');
+    assert.equal(result.desktop.cards.collapses, 6, '每张卡都要有折叠按钮');
+    assert.equal(result.desktop.cards.singleColumn, true, '工作台应是单栏卡片流');
+    assert.equal(result.desktop.cards.removed, true, '审阅收件箱/异常/夜间/上下文四块应已撤下');
+    assert.equal(result.desktop.cards.subtitleGone, true);
+    assert.equal(result.desktop.cards.pathPreviewGone, true, '侧栏「路径预览」按钮应已撤下');
     assert.equal(result.desktop.researchVisible, true);
     assert.equal(result.desktop.notificationInHeader, true);
     assert.equal(result.desktop.viewToggleHidden, true);
@@ -231,11 +247,13 @@ async function main() {
     }
     assert.match(result.desktop.deepseekBalance, /余额 ¥39\.47 · 可用/);
     assert.match(result.desktop.deepseekBalance, /更新于/);
-    assert.ok(result.desktop.operational.exceptions >= 2);
-    assert.equal(result.desktop.operational.contextRisks, 1);
+    // 顶栏 ticker 只剩 Claude 用量 / Codex 用量 / DeepSeek 余额三段
+    assert.equal(result.desktop.ticker.segments, 3, '顶栏应只有三段');
+    assert.equal(result.desktop.ticker.kimiGone, true, 'Kimi 段应已从顶栏撤下');
+    assert.match(result.desktop.ticker.text, /DeepSeek/);
+    assert.match(result.desktop.ticker.text, /余额/);
     assert.equal(result.desktop.operational.artifacts, 3);
     assert.ok(result.desktop.operational.workspaces >= 3);
-    assert.equal(result.desktop.operational.nightCompleted, '1');
     assert.equal(result.desktop.operational.usageWindows, 6);
     assert.equal(result.desktop.operational.usageRefreshTimes, 6);
     assert.equal(result.desktop.operational.updatedLabels, 4);

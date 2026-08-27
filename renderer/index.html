@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' file: data:; connect-src 'self' http://127.0.0.1:* http://localhost:*; frame-src 'self' http://127.0.0.1:* http://localhost:*;">
   <title>AI 群聊 Hub</title>
+  <!-- 主题引导：必须在样式表之前同步执行，先把 <html data-theme> 打上，避免首帧闪深色 -->
+  <script src="theme-bootstrap.js"></script>
   <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="workspace.css">
@@ -117,6 +119,11 @@
           <button class="btn-options" id="btn-options" title="选项"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.66-7.66l-4.24 4.24m-7.07 7.07L4.34 19.66m13.32 0l-4.24-4.24m-7.07-7.07L4.34 4.34"/></svg></button>
           <div class="options-menu" id="options-menu" style="display:none">
             <div class="options-item" id="options-suspend-idle" title="后台每 5 分钟巡检；连续 5 小时无输入输出则自动休眠">💤 自动休眠 · 5 小时（立即扫描）</div>
+            <div class="options-section-label">主题</div>
+            <!-- 内容由 theme-controller.js 按 core/theme-config.js 的清单生成 -->
+            <div class="options-theme-picker" id="options-theme-picker" role="radiogroup" aria-label="选择主题"></div>
+            <div class="options-theme-note">终端、代码块与工具输出在所有主题下都保持深色</div>
+            <div class="options-divider"></div>
             <div class="options-item" id="options-settings">⚙️ 设置</div>
           </div>
         </div>
@@ -126,11 +133,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.4-3.4"/></svg>
         <span>昨日之我</span>
         <kbd>Ctrl Shift F</kbd>
-      </button>
-      <button type="button" class="global-search-launcher preview-path-launcher" id="btn-preview-path" title="输入路径或模糊搜索文件 (Ctrl+O)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H11l2 2h4.5A2.5 2.5 0 0 1 20 9.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><circle cx="15.5" cy="13.5" r="2.5"/><path d="m17.4 15.4 2.1 2.1"/></svg>
-        <span>路径预览</span>
-        <kbd>Ctrl O</kbd>
       </button>
       <!-- 按 AI 家族筛选侧栏列表：全部 / Claude / Codex / 其他。内容与计数由
            session-list-renderer 每次渲染时重建。 -->
@@ -167,7 +169,6 @@
                 <h1 class="home-workbench-title" id="home-workbench-title">HUB 工作台</h1>
                 <span class="home-title-pill">主页</span>
               </div>
-              <p class="home-workbench-subtitle">先看需要审阅的代码、最近文件和机器状态，再进入具体 Session；重复的会话流水线已交回左侧栏。</p>
             </div>
             <div class="home-head-actions">
               <div class="home-health" role="status" aria-live="polite">
@@ -197,56 +198,19 @@
                 <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/><circle cx="12" cy="12" r="10"/></svg></span>
                 <div><div class="home-metric-value" id="home-metric-unread">0</div><div class="home-metric-label">完成未读</div></div>
               </div>
+              <div class="home-metric context" data-home-jump="context-risk" title="上下文超过 70% 的会话数；原来是主区一整张卡，现在收成一个数字">
+                <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+                <div><div class="home-metric-value" id="home-metric-context">0</div><div class="home-metric-label">上下文吃紧</div></div>
+              </div>
               <div class="home-metric dormant">
                 <span class="home-metric-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z"/></svg></span>
                 <div><div class="home-metric-value" id="home-metric-dormant">0</div><div class="home-metric-label">可恢复休眠</div></div>
               </div>
             </section>
 
-            <div class="home-pulse-grid">
-              <div class="home-pulse-main">
-                <section class="home-section-card home-review-inbox" aria-labelledby="home-review-title">
-                  <div class="home-section-head">
-                    <div class="home-section-title" id="home-review-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="m8 12 2.5 2.5L16 9M8 7h8M8 17h5"/></svg>改动审阅收件箱</div>
-                    <button class="home-section-action" id="home-open-review" type="button" data-home-action="open-review">打开审阅驾驶舱</button>
-                  </div>
-                  <div class="home-review-summary" id="home-review-summary" aria-live="polite">
-                    <div><strong id="home-review-repos">0</strong><span>变更工作区</span></div>
-                    <div class="danger"><strong id="home-review-high">0</strong><span>高风险</span></div>
-                    <div class="warn"><strong id="home-review-medium">0</strong><span>需确认</span></div>
-                    <div><strong id="home-review-files">0</strong><span>最近文件</span></div>
-                  </div>
-                  <div class="home-review-list" id="home-review-list"></div>
-                </section>
-
-                <div class="home-operations-grid">
-                  <section class="home-section-card" aria-labelledby="home-exception-title">
-                    <div class="home-section-head">
-                      <div class="home-section-title" id="home-exception-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.8 19h18.4z"/><path d="M12 9v4m0 3h.01"/></svg>异常收件箱</div>
-                      <span class="home-lane-count" id="home-exception-count">0</span>
-                    </div>
-                    <div class="home-insight-list" id="home-exception-list" aria-live="polite"></div>
-                  </section>
-
-                  <section class="home-section-card" aria-labelledby="home-context-title">
-                    <div class="home-section-head">
-                      <div class="home-section-title" id="home-context-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>上下文风险</div>
-                      <span class="home-lane-count" id="home-context-count">0</span>
-                    </div>
-                    <div class="home-insight-list" id="home-context-risk"></div>
-                  </section>
-                </div>
-
-                <section class="home-section-card" aria-labelledby="home-artifact-title">
-                  <div class="home-section-head">
-                    <div class="home-section-title" id="home-artifact-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5M8 13h8m-8 4h6"/></svg>最近文件</div>
-                    <span class="home-section-meta"><span id="home-artifact-count">0</span> 个 Git 变更或 Agent 产物</span>
-                  </div>
-                  <div class="home-artifact-list" id="home-artifact-list"></div>
-                </section>
-              </div>
-
-              <aside class="home-pulse-side" aria-label="当前 HUB 状态与固定入口">
+            <!-- 2026-08-27：三栏改单栏。每张卡都带 data-home-card，折叠状态与顺序由
+                 home-card-layout.js 存在本机；卡片内容为空时自动收成一行标题。 -->
+            <div class="home-card-stack" id="home-card-stack">
                 <button class="home-research-entry" id="btn-chuxin" type="button" title="打开初心投研工作台">
                   <span class="home-research-main">
                     <span class="home-research-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg></span>
@@ -254,8 +218,32 @@
                   </span>
                   <svg class="home-research-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
                 </button>
-
-                <section class="home-section-card home-system-card" aria-labelledby="home-system-title">
+                <section data-home-card="resume" class="home-section-card" aria-labelledby="home-resume-title">
+                  <div class="home-section-head">
+                    <div class="home-section-title" id="home-resume-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>今天该续哪个</div>
+                    <span class="home-section-meta" id="home-resume-meta">按最近活跃 + 有未完成动作排序</span>
+                  </div>
+                  <div class="home-resume-list" id="home-resume-list"></div>
+                </section>
+                <section data-home-card="workspace" class="home-section-card" aria-labelledby="home-workspace-title">
+                  <div class="home-section-head"><div class="home-section-title" id="home-workspace-title">常用项目启动区</div><span class="home-section-meta">默认 Claude · 可再切模型</span></div>
+                  <div class="home-workspace-launch" id="home-workspace-launch"></div>
+                </section>
+                <section data-home-card="artifacts" class="home-section-card" aria-labelledby="home-artifact-title">
+                  <div class="home-section-head">
+                    <div class="home-section-title" id="home-artifact-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h11l5 5v13H4z"/><path d="M15 3v5h5M8 13h8m-8 4h6"/></svg>最近文件</div>
+                    <span class="home-section-meta"><span id="home-artifact-count">0</span> 个 Git 变更或 Agent 产物</span>
+                  </div>
+                  <div class="home-artifact-list" id="home-artifact-list"></div>
+                </section>
+                <section data-home-card="search" class="home-section-card" aria-labelledby="home-search-title">
+                  <div class="home-section-head">
+                    <div class="home-section-title" id="home-search-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>常用搜索 · 最近命中</div>
+                    <button class="home-section-action subtle" type="button" data-home-action="open-search">全局搜索</button>
+                  </div>
+                  <div class="home-search-recent" id="home-search-recent"></div>
+                </section>
+                <section data-home-card="system" class="home-section-card home-system-card" aria-labelledby="home-system-title">
                   <div class="home-section-head"><div class="home-section-title" id="home-system-title">本机与服务器</div><button class="home-section-action subtle" type="button" data-home-action="open-server-settings">配置</button></div>
                   <div class="home-system-grid" aria-label="本机资源使用情况">
                     <div class="home-system-cell"><span>CPU</span><strong id="home-system-cpu">--</strong><i><b id="home-system-cpu-bar"></b></i></div>
@@ -274,62 +262,16 @@
                     <span>PTY <b id="home-sync-terminals">同步中</b></span>
                   </div>
                 </section>
-
-                <section class="home-section-card" aria-labelledby="home-workspace-title">
-                  <div class="home-section-head"><div class="home-section-title" id="home-workspace-title">常用项目启动区</div><span class="home-section-meta">默认 Claude · 可再切模型</span></div>
-                  <div class="home-workspace-launch" id="home-workspace-launch"></div>
-                </section>
-
-                <section class="home-section-card" aria-labelledby="home-provider-title">
+                <section data-home-card="provider" class="home-section-card" aria-labelledby="home-provider-title">
                   <div class="home-section-head"><div class="home-section-title" id="home-provider-title">四模型用量</div><span class="home-section-meta">5h · 7d · 配额刷新</span></div>
                   <div class="home-provider-health" id="home-provider-health"></div>
                 </section>
-
-                <section class="home-section-card" aria-labelledby="home-night-title">
-                  <div class="home-section-head"><div class="home-section-title" id="home-night-title">夜间任务摘要</div><span class="home-section-meta" id="home-night-window">昨晚 20:00 至现在</span></div>
-                  <div class="home-night-metrics">
-                    <div><strong id="home-night-completed">0</strong><span>完成</span></div>
-                    <div><strong id="home-night-failed">0</strong><span>失败</span></div>
-                    <div><strong id="home-night-waiting">0</strong><span>待处理</span></div>
-                    <div><strong id="home-night-duration">—</strong><span>累计耗时</span></div>
-                  </div>
-                  <div class="home-night-list" id="home-night-list"></div>
-                </section>
-
-              </aside>
-            </div>
+                        </div>
           </div>
         </main>
       </div>
-      <div class="ops-modal hidden" id="operations-review-modal" role="dialog" aria-modal="true" aria-labelledby="ops-modal-title">
-        <section class="ops-shell">
-          <header class="ops-head">
-            <div><span class="ops-eyebrow">REVIEW + PROVENANCE</span><h2 id="ops-modal-title">改动审阅驾驶舱</h2><p id="ops-modal-subtitle">自动发现最近工作区；审阅结论与 Git 改动分离保存。</p></div>
-            <div class="ops-head-actions"><button type="button" class="ops-button" id="ops-create-checkpoint">创建安全 Checkpoint</button><button type="button" class="ops-icon-button" id="ops-close" aria-label="关闭审阅驾驶舱">×</button></div>
-          </header>
-          <nav class="ops-tabs" aria-label="审阅与溯源视图">
-            <button type="button" class="active" data-ops-view="review" aria-selected="true">风险审阅</button>
-            <button type="button" data-ops-view="timeline" aria-selected="false">因果时间线</button>
-            <button type="button" data-ops-view="checkpoints" aria-selected="false">Checkpoint 回放</button>
-          </nav>
-          <div class="ops-body">
-            <aside class="ops-navigation">
-              <div class="ops-pane-title"><span>工作区</span><b id="ops-repo-count">0</b></div>
-              <div class="ops-repo-list" id="ops-repo-list"></div>
-              <div class="ops-pane-title files"><span>风险文件</span><b id="ops-file-count">0</b></div>
-              <div class="ops-file-list" id="ops-file-list"></div>
-            </aside>
-            <main class="ops-center">
-              <header class="ops-center-head"><div><h3 id="ops-center-title">选择一个变更工作区</h3><p id="ops-center-meta">不会自动 stage 或丢弃任何代码</p></div><span class="ops-trust missing" id="ops-center-trust">等待选择</span></header>
-              <div class="ops-center-content" id="ops-center-content"></div>
-            </main>
-            <aside class="ops-proof" id="ops-proof-panel">
-              <div class="ops-empty"><strong>风险、证据与“为什么这行”</strong><span>选择文件和代码行后，这里显示可验证事实、推断与缺失证据。</span></div>
-            </aside>
-          </div>
-          <footer class="ops-foot"><span>接受 / 拒绝仅记录审阅结论，不改 Git index</span><span id="ops-live" role="status" aria-live="polite">本地证据账本</span></footer>
-        </section>
-      </div>
+      <!-- 2026-08-27：改动审阅驾驶舱整体删除（无实用价值）。阿里云监控配置留在设置里，
+           由「公司收件箱」卡片使用。 -->
       <!-- Spec 1 v0.9.0: 消息层(卡片视图) -->
       <div id="msg-overlay" class="msg-overlay"></div>
       <nav id="card-question-nav" class="card-question-nav" aria-label="问题导航" hidden>
