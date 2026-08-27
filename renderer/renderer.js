@@ -49,6 +49,13 @@ const {
 const { createPathLinkContextMenuController } = require('./path-link-context-menu.js');
 const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
 const { createHomeCardLayout } = require('./home-card-layout.js');
+const {
+  forgetViewMode,
+  readCardViewSessions,
+  rememberViewMode,
+  viewModeFor,
+  writeCardViewSessions,
+} = require('../core/session-view-mode.js');
 const { createProcessReclaimCard } = require('./process-reclaim-card.js');
 const { createTerminalInputController } = require('./terminal-input-controller.js');
 const { createAccountUsageController } = require('./account-usage-controller.js');
@@ -1512,17 +1519,45 @@ function showTerminal(sessionId, opts = { focus: true }) {
 
 // 初心投研复用同一套 xterm/PTY，不创建镜像终端。研究 Session 只改变挂载位置，
 // 生命周期、输入、工具调用与 transcript 仍由 Hub 原生 SessionManager 管理。
+const _chuxinRequestedSessionViews = new Map();
 window.__chuxinSessionBridge = {
-  async open(sessionId, view = 'card') {
+  async open(sessionId, view = 'card', preparedSession = null) {
+    const requestedView = view === 'pty' ? 'pty' : 'card';
+    _chuxinRequestedSessionViews.set(sessionId, requestedView);
+    setTimeout(() => {
+      if (_chuxinRequestedSessionViews.get(sessionId) === requestedView) {
+        _chuxinRequestedSessionViews.delete(sessionId);
+      }
+    }, 5000);
     let session = sessions.get(sessionId);
-    if (!session) return { ok: false, error: 'session-missing' };
+    // Agent League ensures the live process in main before opening a surface.
+    // The IPC reply and session-created push are independent messages, so the
+    // local Map can briefly retain the old dormant shell. Adopt the authoritative
+    // reply immediately and never race into a second generic dormant resume/picker.
+    if (preparedSession && preparedSession.id === sessionId && preparedSession.status !== 'dormant') {
+      const previous = session || {};
+      sessions.set(sessionId, {
+        ...previous,
+        ...preparedSession,
+        pinned: previous.pinned || preparedSession.pinned || false,
+        unreadCount: previous.unreadCount || 0,
+        suspendedAt: null,
+        suspendReason: null,
+      });
+      session = sessions.get(sessionId);
+      scheduleSessionListRender();
+    }
+    if (!session) {
+      _chuxinRequestedSessionViews.delete(sessionId);
+      return { ok: false, error: 'session-missing' };
+    }
     if (session.status === 'dormant') {
       await resumeDormantSession(sessionId, { forceScrollBottom: true });
       session = sessions.get(sessionId) || session;
     }
     await selectSession(sessionId, { forceScrollBottom: true });
-    if (view === 'card' || view === 'pty') applyViewMode(view);
-    return { ok: true, session: sessions.get(sessionId) || session, view };
+    applyViewMode(requestedView);
+    return { ok: true, session: sessions.get(sessionId) || session, view: requestedView };
   },
   async mount(sessionId, hostEl) {
     if (!hostEl) return { ok: false, error: 'host-missing' };
@@ -2366,6 +2401,18 @@ document.addEventListener('click', (e) => {
 // === Spec 1 v0.9.0 · 视图切换 ===
 // 默认 PTY（卡片视图作为可选第二视图，不破坏 PTY 主流程）— 2026-05-04 用户反馈
 let currentView = 'pty'; // 'card' | 'pty'
+
+// 2026-08-27：卡片/PTY 原来只有 currentView 这一个全局值，selectSession 又从不
+// 调 applyViewMode，于是在 A 会话切到卡片、再点开 B 会话，B 也跟着变成卡片——
+// 用户要的是「每个会话记住自己的视图」。纯逻辑在 core/session-view-mode.js（可单测）。
+const cardViewSessions = readCardViewSessions(localStorage);
+const viewModeForSession = (sessionId) => viewModeFor(cardViewSessions, sessionId);
+function rememberViewModeForSession(sessionId, mode) {
+  if (rememberViewMode(cardViewSessions, sessionId, mode)) writeCardViewSessions(localStorage, cardViewSessions);
+}
+function forgetViewModeForSession(sessionId) {
+  if (forgetViewMode(cardViewSessions, sessionId)) writeCardViewSessions(localStorage, cardViewSessions);
+}
 let _terminalRuntimeStatusTicker = null;
 const { createCardQuestionNavigator } = require('./card-question-navigator.js');
 const cardQuestionNavigator = createCardQuestionNavigator({
@@ -2652,8 +2699,11 @@ function _updateStreamingIndicator(sessionId) {
   }
 }
 
-function applyViewMode(mode) {
+// remember=false 用于「按会话恢复视图」这种回放场景：那不是用户在表达偏好，
+// 不该反过来覆盖记忆。用户点切换按钮走默认的 remember=true。
+function applyViewMode(mode, { remember = true } = {}) {
   currentView = mode;
+  if (remember) rememberViewModeForSession(activeSessionId, mode);
   if (terminalPanelEl) terminalPanelEl.classList.toggle('card-view-active', mode === 'card');
   const overlay = document.getElementById('msg-overlay');
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
@@ -3526,11 +3576,19 @@ async function selectSession(id, opts = {}) {
   // 修复卡片视图里重复点击当前 Claude/Kimi 会话时请求被 kind 过滤掉的问题。
   const forceScrollBottom = requestedBottomPin
     || !!(session && isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));
-  const shouldFocusTerminal = switching || currentView === 'pty';
+  // 视图按会话记忆：先算出这个会话该用哪个视图，再决定要不要把焦点给终端
+  // （卡片视图下抢终端焦点是错的）。
+  const targetView = viewModeForSession(id);
+  const shouldFocusTerminal = switching || targetView === 'pty';
   activeSessionId = id;
+  applyViewMode(targetView, { remember: false });
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
   recentTurnCopyController.setVisible(currentView === 'card' && !!activeSessionId);
   if (session) clearSessionAttention(session, { clearUnread: true });
+  // 2026-08-27：「运行异常/断连」是一个**提醒**信号，用户点开看过就算处理过了。
+  // 原来 clearSessionConnectionIssue 只在提交提问或回答完成时调用，所以只是点开
+  // 看一眼的话，那条断连会一直挂在侧栏「运行异常」组里下不去。
+  if (session) clearSessionConnectionIssue(session);
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
   showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });
@@ -3780,7 +3838,8 @@ async function openGlobalSearchHit(hit, opts = {}) {
   await selectSession(target.id, { forceScrollBottom: !opts.focus });
 
   if (opts.focus) {
-    applyViewMode('card');
+    // 搜索命中要在卡片视图里看，但这是导航副作用而非用户的视图偏好，不写记忆。
+    applyViewMode('card', { remember: false });
     const loaded = await loadSessionHistoryToOverlay(target.id, { forceScrollBottom: false });
     if (loaded && loaded.mounted > 0) _cardHistoryHydratedSid = target.id;
     focusOrdinarySearchHit(hit, opts.preview);
@@ -5744,8 +5803,14 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   if (terminalPanelEl) terminalPanelEl.style.display = '';
   ipcRenderer.send('focus-session', { sessionId: session.id });
   renderSessionList();
-  // 新建 session 默认进 PTY；dormant resume 保留用户当前视图，避免卡片视图被唤醒流程打断。
-  applyViewMode(wasDormant ? currentView : 'pty');
+  // A league shortcut may have requested card/PTY before this asynchronous
+  // event arrived. Honor that last explicit intent; otherwise a late create
+  // event makes the card button intermittently bounce back to PTY.
+  const requestedView = _chuxinRequestedSessionViews.get(session.id);
+  if (requestedView) _chuxinRequestedSessionViews.delete(session.id);
+  // New ordinary sessions default to PTY. Dormant resumes use this session's
+  // remembered view unless a shortcut explicitly requested one.
+  applyViewMode(requestedView || (wasDormant ? viewModeForSession(session.id) : 'pty'), { remember: false });
   showTerminal(session.id, {
     forceScrollBottom: !!(pendingResume && pendingResume.forceScrollBottom),
   });
@@ -5879,6 +5944,7 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     _w16RemoveTimers.delete(sessionId);
   }
   sessions.delete(sessionId);
+  forgetViewModeForSession(sessionId);
   clearRuntimeTruthExpiryTimer(sessionId);
   clearTerminalActivitySession(sessionId);
   disposeCachedTerminal(sessionId);
@@ -6297,7 +6363,9 @@ window.resumeDormantSession = resumeDormantSession;
     if (homeWorkbench) homeWorkbench.render();
     traceRendererStartup('usage cache loaded');
   }).catch(() => { renderAccountUsage(); });
-  applyViewMode('pty');
+  // 启动兜底默认。必须 remember:false —— 此刻可能已恢复上次的 active 会话，
+  // 写记忆会把它自己记住的卡片视图抹掉。
+  applyViewMode('pty', { remember: false });
 })();
 
 // Persist on relevant changes — listen at renderer-level for mutations that
