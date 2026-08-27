@@ -14,7 +14,7 @@ function latestTerminalFrame(value) {
   return (start >= 0 ? text.slice(start) : text.slice(-12_000));
 }
 
-async function inspectCodexRuntime(sessionManager, sessionId) {
+async function inspectNightGuardRuntime(sessionManager, sessionId, provider = 'codex') {
   if (!sessionManager || typeof sessionManager.getSessionBuffer !== 'function') {
     return { state: 'missing', reason: 'session-manager-unavailable' };
   }
@@ -22,17 +22,22 @@ async function inspectCodexRuntime(sessionManager, sessionId) {
   if (buffer == null) return { state: 'missing', reason: 'live-pty-missing' };
   if (detectHostShellTakeover(buffer)) return { state: 'host-shell', reason: 'host-shell-takeover' };
 
-  // The serialized snapshot intentionally contains scrollback. An old
-  // "esc to interrupt" in that history must not beat the current Codex input
-  // box. The raw ring keeps complete live chunks, so classify only the newest
-  // reset-delimited frame (or a bounded tail when the runtime did not clear).
+  // The serialized snapshot intentionally contains scrollback. An old running
+  // marker in that history must not beat the current provider input box. The
+  // raw ring keeps complete live chunks, so classify only the newest reset-
+  // delimited frame (or a bounded tail when the runtime did not clear).
   const lines = stripAnsi(latestTerminalFrame(buffer)).replace(/\r/g, '\n').split('\n');
-  const classified = classifyTerminalRuntime('codex', lines);
+  const runtimeKind = provider === 'claude' ? 'claude' : 'codex';
+  const classified = classifyTerminalRuntime(runtimeKind, lines);
   return {
     state: classified.state,
     reason: classified.reason,
     evidence: classified.evidence,
   };
+}
+
+function inspectCodexRuntime(sessionManager, sessionId) {
+  return inspectNightGuardRuntime(sessionManager, sessionId, 'codex');
 }
 
 function createNightGuardAuditWriter(filePath, options = {}) {
@@ -51,5 +56,6 @@ function createNightGuardAuditWriter(filePath, options = {}) {
 module.exports = {
   createNightGuardAuditWriter,
   inspectCodexRuntime,
+  inspectNightGuardRuntime,
   latestTerminalFrame,
 };

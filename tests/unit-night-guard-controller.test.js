@@ -39,11 +39,15 @@ class FakeClock {
 function fixture(options = {}) {
   const clock = new FakeClock();
   const session = {
-    id: 's1', kind: 'codex', codexSid: '11111111-1111-4111-8111-111111111111',
+    id: 's1', kind: options.kind || 'codex',
+    ...(options.kind === 'claude'
+      ? { ccSessionId: '11111111-1111-4111-8111-111111111111' }
+      : { codexSid: '11111111-1111-4111-8111-111111111111' }),
     currentModel: { id: 'gpt-5.6-sol' }, cwd: 'C:\\work',
   };
   const writes = [];
   const probes = [];
+  const probeProviders = [];
   const audits = [];
   const controller = createNightGuardController({
     now: clock.now,
@@ -59,11 +63,12 @@ function fixture(options = {}) {
     getSession: () => session,
     updateSession(_id, state) { session.nightGuard = state; return session; },
     getProxy: () => 'http://127.0.0.1:7890',
-    probeNetwork: async () => {
+    probeNetwork: async input => {
       const next = options.probeResults && options.probeResults.length
         ? options.probeResults.shift()
         : true;
       probes.push(next);
+      probeProviders.push(input.provider);
       return { ok: next, endpoints: [] };
     },
     inspectRuntime: async () => ({ state: options.runtime || 'idle' }),
@@ -72,7 +77,7 @@ function fixture(options = {}) {
     resumeDormant: async action => { writes.push({ route: 'missing', ...action }); return { ok: true }; },
     audit: record => audits.push(record),
   });
-  return { clock, controller, session, writes, probes, audits };
+  return { clock, controller, session, writes, probes, probeProviders, audits };
 }
 
 async function reachRecovery(fx) {
@@ -96,6 +101,7 @@ test('final stream error waits for three healthy rounds then continues the same 
   assert.equal(fx.writes[0].route, 'live');
   assert.equal(fx.writes[0].prompt, DEFAULT_RECOVERY_PROMPT);
   assert.equal(fx.controller.getStatus('s1').status, 'resuming');
+  assert.equal(fx.controller.canSubmitRecoveryInput('s1', fx.controller.getStatus('s1').incidentId), true);
   assert.equal(fx.controller.handlePtyData('s1', 'recovery prompt echo\n'), false);
   assert.equal(fx.writes.length, 1, 'historical red line must not re-fire on later output');
 
@@ -105,6 +111,7 @@ test('final stream error waits for three healthy rounds then continues the same 
   fx.controller.handleTurnComplete({ hubSessionId: 's1', turnId: 'turn-2', completedAt: fx.clock.now() + 5 });
   assert.equal(fx.controller.getStatus('s1').enabled, false);
   assert.equal(fx.controller.getStatus('s1').status, 'completed');
+  assert.equal(fx.controller.canSubmitRecoveryInput('s1', fx.writes[0].incidentId), false);
   assert.equal(fx.writes.length, 1, 'recovery prompt must be at-most-once');
 });
 
@@ -181,4 +188,32 @@ test('unacknowledged recovery blocks without resending the prompt', async () => 
   assert.equal(fx.controller.getStatus('s1').status, 'blocked');
   assert.equal(fx.controller.getStatus('s1').enabled, false);
   assert.equal(fx.writes.length, 1, 'submit timeout must never replay the prompt');
+});
+
+test('Claude Code API Error uses the same guarded flow with Anthropic provider identity', async () => {
+  const fx = fixture({ kind: 'claude' });
+  fx.controller.setEnabled('s1', true);
+  fx.controller.handlePromptSubmitted({
+    hubSessionId: 's1', text: 'run overnight', submittedAt: 1000, signalSource: 'hook_prompt',
+  });
+  assert.equal(fx.controller.handleTurnFailed({
+    hubSessionId: 's1',
+    message: 'API Error: Connection dropped (ECONNRESET)',
+    failedAt: 1001,
+    signalSource: 'claude-stop-failure',
+  }), true);
+  const incidentId = fx.controller.getStatus('s1').incidentId;
+  assert.equal(fx.controller.handleTurnComplete({
+    hubSessionId: 's1',
+    text: 'API Error: Connection dropped (ECONNRESET)',
+    completedAt: 1002,
+    signalSource: 'stop_hook',
+  }), true);
+  assert.equal(fx.controller.getStatus('s1').incidentId, incidentId,
+    'synthetic Claude API error must not masquerade as late success');
+  await reachRecovery(fx);
+  assert.deepEqual(fx.probeProviders, ['claude', 'claude', 'claude']);
+  assert.equal(fx.writes.length, 1);
+  assert.equal(fx.writes[0].route, 'live');
+  assert.equal(fx.audits.find(item => item.type === 'incident-detected').source, 'claude-stop-failure');
 });

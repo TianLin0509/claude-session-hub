@@ -41,3 +41,42 @@ test('host-shell night guard relaunch resumes the exact SID with one quoted foll
     fs.rmSync(configDir, { recursive: true, force: true });
   }
 });
+
+test('Claude host-shell night guard relaunch resumes the exact ccSessionId with one prompt', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-night-guard-claude-resume-'));
+  const previousDataDir = process.env.CLAUDE_HUB_DATA_DIR;
+  const writes = [];
+  const manager = new SessionManager();
+  const ccSessionId = '22222222-2222-4222-8222-222222222222';
+  const recoveryPrompt = 'Continue the unfinished task after checking the current workspace state.';
+  try {
+    process.env.CLAUDE_HUB_DATA_DIR = dataDir;
+    manager.sessions.set('claude-1', {
+      info: {
+        id: 'claude-1', kind: 'claude', cwd: 'C:\\work', ccSessionId,
+        currentModel: { id: 'claude-opus-5' }, effort: 'max', mcpProfile: 'none',
+        fastMode: false,
+      },
+      pty: { write: data => writes.push(data), kill() {} },
+      pendingTimers: new Set(),
+      ringBuffer: 'PS C:\\work> ',
+    });
+    assert.equal(manager.relaunchCli('claude-1', {
+      resume: true,
+      prompt: recoveryPrompt,
+      trigger: 'night-guard-resume',
+    }), true);
+    const command = writes.join('');
+    assert.match(command, new RegExp(`claude --resume '${ccSessionId}'`));
+    assert.match(command, /--model claude-opus-5/);
+    assert.match(command, /--effort max/);
+    assert.match(command, new RegExp(`'${recoveryPrompt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
+    assert.equal((command.match(/claude --resume/g) || []).length, 1);
+    assert.equal((command.match(/Continue the unfinished task/g) || []).length, 1);
+  } finally {
+    manager.dispose();
+    if (previousDataDir === undefined) delete process.env.CLAUDE_HUB_DATA_DIR;
+    else process.env.CLAUDE_HUB_DATA_DIR = previousDataDir;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});

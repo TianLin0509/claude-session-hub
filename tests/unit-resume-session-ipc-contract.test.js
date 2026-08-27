@@ -128,6 +128,25 @@ test('resumes Claude-family sessions with transcript lookup and renderer event',
   ]);
 });
 
+test('dormant Claude night guard resume carries one initial recovery prompt', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps();
+  registerResumeSessionIpc(ipc, deps);
+
+  await ipc.handlers.get('resume-session')(null, {
+    hubId: 'claude-night-guard',
+    kind: 'claude',
+    ccSessionId: 'cc-night-guard',
+    cwd: 'C:\\repo',
+    nightGuardRecoveryPrompt: 'Continue exactly once.',
+  });
+
+  const createCall = deps.calls.find(call => call[0] === 'createSession');
+  assert.strictEqual(createCall[2].resumeCCSessionId, 'cc-night-guard');
+  assert.strictEqual(createCall[2].claudeInitialPrompt, 'Continue exactly once.');
+  assert.strictEqual(createCall[2].useContinue, false);
+});
+
 test('resume passes manual rename protection into live session', async () => {
   const ipc = createFakeIpc();
   const deps = createBaseDeps();

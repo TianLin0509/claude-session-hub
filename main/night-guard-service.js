@@ -2,10 +2,24 @@
 
 const path = require('path');
 const { createNightGuardController } = require('../core/night-guard-controller.js');
-const { createCurlConnectivityProbe, createFixtureConnectivityProbe } = require('../core/night-guard-network.js');
-const { createNightGuardAuditWriter, inspectCodexRuntime } = require('../core/night-guard-runtime.js');
+const {
+  CLAUDE_ENDPOINTS,
+  CODEX_ENDPOINTS,
+  createCurlConnectivityProbe,
+  createFixtureConnectivityProbe,
+} = require('../core/night-guard-network.js');
+const { createNightGuardAuditWriter, inspectNightGuardRuntime } = require('../core/night-guard-runtime.js');
 const { buildSessionResumeMeta } = require('../core/session-capabilities.js');
+const { nightGuardNativeIdentity, nightGuardProvider } = require('../core/night-guard-provider.js');
 const { registerNightGuardIpc } = require('./ipc/night-guard-handlers.js');
+
+const BP_START = '\x1b[200~';
+const BP_END = '\x1b[201~';
+
+function canSubmitRecoveryEnter(controller, sessionId, incidentId) {
+  return !!(controller && typeof controller.canSubmitRecoveryInput === 'function'
+    && controller.canSubmitRecoveryInput(sessionId, incidentId));
+}
 
 function createNightGuardService(options = {}) {
   const {
@@ -25,15 +39,20 @@ function createNightGuardService(options = {}) {
   }
 
   const auditPath = path.join(getDataDir(), 'diagnostics', 'night-guard.jsonl');
-  let probe = null;
+  let fixtureProbe = null;
   if (env.CLAUDE_HUB_NIGHT_GUARD_FIXTURE) {
     try {
-      probe = createFixtureConnectivityProbe(JSON.parse(env.CLAUDE_HUB_NIGHT_GUARD_FIXTURE));
+      fixtureProbe = createFixtureConnectivityProbe(JSON.parse(env.CLAUDE_HUB_NIGHT_GUARD_FIXTURE));
     } catch (error) {
       logger.warn('[night-guard] invalid fixture:', error && error.message);
     }
   }
-  if (!probe) probe = createCurlConnectivityProbe();
+  const providerProbes = fixtureProbe
+    ? { claude: fixtureProbe, codex: fixtureProbe }
+    : {
+      claude: createCurlConnectivityProbe({ endpoints: CLAUDE_ENDPOINTS }),
+      codex: createCurlConnectivityProbe({ endpoints: CODEX_ENDPOINTS }),
+    };
 
   const timingOverrides = env.CLAUDE_HUB_E2E === '1' && env.CLAUDE_HUB_NIGHT_GUARD_FAST === '1'
     ? {
@@ -89,22 +108,34 @@ function createNightGuardService(options = {}) {
       const config = getConfig();
       return config.proxy || env.HTTPS_PROXY || env.HTTP_PROXY || '';
     },
-    probeNetwork: probe,
-    inspectRuntime: sessionId => inspectCodexRuntime(sessionManager, sessionId),
-    continueLiveSession: async ({ sessionId, prompt }) => {
+    probeNetwork: input => (providerProbes[input.provider] || providerProbes.codex)(input),
+    inspectRuntime: sessionId => {
+      const session = getSession(sessionId);
+      return inspectNightGuardRuntime(sessionManager, sessionId, nightGuardProvider(session));
+    },
+    continueLiveSession: async ({ sessionId, prompt, incidentId }) => {
       if (sessionManager.getSessionBuffer(sessionId) == null) return { ok: false, error: 'live-pty-missing' };
-      sessionManager.writeToSession(sessionId, prompt);
+      const provider = nightGuardProvider(getSession(sessionId));
+      if (!provider) return { ok: false, error: 'unsupported-provider' };
+      sessionManager.writeToSession(
+        sessionId,
+        provider === 'claude' ? `${BP_START}${prompt}${BP_END}` : prompt,
+      );
       const submitOnce = delay => {
-        const timer = setTimeout(() => sessionManager.writeToSession(sessionId, '\r'), delay);
+        const timer = setTimeout(() => {
+          if (canSubmitRecoveryEnter(controller, sessionId, incidentId)) {
+            sessionManager.writeToSession(sessionId, '\r');
+          }
+        }, delay);
         timer.unref?.();
       };
-      submitOnce(500);
-      submitOnce(700);
+      for (const delay of provider === 'claude' ? [700, 900, 1100] : [500, 700]) submitOnce(delay);
       return { ok: true };
     },
     resumeInPlace: async ({ sessionId, prompt }) => {
       const session = getSession(sessionId);
-      if (!session || !session.codexSid) return { ok: false, error: 'codex-sid-missing' };
+      const identity = nightGuardNativeIdentity(session);
+      if (!identity) return { ok: false, error: 'native-session-id-missing' };
       return sessionManager.relaunchCli(sessionId, {
         resume: true,
         prompt,
@@ -113,7 +144,8 @@ function createNightGuardService(options = {}) {
     },
     resumeDormant: async ({ sessionId, prompt, session }) => {
       const source = session || getSession(sessionId);
-      if (!source || !source.codexSid) return { ok: false, error: 'codex-sid-missing' };
+      const identity = nightGuardNativeIdentity(source);
+      if (!identity) return { ok: false, error: 'native-session-id-missing' };
       const meta = buildSessionResumeMeta(source, {
         hubId: sessionId,
         nightGuard: controller.getStatus(sessionId),
@@ -130,4 +162,4 @@ function createNightGuardService(options = {}) {
   return { controller, auditPath, getSession };
 }
 
-module.exports = { createNightGuardService };
+module.exports = { canSubmitRecoveryEnter, createNightGuardService };

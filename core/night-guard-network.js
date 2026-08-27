@@ -2,10 +2,15 @@
 
 const childProcess = require('child_process');
 
-const DEFAULT_ENDPOINTS = [
+const CODEX_ENDPOINTS = [
   { name: 'chatgpt', url: 'https://chatgpt.com/' },
   { name: 'openai-api', url: 'https://api.openai.com/v1/models' },
 ];
+const CLAUDE_ENDPOINTS = [
+  { name: 'claude-web', url: 'https://claude.ai/' },
+  { name: 'anthropic-api', url: 'https://api.anthropic.com/v1/models' },
+];
+const DEFAULT_ENDPOINTS = CODEX_ENDPOINTS;
 
 function execFileUtf8(execFileImpl, file, args, options) {
   return new Promise((resolve, reject) => {
@@ -137,6 +142,8 @@ function createFixtureConnectivityProbe(fixture = {}, options = {}) {
 }
 
 module.exports = {
+  CLAUDE_ENDPOINTS,
+  CODEX_ENDPOINTS,
   DEFAULT_ENDPOINTS,
   createCurlConnectivityProbe,
   createFixtureConnectivityProbe,

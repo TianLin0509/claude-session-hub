@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { appendStreamDisconnectChunk, detectStreamDisconnect } = require('./stream-disconnect.js');
 const { createNightGuardState, sanitizeNightGuardState } = require('./night-guard-state.js');
+const { nightGuardProvider, nightGuardProviderLabel } = require('./night-guard-provider.js');
 
 const DEFAULT_RECOVERY_PROMPT = [
   '【夜间保护自动恢复】上一轮因网络中断而终止。',
@@ -37,11 +38,6 @@ function incidentKey(sessionId, turnId, signature, observedAt) {
     .update([sessionId, turnId || '', signature || '', Math.floor(Number(observedAt || 0) / 1000)].join('|'))
     .digest('hex')
     .slice(0, 20);
-}
-
-function isCodexSession(session) {
-  const kind = String(session && (session.transcriptKind || session.kind) || '').replace(/-resume$/, '');
-  return kind === 'codex' || kind === 'deepseek';
 }
 
 class NightGuardController {
@@ -195,10 +191,18 @@ class NightGuardController {
       || createNightGuardState({ enabled: false, now: this.now() });
   }
 
+  canSubmitRecoveryInput(sessionId, incidentId) {
+    const entry = this.entries.get(String(sessionId || ''));
+    return !!(entry && entry.incident && entry.incident.id === incidentId
+      && entry.public.enabled === true
+      && ['resuming', 'recovering'].includes(entry.public.status));
+  }
+
   setEnabled(sessionId, enabled, options = {}) {
     const session = this.getSession(sessionId);
-    if (!session || !isCodexSession(session)) {
-      return { ok: false, error: 'unsupported-session', message: '夜间保护当前仅支持 Codex 会话' };
+    const provider = nightGuardProvider(session);
+    if (!session || !provider) {
+      return { ok: false, error: 'unsupported-session', message: '夜间保护当前仅支持 Claude Code 与 Codex 会话' };
     }
     const entry = this._entry(sessionId);
     this._clearIncidentTimers(entry);
@@ -241,7 +245,9 @@ class NightGuardController {
       healthyRounds: 0,
       nextCheckAt: null,
       lastError: null,
-      message: mode === 'goal' ? '/goal 已自动开启夜间保护' : '夜间保护已开启，将保护下一轮任务',
+      message: mode === 'goal'
+        ? '/goal 已自动开启夜间保护'
+        : `${nightGuardProviderLabel(provider)} 夜间保护已开启，将保护下一轮任务`,
     });
     this._audit(entry, 'enabled', { source: options.source || mode, mode });
     return { ok: true, state: this.getStatus(sessionId) };
@@ -287,7 +293,7 @@ class NightGuardController {
         activeTurnId: entry.activeTurnId,
         recoveryTurnId: entry.incident.recoveryTurnId,
         nextCheckAt: null,
-        message: '恢复指令已进入同一 Codex 会话，正在继续任务',
+        message: '恢复指令已进入同一 AI 会话，正在继续任务',
       });
       this._audit(entry, 'recovery-prompt-accepted', { recoveryTurnId: entry.incident.recoveryTurnId });
     } else {
@@ -316,9 +322,9 @@ class NightGuardController {
     if (entry.incident && !entry.recoverySentAt
         && entry.incident.failedTurnId && turnId
         && entry.incident.failedTurnId !== turnId) {
-      // Codex itself began a new goal continuation before the guardian acted.
+      // The provider itself began a new goal continuation before the guardian acted.
       // Treat that as provider recovery and never inject a duplicate prompt.
-      this._cancelIncident(entry, 'native-continuation', 'Codex 已自行开始后续 turn，未执行自动续跑');
+      this._cancelIncident(entry, 'native-continuation', 'AI 已自行开始后续 turn，未执行自动续跑');
     }
 
     if (entry.incident && entry.recoverySentAt && startedAt >= entry.recoverySentAt) {
@@ -344,6 +350,20 @@ class NightGuardController {
     const sessionId = event.hubSessionId || event.sessionId;
     if (!sessionId) return false;
     const entry = this._entry(sessionId);
+    const completionIssue = entry.incident ? detectStreamDisconnect(event.text) : null;
+    if (completionIssue) {
+      // Claude records API failures as synthetic assistant entries. A Stop hook
+      // may therefore surface the same error through the normal completion
+      // parser after StopFailure/PTY already established the incident. Treat it
+      // only as corroboration; it must never masquerade as late success.
+      entry.turnOpen = false;
+      entry.incident.corroborated = true;
+      this._audit(entry, 'failure-corroborated', {
+        source: event.signalSource || 'completion-error-text',
+        message: completionIssue.message,
+      });
+      return true;
+    }
     const completedAt = Number(event.completedAt) || this.now();
     const turnId = event.turnId || null;
     entry.turnOpen = false;
@@ -442,18 +462,19 @@ class NightGuardController {
     const issue = detectStreamDisconnect(message);
     if (!issue) return false;
     const entry = this._entry(sessionId);
+    const source = event.signalSource || 'rollout-task-error';
     if (!entry.public.enabled || !entry.turnOpen) return false;
     if (!entry.incident) {
       return this._startIncident(entry, issue, {
         observedAt: Number(event.failedAt || event.completedAt) || this.now(),
         turnId: event.turnId || entry.activeTurnId,
-        source: 'rollout-task-error',
+        source,
       });
     }
     entry.incident.corroborated = true;
     if (event.turnId) entry.incident.failedTurnId = event.turnId;
     this._persist(entry, { failedTurnId: entry.incident.failedTurnId });
-    this._audit(entry, 'failure-corroborated', { source: 'rollout-task-error' });
+    this._audit(entry, 'failure-corroborated', { source });
     return true;
   }
 
@@ -494,6 +515,7 @@ class NightGuardController {
     const id = incidentKey(entry.sessionId, turnId, issue.signature, observedAt);
     if (entry.public.incidentId === id && !TERMINAL_INCIDENT_STATUSES.has(entry.public.status)) return false;
     entry.sessionSnapshot = { ...(this.getSession(entry.sessionId) || entry.sessionSnapshot || {}) };
+    const provider = nightGuardProvider(entry.sessionSnapshot);
     entry.incident = {
       id,
       failedTurnId: turnId,
@@ -501,6 +523,7 @@ class NightGuardController {
       signature: issue.signature,
       message: issue.message,
       source: options.source || 'unknown',
+      provider,
       healthyRounds: 0,
       failedProbeCount: 0,
       lastFailedProbeAt: observedAt,
@@ -520,7 +543,11 @@ class NightGuardController {
       lastError: issue.message,
       message: '确认最终断流，等待同一 turn 的迟到完成事件',
     });
-    this._audit(entry, 'incident-detected', { source: entry.incident.source, message: issue.message });
+    this._audit(entry, 'incident-detected', {
+      source: entry.incident.source,
+      provider,
+      message: issue.message,
+    });
     this._setTimer(entry, 'grace', () => this._beginNetworkWait(entry), this.config.graceMs);
     return true;
   }
@@ -546,13 +573,19 @@ class NightGuardController {
     const proxy = this.getProxy(entry.sessionId, entry.sessionSnapshot);
     let result;
     try {
-      result = await this.probeNetwork({ proxy, sessionId: entry.sessionId, incidentId: incident.id });
+      result = await this.probeNetwork({
+        proxy,
+        provider: incident.provider,
+        sessionId: entry.sessionId,
+        incidentId: incident.id,
+      });
     } catch (error) {
       result = { ok: false, errorCode: 'probe-threw', error: String(error && error.message || error) };
     }
     if (!entry.incident || entry.incident.id !== incident.id || !entry.public.enabled) return;
     this._audit(entry, 'network-probe', {
       ok: result && result.ok === true,
+      provider: incident.provider,
       errorCode: result && result.errorCode || null,
       endpoints: Array.isArray(result && result.endpoints)
         ? result.endpoints.map(item => ({ name: item.name, ok: item.ok, httpCode: item.httpCode || 0 }))
@@ -565,7 +598,7 @@ class NightGuardController {
         this._persist(entry, {
           healthyRounds: incident.healthyRounds,
           nextCheckAt: null,
-          message: '代理已连续稳定，正在确认 Codex 运行态',
+          message: '代理已连续稳定，正在确认 AI 运行态',
         });
         await this._recover(entry);
         return;
@@ -618,31 +651,31 @@ class NightGuardController {
     if (state === 'running') {
       entry.runtimeChecks += 1;
       if (entry.runtimeChecks > this.config.runtimeRetryMax) {
-        this._block(entry, 'runtime-still-running', 'Codex 仍显示运行中，拒绝注入重复任务');
+        this._block(entry, 'runtime-still-running', 'AI 仍显示运行中，拒绝注入重复任务');
         return;
       }
       this._persist(entry, {
         status: 'waiting-runtime',
         nextCheckAt: this.now() + this.config.runtimeRetryMs,
-        message: 'Codex 仍显示运行中，等待其自行收口',
+        message: 'AI 仍显示运行中，等待其自行收口',
       });
       this._setTimer(entry, 'runtime', () => this._recover(entry), this.config.runtimeRetryMs);
       return;
     }
     if (state === 'waiting') {
-      this._block(entry, 'interactive-confirmation', 'Codex 正在等待权限或用户确认，不能自动越权');
+      this._block(entry, 'interactive-confirmation', 'AI 正在等待权限或用户确认，不能自动越权');
       return;
     }
     if (state === 'unknown') {
       entry.runtimeChecks += 1;
       if (entry.runtimeChecks > this.config.runtimeRetryMax) {
-        this._block(entry, 'runtime-ambiguous', '无法确认 Codex 输入框是否安全，未执行自动续跑');
+        this._block(entry, 'runtime-ambiguous', '无法确认 AI 输入框是否安全，未执行自动续跑');
         return;
       }
       this._persist(entry, {
         status: 'waiting-runtime',
         nextCheckAt: this.now() + this.config.runtimeRetryMs,
-        message: 'Codex 当前画面不明确，等待可验证的输入框',
+        message: 'AI 当前画面不明确，等待可验证的输入框',
       });
       this._setTimer(entry, 'runtime', () => this._recover(entry), this.config.runtimeRetryMs);
       return;
@@ -661,8 +694,8 @@ class NightGuardController {
       healthyRounds: incident.healthyRounds,
       nextCheckAt: attemptAt + this.config.submitAckMs,
       message: state === 'host-shell' || state === 'missing'
-        ? '正在精确恢复原 Codex SID 并提交续跑指令'
-        : '正在向原 Codex PTY 提交一次续跑指令',
+        ? '正在精确恢复原生会话 ID 并提交续跑指令'
+        : '正在向原 AI PTY 提交一次续跑指令',
     });
 
     let action;

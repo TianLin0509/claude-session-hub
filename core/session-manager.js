@@ -1492,6 +1492,10 @@ class SessionManager extends EventEmitter {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         cmd += ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
+      if (opts.resumeCCSessionId && typeof opts.claudeInitialPrompt === 'string'
+          && opts.claudeInitialPrompt.trim()) {
+        cmd += ` ${quotePowerShellLiteral(opts.claudeInitialPrompt.trim())}`;
+      }
       cmd += '\r\n';
       let sent = false;
       let debounceTimer = null;
@@ -2254,7 +2258,16 @@ class SessionManager extends EventEmitter {
           hubDataDir: getHubDataDir(),
         });
       const mcpFlag = mcpPlan && mcpPlan.args ? mcpPlan.args : '';
-      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${fastFlag}${mcpFlag}${isolation}\r\n`;
+      const resumeId = options.resume === true && s.info && s.info.ccSessionId
+        ? String(s.info.ccSessionId).trim()
+        : '';
+      cmd = resumeId
+        ? ` claude --resume ${quotePowerShellLiteral(resumeId)} --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${fastFlag}${mcpFlag}${isolation}`
+        : ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${fastFlag}${mcpFlag}${isolation}`;
+      if (resumeId && typeof options.prompt === 'string' && options.prompt.trim()) {
+        cmd += ` ${quotePowerShellLiteral(options.prompt.trim())}`;
+      }
+      cmd += '\r\n';
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
       const mcpPlan = meetingId ? buildClaudeMeetingMcpArgs({
         mcpConfigFile: s.claudeMcpConfigFile,

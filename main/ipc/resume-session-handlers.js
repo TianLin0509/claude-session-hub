@@ -212,6 +212,10 @@ function createResumeSessionHandler(deps) {
       ...(meta.effort ? { effort: meta.effort } : {}),
       ...(isLegacyDeepSeek ? { deepseekLegacyClaude: true } : {}),
       resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
+      ...(isClaudeCliResumable && typeof meta.nightGuardRecoveryPrompt === 'string'
+        && meta.nightGuardRecoveryPrompt.trim()
+        ? { claudeInitialPrompt: meta.nightGuardRecoveryPrompt }
+        : {}),
       resumeTranscriptPath: resumeTranscriptPath || undefined,
       useContinue: isClaudeCliResumable && !meta.ccSessionId,
       useResume: isNativeResumeKind,

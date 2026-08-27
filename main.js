@@ -1655,6 +1655,24 @@ const hookServer = http.createServer((req, res) => {
         if (event === 'stop' && parsed.transcriptPath) {
           transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath).catch(() => {});
         }
+        if (event === 'prompt') {
+          nightGuardController?.handlePromptSubmitted({
+            hubSessionId: parsed.sessionId,
+            text: latestUserMessage || '',
+            submittedAt: eventAt,
+            signalSource: 'hook_prompt',
+          });
+        }
+        if (event === 'stop-failure') {
+          nightGuardController?.handleTurnFailed({
+            hubSessionId: parsed.sessionId,
+            message: [parsed.error, parsed.errorDetails, parsed.lastAssistantMessage]
+              .filter(Boolean)
+              .join(': '),
+            failedAt: eventAt,
+            signalSource: 'claude-stop-failure',
+          });
+        }
         if (event === 'prompt' && latestUserMessage) {
           maybeAutoTitleSessionFromPrompt({
             hubSessionId: parsed.sessionId,

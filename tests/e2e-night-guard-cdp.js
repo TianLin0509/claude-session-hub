@@ -140,6 +140,7 @@ async function main() {
   const port = await reservePort();
   let hub = null;
   let client = null;
+  let primaryError = null;
   const result = { runId: RUN_ID, mode: MODE_NAME, port, screenshot: SCREENSHOT_PATH };
   try {
     const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === 'path') || 'Path';
@@ -147,6 +148,7 @@ async function main() {
       dataDir: DATA_DIR,
       port,
       label: 'night-guard-e2e',
+      windowMode: 'hidden',
       extraEnv: {
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_NIGHT_GUARD_FAST: '1',
@@ -251,9 +253,20 @@ async function main() {
     });
     fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
     console.log(JSON.stringify(result, null, 2));
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
     if (client) { try { client.close(); } catch {} }
-    if (hub) await gracefulQuit(hub);
+    if (hub) {
+      try {
+        await gracefulQuit(hub);
+      } catch (teardownError) {
+        const logTail = hub.log().slice(-80).join('\n');
+        console.error(`[night-guard-e2e] isolated Hub teardown failed:\n${logTail}`);
+        if (!primaryError) throw teardownError;
+      }
+    }
     if (process.env.HUB_NIGHT_GUARD_KEEP_TEMP !== '1') {
       fs.rmSync(TEMP_ROOT, { recursive: true, force: true });
     } else {

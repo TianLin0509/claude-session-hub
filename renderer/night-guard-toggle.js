@@ -53,12 +53,12 @@ function createNightGuardToggle({ document, ipcRenderer, getTarget = () => null 
       blocked: '需处理',
     }[visual] || '夜间保护';
     button.title = state.message || ({
-      unavailable: '夜间保护仅支持当前打开的 Codex 会话',
-      disabled: '为当前 Codex 会话手动开启一次性夜间保护',
+      unavailable: '夜间保护仅支持当前打开的 Claude Code 或 Codex 会话',
+      disabled: '为当前 Claude Code 或 Codex 会话手动开启一次性夜间保护',
       enabled: '夜间保护已开启；任务完成后自动关闭。点击可手动关闭',
       waiting: '已确认最终断流，正在等待代理连续稳定；尚未发送恢复指令',
-      runtime: '网络已恢复，正在确认 Codex 输入框可安全续跑',
-      recovering: '已在同一 Codex 会话中提交受控续跑指令',
+      runtime: '网络已恢复，正在确认 AI 输入框可安全续跑',
+      recovering: '已在同一 AI 会话中提交受控续跑指令',
       completed: '受保护任务已经完成，保护已自动关闭',
       blocked: '保护已熔断，没有继续发送；请查看会话状态',
     }[visual] || '夜间保护');

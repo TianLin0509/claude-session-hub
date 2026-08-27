@@ -13,7 +13,7 @@ function stripTerminalControls(value) {
 const STREAM_DISCONNECT_PATTERNS = [
   /(?:^|\n)\s*[■✖×!]*\s*(stream\s+(?:disconnected|closed|error|failed)\b[^\n]*)/i,
   /(?:^|\n)\s*[■✖×!]*\s*((?:error|fatal)(?::|\s)[^\n]*(?:response\.completed|ECONNRESET|ETIMEDOUT|ENETUNREACH|connection\s+(?:reset|closed)|network\s+unreachable)[^\n]*)/i,
-  /(?:^|\n)\s*[■✖×!]*\s*(API\s+Error:\s*(?:Connection|Network|Request|Unable\s+to\s+connect)[^\n]*)/i,
+  /(?:^|\n)\s*[■✖×!]*\s*(API\s+Error:\s*(?:Connection|Network|Unable\s+to\s+connect)[^\n]*)/i,
 ];
 
 function compactDisconnectMessage(value) {

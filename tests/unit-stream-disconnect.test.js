@@ -16,6 +16,13 @@ test('detects Codex stream disconnect output through ANSI decoration', () => {
   assert.match(issue.message, /stream disconnected before completion/i);
 });
 
+test('detects Claude Code final connection dropped banner', () => {
+  const issue = detectStreamDisconnect('\x1b[33mAPI Error: Connection dropped (ECONNRESET)\x1b[0m\r\n');
+  assert.ok(issue);
+  assert.equal(issue.type, 'stream-disconnected');
+  assert.match(issue.message, /Connection dropped \(ECONNRESET\)/i);
+});
+
 test('detects a stream error split across PTY chunks', () => {
   const first = appendStreamDisconnectChunk('', '■ stream discon');
   assert.equal(first.issue, null);
@@ -30,6 +37,12 @@ test('does not treat ordinary assistant prose as a network failure', () => {
   ), null);
   assert.equal(detectStreamDisconnect('› stream disconnected before completion: 请解释原因'), null);
   assert.equal(detectStreamDisconnect('The stream completed successfully.'), null);
+});
+
+test('does not treat Claude HTTP, auth, or rate-limit request failures as a disconnect', () => {
+  assert.equal(detectStreamDisconnect('API Error: Request failed with status code 429'), null);
+  assert.equal(detectStreamDisconnect('API Error: Request failed with status code 401'), null);
+  assert.equal(detectStreamDisconnect('API Error: Invalid API key'), null);
 });
 
 test('connection issue helper requires the explicit persisted type', () => {

@@ -5,7 +5,26 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createNightGuardService } = require('../main/night-guard-service.js');
+const { canSubmitRecoveryEnter, createNightGuardService } = require('../main/night-guard-service.js');
+
+test('delayed recovery Enter is suppressed after takeover, completion, or incident replacement', () => {
+  let state = { enabled: true, status: 'resuming', incidentId: 'incident-1' };
+  const controller = {
+    canSubmitRecoveryInput(_sessionId, incidentId) {
+      return state.enabled === true && state.incidentId === incidentId
+        && ['resuming', 'recovering'].includes(state.status);
+    },
+  };
+  assert.equal(canSubmitRecoveryEnter(controller, 'session-1', 'incident-1'), true);
+  state = { enabled: true, status: 'recovering', incidentId: 'incident-1' };
+  assert.equal(canSubmitRecoveryEnter(controller, 'session-1', 'incident-1'), true);
+  state = { enabled: true, status: 'armed', incidentId: null };
+  assert.equal(canSubmitRecoveryEnter(controller, 'session-1', 'incident-1'), false);
+  state = { enabled: false, status: 'completed', incidentId: null };
+  assert.equal(canSubmitRecoveryEnter(controller, 'session-1', 'incident-1'), false);
+  state = { enabled: true, status: 'resuming', incidentId: 'incident-2' };
+  assert.equal(canSubmitRecoveryEnter(controller, 'session-1', 'incident-1'), false);
+});
 
 test('main night guard service wires IPC, persistence and manual enable without touching other sessions', (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'night-guard-service-unit-'));
@@ -53,6 +72,11 @@ test('main night guard service wires IPC, persistence and manual enable without 
   assert.equal(enabled.ok, true);
   assert.equal(sessions.get('codex').nightGuard.enabled, true);
   assert.equal(sessions.get('claude').nightGuard, undefined);
+  const codexStateBeforeClaude = { ...sessions.get('codex').nightGuard };
+  const claudeEnabled = service.controller.setEnabled('claude', true);
+  assert.equal(claudeEnabled.ok, true);
+  assert.equal(sessions.get('claude').nightGuard.enabled, true);
+  assert.deepEqual(sessions.get('codex').nightGuard, codexStateBeforeClaude);
   assert.equal(handlers.has('night-guard:get'), true);
   assert.equal(writes.some(item => item.channel === 'night-guard-status'), true);
   service.controller.dispose();

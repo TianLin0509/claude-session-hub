@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
 const { buildSessionResumeMeta, sessionModelId, supportsForkSession } = require('../core/session-capabilities.js');
+const { nightGuardProvider } = require('../core/night-guard-provider.js');
 const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
@@ -5546,7 +5547,7 @@ function getActiveCompletionNotificationTarget() {
 function getActiveNightGuardTarget() {
   if (!activeSessionId) return null;
   const session = sessions.get(activeSessionId);
-  return session && isCodexKind(session.kind) ? session : null;
+  return nightGuardProvider(session) ? session : null;
 }
 const configModal = createConfigModalController({
   document,

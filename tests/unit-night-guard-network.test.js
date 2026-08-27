@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  CLAUDE_ENDPOINTS,
   createCurlConnectivityProbe,
   normalizeProxy,
   parseHttpCode,
@@ -53,4 +54,17 @@ test('proxy auth and upstream 5xx are not treated as recovered service routes', 
     });
     assert.equal((await probe({ proxy: '127.0.0.1:7890' })).ok, false);
   }
+});
+
+test('Claude health rounds target Claude and Anthropic endpoints', async () => {
+  const urls = [];
+  const probe = createCurlConnectivityProbe({
+    endpoints: CLAUDE_ENDPOINTS,
+    execFile(_file, args, _options, callback) {
+      urls.push(args[args.length - 1]);
+      callback(null, args[args.length - 1].includes('api.anthropic.com') ? '401' : '403', '');
+    },
+  });
+  assert.equal((await probe({ proxy: '127.0.0.1:7890' })).ok, true);
+  assert.deepEqual(urls, ['https://claude.ai/', 'https://api.anthropic.com/v1/models']);
 });
