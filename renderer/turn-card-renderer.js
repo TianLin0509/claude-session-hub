@@ -218,7 +218,8 @@ function _renderMetaPills(turn) {
 function renderTurnCard(turn) {
   // turn = { id, role: 'user'|'assistant', text, ts, model?, kind?, toolCalls? }
   const isUser = turn.role === 'user';
-  const cls = isUser ? 'turn-card user' : 'turn-card';
+  // inherited = 从父会话补进来的「分支前」对话（见 core/branch-transcript-inheritance.js）。
+  const cls = (isUser ? 'turn-card user' : 'turn-card') + (turn.inherited ? ' inherited' : '');
   const who = isUser ? '你' : (turn.model || turn.kind || 'Claude');
   const ts = turn.ts ? formatAbsoluteTime(turn.ts) : '';
 
@@ -256,11 +257,12 @@ function renderTurnCard(turn) {
       </details>`;
   }
 
-  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}">
+  return `<div class="${cls}" data-turn-id="${escapeHtml(turn.id || '')}"${turn.inherited ? ' data-inherited="1"' : ''}>
     ${avatarHtml}
     <div class="turn-content">
       <div class="turn-head">
         <span class="turn-who">${escapeHtml(who)}</span>
+        ${turn.inherited ? '<span class="turn-branch-chip" title="分支前的对话，继承自父会话">分支前</span>' : ''}
         <span class="turn-meta">${escapeHtml(ts)}</span>
         <div class="turn-actions">
           <button class="ta-btn" data-action="copy" title="复制">📋</button>

@@ -1221,6 +1221,8 @@ registerTranscriptIpc(ipcMain, {
   findCodexRolloutByCwd,
   findCodexRolloutBySid,
   findTranscriptByCCSessionId,
+  // 分支会话补分支前历史时要找祖先；祖先常常已经休眠，只剩落盘记录。
+  getPersistedSessions: () => lastPersistedSessions,
   isCodexCliKind,
   isUsableCodexRolloutPath,
   parseClaudeTranscriptToTurns,

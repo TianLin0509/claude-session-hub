@@ -124,8 +124,16 @@ test('renderer 必须在打开会话时清掉断连标记', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   const select = src.slice(src.indexOf('async function selectSession'));
   const body = select.slice(0, select.indexOf('\n}\n'));
-  assert.match(body, /clearSessionConnectionIssue\(session\)/,
+  // 2026-08-28 起收紧为 acknowledgeSessionFailureState：光清 connectionIssue 不够，
+  // 断连同时把 runtimeTruth 打成了 RUNTIME_FAILED（终态），不一起降级的话会话仍然
+  // 挂在「⚠ 运行异常」分区里；它内部照旧调 clearSessionConnectionIssue。
+  assert.match(body, /acknowledgeSessionFailureState\(session\)/,
     '「运行异常/断连」是提醒信号，用户点开看过就该消失');
+  const ack = src.slice(src.indexOf('function acknowledgeSessionFailureState'));
+  const ackBody = ack.slice(0, ack.indexOf('\n}\n'));
+  assert.match(ackBody, /clearSessionConnectionIssue\(session,/);
+  assert.match(ackBody, /RUNTIME_FAILED/);
+  assert.match(ackBody, /RUNTIME_IDLE/);
 });
 
 console.log('unit-session-view-mode OK');

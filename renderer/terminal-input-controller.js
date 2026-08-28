@@ -2,7 +2,50 @@
 
 const IMAGE_PATH_RE = /[A-Za-z]:[\\/](?:[^\\/:*?"<>|\r\n\s]+[\\/])*[^\\/:*?"<>|\r\n\s]+\.(?:png|jpe?g|gif|webp|bmp)(?![A-Za-z0-9])/gi;
 
-function createTerminalInputController({ document, window, ipcRenderer, clipboard, terminalCache, EventCtor = Event, requestAnimationFrameFn = requestAnimationFrame, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout }) {
+// 剪贴板里「复制的文件」在 Windows 上是 CF_HDROP。2026-08-28 用真 Electron 41 实测
+// 三条事实，决定了下面两条读取路径：
+//   1. 复制文件后 clipboard.availableFormats() 只有 ['text/uri-list']，readText() 是
+//      空串，readImage() 也是空 —— 老逻辑「文本优先、其次图片」两条分支全落空，
+//      所以粘贴文件在输入框里什么都不出现。
+//   2. paste 事件里 clipboardData.files 拿得到全部文件；Electron 41 已经删掉
+//      File.path，必须走 webUtils.getPathForFile(file)。
+//   3. 截图（原始位图）也会以 files=[image.png] 的形态出现，但 getPathForFile 返回
+//      **空串** —— 这正好是区分「真文件」和「内存位图」的判据，空串就落回原来的
+//      save-clipboard-image 分支，截图粘贴行为完全不变。
+function clipboardFilePathsFromPasteEvent(e, webUtils) {
+  const files = e && e.clipboardData && e.clipboardData.files;
+  if (!files || !files.length || !webUtils || typeof webUtils.getPathForFile !== 'function') return [];
+  const paths = [];
+  for (const file of Array.from(files)) {
+    let filePath = '';
+    try { filePath = webUtils.getPathForFile(file) || ''; } catch { filePath = ''; }
+    if (filePath) paths.push(filePath);
+  }
+  return paths;
+}
+
+// xterm 的 Ctrl+V 走不到 paste 事件（xterm 在 helper textarea 上 stopPropagation），
+// 只能直接读剪贴板。FileNameW 是 Chromium 注册的 UTF-16 格式，read() 会按 latin1
+// 解出乱码，必须 readBuffer + utf16le 再去掉结尾的 NUL。
+// 已知限制：FileNameW 只带**第一个**文件；多选文件的完整列表只有 CF_HDROP 有，
+// 而 Electron 的 clipboard API 读不到它。输入框那条路径（clipboardData.files）不受限。
+function clipboardFilePathFromNative(clipboard) {
+  if (!clipboard || typeof clipboard.readBuffer !== 'function') return '';
+  try {
+    const buffer = clipboard.readBuffer('FileNameW');
+    if (!buffer || !buffer.length) return '';
+    return buffer.toString('utf16le').replace(/\0+$/, '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function formatPastedFilePaths(paths) {
+  // 多个文件用换行分隔：路径里可以有空格，空格分隔会让 CLI 把一条路径拆成两条。
+  return (Array.isArray(paths) ? paths : []).join('\n');
+}
+
+function createTerminalInputController({ document, window, ipcRenderer, clipboard, terminalCache, webUtils = null, EventCtor = Event, requestAnimationFrameFn = requestAnimationFrame, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout }) {
   if (!document) throw new Error('document is required');
   if (!ipcRenderer) throw new Error('ipcRenderer is required');
   if (!clipboard) throw new Error('clipboard is required');
@@ -17,14 +60,23 @@ function createTerminalInputController({ document, window, ipcRenderer, clipboar
   async function handlePasteForSession(sessionId) {
     const cached = terminalCache.get(sessionId);
     if (!cached) return;
-  
+
+    // 复制自资源管理器的文件 → 直接粘绝对路径（任意类型，不限图片）。
+    // 必须排在图片之前：图片文件既是 FileNameW 又可能被 Chromium 合成成位图，
+    // 先判图片会把用户手上那份文件另存成一张新截图，路径就对不上了。
+    const nativeFilePath = clipboardFilePathFromNative(clipboard);
+    if (nativeFilePath) {
+      cached.terminal.paste(nativeFilePath);
+      return;
+    }
+
     const img = clipboard.readImage();
     if (!img.isEmpty()) {
       const filePath = await ipcRenderer.invoke('save-clipboard-image');
       if (filePath) cached.terminal.paste(filePath);
       return;
     }
-  
+
     const text = clipboard.readText();
     if (text) cached.terminal.paste(text);
   }
@@ -80,6 +132,15 @@ function createTerminalInputController({ document, window, ipcRenderer, clipboar
     if (!inputEl || inputEl.dataset.imgPasteBound === '1') return;
     inputEl.dataset.imgPasteBound = '1';
     inputEl.addEventListener('paste', async (e) => {
+      // 文件优先于文本和图片：复制一个文件时 text/plain 本来就是空的，而图片文件
+      // 若先被图片分支接走，会被另存成一张新截图、丢掉用户真正想引用的那条路径。
+      const filePaths = clipboardFilePathsFromPasteEvent(e, webUtils);
+      if (filePaths.length) {
+        e.preventDefault();
+        insertContenteditableText(inputEl, formatPastedFilePaths(filePaths));
+        return;
+      }
+
       // Text wins over image so copied HTML selections become plain prompts.
       const plainText = getPastePlainText(e);
       if (plainText) {
@@ -258,4 +319,9 @@ function createTerminalInputController({ document, window, ipcRenderer, clipboar
   };
 }
 
-module.exports = { createTerminalInputController };
+module.exports = {
+  clipboardFilePathFromNative,
+  clipboardFilePathsFromPasteEvent,
+  createTerminalInputController,
+  formatPastedFilePaths,
+};

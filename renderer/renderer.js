@@ -1,4 +1,6 @@
-const { ipcRenderer, clipboard, nativeImage, shell, webFrame } = require('electron');
+// webUtils.getPathForFile 是 Electron 32+ 取代 File.path 的唯一入口（41 里 File.path
+// 已经是 undefined）。粘贴剪贴板文件要靠它拿绝对路径。
+const { ipcRenderer, clipboard, nativeImage, shell, webFrame, webUtils } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
@@ -68,6 +70,8 @@ const { deriveSessionRuntimeStatus } = require('./session-runtime-status.js');
 const { classifyTerminalRuntime } = require('../core/terminal-runtime-state.js');
 const {
   appendStreamDisconnectChunk,
+  markStreamDisconnectAcknowledged,
+  shouldRaiseStreamDisconnect,
 } = require('../core/stream-disconnect.js');
 const { createPastSessionModals, collapseDormantNativeDuplicates } = require('./past-session-modals.js');
 const { createKeyboardShortcuts } = require('./keyboard-shortcuts.js');
@@ -183,6 +187,7 @@ const terminalInputController = createTerminalInputController({
   ipcRenderer,
   clipboard,
   terminalCache,
+  webUtils,
 });
 const handlePasteForSession = terminalInputController.handlePasteForSession;
 const attachContenteditablePasteImage = terminalInputController.attachContenteditablePasteImage;
@@ -3588,7 +3593,10 @@ async function selectSession(id, opts = {}) {
   // 2026-08-27：「运行异常/断连」是一个**提醒**信号，用户点开看过就算处理过了。
   // 原来 clearSessionConnectionIssue 只在提交提问或回答完成时调用，所以只是点开
   // 看一眼的话，那条断连会一直挂在侧栏「运行异常」组里下不去。
-  if (session) clearSessionConnectionIssue(session);
+  // 2026-08-28 补齐：只清 connectionIssue 不够 —— 断连同时把 runtimeTruth 打成了
+  // RUNTIME_FAILED（终态），且 TUI 重绘会把同一段报错文本再喂一遍。要一起降级
+  // 终态 + 记住已确认签名，提醒才真的只提醒一次。
+  if (session) acknowledgeSessionFailureState(session);
   ipcRenderer.send('focus-session', { sessionId: id });
   renderSessionList();
   showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });
@@ -4091,6 +4099,10 @@ function clearSessionConnectionIssue(sessionOrId, options = {}) {
   const session = typeof sessionOrId === 'string' ? sessions.get(sessionOrId) : sessionOrId;
   if (!session || !session.connectionIssue) return false;
   const issueMessage = String(session.connectionIssue.message || '');
+  // 记下被清掉的那条签名。TUI（尤其 Codex）会把整屏反复重绘，同一段报错文本会
+  // 一次次重新流过 PTY；不记签名的话，用户点进来清掉的下一帧就又被判成断连，
+  // 「运行异常」永远下不去 —— 这正是 2026-08-28 用户反馈的现象。
+  if (options.acknowledged !== false) markStreamDisconnectAcknowledged(session);
   session.connectionIssue = null;
   session._streamDisconnectTail = '';
   if (issueMessage && session.lastError === issueMessage) session.lastError = null;
@@ -4101,6 +4113,33 @@ function clearSessionConnectionIssue(sessionOrId, options = {}) {
   return true;
 }
 
+// 用户点进会话 = 看过这条提醒了。与「等你响应」「已完成未读」同一套语义：
+// 提醒只提醒一次，处理过就撤掉，除非它再次发生。
+// 除了清 connectionIssue，还必须把 RUNTIME_FAILED 降下来 —— 它是终态，
+// session-runtime-truth 的 terminal-state-resurrection 守卫会挡住后续的弱证据，
+// 光清 connectionIssue 的话会话照样挂在「⚠ 运行异常」分区里。
+function acknowledgeSessionFailureState(sessionOrId, options = {}) {
+  const session = typeof sessionOrId === 'string' ? sessions.get(sessionOrId) : sessionOrId;
+  if (!session) return false;
+  let changed = clearSessionConnectionIssue(session, { render: false });
+  if (getSessionRuntimeTruth(session).state === RUNTIME_FAILED) {
+    const applied = observeSessionRuntime(session, {
+      state: RUNTIME_IDLE,
+      source: 'user-acknowledged-failure',
+      // 用户亲眼看过，是这条时间线上最强的证据；低一档会被存量 FAILED 压住。
+      confidence: CONFIDENCE_AUTHORITATIVE,
+      observedAt: Date.now(),
+      reason: 'user-opened-session-after-failure',
+    });
+    if (applied && applied.applied) changed = true;
+  }
+  if (changed && options.render !== false) {
+    scheduleSessionListRender();
+    schedulePersist();
+  }
+  return changed;
+}
+
 function noteStreamDisconnect(sessionId, data) {
   const session = sessions.get(sessionId);
   if (!isAiRuntimeSession(session) || session.status === 'dormant') return false;
@@ -4108,10 +4147,12 @@ function noteStreamDisconnect(sessionId, data) {
   session._streamDisconnectTail = tracked.tail;
   const issue = tracked.issue;
   if (!issue) return false;
-  const previous = session.connectionIssue;
-  if (previous && previous.signature === issue.signature) return false;
+  // 同一条 issue 不重复升起；已被用户确认过的那条，只有在「确认之后又真的跑了
+  // 一轮」时才允许再次升起（否则就是 TUI 重绘把旧报错文本又推了一遍）。
+  if (!shouldRaiseStreamDisconnect(session, issue)) return false;
 
   const observedAt = Date.now();
+  session._connectionIssueAck = null;
   session.connectionIssue = {
     type: issue.type,
     message: issue.message,

@@ -24,6 +24,8 @@ const {
   ensureDeepSeekCodexProfile,
 } = require('./deepseek-codex-profile.js');
 const { ensureMemoryLink } = require('./claude-memory-link.js');
+const { ensureClaudeProjectTrusted } = require('./claude-project-trust.js');
+const { detectClaudeTrustDialog } = require('./claude-trust-dialog.js');
 const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filter.js');
 const { TerminalSnapshot } = require('./terminal-snapshot.js');
 const { CodexXtermScrollbackRewriter } = require('./codex-xterm-scrollback-rewriter.js');
@@ -1118,6 +1120,14 @@ class SessionManager extends EventEmitter {
 
     if (isDeepSeekLegacy) {
       ensureClaudeBypassAndTrust(sessionEnv.CLAUDE_CONFIG_DIR, spawnCwd);
+    } else if (isClaude) {
+      // 2026-08-28：新建会话又开始卡「Quick safety check / Yes, I trust this folder」。
+      // 主桌 Claude 走共享的 ~/.claude.json（没有 CLAUDE_CONFIG_DIR），以前完全靠下面
+      // 那段 PTY 探测按回车兜着；而 Claude Code v2.1.251 把默认高亮项换成了
+      // "No, exit"，盲按回车等于替用户选退出，等于这条兜底彻底失效。
+      // 实测预写 projects[cwd].hasTrustDialogAccepted 能让框根本不出现，且是唯一
+      // 无竞态的做法（写的是 spawn 之前、CLI 还没起来的时刻）。
+      ensureClaudeProjectTrusted(spawnCwd, { configDir: sessionEnv.CLAUDE_CONFIG_DIR || null });
     }
 
     const ptyProcess = pty.spawn('powershell.exe', shellArgs, {
@@ -1136,26 +1146,50 @@ class SessionManager extends EventEmitter {
       conptyInheritCursor: (isCodexRuntime || isKimi) ? false : !opts.noInheritCursor,
     });
 
-    // Claude 共享 ~/.claude.json（当前会话也在用的活跃文件，spawn 时写它有 race 风险），
-    // 故不像 DeepSeek/Codex 那样预写 trust；改为检测「trust this folder」信任对话框自动发
-    // Enter 确认（默认高亮项=Yes proceed，一次性、race-free）。避免新 meeting workspace 卡
-    // trust dialog 致 cli 永不 ready（群聊里该 Claude 全程 no_sent，如投委会主席）。
+    // 信任框兜底。正常路径是上面 spawn 前的 ensureClaudeProjectTrusted 已经把
+    // projects[cwd].hasTrustDialogAccepted 写好、框根本不出现；这里只处理预写没
+    // 生效的场景（.claude.json 损坏 / 只读 / Claude 换了存储位置）。
+    //
+    // ⚠ 绝不能再像老实现那样「检测到就直接回车」：2026-08-28 实测 Claude Code
+    // v2.1.251 的默认高亮项是 "No, exit"，盲按回车等于替用户选退出。
+    // detectClaudeTrustDialog 会按 CUP 把整帧还原成行，定位到「Yes, I trust this
+    // folder」那一行，用方向键移过去再确认；定位不出来就一个键都不发，把选择权
+    // 还给用户。避免新 meeting workspace 卡 trust dialog 致 cli 永不 ready
+    //（群聊里该 Claude 全程 no_sent，如投委会主席）。
     if (isClaude) {
+      // 信任框首帧画出来时 ink 还没把 stdin 切到 raw 模式，此刻发按键会被整段丢掉
+      // （2026-08-28 实测：检测到就立刻发 → 光标纹丝不动；等 1.2s 再发 → 正常选中
+      // Yes 并进入提示符）。所以先攒一拍，再拿最新缓冲重放一次确认框还在。
+      const TRUST_SETTLE_MS = 1200;
       let _trustDone = false;
       let _trustBuf = '';
+      let _trustTimer = null;
       const _trustSub = ptyProcess.onData((d) => {
         if (_trustDone) return;
-        _trustBuf = (_trustBuf + d).slice(-4000);
-        // PTY buffer 在单词间插了 ANSI 光标移动序列（trust[1Cthis[1Cfolder），
-        // 连续匹配永不命中 → 先 strip CSI（含 final 字母）+ 去非字母，再匹配连续字母串。
-        const _alpha = _trustBuf.replace(/\[[^A-Za-z]*[A-Za-z]/g, '').toLowerCase().replace(/[^a-z]/g, '');
-        if ((_alpha.includes('trustthisfolder') || _alpha.includes('trustthefiles')) && _alpha.includes('toconfirm')) {
+        // 4000 太小：整帧带 SGR 的信任框轻松超过它，会把 Yes 选项那几行切掉。
+        _trustBuf = (_trustBuf + d).slice(-16000);
+        if (_trustTimer) return;
+        if (!detectClaudeTrustDialog(_trustBuf)) return;
+        _trustTimer = setTimeout(() => {
+          _trustTimer = null;
+          // 这一拍里用户可能已经自己答了。重放缓冲得到的是**最终**屏幕状态，
+          // 框没了就返回 null，我们什么都不发。
+          const dialog = detectClaudeTrustDialog(_trustBuf);
+          if (!dialog) return;
           _trustDone = true;
-          try { ptyProcess.write('\r'); } catch {}
+          // 逐键发送并留出间隔：方向键和回车挤在同一次 write 里可能被同一帧一起
+          // 吞掉，回车就落在错误的选项上。
+          dialog.keys.forEach((key, index) => {
+            setTimeout(() => { try { ptyProcess.write(key); } catch {} }, index * 80);
+          });
           try { _trustSub.dispose(); } catch {}
-        }
+        }, TRUST_SETTLE_MS);
       });
-      setTimeout(() => { if (!_trustDone) { try { _trustSub.dispose(); } catch {} } }, 45000);
+      setTimeout(() => {
+        if (_trustDone) return;
+        if (_trustTimer) { clearTimeout(_trustTimer); _trustTimer = null; }
+        try { _trustSub.dispose(); } catch {}
+      }, 45000);
     }
 
     let currentModel = null;

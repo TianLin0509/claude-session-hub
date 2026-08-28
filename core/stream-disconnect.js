@@ -53,6 +53,37 @@ function hasStreamDisconnectIssue(session) {
     && session.connectionIssue.type === 'stream-disconnected');
 }
 
+// 用户点开会话 = 已经看过这条提醒。记下被确认的签名，语义与「等你响应」一致：
+// 提醒只提醒一次，除非它再次发生。
+function markStreamDisconnectAcknowledged(session, now = Date.now()) {
+  if (!session || !session.connectionIssue) return null;
+  const ack = {
+    signature: String(session.connectionIssue.signature || ''),
+    at: Number(now) || Date.now(),
+  };
+  session._connectionIssueAck = ack;
+  return ack;
+}
+
+/**
+ * 同一条报错要不要重新升起「运行异常」。
+ *
+ * 关键在于断连是从 PTY 输出里认出来的，而 TUI（尤其 Codex）会把整屏反复重绘 ——
+ * 用户点开清掉之后，下一帧同一段报错文本又流过来，就会被重新判成断连，于是
+ * 「运行异常」永远下不去（2026-08-28 用户反馈：异常早已恢复还一直显示断连）。
+ * 所以已确认过的签名默认压住，只有「确认之后又真的开过新的一轮」才放行。
+ */
+function shouldRaiseStreamDisconnect(session, issue) {
+  if (!session || !issue) return false;
+  const previous = session.connectionIssue;
+  if (previous && previous.signature === issue.signature) return false;
+  const ack = session._connectionIssueAck;
+  if (!ack || !ack.signature || ack.signature !== issue.signature) return true;
+  const runStartedAt = Number(session.runStartedAt) || 0;
+  const ackAt = Number(ack.at) || 0;
+  return runStartedAt > ackAt;
+}
+
 module.exports = {
   DEFAULT_TAIL_CHARS,
   STREAM_DISCONNECT_PATTERNS,
@@ -60,5 +91,7 @@ module.exports = {
   compactDisconnectMessage,
   detectStreamDisconnect,
   hasStreamDisconnectIssue,
+  markStreamDisconnectAcknowledged,
+  shouldRaiseStreamDisconnect,
   stripTerminalControls,
 };

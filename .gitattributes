@@ -1,0 +1,2 @@
+# PTY 原始字节夹具：含 ESC/CR 控制字符，任何行尾转换都会让它不再等于真实终端输出
+tests/fixtures/*.txt -text -diff
