@@ -72,6 +72,8 @@ function providerForHubSession(session) {
   if (kind === 'deepseek' || kind === 'deepseek-legacy') return 'deepseek';
   if (kind === 'codex') return 'codex';
   if (kind === 'claude') return 'claude';
+  if (kind === 'kimi') return 'kimi';
+  if (kind === 'gemini') return 'gemini';
   return 'unknown';
 }
 
@@ -84,6 +86,8 @@ function providerLabel(provider) {
   if (provider === 'codex') return 'Codex';
   if (provider === 'deepseek') return 'DeepSeek';
   if (provider === 'meeting') return '群聊';
+  if (provider === 'kimi') return 'Kimi';
+  if (provider === 'gemini') return 'Gemini';
   return 'AI';
 }
 
@@ -295,6 +299,127 @@ function listCodexDescriptors(roots, maps, diagnostics = []) {
   return [...groups.values()].map(pickDuplicateDescriptor);
 }
 
+// ── Kimi ─────────────────────────────────────────────────────────────────
+// 2026-08-28：此前索引只有 claude / codex / meeting 三个适配器，Kimi 的 45 个
+// 会话（43 个磁盘上有真实 transcript）**一条都进不了索引**，正文怎么搜都搜不到。
+//
+// 磁盘布局：~/.kimi-code/sessions/wd_<slug>_<hash>/session_<uuid>/agents/main/wire.jsonl
+// 只取 agents/main —— agents/agent-0 等是子 agent 的分身，内容会与 main 重复。
+function walkKimiWires(root, diagnostics = []) {
+  const out = [];
+  const visit = (directory, depth) => {
+    if (depth > 4) return;
+    let entries;
+    try { entries = fs.readdirSync(directory, { withFileTypes: true }); }
+    catch (error) { recordDiscoveryError(diagnostics, `Kimi directory ${directory}`, error); return; }
+    for (const entry of entries) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(full, depth + 1);
+      else if (entry.isFile() && entry.name === 'wire.jsonl' && /[\\/]agents[\\/]main[\\/]wire\.jsonl$/i.test(full)) out.push(full);
+    }
+  };
+  visit(root, 0);
+  return out;
+}
+
+function kimiSidFromPath(filePath) {
+  const match = String(filePath).match(/session_([0-9a-f-]{8,})/i);
+  return match ? match[1] : '';
+}
+
+function matchKimiHubSession(filePath, sid, maps) {
+  const normalized = normalizePath(filePath);
+  const candidates = maps.sessions.filter((session) => {
+    if (!session || baseKind(session.kind) !== 'kimi') return false;
+    if (session.transcriptPath && normalizePath(session.transcriptPath) === normalized) return true;
+    // Hub 里存的是 "session_<uuid>"，路径里是同一个 uuid，两种写法都要认
+    const stored = String(session.kimiSid || '').replace(/^session_/i, '');
+    return stored && sid && stored === sid;
+  });
+  return preferredHubSession(candidates);
+}
+
+function listKimiDescriptors(roots, maps, diagnostics = []) {
+  const groups = new Map();
+  for (const root of roots || []) {
+    for (const filePath of walkKimiWires(root, diagnostics)) {
+      let stat;
+      try { stat = fs.statSync(filePath); }
+      catch (error) { recordDiscoveryError(diagnostics, `Kimi wire ${filePath}`, error); continue; }
+      if (!stat.size) continue;
+      const sid = kimiSidFromPath(filePath);
+      if (!sid) continue;
+      const hubSession = matchKimiHubSession(filePath, sid, maps);
+      const descriptor = {
+        type: 'kimi', key: `kimi:${sid}`,
+        filePath, root, provider: 'kimi', nativeSessionId: sid, hubSession,
+        fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
+      };
+      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}`;
+      const list = groups.get(descriptor.key) || [];
+      list.push(descriptor);
+      groups.set(descriptor.key, list);
+    }
+  }
+  return [...groups.values()].map(pickDuplicateDescriptor);
+}
+
+// ── Gemini ───────────────────────────────────────────────────────────────
+// 磁盘布局：~/.gemini/tmp/<projectHash>/chats/session-<时间>-<短id>.json
+// 单文件 JSON：{ sessionId, projectHash, startTime, lastUpdated,
+//               messages: [{ id, timestamp, type: 'user'|'gemini', content: [{text}] }] }
+//
+// 实测（2026-08-28）：磁盘上 1749 个 chat 文件，而 Hub 里 21 个 gemini 会话中
+// 有 chatId 的 10 个，**没有一个**能在磁盘上找到对应文件 —— 那些 transcript 已经
+// 不在了（Hub 记的 projectHash 是 "lintian"，磁盘上却是 uuid 目录）。所以：
+//   · Hub 的 gemini 会话只能靠 titleOnlySources 留标题
+//   · 磁盘上这些孤立 chat 仍然索引，正文可搜、预览可读，但「打开会话」恢复不了
+// 小于 2KB 的基本是 "说一句你好" 这类试跑，跳过，别拿噪声撑大索引。
+const GEMINI_MIN_CHAT_BYTES = 2048;
+
+function listGeminiDescriptors(roots, maps, diagnostics = []) {
+  const groups = new Map();
+  for (const root of roots || []) {
+    let projectDirs;
+    try { projectDirs = fs.readdirSync(root, { withFileTypes: true }); }
+    catch (error) { recordDiscoveryError(diagnostics, `Gemini root ${root}`, error); continue; }
+    for (const projectDir of projectDirs) {
+      if (!projectDir.isDirectory()) continue;
+      const chatsDir = path.join(root, projectDir.name, 'chats');
+      let files;
+      try { files = fs.readdirSync(chatsDir, { withFileTypes: true }); }
+      catch (error) { recordDiscoveryError(diagnostics, `Gemini chats ${chatsDir}`, error); continue; }
+      for (const entry of files) {
+        if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+        const filePath = path.join(chatsDir, entry.name);
+        let stat;
+        try { stat = fs.statSync(filePath); }
+        catch (error) { recordDiscoveryError(diagnostics, `Gemini chat ${filePath}`, error); continue; }
+        if (stat.size < GEMINI_MIN_CHAT_BYTES) continue;
+        const sid = entry.name.replace(/^session-/, '').replace(/\.json$/i, '');
+        // 文件名里只有 uuid 的前 8 位（session-<时间>-<短id>.json），按前缀认
+        const shortId = sid.split('-').pop() || '';
+        const hubSession = preferredHubSession(maps.sessions.filter((session) => {
+          if (!session || baseKind(session.kind) !== 'gemini') return false;
+          const chatId = String(session.geminiChatId || '');
+          return chatId && (chatId === sid || (shortId.length >= 8 && chatId.startsWith(shortId)));
+        }));
+        const descriptor = {
+          type: 'gemini', key: `gemini:${projectDir.name}:${sid}`,
+          filePath, root, provider: 'gemini', nativeSessionId: sid, hubSession,
+          geminiProjectHash: projectDir.name,
+          fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
+        };
+        descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}`;
+        const list = groups.get(descriptor.key) || [];
+        list.push(descriptor);
+        groups.set(descriptor.key, list);
+      }
+    }
+  }
+  return [...groups.values()].map(pickDuplicateDescriptor);
+}
+
 function listMeetingDescriptors(meetingDir, maps, diagnostics = []) {
   let entries;
   try { entries = fs.readdirSync(meetingDir, { withFileTypes: true }); }
@@ -327,13 +452,28 @@ function addExplicitTranscriptDescriptors(descriptors, maps, diagnostics = []) {
   for (const session of maps.sessions) {
     const filePath = session.transcriptPath;
     const provider = providerForHubSession(session);
-    if (!filePath || !['claude', 'codex', 'deepseek'].includes(provider)) continue;
+    if (!filePath || !['claude', 'codex', 'deepseek', 'kimi'].includes(provider)) continue;
     const normalized = normalizePath(filePath);
     if (!normalized || knownPaths.has(normalized)) continue;
     let stat;
     try { stat = fs.statSync(filePath); }
     catch (error) { recordDiscoveryError(diagnostics, `Bound transcript ${filePath}`, error); continue; }
     if (!stat.isFile()) continue;
+    // Kimi 的 transcriptPath 直接指向 agents/main/wire.jsonl。归档搬过目录的会话
+    // 可能不在默认根下，靠这条兜住。
+    if (provider === 'kimi') {
+      const sid = kimiSidFromPath(filePath) || String(session.kimiSid || '').replace(/^session_/i, '');
+      if (!sid) continue;
+      const descriptor = {
+        type: 'kimi', key: `kimi:${sid}`, filePath, root: path.dirname(filePath),
+        provider: 'kimi', nativeSessionId: sid, hubSession: session,
+        fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
+      };
+      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalized)}:${metadataSignature(session)}`;
+      descriptors.push(descriptor);
+      knownPaths.add(normalized);
+      continue;
+    }
     const nativeSessionId = session.ccSessionId || session.codexSid || path.basename(filePath, '.jsonl');
     const type = session.codexSid ? 'codex' : 'claude';
     const codexMeta = type === 'codex' ? readCodexRolloutMeta(filePath) : null;
@@ -359,6 +499,8 @@ function collectSourceDescriptors(options = {}, snapshot = {}) {
   const descriptors = [
     ...listClaudeDescriptors(options.claudeRoots || [], maps, diagnostics),
     ...listCodexDescriptors(options.codexRoots || [], maps, diagnostics),
+    ...listKimiDescriptors(options.kimiRoots || [], maps, diagnostics),
+    ...listGeminiDescriptors(options.geminiRoots || [], maps, diagnostics),
     ...listMeetingDescriptors(options.meetingDir, maps, diagnostics),
   ];
   addExplicitTranscriptDescriptors(descriptors, maps, diagnostics);
@@ -596,6 +738,172 @@ function parseCodexDescriptor(descriptor, options = {}) {
   };
 }
 
+/**
+ * 朴素的 JSONL 分块读取。
+ *
+ * 不能复用 streamJsonlRecordsSync —— 那个包了 createCodexLineFilter，只认 Codex 的
+ * `record_type: event_msg / response_item` 信封。Kimi 的记录是 `type: turn.prompt`
+ * 之类，会被整条过滤掉（第一版就是这么写的，结果 11MB 的 wire 只解析出 1 条标题文档）。
+ *
+ * 超过 maxBytes 时读**尾部**并丢掉开头那半行：搜索关心的是最近的对话。
+ */
+function streamPlainJsonlSync(filePath, onRecord, maxBytes = 16 * 1024 * 1024) {
+  let stat;
+  try { stat = fs.statSync(filePath); } catch { return; }
+  const start = stat.size > maxBytes ? stat.size - maxBytes : 0;
+  const fd = fs.openSync(filePath, 'r');
+  let index = 0;
+  let carry = '';
+  let skipFirstPartial = start > 0;
+  try {
+    const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, stat.size - start)));
+    let position = start;
+    while (position < stat.size) {
+      const bytesRead = fs.readSync(fd, buffer, 0, Math.min(buffer.length, stat.size - position), position);
+      if (bytesRead <= 0) break;
+      position += bytesRead;
+      carry += buffer.subarray(0, bytesRead).toString('utf8');
+      let newline = carry.indexOf('\n');
+      while (newline >= 0) {
+        const line = carry.slice(0, newline);
+        carry = carry.slice(newline + 1);
+        newline = carry.indexOf('\n');
+        if (skipFirstPartial) { skipFirstPartial = false; index += 1; continue; }
+        const trimmed = line.trim();
+        if (trimmed) {
+          let record = null;
+          try { record = JSON.parse(trimmed); } catch { record = null; }
+          if (record) onRecord(record, index);
+        }
+        index += 1;
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  const tail = carry.trim();
+  if (tail && !skipFirstPartial) {
+    try { onRecord(JSON.parse(tail), index); } catch { /* 最后一行可能正在写入 */ }
+  }
+}
+
+function kimiPromptText(input) {
+  if (typeof input === 'string') return input;
+  if (!Array.isArray(input)) return '';
+  return input
+    .map(part => (part && typeof part === 'object' ? (part.text || '') : String(part || '')))
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+/**
+ * Kimi 的 wire.jsonl 是事件流，不是回合数组。取三样东西：
+ *   turn.prompt                            → 用户提问（干净的原始输入）
+ *   loop_event content.part(type=text)     → AI 回答正文（按 step 聚合成一段）
+ *   loop_event tool.call                   → 工具调用
+ * 有意不取 context.append_message：那里的 role=user 混了大量 <system-reminder>
+ * 注入，搜起来全是噪声。
+ */
+function parseKimiWire(filePath) {
+  const turns = [];
+  const toolDocs = [];
+  let pending = null;                 // 正在累积的 AI 回合
+  const flush = () => {
+    if (!pending) return;
+    const text = pending.chunks.join('\n').trim();
+    if (text) turns.push({ id: pending.id, role: 'assistant', text, ts: pending.ts, tsEnd: pending.tsEnd || pending.ts });
+    pending = null;
+  };
+  streamPlainJsonlSync(filePath, (record, lineIndex) => {
+    if (!record || typeof record !== 'object') return;
+    const time = Number(record.time || record.created_at) || 0;
+    if (record.type === 'turn.prompt') {
+      flush();
+      const text = kimiPromptText(record.input);
+      if (text) turns.push({ id: `prompt-${lineIndex}`, role: 'user', text, ts: time, tsEnd: time });
+      return;
+    }
+    if (record.type !== 'context.append_loop_event' || !record.event) return;
+    const event = record.event;
+    if (event.type === 'content.part' && event.part && event.part.type === 'text' && event.part.text) {
+      if (!pending) pending = { id: `assistant-${lineIndex}`, chunks: [], ts: time, tsEnd: time };
+      pending.chunks.push(String(event.part.text));
+      pending.tsEnd = time || pending.tsEnd;
+      return;
+    }
+    if (event.type === 'tool.call') {
+      const parts = [];
+      for (const key of ['name', 'toolName', 'tool', 'command', 'path', 'file_path', 'cwd', 'arguments', 'input', 'args']) {
+        const value = event[key] != null ? event[key] : (event.call && event.call[key]);
+        if (value == null) continue;
+        try { parts.push(omitInlineBinary(typeof value === 'string' ? value : JSON.stringify(value))); }
+        catch { parts.push(String(value)); }
+      }
+      const text = parts.join('\n').trim();
+      if (!text) return;
+      const eventId = `kimi-tool-${lineIndex}-${shortHash(text)}`;
+      toolDocs.push({
+        id: eventId, eventId, scope: 'tool', role: 'tool', speaker: 'Kimi',
+        text, ordinal: lineIndex + 0.5, timestamp: time,
+      });
+      return;
+    }
+    if (event.type === 'step.end') flush();
+  });
+  flush();
+  return { turns, toolDocs };
+}
+
+function parseKimiDescriptor(descriptor) {
+  const parsed = parseKimiWire(descriptor.filePath);
+  const session = sessionRecordFromDescriptor(descriptor, parsed.turns);
+  const docs = docsFromTurns(parsed.turns, session.title, 'kimi');
+  docs.push(...parsed.toolDocs);
+  if (docs[0]) docs[0].timestamp = session.updatedAt;
+  return {
+    key: descriptor.key, signature: descriptor.signature, session, docs,
+    searchable: !session.meetingId, truncatedByReadGuard: false,
+  };
+}
+
+function parseGeminiDescriptor(descriptor, options = {}) {
+  const maxBytes = Math.max(256 * 1024, Number(options.maxReadBytes) || DEFAULT_SEARCH_SOURCE_READ_BYTES);
+  let data = null;
+  try {
+    const stat = fs.statSync(descriptor.filePath);
+    // 单文件 JSON 没法尾读，超限就退化成只留标题，别把主进程拖住
+    if (stat.size <= maxBytes) data = JSON.parse(fs.readFileSync(descriptor.filePath, 'utf8'));
+  } catch { data = null; }
+  if (!data || !Array.isArray(data.messages)) {
+    return titleOnlySourceFromDescriptor(descriptor);
+  }
+  const turns = [];
+  data.messages.forEach((message, index) => {
+    if (!message || typeof message !== 'object') return;
+    const text = Array.isArray(message.content)
+      ? message.content.map(part => (part && part.text) || '').filter(Boolean).join('\n').trim()
+      : String(message.content || message.text || '').trim();
+    if (!text) return;
+    const ts = Date.parse(message.timestamp || '') || 0;
+    turns.push({
+      id: String(message.id || `gemini-${index}`),
+      role: message.type === 'user' ? 'user' : 'assistant',
+      text, ts, tsEnd: ts,
+    });
+  });
+  const session = sessionRecordFromDescriptor(descriptor, turns, {
+    cwd: (descriptor.hubSession && descriptor.hubSession.geminiProjectRoot) || null,
+  });
+  if (!session.updatedAt) session.updatedAt = Date.parse(data.lastUpdated || data.startTime || '') || descriptor.mtime || 0;
+  const docs = docsFromTurns(turns, session.title, 'gemini');
+  if (docs[0]) docs[0].timestamp = session.updatedAt;
+  return {
+    key: descriptor.key, signature: descriptor.signature, session, docs,
+    searchable: !session.meetingId, truncatedByReadGuard: false,
+  };
+}
+
 function meetingSpeakerMap(data, maps) {
   const out = new Map();
   for (const sid of (Array.isArray(data.subSessions) ? data.subSessions : [])) {
@@ -651,6 +959,8 @@ function parseSourceDescriptor(descriptor, maps, options = {}) {
   if (descriptor.type === 'claude') return parseClaudeDescriptor(descriptor, options);
   if (descriptor.type === 'codex') return parseCodexDescriptor(descriptor, options);
   if (descriptor.type === 'meeting') return parseMeetingDescriptor(descriptor, maps, options);
+  if (descriptor.type === 'kimi') return parseKimiDescriptor(descriptor, options);
+  if (descriptor.type === 'gemini') return parseGeminiDescriptor(descriptor, options);
   throw new Error(`Unsupported search source type: ${descriptor.type}`);
 }
 
@@ -660,7 +970,9 @@ function titleOnlySources(maps, representedHubIds, representedMeetingIds) {
     const hubId = hubIdOf(session);
     const provider = providerForHubSession(session);
     if (!hubId || representedHubIds.has(hubId) || session.meetingId) continue;
-    if (!['claude', 'codex', 'deepseek'].includes(provider)) continue;
+    // kimi / gemini 现在也有自己的适配器；即使某条会话的 transcript 找不到，
+    // 至少要留下标题 + 最后一段输出，否则它在搜索里完全不存在。
+    if (!['claude', 'codex', 'deepseek', 'kimi', 'gemini'].includes(provider)) continue;
     const title = String(session.title || providerLabel(provider));
     const updatedAt = sessionUpdatedAt(session);
     const docs = [{ id: 'title', eventId: 'title', scope: 'title', role: 'title', text: title, ordinal: -1, timestamp: updatedAt }];

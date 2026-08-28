@@ -73,6 +73,8 @@ class SessionSearchEngine {
       cachePath: options.cachePath || null,
       claudeRoots: Array.isArray(options.claudeRoots) ? options.claudeRoots : [],
       codexRoots: Array.isArray(options.codexRoots) ? options.codexRoots : [],
+      kimiRoots: Array.isArray(options.kimiRoots) ? options.kimiRoots : [],
+      geminiRoots: Array.isArray(options.geminiRoots) ? options.geminiRoots : [],
       meetingDir: options.meetingDir || null,
       refreshTtlMs: Number(options.refreshTtlMs) || 10_000,
       maxSources: Math.max(20, Number(options.maxSources) || DEFAULT_MAX_SOURCES),

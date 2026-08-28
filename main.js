@@ -164,6 +164,10 @@ const sessionSearchService = new SessionSearchService({
   cachePath: path.join(getHubDataDir(), 'cache', 'session-search-v2.json'),
   claudeRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CLAUDE_ROOTS', claudeProjectRoots()),
   codexRoots: sessionSearchRoots('HUB_SESSION_SEARCH_CODEX_ROOTS', [DEFAULT_CODEX_SESSIONS_ROOT]),
+  // 2026-08-28：补上 Kimi 与 Gemini。此前只有 claude/codex/meeting 三个适配器，
+  // Kimi 的 45 个会话、Gemini 的 21 个会话正文一条都进不了索引。
+  kimiRoots: sessionSearchRoots('HUB_SESSION_SEARCH_KIMI_ROOTS', [path.join(os.homedir(), '.kimi-code', 'sessions')]),
+  geminiRoots: sessionSearchRoots('HUB_SESSION_SEARCH_GEMINI_ROOTS', [path.join(os.homedir(), '.gemini', 'tmp')]),
   meetingDir: path.join(getHubDataDir(), 'meetings'),
   refreshTtlMs: Number(process.env.HUB_SESSION_SEARCH_REFRESH_TTL_MS) || 10_000,
   // Production warms the persistent index after the latency-sensitive boot

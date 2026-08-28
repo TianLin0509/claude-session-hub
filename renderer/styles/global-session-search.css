@@ -252,6 +252,8 @@
 .provider-codex { color: var(--mark-green); }
 .provider-meeting { color: var(--mark-blue); }
 .provider-deepseek { color: var(--brand-hover); }
+.provider-kimi { color: var(--mark-purple, #a78bfa); }
+.provider-gemini { color: var(--mark-cyan, #22d3ee); }
 
 .session-search-selects { display: flex; align-items: center; gap: 6px; }
 .session-search-selects label {

@@ -9,8 +9,13 @@ const PROVIDER_META = Object.freeze({
   codex: { label: 'Codex', className: 'provider-codex' },
   meeting: { label: '群聊', className: 'provider-meeting' },
   deepseek: { label: 'DeepSeek', className: 'provider-deepseek' },
+  kimi: { label: 'Kimi', className: 'provider-kimi' },
+  gemini: { label: 'Gemini', className: 'provider-gemini' },
   all: { label: '全部', className: 'provider-all' },
 });
+
+// 这几个来源平时没几条，零命中时不占筛选栏的位置（deepseek 一直是这个待遇）
+const OPTIONAL_PROVIDERS = Object.freeze(['deepseek', 'kimi', 'gemini']);
 
 const SCOPE_LABELS = Object.freeze({
   title: '标题',
@@ -324,7 +329,7 @@ function createGlobalSessionSearch(options) {
       const count = provider === 'all' ? allCount : (Number(providerCounts[provider]) || 0);
       const countNode = button.querySelector('b');
       if (countNode) countNode.textContent = String(count);
-      if (provider === 'deepseek') button.hidden = count === 0 && activeProvider !== 'deepseek';
+      if (OPTIONAL_PROVIDERS.includes(provider)) button.hidden = count === 0 && activeProvider !== provider;
     }
 
     const selectedProject = projectSelect.value;
