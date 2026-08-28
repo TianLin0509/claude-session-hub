@@ -3847,6 +3847,47 @@ async function openGlobalSearchHit(hit, opts = {}) {
   return { type: 'session', id: target.id };
 }
 
+// 侧栏这些标题（会话 + 群聊）本来就在内存里，一共约 10KB。交给搜索弹窗做
+// 「输入即出」的即时层，不走 IPC、不等 SQLite 全文索引 —— 见 core/title-index.js。
+// hubSessionId / meetingId 必须带上：openGlobalSearchHit 靠它们找回真正的会话。
+function collectLocalSearchTitles() {
+  const out = [];
+  for (const session of sessions.values()) {
+    // 渲染层的会话对象用的是 `id`（`hubId` 只是落盘时的字段名，见 :6090 的 hubId: s.id）。
+    if (!session || !session.id || session.hiddenFromSidebar) continue;
+    if (session.meetingId) continue;              // 群聊子会话挂在群聊下面，不单列
+    if (session.purpose === 'chuxin-research') continue;
+    const kind = String(session.kind || '');
+    const provider = isClaudeFamily(kind) ? 'claude'
+      : isCodexKind(kind) ? 'codex'
+        : kind.startsWith('deepseek') ? 'deepseek' : 'claude';
+    out.push({
+      key: `live-session:${session.id}`,
+      hubSessionId: session.id,
+      title: session.title,
+      provider,
+      kind,
+      cwd: session.cwd || null,
+      projectLabel: session.workspaceLabel || null,
+      updatedAt: Number(session.lastMessageTime || session.lastCompletedAt || session.updatedAt || 0) || 0,
+    });
+  }
+  for (const meeting of Object.values(meetings || {})) {
+    if (!meeting || !meeting.id) continue;
+    out.push({
+      key: `live-meeting:${meeting.id}`,
+      meetingId: meeting.id,
+      title: meeting.title,
+      provider: 'meeting',
+      kind: 'meeting',
+      cwd: meeting.workspace || null,
+      projectLabel: meeting.workspaceLabel || null,
+      updatedAt: Number(meeting.lastMessageTime || meeting.lastCompletedAt || meeting.createdAt || 0) || 0,
+    });
+  }
+  return out;
+}
+
 const pastSessionModals = createPastSessionModals({
   document,
   window,
@@ -3854,6 +3895,7 @@ const pastSessionModals = createPastSessionModals({
   clipboard,
   escapeHtml,
   getSessions: () => sessions,
+  getLocalTitles: collectLocalSearchTitles,
   selectSession: (sessionId, opts) => selectSession(sessionId, opts),
   openSearchHit: (hit, opts) => openGlobalSearchHit(hit, opts),
 });

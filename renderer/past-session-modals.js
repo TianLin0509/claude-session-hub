@@ -127,6 +127,7 @@ function createPastSessionModals({
   clipboard = null,
   escapeHtml,
   getSessions,
+  getLocalTitles = null,
   selectSession,
   openSearchHit,
 }) {
@@ -207,6 +208,7 @@ function createPastSessionModals({
     window,
     ipcRenderer,
     clipboard,
+    getLocalTitles,
     openHit: typeof openSearchHit === 'function' ? openSearchHit : async () => {},
   });
   const openSearchModal = globalSearch.open;

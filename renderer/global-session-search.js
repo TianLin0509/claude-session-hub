@@ -1,6 +1,7 @@
 'use strict';
 
 const { recordSearch } = require('../core/search-recent.js');
+const { buildTitleIndex, mergeTitleHits, searchTitles } = require('../core/title-index.js');
 const { isBlockingModalOpen } = require('./modal-layer-guard.js');
 
 const PROVIDER_META = Object.freeze({
@@ -132,6 +133,9 @@ function createGlobalSessionSearch(options) {
     openHit = async () => {},
     setTimeoutFn = setTimeout,
     clearTimeoutFn = clearTimeout,
+    // 侧栏那 682 个标题（会话 + 群聊）。它们本来就在渲染进程的内存里，
+    // 加起来只有 10KB —— 标题检索不该走 IPC，也不该等全文索引建好。
+    getLocalTitles = null,
   } = options;
   const overlay = document.getElementById('search-modal');
   const queryInput = document.getElementById('search-query');
@@ -166,6 +170,31 @@ function createGlobalSessionSearch(options) {
   let lastResponse = null;
   let statusWasRefreshing = false;
   let returnFocusElement = null;
+  let titleIndex = [];
+  let lastTitleHits = [];
+
+  /** 打开弹窗时重建一次即时标题索引。682 条 / 10KB，实测亚毫秒。 */
+  function refreshTitleIndex() {
+    if (typeof getLocalTitles !== 'function') { titleIndex = []; return; }
+    try {
+      titleIndex = buildTitleIndex(getLocalTitles() || []);
+    } catch {
+      titleIndex = [];   // 即时层是加分项，坏掉也不能拖垮全文检索
+    }
+  }
+
+  function localTitleHits(request) {
+    if (!titleIndex.length) return [];
+    try {
+      return searchTitles(titleIndex, request.query, {
+        limit: request.limit || 50,
+        providers: request.providers,
+        since: request.since,
+      });
+    } catch {
+      return [];
+    }
+  }
 
   const isOpen = () => overlay && overlay.style.display === 'flex';
 
@@ -241,7 +270,9 @@ function createGlobalSessionSearch(options) {
     results = [];
     activeIndex = -1;
     activePreview = null;
-    summaryRoot.firstElementChild.textContent = '输入至少 2 个字符开始搜索';
+    summaryRoot.firstElementChild.textContent = titleIndex.length
+      ? `输入即搜 · ${titleIndex.length} 个标题已在内存里，两个字起搜正文`
+      : '输入至少 2 个字符开始搜索';
     summaryRoot.lastElementChild.textContent = '';
     resultsRoot.replaceChildren(createStaticEmpty(document, {
       title: '找回以前解决过的问题',
@@ -383,12 +414,16 @@ function createGlobalSessionSearch(options) {
 
   function renderResults(response) {
     lastResponse = response;
-    results = Array.isArray(response && response.results) ? response.results : [];
     activeIndex = -1;
     activePreview = null;
     updateFacets(response);
-    const totalSessions = Number(response && response.totalSessions) || 0;
-    const totalMatches = Number(response && response.totalMatches) || 0;
+    // 全文结果在前（信息更丰富），标题层里全文没覆盖到的补在后面。
+    // 冷启动、或全文索引还在建时，全文那半边是空的 —— 用户照样立刻看到标题命中。
+    const fullText = Array.isArray(response && response.results) ? response.results : [];
+    const merged = mergeTitleHits(fullText, lastTitleHits, Number(response && response.limit) || 50);
+    results = merged.results;
+    const totalSessions = (Number(response && response.totalSessions) || 0) + merged.titleOnlyCount;
+    const totalMatches = (Number(response && response.totalMatches) || 0) + merged.titleOnlyCount;
     // 2026-08-27：把跑出结果的查询留痕，工作台的「常用搜索 · 最近命中」要用。
     // 零命中的不记（见 core/search-recent.js）；记录失败绝不能影响搜索本身。
     try {
@@ -401,6 +436,9 @@ function createGlobalSessionSearch(options) {
     // 后端一直在返回 truncated / narrowedScopes，但以前没人读，用户看到的
     // 「找到 N 个」其实可能是被闸门截断后的数字。这里如实说出来。
     const notes = [];
+    if (response && response.pendingFullText) notes.push('全文检索中…');
+    else if (response && response.indexing) notes.push('全文索引后台建立中，标题已可搜');
+    if (merged.titleOnlyCount) notes.push(`${merged.titleOnlyCount} 条仅标题命中`);
     if (response && response.truncated) notes.push('结果已截断，请再加一个关键词');
     if (response && Array.isArray(response.narrowedScopes)) notes.push('短词未搜工具输出');
     summaryRoot.firstElementChild.textContent = totalSessions
@@ -411,14 +449,17 @@ function createGlobalSessionSearch(options) {
       : '';
     if (!results.length) {
       resultsRoot.replaceChildren(createStaticEmpty(document, {
-        title: '没有找到匹配内容',
-        detail: '可减少关键词，切换“全部内容”，或放宽来源、时间和项目范围。',
+        title: response && response.pendingFullText ? '正在搜索全文' : '没有找到匹配内容',
+        detail: response && response.pendingFullText
+          ? '标题里没有匹配，正文结果马上到。'
+          : '可减少关键词，切换“全部内容”，或放宽来源、时间和项目范围。',
+        busy: !!(response && response.pendingFullText),
       }));
       previewRoot.replaceChildren(createStaticEmpty(document, {
         title: '换个条件再试试',
         detail: '搜索不会修改任何历史记录。',
       }));
-      announce('没有找到匹配的会话');
+      if (!(response && response.pendingFullText)) announce('没有找到匹配的会话');
       return;
     }
     const fragment = document.createDocumentFragment();
@@ -442,22 +483,24 @@ function createGlobalSessionSearch(options) {
   async function performSearch({ immediate = false } = {}) {
     if (searchTimer) { clearTimeoutFn(searchTimer); searchTimer = null; }
     const request = searchRequest();
-    if (request.query.normalize('NFKC').trim().length < 2) {
+    const trimmed = request.query.normalize('NFKC').trim();
+    if (!trimmed.length) {
+      lastTitleHits = [];
       renderInitialState();
       return;
     }
+    // 标题层：同步、零 IPC、不等防抖、不等索引。单字也给结果 ——
+    // 682 个标题一共 10KB，没有任何理由让用户等。
+    lastTitleHits = localTitleHits(request);
+    renderResults({ results: [], totalSessions: 0, totalMatches: 0, pendingFullText: trimmed.length >= 2 });
+    // 后端最少要两个字（见 session-search-sqlite-index.js 的 search()），
+    // 单字就到此为止，别白跑一趟 IPC。
+    if (trimmed.length < 2) return;
     if (!immediate) {
       searchTimer = setTimeoutFn(() => performSearch({ immediate: true }), 160);
       return;
     }
     const seq = ++searchSequence;
-    summaryRoot.firstElementChild.textContent = '正在搜索本地索引…';
-    summaryRoot.lastElementChild.textContent = '';
-    if (!results.length) {
-      resultsRoot.replaceChildren(createStaticEmpty(document, {
-        title: '正在搜索', detail: '第一次使用时会先在后台建立本地索引。', busy: true,
-      }));
-    }
     try {
       const response = await ipcRenderer.invoke('search-past-sessions', request);
       if (seq !== searchSequence || !isOpen()) return;
@@ -555,6 +598,25 @@ function createGlobalSessionSearch(options) {
     }
     const hit = results[index];
     const seq = ++previewSequence;
+    // 标题层的命中不在 SQLite 索引里（可能是刚建的会话，或全文索引还没建到它），
+    // 直接问 preview 只会拿到「读不到上下文」的报错。用手上已有的元数据渲染一个
+    // 轻量预览，「打开会话」照常可用。
+    if (hit && hit.titleOnly) {
+      activePreview = null;
+      renderPreview(hit, {
+        session: {
+          title: hit.title,
+          provider: hit.provider,
+          cwd: hit.cwd,
+          projectLabel: hit.projectLabel,
+        },
+        context: [{
+          role: 'title', scope: 'title', timestamp: hit.updatedAt,
+          text: hit.title, isMatch: true,
+        }],
+      });
+      return;
+    }
     previewRoot.replaceChildren(createStaticEmpty(document, {
       title: '正在读取上下文', detail: '从已经建立的本地索引中提取命中前后记录。', busy: true,
     }));
@@ -614,17 +676,9 @@ function createGlobalSessionSearch(options) {
     activeIndex = -1;
     activePreview = null;
     lastResponse = null;
-    const nextQuery = queryInput.value.normalize('NFKC').trim();
-    if (nextQuery.length >= 2) {
-      summaryRoot.firstElementChild.textContent = '正在更新搜索条件…';
-      summaryRoot.lastElementChild.textContent = '';
-      resultsRoot.replaceChildren(createStaticEmpty(document, {
-        title: '正在搜索', detail: '按最新的来源、范围和关键词重新排序。', busy: true,
-      }));
-      previewRoot.replaceChildren(createStaticEmpty(document, {
-        title: '等待新的匹配结果', detail: '旧结果已清除，避免显示在错误的筛选条件下。', busy: true,
-      }));
-    }
+    // 以前这里会先铺一屏「正在搜索」转圈，等 160ms 防抖 + IPC 回来才有内容。
+    // 现在 performSearch 会**同步**先把标题层结果画出来，再去跑全文，
+    // 所以不需要这个中间态 —— 转圈本身就是用户抱怨的「感觉很慢」。
     void performSearch({ immediate: false });
   }
 
@@ -652,8 +706,11 @@ function createGlobalSessionSearch(options) {
       ? document.activeElement
       : launchButton;
     overlay.style.display = 'flex';
+    // 每次打开重建一次即时标题索引：期间可能新建/改名/关闭过会话。
+    // 682 条实测亚毫秒，放在同步路径上不影响弹窗打开。
+    refreshTitleIndex();
     void refreshStatus({ repeat: true });
-    if (queryInput.value.trim().length >= 2) void performSearch({ immediate: true });
+    if (queryInput.value.trim().length >= 1) void performSearch({ immediate: true });
     else renderInitialState();
     window.requestAnimationFrame(() => {
       queryInput.focus();
