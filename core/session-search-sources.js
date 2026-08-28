@@ -24,6 +24,13 @@ function normalizePath(value) {
 const DEFAULT_SEARCH_SOURCE_READ_BYTES = 4 * 1024 * 1024;
 const CODEX_SEARCH_PROJECTION_VERSION = 2;
 
+// 索引里「一条 doc 的文本长什么样」的版本号。refresh() 是按 signature 增量复用的
+// （mtime+size+元数据都没变就直接复用旧文档），所以**只改解析逻辑不改签名，
+// 已经入库的源永远不会重新解析**。2026-08-28 给 user 文档加了注入清洗，
+// 必须靠这个版本号把全量源顶掉重来。以后再改文本投影就 +1。
+const SEARCH_TEXT_PROJECTION_VERSION = 1;
+const PROJECTION_SUFFIX = `:utext-v${SEARCH_TEXT_PROJECTION_VERSION}`;
+
 function readBoundedJsonlTailText(filePath, maxBytes = DEFAULT_SEARCH_SOURCE_READ_BYTES, fsRef = fs) {
   const stat = fsRef.statSync(filePath);
   const limit = Math.max(256 * 1024, Number(maxBytes) || DEFAULT_SEARCH_SOURCE_READ_BYTES);
@@ -238,7 +245,7 @@ function listClaudeDescriptors(roots, maps, diagnostics = []) {
           filePath, root, provider, nativeSessionId: sid, hubSession,
           fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
         };
-        descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}`;
+        descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}` + PROJECTION_SUFFIX;
         const list = groups.get(descriptor.key) || [];
         list.push(descriptor);
         groups.set(descriptor.key, list);
@@ -291,7 +298,7 @@ function listCodexDescriptors(roots, maps, diagnostics = []) {
         filePath, root, provider, nativeSessionId: sid, hubSession, codexMeta: meta,
         fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
       };
-      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}:semantic-v${CODEX_SEARCH_PROJECTION_VERSION}`;
+      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}:semantic-v${CODEX_SEARCH_PROJECTION_VERSION}` + PROJECTION_SUFFIX;
       const list = groups.get(descriptor.key) || [];
       list.push(descriptor);
       groups.set(descriptor.key, list);
@@ -356,7 +363,7 @@ function listKimiDescriptors(roots, maps, diagnostics = []) {
         filePath, root, provider: 'kimi', nativeSessionId: sid, hubSession,
         fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
       };
-      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}`;
+      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}` + PROJECTION_SUFFIX;
       const list = groups.get(descriptor.key) || [];
       list.push(descriptor);
       groups.set(descriptor.key, list);
@@ -411,7 +418,7 @@ function listGeminiDescriptors(roots, maps, diagnostics = []) {
           geminiProjectHash: projectDir.name,
           fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
         };
-        descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}`;
+        descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(hubSession)}` + PROJECTION_SUFFIX;
         const list = groups.get(descriptor.key) || [];
         list.push(descriptor);
         groups.set(descriptor.key, list);
@@ -442,7 +449,7 @@ function listMeetingDescriptors(meetingDir, maps, diagnostics = []) {
       type: 'meeting', key: `meeting:${meetingId}`, filePath, meetingId, meeting,
       fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
     };
-    descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(meeting)}:${memberSignature}`;
+    descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalizePath(filePath))}:${metadataSignature(meeting)}:${memberSignature}` + PROJECTION_SUFFIX;
     out.push(descriptor);
   }
   return out;
@@ -470,7 +477,7 @@ function addExplicitTranscriptDescriptors(descriptors, maps, diagnostics = []) {
         provider: 'kimi', nativeSessionId: sid, hubSession: session,
         fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
       };
-      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalized)}:${metadataSignature(session)}`;
+      descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalized)}:${metadataSignature(session)}` + PROJECTION_SUFFIX;
       descriptors.push(descriptor);
       knownPaths.add(normalized);
       continue;
@@ -488,7 +495,7 @@ function addExplicitTranscriptDescriptors(descriptors, maps, diagnostics = []) {
       fileSignature: statSignature(stat), mtime: stat.mtimeMs || 0,
       ...(type === 'codex' ? { codexMeta } : {}),
     };
-    descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalized)}:${metadataSignature(session)}${type === 'codex' ? `:semantic-v${CODEX_SEARCH_PROJECTION_VERSION}` : ''}`;
+    descriptor.signature = `${descriptor.fileSignature}:${shortHash(normalized)}:${metadataSignature(session)}${type === 'codex' ? `:semantic-v${CODEX_SEARCH_PROJECTION_VERSION}` : ''}` + PROJECTION_SUFFIX;
     descriptors.push(descriptor);
     knownPaths.add(normalized);
   }

@@ -123,4 +123,34 @@ test('剪空之后的空消息不产生文档（免得留一条空壳）', () =>
   assert.equal(docs.filter(d => d.scope === 'user').length, 0);
 });
 
+test('每一处 signature 都要带文本投影版本号，否则旧索引永远不会重新解析', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-search-sources.js'), 'utf8');
+  // refresh() 按 signature 增量复用：mtime+size+元数据没变就直接沿用旧文档。
+  // 只改解析逻辑不改签名的话，这次去噪对已入库的 2000+ 个源一点效果都没有。
+  const lines = src.split('\n').filter(line => /descriptor\.signature\s*=/.test(line));
+  assert.ok(lines.length >= 5, `只找到 ${lines.length} 处签名赋值，文件结构可能变了`);
+  for (const line of lines) {
+    assert.match(line, /PROJECTION_SUFFIX/,
+      `这一处签名没带版本号，改了解析逻辑也不会重建：\n    ${line.trim()}`);
+  }
+  assert.match(src, /const SEARCH_TEXT_PROJECTION_VERSION = \d+;/);
+});
+
+test('去噪后的文本投影确实会让签名变化（版本号不是摆设）', (t) => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { collectSourceDescriptors } = require('../core/session-search-sources.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-sig-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = path.join(root, 'wd_a_1', 'session_11111111-2222-3333-4444-555555555555', 'agents', 'main');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'wire.jsonl'),
+    JSON.stringify({ type: 'turn.prompt', input: [{ type: 'text', text: 'hi' }], time: 1 }) + '\n', 'utf8');
+  const { descriptors } = collectSourceDescriptors({ kimiRoots: [root] }, { sessions: [], meetings: [] });
+  assert.match(descriptors[0].signature, /:utext-v\d+$/, '签名末尾必须是文本投影版本号');
+});
+
 console.log('unit-search-user-text-denoise OK');
