@@ -470,7 +470,10 @@ class SqliteSessionSearchIndex {
     }
     const rawQuery = rawInput.trim();
     const terms = queryTerms(rawQuery);
-    if (normalizeSearchText(rawQuery).length < 2 || !terms.length) {
+    // 2026-08-28 压测发现：单个汉字（「蜃」「熵」「锁」）在中文里是完整的检索单位，
+    // 但这里此前一律拦掉 —— 不是「没搜到」，是**根本没去搜**，属于静默错误。
+    // 放开到 1 个字符；短词本来就走 scope 收窄后的顺序扫描，代价可控。
+    if (!normalizeSearchText(rawQuery).length || !terms.length) {
       return {
         results: [], totalSessions: 0, totalMatches: 0, truncated: false,
         facets: { providers: {}, scopes: {}, projects: [] }, queryMs: Date.now() - startedAt,

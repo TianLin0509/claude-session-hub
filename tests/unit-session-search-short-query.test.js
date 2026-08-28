@@ -197,3 +197,33 @@ test('时间过滤下推后，超出时间窗的命中不再被算进 matchCount
 });
 
 console.log('unit-session-search-short-query OK');
+
+test('单个汉字也要真的去搜（此前是静默不搜，不是没结果）', (t) => {
+  const index = freshIndex(t, 'single-char');
+  index.replaceSource(makeSource('s1', 'codex', '海市蜃楼现象', [
+    { id: 'u1', scope: 'user', text: '这个「蜃」字怎么念' },
+    { id: 'a1', scope: 'assistant', text: '读 shèn。' },
+  ]));
+  index.replaceSource(makeSource('s2', 'claude', '无关会话', [
+    { id: 'u2', scope: 'user', text: '今天天气不错' },
+  ]));
+
+  // 2026-08-28 压测抓到：search() 里 `length < 2` 直接返回空，
+  // 于是单字查询根本没到索引层。中文里单字是完整的检索单位。
+  const hit = index.search({ query: '蜃' });
+  assert.equal(hit.totalSessions, 1, '单个汉字必须能搜到');
+  assert.equal(hit.results[0].sessionKey, 's1');
+
+  assert.equal(index.search({ query: '蜃', scopes: ['title'] }).totalSessions, 1, '标题里也有这个字');
+  assert.equal(index.search({ query: '蜃', scopes: ['assistant'] }).totalSessions, 0, 'AI 回答里没有');
+
+  // 空查询仍然返回空，别把闸门开过头
+  assert.equal(index.search({ query: '' }).totalSessions, 0);
+  assert.equal(index.search({ query: '   ' }).totalSessions, 0);
+});
+
+test('渲染层不再拦单字，否则后端放开了也白搭', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'global-session-search.js'), 'utf8');
+  assert.doesNotMatch(src, /if \(trimmed\.length < 2\) return;/,
+    '渲染层还拦着单字的话，后端放开也没用');
+});
