@@ -561,12 +561,27 @@ class SqliteSessionSearchIndex {
     const shortTermScopes = scopeList || SHORT_TERM_SCOPES;
     let shortTermNarrowed = false;
 
-    const termMatches = terms.map(term => {
+    // 逐个词求候选，而不是先把所有词都查完再判断。
+    //
+    // 2026-08-28 模糊浸泡抓到：粘一大段文本进搜索框会被空白切成十几个词，
+    // 其中的 1~2 字词每个都是一次顺序扫描，串起来 3.5 秒。而多词是 AND —— 只要
+    // **任何一个**词零命中，整个结果就是空的。所以：
+    //   · 长词优先（≥3 字走 FTS，毫秒级），短词最后
+    //   · 一旦某个词零命中，立刻收工，后面的词根本不用查
+    // 语义完全不变，只是把注定为空的查询提前结束。
+    const termOrder = terms
+      .map((term, index) => ({ term, index }))
+      .sort((left, right) => right.term.length - left.term.length);
+    const termMatches = new Array(terms.length);
+    let emptyTerm = false;
+    for (const { term, index: termIndex } of termOrder) {
       const short = String(term).length < 3;
       if (short && !scopeList) shortTermNarrowed = true;
-      return this._matchedDocsForTerm(term, short ? shortTermScopes : scopeList, since);
-    });
-    if (termMatches.some(match => match.rows.length === 0)) {
+      const match = this._matchedDocsForTerm(term, short ? shortTermScopes : scopeList, since);
+      termMatches[termIndex] = match;
+      if (match.rows.length === 0) { emptyTerm = true; break; }
+    }
+    if (emptyTerm) {
       return {
         results: [], totalSessions: 0, totalMatches: 0, truncated: false,
         facets: { providers: {}, scopes: {}, projects: [] }, queryMs: Date.now() - startedAt,
@@ -608,7 +623,7 @@ class SqliteSessionSearchIndex {
     const projectFacet = new Map();
     let totalMatches = 0;
     let loadedDocs = 0;
-    let queryGuardHit = termMatches.some(match => match.truncated);
+    let queryGuardHit = termMatches.some(match => match && match.truncated);
     // 整次查询共用一份正文预算，跨会话累计
     const textBudget = { used: 0, limit: SCORING_TEXT_BUDGET };
 

@@ -227,3 +227,36 @@ test('渲染层不再拦单字，否则后端放开了也白搭', () => {
   assert.doesNotMatch(src, /if \(trimmed\.length < 2\) return;/,
     '渲染层还拦着单字的话，后端放开也没用');
 });
+
+test('多词查询：任一词零命中就立刻收工，不把剩下的词也扫一遍', (t) => {
+  const index = freshIndex(t, 'lazy-terms');
+  index.replaceSource(makeSource('s1', 'codex', '会话', [
+    { id: 'u1', scope: 'user', text: 'LAZYPROBE 常见词 的 是 在' },
+  ]));
+
+  // 模糊浸泡抓到的形态：粘一大段文本进搜索框，被空白切成十几个词，
+  // 其中的 1~2 字词每个都是一次顺序扫描，串起来 3.5 秒。多词是 AND，
+  // 只要有一个词零命中，整个结果必然为空，后面的词根本不该查。
+  const calls = [];
+  const orig = index._matchedDocsForTerm.bind(index);
+  index._matchedDocsForTerm = (term, scopes, since) => { calls.push(term); return orig(term, scopes, since); };
+
+  const res = index.search({ query: 'ZZZABSENTWORD 的 是 在 常见词' });
+  assert.equal(res.totalSessions, 0);
+  assert.equal(calls.length, 1, `零命中的长词应当第一个被查并立即收工，实际查了 ${calls.length} 个词: ${JSON.stringify(calls)}`);
+  assert.equal(calls[0], 'zzzabsentword', '最长的词优先查（≥3 字走 FTS，毫秒级）');
+});
+
+test('多词都命中时，语义仍然是 AND（惰性求值不能改变结果）', (t) => {
+  const index = freshIndex(t, 'lazy-and');
+  index.replaceSource(makeSource('both', 'codex', '两个词都有', [
+    { id: 'a', scope: 'user', text: 'ALPHAWORD 出现在提问' },
+    { id: 'b', scope: 'assistant', text: 'BETAWORD 出现在回答' },
+  ]));
+  index.replaceSource(makeSource('one', 'claude', '只有一个词', [
+    { id: 'c', scope: 'user', text: 'ALPHAWORD 只有这个' },
+  ]));
+  assert.equal(index.search({ query: 'ALPHAWORD BETAWORD' }).totalSessions, 1);
+  assert.equal(index.search({ query: 'BETAWORD ALPHAWORD' }).totalSessions, 1, '词序不该影响结果');
+  assert.equal(index.search({ query: 'ALPHAWORD' }).totalSessions, 2);
+});
