@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { AgentLeagueStore } = require('../core/agent-league-store.js');
 const { PHILOSOPHY_TEMPLATES } = require('../core/agent-league-philosophies.js');
+const { validateDecision, validateHookReview, validateWeeklyReview } = require('../core/agent-league-accounting.js');
 const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-launcher.js');
 const { connectFirstPage } = require('./helpers/cdp-client.js');
 
@@ -67,16 +68,48 @@ function seedLeague() {
       kind: provider[1],
       model: provider[2],
       philosophy,
-      initialCash: 1_000_000,
+      initialCash: 500_000,
     });
-    const nav = 1_000_000 * (1 + returns[index]);
+    const nav = 500_000 * (1 + returns[index]);
     store.savePortfolio(id, {
-      initialCash: 1_000_000,
+      initialCash: 500_000,
       cash: nav,
       positions: [],
       pendingDecision: null,
       navHistory: [{ date: '2026-08-25', nav, cash: nav, marketValue: 0, dailyReturn: returns[index] / 4 }],
     });
+    if (index === 0) {
+      const draft = validateDecision({
+        action_summary: '卖出失效持仓，试探一只预期差标的', market_view: '风险偏好回升但高位拥挤仍在',
+        core_conflict: '逻辑改善与短期位置不舒服同时存在', cash_target: 0.8,
+        targets: [{
+          symbol: '600001.SH', name: '测试股', target_weight: 0.2, conviction: 0.65, horizon_days: 20,
+          rule_refs: ['C1', 'P1', 'R2'], thesis: '改善证据尚未充分计价', counter_evidence: '短期涨幅较快',
+          timing_reason: '只用试探仓验证，不追求一次买满', invalidation: '验证数据转弱或关键结构失守',
+        }], watchlist: [], risk_notes: ['高位拥挤'], memory_note: '沿用不追高纪律',
+      });
+      const hook = validateHookReview({
+        verdict: 'PASS', rule_checks: [{ rule_id: 'P1', status: 'PASS', comment: '仓位已经反映位置不舒服。' }],
+        strongest_counter_evidence: '短期估值扩张可能领先改善。', timing_check: '已比较等待与现金。',
+        portfolio_check: '80% 现金与当前证据匹配。', behavior_check: '未受排行榜影响。', account_feasibility: '50 万账户可按 100 股整数倍执行。',
+        changes: [], final_decision: draft,
+        daily_brief: {
+          headline: '逻辑看对了，也不代表今天值得重仓',
+          body: '今天最重要的矛盾是改善逻辑和短期位置不舒服同时存在。我认可这只股票的预期差，但最强反证是估值扩张已经走在验证前面，因此只保留试探仓并维持高现金。如果后续验证数据转弱或关键结构失守，我会承认判断错误，而不是为了排名补仓。',
+          hook_change: '自检后没有改变仓位，原预案已经把追高风险压进仓位。', video_hooks: ['好逻辑不等于好买点'],
+        },
+      }, { draft });
+      store.recordRunStart(id, { runId: 'fixture-daily', decisionDate: '2026-08-27', dataAsOf: '2026-08-26' });
+      store.recordDraft(id, { runId: 'fixture-daily', decisionDate: '2026-08-27', dataAsOf: '2026-08-26', draft });
+      store.recordDecision(id, { runId: 'fixture-daily', decisionDate: '2026-08-27', dataAsOf: '2026-08-26', decision: draft, hook, dailyBrief: hook.daily_brief });
+      const review = validateWeeklyReview({
+        summary: '本周最有价值的是在逻辑成立时仍然保持价格纪律。', process_win: '没有因上涨扩大仓位。',
+        process_mistake: '对等待条件的描述还不够具体。', lesson: '等待应写出可验证的触发条件。',
+        strongest_counterexample: '过度等待也可能错失继续上涨。', evidence_for: ['两次克制'], evidence_against: ['一次踏空'], checklist_proposal: null,
+      });
+      store.recordWeeklyStart(id, { runId: 'fixture-weekly', saturdayDate: '2026-08-29', tradingDates: ['2026-08-27'] });
+      store.recordWeeklyReview(id, { runId: 'fixture-weekly', saturdayDate: '2026-08-29', review });
+    }
   }
 }
 
@@ -142,10 +175,51 @@ function removeTempRoot() {
 
     await client.eval(`document.querySelector('.cxl-row').click()`);
     await waitEval(client, '!document.querySelector("[data-role=detail-overlay]").hidden && document.querySelector(".cxl-drawer")', 'Agent detail drawer');
-    assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('打开卡片 Session')`), true);
-    assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('打开 PTY')`), true);
+    assert.equal(await client.eval(`/打开卡片 Session|创建卡片 Session/.test(document.querySelector('.cxl-drawer').innerText)`), true);
+    assert.equal(await client.eval(`/打开 PTY|创建并打开 PTY/.test(document.querySelector('.cxl-drawer').innerText)`), true);
+    assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('DRAFT')`), true);
+    assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('DAILY BRIEF')`), true);
+    assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('周六沉淀')`), true);
+    assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('个人 CHECKLIST')`), true);
     const detailShot = await screenshot(client, '02-detail.png');
+    await client.eval(`document.querySelector('[data-action="edit-prompts"]').click()`);
+    await waitEval(client, `!document.querySelector('[data-role="prompt-overlay"]').hidden && document.querySelectorAll('[data-prompt-key]').length >= 19`, 'prompt workbench');
+    const promptInitial = await client.eval(`(() => ({
+      title: document.querySelector('[data-role="prompt-file-title"]').textContent,
+      editable: !document.querySelector('[data-role="prompt-editor"]').readOnly,
+      hasCore: document.querySelector('[data-role="prompt-editor"]').value.includes('核心理念'),
+      hasMachine: !document.querySelector('[data-role="machine-state"]').hidden
+    }))()`);
+    assert.deepEqual(promptInitial, { title: '核心投资人格', editable: true, hasCore: true, hasMachine: true });
+    await client.eval(`(() => {
+      const editor = document.querySelector('[data-role="prompt-editor"]');
+      editor.value += '\\n\\n## E2E 编辑标记\\n\\nPROMPT-EDITOR-E2E';
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('[data-action="save-prompt"]').click();
+    })()`);
+    await waitEval(client, `document.querySelector('[data-role="prompt-status"]').textContent.includes('保存成功')`, 'prompt save');
+    const promptSaved = await client.eval(`(async()=>{
+      const result=await require('electron').ipcRenderer.invoke('agent-league:prompt-files',{agentId:'fixture-agent-01'});
+      return result.files.find(row=>row.key==='agent').content.includes('PROMPT-EDITOR-E2E');
+    })()`);
+    assert.equal(promptSaved, true);
+    await client.eval(`document.querySelector('[data-prompt-key="contractHook"]').click()`);
+    await waitEval(client, `document.querySelector('[data-role="prompt-file-title"]').textContent.includes('决策 Hook') && document.querySelector('[data-role="prompt-editor"]').readOnly`, 'read-only hook contract');
+    const promptShot = await screenshot(client, '02c-prompt-workbench.png');
+    await client.eval(`document.querySelector('[data-action="close-prompts"]').click()`);
     await client.eval(`document.querySelector('[data-action="close-detail"]').click()`);
+
+    await client.eval(`document.documentElement.setAttribute('data-theme', 'codex')`);
+    await _waitMs(180);
+    const lightTheme = await client.eval(`(() => {
+      const root = getComputedStyle(document.querySelector('.cxl-root'));
+      const row = getComputedStyle(document.querySelector('.cxl-row'));
+      return { color: root.color, background: root.backgroundColor, rowBackground: row.backgroundColor };
+    })()`);
+    assert.notEqual(lightTheme.color, lightTheme.background);
+    const lightShot = await screenshot(client, '02b-light-theme.png');
+    await client.eval(`document.documentElement.setAttribute('data-theme', 'dark')`);
+    await _waitMs(120);
 
     // Electron is a desktop shell, so validate its real narrow-window CSS path
     // instead of forcing mobile-browser viewport semantics onto index.html.
@@ -167,6 +241,21 @@ function removeTempRoot() {
     assert.equal(mobile.leagueWidth, 390);
     assert(mobile.rankingScrollHeight > mobile.rankingClientHeight);
     const mobileShot = await screenshot(client, '03-mobile-leaderboard.png');
+    await client.eval(`document.querySelector('.cxl-row').click()`);
+    await waitEval(client, `!document.querySelector('[data-role="detail-overlay"]').hidden`, 'mobile detail drawer');
+    await client.eval(`document.querySelector('[data-action="edit-prompts"]').click()`);
+    await waitEval(client, `!document.querySelector('[data-role="prompt-overlay"]').hidden && document.querySelector('[data-role="prompt-editor"]')`, 'mobile prompt workbench');
+    await _waitMs(300);
+    const mobilePrompt = await client.eval(`(() => {
+      const node=document.querySelector('.cxl-prompt-workbench');
+      return { pageWidth:document.documentElement.scrollWidth, width:Math.round(node.getBoundingClientRect().width), height:Math.round(node.getBoundingClientRect().height), editorVisible:document.querySelector('[data-role="prompt-editor"]').clientHeight>100 };
+    })()`);
+    const mobilePromptShot = await screenshot(client, '03b-mobile-prompt-workbench.png');
+    assert.equal(mobilePrompt.pageWidth, 390);
+    assert(mobilePrompt.width >= 340 && mobilePrompt.width <= 390, JSON.stringify(mobilePrompt));
+    assert(mobilePrompt.height >= 620, JSON.stringify(mobilePrompt));
+    assert.equal(mobilePrompt.editorVisible, true);
+    await client.eval(`document.querySelector('[data-action="close-prompts"]').click(); document.querySelector('[data-action="close-detail"]').click()`);
     await client.send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
     await _waitMs(250);
 
@@ -179,11 +268,14 @@ function removeTempRoot() {
       form.elements.provider.value = 'codex-cli';
       form.elements.provider.dispatchEvent(new Event('change', { bubbles: true }));
       form.elements.model.value = 'gpt-5.6-sol';
-      form.elements.philosophyKey.value = 'trend-confirmation';
-      form.elements.initialCash.value = '1000000';
+      form.elements.philosophyKey.value = 'chuxin-value-speculation';
+      form.elements.initialCash.value = '500000';
       form.requestSubmit();
     })()`);
     await waitEval(client, `document.querySelector('[data-agent-row="session-probe"]')`, 'created Agent leaderboard row');
+    await client.eval(`document.querySelector('[data-agent-row="session-probe"]').click()`);
+    await waitEval(client, `document.querySelector('.cxl-drawer .cxl-status.pending') && document.querySelector('.cxl-drawer').innerText.includes('待首次运行')`, 'pending native Session status');
+    await client.eval(`document.querySelector('[data-action="close-detail"]').click()`);
     const sessionId = await client.eval(`(async()=> (await require('electron').ipcRenderer.invoke('get-sessions')).find(row => row.title === 'Agent · 会话探针')?.id || '')()`);
     assert(sessionId, 'created Agent session id is missing');
     await waitEval(client, `(async()=> (await require('electron').ipcRenderer.invoke('get-sessions')).some(row => row.id === ${JSON.stringify(sessionId)} && row.purpose === 'agent-league' && !row.hiddenFromSidebar))()`, 'visible ordinary Agent session');
@@ -199,7 +291,9 @@ function removeTempRoot() {
       ranking,
       mobile,
       sessionId,
-      screenshots: [leaderboardShot, detailShot, mobileShot, sessionShot],
+      lightTheme,
+      mobilePrompt,
+      screenshots: [leaderboardShot, detailShot, promptShot, lightShot, mobileShot, mobilePromptShot, sessionShot],
       output: OUTPUT,
     }, null, 2));
   } finally {

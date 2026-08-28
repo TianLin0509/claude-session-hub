@@ -234,6 +234,53 @@ test('new and pre-migration DeepSeek sessions resume on their own runtime', asyn
   assert.strictEqual(legacy.opts.resumeTranscriptPath, 'transcript:ds-cc-1');
 });
 
+test('unbound Agent League Codex shell starts fresh instead of opening the resume picker', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps();
+  registerResumeSessionIpc(ipc, deps);
+
+  const session = await ipc.handlers.get('resume-session')(null, {
+    hubId: 'agent-unbound',
+    kind: 'codex',
+    purpose: 'agent-league',
+    codexSid: null,
+    cwd: 'C:\\agent-folder',
+    title: 'Agent · 初心基准',
+  });
+
+  assert.strictEqual(session.opts.useResume, false);
+  assert.strictEqual(session.opts.codexResumePicker, false);
+  assert.strictEqual(session.opts.codexSid, null);
+  assert.strictEqual(session.opts.purpose, 'agent-league');
+  assert.strictEqual(session.opts.mcpProfile, 'lean');
+  assert.deepStrictEqual(session.opts.codexMcpEntries, [{
+    researchArgs: ['agent-league-agent-folder', 3456, 'token', 'C:\\hub', { enableChuxin: true }],
+  }]);
+});
+
+test('unbound Agent League Claude shell starts fresh instead of continuing an unrelated session', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps();
+  registerResumeSessionIpc(ipc, deps);
+
+  const session = await ipc.handlers.get('resume-session')(null, {
+    hubId: 'agent-unbound-claude',
+    kind: 'claude',
+    purpose: 'agent-league',
+    ccSessionId: null,
+    cwd: 'C:\\league\\agents\\trend-agent',
+    title: 'Agent · 逐浪',
+  });
+
+  assert.strictEqual(session.opts.useContinue, false);
+  assert.strictEqual(session.opts.resumeCCSessionId, undefined);
+  assert.strictEqual(session.opts.purpose, 'agent-league');
+  assert.strictEqual(session.opts.mcpConfigFile, 'C:\\hub\\mcp.json');
+  assert.ok(deps.calls.some(call => call[0] === 'writeResearchMcpConfig'
+    && call[1] === 'C:\\hub'
+    && call[2] === 'agent-league-trend-agent'));
+});
+
 test('does not resume a persisted Codex subagent binding as the Hub top-level PTY', async () => {
   const ipc = createFakeIpc();
   const deps = createBaseDeps({

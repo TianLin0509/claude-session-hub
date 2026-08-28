@@ -61,6 +61,26 @@ function createResumeSessionHandler(deps) {
     const hookPort = getHookPort();
 
     let resumeOpts = {};
+    if (meta.purpose === 'agent-league') {
+      const agentId = path.basename(String(meta.cwd || '')).toLowerCase();
+      const scopeId = /^[a-z0-9][a-z0-9_-]{2,63}$/.test(agentId) ? `agent-league-${agentId}` : '';
+      if (scopeId && hookPort) {
+        const hubDataDir = getHubDataDir();
+        if (isClaudeCliResumable) {
+          resumeOpts.mcpConfigFile = scenes.writeResearchMcpConfig(
+            hubDataDir, scopeId, hookPort, hookToken, meta.kind || 'claude', { enableChuxin: true },
+          );
+        } else if (isCodexRuntime && scenes.buildResearchMcpEntryForCodex) {
+          resumeOpts.codexBypassApprovals = true;
+          resumeOpts.mcpProfile = 'lean';
+          addCodexMcpEntry(resumeOpts, scenes.buildResearchMcpEntryForCodex(
+            scopeId, hookPort, hookToken, hubDataDir, { enableChuxin: true },
+          ));
+        }
+      } else if (!hookPort) {
+        logger.warn('[agent-league] resume without hookPort; Chuxin MCP is unavailable');
+      }
+    }
     if (meta.meetingId) {
       const meeting = meetingManager.getMeeting(meta.meetingId);
       if (meeting && meeting.groupChat) resumeOpts.noInheritCursor = true;
@@ -160,6 +180,17 @@ function createResumeSessionHandler(deps) {
       } catch {}
     }
     const codexMissingSid = (isCodexRuntime && !effectiveCodexSid);
+    // A persisted Agent League shell may not have completed its first provider
+    // turn yet. In that state there is no native conversation to resume. Every
+    // provider must start fresh under the same Hub id; otherwise Claude can
+    // continue an unrelated conversation and Codex/Kimi can open a picker that
+    // consumes the automation prompt.
+    const freshUnboundAgentLeague = meta.purpose === 'agent-league' && (
+      codexMissingSid
+      || (isClaudeCliResumable && !meta.ccSessionId)
+      || (isGemini && !meta.geminiChatId)
+      || (isKimi && !meta.kimiSid)
+    );
 
     // Kimi 会话绑死 cwd 且 CLI 会校验。归档搬目录后，renderer 持久化的 cwd /
     // kimiSessionDir 可能还是旧路径（休眠会话不在归档时的运行列表里），直接用会在
@@ -212,9 +243,12 @@ function createResumeSessionHandler(deps) {
       ...(isLegacyDeepSeek ? { deepseekLegacyClaude: true } : {}),
       resumeCCSessionId: isClaudeCliResumable ? (meta.ccSessionId || undefined) : undefined,
       resumeTranscriptPath: resumeTranscriptPath || undefined,
-      useContinue: isClaudeCliResumable && !meta.ccSessionId,
-      useResume: isNativeResumeKind,
-      codexResumePicker: codexMissingSid,
+      useContinue: isClaudeCliResumable && !meta.ccSessionId && !freshUnboundAgentLeague,
+      // Agent 联赛的空壳 Session 从未产生过原生 turn，没有历史可选。
+      // 进入通用 picker 会让自动 Prompt 落到“Resume a previous session”界面。
+      // 保留 Hub ID fresh start；一旦首次 turn 生成 codexSid，后续仍精确 resume。
+      useResume: isNativeResumeKind && !freshUnboundAgentLeague,
+      codexResumePicker: codexMissingSid && !freshUnboundAgentLeague,
       codexSid: effectiveCodexSid,
       codexProfile: isCodexRuntime ? (meta.codexProfile || null) : null,
       // MCP 档位现在 Claude 家族也有（core/claude-mcp-profile.js），不能再只给
@@ -229,7 +263,7 @@ function createResumeSessionHandler(deps) {
       ...(isKimi ? {
         kimiSid: meta.kimiSid || null,
         kimiSessionDir: meta.kimiSessionDir || null,
-        kimiResumePicker: !meta.kimiSid,
+        kimiResumePicker: !meta.kimiSid && !freshUnboundAgentLeague,
       } : {}),
       userRenamed: !!meta.userRenamed,
       autoTitleGenerated: !meta.branchAutoTitlePending
@@ -269,7 +303,7 @@ function createResumeSessionHandler(deps) {
     const session = sessionManager.getSession(createdSession.id) || createdSession;
     sendToRenderer('session-created', { session });
 
-    const needsLevel3 = (
+    const needsLevel3 = !freshUnboundAgentLeague && (
       (isCodexRuntime && !effectiveCodexSid) ||
       (isGemini && !meta.geminiChatId)
     );

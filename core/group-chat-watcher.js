@@ -88,6 +88,32 @@ function noteSubmittedPrompt(sid, kind, actualPrompt) {
   catch (e) { console.warn(`[group-chat] transcriptTap.notePrompt failed for ${kind}(${String(sid).slice(0, 8)}):`, e && e.message); }
 }
 
+function observeCodexTurnStart(sid, kind) {
+  if (!isCodexCliKind(kind)) return null;
+  const tap = _deps && _deps.transcriptTap;
+  if (!tap || typeof tap.on !== 'function' || typeof tap.removeListener !== 'function') return null;
+  let started = false;
+  let resolveStarted = null;
+  const startedPromise = new Promise((resolve) => { resolveStarted = resolve; });
+  const listener = (event = {}) => {
+    if (event.hubSessionId !== sid) return;
+    started = true;
+    resolveStarted(true);
+  };
+  tap.on('turn-started', listener);
+  return {
+    get started() { return started; },
+    async wait(timeoutMs) {
+      if (started) return true;
+      return Promise.race([
+        startedPromise,
+        new Promise(resolve => setTimeout(() => resolve(false), Math.max(0, Number(timeoutMs) || 0))),
+      ]);
+    },
+    dispose() { tap.removeListener('turn-started', listener); },
+  };
+}
+
 async function clearCodexInputLine(sessionManager, sid, kind) {
   if (!isCodexCliKind(kind)) return false;
   // Codex can keep an unsubmitted prompt in the input box after zero-echo /
@@ -186,6 +212,8 @@ async function sendToPty(sid, prompt, kind) {
   //     未提交"(Bug B) + "中文走 .md 文件中转嵌入"(Bug C：BP 直接发中文，不再经 writePromptToSession)。
   //   gemini 协议仍不识别（marker 被吃但 \r 不提交），保留旧主路径。
   if (isClaudeFamily(kind) || isCodexCliKind(kind)) {
+    const turnStart = observeCodexTurnStart(sid, kind);
+    try {
     await clearCodexInputLine(sessionManager, sid, kind); // codex 清输入框残留，防与上次未提交内容拼接（claude no-op）
     const beforeWrite = sessionManager.getGroupChatLastActivity(sid);
     sessionManager.writeToSession(sid, BP_START + prompt + BP_END);
@@ -223,7 +251,36 @@ async function sendToPty(sid, prompt, kind) {
       console.warn(`[group-chat] 1A bracketed-paste verify failed for ${kind}(${sid.slice(0,8)}) after ${VERIFY_MAX_MS}ms; marking stuck`);
       sendStatus = 'stuck';
     }
+
+    if (turnStart) {
+      const firstAckMs = Math.max(20, Number(_deps && _deps.codexTurnStartAckMs || 1800));
+      const recoveryAckMs = Math.max(20, Number(_deps && _deps.codexTurnStartRecoveryMs || 4000));
+      let acknowledged = await turnStart.wait(firstAckMs);
+      let recoveredByLateEnter = false;
+      // PTY activity alone is not proof of submission: Codex redraws the input
+      // box while a `[Pasted Content …]` block is still waiting for Enter. A
+      // transcript task_started event is the semantic acknowledgement. If it
+      // is absent, send a *late isolated* Enter after paste mode has certainly
+      // closed, then wait for the acknowledgement before reporting success.
+      for (let attempt = 0; !acknowledged && attempt < 2; attempt += 1) {
+        console.warn(`[group-chat] Codex prompt has PTY activity but no task_started for ${sid.slice(0, 8)}; sending late Enter recovery ${attempt + 1}/2`);
+        sessionManager.writeToSession(sid, '\r');
+        acknowledged = await turnStart.wait(recoveryAckMs);
+        if (acknowledged) recoveredByLateEnter = true;
+      }
+      if (!acknowledged) {
+        console.warn(`[group-chat] Codex prompt submission not acknowledged for ${sid.slice(0, 8)} after late Enter recovery`);
+        sendStatus = 'stuck';
+      } else if (recoveredByLateEnter || sendStatus === 'stuck') {
+        sendStatus = 'auto_recovered';
+      }
+    }
     return { ok: true, sendStatus };
+    } finally {
+      // PTY writes and transcript readers are external boundaries. Any throw
+      // along the path must still release the semantic acknowledgement hook.
+      if (turnStart) turnStart.dispose();
+    }
   }
   // ===========================================================================
 
