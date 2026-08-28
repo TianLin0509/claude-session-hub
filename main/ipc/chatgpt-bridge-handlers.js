@@ -6,7 +6,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { sendToPty } = require('../../core/group-chat-watcher.js');
 
-const BRIDGE_TIMEOUT_MS = 3 * 60 * 1000;
+const BRIDGE_TIMEOUT_MS = 5 * 60 * 1000;
 const BRIDGE_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const BRIDGE_MAX_INPUT_BYTES = 1024 * 1024;
 
@@ -182,8 +182,13 @@ function registerChatgptBridgeIpc(ipcMain, deps = {}) {
       if (!sendOk) {
         return { ok: false, new: true, sent: false, error: '内容已拉取，但当前 AI 未成功接收。', code: 'pty_send_failed' };
       }
-      const maxTurn = Number(pulled.max_turn) || Math.max(0, ...(pulled.items || []).map(item => Number(item.turn) || 0));
-      const acknowledged = maxTurn > 0 ? await runner(['ack', '--turn', String(maxTurn)]) : { ok: true };
+      const messageIds = Array.from(new Set([
+        ...(Array.isArray(pulled.message_ids) ? pulled.message_ids : []),
+        ...(pulled.items || []).map(item => item && item.message_id),
+      ].filter(value => typeof value === 'string' && value)));
+      const ackArgs = ['ack'];
+      for (const messageId of messageIds) ackArgs.push('--message-id', messageId);
+      const acknowledged = messageIds.length ? await runner(ackArgs) : { ok: true };
       return {
         ok: true,
         new: true,

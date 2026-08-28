@@ -72,11 +72,11 @@ test('IPC pull-and-send peeks, sends to the bound session, then acknowledges', a
           new: true,
           content: '公司发来的原始文字',
           count: 1,
-          max_turn: 7,
-          items: [{ turn: 7 }],
+          message_ids: ['msg-company-7'],
+          items: [{ message_id: 'msg-company-7', turn: 7 }],
         };
       }
-      if (args[0] === 'ack') return { ok: true, acknowledged_turn: 7 };
+      if (args[0] === 'ack') return { ok: true, acknowledged_message_ids: ['msg-company-7'] };
       if (args[0] === 'push') return { ok: true, sent: true };
       return { ok: true };
     },
@@ -93,7 +93,7 @@ test('IPC pull-and-send peeks, sends to the bound session, then acknowledges', a
   assert.deepEqual(sent, [{ sessionId: 's1', text: '公司发来的原始文字', kind: 'codex' }]);
   assert.deepEqual(calls.slice(0, 2).map(call => call.args), [
     ['pull', '--peek'],
-    ['ack', '--turn', '7'],
+    ['ack', '--message-id', 'msg-company-7'],
   ]);
 
   const pushed = await handlers.get('chatgpt-bridge:push')(null, { text: '发到公司' });
@@ -111,7 +111,7 @@ test('IPC never acknowledges content when PTY reports a stuck send', async () =>
     sessionManager: { getSession: () => ({ id: 's1', kind: 'codex' }) },
     async runBridge(args) {
       calls.push(args);
-      return { ok: true, new: true, content: '不能丢失', count: 1, max_turn: 9, items: [{ turn: 9 }] };
+      return { ok: true, new: true, content: '不能丢失', count: 1, message_ids: ['msg-stuck-9'], items: [{ message_id: 'msg-stuck-9', turn: 9 }] };
     },
     async sendPrompt() { return { ok: true, sendStatus: 'stuck' }; },
   });
