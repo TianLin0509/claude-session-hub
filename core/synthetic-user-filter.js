@@ -127,10 +127,22 @@ function stripInjectedBlocks(text) {
  * 返回 null 表示这条整条都是注入，不该进索引。
  */
 function searchableUserText(text) {
-  const shown = displayUserText(text);
-  if (shown === null) return null;
-  const cleaned = stripInjectedBlocks(shown);
-  return cleaned || null;
+  let current = displayUserText(text);
+  if (current === null) return null;
+  // 剪完注入块之后，**剩下的残渣可能本身又是一条注入标记**。
+  // 2026-08-28 在真实 Codex rollout 上抓到的形态（原文 1687 字）：
+  //     <recommended_plugins> …一大段… </recommended_plugins>
+  //     # AGENTS.md instructions for C:\Users\lintian\chuxin-research
+  // 剪掉前一块后剩下后一行，第一版就这么原样入库了，搜索里照样能命中。
+  // 所以剪一轮就重新判一次，直到稳定。
+  for (let round = 0; round < 3; round += 1) {
+    const stripped = stripInjectedBlocks(current);
+    if (!stripped) return null;
+    if (isSyntheticUserText(stripped)) return null;
+    if (stripped === current) break;
+    current = stripped;
+  }
+  return current || null;
 }
 
 module.exports = {
