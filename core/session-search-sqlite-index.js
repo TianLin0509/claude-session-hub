@@ -472,7 +472,7 @@ class SqliteSessionSearchIndex {
     }
     if (!rows) {
       // ⚠ 退回顺序扫描时**必须收窄 scope**。
-      // 2026-08-28 在真实生产索引（2.6GB / 335778 文档）上抓到：查 `a b`
+      // 2026-08-28 在真实生产索引（2.6GB / 335778 文档）上抓到：查 `a\u0000b`
       // 时 FTS 抛错，fallback 却按 scopeList=null 扫了整张 docs 表（229MB），
       // 用了 7339ms —— 这是整个系统最坏的一条路径。
       // 短词本来就走收窄；≥3 字但 FTS 拒收的词同样只可能是垃圾串，一并收窄。
@@ -564,9 +564,9 @@ class SqliteSessionSearchIndex {
         index: this.getStats(), error: `搜索关键词过长（最多 ${MAX_QUERY_LENGTH} 个字符）`,
       };
     }
-    // 控制字符（NUL、 之类）不可能是有意义的检索内容，但会让 FTS5 抛错，
+    // 控制字符（NUL、U+0001 之类）不可能是有意义的检索内容，但会让 FTS5 抛错，
     // 继而退化成顺序扫描。查询侧直接剔掉；索引里的正文不受影响。
-    const rawQuery = rawInput.replace(/[ --]/g, '').trim();
+    const rawQuery = rawInput.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim();
     const terms = queryTerms(rawQuery);
     // 2026-08-28 压测发现：单个汉字（「蜃」「熵」「锁」）在中文里是完整的检索单位，
     // 但这里此前一律拦掉 —— 不是「没搜到」，是**根本没去搜**，属于静默错误。
