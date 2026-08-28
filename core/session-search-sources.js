@@ -13,6 +13,7 @@ const { streamCodexJsonlRecordsSync } = require('./codex-rollout-reader.js');
 const {
   codexAgentMessageEventFromRecord,
 } = require('./transcript-payload-utils.js');
+const { searchableUserText } = require('./synthetic-user-filter.js');
 
 function normalizePath(value) {
   if (!value) return '';
@@ -541,8 +542,15 @@ function projectLabelFor(meta, cwd) {
 function sessionRecordFromDescriptor(descriptor, turns, extra = {}) {
   const hub = descriptor.hubSession || null;
   const cwd = (hub && hub.cwd) || extra.cwd || null;
-  const firstUser = (turns || []).find(turn => turn && turn.role === 'user' && turn.text);
-  const title = (hub && hub.title) || deriveTitle(firstUser && firstUser.text, extra.slug || providerLabel(descriptor.provider));
+  // 取第一句**用户真正说的话**当标题。直接用 turn.text 的话，Codex 那条把
+  // AGENTS.md 全文当 user 消息写进来的注入会让标题变成「# AGENTS.md instructions…」。
+  let firstUserText = '';
+  for (const turn of (turns || [])) {
+    if (!turn || turn.role !== 'user' || !turn.text) continue;
+    const cleaned = searchableUserText(turn.text);
+    if (cleaned) { firstUserText = cleaned; break; }
+  }
+  const title = (hub && hub.title) || deriveTitle(firstUserText, extra.slug || providerLabel(descriptor.provider));
   const newestTurnAt = (turns || []).reduce((max, turn) => Math.max(max, Number(turn && (turn.tsEnd || turn.ts)) || 0), 0);
   return {
     key: descriptor.key,
@@ -623,13 +631,20 @@ function docsFromTurns(turns, title, provider) {
   const docs = [{ id: 'title', eventId: 'title', scope: 'title', role: 'title', text: title, ordinal: -1, timestamp: 0 }];
   (turns || []).forEach((turn, ordinal) => {
     if (!turn || !turn.text) return;
+    const isUser = turn.role === 'user';
+    // 「我的提问」只收用户真正说的话。CLI 会把 AGENTS.md / CLAUDE.md 全文、
+    // <system-reminder>、群聊脚手架这些当成 user 消息写进 transcript，搜索命中
+    // 它们纯属噪声（用户 2026-08-28 反馈：搜「梦境」命中的是注入的 AGENTS.md 正文）。
+    // 复用卡片视图那套判定，保证「搜到的」和「看到的」是同一份文本。
+    const text = isUser ? searchableUserText(turn.text) : String(turn.text);
+    if (!text) return;
     const eventId = String(turn.id || `${turn.role || 'turn'}-${ordinal}`);
     docs.push({
       id: eventId, eventId,
-      scope: turn.role === 'user' ? 'user' : 'assistant',
-      role: turn.role === 'user' ? 'user' : 'assistant',
-      speaker: turn.role === 'user' ? '我' : providerLabel(provider),
-      text: String(turn.text),
+      scope: isUser ? 'user' : 'assistant',
+      role: isUser ? 'user' : 'assistant',
+      speaker: isUser ? '我' : providerLabel(provider),
+      text,
       ordinal,
       timestamp: Number(turn.tsEnd || turn.ts) || 0,
     });

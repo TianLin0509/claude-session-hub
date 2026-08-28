@@ -33,7 +33,13 @@ function isSyntheticUserText(text) {
     // 用户按 Esc / 打断工具调用时 CLI 自己插入的占位
     t.startsWith('[Request interrupted by user') ||
     t.startsWith('This session is being continued from a previous conversation that ran out of context.') ||
-    t.startsWith('# AGENTS.md instructions for ') ||
+    // 2026-08-28：原来要求带 " for " 后缀，漏掉了 Codex 更常见的那一种 ——
+    //   # AGENTS.md instructions\n\n<INSTRUCTIONS>…AGENTS.md 全文…</INSTRUCTIONS>
+    //   <environment_context>…</environment_context>
+    // 实测这是一条**整条都是注入**的 user 消息（1200 字左右，`</INSTRUCTIONS>`
+    // 之后跟的是 environment_context，没有任何用户真话），卡片视图和搜索里
+    // 都不该出现。
+    t.startsWith('# AGENTS.md instructions') ||
     t.startsWith('<permissions instructions>') ||
     t.startsWith('<environment_context>') ||
     t.startsWith('<skills_instructions>') ||
@@ -92,10 +98,47 @@ function isSyntheticUserEntry(entry, text) {
   return isSyntheticUserText(candidate);
 }
 
+// 运行期注入的成块内容。它们可能挂在一条**真**用户消息的前后（不像上面那些
+// 是整条注入），所以只能就地剪掉，不能整条丢。
+const INJECTED_BLOCKS = [
+  /<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>/gi,
+  /<system-reminder>[\s\S]*?<\/system-reminder>/gi,
+  /<environment_context>[\s\S]*?<\/environment_context>/gi,
+  /<recommended_plugins>[\s\S]*?<\/recommended_plugins>/gi,
+  /<user-prompt-submit-hook>[\s\S]*?<\/user-prompt-submit-hook>/gi,
+  /<skills_instructions>[\s\S]*?<\/skills_instructions>/gi,
+  /<plugins_instructions>[\s\S]*?<\/plugins_instructions>/gi,
+  /<permissions instructions>[\s\S]*?<\/permissions instructions>/gi,
+];
+
+function stripInjectedBlocks(text) {
+  let out = String(text || '');
+  for (const pattern of INJECTED_BLOCKS) out = out.replace(pattern, ' ');
+  return out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * 建搜索索引时，一条 user 消息里到底哪些字算"用户说的话"。
+ *
+ * 2026-08-28：用户反馈搜索会命中自动注入的系统提示词（截图里"我的提问"整屏
+ * 都是 AGENTS.md 正文），要求"搜索文本和卡片视图的问答内容一样"。所以直接复用
+ * 卡片视图那套判定（displayUserText），再把可能夹在真话前后的注入块剪掉。
+ *
+ * 返回 null 表示这条整条都是注入，不该进索引。
+ */
+function searchableUserText(text) {
+  const shown = displayUserText(text);
+  if (shown === null) return null;
+  const cleaned = stripInjectedBlocks(shown);
+  return cleaned || null;
+}
+
 module.exports = {
   textFromContent,
   isSyntheticUserText,
   isSyntheticUserEntry,
   extractGroupChatUserInput,
   displayUserText,
+  searchableUserText,
+  stripInjectedBlocks,
 };
