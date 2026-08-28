@@ -216,7 +216,11 @@ test('search child receives an isolated V8 heap and bounded indexing inputs', as
     assert.equal(init.options.maxSourceChars, 2 * 1024 * 1024);
     assert.equal(init.options.maxDocChars, 64 * 1024);
     assert.equal(init.options.maxCandidateSessions, 1200);
-    assert.equal(init.options.maxQueryDocs, 20_000);
+    // 2026-08-28 生产规模压测后从 20000 下调到 6000：这个值同时是「每个词的候选行
+    // 上限」和「打分阶段总行数上限」。20000 时常见词（***/not/hub/的）一次要取两万行，
+    // 打分 139~316ms、候选查询本身也慢（LIMIT 越小越早停）。实测 150 条真实正文探针
+    // 在 4000/6000/10000/14000/20000 各档的召回都是 150/150，而 6000 的 p95 最低。
+    assert.equal(init.options.maxQueryDocs, 6_000);
   } finally {
     await service.close();
   }

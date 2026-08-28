@@ -25,6 +25,37 @@ const DOC_FETCH_CHUNK = 900;
 // 短词（<3 字，trigram 索引不到）默认只扫这三档。tool 占 87% 的行、205MB 正文，
 // 而两个字在工具入参 JSON 里命中的基本都是噪声。
 const SHORT_TERM_SCOPES = Object.freeze(['title', 'user', 'assistant']);
+// 打分阶段最多把多少字符的 normalized_text 拉进 JS。常见词（`***`、`not`、`hub`）
+// 一次能命中两万条，不设上界就跟着语料线性膨胀（实测 164MB / 2.9 秒）。
+const SCORING_TEXT_BUDGET = 24 * 1024 * 1024;
+// 单个会话最多打分多少条命中行。用来把总预算摊到更多会话上，
+// 而不是被前几个「命中特别密集」的会话吃光。
+const PER_SESSION_SCORE_DOCS = 40;
+
+/**
+ * 从一个会话的命中行里挑出要打分的那些。
+ * 多词查询必须保证**每个词都有代表**，否则 covered 校验会误判成「这个会话没覆盖全」。
+ * 同一个词内部按 id 倒序取（id 自增，越大越靠后＝越新）。
+ */
+function pickScoringIds(entry, terms, cap) {
+  if (entry.ids.size <= cap) return [...entry.ids];
+  const perTerm = Math.max(1, Math.floor(cap / Math.max(1, terms.length)));
+  const picked = new Set();
+  for (const term of terms) {
+    const ids = entry.byTerm.get(term);
+    if (!ids) continue;
+    const sorted = [...ids].sort((a, b) => b - a);
+    for (let i = 0; i < sorted.length && i < perTerm; i += 1) picked.add(sorted[i]);
+  }
+  // 还有余量就按新→旧补满
+  if (picked.size < cap) {
+    for (const id of [...entry.ids].sort((a, b) => b - a)) {
+      if (picked.size >= cap) break;
+      picked.add(id);
+    }
+  }
+  return [...picked];
+}
 
 function isRecoverableDatabaseError(error) {
   const text = `${error && error.code || ''} ${error && error.message || error || ''}`.toLocaleLowerCase();
@@ -445,17 +476,52 @@ class SqliteSessionSearchIndex {
     return { rows: rows.slice(0, limit), truncated };
   }
 
-  /** 按 id 批量取命中行的完整内容（打分与摘要需要正文）。 */
-  _docsByIds(ids) {
+  /**
+   * 打分阶段按 id 批量取命中行 —— **不取 text**。
+   *
+   * 2026-08-28 生产规模压测：搜 `***` 一次要把 19925 条命中行的正文拉进 JS，
+   * 合计 164MB，光这一步就 400ms，加上候选阶段总共 2.9 秒。而 `text` 只有最终
+   * 展示的那 ≤50 条摘要用得到；打分只需要 normalized_text。
+   * 摘要改由 _snippetTextByIds 在结果切片之后单独取。
+   *
+   * 同时加字节预算：命中行特别多时（常见词）停在预算处并报截断，
+   * 保证最坏情况有确定上界，而不是跟着语料线性膨胀。
+   */
+  _scoringDocsByIds(ids, budget) {
     const out = [];
+    let bytes = 0;
+    let truncated = false;
+    for (let start = 0; start < ids.length; start += DOC_FETCH_CHUNK) {
+      // budget 由调用方跨会话累计 —— 第一版把它写成了每个会话各算一次，
+      // 100 个候选会话就等于 100 份预算，等于没有上界。
+      if (budget && budget.used >= budget.limit) { truncated = true; break; }
+      if (bytes >= SCORING_TEXT_BUDGET) { truncated = true; break; }
+      const chunk = ids.slice(start, start + DOC_FETCH_CHUNK);
+      const statement = this.db.prepare(
+        `SELECT id, event_id, scope, role, speaker, normalized_text, ordinal, timestamp
+         FROM docs WHERE id IN (${chunk.map(() => '?').join(',')}) ORDER BY ordinal, id`,
+      );
+      for (const row of statement.all(...chunk)) {
+        out.push(row);
+        const size = (row.normalized_text || '').length;
+        bytes += size;
+        if (budget) budget.used += size;
+      }
+    }
+    return { rows: out, truncated };
+  }
+
+  /** 只给最终展示的那几条取正文，用来生成摘要。 */
+  _snippetTextByIds(ids) {
+    const map = new Map();
     for (let start = 0; start < ids.length; start += DOC_FETCH_CHUNK) {
       const chunk = ids.slice(start, start + DOC_FETCH_CHUNK);
       const statement = this.db.prepare(
-        `SELECT * FROM docs WHERE id IN (${chunk.map(() => '?').join(',')}) ORDER BY ordinal, id`,
+        `SELECT id, text FROM docs WHERE id IN (${chunk.map(() => '?').join(',')})`,
       );
-      for (const row of statement.all(...chunk)) out.push(row);
+      for (const row of statement.all(...chunk)) map.set(row.id, row.text || '');
     }
-    return out;
+    return map;
   }
 
   search(request = {}) {
@@ -515,9 +581,12 @@ class SqliteSessionSearchIndex {
       const term = terms[index];
       for (const row of match.rows) {
         let entry = bySession.get(row.session_key);
-        if (!entry) { entry = { ids: new Set(), covered: new Set() }; bySession.set(row.session_key, entry); }
+        if (!entry) { entry = { ids: new Set(), covered: new Set(), byTerm: new Map() }; bySession.set(row.session_key, entry); }
         entry.ids.add(row.id);
         entry.covered.add(term);
+        let perTerm = entry.byTerm.get(term);
+        if (!perTerm) { perTerm = []; entry.byTerm.set(term, perTerm); }
+        perTerm.push(row.id);
       }
     });
     // 命中太多时下面的 maxQueryDocs 闸门会截断。按会话最近活动倒序，让被截掉的
@@ -540,6 +609,8 @@ class SqliteSessionSearchIndex {
     let totalMatches = 0;
     let loadedDocs = 0;
     let queryGuardHit = termMatches.some(match => match.truncated);
+    // 整次查询共用一份正文预算，跨会话累计
+    const textBudget = { used: 0, limit: SCORING_TEXT_BUDGET };
 
     for (const sessionKey of candidateKeys) {
       if (loadedDocs >= this.maxQueryDocs) { queryGuardHit = true; break; }
@@ -551,7 +622,15 @@ class SqliteSessionSearchIndex {
       if (projectFilter && !searchableProject.includes(projectFilter)) continue;
       // 只取这个 session 里**命中的**行。不命中的行在下面 matchedTerms 为空时本来
       // 就会被跳过，所以与原来「取全部行再逐条 includes」语义等价。
-      const rows = this._docsByIds([...bySession.get(sessionKey).ids]);
+      // 单个会话最多打分这么多条。命中特别多的常见词（"codex" 能中 157 个会话）
+      // 如果让前几个会话把总预算吃光，后面的会话根本不会被扫到 —— 用户看到的就是
+      // 「明明这个会话里有，却搜不出来」。按会话摊开预算，每个会话都有机会。
+      const entry = bySession.get(sessionKey);
+      const picked = pickScoringIds(entry, terms, PER_SESSION_SCORE_DOCS);
+      const cappedBySession = picked.length < entry.ids.size;
+      const fetched = this._scoringDocsByIds(picked, textBudget);
+      const rows = fetched.rows;
+      if (fetched.truncated || cappedBySession) queryGuardHit = true;
       loadedDocs += rows.length;
       const covered = new Set();
       const matchedScopes = new Set();
@@ -576,14 +655,20 @@ class SqliteSessionSearchIndex {
         if (score > bestScore || (score === bestScore && doc.timestamp > Number(bestMatch && bestMatch.timestamp))) {
           bestScore = score;
           bestMatch = {
+            // docId 只在内部用：结果切到 limit 之后才去取这一条的正文做摘要，
+            // 免得为了 50 条摘要把两万条正文全拉进来。
+            docId: row.id,
             eventId: doc.eventId || doc.id || null,
             scope: doc.scope, role: doc.role || null, speaker: doc.speaker || null,
             timestamp: doc.timestamp, ordinal: doc.ordinal,
-            text: createSnippet(doc.text, terms),
+            text: '',
           };
         }
       }
       if (!terms.every(term => covered.has(term)) || !bestMatch) continue;
+      // 会话内截断时，展示的命中数用 SQL 侧的精确集合大小，而不是「我们只打了分的那几条」。
+      // entry.ids 已经过 scope / 时间过滤（instr 分支下推、FTS 分支在 JS 里筛过）。
+      if (cappedBySession) matchCount = Math.max(matchCount, entry.ids.size);
       groups.push({
         session, bestMatch, matchCount, newestMatchAt,
         groupScore: bestScore + Math.log2(1 + matchCount) * 2,
@@ -597,13 +682,21 @@ class SqliteSessionSearchIndex {
     groups.sort((a, b) => sort === 'recent'
       ? b.newestMatchAt - a.newestMatchAt || b.groupScore - a.groupScore
       : b.groupScore - a.groupScore || b.newestMatchAt - a.newestMatchAt);
-    const results = groups.slice(0, limit).map(group => ({
+    // 摘要放到切片之后再取正文：只有这 ≤limit 条需要 text。
+    const shown = groups.slice(0, limit);
+    const snippetText = this._snippetTextByIds(
+      shown.map(group => group.bestMatch && group.bestMatch.docId).filter(id => id != null),
+    );
+    const results = shown.map((group) => {
+      const { docId, ...bestMatch } = group.bestMatch;
+      return {
         ...group.session,
         sessionKey: group.session.key,
         updatedAt: group.session.updatedAt || group.newestMatchAt,
         matchCount: group.matchCount,
-        bestMatch: group.bestMatch,
-      }));
+        bestMatch: { ...bestMatch, text: createSnippet(snippetText.get(docId) || '', terms) },
+      };
+    });
     const projects = [...projectFacet.entries()].map(([label, count]) => ({ label, count }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN')).slice(0, 40);
     return {
