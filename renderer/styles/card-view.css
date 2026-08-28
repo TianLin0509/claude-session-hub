@@ -251,7 +251,7 @@
   .terminal-panel.card-view-active .recent-turn-copy {
     left: 16px;
     right: auto;
-    max-width: 150px;
+    max-width: 280px;
     height: 25px;
     min-height: 25px;
   }
