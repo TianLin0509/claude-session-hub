@@ -20,6 +20,11 @@ const SCHEMA_VERSION = 1;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const PREVIEW_TEXT_LIMIT = 12_000;
+// IN (...) 一次塞多少个 id。SQLite 默认变量上限 32766，留足余量。
+const DOC_FETCH_CHUNK = 900;
+// 短词（<3 字，trigram 索引不到）默认只扫这三档。tool 占 87% 的行、205MB 正文，
+// 而两个字在工具入参 JSON 里命中的基本都是噪声。
+const SHORT_TERM_SCOPES = Object.freeze(['title', 'user', 'assistant']);
 
 function isRecoverableDatabaseError(error) {
   const text = `${error && error.code || ''} ${error && error.message || error || ''}`.toLocaleLowerCase();
@@ -117,6 +122,8 @@ class SqliteSessionSearchIndex {
     this.maxCandidateSessions = Math.max(50, Number(options.maxCandidateSessions) || DEFAULT_MAX_CANDIDATE_SESSIONS);
     this.maxQueryDocs = Math.max(1000, Number(options.maxQueryDocs) || DEFAULT_MAX_QUERY_DOCS);
     this.db = null;
+    this.statsCache = null;
+    this.matchStatementCache = new Map();
     this.recoveredDatabaseFiles = [];
     try {
       this._open();
@@ -131,7 +138,13 @@ class SqliteSessionSearchIndex {
 
   _open() {
     this.db = new DatabaseSync(this.databasePath);
-    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=FILE; PRAGMA cache_size=-32768; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
+    // cache_size 从 32MB 提到 128MB、并开 1GB mmap：这个库实测 1.8GB，短词查询要顺序
+    // 扫 docs 表，页缓存太小时每次搜索都在重新读盘。
+    this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=FILE; PRAGMA cache_size=-131072; PRAGMA mmap_size=1073741824; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
+    // WAL 从不截断（journal_size_limit 默认 -1），实测生产环境攒到 290MB，
+    // 每次读都要先过一遍这么大的 WAL 索引。开库时截断一次，之后限制在 64MB。
+    this.db.exec('PRAGMA journal_size_limit=67108864;');
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch { /* 别的进程占着就算了，下次再截 */ }
     this._ensureSchema();
     this._prepare();
   }
@@ -226,12 +239,38 @@ class SqliteSessionSearchIndex {
       source_key, session_key, event_id, scope, role, speaker, text, normalized_text, ordinal, timestamp
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     this.selectSession = this.db.prepare('SELECT * FROM sessions WHERE key = ?');
+    this.selectSessionUpdatedAt = this.db.prepare('SELECT updated_at FROM sessions WHERE key = ?');
     this.selectDocs = this.db.prepare('SELECT * FROM docs WHERE session_key = ? ORDER BY ordinal, id');
-    this.selectFtsCandidates = this.db.prepare(`SELECT DISTINCT d.session_key AS session_key
-      FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid
-      WHERE docs_fts MATCH ? LIMIT ?`);
-    this.selectShortCandidates = this.db.prepare(`SELECT DISTINCT session_key
-      FROM docs WHERE instr(normalized_text, ?) > 0 LIMIT ?`);
+    // scope / 时间 / 词条三个条件现在全部下推到 SQL，语句按条件形状缓存。
+    this.matchStatementCache = new Map();
+  }
+
+  /**
+   * 命中文档查询。原来这里只取 session_key，然后回头把**整个 session 的所有 doc**
+   * （含 text 全文）捞进 JS 再逐条 includes —— 实测一次查询要物化 20000 条 / 40MB
+   * 字符串，而其中真正命中的只有 0.3%~1.8%。
+   *
+   * 打分循环本来就只用得到「命中的那些 doc」（不命中的在 matchedTerms 为空时直接
+   * continue），所以只取命中行与原实现**语义完全等价**，只是不再搬无关数据。
+   */
+  _matchStatement({ useFts, scopes, hasSince }) {
+    const scopeCount = scopes ? scopes.length : 0;
+    const cacheKey = `${useFts ? 'fts' : 'instr'}|${scopeCount}|${hasSince ? 't' : 'f'}`;
+    let statement = this.matchStatementCache.get(cacheKey);
+    if (statement) return statement;
+    const where = [];
+    if (useFts) where.push('docs_fts MATCH ?');
+    else where.push('instr(d.normalized_text, ?) > 0');
+    if (scopeCount) where.push(`d.scope IN (${scopes.map(() => '?').join(',')})`);
+    if (hasSince) where.push('d.timestamp >= ?');
+    const from = useFts
+      ? 'FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid'
+      : 'FROM docs d';
+    statement = this.db.prepare(
+      `SELECT d.id AS id, d.session_key AS session_key ${from} WHERE ${where.join(' AND ')} LIMIT ?`,
+    );
+    this.matchStatementCache.set(cacheKey, statement);
+    return statement;
   }
 
   getSourceSignatures() {
@@ -246,16 +285,19 @@ class SqliteSessionSearchIndex {
   }
 
   markSourceStale(key, signature) {
+    this.statsCache = null;
     this.markSourceStaleStatement.run(String(signature || ''), String(key || ''));
   }
 
   replaceSource(source) {
+    this.statsCache = null;
     if (!source || !source.key) return { docs: 0, chars: 0 };
     const docs = source.searchable === false ? [] : (Array.isArray(source.docs) ? source.docs.slice() : []);
     return this.replaceSourceChunks(source, [docs]);
   }
 
   replaceSourceChunks(source, chunks) {
+    this.statsCache = null;
     if (!source || !source.key) return { docs: 0, chars: 0 };
     const session = source.session || {};
     let documentCount = 0;
@@ -310,6 +352,7 @@ class SqliteSessionSearchIndex {
   }
 
   pruneSources(activeKeys) {
+    this.statsCache = null;
     this.db.exec('CREATE TEMP TABLE IF NOT EXISTS active_source_keys(key TEXT PRIMARY KEY); DELETE FROM active_source_keys;');
     const insert = this.db.prepare('INSERT OR IGNORE INTO active_source_keys(key) VALUES (?)');
     this.db.exec('BEGIN');
@@ -341,29 +384,54 @@ class SqliteSessionSearchIndex {
   }
 
   getStats() {
+    // search() 有 4 个返回点都调它，里面的 count(*) FROM docs 要扫 325k 行。
+    // 统计值只在写索引时会变，缓存到下次写入。
+    if (this.statsCache) return this.statsCache;
     const sessions = Number(this.db.prepare('SELECT count(*) AS count FROM sessions').get().count) || 0;
     const documents = Number(this.db.prepare('SELECT count(*) AS count FROM docs').get().count) || 0;
     const staleSources = Number(this.db.prepare('SELECT count(*) AS count FROM sources WHERE stale = 1').get().count) || 0;
     const providers = Object.fromEntries(this.db.prepare('SELECT provider, count(*) AS count FROM sessions GROUP BY provider').all().map(row => [row.provider, Number(row.count) || 0]));
-    return {
+    this.statsCache = {
       sessions, documents, terms: 0, providers, staleSources, storage: 'sqlite-fts5',
       recoveredCorruptDatabase: this.recoveredDatabaseFiles.length > 0,
     };
+    return this.statsCache;
   }
 
-  _candidateKeysForTerm(term) {
-    const limit = this.maxCandidateSessions;
+  /** 取一个词条命中的 doc id（不取正文）。scopes 为 null 表示不限 scope。 */
+  _matchedDocsForTerm(term, scopes, since) {
+    const limit = this.maxQueryDocs;
+    const scopeList = Array.isArray(scopes) && scopes.length ? scopes : null;
+    const hasSince = since !== null && since !== undefined;
+    const tail = [...(scopeList || []), ...(hasSince ? [since] : []), limit + 1];
     let rows = null;
     if (String(term).length >= 3) {
       try {
-        rows = this.selectFtsCandidates.all(quoteFtsTerm(term), limit + 1);
-      } catch {}
+        rows = this._matchStatement({ useFts: true, scopes: scopeList, hasSince })
+          .all(quoteFtsTerm(term), ...tail);
+      } catch {
+        // FTS 语法/分词器拒绝这个词（例如全是标点），退回顺序扫描。
+        rows = null;
+      }
     }
-    if (!rows) rows = this.selectShortCandidates.all(term, limit + 1);
-    return {
-      keys: new Set(rows.slice(0, limit).map(row => row.session_key)),
-      truncated: rows.length > limit,
-    };
+    if (!rows) {
+      rows = this._matchStatement({ useFts: false, scopes: scopeList, hasSince })
+        .all(term, ...tail);
+    }
+    return { rows: rows.slice(0, limit), truncated: rows.length > limit };
+  }
+
+  /** 按 id 批量取命中行的完整内容（打分与摘要需要正文）。 */
+  _docsByIds(ids) {
+    const out = [];
+    for (let start = 0; start < ids.length; start += DOC_FETCH_CHUNK) {
+      const chunk = ids.slice(start, start + DOC_FETCH_CHUNK);
+      const statement = this.db.prepare(
+        `SELECT * FROM docs WHERE id IN (${chunk.map(() => '?').join(',')}) ORDER BY ordinal, id`,
+      );
+      for (const row of statement.all(...chunk)) out.push(row);
+    }
+    return out;
   }
 
   search(request = {}) {
@@ -385,29 +453,66 @@ class SqliteSessionSearchIndex {
         index: this.getStats(),
       };
     }
-    const termCandidates = terms.map(term => this._candidateKeysForTerm(term));
-    if (termCandidates.some(candidate => candidate.keys.size === 0)) {
-      return {
-        results: [], totalSessions: 0, totalMatches: 0, truncated: false,
-        facets: { providers: {}, scopes: {}, projects: [] }, queryMs: Date.now() - startedAt,
-        index: this.getStats(),
-      };
-    }
-    const termSets = termCandidates.map(candidate => candidate.keys).sort((left, right) => left.size - right.size);
-    const candidateKeys = [...termSets[0]].filter(key => termSets.every(set => set.has(key)));
     const providerFilter = Array.isArray(request.providers) && request.providers.length ? new Set(request.providers.map(String)) : null;
     const scopeFilter = Array.isArray(request.scopes) && request.scopes.length ? new Set(request.scopes.map(String)) : null;
+    const scopeList = scopeFilter ? [...scopeFilter] : null;
     const projectFilter = normalizeSearchText(request.project || '');
     const since = sinceTimestamp(request.timeRange, startedAt);
     const sort = request.sort === 'recent' ? 'recent' : 'relevance';
     const limit = Math.min(MAX_LIMIT, Math.max(1, Number(request.limit) || DEFAULT_LIMIT));
+
+    // 2 字中文词是最常见的检索单位，但 trigram 分词器索引不到它，只能顺序扫 docs。
+    // 全表扫 325k 行 / 686MB 实测 ~880ms，而其中 87% 的行、205MB 是 tool 输出
+    // （命令行与工具入参 JSON）。默认把短词限制在 标题/我的提问/AI 回答 三档，
+    // 用户显式选「工具 / 文件」页签时才扫 tool。
+    const shortTermScopes = scopeList || SHORT_TERM_SCOPES;
+    let shortTermNarrowed = false;
+
+    const termMatches = terms.map(term => {
+      const short = String(term).length < 3;
+      if (short && !scopeList) shortTermNarrowed = true;
+      return this._matchedDocsForTerm(term, short ? shortTermScopes : scopeList, since);
+    });
+    if (termMatches.some(match => match.rows.length === 0)) {
+      return {
+        results: [], totalSessions: 0, totalMatches: 0, truncated: false,
+        facets: { providers: {}, scopes: {}, projects: [] }, queryMs: Date.now() - startedAt,
+        index: this.getStats(),
+        ...(shortTermNarrowed ? { narrowedScopes: SHORT_TERM_SCOPES } : {}),
+      };
+    }
+    // 按 session 归并命中行。SQL 侧的覆盖只是预筛（trigram 可能有假阳性），
+    // 最终仍由下面打分循环里的 includes 复核。
+    const bySession = new Map();
+    termMatches.forEach((match, index) => {
+      const term = terms[index];
+      for (const row of match.rows) {
+        let entry = bySession.get(row.session_key);
+        if (!entry) { entry = { ids: new Set(), covered: new Set() }; bySession.set(row.session_key, entry); }
+        entry.ids.add(row.id);
+        entry.covered.add(term);
+      }
+    });
+    // 命中太多时下面的 maxQueryDocs 闸门会截断。按会话最近活动倒序，让被截掉的
+    // 是最老的会话而不是「索引顺序里恰好排在后面的」。
+    const candidateKeys = [];
+    for (const [key, entry] of bySession) {
+      if (entry.covered.size === terms.length) candidateKeys.push(key);
+    }
+    if (candidateKeys.length > 1) {
+      const recency = new Map(candidateKeys.map(key => {
+        const row = this.selectSessionUpdatedAt.get(key);
+        return [key, Number(row && row.updated_at) || 0];
+      }));
+      candidateKeys.sort((left, right) => recency.get(right) - recency.get(left));
+    }
     const groups = [];
     const providerFacet = new Map();
     const scopeFacet = new Map();
     const projectFacet = new Map();
     let totalMatches = 0;
     let loadedDocs = 0;
-    let queryGuardHit = termCandidates.some(candidate => candidate.truncated);
+    let queryGuardHit = termMatches.some(match => match.truncated);
 
     for (const sessionKey of candidateKeys) {
       if (loadedDocs >= this.maxQueryDocs) { queryGuardHit = true; break; }
@@ -417,10 +522,9 @@ class SqliteSessionSearchIndex {
       if (providerFilter && !providerFilter.has(session.provider)) continue;
       const searchableProject = normalizeSearchText(`${session.projectLabel || ''} ${session.cwd || ''}`);
       if (projectFilter && !searchableProject.includes(projectFilter)) continue;
-      const allRows = this.selectDocs.all(sessionKey);
-      const remainingDocs = this.maxQueryDocs - loadedDocs;
-      const rows = allRows.length > remainingDocs ? allRows.slice(0, remainingDocs) : allRows;
-      if (rows.length < allRows.length) queryGuardHit = true;
+      // 只取这个 session 里**命中的**行。不命中的行在下面 matchedTerms 为空时本来
+      // 就会被跳过，所以与原来「取全部行再逐条 includes」语义等价。
+      const rows = this._docsByIds([...bySession.get(sessionKey).ids]);
       loadedDocs += rows.length;
       const covered = new Set();
       const matchedScopes = new Set();
@@ -480,6 +584,7 @@ class SqliteSessionSearchIndex {
       truncatedReason: queryGuardHit ? 'query_guard' : (groups.length > limit ? 'result_limit' : null),
       facets: { providers: Object.fromEntries(providerFacet), scopes: Object.fromEntries(scopeFacet), projects },
       queryMs: Date.now() - startedAt, index: this.getStats(),
+      ...(shortTermNarrowed ? { narrowedScopes: SHORT_TERM_SCOPES } : {}),
     };
   }
 

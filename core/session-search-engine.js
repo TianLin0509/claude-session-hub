@@ -336,7 +336,12 @@ class SessionSearchEngine {
   async search(request = {}, snapshot = {}) {
     if (!this.statusValue.ready) await this.refresh(snapshot, { force: false });
     else if (Date.now() - this.lastRefreshAt >= this.options.refreshTtlMs && !this.refreshPromise) {
-      void this.refresh(snapshot, { force: false }).catch(() => {});
+      // 曾经是 `void this.refresh(...)`。看着像后台刷新，其实不是：refresh() 的函数体
+      // 在第一个 await 之前是同步执行的，而那一段正是 collectSourceDescriptors()——
+      // 要 readdir/stat 近 2000 个 transcript 并读每个 Codex rollout 的头部，实测 326ms。
+      // TTL 只有 10s，所以弹窗闲置一会儿再搜必然先吃这一刀。挪到下一个事件循环，
+      // 让本次查询先返回。
+      setImmediate(() => { this.refresh(snapshot, { force: false }).catch(() => {}); });
     }
     return { ...this.index.search(request), refreshing: !!this.refreshPromise, status: { ...this.statusValue } };
   }

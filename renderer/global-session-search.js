@@ -398,9 +398,14 @@ function createGlobalSessionSearch(options) {
         matches: totalMatches,
       });
     } catch { /* 留痕是附加功能 */ }
+    // 后端一直在返回 truncated / narrowedScopes，但以前没人读，用户看到的
+    // 「找到 N 个」其实可能是被闸门截断后的数字。这里如实说出来。
+    const notes = [];
+    if (response && response.truncated) notes.push('结果已截断，请再加一个关键词');
+    if (response && Array.isArray(response.narrowedScopes)) notes.push('短词未搜工具输出');
     summaryRoot.firstElementChild.textContent = totalSessions
-      ? `找到 ${totalSessions} 个 session · ${totalMatches} 处命中`
-      : '没有匹配的会话';
+      ? `找到 ${totalSessions} 个 session · ${totalMatches} 处命中${notes.length ? ' · ' + notes.join(' · ') : ''}`
+      : `没有匹配的会话${notes.length ? ' · ' + notes.join(' · ') : ''}`;
     summaryRoot.lastElementChild.textContent = response && Number.isFinite(response.queryMs)
       ? `${response.queryMs}ms · ${sortSelect.value === 'recent' ? '最近更新' : '相关度'} ↓`
       : '';
