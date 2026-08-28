@@ -182,6 +182,7 @@ function createTerminalContextMenuController({
   window,
   termCtxMenuEl,
   openPreviewPanel,
+  syncSelection,
   requestAnimationFrameFn = requestAnimationFrame,
 }) {
   let termCtxMenuSelection = null;
@@ -216,6 +217,16 @@ function createTerminalContextMenuController({
         const sel = termCtxMenuSelection;
         close();
         if (sel) openPreviewPanel(sel.trim());
+      });
+    }
+    const syncBtn = typeof syncSelection === 'function'
+      ? termCtxMenuEl.querySelector('[data-action="sync-chatgpt"]')
+      : null;
+    if (syncBtn) {
+      syncBtn.addEventListener('click', async () => {
+        const sel = termCtxMenuSelection;
+        close();
+        if (sel && typeof syncSelection === 'function') await syncSelection(sel);
       });
     }
   }
