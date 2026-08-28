@@ -147,6 +147,38 @@ test('getStats 缓存在写入后失效，不会返回过期的 session/doc 计�
   assert.equal(index.getStats().sessions, 1, 'prune 之后也要失效');
 });
 
+test('FTS 分支绝不能把 scope 放进 WHERE（放进去实测慢 18000 倍）', (t) => {
+  const index = freshIndex(t, 'fts-shape');
+  // 真实索引上的实测：powershell + scope IN ('tool')
+  //   WHERE 里  → 298477 ms（规划器改用 idx_docs_scope_time 驱动，LIMIT 失去短路）
+  //   投影里    →     16 ms
+  // 这个性质在几行夹具上复现不出来，只能锁语句形状。
+  const fts = index._matchStatement({ useFts: true, scopes: ['tool'], hasSince: true });
+  const ftsSql = String(fts.sourceSQL || fts.expandedSQL || index._lastMatchSql || '');
+  assert.ok(ftsSql, '拿不到 FTS 语句的 SQL 文本，测试本身失效了');
+  assert.doesNotMatch(ftsSql, /scope\s+IN/i, 'FTS 分支的 WHERE 里出现 scope 过滤 —— 这正是那个 298 秒的查询');
+  assert.doesNotMatch(ftsSql, /timestamp\s*>=/i, 'FTS 分支的 WHERE 里也不该有时间过滤');
+  assert.match(ftsSql, /d\.scope AS scope/i, 'scope 要留在投影里，交给 JS 过滤');
+
+  const instr = index._matchStatement({ useFts: false, scopes: ['tool'], hasSince: true });
+  const instrSql = String(instr.sourceSQL || instr.expandedSQL || '');
+  assert.match(instrSql, /scope\s+IN/i, 'instr 分支相反：scope 必须留在 WHERE，那是它唯一的收窄手段');
+});
+
+test('FTS 路径 + scope 过滤：JS 侧过滤的结果必须和语义一致', (t) => {
+  const index = freshIndex(t, 'fts-js-filter');
+  index.replaceSource(makeSource('s1', 'codex', '无关标题', [
+    { id: 'u1', scope: 'user', text: '我问了 SHAPEPROBE 这个词' },
+    { id: 't1', scope: 'tool', text: 'rg SHAPEPROBE C:/somewhere' },
+    { id: 'a1', scope: 'assistant', text: '回答里也有 SHAPEPROBE' },
+  ]));
+  assert.equal(index.search({ query: 'SHAPEPROBE' }).results[0].matchCount, 3, '不限 scope 时三条都算');
+  assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['tool'] }).results[0].matchCount, 1);
+  assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['user'] }).results[0].matchCount, 1);
+  assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['user', 'assistant'] }).results[0].matchCount, 2);
+  assert.equal(index.search({ query: 'SHAPEPROBE', scopes: ['title'] }).totalSessions, 0);
+});
+
 test('时间过滤下推后，超出时间窗的命中不再被算进 matchCount', (t) => {
   const index = freshIndex(t, 'since');
   const now = Date.now();

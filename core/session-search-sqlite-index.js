@@ -254,20 +254,35 @@ class SqliteSessionSearchIndex {
    * continue），所以只取命中行与原实现**语义完全等价**，只是不再搬无关数据。
    */
   _matchStatement({ useFts, scopes, hasSince }) {
-    const scopeCount = scopes ? scopes.length : 0;
-    const cacheKey = `${useFts ? 'fts' : 'instr'}|${scopeCount}|${hasSince ? 't' : 'f'}`;
+    // ⚠ FTS 分支绝不能把 scope 放进 WHERE。
+    //
+    // `docs_fts MATCH ? AND d.scope IN (...)` 会让查询规划器改用 idx_docs_scope_time
+    // 当驱动表，对该 scope 的全部行逐行去 FTS 里验证，同时 LIMIT 也失去短路能力。
+    // 实测（真实 1.8GB 索引）：
+    //     powershell + scope IN ('tool')   在 WHERE 里 → 298477 ms
+    //                                       在投影里 + JS 过滤 →     16 ms
+    //     status     + scope IN ('tool')   60630 ms  →  29 ms
+    //     session    + scope IN ('tool')   50617 ms  →  26 ms
+    // 所以 FTS 分支只把 scope/timestamp 放进**投影**，由调用方在 JS 里过滤。
+    // instr 分支相反：scope 必须留在 WHERE 里，那是它唯一的收窄手段
+    //     （'归档' 全表 821ms → 三档 188ms → 只 title 2ms）。
+    const pushDown = !useFts;
+    const scopeCount = pushDown && scopes ? scopes.length : 0;
+    const pushSince = pushDown && hasSince;
+    const cacheKey = `${useFts ? 'fts' : 'instr'}|${scopeCount}|${pushSince ? 't' : 'f'}`;
     let statement = this.matchStatementCache.get(cacheKey);
     if (statement) return statement;
     const where = [];
     if (useFts) where.push('docs_fts MATCH ?');
     else where.push('instr(d.normalized_text, ?) > 0');
     if (scopeCount) where.push(`d.scope IN (${scopes.map(() => '?').join(',')})`);
-    if (hasSince) where.push('d.timestamp >= ?');
+    if (pushSince) where.push('d.timestamp >= ?');
     const from = useFts
       ? 'FROM docs_fts JOIN docs d ON d.id = docs_fts.rowid'
       : 'FROM docs d';
     statement = this.db.prepare(
-      `SELECT d.id AS id, d.session_key AS session_key ${from} WHERE ${where.join(' AND ')} LIMIT ?`,
+      `SELECT d.id AS id, d.session_key AS session_key, d.scope AS scope, d.timestamp AS timestamp `
+      + `${from} WHERE ${where.join(' AND ')} LIMIT ?`,
     );
     this.matchStatementCache.set(cacheKey, statement);
     return statement;
@@ -403,22 +418,31 @@ class SqliteSessionSearchIndex {
     const limit = this.maxQueryDocs;
     const scopeList = Array.isArray(scopes) && scopes.length ? scopes : null;
     const hasSince = since !== null && since !== undefined;
-    const tail = [...(scopeList || []), ...(hasSince ? [since] : []), limit + 1];
     let rows = null;
+    let truncated = false;
     if (String(term).length >= 3) {
       try {
         rows = this._matchStatement({ useFts: true, scopes: scopeList, hasSince })
-          .all(quoteFtsTerm(term), ...tail);
+          .all(quoteFtsTerm(term), limit + 1);
+        // 截断要按**过滤前**的行数判断：LIMIT 发生在 SQL 里，JS 过滤在其后。
+        truncated = rows.length > limit;
+        if (scopeList || hasSince) {
+          const allowed = scopeList ? new Set(scopeList) : null;
+          rows = rows.filter(row => (!allowed || allowed.has(row.scope))
+            && (!hasSince || Number(row.timestamp) >= since));
+        }
       } catch {
         // FTS 语法/分词器拒绝这个词（例如全是标点），退回顺序扫描。
         rows = null;
+        truncated = false;
       }
     }
     if (!rows) {
       rows = this._matchStatement({ useFts: false, scopes: scopeList, hasSince })
-        .all(term, ...tail);
+        .all(term, ...(scopeList || []), ...(hasSince ? [since] : []), limit + 1);
+      truncated = rows.length > limit;
     }
-    return { rows: rows.slice(0, limit), truncated: rows.length > limit };
+    return { rows: rows.slice(0, limit), truncated };
   }
 
   /** 按 id 批量取命中行的完整内容（打分与摘要需要正文）。 */
