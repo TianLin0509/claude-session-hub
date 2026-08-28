@@ -260,3 +260,30 @@ test('多词都命中时，语义仍然是 AND（惰性求值不能改变结果�
   assert.equal(index.search({ query: 'BETAWORD ALPHAWORD' }).totalSessions, 1, '词序不该影响结果');
   assert.equal(index.search({ query: 'ALPHAWORD' }).totalSessions, 2);
 });
+
+test('短词档要能预热，且预热是只读幂等的', (t) => {
+  const index = freshIndex(t, 'prewarm');
+  index.replaceSource(makeSource('s1', 'codex', '标题里有蜃', [
+    { id: 'u1', scope: 'user', text: '提问里也有蜃' },
+    { id: 't1', scope: 'tool', text: '工具输出里有蜃' },
+  ]));
+  const before = index.getStats();
+  // 罕见 2 字词必须扫完整个短词 scope 才知道没有更多命中，冷缓存下实测 1241ms；
+  // 预热一次 ~75ms 之后同一个查询 65ms。预热本身不能改数据。
+  assert.equal(index.prewarmShortTermScopes(), true);
+  assert.equal(index.prewarmShortTermScopes(), true, '幂等，可以反复调');
+  const after = index.getStats();
+  assert.equal(after.sessions, before.sessions);
+  assert.equal(after.documents, before.documents);
+  assert.equal(index.search({ query: '蜃' }).totalSessions, 1, '预热之后照常能搜');
+});
+
+test('engine 构造与刷新之后都要预热短词档', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-search-engine.js'), 'utf8');
+  const hooks = src.split('\n').filter(line => line.includes('prewarmShortTermScopes'));
+  assert.ok(hooks.length >= 2,
+    `构造时和刷新完成后都要预热，实际只找到 ${hooks.length} 处`);
+  for (const line of hooks) {
+    assert.match(line, /setImmediate/, '预热必须放进 setImmediate，别挡住构造和第一次查询');
+  }
+});

@@ -511,6 +511,28 @@ class SqliteSessionSearchIndex {
     return { rows: out, truncated };
   }
 
+  /**
+   * 把短词要扫的那几档（标题 / 我的提问 / AI 回答）的页拉进缓存。
+   *
+   * 2026-08-28 压测：罕见的 2 字词（「梦境」全库只有 47 条命中）必须扫完整个短词
+   * scope 才能确定没有更多，冷缓存下 1241ms —— 而这恰恰是用户最常打的那种词。
+   * 这几档一共只有 11.5MB（tool 是 146MB，不预热），一次 75ms 就能把冷启动那一刀
+   * 吃掉：预热后同一个查询 65ms。
+   *
+   * 只读、幂等、失败无所谓 —— 纯粹是把页读进 OS/SQLite 缓存。
+   */
+  prewarmShortTermScopes() {
+    try {
+      const placeholders = SHORT_TERM_SCOPES.map(() => '?').join(',');
+      this.db.prepare(
+        `SELECT count(*) AS c, sum(length(normalized_text)) AS b FROM docs WHERE scope IN (${placeholders})`,
+      ).get(...SHORT_TERM_SCOPES);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** 只给最终展示的那几条取正文，用来生成摘要。 */
   _snippetTextByIds(ids) {
     const map = new Map();

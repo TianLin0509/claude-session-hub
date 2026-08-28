@@ -192,6 +192,13 @@ class SessionSearchService {
     //
     // 但 this._status 本来就是**实时**的：子进程在 indexing 过程中会主动 push
     // {type:'status'}（见 _handleChildMessage）。直接返回缓存即可，永远不会被阻塞。
+    //
+    // 唯一的例外：子进程还没起来过（关了 prewarm 的隔离实例、或刚启动还没搜过），
+    // 这时缓存里是初始占位值，会一直显示「未就绪 / 0 个会话」。所以**顺手异步问
+    // 一次**，不 await —— 本次仍然立刻返回缓存，下一次轮询就是真实数据。
+    if (!this._child) {
+      this._request('status').catch(() => {});
+    }
     return Promise.resolve({ ...this._status });
   }
 

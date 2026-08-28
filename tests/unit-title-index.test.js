@@ -172,9 +172,16 @@ test('重建索引时不能饿死状态与查询', () => {
   const statusFn = service.slice(service.indexOf('  status() {'));
   const statusBody = statusFn.slice(0, statusFn.indexOf('\n  prewarm('))
     .split('\n').filter(line => !line.trim().startsWith('//')).join('\n');
-  assert.doesNotMatch(statusBody, /_request\('status'\)/,
-    'status() 不能往忙着重建索引的子进程发往返请求，父进程本来就有实时缓存');
-  assert.match(statusBody, /Promise\.resolve\(\{ \.\.\.this\._status \}\)/);
+  // 不变量是「立刻返回缓存」，不是「不许碰子进程」：
+  // 子进程还没起来时会 fire-and-forget 问一次，让下一轮轮询有真实数据，
+  // 但**本次**必须立刻用缓存返回，不能把这个往返 return 出去。
+  assert.doesNotMatch(statusBody, /return\s+this\._request\('status'\)/,
+    'status() 不能把往返请求 return 出去 —— 子进程在重建索引时这条会排到整批解析后面');
+  assert.match(statusBody, /Promise\.resolve\(\{ \.\.\.this\._status \}\)/,
+    'status() 必须立刻返回父进程的实时缓存');
+  const lastReturn = statusBody.slice(statusBody.lastIndexOf('return'));
+  assert.match(lastReturn, /Promise\.resolve\(\{ \.\.\.this\._status \}\)/,
+    'status() 的返回值必须是缓存，不能是子进程往返');
 
   const engine = fs.readFileSync(path.join(root, 'core', 'session-search-engine.js'), 'utf8');
   const loop = engine.slice(engine.indexOf('for (const descriptor of descriptors) {'));

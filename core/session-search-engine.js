@@ -84,6 +84,10 @@ class SessionSearchEngine {
     };
     this.emitStatus = emitStatus;
     this.index = new SqliteSessionSearchIndex(databasePath, options);
+    // 短词（1~2 字，中文最常打的长度）要顺序扫「标题 / 我的提问 / AI 回答」三档。
+    // 这几档一共十几 MB，冷缓存下第一次查要 1241ms；预热一次只要 ~75ms，之后同一个
+    // 查询 65ms。放进 setImmediate：既不挡构造，也不挡第一次查询。
+    setImmediate(() => { try { this.index.prewarmShortTermScopes(); } catch { /* 预热失败无所谓 */ } });
     this.refreshPromise = null;
     this.lastRefreshAt = Number(this.index.getMeta('lastRefreshAt', 0)) || 0;
     const stats = this.index.getStats();
@@ -318,6 +322,8 @@ class SessionSearchEngine {
       this.index.pruneSources(activeKeys);
       this.lastRefreshAt = Date.now();
       this.index.setMeta('lastRefreshAt', this.lastRefreshAt);
+      // 刚重写过大量页，缓存被冲掉了，重新预热短词档
+      setImmediate(() => { try { this.index.prewarmShortTermScopes(); } catch { /* 同上 */ } });
       const stats = this.index.getStats();
       staleSources = Math.max(staleSources, Number(stats.staleSources) || 0);
       this._emit({
