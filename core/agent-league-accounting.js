@@ -382,12 +382,18 @@ function markPortfolio(portfolioInput, snapshot, options = {}) {
     return { ...position, name: prices.get(position.symbol).name || position.name, lastPrice: price, marketValue: value };
   });
   const nav = roundMoney(portfolio.cash + marketValue);
-  const previous = portfolio.navHistory.length ? portfolio.navHistory[portfolio.navHistory.length - 1] : null;
-  const dailyReturn = previous && Number(previous.nav) > 0 ? nav / Number(previous.nav) - 1 : 0;
   const date = String(snapshot && snapshot.asOf || '');
+  const existingIndex = date ? portfolio.navHistory.findIndex((row) => row.date === date) : -1;
+  // executeOpen may mark an intraday point before recordClose replaces the same
+  // trading date. The close return must still use the prior trading day's close
+  // (or initial cash on day one), never that same-day opening mark.
+  const previous = existingIndex >= 0
+    ? portfolio.navHistory.slice(0, existingIndex).reverse().find((row) => row.date !== date) || null
+    : (portfolio.navHistory.length ? portfolio.navHistory[portfolio.navHistory.length - 1] : null);
+  const baselineNav = previous && Number(previous.nav) > 0 ? Number(previous.nav) : portfolio.initialCash;
+  const dailyReturn = baselineNav > 0 ? nav / baselineNav - 1 : 0;
   const point = { date, nav, cash: portfolio.cash, marketValue: roundMoney(marketValue), dailyReturn };
   if (date) {
-    const existingIndex = portfolio.navHistory.findIndex((row) => row.date === date);
     if (existingIndex >= 0) portfolio.navHistory[existingIndex] = point;
     else portfolio.navHistory.push(point);
   }

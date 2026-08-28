@@ -258,6 +258,29 @@ test('unbound Agent League Codex shell starts fresh instead of opening the resum
   }]);
 });
 
+test('virtual Agent League resumes with its isolated purpose and MCP scope', async () => {
+  const ipc = createFakeIpc();
+  const deps = createBaseDeps();
+  registerResumeSessionIpc(ipc, deps);
+
+  const session = await ipc.handlers.get('resume-session')(null, {
+    hubId: 'virtual-agent-unbound',
+    kind: 'codex',
+    purpose: 'agent-league-virtual',
+    codexSid: null,
+    cwd: 'C:\\league\\_virtual_debug\\agents\\virtual-agent',
+    title: 'Agent · 虚拟探针',
+  });
+
+  assert.strictEqual(session.opts.useResume, false);
+  assert.strictEqual(session.opts.codexResumePicker, false);
+  assert.strictEqual(session.opts.purpose, 'agent-league-virtual');
+  assert.strictEqual(session.opts.mcpProfile, 'lean');
+  assert.deepStrictEqual(session.opts.codexMcpEntries, [{
+    researchArgs: ['agent-league-virtual-virtual-agent', 3456, 'token', 'C:\\hub', { enableChuxin: true }],
+  }]);
+});
+
 test('unbound Agent League Claude shell starts fresh instead of continuing an unrelated session', async () => {
   const ipc = createFakeIpc();
   const deps = createBaseDeps();

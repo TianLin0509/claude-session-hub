@@ -59,6 +59,7 @@ function makeHarness(root, fakeHttp, extraDeps = {}) {
   const sessionManager = new EventEmitter();
   const sessions = new Map();
   const createdOptions = [];
+  const directWrites = [];
   let nextId = 0;
   sessionManager.createSession = (kind, opts) => {
     createdOptions.push({ kind, opts: { ...opts } });
@@ -72,6 +73,7 @@ function makeHarness(root, fakeHttp, extraDeps = {}) {
   sessionManager.getSession = id => sessions.get(id);
   sessionManager.listSessions = () => [...sessions.values()];
   sessionManager.closeSession = id => sessions.delete(id);
+  sessionManager.writeToSession = (id, data) => { directWrites.push({ id, data }); };
   const sentPrompts = [];
   const bridge = registerAgentLeagueIpc(ipc, {
     store, sessionManager, transcriptTap, getHookPort: () => 0, httpJson: fakeHttp,
@@ -79,7 +81,7 @@ function makeHarness(root, fakeHttp, extraDeps = {}) {
     sendToPty: async (sessionId, prompt) => { sentPrompts.push({ sessionId, prompt }); return true; },
     ...extraDeps,
   });
-  return { store, ipc, transcriptTap, sessionManager, sessions, createdOptions, sentPrompts, bridge };
+  return { store, ipc, transcriptTap, sessionManager, sessions, createdOptions, directWrites, sentPrompts, bridge };
 }
 
 function fakeMarketHttp() {
@@ -95,6 +97,7 @@ function fakeMarketHttp() {
     if (url.includes('/api/market/600001.SH/dashboard')) return { ok: true, body: {
       identity: { symbol: '600001.SH', name: '测试股' },
       quote: { symbol: '600001.SH', name: '测试股', price: 10.5, previous_close: 10, open: 10.2, quote_at: '2026-08-27T15:01:00+08:00', source: 'fixture', confidence: 'cross_checked' },
+      daily: { bars: [{ date: '2026-08-26', open: 9.8, close: 10, name: '测试股' }] },
     } };
     throw new Error(`unexpected URL ${url}`);
   };
@@ -391,6 +394,117 @@ test('missed prior-day opening execution is recovered from historical daily open
     assert.equal(row.trades.rows.length, 1);
     assert.equal(row.trades.rows[0].referencePrice, 9.8);
     assert.equal(row.latestDaily.decisionDate, '2026-08-27');
+    harness.bridge.stopScheduler();
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Agent League recovers a Codex launch command whose trailing Enter was swallowed', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-launch-enter-'));
+  try {
+    let readinessChecks = 0;
+    const harness = makeHarness(root, fakeMarketHttp(), {
+      cliReadyWindowsMs: [1, 1, 1],
+      waitCliReady: async () => { readinessChecks += 1; return readinessChecks >= 2; },
+    });
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const started = await harness.ipc.handlers.get('agent-league:run-day')(null, { trigger: 'test', force: true, decisionDate: '2026-08-27' });
+    assert.equal(started.ok, true);
+    await waitFor(() => harness.sentPrompts.length === 1, 'prompt after launch Enter recovery');
+    assert.deepEqual(harness.directWrites, [{ id: harness.sentPrompts[0].sessionId, data: '\r' }]);
+    assert.equal(readinessChecks, 2);
+    harness.bridge.stopScheduler();
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('manual weekend premarket click schedules the next official trading day', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-weekend-next-'));
+  try {
+    const harness = makeHarness(root, fakeMarketHttp());
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const started = await harness.ipc.handlers.get('agent-league:run-day')(null, {
+      trigger: 'manual',
+      now: new Date('2026-08-29T04:00:00.000Z'),
+    });
+    assert.equal(started.ok, true);
+    assert.equal(started.scheduledFrom, '2026-08-29');
+    assert.equal(started.decisionDate, '2026-08-31');
+    assert.equal(started.snapshot.decisionFor, '2026-08-31');
+    await waitFor(() => harness.sentPrompts.length === 1, 'weekend Monday prompt');
+    assert.match(harness.sentPrompts[0].prompt, /决策交易日：2026-08-31/);
+    harness.bridge.stopScheduler();
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('virtual live runtime uses a real Session turn while isolating trades, stats and dates from formal league', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-virtual-runtime-'));
+  try {
+    const harness = makeHarness(root, fakeMarketHttp());
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const initialized = harness.ipc.handlers.get('agent-league:virtual-initialize')(null, {
+      virtualDate: '2026-08-31', scenario: 'rally',
+    });
+    assert.equal(initialized.ok, true);
+    assert.equal(initialized.debug.virtualDate, '2026-08-31');
+    const virtualStore = harness.bridge.virtual.store;
+    assert.equal(virtualStore.listAgents().length, 1);
+
+    const started = await harness.ipc.handlers.get('agent-league-virtual:run-day')(null, { trigger: 'virtual-unit' });
+    assert.equal(started.ok, true);
+    assert.equal(started.run.environment, 'virtual');
+    await waitFor(() => harness.sentPrompts.length === 1, 'virtual DRAFT prompt');
+    const sessionId = harness.sentPrompts[0].sessionId;
+    assert.equal(harness.sessions.get(sessionId).purpose, 'agent-league-virtual');
+    assert.match(harness.sessions.get(sessionId).title, /^虚拟 Agent ·/);
+    assert.equal(harness.ipc.handlers.get('agent-league-virtual:list')(null, {}).agents[0].session.status, 'running');
+    assert.match(harness.sentPrompts[0].prompt, /虚拟实盘调试/);
+    const draft = makeDecision();
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: sessionId,
+      text: `\`\`\`agent-league-draft\n${JSON.stringify({ run_id: started.run.runId, decision_date: '2026-08-31', data_as_of: '2026-08-28', ...draft })}\n\`\`\``,
+    });
+    await waitFor(() => harness.sentPrompts.length === 2, 'virtual Hook prompt');
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: sessionId,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({ run_id: started.run.runId, decision_date: '2026-08-31', data_as_of: '2026-08-28', ...makeHook(draft) })}\n\`\`\``,
+    });
+    await waitFor(() => harness.ipc.handlers.get('agent-league-virtual:list')(null, {}).schedule.lastRunStatus === 'completed', 'virtual decision completion');
+
+    const opened = await harness.ipc.handlers.get('agent-league-virtual:execute-open')(null, { trigger: 'virtual-unit' });
+    assert.equal(opened.ok, true);
+    assert.equal(opened.results[0].trades.length, 1);
+    const closed = await harness.ipc.handlers.get('agent-league-virtual:record-close')(null, { trigger: 'virtual-unit' });
+    assert.equal(closed.ok, true);
+    const virtualRow = virtualStore.getAgent('chuxin-baseline');
+    assert(virtualRow.stats.positionWeight > 0);
+    assert(virtualRow.stats.totalReturn > 0);
+    assert(Math.abs(virtualRow.stats.dailyReturn - virtualRow.stats.totalReturn) < 1e-12, 'first-day daily and total return share the initial-cash baseline');
+    assert.equal(harness.store.getAgent('chuxin-baseline').trades.rows.length, 0, 'formal trades remain untouched');
+    assert.equal(harness.store.getAgent('chuxin-baseline').agent.decisionCount, 0, 'formal decisions remain untouched');
+
+    const weeklyStarted = await harness.ipc.handlers.get('agent-league-virtual:run-weekly')(null, { trigger: 'virtual-unit' });
+    assert.equal(weeklyStarted.ok, true);
+    await waitFor(() => harness.sentPrompts.length === 3, 'virtual weekly prompt');
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: sessionId,
+      text: `\`\`\`agent-league-weekly\n${JSON.stringify({
+        run_id: weeklyStarted.run.runId,
+        saturday_date: '2026-08-31',
+        summary: '虚拟周复盘完成。', process_win: '流程按顺序执行。', process_mistake: '样本仍少。',
+        lesson: '先验证过程，再解释盈亏。', strongest_counterexample: '单日结果不能证明策略。',
+        evidence_for: ['虚拟成交与统计一致'], evidence_against: ['只有一个交易日'], checklist_proposal: null,
+      })}\n\`\`\``,
+    });
+    await waitFor(() => virtualStore.getAgent('chuxin-baseline').latestWeekly && virtualStore.getAgent('chuxin-baseline').latestWeekly.status === 'completed', 'virtual weekly completion');
+    assert.equal(virtualStore.getAgent('chuxin-baseline').memory.candidates.length, 1);
+
+    const debugState = harness.ipc.handlers.get('agent-league:virtual-state')();
+    assert.equal(debugState.debug.phase, 'closed');
+    const selfTest = harness.ipc.handlers.get('agent-league:virtual-self-test')();
+    assert.equal(selfTest.report.ok, true);
+    const advanced = harness.ipc.handlers.get('agent-league:virtual-advance')(null, { scenario: 'mixed' });
+    assert.equal(advanced.ok, true);
+    assert.equal(advanced.debug.virtualDate, '2026-09-01');
+    assert.equal(advanced.debug.phase, 'pre-market');
     harness.bridge.stopScheduler();
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

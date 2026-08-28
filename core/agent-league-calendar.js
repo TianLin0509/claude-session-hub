@@ -61,6 +61,38 @@ function tradingDayStatus(date, calendar = EXCHANGE_CALENDAR) {
   return { isTradingDay: true, reason: 'exchange-open', certainty: 'official-calendar' };
 }
 
+function shiftIsoDate(date, days) {
+  const value = String(date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return '';
+  const cursor = new Date(`${value}T12:00:00.000Z`);
+  if (Number.isNaN(cursor.getTime())) return '';
+  cursor.setUTCDate(cursor.getUTCDate() + Number(days || 0));
+  return cursor.toISOString().slice(0, 10);
+}
+
+function adjacentTradingDay(date, direction, options = {}) {
+  const calendar = options.calendar || EXCHANGE_CALENDAR;
+  const step = direction < 0 ? -1 : 1;
+  let cursor = String(date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cursor)) return null;
+  if (options.includeCurrent === true && tradingDayStatus(cursor, calendar).isTradingDay) return cursor;
+  for (let count = 0; count < 370; count += 1) {
+    cursor = shiftIsoDate(cursor, step);
+    const status = tradingDayStatus(cursor, calendar);
+    if (status.isTradingDay) return cursor;
+    if (status.certainty === 'out-of-coverage') return null;
+  }
+  return null;
+}
+
+function nextTradingDay(date, options = {}) {
+  return adjacentTradingDay(date, 1, options);
+}
+
+function previousTradingDay(date, options = {}) {
+  return adjacentTradingDay(date, -1, options);
+}
+
 function parseClock(value, fallback) {
   const input = /^\d{2}:\d{2}$/.test(String(value || '')) ? String(value) : fallback;
   const [hour, minute] = input.split(':').map(Number);
@@ -70,6 +102,9 @@ function parseClock(value, fallback) {
 module.exports = {
   EXCHANGE_CALENDAR,
   chinaClock,
+  nextTradingDay,
   parseClock,
+  previousTradingDay,
+  shiftIsoDate,
   tradingDayStatus,
 };

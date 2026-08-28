@@ -8,6 +8,7 @@ const {
   computeStats,
   fees,
   lotRuleForSymbol,
+  markPortfolio,
   parseDraftMarkdown,
   parseHookMarkdown,
   settlePendingTargets,
@@ -154,6 +155,24 @@ test('sell settlement applies stamp tax and updates ranking statistics', () => {
   const stats = computeStats(exited.portfolio, [...result.trades, ...exited.trades]);
   assert.equal(stats.tradeCount, 2);
   assert.equal(stats.winRate, 1);
+});
+
+test('same-day close return uses prior close rather than the opening mark', () => {
+  const portfolio = {
+    initialCash: 500000,
+    cash: 400000,
+    positions: [{ symbol: '600001.SH', name: '测试', quantity: 10000, avgCost: 10, lastPrice: 10 }],
+    navHistory: [{ date: '2026-08-28', nav: 500000, cash: 400000, marketValue: 100000, dailyReturn: 0 }],
+  };
+  const opened = markPortfolio(portfolio, {
+    asOf: '2026-08-31', prices: { '600001.SH': { name: '测试', close: 10.1 } },
+  });
+  const closed = markPortfolio(opened.portfolio, {
+    asOf: '2026-08-31', prices: { '600001.SH': { name: '测试', close: 10.5 } },
+  });
+  assert(Math.abs(opened.dailyReturn - 0.002) < 1e-12);
+  assert(Math.abs(closed.dailyReturn - 0.01) < 1e-12);
+  assert.equal(closed.portfolio.navHistory.length, 2, 'close replaces the intraday point for the same date');
 });
 
 test('weekly review separates process from result and keeps checklist changes as proposals', () => {

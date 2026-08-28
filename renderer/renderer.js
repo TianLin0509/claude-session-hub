@@ -1704,7 +1704,7 @@ window.__chuxinSessionBridge = {
     hostEl.appendChild(empty);
   },
   list() {
-    return Array.from(sessions.values()).filter((row) => row && ['chuxin-research', 'agent-league'].includes(row.purpose));
+    return Array.from(sessions.values()).filter((row) => row && ['chuxin-research', 'agent-league', 'agent-league-virtual'].includes(row.purpose));
   },
   get(sessionId) {
     return sessions.get(sessionId) || null;

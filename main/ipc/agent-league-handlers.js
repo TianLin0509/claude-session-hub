@@ -16,9 +16,11 @@ const {
 const {
   EXCHANGE_CALENDAR,
   chinaClock,
+  nextTradingDay,
   parseClock,
   tradingDayStatus,
 } = require('../../core/agent-league-calendar.js');
+const { AgentLeagueVirtualDebug } = require('../../core/agent-league-virtual-debug.js');
 const {
   PHILOSOPHY_TEMPLATES,
   getPhilosophy,
@@ -33,6 +35,7 @@ const { waitCliReady, sendToPty } = require('../../core/group-chat-watcher.js');
 const API_BASE = process.env.CHUXIN_API_BASE || 'http://127.0.0.1:3004';
 const WORKSPACE = 'hub-primary-workspace';
 const AGENT_SCOPE_PREFIX = 'agent-league-';
+const VIRTUAL_AGENT_SCOPE_PREFIX = 'agent-league-virtual-';
 const SCHEDULER_CHECK_MS = 60 * 1000;
 const DEFAULT_AGENT_TURN_TIMEOUT_MS = 30 * 60 * 1000;
 const PROVIDERS = Object.freeze({
@@ -267,11 +270,17 @@ async function fetchTargetContexts(options = {}) {
     const targetDate = String(options.targetDate || '');
     if (response.ok && targetDate && (!quote || quote.quoteDate !== targetDate)) {
       const historical = findDailyBar(response.body, targetDate);
-      if (historical) quote = { symbol, name: historical.name || symbol, ...historical };
+      quote = historical ? { symbol, name: historical.name || symbol, ...historical } : null;
     }
     return quote
       ? { ok: true, ...quote }
-      : { ok: false, symbol, error: String(response.error || response.status || 'quote-unavailable') };
+      : {
+        ok: false,
+        symbol,
+        error: targetDate && response.ok
+          ? `quote-date-mismatch:${targetDate}`
+          : String(response.error || response.status || 'quote-unavailable'),
+      };
   });
   return Object.fromEntries(rows.map((row) => [row.symbol, row]));
 }
@@ -396,8 +405,12 @@ function buildDraftPrompt(agentRow, snapshot, runId) {
     `决策交易日：${snapshot.decisionFor}`,
     `可用数据截至：${snapshot.asOf}`,
     '',
+    ...(snapshot.virtualDebug ? [
+      '> 【虚拟实盘调试】本轮时钟、候选与价格全部是确定性合成数据；不会进入正式排行榜，也不得把任何内容当成真实证券事实。',
+      '',
+    ] : []),
     '这是模拟交易，不连接券商。你负责决定完整目标组合和风险；系统只按真实账户申报单位、现金和费用机械执行。',
-    `本轮在 ${snapshot.decisionFor} 盘前锁定，锁定后按该交易日真实开盘价模拟执行，盘中不再调用你修改订单。`,
+    `本轮在 ${snapshot.decisionFor} 盘前锁定，锁定后按该交易日${snapshot.virtualDebug ? '虚拟' : '真实'}开盘价模拟执行，盘中不再调用你修改订单。`,
     '',
     '## 必须读取',
     '',
@@ -411,8 +424,12 @@ function buildDraftPrompt(agentRow, snapshot, runId) {
     '',
     '## 决策边界',
     '',
-    '- 投资范围是除北交所外的沪深 A 股全市场。冻结候选池只是高优先级研究入口，不是硬性股票白名单。',
-    '- 若研究候选池外股票，必须通过初心只读工具补充可追溯依据；不得凭模型记忆猜行情。',
+    snapshot.virtualDebug
+      ? '- 虚拟调试只能选择本快照列出的合成标的或当前已有虚拟持仓；禁止引入快照外真实股票。'
+      : '- 投资范围是除北交所外的沪深 A 股全市场。冻结候选池只是高优先级研究入口，不是硬性股票白名单。',
+    snapshot.virtualDebug
+      ? '- 不调用真实行情补充虚拟数据；所有结论只服务于功能验收。'
+      : '- 若研究候选池外股票，必须通过初心只读工具补充可追溯依据；不得凭模型记忆猜行情。',
     '- 系统不设置单票或总仓位硬风控；你必须在自己的 CHECKLIST 和后续 Hook 中为仓位负责。',
     '- 完整股票目标权重与现金目标之和必须接近 100%。',
     '- 不得读取其他 Agent 的文件或答案，不得事后改写历史。',
@@ -458,6 +475,7 @@ function buildHookPrompt(agentRow, snapshot, runId, draft, targetContexts = {}) 
     '# 初心 Agent 投资联赛 · 决策前 Hook', '',
     `Agent：${agent.name}（同一个普通 AI Hub Session）`,
     `Run ID：${runId}`, `决策交易日：${snapshot.decisionFor}`, `数据截至：${snapshot.asOf}`, '',
+    ...(snapshot.virtualDebug ? ['> 【虚拟实盘调试】继续使用同一份确定性合成快照；不得调用或混入真实行情。', ''] : []),
     '你现在不是重新选股，也不是为了让草案通过而找理由。请审查刚才已经冻结的 DRAFT，最多修订一次。',
     '先找最强违规项和反对证据，再决定 PASS / REVISE / HOLD。不得新增 DRAFT 中没有的交易股票。', '',
     '## 必须重新读取', '',
@@ -550,10 +568,13 @@ function publicWeeklyState(value) {
   };
 }
 
-function publicAgent(row, sessionManager) {
+function publicAgent(row, sessionManager, options = {}) {
   const live = row.session && row.session.hubSessionId && sessionManager
     ? sessionManager.getSession(row.session.hubSessionId)
     : null;
+  const automationRunning = !!(row.session && row.session.hubSessionId
+    && options.pendingSessionIds instanceof Set
+    && options.pendingSessionIds.has(row.session.hubSessionId));
   const philosophy = getPhilosophy(row.agent.philosophyKey) || {
     key: row.agent.philosophyKey,
     title: row.agent.philosophyTitle,
@@ -592,7 +613,9 @@ function publicAgent(row, sessionManager) {
     session: {
       ...row.session,
       live: !!live,
-      status: live ? (live.status || 'idle') : (row.session.status || (row.session.hubSessionId ? 'restorable' : 'unbound')),
+      status: automationRunning
+        ? 'running'
+        : live ? (live.status || 'idle') : (row.session.status || (row.session.hubSessionId ? 'restorable' : 'unbound')),
       nativeSession: live ? { ...(row.session.nativeSession || {}), ...nativeSessionMeta(live) } : (row.session.nativeSession || {}),
     },
     recentTrades: (row.trades.rows || []).slice(-5).reverse(),
@@ -604,7 +627,7 @@ function publicAgent(row, sessionManager) {
   };
 }
 
-function registerAgentLeagueIpc(ipcMain, deps = {}) {
+function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   const {
     sessionManager = null,
     transcriptTap = null,
@@ -618,8 +641,25 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
   const request = deps.httpJson || httpJson;
   const waitReady = deps.waitCliReady || waitCliReady;
   const sendPrompt = deps.sendToPty || sendToPty;
+  const channelPrefix = String(deps.channelPrefix || 'agent-league');
+  const channel = (name) => `${channelPrefix}:${name}`;
+  const scopePrefix = String(deps.scopePrefix || AGENT_SCOPE_PREFIX);
+  const sessionPurpose = String(deps.sessionPurpose || 'agent-league');
+  const sessionTitlePrefix = String(deps.sessionTitlePrefix || 'Agent ·');
+  const environment = String(deps.environment || 'live');
+  const enforceMarketClock = deps.enforceMarketClock !== false;
+  const autoStartScheduler = deps.autoStartScheduler !== false;
+  const defaultDecisionDate = typeof deps.getDecisionDate === 'function' ? deps.getDecisionDate : () => '';
+  const decisionSnapshotBuilder = deps.buildDecisionSnapshot || buildFrozenSnapshot;
+  const priceSnapshotBuilder = deps.buildPriceSnapshot || buildLivePriceSnapshot;
+  const targetContextBuilder = deps.fetchTargetContexts || fetchTargetContexts;
+  const emit = (name, payload = {}) => sendToRenderer(channel(name), { environment, ...payload });
   const agentTurnTimeoutMs = Math.max(100, Number(deps.agentTurnTimeoutMs || DEFAULT_AGENT_TURN_TIMEOUT_MS));
+  const cliReadyWindowsMs = Array.isArray(deps.cliReadyWindowsMs) && deps.cliReadyWindowsMs.length
+    ? deps.cliReadyWindowsMs.map((value) => Math.max(1, Number(value) || 1))
+    : [10000, 18000, 32000];
   const pendingByHubSession = new Map();
+  const publicRow = (row) => publicAgent(row, sessionManager, { pendingSessionIds: new Set(pendingByHubSession.keys()) });
   let currentRun = null;
   let schedulerTimer = null;
   const initialSchedule = store.getSchedule();
@@ -632,7 +672,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     const hookPort = Number(getHookPort() || 0);
     if (!hookPort) return options;
     const hubDataDir = getHubDataDir();
-    const scopeId = `${AGENT_SCOPE_PREFIX}${agentId}`;
+    const scopeId = `${scopePrefix}${agentId}`;
     if (kind === 'claude') {
       options.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, scopeId, hookPort, hookToken, kind, { enableChuxin: true });
     } else if (kind === 'codex') {
@@ -653,10 +693,10 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     const options = {
       ...(existingHubId ? { id: existingHubId } : {}),
       cwd: row.folder,
-      title: `Agent · ${row.agent.name}`,
+      title: `${sessionTitlePrefix} ${row.agent.name}`,
       model: selection.model,
       userRenamed: true,
-      purpose: 'agent-league',
+      purpose: sessionPurpose,
       hiddenFromSidebar: false,
       ...researchMcpOptions(selection.kind, row.agent.id),
       ...(resume || {}),
@@ -669,7 +709,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       status: 'active',
       nativeSession: { ...(row.session.nativeSession || {}), ...nativeSessionMeta(session) },
     });
-    sendToRenderer('agent-league:session-updated', { agent: publicAgent(updated, sessionManager) });
+    emit('session-updated', { agent: publicRow(updated) });
     return session;
   }
 
@@ -692,7 +732,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
         return createNativeSession(row, null);
       }
       const updated = store.bindSession(agentId, { status: live.status || 'active', nativeSession: nativeSessionMeta(live) });
-      sendToRenderer('agent-league:session-updated', { agent: publicAgent(updated, sessionManager) });
+      emit('session-updated', { agent: publicRow(updated) });
       return live;
     }
     if (hubId && !resume) {
@@ -701,6 +741,27 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       return createNativeSession(row, null);
     }
     return createNativeSession(row, resume);
+  }
+
+  async function waitForAgentCliReady(sessionId, row, stage) {
+    const kind = row && row.agent && row.agent.kind;
+    const codexRuntime = kind === 'codex' || kind === 'deepseek';
+    const windows = codexRuntime ? cliReadyWindowsMs : [60000];
+    for (let index = 0; index < windows.length; index += 1) {
+      if (await waitReady(sessionId, kind, windows[index])) return true;
+      if (!codexRuntime || index >= windows.length - 1 || !sessionManager
+          || typeof sessionManager.writeToSession !== 'function') continue;
+      const live = typeof sessionManager.getSession === 'function' ? sessionManager.getSession(sessionId) : null;
+      // Once a native SID exists, Codex itself has launched; an Enter at that
+      // point could only interfere with a busy TUI. Recovery is exclusively for
+      // the observed host-shell state where Hub wrote the long launch command
+      // but PowerShell's paste handling swallowed its trailing newline.
+      if (live && live.codexSid) continue;
+      const signal = index === 0 ? '\r' : '\n';
+      console.warn(`[agent-league] ${stage} CLI launch not ready after ${windows.slice(0, index + 1).reduce((sum, value) => sum + value, 0)}ms; sending isolated ${signal === '\r' ? 'CR' : 'LF'} recovery for ${String(sessionId).slice(0, 8)}`);
+      sessionManager.writeToSession(sessionId, signal);
+    }
+    return false;
   }
 
   function promptWasSubmitted(result) {
@@ -722,6 +783,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     if (!currentRun) return null;
     return {
       runId: currentRun.runId,
+      environment,
       mode: currentRun.mode || 'daily',
       decisionDate: currentRun.decisionDate || currentRun.asOf,
       asOf: currentRun.asOf,
@@ -736,7 +798,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
   }
 
   function emitRunUpdate() {
-    sendToRenderer('agent-league:run-updated', { run: runPublicState() });
+    emit('run-updated', { run: runPublicState() });
   }
 
   function clearPending(sessionId) {
@@ -794,7 +856,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     if (currentRun.leaseTimer) clearInterval(currentRun.leaseTimer);
     store.releaseRunLease(currentRun.leaseToken);
     currentRun = null;
-    sendToRenderer('agent-league:run-finished', { run: finished });
+    emit('run-finished', { run: finished });
     return true;
   }
 
@@ -824,7 +886,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     } catch (persistError) {
       console.warn('[agent-league] failed to persist run failure:', persistError && persistError.message);
     }
-    sendToRenderer('agent-league:agent-failed', { runId: currentRun.runId, agentId, message: String(error && error.message || error) });
+    emit('agent-failed', { runId: currentRun.runId, agentId, message: String(error && error.message || error) });
     emitRunUpdate();
   }
 
@@ -855,12 +917,12 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       processing: false,
     };
     setPending(session.id, pending);
-    const ready = await waitReady(session.id, row.agent.kind, 60000);
+    const ready = await waitForAgentCliReady(session.id, row, '盘前 DRAFT');
     if (!ready) throw new Error(`${row.agent.provider} CLI 在 60 秒内未就绪`);
     const sent = await sendPrompt(session.id, prompt, row.agent.kind);
     if (!promptWasSubmitted(sent)) throw new Error('每日 Prompt 写入 PTY 后未得到 provider turn 启动确认');
     store.bindSession(agentId, { status: 'running', nativeSession: nativeSessionMeta(session) });
-    sendToRenderer('agent-league:agent-started', { runId: currentRun.runId, agentId, sessionId: session.id });
+    emit('agent-started', { runId: currentRun.runId, agentId, sessionId: session.id });
   }
 
   async function startWeeklyAgentTurn(agentId) {
@@ -888,12 +950,12 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       processing: false,
     };
     setPending(session.id, pending);
-    const ready = await waitReady(session.id, row.agent.kind, 60000);
+    const ready = await waitForAgentCliReady(session.id, row, '周度沉淀');
     if (!ready) throw new Error(`${row.agent.provider} CLI 在 60 秒内未就绪`);
     const sent = await sendPrompt(session.id, prompt, row.agent.kind);
     if (!promptWasSubmitted(sent)) throw new Error('周六沉淀 Prompt 写入 PTY 后未得到 provider turn 启动确认');
     store.bindSession(agentId, { status: 'running', nativeSession: nativeSessionMeta(session) });
-    sendToRenderer('agent-league:agent-started', { runId: currentRun.runId, agentId, sessionId: session.id, mode: 'weekly' });
+    emit('agent-started', { runId: currentRun.runId, agentId, sessionId: session.id, mode: 'weekly' });
   }
 
   async function startAgentTurn(agentId) {
@@ -925,9 +987,35 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     if (currentRun) return { ok: false, error: 'run-busy', message: '上一轮联赛仍在运行', run: runPublicState() };
     let rows = store.listAgents();
     if (!rows.length) return { ok: false, error: 'no-agents', message: '请先创建至少一个 Agent' };
-    const decisionDate = String(input.decisionDate || chinaClock(input.now || new Date()).date).slice(0, 10);
-    const trading = tradingDayStatus(decisionDate);
-    if (!input.force && !trading.isTradingDay) {
+    const clock = chinaClock(input.now || new Date());
+    const explicitDecisionDate = !!input.decisionDate;
+    let decisionDate = String(input.decisionDate || defaultDecisionDate() || clock.date).slice(0, 10);
+    let trading = tradingDayStatus(decisionDate);
+    let scheduledFrom = '';
+    // 手动“盘前决策”表达的是为下一次开市准备，不是“今天必须开市”。
+    // 周末/休市日，或当日盘前截止后点击时，自动落到官方日历中的
+    // 下一交易日；显式传入的非交易日仍拒绝，避免调用方日期写错后
+    // 被静默改写。
+    if (enforceMarketClock && !input.force && !trading.isTradingDay && !explicitDecisionDate && String(input.trigger || 'manual') === 'manual') {
+      const next = nextTradingDay(decisionDate);
+      if (next) {
+        scheduledFrom = decisionDate;
+        decisionDate = next;
+        trading = tradingDayStatus(decisionDate);
+      }
+    }
+    if (enforceMarketClock && !input.force && trading.isTradingDay && !explicitDecisionDate
+        && String(input.trigger || 'manual') === 'manual'
+        && decisionDate === clock.date
+        && clock.minutes >= parseClock(store.getSchedule().decisionCutoff, '09:15')) {
+      const next = nextTradingDay(decisionDate);
+      if (next) {
+        scheduledFrom = decisionDate;
+        decisionDate = next;
+        trading = tradingDayStatus(decisionDate);
+      }
+    }
+    if (enforceMarketClock && !input.force && !trading.isTradingDay) {
       return { ok: false, error: 'not-trading-day', message: `今天不运行交易决策：${trading.reason}`, calendar: trading };
     }
     const stalePendingDates = [...new Set(rows
@@ -945,7 +1033,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       }
     }
     if (stalePendingDates.length) rows = store.listAgents();
-    const snapshot = await buildFrozenSnapshot({
+    const snapshot = await decisionSnapshotBuilder({
       apiBase: input.apiBase || API_BASE,
       workspace: WORKSPACE,
       httpJson: request,
@@ -955,7 +1043,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     });
     const schedule = store.getSchedule();
     if (!input.force && schedule.lastDecisionDate === decisionDate && ['completed', 'running'].includes(schedule.lastRunStatus)) {
-      return { ok: true, alreadyRun: true, snapshot, schedule };
+      return { ok: true, alreadyRun: true, snapshot, schedule, decisionDate, scheduledFrom };
     }
     const runnableRows = rows.filter((row) => {
       const daily = store.getDaily(row.agent.id, decisionDate);
@@ -963,9 +1051,9 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     });
     if (!runnableRows.length) {
       store.saveSchedule({ ...schedule, lastSnapshotAsOf: snapshot.asOf, lastDecisionDate: decisionDate, lastRunStatus: 'completed' });
-      return { ok: true, alreadyRun: true, snapshot, schedule: store.getSchedule() };
+      return { ok: true, alreadyRun: true, snapshot, schedule: store.getSchedule(), decisionDate, scheduledFrom };
     }
-    const runId = `league-${decisionDate.replace(/-/g, '')}-${crypto.randomBytes(4).toString('hex')}`;
+    const runId = `league-${environment === 'virtual' ? 'virtual-' : ''}${decisionDate.replace(/-/g, '')}-${crypto.randomBytes(4).toString('hex')}`;
     const claim = store.claimRunLease({
       ownerHub: String(process.env.CLAUDE_HUB_DATA_DIR || 'default'),
       runId,
@@ -1007,16 +1095,16 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       lastRunStatus: 'running',
     });
     pumpQueue();
-    return { ok: true, run: runPublicState(), snapshot };
+    return { ok: true, run: runPublicState(), snapshot, decisionDate, scheduledFrom };
   }
 
   async function executeOpen(input = {}) {
     if (currentRun) return { ok: false, error: 'run-busy', message: 'Agent 决策/沉淀仍在运行' };
     const clock = chinaClock(input.now || new Date());
-    const decisionDate = String(input.decisionDate || clock.date).slice(0, 10);
+    const decisionDate = String(input.decisionDate || defaultDecisionDate() || clock.date).slice(0, 10);
     const trading = tradingDayStatus(decisionDate);
-    if (!input.force && !trading.isTradingDay) return { ok: false, error: 'not-trading-day', message: `今天不执行开盘订单：${trading.reason}` };
-    if (!input.force && decisionDate === clock.date && clock.minutes < parseClock(store.getSchedule().executionTime, '09:35')) {
+    if (enforceMarketClock && !input.force && !trading.isTradingDay) return { ok: false, error: 'not-trading-day', message: `今天不执行开盘订单：${trading.reason}` };
+    if (enforceMarketClock && !input.force && decisionDate === clock.date && clock.minutes < parseClock(store.getSchedule().executionTime, '09:35')) {
       return { ok: false, error: 'before-execution-time', message: `开盘执行时间尚未到：${store.getSchedule().executionTime || '09:35'}` };
     }
     const rows = store.listAgents().filter((row) => row.portfolio.pendingDecision
@@ -1027,7 +1115,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       for (const position of row.portfolio.positions || []) symbols.add(position.symbol);
       for (const target of row.portfolio.pendingDecision.decision.targets || []) symbols.add(target.symbol);
     }
-    const snapshot = await buildLivePriceSnapshot({
+    const snapshot = await priceSnapshotBuilder({
       apiBase: input.apiBase || API_BASE,
       workspace: WORKSPACE,
       httpJson: request,
@@ -1058,22 +1146,22 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       lastExecutionDate: decisionDate,
       lastExecutionStatus: errors.length ? (results.length ? 'partial' : 'failed') : 'completed',
     });
-    sendToRenderer('agent-league:execution-completed', { decisionDate, results, errors });
+    emit('execution-completed', { decisionDate, results, errors });
     return { ok: !errors.length, decisionDate, snapshotId: snapshot.snapshotId, results, errors };
   }
 
   async function recordClose(input = {}) {
     if (currentRun) return { ok: false, error: 'run-busy', message: 'Agent 决策/沉淀仍在运行' };
     const clock = chinaClock(input.now || new Date());
-    const decisionDate = String(input.decisionDate || clock.date).slice(0, 10);
+    const decisionDate = String(input.decisionDate || defaultDecisionDate() || clock.date).slice(0, 10);
     const trading = tradingDayStatus(decisionDate);
-    if (!input.force && !trading.isTradingDay) return { ok: false, error: 'not-trading-day', message: `今天不记录收盘结果：${trading.reason}` };
-    if (!input.force && decisionDate === clock.date && clock.minutes < parseClock(store.getSchedule().resultTime, '15:10')) {
+    if (enforceMarketClock && !input.force && !trading.isTradingDay) return { ok: false, error: 'not-trading-day', message: `今天不记录收盘结果：${trading.reason}` };
+    if (enforceMarketClock && !input.force && decisionDate === clock.date && clock.minutes < parseClock(store.getSchedule().resultTime, '15:10')) {
       return { ok: false, error: 'before-result-time', message: `收盘记账时间尚未到：${store.getSchedule().resultTime || '15:10'}` };
     }
     const rows = store.listAgents();
     const symbols = new Set(rows.flatMap((row) => (row.portfolio.positions || []).map((position) => position.symbol)));
-    const snapshot = await buildLivePriceSnapshot({
+    const snapshot = await priceSnapshotBuilder({
       apiBase: input.apiBase || API_BASE,
       workspace: WORKSPACE,
       httpJson: request,
@@ -1098,15 +1186,15 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       lastResultDate: decisionDate,
       lastResultStatus: errors.length ? (results.length ? 'partial' : 'failed') : 'completed',
     });
-    sendToRenderer('agent-league:close-completed', { decisionDate, results, errors });
+    emit('close-completed', { decisionDate, results, errors });
     return { ok: !errors.length, decisionDate, snapshotId: snapshot.snapshotId, results, errors };
   }
 
   async function runWeekly(input = {}) {
     if (currentRun) return { ok: false, error: 'run-busy', message: '上一轮联赛仍在运行', run: runPublicState() };
-    const saturdayDate = String(input.saturdayDate || chinaClock(input.now || new Date()).date).slice(0, 10);
+    const saturdayDate = String(input.saturdayDate || defaultDecisionDate() || chinaClock(input.now || new Date()).date).slice(0, 10);
     const clock = chinaClock(new Date(`${saturdayDate}T04:00:00.000Z`));
-    if (!input.force && clock.weekday !== 'Sat') {
+    if (enforceMarketClock && !input.force && clock.weekday !== 'Sat') {
       return { ok: false, error: 'not-saturday', message: '周度沉淀只在周六自动运行' };
     }
     const after = new Date(`${saturdayDate}T00:00:00.000Z`);
@@ -1187,6 +1275,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
   }
 
   function startScheduler() {
+    if (!autoStartScheduler) return null;
     if (schedulerTimer) return schedulerTimer;
     schedulerTimer = setInterval(() => {
       schedulerTick().then((result) => {
@@ -1208,15 +1297,15 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
 
   function isAuthorizedResearchScope(scopeId) {
     const value = String(scopeId || '');
-    if (!value.startsWith(AGENT_SCOPE_PREFIX)) return false;
-    const agentId = value.slice(AGENT_SCOPE_PREFIX.length);
+    if (!value.startsWith(scopePrefix)) return false;
+    const agentId = value.slice(scopePrefix.length);
     const row = store.getAgent(agentId);
     if (!row || !row.session.hubSessionId || !sessionManager) return false;
     return !!sessionManager.getSession(row.session.hubSessionId);
   }
 
   function listPublic(sort = 'return') {
-    return store.listAgents(sort).map((row) => publicAgent(row, sessionManager));
+    return store.listAgents(sort).map((row) => publicRow(row));
   }
 
   function promptWorkbench(agentId) {
@@ -1271,7 +1360,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     };
   }
 
-  ipcMain.handle('agent-league:catalog', () => ({
+  ipcMain.handle(channel('catalog'), () => ({
     ok: true,
     providers: providerCatalog(),
     philosophies: PHILOSOPHY_TEMPLATES.map((row) => ({ ...row })),
@@ -1285,18 +1374,19 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     },
     calendar: { ...EXCHANGE_CALENDAR, closedDates: [...EXCHANGE_CALENDAR.closedDates] },
   }));
-  ipcMain.handle('agent-league:list', (_event, input = {}) => ({
+  ipcMain.handle(channel('list'), (_event, input = {}) => ({
     ok: true,
+    environment,
     agents: listPublic(input.sort === 'asset' ? 'asset' : 'return'),
     schedule: store.getSchedule(),
     run: runPublicState(),
     root: store.root,
   }));
-  ipcMain.handle('agent-league:prompt-files', (_event, input = {}) => {
+  ipcMain.handle(channel('prompt-files'), (_event, input = {}) => {
     try { return { ok: true, ...promptWorkbench(String(input.agentId || '')) }; }
     catch (error) { return { ok: false, error: 'prompt-files-failed', message: error.message }; }
   });
-  ipcMain.handle('agent-league:save-prompt-file', (_event, input = {}) => {
+  ipcMain.handle(channel('save-prompt-file'), (_event, input = {}) => {
     try {
       const file = store.savePromptFile(
         String(input.agentId || ''),
@@ -1310,7 +1400,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       return { ok: false, error: error.code || 'save-prompt-file-failed', message: error.message };
     }
   });
-  ipcMain.handle('agent-league:create', (_event, input = {}) => {
+  ipcMain.handle(channel('create'), (_event, input = {}) => {
     try {
       const selection = validateProvider(String(input.provider || 'codex-cli'), String(input.model || ''));
       if (!selection.ok) return selection;
@@ -1327,36 +1417,36 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
         initialCash: Number(input.initialCash || 500000),
       });
       const session = createNativeSession(row);
-      return { ok: true, agent: publicAgent(store.getAgent(id), sessionManager), session };
+      return { ok: true, agent: publicRow(store.getAgent(id)), session };
     } catch (error) {
       return { ok: false, error: 'create-agent-failed', message: error.message };
     }
   });
-  ipcMain.handle('agent-league:ensure-session', (_event, input = {}) => {
+  ipcMain.handle(channel('ensure-session'), (_event, input = {}) => {
     try {
       const session = ensureAgentSession(String(input.agentId || ''));
-      return { ok: true, session, agent: publicAgent(store.getAgent(String(input.agentId || '')), sessionManager) };
+      return { ok: true, session, agent: publicRow(store.getAgent(String(input.agentId || ''))) };
     } catch (error) {
       return { ok: false, error: 'ensure-session-failed', message: error.message };
     }
   });
-  ipcMain.handle('agent-league:run-day', async (_event, input = {}) => {
+  ipcMain.handle(channel('run-day'), async (_event, input = {}) => {
     try { return await runDay({ ...input, trigger: input.trigger || 'manual' }); }
     catch (error) { return { ok: false, error: 'run-day-failed', message: error.message }; }
   });
-  ipcMain.handle('agent-league:execute-open', async (_event, input = {}) => {
+  ipcMain.handle(channel('execute-open'), async (_event, input = {}) => {
     try { return await executeOpen({ ...input, trigger: input.trigger || 'manual' }); }
     catch (error) { return { ok: false, error: 'execute-open-failed', message: error.message }; }
   });
-  ipcMain.handle('agent-league:record-close', async (_event, input = {}) => {
+  ipcMain.handle(channel('record-close'), async (_event, input = {}) => {
     try { return await recordClose({ ...input, trigger: input.trigger || 'manual' }); }
     catch (error) { return { ok: false, error: 'record-close-failed', message: error.message }; }
   });
-  ipcMain.handle('agent-league:run-weekly', async (_event, input = {}) => {
+  ipcMain.handle(channel('run-weekly'), async (_event, input = {}) => {
     try { return await runWeekly({ ...input, trigger: input.trigger || 'manual' }); }
     catch (error) { return { ok: false, error: 'run-weekly-failed', message: error.message }; }
   });
-  ipcMain.handle('agent-league:update-schedule', (_event, input = {}) => {
+  ipcMain.handle(channel('update-schedule'), (_event, input = {}) => {
     const previous = store.getSchedule();
     const next = store.saveSchedule({
       ...previous,
@@ -1381,11 +1471,11 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       currentRun.active.delete(pending.agentId);
       if (!currentRun.completed.includes(pending.agentId)) currentRun.completed.push(pending.agentId);
     }
-    sendToRenderer('agent-league:agent-completed', {
+    emit('agent-completed', {
       runId: pending.runId,
       mode: pending.kind,
       agentId: pending.agentId,
-      agent: publicAgent(updated, sessionManager),
+      agent: publicRow(updated),
     });
     emitRunUpdate();
     pumpQueue();
@@ -1420,12 +1510,17 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
         if (String(raw.decision_date || '') !== pending.decisionDate) throw new Error(`decision_date 不匹配：${raw.decision_date || '(empty)'}`);
         if (String(raw.data_as_of || '') !== pending.dataAsOf) throw new Error(`data_as_of 不匹配：${raw.data_as_of || '(empty)'}`);
         const existingSymbols = new Set((row.portfolio.positions || []).map((item) => item.symbol));
-        const draft = validateDecision(raw, { existingSymbols });
-        const targetContexts = await fetchTargetContexts({
+        const allowedSymbols = pending.snapshot && pending.snapshot.virtualDebug
+          ? new Set((pending.snapshot.candidates || []).map((item) => item.symbol))
+          : null;
+        const draft = validateDecision(raw, { existingSymbols, ...(allowedSymbols ? { allowedSymbols } : {}) });
+        const targetContexts = await targetContextBuilder({
           apiBase: API_BASE,
           workspace: WORKSPACE,
           httpJson: request,
           symbols: [...draft.targets.map((target) => target.symbol), ...existingSymbols],
+          targetDate: pending.dataAsOf,
+          snapshot: pending.snapshot,
         });
         const hookPrompt = buildHookPrompt(row, pending.snapshot, pending.runId, draft, targetContexts);
         const hookPromptHash = sha256(hookPrompt);
@@ -1442,12 +1537,12 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
         pending.draft = draft;
         pending.targetContexts = targetContexts;
         pending.hookPromptHash = hookPromptHash;
-        const ready = await waitReady(event.hubSessionId, row.agent.kind, 60000);
+        const ready = await waitForAgentCliReady(event.hubSessionId, row, '决策 Hook');
         if (!ready) throw new Error(`${row.agent.provider} CLI 在 Hook 前 60 秒内未就绪`);
         const sent = await sendPrompt(event.hubSessionId, hookPrompt, row.agent.kind);
         if (!promptWasSubmitted(sent)) throw new Error('Hook Prompt 写入 PTY 后未得到 provider turn 启动确认');
         armPendingTimeout(event.hubSessionId, pending);
-        sendToRenderer('agent-league:hook-started', { runId: pending.runId, agentId: pending.agentId, sessionId: event.hubSessionId });
+        emit('hook-started', { runId: pending.runId, agentId: pending.agentId, sessionId: event.hubSessionId });
         return;
       }
 
@@ -1457,10 +1552,13 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       if (String(raw.decision_date || '') !== pending.decisionDate) throw new Error(`decision_date 不匹配：${raw.decision_date || '(empty)'}`);
       if (String(raw.data_as_of || '') !== pending.dataAsOf) throw new Error(`data_as_of 不匹配：${raw.data_as_of || '(empty)'}`);
       const existingSymbols = new Set((row.portfolio.positions || []).map((item) => item.symbol));
-      const hook = validateHookReview(raw, { draft: pending.draft, existingSymbols });
+      const allowedSymbols = pending.snapshot && pending.snapshot.virtualDebug
+        ? new Set((pending.snapshot.candidates || []).map((item) => item.symbol))
+        : null;
+      const hook = validateHookReview(raw, { draft: pending.draft, existingSymbols, ...(allowedSymbols ? { allowedSymbols } : {}) });
       const missingContext = hook.final_decision.targets.filter((target) => {
         const context = pending.targetContexts && pending.targetContexts[target.symbol];
-        return !context || context.ok !== true;
+        return !context || context.ok !== true || (context.quoteDate && context.quoteDate !== pending.dataAsOf);
       });
       if (missingContext.length) {
         throw new Error(`FINAL 仍包含无法由初心只读行情核验的股票：${missingContext.map((row) => row.symbol).join(', ')}`);
@@ -1506,7 +1604,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
           ...(event.rolloutPath || event.wirePath ? { transcriptPath: event.rolloutPath || event.wirePath } : {}),
         },
       });
-      sendToRenderer('agent-league:session-updated', { agent: publicAgent(updated, sessionManager) });
+      emit('session-updated', { agent: publicRow(updated) });
     });
 
     transcriptTap.on('turn-complete', (event = {}) => {
@@ -1526,7 +1624,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
       const row = store.findByHubSessionId(event.sessionId);
       if (row) {
         const updated = store.bindSession(row.agent.id, { status: 'restorable' });
-        sendToRenderer('agent-league:session-updated', { agent: publicAgent(updated, sessionManager) });
+        emit('session-updated', { agent: publicRow(updated) });
       }
       const pending = pendingByHubSession.get(event.sessionId);
       if (!pending) return;
@@ -1537,8 +1635,10 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     });
   }
 
-  startScheduler();
+  if (autoStartScheduler) startScheduler();
   return {
+    environment,
+    channelPrefix,
     store,
     pendingByHubSession,
     providerCatalog,
@@ -1546,6 +1646,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     getProtectedSessionIds: () => new Set(pendingByHubSession.keys()),
     isAuthorizedResearchScope,
     listPublic,
+    getRunState: runPublicState,
     runDay,
     executeOpen,
     recordClose,
@@ -1553,6 +1654,96 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     schedulerTick,
     startScheduler,
     stopScheduler,
+  };
+}
+
+function registerAgentLeagueIpc(ipcMain, deps = {}) {
+  const live = registerAgentLeagueRuntime(ipcMain, {
+    ...deps,
+    channelPrefix: 'agent-league',
+    environment: 'live',
+    scopePrefix: AGENT_SCOPE_PREFIX,
+    sessionPurpose: 'agent-league',
+    sessionTitlePrefix: 'Agent ·',
+    enforceMarketClock: true,
+    autoStartScheduler: true,
+  });
+  if (deps.enableVirtualDebug === false) return live;
+
+  const virtualDebug = deps.virtualDebug || new AgentLeagueVirtualDebug({
+    liveStore: live.store,
+    ...(deps.virtualDebugOptions || {}),
+  });
+  const virtual = registerAgentLeagueRuntime(ipcMain, {
+    ...deps,
+    store: virtualDebug.store,
+    channelPrefix: 'agent-league-virtual',
+    environment: 'virtual',
+    scopePrefix: VIRTUAL_AGENT_SCOPE_PREFIX,
+    sessionPurpose: 'agent-league-virtual',
+    sessionTitlePrefix: '虚拟 Agent ·',
+    enforceMarketClock: false,
+    autoStartScheduler: false,
+    getDecisionDate: () => virtualDebug.getVirtualDate(),
+    buildDecisionSnapshot: (options) => virtualDebug.buildDecisionSnapshot(options),
+    buildPriceSnapshot: (options) => virtualDebug.buildPriceSnapshot(options),
+    fetchTargetContexts: (options) => virtualDebug.fetchTargetContexts(options),
+  });
+
+  const publishDebugState = () => {
+    const debug = virtualDebug.publicState(virtual.getRunState());
+    if (typeof deps.sendToRenderer === 'function') {
+      deps.sendToRenderer('agent-league-virtual:debug-updated', { environment: 'virtual', debug });
+    }
+    return debug;
+  };
+  const respond = (work, fallback) => {
+    try { return { ok: true, debug: work() }; }
+    catch (error) { return { ok: false, error: fallback, message: error.message }; }
+  };
+
+  ipcMain.handle('agent-league:virtual-state', () => ({ ok: true, debug: virtualDebug.publicState(virtual.getRunState()) }));
+  ipcMain.handle('agent-league:virtual-initialize', (_event, input = {}) => respond(() => {
+    virtualDebug.initialize({ ...input, runState: virtual.getRunState() });
+    return publishDebugState();
+  }, 'virtual-initialize-failed'));
+  ipcMain.handle('agent-league:virtual-configure', (_event, input = {}) => respond(() => {
+    virtualDebug.configure({ ...input, runState: virtual.getRunState() });
+    return publishDebugState();
+  }, 'virtual-configure-failed'));
+  ipcMain.handle('agent-league:virtual-advance', (_event, input = {}) => respond(() => {
+    virtualDebug.advance({ ...input, runState: virtual.getRunState() });
+    return publishDebugState();
+  }, 'virtual-advance-failed'));
+  ipcMain.handle('agent-league:virtual-reset', (_event, input = {}) => respond(() => {
+    virtualDebug.reset({
+      ...input,
+      runState: virtual.getRunState(),
+      sessionManager: deps.sessionManager,
+    });
+    return publishDebugState();
+  }, 'virtual-reset-failed'));
+  ipcMain.handle('agent-league:virtual-self-test', () => {
+    try { return { ok: true, report: virtualDebug.selfTest() }; }
+    catch (error) { return { ok: false, error: 'virtual-self-test-failed', message: error.message }; }
+  });
+
+  return {
+    ...live,
+    live,
+    virtual,
+    virtualDebug,
+    getProtectedSessionIds() {
+      return new Set([...live.getProtectedSessionIds(), ...virtual.getProtectedSessionIds()]);
+    },
+    isAuthorizedResearchScope(scopeId) {
+      return live.isAuthorizedResearchScope(scopeId) || virtual.isAuthorizedResearchScope(scopeId);
+    },
+    stopScheduler() {
+      const liveStopped = live.stopScheduler();
+      const virtualStopped = virtual.stopScheduler();
+      return liveStopped || virtualStopped;
+    },
   };
 }
 
@@ -1575,6 +1766,7 @@ module.exports = {
   providerCatalog,
   publicAgent,
   registerAgentLeagueIpc,
+  registerAgentLeagueRuntime,
   resumeOptions,
   slugifyAgentId,
   validateProvider,

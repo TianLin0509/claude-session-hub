@@ -7,6 +7,7 @@ function createAgentLeaguePanel(options = {}) {
   const state = {
     mounted: false,
     loading: false,
+    environment: 'live',
     sort: 'return',
     agents: [],
     schedule: null,
@@ -18,6 +19,8 @@ function createAgentLeaguePanel(options = {}) {
     promptKey: null,
     promptDirty: false,
     promptSaving: false,
+    virtual: null,
+    virtualSelfTest: null,
   };
   let root = null;
 
@@ -45,6 +48,9 @@ function createAgentLeaguePanel(options = {}) {
       save: '<path d="M5 3h12l2 2v16H5Z"/><path d="M8 3v6h8V3M8 21v-7h8v7"/>',
       file: '<path d="M6 3h9l4 4v14H6Z"/><path d="M15 3v5h5M9 13h6M9 17h6"/>',
       lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+      flask: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3l-5-9V3"/><path d="M7.5 16h9"/>',
+      next: '<path d="m8 5 7 7-7 7"/><path d="M16 5v14"/>',
+      trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14"/>',
     };
     return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ''}</svg>`;
   }
@@ -84,13 +90,19 @@ function createAgentLeaguePanel(options = {}) {
     return native.codexSid || native.ccSessionId || native.geminiChatId || native.kimiSid || '';
   }
 
+  function leagueChannel(name) {
+    const prefix = state.environment === 'virtual' ? 'agent-league-virtual' : 'agent-league';
+    return `${prefix}:${name}`;
+  }
+
   function build(container) {
     root = container;
     root.classList.add('cxl-root');
     root.innerHTML = `
       <header class="cxl-page-head">
-        <div><p>AGENT LEAGUE · DAILY DECISION · NATIVE HUB SESSION</p><h1>Agent 投资联赛</h1><span>交易日盘前预案 → 同 Session 自检 Hook → 开盘一次执行；周六沉淀。点击一行查看完整思考与原生 Session。</span></div>
+        <div><p data-role="league-eyebrow">AGENT LEAGUE · DAILY DECISION · NATIVE HUB SESSION</p><h1 data-role="league-title">Agent 投资联赛</h1><span data-role="league-description">交易日盘前预案 → 同 Session 自检 Hook → 开盘一次执行；周六沉淀。点击一行查看完整思考与原生 Session。</span></div>
         <div class="cxl-page-actions">
+          <button type="button" class="cxl-btn debug" data-action="toggle-virtual">${icon('flask')}虚拟调试</button>
           <button type="button" class="cxl-btn" data-action="new-agent">${icon('plus')}新增 Agent</button>
           <button type="button" class="cxl-btn primary" data-action="run-day">${icon('play')}盘前决策</button>
           <button type="button" class="cxl-btn" data-action="execute-open">${icon('sunrise')}开盘执行</button>
@@ -98,10 +110,22 @@ function createAgentLeaguePanel(options = {}) {
           <button type="button" class="cxl-btn" data-action="run-weekly">${icon('book')}周六沉淀</button>
         </div>
       </header>
+      <section class="cxl-virtual-lab" data-role="virtual-lab" hidden>
+        <div class="cxl-virtual-copy"><p>VIRTUAL LIVE LAB · ISOLATED SANDBOX</p><h2>虚拟实盘调试台</h2><span>独立 Agent、Session、持仓与排行榜；时间和行情均为确定性合成数据，不读取实盘价格，也不写正式联赛。</span></div>
+        <div class="cxl-virtual-clock"><span>虚拟交易日</span><b data-role="virtual-date">—</b><em data-role="virtual-phase">未初始化</em></div>
+        <label class="cxl-virtual-scenario"><span>行情场景</span><select data-role="virtual-scenario"></select></label>
+        <div class="cxl-virtual-actions">
+          <button type="button" class="cxl-btn" data-action="configure-virtual">应用场景</button>
+          <button type="button" class="cxl-btn" data-action="self-test-virtual">运行账本自检</button>
+          <button type="button" class="cxl-btn" data-action="advance-virtual">${icon('next')}下一交易日</button>
+          <button type="button" class="cxl-btn danger" data-action="reset-virtual">${icon('trash')}重置沙盒</button>
+        </div>
+        <p class="cxl-virtual-status" data-role="virtual-status">等待初始化。</p>
+      </section>
       <section class="cxl-note"><p data-role="league-note">读取联赛状态…</p><span data-role="runtime-summary"></span></section>
       <section class="cxl-board">
-        <header><div><h2>实时排行榜</h2><p data-role="board-subtitle">当前快照 · 点击任意 Agent 行查看详情</p></div><div class="cxl-board-tools"><button type="button" class="cxl-icon-btn" data-action="refresh" title="刷新">${icon('refresh')}</button><button type="button" class="cxl-auto" data-action="toggle-auto"></button><div class="cxl-sort"><button class="active" data-sort="return">按收益率</button><button data-sort="asset">按当前资产</button></div></div></header>
-        <div class="cxl-table-head cxl-grid"><span>排名</span><span>Agent</span><span class="cxl-wide">状态</span><span>当前资产</span><span>累计收益</span><span class="cxl-wide">今日</span><span class="cxl-wide">最大回撤</span><span class="cxl-wide">仓位</span><span class="cxl-wide">最近决策</span><span></span></div>
+        <header><div><h2 data-role="board-title">实时排行榜</h2><p data-role="board-subtitle">当前快照 · 点击任意 Agent 行查看详情</p></div><div class="cxl-board-tools"><button type="button" class="cxl-icon-btn" data-action="refresh" title="刷新">${icon('refresh')}</button><button type="button" class="cxl-auto" data-action="toggle-auto"></button><div class="cxl-sort"><button class="active" data-sort="return">按收益率</button><button data-sort="asset">按当前资产</button></div></div></header>
+        <div class="cxl-table-head cxl-grid"><span>排名</span><span>Agent</span><span class="cxl-wide">状态</span><span>当前资产</span><span>累计收益</span><span class="cxl-wide">最近一日</span><span class="cxl-wide">最大回撤</span><span class="cxl-wide">仓位</span><span class="cxl-wide">最近决策</span><span></span></div>
         <div class="cxl-ranking" data-role="ranking" aria-live="polite"></div>
         <footer><span>一屏容纳 8 行；更多 Agent 在当前区域继续向下滚动</span><code data-role="root-path"></code></footer>
       </section>
@@ -141,14 +165,19 @@ function createAgentLeaguePanel(options = {}) {
       const actionEl = event.target.closest('[data-action]');
       if (actionEl) {
         const action = actionEl.dataset.action;
-        if (action === 'new-agent') openCreate();
+        if (action === 'toggle-virtual') await toggleVirtualMode();
+        else if (action === 'configure-virtual') await configureVirtual();
+        else if (action === 'self-test-virtual') await selfTestVirtual();
+        else if (action === 'advance-virtual') await advanceVirtual();
+        else if (action === 'reset-virtual') await resetVirtual();
+        else if (action === 'new-agent') openCreate();
         else if (action === 'close-create') closeCreate();
         else if (action === 'close-detail') closeDetail();
         else if (action === 'refresh') await refresh(true);
         else if (action === 'run-day') await runDay(actionEl);
-        else if (action === 'execute-open') await runPhase(actionEl, 'agent-league:execute-open', '正在读取开盘价并机械执行目标组合', '开盘执行完成');
-        else if (action === 'record-close') await runPhase(actionEl, 'agent-league:record-close', '正在读取收盘行情并更新净值', '收盘记账完成');
-        else if (action === 'run-weekly') await runPhase(actionEl, 'agent-league:run-weekly', '正在唤醒同一 Session 做周度沉淀', '周度沉淀已启动');
+        else if (action === 'execute-open') await runPhase(actionEl, 'execute-open', '正在读取开盘价并机械执行目标组合', '开盘执行完成');
+        else if (action === 'record-close') await runPhase(actionEl, 'record-close', '正在读取收盘行情并更新净值', '收盘记账完成');
+        else if (action === 'run-weekly') await runPhase(actionEl, 'run-weekly', '正在唤醒同一 Session 做周度沉淀', '周度沉淀已启动');
         else if (action === 'toggle-auto') await toggleAuto();
         else if (action === 'open-card') await openSession(actionEl.dataset.agent, 'card');
         else if (action === 'open-pty') await openSession(actionEl.dataset.agent, 'pty');
@@ -195,7 +224,8 @@ function createAgentLeaguePanel(options = {}) {
         savePromptFile();
       }
     });
-    for (const channel of ['agent-league:run-updated', 'agent-league:run-finished', 'agent-league:agent-started', 'agent-league:hook-started', 'agent-league:agent-completed', 'agent-league:agent-failed', 'agent-league:execution-completed', 'agent-league:close-completed', 'agent-league:session-updated']) {
+    const eventNames = ['run-updated', 'run-finished', 'agent-started', 'hook-started', 'agent-completed', 'agent-failed', 'execution-completed', 'close-completed', 'session-updated', 'debug-updated'];
+    for (const channel of ['agent-league', 'agent-league-virtual'].flatMap((prefix) => eventNames.map((name) => `${prefix}:${name}`))) {
       ipcRenderer.on(channel, () => { if (root && root.offsetParent !== null) refresh(false); });
     }
   }
@@ -214,12 +244,20 @@ function createAgentLeaguePanel(options = {}) {
     root.classList.add('loading');
     try {
       await loadCatalog();
-      const result = await ipcRenderer.invoke('agent-league:list', { sort: state.sort });
+      if (state.environment === 'virtual') {
+        const debugState = await ipcRenderer.invoke('agent-league:virtual-state');
+        if (!debugState || !debugState.ok || !debugState.debug || !debugState.debug.initialized) {
+          throw new Error(debugState && debugState.message || '虚拟实盘尚未初始化');
+        }
+        state.virtual = debugState.debug;
+      }
+      const result = await ipcRenderer.invoke(leagueChannel('list'), { sort: state.sort });
       if (!result || !result.ok) throw new Error(result && result.message || '排行榜读取失败');
       state.agents = Array.isArray(result.agents) ? result.agents : [];
       state.schedule = result.schedule || {};
       state.run = result.run || null;
       root.querySelector('[data-role="root-path"]').textContent = result.root || '';
+      root.classList.toggle('virtual-mode', state.environment === 'virtual');
       render();
     } catch (error) {
       if (showError) notify(`Agent 联赛读取失败：${error.message}`, true);
@@ -230,6 +268,8 @@ function createAgentLeaguePanel(options = {}) {
   }
 
   function render() {
+    const isVirtual = state.environment === 'virtual';
+    const virtual = state.virtual || {};
     const empty = root.querySelector('[data-role="empty"]');
     const board = root.querySelector('.cxl-board');
     empty.hidden = state.agents.length > 0;
@@ -238,25 +278,75 @@ function createAgentLeaguePanel(options = {}) {
     const idle = state.agents.filter((agent) => agent.session && agent.session.live && agent.session.status === 'idle').length;
     const sleeping = state.agents.filter((agent) => !agent.session || !agent.session.live).length;
     root.querySelector('[data-role="runtime-summary"]').innerHTML = `<i></i>${active} 活跃 · ${idle} 空闲 · ${sleeping} 休眠`;
-    root.querySelector('[data-role="league-note"]').innerHTML = `<b>${state.agents.length} 个 Agent · 每席 ¥500,000 · 沪深全市场（不含北交所）</b>　费用：佣金双边万一、卖出印花税千一；投资风险由 Agent 自检，申报单位由系统机械执行。`;
+    root.querySelector('[data-role="league-eyebrow"]').textContent = isVirtual
+      ? 'AGENT LEAGUE · VIRTUAL LIVE DEBUG · ISOLATED'
+      : 'AGENT LEAGUE · DAILY DECISION · NATIVE HUB SESSION';
+    root.querySelector('[data-role="league-title"]').textContent = isVirtual ? 'Agent 联赛 · 虚拟实盘' : 'Agent 投资联赛';
+    root.querySelector('[data-role="league-description"]').textContent = isVirtual
+      ? '用真实 AI Session 跑盘前决策，用确定性合成行情推进开盘、收盘和下一交易日；全部状态与正式联赛隔离。'
+      : '交易日盘前预案 → 同 Session 自检 Hook → 开盘一次执行；周六沉淀。点击一行查看完整思考与原生 Session。';
+    const virtualToggle = root.querySelector('[data-action="toggle-virtual"]');
+    virtualToggle.innerHTML = isVirtual ? `${icon('close')}退出虚拟调试` : `${icon('flask')}虚拟调试`;
+    virtualToggle.classList.toggle('active', isVirtual);
+    root.querySelector('[data-role="league-note"]').innerHTML = isVirtual
+      ? `<b>${state.agents.length} 个隔离 Agent · 虚拟交易日 ${escapeHtml(virtual.virtualDate || '—')} · ${escapeHtml(virtual.scenarioLabel || '合成行情')}</b>　不读取真实开收盘，不写正式持仓、统计或 Session。`
+      : `<b>${state.agents.length} 个 Agent · 每席 ¥500,000 · 沪深全市场（不含北交所）</b>　费用：佣金双边万一、卖出印花税千一；投资风险由 Agent 自检，申报单位由系统机械执行。`;
+    const lab = root.querySelector('[data-role="virtual-lab"]');
+    lab.hidden = !isVirtual;
+    if (isVirtual) renderVirtualLab();
     const auto = root.querySelector('[data-action="toggle-auto"]');
+    auto.hidden = isVirtual;
     auto.classList.toggle('active', !!state.schedule.enabled);
     auto.textContent = state.schedule.enabled ? `自动 ${state.schedule.decisionTime || '08:30'} / 周六 ${state.schedule.weeklyTime || '10:00'}` : '自动赛程未启用';
     const runButton = root.querySelector('[data-action="run-day"]');
-    runButton.disabled = !!state.run;
-    runButton.innerHTML = state.run ? `${icon('play')}赛程运行中` : `${icon('play')}盘前决策`;
+    runButton.disabled = !!state.run || (isVirtual && virtual.phase !== 'pre-market');
+    runButton.innerHTML = state.run ? `${icon('play')}赛程运行中` : `${icon('play')}${isVirtual ? '虚拟盘前决策' : '盘前决策'}`;
     for (const action of ['execute-open', 'record-close', 'run-weekly']) {
       const button = root.querySelector(`[data-action="${action}"]`);
-      if (button) button.disabled = !!state.run;
+      if (!button) continue;
+      if (!isVirtual) button.disabled = !!state.run;
+      else if (action === 'execute-open') button.disabled = !!state.run || virtual.phase !== 'decision-ready';
+      else if (action === 'record-close') button.disabled = !!state.run || virtual.phase !== 'intraday';
+      else button.disabled = !!state.run || virtual.phase !== 'closed';
     }
+    root.querySelector('[data-role="board-title"]').textContent = isVirtual ? '虚拟排行榜' : '实时排行榜';
     root.querySelector('[data-role="board-subtitle"]').textContent = state.run
       ? `${state.run.mode === 'weekly' ? '周度沉淀' : '盘前决策'} ${state.run.decisionDate || state.run.asOf} · ${state.run.completed.length}/${state.agents.length} 已完成 · ${state.run.active.length} 运行中`
-      : `最近决策：${state.schedule.lastDecisionDate || '尚未运行'} · 开盘执行：${state.schedule.lastExecutionDate || '无'} · 点击任意 Agent 行查看详情`;
+      : isVirtual
+        ? `${escapeHtml(virtual.virtualDate || '—')} · ${virtualPhaseLabel(virtual.phase)} · 最近决策 ${state.schedule.lastDecisionDate || '无'} · 最近收盘 ${state.schedule.lastResultDate || '无'}`
+        : `最近决策：${state.schedule.lastDecisionDate || '尚未运行'} · 开盘执行：${state.schedule.lastExecutionDate || '无'} · 点击任意 Agent 行查看详情`;
     renderRanking();
     if (state.selectedId) {
       const selected = state.agents.find((agent) => agent.id === state.selectedId);
       if (selected && !root.querySelector('[data-role="detail-overlay"]').hidden) renderDrawer(selected);
     }
+  }
+
+  function virtualPhaseLabel(phase) {
+    return {
+      'pre-market': '盘前待决策',
+      'decision-running': 'AI 决策运行中',
+      'decision-ready': '决策已锁定，待开盘',
+      intraday: '已开盘，待收盘记账',
+      closed: '当日已收盘',
+      'weekly-running': '周度沉淀运行中',
+    }[phase] || String(phase || '未知阶段');
+  }
+
+  function renderVirtualLab() {
+    const virtual = state.virtual || {};
+    root.querySelector('[data-role="virtual-date"]').textContent = virtual.virtualDate || '—';
+    root.querySelector('[data-role="virtual-phase"]').textContent = virtualPhaseLabel(virtual.phase);
+    const scenario = root.querySelector('[data-role="virtual-scenario"]');
+    scenario.innerHTML = (virtual.scenarios || []).map((row) => `<option value="${escapeHtml(row.id)}" ${row.id === virtual.scenario ? 'selected' : ''}>${escapeHtml(row.label)} · ${escapeHtml(row.description)}</option>`).join('');
+    scenario.disabled = virtual.phase !== 'pre-market';
+    root.querySelector('[data-action="configure-virtual"]').disabled = virtual.phase !== 'pre-market';
+    root.querySelector('[data-action="advance-virtual"]').disabled = virtual.phase !== 'closed';
+    root.querySelector('[data-action="reset-virtual"]').disabled = !!state.run;
+    const report = state.virtualSelfTest;
+    root.querySelector('[data-role="virtual-status"]').textContent = report
+      ? `${report.ok ? '账本自检 PASS' : '账本自检 FAIL'} · ${(report.checks || []).filter((row) => row.pass).length}/${(report.checks || []).length} 项通过 · 沙盒路径 ${virtual.root || ''}`
+      : `隔离沙盒：${virtual.root || ''}`;
   }
 
   function renderRanking() {
@@ -327,7 +417,7 @@ function createAgentLeaguePanel(options = {}) {
     const drawer = root.querySelector('[data-role="drawer"]');
     drawer.innerHTML = `<header><div class="cxl-drawer-id">${providerLogo(agent)}<div><h2>${escapeHtml(agent.name)}</h2><p>${escapeHtml(agent.philosophy && agent.philosophy.title || '')} · ${escapeHtml(agent.provider)} · ${escapeHtml(agent.model)}</p></div></div><button type="button" class="cxl-close" data-action="close-detail" aria-label="关闭">${icon('close')}</button></header>
       <div class="cxl-drawer-actions"><button type="button" class="cxl-btn primary" data-action="open-card" data-agent="${escapeHtml(agent.id)}">${icon('cards')}${agent.session && agent.session.hubSessionId ? '打开卡片 Session' : '创建卡片 Session'}</button><button type="button" class="cxl-btn" data-action="open-pty" data-agent="${escapeHtml(agent.id)}">${icon('terminal')}${agent.session && agent.session.hubSessionId ? '打开 PTY' : '创建并打开 PTY'}</button><button type="button" class="cxl-btn prompt" data-action="edit-prompts" data-agent="${escapeHtml(agent.id)}">${icon('edit')}查看 / 编辑全部提示词</button></div>
-      <div class="cxl-detail-metrics"><div><span>当前资产</span><b>${formatMoney(stats.nav)}</b><small class="${tone(stats.totalReturn)}">${formatPct(stats.totalReturn)}</small></div><div><span>今日收益</span><b class="${tone(stats.dailyReturn)}">${formatPct(stats.dailyReturn)}</b><small>${escapeHtml(stats.lastAsOf || '尚未结算')}</small></div><div><span>最大回撤</span><b>${formatPct(stats.maxDrawdown)}</b><small>${stats.tradingDays || 0} 个统计日</small></div><div><span>Session</span><b class="cxl-status ${statusClass}"><i></i>${statusText}</b><small>${escapeHtml(nativeSessionId(agent) ? `原生 SID ${nativeSessionId(agent).slice(0, 8)}…` : agent.session && agent.session.hubSessionId ? 'Hub 已绑定 · 首次运行后生成原生 SID' : '点击上方按钮创建普通 Session')}</small></div></div>
+      <div class="cxl-detail-metrics"><div><span>当前资产</span><b>${formatMoney(stats.nav)}</b><small class="${tone(stats.totalReturn)}">${formatPct(stats.totalReturn)}</small></div><div><span>最近一日收益</span><b class="${tone(stats.dailyReturn)}">${formatPct(stats.dailyReturn)}</b><small>${escapeHtml(stats.lastAsOf || '尚未结算')}</small></div><div><span>最大回撤</span><b>${formatPct(stats.maxDrawdown)}</b><small>${stats.tradingDays || 0} 个统计日</small></div><div><span>Session</span><b class="cxl-status ${statusClass}"><i></i>${statusText}</b><small>${escapeHtml(nativeSessionId(agent) ? `原生 SID ${nativeSessionId(agent).slice(0, 8)}…` : agent.session && agent.session.hubSessionId ? 'Hub 已绑定 · 首次运行后生成原生 SID' : '点击上方按钮创建普通 Session')}</small></div></div>
       <section class="cxl-detail-section"><div class="cxl-section-head"><h3>核心理念</h3><span>${agent.strategyPendingConfirmation ? '第一版 · 待你确认' : `策略 ${escapeHtml(agent.strategyVersion || 'v1')}`}</span></div><p>${escapeHtml(agent.philosophy && agent.philosophy.summary || '自定义理念')}</p><blockquote>${escapeHtml(agent.philosophy && agent.philosophy.edge || '')}</blockquote></section>
       <section class="cxl-detail-section cxl-prompt-summary"><div class="cxl-section-head"><h3>这个 Agent 实际会读什么</h3><button type="button" data-action="edit-prompts" data-agent="${escapeHtml(agent.id)}">完整查看与编辑 →</button></div><div><span><b>投资内核</b>AGENT / STRATEGY / CHECKLIST</span><span><b>三段运行提示</b>盘前 DRAFT / 决策 Hook / 周六沉淀</span><span><b>Provider 指令</b>AGENTS / CLAUDE / GEMINI</span><span><b>长期上下文</b>MEMORY / EVOLUTION</span><span><b>系统合同</b>完整编译预览，只读</span></div></section>
       <section class="cxl-detail-section cxl-daily-flow"><div class="cxl-section-head"><h3>今日决策链</h3><span>DRAFT → HOOK → FINAL</span></div>${dailyFlowHtml(agent)}</section>
@@ -344,7 +434,7 @@ function createAgentLeaguePanel(options = {}) {
       let agent = state.agents.find((row) => row.id === agentId);
       if (!agent) return { ok: false, error: 'agent-missing' };
       const bridge = window.__chuxinSessionBridge;
-      const ensured = await ipcRenderer.invoke('agent-league:ensure-session', { agentId });
+      const ensured = await ipcRenderer.invoke(leagueChannel('ensure-session'), { agentId });
       if (!ensured || !ensured.ok) {
         notify((ensured && ensured.message) || 'Agent Session 打开失败', true);
         return { ok: false, error: ensured && ensured.error || 'ensure-session-failed' };
@@ -405,7 +495,7 @@ function createAgentLeaguePanel(options = {}) {
     overlay.hidden = false;
     root.querySelector('[data-role="prompt-agent-note"]').textContent = `${agent.name} · 正在读取实际 Markdown 与系统合同…`;
     try {
-      const result = await ipcRenderer.invoke('agent-league:prompt-files', { agentId });
+      const result = await ipcRenderer.invoke(leagueChannel('prompt-files'), { agentId });
       if (!result || !result.ok) throw new Error(result && result.message || '提示词读取失败');
       state.promptWorkbench = result;
       state.promptDirty = false;
@@ -493,7 +583,7 @@ function createAgentLeaguePanel(options = {}) {
     if (!state.promptAgentId) return;
     if (state.promptDirty && !window.confirm('重新载入会丢弃当前修改，是否继续？')) return;
     const keepKey = state.promptKey;
-    const result = await ipcRenderer.invoke('agent-league:prompt-files', { agentId: state.promptAgentId });
+    const result = await ipcRenderer.invoke(leagueChannel('prompt-files'), { agentId: state.promptAgentId });
     if (!result || !result.ok) return notify((result && result.message) || '重新载入失败', true);
     state.promptWorkbench = result;
     selectPromptFile(keepKey || 'agent', true);
@@ -507,7 +597,7 @@ function createAgentLeaguePanel(options = {}) {
     updatePromptButtons();
     root.querySelector('[data-role="prompt-status"]').textContent = '正在原子保存并创建历史备份…';
     try {
-      const result = await ipcRenderer.invoke('agent-league:save-prompt-file', {
+      const result = await ipcRenderer.invoke(leagueChannel('save-prompt-file'), {
         agentId: state.promptAgentId,
         key: item.key,
         content: root.querySelector('[data-role="prompt-editor"]').value,
@@ -551,9 +641,11 @@ function createAgentLeaguePanel(options = {}) {
     const previous = button.innerHTML;
     button.innerHTML = `${icon('terminal')}启动并跳转 PTY…`;
     try {
-      const result = await ipcRenderer.invoke('agent-league:run-day', { trigger: 'manual' });
+      const result = await ipcRenderer.invoke(leagueChannel('run-day'), { trigger: 'manual' });
       if (!result || !result.ok) throw new Error(result && result.message || '赛程启动失败');
-      notify(result.alreadyRun ? '今天的盘前决策已经完成，正在打开对应 PTY' : '盘前决策已启动，正在打开对应 Agent PTY');
+      const target = result.decisionDate || result.run && result.run.decisionDate || '';
+      const moved = result.scheduledFrom ? `（${result.scheduledFrom} 休市，已自动安排 ${target}）` : target ? `（${target}）` : '';
+      notify(result.alreadyRun ? `${target || '该交易日'}的盘前决策已经完成，正在打开对应 PTY` : `盘前决策已启动${moved}，正在打开对应 Agent PTY`);
       const opened = await jumpToActionPty(result);
       if (!opened || !opened.ok) throw new Error('赛程已启动，但对应 PTY 跳转失败');
     } catch (error) {
@@ -564,17 +656,17 @@ function createAgentLeaguePanel(options = {}) {
     }
   }
 
-  async function runPhase(button, channel, progressText, successText) {
-    const forceWeekly = channel === 'agent-league:run-weekly'
+  async function runPhase(button, action, progressText, successText) {
+    const forceWeekly = action === 'run-weekly' && state.environment !== 'virtual'
       && window.confirm('自动赛程只在周六运行。现在继续会作为手动验收立即沉淀最近交易日，是否继续？');
-    if (channel === 'agent-league:run-weekly' && !forceWeekly) return;
+    if (action === 'run-weekly' && state.environment !== 'virtual' && !forceWeekly) return;
     button.disabled = true;
     const previous = button.innerHTML;
     button.innerHTML = `${icon('terminal')}执行并跳转 PTY…`;
     try {
       notify(progressText);
-      const result = await ipcRenderer.invoke(channel, { trigger: 'manual', ...(forceWeekly ? { force: true } : {}) });
-      if (!result || !result.ok) throw new Error(result && result.message || `${channel} 失败`);
+      const result = await ipcRenderer.invoke(leagueChannel(action), { trigger: 'manual', ...(forceWeekly ? { force: true } : {}) });
+      if (!result || !result.ok) throw new Error(result && result.message || `${action} 失败`);
       notify(result.alreadyRun ? `${result.message || '没有待处理内容'}，正在打开对应 PTY` : `${successText}，正在打开对应 PTY`);
       const opened = await jumpToActionPty(result);
       if (!opened || !opened.ok) throw new Error(`${successText}，但对应 PTY 跳转失败`);
@@ -586,10 +678,102 @@ function createAgentLeaguePanel(options = {}) {
     }
   }
 
+  async function toggleVirtualMode() {
+    if (state.run) return notify('当前赛程仍在运行，完成后再切换环境', true);
+    if (state.environment === 'virtual') {
+      state.environment = 'live';
+      state.virtual = null;
+      state.selectedId = null;
+      closeDetail();
+      closePromptWorkbench();
+      while (state.loading) await new Promise((resolve) => setTimeout(resolve, 20));
+      await refresh(true);
+      notify('已返回正式联赛；虚拟沙盒保留，可稍后继续');
+      return;
+    }
+    const previousEnvironment = state.environment;
+    state.environment = 'virtual';
+    try {
+      const result = await ipcRenderer.invoke('agent-league:virtual-initialize', {});
+      if (!result || !result.ok) throw new Error(result && result.message || '虚拟实盘初始化失败');
+      state.virtual = result.debug;
+      state.selectedId = null;
+      closeDetail();
+      while (state.loading) await new Promise((resolve) => setTimeout(resolve, 20));
+      await refresh(true);
+      notify(`已进入隔离虚拟实盘：${result.debug.virtualDate} · ${result.debug.scenarioLabel}`);
+    } catch (error) {
+      state.environment = previousEnvironment;
+      while (state.loading) await new Promise((resolve) => setTimeout(resolve, 20));
+      await refresh(false);
+      notify(`虚拟实盘初始化失败：${error.message}`, true);
+    }
+  }
+
+  async function configureVirtual() {
+    if (state.environment !== 'virtual') return;
+    try {
+      const scenario = root.querySelector('[data-role="virtual-scenario"]').value;
+      const result = await ipcRenderer.invoke('agent-league:virtual-configure', { scenario });
+      if (!result || !result.ok) throw new Error(result && result.message || '虚拟行情配置失败');
+      state.virtual = result.debug;
+      notify(`虚拟行情已切换为：${result.debug.scenarioLabel}`);
+      render();
+    } catch (error) {
+      notify(`虚拟行情配置失败：${error.message}`, true);
+    }
+  }
+
+  async function selfTestVirtual() {
+    try {
+      const result = await ipcRenderer.invoke('agent-league:virtual-self-test');
+      if (!result || !result.ok || !result.report) throw new Error(result && result.message || '账本自检未返回报告');
+      state.virtualSelfTest = result.report;
+      renderVirtualLab();
+      const failed = (result.report.checks || []).filter((row) => !row.pass);
+      notify(failed.length ? `虚拟账本自检失败：${failed.map((row) => row.id).join('、')}` : '虚拟账本自检 PASS：交易、费用、仓位、收益率与清仓链全部通过', failed.length > 0);
+    } catch (error) {
+      notify(`虚拟账本自检失败：${error.message}`, true);
+    }
+  }
+
+  async function advanceVirtual() {
+    if (state.environment !== 'virtual') return;
+    try {
+      const scenario = root.querySelector('[data-role="virtual-scenario"]').value;
+      const result = await ipcRenderer.invoke('agent-league:virtual-advance', { scenario });
+      if (!result || !result.ok) throw new Error(result && result.message || '虚拟日期推进失败');
+      state.virtual = result.debug;
+      await refresh(false);
+      notify(`虚拟时钟已推进到 ${result.debug.virtualDate}`);
+    } catch (error) {
+      notify(`虚拟日期推进失败：${error.message}`, true);
+    }
+  }
+
+  async function resetVirtual() {
+    if (state.environment !== 'virtual') return;
+    if (!window.confirm('重置只会删除隔离虚拟沙盒中的 Agent、Session、交易和统计；正式联赛不会受影响。确认继续？')) return;
+    try {
+      const scenario = root.querySelector('[data-role="virtual-scenario"]').value;
+      const result = await ipcRenderer.invoke('agent-league:virtual-reset', { scenario });
+      if (!result || !result.ok) throw new Error(result && result.message || '虚拟沙盒重置失败');
+      state.virtual = result.debug;
+      state.virtualSelfTest = null;
+      state.selectedId = null;
+      closeDetail();
+      await refresh(false);
+      notify(`虚拟沙盒已重置；正式联赛未改动，当前日期 ${result.debug.virtualDate}`);
+    } catch (error) {
+      notify(`虚拟沙盒重置失败：${error.message}`, true);
+    }
+  }
+
   async function toggleAuto() {
+    if (state.environment === 'virtual') return notify('虚拟实盘由调试台手动推进，不启用真实时钟调度', true);
     const enabled = !(state.schedule && state.schedule.enabled);
     try {
-      const result = await ipcRenderer.invoke('agent-league:update-schedule', {
+      const result = await ipcRenderer.invoke(leagueChannel('update-schedule'), {
         enabled,
         decisionTime: state.schedule && state.schedule.decisionTime || '08:30',
         decisionCutoff: state.schedule && state.schedule.decisionCutoff || '09:15',
@@ -648,7 +832,7 @@ function createAgentLeaguePanel(options = {}) {
     try {
       const payload = Object.fromEntries(new FormData(form).entries());
       payload.initialCash = Number(payload.initialCash || 500000);
-      const result = await ipcRenderer.invoke('agent-league:create', payload);
+      const result = await ipcRenderer.invoke(leagueChannel('create'), payload);
       if (!result || !result.ok) throw new Error(result && result.message || '创建失败');
       closeCreate();
       form.reset();

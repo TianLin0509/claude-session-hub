@@ -59,11 +59,13 @@ function createResumeSessionHandler(deps) {
       effectiveCodexSessionsRoot = defaultCodexSessionsRoot;
     }
     const hookPort = getHookPort();
+    const isAgentLeague = meta.purpose === 'agent-league' || meta.purpose === 'agent-league-virtual';
 
     let resumeOpts = {};
-    if (meta.purpose === 'agent-league') {
+    if (isAgentLeague) {
       const agentId = path.basename(String(meta.cwd || '')).toLowerCase();
-      const scopeId = /^[a-z0-9][a-z0-9_-]{2,63}$/.test(agentId) ? `agent-league-${agentId}` : '';
+      const scopePrefix = meta.purpose === 'agent-league-virtual' ? 'agent-league-virtual-' : 'agent-league-';
+      const scopeId = /^[a-z0-9][a-z0-9_-]{2,63}$/.test(agentId) ? `${scopePrefix}${agentId}` : '';
       if (scopeId && hookPort) {
         const hubDataDir = getHubDataDir();
         if (isClaudeCliResumable) {
@@ -185,7 +187,7 @@ function createResumeSessionHandler(deps) {
     // provider must start fresh under the same Hub id; otherwise Claude can
     // continue an unrelated conversation and Codex/Kimi can open a picker that
     // consumes the automation prompt.
-    const freshUnboundAgentLeague = meta.purpose === 'agent-league' && (
+    const freshUnboundAgentLeague = isAgentLeague && (
       codexMissingSid
       || (isClaudeCliResumable && !meta.ccSessionId)
       || (isGemini && !meta.geminiChatId)
