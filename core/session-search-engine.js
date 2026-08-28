@@ -291,13 +291,17 @@ class SessionSearchEngine {
           }
         }
         completed += 1;
+        // 状态推送仍然按 4 个一批（别把 IPC 刷爆），但**每一个来源都要让出事件循环**。
+        // 以前 4 个才让一次：子进程是单线程的，一次搜索/状态请求最坏要等 4 个来源
+        // 解析完，而大 Codex rollout 单个就要几百毫秒 —— 这就是重建索引时弹窗
+        // 「卡顿」的直接原因。让出一次的成本是一个宏任务，2400 个来源可以忽略。
         if (completed % 4 === 0 || completed === descriptors.length) {
           this._emit({
             phase: 'indexing', totalSources: descriptors.length, indexedSources: completed,
             parsedSources, reusedSources, staleSources, sourceErrors: diagnostics.slice(0, 8),
           });
-          await new Promise(resolve => setImmediate(resolve));
         }
+        await new Promise(resolve => setImmediate(resolve));
       }
 
       // Drop sources outside the current discovery/retention set before adding

@@ -160,3 +160,43 @@ test('engine 冷启动不得阻塞查询', () => {
 });
 
 console.log('unit-title-index OK');
+
+test('重建索引时不能饿死状态与查询', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = path.join(__dirname, '..');
+
+  // 用户 2026-08-28 反馈：弹窗顶上一直停在「正在读取本地索引…」、来源计数全 0、
+  // 转圈不停。根因是子进程单线程，status/search 排在整批解析后面。
+  const service = fs.readFileSync(path.join(root, 'core', 'session-search-service.js'), 'utf8');
+  const statusFn = service.slice(service.indexOf('  status() {'));
+  const statusBody = statusFn.slice(0, statusFn.indexOf('\n  prewarm('))
+    .split('\n').filter(line => !line.trim().startsWith('//')).join('\n');
+  assert.doesNotMatch(statusBody, /_request\('status'\)/,
+    'status() 不能往忙着重建索引的子进程发往返请求，父进程本来就有实时缓存');
+  assert.match(statusBody, /Promise\.resolve\(\{ \.\.\.this\._status \}\)/);
+
+  const engine = fs.readFileSync(path.join(root, 'core', 'session-search-engine.js'), 'utf8');
+  const loop = engine.slice(engine.indexOf('for (const descriptor of descriptors) {'));
+  const body = loop.slice(0, loop.indexOf('\n      // Drop sources outside'));
+  const yieldLine = body.split('\n').find(line => line.includes('setImmediate'));
+  assert.ok(yieldLine, '索引循环里必须有让出事件循环的点');
+  assert.doesNotMatch(yieldLine, /completed % 4/,
+    '每 4 个来源才让一次的话，一次搜索最坏要等 4 个大 rollout 解析完');
+  // 让出必须在批次判断之外（每个来源都让）
+  const idx = body.indexOf('await new Promise(resolve => setImmediate(resolve));');
+  const before = body.slice(0, idx);
+  const opens = (before.match(/\{/g) || []).length - (before.match(/\}/g) || []).length;
+  assert.equal(opens, 1, '让出语句应当直接在 for 循环体里，而不是嵌在 if 批次判断里');
+});
+
+test('标题档下不该说「全文检索中」', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'global-session-search.js'), 'utf8');
+  assert.match(src, /const titleOnlyScope = activeScope === 'title';/);
+  assert.match(src, /titleOnlyScope \? '正在补历史会话标题…' : '全文检索中…'/,
+    '用户点了「标题」页签还说在搜全文，正是他抱怨的那点');
+  assert.match(src, /function indexBuildingNote\(\)/, '重建期间要给出进度，别让人对着转圈猜');
+  assert.match(src, /全文索引重建中/);
+});

@@ -177,6 +177,15 @@ function createGlobalSessionSearch(options) {
   let returnFocusElement = null;
   let titleIndex = [];
   let lastTitleHits = [];
+  let lastStatus = null;
+
+  /** 索引正在重建时给一句人话，别让用户对着转圈猜。 */
+  function indexBuildingNote() {
+    if (!lastStatus || !lastStatus.refreshing) return '';
+    const done = Number(lastStatus.indexedSources) || 0;
+    const total = Number(lastStatus.totalSources) || 0;
+    return total ? `全文索引重建中 ${done}/${total}` : '全文索引重建中';
+  }
 
   /** 打开弹窗时重建一次即时标题索引。682 条 / 10KB，实测亚毫秒。 */
   function refreshTitleIndex() {
@@ -225,6 +234,7 @@ function createGlobalSessionSearch(options) {
   }
 
   function renderStatus(status) {
+    lastStatus = status || null;
     if (!statusButton || !statusText) return;
     const progress = indexProgressModel(status);
     statusButton.classList.remove('ready', 'busy', 'error');
@@ -440,8 +450,14 @@ function createGlobalSessionSearch(options) {
     } catch { /* 留痕是附加功能 */ }
     // 后端一直在返回 truncated / narrowedScopes，但以前没人读，用户看到的
     // 「找到 N 个」其实可能是被闸门截断后的数字。这里如实说出来。
+    const building = indexBuildingNote();
+    const titleOnlyScope = activeScope === 'title';
     const notes = [];
-    if (response && response.pendingFullText) notes.push('全文检索中…');
+    if (response && response.pendingFullText) {
+      // 用户明确点了「标题」页签时别说"全文检索中" —— 那正是他抱怨的
+      // 「我已经指定了用标题搜索，还是像搜全文一样」。
+      notes.push(titleOnlyScope ? '正在补历史会话标题…' : '全文检索中…');
+    } else if (building) notes.push(`${building} · 标题已可搜`);
     else if (response && response.indexing) notes.push('全文索引后台建立中，标题已可搜');
     if (merged.titleOnlyCount) notes.push(`${merged.titleOnlyCount} 条仅标题命中`);
     if (response && response.truncated) notes.push('结果已截断，请再加一个关键词');
@@ -453,12 +469,22 @@ function createGlobalSessionSearch(options) {
       ? `${response.queryMs}ms · ${sortSelect.value === 'recent' ? '最近更新' : '相关度'} ↓`
       : '';
     if (!results.length) {
+      const pending = !!(response && response.pendingFullText);
+      let emptyTitle = '没有找到匹配内容';
+      let emptyDetail = '可减少关键词，切换“全部内容”，或放宽来源、时间和项目范围。';
+      if (pending && titleOnlyScope) {
+        emptyTitle = '标题里没有这个词';
+        emptyDetail = `当前只搜标题（${titleIndex.length} 个会话标题即时可搜）。想搜对话内容请切到“全部内容”。`;
+      } else if (pending) {
+        emptyTitle = '正在搜索全文';
+        emptyDetail = '标题里没有匹配，正文结果马上到。';
+      } else if (building) {
+        // 重建期间"没找到"往往只是还没轮到那个来源，说清楚比让人干等强
+        emptyTitle = '正文还在重建索引';
+        emptyDetail = `${building}。标题现在就能搜；正文要等重建跑完，期间不影响你正常用 Hub。`;
+      }
       resultsRoot.replaceChildren(createStaticEmpty(document, {
-        title: response && response.pendingFullText ? '正在搜索全文' : '没有找到匹配内容',
-        detail: response && response.pendingFullText
-          ? '标题里没有匹配，正文结果马上到。'
-          : '可减少关键词，切换“全部内容”，或放宽来源、时间和项目范围。',
-        busy: !!(response && response.pendingFullText),
+        title: emptyTitle, detail: emptyDetail, busy: pending || !!building,
       }));
       previewRoot.replaceChildren(createStaticEmpty(document, {
         title: '换个条件再试试',

@@ -186,8 +186,13 @@ class SessionSearchService {
   }
 
   status() {
-    if (!this._child) return Promise.resolve({ ...this._status });
-    return this._request('status');
+    // 2026-08-28：以前这里往子进程发一次 'status' 往返。子进程是单线程的，重建索引
+    // 时（本机 2400+ 个来源要几分钟）这条请求会排在整批解析后面，于是搜索弹窗顶上
+    // 一直停在「正在读取本地索引…」，看起来像卡死 —— 用户就是这么反馈的。
+    //
+    // 但 this._status 本来就是**实时**的：子进程在 indexing 过程中会主动 push
+    // {type:'status'}（见 _handleChildMessage）。直接返回缓存即可，永远不会被阻塞。
+    return Promise.resolve({ ...this._status });
   }
 
   prewarm(snapshot = {}) {
