@@ -523,10 +523,9 @@ function createGlobalSessionSearch(options) {
     // 标题层：同步、零 IPC、不等防抖、不等索引。单字也给结果 ——
     // 682 个标题一共 10KB，没有任何理由让用户等。
     lastTitleHits = localTitleHits(request);
-    renderResults({ results: [], totalSessions: 0, totalMatches: 0, pendingFullText: trimmed.length >= 2 });
-    // 后端最少要两个字（见 session-search-sqlite-index.js 的 search()），
-    // 单字就到此为止，别白跑一趟 IPC。
-    if (trimmed.length < 2) return;
+    renderResults({ results: [], totalSessions: 0, totalMatches: 0, pendingFullText: true });
+    // 单字（「蜃」「熵」这种）在中文里是完整检索单位，后端已放开到 1 个字符，
+    // 所以这里也不再拦；防抖照旧，避免逐键打后端。
     if (!immediate) {
       searchTimer = setTimeoutFn(() => performSearch({ immediate: true }), 160);
       return;

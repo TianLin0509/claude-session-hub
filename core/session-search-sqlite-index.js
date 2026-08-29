@@ -25,6 +25,37 @@ const DOC_FETCH_CHUNK = 900;
 // 短词（<3 字，trigram 索引不到）默认只扫这三档。tool 占 87% 的行、205MB 正文，
 // 而两个字在工具入参 JSON 里命中的基本都是噪声。
 const SHORT_TERM_SCOPES = Object.freeze(['title', 'user', 'assistant']);
+// 打分阶段最多把多少字符的 normalized_text 拉进 JS。常见词（`***`、`not`、`hub`）
+// 一次能命中两万条，不设上界就跟着语料线性膨胀（实测 164MB / 2.9 秒）。
+const SCORING_TEXT_BUDGET = 24 * 1024 * 1024;
+// 单个会话最多打分多少条命中行。用来把总预算摊到更多会话上，
+// 而不是被前几个「命中特别密集」的会话吃光。
+const PER_SESSION_SCORE_DOCS = 40;
+
+/**
+ * 从一个会话的命中行里挑出要打分的那些。
+ * 多词查询必须保证**每个词都有代表**，否则 covered 校验会误判成「这个会话没覆盖全」。
+ * 同一个词内部按 id 倒序取（id 自增，越大越靠后＝越新）。
+ */
+function pickScoringIds(entry, terms, cap) {
+  if (entry.ids.size <= cap) return [...entry.ids];
+  const perTerm = Math.max(1, Math.floor(cap / Math.max(1, terms.length)));
+  const picked = new Set();
+  for (const term of terms) {
+    const ids = entry.byTerm.get(term);
+    if (!ids) continue;
+    const sorted = [...ids].sort((a, b) => b - a);
+    for (let i = 0; i < sorted.length && i < perTerm; i += 1) picked.add(sorted[i]);
+  }
+  // 还有余量就按新→旧补满
+  if (picked.size < cap) {
+    for (const id of [...entry.ids].sort((a, b) => b - a)) {
+      if (picked.size >= cap) break;
+      picked.add(id);
+    }
+  }
+  return [...picked];
+}
 
 function isRecoverableDatabaseError(error) {
   const text = `${error && error.code || ''} ${error && error.message || error || ''}`.toLocaleLowerCase();
@@ -420,6 +451,7 @@ class SqliteSessionSearchIndex {
     const hasSince = since !== null && since !== undefined;
     let rows = null;
     let truncated = false;
+    let ftsRejected = false;
     if (String(term).length >= 3) {
       try {
         rows = this._matchStatement({ useFts: true, scopes: scopeList, hasSince })
@@ -432,30 +464,94 @@ class SqliteSessionSearchIndex {
             && (!hasSince || Number(row.timestamp) >= since));
         }
       } catch {
-        // FTS 语法/分词器拒绝这个词（例如全是标点），退回顺序扫描。
+        // FTS 语法/分词器拒绝这个词（例如全是标点、或含 NUL），退回顺序扫描。
         rows = null;
         truncated = false;
+        ftsRejected = true;
       }
     }
     if (!rows) {
-      rows = this._matchStatement({ useFts: false, scopes: scopeList, hasSince })
-        .all(term, ...(scopeList || []), ...(hasSince ? [since] : []), limit + 1);
+      // ⚠ 退回顺序扫描时**必须收窄 scope**。
+      // 2026-08-28 在真实生产索引（2.6GB / 335778 文档）上抓到：查 `a\u0000b`
+      // 时 FTS 抛错，fallback 却按 scopeList=null 扫了整张 docs 表（229MB），
+      // 用了 7339ms —— 这是整个系统最坏的一条路径。
+      // 短词本来就走收窄；≥3 字但 FTS 拒收的词同样只可能是垃圾串，一并收窄。
+      const fallbackScopes = scopeList || (ftsRejected ? SHORT_TERM_SCOPES : null);
+      rows = this._matchStatement({ useFts: false, scopes: fallbackScopes, hasSince })
+        .all(term, ...(fallbackScopes || []), ...(hasSince ? [since] : []), limit + 1);
       truncated = rows.length > limit;
     }
     return { rows: rows.slice(0, limit), truncated };
   }
 
-  /** 按 id 批量取命中行的完整内容（打分与摘要需要正文）。 */
-  _docsByIds(ids) {
+  /**
+   * 打分阶段按 id 批量取命中行 —— **不取 text**。
+   *
+   * 2026-08-28 生产规模压测：搜 `***` 一次要把 19925 条命中行的正文拉进 JS，
+   * 合计 164MB，光这一步就 400ms，加上候选阶段总共 2.9 秒。而 `text` 只有最终
+   * 展示的那 ≤50 条摘要用得到；打分只需要 normalized_text。
+   * 摘要改由 _snippetTextByIds 在结果切片之后单独取。
+   *
+   * 同时加字节预算：命中行特别多时（常见词）停在预算处并报截断，
+   * 保证最坏情况有确定上界，而不是跟着语料线性膨胀。
+   */
+  _scoringDocsByIds(ids, budget) {
     const out = [];
+    let bytes = 0;
+    let truncated = false;
+    for (let start = 0; start < ids.length; start += DOC_FETCH_CHUNK) {
+      // budget 由调用方跨会话累计 —— 第一版把它写成了每个会话各算一次，
+      // 100 个候选会话就等于 100 份预算，等于没有上界。
+      if (budget && budget.used >= budget.limit) { truncated = true; break; }
+      if (bytes >= SCORING_TEXT_BUDGET) { truncated = true; break; }
+      const chunk = ids.slice(start, start + DOC_FETCH_CHUNK);
+      const statement = this.db.prepare(
+        `SELECT id, event_id, scope, role, speaker, normalized_text, ordinal, timestamp
+         FROM docs WHERE id IN (${chunk.map(() => '?').join(',')}) ORDER BY ordinal, id`,
+      );
+      for (const row of statement.all(...chunk)) {
+        out.push(row);
+        const size = (row.normalized_text || '').length;
+        bytes += size;
+        if (budget) budget.used += size;
+      }
+    }
+    return { rows: out, truncated };
+  }
+
+  /**
+   * 把短词要扫的那几档（标题 / 我的提问 / AI 回答）的页拉进缓存。
+   *
+   * 2026-08-28 压测：罕见的 2 字词（「梦境」全库只有 47 条命中）必须扫完整个短词
+   * scope 才能确定没有更多，冷缓存下 1241ms —— 而这恰恰是用户最常打的那种词。
+   * 这几档一共只有 11.5MB（tool 是 146MB，不预热），一次 75ms 就能把冷启动那一刀
+   * 吃掉：预热后同一个查询 65ms。
+   *
+   * 只读、幂等、失败无所谓 —— 纯粹是把页读进 OS/SQLite 缓存。
+   */
+  prewarmShortTermScopes() {
+    try {
+      const placeholders = SHORT_TERM_SCOPES.map(() => '?').join(',');
+      this.db.prepare(
+        `SELECT count(*) AS c, sum(length(normalized_text)) AS b FROM docs WHERE scope IN (${placeholders})`,
+      ).get(...SHORT_TERM_SCOPES);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 只给最终展示的那几条取正文，用来生成摘要。 */
+  _snippetTextByIds(ids) {
+    const map = new Map();
     for (let start = 0; start < ids.length; start += DOC_FETCH_CHUNK) {
       const chunk = ids.slice(start, start + DOC_FETCH_CHUNK);
       const statement = this.db.prepare(
-        `SELECT * FROM docs WHERE id IN (${chunk.map(() => '?').join(',')}) ORDER BY ordinal, id`,
+        `SELECT id, text FROM docs WHERE id IN (${chunk.map(() => '?').join(',')})`,
       );
-      for (const row of statement.all(...chunk)) out.push(row);
+      for (const row of statement.all(...chunk)) map.set(row.id, row.text || '');
     }
-    return out;
+    return map;
   }
 
   search(request = {}) {
@@ -468,9 +564,14 @@ class SqliteSessionSearchIndex {
         index: this.getStats(), error: `搜索关键词过长（最多 ${MAX_QUERY_LENGTH} 个字符）`,
       };
     }
-    const rawQuery = rawInput.trim();
+    // 控制字符（NUL、U+0001 之类）不可能是有意义的检索内容，但会让 FTS5 抛错，
+    // 继而退化成顺序扫描。查询侧直接剔掉；索引里的正文不受影响。
+    const rawQuery = rawInput.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim();
     const terms = queryTerms(rawQuery);
-    if (normalizeSearchText(rawQuery).length < 2 || !terms.length) {
+    // 2026-08-28 压测发现：单个汉字（「蜃」「熵」「锁」）在中文里是完整的检索单位，
+    // 但这里此前一律拦掉 —— 不是「没搜到」，是**根本没去搜**，属于静默错误。
+    // 放开到 1 个字符；短词本来就走 scope 收窄后的顺序扫描，代价可控。
+    if (!normalizeSearchText(rawQuery).length || !terms.length) {
       return {
         results: [], totalSessions: 0, totalMatches: 0, truncated: false,
         facets: { providers: {}, scopes: {}, projects: [] }, queryMs: Date.now() - startedAt,
@@ -492,12 +593,27 @@ class SqliteSessionSearchIndex {
     const shortTermScopes = scopeList || SHORT_TERM_SCOPES;
     let shortTermNarrowed = false;
 
-    const termMatches = terms.map(term => {
+    // 逐个词求候选，而不是先把所有词都查完再判断。
+    //
+    // 2026-08-28 模糊浸泡抓到：粘一大段文本进搜索框会被空白切成十几个词，
+    // 其中的 1~2 字词每个都是一次顺序扫描，串起来 3.5 秒。而多词是 AND —— 只要
+    // **任何一个**词零命中，整个结果就是空的。所以：
+    //   · 长词优先（≥3 字走 FTS，毫秒级），短词最后
+    //   · 一旦某个词零命中，立刻收工，后面的词根本不用查
+    // 语义完全不变，只是把注定为空的查询提前结束。
+    const termOrder = terms
+      .map((term, index) => ({ term, index }))
+      .sort((left, right) => right.term.length - left.term.length);
+    const termMatches = new Array(terms.length);
+    let emptyTerm = false;
+    for (const { term, index: termIndex } of termOrder) {
       const short = String(term).length < 3;
       if (short && !scopeList) shortTermNarrowed = true;
-      return this._matchedDocsForTerm(term, short ? shortTermScopes : scopeList, since);
-    });
-    if (termMatches.some(match => match.rows.length === 0)) {
+      const match = this._matchedDocsForTerm(term, short ? shortTermScopes : scopeList, since);
+      termMatches[termIndex] = match;
+      if (match.rows.length === 0) { emptyTerm = true; break; }
+    }
+    if (emptyTerm) {
       return {
         results: [], totalSessions: 0, totalMatches: 0, truncated: false,
         facets: { providers: {}, scopes: {}, projects: [] }, queryMs: Date.now() - startedAt,
@@ -512,9 +628,12 @@ class SqliteSessionSearchIndex {
       const term = terms[index];
       for (const row of match.rows) {
         let entry = bySession.get(row.session_key);
-        if (!entry) { entry = { ids: new Set(), covered: new Set() }; bySession.set(row.session_key, entry); }
+        if (!entry) { entry = { ids: new Set(), covered: new Set(), byTerm: new Map() }; bySession.set(row.session_key, entry); }
         entry.ids.add(row.id);
         entry.covered.add(term);
+        let perTerm = entry.byTerm.get(term);
+        if (!perTerm) { perTerm = []; entry.byTerm.set(term, perTerm); }
+        perTerm.push(row.id);
       }
     });
     // 命中太多时下面的 maxQueryDocs 闸门会截断。按会话最近活动倒序，让被截掉的
@@ -536,7 +655,9 @@ class SqliteSessionSearchIndex {
     const projectFacet = new Map();
     let totalMatches = 0;
     let loadedDocs = 0;
-    let queryGuardHit = termMatches.some(match => match.truncated);
+    let queryGuardHit = termMatches.some(match => match && match.truncated);
+    // 整次查询共用一份正文预算，跨会话累计
+    const textBudget = { used: 0, limit: SCORING_TEXT_BUDGET };
 
     for (const sessionKey of candidateKeys) {
       if (loadedDocs >= this.maxQueryDocs) { queryGuardHit = true; break; }
@@ -548,7 +669,15 @@ class SqliteSessionSearchIndex {
       if (projectFilter && !searchableProject.includes(projectFilter)) continue;
       // 只取这个 session 里**命中的**行。不命中的行在下面 matchedTerms 为空时本来
       // 就会被跳过，所以与原来「取全部行再逐条 includes」语义等价。
-      const rows = this._docsByIds([...bySession.get(sessionKey).ids]);
+      // 单个会话最多打分这么多条。命中特别多的常见词（"codex" 能中 157 个会话）
+      // 如果让前几个会话把总预算吃光，后面的会话根本不会被扫到 —— 用户看到的就是
+      // 「明明这个会话里有，却搜不出来」。按会话摊开预算，每个会话都有机会。
+      const entry = bySession.get(sessionKey);
+      const picked = pickScoringIds(entry, terms, PER_SESSION_SCORE_DOCS);
+      const cappedBySession = picked.length < entry.ids.size;
+      const fetched = this._scoringDocsByIds(picked, textBudget);
+      const rows = fetched.rows;
+      if (fetched.truncated || cappedBySession) queryGuardHit = true;
       loadedDocs += rows.length;
       const covered = new Set();
       const matchedScopes = new Set();
@@ -573,14 +702,20 @@ class SqliteSessionSearchIndex {
         if (score > bestScore || (score === bestScore && doc.timestamp > Number(bestMatch && bestMatch.timestamp))) {
           bestScore = score;
           bestMatch = {
+            // docId 只在内部用：结果切到 limit 之后才去取这一条的正文做摘要，
+            // 免得为了 50 条摘要把两万条正文全拉进来。
+            docId: row.id,
             eventId: doc.eventId || doc.id || null,
             scope: doc.scope, role: doc.role || null, speaker: doc.speaker || null,
             timestamp: doc.timestamp, ordinal: doc.ordinal,
-            text: createSnippet(doc.text, terms),
+            text: '',
           };
         }
       }
       if (!terms.every(term => covered.has(term)) || !bestMatch) continue;
+      // 会话内截断时，展示的命中数用 SQL 侧的精确集合大小，而不是「我们只打了分的那几条」。
+      // entry.ids 已经过 scope / 时间过滤（instr 分支下推、FTS 分支在 JS 里筛过）。
+      if (cappedBySession) matchCount = Math.max(matchCount, entry.ids.size);
       groups.push({
         session, bestMatch, matchCount, newestMatchAt,
         groupScore: bestScore + Math.log2(1 + matchCount) * 2,
@@ -594,13 +729,21 @@ class SqliteSessionSearchIndex {
     groups.sort((a, b) => sort === 'recent'
       ? b.newestMatchAt - a.newestMatchAt || b.groupScore - a.groupScore
       : b.groupScore - a.groupScore || b.newestMatchAt - a.newestMatchAt);
-    const results = groups.slice(0, limit).map(group => ({
+    // 摘要放到切片之后再取正文：只有这 ≤limit 条需要 text。
+    const shown = groups.slice(0, limit);
+    const snippetText = this._snippetTextByIds(
+      shown.map(group => group.bestMatch && group.bestMatch.docId).filter(id => id != null),
+    );
+    const results = shown.map((group) => {
+      const { docId, ...bestMatch } = group.bestMatch;
+      return {
         ...group.session,
         sessionKey: group.session.key,
         updatedAt: group.session.updatedAt || group.newestMatchAt,
         matchCount: group.matchCount,
-        bestMatch: group.bestMatch,
-      }));
+        bestMatch: { ...bestMatch, text: createSnippet(snippetText.get(docId) || '', terms) },
+      };
+    });
     const projects = [...projectFacet.entries()].map(([label, count]) => ({ label, count }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN')).slice(0, 40);
     return {

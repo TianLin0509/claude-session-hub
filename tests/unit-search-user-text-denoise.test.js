@@ -154,3 +154,43 @@ test('去噪后的文本投影确实会让签名变化（版本号不是摆设�
 });
 
 console.log('unit-search-user-text-denoise OK');
+
+test('剪掉注入块后，剩下的残渣本身又是注入标记时也要丢掉', () => {
+  // 2026-08-28 在真实 Codex rollout 上抓到的形态（原文 1687 字）：
+  //     <recommended_plugins> …一大段… </recommended_plugins>
+  //     # AGENTS.md instructions for C:\Users\lintian\chuxin-research
+  // 第一版剪掉前一块之后，把后一行当成用户真话入库了，搜索里照样能命中。
+  const real = [
+    '<recommended_plugins>',
+    'Here is a list of plugins that are available but not installed.',
+    'x'.repeat(1400),
+    '</recommended_plugins>',
+    '',
+    '# AGENTS.md instructions for C:\Users\lintian\chuxin-research',
+  ].join('\n');
+  assert.equal(searchableUserText(real), null, '整条都是注入，一个字都不该进索引');
+
+  const docs = docsFromTurns([{ id: 'u1', role: 'user', text: real, ts: 1 }], '标题', 'codex');
+  assert.equal(docs.filter(d => d.scope === 'user').length, 0);
+  assert.equal(docs.some(d => /AGENTS\.md instructions/i.test(d.text || '')), false);
+});
+
+test('注入块后面跟着真话时，真话必须留下', () => {
+  const mixed = [
+    '<recommended_plugins>一堆插件清单</recommended_plugins>',
+    '',
+    '帮我把这个 PPT 转成可编辑的 REALQUESTION',
+  ].join('\n');
+  const out = searchableUserText(mixed);
+  assert.match(out, /REALQUESTION/);
+  assert.doesNotMatch(out, /插件清单/);
+});
+
+test('只有 <recommended_plugins> 一块的消息，剪完为空→丢掉', () => {
+  // 有意**不**把它加进 isSyntheticUserText 的整条判定：那样会把
+  // 「注入块 + 后面跟着的真话」整条误杀（上一条用例就是防这个）。
+  // 靠「剪块 → 剩空 → 丢」达到同样效果，且不误伤。
+  assert.equal(searchableUserText('<recommended_plugins>\nfoo\n</recommended_plugins>'), null);
+  assert.equal(isSyntheticUserText('<recommended_plugins>\nfoo\n</recommended_plugins>'), false,
+    '整条判定不该认它，否则块后面的真话会被一起丢掉');
+});

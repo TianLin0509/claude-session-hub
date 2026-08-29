@@ -155,3 +155,16 @@ C:\Users\lintian\claude-session-hub\node_modules\electron\dist\electron.exe C:\t
 - 2026-04-19 四路代码审查发现：`main.js` 的 `ensureHooksDeployed()` 原本只在目标不存在时复制脚本，导致老用户机器永远拿不到新 statusline 的 env-dir 支持，隔离链条断掉（已修为内容比对覆盖，commit `5dd5dfe`）
 - 同日清理 pytest 垃圾：`AppData\Local\Temp\pytest-of-lintian\pytest-NNN\hub-e2e\node_modules\electron\dist\electron.exe` 因每次是新路径 → 35+ 条防火墙 Allow 规则累积 + 约 3GB 磁盘占用
 - 老测试 fixture `npm install --prefer-offline` 每次 120 秒 + 742MB；junction 后 <1 秒 + 0 字节
+
+## 铁律：每次改动 Hub，同一提交里升版本号
+
+用户 2026-08-29 定的规矩：**「以后所有对 AI HUB 的改动，完成后都要同步改动 AI HUB 的版本号」**。
+
+**为什么这条重要**：Hub 是源码模式跑的（`node_modules\electron\dist\AIGroupChatHub.exe "C:\Users\lintian\claude-session-hub"`），而且 `main-bootstrap.js` 明确不装单实例锁 —— 桌面上会长期同时存在多个实例，每个持有它启动那一刻的代码。窗口标题是 `AI 群聊 Hub：PID <pid> v<version>`（`main.js` 的 `_hubTitle` 动态读 `package.json`），**版本号是唯一能一眼分辨"这个窗口跑的是不是我刚改的代码"的信号**。不升版本，重启后就无法确认改动是否生效。
+
+规则：
+1. 任何进 master 的 Hub 功能/修复提交，都在**同一个提交**里把版本号 +1（默认动 patch 位；破坏性改动才动 minor）。纯文档、纯测试改动可以不动。
+2. 版本号有 **3 处**必须同步：`package.json` 的 `version`、`package-lock.json` 的顶层 `version` 和 `packages[""].version`。`node tests\unit-hub-version-sync.test.js` 守这个一致性。
+3. **不要**去改 `tests\unit-hub-exe-branding.test.js` 和 `tests\unit-process-lifecycle-journal.test.js` 里出现的版本字面量 —— 那些是自洽的 fixture 输入和 `app.getVersion` mock，跟生产版本号无关，跟着改反而制造假耦合。
+4. 升版本会让品牌 stamp 失配，下次启动重新生成 `AIGroupChatHub.exe`。这条路径**已经**处理了"副本正被运行中的 Hub 占用"：`core\hub-exe-branding.js` 先把旧副本 rename 成 `.stale-*` 腾位再替换（Windows 允许 rename 正在执行的映像，但不允许 delete），失败也只是回落 electron.exe 图标。**不需要为了升版本去关生产实例。**
+5. 验证：重启后看窗口标题里的 `v<version>` 是否等于 `package.json` 里的值。

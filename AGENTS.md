@@ -52,3 +52,11 @@
 - 自动沉淀只写目标文件末尾 `<!-- dream:begin/end -->` 托管区，手写正文区不得动；用户级四件套（kimi/claude/codex/gemini）与工作区根 AGENTS.md+CLAUDE.md+GEMINI.md 多写保持逐字一致，缺哪份不补建。
 - 隔离验证梦境/记忆功能必须同时设 `CLAUDE_HUB_HOME_DIR`（否则 memory 孤岛采集扫真实 home、写真实三件套）并清空 `DEEPSEEK_API_KEY`（env 优先于 config.json，父进程的 key 会漏进隔离实例）。
 - 测试：`node tests\unit-dream-consolidation.test.js`、`node tests\e2e-memory-panel-cdp.js`。
+
+## 版本号（2026-08-29）
+
+- 用户规矩：**所有对 Hub 的改动，完成后在同一提交里同步升版本号**（默认 patch 位；纯文档/纯测试可不动）。
+- 理由：Hub 源码模式运行且没有单实例锁，桌面上常年并存多个实例各持不同时刻的代码。窗口标题 `AI 群聊 Hub：PID <pid> v<version>` 动态读 `package.json`，版本号是唯一能一眼确认"这个窗口跑的是不是新代码"的信号。
+- 同步 3 处：`package.json` 的 `version`、`package-lock.json` 的顶层 `version` 和 `packages[""].version`。用 `node tests\unit-hub-version-sync.test.js` 守。
+- 不要动 `tests\unit-hub-exe-branding.test.js` / `tests\unit-process-lifecycle-journal.test.js` 里的版本字面量——那是 fixture 输入和 `app.getVersion` mock，不是生产版本号。
+- 升版本会触发 `core\hub-exe-branding.js` 重建 `AIGroupChatHub.exe`；该路径已处理"副本被运行中的 Hub 占用"（先 rename 成 `.stale-*` 再替换），**不要为此关生产实例**。

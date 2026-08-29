@@ -270,7 +270,8 @@ function renderTurnCard(turn) {
             ? `<button class="ta-btn" data-action="resend" title="重发">↻</button>
                <button class="ta-btn" data-action="edit-resend" title="编辑重发">✏</button>
                <button class="ta-btn" data-action="prompt-inspect" title="查看完整 Prompt（CLAUDE.md / 记忆注入体检）">🔍</button>`
-            : `<button class="ta-btn" data-action="regen" title="重新生成">⏪</button>`}
+            : `<button class="ta-btn" data-action="sync-chatgpt" title="同步此回答到公司 ChatGPT">↑</button>
+               <button class="ta-btn" data-action="regen" title="重新生成">⏪</button>`}
         </div>
       </div>
       ${thinkingHtml}

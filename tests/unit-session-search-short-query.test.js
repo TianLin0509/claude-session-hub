@@ -197,3 +197,93 @@ test('时间过滤下推后，超出时间窗的命中不再被算进 matchCount
 });
 
 console.log('unit-session-search-short-query OK');
+
+test('单个汉字也要真的去搜（此前是静默不搜，不是没结果）', (t) => {
+  const index = freshIndex(t, 'single-char');
+  index.replaceSource(makeSource('s1', 'codex', '海市蜃楼现象', [
+    { id: 'u1', scope: 'user', text: '这个「蜃」字怎么念' },
+    { id: 'a1', scope: 'assistant', text: '读 shèn。' },
+  ]));
+  index.replaceSource(makeSource('s2', 'claude', '无关会话', [
+    { id: 'u2', scope: 'user', text: '今天天气不错' },
+  ]));
+
+  // 2026-08-28 压测抓到：search() 里 `length < 2` 直接返回空，
+  // 于是单字查询根本没到索引层。中文里单字是完整的检索单位。
+  const hit = index.search({ query: '蜃' });
+  assert.equal(hit.totalSessions, 1, '单个汉字必须能搜到');
+  assert.equal(hit.results[0].sessionKey, 's1');
+
+  assert.equal(index.search({ query: '蜃', scopes: ['title'] }).totalSessions, 1, '标题里也有这个字');
+  assert.equal(index.search({ query: '蜃', scopes: ['assistant'] }).totalSessions, 0, 'AI 回答里没有');
+
+  // 空查询仍然返回空，别把闸门开过头
+  assert.equal(index.search({ query: '' }).totalSessions, 0);
+  assert.equal(index.search({ query: '   ' }).totalSessions, 0);
+});
+
+test('渲染层不再拦单字，否则后端放开了也白搭', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'global-session-search.js'), 'utf8');
+  assert.doesNotMatch(src, /if \(trimmed\.length < 2\) return;/,
+    '渲染层还拦着单字的话，后端放开也没用');
+});
+
+test('多词查询：任一词零命中就立刻收工，不把剩下的词也扫一遍', (t) => {
+  const index = freshIndex(t, 'lazy-terms');
+  index.replaceSource(makeSource('s1', 'codex', '会话', [
+    { id: 'u1', scope: 'user', text: 'LAZYPROBE 常见词 的 是 在' },
+  ]));
+
+  // 模糊浸泡抓到的形态：粘一大段文本进搜索框，被空白切成十几个词，
+  // 其中的 1~2 字词每个都是一次顺序扫描，串起来 3.5 秒。多词是 AND，
+  // 只要有一个词零命中，整个结果必然为空，后面的词根本不该查。
+  const calls = [];
+  const orig = index._matchedDocsForTerm.bind(index);
+  index._matchedDocsForTerm = (term, scopes, since) => { calls.push(term); return orig(term, scopes, since); };
+
+  const res = index.search({ query: 'ZZZABSENTWORD 的 是 在 常见词' });
+  assert.equal(res.totalSessions, 0);
+  assert.equal(calls.length, 1, `零命中的长词应当第一个被查并立即收工，实际查了 ${calls.length} 个词: ${JSON.stringify(calls)}`);
+  assert.equal(calls[0], 'zzzabsentword', '最长的词优先查（≥3 字走 FTS，毫秒级）');
+});
+
+test('多词都命中时，语义仍然是 AND（惰性求值不能改变结果）', (t) => {
+  const index = freshIndex(t, 'lazy-and');
+  index.replaceSource(makeSource('both', 'codex', '两个词都有', [
+    { id: 'a', scope: 'user', text: 'ALPHAWORD 出现在提问' },
+    { id: 'b', scope: 'assistant', text: 'BETAWORD 出现在回答' },
+  ]));
+  index.replaceSource(makeSource('one', 'claude', '只有一个词', [
+    { id: 'c', scope: 'user', text: 'ALPHAWORD 只有这个' },
+  ]));
+  assert.equal(index.search({ query: 'ALPHAWORD BETAWORD' }).totalSessions, 1);
+  assert.equal(index.search({ query: 'BETAWORD ALPHAWORD' }).totalSessions, 1, '词序不该影响结果');
+  assert.equal(index.search({ query: 'ALPHAWORD' }).totalSessions, 2);
+});
+
+test('短词档要能预热，且预热是只读幂等的', (t) => {
+  const index = freshIndex(t, 'prewarm');
+  index.replaceSource(makeSource('s1', 'codex', '标题里有蜃', [
+    { id: 'u1', scope: 'user', text: '提问里也有蜃' },
+    { id: 't1', scope: 'tool', text: '工具输出里有蜃' },
+  ]));
+  const before = index.getStats();
+  // 罕见 2 字词必须扫完整个短词 scope 才知道没有更多命中，冷缓存下实测 1241ms；
+  // 预热一次 ~75ms 之后同一个查询 65ms。预热本身不能改数据。
+  assert.equal(index.prewarmShortTermScopes(), true);
+  assert.equal(index.prewarmShortTermScopes(), true, '幂等，可以反复调');
+  const after = index.getStats();
+  assert.equal(after.sessions, before.sessions);
+  assert.equal(after.documents, before.documents);
+  assert.equal(index.search({ query: '蜃' }).totalSessions, 1, '预热之后照常能搜');
+});
+
+test('engine 构造与刷新之后都要预热短词档', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'core', 'session-search-engine.js'), 'utf8');
+  const hooks = src.split('\n').filter(line => line.includes('prewarmShortTermScopes'));
+  assert.ok(hooks.length >= 2,
+    `构造时和刷新完成后都要预热，实际只找到 ${hooks.length} 处`);
+  for (const line of hooks) {
+    assert.match(line, /setImmediate/, '预热必须放进 setImmediate，别挡住构造和第一次查询');
+  }
+});

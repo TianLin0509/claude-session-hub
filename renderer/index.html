@@ -148,12 +148,14 @@
       </div>
       <div class="context-menu" id="terminal-context-menu" style="display:none">
         <button class="context-menu-item" data-action="preview">预览</button>
+        <button class="context-menu-item" data-action="sync-chatgpt">同步选中文字到公司 ChatGPT</button>
       </div>
       <div class="context-menu" id="path-link-context-menu" style="display:none">
         <button class="context-menu-item" data-action="copy-abs-path"
                 data-label-file="复制绝对路径" data-label-url="复制 URL">复制绝对路径</button>
         <button class="context-menu-item" data-action="copy-file" data-file-only>复制对应文件</button>
         <button class="context-menu-item" data-action="sync-company" data-file-only>同步到公司</button>
+        <button class="context-menu-item" data-action="sync-chatgpt">同步内容到公司 ChatGPT</button>
         <div class="context-menu-separator" data-file-only></div>
         <button class="context-menu-item" data-action="show-in-folder" data-file-only>打开上一级文件夹</button>
         <button class="context-menu-item" data-action="open-external">在外部打开</button>
@@ -312,6 +314,8 @@
         </select>
         <span class="recent-turn-copy-total" id="recent-turn-copy-total"></span>
         <button type="button" id="recent-turn-copy-button">复制对话</button>
+        <button type="button" id="chatgpt-bridge-pull" title="从公司 ChatGPT 拉取最新内容并发送给当前 AI">↓ 拉取</button>
+        <button type="button" id="chatgpt-bridge-push" title="把最近一条 AI 回答同步到公司 ChatGPT">↑ 公司</button>
       </div>
       <!-- 视图切换按钮 -->
       <div class="view-toggle">

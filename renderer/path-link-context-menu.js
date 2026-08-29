@@ -14,6 +14,7 @@ function createPathLinkContextMenuController({
   normalizeLocalPathForOpen,
   getSessionCwd,
   getActiveSessionId,
+  pushToChatgpt,
   requestAnimationFrameFn = requestAnimationFrame,
 }) {
   let currentTarget = null;
@@ -132,6 +133,23 @@ function createPathLinkContextMenuController({
           return;
         }
         showSyncStatus(`已同步到公司收件箱\n${r.filename || displayName}`, 'success');
+      } else if (action === 'sync-chatgpt') {
+        const displayName = t.isUrl ? t.absPath : (t.absPath.split(/[\\/]/).pop() || t.absPath);
+        let text = t.absPath;
+        if (!t.isUrl) {
+          const read = await ipcRenderer.invoke('read-file', t.absPath);
+          if (!read || read.error || typeof read.content !== 'string') {
+            showSyncStatus(`同步失败\n仅支持可读取的文本文件`, 'error');
+            return;
+          }
+          text = read.content;
+        }
+        if (typeof pushToChatgpt !== 'function') {
+          showSyncStatus('同步失败\nChatGPT 中转未初始化', 'error');
+          return;
+        }
+        const result = await pushToChatgpt(text, displayName);
+        if (!result || result.ok !== true) return;
       } else if (action === 'open-external') {
         if (t.isUrl) {
           const r = await ipcRenderer.invoke('open-external-url', t.absPath);
@@ -142,7 +160,7 @@ function createPathLinkContextMenuController({
         }
       }
     } catch (e) {
-      if (action === 'sync-company') {
+      if (action === 'sync-company' || action === 'sync-chatgpt') {
         showSyncStatus(`同步失败\n${e && e.message ? e.message : '同步程序异常。'}`, 'error');
       }
       console.warn('[path-link-ctx] action failed:', action, e && e.message);

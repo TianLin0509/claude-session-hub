@@ -69,6 +69,7 @@ const { registerConfigIpc } = require('./main/ipc/config-handlers.js');
 const { registerWorkbenchOperationsIpc } = require('./main/ipc/workbench-operations-handlers.js');
 const { createWorkbenchOperationsService } = require('./core/workbench-operations.js');
 const { registerPathIpc } = require('./main/ipc/path-handlers.js');
+const { registerChatgptBridgeIpc } = require('./main/ipc/chatgpt-bridge-handlers.js');
 const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
 const { registerWorkspaceIpc } = require('./main/ipc/workspace-handlers.js');
 const { getTerminalBatchDelay, isBackgroundMember } = require('./main/terminal-output-policy.js');
@@ -1491,6 +1492,7 @@ registerWorkbenchOperationsIpc(ipcMain, {
 });
 
 registerPathIpc(ipcMain);
+registerChatgptBridgeIpc(ipcMain, { sessionManager });
 
 // --- Hook HTTP server ---
 // Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code

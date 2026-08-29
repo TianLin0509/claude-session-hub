@@ -49,6 +49,7 @@ const {
   supportsRecoverableSessionKind,
 } = require('./context-menus.js');
 const { createPathLinkContextMenuController } = require('./path-link-context-menu.js');
+const { createChatgptBridgeController } = require('./chatgpt-bridge-controller.js');
 const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
 const { createHomeCardLayout } = require('./home-card-layout.js');
 const {
@@ -1638,6 +1639,18 @@ const recentTurnCopyController = createRecentTurnCopyController({
   extractVisibleCardText,
 });
 recentTurnCopyController.init();
+const chatgptBridgeController = createChatgptBridgeController({
+  document,
+  window,
+  ipcRenderer,
+  getActiveSessionId: () => activeSessionId,
+  getLatestAssistantText: () => {
+    const cards = [...document.querySelectorAll('#msg-overlay > .turn-card:not(.user)')];
+    const card = cards[cards.length - 1];
+    return card ? extractVisibleCardText(card.querySelector('.turn-body')) : '';
+  },
+});
+chatgptBridgeController.init();
 
 async function copyRecentTurnsForSession(sessionId, count = 3) {
   const session = sessions.get(sessionId);
@@ -2319,6 +2332,17 @@ document.addEventListener('click', (e) => {
       btn.textContent = '✓';
       setTimeout(() => { btn.textContent = orig; }, 1500);
     }).catch(() => {});
+    return;
+  }
+
+  if (action === 'sync-chatgpt') {
+    const visibleText = extractVisibleCardText(card.querySelector('.turn-body'));
+    const original = btn.textContent;
+    btn.textContent = '…';
+    chatgptBridgeController.pushText(visibleText, '当前回答').then((result) => {
+      btn.textContent = result && result.ok === true ? '✓' : '!';
+      setTimeout(() => { btn.textContent = original; }, 1800);
+    });
     return;
   }
 
@@ -5598,6 +5622,7 @@ const terminalContextMenu = createTerminalContextMenuController({
   }).catch((error) => {
     showPreviewNotice(`预览失败：${String(error && error.message || error)}`, 'error');
   }),
+  syncSelection: (selection) => chatgptBridgeController.pushText(selection, '终端选中文字'),
 });
 terminalContextMenu.init();
 const openTerminalContextMenu = terminalContextMenu.open;
@@ -5613,6 +5638,7 @@ const pathLinkContextMenu = createPathLinkContextMenuController({
   normalizeLocalPathForOpen: _normalizeLocalPathForOpen,
   getSessionCwd,
   getActiveSessionId: () => activeSessionId,
+  pushToChatgpt: (text, label) => chatgptBridgeController.pushText(text, label),
 });
 pathLinkContextMenu.init();
 
