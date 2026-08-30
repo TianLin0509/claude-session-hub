@@ -63,8 +63,6 @@ async function run() {
 
     await cdp.eval(`(() => {
       document.getElementById('terminal-panel').classList.add('card-view-active');
-      const toolbar = document.getElementById('recent-turn-copy');
-      toolbar.hidden = false;
       const overlay = document.getElementById('msg-overlay');
       overlay.style.display = 'block';
       overlay.innerHTML = '<div class="turn-card" data-turn-id="bridge-e2e-turn"><div class="turn-content"><div class="turn-head"><span class="turn-who">Codex</span><div class="turn-actions"><button class="ta-btn" data-action="sync-chatgpt" title="同步此回答到公司 ChatGPT">↑</button></div></div><div class="turn-body">Hub UI E2E：最近回答自动同步可用。</div></div></div>';
@@ -73,13 +71,29 @@ async function run() {
       return true;
     })()`);
 
-    const toolbarState = await cdp.eval(`(() => ({
-      pull: document.getElementById('chatgpt-bridge-pull').textContent.trim(),
-      push: document.getElementById('chatgpt-bridge-push').textContent.trim(),
-      cardAction: document.querySelector('.turn-card [data-action="sync-chatgpt"]')?.title || ''
-    }))()`);
+    const toolbarState = await cdp.eval(`(() => {
+      const bridge = document.getElementById('chatgpt-bridge-actions');
+      const recent = document.getElementById('recent-turn-copy');
+      const rect = bridge.getBoundingClientRect();
+      return {
+        pull: document.getElementById('chatgpt-bridge-pull').textContent.trim(),
+        push: document.getElementById('chatgpt-bridge-push').textContent.trim(),
+        bridgeHidden: bridge.hidden,
+        bridgeDisplay: getComputedStyle(bridge).display,
+        bridgeWidth: rect.width,
+        bridgeHeight: rect.height,
+        recentHidden: recent.hidden,
+        cardAction: document.querySelector('.turn-card [data-action="sync-chatgpt"]')?.title || ''
+      };
+    })()`);
     assert.equal(toolbarState.pull, '↓ 拉取');
     assert.equal(toolbarState.push, '↑ 公司');
+    assert.equal(toolbarState.bridgeHidden, false, 'bridge toolbar must not inherit card-only hidden state');
+    assert.equal(toolbarState.bridgeDisplay, 'flex');
+    assert.ok(toolbarState.bridgeWidth > 100 && toolbarState.bridgeHeight > 20,
+      `bridge toolbar is not visibly laid out: ${JSON.stringify(toolbarState)}`);
+    assert.equal(toolbarState.recentHidden, true,
+      'E2E must prove the bridge stays visible while recent-turn-copy remains hidden');
     assert.match(toolbarState.cardAction, /同步此回答/);
 
     await cdp.eval(`document.getElementById('chatgpt-bridge-push').click()`);

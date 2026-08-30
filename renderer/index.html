@@ -304,6 +304,11 @@
         </svg>
         <span id="completion-notification-toggle-label">通知未配</span>
       </button>
+      <div class="chatgpt-bridge-actions" id="chatgpt-bridge-actions" aria-label="公司 ChatGPT 中转">
+        <span class="chatgpt-bridge-actions-label">中转</span>
+        <button type="button" id="chatgpt-bridge-pull" title="从公司 ChatGPT 拉取最新内容并发送给当前 AI">↓ 拉取</button>
+        <button type="button" id="chatgpt-bridge-push" title="把最近一条 AI 回答同步到公司 ChatGPT">↑ 公司</button>
+      </div>
       <div class="recent-turn-copy" id="recent-turn-copy" hidden>
         <span class="recent-turn-copy-label">近</span>
         <!-- 选项由 recent-turn-copy.js 的 refreshRoundOptions() 按"当前卡片里真实
@@ -314,8 +319,6 @@
         </select>
         <span class="recent-turn-copy-total" id="recent-turn-copy-total"></span>
         <button type="button" id="recent-turn-copy-button">复制对话</button>
-        <button type="button" id="chatgpt-bridge-pull" title="从公司 ChatGPT 拉取最新内容并发送给当前 AI">↓ 拉取</button>
-        <button type="button" id="chatgpt-bridge-push" title="把最近一条 AI 回答同步到公司 ChatGPT">↑ 公司</button>
       </div>
       <!-- 视图切换按钮 -->
       <div class="view-toggle">
