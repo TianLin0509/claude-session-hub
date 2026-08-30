@@ -206,11 +206,12 @@ test('only flags the selected CLI understands are sent', () => {
     /if \(tuning\.showFast && tuning\.fastMode === false\) opts\.fastMode = false/,
     'fastMode must only be sent when the user explicitly turns it off',
   );
-  // 默认档位不能漂：Codex 按用户要求 None，Claude 保持 full。
+  // 默认档位不能漂。2026-08-29 起三家统一 None：用户要求「只有我提到的时候才
+  // 加载 superRAN」，而 superran 每个进程恒定提交 2.66 GB，默认加载是内存杀手。
   assert.match(
     CONTROLLER_SRC,
-    /const DEFAULT_MCP_BY_KIND = \{ claude: 'full', codex: 'none', deepseek: 'lean' \}/,
-    'Codex 默认必须是 None，且不能影响 Claude / DeepSeek 的历史默认',
+    /const DEFAULT_MCP_BY_KIND = \{ claude: 'none', codex: 'none', deepseek: 'none' \}/,
+    '三家默认都必须是 None（不加载任何 MCP）',
   );
   assert.match(
     CONTROLLER_SRC,

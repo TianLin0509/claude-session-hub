@@ -54,14 +54,16 @@
     ultra: '最大推理 + 自动任务分派',
   };
   let codexTuningCatalog = null;
-  // Claude 默认 full = 继承全部全局 MCP = 改动前的行为；Codex 默认 none，
-  // 保证普通 Session 与群聊成员都不会被 workspace/房间 MCP 隐式加回去。
+  // 2026-08-29 起三家统一默认 none：一个 MCP 都不加载，要用哪个当场选。
+  // 起因是 superran 这个 MCP 每个进程恒定提交 2.66 GB（实占只有 20–30 MB），
+  // Claude 原来默认 full，13 个会话就吃掉 34.6 GB 提交内存。
   const MCP_OPTIONS = {
     claude: [
-      ['full', 'Full · 默认，继承全部全局 MCP'],
-      ['lean', 'Lean · 省内存，一个都不加载'],
+      ['none', 'None · 默认，不加载任何 MCP'],
       ['browser', 'Browser · 只留 Playwright / Chrome'],
       ['wireless', 'Wireless · 只留 superran'],
+      ['lean', 'Lean · 仅保留 workspace / 群聊 MCP'],
+      ['full', 'Full · 继承全部全局 MCP（最占内存）'],
     ],
     codex: [
       ['none', 'None · 默认，不加载任何 MCP'],
@@ -71,7 +73,7 @@
       ['full', 'Full · 全部全局 MCP'],
     ],
   };
-  const DEFAULT_MCP_BY_KIND = { claude: 'full', codex: 'none', deepseek: 'lean' };
+  const DEFAULT_MCP_BY_KIND = { claude: 'none', codex: 'none', deepseek: 'none' };
   const DEFAULT_CODEX_SPEED_BY_KIND = { codex: 'fast', deepseek: 'inherit' };
   const EFFORT_LABEL_BY_KIND = {
     claude: '思考强度 (--effort)',
@@ -90,7 +92,7 @@
 
   function effortFamily(kind) { return kind === 'claude' ? 'claude' : 'codex'; }
   function mcpOptionsFor(kind) { return MCP_OPTIONS[effortFamily(kind)] || []; }
-  function defaultMcpFor(kind) { return DEFAULT_MCP_BY_KIND[kind] || 'lean'; }
+  function defaultMcpFor(kind) { return DEFAULT_MCP_BY_KIND[kind] || 'none'; }
   function defaultCodexSpeedFor(kind, modelId) {
     const configuredDefault = DEFAULT_CODEX_SPEED_BY_KIND[kind] || 'inherit';
     // Fast 只能作为支持该通道的 Codex 模型默认值；模型目录明确说不支持时，

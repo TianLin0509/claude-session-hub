@@ -22,8 +22,16 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const CLAUDE_MCP_PROFILES = new Set(['full', 'lean', 'browser', 'wireless']);
-const DEFAULT_CLAUDE_MCP_PROFILE = 'full';
+// 2026-08-29 改默认：full → none。
+// 起因是用户报「内存怎么这么高」。实测：Claude 默认 full 意味着每开一个会话都把
+// ~/.claude.json 里 7 个 MCP server 全拉起来，其中 superran 一个就恒定提交 2.66 GB
+// （实占只有 20–30 MB，全是启动时一次性提交、之后从没碰过）。当时机器上有 13 个
+// Claude 会话 → 单是 superran 就吃掉 34.6 GB 提交内存，占系统总额度的三分之一。
+// 用户明确要求：「只有我提到的时候才加载 superRAN，否则不应该加载」。
+//
+// none 与 Codex 端语义对齐：硬关，连「工作区在无线目录下自动放行」都不走。
+const CLAUDE_MCP_PROFILES = new Set(['none', 'full', 'lean', 'browser', 'wireless']);
+const DEFAULT_CLAUDE_MCP_PROFILE = 'none';
 
 // 同一个能力在 Claude 和 Codex 的配置里叫法不一样（claude 是 superran，
 // codex 历史上写的是 superwireless），两边都列上，谁在就放行谁。
@@ -87,6 +95,9 @@ function isWirelessWorkspace(cwd) {
  */
 function resolveAllowedMcpNames(profile, { cwd, extraAllowed = [] } = {}) {
   const normalized = normalizeClaudeMcpProfile(profile);
+  // none 是硬关：extraAllowed 和「无线工作区自动放行」都不生效，与 Codex 端一致。
+  // 否则默认档一落到无线目录下就又把 superran 拉起来，等于默认没关。
+  if (normalized === 'none') return new Set();
   const allowed = new Set(extraAllowed.filter(Boolean));
   if (normalized === 'browser') BROWSER_MCP_NAMES.forEach(name => allowed.add(name));
   if (normalized === 'wireless' || isWirelessWorkspace(cwd)) WIRELESS_MCP_NAMES.forEach(name => allowed.add(name));
@@ -139,7 +150,9 @@ function buildClaudeMcpProfileArgs({
   if (!hubDataDir) return empty;
 
   try {
-    const servers = listClaudeMcpServers({ homeDir, cwd, fsModule });
+    // none 压根不需要读用户配置：直接写一份空 mcpServers。少读一个文件就少一处
+    // 会抛异常的地方 —— 而 none 是默认档，它的失败回退方向是「全量加载」，代价最大。
+    const servers = profile === 'none' ? {} : listClaudeMcpServers({ homeDir, cwd, fsModule });
     const allowed = resolveAllowedMcpNames(profile, { cwd, extraAllowed });
     const kept = filterMcpServers(servers, allowed);
     const configPath = writeClaudeMcpProfileConfig({ hubDataDir, profile, servers: kept, fsModule });
@@ -152,8 +165,11 @@ function buildClaudeMcpProfileArgs({
       configPath,
     };
   } catch (error) {
-    // 生成失败就退回全量继承：宁可多占内存，也不能让会话少工具还不吭声。
-    logger.warn?.(`[claude-mcp] 档位 ${profile} 生成失败，回退全量继承：${error.message}`);
+    // 生成失败只能退回全量继承（没有别的杠杆）。对 none 这个默认档来说，这等于
+    // 悄悄把 7 个 MCP 全拉回来、多吃几个 GB，所以日志要说清后果，别只写一句失败。
+    logger.warn?.(profile === 'none'
+      ? `[claude-mcp] 默认档 none 生成失败，本次会话将回退到全量加载 MCP（内存会显著上升）：${error.message}`
+      : `[claude-mcp] 档位 ${profile} 生成失败，回退全量继承：${error.message}`);
     return empty;
   }
 }

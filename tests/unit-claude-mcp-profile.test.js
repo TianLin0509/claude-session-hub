@@ -40,10 +40,13 @@ function readGeneratedConfig(configPath) {
   return JSON.parse(fs.readFileSync(configPath, 'utf8'));
 }
 
-test('档位非法值一律回落 full（= 改动前的全量继承）', () => {
-  assert.equal(normalizeClaudeMcpProfile(undefined), 'full');
-  assert.equal(normalizeClaudeMcpProfile(''), 'full');
-  assert.equal(normalizeClaudeMcpProfile('nonsense'), 'full');
+// 2026-08-29 起默认档由 full 改为 none：superran 这类 MCP 每个进程恒定提交
+// 2.66 GB，默认全量加载会让多会话场景直接吃满提交内存。回落方向必须是"最省"，
+// 不再是"最全"。详见 unit-claude-mcp-default-none.test.js。
+test('档位非法值一律回落 none（默认不加载任何 MCP）', () => {
+  assert.equal(normalizeClaudeMcpProfile(undefined), 'none');
+  assert.equal(normalizeClaudeMcpProfile(''), 'none');
+  assert.equal(normalizeClaudeMcpProfile('nonsense'), 'none');
   assert.equal(normalizeClaudeMcpProfile('LEAN'), 'lean');
   assert.equal(normalizeClaudeMcpProfile('wireless'), 'wireless');
 });

@@ -719,7 +719,9 @@ function normalizeCodexMcpProfile(value) {
 }
 
 function resolveCodexMcpProfile(kind, value) {
-  const fallback = String(kind || '').replace(/-resume$/, '') === 'deepseek' ? 'lean' : 'none';
+  // 2026-08-29 起 deepseek 也跟着默认 none（原来是 lean）。用户要求新建会话一律
+  // 不加载 MCP —— lean 会让「无线工作区自动放行」把 superran 拉回来，等于没关。
+  const fallback = 'none';
   if (value === undefined || value === null || value === '') return fallback;
   const normalized = String(value).trim().toLowerCase();
   return CODEX_MCP_PROFILES.has(normalized) ? normalized : fallback;

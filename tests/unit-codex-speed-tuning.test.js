@@ -115,9 +115,11 @@ test('Sol 默认显式使用 1M context，其它模型不虚构窗口', () => {
 });
 
 test('session-manager 的 Codex 默认与 DeepSeek 默认彼此隔离', () => {
+  // 2026-08-29：DeepSeek 也从 lean 改成 none。lean 会走「无线工作区自动放行」，
+  // 在 C:\Vibe\Wireless 下等于把 superran（每进程 2.66 GB）又拉回来，默认档形同虚设。
   assert.equal(_private.resolveCodexMcpProfile('codex', undefined), 'none');
   assert.equal(_private.resolveCodexMcpProfile('codex-resume', undefined), 'none');
-  assert.equal(_private.resolveCodexMcpProfile('deepseek', undefined), 'lean');
+  assert.equal(_private.resolveCodexMcpProfile('deepseek', undefined), 'none');
   assert.equal(_private.resolveCodexSpeedTier('codex', undefined), 'fast');
   assert.equal(_private.resolveCodexSpeedTier('deepseek', undefined), 'inherit');
 });
