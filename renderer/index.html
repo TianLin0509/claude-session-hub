@@ -150,6 +150,10 @@
         <button class="context-menu-item" data-action="preview">预览</button>
         <button class="context-menu-item" data-action="sync-chatgpt">同步选中文字到公司 ChatGPT</button>
       </div>
+      <div class="context-menu" id="card-selection-context-menu" style="display:none">
+        <button class="context-menu-item" data-action="copy">复制</button>
+        <button class="context-menu-item" data-action="sync-chatgpt">同步到公司 ChatGPT</button>
+      </div>
       <div class="context-menu" id="path-link-context-menu" style="display:none">
         <button class="context-menu-item" data-action="copy-abs-path"
                 data-label-file="复制绝对路径" data-label-url="复制 URL">复制绝对路径</button>
@@ -304,11 +308,6 @@
         </svg>
         <span id="completion-notification-toggle-label">通知未配</span>
       </button>
-      <div class="chatgpt-bridge-actions" id="chatgpt-bridge-actions" aria-label="公司 ChatGPT 中转">
-        <span class="chatgpt-bridge-actions-label">中转</span>
-        <button type="button" id="chatgpt-bridge-pull" title="从公司 ChatGPT 拉取最新内容并发送给当前 AI">↓ 拉取</button>
-        <button type="button" id="chatgpt-bridge-push" title="把最近一条 AI 回答同步到公司 ChatGPT">↑ 公司</button>
-      </div>
       <div class="recent-turn-copy" id="recent-turn-copy" hidden>
         <span class="recent-turn-copy-label">近</span>
         <!-- 选项由 recent-turn-copy.js 的 refreshRoundOptions() 按"当前卡片里真实

@@ -15,6 +15,35 @@
   min-width: 0;
 }
 
+.fi-bridge-toolbar {
+  display: flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 1px;
+}
+.fi-bridge-pull {
+  min-height: 24px;
+  padding: 3px 13px;
+  border: 1px solid rgba(var(--rgb-info), .42);
+  border-radius: var(--radius-pill);
+  background: rgba(var(--rgb-info), .10);
+  color: var(--accent-blue, var(--link));
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease, background .15s ease, opacity .15s ease;
+}
+.fi-bridge-pull:hover,
+.fi-bridge-pull:focus-visible {
+  color: var(--text-primary, var(--fg-strong));
+  border-color: var(--accent-blue, var(--link));
+  background: rgba(var(--rgb-info), .17);
+  outline: none;
+}
+.fi-bridge-pull:disabled { cursor: wait; opacity: .58; }
+
 /* Keep the CLI terminal geometry independent from the external composer.
    The collapsed bar keeps a stable flex footprint; multiline drafts and task
    preset details grow upward without changing xterm rows / sending SIGWINCH. */

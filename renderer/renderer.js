@@ -49,6 +49,7 @@ const {
   supportsRecoverableSessionKind,
 } = require('./context-menus.js');
 const { createPathLinkContextMenuController } = require('./path-link-context-menu.js');
+const { createCardSelectionContextMenuController } = require('./card-selection-context-menu.js');
 const { createChatgptBridgeController } = require('./chatgpt-bridge-controller.js');
 const { resolveXtermTheme, createThemeController } = require('./theme-controller.js');
 const { createHomeCardLayout } = require('./home-card-layout.js');
@@ -198,7 +199,6 @@ const getTerminalCoords = terminalInputController.getTerminalCoords;
 const getInputLineSelection = terminalInputController.getInputLineSelection;
 const deleteInputSelection = terminalInputController.deleteInputSelection;
 const floatingInputDrafts = new Map();
-const floatingInputPresetDrafts = new Map();
 const CODEX_BOTTOM_LOCK_EPSILON = 24;
 const CODEX_SCROLL_INTENT_MS = 1500;
 const CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS = 120;
@@ -649,7 +649,6 @@ function preserveAndClearTerminalPanel() {
     document.getElementById('card-question-nav'),
     document.querySelector('.view-toggle'),
     document.getElementById('completion-notification-toggle'),
-    document.getElementById('chatgpt-bridge-actions'),
     document.getElementById('recent-turn-copy'),
   ].filter(Boolean);
   terminalPanelEl.innerHTML = '';
@@ -3021,116 +3020,41 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     inputBox.textContent = floatingInputDrafts.get(sessionId);
   }
 
-  const presetApi = window.TaskPresets;
-  const presetSession = (typeof sessions !== 'undefined' && sessions && typeof sessions.get === 'function')
-    ? sessions.get(sessionId) : null;
-  // AI kind 含 -resume 变体（claude-resume / codex-resume / kimi-resume）：
-  // 恢复的旧会话恰恰最需要「续跑」预设，口径与下方休眠 session 白名单一致。
-  const presetKind = presetSession && presetSession.kind;
-  const presetEnabled = !!(
-    presetApi && Array.isArray(presetApi.PRESETS) && presetApi.PRESETS.length
-    && presetKind && (isAiKind(presetKind) || (typeof presetKind === 'string' && presetKind.endsWith('-resume')))
-  );
-  const presetToolbar = document.createElement('div');
-  presetToolbar.className = 'fi-preset-toolbar';
-  presetToolbar.hidden = !presetEnabled;
-  presetToolbar.setAttribute('aria-label', '任务预设');
-  const presetToolbarLabel = document.createElement('span');
-  presetToolbarLabel.className = 'fi-preset-label';
-  presetToolbarLabel.textContent = '任务预设';
-  presetToolbar.appendChild(presetToolbarLabel);
-
-  const presetPreview = document.createElement('div');
-  presetPreview.className = 'fi-preset-preview';
-  presetPreview.hidden = true;
-  const presetPreviewName = document.createElement('strong');
-  const presetPreviewText = document.createElement('div');
-  presetPreviewText.className = 'fi-preset-preview-text';
-  presetPreviewText.contentEditable = 'true';
-  presetPreviewText.setAttribute('role', 'textbox');
-  presetPreviewText.setAttribute('aria-label', '本次任务预设约束，可编辑');
-  const presetRemoveBtn = document.createElement('button');
-  presetRemoveBtn.type = 'button';
-  presetRemoveBtn.className = 'fi-preset-remove';
-  presetRemoveBtn.title = '取消本次任务预设';
-  presetRemoveBtn.setAttribute('aria-label', '取消本次任务预设');
-  presetRemoveBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
-  presetPreview.append(presetPreviewName, presetPreviewText, presetRemoveBtn);
-
-  function clearPresetSelection() {
-    floatingInputPresetDrafts.delete(sessionId);
-    presetPreview.hidden = true;
-    presetPreviewName.textContent = '';
-    presetPreviewText.textContent = '';
-    presetToolbar.querySelectorAll('.fi-preset-chip').forEach(btn => btn.setAttribute('aria-pressed', 'false'));
-  }
-
-  function selectPreset(presetId) {
-    if (!presetEnabled) return;
-    const preset = presetApi.getPreset(presetId);
-    if (!preset) return;
-    const current = floatingInputPresetDrafts.get(sessionId);
-    if (current && current.id === presetId) {
-      clearPresetSelection();
-      inputBox.focus();
-      return;
-    }
-    floatingInputPresetDrafts.set(sessionId, { id: preset.id, constraint: preset.constraint });
-    presetPreview.hidden = false;
-    presetPreviewName.textContent = preset.name;
-    presetPreviewText.textContent = preset.constraint;
-    presetToolbar.querySelectorAll('.fi-preset-chip').forEach(btn => {
-      btn.setAttribute('aria-pressed', String(btn.dataset.presetId === preset.id));
-    });
-    inputBox.focus();
-  }
-
-  if (presetEnabled) {
-    presetApi.PRESETS.forEach(preset => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'fi-preset-chip';
-      button.dataset.presetId = preset.id;
-      button.textContent = preset.label;
-      button.title = `${preset.name} · ${preset.hint}`;
-      button.setAttribute('aria-pressed', 'false');
-      button.addEventListener('click', (event) => {
-        event.stopPropagation();
-        selectPreset(preset.id);
-      });
-      presetToolbar.appendChild(button);
-    });
-    const savedPreset = floatingInputPresetDrafts.get(sessionId);
-    if (savedPreset && presetApi.getPreset(savedPreset.id)) {
-      const preset = presetApi.getPreset(savedPreset.id);
-      presetPreview.hidden = false;
-      presetPreviewName.textContent = preset.name;
-      // 如实恢复草稿：用户清空过的约束（空串）必须原样恢复成空，
-      // 不能用 || 回退成默认文案——否则 UI 显示有约束、实际发送却是纯原文。
-      presetPreviewText.textContent = savedPreset.constraint != null ? savedPreset.constraint : preset.constraint;
-      presetToolbar.querySelectorAll('.fi-preset-chip').forEach(btn => {
-        btn.setAttribute('aria-pressed', String(btn.dataset.presetId === preset.id));
-      });
-    }
-  }
-
-  // 与主输入框同款粘贴处理（terminal-input-controller）：文本粘贴转纯文本，
-  // 避免富文本格式混入约束草稿；图片粘贴插入本地路径。
-  if (typeof attachContenteditablePasteImage === 'function') attachContenteditablePasteImage(presetPreviewText);
-
-  presetPreviewText.addEventListener('input', () => {
-    const current = floatingInputPresetDrafts.get(sessionId);
-    if (!current) return;
-    floatingInputPresetDrafts.set(sessionId, {
-      id: current.id,
-      constraint: readContenteditablePlainText(presetPreviewText),
-    });
-  });
-  presetRemoveBtn.addEventListener('click', (event) => {
+  // 用户实际工作流只保留一个入口：把公司 ChatGPT 的新内容拉到输入框。
+  // 文本原样追加；附件由 bridge 落盘后以绝对路径追加。写入成功后才 ack，
+  // 因此渲染失败不会吞掉公司任务。
+  const bridgeToolbar = document.createElement('div');
+  bridgeToolbar.className = 'fi-bridge-toolbar';
+  bridgeToolbar.setAttribute('aria-label', '公司 ChatGPT 中转');
+  const bridgePullBtn = document.createElement('button');
+  bridgePullBtn.type = 'button';
+  bridgePullBtn.className = 'fi-bridge-pull';
+  bridgePullBtn.textContent = '拉取';
+  bridgePullBtn.title = '从公司 ChatGPT 拉取文本或文件路径到输入框';
+  bridgePullBtn.addEventListener('click', async (event) => {
     event.stopPropagation();
-    clearPresetSelection();
-    inputBox.focus();
+    if (bridgePullBtn.disabled) return;
+    bridgePullBtn.disabled = true;
+    bridgePullBtn.textContent = '拉取中…';
+    try {
+      await chatgptBridgeController.pullForInput(async (content) => {
+        const incoming = String(content || '').trim();
+        if (!incoming) return false;
+        const current = readContenteditablePlainText(inputBox);
+        const separator = current.trim() ? (current.endsWith('\n') ? '\n' : '\n\n') : '';
+        replaceContenteditableText(inputBox, `${current}${separator}${incoming}`);
+        placeCaretAtContenteditableEnd(inputBox);
+        saveFloatingInputDraft(sessionId, inputBox);
+        inputBox.dispatchEvent(new Event('input', { bubbles: true }));
+        inputBox.focus();
+        return true;
+      });
+    } finally {
+      bridgePullBtn.disabled = false;
+      bridgePullBtn.textContent = '拉取';
+    }
   });
+  bridgeToolbar.appendChild(bridgePullBtn);
 
   // 2026-07-19 道雪 · 方案C：ctx chip（发送前看到成本）+ 运行中红色中断钮（发 \x03=SIGINT）
   const ctxChip = document.createElement('span');
@@ -3159,7 +3083,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   composerRow.append(inputBox, ctxChip, stopBtn, sendBtn);
   const contentStack = document.createElement('div');
   contentStack.className = 'fi-content-stack';
-  contentStack.append(presetToolbar, composerRow, presetPreview);
+  contentStack.append(bridgeToolbar, composerRow);
   bar.append(contentStack);
   bar.classList.add('visible');
 
@@ -3191,10 +3115,7 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
   function sendInput() {
     const userText = readContenteditablePlainText(inputBox);
     if (!userText || !userText.trim()) return;
-    const selectedPreset = floatingInputPresetDrafts.get(sessionId);
-    const text = selectedPreset && presetApi && typeof presetApi.composePrompt === 'function'
-      ? presetApi.composePrompt(userText, selectedPreset.id, selectedPreset.constraint)
-      : userText;
+    const text = userText;
 
     // 立即清 UI + scroll + 还焦给终端，让用户立刻感知"已发送"。后续异步往 PTY 写。
     // 清空必须走 replaceContenteditableText（execCommand）：直接赋 textContent 会
@@ -3205,7 +3126,6 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
     }
     replaceContenteditableText(inputBox, '');
     clearFloatingInputDraft(sessionId);
-    clearPresetSelection();
     terminal.scrollToBottom();
     terminal.focus();
 
@@ -5748,6 +5668,15 @@ terminalContextMenu.init();
 const openTerminalContextMenu = terminalContextMenu.open;
 const closeTerminalContextMenu = terminalContextMenu.close;
 
+const cardSelectionContextMenu = createCardSelectionContextMenuController({
+  document,
+  window,
+  menuEl: document.getElementById('card-selection-context-menu'),
+  clipboard,
+  pushToChatgpt: (text, label) => chatgptBridgeController.pushText(text, label),
+});
+cardSelectionContextMenu.init();
+
 const pathLinkContextMenu = createPathLinkContextMenuController({
   document,
   window,
@@ -6158,7 +6087,6 @@ ipcRenderer.on('session-closed', (_e, { sessionId }) => {
     _codexSubmitPendingTimers.delete(sessionId);
   }
   clearFloatingInputDraft(sessionId);
-  floatingInputPresetDrafts.delete(sessionId);
   if (_cardHistoryHydratedSid === sessionId) _cardHistoryHydratedSid = null;
   if (_turnCompleteBackfillTimers.has(sessionId)) {
     try { clearTimeout(_turnCompleteBackfillTimers.get(sessionId)); } catch {}

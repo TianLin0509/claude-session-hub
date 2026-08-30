@@ -9,10 +9,12 @@ const {
   parseBridgeOutput,
   registerChatgptBridgeIpc,
   resolveChatgptBridgeRuntime,
+  normalizeMessageIds,
   validateText,
 } = require('../main/ipc/chatgpt-bridge-handlers.js');
 const { createChatgptBridgeController } = require('../renderer/chatgpt-bridge-controller.js');
 const { createPathLinkContextMenuController } = require('../renderer/path-link-context-menu.js');
+const { createCardSelectionContextMenuController } = require('../renderer/card-selection-context-menu.js');
 
 test('bridge parser preserves successful content and structured errors', () => {
   const success = parseBridgeOutput(JSON.stringify({
@@ -52,6 +54,11 @@ test('text validation rejects empty and oversized content', () => {
   assert.equal(validateText('').code, 'empty_content');
   assert.equal(validateText('x'.repeat(1024 * 1024 + 1)).code, 'content_too_large');
   assert.equal(validateText('正常内容').ok, true);
+});
+
+test('message id normalization is bounded and removes duplicates', () => {
+  assert.deepEqual(normalizeMessageIds([' msg-1 ', 'msg-1', '', null, 'msg-2']), ['msg-1', 'msg-2']);
+  assert.deepEqual(normalizeMessageIds('msg-1'), []);
 });
 
 test('IPC pull-and-send peeks, sends to the bound session, then acknowledges', async () => {
@@ -121,6 +128,28 @@ test('IPC never acknowledges content when PTY reports a stuck send', async () =>
   assert.deepEqual(calls, [['pull', '--peek']], 'failed delivery must remain unacknowledged for retry');
 });
 
+test('IPC input pull peeks with file download and acknowledges only on explicit confirmation', async () => {
+  const handlers = new Map();
+  const calls = [];
+  registerChatgptBridgeIpc({
+    handle(channel, handler) { handlers.set(channel, handler); },
+  }, {
+    async runBridge(args) {
+      calls.push(args);
+      if (args[0] === 'pull') {
+        return { ok: true, new: true, content: 'C:\\VibeData\\ChatGPTBridge\\inbox\\task.md', message_ids: ['file-msg-1'] };
+      }
+      return { ok: true, acknowledged_message_ids: ['file-msg-1'] };
+    },
+  });
+  const pulled = await handlers.get('chatgpt-bridge:pull-for-input')();
+  assert.equal(pulled.new, true);
+  assert.deepEqual(calls, [['pull', '--peek', '--download-files']], 'peek must not consume before renderer insertion');
+  const acked = await handlers.get('chatgpt-bridge:ack')(null, { messageIds: ['file-msg-1', 'file-msg-1'] });
+  assert.equal(acked.ok, true);
+  assert.deepEqual(calls.at(-1), ['ack', '--message-id', 'file-msg-1']);
+});
+
 function makeElement(id = '') {
   const listeners = {};
   return {
@@ -137,19 +166,14 @@ function makeElement(id = '') {
   };
 }
 
-test('renderer controller exposes one-click pull and latest-answer push', async () => {
-  const pull = makeElement('chatgpt-bridge-pull');
-  const push = makeElement('chatgpt-bridge-push');
+test('renderer controller inserts before acknowledging and remains usable without a top toolbar', async () => {
   const body = makeElement('body');
   const invocations = [];
+  const order = [];
   const document = {
     body,
     createElement: () => makeElement(),
-    getElementById(id) {
-      if (id === pull.id) return pull;
-      if (id === push.id) return push;
-      return null;
-    },
+    getElementById() { return null; },
   };
   const controller = createChatgptBridgeController({
     document,
@@ -157,7 +181,13 @@ test('renderer controller exposes one-click pull and latest-answer push', async 
     ipcRenderer: {
       async invoke(channel, payload) {
         invocations.push({ channel, payload });
-        if (channel === 'chatgpt-bridge:pull-and-send') return { ok: true, new: true, sent: true, count: 1 };
+        if (channel === 'chatgpt-bridge:pull-for-input') {
+          return { ok: true, new: true, content: '公司任务', file_count: 0, message_ids: ['msg-input-1'] };
+        }
+        if (channel === 'chatgpt-bridge:ack') {
+          order.push('ack');
+          return { ok: true };
+        }
         return { ok: true, sent: true };
       },
     },
@@ -165,10 +195,17 @@ test('renderer controller exposes one-click pull and latest-answer push', async 
     getLatestAssistantText: async () => '最近回答',
   });
   assert.equal(controller.init(), true);
-  await pull._listeners.click();
-  await push._listeners.click();
+  const pulled = await controller.pullForInput(async (content) => {
+    assert.equal(content, '公司任务');
+    order.push('insert');
+    return true;
+  });
+  assert.equal(pulled.acknowledged, true);
+  await controller.pushLatest();
+  assert.deepEqual(order, ['insert', 'ack']);
   assert.deepEqual(invocations, [
-    { channel: 'chatgpt-bridge:pull-and-send', payload: { sessionId: 's1' } },
+    { channel: 'chatgpt-bridge:pull-for-input', payload: undefined },
+    { channel: 'chatgpt-bridge:ack', payload: { messageIds: ['msg-input-1'] } },
     { channel: 'chatgpt-bridge:push', payload: { text: '最近回答' } },
   ]);
   assert.equal(body.children.length, 1, 'controller should reuse one live status toast');
@@ -206,30 +243,43 @@ test('path menu sends URL text directly and reads local text files before push',
   ]);
 });
 
-test('Hub UI exposes bridge buttons, card action, path action, and terminal selection action', () => {
+test('card selection menu copies or syncs exactly the selected text', async () => {
+  const copied = [];
+  const pushed = [];
+  const controller = createCardSelectionContextMenuController({
+    document: {},
+    window: {},
+    menuEl: {},
+    clipboard: { writeText(text) { copied.push(text); } },
+    requestAnimationFrameFn: fn => fn(),
+    pushToChatgpt: async (text, label) => {
+      pushed.push({ text, label });
+      return { ok: true };
+    },
+  });
+  assert.equal((await controller.runAction('copy', '精确选区')).ok, true);
+  assert.equal((await controller.runAction('sync-chatgpt', '精确选区')).ok, true);
+  assert.deepEqual(copied, ['精确选区']);
+  assert.deepEqual(pushed, [{ text: '精确选区', label: '卡片选中文字' }]);
+});
+
+test('Hub UI exposes card/company, composer pull, and selection actions without a top bridge toolbar', () => {
   const root = path.join(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');
   const card = fs.readFileSync(path.join(root, 'renderer', 'turn-card-renderer.js'), 'utf8');
   const renderer = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
-  const css = fs.readFileSync(path.join(root, 'renderer', 'styles', 'card-view.css'), 'utf8');
-  assert.match(html, /id="chatgpt-bridge-pull"/);
-  assert.match(html, /id="chatgpt-bridge-push"/);
-  const bridgeTag = html.match(/<div class="chatgpt-bridge-actions"[^>]*>/)?.[0] || '';
-  assert.ok(bridgeTag, 'bridge actions need a dedicated toolbar');
-  assert.doesNotMatch(bridgeTag, /\bhidden\b/, 'bridge toolbar must be visible by default');
-  const recentStart = html.indexOf('id="recent-turn-copy"');
-  const recentEnd = html.indexOf('</div>', recentStart);
-  const recentBlock = html.slice(recentStart, recentEnd);
-  assert.doesNotMatch(recentBlock, /chatgpt-bridge-(?:pull|push)/,
-    'bridge actions must not inherit recent-turn-copy card-view visibility');
-  assert.match(css, /\.chatgpt-bridge-actions\s*\{[\s\S]*?display:\s*inline-flex/);
-  assert.match(renderer, /getElementById\('chatgpt-bridge-actions'\)/,
-    'terminal panel rebuild must preserve the always-visible bridge toolbar');
+  assert.doesNotMatch(html, /id="chatgpt-bridge-(?:pull|push)"/,
+    'the old top-level bridge toolbar must be removed');
+  assert.match(html, /id="card-selection-context-menu"[\s\S]*?data-action="copy"[\s\S]*?data-action="sync-chatgpt"/);
+  assert.match(renderer, /bridgePullBtn\.className = 'fi-bridge-pull'/);
+  assert.match(renderer, /chatgptBridgeController\.pullForInput/);
+  assert.doesNotMatch(renderer, /button\.className = 'fi-preset-chip'/,
+    'unused task preset buttons must not be generated');
   assert.match(renderer, /ipcRenderer\.invoke\('get-last-assistant-text', activeSessionId\)/,
     'PTY view must fall back to the current session transcript for latest-answer push');
   assert.match(html, /data-action="sync-chatgpt"[^>]*>同步选中文字到公司 ChatGPT/);
   assert.match(html, /data-action="sync-chatgpt"[^>]*>同步内容到公司 ChatGPT/);
-  assert.match(card, /data-action="sync-chatgpt" title="同步此回答到公司 ChatGPT"/);
+  assert.match(card, /data-action="sync-chatgpt" title="同步此回答到公司 ChatGPT">公司<\/button>/);
   assert.match(renderer, /#msg-overlay > \.turn-card:not\(\.user\)/,
     'latest-answer push must select assistant cards, whose class is turn-card without .user');
 });

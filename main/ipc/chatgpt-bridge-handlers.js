@@ -132,6 +132,14 @@ function validateText(text) {
   return { ok: true, text, bytes };
 }
 
+function normalizeMessageIds(values) {
+  if (!Array.isArray(values)) return [];
+  return Array.from(new Set(values
+    .map(value => String(value || '').trim())
+    .filter(value => value && value.length <= 128)))
+    .slice(0, 1000);
+}
+
 function registerChatgptBridgeIpc(ipcMain, deps = {}) {
   const sessionManager = deps.sessionManager;
   const runner = deps.runBridge || runChatgptBridge;
@@ -150,6 +158,24 @@ function registerChatgptBridgeIpc(ipcMain, deps = {}) {
     } finally {
       pullInFlight = false;
     }
+  });
+
+  ipcMain.handle('chatgpt-bridge:pull-for-input', async () => {
+    if (pullInFlight) return { ok: false, error: '正在拉取，请稍候。', code: 'already_pulling' };
+    pullInFlight = true;
+    try {
+      return await runner(['pull', '--peek', '--download-files']);
+    } finally {
+      pullInFlight = false;
+    }
+  });
+
+  ipcMain.handle('chatgpt-bridge:ack', async (_event, payload = {}) => {
+    const messageIds = normalizeMessageIds(payload.messageIds);
+    if (!messageIds.length) return { ok: false, error: '没有可确认的 ChatGPT 消息。', code: 'message_ids_missing' };
+    const args = ['ack'];
+    for (const messageId of messageIds) args.push('--message-id', messageId);
+    return runner(args);
   });
 
   ipcMain.handle('chatgpt-bridge:push', async (_event, payload = {}) => {
@@ -211,5 +237,6 @@ module.exports = {
   registerChatgptBridgeIpc,
   resolveChatgptBridgeRuntime,
   runChatgptBridge,
+  normalizeMessageIds,
   validateText,
 };

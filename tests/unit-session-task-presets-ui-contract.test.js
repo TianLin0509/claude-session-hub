@@ -11,15 +11,14 @@ const index = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8')
 const css = readCssWithImports(path.join(root, 'renderer', 'styles.css'));
 
 assert(index.includes('<script src="task-presets.js"></script>'), 'task preset module must load in the renderer');
-assert(index.indexOf('task-presets.js') < index.indexOf('renderer.js'), 'task presets must load before normal-session UI mounts');
-assert(renderer.includes("presetToolbar.className = 'fi-preset-toolbar'"), 'normal session must render a preset row above the composer');
-assert(renderer.includes("presetPreview.className = 'fi-preset-preview'"), 'selected constraint must stay visibly separate from the user text');
-assert(renderer.includes("presetPreviewText.contentEditable = 'true'"), 'selected constraint must be editable before send');
-assert(renderer.includes('floatingInputPresetDrafts.delete(sessionId)'), 'preset selection must be reversible without rewriting user text');
-assert(renderer.includes('presetApi.composePrompt(userText, selectedPreset.id, selectedPreset.constraint)'), 'normal send path must compose the selected preset only at send time');
-assert(renderer.includes("presetKind.endsWith('-resume')"), 'resumed sessions (claude-resume / codex-resume / kimi-resume) must also see the preset row');
-assert(css.includes('.fi-preset-toolbar'), 'preset row must be styled');
-assert(css.includes('.fi-preset-chip[aria-pressed="true"]'), 'selected preset must have a non-ambiguous state');
+assert(index.indexOf('task-presets.js') < index.indexOf('renderer.js'), 'workflow task presets must load before renderer');
+assert(renderer.includes("bridgeToolbar.className = 'fi-bridge-toolbar'"), 'normal session must render the ChatGPT pull row');
+assert(renderer.includes("bridgePullBtn.className = 'fi-bridge-pull'"), 'normal session must expose exactly the pull action');
+assert(renderer.includes('chatgptBridgeController.pullForInput'), 'pull action must use the two-stage bridge controller');
+assert(!renderer.includes("button.className = 'fi-preset-chip'"), 'normal session must not render the unused preset buttons');
+assert(!renderer.includes('presetApi.composePrompt(userText'), 'normal send path must not inject a hidden preset constraint');
+assert(css.includes('.fi-bridge-toolbar'), 'ChatGPT pull row must be styled');
+assert(css.includes('.fi-bridge-pull'), 'pull button must be styled');
 assert(css.includes('.fi-composer-row'), 'existing input and action buttons must remain in one composer row');
 
-console.log('session task presets UI contract ok');
+console.log('session ChatGPT pull UI contract ok');

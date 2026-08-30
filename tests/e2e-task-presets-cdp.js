@@ -92,54 +92,61 @@ async function screenshot(client, file) {
       const stage = document.createElement('div');
       stage.id = 'task-preset-e2e-stage';
       stage.style.cssText = 'position:fixed;inset:70px 70px 90px;z-index:9000;background:var(--bg-primary,#0d1117);border:1px solid var(--border,#30363d);border-radius:14px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.55)';
-      stage.innerHTML = '<div style="padding:15px 18px;border-bottom:1px solid var(--border,#30363d);color:var(--text-primary,#e6edf3);font-weight:700">普通 Session · 任务预设 E2E</div><div class="terminal-panel" style="position:absolute;inset:52px 0 0;display:flex;flex-direction:column"><div class="terminal-container" style="flex:1;padding:24px;color:var(--text-secondary,#8b949e)">真实 renderer / 隔离数据目录</div></div>';
+      stage.innerHTML = '<div style="padding:15px 18px;border-bottom:1px solid var(--border,#30363d);color:var(--text-primary,#e6edf3);font-weight:700">普通 Session · ChatGPT 拉取 E2E</div><div class="terminal-panel" style="position:absolute;inset:52px 0 0;display:flex;flex-direction:column"><div class="terminal-container" style="flex:1;padding:24px;color:var(--text-secondary,#8b949e)">真实 renderer / 隔离数据目录</div></div>';
       document.body.appendChild(stage);
       const sid = 'task-preset-e2e-session';
       sessions.set(sid, { id:sid, kind:'codex', title:'Codex E2E', status:'active' });
+      const electronIpc = require('electron').ipcRenderer;
+      window.__taskPresetOriginalInvoke = electronIpc.invoke;
+      window.__chatgptPullEvents = [];
+      electronIpc.invoke = async function(channel, ...args) {
+        if (channel === 'chatgpt-bridge:pull-for-input') {
+          window.__chatgptPullEvents.push('pull');
+          return {
+            ok:true, new:true, file_count:1,
+            content:'公司纯文本\\n\\nC:\\\\VibeData\\\\ChatGPTBridge\\\\inbox\\\\mock.pdf',
+            message_ids:['mock-message-1'],
+            items:[
+              {message_id:'mock-message-1',source:'inline_text',content:'公司纯文本'},
+              {message_id:'mock-message-1',source:'file_path',path:'C:\\\\VibeData\\\\ChatGPTBridge\\\\inbox\\\\mock.pdf'},
+            ],
+          };
+        }
+        if (channel === 'chatgpt-bridge:ack') {
+          window.__chatgptPullEvents.push('ack:' + args[0].messageIds.join(','));
+          return {ok:true};
+        }
+        return window.__taskPresetOriginalInvoke.call(this, channel, ...args);
+      };
       const terminal = { focus(){}, scrollToBottom(){} };
       const termContainer = stage.querySelector('.terminal-container');
       window.__taskPresetE2EControl = mountFloatingInput(sid, termContainer, terminal);
       const input = stage.querySelector('.floating-input-box');
-      input.textContent = '继续，把剩余问题处理完';
-      input.dispatchEvent(new Event('input', { bubbles:true }));
-      const button = stage.querySelector('[data-preset-id="root-cause-fix"]');
-      button.click();
       return {
-        buttonCount: stage.querySelectorAll('.fi-preset-chip').length,
-        selected: button.getAttribute('aria-pressed'),
-        inputText: input.innerText,
-        previewName: stage.querySelector('.fi-preset-preview strong').innerText,
-        previewText: stage.querySelector('.fi-preset-preview-text').innerText,
-        previewVisible: !stage.querySelector('.fi-preset-preview').hidden,
+        presetButtonCount: stage.querySelectorAll('.fi-preset-chip').length,
+        pullButtonCount: stage.querySelectorAll('.fi-bridge-pull').length,
+        pullLabel: stage.querySelector('.fi-bridge-pull')?.textContent || '',
       };
     })()`);
-    assert.strictEqual(single.buttonCount, 5, 'normal session must render five presets');
-    assert.strictEqual(single.selected, 'true', 'clicked preset must expose selected state');
-    assert.strictEqual(single.inputText, '继续，把剩余问题处理完', 'selecting a preset must not rewrite user text');
-    assert.strictEqual(single.previewName, '根因修复', 'selected preset preview must be visible');
-    assert(single.previewText.includes('复现 → 日志与证据 → 调用链'), 'preview must expose the actual editable constraint');
-    assert.strictEqual(single.previewVisible, true, 'preview must be visible before send');
+    assert.strictEqual(single.presetButtonCount, 0, 'unused normal-session task preset buttons must be removed');
+    assert.strictEqual(single.pullButtonCount, 1, 'normal session must expose exactly one ChatGPT pull button');
+    assert.strictEqual(single.pullLabel, '拉取');
+    await client.eval(`document.querySelector('#task-preset-e2e-stage .fi-bridge-pull').click()`);
+    await waitForEval(client,
+      `document.querySelector('#task-preset-e2e-stage .floating-input-box').innerText.includes('mock.pdf') && window.__chatgptPullEvents.length === 2`,
+      'ChatGPT pull text/path insertion and ack');
+    const pulled = await client.eval(`(() => ({
+      inputText: document.querySelector('#task-preset-e2e-stage .floating-input-box').innerText,
+      events: window.__chatgptPullEvents.slice(),
+    }))()`);
+    assert(pulled.inputText.includes('公司纯文本'));
+    assert(pulled.inputText.includes('C:\\VibeData\\ChatGPTBridge\\inbox\\mock.pdf'));
+    assert.deepStrictEqual(pulled.events, ['pull', 'ack:mock-message-1'], 'ack must happen after content is inserted');
     await screenshot(client, SINGLE_SHOT);
-
-    const reversible = await client.eval(`(() => {
-      const stage = document.getElementById('task-preset-e2e-stage');
-      const input = stage.querySelector('.floating-input-box');
-      const preview = stage.querySelector('.fi-preset-preview-text');
-      preview.textContent = '只做最小修复并回归';
-      preview.dispatchEvent(new Event('input', { bubbles:true }));
-      stage.querySelector('[data-preset-id="root-cause-fix"]').click();
-      return {
-        inputText: input.innerText,
-        previewHidden: stage.querySelector('.fi-preset-preview').hidden,
-        selectedCount: stage.querySelectorAll('.fi-preset-chip[aria-pressed="true"]').length,
-      };
-    })()`);
-    assert.strictEqual(reversible.inputText, '继续，把剩余问题处理完', 'toggle-off must preserve the original draft');
-    assert.strictEqual(reversible.previewHidden, true, 'clicking the selected preset again must remove it');
-    assert.strictEqual(reversible.selectedCount, 0, 'no preset may remain selected after toggle-off');
 
     await client.eval(`(() => {
       if (window.__taskPresetE2EControl) window.__taskPresetE2EControl.dispose();
+      if (window.__taskPresetOriginalInvoke) require('electron').ipcRenderer.invoke = window.__taskPresetOriginalInvoke;
       document.getElementById('task-preset-e2e-stage')?.remove();
       sessions.delete('task-preset-e2e-session');
       window.__workflowPresetSaved = null;
