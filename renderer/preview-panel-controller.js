@@ -11,6 +11,26 @@ const {
 } = require('./preview-outline.js');
 const { isBlockingModalOpen } = require('./modal-layer-guard.js');
 
+// webview 挂掉时 Chromium 只给一个 reason 码。2026-08-29 用户报「预览打不开」，
+// 屏幕上只有 `预览进程异常退出：launch-failed` —— 这句话既不说明发生了什么，也不
+// 提示怎么办，害得排查方向一开始就跑偏到「是不是刚合的代码改坏了」。
+// 这里把 reason 翻译成「原因 + 该干什么」，原始码保留在括号里供排查。
+const GUEST_FAILURE_HINTS = {
+  'launch-failed': '渲染进程起不来。最常见的原因是 Hub 的 exe 在运行期间被换掉过'
+    + '（升版本号会重建品牌化副本），这种情况重启 Hub 就能恢复；系统内存/提交内存'
+    + '吃紧时也会这样。',
+  oom: '渲染进程内存不足被系统回收。先关掉一些占内存的程序，再点 ⟳ 重试。',
+  crashed: '渲染进程崩溃了，点 ⟳ 重试。',
+  'integrity-failure': '渲染进程完整性校验失败，通常是安全软件拦截或 exe 被改动过，重启 Hub 再试。',
+};
+
+function describeGuestFailure(reason, fallback) {
+  const code = String(reason == null ? '' : reason);
+  if (!code) return fallback;
+  const hint = GUEST_FAILURE_HINTS[code];
+  return hint ? `${fallback}：${hint}（${code}）` : `${fallback}：${code}`;
+}
+
 const IMAGE_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
 const WEB_EXTENSIONS = new Set(['.html', '.htm']);
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown']);
@@ -514,7 +534,7 @@ function createPreviewPanelController({
       if (!isCurrentWebview()) return;
       const details = event && (event.details || event.detail || event);
       const reason = details && (details.reason || details.exitCode);
-      onError?.(reason ? fallback + '：' + reason : fallback);
+      onError?.(describeGuestFailure(reason, fallback));
     };
     try {
       webview.addEventListener('render-process-gone', event => {
@@ -2229,6 +2249,7 @@ module.exports = {
   QUICK_OPEN_DEBOUNCE_MS,
   cleanPreviewTarget,
   createPreviewPanelController,
+  describeGuestFailure,
   previewPathKey,
   previewTitle,
 };

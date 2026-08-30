@@ -222,6 +222,57 @@ function applyBrandingToBuffer({ buffer, icoBuffer, productName, productVersion,
   return Buffer.from(exe.generate());
 }
 
+const IN_USE_ERROR_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+
+function samePathIgnoringCase(left, right, platform = process.platform) {
+  const a = path.resolve(String(left || ''));
+  const b = path.resolve(String(right || ''));
+  return platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+/**
+ * 品牌化副本此刻是否正被某个 Hub 实例执行。
+ *
+ * ⚠ 这条判断是 2026-08-29 那次「文件预览突然打不开」的正解，别删。
+ *
+ * Windows 允许**改名**一个正在执行的映像（自更新程序都这么干），所以原来的
+ * 「先把旧副本改名成 .stale-* 腾位、再把新副本放回原路径」看起来是安全的。
+ * 实测不是：真 Hub 跑起来之后做这套动作，之后每一次创建 Chromium 子进程都会
+ * 失败 —— webview 直接 `render-process-gone reason=launch-failed exitCode=57`。
+ * 用户侧的表现就是「文件预览挂了」（预览是唯一按需新建渲染进程的功能），
+ * 而窗口本身还好好的，因为它的渲染进程是换 exe 之前就建好的。
+ *
+ * 复现（真 Hub，非最小 app —— 最小 app 复现不出来，会给出假阴性）：
+ *   起 Hub → 探针建 webview = loaded → 把运行中的 exe 改名并放一个新副本回去
+ *   → 再探针 = launch-failed exitCode=57。
+ *
+ * 而品牌化本身只是图标和版本资源，远没有重要到值得打断用户正开着的窗口。
+ * 「每次改动同步升版本号」是铁律，也就意味着 stamp 会频繁失配、重建会频繁触发，
+ * 所以这里必须有闸门：有实例在跑就跳过，留着 stamp 失配，下次冷启动再补。
+ *
+ * 判据用「能不能以写方式打开」：Windows 对正在执行的映像禁止写打开（EBUSY），
+ * 这条在本机实测过（跑着的 AIGroupChatHub.exe → EBUSY；没人跑的副本 → 可写）。
+ * 误判只会偏向「跳过重建」，不会偏向「打断实例」。
+ */
+function brandedExeInUse({
+  brandedExePath,
+  execPath,
+  fsModule = fs,
+  platform = process.platform,
+} = {}) {
+  if (platform !== 'win32') return false;
+  if (!brandedExePath || !fsModule.existsSync(brandedExePath)) return false;
+  // 自己就跑在这个副本上。brand-hub-exe.js 是 Hub 用 ELECTRON_RUN_AS_NODE spawn 的，
+  // 子进程的 execPath 就是父 Hub 的 exe，所以这一条同时覆盖了「父实例正在跑」。
+  if (samePathIgnoringCase(execPath, brandedExePath, platform)) return true;
+  try {
+    fsModule.closeSync(fsModule.openSync(brandedExePath, 'r+'));
+    return false;
+  } catch (error) {
+    return IN_USE_ERROR_CODES.has(error && error.code);
+  }
+}
+
 function cleanupStaleBrandedExes({ hostExePath, fsModule = fs, logger = console } = {}) {
   const dir = path.dirname(path.resolve(hostExePath));
   const removed = [];
@@ -265,6 +316,14 @@ function ensureBrandedHubExe({
     return { changed: false, reason: 'current', brandedExePath };
   }
   if (!expected) return { changed: false, reason: inspection.reason, brandedExePath };
+
+  // 有 Hub 实例正跑在这个副本上就不要动它 —— 换掉之后那些实例再也起不了
+  // Chromium 子进程（预览直接 launch-failed）。详见 brandedExeInUse 的注释。
+  // 放在生成 buffer 之前：220MB 的读+改+写没必要白跑一趟。
+  if (brandedExeInUse({ brandedExePath, execPath, fsModule, platform })) {
+    logger.log?.('[hub-brand] 有实例正在运行该副本，本次跳过重建（下次冷启动再补）');
+    return { changed: false, reason: 'branded-exe-in-use', brandedExePath, deferred: true };
+  }
 
   let lib = resedit;
   if (!lib) {
@@ -310,6 +369,7 @@ module.exports = {
   applyBrandingToBuffer,
   brandStampMatches,
   brandStampPathFor,
+  brandedExeInUse,
   brandedExePathFor,
   cleanupStaleBrandedExes,
   computeBrandStamp,
