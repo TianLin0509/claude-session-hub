@@ -266,7 +266,7 @@ async function main() {
     assert.equal(result.running.sidebarConfidence, 'strong');
     assert.equal(result.running.footerVisible, true);
     assert.match(result.running.footerText, /gpt-5\.6-sol·max·fast·Context 92% left/);
-    assert.match(result.running.footerText, /card-footer-beijing-group-parity/);
+    assert.equal(result.running.footerText.includes(ROOT), true, result.running.footerText);
     assert.match(result.running.footerAria, /上下文剩余 92%/);
     assert.equal(result.running.footerAboveComposer, true);
     assert.equal(result.running.overlayAboveFooter, true);
