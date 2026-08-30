@@ -145,6 +145,7 @@ test('mergeResumeMetaFields preserves durable workbench metadata but not a stale
     recentArtifacts: [{ path: 'C:\\report.html', timestamp: 456 }],
     userRenamed: true,
     completionNotificationEnabled: true,
+    _connectionIssueAck: { signature: 'stream disconnected', at: 789, occurrenceId: 'turn:789' },
   }]);
 
   assert.strictEqual(incoming[0].transcriptPath, 'C:\\old\\transcript.jsonl');
@@ -155,6 +156,8 @@ test('mergeResumeMetaFields preserves durable workbench metadata but not a stale
   assert.deepStrictEqual(incoming[0].recentArtifacts, [{ path: 'C:\\report.html', timestamp: 456 }]);
   assert.strictEqual(incoming[0].userRenamed, true);
   assert.strictEqual(incoming[0].completionNotificationEnabled, true);
+  assert.deepStrictEqual(incoming[0]._connectionIssueAck,
+    { signature: 'stream disconnected', at: 789, occurrenceId: 'turn:789' });
 
   const explicitlyDisabled = [{ hubId: 'keep', completionNotificationEnabled: false }];
   mergeResumeMetaFields(explicitlyDisabled, [{ hubId: 'keep', completionNotificationEnabled: true }]);

@@ -293,12 +293,34 @@ async function main() {
     assert.equal(result.exactCard.placeholder, null);
 
     await dispatchMouse(client, `[data-session-id="${LEGACY_HUB_ID}"]`);
-    result.legacyCard = await waitForCard(
-      client,
-      LEGACY_HUB_ID,
-      'LEGACY PATH HISTORY QUESTION',
-      'LEGACY PATH HISTORY ANSWER',
-    );
+    await waitFor('legacy Codex resume activation', () => client.eval(`(() => {
+      const session = sessions.get(${JSON.stringify(LEGACY_HUB_ID)});
+      return session && session.status !== 'dormant' && activeSessionId === ${JSON.stringify(LEGACY_HUB_ID)};
+    })()`));
+    // View mode is remembered per session. The exact session was switched to
+    // card above, but that preference must not leak into this legacy session.
+    await dispatchMouse(client, '.view-toggle-btn[data-view="card"]');
+    try {
+      result.legacyCard = await waitForCard(
+        client,
+        LEGACY_HUB_ID,
+        'LEGACY PATH HISTORY QUESTION',
+        'LEGACY PATH HISTORY ANSWER',
+      );
+    } catch (error) {
+      const diagnostics = await client.eval(`(() => {
+        const session = sessions.get(${JSON.stringify(LEGACY_HUB_ID)}) || null;
+        return {
+          activeSessionId,
+          currentView,
+          session,
+          cardText: document.getElementById('msg-overlay')?.innerText || '',
+          placeholder: document.querySelector('#msg-overlay .msg-overlay-placeholder')?.innerText || null,
+        };
+      })()`).catch(() => null);
+      error.message += `\ndiagnostics=${JSON.stringify({ diagnostics, invocations: readInvocations() })}`;
+      throw error;
+    }
     assert.equal(result.legacyCard.codexSid, LEGACY_SID,
       'path-only legacy resume must publish the SID learned synchronously by CodexTap');
     assert.equal(path.resolve(result.legacyCard.transcriptPath), path.resolve(fixtures.legacyPath));

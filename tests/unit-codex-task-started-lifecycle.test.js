@@ -160,3 +160,71 @@ test('Codex 0.147 final_answer item emits turn-complete', async () => {
     await fs.promises.rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('Codex task_complete.error emits one live turn-error and skips historical failures on bind', async () => {
+  const tempRoot = path.join(os.tmpdir(), `hub-codex-turn-error-${process.pid}-${Date.now()}`);
+  const sessionsRoot = path.join(tempRoot, 'sessions');
+  const cwd = path.join(tempRoot, 'workspace');
+  const hubSessionId = 'hub-turn-error';
+  const codexSid = '019ff492-0e1b-7bf2-ab10-b58b4b7bd6b7';
+  const tap = new CodexTap({ sessionsRoot, pollIntervalMs: 30 });
+  const rollout = new FakeCodexRollout({ sessionsRoot, cwd, sid: codexSid, cliVersion: '0.147.0' });
+  const errors = [];
+
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    await rollout.start();
+    const oldAt = new Date(Date.now() - 60_000);
+    await rollout.writeRaw({
+      timestamp: oldAt.toISOString(),
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'old-failure',
+        error: { message: 'stream disconnected before completion: ECONNRESET', codex_error_info: 'other' },
+      },
+    });
+
+    tap.on('turn-error', event => errors.push(event));
+    const bound = new Promise(resolve => tap.once('session-bound', resolve));
+    tap.registerSession(hubSessionId, { cwd, transcriptPath: rollout.rolloutPath });
+    await bound;
+    await new Promise(resolve => setTimeout(resolve, 120));
+    assert.equal(errors.length, 0, 'historical failure in the hydrated suffix must not notify again');
+
+    const failedAt = new Date();
+    const turnId = 'live-failure';
+    await rollout.writeRaw({
+      timestamp: new Date(failedAt.getTime() - 100).toISOString(),
+      type: 'event_msg',
+      payload: { type: 'task_started', turn_id: turnId },
+    });
+    await rollout.writeRaw({
+      timestamp: failedAt.toISOString(),
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: turnId,
+        duration_ms: 100,
+        error: { message: 'stream disconnected before completion: ECONNRESET', codex_error_info: 'other' },
+      },
+    });
+
+    await waitFor(() => errors.length === 1);
+    assert.deepEqual(errors[0], {
+      hubSessionId,
+      transcriptPath: rollout.rolloutPath,
+      message: 'stream disconnected before completion: ECONNRESET',
+      completedAt: failedAt.getTime(),
+      durationMs: 100,
+      turnId,
+      errorInfo: 'other',
+      occurrenceId: `${turnId}:${failedAt.getTime()}`,
+      signalSource: 'task_complete_error',
+    });
+  } finally {
+    tap.unregisterSession(hubSessionId);
+    await rollout.close();
+    await fs.promises.rm(tempRoot, { recursive: true, force: true });
+  }
+});

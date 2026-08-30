@@ -71,6 +71,7 @@ const { deriveSessionRuntimeStatus } = require('./session-runtime-status.js');
 const { classifyTerminalRuntime } = require('../core/terminal-runtime-state.js');
 const {
   appendStreamDisconnectChunk,
+  detectStreamDisconnect,
   markStreamDisconnectAcknowledged,
   shouldRaiseStreamDisconnect,
 } = require('../core/stream-disconnect.js');
@@ -204,6 +205,10 @@ const CODEX_PROGRAMMATIC_SCROLL_SUPPRESS_MS = 120;
 const AI_PTY_FALLBACK_ARM_MS = 45 * 60 * 1000;
 const AI_PTY_FALLBACK_COOLDOWN_MS = 5 * 1000;
 const PTY_RUNTIME_SUBMIT_PENDING_MS = 15 * 1000;
+// Codex briefly exposes its persistent prompt/context footer between commentary
+// and the next tool call. A single such frame is not proof of completion. Hold
+// input-ready for a second current-screen observation before closing a turn.
+const PTY_INPUT_READY_STABLE_MS = 2 * 1000;
 
 function isTranscriptCliKind(kind) {
   const base = String(kind || '').replace(/-resume$/i, '').toLowerCase();
@@ -226,6 +231,53 @@ function isAiRuntimeSession(session) {
   ));
 }
 
+function clearPtyInputReadyCandidate(session) {
+  if (!session) return;
+  if (session._ptyInputReadyTimer) {
+    clearTimeout(session._ptyInputReadyTimer);
+    session._ptyInputReadyTimer = null;
+  }
+  session._ptyInputReadyCandidate = null;
+}
+
+function schedulePtyInputReadyConfirmation(session, candidate, observedAt) {
+  if (!session || !candidate || session._ptyInputReadyTimer) return;
+  const delay = Math.max(25, candidate.confirmAt - (Number(observedAt) || Date.now()));
+  session._ptyInputReadyTimer = setTimeout(() => {
+    session._ptyInputReadyTimer = null;
+    const latest = sessions.get(session.id);
+    if (!latest || latest !== session || latest._ptyInputReadyCandidate !== candidate) return;
+    if (typeof terminalActivityMonitor !== 'undefined') {
+      terminalActivityMonitor.observeRuntimeState(session.id, Date.now());
+    }
+  }, delay);
+}
+
+function ptyInputReadyIsStable(session, runtime, observedAt) {
+  const at = Number(observedAt) || Date.now();
+  const outputAt = Number(session && session._lastOutputTs) || 0;
+  const key = `${runtime.reason || 'idle'}\n${runtime.evidence || ''}`;
+  let candidate = session._ptyInputReadyCandidate;
+  if (!candidate || candidate.key !== key || candidate.outputAt !== outputAt) {
+    clearPtyInputReadyCandidate(session);
+    candidate = {
+      key,
+      outputAt,
+      firstObservedAt: at,
+      confirmAt: at + PTY_INPUT_READY_STABLE_MS,
+    };
+    session._ptyInputReadyCandidate = candidate;
+    schedulePtyInputReadyConfirmation(session, candidate, at);
+    return false;
+  }
+  if (at < candidate.confirmAt) {
+    schedulePtyInputReadyConfirmation(session, candidate, at);
+    return false;
+  }
+  clearPtyInputReadyCandidate(session);
+  return true;
+}
+
 // PTY bytes are a last-resort running signal for AI CLIs. Arm that fallback
 // only when Hub has evidence that the user really submitted a prompt; idle TUI
 // animations and layout repaints otherwise cannot move a session to 运行中.
@@ -240,6 +292,7 @@ function armPtyBurstFallback(sessionId, submittedAt = Date.now()) {
   session._ptyRuntimeState = null;
   session._ptyRuntimeReason = null;
   session._ptyRuntimeEvidence = null;
+  clearPtyInputReadyCandidate(session);
   if (session._ptyRuntimePendingTimer) clearTimeout(session._ptyRuntimePendingTimer);
   session._ptyRuntimePendingTimer = setTimeout(() => {
     session._ptyRuntimePendingTimer = null;
@@ -254,6 +307,7 @@ function armPtyBurstFallback(sessionId, submittedAt = Date.now()) {
 function disarmPtyBurstFallback(sessionOrId, settledAt = Date.now()) {
   const session = typeof sessionOrId === 'string' ? sessions.get(sessionOrId) : sessionOrId;
   if (!isAiRuntimeSession(session)) return;
+  clearPtyInputReadyCandidate(session);
   // Delayed transcript/hook delivery may carry an older completion timestamp;
   // cooldown starts when Hub actually observes the transition, not in the past.
   const at = Math.max(Number(settledAt) || 0, Date.now());
@@ -2075,6 +2129,53 @@ ipcRenderer.on('turn-aborted-event', (_event, payload) => {
     reason: 'turn-aborted',
   });
   if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
+  scheduleSessionListRender();
+  schedulePersist();
+});
+
+ipcRenderer.on('turn-failed-event', (_event, payload) => {
+  const { hubSessionId, failedAt, turnId, kind, message, occurrenceId } = payload || {};
+  if (!hubSessionId || !isTranscriptCliKind(kind)) return;
+  const session = sessions.get(hubSessionId);
+  if (!session || session.status === 'dormant') return;
+  const normalized = detectStreamDisconnect(message);
+  if (normalized) {
+    raiseStreamDisconnectFailure(hubSessionId, {
+      ...normalized,
+      occurrenceId: occurrenceId || `${turnId || 'unknown-turn'}:${failedAt || Date.now()}`,
+      turnId: turnId || null,
+    }, {
+      observedAt: failedAt,
+      authoritative: true,
+    });
+    return;
+  }
+
+  const failureOccurrenceId = occurrenceId || `${turnId || 'unknown-turn'}:${failedAt || Date.now()}`;
+  if (session._lastTranscriptFailureOccurrenceId === failureOccurrenceId) return;
+  session._lastTranscriptFailureOccurrenceId = failureOccurrenceId;
+  const at = Number(failedAt) || Date.now();
+  const runStartedAt = Number(session.runStartedAt) || 0;
+  if (runStartedAt > 0 && at >= runStartedAt) {
+    session.lastRunStartedAt = runStartedAt;
+    session.lastRunDurationMs = at - runStartedAt;
+  }
+  session.runStartedAt = null;
+  session.lastError = String(message || 'Codex turn failed').slice(0, 1000);
+  clearSessionAttention(session);
+  if (isCodexKind(session.kind)) clearCodexCardWorking(hubSessionId);
+  observeSessionRuntime(session, {
+    state: RUNTIME_FAILED,
+    source: 'codex-task-complete-error',
+    confidence: CONFIDENCE_AUTHORITATIVE,
+    observedAt: at,
+    startedAt: runStartedAt,
+    completedAt: at,
+    turnId,
+    reason: payload.errorInfo || 'codex-turn-error',
+    evidence: session.lastError,
+  });
+  _updateStreamingIndicator(hubSessionId);
   scheduleSessionListRender();
   schedulePersist();
 });
@@ -4165,24 +4266,21 @@ function acknowledgeSessionFailureState(sessionOrId, options = {}) {
   return changed;
 }
 
-function noteStreamDisconnect(sessionId, data) {
+function raiseStreamDisconnectFailure(sessionId, issue, options = {}) {
   const session = sessions.get(sessionId);
-  if (!isAiRuntimeSession(session) || session.status === 'dormant') return false;
-  const tracked = appendStreamDisconnectChunk(session._streamDisconnectTail, data);
-  session._streamDisconnectTail = tracked.tail;
-  const issue = tracked.issue;
-  if (!issue) return false;
-  // 同一条 issue 不重复升起；已被用户确认过的那条，只有在「确认之后又真的跑了
-  // 一轮」时才允许再次升起（否则就是 TUI 重绘把旧报错文本又推了一遍）。
+  if (!isAiRuntimeSession(session) || session.status === 'dormant' || !issue) return false;
+  const observedAt = Number(options.observedAt) || Date.now();
+  issue = { ...issue, observedAt };
   if (!shouldRaiseStreamDisconnect(session, issue)) return false;
 
-  const observedAt = Date.now();
   session._connectionIssueAck = null;
   session.connectionIssue = {
     type: issue.type,
     message: issue.message,
     signature: issue.signature,
     observedAt,
+    occurrenceId: issue.occurrenceId || null,
+    turnId: issue.turnId || null,
   };
   session.lastError = issue.message;
   clearSessionAttention(session);
@@ -4200,11 +4298,12 @@ function noteStreamDisconnect(sessionId, data) {
   }
   observeSessionRuntime(session, {
     state: RUNTIME_FAILED,
-    source: 'pty-stream-disconnected',
-    confidence: CONFIDENCE_STRONG,
+    source: options.authoritative ? 'codex-task-complete-error' : 'pty-stream-disconnected',
+    confidence: options.authoritative ? CONFIDENCE_AUTHORITATIVE : CONFIDENCE_STRONG,
     observedAt,
     startedAt: runStartedAt,
     completedAt: observedAt,
+    turnId: issue.turnId || null,
     reason: 'network-stream-disconnected',
     evidence: issue.message,
   });
@@ -4212,6 +4311,15 @@ function noteStreamDisconnect(sessionId, data) {
   scheduleSessionListRender();
   schedulePersist();
   return true;
+}
+
+function noteStreamDisconnect(sessionId, data) {
+  const session = sessions.get(sessionId);
+  if (!isAiRuntimeSession(session) || session.status === 'dormant') return false;
+  const tracked = appendStreamDisconnectChunk(session._streamDisconnectTail, data);
+  session._streamDisconnectTail = tracked.tail;
+  if (!tracked.issue) return false;
+  return raiseStreamDisconnectFailure(sessionId, tracked.issue);
 }
 
 function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
@@ -4228,7 +4336,12 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
     // arms the PTY fallback, while hook/rollout lifecycle events set running
     // independently. The screen classifier upgrades either weak path once it
     // sees an actual provider running marker.
-    if (!wasRunning && !fallbackArmed) return false;
+    // "esc to interrupt" / provider active rows are strong current-screen
+    // evidence, not generic byte activity. They must be able to repair a
+    // prematurely completed status even after the submit fallback was disarmed.
+    const strongCurrentScreen = runtime.confidence === CONFIDENCE_STRONG;
+    if (!wasRunning && !fallbackArmed && !strongCurrentScreen) return false;
+    clearPtyInputReadyCandidate(session);
     session._ptyRuntimeSawRunning = true;
     if (session._ptyRuntimePendingTimer) {
       clearTimeout(session._ptyRuntimePendingTimer);
@@ -4271,6 +4384,8 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
         && session._claudeBackgroundTasks.length > 0) {
       return false;
     }
+    if (runtime.state === 'idle' && !ptyInputReadyIsStable(session, runtime, at)) return false;
+    if (runtime.state === 'waiting') clearPtyInputReadyCandidate(session);
     const runStartedAt = Number(session.runStartedAt) || Number(session._ptyFallbackArmedAt) || 0;
     if (runtime.state === 'idle'
         && !session._ptyRuntimeSawRunning
@@ -6186,6 +6301,9 @@ function schedulePersist() {
         connectionIssue: s.connectionIssue && typeof s.connectionIssue === 'object'
           ? { ...s.connectionIssue }
           : null,
+        _connectionIssueAck: s._connectionIssueAck && typeof s._connectionIssueAck === 'object'
+          ? { ...s._connectionIssueAck }
+          : null,
         currentModel: s.currentModel || null,
         effort: s.effort || null,
         contextPct: typeof s.contextPct === 'number' ? s.contextPct : null,
@@ -6367,6 +6485,9 @@ window.resumeDormantSession = resumeDormantSession;
         suspendReason: meta.suspendReason || null,
         connectionIssue: meta.connectionIssue && typeof meta.connectionIssue === 'object'
           ? { ...meta.connectionIssue }
+          : null,
+        _connectionIssueAck: meta._connectionIssueAck && typeof meta._connectionIssueAck === 'object'
+          ? { ...meta._connectionIssueAck }
           : null,
         createdAt: meta.lastMessageTime || Date.now(),
         cwd: meta.cwd || null,
@@ -6891,6 +7012,23 @@ if (process && process.env && process.env.CLAUDE_HUB_E2E === '1') {
         agentWorking: session._agentWorking || null,
       };
     },
+    applyStreamFailure: (sessionId, message, options = {}) => {
+      const detected = detectStreamDisconnect(message);
+      if (!detected) return { raised: false, issue: null };
+      const issue = {
+        ...detected,
+        occurrenceId: options.occurrenceId || null,
+        turnId: options.turnId || null,
+      };
+      const raised = raiseStreamDisconnectFailure(sessionId, issue, options);
+      const session = sessions.get(sessionId);
+      return {
+        raised,
+        issue: session && session.connectionIssue ? { ...session.connectionIssue } : null,
+        runtime: session ? getSessionRuntimeTruth(session) : null,
+      };
+    },
+    acknowledgeSessionFailure: (sessionId) => acknowledgeSessionFailureState(sessionId),
     sidebarRenderCoalescerStats: () => sidebarRenderCoalescer.stats(),
     sidebarRenderStats: () => sessionListRenderer.getRenderStats(),
     // 侧栏时间分组 E2E：注入指定 lastMessageTime 的测试会话并重渲，读分组 DOM。

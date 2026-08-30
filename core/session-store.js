@@ -52,6 +52,20 @@ function _sanitizeConnectionIssue(value) {
     message,
     signature: typeof value.signature === 'string' ? value.signature.slice(0, 500) : message.toLowerCase(),
     observedAt: typeof value.observedAt === 'number' ? value.observedAt : null,
+    occurrenceId: typeof value.occurrenceId === 'string' ? value.occurrenceId.slice(0, 500) : null,
+    turnId: typeof value.turnId === 'string' ? value.turnId.slice(0, 200) : null,
+  };
+}
+
+function _sanitizeConnectionIssueAck(value) {
+  if (!value || typeof value !== 'object') return null;
+  const signature = typeof value.signature === 'string' ? value.signature.trim().slice(0, 500) : '';
+  const at = Number(value.at);
+  if (!signature || !Number.isFinite(at) || at <= 0) return null;
+  return {
+    signature,
+    at,
+    occurrenceId: typeof value.occurrenceId === 'string' ? value.occurrenceId.slice(0, 500) : null,
   };
 }
 
@@ -126,6 +140,7 @@ function _buildSessionPayload(hubId, data) {
     suspendedAt: typeof data.suspendedAt === 'number' ? data.suspendedAt : null,
     suspendReason: typeof data.suspendReason === 'string' ? data.suspendReason : null,
     connectionIssue: _sanitizeConnectionIssue(data.connectionIssue),
+    _connectionIssueAck: _sanitizeConnectionIssueAck(data._connectionIssueAck),
     updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : now,
     savedAt: now,
   };

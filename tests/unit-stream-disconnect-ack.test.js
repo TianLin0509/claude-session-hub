@@ -52,11 +52,24 @@ for (let i = 0; i < 20; i += 1) {
   assert.strictEqual(shouldRaiseStreamDisconnect(session, tracked.issue), false);
 }
 
-// 确认之后真的又跑了一轮 → 同一条报错必须能再次升起
+// 确认之后又跑一轮会触发 TUI 整屏重绘；光凭 runStartedAt 不能把旧错误复活。
 session.runStartedAt = 4000;
 assert.strictEqual(
-  shouldRaiseStreamDisconnect(session, issue), true,
-  '确认后又开了新一轮，再断连要重新提醒',
+  shouldRaiseStreamDisconnect(session, issue), false,
+  '确认后又开新一轮时，历史错误重绘仍不得重新提醒',
+);
+
+// 权威 transcript 给出新的 occurrenceId，才证明同签名错误确实再次发生。
+const authoritativeRepeat = { ...issue, occurrenceId: 'turn-2:5000', observedAt: 5000 };
+assert.strictEqual(
+  shouldRaiseStreamDisconnect(session, authoritativeRepeat), true,
+  '新的权威失败 occurrence 必须重新提醒',
+);
+
+const delayedSameOccurrence = { ...issue, occurrenceId: 'turn-1:2500', observedAt: 2500 };
+assert.strictEqual(
+  shouldRaiseStreamDisconnect(session, delayedSameOccurrence), false,
+  '用户确认后才到达的权威记录属于同一次失败，不得再次播报',
 );
 
 // 换一条不同的报错，随时可以升起

@@ -201,11 +201,11 @@ setInterval(() => {}, 1000);
 
     if (process.env.HUB_E2E_DEBUG === '1') console.error(JSON.stringify(tuning, null, 2));
 
-    // Claude：fast 开关在、默认勾上；MCP 默认 full（= 改动前的全量继承）
+    // Claude：fast 开关在、默认勾上；MCP 默认 none（避免每个会话拉起全部重型 MCP）
     assert.equal(tuning.claude.fastVisible, true, 'Claude 应显示 fast 开关');
     assert.equal(tuning.claude.fastChecked, true, 'fast 默认开');
     assert.equal(tuning.claude.mcpVisible, true, 'Claude 现在也有 MCP 档位');
-    assert.equal(tuning.claude.mcpValue, 'full', 'Claude 默认必须是 full，不能静默改成 lean');
+    assert.equal(tuning.claude.mcpValue, 'none', 'Claude 默认必须是 none，不能静默加载全量 MCP');
     assert.deepEqual(tuning.claude.effortOptions, ['max', 'xhigh', 'high', 'medium', 'low']);
     assert.equal(tuning.claude.effortValue, 'max');
 
@@ -244,7 +244,7 @@ setInterval(() => {}, 1000);
 
     // 切走再切回来要记住上一次的选择（老行为是每次都重置回默认，反复调很烦）
     assert.equal(tuning.backToClaude.fastChecked, false, '切走再切回来应记住用户关过 fast');
-    assert.equal(tuning.backToClaude.mcpValue, 'full', 'Claude 的档位不该被 Codex 的 lean 串味');
+    assert.equal(tuning.backToClaude.mcpValue, 'none', 'Claude 的 None 默认不该被 Codex 的档位串味');
 
     // fast 勾着时提示要讲清代价
     assert.match(tuning.claude.note, /transcript/);
@@ -360,7 +360,7 @@ setInterval(() => {}, 1000);
 
     // 默认不传 fastMode = 沿用 session-manager 的"默认开"，与改动前逐字一致
     assert.equal('fastMode' in payloads.claudeDefault, false, '默认不该显式传 fastMode');
-    assert.equal(payloads.claudeDefault.mcpProfile, 'full');
+    assert.equal(payloads.claudeDefault.mcpProfile, 'none');
     assert.equal(payloads.claudeFastOff.fastMode, false);
     assert.equal(payloads.claudeLean.mcpProfile, 'lean');
     assert.deepEqual(payloads.codexDefault, {

@@ -67,6 +67,14 @@ async function capture(client, filePath) {
           id: 'pty-claude', kind: 'claude', title: 'Claude hook fallback', status: 'running',
           _runSource: 'semantic', _agentWorking: 'hook', runStartedAt: now - 8000, lastMessageTime: now - 2000,
         },
+        {
+          id: 'pty-codex-revive', kind: 'codex', title: 'Codex live-screen repair', status: 'idle',
+          runtimeTruth: {
+            state: 'completed', source: 'pty-codex-input-ready', confidence: 'strong',
+            observedAt: now - 1000, completedAt: now - 1000, sequence: 1,
+          },
+          _ptyFallbackArmedUntil: 0, lastMessageTime: now - 1500,
+        },
       ]);
       const codex = window.__hubE2E.applyTerminalRuntimeFrame('pty-codex', [
         '› Run PowerShell Start-Sleep -Seconds 4, then reply with exactly PTY_STATE_DONE.',
@@ -80,12 +88,18 @@ async function capture(client, filePath) {
         '>',
         '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
       ], now);
+      const repaired = window.__hubE2E.applyTerminalRuntimeFrame('pty-codex-revive', [
+        '• Working (2m 01s • esc to interrupt)',
+        '› Improve documentation in @filename',
+        '  gpt-5.6-sol max fast · Context 69% left · C:\\\\Vibe\\\\repo',
+      ], now);
       await new Promise(resolve => setTimeout(resolve, 220));
       escapeToHome();
       await new Promise(resolve => setTimeout(resolve, 180));
       return {
         codex,
         claude,
+        repaired,
         activeCount: document.getElementById('home-metric-active').textContent,
         runningSidebarText: document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim(),
         pipelineAbsent: !document.getElementById('home-flow-columns'),
@@ -97,28 +111,38 @@ async function capture(client, filePath) {
     assert.equal(running.codex.runSource, 'pty-semantic');
     assert.equal(running.claude.runtime.state, 'running');
     assert.equal(running.claude.status, 'running');
-    assert.equal(running.activeCount, '2');
+    assert.equal(running.repaired.status, 'running');
+    assert.equal(running.repaired.runSource, 'pty-semantic');
+    assert.equal(running.activeCount, '3');
     assert.equal(running.pipelineAbsent, true);
     assert.match(running.runningSidebarText, /Codex PTY fallback/);
     assert.match(running.runningSidebarText, /Claude hook fallback/);
+    assert.match(running.runningSidebarText, /Codex live-screen repair/);
     await capture(client, SCREENSHOT);
 
     const settled = await client.eval(`(async () => {
       const now = Date.now();
-      const codex = window.__hubE2E.applyTerminalRuntimeFrame('pty-codex', [
+      const codexFirst = window.__hubE2E.applyTerminalRuntimeFrame('pty-codex', [
         '• PTY_STATE_DONE',
         '› Improve documentation in @filename',
         '  gpt-5.6-sol max fast · Context 95% left · C:\\\\Vibe\\\\repo',
       ], now);
+      const codex = window.__hubE2E.applyTerminalRuntimeFrame('pty-codex', [
+        '• PTY_STATE_DONE',
+        '› Improve documentation in @filename',
+        '  gpt-5.6-sol max fast · Context 95% left · C:\\\\Vibe\\\\repo',
+      ], now + 2100);
       const claude = window.__hubE2E.applyTerminalRuntimeFrame('pty-claude', [
         'What do you want to do?',
         '> 1. Stop and wait for limit to reset',
         '  2. Upgrade your plan',
         'Enter to confirm · Esc to cancel',
       ], now);
+      sessions.delete('pty-codex-revive');
       await new Promise(resolve => setTimeout(resolve, 220));
       return {
         codex,
+        codexFirst,
         claude,
         runningSections: Array.from(document.querySelectorAll('#session-list .session-sec-header'))
           .filter(row => row.textContent.includes('运行中')).length,
@@ -131,6 +155,7 @@ async function capture(client, filePath) {
     })()`);
 
     assert.equal(settled.codex.runtime.state, 'idle');
+    assert.equal(settled.codexFirst.status, 'running', 'one transient input-ready frame must not close an active turn');
     assert.equal(settled.codex.status, 'idle');
     assert.equal(settled.claude.runtime.state, 'waiting');
     assert.equal(settled.claude.status, 'idle');
@@ -141,6 +166,48 @@ async function capture(client, filePath) {
     assert.equal(settled.claudeWaiting, true);
     assert.match(settled.sidebarText, /Claude hook fallback/);
 
+    const failureAck = await client.eval(`(async () => {
+      const now = Date.now();
+      const message = 'stream disconnected before completion: ECONNRESET';
+      window.__hubE2E.clearSessions();
+      window.__hubE2E.addFakeSession({
+        id: 'failure-ack', kind: 'codex', title: 'Acknowledged disconnect',
+        status: 'running', runStartedAt: now - 5000, lastMessageTime: now,
+      });
+      const first = window.__hubE2E.applyStreamFailure('failure-ack', message, { observedAt: now });
+      await new Promise(resolve => setTimeout(resolve, 220));
+      const firstSidebar = document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim();
+
+      const acknowledged = window.__hubE2E.acknowledgeSessionFailure('failure-ack');
+      await new Promise(resolve => setTimeout(resolve, 220));
+      const acknowledgedSidebar = document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim();
+
+      sessions.get('failure-ack').runStartedAt = now + 1000;
+      const redraw = window.__hubE2E.applyStreamFailure('failure-ack', message, { observedAt: now + 2000 });
+      await new Promise(resolve => setTimeout(resolve, 220));
+      const redrawSidebar = document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim();
+
+      const genuine = window.__hubE2E.applyStreamFailure('failure-ack', message, {
+        observedAt: now + 3000,
+        authoritative: true,
+        turnId: 'turn-new-failure',
+        occurrenceId: 'turn-new-failure:3000',
+      });
+      await new Promise(resolve => setTimeout(resolve, 220));
+      const genuineSidebar = document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim();
+      window.__hubE2E.acknowledgeSessionFailure('failure-ack');
+      return { first, acknowledged, redraw, genuine, firstSidebar, acknowledgedSidebar, redrawSidebar, genuineSidebar };
+    })()`);
+
+    assert.equal(failureAck.first.raised, true);
+    assert.match(failureAck.firstSidebar, /运行异常/);
+    assert.equal(failureAck.acknowledged, true);
+    assert.doesNotMatch(failureAck.acknowledgedSidebar, /运行异常/);
+    assert.equal(failureAck.redraw.raised, false, 'a new turn repaint must not resurrect an acknowledged old failure');
+    assert.doesNotMatch(failureAck.redrawSidebar, /运行异常/);
+    assert.equal(failureAck.genuine.raised, true, 'a new authoritative failure occurrence must notify again');
+    assert.match(failureAck.genuineSidebar, /运行异常/);
+
     console.log(JSON.stringify({
       ok: true,
       pid: hub.pid,
@@ -148,6 +215,7 @@ async function capture(client, filePath) {
       screenshot: SCREENSHOT,
       running,
       settled,
+      failureAck,
     }, null, 2));
   } catch (error) {
     console.error(error.stack || error.message);

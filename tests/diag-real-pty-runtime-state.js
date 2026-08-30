@@ -15,6 +15,18 @@ const { connectFirstPage } = require('./helpers/cdp-client.js');
 const { gracefulQuit, launchIsolatedHub, _waitMs } = require('./helpers/hub-launcher.js');
 
 const ROOT = path.join(os.tmpdir(), `hub-real-runtime-${process.pid}-${Date.now()}`);
+const SOURCE_CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+const ISOLATED_CODEX_HOME = path.join(ROOT, 'codex-home');
+
+function prepareIsolatedCodexHome() {
+  fs.mkdirSync(ISOLATED_CODEX_HOME, { recursive: true });
+  const authPath = path.join(SOURCE_CODEX_HOME, 'auth.json');
+  if (!fs.existsSync(authPath)) throw new Error(`Codex auth missing: ${authPath}`);
+  for (const name of ['auth.json', 'config.toml', 'models_cache.json']) {
+    const source = path.join(SOURCE_CODEX_HOME, name);
+    if (fs.existsSync(source)) fs.copyFileSync(source, path.join(ISOLATED_CODEX_HOME, name));
+  }
+}
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -47,7 +59,7 @@ async function runSession(client, { kind, prompt, marker, opts }) {
   const created = await client.eval(`window.WorkspaceController.createSession(${JSON.stringify(kind)}, {
     cwd: ${JSON.stringify(path.resolve(__dirname, '..'))},
     opts: ${JSON.stringify(opts)},
-  }).then(session => ({ id: session.id, kind: session.kind }))`);
+  }).then(session => ({ id: session.id, kind: session.kind, title: session.title }))`);
   const id = created.id;
   await waitFor(`${kind} renderer session`, () => client.eval(`sessions.has(${JSON.stringify(id)})`), 20000);
   await client.eval(`window.__hubE2E.selectSession(${JSON.stringify(id)}, { forceScrollBottom: true })`);
@@ -58,7 +70,7 @@ async function runSession(client, { kind, prompt, marker, opts }) {
 
   const before = await client.eval(`(() => {
     const session = sessions.get(${JSON.stringify(id)});
-    return { status: session.status, source: session._runSource || null };
+    return { status: session.status, source: session._runSource || null, title: session.title };
   })()`);
   await client.eval(`(() => {
     const id = ${JSON.stringify(id)};
@@ -127,6 +139,9 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     const sidebar = document.querySelector('.session-item[data-session-id="' + CSS.escape(String(id)) + '"]');
     if (!session || session.status !== 'idle' || (!responseMarkerSeen && !blockedOnInput)) return null;
     if (responseMarkerSeen && (cardState !== 'completed' || cardLabel !== '已完成')) return null;
+    if (${JSON.stringify(kind)} === 'codex' && responseMarkerSeen
+        && (!session.autoTitleGenerated || /^Codex\s+\d+$/i.test(session.title || '')
+          || !session.codexSid || !session.transcriptPath)) return null;
     return {
       status: session.status,
       source: session._runSource || null,
@@ -146,6 +161,10 @@ async function runSession(client, { kind, prompt, marker, opts }) {
       sidebarSource: sidebar?.dataset.runtimeSource || null,
       runtimeSource: session.runtimeTruth?.source || null,
       corroborations: (session.runtimeTruth?.corroborations || []).map(item => item.source),
+      title: session.title || null,
+      autoTitleGenerated: session.autoTitleGenerated === true,
+      codexSid: session.codexSid || null,
+      transcriptPath: session.transcriptPath || null,
       screen,
     };
   })()`), 120000);
@@ -159,6 +178,15 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     const sources = [running.runtimeSource, ...running.corroborations].filter(Boolean).join(' ');
     assert.match(sources, /task_started/);
     assert.match(sources, /pty-codex-interrupt-footer/);
+    assert.equal(done.autoTitleGenerated, true);
+    assert.doesNotMatch(done.title, /^Codex\s+\d+$/i);
+    assert.ok(done.codexSid);
+    assert.ok(done.transcriptPath && fs.existsSync(done.transcriptPath));
+    const firstRecord = JSON.parse(fs.readFileSync(done.transcriptPath, 'utf8').split(/\r?\n/, 1)[0]);
+    const cliVersion = String(firstRecord && firstRecord.payload && firstRecord.payload.cli_version || '');
+    const expectedVersion = String(process.env.HUB_DIAG_EXPECT_CODEX_VERSION || '');
+    if (expectedVersion) assert.equal(cliVersion, expectedVersion);
+    done.cliVersion = cliVersion;
   }
   assert.equal(done.status, 'idle');
   if (done.responseMarkerSeen) {
@@ -171,6 +199,7 @@ async function runSession(client, { kind, prompt, marker, opts }) {
 
 async function main() {
   fs.mkdirSync(ROOT, { recursive: true });
+  prepareIsolatedCodexHome();
   const port = await reservePort();
   let hub = null;
   let client = null;
@@ -182,6 +211,7 @@ async function main() {
       extraEnv: {
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_HOME_DIR: path.join(ROOT, 'fake-home'),
+        CODEX_HOME: ISOLATED_CODEX_HOME,
         DEEPSEEK_API_KEY: '',
       },
     });

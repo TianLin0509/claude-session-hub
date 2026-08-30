@@ -44,6 +44,9 @@ const RESUME_META_FIELDS = [
   'promptPolicyVersion',
   'hiddenFromSidebar',
   'completionNotificationEnabled',
+  // 已读异常与通知已读同义：renderer reload / Hub restart 后也不能重新播报
+  // 同一条历史断连；真正的新失败由 transcript occurrenceId 重新升起。
+  '_connectionIssueAck',
 ];
 
 function withoutVolatileTimestamps(entity) {

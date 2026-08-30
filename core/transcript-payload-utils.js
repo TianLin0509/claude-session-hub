@@ -176,11 +176,42 @@ function codexAgentMessageEventFromRecord(record) {
   };
 }
 
+/**
+ * Normalize an authoritative Codex terminal failure. Current rollouts encode
+ * transport failures as task_complete with error and no last_agent_message.
+ * Keeping this separate from assistant completion prevents an errored turn
+ * from looking completed while also giving the Hub a redraw-proof occurrence
+ * identity (turn id + event time).
+ */
+function codexTaskErrorEventFromRecord(record) {
+  if (!record || record.type !== 'event_msg' || !record.payload) return null;
+  const payload = record.payload;
+  if (payload.type !== 'task_complete' || !payload.error || typeof payload.error !== 'object') return null;
+  const message = codexTextFromPayload(payload.error).trim();
+  if (!message) return null;
+  const completedAt = timestampToMs(record.timestamp)
+    || numericTimestampToMs(payload.completed_at_ms)
+    || numericTimestampToMs(payload.completed_at);
+  const turnId = codexTurnIdFromPayload(payload);
+  return {
+    message,
+    completedAt,
+    durationMs: Number.isFinite(Number(payload.duration_ms)) ? Number(payload.duration_ms) : null,
+    turnId,
+    errorInfo: typeof payload.error.codex_error_info === 'string'
+      ? payload.error.codex_error_info.slice(0, 200)
+      : null,
+    occurrenceId: `${turnId || 'unknown-turn'}:${completedAt || 'unknown-time'}`,
+    signalSource: 'task_complete_error',
+  };
+}
+
 module.exports = {
   codexTextFromContent,
   codexTextFromPayload,
   codexTurnIdFromPayload,
   codexUserMessageEventFromRecord,
   codexAgentMessageEventFromRecord,
+  codexTaskErrorEventFromRecord,
   timestampToMs,
 };

@@ -67,6 +67,7 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
   const requestedDataDir = extraEnv.CLAUDE_HUB_DATA_DIR;
   const requestedHomeDir = extraEnv.CLAUDE_HUB_HOME_DIR;
   const requestedAgentLeagueDir = extraEnv.CHUXIN_AGENT_LEAGUE_DIR;
+  const requestedCodexHome = extraEnv.CODEX_HOME;
   const requestedKey = extraEnv.DEEPSEEK_API_KEY;
   if (!allowExternalState) {
     const tempRoot = path.resolve(os.tmpdir());
@@ -81,6 +82,9 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
     }
     if (requestedAgentLeagueDir && !_isPathInside(testRoot, requestedAgentLeagueDir)) {
       throw new Error('isolated Hub requires CHUXIN_AGENT_LEAGUE_DIR inside the test root');
+    }
+    if (requestedCodexHome && !_isPathInside(testRoot, requestedCodexHome)) {
+      throw new Error('isolated Hub requires CODEX_HOME inside the test root');
     }
     if (requestedKey) throw new Error('isolated Hub forbids a non-empty DEEPSEEK_API_KEY');
   }

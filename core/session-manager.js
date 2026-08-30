@@ -1088,26 +1088,44 @@ class SessionManager extends EventEmitter {
       codexProfile = { id: 'deepseek-api', label: 'DeepSeek API · Codex' };
     } else if (isCodex) {
       const cv = getConfigValues();
+      const selectedSubscriptionProfile = codexProfile
+        || (!opts.meetingId ? resolveCodexSubscriptionProfile(cv, opts.codexProfile) : null);
+      const isolatedDataDir = process.env.CLAUDE_HUB_DATA_DIR || '';
+      const selectedProfileHome = selectedSubscriptionProfile && selectedSubscriptionProfile.home;
+      let selectedProfileHomeAllowed = !!selectedProfileHome;
+      if (selectedProfileHomeAllowed && isolatedDataDir) {
+        const testRoot = path.dirname(path.resolve(isolatedDataDir));
+        const relative = path.relative(testRoot, path.resolve(selectedProfileHome));
+        selectedProfileHomeAllowed = relative === ''
+          || (!relative.startsWith('..') && !path.isAbsolute(relative));
+      }
       if (isCodexApiBackend(cv)) {
         sessionEnv.CODEX_HOME = ensureCodexApiProfile(cv, spawnCwd);
         // API 模式 codex 把 rollout 写到 isolated home（不写 ~/.codex/sessions）。
         // 记到 info 让 transcript-tap 注册时把这个 root 加进 CodexTap 的扫描列表。
         codexSessionsRoot = path.join(sessionEnv.CODEX_HOME, 'sessions');
-      } else if (opts.meetingId) {
-        // 隔离 Hub / E2E 若显式传入 CODEX_HOME，必须继续使用它；否则群聊
-        // 会把临时 scratch 写进用户全局 ~/.codex/config.toml 的 trust 表。
-        // 生产 Hub 没有隔离 data dir 时仍沿用默认 ~/.codex，共享原生 memory。
-        if (process.env.CLAUDE_HUB_DATA_DIR && process.env.CODEX_HOME) {
-          sessionEnv.CODEX_HOME = process.env.CODEX_HOME;
-          ensureCodexCwdTrusted(spawnCwd, process.env.CODEX_HOME);
-          codexSessionsRoot = path.join(process.env.CODEX_HOME, 'sessions');
-        } else {
-          delete sessionEnv.CODEX_HOME;
-          ensureCodexCwdTrusted(spawnCwd);
-          // codexSessionsRoot 保持 null，让 CodexTap 扫默认 ~/.codex/sessions
+      } else if (selectedProfileHomeAllowed) {
+        codexProfile = selectedSubscriptionProfile;
+        sessionEnv.CODEX_HOME = selectedProfileHome;
+        ensureCodexCwdTrusted(spawnCwd, selectedProfileHome);
+        codexSessionsRoot = path.join(selectedProfileHome, 'sessions');
+      } else if (process.env.CLAUDE_HUB_DATA_DIR && process.env.CODEX_HOME) {
+        // A test Hub's isolation boundary applies to ordinary Codex sessions
+        // too, not only meeting members. Falling through to the default
+        // subscription profile silently writes credential-backed diagnostics
+        // into the real ~/.codex session store.
+        sessionEnv.CODEX_HOME = process.env.CODEX_HOME;
+        ensureCodexCwdTrusted(spawnCwd, process.env.CODEX_HOME);
+        codexSessionsRoot = path.join(process.env.CODEX_HOME, 'sessions');
+        if (selectedProfileHome && !selectedProfileHomeAllowed) {
+          console.warn(`[codex] isolated Hub ignored external profile home: ${selectedProfileHome}`);
         }
+      } else if (opts.meetingId) {
+        delete sessionEnv.CODEX_HOME;
+        ensureCodexCwdTrusted(spawnCwd);
+        // codexSessionsRoot 保持 null，让 CodexTap 扫默认 ~/.codex/sessions
       } else {
-        codexProfile = codexProfile || resolveCodexSubscriptionProfile(cv, opts.codexProfile);
+        codexProfile = selectedSubscriptionProfile || resolveCodexSubscriptionProfile(cv, opts.codexProfile);
         if (codexProfile.home) {
           sessionEnv.CODEX_HOME = codexProfile.home;
           ensureCodexCwdTrusted(spawnCwd, codexProfile.home);

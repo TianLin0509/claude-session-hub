@@ -1,6 +1,7 @@
 const assert = require('assert');
 const {
   codexAgentMessageEventFromRecord,
+  codexTaskErrorEventFromRecord,
   codexTextFromContent,
   codexTextFromPayload,
   codexUserMessageEventFromRecord,
@@ -80,6 +81,32 @@ assert.strictEqual(codexTextFromPayload(null), '');
 assert.strictEqual(timestampToMs(null), null);
 assert.strictEqual(timestampToMs('not a date'), null);
 assert.strictEqual(timestampToMs('2026-05-22T00:00:00.000Z'), Date.UTC(2026, 4, 22));
+
+assert.deepStrictEqual(
+  codexTaskErrorEventFromRecord({
+    timestamp: '2026-08-24T08:43:49.678Z',
+    type: 'event_msg',
+    payload: {
+      type: 'task_complete',
+      turn_id: 'turn-network-error',
+      error: {
+        message: 'stream disconnected before completion: ECONNRESET',
+        codex_error_info: 'other',
+      },
+      duration_ms: 233235,
+    },
+  }),
+  {
+    message: 'stream disconnected before completion: ECONNRESET',
+    completedAt: Date.parse('2026-08-24T08:43:49.678Z'),
+    durationMs: 233235,
+    turnId: 'turn-network-error',
+    errorInfo: 'other',
+    occurrenceId: `turn-network-error:${Date.parse('2026-08-24T08:43:49.678Z')}`,
+    signalSource: 'task_complete_error',
+  },
+);
+assert.strictEqual(codexTaskErrorEventFromRecord({ type: 'event_msg', payload: { type: 'task_complete' } }), null);
 
 assert.deepStrictEqual(
   codexUserMessageEventFromRecord({

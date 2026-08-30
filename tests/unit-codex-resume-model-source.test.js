@@ -136,4 +136,16 @@ test('codex API profile uses the same max reasoning effort default', () => {
   );
 });
 
+test('isolated Hub keeps CODEX_HOME for ordinary Codex sessions, not only meetings', () => {
+  const apiBranch = SRC.indexOf('if (isCodexApiBackend(cv)) {');
+  const profileBranch = SRC.indexOf('} else if (selectedProfileHomeAllowed) {', apiBranch);
+  const isolatedBranch = SRC.indexOf('} else if (process.env.CLAUDE_HUB_DATA_DIR && process.env.CODEX_HOME) {', apiBranch);
+  const meetingBranch = SRC.indexOf('} else if (opts.meetingId) {', apiBranch);
+  assert.ok(apiBranch >= 0 && profileBranch > apiBranch && isolatedBranch > profileBranch && meetingBranch > isolatedBranch,
+    'safe explicit profiles win, then ordinary isolated Codex binds its fallback before the meeting branch');
+  const isolatedBody = SRC.slice(isolatedBranch, meetingBranch);
+  assert.match(isolatedBody, /sessionEnv\.CODEX_HOME = process\.env\.CODEX_HOME/);
+  assert.match(isolatedBody, /codexSessionsRoot = path\.join\(process\.env\.CODEX_HOME, 'sessions'\)/);
+});
+
 console.log('All passed.');

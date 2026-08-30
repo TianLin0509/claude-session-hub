@@ -151,6 +151,13 @@ const sessionStore = require('../core/session-store');
         message: 'stream disconnected before completion: ECONNRESET',
         signature: 'stream disconnected before completion: econnreset',
         observedAt: 7100,
+        occurrenceId: 'turn-network:7100',
+        turnId: 'turn-network',
+      },
+      _connectionIssueAck: {
+        signature: 'stream disconnected before completion: econnreset',
+        at: 7200,
+        occurrenceId: 'turn-network:7100',
       },
       updatedAt: 7101,
     });
@@ -160,8 +167,15 @@ const sessionStore = require('../core/session-store');
       message: 'stream disconnected before completion: ECONNRESET',
       signature: 'stream disconnected before completion: econnreset',
       observedAt: 7100,
+      occurrenceId: 'turn-network:7100',
+      turnId: 'turn-network',
     });
-    console.log('PASS S10b stream disconnect metadata');
+    assert.deepStrictEqual(loaded._connectionIssueAck, {
+      signature: 'stream disconnected before completion: econnreset',
+      at: 7200,
+      occurrenceId: 'turn-network:7100',
+    });
+    console.log('PASS S10b stream disconnect and acknowledgement metadata');
   }
 
   // S11: provider/session behavior survives recovery from the per-id authority.

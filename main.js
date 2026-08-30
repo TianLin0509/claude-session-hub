@@ -547,6 +547,30 @@ transcriptTap.on('turn-aborted', (ev) => {
   }
 });
 
+// Codex writes transport failures as task_complete.error. Forward the
+// authoritative occurrence instead of relying only on PTY text, because the
+// full-screen TUI can redraw an old error line during every later turn.
+transcriptTap.on('turn-error', (ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  const session = sessionManager.getSession(ev.hubSessionId);
+  try {
+    sendToRenderer('turn-failed-event', {
+      hubSessionId: ev.hubSessionId,
+      transcriptPath: ev.transcriptPath || (session ? session.transcriptPath : null),
+      failedAt: ev.completedAt != null ? ev.completedAt : Date.now(),
+      meetingId: session ? session.meetingId : null,
+      kind: session ? session.kind : null,
+      signalSource: ev.signalSource || 'task_complete_error',
+      turnId: ev.turnId || null,
+      message: ev.message || 'Codex turn failed',
+      errorInfo: ev.errorInfo || null,
+      occurrenceId: ev.occurrenceId || null,
+    });
+  } catch (error) {
+    console.warn('[codex task] turn-failed-event broadcast failed:', error && error.message);
+  }
+});
+
 transcriptTap.on('prompt-submitted', (ev) => {
   const { hubSessionId, text, submittedAt } = ev || {};
   completionNotifier.notePromptSubmitted(ev || {});

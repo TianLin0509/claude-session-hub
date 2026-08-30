@@ -60,6 +60,9 @@ function markStreamDisconnectAcknowledged(session, now = Date.now()) {
   const ack = {
     signature: String(session.connectionIssue.signature || ''),
     at: Number(now) || Date.now(),
+    occurrenceId: session.connectionIssue.occurrenceId
+      ? String(session.connectionIssue.occurrenceId).slice(0, 500)
+      : null,
   };
   session._connectionIssueAck = ack;
   return ack;
@@ -71,17 +74,27 @@ function markStreamDisconnectAcknowledged(session, now = Date.now()) {
  * 关键在于断连是从 PTY 输出里认出来的，而 TUI（尤其 Codex）会把整屏反复重绘 ——
  * 用户点开清掉之后，下一帧同一段报错文本又流过来，就会被重新判成断连，于是
  * 「运行异常」永远下不去（2026-08-28 用户反馈：异常早已恢复还一直显示断连）。
- * 所以已确认过的签名默认压住，只有「确认之后又真的开过新的一轮」才放行。
+ * 所以 PTY 重绘路径不能仅凭 runStartedAt 变化放行：新一轮启动恰恰会触发整屏
+ * 重绘，把几天前的同一条报错再次写入字节流。只有 transcript 等权威来源给出
+ * 新 occurrenceId，才能证明同签名错误确实再次发生。
  */
 function shouldRaiseStreamDisconnect(session, issue) {
   if (!session || !issue) return false;
   const previous = session.connectionIssue;
-  if (previous && previous.signature === issue.signature) return false;
+  if (previous && previous.signature === issue.signature
+      && (!issue.occurrenceId || previous.occurrenceId === issue.occurrenceId)) return false;
   const ack = session._connectionIssueAck;
   if (!ack || !ack.signature || ack.signature !== issue.signature) return true;
-  const runStartedAt = Number(session.runStartedAt) || 0;
-  const ackAt = Number(ack.at) || 0;
-  return runStartedAt > ackAt;
+  const occurrenceId = issue.occurrenceId ? String(issue.occurrenceId) : '';
+  const acknowledgedOccurrenceId = ack.occurrenceId ? String(ack.occurrenceId) : '';
+  if (!occurrenceId) return false;
+  if (acknowledgedOccurrenceId) return occurrenceId !== acknowledgedOccurrenceId;
+  // PTY can surface the line a few milliseconds before the rollout appends its
+  // task_complete.error. If the user acknowledged in that gap, the delayed
+  // authoritative record belongs to the same occurrence and must not reopen it.
+  const issueAt = Number(issue.observedAt) || 0;
+  const acknowledgedAt = Number(ack.at) || 0;
+  return issueAt > acknowledgedAt;
 }
 
 module.exports = {

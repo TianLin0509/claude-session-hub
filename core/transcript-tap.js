@@ -35,6 +35,7 @@ const {
 const { JsonlTail } = require('./jsonl-tail.js');
 const {
   codexAgentMessageEventFromRecord,
+  codexTaskErrorEventFromRecord,
   codexTurnIdFromPayload,
   codexUserMessageEventFromRecord,
   timestampToMs,
@@ -979,6 +980,8 @@ class CodexTap extends EventEmitter {
   async _bindRolloutToHubSession(hubSessionId, rolloutPath, expectedCodexSid = null) {
     const existing = this._bound.get(hubSessionId);
     if (existing) return existing.rolloutPath === rolloutPath;
+    const pending = this._pending.get(hubSessionId);
+    const liveBoundaryAt = Number(pending && pending.spawnTime) || Date.now();
     const meta = readCodexRolloutMeta(rolloutPath);
     if (!isCodexTopLevelRolloutMeta(meta)) {
       this._seen.add(rolloutPath);
@@ -1057,6 +1060,32 @@ class CodexTap extends EventEmitter {
       if (!entry) return;
       const eventType = obj.payload.type;
       const eventTurnId = codexTurnIdFromPayload(obj.payload);
+
+      const taskError = codexTaskErrorEventFromRecord(obj);
+      if (taskError) {
+        // JsonlTail hydrates a bounded historical suffix on bind. Old failures
+        // are transcript history, not new notifications; only errors at/after
+        // this Hub registration belong to the live lifecycle. Keep a small
+        // clock/bind grace so an immediate failure written just before fs.watch
+        // attaches is not lost.
+        if (taskError.completedAt && taskError.completedAt + 5000 < entry._liveBoundaryAt) return;
+        if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
+        entry._pendingEmitTimer = null;
+        entry._pendingText = null;
+        entry._pendingDurationMs = null;
+        entry._pendingCompletedAt = null;
+        entry._pendingTurnId = null;
+        entry._pendingSignalSource = null;
+        if (entry._lastErrorOccurrenceId !== taskError.occurrenceId) {
+          entry._lastErrorOccurrenceId = taskError.occurrenceId;
+          this.emit('turn-error', {
+            hubSessionId,
+            transcriptPath: entry.rolloutPath,
+            ...taskError,
+          });
+        }
+        return;
+      }
 
       // T13: token_count 事件含 last_token_usage（本轮）+ total_token_usage（累计）
       //   Codex 一个 turn 内可能写多次 token_count（每个 task 完成都写），last_token_usage 是
@@ -1193,6 +1222,7 @@ class CodexTap extends EventEmitter {
       _pendingCompletedAt: null, _pendingTurnId: null, _currentTurnId: null,
       _pendingSignalSource: null,
       _lastPromptSig: null, _lastStartSig: null, _lastAbortSig: null,
+      _lastErrorOccurrenceId: null, _liveBoundaryAt: liveBoundaryAt,
     });
     await tail.start();
     return true;
@@ -1631,6 +1661,7 @@ class TranscriptTap extends EventEmitter {
       b.on('turn-complete', (ev) => this.emit('turn-complete', ev));
       b.on('turn-started', (ev) => this.emit('turn-started', ev));
       b.on('turn-aborted', (ev) => this.emit('turn-aborted', ev));
+      b.on('turn-error', (ev) => this.emit('turn-error', ev));
       b.on('session-bound', (ev) => this.emit('session-bound', ev));
       b.on('prompt-submitted', (ev) => this.emit('prompt-submitted', ev));
       b.on('background-work-changed', (ev) => this.emit('background-work-changed', ev));
