@@ -1699,10 +1699,14 @@ const chatgptBridgeController = createChatgptBridgeController({
   window,
   ipcRenderer,
   getActiveSessionId: () => activeSessionId,
-  getLatestAssistantText: () => {
+  getLatestAssistantText: async () => {
     const cards = [...document.querySelectorAll('#msg-overlay > .turn-card:not(.user)')];
     const card = cards[cards.length - 1];
-    return card ? extractVisibleCardText(card.querySelector('.turn-body')) : '';
+    const visibleText = card ? extractVisibleCardText(card.querySelector('.turn-body')) : '';
+    if (visibleText.trim()) return visibleText;
+    if (!activeSessionId) return '';
+    const transcriptText = await ipcRenderer.invoke('get-last-assistant-text', activeSessionId);
+    return typeof transcriptText === 'string' ? transcriptText : '';
   },
 });
 chatgptBridgeController.init();

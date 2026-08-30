@@ -113,7 +113,8 @@ function createChatgptBridgeController(options = {}) {
   async function pushLatest() {
     if (pushButton) pushButton.disabled = true;
     try {
-      return await pushText(getLatestAssistantText(), '最近一条 AI 回答');
+      const latest = await Promise.resolve(getLatestAssistantText());
+      return await pushText(latest, '最近一条 AI 回答');
     } finally {
       if (pushButton) pushButton.disabled = false;
     }

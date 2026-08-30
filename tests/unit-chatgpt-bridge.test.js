@@ -162,7 +162,7 @@ test('renderer controller exposes one-click pull and latest-answer push', async 
       },
     },
     getActiveSessionId: () => 's1',
-    getLatestAssistantText: () => '最近回答',
+    getLatestAssistantText: async () => '最近回答',
   });
   assert.equal(controller.init(), true);
   await pull._listeners.click();
@@ -225,6 +225,8 @@ test('Hub UI exposes bridge buttons, card action, path action, and terminal sele
   assert.match(css, /\.chatgpt-bridge-actions\s*\{[\s\S]*?display:\s*inline-flex/);
   assert.match(renderer, /getElementById\('chatgpt-bridge-actions'\)/,
     'terminal panel rebuild must preserve the always-visible bridge toolbar');
+  assert.match(renderer, /ipcRenderer\.invoke\('get-last-assistant-text', activeSessionId\)/,
+    'PTY view must fall back to the current session transcript for latest-answer push');
   assert.match(html, /data-action="sync-chatgpt"[^>]*>同步选中文字到公司 ChatGPT/);
   assert.match(html, /data-action="sync-chatgpt"[^>]*>同步内容到公司 ChatGPT/);
   assert.match(card, /data-action="sync-chatgpt" title="同步此回答到公司 ChatGPT"/);
