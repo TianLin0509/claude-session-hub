@@ -110,7 +110,7 @@ test('renderer 必须在 selectSession 里按会话恢复视图，并且恢复�
   const src = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   assert.match(src, /const targetView = viewModeForSession\(id\);/,
     'selectSession 必须先算出该会话的视图');
-  assert.match(src, /applyViewMode\(targetView, \{ remember: false \}\);/,
+  assert.match(src, /applyViewMode\(targetView, \{ remember: false, skipPreviousCardCapture: switching \}\);/,
     '恢复视图是回放而不是用户偏好，不能写回记忆');
   assert.match(src, /const shouldFocusTerminal = switching \|\| targetView === 'pty';/,
     '卡片视图下不该抢终端焦点');

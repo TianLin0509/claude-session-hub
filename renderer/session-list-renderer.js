@@ -338,8 +338,10 @@ function _sessionWarningText(session) {
   // navigation intent on the stable list container and finish it on pointer-up.
   const POINTER_NAV_MAX_MOVE_PX = 8;
   const POINTER_CLICK_SUPPRESS_MS = 750;
+  const POINTER_REPEAT_INTENT_MS = 500;
   let pendingPointerNavigation = null;
-  let lastPointerNavigation = null;
+  let lastPointerNavigationAt = 0;
+  let lastPointerActivation = null;
 
   function navigationIntentFromTarget(target) {
     if (!target || typeof target.closest !== 'function') return null;
@@ -377,13 +379,25 @@ function _sessionWarningText(session) {
 
   sessionListEl.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
-    const intent = navigationIntentFromTarget(event.target);
+    const rawIntent = navigationIntentFromTarget(event.target);
+    const now = Date.now();
+    const x = Number(event.clientX) || 0;
+    const y = Number(event.clientY) || 0;
+    // A first click can immediately reorder the selected/resuming row. The
+    // second half of a physical double-click then lands on whatever row moved
+    // into the old coordinates, even though the user's intent did not change.
+    // Keep the first intent for a same-position repeat inside the native
+    // double-click window; a deliberate click elsewhere still uses its row.
+    const repeatedAtSamePoint = lastPointerActivation
+      && now - lastPointerActivation.at <= POINTER_REPEAT_INTENT_MS
+      && Math.hypot(x - lastPointerActivation.x, y - lastPointerActivation.y) <= POINTER_NAV_MAX_MOVE_PX;
+    const intent = rawIntent && repeatedAtSamePoint ? lastPointerActivation.intent : rawIntent;
     if (!intent || !intent.id) return;
     pendingPointerNavigation = {
       intent,
       pointerId: event.pointerId,
-      x: Number(event.clientX) || 0,
-      y: Number(event.clientY) || 0,
+      x,
+      y,
     };
     try { sessionListEl.setPointerCapture?.(event.pointerId); } catch {}
   });
@@ -397,8 +411,14 @@ function _sessionWarningText(session) {
       (Number(event.clientX) || 0) - pending.x,
       (Number(event.clientY) || 0) - pending.y,
     );
-    lastPointerNavigation = { intent: pending.intent, at: Date.now() };
+    lastPointerNavigationAt = Date.now();
     if (moved > POINTER_NAV_MAX_MOVE_PX) return;
+    lastPointerActivation = {
+      intent: pending.intent,
+      x: pending.x,
+      y: pending.y,
+      at: Date.now(),
+    };
     event.preventDefault();
     event.stopPropagation();
     activateNavigationIntent(pending.intent);
@@ -420,10 +440,9 @@ function _sessionWarningText(session) {
     // the captured intent, so suppress any immediately following mouse click,
     // not only one whose new DOM target happens to have the same id. Keyboard
     // and programmatic activation use detail=0 and remain available.
-    const duplicate = lastPointerNavigation
+    const duplicate = lastPointerNavigationAt > 0
       && event.detail !== 0
-      && Date.now() - lastPointerNavigation.at <= POINTER_CLICK_SUPPRESS_MS;
-    lastPointerNavigation = null;
+      && Date.now() - lastPointerNavigationAt <= POINTER_CLICK_SUPPRESS_MS;
     event.preventDefault();
     event.stopPropagation();
     if (!duplicate) activateNavigationIntent(intent);

@@ -124,6 +124,14 @@ async function readStatus(client) {
         );
         return hit === root || root.contains(hit);
       })(),
+      statusHitStack: statusRect ? document.elementsFromPoint(
+        statusRect.left + statusRect.width / 2,
+        statusRect.top + statusRect.height / 2,
+      ).slice(0, 6).map(element => ({
+        tag: element.tagName,
+        id: element.id || '',
+        className: typeof element.className === 'string' ? element.className : '',
+      })) : [],
       sidebarState: sidebarItem?.dataset.runtimeState || null,
       sidebarSource: sidebarItem?.dataset.runtimeSource || null,
       sidebarConfidence: sidebarItem?.dataset.runtimeConfidence || null,
@@ -181,6 +189,7 @@ async function main() {
     );
     await client.send('Page.enable');
     await client.send('Runtime.enable');
+    await client.send('Page.bringToFront');
     await setViewport(client, 1440, 900);
     await waitFor('renderer shell', () => client.eval('!!(window.__hubE2E && window.LaunchCenter)'));
     await client.eval(`(() => {
@@ -293,6 +302,71 @@ async function main() {
     assert.match(result.newPromptPlacement.inlineParentTurnId || '', /^pending-user-/);
     await screenshot(client, NEW_PROMPT_SHOT);
 
+    result.promptStress = await client.eval(`(async () => {
+      const sessionId = 'card-runtime-status-e2e';
+      const overlay = document.getElementById('msg-overlay');
+      const startedAt = performance.now();
+      let maxBottomGap = 0;
+      for (let index = 0; index < 25; index += 1) {
+        overlay.scrollTop = 0;
+        mountOptimisticUserCard(sessionId, '压力问题 ' + index, 'codex');
+        // Force layout without awaiting requestAnimationFrame: hidden Electron
+        // windows throttle rAF to roughly 1 Hz, which measures background-tab
+        // policy rather than the visible user interaction being tested here.
+        void overlay.offsetHeight;
+        maxBottomGap = Math.max(maxBottomGap,
+          Math.max(0, overlay.scrollHeight - overlay.scrollTop - overlay.clientHeight));
+      }
+      for (let index = 0; index < 20; index += 1) {
+        applyViewMode(index % 2 === 0 ? 'pty' : 'card');
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      applyViewMode('card');
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const cards = Array.from(overlay.querySelectorAll('.turn-card[data-optimistic="true"]'));
+      const latest = cards[cards.length - 1] || null;
+      const rect = latest && latest.getBoundingClientRect();
+      const overlayRect = overlay.getBoundingClientRect();
+      return {
+        iterations: 25,
+        viewToggles: 20,
+        elapsedMs: performance.now() - startedAt,
+        maxBottomGap,
+        finalBottomGap: Math.max(0, overlay.scrollHeight - overlay.scrollTop - overlay.clientHeight),
+        optimisticCards: cards.length,
+        latestText: latest?.innerText || '',
+        latestVisible: !!rect && rect.bottom <= overlayRect.bottom + 1 && rect.bottom >= overlayRect.top,
+        latestRect: rect ? { top: rect.top, bottom: rect.bottom, height: rect.height } : null,
+        overlayRect: { top: overlayRect.top, bottom: overlayRect.bottom, height: overlayRect.height },
+        footerCount: document.querySelectorAll('#card-session-status').length,
+        footerVisible: getComputedStyle(document.getElementById('card-session-status')).display !== 'none',
+        cardMode: document.getElementById('terminal-panel').classList.contains('card-view-active'),
+      };
+    })()`);
+    assert.equal(result.promptStress.iterations, 25);
+    assert.equal(result.promptStress.optimisticCards >= 25, true);
+    assert.match(result.promptStress.latestText, /压力问题 24/);
+    assert.equal(result.promptStress.latestVisible, true, JSON.stringify(result.promptStress));
+    assert.ok(result.promptStress.maxBottomGap <= 1, `prompt stress max gap ${result.promptStress.maxBottomGap}`);
+    assert.ok(result.promptStress.finalBottomGap <= 1, `prompt stress final gap ${result.promptStress.finalBottomGap}`);
+    assert.equal(result.promptStress.footerCount, 1);
+    assert.equal(result.promptStress.footerVisible, true);
+    assert.equal(result.promptStress.cardMode, true);
+    assert.ok(result.promptStress.elapsedMs < 10000, `prompt/view stress took ${result.promptStress.elapsedMs}ms`);
+    result.scrollIntentStress = await client.eval(`(async () => {
+      const overlay = document.getElementById('msg-overlay');
+      overlay.scrollTop = 120;
+      const before = overlay.scrollTop;
+      applyViewMode('pty');
+      applyViewMode('card');
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const after = overlay.scrollTop;
+      overlay.scrollTop = overlay.scrollHeight;
+      return { before, after };
+    })()`);
+    assert.ok(Math.abs(result.scrollIntentStress.after - result.scrollIntentStress.before) <= 1,
+      `scrolled-up reader moved from ${result.scrollIntentStress.before} to ${result.scrollIntentStress.after}`);
+
     await client.eval(`(() => {
       const session = sessions.get('card-runtime-status-e2e');
       session.status = 'idle';
@@ -361,8 +435,9 @@ async function main() {
     assert.ok(result.compact.headerScrollWidth <= result.compact.headerClientWidth + 1, JSON.stringify(result.compact));
     assert.equal(result.compact.statusVisible, true);
     assert.equal(result.compact.statusInsidePanel, true);
-    assert.equal(result.compact.statusTopmost, true, JSON.stringify(result.compact.rects));
+    assert.doesNotMatch(result.compact.footerText, /·\s*$/);
     await screenshot(client, COMPACT_SHOT);
+    assert.equal(result.compact.statusTopmost, true, JSON.stringify({ rects: result.compact.rects, hits: result.compact.statusHitStack }));
 
     await setViewport(client, 1440, 900);
     await client.eval(`(() => {

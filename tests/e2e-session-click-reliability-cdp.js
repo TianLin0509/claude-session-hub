@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { connectFirstPage } = require('./helpers/cdp-client.js');
-const { gracefulQuit, launchIsolatedHub } = require('./helpers/hub-launcher.js');
+const { gracefulQuit, launchIsolatedHub, _waitMs } = require('./helpers/hub-launcher.js');
 
 const ROOT = path.resolve(__dirname, '..');
 const RUN_ID = `${process.pid}-${Date.now()}`;
@@ -15,6 +15,7 @@ const SCREENSHOT = path.join(ROOT, 'output', 'playwright', 'session-click-reliab
 const CDP_PORT = Number(process.env.HUB_SESSION_CLICK_E2E_PORT || (19820 + (process.pid % 100)));
 
 async function physicalClickWithSidebarRebuild(client, sessionId, attribute = 'data-session-id') {
+  await client.send('Page.bringToFront');
   const point = await client.eval(`(() => {
     const row = document.querySelector('[${attribute}="${sessionId}"]');
     if (!row) return null;
@@ -36,6 +37,17 @@ async function physicalClickWithSidebarRebuild(client, sessionId, attribute = 'd
   return releasedAt;
 }
 
+async function waitForRenderer(client, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      if (await client.eval('!!(window.__hubE2E && window.__hubE2E.clearSessions)')) return;
+    } catch {}
+    await _waitMs(100);
+  }
+  throw new Error('renderer E2E bridge did not become ready');
+}
+
 (async () => {
   fs.mkdirSync(path.dirname(SCREENSHOT), { recursive: true });
   let hub = null;
@@ -45,7 +57,10 @@ async function physicalClickWithSidebarRebuild(client, sessionId, attribute = 'd
       dataDir: DATA_DIR,
       port: CDP_PORT,
       label: 'session-click-reliability',
-      windowMode: 'hidden',
+      // Navigation latency must be measured in a visible foreground renderer.
+      // Chromium deliberately throttles hidden-window rAF/compositor work,
+      // which turns xterm surface recovery into a background-policy benchmark.
+      windowMode: 'visible',
       extraEnv: {
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_HOME_DIR: path.join(path.dirname(DATA_DIR), 'home'),
@@ -53,6 +68,7 @@ async function physicalClickWithSidebarRebuild(client, sessionId, attribute = 'd
       },
     });
     client = await connectFirstPage(hub, target => target.type === 'page' && /renderer[\\/]index\.html/.test(target.url || ''));
+    await waitForRenderer(client);
     await client.send('Emulation.setDeviceMetricsOverride', {
       width: 1365, height: 900, deviceScaleFactor: 1, mobile: false,
     });
@@ -93,12 +109,58 @@ async function physicalClickWithSidebarRebuild(client, sessionId, attribute = 'd
     assert.equal(clicked.selected, 'click-b');
     assert.ok(clicked.activationDelayMs < 500, `navigation feedback took ${clicked.activationDelayMs}ms`);
 
+    // Sustained real-pointer pressure: every activation rebuilds all 700+ rows
+    // between down/up, matching the production race instead of calling
+    // selectSession directly. Alternate two stable rows so this also catches a
+    // delayed compatibility click stealing the next activation.
+    const navigationStress = { iterations: 12, failures: [], delaysMs: [], maxActivationDelayMs: 0 };
+    for (let index = 0; index < navigationStress.iterations; index += 1) {
+      const targetId = index % 2 === 0 ? 'click-a' : 'click-b';
+      const stressReleasedAt = await physicalClickWithSidebarRebuild(client, targetId);
+      const observed = await client.eval(`(async () => {
+        const deadline = Date.now() + 1200;
+        while (activeSessionId !== ${JSON.stringify(targetId)} && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        return {
+          activeSessionId,
+          selected:document.querySelector('#session-list .session-item.selected')?.dataset.sessionId || null,
+          delayMs:Date.now() - ${stressReleasedAt},
+        };
+      })()`);
+      navigationStress.delaysMs.push(observed.delayMs);
+      navigationStress.maxActivationDelayMs = Math.max(navigationStress.maxActivationDelayMs, observed.delayMs);
+      if (observed.activeSessionId !== targetId || observed.selected !== targetId) {
+        navigationStress.failures.push({ index, targetId, observed });
+      }
+      // A fast human rhythm, while still leaving one paint opportunity between
+      // clicks so this remains a UI stress test rather than an artificial CDP
+      // command-queue benchmark.
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    const sortedStressDelays = navigationStress.delaysMs.slice().sort((a, b) => a - b);
+    navigationStress.p95ActivationDelayMs = sortedStressDelays[Math.floor((sortedStressDelays.length - 1) * 0.95)] || 0;
+    assert.deepEqual(navigationStress.failures, []);
+    assert.ok(navigationStress.p95ActivationDelayMs < 500,
+      `stress navigation p95 took ${navigationStress.p95ActivationDelayMs}ms`);
+    assert.ok(navigationStress.maxActivationDelayMs < 2500,
+      `stress navigation max took ${navigationStress.maxActivationDelayMs}ms`);
+    navigationStress.settleMs = 500;
+    await new Promise(resolve => setTimeout(resolve, navigationStress.settleMs));
+
     const meetingSetup = await client.eval(`(() => {
       const now = Date.now();
       const meetingId = 'click-meeting';
       const subSessions = ['click-meeting-claude', 'click-meeting-codex'];
       window.__hubE2E.addFakeSessions([
-        { id:subSessions[0], title:'Meeting Claude', kind:'claude', status:'idle', meetingId, lastMessageTime:now },
+        {
+          id:subSessions[0], title:'Meeting Claude', kind:'claude', status:'error', meetingId, lastMessageTime:now,
+          lastError:'stream disconnected before completion: ECONNRESET',
+          connectionIssue:{
+            type:'stream-disconnected', message:'stream disconnected before completion: ECONNRESET',
+            signature:'stream disconnected before completion: econnreset', observedAt:now - 1000,
+          },
+        },
         { id:subSessions[1], title:'Meeting Codex', kind:'codex', status:'idle', meetingId, lastMessageTime:now },
       ]);
       meetings[meetingId] = {
@@ -113,23 +175,43 @@ async function physicalClickWithSidebarRebuild(client, sessionId, attribute = 'd
     const meetingReleasedAt = await physicalClickWithSidebarRebuild(client, meetingSetup.meetingId, 'data-meeting-id');
     const meetingClicked = await client.eval(`(async () => {
       const deadline = Date.now() + 1200;
-      while (activeMeetingId !== 'click-meeting' && Date.now() < deadline) {
+      let activationDelayMs = null;
+      while (Date.now() < deadline) {
+        const row = document.querySelector('[data-meeting-id="click-meeting"]');
+        if (activeMeetingId === 'click-meeting' && row?.classList.contains('selected')) {
+          activationDelayMs = Date.now() - ${meetingReleasedAt};
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      const panelDeadline = Date.now() + 3000;
+      while (document.getElementById('meeting-room-panel')?.style.display === 'none'
+          && Date.now() < panelDeadline) {
         await new Promise(resolve => setTimeout(resolve, 20));
       }
       const row = document.querySelector('[data-meeting-id="click-meeting"]');
+      const failedChild = sessions.get('click-meeting-claude');
       return {
         activeMeetingId,
         activeSessionId,
         selected:row?.classList.contains('selected') || false,
-        activationDelayMs:Date.now() - ${meetingReleasedAt},
+        activationDelayMs,
+        panelReadyDelayMs:Date.now() - ${meetingReleasedAt},
         panelVisible:document.getElementById('meeting-room-panel')?.style.display !== 'none',
+        failedChildIssue:failedChild?.connectionIssue || null,
+        failedChildAck:failedChild?._connectionIssueAck || null,
+        failedChildRuntime:failedChild ? getSessionRuntimeTruth(failedChild).state : null,
       };
     })()`);
     assert.equal(meetingClicked.activeMeetingId, 'click-meeting');
     assert.equal(meetingClicked.activeSessionId, null);
     assert.equal(meetingClicked.selected, true);
     assert.equal(meetingClicked.panelVisible, true);
+    assert.equal(meetingClicked.failedChildIssue, null);
+    assert.equal(meetingClicked.failedChildAck?.signature, 'stream disconnected before completion: econnreset');
+    assert.equal(meetingClicked.failedChildRuntime, 'idle');
     assert.ok(meetingClicked.activationDelayMs < 500, `meeting navigation feedback took ${meetingClicked.activationDelayMs}ms`);
+    assert.ok(meetingClicked.panelReadyDelayMs < 3000, `meeting panel took ${meetingClicked.panelReadyDelayMs}ms`);
 
     const dormantSetup = await client.eval(`(() => {
       const originalInvoke = ipcRenderer.invoke;
@@ -145,6 +227,10 @@ async function physicalClickWithSidebarRebuild(client, sessionId, attribute = 'd
       window.__hubE2E.addFakeSession({
         id:'dormant-click', title:'Dormant click target', kind:'codex', status:'dormant',
         codexSid:'019faaaa-0000-7000-8000-000000000123', lastMessageTime:Date.now() + 100,
+        connectionIssue:{
+          type:'stream-disconnected', message:'stream disconnected before completion: ECONNRESET',
+          signature:'stream disconnected before completion: econnreset', observedAt:Date.now() - 1000,
+        },
       });
       return { patched:ipcRenderer.invoke === delayedInvoke };
     })()`);
@@ -161,6 +247,8 @@ async function physicalClickWithSidebarRebuild(client, sessionId, attribute = 'd
         rowText:row?.innerText || '',
         panelText:panel?.innerText || '',
         pendingCount:_pendingDormantResumes.size,
+        issue:sessions.get('dormant-click')?.connectionIssue || null,
+        issueAck:sessions.get('dormant-click')?._connectionIssueAck || null,
       };
     })()`);
     assert.equal(dormantPending.activeSessionId, 'dormant-click');
@@ -169,11 +257,13 @@ async function physicalClickWithSidebarRebuild(client, sessionId, attribute = 'd
     assert.match(dormantPending.rowText, /唤醒中/);
     assert.match(dormantPending.panelText, /正在唤醒会话/);
     assert.equal(dormantPending.pendingCount, 1);
+    assert.equal(dormantPending.issue, null);
+    assert.equal(dormantPending.issueAck?.signature, 'stream disconnected before completion: econnreset');
 
     const shot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(SCREENSHOT, Buffer.from(shot.data, 'base64'));
     console.log(JSON.stringify({
-      ok: true, releasedAt, setup, clicked, meetingClicked, dormantPending, screenshot: SCREENSHOT, pid: hub.pid,
+      ok: true, releasedAt, setup, clicked, navigationStress, meetingClicked, dormantPending, screenshot: SCREENSHOT, pid: hub.pid,
     }, null, 2));
   } finally {
     if (client) await client.close().catch(() => {});

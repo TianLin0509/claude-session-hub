@@ -968,7 +968,36 @@ async function selectMeeting(meetingId, opts = {}) {
   if (meeting) {
     meeting.unreadCount = 0;
     if (meeting.unreadAnswered instanceof Set) meeting.unreadAnswered.clear();
+    let acknowledgedFailure = false;
+    for (const sid of meeting.subSessions || []) {
+      acknowledgedFailure = acknowledgeSessionFailureState(sid, { render: false }) || acknowledgedFailure;
+    }
+    if (acknowledgedFailure) schedulePersist();
   }
+  paintSidebarActiveTarget({ meetingId });
+  scheduleSessionListRender();
+  // Opening a large room rebuilds the complete meeting surface and can take a
+  // noticeable frame after a long run of terminal switches. Yield once after
+  // painting the selected row so the first click always produces visible
+  // feedback. The bounded timer keeps programmatic/background navigation from
+  // waiting on Chromium's throttled rAF.
+  await new Promise(resolve => {
+    let settled = false;
+    let paintTimer = null;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(fallbackTimer);
+      if (paintTimer) clearTimeout(paintTimer);
+      resolve();
+    };
+    const fallbackTimer = setTimeout(done, 50);
+    // A promise resolved directly inside rAF continues in a microtask before
+    // Chromium paints. Hop through a zero-delay task so the selected row is
+    // actually composited before room construction starts.
+    requestAnimationFrame(() => { paintTimer = setTimeout(done, 0); });
+  });
+  if (activeMeetingId !== meetingId || activeSessionId !== null) return;
   if (meeting && typeof MeetingRoom !== 'undefined') {
     if (meeting.status === 'dormant') {
       meeting.status = 'idle';
@@ -997,8 +1026,6 @@ async function selectMeeting(meetingId, opts = {}) {
     });
   }
 
-  paintSidebarActiveTarget({ meetingId });
-  scheduleSessionListRender();
   await restorePreviewForContext(`meeting:${meetingId}`);
 }
 
@@ -2598,6 +2625,8 @@ document.addEventListener('click', (e) => {
 // === Spec 1 v0.9.0 · 视图切换 ===
 // 默认 PTY（卡片视图作为可选第二视图，不破坏 PTY 主流程）— 2026-05-04 用户反馈
 let currentView = 'pty'; // 'card' | 'pty'
+let _cardViewBottomRestoreRaf = null;
+const _cardOverlayFollowBottomBySession = new Map();
 
 // 2026-08-27：卡片/PTY 原来只有 currentView 这一个全局值，selectSession 又从不
 // 调 applyViewMode，于是在 A 会话切到卡片、再点开 B 会话，B 也跟着变成卡片——
@@ -2608,6 +2637,7 @@ function rememberViewModeForSession(sessionId, mode) {
   if (rememberViewMode(cardViewSessions, sessionId, mode)) writeCardViewSessions(localStorage, cardViewSessions);
 }
 function forgetViewModeForSession(sessionId) {
+  _cardOverlayFollowBottomBySession.delete(sessionId);
   if (forgetViewMode(cardViewSessions, sessionId)) writeCardViewSessions(localStorage, cardViewSessions);
 }
 let _terminalRuntimeStatusTicker = null;
@@ -2898,11 +2928,20 @@ function _updateStreamingIndicator(sessionId) {
 
 // remember=false 用于「按会话恢复视图」这种回放场景：那不是用户在表达偏好，
 // 不该反过来覆盖记忆。用户点切换按钮走默认的 remember=true。
-function applyViewMode(mode, { remember = true } = {}) {
+function applyViewMode(mode, { remember = true, skipPreviousCardCapture = false } = {}) {
+  const previousView = currentView;
+  const overlay = document.getElementById('msg-overlay');
+  if (mode !== 'card' && _cardViewBottomRestoreRaf) {
+    cancelAnimationFrame(_cardViewBottomRestoreRaf);
+    _cardViewBottomRestoreRaf = null;
+  }
+  if (overlay && activeSessionId && !skipPreviousCardCapture
+      && previousView === 'card' && mode !== 'card') {
+    _cardOverlayFollowBottomBySession.set(activeSessionId, _isCardOverlayAtBottom(overlay));
+  }
   currentView = mode;
   if (remember) rememberViewModeForSession(activeSessionId, mode);
   if (terminalPanelEl) terminalPanelEl.classList.toggle('card-view-active', mode === 'card');
-  const overlay = document.getElementById('msg-overlay');
   if (overlay) overlay.classList.toggle('hidden', mode !== 'card');
   cardQuestionNavigator.refresh();
   recentTurnCopyController.setVisible(mode === 'card' && !!activeSessionId);
@@ -2935,6 +2974,22 @@ function applyViewMode(mode, { remember = true } = {}) {
     _updateStreamingIndicator(activeSessionId);
   }
   updateFloatingBarState();
+  if (overlay && mode === 'card' && previousView !== 'card'
+      && _cardOverlayFollowBottomBySession.get(activeSessionId) === true) {
+    // updateFloatingBarState re-enables the 31px card footer. That shrinks the
+    // message viewport after the old scrollTop was restored and otherwise
+    // leaves the newest question partially behind the footer. Preserve user
+    // intent: only re-pin when they were already following the bottom before
+    // leaving card view; a reader who scrolled up stays exactly where they were.
+    const pinBottom = () => { overlay.scrollTop = overlay.scrollHeight; };
+    const restoreSessionId = activeSessionId;
+    pinBottom();
+    if (_cardViewBottomRestoreRaf) cancelAnimationFrame(_cardViewBottomRestoreRaf);
+    _cardViewBottomRestoreRaf = requestAnimationFrame(() => {
+      _cardViewBottomRestoreRaf = null;
+      if (currentView === 'card' && activeSessionId === restoreSessionId) pinBottom();
+    });
+  }
 }
 
 function clearRuntimeTruthExpiryTimer(sessionId) {
@@ -3436,7 +3491,7 @@ function updateCardSessionStatus(session) {
   parts.forEach(([key, value], index) => {
     if (index > 0) {
       const separator = document.createElement('span');
-      separator.className = 'card-session-status-sep';
+      separator.className = `card-session-status-sep card-session-status-sep-before-${key}`;
       separator.textContent = '·';
       element.appendChild(separator);
     }
@@ -3727,6 +3782,12 @@ async function selectSession(id, opts = {}) {
   const session = sessions.get(id);
   if (!session) return;
   const switching = activeSessionId !== id;
+  if (switching && activeSessionId && currentView === 'card') {
+    const previousOverlay = document.getElementById('msg-overlay');
+    if (previousOverlay) {
+      _cardOverlayFollowBottomBySession.set(activeSessionId, _isCardOverlayAtBottom(previousOverlay));
+    }
+  }
   const cachedBeforeSelect = terminalCache.get(id);
   const requestedBottomPin = opts && opts.forceScrollBottom === true;
   // 左侧栏的显式“跳到最新”适用于所有 CLI；Codex 仍保留首次打开自动置底，
@@ -3738,7 +3799,7 @@ async function selectSession(id, opts = {}) {
   const targetView = viewModeForSession(id);
   const shouldFocusTerminal = switching || targetView === 'pty';
   activeSessionId = id;
-  applyViewMode(targetView, { remember: false });
+  applyViewMode(targetView, { remember: false, skipPreviousCardCapture: switching });
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
   recentTurnCopyController.setVisible(currentView === 'card' && !!activeSessionId);
   paintSidebarActiveTarget({ sessionId: id });
@@ -3748,6 +3809,12 @@ async function selectSession(id, opts = {}) {
   // Still switch selection and paint a pending surface immediately so a real
   // CLI restart never looks like a dropped click.
   if (session.status === 'dormant') {
+    // A dormant row can still carry the last run's disconnect alert. Record it
+    // as read before resume replaces the dormant object; otherwise the first
+    // full-screen repaint can replay the old error without an acknowledgement
+    // signature and put the session straight back under “运行异常”.
+    const acknowledgedFailure = acknowledgeSessionFailureState(session, { render: false });
+    if (acknowledgedFailure) schedulePersist();
     session._resumePending = true;
     paintSidebarResumePending(id, true);
     ipcRenderer.send('focus-session', { sessionId: null });

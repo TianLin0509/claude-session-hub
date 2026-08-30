@@ -24,6 +24,10 @@ test('Beijing clock is fixed UTC+8 and independent of host timezone', () => {
   assert.equal(beijingDateKey(ts), '2026-08-30');
 });
 
+test('ISO timestamps use the same Beijing conversion as epoch milliseconds', () => {
+  assert.equal(formatBeijingDateTime('2020-01-01T00:00:00.000Z'), '2020-01-01 08:00:00');
+});
+
 test('Beijing wall-clock conversion handles day rollover', () => {
   const epoch = beijingEpoch({ year: 2026, month: 8, day: 31, hour: 0, minute: 5 });
   assert.equal(new Date(epoch).toISOString(), '2026-08-30T16:05:00.000Z');

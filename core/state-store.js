@@ -16,7 +16,7 @@ const CURRENT_VERSION = 1;
 //   - 每条 session/meeting 加 updatedAt（毫秒），merge 时 LWW 仲裁。
 //   - 删除靠显式 _removedSessionIds/_removedMeetingIds set（main.js 持续 push），
 //     不依赖"内存里没有 = 已删除"，避免某 Hub 启动时把别 Hub 的进展抹掉。
-//   - 锁拿不到（极端 IO 阻塞）走 fallback 直写，保证 Hub 不卡死。
+//   - 锁拿不到时拒绝无锁直写；Windows 原子替换的瞬时 EPERM 则在持锁期内有界重试。
 
 const _removedSessionIds = new Set();
 const _removedMeetingIds = new Set();
@@ -241,7 +241,7 @@ function _writeMergedToDisk(state) {
   const tmp = `${STATE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
     fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-    fs.renameSync(tmp, STATE_FILE);
+    _renameWithRetrySync(tmp, STATE_FILE);
   } finally {
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
   }
@@ -252,9 +252,54 @@ async function _writeMergedToDiskAsync(state) {
   const tmp = `${STATE_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
     await fs.promises.writeFile(tmp, JSON.stringify(state, null, 2));
-    await fs.promises.rename(tmp, STATE_FILE);
+    await _renameWithRetryAsync(tmp, STATE_FILE);
   } finally {
     try { await fs.promises.unlink(tmp); } catch {}
+  }
+}
+
+const TRANSIENT_RENAME_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const RENAME_RETRIES = 80;
+const RENAME_RETRY_DELAY_MS = 15;
+const _renameSleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+function _isTransientRenameError(error) {
+  return !!error && TRANSIENT_RENAME_CODES.has(error.code);
+}
+
+function _renameWithRetrySync(source, target, options = {}) {
+  const rename = options.rename || fs.renameSync;
+  const retries = Number.isInteger(options.retries) ? Math.max(0, options.retries) : RENAME_RETRIES;
+  const retryDelayMs = Number.isFinite(options.retryDelayMs)
+    ? Math.max(0, options.retryDelayMs)
+    : RENAME_RETRY_DELAY_MS;
+  const sleep = options.sleep || (ms => { if (ms > 0) Atomics.wait(_renameSleepCell, 0, 0, ms); });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      rename(source, target);
+      return attempt;
+    } catch (error) {
+      if (!_isTransientRenameError(error) || attempt >= retries) throw error;
+      sleep(retryDelayMs);
+    }
+  }
+}
+
+async function _renameWithRetryAsync(source, target, options = {}) {
+  const rename = options.rename || fs.promises.rename.bind(fs.promises);
+  const retries = Number.isInteger(options.retries) ? Math.max(0, options.retries) : RENAME_RETRIES;
+  const retryDelayMs = Number.isFinite(options.retryDelayMs)
+    ? Math.max(0, options.retryDelayMs)
+    : RENAME_RETRY_DELAY_MS;
+  const sleep = options.sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(source, target);
+      return attempt;
+    } catch (error) {
+      if (!_isTransientRenameError(error) || attempt >= retries) throw error;
+      await sleep(retryDelayMs);
+    }
   }
 }
 
@@ -362,4 +407,9 @@ module.exports = {
   STATE_FILE,
   LOCK_FILE,
   CURRENT_VERSION,
+  _private: {
+    _isTransientRenameError,
+    _renameWithRetryAsync,
+    _renameWithRetrySync,
+  },
 };

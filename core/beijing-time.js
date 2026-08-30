@@ -4,8 +4,14 @@ const BEIJING_TIME_ZONE = 'Asia/Shanghai';
 const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 function timestampOf(value) {
-  const numeric = value instanceof Date ? value.getTime() : Number(value);
-  return Number.isFinite(numeric) ? numeric : NaN;
+  if (value instanceof Date) return value.getTime();
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return NaN;
 }
 
 function beijingParts(value = Date.now()) {

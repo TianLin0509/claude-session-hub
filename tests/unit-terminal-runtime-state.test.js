@@ -94,6 +94,22 @@ test('animation confirmation requires a changed strong frame inside a short wind
   assert.ok(expired.candidate);
 });
 
+test('a long static Working repaint storm never becomes confirmed animation', () => {
+  const runtime = classifyTerminalRuntime('codex', [
+    '• Working (25s • esc to interrupt)',
+    '› Ask Codex to do anything',
+    '  gpt-5.6-sol max fast · Context 91% left · C:\\Vibe\\repo',
+  ]);
+  let candidate = null;
+  let observedAt = 1_000;
+  for (let index = 0; index < 10_000; index += 1) {
+    const advanced = advanceRunningAnimationCandidate(candidate, runtime, observedAt);
+    assert.equal(advanced.confirmed, false, `static frame confirmed at iteration ${index}`);
+    candidate = advanced.candidate;
+    observedAt += 250;
+  }
+});
+
 test('Claude animated status row is running while the same persistent footer stays on screen', () => {
   const result = classifyTerminalRuntime('claude', [
     '> Read package.json, then reply with exactly PTY_STATE_DONE.',
