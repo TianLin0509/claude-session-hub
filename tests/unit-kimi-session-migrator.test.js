@@ -122,6 +122,29 @@ test('migration moves the session dir and rewrites all four workDir records', ()
   });
 });
 
+test('copy fallback after Windows EPERM removes the old session directory', () => {
+  withHome((home, root) => {
+    fs.mkdirSync(home, { recursive: true });
+    const sessionId = 'session_eperm_fallback';
+    const from = path.join(root, 'inbox-task');
+    const to = path.join(root, 'archived');
+    fs.mkdirSync(from, { recursive: true });
+    const { sessionDir: oldDir } = seedHome(home, sessionId, from);
+    fs.mkdirSync(to, { recursive: true });
+
+    const originalRenameSync = fs.renameSync;
+    fs.renameSync = () => { throw Object.assign(new Error('simulated Windows lock'), { code: 'EPERM' }); };
+    try {
+      const result = migrateKimiSession({ sessionId, toCwd: to, homeDir: home });
+      assert.strictEqual(result.ok, true, result.reason);
+      assert.strictEqual(fs.existsSync(oldDir), false, 'copy fallback must remove the source directory');
+      assert.strictEqual(fs.existsSync(result.sessionDir), true, 'copied target must remain available');
+    } finally {
+      fs.renameSync = originalRenameSync;
+    }
+  });
+});
+
 test('state.json agent homedirs inside the old session dir are remapped', () => {
   withHome((home, root) => {
     fs.mkdirSync(home, { recursive: true });

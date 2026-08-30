@@ -133,6 +133,15 @@ function migrateKimiSession(opts = {}) {
     } catch (error) {
       if (!['EXDEV', 'EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error;
       fs.cpSync(oldSessionDir, newSessionDir, { recursive: true });
+      try {
+        fs.rmSync(oldSessionDir, { recursive: true, force: true, maxRetries: 60, retryDelay: 50 });
+      } catch (removeError) {
+        // Do not publish a half-migration whose index points at the copy while
+        // the original remains authoritative. Best-effort rollback keeps the
+        // next user retry possible and surfaces the real Windows lock error.
+        try { fs.rmSync(newSessionDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 }); } catch {}
+        throw removeError;
+      }
     }
   } else {
     fs.mkdirSync(newSessionDir, { recursive: true });
