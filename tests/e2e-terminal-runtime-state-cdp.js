@@ -83,6 +83,14 @@ async function capture(client, filePath) {
           },
           _ptyFallbackArmedUntil: 0, lastMessageTime: now - 1600,
         },
+        {
+          id: 'pty-claude-revive', kind: 'claude', title: 'Claude animated repair', status: 'idle',
+          runtimeTruth: {
+            state: 'completed', source: 'pty-claude-input-ready', confidence: 'strong',
+            observedAt: now - 1000, completedAt: now - 1000, sequence: 1,
+          },
+          _ptyFallbackArmedUntil: 0, lastMessageTime: now - 1700,
+        },
       ]);
       const codex = window.__hubE2E.applyTerminalRuntimeFrame('pty-codex', [
         '› Run PowerShell Start-Sleep -Seconds 4, then reply with exactly PTY_STATE_DONE.',
@@ -96,11 +104,26 @@ async function capture(client, filePath) {
         '>',
         '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
       ], now);
-      const repaired = window.__hubE2E.applyTerminalRuntimeFrame('pty-codex-revive', [
+      const repairedFirst = window.__hubE2E.applyTerminalRuntimeFrame('pty-codex-revive', [
         '• Working (2m 01s • esc to interrupt)',
         '› Improve documentation in @filename',
         '  gpt-5.6-sol max fast · Context 69% left · C:\\\\Vibe\\\\repo',
       ], now);
+      const repaired = window.__hubE2E.applyTerminalRuntimeFrame('pty-codex-revive', [
+        '• Working (2m 02s • esc to interrupt)',
+        '› Improve documentation in @filename',
+        '  gpt-5.6-sol max fast · Context 69% left · C:\\\\Vibe\\\\repo',
+      ], now + 500);
+      const claudeRepairedFirst = window.__hubE2E.applyTerminalRuntimeFrame('pty-claude-revive', [
+        '✻ Cultivating… (4s · ↓ 48 tokens)',
+        '>',
+        '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+      ], now);
+      const claudeRepaired = window.__hubE2E.applyTerminalRuntimeFrame('pty-claude-revive', [
+        '✶ Cultivating… (5s · ↓ 52 tokens)',
+        '>',
+        '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+      ], now + 500);
 
       // Exercise the real renderer path instead of the direct classifier test
       // helper above: terminal-data -> xterm -> onTerminalOutput -> delayed
@@ -130,6 +153,23 @@ async function capture(client, filePath) {
         seq: Number(monitoredCache._hydratedSeq || 0) + 100,
       });
       await new Promise(resolve => setTimeout(resolve, 750));
+      const monitoredCandidateSession = sessions.get(monitoredId);
+      const monitoredFirst = {
+        status: monitoredCandidateSession.status,
+        runtime: getSessionRuntimeTruth(monitoredCandidateSession),
+      };
+      const monitoredNextFrame = '\\x1b[2J\\x1b[H' + [
+        '• Running .\\gradlew.bat --no-daemon :app:testDebugUnitTest',
+        '• Working (26s • esc to interrupt)',
+        '› Use /skills to list available skills',
+        '  gpt-5.6-sol max fast · Context 92% left · C:\\\\Vibe\\\\repo',
+      ].join('\\r\\n');
+      ipcRenderer.emit('terminal-data', {}, {
+        sessionId: monitoredId,
+        data: monitoredNextFrame,
+        seq: Number(monitoredCache._hydratedSeq || 0) + 100,
+      });
+      await new Promise(resolve => setTimeout(resolve, 750));
       const monitoredSession = sessions.get(monitoredId);
       const monitored = {
         status: monitoredSession.status,
@@ -144,7 +184,11 @@ async function capture(client, filePath) {
       return {
         codex,
         claude,
+        claudeRepairedFirst,
+        claudeRepaired,
+        repairedFirst,
         repaired,
+        monitoredFirst,
         monitored,
         activeCount: document.getElementById('home-metric-active').textContent,
         runningSidebarText: document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim(),
@@ -157,17 +201,25 @@ async function capture(client, filePath) {
     assert.equal(running.codex.runSource, 'pty-semantic');
     assert.equal(running.claude.runtime.state, 'running');
     assert.equal(running.claude.status, 'running');
+    assert.equal(running.claudeRepairedFirst.status, 'idle');
+    assert.equal(running.claudeRepaired.status, 'running');
+    assert.equal(running.claudeRepaired.runSource, 'pty-semantic');
+    assert.equal(running.repairedFirst.changed, false);
+    assert.equal(running.repairedFirst.status, 'idle');
     assert.equal(running.repaired.status, 'running');
     assert.equal(running.repaired.runSource, 'pty-semantic');
+    assert.equal(running.monitoredFirst.status, 'idle', 'one static Working frame is only a candidate');
+    assert.equal(running.monitoredFirst.runtime.state, 'completed');
     assert.equal(running.monitored.status, 'running');
     assert.equal(running.monitored.runSource, 'pty-semantic');
     assert.equal(running.monitored.agentWorking, 'pty');
     assert.equal(running.monitored.runtime.state, 'running');
-    assert.match(running.monitored.runtime.evidence, /Working \(25s .*esc to interrupt\)/);
-    assert.equal(running.activeCount, '4');
+    assert.match(running.monitored.runtime.evidence, /Working \(26s .*esc to interrupt\)/);
+    assert.equal(running.activeCount, '5');
     assert.equal(running.pipelineAbsent, true);
     assert.match(running.runningSidebarText, /Codex PTY fallback/);
     assert.match(running.runningSidebarText, /Claude hook fallback/);
+    assert.match(running.runningSidebarText, /Claude animated repair/);
     assert.match(running.runningSidebarText, /Codex live-screen repair/);
     assert.match(running.runningSidebarText, /Codex real monitor repair/);
     await capture(client, SCREENSHOT);
@@ -216,6 +268,7 @@ async function capture(client, filePath) {
       };
       sessions.delete('pty-codex-revive');
       sessions.delete('pty-codex-monitor-revive');
+      sessions.delete('pty-claude-revive');
       if (monitoredCache) {
         try { monitoredCache.terminal.dispose(); } catch {}
         terminalCache.delete('pty-codex-monitor-revive');

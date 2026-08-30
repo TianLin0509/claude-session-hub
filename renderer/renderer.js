@@ -69,7 +69,10 @@ const { createTerminalLinkRegistrar } = require('./terminal-link-provider.js');
 const { createPreviewPanelController } = require('./preview-panel-controller.js');
 const { createTerminalActivityMonitor } = require('./terminal-activity-monitor.js');
 const { deriveSessionRuntimeStatus } = require('./session-runtime-status.js');
-const { classifyTerminalRuntime } = require('../core/terminal-runtime-state.js');
+const {
+  advanceRunningAnimationCandidate,
+  classifyTerminalRuntime,
+} = require('../core/terminal-runtime-state.js');
 const {
   appendStreamDisconnectChunk,
   detectStreamDisconnect,
@@ -240,6 +243,10 @@ function clearPtyInputReadyCandidate(session) {
   session._ptyInputReadyCandidate = null;
 }
 
+function clearPtyRunningAnimationCandidate(session) {
+  if (session) session._ptyRunningAnimationCandidate = null;
+}
+
 function schedulePtyInputReadyConfirmation(session, candidate, observedAt) {
   if (!session || !candidate || session._ptyInputReadyTimer) return;
   const delay = Math.max(25, candidate.confirmAt - (Number(observedAt) || Date.now()));
@@ -293,6 +300,7 @@ function armPtyBurstFallback(sessionId, submittedAt = Date.now()) {
   session._ptyRuntimeReason = null;
   session._ptyRuntimeEvidence = null;
   clearPtyInputReadyCandidate(session);
+  clearPtyRunningAnimationCandidate(session);
   if (session._ptyRuntimePendingTimer) clearTimeout(session._ptyRuntimePendingTimer);
   session._ptyRuntimePendingTimer = setTimeout(() => {
     session._ptyRuntimePendingTimer = null;
@@ -308,6 +316,7 @@ function disarmPtyBurstFallback(sessionOrId, settledAt = Date.now()) {
   const session = typeof sessionOrId === 'string' ? sessions.get(sessionOrId) : sessionOrId;
   if (!isAiRuntimeSession(session)) return;
   clearPtyInputReadyCandidate(session);
+  clearPtyRunningAnimationCandidate(session);
   // Delayed transcript/hook delivery may carry an older completion timestamp;
   // cooldown starts when Hub actually observes the transition, not in the past.
   const at = Math.max(Number(settledAt) || 0, Date.now());
@@ -4324,12 +4333,29 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
     // evidence, not generic byte activity. They must be able to repair a
     // prematurely completed status even after the submit fallback was disarmed.
     const strongCurrentScreen = runtime.confidence === CONFIDENCE_STRONG;
-    if (!wasRunning && !fallbackArmed && !strongCurrentScreen) return false;
+    if (!wasRunning && !fallbackArmed && !strongCurrentScreen) {
+      clearPtyRunningAnimationCandidate(session);
+      return false;
+    }
     // A failed turn can leave its last animated frame on screen. Do not erase
     // an authoritative error merely because that stale frame repainted; a new
     // prompt/task_started boundary will make `wasRunning` or `fallbackArmed`
     // true and legitimately allow the next turn through.
-    if (truthBefore.state === RUNTIME_FAILED && !wasRunning && !fallbackArmed) return false;
+    if (truthBefore.state === RUNTIME_FAILED && !wasRunning && !fallbackArmed) {
+      clearPtyRunningAnimationCandidate(session);
+      return false;
+    }
+    if (!wasRunning && !fallbackArmed) {
+      const animation = advanceRunningAnimationCandidate(
+        session._ptyRunningAnimationCandidate,
+        runtime,
+        at,
+      );
+      session._ptyRunningAnimationCandidate = animation.candidate;
+      if (!animation.confirmed) return false;
+    } else {
+      clearPtyRunningAnimationCandidate(session);
+    }
     clearPtyInputReadyCandidate(session);
     session._ptyRuntimeSawRunning = true;
     if (session._ptyRuntimePendingTimer) {
@@ -4364,6 +4390,7 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
     });
     if (transition.applied) changed = true;
   } else if (runtime.state === 'idle' || runtime.state === 'waiting') {
+    clearPtyRunningAnimationCandidate(session);
     // An input-ready frame is the missing-completion escape hatch. It does not
     // fabricate transcript text or unread counts; a delayed authoritative Stop
     // hook/task_complete can still enrich the card afterwards.

@@ -12,6 +12,8 @@ const RUNTIME_RUNNING = 'running';
 const RUNTIME_IDLE = 'idle';
 const RUNTIME_WAITING = 'waiting';
 const RUNTIME_UNKNOWN = 'unknown';
+const RUNNING_ANIMATION_CONFIRM_MIN_MS = 200;
+const RUNNING_ANIMATION_CONFIRM_MAX_MS = 3000;
 
 // Treat only Codex's structured live status row as authoritative running
 // evidence. A prose answer or documentation snippet may quote "esc to
@@ -119,11 +121,60 @@ function classifyTerminalRuntime(kind, lines) {
   return observation(RUNTIME_UNKNOWN, 'unsupported-runtime');
 }
 
+// Confirm that a provider's active status row is actually animating instead of
+// being a static leftover frame. Callers keep the tiny returned candidate on
+// the session object; no polling, screenshots, or scrollback scans are needed.
+function advanceRunningAnimationCandidate(candidate, runtime, observedAt = Date.now()) {
+  const at = Number(observedAt) || Date.now();
+  const reason = String(runtime && runtime.reason || '').trim();
+  const evidence = String(runtime && runtime.evidence || '').trim();
+  const isStrongRunning = runtime
+    && runtime.state === RUNTIME_RUNNING
+    && runtime.confidence === 'strong'
+    && reason
+    && evidence;
+  if (!isStrongRunning) return { confirmed: false, candidate: null };
+
+  const previous = candidate && typeof candidate === 'object' ? candidate : null;
+  const previousAt = Number(previous && previous.firstObservedAt) || 0;
+  const sameAnimation = previous
+    && previous.reason === reason
+    && at >= previousAt
+    && at - previousAt <= RUNNING_ANIMATION_CONFIRM_MAX_MS;
+  if (!sameAnimation) {
+    return {
+      confirmed: false,
+      candidate: {
+        reason,
+        evidence,
+        firstObservedAt: at,
+        lastObservedAt: at,
+      },
+    };
+  }
+
+  const elapsed = at - previousAt;
+  const frameChanged = evidence !== previous.evidence;
+  if (frameChanged && elapsed >= RUNNING_ANIMATION_CONFIRM_MIN_MS) {
+    return { confirmed: true, candidate: null };
+  }
+  return {
+    confirmed: false,
+    candidate: {
+      ...previous,
+      lastObservedAt: at,
+    },
+  };
+}
+
 module.exports = {
   RUNTIME_RUNNING,
   RUNTIME_IDLE,
   RUNTIME_WAITING,
   RUNTIME_UNKNOWN,
+  RUNNING_ANIMATION_CONFIRM_MIN_MS,
+  RUNNING_ANIMATION_CONFIRM_MAX_MS,
+  advanceRunningAnimationCandidate,
   classifyTerminalRuntime,
   normalizeLines,
 };

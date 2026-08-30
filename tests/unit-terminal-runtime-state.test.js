@@ -8,6 +8,8 @@ const {
   RUNTIME_RUNNING,
   RUNTIME_WAITING,
   RUNTIME_UNKNOWN,
+  RUNNING_ANIMATION_CONFIRM_MAX_MS,
+  advanceRunningAnimationCandidate,
   classifyTerminalRuntime,
 } = require('../core/terminal-runtime-state.js');
 
@@ -66,6 +68,30 @@ test('a structured Working row outside the live status tail cannot resurrect a s
     'gpt-5.6-sol max fast · Context 95% left · C:\\repo',
   ]);
   assert.equal(result.state, RUNTIME_IDLE);
+});
+
+test('animation confirmation requires a changed strong frame inside a short window', () => {
+  const firstRuntime = classifyTerminalRuntime('codex', [
+    '• Working (25s • esc to interrupt)',
+  ]);
+  const changedRuntime = classifyTerminalRuntime('codex', [
+    '• Working (26s • esc to interrupt)',
+  ]);
+  const first = advanceRunningAnimationCandidate(null, firstRuntime, 1000);
+  assert.equal(first.confirmed, false);
+  assert.ok(first.candidate);
+
+  const staticRepeat = advanceRunningAnimationCandidate(first.candidate, firstRuntime, 1400);
+  assert.equal(staticRepeat.confirmed, false, 'a static leftover row is not animation');
+
+  const changed = advanceRunningAnimationCandidate(staticRepeat.candidate, changedRuntime, 1600);
+  assert.equal(changed.confirmed, true);
+  assert.equal(changed.candidate, null);
+
+  const expired = advanceRunningAnimationCandidate(first.candidate, changedRuntime,
+    1000 + RUNNING_ANIMATION_CONFIRM_MAX_MS + 1);
+  assert.equal(expired.confirmed, false, 'widely separated frames are not continuous animation');
+  assert.ok(expired.candidate);
 });
 
 test('Claude animated status row is running while the same persistent footer stays on screen', () => {
