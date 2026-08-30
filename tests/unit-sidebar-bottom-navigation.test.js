@@ -21,8 +21,10 @@ function test(name, fn) {
 }
 
 test('普通 session 与群聊的侧栏点击都显式请求跳到最新', () => {
-  assert.match(sidebar, /selectSession\(s\.id,\s*\{\s*forceScrollBottom:\s*true\s*\}\)/);
-  assert.match(sidebar, /selectMeeting\(s\.id,\s*\{\s*forceScrollBottom:\s*true\s*\}\)/);
+  assert.match(sidebar, /selectSession\(intent\.id,\s*\{\s*forceScrollBottom:\s*true\s*\}\)/);
+  assert.match(sidebar, /selectMeeting\(intent\.id,\s*\{\s*forceScrollBottom:\s*true\s*\}\)/);
+  assert.match(sidebar, /addEventListener\('pointerdown'/);
+  assert.match(sidebar, /addEventListener\('pointerup'/);
 });
 
 test('renderer 把群聊侧栏请求完整传给 MeetingRoom', () => {
@@ -31,7 +33,7 @@ test('renderer 把群聊侧栏请求完整传给 MeetingRoom', () => {
 });
 
 test('普通卡片视图不再把显式置底限定为 Codex', () => {
-  assert.match(renderer, /const forceScrollBottom = requestedBottomPin\s*\|\|\s*!!\(session && isCodexKind/);
+  assert.match(renderer, /const forceScrollBottom = requestedBottomPin\s*\|\|\s*!!\(isCodexKind/);
   assert.match(renderer, /if \(forceScrollBottom\) \{[\s\S]{0,220}container\.scrollTop = container\.scrollHeight/);
 });
 

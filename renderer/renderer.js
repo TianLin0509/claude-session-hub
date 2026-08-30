@@ -880,9 +880,57 @@ function formatRelativeTime(ts) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+function paintSidebarActiveTarget({ sessionId = null, meetingId = null } = {}) {
+  if (!sessionListEl) return;
+  sessionListEl.querySelectorAll('.session-item.selected').forEach(row => row.classList.remove('selected'));
+  const selector = sessionId
+    ? `[data-session-id="${CSS.escape(String(sessionId))}"]`
+    : (meetingId ? `[data-meeting-id="${CSS.escape(String(meetingId))}"]` : '');
+  if (!selector) return;
+  const row = sessionListEl.querySelector(selector);
+  if (row) row.classList.add('selected');
+}
+
+function paintSidebarResumePending(sessionId, pending) {
+  if (!sessionListEl || !sessionId) return;
+  const row = sessionListEl.querySelector(`[data-session-id="${CSS.escape(String(sessionId))}"]`);
+  if (!row) return;
+  row.classList.toggle('resuming', pending === true);
+  if (pending === true) {
+    row.title = '正在唤醒会话';
+    const time = row.querySelector('.sl-time');
+    if (time) time.textContent = '唤醒中…';
+  }
+}
+
+function showDormantResumePlaceholder(session, error = null) {
+  if (!terminalPanelEl || !session) return;
+  suspendInactiveTerminalRenderers(null);
+  terminalPanelEl.classList.remove('home-active');
+  preserveAndClearTerminalPanel();
+  const overlay = document.getElementById('msg-overlay');
+  if (overlay) overlay.classList.add('hidden');
+  if (emptyStateEl) emptyStateEl.style.display = 'none';
+  const panel = document.createElement('div');
+  panel.className = `session-resume-pending${error ? ' failed' : ''}`;
+  const spinner = document.createElement('span');
+  spinner.className = 'session-resume-spinner';
+  spinner.setAttribute('aria-hidden', 'true');
+  const copy = document.createElement('div');
+  const title = document.createElement('strong');
+  title.textContent = error ? '会话唤醒失败' : '正在唤醒会话…';
+  const detail = document.createElement('span');
+  detail.textContent = error
+    ? `${String(error && error.message || error)}。再次点击左侧会话可重试。`
+    : `${session.title || 'Session'} · 正在恢复原生 CLI 与历史上下文`;
+  copy.append(title, detail);
+  panel.append(spinner, copy);
+  terminalPanelEl.appendChild(panel);
+}
+
 
 async function selectMeeting(meetingId, opts = {}) {
-  await savePreviewState();
+  void savePreviewState({ nonBlocking: true });
   activeSessionId = null;
   suspendInactiveTerminalRenderers(null);
   if (typeof recentTurnCopyController !== 'undefined') recentTurnCopyController.setVisible(false);
@@ -935,7 +983,8 @@ async function selectMeeting(meetingId, opts = {}) {
     });
   }
 
-  renderSessionList();
+  paintSidebarActiveTarget({ meetingId });
+  scheduleSessionListRender();
   await restorePreviewForContext(`meeting:${meetingId}`);
 }
 
@@ -3594,7 +3643,7 @@ function startRename(sessionId, titleSpan) {
 
 // --- Session selection ---
 async function selectSession(id, opts = {}) {
-  await savePreviewState();
+  void savePreviewState({ nonBlocking: true });
   activeMeetingId = null;
   // Hiding the meeting DOM alone leaves meeting-room.js believing the room is
   // still active (pollers, draft state, and event guards keep running).  This
@@ -3615,22 +3664,14 @@ async function selectSession(id, opts = {}) {
   if (tp) tp.style.display = '';
 
   const session = sessions.get(id);
-  // Dormant session: clicking wakes it via resume-session IPC. Don't render
-  // terminal now — session-created handler below will take over once PTY is up.
-  if (session && session.status === 'dormant') {
-    void resumeDormantSession(id, opts).catch((error) => {
-      console.warn('[resume-session] dormant wake failed:', error);
-      alert(`会话恢复失败：${error && error.message ? error.message : String(error)}`);
-    });
-    return;
-  }
+  if (!session) return;
   const switching = activeSessionId !== id;
   const cachedBeforeSelect = terminalCache.get(id);
   const requestedBottomPin = opts && opts.forceScrollBottom === true;
   // 左侧栏的显式“跳到最新”适用于所有 CLI；Codex 仍保留首次打开自动置底，
   // 修复卡片视图里重复点击当前 Claude/Kimi 会话时请求被 kind 过滤掉的问题。
   const forceScrollBottom = requestedBottomPin
-    || !!(session && isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));
+    || !!(isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));
   // 视图按会话记忆：先算出这个会话该用哪个视图，再决定要不要把焦点给终端
   // （卡片视图下抢终端焦点是错的）。
   const targetView = viewModeForSession(id);
@@ -3639,25 +3680,42 @@ async function selectSession(id, opts = {}) {
   applyViewMode(targetView, { remember: false });
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();
   recentTurnCopyController.setVisible(currentView === 'card' && !!activeSessionId);
-  if (session) clearSessionAttention(session, { clearUnread: true });
+  paintSidebarActiveTarget({ sessionId: id });
+
+  // Dormant session: clicking wakes it via resume-session IPC. Don't render
+  // terminal now — session-created handler below will take over once PTY is up.
+  // Still switch selection and paint a pending surface immediately so a real
+  // CLI restart never looks like a dropped click.
+  if (session.status === 'dormant') {
+    session._resumePending = true;
+    paintSidebarResumePending(id, true);
+    ipcRenderer.send('focus-session', { sessionId: null });
+    showDormantResumePlaceholder(session);
+    scheduleSessionListRender();
+    void resumeDormantSession(id, opts).catch((error) => {
+      console.warn('[resume-session] dormant wake failed:', error);
+      if (activeSessionId === id) showDormantResumePlaceholder(session, error);
+      alert(`会话恢复失败：${error && error.message ? error.message : String(error)}`);
+    });
+    return;
+  }
+  clearSessionAttention(session, { clearUnread: true });
   // 2026-08-27：「运行异常/断连」是一个**提醒**信号，用户点开看过就算处理过了。
   // 原来 clearSessionConnectionIssue 只在提交提问或回答完成时调用，所以只是点开
   // 看一眼的话，那条断连会一直挂在侧栏「运行异常」组里下不去。
   // 2026-08-28 补齐：只清 connectionIssue 不够 —— 断连同时把 runtimeTruth 打成了
   // RUNTIME_FAILED（终态），且 TUI 重绘会把同一段报错文本再喂一遍。要一起降级
   // 终态 + 记住已确认签名，提醒才真的只提醒一次。
-  if (session) acknowledgeSessionFailureState(session);
+  acknowledgeSessionFailureState(session);
   ipcRenderer.send('focus-session', { sessionId: id });
-  renderSessionList();
   showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });
+  scheduleSessionListRender();
   // Snapshot the current question signature as "read" AFTER showTerminal —
   // on first selection that's when cached.opened flips to true, and
   // getQuestionsSignature needs an opened buffer to read. Calling before
   // showTerminal always returned '' on first click, which then made the very
   // first AI reply after opening the session never bump unread.
-  if (session) {
-    session.readSignature = getQuestionsSignature(id);
-  }
+  session.readSignature = getQuestionsSignature(id);
   // auto-focus 浮动输入框 — 与群聊 openMeeting (meeting-room.js IF-C2) 对称：
   //   点进 session 后用户可直接键盘输入，无需先点输入框。defer 50ms 让 xterm
   //   open + robustFit 的 rAF 链先跑完，避免被它抢焦点回去。
@@ -5906,11 +5964,13 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   const pendingResume = _pendingDormantResumes.get(session.id) || null;
   const wasDormant = !!pendingResume || !!(existing && existing.status === 'dormant');
   if (pendingResume) _pendingDormantResumes.delete(session.id);
+  paintSidebarResumePending(session.id, false);
   if (wasDormant) {
     sessions.set(session.id, {
       ...existing,
       ...session,
       status: 'idle',
+      _resumePending: false,
       // preserve persisted UX state
       pinned: existing.pinned,
       unreadCount: existing.unreadCount || 0,
@@ -5951,7 +6011,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   // 的后台/工作流唤醒会在上面的 meeting 分支返回，因此仍保留休眠前的未读标记。
   const activatedSession = sessions.get(session.id);
   if (activatedSession) clearSessionAttention(activatedSession, { clearUnread: true });
-  await savePreviewState();
+  void savePreviewState({ nonBlocking: true });
   clearPreviewUI();
   activeSessionId = session.id;
   activeMeetingId = null;
@@ -5960,7 +6020,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   if (mrp) mrp.style.display = 'none';
   if (terminalPanelEl) terminalPanelEl.style.display = '';
   ipcRenderer.send('focus-session', { sessionId: session.id });
-  renderSessionList();
+  paintSidebarActiveTarget({ sessionId: session.id });
   // A league shortcut may have requested card/PTY before this asynchronous
   // event arrived. Honor that last explicit intent; otherwise a late create
   // event makes the card button intermittently bounce back to PTY.
@@ -5972,6 +6032,7 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
   showTerminal(session.id, {
     forceScrollBottom: !!(pendingResume && pendingResume.forceScrollBottom),
   });
+  scheduleSessionListRender();
   await restorePreviewForContext(`session:${session.id}`);
 });
 
@@ -6318,6 +6379,9 @@ async function resumeDormantSession(hubId, opts = {}) {
     promise: null,
   };
   _pendingDormantResumes.set(hubId, pendingResume);
+  dormant._resumePending = true;
+  paintSidebarResumePending(hubId, true);
+  scheduleSessionListRender();
   // Keep title / pinned / preview so UI stays stable through the resume.
   let resumed;
   try {
@@ -6330,6 +6394,9 @@ async function resumeDormantSession(hubId, opts = {}) {
     if (_pendingDormantResumes.get(hubId) === pendingResume) {
       _pendingDormantResumes.delete(hubId);
     }
+    dormant._resumePending = false;
+    paintSidebarResumePending(hubId, false);
+    scheduleSessionListRender();
     throw error;
   }
   if (resumed && resumed.cwdFellBackFrom) {
@@ -6347,6 +6414,7 @@ async function resumeDormantSession(hubId, opts = {}) {
       ...s,
       ...resumed,
       status: 'idle',
+      _resumePending: false,
       pinned: s.pinned,
       unreadCount: s.unreadCount || 0,
       suspendedAt: null,
@@ -6356,7 +6424,7 @@ async function resumeDormantSession(hubId, opts = {}) {
       lastOutputPreview: s.lastOutputPreview,
     });
   }
-  if (s) renderSessionList();
+  if (s) scheduleSessionListRender();
   return resumed || null;
 }
 window.resumeDormantSession = resumeDormantSession;

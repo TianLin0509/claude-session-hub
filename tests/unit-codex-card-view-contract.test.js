@@ -70,14 +70,14 @@ assert.ok(
   rendererSrc.includes("const cachedBeforeSelect = terminalCache.get(id);") &&
   rendererSrc.includes("const requestedBottomPin = opts && opts.forceScrollBottom === true;") &&
   rendererSrc.includes("const forceScrollBottom = requestedBottomPin") &&
-  rendererSrc.includes("|| !!(session && isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));") &&
+  rendererSrc.includes("|| !!(isCodexKind(session.kind) && (!cachedBeforeSelect || !cachedBeforeSelect.opened));") &&
   rendererSrc.includes("showTerminal(id, { focus: shouldFocusTerminal, forceScrollBottom });"),
   'all sidebar selections must honor explicit bottom pinning while Codex keeps first-mount pinning',
 );
 assert.ok(
-  rendererSidebarSrc.includes("selectSession(s.id, { forceScrollBottom: true })") &&
-  rendererSidebarSrc.includes("selectSession(subId, { forceScrollBottom: true })"),
-  'left sidebar clicks must request bottom pinning for ordinary sessions',
+  rendererSidebarSrc.includes("selectSession(intent.id, { forceScrollBottom: true })") &&
+  rendererSidebarSrc.includes("selectMeeting(intent.id, { forceScrollBottom: true })"),
+  'delegated sidebar navigation must request bottom pinning for sessions and meetings',
 );
 assert.ok(
   rendererSrc.includes("detachFromBottom") &&

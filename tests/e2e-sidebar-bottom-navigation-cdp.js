@@ -118,8 +118,8 @@ async function main() {
         id: sid, kind: 'claude', title: '侧栏置底 · 普通卡片', status: 'idle',
         transcriptPath: ${JSON.stringify(TRANSCRIPT_PATH)}, createdAt: now, lastMessageTime: now,
       });
-      applyViewMode('card');
       await api.selectSession(sid, { forceScrollBottom: true });
+      applyViewMode('card');
       await wait(850);
       const overlay = document.getElementById('msg-overlay');
       const maxBefore = Math.max(0, overlay.scrollHeight - overlay.clientHeight);

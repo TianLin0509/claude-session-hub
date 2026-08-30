@@ -386,12 +386,23 @@ function createPreviewPanelController({
     stillPresent.zoomLevel = previewZoomLevel;
   }
 
-  async function savePreviewState() {
+  async function savePreviewState(options = {}) {
     const state = getContextState();
     if (!state || !getActiveTab(state)) return;
     state.isFullscreen = previewIsFullscreen;
     state.splitRatio = previewSplitRatio;
-    await captureActiveTabState(state);
+    const capture = captureActiveTabState(state);
+    if (options.nonBlocking === true) {
+      // Session navigation must react immediately. The webview scroll probe is
+      // already bounded, but waiting for it before painting the selected row
+      // made a healthy click look dead for up to 350ms. The request is issued
+      // before the preview DOM is cleared and updates the retained state later.
+      void Promise.resolve(capture).catch(error => {
+        console.debug('[preview] deferred state capture skipped:', error && error.message);
+      });
+      return;
+    }
+    await capture;
   }
 
   function restoreSourcePanelVisibility() {

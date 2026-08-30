@@ -427,6 +427,27 @@ async function testLateWebviewLoadCannotClearNewerFailure() {
   assert.match(active.loadError, /current load failed/);
 }
 
+async function testNavigationSaveDoesNotWaitForWebviewScroll() {
+  const document = makeDocument();
+  const controller = makeController(document, () => 'nonblocking-save');
+  await controller.openPreviewPanel('C:\\tmp\\page.html');
+  const webview = document.getElementById('preview-body').querySelector('webview');
+  let resolveCapture;
+  webview.executeJavaScript = () => new Promise(resolve => { resolveCapture = resolve; });
+
+  const completedQuickly = await Promise.race([
+    controller.savePreviewState({ nonBlocking: true }).then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 25)),
+  ]);
+  assert.strictEqual(completedQuickly, true, 'session navigation must not wait for webview IPC');
+
+  resolveCapture({ x: 4, y: 321 });
+  await new Promise(resolve => setImmediate(resolve));
+  const state = controller.getPreviewState('session:nonblocking-save');
+  const active = state.tabs.find(tab => tab.id === state.activeTabId);
+  assert.deepStrictEqual(active.scroll, { type: 'webview', x: 4, y: 321 });
+}
+
 async function main() {
   await testSessionScopedBodyPreview();
   await testExplicitSplitOverride();
@@ -440,6 +461,7 @@ async function main() {
   await testCopyIsCancelledWhenActiveTabChanges();
   await testDroppingClosedContextRemovesItsTabs();
   await testLateWebviewLoadCannotClearNewerFailure();
+  await testNavigationSaveDoesNotWaitForWebviewScroll();
   console.log('unit-preview-panel-controller-context OK');
 }
 

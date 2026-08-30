@@ -332,6 +332,103 @@ function _sessionWarningText(session) {
     }
   }
 
+  // Session rows are rebuilt wholesale whenever status/recency changes. With
+  // hundreds of rows, a rebuild can land between pointer-down and pointer-up;
+  // a click listener attached to the removed row then never fires. Capture the
+  // navigation intent on the stable list container and finish it on pointer-up.
+  const POINTER_NAV_MAX_MOVE_PX = 8;
+  const POINTER_CLICK_SUPPRESS_MS = 750;
+  let pendingPointerNavigation = null;
+  let lastPointerNavigation = null;
+
+  function navigationIntentFromTarget(target) {
+    if (!target || typeof target.closest !== 'function') return null;
+    const jump = target.closest('[data-sub-id]');
+    if (jump) return { type: 'session', id: jump.getAttribute('data-sub-id') };
+    const toggle = target.closest('[data-action="toggle-expand"]');
+    if (toggle) {
+      const meeting = toggle.closest('[data-meeting-id]');
+      return meeting ? { type: 'toggle-meeting', id: meeting.getAttribute('data-meeting-id') } : null;
+    }
+    const meeting = target.closest('[data-meeting-id]');
+    if (meeting) return { type: 'meeting', id: meeting.getAttribute('data-meeting-id') };
+    const session = target.closest('[data-session-id]');
+    if (session) return { type: 'session', id: session.getAttribute('data-session-id') };
+    return null;
+  }
+
+  function activateNavigationIntent(intent) {
+    if (!intent || !intent.id) return false;
+    try {
+      if (intent.type === 'toggle-meeting') {
+        toggleMeetingExpand(intent.id);
+        return true;
+      }
+      const action = intent.type === 'meeting'
+        ? selectMeeting(intent.id, { forceScrollBottom: true })
+        : selectSession(intent.id, { forceScrollBottom: true });
+      Promise.resolve(action).catch(error => console.warn('[sidebar] navigation failed:', error));
+      return true;
+    } catch (error) {
+      console.warn('[sidebar] navigation failed:', error);
+      return false;
+    }
+  }
+
+  sessionListEl.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    const intent = navigationIntentFromTarget(event.target);
+    if (!intent || !intent.id) return;
+    pendingPointerNavigation = {
+      intent,
+      pointerId: event.pointerId,
+      x: Number(event.clientX) || 0,
+      y: Number(event.clientY) || 0,
+    };
+    try { sessionListEl.setPointerCapture?.(event.pointerId); } catch {}
+  });
+
+  sessionListEl.addEventListener('pointerup', (event) => {
+    const pending = pendingPointerNavigation;
+    if (!pending || pending.pointerId !== event.pointerId) return;
+    pendingPointerNavigation = null;
+    try { sessionListEl.releasePointerCapture?.(event.pointerId); } catch {}
+    const moved = Math.hypot(
+      (Number(event.clientX) || 0) - pending.x,
+      (Number(event.clientY) || 0) - pending.y,
+    );
+    lastPointerNavigation = { intent: pending.intent, at: Date.now() };
+    if (moved > POINTER_NAV_MAX_MOVE_PX) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activateNavigationIntent(pending.intent);
+  });
+
+  sessionListEl.addEventListener('pointercancel', (event) => {
+    if (pendingPointerNavigation && pendingPointerNavigation.pointerId === event.pointerId) {
+      pendingPointerNavigation = null;
+    }
+  });
+
+  // Keyboard activation and older PointerEvent fallbacks still arrive as
+  // click. Suppress the synthetic click that follows a handled pointer-up.
+  sessionListEl.addEventListener('click', (event) => {
+    const intent = navigationIntentFromTarget(event.target);
+    if (!intent || !intent.id) return;
+    // A wholesale rebuild may put a *different* row under the pointer before
+    // Chromium emits its compatibility click. The pointer-up already honored
+    // the captured intent, so suppress any immediately following mouse click,
+    // not only one whose new DOM target happens to have the same id. Keyboard
+    // and programmatic activation use detail=0 and remain available.
+    const duplicate = lastPointerNavigation
+      && event.detail !== 0
+      && Date.now() - lastPointerNavigation.at <= POINTER_CLICK_SUPPRESS_MS;
+    lastPointerNavigation = null;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!duplicate) activateNavigationIntent(intent);
+  });
+
 // --- Session list rendering ---
 // Sort: pinned sessions first, then ordinary/group sessions by latest AI reply.
 // Tree shape: meeting entries optionally expand to show their child sub-sessions.
@@ -504,22 +601,6 @@ function _sessionWarningText(session) {
         </div>
         <div class="session-mini-jumps">${miniJumpsHtml}<span class="sl-members-hint">${memberSelected}/${memberTotal} 已选</span></div>
       `;
-      div.addEventListener('click', (e) => {
-        // Phase 8: 迷你跳转按钮 click → 跳转对应子 session, 不冒泡到 selectMeeting
-        const jumpBtn = e.target.closest('[data-sub-id]');
-        if (jumpBtn) {
-          e.stopPropagation();
-          const subId = jumpBtn.getAttribute('data-sub-id');
-          if (subId) selectSession(subId, { forceScrollBottom: true });
-          return;
-        }
-        if (e.target.closest('[data-action="toggle-expand"]')) {
-          e.stopPropagation();
-          toggleMeetingExpand(s.id);
-        } else {
-          selectMeeting(s.id, { forceScrollBottom: true });
-        }
-      });
       div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
       renderTarget.appendChild(div);
 
@@ -531,12 +612,14 @@ function _sessionWarningText(session) {
           const childDiv = doc.createElement('div');
           const isChildActive = subId === getActiveSessionId();
           const childRuntime = getSessionRuntimeTruth(sub);
+          const childResumePending = sub._resumePending === true;
           const childDormantCls = childRuntime.state === RUNTIME_DORMANT ? ' dormant' : '';
           const childDisconnected = hasStreamDisconnectIssue(sub);
           const childUnreadCount = Math.max(0, Number(sub.unreadCount) || 0);
           const childShowUnread = !isChildActive && childUnreadCount > 0;
           childDiv.className = 'session-item slim child' + (isChildActive ? ' selected' : '')
             + (childShowUnread ? ' need-unread' : '') + childDormantCls
+            + (childResumePending ? ' resuming' : '')
             + (childDisconnected ? ' disconnected' : '');
           childDiv.dataset.sessionId = subId;
           childDiv.dataset.runtimeState = childRuntime.state;
@@ -544,7 +627,9 @@ function _sessionWarningText(session) {
             ? `<span class="child-model-badge ${modelClass(sub.currentModel.id)}" title="${escapeHtml(sub.currentModel.displayName || sub.currentModel.id)}">${escapeHtml(modelShort(sub.currentModel))}</span>`
             : '';
           const childWarning = _sessionWarningText(sub);
-          const childStateTip = childRuntime.state === RUNTIME_DORMANT
+          const childStateTip = childResumePending
+            ? '正在唤醒原生 CLI 与历史上下文'
+            : childRuntime.state === RUNTIME_DORMANT
             ? `${sub.suspendReason === 'idle-timeout' ? '自动休眠' : '休眠中'}${childShowUnread ? `，有 ${childUnreadCount} 条未读` : ''}，点击唤醒`
             : [runtimeTruthSummary(childRuntime), childShowUnread ? `有 ${childUnreadCount} 条未读` : ''].filter(Boolean).join(' · ');
           childDiv.innerHTML = `
@@ -555,7 +640,6 @@ function _sessionWarningText(session) {
           // Use the existing selectSession path: it hides meeting-room-panel,
           // shows terminal-panel, and mounts the cached xterm container.
           // This is exactly the "single-viewer strict switch" the spec calls for.
-          childDiv.addEventListener('click', () => selectSession(subId, { forceScrollBottom: true }));
           childDiv.addEventListener('contextmenu', (ev) => { ev.preventDefault(); openContextMenu(subId, ev.clientX, ev.clientY); });
           renderTarget.appendChild(childDiv);
         }
@@ -574,6 +658,7 @@ function _sessionWarningText(session) {
     div.dataset.runtimeSource = runtimeTruth.source || '';
     div.dataset.runtimeConfidence = runtimeTruth.confidence || '';
     const isDormant = runtimeTruth.state === RUNTIME_DORMANT;
+    const isResumePending = s._resumePending === true;
     const isDisconnected = hasStreamDisconnectIssue(s);
     const dormantCls = isDormant ? ' dormant' : '';
     const showWaiting = runtimeTruth.state === RUNTIME_WAITING;
@@ -581,7 +666,8 @@ function _sessionWarningText(session) {
     const showUnread = sessionHasCompletedUnread(s) && !isActive && !showWaiting;
     // 状态点优先级：等待输入 > 网络断连 > 未读 > 运行 > 休眠 > 空闲
     let dotCls = 'idle';
-    if (showWaiting) dotCls = 'wait';
+    if (isResumePending) dotCls = 'start';
+    else if (showWaiting) dotCls = 'wait';
     else if (isDisconnected) dotCls = 'error';
     else if (showUnread) dotCls = 'unread';
     else if (isDormant) dotCls = 'dorm';
@@ -591,11 +677,14 @@ function _sessionWarningText(session) {
     else if (runtimeTruth.state === RUNTIME_UNKNOWN) dotCls = 'unknown';
     div.className = 'session-item slim' + (isActive ? ' selected' : '')
       + (showWaiting ? ' need-wait' : '') + (showUnread ? ' need-unread' : '') + dormantCls
+      + (isResumePending ? ' resuming' : '')
       + (isDisconnected ? ' disconnected' : '');
     const ctxPct = typeof s.contextPct === 'number' ? s.contextPct : null;
     const modelTxt = s.currentModel ? modelShort(s.currentModel) : '';
     const anyWarning = _sessionWarningText(s);
-    const dormantStateTip = isDormant
+    const dormantStateTip = isResumePending
+      ? '正在唤醒原生 CLI 与历史上下文'
+      : isDormant
       ? `${s.suspendReason === 'idle-timeout' ? '自动休眠' : '休眠中'}${showUnread ? `，有 ${unreadCount} 条未读` : ''}，点击唤醒`
       : '';
     const titleTip = [s.title,
@@ -608,14 +697,13 @@ function _sessionWarningText(session) {
         ? (s.waitingText || '等你输入')
         : (showUnread ? (s.replyReadyText || s.lastOutputPreview || '有完成结果尚未查看') : '')),
     ].filter(Boolean).join(' · ');
-    div.title = runtimeTruthSummary(runtimeTruth);
+    div.title = isResumePending ? '正在唤醒会话' : runtimeTruthSummary(runtimeTruth);
     div.innerHTML = `
       ${_ringHtml(ctxPct, dotCls)}
       <span class="sl-title" title="${escapeHtml(titleTip)}">${s.pinned ? '<span class="sl-pin" title="Pinned">📌</span>' : ''}${anyWarning ? `<span class="sl-pin" title="${escapeHtml(anyWarning)}">⚠</span>` : ''}${escapeHtml(s.title)}${showUnread ? `<span class="sl-un">● ${unreadCount}</span>` : ''}</span>
       <span class="sl-model">${escapeHtml(modelTxt)}</span>
-      <span class="sl-time${isDisconnected ? ' disconnected-time' : (isDormant ? ' dormant-time' : '')}">${isDisconnected ? '断连 · ' : (isDormant ? '休眠 · ' : '')}${formatTime(latestActivityTime(s))}</span>
+      <span class="sl-time${isDisconnected ? ' disconnected-time' : (isDormant ? ' dormant-time' : '')}">${isResumePending ? '唤醒中…' : `${isDisconnected ? '断连 · ' : (isDormant ? '休眠 · ' : '')}${formatTime(latestActivityTime(s))}`}</span>
     `;
-    div.addEventListener('click', () => selectSession(s.id, { forceScrollBottom: true }));
     div.addEventListener('contextmenu', (e) => { e.preventDefault(); openContextMenu(s.id, e.clientX, e.clientY); });
     renderTarget.appendChild(div);
   }

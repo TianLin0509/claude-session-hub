@@ -271,10 +271,21 @@ async function main() {
     // pending must still launch exactly one PTY.
     await dispatchMouse(client, `[data-session-id="${EXACT_HUB_ID}"]`);
     await dispatchMouse(client, `[data-session-id="${EXACT_HUB_ID}"]`);
-    await waitFor('exact Codex resume activation', () => client.eval(`(() => {
-      const session = sessions.get(${JSON.stringify(EXACT_HUB_ID)});
-      return session && session.status !== 'dormant' && activeSessionId === ${JSON.stringify(EXACT_HUB_ID)};
-    })()`));
+    try {
+      await waitFor('exact Codex resume activation', () => client.eval(`(() => {
+        const session = sessions.get(${JSON.stringify(EXACT_HUB_ID)});
+        return session && session.status !== 'dormant' && activeSessionId === ${JSON.stringify(EXACT_HUB_ID)};
+      })()`));
+    } catch (error) {
+      const diagnostics = await client.eval(`(() => ({
+        activeSessionId,
+        session:sessions.get(${JSON.stringify(EXACT_HUB_ID)}) || null,
+        pending:_pendingDormantResumes.size,
+        panel:document.querySelector('.session-resume-pending')?.innerText || '',
+      }))()`);
+      error.message += `\ndiagnostics=${JSON.stringify({ diagnostics, invocations: readInvocations() })}`;
+      throw error;
+    }
     await dispatchMouse(client, '.view-toggle-btn[data-view="card"]');
     result.exactCard = await waitForCard(
       client,
