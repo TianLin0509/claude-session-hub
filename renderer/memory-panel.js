@@ -1,4 +1,5 @@
 'use strict';
+const { formatBeijingDateTime } = require('../core/beijing-time.js');
 // renderer/memory-panel.js
 //
 // 记忆系统面板：从用量 ticker 的「记忆」按钮打开。
@@ -22,10 +23,7 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
     return `${(n / 1024 / 1024).toFixed(1)} MB`;
   };
   const fmtTime = (ms) => {
-    if (!ms) return '';
-    const d = new Date(ms);
-    const pad = x => String(x).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return ms ? formatBeijingDateTime(ms, { seconds: false }) : '';
   };
 
   // ---------- DOM 骨架 ----------

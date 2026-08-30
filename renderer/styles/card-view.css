@@ -18,7 +18,7 @@
   top: var(--term-header-h, 43px);
   left: 0;
   right: 0;
-  bottom: var(--fi-bar-h, 60px);
+  bottom: calc(var(--fi-bar-h, 60px) + var(--card-session-status-h, 0px));
   overflow-y: auto;
   background: var(--bg-primary);
   padding: 12px 16px;
@@ -38,7 +38,7 @@
   position: absolute;
   top: calc(var(--term-header-h, 43px) + 10px);
   right: 10px;
-  bottom: calc(var(--fi-bar-h, 60px) + 10px);
+  bottom: calc(var(--fi-bar-h, 60px) + var(--card-session-status-h, 0px) + 10px);
   width: 32px;
   z-index: 65;
   pointer-events: none;
@@ -63,6 +63,54 @@
   mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
 }
 .card-question-nav-track::-webkit-scrollbar { width: 0; height: 0; }
+
+/* Compact PTY-equivalent status line for card view. It sits above the
+   composer and outside the scrolling transcript so model/tuning/context stay
+   visible without stealing card space. */
+.terminal-panel.card-view-active.card-status-visible {
+  --card-session-status-h: 31px;
+}
+.card-session-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--fi-bar-h, 60px);
+  z-index: 59;
+  height: 31px;
+  box-sizing: border-box;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border-top: 1px solid rgba(var(--rgb-neutral), .16);
+  background: color-mix(in srgb, var(--bg-primary) 92%, var(--bg-secondary));
+  color: var(--text-secondary);
+  font: 600 11px/1.2 "Cascadia Code", Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+}
+.terminal-panel.card-view-active.card-status-visible .card-session-status { display: flex; }
+.card-session-status-part { flex: 0 0 auto; }
+.card-session-status-model { color: var(--mark-yellow); }
+.card-session-status-effort { color: var(--mark-yellow-strong, var(--mark-yellow)); }
+.card-session-status-speed { color: var(--mark-orange, #f0a06b); }
+.card-session-status-context { color: var(--mark-red-soft, #e7a17b); }
+.card-session-status-cwd {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--mark-green-strong, var(--mark-green));
+}
+.card-session-status-sep { flex: 0 0 auto; color: var(--text-muted); opacity: .7; }
+@media (max-width: 760px) {
+  .card-session-status-cwd { display: none; }
+}
+@media (max-width: 520px) {
+  .card-session-status { gap: 6px; padding-inline: 10px; }
+  .card-session-status-context { display: none; }
+}
 .card-question-nav::before {
   content: '';
   position: absolute;

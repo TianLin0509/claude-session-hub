@@ -615,6 +615,19 @@ function mountOptimisticUserCard(sessionId, text, kind) {
   } catch {
     container.scrollTop = container.scrollHeight;
   }
+  // `scrollIntoView` can target an outer ancestor while the absolute card
+  // overlay is still being laid out. A user-authored send is an explicit jump
+  // to the newest question, so pin the actual overlay now and for two frames;
+  // this also survives the streaming-chip move and optimistic-card styling.
+  const pinToNewestQuestion = () => { container.scrollTop = container.scrollHeight; };
+  pinToNewestQuestion();
+  const raf = win && typeof win.requestAnimationFrame === 'function'
+    ? win.requestAnimationFrame.bind(win)
+    : (callback) => setTimeout(callback, 0);
+  raf(() => {
+    pinToNewestQuestion();
+    raf(pinToNewestQuestion);
+  });
   return cardEl;
 }
 win._mountOptimisticUserCard = mountOptimisticUserCard;

@@ -15,6 +15,12 @@ const {
   sessionRuntimeIsActive,
 } = require('../core/session-runtime-truth.js');
 const { collectPathCandidates } = require('./path-candidates.js');
+const {
+  beijingEpoch,
+  beijingParts,
+  formatBeijingClock,
+  formatBeijingDateTime,
+} = require('../core/beijing-time.js');
 
 const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const LONG_TASK_MS = 10 * 60 * 1000;
@@ -149,29 +155,28 @@ function makeMeetingItem(meeting, sessionMap, now = Date.now()) {
 }
 
 function buildNightWindow(now = Date.now()) {
-  const current = new Date(now);
-  const hour = current.getHours();
-  const start = new Date(current);
-  const end = new Date(current);
+  const current = beijingParts(now);
+  const hour = current.hour;
+  let start;
+  let end = now;
   let label;
 
   if (hour >= 20) {
-    start.setHours(20, 0, 0, 0);
+    start = beijingEpoch({ ...current, hour: 20, minute: 0, second: 0, millisecond: 0 });
     label = '今晚 20:00 至现在';
   } else {
-    start.setDate(start.getDate() - 1);
-    start.setHours(20, 0, 0, 0);
+    start = beijingEpoch({ ...current, day: current.day - 1, hour: 20, minute: 0, second: 0, millisecond: 0 });
     if (hour < 8) {
       label = '昨晚 20:00 至现在';
     } else {
-      end.setHours(8, 0, 0, 0);
+      end = beijingEpoch({ ...current, hour: 8, minute: 0, second: 0, millisecond: 0 });
       label = '昨晚 20:00 至今早 08:00';
     }
   }
 
   return {
-    start: start.getTime(),
-    end: hour >= 20 || hour < 8 ? now : end.getTime(),
+    start,
+    end,
     label,
   };
 }
@@ -602,9 +607,9 @@ function createHomeWorkbench(options = {}) {
     const level = pct == null ? 'unknown' : pct >= 85 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
     const resetText = usageWindow ? formatResetIn(usageWindow.resetsAt) : '';
     const refreshText = resetText ? resetText.replace(/后重置$/, '后刷新') : '刷新时间未知';
-    const resetAt = usageWindow && usageWindow.resetsAt ? new Date(usageWindow.resetsAt) : null;
-    const resetTitle = resetAt && Number.isFinite(resetAt.getTime())
-      ? `配额刷新时间：${resetAt.toLocaleString('zh-CN')}`
+    const resetAt = usageWindow && usageWindow.resetsAt ? Number(new Date(usageWindow.resetsAt)) : NaN;
+    const resetTitle = Number.isFinite(resetAt)
+      ? `配额刷新时间：${formatBeijingDateTime(resetAt)}`
       : '配额刷新时间未知';
     return `<div class="home-usage-window ${level}" title="${escapeHtml(resetTitle)}">`
       + `<div class="home-usage-window-head"><span>${escapeHtml(label)}</span><strong>${pct == null ? '—' : `${pct}%`}</strong></div>`
@@ -845,7 +850,7 @@ function createHomeWorkbench(options = {}) {
       setText('home-server-latency', '离线');
       setText('home-server-storage-label', `连接失败 · ${shortText(remote.error || 'unreachable', 42)}`);
       setText('home-server-storage-value', '--');
-      setText('home-server-metrics', `最后检查 ${new Date(remote.checkedAt || nowFn()).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
+      setText('home-server-metrics', `最后检查 ${formatBeijingClock(remote.checkedAt || nowFn())}`);
       if (serverBar) { serverBar.style.width = '0%'; serverBar.className = ''; }
       if (dot) dot.className = 'home-status-dot danger';
       if (server) server.className = 'home-server-status offline';
@@ -935,7 +940,7 @@ function createHomeWorkbench(options = {}) {
     setText('home-metric-waiting', snapshot.metrics.waiting);
     setText('home-metric-unread', snapshot.metrics.unread);
     setText('home-metric-dormant', snapshot.metrics.dormant);
-    setText('home-last-sync', `更新于 ${new Date(state.lastRefreshAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`);
+    setText('home-last-sync', `更新于 ${formatBeijingClock(state.lastRefreshAt, { seconds: true })}`);
 
     const refreshButton = el('home-refresh');
     if (refreshButton) {

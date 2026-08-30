@@ -97,3 +97,18 @@ test('pointer drag is cancelled and its synthetic click is suppressed', () => {
   harness.emit('click', { detail: 1, target, preventDefault() {}, stopPropagation() {} });
   assert.equal(harness.selected.length, 0);
 });
+
+test('meeting pointer intent also survives a full sidebar rebuild', () => {
+  const harness = makeHarness();
+  harness.emit('pointerdown', {
+    button: 0, pointerId: 9, clientX: 12, clientY: 24,
+    target: targetFor('data-meeting-id', 'meeting-a'),
+  });
+  harness.emit('pointerup', {
+    pointerId: 9, clientX: 12, clientY: 24, target: {},
+    preventDefault() {}, stopPropagation() {},
+  });
+  assert.deepEqual(harness.meetings, [{
+    id: 'meeting-a', opts: { forceScrollBottom: true },
+  }]);
+});

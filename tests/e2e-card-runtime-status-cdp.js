@@ -74,11 +74,17 @@ async function readStatus(client) {
     const inline = document.querySelector('#msg-overlay .streaming-indicator');
     const titleRow = document.querySelector('.terminal-title-row');
     const panel = document.getElementById('terminal-panel');
+    const overlay = document.getElementById('msg-overlay');
+    const footer = document.getElementById('card-session-status');
+    const composer = document.querySelector('.floating-input-bar');
     const sidebarItem = activeSessionId
       ? document.querySelector('.session-item[data-session-id="' + CSS.escape(String(activeSessionId)) + '"]')
       : null;
     const statusRect = root?.getBoundingClientRect();
     const panelRect = panel?.getBoundingClientRect();
+    const overlayRect = overlay?.getBoundingClientRect();
+    const footerRect = footer?.getBoundingClientRect();
+    const composerRect = composer?.getBoundingClientRect();
     return {
       state: root?.dataset.runtimeState || null,
       label: root?.querySelector('.terminal-status-label')?.textContent || '',
@@ -91,6 +97,20 @@ async function readStatus(client) {
         : (inline?.closest('.turn-card') ? 'assistant' : 'overlay'),
       inlineParentTurnId: inline?.closest('.turn-card')?.dataset.turnId || null,
       cardMode: document.getElementById('terminal-panel')?.classList.contains('card-view-active') || false,
+      footerText:footer?.textContent?.replace(/\\s+/g, ' ').trim() || '',
+      footerAria:footer?.getAttribute('aria-label') || '',
+      footerVisible:!!footerRect && footerRect.width > 0 && footerRect.height > 0,
+      footerAboveComposer:!!footerRect && !!composerRect && Math.abs(footerRect.bottom - composerRect.top) <= 2,
+      overlayAboveFooter:!!overlayRect && !!footerRect && overlayRect.bottom <= footerRect.top + 1,
+      overlayBottomGap:overlay ? Math.max(0, overlay.scrollHeight - overlay.scrollTop - overlay.clientHeight) : null,
+      latestUserVisible:(() => {
+        const cards = overlay ? overlay.querySelectorAll('.turn-card.user') : [];
+        const card = cards[cards.length - 1];
+        if (!card || !overlayRect) return false;
+        const rect = card.getBoundingClientRect();
+        return rect.bottom <= overlayRect.bottom + 1 && rect.bottom >= overlayRect.top;
+      })(),
+      beijingTimeText:document.querySelector('[data-turn-id="beijing-time-probe"] .turn-meta')?.textContent || '',
       headerClientWidth: titleRow?.clientWidth || 0,
       headerScrollWidth: titleRow?.scrollWidth || 0,
       statusVisible: !!statusRect && statusRect.width > 0 && statusRect.height > 0,
@@ -183,6 +203,9 @@ async function main() {
         unreadCount: 0,
         cwd: ${JSON.stringify(ROOT)},
         currentModel: { id: 'gpt-5.6-sol', displayName: 'GPT-5.6-SOL' },
+        effort: 'max',
+        codexSpeedTier: 'fast',
+        contextPct: 8,
         runStartedAt: startedAt,
         _ptyRuntimeState: 'running',
         _ptyRuntimeReason: 'codex-interrupt-footer',
@@ -206,12 +229,22 @@ async function main() {
       overlay.replaceChildren();
       if (window._sessionTurns) window._sessionTurns.clear();
       mountSessionTurnCard(id, {
+        id:'beijing-time-probe', role:'assistant', text:'北京时间格式探针',
+        ts:Date.parse('2020-01-01T00:00:00Z'), kind:'codex',
+      }, { kind:'codex' });
+      mountSessionTurnCard(id, {
         id: 'assistant-runtime-anchor',
         role: 'assistant',
         text: '上一条回答已经生成；Codex 仍在继续执行后续工具任务。',
         ts: Date.now() - 13 * 60 * 1000,
         kind: 'codex',
       }, { kind: 'codex', autoScroll: true });
+      for (let index = 0; index < 18; index += 1) {
+        mountSessionTurnCard(id, {
+          id:'assistant-fill-' + index, role:'assistant', kind:'codex', ts:Date.now() - (18 - index) * 1000,
+          text:'历史回答 ' + index + '\\n\\n' + '用于制造真实卡片滚动空间。'.repeat(18),
+        }, { kind:'codex' });
+      }
       _updateStreamingIndicator(id);
       updateFloatingBarState();
       renderSessionList();
@@ -231,6 +264,13 @@ async function main() {
     assert.equal(result.running.sidebarState, 'running');
     assert.equal(result.running.sidebarSource, 'pty-codex-interrupt-footer');
     assert.equal(result.running.sidebarConfidence, 'strong');
+    assert.equal(result.running.footerVisible, true);
+    assert.match(result.running.footerText, /gpt-5\.6-sol·max·fast·Context 92% left/);
+    assert.match(result.running.footerText, /card-footer-beijing-group-parity/);
+    assert.match(result.running.footerAria, /上下文剩余 92%/);
+    assert.equal(result.running.footerAboveComposer, true);
+    assert.equal(result.running.overlayAboveFooter, true);
+    assert.equal(result.running.beijingTimeText, '2020年1月1日 08:00');
     await screenshot(client, RUNNING_SHOT);
 
     const firstElapsed = result.running.meta;
@@ -240,12 +280,15 @@ async function main() {
     }, 4000);
 
     await client.eval(`(() => {
+      const overlay = document.getElementById('msg-overlay');
+      overlay.scrollTop = 0;
       mountOptimisticUserCard('card-runtime-status-e2e', '这是已经开始的下一条问题', 'codex');
       _updateStreamingIndicator('card-runtime-status-e2e');
     })()`);
     result.newPromptPlacement = await waitFor('working status follows newest user prompt', async () => {
       const state = await readStatus(client);
-      return state.inlineVisible && state.inlineParentRole === 'user' ? state : null;
+      return state.inlineVisible && state.inlineParentRole === 'user'
+        && state.overlayBottomGap <= 1 && state.latestUserVisible ? state : null;
     });
     assert.match(result.newPromptPlacement.inlineParentTurnId || '', /^pending-user-/);
     await screenshot(client, NEW_PROMPT_SHOT);
@@ -552,6 +595,14 @@ async function main() {
         dormantClass: dormant.classList.contains('dormant'),
         dormantTime: dormantTime?.textContent || '',
         dormantTitleColor: dormantTitle ? getComputedStyle(dormantTitle).color : '',
+        expectedDormantTitleColor:(() => {
+          const probe = document.createElement('span');
+          probe.style.color = 'var(--fg-default)';
+          document.body.appendChild(probe);
+          const color = getComputedStyle(probe).color;
+          probe.remove();
+          return color;
+        })(),
         dormantBackground: getComputedStyle(dormant).backgroundColor,
       };
     })()`));
@@ -560,7 +611,7 @@ async function main() {
     assert.match(result.sidebarStates.disconnectedTime, /^断连 · /);
     assert.equal(result.sidebarStates.dormantClass, true);
     assert.match(result.sidebarStates.dormantTime, /^休眠 · /);
-    assert.equal(result.sidebarStates.dormantTitleColor, 'rgb(199, 208, 220)');
+    assert.equal(result.sidebarStates.dormantTitleColor, result.sidebarStates.expectedDormantTitleColor);
     assert.notEqual(result.sidebarStates.dormantBackground, 'rgba(0, 0, 0, 0)');
     await screenshot(client, SIDEBAR_STATES_SHOT);
     result.screenshots.sidebarStates = SIDEBAR_STATES_SHOT;

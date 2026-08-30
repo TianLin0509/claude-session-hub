@@ -147,7 +147,7 @@ test('shell keeps one launcher plus Home and Research navigation while retaining
 });
 
 test('workbench derives P0/P1 operational insights without transcript scans', () => {
-  const now = new Date('2026-08-10T07:00:00').getTime();
+  const now = Date.parse('2026-08-09T23:00:00Z'); // 北京时间 2026-08-10 07:00
   const artifactPath = 'C:\\Vibe\\AI\\report.html';
   const sessions = new Map([
     ['long', {

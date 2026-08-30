@@ -31,4 +31,10 @@ assert.match(
   'forced bottom pinning must reuse the same restore path as sticky-bottom refreshes'
 );
 
+assert.match(
+  SRC,
+  /_renderActivePanelFromCache\s*\(meetingData\[meeting\.id\][\s\S]{0,180}forceGroupChatBottom:\s*true[\s\S]{0,100}forceMeetingBottom:\s*true/,
+  'a user-authored group question must force both chat and card layouts to the newest content'
+);
+
 console.log('meeting-room group chat scroll contract ok');

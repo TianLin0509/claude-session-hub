@@ -8,6 +8,8 @@ if (typeof document !== 'undefined') (function () {
   const { ipcRenderer } = require('electron');
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
   const { extractVisibleCardText } = require('./visible-card-text.js');
+  const { formatBeijingClock, formatBeijingDateTime } = require('../core/beijing-time.js');
+  const { buildSessionStatusSummary } = require('../core/session-status-summary.js');
   const {
     guardMarkdownLocalPaths,
     restoreMarkdownLocalPaths,
@@ -194,6 +196,7 @@ if (typeof document !== 'undefined') (function () {
       _renderGcPanelInto(panel, active, state, {
         scroll: groupScroll,
         restoreOpts: { forceBottom: forceGroupChatBottom },
+        forceMeetingBottom: opts.forceMeetingBottom === true,
       });
       return true;
     } catch (e) {
@@ -1320,6 +1323,8 @@ if (typeof document !== 'undefined') (function () {
     const isActive = sub.sid === focused;
     const modelName = s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
     const modelCls = s && s.currentModel && typeof modelClass === 'function' ? modelClass(s.currentModel.id) : '';
+    const sessionSummary = buildSessionStatusSummary(s);
+    const tuningText = [sessionSummary.effort, sessionSummary.speed].filter(Boolean).join(' · ');
     const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
     const ctxCls = _ftCtxClass(ctxPct);
     const labelDisplay = slot.displayLabel;
@@ -1462,7 +1467,7 @@ if (typeof document !== 'undefined') (function () {
 
     const html = _ftHtml(
       kind, isActive, sub.sid, labelDisplay, statusLabel, status,
-      modelName, modelCls, ctxPct, ctxCls, bottomHtml,
+      modelName, modelCls, tuningText, ctxPct, ctxCls, bottomHtml,
       thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge,
       slotIndex, sendStuck, lineageHtml, !!meeting.groupChat
     );
@@ -1526,7 +1531,7 @@ if (typeof document !== 'undefined') (function () {
     return `<div class="mr-card-view-tabs" role="tablist" aria-label="AI cards">${items.join('')}</div>`;
   }
 
-  function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, ctxPct, ctxCls, bottomHtml,
+  function _ftHtml(kind, isActive, sid, name, statusLabel, statusCls, modelName, modelCls, tuningText, ctxPct, ctxCls, bottomHtml,
                    thinkCurrent, thinkTotal, tokensCurrent, tokensTotal, newBadge, slotIndex, sendStuck, lineageHtml, isGroupChat) {
     // AI 群聊主题色按 slot 上色（slot 1/2/3 = 皮卡丘/小火龙/杰尼龟），与 kind 解耦：
     // kind 仍保留为 data-attribute 标识 AI 身份，但 CSS 视觉风格只跟槽位走，
@@ -1544,6 +1549,7 @@ if (typeof document !== 'undefined') (function () {
     if (sendStuck) cls.push('send-stuck');
 
     const modelBadge = modelName ? `<span class="mr-ft-model ${slotCls}">${escapeHtml(modelName)}</span>` : '';
+    const tuningBadge = tuningText ? `<span class="mr-ft-tuning">${escapeHtml(tuningText)}</span>` : '';
     const ctxBadge = ctxPct !== null ? `<span class="mr-ft-ctx ${ctxCls}">Ctx ${ctxPct}%</span>` : '';
 
     // AI 群聊卡片头像与 slot 位置绑定（不与 kind 绑定）。
@@ -1612,7 +1618,7 @@ if (typeof document !== 'undefined') (function () {
             <span class="mr-ft-status ${statusCls}${sendStuck ? ' send-stuck' : ''}">${statusLabel}</span>${newBadge}
             ${timeStat}
           </div>
-          <div class="mr-ft-row2">${modelBadge}${ctxBadge}${tokenStat}</div>
+          <div class="mr-ft-row2">${modelBadge}${tuningBadge}${ctxBadge}${tokenStat}</div>
           ${lineageHtml || ''}
         </div>
       </div>
@@ -1828,6 +1834,8 @@ if (typeof document !== 'undefined') (function () {
       const label = slot.displayLabel || slot.label || slot.kind || `AI ${slot.slotIndex + 1}`;
       const sess = (typeof sessions !== 'undefined' && sessions) ? sessions.get(slot.sid) : null;
       const model = sess && sess.currentModel ? (typeof modelShort === 'function' ? modelShort(sess.currentModel) : sess.currentModel.displayName || sess.currentModel.id || '') : '';
+      const summary = buildSessionStatusSummary(sess);
+      const compact = summary.compact || model;
       const ctxPct = sess && typeof sess.contextPct === 'number' ? sess.contextPct : null;
       const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
       const st = _slotTurnStatus(state, meeting, slot, viewingTurnN);
@@ -1835,7 +1843,7 @@ if (typeof document !== 'undefined') (function () {
         <img src="${_groupLogoSrc(slot.kind)}" alt="${escapeHtml(label)}" />
         <span class="mr-card-roster-main">
           <span class="mr-card-roster-name">${escapeHtml(label)}</span>
-          <span class="mr-card-roster-meta">@m${slot.slotIndex + 1}${model ? ` · ${escapeHtml(model)}` : ''}</span>
+          <span class="mr-card-roster-meta">@m${slot.slotIndex + 1}${compact ? ` · ${escapeHtml(compact)}` : ''}</span>
         </span>
         <span class="mr-card-roster-side">
           <span class="mr-card-roster-status is-${_turnStatusBucket(st.status)}">${escapeHtml(st.label)}</span>
@@ -2179,12 +2187,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _formatGroupChatTime(ts) {
-    if (!ts) return '';
-    const d = new Date(ts);
-    if (Number.isNaN(d.getTime())) return '';
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    return `${hh}:${mm}`;
+    return ts ? formatBeijingClock(ts) : '';
   }
 
   function _renderGroupAvatar(slot, isUser) {
@@ -2427,6 +2430,8 @@ if (typeof document !== 'undefined') (function () {
       const label = slot.displayLabel || slot.label || slot.kind || 'AI';
       const s = (typeof sessions !== 'undefined' && sessions) ? sessions.get(slot.sid) : null;
       const model = s && s.currentModel ? (typeof modelShort === 'function' ? modelShort(s.currentModel) : s.currentModel.displayName || '') : '';
+      const summary = buildSessionStatusSummary(s);
+      const compact = summary.compact || model;
       // 群成员行 ctx 占比统一来自各 CLI 状态栏 → session.contextPct。
       const ctxPct = s && typeof s.contextPct === 'number' ? s.contextPct : null;
       const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
@@ -2442,7 +2447,7 @@ if (typeof document !== 'undefined') (function () {
             <span class="mr-gc-member-logo" aria-hidden="true"><img src="${_groupLogoSrc(slot.kind)}" alt="" /></span>
             <span class="mr-gc-member-main">
               <span class="mr-gc-member-name">${escapeHtml(label)}</span>
-              <span class="mr-gc-member-meta">@m${slot.slotIndex + 1}${model ? ` · ${escapeHtml(model)}` : ''}</span>
+              <span class="mr-gc-member-meta">@m${slot.slotIndex + 1}${compact ? ` · ${escapeHtml(compact)}` : ''}</span>
             </span>
             <span class="mr-gc-member-side">
               <span class="mr-gc-member-ctx ${ctxCls}" title="${escapeHtml(ctxTitle)}">${escapeHtml(ctxText)}</span>
@@ -4216,7 +4221,7 @@ if (typeof document !== 'undefined') (function () {
       const reportHtml = LW.buildReportHtml(goal, state, config, {
         builderLabel: _loopLabelOf(m, builderId),
         reviewerLabels: reviewerIds.map(id => _loopLabelOf(m, id)).join('+'),
-        finishedAt: new Date().toLocaleString(),
+        finishedAt: formatBeijingDateTime(Date.now()),
       });
       const os = require('os'), fs = require('fs'), pathMod = require('path');
       const dir = pathMod.join(os.homedir(), 'Desktop', 'claude-artifacts');
@@ -5030,7 +5035,10 @@ if (typeof document !== 'undefined') (function () {
     pendingMessages.push(pending);
     _gcPendingUserMessageByMeeting[meeting.id] = pendingMessages;
     if (meeting.id === activeMeetingId) {
-      _renderActivePanelFromCache(meetingData[meeting.id] || meeting, { forceGroupChatBottom: true });
+      _renderActivePanelFromCache(meetingData[meeting.id] || meeting, {
+        forceGroupChatBottom: true,
+        forceMeetingBottom: true,
+      });
     }
     return pending;
   }
@@ -5272,11 +5280,13 @@ if (typeof document !== 'undefined') (function () {
     const model = session && session.currentModel
       ? (typeof modelShort === 'function' ? modelShort(session.currentModel) : session.currentModel.displayName || session.currentModel.id || '')
       : '';
+    const summary = buildSessionStatusSummary(session);
+    const compact = summary.compact || model;
     const ctxPct = session && typeof session.contextPct === 'number' ? session.contextPct : null;
     const ctxCls = ctxPct == null ? 'unknown' : _ftCtxClass(ctxPct);
     const ctxText = ctxPct == null ? 'Ctx --' : `Ctx ${ctxPct}%`;
     const ctxTitle = ctxPct == null ? '尚未从该 CLI 状态栏读取上下文占比' : `上下文已用 ${ctxPct}%`;
-    const memberLabel = `@m${slot.slotIndex + 1}${model ? ` · ${model}` : ''}`;
+    const memberLabel = `@m${slot.slotIndex + 1}${compact ? ` · ${compact}` : ''}`;
     let changed = false;
 
     const rows = panel.querySelectorAll(`[data-gc-member-idx="${slot.slotIndex}"]`);

@@ -166,6 +166,9 @@ async function main() {
       api.addFakeSessions(sids.map((sid, idx) => ({
         id: sid, kind: ['claude', 'kimi', 'codex'][idx], title: ['Claude', 'Kimi', 'Codex'][idx],
         status: 'idle', createdAt: now + idx, lastMessageTime: now + idx, meetingId: 'sidebar-gc-meeting',
+        currentModel: { id: ['claude-opus-5', 'kimi-code/k3', 'gpt-5.6-sol'][idx], displayName: ['Claude Opus 5', 'Kimi K3', 'GPT-5.6-SOL'][idx] },
+        effort: idx === 1 ? null : 'max', codexSpeedTier: idx === 2 ? 'fast' : null,
+        fastMode: idx === 0 ? true : null, contextPct: 10 + idx,
       })));
       const meeting = {
         id: 'sidebar-gc-meeting', title: '侧栏置底 · AI 群聊', scene: 'general', groupChat: true,
@@ -272,6 +275,8 @@ async function main() {
       return {
         maxBefore,
         rows,
+        tuning:[...document.querySelectorAll('.mr-ft-tuning')].map(el => el.textContent.trim()),
+        roster:[...document.querySelectorAll('.mr-card-roster-meta')].map(el => el.textContent.trim()),
         copy: {
           length: copiedText.length,
           tail: copiedText.slice(-180),
@@ -283,6 +288,8 @@ async function main() {
     assert.equal(result.groupCards.rows.length, 3, JSON.stringify(result.groupCards));
     assert.ok(result.groupCards.rows.every(row => row.max > 200), JSON.stringify(result.groupCards));
     assert.ok(result.groupCards.rows.every(row => row.gap <= 3), JSON.stringify(result.groupCards));
+    assert.ok(result.groupCards.tuning.includes('max · fast'), JSON.stringify(result.groupCards));
+    assert.ok(result.groupCards.roster.some(text => /gpt-5\.6-sol · max · fast/i.test(text)), JSON.stringify(result.groupCards));
     assert.equal(result.groupCards.copy.hasCommand, true, JSON.stringify(result.groupCards));
     assert.equal(result.groupCards.copy.hasNoise, false, JSON.stringify(result.groupCards));
     await screenshot(client, GROUP_CARD_SHOT);

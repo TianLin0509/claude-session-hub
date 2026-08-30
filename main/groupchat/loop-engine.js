@@ -15,6 +15,7 @@
  *   logger
  */
 const LC = require('../../renderer/loop-workflow.js'); // UMD → node 下为纯逻辑 module.exports
+const { formatBeijingDateTime } = require('../../core/beijing-time.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function createLoopEngine(deps) {
@@ -190,7 +191,7 @@ function createLoopEngine(deps) {
 
       persist(meetingId, state, config);
       try {
-        const html = LC.buildReportHtml(goal, state, config, { builderLabel: labelOf(meeting, builderId), reviewerLabels: reviewerIds.map((r) => labelOf(meeting, r)).join('+'), finishedAt: new Date().toLocaleString() });
+        const html = LC.buildReportHtml(goal, state, config, { builderLabel: labelOf(meeting, builderId), reviewerLabels: reviewerIds.map((r) => labelOf(meeting, r)).join('+'), finishedAt: formatBeijingDateTime(Date.now()) });
         const p = writeReport(html); if (p) logger.log('[loop-engine] report → ' + p);
       } catch (e) { logger.log('[loop-engine] report err: ' + (e && e.message)); }
       progress({ stage: state.status === 'paused' ? (state.currentStep || 'paused') : 'done', status: state.status, error: state.lastError || null });

@@ -14,9 +14,9 @@ const DATA_DIR = path.join(os.tmpdir(), `hub-session-click-${RUN_ID}`, 'data');
 const SCREENSHOT = path.join(ROOT, 'output', 'playwright', 'session-click-reliability', `result-${RUN_ID}.png`);
 const CDP_PORT = Number(process.env.HUB_SESSION_CLICK_E2E_PORT || (19820 + (process.pid % 100)));
 
-async function physicalClickWithSidebarRebuild(client, sessionId) {
+async function physicalClickWithSidebarRebuild(client, sessionId, attribute = 'data-session-id') {
   const point = await client.eval(`(() => {
-    const row = document.querySelector('[data-session-id="${sessionId}"]');
+    const row = document.querySelector('[${attribute}="${sessionId}"]');
     if (!row) return null;
     const rect = row.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -93,6 +93,44 @@ async function physicalClickWithSidebarRebuild(client, sessionId) {
     assert.equal(clicked.selected, 'click-b');
     assert.ok(clicked.activationDelayMs < 500, `navigation feedback took ${clicked.activationDelayMs}ms`);
 
+    const meetingSetup = await client.eval(`(() => {
+      const now = Date.now();
+      const meetingId = 'click-meeting';
+      const subSessions = ['click-meeting-claude', 'click-meeting-codex'];
+      window.__hubE2E.addFakeSessions([
+        { id:subSessions[0], title:'Meeting Claude', kind:'claude', status:'idle', meetingId, lastMessageTime:now },
+        { id:subSessions[1], title:'Meeting Codex', kind:'codex', status:'idle', meetingId, lastMessageTime:now },
+      ]);
+      meetings[meetingId] = {
+        id:meetingId, title:'Meeting click target', scene:'general', mode:'free', groupChat:true,
+        status:'idle', subSessions, participants:[0,1], focusedSub:subSessions[0],
+        createdAt:now, updatedAt:now, lastMessageTime:now,
+      };
+      renderSessionList();
+      return { meetingId, exists:!!document.querySelector('[data-meeting-id="' + meetingId + '"]') };
+    })()`);
+    assert.equal(meetingSetup.exists, true);
+    const meetingReleasedAt = await physicalClickWithSidebarRebuild(client, meetingSetup.meetingId, 'data-meeting-id');
+    const meetingClicked = await client.eval(`(async () => {
+      const deadline = Date.now() + 1200;
+      while (activeMeetingId !== 'click-meeting' && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      const row = document.querySelector('[data-meeting-id="click-meeting"]');
+      return {
+        activeMeetingId,
+        activeSessionId,
+        selected:row?.classList.contains('selected') || false,
+        activationDelayMs:Date.now() - ${meetingReleasedAt},
+        panelVisible:document.getElementById('meeting-room-panel')?.style.display !== 'none',
+      };
+    })()`);
+    assert.equal(meetingClicked.activeMeetingId, 'click-meeting');
+    assert.equal(meetingClicked.activeSessionId, null);
+    assert.equal(meetingClicked.selected, true);
+    assert.equal(meetingClicked.panelVisible, true);
+    assert.ok(meetingClicked.activationDelayMs < 500, `meeting navigation feedback took ${meetingClicked.activationDelayMs}ms`);
+
     const dormantSetup = await client.eval(`(() => {
       const originalInvoke = ipcRenderer.invoke;
       window.__sessionClickOriginalInvoke = originalInvoke;
@@ -135,7 +173,7 @@ async function physicalClickWithSidebarRebuild(client, sessionId) {
     const shot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(SCREENSHOT, Buffer.from(shot.data, 'base64'));
     console.log(JSON.stringify({
-      ok: true, releasedAt, setup, clicked, dormantPending, screenshot: SCREENSHOT, pid: hub.pid,
+      ok: true, releasedAt, setup, clicked, meetingClicked, dormantPending, screenshot: SCREENSHOT, pid: hub.pid,
     }, null, 2));
   } finally {
     if (client) await client.close().catch(() => {});

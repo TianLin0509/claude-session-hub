@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { formatAbsoluteTime } = require('../core/beijing-time.js');
 
 const MEMO_OPEN_KEY = 'claude-hub-memo-open';
 
@@ -33,11 +34,7 @@ function createMemoPanel(deps) {
   }
 
   function formatMemoTime(ts) {
-    const d = new Date(ts);
-    const now = new Date();
-    const sameDay = d.toDateString() === now.toDateString();
-    if (sameDay) return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-    return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+    return formatAbsoluteTime(ts);
   }
 
   function renderList() {

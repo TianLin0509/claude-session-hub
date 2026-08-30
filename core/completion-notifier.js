@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { formatBeijingDateTime } = require('./beijing-time.js');
 
 const DEFAULT_NOTIFICATION_CONFIG = Object.freeze({
   enabled: false,
@@ -146,11 +147,10 @@ function formatDuration(durationMs) {
 }
 
 function formatCompletedAt(timestamp) {
-  const date = new Date(Number(timestamp) || Date.now());
   try {
-    return date.toLocaleString('zh-CN', { hour12: false });
+    return formatBeijingDateTime(Number(timestamp) || Date.now());
   } catch {
-    return date.toISOString();
+    return new Date(Number(timestamp) || Date.now()).toISOString();
   }
 }
 

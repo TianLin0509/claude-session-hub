@@ -1,5 +1,6 @@
 const { latestActivityTime } = require('../core/session-recency.js');
 const { createGlobalSessionSearch } = require('./global-session-search.js');
+const { formatBeijingDateTime } = require('../core/beijing-time.js');
 
 function highlightMatch(text, query, escapeHtml) {
   if (!query) return escapeHtml(text);
@@ -150,7 +151,7 @@ function createPastSessionModals({
       );
       const row = document.createElement('div');
       row.className = 'modal-row';
-      const mtimeStr = it.mtime ? new Date(it.mtime).toLocaleString('zh-CN', { hour12: false }) : '';
+      const mtimeStr = it.mtime ? formatBeijingDateTime(it.mtime) : '';
       const preview = it.firstUserMessage || '(no user prompt captured)';
       const modelShort = (it.model || '').replace(/^claude-/, '').replace(/-\d+$/, '');
       row.innerHTML = `

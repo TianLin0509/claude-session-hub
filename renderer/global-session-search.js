@@ -3,6 +3,7 @@
 const { recordSearch } = require('../core/search-recent.js');
 const { buildTitleIndex, mergeTitleHits, searchTitles } = require('../core/title-index.js');
 const { isBlockingModalOpen } = require('./modal-layer-guard.js');
+const { beijingParts, formatBeijingDateTime } = require('../core/beijing-time.js');
 
 const PROVIDER_META = Object.freeze({
   claude: { label: 'Claude', className: 'provider-claude' },
@@ -69,14 +70,15 @@ function formatSearchTime(timestamp, now = Date.now()) {
   if (diff < hour) return `${Math.floor(diff / minute)} 分钟前`;
   if (diff < day) return `${Math.floor(diff / hour)} 小时前`;
   if (diff < 2 * day) return '昨天';
-  const date = new Date(at);
-  const year = date.getFullYear() === new Date(now).getFullYear() ? '' : `${date.getFullYear()}-`;
-  return `${year}${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const date = beijingParts(at);
+  const current = beijingParts(now);
+  const year = date.year === current.year ? '' : `${date.year}-`;
+  return `${year}${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')}`;
 }
 
 function formatAbsolute(timestamp) {
   if (!timestamp) return '';
-  try { return new Date(timestamp).toLocaleString('zh-CN', { hour12: false }); }
+  try { return formatBeijingDateTime(timestamp); }
   catch { return ''; }
 }
 

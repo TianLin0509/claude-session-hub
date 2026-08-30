@@ -10,6 +10,7 @@
  */
 
 const ACT_ORDER = ['立会', '建库', '点评', '辩论', '收敛'];
+const { beijingParts, formatBeijingClock } = require('../core/beijing-time.js');
 
 function escapeHtml(s) {
   return String(s == null ? '' : s)
@@ -198,7 +199,10 @@ function chairHtml(report) {
 
 function _fmtTime(ts) {
   if (!ts) return '';
-  try { const d = new Date(ts); const p = n => String(n).padStart(2, '0'); return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; } catch (e) { return ''; }
+  try {
+    const parts = beijingParts(ts);
+    return parts ? `${parts.month}-${String(parts.day).padStart(2, '0')} ${formatBeijingClock(ts)}` : '';
+  } catch (e) { return ''; }
 }
 
 // 五幕可点 tab（点击切换查看某幕各委员发言）。on=当前查看的幕，done=已完成的幕，has=该幕有发言。

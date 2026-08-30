@@ -131,6 +131,31 @@ async function main() {
       await wait(220);
       const completed = snapshot();
 
+      // A member repaired from its live PTY frame must lift the parent meeting
+      // into 运行中 too; this is independent of dispatcher gcWorking heartbeats.
+      const ptyFirst = api.applyTerminalRuntimeFrame(sids[1], [
+        '• Working (25s • esc to interrupt)',
+        '› Use /skills to list available skills',
+        'gpt-5.6-sol max fast · Context 92% left · C:\\\\Vibe\\\\repo',
+      ], now + 1000);
+      const ptySecond = api.applyTerminalRuntimeFrame(sids[1], [
+        '• Working (26s • esc to interrupt)',
+        '› Use /skills to list available skills',
+        'gpt-5.6-sol max fast · Context 92% left · C:\\\\Vibe\\\\repo',
+      ], now + 1500);
+      await wait(220);
+      const ptyRunning = snapshot();
+      api.applyTerminalRuntimeFrame(sids[1], [
+        '› Use /skills to list available skills',
+        'gpt-5.6-sol max fast · Context 91% left · C:\\\\Vibe\\\\repo',
+      ], now + 2000);
+      api.applyTerminalRuntimeFrame(sids[1], [
+        '› Use /skills to list available skills',
+        'gpt-5.6-sol max fast · Context 91% left · C:\\\\Vibe\\\\repo',
+      ], now + 4200);
+      await wait(220);
+      const ptyCompleted = snapshot();
+
       // 漏掉 complete 时也不能永久黄灯；8 秒无 1.5 秒心跳后自动回收。
       ipc.emit('groupchat-turn-targets', {}, { meetingId, turnNum: 2, sids: [sids[0]] });
       await wait(220);
@@ -144,7 +169,11 @@ async function main() {
       // 留一张用户可见的运行态截图作为 GUI 证据。
       ipc.emit('groupchat-turn-targets', {}, { meetingId, turnNum: 3, sids: [sids[0]] });
       await wait(220);
-      return { initial, targeted, heartbeat, completed, beforeExpiry, expired, final: snapshot() };
+      return {
+        initial, targeted, heartbeat, completed,
+        ptyFirst, ptySecond, ptyRunning, ptyCompleted,
+        beforeExpiry, expired, final: snapshot(),
+      };
     })()`);
 
     console.log(JSON.stringify({ diagnostic: result }, null, 2));
@@ -161,6 +190,12 @@ async function main() {
     }
     assert.equal(result.completed.stateText, '', JSON.stringify(result.completed));
     assert.doesNotMatch(result.completed.claudeClass, /mini-st-thinking/);
+    assert.equal(result.ptyFirst.status, 'idle');
+    assert.equal(result.ptySecond.status, 'running');
+    assert.equal(result.ptyRunning.stateText, '运行中', JSON.stringify(result.ptyRunning));
+    assert.match(result.ptyRunning.codexClass, /mini-st-thinking/);
+    assert.equal(result.ptyCompleted.stateText, '', JSON.stringify(result.ptyCompleted));
+    assert.doesNotMatch(result.ptyCompleted.codexClass, /mini-st-thinking/);
     assert.equal(result.expired.stateText, '', JSON.stringify(result.expired));
     assert.doesNotMatch(result.expired.claudeClass, /mini-st-thinking/);
 
@@ -170,10 +205,15 @@ async function main() {
   } finally {
     if (client) await client.close().catch(() => {});
     if (hub) await gracefulQuit(hub).catch(() => {});
+    await _waitMs(750);
     const resolved = path.resolve(TEMP_ROOT);
     if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
         && path.basename(resolved).startsWith('hub-groupchat-running-')) {
-      fs.rmSync(resolved, { recursive: true, force: true });
+      try {
+        fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+      } catch (cleanupError) {
+        console.warn('[groupchat-running-e2e] cleanup skipped:', cleanupError && cleanupError.message);
+      }
     }
   }
 }

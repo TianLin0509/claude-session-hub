@@ -5,7 +5,12 @@ const fs = require('fs');
 const path = require('path');
 const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexKind, isKimiCliKind } = require('../core/ai-kinds.js');
 const { buildSessionResumeMeta, sessionModelId, supportsForkSession } = require('../core/session-capabilities.js');
-const { formatAbsoluteTime } = require('./format-time.js');
+const { buildSessionStatusSummary } = require('../core/session-status-summary.js');
+const {
+  formatAbsoluteTime,
+  formatBeijingClock,
+  formatBeijingMonthDay,
+} = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
 const { fileURLToPath } = require('url');
@@ -655,6 +660,7 @@ if (operationsReviewModalEl && operationsReviewModalEl.parentElement === termina
 function preserveAndClearTerminalPanel() {
   const preserved = [
     document.getElementById('msg-overlay'),
+    document.getElementById('card-session-status'),
     document.getElementById('card-question-nav'),
     document.querySelector('.view-toggle'),
     document.getElementById('completion-notification-toggle'),
@@ -754,7 +760,7 @@ memoPanel.init();
 function formatTime(ts) {
   const diff = Date.now() - ts;
   if (diff < 2 * 3600000) {
-    return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    return formatBeijingClock(ts);
   }
   if (diff < 24 * 3600000) return `${Math.floor(diff / 3600000)}小时前`;
   return `${Math.floor(diff / 86400000)}天前`;
@@ -885,8 +891,7 @@ function formatRelativeTime(ts) {
   if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
   if (diff < 86400) return Math.floor(diff / 3600) + '小时前';
   if (diff < 604800) return Math.floor(diff / 86400) + '天前';
-  const d = new Date(parseInt(ts) * 1000);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+  return formatBeijingMonthDay(parseInt(ts) * 1000);
 }
 
 function paintSidebarActiveTarget({ sessionId = null, meetingId = null } = {}) {
@@ -3401,13 +3406,59 @@ function syncTerminalRuntimeStatusTicker(session) {
 
 // 2026-07-19 道雪 · 方案C：刷新浮动输入栏的 ctx chip 与中断钮（跟随 active session 状态）。
 //   调用时机：mountFloatingInput 后 + 每次 renderSessionList（status 事件驱动）。
+function updateCardSessionStatus(session) {
+  const element = document.getElementById('card-session-status');
+  if (!element || !terminalPanelEl) return;
+  const summary = session ? buildSessionStatusSummary(session) : null;
+  const visible = currentView === 'card' && !!summary
+    && !!(summary.compact || summary.contextText || summary.cwd);
+  terminalPanelEl.classList.toggle('card-status-visible', visible);
+  if (!visible) {
+    element.replaceChildren();
+    element.dataset.signature = '';
+    element.removeAttribute('aria-label');
+    element.removeAttribute('title');
+    return;
+  }
+
+  const signature = JSON.stringify(summary);
+  if (element.dataset.signature === signature) return;
+  element.dataset.signature = signature;
+  element.dataset.provider = summary.kind;
+  element.replaceChildren();
+  const parts = [
+    ['model', summary.model],
+    ['effort', summary.effort],
+    ['speed', summary.speed],
+    ['context', summary.contextText],
+    ['cwd', summary.cwd],
+  ].filter(([, value]) => value);
+  parts.forEach(([key, value], index) => {
+    if (index > 0) {
+      const separator = document.createElement('span');
+      separator.className = 'card-session-status-sep';
+      separator.textContent = '·';
+      element.appendChild(separator);
+    }
+    const part = document.createElement('span');
+    part.className = `card-session-status-part card-session-status-${key}`;
+    part.textContent = value;
+    if (key === 'cwd') part.title = value;
+    element.appendChild(part);
+  });
+  element.setAttribute('aria-label', summary.ariaLabel || parts.map(([, value]) => value).join('，'));
+  element.title = parts.map(([, value]) => value).join(' · ');
+}
+
 function updateFloatingBarState() {
   if (!activeSessionId) {
+    updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
   const s = sessions.get(activeSessionId);
   if (!s) {
+    updateCardSessionStatus(null);
     syncTerminalRuntimeStatusTicker(null);
     return;
   }
@@ -3417,6 +3468,7 @@ function updateFloatingBarState() {
   const status = terminalPanelEl && terminalPanelEl.querySelector('.terminal-header .terminal-status');
   if (status) paintTerminalRuntimeStatus(status, s);
   syncTerminalRuntimeStatusTicker(s);
+  updateCardSessionStatus(s);
 
   const bar = document.querySelector('.terminal-panel .floating-input-bar');
   if (!bar) return;
