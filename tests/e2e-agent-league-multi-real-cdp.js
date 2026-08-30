@@ -26,6 +26,7 @@ const SATURDAY_DATE = '2026-08-29';
 const BASELINE_ID = 'chuxin-baseline';
 const TREND_ID = 'trend-rider';
 const PICKER_RE = /Resume a previous session|Select a session to resume|resume picker/i;
+const PROGRESS_ONLY = process.env.AGENT_LEAGUE_PROGRESS_ONLY === '1';
 
 const evidence = {
   suite: 'multi-agent-real-click-competition',
@@ -230,6 +231,8 @@ function safeCleanup() {
 
     // createAgent leaves the second Agent selected, so the global action must
     // jump to that selected contestant while both are running.
+    check('M1-global-action-label', '顶部动作明确表示会启动全部 Agent', true,
+      await ctx.client.eval(`document.querySelector('[data-action="run-day"]').textContent.includes('全体盘前决策')`));
     await ctx.client.eval(`document.querySelector('[data-action="close-detail"]').click();document.querySelector('[data-action="run-day"]').click()`);
     const selectedPtyId = await waitPty(ctx.client, 'selected trend Agent PTY');
     league = await waitFor(ctx.client, `(async()=>{const v=await require('electron').ipcRenderer.invoke('agent-league:list',{});return v.run&&v.run.active.length===2?v:null})()`, 'two concurrent active Agents', 30000);
@@ -243,11 +246,38 @@ function safeCleanup() {
     const shotTrendPty = await screenshot(ctx.client, '02-trend-agent-running-pty.png', 'M1-auto-jump-selected');
 
     await openLeague(ctx.client);
+    const progressUi = await ctx.client.eval(`(() => ({
+      buttonText: document.querySelector('[data-action="run-day"]').textContent.trim(),
+      buttonDisabled: document.querySelector('[data-action="run-day"]').disabled,
+      subtitle: document.querySelector('[data-role="board-subtitle"]').textContent,
+      rowStatuses: [...document.querySelectorAll('.cxl-row .cxl-status')].map(node => node.textContent.trim()),
+    }))()`);
+    check('M1-progress-button-enabled', '运行中顶部按钮仍可点击查看进度', false, progressUi.buttonDisabled, { progressUi });
+    check('M1-progress-button-label', '运行中按钮明确显示两名 Agent 的进度入口', true, /查看决策进度（2）/.test(progressUi.buttonText), { progressUi });
+    check('M1-progress-subtitle', '排行榜明确显示两名 Agent 同时运行', true, /2 运行中/.test(progressUi.subtitle), { progressUi });
+    check('M1-progress-row-status', '两行均显示 DRAFT/Hook 运行阶段而非待首次运行', true,
+      progressUi.rowStatuses.length === 2 && progressUi.rowStatuses.every(value => /DRAFT 中|Hook 中/.test(value)), { progressUi });
+    const shotProgress = await screenshot(ctx.client, '03-two-agent-progress-entry.png', 'M1-progress-button-enabled');
+
     await openDrawer(ctx.client, BASELINE_ID);
-    await ctx.client.eval(`document.querySelector('[data-action="open-pty"]').click()`);
-    check('M1-baseline-pty', '可在并发运行时切到初心基准 PTY', baselineHubId, await waitPty(ctx.client, 'baseline concurrent PTY'));
+    await ctx.client.eval(`document.querySelector('[data-action="close-detail"]').click();document.querySelector('[data-action="run-day"]').click()`);
+    check('M1-baseline-pty', '选中初心基准后可用同一顶部按钮查看其 PTY', baselineHubId, await waitPty(ctx.client, 'baseline concurrent PTY'));
     check('M1-baseline-no-picker', '初心基准 PTY 不出现 resume picker', false, PICKER_RE.test(await buffer(ctx.client, baselineHubId)));
-    const shotBaselinePty = await screenshot(ctx.client, '03-baseline-agent-running-pty.png', 'M1-baseline-pty');
+    const shotBaselinePty = await screenshot(ctx.client, '04-baseline-agent-running-pty.png', 'M1-baseline-pty');
+
+    if (PROGRESS_ONLY) {
+      evidence.progressOnly = true;
+      evidence.sessions = { baselineHubId, trendHubId };
+      evidence.phase1Screenshots = [shotBoard, shotTrendPty, shotProgress, shotBaselinePty];
+      await stop(ctx, 'multi-phase-1-run');
+      ctx = null;
+      evidence.finishedAt = new Date().toISOString();
+      evidence.ok = evidence.checks.every(row => row.pass);
+      fs.writeFileSync(path.join(OUTPUT, 'evidence.json'), JSON.stringify(evidence, null, 2), 'utf8');
+      log('MULTI AGENT PROGRESS E2E COMPLETE', { checks: evidence.checks.length, screenshots: evidence.screenshots.length, output: OUTPUT });
+      console.log(JSON.stringify({ ok: true, progressOnly: true, output: OUTPUT, checks: evidence.checks.length, screenshots: evidence.screenshots.length, sessions: evidence.sessions }, null, 2));
+      return;
+    }
 
     log('waiting for two real Codex DRAFT and Hook chains');
     league = await waitRunFinished(ctx.client, 'daily');
@@ -292,7 +322,7 @@ function safeCleanup() {
       check(`M1-${row.id}-lesson`, `${row.id} 写入独立待验证经验`, value => value >= 1, row.recentLessons.length, { expectedText: '>=1' });
     }
     evidence.sessions = { baselineHubId, trendHubId, baselineSid, trendSid };
-    evidence.phase1Screenshots = [shotBoard, shotTrendPty, shotBaselinePty];
+    evidence.phase1Screenshots = [shotBoard, shotTrendPty, shotProgress, shotBaselinePty];
     await stop(ctx, 'multi-phase-1-run');
     ctx = null;
 

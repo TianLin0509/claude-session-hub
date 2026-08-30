@@ -79,8 +79,13 @@ function createAgentLeaguePanel(options = {}) {
     const status = String(agent.session && agent.session.status || 'unbound');
     const native = agent.session && agent.session.nativeSession || {};
     const nativeBound = !!(native.codexSid || native.ccSessionId || native.geminiChatId || native.kimiSid);
+    if (agent.session && agent.session.live && status === 'running') {
+      if (agent.latestWeekly && agent.latestWeekly.status === 'running') return ['running', '周复盘中'];
+      if (agent.latestDaily && (agent.latestDaily.stage === 'hook' || agent.latestDaily.status === 'hook-running')) return ['running', 'Hook 中'];
+      return ['running', 'DRAFT 中'];
+    }
     if (agent.session && agent.session.hubSessionId && !nativeBound) return ['pending', '待首次运行'];
-    if (agent.session && agent.session.live) return status === 'running' ? ['running', '运行中'] : ['active', status === 'idle' ? '空闲' : '活跃'];
+    if (agent.session && agent.session.live) return ['active', status === 'idle' ? '空闲' : '活跃'];
     if (!agent.session || !agent.session.hubSessionId || status === 'unbound') return ['unbound', '未创建'];
     return ['sleep', '休眠'];
   }
@@ -100,11 +105,11 @@ function createAgentLeaguePanel(options = {}) {
     root.classList.add('cxl-root');
     root.innerHTML = `
       <header class="cxl-page-head">
-        <div><p data-role="league-eyebrow">AGENT LEAGUE · DAILY DECISION · NATIVE HUB SESSION</p><h1 data-role="league-title">Agent 投资联赛</h1><span data-role="league-description">交易日盘前预案 → 同 Session 自检 Hook → 开盘一次执行；周六沉淀。点击一行查看完整思考与原生 Session。</span></div>
+        <div><p data-role="league-eyebrow">AGENT LEAGUE · DAILY DECISION · NATIVE HUB SESSION</p><h1 data-role="league-title">Agent 投资联赛</h1><span data-role="league-description">“全体盘前决策”会一次启动所有尚未完成的 Agent；运行中可选择 Agent 并查看其 DRAFT / Hook 进度。</span></div>
         <div class="cxl-page-actions">
           <button type="button" class="cxl-btn debug" data-action="toggle-virtual">${icon('flask')}虚拟调试</button>
           <button type="button" class="cxl-btn" data-action="new-agent">${icon('plus')}新增 Agent</button>
-          <button type="button" class="cxl-btn primary" data-action="run-day">${icon('play')}盘前决策</button>
+          <button type="button" class="cxl-btn primary" data-action="run-day">${icon('play')}全体盘前决策</button>
           <button type="button" class="cxl-btn" data-action="execute-open">${icon('sunrise')}开盘执行</button>
           <button type="button" class="cxl-btn" data-action="record-close">${icon('check')}收盘记账</button>
           <button type="button" class="cxl-btn" data-action="run-weekly">${icon('book')}周六沉淀</button>
@@ -283,14 +288,14 @@ function createAgentLeaguePanel(options = {}) {
       : 'AGENT LEAGUE · DAILY DECISION · NATIVE HUB SESSION';
     root.querySelector('[data-role="league-title"]').textContent = isVirtual ? 'Agent 联赛 · 虚拟实盘' : 'Agent 投资联赛';
     root.querySelector('[data-role="league-description"]').textContent = isVirtual
-      ? '用真实 AI Session 跑盘前决策，用确定性合成行情推进开盘、收盘和下一交易日；全部状态与正式联赛隔离。'
-      : '交易日盘前预案 → 同 Session 自检 Hook → 开盘一次执行；周六沉淀。点击一行查看完整思考与原生 Session。';
+      ? '“全体虚拟盘前决策”会启动沙盒中的全部 Agent；运行中可选择 Agent 并查看其 DRAFT / Hook 进度。'
+      : '“全体盘前决策”会一次启动所有尚未完成的 Agent；运行中可选择 Agent 并查看其 DRAFT / Hook 进度。';
     const virtualToggle = root.querySelector('[data-action="toggle-virtual"]');
     virtualToggle.innerHTML = isVirtual ? `${icon('close')}退出虚拟调试` : `${icon('flask')}虚拟调试`;
     virtualToggle.classList.toggle('active', isVirtual);
     root.querySelector('[data-role="league-note"]').innerHTML = isVirtual
-      ? `<b>${state.agents.length} 个隔离 Agent · 虚拟交易日 ${escapeHtml(virtual.virtualDate || '—')} · ${escapeHtml(virtual.scenarioLabel || '合成行情')}</b>　不读取真实开收盘，不写正式持仓、统计或 Session。`
-      : `<b>${state.agents.length} 个 Agent · 每席 ¥500,000 · 沪深全市场（不含北交所）</b>　费用：佣金双边万一、卖出印花税千一；投资风险由 Agent 自检，申报单位由系统机械执行。`;
+      ? `<b>${state.agents.length} 个隔离 Agent · 虚拟交易日 ${escapeHtml(virtual.virtualDate || '—')} · ${escapeHtml(virtual.scenarioLabel || '合成行情')}</b>　一次启动全部 Agent；运行中再次点击顶部按钮会打开选中 Agent 的进度。`
+      : `<b>${state.agents.length} 个 Agent · 每席 ¥500,000 · 沪深全市场（不含北交所）</b>　一次启动全部 Agent；运行中再次点击顶部按钮会打开选中 Agent 的进度。`;
     const lab = root.querySelector('[data-role="virtual-lab"]');
     lab.hidden = !isVirtual;
     if (isVirtual) renderVirtualLab();
@@ -299,8 +304,14 @@ function createAgentLeaguePanel(options = {}) {
     auto.classList.toggle('active', !!state.schedule.enabled);
     auto.textContent = state.schedule.enabled ? `自动 ${state.schedule.decisionTime || '08:30'} / 周六 ${state.schedule.weeklyTime || '10:00'}` : '自动赛程未启用';
     const runButton = root.querySelector('[data-action="run-day"]');
-    runButton.disabled = !!state.run || (isVirtual && virtual.phase !== 'pre-market');
-    runButton.innerHTML = state.run ? `${icon('play')}赛程运行中` : `${icon('play')}${isVirtual ? '虚拟盘前决策' : '盘前决策'}`;
+    const runningCount = state.run ? (state.run.active || []).length + (state.run.queue || []).length : 0;
+    runButton.disabled = !state.run && isVirtual && virtual.phase !== 'pre-market';
+    runButton.innerHTML = state.run
+      ? `${icon('terminal')}${state.run.mode === 'weekly' ? '查看沉淀进度' : `查看决策进度${runningCount ? `（${runningCount}）` : ''}`}`
+      : `${icon('play')}${isVirtual ? '全体虚拟盘前决策' : '全体盘前决策'}`;
+    runButton.title = state.run
+      ? '全部符合条件的 Agent 已在运行或排队；选择排行榜中的 Agent 后点击这里查看它的 PTY。'
+      : '一次启动所有尚未完成当日决策的 Agent。';
     for (const action of ['execute-open', 'record-close', 'run-weekly']) {
       const button = root.querySelector(`[data-action="${action}"]`);
       if (!button) continue;
@@ -310,8 +321,11 @@ function createAgentLeaguePanel(options = {}) {
       else button.disabled = !!state.run || virtual.phase !== 'closed';
     }
     root.querySelector('[data-role="board-title"]').textContent = isVirtual ? '虚拟排行榜' : '实时排行榜';
+    const runTotal = state.run
+      ? (state.run.completed || []).length + (state.run.active || []).length + (state.run.queue || []).length + (state.run.failed || []).length
+      : 0;
     root.querySelector('[data-role="board-subtitle"]').textContent = state.run
-      ? `${state.run.mode === 'weekly' ? '周度沉淀' : '盘前决策'} ${state.run.decisionDate || state.run.asOf} · ${state.run.completed.length}/${state.agents.length} 已完成 · ${state.run.active.length} 运行中`
+      ? `${state.run.mode === 'weekly' ? '周度沉淀' : '全体盘前决策'} ${state.run.decisionDate || state.run.asOf} · ${state.run.completed.length}/${runTotal} 已完成 · ${state.run.active.length} 运行中${state.run.queue.length ? ` · ${state.run.queue.length} 排队` : ''}`
       : isVirtual
         ? `${escapeHtml(virtual.virtualDate || '—')} · ${virtualPhaseLabel(virtual.phase)} · 最近决策 ${state.schedule.lastDecisionDate || '无'} · 最近收盘 ${state.schedule.lastResultDate || '无'}`
         : `最近决策：${state.schedule.lastDecisionDate || '尚未运行'} · 开盘执行：${state.schedule.lastExecutionDate || '无'} · 点击任意 Agent 行查看详情`;
@@ -621,10 +635,15 @@ function createAgentLeaguePanel(options = {}) {
 
   function actionAgentId(result = {}) {
     const run = result.run || {};
+    const activeIds = Array.isArray(run.active) ? run.active : [];
+    const queuedIds = Array.isArray(run.queue) ? run.queue : [];
+    const selectedRunning = state.selectedId && [...activeIds, ...queuedIds].includes(state.selectedId)
+      ? state.selectedId : null;
     const candidateIds = [
+      selectedRunning,
+      ...activeIds,
+      ...queuedIds,
       state.selectedId,
-      ...(Array.isArray(run.active) ? run.active : []),
-      ...(Array.isArray(run.queue) ? run.queue : []),
       state.agents[0] && state.agents[0].id,
     ].filter(Boolean);
     return candidateIds.find((id) => state.agents.some((agent) => agent.id === id)) || null;
@@ -637,6 +656,14 @@ function createAgentLeaguePanel(options = {}) {
   }
 
   async function runDay(button) {
+    if (state.run) {
+      const activeCount = (state.run.active || []).length;
+      const queuedCount = (state.run.queue || []).length;
+      notify(`全部符合条件的 Agent 已启动：${activeCount} 个运行中${queuedCount ? `，${queuedCount} 个排队中` : ''}。正在打开选中 Agent 的进度。`);
+      const opened = await jumpToActionPty({ run: state.run });
+      if (!opened || !opened.ok) notify('赛程仍在运行，但对应 Agent PTY 暂时无法打开', true);
+      return;
+    }
     button.disabled = true;
     const previous = button.innerHTML;
     button.innerHTML = `${icon('terminal')}启动并跳转 PTY…`;
@@ -645,7 +672,12 @@ function createAgentLeaguePanel(options = {}) {
       if (!result || !result.ok) throw new Error(result && result.message || '赛程启动失败');
       const target = result.decisionDate || result.run && result.run.decisionDate || '';
       const moved = result.scheduledFrom ? `（${result.scheduledFrom} 休市，已自动安排 ${target}）` : target ? `（${target}）` : '';
-      notify(result.alreadyRun ? `${target || '该交易日'}的盘前决策已经完成，正在打开对应 PTY` : `盘前决策已启动${moved}，正在打开对应 Agent PTY`);
+      const startedCount = result.run
+        ? (result.run.active || []).length + (result.run.queue || []).length
+        : state.agents.length;
+      notify(result.alreadyRun
+        ? `${target || '该交易日'}的盘前决策已经完成，正在打开对应 PTY`
+        : `${startedCount} 个 Agent 的盘前决策已统一启动${moved}；系统会按并发上限运行或排队。`);
       const opened = await jumpToActionPty(result);
       if (!opened || !opened.ok) throw new Error('赛程已启动，但对应 PTY 跳转失败');
     } catch (error) {

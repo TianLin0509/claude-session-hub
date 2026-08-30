@@ -39,8 +39,13 @@ test('leaderboard keeps eight compact rows and opens real Session card or PTY vi
   assert.match(ui, /leagueChannel\('save-prompt-file'\)/);
   assert.match(ui, /受保护的机器状态/);
   assert.match(ui, /待首次运行/);
+  assert.match(ui, /status === 'running'[\s\S]*Hook 中/);
+  assert.match(ui, /全体盘前决策/);
+  assert.match(ui, /查看决策进度/);
+  assert.match(ui, /if \(state\.run\)[\s\S]*jumpToActionPty\(\{ run: state\.run \}\)/);
+  assert.match(ui, /runButton\.disabled = !state\.run/);
   assert.match(ui, /leagueChannel\('ensure-session'\)[\s\S]*bridge\.open\(ensured\.session\.id, view, ensured\.session\)/);
-  assert.match(ui, /盘前决策已启动/);
+  assert.match(ui, /盘前决策已统一启动/);
   assert.match(ui, /jumpToActionPty/);
   assert.match(ui, /执行并跳转 PTY/);
   assert.match(ui, /data-action="open-card"/);
