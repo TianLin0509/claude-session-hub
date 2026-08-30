@@ -248,6 +248,7 @@
    pushed “复制对话” outside the terminal panel and covered the title/status row. */
 @media (max-width: 900px) {
   .terminal-panel.card-view-active .terminal-header { padding-top: 42px; }
+  .chatgpt-bridge-actions { right: 220px; }
   .terminal-panel.card-view-active .recent-turn-copy {
     left: 16px;
     right: auto;
@@ -325,11 +326,54 @@
   outline-offset: 2px;
 }
 
-/* 卡片视图：按完整问答轮次复制纯文本，放在通知开关左侧。 */
-.recent-turn-copy {
+/* 公司 ChatGPT 中转是跨视图能力：不依附卡片视图的“复制对话”显隐。 */
+.chatgpt-bridge-actions {
   position: absolute;
   top: 8px;
   right: 414px;
+  z-index: 101;
+  min-height: 25px;
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid rgba(var(--rgb-info), .38);
+  border-radius: var(--radius-sm);
+  background: rgba(var(--rgb-info), .08);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+}
+.chatgpt-bridge-actions-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  color: var(--link);
+  font-weight: 700;
+}
+.chatgpt-bridge-actions button {
+  min-height: 23px;
+  padding: 0 8px;
+  border: 0;
+  border-left: 1px solid rgba(var(--rgb-info), .28);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chatgpt-bridge-actions button:hover { color: var(--text-primary); background: rgba(var(--rgb-info), .10); }
+.chatgpt-bridge-actions button:disabled { cursor: wait; opacity: .55; }
+.chatgpt-bridge-actions button:focus-visible {
+  outline: 2px solid rgba(var(--rgb-info), .7);
+  outline-offset: -2px;
+}
+
+/* 卡片视图：按完整问答轮次复制纯文本，放在中转入口左侧。 */
+.recent-turn-copy {
+  position: absolute;
+  top: 8px;
+  right: 560px;
   z-index: 100;
   min-height: 25px;
   display: inline-flex;
@@ -341,6 +385,13 @@
   color: var(--text-muted);
   font-family: inherit;
   font-size: 11px;
+}
+
+@media (max-width: 650px) {
+  .terminal-panel .terminal-header { padding-top: 42px; }
+  .terminal-panel.card-view-active .terminal-header { padding-top: 72px; }
+  .chatgpt-bridge-actions { left: 16px; right: auto; }
+  .terminal-panel.card-view-active .recent-turn-copy { top: 40px; }
 }
 .recent-turn-copy[hidden] { display: none !important; }
 .recent-turn-copy-label {

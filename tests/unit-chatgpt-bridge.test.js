@@ -211,8 +211,20 @@ test('Hub UI exposes bridge buttons, card action, path action, and terminal sele
   const html = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8');
   const card = fs.readFileSync(path.join(root, 'renderer', 'turn-card-renderer.js'), 'utf8');
   const renderer = fs.readFileSync(path.join(root, 'renderer', 'renderer.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'renderer', 'styles', 'card-view.css'), 'utf8');
   assert.match(html, /id="chatgpt-bridge-pull"/);
   assert.match(html, /id="chatgpt-bridge-push"/);
+  const bridgeTag = html.match(/<div class="chatgpt-bridge-actions"[^>]*>/)?.[0] || '';
+  assert.ok(bridgeTag, 'bridge actions need a dedicated toolbar');
+  assert.doesNotMatch(bridgeTag, /\bhidden\b/, 'bridge toolbar must be visible by default');
+  const recentStart = html.indexOf('id="recent-turn-copy"');
+  const recentEnd = html.indexOf('</div>', recentStart);
+  const recentBlock = html.slice(recentStart, recentEnd);
+  assert.doesNotMatch(recentBlock, /chatgpt-bridge-(?:pull|push)/,
+    'bridge actions must not inherit recent-turn-copy card-view visibility');
+  assert.match(css, /\.chatgpt-bridge-actions\s*\{[\s\S]*?display:\s*inline-flex/);
+  assert.match(renderer, /getElementById\('chatgpt-bridge-actions'\)/,
+    'terminal panel rebuild must preserve the always-visible bridge toolbar');
   assert.match(html, /data-action="sync-chatgpt"[^>]*>同步选中文字到公司 ChatGPT/);
   assert.match(html, /data-action="sync-chatgpt"[^>]*>同步内容到公司 ChatGPT/);
   assert.match(card, /data-action="sync-chatgpt" title="同步此回答到公司 ChatGPT"/);

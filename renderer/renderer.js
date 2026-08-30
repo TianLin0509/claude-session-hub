@@ -595,6 +595,7 @@ function preserveAndClearTerminalPanel() {
     document.getElementById('card-question-nav'),
     document.querySelector('.view-toggle'),
     document.getElementById('completion-notification-toggle'),
+    document.getElementById('chatgpt-bridge-actions'),
     document.getElementById('recent-turn-copy'),
   ].filter(Boolean);
   terminalPanelEl.innerHTML = '';
