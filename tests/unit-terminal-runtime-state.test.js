@@ -33,6 +33,41 @@ test('Codex input-ready frame settles after esc-to-interrupt disappears', () => 
   assert.equal(result.reason, 'codex-input-ready');
 });
 
+test('Codex running evidence must be a structured current status row, not quoted prose', () => {
+  const quoted = classifyTerminalRuntime('codex', [
+    'The documentation says esc to interrupt while the command is working.',
+    '› Improve documentation in @filename',
+    'gpt-5.6-sol max fast · Context 95% left · C:\\repo',
+  ]);
+  assert.equal(quoted.state, RUNTIME_IDLE);
+
+  const bare = classifyTerminalRuntime('codex', [
+    'Working through the remaining review items.',
+  ]);
+  assert.equal(bare.state, RUNTIME_UNKNOWN);
+});
+
+test('a bottom confirmation outranks an older Working row in the same live screen', () => {
+  const result = classifyTerminalRuntime('codex', [
+    '• Working (25s • esc to interrupt)',
+    '› Use /skills to list available skills',
+    'gpt-5.6-sol max fast · Context 92% left · C:\\repo',
+    'Allow this command to run? [y/N]',
+  ]);
+  assert.equal(result.state, RUNTIME_WAITING);
+  assert.equal(result.reason, 'interactive-confirmation');
+});
+
+test('a structured Working row outside the live status tail cannot resurrect a session', () => {
+  const result = classifyTerminalRuntime('codex', [
+    '• Working (99s • esc to interrupt)',
+    ...Array.from({ length: 12 }, (_, index) => `completed output ${index}`),
+    '› Improve documentation in @filename',
+    'gpt-5.6-sol max fast · Context 95% left · C:\\repo',
+  ]);
+  assert.equal(result.state, RUNTIME_IDLE);
+});
+
 test('Claude animated status row is running while the same persistent footer stays on screen', () => {
   const result = classifyTerminalRuntime('claude', [
     '> Read package.json, then reply with exactly PTY_STATE_DONE.',

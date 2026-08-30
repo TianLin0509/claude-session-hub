@@ -75,6 +75,14 @@ async function capture(client, filePath) {
           },
           _ptyFallbackArmedUntil: 0, lastMessageTime: now - 1500,
         },
+        {
+          id: 'pty-codex-monitor-revive', kind: 'codex', title: 'Codex real monitor repair', status: 'idle',
+          runtimeTruth: {
+            state: 'completed', source: 'pty-codex-input-ready', confidence: 'strong',
+            observedAt: now - 1000, completedAt: now - 1000, sequence: 1,
+          },
+          _ptyFallbackArmedUntil: 0, lastMessageTime: now - 1600,
+        },
       ]);
       const codex = window.__hubE2E.applyTerminalRuntimeFrame('pty-codex', [
         '› Run PowerShell Start-Sleep -Seconds 4, then reply with exactly PTY_STATE_DONE.',
@@ -93,6 +101,43 @@ async function capture(client, filePath) {
         '› Improve documentation in @filename',
         '  gpt-5.6-sol max fast · Context 69% left · C:\\\\Vibe\\\\repo',
       ], now);
+
+      // Exercise the real renderer path instead of the direct classifier test
+      // helper above: terminal-data -> xterm -> onTerminalOutput -> delayed
+      // live-screen probe -> RuntimeTruth/sidebar. This is the exact gate that
+      // missed the production AI插件移动端可行性分析 session.
+      const monitoredId = 'pty-codex-monitor-revive';
+      activeSessionId = monitoredId;
+      activeMeetingId = null;
+      currentView = 'pty';
+      showTerminal(monitoredId, { focus: false });
+      const hydrateDeadline = Date.now() + 3000;
+      while (!terminalCache.get(monitoredId)?._hydrated && Date.now() < hydrateDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      const monitoredCache = terminalCache.get(monitoredId);
+      if (!monitoredCache || !monitoredCache._hydrated) throw new Error('monitor test terminal did not hydrate');
+      monitoredCache._lastPtyResizeAt = 0;
+      const monitoredFrame = '\\x1b[2J\\x1b[H' + [
+        '• Running .\\gradlew.bat --no-daemon :app:testDebugUnitTest',
+        '• Working (25s • esc to interrupt)',
+        '› Use /skills to list available skills',
+        '  gpt-5.6-sol max fast · Context 92% left · C:\\\\Vibe\\\\repo',
+      ].join('\\r\\n');
+      ipcRenderer.emit('terminal-data', {}, {
+        sessionId: monitoredId,
+        data: monitoredFrame,
+        seq: Number(monitoredCache._hydratedSeq || 0) + 100,
+      });
+      await new Promise(resolve => setTimeout(resolve, 750));
+      const monitoredSession = sessions.get(monitoredId);
+      const monitored = {
+        status: monitoredSession.status,
+        runSource: monitoredSession._runSource || null,
+        agentWorking: monitoredSession._agentWorking || null,
+        runtime: getSessionRuntimeTruth(monitoredSession),
+        liveScreen: terminalActivityMonitor.extractLiveScreenLines(monitoredId),
+      };
       await new Promise(resolve => setTimeout(resolve, 220));
       escapeToHome();
       await new Promise(resolve => setTimeout(resolve, 180));
@@ -100,6 +145,7 @@ async function capture(client, filePath) {
         codex,
         claude,
         repaired,
+        monitored,
         activeCount: document.getElementById('home-metric-active').textContent,
         runningSidebarText: document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim(),
         pipelineAbsent: !document.getElementById('home-flow-columns'),
@@ -113,11 +159,17 @@ async function capture(client, filePath) {
     assert.equal(running.claude.status, 'running');
     assert.equal(running.repaired.status, 'running');
     assert.equal(running.repaired.runSource, 'pty-semantic');
-    assert.equal(running.activeCount, '3');
+    assert.equal(running.monitored.status, 'running');
+    assert.equal(running.monitored.runSource, 'pty-semantic');
+    assert.equal(running.monitored.agentWorking, 'pty');
+    assert.equal(running.monitored.runtime.state, 'running');
+    assert.match(running.monitored.runtime.evidence, /Working \(25s .*esc to interrupt\)/);
+    assert.equal(running.activeCount, '4');
     assert.equal(running.pipelineAbsent, true);
     assert.match(running.runningSidebarText, /Codex PTY fallback/);
     assert.match(running.runningSidebarText, /Claude hook fallback/);
     assert.match(running.runningSidebarText, /Codex live-screen repair/);
+    assert.match(running.runningSidebarText, /Codex real monitor repair/);
     await capture(client, SCREENSHOT);
 
     const settled = await client.eval(`(async () => {
@@ -138,12 +190,43 @@ async function capture(client, filePath) {
         '  2. Upgrade your plan',
         'Enter to confirm · Esc to cancel',
       ], now);
+
+      // The same real monitor path must also settle once the structured work
+      // row disappears and the input-ready frame remains stable.
+      const monitoredCache = terminalCache.get('pty-codex-monitor-revive');
+      if (!monitoredCache) throw new Error('monitor test terminal disappeared before settle');
+      monitoredCache._lastPtyResizeAt = 0;
+      const monitoredIdleFrame = '\\x1b[2J\\x1b[H' + [
+        '• BUILD_AND_TEST_DONE',
+        '› Use /skills to list available skills',
+        '  gpt-5.6-sol max fast · Context 91% left · C:\\\\Vibe\\\\repo',
+      ].join('\\r\\n');
+      ipcRenderer.emit('terminal-data', {}, {
+        sessionId: 'pty-codex-monitor-revive',
+        data: monitoredIdleFrame,
+        seq: Number(monitoredCache._hydratedSeq || 0) + 100,
+      });
+      await new Promise(resolve => setTimeout(resolve, 2700));
+      const monitoredSettledSession = sessions.get('pty-codex-monitor-revive');
+      const monitoredSettled = {
+        status: monitoredSettledSession.status,
+        runSource: monitoredSettledSession._runSource || null,
+        agentWorking: monitoredSettledSession._agentWorking || null,
+        runtime: getSessionRuntimeTruth(monitoredSettledSession),
+      };
       sessions.delete('pty-codex-revive');
+      sessions.delete('pty-codex-monitor-revive');
+      if (monitoredCache) {
+        try { monitoredCache.terminal.dispose(); } catch {}
+        terminalCache.delete('pty-codex-monitor-revive');
+      }
+      renderSessionList();
       await new Promise(resolve => setTimeout(resolve, 220));
       return {
         codex,
         codexFirst,
         claude,
+        monitoredSettled,
         runningSections: Array.from(document.querySelectorAll('#session-list .session-sec-header'))
           .filter(row => row.textContent.includes('运行中')).length,
         homeWaitingCount: document.getElementById('home-metric-waiting').textContent,
@@ -159,6 +242,10 @@ async function capture(client, filePath) {
     assert.equal(settled.codex.status, 'idle');
     assert.equal(settled.claude.runtime.state, 'waiting');
     assert.equal(settled.claude.status, 'idle');
+    assert.equal(settled.monitoredSettled.runtime.state, 'completed');
+    assert.equal(settled.monitoredSettled.status, 'idle');
+    assert.equal(settled.monitoredSettled.runSource, null);
+    assert.equal(settled.monitoredSettled.agentWorking, null);
     assert.equal(settled.runningSections, 0);
     assert.equal(settled.homeWaitingCount, '1');
     assert.equal(settled.homePipelineAbsent, true);
@@ -178,6 +265,13 @@ async function capture(client, filePath) {
       await new Promise(resolve => setTimeout(resolve, 220));
       const firstSidebar = document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim();
 
+      const staleWorking = window.__hubE2E.applyTerminalRuntimeFrame('failure-ack', [
+        '• Working (25s • esc to interrupt)',
+        '› Improve documentation in @filename',
+        '  gpt-5.6-sol max fast · Context 92% left · C:\\\\Vibe\\\\repo',
+      ], now + 100);
+      const afterStaleWorking = getSessionRuntimeTruth(sessions.get('failure-ack'));
+
       const acknowledged = window.__hubE2E.acknowledgeSessionFailure('failure-ack');
       await new Promise(resolve => setTimeout(resolve, 220));
       const acknowledgedSidebar = document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim();
@@ -196,11 +290,18 @@ async function capture(client, filePath) {
       await new Promise(resolve => setTimeout(resolve, 220));
       const genuineSidebar = document.getElementById('session-list').textContent.replace(/\\s+/g, ' ').trim();
       window.__hubE2E.acknowledgeSessionFailure('failure-ack');
-      return { first, acknowledged, redraw, genuine, firstSidebar, acknowledgedSidebar, redrawSidebar, genuineSidebar };
+      return {
+        first, staleWorking, afterStaleWorking, acknowledged, redraw, genuine,
+        firstSidebar, acknowledgedSidebar, redrawSidebar, genuineSidebar,
+      };
     })()`);
 
     assert.equal(failureAck.first.raised, true);
     assert.match(failureAck.firstSidebar, /运行异常/);
+    assert.equal(failureAck.staleWorking.runtime.state, 'running', 'fixture must contain a recognizable live marker');
+    assert.equal(failureAck.staleWorking.changed, false, 'a stale work row must not erase a failed turn');
+    assert.equal(failureAck.staleWorking.status, 'error');
+    assert.equal(failureAck.afterStaleWorking.state, 'failed');
     assert.equal(failureAck.acknowledged, true);
     assert.doesNotMatch(failureAck.acknowledgedSidebar, /运行异常/);
     assert.equal(failureAck.redraw.raised, false, 'a new turn repaint must not resurrect an acknowledged old failure');

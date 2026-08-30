@@ -195,6 +195,126 @@ test('unarmed AI TUI animation cannot move a recent session to running', () => {
   monitor.clearSession('s1');
 });
 
+test('unarmed Codex output still probes a strong Working row on the live screen', async () => {
+  const session = {
+    id: 's1', kind: 'codex', status: 'idle',
+    runtimeTruth: {
+      state: 'completed', source: 'pty-codex-input-ready', confidence: 'strong',
+      observedAt: Date.now() - 1000, completedAt: Date.now() - 1000, sequence: 1,
+    },
+  };
+  const sessions = new Map([['s1', session]]);
+  let classified = 0;
+  let applied = 0;
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([
+      '• Running .\\gradlew.bat :app:testDebugUnitTest',
+      '• Working (25s • esc to interrupt)',
+      '› Use /skills to list available skills',
+      'gpt-5.6-sol max fast · Context 92% left · C:\\Vibe\\repo',
+    ]),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => {},
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => false,
+    canUsePtyBurstFallback: () => false,
+    canObserveRuntimeState: () => true,
+    classifyRuntimeState: (item, liveLines) => {
+      classified += 1;
+      return classifyTerminalRuntime(item.kind, liveLines);
+    },
+    onRuntimeState: (item, runtime) => {
+      applied += 1;
+      if (runtime.state === 'running') item.status = 'running';
+      return true;
+    },
+    runtimeProbeMs: 5,
+    silenceMs: 50,
+  });
+
+  monitor.onTerminalOutput('s1', 500);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(classified, 1, 'strong current-screen evidence must reach the classifier');
+  assert.equal(applied, 1);
+  assert.equal(session.status, 'running');
+  monitor.clearSession('s1');
+});
+
+test('unarmed Claude output still probes a structured animated status row', async () => {
+  const session = { id: 's1', kind: 'claude', status: 'idle' };
+  const sessions = new Map([['s1', session]]);
+  let observed = null;
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([
+      '✻ Cultivating… (4s · ↓ 48 tokens)',
+      '>',
+      '⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ]),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => {},
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => false,
+    canUsePtyBurstFallback: () => false,
+    canObserveRuntimeState: () => true,
+    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind, liveLines),
+    onRuntimeState: (item, runtime) => {
+      observed = runtime;
+      if (runtime.state === 'running') item.status = 'running';
+      return true;
+    },
+    runtimeProbeMs: 5,
+    silenceMs: 50,
+  });
+
+  monitor.onTerminalOutput('s1', 500);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(observed && observed.reason, 'claude-active-status');
+  assert.equal(session.status, 'running');
+  monitor.clearSession('s1');
+});
+
+test('probing an unarmed idle Codex footer does not promote it to running', async () => {
+  const session = { id: 's1', kind: 'codex', status: 'idle' };
+  const sessions = new Map([['s1', session]]);
+  let observed = null;
+  let rendered = 0;
+  const monitor = createTerminalActivityMonitor({
+    sessions,
+    terminalCache: makeTerminalCache([
+      '› Improve documentation in @filename',
+      'gpt-5.6-sol max fast · Context 92% left · C:\\Vibe\\repo',
+    ]),
+    getActiveSessionId: () => 's1',
+    renderSessionList: () => { rendered += 1; },
+    schedulePersist: () => {},
+    updateStreamingIndicator: () => {},
+    hasSemanticCardWorking: () => false,
+    hasSemanticWorking: () => false,
+    canUsePtyBurstFallback: () => false,
+    canObserveRuntimeState: () => true,
+    classifyRuntimeState: (item, liveLines) => classifyTerminalRuntime(item.kind, liveLines),
+    onRuntimeState: (_item, runtime) => {
+      observed = runtime;
+      return false;
+    },
+    runtimeProbeMs: 5,
+    silenceMs: 50,
+  });
+
+  for (let index = 0; index < 20; index += 1) monitor.onTerminalOutput('s1', 500);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(observed && observed.state, 'idle');
+  assert.equal(session.status, 'idle');
+  assert.equal(rendered, 0);
+  monitor.clearSession('s1');
+});
+
 test('expired AI PTY fallback immediately clears an existing burst state', () => {
   const session = { id: 's1', kind: 'codex', status: 'running', _runSource: 'burst' };
   const sessions = new Map([['s1', session]]);
@@ -309,7 +429,7 @@ test('an input-ready frame can defer burst settlement until the provider running
   monitor.clearSession('s1');
 });
 
-test('a PTY chunk storm coalesces live-screen classification probes', async () => {
+test('an unarmed PTY chunk storm coalesces live-screen classification probes', async () => {
   const session = { id: 's1', kind: 'codex', status: 'idle' };
   const sessions = new Map([['s1', session]]);
   let classifyCount = 0;
@@ -326,7 +446,7 @@ test('a PTY chunk storm coalesces live-screen classification probes', async () =
     updateStreamingIndicator: () => {},
     hasSemanticCardWorking: () => false,
     hasSemanticWorking: () => false,
-    canUsePtyBurstFallback: () => true,
+    canUsePtyBurstFallback: () => false,
     canObserveRuntimeState: () => true,
     classifyRuntimeState: (item, liveLines) => {
       classifyCount += 1;

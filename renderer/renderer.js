@@ -4309,7 +4309,9 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
   if (!isClaudeRuntimeSession(session) && !isCodexKind(session.kind)) return false;
 
   const at = Number(observedAt) || Date.now();
-  const wasRunning = sessionRuntimeIsActive(session, { now: at }) || session.status === 'running';
+  const truthBefore = getSessionRuntimeTruth(session, { now: at });
+  const wasRunning = [RUNTIME_STARTING, RUNTIME_RUNNING].includes(truthBefore.state)
+    || session.status === 'running';
   const fallbackArmed = canUsePtyBurstFallback(session, at);
   let changed = false;
 
@@ -4323,6 +4325,11 @@ function applyPtyRuntimeObservation(session, runtime, observedAt = Date.now()) {
     // prematurely completed status even after the submit fallback was disarmed.
     const strongCurrentScreen = runtime.confidence === CONFIDENCE_STRONG;
     if (!wasRunning && !fallbackArmed && !strongCurrentScreen) return false;
+    // A failed turn can leave its last animated frame on screen. Do not erase
+    // an authoritative error merely because that stale frame repainted; a new
+    // prompt/task_started boundary will make `wasRunning` or `fallbackArmed`
+    // true and legitimately allow the next turn through.
+    if (truthBefore.state === RUNTIME_FAILED && !wasRunning && !fallbackArmed) return false;
     clearPtyInputReadyCandidate(session);
     session._ptyRuntimeSawRunning = true;
     if (session._ptyRuntimePendingTimer) {

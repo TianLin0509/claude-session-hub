@@ -13,7 +13,12 @@ const RUNTIME_IDLE = 'idle';
 const RUNTIME_WAITING = 'waiting';
 const RUNTIME_UNKNOWN = 'unknown';
 
-const CODEX_RUNNING_RE = /\besc to interrupt\b/i;
+// Treat only Codex's structured live status row as authoritative running
+// evidence. A prose answer or documentation snippet may quote "esc to
+// interrupt"; matching that text anywhere on screen would resurrect an idle
+// session incorrectly. The active row is rendered with a provider marker and
+// a small, known family of work verbs.
+const CODEX_RUNNING_RE = /^\s*[\u2022\u23fa\u25cf\u25c9\u25d0-\u25d5]\s*(?:Working|Thinking|Running|Searching|Reading|Writing|Editing|Exploring|Generating|Pursuing\s+goal)\b.*\besc to interrupt\b/i;
 const CODEX_PROMPT_RE = /^\s*[\u203a>]\s*(?:$|\S)/;
 const CODEX_CONTEXT_RE = /\bContext\s+(?:\d+(?:\.\d+)?%\s*(?:left)?|window|left)/i;
 
@@ -56,7 +61,7 @@ function waitingObservation(lines) {
   // Confirmation overlays live at the bottom of the current frame. Restricting
   // this search prevents an old trust/setup prompt that still occupies an
   // untouched row near the top from misclassifying a later completed turn.
-  lines = lines.slice(-5);
+  lines = lines.slice(-4);
   for (const pattern of WAITING_PATTERNS) {
     const hit = firstMatchingLine(lines, pattern);
     if (hit) return observation(RUNTIME_WAITING, 'interactive-confirmation', hit);
@@ -65,7 +70,13 @@ function waitingObservation(lines) {
 }
 
 function classifyCodex(lines) {
-  const runningLine = firstMatchingLine(lines, CODEX_RUNNING_RE);
+  // A bottom-of-screen confirmation is even more specific than a working row:
+  // the provider is blocked on the user, not actively generating. Check that
+  // first, then let a structured live work row outrank the persistent prompt.
+  const waiting = waitingObservation(lines);
+  if (waiting) return waiting;
+
+  const runningLine = firstMatchingLine(lines.slice(-12), CODEX_RUNNING_RE);
   if (runningLine) return observation(RUNTIME_RUNNING, 'codex-interrupt-footer', runningLine);
 
   const promptLine = firstMatchingLine(lines, CODEX_PROMPT_RE);
@@ -73,17 +84,19 @@ function classifyCodex(lines) {
   if (promptLine && contextLine) {
     return observation(RUNTIME_IDLE, 'codex-input-ready', `${promptLine} | ${contextLine}`);
   }
-  const waiting = waitingObservation(lines);
-  if (waiting) return waiting;
   return observation(RUNTIME_UNKNOWN, 'codex-frame-ambiguous');
 }
 
 function classifyClaude(lines) {
-  const interruptLine = firstMatchingLine(lines, /\besc to interrupt\b|ctrl\+b to run in background|running stop hooks/i);
+  const waiting = waitingObservation(lines);
+  if (waiting) return waiting;
+
+  const liveTail = lines.slice(-12);
+  const interruptLine = firstMatchingLine(liveTail, /\besc to interrupt\b|ctrl\+b to run in background|running stop hooks/i);
   if (interruptLine) return observation(RUNTIME_RUNNING, 'claude-interrupt-footer', interruptLine);
 
-  const statusLine = firstMatchingLine(lines, CLAUDE_ACTIVE_STATUS_RE)
-    || firstMatchingLine(lines, CLAUDE_ACTIVE_TOOL_RE);
+  const statusLine = firstMatchingLine(liveTail, CLAUDE_ACTIVE_STATUS_RE)
+    || firstMatchingLine(liveTail, CLAUDE_ACTIVE_TOOL_RE);
   if (statusLine) return observation(RUNTIME_RUNNING, 'claude-active-status', statusLine);
 
   const footerLine = firstMatchingLine(lines, CLAUDE_FOOTER_RE);
@@ -91,8 +104,6 @@ function classifyClaude(lines) {
   if (footerLine && promptLine) {
     return observation(RUNTIME_IDLE, 'claude-input-ready', `${promptLine} | ${footerLine}`);
   }
-  const waiting = waitingObservation(lines);
-  if (waiting) return waiting;
   return observation(RUNTIME_UNKNOWN, 'claude-frame-ambiguous');
 }
 

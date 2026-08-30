@@ -194,6 +194,18 @@ function createTerminalActivityMonitor({
     const cached = terminalCache.get(sessionId);
     const lastRendererResizeAt = Number(cached && cached._lastPtyResizeAt) || 0;
     const semanticCovered = typeof hasSemanticWorking === 'function' && hasSemanticWorking(session);
+
+    // Current-screen provider markers are independent of the raw-byte burst
+    // fallback. In particular, Codex may keep working after a transient prompt
+    // frame prematurely closed the semantic turn; at that point neither
+    // `semanticCovered` nor `burstEligible` remains true. Probe before those
+    // gates so a structured "Working ... esc to interrupt" row (or Claude's
+    // animated active row) can repair the state. The probe is coalesced and the
+    // classifier reads only the logical live screen, never scrollback.
+    const runtimeProbeEligible = typeof classifyRuntimeState === 'function'
+      && (typeof canObserveRuntimeState !== 'function' || canObserveRuntimeState(session));
+    if (runtimeProbeEligible) scheduleRuntimeProbe(sessionId);
+
     if (!semanticCovered
         && lastRendererResizeAt > 0
         && now >= lastRendererResizeAt
@@ -242,12 +254,6 @@ function createTerminalActivityMonitor({
       session._runSource = 'burst';
       renderSessionList();
       updateStreamingIndicator(sessionId);
-    }
-
-    const runtimeProbeEligible = typeof classifyRuntimeState === 'function'
-      && (typeof canObserveRuntimeState !== 'function' || canObserveRuntimeState(session));
-    if (runtimeProbeEligible && (semanticCovered || burstEligible || session.status === 'running')) {
-      scheduleRuntimeProbe(sessionId);
     }
 
     if (silenceTimers.has(sessionId)) clearTimeout(silenceTimers.get(sessionId));
