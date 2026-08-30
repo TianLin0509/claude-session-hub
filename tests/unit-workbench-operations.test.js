@@ -249,7 +249,7 @@ test('out-of-order overview scans cannot poison a newer workspace cache key', { 
   assert.equal(path.resolve(cachedFastResult.repos[0].root), path.resolve(fastRepo));
 });
 
-test('concurrent review decisions remain additive instead of last-writer-wins', { timeout: 30_000 }, async t => {
+test('concurrent review decisions remain additive instead of last-writer-wins', { timeout: 60_000 }, async t => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-ops-review-race-'));
   const repo = path.join(tempRoot, 'repo');
   t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));

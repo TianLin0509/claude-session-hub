@@ -427,9 +427,11 @@ async function main() {
     result.completed = await waitFor('Codex task completion after rename', () => client.eval(`(() => {
       const session = sessions.get(${JSON.stringify(result.created.id)});
       if (!session || session.status !== 'idle' || session.cardWorkingSource) return null;
+      const header = document.querySelector('.terminal-status');
+      if (!header || header.dataset.runtimeState !== 'completed') return null;
       return {
         status: session.status,
-        headerStatus: document.querySelector('.terminal-status')?.textContent?.trim() || '',
+        headerStatus: header.textContent?.trim() || '',
       };
     })()`));
 
@@ -461,7 +463,7 @@ async function main() {
     const resolvedTemp = path.resolve(TEMP_ROOT);
     const resolvedOsTemp = path.resolve(os.tmpdir()) + path.sep;
     if (resolvedTemp.startsWith(resolvedOsTemp)) {
-      fs.rmSync(resolvedTemp, { recursive: true, force: true });
+      fs.rmSync(resolvedTemp, { recursive: true, force: true, maxRetries: 60, retryDelay: 250 });
     }
   }
 }

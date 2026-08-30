@@ -288,7 +288,7 @@ async function waitForEval(client, expression, timeoutMs = 20000) {
     const resolved = path.resolve(dataDir);
     if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
         && path.basename(resolved).startsWith('claude-session-hub-perf-e2e-')) {
-      fs.rmSync(resolved, { recursive: true, force: true });
+      fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 60, retryDelay: 250 });
     }
   }
 })();

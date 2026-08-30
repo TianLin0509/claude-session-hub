@@ -68,6 +68,7 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
   const requestedHomeDir = extraEnv.CLAUDE_HUB_HOME_DIR;
   const requestedAgentLeagueDir = extraEnv.CHUXIN_AGENT_LEAGUE_DIR;
   const requestedCodexHome = extraEnv.CODEX_HOME;
+  const requestedClaudeConfigDir = extraEnv.CLAUDE_CONFIG_DIR;
   const requestedKey = extraEnv.DEEPSEEK_API_KEY;
   if (!allowExternalState) {
     const tempRoot = path.resolve(os.tmpdir());
@@ -85,6 +86,9 @@ function buildIsolatedHubEnv(dataDir, extraEnv = {}, baseEnv = process.env, {
     }
     if (requestedCodexHome && !_isPathInside(testRoot, requestedCodexHome)) {
       throw new Error('isolated Hub requires CODEX_HOME inside the test root');
+    }
+    if (requestedClaudeConfigDir && !_isPathInside(testRoot, requestedClaudeConfigDir)) {
+      throw new Error('isolated Hub requires CLAUDE_CONFIG_DIR inside the test root');
     }
     if (requestedKey) throw new Error('isolated Hub forbids a non-empty DEEPSEEK_API_KEY');
   }
@@ -151,6 +155,27 @@ async function _verifyCdpPortOwner(port, expectedPid, execFile = execFileAsync) 
   if (!Number.isInteger(numericPort) || numericPort <= 0
       || !Number.isInteger(numericPid) || numericPid <= 0) return false;
   if (process.platform !== 'win32') return false;
+  // netstat is substantially faster and less prone to transient CIM provider
+  // stalls than Get-NetTCPConnection on a machine with many short-lived E2E
+  // Electron processes. Parse only LISTENING rows for this exact local port.
+  try {
+    const result = await execFile('netstat.exe', ['-ano', '-p', 'TCP'], {
+      windowsHide: true,
+      timeout: 3000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    const owners = String(result && result.stdout || '')
+      .split(/\r?\n/)
+      .map(line => line.trim().split(/\s+/))
+      .filter(parts => parts.length >= 5
+        && String(parts[0]).toUpperCase() === 'TCP'
+        && String(parts[1]).endsWith(`:${numericPort}`)
+        && String(parts[3]).toUpperCase() === 'LISTENING')
+      .map(parts => Number(parts[parts.length - 1]))
+      .filter(Number.isInteger);
+    if (owners.length > 0) return owners.includes(numericPid);
+  } catch {}
+
   const script = [
     "$ErrorActionPreference='Stop'",
     `$owners = @(Get-NetTCPConnection -State Listen -LocalPort ${numericPort} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess)`,
@@ -172,6 +197,16 @@ async function _verifyCdpPortOwner(port, expectedPid, execFile = execFileAsync) 
   } catch {
     return false;
   }
+}
+
+async function _waitForCdpPortOwner(port, expectedPid, timeoutMs = 1500, verify = _verifyCdpPortOwner) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  do {
+    if (await verify(port, expectedPid)) return true;
+    if (Date.now() >= deadline) break;
+    await _waitMs(100);
+  } while (true);
+  return false;
 }
 
 async function _terminateSpawnedChild(child, { termWaitMs = 2000, killWaitMs = 1200 } = {}) {
@@ -276,7 +311,7 @@ async function launchIsolatedHub({
     err.termination = termination;
     throw err;
   }
-  const identityVerified = await _verifyCdpPortOwner(port, pid);
+  const identityVerified = await _waitForCdpPortOwner(port, pid, 1500);
   if (!identityVerified) {
     const termination = await _terminateSpawnedChild(child);
     const err = new Error(`[${label}] CDP port ${port} is not owned by spawned PID ${pid}; refusing to attach`);
@@ -341,7 +376,11 @@ function _assertCleanHubExit(hub, context) {
 
 // 通过已验证属于本次 spawn PID 的 CDP 页面优雅关闭。任何强制终止、非零
 // 退出或身份丢失都作为测试失败上抛，不能把 crash/残留伪装成 PASS。
-async function gracefulQuit(hub, { timeoutMs = 8000, allowAlreadyExited = false } = {}) {
+// Production shutdown deliberately allows SessionManager up to 15s to drain
+// node-pty callbacks safely. The verifier must wait longer than that contract;
+// an 8s test timeout otherwise force-kills a healthy stress run mid-drain and
+// reports the harness timeout as a product crash.
+async function gracefulQuit(hub, { timeoutMs = 20_000, allowAlreadyExited = false } = {}) {
   if (!hub) return { exitCode: null, exitSignal: null, forced: false };
   if (!hub.isAlive || !hub.isAlive()) {
     const cleanExit = _assertCleanHubExit(hub, 'exited before teardown');
@@ -350,7 +389,13 @@ async function gracefulQuit(hub, { timeoutMs = 8000, allowAlreadyExited = false 
     error.exit = cleanExit;
     throw error;
   }
-  if (!hub.identityVerified || !await _verifyCdpPortOwner(hub.port, hub.pid)) {
+  if (!hub.identityVerified || !await _waitForCdpPortOwner(hub.port, hub.pid, 1000)) {
+    // The CDP listener can disappear a fraction before Electron emits `exit`.
+    // Never attach to or close an unverified port, but allow the exact spawned
+    // child a short window to finish a clean shutdown on its own.
+    const exitDeadline = Date.now() + 1000;
+    while (Date.now() < exitDeadline && hub.isAlive()) await _waitMs(100);
+    if (!hub.isAlive()) return _assertCleanHubExit(hub, 'clean exit while CDP listener closed');
     const termination = await _terminateSpawnedChild(hub.child);
     const error = new Error(`[${hub.label || 'hub'}] CDP identity changed; refused to close an unverified target`);
     error.termination = termination;
@@ -408,6 +453,7 @@ module.exports = {
   listCdpTargets,
   _terminateSpawnedChild,
   _verifyCdpPortOwner,
+  _waitForCdpPortOwner,
   _waitMs,  // 给 e2e 用
   _private: {
     hubHasExited,

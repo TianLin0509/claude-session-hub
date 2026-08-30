@@ -17,6 +17,8 @@ const { gracefulQuit, launchIsolatedHub, _waitMs } = require('./helpers/hub-laun
 const ROOT = path.join(os.tmpdir(), `hub-real-runtime-${process.pid}-${Date.now()}`);
 const SOURCE_CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 const ISOLATED_CODEX_HOME = path.join(ROOT, 'codex-home');
+const SOURCE_CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+const ISOLATED_CLAUDE_CONFIG_DIR = path.join(ROOT, 'claude-config');
 
 function prepareIsolatedCodexHome() {
   fs.mkdirSync(ISOLATED_CODEX_HOME, { recursive: true });
@@ -64,14 +66,42 @@ async function runSession(client, { kind, prompt, marker, opts }) {
   await waitFor(`${kind} renderer session`, () => client.eval(`sessions.has(${JSON.stringify(id)})`), 20000);
   await client.eval(`window.__hubE2E.selectSession(${JSON.stringify(id)}, { forceScrollBottom: true })`);
   const readyPattern = kind === 'codex' ? 'Context ' : 'shift+tab';
+  const startup = await waitFor(`${kind} startup frame`, () => client.eval(`(() => {
+    const screen = window.__hubE2E.terminalLiveScreenText(${JSON.stringify(id)});
+    if (screen.includes(${JSON.stringify(readyPattern)})) return 'ready';
+    if (screen.includes('Make auto mode your default permission mode?')) return 'auto-mode-choice';
+    return '';
+  })()`), 40000);
+  if (startup === 'auto-mode-choice') {
+    await client.eval(`(() => {
+      const id = ${JSON.stringify(id)};
+      ipcRenderer.send('terminal-input', { sessionId: id, data: '\\x1b[B' });
+      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId: id, data: '\\r' }), 150);
+    })()`);
+  }
   await waitFor(`${kind} ready`, () => client.eval(
     `window.__hubE2E.terminalLiveScreenText(${JSON.stringify(id)}).includes(${JSON.stringify(readyPattern)})`,
   ), 40000);
+  await _waitMs(700);
+  const lateAutoModeChoice = await client.eval(
+    `window.__hubE2E.terminalLiveScreenText(${JSON.stringify(id)}).includes('Make auto mode your default permission mode?')`,
+  );
+  if (lateAutoModeChoice) {
+    await client.eval(`(() => {
+      const id = ${JSON.stringify(id)};
+      ipcRenderer.send('terminal-input', { sessionId: id, data: '\\x1b[B' });
+      setTimeout(() => ipcRenderer.send('terminal-input', { sessionId: id, data: '\\r' }), 150);
+    })()`);
+    await waitFor(`${kind} ready after auto-mode choice`, () => client.eval(
+      `window.__hubE2E.terminalLiveScreenText(${JSON.stringify(id)}).includes(${JSON.stringify(readyPattern)})`,
+    ), 10000);
+  }
 
   const before = await client.eval(`(() => {
     const session = sessions.get(${JSON.stringify(id)});
     return { status: session.status, source: session._runSource || null, title: session.title };
   })()`);
+  await _waitMs(500);
   await client.eval(`(() => {
     const id = ${JSON.stringify(id)};
     const cached = terminalCache.get(id);
@@ -80,7 +110,25 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     // xterm.input reliably types into both TUIs, but Claude 2.1.241 can leave a
     // synthetic Enter in the renderer input path unsubmitted. Send the final
     // carriage return through the same IPC used by Hub's floating composer.
-    setTimeout(() => ipcRenderer.send('terminal-input', { sessionId: id, data: '\\r' }), 700);
+    const submitIfStillPending = () => {
+      const session = sessions.get(id);
+      if (!session || session.status === 'running') return;
+      const screen = window.__hubE2E.terminalLiveScreenText(id);
+      if ((screen.split(${JSON.stringify(marker)}).length - 1) >= 2) return;
+      if (screen.includes('Make auto mode your default permission mode?')) {
+        ipcRenderer.send('terminal-input', { sessionId: id, data: '\\x1b[B' });
+        setTimeout(() => ipcRenderer.send('terminal-input', { sessionId: id, data: '\\r' }), 150);
+        return;
+      }
+      if (!screen.includes(${JSON.stringify(prompt)})) {
+        if (screen.includes(${JSON.stringify(readyPattern)})) {
+          cached.terminal.input(${JSON.stringify(prompt)}, true);
+        }
+        return;
+      }
+      ipcRenderer.send('terminal-input', { sessionId: id, data: '\\r' });
+    };
+    [900, 1800, 3000, 4500, 6500, 9000, 12000].forEach(delay => setTimeout(submitIfStillPending, delay));
     return true;
   })()`);
 
@@ -125,7 +173,24 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     throw new Error(`${error.message}\n${JSON.stringify(diagnostic, null, 2)}`);
   }
 
-  const done = await waitFor(`${kind} completed`, () => client.eval(`(() => {
+  // PTY animation can be visible a few hundred milliseconds before the
+  // transcript tail delivers task_started. Verify both channels, but do not
+  // require them to win the same sampling race.
+  const semanticRunning = kind === 'codex'
+    ? await waitFor(`${kind} task_started evidence`, () => client.eval(`(() => {
+      const session = sessions.get(${JSON.stringify(id)});
+      if (!session) return null;
+      const truth = session.runtimeTruth || {};
+      const sources = [truth.source, ...(truth.corroborations || []).map(item => item.source)].filter(Boolean);
+      return sources.some(source => String(source).includes('task_started'))
+        ? { source: truth.source || null, corroborations: sources.slice(1) }
+        : null;
+    })()`), 10000)
+    : null;
+
+  let done;
+  try {
+    done = await waitFor(`${kind} completed`, () => client.eval(`(() => {
     const id = ${JSON.stringify(id)};
     const session = sessions.get(id);
     const screen = window.__hubE2E.terminalLiveScreenText(id);
@@ -167,7 +232,23 @@ async function runSession(client, { kind, prompt, marker, opts }) {
       transcriptPath: session.transcriptPath || null,
       screen,
     };
-  })()`), 120000);
+    })()`), 120000);
+  } catch (error) {
+    const diagnostic = await client.eval(`(() => {
+      const session = sessions.get(${JSON.stringify(id)});
+      return {
+        session: session ? {
+          status: session.status,
+          source: session._runSource || null,
+          ptyState: session._ptyRuntimeState || null,
+          ptyReason: session._ptyRuntimeReason || null,
+          runtimeTruth: session.runtimeTruth || null,
+        } : null,
+        screen: window.__hubE2E.terminalLiveScreenText(${JSON.stringify(id)}),
+      };
+    })()`);
+    throw new Error(`${error.message}\n${JSON.stringify(diagnostic, null, 2)}`);
+  }
 
   assert.equal(before.status, 'idle');
   assert.equal(running.status, 'running');
@@ -175,7 +256,12 @@ async function runSession(client, { kind, prompt, marker, opts }) {
   assert.equal(running.cardLabel, '工作中');
   assert.equal(running.sidebarState, 'running');
   if (kind === 'codex') {
-    const sources = [running.runtimeSource, ...running.corroborations].filter(Boolean).join(' ');
+    const sources = [
+      running.runtimeSource,
+      ...running.corroborations,
+      semanticRunning.source,
+      ...semanticRunning.corroborations,
+    ].filter(Boolean).join(' ');
     assert.match(sources, /task_started/);
     assert.match(sources, /pty-codex-interrupt-footer/);
     assert.equal(done.autoTitleGenerated, true);
@@ -194,16 +280,92 @@ async function runSession(client, { kind, prompt, marker, opts }) {
     assert.equal(done.cardLabel, '已完成');
     assert.equal(done.sidebarState, 'completed');
   }
-  return { id, before, running, done };
+  return { id, before, running, semanticRunning, done };
+}
+
+function prepareIsolatedClaudeConfig() {
+  fs.mkdirSync(ISOLATED_CLAUDE_CONFIG_DIR, { recursive: true });
+  const credentials = path.join(SOURCE_CLAUDE_CONFIG_DIR, '.credentials.json');
+  if (!fs.existsSync(credentials)) throw new Error(`Claude credentials missing: ${credentials}`);
+  fs.copyFileSync(credentials, path.join(ISOLATED_CLAUDE_CONFIG_DIR, '.credentials.json'));
+  const settingsPath = path.join(SOURCE_CLAUDE_CONFIG_DIR, 'settings.json');
+  if (fs.existsSync(settingsPath)) {
+    const sourceSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const isolatedSettings = {};
+    // Keep the Hub lifecycle hooks and permission behavior under test, but
+    // never copy unrelated Stop hooks, plugin catalogs or enabledPlugins into
+    // the disposable config. Those can block shutdown or clone entire
+    // marketplaces (including deep .git trees) into Temp.
+    for (const key of [
+      'permissions', 'skipDangerousModePermissionPrompt', 'permissionMode',
+      'alwaysThinkingEnabled', 'disableAgentView', 'tui', 'theme',
+    ]) {
+      if (sourceSettings[key] !== undefined) isolatedSettings[key] = sourceSettings[key];
+    }
+    isolatedSettings.hooks = {};
+    for (const eventName of ['UserPromptSubmit', 'Stop', 'StopFailure']) {
+      const entries = sourceSettings.hooks && sourceSettings.hooks[eventName];
+      const list = Array.isArray(entries) ? entries : (entries ? [entries] : []);
+      const filtered = list.map(entry => ({
+        ...entry,
+        hooks: (Array.isArray(entry && entry.hooks) ? entry.hooks : [])
+          .filter(hook => /session-hub-hook\.py/i.test(String(hook && hook.command || ''))),
+      })).filter(entry => entry.hooks.length > 0);
+      if (filtered.length > 0) isolatedSettings.hooks[eventName] = filtered;
+    }
+    fs.writeFileSync(
+      path.join(ISOLATED_CLAUDE_CONFIG_DIR, 'settings.json'),
+      JSON.stringify(isolatedSettings, null, 2),
+      'utf8',
+    );
+  }
+  const statePath = path.join(os.homedir(), '.claude.json');
+  if (fs.existsSync(statePath)) {
+    const sourceState = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    const isolatedState = {
+      autoUpdates: false,
+      hasCompletedOnboarding: true,
+      lastOnboardingVersion: sourceState.lastOnboardingVersion || '2.1.251',
+      installMethod: sourceState.installMethod || 'native',
+      projects: {},
+      remoteControlAtStartup: false,
+      officialMarketplaceAutoInstallAttempted: true,
+      officialMarketplaceAutoInstalled: true,
+    };
+    for (const key of [
+      'userID', 'anonymousId', 'machineID', 'oauthAccount', 'clientDataCacheSlots',
+      'hasAvailableSubscription', 'modelAccessCache', 'orgModelDefaultCache',
+      'additionalModelOptionsCache', 'additionalModelCostsCache',
+      'hasSeenAutoModeEntryWarning', 'hasResetAutoModeOptInForDefaultOffer',
+      'autoPermissionsNotificationCount', 'skipDangerousModePermissionPrompt',
+      'unpinFable5LaunchEffort', 'lastReleaseNotesSeen', 'hasSeenUltraplanTerms',
+      'seenNotifications', 'announcementImpressions', 'remoteDialogSeen',
+    ]) {
+      if (sourceState[key] !== undefined) isolatedState[key] = sourceState[key];
+    }
+    fs.writeFileSync(
+      path.join(ISOLATED_CLAUDE_CONFIG_DIR, '.claude.json'),
+      JSON.stringify(isolatedState, null, 2),
+      'utf8',
+    );
+  }
 }
 
 async function main() {
-  fs.mkdirSync(ROOT, { recursive: true });
-  prepareIsolatedCodexHome();
-  const port = await reservePort();
+  const requestedProviders = new Set(
+    String(process.env.HUB_DIAG_PROVIDERS || 'codex')
+      .split(',')
+      .map(value => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  let port = null;
   let hub = null;
   let client = null;
   try {
+    fs.mkdirSync(ROOT, { recursive: true });
+    prepareIsolatedCodexHome();
+    if (requestedProviders.has('claude')) prepareIsolatedClaudeConfig();
+    port = await reservePort();
     hub = await launchIsolatedHub({
       dataDir: path.join(ROOT, 'data'),
       port,
@@ -211,6 +373,7 @@ async function main() {
       extraEnv: {
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_HOME_DIR: path.join(ROOT, 'fake-home'),
+        CLAUDE_CONFIG_DIR: ISOLATED_CLAUDE_CONFIG_DIR,
         CODEX_HOME: ISOLATED_CODEX_HOME,
         DEEPSEEK_API_KEY: '',
       },
@@ -221,12 +384,6 @@ async function main() {
     );
     await waitFor('workspace controller', () => client.eval('!!(window.WorkspaceController && window.__hubE2E)'));
 
-    const requestedProviders = new Set(
-      String(process.env.HUB_DIAG_PROVIDERS || 'codex')
-        .split(',')
-        .map(value => value.trim().toLowerCase())
-        .filter(Boolean),
-    );
     const results = {};
     if (requestedProviders.has('claude')) {
       results.claude = await runSession(client, {
@@ -265,11 +422,19 @@ async function main() {
     if (client) {
       try { client.ws.close(); } catch {}
     }
-    if (hub) await gracefulQuit(hub);
+    if (hub) {
+      await gracefulQuit(hub);
+      // Claude/Codex native children can release their cwd handles a fraction
+      // after the Electron parent exits. Give those verified descendants time
+      // to finish before deleting the credential-copy sandbox on Windows.
+      await _waitMs(2000);
+    }
     const resolved = path.resolve(ROOT);
-    if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
+    if (process.env.HUB_DIAG_KEEP_TEMP === '1') {
+      console.error(`[diag-real-pty-runtime-state] kept temp root: ${resolved}`);
+    } else if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
         && path.basename(resolved).startsWith('hub-real-runtime-')) {
-      fs.rmSync(resolved, { recursive: true, force: true });
+      fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 60, retryDelay: 250 });
     }
   }
 }

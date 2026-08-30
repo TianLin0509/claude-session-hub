@@ -364,7 +364,7 @@ async function main() {
     const resolved = path.resolve(TEMP_ROOT);
     if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
         && path.basename(resolved).startsWith('hub-codex-resume-card-')) {
-      fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 60, retryDelay: 250 });
     }
   }
 }

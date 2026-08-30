@@ -304,7 +304,7 @@ async function main() {
     const resolved = path.resolve(TEMP_ROOT);
     if (resolved.startsWith(path.resolve(os.tmpdir()) + path.sep)
         && path.basename(resolved).startsWith('hub-sidebar-bottom-')) {
-      fs.rmSync(resolved, { recursive: true, force: true });
+      fs.rmSync(resolved, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
     }
   }
 }

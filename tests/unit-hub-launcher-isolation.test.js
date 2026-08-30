@@ -10,6 +10,7 @@ const {
   gracefulQuit,
   scrubParentControlEnv,
   _verifyCdpPortOwner,
+  _waitForCdpPortOwner,
 } = require('./helpers/hub-launcher.js');
 
 test('isolated Hub defaults cannot inherit the real home or DeepSeek key', () => {
@@ -56,6 +57,9 @@ test('ordinary E2E cannot override safety-critical isolation variables', () => {
   assert.throws(() => buildIsolatedHubEnv(dataDir, {
     CODEX_HOME: 'C:\\Users\\real-user\\.codex',
   }, {}), /requires CODEX_HOME inside the test root/);
+  assert.throws(() => buildIsolatedHubEnv(dataDir, {
+    CLAUDE_CONFIG_DIR: 'C:\\Users\\real-user\\.claude',
+  }, {}), /requires CLAUDE_CONFIG_DIR inside the test root/);
   assert.throws(() => buildIsolatedHubEnv('C:\\Users\\real-user\\.claude-session-hub', {}, {}),
     /requires dataDir inside a dedicated OS temp subdirectory/);
 });
@@ -99,6 +103,16 @@ test('isolated Hub strips parent CLI and Hub routing variables', () => {
 test('CDP ownership verification binds the listener to the spawned PID', async () => {
   assert.equal(await _verifyCdpPortOwner(19871, 4242, async () => ({ stdout: '111,4242' })), true);
   assert.equal(await _verifyCdpPortOwner(19871, 4242, async () => ({ stdout: '111,222' })), false);
+});
+
+test('CDP ownership wait tolerates a transient missing listener but never a wrong final owner', async () => {
+  let attempts = 0;
+  assert.equal(await _waitForCdpPortOwner(19871, 4242, 500, async () => {
+    attempts += 1;
+    return attempts >= 3;
+  }), true);
+  assert.equal(attempts, 3);
+  assert.equal(await _waitForCdpPortOwner(19871, 4242, 0, async () => false), false);
 });
 
 test('gracefulQuit rejects an already-crashed child instead of reporting success', async () => {
