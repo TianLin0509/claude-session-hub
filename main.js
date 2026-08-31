@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, dialog, nativeImage, shell, Menu, Tray } = require('electron');
 const path = require('path');
 const { fileURLToPath } = require('url');
 const fs = require('fs');
@@ -397,6 +397,8 @@ let claudeHookWatchdog = null;
 let windowsShellWatchdog = null;
 
 let mainWindow;
+let agentLeagueTray = null;
+let explicitHubQuitRequested = false;
 const sessionManager = new SessionManager();
 sessionManager.on('managed-launch', (record) => {
   appendManagedLaunchAudit(record, { logger: console });
@@ -825,6 +827,69 @@ function focusPrimaryWindow() {
 
 module.exports.focusPrimaryWindow = focusPrimaryWindow;
 
+function shouldKeepAgentLeagueInBackground() {
+  if (explicitHubQuitRequested || process.env.CLAUDE_HUB_DISABLE_LEAGUE_BACKGROUND === '1') return false;
+  if (!agentLeagueBridge || !agentLeagueBridge.store) return false;
+  try {
+    const schedule = agentLeagueBridge.store.getSchedule();
+    const activeRun = typeof agentLeagueBridge.getRunState === 'function' ? agentLeagueBridge.getRunState() : null;
+    return schedule.keepAliveOnClose !== false && (schedule.enabled === true || !!activeRun);
+  } catch (error) {
+    console.warn('[agent-league] failed to evaluate background keepalive:', error && error.message);
+    return false;
+  }
+}
+
+function destroyAgentLeagueTray() {
+  if (!agentLeagueTray) return false;
+  try { agentLeagueTray.destroy(); } catch {}
+  agentLeagueTray = null;
+  return true;
+}
+
+function showHubFromAgentLeagueTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.show();
+  mainWindow.restore?.();
+  mainWindow.focus();
+  destroyAgentLeagueTray();
+}
+
+function ensureAgentLeagueTray() {
+  if (agentLeagueTray || !app.isReady()) return agentLeagueTray;
+  const iconPath = path.join(__dirname, 'claude-wx.ico');
+  let icon = nativeImage.createFromPath(iconPath);
+  if (!icon.isEmpty()) icon = icon.resize({ width: 20, height: 20 });
+  agentLeagueTray = new Tray(icon);
+  agentLeagueTray.setToolTip(`AI 群聊 Hub · Agent 联赛后台守护 · PID ${process.pid}`);
+  const updateMenu = () => {
+    let scheduleLabel = 'Agent 联赛后台守护中';
+    try {
+      const state = agentLeagueBridge && agentLeagueBridge.store && agentLeagueBridge.store.getSchedule();
+      const run = agentLeagueBridge && agentLeagueBridge.getRunState && agentLeagueBridge.getRunState();
+      scheduleLabel = run
+        ? `Agent 联赛：${run.mode === 'weekly' ? '周度沉淀' : '盘前决策'}运行中`
+        : `Agent 联赛：等待 ${state && (state.decisionTime || state.runTime) || '08:30'}`;
+    } catch {}
+    agentLeagueTray.setContextMenu(Menu.buildFromTemplate([
+      { label: `打开 AI 群聊 Hub（PID ${process.pid}）`, click: showHubFromAgentLeagueTray },
+      { label: scheduleLabel, enabled: false },
+      { type: 'separator' },
+      {
+        label: '退出此 Hub（未完成任务可由其他 Hub 接班）',
+        click: () => {
+          explicitHubQuitRequested = true;
+          void beginGracefulHubShutdown('tray-explicit-quit');
+        },
+      },
+    ]));
+  };
+  updateMenu();
+  agentLeagueTray.on('click', showHubFromAgentLeagueTray);
+  agentLeagueTray.on('right-click', updateMenu);
+  return agentLeagueTray;
+}
+
 function createWindow() {
   // Load the icon as a NativeImage so we can pass it to BrowserWindow AND
   // re-apply via setIcon — on Windows the constructor `icon` alone sometimes
@@ -944,6 +1009,22 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('close', (event) => {
     if (shutdownDrainState === 'drained' || shutdownDrainState === 'finalizing') return;
+    if (shouldKeepAgentLeagueInBackground()) {
+      event.preventDefault();
+      try {
+        // Create the recovery affordance first. If Windows refuses the tray
+        // icon, keep the window visible instead of hiding the user's only way
+        // back into the still-running Hub.
+        ensureAgentLeagueTray();
+        mainWindow.hide();
+        console.log(`[agent-league] Hub window hidden; scheduler remains alive in tray (pid=${process.pid})`);
+      } catch (error) {
+        destroyAgentLeagueTray();
+        mainWindow.show();
+        console.error('[agent-league] tray keepalive failed; close cancelled:', error && error.message);
+      }
+      return;
+    }
     event.preventDefault();
     void beginGracefulHubShutdown('window-close-requested');
   });
@@ -1215,6 +1296,29 @@ agentLeagueBridge = require('./main/ipc/agent-league-handlers.js').registerAgent
   sessionManager,
   transcriptTap,
 });
+if (process.env.CLAUDE_HUB_E2E === '1') {
+  ipcMain.handle('debug:agent-league-background-state', () => ({
+    ok: true,
+    pid: process.pid,
+    windowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+    trayActive: !!agentLeagueTray,
+    scheduler: agentLeagueBridge && agentLeagueBridge.schedulerSafety,
+    runtimeAvailable: !!(agentLeagueBridge && agentLeagueBridge.runtimeStore),
+  }));
+  ipcMain.handle('debug:agent-league-close-window', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+    return {
+      ok: true,
+      windowVisible: !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()),
+      trayActive: !!agentLeagueTray,
+    };
+  });
+  ipcMain.handle('debug:agent-league-explicit-quit', () => {
+    explicitHubQuitRequested = true;
+    setImmediate(() => { void beginGracefulHubShutdown('e2e-explicit-quit'); });
+    return { ok: true };
+  });
+}
 
 registerGroupchatQueryIpc(ipcMain, {
   getHubDataDir,
@@ -2464,6 +2568,7 @@ async function runFinalShutdownCleanup() {
   if (agentLeagueBridge && typeof agentLeagueBridge.stopScheduler === 'function') {
     capture('agent-league-scheduler', () => agentLeagueBridge.stopScheduler());
   }
+  capture('agent-league-tray', () => destroyAgentLeagueTray());
   // 2026-05-07 道雪：退出时保证三层都同步落盘——state.json（lock + merge）、
   //   per-meeting JSON、per-session JSON。任意一层丢了，下次 boot 的 selfHeal
   //   都能从另一层恢复。
@@ -2517,6 +2622,13 @@ function beginGracefulHubShutdown(reason) {
 
   shutdownDrainState = 'draining';
   console.log(`[shutdown] draining PTYs before Electron teardown (${reason})`);
+  // Freeze Agent League dispatch before SessionManager starts terminating PTYs.
+  // Active tasks remain durable/orphan-recoverable and the phase lease is only
+  // released by final cleanup after every PTY exit callback has settled.
+  if (agentLeagueBridge && typeof agentLeagueBridge.beginHandoff === 'function') {
+    try { agentLeagueBridge.beginHandoff(reason); }
+    catch (error) { console.warn('[shutdown] agent league handoff preparation failed:', error && error.message); }
+  }
   shutdownDrainPromise = sessionManager.disposeGracefully({ logger: console, warnAfterMs: 5000, drainTimeoutMs: 15_000 })
     .then(async (result) => {
       if (!result || result.safeToQuit !== true) {

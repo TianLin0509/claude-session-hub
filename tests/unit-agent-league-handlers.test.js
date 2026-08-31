@@ -52,6 +52,12 @@ function makeHook(decision, verdict = 'PASS') {
   };
 }
 
+function attemptIdFromPrompt(prompt) {
+  const match = String(prompt || '').match(/"attempt_id"\s*:\s*"([^"]+)"/);
+  assert(match, 'durable Agent prompt must expose attempt_id');
+  return match[1];
+}
+
 function makeHarness(root, fakeHttp, extraDeps = {}) {
   const store = new AgentLeagueStore({ root });
   const ipc = { handlers: new Map(), handle(channel, fn) { this.handlers.set(channel, fn); } };
@@ -111,6 +117,15 @@ async function waitFor(predicate, message = 'condition', loops = 80) {
   throw new Error(`timeout waiting for ${message}`);
 }
 
+async function waitForTimed(predicate, message = 'condition', timeoutMs = 1500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`timeout waiting for ${message}`);
+}
+
 test('provider catalog covers ordinary Hub CLIs and validates exact models', () => {
   assert.deepEqual(providerCatalog().map((row) => row.provider), ['codex-cli', 'claude-cli', 'gemini-cli', 'kimi-cli', 'deepseek-cli']);
   assert.equal(validateProvider('codex-cli', 'gpt-5.6-sol').ok, true);
@@ -166,6 +181,26 @@ test('IPC creates visible ordinary session with 500k baseline and persists nativ
     assert.equal(harness.store.getAgent('chuxin-baseline').session.nativeSession.codexSid, 'native-codex-1');
     harness.bridge.stopScheduler();
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Claude league agents stay autonomous even when the research hook is unavailable', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-claude-autonomous-'));
+  let harness = null;
+  try {
+    harness = makeHarness(root, fakeMarketHttp(), { getHookPort: () => 0 });
+    const created = harness.ipc.handlers.get('agent-league:create')(null, {
+      id: 'chuxin-avatar', name: '初心化身', provider: 'claude-cli',
+      model: 'claude-opus-5[1m]', philosophyKey: 'chuxin-value-speculation',
+    });
+    assert.equal(created.ok, true);
+    const launch = harness.createdOptions[harness.createdOptions.length - 1];
+    assert.equal(launch.opts.autonomous, true);
+    assert.equal(launch.opts.mcpProfile, 'none');
+    assert.equal(launch.opts.mcpConfigFile, undefined);
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('Agent League repairs an unbound persisted shell with a fresh CLI and never uses a picker', () => {
@@ -232,24 +267,25 @@ test('prompt workbench IPC exposes editable files, read-only compiled contracts,
 
 test('daily run uses two turns in the same Session, then open/close phases update files and ledger', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-run-'));
+  let harness = null;
   try {
-    const harness = makeHarness(root, fakeMarketHttp());
+    harness = makeHarness(root, fakeMarketHttp());
     harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
     const started = await harness.ipc.handlers.get('agent-league:run-day')(null, { trigger: 'test', force: true, decisionDate: '2026-08-27' });
-    assert.equal(started.ok, true);
+    assert.equal(started.ok, true, JSON.stringify(started));
     await waitFor(() => harness.sentPrompts.length === 1, 'draft prompt');
     const sessionId = harness.sentPrompts[0].sessionId;
     const draft = makeDecision();
     harness.transcriptTap.emit('turn-complete', {
       hubSessionId: sessionId,
-      text: `\`\`\`agent-league-draft\n${JSON.stringify({ run_id: started.run.runId, decision_date: '2026-08-27', data_as_of: '2026-08-26', ...draft })}\n\`\`\``,
+      text: `\`\`\`agent-league-draft\n${JSON.stringify({ run_id: started.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[0].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...draft })}\n\`\`\``,
     });
     await waitFor(() => harness.sentPrompts.length === 2, 'hook prompt');
     assert.equal(harness.sentPrompts[1].sessionId, sessionId, 'Hook must stay in the same ordinary Session');
     const finalHook = makeHook(draft);
     harness.transcriptTap.emit('turn-complete', {
       hubSessionId: sessionId,
-      text: `\`\`\`agent-league-hook\n${JSON.stringify({ run_id: started.run.runId, decision_date: '2026-08-27', data_as_of: '2026-08-26', ...finalHook })}\n\`\`\``,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({ run_id: started.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[1].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...finalHook })}\n\`\`\``,
     });
     await waitFor(() => harness.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus === 'completed', 'daily completion');
     let row = harness.store.getAgent('chuxin-baseline');
@@ -258,21 +294,174 @@ test('daily run uses two turns in the same Session, then open/close phases updat
     assert.equal(row.portfolio.pendingDecision.decisionDate, '2026-08-27');
 
     const executed = await harness.ipc.handlers.get('agent-league:execute-open')(null, { force: true, decisionDate: '2026-08-27' });
-    assert.equal(executed.ok, true);
+    assert.equal(executed.ok, true, JSON.stringify(executed));
     row = harness.store.getAgent('chuxin-baseline');
     assert.equal(row.trades.rows.length, 1);
     assert.equal(row.latestDaily.execution.trades.length, 1);
+    assert.equal(harness.bridge.runtimeStore.getRun('live:open:2026-08-27').status, 'completed');
+    assert.equal(harness.bridge.runtimeStore.getEffect('live:open:2026-08-27:agent:chuxin-baseline').status, 'applied');
     const closed = await harness.ipc.handlers.get('agent-league:record-close')(null, { force: true, decisionDate: '2026-08-27' });
     assert.equal(closed.ok, true);
     assert(harness.store.getAgent('chuxin-baseline').latestDaily.closeResult.nav > 0);
-    harness.bridge.stopScheduler();
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    assert.equal(harness.bridge.runtimeStore.getRun('live:close:2026-08-27').status, 'completed');
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an Agent added after same-day completion can be caught up without rerunning completed peers', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-same-day-catchup-'));
+  let harness = null;
+  try {
+    harness = makeHarness(root, fakeMarketHttp());
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const first = await harness.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
+    await waitFor(() => harness.sentPrompts.length === 1, 'baseline DRAFT');
+    const draft = makeDecision();
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: harness.sentPrompts[0].sessionId,
+      text: `\`\`\`agent-league-draft\n${JSON.stringify({ run_id: first.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[0].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...draft })}\n\`\`\``,
+    });
+    await waitFor(() => harness.sentPrompts.length === 2, 'baseline Hook');
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: harness.sentPrompts[1].sessionId,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({ run_id: first.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[1].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...makeHook(draft) })}\n\`\`\``,
+    });
+    await waitFor(() => harness.store.getAgent('chuxin-baseline').latestDaily.status === 'decision-queued', 'baseline FINAL');
+    const originalDecisionCount = harness.store.getAgent('chuxin-baseline').agent.decisionCount;
+    harness.store.createAgent({ id: 'chuxin-avatar', name: '初心化身', provider: 'claude-cli', kind: 'claude', model: 'claude-opus-5[1m]', philosophy: baseline });
+    const caughtUp = await harness.ipc.handlers.get('agent-league:run-day')(null, {
+      decisionDate: '2026-08-27', agentIds: ['chuxin-avatar'], trigger: 'test',
+    });
+    assert.equal(caughtUp.ok, true);
+    await waitFor(() => harness.sentPrompts.length === 3, 'avatar catch-up DRAFT');
+    assert.match(harness.sentPrompts[2].prompt, /盘前 DRAFT/);
+    assert.equal(harness.store.getAgent('chuxin-baseline').agent.decisionCount, originalDecisionCount);
+    assert.deepEqual(caughtUp.run.durable.tasks.map((task) => task.agentId).sort(), ['chuxin-avatar', 'chuxin-baseline']);
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('open settlement repairs a crash after portfolio write without duplicating the trade', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-open-reconcile-'));
+  let harness = null;
+  let injected = false;
+  try {
+    harness = makeHarness(root, fakeMarketHttp(), {
+      afterOpenPortfolioSaved: () => {
+        if (!injected) {
+          injected = true;
+          throw new Error('simulated crash after portfolio write');
+        }
+      },
+    });
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const started = await harness.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
+    await waitFor(() => harness.sentPrompts.length === 1, 'reconcile DRAFT');
+    const draft = makeDecision();
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: harness.sentPrompts[0].sessionId,
+      text: `\`\`\`agent-league-draft\n${JSON.stringify({ run_id: started.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[0].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...draft })}\n\`\`\``,
+    });
+    await waitFor(() => harness.sentPrompts.length === 2, 'reconcile Hook');
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: harness.sentPrompts[1].sessionId,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({ run_id: started.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[1].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...makeHook(draft) })}\n\`\`\``,
+    });
+    await waitFor(() => harness.store.getAgent('chuxin-baseline').latestDaily.status === 'decision-queued', 'reconcile FINAL');
+
+    const failedOpen = await harness.ipc.handlers.get('agent-league:execute-open')(null, { force: true, decisionDate: '2026-08-27' });
+    assert.equal(failedOpen.ok, false);
+    let row = harness.store.getAgent('chuxin-baseline');
+    assert.equal(row.portfolio.pendingDecision, null, 'portfolio write already cleared pending before the injected crash');
+    assert.equal(row.trades.rows.length, 1);
+    assert.equal(row.latestDaily.execution, undefined, 'daily execution write was the missing suffix');
+    assert.equal(harness.bridge.runtimeStore.getEffect('live:open:2026-08-27:agent:chuxin-baseline').status, 'prepared');
+
+    const recovered = await harness.ipc.handlers.get('agent-league:execute-open')(null, { force: true, decisionDate: '2026-08-27' });
+    assert.equal(recovered.ok, true, JSON.stringify(recovered));
+    assert.equal(recovered.results[0].recoveredFromPreparedEffect, true);
+    row = harness.store.getAgent('chuxin-baseline');
+    assert.equal(row.trades.rows.length, 1, 'idempotency key prevents a duplicate trade');
+    assert.equal(row.latestDaily.execution.trades.length, 1);
+    assert.equal(harness.bridge.runtimeStore.getEffect('live:open:2026-08-27:agent:chuxin-baseline').status, 'applied');
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('prompt edits are frozen while a durable Agent task is non-terminal', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-prompt-freeze-'));
+  let harness = null;
+  try {
+    harness = makeHarness(root, fakeMarketHttp());
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const file = harness.ipc.handlers.get('agent-league:prompt-files')(null, { agentId: 'chuxin-baseline' }).files.find((row) => row.key === 'dailyPrompt');
+    const started = await harness.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
+    assert.equal(started.ok, true);
+    await waitFor(() => harness.sentPrompts.length === 1, 'active DRAFT');
+    const saved = harness.ipc.handlers.get('agent-league:save-prompt-file')(null, {
+      agentId: 'chuxin-baseline', key: 'dailyPrompt', expectedSha256: file.sha256, content: `${file.content}\n- 不应在运行中写入`,
+    });
+    assert.equal(saved.ok, false);
+    assert.equal(saved.error, 'agent-input-frozen');
+    assert.match(saved.message, /本轮终态后/);
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('health check reports scheduler, SQLite, CLI and T-1 data readiness without starting a run', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-health-'));
+  let harness = null;
+  try {
+    harness = makeHarness(root, fakeMarketHttp(), { commandAvailable: () => true });
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    harness.ipc.handlers.get('agent-league:update-schedule')(null, {
+      enabled: true, decisionTime: '08:30', decisionCutoff: '09:15', executionTime: '09:35', resultTime: '15:10', weeklyTime: '10:00', maxConcurrency: 2,
+    });
+    const result = await harness.ipc.handlers.get('agent-league:health')(null, { now: new Date('2026-08-26T23:00:00.000Z') });
+    assert.equal(result.ok, true);
+    assert.equal(result.report.severity, 'pass');
+    assert.equal(result.report.nextDecisionDate, '2026-08-27');
+    assert.equal(result.report.expectedDataAsOf, '2026-08-26');
+    assert.equal(result.report.checks.find((row) => row.id === 'runtime-db').status, 'pass');
+    assert.equal(result.report.checks.find((row) => row.id === 'chuxin-api').status, 'pass');
+    assert.equal(harness.sentPrompts.length, 0);
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an unknown single-Agent catch-up request fails closed instead of running everyone', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-unknown-catchup-'));
+  let harness = null;
+  try {
+    harness = makeHarness(root, fakeMarketHttp());
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const result = await harness.ipc.handlers.get('agent-league:run-day')(null, {
+      force: true, decisionDate: '2026-08-27', agentIds: ['does-not-exist'],
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'agent-missing');
+    assert.equal(harness.sentPrompts.length, 0);
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('Saturday uses one additional turn and stores memory/checklist proposal without auto-applying it', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-weekly-'));
+  let harness = null;
   try {
-    const harness = makeHarness(root, fakeMarketHttp());
+    harness = makeHarness(root, fakeMarketHttp());
     harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
     const draft = makeDecision();
     const checkedHook = makeHook(draft);
@@ -280,10 +469,10 @@ test('Saturday uses one additional turn and stores memory/checklist proposal wit
     harness.store.recordDraft('chuxin-baseline', { runId: 'r1', decisionDate: '2026-08-27', dataAsOf: '2026-08-26', draft });
     harness.store.recordDecision('chuxin-baseline', { runId: 'r1', decisionDate: '2026-08-27', dataAsOf: '2026-08-26', decision: draft, hook: checkedHook, dailyBrief: checkedHook.daily_brief });
     const started = await harness.ipc.handlers.get('agent-league:run-weekly')(null, { force: true, saturdayDate: '2026-08-29' });
-    assert.equal(started.ok, true);
+    assert.equal(started.ok, true, JSON.stringify(started));
     await waitFor(() => harness.sentPrompts.length === 1, 'weekly prompt');
     const response = {
-      run_id: started.run.runId, saturday_date: '2026-08-29', summary: '保持等待纪律。',
+      run_id: started.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[0].prompt), saturday_date: '2026-08-29', summary: '保持等待纪律。',
       process_win: '没有追高。', process_mistake: '仓位解释不充分。', lesson: '等待也是主动决策。',
       strongest_counterexample: '等待可能踏空。', evidence_for: ['样本A'], evidence_against: ['样本B'],
       checklist_proposal: { rule_id: 'P1', old_rule: '不追高', proposed_rule: '写出等待触发条件', reason: '更可执行', evidence: ['一次样本'] },
@@ -294,14 +483,17 @@ test('Saturday uses one additional turn and stores memory/checklist proposal wit
     assert.equal(row.memory.candidates.length, 1);
     assert.equal(row.evolution.proposals.length, 1);
     assert.equal(row.checklist.rules.find((rule) => rule.id === 'P1').text, '即使公司逻辑成立，当前位置和估值不舒服时也应等待，不因害怕错过而追高。');
-    harness.bridge.stopScheduler();
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
-test('Hook failure preserves DRAFT, releases lease, and retry only starts a fresh unfinished Agent turn', async () => {
+test('Hook failure preserves DRAFT and automatically retries only the Hook checkpoint', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-hook-failure-'));
+  let harness = null;
   try {
-    const harness = makeHarness(root, fakeMarketHttp());
+    harness = makeHarness(root, fakeMarketHttp());
     harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
     const started = await harness.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
     await waitFor(() => harness.sentPrompts.length === 1, 'draft prompt');
@@ -309,33 +501,227 @@ test('Hook failure preserves DRAFT, releases lease, and retry only starts a fres
     const draft = makeDecision();
     harness.transcriptTap.emit('turn-complete', {
       hubSessionId: sessionId,
-      text: `\`\`\`agent-league-draft\n${JSON.stringify({ run_id: started.run.runId, decision_date: '2026-08-27', data_as_of: '2026-08-26', ...draft })}\n\`\`\``,
+      text: `\`\`\`agent-league-draft\n${JSON.stringify({ run_id: started.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[0].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...draft })}\n\`\`\``,
     });
     await waitFor(() => harness.sentPrompts.length === 2, 'hook prompt');
-    harness.transcriptTap.emit('turn-complete', { hubSessionId: sessionId, text: '故意缺少 Hook 结构块' });
-    await waitFor(() => harness.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus === 'failed', 'failed run');
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: sessionId,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({
+        run_id: started.run.runId,
+        attempt_id: attemptIdFromPrompt(harness.sentPrompts[1].prompt),
+        decision_date: '2026-08-27',
+        data_as_of: '2026-08-26',
+        verdict: 'BROKEN',
+      })}\n\`\`\``,
+    });
+    await waitFor(() => harness.sentPrompts.length === 3, 'automatic Hook retry');
     const failed = harness.store.getDaily('chuxin-baseline', '2026-08-27');
     assert.equal(failed.status, 'failed');
     assert.equal(failed.stage, 'hook');
     assert.equal(failed.draft.targets[0].symbol, '600001.SH');
-    assert.equal(harness.store.currentRunLease(), null);
-    const retried = await harness.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
-    assert.equal(retried.ok, true);
-    await waitFor(() => harness.sentPrompts.length === 3, 'retry draft prompt');
     assert.equal(harness.sentPrompts[2].sessionId, sessionId, 'retry must reuse the same ordinary Session');
-    harness.bridge.stopScheduler();
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    assert.match(harness.sentPrompts[2].prompt, /决策前 Hook/);
+    assert.doesNotMatch(harness.sentPrompts[2].prompt, /盘前 DRAFT/);
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: sessionId,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({ run_id: started.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[2].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...makeHook(draft) })}\n\`\`\``,
+    });
+    await waitFor(() => harness.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus === 'completed', 'Hook retry completion');
+    assert.equal(harness.store.currentRunLease(), null);
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a successor Hub adopts an interrupted Hook checkpoint and ignores the fenced late output', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-hook-handoff-'));
+  let first = null;
+  let second = null;
+  try {
+    first = makeHarness(root, fakeMarketHttp());
+    first.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const started = await first.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
+    await waitFor(() => first.sentPrompts.length === 1, 'first Hub DRAFT');
+    const sessionId = first.sentPrompts[0].sessionId;
+    const draft = makeDecision();
+    first.transcriptTap.emit('turn-complete', {
+      hubSessionId: sessionId,
+      text: `\`\`\`agent-league-draft\n${JSON.stringify({
+        run_id: started.run.runId,
+        attempt_id: attemptIdFromPrompt(first.sentPrompts[0].prompt),
+        decision_date: '2026-08-27',
+        data_as_of: '2026-08-26',
+        ...draft,
+      })}\n\`\`\``,
+    });
+    await waitFor(() => first.sentPrompts.length === 2, 'first Hub Hook');
+    const oldHookAttempt = attemptIdFromPrompt(first.sentPrompts[1].prompt);
+    first.bridge.beginHandoff('unit-handoff');
+    first.bridge.stopScheduler();
+    first = null;
+
+    second = makeHarness(root, fakeMarketHttp());
+    const adopted = await second.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
+    assert.equal(adopted.ok, true);
+    await waitFor(() => second.sentPrompts.length === 1, 'successor Hook prompt');
+    assert.match(second.sentPrompts[0].prompt, /决策前 Hook/);
+    assert.doesNotMatch(second.sentPrompts[0].prompt, /盘前 DRAFT/);
+    const newHookAttempt = attemptIdFromPrompt(second.sentPrompts[0].prompt);
+    assert.notEqual(newHookAttempt, oldHookAttempt);
+
+    second.transcriptTap.emit('turn-complete', {
+      hubSessionId: sessionId,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({
+        run_id: adopted.run.runId,
+        attempt_id: oldHookAttempt,
+        decision_date: '2026-08-27',
+        data_as_of: '2026-08-26',
+        ...makeHook(draft),
+      })}\n\`\`\``,
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.notEqual(second.store.getDaily('chuxin-baseline', '2026-08-27').status, 'decision-queued');
+    assert.equal(second.ipc.handlers.get('agent-league:list')(null, {}).run.active.length, 1);
+
+    second.transcriptTap.emit('turn-complete', {
+      hubSessionId: sessionId,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({
+        run_id: adopted.run.runId,
+        attempt_id: newHookAttempt,
+        decision_date: '2026-08-27',
+        data_as_of: '2026-08-26',
+        ...makeHook(draft),
+      })}\n\`\`\``,
+    });
+    await waitFor(() => second.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus === 'completed', 'successor completion');
+    assert.equal(second.store.getAgent('chuxin-baseline').agent.decisionCount, 1);
+  } finally {
+    first?.bridge.stopScheduler();
+    second?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('graceful PTY exit during handoff cannot mark a durable in-flight run completed', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-handoff-exit-'));
+  let harness = null;
+  try {
+    harness = makeHarness(root, fakeMarketHttp());
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const started = await harness.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
+    assert.equal(started.ok, true);
+    await waitFor(() => harness.sentPrompts.length === 1, 'handoff active DRAFT');
+    const sessionId = harness.sentPrompts[0].sessionId;
+    harness.bridge.beginHandoff('unit-pty-drain');
+    harness.sessionManager.emit('session-exited', { sessionId });
+    assert.equal(harness.store.getSchedule().lastRunStatus, 'interrupted');
+    assert.equal(harness.bridge.runtimeStore.getRun('live:decision:2026-08-27').status, 'running');
+    assert.notEqual(harness.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus, 'completed');
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an incompatible runtime protocol cannot replay an unfinished run', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-version-fence-'));
+  let first = null;
+  let second = null;
+  try {
+    first = makeHarness(root, fakeMarketHttp(), { hubVersion: '1.6.28', runtimeProtocolVersion: 1 });
+    first.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const started = await first.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
+    assert.equal(started.ok, true);
+    await waitFor(() => first.sentPrompts.length === 1, 'version A DRAFT');
+    first.bridge.beginHandoff('version-fence');
+    first.bridge.stopScheduler();
+    first = null;
+
+    second = makeHarness(root, fakeMarketHttp(), { hubVersion: '1.6.29', runtimeProtocolVersion: 2 });
+    const adopted = await second.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
+    assert.equal(adopted.ok, false);
+    assert.equal(adopted.error, 'runtime-version-conflict');
+    assert.match(adopted.message, /拒绝不兼容重放/);
+    assert.equal(second.sentPrompts.length, 0);
+  } finally {
+    first?.bridge.stopScheduler();
+    second?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('open execution refuses a partial cohort after the decision owner exits', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-open-barrier-'));
+  let first = null;
+  let second = null;
+  try {
+    first = makeHarness(root, fakeMarketHttp());
+    first.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const started = await first.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
+    assert.equal(started.ok, true, JSON.stringify(started));
+    await waitFor(() => first.sentPrompts.length === 1, 'in-flight DRAFT');
+    first.bridge.beginHandoff('unit-open-barrier');
+    first.bridge.stopScheduler();
+    first = null;
+
+    second = makeHarness(root, fakeMarketHttp());
+    const opened = await second.ipc.handlers.get('agent-league:execute-open')(null, { force: true, decisionDate: '2026-08-27' });
+    assert.equal(opened.ok, false);
+    assert.equal(opened.error, 'decision-cohort-incomplete');
+    assert.deepEqual(opened.incomplete.map((row) => row.agentId), ['chuxin-baseline']);
+    assert.equal(second.store.getSchedule().lastExecutionDate, '');
+    assert.equal(second.store.getAgent('chuxin-baseline').trades.rows.length, 0);
+  } finally {
+    first?.bridge.stopScheduler();
+    second?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('scheduler resumes the frozen cohort after cutoff without admitting a newly added Agent', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-post-cutoff-recovery-'));
+  let first = null;
+  let second = null;
+  try {
+    first = makeHarness(root, fakeMarketHttp());
+    first.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    first.store.saveSchedule({ ...first.store.getSchedule(), enabled: true });
+    const started = await first.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
+    assert.equal(started.ok, true);
+    await waitFor(() => first.sentPrompts.length === 1, 'pre-cutoff DRAFT');
+    first.bridge.beginHandoff('post-cutoff-recovery');
+    first.bridge.stopScheduler();
+    first = null;
+
+    second = makeHarness(root, fakeMarketHttp());
+    second.store.createAgent({ id: 'late-agent', name: '截止后新增', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const tick = await second.bridge.schedulerTick(new Date('2026-08-27T01:20:00.000Z'));
+    assert.equal(tick.ok, true, JSON.stringify(tick));
+    await waitFor(() => second.sentPrompts.length === 1, 'successor recovery DRAFT');
+    assert.equal(second.sentPrompts[0].sessionId, second.store.getAgent('chuxin-baseline').session.hubSessionId);
+    assert.equal(second.store.getAgent('late-agent').latestDaily, null);
+    assert.deepEqual(tick.run.durable.tasks.map((task) => task.agentId), ['chuxin-baseline']);
+  } finally {
+    first?.bridge.stopScheduler();
+    second?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a missing provider completion cannot leave the league permanently running', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-timeout-'));
+  let harness = null;
   try {
-    const harness = makeHarness(root, fakeMarketHttp(), { agentTurnTimeoutMs: 120 });
+    harness = makeHarness(root, fakeMarketHttp(), { agentTurnTimeoutMs: 120 });
     harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
     const started = await harness.ipc.handlers.get('agent-league:run-day')(null, { force: true, decisionDate: '2026-08-27' });
-    assert.equal(started.ok, true);
+    assert.equal(started.ok, true, JSON.stringify(started));
     await waitFor(() => harness.sentPrompts.length === 1, 'draft prompt');
-    await new Promise(resolve => setTimeout(resolve, 260));
+    await waitForTimed(
+      () => harness.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus === 'failed',
+      'retry budget exhaustion',
+    );
     const state = harness.ipc.handlers.get('agent-league:list')(null, {});
     assert.equal(state.run, null, 'watchdog must close the in-memory run');
     assert.equal(state.schedule.lastRunStatus, 'failed');
@@ -345,14 +731,17 @@ test('a missing provider completion cannot leave the league permanently running'
     assert.equal(failed.status, 'failed');
     assert.equal(failed.stage, 'draft');
     assert.match(failed.error, /盘前 DRAFT/);
-    harness.bridge.stopScheduler();
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a PTY send without provider turn acknowledgement fails promptly instead of hanging', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-send-stuck-'));
+  let harness = null;
   try {
-    const harness = makeHarness(root, fakeMarketHttp(), {
+    harness = makeHarness(root, fakeMarketHttp(), {
       sendToPty: async () => ({ ok: true, sendStatus: 'stuck' }),
     });
     harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
@@ -365,12 +754,15 @@ test('a PTY send without provider turn acknowledgement fails promptly instead of
     const failed = harness.store.getDaily('chuxin-baseline', '2026-08-27');
     assert.equal(failed.status, 'failed');
     assert.match(failed.error, /provider turn 启动确认/);
-    harness.bridge.stopScheduler();
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('missed prior-day opening execution is recovered from historical daily open before a new decision', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-recovery-'));
+  let harness = null;
   try {
     const historicalHttp = async (method, url) => {
       const base = await fakeMarketHttp()(method, url);
@@ -379,7 +771,7 @@ test('missed prior-day opening execution is recovered from historical daily open
       }
       return base;
     };
-    const harness = makeHarness(root, historicalHttp);
+    harness = makeHarness(root, historicalHttp);
     harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
     const draft = makeDecision();
     const checkedHook = makeHook(draft);
@@ -394,8 +786,10 @@ test('missed prior-day opening execution is recovered from historical daily open
     assert.equal(row.trades.rows.length, 1);
     assert.equal(row.trades.rows[0].referencePrice, 9.8);
     assert.equal(row.latestDaily.decisionDate, '2026-08-27');
-    harness.bridge.stopScheduler();
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('Agent League recovers a Codex launch command whose trailing Enter was swallowed', async () => {
@@ -419,7 +813,15 @@ test('Agent League recovers a Codex launch command whose trailing Enter was swal
 test('manual weekend premarket click schedules the next official trading day', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-weekend-next-'));
   try {
-    const harness = makeHarness(root, fakeMarketHttp());
+    const baseHttp = fakeMarketHttp();
+    const weekendHttp = async (method, url) => {
+      const response = await baseHttp(method, url);
+      if (url.includes('/observe/overview')) {
+        response.body.header.data_asof = '2026-08-28'; // Monday's immediately previous trading day.
+      }
+      return response;
+    };
+    const harness = makeHarness(root, weekendHttp);
     harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
     const started = await harness.ipc.handlers.get('agent-league:run-day')(null, {
       trigger: 'manual',

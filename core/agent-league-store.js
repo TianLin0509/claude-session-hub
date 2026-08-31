@@ -14,7 +14,10 @@ const { EXCHANGE_CALENDAR } = require('./agent-league-calendar.js');
 
 const AGENT_ID_RE = /^[a-z0-9][a-z0-9_-]{2,63}$/;
 const STATE_MARKER = 'agent-league-state:v1';
-const RUN_LEASE_TTL_MS = 2 * 60 * 1000;
+// Legacy cross-version guard. The durable SQLite epoch is the correctness
+// fence; this short file lease keeps older Hub builds from entering the same
+// phase while still allowing a successor to take over promptly after a crash.
+const RUN_LEASE_TTL_MS = 25 * 1000;
 const PROMPT_EDIT_LIMIT = 200000;
 const PROMPT_FILE_DEFINITIONS = Object.freeze([
   Object.freeze({ key: 'agent', name: 'AGENT.md', group: 'investment', title: '核心投资人格', description: '为什么这样投资、长期相信什么、永远不做什么。', editable: true, protectedState: true }),
@@ -209,6 +212,7 @@ class AgentLeagueStore {
       this.saveSchedule({
         schemaVersion: 2,
         enabled: false,
+        keepAliveOnClose: true,
         timezone: 'Asia/Shanghai',
         decisionTime: '08:30',
         decisionCutoff: '09:15',
@@ -338,6 +342,7 @@ class AgentLeagueStore {
       '# 联赛赛程', '', stateBlock(state), '',
       '## 当前设置', '',
       `- 自动赛程：${state.enabled ? '已启用' : '未启用'}`,
+      `- 关窗后台守护：${state.keepAliveOnClose === false ? '已关闭' : '已启用'}`,
       `- 时区：${state.timezone || 'Asia/Shanghai'}`,
       `- 盘前决策：${state.decisionTime || state.runTime || '08:30'}（截止 ${state.decisionCutoff || '09:15'}）`,
       `- 开盘执行：${state.executionTime || '09:35'}`,
@@ -821,6 +826,9 @@ class AgentLeagueStore {
     const pending = row.portfolio.pendingDecision ? { ...row.portfolio.pendingDecision } : null;
     const result = settlePendingTargets(row.portfolio, snapshot, options);
     const updated = this.savePortfolio(agentId, result.portfolio, result.trades);
+    if (typeof options.afterPortfolioSaved === 'function') {
+      options.afterPortfolioSaved({ agentId, pending, result, updated });
+    }
     if (result.settled && pending) {
       this.recordExecutionResult(agentId, pending.decisionDate || pending.decisionAsOf, result);
     }
@@ -989,9 +997,11 @@ class AgentLeagueStore {
     const decisionDate = String(payload.decisionDate || payload.asOf || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(decisionDate)) throw new Error('invalid decision date');
     const decision = payload.decision;
+    const runId = String(payload.runId || '');
+    const alreadyCounted = !!runId && String(row.agent.lastDecisionRunId || '') === runId;
     const portfolio = normalizePortfolio(row.portfolio);
     portfolio.pendingDecision = {
-      runId: String(payload.runId || ''),
+      runId,
       decisionDate,
       decisionDataAsOf: String(payload.dataAsOf || '').slice(0, 10),
       decisionAsOf: String(payload.dataAsOf || decisionDate).slice(0, 10),
@@ -1003,8 +1013,9 @@ class AgentLeagueStore {
     const agent = {
       ...row.agent,
       schemaVersion: 2,
-      decisionCount: Number(row.agent.decisionCount || 0) + 1,
-      lastDecisionAt: nowIso(this.now),
+      decisionCount: Number(row.agent.decisionCount || 0) + (alreadyCounted ? 0 : 1),
+      lastDecisionAt: alreadyCounted ? row.agent.lastDecisionAt : nowIso(this.now),
+      lastDecisionRunId: runId || row.agent.lastDecisionRunId || '',
       lastHookVerdict: String(payload.hook && payload.hook.verdict || ''),
       lastBriefHeadline: String(payload.dailyBrief && payload.dailyBrief.headline || ''),
       updatedAt: nowIso(this.now),
@@ -1016,7 +1027,7 @@ class AgentLeagueStore {
     const dailyState = {
       ...previous,
       schemaVersion: 2,
-      runId: String(payload.runId || previous.runId || ''),
+      runId: runId || String(previous.runId || ''),
       agentId,
       decisionDate,
       dataAsOf: String(payload.dataAsOf || previous.dataAsOf || '').slice(0, 10),
@@ -1137,23 +1148,27 @@ class AgentLeagueStore {
     const previous = readMarkdownState(filePath) || {};
     if (previous.status === 'completed') return this.getAgent(agentId);
     const review = payload.review;
+    const runId = String(payload.runId || previous.runId || '');
+    const alreadyCounted = !!runId && String(row.agent.lastWeeklyRunId || '') === runId;
     const memory = { ...(row.memory || {}), schemaVersion: 2, candidates: [...(row.memory.candidates || [])] };
-    memory.candidates.push({
-      date: saturdayDate,
-      runId: payload.runId || '',
-      source: 'weekly-review',
-      text: review.lesson,
-      processWin: review.process_win,
-      mistake: review.process_mistake,
-      evidenceFor: review.evidence_for || [],
-      evidenceAgainst: review.evidence_against || [],
-    });
+    if (!runId || !memory.candidates.some((item) => item.runId === runId)) {
+      memory.candidates.push({
+        date: saturdayDate,
+        runId,
+        source: 'weekly-review',
+        text: review.lesson,
+        processWin: review.process_win,
+        mistake: review.process_mistake,
+        evidenceFor: review.evidence_for || [],
+        evidenceAgainst: review.evidence_against || [],
+      });
+    }
     memory.updatedAt = nowIso(this.now);
     const evolution = { ...(row.evolution || {}), proposals: [...(row.evolution.proposals || [])] };
-    if (review.checklist_proposal) {
+    if (review.checklist_proposal && (!runId || !evolution.proposals.some((item) => item.runId === runId && item.type === 'checklist'))) {
       evolution.proposals.push({
         date: saturdayDate,
-        runId: payload.runId || '',
+        runId,
         type: 'checklist',
         ...review.checklist_proposal,
       });
@@ -1161,9 +1176,10 @@ class AgentLeagueStore {
     evolution.updatedAt = nowIso(this.now);
     const agent = {
       ...row.agent,
-      weeklyReviewCount: Number(row.agent.weeklyReviewCount || 0) + 1,
-      evolutionDays: Number(row.agent.evolutionDays || 0) + 1,
-      lastWeeklyAt: nowIso(this.now),
+      weeklyReviewCount: Number(row.agent.weeklyReviewCount || 0) + (alreadyCounted ? 0 : 1),
+      evolutionDays: Number(row.agent.evolutionDays || 0) + (alreadyCounted ? 0 : 1),
+      lastWeeklyAt: alreadyCounted ? row.agent.lastWeeklyAt : nowIso(this.now),
+      lastWeeklyRunId: runId || row.agent.lastWeeklyRunId || '',
       updatedAt: nowIso(this.now),
     };
     replaceMarkdownState(row.files.agent, agent);
@@ -1171,6 +1187,7 @@ class AgentLeagueStore {
     atomicWriteText(row.files.evolution, this._renderEvolution(evolution));
     const state = {
       ...previous,
+      runId,
       status: 'completed',
       review,
       raw: String(payload.markdown || '').slice(0, 40000),

@@ -159,6 +159,23 @@ test('records DRAFT, Hook, FINAL and human-readable daily brief without daily st
   assert.match(fs.readFileSync(store._dailyPath('chuxin-baseline', '2026-08-27'), 'utf8'), /DAILY BRIEF/);
 }));
 
+test('replaying the same FINAL run repairs files without double-counting the decision', () => withStore((store) => {
+  store.createAgent({ id: 'retry-agent', name: '重放测试', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy });
+  const finalDecision = decision();
+  const finalHook = hook(finalDecision);
+  const payload = {
+    runId: 'stable-run-1', decisionDate: '2026-08-27', dataAsOf: '2026-08-26',
+    decision: finalDecision, hook: finalHook, dailyBrief: finalHook.daily_brief,
+  };
+  store.recordDecision('retry-agent', payload);
+  store.recordDecision('retry-agent', payload);
+  const row = store.getAgent('retry-agent');
+  assert.equal(row.agent.decisionCount, 1);
+  assert.equal(row.agent.lastDecisionRunId, 'stable-run-1');
+  assert.equal(row.portfolio.pendingDecision.runId, 'stable-run-1');
+  assert.equal(row.latestDaily.status, 'decision-queued');
+}));
+
 test('settles at same-day open, records result, and keeps deterministic Markdown ledger', () => withStore((store) => {
   store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy });
   const draft = decision();
@@ -203,6 +220,25 @@ test('Saturday review alone updates memory and writes checklist proposal to EVOL
   assert.equal(updated.agent.weeklyReviewCount, 1);
   assert.equal(readMarkdownState(row.files.checklist).rules[1].text, '不追高', 'proposal must not auto-edit checklist');
   assert.match(fs.readFileSync(row.files.evolution, 'utf8'), /写明等待触发条件/);
+}));
+
+test('weekly replay after a partial file loss repairs the record without duplicate memory', () => withStore((store) => {
+  const row = store.createAgent({ id: 'weekly-retry', name: '周复盘重放', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy });
+  const review = validateWeeklyReview({
+    summary: '保持纪律。', process_win: '按规则执行。', process_mistake: '样本较少。',
+    lesson: '重放必须幂等。', strongest_counterexample: '仍需更多样本。',
+    evidence_for: ['一次'], evidence_against: ['样本少'], checklist_proposal: null,
+  });
+  const payload = { runId: 'weekly-stable-1', saturdayDate: '2026-08-29', review };
+  store.recordWeeklyStart('weekly-retry', { runId: payload.runId, saturdayDate: payload.saturdayDate, tradingDates: [] });
+  store.recordWeeklyReview('weekly-retry', payload);
+  fs.unlinkSync(path.join(row.folder, 'weekly', '2026-08-29.md'));
+  store.recordWeeklyReview('weekly-retry', payload);
+  const repaired = store.getAgent('weekly-retry');
+  assert.equal(repaired.agent.weeklyReviewCount, 1);
+  assert.equal(repaired.agent.lastWeeklyRunId, 'weekly-stable-1');
+  assert.equal(repaired.memory.candidates.filter((item) => item.runId === 'weekly-stable-1').length, 1);
+  assert.equal(repaired.latestWeekly.status, 'completed');
 }));
 
 test('schedule migrates to P0 phases and exposes official calendar coverage', () => withStore((store) => {

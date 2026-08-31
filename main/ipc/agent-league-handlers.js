@@ -1,14 +1,18 @@
 'use strict';
 
 const crypto = require('crypto');
+const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { AgentLeagueStore } = require('../../core/agent-league-store.js');
+const { AgentLeagueRuntimeStore, RUNTIME_SCHEMA_VERSION } = require('../../core/agent-league-runtime-store.js');
 const {
   parseDraftMarkdown,
   parseHookMarkdown,
   parseWeeklyMarkdown,
+  settlePendingTargets,
   validateDecision,
   validateHookReview,
   validateWeeklyReview,
@@ -18,9 +22,11 @@ const {
   chinaClock,
   nextTradingDay,
   parseClock,
+  previousTradingDay,
   tradingDayStatus,
 } = require('../../core/agent-league-calendar.js');
 const { AgentLeagueVirtualDebug } = require('../../core/agent-league-virtual-debug.js');
+const { evaluateAgentLeagueSchedulerSafety } = require('../../core/agent-league-scheduler-safety.js');
 const {
   PHILOSOPHY_TEMPLATES,
   getPhilosophy,
@@ -38,6 +44,11 @@ const AGENT_SCOPE_PREFIX = 'agent-league-';
 const VIRTUAL_AGENT_SCOPE_PREFIX = 'agent-league-virtual-';
 const SCHEDULER_CHECK_MS = 60 * 1000;
 const DEFAULT_AGENT_TURN_TIMEOUT_MS = 30 * 60 * 1000;
+const RUNTIME_LEADER_TTL_MS = 20 * 1000;
+const RUNTIME_LEADER_HEARTBEAT_MS = 5 * 1000;
+const RUNTIME_TASK_TTL_MS = 30 * 1000;
+const RUNTIME_TASK_HEARTBEAT_MS = 8 * 1000;
+const DEFAULT_STAGE_MAX_ATTEMPTS = 2;
 const PROVIDERS = Object.freeze({
   'codex-cli': { kind: 'codex', label: 'Codex', mark: 'CX' },
   'claude-cli': { kind: 'claude', label: 'Claude', mark: 'CL' },
@@ -154,6 +165,21 @@ function slugifyAgentId(value) {
     .replace(/^-+|-+$/g, '')
     .slice(0, 40);
   return ascii.length >= 3 ? ascii : `agent-${Date.now().toString(36)}-${crypto.randomBytes(2).toString('hex')}`;
+}
+
+function commandAvailable(command) {
+  if (process.platform !== 'win32') {
+    const result = spawnSync('sh', ['-lc', `command -v ${String(command).replace(/[^a-z0-9_-]/gi, '')}`], {
+      stdio: 'ignore', timeout: 3000,
+    });
+    return result.status === 0;
+  }
+  const result = spawnSync('where.exe', [String(command)], {
+    windowsHide: true,
+    stdio: 'ignore',
+    timeout: 3000,
+  });
+  return result.status === 0;
 }
 
 function compactCandidate(item) {
@@ -338,8 +364,24 @@ async function buildFrozenSnapshot(options = {}) {
   if (!overview.ok || !overview.body) throw new Error(`初心概况不可用：${overview.error || overview.status}`);
   const asOf = String(overview.body.header && overview.body.header.data_asof || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) throw new Error('初心概况缺少有效 data_asof');
+  const expectedAsOf = String(options.expectedAsOf || '').slice(0, 10);
   const existingSnapshot = store && store.getSnapshot(decisionFor, 'decision');
-  if (existingSnapshot) return existingSnapshot;
+  const assertFresh = (actual) => {
+    if (!expectedAsOf || actual === expectedAsOf) return;
+    const error = new Error(`盘前数据不是上一交易日：决策日 ${decisionFor} 要求 ${expectedAsOf}，实际 ${actual || 'missing'}`);
+    error.code = 'stale-decision-snapshot';
+    error.decisionFor = decisionFor;
+    error.expectedAsOf = expectedAsOf;
+    error.actualAsOf = actual || '';
+    throw error;
+  };
+  if (existingSnapshot) {
+    assertFresh(String(existingSnapshot.asOf || '').slice(0, 10));
+    return existingSnapshot;
+  }
+  // 在拉候选池、冻结文件之前先拒绝陈旧概况。否则一个 T-2 快照一旦落盘，
+  // 后续数据恢复后也会因为“历史快照不可覆盖”而整日卡在错误输入上。
+  assertFresh(asOf);
   const response = await request('GET', `${apiBase}/api/observe/candidates?limit=200`, 20000, null, { 'X-Chuxin-Workspace': workspace });
   if (!response.ok || !response.body || !Array.isArray(response.body.items)) {
     throw new Error(`初心候选池不可用：${response.error || response.status}`);
@@ -373,11 +415,12 @@ async function buildFrozenSnapshot(options = {}) {
   return store ? store.saveSnapshot(normalized) : normalized;
 }
 
-function buildDraftPrompt(agentRow, snapshot, runId) {
+function buildDraftPrompt(agentRow, snapshot, runId, attemptId = '') {
   const { agent, files, folder, stats } = agentRow;
   const snapshotPath = path.join(path.dirname(path.dirname(folder)), 'snapshots', `${snapshot.decisionFor || snapshot.asOf}-decision.md`);
   const schema = {
     run_id: runId,
+    ...(attemptId ? { attempt_id: attemptId } : {}),
     decision_date: snapshot.decisionFor,
     data_as_of: snapshot.asOf,
     action_summary: '一句话说明今天的组合动作',
@@ -402,6 +445,7 @@ function buildDraftPrompt(agentRow, snapshot, runId) {
     '',
     `Agent：${agent.name}（${agent.philosophyTitle}）`,
     `Run ID：${runId}`,
+    ...(attemptId ? [`Attempt ID：${attemptId}`] : []),
     `决策交易日：${snapshot.decisionFor}`,
     `可用数据截至：${snapshot.asOf}`,
     '',
@@ -440,7 +484,7 @@ function buildDraftPrompt(agentRow, snapshot, runId) {
     '',
     '## 输出合同',
     '',
-    '先用简短自然语言说明你看到的核心矛盾，再提交完整预案。最后必须且只能出现一个以下代码块；日期与 run_id 必须原样保留：',
+    `先用简短自然语言说明你看到的核心矛盾，再提交完整预案。最后必须且只能出现一个以下代码块；日期、run_id${attemptId ? ' 与 attempt_id' : ''}必须原样保留：`,
     '',
     '```agent-league-draft',
     JSON.stringify(schema, null, 2),
@@ -449,10 +493,11 @@ function buildDraftPrompt(agentRow, snapshot, runId) {
   ].join('\n');
 }
 
-function buildHookPrompt(agentRow, snapshot, runId, draft, targetContexts = {}) {
+function buildHookPrompt(agentRow, snapshot, runId, draft, targetContexts = {}, attemptId = '') {
   const { agent, files } = agentRow;
   const schema = {
     run_id: runId,
+    ...(attemptId ? { attempt_id: attemptId } : {}),
     decision_date: snapshot.decisionFor,
     data_as_of: snapshot.asOf,
     verdict: 'REVISE',
@@ -474,7 +519,9 @@ function buildHookPrompt(agentRow, snapshot, runId, draft, targetContexts = {}) 
   return [
     '# 初心 Agent 投资联赛 · 决策前 Hook', '',
     `Agent：${agent.name}（同一个普通 AI Hub Session）`,
-    `Run ID：${runId}`, `决策交易日：${snapshot.decisionFor}`, `数据截至：${snapshot.asOf}`, '',
+    `Run ID：${runId}`,
+    ...(attemptId ? [`Attempt ID：${attemptId}`] : []),
+    `决策交易日：${snapshot.decisionFor}`, `数据截至：${snapshot.asOf}`, '',
     ...(snapshot.virtualDebug ? ['> 【虚拟实盘调试】继续使用同一份确定性合成快照；不得调用或混入真实行情。', ''] : []),
     '你现在不是重新选股，也不是为了让草案通过而找理由。请审查刚才已经冻结的 DRAFT，最多修订一次。',
     '先找最强违规项和反对证据，再决定 PASS / REVISE / HOLD。不得新增 DRAFT 中没有的交易股票。', '',
@@ -498,7 +545,7 @@ function buildHookPrompt(agentRow, snapshot, runId, draft, targetContexts = {}) 
   ].join('\n');
 }
 
-function buildWeeklyPrompt(agentRow, saturdayDate, dailyStates, runId) {
+function buildWeeklyPrompt(agentRow, saturdayDate, dailyStates, runId, attemptId = '') {
   const { agent, files } = agentRow;
   const compactDays = dailyStates.map((row) => ({
     decision_date: row.decisionDate,
@@ -511,6 +558,7 @@ function buildWeeklyPrompt(agentRow, saturdayDate, dailyStates, runId) {
   }));
   const schema = {
     run_id: runId,
+    ...(attemptId ? { attempt_id: attemptId } : {}),
     saturday_date: saturdayDate,
     summary: '本周最重要的总体结论',
     process_win: '本周过程正确的决策；不能只因为赚钱',
@@ -523,7 +571,9 @@ function buildWeeklyPrompt(agentRow, saturdayDate, dailyStates, runId) {
   };
   return [
     '# 初心 Agent 投资联赛 · 周六沉淀', '',
-    `Agent：${agent.name}`, `Run ID：${runId}`, `周六日期：${saturdayDate}`, '',
+    `Agent：${agent.name}`, `Run ID：${runId}`,
+    ...(attemptId ? [`Attempt ID：${attemptId}`] : []),
+    `周六日期：${saturdayDate}`, '',
     '本轮不产生任何股票订单。请区分“决策过程是否正确”和“最终盈亏”，未达到原定持有周期的交易不得仓促判对错。',
     'MEMORY.md 可以自动增加一条待验证经验；CHECKLIST.md 最多提出一条修改建议，只写入 EVOLUTION.md，不自动生效。AGENT.md 不得修改。', '',
     '## 当前文件', '',
@@ -641,6 +691,8 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   const request = deps.httpJson || httpJson;
   const waitReady = deps.waitCliReady || waitCliReady;
   const sendPrompt = deps.sendToPty || sendToPty;
+  const probeCommand = deps.commandAvailable || commandAvailable;
+  const afterOpenPortfolioSaved = typeof deps.afterOpenPortfolioSaved === 'function' ? deps.afterOpenPortfolioSaved : null;
   const channelPrefix = String(deps.channelPrefix || 'agent-league');
   const channel = (name) => `${channelPrefix}:${name}`;
   const scopePrefix = String(deps.scopePrefix || AGENT_SCOPE_PREFIX);
@@ -649,6 +701,24 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   const environment = String(deps.environment || 'live');
   const enforceMarketClock = deps.enforceMarketClock !== false;
   const autoStartScheduler = deps.autoStartScheduler !== false;
+  let ownsRuntimeStore = false;
+  let runtimeInitError = '';
+  let runtimeStore = deps.runtimeStore && deps.runtimeStore !== false ? deps.runtimeStore : null;
+  if (!runtimeStore && deps.runtimeStore !== false && environment === 'live') {
+    try {
+      runtimeStore = new AgentLeagueRuntimeStore({ root: store.root });
+      ownsRuntimeStore = true;
+    } catch (error) {
+      runtimeInitError = String(error && error.message || error);
+      console.error('[agent-league] durable runtime unavailable:', runtimeInitError);
+    }
+  }
+  const runtimeOwnerId = String(deps.runtimeOwnerId || `${environment}:${process.pid}:${crypto.randomBytes(8).toString('hex')}`);
+  const runtimeOwnerVersion = String(deps.hubVersion || (() => {
+    try { return require('../../package.json').version; } catch { return ''; }
+  })());
+  const runtimeProtocolVersion = Number(deps.runtimeProtocolVersion || RUNTIME_SCHEMA_VERSION);
+  const stageMaxAttempts = Math.max(1, Math.min(5, Number(deps.stageMaxAttempts || DEFAULT_STAGE_MAX_ATTEMPTS)));
   const defaultDecisionDate = typeof deps.getDecisionDate === 'function' ? deps.getDecisionDate : () => '';
   const decisionSnapshotBuilder = deps.buildDecisionSnapshot || buildFrozenSnapshot;
   const priceSnapshotBuilder = deps.buildPriceSnapshot || buildLivePriceSnapshot;
@@ -657,18 +727,39 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   const agentTurnTimeoutMs = Math.max(100, Number(deps.agentTurnTimeoutMs || DEFAULT_AGENT_TURN_TIMEOUT_MS));
   const cliReadyWindowsMs = Array.isArray(deps.cliReadyWindowsMs) && deps.cliReadyWindowsMs.length
     ? deps.cliReadyWindowsMs.map((value) => Math.max(1, Number(value) || 1))
-    : [10000, 18000, 32000];
+    // Cold Codex + a real research MCP can legitimately need more than 60s on
+    // a busy Windows host. The last 60s window is only reached after the three
+    // short probes and does not slow the normal ready-fast path.
+    : [10000, 18000, 32000, 60000];
   const pendingByHubSession = new Map();
   const publicRow = (row) => publicAgent(row, sessionManager, { pendingSessionIds: new Set(pendingByHubSession.keys()) });
   let currentRun = null;
   let schedulerTimer = null;
+  let drainingForHandoff = false;
+  const activePhaseLeases = new Map();
+  const schedulerSafety = deps.schedulerSafety || {
+    allowed: autoStartScheduler,
+    reason: autoStartScheduler ? 'runtime-enabled' : 'runtime-disabled',
+  };
   const initialSchedule = store.getSchedule();
-  if (initialSchedule.lastRunStatus === 'running' && !store.currentRunLease()) {
+  const initialRuntimeLeader = runtimeStore ? runtimeStore.currentLeader() : null;
+  if (autoStartScheduler && initialSchedule.lastRunStatus === 'running'
+      && !store.currentRunLease() && !(initialRuntimeLeader && initialRuntimeLeader.active)) {
     store.saveSchedule({ ...initialSchedule, lastRunStatus: 'interrupted' });
   }
 
-  function researchMcpOptions(kind, agentId) {
+  // Unattended league sessions must never stop on a permission prompt or lose
+  // transcript persistence to fast mode. Research MCP availability is a
+  // separate concern: losing the port costs tools, never the automation bypass.
+  function agentRuntimeOptions(kind, agentId) {
     const options = {};
+    if (kind === 'claude') {
+      options.autonomous = true;
+      options.mcpProfile = 'none';
+    } else if (kind === 'codex') {
+      options.codexBypassApprovals = true;
+      options.mcpProfile = 'lean';
+    }
     const hookPort = Number(getHookPort() || 0);
     if (!hookPort) return options;
     const hubDataDir = getHubDataDir();
@@ -676,10 +767,6 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (kind === 'claude') {
       options.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, scopeId, hookPort, hookToken, kind, { enableChuxin: true });
     } else if (kind === 'codex') {
-      options.codexBypassApprovals = true;
-      // 普通 Codex 默认 mcpProfile=none，会把下方临时 Chuxin 条目一起过滤。
-      // Agent 需要只保留任务所需工具，明确使用 Lean，而不是继承全局 Full。
-      options.mcpProfile = 'lean';
       addCodexMcpEntry(options, scenes.buildResearchMcpEntryForCodex(scopeId, hookPort, hookToken, hubDataDir, { enableChuxin: true }));
     }
     return options;
@@ -698,7 +785,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       userRenamed: true,
       purpose: sessionPurpose,
       hiddenFromSidebar: false,
-      ...researchMcpOptions(selection.kind, row.agent.id),
+      ...agentRuntimeOptions(selection.kind, row.agent.id),
       ...(resume || {}),
     };
     const session = sessionManager.createSession(selection.kind, options);
@@ -746,7 +833,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   async function waitForAgentCliReady(sessionId, row, stage) {
     const kind = row && row.agent && row.agent.kind;
     const codexRuntime = kind === 'codex' || kind === 'deepseek';
-    const windows = codexRuntime ? cliReadyWindowsMs : [60000];
+    const windows = codexRuntime ? cliReadyWindowsMs : [...cliReadyWindowsMs, 60000];
     for (let index = 0; index < windows.length; index += 1) {
       if (await waitReady(sessionId, kind, windows[index])) return true;
       if (!codexRuntime || index >= windows.length - 1 || !sessionManager
@@ -764,8 +851,111 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     return false;
   }
 
+  function cliReadyBudgetSeconds(row) {
+    const kind = row && row.agent && row.agent.kind;
+    const codexRuntime = kind === 'codex' || kind === 'deepseek';
+    const windows = codexRuntime ? cliReadyWindowsMs : [...cliReadyWindowsMs, 60000];
+    return Math.max(1, Math.ceil(windows.reduce((sum, value) => sum + value, 0) / 1000));
+  }
+
   function promptWasSubmitted(result) {
     return !!result && result.ok !== false && result.sendStatus !== 'stuck';
+  }
+
+  function claimPhaseLease(phase, date) {
+    const runId = `${phase}-${String(date || '').replace(/-/g, '')}-${crypto.randomBytes(4).toString('hex')}`;
+    const claim = store.claimRunLease({
+      ownerHub: String(process.env.CLAUDE_HUB_DATA_DIR || getHubDataDir() || 'default'),
+      runId,
+    });
+    if (!claim.ok) return { ok: false, runId, lease: claim.lease };
+    if (environment === 'live' && !runtimeStore) {
+      store.releaseRunLease(claim.token);
+      return { ok: false, runId, runtimeUnavailable: true, message: runtimeInitError || 'durable runtime unavailable' };
+    }
+    let durableClaim = null;
+    try {
+      durableClaim = runtimeStore ? runtimeStore.claimLeadership({
+        ownerId: runtimeOwnerId,
+        ownerPid: process.pid,
+        ownerHub: String(process.env.CLAUDE_HUB_DATA_DIR || getHubDataDir() || 'default'),
+        ownerVersion: runtimeOwnerVersion,
+      }, { ttlMs: RUNTIME_LEADER_TTL_MS }) : null;
+    } catch (error) {
+      store.releaseRunLease(claim.token);
+      return { ok: false, runId, runtimeUnavailable: true, message: error.message };
+    }
+    if (durableClaim && !durableClaim.ok) {
+      store.releaseRunLease(claim.token);
+      return { ok: false, runId, lease: durableClaim.leader, durableBusy: true };
+    }
+    const legacyTimer = setInterval(() => {
+      try {
+        if (!store.renewRunLease(claim.token)) console.warn(`[agent-league] ${phase} lease renewal failed`);
+      } catch (error) {
+        console.warn(`[agent-league] ${phase} lease renewal threw:`, error && error.message);
+      }
+    }, RUNTIME_LEADER_HEARTBEAT_MS);
+    legacyTimer.unref?.();
+    const durableLease = durableClaim && durableClaim.lease || null;
+    const runtimeTimer = durableLease ? setInterval(() => {
+      try {
+        if (!runtimeStore.renewLeadership(durableLease, { ttlMs: RUNTIME_LEADER_TTL_MS })) {
+          console.warn(`[agent-league] ${phase} durable leadership renewal failed; epoch=${durableLease.epoch}`);
+        }
+      } catch (error) {
+        console.warn(`[agent-league] ${phase} durable leadership renewal threw:`, error && error.message);
+      }
+    }, RUNTIME_LEADER_HEARTBEAT_MS) : null;
+    runtimeTimer?.unref?.();
+    const lease = {
+      ok: true,
+      token: claim.token,
+      runId,
+      phase,
+      legacyTimer,
+      durableLease,
+      runtimeTimer,
+    };
+    activePhaseLeases.set(claim.token, lease);
+    return lease;
+  }
+
+  function releasePhaseLease(lease) {
+    if (!lease || !lease.token) return false;
+    if (lease.legacyTimer) clearInterval(lease.legacyTimer);
+    if (lease.runtimeTimer) clearInterval(lease.runtimeTimer);
+    activePhaseLeases.delete(lease.token);
+    let durableReleased = !lease.durableLease;
+    let legacyReleased = false;
+    try {
+      if (lease.durableLease && runtimeStore) durableReleased = runtimeStore.releaseLeadership(lease.durableLease);
+    } catch (error) {
+      console.warn('[agent-league] durable leadership release failed:', error && error.message);
+    } finally {
+      try { legacyReleased = store.releaseRunLease(lease.token); }
+      catch (error) { console.warn('[agent-league] legacy lease release failed:', error && error.message); }
+    }
+    return durableReleased || legacyReleased;
+  }
+
+  async function withPhaseLease(phase, date, work) {
+    const lease = claimPhaseLease(phase, date);
+    if (!lease.ok) {
+      return {
+        ok: false,
+        error: lease.runtimeUnavailable ? 'durable-runtime-unavailable' : 'phase-busy-elsewhere',
+        message: lease.runtimeUnavailable
+          ? `联赛事务运行库不可用，已拒绝非事务降级：${lease.message}`
+          : `同一联赛正在另一 Hub 执行阶段任务：${lease.lease && (lease.lease.runId || lease.lease.ownerId) || 'unknown'}`,
+        lease: lease.lease || null,
+      };
+    }
+    try {
+      return await work(lease);
+    } finally {
+      releasePhaseLease(lease);
+    }
   }
 
   function requiredSymbols() {
@@ -779,8 +969,28 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     return symbols;
   }
 
+  function agentPromptInputHash(agentId) {
+    const files = store.listPromptFiles(agentId)
+      // Freeze user-controlled prompt bodies only. Machine blocks, portfolio,
+      // stats, memory and evolution can legitimately change while repairing a
+      // partially committed FINAL/Weekly write and must not create false drift.
+      .filter((file) => file.editable)
+      .map((file) => ({ key: file.key, bodyHash: sha256(file.content || '') }))
+      .sort((left, right) => left.key.localeCompare(right.key));
+    return sha256(JSON.stringify(files));
+  }
+
   function runPublicState() {
     if (!currentRun) return null;
+    const durableTasks = runtimeStore && currentRun.runtimeRunKey
+      ? runtimeStore.listTasks(currentRun.runtimeRunKey).map((task) => ({
+        agentId: task.agentId,
+        stage: task.stage,
+        status: task.status,
+        attemptNo: task.attemptNo,
+        lastError: task.lastError,
+      }))
+      : [];
     return {
       runId: currentRun.runId,
       environment,
@@ -794,7 +1004,41 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       completed: [...currentRun.completed],
       failed: [...currentRun.failed],
       settlement: currentRun.settlement,
+      durable: currentRun.phaseLease && currentRun.phaseLease.durableLease ? {
+        runKey: currentRun.runtimeRunKey || '',
+        ownerId: currentRun.phaseLease.durableLease.ownerId,
+        ownerPid: process.pid,
+        epoch: currentRun.phaseLease.durableLease.epoch,
+        tasks: durableTasks,
+      } : null,
     };
+  }
+
+  function runtimeTaskKey(agentId) {
+    return currentRun && currentRun.runtimeRunKey
+      ? `${currentRun.runtimeRunKey}:agent:${agentId}`
+      : '';
+  }
+
+  function currentDurableLease() {
+    return currentRun && currentRun.phaseLease && currentRun.phaseLease.durableLease || null;
+  }
+
+  function armRuntimeTaskHeartbeat(pending) {
+    if (!pending || !runtimeStore || !pending.runtimeTaskKey || !pending.runtimeAttemptId) return;
+    if (pending.runtimeHeartbeatTimer) clearInterval(pending.runtimeHeartbeatTimer);
+    pending.runtimeHeartbeatTimer = setInterval(() => {
+      const lease = currentDurableLease();
+      if (!lease || !runtimeStore.heartbeatTask(
+        pending.runtimeTaskKey,
+        pending.runtimeAttemptId,
+        lease,
+        { ttlMs: RUNTIME_TASK_TTL_MS },
+      )) {
+        console.warn(`[agent-league] task heartbeat rejected: ${pending.runtimeTaskKey}`);
+      }
+    }, RUNTIME_TASK_HEARTBEAT_MS);
+    pending.runtimeHeartbeatTimer.unref?.();
   }
 
   function emitRunUpdate() {
@@ -804,6 +1048,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   function clearPending(sessionId) {
     const pending = pendingByHubSession.get(sessionId);
     if (pending && pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
+    if (pending && pending.runtimeHeartbeatTimer) clearInterval(pending.runtimeHeartbeatTimer);
     pendingByHubSession.delete(sessionId);
     return pending || null;
   }
@@ -834,11 +1079,33 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     clearPending(sessionId);
     pendingByHubSession.set(sessionId, pending);
     armPendingTimeout(sessionId, pending);
+    armRuntimeTaskHeartbeat(pending);
   }
 
   function finishRunIfDone() {
     if (!currentRun || currentRun.queue.length || currentRun.active.size) return false;
-    const status = currentRun.failed.length ? (currentRun.completed.length ? 'partial' : 'failed') : 'completed';
+    const durableRun = runtimeStore && currentRun.runtimeRunKey
+      ? runtimeStore.getRun(currentRun.runtimeRunKey)
+      : null;
+    if (durableRun && durableRun.status === 'running') {
+      // In-memory active/queue can reach zero during graceful PTY drain even
+      // though the durable task is intentionally left orphan-recoverable.
+      // Never translate that local emptiness into a false completed schedule.
+      if (!drainingForHandoff) {
+        const pendingAgents = runtimeStore.listTasks(currentRun.runtimeRunKey)
+          .filter((task) => task.status === 'pending')
+          .map((task) => task.agentId)
+          .filter((agentId) => !currentRun.queue.includes(agentId) && !currentRun.active.has(agentId));
+        if (pendingAgents.length) {
+          currentRun.queue.push(...pendingAgents);
+          setImmediate(() => pumpQueue());
+        }
+      }
+      return false;
+    }
+    const status = durableRun && durableRun.status !== 'running'
+      ? durableRun.status
+      : currentRun.failed.length ? (currentRun.completed.length ? 'partial' : 'failed') : 'completed';
     const schedule = store.getSchedule();
     store.saveSchedule(currentRun.mode === 'weekly' ? {
       ...schedule,
@@ -853,8 +1120,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       lastRunStatus: status,
     });
     const finished = { ...runPublicState(), status, finishedAt: new Date().toISOString() };
-    if (currentRun.leaseTimer) clearInterval(currentRun.leaseTimer);
-    store.releaseRunLease(currentRun.leaseToken);
+    releasePhaseLease(currentRun.phaseLease);
     currentRun = null;
     emit('run-finished', { run: finished });
     return true;
@@ -864,11 +1130,40 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (!currentRun) return;
     if (currentRun.completed.includes(agentId)
         || currentRun.failed.some((row) => row.agentId === agentId)) return;
+    const message = String(error && error.message || error);
+    const pending = [...pendingByHubSession.values()].find((value) => value.agentId === agentId && value.runId === currentRun.runId);
+    const runtimeAttempt = currentRun.runtimeAttempts && currentRun.runtimeAttempts.get(agentId);
     currentRun.active.delete(agentId);
-    currentRun.failed.push({ agentId, error: String(error && error.message || error) });
+    let retryScheduled = false;
+    let staleOwner = error && error.code === 'stale-leader-lease';
+    if (runtimeStore && runtimeAttempt && !drainingForHandoff && !staleOwner) {
+      try {
+        const stageAttempts = runtimeStore.stageAttemptCount(runtimeAttempt.taskKey, runtimeAttempt.stage);
+        const terminal = stageAttempts >= stageMaxAttempts;
+        runtimeStore.failTask(
+          runtimeAttempt.taskKey,
+          runtimeAttempt.attemptId,
+          error,
+          currentDurableLease(),
+          { terminal },
+        );
+        retryScheduled = !terminal;
+      } catch (runtimeError) {
+        staleOwner = runtimeError && ['stale-leader-lease', 'stale-task-attempt'].includes(runtimeError.code);
+        if (!staleOwner) console.warn('[agent-league] failed to persist durable task failure:', runtimeError && runtimeError.message);
+      }
+    }
+    if (retryScheduled) {
+      if (!currentRun.queue.includes(agentId)) currentRun.queue.push(agentId);
+      currentRun.runtimeAttempts.delete(agentId);
+    } else if (!drainingForHandoff) {
+      currentRun.failed.push({ agentId, error: message });
+    }
     try {
-      const pending = [...pendingByHubSession.values()].find((value) => value.agentId === agentId && value.runId === currentRun.runId);
-      if (currentRun.mode === 'weekly') {
+      if (drainingForHandoff || staleOwner) {
+        // A successor owns correctness now. Do not let this process write a
+        // misleading failure record after handoff/fencing.
+      } else if (currentRun.mode === 'weekly') {
         store.recordWeeklyFailure(agentId, {
           runId: currentRun.runId,
           saturdayDate: currentRun.decisionDate,
@@ -880,58 +1175,123 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
           decisionDate: currentRun.decisionDate,
           dataAsOf: currentRun.asOf,
           stage: pending && pending.stage || 'draft',
-          error: String(error && error.message || error),
+          error: message,
         });
       }
     } catch (persistError) {
       console.warn('[agent-league] failed to persist run failure:', persistError && persistError.message);
     }
-    emit('agent-failed', { runId: currentRun.runId, agentId, message: String(error && error.message || error) });
+    emit(retryScheduled ? 'agent-retrying' : 'agent-failed', {
+      runId: currentRun.runId,
+      agentId,
+      message,
+      retryScheduled,
+      handoff: drainingForHandoff,
+    });
     emitRunUpdate();
+  }
+
+  function claimRuntimeTask(agentId) {
+    if (!runtimeStore || !currentRun || !currentRun.runtimeRunKey) return null;
+    const lease = currentDurableLease();
+    if (!lease) throw new Error('durable-leader-lease-missing');
+    const taskKey = runtimeTaskKey(agentId);
+    const claimed = runtimeStore.claimTask(taskKey, lease, { ttlMs: RUNTIME_TASK_TTL_MS });
+    if (!claimed.ok) {
+      const error = new Error(`Agent 持久任务正在其他 attempt 中运行：${agentId}`);
+      error.code = claimed.reason || 'runtime-task-busy';
+      throw error;
+    }
+    if (claimed.alreadyTerminal) return claimed;
+    currentRun.runtimeAttempts.set(agentId, {
+      taskKey,
+      attemptId: claimed.attempt.attemptId,
+      stage: claimed.attempt.stage,
+    });
+    return claimed;
   }
 
   async function startDailyAgentTurn(agentId) {
     if (!currentRun) return;
     const row = store.getAgent(agentId);
     if (!row) throw new Error(`Agent 不存在：${agentId}`);
+    const runtimeClaim = claimRuntimeTask(agentId);
+    if (runtimeClaim && runtimeClaim.alreadyTerminal) {
+      currentRun.active.delete(agentId);
+      if (!currentRun.completed.includes(agentId)) currentRun.completed.push(agentId);
+      return;
+    }
+    const durableTask = runtimeClaim && runtimeClaim.task || null;
+    const stage = durableTask ? durableTask.stage : 'draft';
+    if (durableTask && durableTask.inputHash !== agentPromptInputHash(agentId)) {
+      const error = new Error(`Agent ${agentId} 的提示词/策略在运行中发生变化，拒绝用漂移输入继续 ${stage}`);
+      error.code = 'agent-input-drift';
+      throw error;
+    }
     const session = ensureAgentSession(agentId);
-    const prompt = buildDraftPrompt(row, currentRun.snapshot, currentRun.runId);
+    const checkpoint = durableTask && durableTask.checkpoint || null;
+    const draft = checkpoint && checkpoint.draft || null;
+    const targetContexts = checkpoint && checkpoint.targetContexts || null;
+    const runtimeAttempt = currentRun.runtimeAttempts.get(agentId) || {};
+    if (stage === 'hook' && (!draft || !targetContexts)) {
+      throw new Error(`Hook 接班缺少已提交 DRAFT 检查点：${agentId}`);
+    }
+    const prompt = stage === 'hook'
+      ? buildHookPrompt(row, currentRun.snapshot, currentRun.runId, draft, targetContexts, runtimeAttempt.attemptId || '')
+      : buildDraftPrompt(row, currentRun.snapshot, currentRun.runId, runtimeAttempt.attemptId || '');
     const promptHash = sha256(prompt);
-    store.recordRunStart(agentId, {
-      runId: currentRun.runId,
-      decisionDate: currentRun.decisionDate,
-      dataAsOf: currentRun.asOf,
-      promptHash,
-      snapshotPath: store.snapshotPath(currentRun.snapshot),
-    });
+    if (stage === 'draft') {
+      store.recordRunStart(agentId, {
+        runId: currentRun.runId,
+        decisionDate: currentRun.decisionDate,
+        dataAsOf: currentRun.asOf,
+        promptHash,
+        snapshotPath: store.snapshotPath(currentRun.snapshot),
+      });
+    }
     const pending = {
       kind: 'daily',
-      stage: 'draft',
+      stage,
       runId: currentRun.runId,
       agentId,
       decisionDate: currentRun.decisionDate,
       dataAsOf: currentRun.asOf,
       snapshot: currentRun.snapshot,
       promptHash,
+      ...(stage === 'hook' ? { draft, targetContexts, hookPromptHash: promptHash } : {}),
+      runtimeTaskKey: runtimeAttempt.taskKey || '',
+      runtimeAttemptId: runtimeAttempt.attemptId || '',
       startedAt: Date.now(),
       processing: false,
     };
     setPending(session.id, pending);
-    const ready = await waitForAgentCliReady(session.id, row, '盘前 DRAFT');
-    if (!ready) throw new Error(`${row.agent.provider} CLI 在 60 秒内未就绪`);
+    const ready = await waitForAgentCliReady(session.id, row, stage === 'hook' ? '决策 Hook 接班' : '盘前 DRAFT');
+    if (!ready) throw new Error(`${row.agent.provider} CLI 在 ${cliReadyBudgetSeconds(row)} 秒内未就绪`);
     const sent = await sendPrompt(session.id, prompt, row.agent.kind);
-    if (!promptWasSubmitted(sent)) throw new Error('每日 Prompt 写入 PTY 后未得到 provider turn 启动确认');
+    if (!promptWasSubmitted(sent)) throw new Error(`${stage === 'hook' ? 'Hook' : '每日'} Prompt 写入 PTY 后未得到 provider turn 启动确认`);
     store.bindSession(agentId, { status: 'running', nativeSession: nativeSessionMeta(session) });
-    emit('agent-started', { runId: currentRun.runId, agentId, sessionId: session.id });
+    emit('agent-started', { runId: currentRun.runId, agentId, sessionId: session.id, stage, recovered: stage === 'hook' });
   }
 
   async function startWeeklyAgentTurn(agentId) {
     if (!currentRun) return;
     const row = store.getAgent(agentId);
     if (!row) throw new Error(`Agent 不存在：${agentId}`);
+    const runtimeClaim = claimRuntimeTask(agentId);
+    if (runtimeClaim && runtimeClaim.alreadyTerminal) {
+      currentRun.active.delete(agentId);
+      if (!currentRun.completed.includes(agentId)) currentRun.completed.push(agentId);
+      return;
+    }
+    if (runtimeClaim && runtimeClaim.task.inputHash !== agentPromptInputHash(agentId)) {
+      const error = new Error(`Agent ${agentId} 的周度输入文件在运行中发生变化，拒绝继续沉淀`);
+      error.code = 'agent-input-drift';
+      throw error;
+    }
     const session = ensureAgentSession(agentId);
     const dailyStates = currentRun.dailyStatesByAgent.get(agentId) || [];
-    const prompt = buildWeeklyPrompt(row, currentRun.decisionDate, dailyStates, currentRun.runId);
+    const runtimeAttempt = currentRun.runtimeAttempts.get(agentId) || {};
+    const prompt = buildWeeklyPrompt(row, currentRun.decisionDate, dailyStates, currentRun.runId, runtimeAttempt.attemptId || '');
     const promptHash = sha256(prompt);
     store.recordWeeklyStart(agentId, {
       runId: currentRun.runId,
@@ -946,12 +1306,14 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       agentId,
       saturdayDate: currentRun.decisionDate,
       promptHash,
+      runtimeTaskKey: runtimeAttempt.taskKey || '',
+      runtimeAttemptId: runtimeAttempt.attemptId || '',
       startedAt: Date.now(),
       processing: false,
     };
     setPending(session.id, pending);
     const ready = await waitForAgentCliReady(session.id, row, '周度沉淀');
-    if (!ready) throw new Error(`${row.agent.provider} CLI 在 60 秒内未就绪`);
+    if (!ready) throw new Error(`${row.agent.provider} CLI 在 ${cliReadyBudgetSeconds(row)} 秒内未就绪`);
     const sent = await sendPrompt(session.id, prompt, row.agent.kind);
     if (!promptWasSubmitted(sent)) throw new Error('周六沉淀 Prompt 写入 PTY 后未得到 provider turn 启动确认');
     store.bindSession(agentId, { status: 'running', nativeSession: nativeSessionMeta(session) });
@@ -965,7 +1327,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   }
 
   function pumpQueue() {
-    if (!currentRun) return;
+    if (!currentRun || drainingForHandoff) return;
     const maxConcurrency = Math.max(1, Math.min(8, Number(store.getSchedule().maxConcurrency || 2)));
     while (currentRun.active.size < maxConcurrency && currentRun.queue.length) {
       const agentId = currentRun.queue.shift();
@@ -987,6 +1349,15 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (currentRun) return { ok: false, error: 'run-busy', message: '上一轮联赛仍在运行', run: runPublicState() };
     let rows = store.listAgents();
     if (!rows.length) return { ok: false, error: 'no-agents', message: '请先创建至少一个 Agent' };
+    const requestedIds = Array.isArray(input.agentIds)
+      ? [...new Set(input.agentIds.map((value) => String(value || '')).filter(Boolean))]
+      : [];
+    if (requestedIds.length) {
+      const known = new Set(rows.map((row) => row.agent.id));
+      const unknown = requestedIds.filter((id) => !known.has(id));
+      if (unknown.length) return { ok: false, error: 'agent-missing', message: `Agent 不存在：${unknown.join(', ')}` };
+      rows = rows.filter((row) => requestedIds.includes(row.agent.id));
+    }
     const clock = chinaClock(input.now || new Date());
     const explicitDecisionDate = !!input.decisionDate;
     let decisionDate = String(input.decisionDate || defaultDecisionDate() || clock.date).slice(0, 10);
@@ -1040,51 +1411,100 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       store,
       requiredSymbols: requiredSymbols(),
       decisionFor: decisionDate,
+      expectedAsOf: enforceMarketClock && !input.force ? previousTradingDay(decisionDate) : '',
     });
     const schedule = store.getSchedule();
-    if (!input.force && schedule.lastDecisionDate === decisionDate && ['completed', 'running'].includes(schedule.lastRunStatus)) {
-      return { ok: true, alreadyRun: true, snapshot, schedule, decisionDate, scheduledFrom };
-    }
-    const runnableRows = rows.filter((row) => {
+    let runnableRows = rows.filter((row) => {
       const daily = store.getDaily(row.agent.id, decisionDate);
       return !daily || daily.status !== 'decision-queued';
     });
+    if (input.recoveryOnly && runtimeStore) {
+      const existing = runtimeStore.getRun(`${environment}:decision:${decisionDate}`);
+      const frozenParticipants = new Set(existing ? runtimeStore.listTasks(existing.runKey).map((task) => task.agentId) : []);
+      runnableRows = runnableRows.filter((row) => frozenParticipants.has(row.agent.id));
+    }
     if (!runnableRows.length) {
+      if (!input.force && schedule.lastDecisionDate === decisionDate && ['completed', 'running'].includes(schedule.lastRunStatus)) {
+        return { ok: true, alreadyRun: true, snapshot, schedule, decisionDate, scheduledFrom };
+      }
       store.saveSchedule({ ...schedule, lastSnapshotAsOf: snapshot.asOf, lastDecisionDate: decisionDate, lastRunStatus: 'completed' });
       return { ok: true, alreadyRun: true, snapshot, schedule: store.getSchedule(), decisionDate, scheduledFrom };
     }
-    const runId = `league-${environment === 'virtual' ? 'virtual-' : ''}${decisionDate.replace(/-/g, '')}-${crypto.randomBytes(4).toString('hex')}`;
-    const claim = store.claimRunLease({
-      ownerHub: String(process.env.CLAUDE_HUB_DATA_DIR || 'default'),
-      runId,
-    });
-    if (!claim.ok) {
-      return { ok: false, error: 'run-busy-elsewhere', message: '同一联赛正在另一 Hub 中运行', lease: claim.lease };
+    const runId = `league-${environment === 'virtual' ? 'virtual-' : ''}${decisionDate.replace(/-/g, '')}-${sha256(`${environment}|${decisionDate}|${snapshot.snapshotId}`).slice(0, 8)}`;
+    const phaseLease = claimPhaseLease('decision', decisionDate);
+    if (!phaseLease.ok) {
+      return {
+        ok: false,
+        error: phaseLease.runtimeUnavailable ? 'durable-runtime-unavailable' : 'run-busy-elsewhere',
+        message: phaseLease.runtimeUnavailable
+          ? `联赛事务运行库不可用，已拒绝非事务降级：${phaseLease.message}`
+          : '同一联赛正在另一 Hub 中运行',
+        lease: phaseLease.lease || null,
+      };
     }
-    const leaseTimer = setInterval(() => {
-      if (!store.renewRunLease(claim.token)) console.warn('[agent-league] run lease renewal failed');
-    }, 30000);
-    leaseTimer.unref?.();
     try {
+      const runtimeRunKey = runtimeStore ? `${environment}:decision:${decisionDate}` : '';
+      let queue = runnableRows.map((row) => row.agent.id);
+      let durableCompleted = [];
+      let durableFailed = [];
+      if (runtimeStore && phaseLease.durableLease) {
+        const taskSpecs = queue.map((agentId) => ({ agentId, stage: 'draft', inputHash: agentPromptInputHash(agentId) }));
+        const agentInputHashes = Object.fromEntries(taskSpecs.map((spec) => [spec.agentId, spec.inputHash]));
+        const frozenInputHash = sha256({
+          environment,
+          phase: 'decision',
+          decisionDate,
+          snapshotId: snapshot.snapshotId,
+          dataAsOf: snapshot.asOf,
+        });
+        const existingRuntimeRun = runtimeStore.getRun(runtimeRunKey);
+        const frozenProtocol = existingRuntimeRun && existingRuntimeRun.manifest
+          && existingRuntimeRun.manifest.input && existingRuntimeRun.manifest.input.runtimeProtocolVersion;
+        if (frozenProtocol && Number(frozenProtocol) !== runtimeProtocolVersion) {
+          const error = new Error(`未完成运行使用协议 ${frozenProtocol}，当前协议 ${runtimeProtocolVersion} 拒绝不兼容重放`);
+          error.code = 'runtime-version-conflict';
+          throw error;
+        }
+        runtimeStore.ensureRun({
+          runKey: runtimeRunKey,
+          phase: 'decision',
+          decisionDate,
+          snapshotId: snapshot.snapshotId,
+          inputHash: frozenInputHash,
+          participants: queue,
+          taskSpecs,
+          manifest: { runId, dataAsOf: snapshot.asOf, snapshotPath: store.snapshotPath(snapshot), hubVersion: runtimeOwnerVersion, runtimeProtocolVersion, agentInputHashes },
+        }, phaseLease.durableLease);
+        runtimeStore.ensureTasks(runtimeRunKey, taskSpecs, phaseLease.durableLease);
+        if (requestedIds.length && String(input.trigger || 'manual') !== 'scheduler') {
+          runtimeStore.reopenTechnicalForfeits(runtimeRunKey, requestedIds, phaseLease.durableLease);
+        }
+        runtimeStore.recoverOrphanedTasks(phaseLease.durableLease);
+        const tasks = runtimeStore.listTasks(runtimeRunKey);
+        queue = tasks.filter((task) => task.status === 'pending').map((task) => task.agentId);
+        durableCompleted = tasks.filter((task) => task.status === 'completed').map((task) => task.agentId);
+        durableFailed = tasks.filter((task) => task.status === 'technical-forfeit')
+          .map((task) => ({ agentId: task.agentId, error: task.lastError || 'technical forfeit' }));
+      }
       currentRun = {
         mode: 'daily',
         runId,
+        runtimeRunKey,
         decisionDate,
         asOf: snapshot.asOf,
         trigger: String(input.trigger || 'manual'),
         startedAt: new Date().toISOString(),
         snapshot,
         settlement: [],
-        queue: runnableRows.map((row) => row.agent.id),
+        queue,
         active: new Set(),
-        completed: [],
-        failed: [],
-        leaseToken: claim.token,
-        leaseTimer,
+        completed: durableCompleted,
+        failed: durableFailed,
+        runtimeAttempts: new Map(),
+        phaseLease,
       };
     } catch (error) {
-      clearInterval(leaseTimer);
-      store.releaseRunLease(claim.token);
+      releasePhaseLease(phaseLease);
       throw error;
     }
     store.saveSchedule({
@@ -1107,47 +1527,207 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (enforceMarketClock && !input.force && decisionDate === clock.date && clock.minutes < parseClock(store.getSchedule().executionTime, '09:35')) {
       return { ok: false, error: 'before-execution-time', message: `开盘执行时间尚未到：${store.getSchedule().executionTime || '09:35'}` };
     }
-    const rows = store.listAgents().filter((row) => row.portfolio.pendingDecision
-      && String(row.portfolio.pendingDecision.decisionDate || row.portfolio.pendingDecision.decisionAsOf) === decisionDate);
-    if (!rows.length) return { ok: true, alreadyRun: true, decisionDate, results: [], message: '没有待执行决策' };
-    const symbols = new Set();
-    for (const row of rows) {
-      for (const position of row.portfolio.positions || []) symbols.add(position.symbol);
-      for (const target of row.portfolio.pendingDecision.decision.targets || []) symbols.add(target.symbol);
-    }
-    const snapshot = await priceSnapshotBuilder({
-      apiBase: input.apiBase || API_BASE,
-      workspace: WORKSPACE,
-      httpJson: request,
-      store,
-      decisionFor: decisionDate,
-      phase: 'open',
-      symbols,
-    });
-    const results = [];
-    const errors = [];
-    for (const row of rows) {
-      try {
-        const result = store.settleAgent(row.agent.id, snapshot, { executionPriceField: 'open' });
-        results.push({
-          agentId: row.agent.id,
-          settled: result.settled,
-          trades: result.trades,
-          orderNotes: result.orderNotes,
-          nav: result.nav,
-        });
-      } catch (error) {
-        errors.push({ agentId: row.agent.id, error: error.message });
+    return withPhaseLease('open', decisionDate, async (phaseLease) => {
+      const allRows = store.listAgents();
+      const decisionRunKey = `${environment}:decision:${decisionDate}`;
+      const decisionRun = runtimeStore ? runtimeStore.getRun(decisionRunKey) : null;
+      const decisionTasks = decisionRun ? runtimeStore.listTasks(decisionRunKey) : [];
+      const incompleteDecisionTasks = decisionTasks.filter((task) => !['completed', 'technical-forfeit'].includes(task.status));
+      if (incompleteDecisionTasks.length) {
+        return {
+          ok: false,
+          error: 'decision-cohort-incomplete',
+          message: `盘前决策尚未全员终态，拒绝只执行部分 Agent：${incompleteDecisionTasks.map((task) => `${task.agentId}/${task.stage}`).join(', ')}`,
+          incomplete: incompleteDecisionTasks.map((task) => ({ agentId: task.agentId, stage: task.stage, status: task.status })),
+        };
       }
-    }
-    const schedule = store.getSchedule();
-    store.saveSchedule({
-      ...schedule,
-      lastExecutionDate: decisionDate,
-      lastExecutionStatus: errors.length ? (results.length ? 'partial' : 'failed') : 'completed',
+      const participantIds = decisionTasks.length
+        ? decisionTasks.map((task) => task.agentId)
+        : allRows.filter((row) => {
+          const daily = store.getDaily(row.agent.id, decisionDate);
+          return !!daily || (row.portfolio.pendingDecision
+            && String(row.portfolio.pendingDecision.decisionDate || row.portfolio.pendingDecision.decisionAsOf) === decisionDate);
+        }).map((row) => row.agent.id);
+      const participantSet = new Set(participantIds);
+      const rows = allRows.filter((row) => participantSet.has(row.agent.id));
+      if (!rows.length) {
+        const schedule = store.getSchedule();
+        store.saveSchedule({ ...schedule, lastExecutionDate: decisionDate, lastExecutionStatus: 'completed' });
+        return { ok: true, alreadyRun: true, decisionDate, results: [], message: '没有当日参赛决策' };
+      }
+      const symbols = new Set();
+      for (const row of rows) {
+        for (const position of row.portfolio.positions || []) symbols.add(position.symbol);
+        for (const target of row.portfolio.pendingDecision && row.portfolio.pendingDecision.decision
+          && row.portfolio.pendingDecision.decision.targets || []) symbols.add(target.symbol);
+      }
+      const snapshot = await priceSnapshotBuilder({
+        apiBase: input.apiBase || API_BASE,
+        workspace: WORKSPACE,
+        httpJson: request,
+        store,
+        decisionFor: decisionDate,
+        phase: 'open',
+        symbols,
+      });
+      const results = [];
+      const errors = [];
+      const runtimeRunKey = runtimeStore ? `${environment}:open:${decisionDate}` : '';
+      if (runtimeStore && phaseLease.durableLease) {
+        runtimeStore.ensureRun({
+          runKey: runtimeRunKey,
+          phase: 'open',
+          decisionDate,
+          snapshotId: snapshot.snapshotId,
+          inputHash: sha256({ phase: 'open', decisionDate, snapshotId: snapshot.snapshotId, participants: [...participantSet].sort() }),
+          participants: [...participantSet],
+          initialStage: 'open',
+          manifest: { decisionRunKey, snapshotId: snapshot.snapshotId },
+        }, phaseLease.durableLease);
+        runtimeStore.ensureTasks(runtimeRunKey, [...participantSet].map((agentId) => ({ agentId, stage: 'open' })), phaseLease.durableLease);
+        runtimeStore.recoverOrphanedTasks(phaseLease.durableLease);
+      }
+      for (const row of rows) {
+        try {
+          let runtimeClaim = null;
+          if (runtimeStore && phaseLease.durableLease) {
+            runtimeClaim = runtimeStore.claimTask(`${runtimeRunKey}:agent:${row.agent.id}`, phaseLease.durableLease, { ttlMs: RUNTIME_TASK_TTL_MS });
+            if (!runtimeClaim.ok) throw new Error(`开盘任务正忙：${row.agent.id}`);
+          }
+          if (runtimeClaim && runtimeClaim.alreadyTerminal) {
+            const existingEffect = runtimeStore.getEffect(`${runtimeRunKey}:agent:${row.agent.id}`);
+            results.push(existingEffect && existingEffect.result || { agentId: row.agent.id, settled: false, reason: 'already-terminal' });
+            continue;
+          }
+          const effectKey = `${runtimeRunKey}:agent:${row.agent.id}`;
+          let compactResult = null;
+          if (runtimeStore && phaseLease.durableLease) {
+            let preparedEffect = runtimeStore.getEffect(effectKey);
+            if (!preparedEffect) {
+              const dailyBefore = store.getDaily(row.agent.id, decisionDate);
+              const agentBefore = store.getAgent(row.agent.id);
+              preparedEffect = runtimeStore.prepareEffect({
+                effectKey,
+                runKey: runtimeRunKey,
+                effectType: 'open-settlement',
+                payload: {
+                  agentId: row.agent.id,
+                  snapshotId: snapshot.snapshotId,
+                  decisionHash: sha256(dailyBefore ? {
+                    runId: dailyBefore.runId,
+                    status: dailyBefore.status,
+                    decision: dailyBefore.decision || null,
+                  } : null),
+                  portfolioBefore: agentBefore && agentBefore.portfolio || null,
+                },
+              }, phaseLease.durableLease).effect;
+            }
+            const applied = runtimeStore.completeEffect(effectKey, {}, phaseLease.durableLease, {
+              beforeCommit: () => {
+                const fresh = store.getAgent(row.agent.id);
+                const pendingDate = fresh && fresh.portfolio.pendingDecision
+                  && String(fresh.portfolio.pendingDecision.decisionDate || fresh.portfolio.pendingDecision.decisionAsOf);
+                if (pendingDate === decisionDate) {
+                  const settled = store.settleAgent(row.agent.id, snapshot, {
+                    executionPriceField: 'open',
+                    ...(afterOpenPortfolioSaved ? { afterPortfolioSaved: afterOpenPortfolioSaved } : {}),
+                  });
+                  compactResult = {
+                    agentId: row.agent.id,
+                    settled: settled.settled,
+                    trades: settled.trades,
+                    orderNotes: settled.orderNotes,
+                    nav: settled.nav,
+                  };
+                  return compactResult;
+                }
+                const daily = store.getDaily(row.agent.id, decisionDate);
+                if (daily && daily.execution) {
+                  compactResult = {
+                    agentId: row.agent.id,
+                    settled: daily.execution.settled === true,
+                    trades: daily.execution.trades || [],
+                    orderNotes: daily.execution.orderNotes || [],
+                    nav: Number(daily.execution.nav || 0),
+                    recovered: true,
+                  };
+                  return compactResult;
+                }
+                if (preparedEffect.payload && preparedEffect.payload.portfolioBefore) {
+                  const replay = settlePendingTargets(
+                    preparedEffect.payload.portfolioBefore,
+                    snapshot,
+                    { executionPriceField: 'open' },
+                  );
+                  store.savePortfolio(row.agent.id, replay.portfolio, replay.trades);
+                  store.recordExecutionResult(row.agent.id, decisionDate, replay);
+                  compactResult = {
+                    agentId: row.agent.id,
+                    settled: replay.settled,
+                    trades: replay.trades,
+                    orderNotes: replay.orderNotes,
+                    nav: replay.nav,
+                    recovered: true,
+                    recoveredFromPreparedEffect: true,
+                  };
+                  return compactResult;
+                }
+                compactResult = {
+                  agentId: row.agent.id,
+                  settled: false,
+                  trades: [],
+                  orderNotes: [],
+                  nav: Number(fresh && fresh.stats.nav || fresh && fresh.portfolio.initialCash || 0),
+                  reason: 'no-final-decision',
+                };
+                return compactResult;
+              },
+            });
+            compactResult = applied.effect.result;
+            runtimeStore.checkpointTask(
+              `${runtimeRunKey}:agent:${row.agent.id}`,
+              runtimeClaim.attempt.attemptId,
+              { kind: 'open', effectKey, result: compactResult },
+              phaseLease.durableLease,
+              { nextStage: 'complete', terminal: true },
+            );
+          } else {
+            const result = store.settleAgent(row.agent.id, snapshot, { executionPriceField: 'open' });
+            compactResult = {
+              agentId: row.agent.id,
+              settled: result.settled,
+              trades: result.trades,
+              orderNotes: result.orderNotes,
+              nav: result.nav,
+            };
+          }
+          results.push(compactResult || {
+            agentId: row.agent.id,
+            settled: false,
+            trades: [],
+            orderNotes: [],
+          });
+        } catch (error) {
+          if (runtimeStore && phaseLease.durableLease) {
+            const taskKey = `${runtimeRunKey}:agent:${row.agent.id}`;
+            const task = runtimeStore.getTask(taskKey);
+            if (task && task.status === 'running' && task.attemptId) {
+              try { runtimeStore.failTask(taskKey, task.attemptId, error, phaseLease.durableLease); }
+              catch (persistError) { console.warn('[agent-league] failed to persist open task failure:', persistError && persistError.message); }
+            }
+          }
+          errors.push({ agentId: row.agent.id, error: error.message });
+        }
+      }
+      const schedule = store.getSchedule();
+      store.saveSchedule({
+        ...schedule,
+        lastExecutionDate: decisionDate,
+        lastExecutionStatus: errors.length ? (results.length ? 'partial' : 'failed') : 'completed',
+      });
+      emit('execution-completed', { decisionDate, results, errors });
+      return { ok: !errors.length, decisionDate, snapshotId: snapshot.snapshotId, results, errors };
     });
-    emit('execution-completed', { decisionDate, results, errors });
-    return { ok: !errors.length, decisionDate, snapshotId: snapshot.snapshotId, results, errors };
   }
 
   async function recordClose(input = {}) {
@@ -1159,35 +1739,112 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (enforceMarketClock && !input.force && decisionDate === clock.date && clock.minutes < parseClock(store.getSchedule().resultTime, '15:10')) {
       return { ok: false, error: 'before-result-time', message: `收盘记账时间尚未到：${store.getSchedule().resultTime || '15:10'}` };
     }
-    const rows = store.listAgents();
-    const symbols = new Set(rows.flatMap((row) => (row.portfolio.positions || []).map((position) => position.symbol)));
-    const snapshot = await priceSnapshotBuilder({
-      apiBase: input.apiBase || API_BASE,
-      workspace: WORKSPACE,
-      httpJson: request,
-      store,
-      decisionFor: decisionDate,
-      phase: 'close',
-      symbols,
-    });
-    const results = [];
-    const errors = [];
-    for (const row of rows) {
-      try {
-        const result = store.markAgent(row.agent.id, snapshot, decisionDate);
-        results.push({ agentId: row.agent.id, nav: result.nav, dailyReturn: result.dailyReturn });
-      } catch (error) {
-        errors.push({ agentId: row.agent.id, error: error.message });
+    return withPhaseLease('close', decisionDate, async (phaseLease) => {
+      const openRunKey = `${environment}:open:${decisionDate}`;
+      const openRun = runtimeStore ? runtimeStore.getRun(openRunKey) : null;
+      if (openRun && openRun.status === 'running') {
+        const incomplete = runtimeStore.listTasks(openRunKey).filter((task) => !['completed', 'technical-forfeit'].includes(task.status));
+        return {
+          ok: false,
+          error: 'open-settlement-incomplete',
+          message: `开盘结算仍有 ${incomplete.length} 个 Agent 未终态，拒绝提前记录收盘`,
+          incomplete: incomplete.map((task) => ({ agentId: task.agentId, status: task.status })),
+        };
       }
-    }
-    const schedule = store.getSchedule();
-    store.saveSchedule({
-      ...schedule,
-      lastResultDate: decisionDate,
-      lastResultStatus: errors.length ? (results.length ? 'partial' : 'failed') : 'completed',
+      const allRows = store.listAgents();
+      const openTasks = openRun ? runtimeStore.listTasks(openRunKey) : [];
+      const participantIds = openTasks.length ? openTasks.map((task) => task.agentId) : allRows.map((row) => row.agent.id);
+      const participantSet = new Set(participantIds);
+      const rows = allRows.filter((row) => participantSet.has(row.agent.id));
+      const symbols = new Set(rows.flatMap((row) => (row.portfolio.positions || []).map((position) => position.symbol)));
+      const snapshot = await priceSnapshotBuilder({
+        apiBase: input.apiBase || API_BASE,
+        workspace: WORKSPACE,
+        httpJson: request,
+        store,
+        decisionFor: decisionDate,
+        phase: 'close',
+        symbols,
+      });
+      const results = [];
+      const errors = [];
+      const runtimeRunKey = runtimeStore ? `${environment}:close:${decisionDate}` : '';
+      if (runtimeStore && phaseLease.durableLease) {
+        runtimeStore.ensureRun({
+          runKey: runtimeRunKey,
+          phase: 'close',
+          decisionDate,
+          snapshotId: snapshot.snapshotId,
+          inputHash: sha256({ phase: 'close', decisionDate, snapshotId: snapshot.snapshotId, participants: [...participantSet].sort() }),
+          participants: [...participantSet],
+          initialStage: 'close',
+          manifest: { openRunKey, snapshotId: snapshot.snapshotId },
+        }, phaseLease.durableLease);
+        runtimeStore.ensureTasks(runtimeRunKey, [...participantSet].map((agentId) => ({ agentId, stage: 'close' })), phaseLease.durableLease);
+        runtimeStore.recoverOrphanedTasks(phaseLease.durableLease);
+      }
+      for (const row of rows) {
+        try {
+          let runtimeClaim = null;
+          if (runtimeStore && phaseLease.durableLease) {
+            runtimeClaim = runtimeStore.claimTask(`${runtimeRunKey}:agent:${row.agent.id}`, phaseLease.durableLease, { ttlMs: RUNTIME_TASK_TTL_MS });
+            if (!runtimeClaim.ok) throw new Error(`收盘任务正忙：${row.agent.id}`);
+          }
+          if (runtimeClaim && runtimeClaim.alreadyTerminal) {
+            const existingEffect = runtimeStore.getEffect(`${runtimeRunKey}:agent:${row.agent.id}`);
+            results.push(existingEffect && existingEffect.result || { agentId: row.agent.id, alreadyTerminal: true });
+            continue;
+          }
+          let compactResult = null;
+          if (runtimeStore && phaseLease.durableLease) {
+            const effectKey = `${runtimeRunKey}:agent:${row.agent.id}`;
+            runtimeStore.prepareEffect({
+              effectKey,
+              runKey: runtimeRunKey,
+              effectType: 'close-mark',
+              payload: { agentId: row.agent.id, snapshotId: snapshot.snapshotId },
+            }, phaseLease.durableLease);
+            const applied = runtimeStore.completeEffect(effectKey, {}, phaseLease.durableLease, {
+              beforeCommit: () => {
+                const result = store.markAgent(row.agent.id, snapshot, decisionDate);
+                compactResult = { agentId: row.agent.id, nav: result.nav, dailyReturn: result.dailyReturn };
+                return compactResult;
+              },
+            });
+            compactResult = applied.effect.result;
+            runtimeStore.checkpointTask(
+              `${runtimeRunKey}:agent:${row.agent.id}`,
+              runtimeClaim.attempt.attemptId,
+              { kind: 'close', effectKey, result: compactResult },
+              phaseLease.durableLease,
+              { nextStage: 'complete', terminal: true },
+            );
+          } else {
+            const result = store.markAgent(row.agent.id, snapshot, decisionDate);
+            compactResult = { agentId: row.agent.id, nav: result.nav, dailyReturn: result.dailyReturn };
+          }
+          results.push(compactResult);
+        } catch (error) {
+          if (runtimeStore && phaseLease.durableLease) {
+            const taskKey = `${runtimeRunKey}:agent:${row.agent.id}`;
+            const task = runtimeStore.getTask(taskKey);
+            if (task && task.status === 'running' && task.attemptId) {
+              try { runtimeStore.failTask(taskKey, task.attemptId, error, phaseLease.durableLease); }
+              catch (persistError) { console.warn('[agent-league] failed to persist close task failure:', persistError && persistError.message); }
+            }
+          }
+          errors.push({ agentId: row.agent.id, error: error.message });
+        }
+      }
+      const schedule = store.getSchedule();
+      store.saveSchedule({
+        ...schedule,
+        lastResultDate: decisionDate,
+        lastResultStatus: errors.length ? (results.length ? 'partial' : 'failed') : 'completed',
+      });
+      emit('close-completed', { decisionDate, results, errors });
+      return { ok: !errors.length, decisionDate, snapshotId: snapshot.snapshotId, results, errors };
     });
-    emit('close-completed', { decisionDate, results, errors });
-    return { ok: !errors.length, decisionDate, snapshotId: snapshot.snapshotId, results, errors };
   }
 
   async function runWeekly(input = {}) {
@@ -1209,29 +1866,88 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       const weekly = store.getWeekly(row.agent.id, saturdayDate);
       if (days.length && (!weekly || weekly.status !== 'completed')) runnable.push(row);
     }
-    if (!runnable.length) return { ok: true, alreadyRun: true, saturdayDate, message: '本周没有需要沉淀的新交易日记录' };
-    const runId = `weekly-${saturdayDate.replace(/-/g, '')}-${crypto.randomBytes(4).toString('hex')}`;
-    const claim = store.claimRunLease({ ownerHub: String(process.env.CLAUDE_HUB_DATA_DIR || 'default'), runId });
-    if (!claim.ok) return { ok: false, error: 'run-busy-elsewhere', message: '同一联赛正在另一 Hub 中运行', lease: claim.lease };
-    const leaseTimer = setInterval(() => {
-      if (!store.renewRunLease(claim.token)) console.warn('[agent-league] weekly lease renewal failed');
-    }, 30000);
-    leaseTimer.unref?.();
+    const runtimeRunKey = runtimeStore ? `${environment}:weekly:${saturdayDate}` : '';
+    const existingRuntimeRun = runtimeStore ? runtimeStore.getRun(runtimeRunKey) : null;
+    if (!runnable.length && !(existingRuntimeRun && existingRuntimeRun.status === 'running')) {
+      return { ok: true, alreadyRun: true, saturdayDate, message: '本周没有需要沉淀的新交易日记录' };
+    }
+    const liveWeeklyRecords = Object.fromEntries([...dailyStatesByAgent.entries()].map(([agentId, days]) => [agentId, days.map((day) => ({
+      decisionDate: day.decisionDate,
+      runId: day.runId,
+      draft: day.draft,
+      hook: day.hook,
+      decision: day.decision,
+      dailyBrief: day.dailyBrief,
+      execution: day.execution,
+      closeResult: day.closeResult,
+    }))]));
+    const frozenWeeklyInput = existingRuntimeRun && existingRuntimeRun.manifest && existingRuntimeRun.manifest.input || null;
+    const weeklyRecords = frozenWeeklyInput && frozenWeeklyInput.weeklyRecords || liveWeeklyRecords;
+    if (frozenWeeklyInput && frozenWeeklyInput.weeklyRecords) {
+      dailyStatesByAgent.clear();
+      for (const [agentId, days] of Object.entries(frozenWeeklyInput.weeklyRecords)) dailyStatesByAgent.set(agentId, days);
+    }
+    const runId = frozenWeeklyInput && frozenWeeklyInput.runId
+      || `weekly-${saturdayDate.replace(/-/g, '')}-${sha256(weeklyRecords).slice(0, 8)}`;
+    const phaseLease = claimPhaseLease('weekly', saturdayDate);
+    if (!phaseLease.ok) {
+      return { ok: false, error: phaseLease.runtimeUnavailable ? 'durable-runtime-unavailable' : 'run-busy-elsewhere', message: phaseLease.message || '同一联赛正在另一 Hub 中运行', lease: phaseLease.lease };
+    }
+    let queue = [...new Set([
+      ...runnable.map((row) => row.agent.id),
+      ...(existingRuntimeRun && runtimeStore ? runtimeStore.listTasks(runtimeRunKey).map((task) => task.agentId) : []),
+    ])];
+    let durableCompleted = [];
+    let durableFailed = [];
+    try {
+      if (runtimeStore && phaseLease.durableLease) {
+        const frozenProtocol = existingRuntimeRun && existingRuntimeRun.manifest
+          && existingRuntimeRun.manifest.input && existingRuntimeRun.manifest.input.runtimeProtocolVersion;
+        if (frozenProtocol && Number(frozenProtocol) !== runtimeProtocolVersion) {
+          const error = new Error(`未完成周度运行使用协议 ${frozenProtocol}，当前协议 ${runtimeProtocolVersion} 拒绝不兼容重放`);
+          error.code = 'runtime-version-conflict';
+          throw error;
+        }
+        const weeklyTaskSpecs = queue.map((agentId) => ({ agentId, stage: 'weekly', inputHash: agentPromptInputHash(agentId) }));
+        runtimeStore.ensureRun({
+          runKey: runtimeRunKey,
+          phase: 'weekly',
+          decisionDate: saturdayDate,
+          snapshotId: '',
+          inputHash: existingRuntimeRun && existingRuntimeRun.inputHash || sha256({ saturdayDate, weeklyRecords }),
+          participants: queue,
+          taskSpecs: weeklyTaskSpecs,
+          initialStage: 'weekly',
+          manifest: { runId, weeklyRecords, hubVersion: runtimeOwnerVersion, runtimeProtocolVersion },
+        }, phaseLease.durableLease);
+        runtimeStore.ensureTasks(runtimeRunKey, weeklyTaskSpecs, phaseLease.durableLease);
+        runtimeStore.recoverOrphanedTasks(phaseLease.durableLease);
+        const tasks = runtimeStore.listTasks(runtimeRunKey);
+        queue = tasks.filter((task) => task.status === 'pending').map((task) => task.agentId);
+        durableCompleted = tasks.filter((task) => task.status === 'completed').map((task) => task.agentId);
+        durableFailed = tasks.filter((task) => task.status === 'technical-forfeit')
+          .map((task) => ({ agentId: task.agentId, error: task.lastError || 'technical forfeit' }));
+      }
+    } catch (error) {
+      releasePhaseLease(phaseLease);
+      throw error;
+    }
     currentRun = {
       mode: 'weekly',
       runId,
+      runtimeRunKey,
       decisionDate: saturdayDate,
       asOf: saturdayDate,
       trigger: String(input.trigger || 'manual'),
       startedAt: new Date().toISOString(),
       settlement: [],
-      queue: runnable.map((row) => row.agent.id),
+      queue,
       active: new Set(),
-      completed: [],
-      failed: [],
+      completed: durableCompleted,
+      failed: durableFailed,
       dailyStatesByAgent,
-      leaseToken: claim.token,
-      leaseTimer,
+      runtimeAttempts: new Map(),
+      phaseLease,
     };
     const schedule = store.getSchedule();
     store.saveSchedule({ ...schedule, lastWeeklyDate: saturdayDate, lastWeeklyRunId: runId, lastWeeklyStatus: 'running' });
@@ -1245,7 +1961,12 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     const clock = chinaClock(now);
     if (clock.weekday === 'Sat') {
       if (clock.minutes < parseClock(schedule.weeklyTime, '10:00')) return { ok: true, skipped: 'before-weekly-time' };
-      if (schedule.lastWeeklyDate === clock.date && schedule.lastWeeklyStatus === 'completed') return { ok: true, skipped: 'weekly-already-completed' };
+      const weeklyRuntime = runtimeStore ? runtimeStore.getRun(`${environment}:weekly:${clock.date}`) : null;
+      if (schedule.lastWeeklyDate === clock.date
+          && ['completed', 'partial', 'failed'].includes(schedule.lastWeeklyStatus)
+          && (!weeklyRuntime || weeklyRuntime.status !== 'running')) {
+        return { ok: true, skipped: 'weekly-already-terminal' };
+      }
       try { return await runWeekly({ trigger: 'scheduler', saturdayDate: clock.date }); }
       catch (error) { return { ok: false, error: 'scheduler-weekly-failed', message: error.message }; }
     }
@@ -1255,14 +1976,28 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     const cutoff = parseClock(schedule.decisionCutoff, '09:15');
     const executionTime = parseClock(schedule.executionTime, '09:35');
     const resultTime = parseClock(schedule.resultTime, '15:10');
+    const decisionRuntime = runtimeStore ? runtimeStore.getRun(`${environment}:decision:${clock.date}`) : null;
+    const decisionNeedsRecovery = !!decisionRuntime && decisionRuntime.status === 'running';
+    const legacyDecisionInterrupted = schedule.lastDecisionDate === clock.date
+      && ['interrupted', 'failed'].includes(schedule.lastRunStatus);
+    const openRuntime = runtimeStore ? runtimeStore.getRun(`${environment}:open:${clock.date}`) : null;
+    const closeRuntime = runtimeStore ? runtimeStore.getRun(`${environment}:close:${clock.date}`) : null;
+    const openNeedsRecovery = !!openRuntime && openRuntime.status === 'running';
+    const closeNeedsRecovery = !!closeRuntime && closeRuntime.status === 'running';
     try {
-      if (clock.minutes >= decisionTime && clock.minutes < cutoff && schedule.lastDecisionDate !== clock.date) {
+      if (clock.minutes >= decisionTime && clock.minutes < cutoff
+          && (schedule.lastDecisionDate !== clock.date || decisionNeedsRecovery || legacyDecisionInterrupted)) {
         return await runDay({ trigger: 'scheduler', decisionDate: clock.date });
       }
-      if (clock.minutes >= executionTime && clock.minutes < resultTime && schedule.lastExecutionDate !== clock.date) {
+      if (decisionNeedsRecovery && clock.minutes >= cutoff) {
+        return await runDay({ trigger: 'scheduler-recovery', decisionDate: clock.date, recoveryOnly: true });
+      }
+      if (clock.minutes >= executionTime
+          && (schedule.lastExecutionDate !== clock.date || openNeedsRecovery)) {
         return await executeOpen({ trigger: 'scheduler', decisionDate: clock.date });
       }
-      if (clock.minutes >= resultTime && schedule.lastResultDate !== clock.date) {
+      if (clock.minutes >= resultTime
+          && (schedule.lastResultDate !== clock.date || closeNeedsRecovery)) {
         return await recordClose({ trigger: 'scheduler', decisionDate: clock.date });
       }
       if (clock.minutes >= cutoff && schedule.lastDecisionDate !== clock.date) {
@@ -1275,7 +2010,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   }
 
   function startScheduler() {
-    if (!autoStartScheduler) return null;
+    if (!autoStartScheduler || drainingForHandoff || (environment === 'live' && !runtimeStore)) return null;
     if (schedulerTimer) return schedulerTimer;
     schedulerTimer = setInterval(() => {
       schedulerTick().then((result) => {
@@ -1286,12 +2021,38 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     return schedulerTimer;
   }
 
+  function beginHandoff(reason = 'hub-shutdown') {
+    if (drainingForHandoff) return { ok: true, alreadyDraining: true };
+    drainingForHandoff = true;
+    if (schedulerTimer) clearInterval(schedulerTimer);
+    schedulerTimer = null;
+    if (currentRun) {
+      const schedule = store.getSchedule();
+      store.saveSchedule(currentRun.mode === 'weekly' ? {
+        ...schedule,
+        lastWeeklyStatus: 'interrupted',
+      } : {
+        ...schedule,
+        lastRunStatus: 'interrupted',
+      });
+      emit('handoff-started', { reason, run: runPublicState() });
+    }
+    return { ok: true, run: runPublicState() };
+  }
+
   function stopScheduler() {
     const hadTimer = !!schedulerTimer;
     if (schedulerTimer) clearInterval(schedulerTimer);
     schedulerTimer = null;
-    if (currentRun && currentRun.leaseTimer) clearInterval(currentRun.leaseTimer);
-    if (currentRun && currentRun.leaseToken) store.releaseRunLease(currentRun.leaseToken);
+    for (const sessionId of [...pendingByHubSession.keys()]) clearPending(sessionId);
+    if (currentRun && currentRun.phaseLease) releasePhaseLease(currentRun.phaseLease);
+    for (const lease of [...activePhaseLeases.values()]) releasePhaseLease(lease);
+    activePhaseLeases.clear();
+    currentRun = null;
+    if (ownsRuntimeStore && runtimeStore) {
+      runtimeStore.close();
+      runtimeStore = null;
+    }
     return hadTimer;
   }
 
@@ -1306,6 +2067,108 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
 
   function listPublic(sort = 'return') {
     return store.listAgents(sort).map((row) => publicRow(row));
+  }
+
+  function durableRuntimeState() {
+    if (!runtimeStore) return { available: false, error: runtimeInitError, ownerId: runtimeOwnerId, draining: drainingForHandoff, leader: null, activeRun: null };
+    const leader = runtimeStore.currentLeader();
+    const activeRun = runtimeStore.listRuns({ statuses: ['running'], limit: 1 })[0] || null;
+    return {
+      available: true,
+      error: '',
+      ownerId: runtimeOwnerId,
+      ownerIsThisHub: !!leader && leader.active && leader.ownerId === runtimeOwnerId,
+      draining: drainingForHandoff,
+      leader,
+      activeRun: activeRun ? {
+        ...activeRun,
+        tasks: runtimeStore.listTasks(activeRun.runKey).map((task) => ({
+          agentId: task.agentId,
+          stage: task.stage,
+          status: task.status,
+          attemptNo: task.attemptNo,
+          lastError: task.lastError,
+        })),
+      } : null,
+    };
+  }
+
+  async function healthCheck(input = {}) {
+    const checkedAt = new Date().toISOString();
+    const checks = [];
+    const add = (id, label, status, message, detail = null) => checks.push({ id, label, status, message, detail });
+    const schedule = store.getSchedule();
+    try {
+      fs.accessSync(store.root, fs.constants.R_OK | fs.constants.W_OK);
+      add('vault', '联赛账本目录', 'pass', '可读写', store.root);
+    } catch (error) {
+      add('vault', '联赛账本目录', 'fail', `不可读写：${error.message}`, store.root);
+    }
+    if (!runtimeStore) {
+      add('runtime-db', '事务运行库', 'fail', runtimeInitError || '未初始化');
+    } else {
+      const integrity = runtimeStore.quickCheck();
+      add('runtime-db', '事务运行库', integrity.ok ? 'pass' : 'fail', integrity.ok ? 'SQLite quick_check 通过' : integrity.messages.join('; '), runtimeStore.dbPath);
+      const durable = durableRuntimeState();
+      if (durable.activeRun && !(durable.leader && durable.leader.active)) {
+        add('leadership', '接班租约', 'warn', `检测到未完成 ${durable.activeRun.phase}，当前无活跃 owner；下次 tick 将尝试接班`);
+      } else if (durable.leader && durable.leader.active) {
+        add('leadership', '接班租约', 'pass', `PID ${durable.leader.ownerPid} · epoch ${durable.leader.epoch}`, durable.activeRun && durable.activeRun.runKey || 'idle-phase');
+      } else {
+        add('leadership', '接班租约', 'pass', '当前空闲，无需持有写租约');
+      }
+    }
+    if (!schedule.enabled) add('scheduler', '自动赛程', 'warn', '未启用；只能手动运行');
+    else if (!schedulerTimer) add('scheduler', '自动赛程', 'fail', schedulerSafety.allowed === false ? `被安全策略阻止：${schedulerSafety.reason}` : '已启用但调度 timer 未启动');
+    else add('scheduler', '自动赛程', 'pass', `timer 已启动 · ${schedule.decisionTime || '08:30'} 决策 / ${schedule.executionTime || '09:35'} 开盘 / ${schedule.resultTime || '15:10'} 收盘`);
+
+    const rows = store.listAgents();
+    if (!rows.length) add('agents', '参赛 Agent', 'fail', '尚未创建 Agent');
+    else add('agents', '参赛 Agent', 'pass', `${rows.length} 个 Agent 已登记`);
+    const commandByProvider = { 'codex-cli': 'codex', 'claude-cli': 'claude', 'gemini-cli': 'gemini', 'kimi-cli': 'kimi', 'deepseek-cli': 'codex' };
+    const providers = [...new Set(rows.map((row) => row.agent.provider))];
+    for (const provider of providers) {
+      const command = commandByProvider[provider];
+      try {
+        const available = !!command && probeCommand(command);
+        add(`cli-${provider}`, `${provider} CLI`, available ? 'pass' : 'fail', available ? `${command} 可执行` : `找不到 ${command || provider}`);
+      } catch (error) {
+        add(`cli-${provider}`, `${provider} CLI`, 'fail', `探测失败：${error.message}`);
+      }
+    }
+
+    const clock = chinaClock(input.now || new Date());
+    const cutoff = parseClock(schedule.decisionCutoff, '09:15');
+    const todayTrading = tradingDayStatus(clock.date);
+    let decisionFor = todayTrading.isTradingDay && clock.minutes < cutoff && schedule.lastDecisionDate !== clock.date
+      ? clock.date : nextTradingDay(clock.date);
+    if (!decisionFor && todayTrading.isTradingDay) decisionFor = clock.date;
+    const expectedAsOf = decisionFor ? previousTradingDay(decisionFor) : '';
+    try {
+      const overview = await request('GET', `${input.apiBase || API_BASE}/api/observe/overview`, 8000, null, { 'X-Chuxin-Workspace': WORKSPACE });
+      const actualAsOf = String(overview && overview.body && overview.body.header && overview.body.header.data_asof || '').slice(0, 10);
+      if (!overview.ok) add('chuxin-api', '初心数据 API', 'fail', String(overview.error || overview.status || '请求失败'));
+      else if (expectedAsOf && actualAsOf !== expectedAsOf) add('chuxin-api', '初心数据 API', 'warn', `服务可用，但下一决策日 ${decisionFor} 期望 ${expectedAsOf}，当前 ${actualAsOf || '缺失'}`);
+      else add('chuxin-api', '初心数据 API', 'pass', `服务正常 · data_asof ${actualAsOf}`, { decisionFor, expectedAsOf });
+    } catch (error) {
+      add('chuxin-api', '初心数据 API', 'fail', error.message);
+    }
+
+    const severity = checks.some((row) => row.status === 'fail') ? 'fail'
+      : checks.some((row) => row.status === 'warn') ? 'warn' : 'pass';
+    return {
+      ok: severity !== 'fail',
+      severity,
+      checkedAt,
+      nextDecisionDate: decisionFor || '',
+      expectedDataAsOf: expectedAsOf || '',
+      checks,
+      counts: {
+        pass: checks.filter((row) => row.status === 'pass').length,
+        warn: checks.filter((row) => row.status === 'warn').length,
+        fail: checks.filter((row) => row.status === 'fail').length,
+      },
+    };
   }
 
   function promptWorkbench(agentId) {
@@ -1379,17 +2242,39 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     environment,
     agents: listPublic(input.sort === 'asset' ? 'asset' : 'return'),
     schedule: store.getSchedule(),
+    schedulerRuntime: {
+      started: !!schedulerTimer,
+      safety: schedulerSafety,
+      activePhaseLeases: [...activePhaseLeases.values()].map((row) => ({ phase: row.phase, runId: row.runId })),
+      durable: durableRuntimeState(),
+    },
     run: runPublicState(),
     root: store.root,
   }));
+  ipcMain.handle(channel('health'), async (_event, input = {}) => {
+    try { return { ok: true, report: await healthCheck(input) }; }
+    catch (error) { return { ok: false, error: 'health-check-failed', message: error.message }; }
+  });
   ipcMain.handle(channel('prompt-files'), (_event, input = {}) => {
     try { return { ok: true, ...promptWorkbench(String(input.agentId || '')) }; }
     catch (error) { return { ok: false, error: 'prompt-files-failed', message: error.message }; }
   });
   ipcMain.handle(channel('save-prompt-file'), (_event, input = {}) => {
     try {
+      const active = durableRuntimeState().activeRun;
+      const agentId = String(input.agentId || '');
+      const activeTask = active && ['decision', 'weekly'].includes(active.phase)
+        ? (active.tasks || []).find((task) => task.agentId === agentId && !['completed', 'technical-forfeit'].includes(task.status))
+        : null;
+      if (activeTask) {
+        return {
+          ok: false,
+          error: 'agent-input-frozen',
+          message: `${agentId} 正在 ${activeTask.stage} 阶段；为保证接班可重放，提示词与策略将在本轮终态后才能修改`,
+        };
+      }
       const file = store.savePromptFile(
-        String(input.agentId || ''),
+        agentId,
         String(input.key || ''),
         String(input.content == null ? '' : input.content),
         String(input.expectedSha256 || ''),
@@ -1432,7 +2317,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   });
   ipcMain.handle(channel('run-day'), async (_event, input = {}) => {
     try { return await runDay({ ...input, trigger: input.trigger || 'manual' }); }
-    catch (error) { return { ok: false, error: 'run-day-failed', message: error.message }; }
+    catch (error) { return { ok: false, error: error.code || 'run-day-failed', message: error.message }; }
   });
   ipcMain.handle(channel('execute-open'), async (_event, input = {}) => {
     try { return await executeOpen({ ...input, trigger: input.trigger || 'manual' }); }
@@ -1451,6 +2336,9 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     const next = store.saveSchedule({
       ...previous,
       enabled: input.enabled === true,
+      keepAliveOnClose: typeof input.keepAliveOnClose === 'boolean'
+        ? input.keepAliveOnClose
+        : previous.keepAliveOnClose !== false,
       decisionTime: /^\d{2}:\d{2}$/.test(String(input.decisionTime || '')) ? input.decisionTime : (previous.decisionTime || '08:30'),
       decisionCutoff: /^\d{2}:\d{2}$/.test(String(input.decisionCutoff || '')) ? input.decisionCutoff : (previous.decisionCutoff || '09:15'),
       executionTime: /^\d{2}:\d{2}$/.test(String(input.executionTime || '')) ? input.executionTime : (previous.executionTime || '09:35'),
@@ -1470,6 +2358,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (currentRun && currentRun.runId === pending.runId) {
       currentRun.active.delete(pending.agentId);
       if (!currentRun.completed.includes(pending.agentId)) currentRun.completed.push(pending.agentId);
+      currentRun.runtimeAttempts?.delete(pending.agentId);
     }
     emit('agent-completed', {
       runId: pending.runId,
@@ -1482,23 +2371,55 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     finishRunIfDone();
   }
 
+  function assertAttemptIdentity(raw, pending) {
+    if (!pending.runtimeAttemptId) return;
+    if (String(raw && raw.attempt_id || '') === pending.runtimeAttemptId) return;
+    const error = new Error(`attempt_id 不匹配：${raw && raw.attempt_id || '(empty)'}`);
+    error.code = 'stale-task-attempt-output';
+    throw error;
+  }
+
   async function handleAgentTurnComplete(event, pending) {
     if (!pending || pending.processing) return;
     pending.processing = true;
     try {
+      if (pending.runtimeAttemptId && !String(event.text || '').includes(pending.runtimeAttemptId)) {
+        emit('late-output-ignored', {
+          runId: pending.runId,
+          agentId: pending.agentId,
+          expectedAttemptId: pending.runtimeAttemptId,
+          message: 'turn-complete 未携带当前 attempt_id，已保留当前任务等待正确输出或超时重试',
+        });
+        return;
+      }
       const row = store.getAgent(pending.agentId);
       if (!row) throw new Error(`Agent 不存在：${pending.agentId}`);
       if (pending.kind === 'weekly') {
         const raw = parseWeeklyMarkdown(event.text || '');
         if (String(raw.run_id || '') !== pending.runId) throw new Error(`run_id 不匹配：${raw.run_id || '(empty)'}`);
+        assertAttemptIdentity(raw, pending);
         if (String(raw.saturday_date || '') !== pending.saturdayDate) throw new Error(`saturday_date 不匹配：${raw.saturday_date || '(empty)'}`);
         const review = validateWeeklyReview(raw);
-        const updated = store.recordWeeklyReview(pending.agentId, {
-          runId: pending.runId,
-          saturdayDate: pending.saturdayDate,
-          review,
-          markdown: String(event.text || ''),
-        });
+        let updated = null;
+        const persistWeekly = () => {
+          updated = store.recordWeeklyReview(pending.agentId, {
+            runId: pending.runId,
+            saturdayDate: pending.saturdayDate,
+            review,
+            markdown: String(event.text || ''),
+          });
+        };
+        if (runtimeStore && pending.runtimeTaskKey && pending.runtimeAttemptId) {
+          runtimeStore.checkpointTask(
+            pending.runtimeTaskKey,
+            pending.runtimeAttemptId,
+            { kind: 'weekly', review },
+            currentDurableLease(),
+            { nextStage: 'complete', terminal: true, beforeCommit: persistWeekly },
+          );
+        } else {
+          persistWeekly();
+        }
         clearPending(event.hubSessionId);
         finishAgentTurn(pending, updated, event);
         return;
@@ -1507,6 +2428,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       if (pending.stage === 'draft') {
         const raw = parseDraftMarkdown(event.text || '');
         if (String(raw.run_id || '') !== pending.runId) throw new Error(`run_id 不匹配：${raw.run_id || '(empty)'}`);
+        assertAttemptIdentity(raw, pending);
         if (String(raw.decision_date || '') !== pending.decisionDate) throw new Error(`decision_date 不匹配：${raw.decision_date || '(empty)'}`);
         if (String(raw.data_as_of || '') !== pending.dataAsOf) throw new Error(`data_as_of 不匹配：${raw.data_as_of || '(empty)'}`);
         const existingSymbols = new Set((row.portfolio.positions || []).map((item) => item.symbol));
@@ -1522,23 +2444,44 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
           targetDate: pending.dataAsOf,
           snapshot: pending.snapshot,
         });
-        const hookPrompt = buildHookPrompt(row, pending.snapshot, pending.runId, draft, targetContexts);
-        const hookPromptHash = sha256(hookPrompt);
-        store.recordDraft(pending.agentId, {
+        let hookAttemptId = '';
+        const persistDraft = () => store.recordDraft(pending.agentId, {
           runId: pending.runId,
           decisionDate: pending.decisionDate,
           dataAsOf: pending.dataAsOf,
           draft,
           targetContexts,
           markdown: String(event.text || ''),
-          hookPromptHash,
+          hookPromptHash: '',
         });
+        if (runtimeStore && pending.runtimeTaskKey && pending.runtimeAttemptId) {
+          const advanced = runtimeStore.checkpointTask(
+            pending.runtimeTaskKey,
+            pending.runtimeAttemptId,
+            { kind: 'draft', draft, targetContexts, dataAsOf: pending.dataAsOf },
+            currentDurableLease(),
+            { nextStage: 'hook', claimNext: true, taskTtlMs: RUNTIME_TASK_TTL_MS, beforeCommit: persistDraft },
+          );
+          if (!advanced.nextAttempt) throw new Error(`Hook 持久任务原子推进失败：${pending.agentId}`);
+          hookAttemptId = advanced.nextAttempt.attemptId;
+          currentRun.runtimeAttempts.set(pending.agentId, {
+            taskKey: pending.runtimeTaskKey,
+            attemptId: hookAttemptId,
+            stage: 'hook',
+          });
+          pending.runtimeAttemptId = hookAttemptId;
+          armRuntimeTaskHeartbeat(pending);
+        } else {
+          persistDraft();
+        }
+        const hookPrompt = buildHookPrompt(row, pending.snapshot, pending.runId, draft, targetContexts, hookAttemptId);
+        const hookPromptHash = sha256(hookPrompt);
         pending.stage = 'hook';
         pending.draft = draft;
         pending.targetContexts = targetContexts;
         pending.hookPromptHash = hookPromptHash;
         const ready = await waitForAgentCliReady(event.hubSessionId, row, '决策 Hook');
-        if (!ready) throw new Error(`${row.agent.provider} CLI 在 Hook 前 60 秒内未就绪`);
+        if (!ready) throw new Error(`${row.agent.provider} CLI 在 Hook 前 ${cliReadyBudgetSeconds(row)} 秒内未就绪`);
         const sent = await sendPrompt(event.hubSessionId, hookPrompt, row.agent.kind);
         if (!promptWasSubmitted(sent)) throw new Error('Hook Prompt 写入 PTY 后未得到 provider turn 启动确认');
         armPendingTimeout(event.hubSessionId, pending);
@@ -1549,6 +2492,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       if (pending.stage !== 'hook') throw new Error(`未知 Agent 赛程阶段：${pending.stage}`);
       const raw = parseHookMarkdown(event.text || '');
       if (String(raw.run_id || '') !== pending.runId) throw new Error(`run_id 不匹配：${raw.run_id || '(empty)'}`);
+      assertAttemptIdentity(raw, pending);
       if (String(raw.decision_date || '') !== pending.decisionDate) throw new Error(`decision_date 不匹配：${raw.decision_date || '(empty)'}`);
       if (String(raw.data_as_of || '') !== pending.dataAsOf) throw new Error(`data_as_of 不匹配：${raw.data_as_of || '(empty)'}`);
       const existingSymbols = new Set((row.portfolio.positions || []).map((item) => item.symbol));
@@ -1563,18 +2507,41 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       if (missingContext.length) {
         throw new Error(`FINAL 仍包含无法由初心只读行情核验的股票：${missingContext.map((row) => row.symbol).join(', ')}`);
       }
-      const updated = store.recordDecision(pending.agentId, {
-        runId: pending.runId,
-        decisionDate: pending.decisionDate,
-        dataAsOf: pending.dataAsOf,
-        decision: hook.final_decision,
-        hook,
-        dailyBrief: hook.daily_brief,
-        markdown: String(event.text || ''),
-      });
+      let updated = null;
+      const persistDecision = () => {
+        updated = store.recordDecision(pending.agentId, {
+          runId: pending.runId,
+          decisionDate: pending.decisionDate,
+          dataAsOf: pending.dataAsOf,
+          decision: hook.final_decision,
+          hook,
+          dailyBrief: hook.daily_brief,
+          markdown: String(event.text || ''),
+        });
+      };
+      if (runtimeStore && pending.runtimeTaskKey && pending.runtimeAttemptId) {
+        runtimeStore.checkpointTask(
+          pending.runtimeTaskKey,
+          pending.runtimeAttemptId,
+          { kind: 'final', hook, decision: hook.final_decision, dailyBrief: hook.daily_brief },
+          currentDurableLease(),
+          { nextStage: 'complete', terminal: true, beforeCommit: persistDecision },
+        );
+      } else {
+        persistDecision();
+      }
       clearPending(event.hubSessionId);
       finishAgentTurn(pending, updated, event);
     } catch (error) {
+      if (error && error.code === 'stale-task-attempt-output') {
+        emit('late-output-ignored', {
+          runId: pending.runId,
+          agentId: pending.agentId,
+          expectedAttemptId: pending.runtimeAttemptId,
+          message: error.message,
+        });
+        return;
+      }
       markFailed(pending.agentId, error);
       clearPending(event.hubSessionId);
       pumpQueue();
@@ -1639,13 +2606,17 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   return {
     environment,
     channelPrefix,
+    schedulerSafety,
     store,
+    runtimeStore,
+    runtimeOwnerId,
     pendingByHubSession,
     providerCatalog,
     ensureAgentSession,
     getProtectedSessionIds: () => new Set(pendingByHubSession.keys()),
     isAuthorizedResearchScope,
     listPublic,
+    healthCheck,
     getRunState: runPublicState,
     runDay,
     executeOpen,
@@ -1653,20 +2624,32 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     runWeekly,
     schedulerTick,
     startScheduler,
+    beginHandoff,
     stopScheduler,
   };
 }
 
 function registerAgentLeagueIpc(ipcMain, deps = {}) {
+  const liveStore = deps.store || new AgentLeagueStore({ env: deps.env || process.env });
+  const schedulerSafety = deps.schedulerSafety || evaluateAgentLeagueSchedulerSafety({
+    env: deps.env || process.env,
+    leagueRoot: liveStore.root,
+  });
+  const autoStartScheduler = deps.autoStartScheduler !== false && schedulerSafety.allowed;
+  if (!schedulerSafety.allowed) {
+    console.warn(`[agent-league] auto scheduler suppressed: ${schedulerSafety.reason}; dataDir=${schedulerSafety.dataDir}; leagueRoot=${schedulerSafety.leagueRoot}`);
+  }
   const live = registerAgentLeagueRuntime(ipcMain, {
     ...deps,
+    store: liveStore,
     channelPrefix: 'agent-league',
     environment: 'live',
     scopePrefix: AGENT_SCOPE_PREFIX,
     sessionPurpose: 'agent-league',
     sessionTitlePrefix: 'Agent ·',
     enforceMarketClock: true,
-    autoStartScheduler: true,
+    autoStartScheduler,
+    schedulerSafety,
   });
   if (deps.enableVirtualDebug === false) return live;
 
@@ -1677,6 +2660,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
   const virtual = registerAgentLeagueRuntime(ipcMain, {
     ...deps,
     store: virtualDebug.store,
+    runtimeStore: false,
     channelPrefix: 'agent-league-virtual',
     environment: 'virtual',
     scopePrefix: VIRTUAL_AGENT_SCOPE_PREFIX,
@@ -1733,11 +2717,17 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     live,
     virtual,
     virtualDebug,
+    schedulerSafety,
     getProtectedSessionIds() {
       return new Set([...live.getProtectedSessionIds(), ...virtual.getProtectedSessionIds()]);
     },
     isAuthorizedResearchScope(scopeId) {
       return live.isAuthorizedResearchScope(scopeId) || virtual.isAuthorizedResearchScope(scopeId);
+    },
+    beginHandoff(reason) {
+      const liveResult = live.beginHandoff(reason);
+      const virtualResult = virtual.beginHandoff(reason);
+      return { live: liveResult, virtual: virtualResult };
     },
     stopScheduler() {
       const liveStopped = live.stopScheduler();

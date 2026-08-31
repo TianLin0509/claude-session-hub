@@ -170,6 +170,13 @@ async function collectFailureDiagnostics(client, hub) {
     })()`);
     const formalShot = await screenshot(client, '01-formal-before.png');
 
+    // The test contract is a frozen virtual date. Never inherit the machine's
+    // current Shanghai date, otherwise the E2E changes meaning after midnight.
+    const initialized = await client.eval(`require('electron').ipcRenderer.invoke('agent-league:virtual-initialize', {
+      virtualDate: ${JSON.stringify(VIRTUAL_DATE)}, scenario: 'rally'
+    })`);
+    assert.equal(initialized.ok, true, JSON.stringify(initialized));
+
     await client.eval(`document.querySelector('[data-action="toggle-virtual"]').click()`);
     await waitEval(client, `document.querySelector('.cxl-root.virtual-mode') && !document.querySelector('[data-role="virtual-lab"]').hidden && document.querySelector('[data-agent-row="${AGENT_ID}"]') && /_virtual_debug$/.test(document.querySelector('[data-role="root-path"]').textContent)`, 'virtual lab initialized', 60000);
     const virtualUi = await client.eval(`(() => ({
@@ -182,7 +189,8 @@ async function collectFailureDiagnostics(client, hub) {
     assert.equal(virtualUi.title, 'Agent 联赛 · 虚拟实盘');
     assert.equal(virtualUi.date, VIRTUAL_DATE);
     assert.match(virtualUi.root, /_virtual_debug$/);
-    assert.match(virtualUi.note, /不读取真实开收盘/);
+    assert.match(virtualUi.note, new RegExp(`虚拟交易日 ${VIRTUAL_DATE}`));
+    assert.match(virtualUi.note, /隔离 Agent/);
     await client.eval(`document.querySelector('[data-action="self-test-virtual"]').click()`);
     await waitEval(client, `document.querySelector('[data-role="virtual-status"]').textContent.includes('账本自检 PASS')`, 'virtual self-test PASS', 30000);
     const premarketShot = await screenshot(client, '02-virtual-premarket-selftest.png');

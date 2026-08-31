@@ -206,6 +206,14 @@ test('fast 默认开，只有显式 fastMode:false 才关（不是任意 falsy�
   assert.equal(shouldUseClaudeFastSettings({ CLAUDE_BACKEND: 'api', CLAUDE_API_KEY: 'k' }, { fastMode: true }), false);
 });
 
+test('autonomous Agent 强制关闭 fast 并使用白名单权限旁路', () => {
+  const { shouldUseClaudeFastSettings, claudePermissionModeArg } = _private;
+  assert.equal(shouldUseClaudeFastSettings({ CLAUDE_BACKEND: 'subscription' }, { autonomous: true }), false);
+  assert.equal(claudePermissionModeArg({ autonomous: true }), ' --permission-mode bypassPermissions');
+  assert.equal(claudePermissionModeArg({ permissionMode: 'plan' }), ' --permission-mode plan');
+  assert.equal(claudePermissionModeArg({ permissionMode: 'bad;value' }), '');
+});
+
 test('Claude CLI 原地 relaunch 沿用 effort、MCP 档位和关闭 fast 的选择', () => {
   const isolatedDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-claude-relaunch-'));
   const oldDataDir = process.env.CLAUDE_HUB_DATA_DIR;

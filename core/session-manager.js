@@ -231,7 +231,15 @@ function isClaudeApiBackend(cv) {
 // CLAUDE_HUB_NO_FAST=1 一刀切，现在可以按会话选。
 function shouldUseClaudeFastSettings(cv, opts = {}) {
   if (opts && opts.fastMode === false) return false;
+  if (opts && opts.autonomous === true) return false;
   return process.env.CLAUDE_HUB_NO_FAST !== '1' && !isClaudeApiBackend(cv || getConfigValues());
+}
+
+const CLAUDE_PERMISSION_MODES = new Set(['bypassPermissions', 'acceptEdits', 'plan', 'default']);
+
+function claudePermissionModeArg(opts = {}) {
+  const requested = opts.permissionMode || (opts.autonomous === true ? 'bypassPermissions' : '');
+  return CLAUDE_PERMISSION_MODES.has(requested) ? ` --permission-mode ${requested}` : '';
 }
 
 function applyClaudeSessionEnv(sessionEnv, cv) {
@@ -402,8 +410,8 @@ function ensureGroupChatSettings(hubDataDir) {
   return fp;
 }
 
-function buildGroupChatIsolationFlags(meetingId) {
-  if (!meetingId) return '';
+function buildGroupChatIsolationFlags(enabled) {
+  if (!enabled) return '';
   const settingsPath = ensureGroupChatSettings(getHubDataDir());
   // settings 路径含反斜杠 — Claude CLI 在 PowerShell 下接受双反斜杠转义
   const escaped = settingsPath.replace(/\\/g, '\\\\');
@@ -1328,6 +1336,7 @@ class SessionManager extends EventEmitter {
         ? { mcpProfile: normalizeClaudeMcpProfile(opts.mcpProfile || 'lean') } : {}),
       // fast 只对 Claude 家族有意义；显式关掉才落盘，避免给老会话凭空加字段。
       ...(opts.fastMode === false ? { fastMode: false } : {}),
+      ...(opts.autonomous === true ? { autonomous: true } : {}),
       // 记录经过 runtime 白名单归一化的 effort，让 resume / fork / relaunch
       // 沿用同一档位。不要直接存 opts.effort：否则非法 IPC 值虽然首次启动会
       // 回落，却会污染元数据并在后续恢复时再次扩散。
@@ -1501,17 +1510,18 @@ class SessionManager extends EventEmitter {
       // 避免把非法字符串拼进 PTY 命令行）。
       const effort = CLAUDE_EFFORT_LEVELS.has(opts.effort) ? opts.effort : 'max';
       const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ` --effort ${effort}`;
+      const permissionFlag = claudePermissionModeArg(opts);
       let cmd;
       if (opts.forkCCSessionId) {
-        cmd = ` claude --resume ${opts.forkCCSessionId} --fork-session --model ${model}${effortFlag}`;
+        cmd = ` claude --resume ${opts.forkCCSessionId} --fork-session --model ${model}${effortFlag}${permissionFlag}`;
       } else if (opts.resumeCCSessionId) {
-        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model}${effortFlag}`;
+        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model}${effortFlag}${permissionFlag}`;
       } else if (opts.useContinue) {
-        cmd = ` claude --continue --model ${model}${effortFlag}`;
+        cmd = ` claude --continue --model ${model}${effortFlag}${permissionFlag}`;
       } else if (kind === 'claude-resume') {
-        cmd = ` claude --resume --model ${model}${effortFlag}`;
+        cmd = ` claude --resume --model ${model}${effortFlag}${permissionFlag}`;
       } else {
-        cmd = ` claude --model ${model}${effortFlag}`;
+        cmd = ` claude --model ${model}${effortFlag}${permissionFlag}`;
       }
       // Append system prompt file if provided (TeamSessionManager injects character prompt)
       if (opts.appendSystemPromptFile) {
@@ -1519,7 +1529,7 @@ class SessionManager extends EventEmitter {
       }
       // 群聊按成员选择 MCP 档位，同时把 research/通信 MCP 合并进同一个
       // --mcp-config 列表；它们是房间能力，不能被 Lean/Browser/Wireless 过滤掉。
-      if (opts.meetingId) {
+      if (opts.meetingId || (opts.autonomous === true && opts.mcpConfigFile)) {
         const mcpPlan = buildClaudeMeetingMcpArgs({
           mcpConfigFile: opts.mcpConfigFile,
           mcpProfile: opts.mcpProfile,
@@ -1527,7 +1537,7 @@ class SessionManager extends EventEmitter {
           hubDataDir: getHubDataDir(),
         });
         cmd += mcpPlan.args;
-        console.log(`[claude-mcp] ${kind} 群聊档位=${mcpPlan.profile} 保留=${mcpPlan.keptServers.join(',') || '(无额外全局 MCP)'}`);
+        console.log(`[claude-mcp] ${kind} ${opts.meetingId ? '群聊' : 'autonomous'}档位=${mcpPlan.profile} 保留=${mcpPlan.keptServers.join(',') || '(无额外全局 MCP)'}`);
       // Append MCP config file if provided (TeamSessionManager injects MCP server config)
       } else if (opts.mcpConfigFile) {
         cmd += ` --mcp-config "${opts.mcpConfigFile.replace(/\\/g, '\\\\')}"`;
@@ -1545,7 +1555,7 @@ class SessionManager extends EventEmitter {
         }
       }
       // 群聊成员：禁 skill + plugin（保留 auto-memory / CLAUDE.md / OAuth）
-      cmd += buildGroupChatIsolationFlags(opts.meetingId);
+      cmd += buildGroupChatIsolationFlags(opts.meetingId || opts.autonomous === true);
       // 默认开启 fast 模式（仅 Opus 4.6/4.7/4.8 生效，非 Opus 会被忽略）。
       // 通过 --settings 叠加用户既有 settings；用户仍可在 session 内 /fast 关闭。
       // 用 settings 文件而非 inline JSON，规避 PS 5.1 向 native exe 传内嵌双引号的 quoting bug。
@@ -2327,7 +2337,8 @@ class SessionManager extends EventEmitter {
     const runtimeKind = (s.info && s.info.transcriptKind) || kind;
     const baseKind = (typeof runtimeKind === 'string') ? runtimeKind.replace(/-resume$/, '') : runtimeKind;
     const isClaudeCli = isClaudeFamily(baseKind);
-    const isolation = isClaudeCli ? buildGroupChatIsolationFlags(meetingId) : '';
+    const autonomous = !!(s.info && s.info.autonomous);
+    const isolation = isClaudeCli ? buildGroupChatIsolationFlags(meetingId || autonomous) : '';
     let cmd;
     if (isCodexCliKind(runtimeKind)) {
       // relaunch：API 模式时 codex 用 isolated CODEX_HOME，从 info.codexSessionsRoot 反推
@@ -2367,12 +2378,12 @@ class SessionManager extends EventEmitter {
       const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ` --effort ${effort}`;
       let fastFlag = '';
       const cv = getConfigValues();
-      if (shouldUseClaudeFastSettings(cv, { fastMode: s.info && s.info.fastMode })) {
+      if (shouldUseClaudeFastSettings(cv, { fastMode: s.info && s.info.fastMode, autonomous })) {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         fastFlag = ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
       // 单人和群聊都沿用自己的 MCP 档位；群聊额外恢复 research/通信 config。
-      const mcpPlan = meetingId
+      const mcpPlan = (meetingId || (autonomous && s.claudeMcpConfigFile))
         ? buildClaudeMeetingMcpArgs({
           mcpConfigFile: s.claudeMcpConfigFile,
           mcpProfile: s.info && s.info.mcpProfile,
@@ -2385,7 +2396,8 @@ class SessionManager extends EventEmitter {
           hubDataDir: getHubDataDir(),
         });
       const mcpFlag = mcpPlan && mcpPlan.args ? mcpPlan.args : '';
-      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${fastFlag}${mcpFlag}${isolation}\r\n`;
+      const relaunchPermissionFlag = claudePermissionModeArg({ autonomous });
+      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${relaunchPermissionFlag}${fastFlag}${mcpFlag}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
       const mcpPlan = meetingId ? buildClaudeMeetingMcpArgs({
         mcpConfigFile: s.claudeMcpConfigFile,
@@ -2437,6 +2449,7 @@ class SessionManager extends EventEmitter {
       ...(info.codexProfileLabel !== undefined ? { codexProfileLabel: info.codexProfileLabel } : {}),
       ...(info.mcpProfile !== undefined ? { mcpProfile: info.mcpProfile } : {}),
       ...(info.fastMode !== undefined ? { fastMode: info.fastMode } : {}),
+      ...(info.autonomous !== undefined ? { autonomous: info.autonomous } : {}),
       ...(info.effort !== undefined ? { effort: info.effort } : {}),
       ...(info.codexSpeedTier !== undefined ? { codexSpeedTier: info.codexSpeedTier } : {}),
       ...(info.geminiChatId !== undefined ? { geminiChatId: info.geminiChatId } : {}),
@@ -2820,6 +2833,7 @@ module.exports = {
     applyInteractiveTerminalEnv,
     isClaudeApiBackend,
     shouldUseClaudeFastSettings,
+    claudePermissionModeArg,
     applyClaudeSessionEnv,
     resolveClaudeLaunchModel,
     quotePowerShellLiteral,

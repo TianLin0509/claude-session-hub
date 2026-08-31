@@ -70,3 +70,12 @@ test('Agent League sessions remain ordinary visible sidebar sessions', () => {
   assert.match(handler, /hiddenFromSidebar: false/);
   assert.doesNotMatch(list, /purpose\s*!==\s*['"]agent-league/);
 });
+
+test('league UI exposes durable owner progress, health diagnostics and background keepalive', () => {
+  const script = fs.readFileSync(path.join(root, 'renderer', 'agent-league.js'), 'utf8');
+  assert.match(script, /Runner PID/);
+  assert.match(script, /data-action="health-check"/);
+  assert.match(script, /data-role="health-checks"/);
+  assert.match(script, /data-action="toggle-background"/);
+  assert.match(script, /其他 Hub 运行中/);
+});
