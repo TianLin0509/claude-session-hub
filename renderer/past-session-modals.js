@@ -93,6 +93,7 @@ function collapseDormantNativeDuplicates(sessionMap) {
     for (const duplicate of ranked.slice(1)) {
       if (duplicate.status !== 'dormant') continue;
       keep.pinned = !!(keep.pinned || duplicate.pinned);
+      keep.bottomed = !keep.pinned && !!(keep.bottomed || duplicate.bottomed);
       keep.unreadCount = Math.max(Number(keep.unreadCount || 0), Number(duplicate.unreadCount || 0));
       keep.createdAt = Math.min(
         Number(keep.createdAt || keep.lastMessageTime || Date.now()),

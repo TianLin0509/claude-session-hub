@@ -31,3 +31,16 @@ test('current launch routing keeps Claude/Codex/Gemini subscription on proxy and
   assert.match(SOURCE, /else if \(isDeepSeek\)[\s\S]*?clearProxyEnv\(sessionEnv\)/);
   assert.match(SOURCE, /else if \(isKimi\)[\s\S]*?clearProxyEnv\(sessionEnv\)/);
 });
+
+test('interactive ConPTY never inherits a contradictory TERM=dumb startup gate', () => {
+  const inherited = { TERM: 'dumb' };
+  assert.equal(_private.applyInteractiveTerminalEnv(inherited), 'xterm-256color');
+  assert.equal(inherited.TERM, 'xterm-256color');
+
+  const missing = {};
+  assert.equal(_private.applyInteractiveTerminalEnv(missing), 'xterm-256color');
+
+  const explicit = { TERM: 'screen-256color' };
+  assert.equal(_private.applyInteractiveTerminalEnv(explicit), 'screen-256color');
+  assert.equal(explicit.TERM, 'screen-256color');
+});

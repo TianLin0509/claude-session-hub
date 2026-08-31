@@ -1690,6 +1690,8 @@ window.__chuxinSessionBridge = {
         ...previous,
         ...preparedSession,
         pinned: previous.pinned || preparedSession.pinned || false,
+        bottomed: !(previous.pinned || preparedSession.pinned)
+          && !!(previous.bottomed || preparedSession.bottomed),
         unreadCount: previous.unreadCount || 0,
         suspendedAt: null,
         suspendReason: null,
@@ -6125,7 +6127,8 @@ ipcRenderer.on('session-created', async (_e, { session }) => {
       status: 'idle',
       _resumePending: false,
       // preserve persisted UX state
-      pinned: existing.pinned,
+      pinned: !!existing.pinned,
+      bottomed: !!existing.bottomed && !existing.pinned,
       unreadCount: existing.unreadCount || 0,
       suspendedAt: null,
       suspendReason: null,
@@ -6252,12 +6255,14 @@ ipcRenderer.on('session-suspended', (_e, { sessionId, session }) => {
   }
   if (_cardHistoryHydratedSid === sessionId) _cardHistoryHydratedSid = null;
 
-  const pinned = local.pinned;
+  const pinned = !!local.pinned;
+  const bottomed = !!local.bottomed && !pinned;
   const unreadCount = local.unreadCount;
   Object.assign(local, session || {}, {
     id: sessionId,
     status: 'dormant',
     pinned,
+    bottomed,
     unreadCount,
     _agentWorking: false,
     gcWorking: false,
@@ -6425,6 +6430,7 @@ function schedulePersist() {
         memoryLinkWarning: s.memoryLinkWarning || null,
         workspaceLabel: s.workspaceLabel || null,
         pinned: !!s.pinned,
+        bottomed: !!s.bottomed && !s.pinned,
         ccSessionId: s.ccSessionId || null,
         transcriptPath: s.transcriptPath || null,
         meetingId: s.meetingId || null,
@@ -6498,7 +6504,7 @@ function schedulePersist() {
       layout: m.layout, focusedSub: m.focusedSub, syncContext: m.syncContext,
       sendTarget: m.sendTarget, createdAt: m.createdAt, lastMessageTime: m.lastMessageTime,
       lastCompletedAt: typeof m.lastCompletedAt === 'number' ? m.lastCompletedAt : null,
-      pinned: m.pinned || false, lastScene: m.lastScene || null,
+      pinned: !!m.pinned, bottomed: !!m.bottomed && !m.pinned, lastScene: m.lastScene || null,
       scene: m.scene, mode: m.mode,
       userRenamed: !!m.userRenamed,
       autoTitlePending: !!m.autoTitlePending,
@@ -6568,7 +6574,8 @@ async function resumeDormantSession(hubId, opts = {}) {
       ...resumed,
       status: 'idle',
       _resumePending: false,
-      pinned: s.pinned,
+      pinned: !!s.pinned,
+      bottomed: !!s.bottomed && !s.pinned,
       unreadCount: s.unreadCount || 0,
       suspendedAt: null,
       suspendReason: null,
@@ -6648,6 +6655,7 @@ window.resumeDormantSession = resumeDormantSession;
         memoryLinkWarning: meta.memoryLinkWarning || null,
         workspaceLabel: meta.workspaceLabel || null,
         pinned: !!meta.pinned,
+        bottomed: !!meta.bottomed && !meta.pinned,
         ccSessionId: meta.ccSessionId || null,
         transcriptPath: meta.transcriptPath || null,
         meetingId: meta.meetingId || null,

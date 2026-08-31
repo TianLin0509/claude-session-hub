@@ -128,13 +128,30 @@ async function restartFromSidebar(client, sessionId, captureScreenshot = false) 
     if (!menu || !restart || getComputedStyle(menu).display === 'none') return null;
     return { label: restart.textContent.trim() };
   })()`));
-  assert.equal(menu.label, '重启并继续当前会话');
+  assert.equal(menu.label, '重启');
   if (captureScreenshot) {
     const shot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(SCREENSHOT_PATH, Buffer.from(shot.data, 'base64'));
   }
   await dispatchMouse(client, '#context-menu [data-action="restart"]', 'left');
   return menu;
+}
+
+async function bottomFromSidebar(client, sessionId) {
+  await dispatchMouse(client, `[data-session-id="${sessionId}"]`, 'right');
+  const label = await waitFor('bottom context action', () => client.eval(`(() => {
+    const menu = document.querySelector('#context-menu');
+    const bottom = menu && menu.querySelector('[data-action="bottom"]');
+    return menu && bottom && getComputedStyle(menu).display !== 'none'
+      ? bottom.textContent.trim() : null;
+  })()`));
+  assert.equal(label, '置底');
+  await dispatchMouse(client, '#context-menu [data-action="bottom"]', 'left');
+  return waitFor('live placement authority', async () => {
+    const sessions = await client.eval(`ipcRenderer.invoke('get-sessions')`);
+    const session = sessions.find(item => item.id === sessionId);
+    return session && session.bottomed && !session.pinned ? session : null;
+  });
 }
 
 async function main() {
@@ -196,6 +213,7 @@ async function main() {
     await waitFor('initial Codex invocation', () => (
       readInvocations().filter(entry => entry.provider === 'codex').length === 1
     ));
+    result.codexBottomBeforeRestart = await bottomFromSidebar(client, codex.id);
     result.codexMenu = await restartFromSidebar(client, codex.id, true);
     await waitFor('restarted Codex invocation', () => (
       readInvocations().filter(entry => entry.provider === 'codex').length === 2
@@ -237,7 +255,8 @@ async function main() {
       id: codexAfter.id,
       codexSid: codexAfter.codexSid,
       title: codexAfter.title,
-      pinned: codexAfter.pinned,
+      pinned: !!codexAfter.pinned,
+      bottomed: codexAfter.bottomed,
       model: codexAfter.currentModel && codexAfter.currentModel.id,
       codexProfile: codexAfter.codexProfile,
       mcpProfile: codexAfter.mcpProfile,
@@ -245,7 +264,8 @@ async function main() {
       id: codex.id,
       codexSid: CODEX_SID,
       title: 'Codex Exact Restart',
-      pinned: true,
+      pinned: false,
+      bottomed: true,
       model: 'gpt-5.5',
       codexProfile: 'e2e',
       mcpProfile: 'browser',

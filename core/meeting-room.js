@@ -53,6 +53,7 @@ class MeetingRoomManager {
       lastMessageTime: Date.now(),
       lastCompletedAt: null,
       pinned: false,
+      bottomed: false,
       status: 'idle',
       lastScene: 'free_discussion',
       scene: MEETING_MODES.includes(mode) ? mode : 'general',
@@ -226,7 +227,7 @@ class MeetingRoomManager {
       throw new Error(`Invalid scene value: '${fields.scene}'. Allowed: ${MEETING_MODES.join(', ')}`);
     }
     const allowed = [
-      'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned',
+      'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned', 'bottomed',
       'lastMessageTime', 'lastCompletedAt', 'status', 'lastScene', 'scene', 'covenantText',
       'userRenamed', 'autoTitlePending', 'autoTitleGenerated',
       'serialWorkflow', 'workspace', 'workspaceLabel',
@@ -237,11 +238,17 @@ class MeetingRoomManager {
         m[key] = key === 'serialWorkflow' ? cloneSerialWorkflow(fields[key]) : fields[key];
       }
     }
+    // Placement is a three-state choice: top / normal / bottom.  Normalize at
+    // the authoritative manager too, so non-renderer callers cannot persist an
+    // impossible meeting that is both pinned and bottomed.
+    if (fields.pinned === true) m.bottomed = false;
+    else if (fields.bottomed === true) m.pinned = false;
     // 串行工作流配置变更必须落盘（updateMeeting 默认不 markDirty）；传完整 meeting 快照，
     //   避免新群聊首次 markDirty 时 prev 残缺导致 title/subSessions 被默认值覆盖。
     if ('serialWorkflow' in fields || 'workspace' in fields || 'workspaceLabel' in fields
         || 'lastMessageTime' in fields || 'lastCompletedAt' in fields
-        || 'completionNotificationEnabled' in fields) {
+        || 'completionNotificationEnabled' in fields
+        || 'pinned' in fields || 'bottomed' in fields) {
       meetingStore.markDirty(meetingId, m);
     }
     return {
@@ -318,6 +325,7 @@ class MeetingRoomManager {
         ? meetingData.lastCompletedAt
         : null,
       pinned: !!meetingData.pinned,
+      bottomed: !!meetingData.bottomed && !meetingData.pinned,
       status: 'dormant',
       lastScene: meetingData.lastScene || 'free_discussion',
       scene,

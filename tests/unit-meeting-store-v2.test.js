@@ -23,7 +23,7 @@ const meetingStore = require('../core/meeting-store');
       slotSpecs: [{ index: 0, kind: 'claude', model: 'opus' }], mode: 'free', participants: [0, 1, 2],
       title: '通用 #1', scene: 'general', createdAt: 1234567890,
       subSessions: ['sub1', 'sub2'], layout: 'focus', focusedSub: 'sub1',
-      syncContext: false, sendTarget: 'all', pinned: true,
+      syncContext: false, sendTarget: 'all', pinned: true, bottomed: true,
       lastScene: 'free_discussion', lastMessageTime: 999, lastCompletedAt: 888,
       covenantText: '约定文本', immersive: false, updatedAt: 5000,
     });
@@ -36,6 +36,7 @@ const meetingStore = require('../core/meeting-store');
     assert.deepStrictEqual(loaded.subSessions, ['sub1', 'sub2']);
     assert.strictEqual(loaded.covenantText, '约定文本');
     assert.strictEqual(loaded.pinned, true);
+    assert.strictEqual(loaded.bottomed, false, 'pinned wins over corrupt both=true state');
     assert.strictEqual(loaded.lastCompletedAt, 888);
     assert.strictEqual(loaded._timeline.length, 1);
     assert.strictEqual(loaded.updatedAt, 5000);
@@ -63,13 +64,14 @@ const meetingStore = require('../core/meeting-store');
     meetingStore.saveMeetingFile('m2', {
       id: 'm2', _timeline: [], _cursors: {}, _nextIdx: 0,
       title: '投研 #1', scene: 'research', createdAt: 999,
-      subSessions: [], updatedAt: 999,
+      subSessions: [], bottomed: true, updatedAt: 999,
     });
     const all = meetingStore.listMeetingFilesWithData();
     const m2 = all.find(d => d.id === 'm2');
     assert.ok(m2, 'listMeetingFilesWithData 应返回 m2');
     assert.strictEqual(m2.title, '投研 #1');
     assert.strictEqual(m2.scene, 'research');
+    assert.strictEqual(m2.bottomed, true);
     console.log('PASS V3 listMeetingFilesWithData');
   }
 

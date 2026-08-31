@@ -97,6 +97,7 @@ test('resumes Claude-family sessions with transcript lookup and renderer event',
     ccSessionId: 'cc-1',
     cwd: 'C:\\repo',
     title: 'Old Claude',
+    bottomed: true,
   });
 
   assert.strictEqual(session.id, 's1');
@@ -114,6 +115,7 @@ test('resumes Claude-family sessions with transcript lookup and renderer event',
       useContinue: false,
       useResume: false,
       codexResumePicker: false,
+      bottomed: true,
       codexSid: null,
       codexProfile: null,
       geminiChatId: null,

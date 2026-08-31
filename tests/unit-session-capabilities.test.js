@@ -65,6 +65,7 @@ assert.deepEqual({
   codexProfile: resumeMeta.codexProfile,
   mcpProfile: resumeMeta.mcpProfile,
   pinned: resumeMeta.pinned,
+  bottomed: resumeMeta.bottomed,
   userRenamed: resumeMeta.userRenamed,
   branchSourceSessionId: resumeMeta.branchSourceSessionId,
   autoTitleGenerated: resumeMeta.autoTitleGenerated,
@@ -82,6 +83,7 @@ assert.deepEqual({
   codexProfile: 'work',
   mcpProfile: 'browser',
   pinned: true,
+  bottomed: false,
   userRenamed: true,
   branchSourceSessionId: 'parent',
   autoTitleGenerated: true,
@@ -92,6 +94,12 @@ assert.deepEqual({
   workspaceLabel: 'AI',
   completionNotificationEnabled: true,
 });
+
+const bottomedResumeMeta = buildSessionResumeMeta({
+  id: 'hub-bottom', kind: 'claude', bottomed: true, pinned: false,
+});
+assert.equal(bottomedResumeMeta.bottomed, true);
+assert.equal(bottomedResumeMeta.pinned, false);
 
 const pendingBranchMeta = buildSessionResumeMeta({
   id: 'branch-pending', kind: 'codex', title: '分支: 待命名',

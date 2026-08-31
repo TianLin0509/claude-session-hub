@@ -31,6 +31,20 @@ function partitionSessionsByAge(items, now) {
   return { recent, mid, old };
 }
 
+function isPinnedToBottom(item) {
+  return !!(item && item.bottomed && !item.pinned);
+}
+
+function compareSidebarPlacement(left, right) {
+  const leftPinned = !!(left && left.pinned);
+  const rightPinned = !!(right && right.pinned);
+  if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+  const leftBottomed = isPinnedToBottom(left);
+  const rightBottomed = isPinnedToBottom(right);
+  if (leftBottomed !== rightBottomed) return leftBottomed ? 1 : -1;
+  return compareLatestActivityDesc(left, right);
+}
+
 // --- 侧栏 AI 家族筛选 ---
 // 家族由 kind（哪个 CLI）决定，模型只是家族内部的选择：Opus / Fable / Sonnet 都是
 // Claude CLI 起的会话，GPT 各版本都是 Codex CLI 起的。所以按 kind 分族，与用户
@@ -449,7 +463,9 @@ function _sessionWarningText(session) {
   });
 
 // --- Session list rendering ---
-// Sort: pinned sessions first, then ordinary/group sessions by latest AI reply.
+// Sort: pinned sessions first, ordinary/group sessions by latest activity, and
+// explicit bottomed sessions last.  The final render also gives bottomed items
+// their own literal last section so age/status buckets cannot move below them.
 // Tree shape: meeting entries optionally expand to show their child sub-sessions.
 // Top-level regular sessions (no meetingId) sit alongside meetings in the same sort order.
   function renderSessionList() {
@@ -474,16 +490,14 @@ function _sessionWarningText(session) {
     //   显示"已答 N"（1-3）；turnNum 变 / selectMeeting 时清零（详见 renderer.js partial-update handler）。
     unreadAnsweredSize: m.unreadAnswered instanceof Set ? m.unreadAnswered.size : 0,
     pinned: m.pinned,
+    bottomed: m.bottomed,
     _isMeeting: true,
     _meeting: m,
   }));
 
   const all = regularSessions.concat(meetingItems);
 
-  const sorted = all.sort((a, b) => {
-    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
-    return compareLatestActivityDesc(a, b);
-  });
+  const sorted = all.sort(compareSidebarPlacement);
 
   // Hide any leftover legacy background PTY sessions from the removed room path.
   const everything = sorted.filter(s => !s.title || !s.title.startsWith('[Team] '));
@@ -733,7 +747,9 @@ function _sessionWarningText(session) {
   //     运行中   = RuntimeTruth starting/running（原生事件 + PTY 强校验 + 兜底）
   //     完成未读 = 普通回答完成、群聊成员答完或历史 unreadCount>0
   //     最近     = 24h 内其余（含 active、休眠、空闲）
-  const { recent, mid, old } = partitionSessionsByAge(visible, Date.now());
+  const bottomed = visible.filter(isPinnedToBottom);
+  const normallyPlaced = visible.filter(s => !isPinnedToBottom(s));
+  const { recent, mid, old } = partitionSessionsByAge(normallyPlaced, Date.now());
   const activeSid = getActiveSessionId();
   const activeMid = getActiveMeetingId();
   const isActiveItem = (s) => s._isMeeting ? s.id === activeMid : s.id === activeSid;
@@ -785,6 +801,10 @@ function _sessionWarningText(session) {
   }
   appendTimeGroup('mid', '3 天内', mid);
   appendTimeGroup('old', '更早', old);
+  if (bottomed.length) {
+    appendSecHeader('置底', bottomed.length, 'sec-bottom');
+    for (const s of bottomed) appendItem(s);
+  }
 
   // 筛掉一个空视图时说清楚是筛选的结果，否则看起来像会话丢了。
   if (!visible.length && everything.length) {
@@ -851,6 +871,8 @@ sessionListEl.addEventListener('mousedown', (e) => {
 module.exports = {
   createSessionListRenderer,
   compareLatestActivityDesc,
+  compareSidebarPlacement,
+  isPinnedToBottom,
   partitionSessionsByAge,
   latestActivityTime,
   familyOfKind,

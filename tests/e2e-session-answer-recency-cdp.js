@@ -1,7 +1,8 @@
 'use strict';
 
-// Latest-answer recency E2E: ordinary dormant sessions and group chats must be
-// sorted, bucketed, and labelled by lastCompletedAt rather than prompt time.
+// Latest-activity recency E2E: ordinary sessions and group chats must float as
+// soon as a new prompt/run starts, while merely opening a card changes no time.
+// The sidebar uses the newest real interaction timestamp, not raw PTY output.
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -102,7 +103,7 @@ function removeTree() {
       return true;
     })()`);
 
-    const recent = await waitFor('recent answer ordering', async () => {
+    const recent = await waitFor('recent activity ordering', async () => {
       const snapshot = await client.eval(`(() => ({
         rows: [...document.querySelectorAll('#session-list > .session-item')].map(row => ({
           title: (row.querySelector('.sl-title')?.textContent || '').replace(/^[💬🎯📌⚠\s]+/u, '').trim(),
@@ -110,31 +111,17 @@ function removeTree() {
         })),
         groups: window.__hubE2E.sidebarGroups(),
       }))()`);
-      return snapshot.rows.length === 3 ? snapshot : null;
+      return snapshot.rows.length === 5 ? snapshot : null;
     });
     assert.deepStrictEqual(recent.rows.map(row => row.title), [
       '群聊·刚回答',
+      '群聊·旧回答新提问',
       '普通·刚回答',
+      '普通·旧回答新提问',
       '普通·旧数据兼容',
     ]);
     assert.ok(recent.rows.every(row => !/天前$/.test(row.time)), JSON.stringify(recent.rows));
-    assert.deepStrictEqual(recent.groups.map(group => ({ key: group.key, count: Number(group.count) })), [
-      { key: 'mid', count: 2 },
-    ]);
-
-    await client.eval(`window.__hubE2E.clickTimeGroup('mid')`);
-    const expanded = await waitFor('mid answer bucket rows', async () => {
-      const rows = await client.eval(`[...document.querySelectorAll('#session-list > .session-item')].map(row => ({
-        title: (row.querySelector('.sl-title')?.textContent || '').replace(/^[💬🎯📌⚠\\s]+/u, '').trim(),
-        time: (row.querySelector('.sl-time')?.textContent || '').trim(),
-      }))`);
-      return rows.length === 5 ? rows : null;
-    });
-    assert.deepStrictEqual(expanded.slice(-2).map(row => row.title), [
-      '群聊·旧回答新提问',
-      '普通·旧回答新提问',
-    ]);
-    assert.ok(expanded.slice(-2).every(row => /天前$/.test(row.time)), JSON.stringify(expanded));
+    assert.deepStrictEqual(recent.groups, [], 'new prompts keep both ordinary and group sessions in recent');
 
     const sidebar = await client.eval(`(() => {
       const rect = document.getElementById('session-sidebar').getBoundingClientRect();
@@ -146,7 +133,6 @@ function removeTree() {
     console.log(JSON.stringify({
       ok: true,
       recent,
-      expanded,
       screenshot: ARTIFACT,
       isolatedHubPid: hub.pid,
       cdpPort: port,

@@ -41,6 +41,30 @@ assert.deepStrictEqual(state.projects['C:/other'], { allowedTools: ['Bash'] });
 assert.strictEqual('hasCompletedOnboarding' in state, false);
 assert.strictEqual('bypassPermissionsModeAccepted' in state, false);
 
+// Windows Defender/another reader can hold the destination for a few ms.
+// A transient EPERM must retry instead of dropping automatic trust entirely.
+const retryProjectDir = path.join(tmpRoot, 'ws-retry');
+fs.mkdirSync(retryProjectDir, { recursive: true });
+let renameAttempts = 0;
+const retried = ensureClaudeProjectTrusted(retryProjectDir, {
+  configDir,
+  renameRetryDelayMs: 0,
+  fsImpl: {
+    ...fs,
+    renameSync(source, target) {
+      renameAttempts += 1;
+      if (renameAttempts < 3) throw Object.assign(new Error('temporarily busy'), { code: 'EPERM' });
+      return fs.renameSync(source, target);
+    },
+  },
+});
+assert.strictEqual(retried.ok, true);
+assert.strictEqual(renameAttempts, 3);
+assert.strictEqual(
+  JSON.parse(fs.readFileSync(statePath, 'utf8')).projects[toClaudeProjectKey(retryProjectDir)].hasTrustDialogAccepted,
+  true,
+);
+
 // --- 幂等：已经 true 就不写 ---
 const mtimeBefore = fs.statSync(statePath).mtimeMs;
 const second = ensureClaudeProjectTrusted(projectDir, { configDir });

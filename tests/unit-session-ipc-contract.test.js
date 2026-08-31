@@ -52,6 +52,10 @@ function createFakeSessionManager() {
       calls.push(['renameSession', sessionId, title, opts]);
       return { id: sessionId, title, userRenamed: opts.userRenamed };
     },
+    updateSessionMeta(sessionId, fields) {
+      calls.push(['updateSessionMeta', sessionId, fields]);
+      return { id: sessionId, ...fields };
+    },
     getAllSessions() {
       calls.push(['getAllSessions']);
       return sessions;
@@ -134,7 +138,7 @@ function createFakeSessionManager() {
           codexSid: '55555555-5555-4555-8555-555555555555',
         };
       }
-      return { id: sessionId, kind: 'powershell', cwd: 'C:\\work', meetingId: 'm1' };
+      return { id: sessionId, kind: 'powershell', cwd: 'C:\\work', meetingId: 'm1', bottomed: true };
     },
     createSession(kind, opts) {
       calls.push(['createSession', kind, opts]);
@@ -179,9 +183,28 @@ test('registers expected session channels', () => {
     assert.ok(ipc.handlers.has(channel), `${channel} should be registered as handle`);
   }
   assert.ok(ipc.handlers.has('create-session'), 'create-session should be registered as handle');
-  for (const channel of ['terminal-input', 'terminal-resize', 'focus-session']) {
+  for (const channel of ['terminal-input', 'terminal-resize', 'focus-session', 'update-session-placement']) {
     assert.ok(ipc.listeners.has(channel), `${channel} should be registered as listener`);
   }
+});
+
+test('session placement updates the live authority immediately and normalizes top/bottom', () => {
+  const ipc = createFakeIpc();
+  const sessionManager = createFakeSessionManager();
+  registerSessionIpc(ipc, { sessionManager, sendToRenderer: () => {} });
+
+  const update = ipc.listeners.get('update-session-placement');
+  update(null, { sessionId: 's1', pinned: false, bottomed: true });
+  update(null, { sessionId: 's1', pinned: true, bottomed: true });
+  update(null, { sessionId: '', pinned: true, bottomed: false });
+
+  assert.deepStrictEqual(
+    sessionManager.calls.filter(call => call[0] === 'updateSessionMeta'),
+    [
+      ['updateSessionMeta', 's1', { pinned: false, bottomed: true }],
+      ['updateSessionMeta', 's1', { pinned: true, bottomed: false }],
+    ],
+  );
 });
 
 test('fork-session creates a standalone Claude branch from the native session id', () => {
@@ -507,6 +530,7 @@ test('restart-session recreates a non-resumable PowerShell terminal', () => {
       ['closeSession', 's1'],
       ['createSession', 'powershell', {
         id: 's1', cwd: 'C:\\work', meetingId: 'm1', completionNotificationEnabled: false,
+        bottomed: true,
       }],
       ['getSession', 'missing'],
     ]

@@ -14,6 +14,7 @@ const sessionStore = require('../core/session-store');
   {
     sessionStore.saveSessionFile('h1', {
       kind: 'codex', title: 'CodexA', cwd: 'C:/foo',
+      bottomed: true,
       ccSessionId: null, codexSid: 'codex-abc', currentModel: { id: 'gpt-5', displayName: 'GPT-5' },
       updatedAt: 1000,
     });
@@ -21,6 +22,7 @@ const sessionStore = require('../core/session-store');
     assert.ok(loaded);
     assert.strictEqual(loaded.hubId, 'h1');
     assert.strictEqual(loaded.codexSid, 'codex-abc');
+    assert.strictEqual(loaded.bottomed, true);
     assert.strictEqual(loaded.currentModel.id, 'gpt-5');
     console.log('PASS S1 round-trip');
   }
@@ -99,6 +101,8 @@ const sessionStore = require('../core/session-store');
       contextMax: 1_000_000,
       contextEffectiveMax: 828_400,
       contextEffectiveObservedAt: 5_123,
+      pinned: true,
+      bottomed: true,
       updatedAt: 5000,
     });
     const loaded = sessionStore.loadSessionFile('h5');
@@ -112,6 +116,8 @@ const sessionStore = require('../core/session-store');
     assert.strictEqual(loaded.contextMax, 1_000_000);
     assert.strictEqual(loaded.contextEffectiveMax, 828_400);
     assert.strictEqual(loaded.contextEffectiveObservedAt, 5_123);
+    assert.strictEqual(loaded.pinned, true);
+    assert.strictEqual(loaded.bottomed, false, 'top and bottom placement are mutually exclusive');
     console.log('PASS S8 codex card metadata');
   }
 

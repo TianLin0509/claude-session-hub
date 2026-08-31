@@ -1,5 +1,5 @@
 const { supportsForkSession } = require('../core/session-capabilities.js');
-const { compareLatestActivityDesc } = require('../core/session-recency.js');
+const { compareSidebarPlacement } = require('./session-list-renderer.js');
 const { isBlockingModalOpen, isElementOpen } = require('./modal-layer-guard.js');
 
 function createKeyboardShortcuts({
@@ -28,10 +28,7 @@ function createKeyboardShortcuts({
   function getSortedVisibleSessionIds() {
     return Array.from(sessions.values())
       .filter((session) => session && !session.hiddenFromSidebar && session.purpose !== 'chuxin-research')
-      .sort((a, b) => {
-        if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
-        return compareLatestActivityDesc(a, b);
-      })
+      .sort(compareSidebarPlacement)
       .map(s => s.id);
   }
 

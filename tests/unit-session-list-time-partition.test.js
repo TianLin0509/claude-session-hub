@@ -2,6 +2,8 @@
 const assert = require('assert');
 const {
   compareLatestActivityDesc,
+  compareSidebarPlacement,
+  isPinnedToBottom,
   latestActivityTime,
   partitionSessionsByAge,
 } = require('../renderer/session-list-renderer.js');
@@ -50,6 +52,23 @@ test('pinned 永远进 recent（即使很旧）', () => {
   assert.deepStrictEqual(recent.map(x => x.id), ['pold']);
   assert.strictEqual(mid.length, 0);
   assert.strictEqual(old.length, 0);
+});
+
+test('sidebar placement keeps pinned first and bottomed literally last', () => {
+  const items = [
+    { id: 'normal-new', lastMessageTime: now - MINUTE },
+    { id: 'bottom-new', bottomed: true, lastMessageTime: now },
+    { id: 'pin-old', pinned: true, lastMessageTime: now - 100 * DAY },
+    { id: 'normal-old', lastMessageTime: now - HOUR },
+    { id: 'bottom-old', bottomed: true, lastMessageTime: now - DAY },
+    { id: 'both', pinned: true, bottomed: true, lastMessageTime: now - 2 * DAY },
+  ];
+  assert.deepStrictEqual(items.slice().sort(compareSidebarPlacement).map(item => item.id), [
+    'both', 'pin-old', 'normal-new', 'normal-old', 'bottom-new', 'bottom-old',
+  ]);
+  assert.strictEqual(isPinnedToBottom(items[1]), true);
+  assert.strictEqual(isPinnedToBottom(items[5]), false,
+    'defensive legacy both=true state follows pinned-wins normalization');
 });
 
 test('无 lastMessageTime 回退 createdAt，再回退 now', () => {

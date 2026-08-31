@@ -203,6 +203,19 @@ function registerSessionIpc(ipcMain, deps) {
     sessionManager.markRead(sessionId);
   });
 
+  // Sidebar placement lives in renderer state for dormant cards, but a live
+  // SessionManager must learn it immediately too. Restart and the bulk-idle
+  // guard read this authority before the debounced state.json write completes.
+  ipcMain.on('update-session-placement', (_e, payload = {}) => {
+    const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+    if (!sessionId || typeof sessionManager.updateSessionMeta !== 'function') return;
+    const pinned = payload.pinned === true;
+    sessionManager.updateSessionMeta(sessionId, {
+      pinned,
+      bottomed: payload.bottomed === true && !pinned,
+    });
+  });
+
   ipcMain.handle('rename-session', (_e, { sessionId, title, userRenamed }) => {
     const session = sessionManager.renameSession(sessionId, title, { userRenamed: !!userRenamed });
     if (session) sendToRenderer('session-updated', { session });
@@ -274,6 +287,7 @@ function registerSessionIpc(ipcMain, deps) {
       meetingId: old.meetingId || undefined,
       ...(old.workspaceLabel ? { workspaceLabel: old.workspaceLabel } : {}),
       ...(old.pinned ? { pinned: true } : {}),
+      ...(old.bottomed ? { bottomed: true } : {}),
       ...(typeof old.lastMessageTime === 'number' ? { lastMessageTime: old.lastMessageTime } : {}),
       ...(typeof old.lastOutputPreview === 'string' ? { lastOutputPreview: old.lastOutputPreview } : {}),
       ...(sessionModelId(old) ? { model: sessionModelId(old) } : {}),

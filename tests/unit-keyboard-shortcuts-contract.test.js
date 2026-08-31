@@ -246,6 +246,7 @@ test('session cycling follows sidebar sort order', () => {
     ['old', { id: 'old', createdAt: 1, lastMessageTime: 10 }],
     ['pin', { id: 'pin', pinned: true, createdAt: 1, lastMessageTime: 1 }],
     ['new', { id: 'new', createdAt: 2, lastMessageTime: 20 }],
+    ['bottom', { id: 'bottom', bottomed: true, createdAt: 3, lastMessageTime: 30 }],
   ]);
   const shortcuts = createKeyboardShortcuts({
     document: { addEventListener: () => {} },
@@ -262,7 +263,7 @@ test('session cycling follows sidebar sort order', () => {
     setFontSize: () => {},
   });
 
-  assert.deepStrictEqual(shortcuts.getSortedVisibleSessionIds(), ['pin', 'new', 'old']);
+  assert.deepStrictEqual(shortcuts.getSortedVisibleSessionIds(), ['pin', 'new', 'old', 'bottom']);
   shortcuts.cycleSession(1);
   assert.deepStrictEqual(selected, ['new']);
 });

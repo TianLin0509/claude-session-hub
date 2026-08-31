@@ -63,6 +63,7 @@ function _buildMeetingPayload(id, data) {
     syncContext: !!data.syncContext,
     sendTarget: typeof data.sendTarget === 'string' ? data.sendTarget : 'all',
     pinned: !!data.pinned,
+    bottomed: !!data.bottomed && !data.pinned,
     lastScene: typeof data.lastScene === 'string' ? data.lastScene : null,
     lastMessageTime: typeof data.lastMessageTime === 'number' ? data.lastMessageTime : null,
     lastCompletedAt: typeof data.lastCompletedAt === 'number' ? data.lastCompletedAt : null,

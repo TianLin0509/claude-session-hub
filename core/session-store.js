@@ -80,6 +80,7 @@ function _buildSessionPayload(hubId, data) {
     cwd: typeof data.cwd === 'string' ? data.cwd : null,
     workspaceLabel: typeof data.workspaceLabel === 'string' ? data.workspaceLabel : null,
     pinned: !!data.pinned,
+    bottomed: !!data.bottomed && !data.pinned,
     ccSessionId: data.ccSessionId || null,
     transcriptPath: data.transcriptPath || null,
     codexSid: data.codexSid || null,

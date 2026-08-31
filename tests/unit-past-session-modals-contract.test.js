@@ -54,6 +54,7 @@ test('native transcript identity consolidates only dormant duplicate shells and 
   assert.strictEqual(map.has('meeting'), true, 'meeting-scoped shells must never be collapsed');
   assert.strictEqual(map.get('new').title, '我的标题');
   assert.strictEqual(map.get('new').pinned, true);
+  assert.strictEqual(map.get('new').bottomed, false);
   assert.strictEqual(map.get('new').unreadCount, 4);
 });
 
@@ -91,6 +92,7 @@ test('same-profile Codex duplicate collapse preserves resume metadata', () => {
       id: 'older', kind: 'codex', status: 'dormant', codexSid: 'codex-1',
       codexProfile: 'second', codexSessionsRoot: 'C:\\codex-second\\sessions',
       transcriptPath: 'C:\\codex-second\\sessions\\rollout.jsonl', mcpProfile: 'full',
+      bottomed: true,
       lastMessageTime: 10,
     }],
     ['newer', {
@@ -104,6 +106,7 @@ test('same-profile Codex duplicate collapse preserves resume metadata', () => {
   assert.strictEqual(map.get('newer').codexSessionsRoot, 'C:\\codex-second\\sessions');
   assert.strictEqual(map.get('newer').transcriptPath, 'C:\\codex-second\\sessions\\rollout.jsonl');
   assert.strictEqual(map.get('newer').mcpProfile, 'full');
+  assert.strictEqual(map.get('newer').bottomed, true);
 });
 
 test('Gemini dormant shells use their native chat id for duplicate collapse', () => {

@@ -66,12 +66,21 @@ async function runSession(client, { kind, prompt, marker, opts }) {
   await waitFor(`${kind} renderer session`, () => client.eval(`sessions.has(${JSON.stringify(id)})`), 20000);
   await client.eval(`window.__hubE2E.selectSession(${JSON.stringify(id)}, { forceScrollBottom: true })`);
   const readyPattern = kind === 'codex' ? 'Context ' : 'shift+tab';
-  const startup = await waitFor(`${kind} startup frame`, () => client.eval(`(() => {
-    const screen = window.__hubE2E.terminalLiveScreenText(${JSON.stringify(id)});
-    if (screen.includes(${JSON.stringify(readyPattern)})) return 'ready';
-    if (screen.includes('Make auto mode your default permission mode?')) return 'auto-mode-choice';
-    return '';
-  })()`), 40000);
+  let startup;
+  try {
+    startup = await waitFor(`${kind} startup frame`, () => client.eval(`(() => {
+      const screen = window.__hubE2E.terminalLiveScreenText(${JSON.stringify(id)});
+      if (screen.includes(${JSON.stringify(readyPattern)})) return 'ready';
+      if (screen.includes('Make auto mode your default permission mode?')) return 'auto-mode-choice';
+      return '';
+    })()`), 40000);
+  } catch (error) {
+    const diagnostic = await client.eval(`(() => ({
+      session:sessions.get(${JSON.stringify(id)}) || null,
+      screen:window.__hubE2E.terminalLiveScreenText(${JSON.stringify(id)}),
+    }))()`);
+    throw new Error(`${error.message}\n${JSON.stringify(diagnostic, null, 2)}`);
+  }
   if (startup === 'auto-mode-choice') {
     await client.eval(`(() => {
       const id = ${JSON.stringify(id)};

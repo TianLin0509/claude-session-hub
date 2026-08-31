@@ -30,6 +30,7 @@ function createDeps() {
     currentModel: 'opus',
     userRenamed: true,
     completionNotificationEnabled: true,
+    bottomed: true,
   }, {
     hubId: 'removed-session',
   }];
@@ -65,6 +66,7 @@ function createDeps() {
           autoTitlePending: false,
           autoTitleGenerated: true,
           completionNotificationEnabled: true,
+          bottomed: true,
           lastCompletedAt: 789,
           participants: [0, 2],
           slotSpecs: [{ kind: 'codex' }],
@@ -145,6 +147,7 @@ test('mergeResumeMetaFields preserves durable workbench metadata but not a stale
     recentArtifacts: [{ path: 'C:\\report.html', timestamp: 456 }],
     userRenamed: true,
     completionNotificationEnabled: true,
+    bottomed: true,
     _connectionIssueAck: { signature: 'stream disconnected', at: 789, occurrenceId: 'turn:789' },
   }]);
 
@@ -156,6 +159,7 @@ test('mergeResumeMetaFields preserves durable workbench metadata but not a stale
   assert.deepStrictEqual(incoming[0].recentArtifacts, [{ path: 'C:\\report.html', timestamp: 456 }]);
   assert.strictEqual(incoming[0].userRenamed, true);
   assert.strictEqual(incoming[0].completionNotificationEnabled, true);
+  assert.strictEqual(incoming[0].bottomed, true);
   assert.deepStrictEqual(incoming[0]._connectionIssueAck,
     { signature: 'stream disconnected', at: 789, occurrenceId: 'turn:789' });
 
@@ -176,6 +180,7 @@ test('buildMeetingsForState fills missing meeting fields from manager', () => {
   assert.deepStrictEqual(meetings[0].participants, [0, 2]);
   assert.strictEqual(meetings[0].covenantText, 'authoritative covenant');
   assert.strictEqual(meetings[0].completionNotificationEnabled, true);
+  assert.strictEqual(meetings[0].bottomed, true);
   assert.strictEqual(meetings[0].lastCompletedAt, 789);
 });
 

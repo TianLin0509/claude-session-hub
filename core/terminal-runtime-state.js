@@ -25,7 +25,11 @@ const CODEX_PROMPT_RE = /^\s*[\u203a>]\s*(?:$|\S)/;
 const CODEX_CONTEXT_RE = /\bContext\s+(?:\d+(?:\.\d+)?%\s*(?:left)?|window|left)/i;
 
 const CLAUDE_FOOTER_RE = /shift\+tab to cycle|\? for shortcuts|bypass permissions on/i;
-const CLAUDE_PROMPT_RE = /^\s*[>\u276f]\s*(?:$|Try\s+["\u201c])/i;
+// Claude 2.1.251 may render either an empty prompt, a “Try …” placeholder, or
+// the literal `<no suggestion>` after a completed turn.  All three are input
+// ready when paired with the persistent footer; running markers still win
+// because classifyClaude checks them first.
+const CLAUDE_PROMPT_RE = /^\s*[>\u276f]\s*(?:$|Try\s+["\u201c]|<no suggestion>\s*$)/i;
 const CLAUDE_ACTIVE_STATUS_RE = /^\s*[\u2722\u2731-\u273d\u00b7*]\s+[A-Za-z][A-Za-z0-9 '/&+.-]{0,60}(?:\u2026|\.\.\.)(?:\s*\([^)]*\))?\s*$/;
 const CLAUDE_ACTIVE_TOOL_RE = /^\s*[\u25cf\u23fa]\s+(?:Reading|Running|Searching|Writing|Editing|Fetching|Calling|Thinking|Exploring|Generating)\b.*(?:\u2026|\.\.\.)/i;
 

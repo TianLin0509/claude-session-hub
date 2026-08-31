@@ -1319,7 +1319,28 @@
   padding: 7px 11px; border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-xs);
   margin-top: 0; max-width: 86%; width: fit-content;
   font-family: var(--card-content-font-family, "Segoe UI", "Microsoft YaHei UI", sans-serif);
-  font-size: var(--card-content-font-size, 15px); line-height: 1.58;
+  /* 1.58 × 1.10 ≈ 1.74：长回答更容易逐行阅读，同时仍低于松散文档排版。 */
+  font-size: var(--card-content-font-size, 15px); line-height: 1.74;
+}
+.msg-overlay .turn-body ul,
+.msg-overlay .turn-body ol {
+  /* marked 的 marker 默认画在 list-item 外侧；显式留出内部缩进，避免圆点
+     悬到 shrink-to-fit 气泡的背景之外，同时保持多行续行与正文对齐。 */
+  margin: .52em 0 .72em;
+  padding-inline-start: 1.55em;
+  list-style-position: outside;
+}
+.msg-overlay .turn-body li {
+  margin: .18em 0;
+  padding-inline-start: .08em;
+}
+.msg-overlay .turn-body li::marker {
+  color: currentColor;
+  font-size: .82em;
+}
+.msg-overlay .turn-body li > ul,
+.msg-overlay .turn-body li > ol {
+  margin-block: .22em .32em;
 }
 .msg-overlay .turn-body .katex-display {
   margin: 0.8em 0;

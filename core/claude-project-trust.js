@@ -4,6 +4,25 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const TRANSIENT_RENAME_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const _renameSleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+function renameWithRetrySync(source, target, options = {}) {
+  const fsImpl = options.fsImpl || fs;
+  const retries = Number.isInteger(options.retries) ? Math.max(0, options.retries) : 80;
+  const retryDelayMs = Number.isFinite(options.retryDelayMs) ? Math.max(0, options.retryDelayMs) : 15;
+  const sleep = options.sleep || (ms => { if (ms > 0) Atomics.wait(_renameSleepCell, 0, 0, ms); });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fsImpl.renameSync(source, target);
+      return attempt;
+    } catch (error) {
+      if (!error || !TRANSIENT_RENAME_CODES.has(error.code) || attempt >= retries) throw error;
+      sleep(retryDelayMs);
+    }
+  }
+}
+
 // 让 Claude Code 不再对 Hub 新建的工作区弹「Quick safety check」信任框。
 //
 // 2026-08-28 实测（Claude Code v2.1.251，node-pty 起真 CLI）：
@@ -35,6 +54,9 @@ function ensureClaudeProjectTrusted(projectDir, options = {}) {
     configDir = null,
     fsImpl = fs,
     logger = console,
+    renameRetries,
+    renameRetryDelayMs,
+    renameSleep,
   } = options;
   const statePath = claudeStatePathFor(configDir);
   const projectKey = toClaudeProjectKey(projectDir);
@@ -79,8 +101,17 @@ function ensureClaudeProjectTrusted(projectDir, options = {}) {
     // 半截 JSON；tmp + rename 至少保证读到的永远是完整的一版。
     const tmpPath = `${statePath}.hub-${process.pid}-${Date.now()}.tmp`;
     fsImpl.mkdirSync(path.dirname(statePath), { recursive: true });
-    fsImpl.writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf8');
-    fsImpl.renameSync(tmpPath, statePath);
+    try {
+      fsImpl.writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf8');
+      renameWithRetrySync(tmpPath, statePath, {
+        fsImpl,
+        retries: renameRetries,
+        retryDelayMs: renameRetryDelayMs,
+        sleep: renameSleep,
+      });
+    } finally {
+      try { if (fsImpl.existsSync(tmpPath)) fsImpl.unlinkSync(tmpPath); } catch {}
+    }
     return { ok: true, changed: true, statePath, projectKey };
   } catch (err) {
     logger.warn?.('[hub] ensureClaudeProjectTrusted failed:', err && err.message);
@@ -91,5 +122,6 @@ function ensureClaudeProjectTrusted(projectDir, options = {}) {
 module.exports = {
   claudeStatePathFor,
   ensureClaudeProjectTrusted,
+  renameWithRetrySync,
   toClaudeProjectKey,
 };

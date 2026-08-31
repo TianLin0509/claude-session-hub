@@ -104,6 +104,7 @@ function buildSessionResumeMeta(session, overrides = {}) {
     cwdFellBackFrom: session.cwdFellBackFrom || null,
     workspaceLabel: session.workspaceLabel || null,
     pinned: !!session.pinned,
+    bottomed: !!session.bottomed && !session.pinned,
     ccSessionId: session.ccSessionId || null,
     transcriptPath: session.transcriptPath || null,
     meetingId: session.meetingId || null,

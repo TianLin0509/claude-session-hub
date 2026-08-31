@@ -170,6 +170,19 @@ function applyProxyEnv(env, proxy) {
   return true;
 }
 
+/**
+ * Every Hub child runs inside a real xterm-compatible ConPTY.  A Hub launched
+ * from CI/Codex can nevertheless inherit TERM=dumb from its parent shell.
+ * Codex 0.151 treats that contradictory value as an interactive startup gate,
+ * so normalize the child environment to the terminal we actually provide.
+ */
+function applyInteractiveTerminalEnv(env) {
+  if (!env || typeof env !== 'object') return null;
+  const term = String(env.TERM || '').trim().toLowerCase();
+  if (!term || term === 'dumb') env.TERM = 'xterm-256color';
+  return env.TERM;
+}
+
 function quotePowerShellLiteral(value) {
   return `'${String(value == null ? '' : value).replace(/'/g, "''")}'`;
 }
@@ -936,6 +949,7 @@ class SessionManager extends EventEmitter {
     else title = `PowerShell ${++this.psCounter}`;
 
     const sessionEnv = { ...process.env };
+    applyInteractiveTerminalEnv(sessionEnv);
     let codexProfile = null;
 
     if (isClaude) {
@@ -1265,6 +1279,7 @@ class SessionManager extends EventEmitter {
       lastOutputPreview: opts.lastOutputPreview || '',
       unreadCount: 0,
       ...(opts.pinned ? { pinned: true } : {}),
+      ...(opts.bottomed && !opts.pinned ? { bottomed: true } : {}),
       createdAt: now,
       cwd: spawnCwd,
       // 原 cwd 失效被迫回落时留痕，UI 据此提示「这个会话没跑在它原来的目录里」。
@@ -2412,6 +2427,7 @@ class SessionManager extends EventEmitter {
       ...(typeof info.lastCompletedAt === 'number' ? { lastCompletedAt: info.lastCompletedAt } : {}),
       lastOutputPreview: info.lastOutputPreview,
       ...(info.pinned !== undefined ? { pinned: info.pinned } : {}),
+      ...(info.bottomed !== undefined ? { bottomed: info.bottomed } : {}),
       ...(info.ccSessionId !== undefined ? { ccSessionId: info.ccSessionId } : {}),
       ...(info.transcriptPath !== undefined ? { transcriptPath: info.transcriptPath } : {}),
       ...(info.codexSid !== undefined ? { codexSid: info.codexSid } : {}),
@@ -2801,6 +2817,7 @@ module.exports = {
     ensureCodexCwdTrusted,
     clearProxyEnv,
     applyProxyEnv,
+    applyInteractiveTerminalEnv,
     isClaudeApiBackend,
     shouldUseClaudeFastSettings,
     applyClaudeSessionEnv,

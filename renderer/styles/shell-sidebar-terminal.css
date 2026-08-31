@@ -1352,6 +1352,12 @@
   transition: background 0.15s;
 }
 .context-menu-item:hover { background: var(--bg-secondary); }
+.context-menu-item:disabled {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: .48;
+}
+.context-menu-item:disabled:hover { background: none; }
 .context-menu-item.danger { color: var(--accent-red); }
 .context-menu-item.danger:hover { background: rgba(var(--rgb-danger), 0.12); }
 .context-menu-separator {
@@ -1580,6 +1586,7 @@
 .session-sec-header.sec-respond .sec-count { background: rgba(var(--rgb-danger), .22); color: var(--mark-red); }
 .session-sec-header.sec-completed { color: var(--link); }
 .session-sec-header.sec-completed .sec-count { background: rgba(var(--rgb-info), .18); color: var(--link-hover); }
+.session-sec-header.sec-bottom { color: var(--text-muted); opacity: .82; }
 
 /* --- 普通 session：单行密排 --- */
 .session-item.slim {

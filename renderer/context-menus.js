@@ -46,6 +46,7 @@ function createSessionContextMenuController({
     const restartBtn = contextMenuEl.querySelector('[data-action="restart"]');
     const closeBtn = contextMenuEl.querySelector('[data-action="close"]');
     const deleteBtn = contextMenuEl.querySelector('[data-action="delete"]');
+    const bottomBtn = contextMenuEl.querySelector('[data-action="bottom"]');
     if (pinBtn) pinBtn.style.display = '';
     const session = sessions.get(sessionId);
     const meeting = meetings[sessionId];
@@ -53,24 +54,34 @@ function createSessionContextMenuController({
       const restartAllowed = !!(session && session.purpose !== 'chuxin-research');
       restartBtn.style.display = restartAllowed ? '' : 'none';
       if (restartAllowed) {
-        restartBtn.textContent = session.status === 'dormant'
-          ? '唤醒会话'
+        restartBtn.textContent = '重启';
+        restartBtn.title = session.status === 'dormant'
+          ? '唤醒并继续该休眠会话'
           : (supportsRecoverableSessionKind(session) ? '重启并继续当前会话' : '重启终端');
       }
     }
     if (closeBtn) {
-      closeBtn.style.display = meeting || (session && session.status !== 'dormant') ? '' : 'none';
+      closeBtn.style.display = meeting || session ? '' : 'none';
+      closeBtn.disabled = !!(session && session.status === 'dormant');
       closeBtn.textContent = meeting
-        ? '永久关闭会议室'
-        : (supportsRecoverableSessionKind(session) ? '关闭并休眠' : '关闭');
+        ? '删除会议室'
+        : (supportsRecoverableSessionKind(session) ? '休眠' : '关闭');
       if (closeBtn.classList && typeof closeBtn.classList.toggle === 'function') {
         closeBtn.classList.toggle('danger', !!meeting);
       }
     }
-    if (deleteBtn) deleteBtn.style.display = session ? '' : 'none';
+    if (deleteBtn) {
+      deleteBtn.style.display = session ? '' : 'none';
+      deleteBtn.textContent = '删除';
+    }
     if (pinBtn) {
       const target = session || meeting;
-      pinBtn.textContent = target && target.pinned ? 'Unpin' : 'Pin to top';
+      pinBtn.textContent = target && target.pinned ? '取消置顶' : '置顶';
+    }
+    if (bottomBtn) {
+      const target = session || meeting;
+      bottomBtn.style.display = target ? '' : 'none';
+      bottomBtn.textContent = target && target.bottomed ? '取消置底' : '置底';
     }
   }
 
@@ -111,7 +122,23 @@ function createSessionContextMenuController({
 
         if (action === 'pin' && meeting) {
           meeting.pinned = !meeting.pinned;
-          ipcRenderer.send('update-meeting', { meetingId: sid, fields: { pinned: !!meeting.pinned } });
+          if (meeting.pinned) meeting.bottomed = false;
+          ipcRenderer.send('update-meeting', {
+            meetingId: sid,
+            fields: { pinned: !!meeting.pinned, bottomed: !!meeting.bottomed },
+          });
+          renderSessionList();
+          schedulePersist();
+          return;
+        }
+
+        if (action === 'bottom' && meeting) {
+          meeting.bottomed = !meeting.bottomed;
+          if (meeting.bottomed) meeting.pinned = false;
+          ipcRenderer.send('update-meeting', {
+            meetingId: sid,
+            fields: { pinned: !!meeting.pinned, bottomed: !!meeting.bottomed },
+          });
           renderSessionList();
           schedulePersist();
           return;
@@ -121,6 +148,22 @@ function createSessionContextMenuController({
 
         if (action === 'pin') {
           session.pinned = !session.pinned;
+          if (session.pinned) session.bottomed = false;
+          ipcRenderer.send('update-session-placement', {
+            sessionId: sid,
+            pinned: !!session.pinned,
+            bottomed: !!session.bottomed,
+          });
+          renderSessionList();
+          schedulePersist();
+        } else if (action === 'bottom') {
+          session.bottomed = !session.bottomed;
+          if (session.bottomed) session.pinned = false;
+          ipcRenderer.send('update-session-placement', {
+            sessionId: sid,
+            pinned: !!session.pinned,
+            bottomed: !!session.bottomed,
+          });
           renderSessionList();
           schedulePersist();
         } else if (action === 'restart') {

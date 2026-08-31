@@ -79,15 +79,17 @@ async function main() {
       hasDuplicateSuspendAction: !!document.querySelector('#context-menu [data-action="suspend"]'),
       closeLabel: document.querySelector('#context-menu [data-action="close"]')?.textContent.trim() || '',
       deleteLabel: document.querySelector('#context-menu [data-action="delete"]')?.textContent.trim() || '',
+      menuOrder: Array.from(document.querySelectorAll('#context-menu .context-menu-item')).map(button => button.dataset.action),
     }))()`);
     assert.strictEqual(controls.mcpVisible, true);
     assert.strictEqual(controls.mcpValue, 'browser');
-    assert.deepStrictEqual(controls.mcpChoices, ['lean', 'browser', 'wireless', 'full']);
+    assert.deepStrictEqual(controls.mcpChoices, ['none', 'lean', 'browser', 'wireless', 'full']);
     assert.match(controls.summary, /Browser MCP/);
     assert.strictEqual(controls.hasBulkSuspend, true);
     assert.strictEqual(controls.hasDuplicateSuspendAction, false);
-    assert.strictEqual(controls.closeLabel, '关闭并休眠');
-    assert.strictEqual(controls.deleteLabel, '永久删除记录');
+    assert.strictEqual(controls.closeLabel, '休眠');
+    assert.strictEqual(controls.deleteLabel, '删除');
+    assert.deepStrictEqual(controls.menuOrder, ['pin', 'restart', 'close', 'delete', 'bottom']);
 
     const screenshot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
     fs.writeFileSync(screenshotPath, Buffer.from(screenshot.data, 'base64'));
@@ -145,19 +147,20 @@ async function main() {
         errors: window.__memoryE2eErrors,
       };
     })()`);
-    assert.deepStrictEqual(suspended, {
+    const { tooltip: suspendedTooltip, ...suspendedState } = suspended;
+    assert.deepStrictEqual(suspendedState, {
       exists: true,
       status: 'dormant',
       suspendReason: 'idle-timeout',
       unreadCount: 4,
       unreadBadge: '● 4',
-      tooltip: 'Memory live · 自动休眠，有 4 条未读，点击唤醒',
       hasUnreadClass: true,
       closeCalls: [['close-session', 'memory-live']],
       cacheSize: 0,
       emptyVisible: true,
       errors: [],
     });
+    assert.match(suspendedTooltip, /Memory live.*休眠.*自动休眠.*4 条未读.*点击唤醒/);
 
     const resumedUnread = await client.eval(`(async () => {
       const now = Date.now();

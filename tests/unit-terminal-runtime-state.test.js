@@ -133,6 +133,17 @@ test('Claude completed duration row is idle because it has no active ellipsis', 
   assert.equal(result.reason, 'claude-input-ready');
 });
 
+test('Claude no-suggestion placeholder is an input-ready completed frame', () => {
+  const result = classifyTerminalRuntime('claude', [
+    '● CLAUDE_PTY_RUNTIME_DONE',
+    '✻ Cogitated for 9s · done 22:33',
+    '❯ <no suggestion>',
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle) · low · /effort',
+  ]);
+  assert.equal(result.state, RUNTIME_IDLE);
+  assert.equal(result.reason, 'claude-input-ready');
+});
+
 test('Claude stop-hook progress remains running until the input-ready frame is stable', () => {
   const result = classifyTerminalRuntime('claude', [
     '● PTY_STATE_DONE',

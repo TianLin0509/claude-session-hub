@@ -278,6 +278,7 @@ function createResumeSessionHandler(deps) {
         ? { branchAutoTitlePending: meta.branchAutoTitlePending }
         : {}),
       ...(meta.pinned ? { pinned: true } : {}),
+      ...(meta.bottomed ? { bottomed: true } : {}),
       lastMessageTime: meta.lastMessageTime,
       lastOutputPreview: meta.lastOutputPreview,
       ...(typeof meta.contextPct === 'number' ? { contextPct: meta.contextPct } : {}),

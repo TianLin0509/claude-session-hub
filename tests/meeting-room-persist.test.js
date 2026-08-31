@@ -26,6 +26,14 @@ const { loadMeetingFile, flushAll } = require('../core/meeting-store');
   mgr.addSubSession(m.id, 'sid-A');
   mgr.appendTurn(m.id, 'sid-A', 'hello world', 1000);
   mgr.appendTurn(m.id, 'user', 'reply', 2000);
+  mgr.updateMeeting(m.id, { bottomed: true });
+  assert.strictEqual(mgr.getMeeting(m.id).bottomed, true);
+  assert.strictEqual(mgr.getMeeting(m.id).pinned, false);
+  mgr.updateMeeting(m.id, { pinned: true });
+  assert.strictEqual(mgr.getMeeting(m.id).pinned, true);
+  assert.strictEqual(mgr.getMeeting(m.id).bottomed, false, 'placing a meeting at top clears bottom placement');
+  mgr.updateMeeting(m.id, { bottomed: true });
+  assert.strictEqual(mgr.getMeeting(m.id).pinned, false, 'placing a meeting at bottom clears top placement');
 
   await flushAll();
 
@@ -37,6 +45,7 @@ const { loadMeetingFile, flushAll } = require('../core/meeting-store');
   assert.strictEqual(persisted._nextIdx, 2);
   assert.strictEqual(persisted.lastCompletedAt, 2000, 'latest AI reply time persisted');
   assert.strictEqual(persisted.lastMessageTime, 2000, 'legacy activity time stays in sync on completion');
+  assert.strictEqual(persisted.bottomed, true, 'meeting bottom placement persists independently');
   console.log('PASS T2.1 mutation triggers persist');
 
   // T2.2: loadTimelineLazy populates in-memory

@@ -31,15 +31,18 @@ async function main() {
   restartBtn.dataset.action = 'restart';
   const deleteBtn = makeElement();
   deleteBtn.dataset.action = 'delete';
+  const bottomBtn = makeElement();
+  bottomBtn.dataset.action = 'bottom';
   const contextMenuEl = makeElement();
   contextMenuEl.querySelector = (selector) => {
     if (selector === '[data-action="pin"]') return pinBtn;
     if (selector === '[data-action="restart"]') return restartBtn;
     if (selector === '[data-action="close"]') return closeBtn;
     if (selector === '[data-action="delete"]') return deleteBtn;
+    if (selector === '[data-action="bottom"]') return bottomBtn;
     return null;
   };
-  contextMenuEl.querySelectorAll = () => [pinBtn, closeBtn, restartBtn, deleteBtn];
+  contextMenuEl.querySelectorAll = () => [pinBtn, restartBtn, closeBtn, deleteBtn, bottomBtn];
 
   const sessions = new Map([['s1', {
     id: 's1', kind: 'codex', codexSid: 'native-1', pinned: false, status: 'dormant',
@@ -83,14 +86,38 @@ async function main() {
   sessionMenu.init();
   sessionMenu.open('s1', 10, 20);
   assert.strictEqual(contextMenuEl.style.display, 'block');
-  assert.strictEqual(pinBtn.textContent, 'Pin to top');
-  assert.strictEqual(closeBtn.style.display, 'none', 'dormant sessions cannot be closed twice');
-  assert.strictEqual(restartBtn.textContent, '唤醒会话');
+  assert.deepStrictEqual(
+    contextMenuEl.querySelectorAll().map(button => button.dataset.action),
+    ['pin', 'restart', 'close', 'delete', 'bottom'],
+  );
+  assert.strictEqual(pinBtn.textContent, '置顶');
+  assert.strictEqual(closeBtn.style.display, '');
+  assert.strictEqual(closeBtn.disabled, true, 'dormant sessions keep a visible but disabled sleep action');
+  assert.strictEqual(closeBtn.textContent, '休眠');
+  assert.strictEqual(restartBtn.textContent, '重启');
   assert.strictEqual(deleteBtn.style.display, '', 'dormant cards retain an explicit permanent-delete action');
+  assert.strictEqual(deleteBtn.textContent, '删除');
+  assert.strictEqual(bottomBtn.textContent, '置底');
   pinBtn._listeners.click();
   assert.strictEqual(sessions.get('s1').pinned, true);
+  assert.strictEqual(sessions.get('s1').bottomed, false);
+  assert.deepStrictEqual(sent.at(-1), {
+    channel: 'update-session-placement',
+    payload: { sessionId: 's1', pinned: true, bottomed: false },
+  });
   assert.strictEqual(rendered, 1);
   assert.strictEqual(persisted, 1);
+
+  sessionMenu.open('s1', 10, 20);
+  await bottomBtn._listeners.click();
+  assert.strictEqual(sessions.get('s1').pinned, false, '置底必须取消置顶');
+  assert.strictEqual(sessions.get('s1').bottomed, true);
+  assert.deepStrictEqual(sent.at(-1), {
+    channel: 'update-session-placement',
+    payload: { sessionId: 's1', pinned: false, bottomed: true },
+  });
+  assert.strictEqual(rendered, 2);
+  assert.strictEqual(persisted, 2);
 
   sessionMenu.open('s1', 10, 20);
   await restartBtn._listeners.click();
@@ -108,8 +135,9 @@ async function main() {
   });
   sessionMenu.open('s2', 10, 20);
   assert.strictEqual(closeBtn.style.display, '');
-  assert.strictEqual(closeBtn.textContent, '关闭并休眠');
-  assert.strictEqual(restartBtn.textContent, '重启并继续当前会话');
+  assert.strictEqual(closeBtn.disabled, false);
+  assert.strictEqual(closeBtn.textContent, '休眠');
+  assert.strictEqual(restartBtn.textContent, '重启');
   await restartBtn._listeners.click();
   assert.deepStrictEqual(invoked.at(-1), { channel: 'restart-session', sid: 's2' });
   assert.deepStrictEqual(notices, ['尚未绑定原生会话 ID']);
@@ -130,6 +158,18 @@ async function main() {
   sessionMenu.open('protected', 10, 20);
   assert.strictEqual(restartBtn.style.display, 'none',
     'protected Chuxin research sessions must not advertise an operation the backend rejects');
+
+  meetings.m1 = { id: 'm1', title: '群聊', pinned: false, bottomed: false };
+  sessionMenu.open('m1', 10, 20);
+  assert.strictEqual(pinBtn.textContent, '置顶');
+  assert.strictEqual(bottomBtn.textContent, '置底');
+  await bottomBtn._listeners.click();
+  assert.strictEqual(meetings.m1.bottomed, true);
+  assert.strictEqual(meetings.m1.pinned, false);
+  assert.deepStrictEqual(sent.at(-1), {
+    channel: 'update-meeting',
+    payload: { meetingId: 'm1', fields: { pinned: false, bottomed: true } },
+  });
 
   const previewBtn = makeElement();
   previewBtn.dataset.action = 'preview';
