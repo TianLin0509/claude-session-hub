@@ -202,7 +202,6 @@ async function main() {
           : window.__sidebarBottomRealInvoke(channel, args);
       }
       renderSessionList();
-      localStorage.setItem('mr-group-chat-view-mode', 'chat');
       await api.selectMeeting(meeting.id, { forceScrollBottom: true });
       await wait(700);
       let messagesEl = document.querySelector('.mr-gc-messages');
@@ -246,52 +245,26 @@ async function main() {
     assert.equal(result.groupChat.copy.hasNoise, false, JSON.stringify(result.groupChat));
     await screenshot(client, CHAT_SHOT);
 
-    result.groupCards = await client.eval(`(async () => {
+    result.unifiedGroup = await client.eval(`(async () => {
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
       const meeting = meetings['sidebar-gc-meeting'];
-      localStorage.setItem('mr-group-chat-view-mode', 'card');
-      const harnessStyle = document.createElement('style');
-      harnessStyle.textContent = '.mr-ft-preview{height:240px!important;max-height:240px!important;flex:0 0 240px!important;}';
-      document.head.appendChild(harnessStyle);
       window.MeetingRoom.debugRenderGroupChatState(meeting.id, window.__sidebarBottomState);
       await wait(250);
-      let previews = [...document.querySelectorAll('.mr-ft-preview')];
-      previews.forEach(el => { el.scrollTop = 0; });
-      const maxBefore = previews.map(el => Math.max(0, el.scrollHeight - el.clientHeight));
-      document.querySelector('.session-item[data-meeting-id="' + meeting.id + '"]').click();
-      await wait(750);
-      previews = [...document.querySelectorAll('.mr-ft-preview')];
-      const rows = previews.map(el => {
-        const max = Math.max(0, el.scrollHeight - el.clientHeight);
-        return {
-          max, top: el.scrollTop, gap: Math.max(0, max - el.scrollTop),
-          clientHeight: el.clientHeight, scrollHeight: el.scrollHeight,
-          textLength: (el.textContent || '').length, overflowY: getComputedStyle(el).overflowY,
-        };
-      });
-      document.querySelector('.mr-ft [data-gc-action="copy"]').click();
-      await wait(100);
-      const copiedText = window.__lastCopiedText;
       return {
-        maxBefore,
-        rows,
-        tuning:[...document.querySelectorAll('.mr-ft-tuning')].map(el => el.textContent.trim()),
-        roster:[...document.querySelectorAll('.mr-card-roster-meta')].map(el => el.textContent.trim()),
-        copy: {
-          length: copiedText.length,
-          tail: copiedText.slice(-180),
-          hasCommand: copiedText.includes('GROUP_VISIBLE_COMMAND'),
-          hasNoise: copiedText.includes(String.fromCharCode(96).repeat(3)) || /一键提取|跳过|📤\\s*发送|bash\\s*·\\s*复制/u.test(copiedText),
-        },
+        legacyCards: document.querySelectorAll('.mr-ft').length,
+        legacyViewButtons: document.querySelectorAll('#mr-btn-group-' + 'card-view,#mr-btn-group-' + 'chat-view').length,
+        messageCount: document.querySelectorAll('.mr-gc-msg').length,
+        retryActions: document.querySelectorAll('[data-gc-retry-answer]').length,
+        userResendActions: document.querySelectorAll('[data-gc-resend-turn]').length,
+        memberRows: document.querySelectorAll('.mr-gc-member-row').length,
       };
     })()`);
-    assert.equal(result.groupCards.rows.length, 3, JSON.stringify(result.groupCards));
-    assert.ok(result.groupCards.rows.every(row => row.max > 200), JSON.stringify(result.groupCards));
-    assert.ok(result.groupCards.rows.every(row => row.gap <= 3), JSON.stringify(result.groupCards));
-    assert.ok(result.groupCards.tuning.includes('max · fast'), JSON.stringify(result.groupCards));
-    assert.ok(result.groupCards.roster.some(text => /gpt-5\.6-sol · max · fast/i.test(text)), JSON.stringify(result.groupCards));
-    assert.equal(result.groupCards.copy.hasCommand, true, JSON.stringify(result.groupCards));
-    assert.equal(result.groupCards.copy.hasNoise, false, JSON.stringify(result.groupCards));
+    assert.equal(result.unifiedGroup.legacyCards, 0, JSON.stringify(result.unifiedGroup));
+    assert.equal(result.unifiedGroup.legacyViewButtons, 0, JSON.stringify(result.unifiedGroup));
+    assert.ok(result.unifiedGroup.messageCount >= 60, JSON.stringify(result.unifiedGroup));
+    assert.ok(result.unifiedGroup.retryActions >= 3, JSON.stringify(result.unifiedGroup));
+    assert.ok(result.unifiedGroup.userResendActions >= 18, JSON.stringify(result.unifiedGroup));
+    assert.equal(result.unifiedGroup.memberRows, 3, JSON.stringify(result.unifiedGroup));
     await screenshot(client, GROUP_CARD_SHOT);
 
     result.screenshots = { ordinaryCard: CARD_SHOT, groupChat: CHAT_SHOT, groupCards: GROUP_CARD_SHOT };

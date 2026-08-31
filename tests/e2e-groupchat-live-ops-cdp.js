@@ -2,7 +2,7 @@
 // AI 群聊「运行中也能操作」E2E（2026-07-29 道雪）—— 真实隔离 Hub + 真 PTY 成员 + CDP 驱动真 UI。
 //
 // 场景（全部走真实 IPC，不 mock groupchat:turn / groupchat:interrupt）：
-//   1. 建群 + 加 2 位真实 PTY 成员（PowerShell —— 不烧 AI CLI token，但走完全相同的
+//   1. 建群 + 通过测试 IPC 加 2 位真实 PTY 夹具（PowerShell —— 不烧 AI CLI token，但走相同的
 //      dispatch / watcher / PTY 链路；它永远不会 emit turn-complete，天然模拟"AI 还在思考"）
 //   2. 发第一轮 → 成员进入"思考中"
 //   3. **运行中断言**：输入框可编辑、发送按钮不灰、成员勾选不灰、「⏹ 停止本轮」入口出现
@@ -30,10 +30,10 @@ const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-laun
 const { connectFirstPage } = require('./helpers/cdp-client');
 
 const HUB_ROOT = path.resolve(__dirname, '..');
-const ARTIFACT_DIR = path.join(HUB_ROOT, 'artifacts');
+const ARTIFACT_DIR = path.join(HUB_ROOT, 'output', 'playwright', 'groupchat-live-ops');
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
-const SHOT_RUNNING = path.join(ARTIFACT_DIR, `groupchat-live-ops-running-${STAMP}.png`);
-const SHOT_STOPPED = path.join(ARTIFACT_DIR, `groupchat-live-ops-stopped-${STAMP}.png`);
+const SHOT_RUNNING = path.join(ARTIFACT_DIR, `20260831-ai-hub-groupchat-live-running-codex1-${STAMP}.png`);
+const SHOT_STOPPED = path.join(ARTIFACT_DIR, `20260831-ai-hub-groupchat-live-stopped-codex1-${STAMP}.png`);
 
 const PREFERRED_PORT = Number(process.env.GC_LIVE_OPS_E2E_PORT || 9232);
 const DATA_DIR = process.env.CLAUDE_HUB_DATA_DIR
@@ -73,11 +73,14 @@ async function waitFor(cdp, expression, label, timeoutMs = 25000) {
 
 const j = (v) => JSON.stringify(v);
 
-async function addPowerShellMember(cdp, meetingId, triggerExpression, expectedCount) {
-  await cdp.eval(triggerExpression);
-  await waitFor(cdp, "!!document.getElementById('mr-add-sub-menu')", 'add-member menu');
-  const clicked = await cdp.eval("(() => { const item = [...document.querySelectorAll('#mr-add-sub-menu .mr-quote-menu-item')].find(el => el.textContent.trim() === 'PowerShell'); if (!item) return false; item.click(); return true; })()");
-  assert.strictEqual(clicked, true, 'PowerShell add-member menu item should be available');
+async function addPowerShellMember(cdp, meetingId, _triggerExpression, expectedCount) {
+  const added = await cdp.eval(`(async () => {
+    const result = await require('electron').ipcRenderer.invoke('add-meeting-sub', { meetingId: ${j(meetingId)}, kind: 'powershell' });
+    if (result && result.session) sessions.set(result.session.id, result.session);
+    if (result && result.meeting) window.MeetingRoom.updateMeetingData(${j(meetingId)}, result.meeting);
+    return !!(result && result.meeting && result.session);
+  })()`);
+  assert.strictEqual(added, true, 'PowerShell PTY fixture should be added through test IPC');
   await waitFor(cdp, `window.MeetingRoom.getMeetingData(${j(meetingId)}).subSessions.length === ${expectedCount}`, `member #${expectedCount}`, 30000);
 }
 
@@ -139,7 +142,6 @@ async function composerSnapshot(cdp) {
     const meetingId = meeting.id;
 
     await cdp.eval(`(async () => {
-      localStorage.setItem('mr-group-chat-view-mode', 'chat');
       const ipc = require('electron').ipcRenderer;
       const all = await ipc.invoke('get-meetings');
       const m = all.find(x => x.id === ${j(meetingId)});

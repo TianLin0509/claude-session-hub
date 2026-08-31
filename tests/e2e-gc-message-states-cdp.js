@@ -30,9 +30,9 @@ const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-laun
 const { connectFirstPage } = require('./helpers/cdp-client');
 
 const HUB_ROOT = path.resolve(__dirname, '..');
-const ARTIFACT_DIR = path.join(HUB_ROOT, 'artifacts');
+const ARTIFACT_DIR = path.join(HUB_ROOT, 'output', 'playwright', 'groupchat-message-states');
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
-const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `gc-message-states-${STAMP}.png`);
+const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `20260831-ai-hub-groupchat-message-states-codex1-${STAMP}.png`);
 
 function canListen(port) {
   return new Promise((resolve) => {
@@ -94,7 +94,6 @@ function cleanupDataDir(dataDir) {
     await waitForEval(client, 'window.MeetingRoom && window.MeetingRoom.debugRenderGroupChatState && document.getElementById("meeting-room-panel") && typeof sessions !== "undefined" && typeof meetings !== "undefined" && window.__hubE2E && typeof window.__hubE2E.selectMeeting === "function"', 'MeetingRoom E2E API + renderer globals');
 
     const result = await client.eval(`(async () => {
-      localStorage.setItem('mr-group-chat-view-mode', 'chat');
 
       const sids = ['e2e-claude', 'e2e-gemini', 'e2e-codex'];
       const now = Date.now();
@@ -141,7 +140,7 @@ function cleanupDataDir(dataDir) {
           { n: 6, mode: 'group', userInput: '还等什么，执行', by: { [sids[0]]: '已完成推送，release v1.6.2 已发布。' }, byStatus: { [sids[0]]: 'completed', [sids[1]]: 'superseded', [sids[2]]: 'completed' }, timestamp: now - 23000 },
         ],
         _partialBy: {
-          [sids[0]]: { text: '正在整理第 7 轮回答……', status: 'streaming' },
+          [sids[0]]: { text: '', status: 'thinking', sendStatus: 'stuck' },
           [sids[1]]: { text: '不应重复显示的旧 streaming', status: 'streaming' },
           [sids[2]]: { text: '', status: 'errored', reason: 'pty exit code=1 signal=none' },
         },
@@ -160,6 +159,7 @@ function cleanupDataDir(dataDir) {
           hasSyncBtn: !!el.querySelector('.mr-gc-sync-btn'),
           hasCursor: !!el.querySelector('.mr-ft-cursor'),
           hasWordChip: !!el.querySelector('.mr-gc-wordcount'),
+          hasSubmitAgain: !!el.querySelector('[data-gc-escape="resend-prompt"]'),
           pendingClass: el.classList.contains('pending'),
         };
       };
@@ -170,7 +170,7 @@ function cleanupDataDir(dataDir) {
         superseded: info('a6-m2'),
         completedEmpty: info('a6-m3'),
         pendingErrored: info('pending-' + sids[2]),
-        pendingStreaming: info('pending-' + sids[0]),
+        pendingStuck: info('pending-' + sids[0]),
         persistedInflight: info('a7-m2'),
         duplicatePendingRecovered: info('pending-' + sids[1]),
       };
@@ -215,12 +215,12 @@ function cleanupDataDir(dataDir) {
     assert.ok(ok6.hasWordChip, 'completed 消息显示字数 chip');
     assert.ok(!ok6.hasPlaceholder, 'completed 有内容消息不渲染占位');
 
-    // 6. 正常 pending streaming（好路径不被修坏）
-    const ps = result.pendingStreaming;
-    assert.ok(ps, 'streaming pending bubble must render');
-    assert.ok(ps.text.includes('正在发言'), 'streaming pending 仍显示「正在发言」');
-    assert.ok(ps.hasCursor, 'streaming pending 仍渲染光标');
-    assert.ok(ps.text.includes('正在整理第 7 轮回答'), 'streaming 文本正常渲染');
+    // 6. default unified view must expose the stuck-input escape action
+    const ps = result.pendingStuck;
+    assert.ok(ps, 'send-stuck pending card must render');
+    assert.ok(ps.text.includes('输入未提交'), 'send-stuck card must distinguish input delivery from model failure');
+    assert.ok(ps.text.includes('尚未检测到 agent 开工'), 'send-stuck explanation must use semantic work-start truth');
+    assert.ok(ps.hasSubmitAgain, 'send-stuck card must expose visible 再次发送 action');
 
     // 7. 当前轮已经持久化的恢复结果必须取代该 sid 的 pending 气泡
     const recovered = result.persistedInflight;

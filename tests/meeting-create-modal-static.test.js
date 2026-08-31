@@ -43,13 +43,15 @@ test('modal model lists cover the five core AI kinds including Kimi K3', () => {
   assert.match(modelIds, /kimi-code\/k3/);
 });
 
-test('default group slots use Claude, Codex, and DeepSeek strongest defaults', () => {
+test('group defaults to Claude + Codex and keeps DeepSeek as the optional third provider', () => {
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.claude, 'claude-opus-5[1m]');
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.codex, 'gpt-5.6-sol');
   assert.strictEqual(DEFAULT_MODEL_BY_KIND.deepseek, 'deepseek-v4-flash');
   assert.match(MODAL_JS, /\{\s*kind:\s*'claude'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.claude\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'codex'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.codex\s*\}/);
   assert.match(MODAL_JS, /\{\s*kind:\s*'deepseek'\s*,\s*model:\s*DEFAULT_MODEL_BY_KIND\.deepseek\s*\}/);
+  assert.match(MODAL_JS, /DEFAULT_GROUP_MEMBERS\s*=\s*DEFAULT_SLOTS\.slice\(0,\s*2\)/);
+  assert.match(MODAL_JS, /GROUP_MEMBER_KINDS\s*=\s*\['claude',\s*'codex',\s*'deepseek'\]/);
 });
 
 test('new DeepSeek sessions accept Codex Pro and Flash while old Claude sessions keep 1M aliases', () => {
@@ -161,7 +163,7 @@ test('every group member exposes the same provider-specific tuning as new Sessio
     'group modal must reuse new-session provider-specific payload rules');
   assert.match(MODAL_JS, /WorkspaceController\.loadCodexTuningCatalog/,
     'Codex effort and Fast options must come from its model catalog');
-  assert.match(MODAL_JS, /Codex 选 None 时不会注入群聊或投研 MCP/);
+  assert.match(MODAL_JS, /默认保留 Claude \+ Codex/);
   assert.match(MODAL_CSS, /\.mcm-member-caption\s*\{/);
   assert.match(MODAL_CSS, /\.mcm-tuning-field\s*\{/);
 });

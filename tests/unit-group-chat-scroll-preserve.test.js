@@ -58,9 +58,9 @@ test('groupchat-partial-update 在群聊视图下走局部 patch 而非全量重
   //   字面量由 contract 3 在该函数体里校验）
   assert.ok(/_patchGroupChatPendingMessage\s*\(/.test(body),
     'partial-update handler 必须在群聊视图下调 _patchGroupChatPendingMessage 走局部 patch，不能掉到全量 panel.innerHTML 重渲（会销毁 .mr-gc-messages 容器、丢失 scrollTop）');
-  // 必须有群聊视图判断（meeting.groupChat 或 _getGroupViewMode）
-  assert.ok(/meeting\.groupChat/.test(body) && /_getGroupViewMode/.test(body),
-    'partial-update handler 必须先判断群聊视图模式才走专属分支');
+  // 统一视图后只需按 meeting.groupChat 分流；不得再依赖已删除的第二视图状态。
+  assert.ok(/meeting\.groupChat/.test(body) && !(new RegExp('_get' + 'GroupViewMode')).test(body),
+    'partial-update handler 必须让所有群聊统一走局部 patch 分支');
 });
 
 // ---------------- 契约 3：群聊专属 patch 不重写 .mr-gc-messages 容器 ----------------

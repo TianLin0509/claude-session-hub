@@ -101,10 +101,10 @@ assert.ok(/return \{ status: 'completed', turnNum, results, meta, superseded: wa
 assert.ok(/interruptMeetingTurn,/.test(dispatcherSrc), 'dispatcher 必须导出 interruptMeetingTurn');
 
 assert.ok(/ipcMain\.handle\('groupchat:interrupt'/.test(turnIpcSrc), '必须注册 groupchat:interrupt IPC');
-assert.ok(/stopLoop\(args\.meetingId\)/.test(turnIpcSrc), '停止本轮应一并停掉在跑的循环工作流');
+assert.ok(/stopLoop\(args\.meetingId, \{ interrupt: false \}\)/.test(turnIpcSrc), '停止本轮应先标记工作流停止，再由统一群聊中断路径发 ESC');
 assert.ok(/interruptGroupChatTurn: groupChatDispatcher\.interruptMeetingTurn/.test(mainSrc),
   'main.js 必须把 dispatcher 的中断能力接进 IPC');
-assert.ok(/stopLoop: \(meetingId\) => \(global\.__loopEngine \? global\.__loopEngine\.stopLoop\(meetingId\) : false\)/.test(mainSrc),
+assert.ok(/stopLoop: \(meetingId, options\) => \(global\.__loopEngine \? global\.__loopEngine\.stopLoop\(meetingId, options\) : false\)/.test(mainSrc),
   'main.js 必须把 loopEngine.stopLoop 接进中断 IPC');
 
 assert.ok(/if \(bRes\.interrupted \|\| bRes\.superseded\)/.test(loopSrc)
@@ -112,8 +112,7 @@ assert.ok(/if \(bRes\.interrupted \|\| bRes\.superseded\)/.test(loopSrc)
   'loop-engine 的 builder / reviewer 两步都要检测用户接管');
 assert.ok((loopSrc.match(/state\.status = 'stopped_user';/g) || []).length >= 3,
   'loop-engine 被接管后必须停在 stopped_user（abort + builder + reviewer 三处）');
-assert.ok(/if \(result\.interrupted \|\| result\.superseded\) \{/.test(rendererSrc)
-  && /workflowTakenOver = result\.interrupted \? 'interrupted' : 'superseded';/.test(rendererSrc),
-  'renderer 串行工作流被接管后必须 break，不继续跑下一步');
+assert.ok(/if \(checked\.takenOver\) \{[\s\S]{0,120}state\.status = 'stopped_user'/.test(loopSrc),
+  'main 串行工作流被接管后必须停在 stopped_user，不继续跑下一步');
 
 console.log('All passed.');

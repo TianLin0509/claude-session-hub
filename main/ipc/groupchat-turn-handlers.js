@@ -25,7 +25,7 @@ function registerGroupchatTurnIpc(ipcMain, deps) {
       if (!args || !args.meetingId) return { ok: false, reason: 'no_meeting_id' };
       let loopStopped = false;
       if (typeof stopLoop === 'function') {
-        try { loopStopped = !!stopLoop(args.meetingId); }
+        try { loopStopped = !!stopLoop(args.meetingId, { interrupt: false }); }
         catch (err) {
           if (logger && typeof logger.warn === 'function') logger.warn('[groupchat:interrupt] stopLoop threw:', err && err.message);
         }

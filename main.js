@@ -515,6 +515,15 @@ transcriptTap.on('turn-started', (ev) => {
   if (!ev || !ev.hubSessionId) return;
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
+    sessionManager.noteAgentTurnStarted(ev.hubSessionId, {
+      startedAt: ev.startedAt,
+      signalSource: ev.signalSource || 'task_started',
+      turnId: ev.turnId || null,
+    });
+  } catch (error) {
+    console.warn('[codex task] main-process lifecycle note failed:', error && error.message);
+  }
+  try {
     sendToRenderer('turn-started-event', {
       hubSessionId: ev.hubSessionId,
       transcriptPath: ev.transcriptPath || (session ? session.transcriptPath : null),
@@ -1130,14 +1139,18 @@ groupChatDispatcher = createGroupChatDispatcher({
 registerGroupchatTurnIpc(ipcMain, {
   dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
   interruptGroupChatTurn: groupChatDispatcher.interruptMeetingTurn,
-  stopLoop: (meetingId) => (global.__loopEngine ? global.__loopEngine.stopLoop(meetingId) : false),
+  stopLoop: (meetingId, options) => (global.__loopEngine ? global.__loopEngine.stopLoop(meetingId, options) : false),
 });
 
 // Phase 2b：main 进程循环引擎（崩溃续跑 + 成员 wake），复用 dispatcher。try 包裹，绝不影响启动。
 try {
   global.__loopEngine = require('./main/groupchat/loop-engine.js').createLoopEngine({
     getDispatcher: () => groupChatDispatcher,
+    getOrchestrator: (meetingId) => groupchat.getOrchestrator(getHubDataDir(), meetingId),
     meetingManager, sessionManager, sendToRenderer,
+    // resumeSession is initialized later in this module; the closure is only
+    // invoked after startup, when the provider-native resume handler exists.
+    resumeSession: (meta) => resumeSession(meta),
     writeReport: (html) => {
       try {
         const fsx = require('fs'), pathx = require('path'), osx = require('os');
@@ -1223,10 +1236,12 @@ registerGroupchatQueryIpc(ipcMain, {
 });
 
 registerGroupchatRecoveryIpc(ipcMain, {
+  dispatchGroupChatTurn: groupChatDispatcher.dispatchGroupChatTurn,
   getHubDataDir,
   getActiveWatchers: groupChatDispatcher.getActiveWatchers,
   groupchat,
   groupChatWatcher: groupChatDispatcher.getGroupChatWatcher(),
+  isWorkflowRunning: (meetingId) => !!(global.__loopEngine && global.__loopEngine.isRunning(meetingId)),
   meetingManager,
   sendToRenderer,
   sessionManager,
@@ -1669,13 +1684,23 @@ const hookServer = http.createServer((req, res) => {
         if (event === 'stop' && parsed.transcriptPath) {
           transcriptTap.notifyClaudeStop(parsed.sessionId, parsed.transcriptPath).catch(() => {});
         }
-        if (event === 'prompt' && latestUserMessage) {
-          maybeAutoTitleSessionFromPrompt({
-            hubSessionId: parsed.sessionId,
-            text: latestUserMessage,
-            submittedAt: eventAt,
-            signalSource: 'hook_prompt',
-          });
+        if (event === 'prompt') {
+          try {
+            sessionManager.noteAgentTurnStarted(parsed.sessionId, {
+              startedAt: eventAt,
+              signalSource: 'claude-user-prompt-submit',
+            });
+          } catch (error) {
+            console.warn('[claude prompt] main-process lifecycle note failed:', error && error.message);
+          }
+          if (latestUserMessage) {
+            maybeAutoTitleSessionFromPrompt({
+              hubSessionId: parsed.sessionId,
+              text: latestUserMessage,
+              submittedAt: eventAt,
+              signalSource: 'hook_prompt',
+            });
+          }
         }
         sendToRenderer('hook-event', {
           event,

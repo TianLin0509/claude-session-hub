@@ -4,7 +4,7 @@
  * ─────────────────────────────────────────────────────────────
  * 在「串行工作流」之上加：评审 gate + 不达标自动重来 + 达标后自动打磨。
  * 本文件只放【无 DOM / 无 IPC 依赖】的纯逻辑，便于单元测试；
- * 真正的循环驱动（调 groupchat:turn）在 meeting-room.js 的 runLoopWorkflow 里，调用这里的纯函数。
+ * 真正的循环驱动（调 groupchat:turn）在 main/groupchat/loop-engine.js，renderer 只展示进度。
  *
  * ⚠ 下面 PROMPTS 是「默认值，待用户审定」——见 Desktop/claude-artifacts/loop-prompt-design.html。
  *   用户改 prompt 文本不影响本文件的判定逻辑（逻辑只依赖 <<<VERDICT>>> 输出契约）。
@@ -197,6 +197,9 @@
       s.currentStep = persisted.currentStep || null;
       s.attempt = persisted.attempt || (s.round + 1);
       s.lastError = persisted.lastError || null;
+      s.runId = persisted.runId || null;
+      s.currentTurnNum = persisted.currentTurnNum || null;
+      s.stepAttempt = Number(persisted.stepAttempt) || 0;
     }
     // 上一轮若未过 → 恢复 prevMerge，让续跑首轮回灌其阻断项
     const last = s.history[s.history.length - 1];

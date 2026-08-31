@@ -69,10 +69,10 @@ async function main() {
       const api = window.__hubE2E;
       const now = Date.now();
       const meetingId = 'avatar-jump-meeting';
-      const sids = ['avatar-claude', 'avatar-kimi', 'avatar-codex'];
-      const kinds = ['claude', 'kimi', 'codex'];
+      const sids = ['avatar-claude', 'avatar-deepseek', 'avatar-codex'];
+      const kinds = ['claude', 'deepseek', 'codex'];
       api.addFakeSessions(sids.map((id, index) => ({
-        id, kind: kinds[index], title: ['Claude', 'Kimi', 'Codex'][index],
+        id, kind: kinds[index], title: ['Claude', 'DeepSeek', 'Codex'][index],
         status: 'idle', meetingId, createdAt: now + index, lastMessageTime: now + index,
       })));
       const meeting = {
@@ -83,24 +83,23 @@ async function main() {
       meetings[meeting.id] = meeting;
       renderSessionList();
 
-      const states = {
-        card: {
-          currentMode: 'idle', currentTurn: 1,
-          turns: [{ n: 1, mode: 'group', userInput: '测试', by: {
-            [sids[0]]: 'Claude answer', [sids[1]]: 'Kimi answer', [sids[2]]: 'Codex answer',
-          }, byStatus: Object.fromEntries(sids.map(sid => [sid, 'completed'])), timestamp: now }],
-          messages: [], aiStats: {},
-        },
-        chat: {
-          currentMode: 'idle', currentTurn: 1, turns: [], aiStats: {},
-          messages: [
-            { id: 'u1', turnNum: 1, role: 'user', speaker: '我', content: '测试', createdAt: now },
-            { id: 'a1', turnNum: 1, role: 'assistant', sid: sids[0], speaker: 'Claude', content: 'answer', status: 'completed', createdAt: now + 1 },
-          ],
-        },
-        empty: { currentMode: 'idle', currentTurn: 0, turns: [], messages: [], aiStats: {} },
+      const state = {
+        currentMode: 'idle', currentTurn: 1, turns: [], aiStats: {},
+        messages: [
+          { id: 'u1', turnNum: 1, role: 'user', speaker: '我', content: '测试', createdAt: now },
+          ...sids.map((sid, index) => ({
+            id: 'a1-' + index,
+            turnNum: 1,
+            role: 'assistant',
+            sid,
+            speaker: ['Claude', 'DeepSeek', 'Codex'][index],
+            content: 'answer-' + index,
+            status: 'completed',
+            createdAt: now + index + 1,
+          })),
+        ],
       };
-      window.__avatarState = states.card;
+      window.__avatarState = state;
       const ipc = require('electron').ipcRenderer;
       const realInvoke = ipc.invoke.bind(ipc);
       ipc.invoke = (channel, args) => channel === 'groupchat:get-state'
@@ -114,15 +113,14 @@ async function main() {
         return realOpen(sid);
       };
 
-      async function openRoom(mode, state) {
-        window.__avatarState = state;
-        localStorage.setItem('mr-group-chat-view-mode', mode);
+      async function openRoom() {
         await api.selectMeeting(meeting.id);
         window.MeetingRoom.debugRenderGroupChatState(meeting.id, state);
         await wait(180);
       }
 
-      async function clickAndCheck(selector, expectedSid) {
+      async function clickAndCheck(expectedSid) {
+        const selector = '.mr-gc-msg.ai .mr-gc-avatar[data-gc-open-session="' + expectedSid + '"]';
         const el = document.querySelector(selector);
         if (!el) throw new Error('missing avatar: ' + selector);
         const semantics = {
@@ -144,29 +142,15 @@ async function main() {
         };
       }
 
-      await openRoom('card', states.card);
-      const card = await clickAndCheck('.mr-ft[data-ft-sid="avatar-kimi"] .mr-ft-avatar[data-gc-open-session]', sids[1]);
-
-      await openRoom('chat', states.chat);
-      const chat = await clickAndCheck('.mr-gc-msg.ai .mr-gc-avatar[data-gc-open-session]', sids[0]);
-
-      await openRoom('card', states.empty);
-      const onboardingEl = document.querySelector('.mr-gc-ob-avatar[data-gc-open-session="avatar-codex"]');
-      onboardingEl.focus();
-      onboardingEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-      await wait(220);
-      const onboarding = {
-        expectedSid: sids[2],
-        actualSid: window.__avatarJumpCalls.at(-1),
-        keyboardFocused: document.activeElement === onboardingEl,
-        meetingClosed: window.MeetingRoom.getActiveMeetingId() === null,
-        meetingPanelHidden: document.getElementById('meeting-room-panel').style.display === 'none',
-      };
-
-      return { card, chat, onboarding, calls: window.__avatarJumpCalls.slice() };
+      const items = [];
+      for (const sid of sids) {
+        await openRoom();
+        items.push(await clickAndCheck(sid));
+      }
+      return { items, calls: window.__avatarJumpCalls.slice() };
     })()`);
 
-    for (const item of [result.card, result.chat]) {
+    for (const item of result.items) {
       assert.equal(item.actualSid, item.expectedSid, JSON.stringify(item));
       assert.equal(item.semantics.sid, item.expectedSid, JSON.stringify(item));
       assert.equal(item.semantics.role, 'button', JSON.stringify(item));
@@ -177,15 +161,11 @@ async function main() {
       assert.equal(item.meetingPanelHidden, true, JSON.stringify(item));
       assert.equal(item.terminalPanelVisible, true, JSON.stringify(item));
     }
-    assert.equal(result.onboarding.actualSid, result.onboarding.expectedSid, JSON.stringify(result.onboarding));
-    assert.equal(result.onboarding.meetingClosed, true, JSON.stringify(result.onboarding));
-    assert.equal(result.onboarding.meetingPanelHidden, true, JSON.stringify(result.onboarding));
-    assert.deepEqual(result.calls, ['avatar-kimi', 'avatar-claude', 'avatar-codex']);
+    assert.deepEqual(result.calls, ['avatar-claude', 'avatar-deepseek', 'avatar-codex']);
 
     await client.eval(`(async () => {
       const api = window.__hubE2E;
       await api.selectMeeting('avatar-jump-meeting');
-      localStorage.setItem('mr-group-chat-view-mode', 'card');
       window.MeetingRoom.debugRenderGroupChatState('avatar-jump-meeting', window.__avatarState);
       await new Promise(resolve => setTimeout(resolve, 180));
     })()`);

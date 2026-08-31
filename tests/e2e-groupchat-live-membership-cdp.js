@@ -10,8 +10,8 @@ const { launchIsolatedHub, gracefulQuit, _waitMs } = require('./helpers/hub-laun
 const { connectFirstPage } = require('./helpers/cdp-client.js');
 
 const HUB_ROOT = path.resolve(__dirname, '..');
-const ARTIFACT_DIR = path.join(HUB_ROOT, 'artifacts');
-const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, 'groupchat-live-membership-and-pending-message.png');
+const ARTIFACT_DIR = path.join(HUB_ROOT, 'output', 'playwright', 'groupchat-live-membership');
+const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, '20260831-ai-hub-groupchat-live-membership-codex1.png');
 
 function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -33,11 +33,9 @@ async function waitFor(cdp, expression, timeoutMs = 20000) {
   throw new Error('Timed out waiting for: ' + expression);
 }
 
-async function addPowerShellMember(cdp, meetingId, triggerExpression, expectedCount) {
-  await cdp.eval(triggerExpression);
-  await waitFor(cdp, "!!document.getElementById('mr-add-sub-menu')");
-  const clicked = await cdp.eval("(() => { const item = [...document.querySelectorAll('#mr-add-sub-menu .mr-quote-menu-item')].find(el => el.textContent.trim() === 'PowerShell'); if (!item) return false; item.click(); return true; })()");
-  assert.strictEqual(clicked, true, 'PowerShell add-member menu item should be available');
+async function addPowerShellMember(cdp, meetingId, _triggerExpression, expectedCount) {
+  const added = await cdp.eval("(async () => { const result = await require('electron').ipcRenderer.invoke('add-meeting-sub', { meetingId: " + JSON.stringify(meetingId) + ", kind: 'powershell' }); if (result && result.session) sessions.set(result.session.id, result.session); if (result && result.meeting) window.MeetingRoom.updateMeetingData(" + JSON.stringify(meetingId) + ", result.meeting); return !!(result && result.meeting && result.session); })()");
+  assert.strictEqual(added, true, 'PowerShell PTY fixture should be added through test IPC');
   await waitFor(cdp, "window.MeetingRoom.getMeetingData(" + JSON.stringify(meetingId) + ").subSessions.length === " + expectedCount, 30000);
   await waitFor(cdp, "document.querySelectorAll('.mr-gc-member-row').length === " + expectedCount, 10000);
   const participants = await cdp.eval("window.MeetingRoom.getMeetingData(" + JSON.stringify(meetingId) + ").participants.slice()");
@@ -79,7 +77,7 @@ async function run() {
     assert.ok(meeting && meeting.id, 'real create-meeting IPC should return a meeting');
     const meetingId = meeting.id;
 
-    await cdp.eval("(async () => { localStorage.setItem('mr-group-chat-view-mode', 'chat'); localStorage.removeItem('mr-group-chat-side-state'); const ipc = require('electron').ipcRenderer; const all = await ipc.invoke('get-meetings'); const meeting = all.find(item => item.id === " + JSON.stringify(meetingId) + "); window.MeetingRoom.openMeeting(meeting.id, meeting); return true; })()");
+    await cdp.eval("(async () => { localStorage.removeItem('mr-group-chat-side-state'); const ipc = require('electron').ipcRenderer; const all = await ipc.invoke('get-meetings'); const meeting = all.find(item => item.id === " + JSON.stringify(meetingId) + "); window.MeetingRoom.openMeeting(meeting.id, meeting); return true; })()");
     await waitFor(cdp, "!!document.querySelector('.mr-gc-shell')");
 
     const defaultCollapsed = await cdp.eval("document.querySelector('.mr-gc-shell').classList.contains('side-collapsed')");

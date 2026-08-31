@@ -176,7 +176,7 @@ async function main() {
     assert.deepEqual(result.modalIsolation, { launchCenterVisible: true, quickOpenVisible: false, searchVisible: false });
 
     await clickPoint(client, '[data-launch-intent="group"]');
-    await waitFor('embedded group configuration', () => client.eval(`document.querySelector('#launch-center-group-host .mcm-embedded .mcm-slots')?.children.length === 3`));
+    await waitFor('embedded group configuration', () => client.eval(`document.querySelector('#launch-center-group-host .mcm-embedded .mcm-slots')?.children.length === 2`));
     await clickPoint(client, '[data-mcm-template="review"]');
     result.groupIntent = await client.eval(`(() => ({
       intent: window.LaunchCenter.getActiveIntent(),
@@ -191,7 +191,7 @@ async function main() {
     }))()`);
     assert.deepEqual(result.groupIntent, {
       intent: 'group', panelVisible: true, sessionHidden: true,
-      embedded: true, embeddedRole: 'group', members: 3, reviewSelected: true, devScene: true, launchCenterVisible: true,
+      embedded: true, embeddedRole: 'group', members: 2, reviewSelected: true, devScene: true, launchCenterVisible: true,
     });
     await client.eval(`document.getElementById('mcm-title-input').value = '保留这份成员配置'`);
     await screenshot(client, GROUP_SCREENSHOT_PATH);
@@ -214,7 +214,7 @@ async function main() {
       members: document.querySelectorAll('#launch-center-group-host .mcm-slot').length,
       reviewSelected: document.querySelector('[data-mcm-template="review"]')?.classList.contains('selected'),
     }))()`);
-    assert.deepEqual(result.groupPreserved, { title: '保留这份成员配置', members: 3, reviewSelected: true });
+    assert.deepEqual(result.groupPreserved, { title: '保留这份成员配置', members: 2, reviewSelected: true });
     await clickPoint(client, '[data-launch-intent="resume"]');
 
     await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
@@ -256,7 +256,7 @@ async function main() {
     await setViewport(client, 760, 900);
     await clickPoint(client, '#btn-new');
     await clickPoint(client, '[data-launch-intent="group"]');
-    await waitFor('compact embedded group form', () => client.eval(`document.querySelector('#launch-center-group-host .mcm-embedded .mcm-slots')?.children.length === 3`));
+    await waitFor('compact embedded group form', () => client.eval(`document.querySelector('#launch-center-group-host .mcm-embedded .mcm-slots')?.children.length === 2`));
     result.compact = await client.eval(`(() => {
       const modal = document.getElementById('new-session-menu').getBoundingClientRect();
       const layout = getComputedStyle(document.querySelector('.launch-center-layout'));

@@ -19,8 +19,9 @@ const FAKE_BIN = path.join(TEMP_ROOT, 'fake-bin');
 const CODEX_HOME = path.join(TEMP_ROOT, 'codex-home');
 const INVOCATION_LOG = path.join(TEMP_ROOT, 'invocations.jsonl');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'groupchat-create');
-const MODAL_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `groupchat-modal-${RUN_ID}.png`);
-const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `groupchat-create-${RUN_ID}.png`);
+const DEFAULT_MODAL_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `20260831-ai-hub-groupchat-default-pair-codex1-${RUN_ID}.png`);
+const CONFIGURED_MODAL_SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `20260831-ai-hub-groupchat-with-deepseek-codex1-${RUN_ID}.png`);
+const SCREENSHOT_PATH = path.join(ARTIFACT_DIR, `20260831-ai-hub-groupchat-created-codex1-${RUN_ID}.png`);
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -175,7 +176,11 @@ async function main() {
     try {
       await waitFor('embedded group form', () => client.eval(`(() => {
         const modal = document.querySelector('#launch-center-group-host #meeting-create-modal.mcm-embedded');
-        return modal?.style.display === 'flex' && modal.querySelectorAll('.mcm-slot').length === 3;
+        const slots = [...(modal?.querySelectorAll('.mcm-slot') || [])];
+        return modal?.style.display === 'flex'
+          && slots.length === 2
+          && slots.map(slot => slot.querySelector('.mcm-ai-select')?.value).join(',') === 'claude,codex'
+          && /DeepSeek/.test(modal.querySelector('#mcm-add-member')?.textContent || '');
       })()`), 8000);
     } catch (error) {
       const diagnostics = await client.eval(`(async () => {
@@ -201,7 +206,7 @@ async function main() {
     }
 
     const modalShot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-    fs.writeFileSync(MODAL_SCREENSHOT_PATH, Buffer.from(modalShot.data, 'base64'));
+    fs.writeFileSync(DEFAULT_MODAL_SCREENSHOT_PATH, Buffer.from(modalShot.data, 'base64'));
 
     // Regression: any synchronous DOM problem used to throw before _onCreate's try/catch,
     // leaving the user with a button that appeared to do absolutely nothing.
@@ -228,6 +233,9 @@ async function main() {
       window.LaunchCenter.close();
       window.LaunchCenter.open('group');
     })()`);
+    await waitFor('default Claude + Codex pair', () => client.eval(`document.querySelectorAll('#meeting-create-modal .mcm-slot').length === 2`), 8000);
+    await client.eval(`document.querySelector('#mcm-add-member')?.scrollIntoView({ block: 'center' })`);
+    await clickPoint(client, await pointFor(client, '#mcm-add-member'));
     await waitFor('member tuning controls', () => client.eval(`(() => {
       const slots = document.querySelectorAll('#launch-center-group-host #meeting-create-modal.mcm-embedded .mcm-slot');
       return slots.length === 3
@@ -282,7 +290,7 @@ async function main() {
     ]);
 
     const configuredShot = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
-    fs.writeFileSync(MODAL_SCREENSHOT_PATH, Buffer.from(configuredShot.data, 'base64'));
+    fs.writeFileSync(CONFIGURED_MODAL_SCREENSHOT_PATH, Buffer.from(configuredShot.data, 'base64'));
     const createPoint = await pointFor(client, '.mcm-create');
     await clickPoint(client, createPoint);
 
@@ -312,7 +320,7 @@ async function main() {
     const logs = hub.log().slice(-40);
     assert.ok(!logs.some(line => /installed into Gemini settings\.json/.test(line)),
       'isolated Hub must not rewrite the real user Gemini settings');
-    console.log(JSON.stringify({ ok: result.meetingCount > 0 && result.modalDisplay === 'none', recoveredError, createPoint, result, screenshots: { modal: MODAL_SCREENSHOT_PATH, created: SCREENSHOT_PATH }, logs }, null, 2));
+    console.log(JSON.stringify({ ok: result.meetingCount > 0 && result.modalDisplay === 'none', recoveredError, createPoint, result, screenshots: { defaultPair: DEFAULT_MODAL_SCREENSHOT_PATH, configuredWithDeepSeek: CONFIGURED_MODAL_SCREENSHOT_PATH, created: SCREENSHOT_PATH }, logs }, null, 2));
     assert.ok(result.meetingCount > 0, `group chat was not created: ${result.error || 'no visible error'}`);
     assert.equal(result.meeting.subSessions.length, 3);
     assert.equal(result.meeting.scene, 'research');

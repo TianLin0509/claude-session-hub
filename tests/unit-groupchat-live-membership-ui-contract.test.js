@@ -18,7 +18,8 @@ assert.match(renderer, /const partialBy = state && state\._partialBy \? state\._
   'dispatched members should show thinking before the first partial update');
 assert.match(renderer, /data-gc-member-remove-sid=/, 'member rows need a remove action');
 assert.match(renderer, /data-gc-add-member=/, 'member sidebar needs an add action');
-assert.match(renderer, /!meeting\.groupChat && meeting\.subSessions\.length >= 3/, 'only legacy non-group meetings keep the three-slot cap');
+assert.match(renderer, /if \(!meeting \|\| meeting\.subSessions\.length >= 3\) return;/, 'future group rooms keep the Claude/Codex/DeepSeek three-provider cap');
+assert.match(renderer, /\['claude', 'codex', 'deepseek'\]\.filter/, 'group add menu only offers the supported provider trio');
 assert.match(renderer, /response\.meeting/, 'participant writes must consume the explicit meeting response');
 assert.match(renderer, /return state !== 'expanded'/, 'member sidebar should default to collapsed');
 assert.doesNotMatch(renderer, /alert\('\?\?\?\?: '/, 'participant errors must not show mojibake');

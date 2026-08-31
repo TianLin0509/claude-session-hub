@@ -15,15 +15,25 @@
  *   logger
  */
 const LC = require('../../renderer/loop-workflow.js'); // UMD → node 下为纯逻辑 module.exports
+const WT = require('../../renderer/workflow-templates.js');
 const { formatBeijingDateTime } = require('../../core/beijing-time.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function createLoopEngine(deps) {
   const {
-    getDispatcher, meetingManager, sessionManager,
+    getDispatcher, getOrchestrator, meetingManager, resumeSession, sessionManager,
     sendToRenderer = () => {}, writeReport = () => null, logger = console,
   } = deps || {};
-  const running = new Map(); // meetingId → { abort: bool }
+  const running = new Map(); // meetingId → { abort, mode, runId, startedAt }
+
+  function runId(prefix) {
+    return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  }
+
+  function logError(message, error) {
+    const fn = logger && (logger.error || logger.warn || logger.log);
+    if (typeof fn === 'function') fn.call(logger, message, error && error.message ? error.message : error || '');
+  }
 
   function sidOf(meeting, memberId) {
     const idx = parseInt(String(memberId).slice(1), 10);
@@ -39,22 +49,31 @@ function createLoopEngine(deps) {
     return r ? (r.text || '') : '';
   }
 
-  // 进阶①：dormant 成员唤醒（createSession 复用 id + 轮询非 dormant）。简化版：不等 cli-ready，给固定窗口。
+  // Dormant members must resume through the same provider-native path as a
+  // normal Session.  Recreating with only {id,title} silently lost cwd/model/
+  // tuning/MCP and was a major source of workflow-only failures.
   async function ensureMemberReady(meeting, memberId) {
-    try {
-      const sid = sidOf(meeting, memberId);
-      if (!sid || !sessionManager) return;
-      const s = sessionManager.getSession(sid);
-      if (s && s.status === 'dormant') {
-        logger.log('[loop-engine] waking dormant member', sid);
-        try { sessionManager.createSession(s.kind, { id: sid, title: s.title }); } catch (e) {}
-        for (let i = 0; i < 30; i++) {
-          const ss = sessionManager.getSession(sid);
-          if (ss && ss.status !== 'dormant') break;
-          await sleep(1000);
-        }
-      }
-    } catch (e) { logger.log('[loop-engine] ensureMemberReady err: ' + (e && e.message)); }
+    const sid = sidOf(meeting, memberId);
+    if (!sid || !sessionManager) throw new Error(`workflow member ${memberId} is missing`);
+    let session = sessionManager.getSession(sid);
+    // Boot resume can race renderer/session restoration. Wait for the persisted
+    // session to materialize before declaring the workflow broken.
+    for (let i = 0; !session && i < 60; i += 1) {
+      await sleep(500);
+      session = sessionManager.getSession(sid);
+    }
+    if (!session) throw new Error(`workflow session ${memberId} (${sid}) is missing after restore grace`);
+    if (session.status !== 'dormant') return session;
+    if (typeof resumeSession !== 'function') throw new Error(`workflow member ${memberId} cannot resume`);
+    logger.log('[workflow-engine] resuming dormant member', sid);
+    const resumed = await resumeSession({ ...session, hubId: session.id || sid, meetingId: meeting.id });
+    if (!resumed) throw new Error(`workflow member ${memberId} resume failed`);
+    for (let i = 0; i < 60; i += 1) {
+      session = sessionManager.getSession(sid);
+      if (session && session.status !== 'dormant') return session;
+      await sleep(500);
+    }
+    throw new Error(`workflow member ${memberId} resume timed out`);
   }
 
   function buildConfig(loopCfg) {
@@ -77,21 +96,338 @@ function createLoopEngine(deps) {
       meetingManager.updateMeeting(meetingId, {
         serialWorkflow: Object.assign({}, cur, {
           loopState: {
+            runId: state.runId || null,
             goal: state.goal, status: state.status, phase: state.phase, round: state.round,
             consecutiveGreen: state.consecutiveGreen, suggestionPool: state.suggestionPool,
             history: state.history, _lastBlockerSig: state._lastBlockerSig, _noProgress: state._noProgress,
             deadlineTs: config.stop.deadlineTs, driver: 'main',
             currentStep: state.currentStep || null, attempt: state.attempt || (state.round + 1),
+            currentTurnNum: state.currentTurnNum || null,
+            stepAttempt: Number(state.stepAttempt) || 0,
             lastError: state.lastError || null,
           },
         }),
       });
-    } catch (e) { logger.log('[loop-engine] persist err: ' + (e && e.message)); }
+      return true;
+    } catch (e) {
+      logError('[loop-engine] persist failed:', e);
+      return false;
+    }
+  }
+
+  function validateSerial(meetingId) {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
+    const workflow = meeting.serialWorkflow || {};
+    const steps = Array.isArray(workflow.steps) ? workflow.steps : [];
+    if (!workflow.enabled || !steps.length) return { ok: false, reason: 'serial_workflow_not_enabled' };
+    if (steps.some(step => !Array.isArray(step) || !step.filter(Boolean).length)) {
+      return { ok: false, reason: 'serial_workflow_has_empty_step' };
+    }
+    return { ok: true, meeting, workflow, steps };
+  }
+
+  function validateLoop(meetingId) {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
+    const workflow = meeting.serialWorkflow || {};
+    const steps = Array.isArray(workflow.steps) ? workflow.steps : [];
+    const builderId = (steps[0] || [])[0];
+    const reviewers = Array.from(new Set([].concat(...steps.slice(1)).filter(Boolean)));
+    if (!(workflow.loop && workflow.loop.enabled)) return { ok: false, reason: 'loop_workflow_not_enabled' };
+    if (!builderId || !reviewers.length) return { ok: false, reason: 'loop_requires_builder_and_reviewer' };
+    return { ok: true, meeting, workflow, steps };
+  }
+
+  function persistSerial(meetingId, state) {
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting) throw new Error('meeting disappeared while persisting serial workflow');
+    const current = meeting.serialWorkflow || {};
+    meetingManager.updateMeeting(meetingId, {
+      serialWorkflow: {
+        ...current,
+        serialRunState: {
+          schemaVersion: 1,
+          driver: 'main',
+          kind: 'serial',
+          runId: state.runId,
+          goal: state.goal,
+          status: state.status,
+          nextStepIndex: state.nextStepIndex,
+          currentStepIndex: state.currentStepIndex,
+          currentTurnNum: state.currentTurnNum,
+          attemptsByStep: { ...(state.attemptsByStep || {}) },
+          completedSteps: Array.isArray(state.completedSteps) ? state.completedSteps.slice(-100) : [],
+          startedAt: state.startedAt,
+          updatedAt: Date.now(),
+          lastError: state.lastError || null,
+        },
+      },
+    });
+  }
+
+  function stepEvidence(meetingId, runIdValue, stepIndex) {
+    if (typeof getOrchestrator !== 'function') return null;
+    try {
+      const orchestrator = getOrchestrator(meetingId);
+      const state = orchestrator && typeof orchestrator.getState === 'function'
+        ? orchestrator.getState()
+        : orchestrator && orchestrator.state;
+      for (const turn of (state && state.turns) || []) {
+        const entries = turn && turn.meta && Array.isArray(turn.meta.workflowSteps)
+          ? turn.meta.workflowSteps
+          : [];
+        const entry = entries.find(item => item
+          && item.runId === runIdValue
+          && Number(item.stepIndex) === Number(stepIndex));
+        if (entry) return { entry, turnNum: turn.n, turn };
+      }
+    } catch (error) {
+      logError('[workflow-engine] failed to inspect durable step evidence:', error);
+    }
+    return null;
+  }
+
+  function pendingStepTurn(meetingId, runIdValue, stepIndex) {
+    if (typeof getOrchestrator !== 'function') return null;
+    try {
+      const orchestrator = getOrchestrator(meetingId);
+      const state = orchestrator && typeof orchestrator.getState === 'function'
+        ? orchestrator.getState()
+        : orchestrator && orchestrator.state;
+      for (const [turnNum, bySid] of Object.entries(state && state.pendingPrompts || {})) {
+        for (const entry of Object.values(bySid || {})) {
+          const workflowRun = entry && entry.workflowRun;
+          if (workflowRun
+            && workflowRun.runId === runIdValue
+            && Number(workflowRun.stepIndex) === Number(stepIndex)) {
+            const parsed = Number(turnNum);
+            return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+          }
+        }
+      }
+    } catch (error) {
+      logError('[workflow-engine] failed to inspect pending step receipt:', error);
+    }
+    return null;
+  }
+
+  function resultIsSuccessful(result) {
+    return !!(result
+      && (!result.status || ['completed', 'manual_extracted'].includes(result.status))
+      && String(result.text || '').trim());
+  }
+
+  function validateStepResult(meeting, targetMemberIds, dispatchResult) {
+    if (!dispatchResult || dispatchResult.status !== 'completed') {
+      return { ok: false, reason: dispatchResult && (dispatchResult.reason || dispatchResult.status) || 'step_not_completed' };
+    }
+    if (dispatchResult.interrupted || dispatchResult.superseded) {
+      return { ok: false, takenOver: true, reason: dispatchResult.interrupted ? 'interrupted' : 'superseded' };
+    }
+    const expectedSids = targetMemberIds.map(id => sidOf(meeting, id)).filter(Boolean);
+    const results = Array.isArray(dispatchResult.results) ? dispatchResult.results : [];
+    const failed = expectedSids.map(sid => results.find(item => item && item.sid === sid))
+      .filter(item => !resultIsSuccessful(item));
+    if (expectedSids.length !== targetMemberIds.length) return { ok: false, reason: 'workflow_member_missing' };
+    if (failed.length) {
+      const first = failed[0];
+      return { ok: false, reason: first && (first.reason || first.status) || 'participant_result_missing' };
+    }
+    return { ok: true };
+  }
+
+  function evidenceIsSuccessful(evidence, targetCount) {
+    const results = evidence && evidence.entry && Array.isArray(evidence.entry.results)
+      ? evidence.entry.results
+      : [];
+    return results.length >= targetCount && results.slice(0, targetCount).every(result =>
+      result && (!result.status || ['completed', 'manual_extracted'].includes(result.status)) && Number(result.textLength) > 0);
+  }
+
+  function dispatchResultFromEvidence(meeting, targetMemberIds, evidence) {
+    const turn = evidence && evidence.turn || {};
+    return {
+      status: 'completed',
+      turnNum: evidence && evidence.turnNum || null,
+      results: targetMemberIds.map(memberId => {
+        const sid = sidOf(meeting, memberId);
+        return {
+          sid,
+          status: turn.byStatus && turn.byStatus[sid] || 'completed',
+          text: turn.by && turn.by[sid] || '',
+          recovered: true,
+        };
+      }),
+      recovered: true,
+    };
+  }
+
+  async function runSerial(meetingId, userInput, persistedState, runOptions = {}) {
+    if (running.has(meetingId)) return null;
+    const validation = validateSerial(meetingId);
+    if (!validation.ok) return { status: 'paused', lastError: { reason: validation.reason, at: Date.now() } };
+    const { meeting, workflow, steps } = validation;
+    const stepConfigs = WT.normalizeStepConfigs(steps, workflow.stepConfigs);
+    const maxAttempts = Math.max(1, Math.min(3, Number(workflow.maxAttemptsPerStep) || 2));
+    const state = persistedState && persistedState.status === 'running'
+      ? {
+          ...persistedState,
+          attemptsByStep: { ...(persistedState.attemptsByStep || {}) },
+          completedSteps: Array.isArray(persistedState.completedSteps) ? persistedState.completedSteps.slice() : [],
+        }
+      : {
+          runId: runId('serial'),
+          goal: String(userInput || '').trim(),
+          status: 'running',
+          nextStepIndex: 0,
+          currentStepIndex: null,
+          currentTurnNum: null,
+          attemptsByStep: {},
+          completedSteps: [],
+          startedAt: Date.now(),
+          lastError: null,
+        };
+    if (!state.goal) state.goal = String(userInput || '').trim();
+    const entry = { abort: false, mode: 'serial', runId: state.runId, startedAt: Date.now() };
+    running.set(meetingId, entry);
+    const progress = (extra = {}) => {
+      try {
+        sendToRenderer('workflow:progress', {
+          meetingId,
+          kind: 'serial',
+          runId: state.runId,
+          goal: state.goal,
+          status: state.status,
+          nextStepIndex: state.nextStepIndex,
+          currentStepIndex: state.currentStepIndex,
+          currentTurnNum: state.currentTurnNum,
+          totalSteps: steps.length,
+          ...extra,
+        });
+      } catch (error) {
+        logError('[workflow-engine] progress delivery failed:', error);
+      }
+    };
+    try {
+      persistSerial(meetingId, state);
+      progress({ stage: 'start' });
+      while (state.status === 'running' && state.nextStepIndex < steps.length) {
+        if (entry.abort) { state.status = 'stopped_user'; break; }
+        const index = state.currentStepIndex != null ? Number(state.currentStepIndex) : Number(state.nextStepIndex);
+        const targetMemberIds = (steps[index] || []).filter(Boolean);
+
+        // Crash window closure: dispatcher persists this evidence before its
+        // Promise resolves. If Hub died after the provider answered but before
+        // serialRunState advanced, do not execute the step twice.
+        const recovered = stepEvidence(meetingId, state.runId, index);
+        if (recovered && evidenceIsSuccessful(recovered, targetMemberIds.length)) {
+          state.currentTurnNum = state.currentTurnNum || recovered.turnNum || null;
+          if (!state.completedSteps.some(item => Number(item.stepIndex) === index)) {
+            state.completedSteps.push({ stepIndex: index, completedAt: recovered.entry.completedAt || Date.now(), recovered: true });
+          }
+          state.nextStepIndex = index + 1;
+          state.currentStepIndex = null;
+          state.lastError = null;
+          persistSerial(meetingId, state);
+          progress({ stage: 'recovered-step', completedStepIndex: index });
+          continue;
+        }
+        if (!state.currentTurnNum) {
+          state.currentTurnNum = pendingStepTurn(meetingId, state.runId, index) || null;
+        }
+
+        const previousAttempts = Number(state.attemptsByStep[index]) || 0;
+        if (previousAttempts >= maxAttempts) {
+          state.status = 'paused';
+          state.lastError = state.lastError || { stage: 'serial', stepIndex: index, reason: 'attempts_exhausted', at: Date.now() };
+          break;
+        }
+        const attempt = previousAttempts + 1;
+        state.currentStepIndex = index;
+        state.attemptsByStep[index] = attempt;
+        state.lastError = null;
+        persistSerial(meetingId, state);
+        progress({ stage: 'step', stepIndex: index, attempt });
+
+        let dispatchResult = null;
+        let failureReason = null;
+        try {
+          for (const memberId of targetMemberIds) await ensureMemberReady(meeting, memberId);
+          if (entry.abort) { state.status = 'stopped_user'; break; }
+          const stepPrompt = WT.buildSerialStepPrompt(state.goal, stepConfigs[index], index, steps.length);
+          const timeoutMs = Math.max(60_000, Math.min(30 * 60_000, Number(stepConfigs[index] && stepConfigs[index].timeoutMs) || 10 * 60_000));
+          dispatchResult = await getDispatcher().dispatchGroupChatTurn(meetingId, {
+            userInput: stepPrompt,
+            targetMemberIds,
+            reuseTurnNum: state.currentTurnNum || null,
+            appendUserMessage: !state.currentTurnNum,
+            dispatchMode: 'serial',
+            turnTimeoutMs: timeoutMs,
+            allowActiveExtend: false,
+            heroIdBySid: runOptions.heroIdBySid || {},
+            workflowRun: {
+              runId: state.runId,
+              kind: 'serial',
+              stepIndex: index,
+              attempt,
+              targetMemberIds,
+            },
+          });
+          if (dispatchResult && dispatchResult.turnNum) state.currentTurnNum = dispatchResult.turnNum;
+          const checked = validateStepResult(meeting, targetMemberIds, dispatchResult);
+          if (checked.takenOver) {
+            state.status = 'stopped_user';
+            state.lastError = { stage: 'serial', stepIndex: index, reason: checked.reason, at: Date.now() };
+            break;
+          }
+          if (!checked.ok) failureReason = checked.reason;
+        } catch (error) {
+          failureReason = error && error.message || 'serial_step_exception';
+          logError(`[workflow-engine] serial step ${index + 1} failed:`, error);
+        }
+
+        if (!failureReason) {
+          state.completedSteps.push({ stepIndex: index, completedAt: Date.now(), attempt });
+          state.nextStepIndex = index + 1;
+          state.currentStepIndex = null;
+          state.lastError = null;
+          persistSerial(meetingId, state);
+          progress({ stage: 'step-complete', completedStepIndex: index, attempt });
+          continue;
+        }
+
+        state.lastError = { stage: 'serial', stepIndex: index, reason: failureReason, attempt, at: Date.now() };
+        persistSerial(meetingId, state);
+        if (attempt < maxAttempts && !entry.abort) {
+          progress({ stage: 'step-retry', stepIndex: index, attempt, error: state.lastError });
+          await sleep(500);
+          continue;
+        }
+        state.status = entry.abort ? 'stopped_user' : 'paused';
+      }
+
+      if (state.status === 'running' && state.nextStepIndex >= steps.length) state.status = 'done';
+      state.currentStepIndex = null;
+      persistSerial(meetingId, state);
+      progress({ stage: state.status === 'done' ? 'done' : state.status, error: state.lastError });
+      return state;
+    } catch (error) {
+      state.status = entry.abort ? 'stopped_user' : 'paused';
+      state.lastError = { stage: 'serial-engine', reason: error && error.message || 'internal_error', at: Date.now() };
+      try { persistSerial(meetingId, state); } catch (persistError) { logError('[workflow-engine] serial fatal persist failed:', persistError); }
+      progress({ stage: 'paused', error: state.lastError });
+      return state;
+    } finally {
+      if (running.get(meetingId) === entry) running.delete(meetingId);
+    }
   }
 
   async function runLoop(meetingId, userInput, persistedLoopState, runOptions = {}) {
     if (running.has(meetingId)) { logger.log('[loop-engine] already running for ' + meetingId); return null; }
-    running.set(meetingId, { abort: false });
+    let entry = null;
+    let state = null;
+    let config = null;
     try {
       const meeting = meetingManager.getMeeting(meetingId);
       if (!meeting) { logger.log('[loop-engine] meeting not found ' + meetingId); return null; }
@@ -100,12 +436,16 @@ function createLoopEngine(deps) {
       const builderId = (steps[0] || [])[0];
       const reviewerIds = Array.from(new Set([].concat(...steps.slice(1)).filter(Boolean)));
       if (!builderId || !reviewerIds.length) { logger.log('[loop-engine] need builder + reviewer(s)'); return null; }
-      const config = buildConfig(wf.loop);
+      config = buildConfig(wf.loop);
 
-      let state, prevMerge = null, goal, resuming = false;
+      let prevMerge = null, goal, resuming = false;
       if (persistedLoopState && persistedLoopState.status === 'running') {
         const r = LC.resumeState(persistedLoopState); state = r.state; prevMerge = r.prevMerge; goal = state.goal || (userInput || '').trim(); resuming = true;
       } else { goal = (userInput || '').trim(); state = LC.newLoopState(); state.goal = goal; }
+      state.runId = state.runId || runId('loop');
+      state.currentTurnNum = state.currentTurnNum || null;
+      entry = { abort: false, mode: 'loop', runId: state.runId, startedAt: Date.now() };
+      running.set(meetingId, entry);
       // v2 migration: a legacy run that already entered polishing has passed its gate.
       // Do not revive the old self-refilling suggestion loop after restart.
       if (state.phase === 'polishing' && !config.polish.enabled) {
@@ -119,30 +459,75 @@ function createLoopEngine(deps) {
       const reviewerRolePrompt = (stepConfigs[1] && stepConfigs[1].prompt) || '';
 
       const dispatcher = getDispatcher();
-      const progress = (extra) => { try { sendToRenderer('loop:progress', Object.assign({ meetingId, round: state.round, phase: state.phase, status: state.status }, extra || {})); } catch (e) {} };
+      const progress = (extra) => {
+        try { sendToRenderer('loop:progress', Object.assign({ meetingId, round: state.round, phase: state.phase, status: state.status }, extra || {})); }
+        catch (error) { logError('[loop-engine] progress delivery failed:', error); }
+      };
+      const persistOrPause = () => {
+        if (persist(meetingId, state, config)) return true;
+        state.status = 'paused';
+        state.lastError = { stage: 'persist', reason: 'workflow_state_persist_failed', at: Date.now() };
+        progress({ stage: 'paused', error: state.lastError });
+        return false;
+      };
       logger.log('[loop-engine] ' + (resuming ? 'resume' : 'start') + ' meeting=' + meetingId + ' round=' + state.round + ' goal=' + goal);
-      persist(meetingId, state, config); progress({ stage: 'start' });
+      if (!persistOrPause()) return state;
+      progress({ stage: 'start' });
 
       while (state.status === 'running') {
-        if (running.get(meetingId) && running.get(meetingId).abort) { state.status = 'stopped_user'; break; }
+        if (entry.abort) { state.status = 'stopped_user'; break; }
         if (state.round > config.stop.maxRounds + 2) { state.status = 'stopped_max'; break; } // 本地兜底
 
         const taskInfo = LC.builderTaskText(state, prevMerge, config);
         const builderPrompt = LC.PROMPTS.builder({ goal, cwd: config.cwd, firstRound: taskInfo.firstRound, phase: taskInfo.phase, taskText: taskInfo.taskText, rolePrompt: builderRolePrompt });
-        await ensureMemberReady(meeting, builderId);
         state.currentStep = 'builder'; state.attempt = state.round + 1; state.lastError = null;
-        persist(meetingId, state, config);
+        if (!persistOrPause()) break;
         progress({ stage: 'builder', round: state.round + 1 });
-        let bRes;
-        // 2026-07-20 道雪 [修#8]：builder 轮 10min 硬超时——此前不传 turnTimeoutMs，
-        //   一个卡死的 CLI 会让 loop 轮内永久挂起（deadlineTs 只在轮间检查）。
-        try { bRes = await dispatcher.dispatchGroupChatTurn(meetingId, { userInput: builderPrompt, targetMemberIds: [builderId], reuseTurnNum: null, appendUserMessage: true, dispatchMode: 'serial', turnTimeoutMs: 10 * 60 * 1000, heroIdBySid: runOptions.heroIdBySid || {} }); }
-        catch (e) {
-          state.status = 'paused'; state.lastError = { stage: 'builder', reason: (e && e.message) || 'builder_error', at: Date.now() };
-          logger.log('[loop-engine] builder turn err: ' + state.lastError.reason); break;
+        let bRes = null;
+        const builderStepIndex = state.round * 2;
+        const builderEvidence = stepEvidence(meetingId, state.runId, builderStepIndex);
+        if (builderEvidence && evidenceIsSuccessful(builderEvidence, 1)) {
+          bRes = dispatchResultFromEvidence(meeting, [builderId], builderEvidence);
+          state.currentTurnNum = bRes.turnNum;
+          progress({ stage: 'builder-recovered', round: state.round + 1 });
+        } else {
+          if (!state.currentTurnNum) state.currentTurnNum = pendingStepTurn(meetingId, state.runId, builderStepIndex) || null;
+          for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
+            state.stepAttempt = transportAttempt;
+            if (!persistOrPause()) break;
+            try {
+              await ensureMemberReady(meeting, builderId);
+              bRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
+                userInput: builderPrompt,
+                targetMemberIds: [builderId],
+                reuseTurnNum: state.currentTurnNum || null,
+                appendUserMessage: !state.currentTurnNum,
+                dispatchMode: 'serial',
+                turnTimeoutMs: 10 * 60 * 1000,
+                allowActiveExtend: false,
+                heroIdBySid: runOptions.heroIdBySid || {},
+                workflowRun: { runId: state.runId, kind: 'loop', stepIndex: builderStepIndex, attempt: transportAttempt, targetMemberIds: [builderId] },
+              });
+              if (bRes && bRes.turnNum) state.currentTurnNum = bRes.turnNum;
+              const checked = validateStepResult(meeting, [builderId], bRes);
+              if (checked.takenOver) break;
+              if (checked.ok) break;
+              state.lastError = { stage: 'builder', reason: checked.reason, attempt: transportAttempt, at: Date.now() };
+            } catch (e) {
+              state.lastError = { stage: 'builder', reason: (e && e.message) || 'builder_error', attempt: transportAttempt, at: Date.now() };
+              logError('[loop-engine] builder turn failed:', e);
+            }
+            if (!persistOrPause()) break;
+            if (transportAttempt < 2 && !entry.abort) {
+              progress({ stage: 'builder-retry', round: state.round + 1, attempt: transportAttempt, error: state.lastError });
+              await sleep(500);
+            }
+          }
         }
-        if (!bRes || bRes.status !== 'completed') {
-          state.status = 'paused'; state.lastError = { stage: 'builder', reason: (bRes && (bRes.reason || bRes.status)) || 'builder_not_completed', at: Date.now() };
+        const builderChecked = validateStepResult(meeting, [builderId], bRes);
+        if (!builderChecked.ok && !builderChecked.takenOver) {
+          state.status = 'paused';
+          state.lastError = state.lastError || { stage: 'builder', reason: builderChecked.reason, at: Date.now() };
           logger.log('[loop-engine] builder not completed: ' + state.lastError.reason); break;
         }
         // 运行中被用户接管（2026-07-29 道雪）：用户点「停止本轮」(interrupted) 或直接
@@ -156,21 +541,55 @@ function createLoopEngine(deps) {
           break;
         }
         const turnNum = bRes.turnNum;
+        state.currentTurnNum = turnNum;
+        state.stepAttempt = 0;
 
         const reviewerPrompt = LC.PROMPTS.reviewer({ goal, cwd: config.cwd, rolePrompt: reviewerRolePrompt });
-        for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
         state.currentStep = 'reviewer'; state.lastError = null;
-        persist(meetingId, state, config);
+        if (!persistOrPause()) break;
         progress({ stage: 'reviewer', round: state.round + 1 });
-        let rRes;
-        // 2026-07-20 道雪 [修#8]：reviewer 轮 5min 硬超时（评审通常快于构建）。
-        try { rRes = await dispatcher.dispatchGroupChatTurn(meetingId, { userInput: reviewerPrompt, targetMemberIds: reviewerIds, reuseTurnNum: turnNum, appendUserMessage: false, dispatchMode: 'serial', turnTimeoutMs: 5 * 60 * 1000, heroIdBySid: runOptions.heroIdBySid || {} }); }
-        catch (e) {
-          state.status = 'paused'; state.lastError = { stage: 'reviewer', reason: (e && e.message) || 'reviewer_error', at: Date.now() };
-          logger.log('[loop-engine] reviewer turn err: ' + state.lastError.reason); break;
+        let rRes = null;
+        const reviewerStepIndex = state.round * 2 + 1;
+        const reviewerEvidence = stepEvidence(meetingId, state.runId, reviewerStepIndex);
+        if (reviewerEvidence && evidenceIsSuccessful(reviewerEvidence, reviewerIds.length)) {
+          rRes = dispatchResultFromEvidence(meeting, reviewerIds, reviewerEvidence);
+          progress({ stage: 'reviewer-recovered', round: state.round + 1 });
+        } else {
+          for (let transportAttempt = Math.max(0, Number(state.stepAttempt) || 0) + 1; transportAttempt <= 2; transportAttempt += 1) {
+            state.stepAttempt = transportAttempt;
+            if (!persistOrPause()) break;
+            try {
+              for (const rid of reviewerIds) await ensureMemberReady(meeting, rid);
+              rRes = await dispatcher.dispatchGroupChatTurn(meetingId, {
+                userInput: reviewerPrompt,
+                targetMemberIds: reviewerIds,
+                reuseTurnNum: turnNum,
+                appendUserMessage: false,
+                dispatchMode: 'serial',
+                turnTimeoutMs: 5 * 60 * 1000,
+                allowActiveExtend: false,
+                heroIdBySid: runOptions.heroIdBySid || {},
+                workflowRun: { runId: state.runId, kind: 'loop', stepIndex: reviewerStepIndex, attempt: transportAttempt, targetMemberIds: reviewerIds },
+              });
+              const checked = validateStepResult(meeting, reviewerIds, rRes);
+              if (checked.takenOver) break;
+              if (checked.ok) break;
+              state.lastError = { stage: 'reviewer', reason: checked.reason, attempt: transportAttempt, at: Date.now() };
+            } catch (e) {
+              state.lastError = { stage: 'reviewer', reason: (e && e.message) || 'reviewer_error', attempt: transportAttempt, at: Date.now() };
+              logError('[loop-engine] reviewer turn failed:', e);
+            }
+            if (!persistOrPause()) break;
+            if (transportAttempt < 2 && !entry.abort) {
+              progress({ stage: 'reviewer-retry', round: state.round + 1, attempt: transportAttempt, error: state.lastError });
+              await sleep(500);
+            }
+          }
         }
-        if (!rRes || rRes.status !== 'completed') {
-          state.status = 'paused'; state.lastError = { stage: 'reviewer', reason: (rRes && (rRes.reason || rRes.status)) || 'reviewer_not_completed', at: Date.now() };
+        const reviewerChecked = validateStepResult(meeting, reviewerIds, rRes);
+        if (!reviewerChecked.ok && !reviewerChecked.takenOver) {
+          state.status = 'paused';
+          state.lastError = state.lastError || { stage: 'reviewer', reason: reviewerChecked.reason, at: Date.now() };
           logger.log('[loop-engine] reviewer not completed: ' + state.lastError.reason); break;
         }
         // 同 builder：评审步被中断/被新提问抢占 → 停整个循环，不拿空 verdict 推进 gate。
@@ -184,12 +603,13 @@ function createLoopEngine(deps) {
         const reviews = reviewerIds.map((rid) => { const sid = sidOf(meeting, rid); return { from: labelOf(meeting, rid), verdict: LC.parseVerdict(textFrom(rRes.results, sid)), raw: textFrom(rRes.results, sid) }; });
         const merge = LC.mergeVerdicts(reviews); prevMerge = merge;
         LC.advanceLoopState(state, merge, config, Date.now());
-        state.currentStep = null; state.lastError = null;
+        state.currentStep = null; state.currentTurnNum = null; state.stepAttempt = 0; state.lastError = null;
         logger.log('[loop-engine] round=' + state.round + ' phase=' + state.phase + ' pass=' + merge.pass + ' status=' + state.status);
-        persist(meetingId, state, config); progress({ stage: 'advanced' });
+        if (!persistOrPause()) break;
+        progress({ stage: 'advanced' });
       }
 
-      persist(meetingId, state, config);
+      persistOrPause();
       try {
         const html = LC.buildReportHtml(goal, state, config, { builderLabel: labelOf(meeting, builderId), reviewerLabels: reviewerIds.map((r) => labelOf(meeting, r)).join('+'), finishedAt: formatBeijingDateTime(Date.now()) });
         const p = writeReport(html); if (p) logger.log('[loop-engine] report → ' + p);
@@ -197,13 +617,44 @@ function createLoopEngine(deps) {
       progress({ stage: state.status === 'paused' ? (state.currentStep || 'paused') : 'done', status: state.status, error: state.lastError || null });
       logger.log('[loop-engine] finished ' + meetingId + ' status=' + state.status + ' rounds=' + state.round);
       return state;
+    } catch (error) {
+      logError('[loop-engine] unhandled runtime failure:', error);
+      if (!state) {
+        return { status: 'paused', lastError: { stage: 'loop-engine', reason: error && error.message || 'internal_error', at: Date.now() } };
+      }
+      state.status = entry && entry.abort ? 'stopped_user' : 'paused';
+      state.lastError = { stage: 'loop-engine', reason: error && error.message || 'internal_error', at: Date.now() };
+      if (config) persist(meetingId, state, config);
+      try { sendToRenderer('loop:progress', { meetingId, round: state.round, phase: state.phase, status: state.status, stage: state.status, error: state.lastError }); }
+      catch (progressError) { logError('[loop-engine] fatal progress delivery failed:', progressError); }
+      return state;
     } finally {
-      running.delete(meetingId);
+      if (entry && running.get(meetingId) === entry) running.delete(meetingId);
     }
   }
 
-  function stopLoop(meetingId) { const r = running.get(meetingId); if (r) { r.abort = true; return true; } return false; }
+  function stopLoop(meetingId, options = {}) {
+    const r = running.get(meetingId);
+    if (!r) return false;
+    r.abort = true;
+    if (options.interrupt !== false) {
+      try { getDispatcher().interruptMeetingTurn(meetingId, { reason: 'workflow_stop' }); }
+      catch (error) { logError('[workflow-engine] interrupt on stop failed:', error); }
+    }
+    return true;
+  }
   function isRunning(meetingId) { return running.has(meetingId); }
+  function getStatus(meetingId) {
+    const active = running.get(meetingId);
+    if (active) return { running: true, mode: active.mode, runId: active.runId, startedAt: active.startedAt };
+    const meeting = meetingManager.getMeeting(meetingId);
+    const workflow = meeting && meeting.serialWorkflow || {};
+    return {
+      running: false,
+      serialRunState: workflow.serialRunState || null,
+      loopState: workflow.loopState || null,
+    };
+  }
 
   // Hub boot：扫描所有 meeting，未完成的循环自动续跑
   function resumePending() {
@@ -211,15 +662,20 @@ function createLoopEngine(deps) {
       const all = (meetingManager.getAllMeetings && meetingManager.getAllMeetings()) || [];
       for (const mt of all) {
         const sw = mt && mt.serialWorkflow; const ls = sw && sw.loopState;
-        if (sw && sw.loop && sw.loop.enabled && ls && ls.status === 'running' && !(ls.deadlineTs && Date.now() >= ls.deadlineTs)) {
+        const serialState = sw && sw.serialRunState;
+        if (sw && sw.enabled && !(sw.loop && sw.loop.enabled)
+          && serialState && serialState.status === 'running') {
+          logger.log('[workflow-engine] boot resume serial ' + mt.id + ' from step ' + serialState.nextStepIndex);
+          runSerial(mt.id, null, serialState).catch(error => logError('[workflow-engine] boot serial resume failed:', error));
+        } else if (sw && sw.loop && sw.loop.enabled && ls && ls.status === 'running' && !(ls.deadlineTs && Date.now() >= ls.deadlineTs)) {
           logger.log('[loop-engine] boot resume ' + mt.id + ' from round ' + ls.round);
-          runLoop(mt.id, null, ls); // 不 await，后台续跑
+          runLoop(mt.id, null, ls).catch(error => logError('[loop-engine] boot loop resume failed:', error)); // 不 await，后台续跑
         }
       }
     } catch (e) { logger.log('[loop-engine] resumePending err: ' + (e && e.message)); }
   }
 
-  return { runLoop, stopLoop, isRunning, resumePending };
+  return { getStatus, isRunning, resumePending, runLoop, runSerial, stopLoop, validateLoop, validateSerial };
 }
 
 module.exports = { createLoopEngine };

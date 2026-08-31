@@ -8,6 +8,7 @@ const { EventEmitter } = require('events');
 const { ChuxinSessionRegistry } = require('../core/chuxin-session-registry.js');
 const { MODEL_OPTIONS_BY_KIND, DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
 const { CHUXIN_DEFAULT_MODEL_BY_KIND, modelCatalog, registerChuxinIpc, resumeOptions, validateProviderModel } = require('../main/ipc/chuxin-handlers.js');
+const CHUXIN_ROOT = process.env.CHUXIN_DIR || path.join(os.homedir(), 'chuxin-research');
 
 function test(name, fn) {
   try {
@@ -149,7 +150,7 @@ test('Chuxin exposes one eight-item workbench nav including the native Agent Lea
   const root = path.join(__dirname, '..');
   const chuxin = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
   const styles = fs.readFileSync(path.join(root, 'renderer', 'chuxin.css'), 'utf8');
-  const frontendRoot = path.join(root, '..', 'chuxin-research', 'frontend');
+  const frontendRoot = path.join(CHUXIN_ROOT, 'frontend');
   const embeddedApp = fs.readFileSync(path.join(frontendRoot, 'app.js'), 'utf8');
   const embeddedStyles = fs.readFileSync(path.join(frontendRoot, 'styles.css'), 'utf8');
   const primaryBlock = chuxin.match(/const PRIMARY_TABS = \[([\s\S]*?)\n  \];/);
@@ -177,7 +178,7 @@ test('backend launcher polls readiness and exposes actionable startup errors', (
   const root = path.join(__dirname, '..');
   const handler = fs.readFileSync(path.join(root, 'main', 'ipc', 'chuxin-handlers.js'), 'utf8');
   const renderer = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
-  const runScript = fs.readFileSync(path.join(root, '..', 'chuxin-research', 'run.ps1'), 'utf8');
+  const runScript = fs.readFileSync(path.join(CHUXIN_ROOT, 'run.ps1'), 'utf8');
   assert.match(handler, /stdio: \['ignore', 'pipe', 'pipe'\]/);
   assert.match(handler, /waitHealthy\(45000\)/);
   assert.match(handler, /launcher\.log/);

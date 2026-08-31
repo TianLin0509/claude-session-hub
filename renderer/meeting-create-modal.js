@@ -14,41 +14,41 @@ const DEFAULT_SLOTS = [
   { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
   { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
 ];
-const DEFAULT_GROUP_MEMBERS = DEFAULT_SLOTS.map(x => ({ ...x }));
+const GROUP_MEMBER_KINDS = ['claude', 'codex', 'deepseek'];
+// Claude + Codex are the durable default pair. DeepSeek is an explicit third
+// member rather than a cost/latency-bearing default in every room.
+const DEFAULT_GROUP_MEMBERS = DEFAULT_SLOTS.slice(0, 2).map(x => ({ ...x }));
 const SLOT_NAMES = ['一号位', '二号位', '三号位'];
 const GROUP_TEMPLATES = [
   {
     id: 'general',
     label: '通用会诊',
-    desc: '澄清、方案、风险三路并行',
+    desc: '分析与反证双路协作',
     scene: 'general',
     placeholder: '例如：帮我拆解这个问题，给出可执行方案',
     slots: [
       { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
       { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
-      { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
     ],
   },
   {
     id: 'review',
     label: '代码/方案评审',
-    desc: '实现者、审查者、反例攻击',
+    desc: '实现与独立审查双路协作',
     scene: 'dev',
     placeholder: '例如：审查这段实现的风险和遗漏',
     slots: [
       { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
       { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
-      { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
     ],
   },
   {
     id: 'research',
     label: '投研圆桌',
-    desc: '基本面、资金面、反方风控',
+    desc: '主论据与反方风控双路研判',
     scene: 'research',
     placeholder: '例如：分析这只股票后续走势和操作计划',
     slots: [
-      { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
       { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
       { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
     ],
@@ -56,12 +56,11 @@ const GROUP_TEMPLATES = [
   {
     id: 'decision',
     label: '决策交接',
-    desc: '结论、取舍、下一步动作',
+    desc: '方案与取舍双路收敛',
     scene: 'general',
     placeholder: '例如：把多方案讨论收敛成决策建议',
     slots: [
       { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
-      { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
       { kind: 'codex', model: DEFAULT_MODEL_BY_KIND.codex },
     ],
   },
@@ -193,7 +192,8 @@ function _applyTemplate(templateId, opts = {}) {
 function _slotHtml(i, spec, isGroup) {
   const def = _normalizeSlotSpec(spec || DEFAULT_SLOTS[i] || DEFAULT_SLOTS[0]);
   const tuning = window.WorkspaceController.resolveSessionTuning(def.kind, def.model, def);
-  const aiOptions = Object.keys(MODELS_BY_KIND).map(k =>
+  const providerKinds = isGroup ? GROUP_MEMBER_KINDS : Object.keys(MODELS_BY_KIND);
+  const aiOptions = providerKinds.map(k =>
     `<option value="${_escapeHtml(k)}"${k === def.kind ? ' selected' : ''}>${_escapeHtml(KIND_LABELS[k] || k)}</option>`
   ).join('');
   const avatarSrc = _aiLogo(def.kind);
@@ -298,6 +298,16 @@ function _renderSlots() {
       }
     });
   });
+  const addBtn = _modalEl.querySelector('#mcm-add-member');
+  if (addBtn && _isGroupChat) {
+    const present = new Set(_groupSlots.map(slot => slot.kind));
+    const nextKind = GROUP_MEMBER_KINDS.find(kind => !present.has(kind));
+    addBtn.disabled = !nextKind;
+    addBtn.textContent = nextKind === 'deepseek'
+      ? '+ 添加 DeepSeek'
+      : nextKind ? `+ 添加 ${KIND_LABELS[nextKind] || nextKind}` : '成员已齐全';
+    addBtn.title = nextKind ? `添加可选成员 ${KIND_LABELS[nextKind] || nextKind}` : '群聊支持 Claude、Codex、DeepSeek 各一位';
+  }
 }
 
 function _ensureModal() {
@@ -332,7 +342,7 @@ function _ensureModal() {
         </div>
         <div class="mcm-member-caption">
           <strong>成员配置</strong>
-          <span>每位成员独立选择模型、思考强度、速度与 MCP；Codex 选 None 时不会注入群聊或投研 MCP，1M 为启动请求并受 CLI 模型目录上限约束。</span>
+          <span>默认保留 Claude + Codex；需要第三视角时再添加 DeepSeek。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
         </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
@@ -369,7 +379,10 @@ function _bindEvents() {
   });
   _modalEl.querySelector('#mcm-add-member').addEventListener('click', () => {
     _syncGroupSlotsFromDom();
-    _groupSlots.push(_normalizeSlotSpec(DEFAULT_GROUP_MEMBERS[_groupSlots.length % DEFAULT_GROUP_MEMBERS.length]));
+    const present = new Set(_groupSlots.map(slot => slot.kind));
+    const nextKind = GROUP_MEMBER_KINDS.find(kind => !present.has(kind));
+    if (!nextKind) return;
+    _groupSlots.push(_normalizeSlotSpec({ kind: nextKind, model: DEFAULT_MODEL_BY_KIND[nextKind] }));
     _renderSlots();
   });
   _modalEl.querySelectorAll('[data-mcm-workspace-mode]').forEach(button => {

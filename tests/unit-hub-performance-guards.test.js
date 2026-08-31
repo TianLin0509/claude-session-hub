@@ -349,6 +349,7 @@ test('automatic suspend can hibernate idle meeting members while protecting acti
 test('renderer keeps xterms lazy, session-lifecycle retained and snapshot-hydrated', () => {
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'renderer.js'), 'utf8');
   const meeting = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'meeting-room.js'), 'utf8');
+  const workflowEngine = fs.readFileSync(path.join(__dirname, '..', 'main', 'groupchat', 'loop-engine.js'), 'utf8');
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const created = renderer.slice(renderer.indexOf("ipcRenderer.on('session-created'"), renderer.indexOf("ipcRenderer.on('session-meta-updated'"));
   assert.doesNotMatch(created, /getOrCreateTerminal\(session\.id\)/);
@@ -366,7 +367,11 @@ test('renderer keeps xterms lazy, session-lifecycle retained and snapshot-hydrat
   assert.doesNotMatch(renderer.slice(unloadStart, unloadEnd), /terminal\.dispose\(/,
     'surface suspension must never dispose the live xterm/buffer');
   assert.match(renderer, /usesLazySerialWake/);
-  assert.match(meeting, /await _ensureWorkflowMembersReady\(m, targetMemberIds\)/);
+  assert.match(meeting, /ipcRenderer\.invoke\('serial:start'/,
+    'renderer must delegate serial work instead of holding eager PTY wake loops');
+  assert.match(workflowEngine, /await ensureMemberReady\(meeting, memberId\)/);
+  assert.match(workflowEngine, /resumeSession\(\{ \.\.\.session, hubId:/,
+    'main workflow engine must lazily resume each provider with full Session metadata');
   assert.match(main, /meeting-terminal-activity/);
   assert.match(main, />= 500/);
 });
