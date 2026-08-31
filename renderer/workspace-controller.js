@@ -246,7 +246,10 @@
     catch { return String(value || '').toLowerCase(); }
   }
 
+  // 平铺模式下工作根正是该用的目录，不能再显示成「组织根·不可用」——
+  // 那会把默认落点标成不可用，与实际行为直接矛盾。
   function workspaceTierLabel(tier) {
+    if (tier === 'root' && flatWorkRoot) return '工作根';
     return WORKSPACE_TIER_LABELS[tier] || '工作区';
   }
 
@@ -1143,6 +1146,10 @@
       if (button) button.addEventListener('click', closeNewSessionModal);
     }
     paint();
+    // 预热工作区信息：workspaceTierLabel() 要靠 flatWorkRoot 才能把工作根显示成
+    // 「工作根」而不是「组织根·不可用」，而侧边栏 / 会话 header 的 chip 可能在
+    // 启动中心第一次打开之前就调用它。不预热就会先闪一次错误标签。
+    void loadRecent().then(paint).catch(() => {});
   }
 
   window.WorkspaceController = {

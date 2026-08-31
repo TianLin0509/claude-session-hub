@@ -112,6 +112,47 @@ test('listWorkspaces 把 flatRoot 透出给 UI', () => {
   assert.equal(path.resolve(listing.root).toLowerCase(), path.resolve(root).toLowerCase());
 });
 
+// 审阅时抓到的真 bug：renderer 的 createDefaultWorkspace 会传 label:'未命名任务'，
+// session-handlers 会传 opts.workspaceLabel，而 touchWorkspace 见到非空 label 就覆盖 ——
+// 于是每开一个新会话，工作根在注册表里的名字就被改成「未命名任务」。
+test('工作根的显示名不会被会话级 label 覆盖', () => {
+  const root = tempRoot('label');
+  const svc = makeService(root);
+  svc.ensureRoot();
+  fs.writeFileSync(path.join(root, '.aiwork-root'), 'marker');
+
+  const expected = path.basename(root);
+  const first = svc.ensureDefaultWorkspace({ select: false, label: '未命名任务' });
+  assert.equal(first.label, expected);
+
+  // 再开两个会话，名字必须纹丝不动
+  svc.resolveForSession(undefined, { select: false, label: '未命名群聊' });
+  const third = svc.resolveForSession(undefined, { select: false, label: '随便什么标题' });
+  assert.equal(third.label, expected, '工作根名字必须稳定，只跟目录名走');
+
+  assert.equal(svc.getWorkspace(root).label, expected, '注册表里也不能被改');
+});
+
+// 归档提示在平铺下必须彻底哑火：工作根 draft=false，老 _scratch 目录也不再算
+// 本工作根的 scratch（scratch 根已经跟着 AI_HUB_WORKSPACE_ROOT 搬走了）。
+test('平铺下归档提示不触发，且不抛异常', () => {
+  const root = tempRoot('archive');
+  const svc = makeService(root);
+  svc.ensureRoot();
+  fs.writeFileSync(path.join(root, '.aiwork-root'), 'marker');
+
+  const ws = svc.ensureDefaultWorkspace({ select: false });
+  const ctx = svc.getArchiveContext(ws.path);
+  assert.equal(ctx.required, false, '工作根不该触发归档提示');
+
+  // 一个「别的工作根下的」历史 scratch 目录：不属于当前 scratch 根，也不该要求归档
+  const legacy = path.join(root, 'legacy-scratch-like');
+  fs.mkdirSync(legacy, { recursive: true });
+  const legacyWs = svc.touchWorkspace(legacy, { draft: true, select: false });
+  assert.equal(svc.isScratchWorkspace(legacyWs.path), false);
+  assert.equal(svc.getArchiveContext(legacy).required, false);
+});
+
 test('显式传入的 cwd 依然优先于任何默认档', () => {
   const root = tempRoot('explicit');
   const svc = makeService(root);

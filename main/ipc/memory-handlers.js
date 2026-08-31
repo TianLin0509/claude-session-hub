@@ -31,6 +31,12 @@ function registerMemoryIpc(ipcMain, deps) {
   const ctx = () => ({
     homeDir,
     workspaceRoot: workspaceService.getWorkspaceRoot(),
+    // 平铺模式下工作根就是会话 cwd，根上的 AGENTS.md 被直接读取而不是被播种出去。
+    // 面板要靠这个标志改文案，否则会一直说「seed 源 · 自动播种到未来临时工作区」，
+    // 而实际上已经不再有副本可播。
+    flatRoot: typeof workspaceService.isFlatWorkRoot === 'function'
+      ? workspaceService.isFlatWorkRoot()
+      : false,
     hubDataDir: getHubDataDir(),
   });
 

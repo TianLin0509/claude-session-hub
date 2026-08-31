@@ -184,7 +184,12 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
         badge: f.hasDreamSection ? '梦境区' : '', badgeCls: 'dream',
       })).join('')}</div>`);
 
-    sections.push(`<div class="mp-section"><div class="mp-sec-title">工作区规则（seed 源 · 改动自动播种到未来临时工作区）</div>${
+    // 平铺模式下工作根就是会话 cwd，这三份规则被 CLI 直接读取；改完对所有会话
+    // 立即生效，不再需要「播种到未来的临时工作区」那套。
+    const workspaceSecTitle = o.flatRoot
+      ? `工作根规则（${escapeHtml(o.workspaceRoot || '')} · 所有新会话共享，改完立即生效）`
+      : '工作区规则（seed 源 · 改动自动播种到未来临时工作区）';
+    sections.push(`<div class="mp-section"><div class="mp-sec-title">${workspaceSecTitle}</div>${
       o.workspaceFiles.map(f => fileRow({
         label: f.label, path: f.path, exists: f.exists, size: f.size, mtime: f.mtime,
         badge: f.hasDreamSection ? '梦境区' : '', badgeCls: 'dream',
@@ -192,12 +197,19 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
 
     const cm = o.claudeMemory;
     const memBadge = cm.islandCount ? `<span class="mp-badge warn">${cm.islandCount} 个孤岛</span>` : `<span class="mp-badge ok">${cm.linkedCount} 桶已链接</span>`;
+    // 标题必须用真实总数：列表被 listMdFiles 截到最近 50 个，照 files.length 写
+    // 会把 206 篇说成 50 篇。
+    const canonicalTotal = typeof cm.canonical.totalFiles === 'number'
+      ? cm.canonical.totalFiles
+      : cm.canonical.files.length;
     const canonicalChildren = cm.canonical.files.map(f =>
       fileRow({ label: f.name, path: f.path, exists: true, size: f.size, mtime: f.mtime })).join('')
-      + (cm.canonical.files.length >= 50 ? '<div class="mp-more">… 仅列最近修改的 50 个</div>' : '');
+      + (canonicalTotal > cm.canonical.files.length
+        ? `<div class="mp-more">… 共 ${canonicalTotal} 个，仅列最近修改的 ${cm.canonical.files.length} 个</div>`
+        : '');
     sections.push(`<div class="mp-section">
       <div class="mp-sec-title">Claude memory 规范库 ${memBadge}</div>
-      ${dirRow({ label: `规范库（${cm.canonical.files.length} 个文件）`, path: cm.canonical.path, children: canonicalChildren })}
+      ${dirRow({ label: `规范库（${canonicalTotal} 个文件）`, path: cm.canonical.path, children: canonicalChildren })}
     </div>`);
 
     const islands = cm.buckets.filter(b => b.status === 'island');
@@ -214,12 +226,22 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
         })).join('')}</div>`);
     }
 
+    // seed 副本区：平铺模式下不再产生新副本（cwd 就是根，规则被直接读取）。
+    // 但存量副本仍可能有「被改过、还没并回根规则」的知识，那是真要处理的，
+    // 所以只在确实还有存量时才显示；一份都没有时整区隐藏，避免留一块永远
+    // 空着的面板让人以为功能坏了。
     const sc = o.seedCopies;
-    sections.push(`<div class="mp-section">
-      <div class="mp-sec-title">seed 副本（临时工作区的 AGENTS.md）${sc.modifiedCount ? `<span class="mp-badge warn">${sc.modifiedCount} 份被改过</span>` : '<span class="mp-badge ok">全部与源同步</span>'}</div>
-      ${sc.copies.filter(c => c.status === 'modified').slice(0, 10).map(c =>
-        fileRow({ label: c.cwd.split(/[\\/]/).pop(), path: c.path, exists: true, size: 0, mtime: 0, badge: '已修改', badgeCls: 'warn' })).join('') || '<div class="mp-more">没有被本地修改的副本。</div>'}
-    </div>`);
+    const hasSeedCopies = sc && Array.isArray(sc.copies) && sc.copies.length > 0;
+    if (hasSeedCopies) {
+      const seedTitle = o.flatRoot
+        ? 'seed 副本（存量临时工作区的 AGENTS.md · 平铺后不再新增）'
+        : 'seed 副本（临时工作区的 AGENTS.md）';
+      sections.push(`<div class="mp-section">
+        <div class="mp-sec-title">${seedTitle}${sc.modifiedCount ? `<span class="mp-badge warn">${sc.modifiedCount} 份被改过</span>` : '<span class="mp-badge ok">全部与源同步</span>'}</div>
+        ${sc.copies.filter(c => c.status === 'modified').slice(0, 10).map(c =>
+          fileRow({ label: c.cwd.split(/[\\/]/).pop(), path: c.path, exists: true, size: 0, mtime: 0, badge: '已修改', badgeCls: 'warn' })).join('') || '<div class="mp-more">没有被本地修改的副本。</div>'}
+      </div>`);
+    }
 
     const c = o.consolidation;
     const lastRun = c.state && c.state.summary;

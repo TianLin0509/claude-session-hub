@@ -133,7 +133,12 @@ class WorkspaceService {
       this.logger.warn('[workspace] ensure codex root marker failed:', error && error.message);
     }
     return this.touchWorkspace(root, {
-      label: meta.label || this._defaultLabel(root),
+      // **故意忽略 meta.label**。调用方普遍传「未命名任务」「未命名群聊」这类会话级标签
+      // （renderer 的 createDefaultWorkspace、session-handlers 的 opts.workspaceLabel），
+      // 而 touchWorkspace 每次都会用非空 label 覆盖注册表里的值 —— 照单全收的话，
+      // 每开一个新会话都会把工作根重命名成「未命名任务」。工作根是常驻工作区，
+      // 名字必须稳定，只认目录名。
+      label: this._defaultLabel(root),
       // 平铺根是常驻工作区，不是草稿：draft 会触发归档提示，而平铺方案下没有归档这回事。
       draft: false,
       select: meta.select !== false,

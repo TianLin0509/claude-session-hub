@@ -30,6 +30,16 @@ function statFile(p) {
   }
 }
 
+// 真实总数，不受 listMdFiles 的展示上限影响。
+function countMdFiles(dir) {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter(e => e.isFile() && /\.md$/i.test(e.name)).length;
+  } catch {
+    return 0;
+  }
+}
+
 function listMdFiles(dir, limit = 50) {
   try {
     return fs.readdirSync(dir, { withFileTypes: true })
@@ -54,6 +64,9 @@ function isSymlinkOrJunction(p) {
 function inspectClaudeMemory(homeDir) {
   const canonical = path.join(homeDir, '.claude', 'projects', projectSlug(homeDir), 'memory');
   const canonicalFiles = listMdFiles(canonical);
+  // listMdFiles 只回最近修改的 50 个（列表要能看），但面板标题得说真实总数——
+  // 实测规范库有 206 篇，标题写「50 个文件」是错的。
+  const canonicalTotal = countMdFiles(canonical);
   const buckets = [];
   for (const root of ['.claude', '.claude-deepseek']) {
     const projectsDir = path.join(homeDir, root, 'projects');
@@ -88,7 +101,12 @@ function inspectClaudeMemory(homeDir) {
     }
   }
   return {
-    canonical: { path: canonical, exists: canonicalFiles.length > 0 || fs.existsSync(canonical), files: canonicalFiles },
+    canonical: {
+      path: canonical,
+      exists: canonicalFiles.length > 0 || fs.existsSync(canonical),
+      files: canonicalFiles,
+      totalFiles: canonicalTotal,
+    },
     buckets,
     islandCount: buckets.filter(b => b.status === 'island').length,
     linkedCount: buckets.filter(b => b.status === 'linked').length,
@@ -142,24 +160,32 @@ function readChangelog(hubDataDir, limit = 200) {
   }
 }
 
-function getOverview({ homeDir = os.homedir(), workspaceRoot, hubDataDir, consolidationConfig }) {
+function getOverview({ homeDir = os.homedir(), workspaceRoot, flatRoot = false, hubDataDir, consolidationConfig }) {
   const claudeMemory = inspectClaudeMemory(homeDir);
   const seedCopies = inspectSeedCopies(workspaceRoot);
   const consolidation = readConsolidationState(hubDataDir);
   return {
     generatedAt: new Date().toISOString(),
     workspaceRoot,
+    flatRoot,
     userGlobalFiles: [
       { label: 'Kimi 全局', ...statFile(path.join(homeDir, '.kimi-code', 'AGENTS.md')) },
       { label: 'Claude 全局', ...statFile(path.join(homeDir, '.claude', 'CLAUDE.md')) },
       { label: 'Codex 全局', ...statFile(path.join(homeDir, '.codex', 'AGENTS.md')) },
       { label: 'Gemini 全局', ...statFile(path.join(homeDir, '.gemini', 'GEMINI.md')) },
     ],
-    workspaceFiles: [
-      { label: '工作区根 AGENTS.md（seed 源）', ...statFile(path.join(workspaceRoot, 'AGENTS.md')) },
-      { label: '工作区根 CLAUDE.md（Claude 向上链）', ...statFile(path.join(workspaceRoot, 'CLAUDE.md')) },
-      { label: '工作区根 GEMINI.md', ...statFile(path.join(workspaceRoot, 'GEMINI.md')) },
-    ],
+    // 平铺模式下这三份是被 CLI 直接读取的（cwd 就是工作根），不是播种源。
+    workspaceFiles: flatRoot
+      ? [
+        { label: '工作根 AGENTS.md（Codex / Kimi 直接读）', ...statFile(path.join(workspaceRoot, 'AGENTS.md')) },
+        { label: '工作根 CLAUDE.md（Claude 直接读）', ...statFile(path.join(workspaceRoot, 'CLAUDE.md')) },
+        { label: '工作根 GEMINI.md', ...statFile(path.join(workspaceRoot, 'GEMINI.md')) },
+      ]
+      : [
+        { label: '工作区根 AGENTS.md（seed 源）', ...statFile(path.join(workspaceRoot, 'AGENTS.md')) },
+        { label: '工作区根 CLAUDE.md（Claude 向上链）', ...statFile(path.join(workspaceRoot, 'CLAUDE.md')) },
+        { label: '工作区根 GEMINI.md', ...statFile(path.join(workspaceRoot, 'GEMINI.md')) },
+      ],
     claudeMemory,
     seedCopies,
     consolidation: {
