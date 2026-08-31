@@ -18,9 +18,11 @@ const {
   chinaClock,
   nextTradingDay,
   parseClock,
+  previousTradingDay,
   tradingDayStatus,
 } = require('../../core/agent-league-calendar.js');
 const { AgentLeagueVirtualDebug } = require('../../core/agent-league-virtual-debug.js');
+const { evaluateAgentLeagueSchedulerSafety } = require('../../core/agent-league-scheduler-safety.js');
 const {
   PHILOSOPHY_TEMPLATES,
   getPhilosophy,
@@ -338,8 +340,24 @@ async function buildFrozenSnapshot(options = {}) {
   if (!overview.ok || !overview.body) throw new Error(`初心概况不可用：${overview.error || overview.status}`);
   const asOf = String(overview.body.header && overview.body.header.data_asof || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) throw new Error('初心概况缺少有效 data_asof');
+  const expectedAsOf = String(options.expectedAsOf || '').slice(0, 10);
   const existingSnapshot = store && store.getSnapshot(decisionFor, 'decision');
-  if (existingSnapshot) return existingSnapshot;
+  const assertFresh = (actual) => {
+    if (!expectedAsOf || actual === expectedAsOf) return;
+    const error = new Error(`盘前数据不是上一交易日：决策日 ${decisionFor} 要求 ${expectedAsOf}，实际 ${actual || 'missing'}`);
+    error.code = 'stale-decision-snapshot';
+    error.decisionFor = decisionFor;
+    error.expectedAsOf = expectedAsOf;
+    error.actualAsOf = actual || '';
+    throw error;
+  };
+  if (existingSnapshot) {
+    assertFresh(String(existingSnapshot.asOf || '').slice(0, 10));
+    return existingSnapshot;
+  }
+  // 在拉候选池、冻结文件之前先拒绝陈旧概况。否则一个 T-2 快照一旦落盘，
+  // 后续数据恢复后也会因为“历史快照不可覆盖”而整日卡在错误输入上。
+  assertFresh(asOf);
   const response = await request('GET', `${apiBase}/api/observe/candidates?limit=200`, 20000, null, { 'X-Chuxin-Workspace': workspace });
   if (!response.ok || !response.body || !Array.isArray(response.body.items)) {
     throw new Error(`初心候选池不可用：${response.error || response.status}`);
@@ -662,8 +680,13 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   const publicRow = (row) => publicAgent(row, sessionManager, { pendingSessionIds: new Set(pendingByHubSession.keys()) });
   let currentRun = null;
   let schedulerTimer = null;
+  const activePhaseLeases = new Map();
+  const schedulerSafety = deps.schedulerSafety || {
+    allowed: autoStartScheduler,
+    reason: autoStartScheduler ? 'runtime-enabled' : 'runtime-disabled',
+  };
   const initialSchedule = store.getSchedule();
-  if (initialSchedule.lastRunStatus === 'running' && !store.currentRunLease()) {
+  if (autoStartScheduler && initialSchedule.lastRunStatus === 'running' && !store.currentRunLease()) {
     store.saveSchedule({ ...initialSchedule, lastRunStatus: 'interrupted' });
   }
 
@@ -766,6 +789,45 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
 
   function promptWasSubmitted(result) {
     return !!result && result.ok !== false && result.sendStatus !== 'stuck';
+  }
+
+  function claimPhaseLease(phase, date) {
+    const runId = `${phase}-${String(date || '').replace(/-/g, '')}-${crypto.randomBytes(4).toString('hex')}`;
+    const claim = store.claimRunLease({
+      ownerHub: String(process.env.CLAUDE_HUB_DATA_DIR || getHubDataDir() || 'default'),
+      runId,
+    });
+    if (!claim.ok) return { ok: false, runId, lease: claim.lease };
+    const timer = setInterval(() => {
+      if (!store.renewRunLease(claim.token)) console.warn(`[agent-league] ${phase} lease renewal failed`);
+    }, 30000);
+    timer.unref?.();
+    activePhaseLeases.set(claim.token, { phase, runId, timer });
+    return { ok: true, token: claim.token, runId, timer };
+  }
+
+  function releasePhaseLease(lease) {
+    if (!lease || !lease.token) return false;
+    if (lease.timer) clearInterval(lease.timer);
+    activePhaseLeases.delete(lease.token);
+    return store.releaseRunLease(lease.token);
+  }
+
+  async function withPhaseLease(phase, date, work) {
+    const lease = claimPhaseLease(phase, date);
+    if (!lease.ok) {
+      return {
+        ok: false,
+        error: 'phase-busy-elsewhere',
+        message: `同一联赛正在另一 Hub 执行阶段任务：${lease.lease && lease.lease.runId || 'unknown'}`,
+        lease: lease.lease || null,
+      };
+    }
+    try {
+      return await work();
+    } finally {
+      releasePhaseLease(lease);
+    }
   }
 
   function requiredSymbols() {
@@ -1040,6 +1102,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       store,
       requiredSymbols: requiredSymbols(),
       decisionFor: decisionDate,
+      expectedAsOf: enforceMarketClock && !input.force ? previousTradingDay(decisionDate) : '',
     });
     const schedule = store.getSchedule();
     if (!input.force && schedule.lastDecisionDate === decisionDate && ['completed', 'running'].includes(schedule.lastRunStatus)) {
@@ -1107,47 +1170,49 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (enforceMarketClock && !input.force && decisionDate === clock.date && clock.minutes < parseClock(store.getSchedule().executionTime, '09:35')) {
       return { ok: false, error: 'before-execution-time', message: `开盘执行时间尚未到：${store.getSchedule().executionTime || '09:35'}` };
     }
-    const rows = store.listAgents().filter((row) => row.portfolio.pendingDecision
-      && String(row.portfolio.pendingDecision.decisionDate || row.portfolio.pendingDecision.decisionAsOf) === decisionDate);
-    if (!rows.length) return { ok: true, alreadyRun: true, decisionDate, results: [], message: '没有待执行决策' };
-    const symbols = new Set();
-    for (const row of rows) {
-      for (const position of row.portfolio.positions || []) symbols.add(position.symbol);
-      for (const target of row.portfolio.pendingDecision.decision.targets || []) symbols.add(target.symbol);
-    }
-    const snapshot = await priceSnapshotBuilder({
-      apiBase: input.apiBase || API_BASE,
-      workspace: WORKSPACE,
-      httpJson: request,
-      store,
-      decisionFor: decisionDate,
-      phase: 'open',
-      symbols,
-    });
-    const results = [];
-    const errors = [];
-    for (const row of rows) {
-      try {
-        const result = store.settleAgent(row.agent.id, snapshot, { executionPriceField: 'open' });
-        results.push({
-          agentId: row.agent.id,
-          settled: result.settled,
-          trades: result.trades,
-          orderNotes: result.orderNotes,
-          nav: result.nav,
-        });
-      } catch (error) {
-        errors.push({ agentId: row.agent.id, error: error.message });
+    return withPhaseLease('open', decisionDate, async () => {
+      const rows = store.listAgents().filter((row) => row.portfolio.pendingDecision
+        && String(row.portfolio.pendingDecision.decisionDate || row.portfolio.pendingDecision.decisionAsOf) === decisionDate);
+      if (!rows.length) return { ok: true, alreadyRun: true, decisionDate, results: [], message: '没有待执行决策' };
+      const symbols = new Set();
+      for (const row of rows) {
+        for (const position of row.portfolio.positions || []) symbols.add(position.symbol);
+        for (const target of row.portfolio.pendingDecision.decision.targets || []) symbols.add(target.symbol);
       }
-    }
-    const schedule = store.getSchedule();
-    store.saveSchedule({
-      ...schedule,
-      lastExecutionDate: decisionDate,
-      lastExecutionStatus: errors.length ? (results.length ? 'partial' : 'failed') : 'completed',
+      const snapshot = await priceSnapshotBuilder({
+        apiBase: input.apiBase || API_BASE,
+        workspace: WORKSPACE,
+        httpJson: request,
+        store,
+        decisionFor: decisionDate,
+        phase: 'open',
+        symbols,
+      });
+      const results = [];
+      const errors = [];
+      for (const row of rows) {
+        try {
+          const result = store.settleAgent(row.agent.id, snapshot, { executionPriceField: 'open' });
+          results.push({
+            agentId: row.agent.id,
+            settled: result.settled,
+            trades: result.trades,
+            orderNotes: result.orderNotes,
+            nav: result.nav,
+          });
+        } catch (error) {
+          errors.push({ agentId: row.agent.id, error: error.message });
+        }
+      }
+      const schedule = store.getSchedule();
+      store.saveSchedule({
+        ...schedule,
+        lastExecutionDate: decisionDate,
+        lastExecutionStatus: errors.length ? (results.length ? 'partial' : 'failed') : 'completed',
+      });
+      emit('execution-completed', { decisionDate, results, errors });
+      return { ok: !errors.length, decisionDate, snapshotId: snapshot.snapshotId, results, errors };
     });
-    emit('execution-completed', { decisionDate, results, errors });
-    return { ok: !errors.length, decisionDate, snapshotId: snapshot.snapshotId, results, errors };
   }
 
   async function recordClose(input = {}) {
@@ -1159,35 +1224,37 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (enforceMarketClock && !input.force && decisionDate === clock.date && clock.minutes < parseClock(store.getSchedule().resultTime, '15:10')) {
       return { ok: false, error: 'before-result-time', message: `收盘记账时间尚未到：${store.getSchedule().resultTime || '15:10'}` };
     }
-    const rows = store.listAgents();
-    const symbols = new Set(rows.flatMap((row) => (row.portfolio.positions || []).map((position) => position.symbol)));
-    const snapshot = await priceSnapshotBuilder({
-      apiBase: input.apiBase || API_BASE,
-      workspace: WORKSPACE,
-      httpJson: request,
-      store,
-      decisionFor: decisionDate,
-      phase: 'close',
-      symbols,
-    });
-    const results = [];
-    const errors = [];
-    for (const row of rows) {
-      try {
-        const result = store.markAgent(row.agent.id, snapshot, decisionDate);
-        results.push({ agentId: row.agent.id, nav: result.nav, dailyReturn: result.dailyReturn });
-      } catch (error) {
-        errors.push({ agentId: row.agent.id, error: error.message });
+    return withPhaseLease('close', decisionDate, async () => {
+      const rows = store.listAgents();
+      const symbols = new Set(rows.flatMap((row) => (row.portfolio.positions || []).map((position) => position.symbol)));
+      const snapshot = await priceSnapshotBuilder({
+        apiBase: input.apiBase || API_BASE,
+        workspace: WORKSPACE,
+        httpJson: request,
+        store,
+        decisionFor: decisionDate,
+        phase: 'close',
+        symbols,
+      });
+      const results = [];
+      const errors = [];
+      for (const row of rows) {
+        try {
+          const result = store.markAgent(row.agent.id, snapshot, decisionDate);
+          results.push({ agentId: row.agent.id, nav: result.nav, dailyReturn: result.dailyReturn });
+        } catch (error) {
+          errors.push({ agentId: row.agent.id, error: error.message });
+        }
       }
-    }
-    const schedule = store.getSchedule();
-    store.saveSchedule({
-      ...schedule,
-      lastResultDate: decisionDate,
-      lastResultStatus: errors.length ? (results.length ? 'partial' : 'failed') : 'completed',
+      const schedule = store.getSchedule();
+      store.saveSchedule({
+        ...schedule,
+        lastResultDate: decisionDate,
+        lastResultStatus: errors.length ? (results.length ? 'partial' : 'failed') : 'completed',
+      });
+      emit('close-completed', { decisionDate, results, errors });
+      return { ok: !errors.length, decisionDate, snapshotId: snapshot.snapshotId, results, errors };
     });
-    emit('close-completed', { decisionDate, results, errors });
-    return { ok: !errors.length, decisionDate, snapshotId: snapshot.snapshotId, results, errors };
   }
 
   async function runWeekly(input = {}) {
@@ -1292,6 +1359,11 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     schedulerTimer = null;
     if (currentRun && currentRun.leaseTimer) clearInterval(currentRun.leaseTimer);
     if (currentRun && currentRun.leaseToken) store.releaseRunLease(currentRun.leaseToken);
+    for (const [token, lease] of activePhaseLeases.entries()) {
+      if (lease.timer) clearInterval(lease.timer);
+      store.releaseRunLease(token);
+    }
+    activePhaseLeases.clear();
     return hadTimer;
   }
 
@@ -1379,6 +1451,11 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     environment,
     agents: listPublic(input.sort === 'asset' ? 'asset' : 'return'),
     schedule: store.getSchedule(),
+    schedulerRuntime: {
+      started: !!schedulerTimer,
+      safety: schedulerSafety,
+      activePhaseLeases: [...activePhaseLeases.values()].map((row) => ({ phase: row.phase, runId: row.runId })),
+    },
     run: runPublicState(),
     root: store.root,
   }));
@@ -1432,7 +1509,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   });
   ipcMain.handle(channel('run-day'), async (_event, input = {}) => {
     try { return await runDay({ ...input, trigger: input.trigger || 'manual' }); }
-    catch (error) { return { ok: false, error: 'run-day-failed', message: error.message }; }
+    catch (error) { return { ok: false, error: error.code || 'run-day-failed', message: error.message }; }
   });
   ipcMain.handle(channel('execute-open'), async (_event, input = {}) => {
     try { return await executeOpen({ ...input, trigger: input.trigger || 'manual' }); }
@@ -1639,6 +1716,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   return {
     environment,
     channelPrefix,
+    schedulerSafety,
     store,
     pendingByHubSession,
     providerCatalog,
@@ -1658,15 +1736,26 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
 }
 
 function registerAgentLeagueIpc(ipcMain, deps = {}) {
+  const liveStore = deps.store || new AgentLeagueStore({ env: deps.env || process.env });
+  const schedulerSafety = deps.schedulerSafety || evaluateAgentLeagueSchedulerSafety({
+    env: deps.env || process.env,
+    leagueRoot: liveStore.root,
+  });
+  const autoStartScheduler = deps.autoStartScheduler !== false && schedulerSafety.allowed;
+  if (!schedulerSafety.allowed) {
+    console.warn(`[agent-league] auto scheduler suppressed: ${schedulerSafety.reason}; dataDir=${schedulerSafety.dataDir}; leagueRoot=${schedulerSafety.leagueRoot}`);
+  }
   const live = registerAgentLeagueRuntime(ipcMain, {
     ...deps,
+    store: liveStore,
     channelPrefix: 'agent-league',
     environment: 'live',
     scopePrefix: AGENT_SCOPE_PREFIX,
     sessionPurpose: 'agent-league',
     sessionTitlePrefix: 'Agent ·',
     enforceMarketClock: true,
-    autoStartScheduler: true,
+    autoStartScheduler,
+    schedulerSafety,
   });
   if (deps.enableVirtualDebug === false) return live;
 
@@ -1733,6 +1822,7 @@ function registerAgentLeagueIpc(ipcMain, deps = {}) {
     live,
     virtual,
     virtualDebug,
+    schedulerSafety,
     getProtectedSessionIds() {
       return new Set([...live.getProtectedSessionIds(), ...virtual.getProtectedSessionIds()]);
     },

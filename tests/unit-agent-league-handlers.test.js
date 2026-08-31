@@ -419,7 +419,15 @@ test('Agent League recovers a Codex launch command whose trailing Enter was swal
 test('manual weekend premarket click schedules the next official trading day', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-weekend-next-'));
   try {
-    const harness = makeHarness(root, fakeMarketHttp());
+    const baseHttp = fakeMarketHttp();
+    const weekendHttp = async (method, url) => {
+      const response = await baseHttp(method, url);
+      if (url.includes('/observe/overview')) {
+        response.body.header.data_asof = '2026-08-28'; // Monday's immediately previous trading day.
+      }
+      return response;
+    };
+    const harness = makeHarness(root, weekendHttp);
     harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
     const started = await harness.ipc.handlers.get('agent-league:run-day')(null, {
       trigger: 'manual',
