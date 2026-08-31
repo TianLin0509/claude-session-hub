@@ -218,6 +218,17 @@ function registerWorkspaceIpc(ipcMain, deps) {
     return workspace;
   });
 
+  // 平铺模式的默认工作区（工作根本身）。renderer 用它来实现「默认」那一档，
+  // 顺带回一个 flat 标志，让 UI 知道该不该显示平铺文案。
+  ipcMain.handle('workspace:default', (_event, opts = {}) => {
+    const flat = workspaceService.isFlatWorkRoot();
+    const workspace = flat
+      ? workspaceService.ensureDefaultWorkspace({ ...opts, select: false })
+      : workspaceService.createScratchWorkspace({ ...opts, select: false });
+    sendToRenderer('workspace-updated', { workspace });
+    return { ...workspace, flat };
+  });
+
   ipcMain.handle('workspace:select', (_event, cwd) => {
     const workspace = workspaceService.resolveForSession(cwd, { select: false });
     sendToRenderer('workspace-updated', { workspace });

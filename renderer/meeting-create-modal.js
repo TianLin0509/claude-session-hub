@@ -73,7 +73,9 @@ let _isGroupChat = true;
 let _groupSlots = DEFAULT_GROUP_MEMBERS.map(x => ({ ...x }));
 let _escListener = null;
 let _meetingWorkspace = null;
-let _meetingWorkspaceMode = 'scratch';
+// 群聊与单会话同一个默认档：工作根（2026-08-31 平铺决策）。
+// 群聊尤其需要——180 场会议 100% 共用 cwd，本来就是「多个 AI 同一个目录」的场景。
+let _meetingWorkspaceMode = 'default';
 let _creating = false;
 let _presentation = { embedded: false, onCreated: null };
 
@@ -99,6 +101,8 @@ function _paintWorkspace(workspace) {
 async function _syncWorkspace() {
   if (_meetingWorkspaceMode === 'scratch') {
     _meetingWorkspace = await window.WorkspaceController.createScratch('未命名群聊');
+  } else if (_meetingWorkspaceMode === 'default') {
+    _meetingWorkspace = await window.WorkspaceController.createDefaultWorkspace('未命名群聊');
   } else if (!_meetingWorkspace || !_meetingWorkspace.path) {
     _meetingWorkspace = await window.WorkspaceController.pickWorkspace();
   }
@@ -317,8 +321,9 @@ function _ensureModal() {
         <div class="mcm-workspace-block">
           <span class="mcm-workspace-caption">Workspace</span>
           <div class="mcm-workspace-choices" role="radiogroup" aria-label="选择群聊 workspace 方式">
-            <button type="button" class="mcm-workspace-choice selected" data-mcm-workspace-mode="scratch" role="radio" aria-checked="true"><strong>完全新开</strong><small>创建独立临时目录，首问后自动命名</small></button>
-            <button type="button" class="mcm-workspace-choice" data-mcm-workspace-mode="existing" role="radio" aria-checked="false"><strong>选择已有路径</strong><small>可选项目、领域或外部目录；组织根不可用</small></button>
+            <button type="button" class="mcm-workspace-choice selected" data-mcm-workspace-mode="default" role="radio" aria-checked="true"><strong>默认工作目录</strong><small>全员开在工作根，跨会话文件互相可见</small></button>
+            <button type="button" class="mcm-workspace-choice" data-mcm-workspace-mode="scratch" role="radio" aria-checked="false"><strong>临时目录</strong><small>随机新建一次性目录，全员共用</small></button>
+            <button type="button" class="mcm-workspace-choice" data-mcm-workspace-mode="existing" role="radio" aria-checked="false"><strong>选择已有路径</strong><small>可选项目、领域或外部目录</small></button>
           </div>
           <div class="mcm-workspace-existing" id="mcm-workspace-existing" hidden><code id="mcm-workspace-path">尚未选择</code><button type="button" class="mcm-workspace-button" id="mcm-workspace-button">选择文件夹…</button></div>
         </div>
@@ -369,7 +374,8 @@ function _bindEvents() {
   });
   _modalEl.querySelectorAll('[data-mcm-workspace-mode]').forEach(button => {
     button.addEventListener('click', () => {
-      _meetingWorkspaceMode = button.getAttribute('data-mcm-workspace-mode') === 'existing' ? 'existing' : 'scratch';
+      const requested = button.getAttribute('data-mcm-workspace-mode');
+      _meetingWorkspaceMode = requested === 'existing' || requested === 'scratch' ? requested : 'default';
       _paintWorkspace();
       if (_meetingWorkspaceMode === 'existing' && !_meetingWorkspace) {
         void _chooseMeetingExistingWorkspace().catch(err => _showError(`选择目录失败：${err && err.message ? err.message : String(err)}`));
@@ -502,7 +508,7 @@ function openMeetingCreateModal(mode = 'general', options = {}) {
   };
   _clearError();
   _applyTemplate(requestedTemplate, { clearTitle: true });
-  _meetingWorkspaceMode = 'scratch';
+  _meetingWorkspaceMode = 'default';
   _meetingWorkspace = null;
   _paintWorkspace();
 

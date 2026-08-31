@@ -198,7 +198,10 @@
 
   let menuEl = null;
   let selectedKind = 'claude';
-  let workspaceMode = 'scratch';
+  // 默认档从「新建临时目录」改成「工作根」（2026-08-31 平铺决策）。
+  // 工作根没挂 .aiwork-root 标记时主进程会自动退回建 scratch，所以这个默认值
+  // 在旧配置下也不会出错。
+  let workspaceMode = 'default';
   let existingWorkspace = null;
   let submitting = false;
   let selectedModel = '';
@@ -209,6 +212,8 @@
   let recentItems = [];
   let recommendedItems = [];
   let scratchRoot = '';
+  let workspaceRoot = '';
+  let flatWorkRoot = false;
   let archiveModalEl = null;
   let archiveContext = null;
   let archiveParent = null;
@@ -599,6 +604,12 @@
     return ipcRenderer.invoke('workspace:create-scratch', { label });
   }
 
+  // 平铺模式下的默认工作区 = 工作根本身。工作根没挂 .aiwork-root 标记时，
+  // 主进程会自动退回建 _scratch，所以 renderer 这边不需要分支。
+  async function createDefaultWorkspace(label = '未命名任务') {
+    return ipcRenderer.invoke('workspace:default', { label });
+  }
+
   async function pickWorkspace() {
     return ipcRenderer.invoke('workspace:pick');
   }
@@ -608,7 +619,9 @@
     if (!workspace && options.cwd) {
       workspace = await ipcRenderer.invoke('workspace:select', options.cwd);
     }
-    if (!workspace) workspace = await createScratch(options.workspaceLabel || '未命名任务');
+    // 兜底改成「默认工作区」而不是「新建 scratch」：平铺模式下任何没指定目录的
+    // 入口（快捷键、外部调用、恢复流程）都该落到工作根，而不是又造一个一次性目录。
+    if (!workspace) workspace = await createDefaultWorkspace(options.workspaceLabel || '未命名任务');
     return ipcRenderer.invoke('create-session', {
       kind,
       opts: {
@@ -633,6 +646,8 @@
     try {
       const listing = await ipcRenderer.invoke('workspace:list');
       scratchRoot = (listing && listing.scratchRoot) || scratchRoot;
+      workspaceRoot = (listing && listing.root) || workspaceRoot;
+      flatWorkRoot = !!(listing && listing.flatRoot);
       recommendedItems = ((listing && listing.recommended) || [])
         .filter(item => item && item.path);
       recentItems = ((listing && listing.items) || [])
@@ -895,6 +910,7 @@
   // AI_HUB_WORKSPACE_ROOT is visible before the session is created.
   function targetPathPreview() {
     if (workspaceMode === 'existing') return existingWorkspace ? existingWorkspace.path : '';
+    if (workspaceMode === 'default') return workspaceRoot || '默认工作目录';
     return scratchRoot ? path.join(scratchRoot, 'inbox-…') : '新建临时 workspace';
   }
 
@@ -956,7 +972,7 @@
     const requestedWorkspace = options.workspace && typeof options.workspace.path === 'string'
       ? { ...options.workspace }
       : null;
-    workspaceMode = requestedWorkspace ? 'existing' : 'scratch';
+    workspaceMode = requestedWorkspace ? 'existing' : 'default';
     existingWorkspace = requestedWorkspace;
     submitting = false;
     selectedModel = DEFAULT_MODEL_BY_KIND[selectedKind] || '';
@@ -965,6 +981,9 @@
     renderRecommendations();
     renderRecent();
     paint();
+    // 「默认」档的页脚要显示真实的工作根路径，所以打开时就得先拿到 workspace:list，
+    // 而不是等用户切到「选择已有路径」才加载 —— 否则默认档一直显示占位文案。
+    void loadRecent().then(() => { renderRecommendations(); renderRecent(); paint(); });
     // 必须是 flex：.new-session-menu 用 column flex 把 head/footer 固定、中段滚动。
     // 早期这里写的是 'block'，内联样式压过 CSS 的 display:flex，
     // 于是 .session-create-body 拿不到 flex 高度，overflow-y 不生效，
@@ -1042,6 +1061,7 @@
       await loadCodexTuningCatalog();
       paintTuning();
       if (workspaceMode === 'scratch') workspace = await createScratch('未命名任务');
+      else if (workspaceMode === 'default') workspace = await createDefaultWorkspace('未命名任务');
       const session = await createSession(selectedKind, { workspace, opts: tuningOpts() });
       closeNewSessionModal();
       return session;
@@ -1070,7 +1090,8 @@
     });
     menuEl.querySelectorAll('.session-workspace-choice').forEach(button => {
       button.addEventListener('click', () => {
-        workspaceMode = button.dataset.workspaceMode === 'existing' ? 'existing' : 'scratch';
+        const requested = button.dataset.workspaceMode;
+        workspaceMode = requested === 'existing' || requested === 'scratch' ? requested : 'default';
         setError('');
         paint();
         // No auto-opening the OS dialog: the recent list is shown first and
@@ -1128,6 +1149,7 @@
     closeNewSessionModal,
     compactPath,
     createScratch,
+    createDefaultWorkspace,
     createSession,
     openNewSessionModal,
     maybePromptMeetingArchive: meetingId => maybePromptArchive('meeting', meetingId),

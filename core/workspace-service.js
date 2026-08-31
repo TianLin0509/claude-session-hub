@@ -14,6 +14,25 @@ const DEFAULT_RECOMMENDED_CATEGORIES = [
   { id: 'research', directory: 'Stock', label: '投研', description: '股票与策略研究' },
 ];
 
+// ── 平铺工作根（2026-08-31 用户决策）────────────────────────────────────────────
+// 以前每个任务都开在 <root>\_scratch\inbox-<时间戳>-<随机>，理由是「产物隔离 + 可整体删」。
+// 这一轮把这两条理由都实测了一遍，没能撑住：
+//   · 产物冲突 = 29 条路径 / 12 个会话 / 四个月（207 目录合并模拟）
+//   · 大 cwd 对 agent 的可测影响 ≈ 0.5%~1% 的工具调用（Grep 98.4% 自带 path 限定；
+//     17,288 次 shell 调用里只有 87 次列 cwd 根；目录清单不会自动进上下文）
+//   · 「可整体删」四个月里一次没用过（208 个目录 / 151 个超 7 天 / 一个没删）
+// 而平铺的收益是实测的：61.3% 的会话需要引用别的会话目录（13,931 次），
+// 平铺后这些全变成同一个 cwd 下的相对路径。
+//
+// 所以默认改成「所有新会话直接开在工作根」。但**不是无条件拆掉根守卫**——
+// classifyWorkspace() 里那条「聚合根不能当 workspace」是为 C:\Vibe 写的，那里
+// 确实不该干活（用户根规则第一条就禁止）。用一个显式标记区分两种根：
+//   <root>\.aiwork-root 存在 → 这是专门的工作根，允许直接在上面开会话
+//   标记不存在             → 沿用旧行为，根仍然硬拦，默认落 _scratch
+// 标记是文件而不是配置项，因为它跟着目录走：把 AI_HUB_WORKSPACE_ROOT 指回
+// C:\Vibe 时守卫自动恢复，不需要记得改任何开关。
+const WORK_ROOT_MARKER = '.aiwork-root';
+
 function normalizeKey(value) {
   return path.resolve(String(value || '')).replace(/[\\/]+$/, '').toLowerCase();
 }
@@ -84,6 +103,41 @@ class WorkspaceService {
 
   getScratchRoot() {
     return this.path.join(this.getWorkspaceRoot(), '_scratch');
+  }
+
+  // 工作根是「可以直接在上面干活的根」还是「只能当组织根的根」？看标记文件。
+  // 见文件头 WORK_ROOT_MARKER 处的决策说明。
+  isFlatWorkRoot() {
+    try {
+      return this.fs.existsSync(this.path.join(this.getWorkspaceRoot(), WORK_ROOT_MARKER));
+    } catch {
+      return false;
+    }
+  }
+
+  // 平铺模式下的默认工作区 = 工作根本身。
+  //
+  // 这里**不 seed AGENTS.md**：平铺下 cwd 就是根，根上那份 AGENTS.md 本来就是源文件，
+  // 自己播种给自己没有意义（seedUngovernedAgentsFile 也确实会对根返回 false，因为
+  // isPathInside(root, root) === false）。所以不再需要给每个任务目录发副本——
+  // 存量 198 份副本 + 193 个 .vibe-root，平铺后各只要 1 份。
+  //
+  // 但 .vibe-root 仍然必须有：Codex 从「最近的带标记祖先」向下收集 AGENTS.md，
+  // 根上没标记的话它会一路走到 C:\，把盘符根下所有 AGENTS.md 都读进来。
+  ensureDefaultWorkspace(meta = {}) {
+    const root = this.getWorkspaceRoot();
+    this.fs.mkdirSync(root, { recursive: true });
+    try {
+      this._ensureCodexRootMarker(root);
+    } catch (error) {
+      this.logger.warn('[workspace] ensure codex root marker failed:', error && error.message);
+    }
+    return this.touchWorkspace(root, {
+      label: meta.label || this._defaultLabel(root),
+      // 平铺根是常驻工作区，不是草稿：draft 会触发归档提示，而平铺方案下没有归档这回事。
+      draft: false,
+      select: meta.select !== false,
+    });
   }
 
   getRegistryPath() {
@@ -178,8 +232,10 @@ class WorkspaceService {
   }
 
   // 只有聚合根本身不能当 workspace。返回 null 表示可用，否则是给用户看的理由。
+  // 例外：带 .aiwork-root 标记的根是专门的平铺工作根，本来就该在上面干活。
   workspaceRejectReason(cwd) {
     if (this.classifyWorkspace(cwd) !== 'root') return null;
+    if (this.isFlatWorkRoot()) return null;
     return `${this.getWorkspaceRoot()} 是组织根，不能直接当工作目录`
       + '——在这里搜索会扫穿所有领域、产物会落在根上。请选具体项目、领域目录或新建临时任务。';
   }
@@ -583,6 +639,11 @@ class WorkspaceService {
     });
   }
 
+  // 没给 cwd 时落到哪，由三件事决定（优先级从高到低）：
+  //   1. meta.workspaceMode === 'scratch' —— 用户明确要一次性随机目录
+  //   2. 工作根带 .aiwork-root 标记        —— 平铺模式，默认开在根上
+  //   3. 其余                              —— 旧行为，建 _scratch\inbox-*
+  // 单会话和群聊都走这里，所以群聊自动跟着变，不需要单独改 meeting 路径。
   resolveForSession(cwd, meta = {}) {
     if (typeof cwd === 'string' && cwd.trim()) {
       const resolved = this.path.resolve(cwd.trim());
@@ -590,6 +651,8 @@ class WorkspaceService {
       if (rejectReason) throw new Error(rejectReason);
       return this.touchWorkspace(resolved, meta);
     }
+    if (meta.workspaceMode === 'scratch') return this.createScratchWorkspace(meta);
+    if (this.isFlatWorkRoot()) return this.ensureDefaultWorkspace(meta);
     return this.createScratchWorkspace(meta);
   }
 
@@ -644,6 +707,8 @@ class WorkspaceService {
     return {
       root: this.getWorkspaceRoot(),
       scratchRoot: this.getScratchRoot(),
+      // UI 靠这个决定「默认」那一档显示成工作根还是临时目录。
+      flatRoot: this.isFlatWorkRoot(),
       selectedPath: registry.selectedPath,
       recommended: this.listRecommendedWorkspaces(),
       items,
