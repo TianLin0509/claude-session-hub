@@ -93,10 +93,17 @@ test('league UI separates decision truth from runtime state and progressively di
   assert.match(script, /技术弃权：没有形成策略结论/);
   assert.match(script, /策略结论与技术状态分账/);
   assert.match(script, /decisionReliabilityHtml/);
+  assert.match(script, /赛程 \/ Session/);
+  assert.match(script, /历史 \$\{label\}/);
+  assert.match(script, /Session 可恢复/);
+  assert.match(script, /sessionAvailabilityLabel/);
+  assert.match(script, /statusDetail/);
+  assert.match(script, /function renderDrawer\(agent\)[\s\S]{0,260}sessionState\(agent\)/);
   assert.doesNotMatch(script, /lastHookVerdict[^\n]*latestDaily\.decisionDate/);
   assert.match(css, /\.cxl-command-center/);
   assert.match(css, /\.cxl-board-filters/);
   assert.match(css, /\.cxl-status\.error/);
+  assert.match(css, /\.cxl-status>span small/);
   assert.match(css, /\.cxl-truth-warning/);
   assert.match(css, /prefers-reduced-motion/);
 });

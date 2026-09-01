@@ -178,7 +178,7 @@ function createAgentLeaguePanel(options = {}) {
       <section class="cxl-board">
         <header><div><h2 data-role="board-title">实时排行榜</h2><p data-role="board-subtitle">当前快照 · 点击任意 Agent 行查看详情</p></div><div class="cxl-board-tools"><button type="button" class="cxl-icon-btn" data-action="refresh" title="刷新">${icon('refresh')}</button><button type="button" class="cxl-auto" data-action="toggle-auto"></button><button type="button" class="cxl-auto" data-action="toggle-background"></button><div class="cxl-sort"><button class="active" data-sort="return">按收益率</button><button data-sort="asset">按当前资产</button></div></div></header>
         <div class="cxl-board-filters" role="toolbar" aria-label="筛选参赛 Agent"><button type="button" class="active" data-agent-filter="all" aria-pressed="true">全部 <span data-filter-count="all">0</span></button><button type="button" data-agent-filter="attention" aria-pressed="false">需关注 <span data-filter-count="attention">0</span></button><button type="button" data-agent-filter="positions" aria-pressed="false">有持仓 <span data-filter-count="positions">0</span></button><button type="button" data-agent-filter="incomplete" aria-pressed="false">覆盖不足 <span data-filter-count="incomplete">0</span></button><small data-role="filter-summary" aria-live="polite"></small></div>
-        <div class="cxl-table-head cxl-grid"><span>排名</span><span>Agent</span><span class="cxl-wide">状态</span><span>当前资产</span><span>累计收益</span><span class="cxl-wide">最近一日</span><span class="cxl-wide">最大回撤</span><span class="cxl-wide">仓位</span><span class="cxl-wide">最近决策</span><span></span></div>
+        <div class="cxl-table-head cxl-grid"><span>排名</span><span>Agent</span><span class="cxl-wide">赛程 / Session</span><span>当前资产</span><span>累计收益</span><span class="cxl-wide">最近一日</span><span class="cxl-wide">最大回撤</span><span class="cxl-wide">仓位</span><span class="cxl-wide">最近决策</span><span></span></div>
         <div class="cxl-ranking" data-role="ranking" aria-live="polite"></div>
         <footer><span>一屏容纳 8 行；更多 Agent 在当前区域继续向下滚动</span><code data-role="root-path"></code></footer>
       </section>
@@ -539,16 +539,16 @@ function createAgentLeaguePanel(options = {}) {
       return;
     }
     ranking.innerHTML = ranked.map(({ agent, rank }) => {
-      const [statusClass, statusText] = agentOperationalState(agent);
+      const [statusClass, statusText, statusDetail] = agentOperationalState(agent);
       const stats = agent.stats || {};
       const reliability = agent.decisionReliability || {};
       const finalDaily = agent.latestCompletedDaily || null;
       const verdict = finalDaily && finalDaily.hook && finalDaily.hook.verdict || '—';
       const finalDate = finalDaily && finalDaily.decisionDate || '尚无有效决策';
-      return `<button type="button" class="cxl-row cxl-grid ${state.selectedId === agent.id ? 'selected' : ''} ${attentionIds.has(agent.id) ? 'needs-attention' : ''}" data-agent-row="${escapeHtml(agent.id)}" aria-label="第 ${rank} 名，${escapeHtml(agent.name)}，累计收益 ${formatPct(stats.totalReturn)}，${escapeHtml(statusText)}">
+      return `<button type="button" class="cxl-row cxl-grid ${state.selectedId === agent.id ? 'selected' : ''} ${attentionIds.has(agent.id) ? 'needs-attention' : ''}" data-agent-row="${escapeHtml(agent.id)}" aria-label="第 ${rank} 名，${escapeHtml(agent.name)}，累计收益 ${formatPct(stats.totalReturn)}，${escapeHtml(statusText)}，${escapeHtml(statusDetail || '')}">
         <span class="cxl-rank ${rank <= 3 ? `top${rank}` : ''}">${rank}</span>
         <span class="cxl-agent">${providerLogo(agent)}<span><b>${escapeHtml(agent.name)}</b><small>${escapeHtml(agent.philosophy && agent.philosophy.title || '')} · 有效 ${Number(reliability.completedDecisions || 0)}/${Number(reliability.resolvedDays || 0)}</small></span></span>
-        <span class="cxl-status ${statusClass} cxl-wide"><i></i>${statusText}</span>
+        <span class="cxl-status ${statusClass} cxl-wide"><i></i><span><b>${escapeHtml(statusText)}</b>${statusDetail ? `<small>${escapeHtml(statusDetail)}</small>` : ''}</span></span>
         <span class="cxl-number"><b>${formatMoney(stats.nav)}</b><small>初始 ${formatMoney(agent.initialCash || stats.nav)}</small></span>
         <span class="cxl-return ${tone(stats.totalReturn)}">${formatPct(stats.totalReturn)}</span>
         <span class="cxl-small ${tone(stats.dailyReturn)} cxl-wide">${formatPct(stats.dailyReturn)}</span>
@@ -622,7 +622,9 @@ function createAgentLeaguePanel(options = {}) {
 
   function renderDrawer(agent) {
     const stats = agent.stats || {};
-    const [statusClass, statusText] = agentOperationalState(agent);
+    // 抽屉指标明确叫 Session，只展示会话本身是否活跃/可恢复；
+    // 历史赛程失败由下方“决策可靠性”和“最近一次赛程”承担。
+    const [statusClass, statusText] = sessionState(agent);
     const positions = agent.portfolio && Array.isArray(agent.portfolio.positions) ? agent.portfolio.positions : [];
     const drawer = root.querySelector('[data-role="drawer"]');
     drawer.innerHTML = `<header><div class="cxl-drawer-id">${providerLogo(agent)}<div><h2>${escapeHtml(agent.name)}</h2><p>${escapeHtml(agent.philosophy && agent.philosophy.title || '')} · ${escapeHtml(agent.provider)} · ${escapeHtml(agent.model)}</p></div></div><button type="button" class="cxl-close" data-action="close-detail" aria-label="关闭">${icon('close')}</button></header>
@@ -854,14 +856,27 @@ function createAgentLeaguePanel(options = {}) {
 
   function agentOperationalState(agent) {
     const task = durableTask(agent.id);
-    if (task) return sessionState(agent);
+    if (task) {
+      const [statusClass, statusText] = sessionState(agent);
+      return [statusClass, statusText, '当前赛程'];
+    }
     const daily = agent.latestDaily;
     if (daily && daily.status === 'failed') {
       const label = daily.failureKind === 'technical-forfeit' ? '技术弃权' : `${daily.stage === 'hook' ? 'Hook' : 'DRAFT'} 失败`;
-      return ['error', `${daily.decisionDate || ''} ${label}`.trim()];
+      return ['error', `历史 ${label}`, `${daily.decisionDate || '日期未知'} · ${sessionAvailabilityLabel(agent)}`];
     }
-    if (daily && daily.status === 'retrying') return ['pending', `${daily.stage === 'hook' ? 'Hook' : 'DRAFT'} 重试中`];
-    return sessionState(agent);
+    if (daily && daily.status === 'retrying') {
+      return ['pending', `${daily.stage === 'hook' ? 'Hook' : 'DRAFT'} 重试中`, `${daily.decisionDate || '当前'} · ${sessionAvailabilityLabel(agent)}`];
+    }
+    const [statusClass, statusText] = sessionState(agent);
+    return [statusClass, statusText, sessionAvailabilityLabel(agent)];
+  }
+
+  function sessionAvailabilityLabel(agent) {
+    const session = agent && agent.session || {};
+    if (session.live) return session.status === 'idle' ? 'Session 空闲' : 'Session 活跃';
+    if (session.hubSessionId) return 'Session 可恢复';
+    return 'Session 未创建';
   }
 
   function renderHealth() {

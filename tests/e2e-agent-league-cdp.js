@@ -115,6 +115,11 @@ function seedLeague() {
         runId: 'fixture-technical-forfeit', decisionDate: '2026-08-27', dataAsOf: '2026-08-26',
         stage: 'draft', failureKind: 'technical-forfeit', error: '历史 task_complete 被误识别；本轮没有形成有效 DRAFT',
       });
+      store.bindSession(id, {
+        hubSessionId: 'fixture-restorable-codex',
+        status: 'restorable',
+        nativeSession: { codexSid: 'fixture-native-codex' },
+      });
     }
   }
   store.saveSchedule({
@@ -191,18 +196,25 @@ function removeTempRoot() {
       headline: document.querySelector('[data-role="command-headline"]').textContent,
       coverage: document.querySelector('[data-role="metric-coverage"]').textContent,
       failures: document.querySelector('[data-role="metric-failures"]').textContent,
-      lastValid: document.querySelector('.cxl-row [class="cxl-small cxl-wide"] small')?.textContent || ''
+      lastValid: document.querySelector('.cxl-row [class="cxl-small cxl-wide"] small')?.textContent || '',
+      statusHeader: document.querySelector('.cxl-table-head span:nth-child(3)')?.textContent || '',
+      failureStatus: document.querySelector('[data-agent-row="fixture-agent-02"] .cxl-status')?.innerText || ''
     }))()`);
     assert.equal(decisionTruth.coverage, '1/10');
     assert.equal(decisionTruth.failures, '9');
     assert.match(decisionTruth.headline, /有效 FINAL 1\/10/);
     assert.match(decisionTruth.lastValid, /有效 2026-08-27/);
+    assert.equal(decisionTruth.statusHeader, '赛程 / Session');
+    assert.match(decisionTruth.failureStatus, /历史 技术弃权/);
+    assert.match(decisionTruth.failureStatus, /2026-08-27/);
+    assert.match(decisionTruth.failureStatus, /Session 可恢复/);
     await client.eval(`document.querySelector('[data-action="toggle-operations"]').click()`);
     await waitEval(client, `!document.querySelector('[data-role="operations"]').hidden && document.querySelectorAll('[data-role="attention-list"] article').length >= 10`, 'decision truth details');
     const operationsShot = await screenshot(client, '01b-decision-truth-expanded.png');
     await client.eval(`document.querySelector('[data-role="attention-list"] [data-agent="fixture-agent-02"]').click()`);
     await waitEval(client, `!document.querySelector('[data-role="detail-overlay"]').hidden && document.querySelector('.cxl-truth-warning')`, 'technical failure detail');
     assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('不代表 Agent 主动选择空仓')`), true);
+    assert.equal(await client.eval(`document.querySelector('.cxl-detail-metrics').innerText.includes('休眠')`), true);
     const failureDetailShot = await screenshot(client, '01c-technical-failure-detail.png');
     await client.eval(`document.querySelector('[data-action="close-detail"]').click()`);
     await client.eval(`document.querySelector('[data-agent-filter="attention"]').click()`);
