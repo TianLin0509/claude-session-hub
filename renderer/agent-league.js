@@ -180,6 +180,7 @@ function createAgentLeaguePanel(options = {}) {
         else if (action === 'close-detail') closeDetail();
         else if (action === 'refresh') await refresh(true);
         else if (action === 'run-day') await runDay(actionEl);
+        else if (action === 'run-agent-day') await runAgentDay(actionEl, actionEl.dataset.agent);
         else if (action === 'execute-open') await runPhase(actionEl, 'execute-open', '正在读取开盘价并机械执行目标组合', '开盘执行完成');
         else if (action === 'record-close') await runPhase(actionEl, 'record-close', '正在读取收盘行情并更新净值', '收盘记账完成');
         else if (action === 'run-weekly') await runPhase(actionEl, 'run-weekly', '正在唤醒同一 Session 做周度沉淀', '周度沉淀已启动');
@@ -430,7 +431,7 @@ function createAgentLeaguePanel(options = {}) {
     const positions = agent.portfolio && Array.isArray(agent.portfolio.positions) ? agent.portfolio.positions : [];
     const drawer = root.querySelector('[data-role="drawer"]');
     drawer.innerHTML = `<header><div class="cxl-drawer-id">${providerLogo(agent)}<div><h2>${escapeHtml(agent.name)}</h2><p>${escapeHtml(agent.philosophy && agent.philosophy.title || '')} · ${escapeHtml(agent.provider)} · ${escapeHtml(agent.model)}</p></div></div><button type="button" class="cxl-close" data-action="close-detail" aria-label="关闭">${icon('close')}</button></header>
-      <div class="cxl-drawer-actions"><button type="button" class="cxl-btn primary" data-action="open-card" data-agent="${escapeHtml(agent.id)}">${icon('cards')}${agent.session && agent.session.hubSessionId ? '打开卡片 Session' : '创建卡片 Session'}</button><button type="button" class="cxl-btn" data-action="open-pty" data-agent="${escapeHtml(agent.id)}">${icon('terminal')}${agent.session && agent.session.hubSessionId ? '打开 PTY' : '创建并打开 PTY'}</button><button type="button" class="cxl-btn prompt" data-action="edit-prompts" data-agent="${escapeHtml(agent.id)}">${icon('edit')}查看 / 编辑全部提示词</button></div>
+      <div class="cxl-drawer-actions"><button type="button" class="cxl-btn primary" data-action="run-agent-day" data-agent="${escapeHtml(agent.id)}">${icon('play')}只跑这个 Agent 的盘前决策</button><button type="button" class="cxl-btn" data-action="open-card" data-agent="${escapeHtml(agent.id)}">${icon('cards')}${agent.session && agent.session.hubSessionId ? '打开卡片 Session' : '创建卡片 Session'}</button><button type="button" class="cxl-btn" data-action="open-pty" data-agent="${escapeHtml(agent.id)}">${icon('terminal')}${agent.session && agent.session.hubSessionId ? '打开 PTY' : '创建并打开 PTY'}</button><button type="button" class="cxl-btn prompt" data-action="edit-prompts" data-agent="${escapeHtml(agent.id)}">${icon('edit')}查看 / 编辑全部提示词</button></div>
       <div class="cxl-detail-metrics"><div><span>当前资产</span><b>${formatMoney(stats.nav)}</b><small class="${tone(stats.totalReturn)}">${formatPct(stats.totalReturn)}</small></div><div><span>最近一日收益</span><b class="${tone(stats.dailyReturn)}">${formatPct(stats.dailyReturn)}</b><small>${escapeHtml(stats.lastAsOf || '尚未结算')}</small></div><div><span>最大回撤</span><b>${formatPct(stats.maxDrawdown)}</b><small>${stats.tradingDays || 0} 个统计日</small></div><div><span>Session</span><b class="cxl-status ${statusClass}"><i></i>${statusText}</b><small>${escapeHtml(nativeSessionId(agent) ? `原生 SID ${nativeSessionId(agent).slice(0, 8)}…` : agent.session && agent.session.hubSessionId ? 'Hub 已绑定 · 首次运行后生成原生 SID' : '点击上方按钮创建普通 Session')}</small></div></div>
       <section class="cxl-detail-section"><div class="cxl-section-head"><h3>核心理念</h3><span>${agent.strategyPendingConfirmation ? '第一版 · 待你确认' : `策略 ${escapeHtml(agent.strategyVersion || 'v1')}`}</span></div><p>${escapeHtml(agent.philosophy && agent.philosophy.summary || '自定义理念')}</p><blockquote>${escapeHtml(agent.philosophy && agent.philosophy.edge || '')}</blockquote></section>
       <section class="cxl-detail-section cxl-prompt-summary"><div class="cxl-section-head"><h3>这个 Agent 实际会读什么</h3><button type="button" data-action="edit-prompts" data-agent="${escapeHtml(agent.id)}">完整查看与编辑 →</button></div><div><span><b>投资内核</b>AGENT / STRATEGY / CHECKLIST</span><span><b>三段运行提示</b>盘前 DRAFT / 决策 Hook / 周六沉淀</span><span><b>Provider 指令</b>AGENTS / CLAUDE / GEMINI</span><span><b>长期上下文</b>MEMORY / EVOLUTION</span><span><b>系统合同</b>完整编译预览，只读</span></div></section>
@@ -653,6 +654,37 @@ function createAgentLeaguePanel(options = {}) {
     const agentId = actionAgentId(result);
     if (!agentId) return { ok: false, error: 'no-agent' };
     return openSession(agentId, 'pty');
+  }
+
+  // 单个 Agent 的盘前决策。故意不传 decisionDate：让后端按同一套市场时钟决定
+  // 目标交易日 —— 过了 09:15 截止会自动落到下一交易日，而不是让这个 Agent 在
+  // 已经开盘之后为今天决策、再按今天开盘价成交（那是未来函数）。
+  async function runAgentDay(button, agentId) {
+    const agent = state.agents.find((row) => row.id === agentId);
+    if (!agent) { notify('Agent 不存在', true); return; }
+    if (state.run) {
+      notify(`赛程正在运行中（${(state.run.active || []).length} 个运行中），请等本轮结束再单独补跑。`, true);
+      return;
+    }
+    button.disabled = true;
+    const previous = button.innerHTML;
+    button.innerHTML = `${icon('terminal')}启动并跳转 PTY…`;
+    try {
+      const result = await ipcRenderer.invoke(leagueChannel('run-day'), { trigger: 'manual', agentIds: [agentId] });
+      if (!result || !result.ok) throw new Error(result && result.message || '启动失败');
+      const target = result.decisionDate || result.run && result.run.decisionDate || '';
+      const moved = result.scheduledFrom ? `（${result.scheduledFrom} 已过盘前截止或休市，改为 ${target}）` : target ? `（${target}）` : '';
+      notify(result.alreadyRun
+        ? `${escapeHtml(agent.name)} 在 ${target || '该交易日'} 已经有决策，无需补跑。`
+        : `已单独启动 ${escapeHtml(agent.name)} 的盘前决策${moved}；其他 Agent 不受影响。`);
+      const opened = await jumpToActionPty(result);
+      if (!opened || !opened.ok) throw new Error('已启动，但 PTY 跳转失败');
+    } catch (error) {
+      notify(`单独运行失败：${error.message}`, true);
+    } finally {
+      button.disabled = false;
+      button.innerHTML = previous;
+    }
   }
 
   async function runDay(button) {

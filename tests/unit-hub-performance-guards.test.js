@@ -22,6 +22,26 @@ test('group Claude plugin isolation no longer overrides the member MCP profile',
   assert.doesNotMatch(flags, /--strict-mcp-config/);
 });
 
+test('autonomous Claude sessions bypass approvals, drop fast, and reuse the plugin isolation settings', () => {
+  const { claudePermissionModeArg, shouldUseClaudeFastSettings, buildGroupChatIsolationFlags } = _private;
+  const subscription = { CLAUDE_BACKEND: 'subscription' };
+
+  // 人类会话不受影响：没人要求旁路时不写 --permission-mode。
+  assert.strictEqual(claudePermissionModeArg({}), '');
+  assert.strictEqual(claudePermissionModeArg({ autonomous: true }), ' --permission-mode bypassPermissions');
+  assert.strictEqual(claudePermissionModeArg({ permissionMode: 'plan' }), ' --permission-mode plan');
+  // 白名单外的值绝不能被拼进 PowerShell 命令行。
+  assert.strictEqual(claudePermissionModeArg({ permissionMode: 'rm -rf /' }), '');
+
+  // fast 可能不落 transcript jsonl；无人值守会话必须硬关，否则收不到 turn-complete。
+  assert.strictEqual(shouldUseClaudeFastSettings(subscription, {}), true);
+  assert.strictEqual(shouldUseClaudeFastSettings(subscription, { autonomous: true }), false);
+
+  // plugin 隔离原本只认 meetingId，现在 autonomous 也复用同一份 settings。
+  assert.strictEqual(buildGroupChatIsolationFlags(false), '');
+  assert.match(buildGroupChatIsolationFlags(true), /--settings/);
+});
+
 test('group Claude MCP profiles keep mandatory room config while filtering optional globals', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-claude-group-mcp-'));
   const homeDir = path.join(root, 'home');

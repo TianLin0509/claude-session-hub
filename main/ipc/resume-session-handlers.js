@@ -258,6 +258,9 @@ function createResumeSessionHandler(deps) {
       // 悄悄变回 Full，一次多起七个 MCP 进程。
       ...(meta.mcpProfile ? { mcpProfile: meta.mcpProfile } : {}),
       ...(meta.fastMode === false ? { fastMode: false } : {}),
+      // autonomous 会话恢复后仍然没有人在终端前：权限旁路、plugin 隔离和 strict
+      // MCP 必须一起带回来，缺一项下一次自动 Prompt 就会停在弹窗上等到超时。
+      ...(meta.autonomous === true ? { autonomous: true } : {}),
       ...(meta.codexSpeedTier ? { codexSpeedTier: meta.codexSpeedTier } : {}),
       geminiChatId: isGemini ? (meta.geminiChatId || null) : null,
       ...(isGemini && meta.geminiProjectHash ? { geminiProjectHash: meta.geminiProjectHash } : {}),

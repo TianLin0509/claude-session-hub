@@ -667,8 +667,26 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     store.saveSchedule({ ...initialSchedule, lastRunStatus: 'interrupted' });
   }
 
-  function researchMcpOptions(kind, agentId) {
+  // 联赛 Agent 的会话运行时选项。赛程由调度器驱动，终端前没有人：任何一次权限
+  // 询问、任何一个会吞掉 turn 文本的加速开关，都会让这一轮只能等硬超时判 failed。
+  // 因此自动化旁路必须与 research MCP 分开算 —— hookPort 缺失只该让 Agent 少一套
+  // 工具，不该顺带把它退回“需要人工点确认”的模式。
+  function agentRuntimeOptions(kind, agentId) {
     const options = {};
+    if (kind === 'claude') {
+      // Claude 侧的 codexBypassApprovals 等价物：权限旁路 + 关 fast（fast 可能不落
+      // transcript jsonl，transcript-tap 就收不到 turn-complete）+ plugin 隔离 +
+      // strict MCP。四项由 session-manager 的 autonomous 语义统一落实。
+      options.autonomous = true;
+      // 明确写死档位，不依赖 Claude 的 MCP 默认值：它已经改过一次（full→none），
+      // Agent 的工具面不能跟着默认值漂。
+      options.mcpProfile = 'none';
+    } else if (kind === 'codex') {
+      options.codexBypassApprovals = true;
+      // 普通 Codex 默认 mcpProfile=none，会把下方临时 Chuxin 条目一起过滤。
+      // Agent 需要只保留任务所需工具，明确使用 Lean，而不是继承全局 Full。
+      options.mcpProfile = 'lean';
+    }
     const hookPort = Number(getHookPort() || 0);
     if (!hookPort) return options;
     const hubDataDir = getHubDataDir();
@@ -676,10 +694,6 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (kind === 'claude') {
       options.mcpConfigFile = scenes.writeResearchMcpConfig(hubDataDir, scopeId, hookPort, hookToken, kind, { enableChuxin: true });
     } else if (kind === 'codex') {
-      options.codexBypassApprovals = true;
-      // 普通 Codex 默认 mcpProfile=none，会把下方临时 Chuxin 条目一起过滤。
-      // Agent 需要只保留任务所需工具，明确使用 Lean，而不是继承全局 Full。
-      options.mcpProfile = 'lean';
       addCodexMcpEntry(options, scenes.buildResearchMcpEntryForCodex(scopeId, hookPort, hookToken, hubDataDir, { enableChuxin: true }));
     }
     return options;
@@ -698,7 +712,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       userRenamed: true,
       purpose: sessionPurpose,
       hiddenFromSidebar: false,
-      ...researchMcpOptions(selection.kind, row.agent.id),
+      ...agentRuntimeOptions(selection.kind, row.agent.id),
       ...(resume || {}),
     };
     const session = sessionManager.createSession(selection.kind, options);
@@ -746,7 +760,11 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
   async function waitForAgentCliReady(sessionId, row, stage) {
     const kind = row && row.agent && row.agent.kind;
     const codexRuntime = kind === 'codex' || kind === 'deepseek';
-    const windows = codexRuntime ? cliReadyWindowsMs : [60000];
+    // Claude 冷启动同样可能超过单个 60s 窗口：--mcp-config 要先把 research MCP
+    // 子进程拉起来，Opus 1M 档在忙碌的机器上启动本身就要几十秒。窗口只是轮询上限，
+    // 就绪即返回，多给一段不增加正常路径的耗时。Enter 兜底仍只对 Codex 生效——
+    // 它修的是 PowerShell 吞掉启动命令换行这个 Codex 专有现象。
+    const windows = codexRuntime ? cliReadyWindowsMs : [...cliReadyWindowsMs, 60000];
     for (let index = 0; index < windows.length; index += 1) {
       if (await waitReady(sessionId, kind, windows[index])) return true;
       if (!codexRuntime || index >= windows.length - 1 || !sessionManager
@@ -1042,14 +1060,32 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       decisionFor: decisionDate,
     });
     const schedule = store.getSchedule();
-    if (!input.force && schedule.lastDecisionDate === decisionDate && ['completed', 'running'].includes(schedule.lastRunStatus)) {
-      return { ok: true, alreadyRun: true, snapshot, schedule, decisionDate, scheduledFrom };
+    // 只跑指定 Agent（单个 Agent 的补跑）。必须显式存在，否则宁可报错也不要
+    // 静默退化成"跑全部"——调用方 id 写错时那是最糟的失败方式。
+    const requestedIds = Array.isArray(input.agentIds)
+      ? [...new Set(input.agentIds.map((value) => String(value || '')).filter(Boolean))]
+      : [];
+    if (requestedIds.length) {
+      const known = new Set(rows.map((row) => row.agent.id));
+      const unknown = requestedIds.filter((id) => !known.has(id));
+      if (unknown.length) {
+        return { ok: false, error: 'agent-missing', message: `Agent 不存在：${unknown.join(', ')}` };
+      }
+      rows = rows.filter((row) => requestedIds.includes(row.agent.id));
     }
+    // 当日已经产出决策（decision-queued）的 Agent 不重复跑。这一条同时就是补跑的
+    // 判据：中途新建的 Agent 当天没有记录，所以它 runnable，而已决策的不会被重来。
     const runnableRows = rows.filter((row) => {
       const daily = store.getDaily(row.agent.id, decisionDate);
       return !daily || daily.status !== 'decision-queued';
     });
+    // 赛程级的"今天已经跑过"只在确实没人可跑时才短路。以前它排在 runnableRows
+    // 之前无条件返回，于是当天开跑之后再加入的 Agent 永远补不上当日决策，
+    // 只能等第二天——联赛里这等于凭空少一个参赛者。
     if (!runnableRows.length) {
+      if (!input.force && schedule.lastDecisionDate === decisionDate && ['completed', 'running'].includes(schedule.lastRunStatus)) {
+        return { ok: true, alreadyRun: true, snapshot, schedule, decisionDate, scheduledFrom };
+      }
       store.saveSchedule({ ...schedule, lastSnapshotAsOf: snapshot.asOf, lastDecisionDate: decisionDate, lastRunStatus: 'completed' });
       return { ok: true, alreadyRun: true, snapshot, schedule: store.getSchedule(), decisionDate, scheduledFrom };
     }

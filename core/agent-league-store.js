@@ -61,6 +61,19 @@ function stateBlock(state, marker = STATE_MARKER) {
   return `<!-- ${marker}\n${JSON.stringify(state, null, 2)}\n-->`;
 }
 
+// 理念模板的可选正文段落。传空/缺省时返回空数组，老模板渲染结果一字不变。
+function renderPhilosophySections(sections) {
+  if (!Array.isArray(sections) || !sections.length) return [];
+  const out = [];
+  for (const section of sections) {
+    const title = String((section && section.title) || '').trim();
+    const lines = Array.isArray(section && section.lines) ? section.lines.map((line) => String(line)) : [];
+    if (!title || !lines.length) continue;
+    out.push(`## ${title}`, '', ...lines, '');
+  }
+  return out;
+}
+
 function readStateFromText(text, marker = STATE_MARKER) {
   const match = String(text || '').match(new RegExp(`<!--\\s*${escapeRegex(marker)}\\s*([\\s\\S]*?)-->`));
   if (!match) return null;
@@ -428,6 +441,14 @@ class AgentLeagueStore {
     const title = kind === 'daily' ? '盘前 DRAFT 补充提示'
       : kind === 'hook' ? '决策 Hook 补充提示' : '周六沉淀补充提示';
     const lines = [`# ${title}`, '', `> Agent：${agent.name} · ${philosophy.title || agent.philosophyTitle || '自定义理念'}`, ''];
+    // 理念自带的运行提示优先。默认三段文案对所有 Agent 几乎逐字相同（HOOK 与
+    // WEEKLY 只有标题行不同），个性化提示的实际贡献接近零；模板给了自己的版本
+    // 就用它，让不同打法在盘前/自检/沉淀三个环节真的分开。
+    const custom = philosophy.prompts && philosophy.prompts[kind];
+    if (Array.isArray(custom) && custom.length) {
+      lines.push(...custom.map((line) => String(line)));
+      return `${lines.join('\n')}\n`;
+    }
     if (kind === 'daily') {
       lines.push(
         '- 首先检查已有持仓逻辑是否仍成立，再研究新机会。',
@@ -477,6 +498,10 @@ class AgentLeagueStore {
       '## 核心理念（冻结）', '', philosophy.summary || '由创建者定义并长期保持可辨识。', '',
       ...(agent.strategyPendingConfirmation ? ['> 当前是第一版建议策略，等待创建者后续确认；在确认前仍按版本化规则完整记录。', ''] : []),
       '## 优势假设', '', philosophy.edge || '必须通过长期结果检验，而不是靠单日收益证明。', '',
+      // 有些理念光靠 summary/edge/边界三段说不清楚（例如同一套选股标准下分两个
+      // 进场阶段、或者组合本身要分层）。sections 让模板补自己的正文段落，而不是
+      // 逼创建者事后手工改这份冻结文件。
+      ...renderPhilosophySections(philosophy.sections),
       '## 选股与持有边界', '',
       `- 典型周期：${philosophy.horizon || '5-20 个交易日'}`,
       `- 允许关注：${philosophy.universe || '初心投研冻结候选池与已有持仓'}`,
@@ -493,6 +518,7 @@ class AgentLeagueStore {
       `# 策略 ${strategy.version}`, '', stateBlock(strategy), '',
       '## 入场', '', philosophy.entry || '只在理念定义的优势条件成立时建立目标仓位。', '',
       '## 退出', '', philosophy.exit || '失效条件触发时降低至零或防守仓位。', '',
+      ...renderPhilosophySections(philosophy.strategySections),
       '## Agent 自主风险预算', '',
       `- 当前自律参考：单票通常不超过 ${(strategy.maxSingleWeight * 100).toFixed(0)}%，总股票仓位通常不超过 ${(strategy.maxGrossWeight * 100).toFixed(0)}%。`,
       '- 上述是 Agent 在 Hook 中自行解释和检查的策略纪律，不是系统替它判断的硬风控。',

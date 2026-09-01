@@ -202,7 +202,19 @@ class ClaudeTap extends EventEmitter {
       });
     }
     const entry = this._bound.get(hubSessionId);
+    const boundPathChanged = entry.transcriptPath !== transcriptPath;
     entry.transcriptPath = transcriptPath;
+
+    // Claude 过去只在 turn-complete 里带回文本，从不 emit session-bound —— 于是
+    // ccSessionId 只能等调用方自己去 sessionManager 里捞。对 Agent 联赛这种无人值守
+    // 场景后果很实在：一轮中途失败就没人落 ccSessionId，第二天只能开一个全新会话，
+    // Agent 的历史与记忆连续性断在这里。路径变化时补一条，与 codex/kimi 对齐。
+    if (boundPathChanged) {
+      const ccSessionId = path.basename(String(transcriptPath)).replace(/\.jsonl$/i, '');
+      if (ccSessionId) {
+        this.emit('session-bound', { hubSessionId, kind: 'claude', ccSessionId, transcriptPath });
+      }
+    }
 
     // 首次拿到路径 → 启动 JsonlTail，让后续轮也能流式
     if (!entry._tail) {

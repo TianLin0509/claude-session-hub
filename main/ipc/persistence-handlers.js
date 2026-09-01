@@ -15,6 +15,7 @@ const RESUME_META_FIELDS = [
   'codexProfileLabel',
   'mcpProfile',
   'fastMode',
+  'autonomous',
   'codexSpeedTier',
   'geminiChatId',
   'geminiProjectHash',
