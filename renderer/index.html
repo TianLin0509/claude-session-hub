@@ -184,7 +184,7 @@
                 <span id="home-health-label">当前 HUB 状态正常</span>
                 <span class="home-last-sync" id="home-last-sync">正在同步</span>
               </div>
-              <div class="home-notification-slot" id="home-notification-slot" aria-label="微信完成通知开关"></div>
+              <div class="home-notification-slot" id="home-notification-slot" aria-label="飞书完成通知开关"></div>
               <button class="home-refresh" id="home-refresh" type="button" title="刷新 Session、配额与系统状态">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0 1 4"/><path d="M20 4v7h-7"/></svg>
                 <span>刷新</span>
@@ -303,7 +303,7 @@
       </nav>
       <button class="completion-notification-toggle unconfigured" id="completion-notification-toggle"
               type="button" aria-pressed="false" data-state="unconfigured"
-              title="未配置 Server酱 SendKey，点击进入设置">
+              title="未配置飞书接收对象，点击进入设置">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/>
           <path d="M10 21h4"/>
@@ -598,17 +598,17 @@
           </div>
           <div class="config-section-label config-notification-title">
             <span>回答完成通知</span>
-            <span>Server酱 · 微信</span>
+            <span>飞书 CLI</span>
           </div>
           <div class="config-notification-card" id="config-notification-card">
             <label class="config-toggle-row" for="cfg-notification-enabled">
               <input type="checkbox" id="cfg-notification-enabled">
-              <span><strong id="cfg-notification-target-title">当前会话微信通知</strong><small id="cfg-notification-target-hint">每个会话独立设置；新会话默认关闭，顶栏可随时切换。</small></span>
+              <span><strong id="cfg-notification-target-title">当前会话飞书通知</strong><small id="cfg-notification-target-hint">每个会话独立设置；新会话默认关闭，顶栏可随时切换。</small></span>
             </label>
             <div class="config-field">
-              <label for="cfg-serverchan-sendkey">Server酱 SendKey <span class="config-label-hint">（本机保存，不写入日志）</span></label>
+              <label for="cfg-feishu-target">飞书接收对象 ID <span class="config-label-hint">（oc_ 会话/群聊，或 ou_ 用户）</span></label>
               <div class="config-secret-row">
-                <input type="password" id="cfg-serverchan-sendkey" placeholder="SCT..." spellcheck="false" autocomplete="off">
+                <input type="text" id="cfg-feishu-target" placeholder="oc_... 或 ou_..." spellcheck="false" autocomplete="off">
                 <button type="button" class="config-test-btn" id="config-notification-test">发送测试</button>
               </div>
             </div>
@@ -617,7 +617,7 @@
               <label for="cfg-notification-include-preview"><input type="checkbox" id="cfg-notification-include-preview"> 附带回复预览（默认关闭，保护隐私）</label>
             </div>
             <p class="config-notification-status" id="config-notification-status" aria-live="polite"></p>
-            <p class="config-reading-note">首次使用：在 Server酱官网用微信扫码关注服务号，复制 SendKey 到这里。测试通知可在保存前直接发送。</p>
+            <p class="config-reading-note">首次使用：先完成飞书 CLI 的应用配置/授权，并确保机器人已加入目标会话。测试通知可在保存前直接发送。</p>
           </div>
           <div class="config-section-label config-reading-title">
             <span>普通会话卡片</span>

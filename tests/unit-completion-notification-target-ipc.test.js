@@ -10,7 +10,7 @@ process.env.CLAUDE_HUB_DATA_DIR = tempDir;
 fs.writeFileSync(path.join(tempDir, 'config.json'), JSON.stringify({
   notifications: {
     enabled: true,
-    serverchan: { send_key: 'SCT_TARGET_TEST_123456' },
+    feishu: { target: 'oc_1234567890' },
   },
 }), 'utf8');
 

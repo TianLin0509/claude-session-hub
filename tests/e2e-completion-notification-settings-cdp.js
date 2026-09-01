@@ -2,7 +2,6 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -17,9 +16,12 @@ const HOME_DIR = path.join(TEMP_ROOT, 'fake-home');
 const ARTIFACT_DIR = path.join(ROOT, 'output', 'playwright', 'completion-notifications');
 const ON_SCREENSHOT = path.join(ARTIFACT_DIR, `top-toggle-on-${RUN_ID}.png`);
 const OFF_SCREENSHOT = path.join(ARTIFACT_DIR, `top-toggle-off-${RUN_ID}.png`);
+const CONFIG_SCREENSHOT = path.join(ARTIFACT_DIR, `feishu-settings-${RUN_ID}.png`);
 const RESULT_PATH = path.join(ARTIFACT_DIR, `top-toggle-result-${RUN_ID}.json`);
 const CDP_PORT = Number(process.env.HUB_COMPLETION_NOTIFICATION_E2E_PORT || (9780 + (process.pid % 180)));
-const SEND_KEY = 'SCT_E2E_PRIVATE_123456';
+const FEISHU_TARGET = 'oc_1234567890';
+const FAKE_CLI_PATH = path.join(TEMP_ROOT, 'fake-lark-cli.js');
+const CLI_CALL_PATH = path.join(TEMP_ROOT, 'fake-lark-cli-calls.jsonl');
 
 async function captureTopControls(client, filePath) {
   const clip = await client.eval(`(() => {
@@ -43,37 +45,40 @@ async function captureTopControls(client, filePath) {
   fs.writeFileSync(filePath, Buffer.from(result.data, 'base64'));
 }
 
-async function startServerChanMock() {
-  const requests = [];
-  const server = http.createServer((request, response) => {
-    const chunks = [];
-    request.on('data', chunk => chunks.push(chunk));
-    request.on('end', () => {
-      requests.push({
-        method: request.method,
-        url: request.url,
-        body: Buffer.concat(chunks).toString('utf8'),
-      });
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ code: 0, data: { pushid: 'e2e-local-mock' } }));
-    });
+async function captureElement(client, selector, filePath) {
+  const clip = await client.eval(`(() => {
+    const rect = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+    return {
+      x: Math.max(0, rect.left - 12),
+      y: Math.max(0, rect.top - 12),
+      width: Math.ceil(rect.width + 24),
+      height: Math.ceil(rect.height + 24),
+      scale: 1.5,
+    };
+  })()`);
+  const result = await client.send('Page.captureScreenshot', {
+    format: 'png',
+    fromSurface: true,
+    captureBeyondViewport: true,
+    clip,
   });
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  return {
-    server,
-    requests,
-    baseUrl: `http://127.0.0.1:${server.address().port}`,
-  };
+  fs.writeFileSync(filePath, Buffer.from(result.data, 'base64'));
+}
+
+function writeFakeFeishuCli() {
+  fs.writeFileSync(FAKE_CLI_PATH, [
+    "'use strict';",
+    "const fs = require('node:fs');",
+    "fs.appendFileSync(process.env.HUB_FEISHU_FAKE_CALL_LOG, JSON.stringify(process.argv.slice(2)) + '\\n', 'utf8');",
+    "process.stdout.write(JSON.stringify({ok:true,identity:'bot',data:{message_id:'om_e2e_mock',chat_id:'oc_1234567890'}}) + '\\n');",
+  ].join('\n'), 'utf8');
 }
 
 async function main() {
   fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(HOME_DIR, { recursive: true });
-  const mock = await startServerChanMock();
+  writeFakeFeishuCli();
   let hub = null;
   let client = null;
   const result = { runId: RUN_ID, cdpPort: CDP_PORT };
@@ -87,7 +92,9 @@ async function main() {
         CLAUDE_HUB_E2E: '1',
         CLAUDE_HUB_HOME_DIR: HOME_DIR,
         DEEPSEEK_API_KEY: '',
-        HUB_NOTIFY_SERVERCHAN_API_BASE: mock.baseUrl,
+        HUB_NOTIFY_FEISHU_CLI_PATH: FAKE_CLI_PATH,
+        HUB_NOTIFY_FEISHU_NODE_PATH: process.execPath,
+        HUB_FEISHU_FAKE_CALL_LOG: CLI_CALL_PATH,
       },
     });
     await _waitMs(1200);
@@ -134,16 +141,17 @@ async function main() {
       return {
         modalVisible: !modal.classList.contains('hidden'),
         status: document.getElementById('config-notification-status').textContent,
-        keyFocused: document.activeElement === document.getElementById('cfg-serverchan-sendkey'),
+        keyFocused: document.activeElement === document.getElementById('cfg-feishu-target'),
       };
     })()`);
     assert.equal(result.setupGuidance.modalVisible, true);
-    assert.match(result.setupGuidance.status, /先填写 SendKey/);
+    assert.match(result.setupGuidance.status, /先填写飞书接收对象/);
     assert.equal(result.setupGuidance.keyFocused, true);
+    await captureElement(client, '#config-notification-card', CONFIG_SCREENSHOT);
 
     result.configure = await client.eval(`(async () => {
-      const key = document.getElementById('cfg-serverchan-sendkey');
-      key.value = ${JSON.stringify(SEND_KEY)};
+      const key = document.getElementById('cfg-feishu-target');
+      key.value = ${JSON.stringify(FEISHU_TARGET)};
       document.getElementById('config-notification-test').click();
       const status = document.getElementById('config-notification-status');
       const testDeadline = Date.now() + 8000;
@@ -167,11 +175,11 @@ async function main() {
         state: toggle.dataset.state,
         label: document.getElementById('completion-notification-toggle-label').textContent,
         legacyEnabled: saved.notificationEnabled,
-        keyMatches: saved.serverchanSendKey === ${JSON.stringify(SEND_KEY)},
+        keyMatches: saved.feishuTarget === ${JSON.stringify(FEISHU_TARGET)},
         checkboxDisabled: document.getElementById('cfg-notification-enabled').disabled,
       };
     })()`);
-    assert.match(result.configure.testStatus, /Server酱接收/);
+    assert.match(result.configure.testStatus, /已发送，请查看飞书/);
     assert.match(result.configure.saveMessage, /打开需要关注的会话/);
     assert.equal(result.configure.state, 'unavailable');
     assert.equal(result.configure.label, '会话通知');
@@ -329,34 +337,36 @@ async function main() {
       label: '通知开',
     });
 
-    assert.equal(mock.requests.length, 1, 'only the explicit test button should hit ServerChan');
-    assert.equal(mock.requests[0].method, 'POST');
-    assert.equal(mock.requests[0].url, `/${SEND_KEY}.send`);
-    const posted = new URLSearchParams(mock.requests[0].body);
-    assert.equal(posted.get('title'), 'AI Hub · 通知测试成功');
+    const cliCalls = fs.readFileSync(CLI_CALL_PATH, 'utf8').trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+    assert.equal(cliCalls.length, 1, 'only the explicit test button should invoke Feishu CLI');
+    assert.deepEqual(cliCalls[0].slice(0, 4), ['im', '+messages-send', '--chat-id', FEISHU_TARGET]);
+    assert.ok(cliCalls[0].includes('--idempotency-key'));
+    assert.ok(cliCalls[0].includes('bot'));
 
     const storedConfig = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'config.json'), 'utf8'));
     assert.equal(storedConfig.notifications.enabled, false,
       'legacy global switch must stay off; per-session state is stored on the session');
-    assert.equal(storedConfig.notifications.serverchan.send_key, SEND_KEY);
+    assert.equal(storedConfig.notifications.provider, 'feishu-cli');
+    assert.equal(storedConfig.notifications.feishu.target, FEISHU_TARGET);
+    assert.ok(!Object.prototype.hasOwnProperty.call(storedConfig.notifications, 'serverchan'));
     for (const legacyField of ['mode', 'idle_seconds', 'min_duration_seconds']) {
       assert.ok(!Object.prototype.hasOwnProperty.call(storedConfig.notifications, legacyField));
     }
     const audit = fs.readFileSync(path.join(DATA_DIR, 'notification-delivery.jsonl'), 'utf8');
     assert.ok(audit.includes('"status":"sent"'));
-    assert.ok(!audit.includes(SEND_KEY), 'delivery audit must never contain SendKey');
+    assert.ok(!audit.includes(FEISHU_TARGET), 'delivery audit must not contain the Feishu recipient');
 
-    result.mockRequestCount = mock.requests.length;
+    result.mockRequestCount = cliCalls.length;
     result.auditSecretFree = true;
     result.onScreenshot = ON_SCREENSHOT;
     result.offScreenshot = OFF_SCREENSHOT;
+    result.configScreenshot = CONFIG_SCREENSHOT;
     result.success = true;
     fs.writeFileSync(RESULT_PATH, JSON.stringify(result, null, 2), 'utf8');
     console.log(JSON.stringify(result, null, 2));
   } finally {
     if (client) await client.close().catch(() => {});
     if (hub) await gracefulQuit(hub);
-    await new Promise(resolve => mock.server.close(resolve));
   }
 }
 

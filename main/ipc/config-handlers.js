@@ -13,14 +13,18 @@ const {
   normalizeCardFontFamily,
 } = require('../../core/card-display-config.js');
 const {
-  isUsableSendKey,
-  maskSecret,
+  isUsableFeishuTarget,
   normalizeNotificationConfig,
 } = require('../../core/completion-notifier.js');
 const {
   normalizeOperationsConfig,
   serializeOperationsConfig,
 } = require('../../core/operations-config.js');
+
+function maskSecret(secret) {
+  const value = String(secret || '');
+  return value ? `***${value.slice(-4)}` : '';
+}
 
 function toMaskedConfig(config) {
   const notifications = normalizeNotificationConfig(config.notifications || {});
@@ -44,8 +48,9 @@ function toMaskedConfig(config) {
     notificationEnabled: notifications.enabled,
     notificationIncludePreview: notifications.includePreview,
     notificationNotifyGroupChats: notifications.notifyGroupChats,
-    serverchanSendKey: maskSecret(notifications.serverchanSendKey),
-    serverchanSendKeySet: isUsableSendKey(notifications.serverchanSendKey),
+    notificationConfigured: isUsableFeishuTarget(notifications.feishuTarget),
+    feishuTarget: notifications.feishuTarget,
+    feishuTargetSet: isUsableFeishuTarget(notifications.feishuTarget),
     aliyunMonitorEnabled: operations.aliyunMonitor.enabled,
     aliyunMonitorLabel: operations.aliyunMonitor.label,
     aliyunHealthUrl: operations.aliyunMonitor.healthUrl,
@@ -78,7 +83,9 @@ function toEditableConfig(config) {
     notificationEnabled: notifications.enabled,
     notificationIncludePreview: notifications.includePreview,
     notificationNotifyGroupChats: notifications.notifyGroupChats,
-    serverchanSendKey: notifications.serverchanSendKey,
+    notificationConfigured: isUsableFeishuTarget(notifications.feishuTarget),
+    feishuTarget: notifications.feishuTarget,
+    feishuCliPath: notifications.feishuCliPath,
     aliyunMonitorEnabled: operations.aliyunMonitor.enabled,
     aliyunMonitorLabel: operations.aliyunMonitor.label,
     aliyunHealthUrl: operations.aliyunMonitor.healthUrl,
@@ -92,7 +99,8 @@ const NOTIFICATION_UPDATE_FIELDS = [
   'notificationEnabled',
   'notificationIncludePreview',
   'notificationNotifyGroupChats',
-  'serverchanSendKey',
+  'feishuTarget',
+  'feishuCliPath',
 ];
 
 const OPERATIONS_UPDATE_FIELDS = [
@@ -114,21 +122,28 @@ function buildNotificationJsonUpdate(existingNotifications, newConfig, hasOwn) {
     notifyGroupChats: hasOwn('notificationNotifyGroupChats')
       ? newConfig.notificationNotifyGroupChats
       : previous.notifyGroupChats,
-    serverchanSendKey: hasOwn('serverchanSendKey')
-      ? newConfig.serverchanSendKey
-      : previous.serverchanSendKey,
+    feishuTarget: hasOwn('feishuTarget')
+      ? newConfig.feishuTarget
+      : previous.feishuTarget,
+    feishuCliPath: hasOwn('feishuCliPath')
+      ? newConfig.feishuCliPath
+      : previous.feishuCliPath,
   }, {});
 
+  const existingFeishu = existingNotifications?.feishu && typeof existingNotifications.feishu === 'object'
+    ? existingNotifications.feishu
+    : {};
   const updated = {
     ...(existingNotifications || {}),
     enabled: candidate.enabled,
-    provider: 'serverchan',
+    provider: 'feishu-cli',
     include_preview: candidate.includePreview,
     preview_chars: candidate.previewChars,
     notify_group_chats: candidate.notifyGroupChats,
-    serverchan: {
-      ...(existingNotifications?.serverchan || {}),
-      send_key: candidate.serverchanSendKey || undefined,
+    feishu: {
+      ...existingFeishu,
+      target: candidate.feishuTarget || undefined,
+      ...(hasOwn('feishuCliPath') ? { cli_path: candidate.feishuCliPath || undefined } : {}),
     },
   };
   // 旧版曾按窗口焦点/系统空闲/任务耗时自动过滤。连接设置变更时清理这些
@@ -136,7 +151,9 @@ function buildNotificationJsonUpdate(existingNotifications, newConfig, hasOwn) {
   delete updated.mode;
   delete updated.idle_seconds;
   delete updated.min_duration_seconds;
-  if (!updated.serverchan.send_key) delete updated.serverchan.send_key;
+  delete updated.serverchan;
+  if (!updated.feishu.target) delete updated.feishu.target;
+  if (!updated.feishu.cli_path) delete updated.feishu.cli_path;
   return updated;
 }
 
@@ -144,7 +161,7 @@ function completionNotificationState(config = getConfig()) {
   const notifications = normalizeNotificationConfig(config.notifications || {});
   return {
     enabled: notifications.enabled,
-    configured: isUsableSendKey(notifications.serverchanSendKey),
+    configured: isUsableFeishuTarget(notifications.feishuTarget),
   };
 }
 
@@ -270,7 +287,7 @@ function registerConfigIpc(ipcMain, deps) {
     }
     try {
       return await testCompletionNotification({
-        sendKey: typeof payload.sendKey === 'string' ? payload.sendKey : '',
+        target: typeof payload.target === 'string' ? payload.target : '',
       });
     } catch {
       return { ok: false, status: 'failed', errorCode: 'unexpected_error' };

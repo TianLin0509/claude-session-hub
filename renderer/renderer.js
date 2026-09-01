@@ -855,9 +855,9 @@ async function refreshHubProxyInfo(options = {}) {
       : null;
     const next = {
       proxy: (cfg && cfg.proxy) || (hubProxyInfo && hubProxyInfo.proxy) || (egress && egress.proxyEndpoint) || '',
-      serverchanSendKeySet: cfg
-        ? !!(cfg.serverchanSendKeySet || String(cfg.serverchanSendKey || '').trim())
-        : !!(hubProxyInfo && hubProxyInfo.serverchanSendKeySet),
+      notificationConfigured: cfg
+        ? !!(cfg.notificationConfigured || cfg.feishuTargetSet || String(cfg.feishuTarget || '').trim())
+        : !!(hubProxyInfo && hubProxyInfo.notificationConfigured),
       deepseekApiKeySet: cfg
         ? !!String(cfg.deepseekApiKey || '').trim()
         : !!(hubProxyInfo && hubProxyInfo.deepseekApiKeySet),
@@ -866,7 +866,7 @@ async function refreshHubProxyInfo(options = {}) {
     };
     if (hubProxyInfo
         && hubProxyInfo.proxy === next.proxy
-        && hubProxyInfo.serverchanSendKeySet === next.serverchanSendKeySet
+        && hubProxyInfo.notificationConfigured === next.notificationConfigured
         && hubProxyInfo.deepseekApiKeySet === next.deepseekApiKeySet
         && Number(hubProxyInfo.egress && hubProxyInfo.egress.checkedAt) === Number(next.egress && next.egress.checkedAt)
         && String(hubProxyInfo.egress && hubProxyInfo.egress.alert && hubProxyInfo.egress.alert.type || '')

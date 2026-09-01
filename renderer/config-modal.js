@@ -89,7 +89,7 @@ function createConfigModalController({
       notificationNotifyGroupChats: configEl('cfg-notification-group-chats')
         ? !!configEl('cfg-notification-group-chats').checked
         : true,
-      serverchanSendKey: configEl('cfg-serverchan-sendkey')?.value.trim() || '',
+      feishuTarget: configEl('cfg-feishu-target')?.value.trim() || '',
     };
   }
 
@@ -101,8 +101,8 @@ function createConfigModalController({
     }
     if (configEl('cfg-notification-target-title')) {
       configEl('cfg-notification-target-title').textContent = target
-        ? `当前${target.type === 'meeting' ? '群聊' : '会话'}微信通知`
-        : '当前会话微信通知';
+        ? `当前${target.type === 'meeting' ? '群聊' : '会话'}飞书通知`
+        : '当前会话飞书通知';
     }
     if (configEl('cfg-notification-target-hint')) {
       configEl('cfg-notification-target-hint').textContent = target
@@ -115,8 +115,8 @@ function createConfigModalController({
     if (configEl('cfg-notification-group-chats')) {
       configEl('cfg-notification-group-chats').checked = config.notificationNotifyGroupChats !== false;
     }
-    if (configEl('cfg-serverchan-sendkey')) {
-      configEl('cfg-serverchan-sendkey').value = config.serverchanSendKey || '';
+    if (configEl('cfg-feishu-target')) {
+      configEl('cfg-feishu-target').value = config.feishuTarget || '';
     }
     return readNotificationForm();
   }
@@ -151,34 +151,35 @@ function createConfigModalController({
 
   function notificationErrorMessage(result) {
     const errorCode = result && result.errorCode;
-    if (errorCode === 'invalid_sendkey' || result?.status === 'configuration_missing') {
-      return '请先粘贴有效的 Server酱 SendKey。';
+    if (errorCode === 'invalid_target' || result?.status === 'configuration_missing') {
+      return '请填写有效的飞书接收对象 ID（oc_ 会话/群聊，或 ou_ 用户）。';
     }
-    if (errorCode === 'provider_rejected') return 'Server酱拒绝了请求，请检查 SendKey 或账号推送额度。';
-    if (errorCode === 'timeout') return '连接 Server酱超时，请检查网络后重试。';
-    if (errorCode === 'network_error') return '无法连接 Server酱，请检查网络或防火墙。';
-    if (errorCode === 'http_error') {
-      return `Server酱接口返回 HTTP ${result.statusCode || '错误'}，请稍后重试。`;
-    }
-    return '测试发送失败，请检查 SendKey 与网络后重试。';
+    if (errorCode === 'cli_not_found' || errorCode === 'cli_spawn_error') return '未找到飞书 CLI，请先安装或检查 HUB_NOTIFY_FEISHU_CLI_PATH。';
+    if (errorCode === 'authorization_error' || errorCode === 'cli_configuration_error') return '飞书 CLI 尚未完成应用配置或授权，请先运行 lark-cli config init / auth login。';
+    if (errorCode === 'missing_scope') return '飞书应用缺少 im:message:send_as_bot 权限，请补充权限后重试。';
+    if (errorCode === 'confirmation_required') return '飞书 CLI 风险门禁要求人工确认；通知器不会静默绕过。';
+    if (errorCode === 'timeout') return '飞书 CLI 发送超时，请检查网络后重试。';
+    if (errorCode === 'network_error') return '飞书 CLI 无法连接开放平台，请检查网络或代理。';
+    if (errorCode === 'invalid_response') return '飞书 CLI 返回了无法识别的结果，请检查 CLI 版本。';
+    return `飞书测试发送失败${result?.providerCode ? `（${result.providerCode}）` : ''}，请检查机器人是否在目标会话内。`;
   }
 
   async function testCompletionNotification() {
     const button = configEl('config-notification-test');
-    const sendKey = configEl('cfg-serverchan-sendkey')?.value.trim() || '';
-    if (!sendKey) {
-      setNotificationTestStatus('请先粘贴 Server酱 SendKey。', 'error');
+    const target = configEl('cfg-feishu-target')?.value.trim() || '';
+    if (!target) {
+      setNotificationTestStatus('请先填写飞书接收对象 ID。', 'error');
       return { ok: false, status: 'configuration_missing' };
     }
     if (button) {
       button.disabled = true;
       button.textContent = '发送中…';
     }
-    setNotificationTestStatus('正在通过 Server酱发送测试通知…', 'working');
+    setNotificationTestStatus('正在通过飞书 CLI 发送测试通知…', 'working');
     try {
-      const result = await ipcRenderer.invoke('test-completion-notification', { sendKey });
+      const result = await ipcRenderer.invoke('test-completion-notification', { target });
       if (result && result.ok) {
-        setNotificationTestStatus('测试通知已由 Server酱接收，请查看微信。', 'success');
+        setNotificationTestStatus('测试通知已发送，请查看飞书。', 'success');
       } else {
         setNotificationTestStatus(notificationErrorMessage(result), 'error');
       }
@@ -413,11 +414,11 @@ function createConfigModalController({
     showConfigMainView();
     modal.classList.remove('hidden');
     if (options && options.notificationSetup === true) {
-      setNotificationTestStatus('先填写 SendKey 并发送测试；进入重要会话后，再为该会话单独开启通知。', 'working');
+      setNotificationTestStatus('先填写飞书接收对象并发送测试；进入重要会话后，再为该会话单独开启通知。', 'working');
       const card = configEl('config-notification-card');
       try { card?.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch {}
       setTimeout(() => {
-        try { configEl('cfg-serverchan-sendkey')?.focus(); } catch {}
+        try { configEl('cfg-feishu-target')?.focus(); } catch {}
       }, 0);
     }
     if (options && options.operationsSetup === true) {
@@ -500,7 +501,7 @@ function createConfigModalController({
         ...readCardDisplayForm(),
         notificationIncludePreview: notificationForm.notificationIncludePreview,
         notificationNotifyGroupChats: notificationForm.notificationNotifyGroupChats,
-        serverchanSendKey: notificationForm.serverchanSendKey,
+        feishuTarget: notificationForm.feishuTarget,
         ...operationsForm,
       };
       if (newConfig.claudeBackend === 'api' && (!newConfig.claudeApiKey || !newConfig.claudeApiBaseUrl || !newConfig.claudeApiModel)) {
@@ -509,8 +510,14 @@ function createConfigModalController({
         msg.style.display = 'block';
         return;
       }
-      if (notificationForm.notificationTargetEnabled && !newConfig.serverchanSendKey) {
-        msg.textContent = '启用微信通知前，请先填写 Server酱 SendKey。';
+      if (newConfig.feishuTarget && !/^(?:oc|ou)_[A-Za-z0-9_-]{6,256}$/.test(newConfig.feishuTarget)) {
+        msg.textContent = '飞书接收对象 ID 必须以 oc_（会话/群聊）或 ou_（用户）开头。';
+        msg.className = 'config-save-msg error';
+        msg.style.display = 'block';
+        return;
+      }
+      if (notificationForm.notificationTargetEnabled && !newConfig.feishuTarget) {
+        msg.textContent = '启用飞书通知前，请先填写飞书接收对象 ID。';
         msg.className = 'config-save-msg error';
         msg.style.display = 'block';
         return;

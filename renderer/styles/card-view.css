@@ -316,7 +316,7 @@
   .terminal-panel.card-view-active .view-toggle { right: 16px; }
 }
 
-/* 当前会话微信完成通知：入口位置不变，状态随当前 session / meeting 切换。 */
+/* 当前会话飞书完成通知：入口位置不变，状态随当前 session / meeting 切换。 */
 .completion-notification-toggle {
   position: absolute;
   top: 8px;

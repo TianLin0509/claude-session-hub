@@ -388,11 +388,25 @@ function buildExceptions(items, options = {}) {
 
   const lastDelivery = hubConfig.notificationHealth && hubConfig.notificationHealth.lastDelivery;
   const deliveryAt = finiteNumber(lastDelivery && lastDelivery.timestamp);
+  const notificationAuditReadError = hubConfig.notificationHealth && hubConfig.notificationHealth.auditReadError;
+  const notificationAuditWriteError = hubConfig.notificationHealth && hubConfig.notificationHealth.auditWriteError;
+  const notificationAuditError = notificationAuditWriteError || notificationAuditReadError;
+  if (notificationAuditError) {
+    add({
+      id: notificationAuditWriteError ? 'notification:audit-write-failed' : 'notification:audit-read-failed',
+      severity: 'warning',
+      title: notificationAuditWriteError ? '飞书通知审计写入失败' : '飞书通知审计不可读',
+      detail: `错误：${notificationAuditError} · 重启后的持久去重保护已降级`,
+      type: 'system',
+      action: 'refresh',
+      timestamp: now,
+    });
+  }
   if (lastDelivery && lastDelivery.status === 'failed' && deliveryAt && now - deliveryAt <= RECENT_WINDOW_MS) {
     add({
       id: 'notification:last-failed',
       severity: 'warning',
-      title: '微信通知最近发送失败',
+      title: '飞书通知最近发送失败',
       detail: `错误：${lastDelivery.errorCode || 'unknown_error'} · 可点击刷新后重试任务`,
       type: 'system',
       action: 'refresh',
@@ -877,7 +891,7 @@ function createHomeWorkbench(options = {}) {
   function renderSyncHealth(snapshot) {
     const config = getHubConfig() || {};
     const resources = getResourceUsage() || {};
-    const configured = config.serverchanSendKeySet === true;
+    const configured = config.notificationConfigured === true || config.feishuTargetSet === true;
     setSyncValue('home-sync-notification', configured ? '已配置 · 按会话开启' : '未配置', configured ? 'ok' : 'warn');
     setSyncValue('home-sync-proxy', shortProxy(config.proxy), config.proxy ? 'ok' : 'dim');
 

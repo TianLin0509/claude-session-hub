@@ -33,7 +33,7 @@ function makeElement() {
 async function main() {
   assert.deepStrictEqual(normalizeToggleState({
     completionNotificationEnabled: true,
-    serverchanSendKeySet: true,
+    feishuTargetSet: true,
     available: true,
     targetType: 'session',
     targetId: 'session-1',
@@ -56,7 +56,7 @@ async function main() {
   };
 
   let openSettingsCount = 0;
-  let config = { serverchanSendKeySet: false };
+  let config = { notificationConfigured: false };
   let target = {
     id: 'session-1',
     type: 'session',
@@ -106,7 +106,7 @@ async function main() {
   assert.strictEqual(openSettingsCount, 1);
   assert.strictEqual(invocations.filter(item => item.channel === 'set-completion-notification-enabled').length, 0);
 
-  config = { serverchanSendKeySet: true };
+  config = { notificationConfigured: true };
   await controller.refresh();
   assert.strictEqual(button.dataset.state, 'disabled');
   assert.strictEqual(label.textContent, '通知关');

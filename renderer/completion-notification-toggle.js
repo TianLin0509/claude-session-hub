@@ -5,7 +5,9 @@ function normalizeToggleState(value = {}) {
   const targetType = value.targetType === 'meeting' ? 'meeting' : (value.targetType === 'session' ? 'session' : null);
   return {
     enabled: value.enabled === true || value.completionNotificationEnabled === true,
-    configured: value.configured === true || value.serverchanSendKeySet === true,
+    configured: value.configured === true
+      || value.notificationConfigured === true
+      || value.feishuTargetSet === true,
     available: value.available !== false && !!targetId && !!targetType,
     targetType,
     targetId,
@@ -46,12 +48,12 @@ function createCompletionNotificationToggle({
         ? '通知关'
         : (visualState === 'unavailable' ? '会话通知' : '通知未配'));
     button.title = visualState === 'enabled'
-      ? '当前会话的微信完成通知已开启。点击关闭'
+      ? '当前会话的飞书完成通知已开启。点击关闭'
       : (visualState === 'disabled'
-        ? '当前会话的微信完成通知已关闭。点击开启'
+        ? '当前会话的飞书完成通知已关闭。点击开启'
         : (visualState === 'unavailable'
-          ? '打开一个会话后，可在这里单独开启微信完成通知'
-          : '未配置 Server酱 SendKey，点击进入设置'));
+          ? '打开一个会话后，可在这里单独开启飞书完成通知'
+          : '未配置飞书接收对象，点击进入设置'));
     return state;
   }
 
@@ -85,7 +87,11 @@ function createCompletionNotificationToggle({
   async function refresh() {
     try {
       const config = await ipcRenderer.invoke('get-hub-config');
-      return refreshTarget(!!(config && (config.serverchanSendKeySet || config.configured)));
+      return refreshTarget(!!(config && (
+        config.notificationConfigured
+        || config.feishuTargetSet
+        || config.configured
+      )));
     } catch {
       return render();
     }
@@ -142,7 +148,11 @@ function createCompletionNotificationToggle({
     });
     if (typeof ipcRenderer.on === 'function') {
       ipcRenderer.on('completion-notification-config-changed', (_event, payload) => {
-        const configured = !!(payload && (payload.configured || payload.serverchanSendKeySet));
+        const configured = !!(payload && (
+          payload.configured
+          || payload.notificationConfigured
+          || payload.feishuTargetSet
+        ));
         refreshTarget(configured);
       });
       ipcRenderer.on('completion-notification-target-changed', () => {

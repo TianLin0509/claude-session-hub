@@ -16,8 +16,8 @@ const {
   toMaskedConfig,
 } = require('../main/ipc/config-handlers.js');
 
-assert.ok(/id="cfg-serverchan-sendkey"[^>]*type="password"|type="password"[^>]*id="cfg-serverchan-sendkey"/.test(html),
-  'SendKey must be rendered as a password input');
+assert.ok(/id="cfg-feishu-target"[^>]*type="text"|type="text"[^>]*id="cfg-feishu-target"/.test(html),
+  'the reused notification form must expose one Feishu recipient input');
 for (const id of [
   'cfg-notification-enabled',
   'cfg-notification-group-chats',
@@ -29,7 +29,7 @@ for (const id of [
 ]) {
   assert.ok(html.includes(`id="${id}"`), `settings UI should include ${id}`);
 }
-assert.ok(/ipcRenderer\.invoke\('test-completion-notification',\s*\{\s*sendKey\s*\}\)/.test(modalSource),
+assert.ok(/ipcRenderer\.invoke\('test-completion-notification',\s*\{\s*target\s*\}\)/.test(modalSource),
   'test button should call the dedicated main-process IPC without requiring a save');
 assert.ok(/notificationTargetEnabled/.test(modalSource)
   && /set-completion-notification-enabled/.test(modalSource),
@@ -41,12 +41,20 @@ assert.ok(!html.includes('cfg-notification-mode') && !html.includes('cfg-notific
 assert.ok(/set-completion-notification-enabled/.test(toggleSource),
   'top-bar toggle should persist through a dedicated narrow IPC');
 assert.ok(/openNotificationSettings/.test(toggleSource),
-  'unconfigured top-bar toggle should guide the user to ServerChan settings');
+  'unconfigured top-bar toggle should guide the user to Feishu settings');
+assert.ok(!/Server酱|微信通知/.test(html + modalSource + toggleSource),
+  'the replaced notification UI must not retain ServerChan/WeChat wording');
 
 assert.ok(/completionNotifier\.handleTurnComplete\(ev\s*\|\|\s*\{\},\s*session\)/.test(mainSource),
   'main-process transcript completion should feed the notifier');
 assert.ok(/completionNotifier\.notePromptSubmitted\(ev\s*\|\|\s*\{\}\)/.test(mainSource),
   'prompt submission should feed duration tracking');
+assert.ok(/turn-started[\s\S]*completionNotifier\.noteTurnStarted\(ev\)/.test(mainSource),
+  'authoritative turn start must advance the notification accuracy gate');
+assert.ok(/turn-aborted[\s\S]*completionNotifier\.noteTurnAborted\(ev\)/.test(mainSource),
+  'aborted turns must close the notification accuracy gate');
+assert.ok(/turn-error[\s\S]*completionNotifier\.noteTurnFailed\(ev\)/.test(mainSource),
+  'failed turns must close the notification accuracy gate');
 assert.ok(/onGroupChatComplete:\s*\(event\)\s*=>\s*completionNotifier\.handleGroupChatComplete/.test(mainSource),
   'main should wire aggregate group-chat completion into the notifier');
 assert.ok(/notifyGroupChatComplete\(\{[\s\S]*durationMs:\s*Date\.now\(\)\s*-\s*turnStartedAt[\s\S]*\},\s*meeting\)/.test(dispatcherSource),
@@ -57,15 +65,15 @@ const config = {
     enabled: true,
     includePreview: false,
     notifyGroupChats: true,
-    serverchanSendKey: 'SCT_SECRET_123456',
+    feishuTarget: 'oc_1234567890',
   },
 };
 const masked = toMaskedConfig(config);
-assert.strictEqual(masked.serverchanSendKey, '***3456');
-assert.strictEqual(masked.serverchanSendKeySet, true);
-assert.ok(!JSON.stringify(masked).includes('SCT_SECRET_123456'));
+assert.strictEqual(masked.feishuTarget, 'oc_1234567890');
+assert.strictEqual(masked.feishuTargetSet, true);
+assert.strictEqual(masked.notificationConfigured, true);
 const editable = toEditableConfig(config);
-assert.strictEqual(editable.serverchanSendKey, 'SCT_SECRET_123456');
+assert.strictEqual(editable.feishuTarget, 'oc_1234567890');
 assert.ok(!Object.prototype.hasOwnProperty.call(editable, 'notificationMode'));
 
 const existing = {
@@ -87,6 +95,7 @@ const existing = {
     min_duration_seconds: 15,
     custom: 'preserve-me',
     serverchan: { send_key: 'SCT_OLD_123456', custom: 'keep' },
+    feishu: { custom: 'keep-feishu' },
   },
   unrelated: { keep: true },
 };
@@ -96,7 +105,7 @@ assert.deepStrictEqual(preserved.notifications, existing.notifications,
 const updated = buildConfigJsonUpdate(existing, {
   notificationIncludePreview: true,
   notificationNotifyGroupChats: false,
-  serverchanSendKey: 'SCT_NEW_654321',
+  feishuTarget: 'ou_1234567890',
 });
 assert.strictEqual(updated.unrelated.keep, true);
 assert.deepStrictEqual(updated.providers.codex, existing.providers.codex,
@@ -106,8 +115,11 @@ assert.strictEqual(updated.notifications.enabled, false,
   'connection settings must preserve but never implicitly enable the legacy global flag');
 assert.strictEqual(updated.notifications.include_preview, true);
 assert.strictEqual(updated.notifications.notify_group_chats, false);
-assert.strictEqual(updated.notifications.serverchan.custom, 'keep');
-assert.strictEqual(updated.notifications.serverchan.send_key, 'SCT_NEW_654321');
+assert.strictEqual(updated.notifications.provider, 'feishu-cli');
+assert.strictEqual(updated.notifications.feishu.custom, 'keep-feishu');
+assert.strictEqual(updated.notifications.feishu.target, 'ou_1234567890');
+assert.ok(!Object.prototype.hasOwnProperty.call(updated.notifications, 'serverchan'),
+  'saving Feishu notification settings must retire the legacy ServerChan node');
 for (const legacyField of ['mode', 'idle_seconds', 'min_duration_seconds']) {
   assert.ok(!Object.prototype.hasOwnProperty.call(updated.notifications, legacyField),
     `legacy automatic filter field ${legacyField} should be removed on notification save`);

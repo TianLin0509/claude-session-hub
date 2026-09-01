@@ -421,14 +421,8 @@ const networkEgressMonitor = createNetworkEgressMonitor({
   ...(networkEgressProbe ? { probe: networkEgressProbe } : {}),
   logger: console,
 });
-const serverchanApiBaseOverride = String(process.env.HUB_NOTIFY_SERVERCHAN_API_BASE || '')
-  .trim()
-  .replace(/\/+$/, '');
 const completionNotifier = new CompletionNotifier({
   getConfig: getHubConfig,
-  endpointBuilder: serverchanApiBaseOverride
-    ? sendKey => `${serverchanApiBaseOverride}/${encodeURIComponent(sendKey)}.send`
-    : undefined,
   getLogPath: () => path.join(getHubDataDir(), 'notification-delivery.jsonl'),
   logger: console,
 });
@@ -515,6 +509,7 @@ const { maybeAutoTitleMeetingFromPrompt, maybeAutoTitleSessionFromPrompt } = aut
 // auto-title or notification prompt bookkeeping with synthetic text.
 transcriptTap.on('turn-started', (ev) => {
   if (!ev || !ev.hubSessionId) return;
+  completionNotifier.noteTurnStarted(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
     sendToRenderer('turn-started-event', {
@@ -533,6 +528,7 @@ transcriptTap.on('turn-started', (ev) => {
 
 transcriptTap.on('turn-aborted', (ev) => {
   if (!ev || !ev.hubSessionId) return;
+  completionNotifier.noteTurnAborted(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
     sendToRenderer('turn-aborted-event', {
@@ -554,6 +550,7 @@ transcriptTap.on('turn-aborted', (ev) => {
 // full-screen TUI can redraw an old error line during every later turn.
 transcriptTap.on('turn-error', (ev) => {
   if (!ev || !ev.hubSessionId) return;
+  completionNotifier.noteTurnFailed(ev);
   const session = sessionManager.getSession(ev.hubSessionId);
   try {
     sendToRenderer('turn-failed-event', {
@@ -1066,6 +1063,7 @@ sessionManager.onData = (sessionId, data, seq) => {
 
 sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
   const isWorkspaceMigration = workspaceMigrationSessionIds.has(sessionId);
+  completionNotifier.noteSessionClosed({ sessionId });
   terminalOutputBatcher.flush(sessionId);
   meetingTerminalActivitySentAt.delete(sessionId);
   if (!isWorkspaceMigration) groupChatDispatcher?.markProcessExitForSession(sessionId, exitInfo);
@@ -1083,6 +1081,7 @@ sessionManager.onSessionClosed = (sessionId, meetingId, exitInfo) => {
 };
 
 sessionManager.onSessionSuspended = (sessionId, meetingId, session, exitInfo) => {
+  completionNotifier.noteSessionClosed({ sessionId });
   terminalOutputBatcher.flush(sessionId);
   meetingTerminalActivitySentAt.delete(sessionId);
   groupChatDispatcher?.markProcessExitForSession(sessionId, { ...(exitInfo || {}), suspended: true });

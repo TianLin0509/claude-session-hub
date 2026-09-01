@@ -132,7 +132,7 @@ function getConfig() {
     uiCodeFoldThreshold: parseInt(getConfigValue('uiCodeFoldThreshold', 'HUB_UI_CODE_FOLD', 'ui.code_fold_threshold', DEFAULTS.ui_code_fold_threshold), 10),
     cardFontSize: normalizeCardFontSize(getConfigValue('cardFontSize', 'HUB_UI_CARD_FONT_SIZE', 'ui.card_font_size', DEFAULTS.ui_card_font_size)),
     cardFontFamily: normalizeCardFontFamily(getConfigValue('cardFontFamily', 'HUB_UI_CARD_FONT_FAMILY', 'ui.card_font_family', DEFAULTS.ui_card_font_family)),
-    // 回答完成通知；SendKey 可由 config.json 或 HUB_NOTIFY_SERVERCHAN_SENDKEY 提供。
+    // 回答完成通知；飞书接收对象可由 config.json 或 HUB_NOTIFY_FEISHU_TARGET 提供。
     notifications: normalizeNotificationConfig(rawConfig.notifications),
     // 梦境系统（dream-consolidation）配置段，config.json 的 consolidation 键。
     consolidation: normalizeConsolidationConfig(rawConfig.consolidation),
