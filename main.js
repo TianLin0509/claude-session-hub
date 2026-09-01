@@ -1043,6 +1043,7 @@ function sendToRenderer(channel, data) {
 let groupChatDispatcher = null;
 let sessionAutoSuspendScheduler = null;
 let agentLeagueBridge = null;
+let studyBridge = null;
 const meetingTerminalActivitySentAt = new Map();
 const terminalOutputBatcher = new TerminalOutputBatcher({
   emit: ({ sessionId, data, seq }) => {
@@ -1246,6 +1247,7 @@ sessionAutoSuspendScheduler = createSessionAutoSuspendScheduler({
     groupChatDispatcher,
     loopEngine: global.__loopEngine,
     meetingManager,
+    studyBridge,
   }),
   logger: console,
 });
@@ -1301,6 +1303,20 @@ agentLeagueBridge = require('./main/ipc/agent-league-handlers.js').registerAgent
   sessionManager,
   transcriptTap,
 });
+
+// 学习 Tab：Claude（主笔）与 Codex（审阅兼插画）两个常驻实体 Session，
+// 由主进程按三棒串行工作流驱动。Claude 不去调用 Codex——两者都是普通 Hub Session。
+try {
+  studyBridge = require('./main/ipc/study-handlers.js').registerStudyIpc(ipcMain, {
+    getHubDataDir,
+    registerSessionForTap,
+    sendToRenderer,
+    sessionManager,
+    transcriptTap,
+  });
+} catch (e) {
+  console.warn('[study] 学习 Tab 初始化失败：', e && e.message);
+}
 if (process.env.CLAUDE_HUB_E2E === '1') {
   ipcMain.handle('debug:agent-league-background-state', () => ({
     ok: true,

@@ -4,7 +4,7 @@ const AUTO_SUSPEND_IDLE_MS = 5 * 60 * 60 * 1000;
 const AUTO_SUSPEND_CHECK_MS = 5 * 60 * 1000;
 const AUTO_SUSPEND_REASON = 'idle-timeout';
 
-function collectProtectedSessionIds({ agentLeagueBridge, groupChatDispatcher, loopEngine, meetingManager } = {}) {
+function collectProtectedSessionIds({ agentLeagueBridge, groupChatDispatcher, loopEngine, meetingManager, studyBridge } = {}) {
   const protectedIds = new Set();
 
   try {
@@ -42,6 +42,20 @@ function collectProtectedSessionIds({ agentLeagueBridge, groupChatDispatcher, lo
       : null;
     if (leagueIds && typeof leagueIds[Symbol.iterator] === 'function') {
       for (const sessionId of leagueIds) {
+        if (sessionId) protectedIds.add(String(sessionId));
+      }
+    }
+  } catch {}
+
+  // 学习 Tab：某一棒正在跑时，对应的 Claude / Codex Session 不能被休眠收走，
+  // 否则自动 prompt 发出去后会话就没了，这一棒只能等超时失败。
+  try {
+    const studyIds = studyBridge
+      && typeof studyBridge.getProtectedSessionIds === 'function'
+      ? studyBridge.getProtectedSessionIds()
+      : null;
+    if (studyIds && typeof studyIds[Symbol.iterator] === 'function') {
+      for (const sessionId of studyIds) {
         if (sessionId) protectedIds.add(String(sessionId));
       }
     }
