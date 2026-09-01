@@ -56,11 +56,34 @@ function previewCacheName(filePath, stat) {
     .slice(0, 32)}.png`;
 }
 
+function previewPdfPath(imagePath) {
+  const normalized = String(imagePath || '');
+  return /\.png$/i.test(normalized) ? normalized.replace(/\.png$/i, '.pdf') : `${normalized}.pdf`;
+}
+
+async function writeAtomic(outputPath, data) {
+  const tempPath = `${outputPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  await fs.promises.writeFile(tempPath, data);
+  try {
+    await fs.promises.rename(tempPath, outputPath);
+  } catch (error) {
+    try {
+      const existing = await fs.promises.stat(outputPath);
+      if (existing.isFile() && existing.size > 0) {
+        try { await fs.promises.unlink(tempPath); } catch {}
+        return;
+      }
+    } catch {}
+    try { await fs.promises.unlink(tempPath); } catch {}
+    throw error;
+  }
+}
+
 async function prunePreviewCache(outputDir, now = Date.now()) {
   let entries = [];
   try { entries = await fs.promises.readdir(outputDir, { withFileTypes: true }); } catch { return; }
   await Promise.all(entries.map(async (entry) => {
-    if (!entry.isFile() || !/^[a-f0-9]{32}\.png$/i.test(entry.name)) return;
+    if (!entry.isFile() || !/^[a-f0-9]{32}\.(?:png|pdf)$/i.test(entry.name)) return;
     const candidate = path.join(outputDir, entry.name);
     try {
       const stat = await fs.promises.stat(candidate);
@@ -97,9 +120,15 @@ function createHtmlArtifactPreviewRenderer(options = {}) {
     const outputDir = path.join(outputRoot, 'notification-previews');
     await fs.promises.mkdir(outputDir, { recursive: true });
     const outputPath = path.join(outputDir, previewCacheName(artifactPath, stat));
+    const pdfPath = previewPdfPath(outputPath);
     try {
-      const cached = await fs.promises.stat(outputPath);
-      if (cached.isFile() && cached.size > 0) return outputPath;
+      const [cachedImage, cachedPdf] = await Promise.all([
+        fs.promises.stat(outputPath),
+        fs.promises.stat(pdfPath),
+      ]);
+      if (cachedImage.isFile() && cachedImage.size > 0 && cachedPdf.isFile() && cachedPdf.size > 0) {
+        return outputPath;
+      }
     } catch {}
 
     const partition = `hub-notification-preview-${crypto.randomBytes(10).toString('hex')}`;
@@ -163,13 +192,20 @@ function createHtmlArtifactPreviewRenderer(options = {}) {
         error.code = 'preview_empty_png';
         throw error;
       }
-      const tempPath = `${outputPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-      await fs.promises.writeFile(tempPath, png);
+      await writeAtomic(outputPath, png);
       try {
-        await fs.promises.rename(tempPath, outputPath);
+        if (typeof webContents.printToPDF !== 'function') throw new Error('preview_pdf_unavailable');
+        const pdf = await withTimeout(webContents.printToPDF({
+          landscape: true,
+          printBackground: true,
+          pageSize: 'A4',
+          margins: { top: 0, bottom: 0, left: 0, right: 0 },
+          preferCSSPageSize: true,
+        }), 7_000, 'preview_pdf_timeout');
+        if (!Buffer.isBuffer(pdf) || pdf.length === 0) throw new Error('preview_empty_pdf');
+        await writeAtomic(pdfPath, pdf);
       } catch (error) {
-        try { await fs.promises.unlink(tempPath); } catch {}
-        if (error && error.code !== 'EEXIST') throw error;
+        try { logger.warn('[completion-notifier] HTML PDF fallback failed:', error && error.code || error && error.message || 'unknown'); } catch {}
       }
       prunePreviewCache(outputDir).catch(error => {
         try { logger.warn('[completion-notifier] preview cache prune failed:', error && error.code || 'unknown'); } catch {}
@@ -191,5 +227,7 @@ module.exports = {
   isAllowedPreviewRequest,
   isPathInside,
   previewCacheName,
+  previewPdfPath,
   prunePreviewCache,
+  writeAtomic,
 };

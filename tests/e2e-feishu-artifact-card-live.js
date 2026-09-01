@@ -107,15 +107,17 @@ async function run() {
       attachmentsSent: Number(outcome.attachmentsSent) || 0,
       driveArtifactsUploaded: Number(outcome.driveArtifactsUploaded) || 0,
       drivePreviewState: outcome.drivePreviewState || null,
+      pdfFallbackSent: Number(outcome.pdfFallbackSent) || 0,
       warningCodes: Array.isArray(outcome.warningCodes) ? outcome.warningCodes : [],
     });
     assert.equal(outcome.ok, true);
     assert.equal(outcome.deliveryMode, 'card2');
     assert.equal(outcome.artifactCount, 1);
-    assert.equal(outcome.attachmentsSent, 0);
+    assert.equal(outcome.attachmentsSent, 2);
     assert.equal(outcome.driveArtifactsUploaded, 1);
-    assert.ok(['ready', 'processing', 'client_only', 'unknown'].includes(outcome.drivePreviewState));
-    assert.deepEqual(outcome.warningCodes, []);
+    assert.equal(outcome.drivePreviewState, 'unsupported');
+    assert.equal(outcome.pdfFallbackSent, 1);
+    assert.ok(outcome.warningCodes.includes('drive_preview_unsupported'));
   } finally {
     notifier?.dispose();
     try { if (!lifecycleWindow.isDestroyed()) lifecycleWindow.destroy(); } catch {}

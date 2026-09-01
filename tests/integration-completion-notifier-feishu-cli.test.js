@@ -5,7 +5,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { CompletionNotifier, sendFeishuCli } = require('../core/completion-notifier.js');
+const {
+  CompletionNotifier,
+  resetDriveHtmlPreviewCapabilityForTests,
+  sendFeishuCli,
+} = require('../core/completion-notifier.js');
 
 async function run() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-feishu-cli-notifier-'));
@@ -15,6 +19,7 @@ async function run() {
   const previousLog = process.env.HUB_FEISHU_FAKE_CALL_LOG;
   const previousMode = process.env.HUB_FEISHU_FAKE_MODE;
   try {
+    resetDriveHtmlPreviewCapabilityForTests();
     fs.writeFileSync(fakeCliPath, [
       "'use strict';",
       "const fs = require('node:fs');",
@@ -103,8 +108,10 @@ async function run() {
     fs.mkdirSync(artifactDir, { recursive: true });
     const htmlPath = path.join(artifactDir, '20260901-AIHub-rich-preview.html');
     const pngPath = path.join(tempDir, 'rendered-preview.png');
+    const pdfPath = path.join(tempDir, 'rendered-preview.pdf');
     fs.writeFileSync(htmlPath, '<!doctype html><h1>Rich artifact</h1>', 'utf8');
     fs.writeFileSync(pngPath, 'PNG', 'utf8');
+    fs.writeFileSync(pdfPath, 'PDF', 'utf8');
     const richNotifier = new CompletionNotifier({
       getConfig: () => ({
         notifications: {
@@ -239,10 +246,17 @@ async function run() {
     });
     assert.equal(clientPreview.ok, true);
     assert.equal(clientPreview.driveArtifactsUploaded, 1);
-    assert.equal(clientPreview.drivePreviewState, 'client_only');
-    assert.equal(clientPreview.attachmentsSent, 0);
-    assert.equal(clientPreview.warningCodes.some(code => code.startsWith('drive_preview_')), false);
+    assert.equal(clientPreview.drivePreviewState, 'unsupported');
+    assert.equal(clientPreview.attachmentsSent, 2,
+      'unsupported HTML preview must send PDF plus the original HTML fallback');
+    assert.equal(clientPreview.pdfFallbackSent, 1);
+    assert.ok(clientPreview.warningCodes.includes('drive_preview_unsupported'));
+    const clientPreviewCalls = fs.readFileSync(callPath, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
+    const clientPreviewCardCall = clientPreviewCalls.slice().reverse().find(call => call.includes('interactive'));
+    const clientPreviewCard = JSON.parse(clientPreviewCardCall[clientPreviewCardCall.indexOf('--content') + 1]);
+    assert.doesNotMatch(JSON.stringify(clientPreviewCard), /飞书内打开 HTML|boxcn_native_preview/);
     clientPreviewNotifier.dispose();
+    resetDriveHtmlPreviewCapabilityForTests();
 
     process.env.HUB_FEISHU_FAKE_MODE = 'drive-scope-fail';
     const driveFallbackNotifier = new CompletionNotifier({
@@ -272,8 +286,9 @@ async function run() {
     assert.equal(driveFallback.ok, true);
     assert.equal(driveFallback.deliveryMode, 'card2');
     assert.equal(driveFallback.driveArtifactsUploaded, 0);
-    assert.equal(driveFallback.attachmentsSent, 1,
-      'missing Drive scope must fall back to the original IM file');
+    assert.equal(driveFallback.attachmentsSent, 2,
+      'missing Drive scope must fall back to PDF plus the original IM file');
+    assert.equal(driveFallback.pdfFallbackSent, 1);
     assert.ok(driveFallback.warningCodes.includes('drive_upload_missing_scope'));
     driveFallbackNotifier.dispose();
 
@@ -304,8 +319,9 @@ async function run() {
     });
     assert.equal(grantFailure.ok, true);
     assert.equal(grantFailure.driveArtifactsUploaded, 1);
-    assert.equal(grantFailure.attachmentsSent, 1,
-      'an inaccessible Drive file must retain the generic IM fallback');
+    assert.equal(grantFailure.attachmentsSent, 2,
+      'an inaccessible Drive file must retain PDF plus the generic IM fallback');
+    assert.equal(grantFailure.pdfFallbackSent, 1);
     assert.ok(grantFailure.warningCodes.includes('drive_permission_failed'));
     grantFailureNotifier.dispose();
 
@@ -389,6 +405,7 @@ async function run() {
 
     console.log('integration-completion-notifier-feishu-cli.test.js OK');
   } finally {
+    resetDriveHtmlPreviewCapabilityForTests();
     if (previousLog === undefined) delete process.env.HUB_FEISHU_FAKE_CALL_LOG;
     else process.env.HUB_FEISHU_FAKE_CALL_LOG = previousLog;
     if (previousMode === undefined) delete process.env.HUB_FEISHU_FAKE_MODE;

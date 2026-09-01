@@ -6,7 +6,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { app, BrowserWindow, nativeImage } = require('electron');
-const { createHtmlArtifactPreviewRenderer } = require('../core/html-artifact-preview.js');
+const { createHtmlArtifactPreviewRenderer, previewPdfPath } = require('../core/html-artifact-preview.js');
 
 app.commandLine.appendSwitch('disable-gpu');
 const keepAlive = setInterval(() => {}, 1_000);
@@ -59,7 +59,11 @@ h1{margin:0 0 20px;color:#17803d;font-size:42px}p{font-size:24px;line-height:1.7
     assert.ok(size.height > 0 && size.height <= 3_000, `invalid preview height: ${size.height}`);
     assert.ok(size.height / size.width <= 16 / 9, `preview ratio exceeds Feishu limit: ${size.width}x${size.height}`);
     assert.equal(externalRequestCount, 0, 'preview HTML must not reach even a loopback HTTP server');
-    console.log(`integration-html-artifact-preview-electron.test.js OK ${size.width}x${size.height} ${stat.size} bytes`);
+    const pdfPath = previewPdfPath(previewPath);
+    const pdfStat = fs.statSync(pdfPath);
+    assert.ok(pdfStat.size > 1_000, `PDF fallback is unexpectedly small: ${pdfStat.size}`);
+    assert.equal(fs.readFileSync(pdfPath).subarray(0, 4).toString('ascii'), '%PDF');
+    console.log(`integration-html-artifact-preview-electron.test.js OK ${size.width}x${size.height} PNG=${stat.size} PDF=${pdfStat.size}`);
   } finally {
     try { if (!lifecycleWindow.isDestroyed()) lifecycleWindow.destroy(); } catch {}
     if (server) await new Promise(resolve => server.close(resolve));
