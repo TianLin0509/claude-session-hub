@@ -237,6 +237,15 @@ function createLivePtyRuntimeObserver(sessionManager, sid, kind) {
   };
 }
 
+// 最近一次探针是否已经把屏幕读成「正在跑」。这里刻意不要求动画确认帧：
+//   waitForAgentWorkStart 只在 confirmed 时才返回，而「未确认但确实在跑」正是
+//   最不该补回车的状态。用作补 Enter 的否决条件，而不是开工的肯定证据。
+function looksAlreadyRunning(probeState) {
+  if (!probeState) return false;
+  return (probeState.lastLiveRuntime && probeState.lastLiveRuntime.state === RUNTIME_RUNNING)
+    || (probeState.lastRingRuntime && probeState.lastRingRuntime.state === RUNTIME_RUNNING);
+}
+
 async function waitForAgentWorkStart(observer, sessionManager, sid, kind, timeoutMs, probeState, livePtyObserver) {
   const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
   while (Date.now() < deadline) {
@@ -380,10 +389,12 @@ async function sendToPty(sid, prompt, kind) {
     let acknowledgement = null;
     let probeState = null;
     if (turnStart) {
-      // Large bracketed pastes need time to leave the TUI input state. Waiting
-      // four seconds avoids pressing a redundant Enter while a 10k+ prompt is
-      // already being parsed; only a genuinely absent work-start gets retry #1.
-      const firstAckMs = Math.max(20, Number(_deps && (_deps.agentTurnStartAckMs || _deps.codexTurnStartAckMs) || 4000));
+      // Large bracketed pastes need time to leave the TUI input state.
+      // 实测（20260831，Codex CLI 0.151.0，222 行 / 14,061 字）：从提交到 task_started
+      //   稳定落在 4708-4847ms。窗口若取 4000ms，这条"有条件"的补 Enter 就变成每次必发，
+      //   3 次试验里还多打出过一个 Codex turn。取 9s 留约 2 倍余量：宁可晚 5 秒报 stuck，
+      //   也不要在 agent 已经开工后再补一次回车。
+      const firstAckMs = Math.max(20, Number(_deps && (_deps.agentTurnStartAckMs || _deps.codexTurnStartAckMs) || 9000));
       const recoveryAckMs = Math.max(20, Number(_deps && (_deps.agentTurnStartRecoveryMs || _deps.codexTurnStartRecoveryMs) || 6000));
       const configuredRetryMax = Number(_deps && _deps.agentTurnStartRetryMax);
       const retryMax = Number.isFinite(configuredRetryMax)
@@ -397,6 +408,13 @@ async function sendToPty(sid, prompt, kind) {
       // provider lifecycle event is the semantic acknowledgement. If absent,
       // send a late isolated Enter only then, exactly as the user would.
       for (let attempt = 0; !acknowledgement && attempt < retryMax; attempt += 1) {
+        // 正向证据优先：屏幕上已经在跑（哪怕动画还没攒够确认帧），就绝不再补回车——
+        //   那一下会落进一个已经开工的 TUI，轻则空提交，重则再起一个 turn。只延长等待。
+        if (looksAlreadyRunning(probeState)) {
+          console.warn(`[group-chat] ${kind} work-start unconfirmed for ${sid.slice(0, 8)} but the screen already reads running; extending the wait instead of pressing Enter`);
+          acknowledgement = await waitForAgentWorkStart(turnStart, sessionManager, sid, kind, recoveryAckMs, probeState, livePtyObserver);
+          continue;
+        }
         recoveryAttempts += 1;
         enterAttempts += 1;
         console.warn(`[group-chat] ${kind} prompt has no agent work-start acknowledgement for ${sid.slice(0, 8)}; sending late Enter recovery ${attempt + 1}/${retryMax}`);

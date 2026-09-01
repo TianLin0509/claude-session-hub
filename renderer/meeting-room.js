@@ -5360,7 +5360,8 @@ if (typeof document !== 'undefined') (function () {
 
   function showAddSubMenu(meetingId, anchorEl = null) {
     const meeting = meetingData[meetingId];
-    if (!meeting || meeting.subSessions.length >= 3) return;
+    // 3 人上限只对非群聊的多标签会议生效；群聊不限人数（实际基本停在 3 人，但那是用户的选择）。
+    if (!meeting || (!meeting.groupChat && meeting.subSessions.length >= 3)) return;
 
     const btn = anchorEl || document.getElementById('mr-btn-add-sub');
     if (!btn) return;
@@ -5375,15 +5376,12 @@ if (typeof document !== 'undefined') (function () {
     menu.style.top = rect.bottom + 4 + 'px';
     menu.style.left = rect.left + 'px';
 
-    // 新群聊的主力矩阵固定为 Claude + Codex，可选补一位 DeepSeek。
-    // 历史会议里的 Gemini/Kimi 等成员继续可读可运行，但不再从群聊入口新增。
+    // 群聊入口只提供 Claude / Codex / DeepSeek 三种 runtime（主力矩阵）。
+    // 但不去重、不封顶：同一种 AI 可以加多个（两个 Claude 跑不同模型/角色是有效用法）。
+    // 历史会议里的 Gemini/Kimi 等成员继续可读可运行，只是不再从群聊入口新增。
     const _CLI_SUFFIX = { claude: 'Claude Code', gemini: 'Gemini CLI', codex: 'Codex CLI', deepseek: 'DeepSeek · Codex', kimi: 'Kimi Code' };
-    const existingKinds = new Set((meeting.subSessions || []).map(sid => {
-      const session = (typeof sessions !== 'undefined' && sessions) ? sessions.get(sid) : null;
-      return String(session && session.kind || '').replace(/-resume$/i, '').toLowerCase();
-    }).filter(Boolean));
     const availableKinds = meeting.groupChat
-      ? ['claude', 'codex', 'deepseek'].filter(kind => !existingKinds.has(kind))
+      ? ['claude', 'codex', 'deepseek']
       : ALL_AI_KINDS;
     const kinds = availableKinds.map(k => ({
       kind: k,

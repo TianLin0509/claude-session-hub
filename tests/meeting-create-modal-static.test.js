@@ -54,6 +54,19 @@ test('group defaults to Claude + Codex and keeps DeepSeek as the optional third 
   assert.match(MODAL_JS, /GROUP_MEMBER_KINDS\s*=\s*\['claude',\s*'codex',\s*'deepseek'\]/);
 });
 
+test('group membership is a default, not a cap: same kind may repeat and the roster is unbounded', () => {
+  // 「默认 Claude + Codex」说的是起手配置，不是上限。用户明确要求：
+  //   同一种 AI 可以多开（两个 Claude 跑不同模型/角色），人数也不封顶。
+  assert.match(MODAL_JS, /GROUP_MEMBER_KINDS\[_groupSlots\.length % GROUP_MEMBER_KINDS\.length\]/,
+    'once every provider is present the add button must cycle instead of giving up');
+  assert.match(MODAL_JS, /addBtn\.disabled\s*=\s*false/,
+    'the add-member button must never disable itself on a member count');
+  assert.doesNotMatch(MODAL_JS, /addBtn\.disabled\s*=\s*!nextKind/,
+    'no per-kind uniqueness gate on the add-member button');
+  assert.doesNotMatch(MODAL_JS, /成员已齐全/,
+    'the modal must not tell the user the roster is full');
+});
+
 test('new DeepSeek sessions accept Codex Pro and Flash while old Claude sessions keep 1M aliases', () => {
   assert.strictEqual(normalizeDeepSeekModel(), 'deepseek-v4-flash');
   assert.strictEqual(normalizeDeepSeekModel('deepseek-v4-pro'), 'deepseek-v4-pro');

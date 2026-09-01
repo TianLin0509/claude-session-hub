@@ -18,6 +18,8 @@ const LC = require('../../renderer/loop-workflow.js'); // UMD → node 下为纯
 const WT = require('../../renderer/workflow-templates.js');
 const { formatBeijingDateTime } = require('../../core/beijing-time.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 开机自动续跑串行工作流的年龄上限：超过这个时长没动静的，只做提示不自动派发。
+const SERIAL_BOOT_RESUME_MAX_IDLE_MS = 6 * 60 * 60 * 1000;
 
 function createLoopEngine(deps) {
   const {
@@ -665,6 +667,15 @@ function createLoopEngine(deps) {
         const serialState = sw && sw.serialRunState;
         if (sw && sw.enabled && !(sw.loop && sw.loop.enabled)
           && serialState && serialState.status === 'running') {
+          // 循环工作流有 deadlineTs 兜底，串行没有。没有年龄下限的话，几天前被打断的
+          //   一次串行会在下次开 Hub 时静默地重新向 CLI 发指令。超龄的留给用户手点
+          //   serial:resume（IPC 已存在），不在启动时自作主张。
+          const idleMs = Date.now() - (Number(serialState.updatedAt) || Number(serialState.startedAt) || 0);
+          if (idleMs > SERIAL_BOOT_RESUME_MAX_IDLE_MS) {
+            logger.log('[workflow-engine] skip stale serial resume for ' + mt.id
+              + ' (idle ' + Math.round(idleMs / 3600000) + 'h); use serial:resume to continue manually');
+            continue;
+          }
           logger.log('[workflow-engine] boot resume serial ' + mt.id + ' from step ' + serialState.nextStepIndex);
           runSerial(mt.id, null, serialState).catch(error => logError('[workflow-engine] boot serial resume failed:', error));
         } else if (sw && sw.loop && sw.loop.enabled && ls && ls.status === 'running' && !(ls.deadlineTs && Date.now() >= ls.deadlineTs)) {

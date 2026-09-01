@@ -18,8 +18,12 @@ assert.match(renderer, /const partialBy = state && state\._partialBy \? state\._
   'dispatched members should show thinking before the first partial update');
 assert.match(renderer, /data-gc-member-remove-sid=/, 'member rows need a remove action');
 assert.match(renderer, /data-gc-add-member=/, 'member sidebar needs an add action');
-assert.match(renderer, /if \(!meeting \|\| meeting\.subSessions\.length >= 3\) return;/, 'future group rooms keep the Claude/Codex/DeepSeek three-provider cap');
-assert.match(renderer, /\['claude', 'codex', 'deepseek'\]\.filter/, 'group add menu only offers the supported provider trio');
+assert.match(renderer, /if \(!meeting \|\| \(!meeting\.groupChat && meeting\.subSessions\.length >= 3\)\) return;/,
+  'the three-slot cap stays scoped to non-group meetings; group rooms take as many members as the user wants');
+assert.match(renderer, /meeting\.groupChat\s*\?\s*\['claude', 'codex', 'deepseek'\]/,
+  'group add menu offers the supported provider trio');
+assert.doesNotMatch(renderer, /\['claude', 'codex', 'deepseek'\]\s*\.filter\(/,
+  'group add menu must not drop a provider just because one of that kind is already in the room');
 assert.match(renderer, /response\.meeting/, 'participant writes must consume the explicit meeting response');
 assert.match(renderer, /return state !== 'expanded'/, 'member sidebar should default to collapsed');
 assert.doesNotMatch(renderer, /alert\('\?\?\?\?: '/, 'participant errors must not show mojibake');

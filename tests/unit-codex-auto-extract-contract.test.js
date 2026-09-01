@@ -24,8 +24,16 @@ assert.ok(/signalSource\s*=\s*isCodexFinal[\s\S]{0,160}codex_auto_extract_final_
   /watcher\.completeFromTranscript\(extracted\.text,\s*signalSource\)/.test(dispatcherSrc),
   'auto extract should settle Claude/Codex with distinct authoritative signal sources');
 
-assert.ok(/Number\(extracted\.completedAt\)\s*>=\s*sincePromptTs/.test(dispatcherSrc),
+// sincePromptTs 比真实提交时刻早 1s（容忍 CLI 写 rollout 的时钟偏差）。拿它当归属判据
+//   会把「上一轮在这 1s 内完成的答案」认成本轮的——串行工作流步与步之间正好落在窗口里。
+//   归属判据必须是真实提交时刻，且在拿到语义开工信号后进一步收紧。
+assert.ok(/const promptSubmittedAt = Number\(opts\.promptSubmittedAt\) \|\| startTs;/.test(dispatcherSrc),
+  'auto extract must know the real submit instant, not the clock-skew-padded search floor');
+assert.ok(/const claudeAnswerFloor = Math\.max\(promptSubmittedAt, agentTurnStartedAt\);/.test(dispatcherSrc)
+  && /Number\(extracted\.completedAt\)\s*>=\s*claudeAnswerFloor/.test(dispatcherSrc),
   'Claude fallback must reject a previous-turn transcript that predates this prompt');
+assert.ok(!/Number\(extracted\.completedAt\)\s*>=\s*sincePromptTs/.test(dispatcherSrc),
+  'the padded search floor must never be reused as the answer-ownership floor');
 
 assert.ok(/if \(codexAutoExtractTimer\) clearInterval\(codexAutoExtractTimer\)/.test(dispatcherSrc),
   'auto extract timer must be cleared when the watcher settles');

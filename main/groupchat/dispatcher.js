@@ -396,8 +396,29 @@ function createGroupChatDispatcher(deps) {
     let codexPromptSubmitTimer = null;
     let codexPromptSubmitRetries = 0;
     let onCodexPromptSubmitted = null;
+    let onAgentTurnStartedForExtract = null;
     if (isCodexBaseKind(waitKind) || isClaudeFamily(waitKind)) {
       const sincePromptTs = promptSubmitSinceTs;
+      // promptSubmitSinceTs 故意比真实发送时刻早 1s，用来容忍 CLI 侧写 rollout 文件的
+      //   时钟偏差——那个松弛只能用于「找本轮的用户消息」。判定「这条回答属于本轮」
+      //   必须用真实提交时刻：上一轮若在这 1s 松弛内完成，transcript 末轮就会被认成
+      //   本轮答案（串行工作流第 N 步刚结束就派发第 N+1 步，正好落在窗口里）。
+      const promptSubmittedAt = Number(opts.promptSubmittedAt) || startTs;
+      // 更强的下界：拿到本轮的语义开工信号后，只认此刻之后完成的 turn。
+      //   hook 未部署时该值保持 0，自动退回 promptSubmittedAt 下界。
+      let agentTurnStartedAt = 0;
+      if (isClaudeFamily(waitKind) && sessionManager && typeof sessionManager.on === 'function') {
+        onAgentTurnStartedForExtract = (ev) => {
+          if (!ev || ev.sessionId !== sid || agentTurnStartedAt) return;
+          const at = Number(ev.observedAt) || Date.now();
+          if (at >= sincePromptTs) agentTurnStartedAt = at;
+        };
+        try { sessionManager.on('agent-turn-started', onAgentTurnStartedForExtract); }
+        catch (error) {
+          warn('[group-chat] auto-extract turn-start listener registration failed:', error && error.message);
+          onAgentTurnStartedForExtract = null;
+        }
+      }
       let autoExtractBusy = false;
       codexAutoExtractTimer = setInterval(async () => {
         if (watcher.isSettled()) {
@@ -412,9 +433,10 @@ function createGroupChatDispatcher(deps) {
           const extracted = await transcriptTap.extractLatestTurn(sid, sincePromptTs);
           const isCodexFinal = isCodexBaseKind(waitKind)
             && extracted?.extractMode === 'final_answer';
+          const claudeAnswerFloor = Math.max(promptSubmittedAt, agentTurnStartedAt);
           const isClaudeFinal = isClaudeFamily(waitKind)
             && extracted?.source === 'manual_claude_transcript'
-            && Number(extracted.completedAt) >= sincePromptTs;
+            && Number(extracted.completedAt) >= claudeAnswerFloor;
           if ((isCodexFinal || isClaudeFinal) && extracted.text) {
             const signalSource = isCodexFinal
               ? 'codex_auto_extract_final_answer'
@@ -501,6 +523,10 @@ function createGroupChatDispatcher(deps) {
       if (onCodexPromptSubmitted && transcriptTap && typeof transcriptTap.removeListener === 'function') {
         try { transcriptTap.removeListener('prompt-submitted', onCodexPromptSubmitted); }
         catch (error) { warn('[group-chat] prompt-submitted listener cleanup failed:', error && error.message); }
+      }
+      if (onAgentTurnStartedForExtract && sessionManager && typeof sessionManager.removeListener === 'function') {
+        try { sessionManager.removeListener('agent-turn-started', onAgentTurnStartedForExtract); }
+        catch (error) { warn('[group-chat] auto-extract turn-start listener cleanup failed:', error && error.message); }
       }
       if (streamTimer) clearInterval(streamTimer);
       activeWatchers.delete(sid);
@@ -623,6 +649,7 @@ function createGroupChatDispatcher(deps) {
         const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
         if (sendResult && sendResult.ok) {
           t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
+          t.promptSubmittedAt = sendStartedAt;
           sentTargets.push(t);
         }
       } catch (e) {
@@ -638,6 +665,7 @@ function createGroupChatDispatcher(deps) {
         kind: t.kind,
         prompt: t.prompt,
         promptSubmitSinceTs: t.promptSubmitSinceTs,
+        promptSubmittedAt: t.promptSubmittedAt,
         disableHardTimeout: !(Number(turnTimeoutMs) > 0),
         hardTimeoutMs: Number(turnTimeoutMs) > 0 ? Number(turnTimeoutMs) : undefined,
         silent: true,
@@ -951,6 +979,7 @@ function createGroupChatDispatcher(deps) {
           }
           if (ok) {
             t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
+            t.promptSubmittedAt = sendStartedAt;
             sentTargets.push(t);
             const submitAcknowledged = !!(sendResult && sendResult.acknowledgementSource);
             // A semantic or strong-current-screen acknowledgement proves the
@@ -1037,6 +1066,7 @@ function createGroupChatDispatcher(deps) {
       const settledPromise = Promise.allSettled(sentTargets.map(t =>
         waitTurnComplete(t.sid, t.label, {
           meetingId, mode: 'group', turnNum, kind: t.kind, prompt: t.prompt, promptSubmitSinceTs: t.promptSubmitSinceTs,
+          promptSubmittedAt: t.promptSubmittedAt,
           memberId: t.member && t.member.memberId,
           speaker: t.label,
           disableHardTimeout: !(Number(turnTimeoutMs) > 0),

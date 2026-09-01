@@ -267,6 +267,15 @@ function _syncGroupSlotsFromDom({ strict = false } = {}) {
     .filter(Boolean);
 }
 
+// 「+ 添加成员」下一个默认落哪种 AI：先补齐还没出场的（Claude+Codex 两人时给 DeepSeek），
+//   补齐后按顺序轮换。同一种 AI 允许多开（两个 Claude 跑不同模型/角色是有效用法），
+//   成员数也不设上限——实际基本停在 3 人，但那是用户的选择，不该由代码写死。
+function _nextGroupMemberKind() {
+  const present = new Set(_groupSlots.map(slot => slot.kind));
+  return GROUP_MEMBER_KINDS.find(kind => !present.has(kind))
+    || GROUP_MEMBER_KINDS[_groupSlots.length % GROUP_MEMBER_KINDS.length];
+}
+
 function _renderSlots() {
   if (!_modalEl) return;
   const wrap = _modalEl.querySelector('.mcm-slots');
@@ -300,13 +309,10 @@ function _renderSlots() {
   });
   const addBtn = _modalEl.querySelector('#mcm-add-member');
   if (addBtn && _isGroupChat) {
-    const present = new Set(_groupSlots.map(slot => slot.kind));
-    const nextKind = GROUP_MEMBER_KINDS.find(kind => !present.has(kind));
-    addBtn.disabled = !nextKind;
-    addBtn.textContent = nextKind === 'deepseek'
-      ? '+ 添加 DeepSeek'
-      : nextKind ? `+ 添加 ${KIND_LABELS[nextKind] || nextKind}` : '成员已齐全';
-    addBtn.title = nextKind ? `添加可选成员 ${KIND_LABELS[nextKind] || nextKind}` : '群聊支持 Claude、Codex、DeepSeek 各一位';
+    const nextKind = _nextGroupMemberKind();
+    addBtn.disabled = false;
+    addBtn.textContent = `+ 添加 ${KIND_LABELS[nextKind] || nextKind}`;
+    addBtn.title = `添加成员 ${KIND_LABELS[nextKind] || nextKind}；同一种 AI 可以多开，人数不设上限`;
   }
 }
 
@@ -342,7 +348,7 @@ function _ensureModal() {
         </div>
         <div class="mcm-member-caption">
           <strong>成员配置</strong>
-          <span>默认保留 Claude + Codex；需要第三视角时再添加 DeepSeek。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
+          <span>默认保留 Claude + Codex；需要第三视角时再添加 DeepSeek。可继续加人，同一种 AI 也能多开。每位成员可独立选择模型、思考强度、速度与 MCP。</span>
         </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
@@ -379,9 +385,7 @@ function _bindEvents() {
   });
   _modalEl.querySelector('#mcm-add-member').addEventListener('click', () => {
     _syncGroupSlotsFromDom();
-    const present = new Set(_groupSlots.map(slot => slot.kind));
-    const nextKind = GROUP_MEMBER_KINDS.find(kind => !present.has(kind));
-    if (!nextKind) return;
+    const nextKind = _nextGroupMemberKind();
     _groupSlots.push(_normalizeSlotSpec({ kind: nextKind, model: DEFAULT_MODEL_BY_KIND[nextKind] }));
     _renderSlots();
   });
