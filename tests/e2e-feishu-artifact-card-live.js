@@ -105,12 +105,16 @@ async function run() {
       deliveryMode: outcome.deliveryMode || null,
       artifactCount: Number(outcome.artifactCount) || 0,
       attachmentsSent: Number(outcome.attachmentsSent) || 0,
+      driveArtifactsUploaded: Number(outcome.driveArtifactsUploaded) || 0,
+      drivePreviewState: outcome.drivePreviewState || null,
       warningCodes: Array.isArray(outcome.warningCodes) ? outcome.warningCodes : [],
     });
     assert.equal(outcome.ok, true);
     assert.equal(outcome.deliveryMode, 'card2');
     assert.equal(outcome.artifactCount, 1);
-    assert.equal(outcome.attachmentsSent, 1);
+    assert.equal(outcome.attachmentsSent, 0);
+    assert.equal(outcome.driveArtifactsUploaded, 1);
+    assert.ok(['ready', 'processing', 'client_only', 'unknown'].includes(outcome.drivePreviewState));
     assert.deepEqual(outcome.warningCodes, []);
   } finally {
     notifier?.dispose();

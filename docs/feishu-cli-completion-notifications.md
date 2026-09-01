@@ -19,6 +19,8 @@ npm install --prefix C:\DevTools\LarkCLI @larksuite/cli@1.0.92
 
 若要发送 HTML 预览图和原始成果文件，还需要机器人可上传 IM 资源（`im:resource:upload` / `im:resource`）。缺少资源权限时，主完成卡片仍会发送，仅预览或附件被记为部分失败。
 
+若要让 HTML 在飞书 App 内直接预览，还需要把 HTML 作为 Drive 文件上传到飞书云空间，而不是只发送 IM 通用文件。当前机器人路径需开通 `drive:drive`、`drive:file`、`drive:file:upload`；机器人新建文件后，CLI 会尝试把当前 CLI 用户授予为 `full_access`。Drive 上传或授权失败时，Hub 会保留卡片截图并退回原来的 IM 文件附件。
+
 ## 在 Hub 中启用
 
 1. 打开一个需要关注的 session。
@@ -53,7 +55,7 @@ npm install --prefix C:\DevTools\LarkCLI @larksuite/cli@1.0.92
 - 顶栏“通知开”：仅当前 session 回答完成后推送。
 - 顶栏“通知关”：仅当前 session 不推送，其他 session 不受影响。
 - 顶栏“通知未配”：尚无有效 `oc_...` / `ou_...` 接收对象。
-- 普通 session 每轮恰好有一条可去重的“完成主通知”；开启成果快递后，最多再跟随 3 条原文件消息。
+- 普通 session 每轮恰好有一条可去重的“完成主通知”；成功上传云空间的 HTML 通过卡片按钮打开，不再重复发送普通 HTML 附件；其余成果或 Drive 降级场景最多再跟随 3 条文件消息。
 - 群聊按房间独立设置，整轮收敛后最多推送一条。
 - 默认不包含回复正文和成果文件；“附带回答与成果快递”必须由用户显式开启。
 - 网络/CLI 瞬时失败按 2 秒、10 秒、60 秒退避重试。
@@ -67,10 +69,12 @@ npm install --prefix C:\DevTools\LarkCLI @larksuite/cli@1.0.92
 - 回答正文先展示本轮结论，较长细节收进折叠面板；
 - 仅从本轮回答明确交付的路径中发现成果，且限制为允许的文档、图片、Office、压缩包和视频类型；
 - HTML 在隔离的隐藏窗口中生成 1200×675 静态图：禁用 Node 集成、开启 sandbox/context isolation、拒绝外网、只允许同成果目录的本地资源；
-- 静态图上传后嵌入卡片，原始 HTML/其他成果以随后文件消息发送；
+- 静态图上传后嵌入卡片；原始 HTML 同时上传飞书云空间，卡片显示“飞书内打开 HTML”按钮；
+- Drive 上传成功后会用 `drive +preview --list-only` 检查服务端预览状态；若 API 返回 HTML 不生成可下载预览产物（`1060006`），仍使用飞书云空间客户端文件页并记录 `client_only`。审计只保存状态，不记录 URL 或 file token；
+- Drive 缺权限、URL 不可信、自动授权失败时，HTML 自动退回原来的 IM 文件消息；其他成果仍按随后文件消息发送；
 - 单文件必须非空且小于 30 MB；敏感目录、凭据/令牌命名、源码普通引用和代码块中的路径不会自动投递。
 
-飞书卡片不能原生执行任意 HTML/JavaScript，也不能内嵌 iframe，因此这里提供的是安全静态预览；需要交互时仍打开收到的原始 HTML 文件。图片上传、HTML 渲染或伴随附件任一失败都只产生安全 warning code，不会把已经成功的主完成通知标成失败。
+飞书卡片本身不能嵌入任意 HTML/JavaScript 或 iframe；卡片内展示的是安全静态图，按钮打开的是飞书云空间文件页。轻量单页 HTML 可在飞书内预览；复杂、多资源或长期发布的页面仍更适合妙搭。图片上传、Drive 上传、HTML 渲染或伴随附件任一失败都只产生安全 warning code，不会把已经成功的主完成通知标成失败。
 
 ## 配置与环境变量
 
@@ -113,7 +117,7 @@ Windows 默认先查找：
 - 尝试次数；
 - CLI exit code；
 - 安全错误码和飞书 message ID。
-- 主消息模式（`card2` / `markdown_fallback`）、成果数、成功附件数和安全 warning code。
+- 主消息模式（`card2` / `markdown_fallback`）、成果数、成功附件数、Drive 上传数、Drive 预览状态和安全 warning code。
 
 审计不记录飞书接收对象、通知标题、回答正文、成果路径或回复预览。
 
@@ -122,7 +126,7 @@ Windows 默认先查找：
 - `invalid_target`：接收对象不是有效的 `oc_...` / `ou_...`。
 - `cli_not_found`：飞书 CLI 未安装，或 `HUB_NOTIFY_FEISHU_CLI_PATH` 错误。
 - `authorization_error` / `cli_configuration_error`：CLI 尚未完成应用配置。
-- `missing_scope`：应用缺少 `im:message:send_as_bot`；若只在预览/附件阶段出现，再检查 `im:resource:upload` / `im:resource`。
+- `missing_scope`：应用缺少 `im:message:send_as_bot`；若只在图片/普通附件阶段出现，再检查 `im:resource:upload` / `im:resource`；若 warning code 以 `drive_` 开头，再检查 `drive:drive` / `drive:file` / `drive:file:upload` 及文件协作者授权。
 - `confirmation_required`：CLI 风险门禁要求人工确认；Hub 不会静默绕过。
 - `timeout` / `network_error`：检查本机网络、代理及飞书开放平台连通性。
 - `cli_failed`：检查机器人是否已经加入目标会话，以及目标 ID 是否属于当前租户。

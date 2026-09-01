@@ -7,6 +7,12 @@ const path = require('path');
 const { formatBeijingDateTime } = require('./beijing-time.js');
 const { discoverCompletionArtifacts } = require('./completion-artifacts.js');
 const { buildSessionCompletionCard } = require('./feishu-card-builder.js');
+const {
+  buildFeishuDrivePreviewArgs,
+  buildFeishuDriveUploadArgs,
+  parseDrivePreviewData,
+  parseDriveUploadData,
+} = require('./feishu-drive-artifacts.js');
 
 const PROVIDER = 'feishu-cli';
 const DEFAULT_NOTIFICATION_CONFIG = Object.freeze({
@@ -208,6 +214,10 @@ function readLastDeliveryAudit(logPath, onError = null) {
       transient: record.transient === true,
       exitCode: Number.isFinite(Number(record.exitCode)) ? Number(record.exitCode) : null,
       providerCode: record.providerCode == null ? null : String(record.providerCode),
+      deliveryMode: cleanInlineText(record.deliveryMode || '', 40) || null,
+      driveArtifactsUploaded: Math.max(0, Number(record.driveArtifactsUploaded) || 0),
+      drivePreviewState: cleanInlineText(record.drivePreviewState || '', 24) || null,
+      warningCount: Array.isArray(record.warningCodes) ? record.warningCodes.length : 0,
     };
   }
   return null;
@@ -354,7 +364,8 @@ function cliFailureError(exitCode, stdout, stderr) {
   if (Number(exitCode) === 10 || subtype === 'confirmation_required') {
     return new NotificationDeliveryError('confirmation_required', { exitCode, providerCode });
   }
-  if (subtype === 'missing_scope') {
+  if (subtype === 'missing_scope' || subtype === 'app_scope_not_applied'
+      || (Array.isArray(error.missing_scopes) && error.missing_scopes.length > 0)) {
     return new NotificationDeliveryError('missing_scope', { exitCode, providerCode });
   }
   if (type === 'authorization' || type === 'auth') {
@@ -506,6 +517,81 @@ async function uploadFeishuPreviewImage(payload, options = {}) {
   return imageKey;
 }
 
+async function uploadHtmlArtifactToDrive(payload, artifact, options = {}) {
+  let uploadArgs;
+  try {
+    uploadArgs = buildFeishuDriveUploadArgs(artifact);
+  } catch {
+    throw new NotificationDeliveryError('drive_artifact_invalid');
+  }
+  const upload = await runFeishuCliCommand(
+    uploadArgs,
+    payload,
+    { ...options, cwd: path.dirname(artifact.path) },
+  );
+  const parsed = parseDriveUploadData(upload.data);
+  if (!parsed.fileToken || !parsed.url) {
+    throw new NotificationDeliveryError('invalid_drive_response', { transient: true });
+  }
+
+  let previewState = 'unchecked';
+  const warningCodes = [];
+  const accessible = parsed.permissionStatus !== 'failed' && parsed.permissionStatus !== 'skipped';
+  if (!accessible) warningCodes.push(`drive_permission_${parsed.permissionStatus}`);
+  try {
+    const preview = await runFeishuCliCommand(
+      buildFeishuDrivePreviewArgs(parsed.fileToken),
+      payload,
+      options,
+    );
+    previewState = parseDrivePreviewData(preview.data).state;
+    if (previewState === 'unsupported' || previewState === 'failed') {
+      warningCodes.push(`drive_preview_${previewState}`);
+    }
+  } catch (error) {
+    if (error instanceof NotificationDeliveryError && error.providerCode === '1060006') {
+      // Drive's preview-artifact API can report NO_SUPPORT for HTML while the
+      // Feishu cloud file page still provides the client-native HTML viewer.
+      // Treat this as a known routing distinction, not a delivery failure.
+      previewState = 'client_only';
+    } else {
+      previewState = 'unknown';
+      warningCodes.push(normalizeWarningCode('drive_preview', error));
+    }
+  }
+
+  return {
+    ok: true,
+    accessible,
+    previewUsable: previewState !== 'unsupported' && previewState !== 'failed',
+    artifactPath: artifact.path,
+    fileToken: parsed.fileToken,
+    url: parsed.url,
+    permissionStatus: parsed.permissionStatus,
+    previewState,
+    warningCodes: normalizeWarningCodes(warningCodes),
+  };
+}
+
+async function resolveDriveDelivery(payload, artifacts, options = {}) {
+  const htmlArtifact = artifacts.find(artifact => artifact && artifact.kind === 'html');
+  if (!htmlArtifact) return null;
+  if (payload.driveDelivery && payload.driveDelivery.artifactPath === htmlArtifact.path) {
+    return payload.driveDelivery;
+  }
+  try {
+    payload.driveDelivery = await uploadHtmlArtifactToDrive(payload, htmlArtifact, options);
+  } catch (error) {
+    payload.driveDelivery = {
+      ok: false,
+      artifactPath: htmlArtifact.path,
+      errorCode: error instanceof NotificationDeliveryError ? error.code : 'unknown_error',
+      warningCodes: [normalizeWarningCode('drive_upload', error)],
+    };
+  }
+  return payload.driveDelivery;
+}
+
 async function sendFeishuCli(payload, options = {}) {
   if (!isUsableFeishuTarget(payload.target)) throw new NotificationDeliveryError('invalid_target');
   if (!payload.cardInput) {
@@ -513,30 +599,42 @@ async function sendFeishuCli(payload, options = {}) {
   }
 
   const warnings = normalizeWarningCodes(payload.warningCodes);
-  let imageKey = null;
-  if (payload.previewPath) {
-    try {
-      imageKey = await uploadFeishuPreviewImage(payload, options);
-    } catch (error) {
-      warnings.push(normalizeWarningCode('preview_upload', error));
-    }
+  const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts.slice(0, 3) : [];
+  const imageTask = payload.previewPath
+    ? uploadFeishuPreviewImage(payload, options)
+      .then(imageKey => ({ imageKey, warningCodes: [] }))
+      .catch(error => ({ imageKey: null, warningCodes: [normalizeWarningCode('preview_upload', error)] }))
+    : Promise.resolve({ imageKey: null, warningCodes: [] });
+  const driveTask = resolveDriveDelivery(payload, artifacts, options);
+  const [imageDelivery, driveDelivery] = await Promise.all([imageTask, driveTask]);
+  warnings.push(...imageDelivery.warningCodes);
+  if (driveDelivery && Array.isArray(driveDelivery.warningCodes)) {
+    warnings.push(...driveDelivery.warningCodes);
   }
+  const imageKey = imageDelivery.imageKey;
+  const driveUrl = driveDelivery && driveDelivery.ok && driveDelivery.accessible && driveDelivery.previewUsable
+    ? driveDelivery.url
+    : null;
+  const mainPayload = driveUrl
+    ? { ...payload, desp: `${payload.desp}\n\n**飞书内预览 HTML**：${driveUrl}` }
+    : payload;
 
   let mainResult;
   let deliveryMode = 'card2';
   try {
-    const card = buildSessionCompletionCard({ ...payload.cardInput, imageKey });
-    mainResult = await sendMessageCommand(buildFeishuInteractiveCliArgs(payload, card), payload, options);
+    const card = buildSessionCompletionCard({ ...payload.cardInput, imageKey, driveUrl });
+    mainResult = await sendMessageCommand(buildFeishuInteractiveCliArgs(mainPayload, card), mainPayload, options);
   } catch (error) {
     warnings.push(normalizeWarningCode('card2', error));
     deliveryMode = 'markdown_fallback';
-    mainResult = await sendMessageCommand(buildFeishuCliArgs(payload), payload, options);
+    mainResult = await sendMessageCommand(buildFeishuCliArgs(mainPayload), mainPayload, options);
   }
 
   let attachmentsSent = 0;
-  const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts.slice(0, 3) : [];
   for (let index = 0; index < artifacts.length; index += 1) {
     const artifact = artifacts[index];
+    if (driveDelivery && driveDelivery.ok && driveDelivery.accessible && driveDelivery.previewUsable
+        && artifact.path === driveDelivery.artifactPath) continue;
     try {
       await sendMessageCommand(
         buildFeishuFileCliArgs(payload, artifact, index),
@@ -554,6 +652,8 @@ async function sendFeishuCli(payload, options = {}) {
     deliveryMode,
     artifactCount: artifacts.length,
     attachmentsSent,
+    driveArtifactsUploaded: driveDelivery && driveDelivery.ok ? 1 : 0,
+    drivePreviewState: driveDelivery && driveDelivery.ok ? driveDelivery.previewState : null,
     warningCodes: normalizeWarningCodes(warnings),
   };
 }
@@ -1000,6 +1100,8 @@ class CompletionNotifier {
       const deliveryMode = cleanInlineText(result.deliveryMode || (payload.cardInput ? 'card2' : 'markdown'), 40);
       const artifactCount = Math.max(0, Number(result.artifactCount) || 0);
       const attachmentsSent = Math.max(0, Number(result.attachmentsSent) || 0);
+      const driveArtifactsUploaded = Math.max(0, Number(result.driveArtifactsUploaded) || 0);
+      const drivePreviewState = cleanInlineText(result.drivePreviewState || '', 24) || null;
       if (warningCodes.length) {
         try { this.logger.warn('[completion-notifier] delivery completed with partial warnings:', warningCodes.join(',')); } catch {}
       }
@@ -1014,6 +1116,8 @@ class CompletionNotifier {
         deliveryMode,
         artifactCount,
         attachmentsSent,
+        driveArtifactsUploaded,
+        drivePreviewState,
         ...(warningCodes.length ? { warningCodes } : {}),
       });
       this.deliveredEvents.set(payload.eventId, this.now());
@@ -1025,6 +1129,8 @@ class CompletionNotifier {
         exitCode: result.exitCode,
         providerCode: result.providerCode,
         deliveryMode,
+        driveArtifactsUploaded,
+        drivePreviewState,
         warningCount: warningCodes.length,
       };
       return {
@@ -1035,6 +1141,8 @@ class CompletionNotifier {
         deliveryMode,
         artifactCount,
         attachmentsSent,
+        driveArtifactsUploaded,
+        drivePreviewState,
         warningCodes,
       };
     } catch (error) {

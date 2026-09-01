@@ -40,6 +40,16 @@ function escapeMarkdownLiteral(value) {
   return escapeCardTags(clampPlainText(value, 100)).replace(/[\\`*_[\]()~#:]/g, (char) => `&#${char.codePointAt(0)};`);
 }
 
+function normalizeOpenUrl(value) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    const officialHost = /(?:^|\.)(?:feishu\.cn|larksuite\.com|doubao\.com)$/i.test(parsed.hostname);
+    return parsed.protocol === 'https:' && officialHost ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function findBoundary(text, limit, minRatio = 0.55) {
   if (text.length <= limit) return text.length;
   const floor = Math.floor(limit * minRatio);
@@ -116,6 +126,7 @@ function buildSessionCompletionCard(input = {}) {
   const artifacts = Array.isArray(input.artifacts)
     ? input.artifacts.slice(0, 3).map((item) => ({ name: clampPlainText(item && item.name, 100) })).filter(item => item.name)
     : [];
+  const driveUrl = normalizeOpenUrl(input.driveUrl);
   const includeContent = input.includeContent === true;
   const answer = includeContent ? splitAnswer(input.answerText) : { primary: '', secondary: '', truncated: false };
   const elements = [];
@@ -166,11 +177,42 @@ function buildSessionCompletionCard(input = {}) {
 
   if (artifacts.length) {
     const names = artifacts.map(item => `- ${escapeMarkdownLiteral(item.name)}`).join('\n');
-    elements.push({
+    const deliveryNote = driveUrl
+      ? "<font color='grey'>HTML 原件已上传飞书云空间，可在飞书内直接打开。</font>"
+      : "<font color='grey'>原文件将以随后消息投递。</font>";
+    const artifactElements = [{
       tag: 'markdown',
-      content: `**本轮成果**\n${names}\n<font color='grey'>原文件将以随后消息投递。</font>`,
+      content: `**本轮成果**\n${names}\n${deliveryNote}`,
       text_size: 'normal',
+    }];
+    if (driveUrl) {
+      artifactElements.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: '飞书内打开 HTML' },
+        type: 'primary_filled',
+        width: 'fill',
+        behaviors: [{
+          type: 'open_url',
+          default_url: driveUrl,
+          pc_url: driveUrl,
+          ios_url: driveUrl,
+          android_url: driveUrl,
+        }],
+      });
+    }
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      background_style: driveUrl ? 'turquoise-50' : 'grey-50',
       margin: answer.secondary ? '0px 0px 12px 0px' : '0px',
+      columns: [{
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        padding: '12px',
+        vertical_spacing: '8px',
+        elements: artifactElements,
+      }],
     });
   }
 
@@ -246,6 +288,7 @@ module.exports = {
   cleanAnswerMarkdown,
   clampPlainText,
   escapeCardTags,
+  normalizeOpenUrl,
   splitAnswer,
   stripInternalMetadata,
 };
