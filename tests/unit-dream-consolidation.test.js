@@ -85,6 +85,14 @@ async function main() {
     assert.ok(!out.includes('abcdefghijklmnop'), out);
   });
 
+  await test('蒸馏 prompt 使用当前工作根，并如实声明不采集普通 Session', () => {
+    const system = dream.buildDistillSystem('C:\\AIWork');
+    assert.ok(system.includes('C:\\AIWork'));
+    assert.ok(system.includes('不在本管线采集范围内'));
+    assert.ok(!system.includes('C:\\Vibe'));
+    assert.ok(system.includes('新启动会话读取'));
+  });
+
   await test('mergeManagedSection：建区、追加、去重、不动手写区', () => {
     const first = dream.mergeManagedSection('# 手写正文\n', [{ claim: '规则甲' }], '2026-07-31');
     assert.ok(first.content.includes(dream.DREAM_BEGIN));

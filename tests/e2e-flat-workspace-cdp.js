@@ -125,6 +125,22 @@ async function evalJson(page, expression) {
     });
     record('工作根 tier 为 root', () => assert.equal(rootEntry.tier, 'root'));
 
+    console.log('\n=== C2. 真实 create-meeting 不得把工作根改名 ===');
+    const meeting = JSON.parse(await evalJson(page,
+      `require('electron').ipcRenderer.invoke('create-meeting', ${JSON.stringify({
+        title: '', scene: 'general', slots: [], workspace: WORKSPACE_ROOT, workspaceDraft: false,
+      })}).then(r => JSON.stringify(r))`));
+    record('群聊 workspaceLabel 保持工作根目录名', () => {
+      assert.ok(meeting && meeting.id, '群聊应创建成功');
+      assert.equal(meeting.workspaceLabel, path.basename(WORKSPACE_ROOT));
+    });
+    const afterMeeting = JSON.parse(await evalJson(page,
+      `require('electron').ipcRenderer.invoke('workspace:list').then(r => JSON.stringify(r))`));
+    const rootAfterMeeting = afterMeeting.items.find(it =>
+      path.resolve(it.path).toLowerCase() === path.resolve(WORKSPACE_ROOT).toLowerCase());
+    record('群聊二次 resolve 后注册表根名仍稳定', () =>
+      assert.equal(rootAfterMeeting && rootAfterMeeting.label, path.basename(WORKSPACE_ROOT)));
+
     console.log('\n=== D. 临时目录档仍然可用且每次唯一 ===');
     const s1 = JSON.parse(await evalJson(page,
       `require('electron').ipcRenderer.invoke('workspace:create-scratch', {label:'t1'}).then(r => JSON.stringify(r))`));

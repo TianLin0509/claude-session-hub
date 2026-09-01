@@ -5102,7 +5102,15 @@ const memoryPanel = createMemoryPanel({
   escapeHtml,
   getActiveSessionInfo: () => {
     const s = sessions.get(activeSessionId);
-    return s ? { cwd: s.cwd, kind: s.kind, title: s.title } : null;
+    return s ? {
+      cwd: s.cwd,
+      kind: s.kind,
+      runtimeKind: s.transcriptKind || s.kind,
+      title: s.title,
+      codexSessionsRoot: s.codexSessionsRoot || null,
+      codexProfile: s.codexProfile || null,
+      meetingId: s.meetingId || null,
+    } : null;
   },
 });
 function pctClass(pct) { return accountUsageController.pctClass(pct); }

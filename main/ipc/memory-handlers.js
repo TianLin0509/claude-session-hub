@@ -50,7 +50,13 @@ function registerMemoryIpc(ipcMain, deps) {
   ipcMain.handle('memory:get-session-files', (_e, payload) => {
     const cwd = typeof payload === 'string' ? payload : payload && payload.cwd;
     const kind = typeof payload === 'object' && payload ? payload.kind : '';
-    return memoryInspector.getSessionFiles({ ...ctx(), cwd, kind });
+    const runtimeKind = typeof payload === 'object' && payload ? payload.runtimeKind : '';
+    const codexSessionsRoot = typeof payload === 'object' && payload ? payload.codexSessionsRoot : '';
+    const codexProfile = typeof payload === 'object' && payload ? payload.codexProfile : '';
+    const meetingId = typeof payload === 'object' && payload ? payload.meetingId : '';
+    return memoryInspector.getSessionFiles({
+      ...ctx(), cwd, kind, runtimeKind, codexSessionsRoot, codexProfile, meetingId,
+    });
   });
 
   // 孤岛桶「一键并入规范库」：机械合并（不是 LLM 蒸馏），行为记入梦境 changelog 可回溯。

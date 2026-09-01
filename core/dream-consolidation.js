@@ -1,8 +1,9 @@
 'use strict';
 // core/dream-consolidation.js
 //
-// 梦境系统（Dream Consolidation）核心：把临时 session 里沉淀不下的知识
-// （被改过的 seed AGENTS.md 副本、memory 孤岛桶）蒸馏进分层规则文件。
+// Seed / memory 孤岛整理器：把被改过的 seed AGENTS.md 副本和 Claude memory
+// 孤岛桶蒸馏进分层规则文件。它**不采集普通 Session transcript**；UI 必须如实
+// 展示这个边界，不能把定时运行等同于完整的跨 Session 自动沉淀。
 //
 // 设计约定（2026-07-31，与用户对齐）：
 // - 改动自动落盘，不逐条征求同意；但每一次写入都必须可回溯、可回滚：
@@ -293,25 +294,28 @@ async function callLlm({ provider, model, deepseekApiKey, system, user, timeoutM
 // ---------------------------------------------------------------------------
 // 蒸馏（蒸馏与仲裁合并为一次调用：输入证据+目标层现状，输出结构化沉淀条目）
 
-const DISTILL_SYSTEM = [
-  '你是 AI Hub 梦境系统的蒸馏器。用户在多个临时工作区（_scratch/inbox-*）里与多家 CLI 协作，',
-  '临时目录里的规则修改和 memory 会随目录消亡。你的任务是从证据中提炼**值得跨 session 沉淀**的知识。',
-  '',
-  '目标层（target_layer 只能取其一）：',
-  '- user_global：跨项目通用规则/偏好（同步写入用户级规则文件：Kimi/Codex 的 AGENTS.md、Claude 的 CLAUDE.md、Gemini 的 GEMINI.md）',
-  '- workspace：C:\\Vibe 工作区级规则（写入工作区根 AGENTS.md+CLAUDE.md，自动播种到所有未来临时工作区）',
-  '- project：某个具体项目专属的事实/规则（需给 project_path，必须在工作区内）',
-  '- memory：反馈/偏好类记忆（写入 memory 规范库索引 MEMORY.md）',
-  '- staging：拿不准、一次性、证据不足的——宁进 staging 不硬沉淀',
-  '',
-  '硬性要求：',
-  '1. 每条必须给 evidence：从证据原文逐字引用的一小段（中文原文照抄）。没有原文支持的一律进 staging。',
-  '2. claim 是一条可执行的规则或事实陈述，<=120 字，用祈使或陈述句，不要解释背景。',
-  '3. 忽略以下内容：seed 副本里本来就有的模板规则（工作区边界、产物目录、Git 与迁移等套话）、',
-  '   一次性的任务细节、路径里明显的临时信息、任何疑似密钥的内容。',
-  '4. 最多 5 条。没有值得沉淀的就返回空 entries，这是完全正常的输出。',
-  '5. 只输出 JSON，格式：{"entries":[{"target_layer":"...","project_path":"","claim":"...","type":"rule|fact|preference","confidence":0.0,"evidence":"..."}]}',
-].join('\n');
+function buildDistillSystem(workspaceRoot) {
+  return [
+    '你是 AI Hub 的 seed / memory 孤岛整理器。输入只来自两类来源：被改过的临时 AGENTS.md seed 副本、Claude memory 孤岛桶。',
+    '不要声称你看过普通 Session transcript、工具结果、commit/test 或用户纠正；这些不在本管线采集范围内。',
+    '你的任务是从本轮明确给出的证据中提炼值得跨 session 沉淀的知识。',
+    '',
+    '目标层（target_layer 只能取其一）：',
+    '- user_global：跨项目通用规则/偏好（同步写入用户级规则文件：Kimi/Codex 的 AGENTS.md、Claude 的 CLAUDE.md、Gemini 的 GEMINI.md）',
+    `- workspace：${workspaceRoot} 工作根规则（写入 AGENTS.md+CLAUDE.md+GEMINI.md；新启动会话读取）`,
+    '- project：某个具体项目专属的事实/规则（需给 project_path，必须在工作区内）',
+    '- memory：反馈/偏好类记忆（写入 memory 规范库索引 MEMORY.md）',
+    '- staging：拿不准、一次性、证据不足的——宁进 staging 不硬沉淀',
+    '',
+    '硬性要求：',
+    '1. 每条必须给 evidence：从证据原文逐字引用的一小段（中文原文照抄）。没有原文支持的一律进 staging。',
+    '2. claim 是一条可执行的规则或事实陈述，<=120 字，用祈使或陈述句，不要解释背景。',
+    '3. 忽略以下内容：seed 副本里本来就有的模板规则（工作区边界、产物目录、Git 与迁移等套话）、',
+    '   一次性的任务细节、路径里明显的临时信息、任何疑似密钥的内容。',
+    '4. 最多 5 条。没有值得沉淀的就返回空 entries，这是完全正常的输出。',
+    '5. 只输出 JSON，格式：{"entries":[{"target_layer":"...","project_path":"","claim":"...","type":"rule|fact|preference","confidence":0.0,"evidence":"..."}]}',
+  ].join('\n');
+}
 
 function buildDistillUser(candidate, workspaceRoot) {
   const kindLabel = candidate.kind === 'agents-diff'
@@ -563,7 +567,7 @@ async function runConsolidation(opts) {
           provider: config.provider,
           model: config.model,
           deepseekApiKey: hubCfg.deepseekApiKey,
-          system: DISTILL_SYSTEM,
+          system: buildDistillSystem(workspaceRoot),
           user: buildDistillUser(candidate, workspaceRoot),
         });
         const { entries, parseError } = parseDistillOutput(raw);
@@ -676,6 +680,7 @@ module.exports = {
   normalizeConsolidationConfig,
   redactSecrets,
   seedCopyStatus,
+  buildDistillSystem,
   collectCandidates,
   callLlm,
   parseDistillOutput,

@@ -14,7 +14,8 @@ if (typeof document !== 'undefined') (function () {
     guardMarkdownLocalPaths,
     restoreMarkdownLocalPaths,
   } = require('./markdown-local-path-guard.js');
-  const { CLAUDE_MEMORY_INDEX: _CLAUDE_MEMORY_INDEX } = require('../core/claude-memory-loader.js');
+  const { resolveClaudeMemoryIndex: _resolveClaudeMemoryIndex } = require('../core/claude-memory-loader.js');
+  const _CLAUDE_MEMORY_INDEX = _resolveClaudeMemoryIndex();
   const {
     buildHeroPromptBlock: _buildHeroPromptBlock,
     getHero: _getHero,

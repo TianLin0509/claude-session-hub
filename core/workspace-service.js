@@ -6,8 +6,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { getHubDataDir, isIsolatedHub } = require('./data-dir.js');
+const { acquireLock, releaseLock } = require('./file-lock.js');
 
 const REGISTRY_VERSION = 1;
+const REGISTRY_LOCK_RETRIES = 300;
+const REGISTRY_LOCK_RETRY_DELAY_MS = 10;
+const REGISTRY_RENAME_RETRIES = 80;
+const REGISTRY_RENAME_RETRY_DELAY_MS = 15;
+const TRANSIENT_RENAME_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const RENAME_SLEEP_CELL = new Int32Array(new SharedArrayBuffer(4));
 const DEFAULT_RECOMMENDED_CATEGORIES = [
   { id: 'ai', directory: 'AI', label: 'AI', description: 'Agent / 应用开发' },
   { id: 'wireless', directory: 'Wireless', label: 'Wireless', description: '无线通信研究' },
@@ -78,6 +85,8 @@ class WorkspaceService {
     this.randomId = opts.randomId || (() => crypto.randomBytes(3).toString('hex'));
     this.logger = opts.logger || console;
     this.workspaceRoot = opts.workspaceRoot || null;
+    this.acquireRegistryLock = opts.acquireRegistryLock || acquireLock;
+    this.releaseRegistryLock = opts.releaseRegistryLock || releaseLock;
     // 注册表落盘位置必须和 workspaceRoot 一样可注入。原先只有 workspaceRoot 能注入，
     // getRegistryPath() 却硬走 getHubDataDir() —— 单测把 workspace 建在临时目录、
     // 却把条目写进用户的生产 ~/.claude-session-hub/workspaces.json，每跑一次脏一批
@@ -160,7 +169,7 @@ class WorkspaceService {
     return { schemaVersion: REGISTRY_VERSION, selectedPath: null, workspaces: [] };
   }
 
-  _readRegistry() {
+  _readRegistry(opts = {}) {
     try {
       const parsed = JSON.parse(this.fs.readFileSync(this.getRegistryPath(), 'utf8'));
       // listWorkspaces 会过滤掉目录已消失的条目，selectedPath 却没有对应兜底——
@@ -173,17 +182,71 @@ class WorkspaceService {
         workspaces: Array.isArray(parsed.workspaces) ? parsed.workspaces : [],
       };
     } catch (err) {
+      if (opts.strict && err && err.code !== 'ENOENT') throw err;
       if (err && err.code !== 'ENOENT') this.logger.warn('[workspace] registry read failed:', err.message);
       return this._emptyRegistry();
     }
   }
 
+  _registryLockPath() {
+    return `${this.getRegistryPath()}.lock`;
+  }
+
+  _withRegistryLock(fn) {
+    const registryPath = this.getRegistryPath();
+    this.fs.mkdirSync(this.path.dirname(registryPath), { recursive: true });
+    const lockPath = this._registryLockPath();
+    const fd = this.acquireRegistryLock(lockPath, {
+      retries: REGISTRY_LOCK_RETRIES,
+      retryDelayMs: REGISTRY_LOCK_RETRY_DELAY_MS,
+    });
+    if (fd == null) {
+      const error = new Error('workspace 注册表正被另一个 Hub 占用，请稍后重试');
+      error.code = 'WORKSPACE_REGISTRY_BUSY';
+      throw error;
+    }
+    try {
+      return fn();
+    } finally {
+      this.releaseRegistryLock(fd, lockPath);
+    }
+  }
+
+  _renameRegistryWithRetry(source, target) {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        this.fs.renameSync(source, target);
+        return attempt;
+      } catch (error) {
+        if (!error || !TRANSIENT_RENAME_CODES.has(error.code) || attempt >= REGISTRY_RENAME_RETRIES) {
+          throw error;
+        }
+        Atomics.wait(RENAME_SLEEP_CELL, 0, 0, REGISTRY_RENAME_RETRY_DELAY_MS);
+      }
+    }
+  }
+
+  // 只能在 _withRegistryLock() 内调用。锁外写入会重新引入多 Hub 的
+  // read-modify-write 丢更新；调用方必须先持锁、再读取最新磁盘状态。
   _writeRegistry(registry) {
     const file = this.getRegistryPath();
     this.fs.mkdirSync(this.path.dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.tmp`;
-    this.fs.writeFileSync(tmp, JSON.stringify(registry, null, 2), 'utf8');
-    this.fs.renameSync(tmp, file);
+    const tmp = `${file}.${process.pid}.${Date.now()}.${this.randomId()}.tmp`;
+    try {
+      this.fs.writeFileSync(tmp, JSON.stringify(registry, null, 2), 'utf8');
+      this._renameRegistryWithRetry(tmp, file);
+    } finally {
+      try { if (this.fs.existsSync(tmp)) this.fs.unlinkSync(tmp); } catch {}
+    }
+  }
+
+  _mutateRegistry(mutator) {
+    return this._withRegistryLock(() => {
+      const registry = this._readRegistry({ strict: true });
+      const outcome = mutator(registry) || {};
+      if (outcome.changed !== false) this._writeRegistry(registry);
+      return outcome.value;
+    });
   }
 
   _isDirectory(value) {
@@ -281,12 +344,12 @@ class WorkspaceService {
   dismissArchive(cwd) {
     if (!cwd) return null;
     const resolved = this.path.resolve(cwd);
-    const registry = this._readRegistry();
-    const item = registry.workspaces.find(entry => normalizeKey(entry.path) === normalizeKey(resolved));
-    if (!item) return null;
-    item.archiveDismissedAt = this.now();
-    this._writeRegistry(registry);
-    return { ...item };
+    return this._mutateRegistry(registry => {
+      const item = registry.workspaces.find(entry => normalizeKey(entry.path) === normalizeKey(resolved));
+      if (!item) return { value: null, changed: false };
+      item.archiveDismissedAt = this.now();
+      return { value: { ...item } };
+    });
   }
 
   getArchiveContext(cwd) {
@@ -331,64 +394,82 @@ class WorkspaceService {
 
   archiveDraft(cwd, opts = {}) {
     const plan = this.planArchive(cwd, opts);
-    const registry = this._readRegistry();
-    const item = registry.workspaces.find(entry => normalizeKey(entry.path) === normalizeKey(plan.source));
-    if (!item) throw new Error('scratch workspace disappeared from registry');
+    return this._withRegistryLock(() => {
+      const registry = this._readRegistry({ strict: true });
+      const item = registry.workspaces.find(entry => normalizeKey(entry.path) === normalizeKey(plan.source));
+      if (!item || !item.draft || !this.isScratchWorkspace(plan.source)) {
+        throw new Error('scratch workspace disappeared from registry');
+      }
+      if (this.fs.existsSync(plan.target)) throw new Error(`目标路径已存在：${plan.target}`);
 
-    this.fs.renameSync(plan.source, plan.target);
-    try {
-      item.path = plan.target;
-      item.label = String(opts.label || item.label || plan.folderName).trim().slice(0, 60) || plan.folderName;
-      item.suggestedName = plan.folderName;
-      item.draft = false;
-      item.archivedAt = this.now();
-      item.lastUsedAt = this.now();
-      if (registry.selectedPath && normalizeKey(registry.selectedPath) === normalizeKey(plan.source)) {
-        registry.selectedPath = plan.target;
+      this.fs.renameSync(plan.source, plan.target);
+      try {
+        item.path = plan.target;
+        item.label = String(opts.label || item.label || plan.folderName).trim().slice(0, 60) || plan.folderName;
+        item.suggestedName = plan.folderName;
+        item.draft = false;
+        item.archivedAt = this.now();
+        item.lastUsedAt = this.now();
+        if (registry.selectedPath && normalizeKey(registry.selectedPath) === normalizeKey(plan.source)) {
+          registry.selectedPath = plan.target;
+        }
+        this._writeRegistry(registry);
+      } catch (error) {
+        try { this.fs.renameSync(plan.target, plan.source); } catch (rollbackError) {
+          this.logger.error?.('[workspace] archive registry rollback failed:', rollbackError && rollbackError.message);
+        }
+        throw error;
       }
-      this._writeRegistry(registry);
-    } catch (error) {
-      try { this.fs.renameSync(plan.target, plan.source); } catch (rollbackError) {
-        this.logger.error?.('[workspace] archive registry rollback failed:', rollbackError && rollbackError.message);
-      }
-      throw error;
-    }
-    return { ...item };
+      return { ...item };
+    });
   }
 
   touchWorkspace(cwd, meta = {}) {
     if (!cwd || typeof cwd !== 'string') throw new Error('workspace path is required');
     const resolved = this.path.resolve(cwd);
     if (!this._isDirectory(resolved)) throw new Error(`workspace directory does not exist: ${resolved}`);
-    const registry = this._readRegistry();
-    const key = normalizeKey(resolved);
-    let item = registry.workspaces.find(entry => normalizeKey(entry.path) === key);
-    if (!item) {
-      item = {
-        id: meta.id || this.randomId(),
-        path: resolved,
-        label: meta.label || this._defaultLabel(resolved),
-        createdAt: this.now(),
-        lastUsedAt: this.now(),
-        draft: !!meta.draft,
-        pinned: !!meta.pinned,
-        gitInitialized: !!meta.gitInitialized,
-      };
-      registry.workspaces.push(item);
-    } else {
-      item.path = resolved;
-      item.lastUsedAt = this.now();
-      if (typeof meta.label === 'string' && meta.label.trim()) item.label = meta.label.trim().slice(0, 60);
-      // Only ever raise the draft flag here. Clearing it is archiveDraft()'s job —
-      // a stray `draft: false` from a reconnect used to silently kill the
-      // first-turn archive prompt and strand the workspace in _scratch.
-      if (meta.draft === true) item.draft = true;
-      if (typeof meta.pinned === 'boolean') item.pinned = meta.pinned;
-      if (typeof meta.gitInitialized === 'boolean') item.gitInitialized = meta.gitInitialized;
-    }
-    if (meta.select !== false) registry.selectedPath = resolved;
-    this._writeRegistry(registry);
-    return { ...item, tier: this.classifyWorkspace(resolved) };
+    const permanentRoot = this.isFlatWorkRoot()
+      && normalizeKey(resolved) === normalizeKey(this.getWorkspaceRoot());
+    return this._mutateRegistry(registry => {
+      const key = normalizeKey(resolved);
+      let item = registry.workspaces.find(entry => normalizeKey(entry.path) === key);
+      if (!item) {
+        item = {
+          id: meta.id || this.randomId(),
+          path: resolved,
+          label: permanentRoot ? this._defaultLabel(resolved) : (meta.label || this._defaultLabel(resolved)),
+          createdAt: this.now(),
+          lastUsedAt: this.now(),
+          draft: permanentRoot ? false : !!meta.draft,
+          pinned: !!meta.pinned,
+          gitInitialized: !!meta.gitInitialized,
+          ...(permanentRoot ? { permanentRoot: true } : {}),
+        };
+        registry.workspaces.push(item);
+      } else {
+        item.path = resolved;
+        item.lastUsedAt = this.now();
+        if (permanentRoot || item.permanentRoot) {
+          // 平铺工作根是所有 Session 共用的常驻容器，不属于任何一个会话。
+          // 会话占位名、群聊标题、auto-title 都不得把它改名。
+          item.permanentRoot = true;
+          item.label = this._defaultLabel(resolved);
+          item.draft = false;
+          delete item.suggestedName;
+          delete item.autoNamedAt;
+        } else {
+          if (typeof meta.label === 'string' && meta.label.trim()) item.label = meta.label.trim().slice(0, 60);
+          // Only ever raise the draft flag here. Clearing it is archiveDraft()'s job —
+          // a stray `draft: false` from a reconnect used to silently kill the
+          // first-turn archive prompt and strand the workspace in _scratch.
+          if (meta.draft === true) item.draft = true;
+        }
+        if (typeof meta.pinned === 'boolean') item.pinned = meta.pinned;
+        if (typeof meta.gitInitialized === 'boolean') item.gitInitialized = meta.gitInitialized;
+      }
+      if (meta.select !== false) registry.selectedPath = resolved;
+      return { value: { ...item, tier: this.classifyWorkspace(resolved) } };
+    });
   }
 
   // Claude Code 会一路向上读到 <root>\CLAUDE.md，但 Codex / Kimi / Gemini 只读
@@ -664,46 +745,84 @@ class WorkspaceService {
   updateSuggestedName(cwd, title) {
     if (!cwd || !title) return null;
     const resolved = this.path.resolve(cwd);
-    const registry = this._readRegistry();
-    const item = registry.workspaces.find(entry => normalizeKey(entry.path) === normalizeKey(resolved));
-    if (!item) return null;
-    item.label = String(title).trim().slice(0, 60) || item.label;
-    item.suggestedName = safeSlug(title, item.id || 'workspace');
-    item.autoNamedAt = this.now();
-    item.lastUsedAt = this.now();
-    this._writeRegistry(registry);
-    return { ...item };
+    const permanentRoot = this.isFlatWorkRoot()
+      && normalizeKey(resolved) === normalizeKey(this.getWorkspaceRoot());
+    return this._mutateRegistry(registry => {
+      const item = registry.workspaces.find(entry => normalizeKey(entry.path) === normalizeKey(resolved));
+      if (!item) return { value: null, changed: false };
+      if (permanentRoot || item.permanentRoot) {
+        item.permanentRoot = true;
+        item.label = this._defaultLabel(resolved);
+        item.draft = false;
+        delete item.suggestedName;
+        delete item.autoNamedAt;
+      } else {
+        item.label = String(title).trim().slice(0, 60) || item.label;
+        item.suggestedName = safeSlug(title, item.id || 'workspace');
+        item.autoNamedAt = this.now();
+      }
+      item.lastUsedAt = this.now();
+      return { value: { ...item } };
+    });
   }
 
   renameLabel(cwd, label) {
     const clean = String(label || '').trim().slice(0, 60);
     if (!clean) throw new Error('workspace label is required');
+    const resolved = this.path.resolve(String(cwd || ''));
+    if ((this.isFlatWorkRoot() && normalizeKey(resolved) === normalizeKey(this.getWorkspaceRoot()))
+        || (this.getWorkspace(resolved) || {}).permanentRoot) {
+      throw new Error('平铺工作根名称固定为目录名，不能按单个任务重命名');
+    }
     return this.touchWorkspace(cwd, { label: clean, select: true });
   }
 
   listWorkspaces(extraPaths = []) {
     this.ensureRoot();
-    const registry = this._readRegistry();
-    let changed = false;
-    for (const cwd of extraPaths) {
-      if (!cwd || typeof cwd !== 'string' || !this._isDirectory(cwd)) continue;
-      const resolved = this.path.resolve(cwd);
-      if (!registry.workspaces.some(entry => normalizeKey(entry.path) === normalizeKey(resolved))) {
-        registry.workspaces.push({
-          id: this.randomId(),
-          path: resolved,
-          label: this._defaultLabel(resolved),
-          createdAt: this.now(),
-          lastUsedAt: 0,
-          draft: false,
-          pinned: false,
-          legacy: normalizeKey(resolved) === normalizeKey(this.os.homedir()),
-        });
-        changed = true;
+    const updateRegistry = registry => {
+      let changed = false;
+      for (const cwd of extraPaths) {
+        if (!cwd || typeof cwd !== 'string' || !this._isDirectory(cwd)) continue;
+        const resolved = this.path.resolve(cwd);
+        if (!registry.workspaces.some(entry => normalizeKey(entry.path) === normalizeKey(resolved))) {
+          const permanentRoot = this.isFlatWorkRoot()
+            && normalizeKey(resolved) === normalizeKey(this.getWorkspaceRoot());
+          registry.workspaces.push({
+            id: this.randomId(),
+            path: resolved,
+            label: this._defaultLabel(resolved),
+            createdAt: this.now(),
+            lastUsedAt: 0,
+            draft: false,
+            pinned: false,
+            legacy: normalizeKey(resolved) === normalizeKey(this.os.homedir()),
+            ...(permanentRoot ? { permanentRoot: true } : {}),
+          });
+          changed = true;
+        }
       }
-    }
-    registry.workspaces = registry.workspaces.filter(entry => entry && entry.path && this._isDirectory(entry.path));
-    if (changed) this._writeRegistry(registry);
+      if (this.isFlatWorkRoot()) {
+        const rootKey = normalizeKey(this.getWorkspaceRoot());
+        const rootItem = registry.workspaces.find(entry => entry && normalizeKey(entry.path) === rootKey);
+        if (rootItem) {
+          const stableLabel = this._defaultLabel(rootItem.path);
+          if (!rootItem.permanentRoot || rootItem.label !== stableLabel || rootItem.draft
+              || rootItem.suggestedName !== undefined || rootItem.autoNamedAt !== undefined) {
+            rootItem.permanentRoot = true;
+            rootItem.label = stableLabel;
+            rootItem.draft = false;
+            delete rootItem.suggestedName;
+            delete rootItem.autoNamedAt;
+            changed = true;
+          }
+        }
+      }
+      const before = registry.workspaces.length;
+      registry.workspaces = registry.workspaces.filter(entry => entry && entry.path && this._isDirectory(entry.path));
+      if (registry.workspaces.length !== before) changed = true;
+      return { value: registry, changed };
+    };
+    const registry = this._mutateRegistry(updateRegistry);
     const selectedKey = registry.selectedPath ? normalizeKey(registry.selectedPath) : '';
     const items = registry.workspaces
       // tier 供 UI 区分「领域工作区」和普通项目（决策 2：不禁止，但要说清楚选的是什么）。
