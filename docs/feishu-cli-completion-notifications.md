@@ -17,6 +17,8 @@ npm install --prefix C:\DevTools\LarkCLI @larksuite/cli@1.0.92
 - `im:message:send_as_bot` 权限；
 - 机器人已加入目标群聊/会话，或已与目标用户建立私聊关系。
 
+若要发送 HTML 预览图和原始成果文件，还需要机器人可上传 IM 资源（`im:resource:upload` / `im:resource`）。缺少资源权限时，主完成卡片仍会发送，仅预览或附件被记为部分失败。
+
 ## 在 Hub 中启用
 
 1. 打开一个需要关注的 session。
@@ -25,7 +27,8 @@ npm install --prefix C:\DevTools\LarkCLI @larksuite/cli@1.0.92
    - `oc_...`：会话/群聊 `chat_id`；
    - `ou_...`：用户 `open_id`。
 4. 点击“发送测试”，在飞书手机端确认收到。
-5. 勾选当前会话通知并保存。顶栏应显示“通知开”。
+5. 如需卡片正文、HTML 静态预览和原始成果文件，勾选“附带回答与成果快递”。
+6. 勾选当前会话通知并保存。顶栏应显示“通知开”。
 
 设置界面、顶栏开关和会话级持久化语义与旧微信版一致；只是通知 provider 已替换为飞书 CLI。
 
@@ -40,6 +43,7 @@ npm install --prefix C:\DevTools\LarkCLI @larksuite/cli@1.0.92
 - 被抢占、中断或仍含 `running` 等非终态成员的群聊不推送。
 - 成功事件 ID 会写入投递审计；Hub 重启后从审计恢复，防止同一轮再次推送。
 - 飞书 CLI 额外使用同一 event ID 派生的 idempotency key，网络重试不会制造重复消息。
+- Card 2.0 无法发送时，同一个 event ID 会退回原 Markdown 通知，展示增强不会吞掉完成提醒。
 
 这里的“零虚警/零漏警”是验收矩阵内的目标，不代表外部网络、飞书开放平台或本机断电永远不会失败。外部投递失败会显式出现在工作台健康提醒和审计日志中，不会伪装成已发送。
 
@@ -49,10 +53,24 @@ npm install --prefix C:\DevTools\LarkCLI @larksuite/cli@1.0.92
 - 顶栏“通知开”：仅当前 session 回答完成后推送。
 - 顶栏“通知关”：仅当前 session 不推送，其他 session 不受影响。
 - 顶栏“通知未配”：尚无有效 `oc_...` / `ou_...` 接收对象。
-- 普通 session 每轮最多推送一条。
+- 普通 session 每轮恰好有一条可去重的“完成主通知”；开启成果快递后，最多再跟随 3 条原文件消息。
 - 群聊按房间独立设置，整轮收敛后最多推送一条。
-- 默认不包含回复正文；“附带回复预览”必须由用户显式开启。
+- 默认不包含回复正文和成果文件；“附带回答与成果快递”必须由用户显式开启。
 - 网络/CLI 瞬时失败按 2 秒、10 秒、60 秒退避重试。
+
+## Session 成果快递（Card 2.0）
+
+开启“附带回答与成果快递”后，普通 session 的主通知会使用 Card 2.0：
+
+- header 直接显示 session 名、完成状态、AI 类型和完成时间；
+- 指标块显示模型、耗时和本轮成果数；
+- 回答正文先展示本轮结论，较长细节收进折叠面板；
+- 仅从本轮回答明确交付的路径中发现成果，且限制为允许的文档、图片、Office、压缩包和视频类型；
+- HTML 在隔离的隐藏窗口中生成 1200×675 静态图：禁用 Node 集成、开启 sandbox/context isolation、拒绝外网、只允许同成果目录的本地资源；
+- 静态图上传后嵌入卡片，原始 HTML/其他成果以随后文件消息发送；
+- 单文件必须非空且小于 30 MB；敏感目录、凭据/令牌命名、源码普通引用和代码块中的路径不会自动投递。
+
+飞书卡片不能原生执行任意 HTML/JavaScript，也不能内嵌 iframe，因此这里提供的是安全静态预览；需要交互时仍打开收到的原始 HTML 文件。图片上传、HTML 渲染或伴随附件任一失败都只产生安全 warning code，不会把已经成功的主完成通知标成失败。
 
 ## 配置与环境变量
 
@@ -95,15 +113,16 @@ Windows 默认先查找：
 - 尝试次数；
 - CLI exit code；
 - 安全错误码和飞书 message ID。
+- 主消息模式（`card2` / `markdown_fallback`）、成果数、成功附件数和安全 warning code。
 
-审计不记录飞书接收对象、通知标题、回答正文或回复预览。
+审计不记录飞书接收对象、通知标题、回答正文、成果路径或回复预览。
 
 ## 常见错误
 
 - `invalid_target`：接收对象不是有效的 `oc_...` / `ou_...`。
 - `cli_not_found`：飞书 CLI 未安装，或 `HUB_NOTIFY_FEISHU_CLI_PATH` 错误。
 - `authorization_error` / `cli_configuration_error`：CLI 尚未完成应用配置。
-- `missing_scope`：应用缺少 `im:message:send_as_bot`。
+- `missing_scope`：应用缺少 `im:message:send_as_bot`；若只在预览/附件阶段出现，再检查 `im:resource:upload` / `im:resource`。
 - `confirmation_required`：CLI 风险门禁要求人工确认；Hub 不会静默绕过。
 - `timeout` / `network_error`：检查本机网络、代理及飞书开放平台连通性。
 - `cli_failed`：检查机器人是否已经加入目标会话，以及目标 ID 是否属于当前租户。

@@ -1,0 +1,7 @@
+{
+  "name": "hub-feishu-card-live-acceptance",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs"
+}

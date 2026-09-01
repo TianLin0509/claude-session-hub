@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { formatBeijingDateTime } = require('./beijing-time.js');
+const { discoverCompletionArtifacts } = require('./completion-artifacts.js');
+const { buildSessionCompletionCard } = require('./feishu-card-builder.js');
 
 const PROVIDER = 'feishu-cli';
 const DEFAULT_NOTIFICATION_CONFIG = Object.freeze({
@@ -275,21 +277,68 @@ function buildFeishuMarkdown(payload = {}) {
   return [`#### ${title}`, '', body].filter((line, index, all) => line || index < all.length - 1).join('\n');
 }
 
-function buildFeishuCliArgs(payload = {}, prefixArgs = []) {
-  const target = String(payload.target || '').trim();
-  if (!isUsableFeishuTarget(target)) {
+function buildFeishuTargetArgs(target) {
+  const normalized = String(target || '').trim();
+  if (!isUsableFeishuTarget(normalized)) {
     throw new NotificationDeliveryError('invalid_target');
   }
-  const targetArgs = target.startsWith('oc_')
-    ? ['--chat-id', target]
-    : ['--user-id', target];
-  const idempotencyKey = `hub-${hashValue(payload.eventId || buildFeishuMarkdown(payload))}`;
+  return normalized.startsWith('oc_')
+    ? ['--chat-id', normalized]
+    : ['--user-id', normalized];
+}
+
+function buildIdempotencyKey(prefix, value) {
+  return `${prefix}-${hashValue(value)}`.slice(0, 50);
+}
+
+function buildFeishuCliArgs(payload = {}, prefixArgs = []) {
+  const targetArgs = buildFeishuTargetArgs(payload.target);
+  const idempotencyKey = buildIdempotencyKey('hub', payload.eventId || buildFeishuMarkdown(payload));
   return [
     ...prefixArgs,
     'im', '+messages-send',
     ...targetArgs,
     '--markdown', buildFeishuMarkdown(payload),
     '--idempotency-key', idempotencyKey,
+    '--as', 'bot',
+  ];
+}
+
+function buildFeishuInteractiveCliArgs(payload = {}, card = {}, prefixArgs = []) {
+  const targetArgs = buildFeishuTargetArgs(payload.target);
+  return [
+    ...prefixArgs,
+    'im', '+messages-send',
+    ...targetArgs,
+    '--msg-type', 'interactive',
+    '--content', JSON.stringify(card),
+    '--idempotency-key', buildIdempotencyKey('hub', payload.eventId || JSON.stringify(card)),
+    '--as', 'bot',
+  ];
+}
+
+function buildFeishuFileCliArgs(payload = {}, artifact = {}, index = 0, prefixArgs = []) {
+  const targetArgs = buildFeishuTargetArgs(payload.target);
+  const fileName = path.basename(String(artifact.path || artifact.name || ''));
+  if (!fileName) throw new NotificationDeliveryError('artifact_missing');
+  return [
+    ...prefixArgs,
+    'im', '+messages-send',
+    ...targetArgs,
+    '--file', `./${fileName}`,
+    '--idempotency-key', buildIdempotencyKey('hubf', `${payload.eventId || ''}|${index}|${fileName}`),
+    '--as', 'bot',
+  ];
+}
+
+function buildFeishuImageUploadArgs(previewPath, prefixArgs = []) {
+  const fileName = path.basename(String(previewPath || ''));
+  if (!fileName) throw new NotificationDeliveryError('preview_missing');
+  return [
+    ...prefixArgs,
+    'im', 'images', 'create',
+    '--data', JSON.stringify({ image_type: 'message' }),
+    '--file', `./${fileName}`,
     '--as', 'bot',
   ];
 }
@@ -325,10 +374,26 @@ function cliFailureError(exitCode, stdout, stderr) {
   });
 }
 
-async function sendFeishuCli(payload, options = {}) {
-  if (!isUsableFeishuTarget(payload.target)) {
-    throw new NotificationDeliveryError('invalid_target');
+function normalizeWarningCode(prefix, error) {
+  const suffix = String(error && error.code || 'unknown')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .slice(0, 48) || 'unknown';
+  return `${prefix}_${suffix}`.slice(0, 72);
+}
+
+function normalizeWarningCodes(values) {
+  const result = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const normalized = String(value || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').slice(0, 72);
+    if (normalized && !result.includes(normalized)) result.push(normalized);
+    if (result.length >= 12) break;
   }
+  return result;
+}
+
+async function runFeishuCliCommand(commandArgs, payload = {}, options = {}) {
+  buildFeishuTargetArgs(payload.target);
   const cliPath = String(options.cliPath || payload.cliPath || resolveDefaultFeishuCliPath()).trim();
   if (!cliPath) throw new NotificationDeliveryError('cli_not_found');
   const configuredPrefix = Array.isArray(options.cliPrefixArgs) ? options.cliPrefixArgs : [];
@@ -339,7 +404,9 @@ async function sendFeishuCli(payload, options = {}) {
     || (process.versions && process.versions.electron ? 'node.exe' : process.execPath),
   ).trim();
   const command = isNodeScript ? nodeCommand : cliPath;
-  const args = buildFeishuCliArgs(payload, isNodeScript ? [cliPath, ...configuredPrefix] : configuredPrefix);
+  const args = isNodeScript
+    ? [cliPath, ...configuredPrefix, ...commandArgs]
+    : [...configuredPrefix, ...commandArgs];
   const spawnImpl = options.spawnImpl || childProcess.spawn;
   const timeoutMs = clampInteger(options.timeoutMs, 15_000, 1_000, 60_000);
 
@@ -397,23 +464,98 @@ async function sendFeishuCli(payload, options = {}) {
           return;
         }
         const parsed = parseCliJson(stdout);
-        const data = parsed && parsed.data && typeof parsed.data === 'object' ? parsed.data : parsed;
-        const compatibleRawSuccess = parsed && parsed.ok === undefined && data && data.message_id;
-        if (!parsed || (parsed.ok !== true && !compatibleRawSuccess)) {
+        if (parsed && parsed.ok === false) {
+          reject(cliFailureError(exitCode, stdout, stderr));
+          return;
+        }
+        if (!parsed || (parsed.ok !== true && parsed.ok !== undefined)) {
           reject(new NotificationDeliveryError('invalid_response', { transient: true, exitCode: 0 }));
           return;
         }
-        const messageId = data && (data.message_id || data.messageId) || null;
-        resolve({
-          ok: true,
-          exitCode: 0,
-          providerCode: messageId,
-          messageId,
-          chatId: data && (data.chat_id || data.chatId) || null,
-        });
+        const data = parsed && parsed.data && typeof parsed.data === 'object' ? parsed.data : parsed;
+        resolve({ exitCode: 0, parsed, data: data && typeof data === 'object' ? data : {} });
       });
     });
   });
+}
+
+async function sendMessageCommand(args, payload, options = {}) {
+  const result = await runFeishuCliCommand(args, payload, options);
+  const messageId = result.data.message_id || result.data.messageId || null;
+  if (!messageId) {
+    throw new NotificationDeliveryError('invalid_response', { transient: true, exitCode: result.exitCode });
+  }
+  return {
+    ok: true,
+    exitCode: result.exitCode,
+    providerCode: messageId,
+    messageId,
+    chatId: result.data.chat_id || result.data.chatId || null,
+  };
+}
+
+async function uploadFeishuPreviewImage(payload, options = {}) {
+  const previewPath = String(payload.previewPath || '');
+  const result = await runFeishuCliCommand(
+    buildFeishuImageUploadArgs(previewPath),
+    payload,
+    { ...options, cwd: path.dirname(previewPath) },
+  );
+  const imageKey = result.data.image_key || result.data.imageKey || null;
+  if (!imageKey) throw new NotificationDeliveryError('invalid_image_response', { transient: true });
+  return imageKey;
+}
+
+async function sendFeishuCli(payload, options = {}) {
+  if (!isUsableFeishuTarget(payload.target)) throw new NotificationDeliveryError('invalid_target');
+  if (!payload.cardInput) {
+    return sendMessageCommand(buildFeishuCliArgs(payload), payload, options);
+  }
+
+  const warnings = normalizeWarningCodes(payload.warningCodes);
+  let imageKey = null;
+  if (payload.previewPath) {
+    try {
+      imageKey = await uploadFeishuPreviewImage(payload, options);
+    } catch (error) {
+      warnings.push(normalizeWarningCode('preview_upload', error));
+    }
+  }
+
+  let mainResult;
+  let deliveryMode = 'card2';
+  try {
+    const card = buildSessionCompletionCard({ ...payload.cardInput, imageKey });
+    mainResult = await sendMessageCommand(buildFeishuInteractiveCliArgs(payload, card), payload, options);
+  } catch (error) {
+    warnings.push(normalizeWarningCode('card2', error));
+    deliveryMode = 'markdown_fallback';
+    mainResult = await sendMessageCommand(buildFeishuCliArgs(payload), payload, options);
+  }
+
+  let attachmentsSent = 0;
+  const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts.slice(0, 3) : [];
+  for (let index = 0; index < artifacts.length; index += 1) {
+    const artifact = artifacts[index];
+    try {
+      await sendMessageCommand(
+        buildFeishuFileCliArgs(payload, artifact, index),
+        payload,
+        { ...options, cwd: path.dirname(artifact.path) },
+      );
+      attachmentsSent += 1;
+    } catch (error) {
+      warnings.push(normalizeWarningCode('artifact_send', error));
+    }
+  }
+
+  return {
+    ...mainResult,
+    deliveryMode,
+    artifactCount: artifacts.length,
+    attachmentsSent,
+    warningCodes: normalizeWarningCodes(warnings),
+  };
 }
 
 class CompletionNotifier {
@@ -421,6 +563,12 @@ class CompletionNotifier {
     this.getConfig = typeof options.getConfig === 'function' ? options.getConfig : () => ({});
     this.getLogPath = typeof options.getLogPath === 'function' ? options.getLogPath : () => null;
     this.deliveryImpl = typeof options.deliveryImpl === 'function' ? options.deliveryImpl : sendFeishuCli;
+    this.discoverArtifacts = typeof options.discoverArtifacts === 'function'
+      ? options.discoverArtifacts
+      : discoverCompletionArtifacts;
+    this.renderHtmlPreview = typeof options.renderHtmlPreview === 'function'
+      ? options.renderHtmlPreview
+      : null;
     this.spawnImpl = options.spawnImpl || childProcess.spawn;
     this.cliPath = typeof options.cliPath === 'string' ? options.cliPath : null;
     this.cliPrefixArgs = Array.isArray(options.cliPrefixArgs) ? [...options.cliPrefixArgs] : [];
@@ -637,6 +785,35 @@ class CompletionNotifier {
     });
   }
 
+  async _prepareArtifacts(event, session, config) {
+    if (!config.includePreview) return { artifacts: [], previewPath: null, warningCodes: [] };
+    const warningCodes = [];
+    let artifacts = [];
+    try {
+      artifacts = this.discoverArtifacts(event.text, session && session.cwd || null);
+    } catch {
+      warningCodes.push('artifact_discovery_failed');
+    }
+
+    let previewPath = null;
+    const htmlArtifact = artifacts.find(artifact => artifact.kind === 'html');
+    const imageArtifact = artifacts.find(artifact => artifact.kind === 'image');
+    if (htmlArtifact) {
+      if (this.renderHtmlPreview) {
+        try {
+          previewPath = await this.renderHtmlPreview(htmlArtifact.path);
+        } catch {
+          warningCodes.push('preview_render_failed');
+        }
+      } else {
+        warningCodes.push('preview_renderer_unavailable');
+      }
+    } else if (imageArtifact) {
+      previewPath = imageArtifact.path;
+    }
+    return { artifacts, previewPath, warningCodes: normalizeWarningCodes(warningCodes) };
+  }
+
   async handleTurnComplete(event = {}, session = null) {
     if (!event.hubSessionId) return { ok: false, status: 'missing_session' };
     if (!session) return { ok: false, status: 'missing_session' };
@@ -662,11 +839,19 @@ class CompletionNotifier {
     const durationMs = this._durationFor(event, completion.state);
     const sessionTitle = cleanInlineText(session.title || session.label || session.kind || 'AI 会话', 64) || 'AI 会话';
     const kind = cleanInlineText(session.kind || 'AI', 24) || 'AI';
+    const modelValue = event.modelId
+      || session.model
+      || (session.currentModel && (session.currentModel.displayName || session.currentModel.id))
+      || kind;
+    const model = cleanInlineText(modelValue, 40) || kind;
+    const durationText = formatDuration(durationMs);
+    const completedAtText = formatCompletedAt(completion.at);
+    const artifactDelivery = await this._prepareArtifacts(event, session, config);
     const lines = [
       `**会话**：${sessionTitle}`,
       `**AI**：${kind}`,
-      `**耗时**：${formatDuration(durationMs)}`,
-      `**完成时间**：${formatCompletedAt(completion.at)}`,
+      `**耗时**：${durationText}`,
+      `**完成时间**：${completedAtText}`,
     ];
     if (config.includePreview) {
       const preview = cleanPreview(event.text, config.previewChars);
@@ -680,6 +865,19 @@ class CompletionNotifier {
       cliPath: config.feishuCliPath,
       title: `AI Hub · ${sessionTitle} 完成`,
       desp: lines.join('\n\n'),
+      cardInput: {
+        sessionTitle,
+        kind,
+        model,
+        durationText,
+        completedAtText,
+        includeContent: config.includePreview,
+        answerText: config.includePreview ? event.text : '',
+        artifacts: artifactDelivery.artifacts.map(artifact => ({ name: artifact.name, kind: artifact.kind })),
+      },
+      artifacts: artifactDelivery.artifacts,
+      previewPath: artifactDelivery.previewPath,
+      warningCodes: artifactDelivery.warningCodes,
     });
   }
 
@@ -768,6 +966,16 @@ class CompletionNotifier {
       cliPath: config.feishuCliPath,
       title: 'AI Hub · 飞书通知测试成功',
       desp: `飞书 CLI 通知链路已打通。\n\n**测试时间**：${formatCompletedAt(now)}\n\n顶栏开关只控制当前会话；新会话默认关闭，需要时请手动开启。`,
+      cardInput: {
+        sessionTitle: '飞书通知测试成功',
+        kind: 'AI Hub',
+        model: 'Card 2.0',
+        durationText: '链路正常',
+        completedAtText: formatCompletedAt(now),
+        includeContent: true,
+        answerText: '飞书 CLI 通知链路已打通。\n\n顶栏开关只控制当前会话；新会话默认关闭，需要时请手动开启。',
+        artifacts: [],
+      },
     }, { allowRetry: false });
   }
 
@@ -788,6 +996,13 @@ class CompletionNotifier {
         spawnImpl: this.spawnImpl,
         timeoutMs: this.timeoutMs,
       });
+      const warningCodes = normalizeWarningCodes(result.warningCodes);
+      const deliveryMode = cleanInlineText(result.deliveryMode || (payload.cardInput ? 'card2' : 'markdown'), 40);
+      const artifactCount = Math.max(0, Number(result.artifactCount) || 0);
+      const attachmentsSent = Math.max(0, Number(result.attachmentsSent) || 0);
+      if (warningCodes.length) {
+        try { this.logger.warn('[completion-notifier] delivery completed with partial warnings:', warningCodes.join(',')); } catch {}
+      }
       await this._appendAudit({
         ts: new Date(this.now()).toISOString(),
         eventId: payload.eventId,
@@ -796,6 +1011,10 @@ class CompletionNotifier {
         attempt,
         exitCode: result.exitCode,
         providerCode: result.providerCode,
+        deliveryMode,
+        artifactCount,
+        attachmentsSent,
+        ...(warningCodes.length ? { warningCodes } : {}),
       });
       this.deliveredEvents.set(payload.eventId, this.now());
       this._pruneEventMaps();
@@ -805,8 +1024,19 @@ class CompletionNotifier {
         attempt,
         exitCode: result.exitCode,
         providerCode: result.providerCode,
+        deliveryMode,
+        warningCount: warningCodes.length,
       };
-      return { ok: true, status: 'sent', attempt, messageId: result.messageId || null };
+      return {
+        ok: true,
+        status: 'sent',
+        attempt,
+        messageId: result.messageId || null,
+        deliveryMode,
+        artifactCount,
+        attachmentsSent,
+        warningCodes,
+      };
     } catch (error) {
       const safeError = error instanceof NotificationDeliveryError
         ? error
@@ -893,6 +1123,9 @@ module.exports = {
   DEFAULT_NOTIFICATION_CONFIG,
   NotificationDeliveryError,
   buildFeishuCliArgs,
+  buildFeishuFileCliArgs,
+  buildFeishuImageUploadArgs,
+  buildFeishuInteractiveCliArgs,
   buildFeishuMarkdown,
   isUsableFeishuTarget,
   normalizeNotificationConfig,
@@ -900,5 +1133,6 @@ module.exports = {
   readDeliveredEventIds,
   readLastDeliveryAudit,
   resolveDefaultFeishuCliPath,
+  runFeishuCliCommand,
   sendFeishuCli,
 };

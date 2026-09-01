@@ -48,6 +48,7 @@ const meetingStore = require('./core/meeting-store.js');
 const sessionStore = require('./core/session-store.js');
 const { TranscriptTap } = require('./core/transcript-tap');
 const { CompletionNotifier } = require('./core/completion-notifier.js');
+const { createHtmlArtifactPreviewRenderer } = require('./core/html-artifact-preview.js');
 const { normalizeEventTime } = require('./core/session-attention-state.js');
 const { createUsageFilter } = require('./core/usage-filter.js');
 const scenes = require('./core/group-chat-scenes.js');
@@ -424,6 +425,11 @@ const networkEgressMonitor = createNetworkEgressMonitor({
 const completionNotifier = new CompletionNotifier({
   getConfig: getHubConfig,
   getLogPath: () => path.join(getHubDataDir(), 'notification-delivery.jsonl'),
+  renderHtmlPreview: createHtmlArtifactPreviewRenderer({
+    BrowserWindow,
+    getOutputDir: getHubDataDir,
+    logger: console,
+  }),
   logger: console,
 });
 // SessionManager 构造不接收依赖；kimi 会话 spawn 前的 AGENTS.md seed 需要它
