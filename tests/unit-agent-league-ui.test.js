@@ -79,3 +79,24 @@ test('league UI exposes durable owner progress, health diagnostics and backgroun
   assert.match(script, /data-action="toggle-background"/);
   assert.match(script, /其他 Hub 运行中/);
 });
+
+test('league UI separates decision truth from runtime state and progressively discloses evidence', () => {
+  const script = fs.readFileSync(path.join(root, 'renderer', 'agent-league.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'renderer', 'agent-league.css'), 'utf8');
+  assert.match(script, /data-role="command-center"/);
+  assert.match(script, /DECISION TRUTH · AUDITABLE COVERAGE/);
+  assert.match(script, /data-action="toggle-operations"[^>]*aria-expanded="false"/);
+  assert.match(script, /data-agent-filter="attention"[^>]*aria-pressed="false"/);
+  assert.match(script, /data-agent-filter="positions"/);
+  assert.match(script, /data-agent-filter="incomplete"/);
+  assert.match(script, /latestCompletedDaily/);
+  assert.match(script, /技术弃权：没有形成策略结论/);
+  assert.match(script, /策略结论与技术状态分账/);
+  assert.match(script, /decisionReliabilityHtml/);
+  assert.doesNotMatch(script, /lastHookVerdict[^\n]*latestDaily\.decisionDate/);
+  assert.match(css, /\.cxl-command-center/);
+  assert.match(css, /\.cxl-board-filters/);
+  assert.match(css, /\.cxl-status\.error/);
+  assert.match(css, /\.cxl-truth-warning/);
+  assert.match(css, /prefers-reduced-motion/);
+});

@@ -516,7 +516,7 @@ test('Hook failure preserves DRAFT and automatically retries only the Hook check
     });
     await waitFor(() => harness.sentPrompts.length === 3, 'automatic Hook retry');
     const failed = harness.store.getDaily('chuxin-baseline', '2026-08-27');
-    assert.equal(failed.status, 'failed');
+    assert.equal(failed.status, 'retrying');
     assert.equal(failed.stage, 'hook');
     assert.equal(failed.draft.targets[0].symbol, '600001.SH');
     assert.equal(harness.sentPrompts[2].sessionId, sessionId, 'retry must reuse the same ordinary Session');
@@ -527,6 +527,10 @@ test('Hook failure preserves DRAFT and automatically retries only the Hook check
       text: `\`\`\`agent-league-hook\n${JSON.stringify({ run_id: started.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[2].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...makeHook(draft) })}\n\`\`\``,
     });
     await waitFor(() => harness.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus === 'completed', 'Hook retry completion');
+    const recovered = harness.store.getDaily('chuxin-baseline', '2026-08-27');
+    assert.equal(recovered.status, 'decision-queued');
+    assert.equal(recovered.error, undefined);
+    assert.equal(recovered.failureKind, undefined);
     assert.equal(harness.store.currentRunLease(), null);
   } finally {
     harness?.bridge.stopScheduler();
@@ -702,6 +706,9 @@ test('scheduler resumes the frozen cohort after cutoff without admitting a newly
     assert.equal(second.sentPrompts[0].sessionId, second.store.getAgent('chuxin-baseline').session.hubSessionId);
     assert.equal(second.store.getAgent('late-agent').latestDaily, null);
     assert.deepEqual(tick.run.durable.tasks.map((task) => task.agentId), ['chuxin-baseline']);
+    const listed = second.ipc.handlers.get('agent-league:list')(null, {});
+    assert.equal(listed.dashboard.current.expectedAgents, 1, 'dashboard must use the frozen cohort, not late-added Agents');
+    assert.deepEqual(listed.dashboard.current.outcomes.map((row) => row.agentId), ['chuxin-baseline']);
   } finally {
     first?.bridge.stopScheduler();
     second?.bridge.stopScheduler();
@@ -725,6 +732,13 @@ test('a missing provider completion cannot leave the league permanently running'
     const state = harness.ipc.handlers.get('agent-league:list')(null, {});
     assert.equal(state.run, null, 'watchdog must close the in-memory run');
     assert.equal(state.schedule.lastRunStatus, 'failed');
+    assert.equal(state.dashboard.current.completed, 0);
+    assert.equal(state.dashboard.current.technicalForfeits, 1);
+    assert.equal(state.dashboard.current.coverageRate, 0);
+    assert.equal(state.dashboard.filterCounts.attention, 1);
+    assert(state.dashboard.attention.some((row) => row.agentId === 'chuxin-baseline' && row.title.includes('技术弃权')));
+    assert.equal(state.agents[0].decisionReliability.latestCompleted, null);
+    assert.equal(state.agents[0].latestCompletedDaily, null);
     assert.equal(harness.bridge.pendingByHubSession.size, 0);
     assert.equal(harness.store.currentRunLease(), null);
     const failed = harness.store.getDaily('chuxin-baseline', '2026-08-27');

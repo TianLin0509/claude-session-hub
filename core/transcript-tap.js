@@ -1172,13 +1172,22 @@ class CodexTap extends EventEmitter {
 
       const completedAgent = codexAgentMessageEventFromRecord(obj);
       if (completedAgent && completedAgent.completed) {
+        // JsonlTail hydrates an existing rollout suffix when a dormant Codex
+        // session resumes. A historical task_complete/final_answer is history,
+        // not the completion of the prompt that is about to be submitted by
+        // this Hub registration. task errors already use the same live-boundary
+        // rule above; successful completions must be fenced identically.
+        const completionAt = Number(completedAgent.completedAt)
+          || timestampToMs(obj.timestamp)
+          || 0;
+        if (completionAt && completionAt + 5000 < entry._liveBoundaryAt) return;
         const text = completedAgent.text;
         // Legacy task_complete and 0.147 final_answer share one debounce path.
         // If several terminal records arrive, the last authoritative text wins.
         if (entry._pendingEmitTimer) clearTimeout(entry._pendingEmitTimer);
         entry._pendingText = text;
         entry._pendingDurationMs = completedAgent.durationMs;
-        entry._pendingCompletedAt = completedAgent.completedAt || Date.now();
+        entry._pendingCompletedAt = completionAt || Date.now();
         entry._pendingTurnId = completedAgent.turnId || eventTurnId || entry._currentTurnId || null;
         entry._pendingSignalSource = completedAgent.signalSource;
         entry._pendingEmitTimer = setTimeout(() => {

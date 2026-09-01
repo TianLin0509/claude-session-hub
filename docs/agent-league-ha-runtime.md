@@ -2,14 +2,16 @@
 
 ## 结论
 
-v1.6.28 将联赛从“单个 Hub 内存队列 + 两分钟文件锁”升级为：
+v1.6.29 将联赛从“单个 Hub 内存队列 + 两分钟文件锁”升级为：
 
 - SQLite 事务运行库：`<league-root>/.runtime/agent-league.db`
 - 每次接班递增 `epoch`，所有任务/副作用提交都校验 fencing token
 - DRAFT、Hook、FINAL、Weekly 是持久阶段检查点
 - 开盘与收盘采用 `prepare → 外部文件写入 → applied` 的 effect 协议
 - 普通关窗默认隐藏到托盘，Hub/PTY/调度器继续运行
-- 明确退出或进程崩溃后，其他 v1.6.28 Hub 可按检查点接班
+- 明确退出或进程崩溃后，其他 v1.6.29 Hub 可按检查点接班
+- Codex resume 不再重放绑定前的历史完成事件；联赛 attempt_id 继续作为第二层防线
+- 首页把最新运行尝试、最近有效 FINAL、技术弃权和执行覆盖率分账呈现
 
 这里的“断点续传”是阶段级，不承诺从模型思考到第几个 token 继续：已提交阶段不重做；崩溃时尚未提交的阶段会先核对 attempt，再安全重放。
 
@@ -77,19 +79,19 @@ pending/draft
 
 ## 一次性升级要求
 
-旧版本的开盘/收盘没有完整 fencing。第一次切换 v1.6.28 时必须：
+旧版本的开盘/收盘没有完整 fencing。第一次切换 v1.6.29 时必须：
 
 1. 等当前联赛阶段终态，或确认 `.run.lock` 不存在。
 2. 关闭所有 v1.6.27 及更早 Hub 一次。
-3. 启动一个 v1.6.28 Hub，打开“联赛健康”，确认 SQLite、scheduler、CLI、T-1 数据均通过。
-4. 此后可以多开 v1.6.28 Hub；不兼容 runtime protocol 会拒绝接班，而不是冒险重放。
+3. 启动一个 v1.6.29 Hub，打开“联赛健康”，确认 SQLite、scheduler、CLI、T-1 数据均通过。
+4. 此后可以多开 v1.6.29 Hub；不兼容 runtime protocol 会拒绝接班，而不是冒险重放。
 
 不要让旧 Hub 与新 Hub 长期同时指向生产 vault。
 
 ## 回滚
 
 1. 在 UI 关闭自动赛程。
-2. 从托盘明确退出所有 v1.6.28 Hub。
+2. 从托盘明确退出所有 v1.6.29 Hub。
 3. 备份 `<league-root>/.runtime/`，不要直接删除。
 4. Markdown 账本仍然可读；回滚旧代码前确认没有 pending decision 或未完成开盘 effect。
 5. 若必须恢复旧版，只开一个旧 Hub，避免其无 fencing 的 open/close 与其他实例竞争。

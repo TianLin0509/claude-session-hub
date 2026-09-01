@@ -71,6 +71,44 @@ function readStateFromText(text, marker = STATE_MARKER) {
   catch { return null; }
 }
 
+function isCompletedDailyDecision(state) {
+  return !!state
+    && state.stage === 'complete'
+    && state.status === 'decision-queued'
+    && !!state.decision
+    && !!state.hook;
+}
+
+function summarizeDecisionHistory(rows = []) {
+  const history = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  const completed = history.filter(isCompletedDailyDecision);
+  const failed = history.filter((row) => row.status === 'failed');
+  const technicalForfeits = failed.filter((row) => row.failureKind === 'technical-forfeit');
+  const resolved = completed.length + failed.length;
+  const summarizeDay = (row) => row ? {
+    runId: String(row.runId || ''),
+    decisionDate: String(row.decisionDate || ''),
+    dataAsOf: String(row.dataAsOf || ''),
+    stage: String(row.stage || ''),
+    status: String(row.status || ''),
+    failureKind: String(row.failureKind || ''),
+    verdict: String(row.hook && row.hook.verdict || ''),
+    error: String(row.error || '').slice(0, 500),
+  } : null;
+  return {
+    maxWindowDays: 260,
+    attemptedDays: history.length,
+    resolvedDays: resolved,
+    completedDecisions: completed.length,
+    failedDays: failed.length,
+    technicalForfeits: technicalForfeits.length,
+    validRate: resolved ? completed.length / resolved : null,
+    latestAttempt: summarizeDay(history.length ? history[history.length - 1] : null),
+    latestCompleted: summarizeDay(completed.length ? completed[completed.length - 1] : null),
+    recentDays: history.slice(-8).reverse().map(summarizeDay),
+  };
+}
+
 function readMarkdownState(filePath, marker = STATE_MARKER) {
   try { return readStateFromText(fs.readFileSync(filePath, 'utf8'), marker); }
   catch { return null; }
@@ -663,6 +701,10 @@ class AgentLeagueStore {
     const memory = readMarkdownState(path.join(dir, 'MEMORY.md')) || { candidates: [], promoted: [] };
     const evolution = readMarkdownState(path.join(dir, 'EVOLUTION.md')) || { proposals: [] };
     const stats = computeStats(portfolio, trades.rows || []);
+    const dailyHistory = this.listDaily(id, { limit: 260 });
+    const latestDaily = dailyHistory.length ? dailyHistory[dailyHistory.length - 1] : null;
+    const completedDaily = dailyHistory.filter(isCompletedDailyDecision);
+    const latestCompletedDaily = completedDaily.length ? completedDaily[completedDaily.length - 1] : null;
     return {
       agent,
       session,
@@ -673,7 +715,9 @@ class AgentLeagueStore {
       memory,
       evolution,
       stats,
-      latestDaily: this.getLatestDaily(id),
+      latestDaily,
+      latestCompletedDaily,
+      decisionReliability: summarizeDecisionHistory(dailyHistory),
       latestWeekly: this.getLatestWeekly(id),
       folder: dir,
       files: {
@@ -873,6 +917,7 @@ class AgentLeagueStore {
       `- 使用数据：${state.dataAsOf || '—'}`,
       `- Run ID：${state.runId || '—'}`,
       `- 快照：${state.snapshotPath || '—'}`,
+      ...(state.failureKind ? [`- 失败分类：${state.failureKind}`] : []),
       ...(state.error ? [`- 错误：${state.error}`] : []), '',
       ...(state.draft ? [
         '## DRAFT · 盘前预案', '',
@@ -983,7 +1028,8 @@ class AgentLeagueStore {
       agentId,
       decisionDate: date,
       stage: String(payload.stage || previous.stage || 'draft'),
-      status: 'failed',
+      status: payload.failureKind === 'retrying' ? 'retrying' : 'failed',
+      failureKind: String(payload.failureKind || 'runtime-failure'),
       failedAt: nowIso(this.now),
       error: String(payload.error || 'unknown error').slice(0, 2000),
     };
@@ -1024,8 +1070,12 @@ class AgentLeagueStore {
     atomicWriteText(row.files.portfolio, this._renderPortfolio(portfolio));
     const dailyPath = this._dailyPath(agentId, decisionDate);
     const previous = readMarkdownState(dailyPath) || {};
+    const recovered = { ...previous };
+    delete recovered.failureKind;
+    delete recovered.failedAt;
+    delete recovered.error;
     const dailyState = {
-      ...previous,
+      ...recovered,
       schemaVersion: 2,
       runId: runId || String(previous.runId || ''),
       agentId,
@@ -1305,10 +1355,12 @@ class AgentLeagueStore {
 module.exports = {
   AGENT_ID_RE,
   AgentLeagueStore,
+  isCompletedDailyDecision,
   PROMPT_EDIT_LIMIT,
   PROMPT_FILE_DEFINITIONS,
   PromptFileConflictError,
   RUN_LEASE_TTL_MS,
+  summarizeDecisionHistory,
   STATE_MARKER,
   atomicWriteText,
   composeManagedMarkdown,

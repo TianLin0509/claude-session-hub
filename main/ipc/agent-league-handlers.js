@@ -596,6 +596,7 @@ function publicDailyState(value) {
     dataAsOf: value.dataAsOf || '',
     stage: value.stage || '',
     status: value.status || '',
+    failureKind: value.failureKind || '',
     error: value.error || '',
     draft: value.draft || null,
     hook: value.hook || null,
@@ -673,6 +674,11 @@ function publicAgent(row, sessionManager, options = {}) {
     recentProposals: (row.evolution.proposals || []).slice(-5).reverse(),
     checklist: row.checklist || { rules: [] },
     latestDaily: publicDailyState(row.latestDaily),
+    latestCompletedDaily: publicDailyState(row.latestCompletedDaily),
+    decisionReliability: row.decisionReliability || {
+      maxWindowDays: 260, attemptedDays: 0, resolvedDays: 0, completedDecisions: 0, failedDays: 0,
+      technicalForfeits: 0, validRate: null, latestAttempt: null, latestCompleted: null, recentDays: [],
+    },
     latestWeekly: publicWeeklyState(row.latestWeekly),
   };
 }
@@ -1135,6 +1141,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     const runtimeAttempt = currentRun.runtimeAttempts && currentRun.runtimeAttempts.get(agentId);
     currentRun.active.delete(agentId);
     let retryScheduled = false;
+    let technicalForfeit = false;
     let staleOwner = error && error.code === 'stale-leader-lease';
     if (runtimeStore && runtimeAttempt && !drainingForHandoff && !staleOwner) {
       try {
@@ -1147,6 +1154,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
           currentDurableLease(),
           { terminal },
         );
+        technicalForfeit = terminal;
         retryScheduled = !terminal;
       } catch (runtimeError) {
         staleOwner = runtimeError && ['stale-leader-lease', 'stale-task-attempt'].includes(runtimeError.code);
@@ -1175,6 +1183,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
           decisionDate: currentRun.decisionDate,
           dataAsOf: currentRun.asOf,
           stage: pending && pending.stage || 'draft',
+          failureKind: retryScheduled ? 'retrying' : technicalForfeit ? 'technical-forfeit' : 'runtime-failure',
           error: message,
         });
       }
@@ -2073,6 +2082,17 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     if (!runtimeStore) return { available: false, error: runtimeInitError, ownerId: runtimeOwnerId, draining: drainingForHandoff, leader: null, activeRun: null };
     const leader = runtimeStore.currentLeader();
     const activeRun = runtimeStore.listRuns({ statuses: ['running'], limit: 1 })[0] || null;
+    const latestDecisionRun = runtimeStore.listRuns({ limit: 20 }).find((run) => run.phase === 'decision') || null;
+    const withTasks = (run) => run ? {
+      ...run,
+      tasks: runtimeStore.listTasks(run.runKey).map((task) => ({
+        agentId: task.agentId,
+        stage: task.stage,
+        status: task.status,
+        attemptNo: task.attemptNo,
+        lastError: task.lastError,
+      })),
+    } : null;
     return {
       available: true,
       error: '',
@@ -2080,16 +2100,137 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       ownerIsThisHub: !!leader && leader.active && leader.ownerId === runtimeOwnerId,
       draining: drainingForHandoff,
       leader,
-      activeRun: activeRun ? {
-        ...activeRun,
-        tasks: runtimeStore.listTasks(activeRun.runKey).map((task) => ({
-          agentId: task.agentId,
-          stage: task.stage,
-          status: task.status,
-          attemptNo: task.attemptNo,
-          lastError: task.lastError,
-        })),
-      } : null,
+      activeRun: withTasks(activeRun),
+      latestDecisionRun: withTasks(latestDecisionRun),
+    };
+  }
+
+  function buildLeagueDashboard(agents = [], schedule = {}, durable = {}) {
+    const rows = Array.isArray(agents) ? agents : [];
+    const decisionDate = String(schedule.lastDecisionDate || '');
+    const activeDecisionRun = durable && durable.activeRun
+      && durable.activeRun.phase === 'decision'
+      && (!decisionDate || durable.activeRun.decisionDate === decisionDate)
+      ? durable.activeRun : null;
+    const latestDecisionRun = durable && durable.latestDecisionRun
+      && durable.latestDecisionRun.decisionDate === decisionDate
+      ? durable.latestDecisionRun : null;
+    const cohortRun = activeDecisionRun || latestDecisionRun;
+    const taskByAgent = new Map((cohortRun && cohortRun.tasks || []).map((task) => [task.agentId, task]));
+    const participants = taskByAgent.size ? rows.filter((agent) => taskByAgent.has(agent.id)) : rows;
+    const outcomeFor = (agent) => {
+      const task = taskByAgent.get(agent.id) || null;
+      const daily = agent.latestDaily && agent.latestDaily.decisionDate === decisionDate ? agent.latestDaily : null;
+      if (task && task.status === 'technical-forfeit') return { code: 'technical-forfeit', stage: task.stage, error: task.lastError || daily && daily.error || '' };
+      if (task && ['running', 'pending'].includes(task.status)) return { code: task.status, stage: task.stage, error: task.lastError || '' };
+      if (daily && daily.stage === 'complete' && daily.status === 'decision-queued' && daily.decision && daily.hook) {
+        return { code: 'completed', stage: 'complete', verdict: daily.hook.verdict || '', error: '' };
+      }
+      if (daily && daily.status === 'retrying') return { code: 'retrying', stage: daily.stage || 'draft', error: daily.error || '' };
+      if (daily && daily.status === 'failed') {
+        return {
+          code: daily.failureKind === 'technical-forfeit' ? 'technical-forfeit' : 'failed',
+          stage: daily.stage || 'draft',
+          error: daily.error || '',
+        };
+      }
+      if (daily && ['running', 'hook-running'].includes(daily.status)) return { code: 'running', stage: daily.stage || 'draft', error: '' };
+      return { code: 'missing', stage: '', error: '' };
+    };
+    const outcomes = decisionDate ? participants.map((agent) => ({
+      agentId: agent.id,
+      name: agent.name,
+      decisionDate,
+      ...outcomeFor(agent),
+    })) : [];
+    const count = (code) => outcomes.filter((row) => row.code === code).length;
+    const expected = outcomes.length;
+    const completed = count('completed');
+    const technicalForfeits = count('technical-forfeit');
+    const failed = count('failed');
+    const missing = count('missing');
+    const running = count('running') + count('pending') + count('retrying');
+    const completedDecisions = rows.reduce((sum, row) => sum + Number(row.decisionReliability && row.decisionReliability.completedDecisions || 0), 0);
+    const failedDays = rows.reduce((sum, row) => sum + Number(row.decisionReliability && row.decisionReliability.failedDays || 0), 0);
+    const resolvedDays = completedDecisions + failedDays;
+    const attention = [];
+    if (decisionDate && ['partial', 'failed', 'interrupted'].includes(String(schedule.lastRunStatus || ''))) {
+      attention.push({
+        id: `run-${decisionDate}`,
+        severity: 'fail',
+        kind: 'run',
+        title: `${decisionDate} 盘前赛程未全员成功`,
+        detail: `${completed}/${expected} 个 Agent 形成有效 FINAL；赛程状态 ${schedule.lastRunStatus}`,
+        decisionDate,
+      });
+    }
+    for (const outcome of outcomes) {
+      if (!['technical-forfeit', 'failed', 'missing'].includes(outcome.code)) continue;
+      const title = outcome.code === 'technical-forfeit' ? '技术弃权'
+        : outcome.code === 'failed' ? '运行失败' : '缺少当日记录';
+      attention.push({
+        id: `${outcome.agentId}-${decisionDate}-${outcome.code}`,
+        severity: outcome.code === 'missing' ? 'warn' : 'fail',
+        kind: 'agent',
+        agentId: outcome.agentId,
+        title: `${outcome.name} · ${title}`,
+        detail: outcome.error || (outcome.stage ? `停在 ${outcome.stage}` : '没有形成 DRAFT / Hook / FINAL'),
+        decisionDate,
+      });
+    }
+    const executionSameDay = decisionDate && schedule.lastExecutionDate === decisionDate;
+    if (executionSameDay && schedule.lastExecutionStatus === 'completed' && completed < expected) {
+      attention.push({
+        id: `execution-coverage-${decisionDate}`,
+        severity: 'warn',
+        kind: 'execution',
+        title: '开盘阶段已结束，但并非全员都有有效 FINAL',
+        detail: `${completed}/${expected} 个 Agent 具备当日有效决策；技术失败不会再伪装成策略空仓`,
+        decisionDate,
+      });
+    }
+    const attentionIds = new Set(outcomes.filter((row) => row.code !== 'completed').map((row) => row.agentId));
+    const incompleteIds = new Set(rows.filter((agent) => {
+      const reliability = agent.decisionReliability || {};
+      return Number(reliability.failedDays || 0) > 0 || (Number(reliability.attemptedDays || 0) > 0 && Number(reliability.completedDecisions || 0) === 0);
+    }).map((agent) => agent.id));
+    for (const agentId of attentionIds) incompleteIds.add(agentId);
+    return {
+      severity: attention.some((row) => row.severity === 'fail') ? 'fail' : attention.length ? 'warn' : 'pass',
+      headline: !decisionDate ? '尚无盘前赛程'
+        : completed === expected && expected ? `${decisionDate} 全员形成有效 FINAL`
+          : `${decisionDate} 有效 FINAL ${completed}/${expected}`,
+      current: {
+        decisionDate,
+        runStatus: String(schedule.lastRunStatus || 'never'),
+        expectedAgents: expected,
+        completed,
+        technicalForfeits,
+        failed,
+        missing,
+        running,
+        coverageRate: expected ? completed / expected : null,
+        outcomes,
+        executionDate: String(schedule.lastExecutionDate || ''),
+        executionStatus: String(schedule.lastExecutionStatus || 'never'),
+        executionEligible: completed,
+        executionUnavailable: Math.max(0, expected - completed),
+      },
+      overall: {
+        completedDecisions,
+        failedDays,
+        resolvedDays,
+        validRate: resolvedDays ? completedDecisions / resolvedDays : null,
+      },
+      filterCounts: {
+        all: rows.length,
+        attention: attentionIds.size,
+        positions: rows.filter((agent) => Number(agent.stats && agent.stats.positionWeight || 0) > 0).length,
+        incomplete: incompleteIds.size,
+      },
+      attentionIds: [...attentionIds],
+      incompleteIds: [...incompleteIds],
+      attention,
     };
   }
 
@@ -2125,6 +2266,14 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     const rows = store.listAgents();
     if (!rows.length) add('agents', '参赛 Agent', 'fail', '尚未创建 Agent');
     else add('agents', '参赛 Agent', 'pass', `${rows.length} 个 Agent 已登记`);
+    const decisionDashboard = buildLeagueDashboard(rows.map((row) => publicRow(row)), schedule, durableRuntimeState());
+    if (!decisionDashboard.current.decisionDate) {
+      add('decision-truth', '决策完整性', 'pass', '尚无历史赛程；不影响下一次盘前运行');
+    } else if (decisionDashboard.current.completed < decisionDashboard.current.expectedAgents) {
+      add('decision-truth', '决策完整性', 'warn', decisionDashboard.headline, decisionDashboard.current);
+    } else {
+      add('decision-truth', '决策完整性', 'pass', decisionDashboard.headline, decisionDashboard.current);
+    }
     const commandByProvider = { 'codex-cli': 'codex', 'claude-cli': 'claude', 'gemini-cli': 'gemini', 'kimi-cli': 'kimi', 'deepseek-cli': 'codex' };
     const providers = [...new Set(rows.map((row) => row.agent.provider))];
     for (const provider of providers) {
@@ -2237,20 +2386,26 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     },
     calendar: { ...EXCHANGE_CALENDAR, closedDates: [...EXCHANGE_CALENDAR.closedDates] },
   }));
-  ipcMain.handle(channel('list'), (_event, input = {}) => ({
-    ok: true,
-    environment,
-    agents: listPublic(input.sort === 'asset' ? 'asset' : 'return'),
-    schedule: store.getSchedule(),
-    schedulerRuntime: {
+  ipcMain.handle(channel('list'), (_event, input = {}) => {
+    const agents = listPublic(input.sort === 'asset' ? 'asset' : 'return');
+    const schedule = store.getSchedule();
+    const durable = durableRuntimeState();
+    return {
+      ok: true,
+      environment,
+      agents,
+      schedule,
+      dashboard: buildLeagueDashboard(agents, schedule, durable),
+      schedulerRuntime: {
       started: !!schedulerTimer,
       safety: schedulerSafety,
       activePhaseLeases: [...activePhaseLeases.values()].map((row) => ({ phase: row.phase, runId: row.runId })),
-      durable: durableRuntimeState(),
-    },
-    run: runPublicState(),
-    root: store.root,
-  }));
+        durable,
+      },
+      run: runPublicState(),
+      root: store.root,
+    };
+  });
   ipcMain.handle(channel('health'), async (_event, input = {}) => {
     try { return { ok: true, report: await healthCheck(input) }; }
     catch (error) { return { ok: false, error: 'health-check-failed', message: error.message }; }

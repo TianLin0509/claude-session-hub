@@ -161,6 +161,64 @@ test('Codex 0.147 final_answer item emits turn-complete', async () => {
   }
 });
 
+test('Codex resume binding never replays a historical successful completion', async () => {
+  const tempRoot = path.join(os.tmpdir(), `hub-codex-historical-complete-${process.pid}-${Date.now()}`);
+  const sessionsRoot = path.join(tempRoot, 'sessions');
+  const cwd = path.join(tempRoot, 'workspace');
+  const hubSessionId = 'hub-historical-complete';
+  const codexSid = '019ff492-0e1b-7bf2-ab10-b58b4b7bd6b8';
+  const tap = new CodexTap({ sessionsRoot, pollIntervalMs: 30 });
+  const rollout = new FakeCodexRollout({ sessionsRoot, cwd, sid: codexSid });
+  const completed = [];
+
+  try {
+    fs.mkdirSync(cwd, { recursive: true });
+    await rollout.start();
+    const oldAt = new Date(Date.now() - 60_000);
+    await rollout.writeRaw({
+      timestamp: oldAt.toISOString(),
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'old-success',
+        last_agent_message: '旧 Hook 结果，绝不能冒充新 DRAFT',
+        duration_ms: 100,
+      },
+    });
+
+    tap.on('turn-complete', event => completed.push(event));
+    const bound = new Promise(resolve => tap.once('session-bound', resolve));
+    tap.registerSession(hubSessionId, { cwd, transcriptPath: rollout.rolloutPath });
+    await bound;
+    await new Promise(resolve => setTimeout(resolve, 520));
+    assert.equal(completed.length, 0, 'historical success in the hydrated suffix must not complete a new turn');
+
+    const liveAt = new Date();
+    await rollout.writeRaw({
+      timestamp: liveAt.toISOString(),
+      type: 'event_msg',
+      payload: { type: 'task_started', turn_id: 'live-success' },
+    });
+    await rollout.writeRaw({
+      timestamp: new Date(liveAt.getTime() + 100).toISOString(),
+      type: 'event_msg',
+      payload: {
+        type: 'task_complete',
+        turn_id: 'live-success',
+        last_agent_message: '新一轮真实完成',
+        duration_ms: 100,
+      },
+    });
+    await waitFor(() => completed.length === 1);
+    assert.equal(completed[0].text, '新一轮真实完成');
+    assert.equal(completed[0].turnId, 'live-success');
+  } finally {
+    tap.unregisterSession(hubSessionId);
+    await rollout.close();
+    await fs.promises.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('Codex task_complete.error emits one live turn-error and skips historical failures on bind', async () => {
   const tempRoot = path.join(os.tmpdir(), `hub-codex-turn-error-${process.pid}-${Date.now()}`);
   const sessionsRoot = path.join(tempRoot, 'sessions');

@@ -109,8 +109,22 @@ function seedLeague() {
       });
       store.recordWeeklyStart(id, { runId: 'fixture-weekly', saturdayDate: '2026-08-29', tradingDates: ['2026-08-27'] });
       store.recordWeeklyReview(id, { runId: 'fixture-weekly', saturdayDate: '2026-08-29', review });
+    } else if (index === 1) {
+      store.recordRunStart(id, { runId: 'fixture-technical-forfeit', decisionDate: '2026-08-27', dataAsOf: '2026-08-26' });
+      store.recordRunFailure(id, {
+        runId: 'fixture-technical-forfeit', decisionDate: '2026-08-27', dataAsOf: '2026-08-26',
+        stage: 'draft', failureKind: 'technical-forfeit', error: '历史 task_complete 被误识别；本轮没有形成有效 DRAFT',
+      });
     }
   }
+  store.saveSchedule({
+    ...store.getSchedule(),
+    lastDecisionDate: '2026-08-27',
+    lastRunId: 'fixture-partial-run',
+    lastRunStatus: 'partial',
+    lastExecutionDate: '2026-08-27',
+    lastExecutionStatus: 'completed',
+  });
 }
 
 function removeTempRoot() {
@@ -173,6 +187,30 @@ function removeTempRoot() {
     assert(ranking.visibleRows >= 6 && ranking.visibleRows <= 8, JSON.stringify(ranking));
     const leaderboardShot = await screenshot(client, '01-leaderboard.png');
 
+    const decisionTruth = await client.eval(`(() => ({
+      headline: document.querySelector('[data-role="command-headline"]').textContent,
+      coverage: document.querySelector('[data-role="metric-coverage"]').textContent,
+      failures: document.querySelector('[data-role="metric-failures"]').textContent,
+      lastValid: document.querySelector('.cxl-row [class="cxl-small cxl-wide"] small')?.textContent || ''
+    }))()`);
+    assert.equal(decisionTruth.coverage, '1/10');
+    assert.equal(decisionTruth.failures, '9');
+    assert.match(decisionTruth.headline, /有效 FINAL 1\/10/);
+    assert.match(decisionTruth.lastValid, /有效 2026-08-27/);
+    await client.eval(`document.querySelector('[data-action="toggle-operations"]').click()`);
+    await waitEval(client, `!document.querySelector('[data-role="operations"]').hidden && document.querySelectorAll('[data-role="attention-list"] article').length >= 10`, 'decision truth details');
+    const operationsShot = await screenshot(client, '01b-decision-truth-expanded.png');
+    await client.eval(`document.querySelector('[data-role="attention-list"] [data-agent="fixture-agent-02"]').click()`);
+    await waitEval(client, `!document.querySelector('[data-role="detail-overlay"]').hidden && document.querySelector('.cxl-truth-warning')`, 'technical failure detail');
+    assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('不代表 Agent 主动选择空仓')`), true);
+    const failureDetailShot = await screenshot(client, '01c-technical-failure-detail.png');
+    await client.eval(`document.querySelector('[data-action="close-detail"]').click()`);
+    await client.eval(`document.querySelector('[data-agent-filter="attention"]').click()`);
+    await waitEval(client, `document.querySelectorAll('.cxl-row').length === 9`, 'attention filter');
+    assert.match(await client.eval(`document.querySelector('[data-role="filter-summary"]').textContent`), /9 个/);
+    await client.eval(`document.querySelector('[data-agent-filter="all"]').click()`);
+    await waitEval(client, `document.querySelectorAll('.cxl-row').length === 10`, 'all filter');
+
     await client.eval(`document.querySelector('.cxl-row').click()`);
     await waitEval(client, '!document.querySelector("[data-role=detail-overlay]").hidden && document.querySelector(".cxl-drawer")', 'Agent detail drawer');
     assert.equal(await client.eval(`/打开卡片 Session|创建卡片 Session/.test(document.querySelector('.cxl-drawer').innerText)`), true);
@@ -181,6 +219,8 @@ function removeTempRoot() {
     assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('DAILY BRIEF')`), true);
     assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('周六沉淀')`), true);
     assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('个人 CHECKLIST')`), true);
+    assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('决策可靠性')`), true);
+    assert.equal(await client.eval(`document.querySelector('.cxl-drawer').innerText.includes('有效决策')`), true);
     const detailShot = await screenshot(client, '02-detail.png');
     await client.eval(`document.querySelector('[data-action="edit-prompts"]').click()`);
     await waitEval(client, `!document.querySelector('[data-role="prompt-overlay"]').hidden && document.querySelectorAll('[data-prompt-key]').length >= 19`, 'prompt workbench');
@@ -256,6 +296,22 @@ function removeTempRoot() {
     assert(mobilePrompt.height >= 620, JSON.stringify(mobilePrompt));
     assert.equal(mobilePrompt.editorVisible, true);
     await client.eval(`document.querySelector('[data-action="close-prompts"]').click(); document.querySelector('[data-action="close-detail"]').click()`);
+    const responsive = [];
+    for (const width of [768, 1024, 1440]) {
+      await client.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+      await _waitMs(160);
+      const sample = await client.eval(`({
+        width: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        commandWidth: Math.round(document.querySelector('[data-role="command-center"]').getBoundingClientRect().width),
+        filtersVisible: getComputedStyle(document.querySelector('.cxl-board-filters')).display !== 'none'
+      })`);
+      assert.equal(sample.width, width);
+      assert.equal(sample.scrollWidth, width, JSON.stringify(sample));
+      assert(sample.commandWidth > 320 && sample.commandWidth <= width, JSON.stringify(sample));
+      assert.equal(sample.filtersVisible, true);
+      responsive.push(sample);
+    }
     await client.send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false });
     await _waitMs(250);
 
@@ -293,7 +349,9 @@ function removeTempRoot() {
       sessionId,
       lightTheme,
       mobilePrompt,
-      screenshots: [leaderboardShot, detailShot, promptShot, lightShot, mobileShot, mobilePromptShot, sessionShot],
+      responsive,
+      decisionTruth,
+      screenshots: [leaderboardShot, operationsShot, failureDetailShot, detailShot, promptShot, lightShot, mobileShot, mobilePromptShot, sessionShot],
       output: OUTPUT,
     }, null, 2));
   } finally {

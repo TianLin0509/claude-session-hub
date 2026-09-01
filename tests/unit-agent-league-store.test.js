@@ -159,6 +159,34 @@ test('records DRAFT, Hook, FINAL and human-readable daily brief without daily st
   assert.match(fs.readFileSync(store._dailyPath('chuxin-baseline', '2026-08-27'), 'utf8'), /DAILY BRIEF/);
 }));
 
+test('decision reliability keeps the latest attempt separate from the latest valid FINAL', () => withStore((store) => {
+  store.createAgent({ id: 'truth-agent', name: '真相测试', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy });
+  const draft = decision();
+  const checkedHook = hook(draft);
+  store.recordRunStart('truth-agent', { runId: 'truth-valid', decisionDate: '2026-08-27', dataAsOf: '2026-08-26' });
+  store.recordDraft('truth-agent', { runId: 'truth-valid', decisionDate: '2026-08-27', dataAsOf: '2026-08-26', draft });
+  store.recordDecision('truth-agent', {
+    runId: 'truth-valid', decisionDate: '2026-08-27', dataAsOf: '2026-08-26',
+    decision: draft, hook: checkedHook, dailyBrief: checkedHook.daily_brief,
+  });
+  store.recordRunStart('truth-agent', { runId: 'truth-failed', decisionDate: '2026-08-28', dataAsOf: '2026-08-27' });
+  store.recordRunFailure('truth-agent', {
+    runId: 'truth-failed', decisionDate: '2026-08-28', dataAsOf: '2026-08-27',
+    stage: 'draft', failureKind: 'technical-forfeit', error: 'provider output missing attempt identity',
+  });
+
+  const row = store.getAgent('truth-agent');
+  assert.equal(row.latestDaily.decisionDate, '2026-08-28');
+  assert.equal(row.latestDaily.status, 'failed');
+  assert.equal(row.latestCompletedDaily.decisionDate, '2026-08-27');
+  assert.equal(row.latestCompletedDaily.hook.verdict, 'PASS');
+  assert.equal(row.decisionReliability.completedDecisions, 1);
+  assert.equal(row.decisionReliability.failedDays, 1);
+  assert.equal(row.decisionReliability.technicalForfeits, 1);
+  assert.equal(row.decisionReliability.validRate, 0.5);
+  assert.deepEqual(row.decisionReliability.recentDays.map((day) => day.decisionDate), ['2026-08-28', '2026-08-27']);
+}));
+
 test('replaying the same FINAL run repairs files without double-counting the decision', () => withStore((store) => {
   store.createAgent({ id: 'retry-agent', name: '重放测试', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy });
   const finalDecision = decision();
