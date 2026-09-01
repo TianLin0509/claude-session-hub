@@ -231,10 +231,16 @@ function isClaudeApiBackend(cv) {
 // CLAUDE_HUB_NO_FAST=1 一刀切，现在可以按会话选。
 function shouldUseClaudeFastSettings(cv, opts = {}) {
   if (opts && opts.fastMode === false) return false;
+  // autonomous 会话（Agent 联赛的自动赛程）没有人盯着终端：fast 一旦不落
+  // transcript jsonl，transcript-tap 就永远收不到 turn-complete，整轮只能等
+  // 30 分钟硬超时后判 failed。这里必须硬关，不给"默认开"留下沉默失败面。
   if (opts && opts.autonomous === true) return false;
   return process.env.CLAUDE_HUB_NO_FAST !== '1' && !isClaudeApiBackend(cv || getConfigValues());
 }
 
+// Claude CLI 的自动化档位。人类会话由用户逐条批准工具调用；autonomous 会话没有
+// 人在场，任何一次权限询问都会把 PTY 停在弹窗上直到超时，所以必须显式旁路。
+// 只接受白名单值，避免非法 IPC 字符串被拼进 PowerShell 命令行。
 const CLAUDE_PERMISSION_MODES = new Set(['bypassPermissions', 'acceptEdits', 'plan', 'default']);
 
 function claudePermissionModeArg(opts = {}) {
@@ -410,6 +416,9 @@ function ensureGroupChatSettings(hubDataDir) {
   return fp;
 }
 
+// enabled 早期只是 meetingId（群聊成员），现在 Agent 联赛的 autonomous 会话也
+// 复用同一份"全 plugin disabled"settings：自动跑批的 Agent 不该把 23 个 plugin
+// 的 skill 拉进上下文，更不该在赛程里被 /loop、/schedule 这类命令带偏。
 function buildGroupChatIsolationFlags(enabled) {
   if (!enabled) return '';
   const settingsPath = ensureGroupChatSettings(getHubDataDir());
@@ -1336,6 +1345,9 @@ class SessionManager extends EventEmitter {
         ? { mcpProfile: normalizeClaudeMcpProfile(opts.mcpProfile || 'lean') } : {}),
       // fast 只对 Claude 家族有意义；显式关掉才落盘，避免给老会话凭空加字段。
       ...(opts.fastMode === false ? { fastMode: false } : {}),
+      // autonomous = 由自动赛程驱动、没有人在终端前的会话。落盘是为了 relaunch /
+      // resume 能重建同一套旁路（权限、plugin 隔离、strict MCP、关 fast）；漏掉任何
+      // 一项，重启后的 Agent 都会在下一次自动 prompt 时静默卡住。
       ...(opts.autonomous === true ? { autonomous: true } : {}),
       // 记录经过 runtime 白名单归一化的 effort，让 resume / fork / relaunch
       // 沿用同一档位。不要直接存 opts.effort：否则非法 IPC 值虽然首次启动会
@@ -1530,6 +1542,10 @@ class SessionManager extends EventEmitter {
       // 群聊按成员选择 MCP 档位，同时把 research/通信 MCP 合并进同一个
       // --mcp-config 列表；它们是房间能力，不能被 Lean/Browser/Wireless 过滤掉。
       if (opts.meetingId || (opts.autonomous === true && opts.mcpConfigFile)) {
+        // autonomous 走与群聊同一条合并路径：注入的 research MCP 是"房间能力"必须
+        // 保留，同时靠档位 + --strict-mcp-config 把 ~/.claude.json 里的全局 server
+        // 挡在外面。少了 strict，只给 --mcp-config 等于和全局合并，Agent 会平白
+        // 拉起 superran 这类常驻子进程（单个恒定提交 2.66 GB）。
         const mcpPlan = buildClaudeMeetingMcpArgs({
           mcpConfigFile: opts.mcpConfigFile,
           mcpProfile: opts.mcpProfile,
@@ -1554,7 +1570,7 @@ class SessionManager extends EventEmitter {
           console.log(`[claude-mcp] ${kind} 档位=${mcpPlan.profile} 保留=${mcpPlan.keptServers.join(',') || '(无)'}`);
         }
       }
-      // 群聊成员：禁 skill + plugin（保留 auto-memory / CLAUDE.md / OAuth）
+      // 群聊成员与 autonomous Agent：禁 skill + plugin（保留 auto-memory / CLAUDE.md / OAuth）
       cmd += buildGroupChatIsolationFlags(opts.meetingId || opts.autonomous === true);
       // 默认开启 fast 模式（仅 Opus 4.6/4.7/4.8 生效，非 Opus 会被忽略）。
       // 通过 --settings 叠加用户既有 settings；用户仍可在 session 内 /fast 关闭。
@@ -2382,7 +2398,7 @@ class SessionManager extends EventEmitter {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         fastFlag = ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
-      // 单人和群聊都沿用自己的 MCP 档位；群聊额外恢复 research/通信 config。
+      // 单人和群聊都沿用自己的 MCP 档位；群聊与 autonomous 额外恢复 research config。
       const mcpPlan = (meetingId || (autonomous && s.claudeMcpConfigFile))
         ? buildClaudeMeetingMcpArgs({
           mcpConfigFile: s.claudeMcpConfigFile,

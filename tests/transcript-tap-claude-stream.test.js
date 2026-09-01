@@ -158,6 +158,33 @@ async function main() {
     await rmDir(dir);
   });
 
+  await test('notifyClaudeStop 首次绑定路径时 emit session-bound（带 ccSessionId）', async () => {
+    const tap = new TranscriptTap();
+    const sid = 'test-claude-' + Date.now() + '-bound';
+    const { dir } = await tmpJsonl();
+    const ccSessionId = '019dc05c-9e35-7b73-a1c5-3a4cc9ad9c11';
+    const jsonlPath = path.join(dir, `${ccSessionId}.jsonl`);
+    await fs.promises.writeFile(jsonlPath, '');
+
+    const bound = [];
+    tap.on('session-bound', (ev) => bound.push(ev));
+    tap.registerSession(sid, 'claude', { cwd: dir });
+    await tap.notifyClaudeStop(sid, jsonlPath);
+
+    assert.strictEqual(bound.length, 1, 'claude 也要 emit session-bound，否则调用方永远拿不到 ccSessionId');
+    assert.strictEqual(bound[0].hubSessionId, sid);
+    assert.strictEqual(bound[0].kind, 'claude');
+    assert.strictEqual(bound[0].ccSessionId, ccSessionId);
+    assert.strictEqual(bound[0].transcriptPath, jsonlPath);
+
+    // 同一路径重复 Stop 不应刷屏；只有换绑才再报一次。
+    await tap.notifyClaudeStop(sid, jsonlPath);
+    assert.strictEqual(bound.length, 1, 'same transcript path must not re-emit');
+
+    tap.unregisterSession(sid);
+    await rmDir(dir);
+  });
+
   console.log('All passed.');
 }
 

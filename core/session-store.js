@@ -92,6 +92,9 @@ function _buildSessionPayload(hubId, data) {
     // 只有显式关掉 fast 才落 false；老会话没有这个字段 → null → 走"默认开"。
     // 用 `=== false` 而不是 !!data.fastMode，否则每条老记录都会变成"关"。
     fastMode: data.fastMode === false ? false : null,
+    // Agent 联赛这类无人值守会话。Hub 重启后必须知道它仍是 autonomous，否则
+    // resume 出来的 Agent 会丢掉权限旁路与 strict MCP，下一次自动 Prompt 静默卡住。
+    autonomous: data.autonomous === true ? true : null,
     // Codex service_tier 档：'inherit' 等于没选，不落盘（null）。
     // inherit is an explicit choice. Dropping it would make a resumed Codex
     // session fall back to Hub's Standard default and silently change speed.

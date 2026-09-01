@@ -203,6 +203,62 @@ test('Claude league agents stay autonomous even when the research hook is unavai
   }
 });
 
+test('Claude agents launch autonomous with strict research MCP while Codex keeps its own bypass', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-claude-'));
+  const hubDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-hubdata-'));
+  try {
+    const harness = makeHarness(root, fakeMarketHttp(), {
+      getHookPort: () => 45231,
+      getHubDataDir: () => hubDataDir,
+      hookToken: 'test-token',
+    });
+    const claude = harness.ipc.handlers.get('agent-league:create')(null, {
+      id: 'chuxin-avatar', name: '初心化身', provider: 'claude-cli',
+      model: 'claude-opus-5[1m]', philosophyKey: 'chuxin-avatar-right-side',
+    });
+    assert.equal(claude.ok, true);
+    const claudeLaunch = harness.createdOptions[harness.createdOptions.length - 1];
+    assert.equal(claudeLaunch.kind, 'claude');
+    // 赛程由调度器驱动，终端前没有人：权限旁路 / 关 fast / plugin 隔离 / strict MCP
+    // 四件事由 session-manager 的 autonomous 语义一起承载，缺一项就会静默卡住。
+    assert.equal(claudeLaunch.opts.autonomous, true);
+    assert.equal(claudeLaunch.opts.mcpProfile, 'none');
+    assert.match(String(claudeLaunch.opts.mcpConfigFile), /agent-league-chuxin-avatar-research-mcp\.json$/);
+    const injected = JSON.parse(fs.readFileSync(claudeLaunch.opts.mcpConfigFile, 'utf8'));
+    assert.equal(injected.mcpServers['arena-research'].env.ARENA_CHUXIN_ENABLED, '1');
+
+    const codex = harness.ipc.handlers.get('agent-league:create')(null, {
+      id: 'trend-rider', name: '逐浪', provider: 'codex-cli',
+      model: 'gpt-5.6-sol', philosophyKey: 'trend-confirmation',
+    });
+    assert.equal(codex.ok, true);
+    const codexLaunch = harness.createdOptions[harness.createdOptions.length - 1];
+    assert.equal(codexLaunch.opts.codexBypassApprovals, true);
+    assert.equal(codexLaunch.opts.mcpProfile, 'lean');
+    assert.equal(codexLaunch.opts.autonomous, undefined);
+    harness.bridge.stopScheduler();
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(hubDataDir, { recursive: true, force: true });
+  }
+});
+
+test('losing the research hook port costs tools, never the unattended bypass', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-nohook-'));
+  try {
+    const harness = makeHarness(root, fakeMarketHttp()); // getHookPort() === 0
+    harness.ipc.handlers.get('agent-league:create')(null, {
+      id: 'chuxin-avatar', name: '初心化身', provider: 'claude-cli',
+      model: 'claude-opus-5[1m]', philosophyKey: 'chuxin-avatar-right-side',
+    });
+    const launch = harness.createdOptions[harness.createdOptions.length - 1];
+    assert.equal(launch.opts.mcpConfigFile, undefined);
+    // 没有 research MCP 只是少一套工具；退回“需要人工点确认”会让整轮等到硬超时。
+    assert.equal(launch.opts.autonomous, true);
+    harness.bridge.stopScheduler();
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('Agent League repairs an unbound persisted shell with a fresh CLI and never uses a picker', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-unbound-repair-'));
   try {
@@ -261,6 +317,76 @@ test('prompt workbench IPC exposes editable files, read-only compiled contracts,
     });
     assert.equal(blocked.ok, false);
     assert.match(blocked.message, /只能查看/);
+    harness.bridge.stopScheduler();
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an agent added mid-day can still be run alone without re-running the ones already decided', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-catchup-'));
+  try {
+    const harness = makeHarness(root, fakeMarketHttp());
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+
+    const first = await harness.ipc.handlers.get('agent-league:run-day')(null, { trigger: 'test', force: true, decisionDate: '2026-08-27' });
+    assert.equal(first.ok, true);
+    await waitFor(() => harness.sentPrompts.length === 1, 'draft prompt');
+    const sessionId = harness.sentPrompts[0].sessionId;
+    const draft = makeDecision();
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: sessionId,
+      text: `\`\`\`agent-league-draft\n${JSON.stringify({ run_id: first.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[0].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...draft })}\n\`\`\``,
+    });
+    await waitFor(() => harness.sentPrompts.length === 2, 'hook prompt');
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: sessionId,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({ run_id: first.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[1].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...makeHook(draft) })}\n\`\`\``,
+    });
+    await waitFor(() => harness.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus === 'completed', 'first completion');
+
+    // 联赛当天已跑完之后才加入的 Agent。以前赛程级 alreadyRun 会无条件短路，
+    // 它只能等第二天 —— 等于凭空少一个参赛者。
+    harness.store.createAgent({
+      id: 'chuxin-avatar', name: '初心化身', provider: 'claude-cli', kind: 'claude',
+      model: 'claude-opus-5[1m]', philosophy: getPhilosophy('chuxin-avatar-right-side'),
+    });
+    const promptsBefore = harness.sentPrompts.length;
+    const catchUp = await harness.ipc.handlers.get('agent-league:run-day')(null, {
+      trigger: 'test', decisionDate: '2026-08-27', agentIds: ['chuxin-avatar'],
+    });
+    assert.equal(catchUp.ok, true);
+    assert.equal(catchUp.alreadyRun, undefined, '当天还有没决策的 Agent 时不得短路');
+    const touched = [...(catchUp.run.active || []), ...(catchUp.run.queue || [])];
+    assert.deepEqual(touched, ['chuxin-avatar'], '只能动被点名的 Agent');
+    await waitFor(() => harness.sentPrompts.length === promptsBefore + 1, 'catch-up draft prompt');
+    const catchUpSessionId = harness.sentPrompts[promptsBefore].sessionId;
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: catchUpSessionId,
+      text: `\`\`\`agent-league-draft\n${JSON.stringify({ run_id: catchUp.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[promptsBefore].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...draft })}\n\`\`\``,
+    });
+    await waitFor(() => harness.sentPrompts.length === promptsBefore + 2, 'catch-up hook prompt');
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: catchUpSessionId,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({ run_id: catchUp.run.runId, attempt_id: attemptIdFromPrompt(harness.sentPrompts[promptsBefore + 1].prompt), decision_date: '2026-08-27', data_as_of: '2026-08-26', ...makeHook(draft) })}\n\`\`\``,
+    });
+    await waitFor(() => harness.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus === 'completed', 'catch-up completion');
+    // 已经决策过的那个不能被重跑，它的 FINAL 必须原样保留。
+    assert.equal(harness.store.getAgent('chuxin-baseline').latestDaily.hook.verdict, 'PASS');
+    assert.equal(harness.store.getAgent('chuxin-baseline').portfolio.pendingDecision.decisionDate, '2026-08-27');
+    harness.bridge.stopScheduler();
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a single-agent run refuses unknown ids instead of silently running everyone', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-badid-'));
+  try {
+    const harness = makeHarness(root, fakeMarketHttp());
+    harness.store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy: baseline });
+    const result = await harness.ipc.handlers.get('agent-league:run-day')(null, {
+      trigger: 'test', force: true, decisionDate: '2026-08-27', agentIds: ['does-not-exist'],
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'agent-missing');
+    assert.equal(harness.sentPrompts.length, 0, '不得退化成跑全部');
     harness.bridge.stopScheduler();
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

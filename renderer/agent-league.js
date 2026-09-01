@@ -899,6 +899,8 @@ function createAgentLeaguePanel(options = {}) {
     renderHealth();
   }
 
+  // 单个 Agent 的盘前决策。故意不传 decisionDate：让后端按同一套市场时钟决定
+  // 目标交易日。过了盘前截止会自动落到下一交易日，不能在开盘后补做今天的决策。
   async function runAgentDay(button, agentId) {
     const agent = state.agents.find((row) => row.id === agentId);
     if (!agent) return notify('Agent 不存在', true);
