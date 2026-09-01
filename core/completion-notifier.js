@@ -7,13 +7,6 @@ const path = require('path');
 const { formatBeijingDateTime } = require('./beijing-time.js');
 const { discoverCompletionArtifacts } = require('./completion-artifacts.js');
 const { buildSessionCompletionCard } = require('./feishu-card-builder.js');
-const { previewPdfPath } = require('./html-artifact-preview.js');
-const {
-  buildFeishuDrivePreviewArgs,
-  buildFeishuDriveUploadArgs,
-  parseDrivePreviewData,
-  parseDriveUploadData,
-} = require('./feishu-drive-artifacts.js');
 
 const PROVIDER = 'feishu-cli';
 const DEFAULT_NOTIFICATION_CONFIG = Object.freeze({
@@ -38,7 +31,6 @@ const TERMINAL_GROUP_STATUSES = new Set([
   'errored', 'error', 'failed',
   'interrupted', 'superseded',
 ]);
-let driveHtmlPreviewCapability = 'unknown';
 
 function clampInteger(value, fallback, min, max) {
   const parsed = Number.parseInt(value, 10);
@@ -217,9 +209,6 @@ function readLastDeliveryAudit(logPath, onError = null) {
       exitCode: Number.isFinite(Number(record.exitCode)) ? Number(record.exitCode) : null,
       providerCode: record.providerCode == null ? null : String(record.providerCode),
       deliveryMode: cleanInlineText(record.deliveryMode || '', 40) || null,
-      driveArtifactsUploaded: Math.max(0, Number(record.driveArtifactsUploaded) || 0),
-      drivePreviewState: cleanInlineText(record.drivePreviewState || '', 24) || null,
-      pdfFallbackSent: Math.max(0, Number(record.pdfFallbackSent) || 0),
       warningCount: Array.isArray(record.warningCodes) ? record.warningCodes.length : 0,
     };
   }
@@ -520,95 +509,6 @@ async function uploadFeishuPreviewImage(payload, options = {}) {
   return imageKey;
 }
 
-async function uploadHtmlArtifactToDrive(payload, artifact, options = {}) {
-  let uploadArgs;
-  try {
-    uploadArgs = buildFeishuDriveUploadArgs(artifact);
-  } catch {
-    throw new NotificationDeliveryError('drive_artifact_invalid');
-  }
-  const upload = await runFeishuCliCommand(
-    uploadArgs,
-    payload,
-    { ...options, cwd: path.dirname(artifact.path) },
-  );
-  const parsed = parseDriveUploadData(upload.data);
-  if (!parsed.fileToken || !parsed.url) {
-    throw new NotificationDeliveryError('invalid_drive_response', { transient: true });
-  }
-
-  let previewState = 'unchecked';
-  const warningCodes = [];
-  const accessible = parsed.permissionStatus !== 'failed' && parsed.permissionStatus !== 'skipped';
-  if (!accessible) warningCodes.push(`drive_permission_${parsed.permissionStatus}`);
-  try {
-    const preview = await runFeishuCliCommand(
-      buildFeishuDrivePreviewArgs(parsed.fileToken),
-      payload,
-      options,
-    );
-    previewState = parseDrivePreviewData(preview.data).state;
-    if (previewState === 'ready' || previewState === 'processing') {
-      driveHtmlPreviewCapability = 'supported';
-    }
-    if (previewState === 'unsupported' || previewState === 'failed') {
-      warningCodes.push(`drive_preview_${previewState}`);
-    }
-  } catch (error) {
-    if (error instanceof NotificationDeliveryError && error.providerCode === '1060006') {
-      previewState = 'unsupported';
-      driveHtmlPreviewCapability = 'unsupported';
-      warningCodes.push('drive_preview_unsupported');
-    } else {
-      previewState = 'unknown';
-      warningCodes.push(normalizeWarningCode('drive_preview', error));
-    }
-  }
-
-  return {
-    ok: true,
-    accessible,
-    previewUsable: previewState !== 'unsupported' && previewState !== 'failed',
-    artifactPath: artifact.path,
-    fileToken: parsed.fileToken,
-    url: parsed.url,
-    permissionStatus: parsed.permissionStatus,
-    previewState,
-    warningCodes: normalizeWarningCodes(warningCodes),
-  };
-}
-
-async function resolveDriveDelivery(payload, artifacts, options = {}) {
-  const htmlArtifact = artifacts.find(artifact => artifact && artifact.kind === 'html');
-  if (!htmlArtifact) return null;
-  if (driveHtmlPreviewCapability === 'unsupported') {
-    return {
-      ok: false,
-      artifactPath: htmlArtifact.path,
-      previewState: 'unsupported',
-      warningCodes: ['drive_preview_unsupported_cached'],
-    };
-  }
-  if (payload.driveDelivery && payload.driveDelivery.artifactPath === htmlArtifact.path) {
-    return payload.driveDelivery;
-  }
-  try {
-    payload.driveDelivery = await uploadHtmlArtifactToDrive(payload, htmlArtifact, options);
-  } catch (error) {
-    payload.driveDelivery = {
-      ok: false,
-      artifactPath: htmlArtifact.path,
-      errorCode: error instanceof NotificationDeliveryError ? error.code : 'unknown_error',
-      warningCodes: [normalizeWarningCode('drive_upload', error)],
-    };
-  }
-  return payload.driveDelivery;
-}
-
-function resetDriveHtmlPreviewCapabilityForTests() {
-  driveHtmlPreviewCapability = 'unknown';
-}
-
 async function sendFeishuCli(payload, options = {}) {
   if (!isUsableFeishuTarget(payload.target)) throw new NotificationDeliveryError('invalid_target');
   if (!payload.cardInput) {
@@ -616,52 +516,30 @@ async function sendFeishuCli(payload, options = {}) {
   }
 
   const warnings = normalizeWarningCodes(payload.warningCodes);
-  const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts.slice(0, 3) : [];
-  const imageTask = payload.previewPath
-    ? uploadFeishuPreviewImage(payload, options)
-      .then(imageKey => ({ imageKey, warningCodes: [] }))
-      .catch(error => ({ imageKey: null, warningCodes: [normalizeWarningCode('preview_upload', error)] }))
-    : Promise.resolve({ imageKey: null, warningCodes: [] });
-  const driveTask = resolveDriveDelivery(payload, artifacts, options);
-  const [imageDelivery, driveDelivery] = await Promise.all([imageTask, driveTask]);
-  warnings.push(...imageDelivery.warningCodes);
-  if (driveDelivery && Array.isArray(driveDelivery.warningCodes)) {
-    warnings.push(...driveDelivery.warningCodes);
+  let imageKey = null;
+  if (payload.previewPath) {
+    try {
+      imageKey = await uploadFeishuPreviewImage(payload, options);
+    } catch (error) {
+      warnings.push(normalizeWarningCode('preview_upload', error));
+    }
   }
-  const imageKey = imageDelivery.imageKey;
-  const driveUsable = !!(driveDelivery && driveDelivery.ok
-    && driveDelivery.accessible && driveDelivery.previewUsable);
-  const driveUrl = driveUsable
-    ? driveDelivery.url
-    : null;
-  const mainPayload = driveUrl
-    ? { ...payload, desp: `${payload.desp}\n\n**飞书内预览 HTML**：${driveUrl}` }
-    : payload;
 
   let mainResult;
   let deliveryMode = 'card2';
   try {
-    const card = buildSessionCompletionCard({ ...payload.cardInput, imageKey, driveUrl });
-    mainResult = await sendMessageCommand(buildFeishuInteractiveCliArgs(mainPayload, card), mainPayload, options);
+    const card = buildSessionCompletionCard({ ...payload.cardInput, imageKey });
+    mainResult = await sendMessageCommand(buildFeishuInteractiveCliArgs(payload, card), payload, options);
   } catch (error) {
     warnings.push(normalizeWarningCode('card2', error));
     deliveryMode = 'markdown_fallback';
-    mainResult = await sendMessageCommand(buildFeishuCliArgs(mainPayload), mainPayload, options);
+    mainResult = await sendMessageCommand(buildFeishuCliArgs(payload), payload, options);
   }
 
   let attachmentsSent = 0;
-  let pdfFallbackSent = 0;
-  const htmlArtifact = artifacts.find(artifact => artifact && artifact.kind === 'html');
-  const attachmentQueue = [];
-  if (!driveUsable && htmlArtifact && payload.pdfPath) {
-    attachmentQueue.push({ path: payload.pdfPath, name: path.basename(payload.pdfPath), kind: 'pdf_fallback' });
-  }
-  for (const artifact of artifacts) {
-    if (driveUsable && artifact.path === driveDelivery.artifactPath) continue;
-    attachmentQueue.push(artifact);
-  }
-  for (let index = 0; index < attachmentQueue.length; index += 1) {
-    const artifact = attachmentQueue[index];
+  const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts.slice(0, 3) : [];
+  for (let index = 0; index < artifacts.length; index += 1) {
+    const artifact = artifacts[index];
     try {
       await sendMessageCommand(
         buildFeishuFileCliArgs(payload, artifact, index),
@@ -669,7 +547,6 @@ async function sendFeishuCli(payload, options = {}) {
         { ...options, cwd: path.dirname(artifact.path) },
       );
       attachmentsSent += 1;
-      if (artifact.kind === 'pdf_fallback') pdfFallbackSent += 1;
     } catch (error) {
       warnings.push(normalizeWarningCode('artifact_send', error));
     }
@@ -680,9 +557,6 @@ async function sendFeishuCli(payload, options = {}) {
     deliveryMode,
     artifactCount: artifacts.length,
     attachmentsSent,
-    driveArtifactsUploaded: driveDelivery && driveDelivery.ok ? 1 : 0,
-    drivePreviewState: driveDelivery ? driveDelivery.previewState || null : null,
-    pdfFallbackSent,
     warningCodes: normalizeWarningCodes(warnings),
   };
 }
@@ -915,7 +789,7 @@ class CompletionNotifier {
   }
 
   async _prepareArtifacts(event, session, config) {
-    if (!config.includePreview) return { artifacts: [], previewPath: null, pdfPath: null, warningCodes: [] };
+    if (!config.includePreview) return { artifacts: [], previewPath: null, warningCodes: [] };
     const warningCodes = [];
     let artifacts = [];
     try {
@@ -925,7 +799,6 @@ class CompletionNotifier {
     }
 
     let previewPath = null;
-    let pdfPath = null;
     const htmlArtifact = artifacts.find(artifact => artifact.kind === 'html');
     const imageArtifact = artifacts.find(artifact => artifact.kind === 'image');
     if (htmlArtifact) {
@@ -938,17 +811,10 @@ class CompletionNotifier {
       } else {
         warningCodes.push('preview_renderer_unavailable');
       }
-      if (previewPath) {
-        const candidate = previewPdfPath(previewPath);
-        try {
-          const stat = await fs.promises.stat(candidate);
-          if (stat.isFile() && stat.size > 0) pdfPath = candidate;
-        } catch {}
-      }
     } else if (imageArtifact) {
       previewPath = imageArtifact.path;
     }
-    return { artifacts, previewPath, pdfPath, warningCodes: normalizeWarningCodes(warningCodes) };
+    return { artifacts, previewPath, warningCodes: normalizeWarningCodes(warningCodes) };
   }
 
   async handleTurnComplete(event = {}, session = null) {
@@ -1014,7 +880,6 @@ class CompletionNotifier {
       },
       artifacts: artifactDelivery.artifacts,
       previewPath: artifactDelivery.previewPath,
-      pdfPath: artifactDelivery.pdfPath,
       warningCodes: artifactDelivery.warningCodes,
     });
   }
@@ -1138,9 +1003,6 @@ class CompletionNotifier {
       const deliveryMode = cleanInlineText(result.deliveryMode || (payload.cardInput ? 'card2' : 'markdown'), 40);
       const artifactCount = Math.max(0, Number(result.artifactCount) || 0);
       const attachmentsSent = Math.max(0, Number(result.attachmentsSent) || 0);
-      const driveArtifactsUploaded = Math.max(0, Number(result.driveArtifactsUploaded) || 0);
-      const drivePreviewState = cleanInlineText(result.drivePreviewState || '', 24) || null;
-      const pdfFallbackSent = Math.max(0, Number(result.pdfFallbackSent) || 0);
       if (warningCodes.length) {
         try { this.logger.warn('[completion-notifier] delivery completed with partial warnings:', warningCodes.join(',')); } catch {}
       }
@@ -1155,9 +1017,6 @@ class CompletionNotifier {
         deliveryMode,
         artifactCount,
         attachmentsSent,
-        driveArtifactsUploaded,
-        drivePreviewState,
-        pdfFallbackSent,
         ...(warningCodes.length ? { warningCodes } : {}),
       });
       this.deliveredEvents.set(payload.eventId, this.now());
@@ -1169,9 +1028,6 @@ class CompletionNotifier {
         exitCode: result.exitCode,
         providerCode: result.providerCode,
         deliveryMode,
-        driveArtifactsUploaded,
-        drivePreviewState,
-        pdfFallbackSent,
         warningCount: warningCodes.length,
       };
       return {
@@ -1182,9 +1038,6 @@ class CompletionNotifier {
         deliveryMode,
         artifactCount,
         attachmentsSent,
-        driveArtifactsUploaded,
-        drivePreviewState,
-        pdfFallbackSent,
         warningCodes,
       };
     } catch (error) {
@@ -1282,7 +1135,6 @@ module.exports = {
   parseCliJson,
   readDeliveredEventIds,
   readLastDeliveryAudit,
-  resetDriveHtmlPreviewCapabilityForTests,
   resolveDefaultFeishuCliPath,
   runFeishuCliCommand,
   sendFeishuCli,

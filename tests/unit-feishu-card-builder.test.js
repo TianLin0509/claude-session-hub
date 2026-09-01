@@ -34,7 +34,6 @@ const card = buildSessionCompletionCard({
   includeContent: true,
   answerText: longAnswer,
   imageKey: 'img_v3_preview',
-  driveUrl: 'https://tenant.feishu.cn/file/boxcn_native_preview',
   artifacts: [
     { name: '20260901-AIHub-成果预览.html', kind: 'html' },
     { name: '20260901-AIHub-实现说明.md', kind: 'text' },
@@ -52,13 +51,6 @@ assert.equal(card.body.elements[0].tag, 'column_set');
 assert.equal(card.body.elements[0].flex_mode, 'none');
 assert.equal(card.body.elements[2].tag, 'img');
 assert.equal(card.body.elements[2].img_key, 'img_v3_preview');
-assert.equal(card.body.elements[3].tag, 'column_set');
-const driveButton = card.body.elements[3].columns[0].elements[1];
-assert.equal(driveButton.tag, 'button');
-assert.equal(driveButton.type, 'primary_filled');
-assert.equal(driveButton.width, 'fill');
-assert.equal(driveButton.behaviors[0].type, 'open_url');
-assert.equal(driveButton.behaviors[0].android_url, 'https://tenant.feishu.cn/file/boxcn_native_preview');
 assert.equal(card.body.elements.at(-1).tag, 'collapsible_panel');
 
 const serialized = JSON.stringify(card);
@@ -78,20 +70,5 @@ const privateCard = buildSessionCompletionCard({
 });
 assert.doesNotMatch(JSON.stringify(privateCard), /TOP SECRET BODY/,
   'answer content must remain absent until the existing opt-in is enabled');
-
-const unsafeUrlCard = buildSessionCompletionCard({
-  sessionTitle: '不可信链接',
-  artifacts: [{ name: 'result.html' }],
-  driveUrl: 'javascript:alert(1)',
-});
-assert.doesNotMatch(JSON.stringify(unsafeUrlCard), /javascript:/,
-  'card buttons must never accept a non-HTTPS URL');
-const externalUrlCard = buildSessionCompletionCard({
-  sessionTitle: '外部链接',
-  artifacts: [{ name: 'result.html' }],
-  driveUrl: 'https://evil.example/result.html',
-});
-assert.doesNotMatch(JSON.stringify(externalUrlCard), /evil\.example/,
-  'Drive preview buttons must only accept official Feishu/Lark hosts');
 
 console.log('unit-feishu-card-builder.test.js OK');

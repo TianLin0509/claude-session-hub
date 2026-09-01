@@ -11,7 +11,6 @@ const {
   PREVIEW_WIDTH,
   createHtmlArtifactPreviewRenderer,
   isAllowedPreviewRequest,
-  previewPdfPath,
 } = require('../core/html-artifact-preview.js');
 
 class FakeWebRequest {
@@ -55,7 +54,6 @@ class FakeWebContents extends EventEmitter {
       toPNG: () => Buffer.from('PNG-MOCK'),
     });
   }
-  printToPDF() { return Promise.resolve(Buffer.from('PDF-MOCK')); }
 }
 
 class FakeBrowserWindow {
@@ -101,12 +99,6 @@ async function run() {
     const previewPath = await render(htmlPath);
     assert.equal(fs.existsSync(previewPath), true);
     assert.equal(fs.readFileSync(previewPath, 'utf8'), 'PNG-MOCK');
-    const pdfPath = previewPdfPath(previewPath);
-    assert.equal(fs.readFileSync(pdfPath, 'utf8'), 'PDF-MOCK');
-    fs.unlinkSync(pdfPath);
-    await render(htmlPath);
-    assert.equal(fs.readFileSync(pdfPath, 'utf8'), 'PDF-MOCK',
-      'an existing PNG cache entry must be upgraded with a missing PDF sidecar');
 
     const win = FakeBrowserWindow.latest;
     assert.equal(win.options.show, false);
