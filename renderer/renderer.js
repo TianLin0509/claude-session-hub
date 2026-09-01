@@ -958,6 +958,7 @@ async function selectMeeting(meetingId, opts = {}) {
   if (terminalPanelEl) terminalPanelEl.style.display = 'none';
   if (terminalPanelEl) terminalPanelEl.classList.remove('home-active');
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
+  if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
   setShellNavActive(null);
   if (emptyStateEl) emptyStateEl.style.display = 'none';
   clearPreviewUI();
@@ -3774,6 +3775,7 @@ async function selectSession(id, opts = {}) {
     MeetingRoom.closeMeetingPanel();
   }
   if (window.__chuxinHide) window.__chuxinHide(); // 2026-07-23 投研面板互斥
+  if (window.__studyHide) window.__studyHide(); // 2026-09-01 学习面板互斥
   setShellNavActive(null);
   const mrp = document.getElementById('meeting-room-panel');
   if (mrp) mrp.style.display = 'none';
@@ -5957,6 +5959,7 @@ const shellController = createShellController({
 });
 function escapeToHome() {
   if (window.__chuxinHide) window.__chuxinHide();
+  if (window.__studyHide) window.__studyHide();
   shellController.escapeToHome();
   setShellNavActive('home');
   if (completionNotificationToggle) completionNotificationToggle.refreshTarget();

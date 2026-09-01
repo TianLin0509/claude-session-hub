@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="committee-ui.css">
   <link rel="stylesheet" href="workflow-config-modal.css">
   <link rel="stylesheet" href="chuxin.css">
+  <link rel="stylesheet" href="study.css">
   <link rel="stylesheet" href="agent-league.css">
   <link rel="stylesheet" href="styles/home-workbench.css">
   <link rel="stylesheet" href="launch-center.css">
@@ -116,6 +117,7 @@
         </div>
         <button type="button" class="btn-shell-nav active" id="btn-home" title="主页 · HUB 工作台" aria-current="page"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v10h13V10"/><path d="M9.5 20v-6h5v6"/></svg><span class="btn-label">主页</span></button>
         <button type="button" class="btn-shell-nav" id="btn-research" data-chuxin-entry title="初心投研"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5m0 14h16"/><path d="m7 15 4-4 3 2 5-6"/></svg><span class="btn-label">投研</span></button>
+        <button type="button" class="btn-shell-nav" id="btn-study" data-study-entry title="学习 · Claude 与 Codex 陪伴"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.5A2 2 0 0 1 5 4h5v15H5a2 2 0 0 0-2 2z"/><path d="M21 5.5A2 2 0 0 0 19 4h-5v15h5a2 2 0 0 1 2 2z"/></svg><span class="btn-label">学习</span></button>
         <div class="options-wrapper">
           <button class="btn-options" id="btn-options" title="选项"><svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 10v6m11-11h-6m-10 0H1m17.66-7.66l-4.24 4.24m-7.07 7.07L4.34 19.66m13.32 0l-4.24-4.24m-7.07-7.07L4.34 4.34"/></svg></button>
           <div class="options-menu" id="options-menu" style="display:none">
@@ -355,6 +357,8 @@
     <!-- 2026-07-23 Kimi 移植：初心投研面板（第三主区视图，与 terminal/mr 平级互斥）。
          骨架由 renderer/chuxin.js 自构建，数据来自本机 chuxin-research API。 -->
     <div class="chuxin-panel" id="chuxin-panel" style="display:none"></div>
+    <!-- 学习面板：Hub 第四主区视图。骨架由 renderer/study.js 自构建。 -->
+    <div id="study-panel"></div>
     <!-- 2026-05-05 道雪：preview-splitter + preview-panel 从 terminal-panel 之后挪到
            meeting-room-panel 之后。flex 排版下，普通 session 时 mr-panel 隐藏 →
            排成 [terminal | preview]，群聊时 terminal 隐藏 → 排成 [meeting-room | preview]，
@@ -562,6 +566,7 @@
   <script src="committee-ui.js"></script>
   <script src="workflow-config-modal.js"></script>
   <script src="chuxin.js"></script>
+  <script src="study.js"></script>
 
   <div id="config-modal" class="config-modal-overlay hidden">
     <div class="config-modal-content">
