@@ -38,7 +38,7 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
           <span class="mp-title">记忆系统</span>
           <div class="mp-tabs">
             <button class="mp-tab" data-tab="overview">总览</button>
-            <button class="mp-tab" data-tab="dream">梦境记录</button>
+            <button class="mp-tab" data-tab="dream">整理记录</button>
             <button class="mp-tab" data-tab="session">当前会话</button>
             <button class="mp-tab" data-tab="settings">设置</button>
           </div>
@@ -178,16 +178,16 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
     if (!o) { list.innerHTML = '<div class="mp-empty">巡检失败</div>'; return; }
 
     const sections = [];
-    sections.push(`<div class="mp-section"><div class="mp-sec-title">用户级规则（三件套 · 全 CLI 共享）</div>${
+    sections.push(`<div class="mp-section"><div class="mp-sec-title">用户级规则（四家 CLI 各自读取，不互相冒充）</div>${
       o.userGlobalFiles.map(f => fileRow({
         label: f.label, path: f.path, exists: f.exists, size: f.size, mtime: f.mtime,
         badge: f.hasDreamSection ? '梦境区' : '', badgeCls: 'dream',
       })).join('')}</div>`);
 
-    // 平铺模式下工作根就是会话 cwd，这三份规则被 CLI 直接读取；改完对所有会话
-    // 立即生效，不再需要「播种到未来的临时工作区」那套。
+    // 平铺模式下工作根就是新会话 cwd；CLI 在启动时读取规则链，已打开的会话
+    // 不会实时重建启动 prompt，不能再写「改完立即生效」。
     const workspaceSecTitle = o.flatRoot
-      ? `工作根规则（${escapeHtml(o.workspaceRoot || '')} · 所有新会话共享，改完立即生效）`
+      ? `工作根规则（${escapeHtml(o.workspaceRoot || '')} · 新启动会话共享；已打开会话需重开）`
       : '工作区规则（seed 源 · 改动自动播种到未来临时工作区）';
     sections.push(`<div class="mp-section"><div class="mp-sec-title">${workspaceSecTitle}</div>${
       o.workspaceFiles.map(f => fileRow({
@@ -210,6 +210,22 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
     sections.push(`<div class="mp-section">
       <div class="mp-sec-title">Claude memory 规范库 ${memBadge}</div>
       ${dirRow({ label: `规范库（${canonicalTotal} 个文件）`, path: cm.canonical.path, children: canonicalChildren })}
+    </div>`);
+
+    const codexMemory = o.codexMemory || {};
+    const codexBadge = codexMemory.useMemories
+      ? '<span class="mp-badge ok">已启用</span>'
+      : '<span class="mp-badge dim">未启用</span>';
+    const codexChildren = (codexMemory.files || []).map(f =>
+      fileRow({ label: f.name, path: f.path, exists: true, size: f.size, mtime: f.mtime })).join('');
+    sections.push(`<div class="mp-section">
+      <div class="mp-sec-title">Codex local memories（独立于 Claude）${codexBadge}</div>
+      ${dirRow({
+        label: `~/.codex/memories（主文件 ${codexMemory.totalFiles || 0} · rollout summaries ${codexMemory.rolloutSummaryCount || 0}）`,
+        path: codexMemory.path,
+        children: codexChildren || '<div class="mp-more">当前没有可展示的 Markdown memory 文件。</div>',
+      })}
+      <div class="mp-kv">Codex memory 在会话空闲后后台生成，不保证回答结束立刻写入；必达规则仍应放 AGENTS.md。</div>
     </div>`);
 
     const islands = cm.buckets.filter(b => b.status === 'island');
@@ -245,10 +261,12 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
 
     const c = o.consolidation;
     const lastRun = c.state && c.state.summary;
-    sections.push(`<div class="mp-section"><div class="mp-sec-title">梦境系统</div>
+    const coverage = c.coverage || {};
+    sections.push(`<div class="mp-section"><div class="mp-sec-title">Seed / memory 孤岛整理器</div>
       <div class="mp-kv">状态：${c.config.enabled ? '启用' : '停用'} · ${escapeHtml(c.config.provider)} / ${escapeHtml(c.config.model || '默认')} · 每天 ${escapeHtml(c.config.schedule)} · autoApply=${c.config.autoApply ? '开' : '关'}</div>
       <div class="mp-kv">上次运行：${c.state.lastRunAt ? escapeHtml(fmtTime(Date.parse(c.state.lastRunAt))) : '从未'}${lastRun ? ` · 候选 ${lastRun.candidates} · 落盘 ${lastRun.applied || 0} · staging ${lastRun.staged || 0}（${escapeHtml(lastRun.note || '')}）` : ''}</div>
       <div class="mp-kv">changelog 共 ${c.changelogCount} 条${c.staging && c.staging.exists ? ` · staging 待升级 ${fmtSize(c.staging.size)}` : ''}</div>
+      <div class="mp-kv">覆盖边界：${escapeHtml(coverage.label || 'seed / memory 孤岛')}；<b>不采集普通 Session transcript、工具结果、commit 或用户纠正</b>。</div>
     </div>`);
 
     list.innerHTML = sections.join('');
@@ -302,7 +320,8 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
     const list = overlay.querySelector('#mp-list');
     list.innerHTML = `
       <div class="mp-section">
-        <div class="mp-sec-title">梦境行为记录（可回溯）<button class="mp-btn mp-run-now" id="mp-run-now">立即跑一轮</button></div>
+        <div class="mp-sec-title">Seed / memory 孤岛整理记录（可回溯）<button class="mp-btn mp-run-now" id="mp-run-now">立即整理一轮</button></div>
+        <div class="mp-kv">这里只整理被修改的 seed AGENTS.md 与 Claude memory 孤岛；普通 Session 尚未进入自动蒸馏。</div>
         <div id="mp-run-result"></div>
         <div id="mp-log-list"><div class="mp-empty">读取中…</div></div>
       </div>`;
@@ -322,7 +341,7 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
         }
       } finally {
         btn.disabled = false;
-        btn.textContent = '立即跑一轮';
+        btn.textContent = '立即整理一轮';
         const entries = await ipcRenderer.invoke('memory:get-changelog', 200);
         overlay.querySelector('#mp-log-list').innerHTML = entries.map(describeEntry).join('') || '<div class="mp-empty">暂无记录</div>';
       }
@@ -342,7 +361,14 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
       return;
     }
     list.innerHTML = '<div class="mp-empty">巡检中…</div>';
-    const data = await ipcRenderer.invoke('memory:get-session-files', { cwd: info.cwd, kind: info.kind });
+    const data = await ipcRenderer.invoke('memory:get-session-files', {
+      cwd: info.cwd,
+      kind: info.kind,
+      runtimeKind: info.runtimeKind,
+      codexSessionsRoot: info.codexSessionsRoot,
+      codexProfile: info.codexProfile,
+      meetingId: info.meetingId,
+    });
     if (activeTab !== 'session') return; // await 期间用户切页签，不写旧内容
     const seedBadge = (s) => {
       if (s === 'synced') return '<span class="mp-badge ok">与源同步</span>';
@@ -350,24 +376,31 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
       if (s === 'own') return '<span class="mp-badge">项目自有</span>';
       return '<span class="mp-badge dim">无文件</span>';
     };
-    const memLabel = { linked: '已链接规范库', island: '孤岛（未共享）', 'empty-dir': '空目录', missing: '未创建' };
-    const memCls = { linked: 'ok', island: 'warn', 'empty-dir': 'dim', missing: 'dim' };
+    const memLabel = {
+      linked: '已链接规范库', island: '孤岛（未共享）', 'empty-dir': '空目录', missing: '未创建',
+      enabled: '已启用', present: '目录存在但未启用', disabled: '未启用',
+    };
+    const memCls = {
+      linked: 'ok', island: 'warn', 'empty-dir': 'dim', missing: 'dim',
+      enabled: 'ok', present: 'warn', disabled: 'dim',
+    };
+    const seedFile = data.files.find(f => f.seedStatus);
     list.innerHTML = `
       <div class="mp-section"><div class="mp-sec-title">${escapeHtml(info.title || info.kind || '当前会话')}</div>
-        <div class="mp-kv" title="${escapeHtml(data.cwd)}">cwd：${escapeHtml(data.cwd)}</div></div>
-      <div class="mp-section"><div class="mp-sec-title">规则文件链</div>
+        <div class="mp-kv" title="${escapeHtml(data.cwd)}">cwd：${escapeHtml(data.cwd)} · runtime：${escapeHtml(data.runtimeKind || data.kind || '')}</div></div>
+      <div class="mp-section"><div class="mp-sec-title">实际规则文件链</div>
+        <div class="mp-kv">${escapeHtml(data.ruleNote || '')}</div>
         ${data.files.map(f => fileRow({
           label: f.label, path: f.path, exists: f.exists, size: f.size, mtime: f.mtime,
           badge: f.seedStatus ? undefined : (f.hasDreamSection ? '梦境区' : ''),
           badgeCls: 'dream',
-        })).join('')}
-        <div class="mp-kv">本目录 AGENTS.md 状态：${seedBadge(data.files.find(f => f.seedStatus) ? data.files.find(f => f.seedStatus).seedStatus : 'missing')}</div>
+        })).join('') || '<div class="mp-more">该 provider 没有可核验的规则文件。</div>'}
+        ${seedFile ? `<div class="mp-kv">本目录 AGENTS.md 状态：${seedBadge(seedFile.seedStatus)}</div>` : ''}
       </div>
-      ${data.claudeChain && data.claudeChain.length ? `<div class="mp-section"><div class="mp-sec-title">Claude 向上链（实际会被读到）</div>
-        ${data.claudeChain.map(f => fileRow({ label: 'CLAUDE.md', path: f.path, exists: true, size: f.size, mtime: f.mtime })).join('')}</div>` : ''}
-      <div class="mp-section"><div class="mp-sec-title">memory 桶</div>
+      <div class="mp-section"><div class="mp-sec-title">Provider memory</div>
         <div class="mp-kv">${escapeHtml(data.memoryNote || '')}</div>
-        ${data.memory.map(m => `<div class="mp-kv">[${escapeHtml(m.root)}] <span class="mp-badge ${memCls[m.status] || ''}">${memLabel[m.status] || m.status}</span> <span class="mp-file-path" title="${escapeHtml(m.path)}">${escapeHtml(m.path)}</span></div>`).join('')}
+        ${data.memory.map(m => `<div class="mp-kv">${escapeHtml(m.label || m.root || '')} <span class="mp-badge ${memCls[m.status] || ''}">${memLabel[m.status] || m.status}</span> <span class="mp-file-path" title="${escapeHtml(m.path)}">${escapeHtml(m.path)}</span>${typeof m.totalFiles === 'number' ? ` · 主文件 ${m.totalFiles}` : ''}${typeof m.rolloutSummaryCount === 'number' ? ` · summaries ${m.rolloutSummaryCount}` : ''}</div>`).join('') || '<div class="mp-more">无 Hub 可核验的 provider memory store。</div>'}
+        ${(data.memoryFiles || []).map(f => fileRow({ label: f.label, path: f.path, exists: f.exists, size: f.size, mtime: f.mtime })).join('')}
       </div>`;
     bindFileRows();
   }
@@ -387,15 +420,15 @@ function createMemoryPanel({ document, ipcRenderer, escapeHtml, getActiveSession
     ].map(([v, label]) => `<option value="${v}"${cfg.provider === v ? ' selected' : ''}>${label}</option>`).join('');
     list.innerHTML = `
       <div class="mp-section">
-        <div class="mp-sec-title">梦境系统设置（写入 config.json 的 consolidation 段）</div>
-        <label class="mp-field"><input type="checkbox" id="mp-cfg-enabled"${cfg.enabled ? ' checked' : ''}> 启用每日自动沉淀</label>
+        <div class="mp-sec-title">Seed / memory 孤岛整理设置（写入 config.json 的 consolidation 段）</div>
+        <label class="mp-field"><input type="checkbox" id="mp-cfg-enabled"${cfg.enabled ? ' checked' : ''}> 启用每日 seed / 孤岛整理</label>
         <label class="mp-field"><input type="checkbox" id="mp-cfg-autoapply"${cfg.autoApply ? ' checked' : ''}> 自动落盘（关则全部进 staging 待人工）</label>
         <label class="mp-field">每日运行时间 <input type="text" id="mp-cfg-schedule" value="${escapeHtml(cfg.schedule)}" placeholder="03:40" size="6"></label>
         <div class="mp-kv">Hub 本地时间到点触发；当时没开机则在下次启动后约 30 秒补跑。</div>
         <label class="mp-field">LLM 通道 <select id="mp-cfg-provider">${providerOptions}</select></label>
         <label class="mp-field">模型 <input type="text" id="mp-cfg-model" value="${escapeHtml(cfg.model || '')}" placeholder="deepseek-chat" size="24"></label>
         <label class="mp-field">每轮候选上限 <input type="number" id="mp-cfg-maxc" value="${cfg.maxCandidatesPerRun}" min="1" max="50" style="width:64px"></label>
-        <div class="mp-kv">候选 = 本轮发现的知识源（被改过的 seed 副本 + memory 孤岛桶），每个候选一次 LLM 调用。
+        <div class="mp-kv"><b>覆盖边界：不读取普通 Session transcript。</b>候选 = 本轮发现的知识源（被改过的 seed 副本 + Claude memory 孤岛桶），每个候选一次 LLM 调用。
           上限控制单轮 token 开销与噪声；超出的候选原样留到下一轮，不会丢。
           同一候选内容没变化时第二轮起自动跳过（增量去重），日常开销趋近于零。</div>
         <div class="mp-kv">DeepSeek API Key 沿用 Hub 已有配置（设置 → DeepSeek）；订阅通道走各 CLI 本机登录态。</div>

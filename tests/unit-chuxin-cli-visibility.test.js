@@ -20,6 +20,18 @@ function test(name, fn) {
   }
 }
 
+function resolveChuxinResearchRoot(repoRoot) {
+  const candidates = [
+    process.env.CHUXIN_RESEARCH_ROOT,
+    path.join(repoRoot, '..', 'chuxin-research'),
+    path.join(os.homedir(), 'chuxin-research'),
+  ].filter(Boolean).map(candidate => path.resolve(candidate));
+  const found = candidates.find(candidate => fs.existsSync(path.join(candidate, 'frontend', 'app.js')));
+  assert.ok(found,
+    `chuxin-research not found; set CHUXIN_RESEARCH_ROOT (checked: ${candidates.join(', ')})`);
+  return found;
+}
+
 console.log('Running Chuxin native PTY tests...');
 
 test('research model picker consumes the Hub catalog instead of a private list', () => {
@@ -149,7 +161,7 @@ test('Chuxin exposes one eight-item workbench nav including the native Agent Lea
   const root = path.join(__dirname, '..');
   const chuxin = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
   const styles = fs.readFileSync(path.join(root, 'renderer', 'chuxin.css'), 'utf8');
-  const frontendRoot = path.join(root, '..', 'chuxin-research', 'frontend');
+  const frontendRoot = path.join(resolveChuxinResearchRoot(root), 'frontend');
   const embeddedApp = fs.readFileSync(path.join(frontendRoot, 'app.js'), 'utf8');
   const embeddedStyles = fs.readFileSync(path.join(frontendRoot, 'styles.css'), 'utf8');
   const primaryBlock = chuxin.match(/const PRIMARY_TABS = \[([\s\S]*?)\n  \];/);
@@ -177,7 +189,7 @@ test('backend launcher polls readiness and exposes actionable startup errors', (
   const root = path.join(__dirname, '..');
   const handler = fs.readFileSync(path.join(root, 'main', 'ipc', 'chuxin-handlers.js'), 'utf8');
   const renderer = fs.readFileSync(path.join(root, 'renderer', 'chuxin.js'), 'utf8');
-  const runScript = fs.readFileSync(path.join(root, '..', 'chuxin-research', 'run.ps1'), 'utf8');
+  const runScript = fs.readFileSync(path.join(resolveChuxinResearchRoot(root), 'run.ps1'), 'utf8');
   assert.match(handler, /stdio: \['ignore', 'pipe', 'pipe'\]/);
   assert.match(handler, /waitHealthy\(45000\)/);
   assert.match(handler, /launcher\.log/);

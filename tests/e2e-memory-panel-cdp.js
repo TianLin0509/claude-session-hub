@@ -14,6 +14,8 @@ const { connectFirstPage } = require('./helpers/cdp-client.js');
 
 const PORT = 9377;
 const SHOT_DIR = 'C:/VibeData/Artifacts/Reports';
+const NOW = new Date();
+const DATE_TAG = [NOW.getFullYear(), String(NOW.getMonth() + 1).padStart(2, '0'), String(NOW.getDate()).padStart(2, '0')].join('');
 
 async function main() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-mem-e2e-'));
@@ -29,6 +31,7 @@ async function main() {
   // 双保险：home 指到隔离目录（防 memory 孤岛采集扫真实 home、蒸馏写真实三件套），
   // 并清空 DEEPSEEK_API_KEY（env 优先级高于 config.json，父进程的 key 会漏进隔离实例）。
   const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-mem-e2e-home-'));
+  const workspaceRoot = path.join(dataDir, 'workspaces', 'user');
   // fake home 夹具：规范库 2 文件 + 一个 2 文件的孤岛桶（测二级展开与一键并入）。
   const { projectSlug } = require('../core/claude-transcript-locator.js');
   const canonicalDir = path.join(fakeHome, '.claude', 'projects', projectSlug(fakeHome), 'memory');
@@ -39,6 +42,20 @@ async function main() {
   fs.mkdirSync(islandDir, { recursive: true });
   fs.writeFileSync(path.join(islandDir, 'only1.md'), '独有记忆 1\n', 'utf8');
   fs.writeFileSync(path.join(islandDir, 'only2.md'), '独有记忆 2\n', 'utf8');
+  fs.mkdirSync(path.join(fakeHome, '.codex', 'memories'), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, '.codex', 'AGENTS.md'), '# CODEX GLOBAL E2E\n', 'utf8');
+  fs.writeFileSync(path.join(fakeHome, '.codex', 'config.toml'), [
+    'project_root_markers = [".vibe-root"]',
+    '[features]',
+    'memories = true',
+  ].join('\n'), 'utf8');
+  fs.writeFileSync(path.join(fakeHome, '.codex', 'memories', 'memory_summary.md'), '# CODEX MEMORY E2E\n', 'utf8');
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, '.aiwork-root'), 'marker\n', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, '.vibe-root'), 'marker\n', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, 'AGENTS.md'), '# WORKSPACE AGENTS E2E\n', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, 'CLAUDE.md'), '# WORKSPACE CLAUDE E2E\n', 'utf8');
+  fs.writeFileSync(path.join(workspaceRoot, 'GEMINI.md'), '# WORKSPACE GEMINI E2E\n', 'utf8');
   const hub = await launchIsolatedHub({
     dataDir,
     port: PORT,
@@ -84,10 +101,12 @@ async function main() {
     const ov = await cdp.eval(`(async function(){
       const { ipcRenderer } = require('electron');
       const o = await ipcRenderer.invoke('memory:get-overview');
-      return { ug: o.userGlobalFiles.length, hasClaudeMemory: !!o.claudeMemory, hasSeed: !!o.seedCopies, cfgProvider: o.consolidation.config.provider };
+      return { ug: o.userGlobalFiles.length, hasClaudeMemory: !!o.claudeMemory, hasCodexMemory: !!o.codexMemory, codexEnabled: o.codexMemory.useMemories, hasSeed: !!o.seedCopies, cfgProvider: o.consolidation.config.provider, includesNormalSessions: o.consolidation.coverage.includesNormalSessions };
     })()`);
-    ok(ov && ov.ug === 4 && ov.hasClaudeMemory && ov.hasSeed, '3.2 memory:get-overview IPC 结构完整（含 Gemini 层）');
+    ok(ov && ov.ug === 4 && ov.hasClaudeMemory && ov.hasCodexMemory && ov.codexEnabled && ov.hasSeed,
+      '3.2 overview 同时包含 Claude 规范库与 Codex local memories');
     ok(ov && ov.cfgProvider === 'deepseek-api', '3.3 consolidation 默认 provider=deepseek-api');
+    ok(ov && ov.includesNormalSessions === false, '3.3b 整理器明确标注不采集普通 Session');
 
     // 二级展开：规范库是目录，点击展开子文件列表而不是误预览（ unsupported extension 修复）
     const expandOk = await cdp.eval(`(function(){
@@ -134,11 +153,11 @@ async function main() {
     })()`);
     ok(ov2 && ov2.islands === 0 && ov2.files === 4 && ov2.linked === 1, `3.8 并入后孤岛归零、规范库 4 文件、桶已换链（${JSON.stringify(ov2)}）`);
 
-    // 梦境记录：手动跑一轮（隔离环境无候选 → no-candidates，验证主进程全链路）
+    // 整理记录：手动跑一轮（隔离环境无候选 → no-candidates，验证主进程全链路）
     await cdp.eval(`document.querySelector('.mp-tab[data-tab="dream"]').click();`, { awaitPromise: false });
     await new Promise(r => setTimeout(r, 500));
     const hasRunBtn = await cdp.eval(`!!document.querySelector('#mp-run-now')`, { awaitPromise: false });
-    ok(hasRunBtn, '4.1 梦境记录页含「立即跑一轮」');
+    ok(hasRunBtn, '4.1 整理记录页含「立即整理一轮」');
     await cdp.eval(`document.querySelector('#mp-run-now').click();`, { awaitPromise: false });
     let runText = '';
     for (let i = 0; i < 30 && !runText; i++) {
@@ -157,6 +176,44 @@ async function main() {
     const sessionHint = await cdp.eval(`(document.querySelector('#mp-list .mp-empty')||{}).textContent || ''`, { awaitPromise: false });
     ok(/没有.*活动会话/.test(sessionHint), '5.1 当前会话页无会话时给出提示');
 
+    // 注入一个 renderer 内存态 Codex Session，验证“当前会话”页只列实际 provider 链，
+    // 不再把 Claude/Kimi/Gemini 文件混进来，也不再声称 Codex 没有 memory。
+    const injected = await cdp.eval(`(function(){
+      if (typeof sessions === 'undefined') return false;
+      sessions.set('memory-codex-e2e', {
+        id: 'memory-codex-e2e', kind: 'codex', title: 'Codex Memory E2E',
+        cwd: ${JSON.stringify(workspaceRoot)},
+        codexSessionsRoot: ${JSON.stringify(path.join(fakeHome, '.codex', 'sessions'))},
+      });
+      activeSessionId = 'memory-codex-e2e';
+      document.querySelector('.mp-tab[data-tab="session"]').click();
+      return true;
+    })()`, { awaitPromise: false });
+    await new Promise(r => setTimeout(r, 700));
+    const sessionTruth = await cdp.eval(`(function(){
+      const text = document.querySelector('#mp-list').textContent;
+      const paths = [...document.querySelectorAll('#mp-list .mp-file-path')].map(x => x.textContent.toLowerCase());
+      return {
+        text,
+        codexGlobal: text.includes('Codex 全局指令'),
+        codexProject: text.includes('Codex 项目指令'),
+        codexMemory: text.includes('Codex local memories 已启用'),
+        mixedClaude: text.includes('Claude 全局指令'),
+        duplicates: paths.length - new Set(paths).size,
+      };
+    })()`, { awaitPromise: false });
+    ok(injected && sessionTruth && sessionTruth.codexGlobal && sessionTruth.codexProject && sessionTruth.codexMemory,
+      '5.2 Codex 当前会话显示真实 AGENTS 链与 local memories');
+    ok(sessionTruth && !sessionTruth.mixedClaude && sessionTruth.duplicates === 0,
+      '5.3 Codex 当前会话不混入 Claude 规则且 flat 路径零重复');
+    await cdp.send('Page.enable');
+    fs.mkdirSync(SHOT_DIR, { recursive: true });
+    const sessionShot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(
+      path.join(SHOT_DIR, `${DATE_TAG}-AIHub-memory-panel-e2e-codex-session-${process.pid}.png`),
+      Buffer.from(sessionShot.data, 'base64'),
+    );
+
     // 设置：5 个通道 + 保存真实落 config.json
     await cdp.eval(`document.querySelector('.mp-tab[data-tab="settings"]').click();`, { awaitPromise: false });
     await new Promise(r => setTimeout(r, 500));
@@ -173,15 +230,13 @@ async function main() {
     const cfgBack = await cdp.eval(`(async function(){ const { ipcRenderer } = require('electron'); const c = await ipcRenderer.invoke('consolidation:get-config'); return c.schedule; })()`);
     ok(cfgBack === '04:20', '6.3 保存后 get-config 读回新值');
 
-    // 截图取证（设置页 + 梦境记录页）
-    await cdp.send('Page.enable');
-    fs.mkdirSync(SHOT_DIR, { recursive: true });
+    // 截图取证（设置页 + 整理记录页），文件名带日期和 PID，禁止每轮静默覆盖。
     const shot1 = await cdp.send('Page.captureScreenshot', { format: 'png' });
-    fs.writeFileSync(path.join(SHOT_DIR, 'hub-memory-panel-e2e-settings.png'), Buffer.from(shot1.data, 'base64'));
+    fs.writeFileSync(path.join(SHOT_DIR, `${DATE_TAG}-AIHub-memory-panel-e2e-settings-${process.pid}.png`), Buffer.from(shot1.data, 'base64'));
     await cdp.eval(`document.querySelector('.mp-tab[data-tab="dream"]').click();`, { awaitPromise: false });
     await new Promise(r => setTimeout(r, 600));
     const shot2 = await cdp.send('Page.captureScreenshot', { format: 'png' });
-    fs.writeFileSync(path.join(SHOT_DIR, 'hub-memory-panel-e2e-dream.png'), Buffer.from(shot2.data, 'base64'));
+    fs.writeFileSync(path.join(SHOT_DIR, `${DATE_TAG}-AIHub-memory-panel-e2e-organizer-${process.pid}.png`), Buffer.from(shot2.data, 'base64'));
     ok(true, '7.1 截图已存 C:/VibeData/Artifacts/Reports/');
 
     // Esc 关闭

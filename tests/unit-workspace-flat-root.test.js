@@ -133,6 +133,47 @@ test('工作根的显示名不会被会话级 label 覆盖', () => {
   assert.equal(svc.getWorkspace(root).label, expected, '注册表里也不能被改');
 });
 
+test('工作根不会被 Session 或群聊 auto-title 改名', () => {
+  const root = tempRoot('autotitle');
+  const svc = makeService(root);
+  svc.ensureRoot();
+  fs.writeFileSync(path.join(root, '.aiwork-root'), 'marker');
+
+  svc.ensureDefaultWorkspace({ select: false });
+  svc.updateSuggestedName(root, 'AI群聊功能升级排查方案');
+  assert.equal(svc.getWorkspace(root).label, path.basename(root));
+  assert.equal(svc.getWorkspace(root).suggestedName, undefined);
+
+  // create-meeting 会把 root 当显式 cwd 再 resolve 一次，并传「未命名群聊」。
+  // 这条必须同样保持 root-owned 名称。
+  const meetingResolved = svc.resolveForSession(root, { label: '未命名群聊', select: false });
+  assert.equal(meetingResolved.label, path.basename(root));
+  assert.equal(meetingResolved.permanentRoot, true);
+  assert.throws(() => svc.renameLabel(root, '单个任务名'), /名称固定/);
+});
+
+test('workspace:list 会自愈 v1.6.27 已被标题污染的工作根记录', () => {
+  const root = tempRoot('heal-label');
+  const svc = makeService(root);
+  svc.ensureRoot();
+  fs.writeFileSync(path.join(root, '.aiwork-root'), 'marker');
+  svc.ensureDefaultWorkspace({ select: false });
+
+  const registryPath = path.join(root, '_registry.json');
+  const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+  registry.workspaces[0].label = 'AI群聊功能升级排查方案';
+  registry.workspaces[0].suggestedName = 'AI群聊功能升级排查方案';
+  registry.workspaces[0].autoNamedAt = Date.now();
+  fs.writeFileSync(registryPath, JSON.stringify(registry), 'utf8');
+
+  const listing = svc.listWorkspaces();
+  assert.equal(listing.items[0].label, path.basename(root));
+  const healed = JSON.parse(fs.readFileSync(registryPath, 'utf8')).workspaces[0];
+  assert.equal(healed.permanentRoot, true);
+  assert.equal(healed.suggestedName, undefined);
+  assert.equal(healed.autoNamedAt, undefined);
+});
+
 // 归档提示在平铺下必须彻底哑火：工作根 draft=false，老 _scratch 目录也不再算
 // 本工作根的 scratch（scratch 根已经跟着 AI_HUB_WORKSPACE_ROOT 搬走了）。
 test('平铺下归档提示不触发，且不抛异常', () => {
