@@ -4,7 +4,8 @@ const path = require('path');
 const { readCssWithImports } = require('./helpers/read-css-with-imports.js');
 
 const root = path.join(__dirname, '..');
-const js = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.js'), 'utf8');
+// Windows 检出为 CRLF，下面有跨行的源码字面量断言，读入时统一归一化为 LF
+const js = fs.readFileSync(path.join(root, 'renderer', 'meeting-room.js'), 'utf8').replace(/\r\n/g, '\n');
 const css = readCssWithImports(path.join(root, 'renderer', 'meeting-room.css'));
 
 assert.ok(js.includes("_CARD_VIEW_MODE_KEY = 'mr-card-view-mode'"), 'card view mode is persisted');
