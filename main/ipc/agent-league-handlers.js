@@ -844,14 +844,15 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     return createNativeSession(row, resume);
   }
 
-  async function waitForAgentCliReady(sessionId, row, stage) {
+  async function waitForAgentCliReady(sessionId, row, stage, options = {}) {
     const kind = row && row.agent && row.agent.kind;
     const codexRuntime = kind === 'codex' || kind === 'deepseek';
     // Claude 冷启动同样可能超过单个 60s 窗口：--mcp-config 要先把 research MCP
     // 子进程拉起来，Opus 1M 档在忙碌的机器上启动本身就要几十秒。窗口只是轮询上限，
     // 就绪即返回，多给一段不增加正常路径的耗时。Enter 兜底仍只对 Codex 生效——
     // 它修的是 PowerShell 吞掉启动命令换行这个 Codex 专有现象。
-    const windows = codexRuntime ? cliReadyWindowsMs : [...cliReadyWindowsMs, 60000];
+    const defaultWindows = codexRuntime ? cliReadyWindowsMs : [...cliReadyWindowsMs, 60000];
+    const windows = Array.isArray(options.windows) && options.windows.length ? options.windows : defaultWindows;
     for (let index = 0; index < windows.length; index += 1) {
       if (await waitReady(sessionId, kind, windows[index])) return true;
       if (!codexRuntime || index >= windows.length - 1 || !sessionManager
@@ -867,6 +868,111 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       sessionManager.writeToSession(sessionId, signal);
     }
     return false;
+  }
+
+  function isCodexRuntimeAgent(row) {
+    const kind = row && row.agent && row.agent.kind;
+    return kind === 'codex' || kind === 'deepseek';
+  }
+
+  function assertActiveRunOwnership(operation) {
+    const durableLease = currentDurableLease();
+    const stale = !currentRun
+      || drainingForHandoff
+      || (runtimeStore && (!durableLease || !runtimeStore.assertLeadership(durableLease)));
+    if (!stale) return;
+    const error = new Error(`联赛写入权已转移，拒绝旧 Hub 继续${operation || '运行'}`);
+    error.code = 'stale-leader-lease';
+    throw error;
+  }
+
+  function restartAgentSessionFresh(agentId, row, session, stage) {
+    assertActiveRunOwnership(`重置 Agent Session：${agentId}`);
+    const hubId = String(session && session.id || row && row.session && row.session.hubSessionId || '');
+    if (!hubId) throw new Error(`Agent ${agentId} 缺少可恢复的 Hub Session ID`);
+    // Clear the persisted Hub ID before closing the old PTY. If closeSession
+    // synchronously emits session-exited, that late event can no longer find
+    // either the Agent binding or its in-flight task and cannot create a false
+    // technical forfeit.
+    const reset = store.clearNativeSession(agentId, `codex-ready-timeout:${stage}`, { clearHubSessionId: true });
+    const pending = clearPending(hubId);
+    if (sessionManager && sessionManager.getSession(hubId)) {
+      try { sessionManager.closeSession(hubId); }
+      catch (error) { console.warn(`[agent-league] stale Session close failed for ${agentId}; continuing with fenced fresh ID:`, error.message); }
+    }
+    const fresh = createNativeSession(reset, null);
+    if (pending) setPending(fresh.id, pending);
+    emit('session-recovering', {
+      runId: currentRun && currentRun.runId || '',
+      agentId,
+      previousSessionId: hubId,
+      sessionId: fresh.id,
+      stage,
+      mode: 'fresh-after-resume-timeout',
+    });
+    return fresh;
+  }
+
+  async function ensureAgentCliReady(agentId, row, session, stage) {
+    const native = row && row.session && row.session.nativeSession || {};
+    const resumeCodex = isCodexRuntimeAgent(row) && !!native.codexSid;
+    const resumeWindows = resumeCodex
+      ? cliReadyWindowsMs.slice(0, Math.max(1, cliReadyWindowsMs.length - 1))
+      : null;
+    if (await waitForAgentCliReady(session.id, row, stage, resumeWindows ? { windows: resumeWindows } : {})) {
+      return { ready: true, session, freshFallback: false };
+    }
+    if (!resumeCodex) return { ready: false, session, freshFallback: false };
+
+    console.warn(`[agent-league] ${stage} resume CLI failed readiness; replacing native Codex session for ${agentId}`);
+    const fresh = restartAgentSessionFresh(agentId, row, session, stage);
+    const freshRow = store.getAgent(agentId);
+    const ready = await waitForAgentCliReady(fresh.id, freshRow, `${stage} fresh`);
+    return { ready, session: fresh, freshFallback: true };
+  }
+
+  function prewarmAgentSessions(agentIds = []) {
+    if (!currentRun) return;
+    if (!currentRun.prewarmReady) currentRun.prewarmReady = new Map();
+    for (const agentId of agentIds) {
+      try {
+        const row = store.getAgent(agentId);
+        if (!row) throw new Error(`Agent 不存在：${agentId}`);
+        const session = ensureAgentSession(agentId);
+        // Session creation starts every CLI process immediately. Readiness is
+        // prepared concurrently, outside model-turn maxConcurrency, so a stale
+        // Codex resume can be replaced while earlier Agents are thinking.
+        const ready = ensureAgentCliReady(agentId, row, session, '赛程预热')
+          .then((result) => ({ ...result, error: null }))
+          .catch((error) => ({ ready: false, session: null, freshFallback: false, error }));
+        currentRun.prewarmReady.set(agentId, ready);
+        emit('agent-prewarmed', { runId: currentRun && currentRun.runId || '', agentId });
+      } catch (error) {
+        // Prewarm is an optimization. The owned task still performs the same
+        // authoritative ensure path and records any real failure there.
+        console.warn(`[agent-league] prewarm failed for ${agentId}:`, error && error.message);
+      }
+    }
+  }
+
+  async function consumePrewarmedCliReady(agentId, row, session, stage) {
+    const prewarmReady = currentRun && currentRun.prewarmReady;
+    const preparedPromise = prewarmReady && prewarmReady.get(agentId);
+    if (preparedPromise) {
+      prewarmReady.delete(agentId);
+      const prepared = await preparedPromise;
+      const preparedId = String(prepared && prepared.session && prepared.session.id || '');
+      const livePrepared = preparedId && sessionManager && sessionManager.getSession(preparedId);
+      if (prepared.ready && livePrepared) return { ...prepared, session: livePrepared };
+      if (prepared.error) {
+        console.warn(`[agent-league] prewarm readiness failed for ${agentId}; retrying in owned task:`, prepared.error.message);
+      }
+      assertActiveRunOwnership(`重试 Agent 预热：${agentId}`);
+      const latestRow = store.getAgent(agentId) || row;
+      const latestSession = ensureAgentSession(agentId);
+      return ensureAgentCliReady(agentId, latestRow, latestSession, stage);
+    }
+    return ensureAgentCliReady(agentId, row, session, stage);
   }
 
   function cliReadyBudgetSeconds(row) {
@@ -1071,6 +1177,13 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
     return pending || null;
   }
 
+  function clearPendingTask(target) {
+    if (!target) return;
+    for (const [sessionId, pending] of pendingByHubSession.entries()) {
+      if (pending === target) clearPending(sessionId);
+    }
+  }
+
   function armPendingTimeout(sessionId, pending) {
     if (!pending || pendingByHubSession.get(sessionId) !== pending) return;
     if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
@@ -1249,7 +1362,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       error.code = 'agent-input-drift';
       throw error;
     }
-    const session = ensureAgentSession(agentId);
+    let session = ensureAgentSession(agentId);
     const checkpoint = durableTask && durableTask.checkpoint || null;
     const draft = checkpoint && checkpoint.draft || null;
     const targetContexts = checkpoint && checkpoint.targetContexts || null;
@@ -1286,8 +1399,14 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       processing: false,
     };
     setPending(session.id, pending);
-    const ready = await waitForAgentCliReady(session.id, row, stage === 'hook' ? '决策 Hook 接班' : '盘前 DRAFT');
-    if (!ready) throw new Error(`${row.agent.provider} CLI 在 ${cliReadyBudgetSeconds(row)} 秒内未就绪`);
+    const readiness = await consumePrewarmedCliReady(agentId, row, session, stage === 'hook' ? '决策 Hook 接班' : '盘前 DRAFT');
+    session = readiness.session;
+    if (!readiness.ready) {
+      throw new Error(readiness.freshFallback
+        ? `${row.agent.provider} CLI 恢复会话与 fresh 启动均未在就绪预算内完成`
+        : `${row.agent.provider} CLI 在 ${cliReadyBudgetSeconds(row)} 秒内未就绪`);
+    }
+    assertActiveRunOwnership(`发送 ${stage === 'hook' ? 'Hook' : 'DRAFT'} Prompt`);
     const sent = await sendPrompt(session.id, prompt, row.agent.kind);
     if (!promptWasSubmitted(sent)) throw new Error(`${stage === 'hook' ? 'Hook' : '每日'} Prompt 写入 PTY 后未得到 provider turn 启动确认`);
     store.bindSession(agentId, { status: 'running', nativeSession: nativeSessionMeta(session) });
@@ -1309,7 +1428,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       error.code = 'agent-input-drift';
       throw error;
     }
-    const session = ensureAgentSession(agentId);
+    let session = ensureAgentSession(agentId);
     const dailyStates = currentRun.dailyStatesByAgent.get(agentId) || [];
     const runtimeAttempt = currentRun.runtimeAttempts.get(agentId) || {};
     const prompt = buildWeeklyPrompt(row, currentRun.decisionDate, dailyStates, currentRun.runId, runtimeAttempt.attemptId || '');
@@ -1333,8 +1452,14 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       processing: false,
     };
     setPending(session.id, pending);
-    const ready = await waitForAgentCliReady(session.id, row, '周度沉淀');
-    if (!ready) throw new Error(`${row.agent.provider} CLI 在 ${cliReadyBudgetSeconds(row)} 秒内未就绪`);
+    const readiness = await consumePrewarmedCliReady(agentId, row, session, '周度沉淀');
+    session = readiness.session;
+    if (!readiness.ready) {
+      throw new Error(readiness.freshFallback
+        ? `${row.agent.provider} CLI 恢复会话与 fresh 启动均未在就绪预算内完成`
+        : `${row.agent.provider} CLI 在 ${cliReadyBudgetSeconds(row)} 秒内未就绪`);
+    }
+    assertActiveRunOwnership('发送周度沉淀 Prompt');
     const sent = await sendPrompt(session.id, prompt, row.agent.kind);
     if (!promptWasSubmitted(sent)) throw new Error('周六沉淀 Prompt 写入 PTY 后未得到 provider turn 启动确认');
     store.bindSession(agentId, { status: 'running', nativeSession: nativeSessionMeta(session) });
@@ -1528,6 +1653,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
         completed: durableCompleted,
         failed: durableFailed,
         runtimeAttempts: new Map(),
+        prewarmReady: new Map(),
         phaseLease,
       };
     } catch (error) {
@@ -1541,6 +1667,10 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       lastRunId: runId,
       lastRunStatus: 'running',
     });
+    // Start every CLI shell immediately while model turns remain bounded by
+    // maxConcurrency. Slow Claude turns can no longer postpone Codex cold
+    // startup until the end of the 08:30-09:15 decision window.
+    prewarmAgentSessions(currentRun.queue);
     pumpQueue();
     return { ok: true, run: runPublicState(), snapshot, decisionDate, scheduledFrom };
   }
@@ -1974,10 +2104,12 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       failed: durableFailed,
       dailyStatesByAgent,
       runtimeAttempts: new Map(),
+      prewarmReady: new Map(),
       phaseLease,
     };
     const schedule = store.getSchedule();
     store.saveSchedule({ ...schedule, lastWeeklyDate: saturdayDate, lastWeeklyRunId: runId, lastWeeklyStatus: 'running' });
+    prewarmAgentSessions(currentRun.queue);
     pumpQueue();
     return { ok: true, run: runPublicState() };
   }
@@ -2653,12 +2785,20 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
         pending.draft = draft;
         pending.targetContexts = targetContexts;
         pending.hookPromptHash = hookPromptHash;
-        const ready = await waitForAgentCliReady(event.hubSessionId, row, '决策 Hook');
-        if (!ready) throw new Error(`${row.agent.provider} CLI 在 Hook 前 ${cliReadyBudgetSeconds(row)} 秒内未就绪`);
-        const sent = await sendPrompt(event.hubSessionId, hookPrompt, row.agent.kind);
+        const liveSession = sessionManager && sessionManager.getSession(event.hubSessionId);
+        if (!liveSession) throw new Error('Hook 前 Agent Session 已不存在');
+        const readiness = await ensureAgentCliReady(pending.agentId, row, liveSession, '决策 Hook');
+        if (!readiness.ready) {
+          throw new Error(readiness.freshFallback
+            ? `${row.agent.provider} CLI 在 Hook 前恢复会话与 fresh 启动均未就绪`
+            : `${row.agent.provider} CLI 在 Hook 前 ${cliReadyBudgetSeconds(row)} 秒内未就绪`);
+        }
+        assertActiveRunOwnership('发送决策 Hook Prompt');
+        const hookSessionId = readiness.session.id;
+        const sent = await sendPrompt(hookSessionId, hookPrompt, row.agent.kind);
         if (!promptWasSubmitted(sent)) throw new Error('Hook Prompt 写入 PTY 后未得到 provider turn 启动确认');
-        armPendingTimeout(event.hubSessionId, pending);
-        emit('hook-started', { runId: pending.runId, agentId: pending.agentId, sessionId: event.hubSessionId });
+        armPendingTimeout(hookSessionId, pending);
+        emit('hook-started', { runId: pending.runId, agentId: pending.agentId, sessionId: hookSessionId });
         return;
       }
 
@@ -2716,7 +2856,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
         return;
       }
       markFailed(pending.agentId, error);
-      clearPending(event.hubSessionId);
+      clearPendingTask(pending);
       pumpQueue();
       finishRunIfDone();
     } finally {
@@ -2752,7 +2892,7 @@ function registerAgentLeagueRuntime(ipcMain, deps = {}) {
       if (!pending) return;
       handleAgentTurnComplete(event, pending).catch((error) => {
         markFailed(pending.agentId, error);
-        clearPending(event.hubSessionId);
+        clearPendingTask(pending);
         pumpQueue();
         finishRunIfDone();
       });

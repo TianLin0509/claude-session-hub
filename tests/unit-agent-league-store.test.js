@@ -119,6 +119,26 @@ test('persists ordinary Hub/native session binding in SESSION.md', () => withSto
   assert.equal(store.findByHubSessionId('hub-1').agent.id, 'chuxin-baseline');
 }));
 
+test('clears a poisoned native resume identity before binding a fresh Hub session', () => withStore((store) => {
+  store.createAgent({ id: 'chuxin-baseline', name: '初心基准', provider: 'codex-cli', kind: 'codex', model: 'gpt-5.6-sol', philosophy });
+  store.bindSession('chuxin-baseline', {
+    hubSessionId: 'hub-stale', status: 'active', nativeSession: { codexSid: 'codex-stale' },
+  });
+
+  const reset = store.clearNativeSession(
+    'chuxin-baseline',
+    'codex-ready-timeout:盘前 DRAFT',
+    { clearHubSessionId: true },
+  );
+
+  assert.equal(reset.session.hubSessionId, '');
+  assert.equal(reset.session.previousHubSessionId, 'hub-stale');
+  assert.equal(reset.session.status, 'unbound');
+  assert.deepEqual(reset.session.nativeSession, {});
+  assert.match(reset.session.nativeResetReason, /codex-ready-timeout/);
+  assert.equal(store.findByHubSessionId('hub-stale'), null);
+}));
+
 test('cross-Hub run lease permits one writer and reclaims stale owners', () => withStore((store, root) => {
   const second = new AgentLeagueStore({ root });
   const first = store.claimRunLease({ ownerHub: 'hub-a', runId: 'run-a' });

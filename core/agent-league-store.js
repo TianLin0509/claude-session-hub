@@ -866,6 +866,29 @@ class AgentLeagueStore {
     return this.getAgent(agentId);
   }
 
+  clearNativeSession(agentId, reason = 'runtime-recovery', options = {}) {
+    const row = this.getAgent(agentId);
+    if (!row) throw new Error(`Agent 不存在：${agentId}`);
+    const previous = row.session || {};
+    const next = {
+      ...previous,
+      schemaVersion: 1,
+      status: previous.hubSessionId ? 'restorable' : 'unbound',
+      nativeSession: {},
+      nativeResetAt: nowIso(this.now),
+      nativeResetReason: String(reason || 'runtime-recovery').slice(0, 200),
+      lastSeenAt: nowIso(this.now),
+    };
+    if (options.clearHubSessionId === true) {
+      next.previousHubSessionId = String(previous.hubSessionId || '');
+      next.hubSessionId = '';
+      next.boundAt = null;
+      next.status = 'unbound';
+    }
+    atomicWriteText(row.files.session, this._renderSession(next));
+    return this.getAgent(agentId);
+  }
+
   findByHubSessionId(hubSessionId) {
     const id = String(hubSessionId || '');
     return this.listAgents().find((row) => row.session && row.session.hubSessionId === id) || null;

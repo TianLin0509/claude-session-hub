@@ -950,6 +950,250 @@ test('Agent League recovers a Codex launch command whose trailing Enter was swal
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('daily kickoff prewarms every CLI while model turns still obey maxConcurrency', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-prewarm-all-'));
+  let harness = null;
+  try {
+    const readiness = [];
+    harness = makeHarness(root, fakeMarketHttp(), {
+      cliReadyWindowsMs: [1],
+      waitCliReady: sessionId => new Promise(resolve => readiness.push({ sessionId, resolve })),
+    });
+    for (const [id, name, provider, kind, model] of [
+      ['claude-a', 'Claude A', 'claude-cli', 'claude', 'claude-opus-5[1m]'],
+      ['claude-b', 'Claude B', 'claude-cli', 'claude', 'claude-opus-5[1m]'],
+      ['codex-a', 'Codex A', 'codex-cli', 'codex', 'gpt-5.6-sol'],
+      ['codex-b', 'Codex B', 'codex-cli', 'codex', 'gpt-5.6-sol'],
+    ]) {
+      harness.store.createAgent({ id, name, provider, kind, model, philosophy: baseline });
+    }
+    harness.store.saveSchedule({ ...harness.store.getSchedule(), maxConcurrency: 2 });
+
+    const started = await harness.ipc.handlers.get('agent-league:run-day')(null, {
+      trigger: 'test', force: true, decisionDate: '2026-08-27',
+    });
+    assert.equal(started.ok, true, JSON.stringify(started));
+    await waitFor(() => readiness.length === 4, 'all four CLI readiness probes');
+
+    assert.equal(harness.createdOptions.length, 4, 'all CLI processes start at kickoff');
+    assert.deepEqual(new Set(readiness.map((item) => item.sessionId)).size, 4);
+    assert.equal(harness.ipc.handlers.get('agent-league:list')(null, {}).run.active.length, 2);
+    assert.equal(harness.sentPrompts.length, 0, 'no prompt is sent before its CLI is ready');
+
+    readiness.forEach((item) => item.resolve(true));
+    await waitFor(() => harness.sentPrompts.length === 2, 'two owned model turns');
+    assert.equal(harness.sentPrompts.length, 2, 'prewarm does not bypass model concurrency');
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a draining Hub cannot reset a stale Codex session after leadership handoff starts', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-prewarm-handoff-fence-'));
+  let harness = null;
+  try {
+    let releaseFirstProbe = null;
+    let readinessChecks = 0;
+    harness = makeHarness(root, fakeMarketHttp(), {
+      cliReadyWindowsMs: [1],
+      waitCliReady: async () => {
+        readinessChecks += 1;
+        if (readinessChecks > 1) return false;
+        return new Promise(resolve => { releaseFirstProbe = resolve; });
+      },
+    });
+    harness.store.createAgent({
+      id: 'codex-handoff', name: 'Codex Handoff', provider: 'codex-cli', kind: 'codex',
+      model: 'gpt-5.6-sol', philosophy: baseline,
+    });
+    harness.store.bindSession('codex-handoff', {
+      hubSessionId: 'hub-handoff-stale', status: 'restorable', nativeSession: { codexSid: 'native-handoff-stale' },
+    });
+
+    const started = await harness.ipc.handlers.get('agent-league:run-day')(null, {
+      trigger: 'test', force: true, decisionDate: '2026-08-27',
+    });
+    assert.equal(started.ok, true);
+    await waitFor(() => typeof releaseFirstProbe === 'function', 'blocked prewarm readiness probe');
+    harness.bridge.beginHandoff('unit-prewarm-handoff');
+    releaseFirstProbe(false);
+    await waitFor(() => readinessChecks >= 1, 'prewarm released after handoff');
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(harness.createdOptions.length, 1, 'old owner must not create a fresh replacement');
+    assert.equal(harness.sentPrompts.length, 0, 'old owner must not send a prompt after handoff');
+    const row = harness.store.getAgent('codex-handoff');
+    assert.equal(row.session.hubSessionId, 'hub-handoff-stale');
+    assert.equal(row.session.nativeSession.codexSid, 'native-handoff-stale');
+    assert.equal(harness.store.getSchedule().lastRunStatus, 'interrupted');
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('two stale Codex resumes are replaced in parallel and both finish DRAFT plus Hook', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-two-codex-fresh-fallback-'));
+  let harness = null;
+  try {
+    const staleHubIds = ['hub-stale-codex-a', 'hub-stale-codex-b'];
+    harness = makeHarness(root, fakeMarketHttp(), {
+      cliReadyWindowsMs: [1],
+      waitCliReady: async sessionId => !staleHubIds.includes(sessionId),
+    });
+    const synchronouslyClosed = [];
+    harness.sessionManager.closeSession = (sessionId) => {
+      harness.sessions.delete(sessionId);
+      synchronouslyClosed.push(sessionId);
+      harness.sessionManager.emit('session-exited', { sessionId });
+    };
+    for (const [index, agentId] of ['codex-a', 'codex-b'].entries()) {
+      harness.store.createAgent({
+        id: agentId, name: `Codex ${index + 1}`, provider: 'codex-cli', kind: 'codex',
+        model: 'gpt-5.6-sol', philosophy: baseline,
+      });
+      harness.store.bindSession(agentId, {
+        hubSessionId: staleHubIds[index],
+        status: 'restorable',
+        nativeSession: { codexSid: `native-stale-${index + 1}` },
+      });
+    }
+
+    const started = await harness.ipc.handlers.get('agent-league:run-day')(null, {
+      trigger: 'test', force: true, decisionDate: '2026-08-27',
+    });
+    assert.equal(started.ok, true, JSON.stringify(started));
+    await waitFor(() => harness.sentPrompts.length === 2, 'two fresh Codex DRAFT prompts');
+
+    const draftPrompts = [...harness.sentPrompts];
+    assert(draftPrompts.every((item) => !staleHubIds.includes(item.sessionId)));
+    assert.deepEqual(new Set(synchronouslyClosed), new Set(staleHubIds));
+    assert.equal(harness.createdOptions.filter((item) => item.opts.useResume === true).length, 2);
+    assert.equal(harness.createdOptions.filter((item) => !item.opts.useResume && !item.opts.codexSid).length, 2);
+    for (const [index, agentId] of ['codex-a', 'codex-b'].entries()) {
+      const row = harness.store.getAgent(agentId);
+      assert.equal(row.session.previousHubSessionId, staleHubIds[index]);
+      assert.notEqual(row.session.hubSessionId, staleHubIds[index]);
+    }
+
+    // Closing the poisoned PTYs may report their exits after the replacement
+    // sessions already own the tasks. Those late exits must be harmless.
+    staleHubIds.forEach(sessionId => harness.sessionManager.emit('session-exited', { sessionId }));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(harness.ipc.handlers.get('agent-league:list')(null, {}).run.failed.length, 0);
+
+    const draft = makeDecision();
+    for (const item of draftPrompts) {
+      harness.transcriptTap.emit('turn-complete', {
+        hubSessionId: item.sessionId,
+        text: `\`\`\`agent-league-draft\n${JSON.stringify({
+          run_id: started.run.runId,
+          attempt_id: attemptIdFromPrompt(item.prompt),
+          decision_date: '2026-08-27',
+          data_as_of: '2026-08-26',
+          ...draft,
+        })}\n\`\`\``,
+      });
+    }
+    await waitFor(() => harness.sentPrompts.length === 4, 'two Hook prompts');
+    const hookPrompts = harness.sentPrompts.slice(2);
+    for (const item of hookPrompts) {
+      harness.transcriptTap.emit('turn-complete', {
+        hubSessionId: item.sessionId,
+        text: `\`\`\`agent-league-hook\n${JSON.stringify({
+          run_id: started.run.runId,
+          attempt_id: attemptIdFromPrompt(item.prompt),
+          decision_date: '2026-08-27',
+          data_as_of: '2026-08-26',
+          ...makeHook(draft),
+        })}\n\`\`\``,
+      });
+    }
+    await waitFor(
+      () => harness.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus === 'completed',
+      'both Codex FINAL decisions',
+    );
+    assert.deepEqual(
+      ['codex-a', 'codex-b'].map(agentId => harness.store.getAgent(agentId).agent.decisionCount),
+      [1, 1],
+    );
+    assert.equal(harness.ipc.handlers.get('agent-league:list')(null, {}).dashboard.current.technicalForfeits, 0);
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Hook handoff migrates the pending task when a resumed Codex becomes unready', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-hook-fresh-fallback-'));
+  let harness = null;
+  try {
+    const staleHubId = 'hub-hook-stale';
+    let staleChecks = 0;
+    harness = makeHarness(root, fakeMarketHttp(), {
+      cliReadyWindowsMs: [1],
+      waitCliReady: async sessionId => {
+        if (sessionId !== staleHubId) return true;
+        staleChecks += 1;
+        return staleChecks === 1;
+      },
+    });
+    harness.store.createAgent({
+      id: 'codex-hook', name: 'Codex Hook', provider: 'codex-cli', kind: 'codex',
+      model: 'gpt-5.6-sol', philosophy: baseline,
+    });
+    harness.store.bindSession('codex-hook', {
+      hubSessionId: staleHubId, status: 'restorable', nativeSession: { codexSid: 'native-hook-stale' },
+    });
+
+    const started = await harness.ipc.handlers.get('agent-league:run-day')(null, {
+      trigger: 'test', force: true, decisionDate: '2026-08-27',
+    });
+    await waitFor(() => harness.sentPrompts.length === 1, 'DRAFT on resumed Codex');
+    const draftPrompt = harness.sentPrompts[0];
+    assert.equal(draftPrompt.sessionId, staleHubId);
+    const draft = makeDecision();
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: staleHubId,
+      text: `\`\`\`agent-league-draft\n${JSON.stringify({
+        run_id: started.run.runId,
+        attempt_id: attemptIdFromPrompt(draftPrompt.prompt),
+        decision_date: '2026-08-27',
+        data_as_of: '2026-08-26',
+        ...draft,
+      })}\n\`\`\``,
+    });
+    await waitFor(() => harness.sentPrompts.length === 2, 'Hook on fresh Codex');
+    const hookPrompt = harness.sentPrompts[1];
+    assert.notEqual(hookPrompt.sessionId, staleHubId);
+    assert.equal(harness.bridge.pendingByHubSession.has(staleHubId), false);
+    assert.equal(harness.bridge.pendingByHubSession.has(hookPrompt.sessionId), true);
+
+    harness.sessionManager.emit('session-exited', { sessionId: staleHubId });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(harness.ipc.handlers.get('agent-league:list')(null, {}).run.failed.length, 0);
+    harness.transcriptTap.emit('turn-complete', {
+      hubSessionId: hookPrompt.sessionId,
+      text: `\`\`\`agent-league-hook\n${JSON.stringify({
+        run_id: started.run.runId,
+        attempt_id: attemptIdFromPrompt(hookPrompt.prompt),
+        decision_date: '2026-08-27',
+        data_as_of: '2026-08-26',
+        ...makeHook(draft),
+      })}\n\`\`\``,
+    });
+    await waitFor(
+      () => harness.ipc.handlers.get('agent-league:list')(null, {}).schedule.lastRunStatus === 'completed',
+      'Hook completion after fresh handoff',
+    );
+    assert.equal(harness.store.getAgent('codex-hook').agent.decisionCount, 1);
+  } finally {
+    harness?.bridge.stopScheduler();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('manual weekend premarket click schedules the next official trading day', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-league-weekend-next-'));
   try {

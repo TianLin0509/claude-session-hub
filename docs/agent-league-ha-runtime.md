@@ -1,5 +1,7 @@
 # Agent League 高可用运行与接班手册
 
+> 2026-09-02 / v1.6.36：新增全 Agent CLI 并行预热，并为 Codex 旧原生会话恢复增加超时后 fresh session 接管；详见“CLI 预热与失效恢复”。
+
 ## 结论
 
 v1.6.29 将联赛从“单个 Hub 内存队列 + 两分钟文件锁”升级为：
@@ -14,6 +16,21 @@ v1.6.29 将联赛从“单个 Hub 内存队列 + 两分钟文件锁”升级为�
 - 首页把最新运行尝试、最近有效 FINAL、技术弃权和执行覆盖率分账呈现
 
 这里的“断点续传”是阶段级，不承诺从模型思考到第几个 token 继续：已提交阶段不重做；崩溃时尚未提交的阶段会先核对 attempt，再安全重放。
+
+## CLI 预热与失效恢复
+
+- 赛程创建后立即启动全部 Agent 的 CLI 会话并并行检查就绪；`maxConcurrency` 只限制正在执行的模型 turn，不再让排在后面的 Codex 等前两个 Agent 结束后才启动。
+- 若 Codex 带历史 `codexSid` 恢复，但在前 60 秒就绪窗口内没有进入可发送状态，运行时会原子清除旧 native/Hub 绑定，关闭中毒 PTY，用新 Hub Session ID fresh 启动，再给完整就绪预算。
+- 若正在 DRAFT→Hook 之间切换，pending task、watchdog 和 durable heartbeat 会一起迁移到新 Session；旧 PTY 随后上报的 exit/turn-complete 不能再把新任务误判为技术弃权。
+- fresh 接管与 Prompt 发送前都会复核当前 SQLite leader/epoch；Hub 一旦进入 handoff 或租约已转移，后台预热即使刚好超时也不能再改写共享 SESSION 或发送新 turn。
+- fresh 启动仍失败时，会进入原有 durable retry/technical-forfeit 语义，不会伪造成功；这能消除已知的“反复重用同一个卡死 Codex resume”路径，但不代替 CLI 登录、网络和模型容量健康检查。
+
+真实双 Codex 验收会消耗模型调用，因此必须显式开启；脚本只使用隔离 Hub 数据目录、独立 CDP 端口和临时联赛 vault：
+
+```powershell
+$env:RUN_REAL_AGENT_LEAGUE_E2E='1'
+node tests/e2e-agent-league-two-codex-real.js
+```
 
 ## 成熟系统经验如何落地
 
