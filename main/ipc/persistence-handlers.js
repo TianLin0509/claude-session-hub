@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('node:fs');
 const { isDeepStrictEqual } = require('node:util');
 
 // 注意：memoryLinkWarning **故意不在这个名单里**。这里的语义是「新会话缺该字段就继承旧值」，
@@ -223,11 +224,33 @@ function handlePersistSessions(list, meetingList, deps) {
   return true;
 }
 
-function registerPersistenceIpc(ipcMain, deps) {
-  ipcMain.handle('get-dormant-sessions', () => ({
-    sessions: deps.getLastPersistedSessions(),
-    wasCleanShutdown: deps.bootWasClean,
+// 2026-08-09 [休眠卡时间回填]：会话休眠/Hub 未运行期间，在外部终端续聊只写原生
+//   transcript（kimi=wire.jsonl / codex=rollout / claude=cc transcript）——tap 未绑定
+//   不产生事件，lastMessageTime 停在休眠前，侧栏按"更早"沉底、用户找不到最近会话
+//   （实测：8/9 全天对话的 kimi 会话时间停在 8/3）。恢复休眠卡时按 transcript mtime
+//   回填，只增不减，三个 kind 通用；纯 additive，不触碰任何存活会话的更新路径。
+async function backfillDormantLastMessageTime(sessions) {
+  await Promise.all((sessions || []).map(async (session) => {
+    if (!session || typeof session.transcriptPath !== 'string' || !session.transcriptPath) return;
+    try {
+      const stat = await fs.promises.stat(session.transcriptPath);
+      const mtimeMs = Math.round(stat.mtimeMs);
+      if (!Number.isFinite(mtimeMs) || mtimeMs <= 0) return;
+      const current = typeof session.lastMessageTime === 'number' ? session.lastMessageTime : 0;
+      if (mtimeMs > current) session.lastMessageTime = mtimeMs;
+    } catch {}
   }));
+}
+
+function registerPersistenceIpc(ipcMain, deps) {
+  ipcMain.handle('get-dormant-sessions', async () => {
+    const sessions = deps.getLastPersistedSessions();
+    await backfillDormantLastMessageTime(sessions);
+    return {
+      sessions,
+      wasCleanShutdown: deps.bootWasClean,
+    };
+  });
 
   ipcMain.on('persist-sessions', (_e, list, meetingList) => {
     handlePersistSessions(list, meetingList, deps);
@@ -236,6 +259,7 @@ function registerPersistenceIpc(ipcMain, deps) {
 
 module.exports = {
   RESUME_META_FIELDS,
+  backfillDormantLastMessageTime,
   buildMeetingsForState,
   handlePersistSessions,
   mergeResumeMetaFields,

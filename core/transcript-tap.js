@@ -1577,6 +1577,9 @@ class TranscriptTap extends EventEmitter {
       b.on('session-bound', (ev) => this.emit('session-bound', ev));
       b.on('prompt-submitted', (ev) => this.emit('prompt-submitted', ev));
       b.on('background-work-changed', (ev) => this.emit('background-work-changed', ev));
+      // 2026-08-09：kimi 的 ESC/中断收尾信号（turn.cancel）也要转发——不加这行，
+      // KimiTap 的 turn-aborted 到不了 main.js，中断的会话仍卡"运行中"。
+      b.on('turn-aborted', (ev) => this.emit('turn-aborted', ev));
     }
   }
 

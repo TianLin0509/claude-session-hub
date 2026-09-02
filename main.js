@@ -425,6 +425,23 @@ transcriptTap.on('background-work-changed', (ev) => {
   }
 });
 
+// Kimi ESC/中断：wire 里的 turn.cancel 是被中断 turn 的唯一收尾信号（中断的 step
+// 没有 step.end → 永远等不到 turn-complete）。转发给 renderer 立即清掉"运行中"，
+// 否则只能卡到 45min maxAge 兜底（对齐 Claude 的 Stop hook 行为）。
+transcriptTap.on('turn-aborted', (ev) => {
+  if (!ev || !ev.hubSessionId) return;
+  const session = sessionManager.getSession(ev.hubSessionId);
+  try {
+    sendToRenderer('turn-aborted-event', {
+      ...ev,
+      meetingId: session ? session.meetingId : null,
+      kind: session ? session.kind : (ev.kind || null),
+    });
+  } catch (error) {
+    console.warn('[kimi turn-aborted] broadcast failed:', error && error.message);
+  }
+});
+
 // Persist resume meta when transcript-tap binds a sub-session to its native CLI sid.
 transcriptTap.on('session-bound', (ev) => {
   if (!ev || !ev.hubSessionId) return;

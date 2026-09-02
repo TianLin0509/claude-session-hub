@@ -485,6 +485,27 @@ class KimiTap extends EventEmitter {
       }
       return;
     }
+    // 2026-08-09 [ESC 中断收尾]：Kimi 的 ESC/中断在 wire 里写 turn.cancel，被中断的
+    //   step 不会再有 step.end → turn-complete 永远不来，Hub 侧"运行中"只能等 45min
+    //   maxAge 兜底（Claude 的 ESC 有 Stop hook 立即收尾，这里对齐）。turn.steer 是
+    //   中途追加输入，turn 继续运行，不需要状态动作。
+    if (record.type === 'turn.cancel') {
+      bound.turnText = '';
+      bound.steps.clear();
+      bound.completedSteps.clear();
+      bound.streamingText = '';
+      // 中断同时杀掉在跑的 Coder/Agent 子任务，漏清的 job 会让后台状态卡到 maxAge。
+      for (const jobId of Array.from(bound.backgroundAgentCalls)) {
+        this._finishBackgroundAgent(bound, jobId, recordTimeMs(record));
+      }
+      this.emit('turn-aborted', {
+        hubSessionId: bound.hubSessionId,
+        abortedAt: recordTimeMs(record),
+        transcriptPath: bound.wirePath,
+        signalSource: 'kimi_wire_turn_cancel',
+      });
+      return;
+    }
     if (record.type !== 'context.append_loop_event' || !record.event) return;
     const event = record.event;
     const fallbackStepKey = `${event.turnId || ''}:${event.step || ''}`;

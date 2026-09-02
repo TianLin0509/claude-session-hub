@@ -1530,6 +1530,10 @@ ipcRenderer.on('background-work-event', (_event, payload) => {
   onKimiBackgroundWorkEvent(payload);
 });
 
+ipcRenderer.on('turn-aborted-event', (_event, payload) => {
+  onTurnAbortedFromTranscriptEvent(payload);
+});
+
 // === Spec 2 v1.0.0 · S6 turn-complete-event listener ===
 // main.js (S3) broadcasts 'turn-complete-event' whenever an assistant turn
 // finishes streaming. Append the just-completed turn as a card to #msg-overlay
@@ -1933,7 +1937,7 @@ function clearKimiBackgroundFinishTimer(sessionId) {
 }
 
 function onKimiBackgroundWorkEvent(payload) {
-  const { hubSessionId, phase, jobId } = payload || {};
+  const { hubSessionId, phase, jobId, changedAt } = payload || {};
   if (!hubSessionId || !jobId) return;
   const session = sessions.get(hubSessionId);
   if (!session || !isKimiCliKind(session.kind) || session.status === 'dormant') return;
@@ -1942,6 +1946,9 @@ function onKimiBackgroundWorkEvent(payload) {
   if (phase === 'started') {
     clearKimiBackgroundFinishTimer(hubSessionId);
     session._kimiBackgroundJobs.add(String(jobId));
+    // 2026-08-09：长后台任务期间主 wire 静默，prompt/turn-complete 都不来，
+    //   lastMessageTime 会停滞数十分钟（侧栏时间滞后）——开工即刷新。
+    session.lastMessageTime = changedAt || Date.now();
     markCodexCardWorking(hubSessionId, 'kimi_background_agent');
     renderSessionList();
     schedulePersist();
@@ -1981,6 +1988,20 @@ function hasSemanticCardWorking(session) {
     ? _CODEX_CARD_SUBMIT_PENDING_MS
     : _CODEX_CARD_WORK_MAX_MS;
   if (Date.now() - session.cardWorkingSince > maxAge) {
+    // 2026-08-09 [kimi 长任务误杀修复]：45min 上限的本意是"45min 无任何输出判卡死"
+    //   （对齐 hook 系 sweepStaleRunning 的 _lastOutputTs 规则），但此前只看
+    //   cardWorkingSince——Kimi 单个长 turn（Coder Agent 跑几十分钟很常见）到期被
+    //   强制置 idle，随后 PTY 输出又把它打回 running，状态来回抖。改为：期间只要有
+    //   输出（_lastOutputTs 由 terminal-activity-monitor.onTerminalOutput 维护）就
+    //   按最后输出时间顺延。floating_input 的 15s 提交确认窗口不顺延——终端回显
+    //   不能证明 prompt 已落到 transcript。
+    const lastOutputTs = session._lastOutputTs || 0;
+    if (session.cardWorkingSource !== 'floating_input'
+        && lastOutputTs > session.cardWorkingSince
+        && Date.now() - lastOutputTs <= maxAge) {
+      session.cardWorkingSince = lastOutputTs;
+      return true;
+    }
     session.cardWorkingSince = null;
     session.cardWorkingSource = null;
     return false;
@@ -2328,7 +2349,11 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       }
     }
 
-    if (kind && isClaudeFamily(kind)) {
+    // 2026-08-09 [kimi 多行输入修复]：kimi 识别 BP marker（kimi.exe 启动即发送
+    //   \x1B[?2004h 开启 bracketed paste，并解析 [200~/[201~]），与 claude 同路
+    //   BP 包裹发送——此前 kimi 被归进"不识别 BP"分支裸发原文，多行文本的每个
+    //   换行都触发一次提交，一条 prompt 被拆成 N 条。
+    if (kind && (isClaudeFamily(kind) || isKimiCliKind(kind))) {
       ipcRenderer.send('terminal-input', { sessionId, data: BP_START + text + BP_END });
       // belt-and-suspenders（2026-05-11 用户反馈：BP+500ms+1×\r 仍偶发"消息进输入框但没提交"）：
       //   BP_END 后 Ink paste-detect 仍有 debounce 窗口，紧贴的 \r 被并入 paste 内容吞掉。
@@ -2446,7 +2471,7 @@ function updateFloatingBarState() {
 //   无任何回收 → 实测卡在运行中 4 小时；card 系的 45min maxAge 只在静默计时器里
 //   检查（完全无输出时永远不会触发）；gcWorking 在 watcher 卡死且无 turn-complete 时
 //   永久置位。规则：
-//   - card 系：hasSemanticCardWorking 的 45min maxAge（每次扫都真正执行）
+//   - card 系：hasSemanticCardWorking 的 45min maxAge（每次扫都真正执行；期间有 PTY 输出即顺延，见该函数内注释）
 //   - hook 系：45min 无任何 PTY 输出判卡死（_lastOutputTs 由 onTerminalOutput/语义起点维护）
 //   - gcWorking：8s 无任何 partial-update（活着的 watcher 每 1.5s 必有 streaming）
 function sweepStaleRunning() {
@@ -3405,6 +3430,31 @@ function clearSessionWaitingState(sessionId) {
   session.isWaiting = false;
   session.waitingReason = null;
   session.waitingText = null;
+  renderSessionList();
+  schedulePersist();
+}
+
+// 2026-08-09 [kimi ESC 中断收尾]：turn.cancel = 用户主动中断，地位等价 claude 的
+//   Stop hook。此前 wire 里这个记录没人认，被中断的 kimi 会话"运行中"会一直卡到
+//   45min maxAge 兜底才回落。收到即清工作标记回 idle；不置 isWaiting——用户中断后
+//   回到的是空输入框，没有待回答的问题（与 claude Stop hook 后无待答问题的终态一致）。
+function onTurnAbortedFromTranscriptEvent(payload) {
+  const { hubSessionId, kind } = payload || {};
+  if (!hubSessionId) return;
+  if (!isTranscriptCliKind(kind)) return;
+
+  const session = sessions.get(hubSessionId);
+  if (!session) return;
+  if (session.status === 'dormant') return;
+
+  clearKimiBackgroundFinishTimer(hubSessionId);
+  if (session._kimiBackgroundJobs instanceof Set) session._kimiBackgroundJobs.clear();
+  clearCodexCardWorking(hubSessionId);
+  if (session.status === 'running') session.status = 'idle';
+  session.isWaiting = false;
+  session.waitingReason = null;
+  session.waitingText = null;
+  if (typeof _updateStreamingIndicator === 'function') _updateStreamingIndicator(hubSessionId);
   renderSessionList();
   schedulePersist();
 }
